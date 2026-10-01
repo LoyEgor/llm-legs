@@ -19,7 +19,7 @@ HOME = os.path.expanduser("~")
 LIMITS = {
     "event_waiting_d": 0,
     "event_stuck_d": 2,
-    "cli_behind_h": 36,
+    "cli_behind_h": 24,
     "pass_stale_h": 36,
 }
 PASS_OK = ("current", "updated", "busy", "not-installed")
@@ -257,7 +257,7 @@ class Collector:
                     problem["state"] = "fixed-pending"
                 elif status == "fixed":
                     fixed_at = max([iso_epoch(f.get("at")) or 0 for f in row.get("fixes") or [] if isinstance(f, dict)] or [0])
-                    problem["state"] = "regressed" if (last or 0) > fixed_at else "watch"
+                    problem["state"] = "regressed" if problem["state"] != "watch" and (last or 0) > fixed_at else "watch"
                 elif problem["state"] != "watch":
                     problem["state"] = "open"
             kept.append(problem)
@@ -365,14 +365,17 @@ def collect(now):
                 if line["word"] == "updated":
                     since, streak = None, []
                 elif line["word"] in ("busy", "install-failed"):
-                    if streak and line["at"] - streak[-1]["at"] > LIMITS["cli_behind_h"] * 3600:
+                    if streak and line["at"] - streak[-1]["at"] > LIMITS["pass_stale_h"] * 3600:
                         since, streak = None, []
                     since = since or line["at"]
                     streak.append(line)
+            since = since or at
             hours = (now - since) / 3600 if since else 0
-            if hours > LIMITS["cli_behind_h"]:
-                col.add("cli-behind", vendor, "new", "%s: installed %s is behind %s for %dh" % (
-                    vendor, entry.get("installed"), entry.get("latest"), hours),
+            stuck = hours > LIMITS["cli_behind_h"]
+            fact = "%s %s → %s waiting: %s since %s" % (
+                vendor, entry.get("installed"), entry.get("latest"), result,
+                time.strftime("%H:%M", time.localtime(since)) if since else "?")
+            col.add("cli-behind", vendor, "new" if stuck else "watch", fact + (" · %dh" % hours if stuck else ""),
                     round(hours, 1), LIMITS["cli_behind_h"], "h", None, exposure, len(streak), since, at,
                     log_evidence(streak))
 

@@ -150,7 +150,8 @@ expect_as pass '{}' 'llm-limits --table --no-write'
 # A help screen launches nothing, while a real launch chained beside one still does.
 for help in 'codex help exec' 'codex exec --help' 'claude -p --help' 'claude -p -h' 'codexb exec -h' \
   'gemini -p --help' 'grokb --prompt x --help' 'opencode run --help' 'codex exec --help | head -40' \
-  'codex exec --help 2>&1 | head -30' 'codex exec -h 2>&1' 'codex exec --help >/tmp/x.txt' 'codex help exec 2>&1'; do
+  'codex exec --help 2>&1 | head -30' 'codex exec -h 2>&1' 'codex exec --help >/tmp/x.txt' 'codex help exec 2>&1' \
+  'codex exec --help > /tmp/out' 'claude -p --help 2> /dev/null'; do
   expect_as pass '{}' "$help"
   expect_as pass "$RELAY" "$help"
 done

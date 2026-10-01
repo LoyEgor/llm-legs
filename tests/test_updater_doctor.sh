@@ -125,8 +125,10 @@ assert_fails has catalog-missing:claude
 assert_fails has catalog-missing:grok
 assert [ "$(state_of foreign-client:codex)" = watch ]
 assert jqe '(.fact | test("ChatGPT.app/codex 0.158.0")) and .value == 1' <<<"$(problem foreign-client:codex)"
-assert jqe '.state == "new" and .value > 36 and .limit == 36 and .count == 3 and .evidence[0].excerpt == "\(.evidence[0].ref) grok busy 1.0.40 -> 1.0.44"' <<<"$(problem cli-behind:grok)"
-assert_fails has cli-behind:claude
+assert jqe '.state == "new" and .value > 24 and .limit == 24 and .count == 3 and .evidence[0].excerpt == "\(.evidence[0].ref) grok busy 1.0.40 -> 1.0.44"' <<<"$(problem cli-behind:grok)"
+assert jqe --arg t "$(date -r $(($(date +%s) - 60 * H)) +%H:%M)" '.fact == "grok 1.0.40 → 1.0.44 waiting: busy since \($t) · 60h"' <<<"$(problem cli-behind:grok)"
+assert jqe --arg t "$(date -r $(($(date +%s) - H)) +%H:%M)" '.state == "watch" and .fact == "claude 2.1.283 → 2.1.284 waiting: install-failed since \($t)"' <<<"$(problem cli-behind:claude)"
+assert_fails has cli-behind:codex
 assert jqe '.state == "new" and (.fact | test("install-failed")) and (.evidence[0].excerpt | test("claude install-failed"))' <<<"$(problem pass-failed:claude)"
 assert_fails has pass-failed:grok
 assert jqe '.value == "0.160.0" and .limit == "0.159.0"' <<<"$(problem client-too-old:codex/gpt-7)"
@@ -191,9 +193,24 @@ assert jqe '.blind_spots | map(keys == (["id", "what", "reason", "since", "would
 assert jqe '[.blind_spots[].id] == ["announced-not-served", "claude-catalog", "per-account-rollout"]' "$L"
 assert jqe '(.blind_spots[] | select(.id == "announced-not-served") | .would_catch_if) | test("release-notes feed") and test("research leg")' "$L"
 
+# A pending update is a watch row from its first busy skip, red past a day; with no log line it waits
+# since its last check; a fixed ledger row regresses only a stuck one.
+jq --arg t "$(ago 600)" '.codex = {result: "busy", installed: "0.159.0", latest: "0.159.2", checked_at: $t}
+  | .claude = {result: "busy", installed: "2.1.283", latest: "2.1.284", checked_at: $t}' "$STATE/state.json" >"$WORK/s" && mv "$WORK/s" "$STATE/state.json"
+mv "$STATE/update.log" "$WORK/update.log"
+printf '%s codex busy 0.159.0 -> 0.159.2\n' "$(ago $((2 * H)))" "$(ago $H)" >"$STATE/update.log"
+run
+mv "$WORK/update.log" "$STATE/update.log"
+assert jqe --arg t "$(date -r $(($(date +%s) - 2 * H)) +%H:%M)" '.state == "watch" and .count == 2 and .fact == "codex 0.159.0 → 0.159.2 waiting: busy since \($t)"' <<<"$(problem cli-behind:codex)"
+assert jqe --arg t "$(date -r $(($(date +%s) - 600)) +%H:%M)" '.state == "watch" and .fact == "claude 2.1.283 → 2.1.284 waiting: busy since \($t)"' <<<"$(problem cli-behind:claude)"
+assert jqe '[.problems[] | select(.rule == "cli-behind" and .state == "watch") | .id] == ["cli-behind:claude", "cli-behind:codex", "cli-behind:grok"]' "$DOC"
+ledger '{"owner":"t","rows":[{"id":"U5","title":"t","match":{"rule":"cli-behind","key":"codex"},"status":"fixed","fixes":[{"at":"2026-01-01T00:00:00Z"}]}],"blind_spots":[]}'
+assert [ "$(state_of U5)" = watch ]
+state 3600
+
 # --json prints the document and writes nothing.
 rm -f "$DOC"
 "$DOCTOR" --json | jqe '.doctor == "updater"'
 assert [ ! -e "$DOC" ]
 
-echo "PASS: $asserts asserts; envelope, every rule (event-waiting, event-stuck, probe-broken, catalog-missing, cli-behind, client-too-old, pass-stale, pass-failed, foreign-client) with its negatives, vendors for the menu, blind on a stale or missing pass, judge over code and ledger, ledger open/dismissed/regressed/fault, pinned ledger shape, under 1 s"
+echo "PASS: $asserts asserts; envelope, every rule (event-waiting, event-stuck, probe-broken, catalog-missing, cli-behind as a watch row from the first skip and red past a day, client-too-old, pass-stale, pass-failed, foreign-client) with its negatives, vendors for the menu, blind on a stale or missing pass, judge over code and ledger, ledger open/dismissed/regressed/fault, pinned ledger shape, under 1 s"

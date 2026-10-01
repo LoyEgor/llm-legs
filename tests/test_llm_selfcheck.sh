@@ -89,12 +89,19 @@ write_caches() {
 assert grep -q 'HOME/.claude-profiles/\*/CLAUDE.md' "$SCRIPT"
 assert grep -q 'HOME/.claude-profiles/\*/agents/\*.md' "$SCRIPT"
 
-# The Light install: the PATH entry resolving to THIS checkout's launcher, and both relay agent
-# files. Installed by hand, so nothing else notices when one goes.
+# Every README-listed `bin/X → ~/.local/bin/X` link resolves to THIS checkout, and the Light class
+# has both relay agent files. Installed by hand, so nothing else notices when one goes.
+cat >"$FIXTURE/README.md" <<'EOF'
+- `bin/light-research` → `~/.local/bin/light-research` — research leg.
+- `bin/statusline.sh` → `~/.claude/statusline.sh` — not a PATH link.
+- `bin/gemini-music` → `~/.local/bin/gemini-music` — music.
+EOF
 install_light() {
   mkdir -p "$HOME/.local/bin" "$HOME/.claude/agents"
-  : >"$FIXTURE/bin/light-research"
-  ln -sfn "$FIXTURE/bin/light-research" "$HOME/.local/bin/light-research"
+  for name in light-research gemini-music; do
+    : >"$FIXTURE/bin/$name"
+    ln -sfn "$FIXTURE/bin/$name" "$HOME/.local/bin/$name"
+  done
   printf 'x\n' >"$HOME/.claude/agents/light-research.md"
   printf 'x\n' >"$HOME/.claude/agents/light-worker.md"
 }
@@ -149,24 +156,35 @@ assert tail -n 1 "$LOG" | grep -Eq ' status=FAIL failed_step=test_claudeb.sh$'
 assert grep -q '^hs .*hs.alert.show.*test_claudeb.sh' "$ALERTS"
 assert grep -q '^osascript .*display notification .*test_claudeb.sh' "$ALERTS"
 
-# A broken Light install fails before a single suite runs, and the alert names the step.
-for light_break in 'rm -f "$HOME/.local/bin/light-research"' \
-                   'ln -sfn /nowhere/light-research "$HOME/.local/bin/light-research"' \
-                   'rm -f "$HOME/.claude/agents/light-research.md"' \
-                   'rm -f "$HOME/.claude/agents/light-worker.md"'; do
+# A broken PATH link or Light install fails before a single suite runs, and the alert names the step.
+mkdir -p "$WORK/elsewhere"
+: >"$WORK/elsewhere/gemini-music"
+for light_break in 'path-links:rm -f "$HOME/.local/bin/light-research"' \
+                   'path-links:ln -sfn /nowhere/light-research "$HOME/.local/bin/light-research"' \
+                   'path-links:rm -f "$HOME/.local/bin/gemini-music"' \
+                   'path-links:ln -sfn "$WORK/elsewhere/gemini-music" "$HOME/.local/bin/gemini-music"' \
+                   'light-install:rm -f "$HOME/.claude/agents/light-research.md"' \
+                   'light-install:rm -f "$HOME/.claude/agents/light-worker.md"'; do
+  step=${light_break%%:*}
   install_light
-  eval "$light_break"
+  eval "${light_break#*:}"
   : >"$CALLS"
   : >"$ALERTS"
   asserts=$((asserts + 1))
-  bash "$SCRIPT" run --force >/dev/null 2>&1 && fail "a broken Light install passed: $light_break"
+  bash "$SCRIPT" run --force >/dev/null 2>&1 && fail "a broken install passed: $light_break"
   assert test ! -s "$CALLS"
-  assert tail -n 2 "$LOG" | grep -q 'status=FAIL step=light-install'
-  assert grep -q 'light-install' "$ALERTS"
+  assert tail -n 2 "$LOG" | grep -q "status=FAIL step=$step"
+  assert grep -q "$step" "$ALERTS"
 done
 install_light
+rm -f "$HOME/.local/bin/light-research" "$HOME/.local/bin/gemini-music"
+asserts=$((asserts + 1))
+bash "$SCRIPT" run --force >/dev/null 2>&1 && fail "two missing PATH links passed"
+assert grep -qF "status=FAIL step=path-links detail=$HOME/.local/bin/light-research does not resolve to $FIXTURE/bin/light-research; $HOME/.local/bin/gemini-music does not resolve to $FIXTURE/bin/gemini-music" < <(tail -n 2 "$LOG")
+install_light
 : >"$ALERTS"
-bash "$SCRIPT" run --force || fail "restored Light install run failed"
+bash "$SCRIPT" run --force || fail "restored install run failed"
+assert grep -q 'status=PASS step=path-links detail=ok' < <(tail -n 4 "$LOG")
 assert grep -q 'status=PASS step=light-install detail=ok' < <(tail -n 3 "$LOG")
 assert test ! -s "$ALERTS"
 
@@ -176,7 +194,7 @@ ln -sfn ../../../repo/bin/light-research "$HOME/.local/bin/light-research"
 assert test "$(readlink "$HOME/.local/bin/light-research")" = ../../../repo/bin/light-research
 : >"$ALERTS"
 bash "$SCRIPT" run --force || fail "a relative Light symlink was read as a missing install"
-assert grep -q 'status=PASS step=light-install detail=ok' < <(tail -n 3 "$LOG")
+assert grep -q 'status=PASS step=path-links detail=ok' < <(tail -n 4 "$LOG")
 assert test ! -s "$ALERTS"
 install_light
 
@@ -256,4 +274,4 @@ assert grep -qF 'with\ space/bin/llm-selfcheck' "$WRAPPER"
 bash "$SPACED/llm-selfcheck" uninstall >/dev/null || fail "uninstall from a spaced path failed"
 assert test ! -e "$WRAPPER"
 
-echo "PASS: $asserts asserts; config tripwire, ordered suites and skip list, daily fixture-only e2e vs manual --e2e, log format and trimming, failure alerts, the Light install checked before any suite runs through an absolute and a relative symlink, debounce/catch-up/stale-alert dedup, install and uninstall plist"
+echo "PASS: $asserts asserts; config tripwire, ordered suites and skip list, daily fixture-only e2e vs manual --e2e, log format and trimming, failure alerts, every README-listed PATH link and the Light agent files checked before any suite runs, absolute and relative symlinks, debounce/catch-up/stale-alert dedup, install and uninstall plist"

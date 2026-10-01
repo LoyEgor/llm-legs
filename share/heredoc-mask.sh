@@ -14,32 +14,26 @@ heredoc_mask() { # shell-fed-before-re shell-fed-after-re < command → command,
        # such a body, so `$( … )` and a backtick span inside it are command lines, and masking them
        # with the text around them would blank a run the shell is about to make. Their contents are
        # kept, chained with `;`, and everything else on the line goes.
-       function subst_only(s,   i, c, out, depth, buf) {
-         out = ""
-         i = 1
-         while (i <= length(s)) {
+       function subst_only(s,   i, c, out, buf) {
+         out = ""; buf = ""
+         for (i = 1; i <= length(s); i++) {
            c = substr(s, i, 1)
-           if (c == "$" && substr(s, i + 1, 1) == "(") {
-             depth = 1; i += 2; buf = ""
-             while (i <= length(s) && depth > 0) {
-               c = substr(s, i, 1)
-               if (c == "(") depth++
-               else if (c == ")") { depth--; if (depth == 0) { i++; break } }
-               buf = buf c
-               i++
-             }
-             out = out buf ";"
+           if (c == "\\") { if (SD > 0 || BT) buf = buf c substr(s, i + 1, 1); i++; continue }
+           if (SD > 0) {
+             if (c == "(") SD++
+             else if (c == ")" && --SD == 0) { out = out buf ";"; buf = ""; continue }
+             buf = buf c
              continue
            }
-           if (c == "`") {
-             i++; buf = ""
-             while (i <= length(s) && substr(s, i, 1) != "`") { buf = buf substr(s, i, 1); i++ }
-             i++
-             out = out buf ";"
+           if (BT) {
+             if (c == "`") { BT = 0; out = out buf ";"; buf = ""; continue }
+             buf = buf c
              continue
            }
-           i++
+           if (c == "$" && substr(s, i + 1, 1) == "(") { SD = 1; i++ }
+           else if (c == "`") BT = 1
          }
+         if (buf != "") out = out buf ";"
          return out
        }
        function find_heredoc(line,   i, c, q, rest) {
@@ -56,6 +50,7 @@ heredoc_mask() { # shell-fed-before-re shell-fed-after-re < command → command,
              continue
            }
            if (c == "\\") { i++; continue }
+           if (c == "#" && (i == 1 || substr(line, i - 1, 1) ~ /[[:space:];&|(]/)) return 0
            if (c == "\047" || c == "\"") { q = c; continue }
            if (c != "<") continue
            # A herestring is not a heredoc, and its word would read as a delimiter that never closes.
@@ -83,7 +78,7 @@ heredoc_mask() { # shell-fed-before-re shell-fed-after-re < command → command,
            # unexpanded body is inert text all the way down.
            expand = (delim !~ /^["\047\\]/)
            gsub(/["\047\\]/, "", delim)
-           end = 0
+           end = 0; SD = 0; BT = 0
            for (j = i + 1; j <= NR; j++) {
              probe = line[j]
              if (dash) sub(/^\t+/, "", probe)

@@ -1,6 +1,7 @@
 """The commit that settles a doctor ledger fix `{at, files: ["<repo>/<path>", ...], in}`, shared by
 llm-doctor and harness-doctor."""
 import datetime
+import functools
 import os
 import subprocess
 
@@ -39,3 +40,33 @@ def fix_commit(fix, repos):
         found.append((int(words[1]), repo, words[0]))
     _, repo, commit = max(found)
     return "%s@%s" % (repo, commit)
+
+
+@functools.lru_cache(maxsize=None)
+def fix_landed(ref, repos):
+    """When the fix's `in` commit `repo@hash` reached HEAD of its checkout under `repos`: its own commit time
+    when it sits on HEAD's first-parent line, else the time of the merge that brought it in; None if unknown."""
+    repo, _, commit = str(ref or "").partition("@")
+    top = os.path.join(repos, repo)
+    if not commit or not os.path.isdir(top):
+        return None
+    def git(*args):
+        return subprocess.run(["git", "-C", top] + list(args), capture_output=True, text=True, timeout=10)
+    try:
+        own = git("log", "-1", "--format=%ct %H", commit, "--")
+        words = own.stdout.split()
+        if own.returncode or len(words) != 2 or git("merge-base", "--is-ancestor", words[1], "HEAD").returncode:
+            return None
+        line = git("log", "--first-parent", "--format=%ct %H %P", words[1] + "..HEAD", "--")
+        below = git("rev-list", "--ancestry-path", words[1] + "..HEAD", "--")
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if line.returncode or below.returncode:
+        return None
+    descendants = set(below.stdout.split())
+    oldest = None
+    for entry in line.stdout.splitlines():
+        parts = entry.split()
+        if len(parts) > 2 and parts[1] in descendants:
+            oldest = parts
+    return int(oldest[0]) if oldest and oldest[2] != words[1] else int(words[0])

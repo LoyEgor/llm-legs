@@ -3,7 +3,7 @@ set -u
 
 # A routing read never refreshes the catalog: the hooks export the same switch, and a live
 # `grok models` on every pick is what made the menu's store watcher a process storm.
-export GROKB_MODELS_NO_FETCH=1
+export GROKB_MODELS_NO_FETCH=1 CODEXB_MODELS_NO_REFRESH=1
 
 # Selection follows docs/routing-contract.md: candidates are pool members with live auth and a
 # daily budget the shared limits view can compute, the answer is the pin or the largest budget,
@@ -333,6 +333,20 @@ cx_walls=$(walls_json codex)
 gm_walls=$(walls_json gemini)
 gr_walls=$(walls_json grok)
 
+# A codex catalog is per account (a lapsed plan lists the free models alone), so an account whose own
+# cache lacks the worker family is no candidate: its ACCOUNT: line would launch an id it does not
+# serve. No cache of its own (exit 3), or a miss in a list an older client wrote (exit 4: nothing here
+# refreshes it), is no evidence and keeps it.
+cx_unlisted='[]'
+if [ "$cx_paused" = false ] && [ -n "$cx_model" ]; then
+  cx_family=$(worker_model_codex_family "$cx_model")
+  cx_unlisted=$(jq -r '.vendors.codex.accounts[]? | .account // "main"' "$LIMITS_FILE" 2>/dev/null |
+    while IFS= read -r account; do
+      "$worker_pick_share/../bin/codexb" models --own --family "$cx_family" --account "$account" >/dev/null 2>&1
+      [ "$?" -ne 1 ] || printf '%s\n' "$account"
+    done | jq -Rsc 'split("\n") | map(select(length > 0))') || cx_unlisted='[]'
+fi
+
 # A met wall drops the pin once. Limits at 100% never do.
 clear_observed_pins() {
   local vendor="$1" walls acct
@@ -478,7 +492,7 @@ summary=$(jq -r \
   --argjson cb_claims "$cb_claims" --argjson cx_claims "$cx_claims" \
   --argjson gm_claims "$gm_claims" --argjson gr_claims "$gr_claims" \
   --argjson cb_walls "$cb_walls" --argjson cx_walls "$cx_walls" \
-  --argjson gm_walls "$gm_walls" --argjson gr_walls "$gr_walls" \
+  --argjson gm_walls "$gm_walls" --argjson gr_walls "$gr_walls" --argjson cx_unlisted "$cx_unlisted" \
   --argjson qx "$query_exclude_json" --arg fable_view "$query_fable_view" "$LIMITS_VIEW_JQ"'
   # Local names for the store-reading defs of share/limits-view.sh, which the pin writes its wall
   # record from as well; never a second copy of them.
@@ -638,6 +652,7 @@ summary=$(jq -r \
        elif $paused == "true" then "paused"
        elif ($off == "true" and $pinned == null) or (.enabled == false and .name != $sel) then "off"
        elif .token_expiry then "token-expiry"
+       elif .unlisted == true then "no-model"
        elif .walled then "walled"
        else "ok" end)] | join("\t")) | join("\u001e");
   # The one-line face of the same rows, for the stderr of a query that could not answer.
@@ -659,7 +674,7 @@ summary=$(jq -r \
     .eligible = (.enabled and .auth_ok and .measured and (.walled | not) and (excluded | not)) |
     .in_pool = (.enabled and (excluded | not));
   def serving_pins($accounts; $pins):
-    $accounts | map(select((.name | IN($pins[])) and .auth_ok and .measured and
+    $accounts | map(select((.name | IN($pins[])) and .auth_ok and .measured and (.unlisted != true) and
                            (.observed | not) and (excluded | not))) | rank;
   def pin_lapse($pin; $row; $selected):
     if $pin == "" or $selected != null then ""
@@ -668,6 +683,7 @@ summary=$(jq -r \
     # Pool exclusion is not among the reasons and never can be: the pin is the one override above
     # the toggle (contract rules 2 and 4).
     elif ($row.auth_ok | not) then "auth unavailable"
+    elif $row.unlisted == true then "no launchable model of the family"
     elif ($row.measured | not) then "no quota data"
     elif $row.observed then "exhausted"
     else "unavailable" end;
@@ -761,7 +777,8 @@ summary=$(jq -r \
     .spend = spending | .budget = spend_budget | .budget_days = spend_days |
     .claimed = claimed_in($cx_claims) |
     .observed = (.name | IN($cx_walls[])) |
-    .walled = (usage_walled(.spend) or .observed) | eligibility]) as $cx_accounts |
+    .walled = (usage_walled(.spend) or .observed) | eligibility |
+    .unlisted = (.name | IN($cx_unlisted[])) | .eligible = (.eligible and (.unlisted | not))]) as $cx_accounts |
   ($cx_accounts | map(select(.eligible)) | rank) as $cx_eligible |
   serving_pins($cx_accounts; $cx_pins) as $cx_pin_tier |
   ($cx_pin_tier[0] // null) as $cx_pinned |
@@ -1201,18 +1218,20 @@ menu_head() { # vendor workers_off
     *) printf on ;;
   esac
 }
-menu_section() { # label vendor known rows workers_off paused present
+# A paused vendor keeps its `paused` row in the menu whether or not the collector still stores it: that
+# row carries the menu's Resume.
+menu_section() { # label vendor known rows workers_off paused
   if [ "$3" = true ]; then
     print_section "$1" "$4" "$(menu_head "$2" "$5")"
-  elif [ "$query_menu" = true ] && [ "$6" = true ] && [ "$7" = yes ]; then
+  elif [ "$query_menu" = true ] && [ "$6" = true ]; then
     print_section "$1" "" paused
   fi
 }
 # The LLM Limits menu lists its vendors in this order too.
-menu_section claude claudeb "$cb_known" "$cl_rows" "$cb_role_off" "$cb_paused" "$cl_present"
-menu_section codex codex "$cx_known" "$cx_rows" "$cx_role_off" "$cx_paused" "$cx_present"
-menu_section grok grok "$gr_known" "$gr_rows" "$gr_role_off" "$gr_paused" "$gr_present"
-menu_section gemini gemini "$gm_known" "$gm_rows" "$gm_role_off" "$gm_paused" "$gm_present"
+menu_section claude claudeb "$cb_known" "$cl_rows" "$cb_role_off" "$cb_paused"
+menu_section codex codex "$cx_known" "$cx_rows" "$cx_role_off" "$cx_paused"
+menu_section grok grok "$gr_known" "$gr_rows" "$gr_role_off" "$gr_paused"
+menu_section gemini gemini "$gm_known" "$gm_rows" "$gm_role_off" "$gm_paused"
 light_rows=''
 for light_role in research edit; do
   if light_vendor=$(worker_light_vendor "$light_role" 2>/dev/null) &&

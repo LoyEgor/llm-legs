@@ -21,7 +21,7 @@ CLI, not the Gemini Developer API, Vertex API, or the Python SDK's configurable 
 | Resume | `--resume ID --account NAME` maps to `agy --conversation ID` in that profile | `agy --help`; Google [headless conversation documentation](https://antigravity.google/docs/cli/headless/) |
 | Session id | Terminal `.result.conversation_id`, fallback `.conversation_id` on `init` | Google headless documentation |
 | Generated file | `generate_image` tool output text, final response, then invocation-specific brain rescue | H1; B5 |
-| Video / audio generation | No exposed generation tool found; video is unsupported | Binary tools implementation inventory; Google tool inventory |
+| Video / audio generation | Not in agy or Gemini CLI (agy 1.2.14: `generate_image` only, no Veo/Omni model; [antigravity-cli#734](https://github.com/google-antigravity/antigravity-cli/issues/734)); served instead by `bin/gemini-video` on Google Flow, see [Video on Google Flow](#video-on-google-flow) | Binary tools implementation inventory; Google tool inventory; live Flow runs 2026-09-30 |
 
 “Make this image wider” can be expressed with `--ref image.jpg --aspect 16:9` and a
 prompt such as “Extend the scene left and right; preserve the subject and composition.”
@@ -178,3 +178,105 @@ generated on all eight pool accounts (`1264x848` for `--aspect 3:2`, refs trunca
 account is structurally unable to generate images today. Every call reported
 `caps=stale cli=1.2.1 verified=1.2.0` — the version check works; the manifest is re-verified
 against 1.2.1 below.
+
+## Video on Google Flow
+
+`bin/gemini-video` → `bin/gemini-web` (`share/gemini_web.py`, Playwright 1.61 via `uv run --script`)
+drives flow.google.com in a hidden copy of Google Chrome (`~/.gemini-web/Gemini Web Automation.app`,
+`LSBackgroundOnly`, rebuilt when Chrome's version changes), one profile per geminib account name under
+`~/.gemini-web/profiles/`. It uses Flow's manual composer (the Agent toggle off): the settings popover
+picks Video, the model family, Frames or Ingredients, aspect, resolution, duration and x1; frames go into
+the Start/End slots, refs and an `--edit` video into the ingredient picker, each uploaded under a unique
+name. Before sending, the popover's own "Generating will use N credits" quote and chip must match the
+manifest, so a misread setup spends nothing. Watermark: none on PRO.
+
+| Fact (2026-10-01, build `boq_labs-ai-sandbox-frontend_20260929.10_p0`, PRO) | Evidence |
+| --- | --- |
+| Credits: 1000 a month per PRO account; Veo 3.1 Lite/Fast/Quality 8 s 720p = 10/20/100; Omni 1.1 Flash 4/6/8/10 s = 7/10/12/15 at 720p, 4/5/6/7 at 360p; x2–x4 linear; aspect and frames cost nothing extra | popover quotes for every model; real runs matched their quotes |
+| Veo: 8 s 720p only, up to 3 image refs, no video ref; Omni: 360p/720p, 4–10 s, 4 image refs seen (true maximum unknown) plus 1 video | settings popover; ingredient warnings |
+| `--edit`: Omni reworks an uploaded video (any source; uploads over 30 s must be trimmed), the clip keeps the source length; 720p edit of an 8 s upload = 20 credits (Flow help says 40; the charge was 20) | real edit run, 1030 → 1010 |
+| `--resolution 1080p`: renders 720p, then the clip editor's "Download media → 1080p Upscaled" gives 1920x1080 at no charge (4K is disabled on PRO) | real runs, credits unchanged |
+| `--extend`: the source clip's editor → "Add clip" → "Extend (Veo 3.1 - Lite)" → prompt → send; 10 credits, a 7 s 720p clip holding only the continuation, which starts where the source ends (SSIM 0.91 and 0.92 against the source's last frame). Veo clips only: on Omni the item is disabled ("Only Veo-generated videos can be extended"); an extension opens as an empty editor (no Add clip, Download disabled), so it can be neither extended again nor downloaded upscaled. Extend mode shows no quote, so the charge is checked afterwards from the reply's credits. The source is looked up in `~/.gemini-web/jobs.jsonl` (account, project, scene, model, bytes), the scene of an older row through the page's `as29s` read | two real runs (the first 990 → 980) |
+| `--count 2-4`: the x2–x4 setting; the reply names every take, saved as the dest, `<stem>-2.mp4`, …; Omni 360p 4 s x2 = 8 | real run on egbogd |
+| `--edit` + `--ref`: puts the ingredient into the uploaded video (a stopwatch onto a water clip's sand), same 20 credits as a plain edit | real run on jihangarangan |
+| Output: 1280x720 (640x360 at 360p) h264 with AAC | ffprobe of every run |
+| Generation rpcs, one per mode: `YhhmEf` text, `nprQif` frames, `MZZa6b` ingredients, `jIps6` edit, `fZytfe` extend; the reply names the new clips, their scenes and the credits left | page traffic |
+| Wire keys: `veo_3_1_t2v_fast`, `veo_3_1_i2v_s_fast`, `abra_t2v_4s_360p`, `abra_i2v_4s`, `omni_flash_i2v_4s_first_last_360p`, `abra_r2v_4s_360p`, `abra_edit`, `veo_3_1_extension_lite` (its media record names `models/veo-3.1-lite-generate-002`) | reply and `jwpduf` media records |
+| Send → saved clip ≈ 25–65 s; a whole run ≈ 35–90 s (uploads and the 1080p download add most of it) | `seconds=` footer |
+
+The page's traffic is read passively, never replayed: the generation reply names the clip, batchexecute
+`jwpduf` carries media status and remaining credits, `as29s` the signed `flow-content.google` URL. Calling
+the generation RPCs from outside the page fails Google's reCAPTCHA check (`PUBLIC_ERROR_UNUSUAL_ACTIVITY`),
+which is why the route clicks the UI.
+
+Operations: `gemini-web login <account>` once (a visible Chrome; sign in to the Google account whose geminib
+profile has that name, then Cmd+Q), then `gemini-web status <account>` binds the email and reads credits
+without spending; `gemini-web accounts` lists profiles, credits and walls; `gemini-web generate … --dry-run`
+sets the composer up and prints Flow's quote without sending (with `--extend` it opens extend mode, which adds an empty "Untitled Scene" to the project); a clip that finished after a timeout is
+recovered with `gemini-web fetch <account> <media_id> --dest <abs .mp4>`. Rotation (no `--account`) keeps to
+the gemini worker pool ("In pool", read through `share/worker-pool.sh`; a pin in `worker-model` overrides it,
+and a named account out of the pool exits 4), skips an account whose balance read in the last 6 h is under
+the job's price, and moves past an account that needs a sign-in step (exit 4) to the next. A balance short
+of one job's price is never walled, so a cheaper job still runs there. Exit 3 otherwise walls an account in
+`~/.gemini-web/walls.json` (writes serialised by a lock file): 6 h when it is out of credits, 24 h when Flow flags it
+(`PUBLIC_ERROR_UNUSUAL_ACTIVITY` on a whole failed envelope or on the new clip — "We noticed some unusual
+activity", nothing charged). On 2026-09-30 rawilimo, abel, egbor and mish were flagged in agent and manual
+mode alike, including under raw CDP input with no Runtime domain, while egbogd, com, jihangarangan and
+locomthebest ran; exit 4 is a profile never signed in. A quote that differs from the manifest fails with
+both numbers and spends nothing. Re-verify after a `model_caps=stale` line, a quote mismatch or a
+`Flow UI drift` failure: run one clip (or `--dry-run`), read the new wire key, quote or failing step,
+update `share/image-caps/gemini.json` `.video`, run `tests/test_gemini_video.sh`.
+
+## Audio: music, sound effects, listening
+
+Three scripts, all on Gemini subscription accounts; the agent `image-gen` owns them (`AUDIO: music|sfx|listen`
+briefs), and `worker-launch-gate.sh` blocks them in any other Bash.
+
+**Music** — `bin/gemini-music` → `share/gemini_music.py` drives gemini.google.com/app (Upload & tools → More
+tools → Create music, Lyria 3.5) in the same hidden Chrome and profiles as Flow. Rotation skips accounts
+with a Flow wall, a 6 h music wall (`~/.gemini-web/music-walls.json`) or out of the gemini worker pool, and
+takes the one least recently used for music. With `--count`, takes that finished before a later take failed
+are kept: the rest go to the next account, and if none is left the run delivers what it has with a `short=`
+footer line. Images and a video for the tool to watch are attached through Upload files; Playwright's
+filechooser event answers the native chooser.
+
+| Fact (2026-10-01) | Evidence |
+| --- | --- |
+| The clone launches with `--disable-blink-features=AutomationControlled`; with `navigator.webdriver` set, the music tool answers "no track" every time while the same prompt works in the owner's Chrome. Flow works with the flag | 3 runs, a no-track reply each, then tracks once the flag was set; later Flow runs |
+| short ≈ 60 s, standard 2–3 min, no exact length; mp3 192 kb/s (a `.wav` dest is decoded from it), and an mp4 with cover art next to it | 3 real tracks: 58.4 s, 61 s, 60.4 s |
+| `<dest>.txt` holds the tool's plan: tempo and sections with start times. Timed hit points in the prompt are followed only roughly: in one run, the times 0/7/24/37/42/53 s appeared in the plan, the RMS curve showed changes at 7, 24 and 56 s, and the break at 37 s was weak | timed-A run on com |
+| `--video`: the tool watches the cut and names the track (`where_the_pendulum_rests.mp3`); the music changed near cuts (~4–6, 16, 24, 40 s) but ran 14 s past a 46 s picture | r6b run on egbogd |
+| The first upload on an account opens a rights notice ("…necessary rights…"), and a send with a video opens "A reminder about creating videos…". Agree persists per account. The script clicks Agree only for accounts in `~/.gemini-web/notices.json` "agreed" (the owner's yes); any other account exits 4 and names the notice | live on com, egbogd, jihangarangan, locomthebest |
+| The reply also lists the user's own uploads. The base64 `c=` token of a media URL names its store: `request_data` is an upload, while `temp_data`/`response_data` is output (`uploaded()` skips uploads). The cover mp4 can 404 for a minute after the reply, so it is retried 6× at 10 s; on a final miss, the take keeps the audio and records `video_error` | the HTTP 404 on the first video run |
+
+Exits: 3 = Gemini says the music generations are spent (the account is walled for 6 h) or every account is walled; 4 =
+signed out, no Create music tool, or a rights notice still to agree; 1 = UI drift (names the step), "no track"
+(Gemini's own words), "the prompt was never sent: no chat opened", an upload that never finished or a refusal
+toast. A run that saved nothing locally but shows a track in the chat can be read again from the chat; the
+reply parser works on a reloaded chat's batchexecute.
+
+Failures: every failed attempt of either engine, an account the rotation skipped included, prints one
+`BROWSER_FAILURE route=<flow|gemini-app> account= code= shot= reason=` line on stderr (`BROWSER_WARNING`
+when the run still succeeded: the clone could not be hidden, the cover mp4 missed), saved in the image-leg
+log; `shot=` is a screenshot in `~/.gemini-web/failures/` beside a `.txt` page dump (dialogs, toasts,
+buttons, text), kept 14 days. llm-doctor turns the lines into `browser …` words in its image block.
+
+**Flow Music** (flowmusic.app) is signed in on com, egbogd, jihangarangan and locomthebest (Continue with
+Google → the account → Continue → tick "See your Google One membership…" → Continue → Privacy Notice
+Agree). The PLUS tier shows after a reload. It offers Lyria 3.5 and Lyria 3 Pro, audio uploads up to 40 MB
+and image uploads, and per song M4A/MP3/WAV, a video download and split stems, but no video input. It is not
+wired yet. It is the route for WAV masters, stems and a reference track.
+
+**Sound effects** — `bin/gemini-sfx` runs `bin/gemini-video --model omni --resolution 360p` (4/6/8/10 s =
+4/5/6/7 credits) with a prompt that asks for an isolated sound on a close-up of its source. It keeps only the
+soundtrack: trims silence at both ends (-50 dB), applies two-pass loudnorm to -16 LUFS / -1.5 dBTP, and
+writes 48 kHz stereo pcm_s16le. A clip at -70 LUFS or quieter is refused as silent; with `--count` an
+unusable take is dropped, the usable ones become the dest and its variants, and the run fails only when none is. `--for-video <≤ 10 s>` is
+an Omni edit at 720p (20 credits) asking for effects synced to the picture; the wav keeps the video's
+length. By ear, 1 of 3 text takes was usable (the others had a drone or hiss under the sound), so ask for
+`--count 2`. In the edit, whooshes landed on the cuts, but continuous clicks ignored the hand's pauses.
+
+**Listening** — `bin/gemini-listen` asks Gemini (agy, Pro or Flash) to watch and hear files through
+`view_file`. Files over `.listen.view_max_bytes` (agy shows at most 20 MB) are sent as a proxy: video at
+720p, audio as mp3. A reply that never opened a file is refused, and so is one whose `view_file` step returned an error. It judges sound and sync well, but
+it echoes timings from the question, so measure exact times with ffmpeg.

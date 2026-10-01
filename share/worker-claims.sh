@@ -22,6 +22,14 @@ worker_claims_record() {
   mkdir -p -- "$root/$vendor" && touch -- "$root/$vendor/$account"
 }
 
+worker_claims_release() {
+  local vendor="$1" account="$2" root
+  worker_claims_valid_name "$vendor" || return 1
+  worker_claims_valid_name "$account" || return 1
+  root=$(worker_claims_dir) || return 1
+  rm -f -- "$root/$vendor/$account"
+}
+
 # Lists the unexpired claims and says nothing else: the status is an error verdict only, never
 # the freshness of whichever file `find` happened to hand over last.
 worker_claims_fresh() {

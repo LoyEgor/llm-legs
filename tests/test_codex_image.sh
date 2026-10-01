@@ -272,6 +272,7 @@ assert image_run --dest "$OUTPUT_DIR/native.png" \
   --prompt 'transparent green badge' --transparent --account explicit
 assert grep -q 'transparent green badge' "$FAKE_CODEX_PROMPT"
 assert grep -q 'genuinely transparent background' "$FAKE_CODEX_PROMPT"
+assert grep -q 'transparent_background argument to true' "$FAKE_CODEX_PROMPT"
 assert grep -q 'Only if real transparency is impossible' "$FAKE_CODEX_PROMPT"
 assert test "$(sips -g hasAlpha "$OUTPUT_DIR/native.png" | awk '/hasAlpha:/ {print $2}')" = yes
 assert cmp "$CODEX_PROFILES/explicit/generated_images/$THREAD/exec-fixture.png" "$OUTPUT_DIR/native.png"
@@ -367,6 +368,15 @@ image_rc=0
 image_run --dest "$OUTPUT_DIR/limit.png" --prompt badge --account explicit || image_rc=$?
 assert test "$image_rc" -eq 3
 assert grep -qx CODEX_USAGE_LIMIT "$IMAGE_ERR"
+
+# 0.159.0's ImageGenerationFailure::usageLimitExceeded: the image item fails and the turn ends clean.
+FAKE_CODEX_MODE=limit-item
+export FAKE_CODEX_MODE
+image_rc=0
+image_run --dest "$OUTPUT_DIR/limit-item.png" --prompt badge --account fresh || image_rc=$?
+assert test "$image_rc" -eq 3
+assert grep -qx CODEX_USAGE_LIMIT "$IMAGE_ERR"
+assert_fails grep -q 'generated file not found' "$IMAGE_ERR"
 
 FAKE_CODEX_MODE=fail
 export FAKE_CODEX_MODE

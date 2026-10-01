@@ -318,9 +318,26 @@ case "$MODE" in
     # There the raw command decides, which is this door's conservative side.
     scan=$(printf '%s' "$cmd" | instruction_shell_scan 2>/dev/null) || scan=''
     [ -n "$scan" ] || scan="$cmd"
+    # `bash tests/x.sh 2>&1` runs a FILE: no text this command carries is what that shell executes,
+    # unless this same command writes that file (`cat > x.sh <<EOF … EOF; bash x.sh`).
+    script_file_re='^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:]]*/)?(bash|sh|zsh)([[:space:]]+-[a-bd-rt-z]+)*[[:space:]]+([A-Za-z0-9_./][^[:space:]<>$`]*)([[:space:]]+[^[:space:]<>$`]+)*([[:space:]]+[0-9]*>>?[^[:space:]<$`]*)*[[:space:]]*$'
+    executes_text() { # scan → 0 when a shell or an unresolved command word in it runs carried text
+      local segment script name
+      grep -Eq "$INSTRUCTION_CMD_POSITION_RE" <<<"$1" && return 0
+      while IFS= read -r -d '' segment; do
+        grep -Eq "$INSTRUCTION_SHELL_INTERPRETER_RE" <<<"$segment" || continue
+        [[ "$segment" =~ $script_file_re ]] || return 0
+        script=$(canonical_path "${BASH_REMATCH[5]}")
+        [[ "$script" = /dev/* ]] && return 0
+        while IFS="$row_sep" read -r _ _ _ name; do
+          [ -n "$name" ] && [ "$(canonical_path "$name")" = "$script" ] && return 0
+        done < <(instruction_write_targets "$1" '[^[:space:]]+' | awk -F '\t' '$2 != "unknown"')
+      done < <(instruction_split_commands "$1")
+      return 1
+    }
     ambiguous=''
     runtime=''
-    if grep -Eq "$INSTRUCTION_SHELL_INTERPRETER_RE|$INSTRUCTION_CMD_POSITION_RE" <<<"$scan"; then
+    if executes_text "$scan"; then
       scan="$cmd"
       ambiguous=1
     elif grep -Eq "$INSTRUCTION_LANG_INTERPRETER_RE" <<<"$scan"; then
@@ -361,9 +378,75 @@ case "$MODE" in
           return n
         }
         # Positions are taken before pinned() runs: its match() overwrites RSTART and RLENGTH.
-        function writes(s,   rest, off, at, n, k, pre, hasmode, a, verb, hit) {
+        # 1: every argument of this call is a write target; 2: only the destination ones (a copy
+        # FROM the pin reads it); 0: no file write.
+        function callkind(tok, prev,   q, f) {
+          q = ""; f = tok
+          if (match(tok, /\.[^.]*$/)) { q = substr(tok, 1, RSTART - 1); f = substr(tok, RSTART + 1) }
+          if (q == "" && prev == ".") q = "?"
+          if (q == "" && (f in imported)) f = imported[f]
+          else if (q == "" && f !~ /^((writeFile|appendFile|createWriteStream|copyFile)(Sync)?|unlink|rename)$/) return 0
+          if (f ~ /^(writeFile|appendFile|createWriteStream)(Sync)?$/) return 1
+          if (f ~ /^copyFile(Sync)?$/) return 2
+          if (q != "" && q != "shutil" && q != "os" && q != "File" && q != "FileUtils" && q !~ /(^|\.)fs[A-Za-z]*(\.promises)?$/ && f !~ /Sync$/) return 0
+          sub(/Sync$/, "", f)
+          if (f ~ /^(copy|copy2|copyfile|copytree|copymode|copystat|cp|install)$/) return 2
+          if (f ~ /^(move|mv|link|symlink|replace|rename|renames|remove|unlink|rmtree|rm|truncate|chmod)$/) return 1
+          if (q == "shutil" || (q == "File" && f ~ /^(write|delete)$/)) return 1
+          return 0
+        }
+        function receiver(s, dot,   i, c, d) {
+          i = dot - 1
+          while (i >= 1) {
+            c = substr(s, i, 1)
+            if (c ~ /[A-Za-z0-9_.]/) { i--; continue }
+            if (c != ")" && c != "]") break
+            d = 0
+            for (; i >= 1; i--) {
+              c = substr(s, i, 1)
+              if (c == ")" || c == "]") d++
+              else if ((c == "(" || c == "[") && --d == 0) break
+            }
+            i--
+          }
+          return substr(s, i + 1, dot - i - 1)
+        }
+        function outside_containers(t,   i, c, q, d, out) {
+          q = ""; d = 0; out = ""
+          for (i = 1; i <= length(t); i++) {
+            c = substr(t, i, 1)
+            if (q != "") { if (c == q) q = ""; if (!d) out = out c; continue }
+            if (c == "\"" || c == "\047") q = c
+            else if (c == "[" || c == "{") d++
+            else if ((c == "]" || c == "}") && d > 0) { d--; continue }
+            if (!d) out = out c
+          }
+          return out
+        }
+        function imports(s,   list, n, k, item, name, alias) {
+          if (match(s, /from[[:space:]]+(shutil|os|os\.path|pathlib)[[:space:]]+import[[:space:]]+/)) list = substr(s, RSTART + RLENGTH)
+          else if (match(s, /\{[^}]*\}[[:space:]]*=[[:space:]]*require[[:space:]]*\([[:space:]]*["\047](node:)?fs/)) { list = substr(s, RSTART + 1); sub(/\}.*/, "", list) }
+          else if (match(s, /import[[:space:]]*\{[^}]*\}[[:space:]]*from[[:space:]]*["\047](node:)?fs/)) { list = substr(s, RSTART); sub(/^[^{]*\{/, "", list); sub(/\}.*/, "", list) }
+          else if (s ~ /use[[:space:]]+File::Copy|include[[:space:]]+FileUtils/) list = "copy, move, cp, mv"
+          else return
+          gsub(/[()]/, " ", list)
+          n = split(list, items, ",")
+          for (k = 1; k <= n; k++) {
+            item = items[k]; gsub(/^[[:space:]]+|[[:space:]]+$/, "", item)
+            name = item; sub(/[[:space:]:].*/, "", name)
+            alias = item; sub(/.*([[:space:]]as[[:space:]]+|:[[:space:]]*)/, "", alias)
+            if (name ~ /^[A-Za-z_][A-Za-z0-9_]*$/ && alias ~ /^[A-Za-z_][A-Za-z0-9_]*$/) imported[alias] = name
+          }
+        }
+        function writes(s,   rest, off, at, n, k, pre, hasmode, a, verb, hit, tok, prev, kind, m, tail) {
+          if (match(s, /(^|[^A-Za-z0-9_.$>:])open[[:space:]]+(my[[:space:]]+)?[$A-Z]/)) {
+            m = substr(s, RSTART, RLENGTH); at = RSTART + index(m, "open") - 1
+            tail = substr(s, at + 4)
+            if (match(tail, /[[:space:]]+(or|and|\|\||&&)[[:space:]]/)) s = substr(s, 1, at - 1) "open(" substr(tail, 1, RSTART - 1) ")" substr(tail, RSTART)
+            else s = substr(s, 1, at - 1) "open(" tail ")"
+          }
           rest = s; off = 0
-          while (match(rest, /(^|[^A-Za-z0-9_])open[[:space:]]*\(/)) {
+          while (match(rest, /(^|[^A-Za-z0-9_])open(Sync)?[[:space:]]*\(/)) {
             at = off + RSTART; off += RSTART + RLENGTH - 1; rest = substr(s, off + 1)
             n = args(s, off)
             hasmode = 0
@@ -375,15 +458,19 @@ case "$MODE" in
           }
           rest = s; off = 0
           while (match(rest, /\.(write_text|write_bytes|touch|unlink|chmod|symlink_to|hardlink_to)[[:space:]]*\(/)) {
-            pre = substr(s, 1, off + RSTART - 1); off += RSTART + RLENGTH - 1; rest = substr(s, off + 1)
-            sub(/.*=[[:space:]]*/, "", pre)
+            pre = receiver(s, off + RSTART); off += RSTART + RLENGTH - 1; rest = substr(s, off + 1)
             if (pinned(pre)) return 1
           }
           rest = s; off = 0
-          while (match(rest, /(shutil\.[a-z_0-9]+|os\.(replace|rename|renames|remove|unlink|chmod|link|symlink|truncate)|fs[A-Za-z]*\.(cp|rename|unlink|rm|symlink|link|truncate|chmod)(Sync)?|(writeFile|appendFile|copyFile)(Sync)?|File\.(write|delete|rename|unlink)|(^|[^A-Za-z0-9_.])(unlink|rename))[[:space:]]*\(/)) {
+          while (match(rest, /[A-Za-z_][A-Za-z0-9_.]*[[:space:]]*\(/)) {
+            at = off + RSTART; tok = substr(rest, RSTART, RLENGTH)
             off += RSTART + RLENGTH - 1; rest = substr(s, off + 1)
+            sub(/[[:space:]]*\($/, "", tok)
+            prev = at > 1 ? substr(s, at - 1, 1) : ""
+            kind = callkind(tok, prev)
+            if (!kind) continue
             n = args(s, off)
-            for (k = 1; k <= n; k++) if (pinned(A[k])) return 1
+            for (k = (kind == 2 && n >= 2) ? 2 : 1; k <= n; k++) if (pinned(A[k])) return 1
           }
           # A process call is a write only when its command writes: `check_output(["cat", pin])` reads.
           rest = s; off = 0
@@ -406,9 +493,9 @@ case "$MODE" in
           }
           rest = s; off = 0
           while (match(rest, /\.(replace|rename)[[:space:]]*\(/)) {
-            off += RSTART + RLENGTH - 1; rest = substr(s, off + 1)
+            pre = receiver(s, off + RSTART); off += RSTART + RLENGTH - 1; rest = substr(s, off + 1)
             n = args(s, off)
-            if (n == 1 && pinned(A[1])) return 1
+            if (n == 1 && (pinned(A[1]) || pinned(pre))) return 1
           }
           rest = s
           while (match(rest, /(^|[^0-9&<>=-])>>?[[:space:]]*[^[:space:]&>=)(,;]+/)) {
@@ -418,15 +505,58 @@ case "$MODE" in
           }
           return 0
         }
-        { n = split($0, parts, ";"); for (i = 1; i <= n; i++) st[++ns] = parts[i] }
+        function open_brackets(s,   i, c, q, d) {
+          d = 0; q = ""
+          for (i = 1; i <= length(s); i++) {
+            c = substr(s, i, 1)
+            if (q != "") { if (c == q) q = ""; continue }
+            if (c == "\"" || c == "\047") q = c
+            else if (c == "(" || c == "[" || c == "{") d++
+            else if (c == ")" || c == "]" || c == "}") d--
+          }
+          return d
+        }
+        function statements(s,   n, i) { n = split(s, parts, ";"); for (i = 1; i <= n; i++) st[++ns] = parts[i] }
+        # A triple-quoted literal spanning lines is text the program carries — a test or doc it
+        # rewrites — so it reads as an empty string, unless the program can execute a string.
+        function drop_long_literals(line,   out, i, j, d, rest) {
+          out = ""
+          while (1) {
+            if (tq != "") {
+              j = index(line, tq)
+              if (!j) return out
+              line = substr(line, j + 3); tq = ""
+              continue
+            }
+            if (!match(line, /\047\047\047|"""|[\047"#]/)) return out line
+            i = RSTART; d = substr(line, i, RLENGTH); rest = substr(line, i + RLENGTH)
+            if (d == "#") return out line
+            # `.replace(\047"""\047, …)`: a triple quote inside a short string opens nothing.
+            if (RLENGTH == 1) {
+              if (!match(rest, "^([^" d "\\\\]|\\\\.)*" d)) return out line
+              out = out substr(line, 1, i + RLENGTH); line = substr(rest, RLENGTH + 1)
+              continue
+            }
+            j = index(rest, d)
+            if (j) { out = out substr(line, 1, i + j + 4); line = substr(rest, j + 3); continue }
+            out = out substr(line, 1, i - 1) "\"\""; tq = d; line = rest
+          }
+        }
+        { raw[++nl] = $0; if ($0 ~ /subprocess|os\.(system|popen|exec|spawn)|pty\.spawn|(^|[^A-Za-z0-9_.])(exec|eval)[[:space:]]*\(/) runs = 1 }
         END {
+          for (l = 1; l <= nl; l++) {
+            line = runs ? raw[l] : drop_long_literals(raw[l])
+            held = held == "" ? line : held " " line; depth += open_brackets(line); if (depth <= 0) { statements(held); held = ""; depth = 0 }
+          }
+          if (held != "") statements(held)
+          for (i = 1; i <= ns; i++) imports(st[i])
           for (round = 0; round < 4; round++)
             for (i = 1; i <= ns; i++) {
               s = st[i]
               if (match(s, /(^|[^A-Za-z0-9_.$=!<>])[$@%]?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*:?=[^=]/)) {
                 lhs = substr(s, RSTART, RLENGTH); rhs = substr(s, RSTART + RLENGTH - 1)
                 sub(/[[:space:]]*:?=.$/, "", lhs); sub(/^[^A-Za-z_]*/, "", lhs)
-                if (pinned(rhs)) bound[lhs] = 1
+                if (pinned(outside_containers(rhs))) bound[lhs] = 1
               }
               if (match(s, /(^|[^A-Za-z0-9_])(for|as)[[:space:]]+[A-Za-z_][A-Za-z0-9_]*/) && pinned(s)) {
                 lhs = substr(s, RSTART, RLENGTH); sub(/^.*(for|as)[[:space:]]+/, "", lhs); bound[lhs] = 1

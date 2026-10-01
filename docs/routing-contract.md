@@ -193,9 +193,11 @@ recording a run. Every headless run therefore goes through `worker-run` or a too
 own launches, and this is the whole list: `worker-run`, `review-bench`,
 `llm-limits`, `claudeb revive`, `claudeb warm`, `claude-session-driver`, `opencode-go`,
 `light-research`, plus the
-OWNED pair — `worker-run start|wait`, which only a relay agent may spell, and `codex-image` /
-`gemini-image` / `grok-image`, which only the `image-gen` agent may: a run or an image started from
-the main chat's Bash belongs to a turn nothing renders. `bin/worker-launch-gate.sh` is the
+OWNED pair — `worker-run start|wait`, which only a relay agent may spell, and the media scripts
+`codex-image` / `gemini-image` / `grok-image` / `grok-video` / `image-fanout` / `gemini-video` /
+`gemini-music` / `gemini-sfx` / `gemini-listen`, which only the `image-gen` agent may: a run, an
+image, a clip, a track or a listening started from the main chat's Bash belongs to a turn nothing
+renders. `bin/worker-launch-gate.sh` is the
 mechanical half — a PreToolUse Bash gate denying a bare launch in any segment of a command (a
 launcher in command position exempts only its own segment, and a comment or an operand naming one
 exempts nothing), and denying an owned one outside the agent type that owns it. The `ask_*.sh`

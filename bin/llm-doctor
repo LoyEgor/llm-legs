@@ -21,7 +21,7 @@ BIN_DIR = os.path.dirname(os.path.realpath(__file__))
 ROOT_DIR = os.path.dirname(BIN_DIR)
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 
-from fix_commit import fix_commit
+from fix_commit import fix_commit, fix_landed
 
 
 def load_gemini_weather():
@@ -222,6 +222,28 @@ IMAGE_REASONS = (
                                 re.IGNORECASE)),
 )
 IMAGE_ORIGIN = {"bad output": "ours"}
+# The hidden-Chrome routes (gemini-web: Flow, the Gemini app) print one BROWSER_FAILURE or BROWSER_WARNING
+# line per failed attempt; the words name the browser step, ordered most specific first.
+BROWSER_LINE_RE = re.compile(r"^BROWSER_(FAILURE|WARNING) route=(\S+) account=(\S+) code=(\d+) shot=(\S+) reason=(.*)$",
+                             re.MULTILINE)
+BROWSER_REASONS = (
+    ("browser not sent", re.compile(r"never sent", re.IGNORECASE)),
+    ("browser price", re.compile(r"quotes \d+ credits|charged \d+ credits|the manifest says", re.IGNORECASE)),
+    ("browser profile", re.compile(r"open in another Chrome|is already open|timed out waiting for \S+\.lock"
+                                   r"|signed in as .* bound to|Google Chrome not found", re.IGNORECASE)),
+    ("browser upload", re.compile(r"upload|file ?chooser|frame slot never took|never showed up as a prompt ingredient",
+                                  re.IGNORECASE)),
+    ("browser download", re.compile(r"download|no video URL|not an mp4", re.IGNORECASE)),
+    ("browser no output", re.compile(r"no track|without running the music tool|showed up in the project within"
+                                     r"|not ready after|no longer lists clip|no finished video|refused the clip"
+                                     r"|returned no take", re.IGNORECASE)),
+    ("browser hide", re.compile(r"could not hide", re.IGNORECASE)),
+    ("browser drift", re.compile(r"UI drift|waiting for|Timeout \d+ ?ms|did not load within|does not stick"
+                                 r"|stays (?:on|disabled)|composer|chip|menu item|toggle|frame slot", re.IGNORECASE)),
+)
+BROWSER_OWNER_STEP, BROWSER_OTHER = "browser owner step", "browser other"
+IMAGE_ORIGIN.update({word: "ours" for word, _ in BROWSER_REASONS})
+IMAGE_ORIGIN.update({BROWSER_OWNER_STEP: "ours", BROWSER_OTHER: "ours"})
 PRELAUNCH_SKIP = ("LIGHT_OFF", "RESUME_BUSY", "DUPLICATE_RUN")
 
 
@@ -1041,7 +1063,7 @@ def worker_legs(cutoff, now):
         cohort = "·".join(part for part in (fields[1], effort, kind, "resume" if meta.get("resume") else "") if part)
         legs.append(leg(block, "worker", fields[1], ended, klass, reason, detail, origin, cohort=cohort,
                         duration=finished - begun if finished > begun else None,
-                        size=file_size(os.path.join(run_dir, "brief")), **common))
+                        size=file_size(os.path.join(run_dir, "brief")), **dict(common, start=begun)))
         for account in meta.get("walled_accounts") or []:
             legs.append(leg(block, "worker", fields[1], started, "walled", "walled", "usage limit", "",
                             attempt="superseded", **dict(common, account=str(account),
@@ -1154,6 +1176,30 @@ def classify_image(rc, err):
     return klass, reason, detail, origin
 
 
+def classify_browser(code, reason):
+    """A BROWSER_ line's verdict: its exit code first, then the provider's own weather, then the step."""
+    if code == 3:
+        return "walled", "walled", "usage limit", ""
+    if code == 2:
+        return "failed", "bad command", "bad arguments", "ours"
+    word = failure_reason(reason)
+    if code and (FAILURE_ORIGIN.get(word) == "theirs" or word in WALL_REASONS):
+        return classify_failure_text(reason, code)
+    detail = reason[:200]
+    if code == 4:
+        return "failed", BROWSER_OWNER_STEP, detail, "ours"
+    for word, pattern in BROWSER_REASONS:
+        if pattern.search(reason):
+            return "failed", word, detail, "ours"
+    return "failed", BROWSER_OTHER, detail, "ours"
+
+
+def browser_text(route, account, shot, reason):
+    home = base_home()
+    shot = "~" + shot[len(home):] if home and shot.startswith(home + "/") else shot
+    return "browser route=%s account=%s shot=%s reason=%s" % (route, account, shot, reason)
+
+
 def image_legs(cutoff, now):
     legs, earliest = [], None
     for row in read_jsonl(image_log()):
@@ -1165,10 +1211,25 @@ def image_legs(cutoff, now):
         if at < cutoff or at > now + 3600:
             continue
         err = str(row.get("err") or "")
-        klass, reason, detail, origin = classify_image(rc, err)
+        model = str(row.get("tool") or "")
+        lines = BROWSER_LINE_RE.findall(err)
+        final = lines[-1] if rc != 0 and lines and lines[-1][0] == "FAILURE" else None
+        for index, (_, route, line_account, code, shot, said) in enumerate(lines[:-1] if final else lines):
+            klass, reason, detail, origin = classify_browser(int(code), said)
+            legs.append(leg("image", str(row.get("kind") or "image"), model, at, klass, reason, detail, origin,
+                            attempt="superseded", account=line_account, browser=True,
+                            ref="image:%s/%s/%s#%d" % (event_stamp(at), model or "-", line_account, index + 1),
+                            start=at, text=browser_text(route, line_account, shot, said)))
+        if final:
+            _, route, line_account, code, shot, said = final
+            klass, reason, detail, origin = classify_browser(int(code), said)
+            err = browser_text(route, line_account, shot, said)
+            if not row.get("account") and line_account != "-":
+                row = dict(row, account=line_account)
+        else:
+            klass, reason, detail, origin = classify_image(rc, err)
         if klass == "skip":
             continue
-        model = str(row.get("tool") or "")
         if reason == "pool empty" and refused_by_switch(model.split("-")[0], str(row.get("account") or ""), at):
             klass, reason, detail, origin = "off", "off", "switched off", ""
         served = str(row.get("served") or "")
@@ -1178,7 +1239,7 @@ def image_legs(cutoff, now):
                         cohort=model + "·" + served if served else model, duration=seconds,
                         size=as_int(row.get("size")), account=account,
                         ref="image:%s/%s/%s" % (event_stamp(at), model or "-", account or "-"),
-                        start=at - seconds if seconds else at, text=err[-TEXT_MAX:]))
+                        start=at - seconds if seconds else at, text=err[-TEXT_MAX:], browser=bool(final)))
     return legs, earliest
 
 
@@ -1316,6 +1377,8 @@ def row_faults(row, ids):
     if not isinstance(row, dict):
         return ["not an object"]
     faults = []
+    if not isinstance(row.get("id"), str) or not row["id"].strip():
+        faults.append("no id")
     if row.get("block") not in BLOCKS + ("any",):
         faults.append("block %r" % row.get("block"))
     status = row.get("status")
@@ -1331,7 +1394,8 @@ def row_faults(row, ids):
     if not isinstance(match, dict):
         faults.append("no match")
     elif "machinery" in match:
-        if set(match) != {"machinery"} or row.get("block") != "reviewers":
+        if set(match) != {"machinery"} or row.get("block") != "reviewers" \
+                or not isinstance(match["machinery"], str) or not match["machinery"]:
             faults.append("a machinery row is {machinery} alone on reviewers")
         if status in DISMISSALS:
             faults.append("a machinery row matches a whole class: open or fixed, never %s" % status)
@@ -1341,7 +1405,8 @@ def row_faults(row, ids):
         elif not narrow_regex(match.get("key")):
             faults.append("health key %r matches every item" % match.get("key"))
     else:
-        if not set(match) <= WORD_MATCH_KEYS or match.get("word") not in LEDGER_WORDS:
+        if not set(match) <= WORD_MATCH_KEYS or not isinstance(match.get("word"), str) \
+                or match["word"] not in LEDGER_WORDS:
             faults.append("match %r names no bug word" % match)
         if not (match.get("model") or match.get("detail")):
             faults.append("a catch-all: word %r with no model or detail" % match.get("word"))
@@ -1372,45 +1437,53 @@ def row_faults(row, ids):
 
 
 def ledger_faults(document):
-    """Every reason the ledger may not judge, one line each, `<where>: <why>`. The doctor drops a faulty
-    row from judging and reports the fault as a problem; the tests hold the committed ledger to none."""
+    """Every reason the ledger may not judge, one `(where, why)` each. The doctor drops a faulty row from
+    judging and reports its faults as one problem; the tests hold the committed ledger to none."""
     if not isinstance(document, dict):
-        return ["ledger: not a JSON object"]
+        return [("ledger", "not a JSON object")]
     faults = []
     if not isinstance(document.get("owner"), str) or not document["owner"].strip():
-        faults.append("owner: names no chat")
+        faults.append(("owner", "names no chat"))
     owners = document.get("owners")
     if not isinstance(owners, dict) or set(owners) != set(BLOCKS) \
             or not all(isinstance(name, str) and name.strip() for name in owners.values()):
-        faults.append("owners: every block names a chat")
+        faults.append(("owners", "every block names a chat"))
     rows = document.get("rows") if isinstance(document.get("rows"), list) else []
     ids = [row.get("id") for row in rows if isinstance(row, dict)]
-    for row in rows:
-        where = row.get("id") if isinstance(row, dict) and isinstance(row.get("id"), str) and row["id"] else "?"
+    for index, row in enumerate(rows):
+        where = row["id"] if isinstance(row, dict) and isinstance(row.get("id"), str) and row["id"].strip() \
+            else "rows[%d]" % index
         if ids.count(where) > 1:
-            faults.append("%s: id used twice" % where)
-        faults.extend("%s: %s" % (where, fault) for fault in row_faults(row, ids))
+            faults.append((where, "id used twice"))
+        faults.extend((where, fault) for fault in row_faults(row, ids))
     spots = document.get("blind_spots")
     if not isinstance(spots, list):
-        faults.append("blind_spots: not a list")
+        faults.append(("blind_spots", "not a list"))
         spots = []
     for spot in spots:
-        if not isinstance(spot, dict) or not all(isinstance(spot.get(key), str) and spot[key].strip()
-                                                  for key in BLIND_KEYS):
-            faults.append("blind_spots: each is {%s}" % ", ".join(BLIND_KEYS))
+        if not blind_spot_ok(spot):
+            faults.append(("blind_spots", "each is {%s}" % ", ".join(BLIND_KEYS)))
     return faults
+
+
+def blind_spot_ok(spot):
+    return isinstance(spot, dict) and all(isinstance(spot.get(key), str) and spot[key].strip() for key in BLIND_KEYS)
 
 
 def last_fix_at(row):
     fixes = row.get("fixes") or []
-    return zoned_epoch(fixes[-1].get("at")) if fixes and isinstance(fixes[-1], dict) else None
+    if not fixes or not isinstance(fixes[-1], dict):
+        return None
+    at, landed = zoned_epoch(fixes[-1].get("at")), fix_landed(fixes[-1].get("in"), repos_dir())
+    return at if at is None or landed is None else max(at, landed)
 
 
 def load_ledger():
     document = read_json(ledger_path())
-    faults = ledger_faults(document) if document is not None else ["ledger: missing or not JSON"]
+    faults = ledger_faults(document) if document is not None else [("ledger", "missing or not JSON")]
     document = document if isinstance(document, dict) else {}
-    source = [row for row in document.get("rows") or [] if isinstance(row, dict)]
+    source = [row for row in document.get("rows") or [] if isinstance(row, dict)] \
+        if isinstance(document.get("rows"), list) else []
     ids = [row.get("id") for row in source]
     rows, machinery_rows, health_rows = [], {}, []
     for row in source:
@@ -1418,10 +1491,10 @@ def load_ledger():
             continue
         compiled = dict(row, _fixed_at=last_fix_at(row))
         match = row["match"]
-        if match.get("machinery"):
+        if "machinery" in match:
             machinery_rows.setdefault(match["machinery"], compiled)
             continue
-        if match.get("health"):
+        if "health" in match:
             compiled["_key"] = re.compile(match["key"], re.IGNORECASE)
             health_rows.append(compiled)
             continue
@@ -1434,9 +1507,11 @@ def load_ledger():
     order = {id(row): index for index, row in enumerate(rows)}
     rows.sort(key=lambda row: (-row["_specific"], order[id(row)]))
     owners = document.get("owners") if isinstance(document.get("owners"), dict) else {}
-    spots = [spot for spot in document.get("blind_spots") or [] if isinstance(spot, dict)]
+    spots = [spot for spot in document.get("blind_spots") or [] if blind_spot_ok(spot)] \
+        if isinstance(document.get("blind_spots"), list) else []
     return {"owner": document.get("owner") or "", "owners": owners, "rows": rows, "machinery": machinery_rows,
-            "health": health_rows, "blind_spots": spots, "faults": faults, "ids": set(ids),
+            "health": health_rows, "blind_spots": spots, "faults": faults,
+            "ids": {value for value in ids if isinstance(value, str)},
             "by_id": {row["id"]: row for row in rows + list(machinery_rows.values()) + health_rows}}
 
 
@@ -1488,7 +1563,9 @@ def mark_problems(ledger, legs):
         else:
             leg_row["pid"] = leg_row["ledger"]["id"] if leg_row["ledger"] is not None else ""
         if leg_row["attempt"] == "superseded" and leg_row["class"] == "failed" and leg_row["origin"] != "theirs":
-            leg_row["hidden"] = leg_id(leg_row, ledger_match(ledger, leg_row))
+            state, row = judge_leg_state(ledger, dict(leg_row, attempt="final"))
+            if state in BUG_STATES:
+                leg_row["hidden"] = leg_id(leg_row, row)
 
 
 def local_day(epoch):
@@ -1510,14 +1587,14 @@ def rollup_key(leg_row):
 
 
 def relabel_frozen(counts, ledger, at):
-    """A frozen day keeps the id its bug legs had then: none, or a ledger row since deleted. Such counts
-    move to the row that claims them without detail text, else to the unledgered id the split gives them,
-    so a problem's sparkline holds its own history and no other's."""
+    """A frozen day keeps the id its bug legs had then: none, an unledgered id, or a ledger row since
+    deleted. Such counts move to the row that claims them without detail text, else to the unledgered id
+    the split gives them, so a problem's sparkline holds its own history and no other's."""
     relabeled = {}
     for key, value in counts.items():
         fields = key.split("|")
         bug = len(fields) == 6 and (fields[2] == "escaped" or (fields[2] == "failed" and fields[4] != "theirs"))
-        if bug and ":" not in fields[5] and fields[5] not in ledger["by_id"]:
+        if bug and fields[5] not in ledger["ids"]:
             synthetic = {"block": fields[0], "model": fields[1], "class": fields[2],
                          "reason": fields[3] if fields[2] == "failed" else fields[2], "text": "", "detail": "", "at": at}
             row = ledger_match(ledger, synthetic)
@@ -1608,6 +1685,8 @@ def iso_time(epoch):
 def excerpt_of(leg_row):
     """At most EXCERPT_MAX characters of the raw text the matcher read, around what it matched."""
     text = (leg_row.get("text") or "").strip()
+    if leg_row.get("browser"):
+        return text[:EXCERPT_MAX]
     if leg_row["class"] == "failed":
         for word, pattern in FAILURE_REASONS + IMAGE_REASONS:
             found = pattern.search(text) if word == leg_row["reason"] else None
@@ -1874,16 +1953,45 @@ def leg_problems(ledger, legs, window_cutoff, window_h, now):
                                                        max(item["at"] for item in rows)),
                                 evidence_of(rows), pid if pid in ledger["by_id"] else None,
                                 recovered=len(rows), lost_s=int(sum(item["duration"] or 0 for item in rows))))
+    listed = {item["id"] for item in problems}
     for row in ledger["rows"]:
-        if row.get("status") not in FIXED_STATUSES or row["id"] in by_pid:
+        if row.get("status") not in FIXED_STATUSES or row["id"] in listed:
             continue
         events, matched = proof(row, legs)
-        if row["status"] == "fixed" and events >= PROOF_MIN:
+        if row["status"] == "fixed" and events >= PROOF_MIN and not matched:
             continue
         state = "fixed-pending" if row["status"] == "fixed-pending" else "watch"
         problems.append(problem(row["id"], "fix-proof", state, "%s · %s" % (row["title"], proof_text(row, legs, now)),
                                 events, PROOF_MIN, "events since the fix", window_h, events, 0, span.get(row["id"]),
                                 [], row["id"]))
+    return problems
+
+
+def pending_fix_problems(ledger, problems, window_h, now):
+    """A machinery or debt row whose fix awaits its commit stays listed once its anomalies are gone."""
+    listed = {item["id"] for item in problems}
+    found = []
+    for row in list(ledger["machinery"].values()) + ledger["health"]:
+        if row.get("status") != "fixed-pending" or row["id"] in listed:
+            continue
+        since = days_since(row["fixes"][-1].get("at"), now)
+        found.append(problem(row["id"], "fix-proof", "fixed-pending", "%s · fix pending commit%s" % (
+            row["title"], " %dd" % since if since is not None else ""), 0, 0, "events since the fix", window_h, 0, 0,
+            None, [], row["id"]))
+    return found
+
+
+def fault_problems(faults, window_h, now):
+    grouped = {}
+    for where, why in faults:
+        grouped.setdefault(where, []).append(why)
+    problems = []
+    for where, whys in grouped.items():
+        fault = "%s: %s" % (where, " · ".join(whys))
+        problems.append(problem("ledger:%s" % where, "ledger", "new", "ledger %s" % fault, len(whys), 0, "faults",
+                                window_h, 0, len(whys), (now, now), [{"at": iso_time(now), "ref": "ledger:%s" % where,
+                                                                      "account": "", "excerpt": fault[:EXCERPT_MAX]}],
+                                None))
     return problems
 
 
@@ -2135,31 +2243,44 @@ def git_out(root, *args):
 
 
 def missing_commit(value):
-    """Why a fix's `repo@hash` names no commit, or None (also when the repository is not here to ask)."""
+    """Why a fix's `repo@hash` names no commit, or None (also when git is not here to answer)."""
     repo, commit = FIX_IN_RE.match(value).groups()
     root = os.path.join(repos_dir(), repo)
     if not os.path.isdir(root):
         return None
-    return None if git_out(root, "cat-file", "-e", commit + "^{commit}") is not None else \
-        "%s is no commit of %s" % (commit, repo)
+    try:
+        done = subprocess.run(["git", "-C", root, "rev-parse", "--verify", "--quiet", commit + "^{commit}"],
+                              capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return "%s is no commit of %s" % (commit, repo) if done.returncode == 1 else None
+
+
+def drop_row(ledger, row):
+    ledger["by_id"].pop(row["id"], None)
+    ledger["rows"] = [other for other in ledger["rows"] if other is not row]
+    ledger["health"] = [other for other in ledger["health"] if other is not row]
+    ledger["machinery"] = {name: other for name, other in ledger["machinery"].items() if other is not row}
 
 
 def settle_fixes(ledger):
-    """Turn a fixed-pending row fixed once the sweep has committed its fix, and check every recorded commit.
-    Returns {row id: repo@hash} for the rows it settled and the faults it found."""
+    """Turn a fixed-pending row fixed once the sweep has committed its fix, and check every recorded commit:
+    a row naming no commit judges nothing. Returns {row id: repo@hash} for the rows it settled and the
+    `(row id, why)` faults it found."""
     settled, faults = {}, []
     for row in list(ledger["by_id"].values()):
-        for index, fix in enumerate(row.get("fixes") or []):
-            if fix.get("in"):
-                fault = missing_commit(fix["in"])
-                if fault:
-                    faults.append("%s: %s" % (row["id"], fault))
-            elif row.get("status") == "fixed-pending" and index == len(row["fixes"]) - 1:
-                found = fix_commit(fix, repos_dir())
-                if found:
-                    settled[row["id"]] = found
-                    row["fixes"] = row["fixes"][:-1] + [dict(fix, **{"in": found})]
-                    row["status"] = "fixed"
+        fixes = row.get("fixes") or []
+        missing = [fault for fault in (missing_commit(fix["in"]) for fix in fixes if fix.get("in")) if fault]
+        if missing:
+            faults.extend((row["id"], fault) for fault in missing)
+            drop_row(ledger, row)
+        elif row.get("status") == "fixed-pending" and fixes and not fixes[-1].get("in"):
+            found = fix_commit(fixes[-1], repos_dir())
+            if found:
+                settled[row["id"]] = found
+                row["fixes"] = fixes[:-1] + [dict(fixes[-1], **{"in": found})]
+                row["status"] = "fixed"
+                row["_fixed_at"] = last_fix_at(row)
     return settled, faults
 
 
@@ -2170,7 +2291,7 @@ def write_settled(settled, source):
         return
     document = json.loads(source)
     for row in document["rows"]:
-        if row.get("id") in settled:
+        if isinstance(row, dict) and isinstance(row.get("id"), str) and row["id"] in settled:
             row["fixes"][-1]["in"] = settled[row["id"]]
             row["status"] = "fixed"
     temporary = "%s.tmp.%d" % (path, os.getpid())
@@ -2261,11 +2382,8 @@ def collect(window_h, now, write_daily=False):
     problems = leg_problems(ledger, legs, window_cutoff, window_h, now) + machinery_problems(found, window_h)
     for row in health:
         problems.extend(health_problems(row, ledger, window_h))
-    for fault in ledger["faults"] + commit_faults:
-        where = fault.split(":", 1)[0]
-        problems.append(problem("ledger:%s" % where, "ledger", "new", "ledger %s" % fault, 1, 0, "faults", window_h, 0, 1,
-                                (now, now), [{"at": iso_time(now), "ref": "ledger:%s" % where, "account": "",
-                                              "excerpt": fault[:EXCERPT_MAX]}], None))
+    problems.extend(pending_fix_problems(ledger, problems, window_h, now))
+    problems.extend(fault_problems(ledger["faults"] + commit_faults, window_h, now))
     if write_daily:
         write_settled(settled, source)
     inputs = inputs_of(found, window_cutoff)

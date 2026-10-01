@@ -12,6 +12,7 @@ if ! eval "$have_wait_n"; then
   exit 1
 fi
 set -u
+printf -v run_suites_start '%(%s)T' -1
 
 usage() {
   cat >&2 <<'USAGE'
@@ -57,47 +58,17 @@ done
 repo=$(cd "$repo" && pwd -P) || fail "unreadable repo: $repo"
 [ -d "$repo/tests" ] || fail "no tests directory under $repo"
 
-# Branch of a linked worktree, empty otherwise. Detached is empty: there is no branch to share.
-run_suites_linked_branch() {
-  local git_dir='' common='' branch=''
-  git_dir=$(git -C "$1" rev-parse --path-format=absolute --git-dir 2>/dev/null) || return 0
-  common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 0
-  [ "$git_dir" != "$common" ] || return 0
-  branch=$(git -C "$1" rev-parse --abbrev-ref HEAD 2>/dev/null) || return 0
-  [ -n "$branch" ] && [ "$branch" != HEAD ] || return 0
-  printf '%s\n' "$branch"
-}
-
-# A sibling checkout whose porcelain branch is refs/heads/<branch>. The main checkout counts
-# when it is the one on that branch; a missing directory does not.
-run_suites_same_branch() {
-  local branch="$2" line='' path=''
-  [ -n "$branch" ] && [ -d "$1" ] || return 1
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in
-      worktree\ *) path=${line#worktree } ;;
-      branch\ *)
-        if [ "${line#branch }" = "refs/heads/$branch" ] && [ -n "$path" ] && [ -d "$path" ]; then
-          printf '%s\n' "$path"
-          return 0
-        fi
-        path=''
-        ;;
-      '') path='' ;;
-    esac
-  done < <(git -C "$1" worktree list --porcelain 2>/dev/null)
-  return 1
-}
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/worktree-branch.sh"
 
 # A linked worktree has no sibling checkout beside it. Another repo's worktree on this same
 # branch is the set under test; otherwise the main checkout. An exported variable wins either way.
 if common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
   projects=$(dirname "$(dirname "$common")")
-  own_branch=$(run_suites_linked_branch "$repo")
+  own_branch=$(linked_worktree_branch "$repo")
   for sibling in CLAUDE_SETUP_ROOT=claude-setup REVIEW_BENCH_ROOT=review-bench REVIEW_ROOT=review-bench LLM_LEGS_ROOT=llm-legs; do
     var=${sibling%%=*} name=${sibling#*=}
     [ -n "${!var:-}" ] && continue
-    if [ -n "$own_branch" ] && sibling_wt=$(run_suites_same_branch "$projects/$name" "$own_branch"); then
+    if [ -n "$own_branch" ] && sibling_wt=$(same_branch_worktree "$projects/$name" "$own_branch"); then
       export "$var=$sibling_wt"
       continue
     fi
@@ -191,6 +162,27 @@ if [ "$changed" = true ]; then
   [ "${#suites[@]}" -gt 0 ] || { printf 'run-suites: nothing changed that any suite names\n'; exit 0; }
 fi
 
+# Brew relinks `python3` to each new minor release, which arrives without pytest.
+pytest_python() {
+  local candidate
+  for candidate in "$repo/.venv/bin/python" python3 $(
+      IFS=:
+      for dir in $PATH; do
+        for bin in "$dir"/python3.[0-9]*; do
+          [[ "${bin##*/}" =~ ^python3\.[0-9]+$ ]] && printf '%s\n' "${bin##*/}"
+        done
+      done | sort -t. -k2,2nr -u); do
+    [ "$candidate" = "$repo/.venv/bin/python" ] && [ ! -x "$candidate" ] && continue
+    "$candidate" -c 'import pytest' >/dev/null 2>&1 && { command -v "$candidate"; return 0; }
+  done
+  return 1
+}
+python=''
+if printf '%s\n' "${suites[@]}" | grep -q '\.py$'; then
+  python=$(pytest_python) ||
+    fail "no python with pytest: tried $repo/.venv/bin/python, python3 and python3.X on PATH"
+fi
+
 logdir=$(mktemp -d "${TMPDIR:-/tmp}/run-suites.XXXXXX") || fail 'could not create a log directory'
 # The statusline's work probe finds this run by its pid, counts its .status files for `n/m` and
 # names the repository from here: this process never leaves the caller's directory.
@@ -201,7 +193,7 @@ trap 'rm -f "$progress_file"' EXIT
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/test-scope.sh"
 if [ "${#explicit[@]}" -gt 0 ]; then scope=named; elif $changed; then scope=changed; elif $include_live; then scope=all
 else scope=full; fi
-test_scope_mark "$scope" suites "$repo"
+test_scope_mark "$scope" suites "$repo" "$run_suites_start"
 
 run_one() { # suite-path
   local path="$1" name start finish rc
@@ -214,7 +206,10 @@ run_one() { # suite-path
     export TMPDIR="$logdir/tmp-$name"
     # A suite judges hooks the way a chat meets them; run from inside a worker it would inherit the
     # worker's markers and be judged as one, and a fixture HOME would still read the real toggle.
-    unset CLAUDEB_WORKER WORKER_RUN_RECORD CLAUDE_LAUNCHER_SESSION WORKER_PICK_CONFIG_FILE
+    # The chat's session id would hand every suite that chat's own worker pin; bytecode a suite's
+    # SourceFileLoader import leaves in bin/ reads to a review's integrity check as a new file.
+    unset CLAUDEB_WORKER WORKER_RUN_RECORD CLAUDE_LAUNCHER_SESSION WORKER_PICK_CONFIG_FILE CLAUDE_CODE_SESSION_ID
+    export PYTHONDONTWRITEBYTECODE=1
     mkdir -p "$TMPDIR"
     cd "$repo" || exit 4
     # Absolute, not -n: a nested run must stay at 10, not sink further. $BASHPID, not $$:
@@ -222,7 +217,7 @@ run_one() { # suite-path
     # would pin the wall-clock tail behind every other invocation's wave. No lock.
     serial_suite "$name" || renice 10 -p "$BASHPID" >/dev/null 2>&1 || :
     case "$path" in
-      *.py) exec python3 -m pytest -q "$path" ;;
+      *.py) exec "$python" -m pytest -q "$path" ;;
       # $BASH and not `bash`: the header verified THIS interpreter, and a sub-suite resolving its
       # own off PATH gets macOS 3.2, where `declare -A` fails while the table still prints PASS.
       *) exec "$BASH" "$path" ;;

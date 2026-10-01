@@ -80,6 +80,12 @@ cat >"$WORK/bin/security" <<'SECURITY'
 jq -e --arg service "$3" '.[$service] | select(. != null) | {claudeAiOauth:{expiresAt:.}}' "$CLAUDEB_DIR/expiry-fixture.json"
 SECURITY
 chmod +x "$WORK/bin/security"
+cat >"$WORK/bin/codex" <<'CODEX'
+#!/usr/bin/env bash
+[ "${1:-}" = --version ] && printf 'codex-cli %s\n' "${FAKE_CODEX_VERSION:-0.154.0}" && exit 0
+exit 1
+CODEX
+chmod +x "$WORK/bin/codex"
 
 # The chat role spends the bucket of the chat's model and a query naming none reads the default
 # model from settings.json; the suite's chat cases are written for a Fable default, the Opus ones
@@ -616,6 +622,20 @@ assert test "$query_out" = with-credit
 query_case codex_credit --account codex --exclude plain,with-credit
 assert test "$query_rc" -eq 3
 assert grep -q 'no selectable codex account' "$WORK/query.err"
+# A lapsed plan's own catalog lists no astra: that account is no candidate, whatever its quota.
+mkdir -p "$HOME_FIXTURE/.codex-profiles/plain"
+jq '.models |= map(select(.slug | test("astra") | not))' "$ROOT/tests/fixtures/codexb-models.json" \
+  >"$HOME_FIXTURE/.codex-profiles/plain/models_cache.json"
+query_case codex_credit --account codex
+assert test "$query_out" = with-credit
+run_case codex_credit
+assert contains "$(nrow 1)" 'codex/with-credit'
+# The same miss in a list an older client wrote proves nothing: the picker never refreshes it.
+jq '.client_version = "0.150.0"' "$HOME_FIXTURE/.codex-profiles/plain/models_cache.json" >"$WORK/c" &&
+  mv "$WORK/c" "$HOME_FIXTURE/.codex-profiles/plain/models_cache.json"
+query_case codex_credit --account codex
+assert test "$query_out" = plain
+rm -rf "$HOME_FIXTURE/.codex-profiles/plain"
 run_filter codex_plain '.vendors.codex.accounts = [
   {account:"main",five_hour:{used_pct:20},weekly:{used_pct:20}},
   {account:"zeta",five_hour:{used_pct:20},weekly:{used_pct:20}}]'
@@ -1112,6 +1132,11 @@ assert test "$(vline grok: | squeeze)" = 'grok: on'
 assert contains "$(vsection grok)" 'supergrok'
 write_config 'grok_paused=on'
 grok_query "$GROK_PAIR_JSON" --menu
+output=$query_out
+assert test "$(vsection grok)" = 'paused'
+# The collector drops a paused vendor from the store; the menu keeps its row, which carries Resume.
+run_filter golden 'del(.vendors.grok)'
+query --menu
 output=$query_out
 assert test "$(vsection grok)" = 'paused'
 grok_query "$GROK_PAIR_JSON"

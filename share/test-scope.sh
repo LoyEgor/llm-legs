@@ -11,15 +11,16 @@ git_top() {
   if [ "$gitdir" = "$common" ]; then root=$top; else root=${common%/*}; fi
 }
 
-# scope [label] [dir]: full | all | changed | named | partial.
+# scope [label] [dir] [start epoch]: full | all | changed | named | partial.
 test_scope_mark() {
   local cache="${STATUSLINE_CACHE_DIR:-$HOME/.cache/claude-statusline}" scope=$1 label="${2:-$0}" where="${3:-}" top root
+  local start="${4:-${EPOCHSECONDS:-$(date +%s)}}"
   label="${label##*/}"
   label="${label%.*}"
   [ -d "$cache" ] || return 0
   [ -n "$where" ] || where=$(cd "$(dirname "${2:-$0}")" 2>/dev/null && pwd -P) || where=$PWD
   git_top "$where" || root=""
-  jq -cn --argjson start "${EPOCHSECONDS:-$(date +%s)}" --arg label "$label" --arg scope "$scope" --argjson pid "$$" \
+  jq -cn --argjson start "$start" --arg label "$label" --arg scope "$scope" --argjson pid "$$" \
     --arg root "$root" '{start: $start, label: $label, scope: $scope, pid: $pid}
       + (if $root == "" then {} else {repo_root: $root} end)' >> "$cache/test-scope.jsonl" 2>/dev/null || :
 }

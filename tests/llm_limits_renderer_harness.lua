@@ -723,6 +723,15 @@ local routingFixture = { schema = 1, vendors = {
   codex = { available = false },
   gemini = { available = false },
 }}
+do
+  local safeRouting = loadModule(routingFixture, nil, routingNow)
+  safeRouting.routingCache = { text = "NEXT: unavailable\nclaude: unavailable\nDATA: unavailable\n", at = routingNow }
+  local lightFound = false
+  for _, item in ipairs(routingItem(safeRouting.menuItems()).menu) do
+    if titleText(item):match("^light: ") and type(item.fn) == "function" then lightFound = true end
+  end
+  assert(lightFound, "worker-pick's fail-safe routing answer left the menu no Light switch")
+end
 local freshRouting = loadModule(routingFixture, nil, routingNow)
 freshRouting.routingCache = { text = routingText, at = routingNow }
 do
@@ -3497,11 +3506,11 @@ do
   assert(type(title) == "table" and title.text == "LLM Limits: 1 hold" and isRed(title.attributes),
     "a red hold did not reach the Automation title: " .. titleText({ title = title }))
   holdFake.files = { ["suite-slots-4343.json"] = hold("suite-slots", 4343, 90, "suite") }
-  holdFake.files["suite-slots-4343.json"]["until"] = now + 600
-  local bounded = holdLines(mod)[1].menu
-  assert(titleText(bounded[#bounded]) == "until " .. os.date("%H:%M", now + 600)
-      and titleText(bounded[#bounded - 1]) == "why: memory pressure",
-    "a bounded hold did not end its submenu with its until")
+  holdFake.files["suite-slots-4343.json"]["until"] = now + 600.5
+  local bounded = (holdLines(mod)[1] or {}).menu or {}
+  assert(titleText(bounded[#bounded] or {}) == "until " .. require("menu-style").clock(now + 600, now)
+      and titleText(bounded[#bounded - 1] or {}) == "why: memory pressure",
+    "a bounded hold with a fractional until did not end its submenu with its until")
   assert(mod.title() == "LLM Limits", "a hold under 5 min turned the Automation title red")
   holdFake.files = { ["gone-5151.json"] = hold("gone", 5151, 900, "job") }
   assert(#holdLines(mod) == 0 and not mod.refreshState().holdText, "a dead pid's hold file was drawn as live")

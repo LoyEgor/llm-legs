@@ -196,10 +196,10 @@ assert [ ! -e "$EVENTS/$fid.base" ]
 taken
 # The account is a chat's, asked past the workers switch; and launchd's PATH carries no repo bin, so
 # the picker is the one beside the script.
-assert grep -qxF -- '--account claudeb --role chat --claim' "$DATA/pick-args"
+assert grep -qxF -- '--account claudeb --role chat --model opus --claim' "$DATA/pick-args"
 mkdir -p "$WORK/repo/bin" "$WORK/repo/share"
 cp "$SCRIPT" "$WORK/repo/bin/vendor-fingerprint"
-cp "$ROOT/share/chat-open.sh" "$WORK/repo/share/chat-open.sh"
+cp "$ROOT/share/chat-open.sh" "$ROOT/share/night-worktree.sh" "$WORK/repo/share/"
 printf '#!/usr/bin/env bash\nprintf "repo-acct\\n"\n' >"$WORK/repo/bin/worker-pick"
 chmod +x "$WORK/repo/bin/worker-pick"
 : >"$OPENED"
@@ -403,6 +403,10 @@ assert_fails bash "$SCRIPT" close "$id" --decisions "$WORK/decisions" "integrate
 assert grep -qF "row 1: purpose 'docs/no-such-file.md' resolves to no commit" "$WORK/close.err"
 assert [ "$(jq -r .status "$EVENTS/$id.json")" = open ]
 printf 'ids\t+claude-opus-*\tintegrated\tdocs/vendor-release.md:88\tthe opus alias resolves it; tests/test_x.sh\n' >"$WORK/decisions"
+# Purposes that cannot be judged hold the close like purposes that resolve nowhere.
+assert_fails env TMPDIR="$WORK/no-tmp" bash "$SCRIPT" close "$id" --decisions "$WORK/decisions" "integrated claude-opus-6" 2>"$WORK/close.err"
+assert grep -qF "no record to judge purposes with under $WORK/no-tmp" "$WORK/close.err"
+assert [ "$(jq -r .status "$EVENTS/$id.json")" = open ]
 bash "$SCRIPT" close "$id" --decisions "$WORK/decisions" "integrated claude-opus-6" || fail "close failed"
 assert [ "$(jq -r '.decisions[0] | "\(.decision) \(.purpose)"' "$EVENTS/$id.json")" = "integrated docs/vendor-release.md:88" ]
 assert jqe --arg id "$id" '.closed_at != null and .decisions == [{id: $id, purpose: "docs/vendor-release.md:88", verdict: "integrated",
@@ -553,17 +557,53 @@ grok_ids grok-6 grok-7 grok-8
 VENDOR_FINGERPRINT_HOLD=1 check grok
 night_grok=$(field .id)
 assert [ "$(field '"\(.vendor) \(.status) \(.launched_at)"')" = "grok open null" ]
+# No base ref: no worktree from HEAD, and the event keeps waiting.
+assert_fails night N1 >"$WORK/night1" 2>"$WORK/err"
+assert grep -qF "no refs/night/N1/base in $NREPO" "$WORK/err"
+assert [ ! -e "$NREPO/.claude/worktrees/night-N1-grok" ]
+assert jqe '.launched_at == null' "$EVENTS/$night_grok.json"
+git -C "$NREPO" update-ref refs/night/N1/base HEAD
+SIB="$WORK/review-bench"
+git init -q "$SIB"
+git -C "$SIB" -c user.name=t -c user.email=t@t commit -q --allow-empty -m base
+git -C "$SIB" update-ref refs/night/N1/base HEAD
+SIB_WT="$SIB/.claude/worktrees/night-N1-grok"
+# The night request joins the event under the check lock, so a scheduled check never rewrites it meanwhile.
+lockf -k "$STATE/fingerprints/check.lock" sleep 30 &
+HOLDER=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  lockf -k -t 0 "$STATE/fingerprints/check.lock" true 2>/dev/null || break
+  sleep 0.2
+done
+assert_fails env VENDOR_FINGERPRINT_LOCK_WAIT=1 bash "$NREPO/bin/vendor-fingerprint" request --night N1 >"$WORK/night1" 2>/dev/null
+kill "$HOLDER" 2>/dev/null
+wait "$HOLDER" 2>/dev/null
+assert [ ! -s "$WORK/night1" ]
+assert jqe '.launched_at == null' "$EVENTS/$night_grok.json"
+assert [ ! -e "$NREPO/.claude/worktrees/night-N1-grok" ]
 assert night N1 >"$WORK/night1"
 assert [ "$(wc -l <"$WORK/night1" | tr -d ' ')" = 1 ]
-IFS=$'\t' read -r n_vendor n_id n_brief n_tree <"$WORK/night1"
-assert [ "$n_vendor $n_id $n_brief" = "grok $night_grok $EVENTS/$night_grok.brief.md" ]
+# The ref is the event's updater fixer run, so the orchestrator's doctor-fix show reads it like a fixer's.
+IFS=$'\t' read -r n_run n_brief n_tree <"$WORK/night1"
+assert grep -qE '^updater-release-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{4}$' <<<"$n_run"
+assert [ "$n_brief" = "$EVENTS/$night_grok.brief.md" ]
 assert [ "$n_tree" = "$NREPO/.claude/worktrees/night-N1-grok" ]
+assert jqe --arg e "$night_grok" --arg w "$n_tree" --arg s "$SIB_WT" '.night == "N1" and .branch == "night/N1/grok"
+  and .worktrees == [$w, $s] and [.problems[].id] == [$e] and .launched_at != null and .closed_at == null' "$RUNS/$n_run.json"
+assert [ "$(git -C "$SIB_WT" rev-parse --abbrev-ref HEAD)" = night/N1/grok ]
+eval "$(sed -n '/^brief_add_dirs() {/,/^}/p' "$ROOT/bin/worker-run")"
+assert [ "$(brief_add_dirs "$n_brief")" = "$SIB_WT" ]
+assert [ "$(head -n 1 "$n_brief")" = "ROUND: none" ]
+assert jqe --arg r "$n_run" '.run == $r' "$EVENTS/$night_grok.json"
+bash "$NREPO/bin/doctor-fix" show "$n_run" >"$WORK/show" || fail "doctor-fix show of the night vendor run"
+assert grep -qF "run $n_run · updater doctor · area release · open" "$WORK/show"
 assert [ "$(git -C "$n_tree" rev-parse --abbrev-ref HEAD)" = night/N1/grok ]
 assert [ -z "$(git -C "$NREPO" status --porcelain)" ]
 assert grep -qF "Working directory: $n_tree, the llm-legs worktree on branch night/N1/grok." "$n_brief"
 assert grep -qF "Read $NREPO/docs/vendor-release.md in full" "$n_brief"
 assert grep -qF "bin/vendor-fingerprint show $night_grok" "$n_brief"
 assert grep -qF '`blocked-on-egor:`' "$n_brief"
+assert grep -qF 'Look at the older blocks around what you touch, not only at what you add' "$n_brief"
 assert jqe '.launched == "night" and .night == "N1" and .launched_at != null' "$EVENTS/$night_grok.json"
 assert [ ! -e "$EVENTS/$night_grok.base" ]
 assert jqe '.launched_at == null' "$EVENTS/$day_manual.json"
@@ -582,6 +622,7 @@ assert_fails quiet env VENDOR_FINGERPRINT_DOCTOR_FIX=/dev/null bash "$n_tree/bin
 assert_fails quiet bash "$SCRIPT" close "$night_grok" --decisions "$WORK/decisions" "night"
 assert bash "$n_tree/bin/vendor-fingerprint" close "$night_grok" --decisions "$WORK/decisions" "night"
 assert jqe '.status == "closed" and (.decisions | map(.purpose) | unique) == ["docs/new-surface.md"]' "$EVENTS/$night_grok.json"
+assert jqe --arg e "$night_grok" '.closed_at != null and .decisions[0].id == $e and .decisions[0].verdict == "integrated"' "$RUNS/$n_run.json"
 
 # A field that is a leaf in one home and a container in another no longer kills the codex catalog
 # merge (gpt-6.1-sol vanished from every catalog facet this way), and a merge that does fail is a
@@ -597,4 +638,4 @@ codex_cache "$HOME/.codex-profiles/z" "$v" '[1]'
 bash "$SCRIPT" snapshot codex >"$WORK/broken.json"
 assert jqe '(.facets | has("catalog") | not) and ([.failed[] | select(.facet == "catalog")] == [{facet: "catalog", where: "local"}])' "$WORK/broken.json"
 
-echo "PASS: $asserts asserts; baseline, version-only releases close themselves, new ids/catalog fields/docs/help/newly lagging installs/divergence open an event each, an install catching up or still lagging closes itself, prompts and foreign clients are informational, unreadable facets keep their value, broken local probes are reported, manual requests, close, lock, check --here, no chat from check for a waiting event however old, a failed manual request retried by check, waiting events joined and reverts closed, every vendor in one chat on request --all, each chat a fixer run of doctor updater that closes with its last event, a request taking its vendor's waiting event, manual diffs that carry the whole fingerprint, decision purposes judged by doctor-fix, a bounded lock wait for check --here, one worktree, branch and brief per vendor on request --night, a codex catalog merge across homes whose field shapes differ, and a failed merge reported as a broken probe"
+echo "PASS: $asserts asserts; baseline, version-only releases close themselves, new ids/catalog fields/docs/help/newly lagging installs/divergence open an event each, an install catching up or still lagging closes itself, prompts and foreign clients are informational, unreadable facets keep their value, broken local probes are reported, manual requests, close, lock, check --here, no chat from check for a waiting event however old, a failed manual request retried by check, waiting events joined and reverts closed, every vendor in one chat on request --all, each chat a fixer run of doctor updater that closes with its last event, a request taking its vendor's waiting event, manual diffs that carry the whole fingerprint, decision purposes judged by doctor-fix, a bounded lock wait for check --here, one worktree, branch, brief and updater fixer run (the printed ref) per vendor on request --night and none without a base ref, a codex catalog merge across homes whose field shapes differ, a failed merge reported as a broken probe, a night request under the check lock, and purposes that cannot be judged holding the close"

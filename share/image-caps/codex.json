@@ -1,7 +1,7 @@
 {
   "vendor": "codex",
-  "verified": "2026-09-23",
-  "cli": {"name": "codex", "version": "0.156.1", "version_args": ["--version"]},
+  "verified": "2026-09-30",
+  "cli": {"name": "codex", "version": "0.159.0", "version_args": ["--version"]},
   "model": {"image": "gpt-image-2", "video": null},
   "short": {"image": "gpt-image-2"},
   "refs": {"max": 5, "verified_max": false},
@@ -10,5 +10,5 @@
   "transparent": "native+chroma",
   "resume": {"flag": "--resume", "id_source": "thread.started thread_id on codex exec --experimental-json"},
   "video": null,
-  "unsupported": ["aspect", "mask", "n", "quality", "size", "transparency argument", "video"]
+  "unsupported": ["aspect", "mask", "n", "quality", "size", "video"]
 }

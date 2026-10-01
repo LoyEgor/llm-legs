@@ -27,7 +27,7 @@ stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 usage() {
   cat >&2 <<'EOF'
-usage: night-run start [--deadline-h N]
+usage: night-run start [--cleanup | --resume <id> [--job <ref>]]
        night-run base <id>
        night-run job <id> add <fixer|vendor|debt> <ref> [--branch B]
        night-run job <id> set <ref> key=value...   (state, reason, branch, review, commits, pushed)
@@ -35,11 +35,15 @@ usage: night-run start [--deadline-h N]
        night-run report [<id>]
        night-run latest --menu
 
+start opens the orchestrator chat: --cleanup lands finished night branches and runs the debt round
+  only; --resume reopens night <id> under a new orchestrator for its unfinished jobs (one with --job,
+  else all plus a cleanup job), the old session kept in previous_sessions
 Nights live in ${DOCTORS_DIR:-~/.cache/doctors}/nights/<id>.json.
 states: pending merged left failed-launch blocked-on-egor nothing-to-do (left needs reason=)
 commits=<repo>:<hash>[,<repo>:<hash>...]  replaces the job's list; <repo> is a sweep-repos
-  basename or an absolute path
-pushed=true is refused unless every commit of the job is on its repository's origin
+  basename or an absolute path; a changed list clears pushed unless pushed=true comes with it
+pushed=true is refused unless every commit of the job is on its repository's origin main and not
+  in the night's refs/night/<id>/base
 EOF
   exit 2
 }
@@ -91,44 +95,88 @@ main_checkout() {
   git_top "$repo_root" && printf '%s\n' "$root" || printf '%s\n' "$repo_root"
 }
 
-open_nights() { # -> ids of nights neither finished nor past their deadline
-  all_nights | jq -r '.[] | select(.finished_at == null and (.deadline_at | fromdateiso8601) > now) | .id'
+night_status() { # night-file -> finished, running, or unfinished when its orchestrator chat is gone
+  local session
+  session=$(jq -r 'if .finished_at != null then "finished" else .session // "opener:\(.opener // 0)" end' "$1")
+  case $session in
+    finished) printf 'finished\n' ;;
+    opener:*)
+      if [ "${session#opener:}" != 0 ] && kill -0 "${session#opener:}" 2>/dev/null; then printf 'running\n'
+      else printf 'unfinished\n'; fi ;;
+    *) if pgrep -f -- "--(session-id|resume) $session" >/dev/null; then printf 'running\n'; else printf 'unfinished\n'; fi ;;
+  esac
+}
+
+open_nights() { # -> ids of nights whose orchestrator chat still runs
+  local id
+  all_nights | jq -r '.[] | select(.finished_at == null) | .id' | while IFS= read -r id; do
+    [ "$(night_status "$(night_file "$id")")" != running ] || printf '%s\n' "$id"
+  done
+}
+
+JQ_UNFINISHED='def unfinished: .state == "left" or .state == "pending";'
+
+resume_night() { # id job-ref-or-empty (locked): reopens the night for a new orchestrator, the old session kept
+  local id=$1 job=$2 file
+  known_night "$id"
+  file=$(night_file "$id")
+  if [ -n "$job" ]; then
+    jq -e --arg r "$job" "$JQ_UNFINISHED"' any(.jobs[]; .ref == $r and unfinished)' "$file" >/dev/null ||
+      die "night $id has no unfinished job $job"
+  else
+    jq -e "$JQ_UNFINISHED"' any(.jobs[]; unfinished)' "$file" >/dev/null || die "night $id has no unfinished job"
+  fi
+  night_set "$id" "$JQ_UNFINISHED"' .previous_sessions = ((.previous_sessions // []) + [.session | values])
+    | .session = null | .opener = $opener | .finished_at = null | .doctors_after = null | .note = null
+    | .jobs |= map(if unfinished and ($job == "" or .ref == $job) then .state = "pending" else . end)
+    | if $job == "" and ([.jobs[] | select(.kind == "debt" and .state == "pending")] | length) == 0
+      then .jobs += [{kind: "debt", ref: "debt-\([.jobs[] | select(.kind == "debt")] | length + 1)", state: "pending",
+        reason: null, branch: null, review: null, commits: [], pushed: false}] else . end' --arg job "$job" \
+    --argjson opener "$$" ||
+    die "cannot write night $id"
 }
 
 cmd_start() {
-  local hours=4 id open file opened account session
+  local id open file opened account session scope=all resume='' job='' marker=''
   while [ $# -gt 0 ]; do
     case $1 in
-      --deadline-h) [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || usage; hours=$2; shift 2 ;;
+      --cleanup) scope=cleanup; shift ;;
+      --resume) [ -n "${2:-}" ] || usage; scope=resume resume=$2; shift 2 ;;
+      --job) [ -n "${2:-}" ] || usage; job=$2; shift 2 ;;
       *) usage ;;
     esac
   done
+  [ -z "$job" ] || [ -n "$resume" ] || usage
+  [ "$scope" = all ] || marker=" $scope"
   lock
   open=$(open_nights | head -1)
-  [ -z "$open" ] || die "night $open is still open: finish it with night-run finish $open, or wait for its deadline."
-  id="$(date -u +%Y%m%dT%H%M%SZ)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
-  file=$(night_file "$id")
-  [ ! -e "$file" ] || die "night id $id is taken"
-  jq -n --arg id "$id" --arg t "$(stamp)" --argjson h "$hours" --argjson before "$(doctor_counts)" \
-    '{id: $id, started_at: $t, deadline_at: (($t | fromdateiso8601) + $h * 3600 | todateiso8601),
-      finished_at: null, session: null, account: null, command: null, note: null,
-      doctors_before: $before, doctors_after: null, jobs: []}' >"$file.tmp" && mv -f "$file.tmp" "$file" ||
-    { rm -f "$file.tmp"; die "cannot write $file"; }
+  [ -z "$open" ] || die "night $open is still running: its orchestrator chat is open; night-run finish $open closes it."
+  if [ -n "$resume" ]; then
+    id=$resume
+    resume_night "$id" "$job"
+  else
+    id="$(date -u +%Y%m%dT%H%M%SZ)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
+    file=$(night_file "$id")
+    [ ! -e "$file" ] || die "night id $id is taken"
+    jq -n --arg id "$id" --arg t "$(stamp)" --argjson before "$(doctor_counts)" --argjson opener "$$" \
+      '{id: $id, started_at: $t, finished_at: null, session: null, account: null, command: null, note: null,
+        doctors_before: $before, doctors_after: null, jobs: [], opener: $opener}' >"$file.tmp" && mv -f "$file.tmp" "$file" ||
+      { rm -f "$file.tmp"; die "cannot write $file"; }
+  fi
   unlock
   if ! opened=$(CHAT_OPEN_OPENER="${NIGHT_RUN_OPENER:-open -a Terminal}" \
     CHAT_OPEN_WORKER_PICK="${NIGHT_RUN_WORKER_PICK:-$repo_root/bin/worker-pick}" \
     CHAT_OPEN_PREFIX="caffeinate -i" \
-    chat_open "$nights_dir/$id.command" "$(main_checkout)" "сделай чистку — night run $id" 2>&1); then
+    chat_open "$nights_dir/$id.command" "$(main_checkout)" "сделай чистку — night run $id$marker" 2>&1); then
     lock
-    night_set "$id" '.note = $n | .finished_at = $t' --arg n "orchestrator chat did not open: $opened" --arg t "$(stamp)"
+    night_set "$id" '.note = $n | .finished_at = $t | del(.opener)' --arg n "orchestrator chat did not open: $opened" --arg t "$(stamp)"
     die "night $id: the orchestrator chat did not open: $opened"
   fi
   read -r account session <<<"$opened"
   lock
-  night_set "$id" '.session = $s | .account = $a | .command = $c' \
+  night_set "$id" '.session = $s | .account = $a | .command = $c | del(.opener)' \
     --arg s "$session" --arg a "$account" --arg c "$nights_dir/$id.command" || die "cannot write night $id"
-  printf 'night %s started: orchestrator on %s, deadline %s\n' "$id" "$account" \
-    "$(jq -r .deadline_at "$(night_file "$id")")"
+  printf 'night %s %s: orchestrator on %s\n' "$id" "$([ -n "$resume" ] && echo resumed || echo started)" "$account"
 }
 
 repo_dir() { # name-or-path -> repository directory
@@ -141,22 +189,45 @@ repo_dir() { # name-or-path -> repository directory
   return 1
 }
 
-on_origin() { # dir hash: whether some branch head on origin contains hash
-  local head
-  git -C "$1" cat-file -e "$2^{commit}" 2>/dev/null || return 1
-  while read -r head _; do
-    git -C "$1" merge-base --is-ancestor "$2" "$head" 2>/dev/null && return 0
-  done < <(git -C "$1" ls-remote --heads origin 2>/dev/null)
-  return 1
+push_refusal() { # dir hash night -> why hash is no pushed night commit, empty when it is one
+  local main
+  git -C "$1" cat-file -e "$2^{commit}" 2>/dev/null || { printf 'commit %s is not in %s\n' "$2" "$1"; return; }
+  main=$(git -C "$1" ls-remote origin refs/heads/main 2>/dev/null | cut -f1)
+  [ -z "$main" ] || git -C "$1" cat-file -e "$main^{commit}" 2>/dev/null || git -C "$1" fetch -q origin refs/heads/main 2>/dev/null
+  [ -n "$main" ] && git -C "$1" merge-base --is-ancestor "$2" "$main" 2>/dev/null ||
+    { printf 'commit %s is not on origin main of %s: push it first\n' "$2" "$1"; return; }
+  git -C "$1" rev-parse -q --verify "refs/night/$3/base^{commit}" >/dev/null ||
+    { printf '%s has no refs/night/%s/base to tell a night commit by\n' "$1" "$3"; return; }
+  ! git -C "$1" merge-base --is-ancestor "$2" "refs/night/$3/base" ||
+    printf 'commit %s is already in refs/night/%s/base of %s: no commit of this night\n' "$2" "$3" "$1"
 }
 
+SNAPSHOT_MAX_BYTES=$((5 * 1024 * 1024))
+
 snapshot() { # dir id -> commit of the checkout as it stands, uncommitted and untracked included
-  local dir index tree commit
+  local dir index tree commit meta path sha status size reason drops=()
   dir=$(mktemp -d) || return 1
   index=$dir/index
   GIT_INDEX_FILE=$index git -C "$1" read-tree HEAD &&
-    GIT_INDEX_FILE=$index git -C "$1" add -A . &&
-    tree=$(GIT_INDEX_FILE=$index git -C "$1" write-tree) &&
+    GIT_INDEX_FILE=$index git -C "$1" add -A . || { rm -rf "$dir"; return 1; }
+  while IFS= read -r -d '' meta && IFS= read -r -d '' path; do
+    read -r _ _ _ sha status <<<"$meta"
+    [ "$status" != D ] || continue
+    reason=''
+    if [ "$status" = A ]; then
+      case ${path##*/} in .env | *.pem | *.key | id_*) reason='an untracked secret name' ;; esac
+    fi
+    if [ -z "$reason" ]; then
+      size=$(git -C "$1" cat-file -s "$sha" 2>/dev/null) || size=0
+      [ "$size" -le "$SNAPSHOT_MAX_BYTES" ] || reason="a $((size / 1048576)) MB blob"
+    fi
+    [ -n "$reason" ] || continue
+    drops+=("$path")
+    printf 'night-run: the base of %s drops %s: %s\n' "$1" "$path" "$reason" >&2
+  done < <(GIT_INDEX_FILE=$index git -C "$1" diff-index -z --cached HEAD)
+  [ ${#drops[@]} -eq 0 ] || GIT_INDEX_FILE=$index git --literal-pathspecs -C "$1" reset -q HEAD -- "${drops[@]}" ||
+    { rm -rf "$dir"; return 1; }
+  tree=$(GIT_INDEX_FILE=$index git -C "$1" write-tree) &&
     commit=$(git -C "$1" -c user.name=night-run -c user.email=night-run@localhost commit-tree "$tree" -p HEAD -m "night $2 base: the checkout as pressed") &&
     git -C "$1" update-ref "refs/night/$2/base" "$commit" &&
     printf '%s\n' "$commit"
@@ -208,8 +279,12 @@ cmd_job() {
   esac
 }
 
+job_of() { # night-file ref patch -> the job with patch applied, empty when there is none
+  jq -c --arg r "$2" --argjson p "$3" 'first(.jobs[] | select(.ref == $r)) + $p' "$1"
+}
+
 job_set() { # id ref key=value...
-  local id=$1 ref=${2:-} pair key value patch='{}' item repo hash dir commits='' pushed=''
+  local id=$1 ref=${2:-} pair key value patch='{}' item repo hash dir commits_set=false pushed=''
   [ -n "$ref" ] && [ $# -ge 3 ] || usage
   shift 2
   for pair in "$@"; do
@@ -219,7 +294,7 @@ job_set() { # id ref key=value...
       state) [[ "$STATES" == *" $value "* ]] || die "state $value is none of:$STATES"
         patch=$(jq -c --arg v "$value" '.state = $v' <<<"$patch") ;;
       reason | branch | review) patch=$(jq -c --arg k "$key" --arg v "$value" '.[$k] = (if $v == "" then null else $v end)' <<<"$patch") ;;
-      commits) commits=$value
+      commits) commits_set=true
         patch=$(jq -c --arg v "$value" '.commits = [$v | splits(",") | select(. != "")
           | capture("^(?<repo>.+):(?<hash>[0-9a-f]{7,40})$") // error("not <repo>:<hash>: \(.)")]' <<<"$patch" 2>/dev/null) ||
           die "commits takes <repo>:<hash>[,<repo>:<hash>...], not $value" ;;
@@ -228,20 +303,31 @@ job_set() { # id ref key=value...
       *) die "no job key $key: state, reason, branch, review, commits or pushed" ;;
     esac
   done
-  lock
-  local file job
+  local file job checked='' refusal
   file=$(night_file "$id")
-  job=$(jq -c --arg r "$ref" --argjson p "$patch" 'first(.jobs[] | select(.ref == $r)) + $p' "$file")
-  [ -n "$job" ] || die "night $id has no job $ref"
-  [ "$(jq -r '.state' <<<"$job")" != left ] || [ "$(jq -r '.reason // ""' <<<"$job")" != "" ] ||
-    die "state left needs reason=<why it stayed>"
   if [ "$pushed" = true ]; then
-    [ "$(jq '.commits | length' <<<"$job")" -gt 0 ] || die "pushed=true needs the job's commits first"
+    job=$(job_of "$file" "$ref" "$patch")
+    [ -n "$job" ] || die "night $id has no job $ref"
+    checked=$(jq -c '.commits' <<<"$job")
+    [ "$checked" != '[]' ] || die "pushed=true needs the job's commits first"
     while IFS=$'\t' read -r repo hash; do
       dir=$(repo_dir "$repo") || die "no repository $repo: not an absolute path nor a basename in $sweep_repos"
-      on_origin "$dir" "$hash" || die "commit $hash is not on origin of $dir: push it first"
+      refusal=$(push_refusal "$dir" "$hash" "$id")
+      [ -z "$refusal" ] || die "$refusal"
     done < <(jq -r '.commits[] | [.repo, .hash] | @tsv' <<<"$job")
   fi
+  lock
+  job=$(job_of "$file" "$ref" "$patch")
+  [ -n "$job" ] || die "night $id has no job $ref"
+  if $commits_set && [ -z "$pushed" ] &&
+    [ "$(jq -c --arg r "$ref" 'first(.jobs[] | select(.ref == $r)) | .commits' "$file")" != "$(jq -c '.commits' <<<"$job")" ]; then
+    patch=$(jq -c '.pushed = false' <<<"$patch")
+    job=$(jq -c '.pushed = false' <<<"$job")
+  fi
+  [ "$(jq -r '.state' <<<"$job")" != left ] || [ "$(jq -r '.reason // ""' <<<"$job")" != "" ] ||
+    die "state left needs reason=<why it stayed>"
+  [ "$pushed" != true ] || [ "$(jq -c '.commits' <<<"$job")" = "$checked" ] ||
+    die "the job's commits changed while origin was checked: set pushed=true again"
   night_set "$id" '.jobs |= map(if .ref == $r then . + $p else . end)' --arg r "$ref" --argjson p "$patch" ||
     die "cannot write night $id"
   printf 'night %s: job %s %s\n' "$id" "$ref" "$(jq -r '[.state, (if .pushed then "pushed" else empty end)] | join(" ")' <<<"$job")"
@@ -256,7 +342,36 @@ cmd_finish() {
   night_set "$id" '.finished_at = $t | .doctors_after = $after
     | .jobs |= map(if .state == "pending" then .state = "left" | .reason = "no outcome recorded by the close" else . end)' \
     --arg t "$(stamp)" --argjson after "$(doctor_counts)" || die "cannot write night $id"
+  unlock
   printf 'night %s finished\n' "$id"
+  prune_landed
+}
+
+# Every night's worktrees, not only this one's: a branch the cleanup landed from an earlier night is
+# done too. Base-equal branches count as landed, since a nothing-to-do job never committed.
+prune_landed() {
+  local repo line wt branch night cwds
+  cwds=$(lsof -a -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
+  while IFS= read -r repo; do
+    [ -n "$repo" ] && [ -d "$repo" ] || continue
+    git -C "$repo" rev-parse -q --verify refs/heads/main >/dev/null || continue
+    wt=''
+    while IFS= read -r line; do
+      case $line in
+        "worktree "*) wt=${line#worktree } ;;
+        "branch refs/heads/night/"*/*)
+          branch=${line#branch refs/heads/} night=${branch#night/} night=${night%%/*}
+          git -C "$repo" merge-base --is-ancestor "$branch" refs/heads/main 2>/dev/null ||
+            [ "$(git -C "$repo" rev-parse "$branch")" = "$(git -C "$repo" rev-parse -q --verify "refs/night/$night/base")" ] ||
+            continue
+          [ -z "$(git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null)" ] &&
+            ! grep -qxE "$(printf '%s' "$wt" | sed 's/[][\.*^$+?(){}|]/\\&/g')(/.*)?" <<<"$cwds" ||
+            { printf 'kept %s %s: uncommitted work or a process inside\n' "$(basename "$repo")" "$branch"; continue; }
+          git -C "$repo" worktree remove "$wt" && git -C "$repo" branch -q -D "$branch" &&
+            printf 'pruned %s %s\n' "$(basename "$repo")" "$branch" ;;
+      esac
+    done < <(git -C "$repo" worktree list --porcelain)
+  done <"$sweep_repos"
 }
 
 JQ_TOTALS='def totals: [.jobs[] | .state] as $s
@@ -266,8 +381,7 @@ JQ_TOTALS='def totals: [.jobs[] | .state] as $s
      nothing: ($s | map(select(. == "nothing-to-do")) | length),
      pending: ($s | map(select(. == "pending")) | length),
      unpushed: ([.jobs[] | select(.state == "merged" and .pushed != true)] | length),
-     unfinished: (.finished_at == null and (.deadline_at | fromdateiso8601) <= now),
-     running: (.finished_at == null and (.deadline_at | fromdateiso8601) > now)};
+     unfinished: ($status == "unfinished"), running: ($status == "running")};
 def hm: if . == null then "-" else fromdateiso8601 | strflocaltime("%H:%M") end;
 def count(n; word): if n > 0 then "\(n) \(word)" else empty end;'
 
@@ -281,12 +395,32 @@ pick_night() { # [id] -> night file
   night_file "$id"
 }
 
+code_lines() { # night-file -> {"<ref>": [added, removed], or null when a commit cannot be read}
+  local ref repo hash dir
+  jq -r '.jobs[] | .ref as $r | .commits[] | [$r, .repo, .hash] | @tsv' "$1" |
+    while IFS=$'\t' read -r ref repo hash; do
+      if dir=$(repo_dir "$repo") && git -C "$dir" cat-file -e "$hash^{commit}" 2>/dev/null; then
+        git -C "$dir" diff --numstat "$hash^" "$hash" -- . ':(glob,exclude)**/tests/**' ':(glob,exclude)**/test_*' |
+          awk -v r="$ref" -F '\t' '{ if ($1 != "-") { a += $1; d += $2 } } END { printf "%s\t%d\t%d\n", r, a, d }'
+      else
+        printf '%s\t?\t?\n' "$ref"
+      fi
+    done | jq -Rsc '[split("\n")[] | select(. != "") | split("\t")] | group_by(.[0])
+      | map({(.[0][0]): (if any(.[]; .[1] == "?") then null
+          else [(map(.[1] | tonumber) | add), (map(.[2] | tonumber) | add)] end)}) | add // {}'
+}
+
 cmd_report() {
-  local file
+  local file unverified run
   [ $# -le 1 ] || usage
   file=$(pick_night "${1:-}")
-  jq -r "$JQ_TOTALS"' totals as $t
-    | "night \(.id) · \(.started_at | hm)–\(.finished_at | hm) · deadline \(.deadline_at | hm)"
+  unverified=$(jq -r '.jobs[].ref' "$file" | while IFS= read -r ref; do
+    run="${nights_dir%/*}/runs/$ref.json"
+    [ ! -f "$run" ] || jq -c --arg r "$ref" '{($r): [.decisions[]? | select(.component == "unverified") | .id]}' "$run"
+  done | jq -sc 'add // {}')
+  jq -r --argjson u "$unverified" --argjson lines "$(code_lines "$file")" --arg status "$(night_status "$file")" \
+    "$JQ_TOTALS"' totals as $t
+    | "night \(.id) · \(.started_at | hm)–\(.finished_at | hm)"
       + (if $t.running then " · running" elif $t.unfinished then " · UNFINISHED" else "" end),
       (if .note then "note · \(.note)" else empty end),
       ("doctors · " + ([["llm", "harness", "updater"][] as $d
@@ -295,8 +429,11 @@ cmd_report() {
         + (if .branch and .state != "merged" then [.branch] else [] end)
         + (if .review then ["review \(.review)"] else [] end)
         + [.commits[] | "\(.repo | split("/") | last)@\(.hash[0:7])"]
+        + (.ref as $r | if ($lines | has($r)) | not then []
+            elif $lines[$r] == null then ["code ?"] else ["code +\($lines[$r][0])/-\($lines[$r][1])"] end)
         + (if .state == "merged" then [if .pushed then "pushed" else "NOT PUSHED" end] else [] end)
         + (if .reason then [.reason] else [] end)) | join(" · ")),
+      ($u | to_entries[] | select(.value | length > 0) | "unverified component · \(.key) · \(.value | join(", "))"),
       ("total · " + ([count($t.merged; "merged"), count($t.left; "left"), count($t.failed; "failed-launch"),
         count($t.blocked; "blocked-on-egor"), count($t.nothing; "nothing-to-do"), count($t.pending; "pending")]
         + [if $t.unpushed > 0 then "\($t.unpushed) not pushed" elif $t.merged > 0 then "pushed" else empty end]
@@ -304,15 +441,41 @@ cmd_report() {
 }
 
 cmd_latest() {
+  local id
   [ "${1:-}" = --menu ] && [ $# -eq 1 ] || usage
-  all_nights | jq -r "$JQ_TOTALS"' .[0] // empty | totals as $t
-    | ([if $t.running then "running" elif $t.unfinished then "unfinished" else empty end]
-       + [count($t.merged; "merged"), count($t.left; "left"), count($t.failed; "failed"),
-          count($t.blocked; "blocked on Egor"), count($t.pending; "pending")]
-       + [if $t.unpushed > 0 then "\($t.unpushed) not pushed" elif $t.merged > 0 then "pushed" else empty end]
-       + (if (.jobs | length) == 0 then ["no jobs"] else [] end)) as $parts
-    | "Night: \($parts | join(" · "))\t\(if $t.left + $t.failed + $t.blocked + $t.unpushed > 0 or $t.unfinished
-        or (.note != null) then 1 else 0 end)"'
+  id=$(all_nights | jq -r '.[0].id // empty')
+  [ -n "$id" ] || return 0
+  jq -r --arg status "$(night_status "$(night_file "$id")")" "$JQ_TOTALS$JQ_UNFINISHED"'
+    def flat: tostring | gsub("[\t\r\n]+"; " ");
+    def gist: split(":")[0] | split(",")[0] | split(";")[0] | split(" ") | map(select(. != ""))
+      | if length > 6 then .[0:6] + ["…"] else . end | join(" ");
+    def name: .ref as $r | if .kind == "debt" then (if $r | test("^debt(-[0-9]+)?$") then "cleanup" else "cleanup \($r)" end)
+      elif .kind == "vendor" then "\(.branch // "" | split("/") | if length > 2 then last else $r | sub("-[0-9]{8}T[0-9]{6}Z.*$"; "") end) update"
+      else ($r | capture("^(?<d>llm|harness|updater)(-(?<a>.+?))?-[0-9]{8}T[0-9]{6}Z(-[0-9a-f]+)?$")
+        | ({llm: "LLM", harness: "Harness", updater: "Updater"}[.d] + " fixer"
+          + (if .a then ": " + (.a | gsub("-"; " ")) else "" end))) // $r end;
+    def word: {merged: (if .pushed then "done and pushed" else "done, not pushed yet" end), left: "unfinished",
+      "failed-launch": "failed to launch", "blocked-on-egor": "needs you", "nothing-to-do": "nothing to do",
+      pending: (if $status == "running" then "in progress" else "unfinished" end)}[.state] // .state;
+    totals as $t
+    | (if $t.running then "Night run since \(.started_at | hm)"
+       else "Last night \(.started_at | fromdateiso8601 | strflocaltime("%d %b") | ltrimstr("0"))"
+         + (if $t.unfinished then ", stopped early" else "" end) end) as $when
+    | ($t.merged + $t.nothing) as $done
+    | (if (.jobs | length) == 0 then [if .note then "did not start" else "no jobs" end]
+       else ["\($done) of \(.jobs | length) done"
+           + (if $t.merged > 0 and $t.unpushed == 0 then " and pushed" else "" end)]
+         + [count($t.unpushed; "not pushed yet"),
+            count($t.left + (if $t.running then 0 else $t.pending end); "unfinished"),
+            count(if $t.running then $t.pending else 0 end; "in progress"),
+            count($t.failed; "failed to launch"), count($t.blocked; "need you")] end) as $parts
+    | "\($when): \($parts | join(" · "))\t\(if $t.failed + $t.blocked > 0 or .note != null then 1 else 0 end)\t\(
+        if $t.running then 1 else 0 end)\t\(.id)",
+      (if .note then "orchestrator chat did not open\t1\t\(.note | flat)" else empty end),
+      (.jobs[] | "\(name) · \(word)\(if .reason then " · " + (.reason | flat | gist) else "" end)\t\(
+        if .state == "failed-launch" or .state == "blocked-on-egor" then 1 else 0 end)\t\(.reason // "" | flat)\t\(
+        .ref | flat)\t\(.kind)\t\(if unfinished and ($t.running | not) then 1 else 0 end)")' \
+    "$(night_file "$id")"
 }
 
 case "${1:-}" in

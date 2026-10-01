@@ -1,0 +1,276 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+command -v jq >/dev/null 2>&1 || {
+  printf 'gemini-video: jq is required\n' >&2
+  exit 1
+}
+
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+
+root=$(resolve_root)
+. "$root/share/image-leg.sh"
+image_leg_start gemini-video video observed_model
+. "$root/share/image-caps.sh"
+
+caps() { image_caps_get "$root" gemini "$1"; }
+
+container=$(caps '.video.container')
+durations=$(caps '.video.durations | join("|")')
+default_duration=$(caps '.video.duration_default')
+video_aspects=$(caps '.video.aspects | join("|")')
+default_aspect=$(caps '.video.aspect_default')
+resolutions=$(caps '.video.resolutions | join("|")')
+default_resolution=$(caps '.video.resolution_default')
+refs_max=$(caps '.video.refs_max')
+edit_max=$(caps '.video.edit_source_max_s')
+counts=$(caps '.video.counts | map(tostring) | join("|")')
+
+usage() {
+  printf 'usage: gemini-video --dest <absolute .%s path> --prompt <motion description> [--first-frame <absolute image path>] [--last-frame <absolute image path>] [--ref <absolute image path>]... [--edit <absolute video path>] [--extend <absolute path of a Flow Veo clip>] [--duration <%s>] [--resolution <%s>] [--aspect <%s>] [--model <%s>] [--count <%s>] [--account <geminib profile>]\n' \
+    "$container" "$durations" "$resolutions" "$video_aspects" "$(caps '.video.models | keys | join("|")')" "$counts" >&2
+  printf '  Google Flow on the account'\''s subscription, through a hidden Chrome (gemini-web)\n' >&2
+  printf '  frames (--first-frame/--last-frame; a lone --ref is the first frame) or ingredients (several --ref, --edit), never both\n' >&2
+  printf '  --edit reworks a video of up to %ss (any source, a Grok clip too) on Omni; the clip keeps its length\n' "$edit_max" >&2
+  printf '  --extend continues a Veo clip gemini-video saved, on its own account: a new %ss clip that picks up its motion\n' "$(caps '.video.extend.seconds')" >&2
+  printf '  --count 2-4 renders variants in one send (dest, then <stem>-2, ...) at that multiple of the credits; default 1\n' >&2
+  printf '  --resolution 1080p renders 720p and downloads Flow'\''s own upscale (no extra credits)\n' >&2
+  printf '  prompting guide (read before writing a prompt): %s/docs/video-prompting.md\n' "$root" >&2
+  printf '  one-time per account: gemini-web login <account>; readiness: gemini-web status <account>\n' >&2
+  exit 2
+}
+
+say() {
+  printf 'gemini-video: %s\n' "$1" >&2
+  exit 2
+}
+
+dest=''
+prompt=''
+duration=''
+resolution=''
+aspect=''
+account=''
+model=''
+first_frame=''
+last_frame=''
+edit=''
+extend=''
+count=1
+refs=()
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dest) [ "$#" -ge 2 ] || usage; dest=$2; shift 2 ;;
+    --prompt) [ "$#" -ge 2 ] || usage; prompt=$2; shift 2 ;;
+    --first-frame) [ "$#" -ge 2 ] || usage; first_frame=$2; shift 2 ;;
+    --last-frame) [ "$#" -ge 2 ] || usage; last_frame=$2; shift 2 ;;
+    --ref) [ "$#" -ge 2 ] || usage; refs+=("$2"); shift 2 ;;
+    --edit) [ "$#" -ge 2 ] || usage; edit=$2; shift 2 ;;
+    --extend) [ "$#" -ge 2 ] || usage; extend=$2; shift 2 ;;
+    --count) [ "$#" -ge 2 ] || usage; count=$2; shift 2 ;;
+    --duration) [ "$#" -ge 2 ] || usage; duration=$2; shift 2 ;;
+    --resolution) [ "$#" -ge 2 ] || usage; resolution=$2; shift 2 ;;
+    --aspect) [ "$#" -ge 2 ] || usage; aspect=$2; shift 2 ;;
+    --account) [ "$#" -ge 2 ] || usage; account=$2; shift 2 ;;
+    --model) [ "$#" -ge 2 ] || usage; model=$2; shift 2 ;;
+    *) usage ;;
+  esac
+done
+
+[ -n "$dest" ] && [ -n "$prompt" ] || usage
+[[ "$dest" = /* ]] || usage
+[ "$(printf '%s' "${dest##*.}" | tr '[:upper:]' '[:lower:]')" = "$container" ] || usage
+[ -d "$(dirname "$dest")" ] || usage
+[ "${#refs[@]}" -le "$refs_max" ] || say "Flow takes at most $refs_max --ref images"
+case "|$counts|" in
+  *"|$count|"*) ;;
+  *) say "Flow makes $counts clips per send, not $count" ;;
+esac
+if [ -n "$extend" ]; then
+  { [ -z "$first_frame" ] && [ -z "$last_frame" ] && [ -z "$edit" ] && [ "${#refs[@]}" -eq 0 ]; } \
+    || say "--extend continues a clip from its own ending; it takes no frames, --ref or --edit"
+  { [ -z "$duration" ] && [ -z "$model" ] && [ -z "$aspect" ] && [ "$count" = 1 ]; } \
+    || say "--extend keeps the source's model and aspect and adds $(caps '.video.extend.seconds')s; drop --duration, --model, --aspect and --count"
+  { [[ "$extend" = /* ]] && [ -f "$extend" ]; } || usage
+fi
+if [ "${#refs[@]}" -eq 1 ] && [ -z "$first_frame" ] && [ -z "$edit" ]; then
+  first_frame=${refs[0]}
+  refs=()
+fi
+if { [ -n "$first_frame" ] || [ -n "$last_frame" ]; } && { [ "${#refs[@]}" -gt 0 ] || [ -n "$edit" ]; }; then
+  say "frames (--first-frame/--last-frame) and ingredients (--ref/--edit) are separate Flow modes; pick one"
+fi
+for input in "$first_frame" "$last_frame" "$edit" ${refs[@]+"${refs[@]}"}; do
+  [ -z "$input" ] || { [[ "$input" = /* ]] && [ -f "$input" ]; } || usage
+done
+[ -z "$account" ] || [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]] || usage
+
+ffprobe_cmd="${GEMINI_VIDEO_FFPROBE:-ffprobe}"
+# Checked before the spend: a clip nobody can measure cannot be reported under the size=WxH contract.
+command -v "$ffprobe_cmd" >/dev/null 2>&1 || {
+  printf 'gemini-video: ffprobe is required to inspect the output\n' >&2
+  exit 1
+}
+
+if [ -n "$extend" ]; then
+  duration=$(caps '.video.extend.seconds')
+elif [ -n "$edit" ]; then
+  [ -z "$duration" ] || say "an --edit clip keeps the length of its source; drop --duration"
+  source_s=$("$ffprobe_cmd" -v error -show_entries format=duration -of csv=p=0 "$edit" 2>/dev/null) || source_s=''
+  [[ "$source_s" =~ ^[0-9]+(\.[0-9]+)?$ ]] || say "ffprobe cannot read a video in $edit"
+  awk -v s="$source_s" -v m="$edit_max" 'BEGIN { exit !(s <= m + 0.05) }' \
+    || say "Flow edits videos of up to ${edit_max}s; $edit is ${source_s%.*}s, trim it first"
+  duration=${source_s%.*}
+else
+  duration=${duration:-$default_duration}
+  case "|$durations|" in
+    *"|$duration|"*) ;;
+    *) say "Flow takes duration $durations, not $duration" ;;
+  esac
+fi
+resolution=${resolution:-$default_resolution}
+case "|$resolutions|" in
+  *"|$resolution|"*) ;;
+  *) say "Flow renders $resolutions, not $resolution" ;;
+esac
+render=$(caps ".video.upscale[\"$resolution\"] // \"$resolution\"")
+aspect=${aspect:-$default_aspect}
+case "|$video_aspects|" in
+  *"|$aspect|"*) ;;
+  *) say "Flow takes aspect $video_aspects, not $aspect" ;;
+esac
+
+manifest=$(image_caps_file "$root" gemini)
+edit_mode=false
+[ -z "$edit" ] || edit_mode=true
+if [ -n "$extend" ]; then
+  model=extend
+  label=$(caps '.video.extend.label')
+  wire_path='.video.extend.wire'
+  jq -e --arg r "$resolution" '.video.extend.resolutions | index($r)' "$manifest" >/dev/null \
+    || say "$label renders $(caps '.video.extend.resolutions | join("|")'), not $resolution: Flow has no upscaled download of an extension; video-chain join scales it to the chain"
+else
+  if [ -z "$model" ]; then
+    model=$(jq -r --arg d "$duration" --arg r "$render" --argjson n "${#refs[@]}" --argjson e "$edit_mode" '
+      .video as $v | ([$v.model_by_duration[$d] // empty] + ($v.models | keys))
+      | map(select(. as $m | $v.models[$m] as $x | $x != null and $x.refs_max >= $n
+          and (if $e then $x.edit_costs[$r] != null else $x.costs[$r][$d] != null end)))
+      | first // empty' "$manifest")
+    [ -n "$model" ] || say "no Flow model takes this combination (duration $duration, $render, ${#refs[@]} refs)"
+  fi
+  label=$(caps ".video.models[\"$model\"].label // empty")
+  [ -n "$label" ] || usage
+  wire_path=".video.models[\"$model\"].wire"
+  [ "${#refs[@]}" -le "$(caps ".video.models[\"$model\"].refs_max")" ] \
+    || say "$label takes at most $(caps ".video.models[\"$model\"].refs_max") --ref images"
+  [ -n "$(caps ".video.models[\"$model\"].costs[\"$render\"] // empty")" ] \
+    || say "$label renders $(caps ".video.models[\"$model\"].costs | keys | join(\"|\")"), not $render"
+  if [ "$edit_mode" = true ]; then
+    [ -n "$(caps ".video.models[\"$model\"].edit_costs[\"$render\"] // empty")" ] \
+      || say "$label cannot edit a video at $render"
+  elif [ -z "$(caps ".video.models[\"$model\"].costs[\"$render\"][\"$duration\"] // empty")" ]; then
+    say "$label takes duration $(caps ".video.models[\"$model\"].costs[\"$render\"] | keys | join(\"|\")"), not $duration"
+  fi
+fi
+
+engine=${GEMINI_VIDEO_ENGINE:-$root/bin/gemini-web}
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/gemini-video.XXXXXX")
+trap 'image_leg_exit; rm -rf "$tmp_dir"' EXIT
+result_file="$tmp_dir/result.json"
+
+if [ -n "$extend" ]; then
+  engine_args=(generate --prompt "$prompt" --dest "$dest" --extend "$extend" --resolution "$resolution")
+else
+  engine_args=(generate --prompt "$prompt" --dest "$dest" --duration "$duration" --aspect "$aspect"
+    --model "$model" --resolution "$resolution")
+fi
+[ "$count" = 1 ] || engine_args+=(--count "$count")
+[ -z "$account" ] || engine_args+=(--account "$account")
+[ -z "$first_frame" ] || engine_args+=(--first-frame "$first_frame")
+[ -z "$last_frame" ] || engine_args+=(--last-frame "$last_frame")
+[ -z "$edit" ] || engine_args+=(--edit "$edit")
+for ref in ${refs[@]+"${refs[@]}"}; do
+  engine_args+=(--ref "$ref")
+done
+
+image_leg_mark "$duration"
+engine_rc=0
+"$engine" "${engine_args[@]}" >"$result_file" || engine_rc=$?
+result=$(tail -n 1 "$result_file" 2>/dev/null) || result=''
+jq -e . >/dev/null 2>&1 <<<"$result" || result='{}'
+account=$(jq -r '.account // empty' <<<"$result")
+reason=$(jq -r '.reason // empty' <<<"$result")
+
+case "$engine_rc" in
+  0) ;;
+  2)
+    printf 'gemini-video: %s\n' "${reason:-the engine refused the request}" >&2
+    exit 2
+    ;;
+  3)
+    printf 'GEMINI_USAGE_LIMIT\n' >&2
+    [ -z "$reason" ] || printf 'gemini-video: %s\n' "$reason" >&2
+    exit 3
+    ;;
+  4)
+    printf 'gemini-video: %s\n' "${reason:-account is not signed in to Flow}" >&2
+    exit 4
+    ;;
+  *)
+    printf 'gemini-video: %s\n' "${reason:-engine failed with exit $engine_rc}" >&2
+    exit 1
+    ;;
+esac
+
+if [ ! -s "$dest" ]; then
+  printf 'gemini-video: engine reported success but %s is empty\n' "$dest" >&2
+  exit 1
+fi
+probe=$("$ffprobe_cmd" -v error -show_entries 'stream=width,height:format=duration' \
+  -select_streams v:0 -of json "$dest" 2>/dev/null) || probe=''
+width=$(jq -r '.streams[0].width // empty' <<<"${probe:-{\}}")
+height=$(jq -r '.streams[0].height // empty' <<<"${probe:-{\}}")
+measured=$(jq -r '.format.duration // empty' <<<"${probe:-{\}}")
+if [ -z "$width" ] || [ -z "$height" ]; then
+  printf 'gemini-video: saved %s but ffprobe cannot read a video stream in it\n' "$dest" >&2
+  exit 1
+fi
+measured=${measured%.*}
+observed_model=$(jq -r '.model // empty' <<<"$result")
+
+printf 'dest=%s\nsize=%sx%s\nformat=%s\nduration=%s\naccount=%s\nmedia=%s\n' \
+  "$dest" "$width" "$height" "$container" "${measured:-$duration}" "$account" "$(jq -r '.media_id // empty' <<<"$result")"
+# Flow names one wire key per mode, length and resolution (abra_t2v_4s_360p), so the manifest keeps
+# one pattern per model family seen on the wire; an unmatched key is how a silent model swap shows up.
+if [ -z "$observed_model" ]; then
+  printf 'model=unknown model_caps=unknown\n'
+elif jq -e --arg o "$observed_model" "$wire_path | any(. as \$p | \$o | test(\$p))" "$manifest" >/dev/null; then
+  printf 'model=%s model_caps=fresh\n' "$observed_model"
+else
+  printf 'model=%s model_caps=stale verified=%s\n' "$observed_model" "$(caps "$wire_path | join(\",\")")"
+fi
+printf 'caps=fresh surface=%s\n' "$(jq -r '.build // "unknown"' <<<"$result")"
+jq -r '.seconds // empty | "seconds=\(.total) harness=\(.harness) render=\(.render)"' <<<"$result"
+while IFS=$'\t' read -r variant variant_media; do
+  [ -n "$variant" ] || continue
+  vprobe=$("$ffprobe_cmd" -v error -show_entries 'stream=width,height:format=duration' \
+    -select_streams v:0 -of json "$variant" 2>/dev/null) || vprobe='{}'
+  printf 'variant=%s size=%sx%s duration=%s media=%s\n' "$variant" \
+    "$(jq -r '.streams[0].width // "?"' <<<"$vprobe")" "$(jq -r '.streams[0].height // "?"' <<<"$vprobe")" \
+    "$(jq -r '.format.duration // "?" | tostring | sub("\\..*"; "")' <<<"$vprobe")" "$variant_media"
+done < <(jq -r '(.variants // [])[1:][] | [.dest, .media_id] | @tsv' <<<"$result")
+jq -r '(.refused // [])[] | "refused=\(.media_id) \(.error)"' <<<"$result"
+charged=$(jq -r '.charged // empty' <<<"$result")
+if [ -n "$charged" ] && [ "$charged" != "$(jq -r '.cost // empty' <<<"$result")" ]; then
+  printf 'gemini-video: Flow charged %s credits, the manifest says %s; update share/image-caps/gemini.json\n' \
+    "$charged" "$(jq -r '.cost' <<<"$result")" >&2
+fi

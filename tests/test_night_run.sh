@@ -3,7 +3,7 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+trap 'xargs kill 2>/dev/null <"$WORK/data/orchestrators"; rm -rf "$WORK"' EXIT
 WORK="$(cd -P "$WORK" && pwd)"
 asserts=0
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -31,6 +31,9 @@ cat >"$FAKE_BIN/opener" <<'EOF'
 #!/usr/bin/env bash
 [ ! -e "$DATA/opener-fails" ] || exit 1
 printf '%s\n' "$*" >>"$OPENED"
+session=$(LC_ALL=C sed -n 's/.*--session-id \([^ ]*\) .*/\1/p' "$1")
+bash -c 'exec -a "$0" sleep 600' "claudeb profile acct-n --session-id $session" >/dev/null 2>&1 &
+printf '%s\n' "$!" >>"$DATA/orchestrators"
 EOF
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$DATA/pick-args"\nprintf "acct-n\\n"\n' >"$FAKE_BIN/worker-pick"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$FAKE_BIN/claudeb"
@@ -44,14 +47,13 @@ doc harness 3
 
 # start: the record, the orchestrator chat on the main checkout with the sweep word, the session.
 night start >"$WORK/out" || fail "start failed"
-id=$(sed -n 's/^night \([0-9]\{8\}T[0-9]\{6\}Z-[0-9a-f]\{4\}\) started: orchestrator on acct-n, deadline .*/\1/p' "$WORK/out")
+id=$(sed -n 's/^night \([0-9]\{8\}T[0-9]\{6\}Z-[0-9a-f]\{4\}\) started: orchestrator on acct-n$/\1/p' "$WORK/out")
 assert [ -n "$id" ]
 R=$(record "$id")
-assert jqe 'keys == (["id", "started_at", "deadline_at", "finished_at", "session", "account", "command", "note",
+assert jqe 'keys == (["id", "started_at", "finished_at", "session", "account", "command", "note",
   "doctors_before", "doctors_after", "jobs"] | sort)' "$R"
 assert jqe '.doctors_before == {llm: 5, harness: 3, updater: null} and .doctors_after == null and .jobs == []
   and .finished_at == null and .account == "acct-n"' "$R"
-assert jqe '((.deadline_at | fromdateiso8601) - (.started_at | fromdateiso8601)) == 4 * 3600' "$R"
 session=$(jq -r .session "$R")
 assert [ "${#session}" = 36 ]
 assert [ "$(cat "$OPENED")" = "$NIGHTS/$id.command" ]
@@ -63,11 +65,12 @@ exec_line=$(grep '^exec ' "$NIGHTS/$id.command")
 eval "set -- ${exec_line#exec }"
 assert [ "${!#}" = "сделай чистку — night run $id" ]
 assert [ "$1 $2" = "caffeinate -i" ]
-assert grep -qxF -- '--account claudeb --role chat --claim' "$DATA/pick-args"
+assert grep -qxF -- '--account claudeb --role chat --model opus --claim' "$DATA/pick-args"
 
-# An open night refuses a second start; one past its deadline does not.
+# A night whose orchestrator chat runs refuses a second start, however long it runs; no deadline flag.
 assert_fails night start 2>"$WORK/err"
-assert grep -qF "night $id is still open" "$WORK/err"
+assert grep -qF "night $id is still running" "$WORK/err"
+assert_fails night start --deadline-h 2 2>/dev/null
 assert [ "$(wc -l <"$OPENED" | tr -d ' ')" = 1 ]
 
 # Jobs: add before dispatch, one per ref, kinds checked.
@@ -112,17 +115,22 @@ assert grep -qF 'needs reason=' "$WORK/err"
 assert_fails night job "$id" set debt-round colour=red 2>/dev/null
 assert_fails night job "$id" set nosuch state=merged 2>/dev/null
 assert_fails night job "$id" set debt-round commits=llm-legs 2>/dev/null
-night job "$id" set debt-round state=left "reason=deadline: 140 lines left" >/dev/null || fail "set left"
+night job "$id" set debt-round state=left "reason=hung: idle 1800" >/dev/null || fail "set left"
 night job "$id" set harness-r1 state=failed-launch reason=opener >/dev/null || fail "set failed"
-assert jqe '.jobs[2].state == "left" and .jobs[2].reason == "deadline: 140 lines left"' "$R"
+assert jqe '.jobs[2].state == "left" and .jobs[2].reason == "hung: idle 1800"' "$R"
 
-# pushed=true is checked against the remote.
+# pushed=true is checked against the remote: on origin's main, and made after the night's base.
 git init -q --bare "$WORK/origin.git"
 git init -q -b main "$WORK/repo"
+git -C "$WORK/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m zero
+based_hash=$(git -C "$WORK/repo" rev-parse HEAD)
+git -C "$WORK/repo" update-ref "refs/night/$id/base" "$based_hash"
 git -C "$WORK/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m one
 git -C "$WORK/repo" remote add origin "$WORK/origin.git"
 git -C "$WORK/repo" push -q origin main
 pushed_hash=$(git -C "$WORK/repo" rev-parse HEAD)
+side_hash=$(git -C "$WORK/repo" -c user.name=t -c user.email=t@t commit-tree "HEAD^{tree}" -p HEAD -m side)
+git -C "$WORK/repo" push -q origin "$side_hash:refs/heads/side"
 git -C "$WORK/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m two
 local_hash=$(git -C "$WORK/repo" rev-parse HEAD)
 printf '%s\n' "$WORK/elsewhere/llm-legs" "$WORK/repo" >"$WORK/sweep-repos"
@@ -131,19 +139,48 @@ assert grep -qF 'needs the job' "$WORK/err"
 night job "$id" set llm-20260930T010203Z state=merged "commits=repo:$local_hash" review=rb-1 >/dev/null || fail "set merged"
 assert_fails night job "$id" set llm-20260930T010203Z pushed=true 2>"$WORK/err"
 assert grep -qF "commit $local_hash is not on origin" "$WORK/err"
+assert_fails night job "$id" set llm-20260930T010203Z "commits=repo:$side_hash" pushed=true 2>"$WORK/err"
+assert grep -qF "commit $side_hash is not on origin main" "$WORK/err"
+assert_fails night job "$id" set llm-20260930T010203Z "commits=repo:$based_hash" pushed=true 2>"$WORK/err"
+assert grep -qF "commit $based_hash is already in refs/night/$id/base" "$WORK/err"
+# The origin check runs before the nights lock is taken: a held lock never waits on the network.
+sleep 30 & live=$!
+mkdir "$NIGHTS/.lock" && printf '%s\n' "$live" >"$NIGHTS/.lock/pid"
+assert_fails env LLM_STORE_LOCK_DELAY=0.01 LLM_STORE_LOCK_RETRIES=40 bash "$ROOT/bin/night-run" job "$id" set llm-20260930T010203Z pushed=true 2>"$WORK/err"
+assert grep -qF "commit $local_hash is not on origin" "$WORK/err"
+kill "$live" 2>/dev/null
+rm -rf "$NIGHTS/.lock"
 assert jqe '.jobs[0].pushed == false and .jobs[0].commits == [{repo: "repo", hash: "'"$local_hash"'"}]
   and .jobs[0].review == "rb-1"' "$R"
 assert_fails night job "$id" set llm-20260930T010203Z "commits=nowhere:$pushed_hash" pushed=true 2>"$WORK/err"
 assert grep -qF 'no repository nowhere' "$WORK/err"
+# origin moved on from a checkout this repository never fetched: its head is fetched before the ancestry check.
+git clone -q -b main "$WORK/origin.git" "$WORK/other"
+git -C "$WORK/other" -c user.name=t -c user.email=t@t commit -q --allow-empty -m later
+git -C "$WORK/other" push -q origin HEAD:main
 night job "$id" set llm-20260930T010203Z "commits=repo:$pushed_hash" pushed=true >/dev/null || fail "pushed by name"
 night job "$id" set codex-e1 state=merged "commits=$WORK/repo:$pushed_hash" pushed=true >/dev/null || fail "pushed by path"
 assert jqe '.jobs[0].pushed == true and .jobs[1].pushed == true' "$R"
+# A new commit list is unverified: pushed goes back to false until pushed=true checks it; the same list keeps it.
+night job "$id" set llm-20260930T010203Z "commits=repo:$pushed_hash" >/dev/null || fail "same commits"
+assert jqe '.jobs[0].pushed == true' "$R"
+night job "$id" set llm-20260930T010203Z "commits=repo:$local_hash" >"$WORK/out" || fail "new commits"
+assert jqe '.jobs[0].pushed == false' "$R"
+assert grep -qxF "night $id: job llm-20260930T010203Z merged" "$WORK/out"
+night job "$id" set llm-20260930T010203Z "commits=repo:$pushed_hash" pushed=true >/dev/null || fail "pushed again"
 night job "$id" set p1 state=blocked-on-egor reason="step 10 needs his word" >/dev/null || fail "set blocked"
 
 # Menu and report while running.
-IFS=$'\t' read -r text red < <(night latest --menu)
-assert [ "$text" = 'Night: running · 2 merged · 1 left · 1 failed · 1 blocked on Egor · 7 pending · pushed' ]
-assert [ "$red" = 1 ]
+# Plain words for the Doctors menu: a title line, then one line per job; red only where Egor is needed.
+night latest --menu >"$WORK/menu"
+started=$(jq -r '.started_at | fromdateiso8601 | strflocaltime("%H:%M")' "$R")
+assert [ "$(head -1 "$WORK/menu")" = "$(printf 'Night run since %s: 2 of 12 done and pushed · 1 unfinished · 7 in progress · 1 failed to launch · 1 need you\t1\t1\t%s' "$started" "$id")" ]
+assert grep -qxF "$(printf 'LLM fixer · done and pushed\t0\t\tllm-20260930T010203Z\tfixer\t0')" "$WORK/menu"
+assert grep -qxF "$(printf 'cleanup debt-round · unfinished · hung\t0\thung: idle 1800\tdebt-round\tdebt\t0')" "$WORK/menu"
+assert grep -qxF "$(printf 'harness-r1 · failed to launch · opener\t1\topener\tharness-r1\tfixer\t0')" "$WORK/menu"
+assert grep -qxF "$(printf 'cleanup p1 · needs you · step 10 needs his word\t1\tstep 10 needs his word\tp1\tdebt\t0')" "$WORK/menu"
+assert grep -qxF "$(printf 'cleanup p2 · in progress\t0\t\tp2\tdebt\t0')" "$WORK/menu"
+assert [ "$(wc -l <"$WORK/menu" | tr -d ' ')" = 13 ]
 
 # finish: doctors after, pending becomes left with a reason; a second finish refuses.
 doc llm 1
@@ -154,43 +191,79 @@ assert_fails night finish "$id" 2>/dev/null
 assert jqe '.doctors_after == {llm: 1, harness: 0, updater: 2} and .finished_at != null
   and ([.jobs[] | select(.state == "pending")] | length) == 0
   and ([.jobs[] | select(.ref == "p2")][0] | .state == "left" and .reason == "no outcome recorded by the close")' "$R"
+mkdir -p "$DOCTORS_DIR/runs"
+printf '{"decisions": [{"id": "load:busy", "component": "unverified"}, {"id": "R1"}, {"id": "reading-miss:x", "component": "unverified"}]}\n' \
+  >"$DOCTORS_DIR/runs/llm-20260930T010203Z.json"
+printf '{"decisions": [{"id": "R2"}]}\n' >"$DOCTORS_DIR/runs/harness-r1.json"
 night report "$id" >"$WORK/report" || fail "report"
+assert grep -qxF "unverified component · llm-20260930T010203Z · load:busy, reading-miss:x" "$WORK/report"
+assert [ "$(grep -c '^unverified' "$WORK/report")" = 1 ]
 assert grep -qxF "doctors · llm 5→1 · harness 3→0 · updater -→2" "$WORK/report"
-assert grep -qxF "merged · fixer · llm-20260930T010203Z · review rb-1 · repo@${pushed_hash:0:7} · pushed" "$WORK/report"
-assert grep -qxF "left · debt · debt-round · deadline: 140 lines left" "$WORK/report"
+assert grep -qxF "merged · fixer · llm-20260930T010203Z · review rb-1 · repo@${pushed_hash:0:7} · code +0/-0 · pushed" "$WORK/report"
+assert grep -qxF "left · debt · debt-round · hung: idle 1800" "$WORK/report"
 assert grep -qxF "failed-launch · fixer · harness-r1 · night/$id/harness-r1 · opener" "$WORK/report"
 assert grep -qxF "total · 2 merged · 8 left · 1 failed-launch · 1 blocked-on-egor · pushed" "$WORK/report"
-assert [ "$(wc -l <"$WORK/report" | tr -d ' ')" = 15 ]
+assert [ "$(wc -l <"$WORK/report" | tr -d ' ')" = 16 ]
 assert [ "$(awk '{ print length }' "$WORK/report" | sort -n | tail -1)" -le 100 ]
 assert cmp -s "$WORK/report" <(night report)
 jq '.started_at = "2026-01-01T00:00:00Z"' "$R" >"$WORK/tmp" && mv "$WORK/tmp" "$R"
 
 # A clean night reads green; a merged job not pushed turns it red.
-night start --deadline-h 2 >"$WORK/out" || fail "second start"
+night start >"$WORK/out" || fail "second start"
 id2=$(sed -n 's/^night \([^ ]*\) started:.*/\1/p' "$WORK/out")
-R2=$(record "$id2")
-assert jqe '((.deadline_at | fromdateiso8601) - (.started_at | fromdateiso8601)) == 2 * 3600' "$R2"
 night job "$id2" add fixer f1 >/dev/null
 night job "$id2" add vendor v1 >/dev/null
+assert_fails night job "$id2" set f1 state=merged "commits=repo:$pushed_hash" pushed=true 2>"$WORK/err"
+assert grep -qF "has no refs/night/$id2/base" "$WORK/err"
+git -C "$WORK/repo" update-ref "refs/night/$id2/base" "$based_hash"
 night job "$id2" set f1 state=merged "commits=repo:$pushed_hash" pushed=true >/dev/null
 night job "$id2" set v1 state=nothing-to-do >/dev/null
 night finish "$id2" >/dev/null
-assert [ "$(night latest --menu)" = "$(printf 'Night: 1 merged · pushed\t0')" ]
+day2=$(jq -r '.started_at | fromdateiso8601 | strflocaltime("%d %b") | ltrimstr("0")' "$(record "$id2")")
+assert [ "$(night latest --menu | head -1)" = "$(printf 'Last night %s: 2 of 2 done and pushed\t0\t0\t%s' "$day2" "$id2")" ]
 night report | head -1 | grep -q "^night $id2 " || fail "report without an id reads the latest night"
 night job "$id2" set v1 state=merged "commits=repo:$local_hash" >/dev/null
-assert [ "$(night latest --menu)" = "$(printf 'Night: 2 merged · 1 not pushed\t1')" ]
+assert [ "$(night latest --menu | head -1)" = "$(printf 'Last night %s: 2 of 2 done · 1 not pushed yet\t0\t0\t%s' "$day2" "$id2")" ]
+assert grep -qxF "$(printf 'v1 update · done, not pushed yet\t0\t\tv1\tvendor\t0')" <(night latest --menu)
+night job "$id2" set f1 state=nothing-to-do >/dev/null
+night job "$id2" set v1 state=nothing-to-do >/dev/null
+assert [ "$(night latest --menu | head -1)" = "$(printf 'Last night %s: 2 of 2 done\t0\t0\t%s' "$day2" "$id2")" ]
 
-# A night past its deadline and never finished no longer blocks start, and reads red.
+# Per job the code lines its commits add and remove, test paths left out, summed over its commits.
+mkdir -p "$WORK/repo/bin" "$WORK/repo/tests" "$WORK/repo/tools"
+printf 'a\nb\nc\n' >"$WORK/repo/bin/x"
+printf '1\n2\n3\n4\n5\n' >"$WORK/repo/tests/test_x.sh"
+printf 'p\nq\n' >"$WORK/repo/tools/test_y.py"
+git -C "$WORK/repo" add -A && git -C "$WORK/repo" -c user.name=t -c user.email=t@t commit -q -m code
+code1=$(git -C "$WORK/repo" rev-parse HEAD)
+printf 'a\nB\nc\n' >"$WORK/repo/bin/x"
+printf '1\n' >"$WORK/repo/tests/test_x.sh"
+git -C "$WORK/repo" -c user.name=t -c user.email=t@t commit -q -am more
+code2=$(git -C "$WORK/repo" rev-parse HEAD)
+night job "$id2" add fixer c1 >/dev/null
+night job "$id2" set c1 "commits=repo:$code1,repo:$code2" >/dev/null
+night job "$id2" add fixer c2 >/dev/null
+night job "$id2" set c2 "commits=repo:$code1,repo:0000000000000000000000000000000000000000" >/dev/null
+night job "$id2" add fixer c3 >/dev/null
+night report "$id2" >"$WORK/report"
+assert grep -qxF "pending · fixer · c1 · repo@${code1:0:7} · repo@${code2:0:7} · code +4/-1" "$WORK/report"
+assert grep -qxF "pending · fixer · c2 · repo@${code1:0:7} · repo@0000000 · code ?" "$WORK/report"
+assert grep -qxF "nothing-to-do · fixer · f1 · repo@${pushed_hash:0:7} · code +0/-0" "$WORK/report"
+assert grep -qxF "pending · fixer · c3" "$WORK/report"
+
+# A night whose orchestrator chat is gone and never finished no longer blocks start, and reads red.
 night start >"$WORK/out" || fail "third start"
 id3=$(sed -n 's/^night \([^ ]*\) started:.*/\1/p' "$WORK/out")
-jq '.started_at = "2026-01-01T00:00:00Z" | .deadline_at = "2026-01-01T01:00:00Z"' "$(record "$id3")" >"$WORK/tmp" &&
-  mv "$WORK/tmp" "$(record "$id3")"
-night start >"$WORK/out" || fail "start after a lapsed deadline"
+assert_fails night start 2>/dev/null
+pkill -f -- "--session-id $(jq -r .session "$(record "$id3")")"
+while pgrep -f -- "--session-id $(jq -r .session "$(record "$id3")")" >/dev/null; do sleep 0.1; done
+night start >"$WORK/out" || fail "start after the orchestrator chat ended"
 id4=$(sed -n 's/^night \([^ ]*\) started:.*/\1/p' "$WORK/out")
+assert [ "$(night report "$id3" | head -1)" = "night $id3 · $(jq -r '.started_at | fromdateiso8601 | strflocaltime("%H:%M")' "$(record "$id3")")–- · UNFINISHED" ]
 rm "$(record "$id")" "$(record "$id2")" "$(record "$id4")"
-IFS=$'\t' read -r text red < <(night latest --menu)
-assert [ "$text" = 'Night: unfinished · no jobs' ]
-assert [ "$red" = 1 ]
+IFS=$'\t' read -r text red running _ < <(night latest --menu)
+assert [ "$text" = "Last night $(jq -r '.started_at | fromdateiso8601 | strflocaltime("%d %b") | ltrimstr("0")' "$(record "$id3")"), stopped early: no jobs" ]
+assert [ "$red$running" = 00 ]
 
 # The chat does not open: the night is closed with a note and reads red.
 rm "$(record "$id3")"
@@ -199,31 +272,154 @@ assert_fails night start 2>"$WORK/err"
 assert grep -qF 'the orchestrator chat did not open' "$WORK/err"
 id5=$(ls "$NIGHTS" | sed -n 's/\.json$//p' | head -1)
 assert jqe '.finished_at != null and (.note | startswith("orchestrator chat did not open"))' "$(record "$id5")"
-IFS=$'\t' read -r text red < <(night latest --menu)
-assert [ "$text" = 'Night: no jobs' ]
+IFS=$'\t' read -r text red _ < <(night latest --menu)
+assert [ "$text" = "Last night $(jq -r '.started_at | fromdateiso8601 | strflocaltime("%d %b") | ltrimstr("0")' "$(record "$id5")"): did not start" ]
 assert [ "$red" = 1 ]
+assert grep -q "^orchestrator chat did not open	1	orchestrator chat did not open: " <(night latest --menu)
 rm "$DATA/opener-fails"
 night start >/dev/null || fail "a failed open does not block the next start"
 
 # base: every sweep repository is snapshotted as it stands (uncommitted and untracked included)
-# into refs/night/<id>/base, without touching its index or working tree.
+# into refs/night/<id>/base, without touching its index or working tree. Untracked secret names and
+# blobs over 5 MB stay out of the base, each named.
 git init -q -b main "$WORK/snap"
 git -C "$WORK/snap" -c user.email=t@t -c user.name=t commit -q --allow-empty -m root
 printf 'committed\n' >"$WORK/snap/a"
-git -C "$WORK/snap" add a
+printf 'cert\n' >"$WORK/snap/c.pem"
+git -C "$WORK/snap" add a c.pem
 git -C "$WORK/snap" -c user.email=t@t -c user.name=t commit -q -m a
 printf 'dirty\n' >"$WORK/snap/a"
+printf 'cert2\n' >"$WORK/snap/c.pem"
 printf 'new\n' >"$WORK/snap/untracked"
+mkdir -p "$WORK/snap/keys"
+printf 'SECRET=1\n' >"$WORK/snap/.env"
+printf 'pem\n' >"$WORK/snap/keys/server.pem"
+printf 'key\n' >"$WORK/snap/k.key"
+printf 'ssh\n' >"$WORK/snap/keys/id_ed25519"
+head -c 6291456 /dev/zero >"$WORK/snap/big.bin"
 printf '%s\n' "$WORK/snap" >"$WORK/sweep-repos"
 id6=$(ls -t "$NIGHTS" | sed -n 's/\.json$//p' | head -1)
 before_status=$(git -C "$WORK/snap" status --porcelain)
-night base "$id6" >"$WORK/base.out" || fail "night base failed"
+night base "$id6" >"$WORK/base.out" 2>"$WORK/base.err" || fail "night base failed"
 assert [ "$(git -C "$WORK/snap" show "refs/night/$id6/base:a")" = dirty ]
+assert [ "$(git -C "$WORK/snap" show "refs/night/$id6/base:c.pem")" = cert2 ]
 assert [ "$(git -C "$WORK/snap" show "refs/night/$id6/base:untracked")" = new ]
+for dropped in .env keys/server.pem k.key keys/id_ed25519 big.bin; do
+  assert_fails git -C "$WORK/snap" cat-file -e "refs/night/$id6/base:$dropped" 2>/dev/null
+  assert grep -qF "the base of $WORK/snap drops $dropped: " "$WORK/base.err"
+done
+assert grep -qxF "night-run: the base of $WORK/snap drops big.bin: a 6 MB blob" "$WORK/base.err"
+assert [ "$(wc -l <"$WORK/base.err" | tr -d ' ')" = 5 ]
 assert [ "$(git -C "$WORK/snap" rev-parse "refs/night/$id6/base^")" = "$(git -C "$WORK/snap" rev-parse HEAD)" ]
 assert [ "$(git -C "$WORK/snap" status --porcelain)" = "$before_status" ]
 assert jqe --arg c "$(git -C "$WORK/snap" rev-parse "refs/night/$id6/base")" '.bases.snap == $c' "$(record "$id6")"
 night finish "$id6" >/dev/null
+
+# Resume: the SAME night reopens under a new orchestrator for its unfinished jobs, the old session kept
+# in previous_sessions; the review-flow gate reads finished_at null and the new session's live process.
+stop_chat() { pkill -f -- "--session-id $1"; while pgrep -f -- "--session-id $1" >/dev/null; do sleep 0.1; done; }
+last_arg() { local line; line=$(grep '^exec ' "$NIGHTS/$1.command"); eval "set -- ${line#exec }"; printf '%s\n' "${!#}"; }
+R6=$(record "$id6")
+rm "$(record "$id5")"
+night job "$id6" add vendor codex-e1 --branch "night/$id6/codex" >/dev/null
+night job "$id6" set codex-e1 state=left 'reason=hung: idle 1800, branch night/x/codex' >/dev/null
+night job "$id6" add fixer f-done >/dev/null
+night job "$id6" set f-done state=nothing-to-do >/dev/null
+night job "$id6" add debt debt >/dev/null
+night job "$id6" set debt state=left reason=hung >/dev/null
+assert grep -qxF "$(printf 'codex update · unfinished · hung\t0\thung: idle 1800, branch night/x/codex\tcodex-e1\tvendor\t1')" <(night latest --menu)
+assert grep -qxF "$(printf 'f-done · nothing to do\t0\t\tf-done\tfixer\t0')" <(night latest --menu)
+assert [ "$(night latest --menu | head -1 | cut -f4)" = "$id6" ]
+old_session=$(jq -r .session "$R6")
+assert_fails night start --job codex-e1 2>/dev/null
+assert_fails night start --resume nosuch 2>/dev/null
+assert_fails night start --resume "$id6" --job f-done 2>"$WORK/err"
+assert grep -qF "night $id6 has no unfinished job f-done" "$WORK/err"
+night start --resume "$id6" --job codex-e1 >"$WORK/out" || fail "resume one job"
+assert [ "$(cat "$WORK/out")" = "night $id6 resumed: orchestrator on acct-n" ]
+new_session=$(jq -r .session "$R6")
+assert jqe --arg o "$old_session" '.finished_at == null and .doctors_after == null and .previous_sessions == [$o]
+  and .session != $o and ([.jobs[] | [.ref, .state]] == [["codex-e1", "pending"], ["f-done", "nothing-to-do"], ["debt", "left"]])
+  and .jobs[0].reason == "hung: idle 1800, branch night/x/codex"' "$R6"
+assert pgrep -f -- "--session-id $new_session" >/dev/null
+assert [ "$(last_arg "$id6")" = "сделай чистку — night run $id6 resume" ]
+assert_fails night start --resume "$id6" 2>"$WORK/err"
+assert grep -qF "night $id6 is still running" "$WORK/err"
+assert_fails night start --cleanup 2>/dev/null
+assert [ "$(night latest --menu | head -1 | cut -f3)" = 1 ]
+assert grep -q "^codex update · in progress · hung	0	.*	codex-e1	vendor	0$" <(night latest --menu)
+stop_chat "$new_session"
+night start --resume "$id6" >/dev/null || fail "resume every unfinished job"
+assert jqe --arg o "$old_session" --arg n "$new_session" '.previous_sessions == [$o, $n]
+  and ([.jobs[] | [.ref, .kind, .state]] == [["codex-e1", "vendor", "pending"], ["f-done", "fixer", "nothing-to-do"],
+    ["debt", "debt", "pending"]])' "$R6"
+stop_chat "$(jq -r .session "$R6")"
+night finish "$id6" >/dev/null
+night job "$id6" set debt state=nothing-to-do >/dev/null
+night start --resume "$id6" >/dev/null || fail "resume adds the cleanup a done one no longer covers"
+assert jqe '[.jobs[] | select(.kind == "debt") | [.ref, .state]] == [["debt", "nothing-to-do"], ["debt-2", "pending"]]' "$R6"
+assert grep -q "^cleanup · in progress	0		debt-2	debt	0$" <(night latest --menu)
+stop_chat "$(jq -r .session "$R6")"
+touch "$DATA/opener-fails"
+assert_fails night start --resume "$id6" 2>/dev/null
+assert jqe '.finished_at != null and (.note | startswith("orchestrator chat did not open")) and (.previous_sessions | length) == 4' "$R6"
+rm "$DATA/opener-fails"
+
+# Cleanup alone: a new night whose orchestrator prompt carries the sweep word and the cleanup scope.
+night start --cleanup >"$WORK/out" || fail "cleanup start"
+idc=$(sed -n 's/^night \([^ ]*\) started:.*/\1/p' "$WORK/out")
+assert [ -n "$idc" ] && [ "$idc" != "$id6" ]
+assert [ "$(last_arg "$idc")" = "сделай чистку — night run $idc cleanup" ]
+assert jqe '.jobs == [] and .finished_at == null' "$(record "$idc")"
+assert_fails night start --cleanup 2>/dev/null
+stop_chat "$(jq -r .session "$(record "$idc")")"
+
+# finish prunes every night's landed, clean worktrees: merged into main, or still at its base; a dirty
+# one, an unlanded one and one a process sits in stay.
+wt="$WORK/repo/.claude/worktrees"
+printf '%s\n' "$WORK/repo" >"$WORK/sweep-repos"
+git -C "$WORK/repo" update-ref "refs/night/$idc/base" "$based_hash"
+git -C "$WORK/repo" worktree add -q -b "night/$id/landed" "$wt/landed" "$pushed_hash"
+git -C "$WORK/repo" worktree add -q -b "night/$idc/at-base" "$wt/at-base" "$based_hash"
+git -C "$WORK/repo" worktree add -q -b "night/$idc/dirty" "$wt/dirty" "$pushed_hash"
+: >"$wt/dirty/wip"
+git -C "$WORK/repo" worktree add -q -b "night/$idc/open" "$wt/open" "$side_hash"
+git -C "$WORK/repo" worktree add -q -b "night/$idc/busy" "$wt/busy" "$pushed_hash"
+(cd "$wt/busy" && exec sleep 600) &
+busy=$!
+night finish "$idc" >"$WORK/out" || fail "finish with worktrees"
+kill "$busy" 2>/dev/null
+assert grep -qxF "pruned repo night/$id/landed" "$WORK/out"
+assert grep -qxF "pruned repo night/$idc/at-base" "$WORK/out"
+assert grep -qxF "kept repo night/$idc/dirty: uncommitted work or a process inside" "$WORK/out"
+assert grep -qxF "kept repo night/$idc/busy: uncommitted work or a process inside" "$WORK/out"
+assert [ ! -e "$wt/landed" ] && [ ! -e "$wt/at-base" ] && [ -e "$wt/dirty/wip" ] && [ -d "$wt/open" ]
+assert_fails git -C "$WORK/repo" rev-parse -q --verify "refs/heads/night/$id/landed"
+assert git -C "$WORK/repo" rev-parse -q --verify "refs/heads/night/$idc/open" >/dev/null
+
+# A vendor job is named by its branch's vendor, whatever run ref its updater fixer got.
+night job "$idc" add vendor updater-release-20261001T020703Z-0d10 --branch "night/$idc/codex" >/dev/null
+assert grep -q "^codex update · " <(night latest --menu)
+
+# A start killed before it recorded the session leaves a night that runs only while that start lives.
+rm "$NIGHTS"/*.json
+opening() { # opener-pid-json
+  jq -n --argjson o "$1" '{id: "20261001T000000Z-0pen", started_at: "2026-10-01T00:00:00Z", finished_at: null,
+    session: null, account: null, command: null, note: null, doctors_before: {}, doctors_after: null, jobs: [],
+    opener: $o} | if $o == null then del(.opener) else . end' >"$(record 20261001T000000Z-0pen)"
+}
+opening $$
+assert_fails night start 2>"$WORK/err"
+assert grep -qF "night 20261001T000000Z-0pen is still running" "$WORK/err"
+assert [ "$(night latest --menu | head -1 | cut -f3)" = 1 ]
+sleep 0 &
+dead=$!
+wait "$dead"
+for opener in "$dead" null; do
+  opening "$opener"
+  assert [ "$(night latest --menu | head -1 | cut -f3)" = 0 ]
+  assert grep -q 'UNFINISHED' <(night report 2>/dev/null; night latest --menu)
+done
 
 # No night at all: the menu prints nothing.
 rm "$NIGHTS"/*.json

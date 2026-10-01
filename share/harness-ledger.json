@@ -164,7 +164,7 @@
             "llm-legs/share/instruction-files.sh"
           ],
           "in": "llm-legs@73a54ec",
-          "regressed_at": null
+          "regressed_at": "2026-09-30T12:46:39+03:00"
         }
       ],
       "same_cause": [],

@@ -1,0 +1,17 @@
+# Read by tests/test_no_hardcoded_models.sh. One entry per line: `<path-glob> <awk-ERE> # reason`.
+# The ERE is matched against the whole code line; every entry must still match a line.
+# Entries under [KNOWN_DEBT] are true hardcodes to remove, not exemptions.
+bin/codexb ^    gpt-[0-9][-0-9.a-z]* GPT-[-0-9.A-Za-z]+ [0-9]+ (list|hide) # frozen models_builtin fallback, invariant row cr
+bin/geminib ^    gemini-[0-9]+[.][0-9]+-(flash|pro) (flash[0-9]+|pro) gemini- # frozen families_builtin fallback, invariant row cr
+bin/grokb ^    grok-[0-9][-0-9.a-z]* (yes|no) grok- # frozen models_builtin fallback, invariant row cr
+bin/worker-pick gemini:flash3\[0-9\]\) # slug-shape pattern shortening any catalog Flash label
+bin/claudeb User-Agent: claude-cli/[0-9.]+ # server-gated claude-cli version in the usage User-Agent
+share/claude_resets.py ^USER_AGENT = "claude-cli/[0-9.]+ # server-gated claude-cli version, same string as bin/claudeb
+grok-quota.py ^FALLBACK_CLIENT_VERSION = # vendor CLI version when the installed one cannot be parsed
+review-bench/share/rbench/catalog.py ^ +"note": " # measurement note naming the model it was taken on
+review-bench/share/rbench/catalog.py ^    "[a-z0-9.-]+": "([0-9]+s, |HTTP [0-9]) # screened-out model's recorded failure
+review-bench/share/rbench/catalog.py ^LEGACY_GROK_CELLS = # stored runs' legacy cell name
+review-bench/share/rbench/raters.py (flash35-|"agy-flash36-") # legacy rater renames for stored rows
+
+[KNOWN_DEBT]
+review-bench/share/rbench/catalog.py ^    "oc-[a-z0-9]+": "[a-z] # OpenCode review roster maps each cell to a literal model id

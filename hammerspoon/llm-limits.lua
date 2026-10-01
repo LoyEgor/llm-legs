@@ -2566,7 +2566,7 @@ local function routingSubmenu()
   if M.routingFailed == true then
     table.insert(menu, { title = infoTitle("⚠ routing refresh failed", true, false), disabled = true })
   end
-  local pick, section, flashAt = nil, nil, nil
+  local pick, section, flashAt, lightShown = nil, nil, nil, false
   for index, line in ipairs(lines) do
     local label, state = line:match("^(%a+):%s+(.-)%s*$")
     if label then section = label elseif not line:match("^%s") then section = nil end
@@ -2578,13 +2578,15 @@ local function routingSubmenu()
         and {{ title = "Resume", fn = function() M.resumeVendor(label) end }}
         or workerSwitchItems(label) }
     elseif label == "light" then
-      item = lightSwitch(line, dim)
+      item, lightShown = lightSwitch(line, dim), true
     else
       item = { title = infoTitle(header and line:lower() or line, false, dim or header), disabled = true }
     end
     table.insert(menu, item)
     if section == "light" then flashAt = #menu + 1 end
   end
+  -- worker-pick's fail-safe answer prints no `light:` row, and the switch must not go with it.
+  if not lightShown then table.insert(menu, lightSwitch(nil, dim)) end
   table.insert(menu, flashAt or #menu + 1, reviewFlashItem())
   return menu, pick and ("Routing: next " .. pick) or "Routing"
 end

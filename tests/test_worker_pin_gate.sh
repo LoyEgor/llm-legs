@@ -301,9 +301,77 @@ for runtime_pin in \
   $'python3 - <<\'EOF\'\nimport fileinput, os\nfor line in fileinput.input(os.path.expanduser("~/.claude/worker-model"), inplace=True):\n    print(line.replace("a", "b"), end="")\nEOF' \
   $'python3 - <<\'EOF\'\nimport os\nfd = os.open(os.path.expanduser("~/.claude/worker-model"), os.O_WRONLY | os.O_APPEND)\nos.write(fd, b"x")\nEOF' \
   $'python3 -c \'import subprocess; subprocess.run(["sed", "-i", "", "s/a/b/", "/Users/x/.claude/worker-model"])\'' \
-  $'python3 -c \'import os; os.system("echo x > ~/.claude/worker-model")\''
+  $'python3 -c \'import os; os.system("echo x > ~/.claude/worker-model")\'' \
+  $'python3 - <<\'EOF\'\nfrom pathlib import Path\np = Path("~/.claude/worker-model").expanduser()\np.replace("/tmp/gone")\nEOF' \
+  $'python3 - <<\'EOF\'\nimport os\nfrom pathlib import Path\nPath(os.path.expanduser("~/.claude/worker-model")).rename("/tmp/x")\nEOF' \
+  $'perl -e \'my $p = "$ENV{HOME}/.claude/worker-model"; open my $fh, ">", $p or die; print $fh "x"\'' \
+  $'python3 - <<\'EOF\'\nimport shutil, os\nPIN = os.path.expanduser("~/.claude/worker-model")\nshutil.copy(\n    "/tmp/src",\n    PIN)\nEOF' \
+  $'node -e "const fs=require(\'fs\'); fs.createWriteStream(process.env.HOME+\'/.claude/worker-model\').write(\'x\')"' \
+  $'node -e "const fs=require(\'fs\'); fs.writeSync(fs.openSync(process.env.HOME+\'/.claude/worker-model\', \'w\'), \'x\')"' \
+  $'python3 - <<\'EOF\'\nimport os\nfrom shutil import copy\ncopy("/tmp/x", os.path.expanduser("~/.claude/worker-model"))\nEOF' \
+  $'python3 - <<\'EOF\'\nimport os\nfrom os import replace\npin = os.path.expanduser("~/.claude/worker-model")\nreplace("/tmp/t", pin)\nEOF' \
+  $'node -e "const {renameSync}=require(\'fs\'); renameSync(\'/tmp/t\', process.env.HOME+\'/.claude/worker-model\')"' \
+  $'python3 - <<\'EOF\'\nimport os\nfrom shutil import move as mv\nmv("/tmp/x", os.path.expanduser("~/.claude/worker-model"))\nEOF' \
+  $'perl -e \'use File::Copy; move("/tmp/x", "$ENV{HOME}/.claude/worker-model")\'' \
+  $'node --input-type=module -e "import {writeFileSync as w} from \'fs\'; w(process.env.HOME+\'/.claude/worker-model\', \'x\')"' \
+  $'python3 - <<\'EOF\'\nfrom pathlib import Path\npin = Path("~/.claude/worker-model").expanduser()\nprint(pin.stat().st_mtime, pin.replace("/tmp/gone"))\nEOF'
 do
   assert denied "$(bash_event "$runtime_pin")"
+done
+# Only the pin's own name is bound, only the pin's own receiver renames it, and only a real writer writes.
+for runtime_other in \
+  $'python3 - <<\'EOF\'\nfrom pathlib import Path\ncfg = {\n    "pin": "~/.claude/worker-model",\n    "out": "/tmp/report.txt",\n}\nPath(cfg["out"]).write_text("x")\nEOF' \
+  $'python3 - <<\'EOF\'\nfrom datetime import datetime\nfrom pathlib import Path\npin = Path("~/.claude/worker-model").expanduser()\nprint(pin.stat().st_mtime, datetime.now().replace(microsecond=0))\nEOF' \
+  $'python3 - <<\'EOF\'\nimport os\ndef move(a, b):\n    print(a, "->", b)\npin = os.path.expanduser("~/.claude/worker-model")\nmove("/tmp/a", pin)\nEOF' \
+  'cp ~/.claude/worker-model /tmp/wm.bak' \
+  $'cat <<EOF > /tmp/notes.md\nrm ~/.claude/worker-model resets the pin\nEOF'
+do
+  assert allowed "$(bash_event "$runtime_other")"
+done
+# A copy FROM the pin reads it: only a copy's destination is a write target.
+for runtime_read in \
+  $'python3 - <<\'EOF\'\nimport shutil, os\nshutil.copy(os.path.expanduser("~/.claude/worker-model"), "/tmp/wm.bak")\nEOF' \
+  $'python3 - <<\'EOF\'\nimport os\nfrom shutil import copy\ncopy(os.path.expanduser("~/.claude/worker-model"), "/tmp/wm.bak")\nEOF' \
+  $'node -e "console.log(require(\'fs\').readFileSync(process.env.HOME+\'/.claude/worker-model\', \'utf8\'))"'
+do
+  assert allowed "$(bash_event "$runtime_read")"
+done
+# Live 2026-10-01: a python heredoc rewriting a test whose new text writes a temp-HOME pin fixture,
+# then running that test.
+fixture_edit=$(cat <<'CMD'
+python3 - <<'PY'
+p = "tests/test_gemini_music.sh"
+s = open(p).read()
+s = s.replace('''assert m.rotation() == ["beta", "alpha"], m.rotation()
+EOF''', '''(Path(os.environ["HOME"]) / ".claude").mkdir()
+(Path(os.environ["HOME"]) / ".claude" / "worker-model").write_text("gemini_profile=beta\\n")
+assert m.rotation() == ["beta", "alpha"], m.rotation()
+EOF''')
+open(p, "w").write(s)
+PY
+bash tests/test_gemini_music.sh 2>&1 | tail -5
+CMD
+)
+assert allowed "$(bash_event "$fixture_edit")"
+for content_then_move in \
+  "$fixture_edit; echo claudeb_profile=b > ~/.claude/worker-model" \
+  "$fixture_edit; printf codex_profile=x | tee \$HOME/.claude/worker-model" \
+  "$fixture_edit; sed -i '' 's/^gemini_profile=.*/gemini_profile=b/' ~/.claude/worker-model" \
+  "$fixture_edit; cp /tmp/x ~/.claude/worker-model" \
+  "$fixture_edit; mv /tmp/x \"\$HOME/.claude/worker-model\"" \
+  "$fixture_edit; f=~/.claude/worker-model; printf x > \"\$f\"" \
+  "$fixture_edit; perl -e 'open my \$f, \">\", \"\$ENV{HOME}/.claude/worker-model\"; print \$f \"x\"'" \
+  $'python3 - <<\'PY\'\nimport os\ns = \'\'\'\ngemini_profile=beta\n\'\'\'\nopen(os.path.expanduser("~/.claude/worker-model"), "w").write(s)\nPY\nbash tests/t.sh' \
+  $'python3 - <<\'PY\'\nexec(\'\'\'\nimport os\nopen(os.path.expanduser("~/.claude/worker-model"), "w").write("x")\n\'\'\')\nPY' \
+  $'python3 - <<\'PY\'\nimport subprocess\nsubprocess.run(["sh", "-c", """\necho x > ~/.claude/worker-model\n"""])\nPY' \
+  $'bash -s <<\'EOF\'\necho x > ~/.claude/worker-model\nEOF' \
+  $'bash tests/t.sh <<\'EOF\'\necho x > ~/.claude/worker-model\nEOF' \
+  $'cat > /tmp/fix.sh <<\'EOF\'\necho x > ~/.claude/worker-model\nEOF\nbash /tmp/fix.sh 2>&1 | tail -5' \
+  $'printf \'rm ~/.claude/worker-model\\n\' | tee fix.sh >/dev/null && sh -x ./fix.sh' \
+  $'python3 - <<\'PY\'\nimport os\ns = open("x.py").read().replace(\'"""\', "\'\'\'")\nopen(os.path.expanduser("~/.claude/worker-model"), "w").write("x")\nPY' \
+  $'python3 - <<\'PY\'\nimport os\nos.spawnlp(os.P_WAIT, "sh", "sh", "-c", """\necho x > ~/.claude/worker-model\n""")\nPY'
+do
+  assert denied "$(bash_event "$content_then_move")"
 done
 
 # Quoted text is carried, not executed: a command whose ARGUMENT happens to spell a redirect or an

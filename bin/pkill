@@ -1,0 +1,55 @@
+#!/bin/bash
+set -u
+
+tool=${0##*/}
+case "$tool" in
+  pkill|pgrep) ;;
+  *) printf '%s: invoke as pkill or pgrep\n' "$tool" >&2; exit 2 ;;
+esac
+real="${PKILL_GUARD_REAL_DIR:-/usr/bin}/$tool"
+
+refuse() {
+  printf '%s: refused: option %s comes after the first pattern. macOS %s stops reading options at the first pattern, so %s would become another pattern that can match unrelated processes (every Claude Bash tool shell contains `pwd -P`). Put every option before the pattern, e.g. `%s -f -P 123 pattern`; a pattern that starts with - goes after `--`.\n' \
+    "$tool" "'$1'" "$tool" "'$1'" "$tool" >&2
+  exit 2
+}
+
+# BSD getopt does not permute: the first non-option ends option parsing, so a later -P is a pattern.
+args=("$@")
+i=0
+n=${#args[@]}
+if [ "$tool" = pkill ] && [ "$n" -gt 0 ]; then
+  sig=$(printf '%s' "${args[0]}" | tr '[:lower:]' '[:upper:]')
+  case "$sig" in
+    -[0-9]*) i=1 ;;
+    -?*)
+      sig=${sig#-}
+      sig=${sig#SIG}
+      [ -n "$sig" ] && case " $(/bin/kill -l | tr '\n' ' ') " in *" $sig "*) i=1 ;; esac ;;
+  esac
+fi
+while [ "$i" -lt "$n" ]; do
+  arg=${args[$i]}
+  i=$((i + 1))
+  case "$arg" in
+    --) i=$n; break ;;
+    -?*) ;;
+    *) break ;;
+  esac
+  rest=${arg#-}
+  while [ -n "$rest" ]; do
+    c=${rest:0:1}
+    rest=${rest:1}
+    case "$c" in
+      [FGPUcdgtu])
+        [ -z "$rest" ] && i=$((i + 1))
+        break ;;
+    esac
+  done
+done
+while [ "$i" -lt "$n" ]; do
+  case "${args[$i]}" in -*) refuse "${args[$i]}" ;; esac
+  i=$((i + 1))
+done
+
+exec "$real" "$@"

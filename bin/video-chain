@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ffmpeg_cmd=${VIDEO_CHAIN_FFMPEG:-ffmpeg}
+ffprobe_cmd=${VIDEO_CHAIN_FFPROBE:-ffprobe}
+still_below=4
+
+usage() {
+  cat >&2 <<'EOF'
+usage: video-chain last-frame <clip> <out.png|.jpg>
+       video-chain end-motion <clip> [--tail <seconds>] [--strip <out.png>]
+       video-chain join <out.mp4> <clip> <clip>...
+  last-frame  the clip's final frame, to pass as the next clip's --first-frame
+  end-motion  how much the last second moves: motion=still|moving score=N (strongest 16x9 block's mean
+              frame-to-frame change, 0-255; below 4 is still); --strip saves three frames across the
+              tail side by side, so the direction of motion can be read before chaining
+  join        cut the clips together in order at the first clip's size and frame rate, AAC stereo audio
+              (silence where a clip has none)
+EOF
+  exit 2
+}
+
+say() {
+  printf 'video-chain: %s\n' "$1" >&2
+  exit 2
+}
+
+need_clip() {
+  [ -f "$1" ] || say "$1 is not a file"
+  "$ffprobe_cmd" -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$1" 2>/dev/null \
+    | grep -q '^[0-9]' || say "ffprobe finds no video stream in $1"
+}
+
+probe() { # clip entries
+  "$ffprobe_cmd" -v error -select_streams v:0 -show_entries "$2" -of csv=p=0 "$1" 2>/dev/null | head -n 1
+}
+
+seconds_of() {
+  local value
+  value=$(probe "$1" stream=duration)
+  [[ "$value" =~ ^[0-9.]+$ ]] || value=$("$ffprobe_cmd" -v error -show_entries format=duration -of csv=p=0 "$1")
+  printf '%s' "$value"
+}
+
+# -sseof counts from the container's end, which a longer audio track pushes past the last frame.
+tail_start() { # clip seconds
+  awk -v d="$(seconds_of "$1")" -v t="$2" 'BEGIN { s = d - t; printf "%.3f", (s > 0 ? s : 0) }'
+}
+
+last_frame() {
+  [ "$#" -eq 2 ] || usage
+  need_clip "$1"
+  case "$(printf '%s' "${2##*.}" | tr '[:upper:]' '[:lower:]')" in png | jpg | jpeg) ;; *) usage ;; esac
+  rm -f "$2"
+  # -update keeps overwriting one image, so what remains is the very last decoded frame.
+  "$ffmpeg_cmd" -v error -y -ss "$(tail_start "$1" 0.5)" -i "$1" -an -update 1 -q:v 2 "$2"
+  [ -s "$2" ] || say "ffmpeg wrote no frame from $1"
+  printf 'frame=%s\nsize=%s\n' "$2" "$(probe "$1" stream=width,height | tr ',' 'x')"
+}
+
+end_motion() {
+  local clip=$1 tail=1 strip='' score
+  shift
+  need_clip "$clip"
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --tail) [ "$#" -ge 2 ] || usage; tail=$2; shift 2 ;;
+      --strip) [ "$#" -ge 2 ] || usage; strip=$2; shift 2 ;;
+      *) usage ;;
+    esac
+  done
+  [[ "$tail" =~ ^[0-9]+(\.[0-9]+)?$ ]] || usage
+  score=$("$ffmpeg_cmd" -v error -ss "$(tail_start "$clip" "$tail")" -i "$clip" -an -vf \
+    "tblend=all_mode=difference,scale=16:9:flags=area,signalstats,metadata=print:key=lavfi.signalstats.YMAX:file=-" \
+    -f null - | awk -F= '/YMAX/ { s += $2; n++ } END { if (n) printf "%.1f", s / n }')
+  [ -n "$score" ] || say "no frame pairs in the last ${tail}s of $clip"
+  if awk -v s="$score" -v t="$still_below" 'BEGIN { exit !(s < t) }'; then
+    printf 'motion=still score=%s tail=%s\n' "$score" "$tail"
+  else
+    printf 'motion=moving score=%s tail=%s\n' "$score" "$tail"
+  fi
+  [ -n "$strip" ] || return 0
+  "$ffmpeg_cmd" -v error -y -ss "$(tail_start "$clip" "$tail")" -i "$clip" -an \
+    -vf "fps=3/$tail,scale=480:-2,tile=3x1" -frames:v 1 "$strip"
+  printf 'strip=%s\n' "$strip"
+}
+
+join_clips() {
+  [ "$#" -ge 3 ] || usage
+  local out=$1 width height fps index=0 inputs=() graph='' pairs='' clip length
+  shift
+  case "$(printf '%s' "${out##*.}" | tr '[:upper:]' '[:lower:]')" in mp4) ;; *) usage ;; esac
+  for clip in "$@"; do need_clip "$clip"; done
+  IFS=, read -r width height fps <<<"$(probe "$1" stream=width,height,r_frame_rate)"
+  for clip in "$@"; do
+    inputs+=(-i "$clip")
+    length=$(seconds_of "$clip")
+    graph+="[$index:v]scale=$width:$height:force_original_aspect_ratio=decrease,pad=$width:$height:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=$fps,format=yuv420p[v$index];"
+    # concat pairs audio with video per segment, so every segment's audio is cut or padded to its video.
+    if [ -n "$(probe_audio "$clip")" ]; then
+      graph+="[$index:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,apad,atrim=0:$length[a$index];"
+    else
+      graph+="anullsrc=r=48000:cl=stereo,atrim=0:$length[a$index];"
+    fi
+    pairs+="[v$index][a$index]"
+    index=$((index + 1))
+  done
+  graph+="${pairs}concat=n=$index:v=1:a=1[v][a]"
+  "$ffmpeg_cmd" -v error -y "${inputs[@]}" -filter_complex "$graph" -map '[v]' -map '[a]' \
+    -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -b:a 192k -movflags +faststart "$out"
+  printf 'dest=%s\nsize=%sx%s\nduration=%s\nclips=%s\n' "$out" "$width" "$height" \
+    "$(awk -v s="$(seconds_of "$out")" 'BEGIN { printf "%.2f", s }')" "$index"
+}
+
+probe_audio() {
+  "$ffprobe_cmd" -v error -select_streams a:0 -show_entries stream=index -of csv=p=0 "$1" 2>/dev/null
+}
+
+command -v "$ffmpeg_cmd" >/dev/null 2>&1 && command -v "$ffprobe_cmd" >/dev/null 2>&1 \
+  || { printf 'video-chain: ffmpeg and ffprobe are required\n' >&2; exit 1; }
+[ "$#" -ge 1 ] || usage
+command=$1
+shift
+case "$command" in
+  last-frame) last_frame "$@" ;;
+  end-motion) [ "$#" -ge 1 ] || usage; end_motion "$@" ;;
+  join) join_clips "$@" ;;
+  *) usage ;;
+esac

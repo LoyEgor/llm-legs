@@ -168,7 +168,13 @@ decision() {
 # sweeps anything older than a day before it looks.
 age_stamps() {
   find "${1:-$INSTRUCTION_WRITE_GATE_STAMPS}" -mindepth 1 -maxdepth 1 \
-    -exec touch -A -000010 {} + 2>/dev/null
+    -exec touch -t "$(date -v-10S +%Y%m%d%H%M.%S)" {} + 2>/dev/null
+}
+# A twin is a call inside the stamp's 2 s window, which a gate run alone can outlast on a loaded
+# machine: the stamp is dated ahead so the twin stays one.
+fresh_stamps() {
+  find "${1:-$INSTRUCTION_WRITE_GATE_STAMPS}" -mindepth 1 -maxdepth 1 \
+    -exec touch -t "$(date -v+60S +%Y%m%d%H%M.%S)" {} + 2>/dev/null
 }
 
 echo "== write gate: denies a shell write to a protected file"
@@ -575,6 +581,7 @@ assert_eq pass "$(bloat_decision "$WORK/no-such-dir/ordinary.md")"
 echo "== bloat gate: one deny, then the identical edit passes"
 rm -rf "$BLOAT_STAMPS"
 assert_eq deny "$(bloat_decision "$CLAUDE_MD")"
+fresh_stamps "$BLOAT_STAMPS"
 assert_eq deny "$(bloat_decision "$CLAUDE_MD")"
 age_stamps "$BLOAT_STAMPS"
 assert_eq pass "$(bloat_decision "$CLAUDE_MD")"
@@ -2521,6 +2528,21 @@ assert_eq ambiguous "$(printf '%s' "$rec" | jq -r .writer)"
 assert_eq "sid-amb-a sid-amb-b" "$(printf '%s' "$rec" | jq -r '[.candidates[].sid] | sort | join(" ")')"
 assert_eq "Chat of sid-amb-a|Chat of sid-amb-b" \
   "$(printf '%s' "$rec" | jq -r '[.candidates[].chat] | sort | join("|")')"
+
+echo "== in flight: two files under the same two windows name each chat once"
+amb_agent="$HOME/.claude/agents/codex-worker.md"
+printf 'tier doc\n' > "$DOC"
+printf 'agent doc\n' > "$amb_agent"
+span_base sid-amb-a >/dev/null
+pre_call sid-amb-a Bash command "$grow_cmd" "$SPAN_T"
+tool_payload PreToolUse sid-amb-b Bash command "$ANY_CALL" "$NOSPAN_T" | bash "$WRITE_GATE" >/dev/null
+printf 'a line in the doc\n' >> "$DOC"
+printf 'a line in the agent\n' >> "$amb_agent"
+span_check sid-amb-a Bash command "$grow_cmd" "$SPAN_T" >/dev/null
+rec=$(tail -1 "$J")
+assert_eq 2 "$(printf '%s' "$rec" | jq '.files | length')"
+assert_eq "sid-amb-a sid-amb-b" "$(printf '%s' "$rec" | jq -r '[.candidates[].sid] | sort | join(" ")')"
+printf 'agent doc\n' > "$amb_agent"
 printf '#!/bin/sh\nexit 1\n' > "$HOME/.local/bin/chat-name"
 rm -f "$INSTRUCTION_WATCH_STATE"/inflight/*
 

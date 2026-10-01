@@ -99,6 +99,20 @@ probe
 probe
 assert_eq '{"total":2,"failed":1,"ok":false}' \
   "$(jq -c 'select(.repo == "r-255") | {total, failed, ok}' "$STATUSLINE_CACHE_DIR/test-history.jsonl")"
+# A run-suites run, chat or worker, carries each suite's seconds from its .status files.
+assert_eq 'r-gone null r-pass {"test_1.sh":3,"test_2.sh":1}' \
+  "$(jq -r 'select(.repo == "r-pass" or .repo == "r-gone") | "\(.repo) \(.suite_secs | tojson)"' \
+    "$STATUSLINE_CACHE_DIR/test-history.jsonl" | sort | paste -sd' ' -)"
+mkdir -p "$WORK/logs-702"
+printf '0\t7\n' > "$WORK/logs-702/test_w.sh.status"
+printf '%s\t1\t%s\t%s\n' "$WORK/logs-702" "$WORK/repo" "$(date +%s)" > "$STATUSLINE_CACHE_DIR/suites-702"
+{ printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28
+  printf '700 1 03:00 bash -c supervisor\n702 700 01:50 bash tests/run-all -j 5\n'; } > "$WORK/snap"
+probe
+{ printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28; printf '700 1 03:00 bash -c supervisor\n'; } > "$WORK/snap"
+probe
+assert_eq '{"test_w.sh":7}' \
+  "$(jq -c 'select(.label == "suites" and .who == "worker") | .suite_secs' "$STATUSLINE_CACHE_DIR/test-history.jsonl")"
 
 # repo_root is the main checkout for every layout: a submodule's and a separate git dir's own
 # toplevel, a .bare layout's project directory, a linked worktree's main checkout.
@@ -137,6 +151,15 @@ for args in "" "--all" "--changed" "test_one.sh"; do
 done
 assert_eq "$(jq -cn --arg root "$suites_repo" '["full","all","changed","named"] | map({label: "suites", scope: ., repo_root: $root})')" \
   "$(jq -sc 'map({label, scope, repo_root})' "$STATUSLINE_CACHE_DIR/test-scope.jsonl")"
+mkdir -p "$WORK/slow-git"
+printf '#!/bin/bash\ncase " $* " in *" ls-files "*) sleep 3 ;; esac\nexec %s "$@"\n' "$(command -v git)" > "$WORK/slow-git/git"
+chmod +x "$WORK/slow-git/git"
+: > "$STATUSLINE_CACHE_DIR/test-scope.jsonl"
+launched=$(date +%s)
+PATH="$WORK/slow-git:$PATH" RUN_SUITES_TIMES="$WORK/times.tsv" bash "$ROOT/share/run-suites.sh" --repo "$suites_repo" -j 2 \
+  --changed >/dev/null 2>&1 || fail "run-suites --changed under a slow git failed"
+assert_eq yes "$(jq -r --argjson at "$launched" 'if .start - $at <= 1 then "yes" else "\(.start - $at) s late" end' \
+  "$STATUSLINE_CACHE_DIR/test-scope.jsonl")" "run-suites stamps its scope marker with its own start, not after a slow discovery"
 
 # A test script that runs part of itself is partial whichever selector it reads narrowed it.
 selectors=$(grep -Eo 'WORKER_RUN_TEST_([A-Z_]*_)?(CASE|ONLY)' "$ROOT/tests/test_worker_run.sh" | sort -u)

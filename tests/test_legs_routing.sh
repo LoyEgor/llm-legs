@@ -125,7 +125,10 @@ run_leg() {
 
 ROUTED_PATH="$STUB_BIN:$SYSTEM_PATH"
 LEG_ENV=()
-mkdir -p "$WORK/home/.codex-profiles"
+# A codex account's slug comes from its own list alone, so the leg's account gets one.
+mkdir -p "$WORK/home/.codex-profiles/codex-worker"
+cp "$ROOT/tests/fixtures/codexb-models.json" "$WORK/home/.codex-profiles/codex-worker/models_cache.json"
+export CODEXB_MODELS_NO_REFRESH=1
 # The slug the roster names for the codex leg under this hermetic HOME; never a literal here, so a
 # roster release does not edit this test.
 ROSTER_CODEX="$(env HOME="$WORK/home" CODEXB_PROFILES_DIR="$WORK/home/.codex-profiles" \
@@ -188,6 +191,7 @@ assert jq -e '.requested == "gpt-explicit-fixture"' "$WORK/explicit-codex/served
 
 # A family word runs that family's newest roster slug; a word the roster does not know passes through.
 ROSTER_FAMILY="$(bash -c '. "$1/share/worker-model.sh" && worker_model_codex_family "$2"' _ "$ROOT" "$ROSTER_CODEX")"
+STUB_PICK_ACCOUNT=codex-worker
 for spec in "$ROSTER_FAMILY:$ROSTER_CODEX" "nofamily-fixture:nofamily-fixture"; do
   IFS=: read -r word slug <<<"$spec"
   : >"$CALL_LOG"

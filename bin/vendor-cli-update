@@ -21,6 +21,7 @@ agent_dir="$HOME/Library/LaunchAgents"
 label="com.llm-legs.vendor-cli-update"
 plist="$agent_dir/$label.plist"
 wrapper="$HOME/.local/libexec/vendor-cli-update"
+pass_every_s=86400
 # agy and the native Claude Code update themselves; npm installs never do, and a vendor lists a new
 # model only to a client at least as new as the model's minimal_client_version. An npm claude is a
 # second install that any PATH with /usr/local/bin or nvm first runs instead of the native one.
@@ -193,14 +194,36 @@ update_vendor() { # vendor
   record "$vendor" updated "$now" "$latest" "$installed"
 }
 
-run_all() {
-  local vendor bin_dir installed findings bin_dirs=''
+due_vendors() { # -> `all` when a full pass is due, else the vendors whose last result wants a retry
+  local due
+  due=$(jq -r --arg vendors "$vendors" --argjson now "$(date +%s)" --argjson max "$pass_every_s" '
+    . as $s | ($vendors | split(" ")) as $v
+    | if any($v[]; ($s[.].checked_at // "" | try fromdateiso8601 catch 0) < $now - $max) then "all"
+      else $v[] | select($s[.].result | IN("busy", "install-failed", "check-failed")) end' \
+    "$state_file" 2>/dev/null) && [ -s "$state_file" ] || due=all
+  printf '%s\n' "$due" | paste -sd ' ' -
+}
+
+# launchd starts `run --if-due` every half hour: a full pass once a day, and in between only a retry
+# of the vendors a busy client or a failed install left behind, since a full pass re-reads every
+# account's model list.
+run_all() { # [--if-due]
+  local vendor bin_dir installed findings bin_dirs='' due=all
   mkdir -p "$state_dir"
   if [ -z "${VENDOR_CLI_UPDATE_LOCKED:-}" ]; then
-    exec env VENDOR_CLI_UPDATE_LOCKED=1 lockf -k -t 0 "$state_dir/run.lock" "$script_path" run
+    exec env VENDOR_CLI_UPDATE_LOCKED=1 lockf -k -t 0 "$state_dir/run.lock" "$script_path" run "$@"
+  fi
+  if [ "${1:-}" = --if-due ]; then
+    due=$(due_vendors)
+    if [ "$due" != all ]; then
+      [ -n "$due" ] || return 0
+      for vendor in $due; do update_vendor "$vendor"; done
+      jq -e --arg due "$due" 'any(($due | split(" "))[] as $v | .[$v].result; . == "updated")' "$state_file" >/dev/null ||
+        { run_doctor; return 0; }
+    fi
   fi
   for vendor in $vendors; do
-    update_vendor "$vendor"
+    [ "$due" = all ] && update_vendor "$vendor"
     bin_dir=$(node_bin_dir "$vendor") || continue
     bin_dirs+=":$bin_dir"
     if [ "$vendor" = codex ]; then
@@ -286,9 +309,10 @@ install_agent() {
   <array>
     <string>$wrapper</string>
     <string>run</string>
+    <string>--if-due</string>
   </array>
   <key>StartInterval</key>
-  <integer>86400</integer>
+  <integer>1800</integer>
   <key>RunAtLoad</key>
   <true/>
   <key>ProcessType</key>
@@ -309,7 +333,7 @@ EOF
   if ! launchctl bootstrap "gui/$UID" "$plist"; then
     launchctl load -w "$plist"
   fi
-  printf 'Installed %s: daily and at login.\n' "$label"
+  printf 'Installed %s: a full pass daily, a busy or failed vendor retried every 30 minutes.\n' "$label"
 }
 
 uninstall_agent() {
@@ -336,10 +360,10 @@ show_status() {
   return 0
 }
 
-usage() { printf 'usage: vendor-cli-update [run|now [--night]|install|uninstall|status]\n' >&2; exit 2; }
+usage() { printf 'usage: vendor-cli-update [run [--if-due]|now [--night]|install|uninstall|status]\n' >&2; exit 2; }
 
 case "${1:-run}" in
-  run) run_all ;;
+  run) run_all "${@:2}" ;;
   now) update_now "${@:2}" ;;
   install) install_agent ;;
   uninstall) uninstall_agent ;;

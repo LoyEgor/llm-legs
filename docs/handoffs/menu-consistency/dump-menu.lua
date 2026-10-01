@@ -36,4 +36,10 @@ local function walk(items, depth)
   end
 end
 walk(AutomationMenu.buildMenu(), 0)
-return table.concat(out, "\n")
+-- The hs -c reply is cut short on a full tree (menu-before.txt lost its tail that way): the dump goes
+-- to a file and only its path and row count come back.
+local path = (os.getenv("TMPDIR") or "/tmp/") .. "menu-dump.txt"
+local f = assert(io.open(path, "w"))
+f:write(table.concat(out, "\n"), "\n")
+f:close()
+return path .. " " .. #out .. " rows"

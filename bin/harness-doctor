@@ -25,7 +25,7 @@ import traceback
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 
-from fix_commit import fix_commit
+from fix_commit import fix_commit, fix_landed
 from limiter_hold import hold_dir
 
 LIMITS = {
@@ -51,6 +51,11 @@ LIMITS = {
     "test_slow_ratio": 2.0,
     "test_slow_min_s": 600,
     "test_slow_fresh_s": 6 * 3600,
+    "test_cost_window_s": 24 * 3600,
+    "long_pole_share": 0.5,
+    "long_pole_min_s": 300,
+    "test_day_s": 2 * 3600,
+    "test_day_note_s": 3600,
     "loose_note": 6700,
     "loose_red": 13400,
     "store_entries": 50000,
@@ -116,7 +121,6 @@ STATUSLINE_KEY = "\tstatusline"
 HIST_EDGES_MS = (5, 10, 20, 30, 50, 75, 100, 150, 200, 300, 500, 750, 1000, 1500, 2000, 3000, 5000, 7500, 10000,
                  15000, 30000, 60000, 120000, 300000, 600000)
 SLOT_S = 600
-JOURNAL_KEEP_S = 25 * 3600
 JOURNAL_FILE_DAYS = 3
 SPOOL_STALE_S = 900
 SUMMARY_V = 2
@@ -127,6 +131,8 @@ WEEK_MIN_RUNS = 20
 WEEK_MIN_DAYS = 3
 DOCTOR_WINDOWS_H = (3, 6, 12, 24, 72, 168)
 WINDOW_MIN_DAYS = {72: 2, 168: WEEK_MIN_DAYS}
+RAW_REACH_S = 2 * 3600 * max(h for h in DOCTOR_WINDOWS_H if h not in WINDOW_MIN_DAYS)
+JOURNAL_KEEP_S = RAW_REACH_S + 3600
 RAW_MIN_COVER = 0.5
 SAMPLE_STEP_S = 300
 LOAD_KEYS = ("busy", "kernel", "forks", "unseen")
@@ -156,6 +162,8 @@ FLOOR_ROWS = (("bash:trivial", "Bash · trivial", "a trivial Bash call"),
               ("event:PreCompact", "compaction", "a compaction"),
               ("event:SessionEnd", "chat end", "a chat end"))
 FAST_PATH_PROBES = {"readonly-command.sh": 'rc_readonly_command ls && ! rc_readonly_command "rm x"'}
+SECRET_SETTING = re.compile(r"(?i)^env\.|token|secret|passw|credential|api.?key")
+SUITE_EXT = re.compile(r"\.(sh|bash|py|lua)$")
 QUIET_SOURCE = re.compile(r"(?m)(?:^|[\s;&|!(])(?:\.|source)\s+([^\s;&|].*?)\s+2>\s?/dev/null")
 
 
@@ -651,6 +659,12 @@ def day_summaries(state, now, write, samples, windows, today_rows):
                                            day_start(min(rebuilt)), day_end(max(rebuilt)))
         missing |= set(rebuilt)
         state["rebuilt"] = SUMMARY_V
+    for day in sorted(d for d in floor_days if oldest <= d < today and d in out and d not in missing):
+        floors = out[day].setdefault("floors", {})
+        for key, entry in floor_days[day].items():
+            hist_join(floors.setdefault(key, hist_new()), entry)
+        if write:
+            write_json(os.path.join(folder, day + ".json"), out[day])
     for day in sorted(missing):
         summary = (summarize_day(day, rebuilt[day], samples, journal_days.get(day), rebuilt_windows,
                                  floor_days.get(day))
@@ -827,18 +841,22 @@ def watch_changes(state, now, versions, hooks):
             for name, inner in value.items():
                 walk(prefix + "." + name if prefix else name, inner)
         else:
-            flat[prefix] = json.dumps(value, sort_keys=True, ensure_ascii=False)[:120]
+            text = json.dumps(value, sort_keys=True, ensure_ascii=False)
+            digest = "#" + hashlib.sha1(text.encode()).hexdigest()[:12]
+            flat[prefix] = (digest if SECRET_SETTING.search(prefix) else text if len(text) <= 120
+                            else text[:100] + "… " + digest)
 
     for name, value in read_json(settings_path(), {}).items():
         if name != "hooks":
             walk(name, value)
     old_settings = state.get("settings")
     if old_settings is not None:
-        at = round(max(min(settings_mtime(), now), now - 3600), 1)
+        at = round(min(settings_mtime() or now, now), 1)
         for key in sorted(set(flat) | set(old_settings)):
             if flat.get(key) != old_settings.get(key):
-                changes.append({"at": at, "kind": "setting", "what": "%s %s → %s" % (
-                    key, old_settings.get(key, "unset"), flat.get(key, "unset"))})
+                changes.append({"at": at, "kind": "setting", "what": "%s %s" % (
+                    key, "changed" if SECRET_SETTING.search(key) else "%s → %s" % (
+                        old_settings.get(key, "unset"), flat.get(key, "unset")))})
     state["settings"] = flat
 
     known_versions = state.get("versions")
@@ -1264,7 +1282,7 @@ def floor_class(call):
     return "read" if call[3] == "Read" else "tool"
 
 
-def hook_view(hooks, runs, calls, now, repos=None):
+def hook_view(hooks, runs, calls, now, repos=None, since=None):
     tools = {c[3] for c in calls} | {"Bash", "Read", OTHER_TOOL} | EDIT_TOOLS
     slots = hook_slots(hooks, tools)
     seen = {r[1] for r in runs}
@@ -1311,6 +1329,8 @@ def hook_view(hooks, runs, calls, now, repos=None):
             if event not in TOOL_EVENTS:
                 batch["event"] = event
                 floors.append({"t": batch["t0"], "cls": "event:" + event, "ms": batch["ms"], "by": batch["by"]})
+        if since is not None and batch["t0"] <= since:
+            continue
         if call is not None or batch.get("event") is None:
             tool_batches += 1
             joined += call is not None
@@ -1478,8 +1498,8 @@ def load_tests(now):
         marks = starts.get((row.get("label"), row.get("repo_root")))
         if marks:
             began = row["end"] - row["secs"]
-            joined = [scope for start, scope in marks if abs(began - start) <= SCOPE_JOIN_S]
-            row["scope"] = joined[0] if joined else "full"
+            joined = sorted((abs(began - start), scope) for start, scope in marks if abs(began - start) <= SCOPE_JOIN_S)
+            row["scope"] = joined[0][1] if joined else "full"
             row["partial"] = row["scope"] != "full"
             row["scoped"] = began >= min(start for start, _ in marks) - SCOPE_JOIN_S
     return rows
@@ -1952,6 +1972,10 @@ def hooks_section(hooks, calls, cuts, samples_h, hooks_since, timed24, timed1, n
                               cut[3], cut[1]), "%s cut after %s ms in %s" % (name, cut[5], cut[2]))
                                     for cut in sorted(mine, key=lambda c: -c[1])[:3]])]
         for rule, applies, hit, value, limit, fact in (
+                ("hook_sync", synchronous and recent_ms is not None,
+                 recent_ms is not None and recent_ms > LIMITS["hook_note_ms"] and not judges[0]["level"], recent_ms,
+                 LIMITS["hook_note_ms"],
+                 lambda: "%s takes %s ms a run %s" % (name, num(recent_ms), recent_span)),
                 ("hook_every_call", every_call(members) and recent_ms is not None,
                  recent_ms is not None and recent_ms > LIMITS["every_call_ms"],
                  recent_ms, LIMITS["every_call_ms"], lambda: "%s costs %s ms on every tool call, %s calls in 24 h" % (
@@ -2088,9 +2112,11 @@ def hooks_section(hooks, calls, cuts, samples_h, hooks_since, timed24, timed1, n
             ["library", "shell", "sourced by", "state"], [False, False, False, False]))
         probe.update(key="hooks:fastpath", say=text if broken else None, judge=[
             verdict("fastpath", "%s:%s" % (os.path.basename(f["lib"]), os.path.basename(f["shell"])), None, None, "",
-                    24, len(f["hooks"]), "red" if f in red else "watch",
+                    0, len(f["hooks"]), "red" if f in red else "watch",
                     fact="%s %s under %s: %s" % (os.path.basename(f["lib"]), f["state"], f["shell"],
-                                                  ", ".join(f["hooks"])))
+                                                  ", ".join(f["hooks"])),
+                    evidence=[evidence(now, "probe %s under %s" % (os.path.basename(f["lib"]), f["shell"]),
+                                       f["state"])])
             for f in broken])
         out["lead"].append(probe)
         if red and out["state"] != "problem":
@@ -2383,6 +2409,101 @@ def test_scope(t):
     return t.get("scope") or ("partial" if t.get("partial") else "full")
 
 
+def test_where(t):
+    root = t.get("repo_root")
+    return os.path.basename(root.rstrip("/")) if root else repo_name(t.get("repo"))
+
+
+def history_ref(t, label=None):
+    return "test-history %s %s %d" % (t.get("repo"), label or t.get("label"), t["end"])
+
+
+def pole_line(tests, now):
+    window = LIMITS["test_cost_window_s"]
+    fulls = {}
+    for t in tests:
+        if (t.get("label") == "suites" and isinstance(t.get("suite_secs"), dict) and t["suite_secs"]
+                and test_scope(t) in ("full", "all") and t["end"] >= now - window):
+            fulls.setdefault(test_ident(t.get("repo"), "", t.get("repo_root")), []).append(t)
+    rows = []
+    for runs in fulls.values():
+        runs.sort(key=lambda t: t["end"])
+        run = runs[-1]
+        ranked = sorted(run["suite_secs"].items(), key=lambda kv: (-kv[1], kv[0]))
+        (pole, took), (after, next_took) = ranked[0], ranked[1] if len(ranked) > 1 else ("–", 0)
+        share = min(1.0, took / float(run["secs"])) if run["secs"] > 0 else 1.0
+        over = share > LIMITS["long_pole_share"]
+        level = "red" if over and took >= LIMITS["long_pole_min_s"] else "watch" if over else None
+        repo = test_where(run)
+        fact = "%s took %d s of the %d s full %s run (%s), %d s more than %s" % (
+            pole, took, run["secs"], repo, fmt_pct(share), took - next_took, after)
+        rows.append((share, row([clip(repo, 20), clip(pole, 30), num(took, 60.0), num(took - next_took, 60.0),
+                                 fmt_pct(share)], [4] if level == "red" else [], dim=not level, say=fact,
+                                judge=verdict("test_long_pole", test_ident(run.get("repo"), SUITE_EXT.sub("", pole),
+                                                                           run.get("repo_root")), share,
+                                    LIMITS["long_pole_share"], "", window // 3600, len(runs), level, fact=fact,
+                                    values=[max(r["suite_secs"].values()) / float(r["secs"]) for r in runs
+                                            if r["secs"] > 0], evidence=[evidence(
+                                        run["end"] - run["secs"], history_ref(run), "%s %d s of %d s" % (
+                                            pole, took, run["secs"]), run.get("who") or "")]))))
+    rows.sort(key=lambda x: -x[0])
+    rows = [r for _, r in rows]
+    top = rows[0] if rows else None
+    out = line("long pole, %d h: %s" % (window // 3600, "%s · %s %s" % (top["cells"][1], top["cells"][0], top["cells"][4])
+                                         if top else "no full run with suite times"),
+               dim=not (top and top["judge"][0]["level"]), red=any(r["red"] for r in rows),
+               menu=section("", rows, ["repo", "long pole", "min", "min over next", "share of run"],
+                            [False, False, True, True, True]) if rows else None)
+    out.update(key="tests:pole", say=next((r["say"] for r in rows if r["red"]), top and top["say"]))
+    return out
+
+
+def cost_line(tests, now):
+    window = LIMITS["test_cost_window_s"]
+    costs, bare = {}, []
+    for t in tests:
+        if t["end"] < now - window:
+            continue
+        if t.get("label") == "suites":
+            if not isinstance(t.get("suite_secs"), dict) or not t["suite_secs"]:
+                bare.append(t)
+                continue
+            parts = [(SUITE_EXT.sub("", name), secs) for name, secs in t["suite_secs"].items()]
+        else:
+            parts = [(t.get("label") or "?", t["secs"])]
+        for label, secs in parts:
+            costs.setdefault(test_ident(t.get("repo"), label, t.get("repo_root")), (label, test_where(t), []))[2].append(
+                (secs, t))
+    ranked = []
+    for ident, (label, repo, runs) in costs.items():
+        total = sum(secs for secs, _ in runs)
+        level = "red" if total > LIMITS["test_day_s"] else "watch" if total > LIMITS["test_day_note_s"] else None
+        biggest = max(runs, key=lambda x: x[0])
+        first = min(t["end"] - t["secs"] for _, t in runs)
+        fact = "%s · %s cost %s of wall clock in %d h over %d runs" % (label, repo, fmt_long(total), window // 3600,
+                                                                     len(runs))
+        ranked.append((total, level, row(
+            [clip("%s · %s" % (label, repo), 34), fmt_count(len(runs)), num(total, 60.0),
+             num(median([secs for secs, _ in runs]), 60.0)], [2] if level == "red" else [], dim=not level, say=fact,
+            judge=verdict("test_daily_cost", ident, total, LIMITS["test_day_s"], "s", window // 3600, len(runs), level,
+                          fact=fact, values=[secs for secs, _ in runs], bad=int(bool(level)),
+                          evidence=[evidence(first, history_ref(biggest[1], label), "%d runs, %d s in %d h" % (
+                              len(runs), total, window // 3600), biggest[1].get("who") or "")]))))
+    ranked.sort(key=lambda x: -x[0])
+    rows = [r for i, (_, level, r) in enumerate(ranked) if i < INVENTORY_ROWS or level]
+    if bare:
+        rows.append(row(["suites runs without suite times", fmt_count(len(bare)), num(sum(t["secs"] for t in bare), 60.0),
+                         "–"], dim=True))
+    top = ranked[0][2] if ranked else None
+    out = line("daily cost, %d h: %s" % (window // 3600, "%s %s min" % (top["cells"][0], top["cells"][2])
+                                         if top else "no suite times" if bare else "no test ran"),
+               dim=not (ranked and ranked[0][1]), red=any(level == "red" for _, level, _ in ranked),
+               menu=section("", rows, ["suite · repo", "runs", "min %d h" % (window // 3600), "min a run"],
+                            [False, True, True, True]) if rows else None)
+    out.update(key="tests:cost", say=next((r["say"] for _, level, r in ranked if level == "red"), top and top["say"]))
+    return out
+
+
 def tests_section(tests, now, kills=()):
     today = local_day(now)
     todays = [t for t in tests if local_day(t["end"]) == today]
@@ -2396,9 +2517,7 @@ def tests_section(tests, now, kills=()):
         where = (t.get("repo"), t.get("repo_root"))
         if where not in idents:
             idents[where] = test_ident(where[0], "", where[1])
-        ident = idents[where] + (t.get("label") or "?")
-        groups.setdefault(ident if not ident.startswith("worktree:") else (repo_name(t.get("repo")), ident),
-                          []).append(t)
+        groups.setdefault(idents[where] + (t.get("label") or "?"), []).append(t)
     ranked = []
     for items in groups.values():
         items.sort(key=lambda t: t["end"])
@@ -2426,9 +2545,10 @@ def tests_section(tests, now, kills=()):
              num(last, 60.0)], red, dim=not red and not slow, key="tests:" + ident,
             say="%s took %s, usual %s%s" % (name, fmt_long(last), fmt_long(usual), "" if scope == "full" else " for a %s run" % SCOPE_SAY.get(scope, scope)),
             judge=verdict("test_slow", ident, last, LIMITS["test_slow_min_s"], "s", LIMITS["test_slow_fresh_s"] // 3600,
-                          len(items), "red" if red else "watch" if slow else None,
+                          sum(1 for t in items if t["end"] - t["secs"] > now - fresh),
+                          "red" if red else "watch" if slow else None,
                           values=[t["secs"] for t in items], bad=int(bool(slow)),
-                          evidence=[evidence(items[-1]["end"], "test-history %s %s %d" % (
+                          evidence=[evidence(items[-1]["end"] - last, "test-history %s %s %d" % (
                               items[-1].get("repo"), label, items[-1]["end"]), "took %d s, usual %d s" % (
                               last, usual), items[-1].get("who") or "")]))))
     ranked.sort(key=lambda x: -x[0])
@@ -2472,14 +2592,15 @@ def tests_section(tests, now, kills=()):
     loaded["judge"] = [verdict("test_load_fail", test_ident(t.get("repo"), t.get("label"), t.get("repo_root")), crowd,
                                LIMITS["load_fail_suites"], "suites", fresh // 3600, 1, "red", bad=1,
                                fact="%s failed while %d suites ran, passed alone" % (t.get("label"), crowd),
-                               evidence=[evidence(t["end"], "test-history %s %s %d" % (t.get("repo"), t.get("label"),
-                                                                                       t["end"]))])
+                               evidence=[evidence(t["end"] - t["secs"], "test-history %s %s %d" % (
+                                   t.get("repo"), t.get("label"), t["end"]))])
                        for t, crowd, passed in fails]
-    out = section("Tests", rows, columns, right, lead=[overlap, loaded], nav=nav,
+    pole, cost = pole_line(tests, now), cost_line(tests, now)
+    out = section("Tests", rows, columns, right, lead=[overlap, loaded, pole, cost], nav=nav,
                   ok=("%d runs today, %s of wall clock, none slower than usual" % (
                       len(todays), fmt_long(union_secs(intervals(todays)))) if todays else "no test finished today")
                   + ("; %d running now" % len(live) if live else ""))
-    out["extra_red"] = [x for x in (overlap, loaded) if x["red"]]
+    out["extra_red"] = [x for x in (overlap, loaded, pole, cost) if x["red"]]
     if out["extra_red"] and out["state"] != "problem":
         out.update(state="problem", fact=out["extra_red"][0]["say"])
     return out
@@ -2559,12 +2680,13 @@ def transcript_times():
     return newest, born
 
 
-def health_hit(items, rule, ident, label, at, value=None, ref="", excerpt="", level="red", head=None):
+def health_hit(items, rule, ident, label, at, value=None, ref="", excerpt="", level="red", head=None, n=1,
+               noun="time"):
     item = items.setdefault((rule, str(ident)), {"label": label, "count": 0, "first": at, "last": at, "value": None,
-                                                 "events": [], "level": level, "head": head})
+                                                 "events": [], "level": level, "head": head, "noun": noun})
     if LEVELS[level] > LEVELS[item["level"]]:
         item.update(level=level, label=label, head=head)
-    item["count"] += 1
+    item["count"] += n
     item["first"], item["last"] = min(item["first"], at), max(item["last"], at)
     if value is not None:
         item["value"] = max(item["value"] or value, value)
@@ -2576,7 +2698,7 @@ def health_section(name, prefix, items, exposure, now, ok, blind=""):
     for (rule, ident), item in sorted(items.items(), key=lambda kv: (-LEVELS[kv[1]["level"]], -kv[1]["last"])):
         limit_key, unit = HEALTH_LIMITS.get(rule, (None, "events"))
         red = item["level"] == "red"
-        say, head = ("%s, %d time%s in 24 h" % (label, item["count"], "" if item["count"] == 1 else "s") if red
+        say, head = ("%s, %d %s%s in 24 h" % (label, item["count"], item["noun"], "" if item["count"] == 1 else "s") if red
                      else "%s, under its %s limit" % (label, fmt_long(LIMITS[limit_key]) if unit == "s" else "%d %s" % (
                          LIMITS[limit_key], unit)) for label in (item["label"], item.get("head") or item["label"]))
         rows.append(row([clip(item["label"], 60), fmt_count(item["count"]), time.strftime(
@@ -2719,6 +2841,22 @@ def write_classes(paths):
     return dict(zip(paths, found)) if out.returncode == 0 and len(found) == len(paths) + 1 else {}
 
 
+def growth_root(path, skills):
+    """(root, on_demand): the skill directory, else the docs tree, else the file. A skill's files other than
+    its SKILL.md load only when it runs, not the every-chat context growth_min_b prices (design §11)."""
+    parent = os.path.dirname(path)
+    while parent != os.path.dirname(parent):
+        if parent not in skills:
+            skills[parent] = os.path.isfile(os.path.join(parent, "SKILL.md"))
+        if skills[parent]:
+            return parent, not (os.path.dirname(path) == parent and os.path.basename(path).upper() == "SKILL.MD")
+        parent = os.path.dirname(parent)
+    parts = path.split("/")
+    if "docs" in parts[:-1]:
+        return "/".join(parts[:parts.index("docs") + 1]), False
+    return path, False
+
+
 def guards_section(now):
     """What llm-doctor's Guards row judged: instruction-file growth no gate priced or passed, forged retry
     stamps, the gates' own faults, and a watcher or tripwire that went quiet."""
@@ -2742,6 +2880,8 @@ def guards_section(now):
                        head="a guard on instruction files failed")
     events = read_jsonl(os.path.join(state, "events.jsonl"), cutoff, "at") or ()
     classes = write_classes(str(p) for entry in events for p in entry.get("files") or [])
+    skills = {os.path.dirname(str(p)): True for entry in events for p in entry.get("files") or []
+              if os.path.basename(str(p)).upper() == "SKILL.MD"}
     for entry in events:
         at = iso_epoch(entry.get("at"))
         if at is None or not cutoff <= at <= now + 3600:
@@ -2751,23 +2891,40 @@ def guards_section(now):
         files = [str(p) for p in entry.get("files") or []]
         ref = "events:%s/%s" % (entry.get("at"), file_key(files[0]) if files else "-")
         if kind in ("change", "changed-between-sessions") and not entry.get("reverted"):
+            between = kind == "changed-between-sessions"
+            groups, aside = {}, {}
             for path, delta in zip(files, entry.get("bytes") or []):
                 if (not isinstance(delta, (int, float)) or delta <= 0 or not classes.get(path, "?")
                         or FIXTURE_PATH_RE.search(file_key(path))):
                     continue
                 gate = gate_verdict(decisions, path, at)
-                if gate == "passed" or delta < NEAR_SHARE * LIMITS["growth_min_b"]:
+                if gate == "passed":
                     continue
-                between = kind == "changed-between-sessions"
-                rule = "growth-denied" if gate else "growth-ungated"
-                ident = "between-sessions" if between else file_key(path)
-                label = "instruction files grew between sessions" if between else "%s grew %s" % (
-                    "/".join(path.rstrip("/").split("/")[-2:]), "after a denial" if gate else "with no gate seeing it")
-                health_hit(items, rule, ident, label, at, value=delta, ref="events:%s/%s" % (entry.get("at"), file_key(path)),
-                           excerpt="%s +%d B" % (file_key(path), delta),
-                           level="red" if delta > LIMITS["growth_min_b"] else "watch",
-                           head=None if between else "an instruction file grew %s" % (
-                               "after a guard refused it" if gate else "with no guard seeing it"))
+                root, on_demand = growth_root(path, skills)
+                if on_demand:
+                    aside[root] = aside.get(root, 0) + 1
+                    continue
+                groups.setdefault(("growth-denied" if gate else "growth-ungated", root), []).append((path, delta))
+            for (rule, root), grown in sorted(groups.items()):
+                total = sum(delta for _, delta in grown)
+                if total < NEAR_SHARE * LIMITS["growth_min_b"]:
+                    continue
+                denied = rule == "growth-denied"
+                label = "instruction files grew between sessions" if between else "%s%s grew %s" % (
+                    "/".join(file_key(root).rstrip("/").split("/")[-2:]), " (%d files)" % len(grown) if len(grown) > 1 else "",
+                    "after a denial" if denied else "with no gate seeing it")
+                listed = ", ".join("%s +%d B" % (os.path.basename(p) if p == root else os.path.relpath(p, root), delta)
+                                   for p, delta in grown)
+                if aside.get(root):
+                    listed += "; %d on-demand file%s not counted" % (aside[root], "" if aside[root] == 1 else "s")
+                health_hit(items, rule, "between-sessions" if between else file_key(root), label, at, value=total,
+                           ref="events:%s/%s" % (entry.get("at"), file_key(root)),
+                           excerpt="%s +%d B: %s" % (file_key(root), total, listed),
+                           level="red" if total > LIMITS["growth_min_b"] else "watch",
+                           head=None if between else "%s grew %s" % (
+                               "an instruction file" if len(grown) == 1 else "instruction files",
+                               "after a guard refused it" if denied else "with no guard seeing it"),
+                           n=len(grown), noun="file")
         elif kind == "stamp-forged":
             health_hit(items, "stamp-forged", file_key(files[0]) if files else "?", "forged retry stamp: %s" % (
                 "/".join((files[0] if files else "?").split("/")[-2:])), at, ref=ref,
@@ -2844,7 +3001,7 @@ def load_failures(tests, now, kills=()):
 
     groups = {}
     for t in tests:
-        groups.setdefault((t.get("repo"), t.get("label")), []).append(t)
+        groups.setdefault((t.get("repo"), t.get("label"), t.get("scope")), []).append(t)
     out = []
     for t in sorted(tests, key=lambda t: -t["end"]):
         if t.get("ok") is not False or now - t["end"] > LIMITS["test_slow_fresh_s"]:
@@ -2854,7 +3011,7 @@ def load_failures(tests, now, kills=()):
         busy = crowd(t)
         if busy < LIMITS["load_fail_suites"]:
             continue
-        for later in sorted(groups[(t.get("repo"), t.get("label"))], key=lambda x: x["end"]):
+        for later in sorted(groups[(t.get("repo"), t.get("label"), t.get("scope"))], key=lambda x: x["end"]):
             if (later.get("ok") is True and 0 < later["end"] - t["end"] <= LIMITS["load_pass_within_s"]
                     and crowd(later) <= 1):
                 out.append((t, busy, later))
@@ -2866,9 +3023,9 @@ def growth_section(growth, now, spool=None):
     if not growth:
         return None
     latest = growth[-1]
-    week = [g for g in growth if g.get("t", 0) <= now - 6.5 * 86400]
+    week = [g for g in growth[:-1] if g.get("t", 0) <= now - 6.5 * 86400]
     before = week[-1]["stores"] if week else {}
-    day = [g for g in growth if g.get("t", 0) <= now - 20 * 3600]
+    day = [g for g in growth[:-1] if g.get("t", 0) <= now - 20 * 3600]
     yesterday = day[-1]["stores"] if day else {}
     every = []
     for name, (count, size) in sorted(latest["stores"].items(), key=lambda kv: -(kv[1][1] or 0)):
@@ -2897,16 +3054,16 @@ def growth_section(growth, now, spool=None):
                        name, fmt_count(count or 0)) if runaway and not big
                    else "%s holds %s entries, %s" % (name, fmt_count(count or 0), fmt_bytes(size)))
         ident = slug(name)
+        rule, value, limit, unit = ("loose_objects", count, LIMITS["loose_red"], "entries") if loose else \
+            ("store_runaway", count, LIMITS["per_call_entries"], "entries") if runaway and not big else \
+            ("store_size", size, LIMITS["store_bytes"], "bytes") if (count or 0) <= LIMITS["store_entries"] and big else \
+            ("store_size", count, LIMITS["store_entries"], "entries")
         every.append(row([clip(name, 40), fmt_count(count) if count is not None else "–",
                           fmt_count(old) if old is not None else "–",
                           fmt_count((size or 0) / float(1 << 20)) if size is not None else "–"], red,
                          dim=not red and not note, key="growth:" + ident, say=say if red or note else None,
-                         judge=verdict("loose_objects" if loose else "store_runaway" if runaway and not big
-                                       else "store_size", ident, count,
-                                       LIMITS["loose_red"] if loose else LIMITS["per_call_entries"] if runaway and not big
-                                       else LIMITS["store_entries"], "entries", 24 * 7, 1,
-                                       "red" if red else "watch" if note else None, fact=say,
-                                       bad=int(bool(red or note)))))
+                         judge=verdict(rule, ident, value, limit, unit, 24 * 7, 1,
+                                       "red" if red else "watch" if note else None, fact=say, bad=int(bool(red or note)))))
     if spool is not None:
         count, oldest = spool
         stuck = oldest > 2 * SPOOL_STALE_S
@@ -2936,7 +3093,7 @@ def test_ident(repo, label, root=None):
     repo = repo or ""
     home = os.path.dirname(ROOT_DIR)
     main = repo and not repo.startswith("⧉") and os.path.isdir(os.path.join(home, repo, ".git"))
-    return "%s:%s" % (slug(repo) if main else "worktree", label)
+    return "%s:%s" % (slug(repo) if main else "worktree:" + (slug(repo.replace("⧉", "")) or "?"), label)
 
 
 def drop_column(rows, columns, index):
@@ -3424,10 +3581,12 @@ def load_ledger():
     try:
         with open(ledger_path(), "rb") as handle:
             raw = handle.read()
-        ledger = json.loads(raw)
-    except (OSError, ValueError):
+    except OSError:
         return {"owner": "Harness Doctor", "rows": [], "blind_spots": []}, b""
-    return ledger, raw
+    try:
+        return json.loads(raw), raw
+    except ValueError:
+        return None, raw
 
 
 def judge_digest(ledger_raw):
@@ -3454,7 +3613,7 @@ def ident_probes():
     rand = random.Random(0)
     word = lambda: "".join(rand.choice("abcdefghijklmnopqrstuvwxyz0123456789_") for _ in range(rand.randint(4, 12)))
     shapes = ("bash:%s", "event:%s", "%s.sh", "%s:%s", "~/%s/%s.md", "/Volumes/%s/%s", "inline-%s", "%s-%s",
-              "worktree:test_%s", "%s:test_%s", "busy-%s", "%s")
+              "worktree:%s:test_%s", "%s:test_%s", "busy-%s", "%s")
     return [shape % tuple(word() for _ in range(shape.count("%s"))) for shape in shapes for _ in range(20)]
 
 
@@ -3486,6 +3645,8 @@ def row_faults(entry, ids, probes):
 
 
 def ledger_faults(ledger):
+    if ledger is None:
+        return [("ledger", "is not JSON")]
     rows = ledger.get("rows") if isinstance(ledger, dict) else None
     if not isinstance(rows, list):
         return [("ledger", "rows is not a list")]
@@ -3512,7 +3673,10 @@ def ledger_row_by_id(ledger, ident):
 
 def last_fix_at(entry):
     fixes = (entry or {}).get("fixes") or []
-    return at_epoch(fixes[-1].get("at")) if fixes else None
+    if not fixes:
+        return None
+    at, landed = at_epoch(fixes[-1].get("at")), fix_landed(fixes[-1].get("in"), repos_dir())
+    return at if at is None or landed is None else max(at, landed)
 
 
 def all_verdicts(sections):
@@ -3567,7 +3731,7 @@ def settle_fixes(ledger):
 
 def write_fix_fields(judging):
     fresh, raw = load_ledger()
-    if not raw:
+    if not raw or not isinstance(fresh, dict):
         return
     rows = {r.get("id"): r for r in fresh.get("rows") or () if isinstance(r, dict)}
     for entry in judging.get("rows") or ():
@@ -3772,7 +3936,7 @@ def error_document(now, started, error, ledger_raw=b""):
     except OSError:
         judge = None
     return {"contract": CONTRACT, "doctor": "harness", "as_of": iso_time(now), "as_of_s": int(now), "judge": judge,
-            "status": "error", "problem_count": 0, "problems": [], "blind_spots": [],
+            "status": "error", "problem_count": None, "problems": [], "blind_spots": [],
             "self": {"collector_s": round(time.monotonic() - started, 2), "error": error},
             "red": 1, "local_slow": [], "title": "Harness doctor: error · " + clip(error, 80), "sections": [],
             "periods": {}, "extras": [line(error, dim=False, red=True)], "footer": "as of %s" % time.strftime("%H:%M", time.localtime(now))}
@@ -3832,8 +3996,11 @@ def collect(write, now):
         if write:
             with open(os.path.join(folder, "growth.jsonl"), "a") as handle:
                 handle.write(json.dumps(growth[-1], separators=(",", ":")) + "\n")
-    reach = 2 * 3600 * max(h for h in DOCTOR_WINDOWS_H if h not in WINDOW_MIN_DAYS)
-    days = days_between(now - reach, now)
+    reach = RAW_REACH_S
+    journal = state.setdefault("journal", {})
+    settled, upto = now - FLOOR_SETTLE_S, journal.get("floor_upto", now - reach)
+    since = max(min(upto, now - reach), now - JOURNAL_FILE_DAYS * 86400)
+    days = days_between(since, now)
     events = load_events(days) if write else load_events(days) + new_events
     today = local_day(now)
     today_rows = [e for e in events if local_day(e[1]) == today]
@@ -3841,18 +4008,18 @@ def collect(write, now):
     raw = {"events": [e for e in events if now - e[1] <= reach], "samples": samples,
            "events_since": day_start(os.path.basename(logged[0])[:-6]) if logged
            else min((e[1] for e in new_events), default=None)}
-    raw["hooks"], raw["hooks_since"] = journal_runs(now - reach, () if write else fresh_spool)
+    raw["hooks"], raw["hooks_since"] = journal_runs(since, () if write else fresh_spool)
     raw["hook_slots"] = state["journal"]["slots"]
-    calls24 = [e for e in raw["events"] if e[0] == "c"]
-    view = hook_view(hooks, raw["hooks"], calls24, now, session_repos(state.setdefault("journal", {}), calls24, now))
-    raw["floors"] = [(f["t"], f["cls"], f["ms"]) for f in view["floors"]]
-    journal = state.setdefault("journal", {})
-    settled, upto = now - FLOOR_SETTLE_S, journal.get("floor_upto", now - reach)
+    calls_since = [e for e in events if e[0] == "c" and e[1] > since]
+    view = hook_view(hooks, raw["hooks"], calls_since, now, session_repos(journal, calls_since, now), now - 86400)
     for floor in view["floors"]:
         if upto < floor["t"] <= settled:
             day = journal.setdefault("floor_days", {}).setdefault(local_day(floor["t"]), {})
             hist_put(day.setdefault(floor["cls"], hist_new()), floor["ms"])
     journal["floor_upto"] = max(upto, settled)
+    floors_reach = [f for f in view["floors"] if now - f["t"] <= reach]
+    raw["floors"] = [(f["t"], f["cls"], f["ms"]) for f in floors_reach]
+    view["floors"] = [f for f in floors_reach if now - f["t"] <= 86400]
     events = [e for e in events if now - e[1] <= 86400]
     calls = [e for e in events if e[0] == "c"]
     cuts = [e for e in events if e[0] == "x"]
@@ -3879,7 +4046,7 @@ def collect(write, now):
     growth_part = growth_section(growth, now, spool_backlog(now))
     if growth_part:
         sections.append(growth_part)
-    impact = change_impact(calls, samples, now, view["floors"], tests)
+    impact = change_impact(calls, samples, now, floors_reach, tests)
     attach_causes(state, sections, changes_log, impact, now)
     red = sum(1 for s in sections if s["state"] == "problem")
     recent = sorted([c for c in changes_log if c["at"] >= now - 7 * 86400], key=lambda c: -c["at"])
@@ -3986,6 +4153,7 @@ def guarded_collect(write, now):
         return collect(write, now)
     except Exception as exc:
         document = error_document(now, started, error_line(exc), load_ledger()[1])
+        document["local_slow"] = read_json(os.path.join(state_dir(), "latest.json"), {}).get("local_slow") or []
         if write:
             publish(state_dir(), document)
         return document

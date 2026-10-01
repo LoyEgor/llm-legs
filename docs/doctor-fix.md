@@ -10,6 +10,9 @@ one area (`docs/night-run.md`). Work autonomously and go deep. Updater release e
   ledger row, earlier runs' decisions, the component with its files and rule line, each file's first
   and last 5 commits, and the handoffs, invariant rows and memory files naming it. These ids are your
   scope; a problem that appeared after launch goes into the report for the next run.
+- Its `known, quiet` rows are open ledger rows the doctor's window did not see: check in the code
+  whether each cause still stands, then fix it or write in the row's `note` why not. They need no
+  decision line.
 - Read this common part and your own doctor's section below; skip the other doctors' sections.
 
 ## 1. Purpose before fixes
@@ -27,7 +30,8 @@ one area (`docs/night-run.md`). Work autonomously and go deep. Updater release e
 
 Each decision line's `purpose` column cites where the goal is stated, and it must touch the
 component: one of its files (`path` or `path:line`), or `repo@hash` of a commit that changed one.
-When the packet names no component file, any file or commit that resolves is accepted.
+A problem whose packet names no component file (a machine-wide row) closes with its decision
+recorded `component: unverified`, shown by `doctor-fix show` and `night-run report`.
 `doctor-fix close` refuses anything else.
 
 ## 2. Decide every problem
@@ -74,15 +78,17 @@ job (your section says what it counts); never wait for it.
 ## 5. Close
 
 1. Rerun the doctor. By day, `bin/llm-doctor --quiet`, `bin/harness-doctor --quiet` or
-   `bin/updater-doctor --quiet` rewrites `latest.json`; at night see Night.
+   `bin/updater-doctor --quiet` rewrites `latest.json`; at night close reruns it (see Night).
 2. Write a decisions file with one line per problem id of the run:
    `id<TAB>fixed|ruled-out|weather|blind-spot|handoff<TAB>purpose<TAB>evidence`. `evidence` is a
    test name, a `file:line`, a document fact or a handoff path. If `judge` moved since launch, add
    `judge<TAB>changed<TAB>purpose<TAB>why`, the purpose a file of the judge (the doctor or its
    ledger) or a commit that changed one.
-3. Run `bin/doctor-fix close <run id> --decisions <file> [--doc <document>] <one-line note>`. It
-   refuses until every id is decided and every citation resolves and touches its component, and it
-   refuses an abandoned or failed run.
+3. Run `bin/doctor-fix close <run id> --decisions <file> <one-line note>`. It refuses until every
+   id is decided, every citation resolves and touches its component, and every `fixed` id reads
+   `fixed-pending` or is gone in the doctor's document, which must not read `status: error`; it
+   refuses an abandoned or failed run. A launch on a `status: error` document snapshots one
+   problem, `collector:error`, whose component is the doctor itself.
 4. Rewrite the `Status:` line of every handoff you settled.
 
 ## 6. Report
@@ -95,18 +101,19 @@ one line of why and where it was fixed and tested; handoffs and blind spots adde
 
 The brief (`<runs>/<id>.brief.md`) names your area, worktree and branch `night/<night-id>/<run-id>`.
 It replaces the pour:
-- Work only in that worktree; a second repository gets its own worktree on the same branch name,
-  started from that repository's `refs/night/<night>/base` (main as pressed, uncommitted work included).
-  Never write a main checkout: hooks and other chats read it.
+- Work only in that worktree and the `ADD-DIR:` worktrees at the top of the brief: one per other
+  repository the components name, on the same branch, started from that repository's
+  `refs/night/<night>/base` (main as pressed, uncommitted work included). A change in any other
+  repository is a handoff. Never write a main checkout: hooks and other chats read it.
 - Commit on your branch (one long line). Never push, review or merge: the orchestrator reviews the
   branch, has you fix findings, rebases and pushes.
 - Never ask Egor anything and never stop on a question: decide, or hand off (§2).
-- Close against a run-local document, never the shared `latest.json` that launchd and other fixers
-  rewrite: from the worktree, `bin/<doctor>-doctor --json > <runs>/<id>.d/latest.json` (live
-  journals, your branch's code and ledger, nothing shared written), then `close … --doc` it. The judge
-  is compared with your branch's base, so a limit or dismissal you changed shows.
-- At the deadline the orchestrator abandons an unfinished run; it closes no more and its branch
-  stays unmerged.
+- Close from the worktree. It reruns `bin/<doctor>-doctor --json` there itself into
+  `<runs>/<id>.d/latest.json` (live journals, your branch's code and ledger, nothing shared written),
+  never the shared `latest.json` that launchd and other fixers rewrite. The judge is compared with
+  your branch's base, so a limit or dismissal you changed shows.
+- No deadline ends a run. A worker the `worker-run` watchdog stopped for no progress is hung: the
+  orchestrator abandons its run, which closes no more, and its branch stays unmerged.
 
 ## Updater doctor
 
@@ -193,13 +200,28 @@ walled is `walled`); a `bad command` is only the CLI's own refusal after launch 
 `EFFORT_REFUSED`/`MODEL_REFUSED` is the guard working, `off`); an `escaped` can be legitimate for a
 cross-repository brief — triage it with a model or detail row, never by dismissing the class.
 
+Browser words (`browser drift|upload|download|not sent|no output|price|profile|hide|owner step|other`,
+image block) are failed steps of the hidden-Chrome routes: `gemini-video`/`gemini-sfx` on Google Flow,
+`gemini-music` on the Gemini app (`share/gemini_web.py`, `share/gemini_music.py`, Playwright clicking the
+real page). The excerpt is the engine's `BROWSER_FAILURE` line: route, account, `shot=` (the screenshot
+under `~/.gemini-web/failures/`, with a `.txt` beside it: URL, open dialogs, toasts, visible buttons, page
+text) and the reason. Read both files before touching a selector: most causes are a renamed button, a
+new dialog or notice, or a changed upload flow. Reproduce for free with `gemini-web generate … --dry-run`
+or `gemini-music --dry-run` through the `image-gen` agent; a live generation spends credits and needs
+Egor's word. Never replace a UI step with an RPC replay. `owner step` is an account that needs Egor's
+one-time action (sign-in, a rights notice: the excerpt names it); relay it to him, never click it yourself
+without his yes. Superseded attempts (`…#n` refs) are accounts the rotation skipped before another one
+served: `watch` after `RECOVERED_MIN`. A ledger row narrows with `{word, detail}`, `detail` a regex over
+the reason (`^Upload files opened no file chooser`).
+
 ### Recompute and prove
 
 - Now, writing nothing: `bin/llm-doctor --json | jq '.problems'`; at a given time prefix
   `LLM_DOCTOR_NOW=<epoch>`; from fixtures `bash tests/test_llm_doctor.sh`.
 
 Proof (the doctor's, later): `fixed Nd · E since · 0 matched` with E ≥ 10 (`PROOF_MIN`) final legs
-of the row's block (and model) that STARTED after the last fix's `at`. Record a `fixes[]` entry
+of the row's block (and model) that STARTED after the last fix's `at`, or after its `in` reached
+main when that came later. Record a `fixes[]` entry
 `{at, by, files, in: null, regressed_at: null}` (`files` as `repo/path`, one repository per entry)
 and status `fixed-pending`; the doctor fills `in` once git shows every file committed after `at`.
 Never edit `in` by hand. A regressed fix keeps its entry (set `regressed_at`); the re-fix is a new one.

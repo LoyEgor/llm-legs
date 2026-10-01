@@ -355,8 +355,10 @@ assert workers[("failed · unclassified", "")]["count"] == 1, sorted(workers)
 assert doc["bugs"] == sum(block["bugs"] for block in doc["blocks"])
 machinery = blocks["reviewers"]["machinery"]
 assert [(item["class"], item["status"]) for item in machinery["classes"]] == [
-    ("anchors", "open"), ("closure_pending", "new"), ("debt_scope", "fixed"), ("integrity", "regressed")], machinery
-assert machinery["issues"] == 6 and machinery["classes"][0]["ledger"]["id"] == "M1", machinery
+    ("anchors", "open"), ("closure_pending", "new"), ("debt_scope", "new"), ("integrity", "regressed")], machinery
+# M3 names no commit, so it is a ledger fault and judges nothing: its class reads new.
+assert machinery["issues"] == 9 and machinery["classes"][0]["ledger"]["id"] == "M1", machinery
+assert machinery["classes"][2]["ledger"] is None, machinery
 for block in doc["blocks"]:
     for problem in block["problems"]:
         for incident in problem["incidents"]:
@@ -392,6 +394,7 @@ assert states["H1"] == ("open", "debt-gap", "H1") and "debt-gap:fixer-missing" n
 assert states["debt-gap:touch-failed/repo"] == ("new", "debt-gap", None), states
 assert states["M1"][0] == "open" and states["M2"][0] == "regressed" and "M3" not in states, states
 assert states["machinery:closure_pending"] == ("new", "machinery", None), states
+assert states["machinery:debt_scope"] == ("new", "machinery", None), states
 assert "matches every leg" in found["ledger:X5"]["fact"] and "deadbee is no commit" in found["ledger:M3"]["fact"], states
 assert sorted(pid for pid in found if pid.startswith("ledger:")) == ["ledger:M3", "ledger:X5"], states
 # First seen is the earliest start of any loaded leg of the cause, not of the window's.
@@ -746,7 +749,9 @@ assert sorted((row["id"], row["match"].get("until")) for row in committed["rows"
     ("N7", "2026-09-13T23:59:59+03:00")]
 assert sorted(word for word, origin in doctor.FAILURE_ORIGIN.items() if origin == "theirs") == [
     "bare 429", "cancelled", "capacity", "mismatch", "refused", "server error", "throttled", "walled"]
-assert set(doctor.FAILURE_ORIGIN.values()) == {"ours", "theirs"} and doctor.IMAGE_ORIGIN == {"bad output": "ours"}
+assert set(doctor.FAILURE_ORIGIN.values()) == {"ours", "theirs"} and doctor.IMAGE_ORIGIN == dict.fromkeys(
+    ("bad output", "browser not sent", "browser price", "browser profile", "browser upload", "browser download",
+     "browser no output", "browser hide", "browser drift", "browser owner step", "browser other"), "ours")
 assert doctor.PRELAUNCH_SKIP == ("LIGHT_OFF", "RESUME_BUSY", "DUPLICATE_RUN")
 assert doctor.PROFILE_HOME_RE.pattern == r"/\.(?:claude|gemini|codex|grok|opencode)-profiles/|/\.gemini/(?:antigravity/brain|tmp)/"
 assert doctor.MAIN_STATE_RE.pattern == r"/\.gemini/(?:antigravity/brain|tmp)/"
@@ -815,6 +820,41 @@ def crashed(start, end):
 assert [doctor.judge_leg_state(refixed, crashed(start, end))[0] for start, end in
         ((18100, 18000), (7400, 7000), (7100, 7000))] == ["fixed", "fixed", "regressed"]
 
+# A fix committed on a branch dates from when it reached main (W3, afb7e91): a leg between the two
+# ran on code without it and regresses nothing.
+late_repos, saved_repos = os.path.join(unit, "late-repos"), os.environ["LLM_DOCTOR_REPOS"]
+late = os.path.join(late_repos, "late")
+os.makedirs(late)
+def late_git(offset, *args):
+    env = dict(os.environ, GIT_COMMITTER_DATE="@%d" % (now - offset), GIT_AUTHOR_DATE="@%d" % (now - offset))
+    return doctor.subprocess.run(["git", "-C", late, "-c", "user.name=t", "-c", "user.email=t@t"] + list(args),
+                                 check=True, capture_output=True, text=True, env=env).stdout.strip()
+late_git(30000, "init", "-q", "-b", "main")
+late_git(30000, "commit", "-q", "--allow-empty", "-m", "base")
+late_git(9000, "checkout", "-q", "-b", "night/n/job")
+late_git(9000, "commit", "-q", "--allow-empty", "-m", "fix")
+branch_fix = late_git(9000, "rev-parse", "--short", "HEAD")
+late_git(8000, "checkout", "-q", "main")
+late_git(8000, "commit", "-q", "--allow-empty", "-m", "other")
+late_git(3000, "merge", "-q", "--no-ff", "-m", "land", "night/n/job")
+os.environ["LLM_DOCTOR_REPOS"] = late_repos
+landed = fixture_ledger([entry(narrow, "fixed", fixes=[fix_at(7200, "late@" + branch_fix)])])
+assert [doctor.judge_leg_state(landed, crashed(start, start - 50))[0] for start in (5000, 2000)] \
+    == ["fixed", "regressed"]
+other_fix = late_git(8000, "rev-parse", "--short", "HEAD^1")
+late_git(2500, "checkout", "-q", "-b", "night/n/two")
+late_git(2500, "commit", "-q", "--allow-empty", "-m", "fix one")
+two_fix = late_git(2500, "rev-parse", "--short", "HEAD")
+late_git(2400, "commit", "-q", "--allow-empty", "-m", "fix two")
+late_git(2300, "checkout", "-q", "-b", "night/n/open")
+late_git(2300, "commit", "-q", "--allow-empty", "-m", "never merged")
+open_fix = late_git(2300, "rev-parse", "--short", "HEAD")
+late_git(1000, "checkout", "-q", "main")
+late_git(1000, "merge", "-q", "--no-ff", "-m", "land two", "night/n/two")
+assert [doctor.fix_landed("late@" + ref, late_repos) for ref in (two_fix, open_fix, other_fix)] \
+    == [now - 1000, None, now - 8000]
+os.environ["LLM_DOCTOR_REPOS"] = saved_repos
+
 # A cause every retry hid still adds up: three lost attempts are a watch problem with their seconds.
 recovered = fixture_ledger([])
 lost = [doctor.leg("reviewers", "review", "kimi", now - 100 * step, "failed", "crashed", "crashed", "ours",
@@ -849,6 +889,90 @@ settled_ids, _ = doctor.settle_fixes({"by_id": {"C": cross}})
 assert list(settled_ids) == ["C"] and cross["status"] == "fixed" \
     and doctor.re.fullmatch(r"(one|two)@[0-9a-f]+", cross["fixes"][-1]["in"]), cross
 os.environ["LLM_DOCTOR_REPOS"] = saved_repos
+
+# A rescued worker run starts at its restamped attempt, not at its directory's epoch.
+rescued = os.path.join(unit, "runs", "codex-%d-9-f00d" % (now - 5000))
+os.makedirs(rescued)
+for name, text in (("tag", "main · astra · task\n"), ("err", "account lookup failed\n"), ("exit_code", "1\n"),
+                   ("meta.json", json.dumps({"started_at": now - 1000}))):
+    open(os.path.join(rescued, name), "w").write(text)
+os.utime(os.path.join(rescued, "exit_code"), (now - 500, now - 500))
+assert [row["start"] for row in doctor.worker_legs(now - 86400, now)[0]
+        if row["ref"] == os.path.basename(rescued)] == [now - 1000]
+shutil.rmtree(rescued)
+
+# A malformed row is a fault of its own, never a crash of the whole collection.
+id_less = dict(entry(narrow))
+del id_less["id"]
+for bad in (id_less, entry({"word": ["crashed"], "detail": "cell processing crashed"}), entry({"machinery": ""}, "open")):
+    assert doctor.row_faults(bad, ["Z"]), bad
+json.dump({"owner": "o", "owners": {block: "o" for block in doctor.BLOCKS},
+           "rows": [id_less, entry({"word": ["x"], "detail": "abcdef"}, id=["L"]), entry({"machinery": ""}, "open", id="E")],
+           "blind_spots": [{"id": "B"}]}, open(path, "w"))
+malformed = doctor.load_ledger()
+assert (malformed["by_id"], malformed["blind_spots"]) == ({}, []), malformed
+assert ("rows[0]", "no id") in malformed["faults"] and ("blind_spots", "each is {id, what, reason, since, would_catch_if}") \
+    in malformed["faults"], malformed["faults"]
+# One problem per faulty place, under the row's whole id.
+several = doctor.fault_problems([("leg-failure:workers/crashed", "no title"), ("leg-failure:workers/crashed", "block 'x'"),
+                                 ("blind_spots", "a"), ("blind_spots", "b")], 24, now)
+assert [(item["id"], item["count"]) for item in several] == [("ledger:leg-failure:workers/crashed", 2),
+                                                             ("ledger:blind_spots", 2)], several
+# A settlement meets a non-object row in the file without raising.
+fixture_ledger([pending])
+junk = dict(json.load(open(path)), rows=["junk", pending])
+json.dump(junk, open(path, "w"))
+source = open(path).read()
+doctor.write_settled({"Z": "review-bench@abc1234"}, source)
+assert json.load(open(path))["rows"][1]["status"] == "fixed"
+
+# A commit git cannot vouch for is a fault only when git says so, and such a row judges nothing.
+os.environ["LLM_DOCTOR_REPOS"] = late_repos
+assert doctor.missing_commit("late@" + branch_fix) is None and doctor.missing_commit("late@deadbee")
+os.environ["PATH"] = unit
+assert doctor.missing_commit("late@deadbee") is None
+os.environ["PATH"] = saved_path
+bogus = fixture_ledger([entry(narrow, "fixed", fixes=[fix_at(7200, "late@deadbee")])])
+_, bogus_faults = doctor.settle_fixes(bogus)
+assert bogus_faults == [("Z", "deadbee is no commit of late")] and "Z" not in bogus["by_id"], bogus_faults
+assert doctor.judge_leg_state(bogus, crashed(100, 50)) == ("new", None)
+os.environ["LLM_DOCTOR_REPOS"] = saved_repos
+
+# Frozen history keeps a row that is only faulty for now, and moves an unledgered id to a row that now claims it.
+frozen = {"reviewers|sol|failed|crashed|ours|Z": 4, "reviewers|sol|failed|crashed|ours|leg-failure:reviewers/crashed": 3}
+faulty = fixture_ledger([entry(narrow, reviewed_by="")])
+assert doctor.relabel_frozen(frozen, faulty, now - 86400) == frozen
+claims = fixture_ledger([entry({"word": "crashed", "model": "^sol"}, "open", id="S")])
+assert doctor.relabel_frozen(frozen, claims, now - 86400) == {"reviewers|sol|failed|crashed|ours|S": 7}
+
+# Hidden retries count only while their row still calls them bugs; a fix-proof row is listed once and keeps
+# a post-fix match even at full exposure.
+def hidden_attempts(ledger, start):
+    rows = [doctor.leg("reviewers", "review", "kimi", now - 100 * step, "failed", "crashed", "crashed", "ours",
+                       attempt="superseded", start=now - start - 100 * step, text="cell processing crashed",
+                       event="bench:h/kimi#%d" % step) for step in (1, 2, 3)]
+    doctor.mark_problems(ledger, rows)
+    return [(item["id"], item["rule"], item["state"]) for item in doctor.leg_problems(ledger, rows, now - 86400, 24, now)]
+assert hidden_attempts(fixture_ledger([entry(narrow)]), 0) == []
+fixed_z = [entry(narrow, "fixed", fixes=[fix_at(7200)])]
+assert hidden_attempts(fixture_ledger(fixed_z), 9000) == [("Z", "fix-proof", "watch")]
+assert hidden_attempts(fixture_ledger(fixed_z), 0) == [("Z", "leg-failure", "watch")]
+proven = fixture_ledger([entry({"word": "crashed", "model": "^sol"}, "fixed", fixes=[fix_at(90000)])])
+history = [doctor.leg("reviewers", "review", "sol", now - 80000 + step, None, None, "", "", start=now - 80000 + step - 10)
+           for step in range(10)]
+history.append(doctor.leg("reviewers", "review", "sol", now - 70000, "failed", "crashed", "crashed", "ours",
+                          start=now - 70010))
+doctor.mark_problems(proven, history)
+assert [(item["id"], item["rule"]) for item in doctor.leg_problems(proven, history, now - 3600, 1, now)] \
+    == [("Z", "fix-proof")]
+
+# A machinery or debt fix awaiting its commit stays listed once its anomalies are gone.
+awaiting = fixture_ledger([entry({"machinery": "integrity"}, "fixed-pending", fixes=[fix_at(100, None)], id="MP"),
+                           entry({"health": "debt", "key": "^debt-gap:abcdef"}, "fixed-pending", fixes=[fix_at(100, None)],
+                                 id="HP", block="any")])
+assert [(item["id"], item["state"]) for item in doctor.pending_fix_problems(awaiting, [], 24, now)] \
+    == [("MP", "fixed-pending"), ("HP", "fixed-pending")]
+assert doctor.pending_fix_problems(awaiting, [{"id": "MP"}, {"id": "HP"}], 24, now) == []
 
 # A collector that throws leaves an error document, never an older document's colour.
 os.environ["LLM_DOCTOR_DIR"] = os.path.join(unit, "doctor-error")

@@ -21,8 +21,10 @@ INLINE = re.compile(r"`[^`\n]*`")
 # Typographic quotes only: a straight quote also delimits every string literal, and a Russian prompt
 # inside agent("...") or codex exec "..." is exactly the text this rule exists to catch.
 QUOTED = re.compile(r"«([^«»]*)»|“([^“”]*)”|„([^„“”]*)[“”]")
-# A Latin path or URL pads the letter count of a Russian brief under SHARE_MAX.
-PATHISH = re.compile(r"\S*/\S*")
+# A Latin path or URL pads the letter count of a Russian brief under SHARE_MAX; Russian words joined
+# by a slash are prose and stay. Anchored at a token start (else each start rescans the token:
+# quadratic); a quote mark ends it, so a path touching a closing » leaves the quote closed.
+PATHISH = re.compile(r"(?<![^\s«»“”„])[^\s«»“”„]*/[^\s«»“”„]*")
 QUOTE_WORDS_MAX = 6
 # A Russian brief cut into short quotes is still a Russian brief.
 QUOTED_WORDS_MAX = 24
@@ -49,15 +51,16 @@ def cyrillic_words(text):
 
 
 def prose(text):
-    for pattern in (FENCE, INLINE, PATHISH):
+    for pattern in (FENCE, INLINE):
         text = pattern.sub(" ", text)
+    text = PATHISH.sub(lambda m: m.group(0) if cyrillic_words(m.group(0)) else " ", text)
     budget = QUOTED_WORDS_MAX
 
     def trigger_phrase(match):
         nonlocal budget
         phrase = next(group for group in match.groups() if group is not None)
         words = len(cyrillic_words(phrase))
-        if words > QUOTE_WORDS_MAX or words > budget:
+        if not words or words > QUOTE_WORDS_MAX or words > budget:
             return match.group(0)
         budget -= words
         return " "

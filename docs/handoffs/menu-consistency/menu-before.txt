@@ -1514,3 +1514,5 @@ Doctors · 41 problems    ⟨1-22 .AppleSystemUIFont 13.0 rgb(0.90,0.25,0.20,a1.
       claude-sonnet-4-6    ⟨1-17 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
       ────
       gemini-20260925T203348Z · open · 1.2.10 → 1.2.13 · 4 d ago    ⟨1-63 Menlo-Regular 1
+
+[capture cut here by the hs -c reply; the rest of the before-state is lost]

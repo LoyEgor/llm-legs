@@ -2761,6 +2761,9 @@ assert grep -Fq "ctx ${DIM}55%${RESET} ${YELLOW}111k${RESET}" <<< "$garbage_out"
 
 LEARNED="$STATE_DIR/cache-ttl-learned"
 rm -f "$LEARNED"
+# Re-stamped: under load the suite can reach here minutes after NOW was taken, and a 5m cache
+# would already read as dead.
+NOW=$(date +%s)
 
 t_reset; t_assist $((NOW - 30)) fixmodel 100000 500 5m; t_stamp ctx-bk5
 bk5_out=$(run_statusline "$(statusline_payload ctx-bk5 "$(warm_extra "$TRANSCRIPT" 20 100000)")")
@@ -2902,7 +2905,7 @@ FAIL_COLLECTOR="$FIXTURES/fail-collector"
 printf '#!/usr/bin/env bash\nprintf boom >&2\nexit 2\n' > "$FAIL_COLLECTOR"
 chmod +x "$FAIL_COLLECTOR"
 SLOW_COLLECTOR="$FIXTURES/slow-collector"
-printf '#!/usr/bin/env bash\nsleep 3\nprintf slow >> "%s"\n' "$KICK_MARK" > "$SLOW_COLLECTOR"
+printf '#!/usr/bin/env bash\nsleep 10\nprintf slow >> "%s"\n' "$KICK_MARK" > "$SLOW_COLLECTOR"
 chmod +x "$SLOW_COLLECTOR"
 
 # The kick only fires in the fresh-headers write branch: a pinned account with
@@ -2944,7 +2947,8 @@ kick_reset
 kick_start=$(date +%s)
 STORE_MERGE_CMD="$SLOW_COLLECTOR" run_statusline "$kick_payload" kickacct >/dev/null \
   || fail "statusline kick with slow collector exited nonzero"
-assert test "$(( $(date +%s) - kick_start ))" -lt 2
+# Slept 10 s: a render under machine load can take seconds, never the collector's ten.
+assert test "$(( $(date +%s) - kick_start ))" -lt 8
 
 # --- Codex quota kick (bin/statusline.sh) ---
 CQ_ARGS="$WORK/codex-kick-args"
@@ -2955,7 +2959,7 @@ CQ_FAIL="$FIXTURES/codex-refresher-fail"
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\nprintf boom >&2\nexit 3\n' "$CQ_ARGS" > "$CQ_FAIL"
 chmod +x "$CQ_FAIL"
 CQ_SLOW="$FIXTURES/codex-refresher-slow"
-printf '#!/usr/bin/env bash\nsleep 3\nprintf "%%s\\n" "$*" >> "%s"\n' "$CQ_ARGS" > "$CQ_SLOW"
+printf '#!/usr/bin/env bash\nsleep 10\nprintf "%%s\\n" "$*" >> "%s"\n' "$CQ_ARGS" > "$CQ_SLOW"
 chmod +x "$CQ_SLOW"
 cq_stamp() { printf '%s' "$STATE_DIR/codex-quota-kick-$1"; }
 cq_reset() {
@@ -3029,9 +3033,9 @@ cq_reset
 cq_start=$(date +%s)
 CLAUDEGPT_ACCOUNT=work4 CODEX_REFRESH_CMD="$CQ_SLOW" run_statusline "$cq_payload" >/dev/null \
   || fail "claudegpt kick with slow refresher exited nonzero"
-assert test "$(( $(date +%s) - cq_start ))" -lt 2
+assert test "$(( $(date +%s) - cq_start ))" -lt 8
 # Its late write must land here, not in a later case's args file.
-for _ in $(seq 1 200); do [ -s "$CQ_ARGS" ] && break; sleep 0.05; done
+for _ in $(seq 1 400); do [ -s "$CQ_ARGS" ] && break; sleep 0.05; done
 assert_eq "--refresh-account codex/work4" "$(cat "$CQ_ARGS")"
 
 # F: the account label is an environment variable this process does not own — a name that is not
@@ -3884,21 +3888,22 @@ wl_out=$(run_statusline "$(statusline_payload wl-two)")
 assert_eq 4 "$(printf '%s\n' "$wl_out" | wc -l | tr -d ' ')"
 # A record with no repository keeps its fields in place: tab is IFS whitespace to `read`.
 printf 'main\ttests\t%s\t\tsuites\t2\t1\t5\n' "$((wl_now - 300))" > "$STATE_DIR/work-wl-norepo"
-assert grep -Eq '^tests · suites 2/5 ✗1 · 5m [0-2]s$' <<< "$(run_statusline "$(statusline_payload wl-norepo)" | sed -n 3p | wl_strip)"
-assert grep -Eq '^tests · llm-legs · suites 2/5 ✗1 · 5m [0-2]s$' <<< "$(sed -n 3p <<< "$wl_out" | wl_strip)"
-assert grep -Eq '^shell · ⧉ wt-one · git push · 3[0-2]s$' <<< "$(sed -n 4p <<< "$wl_out" | wl_strip)"
+assert grep -Eq '^tests · suites 2/5 ✗1 · 5m [0-9]+s$' <<< "$(run_statusline "$(statusline_payload wl-norepo)" | sed -n 3p | wl_strip)"
+assert grep -Eq '^tests · llm-legs · suites 2/5 ✗1 · 5m [0-9]+s$' <<< "$(sed -n 3p <<< "$wl_out" | wl_strip)"
+assert grep -Eq '^shell · ⧉ wt-one · git push · 3[0-9]s$' <<< "$(sed -n 4p <<< "$wl_out" | wl_strip)"
 assert grep -Fq "${MAGENTA}tests · llm-legs${RESET}" <<< "$wl_out"
 assert grep -Fq "${RED}✗1${RESET}" <<< "$wl_out"
 # Too narrow: the repo goes first, then the label shrinks to nothing; class, count and time stay.
 wl_narrow=$(FIT_COLUMNS=34 FIT_MARGIN=0 run_statusline "$(statusline_payload wl-two)")
-assert grep -Eq '^tests · suites 2/5 ✗1 · 5m [0-2]s$' <<< "$(sed -n 3p <<< "$wl_narrow" | wl_strip)"
+assert grep -Eq '^tests · suites 2/5 ✗1 · 5m [0-9]+s$' <<< "$(sed -n 3p <<< "$wl_narrow" | wl_strip)"
 wl_narrow=$(FIT_COLUMNS=24 FIT_MARGIN=0 run_statusline "$(statusline_payload wl-two)")
-assert grep -Eq '^tests · 2/5 ✗1 · 5m [0-2]s$' <<< "$(sed -n 3p <<< "$wl_narrow" | wl_strip)"
+assert grep -Eq '^tests · 2/5 ✗1 · 5m [0-9]+s$' <<< "$(sed -n 3p <<< "$wl_narrow" | wl_strip)"
 # At most three lines; the third says how many more are running.
+wl_now=$(date +%s)
 for wl_i in 1 2 3 4 5; do printf 'main\tshell\t%s\tr\tjob%s\t\t\t\n' "$((wl_now - 60 + wl_i))" "$wl_i"; done > "$STATE_DIR/work-wl-cap"
 wl_cap=$(run_statusline "$(statusline_payload wl-cap)")
 assert_eq 5 "$(printf '%s\n' "$wl_cap" | wc -l | tr -d ' ')"
-assert grep -Eq '^shell · r · job3 · 5[0-9]s · \+2$' <<< "$(sed -n 5p <<< "$wl_cap" | wl_strip)"
+assert grep -Eq '^shell · r · job3 · (5[0-9]s|1m [0-9]+s) · \+2$' <<< "$(sed -n 5p <<< "$wl_cap" | wl_strip)"
 # A cache the probe stopped refreshing is hidden, and an absent one sends the probe to write it.
 touch -t 202001010000 "$STATE_DIR/work-wl-two"
 assert_eq 2 "$(printf '%s\n' "$(run_statusline "$(statusline_payload wl-two)")" | wc -l | tr -d ' ')"
@@ -4550,6 +4555,15 @@ assert jq -e '.hookSpecificOutput.updatedInput.description == "gmroute · flash-
   <<< "$image_vendor" >/dev/null
 assert_eq 'gmroute · flash-image-3.1' "$(seed_of img-vendor image-gen)"
 
+# An AUDIO: brief runs a gemini script: its short name is that kind's, never the codex image default.
+# Music and sfx pick their own gemini-web profile, so an unpinned row says pool; listen asks the router.
+image_music=$(image_spawn img-music $'AUDIO: music\nA 60 s score.' "$IMAGE_PICK")
+assert_eq 'pool · lyria-3.5' "$(seed_of img-music image-gen)"
+image_listen=$(image_spawn img-listen $'AUDIO: listen\nIs the mix clean?' "$IMAGE_PICK")
+assert_eq 'gmroute · agy' "$(seed_of img-listen image-gen)"
+image_sfx=$(image_spawn img-sfx $'AUDIO: sfx\nACCOUNT: com\nA door knock.' "$IMAGE_PICK")
+assert_eq 'com · omni-1.1-flash' "$(seed_of img-sfx image-gen)"
+
 image_fanout=$(image_spawn img-fanout $'FANOUT: all\nACCOUNTS: all\nDraw a cat.' "$IMAGE_PICK")
 assert_eq 'fanout · image' "$(seed_of img-fanout image-gen)"
 image_fanout_pick=$(image_spawn img-fanout-pick $'FANOUT: codex|grok\nACCOUNTS: pick\nDraw a cat.' "$IMAGE_PICK")
@@ -5123,6 +5137,14 @@ debt_render() { # session repo
   done
   run_statusline "$payload" || fail "repo debt render failed: $1"
 }
+debt_settle() {
+  local i
+  for i in $(seq 1 200); do
+    compgen -G "$STATE_DIR/repo-debt-*" >/dev/null 2>&1 &&
+      ! compgen -G "$STATE_DIR/repo-debt-*.lock" >/dev/null 2>&1 && return 0
+    sleep 0.05
+  done
+}
 DEBT_CMD="$DEBT_STUB"
 : > "$DEBT_LOG"
 DEBT_ANSWER='LINES=153 FILES=16'
@@ -5174,6 +5196,8 @@ DEBT_CMD="$DEBT_STUB"
 DEBT_SLEEP=0.4
 debt_slow_out=$(run_statusline "$(statusline_payload repo-debt-slow "" "$REVIEW_DIRTY")")
 assert test "${debt_slow_out#*∑}" = "$debt_slow_out"
+# The slow probe still lands after its render; under load it would land inside the next case.
+debt_settle
 DEBT_SLEEP=
 # A machine with neither `timeout` nor `gtimeout` bounds the walk itself: the render is as silent as
 # with one, and the probe still frees its lock, so the next render is never blocked by a dead one.
@@ -5187,10 +5211,7 @@ rmdir "$STATE_DIR/repo-debt-"*.lock 2>/dev/null
 debt_nt_out=$(NO_TIMEOUT_BIN=1 run_statusline \
   "$(statusline_payload repo-debt-no-timeout "" "$REVIEW_DIRTY")")
 assert test "${debt_nt_out#*∑}" = "$debt_nt_out"
-for debt_wait in $(seq 1 100); do
-  [ -d "$debt_lock" ] || break
-  sleep 0.05
-done
+debt_settle
 assert test ! -d "$debt_lock"
 assert grep -Fq "∑21" <<< "$(NO_TIMEOUT_BIN=1 run_statusline \
   "$(statusline_payload repo-debt-no-timeout "" "$REVIEW_DIRTY")")"
@@ -6317,6 +6338,9 @@ for gate_lookup in \
   'command -v worker-run' \
   'type light-research' \
   'which codex-image' \
+  'gemini-music --help 2>&1 | head -20' \
+  '/Volumes/Work/Projects/llm-legs/bin/gemini-listen -h' \
+  'gemini-music --help </dev/null' \
   'hash -t light-research'; do
   gate_out=$(gate_payload "$gate_lookup" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
   assert_eq "" "$gate_out"
@@ -6327,6 +6351,11 @@ for gate_lookup_denied in \
   'env light-research' \
   'exec light-research' \
   'command codex-image --dest /tmp/a.png --prompt cat' \
+  'gemini-music --dest /tmp/a.mp3 --prompt x --help' \
+  'sh -c "gemini-music --dest /tmp/a.mp3 --prompt x"' \
+  'gemini-sfx --help; gemini-sfx --dest /tmp/a.wav --prompt x' \
+  'echo --dest /tmp/a.mp3 --prompt hi | xargs -J --help gemini-music --help' \
+  "true; gemini-music --help; H=--help; H='--dest /tmp/a.mp3 --prompt hi'; gemini-music \$H" \
   'command claudeb notcom -p go' \
   'command -v light-research && light-research --prompt-file /tmp/q' \
   'command -v claudeb; claudeb notcom -p go'; do
@@ -6403,6 +6432,31 @@ gate_out=$(relay_payload codex-worker relaysol "$(launch_with "" $'ACCOUNT: work
   fail "launch gate exited nonzero"
 assert jq -e '.hookSpecificOutput.permissionDecision == "deny" and
   (.hookSpecificOutput.permissionDecisionReason | contains("ACCOUNT: notcom"))' <<<"$gate_out" >/dev/null
+# A brief file the orchestrator wrote earlier carries its own lines; one the same call also writes
+# proves nothing by its old text.
+printf 'ACCOUNT: notcom\nMODEL: sol\n\nbody\n' >"$WORK/saved-brief.md"
+gate_out=$(relay_payload codex-worker relaysol "worker-run start codex --brief $WORK/saved-brief.md --workdir /tmp" | "$LAUNCH_GATE_BIN") ||
+  fail "launch gate exited nonzero"
+assert_eq "" "$gate_out"
+gate_out=$(relay_payload codex-worker relaysol "printf 'ACCOUNT: work4\n' >$WORK/saved-brief.md; worker-run start codex --brief $WORK/saved-brief.md --workdir /tmp" | "$LAUNCH_GATE_BIN") ||
+  fail "launch gate exited nonzero"
+assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
+mkdir -p "$WORK/saved-sub"
+printf 'ACCOUNT: work4\nMODEL: sol\n' >"$WORK/saved-sub/saved-brief.md"
+ln -sfn "$WORK/saved-brief.md" "$WORK/saved-link.md"
+for saved_respelled in \
+  "B=$WORK/saved-brief.md; printf 'ACCOUNT: work4\n' >\"\$B\"; worker-run start codex --brief \"\$B\" --workdir /tmp" \
+  "cd $WORK && printf 'ACCOUNT: work4\n' >./saved-brief.md; worker-run start codex --brief $WORK/saved-brief.md --workdir /tmp" \
+  "printf 'ACCOUNT: work4\n' >$WORK/saved-brief.md; worker-run start codex --brief $WORK/saved-link.md --workdir /tmp" \
+  "cd $WORK/saved-sub && worker-run start codex --brief saved-brief.md --workdir /tmp"; do
+  gate_out=$(cd "$WORK" && relay_payload codex-worker relaysol "$saved_respelled" | "$LAUNCH_GATE_BIN") ||
+    fail "launch gate exited nonzero"
+  assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
+done
+printf 'ACCOUNT: work4\nMODEL: sol\n\nbody\n' >"$WORK/other-brief.md"
+gate_out=$(relay_payload codex-worker relaysol "worker-run start codex --brief $WORK/other-brief.md --workdir /tmp" | "$LAUNCH_GATE_BIN") ||
+  fail "launch gate exited nonzero"
+assert jq -e '.hookSpecificOutput.permissionDecisionReason | contains("ACCOUNT: notcom")' <<<"$gate_out" >/dev/null
 # Only the heredoc written to that start line's own --brief carries a line, and research starts adopt
 # nothing in worker-run, so the line elsewhere in the call carries nothing for them.
 for carried_elsewhere in \
@@ -6761,7 +6815,7 @@ tr_render() { # columns
     WORKER_STATS_DIR="$TR_STATS" SUBAGENT_ROW_RESERVE=0 CLAUDE_LIMITS_ACCOUNT=rowacct "$RENDER_BIN"
 }
 # A second may tick between the fixture's clock and the renderer's; both spell the same width.
-tr_row() { jq -r --arg id "$2" 'select(.id == $id) | .content' <<<"$1" | perl -pe 's/\e\[[0-9;]*m//g; s/1m [5-9]s/1m 5s/'; }
+tr_row() { jq -r --arg id "$2" 'select(.id == $id) | .content' <<<"$1" | perl -pe 's/\e\[[0-9;]*m//g; s/(?<!tests )1m [0-9]+s/1m 5s/'; }
 tr_wide=$(tr_render 300) || fail "renderer exited nonzero"
 assert_eq 15 "$(grep -c . <<<"$tr_wide")"
 assert_eq 'acc · astra · high — Implement the parser fix · wait 3 · 1m 5s · ↓ 12.3k tok' "$(tr_row "$tr_wide" w1)"
@@ -6783,7 +6837,7 @@ assert_eq 'fix: acc · astra · high · e66f8e6 · wait 1 · 1m 5s' "$(tr_row "$
 # a cache the probe stopped refreshing says nothing.
 printf 'run\tcodex-9-9-wait\t%s\tpnpm test\n' "$(( $(date +%s) - 75 ))" > "$STATE_DIR/work-$TR_RSESS"
 assert_eq 'acc · astra · high — Implement the parser fix · wait 3 · tests 1m 15s · 1m 5s · ↓ 12.3k tok' \
-  "$(tr_row "$(tr_render 300)" w1 | perl -pe 's/tests 1m 1[5-9]s/tests 1m 15s/')"
+  "$(tr_row "$(tr_render 300)" w1 | perl -pe 's/tests 1m [0-9]+s/tests 1m 15s/')"
 touch -t 202001010000 "$STATE_DIR/work-$TR_RSESS"
 assert_eq 'acc · astra · high — Implement the parser fix · wait 3 · 1m 5s · ↓ 12.3k tok' "$(tr_row "$(tr_render 300)" w1)"
 rm -f "$STATE_DIR/work-$TR_RSESS"
@@ -6843,7 +6897,7 @@ printf 'T0 · double · bugs\nreview=%s\n' "$TR_REVIEW8" > "$TR_HOME_CACHE/$TR_R
 tr8_row() { # columns
   jq -cn --argjson cols "$1" --argjson start "$(( ($(date +%s) - 300) * 1000 ))" --arg sess "$TR_RSESS" '{session_id:$sess,columns:$cols,
     tasks:[{id:"r8",type:"local_agent",status:"running",description:"T0 debt review of chunk rows and the post-round delta",startTime:$start}]}' |
-    WORKER_STATS_DIR="$TR_STATS" "$RENDER_BIN" | jq -r '.content' | perl -pe 's/\e\[[0-9;]*m//g; s/5m [0-9]s/5m 0s/'
+    WORKER_STATS_DIR="$TR_STATS" "$RENDER_BIN" | jq -r '.content' | perl -pe 's/\e\[[0-9;]*m//g; s/5m [0-9]+s/5m 0s/'
 }
 assert_eq 'T0 · double · bugs · all 5/8 agy 2/4 ✗1 opus 1/2 sol ✓ · 5m 0s' "$(tr8_row 200)"
 # The default reserve is the top statusline's fit margin, 3: 62 cells fit in 65 columns.
@@ -6888,7 +6942,7 @@ trj_row() { # columns
   jq -cn --argjson cols "$1" --argjson start "$(( (TRJ_NOW - 245) * 1000 ))" --arg sess "$TR_RSESS" '{session_id:$sess,columns:$cols,
     tasks:[{id:"j1",type:"local_agent",status:"running",description:"x",startTime:$start,tokenCount:2400}]}' |
     WORKER_STATS_DIR="$TR_STATS" SUBAGENT_JUDGE_ROW="${TRJ_MODE:-}" "$RENDER_BIN" | jq -r '.content' |
-    perl -pe 's/\e\[[0-9;]*m//g; s/1m [0-9]+s/1m 5s/; s/4m [4-9]s/4m 5s/'
+    perl -pe 's/\e\[[0-9;]*m//g; s/1m [0-9]+s/1m 5s/; s/4m [0-9]+s/4m 5s/'
 }
 printf 'T0 · double · bugs\nreview=%s\n' "$TR_REVIEWJ" > "$TR_HOME_CACHE/$TR_RSESS/j1"
 trj_doc .

@@ -19,6 +19,12 @@ assert test "$(grep -c 'PASS: nice=10' <<<"$out")" = 2
 assert grep -q '2 PASS' <<<"$out"
 assert test "$(grep -c wall-clock <<<"$out")" = 0
 
+# A suite never sees the launching chat's session id (its worker pin) and writes no bytecode.
+mkdir -p "$WORK/env/tests"
+printf '#!/usr/bin/env bash\necho "PASS: sid=${CLAUDE_CODE_SESSION_ID:-none} pyc=${PYTHONDONTWRITEBYTECODE:-}"\n' >"$WORK/env/tests/test_env.sh"
+out=$(CLAUDE_CODE_SESSION_ID=chat-1 bash "$ROOT/share/run-suites.sh" --repo "$WORK/env" 2>&1)
+assert grep -q 'PASS: sid=none pyc=1' <<<"$out"
+
 # Wall-clock budget suites stay at the caller's nice; the parallel wave is what drops to 10.
 parent_nice=$(ps -o nice= -p $$ | tr -d '[:space:]')
 mkdir -p "$WORK/prio/tests"
@@ -94,4 +100,32 @@ assert grep -q $'^/elsewhere\ttest_d.sh\t99$' "$RUN_SUITES_TIMES"
 assert grep -Eq "^$WORK/order"$'\ttest_d.sh\t[01]$' "$RUN_SUITES_TIMES"
 assert test "$(grep -c "^$WORK/order"$'\t' "$RUN_SUITES_TIMES")" = 4
 
-printf 'PASS: %s asserts; run-suites runs the wave at nice 10 and wall-clock suites at the caller'\''s nice, in parallel, longest first, a worktree on branch B uses a sibling worktree on B else the main checkout, and a run leaves its progress pointer only while it lasts\n' "$asserts"
+# A python suite runs under an interpreter that imports pytest: the repo's .venv first, else
+# python3, else python3.X on PATH newest first; none at all is one clear line. The toolbox holds
+# every system binary but python, so no real interpreter answers.
+mkdir -p "$WORK/tools" "$WORK/fakepy" "$WORK/py/tests"
+for f in /usr/bin/* /bin/*; do
+  case "${f##*/}" in python*|pydoc*) ;; *) [ -e "$WORK/tools/${f##*/}" ] || ln -s "$f" "$WORK/tools/${f##*/}" ;; esac
+done
+fake_py() { # name has-pytest
+  printf '#!/bin/sh\n[ "$1" = -c ] && exit %s\necho "PASS: ran by %s"\n' "$([ "$2" = yes ] && echo 0 || echo 1)" "$1" >"$WORK/fakepy/$1"
+  chmod +x "$WORK/fakepy/$1"
+}
+fake_py python3 no
+fake_py python3.99 yes
+fake_py python3.100 yes
+fake_py python3.100-config yes
+touch "$WORK/py/tests/test_p.py"
+out=$(PATH="$WORK/fakepy:$WORK/tools" "$BASH" "$ROOT/share/run-suites.sh" --repo "$WORK/py" 2>&1)
+assert grep -q 'PASS: ran by python3.100' <<<"$out"
+mkdir -p "$WORK/py/.venv/bin"
+cp "$WORK/fakepy/python3.99" "$WORK/py/.venv/bin/python"
+out=$(PATH="$WORK/fakepy:$WORK/tools" "$BASH" "$ROOT/share/run-suites.sh" --repo "$WORK/py" 2>&1)
+assert grep -q 'PASS: ran by python3.99' <<<"$out"
+rm -rf "$WORK/py/.venv" "$WORK/fakepy"/python3.*
+out=$(PATH="$WORK/fakepy:$WORK/tools" "$BASH" "$ROOT/share/run-suites.sh" --repo "$WORK/py" 2>&1)
+assert test "$(grep -c 'no python with pytest' <<<"$out")" = 1
+out=$(PATH="$WORK/fakepy:$WORK/tools" "$BASH" "$ROOT/share/run-suites.sh" --repo "$WORK/repo" 2>&1)
+assert grep -q '2 PASS' <<<"$out"
+
+printf 'PASS: %s asserts; run-suites runs the wave at nice 10 and wall-clock suites at the caller'\''s nice, in parallel, longest first, a worktree on branch B uses a sibling worktree on B else the main checkout, a python suite runs under a python that imports pytest, and a run leaves its progress pointer only while it lasts\n' "$asserts"

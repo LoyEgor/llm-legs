@@ -16,12 +16,13 @@ This design folds in two frontier hunts (runs 20260929T225123Z-3e30191 and 20260
 - pours into the live main checkout;
 - account pile-up;
 - racing run records;
-- no deadline for the sweep;
+- a hung job with nothing to stop it;
 - a report that hides what did not land.
 
 ## Shape
 1. **Button.**
-   - Doctors menu → `Night run` → `bin/night-run start`. It writes the night record and opens ONE
+   - Doctors menu → `Run everything now (fixers · updates · cleanup)`, after a confirmation, →
+     `bin/night-run start`; off while a night runs. It writes the night record and opens ONE
      orchestrator chat via `chat_open`. That chat takes an account with a claim, runs under
      `caffeinate -i -w <its pid>`, and starts with the prompt
      `сделай чистку — night run <night-id>`.
@@ -49,13 +50,15 @@ This design folds in two frontier hunts (runs 20260929T225123Z-3e30191 and 20260
      - The orchestrator starts each brief as a headless worker (`worker-run`, `--workdir` the
        worktree; account from `worker-pick`).
    - **Vendors.** `vendor-fingerprint request --night <night-id>` makes one event per vendor with a
-     REAL waiting release (no manual full-checklist events at night). Each gets a worktree on
-     `night/<night-id>/<vendor>` and a brief. One headless worker per vendor.
-   - **Existing debt.** The orchestrator runs the sweep's debt rounds (night-sweep step 3) over the
-     debt that already sat in main at press time. Workers never touch main, so this runs beside them.
+     REAL waiting release (no manual full-checklist events at night). Each gets an updater fixer
+     run (the printed ref), a worktree on `night/<night-id>/<vendor>`, the same branch's worktrees in
+     review-bench and claude-setup as the brief's `ADD-DIR:` lines, and a brief. One headless worker
+     per vendor.
+   - **Existing debt.** The orchestrator runs the sweep's debt rounds (night-sweep step 3), each ONE
+     chunked round across all sweep repositories, over the debt that already sat in main at press
+     time. Workers never touch main, so this runs beside them.
 4. **Per branch, as soon as its worker returns** (a completion notification, never polling):
-   - The run closed, and its close gate passed inside the worktree against a run-local doctor
-     document.
+   - The run closed: its close gate reran the doctor inside the worktree and passed.
    - One T2 bugs review of that branch.
    - The orchestrator reads the decision table itself and checks every non-`fixed` verdict. That is
      the second model on a fixer's self-clearing.
@@ -65,15 +68,20 @@ This design folds in two frontier hunts (runs 20260929T225123Z-3e30191 and 20260
    - Commit (one long line) and push.
    - One commit per branch is fine: commit count does not matter to Egor. Merges into main are
      serial and short; everything else is parallel.
-5. **Deadline.**
-   - The night record carries `deadline_at` (default start + 4 h).
-   - At the deadline the orchestrator marks unfinished runs abandoned (`doctor-fix abandon`) and
-     stops their workers. Their branches stay unmerged and are named in the report.
-   - The debt recount loop also stops at the deadline, and what is left is named.
+5. **No deadline** (Egor, 2026-09-30: a 4 h deadline closed a night while a debt round was still
+   running, and its findings sat unfixed until noon).
+   - The orchestrator works until every job is `merged`, `nothing-to-do` or `blocked-on-egor`; a
+     round that finishes late is fixed and landed like any other.
+   - The only stop is for a hung job: `worker-run`'s watchdog ends a worker that shows no progress
+     (`WORKER_RUN_IDLE_S`, 30 min; a 6 h wall ceiling behind it). The orchestrator then abandons its
+     run (`doctor-fix abandon`) and records the job `left` with the watchdog's reason; its branch
+     stays unmerged and is named in the report.
 6. **Close.**
    - Rerun the three doctors. This settles the ledger's `fixed-pending` rows. Commit and push that
      bookkeeping as well, so nothing is dirty after the last push.
-   - `night-run finish` writes the morning result, then `span-off`.
+   - `night-run finish` writes the morning result, then `span-off`. It also removes every night's
+     worktree and branch that landed (in main, or still at its night's base) and is clean with no
+     process inside; the rest stay, named `kept`, for the next Continue or Cleanup.
 
 ## Isolation rules
 - At night a worker never writes the main checkout.
@@ -90,7 +98,8 @@ This design folds in two frontier hunts (runs 20260929T225123Z-3e30191 and 20260
 
 ## Morning record
 `~/.cache/doctors/nights/<night-id>.json`:
-- `id`, `started_at`, `deadline_at`, `finished_at`, and the orchestrator's `session`;
+- `id`, `started_at`, `finished_at`, the orchestrator's `session` and, once resumed, the earlier
+  ones in `previous_sessions`;
 - `doctors_before` and `doctors_after` (problem counts);
 - `jobs[]`, each with:
   - `kind` (fixer, vendor or debt) and `ref` (run id, event id or review round);
@@ -99,13 +108,41 @@ This design folds in two frontier hunts (runs 20260929T225123Z-3e30191 and 20260
     the remote).
 
 Jobs start `pending`; `finish` turns any still `pending` into `left`. `pushed` is set only after
-the commits are verified on the remote (`ls-remote` plus ancestry). A chat that fails to open finishes
+the commits are verified on the remote (`ls-remote`, the remote head fetched when it is missing
+locally, plus ancestry); a changed `commits` list clears it until `pushed=true` checks again. A chat that fails to open finishes
 the night at once with a note: red in the menu, never blocking a retry.
 
-`night-run report [<id>]` prints it narrowly: one line per job, then the totals.
+A night not finished reads `running` while a process carrying its orchestrator's `--session-id`
+lives, and `UNFINISHED` (red) once that chat is gone. Before the session is recorded the night
+carries `opener`, the pid of the `start` opening its chat, and reads `running` only while that
+process lives, so a start killed mid-open never blocks the next one. Only a running night refuses
+`start`.
 
-The Doctors menu shows the last night on one row, such as `Night: 7 merged · 1 left · pushed`. The
-row is red when anything was left, failed or is blocked on Egor.
+## Continue and Cleanup
+- `night-run start --resume <id> [--job <ref>]` reopens the SAME night for a new orchestrator
+  (prompt `сделай чистку — night run <id> resume`): `finished_at` and `doctors_after` go null, the old
+  `session` is appended to `previous_sessions`, and the unfinished (`left`, `pending`) jobs, or the one
+  `--job` names, go back to `pending` with their reasons kept. Without `--job` a `debt-<n>` job is
+  added when no debt job is pending. The review-flow gate needs no change: it reads the night's
+  `finished_at` and live `session`, so resumed workers commit on their `night/<id>/…` branches again.
+- `night-run start --cleanup` opens a new night with the prompt `сделай чистку — night run <id>
+  cleanup`: the orchestrator lands the finished night branches and runs the debt round, no fixers, no
+  updates.
+- The Doctors menu: `Cleanup now (land night branches · debt round)` above `Run everything`, behind
+  the same Cancel-first confirmation and off while a night runs; under the last night, while it does
+  not run, each unfinished job gets `Continue this job` one level down, and one item `Continue
+  unfinished (N jobs) + cleanup` resumes them all.
+
+`night-run report [<id>]` prints it narrowly: one line per job, then the totals. A job with commits
+shows `code +A/-R`: lines its commits add and remove, test paths (`tests/`, `test_*`) left out;
+`code ?` when a commit cannot be read. Information only: no threshold.
+
+The Doctors menu shows the last night on one row from `night-run latest --menu`, such as
+`Last night 30 Sep: 11 of 13 done and pushed · 2 unfinished`; its submenu lists every job, done or
+unfinished, with the reason in a few words and the whole reason one level down. Red only where Egor
+is needed: a job blocked on him or a failed launch. Output: a title line `text\tred\trunning\tid`,
+then one `text\tred\treason\tref\tkind\tresumable` line per job (`resumable` 1 for an unfinished job
+of a night that does not run).
 
 ## Day Fix button
 Unchanged. It opens an interactive chat on one doctor, and that chat pours into main uncommitted.

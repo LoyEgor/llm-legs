@@ -94,7 +94,9 @@ only with a stated reason), and every new capability is supported, per account, 
    review-bench transport (`share/rbench/launch.py` `run_<side>`, its stream-evidence parser): a
    changed event shape, tool name or parameter, output truncation or sandbox flag silently breaks what
    a cell reads or the report counts; where the release touches one, run one real cell and compare
-   its stream with its `rater_runs` row.
+   its stream with its `rater_runs` row. On every surface, look at the older blocks around what you
+   touch, not only at what you add: is a workaround there obsolete now, because the vendor does it
+   natively or its reason is gone? Then remove it.
 9. Per account: resolve and check each account the pool holds today (`codexb models --account`,
    per-account catalogs, entitlements); an entitlement refusal is typed apart from a usage limit.
 10. Live proof. LLM models: one real `worker-run` per new model (cheapest fitting account from
@@ -135,12 +137,14 @@ or transcripts.
 
 ## 6. Night (`docs/night-run.md`)
 
-`bin/vendor-fingerprint request --night <night-id>`: one headless worker per vendor with a real waiting
-release (never a manual one), a brief beside the event, a worktree `.claude/worktrees/night-<night>-<vendor>`
-on branch `night/<night>/<vendor>`. The day procedure holds except:
-- Step 14: commit on your branch in every worktree you changed (a second repository gets its own
-  worktree on the same branch name, from its `refs/night/<night>/base`); no pour, push, merge or removal: the orchestrator reviews,
-  rebases and pushes. `check --here <vendor>` runs in your worktree, waiting for the shared lock.
+`bin/vendor-fingerprint request --night <night-id>` prints `<run>\t<brief>\t<worktree>` per vendor with
+a real waiting release (never a manual one): an updater fixer run, a brief beside the event, a worktree
+`.claude/worktrees/night-<night>-<vendor>` on branch `night/<night>/<vendor>`, and the same branch's
+worktrees in review-bench and claude-setup as the brief's `ADD-DIR:` lines. Every repository needs its
+`refs/night/<night>/base`; without it that worktree is not made. The day procedure holds except:
+- Step 14: commit on your branch in every worktree you changed; a change in a repository without one
+  is a handoff. No pour, push, merge or removal: the orchestrator reviews, rebases and pushes.
+  `check --here <vendor>` runs in your worktree, waiting for the shared lock.
 - Steps 3 and 4 start in parallel. A generation (step 10), or any step needing Egor's word, is decided
   `blocked` with evidence `blocked-on-egor: <what his word unlocks>`; never wait for him.
 - The report is the brief's, in English, to the orchestrator; §5 is the day chat's.

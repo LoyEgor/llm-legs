@@ -8,7 +8,7 @@ DOCTOR="$ROOT/bin/harness-doctor"
 # project_of names /private/tmp and /private/var paths "tmp", so the fixture repos must sit on the
 # unresolved /var/folders path.
 WORK=$(mktemp -d "$(getconf DARWIN_USER_TEMP_DIR)hd.XXXXXX")
-trap 'rm -rf "$WORK"' EXIT
+trap '[ -z "${reused_pid:-}" ] || kill "$reused_pid" 2>/dev/null; rm -rf "$WORK"' EXIT
 export TZ=UTC HOME="$WORK/home"
 export CLAUDE_PROJECTS_DIR="$HOME/.claude/projects" HARNESS_SETTINGS="$HOME/.claude/settings.json"
 export STATUSLINE_CACHE_DIR="$WORK/statusline" MEMLOGD_DIR="$WORK/memlogd" INSTRUCTION_WATCH_STATE="$WORK/watch"
@@ -125,7 +125,9 @@ with open(os.path.join(journal, "hooks", "%d.tsv" % (T // 86400)), "w") as handl
 spool = os.path.join(journal, "hooks", "spool", "1.1")
 with open(spool, "w") as handle:
     handle.write("post-edit.sh\t0\t77\n")
-born = os.stat(spool).st_birthtime
+# utime can only move a birth time back, so the spool run is pinned before today 00:00 UTC.
+born = T - 43260
+os.utime(spool, (born, born))
 os.utime(spool, (born + 0.6, born + 0.6))
 with open(os.path.join(journal, "statusline", time.strftime("%Y-%m-%d", time.localtime(T)) + ".tsv"), "w") as handle:
     handle.write("".join("%d\t%d\ts1\n" % ((T - 600 + i) * 1000000, (T - 600 + i) * 1000000 + 80000)
@@ -706,7 +708,8 @@ PINNED = {"call_s": 5.0, "call_note_s": 3.0, "call_min_calls": 5, "cut_share": 0
           "hook_p50_s": 1.0, "hook_min_samples": 5, "busy": 0.90, "busy_note": 0.70, "kernel": 0.50,
           "kernel_note": 0.30, "forks": 2500, "forks_note": 1000, "unseen_cores": 5.0, "unseen_note": 2.0,
           "swap_share": 0.90, "suites_at_once": 5, "suites_note": 3, "test_slow_ratio": 2.0, "test_slow_min_s": 600,
-          "test_slow_fresh_s": 6 * 3600, "loose_note": 6700, "loose_red": 13400, "store_entries": 50000,
+          "test_slow_fresh_s": 6 * 3600, "test_cost_window_s": 24 * 3600, "long_pole_share": 0.5,
+          "long_pole_min_s": 300, "test_day_s": 2 * 3600, "test_day_note_s": 3600, "loose_note": 6700, "loose_red": 13400, "store_entries": 50000,
           "store_bytes": 1 << 30, "store_growth": 2.0, "impact_min_calls": 3, "floor_ms": 300, "floor_note_ms": 150,
           "floor_write_ms": 500, "floor_event_ms": 1000, "hook_note_ms": 150, "every_call_ms": 50,
           "full_work_ratio": 0.8, "full_work_min_ms": 10, "split_min_runs": 10, "history_ratio": 1.5,
@@ -814,6 +817,17 @@ check([r["id"] for r in after["rows"]] == ["p", "landed-meanwhile"] and after["r
       "settling a fix re-reads the ledger, so a row landed during the run survives the write")
 os.environ["HARNESS_LEDGER"] = prior_ledger
 
+subprocess.run(["git", "-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty",
+                "-m", "landed"], check=True, env=dict(os.environ, GIT_COMMITTER_DATE="@%d" % (T - 600)))
+late_row = dict(fixed_row, fixes=[dict(fixed_row["fixes"][0], **{"in": "fixrepo@" + subprocess.run(
+    ["git", "-C", repo, "log", "-1", "--format=%h"], capture_output=True, text=True).stdout.strip()})])
+before_landing = {"judge": [m.verdict("floor", "bash:trivial", 400, 300, "ms", 1, 25, "red",
+                                      evidence=[m.evidence(T - 3000, "tool_use z")])], "cells": ["x"]}
+check([p["state"] for p in m.problems_from([{"rows": [before_landing]}], {"rows": [late_row]}, {}, T)]
+      == ["fixed-pending"]
+      and [p["state"] for p in m.problems_from([{"rows": [back]}], {"rows": [late_row]}, {}, T)] == ["regressed"],
+      "a fix dates from when its commit landed, so an event between its at and the landing regresses nothing")
+
 roots = os.environ.pop("HARNESS_WATCH_ROOTS")
 check(os.path.join(m.ROOT_DIR, "hammerspoon") in m.watch_roots(), "the change log watches hammerspoon/*.lua")
 os.environ["HARNESS_WATCH_ROOTS"] = roots
@@ -910,7 +924,8 @@ fold.append(dict(test_row("⧉ wt-one", "test_fold", T - 1600, T - 100), repo_ro
 check([r["key"] for r in m.tests_section(fold, T)["rows"] if "test_fold" in r.get("key", "")]
       == ["tests:llm-legs:test_fold"] and slow_level(fold) == ["red"],
       "a worktree's run folds into its repository's test row, usual and id once the row names its repo_root")
-check(m.test_ident("⧉ wt-one", "test_fold") == "worktree:test_fold", "a row with no repo_root keeps its worktree id")
+check(m.test_ident("⧉ wt-one", "test_fold") == "worktree:wt-one:test_fold",
+      "a row with no repo_root keeps a worktree id that names its worktree")
 
 def aged(path, at, text=""):
     put(path, text)
@@ -1032,7 +1047,27 @@ check(judged(health(G, events=[change(T - 600, os.path.join(home, ".claude", "ho
       "J Guards: growth of a file no gate class speaks for is not judged")
 check(judged(health(G, events=[change(T - 600, kind="changed-between-sessions")]))
       == {("growth-ungated", "between-sessions"): "red"}, "Guards: growth between sessions has its own id")
-passed = {"at": T - 700, "decision": "passed", "gate": "write", "file": cmd}
+skill = os.path.join(home, ".claude", "skills", "tool")
+refs = [os.path.join(skill, "references", "r%d.md" % i) for i in range(40)]
+install = dict(change(T - 600), files=[os.path.join(skill, "SKILL.md")] + refs, bytes=[900] + [5000] * 40)
+part = health(G, events=[install])
+check(judged(part) == {("growth-ungated", "~/.claude/skills/tool"): "red"}
+      and [(j["value"], j["bad"]) for r in part["rows"] for j in r["judge"]] == [(900, 1)],
+      "Guards: one install of a skill is one problem keyed by the skill, its SKILL.md priced and its on-demand "
+      "files out of scope")
+put(os.path.join(skill, "SKILL.md"), "---\nname: tool\n---\n")
+check(judged(health(G, events=[dict(install, files=refs, bytes=[5000] * 40)])) == {},
+      "J Guards: growth only in an installed skill's on-demand files is not judged")
+docs = [os.path.join(home, "p", "docs", n) for n in ("a.md", "sub/b.md", "c.md")]
+part = health(G, events=[dict(change(T - 600), files=docs + [os.path.join(skill, "SKILL.md")], bytes=[50, 50, 50, 70])])
+check(judged(part) == {("growth-ungated", "~/p/docs"): "red", ("growth-ungated", "~/.claude/skills/tool"): "watch"}
+      and sorted((j["ident"], j["value"], j["bad"]) for r in part["rows"] for j in r["judge"])
+      == [("~/.claude/skills/tool", 70, 1), ("~/p/docs", 150, 3)],
+      "Guards: two roots in one change are two problems, a docs tree summing its files' bytes")
+check(judged(health(G, gates=[{"at": T - 700, "decision": "denied", "gate": "write", "file": p} for p in docs],
+                    events=[dict(change(T - 600), files=docs, bytes=[100] * 3)]))
+      == {("growth-denied", "~/p/docs"): "red"}, "Guards: growth after denials in one tree is one problem")
+passed ={"at": T - 700, "decision": "passed", "gate": "write", "file": cmd}
 check(judged(health(G, gates=[passed], events=[change(T - 600)])) == {}, "J Guards: growth a gate passed is quiet")
 denied = dict(passed, decision="denied")
 check(judged(health(G, gates=[denied], events=[change(T - 600)])) == {("growth-denied", "~/.claude/CLAUDE.md"): "red"},
@@ -1059,6 +1094,145 @@ ids = {p["id"] for p in m.problems_from([health(S, stop=[stop(T - 600, ("ask-x",
                                          health(G, events=[change(T - 600)])], {"rows": []}, {}, T)}
 check(ids == {"hook-error:ask-x", "growth-ungated:~/.claude/CLAUDE.md"},
       "Stop hooks and Guards problems carry <rule>:<ident> ids")
+def grown(t, n, size=1, name="context-nudge state"):
+    return {"t": t, "day": m.local_day(t), "stores": {name: [n, size]}}
+judged_growth = lambda part: [(j["rule"], j["value"], j["limit"], j["unit"]) for r in part["rows"]
+                              for j in r.get("judge", []) if j["level"]]
+check(judged_growth(m.growth_section([grown(T - 30 * 3600, 1500), grown(T - 21 * 3600, 3100)], T))
+      == [("store_runaway", 3100, 1000, "entries")],
+      "G: a per-call store that doubled since yesterday's sample is a watch when today's sample is already 21 h old")
+check(judged_growth(m.growth_section([grown(T - 3600, 10, 2 << 30, "some store")], T))
+      == [("store_size", 2 << 30, 1 << 30, "bytes")],
+      "G: a store over the byte limit reports its bytes and the byte limit, not its entry count")
+
+settings_file = os.path.join(work, "watched-settings.json")
+def settings_at(value, at):
+    put(settings_file, json.dumps(value))
+    os.utime(settings_file, (at, at))
+saved_settings, os.environ["HARNESS_SETTINGS"] = os.environ["HARNESS_SETTINGS"], settings_file
+settings_at({"env": {"API_KEY": "sk-old-secret"}, "permissions": {"allow": ["Bash(x%03d)" % i for i in range(20)]}}, T - 7200)
+watched = {"watched": {}, "settings": {}}
+m.watch_changes(watched, T - 7000, {}, [])
+settings_at({"env": {"API_KEY": "sk-new-secret"},
+             "permissions": {"allow": ["Bash(x%03d)" % i for i in range(20)] + ["Bash(added)"]}}, T - 7200)
+logged = [c for c in m.watch_changes(watched, T, {}, []) if c["kind"] == "setting"]
+os.environ["HARNESS_SETTINGS"] = saved_settings
+check(sorted(c["what"].split()[0] for c in logged) == ["env.API_KEY", "permissions.allow"],
+      "a change past the first 120 characters of a long setting is logged")
+check([c["at"] for c in logged] == [T - 7200] * 2, "a setting change is dated by the file's mtime, even over an hour old")
+check("secret" not in json.dumps(logged) + json.dumps(watched["settings"]),
+      "an env value never reaches the change log or the state")
+
+near_pair = [dict(test_row("llm-legs", "test_pair", T - 700, T - 100), repo_root="/r/llm-legs")]
+pair_marks = [{"start": T - 704, "label": "test_pair", "scope": "named", "pid": 1, "repo_root": "/r/llm-legs"},
+              {"start": T - 700, "label": "test_pair", "scope": "full", "pid": 2, "repo_root": "/r/llm-legs"}]
+check([t["scope"] for t in marked_history("pair", near_pair, pair_marks)] == ["full"],
+      "a run takes the scope marker nearest its start, not the first within the join window")
+
+scoped = [dict(t) for t in history[:-1]] + [dict(history[-1], ok=True)]
+for t in scoped:
+    if t["label"] in ("test_claudeb", "test_worker_run"):
+        t["scope"] = "full" if t.get("ok") is False else "named"
+check([x for x in m.tests_section(scoped, T)["lead"] if x.get("key") == "tests:load"][0]["cells"][0]
+      == "failed under load, 6 h: 0", "H: a full run that failed under load is not cleared by a named-suite run passing")
+
+slow_fold = [j for r in m.tests_section(fold, T)["rows"] for j in r.get("judge", []) if j["rule"] == "test_slow"
+             and j["level"]]
+check([(j["evidence"][0]["at"], j["exposure"]) for j in slow_fold] == [(m.iso_time(T - 1600), 1)],
+      "a slow test's evidence is its start, and its exposure counts only the runs in its window")
+fold_fixed = {"rows": [{"id": "fold-fix", "match": {"rule": "test_slow", "ident": "llm-legs:test_fold"},
+                        "status": "fixed", "fixes": [{"at": m.iso_time(T - 1000), "in": None}]}]}
+check([p["state"] for p in m.problems_from([m.tests_section(fold, T)], fold_fixed, {}, T) if p["id"] == "fold-fix"]
+      == ["fixed-pending"], "a slow run that started before the fix and ended after it does not regress the fix")
+load_mix = history[:-1] + [dict(history[-1], ok=True)]
+load_evidence = [j["evidence"][0]["at"] for x in m.tests_section(load_mix, T)["lead"]
+                 if x.get("key") == "tests:load" for j in x["judge"]]
+check(load_evidence and set(load_evidence) <= {m.iso_time(t["end"] - t["secs"]) for t in load_mix if t.get("ok") is False},
+      "a load failure's evidence is the failed run's start")
+
+twins = [test_row("⧉ wt-%s" % w, "test_same", T - 3600 * (4 - i) - 100, T - 3600 * (4 - i)) for w in "ab" for i in range(3)]
+check(sorted(r["key"] for r in m.tests_section(twins, T)["rows"] if "test_same" in r["key"])
+      == ["tests:worktree:wt-a:test_same", "tests:worktree:wt-b:test_same"],
+      "two worktrees with no repo_root running one label keep separate rows and idents")
+
+runs, calls = traffic(250, 200, nudge_big_ms=160)
+view = m.hook_view(hooks, runs, calls, T)
+t24 = timed(runs)
+sync_part = m.hooks_section(hooks, calls, [], [], 0, t24, t24, T, view["split"], m.probe_fast_paths(hooks))
+check({p["id"]: p["state"] for p in m.problems_from([sync_part], {"rows": []}, {}, T)}.get("hook_sync:gate-a.sh")
+      == "watch", "E: a synchronous hook over 150 ms reaches the problems as a watch")
+recent = m.hook_view(hooks, runs, calls, T, since=T - 1800)
+check(0 < recent["tool_batches"] < view["tool_batches"] and len(recent["floors"]) == len(view["floors"])
+      and 0 < len(recent["split"]["gate-a.sh"]["trivial"]) < len(view["split"]["gate-a.sh"]["trivial"]),
+      "the hook view counts batches and splits only since its window start, and keeps every floor")
+
+put(os.path.join(home, "hk", "lib", "readonly-command.sh"), 'rc_readonly_command() { return 0; }\n')
+fast_fixed = {"rows": [{"id": "fast-fix", "match": {"rule": "fastpath", "ident": "readonly-command\\.sh:bash"},
+                        "status": "fixed", "fixes": [{"at": m.iso_time(T - 3600), "in": None}]}]}
+fast_broken = m.hooks_section(hooks, calls, [], [], 0, t24, t24, T, {}, m.probe_fast_paths(hooks))
+put(os.path.join(home, "hk", "lib", "readonly-command.sh"), GOOD)
+check([p["state"] for p in m.problems_from([fast_broken], fast_fixed, {}, T) if p["id"] == "fast-fix"] == ["regressed"],
+      "D: a fast path failing now regresses its fix at once")
+
+keep_state = {"journal": {"slots": {str(int((T - 30 * 3600) // m.SLOT_S * m.SLOT_S)): {"k": m.hist_new()}}}}
+os.environ["HARNESS_DOCTOR_DIR"], saved_dir = os.path.join(work, "keep"), os.environ["HARNESS_DOCTOR_DIR"]
+m.read_journals(keep_state, T, False)
+check(len(keep_state["journal"]["slots"]) == 1, "hook slots live long enough for the previous 24 h window")
+yesterday = m.local_day(T - 86400)
+one = m.hist_new()
+m.hist_put(one, 200)
+put(os.path.join(os.environ["HARNESS_DOCTOR_DIR"], "days", yesterday + ".json"),
+    json.dumps({"v": m.SUMMARY_V, "waits": {}, "slow_s": 0, "floors": {"edit": one}}))
+late = {"rebuilt": m.SUMMARY_V, "journal": {"days": {}, "floor_days": {yesterday: {"edit": json.loads(json.dumps(one))}}}}
+merged = m.day_summaries(late, T, True, [], [], [])
+on_disk = m.read_json(os.path.join(os.environ["HARNESS_DOCTOR_DIR"], "days", yesterday + ".json"), {})
+os.environ["HARNESS_DOCTOR_DIR"] = saved_dir
+check(merged[yesterday]["floors"]["edit"][0] == on_disk["floors"]["edit"][0] == 2
+      and yesterday not in late["journal"]["floor_days"],
+      "floors that settle after their day was summarized join that day's summary")
+
+def full_run(end, secs, times, scope=None):
+    out = dict(test_row("llm-legs", "suites", end - secs, end), repo_root="/r/llm-legs", suite_secs=times)
+    if scope:
+        out["scope"] = scope
+    return out
+
+def cost_judges(tests, key):
+    part = m.tests_section(tests, T)
+    lead = [x for x in part["lead"] if x.get("key") == key][0]
+    return part, lead, {j["ident"]: j for r in (lead.get("menu") or {}).get("rows", []) for j in r.get("judge", [])}
+
+poles = [full_run(T - 7200, 700, {"test_big.sh": 300, "test_mid.sh": 290}),
+         full_run(T - 600, 700, {"test_big.sh": 650, "test_mid.sh": 200, "test_small.sh": 30}),
+         full_run(T - 300, 700, {"test_mid.sh": 690}, scope="changed"),
+         dict(full_run(T - 500, 200, {"test_a.sh": 150, "test_b.sh": 20}), repo_root="/r/claude-setup")]
+part, lead, pole = cost_judges(poles, "tests:pole")
+big = pole.get("llm-legs:test_big", {})
+check((big.get("level"), round(big.get("value") or 0, 2), big.get("exposure"), big.get("limit")) == ("red", 0.93, 2, 0.5)
+      and "450 s more than test_mid.sh" in big.get("fact", ""),
+      "long pole: the suite over half of its repository's latest full run is red, with its lead over the next suite")
+check(pole.get("claude-setup:test_a", {}).get("level") == "watch",
+      "long pole: over half of a full run under 5 min is a watch, a split saves under 2.5 min")
+check(lead["red"] and part["state"] == "problem" and lead in part["extra_red"] and "llm-legs:test_mid" not in pole,
+      "long pole: a red pole makes Tests a problem, and a changed-suites run is no full run")
+part, lead, pole = cost_judges([poles[1], full_run(T - 60, 700, {"test_big.sh": 300, "test_mid.sh": 290})], "tests:pole")
+check(pole.get("llm-legs:test_big", {}).get("level") is None and pole["llm-legs:test_big"]["value"] is not None
+      and not lead["red"], "long pole: only the latest full run is judged, and a balanced one stays a quiet value")
+costs = ([dict(test_row("llm-legs", "test_big", T - 3600 * i - 1500, T - 3600 * i), repo_root="/r/llm-legs")
+          for i in range(1, 6)]
+         + [dict(test_row("llm-legs", "test_mid", T - 3600 * i - 1110, T - 3600 * i), repo_root="/r/llm-legs")
+            for i in range(1, 4)]
+         + [dict(test_row("llm-legs", "test_mid", T - 30 * 3600 - 9000, T - 30 * 3600), repo_root="/r/llm-legs"),
+            full_run(T - 7200, 700, {"test_big.sh": 300, "test_mid.sh": 290}),
+            dict(test_row("llm-legs", "suites", T - 4000, T - 1000), repo_root="/r/llm-legs")])
+part, lead, cost = cost_judges(costs, "tests:cost")
+check((cost["llm-legs:test_big"]["level"], cost["llm-legs:test_big"]["value"], cost["llm-legs:test_big"]["exposure"])
+      == ("red", 7800, 6) and lead["red"] and lead in part["extra_red"],
+      "daily cost: a suite over 2 h of wall clock in 24 h, run alone or inside full runs, is red")
+check((cost["llm-legs:test_mid"]["level"], cost["llm-legs:test_mid"]["value"]) == ("watch", 3620),
+      "daily cost: over 1 h is a watch counting the suite's share of full runs, and a run that ended before the window is left out")
+check("llm-legs:suites" not in cost and lead["menu"]["rows"][-1]["cells"][:2] == ["suites runs without suite times", "1"],
+      "daily cost: a suites run without suite times is shown unattributed, never judged as a suite")
 for key, value in saved_env.items():
     if value is None:
         os.environ.pop(key, None)
@@ -1155,7 +1329,29 @@ assert_eq '["error",true]' "$(jq -c '[.status, (.self.error | test("line [0-9]+"
 assert_eq '1	Harness doctor: error' "$(head -1 "$WORK/broken/menu.txt" | cut -f2,4 | cut -c1-23)" \
   "the menu shows the error, never the previous document's colour"
 
-python3 - "$ROOT/share/harness-ledger.json" "$(dirname "$ROOT")" <<'LEDGER' || fail "the ledger breaks a contract guard"
+printf '{"local_slow": [[1, 2]]}' > "$WORK/broken/latest.json"
+HARNESS_SETTINGS="$WORK/broken-settings.json" HARNESS_DOCTOR_DIR="$WORK/broken" HARNESS_DOCTOR_NOW=$((T + 900)) \
+  HARNESS_DOCTOR_FAKE_SAMPLE="" "$DOCTOR" --quiet 2>/dev/null
+assert_eq '[null,[[1,2]]]' "$(jq -c '[.problem_count, .local_slow]' "$WORK/broken/latest.json")" \
+  "a failed collector keeps the last local_slow windows and counts its problems as unknown"
+
+printf '{"rows": [' > "$WORK/malformed-ledger.json"
+assert_eq '["ledger:ledger",true]' "$(HARNESS_LEDGER="$WORK/malformed-ledger.json" HARNESS_DOCTOR_DIR="$WORK/malformed" \
+  HARNESS_DOCTOR_NOW=$((T + 900)) HARNESS_DOCTOR_FAKE_SAMPLE="" "$DOCTOR" --json |
+  jq -c '[.problems[] | select(.rule == "ledger_fault") | .id, (.fact | test("not JSON"))]')" \
+  "a ledger that is not JSON is a ledger fault, never an empty ledger"
+
+catchup="$WORK/catchup"
+gap=$((T - 55 * 3600))
+mkdir -p "$catchup/hooks"
+printf '%d\t%d\tprompt-nice.sh\t0\t77\n' $((gap * 1000000)) $((gap * 1000000 + 400000)) > "$catchup/hooks/$((gap / 86400)).tsv"
+printf '{"journal": {"floor_upto": %d}}' $((T - 60 * 3600)) > "$catchup/state.json"
+HARNESS_DOCTOR_DIR="$catchup" HARNESS_DOCTOR_NOW=$T HARNESS_DOCTOR_FAKE_SAMPLE="" "$DOCTOR" --quiet || fail "a catch-up run failed"
+assert_eq 1 "$(jq '.floors["event:UserPromptSubmit"][0]' "$catchup/days/$(date -u -r "$gap" +%F).json" 2>/dev/null)" \
+  "a run after a gap longer than the raw reach still records the floors since its last run"
+
+ledger_guard() {
+python3 - "$1" "$(dirname "$ROOT")" <<'LEDGER'
 import json, os, re, subprocess, sys
 ledger = json.load(open(sys.argv[1]))
 assert ledger["owner"] == "Harness Doctor" and isinstance(ledger["rows"], list), "owner and rows"
@@ -1166,10 +1362,10 @@ for r in ledger["rows"]:
     assert set(r["same_cause"]) <= set(ids), r["id"]
     if r["status"] in ("fixed", "fixed-pending"):
         assert r["fixes"], "a fixed row names its fix: %s" % r["id"]
-    for fix in r["fixes"]:
+    for i, fix in enumerate(r["fixes"]):
         assert set(fix) == {"at", "by", "files", "in", "regressed_at"} and fix["files"], r["id"]
         assert all(re.fullmatch(r"[\w.-]+/.+", f) for f in fix["files"]), r["id"]
-        assert (fix["in"] is None) == (r["status"] == "fixed-pending"), r["id"]
+        assert i < len(r["fixes"]) - 1 or (fix["in"] is None) == (r["status"] == "fixed-pending"), r["id"]
         if fix["in"]:
             repo, commit = fix["in"].split("@")
             top = os.path.join(sys.argv[2], repo)
@@ -1178,6 +1374,16 @@ for r in ledger["rows"]:
 for b in ledger["blind_spots"]:
     assert set(b) == {"id", "what", "reason", "since", "would_catch_if"}, b
 LEDGER
+}
+ledger_guard "$ROOT/share/harness-ledger.json" || fail "the ledger breaks a contract guard"
+asserts=$((asserts + 1))
+jq '.rows = [{id: "refixed", title: "t", match: {rule: "floor", ident: "bash:refixed"}, status: "fixed-pending",
+  fixes: [{at: "2026-09-01T00:00:00+00:00", by: "c", files: ["llm-legs/bin/x"], in: "no-such-repo@abc1234",
+           regressed_at: "2026-09-02T00:00:00+00:00"},
+          {at: "2026-09-03T00:00:00+00:00", by: "c", files: ["llm-legs/bin/x"], in: null, regressed_at: null}],
+  same_cause: [], last_reviewed: null, reviewed_by: null, note: null, handoff: null}]' \
+  "$ROOT/share/harness-ledger.json" > "$WORK/refixed.json"
+ledger_guard "$WORK/refixed.json" 2>/dev/null || fail "the ledger guard fails a row whose repeat fix is pending over a committed one"
 asserts=$((asserts + 1))
 
 FIXTURE="$ROOT/tests/fixtures/harness-calibration"
@@ -1186,17 +1392,27 @@ for script in $(jq -r '.hooks[][].hooks[].command | split(" ")[0] | ltrimstr("~/
   printf '#!/bin/bash\n. ~/.claude/hooks/lib/hook-time.sh\n' > "$WORK/replay-home/hk/$script"
 done
 replay() {
-  mkdir -p "$WORK/replay-$1/hooks" "$WORK/replay-$1/projects"
+  mkdir -p "$WORK/replay-$1/hooks" "$WORK/replay-$1/projects" "$WORK/replay-$1/statusline"
   cp "$FIXTURE/hooks/20725.tsv" "$WORK/replay-$1/hooks/"
+  cp "$FIXTURE/statusline/test-history.jsonl" "$WORK/replay-$1/statusline/"
   HOME="$WORK/replay-home" HARNESS_SETTINGS="$FIXTURE/settings.json" HARNESS_DOCTOR_DIR="$WORK/replay-$1" \
     CLAUDE_PROJECTS_DIR="$WORK/replay-$1/projects" STATUSLINE_CACHE_DIR="$WORK/replay-$1/statusline" \
     MEMLOGD_DIR="$WORK/replay-$1/memlogd" INSTRUCTION_WATCH_STATE="$WORK/replay-$1/watch" \
     HARNESS_WATCH_ROOTS="" HARNESS_DOCTOR_NOW=1790695676 \
-    HARNESS_DOCTOR_FAKE_SAMPLE="" "$DOCTOR" --json | jq -c '[.problems[] | .id + "=" + .state]'
+    HARNESS_DOCTOR_FAKE_SAMPLE="" "$DOCTOR" --json > "$WORK/replay-$1.json"
+  jq -c '[.problems[] | .id + "=" + .state]' "$WORK/replay-$1.json"
 }
 first_ids=$(replay 1)
 assert_eq "$first_ids" "$(replay 2)" "the committed calibration fixture replays with the same problem ids"
-assert_eq '["floor:event:SessionStart=watch","hook-every-call-instruction-watch=watch","hook_every_call:statusline-workdir-hook.sh=watch","floor-trivial-bash-readonly-fastpath=fixed-pending","hook-every-call-context-nudge=fixed-pending","floor-edit-hooks=fixed-pending","guards-tripwire-rejournal=fixed-pending","ask-deferred-bg-task-hold-cap=fixed-pending","word-miss-deferred-reading-lost=fixed-pending","hook-grows-repos-commit-journal=fixed-pending","hook-grows-repos-review-flow-gate=fixed-pending","hook-grows-size-commit-journal=fixed-pending","hook-grows-size-review-flow-gate=fixed-pending"]' \
+assert_eq '["floor:event:SessionStart=watch","hook-every-call-instruction-watch=watch","hook_every_call:statusline-workdir-hook.sh=watch","hook_sync:instruction-watch.sh check=watch","test_daily_cost:llm-legs:test_instruction_gate=new","test_daily_cost:llm-legs:test_worker_run=new","test_long_pole:llm-legs:test_worker_run=new","floor-trivial-bash-readonly-fastpath=fixed-pending","hook-every-call-context-nudge=fixed-pending","floor-edit-hooks=fixed-pending","guards-tripwire-rejournal=fixed-pending","ask-deferred-bg-task-hold-cap=fixed-pending","word-miss-deferred-reading-lost=fixed-pending","hook-grows-repos-commit-journal=fixed-pending","hook-grows-repos-review-flow-gate=fixed-pending","hook-grows-size-commit-journal=fixed-pending","hook-grows-size-review-flow-gate=fixed-pending"]' \
   "$first_ids" "the 2026-09-29 18:27 calibration reads its known watches and every night fix as pending proof"
+assert_eq '["test_daily_cost:llm-legs:test_instruction_gate 10377.0 38","test_daily_cost:llm-legs:test_worker_run 8714.0 24","test_long_pole:llm-legs:test_worker_run 0.957 1"]' \
+  "$(jq -c '[.problems[] | select(.id | startswith("test_")) | "\(.id) \(.value) \(.exposure)"]' "$WORK/replay-1.json")" \
+  "the calibration's 24 h of llm-legs tests: test_worker_run is the long pole, both suites cost over 2 h"
 
-printf 'PASS: %s asserts; harness-doctor reads waits, cuts, hooks, load, tests and causes off fixtures, incrementally and under its lock, and compares every picker window, days off its day summaries and hours off the raw rows\n' "$asserts"
+# A Background agent gets no CPU under a saturated machine: on 2026-09-30 a run starved for 48 min
+# holding the lock, and the menu froze exactly when load was what it had to show.
+assert_eq Standard "$(plutil -extract ProcessType raw "$ROOT/launchd/com.egor.harness-doctor.plist")" \
+  "the doctor LaunchAgent runs in the Standard band, never Background"
+
+printf 'PASS: %s asserts; harness-doctor reads waits, cuts, hooks, load, tests and causes off fixtures, incrementally and under its lock in a LaunchAgent that is never starved, and compares every picker window, days off its day summaries and hours off the raw rows\n' "$asserts"

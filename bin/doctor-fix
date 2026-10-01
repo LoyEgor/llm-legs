@@ -30,16 +30,18 @@ JQ_EPOCH='def epoch: if type == "number" then . elif type == "string" then
         else ((.h | tonumber) * 3600 + (.m | tonumber) * 60) * (if .s == "-" then -1 else 1 end) end)) // null)
   else null end;'
 JQ_OPEN='def open: .closed_at == null and .abandoned_at == null and .failed_at == null;'
+JQ_AREA='def area: .area // (if .doctor == "updater" then "release" else "all" end);'
+JQ_COUNTS='"\(.problems | length) problems" + (if (.quiet // []) | length > 0 then " · \(.quiet | length) known, quiet" else "" end)'
 
 die() { printf 'doctor-fix: %s\n' "$*" >&2; exit 1; }
 stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 pending_id=''
 on_exit() {
+  store_lock_release "$runs_dir/.lock"
   if [ -n "$pending_id" ]; then
     locked fail_run "$pending_id" "the launcher exited before the run opened" >/dev/null 2>&1
   fi
-  store_lock_release "$runs_dir/.lock"
 }
 trap on_exit EXIT
 
@@ -96,7 +98,7 @@ new_record() { # doctor area night (locked) -> id
     '{id: $id, doctor: $doctor, area: $area, night: (if $night == "" then null else $night end), created_at: $t,
       launched_at: null, closed_at: null, abandoned_at: null, failed_at: null, account: null, session: null,
       command: null, branch: null, worktrees: [], judge_at_launch: null, judge_at_close: null,
-      problems: [], decisions: [], note: null}' >"$tmp" && mv -f "$tmp" "$file" || { rm -f "$tmp" "$file"; return 1; }
+      problems: [], quiet: [], decisions: [], note: null}' >"$tmp" && mv -f "$tmp" "$file" || { rm -f "$tmp" "$file"; return 1; }
   printf '%s\n' "$id"
 }
 
@@ -115,6 +117,12 @@ sys.path.insert(0, os.path.join(ROOT, "share"))
 from report_frame import fit
 DOCTORS = ("llm", "harness", "updater")
 HOOK_AREAS = ("Hooks", "Hook waits")
+LLM_ENTRIES = {"reviewers": "review-bench/bin/review-bench", "workers": "llm-legs/bin/worker-run",
+               "light": "llm-legs/bin/light-research", "image": "llm-legs/share/image-leg.sh",
+               "health": "llm-legs/bin/llm-doctor"}
+BROWSER_ENGINE = ("llm-legs/share/gemini_web.py", "llm-legs/share/gemini_music.py")
+UPDATER_MACHINERY = {rule: "llm-legs/bin/vendor-cli-update" for rule in ("pass-stale", "pass-failed", "cli-behind", "client-too-old")}
+UPDATER_MACHINERY.update({rule: "llm-legs/bin/vendor-fingerprint" for rule in ("probe-broken", "catalog-missing", "event-stuck", "foreign-client")})
 WIDTH = 200
 
 
@@ -175,8 +183,19 @@ def rule_at(doctor, rule):
     return None
 
 
+def dicts(value):
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+def strings(value):
+    return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+
 def snapshot(doctor, doc_file):
     doc, ledger = load(doc_file, {}), load(ledger_path(doctor), {}) or {}
+    if doc.get("status") == "error":
+        doc["problems"] = [{"id": "collector:error", "rule": "collector", "state": "new",
+                            "fact": "the collector failed: %s" % ((doc.get("self") or {}).get("error") or "no error text")}]
     rows = {r.get("id"): r for r in ledger.get("rows") or () if isinstance(r, dict)}
     owners = ledger.get("owners") or {}
     sections, hooks = {}, []
@@ -190,17 +209,24 @@ def snapshot(doctor, doc_file):
             for rule in rules:
                 sections.setdefault(rule, part.get("name"))
         try:
-            hooks = [(module.hook_ident(h["command"]), module.hook_script(h["command"])) for h in module.settings_hooks()]
+            hooks = [(module.hook_ident(h["command"]), module.hook_script(h["command"]), h["event"])
+                     for h in module.settings_hooks()]
         except Exception:
             hooks = []
+    problems = list(doc.get("problems") or ())
+    if doc.get("status") != "error":
+        seen = {p.get("ledger") for p in problems} | {str(p.get("id"))[7:] for p in problems if str(p.get("id")).startswith("ledger:")}
+        problems += [{"id": r["id"], "rule": (r.get("match") if isinstance(r.get("match"), dict) else {}).get("rule"),
+                      "ledger": r["id"], "state": "quiet", "fact": r.get("title")}
+                     for r in rows.values() if r.get("status") == "open" and r.get("id") and r["id"] not in seen]
     kept, watched = [], []
-    for problem in doc.get("problems") or ():
+    for problem in problems:
         pid, rule, state = problem.get("id"), problem.get("rule"), problem.get("state")
         row = rows.get(problem.get("ledger")) or (rows.get(pid[7:]) if str(pid).startswith("ledger:") else None)
         files, what = [], rule
         if doctor == "llm":
             block = (row or {}).get("block")
-            if row and "health" in (row.get("match") or {}):
+            if not isinstance(block, str) or row and isinstance(row.get("match"), dict) and "health" in row["match"]:
                 block = None
             match = re.match(r"^leg-(?:failure|escape):([a-z]+)/", pid)
             block = block or (match and match.group(1))
@@ -210,21 +236,41 @@ def snapshot(doctor, doc_file):
                                   or (pid.startswith("machinery:") and pid[10:] in classes)):
                     block = part.get("block")
             area = block or "health"
+            files.append(os.path.join(repos_dir(doctor), LLM_ENTRIES.get(area, LLM_ENTRIES["health"])))
             what = "%s block · owner «%s»" % (area, owners.get(area) or ledger.get("owner"))
+            match = (row or {}).get("match")
+            word = str((match if isinstance(match, dict) else {}).get("word") or pid.partition("/")[2])
+            if area == "image" and word.startswith("browser "):
+                files += [os.path.join(repos_dir(doctor), path) for path in BROWSER_ENGINE]
+                what = "hidden-Chrome route (Flow, the Gemini app), step %s · %s" % (word[8:], what)
             if pid.startswith("machinery:"):
                 what = "review-bench doctor class %s · %s" % (pid[10:], what)
         elif doctor == "harness":
             area = sections.get(rule) or "self"
             ident = pid.split(":", 1)[1] if ":" in pid else ""
-            files += [script for key, script in hooks if script and ident and key == ident]
+            match = (row or {}).get("match")
+            pattern = str((match if isinstance(match, dict) else {}).get("ident") or "")
+            try:
+                named_by_row = re.compile(pattern).fullmatch if pattern else lambda key: False
+            except re.error:
+                named_by_row = lambda key: False
+            files += [script for key, script, event in hooks if script and (named_by_row(key) or ident
+                      and (ident.split(":")[0] == key or ident == key or ident == "event:" + event))]
             if ident.startswith(("/", "~/")) and os.path.isfile(os.path.expanduser(ident)):
                 files.append(ident)
+            if rule in ("test_slow", "test_load_fail", "test_long_pole", "test_daily_cost") and ident.count(":") == 1:
+                repo, test = ident.split(":")
+                files += [f for f in (os.path.join(repos_dir(doctor), repo, "tests", test + ext) for ext in (".sh", ".py", ""))
+                          if os.path.isfile(f)][:1]
+            if rule == "collector":
+                files.append(doctor_script(doctor))
         else:
             if rule == "event-waiting":
                 continue
             area = "machinery"
-        for fix in (row or {}).get("fixes") or ():
-            files += [os.path.join(repos_dir(doctor), name) for name in fix.get("files") or ()]
+            files.append(os.path.join(repos_dir(doctor), UPDATER_MACHINERY.get(rule, "llm-legs/bin/updater-doctor")))
+        for fix in dicts((row or {}).get("fixes")):
+            files += [os.path.join(repos_dir(doctor), name) for name in strings(fix.get("files"))]
         entry = {"id": pid, "state": state, "fact": problem.get("fact"), "rule": rule, "ledger": problem.get("ledger"),
                  "area": slug(area), "component": {"what": what, "files": sorted({norm(f) for f in files}),
                                                    "rule_at": rule_at(doctor, rule)}}
@@ -259,7 +305,7 @@ def named(terms, text):
     return any(re.search(r"(?<![\w.-])%s(?![\w-])" % re.escape(t), text) for t in terms)
 
 
-def packet(record_file):
+def packet(record_file, key):
     record = load(record_file, {})
     doctor = record.get("doctor")
     rows = {}
@@ -277,18 +323,20 @@ def packet(record_file):
         os.path.join(DOCS, "shared-invariants.md"), "").splitlines() if l.startswith("| ")]
     memory = texts(os.path.join(HOME, ".claude-profiles", "*", "projects", "-Volumes-Work-Projects-*", "memory", "*.md"))
     history = {}
-    for problem in record.get("problems") or ():
+    for problem in record.get(key) or ():
         out = ["  %s\t%s\t%s" % (problem.get("id"), problem.get("state") or "-", problem.get("fact") or "")]
         row = rows.get(problem.get("ledger"))
         if row:
             out.append("ledger %s %s · %s" % (row.get("id"), row.get("status"), row.get("title") or ""))
-            for fix in (row.get("fixes") or [])[-3:]:
-                out.append("fix %s by %s: %s → %s%s" % (fix.get("at"), fix.get("by"), ", ".join(fix.get("files") or ()),
+            if row.get("note"):
+                out.append("note: %s" % row["note"])
+            for fix in dicts(row.get("fixes"))[-3:]:
+                out.append("fix %s by %s: %s → %s%s" % (fix.get("at"), fix.get("by"), ", ".join(strings(fix.get("files"))),
                            fix.get("in"), " · regressed %s" % fix["regressed_at"] if fix.get("regressed_at") else ""))
-            if row.get("same_cause"):
-                out.append("same cause: " + ", ".join(row["same_cause"]))
+            if strings(row.get("same_cause")):
+                out.append("same cause: " + ", ".join(strings(row["same_cause"])))
             if row.get("handoff"):
-                out.append("handoff: " + row["handoff"])
+                out.append("handoff: %s" % row["handoff"])
         for line in (earlier.get(problem.get("id")) or [])[-5:]:
             out.append("earlier " + line)
         component = problem.get("component") or {}
@@ -322,18 +370,20 @@ def packet(record_file):
 def touches(record_file, pid, purpose):
     record = load(record_file, {})
     doctor = record.get("doctor")
+    problem = next((p for p in record.get("problems") or () if p.get("id") == pid), None)
     if pid == "judge":
         component = [doctor_script(doctor), ledger_path(doctor)] if doctor in DOCTORS else []
     else:
-        component = next(((p.get("component") or {}).get("files") or [] for p in record.get("problems") or ()
-                          if p.get("id") == pid), [])
+        component = ((problem or {}).get("component") or {}).get("files") or []
     component = {norm(f) for f in component}
+    if pid != "judge" and problem is not None and not component:
+        return 3
     match = re.match(r"^([A-Za-z0-9._-]+)@([0-9a-f]{4,40})$", purpose)
     if match:
         top = os.path.join(PROJECTS, match.group(1))
         if not git(top, "rev-parse", "--verify", "--quiet", match.group(2) + "^{commit}"):
             return 1
-        names = git(top, "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", match.group(2))
+        names = git(top, "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", "--diff-merges=first-parent", match.group(2))
         return 0 if not component or any(norm(os.path.join(top, n)) in component for n in names) else 2
     path = re.sub(r":[0-9]+(-[0-9]+)?$", "", purpose)
     if not path:
@@ -350,7 +400,7 @@ if __name__ == "__main__":
     if command == "snapshot":
         snapshot(sys.argv[2], sys.argv[3])
     elif command == "packet":
-        packet(sys.argv[2])
+        packet(sys.argv[2], sys.argv[3])
     elif command == "touches":
         sys.exit(touches(sys.argv[2], sys.argv[3], sys.argv[4]))
 '
@@ -380,10 +430,11 @@ claim_run() { # doctor area night problems-file -> id; refuses (exit 3) while an
     fi
     record_set "$id" '.abandoned_at = $t' --arg t "$(stamp)" || return 1
     printf 'run %s abandoned: open for %s h\n' "$id" "$((age / 3600))" >&2
-  done < <(all_records | jq -r --arg d "$doctor" --arg a "$area" "$JQ_EPOCH $JQ_OPEN"' .[] | select(.doctor == $d and open
-    and ($a == "all" or (.area // "all") == "all" or .area == $a)) | [.id, ((now - ((.launched_at // .created_at) | epoch)) | floor)] | @tsv')
+  done < <(all_records | jq -r --arg d "$doctor" --arg a "$area" "$JQ_EPOCH $JQ_OPEN $JQ_AREA"' .[] | select(.doctor == $d and open
+    and ($a == "all" or area == "all" or area == $a)) | [.id, ((now - ((.launched_at // .created_at) | epoch)) | floor)] | @tsv')
   id=$(new_record "$doctor" "$area" "$3") || return 1
-  record_set "$id" '.judge_at_launch = ($doc[0].judge // null) | .problems = $p[0]' \
+  record_set "$id" '.judge_at_launch = ($doc[0].judge // null) | .problems = ($p[0] | map(select(.state != "quiet")))
+    | .quiet = ($p[0] | map(select(.state == "quiet")))' \
     --slurpfile doc "$(doc_path "$doctor")" --slurpfile p "$4" || return 1
   printf '%s\n' "$id"
 }
@@ -391,8 +442,9 @@ claim_run() { # doctor area night problems-file -> id; refuses (exit 3) while an
 launch_day() { # llm|harness
   local doctor=$1 id prompt opened account session n count
   count=$(check_doc "$doctor") || exit 1
-  [ "$count" != none ] || die "nothing to fix: the $doctor doctor reads ok with 0 problems."
   py snapshot "$doctor" "$(doc_path "$doctor")" >"$runs_dir/.$$.problems" || die "cannot snapshot the $doctor doctor"
+  [ "$count" != none ] || [ "$(jq 'map(select(.state == "quiet")) | length' "$runs_dir/.$$.problems")" != 0 ] ||
+    { rm -f "$runs_dir/.$$.problems"; die "nothing to fix: the $doctor doctor reads ok with 0 problems and no quiet open ledger row."; }
   id=$(locked claim_run "$doctor" all '' "$runs_dir/.$$.problems") || { rm -f "$runs_dir/.$$.problems"; exit 1; }
   rm -f "$runs_dir/.$$.problems"
   pending_id=$id
@@ -408,8 +460,7 @@ launch_day() { # llm|harness
   locked record_set "$id" '.launched_at = $t | .account = $a | .session = $s | .command = $c' \
     --arg t "$(stamp)" --arg a "$account" --arg s "$session" --arg c "$runs_dir/$id.command" || die "cannot write run $id"
   pending_id=''
-  n=$(jq '.problems | length' "$(record_file "$id")")
-  printf '%s fixer opened: run %s, %s problems\n' "$doctor" "$id" "$n"
+  printf '%s fixer opened: run %s, %s\n' "$doctor" "$id" "$(jq -r "$JQ_COUNTS" "$(record_file "$id")")"
 }
 
 worktree_top() {
@@ -419,35 +470,44 @@ worktree_top() {
 }
 
 write_brief() { # id worktree -> the brief file
-  local id=$1 wt=$2 file doctor area night branch decisions doc var title
+  local id=$1 wt=$2 file doctor area night branch decisions title
   file=$(record_file "$id")
   IFS=$'\t' read -r doctor area night branch < <(jq -r '[.doctor, .area, .night, .branch] | @tsv' "$file")
   mkdir -p "$runs_dir/$id.d" || return 1
   decisions="$runs_dir/$id.d/decisions.tsv"
-  doc="$runs_dir/$id.d/latest.json"
-  var=$(doctor_env "$doctor")
   case $doctor in llm) title=LLM ;; harness) title=Harness ;; *) title=Updater ;; esac
   {
+    printf 'ROUND: none\n'
+    jq -r '.worktrees[1:][] | "ADD-DIR: \(.)"' "$file"
     printf 'Working directory: %s\n\n# Night fixer run %s\n\n' "$wt" "$id"
-    printf 'Night %s · %s doctor · area %s · %s problems. Worktree `%s` on branch `%s`.\n\n' \
-      "$night" "$doctor" "$area" "$(jq '.problems | length' "$file")" "$wt" "$branch"
+    printf 'Night %s · %s doctor · area %s · %s. Worktree `%s` on branch `%s`.\n\n' \
+      "$night" "$doctor" "$area" "$(jq -r "$JQ_COUNTS" "$file")" "$wt" "$branch"
     printf '1. Read `%s/docs/doctor-fix.md`: sections 0-6, "Night" and "%s doctor" only.\n' "$wt" "$title"
-    printf '2. Your scope is the problems below, nothing else. Work only in the worktree; a second repository gets its own worktree on the branch `%s`, started from its `refs/night/%s/base`.\n' "$branch" "$night"
+    printf '2. Your scope is the problems below and the known quiet rows after them, nothing else. Work only in the worktree and the `ADD-DIR:` worktrees of the other repositories your component lives in, all on the branch `%s`, started from their `refs/night/%s/base`; a change another repository needs is a handoff. Look at the older blocks around what you touch, not only at what you add: is a workaround there obsolete now, because the vendor does it natively or its reason is gone? Then remove it.\n' "$branch" "$night"
     printf '3. Commit on that branch; never push, never touch a main checkout, never ask Egor: decide, or hand off.\n'
     printf '4. Close, from the worktree:\n\n'
-    printf '       cd %q && bin/%s-doctor --json >%q\n' "$wt" "$doctor" "$doc"
-    printf '       DOCTORS_DIR=%q bin/doctor-fix close %s --decisions %q --doc %q <one-line note>\n\n' \
-      "${runs_dir%/runs}" "$id" "$decisions" "$doc"
-    printf '   `%s` stays unset: the shared `latest.json` is rewritten every 5 min and by other fixers.\n' "$var"
-    printf '5. Report: per problem the verdict and one line of why, the commits (repo@hash) and every handoff.\n\n'
+    printf '       cd %q && DOCTORS_DIR=%q bin/doctor-fix close %s --decisions %q <one-line note>\n\n' \
+      "$wt" "${runs_dir%/runs}" "$id" "$decisions"
+    printf '   Close reruns `bin/%s-doctor --json` in this worktree itself; a `fixed` problem must read fixed-pending or be gone there.\n' "$doctor"
+    printf '5. Whatever you found but did not fix, and every cause you ruled out, goes into the ledger (a row'"'"'s `note`, a new row or a `blind_spots` row), so the next fixer does not dig the same ground.\n'
+    printf '6. Report: per problem the verdict and one line of why, the commits (repo@hash) and every handoff.\n\n'
     printf '## Packet\n\n'
     show_run "$id"
   } >"$runs_dir/$id.brief.md" || return 1
   printf '%s\n' "$runs_dir/$id.brief.md"
 }
 
+component_repos() { # id top -> the main checkouts other than top that hold the run's component files
+  local f d top root
+  jq -r '.problems[].component.files[]?' "$(record_file "$1")" | while IFS= read -r f; do
+    d=$(dirname "$f")
+    while [ ! -d "$d" ]; do d=$(dirname "$d"); done
+    git_top "$d" && [ "$root" != "$2" ] && printf '%s\n' "$root"
+  done | sort -u
+}
+
 launch_night() { # doctor night
-  local doctor=$1 night=$2 snap area id top wt branch err judge='' brief failed=0
+  local doctor=$1 night=$2 snap area id top wt branch err judge='' brief siblings repo repos failed=0
   [[ $night =~ ^[A-Za-z0-9._-]+$ ]] || die "night id '$night' is not branch-safe"
   check_doc "$doctor" >/dev/null || exit 1
   snap=$(py snapshot "$doctor" "$(doc_path "$doctor")") || die "cannot snapshot the $doctor doctor"
@@ -471,6 +531,10 @@ launch_night() { # doctor night
       pending_id='' failed=1
       continue
     fi
+    repos=()
+    while IFS= read -r repo; do repos+=("$repo"); done < <(component_repos "$id" "$top")
+    siblings=$(night_sibling_worktrees "$night" "$branch" "$id" ${repos[@]+"${repos[@]}"})
+    [ -z "$siblings" ] || locked record_set "$id" '.worktrees += ($s | split("\n"))' --arg s "$siblings"
     [ -n "$judge" ] || judge=$( (cd "$wt" && "bin/$doctor-doctor" --json 2>/dev/null) | jq -r '.judge // empty' 2>/dev/null)
     [ -z "$judge" ] || locked record_set "$id" '.judge_at_launch = $j' --arg j "$judge"
     if ! brief=$(write_brief "$id" "$wt"); then
@@ -479,7 +543,12 @@ launch_night() { # doctor night
       pending_id='' failed=1
       continue
     fi
-    locked record_set "$id" '.launched_at = $t' --arg t "$(stamp)" || { failed=1; continue; }
+    if ! locked record_set "$id" '.launched_at = $t' --arg t "$(stamp)"; then
+      locked fail_run "$id" "launched_at not written"
+      printf 'run %s failed: launched_at not written\n' "$id" >&2
+      pending_id='' failed=1
+      continue
+    fi
     pending_id=''
     printf '%s\t%s\t%s\n' "$id" "$brief" "$wt"
   done
@@ -498,27 +567,38 @@ launch() { # llm|harness|updater [--night <id>]
   esac
 }
 
-record_updater() { # --session S --account A --command F --problems id...
-  local session='' account='' command='' id event problems=()
+record_updater() { # --session S --account A --command F | --night N --branch B --worktree W..., then --problems id...
+  local session='' account='' command='' night='' branch='' worktree='' worktrees=() id event problems=()
   while [ $# -gt 0 ]; do
     case $1 in
       --session) session=${2:-}; shift 2 || usage ;;
       --account) account=${2:-}; shift 2 || usage ;;
       --command) command=${2:-}; shift 2 || usage ;;
+      --night) night=${2:-}; shift 2 || usage ;;
+      --branch) branch=${2:-}; shift 2 || usage ;;
+      --worktree) worktree=${2:-}; worktrees+=("$worktree"); shift 2 || usage ;;
       --problems) shift; problems=("$@"); break ;;
       *) usage ;;
     esac
   done
-  [ -n "$session" ] && [ -n "$account" ] && [ -n "$command" ] && [ ${#problems[@]} -gt 0 ] || usage
+  [ ${#problems[@]} -gt 0 ] || usage
+  if [ -n "$night$branch$worktree" ]; then
+    [ -n "$night" ] && [ -n "$branch" ] && [ -n "$worktree" ] && [ -z "$session$account$command" ] || usage
+  else
+    [ -n "$session" ] && [ -n "$account" ] && [ -n "$command" ] || usage
+  fi
   mkdir -p "$runs_dir" || die "cannot make $runs_dir"
   for event in "${problems[@]}"; do
     jq -c --arg id "$event" '{id: $id, state: "open", fact: "\(.vendor) \(.from) → \(.to): \((.substantive // []) | if length > 0 then join(", ") else "manual request" end)"}' \
       "$events_dir/$event.json" 2>/dev/null || jq -nc --arg id "$event" '{id: $id, state: "open", fact: null}'
   done | jq -s . >"$runs_dir/.$$.problems"
-  id=$(locked new_record updater release '') || die "cannot write a run record under $runs_dir"
-  locked record_set "$id" '.launched_at = .created_at | .account = $a | .session = $s | .command = $c
-    | .judge_at_launch = (if $j == "" then null else $j end) | .problems = $p[0]' \
-    --arg a "$account" --arg s "$session" --arg c "$command" --arg j "$(doc_judge updater)" \
+  id=$(locked new_record updater release "$night") || die "cannot write a run record under $runs_dir"
+  locked record_set "$id" 'def opt: if . == "" then null else . end;
+    .launched_at = .created_at | .account = ($a | opt) | .session = ($s | opt) | .command = ($c | opt)
+    | .branch = ($b | opt) | .worktrees = $w
+    | .judge_at_launch = ($j | opt) | .problems = $p[0]' \
+    --arg a "$account" --arg s "$session" --arg c "$command" --arg b "$branch" --arg j "$(doc_judge updater)" \
+    --argjson w "$(jq -nc '$ARGS.positional' --args ${worktrees[@]+"${worktrees[@]}"})" \
     --slurpfile p "$runs_dir/.$$.problems" || { rm -f "$runs_dir/.$$.problems"; die "cannot write run $id"; }
   rm -f "$runs_dir/.$$.problems"
   printf '%s\n' "$id"
@@ -545,52 +625,55 @@ record_close() { # id --decisions <json-file> note...
   file=$(record_file "$id")
   [ -n "$id" ] && [ -f "$file" ] || die "no run $id"
   [ "${2:-}" = --decisions ] && [ -r "${3:-}" ] || usage
-  jq -e '.doctor == "updater" and (.area // "release") == "release"' "$file" >/dev/null || die "run $id is no updater release run"
+  jq -e "$JQ_AREA"' .doctor == "updater" and area == "release"' "$file" >/dev/null || die "run $id is no updater release run"
   (locked commit_record_close "$id" "$3" "${*:4}") || exit 1
 }
 
-commit_close() { # id decisions-file judge note (locked)
+commit_close() { # id decisions-file judge note unverified-ids (locked)
   refuse_unless_open "$1"
   record_set "$1" '.closed_at = $t | .judge_at_close = (if $j == "" then null else $j end) | .note = $n
+    | ($u | split("\n")) as $u
     | .decisions = [$lines | split("\n")[] | split("\t") | select(length >= 4 and (.[0] | length) > 0)
-        | {id: .[0], verdict: .[1], purpose: .[2], evidence: .[3]}]' \
-    --arg t "$(stamp)" --arg j "$3" --arg n "$4" --rawfile lines "$2"
+        | {id: .[0], verdict: .[1], purpose: .[2], evidence: .[3]}
+        + (if .[0] as $p | $u | index([$p]) then {component: "unverified"} else {} end)]' \
+    --arg t "$(stamp)" --arg j "$3" --arg n "$4" --arg u "${5:-}" --rawfile lines "$2"
 }
 
-close_run() { # id --decisions <file> [--doc <path>] note...
-  local id=${1:-} decisions='' doc='' file doctor as_of launched judge_then judge_now line_no=0
-  local pid verdict purpose evidence decided='' problems bad=() touch
+rerun_doc() { # id doctor -> the document the doctor prints from the run's worktree, kept run-local
+  local wt out
+  wt=$(jq -r '.worktrees[0] // ""' "$(record_file "$1")")
+  [ -n "$wt" ] && [ -x "$wt/bin/$2-doctor" ] || die "run $1 has no worktree with bin/$2-doctor to rerun the doctor in"
+  mkdir -p "$runs_dir/$1.d" || die "cannot make $runs_dir/$1.d"
+  out="$runs_dir/$1.d/latest.json"
+  (cd "$wt" && "bin/$2-doctor" --json) >"$out" 2>/dev/null
+  printf '%s\n' "$out"
+}
+
+close_run() { # id --decisions <file> note...
+  local id=${1:-} decisions='' doc file doctor as_of launched judge_then judge_now line_no=0
+  local pid verdict purpose evidence decided='' unverified='' problems bad=() touch state failure
   file=$(record_file "$id")
   [ -n "$id" ] && [ -f "$file" ] || die "no run $id"
   shift
-  while [ $# -gt 0 ]; do
-    case $1 in
-      --decisions) decisions=${2:-}; shift 2 || usage ;;
-      --doc) doc=${2:-}; shift 2 || usage ;;
-      *) break ;;
-    esac
-  done
-  [ -n "$decisions" ] || usage
+  [ "${1:-}" = --decisions ] && [ -n "${2:-}" ] || usage
+  decisions=$2
+  shift 2
   [ -r "$decisions" ] || die "cannot read $decisions"
   doctor=$(jq -r .doctor "$file")
   case $doctor in
     llm | harness) ;;
-    updater) [ "$(jq -r '.area // "release"' "$file")" != release ] ||
+    updater) [ "$(jq -r "$JQ_AREA area" "$file")" != release ] ||
       die "run $id is an updater release run: it closes with its last event, through vendor-fingerprint close" ;;
     *) die "run $id names no doctor" ;;
   esac
   refuse_unless_open "$id"
-  if [ -z "$doc" ]; then
-    jq -e '.night == null' "$file" >/dev/null ||
-      die "run $id is a night run: close it with --doc <the document bin/$doctor-doctor --json wrote from its worktree>"
+  if jq -e '.night == null' "$file" >/dev/null; then
     doc=$(doc_path "$doctor")
   else
-    [ -r "$doc" ] || die "cannot read $doc"
-    [ "$(realpath "$doc")" != "$(realpath "$(doc_path "$doctor")" 2>/dev/null)" ] ||
-      die "--doc names the shared $doctor document, which other runs rewrite: write a run-local one"
-    jq -e --arg d "$doctor" '.contract == 1 and .doctor == $d' "$doc" >/dev/null 2>&1 ||
-      die "$doc is no contract-1 $doctor doctor document"
+    doc=$(rerun_doc "$id" "$doctor") || exit 1
   fi
+  jq -e --arg d "$doctor" '.contract == 1 and .doctor == $d' "$doc" >/dev/null 2>&1 ||
+    die "$doc is no contract-1 $doctor doctor document"
   as_of=$(jq -r "$JQ_EPOCH"' (.as_of_s // (.as_of | epoch)) // 0' "$doc" 2>/dev/null) || as_of=0
   launched=$(jq -r "$JQ_EPOCH"' .launched_at | epoch' "$file")
   [ "${as_of%.*}" -gt "${launched%.*}" ] ||
@@ -606,11 +689,21 @@ close_run() { # id --decisions <file> [--doc <path>] note...
     fi
     py touches "$file" "$pid" "$purpose"
     touch=$?
+    [ "$touch" != 3 ] || { unverified+="$pid"$'\n'; touch=0; }
     [ "$touch" != 1 ] ||
       { bad+=("line $line_no ($pid): purpose '$purpose' resolves to no commit (repo@hash) and no file"); continue; }
     [ "$touch" = 0 ] ||
       { bad+=("line $line_no ($pid): purpose '$purpose' does not touch the component: cite one of its files or a commit that changed one (doctor-fix show $id)"); continue; }
     [ -n "$evidence" ] || { bad+=("line $line_no ($pid): no evidence"); continue; }
+    if [ "$verdict" = fixed ]; then
+      failure=$(jq -r 'if .status == "error" then (.self.error // "no error text") else "" end' "$doc")
+      [ -z "$failure" ] ||
+        { bad+=("line $line_no ($pid): fixed, but the rerun $doctor doctor fails: $failure"); continue; }
+      state=$(jq -r --arg p "$pid" 'first(.problems[]? | select(.id == $p and (.state == "new" or .state == "open"
+        or .state == "regressed")) | .state) // ""' "$doc")
+      [ -z "$state" ] ||
+        { bad+=("line $line_no ($pid): fixed, but the rerun $doctor doctor still reads it $state: a fix leaves it fixed-pending or gone"); continue; }
+    fi
     decided+="$pid"$'\n'
   done < <(awk -F'\t' '{ printf "%s\037%s\037%s\037%s\n", $1, $2, $3, $4 }' "$decisions")
   problems=$(jq -r '.problems[].id' "$file")
@@ -628,7 +721,7 @@ close_run() { # id --decisions <file> [--doc <path>] note...
     printf '%s\n' "${bad[@]}" >&2
     exit 1
   fi
-  (locked commit_close "$id" "$decisions" "$judge_now" "$*") || exit 1
+  (locked commit_close "$id" "$decisions" "$judge_now" "$*" "$unverified") || exit 1
   printf 'run %s closed: %s decisions\n' "$id" "$(jq '.decisions | length' "$file")"
 }
 
@@ -658,13 +751,16 @@ show_run() { # id
   local file
   file=$(record_file "${1:-}")
   [ -n "${1:-}" ] && [ -f "$file" ] || die "no run ${1:-}"
-  jq -r "def status: $(run_status);"' "run \(.id) · \(.doctor) doctor · area \(.area // "all") · \(status)",
+  jq -r "def status: $(run_status); $JQ_AREA"' "run \(.id) · \(.doctor) doctor · area \(area) · \(status)",
     "created \(.created_at) · launched \(.launched_at // "-") · closed \(.closed_at // "-")\(if .abandoned_at then " · abandoned \(.abandoned_at)" else "" end)\(if .failed_at then " · failed \(.failed_at)" else "" end)",
     (if .night then "night \(.night) · branch \(.branch // "-") · worktrees \((.worktrees // []) | join(" "))" else "account \(.account // "-") · command \(.command // "-")" end),
     "judge at launch \((.judge_at_launch // "-")[:12]) · at close \((.judge_at_close // "-")[:12])",
     "problems (\(.problems | length)):"' "$file"
-  py packet "$file"
-  jq -r '(if (.decisions | length) > 0 then "decisions (\(.decisions | length)):", (.decisions[] | "  \(.id)\t\(.verdict)\t\(.purpose // "-")\t\(.evidence)") else empty end),
+  py packet "$file" problems
+  jq -e '(.quiet // []) | length > 0' "$file" >/dev/null &&
+    printf 'known, quiet (%s): open ledger rows the doctor did not see in its window. Check in the code whether each cause still stands, then fix it, or write in the row'"'"'s note why not:\n' \
+      "$(jq '.quiet | length' "$file")" && py packet "$file" quiet
+  jq -r '(if (.decisions | length) > 0 then "decisions (\(.decisions | length)):", (.decisions[] | "  \(.id)\t\(.verdict)\t\(.purpose // "-")\t\(.evidence)\(if .component then "\tcomponent \(.component)" else "" end)") else empty end),
     (if .note then "note: \(.note)" else empty end)' "$file"
 }
 
@@ -691,11 +787,12 @@ usage_text() {
 usage: doctor-fix launch llm|harness|updater [--night <night-id>]
        doctor-fix show <id>
        doctor-fix runs [llm|harness|updater] [--open] [--json]
-       doctor-fix close <id> --decisions <file> [--doc <document>] <note...>
+       doctor-fix close <id> --decisions <file> <note...>   (a night run reruns its doctor in its worktree)
        doctor-fix abandon <id> [--reason TEXT]
        doctor-fix record updater --session <s> --account <a> --command <file> --problems <event id>...   (internal)
+       doctor-fix record updater --night <night-id> --branch <b> --worktree <w> [--worktree <w>...] --problems <event id>...   (internal)
        doctor-fix record-close <id> --decisions <json-file> <note...>   (internal, updater release runs)
-       doctor-fix touches <record-file> <id> <purpose>   (internal: 0 resolves and touches, 1 resolves nowhere, 2 misses the component)
+       doctor-fix touches <record-file> <id> <purpose>   (internal: 0 resolves and touches, 1 resolves nowhere, 2 misses the component, 3 the problem's component names no file: close records it component unverified)
 EOF
 }
 usage() { usage_text >&2; exit 2; }

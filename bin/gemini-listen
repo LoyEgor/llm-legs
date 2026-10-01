@@ -1,0 +1,252 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  printf 'usage: gemini-listen "<question>" <absolute media path>... [-o <absolute .md path>] [--model pro|flash] [--account <geminib profile>]\n' >&2
+  printf '  Gemini watches and listens through agy on a subscription account: video with its sound, audio, images\n' >&2
+  printf '  files over %s bytes (agy views at most 20 MB) are sent as a proxy: video 720p at the bitrate that fits, audio mp3\n' "$limit_bytes" >&2
+  printf '  the answer goes to -o (or stdout) as "<!-- model -->" then the text; exit 3 = usage limit, retry with the other --model\n' >&2
+  exit 2
+}
+
+say() {
+  printf 'gemini-listen: %s\n' "$1" >&2
+  exit "${2:-2}"
+}
+
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+
+root=$(resolve_root)
+. "$root/share/image-leg.sh"
+image_leg_start gemini-listen listen observed_model
+. "$root/share/image-caps.sh"
+limit_bytes=$(image_caps_get "$root" gemini '.listen.view_max_bytes')
+ffmpeg_cmd=${GEMINI_LISTEN_FFMPEG:-ffmpeg}
+ffprobe_cmd=${GEMINI_LISTEN_FFPROBE:-ffprobe}
+
+question=''
+out=''
+model_key=$(image_caps_get "$root" gemini '.listen.model_default')
+account=''
+media=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o | --out) [ "$#" -ge 2 ] || usage; out=$2; shift 2 ;;
+    --model) [ "$#" -ge 2 ] || usage; model_key=$2; shift 2 ;;
+    --account) [ "$#" -ge 2 ] || usage; account=$2; shift 2 ;;
+    -h | --help) usage ;;
+    -*) usage ;;
+    *)
+      if [ -z "$question" ]; then question=$1; else media+=("$1"); fi
+      shift
+      ;;
+  esac
+done
+[ -n "$question" ] && [ "${#media[@]}" -gt 0 ] || usage
+[ -z "$out" ] || { [[ "$out" = /* ]] && [ -d "$(dirname "$out")" ]; } || say "-o needs an absolute path in an existing folder"
+if [ -n "$account" ] && ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then usage; fi
+family_kind=$(image_caps_get "$root" gemini ".listen.models[\"$model_key\"].family // empty")
+[ -n "$family_kind" ] || say "--model is pro or flash"
+effort=$(image_caps_get "$root" gemini ".listen.models[\"$model_key\"].effort")
+for file in "${media[@]}"; do
+  [[ "$file" = /* ]] || say "$file is not an absolute path"
+  [ -f "$file" ] || say "$file is not a file"
+done
+command -v "$ffprobe_cmd" >/dev/null 2>&1 && command -v "$ffmpeg_cmd" >/dev/null 2>&1 ||
+  say "ffmpeg and ffprobe are required" 1
+
+started=$(date +%s)
+base_home=$HOME
+gemini_base_home=$base_home
+gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$base_home/.gemini-profiles}"
+. "$root/share/gemini-accounts.sh"
+. "$root/share/worker-model.sh"
+. "$root/share/worker-pool.sh"
+. "$root/share/worker-claims.sh"
+
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/gemini-listen.XXXXXX")
+trap 'image_leg_exit; rm -rf "$tmp_dir"' EXIT
+mkdir "$tmp_dir/media"
+
+stream_of() { # file type
+  "$ffprobe_cmd" -v error -select_streams "$2:0" -show_entries stream=codec_name -of csv=p=0 "$1" 2>/dev/null | head -n 1
+}
+duration_of() {
+  "$ffprobe_cmd" -v error -show_entries format=duration -of csv=p=0 "$1" 2>/dev/null | head -n 1
+}
+size_of() { stat -f %z "$1"; }
+
+# Video over the limit: 720p at the bitrate that fits, re-encoded once lower when x264 overshoots.
+video_proxy() { # source dest seconds
+  local target kbps attempt
+  target=$((limit_bytes * 9 / 10))
+  for attempt in 1 2; do
+    kbps=$(awk -v b="$target" -v s="$3" 'BEGIN { k = int(b * 8 / s / 1000) - 128; print (k > 4000 ? 4000 : k) }')
+    [ "$kbps" -ge 150 ] || say "$1 lasts ${3}s: under 20 MB its picture would be unreadable; cut it into parts" 2
+    "$ffmpeg_cmd" -v error -y -i "$1" -map 0:v:0 -map '0:a:0?' -vf "scale='min(1280,iw)':-2" -fpsmax 30 \
+      -c:v libx264 -preset veryfast -b:v "${kbps}k" -maxrate "${kbps}k" -bufsize "$((kbps * 2))k" \
+      -pix_fmt yuv420p -c:a aac -b:a 128k -ac 2 -movflags +faststart "$2" || say "ffmpeg could not make a proxy of $1" 1
+    [ "$(size_of "$2")" -gt "$limit_bytes" ] || return 0
+    target=$((target * 7 / 10))
+  done
+  say "the proxy of $1 is still over $limit_bytes bytes" 1
+}
+
+kind_of() { # file ext
+  case "$2" in
+    png | jpg | jpeg | webp | heic | bmp | tif | tiff | gif) printf image; return ;;
+    wav | mp3 | flac | ogg | oga | opus | aac | aiff | aif | m4a) printf audio; return ;;
+  esac
+  # V, not v: a cover picture in an audio file is a video stream too.
+  if [ -n "$(stream_of "$1" V)" ]; then printf video
+  elif [ -n "$(stream_of "$1" a)" ]; then printf audio
+  fi
+}
+shape_of() {
+  "$ffprobe_cmd" -v error -select_streams V:0 -show_entries stream=width,height -of csv=p=0:s=x "$1" | head -n 1
+}
+
+labels=''
+proxied=0
+proxy_lines=''
+index=0
+for file in "${media[@]}"; do
+  index=$((index + 1))
+  ext=$(printf '%s' "${file##*.}" | tr '[:upper:]' '[:lower:]')
+  bytes=$(size_of "$file")
+  kind=$(kind_of "$file" "$ext")
+  [ -n "$kind" ] || say "$file has no picture or sound ffprobe can read"
+  seconds=$(duration_of "$file")
+  if [ "$kind" != image ]; then
+    [[ "$seconds" =~ ^[0-9.]+$ ]] || say "ffprobe reads no duration in $file"
+    seconds=$(awk -v s="$seconds" 'BEGIN { printf "%.1f", s }')
+  fi
+  case "$kind" in
+    video) keep='mp4|mov|webm' proxy_ext=mp4 ;;
+    audio) keep='wav|mp3|flac|ogg|aac|aiff' proxy_ext=mp3 ;;
+    image) keep='png|jpg|jpeg|webp' proxy_ext=jpg ;;
+  esac
+  if [ "$bytes" -le "$limit_bytes" ] && [[ "$ext" =~ ^($keep)$ ]]; then
+    send="$tmp_dir/media/file$index.$ext"
+    cp "$file" "$send"
+  else
+    send="$tmp_dir/media/file$index.$proxy_ext"
+    case "$kind" in
+      video) video_proxy "$file" "$send" "$seconds" ;;
+      audio)
+        "$ffmpeg_cmd" -v error -y -i "$file" -map 0:a:0 -c:a libmp3lame -b:a 192k "$send" ||
+          say "ffmpeg could not make a proxy of $file" 1
+        [ "$(size_of "$send")" -le "$limit_bytes" ] || say "$file is too long to send as one audio file; cut it into parts"
+        ;;
+      image) "$ffmpeg_cmd" -v error -y -i "$file" -frames:v 1 -q:v 2 "$send" || say "ffmpeg could not convert $file" 1 ;;
+    esac
+    proxied=$((proxied + 1))
+    proxy_lines+="proxy=file$index.$proxy_ext $(size_of "$send") bytes from $bytes: $file"$'\n'
+  fi
+  case "$kind" in
+    video) desc="video, $seconds s, $(shape_of "$send"), $([ -n "$(stream_of "$send" a)" ] && printf 'with sound' || printf 'silent')" ;;
+    audio) desc="audio, $seconds s" ;;
+    image) desc="image, $(shape_of "$send")" ;;
+  esac
+  labels+="File $index: $send ($desc; the caller's file ${file##*/})"$'\n'
+  printf '%s\t%s\n' "$send" "$file" >>"$tmp_dir/sent"
+done
+
+picked=false
+if [ -z "$account" ]; then
+  pick_rc=0
+  if command -v worker-pick >/dev/null 2>&1; then
+    account=$(worker-pick --account gemini --role image 2>/dev/null) || pick_rc=$?
+  else
+    pick_rc=127
+  fi
+  [ "$pick_rc" -ne 3 ] || { printf 'GEMINI_USAGE_LIMIT\n' >&2; exit 3; }
+  if [ "$pick_rc" -ne 0 ] || ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    account=$(worker_model_pin_first gemini 2>/dev/null || true)
+    [[ "${account:-}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || account=main
+    printf 'gemini-listen: worker-pick unavailable; falling back to account %s\n' "$account" >&2
+  else
+    picked=true
+  fi
+fi
+grep -Fqx -- "$account" <<<"$(gemini_account_names)" || say "unknown account: $account" 1
+worker_pool_refuse_headless gemini "$account" "$(worker_model_pin_csv < <(worker_model_pins gemini))" || exit 4
+if [ "$picked" = true ] && ! worker_claims_record gemini "$account"; then
+  printf 'gemini-listen: could not record the claim on %s\n' "$account" >&2
+fi
+
+prefix=$("$root/bin/geminib" families 2>/dev/null |
+  awk -F'\t' -v kind="$family_kind" '$1 ~ ("-" kind "$") && !done { print $3; done = 1 }')
+[ -n "$prefix" ] || say "\`geminib families\` printed no $family_kind row" 1
+agy_model="$prefix-$effort"
+
+instruction="Answer a question about the media files below. First open every file with your view_file tool: it shows you the picture of a video or an image and lets you hear the sound of a video or an audio file. Open each file whole, one view_file call per file, and never run a shell command or write a file. Answer only from what you saw and heard; say so when something cannot be told from the media.
+
+${labels}
+If view_file fails on a file, reply with the single line CANNOT_OPEN <file number> <the error>.
+If a quota or usage-limit error stops you, reply with the single word QUOTA.
+
+Question:
+$question"
+
+image_leg_mark "${#media[@]}"
+rc=0
+(cd "$tmp_dir" && geminib profile "$account" --model "$agy_model" --print-timeout 540s \
+  --output-format stream-json --dangerously-skip-permissions --log-file "$tmp_dir/agy.log" \
+  --print "$instruction") >"$tmp_dir/stdout" 2>"$tmp_dir/stderr" || rc=$?
+events="$tmp_dir/events.json"
+jq -Rn '[inputs | fromjson? | select(type == "object")]' "$tmp_dir/stdout" >"$events"
+session=$(jq -r '([.[] | select(.event == "result") | .result.conversation_id // empty] | last) //
+  ([.[] | select(.event == "init") | .conversation_id // empty] | last) // "none"' "$events")
+observed_model=$(jq -r '[.[] | select(.event == "init") | .init.model // empty] | last // empty' "$events")
+answer=$(jq -r '[.[] | select(.event == "result") | .result.response // empty] | last // ""' "$events")
+jq -r '.[] | (.result.error // empty), (.step_update.tool_info.error // empty) | .. | strings' "$events" >"$tmp_dir/errors"
+last_line=$(printf '%s\n' "$answer" | awk 'NF { line = $0 } END { print line }' | tr -d '\r')
+
+# Stream events echo the prompt, so of stdout only the lines that are not events count.
+grep -v '^[[:space:]]*{' "$tmp_dir/stdout" >"$tmp_dir/stdout-text" || :
+limit_re='GEMINI_USAGE_LIMIT|RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota exceeded|rate limit'
+limited() {
+  [ "$last_line" = QUOTA ] || grep -Eqi "$limit_re" "$tmp_dir/errors" ||
+    { [ "$rc" -ne 0 ] && grep -Eqi "$limit_re" "$tmp_dir/stdout-text" "$tmp_dir/stderr"; }
+}
+if limited; then
+  printf 'GEMINI_USAGE_LIMIT\n' >&2
+  printf 'gemini-listen: %s is out of %s quota; retry with --model %s or later\n' "$account" "$model_key" \
+    "$([ "$model_key" = pro ] && printf flash || printf pro)" >&2
+  exit 3
+fi
+if [ "$rc" -ne 0 ] && grep -Eqi 'out of the worker pool|treating every account as out of the pool' "$tmp_dir/stderr" "$tmp_dir/stdout-text"; then
+  say "account $account refused by the worker pool" 4
+fi
+if [[ "$last_line" =~ ^CANNOT_OPEN ]]; then
+  say "agy could not open a file: ${last_line#CANNOT_OPEN }" 1
+fi
+[ -n "$answer" ] || { tail -n 20 "$tmp_dir/stderr" >&2; say "agy returned no answer (exit $rc)" 1; }
+while IFS=$'\t' read -r sent original; do
+  jq -e --arg path "$sent" 'any(.[]; .event == "step_update" and .step_update.state == "DONE" and
+      .step_update.tool_name == "view_file" and .step_update.tool_info.parameters.AbsolutePath == $path and
+      ((.step_update.tool_info.error // "") == ""))' \
+    "$events" >/dev/null || say "the model answered without opening $original; the answer is not grounded" 1
+  answer=${answer//"$sent"/"$original"}
+done <"$tmp_dir/sent"
+
+model_label=${observed_model:-$agy_model}
+body=$(printf '<!-- %s -->\n%s\n' "$model_label" "$answer")
+footer=$(printf 'dest=%s\naccount=%s\nsession=%s\nmodel=%s\nfiles=%s proxied=%s\n%sseconds=%s' \
+  "${out:--}" "$account" "$session" "$model_label" "${#media[@]}" "$proxied" "$proxy_lines" "$(($(date +%s) - started))")
+if [ -n "$out" ]; then
+  printf '%s\n' "$body" >"$out"
+  printf '%s\n' "$footer"
+else
+  printf '%s\n' "$body"
+  printf '%s\n' "$footer" >&2
+fi

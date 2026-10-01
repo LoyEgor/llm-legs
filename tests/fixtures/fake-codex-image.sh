@@ -45,7 +45,10 @@ fi
 printf '%s\n' "{\"type\":\"thread.started\",\"thread_id\":\"$thread\"}"
 printf '%s\n' '{"type":"turn.started"}'
 
-if [ "${FAKE_CODEX_MODE:-image}" = no-image ]; then
+if [ "${FAKE_CODEX_MODE:-image}" = limit-item ]; then
+  printf '%s\n' '{"type":"item.completed","item":{"type":"image_generation","failure":{"type":"usageLimitExceeded","limitId":"images","resetsAt":1790800000}}}'
+fi
+if [ "${FAKE_CODEX_MODE:-image}" = no-image ] || [ "${FAKE_CODEX_MODE:-image}" = limit-item ]; then
   printf '%s\n' '{"type":"turn.completed"}'
   [ -z "$last_message_file" ] || printf 'no image was produced\n' >"$last_message_file"
   exit 0

@@ -13,7 +13,7 @@
   <key>RunAtLoad</key>
   <true/>
   <key>ProcessType</key>
-  <string>Background</string>
+  <string>Standard</string>
   <key>Nice</key>
   <integer>10</integer>
   <key>EnvironmentVariables</key>

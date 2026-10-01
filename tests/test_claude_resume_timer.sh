@@ -48,6 +48,14 @@ if [ "${1:-}" = "-axo" ] && [ "${2:-}" = "tty=,command=" ]; then
   cat "$PS_FIXTURE"
   exit 0
 fi
+if [ "${1:-}" = "-E" ]; then
+  [ ! -f "$PS_FIXTURE.env.${5:-}" ] || cat "$PS_FIXTURE.env.$5"
+  exit 0
+fi
+if [ "${1:-}" = "-o" ] && [ "${2:-}" = "lstart=" ]; then
+  [ ! -f "$PS_FIXTURE.lstart.${4:-}" ] || cat "$PS_FIXTURE.lstart.$4"
+  exit 0
+fi
 if [ "${1:-}" = "-o" ] && [ "${2:-}" = "tty=" ]; then
   if [ -f "$PS_FIXTURE.pid.${4:-}" ]; then cat "$PS_FIXTURE.pid.$4"; else echo "${FAKE_TTY:-??}"; fi
   exit 0
@@ -318,6 +326,49 @@ echo "$out" | grep -q '^claude-resume-timer: .*armed ' || fail "--now should pri
 
 run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal --to sid-peer --now >/dev/null || fail "--to by session id failed"
 grep -qF '"/dev/ttys007")' "$CALLS" || fail "--to should take a session id too: $(cat "$CALLS")"
+
+# The peer's timer is timed off the PEER's five-hour window, read from its own environment.
+cat >"$FIXTURE_HOME/.llm-limits.json" <<EOF
+{"vendors":{"claude":{"accounts":[
+  {"account":"notcom","five_hour":{"resets_at":"$(date -u -r "$((now + 6000))" +%Y-%m-%dT%H:%M:%SZ)"}},
+  {"account":"acct","five_hour":{"resets_at":"$(date -u -r "$((now + 600))" +%Y-%m-%dT%H:%M:%SZ)"}}]},
+ "codex":{"accounts":[{"account":"gw","five_hour":{"resets_at":"$(date -u -r "$((now + 1800))" +%Y-%m-%dT%H:%M:%SZ)"}}]}}}
+EOF
+printf '%s\n' '/Users/e/.local/bin/claude PATH=/usr/bin CLAUDE_CONFIG_DIR=/Users/e/.claude-profiles/acct CLAUDE_LIMITS_ACCOUNT=acct' \
+  >"$PS_FIXTURE.env.501"
+out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal 10 --to peer) || fail "--to without --now failed: $out"
+grep -qE 'startTimerFor\("terminal", (19|20), nil, "/dev/ttys007"\)' "$CALLS" \
+  || fail "--to should time the peer off its own account: $(cat "$CALLS")"
+printf '%s\n' '/Users/e/.local/bin/claude PATH=/usr/bin CLAUDEGPT_ACCOUNT=gw' >"$PS_FIXTURE.env.501"
+out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal 10 --to peer) || fail "--to a gateway peer failed: $out"
+grep -qE 'startTimerFor\("terminal", (39|40), nil, "/dev/ttys007"\)' "$CALLS" \
+  || fail "--to a gateway peer should time it off its codex account: $(cat "$CALLS")"
+rm -f "$PS_FIXTURE.env.501"
+out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal 10 --to peer 2>&1)
+[ $? -ne 0 ] || fail "--to a peer whose environment is unreadable should refuse"
+grep -q HS "$CALLS" && fail "an unreadable peer must not reach hs: $(cat "$CALLS")"
+write_limits notcom "$(date -u -r "$((now + 6000))" +%Y-%m-%dT%H:%M:%SZ)"
+
+# --now fires through the tty's one slot, so a resume timer already waiting there is kept, not replaced.
+printf '{"timers":{"terminal:/dev/ttys007":{"firesAt":%s,"targetTty":"/dev/ttys007"}}}' "$((now + 3600))" \
+  >"$WORK/continue-state.json"
+out=$(run_timer env RESUME_TIMER_STATE="$WORK/continue-state.json" CLAUDE_LIMITS_ACCOUNT=notcom \
+  "$SCRIPT" terminal --to peer --now -m 'next pass' 2>&1)
+[ $? -ne 0 ] || fail "--now over an armed resume timer should refuse"
+grep -q HS "$CALLS" && fail "--now over an armed resume timer must not reach hs: $(cat "$CALLS")"
+echo "$out" | grep -q 'already holds a resume timer' || fail "--now over an armed timer should say why: $out"
+
+# A registry whose pid now belongs to another process (its start differs) names no live chat.
+printf '{"pid":505,"sessionId":"sid-stale","name":"stale","procStart":"Mon Jan  1 00:00:00 2024"}' \
+  >"$FIXTURE_HOME/.claude/sessions/505.json"
+echo ttys007 >"$PS_FIXTURE.pid.505"
+echo 'Tue Sep 29 22:15:04 2026' >"$PS_FIXTURE.lstart.505"
+out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal --to sid-stale --now 2>&1)
+[ $? -ne 0 ] || fail "--to a chat whose pid was reused should refuse"
+echo "$out" | grep -q 'no live chat is named' || fail "a reused pid should name no chat: $out"
+echo 'Mon Jan  1 00:00:00 2024' >"$PS_FIXTURE.lstart.505"
+run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal --to sid-stale --now >/dev/null || fail "--to a live pid failed"
+rm -f "$FIXTURE_HOME/.claude/sessions/505.json" "$PS_FIXTURE.pid.505" "$PS_FIXTURE.lstart.505"
 
 for bad in nobody shell; do
   out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal --to "$bad" --now 2>&1)

@@ -319,7 +319,7 @@ fi
 {
   printf 'Use your built-in image_gen tool (imagegen skill). Generate one image with this content:\n%s\n\n' "$content"
   if [ "$remove_green" = true ] && [ "$transparent_native" = true ]; then
-    printf 'Ask image_gen for a genuinely transparent background and preserve the alpha channel it returns; never flatten it onto a color.\n'
+    printf 'Ask image_gen for a genuinely transparent background by setting its transparent_background argument to true, and preserve the alpha channel it returns; never flatten it onto a color.\n'
     if [ "$transparent_chroma" = true ]; then
       # The fallback key has to be ORDERED here: asked for alpha and unable to deliver it, the tool
       # answers with an opaque background of its own choosing, and keying that costs the subject.
@@ -446,6 +446,11 @@ fi
 rmdir "$lock_dir" 2>/dev/null || true
 lock_held=false
 if [ -z "$generated" ]; then
+  # A walled image_gen call fails its item, not the turn, and codex still exits 0.
+  if grep -Eq 'usageLimitExceeded|usage_limit_exceeded' "$cli_stdout" 2>/dev/null; then
+    printf 'CODEX_USAGE_LIMIT\n' >&2
+    exit 3
+  fi
   printf 'codex-image: generated file not found\n' >&2
   tail -n 20 "$cli_stderr" "$cli_stdout" "$stdout_file" >&2 2>/dev/null || true
   exit 1

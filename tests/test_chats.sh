@@ -797,6 +797,75 @@ assert grep -qx 'worker-paired: chat-one' <<<"$LAUNCHERS"
 assert grep -qx 'worker-shared: -' <<<"$LAUNCHERS"
 assert grep -qx 'worker-orphan: -' <<<"$LAUNCHERS"
 
+python3 - "$SCRIPT" "$WORK" <<'PYBOARDS' || fail "board switch probe failed"
+import contextlib, importlib.machinery, importlib.util, io, sys, time
+from unittest.mock import patch
+
+loader = importlib.machinery.SourceFileLoader("chats", sys.argv[1])
+spec = importlib.util.spec_from_loader("chats", loader)
+chats = importlib.util.module_from_spec(spec)
+loader.exec_module(chats)
+c = chats.curses
+
+# An empty first board leaves every position None; the next board switch restacks from it.
+assert chats.restack([], [], (None, None, None)) == [None, None, None]
+assert chats.restack([], [("claudeb", "alpha")], (None, None, None)) == [0, 0, 0]
+
+# A double-click on another row opens it under ITS board's account, not the cursor row's.
+names = [("claudeb", "alpha"), ("claudeb", "omega")]
+rows = [dict(session="0", cwd=sys.argv[2], model="opus"), dict(session="1", cwd=sys.argv[2], model="opus"),
+        dict(session="2", cwd=sys.argv[2], model="fable")]
+boards = {"weekly": ([("claudeb", "omega"), ("claudeb", "alpha")], {}, set(), "omega"),
+          "fable": ([("claudeb", "alpha"), ("claudeb", "omega")], {}, set(), "alpha")}
+
+
+class Screen:
+    def __init__(self):
+        self.events = iter([None] * 20 + [(0, 3, c.BUTTON1_DOUBLE_CLICKED)])
+
+    def getmaxyx(self):
+        return 7, 80
+
+    def timeout(self, delay):
+        pass
+
+    def get_wch(self):
+        event = next(self.events)
+        if event is None:
+            time.sleep(0.01)
+            raise c.error("no input")
+        self.mouse = (0, event[0], event[1], 0, event[2])
+        return c.KEY_MOUSE
+
+
+screen = Screen()
+with patch.multiple(c, curs_set=lambda _: None, start_color=lambda: None,
+                    use_default_colors=lambda: None, mouseinterval=lambda _: None,
+                    mousemask=lambda _: None), \
+        patch.object(c, "getmouse", side_effect=lambda: screen.mouse), \
+        patch.object(chats, "draw", lambda *rest: None), \
+        patch.object(chats, "rankings", lambda timeout=10: boards), \
+        patch.object(chats, "board_of", lambda row: "fable" if row.get("model") == "fable" else "weekly"):
+    result = chats.run(screen, rows, list(names), None, 0, 0, (7,))
+assert result[1] == rows[2], result
+assert result[0] == ("claudeb", "alpha"), result
+
+# A row with no model is ranked on the board the picker files it under, never on settings.json's model.
+asked = []
+row = dict(session="s", cwd=sys.argv[2], model=None)
+with patch.object(chats, "resolve_session", lambda s: [s]), patch.object(chats, "fold_session", lambda s: s), \
+        patch.object(chats, "fetch_chats", lambda level: [row]), patch.object(chats, "annotate", lambda rows: rows), \
+        patch.object(chats, "profiles", lambda: list(names)), \
+        patch.object(chats, "ranking", lambda timeout, model=None: asked.append(model) or ([], {}, set(), None)), \
+        patch.object(chats, "die", side_effect=SystemExit):
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            chats.open_command("s", 1)
+    except SystemExit:
+        pass
+assert asked and asked[0] and chats.board_of({"model": asked[0]}) == chats.board_of(row), asked
+PYBOARDS
+
 echo "== non-interactive open command"
 OPEN_HOME="$WORK/open-home"
 OPEN_SID=12345678-1234-1234-1234-123456789abc

@@ -27,6 +27,11 @@ assert test "$(worker_claims_fresh codex)" = work4
 assert worker_claims_record claude alpha
 assert test "$(worker_claims_fresh codex)" = work4
 assert test "$(worker_claims_fresh claude)" = alpha
+assert worker_claims_record codex work5
+assert worker_claims_release codex work5
+assert test "$(worker_claims_fresh codex)" = work4
+assert_fails worker_claims_release codex ../claude/alpha 2>/dev/null
+assert test "$(worker_claims_fresh claude)" = alpha
 
 WORKER_CLAIMS_TTL=1
 export WORKER_CLAIMS_TTL

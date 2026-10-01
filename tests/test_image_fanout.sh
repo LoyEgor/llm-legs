@@ -70,6 +70,7 @@ ln -s "$FAKE_BIN/fake-image" "$FAKE_BIN/codex-image"
 ln -s "$FAKE_BIN/fake-image" "$FAKE_BIN/gemini-image"
 ln -s "$FAKE_BIN/fake-image" "$FAKE_BIN/grok-image"
 ln -s "$FAKE_BIN/fake-image" "$FAKE_BIN/grok-video"
+ln -s "$FAKE_BIN/fake-image" "$FAKE_BIN/gemini-video"
 
 cat >"$FAKE_BIN/worker-pick" <<'EOF'
 #!/usr/bin/env bash
@@ -187,10 +188,19 @@ fanout --dest-dir "$DEST" --prompt 'motion' --dry-run --video --ref "$WORK/refs/
 assert test "$rc" -eq 0
 assert grep -Fq 'skipped: video unsupported' "$FANOUT_OUT"
 assert grep -Fq $'codex -\tskipped: video unsupported' "$FANOUT_OUT"
-assert grep -Fq $'gemini -\tskipped: video unsupported' "$FANOUT_OUT"
+assert_fails grep -Fq $'gemini -\tskipped: video unsupported' "$FANOUT_OUT"
+assert grep -Fq 'gemini-video' <<<"$(plan_cmd gemini gamma)"
+assert grep -Fq '.mp4' <<<"$(plan_cmd gemini gamma)"
 assert grep -Fq 'grok-video' <<<"$(plan_cmd grok delta)"
 assert grep -Fq '.mp4' <<<"$(plan_cmd grok delta)"
 assert_fails "$(plan_cmd grok delta)" grok-image
+# With several references gemini keeps to its listed lengths; grok's reference range takes any second in it.
+rc=0
+fanout --dest-dir "$DEST" --prompt 'motion' --dry-run --video --duration 5 --ref "$WORK/refs/r1.png" --ref "$WORK/refs/r2.png" || rc=$?
+assert test "$rc" -eq 0
+assert grep -Fq 'duration 5→4' <<<"$(plan_reason gemini gamma)"
+assert grep -Fq -- '--duration 4' <<<"$(plan_cmd gemini gamma)"
+assert_fails "$(plan_reason grok delta)" 'duration 5→'
 assert_fails "$(cat "$FANOUT_OUT")" codex-image
 assert_fails "$(cat "$FANOUT_OUT")" gemini-image
 

@@ -10,10 +10,14 @@
   },
   "model": {
     "image": "gemini-3.1-flash-image",
-    "video": null
+    "video": "veo_3_1_t2v_fast"
   },
   "short": {
-    "image": "flash-image-3.1"
+    "image": "flash-image-3.1",
+    "video": "veo-3.1-fast",
+    "music": "lyria-3.5",
+    "sfx": "omni-1.1-flash",
+    "listen": "agy"
   },
   "refs": {
     "max": 3,
@@ -47,11 +51,139 @@
     "id_source": "stream-json result.conversation_id; init.conversation_id fallback",
     "requires_account": true
   },
-  "video": null,
+  "video": {
+    "surface": "flow",
+    "engine": "bin/gemini-web",
+    "container": "mp4",
+    "aspects": [
+      "16:9",
+      "9:16"
+    ],
+    "aspect_default": "16:9",
+    "durations": [
+      4,
+      6,
+      8,
+      10
+    ],
+    "duration_default": 8,
+    "reference_durations": [
+      4,
+      6,
+      8,
+      10
+    ],
+    "refs_max": 4,
+    "resolutions": [
+      "360p",
+      "720p",
+      "1080p"
+    ],
+    "resolution_default": "720p",
+    "upscale": {
+      "1080p": "720p"
+    },
+    "frames": [
+      "first",
+      "last"
+    ],
+    "edit_source_max_s": 30,
+    "counts": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "extend": {
+      "label": "Extend (Veo 3.1 - Lite)",
+      "cost": 10,
+      "seconds": 7,
+      "resolutions": [
+        "720p"
+      ],
+      "sources": [
+        "fast",
+        "lite",
+        "quality"
+      ],
+      "wire": [
+        "^veo_3_1_extension_lite$",
+        "^models/veo-3\\.1-lite-"
+      ]
+    },
+    "model_by_duration": {
+      "4": "omni",
+      "6": "omni",
+      "8": "fast",
+      "10": "omni"
+    },
+    "models": {
+      "fast": {
+        "label": "Veo 3.1 - Fast",
+        "refs_max": 3,
+        "costs": {
+          "720p": {
+            "8": 20
+          }
+        },
+        "wire": [
+          "^veo_3_1_[a-z0-9_]*fast$"
+        ]
+      },
+      "lite": {
+        "label": "Veo 3.1 - Lite",
+        "refs_max": 3,
+        "costs": {
+          "720p": {
+            "8": 10
+          }
+        },
+        "wire": []
+      },
+      "quality": {
+        "label": "Veo 3.1 - Quality",
+        "refs_max": 3,
+        "costs": {
+          "720p": {
+            "8": 100
+          }
+        },
+        "wire": []
+      },
+      "omni": {
+        "label": "Omni 1.1 Flash",
+        "refs_max": 4,
+        "costs": {
+          "360p": {
+            "4": 4,
+            "6": 5,
+            "8": 6,
+            "10": 7
+          },
+          "720p": {
+            "4": 7,
+            "6": 10,
+            "8": 12,
+            "10": 15
+          }
+        },
+        "edit_costs": {
+          "720p": 20
+        },
+        "wire": [
+          "^abra_",
+          "^omni_flash_"
+        ]
+      }
+    },
+    "credits": {
+      "tier": "PRO",
+      "monthly": 1000
+    }
+  },
   "unsupported": [
     "resolution",
     "mask",
-    "video",
     "n",
     "quality",
     "native_alpha",
@@ -131,6 +263,25 @@
     "wrapper": {
       "location": "bin/gemini-image; share/image-chroma.sh; share/gemini-accounts.sh",
       "observed": "Wrapper defaults and emulation, not native vendor capabilities"
+    },
+    "flow": {
+      "location": "https://flow.google.com (bin/gemini-web, hidden Chrome clone, geminib account profiles)",
+      "observed": "2026-09-30 build boq_labs-ai-sandbox-frontend_20260929.10_p0, PRO tier: agent settings model list, agent capability answer, ask_for_permission/generate_video_from_text tool calls, jwpduf/as29s media records; 2026-09-30 manual composer (Agent off) settings popover: model family menu, 360p/720p and 4-10s on Omni only, Frames Start/End slots, Ingredients picker (Veo 3 images no video, Omni 4 images + 1 video), live 'Generating will use N credits' quote, generation rpc YhhmEf with wire key abra_t2v_4s_360p; 2026-10-01 real manual runs: generation rpcs YhhmEf (text), nprQif (frames), MZZa6b (ingredients), jIps6 (edit) with one reply shape; wire keys abra_t2v_4s_360p, omni_flash_i2v_4s_first_last_360p, abra_r2v_4s_360p, abra_edit; quotes matched the charge (Omni 360p 4s = 4, edit of an uploaded 8s clip at 720p = 20); the editor's '1080p Upscaled' download is 1920x1080 and charged nothing; Extend (fZytfe, veo_3_1_extension_lite) charged 10 for a 7s 720p continuation of a Veo clip, disabled on Omni clips, and an extension's editor is empty (no Add clip, Download disabled); x2 returned two clips in one reply (Omni 360p 4s x2 = 8); an --edit with an image ingredient inserted the object at the plain edit price"
+    },
+    "listen": {
+      "location": "/Users/egorloy/.local/bin/agy",
+      "version": "1.2.14",
+      "method": "strings: view_file \"file size (%d MB) exceeds 20MB display limit\"; live: view_file on mp4/wav/png answered the testsrc2 ground truth (2026-10-01)"
+    },
+    "music": {
+      "location": "https://gemini.google.com/app (Upload & tools > More tools > Create music)",
+      "verified": "2026-10-01",
+      "method": "live in the gemini-web clone: chip menus read, one generation (StreamGenerate reply: music_gen tool, lyria_3_5_fullsong, music.mp3 + output.mp4); video input: --video with a 46s cut gave a 60.4s named track and a cover mp4 (sections near the cuts, runs past the picture); rights notices answered from notices.json"
+    },
+    "sfx": {
+      "location": "bin/gemini-sfx over bin/gemini-video (Flow Omni)",
+      "verified": "2026-10-01",
+      "method": "live: three text-to-video takes at 360p (4 credits each, one usable of three by ear) and one --for-video edit at 720p (20 credits, 94s: whooshes land on the cuts, foley does not follow the motion); trim, two-pass loudnorm and the silence check measured on each"
     }
   },
   "field_sources": {
@@ -169,8 +320,7 @@
       "wrapper"
     ],
     "video": [
-      "binary",
-      "tools"
+      "flow"
     ],
     "unsupported": [
       "binary",
@@ -181,6 +331,118 @@
     ],
     "tool": [
       "binary"
+    ],
+    "listen": [
+      "listen"
+    ],
+    "music": [
+      "music"
+    ],
+    "sfx": [
+      "flow",
+      "sfx"
     ]
+  },
+  "listen": {
+    "script": "bin/gemini-listen",
+    "tool": "view_file",
+    "view_max_bytes": 19000000,
+    "models": {
+      "pro": {
+        "family": "pro",
+        "effort": "high"
+      },
+      "flash": {
+        "family": "flash",
+        "effort": "high"
+      }
+    },
+    "model_default": "pro"
+  },
+  "music": {
+    "surface": "gemini-app",
+    "engine": "share/gemini_music.py",
+    "model": "lyria_3_5_fullsong",
+    "lengths": {
+      "short": {
+        "label": "Short",
+        "seconds": 60
+      },
+      "standard": {
+        "label": "Standard",
+        "seconds": 150
+      }
+    },
+    "vocals": {
+      "custom": "Custom",
+      "on": "Vocals on",
+      "instrumental": "Instrumental"
+    },
+    "genres": [
+      "Pop",
+      "Hip-hop & rap",
+      "Rock",
+      "K-pop",
+      "Latin",
+      "Electronic",
+      "R&B",
+      "Country",
+      "Afrobeats",
+      "Reggae",
+      "Jazz & blues",
+      "Classical",
+      "Folk",
+      "Lo-fi",
+      "Acoustic",
+      "Cinematic",
+      "Ambient"
+    ],
+    "attach": [
+      "image",
+      "video"
+    ],
+    "counts": [
+      1,
+      2,
+      3
+    ],
+    "delivers": {
+      "audio": "mp3 192 kb/s 44.1 kHz stereo",
+      "video": "mp4 1024x1024 cover art + AAC"
+    },
+    "dests": [
+      "wav",
+      "mp3",
+      "mp4"
+    ],
+    "timeout_s": 600,
+    "upload_wait_s": 300,
+    "unsupported": [
+      "ref-audio",
+      "stems",
+      "wav-download"
+    ]
+  },
+  "sfx": {
+    "script": "bin/gemini-sfx",
+    "route": "bin/gemini-video --model omni",
+    "resolution": "360p",
+    "durations": [
+      4,
+      6,
+      8,
+      10
+    ],
+    "duration_default": 4,
+    "prompt_prefix": "Sound effect reference clip. A simple close-up shows the source of this sound as it makes it:",
+    "prompt_suffix": "The soundtrack is only this sound effect, crisp, close-miked and isolated: no music, no voices, no speech, no background ambience.",
+    "trim": "silenceremove=start_periods=1:start_threshold=-50dB:start_silence=0.05,areverse,silenceremove=start_periods=1:start_threshold=-50dB:start_silence=0.05,areverse",
+    "loudnorm": "I=-16:TP=-1.5:LRA=11",
+    "delivers": "wav pcm_s16le 48 kHz stereo",
+    "for_video": {
+      "resolution": "720p",
+      "source_max_s": 10,
+      "prompt_prefix": "Keep the picture exactly as it is: the same frames, motion, cuts and timing. Change only the soundtrack: add sound effects synced to what happens on screen, with no music and no voices. The sounds:"
+    }
   }
 }

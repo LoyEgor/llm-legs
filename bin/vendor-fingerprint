@@ -21,6 +21,7 @@ codex_profiles_dir="${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}"
 grok_home="${GROK_HOME:-$HOME/.grok}"
 grokb_cache="${GROKB_CACHE_DIR:-$HOME/.cache/grokb}/models.json"
 vendors="codex grok gemini claude"
+sibling_repos="review-bench claude-setup"
 # Facets that are recorded in an event but never open an integration chat on their own.
 info_facets="version catalog_text catalog_order foreign_clients"
 id_prefixes='gpt|grok|gemini|imagen|veo|sora|claude'
@@ -448,9 +449,12 @@ night_worktree() { # main-checkout night vendor -> the llm-legs worktree on bran
   night_worktree_add "$1" "$2" "night/$2/$3" "$path" && printf '%s\n' "$path"
 }
 
-night_brief() { # main-checkout night id worktree -> the brief a headless worker runs
-  local top=$1 night=$2 id=$3 worktree=$4 vendor
+night_brief() { # main-checkout night id worktree sibling-worktree... -> the brief a headless worker runs
+  local top=$1 night=$2 id=$3 worktree=$4 vendor sibling
+  shift 4
   vendor=$(jq -r .vendor "$events_dir/$id.json")
+  printf 'ROUND: none\n'
+  for sibling in "$@"; do printf 'ADD-DIR: %s\n' "$sibling"; done
   cat <<EOF
 Night run $night: vendor release event $id ($(jq -r '"\(.vendor) \(.from) -> \(.to), changed: \(.substantive | join(", "))"' "$events_dir/$id.json")).
 
@@ -459,22 +463,24 @@ Never write a main checkout.
 
 Read $top/docs/vendor-release.md in full and follow it with its §6 Night rules:
 - \`bin/vendor-fingerprint show $id\` is your event; its diff is $events_dir/$id.diff.
-- Another repository you change gets its own worktree, <repo>/.claude/worktrees/night-$night-$vendor,
-  on the same branch night/$night/$vendor.
+- The other repositories you may change have their worktrees on the same branch: the \`ADD-DIR:\`
+  lines above. A repository with none is not yours tonight: its change is a handoff.
 - Commit on that branch in every worktree you changed. Never push, merge or rebase.
 - \`bin/vendor-fingerprint check --here $vendor\` runs in this worktree, then
   \`bin/vendor-fingerprint close $id --decisions <file> <note>\`.
 - A generation, or any step that needs Egor's word, is decided \`blocked\` with evidence starting
   \`blocked-on-egor:\` and naming what his word unlocks. Never wait for him.
 - Start the research leg (step 3) and the blind cross-check leg (step 4) in parallel.
+- Look at the older blocks around what you touch, not only at what you add: is a workaround there
+  obsolete now, because the vendor does it natively or its reason is gone? Then remove it.
 
 Report in English, under 300 words, outcome first: event $id closed or not; the branch and commit
 hash per repository; every blocked-on-egor line; the suites run with PASS counts.
 EOF
 }
 
-night_request() { # night-id -> one worktree and brief per vendor with a real waiting release
-  local night=$1 top common vendor id worktree brief failed=0
+night_request() { # night-id -> per vendor with a real waiting release: its fixer run, brief and worktree
+  local night=$1 top common vendor id worktree brief run repo repos record_args siblings failed=0
   [[ $night =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || usage
   common=$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=''
   if [ "$(basename "$common")" = .git ]; then top=$(dirname "$common"); else top=$repo_root; fi
@@ -482,17 +488,37 @@ night_request() { # night-id -> one worktree and brief per vendor with a real wa
     id=$(pending_event "$vendor")
     [ -n "$id" ] || continue
     brief="$events_dir/$id.brief.md"
-    if ! worktree=$(night_worktree "$top" "$night" "$vendor") || ! night_brief "$top" "$night" "$id" "$worktree" >"$brief"; then
+    siblings=() record_args=()
+    if worktree=$(night_worktree "$top" "$night" "$vendor"); then
+      repos=()
+      for repo in $sibling_repos; do [ ! -d "${top%/*}/$repo" ] || repos+=("${top%/*}/$repo"); done
+      while IFS= read -r repo; do siblings+=("$repo") record_args+=(--worktree "$repo"); done < <(
+        night_sibling_worktrees "$night" "night/$night/$vendor" "$vendor" ${repos[@]+"${repos[@]}"})
+    fi
+    if [ -z "$worktree" ] || ! night_brief "$top" "$night" "$id" "$worktree" ${siblings[@]+"${siblings[@]}"} >"$brief"; then
       log "night $night: no worktree or brief for $id, it keeps waiting"
       printf 'vendor-fingerprint: night %s: no worktree or brief for %s\n' "$night" "$id" >&2
       failed=1
       continue
     fi
-    event_set "$id" '.launched_at = $t | .launched = "night" | .night = $n | .worktree = $w | .brief = $b' \
-      --arg t "$(stamp)" --arg n "$night" --arg w "$worktree" --arg b "$brief"
+    if ! run=$("$doctor_fix" record updater --night "$night" --branch "night/$night/$vendor" --worktree "$worktree" \
+      ${record_args[@]+"${record_args[@]}"} --problems "$id" 2>/dev/null) || [ -z "$run" ]; then
+      log "night $night: no fixer run recorded for $id, it keeps waiting"
+      printf 'vendor-fingerprint: night %s: no fixer run recorded for %s\n' "$night" "$id" >&2
+      failed=1
+      continue
+    fi
+    if ! event_set "$id" '.launched_at = $t | .launched = "night" | .night = $n | .worktree = $w | .brief = $b | .run = $r' \
+      --arg t "$(stamp)" --arg n "$night" --arg w "$worktree" --arg b "$brief" --arg r "$run"; then
+      "$doctor_fix" abandon "$run" --reason "event $id not written" >/dev/null 2>&1
+      log "night $night: event $id not written, run $run abandoned, it keeps waiting"
+      printf 'vendor-fingerprint: night %s: event %s not written\n' "$night" "$id" >&2
+      failed=1
+      continue
+    fi
     rm -f "${events_dir:?}/$id.base"
-    log "night $night: $id to $worktree"
-    printf '%s\t%s\t%s\t%s\n' "$vendor" "$id" "$brief" "$worktree"
+    log "night $night: $id to $worktree (run $run)"
+    printf '%s\t%s\t%s\n' "$run" "$brief" "$worktree"
   done
   return "$failed"
 }
@@ -502,6 +528,8 @@ request() { # [--here] vendor|--all [note...] | --night <night-id>
   if [ "${1:-}" = --night ]; then
     [ -n "${2:-}" ] || usage
     mkdir -p "$fp_dir" "$events_dir"
+    [ -n "${VENDOR_FINGERPRINT_LOCKED:-}" ] || exec env VENDOR_FINGERPRINT_LOCKED=1 \
+      lockf -k -t "${VENDOR_FINGERPRINT_LOCK_WAIT:-600}" "$fp_dir/check.lock" "$script_path" request --night "$2"
     night_request "$2"
     return
   fi
@@ -558,8 +586,10 @@ unresolved_purposes() { # decisions-file -> one line per decision row whose purp
   local record row purpose
   "$doctor_fix" help 2>/dev/null | grep -q 'doctor-fix touches ' ||
     { printf '%s has no touches verb to judge purposes with\n' "$doctor_fix"; return 0; }
-  record=$(mktemp "${TMPDIR:-/tmp}/vendor-fingerprint-purpose.XXXXXX") || return 0
-  jq -n --arg w "$repo_root" '{doctor: "updater", problems: [], worktrees: [$w]}' >"$record"
+  record=$(mktemp "${TMPDIR:-/tmp}/vendor-fingerprint-purpose.XXXXXX") ||
+    { printf 'no record to judge purposes with under %s\n' "${TMPDIR:-/tmp}"; return 0; }
+  jq -n --arg w "$repo_root" '{doctor: "updater", problems: [], worktrees: [$w]}' >"$record" ||
+    { rm -f "${record:?}"; printf 'no record to judge purposes with at %s\n' "$record"; return 0; }
   while IFS=$'\t' read -r row purpose; do
     "$doctor_fix" touches "$record" "row $row" "$purpose" </dev/null >/dev/null 2>&1 ||
       printf "row %s: purpose '%s' resolves to no commit (repo@hash) and no file\n" "$row" "$purpose"

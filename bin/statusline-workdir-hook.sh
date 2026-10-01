@@ -82,7 +82,7 @@ if [ -n "$agent_flag" ]; then
       # with `error: "Exit code N…"`; a backgrounded launch has not exited yet.
       [ -n "$agent_id" ] && grep -q '^media=' "$tag_file" 2>/dev/null || exit 0
       printf '%s' "$input" | jq -e '(.tool_input.run_in_background // false) != true and
-        (.tool_input.command // "" | test("(^|[;&|(/[:space:]])((codex|gemini|grok)-image|grok-video)([[:space:]]|$)"))' >/dev/null || exit 0
+        (.tool_input.command // "" | test("(^|[;&|(/[:space:]])((codex|gemini|grok)-image|grok-video|gemini-(video|music|sfx|listen))([[:space:]]|$)"))' >/dev/null || exit 0
       stamp=exit ;;
     *:Edit|*:Write|*:NotebookEdit) stamp='' ;;
     *) exit 0 ;;

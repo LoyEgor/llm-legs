@@ -67,9 +67,9 @@ case "$subagent" in
       exit 0
     fi ;;
 esac
-image_model() { # vendor
+image_model() { # vendor [music|sfx|listen]
   local model
-  model=$(jq -r '.short.image // empty' "$SELF_DIR/../share/image-caps/$1.json" 2>/dev/null)
+  model=$(jq -r --arg kind "${2:-image}" '.short[$kind] // empty' "$SELF_DIR/../share/image-caps/$1.json" 2>/dev/null)
   printf '%s' "${model:-image}"
 }
 session_account() {
@@ -172,16 +172,19 @@ elif [ "$subagent" = image-gen ]; then
   else
     vendor=$(printf '%s' "$prompt" | grep -m1 -oE '^VENDOR:[[:space:]]*(codex|gemini|grok)' |
       grep -oE '(codex|gemini|grok)$')
+    audio=$(printf '%s' "$prompt" | grep -m1 -oE '^AUDIO:[[:space:]]*(music|sfx|listen)' | grep -oE '(music|sfx|listen)$' || true)
+    [ -z "$audio" ] || vendor=gemini
     [ -n "$vendor" ] || vendor=codex
     # A pin — an `ACCOUNT:` line or `--account` on the launch line — is the account for sure. Without
     # one the row predicts the router's `--role image` answer, as the research row does: the script
     # asks the same router a second later, so the two differ only under a race, and a row that
-    # says `?` tells Egor nothing (2026-09-11).
+    # says `?` tells Egor nothing (2026-09-11). Music and sfx never ask it: they rotate gemini-web's
+    # own signed-in profiles, so the router's name would be a wrong one.
     acct=$(brief_line ACCOUNT)
     [ -n "$acct" ] || acct=$(flag_account)
-    [ -n "$acct" ] || acct=$(route_account "$vendor" --role image)
+    case "$audio" in music | sfx) ;; *) [ -n "$acct" ] || acct=$(route_account "$vendor" --role image) ;; esac
     [ -n "$acct" ] || acct=pool
-    media=$(image_model "$vendor")
+    media=$(image_model "$vendor" "$audio")
   fi
   prefix="$acct · $media"
 elif [ "$subagent" = fork ]; then

@@ -82,7 +82,7 @@ UNREADABLE_RUN_RE="${VENDOR_WORD}[\$][{]?[A-Za-z_][A-Za-z0-9_]*[}]?[[:space:]]+(
 # spend an image account with nothing rendering the spend — no task row, no tag, no notification —
 # so `image-gen` is the only hand they pass in, a relay's included: a worker generating an image is
 # a launch inside a launch nobody can see.
-OWNED_IMAGE_RE="${VENDOR_WORD}((codex|gemini|grok)-image|grok-video|image-fanout)${EDGE}"
+OWNED_IMAGE_RE="${VENDOR_WORD}((codex|gemini|grok)-image|grok-video|gemini-(video|music|sfx|listen)|image-fanout)${EDGE}"
 
 # A review run's wait is owned the same way, by the `review-waiter` agent, and light-research by its
 # own agent type: from the chat's Bash neither has a row nor anything that wakes the chat.
@@ -217,6 +217,7 @@ scan=$(tr ';|&()`' '\n' <<<"$unsplit")
 # `hash` are commands in their own right, so their operand never reaches command position at all.
 LOOKUP_RE='^[[:space:]]*command[[:space:]]+(-[^[:space:]]+[[:space:]]+)*-[vV]([[:space:]]|$)'
 scan=$(grep -Ev "$LOOKUP_RE" <<<"$scan")
+scan_literal=$scan
 
 # A command word held in a variable is the launch it names: `W=…/worker-run; $W start` ran two
 # workers with no row (2026-09-24). Names assigned in this command are expanded in place; a value
@@ -271,12 +272,26 @@ legs_hit=$(grep -E "$OWNED_LEGS_RE" <<<"$scan" 2>/dev/null | grep -Ev -e "$LEGS_
   grep -Eo "$OWNED_LEGS_RE" | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
 [ -z "$legs_hit" ] || span_live ||
   deny "Blocked: \`${legs_hit}\` spends a Claude, Codex or Gemini account from Claude Code's Bash with no worker-run record and no task row naming the account. A question for a model goes to ${RELAY_AGENTS}; a live probe is Egor's to run — hand him the paste-ready command for his own terminal."
+HELP_TAIL='([[:space:]]+[0-9]*[<>]+[[:space:]]*[^[:space:]]*)*[[:space:]]*$'
 case "$agent_type" in
   image-gen) ;;
   *)
-    image_hit=$(first_hit "$OWNED_IMAGE_RE")
+    # Exempt by line and only as typed: a wrapper (`xargs -J --help`) or an expanded `$VAR` makes a
+    # line that reads as help yet runs the script with other arguments.
+    image_help_re="^[[:space:]]*([^[:space:]/]*/)*${OWNED_IMAGE_RE#"$VENDOR_WORD"}"
+    image_help_re="${image_help_re%"$EDGE"}[[:space:]]+(-h|--help)${HELP_TAIL}"
+    typed=$(tr ';|&()`' '\n' <<<"$prestrip" | grep -v "[\\\\'\"]")
+    literal=()
+    while IFS= read -r line; do literal+=("$line"); done <<<"$scan_literal"
+    image_scan=$(i=0
+      while IFS= read -r line; do
+        [ "$line" = "${literal[i]-}" ] && [[ $line =~ $image_help_re ]] && grep -Fxq -- "$line" <<<"$typed" ||
+          printf '%s\n' "$line"
+        i=$((i + 1))
+      done <<<"$scan")
+    image_hit=$(scan=$image_scan; first_hit "$OWNED_IMAGE_RE")
     [ -z "$image_hit" ] ||
-      deny "Blocked: \`${image_hit}\` generates an image from this chat's own Bash, where the account it spends renders as nothing — no tagged row, no notification when it lands. Spawn the \`image-gen\` Agent instead and put the description, the absolute destination path, the format, transparency yes/no and the size in its brief; it owns these five scripts and is the only agent type that may run them — a relay worker may not either. Quoting one inside a heredoc body is not running it."
+      deny "Blocked: \`${image_hit}\` generates or reads media from this chat's own Bash, where the account it spends renders as nothing — no tagged row, no notification when it lands. Spawn the \`image-gen\` Agent instead and put the description, the absolute destination path, the format, transparency yes/no and the size in its brief; it owns these media scripts and is the only agent type that may run them — a relay worker may not either. Quoting one inside a heredoc body is not running it."
     ;;
 esac
 case "$agent_type" in
@@ -401,6 +416,14 @@ carried() { # key value
   target=$(grep -oE -e "--brief(=|[[:space:]]+)(\"[^\"]*\"|'[^']*'|[^[:space:];&|]+)" <<<"$start_line" | head -n 1 |
     sed -E "s/^--brief(=|[[:space:]]+)//; s/^[\"']//; s/[\"']$//")
   [ -n "$target" ] || return 1
+  # A brief file written before this call is what worker-run reads, but only when nothing in the call
+  # runs before the launch and the path cannot resolve elsewhere: an earlier segment may rewrite it
+  # under another spelling (`$B`, `./b`, a symlink, after a `cd`), so its old text proves nothing.
+  if [ "${target#/}" != "$target" ] && [ "$(grep -m1 '[^[:space:]]' <<<"$scan")" = "$start_line" ] &&
+    [ -f "$target" ] && [ -r "$target" ] && [ "$(grep -oF -- "$target" <<<"$cmd" | wc -l)" -eq 1 ]; then
+    [ "$(head -n 400 "$target" | grep -m1 -oE "^$1:[[:space:]]*[A-Za-z0-9_.-]+" | sed -E "s/^$1:[[:space:]]*//")" = "$2" ]
+    return
+  fi
   [ "$(awk -v target="$target" -v q="'" '
     BEGIN { doc = "(^|[^<])<<-?[ \t]*[\"" q "]?[A-Za-z_][A-Za-z0-9_]*[\"" q "]?"; to = "(^|[^>])>[ \t]*[\"" q "]?[^ \t\"" q ";&|<>()]+" }
     body { line = $0; if (strip) sub(/^\t+/, "", line); if (line == delim) { body = 0; if (hit) exit; next } if (hit) print; next }
@@ -482,7 +505,6 @@ scheduled=$(grep -E '^[[:space:]]*(at|batch)([[:space:]]|$)|^[[:space:]]*crontab
 # `help` is a subcommand only to some CLIs; to gemini and claude it is a positional prompt, so a flag
 # after it (`gemini help -p "fix x"`) is a headless launch. A help line is exempt only as a segment
 # that held no quote or backslash before stripping: `sh -c "claude -p 'ls -h'"` strips to a help line.
-HELP_TAIL='([[:space:]]+[0-9]*>+[^[:space:]]*)*[[:space:]]*$'
 HELP_RE="${VENDOR_WORD}(claude|claudeb|claudegpt|codex|codexb|gemini|geminib|agy|opencode|grok|grokb)(${SUBCOMMAND}(-h|--help)${HELP_TAIL}|[[:space:]]+help([[:space:]]+[^[:space:]-][^[:space:]]*)*${HELP_TAIL})"
 help_lines=$(grep -E "$HELP_RE" <<<"$unsanctioned" |
   grep -Fx -f <(tr ';|&()`' '\n' <<<"$prestrip" | grep -v "[\\\\'\"]"))

@@ -40,6 +40,11 @@ eq "$(printf '%s' $'x\n```\nпривет мир\n```' | "$SHARE" | cut -d' ' -f1
 # A Russian brief cut into short quotes, or padded with Latin paths, is still a Russian brief.
 eq "$(printf '%s' '«Сделай ревью всего модуля» «и исправь все найденные баги» «сам без вопросов и отчета» «потом запусти все тесты» «и напиши короткий итог» «ни в коем случае»' | "$SHARE" | cut -d' ' -f1)" "100"
 eq "$(printf 'Проверь что всё работает и почини тесты.\n%s' "$(printf '/Volumes/Work/Projects/llm-legs/bin/helper-%s\n' 1 2 3 4 5 6 7 8 9 10 11 12)" | "$SHARE" | cut -d' ' -f1)" "100"
+eq "$(printf '%s' 'Egor said «положи в /tmp/out» then keep going with the tests.' | "$SHARE" | cut -d' ' -f1)" "0"
+eq "$(printf '%s' 'Fix the gate and run the suite: да/нет/может/быть' | "$SHARE" | cut -d' ' -f1)" "37"
+eq "$(printf '%s' 'Проверь это: “the gate is fine and the whole suite passes on main”' | "$SHARE" | cut -d' ' -f1)" "20"
+python3 -c "print('a' * 200000)" >"$WORK/long-token"
+eq "$(perl -e 'alarm 10; exec @ARGV' "$SHARE" <"$WORK/long-token" | cut -d' ' -f1)" "0"
 eq "$(printf '%s' "$(printf 'Fix the gate. %.0s' {1..30})«сделай ревью» «не парься» «сделай коммит» «подумай как следует»" | "$SHARE" | cut -d' ' -f1)" "0"
 
 # --- 2. the brief worker-run is handed --------------------------------------

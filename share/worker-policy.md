@@ -59,6 +59,9 @@ that hit the old deadline died mid-work with nothing handed back (`scratchpad/lo
   beat one run that never returns.
 - Each worker runs only the suites covering ITS cluster; one cheap worker runs every full suite once
   at the end (`tests/run-all`).
+- While iterating, run only the affected suites (`share/run-suites.sh --changed` or the named
+  suite); the full `tests/run-all` runs once, at the end — six workers on parallel `run-all`s flaked
+  the timing suites and loaded the machine (2026-09-30).
 - Do NOT repeat the loop rule in the brief: `worker-run` appends it to every launched brief
   (`BRIEF_PREAMBLE`), so a brief that spells it again only makes itself longer.
 - A relay worker never writes an always-loaded instruction file (global/project `CLAUDE.md`, `~/.claude/agents|commands|docs|skills|instructions|rules/*.md`): both instruction gates refuse it with no retry and the tripwire puts back what a shell write grew; the worker returns the exact proposed text and its byte delta under `MD-PROPOSAL`, with the cut that pays for it, and the orchestrating chat audits and edits.

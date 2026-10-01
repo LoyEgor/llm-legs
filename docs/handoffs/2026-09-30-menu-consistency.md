@@ -10,10 +10,12 @@ smaller font, a jargon row at the top of LLM Limits. On 2026-09-29 a T2 task hun
 `20260929T220510Z-5838bea`) listed 36 inconsistencies. Only the opus-high cell ran, because the codex,
 gemini and grok legs were off. The judge confirmed 17 of the 36.
 - Findings: `menu-consistency/hunt-findings.txt`.
-- The live menu before the changes: `menu-consistency/menu-before.txt`.
+- The live menu before the changes: `menu-consistency/menu-before.txt`. Its capture was cut at
+  180 225 bytes (inside the Doctors release rows); that before-state is gone and cannot be re-taken.
 - Re-render the live tree read-only with
   `hs -c "return dofile('/Volumes/Work/Projects/llm-legs/docs/handoffs/menu-consistency/dump-menu.lua')"`.
-  Each row prints its font, colour and flags.
+  It writes the whole tree to `$TMPDIR/menu-dump.txt` and prints that path and the row count. Each
+  row carries its font, colour and flags.
 
 ## Done (by the orchestrating chat)
 - **One red:** `{0.9, 0.25, 0.2}` in every module.
@@ -163,3 +165,11 @@ gemini and grok legs were off. The judge confirmed 17 of the 36.
 - Open: nothing surfaces a refresh failure that lasts for hours in Doctors yet.
 - Chats: clicking a live chat brings its Terminal tab to the front (`ChatGate.selectTabByTty` by the chat's tty). A closed chat, or a live one whose tab it can't find, falls back to `--open-command`.
 - Cold-resume rows in token-map show `<repo> › <worktree dir>` or the repo basename.
+- Doctors changes, requested by the Updater doctor chat:
+  - The fixer row reads the newest run record by its `created_at`, falling back to `launched_at`, instead of by file name.
+  - `failed_at` is a terminal state: a red row `fixer: failed <age>` with the note in a submenu, and Fix stays available.
+  - A `Night:` row sits under the three doctors.
+    - It shows the text of `bin/night-run latest --menu`, red when the flag is 1 and dim otherwise.
+    - It is refreshed at most every 60 s and hidden while the output is empty.
+    - It is painted like its neighbours (Menlo 13, `style.RED`), so it differs from the top-level `ALARM_RED` + `MENU_FONT` titles.
+  - `doctors_menu_harness` pins all of this (57 checks). A mutation that reverts the name sort and the failed state turns it red.

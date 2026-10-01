@@ -6,8 +6,8 @@ under [`docs/image-vendors/`](image-vendors/):
 | Vendor | Wrapper | Notes |
 | --- | --- | --- |
 | [Codex](image-vendors/codex.md) | `bin/codex-image` | Built-in `image_gen`; no aspect argument; `--size` is prose; no video |
-| [Gemini](image-vendors/gemini.md) | `bin/gemini-image` | agy `generate_image`; 3 refs; seven aspect ratios; no video |
-| [Grok](image-vendors/grok.md) | `bin/grok-image`, `bin/grok-video` | Imagine image + video; chroma transparency; the only video vendor |
+| [Gemini](image-vendors/gemini.md) | `bin/gemini-image`, `bin/gemini-video` | agy `generate_image`; 3 refs; seven aspect ratios; video on Google Flow (Veo 3.1 / Omni) through a hidden Chrome |
+| [Grok](image-vendors/grok.md) | `bin/grok-image`, `bin/grok-video` | Imagine image + video; chroma transparency |
 
 Runtime limits are the JSON manifests in [`share/image-caps/`](../share/image-caps/README.md),
 not these pages. Re-verify a manifest when a run prints `caps=stale` or `model_caps=stale`.
@@ -27,7 +27,8 @@ vendor API has and its CLI does not carry). No vendor has a mask, a fidelity fla
 | Quality control | none | none | none (API `low\|medium\|auto`: `api_only`) |
 | Exact size | no (size as prose) | no | no |
 | 1K / 2K | no | no | no (`api_only`) |
-| Video | no | no | `grok-video`: 1 ref → 6/10 s, up to 14 refs → 1–15 s, pinned first/last frames and up to 4 keyframes, 480p/720p (API 1080p: `api_only`) |
+| Video | no | `gemini-video`: text, first/last frame, up to 3 (Veo) or 4 (Omni) image refs, or `--edit` of any video up to 30 s (Omni, `--ref` puts a character or object into it), `--extend` of a Flow Veo clip (+7 s, 720p), `--count 2–4` takes → 8 s Veo 3.1 Lite/Fast/Quality or 4–10 s Omni Flash; 16:9 or 9:16; 360p/720p, 1080p via Flow's free upscale; audio; Flow credits | `grok-video`: 1 ref → 6/10 s, up to 14 refs → 1–15 s, pinned first/last frames and up to 4 keyframes, 480p/720p (API 1080p: `api_only`) |
+| Audio | no | `gemini-music` (Lyria 3.5 in the Gemini app: ≈60 s or 2–3 min, mp3/wav, sections from a brief, `--video` to watch the cut, `--ref-image`), `gemini-sfx` (a Flow Omni soundtrack, trimmed and normalised; `--for-video` ≤ 10 s), `gemini-listen` (agy watches and hears files) | no |
 
 ## Soft vs hard fan-out adaptations
 
@@ -50,7 +51,7 @@ bin/image-fanout --dest-dir /tmp/badge-fanout \
   --prompt 'a round blue enamel badge, white background' \
   --aspect 1:1 --transparent
 
-# Video: only vendors with a video block (today: grok). Needs at least one --ref.
+# Video: only vendors with a video block (today: gemini, grok). Needs at least one --ref.
 bin/image-fanout --dest-dir /tmp/badge-fanout --video --duration 6 \
   --prompt 'slow gentle push-in' --ref /tmp/badge-fanout/grok-notcom.png
 ```
@@ -80,7 +81,7 @@ JSON may be lying about refs, aspects, or tools.
 Procedure: follow the vendor page's re-verify section, update
 `share/image-caps/<vendor>.json`, bump `verified` and `cli.version`, run that vendor's
 image suite (`tests/test_codex_image.sh`, `tests/test_gemini_image.sh`,
-`tests/test_grok_image.sh` / `tests/test_grok_video.sh`). Details:
+`tests/test_grok_image.sh` / `tests/test_grok_video.sh`, `tests/test_gemini_video.sh`). Details:
 [`share/image-caps/README.md`](../share/image-caps/README.md).
 
 ## Resume (multi-turn)

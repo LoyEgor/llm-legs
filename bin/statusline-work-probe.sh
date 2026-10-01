@@ -127,7 +127,7 @@ found=$(printf '%s\n' "$snapshot" | awk -v start="$start_pid" -v runs="$runs" '
     if (tag != "R" && prog(pid) ~ owned) return 1
     lbl = test_label(pid)
     if (lbl != "") {
-      if (tag == "R") print "R\t" run_of_visit "\t" secs(et[pid]) "\t" lbl
+      if (tag == "R") print "R\t" run_of_visit "\t" secs(et[pid]) "\t" lbl "\t" pid
       else print tag "\ttests\t" pid "\t" secs(et[pid]) "\t" lbl "\t" tpath
       return 1
     }
@@ -150,7 +150,7 @@ found=$(printf '%s\n' "$snapshot" | awk -v start="$start_pid" -v runs="$runs" '
     kids[$2] = kids[$2] " " $1
   }
   END {
-    owned = "^(worker-run|review-bench|image-fanout|codex-image|gemini-image|grok-image|grok-video)$"
+    owned = "^(worker-run|review-bench|image-fanout|codex-image|gemini-image|grok-image|grok-video|gemini-video|gemini-music|gemini-sfx|gemini-listen)$"
     pid = start; depth = 0; root = ""
     while (pid != "" && pid + 0 > 1 && depth < 30) {
       if (base_of(pid) == "claude") { root = pid; break }
@@ -216,7 +216,11 @@ while IFS= read -r found_line; do
       [ "$kind" = M ] || [[ " $mine " = *" $b "* ]] || continue
       items+="$b"$'\037'"$a"$'\037'"$c"$'\037'"$d"$'\037'"$e"$'\n'
       pids="${pids:+$pids,}$b" ;;
-    R) runs_out+="run"$'\t'"$a"$'\t'"$((now - b))"$'\t'"$c"$'\n' ;;
+    R)
+      logdir="" stamp=""
+      [ "$c" != suites ] || [ ! -f "$cache_dir/suites-$d" ] || IFS=$'\t' read -r logdir _ _ stamp < "$cache_dir/suites-$d" || :
+      [ -n "$logdir" ] && [ -d "$logdir" ] && [[ "$stamp" =~ ^[0-9]+$ ]] && [ "$stamp" -ge "$((now - b - 3))" ] || logdir=""
+      runs_out+="run"$'\t'"$a"$'\t'"$((now - b))"$'\t'"$c"${logdir:+$'\t\t\t\t\t'"$logdir"}$'\n' ;;
   esac
 done <<< "$found"
 runs_out=${runs_out%$'\n'}
@@ -301,36 +305,42 @@ if [[ "$old_mtime" =~ ^[0-9]+$ ]] && [ "$((now - old_mtime))" -le 15 ]; then
   if [ -n "$finished" ]; then
     while IFS=$'\037' read -r kind a start c d e f g h root _; do
       # A code of 129-192 is a kill by signal (interrupt, memory guard), no verdict on the code under test.
-      ok=""
-      if [ "$d" = suites ] && [[ "$g" =~ ^[1-9][0-9]*$ ]] && [ -n "$h" ] && [ -d "$h" ]; then
+      ok="" times=""
+      if { [ "$d" = suites ] || [ "$kind/$c" = run/suites ]; } && [ -n "$h" ] && [ -d "$h" ]; then
         n=0 bad=0 killed=0
         for status in "$h"/*.status; do
           [ -f "$status" ] || continue
-          rc=""; IFS=$'\t' read -r rc _ < "$status" || :
+          rc="" took=""; IFS=$'\t' read -r rc took _ < "$status" || :
+          name=${status##*/}
+          [[ ! "$took" =~ ^[0-9]+$ ]] || times+="${name%.status}"$'\t'"$took"$'\n'
           n=$((n + 1))
           if [ "$rc" = 0 ]; then :
           elif [[ "$rc" =~ ^[0-9]{1,3}$ ]] && { [ "$rc" -le 128 ] || [ "$rc" -gt 192 ]; }; then bad=$((bad + 1))
           else killed=$((killed + 1))
           fi
         done
-        f=$((bad + killed))
-        if [ "$bad" -gt 0 ]; then ok=false
-        elif [ "$killed" -eq 0 ] && [ "$n" -eq "$g" ]; then ok=true
+        if [[ "$g" =~ ^[1-9][0-9]*$ ]]; then
+          f=$((bad + killed))
+          if [ "$bad" -gt 0 ]; then ok=false
+          elif [ "$killed" -eq 0 ] && [ "$n" -eq "$g" ]; then ok=true
+          fi
         fi
       fi
+      suite_secs='if $times == "" then {} else {suite_secs: ($times | rtrimstr("\n") | split("\n")
+        | map(split("\t") | {(.[0]): (.[1] | tonumber)}) | add)} end'
       if [ "$kind" = run ]; then
         workdir=$(jq -r '.workdir // empty' "$runs_root/$a/meta.json" 2>/dev/null)
         root=""
         [ -z "$workdir" ] || git_top "$workdir" || :
         jq -cn --argjson end "$now" --argjson start "$start" --arg repo "${workdir##*/}" --arg label "$c" --arg root "$root" \
-          '{end: $end, secs: ($end - $start), who: "worker", repo: $repo, label: $label}
-          + (if $root == "" then {} else {repo_root: $root} end)'
+          --arg times "$times" '{end: $end, secs: ($end - $start), who: "worker", repo: $repo, label: $label}
+          + (if $root == "" then {} else {repo_root: $root} end) + ('"$suite_secs"')'
       else
         jq -cn --argjson end "$now" --argjson start "$start" --arg repo "$c" --arg label "$d" --arg done "$e" \
-          --arg failed "$f" --arg total "$g" --arg ok "$ok" --arg root "$root" '{end: $end, secs: ($end - $start), who: "chat", repo: $repo, label: $label}
+          --arg failed "$f" --arg total "$g" --arg ok "$ok" --arg root "$root" --arg times "$times" '{end: $end, secs: ($end - $start), who: "chat", repo: $repo, label: $label}
           + (if $total == "" then {} else {total: ($total | tonumber), failed: (($failed | tonumber?) // 0)} end)
           + (if $ok == "" then {} else {ok: ($ok == "true")} end)
-          + (if $root == "" then {} else {repo_root: $root} end)'
+          + (if $root == "" then {} else {repo_root: $root} end) + ('"$suite_secs"')'
       fi
     done <<< "${finished//$'\t'/$'\037'}" >> "$cache_dir/test-history.jsonl" 2>/dev/null
   fi

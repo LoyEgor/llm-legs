@@ -295,8 +295,8 @@ def current_profile(names, chosen):
 def restack(names, kept, positions):
     """The bar's positions after it is reordered: each follows the entry it named, and one
     whose account is gone falls back to the first, or to none when the bar is empty."""
-    return [kept.index(names[position]) if names[position] in kept else (0 if kept else None)
-            for position in positions]
+    return [kept.index(names[position]) if position is not None and names[position] in kept
+            else (0 if kept else None) for position in positions]
 
 
 def refollow(row, landed, profile, held):
@@ -540,7 +540,7 @@ def run(screen, chats, names, used, profile, level, windows):
         pass
     screen.timeout(100)
     view = {"cursor": 0, "top": 0, "now": time.time()}
-    needle, note, scrolled, landed = "", "", False, None
+    needle, note, scrolled, landed, opening = "", "", False, None, None
     listing, ranked = Job(), Job()
     ready, pending, pinned = chats is not None, None, False
     if not ready:
@@ -623,6 +623,9 @@ def run(screen, chats, names, used, profile, level, windows):
         # The 100ms timeout exists only to notice a landed load; repainting on every
         # empty tick would redraw an idle picker ten times a second for nothing.
         key = None
+        if opening is not None and rows and rows[view["cursor"]].get("session") == opening:
+            key = curses.KEY_ENTER
+        opening = None
         while key is None:
             try:
                 key = screen.get_wch()
@@ -671,10 +674,10 @@ def run(screen, chats, names, used, profile, level, windows):
                 continue
             if index != view["cursor"]:
                 view["cursor"] = index
-                if not bstate & curses.BUTTON1_DOUBLE_CLICKED:
-                    continue
-                landed = rows[index].get("session")
-                profile = held = account_for(rows[index], view["now"], names, default)
+                # Opened from the next pass, once the bar has switched to this row's board.
+                if bstate & curses.BUTTON1_DOUBLE_CLICKED:
+                    opening = rows[index].get("session")
+                continue
             key = curses.KEY_ENTER
 
         # End goes to the last row he has; only stepping PAST it asks for more.
@@ -749,7 +752,11 @@ def open_command(session, timeout):
         die("no such directory: %s" % (cwd or "?"))
     annotate([row])
     names = profiles()
-    order, _, hidden, chosen = ranking(timeout, row.get("model"))
+    model = row.get("model")
+    if not model:
+        learn_buckets(("",) + BOARD_MODELS)
+        model = next((m for m in BOARD_MODELS if board_of({"model": m}) == board_of(row)), None)
+    order, _, hidden, chosen = ranking(timeout, model)
     names = arrange(names, order, hidden)
     default = current_profile(names, chosen)
     position = account_for(row, time.time(), names, None)

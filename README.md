@@ -66,6 +66,7 @@ Tests: `python3 -m unittest discover tests`.
 `llm-selfcheck` runs a ~10s live smoke (Hammerspoon alive, menu builds), then the hermetic limits, claudeb, codexb, and geminib suites every day at 10:30 local time.
 `llm-selfcheck run --e2e` adds the full `tests/e2e_surfaces.sh` on top and skips the daily debounce — the change-time invocation, not a scheduled one.
 Each run is recorded in `~/.claude-profiles/.claudeb/selfcheck.log`; failures also raise a Hammerspoon alert and a macOS notification.
+Before any suite, the `path-links` step fails naming every `bin/X → ~/.local/bin/X` link listed in this README that is missing or points elsewhere.
 
 ## Subscription limit collector
 
@@ -269,6 +270,28 @@ Snapshot store and schema live in `~/.claude-profiles/` (documented in its READM
   for that reset + extra minutes (default +10), falling back to +15 minutes if the window is expired
   or unknown. It arms nothing for a worker run or a caller outside every Claude chat; the app and
   Kimi slots are the Hammerspoon menu's alone.
+
+## Scripts the agents run by name
+
+The claude-setup agent definitions call these bare, so each needs its PATH link
+(`tests/test_consistency.sh` holds every name they run to this list):
+
+- `bin/worker-run` → `~/.local/bin/worker-run` — relay launcher every worker agent drives (`start`, `wait`, `report`).
+- `bin/worker-pick` → `~/.local/bin/worker-pick` — account and vendor pick per `docs/routing-contract.md`.
+- `bin/grokb` → `~/.local/bin/grokb` — SuperGrok multi-account launcher.
+- `bin/codex-image` → `~/.local/bin/codex-image` — image generation and editing on Codex (image-gen default).
+- `bin/gemini-image` → `~/.local/bin/gemini-image` — image generation and editing on Gemini.
+- `bin/grok-image` → `~/.local/bin/grok-image` — image generation and editing on Grok.
+- `bin/grok-video` → `~/.local/bin/grok-video` — video clips on Grok Imagine.
+- `bin/image-fanout` → `~/.local/bin/image-fanout` — one request across every vendor and account.
+- `bin/gemini-video` → `~/.local/bin/gemini-video` — Veo/Omni clips through Google Flow.
+- `bin/video-chain` → `~/.local/bin/video-chain` — frame extraction for chaining clips.
+- `bin/gemini-music` → `~/.local/bin/gemini-music` — music through the Gemini app's Lyria tool.
+- `bin/gemini-sfx` → `~/.local/bin/gemini-sfx` — sound effects from a Flow Omni render.
+- `bin/gemini-listen` → `~/.local/bin/gemini-listen` — a Gemini model's judgement of video or audio.
+- `bin/gemini-web` → `~/.local/bin/gemini-web` — the hidden Chrome behind the Gemini media scripts (`login <profile>`).
+- `bin/pkill` → `~/.local/bin/pkill` — shadows `/usr/bin/pkill` for every model and vendor: refuses an option after the first pattern (macOS stops option parsing there, and a stray `-P` pattern matches every Claude Bash shell's `pwd -P`), else execs the real tool.
+- `bin/pgrep` → `~/.local/bin/pgrep` — the same guard for `/usr/bin/pgrep` (a link to `bin/pkill`).
 
 ## codexb multi-account suite
 

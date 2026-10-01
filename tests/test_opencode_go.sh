@@ -715,6 +715,19 @@ out=$("$SCRIPT" wall-check 2>"$WORK/err") || fail "wall-check after the lift fai
 assert grep -q '^served' <<<"$out"
 assert test -s "$WORKER_STATS_DIR/opencode-seen/opencode-go"
 
+# The probe model comes off the plan's live list, never a literal: a small fast one wherever the
+# list puts it, else the list's first.
+MODELS_CACHE="$TMPDIR/opencode-go-models.$(id -u).txt"
+limits_cache - true
+for catalog in 'big-9 nova-v9-flash glm-5.2|nova-v9-flash' 'big-9 kimi-k3|big-9'; do
+  printf '%s\n' ${catalog%|*} >"$MODELS_CACHE"
+  reset_calls
+  printf '200|%s|0\n' "$WORK/answer.json" >"$CURL_PLAN"
+  "$SCRIPT" wall-check >/dev/null 2>&1 || fail "wall-check on catalog ${catalog%|*} failed"
+  assert test "$(jq -r .model "$CURL_BODY.1")" = "${catalog#*|}"
+done
+printf 'glm-5.2\nkimi-k3\n' >"$MODELS_CACHE"
+
 # One of the files a probe makes is the curl config carrying the bearer token, and a `( … )`
 # subshell starts with the parent's EXIT trap reset: the refusal the probe goes looking for is
 # exactly the path that used to leave both behind.

@@ -56,10 +56,11 @@ local function iso(epoch) return os.date("!%Y-%m-%dT%H:%M:%SZ", epoch) end
 
 -- Tasks and alerts never leave the harness; pathwatcher off keeps the loaded llm-limits copy from
 -- watching or collecting anything.
-local tasks, alerts = {}, {}
+local tasks, alerts, dialogs, answer = {}, {}, {}, "Cancel"
 local fakeHs = setmetatable({
   pathwatcher = false,
   alert = { show = function(message) alerts[#alerts + 1] = message end },
+  dialog = { blockAlert = function(...) dialogs[#dialogs + 1] = { ... }; return answer end },
   task = { new = function(path, callback, args)
     local task = { path = path, args = args, callback = callback, alive = false }
     function task:setEnvironment(env) self.env = env end
@@ -89,6 +90,12 @@ local function loadDoctors()
   doctors.updaterDoctorDir = dir .. "/updater-doctor"
   doctors.doctorFixCmd = "/fixture/bin/doctor-fix"
   doctors.updaterDoctorCmd = "/fixture/bin/updater-doctor"
+  doctors.nightRunCmd = "/fixture/bin/night-run"
+  doctors.llmDoctorDir = dir .. "/llm-doctor"
+  doctors.harnessDoctorDir = dir .. "/harness-doctor"
+  doctors.llmLedger = dir .. "/llm-ledger.json"
+  doctors.harnessLedger = dir .. "/harness-ledger.json"
+  doctors.updaterLedger = dir .. "/updater-ledger.json"
   doctors.cacheSeconds = 0
   return doctors
 end
@@ -108,8 +115,12 @@ local updater = {
   problems = {
     { id = "codex:integrate", state = "new", fact = "codex 0.160.0 is out and not integrated" },
     { id = "claude:models", state = "watch", fact = "claude lists a model no leg uses" },
+    { id = "foreign-client:codex", state = "watch", fact = "codex: 3 other installs at another version: "
+      .. "/Applications/ChatGPT.app/Contents/Resources/codex 0.155.0, "
+      .. "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex 0.158.0" },
   },
-  blind_spots = { { id = "grok-changelog", what = "grok has no changelog to read" } },
+  blind_spots = { { id = "grok-changelog", what = "grok has no changelog to read",
+    reason = "xAI publishes release notes only on X, which the doctor cannot read", would_catch_if = "a feed" } },
   vendors = {
     { vendor = "codex", installed = "0.159.0", latest = "0.160.0", checked_at = iso(now - 3 * 3600), result = "ok",
       models = { "gpt-6-astra", "gpt-6-mini" },
@@ -133,13 +144,30 @@ write("/updater-doctor/latest.json", { contract = 1, doctor = "updater", as_of_s
 local doctors = loadDoctors()
 check(doctors.title() == "Doctors", "all ok: " .. text(doctors.title()))
 local items = doctors.menuItems()
-check(#items == 3 and text(items[1].title):match("^LLM doctor") and text(items[2].title):match("^Harness doctor")
+check(#items == 6 and text(items[1].title):match("^LLM doctor") and text(items[2].title):match("^Harness doctor")
   and text(items[3].title):match("^Updater doctor"), "the three doctors in order")
 check(text(items[3].title) == "Updater doctor: ok" and dimmed(items[3].title), "a clean Updater doctor: " .. text(items[3].title))
+local pendingRow = { id = "cli-behind:codex", rule = "cli-behind", state = "watch",
+  fact = "codex 0.159.0 → 0.159.2 waiting: busy since 00:14" }
+write("/updater-doctor/latest.json", { contract = 1, doctor = "updater", as_of_s = now, status = "ok",
+  problem_count = 0, problems = { pendingRow }, blind_spots = {}, vendors = {} })
+local pending = doctors.menuItems()[3]
+check(text(pending.title) == "Updater doctor: 1 update pending" and not dimmed(pending.title) and not red(pending.title),
+  "a pending update is never a plain ok: " .. text(pending.title))
+check(text(pending.menu[1].title) == pendingRow.fact and dimmed(pending.menu[1].title), "the pending update is a watch row")
+pendingRow.state, pendingRow.fact = "new", pendingRow.fact .. " · 26h"
+write("/updater-doctor/latest.json", { contract = 1, doctor = "updater", as_of_s = now, status = "problems",
+  problem_count = 1, problems = { pendingRow }, blind_spots = {}, vendors = {} })
+pending = doctors.menuItems()[3]
+check(text(pending.title) == "Updater doctor: 1 problem" and red(pending.title) and red(pending.menu[1].title),
+  "a pending update stuck past a day is red: " .. text(pending.title))
+write("/updater-doctor/latest.json", { contract = 1, doctor = "updater", as_of_s = now, status = "ok",
+  problem_count = 0, problems = {}, blind_spots = {}, vendors = {} })
 check(text(fix(items[1].menu).title) == "Fix — open a fixer chat" and fix(items[1].menu).fn ~= nil, "LLM Fix button")
 check(text(fix(items[2].menu).title) == "Fix — open a fixer chat", "Harness Fix button")
 check(text(fix(items[3].menu).title) == "Fix — update and integrate all vendors", "Updater Fix button")
-for _, item in ipairs(items) do
+for index = 1, 3 do
+  local item = items[index]
   check(text(fixer(item.menu).title) == "fixer: never ran" and fixer(item.menu).disabled and dimmed(fixer(item.menu).title),
     "no run record: " .. text(fixer(item.menu).title))
   check(text(refreshRow(item.menu).title) == "Refresh" and (item.menu[#item.menu - 3] or {}).title == "-",
@@ -191,7 +219,25 @@ for _, item in ipairs(codex and codex.menu or {}) do sub[#sub + 1] = item.title 
 check(table.concat(sub, "|") == "gpt-6-astra|gpt-6-mini|-|codex-0.159.0 · open · 0.158.0 → 0.159.0 · 2d ago"
   .. "|codex-0.158.0 · closed · 0.157.0 → 0.158.0 · 4d ago", "vendor submenu: " .. table.concat(sub, "|"))
 check(codex and codex.menu[5].menu and text(codex.menu[5].menu[1].title) == "worker-pick table", "an event lists what it changed")
-check(find(up.menu, "blind: grok has no changelog to read") and dimmed(find(up.menu, "blind: ").title), "blind spots dim")
+local spots = find(up.menu, "not measured: 1 blind spot")
+check(spots and dimmed(spots.title) and #spots.menu == 1 and text(spots.menu[1].title) == "grok has no changelog to read"
+  and text(spots.menu[1].menu[1].title) == "why: xAI publishes release notes only on X, which the doctor"
+  and text(spots.menu[1].menu[#spots.menu[1].menu].title) == "would catch it: a feed",
+  "blind spots sit one level down, each with its why")
+local long = find(up.menu, "codex: 3 other")
+local detail = {}
+for _, item in ipairs(long and long.menu or {}) do detail[#detail + 1] = text(item.title) end
+check(long and text(long.title) == "codex: 3 other installs at another version…" and dimmed(long.title)
+  and not long.disabled and #detail == 4 and table.concat(detail):gsub(" ", "") == updater.problems[3].fact:gsub(" ", ""),
+  "a long problem is one short row with its whole fact one level down: " .. (long and text(long.title) or "missing"))
+local function widest(menu)
+  local most = 0
+  for _, item in ipairs(menu or {}) do
+    if item.title ~= "-" then most = math.max(most, utf8.len(text(item.title))) end
+  end
+  return most
+end
+check(widest(up.menu) <= 64 and widest(long and long.menu) <= 64, "an Updater row is wider than 64: " .. widest(up.menu))
 local refresh = refreshRow(up.menu)
 check(text(refresh.title) == "Refresh" and refresh.fn and (up.menu[#up.menu - 3] or {}).title == "-",
   "the Updater doctor has Refresh after a separator")
@@ -215,6 +261,28 @@ remove("/updater-doctor/latest.json")
 up = doctors.menuItems()[3]
 check(text(up.title) == "Updater doctor: no data yet" and text(up.menu[1].title) == "no data yet"
   and up.menu[2].title == "-" and text(up.menu[3].title) == "Refresh" and #up.menu == 5, "missing file: " .. text(up.title))
+
+-- The LLM and Harness blocks keep the same width: a long row is clipped, its text one level down.
+local llmWide = llmDocument("ok", 0)
+llmWide.not_measurable = { "worker false-green reports", "weakened tests", "the code revision a leg ran",
+  "false-clean reviews" }
+write("/llm-doctor/latest.json", llmWide)
+write("/harness-doctor/menu.txt", "T\t1\t" .. now .. "\tHarness doctor: 1 problem\n"
+  .. "0\td\t\tStop hooks: problem · end-of-turn checks held back over 2 h while a background task ran\n"
+  .. "1\td\t\tstarted before 09-28 22:16 · cause unknown\n")
+items = doctors.menuItems()
+local measurable = find(items[1].menu, "not measurable yet")
+check(measurable and text(measurable.title) == "not measurable yet: worker false-green reports, weakened…"
+  and measurable.menu and not measurable.disabled, "a long LLM row: " .. (measurable and text(measurable.title) or "missing"))
+local stop = items[2].menu[1]
+local stopRows = {}
+for _, item in ipairs(stop.menu or {}) do stopRows[#stopRows + 1] = item.title == "-" and "-" or text(item.title) end
+check(text(stop.title) == "Stop hooks: problem · end-of-turn checks held back over 2 h…"
+  and table.concat(stopRows, "|") == "Stop hooks: problem · end-of-turn checks held back over 2 h|"
+  .. "while a background task ran|-|started before 09-28 22:16 · cause unknown", "a long Harness row keeps its own rows: "
+  .. table.concat(stopRows, "|"))
+for index = 1, 3 do check(widest(items[index].menu) <= 64, text(items[index].title) .. " has a row over 64") end
+write("/llm-doctor/latest.json", llmDocument("ok", 0))
 
 -- Fixer rows off the newest run record.
 write("/doctors/runs/llm-20260101T000000Z.json", { doctor = "llm", launched_at = iso(now - 90 * 86400) })
@@ -255,6 +323,163 @@ check(table.concat(tasks[2].args, " ") == "launch llm", "Fix on the LLM doctor l
 tasks[2]:finish(3, "", "checking\nrefused: a run is already open\n")
 check(alerts[2] and alerts[2]:find("exit 3", 1, true) and alerts[2]:find("refused: a run is already open", 1, true),
   "a failed launch shows its line: " .. tostring(alerts[2]))
+
+-- The newest run record by its own clock, whatever area its name sorts under; a failed launch is final.
+write("/doctors/runs/llm-workers-20260301T000000Z-aaaa.json", { doctor = "llm", created_at = iso(now - 5 * 86400),
+  launched_at = iso(now - 5 * 86400), closed_at = iso(now - 5 * 86400) })
+write("/doctors/runs/llm-reviewers-20260101T000000Z-bbbb.json", { doctor = "llm", created_at = iso(now - 3 * 3600),
+  failed_at = iso(now - 3 * 3600), note = "no account left to launch on" })
+items = doctors.menuItems()
+local failedRow = fixer(items[1].menu)
+check(text(failedRow.title) == "fixer: failed 3h ago" and red(failedRow.title) and failedRow.menu
+  and text(failedRow.menu[1].title) == "no account left to launch on", "failed run: " .. text(failedRow.title))
+check(fix(items[1].menu).fn ~= nil, "a failed run leaves Fix on")
+
+-- Night: bin/night-run latest --menu, a row under the doctors with a job per line, hidden while it
+-- prints nothing; Run everything under it.
+tasks = {}
+doctors = loadDoctors()
+items = doctors.menuItems()
+local nightTask = tasks[1]
+check(#items == 6 and nightTask and nightTask.path == "/fixture/bin/night-run"
+  and table.concat(nightTask.args, " ") == "latest --menu", "the Night row reads bin/night-run latest --menu")
+doctors.menuItems()
+check(#tasks == 1, "a second build started a second night-run")
+local quietTitle = text(doctors.title())
+local reason = "deadline, branch night/x/codex (llm-legs 083450f): round 20260930T032123Z-43d191b confirmed 7 findings, unfixed"
+nightTask:finish(0, "Last night 30 Sep: 1 of 3 done and pushed · 1 unfinished · 1 need you\t1\t0\n"
+  .. "LLM fixer: health · done and pushed\t0\t\n"
+  .. "codex update · unfinished · deadline\t0\t" .. reason .. "\n"
+  .. "cleanup p1 · needs you · step 10 needs his word\t1\tstep 10 needs his word\n")
+items = doctors.menuItems()
+local nightRow = items[4]
+check(#items == 7 and text(nightRow.title) == "Last night 30 Sep: 1 of 3 done and pushed · 1 unfinished · 1 need you"
+  and red(nightRow.title) and not nightRow.disabled and allMenlo({ nightRow }),
+  "a red night: " .. (nightRow and text(nightRow.title) or "missing"))
+local jobs = nightRow.menu or {}
+check(#jobs == 3 and text(jobs[1].title) == "LLM fixer: health · done and pushed" and dimmed(jobs[1].title) and jobs[1].disabled
+  and text(jobs[2].title) == "codex update · unfinished · deadline" and dimmed(jobs[2].title) and jobs[2].menu
+  and text(jobs[3].title) == "cleanup p1 · needs you · step 10 needs his word" and red(jobs[3].title),
+  "a job per row, red only where Egor is needed")
+local reasonRows = {}
+for _, item in ipairs(jobs[2] and jobs[2].menu or {}) do reasonRows[#reasonRows + 1] = text(item.title) end
+check(table.concat(reasonRows, " ") == reason and widest(jobs[2].menu) <= 64, "a job's whole reason one level down")
+check(text(doctors.title()) == quietTitle, "the Night row changed the Doctors title")
+doctors.refreshNight()
+tasks[#tasks]:finish(0, "Last night 30 Sep: 4 of 4 done and pushed\t0\t0\n")
+nightRow = doctors.menuItems()[4]
+check(nightRow and text(nightRow.title) == "Last night 30 Sep: 4 of 4 done and pushed" and dimmed(nightRow.title)
+  and nightRow.disabled, "a clean night with no job rows is dim")
+
+-- Run everything: bin/night-run start behind a confirmation; off while a night runs.
+items = doctors.menuItems()
+local run = items[#items]
+check(items[#items - 2].title == "-" and text(run.title) == "Run everything now (fixers · updates · cleanup)" and run.fn,
+  "Run everything is the last Doctors item")
+check(text(items[#items - 1].title) == "Cleanup now (land night branches · debt round)" and items[#items - 1].fn,
+  "Cleanup now sits right above Run everything")
+tasks, dialogs, answer = {}, {}, "Cancel"
+run.fn()
+check(#dialogs == 1 and #tasks == 0, "Cancel on the confirmation starts nothing")
+check(dialogs[1] and dialogs[1][2]:find("hours", 1, true) and dialogs[1][3] == "Cancel" and dialogs[1][4] == "Run",
+  "the confirmation says it works for hours, Cancel first")
+answer = "Run"
+run.fn()
+check(#tasks == 1 and tasks[1].path == "/fixture/bin/night-run" and table.concat(tasks[1].args, " ") == "start"
+  and tasks[1].env and tasks[1].env.HOME == os.getenv("HOME"), "Run launches bin/night-run start")
+local opening = doctors.menuItems()
+check(text(opening[#opening].title) == "Run everything — opening…" and opening[#opening].disabled
+  and not opening[#opening].fn, "a launching night reads opening")
+doctors.runEverything()
+check(#tasks == 1 and #dialogs == 2, "a second click launched a second night")
+tasks[1]:finish(0, "night 20260930T120000Z-abcd started: orchestrator on acct\n")
+check(alerts[#alerts] == "night 20260930T120000Z-abcd started: orchestrator on acct", "the start line is the alert")
+doctors.menuItems()
+check(#tasks == 2 and table.concat(tasks[2].args, " ") == "latest --menu", "a started night is read back at once")
+tasks[2]:finish(0, "Night run since 12:00: 0 of 1 done · 1 in progress\t0\t1\nLLM fixer · in progress\t0\t\n")
+local busy = doctors.menuItems()
+check(text(busy[#busy].title) == "Run everything — a night run is going" and busy[#busy].disabled and not busy[#busy].fn,
+  "a running night holds Run everything")
+local dialogCount = #dialogs
+doctors.runEverything()
+check(#dialogs == dialogCount and #tasks == 2, "a running night asked or started again")
+doctors.refreshNight()
+tasks[#tasks]:finish(4, "", "night-run: cannot read\n")
+check(#doctors.menuItems() == 6, "an empty night-run hides the row")
+
+-- Cleanup now: bin/night-run start --cleanup behind the same Cancel-first confirmation; off while a night runs.
+doctors.refreshNight()
+tasks[#tasks]:finish(0, "Last night 30 Sep: 4 of 4 done and pushed\t0\t0\tn-1\n")
+tasks, dialogs, answer = {}, {}, "Cancel"
+items = doctors.menuItems()
+local cleanup = items[#items - 1]
+cleanup.fn()
+check(#dialogs == 1 and #tasks == 0 and dialogs[1][3] == "Cancel" and dialogs[1][4] == "Run"
+  and dialogs[1][2]:find("No fixers, no updates", 1, true), "Cancel on the cleanup confirmation starts nothing")
+answer = "Run"
+cleanup.fn()
+check(#tasks == 1 and table.concat(tasks[1].args, " ") == "start --cleanup", "Cleanup now runs bin/night-run start --cleanup")
+tasks[1]:finish(0, "night n-2 started: orchestrator on acct\n")
+doctors.menuItems()
+tasks[#tasks]:finish(0, "Night run since 12:00: no jobs\t0\t1\tn-2\n")
+items = doctors.menuItems()
+check(text(items[#items - 1].title) == "Cleanup — a night run is going" and items[#items - 1].disabled
+  and not items[#items - 1].fn, "a running night holds Cleanup now")
+
+-- Continue: each unfinished job of a night that no longer runs, and all of them plus the cleanup.
+doctors.refreshNight()
+tasks[#tasks]:finish(0, "Last night 30 Sep: 1 of 3 done and pushed · 2 unfinished\t0\t0\tn-1\n"
+  .. "LLM fixer · done and pushed\t0\t\tllm-x\tfixer\t0\n"
+  .. "codex update · unfinished · deadline\t0\t" .. reason .. "\tcodex-e1\tvendor\t1\n"
+  .. "cleanup · unfinished · deadline\t0\t\tdebt\tdebt\t1\n")
+tasks, dialogs, answer = {}, {}, "Continue"
+jobs = doctors.menuItems()[4].menu
+check(#jobs == 5 and jobs[1].disabled and jobs[4].title == "-", "three jobs, then a separator: " .. #jobs)
+local codexMenu = jobs[2].menu or {}
+local continueJob = codexMenu[#codexMenu]
+check(continueJob and text(continueJob.title) == "Continue this job" and codexMenu[#codexMenu - 1].title == "-"
+  and text(codexMenu[1].title) == reason:sub(1, #text(codexMenu[1].title)), "a job's reason, then Continue this job")
+check(jobs[3].menu and #jobs[3].menu == 1 and not jobs[3].disabled, "a job with no reason still continues")
+check(text(jobs[5].title) == "Continue unfinished (1 job) + cleanup" and jobs[5].fn, "Continue counts the jobs besides the cleanup")
+continueJob.fn()
+check(#tasks == 1 and table.concat(tasks[1].args, " ") == "start --resume n-1 --job codex-e1" and dialogs[1][3] == "Cancel",
+  "Continue this job resumes night n-1 for codex-e1 alone")
+tasks[1]:finish(0, "night n-1 resumed: orchestrator on acct\n")
+doctors.menuItems()
+tasks[#tasks]:finish(0, "Last night 30 Sep: 2 unfinished\t0\t0\tn-1\ncodex update · unfinished\t0\t\tcodex-e1\tvendor\t1\n")
+tasks = {}
+jobs = doctors.menuItems()[4].menu
+jobs[#jobs].fn()
+check(#tasks == 1 and table.concat(tasks[1].args, " ") == "start --resume n-1", "Continue unfinished resumes the whole night")
+tasks[1]:finish(0, "night n-1 resumed\n")
+doctors.menuItems()
+tasks[#tasks]:finish(0, "Night run since 12:00: 1 in progress\t0\t1\tn-1\ncodex update · in progress\t0\t\tcodex-e1\tvendor\t0\n")
+jobs = doctors.menuItems()[4].menu
+check(#jobs == 1 and jobs[1].disabled, "a running night offers no Continue")
+
+-- Known, quiet: an open ledger row no problem names is one dim row per doctor, the ids one level down.
+local quietDoc = llmDocument("problems", 1)
+quietDoc.problems = { { id = "M1", ledger = "M1", state = "open" }, { id = "ledger:M2", state = "new" } }
+write("/llm-doctor/latest.json", quietDoc)
+write("/llm-ledger.json", { rows = {
+  { id = "M1", status = "open", title = "seen" }, { id = "M2", status = "open", title = "a faulty row" },
+  { id = "V14", status = "open", title = "the judge ruled on fewer claims than it was given" },
+  { id = "W1", status = "open", title = "a worker row" }, { id = "R3", status = "fixed", title = "done" } } })
+write("/harness-doctor/latest.json", { contract = 1, doctor = "harness", as_of_s = now, status = "problems", problems = {} })
+write("/harness-ledger.json", { rows = { { id = "suites-llm-legs-concurrent-load", status = "open" } } })
+items = doctors.menuItems()
+local quietLlm = items[1].menu[#items[1].menu - 2]
+check(text(quietLlm.title) == "2 known, quiet" and dimmed(quietLlm.title) and #quietLlm.menu == 2
+  and text(quietLlm.menu[1].title) == "V14 · the judge ruled on fewer claims than it was given"
+  and text(quietLlm.menu[2].title) == "W1 · a worker row", "the LLM doctor's quiet rows: " .. text(quietLlm.title))
+local quietHarness = items[2].menu[#items[2].menu - 2]
+check(text(quietHarness.title) == "1 known, quiet" and text(quietHarness.menu[1].title) == "suites-llm-legs-concurrent-load",
+  "the Harness doctor's quiet row: " .. text(quietHarness.title))
+check(text(items[3].menu[#items[3].menu - 2].title) == "Refresh", "no ledger rows, no quiet row")
+quietDoc.status = "error"
+write("/llm-doctor/latest.json", quietDoc)
+items = doctors.menuItems()
+check(not text(items[1].menu[#items[1].menu - 2].title):find("known, quiet", 1, true), "a failed collector hides nothing as quiet")
 
 os.execute("rm -rf '" .. dir .. "'")
 if #failures > 0 then return "FAIL: " .. table.concat(failures, "; ") end

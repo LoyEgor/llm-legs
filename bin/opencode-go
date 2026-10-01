@@ -656,8 +656,9 @@ raw_request() {
   [[ $status == 2?? ]]
 }
 # The wall belongs to the plan, not to one model, so any model the plan serves answers the
-# question; the two named are its small fast ones.
-WALL_PROBE_MODELS=(deepseek-v4-flash glm-5.2)
+# question: the first small fast one on the plan's live list (ask_codex.sh's WEAK_RE words), else
+# the list's first.
+WALL_PROBE_SMALL_RE='(^|[-_.])(mini|nano|lite|flash|small|tiny|haiku|luna)([-_.0-9]|$)'
 # Every line this prints opens with the state it observed, and the three are not interchangeable:
 # `served` needs a completion the plan answered, `walled` needs a refusal this very probe recorded,
 # and `dormant` sent nothing at all — reading the third as the first is how an account nobody asked
@@ -670,7 +671,7 @@ wall_check() {
       *) usage ;;
     esac
   done
-  local profile=${OPENCODE_GO_PROFILE:--} walled started fresh cache model candidate rc=0
+  local profile=${OPENCODE_GO_PROFILE:--} walled started fresh cache model rc=0
   local window reset
   walled=$(jq -r --arg p "$profile" \
     'first(.vendors.opencode.accounts[]? | select(.account == $p) | .walled | tostring) // "unknown"' \
@@ -688,14 +689,7 @@ wall_check() {
     fi
   fi
   cache=$(models_cache) || return 1
-  model=
-  for candidate in "${WALL_PROBE_MODELS[@]}"; do
-    if grep -qxF "$candidate" "$cache"; then
-      model=$candidate
-      break
-    fi
-  done
-  [[ -n $model ]] || model=$(head -n 1 "$cache")
+  model=$(grep -E -m 1 "$WALL_PROBE_SMALL_RE" "$cache" || head -n 1 "$cache")
   if [[ -z $model ]]; then
     printf 'inconclusive — the plan lists no model to ask with\n' >&2
     return 1

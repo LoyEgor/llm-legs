@@ -18,8 +18,9 @@ end
 function M.ago(seconds) return M.age(seconds) .. " ago" end
 
 function M.clock(epoch, now)
+  epoch = tonumber(epoch)
   if not epoch then return "?" end
-  now = now or os.time()
+  epoch, now = math.floor(epoch), math.floor(now or os.time())
   if os.date("%Y-%m-%d", epoch) == os.date("%Y-%m-%d", now) then return os.date("%H:%M", epoch) end
   return os.date("%b ", epoch) .. tonumber(os.date("%d", epoch)) .. os.date(" %H:%M", epoch)
 end

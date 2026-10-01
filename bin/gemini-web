@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+
+root=$(resolve_root)
+uv_cmd=${GEMINI_WEB_UV:-$(command -v uv || printf /opt/homebrew/bin/uv)}
+exec "$uv_cmd" run -q --script "$root/share/gemini_web.py" "$@"

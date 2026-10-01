@@ -462,7 +462,7 @@ alert_once() { # path content-key summary
       [ -z "${r_revert[$i]}" ] || won_reverted+=("${r_revert[$i]}")
       while IFS= read -r c; do
         [ -n "$c" ] || continue
-        case "$_watch_nl$(printf '%s\n' ${won_cands[@]+"${won_cands[@]}"})" in *"$_watch_nl$c$_watch_nl"*) continue ;; esac
+        case "$_watch_nl$(printf '%s\n' ${won_cands[@]+"${won_cands[@]}"})$_watch_nl" in *"$_watch_nl$c$_watch_nl"*) continue ;; esac
         won_cands+=("$c")
       done <<<"${r_cands[$i]}"
       summary="$summary${summary:+; }${reports[$i]}"

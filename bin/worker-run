@@ -195,6 +195,10 @@ command -v worker_walls_record >/dev/null ||
   fail 'share/codex-accounts.sh is missing: worker-run cannot tell whether codex main was removed'
 . "$SCRIPT_DIRECTORY/../share/store-lock.sh" ||
   fail 'share/store-lock.sh is missing: worker-run cannot rotate the worker-attempts journal safely'
+. "$SCRIPT_DIRECTORY/../share/worktree-branch.sh" ||
+  fail 'share/worktree-branch.sh is missing: worker-run cannot find a sibling worktree on its branch'
+. "$SCRIPT_DIRECTORY/../share/worker-claims.sh" ||
+  fail 'share/worker-claims.sh is missing: worker-run cannot release a claim on an account it passed over'
 gemini_base_home=$HOME
 gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}"
 
@@ -873,11 +877,32 @@ pick_account() {
   # pin-lapse clause before it and, on older builds, a vendor prefix (`grok: unavailable`).
   ! grep -Eq 'no selectable [a-z]+ account \(([a-z]+: )?([^)]*[|—] )?(unavailable|no( [A-Za-z]+)* quota data|no accounts)\)' "$errors" ||
     PICKED_NO_DATA=true
-  if [ "${WORKER_RUN_ROLE:-workers}" = research ] && ! grep -Eq '(^|[^[:alnum:]_])WALLED([^[:alnum:]_]|$)' "$errors"; then
+  PICKED_WALLED=false
+  ! grep -Eq '(^|[^[:alnum:]_])WALLED([^[:alnum:]_]|$)' "$errors" || PICKED_WALLED=true
+  if [ "${WORKER_RUN_ROLE:-workers}" = research ] && [ "$PICKED_WALLED" = false ]; then
     PICKED_NO_DATA=true
   fi
   rm -f "$errors"
   PICKED_ACCOUNT=${PICKED_ACCOUNT%%$'\n'*}
+}
+
+# The picker ranks quota only, and a codex catalog is per account: a lapsed plan lists the free models
+# alone, so its idle account ranks first and would launch an id it does not serve.
+pick_account_listing() { # vendor exclude model
+  local exclude=$2 claimed=''
+  PICKED_UNLISTED=''
+  while :; do
+    [ "$1" != codex ] || claimed=$(worker_claims_fresh codex 2>/dev/null) || claimed=''
+    pick_account "$1" "$exclude"
+    [ "$1" = codex ] && [ "$PICKED_RC" -eq 0 ] && [ -n "$PICKED_ACCOUNT" ] || return 0
+    [ -z "$(worker_model_codex_slug "$3" "$PICKED_ACCOUNT")" ] || return 0
+    case ",$exclude," in *",$PICKED_ACCOUNT,"*) PICKED_ACCOUNT='' PICKED_RC=3; return 0 ;; esac
+    # The picker claimed it for this launch; a claim someone else already held stays theirs.
+    grep -qxF -- "$PICKED_ACCOUNT" <<<"$claimed" || worker_claims_release codex "$PICKED_ACCOUNT" || :
+    printf 'worker-run: codex/%s lists no model of %s; routing past it\n' "$PICKED_ACCOUNT" "$3" >&2
+    PICKED_UNLISTED=${PICKED_UNLISTED:+$PICKED_UNLISTED,}$PICKED_ACCOUNT
+    exclude=${exclude:+$exclude,}$PICKED_ACCOUNT
+  done
 }
 
 read_json_array() {
@@ -946,7 +971,7 @@ codex_attempt() {
 }
 
 supervise_codex() {
-  local directory="$1" meta="$1/meta.json" account model effort resume cli rc value drop=false dropped=false fast
+  local directory="$1" meta="$1/meta.json" account model effort resume cli rc value drop=false dropped=false fast refused=
   local -a command retry add_dirs images
   account=$(jq -r '.account' "$meta")
   model=$(jq -r '.model' "$meta")
@@ -997,14 +1022,18 @@ supervise_codex() {
   if [ "$rc" -ne 0 ] && codex_unsupported_model "$directory"; then
     retry=()
     for value in "${command[@]}"; do
-      if [ "$drop" = true ]; then drop=false; continue; fi
+      if [ "$drop" = true ]; then drop=false; refused=$value; continue; fi
       if [ "$value" = -m ]; then drop=true; dropped=true; continue; fi
       retry+=("$value")
     done
     if [ "$dropped" = true ]; then
-      value=$(codex_config_model)
-      worker_model_allows codex "$value" || return "$rc"
-      value=$(worker_model_codex_slug "$value" "$account") && [ -n "$value" ] || return "$rc"
+      worker_model_codex_refuse "$account" "$refused" || :
+      value=$(worker_model_codex_slug "$model" "$account") || value=''
+      if [ -z "$value" ] || [ "$value" = "$refused" ]; then
+        value=$(codex_config_model)
+        worker_model_allows codex "$value" || return "$rc"
+        value=$(worker_model_codex_slug "$value" "$account") && [ -n "$value" ] || return "$rc"
+      fi
       retry+=(-c "model=\"$value\"")
       meta_update "$directory" '.model_flag_dropped = true' || return 4
       : >"$directory/out"
@@ -1168,7 +1197,7 @@ reroute_walled() {
   [ -z "$(jq -r '.resume // empty' "$directory/meta.json")" ] || return 1
   if jq -e '.role == "research" and .explicit_account != ""' "$directory/meta.json" >/dev/null; then return 1; fi
   walled=$(jq -r '((.walled_accounts // []) + [.account]) | join(",")' "$directory/meta.json")
-  pick_account "$vendor" "$walled"
+  pick_account_listing "$vendor" "$walled" "$(jq -r '.model' "$directory/meta.json")"
   [ "$PICKED_RC" -eq 0 ] && [ -n "$PICKED_ACCOUNT" ] || return 1
   # Defence against a picker that ignores --exclude: relaunching on an account
   # this run already burnt would wall again forever.
@@ -2254,8 +2283,23 @@ start_run() {
     fail '--web-search and --no-web-search ask for opposite states: pass one of them'
   [ "$role" = workers ] || [ "$role" = research ] || usage
   if [ -n "$brief" ] && [ "$role" = workers ]; then
+    # A flag the relay rebuilt from the header must not outvote it: a relay that lost `--effort` to a
+    # shell quoting slip launched a Fable `EFFORT: high` brief on the low default (2026-09-30).
+    local header_key header_value header_flag
+    for header_key in ACCOUNT MODEL EFFORT; do
+      [ "$header_key" = ACCOUNT ] || [ "$vendor" != light ] || continue
+      header_value=$(brief_line_value "$brief" "$header_key")
+      case "$header_key" in
+        ACCOUNT) header_flag=$explicit_account ;;
+        MODEL) header_flag=$model ;;
+        EFFORT) header_flag=$effort ;;
+      esac
+      [ -z "$header_value" ] || [ -z "$header_flag" ] || [ "$header_flag" = "$header_value" ] ||
+        fail "--$(tr '[:upper:]' '[:lower:]' <<<"$header_key") $header_flag contradicts the brief header '$header_key: $header_value': drop the flag, worker-run reads the header itself. Nothing was launched and no account was spent."
+    done
     [ -n "$explicit_account" ] || explicit_account=$(brief_line_value "$brief" ACCOUNT)
     [ -n "$model" ] || [ "$vendor" = light ] || model=$(brief_line_value "$brief" MODEL)
+    [ -n "$effort" ] || [ "$vendor" = light ] || effort=$(brief_line_value "$brief" EFFORT)
     [ "$computer" = true ] || [ "$(brief_line_value "$brief" COMPUTER)" != yes ] || computer=true
     while IFS= read -r value; do
       [[ "$value" = /* ]] && [ -d "$value" ] ||
@@ -2572,7 +2616,7 @@ start_run() {
   if [ -n "$explicit_account" ]; then
     account="$explicit_account"
   else
-    pick_account "$vendor" ''
+    pick_account_listing "$vendor" '' "$model"
     if [ "$PICKED_RC" -eq 0 ] && [ -n "$PICKED_ACCOUNT" ]; then
       account="$PICKED_ACCOUNT"
     elif [ "$PICKED_RC" -eq 3 ]; then
@@ -2587,6 +2631,11 @@ start_run() {
       if [ "$PICKED_NO_DATA" = true ]; then
         outcome_line "$(vendor_name "$vendor")_UNAVAILABLE"
         fail "worker-pick has no usage data for $vendor, so it can route to no account; name one with --account"
+      fi
+      # A wall behind the passed-over accounts is a quota to wait out, not a model to change.
+      if [ -n "$PICKED_UNLISTED" ] && [ "$PICKED_WALLED" = false ]; then
+        outcome_line MODEL_REFUSED
+        fail "codex model $model: no selectable account lists it (passed over $PICKED_UNLISTED, whose catalogs lack it). Nothing was launched and no account was spent."
       fi
       outcome_line "$(vendor_name "$vendor")_USAGE_LIMIT"
       exit 3
@@ -3559,8 +3608,9 @@ shell_write_rows() { # directory workdir snapshot
     'BEGIN { from = ENVIRON["AWK_FROM"]; to = ENVIRON["AWK_TO"] }
      { if (from != to && index($0, from) == 1) $0 = to substr($0, length(from) + 1); print }' \
     "$1/shell-writes" | listing_spelling "$2" |
-    AWK_SNAP=$3 awk 'BEGIN { n = split(ENVIRON["AWK_SNAP"], snap, "\n") }
-      { print; for (i = 1; i <= n; i++) if (snap[i] != "" && index(snap[i], $0 "/") == 1) print snap[i] }' |
+    AWK_TOP=${2%/} AWK_PTOP=${physical%/} awk 'NR == FNR { if ($0 != "") snap[++n] = $0; next }
+      $0 == ENVIRON["AWK_TOP"] || $0 == ENVIRON["AWK_PTOP"] { for (i = 1; i <= n; i++) print snap[i]; next }
+      { print; for (i = 1; i <= n; i++) if (index(snap[i], $0 "/") == 1) print snap[i] }' <(printf '%s\n' "$3") - |
     sort -u
 }
 
@@ -4646,14 +4696,16 @@ run_result_text() {
 # run-start of their own. Folded from the workdir alone, a fix that also edits them never anchors
 # there, and the launcher is charged for the fix itself.
 snapshot_other_families() { # directory workdir launcher add-dir...
-  local directory="$1" workdir="$2" launcher="$3" seen candidate common top sub n=0
+  local directory="$1" workdir="$2" launcher="$3" seen candidate common top sub n=0 branch sibling
   shift 3
   seen=$(git -C "$workdir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || seen=''
+  branch=$(linked_worktree_branch "$workdir")
   while IFS= read -r candidate; do
     [ -n "$candidate" ] && [ -d "$candidate" ] || continue
     common=$(git -C "$candidate" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || continue
     top=$(git -C "$candidate" rev-parse --show-toplevel 2>/dev/null) || continue
     [ -n "$common" ] && [ -n "$top" ] || continue
+    if [ -n "$branch" ] && sibling=$(same_branch_worktree "$top" "$branch"); then top=$sibling; fi
     grep -qxF -- "$common" <<<"$seen" && continue
     seen="$seen"$'\n'"$common"
     n=$((n + 1))

@@ -116,7 +116,11 @@ if [ -s "$STUB_DIR/pick_queue" ]; then
   sed '1d' "$STUB_DIR/pick_queue" >"$STUB_DIR/pick_queue.next" && mv "$STUB_DIR/pick_queue.next" "$STUB_DIR/pick_queue"
   # shellcheck disable=SC2086
   set -- $queued
-  [ "$1" = 0 ] || exit "$1"
+  if [ "$1" != 0 ]; then
+    [ -z "${PICK_STDERR:-}" ] || printf '%s\n' "$PICK_STDERR" >&2
+    exit "$1"
+  fi
+  [ -z "${PICK_CLAIMS:-}" ] || { mkdir -p "$PICK_CLAIMS/codex" && touch "$PICK_CLAIMS/codex/$2"; }
   printf '%s\n' "$2"
   exit 0
 fi
@@ -355,6 +359,7 @@ set_config() {
 clear_stub() {
   : >"$CALL_LOG"
   : >"$PICK_LOG"
+  rm -f "$HOME/.codex-profiles/.codexb/refused-models"
   unset STUB_SLEEP STUB_HEARTBEAT STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT STUB_TRANSCRIPT_GROW STUB_TRANSCRIPT_GROW_TURNS \
     STUB_EDIT_PATH STUB_PICK_WALL \
     STUB_ERROR STUB_CODE STUB_STDOUT STUB_GEMINI_LABEL STUB_SESSION STUB_GROK_SESSION STUB_GROK_MODEL \
@@ -459,6 +464,24 @@ model_effort_tests() {
   assert await_done
   assert grep -qx 'ARG=fable' "$CALL_LOG"
   assert test "$(jq -r '.effort' "$RUN_DIR/meta.json")" = low
+  # The brief's EFFORT: is the run's effort like its ACCOUNT: and MODEL:, and a flag that contradicts
+  # a header line refuses: a relay's dropped `--effort` once launched a Fable `EFFORT: high` brief on low.
+  cp "$WORK/brief" "$WORK/brief.noheader"
+  { printf 'MODEL: fable\nEFFORT: high\n\n'; cat "$WORK/brief.noheader"; } >"$WORK/brief"
+  clear_stub
+  start_ok claudeb --account main
+  assert await_done
+  assert test "$(jq -r '[.model, .effort] | join(" ")' "$RUN_DIR/meta.json")" = 'fable high'
+  for flag in '--effort low' '--model opus'; do
+    clear_stub
+    rc=0
+    # shellcheck disable=SC2086
+    "$RUNNER" start claudeb --brief "$WORK/brief" --workdir "$WORK/workdir" --account main $flag >"$WORK/effort.out" 2>&1 || rc=$?
+    assert test "$rc" -eq 4
+    assert grep -qF -e "$flag contradicts the brief header" "$WORK/effort.out"
+    assert test ! -s "$CALL_LOG"
+  done
+  mv "$WORK/brief.noheader" "$WORK/brief"
   # `gemini:flash38:ultra` and not `xhigh`: every effort the table knows is RAISED to high on a
   # Gemini leg, so only a word that is no effort at all can be refused there.
   for spec in codex:astra:max codex:gpt-5.6-sol:max claudeb:opus:ultra gemini:flash38:ultra grok:auto:low grok:grok-4.6:medium; do
@@ -586,16 +609,16 @@ reliability_tests() {
     : >"$STUB_DIR/codex_bad_model"
     start_ok codex --account model
     assert await_done
-    assert grep -qxF 'ARG=model=\"gpt-6.1-astra\"' "$CALL_LOG"
+    assert grep -qxF 'ARG=model=\"gpt-6-astra\"' "$CALL_LOG"
     clear_stub
     : >"$STUB_DIR/codex_bad_model"
     # config.toml is Egor's interactive pick: a terra there changes nothing about the retry,
-    # which respells the allow-list's own model.
+    # which takes the family's next slug past the refused one.
     printf 'model = "gpt-5.6-terra"\n' >"$WORKER_RUN_CODEX_CONFIG"
     start_ok codex --account model --model astra
     assert await_done
     assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 2
-    assert grep -qxF 'ARG=model=\"gpt-6.1-astra\"' "$CALL_LOG"
+    assert grep -qxF 'ARG=model=\"gpt-6-astra\"' "$CALL_LOG"
     assert_fails grep -qx 'OUTCOME: CODEX_UNAVAILABLE' "$WORK/wait.out"
     printf 'model = "gpt-6-astra"\n' >"$WORKER_RUN_CODEX_CONFIG"
   fi
@@ -689,8 +712,8 @@ EOF
 
   if reliability_case C; then
     clear_stub
-    export STUB_SLEEP=8
-    start_ok codex --account busy --resume busy-session
+    export STUB_SLEEP=120
+    WORKER_RUN_DEADLINE=600 start_ok codex --account busy --resume busy-session
     old_id=$RUN_ID old_dir=$RUN_DIR
     assert grep -qx busy-session "$old_dir/worker-session"
     rc=0
@@ -708,8 +731,10 @@ EOF
 
   if reliability_case D; then
     clear_stub
-    export STUB_SLEEP=8
-    start_ok codex --account duplicate
+    # The first run must still be live at the nested check after two more whole runs; only the kill
+    # below may end it, never its own sleep or the section's 10 s deadline on a loaded machine.
+    export STUB_SLEEP=120
+    WORKER_RUN_DEADLINE=600 start_ok codex --account duplicate
     old_id=$RUN_ID old_dir=$RUN_DIR
     rc=0
     WORKER_RUN_ALLOW_DUPLICATE=0 "$RUNNER" start codex --brief "$WORK/brief" --account duplicate >"$WORK/duplicate.out" 2>&1 || rc=$?
@@ -772,7 +797,7 @@ EOF
       printf '%s\n' "$started" >"$fixture/cotenant-edit"
       sleep 1
     done
-    result=$("$RUNNER" wait "$RUN_ID" --max 0)
+    result=$("$RUNNER" wait "$RUN_ID" --max 6)
     assert grep -q '^KILLED: idle watchdog' <<<"$result"
     unset STUB_SLEEP
   fi
@@ -2462,6 +2487,28 @@ ANCHORS
   assert grep -qF -- "--base=./kept=$kept_base" <<<"$fold"
   assert grep -qF -- "--after=./kept=$(git -C "$other" hash-object kept)" <<<"$fold"
   assert test "$(grep -c "^run-fold${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}" "$ANCHOR_LOG")" = 1
+
+  # A workdir in a linked worktree (night run 20260930T001419Z-8480, run 56f7): the sibling family
+  # is the other repository's worktree on the same branch, never its main checkout.
+  clear_stub
+  : >"$ANCHOR_LOG"
+  git -C "$repo" worktree add -q -b night/n1/job "$WORK/anchors-repo-wt" >/dev/null 2>&1 ||
+    fail "worktree add in $repo failed"
+  git -C "$other" worktree add -q -b night/n1/job "$WORK/anchors-other-wt" >/dev/null 2>&1 ||
+    fail "worktree add in $other failed"
+  repo_wt=$(cd "$WORK/anchors-repo-wt" && pwd -P)
+  other_wt=$(cd "$WORK/anchors-other-wt" && pwd -P)
+  export STUB_SLEEP=3
+  "$RUNNER" start codex --brief "$WORK/anchors-brief" --workdir "$repo_wt" \
+    >"$WORK/anchors.out" 2>"$WORK/anchors.err" || fail "worktree start failed: $(<"$WORK/anchors.err")"
+  RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/anchors.out")
+  RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/anchors.out")
+  assert grep -qxF "run-start${anchors_tab}--repo${anchors_tab}${other_wt}${anchors_tab}--run${anchors_tab}${RUN_ID}${anchors_tab}--session${anchors_tab}anchors-chat" "$ANCHOR_LOG"
+  assert_fails grep -qF "run-start${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}" "$ANCHOR_LOG"
+  assert grep -qxF "$other_wt" "$RUN_DIR/families/1/top"
+  assert await_done
+  git -C "$repo" worktree remove --force "$repo_wt" >/dev/null 2>&1
+  git -C "$other" worktree remove --force "$other_wt" >/dev/null 2>&1
   rm -f "$HOME/.cache/claude/review-journal/anchors-chat.repos"
 
   # A run that failed is folded like any other — the store's question is what content moved, never
@@ -3605,6 +3652,68 @@ assert grep -qx 'ARG=gpt-6.1-astra' "$CALL_LOG"
 rm -r "$HOME/.codex-profiles/ownlist" "$HOME/.codex-profiles/otherlist" "$HOME/.codex-profiles/.codexb/fast-mode/ownlist"
 export CODEXB_MODELS_CACHE=$saved_models_cache
 
+# A picked account whose catalog lists no model of the family (a lapsed plan keeps the free models
+# only) is passed over, never launched on the machine-wide id; none left is a model refusal.
+clear_stub
+unset CODEXB_MODELS_CACHE
+mkdir -p "$HOME/.codex-profiles/ownlist" "$HOME/.codex-profiles/lapsed"
+jq '.client_version = "0.156.1" | .fetched_at = "2026-09-23T00:00:00.000000Z"' "$saved_models_cache" \
+  >"$HOME/.codex-profiles/ownlist/models_cache.json"
+jq '.models |= map(select(.slug | test("astra") | not))' "$saved_models_cache" \
+  | jq '.client_version = "0.156.1" | .fetched_at = "2026-09-24T00:00:00.000000Z"' >"$HOME/.codex-profiles/lapsed/models_cache.json"
+export WORKER_CLAIMS_DIR="$WORK/claims" PICK_CLAIMS="$WORK/claims"
+printf '%s\n' '0 lapsed' '0 ownlist' >"$STUB_DIR/pick_queue"
+start_ok codex --model astra
+assert grep -qF 'codex/lapsed lists no model of astra' "$WORK/start.err"
+assert grep -q -- '--exclude lapsed$' "$PICK_LOG"
+assert meta_account_is ownlist
+assert await_done
+assert grep -qx 'ARG=gpt-6.1-astra' "$CALL_LOG"
+# The claim the picker recorded on the account passed over is released; a claim held before stays.
+assert test ! -e "$WORK/claims/codex/lapsed"
+assert test -e "$WORK/claims/codex/ownlist"
+clear_stub
+touch "$WORK/claims/codex/lapsed"
+printf '%s\n' '0 lapsed' '0 ownlist' >"$STUB_DIR/pick_queue"
+start_ok codex --model astra
+assert test -e "$WORK/claims/codex/lapsed"
+assert await_done
+unset PICK_CLAIMS
+rm -rf "$WORK/claims"
+# A pinned slug is checked against the account's own catalog too, and so is an account whose
+# catalog cannot be read: neither launches on the machine-wide list.
+clear_stub
+printf '%s\n' '0 lapsed' '0 nohome' '0 ownlist' >"$STUB_DIR/pick_queue"
+start_ok codex --model gpt-6.1-astra
+assert grep -qF 'codex/lapsed lists no model of gpt-6.1-astra' "$WORK/start.err"
+assert grep -qF 'codex/nohome lists no model of gpt-6.1-astra' "$WORK/start.err"
+assert meta_account_is ownlist
+assert await_done
+clear_stub
+printf '%s\n' '0 lapsed' '3' >"$STUB_DIR/pick_queue"
+unlisted_rc=0
+"$RUNNER" start codex --brief "$WORK/brief" --workdir "${WORKER_TEST_WORKDIR:-$WORK/workdir}" --model astra \
+  >"$WORK/start.out" 2>"$WORK/start.err" || unlisted_rc=$?
+assert test "$unlisted_rc" -eq 4
+assert grep -qx 'OUTCOME: MODEL_REFUSED' "$WORK/start.out"
+assert grep -qF 'passed over lapsed' "$WORK/start.err"
+assert test ! -s "$CALL_LOG"
+# Walled accounts behind the one passed over are a usage limit to wait out, never a missing model.
+clear_stub
+printf '%s\n' '0 lapsed' '3' >"$STUB_DIR/pick_queue"
+unlisted_rc=0
+PICK_STDERR='worker-pick: no selectable codex account (ownlist 100% 5h 100% WALLED)' \
+  "$RUNNER" start codex --brief "$WORK/brief" --workdir "${WORKER_TEST_WORKDIR:-$WORK/workdir}" --model astra \
+  >"$WORK/start.out" 2>"$WORK/start.err" || unlisted_rc=$?
+assert test "$unlisted_rc" -eq 3
+assert grep -qx 'OUTCOME: CODEX_USAGE_LIMIT' "$WORK/start.out"
+assert_fails grep -q 'MODEL_REFUSED' "$WORK/start.out"
+assert test ! -s "$CALL_LOG"
+unset WORKER_CLAIMS_DIR
+rm -f "$STUB_DIR/pick_queue"
+rm -r "$HOME/.codex-profiles/ownlist" "$HOME/.codex-profiles/lapsed"
+export CODEXB_MODELS_CACHE=$saved_models_cache
+
 readonly_runs="$WORK/readonly-runs"
 readonly_workdir="$WORK/readonly-workdir"
 mkdir -p "$readonly_runs" "$readonly_workdir"
@@ -3784,6 +3893,29 @@ assert test "$(grep -c '^ARG=gpt-6.1-astra$' "$CALL_LOG")" -eq 1
 assert jq -e '.model_flag_dropped == true' "$RUN_DIR/meta.json" >/dev/null
 assert_launched_brief "$STUB_DIR/codex.stdin"
 
+# The refused slug is recorded for the account (codex 0.159.0 listed gpt-6.1-sol and refused it),
+# the rerun takes the family's next slug rather than the config default, and the next launch on
+# that account resolves past it before spending an attempt.
+saved_codex_config=$(cat "$WORKER_RUN_CODEX_CONFIG")
+printf 'model = "gpt-5.6-sol"\n' >"$WORKER_RUN_CODEX_CONFIG"
+clear_stub
+set_config 'codex_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=badmodel
+: >"$STUB_DIR/codex_bad_model"
+start_ok codex --model astra
+assert await_done
+assert grep -q '^STATUS: done$' "$WORK/wait.out"
+assert grep -qx $'badmodel\tgpt-6.1-astra\t[0-9]*' "$HOME/.codex-profiles/.codexb/refused-models"
+assert grep -qxF 'ARG=model=\"gpt-6-astra\"' "$CALL_LOG"
+: >"$CALL_LOG"
+rm -f "$STUB_DIR/codex_bad_model"
+start_ok codex --model astra
+assert await_done
+assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 1
+assert grep -qx 'ARG=gpt-6-astra' "$CALL_LOG"
+printf '%s\n' "$saved_codex_config" >"$WORKER_RUN_CODEX_CONFIG"
+rm -f "$HOME/.codex-profiles/.codexb/refused-models"
+
 # A clean exit whose stderr mentions the phrase is not rerun.
 clear_stub
 set_config 'codex_effort=high'
@@ -3863,7 +3995,8 @@ cp "$RUNNER" "$SELF_RUNNER"
 mkdir -p "$WORK/share"
 cp "$ROOT/share/worker-pool.sh" "$ROOT/share/gemini-accounts.sh" "$ROOT/share/codex-accounts.sh" \
   "$ROOT/share/worker-model.sh" "$ROOT/share/limits-view.sh" "$ROOT/share/worker-walls.sh" \
-  "$ROOT/share/web-search.sh" "$ROOT/share/run-liveness.sh" "$ROOT/share/store-lock.sh" "$WORK/share/"
+  "$ROOT/share/web-search.sh" "$ROOT/share/run-liveness.sh" "$ROOT/share/store-lock.sh" \
+  "$ROOT/share/worktree-branch.sh" "$ROOT/share/worker-claims.sh" "$WORK/share/"
 [ -e "$WORK/bin/codexb" ] || ln -s "$ROOT/bin/codexb" "$WORK/bin/codexb"
 [ -e "$WORK/bin/cyrillic-share" ] || ln -s "$ROOT/bin/cyrillic-share" "$WORK/bin/cyrillic-share"
 printf '%s\n' "$SELF_RUNNER" >"$STUB_DIR/codex_append_target"
@@ -4463,6 +4596,35 @@ EOF
   clear_stub
 }
 guard_recorded_tests
+
+# A contents copy into the top (`rsync -a src/ .`) is recorded as the top itself, answering for every
+# changed file under it; it is no write outside the repository.
+guard_top_recorded_tests() {
+  clear_stub
+  set_config 'claudeb_model=opus' 'claudeb_effort=high'
+  export PICK_RC=0 PICK_ACCOUNT=recordacct CLAUDE_CODE_SESSION_ID=chat-abc STUB_SLEEP=1
+  mkdir -p "$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture"
+  cat >"$STUB_DIR/relay_hook" <<'EOF'
+#!/usr/bin/env bash
+top=$(cd "$GUARD_REPO" && pwd -P)
+printf 'copied\n' >"$GUARD_REPO/bin/guard-top-copied"
+printf '%s\n' "$top" >>"$WORKER_RUN_RECORD/shell-writes"
+EOF
+  chmod +x "$STUB_DIR/relay_hook"
+  export GUARD_REPO=$DIRT_REPO
+  TOOL_TS=$(iso $(($(date +%s) + 600)))
+  tool_call Bash command 'rsync -a /tmp/src/ .' \
+    >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+  start_ok claudeb --workdir "$DIRT_REPO"
+  assert await_done
+  assert grep -qx 'bin/guard-top-copied' "$RUN_DIR/files"
+  assert_fails grep -q 'guard-top-copied' "$RUN_DIR/dirty"
+  assert_fails grep -qxF "$(cd "$DIRT_REPO" && pwd -P)" "$RUN_DIR/files-external"
+  rm -f "$STUB_DIR/relay_hook" "$DIRT_REPO/bin/guard-top-copied"
+  unset GUARD_REPO
+  clear_stub
+}
+guard_top_recorded_tests
 
 clear_stub
 INITIAL_REPO="$WORK/initial-repo"

@@ -193,15 +193,23 @@ worker_model_codex_family() { # word or slug -> the family word the table keys o
   printf '%s\n' "${split%%$'\t'*}"
 }
 
-# The slug a codex launch runs: a family word follows the vendor's newest listed member — of the
-# named account's own list when one is given — and a full slug is a deliberate pin and passes through.
+# The slug a codex launch runs: a family word follows the vendor's newest listed member and a full
+# slug is a deliberate pin. With an account, both come from that account's own list alone.
 worker_model_codex_slug() { # word-or-slug [account]
   local model="${1-}"
   [ -n "$model" ] || return 1
-  case "$model" in
-    gpt-*) printf '%s\n' "$model" ;;
-    *) "${BASH_SOURCE[0]%/*}/../bin/codexb" models --family "$model" ${2:+--account "$2"} 2>/dev/null ;;
-  esac
+  if [ -n "${2-}" ]; then
+    "${BASH_SOURCE[0]%/*}/../bin/codexb" models --own --family "$model" --account "$2" 2>/dev/null
+  else
+    case "$model" in
+      gpt-*) printf '%s\n' "$model" ;;
+      *) "${BASH_SOURCE[0]%/*}/../bin/codexb" models --family "$model" 2>/dev/null ;;
+    esac
+  fi
+}
+
+worker_model_codex_refuse() { # account slug — the server refused slug there; family words skip it a day
+  "${BASH_SOURCE[0]%/*}/../bin/codexb" refuse-model "$1" "$2" >/dev/null 2>&1
 }
 
 worker_model_gemini_families() {

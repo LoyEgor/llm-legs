@@ -6,19 +6,20 @@ which needs `OPENAI_API_KEY` and is a different model surface with different kno
 script enforces come from `share/image-caps/codex.json` at runtime; this file says where every value
 in that manifest came from and how to check it again.
 
-Verified against `codex-cli 0.156.1` on 2026-09-23.
+Verified against `codex-cli 0.159.0` on 2026-09-30 (first pass: 0.156.1, 2026-09-23).
 
 ## Capabilities
 
 | Capability | Value | Source |
 | --- | --- | --- |
 | Tool | `image_gen.imagegen` (built-in, no API key) | binary tool description, `ext/image-generation/src/tool.rs`; skill `SKILL.md` "Default built-in tool mode (preferred)" |
-| Arguments | `prompt`, `referenced_image_paths`, `num_last_images_to_include` — and nothing else | binary: `struct ImagegenArgs with 3 elements`, `properties`/`additionalProperties` schema strings |
+| Arguments | `prompt`, `transparent_background` (bool, since 0.157–0.159), `referenced_image_paths`, `num_last_images_to_include` — and nothing else | binary 0.159.0: `struct ImagegenArgs with 4 elements` over `prompttransparent_backgroundreferenced_image_pathsnum_last_images_to_include` (0.156.1: 3 elements, no `transparent_background`), `properties`/`additionalProperties` schema strings |
 | Image model | `gpt-image-2` | binary: the literal sits inside `ext/image-generation/src/tool.rs`, beside the ImagegenArgs errors |
 | Reference images | local paths, at most 5 | binary: `` `referenced_image_paths` must contain at most `` (the number is formatted at runtime, so the 5 is the tool description's own "up to 5" for the sibling argument — hence `refs.verified_max: false`) |
 | Conversation images | `num_last_images_to_include` 1–5, never together with `referenced_image_paths` | binary: `` `num_last_images_to_include` must be between 1 and ``; "Never provide both" |
 | Local-file edits | `view_image` the file first, then pass it in `referenced_image_paths` | binary tool description: "If you have not seen a local image yet, use `view_image` to inspect it before editing"; `SKILL.md` "Built-in edit semantics" |
-| Transparency | native alpha, asked for in prose; keyed as a fallback | `SKILL.md` "For transparent images, ask built-in `image_gen` for a transparent background and preserve the generated alpha"; telemetry field `transparent_background` beside `saved_path` in the binary |
+| Transparency | native alpha through the tool's `transparent_background` argument, which the instruction names (the model fills tool arguments, so a sentence is the only way to set it); keyed as a fallback | binary 0.159.0 `ImagegenArgs` above and `ImageGenerationItem.transparentBackground`; `SKILL.md` "For transparent images, ask built-in `image_gen` for a transparent background and preserve the generated alpha" |
+| Failure | `ImageGenerationFailure` is `usageLimitExceeded` (`limitId`, `resetsAt`) or other; a failed item may end a turn with exit 0, so a missing image with that tag in the JSONL is `CODEX_USAGE_LIMIT` (exit 3) | binary 0.159.0: `internally tagged enum ImageGenerationFailure`, `usageLimitExceeded limitId resetsAt`; whether `codex exec` JSONL carries the item is unproven (`docs/vendor-release-open.md`) |
 | Output location | `$CODEX_HOME/generated_images/<thread_id>/<name>.png` | `SKILL.md` save-path policy; live store: `~/.codex/generated_images/019f3d39-…/exec-<uuid>.png` |
 | Session id | `thread.started` → `thread_id`, on `codex exec --experimental-json` | binary: the exec event enum `thread.started turn.started turn.completed turn.failed item.*`; [vendor docs](https://developers.openai.com/codex/noninteractive) |
 | Resume | `codex exec [OPTIONS] resume <SESSION_ID> [PROMPT]`, `--last` for the newest | binary `ResumeArgs`: "Conversation/session id (UUID) or thread name … If omitted, use `--last`"; vendor docs |
@@ -50,8 +51,8 @@ The manifest says `native+chroma`, so the script:
 
 1. keeps the caller's prompt **verbatim** — the chroma-only vendors strip the word `transparent`
    because it would poison a green-screen generation; here it names the very thing being asked for;
-2. adds one instruction asking `image_gen` for a genuinely transparent background with its alpha
-   preserved, and a second, explicitly subordinate one: only if real transparency is impossible,
+2. adds one instruction asking `image_gen` for a genuinely transparent background — its
+   `transparent_background` argument set to true — with its alpha preserved, and a second, explicitly subordinate one: only if real transparency is impossible,
    fill the background with flat `#00FF00`. Without that ordered fallback an opaque answer would be
    keyed on whatever colour the model happened to choose, which eats the subject;
 3. accepts the native alpha only when it is real — `magick identify -format '%A'` says the channel

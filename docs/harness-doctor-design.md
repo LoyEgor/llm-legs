@@ -67,7 +67,7 @@ changes, so the block's `menu.txt` stays near 300 lines.
 | **Hook waits** | the floor a call waits on hooks (§3.2): a problem when a class's 1 h median, ≥ 5 calls, is over its red limit; a watch over the note | class (Bash · trivial, Bash · other, Edit/Write, Read, other tools, message, turn end, subagent end, chat start, compact, chat end) · calls 1 h · wait ms 1 h · wait ms 24 h · set by 1 h; each row drills into its Pre and Post side with p95 and the hook that set it; a nav line gives the share of tool batches joined to their call |
 | **Hooks** | a synchronous hook slow this hour or cut is a problem; one slow over 24 h, a failed fast-path probe, or any watch reason of §3.3 is a watch | hook · when · median ms 24 h · min 24 h · cuts 24 h (a script run by several events is one row, `when` naming the first `+N`; the statusline and each `menu build: <menu>` are rows of their own, a menu build red over its band); nav lines `on every tool call`, `full work on trivial Bash`, `by transcript size`, `by repositories in the chat`; lead line `fast paths` |
 | **Load** | CPU busy, kernel share, new processes, unaccounted CPU, memory guard, swap | last hour · 7 days (shown once the samples cover more than 1.5 h) |
-| **Tests** | a group's last run over twice its usual and within 6 h, 5+ suites at once in the last 6 h (`suites at once, 6 h: N` above the table), or a test that failed under load in the last 6 h (`failed under load, 6 h: N`, §3.3) | test · repo · runs today · min today · usual min · last min |
+| **Tests** | a group's last run over twice its usual and within 6 h, 5+ suites at once in the last 6 h (`suites at once, 6 h: N` above the table), a test that failed under load in the last 6 h (`failed under load, 6 h: N`, §3.3), a suite over half of its repository's latest full run (`long pole, 24 h`, L), or a suite over 2 h of wall clock in 24 h (`daily cost, 24 h`, L) | test · repo · runs today · min today · usual min · last min; `long pole` drills into repo · long pole · min · min over next · share of run, `daily cost` into suite · repo · runs · min 24 h · min a run |
 | **Growth** | loose git objects over the limit, a big store that doubled in a week, or a hook spool file older than 30 min (the collector stopped folding); a watch for a per-call store over 1 000 entries that doubled in a day (its cleanup stopped) | store · entries · a week ago (once a week of samples exists) · size MB |
 
 ### 2.1 Row grammar
@@ -139,7 +139,7 @@ a tone only from 10 %), worse red and better green. The line counts them: `· 3 
 | new processes | spawn `/usr/bin/true`, wait 2 s, spawn again | PID delta mod 99 999 ÷ elapsed. There is no sysctl fork counter. |
 | unaccounted CPU | busy × ncpu − the visible cores in memlogd's `chats.json` title | CPU that per-process sampling misses: short-lived forks. The title parse is fragile coupling. |
 | memory | `vm.swapusage`, `kern.memorystatus_level`, and memlogd's guard alarm | red on the guard alarm or swap > 90 % |
-| tests | `~/.cache/claude-statusline/test-history.jsonl`, written by `bin/statusline-work-probe.sh` for every test it saw end; `ok` (true/false) when the writer knows the outcome | wall clock is the union of overlapping runs, so parallel suites are not double-counted |
+| tests | `~/.cache/claude-statusline/test-history.jsonl`, written by `bin/statusline-work-probe.sh` for every test it saw end; `ok` (true/false) when the writer knows the outcome; `suite_secs` on a `suites` run, chat or worker, from its `.status` files | wall clock is the union of overlapping runs, so parallel suites are not double-counted |
 | running now | `~/.cache/claude-statusline/work-*` newer than 30 s | the `main tests` lines |
 | growth | daily sample | entries and bytes of the instruction-watch reverts, read-only notes, inflight and closed marks and temp leftovers (`*.tsv.<n>`), the review journal and its `.hashes`/`.ref` files, context-nudge state, statusline cache, review benches, this doctor's state and the transcripts, plus `git count-objects` per repository seen in the last 7 days; the hook spool's file count and oldest age live, every run |
 | cause | collector state | first-red time per row key, attached to the area it decides. A row red since the collector's first run claims no cause. |
@@ -190,6 +190,8 @@ from runs that printed, so their median is biased.
 | I, menu build | `menu/<YYYY-MM-DD>.tsv` lines `start_us end_us menu`: a problem when ≥ 3 builds in the last hour have a median over 300 ms, a watch over 100 ms in 24 h |
 | D, silent fallback | every quiet `. lib 2>/dev/null` / `source lib 2>/dev/null` in a settings hook script is resolved and loaded under the hook's shell (`/bin/bash` or `bash`); a library that does not load is red, and a known fast path whose probe answers wrong is red (`readonly-command.sh`: `ls` read-only, `rm x` not). One line `fast paths: N quiet libraries load` leads the area; the probes run in parallel, about 50-100 ms |
 | H, load failure | a failed test (`ok: false`) with ≥ 3 suite runs overlapping it and a passing run of the same test with at most one other run overlapping, within the hour after; red for 6 h (`failed under load`). A run with a memory-guard `KILLED <epoch>` line of memlogd's day log (`$MEMLOGD_DIR/YYYY-MM-DD.log`, written by chat-load) within 5 s of its span is left out: the guard, not load, ended it |
+| L, long pole | a `suites` history row's `suite_secs` (each suite's seconds, off its `.status` files) on the latest full run (`full` or `all` scope) of each repository in 24 h: the longest suite's share of the run's wall clock and its lead over the next suite. Over half is red once the suite takes 5 min, a watch below; the fix is to split it into parallel shards |
+| L, daily cost | each suite's runs in 24 h, alone or inside a `suites` run's `suite_secs`, summed: over 2 h is red, over 1 h a watch; the top 20 are shown as data. A `suites` run without suite times (older rows) is one unattributed menu row, never judged |
 
 ## 4. Limits and their calibration
 
@@ -220,6 +222,8 @@ from this machine on 2026-09-28, from the 28-day backfill and a day of samples:
 | swap | > 90 % | > 50 % | – |
 | suite runs at once, peak over the last 6 h | ≥ 5 | ≥ 3 | a daily peak of 3-4 is normal, because `run-suites` runs ncpu/2 in parallel |
 | a test group's last run | > 2 × its usual and > 10 min, with ≥ 3 runs of its scope | – | usual = the median of the earlier runs of the same scope (full, all, changed, named or partial, §8) once the test marks its partial runs, else their p75: test_worker_run's full runs take 7-21 min and its partial ones 21-197 s, and a median over both (≈ 4 min) turned an ordinary 614 s full run red |
+| long pole (L), latest full run in 24 h | one suite > 50 % of the run's wall clock and ≥ 5 min | > 50 % under 5 min | the brief of 2026-09-30: `test_worker_run.sh` bounds llm-legs `run-all` (81 suites, `-j 5`); the calibration replay's full run, its suites' times from `run-suites/times.tsv` of 09-30 in the 678 s wall clock of that day's chat run, reads it at 649 s, 96 %, 310 s over `test_instruction_gate.sh`. Under 5 min a split saves at most 2.5 min a run, so it stays a watch |
+| daily cost (L), 24 h | > 2 h | > 1 h | 2 h is a quarter of an 8-hour day of one agent waiting on one suite. The history of 09-26..30 shows one or two suites a day over it (`test_worker_run` 106-150 min alone, `test_instruction_gate` 99-167 min) and the next three at 60-100 min, which stay watches; the calibration replay reads 173 min and 145 min |
 | loose git objects | > 13 400 | > 6 700 | logo-vectorizer-bench had 16 430 and llm-legs 8 113 |
 | any other store | > 50 000 entries or > 1 GiB **and** × 2 in 7 days | big alone | a store that is only big is shown as a note, not a problem |
 | the same stop-hook ask again (`stop_repeat_s`) | within 30 min | – | llm-doctor's `hooks_health` value, moved as is (§11) |
@@ -258,6 +262,11 @@ over all of it and at 18:26 over the runs from 18:00:
   collector kept those runs per run only from 18:43 on (`hooks/folded/` did not exist before); the
   earlier ones were folded into histograms and deleted. Its slots in `state.json` showed a median in
   the 500-750 ms bucket before and 200-300 ms after.
+- **tests (L), added 2026-09-30**: `tests/fixtures/harness-calibration/statusline/test-history.jsonl`
+  holds the real llm-legs `test_worker_run` and `test_instruction_gate` runs of the 24 h before the
+  replay time and one full run whose `suite_secs` are composed as the long-pole row says, since the
+  history kept no suite times before. The replay pins `test_long_pole` on `test_worker_run` (0.957)
+  and `test_daily_cost` on both suites (8 714 s and 10 377 s).
 
 ## 5. Collector
 
@@ -304,7 +313,10 @@ over all of it and at 18:26 over the runs from 18:00:
 - **Cost**: a steady run takes about 2 s wall time, most of it the 2 s fork-rate sleep. The first
   backfill took about 35 s at normal priority and 72 s under the LaunchAgent's Background priority.
 - **LaunchAgent**: `com.egor.harness-doctor` runs `~/.local/libexec/harness-doctor` (source copy
-  `launchd/harness-doctor`) every 300 s, with RunAtLoad, `ProcessType Background` and `Nice 10`.
+  `launchd/harness-doctor`) every 300 s, with RunAtLoad, `ProcessType Standard` and `Nice 10`. Never
+  `Background`: that band gets no CPU while the cores are saturated. On 2026-09-30, at load 240, one
+  run got 2.7 s of CPU in 48 min, held the lock and froze the menu block exactly when load was the
+  story.
   It logs to `~/Library/Logs/harness-doctor.log`. After editing the wrapper or the plist, copy
   both into place and `launchctl bootout` / `bootstrap` the job.
 
@@ -485,6 +497,7 @@ the rework:
 | Is the Hammerspoon menu slow? | Hooks, `menu build: <menu>` | answered for the whole Automation menu and its LLM Limits part |
 | Is the Mac overloaded, and by what? | Load; the Chats block for chats; Hooks' totals | load answered; hook totals attribute part of the short-lived processes, the rest are not attributed |
 | Are tests the reason? What is running now? | Tests | answered |
+| Which suite bounds a full run, and which suites cost the most machine time a day? | Tests, `long pole, 24 h` and `daily cost, 24 h` | answered for runs journaled with `suite_secs` (from 2026-09-30); older `suites` rows stay unattributed |
 | Did a change make it slower? | the cause line of a problem; `changes, 7 d` | candidates ranked: the change naming the red row's hook or script first, then the biggest step in the measure of the rule that went red (hook wait ms for floors and hooks, CPU busy for Load, suite min for Tests, short Bash s otherwise), then the nearest; watched: `~/.claude/hooks`, llm-legs `bin`, `share`, `hammerspoon`, `~/.hammerspoon`, every settings.json key |
 | Is a growing store slowing things? | Growth | size and limit answered; the 7-day trend appears after a week of samples |
 | Is this week (or these hours) better than the last? | `<W> vs prev <W>` over the picker's window, `by week` | answered for waits (28 days back); hooks and load from 2026-09-29 on |
@@ -502,10 +515,11 @@ the rework:
   and up to three evidence items. The ident is identity only: `bash:<project>` or a tool class for
   waits and floors, the hook key, `<repo>:<label>` for a test (a worktree's runs fold into their
   repository through the history row's `repo_root`; a row without it outside a main checkout reads
-  `worktree:<label>`), a slug of the store for growth. Rules: `wait`, `wait_cut`, `floor`, `hook_p50`,
+  `worktree:<worktree>:<label>`; a long pole or daily cost names the suite file without its extension,
+  which `doctor-fix` resolves to `<repo>/tests/<suite>` as the component), a slug of the store for growth. Rules: `wait`, `wait_cut`, `floor`, `hook_p50`, `hook_sync`,
   `hook_cut`, `hook_every_call`, `hook_full_work`, `hook_grows_size`, `hook_grows_repos`,
   `statusline`, `menu_build`, `fastpath`, `unjournaled`, `load`, `test_slow`, `suites_at_once`,
-  `test_load_fail`, `store_size`, `store_runaway`, `loose_objects`, `spool_stuck`, `collector`, and
+  `test_load_fail`, `test_long_pole`, `test_daily_cost`, `store_size`, `store_runaway`, `loose_objects`, `spool_stuck`, `collector`, and
   the §11 rules.
 - **Problems.** Red and watch verdicts become problems; the id is the ledger row's when its
   `match {rule, ident regex}` matches, else `<rule>:<ident>`. State: `new` (no row), `open`,
@@ -544,12 +558,20 @@ up to three events as evidence (`stop:<ts>/<session>`, `words:<ts>/<session>`, `
   `word-miss` by the word hook; `reading-miss` is `unprompted`; `stop-silent` is `stop-dispatch`.
   No stop journal reads `blind`; no words journal is a blind spot.
 - **Guards** reads the instruction-watch state (`INSTRUCTION_WATCH_STATE`): `gate-fault` keyed by
-  gate; `growth-denied` and `growth-ungated` by the file with the home as `~` and the worktree
-  segment dropped, or `between-sessions`; `stamp-forged` by file; `changed-while-watcher-off`,
-  `baseline-missing`, `dropped` and `baseline-silent` are `tripwire`; `watcher-down` is
-  `never-started`, `stale`, `error` or `no-root`. No state directory reads `blind`.
+  gate; `growth-denied` and `growth-ungated` by the root the file grew under, with the home as `~`
+  and the worktree segment dropped, or `between-sessions`; `stamp-forged` by file;
+  `changed-while-watcher-off`, `baseline-missing`, `dropped` and `baseline-silent` are `tripwire`;
+  `watcher-down` is `never-started`, `stale`, `error` or `no-root`. No state directory reads `blind`.
+- **Growth roots.** One change is one problem per root: the skill directory (the nearest one holding a
+  `SKILL.md`), else the `docs` tree it sits in, else the file. Its value is the bytes the change added
+  under that root, its count the files, and the files are listed in the evidence. Incident
+  2026-09-30 13:32: one install of third-party skills under `~/.claude/skills` read as 233 problems.
+- **On-demand skill files are out of scope.** The rule prices context that loads into every chat
+  with no audit. Only a skill's own `SKILL.md` loads that way. Its `references/` and other files load
+  when the skill runs and its `SKILL.md` points to them, and the rule still watches that `SKILL.md`.
+  Their growth is left out of the value and the count, and the evidence names how many were left out.
 - Two differences from llm-doctor: a value between half the limit and the limit is a watch (deferral,
-  silence, growth), and a growth value is the largest single write, not the day's sum.
+  silence, growth), and a growth value is the largest single change under one root, not the day's sum.
 
 ## 12. Limiter holds
 

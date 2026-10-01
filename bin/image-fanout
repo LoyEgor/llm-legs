@@ -523,9 +523,12 @@ for vendor in $vendors; do
     if [ "$n_used" -le 1 ]; then
       dlist=$(caps_get "$vendor" '.video.durations | join(",")')
     else
-      dmin=$(caps_get "$vendor" '.video.reference_duration.min')
-      dmax=$(caps_get "$vendor" '.video.reference_duration.max')
-      dlist="${dmin}-${dmax}"
+      dlist=$(caps_get "$vendor" '.video.reference_durations // empty | join(",")')
+      if [ -z "$dlist" ]; then
+        dmin=$(caps_get "$vendor" '.video.reference_duration.min')
+        dmax=$(caps_get "$vendor" '.video.reference_duration.max')
+        dlist="${dmin}-${dmax}"
+      fi
     fi
     mapped_d=$(nearest_int "$duration" "$dlist")
     used_duration=$mapped_d

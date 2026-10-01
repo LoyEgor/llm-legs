@@ -138,14 +138,37 @@ heredoc_bodies_cut() {
   heredoc_mask "^[ \t]*(${heredoc_wrap})*${heredoc_shell}" "[|][ \t]*(${heredoc_wrap})*${heredoc_shell}"
 }
 
-# A body the same command can later run — a script file handed to a shell, `source`, `eval`, sudo —
-# is not data, and nothing here can follow which file it lands in: the body is judged whole.
+# A body the same command can later run — a script file handed to a shell, `source`, `eval`, sudo,
+# `at`, a file run by its path — is not data, and nothing here can follow which file it lands in: the
+# body is judged whole. Only the command's own lines say so; a body's prose saying `source` does not.
 body_cut=heredoc_bodies_cut
 self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) && . "${self%/*}/../share/heredoc-mask.sh" 2>/dev/null ||
   body_cut=cat
-printf '%s' "$command_text" |
-  grep -Eq '(^|[^[:alnum:]_.-])((ba|z|k|da|a|fi)?sh|source|eval|xargs|sudo|exec)([^[:alnum:]_.-]|$)|(^|[;&|(`[:space:]])\.[[:space:]]' &&
-  body_cut=cat
+runs_written_file() {
+  awk '
+    function base(w) { gsub(/["\047]/, "", w); sub(/.*\//, "", w); return w }
+    {
+      t = $0
+      while (match(t, />>?[[:space:]]*[^[:space:];&|()<>]+|(^|[^[:alnum:]_-])tee[[:space:]]+(-a[[:space:]]+)?[^[:space:];&|()<>-][^[:space:];&|()<>]*/)) {
+        w = substr(t, RSTART, RLENGTH); t = substr(t, RSTART + RLENGTH)
+        sub(/.*[>[:space:]]/, "", w); wrote[base(w)] = 1
+      }
+      n = split($0, seg, /[;&|()`]/)
+      for (i = 1; i <= n; i++) {
+        s = seg[i]; sub(/^[[:space:]]+/, "", s)
+        while (s ~ /^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+/) sub(/^[^[:space:]]*[[:space:]]+/, "", s)
+        sub(/[[:space:]].*/, "", s)
+        if (s ~ /[\/$]/) run[base(s)] = 1
+      }
+    }
+    END { for (w in run) if (w in wrote) exit 0; exit 1 }'
+}
+if [ "$body_cut" != cat ]; then
+  cut_text=$(printf '%s\n' "$command_text" | heredoc_bodies_cut)
+  grep -Eq '(^|[^[:alnum:]_.-])((ba|z|k|da|a|fi|c|tc)?sh|source|eval|xargs|sudo|exec)([^[:alnum:]_.-]|$)|(^|[;&|(`[:space:]])\.[[:space:]]|(^|[;&|(`])[[:space:]]*(at|batch)([[:space:]]|$)|\.git/hooks/' <<<"$cut_text" &&
+    body_cut=cat
+  [ "$body_cut" = cat ] || ! runs_written_file <<<"$cut_text" || body_cut=cat
+fi
 blocked=0
 while IFS= read -r segment; do
   segment=${segment#"${segment%%[![:space:]]*}"}

@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+command -v jq >/dev/null 2>&1 || { printf 'gemini-music: jq is required\n' >&2; exit 1; }
+
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+
+root=$(resolve_root)
+. "$root/share/image-leg.sh"
+image_leg_start gemini-music audio observed_model
+. "$root/share/image-caps.sh"
+caps() { image_caps_get "$root" gemini "$1"; }
+
+usage() {
+  printf 'usage: gemini-music --dest <absolute .wav|.mp3|.mp4 path> --prompt <brief> [--length short|standard] [--instrumental | --vocals] [--genre <%s>] [--ref-image <absolute image>] [--video <absolute mp4>] [--count 1|2|3] [--account <profile>] [--dry-run]\n' \
+    "$(caps '.music.genres | join("|")')" >&2
+  printf '  the Gemini app'\''s Create music tool (Lyria 3.5) on a subscription account, through the hidden Chrome of gemini-web\n' >&2
+  printf '  short is about 60 s, standard 2-3 min; the track comes as mp3 192 kb/s (a .wav dest is decoded from it) or an mp4 with cover art\n' >&2
+  printf '  <dest>.txt keeps the tool'\''s own description of the take (tempo, sections with start times) and Gemini'\''s reply\n' >&2
+  printf '  timed hit points belong in the prompt as words ("at 24 s the energy builds"); see docs/image-vendors/gemini.md\n' >&2
+  exit 2
+}
+
+say() {
+  printf 'gemini-music: %s\n' "$1" >&2
+  exit 2
+}
+
+dest=''
+prompt=''
+length=''
+vocals=''
+genre=''
+account=''
+count=1
+dry_run=false
+attach=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dest) [ "$#" -ge 2 ] || usage; dest=$2; shift 2 ;;
+    --prompt) [ "$#" -ge 2 ] || usage; prompt=$2; shift 2 ;;
+    --length) [ "$#" -ge 2 ] || usage; length=$2; shift 2 ;;
+    --instrumental) [ -z "$vocals" ] || usage; vocals=instrumental; shift ;;
+    --vocals) [ -z "$vocals" ] || usage; vocals=on; shift ;;
+    --genre) [ "$#" -ge 2 ] || usage; genre=$2; shift 2 ;;
+    --ref-image | --video) [ "$#" -ge 2 ] || usage; attach+=("$1=$2"); shift 2 ;;
+    --count) [ "$#" -ge 2 ] || usage; count=$2; shift 2 ;;
+    --account) [ "$#" -ge 2 ] || usage; account=$2; shift 2 ;;
+    --dry-run) dry_run=true; shift ;;
+    --duration) say "the music tool takes no exact length: --length short (about 60 s) or standard (2-3 min), then cut to picture" ;;
+    --ref-audio | --stems)
+      say "$1 is not offered by the Gemini app's music tool; Google Flow Music (flowmusic.app) has it but needs a one-time sign-in by the owner" ;;
+    *) usage ;;
+  esac
+done
+
+[ -n "$dest" ] && [ -n "$prompt" ] || usage
+[[ "$dest" = /* ]] && [ -d "$(dirname "$dest")" ] || say "--dest needs an absolute path in an existing folder"
+ext=$(printf '%s' "${dest##*.}" | tr '[:upper:]' '[:lower:]')
+jq -e --arg ext "$ext" '.music.dests | index($ext) != null' "$(image_caps_file "$root" gemini)" >/dev/null ||
+  say "--dest must end in .$(caps '.music.dests | join(" .")')"
+[ -z "$length" ] || jq -e --arg v "$length" '.music.lengths | has($v)' "$(image_caps_file "$root" gemini)" >/dev/null ||
+  say "--length is short or standard"
+[ -z "$genre" ] || jq -e --arg v "$genre" '.music.genres | index($v) != null' "$(image_caps_file "$root" gemini)" >/dev/null ||
+  say "--genre is one of: $(caps '.music.genres | join(", ")')"
+jq -e --argjson n "${count//[^0-9]/0}" '.music.counts | index($n) != null' "$(image_caps_file "$root" gemini)" >/dev/null 2>&1 ||
+  say "--count is 1, 2 or 3"
+[ -z "$account" ] || [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]] || usage
+engine_args=(generate --prompt "$prompt" --count "$count")
+for item in ${attach[@]+"${attach[@]}"}; do
+  path=${item#*=}
+  [[ "$path" = /* ]] && [ -f "$path" ] || say "${item%%=*} needs an absolute path to a file"
+  case "${item%%=*}:$(printf '%s' "${path##*.}" | tr '[:upper:]' '[:lower:]')" in
+    --ref-image:png | --ref-image:jpg | --ref-image:jpeg | --ref-image:webp | --video:mp4 | --video:mov) ;;
+    *) say "--ref-image takes a png, jpg or webp image, --video an mp4 or mov" ;;
+  esac
+  engine_args+=(--attach "$path")
+done
+[ -z "$length" ] || engine_args+=(--length "$length")
+[ -z "$vocals" ] || engine_args+=(--vocals "$vocals")
+[ -z "$genre" ] || engine_args+=(--genre "$genre")
+[ -z "$account" ] || engine_args+=(--account "$account")
+[ "$dry_run" = false ] || engine_args+=(--dry-run)
+command -v ffmpeg >/dev/null 2>&1 || { printf 'gemini-music: ffmpeg is required\n' >&2; exit 1; }
+
+started=$(date +%s)
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/gemini-music.XXXXXX")
+trap 'image_leg_exit; rm -rf "$tmp_dir"' EXIT
+engine_args+=(--out-dir "$tmp_dir")
+image_leg_mark "$count"
+rc=0
+if [ -n "${GEMINI_MUSIC_ENGINE:-}" ]; then
+  "$GEMINI_MUSIC_ENGINE" "${engine_args[@]}" >"$tmp_dir/engine.out" 2>"$tmp_dir/engine.err" || rc=$?
+else
+  uv_cmd=${GEMINI_WEB_UV:-$(command -v uv || printf /opt/homebrew/bin/uv)}
+  "$uv_cmd" run -q --script "$root/share/gemini_music.py" "${engine_args[@]}" >"$tmp_dir/engine.out" 2>"$tmp_dir/engine.err" || rc=$?
+fi
+grep '^BROWSER_' "$tmp_dir/engine.err" >&2 || true
+result=$(grep '^{' "$tmp_dir/engine.out" | tail -n 1 || true)
+if ! jq -e . >/dev/null 2>&1 <<<"$result"; then
+  tail -n 15 "$tmp_dir/engine.err" >&2
+  printf 'gemini-music: the engine printed no result (exit %s)\n' "$rc" >&2
+  exit 1
+fi
+if [ "$(jq -r '.ok' <<<"$result")" != true ]; then
+  reason=$(jq -r '.reason // "unknown failure"' <<<"$result")
+  case "$rc" in
+    3) printf 'GEMINI_USAGE_LIMIT\ngemini-music: %s\n' "$reason" >&2; exit 3 ;;
+    4) printf 'gemini-music: %s\n' "$reason" >&2; exit 4 ;;
+    2) printf 'gemini-music: %s\n' "$reason" >&2; exit 2 ;;
+    *) printf 'gemini-music: %s\n' "$reason" >&2; exit 1 ;;
+  esac
+fi
+account=$(jq -r '.account' <<<"$result")
+if [ "$(jq -r '.dry_run // false' <<<"$result")" = true ]; then
+  printf 'dry_run=ok\naccount=%s\nchips=%s\n' "$account" "$(jq -c '.chips' <<<"$result")"
+  exit 0
+fi
+
+variant_of() { # index
+  if [ "$1" -eq 1 ]; then printf '%s' "$dest"; else printf '%s-%s.%s' "${dest%.*}" "$1" "$ext"; fi
+}
+takes=$(jq -r '.takes | length' <<<"$result")
+[ "$takes" -ge 1 ] || { printf 'gemini-music: the engine returned no take\n' >&2; exit 1; }
+index=0
+footer=''
+while [ "$index" -lt "$takes" ]; do
+  take=$(jq -c ".takes[$index]" <<<"$result")
+  index=$((index + 1))
+  out=$(variant_of "$index")
+  audio=$(jq -r '.audio' <<<"$take")
+  [ -s "$audio" ] || { printf 'gemini-music: take %s has no audio file\n' "$index" >&2; exit 1; }
+  case "$ext" in
+    mp3) cp "$audio" "$out" ;;
+    wav) ffmpeg -v error -y -i "$audio" -c:a pcm_s16le -ar 48000 -ac 2 "$out" ||
+      { printf 'gemini-music: could not decode take %s to wav\n' "$index" >&2; exit 1; } ;;
+    mp4)
+      video=$(jq -r '.video // empty' <<<"$take")
+      [ -n "$video" ] && [ -s "$video" ] ||
+        { printf 'gemini-music: take %s came without its mp4: %s\n' "$index" "$(jq -r '.video_error // "none offered"' <<<"$take")" >&2; exit 1; }
+      cp "$video" "$out" ;;
+  esac
+  [ "$ext" = mp4 ] || [ "$(jq -r '.video_error // empty' <<<"$take")" = '' ] ||
+    printf 'gemini-music: take %s: the cover-art mp4 did not download (%s); the audio is fine\n' "$index" "$(jq -r '.video_error' <<<"$take")" >&2
+  jq -r '"Model: \(.model // "unknown")\nChat: \(.url)\n\nThe music tool'"'"'s description of the take:\n\(.description)\n\nGemini'"'"'s reply:\n\(.text)"' <<<"$take" >"$out.txt"
+  seconds=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$out" 2>/dev/null | head -n 1)
+  observed_model=$(jq -r '.model // empty' <<<"$take")
+  if [ "$index" -eq 1 ]; then
+    footer+="dest=$out"$'\n'"duration=$(awk -v s="$seconds" 'BEGIN { printf "%.2f", s }')"$'\n'
+    footer+="format=$ext"$'\n'"chat=$(jq -r '.url' <<<"$take")"$'\n'
+  else
+    take_account=$(jq -r '.account // empty' <<<"$take")
+    footer+="variant=$out duration=$(awk -v s="$seconds" 'BEGIN { printf "%.2f", s }') chat=$(jq -r '.url' <<<"$take")"
+    [ -z "$take_account" ] || [ "$take_account" = "$account" ] || footer+=" account=$take_account"
+    footer+=$'\n'
+  fi
+done
+short=$(jq -r '.short // empty' <<<"$result")
+if [ -n "$short" ]; then
+  printf 'gemini-music: only %s\n' "$short" >&2
+  footer+="short=$short"$'\n'
+fi
+printf '%saccount=%s\nmodel=%s\ncredits=unmetered (the Gemini app shows no music balance)\nseconds=%s\n' \
+  "$footer" "$account" "${observed_model:-unknown}" "$(($(date +%s) - started))"

@@ -62,6 +62,7 @@ local fixture = {
 }
 write(hs.json.encode(fixture))
 M.setPath(path)
+M.setSettings({ get = function() end, set = function() end })
 local copied, alerts = nil, {}
 M.setPasteboard(function(value) copied = value end)
 M.setAlert(function(value) alerts[#alerts + 1] = value end)

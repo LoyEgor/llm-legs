@@ -343,14 +343,14 @@ elif printf '%s' "$launch" | grep -qE "${cmd_word}"'light-research([[:space:]]|$
   # actually landed on, and an attach names the run it waits on.
   attach_run=$(grab '\-\-attach[= ]+["'\'' ]*[a-z0-9][a-z0-9-]*' | grep -oE '[a-z0-9][a-z0-9-]*$')
   if [ -n "$attach_run" ]; then extra+=("run=$attach_run"); else extra+=("start=$(date +%s)"); fi
-elif printf '%s' "$launch" | grep -qE "${cmd_word}"'((codex|gemini|grok)-image|grok-video)([[:space:]]|$)'; then
+elif printf '%s' "$launch" | grep -qE "${cmd_word}"'((codex|gemini|grok)-image|grok-video|gemini-(video|music|sfx|listen))([[:space:]]|$)'; then
   # `--account` is the only account this text can vouch for: without it the script asks worker-pick
   # at run time, so the seed worker-spawn-hook wrote is the better answer and the tail below keeps it.
-  script=$(grab "${cmd_word}"'((codex|gemini|grok)-image|grok-video)' | grep -oE '(codex|gemini|grok)-(image|video)$')
+  script=$(grab "${cmd_word}"'((codex|gemini|grok)-image|grok-video|gemini-(video|music|sfx|listen))' | grep -oE '(codex|gemini|grok)-(image|video|music|sfx|listen)$')
   vendor=${script%-*}
   acct=$(grab '\-\-account[= ]+["'\'' ]*[a-z0-9][a-z0-9-]*' | grep -oE '[a-z0-9][a-z0-9-]*$')
   [ -z "$acct" ] || [ -z "$vendor" ] || tag="$acct · $(media_model "$vendor" "${script##*-}")"
-  if printf '%s' "$launch" | grep -qE -- '--(ref|resume)([=[:space:]]|$)'; then extra+=(media=edit); else extra+=(media=gen); fi
+  if printf '%s' "$launch" | grep -qE -- '--(ref|resume|edit|extend|for-video)([=[:space:]]|$)'; then extra+=(media=edit); else extra+=(media=gen); fi
   extra+=(exit=)
 elif printf '%s' "$launch" | grep -qE "${cmd_word}"'image-fanout([[:space:]]|$)'; then
   if printf '%s' "$launch" | grep -qE -- '--video([[:space:]]|$)'; then tag="fanout · video"; else tag="fanout · image"; fi

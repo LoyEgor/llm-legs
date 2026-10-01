@@ -172,10 +172,12 @@ fi
 # since a chat on another account is as much his; the glob skips `.claudeb`, which is no profile.
 # The name is share/chat_names.py's, never the registry's `.name`: that one carries the derived
 # placeholders no chat is shown under, and lags a title set in the transcript.
+# A registry left behind by a crashed chat can name a pid the system has since handed to another
+# process: `procStart` must match that pid's own start, as claude-chat-switch's live_registry checks.
 chat_tty() {
-  local file pid session tty found="" records names
+  local file pid session started tty found="" records names
   records=$(for file in "$HOME"/.claude/sessions/*.json "$HOME"/.claude-profiles/*/sessions/*.json; do
-    [ -f "$file" ] && jq -r '[(.sessionId // "" | tostring), (.pid // "" | tostring)] | @tsv' "$file" 2>/dev/null
+    [ -f "$file" ] && jq -r '[(.sessionId // "" | tostring), (.pid // "" | tostring), (.procStart // "" | tostring)] | @tsv' "$file" 2>/dev/null
   done)
   names=$(cut -f1 <<<"$records" | grep -v '^$' | sort -u |
     python3 -c 'import sys
@@ -184,27 +186,46 @@ from chat_names import chat_name, fold_session
 for session in sys.stdin.read().split():
     print(session + "\t" + ((fold_session(session) == session and chat_name(session)) or ""))' \
       "${legs_root:-/nonexistent}/share" 2>/dev/null)
-  while IFS=$'\t' read -r session pid; do
+  while IFS=$'\t' read -r session pid started; do
     [ -n "$session" ] || continue
     [ "$session" = "$1" ] || grep -qxF "$session"$'\t'"$1" <<<"$names" || continue
     case $pid in ''|*[!0-9]*) continue ;; esac
+    [ -z "$started" ] ||
+      [ "$(env LC_ALL=C TZ=UTC ps -o lstart= -p "$pid" 2>/dev/null | sed 's/[[:space:]]*$//')" = "$started" ] || continue
     tty=$(ps -o tty= -p "$pid" 2>/dev/null | tr -d ' ')
     case $tty in ''|'?'|'??') continue ;; esac
-    found="$found/dev/${tty#/dev/}"$'\n'
+    found="$found/dev/${tty#/dev/}"$'\t'"$pid"$'\n'
   done <<<"$records"
-  found=$(printf '%s' "$found" | sort -u)
+  found=$(printf '%s' "$found" | sort -u -t$'\t' -k1,1)
   case $found in
     '') echo "claude-resume-timer: no live chat is named '$1'" >&2; return 1 ;;
-    *$'\n'*) echo "claude-resume-timer: several live chats answer to '$1': $(tr '\n' ' ' <<<"$found")" >&2; return 1 ;;
+    *$'\n'*) echo "claude-resume-timer: several live chats answer to '$1': $(cut -f1 <<<"$found" | tr '\n' ' ')" >&2; return 1 ;;
   esac
+  target_pid=${found#*$'\t'}
+  found=${found%%$'\t'*}
   grep -qxF "$found" <<<"$chat_ttys" || {
     echo "claude-resume-timer: '$1' sits on $found, where no Claude chat runs" >&2
     return 1
   }
-  printf '%s\n' "$found"
+  printf '%s\t%s\n' "$found" "$target_pid"
 }
+target_pid=""
 if [ -n "$to_chat" ]; then
-  target_tty=$(chat_tty "$to_chat") || exit 1
+  target=$(chat_tty "$to_chat") || exit 1
+  target_tty=${target%%$'\t'*} target_pid=${target#*$'\t'}
+fi
+
+# The per-tty slot holds ONE timer, and arming it at +0 replaces a resume timer already waiting there.
+if [ "$fire_now" -eq 1 ]; then
+  timer_state="${RESUME_TIMER_STATE:-$HOME/.hammerspoon/claude_continue_state.json}"
+  pending_fire=$(jq -r --arg tty "$target_tty" '
+    .timers // {} | to_entries[]
+    | select(.key == ("terminal:" + $tty) or (.key == "terminal" and .value.targetTty == $tty))
+    | .value.firesAt // empty' "$timer_state" 2>/dev/null | head -n1)
+  if [ -n "$pending_fire" ]; then
+    echo "claude-resume-timer: $target_tty already holds a resume timer (fires ~$(date -r "${pending_fire%%.*}" '+%H:%M' 2>/dev/null || echo "?")); --now would replace it, so nothing was sent" >&2
+    exit 1
+  fi
 fi
 
 now=$(date +%s)
@@ -222,7 +243,24 @@ if [ "$fire_now" -eq 0 ]; then
     exit 1
   fi
   . "$legs_root/share/chat-account.sh"
-  chat_account_resolve
+  # Another chat's account is ITS environment's, read off its process; the caller's own says nothing.
+  if [ -n "$target_pid" ]; then
+    target_env=$(ps -E -o command= -p "$target_pid" 2>/dev/null | tr ' ' '\n')
+    grep -q '^PATH=' <<<"$target_env" || {
+      echo "claude-resume-timer: cannot read the environment of '$to_chat' (pid $target_pid); refusing to guess its account" >&2
+      exit 1
+    }
+    resolved=$(
+      unset CLAUDEGPT_ACCOUNT CLAUDE_LIMITS_ACCOUNT CLAUDE_CONFIG_DIR
+      while IFS='=' read -r name value; do export "$name=$value"; done \
+        < <(grep -E '^(CLAUDEGPT_ACCOUNT|CLAUDE_LIMITS_ACCOUNT|CLAUDE_CONFIG_DIR)=' <<<"$target_env")
+      chat_account_resolve
+      printf '%s\t%s' "$CHAT_ACCOUNT_VENDOR" "$CHAT_ACCOUNT_NAME"
+    )
+    CHAT_ACCOUNT_VENDOR=${resolved%%$'\t'*} CHAT_ACCOUNT_NAME=${resolved#*$'\t'}
+  else
+    chat_account_resolve
+  fi
   vendor=$CHAT_ACCOUNT_VENDOR
   account=${CHAT_ACCOUNT_NAME:-notcom}
 

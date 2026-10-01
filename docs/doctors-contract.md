@@ -36,7 +36,7 @@ and adds these top-level keys. Its own keys stay as they are.
 | `as_of` | ISO-8601 with offset |
 | `judge` | sha256 over the doctor's code, ledger and limits; it changes whenever the judge changes |
 | `status` | `ok` \| `problems` \| `blind` \| `error` |
-| `problem_count` | the N of the menu's `N problems`: problems whose state is `new`, `open` or `regressed` |
+| `problem_count` | the N of the menu's `N problems`: problems whose state is `new`, `open` or `regressed`; the harness doctor writes `null` when its collector failed |
 | `problems` | list of problems, below |
 | `blind_spots` | list from §3 |
 | `self` | `{collector_s, error}`, where `error` is null or one line |
@@ -98,7 +98,10 @@ The fix lifecycle:
   patching again.
 
 A matching event regresses a fix only if it ran on code that holds the fix:
-- It must have started after the last `fixes[].at`; its end time is not enough.
+- It must have started after the last fix: its `at`, or once `in` is filled the time `in` reached
+  HEAD of the watched checkout, whichever is later (the commit's own time when it sits on HEAD's
+  first-parent line, else the merge that brought it in). A fix committed on a night branch holds
+  from its landing, never from the branch commit. Its end time is not enough.
 - A doctor that records the code revision per event uses that instead.
 
 Proof of a fix: the doctor shows `fixed · E events since · 0 matched`. While E is below the doctor's
@@ -134,6 +137,8 @@ read-modify-write holds the runs directory's lock (`share/store-lock.sh`). Field
   base), or null;
 - `problems`: `[{id, state, fact, rule, ledger, area, component: {what, files, rule_at}}]`, the
   snapshot at launch;
+- `quiet`: the same shape with state `quiet`: the ledger's `open` rows no problem of the document
+  names (its window did not see them), assigned to areas like problems; they need no decision line;
 - `decisions`: `[{id, verdict, purpose, evidence}]`;
 - `note`.
 
@@ -148,10 +153,10 @@ The menu reads `doctor-fix runs [doctor] [--open] [--json]` (newest first) to sh
 ledger row, earlier decisions on the id, the component and its git history, and the handoffs,
 invariant rows and memory files naming it. Launch:
 - `launch llm|harness`: the day chat. Refused when the document's `contract` is not 1 or it is
-  older than 2 h, when it reads `ok` with no problem, or while a run of that doctor opened less than
+  older than 2 h, when it reads `ok` with no problem and no quiet open row, or while a run of that doctor opened less than
   12 h ago is open; an older open run is marked `abandoned_at`. The chat opens through
   `share/chat-open.sh` on `docs/doctor-fix.md`.
-- `launch llm|harness|updater --night <night-id>`: no chat. Per area with problems and no open run
+- `launch llm|harness|updater --night <night-id>`: no chat. Per area with problems or quiet rows and no open run
   of (doctor, area), a record, a worktree `<repo>/.claude/worktrees/night-<night>-<id>` on its branch,
   and `<runs>/<id>.brief.md`; one line `<id>\t<brief>\t<worktree>` each. Nothing to do prints
   nothing; a failed worktree or brief fails its run and the exit status.
@@ -222,7 +227,8 @@ LLM doctor (added 2026-09-29 by its owner chat):
   `problem_count`, and `blind[]` names the required inputs that are not `ok`.
 - ids without a ledger row: `leg-failure:<block>/<word>`, `leg-escape:<block>/escaped`,
   `machinery:<class>`, `<rule>:<key>` for review debt, and `ledger:<row>` for a ledger
-  fault. A faulty row judges nothing.
+  fault — one per faulty row whatever its faults, `ledger:rows[<index>]` for a row with no id. A
+  faulty row judges nothing.
 - `watch` also marks a `fixed` row still short of its proof, and a cause every retry hid:
   `recovered` of those attempts ≥ 3 (`RECOVERED_MIN`), with `lost_s` their seconds. A
   `fixed-pending` row is listed under rule `fix-proof`.

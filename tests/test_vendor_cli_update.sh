@@ -306,6 +306,50 @@ assert_fails grep -qF 'fingerprint request' "$CALLS"
 assert [ "$(tail -n 1 "$CALLS")" = "doctor --quiet" ]
 assert grep -qF 'night update: pass done, no integration chat' "$LOG"
 
+# launchd's `run --if-due` every half hour: nothing while every vendor is current and checked within a
+# day; a busy or failed vendor alone is retried, and only an update brings the rest of the pass.
+due_state() { # codex-result grok-result claude-result checked-at
+  jq -n --arg c "$1" --arg g "$2" --arg l "$3" --arg t "$4" \
+    '{codex: {result: $c, checked_at: $t}, grok: {result: $g, checked_at: $t}, claude: {result: $l, checked_at: $t}}' >"$STATE"
+}
+due_run() { : >"$CALLS"; bash "$SCRIPT" run --if-due; }
+fresh=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+set_versions 0.157.0 0.158.0 1.0.41 1.0.42
+printf '2.1.280\n' >"$FAKE_BIN/ver-claude"
+due_state current current current "$fresh"
+due_run || fail "an idle due run exited non-zero"
+assert [ ! -s "$CALLS" ]
+assert [ "$(result codex)" = "current " ]
+printf '%s\n' "$CODEX_NATIVE" >"$BUSY"
+due_state busy current current "$fresh"
+due_run
+assert_fails grep -q 'npm install' "$CALLS"
+assert_fails grep -qF 'codex-refresh' "$CALLS"
+assert [ "$(cat "$CALLS")" = "doctor --quiet" ]
+assert [ "$(result codex)" = "busy 0.157.0" ]
+: >"$BUSY"
+set_versions 0.157.0 0.158.0 1.0.41 1.0.42
+due_run
+assert grep -qxF 'npm install @openai/codex@latest' "$CALLS"
+assert_fails grep -qF 'npm install @xai-official/grok' "$CALLS"
+assert [ "$(result codex)" = "updated 0.158.0" ]
+assert [ "$(result grok)" = "current " ]
+assert grep -qxF "codex-refresh $HOME/.codex-profiles/a" "$CALLS"
+assert grep -qE '^fingerprint check ' "$CALLS"
+assert [ "$(tail -n 1 "$CALLS")" = "doctor --quiet" ]
+set_versions 0.158.0 0.158.0 1.0.41 1.0.42
+due_state install-failed current current "$fresh"
+due_run
+assert [ "$(result codex)" = "current 0.158.0" ]
+assert [ "$(cat "$CALLS")" = "doctor --quiet" ]
+due_state current current current "$(date -u -v-25H +%Y-%m-%dT%H:%M:%SZ)"
+due_run
+assert grep -qxF 'npm install @xai-official/grok@latest' "$CALLS"
+assert [ "$(result grok)" = "updated 1.0.42" ]
+rm -f "$STATE"
+due_run
+assert grep -qE '^fingerprint check ' "$CALLS"
+
 # launchd runs a wrapper named after the job, never a bare interpreter; uninstall removes both.
 WRAPPER="$HOME/.local/libexec/vendor-cli-update"
 PLIST="$HOME/Library/LaunchAgents/com.llm-legs.vendor-cli-update.plist"
@@ -314,6 +358,8 @@ assert test -x "$WRAPPER"
 assert grep -qF "exec $SCRIPT" "$WRAPPER"
 assert [ "$(plutil -extract ProgramArguments.0 raw "$PLIST")" = "$WRAPPER" ]
 assert [ "$(plutil -extract ProgramArguments.1 raw "$PLIST")" = run ]
+assert [ "$(plutil -extract ProgramArguments.2 raw "$PLIST")" = --if-due ]
+assert [ "$(plutil -extract StartInterval raw "$PLIST")" = 1800 ]
 plist_path=$(plutil -extract EnvironmentVariables.PATH raw "$PLIST")
 assert [ "${plist_path%%:*}" = "$HOME/.local/bin" ]
 assert grep -qF "launchctl bootstrap gui/$UID $PLIST" "$CALLS"
@@ -321,4 +367,4 @@ bash "$SCRIPT" uninstall >/dev/null || fail "uninstall failed"
 assert test ! -e "$WRAPPER"
 assert test ! -e "$PLIST"
 
-echo "PASS: $asserts asserts; update when the registry is newer (codex, grok and the npm claude, which follows the native claude version when npm has it), model caches re-read every run, divergence (foreign cache writers, foreign clients, per-account catalog gaps) recorded once per change, no reinstall or downgrade, busy clients left alone, registry and install failures recorded, run lock, launchd wrapper, fingerprint check last with npm bin dirs appended, then the Updater doctor whose failure fails no pass, a manual update detached with one chat for every vendor"
+echo "PASS: $asserts asserts; update when the registry is newer (codex, grok and the npm claude, which follows the native claude version when npm has it), model caches re-read every run, divergence (foreign cache writers, foreign clients, per-account catalog gaps) recorded once per change, no reinstall or downgrade, busy clients left alone and retried within half an hour while a current install is left for a day, registry and install failures recorded, run lock, launchd wrapper, fingerprint check last with npm bin dirs appended, then the Updater doctor whose failure fails no pass, a manual update detached with one chat for every vendor"

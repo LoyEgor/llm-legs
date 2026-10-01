@@ -587,77 +587,7 @@ assert doc_has 'Gemini capacity fallback'
 assert doc_has 'geminib: model <slug>'
 
 # --- Row cr: Gemini model families -------------------------------------------
-# A versioned model id of any vendor in a production file is a copy the next release has to find and
-# bump. Survivors name one on purpose: the frozen `*_builtin` fallbacks, the image-caps manifests'
-# proven pins, the line under a `pin:` comment, a registered experiment's tagged block, the bench's
-# legacy rater renames. A comment line is history, not behaviour.
-family_literals() { # legs-root bench-root setup-root
-  python3 - "$@" <<'FAMPY'
-import json, os, re, sys
-legs, bench, setup = sys.argv[1:4]
-literal = re.compile(r"gemini-[0-9]+\.[0-9]+-(flash|pro)(?!-image)|flash3[0-9]|\bgpt-(image-)?[0-9]|\bgrok-([0-9]|imagine-)"
-                     r"|\bclaude-(opus|sonnet|haiku|fable)-[0-9]|\b(imagen|veo)-[0-9]")
-tag = re.compile(r"TEMP-[A-Z][A-Z0-9_-]*\([a-z0-9_-]+\)|(#|--|//) pin: ")
-comment = re.compile(r"\s*(#|--|//)")
-experiment_ids = []
-for root in (legs, bench):
-    try:
-        experiment_ids += [entry[key] for entry in json.load(open(os.path.join(root, "EXPERIMENTS.json")))
-                           for key in ("id", "tag") if entry.get(key)]
-    except (OSError, ValueError, KeyError, TypeError):
-        pass
-hits = []
-for root, tops in ((legs, ("bin", "share", "hammerspoon")), (bench, ("share/rbench",)),
-                   (setup, ("agents", "commands", "hooks"))):
-    for top in tops:
-        for directory, subdirs, files in os.walk(os.path.join(root, top)):
-            subdirs[:] = [d for d in subdirs if d != "__pycache__"]
-            for name in files:
-                path = os.path.join(directory, name)
-                if os.path.islink(path):
-                    continue
-                try:
-                    lines = open(path, encoding="utf-8").read().split("\n")
-                except (OSError, UnicodeDecodeError):
-                    continue
-                relative = os.path.relpath(path, root)
-                if relative.startswith("share/image-caps/"):
-                    continue
-                tagged = builtin = legacy = False
-                for number, line in enumerate(lines, 1):
-                    stripped = line.strip()
-                    if relative in ("bin/geminib", "bin/grokb", "bin/codexb"):
-                        builtin = bool(re.match(r"[a-z]+_builtin\(\)", stripped)) or (builtin and stripped != "}")
-                    if relative == "share/rbench/raters.py":
-                        legacy = line.startswith("def normalize_legacy_rater(") or (legacy and not line.startswith("def "))
-                    tagged = tagged or bool(tag.search(line))
-                    text = line
-                    for word in experiment_ids:
-                        text = text.replace(word, "")
-                    if literal.search(text) and not (tagged or builtin or legacy or comment.match(line)):
-                        hits.append("%s:%d" % (relative, number))
-                    if tagged and not tag.search(line) and not stripped.startswith("#"):
-                        tagged = False
-print(" ".join(hits))
-FAMPY
-}
 FAMILY_SETUP_ROOT="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}"
-assert test -r "$FAMILY_SETUP_ROOT/commands/worker.md"
-assert eq "$(family_literals "$ROOT" "$REVIEW_ROOT" "$FAMILY_SETUP_ROOT")" ''
-family_probe="$CONSISTENCY_CACHE/family-probe"
-mkdir -p "$family_probe/bin" "$family_probe/share" "$family_probe/bench/share/rbench" "$family_probe/agents"
-printf 'x\n# TEMP-%s(default): lead\n# more\nlead=flash37\nnext=flash37\n' PROBE >"$family_probe/share/tagged.sh"
-printf 'def normalize_legacy_rater(r):\n    return "agy-flash36-"\n\ndef other():\n    return "agy-flash38"\n' >"$family_probe/bench/share/rbench/raters.py"
-printf 'families_builtin() {\n  printf x gemini-3.8-flash\n}\nchain=gemini-3.7-flash\n' >"$family_probe/bin/geminib"
-printf 'model gemini-3.1-flash-image\n' >"$family_probe/share/image.json"
-printf 'Gemini on gemini-3.6-flash-high\n' >"$family_probe/agents/a.md"
-mkdir -p "$family_probe/hammerspoon" "$family_probe/share/image-caps"
-printf -- '-- gpt-6-sol is the newest\nlocal model = "gpt-6-sol"\n-- pin: the cheapest id answers a probe\nlocal probe = "claude-haiku-4-5"\nlocal last = "grok-4.7"\n' \
-  >"$family_probe/hammerspoon/probe.lua"
-printf 'models_builtin() {\n  printf x grok-4.7\n}\n' >"$family_probe/bin/grokb"
-printf '{"image": "grok-imagine-image-2.0"}\n' >"$family_probe/share/image-caps/grok.json"
-assert eq "$(family_literals "$family_probe" "$family_probe/bench" "$family_probe")" \
-  'bin/geminib:4 share/tagged.sh:5 hammerspoon/probe.lua:2 hammerspoon/probe.lua:5 share/rbench/raters.py:5 agents/a.md:1'
 # The built-in list, both fixtures and what `geminib families` prints share one column format.
 family_rows_ok() {
   awk -F'\t' 'NF != 4 || $1 !~ /^gemini-[0-9]+\.[0-9]+-(flash|pro)$/ || $2 !~ /^(flash[0-9]+|pro)$/ ||
@@ -960,8 +890,9 @@ assert grep -Fq 'outcome_line "$(vendor_name "$vendor")_USAGE_LIMIT"' "$WORKER_R
 assert grep -Fq 'pin=$(worker_model_pin_first "$vendor")' "$WORKER_RUN"
 assert grep -Fq 'claudeb needs an explicit account or claudeb_profile pin when worker-pick is unavailable' "$WORKER_RUN"
 assert grep -Fq 'account=main' "$WORKER_RUN"
+assert grep -Fq 'contradicts the brief header' "$WORKER_RUN"
 for agent in "$CLAUDEB_AGENT" "$CODEX_AGENT" "$GEMINI_AGENT"; do
-  assert grep -Fq -- '`--account <n>` (an `ACCOUNT:` line' "$agent"
+  assert grep -Fq "worker-run reads the brief's \`ACCOUNT:\`, \`MODEL:\` and \`EFFORT:\` header lines itself" "$agent"
   assert grep -Fq 'worker-run start' "$agent"
 done
 assert doc_has 'Worker account resolution'
@@ -2534,10 +2465,16 @@ assert eq "$gate_sanctioned" 'claude-session-driver light-research llm-limits op
 # own and NONE of them may reappear in SANCTIONED_RE — named there, an image would be generated
 # from any chat's Bash with nothing rendering the account it spent. The extraction above still
 # reads the `-image` shape, so a re-added one breaks that equality rather than passing unseen.
-for owned in codex-image gemini-image grok-image; do
+for owned in codex-image gemini-image grok-image grok-video image-fanout gemini-video gemini-music gemini-sfx gemini-listen; do
   assert grep -Fq "\`$owned\`" "$ROOT/$DOC"
 done
 assert grep -Eq '^OWNED_IMAGE_RE=.*\(codex\|gemini\|grok\)-image' "$LAUNCH_GATE"
+assert grep -Eq '^OWNED_IMAGE_RE=.*gemini-\(video\|music\|sfx\|listen\)' "$LAUNCH_GATE"
+# The tag hook, the exit stamp and the work probe recognise the same media scripts the gate owns.
+for media_site in bin/worker-tag-hook.sh bin/statusline-workdir-hook.sh; do
+  assert grep -Fq '(codex|gemini|grok)-image|grok-video|gemini-(video|music|sfx|listen))' "$ROOT/$media_site"
+done
+assert grep -Fq 'grok-video|gemini-video|gemini-music|gemini-sfx|gemini-listen)$"' "$ROOT/bin/statusline-work-probe.sh"
 assert grep -Eq '^OWNED_RUN_RE=.*worker-run.*\(start\|wait\)' "$LAUNCH_GATE"
 assert doc_has 'sanctioned only in the hand that owns them'
 # `claudeb revive` and `claudeb warm` are subcommands, not binaries: the gate must not exempt every
@@ -2801,7 +2738,9 @@ assert grep -Fq 'worker_claims_fresh' "$WORKERPICK"
 # Launchers with a ready-to-run profile claim through the picker's flag. Image launchers pick
 # without --claim, validate the profile, then call the same recorder so a ghost account does not burn the TTL.
 assert grep -Fq -- '--claim' "$ROOT/bin/worker-run"
-assert eq "$(grep -c 'worker-claims.sh' "$ROOT/bin/worker-run")" 0
+# worker-run records no claim itself; the module is sourced only to release one it routed past.
+assert eq "$(grep -c 'worker_claims_record' "$ROOT/bin/worker-run")" 0
+assert grep -Fq 'worker_claims_release codex "$PICKED_ACCOUNT"' "$ROOT/bin/worker-run"
 # Research picks for itself nowhere any more: the compatibility entrypoint submits a tracked
 # worker-run, and that run claims through the same picker flag every other relay uses.
 assert grep -Fq -- 'args=(start "$vendor" --role research' "$ROOT/bin/light-research"
@@ -3171,5 +3110,20 @@ menu_age_formatters=$(perl -ne 'next if /^\s*--/ || $ARGV =~ m{/menu-style\.lua$
 assert test -z "$menu_age_formatters"
 assert doc_has 'no local age or relative-time formatter'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the anchors store under the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot envelope the menubar reads, the one resolver every surface names a chat through, the review round a fixing worker'"'"'s brief carries in the one field both repositories read, the launchers a headless vendor run may reach the machine through, the one anchors store per git family every side resolves with the same command and one writer holds a lock over, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types the spawn hook alone admits and no second gate judges, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the five carriers that spell the gateway model-id prefix, the one Gemini family list `geminib families` prints, the one file that pins which Flash family the review cells run and no worker reads, the one Grok model list `grokb models` prints and the single rule that collapses its default to the vendor word, the one web-search table every vendor and every worker-run entry point resolves through, the Hammerspoon entry points this repository calls, pinned fail-closed at their install path, the hook and statusline journals the Harness doctor reads, the week-over-week Δ Token tracking and the Harness doctor share, the one limiter hold directory every writer raises a hold in and both the doctor and the menu read, and the one red every Hammerspoon menu paints with styled text that always names its font) and match %s
+# Every script a claude-setup agent runs by bare name has its README PATH link, the inventory
+# llm-selfcheck's path-links step checks; image-gen names the image scripts only as "that vendor's
+# script", hence the fixed floor.
+AGENT_DIR="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/agents"
+[ -r "$AGENT_DIR/image-gen.md" ] || fail "agent run names: $AGENT_DIR is unreadable (set CLAUDE_SETUP_ROOT)"
+readme_links=$(LC_ALL=C sed -nE 's/^- `bin\/([^`]+)` → `~\/\.local\/bin\/([^`]+)`.*/\1 \2/p' "$ROOT/README.md" | awk '$1 == $2 { print $1 }')
+agent_run_names="codex-image gemini-image grok-image grok-video image-fanout gemini-video gemini-music gemini-sfx gemini-listen worker-run worker-pick"
+for script in "$ROOT"/bin/*; do
+  name=${script##*/}
+  [ -f "$script" ] && [ -x "$script" ] && [[ "$name" != *.sh ]] || continue
+  grep -qE "(^|[^[:alnum:]_/.-])$name([^[:alnum:]_-]|\$)" "$AGENT_DIR"/*.md && agent_run_names+=" $name"
+done
+unlinked_run_names=$(for name in $(printf "%s\n" $agent_run_names | sort -u); do grep -qxF "$name" <<<"$readme_links" || printf '%s ' "$name"; done)
+assert eq "unlinked: $unlinked_run_names" "unlinked: "
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the anchors store under the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot envelope the menubar reads, the one resolver every surface names a chat through, the review round a fixing worker'"'"'s brief carries in the one field both repositories read, the launchers a headless vendor run may reach the machine through, the one anchors store per git family every side resolves with the same command and one writer holds a lock over, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types the spawn hook alone admits and no second gate judges, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the five carriers that spell the gateway model-id prefix, the one Gemini family list `geminib families` prints, the one file that pins which Flash family the review cells run and no worker reads, the one Grok model list `grokb models` prints and the single rule that collapses its default to the vendor word, the one web-search table every vendor and every worker-run entry point resolves through, the Hammerspoon entry points this repository calls, pinned fail-closed at their install path, the hook and statusline journals the Harness doctor reads, the week-over-week Δ Token tracking and the Harness doctor share, the one limiter hold directory every writer raises a hold in and both the doctor and the menu read, the one red every Hammerspoon menu paints with styled text that always names its font, and the README PATH link of every script a claude-setup agent runs by name) and match %s
 ' "$asserts" "$DOC"

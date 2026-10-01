@@ -82,21 +82,22 @@ assert [ -n "$id" ]
 assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 1 ]
 R=$(record "$id")
 assert jqe 'keys == (["id", "doctor", "area", "night", "created_at", "launched_at", "closed_at", "abandoned_at", "failed_at",
-  "account", "session", "command", "branch", "worktrees", "judge_at_launch", "judge_at_close", "problems", "decisions", "note"] | sort)' "$R"
+  "account", "session", "command", "branch", "worktrees", "judge_at_launch", "judge_at_close", "problems", "quiet", "decisions", "note"] | sort)' "$R"
 assert jqe --arg id "$id" '.id == $id and .doctor == "llm" and .area == "all" and .night == null and .account == "acct-b"
   and .judge_at_launch == "j1" and .closed_at == null and .abandoned_at == null and .failed_at == null and .decisions == []
   and .note == null and .branch == null and .worktrees == []' "$R"
 assert jqe '[.created_at, .launched_at] | all(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$"))' "$R"
 assert jqe '[.problems[] | {id, state, fact}] == [{id: "A", state: "new", fact: "a new bug"}, {id: "B", state: "open", fact: "an open row"},
   {id: "E", state: "regressed", fact: "a regressed fix"}]' "$R"
-assert jqe '[.problems[] | .area] == ["health", "health", "health"] and all(.problems[]; .component.files == [])' "$R"
+assert jqe --arg e "$WORK/projects/llm-legs/bin/llm-doctor" '[.problems[] | .area] == ["health", "health", "health"]
+  and all(.problems[]; .component.files == [$e])' "$R"
 session=$(jq -r .session "$R")
 assert grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' <<<"$session"
 assert_fails grep -qF "$session" "$WORK/out"
 # The chat opens through the shared helper: picked account, pinned session, strong model, the procedure.
 assert [ "$(jq -r .command "$R")" = "$RUNS/$id.command" ]
 assert [ "$(cat "$OPENED")" = "$RUNS/$id.command" ]
-assert grep -qxF -- '--account claudeb --role chat --claim' "$DATA/pick-args"
+assert grep -qxF -- '--account claudeb --role chat --model opus --claim' "$DATA/pick-args"
 assert grep -qxF "cd $(printf '%q' "$ROOT") || exit 1" "$RUNS/$id.command"
 assert grep -qF "CLAUDE_CODE_SESSION_ID=$session $(printf '%q' "$ROOT/bin/chat-pin") all" "$RUNS/$id.command"
 assert grep -qF -- "exec $FAKE_BIN/claudeb profile acct-b --session-id $session --model opus --effort high Doctor\\ fixer\\ run\\ $id:\\ read\\ $ROOT/docs/doctor-fix.md\\ in\\ full\\ and\\ follow\\ it\\ for\\ this\\ run." "$RUNS/$id.command"
@@ -138,8 +139,21 @@ printf 'why\n' >"$WORK/projects/proj/README"
 git -C "$WORK/projects/proj" add README
 git -C "$WORK/projects/proj" -c user.name=t -c user.email=t@t commit -qm purpose
 hash=$(git -C "$WORK/projects/proj" rev-parse --short HEAD)
-printf 'A\tfixed\tproj@%s\tbin/x.py:12 fixed; tests/test_x.sh\nB\truled-out\tdocs/doctors-contract.md:40\tthe row is the design\nE\tweather\tproj/README\tvendor 429s\n' \
-  "$hash" >"$WORK/decisions"
+# The llm-legs repository: its doctors are the health block's entry and what night worktrees rerun.
+L="$WORK/projects/llm-legs"
+mkdir -p "$L/bin"
+for d in llm harness updater; do
+  cat >"$L/bin/$d-doctor" <<EOF
+#!/bin/bash
+printf '%s\n' "\$PWD" >>"\$DATA/$d-doctor-runs"
+if [ -f "\$DATA/$d-doc.json" ]; then cat "\$DATA/$d-doc.json"; else printf '{"judge": "base-$d"}\n'; fi
+EOF
+done
+chmod +x "$L"/bin/*
+git -C "$L" init -q && git -C "$L" add bin && git -C "$L" -c user.name=t -c user.email=t@t commit -qm base
+lhash=$(git -C "$L" rev-parse --short HEAD)
+printf 'A\tfixed\tllm-legs@%s\tbin/x.py:12 fixed; tests/test_x.sh\nB\truled-out\tllm-legs/bin/llm-doctor:40\tthe row is the design\nE\tweather\tllm-legs/bin/llm-doctor\tvendor 429s\n' \
+  "$lhash" >"$WORK/decisions"
 assert_fails fix close "$id2" --decisions "$WORK/decisions" "done" 2>"$WORK/err"
 assert grep -qF 'rerun the llm doctor, the proof reads its fresh numbers' "$WORK/err"
 doc llm $(($(now) + 5)) problems 3 j1
@@ -148,15 +162,19 @@ head -n 2 "$WORK/decisions" >"$WORK/partial"
 assert_fails fix close "$id2" --decisions "$WORK/partial" "done" 2>"$WORK/err"
 assert grep -qxF 'E: undecided' "$WORK/err"
 # A purpose must resolve: a file that exists, or a commit in that project.
-sed 's#docs/doctors-contract.md:40#docs/no-such-file.md#' "$WORK/decisions" >"$WORK/bad-path"
+sed 's#llm-legs/bin/llm-doctor:40#docs/no-such-file.md#' "$WORK/decisions" >"$WORK/bad-path"
 assert_fails fix close "$id2" --decisions "$WORK/bad-path" "done" 2>"$WORK/err"
 assert grep -qF "line 2 (B): purpose 'docs/no-such-file.md' resolves to no commit" "$WORK/err"
 assert grep -qxF 'B: undecided' "$WORK/err"
-sed "s#proj@$hash#proj@deadbeef#" "$WORK/decisions" >"$WORK/bad-commit"
+sed "s#llm-legs@$lhash#llm-legs@deadbeef#" "$WORK/decisions" >"$WORK/bad-commit"
 assert_fails fix close "$id2" --decisions "$WORK/bad-commit" "done" 2>"$WORK/err"
-assert grep -qF "line 1 (A): purpose 'proj@deadbeef' resolves to no commit" "$WORK/err"
-sed 's#docs/doctors-contract.md:40#docs#' "$WORK/decisions" >"$WORK/dir-purpose"
+assert grep -qF "line 1 (A): purpose 'llm-legs@deadbeef' resolves to no commit" "$WORK/err"
+sed 's#llm-legs/bin/llm-doctor:40#llm-legs/bin#' "$WORK/decisions" >"$WORK/dir-purpose"
 assert_fails fix close "$id2" --decisions "$WORK/dir-purpose" "done" 2>/dev/null
+# A problem with no ledger fix still has its block's entry file: a purpose elsewhere does not touch it.
+sed 's#llm-legs/bin/llm-doctor:40#proj/README#' "$WORK/decisions" >"$WORK/off-component"
+assert_fails fix close "$id2" --decisions "$WORK/off-component" "done" 2>"$WORK/err"
+assert grep -qF "line 2 (B): purpose 'proj/README' does not touch the component" "$WORK/err"
 sed 's#\tvendor 429s$#\t#' "$WORK/decisions" >"$WORK/no-evidence"
 assert_fails fix close "$id2" --decisions "$WORK/no-evidence" "done" 2>"$WORK/err"
 assert grep -qF 'line 3 (E): no evidence' "$WORK/err"
@@ -173,13 +191,17 @@ printf 'judge\tchanged\tdocs/doctors-contract.md\tthe owner narrowed a dismissal
 assert_fails fix close "$id2" --decisions "$WORK/decisions" "done" 2>"$WORK/err"
 assert grep -qF "line 4 (judge): purpose 'docs/doctors-contract.md' does not touch the component" "$WORK/err"
 sed -i '' 's#^judge\tchanged\tdocs/doctors-contract.md#judge\tchanged\tbin/llm-doctor#' "$WORK/decisions"
+# fixed needs the doctor's rerun to read the problem fixed-pending or gone.
+assert_fails fix close "$id2" --decisions "$WORK/decisions" "done" 2>"$WORK/err"
+assert grep -qxF 'line 1 (A): fixed, but the rerun llm doctor still reads it new: a fix leaves it fixed-pending or gone' "$WORK/err"
+jq '(.problems[] | select(.id == "A") | .state) = "fixed-pending"' "$WORK/llm/latest.json" >"$WORK/l" && mv "$WORK/l" "$WORK/llm/latest.json"
 fix close "$id2" --decisions "$WORK/decisions" "three fixed or ruled out" >"$WORK/out" || fail "clean close failed"
 assert grep -qxF "run $id2 closed: 4 decisions" "$WORK/out"
 assert jqe '.closed_at != null and .judge_at_close == "j2" and .note == "three fixed or ruled out"' "$R2"
-assert jqe --arg h "proj@$hash" '.decisions == [
+assert jqe --arg h "llm-legs@$lhash" '.decisions == [
   {id: "A", verdict: "fixed", purpose: $h, evidence: "bin/x.py:12 fixed; tests/test_x.sh"},
-  {id: "B", verdict: "ruled-out", purpose: "docs/doctors-contract.md:40", evidence: "the row is the design"},
-  {id: "E", verdict: "weather", purpose: "proj/README", evidence: "vendor 429s"},
+  {id: "B", verdict: "ruled-out", purpose: "llm-legs/bin/llm-doctor:40", evidence: "the row is the design"},
+  {id: "E", verdict: "weather", purpose: "llm-legs/bin/llm-doctor", evidence: "vendor 429s"},
   {id: "judge", verdict: "changed", purpose: "bin/llm-doctor", evidence: "the owner narrowed a dismissal row"}]' "$R2"
 assert_fails fix close "$id2" --decisions "$WORK/decisions" "again" 2>/dev/null
 
@@ -210,6 +232,17 @@ assert jqe '.closed_at != null and .judge_at_close == "u1" and .decisions[0].ver
 fix launch updater >"$WORK/out" || fail "launch updater failed"
 assert [ "$(cat "$WORK/out")" = "vendor update started: fake" ]
 assert [ "$(cat "$DATA/vcu-args")" = now ]
+# A night vendor run has no chat: its night, branch and worktree instead, so show and abandon reach it.
+nid=$(fix record updater --night n9 --branch night/n9/grok --worktree "$WORK/wt-grok" --problems grok-1) ||
+  fail "record updater --night failed"
+assert jqe --arg w "$WORK/wt-grok" '.night == "n9" and .area == "release" and .branch == "night/n9/grok" and .worktrees == [$w]
+  and .session == null and .account == null and .command == null and .launched_at != null
+  and [.problems[].id] == ["grok-1"]' "$(record "$nid")"
+fix show "$nid" >"$WORK/show"
+assert grep -qxF "night n9 · branch night/n9/grok · worktrees $WORK/wt-grok" "$WORK/show"
+assert_fails fix record updater --night n9 --problems grok-1 2>/dev/null
+assert_fails fix record updater --night n9 --branch b --worktree w --session s --problems grok-1 2>/dev/null
+fix record-close "$nid" --decisions "$WORK/ujson" "grok-1: integrated" || fail "record-close of a night vendor run failed"
 
 # Parallel record writes never share an id.
 for n in 1 2 3 4 5 6; do fix record updater --session "s-$n" --account a --command c --problems "e-$n" >"$DATA/par-$n" & done
@@ -217,14 +250,9 @@ wait
 assert [ "$(cat "$DATA"/par-* | sort -u | grep -cE '^updater-release-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{4}$')" = 6 ]
 for n in 1 2 3 4 5 6; do assert jqe --arg s "s-$n" '.session == $s' "$(record "$(cat "$DATA/par-$n")")"; done
 
-# Night fixtures: the llm-legs repository the worktrees branch from, a component repository, docs and memory.
-L="$WORK/projects/llm-legs"
-mkdir -p "$L/bin" "$WORK/projects/claude-setup/hooks" "$HOME/.claude-profiles/p1/projects/-Volumes-Work-Projects-llm-legs/memory"
-for d in llm harness updater; do
-  printf '#!/bin/bash\nprintf "{\\"judge\\": \\"base-%s\\"}\\n"\n' "$d" >"$L/bin/$d-doctor"
-done
-chmod +x "$L"/bin/*
-git -C "$L" init -q && git -C "$L" add bin && git -C "$L" -c user.name=t -c user.email=t@t commit -qm base
+# Night fixtures: a component repository, docs and memory beside the llm-legs repository the worktrees branch from.
+mkdir -p "$WORK/projects/claude-setup/hooks" "$WORK/projects/review-bench/bin" "$HOME/.claude-profiles/p1/projects/-Volumes-Work-Projects-llm-legs/memory"
+printf '#!/bin/bash\n' >"$WORK/projects/review-bench/bin/review-bench"
 printf '#!/bin/bash\n' >"$WORK/projects/claude-setup/hooks/gate.sh"
 jq -n --arg c "$WORK/projects/claude-setup/hooks/gate.sh" '{hooks: {PreToolUse: [{matcher: "Bash", hooks: [{type: "command", command: $c}]}]}}' \
   >"$WORK/settings.json"
@@ -234,7 +262,10 @@ other=$(git -C "$WORK/projects/proj" rev-parse --short HEAD)
 jq -n '{owner: "LLM owner", owners: {reviewers: "RB chat", workers: "W chat"}, blind_spots: [],
   rows: [{id: "R9", title: "a twice-fixed row", block: "reviewers", match: {word: "crashed", detail: "boom"}, status: "fixed-pending",
     fixes: [{at: "2026-09-01T00:00:00Z", by: "a chat", files: ["proj/README"], in: null, regressed_at: null}],
-    same_cause: ["R8"], handoff: "docs/handoffs/h.md"}]}' >"$WORK/ledgers/llm.json"
+    same_cause: ["R8"], handoff: "docs/handoffs/h.md"},
+    {id: "Q1", title: "a quiet row", block: "workers", match: {word: "bad output"}, status: "open", fixes: [],
+      note: "the cause in the judge prompt still stands"},
+    {id: "Q2", title: "a dismissed row", block: "workers", match: {word: "crashed"}, status: "not-a-bug", fixes: []}]}' >"$WORK/ledgers/llm.json"
 printf '# R9 again\n\nStatus: open\nR9 crashed twice.\n' >"$WORK/docs/handoffs/2026-09-30-r9.md"
 printf '# unrelated\n\nR99 only.\n' >"$WORK/docs/handoffs/2026-09-30-other.md"
 printf '| # | Invariant |\n|---|---|\n| zz | R9 stays narrow |\n| yy | nothing |\n' >"$WORK/docs/shared-invariants.md"
@@ -254,6 +285,16 @@ jq -n --argjson s "$(now)" '{contract: 1, doctor: "llm", as_of_s: $s, judge: "li
     {id: "W", rule: "leg-failure", state: "watch", fact: "watched", ledger: null},
     {id: "machinery:anchors", rule: "machinery", state: "new", fact: "anchors", ledger: null}]}' >"$WORK/llm/latest.json"
 
+# A night with no base ref fails its runs instead of branching from HEAD.
+before=$(ls "$RUNS"/*.json)
+assert_fails fix launch llm --night n0 >/dev/null 2>"$WORK/err"
+assert grep -qF "worktree not created: no refs/night/n0/base in $L" "$WORK/err"
+for f in $(comm -13 <(printf '%s\n' "$before") <(ls "$RUNS"/*.json)); do assert jqe '.failed_at != null and .launched_at == null' "$f"; done
+assert [ -z "$(git -C "$L" branch --list 'night/n0/*')" ]
+for n in n1 n3 n4; do git -C "$L" update-ref "refs/night/$n/base" HEAD; done
+git -C "$WORK/projects/proj" update-ref refs/night/n1/base HEAD
+eval "$(sed -n '/^brief_add_dirs() {/,/^}/p' "$ROOT/bin/worker-run")"
+
 # A night launch opens no chat: one run per area, each with its worktree on its own branch and a brief.
 # A fix's files resolve where the doctor itself resolves them, never through doctor-fix's own projects dir.
 opened_before=$(wc -l <"$OPENED")
@@ -271,19 +312,42 @@ assert [ "$(git -C "$WT" rev-parse --abbrev-ref HEAD)" = "night/n1/$rid" ]
 assert grep -qxF '.claude/worktrees/' "$L/.git/info/exclude"
 assert [ -z "$(git -C "$L" status --porcelain)" ]
 RR=$(record "$rid")
-assert jqe --arg w "$WT" --arg b "night/n1/$rid" '.night == "n1" and .area == "reviewers" and .branch == $b and .worktrees == [$w]
+# Each other repository the component lives in gets its worktree on the same branch, granted by an
+# ADD-DIR: line worker-run's own parser reads; one it cannot branch (review-bench, no repository) gets none.
+PW="$WORK/projects/proj/.claude/worktrees/night-n1-$rid"
+assert [ "$(git -C "$PW" rev-parse --abbrev-ref HEAD)" = "night/n1/$rid" ]
+assert [ "$(brief_add_dirs "$RUNS/$rid.brief.md")" = "$PW" ]
+assert [ "$(sed -n 2p "$RUNS/$rid.brief.md")" = "ADD-DIR: $PW" ]
+# A brief citing an open review round's id without ROUND: is refused by worker-run; a fixer fixes no round.
+assert [ "$(head -n 1 "$RUNS/$rid.brief.md")" = "ROUND: none" ]
+assert [ "$(head -n 1 "$RUNS/$wid.brief.md")" = "ROUND: none" ]
+assert [ -z "$(brief_add_dirs "$RUNS/$wid.brief.md")" ]
+assert jqe --arg w "$WT" --arg p "$PW" --arg b "night/n1/$rid" '.night == "n1" and .area == "reviewers" and .branch == $b and .worktrees == [$w, $p]
   and .launched_at != null and .failed_at == null and .account == null and .judge_at_launch == "base-llm"
   and ([.problems[].id] == ["R9", "machinery:anchors"])' "$RR"
-assert jqe --arg f "$WORK/projects/proj/README" '.problems[0].component.files == [$f]
+assert jqe --arg f "$WORK/projects/proj/README" --arg e "$WORK/projects/review-bench/bin/review-bench" '.problems[0].component.files == [$f, $e]
+  and .problems[1].component.files == [$e]
   and .problems[0].component.what == "reviewers block · owner «RB chat»"
   and (.problems[0].component.rule_at | startswith("bin/llm-doctor:"))
   and .problems[1].component.what == "review-bench doctor class anchors · reviewers block · owner «RB chat»"' "$RR"
-assert jqe '[.problems[].id] == ["debt-gap:x"]' "$(record "$hid")"
+assert jqe '[.problems[].id] == ["debt-gap:x"] and .quiet == []' "$(record "$hid")"
+# An open ledger row no current problem matched is known but quiet: its own section in its area's brief.
+assert jqe --arg e "$WORK/projects/llm-legs/bin/worker-run" '[.problems[].id] == ["leg-escape:workers/escaped"]
+  and [.quiet[] | {id, state, area, files: .component.files}] == [{id: "Q1", state: "quiet", area: "workers", files: [$e]}]' "$(record "$wid")"
+WB="$RUNS/$wid.brief.md"
+assert grep -qF 'area workers · 1 problems · 1 known, quiet.' "$WB"
+assert grep -qF 'Your scope is the problems below and the known quiet rows after them' "$WB"
+assert grep -qxF "known, quiet (1): open ledger rows the doctor did not see in its window. Check in the code whether each cause still stands, then fix it, or write in the row's note why not:" "$WB"
+assert grep -qxF "$(printf '  Q1\tquiet\ta quiet row')" "$WB"
+assert grep -qxF "    note: the cause in the judge prompt still stands" "$WB"
+assert grep -qF "Whatever you found but did not fix, and every cause you ruled out, goes into the ledger" "$WB"
+assert [ "$(grep -c 'known, quiet (' "$RUNS/$rid.brief.md")" = 0 ]
 # The brief is complete: the procedure, the close line with a run-local document, and the packet.
 B="$RUNS/$rid.brief.md"
 assert grep -qF "docs/doctor-fix.md\`: sections 0-6, \"Night\" and \"LLM doctor\" only." "$B"
-assert grep -qF "cd $WT && bin/llm-doctor --json >$RUNS/$rid.d/latest.json" "$B"
-assert grep -qF "bin/doctor-fix close $rid --decisions $RUNS/$rid.d/decisions.tsv --doc $RUNS/$rid.d/latest.json" "$B"
+assert grep -qF "cd $WT && DOCTORS_DIR=$WORK/doctors bin/doctor-fix close $rid --decisions $RUNS/$rid.d/decisions.tsv <one-line note>" "$B"
+assert grep -qF 'Close reruns `bin/llm-doctor --json` in this worktree itself' "$B"
+assert grep -qF 'Look at the older blocks around what you touch, not only at what you add' "$B"
 assert grep -qxF "  R9	regressed	crashed again" "$B"
 assert grep -qxF "    ledger R9 fixed-pending · a twice-fixed row" "$B"
 assert grep -qxF "    fix 2026-09-01T00:00:00Z by a chat: proj/README → None" "$B"
@@ -296,7 +360,7 @@ assert grep -qxF "    handoffs: docs/handoffs/2026-09-30-r9.md" "$B"
 assert grep -qxF "    invariant rows: zz" "$B"
 assert grep -qxF "    memory: ~/.claude-profiles/p1/projects/-Volumes-Work-Projects-llm-legs/memory/r9.md" "$B"
 fix show "$rid" >"$WORK/show"
-assert grep -qxF "night n1 · branch night/n1/$rid · worktrees $WT" "$WORK/show"
+assert grep -qxF "night n1 · branch night/n1/$rid · worktrees $WT $PW" "$WORK/show"
 # One open run per (doctor, area): a second launch of the same night makes nothing.
 before=$(ls "$RUNS"/*.json | wc -l)
 fix launch llm --night n1 >"$WORK/night2" 2>"$WORK/err" || fail "a held night relaunch failed"
@@ -305,36 +369,45 @@ assert grep -qF "run $rid of the llm doctor is still open" "$WORK/err"
 assert [ "$(ls "$RUNS"/*.json | wc -l)" = "$before" ]
 assert_fails fix launch llm 2>/dev/null
 
-# A night close needs a run-local document, and every purpose must touch its component.
-printf 'R9\tfixed\tproj@%s\tproj/README fixed; tests/x\nmachinery:anchors\thandoff\tproj/README\tdocs/handoffs/2026-09-30-r9.md\n' "$hash" >"$WORK/nd"
-assert_fails fix close "$rid" --decisions "$WORK/nd" "x" 2>"$WORK/err"
-assert grep -qF "run $rid is a night run: close it with --doc" "$WORK/err"
-assert_fails fix close "$rid" --decisions "$WORK/nd" --doc "$WORK/llm/latest.json" "x" 2>"$WORK/err"
-assert grep -qF 'names the shared llm document' "$WORK/err"
+# A night close reruns the doctor in the run's worktree itself, once per close: a document the worker
+# hands in proves nothing. Every purpose must touch its component.
+printf 'R9\tfixed\tproj@%s\tproj/README fixed; tests/x\nmachinery:anchors\thandoff\treview-bench/bin/review-bench\tdocs/handoffs/2026-09-30-r9.md\n' "$hash" >"$WORK/nd"
+night_doc() { # R9-state judge [doctor] -> what the worktree's llm doctor prints
+  jq -n --argjson s $(($(now) + 5)) --arg st "$1" --arg j "$2" --arg d "${3:-llm}" '{contract: 1, doctor: $d, as_of_s: $s, judge: $j,
+    problems: [{id: "R9", state: $st}, {id: "machinery:anchors", state: "new"}]}' >"$DATA/llm-doc.json"
+}
 mkdir -p "$RUNS/$rid.d"
-jq -n --argjson s $(($(now) + 5)) '{contract: 1, doctor: "harness", as_of_s: $s, judge: "base-llm"}' >"$RUNS/$rid.d/latest.json"
-assert_fails fix close "$rid" --decisions "$WORK/nd" --doc "$RUNS/$rid.d/latest.json" "x" 2>"$WORK/err"
-assert grep -qF 'is no contract-1 llm doctor document' "$WORK/err"
-jq -n --argjson s $(($(now) + 5)) '{contract: 1, doctor: "llm", as_of_s: $s, judge: "base-llm"}' >"$RUNS/$rid.d/latest.json"
+jq -n --argjson s $(($(now) + 5)) '{contract: 1, doctor: "llm", as_of_s: $s, judge: "base-llm", problems: []}' >"$RUNS/$rid.d/forged.json"
+assert_fails fix close "$rid" --decisions "$WORK/nd" --doc "$RUNS/$rid.d/forged.json" "x" 2>/dev/null
+night_doc regressed base-llm harness
+assert_fails fix close "$rid" --decisions "$WORK/nd" "x" 2>"$WORK/err"
+assert grep -qF "$RUNS/$rid.d/latest.json is no contract-1 llm doctor document" "$WORK/err"
+night_doc regressed base-llm
+: >"$DATA/llm-doctor-runs"
+assert_fails fix close "$rid" --decisions "$WORK/nd" "x" 2>"$WORK/err"
+assert grep -qxF 'line 1 (R9): fixed, but the rerun llm doctor still reads it regressed: a fix leaves it fixed-pending or gone' "$WORK/err"
+assert [ "$(cat "$DATA/llm-doctor-runs")" = "$WT" ]
+night_doc fixed-pending base-llm
 sed "s#^R9\tfixed\tproj@$hash#R9\tfixed\tproj@$other#" "$WORK/nd" >"$WORK/nd-other"
-assert_fails fix close "$rid" --decisions "$WORK/nd-other" --doc "$RUNS/$rid.d/latest.json" "x" 2>"$WORK/err"
+assert_fails fix close "$rid" --decisions "$WORK/nd-other" "x" 2>"$WORK/err"
 assert grep -qF "line 1 (R9): purpose 'proj@$other' does not touch the component" "$WORK/err"
 sed 's#^R9\tfixed\tproj@[0-9a-f]*#R9\tfixed\tdocs/doctors-contract.md#' "$WORK/nd" >"$WORK/nd-path"
-assert_fails fix close "$rid" --decisions "$WORK/nd-path" --doc "$RUNS/$rid.d/latest.json" "x" 2>"$WORK/err"
+assert_fails fix close "$rid" --decisions "$WORK/nd-path" "x" 2>"$WORK/err"
 assert grep -qF "line 1 (R9): purpose 'docs/doctors-contract.md' does not touch the component" "$WORK/err"
-jq '.judge = "loosened"' "$RUNS/$rid.d/latest.json" >"$WORK/j" && mv "$WORK/j" "$RUNS/$rid.d/latest.json"
-assert_fails fix close "$rid" --decisions "$WORK/nd" --doc "$RUNS/$rid.d/latest.json" "x" 2>"$WORK/err"
+night_doc fixed-pending loosened
+assert_fails fix close "$rid" --decisions "$WORK/nd" "x" 2>"$WORK/err"
 assert grep -qF "judge changed since launch (base-llm -> loosened)" "$WORK/err"
-jq '.judge = "base-llm"' "$RUNS/$rid.d/latest.json" >"$WORK/j" && mv "$WORK/j" "$RUNS/$rid.d/latest.json"
-fix close "$rid" --decisions "$WORK/nd" --doc "$RUNS/$rid.d/latest.json" "R9 fixed" >"$WORK/out" || fail "night close failed: $(cat "$WORK/err")"
+night_doc fixed-pending base-llm
+fix close "$rid" --decisions "$WORK/nd" "R9 fixed" >"$WORK/out" 2>"$WORK/err" || fail "night close failed: $(cat "$WORK/err")"
 assert grep -qxF "run $rid closed: 2 decisions" "$WORK/out"
 assert jqe '.closed_at != null and .judge_at_close == "base-llm"' "$RR"
+assert [ "$(wc -l <"$DATA/llm-doctor-runs" | tr -d ' ')" = 5 ]
 
 # abandon: the deadline's verb. An abandoned run closes no more; a closed one cannot be abandoned.
 fix abandon "$wid" --reason "deadline passed" >"$WORK/out" || fail "abandon failed"
 assert grep -qxF "run $wid abandoned" "$WORK/out"
 assert jqe '.abandoned_at != null and .closed_at == null and .note == "deadline passed"' "$(record "$wid")"
-assert_fails fix close "$wid" --decisions "$WORK/nd" --doc "$RUNS/$rid.d/latest.json" "x" 2>"$WORK/err"
+assert_fails fix close "$wid" --decisions "$WORK/nd" "x" 2>"$WORK/err"
 assert grep -qF "run $wid was abandoned" "$WORK/err"
 assert_fails fix abandon "$rid" 2>"$WORK/err"
 assert grep -qF "run $rid is already closed" "$WORK/err"
@@ -345,6 +418,7 @@ fix abandon "$hid" >/dev/null || fail "abandon without a reason failed"
 mkdir -p "$WORK/projects/broken/.claude"
 git -C "$WORK/projects/broken" init -q
 git -C "$WORK/projects/broken" -c user.name=t -c user.email=t@t commit -q --allow-empty -m base
+git -C "$WORK/projects/broken" update-ref refs/night/n2/base HEAD
 : >"$WORK/projects/broken/.claude/worktrees"
 before=$(ls "$RUNS"/*.json)
 assert_fails env DOCTOR_FIX_WORKTREE_REPO="$WORK/projects/broken" bash "$FIX" launch llm --night n2 >"$WORK/out" 2>"$WORK/err"
@@ -365,22 +439,51 @@ jq -n --argjson s "$(now)" '{contract: 1, doctor: "harness", as_of_s: $s, judge:
       judge: [{rule: "load", ident: "host", level: "red"}]}]}}]}],
   problems: ([
     {id: "hook_every_call:gate.sh", rule: "hook_every_call", state: "new", fact: "gate every call", value: 1, exposure: 1},
+    {id: "gate-row", rule: "hook_every_call", state: "open", fact: "a ledger row naming its hook by regex", ledger: "gate-row"},
     {id: "load:host", rule: "load", state: "new", fact: "busy", value: 9, exposure: 9},
     {id: "collector:run", rule: "collector", state: "new", fact: "slow collector"},
+    {id: "floor:event:PreToolUse", rule: "floor", state: "new", fact: "slow tool hooks", value: 1, exposure: 1},
+    {id: "test_slow:proj:test_x", rule: "test_slow", state: "new", fact: "slow suite"},
+    {id: "test_long_pole:proj:test_x", rule: "test_long_pole", state: "new", fact: "the long pole"},
+    {id: "test_daily_cost:proj:test_x", rule: "test_daily_cost", state: "new", fact: "a costly suite"},
     {id: "floor:tool", rule: "floor", state: "watch", fact: "floor", value: 100, exposure: 100},
     {id: "load:quiet", rule: "load", state: "watch", fact: "quiet", value: 1000, exposure: 1000}]
     + [range(10) | {id: "hook_p50:w\(.)", rule: "hook_p50", state: "watch", fact: "w", value: ., exposure: 10}])}' \
   >"$WORK/harness/latest.json"
+mkdir -p "$WORK/projects/proj/tests" && printf '#!/bin/bash\n' >"$WORK/projects/proj/tests/test_x.sh"
+printf '{"owner": "H owner", "rows": [{"id": "gate-row", "status": "open", "match": {"rule": "hook_every_call", "ident": "gate\\\\.sh"}}, {"id": "quiet-hook", "title": "a hook gone quiet", "status": "open", "match": {"rule": "hook_every_call", "ident": "gate\\\\.sh"}}]}\n' \
+  >"$WORK/ledgers/harness.json"
 for n in 1 2 3 4; do bash "$FIX" launch harness --night n3 >"$DATA/h-$n" 2>/dev/null & done
 wait
 assert [ "$(cat "$DATA"/h-* | cut -f1 | sed -E 's/^harness-([a-z-]+)-[0-9]{8}.*/\1/' | sort | xargs)" = "hook-waits hooks load self" ]
 assert [ "$(ls "$RUNS"/harness-*-*-*.json | grep -c -- '-hooks-')" = 1 ]
 hk=$(cat "$DATA"/h-* | awk -F'\t' '$1 ~ /^harness-hooks-/ {print $1}')
-assert jqe '[.problems[].id] == ["hook_every_call:gate.sh", "hook_p50:w9", "hook_p50:w8", "hook_p50:w7", "hook_p50:w6",
+assert jqe '[.problems[].id] == ["hook_every_call:gate.sh", "gate-row", "hook_p50:w9", "hook_p50:w8", "hook_p50:w7", "hook_p50:w6",
   "hook_p50:w5", "hook_p50:w4", "hook_p50:w3"] and .judge_at_launch == "base-harness"' "$(record "$hk")"
-assert jqe --arg f "$WORK/projects/claude-setup/hooks/gate.sh" '.problems[0].component.files == [$f]
+assert jqe --arg f "$WORK/projects/claude-setup/hooks/gate.sh" '[.quiet[] | {id, files: .component.files}] == [{id: "quiet-hook", files: [$f]}]' "$(record "$hk")"
+assert [ "$(cat "$DATA"/h-* | cut -f1 | while read -r r; do jq '.quiet | length' "$RUNS/$r.json"; done | paste -sd+ - | bc)" = 1 ]
+assert jqe --arg f "$WORK/projects/claude-setup/hooks/gate.sh" '.problems[0].component.files == [$f] and .problems[1].component.files == [$f]
   and (.problems[0].component.rule_at | startswith("bin/harness-doctor:"))' "$(record "$hk")"
-assert jqe '[.problems[].id] == ["floor:tool"]' "$(cat "$DATA"/h-* | awk -F'\t' '$1 ~ /^harness-hook-waits-/ {print $1".json"}' | sed "s#^#$RUNS/#")"
+assert jqe --arg f "$WORK/projects/claude-setup/hooks/gate.sh" '[.problems[].id] == ["floor:event:PreToolUse", "floor:tool"]
+  and .problems[0].component.files == [$f]' "$(cat "$DATA"/h-* | awk -F'\t' '$1 ~ /^harness-hook-waits-/ {print $1".json"}' | sed "s#^#$RUNS/#")"
+# Every other harness row gets the file it names; one that names none closes, marked component unverified.
+self=$(cat "$DATA"/h-* | awk -F'\t' '$1 ~ /^harness-self-/ {print $1}')
+assert jqe --arg c "$(cd -P "$ROOT" && pwd)/bin/harness-doctor" --arg t "$WORK/projects/proj/tests/test_x.sh" \
+  '[.problems[] | {id, files: .component.files}] == [{id: "collector:run", files: [$c]}, {id: "test_slow:proj:test_x", files: [$t]},
+  {id: "test_long_pole:proj:test_x", files: [$t]}, {id: "test_daily_cost:proj:test_x", files: [$t]}]' "$(record "$self")"
+load=$(cat "$DATA"/h-* | awk -F'\t' '$1 ~ /^harness-load-/ {print $1}')
+assert jqe '.problems[0].id == "load:host" and .problems[0].component.files == []' "$(record "$load")"
+fix touches "$(record "$load")" load:host proj/README
+assert [ $? = 3 ]
+fix touches "$(record "$load")" "row 1" proj/README || fail "a purpose for no listed problem only has to resolve"
+jq -n --argjson s $(($(now) + 5)) '{contract: 1, doctor: "harness", as_of_s: $s, judge: "base-harness",
+  problems: [{id: "load:host", state: "fixed-pending"}]}' >"$DATA/harness-doc.json"
+printf 'load:host\tfixed\tproj/README\ttests/test_x.sh\n' >"$WORK/ld"
+fix close "$load" --decisions "$WORK/ld" "load fixed" >/dev/null 2>"$WORK/err" || fail "a row naming no file blocks close: $(cat "$WORK/err")"
+assert jqe '.decisions == [{id: "load:host", verdict: "fixed", purpose: "proj/README", evidence: "tests/test_x.sh", component: "unverified"}]' "$(record "$load")"
+fix show "$load" >"$WORK/show"
+assert grep -qxF "$(printf '  load:host\tfixed\tproj/README\ttests/test_x.sh\tcomponent unverified')" "$WORK/show"
+rm "$DATA/harness-doc.json"
 assert grep -qF 'sections 0-6, "Night" and "Harness doctor" only.' "$RUNS/$hk.brief.md"
 
 # Updater: its own machinery is one area; vendor release events are vendor-fingerprint's. Nothing to do prints nothing.
@@ -394,10 +497,94 @@ jq --argjson s "$(now)" '.problems += [{id: "pass-stale", rule: "pass-stale", st
 fix launch updater --night n4 >"$WORK/out" || fail "updater night failed"
 uid=$(cut -f1 "$WORK/out")
 assert grep -qE '^updater-machinery-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{4}$' <<<"$uid"
-assert jqe '[.problems[].id] == ["pass-stale"] and .judge_at_launch == "base-updater"' "$(record "$uid")"
+assert jqe --arg f "$WORK/projects/llm-legs/bin/vendor-cli-update" '[.problems[].id] == ["pass-stale"]
+  and .problems[0].component.files == [$f] and .judge_at_launch == "base-updater"' "$(record "$uid")"
 assert_fails fix close "$uid" --decisions "$WORK/nd" "x" 2>"$WORK/err"
-assert grep -qF "run $uid is a night run" "$WORK/err"
+assert grep -qF "$RUNS/$uid.d/latest.json is no contract-1 updater doctor document" "$WORK/err"
 assert_fails fix launch llm --night 'bad night' 2>/dev/null
+
+# A release run recorded before runs had an area is a release run, not an all-areas one.
+fix abandon "$uid" >/dev/null || fail "abandon of the updater night run failed"
+jq -n --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{id: "updater-20260101T000000Z", doctor: "updater", night: null, created_at: $t,
+  launched_at: $t, closed_at: null, abandoned_at: null, problems: [{id: "grok-1", state: "open"}], decisions: []}' \
+  >"$RUNS/updater-20260101T000000Z.json"
+fix launch updater --night n4 >"$WORK/out" 2>"$WORK/err" || fail "a legacy release run blocked the updater night: $(cat "$WORK/err")"
+assert grep -qE '^updater-machinery-' "$WORK/out"
+assert jqe '.abandoned_at == null' "$RUNS/updater-20260101T000000Z.json"
+fix record-close updater-20260101T000000Z --decisions "$WORK/ujson" "grok-1: integrated" || fail "a legacy release run does not close"
+
+# A commit citation that is a merge touches what the merge brought in.
+P="$WORK/projects/proj"
+git -C "$P" checkout -qb side
+printf 'why more\n' >>"$P/README"
+git -C "$P" -c user.name=t -c user.email=t@t commit -qam side
+git -C "$P" checkout -q -
+printf 'x\n' >"$P/MAIN" && git -C "$P" add MAIN && git -C "$P" -c user.name=t -c user.email=t@t commit -qm main
+git -C "$P" -c user.name=t -c user.email=t@t merge -q --no-ff side -m merge
+fix touches "$RR" R9 "proj@$(git -C "$P" rev-parse --short HEAD)" || fail "a merge that changed the component does not touch it"
+
+# A malformed ledger row the doctor reports still snapshots, so its fixer can repair it.
+for n in n5 n6 n7; do git -C "$L" update-ref "refs/night/$n/base" HEAD; done
+jq -n '{owner: "LLM owner", owners: {}, blind_spots: [], rows: [{id: "R7", block: "workers", match: "bad",
+  fixes: [null, {files: "proj/README"}, {at: "2026-09-02T00:00:00Z", files: ["proj/README", 3]}], same_cause: [1, "R6"]}]}' \
+  >"$WORK/ledgers/llm.json"
+jq -n --argjson s "$(now)" '{contract: 1, doctor: "llm", as_of_s: $s, judge: "j", status: "problems", problem_count: 1, blocks: [],
+  problems: [{id: "ledger:R7", rule: "ledger", state: "new", fact: "fixes[0] is no object", ledger: null}]}' >"$WORK/llm/latest.json"
+fix launch llm --night n5 >"$WORK/out" 2>"$WORK/err" || fail "a malformed ledger row broke the night snapshot: $(cat "$WORK/err")"
+mid=$(cut -f1 "$WORK/out")
+assert jqe --arg w "$WORK/projects/llm-legs/bin/worker-run" --arg f "$WORK/projects/proj/README" \
+  '.area == "workers" and [.problems[] | {id, files: .component.files}] == [{id: "ledger:R7", files: [$w, $f]}]' "$(record "$mid")"
+assert grep -qxF "$(printf '  ledger:R7\tnew\tfixes[0] is no object')" "$RUNS/$mid.brief.md"
+
+# A collector that failed is a problem of its own, and a fix of it holds only once the rerun doctor stops failing.
+jq -n --argjson s "$(now)" '{contract: 1, doctor: "llm", as_of_s: $s, judge: null, status: "error", problem_count: 0, problems: [],
+  blind_spots: [], self: {collector_s: null, error: "KeyError: '\''x'\''"}}' >"$WORK/llm/latest.json"
+fix launch llm --night n6 >"$WORK/out" 2>"$WORK/err" || fail "a failed collector launched nothing: $(cat "$WORK/err")"
+cid=$(cut -f1 "$WORK/out")
+assert grep -qE '^llm-health-' <<<"$cid"
+assert jqe --arg e "$WORK/projects/llm-legs/bin/llm-doctor" '[.problems[] | {id, rule, state, fact, files: .component.files}]
+  == [{id: "collector:error", rule: "collector", state: "new", fact: "the collector failed: KeyError: '\''x'\''", files: [$e]}]' "$(record "$cid")"
+printf 'collector:error\tfixed\tllm-legs/bin/llm-doctor\ttests/test_llm_doctor.sh\n' >"$WORK/cd"
+jq -n --argjson s $(($(now) + 5)) '{contract: 1, doctor: "llm", as_of_s: $s, judge: "base-llm", status: "error", problems: [],
+  self: {error: "KeyError: '\''x'\''"}}' >"$DATA/llm-doc.json"
+assert_fails fix close "$cid" --decisions "$WORK/cd" "x" 2>"$WORK/err"
+assert grep -qxF "line 1 (collector:error): fixed, but the rerun llm doctor fails: KeyError: 'x'" "$WORK/err"
+jq -n --argjson s $(($(now) + 5)) '{contract: 1, doctor: "llm", as_of_s: $s, judge: "base-llm", status: "ok", problems: []}' >"$DATA/llm-doc.json"
+fix close "$cid" --decisions "$WORK/cd" "collector fixed" >/dev/null || fail "a fixed collector does not close"
+
+# A launched_at that is not written fails that run, not only the last area's.
+cat >"$FAKE_BIN/mv" <<'EOF'
+#!/bin/bash
+src=${*: -2:1}
+if [ -f "$src" ] && grep -q '"launched_at": "' "$src"; then
+  [ ! -e "$DATA/mv-refuse-launch" ] || exit 1
+  ! rm "$DATA/mv-term-launch" 2>/dev/null || kill -TERM "$PPID"
+fi
+exec /bin/mv "$@"
+EOF
+chmod +x "$FAKE_BIN/mv"
+jq -n --argjson s "$(now)" '{contract: 1, doctor: "llm", as_of_s: $s, judge: "j", status: "problems", problem_count: 2,
+  blocks: [{block: "reviewers", machinery: {classes: [{class: "anchors"}]}, problems: []}],
+  problems: [{id: "debt-gap:y", rule: "debt-gap", state: "new", fact: "a debt gap", ledger: null},
+    {id: "machinery:anchors", rule: "machinery", state: "new", fact: "anchors", ledger: null}]}' >"$WORK/llm/latest.json"
+before=$(ls "$RUNS"/*.json)
+: >"$DATA/mv-refuse-launch"
+assert_fails fix launch llm --night n7 >/dev/null 2>"$WORK/err"
+rm "$DATA/mv-refuse-launch"
+new=$(comm -13 <(printf '%s\n' "$before") <(ls "$RUNS"/*.json))
+assert [ "$(printf '%s\n' "$new" | wc -l | tr -d ' ')" = 2 ]
+for f in $new; do assert jqe '.failed_at != null and .launched_at == null and .note == "launched_at not written"' "$f"; done
+
+# A launcher killed while it holds the runs lock still fails its pending run on the way out.
+for open in $(fix runs --open --json | jq -r '.[].id'); do fix abandon "$open" >/dev/null; done
+doc llm "$(now)" problems 3 j1
+: >"$DATA/mv-term-launch"
+assert_fails env LLM_STORE_LOCK_RETRIES=8 bash "$FIX" launch llm >/dev/null 2>&1
+killed=$(fix runs llm --json | jq -r '.[0].id')
+assert grep -qE '^llm-all-' <<<"$killed"
+assert jqe '.failed_at != null and .note == "the launcher exited before the run opened"' "$(record "$killed")"
+assert [ ! -e "$RUNS/.lock" ]
+rm "$FAKE_BIN/mv"
 
 fix --help >"$WORK/help"
 for word in launch show runs close abandon record record-close touches; do assert grep -qE "doctor-fix $word( |$)" "$WORK/help"; done
@@ -421,4 +608,20 @@ assert [ "$(sed -n 4p <<<"$prefix_words")" = profile ]
 assert [ "$(sed -n 5p <<<"$prefix_words")" = acct-b ]
 assert grep -q '^acct-b ' "$WORK/prefix.out"
 
-echo "PASS: $asserts asserts; launch refusals (no or foreign or stale document, nothing to fix, open run under 12 h), an old run abandoned, the snapshot without watch/fixed-pending, the chat through the shared opener, the record fields, a failed opener, close refusals (doctor not rerun, undecided id, missing path, missing commit, a directory, no evidence, bad verdict, judge changed without its line), a clean close, show, runs, updater records and launch, parallel ids, night launch (areas, worktrees, branches, briefs, the packet, one open run per area), night close (run-local document, purpose touching its component, judge), abandon, a failed worktree, harness sections and top watch rows under parallel launch, updater machinery"
+# A doctor that reads ok still opens its day fixer while a quiet open ledger row waits; with none, nothing to fix.
+mkdir -p "$WORK/llm-q"
+jq -n --argjson s "$(now)" '{contract: 1, doctor: "llm", as_of_s: $s, judge: "q", status: "ok", problem_count: 0, problems: []}' \
+  >"$WORK/llm-q/latest.json"
+printf '{"owner": "o", "rows": [{"id": "Q7", "title": "quiet", "block": "workers", "status": "fixed", "match": {"word": "x"}}]}\n' >"$WORK/ledgers/q.json"
+assert_fails env DOCTORS_DIR="$WORK/doctors-q" LLM_DOCTOR_DIR="$WORK/llm-q" LLM_DOCTOR_LEDGER="$WORK/ledgers/q.json" bash "$FIX" launch llm 2>"$WORK/err"
+assert grep -qF 'nothing to fix' "$WORK/err"
+printf '{"owner": "o", "rows": [{"id": "Q7", "title": "quiet", "block": "workers", "status": "open", "match": {"word": "x"}}]}\n' >"$WORK/ledgers/q.json"
+DOCTORS_DIR="$WORK/doctors-q" LLM_DOCTOR_DIR="$WORK/llm-q" LLM_DOCTOR_LEDGER="$WORK/ledgers/q.json" bash "$FIX" launch llm >"$WORK/out" 2>"$WORK/err" ||
+  fail "a quiet open row must open the fixer: $(cat "$WORK/err")"
+assert grep -qE '^llm fixer opened: run llm-all-[^,]+, 0 problems · 1 known, quiet$' "$WORK/out"
+qid=$(sed -n 's/^llm fixer opened: run \([^,]*\),.*/\1/p' "$WORK/out")
+DOCTORS_DIR="$WORK/doctors-q" LLM_DOCTOR_LEDGER="$WORK/ledgers/q.json" bash "$FIX" show "$qid" >"$WORK/show"
+assert grep -qF 'known, quiet (1): ' "$WORK/show"
+assert grep -qxF "$(printf '  Q7\tquiet\tquiet')" "$WORK/show"
+
+echo "PASS: $asserts asserts; launch refusals (no or foreign or stale document, nothing to fix, open run under 12 h), an old run abandoned, the snapshot without watch/fixed-pending, the chat through the shared opener, the record fields, a failed opener, close refusals (doctor not rerun, undecided id, missing path, missing commit, a directory, no evidence, bad verdict, judge changed without its line), a clean close, show, runs, updater records and launch, parallel ids, night launch (areas, worktrees, branches, briefs, the packet, one open run per area), night vendor records, a night without a base ref, llm components with their block's entry file, fixed only once the doctor reads it fixed-pending or gone, night close (the doctor rerun once in the worktree, a handed-in document refused, purpose touching its component, judge), abandon, a failed worktree, harness sections and top watch rows under parallel launch, updater machinery, a legacy release run, a merge citation, a malformed ledger row, a failed collector, an unwritten launched_at, a launcher killed under the lock, quiet open ledger rows (their own brief section, the day launch)"

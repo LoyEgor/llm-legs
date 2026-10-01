@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+command -v jq >/dev/null 2>&1 || { printf 'gemini-sfx: jq is required\n' >&2; exit 1; }
+
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+
+root=$(resolve_root)
+. "$root/share/image-leg.sh"
+image_leg_start gemini-sfx audio observed_model
+. "$root/share/image-caps.sh"
+caps() { image_caps_get "$root" gemini "$1"; }
+
+usage() {
+  printf 'usage: gemini-sfx --dest <absolute .wav path> --prompt "<the sound>" [--duration %s] [--count %s] [--account <profile>]\n' \
+    "$(caps '.sfx.durations | join("|")')" "$(caps '.video.counts | map(tostring) | join("|")')" >&2
+  printf '       gemini-sfx --dest <absolute .wav path> --prompt "<the sounds>" --for-video <absolute video of up to %ss> [--account <profile>]\n' \
+    "$(caps '.sfx.for_video.source_max_s')" >&2
+  printf '  a Flow Omni clip rendered for its soundtrack (%s, %s credits for %ss); the audio is cut out, trimmed of silence and loudness-normalised\n' \
+    "$(caps '.sfx.resolution')" "$(caps ".video.models.omni.costs[\"$(caps '.sfx.resolution')\"][\"$(caps '.sfx.duration_default')\"]")" \
+    "$(caps '.sfx.duration_default')" >&2
+  printf '  --for-video edits the video on Omni (%s credits) to add sound effects synced to its picture; the wav keeps the video'\''s length, untrimmed\n' \
+    "$(caps '.video.models.omni.edit_costs["720p"]')" >&2
+  exit 2
+}
+
+say() {
+  printf 'gemini-sfx: %s\n' "$1" >&2
+  exit 2
+}
+
+dest=''
+prompt=''
+duration=''
+count=1
+account=''
+for_video=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dest) [ "$#" -ge 2 ] || usage; dest=$2; shift 2 ;;
+    --prompt) [ "$#" -ge 2 ] || usage; prompt=$2; shift 2 ;;
+    --duration) [ "$#" -ge 2 ] || usage; duration=$2; shift 2 ;;
+    --count) [ "$#" -ge 2 ] || usage; count=$2; shift 2 ;;
+    --account) [ "$#" -ge 2 ] || usage; account=$2; shift 2 ;;
+    --for-video) [ "$#" -ge 2 ] || usage; for_video=$2; shift 2 ;;
+    *) usage ;;
+  esac
+done
+
+[ -n "$dest" ] && [ -n "$prompt" ] || usage
+[[ "$dest" = /* ]] && [ -d "$(dirname "$dest")" ] || say "--dest needs an absolute path in an existing folder"
+[ "$(printf '%s' "${dest##*.}" | tr '[:upper:]' '[:lower:]')" = wav ] || say "--dest must end in .wav"
+[ -z "$account" ] || [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]] || usage
+for tool in ffmpeg ffprobe; do
+  command -v "$tool" >/dev/null 2>&1 || { printf 'gemini-sfx: %s is required\n' "$tool" >&2; exit 1; }
+done
+
+resolution=$(caps '.sfx.resolution')
+video_args=(--model omni)
+if [ -n "$for_video" ]; then
+  [ -z "$duration" ] && [ "$count" = 1 ] || say "--for-video keeps the video's length and makes one take; drop --duration and --count"
+  [[ "$for_video" = /* ]] && [ -f "$for_video" ] || say "--for-video needs an absolute path to a video"
+  source_s=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$for_video" 2>/dev/null | head -n 1) || source_s=''
+  [[ "$source_s" =~ ^[0-9]+(\.[0-9]+)?$ ]] || say "ffprobe cannot read a video in $for_video"
+  awk -v s="$source_s" -v m="$(caps '.sfx.for_video.source_max_s')" 'BEGIN { exit !(s <= m + 0.05) }' ||
+    say "--for-video takes up to $(caps '.sfx.for_video.source_max_s')s; cut the scene out first"
+  resolution=$(caps '.sfx.for_video.resolution')
+  credits=$(caps ".video.models.omni.edit_costs[\"$resolution\"]")
+  wrapped="$(caps '.sfx.for_video.prompt_prefix') $prompt"
+  video_args+=(--edit "$for_video")
+else
+  duration=${duration:-$(caps '.sfx.duration_default')}
+  jq -e --argjson d "${duration//[^0-9]/0}" '.sfx.durations | index($d) != null' "$(image_caps_file "$root" gemini)" >/dev/null ||
+    say "--duration is one of $(caps '.sfx.durations | join(", ")') seconds"
+  jq -e --argjson n "${count//[^0-9]/0}" '.video.counts | index($n) != null' "$(image_caps_file "$root" gemini)" >/dev/null ||
+    say "--count is one of $(caps '.video.counts | join(", ")')"
+  credits=$(($(caps ".video.models.omni.costs[\"$resolution\"][\"$duration\"]") * count))
+  wrapped="$(caps '.sfx.prompt_prefix') $prompt $(caps '.sfx.prompt_suffix')"
+  video_args+=(--duration "$duration" --count "$count")
+fi
+video_args+=(--resolution "$resolution")
+[ -z "$account" ] || video_args+=(--account "$account")
+
+started=$(date +%s)
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/gemini-sfx.XXXXXX")
+trap 'image_leg_exit; rm -rf "$tmp_dir"' EXIT
+image_leg_mark "${duration:-${source_s%.*}}"
+rc=0
+IMAGE_LEG_LOG=/dev/null "${GEMINI_SFX_VIDEO:-$root/bin/gemini-video}" --dest "$tmp_dir/take.mp4" --prompt "$wrapped" \
+  "${video_args[@]}" >"$tmp_dir/video.out" || rc=$?
+case "$rc" in
+  0) ;;
+  2 | 3 | 4) exit "$rc" ;;
+  *) exit 1 ;;
+esac
+field() { sed -n "s/^$1=\\([^ ]*\\).*/\\1/p" "$tmp_dir/video.out" | head -n 1; }
+account=$(field account)
+observed_model=$(field model)
+media=$(field media)
+
+clean() { # source.mp4 out.wav keep_length
+  local filters measured
+  if [ "$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 "$1" 2>/dev/null)" != audio ]; then
+    printf 'gemini-sfx: Flow returned %s without a soundtrack\n' "$(basename "$1")" >&2
+    return 1
+  fi
+  filters=''
+  [ "$3" = true ] || filters="$(caps '.sfx.trim'),"
+  measured=$(ffmpeg -hide_banner -nostats -i "$1" -vn -af "${filters}loudnorm=$(caps '.sfx.loudnorm'):print_format=json" \
+    -f null - 2>&1 | sed -n '/^{/,/^}/p')
+  jq -e '.input_i | tonumber > -70' >/dev/null 2>&1 <<<"$measured" || {
+    printf 'gemini-sfx: the soundtrack of %s is silent\n' "$(basename "$1")" >&2
+    return 1
+  }
+  filters+=$(jq -r --arg target "$(caps '.sfx.loudnorm')" \
+    '"loudnorm=\($target):measured_I=\(.input_i):measured_TP=\(.input_tp):measured_LRA=\(.input_lra):measured_thresh=\(.input_thresh):offset=\(.target_offset):linear=true"' <<<"$measured")
+  ffmpeg -v error -y -i "$1" -vn -af "$filters" -c:a pcm_s16le -ar 48000 -ac 2 "$2"
+}
+
+seconds_of() { ffprobe -v error -show_entries format=duration -of csv=p=0 "$1" 2>/dev/null | awk '{ printf "%.2f", $1 }'; }
+
+keep=false
+[ -z "$for_video" ] || keep=true
+takes=("$tmp_dir/take.mp4")
+while IFS= read -r variant; do
+  takes+=("$variant")
+done < <(sed -n 's/^variant=\(.*\) size=[0-9]*x[0-9]* duration=.*/\1/p' "$tmp_dir/video.out")
+kept=0
+for take in "${takes[@]}"; do
+  out=$dest
+  [ "$kept" -eq 0 ] || out="${dest%.*}-$((kept + 1)).wav"
+  clean "$take" "$out" "$keep" || continue
+  kept=$((kept + 1))
+  if [ "$kept" -gt 1 ]; then
+    printf 'variant=%s duration=%s\n' "$out" "$(seconds_of "$out")"
+    continue
+  fi
+  printf 'dest=%s\nduration=%s\nformat=wav\n' "$dest" "$(seconds_of "$dest")"
+  [ -z "$for_video" ] || printf 'source=%s source_duration=%s\n' "$for_video" "$(awk -v s="$source_s" 'BEGIN { printf "%.2f", s }')"
+done
+[ "$kept" -gt 0 ] || exit 1
+[ "$kept" -eq "${#takes[@]}" ] || printf 'gemini-sfx: kept %s of %s takes\n' "$kept" "${#takes[@]}" >&2
+printf 'account=%s\nmedia=%s\nmodel=%s\ncredits=%s\nseconds=%s\n' \
+  "$account" "$media" "${observed_model:-unknown}" "$credits" "$(($(date +%s) - started))"

@@ -128,6 +128,21 @@ assert_deny 'heredoc lines evaluated' codex-worker $'cat <<\'EOF\' | while read 
 assert_deny 'heredoc fed to fish' codex-worker $'fish <<\'EOF\'\ngit stash\nEOF'
 assert_deny 'heredoc body dotted in' codex-worker $'cat > /tmp/x <<\'EOF\'\ngit stash\nEOF\n. /tmp/x'
 assert_allow 'heredoc body next to a .sh path' codex-worker $'cat > /tmp/fix.sh <<\'EOF\'\ngit stash\nEOF\nchmod +x /tmp/fix.sh'
+assert_deny 'heredoc marker in a comment' codex-worker $'echo hi # <<X\ngit reset --hard\nX'
+assert_deny 'herestring word closing a later line' codex-worker $'grep x <<<"done"\ngit reset --hard\ndone'
+assert_deny 'heredoc script run by its path' codex-worker $'cat > /tmp/r.sh <<\'EOF\'\ngit reset --hard\nEOF\nchmod +x /tmp/r.sh && /tmp/r.sh'
+assert_deny 'heredoc fed to at' codex-worker $'at now <<EOF\ngit stash\nEOF'
+assert_deny 'heredoc fed to csh' codex-worker $'csh <<EOF\ngit stash\nEOF'
+assert_deny 'multiline substitution in an unquoted heredoc' codex-worker $'cat > notes <<EOF\n$(\ngit reset --hard\n)\nEOF'
+assert_deny 'heredoc script run from its directory' codex-worker $'cat > /tmp/r.sh <<\'EOF\'\ngit reset --hard\nEOF\ncd /tmp && ./r.sh'
+assert_deny 'heredoc script teed then run' codex-worker $'tee /tmp/r.sh >/dev/null <<\'EOF\'\ngit stash\nEOF\nFOO=1 /tmp/r.sh'
+assert_deny 'heredoc script in a variable run' codex-worker $'f=/tmp/r.sh; cat > "$f" <<\'EOF\'\ngit stash\nEOF\n"$f"'
+assert_allow 'heredoc fed to a script run by path' codex-worker $'./scripts/fmt.sh <<\'EOF\'\ngit restore is mentioned\nEOF'
+assert_allow 'escaped backtick in an unquoted heredoc' codex-worker $'cat > notes <<EOF\na lone \\` quote\ngit checkout -- is prose\nEOF'
+assert_allow 'commit body read from stdin' codex-worker $'git commit -F - <<EOF\nKeep git reset --hard out of worker hands\nEOF'
+assert_allow 'heredoc to a file naming git checkout and rm' codex-worker $'cat <<EOF > /tmp/notes.md\ngit checkout -- file drops edits\nrm -rf is denied too\nEOF'
+assert_allow 'crontab listed beside a heredoc' codex-worker $'crontab -l\ncat > notes <<\'EOF\'\ngit stash is prose\nEOF'
+assert_allow 'commit body prose naming source' codex-worker $'git commit -F - <<\'EOF\'\nFix the source loader\ngit checkout -- stays a worker\'s last resort.\nEOF'
 
 unlock_session=unlocked-session
 unlock_dir="$HOME/.cache/claude-worker-tags/$unlock_session"

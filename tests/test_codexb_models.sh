@@ -59,10 +59,15 @@ assert_eq "$(models)" "$expected"
 assert_eq "$(cat "$WORK/err")" ''
 assert_eq "$(models --family astra)" gpt-6.1-astra
 assert_eq "$(slug_of astra)" gpt-6.1-astra
-# An older home stays behind a newer one even when it is the main ~/.codex.
-jq '.fetched_at = "2026-09-24T00:00:00.000000Z"' "$HOME/.codex/models_cache.json" >"$WORK/newer" &&
-  mv "$WORK/newer" "$HOME/.codex/models_cache.json"
-assert_eq "$(models --family astra)" gpt-6-astra
+# An older home stays behind a newer one of the same length even when it is the main ~/.codex.
+jq '.fetched_at = "2026-09-24T00:00:00.000000Z" | .models |= map(if .slug == "gpt-6-astra" then .display_name = "Newest fetch" else . end)' \
+  "$CODEXB_PROFILES_DIR/beta/models_cache.json" >"$HOME/.codex/models_cache.json"
+assert_eq "$(models | awk -F'\t' '$1 == "gpt-6-astra" { print $4 }')" 'Newest fetch'
+# A shorter list fetched later is a narrower plan (codex 0.159.0: a lapsed Plus home lists the free
+# models only), never the machine-wide list: fetched last, it would hide every paid family.
+jq '.fetched_at = "2026-09-24T00:00:00.000000Z" | .models |= map(select(.slug != "gpt-6.1-astra"))' \
+  "$FIXTURE" >"$HOME/.codex/models_cache.json"
+assert_eq "$(models --family astra)" gpt-6.1-astra
 jq '.fetched_at = "2026-09-20T00:00:00.000000Z"' "$HOME/.codex/models_cache.json" >"$WORK/older" &&
   mv "$WORK/older" "$HOME/.codex/models_cache.json"
 
@@ -138,36 +143,62 @@ jq '.client_version = "0.157.0"' "$CODEXB_PROFILES_DIR/beta/models_cache.json" >
 assert_eq "$(FAKE_CODEX_VERSION=0.156.1 ranked --family astra)" gpt-6-astra
 # With no installed CLI to measure against, the newest writer wins.
 assert_eq "$(FAKE_CODEX_VERSION='' ranked --family astra)" gpt-6.1-astra
-# One writer version everywhere: fetched_at decides and the CLI is never asked.
-jq '.client_version = "0.154.0"' "$CODEXB_PROFILES_DIR/beta/models_cache.json" >"$WORK/c" &&
+# One writer version everywhere: the longest list, then fetched_at, decides and the CLI is never asked.
+jq '.client_version = "0.154.0" | .fetched_at = "2026-09-24T12:00:00.000000Z"' "$CODEXB_PROFILES_DIR/beta/models_cache.json" >"$WORK/c" &&
+  mv "$WORK/c" "$CODEXB_PROFILES_DIR/beta/models_cache.json"
+assert_eq "$(FAKE_CODEX_VERSION=0.156.1 ranked --family astra)" gpt-6.1-astra
+jq '.models |= map(select(.slug != "gpt-reserve"))' "$CODEXB_PROFILES_DIR/beta/models_cache.json" >"$WORK/c" &&
   mv "$WORK/c" "$CODEXB_PROFILES_DIR/beta/models_cache.json"
 assert_eq "$(FAKE_CODEX_VERSION=0.156.1 ranked --family astra)" gpt-6-astra
 assert_eq "$(cat "$FAKE_CODEX_LOG")" ''
 
-# --- --account: that account's own list, brought to the installed client first ---
+# --- --account --own: that account's own list alone, brought to the installed client first ---
 jq '.client_version = "0.154.0" | .models |= map(select(.slug != "gpt-6.1-astra"))' "$FIXTURE" \
   >"$CODEXB_PROFILES_DIR/alpha/models_cache.json"
+# beta keeps alpha's list length, so fetched_at alone keeps it the machine-wide list below.
 jq '.client_version = "0.156.1" | .fetched_at = "2026-09-26T00:00:00.000000Z"
-    | .models |= map(select(.slug != "gpt-6.1-astra"))' "$FIXTURE" >"$CODEXB_PROFILES_DIR/beta/models_cache.json"
+    | .models |= (map(select(.slug != "gpt-6.1-astra")) + [{"slug": "gpt-hidden", "visibility": "hide"}])' \
+  "$FIXTURE" >"$CODEXB_PROFILES_DIR/beta/models_cache.json"
 export FAKE_CODEX_REFRESH="$FIXTURE"
-assert_eq "$(FAKE_CODEX_VERSION=0.156.1 ranked --family astra --account alpha)" gpt-6.1-astra
+assert_eq "$(FAKE_CODEX_VERSION=0.156.1 ranked --family astra --account alpha --own)" gpt-6.1-astra
 assert_eq "$(cat "$FAKE_CODEX_LOG")" "$CODEXB_PROFILES_DIR/alpha"
 assert_eq "$(jq -r .client_version "$CODEXB_PROFILES_DIR/alpha/models_cache.json")" 0.156.1
 assert_eq "$(FAKE_CODEX_VERSION=0.156.1 ranked --family astra)" gpt-6-astra
 # Already the installed client's list: read as it is, no refresh.
 : >"$FAKE_CODEX_LOG"
-assert_eq "$(FAKE_CODEX_VERSION=0.156.1 ranked --family astra --account alpha)" gpt-6.1-astra
+assert_eq "$(FAKE_CODEX_VERSION=0.156.1 ranked --family astra --account alpha --own)" gpt-6.1-astra
 assert_eq "$(cat "$FAKE_CODEX_LOG")" ''
-# A refresh that fails leaves an older client's list unanswered: the machine-wide choice serves.
+# A refresh that fails keeps the older client's list of the account: it still shows the plan.
 jq '.client_version = "0.154.0"' "$CODEXB_PROFILES_DIR/alpha/models_cache.json" >"$WORK/c" &&
   mv "$WORK/c" "$CODEXB_PROFILES_DIR/alpha/models_cache.json"
-assert_eq "$(FAKE_CODEX_REFRESH='' FAKE_CODEX_VERSION=0.156.1 ranked --family astra --account alpha)" gpt-6-astra
+assert_eq "$(FAKE_CODEX_REFRESH='' FAKE_CODEX_VERSION=0.156.1 ranked --family astra --account alpha --own)" gpt-6.1-astra
 assert_eq "$(cat "$FAKE_CODEX_LOG")" "$CODEXB_PROFILES_DIR/alpha"
 assert_eq "$(jq -r .client_version "$CODEXB_PROFILES_DIR/alpha/models_cache.json")" 0.154.0
-# An account with no home, or a name that is no account, falls back without touching anything.
+# Never another list: an account with no list of its own answers 3, and a slug named outright is
+# judged the same way. --account and --own come together.
+mkdir -p "$CODEXB_PROFILES_DIR/gamma"
+jq '.client_version = "0.154.0" | .models |= map(select(.slug | test("astra") | not))' "$FIXTURE" \
+  >"$CODEXB_PROFILES_DIR/gamma/models_cache.json"
+own() { FAKE_CODEX_REFRESH='' FAKE_CODEX_VERSION=0.156.1 ranked --own "$@" >/dev/null; printf %s $?; }
+assert_eq "$(ranked --family astra --account gamma >/dev/null; printf %s $?)" 2
+assert_eq "$(own --family astra --account gamma)" 1
+assert_eq "$(own --family gpt-6-astra --account gamma)" 1
+assert_eq "$(own --family sol --account gamma)" 0
+assert_eq "$(own --family gpt-6.1-astra --account alpha)" 0
+assert_eq "$(own --family astra --account gone)" 3
+assert_eq "$(own --family astra)" 2
+# Unrefreshed, a miss in a list an older client wrote is no evidence; the installed client's list is.
+assert_eq "$(CODEXB_MODELS_NO_REFRESH=1 own --family astra --account gamma)" 4
+jq '.client_version = "0.156.1"' "$CODEXB_PROFILES_DIR/gamma/models_cache.json" >"$WORK/c" &&
+  mv "$WORK/c" "$CODEXB_PROFILES_DIR/gamma/models_cache.json"
+assert_eq "$(CODEXB_MODELS_NO_REFRESH=1 own --family astra --account gamma)" 1
+lists() { PATH="$FAKE:$PATH" FAKE_CODEX_REFRESH='' FAKE_CODEX_VERSION=0.156.1 bash -c '. "$1/share/worker-model.sh"; worker_model_codex_slug "$2" "$3" >/dev/null; printf %s $?' _ "$ROOT" "$@"; }
+assert_eq "$(lists astra gamma)$(lists gpt-6.1-astra alpha)$(lists astra gone)" 103
+assert_eq "$(PATH="$FAKE:$PATH" FAKE_CODEX_REFRESH='' FAKE_CODEX_VERSION=0.156.1 bash -c '. "$1/share/worker-model.sh"; worker_model_codex_slug gpt-6.1-astra alpha' _ "$ROOT")" gpt-6.1-astra
+rm -r "$CODEXB_PROFILES_DIR/gamma"
+# An account with no home, or a name that is no account, answers 3 without touching anything.
 : >"$FAKE_CODEX_LOG"
-assert_eq "$(FAKE_CODEX_VERSION=0.156.1 ranked --family astra --account gone)" gpt-6-astra
-assert_eq "$(FAKE_CODEX_VERSION=0.156.1 ranked --family astra --account ../beta)" gpt-6-astra
+assert_eq "$(own --family astra --account ../beta)" 3
 assert_eq "$(cat "$FAKE_CODEX_LOG")" ''
 # The launch helper hands its account through.
 assert_eq "$(PATH="$FAKE:$PATH" FAKE_CODEX_VERSION=0.156.1 bash -c '. "$1/share/worker-model.sh"; worker_model_codex_slug astra alpha' _ "$ROOT" 2>/dev/null)" gpt-6.1-astra
@@ -184,5 +215,47 @@ printf '#!/usr/bin/env bash\nfor a in "$@"; do printf "ARG=%%s\\n" "$a"; done >"
 chmod +x "$WORK/bin/codex"
 PATH="$WORK/bin:$PATH" bash "$SCRIPT" profile alpha >/dev/null 2>&1
 assert grep -qx 'ARG=gpt-6.1-astra' "$WORK/calls"
+
+# --- A slug the server refused (0.159.0 listed gpt-6.1-sol, then answered "not supported when using
+# Codex with a ChatGPT account") never answers a family word for a day ---
+refused_file="$CODEXB_PROFILES_DIR/.codexb/refused-models"
+assert_eq "$(models --family astra)" gpt-6.1-astra
+# A lapsed plan refuses what its own catalog does not list: that stays its own, never the pool's.
+mkdir -p "$CODEXB_PROFILES_DIR/lapsed"
+jq '.models |= map(select(.slug | test("astra") | not))' "$FIXTURE" >"$CODEXB_PROFILES_DIR/lapsed/models_cache.json"
+assert bash "$SCRIPT" refuse-model lapsed gpt-6.1-astra
+assert_eq "$(models --family astra)" gpt-6.1-astra
+assert_eq "$(models --family astra --account beta --own)" gpt-6.1-astra
+rm -r "$CODEXB_PROFILES_DIR/lapsed"
+: >"$refused_file"
+# Refusals recorded at the same moment are all kept.
+for name in r1 r2 r3 r4 r5 r6 r7 r8 r9 r10 r11 r12 r13 r14 r15 r16; do
+  bash "$SCRIPT" refuse-model "$name" gpt-6.1-astra &
+done
+wait
+assert_eq "$(cut -f1 "$refused_file" | LC_ALL=C sort -u | wc -l | tr -d ' ')" 16
+: >"$refused_file"
+stamp "$CODEXB_PROFILES_DIR/alpha/models_cache.json" 2026-09-23T08:00:00.000000Z
+assert bash "$SCRIPT" refuse-model alpha gpt-6.1-astra
+assert grep -qx "alpha${TAB}gpt-6.1-astra${TAB}[0-9]*" "$refused_file"
+assert_eq "$(models --family astra --account alpha --own)" gpt-6-astra
+# Pool-wide, a refusal counts where the refusing account's own catalog lists the slug: review-bench
+# cells resolve with no account.
+assert_eq "$(models --family astra)" gpt-6-astra
+assert_eq "$(slug_of astra)" gpt-6-astra
+assert_eq "$(models --family astra --account beta --own)" gpt-6.1-astra
+# A slug named outright is a deliberate pin and launches unchanged.
+assert_eq "$(models --family gpt-6.1-astra)" gpt-6.1-astra
+assert_eq "$(CODEXB_REFUSED_TTL=0 bash "$SCRIPT" models --family astra 2>/dev/null)" gpt-6.1-astra
+# Recorded twice, kept once; an expired line is swept by the next write.
+bash "$SCRIPT" refuse-model alpha gpt-6.1-astra
+printf 'beta\tgpt-5.6-sol\t1\n' >>"$refused_file"
+bash "$SCRIPT" refuse-model alpha gpt-6-astra
+assert_eq "$(cut -f1,2 "$refused_file" | LC_ALL=C sort | tr '\n' ' ')" "alpha${TAB}gpt-6-astra alpha${TAB}gpt-6.1-astra "
+assert_fails() { asserts=$((asserts + 1)); ! "$@" || fail "assert $asserts should fail: $*"; }
+assert_fails models --family astra
+assert grep -q 'every listed codex model of family astra was refused' "$WORK/err"
+assert_fails bash -c 'bash "$0" refuse-model "Bad Name" gpt-6-astra 2>/dev/null' "$SCRIPT"
+rm -f "$refused_file"
 
 printf 'PASS: %s assertions\n' "$asserts"
