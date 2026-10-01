@@ -210,7 +210,7 @@
         "rule": "ask-deferred",
         "ident": "busy-bg-task"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-09-30T04:05:00+03:00",
@@ -222,14 +222,23 @@
           ],
           "in": "claude-setup@e5909cd",
           "regressed_at": "2026-09-30T06:41:19+03:00"
+        },
+        {
+          "at": "2026-10-01T05:25:00+03:00",
+          "by": "night fixer harness-stop-hooks-20261001T020700Z-5bfd",
+          "files": [
+            "claude-setup/hooks/stop-dispatch.sh"
+          ],
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [
         "word-miss-deferred-reading-lost"
       ],
-      "last_reviewed": "2026-09-30",
-      "reviewed_by": "night fixer harness-stop-hooks-20260930T001649Z-33fb",
-      "note": "stop-dispatch.sh holds asks for background work at most STOP_DISPATCH_HELD_CAP (3600 s), then runs them at that stop with busy empty and the journal line's `held` naming what it would have called busy, and the hold restarts; ask-span-drill stays silent under STOP_HELD; ask-run-unfinished also sees waiter tasks under the 2.1.285 label `subagent`. The doctor's ask-busy rule does not see asks run under `held`, by design.",
+      "last_reviewed": "2026-10-01",
+      "reviewed_by": "night fixer harness-stop-hooks-20261001T020700Z-5bfd",
+      "note": "stop-dispatch.sh holds asks for background work at most STOP_DISPATCH_HELD_CAP (3600 s), then runs them at that stop with busy empty and the journal line's held naming what it would have called busy, and the hold restarts; ask-span-drill stays silent under STOP_HELD; ask-run-unfinished also sees waiter tasks under the 2.1.285 label subagent. The doctor's ask-busy rule does not see asks run under held, by design. The 2026-09-30 06:55-08:16 regression (10417 s in 2ddedf36, 8646 s in 233cceb1, 7237 s in e4fb4c87) was transitional: all three background tasks started before e5909cd landed at 06:15:31, so the new hold granted them another cap from their first post-land stop while the doctor measured the whole pre-land streak; zero streaks >= 3600 s since 08:16. stop-dispatch guards held_file read so fresh holds no longer log No such file or directory to stderr.",
       "handoff": null
     },
     {
