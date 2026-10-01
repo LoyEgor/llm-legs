@@ -27,4 +27,4 @@ For the chat «Harness Doctor» (owner of `share/harness-ledger.json`) and «llm
 
 1. Decompose `tests/test_worker_run.sh` into modular suites (`test_worker_run_browse.sh`, `test_worker_run_websearch.sh`, `test_worker_run.sh`) so they can run concurrently in `run-suites`, eliminating the single 20-minute long pole and bringing individual suite durations under 300 s.
 2. In `share/run-suites.sh`, consider isolating or staggering heavy integration suites when machine load or core count is high.
-3. Keep the open ledger rows `test-worker-run-daily-cost` and `test-worker-run-long-pole` on record to track these signals until suite decomposition is performed.
+3. Keep the open ledger rows `test_daily_cost-worker-run` and `test_long_pole-worker-run` on record to track these signals until suite decomposition is performed.
