@@ -367,7 +367,7 @@
     "detail": "^wrote "
    },
    "title": "a cross-repository brief named its second repository only in prose, so worker-run granted it nothing and every write there read as escaped",
-   "status": "fixed",
+   "status": "open",
    "fixes": [
     {
      "at": "2026-09-30T03:33:34+03:00",
@@ -377,14 +377,14 @@
       "llm-legs/share/worker-policy.md"
      ],
      "in": "llm-legs@afb7e91",
-     "regressed_at": null
+     "regressed_at": "2026-09-30T06:57:07+03:00"
     }
    ],
    "same_cause": [],
-   "last_reviewed": "2026-09-30",
+   "last_reviewed": "2026-10-01",
    "reviewed_by": "LLM doctor",
-   "note": "x8 claudeb legs 2026-09-29/30 (hammerspoon, claude-setup, logo-vectorizer-bench): every brief listed its second repository in prose (Working directories / Repos / Workdirs) and no relay or flag carried it, so add_dirs stayed empty; worker-run now grants a header ADD-DIR: line as --add-dir. The detail names the files-note outside-write class, the narrowest the leg carries: a write to a repository no brief names still lands here and reads as a regression.",
-   "handoff": null
+   "note": "x8 claudeb legs 2026-09-29/30 (hammerspoon, claude-setup, logo-vectorizer-bench): every brief listed its second repository in prose (Working directories / Repos / Workdirs) and no relay or flag carried it, so add_dirs stayed empty; worker-run now grants a header ADD-DIR: line as --add-dir. The detail names the files-note outside-write class, the narrowest the leg carries: a write to a repository no brief names still lands here and reads as a regression. 2026-10-01: six packet regressions inspected: five omit grants for prose-authorized claude-setup/review-bench writes; one grants the review-bench sibling but explicitly pours into ungranted llm-legs main. Fresh doctor additionally counts a grantless review-bench resume. Fixture header parsing passes for fresh/resume, prose grants nothing. Current doctor/vendor brief emitters and night-sweep resume guidance already carry ADD-DIR; do not duplicate them. Scratch filtering does not explain the reported repository paths. Historical launcher revision remains unconfirmed (B3). Relay/scope owner handoff required; no authorized claude-setup worktree.",
+   "handoff": "docs/handoffs/2026-10-01-worker-grants.md"
   },
   {
    "id": "M1",
@@ -572,6 +572,23 @@
    "reviewed_by": "Night fixer llm-reviewers-20260930T001641Z-5fac",
    "note": "2026-09-30: 3 chats, all WHY=gap: the logo-vectorizer-bench hash-cap gaps of M1, a fixer-missing gap of round 20260924T222306Z-8877b05 and a pre-missing gap a latency probe (toolu_probe_timing) recorded against the live store; no machinery bug found",
    "handoff": "docs/handoffs/2026-09-30-review-machinery-classes.md"
+  },
+  {
+   "id": "W4",
+   "block": "workers",
+   "match": {
+    "word": "no output",
+    "model": "^opus$",
+    "detail": "^no output · exit 1$"
+   },
+   "title": "Claude JSON error result omitted from worker failure diagnostics",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-10-01",
+   "reviewed_by": "LLM doctor",
+   "note": "claudeb-1790757454-79915-4251 on com: exit 1, empty err, nonempty JSON/result says Failed to authenticate: OAuth session expired and could not be refreshed; is_error true despite subtype success. Fixture reproduces no output; feeding the error to current vocabulary yields unclassified, ruling out an evidence-source-only fix. No recorded watchdog/memory kill or missing vendor answer. OAuth refresh cause unconfirmed in retained out/result/err; no credentials opened or refresh attempted. Shared auth vocabulary correction needs review-bench, outside authorized worktrees. Matcher is the narrowest available emitted model/detail, not proof every matching future run has this cause.",
+   "handoff": "docs/handoffs/2026-10-01-worker-json-auth-diagnostic.md"
   }
  ],
  "blind_spots": [
