@@ -155,7 +155,7 @@ local pendingRow = { id = "cli-behind:codex", rule = "cli-behind", state = "watc
 write("/updater-doctor/latest.json", { contract = 1, doctor = "updater", as_of_s = now, status = "ok",
   problem_count = 0, problems = { pendingRow }, blind_spots = {}, vendors = {} })
 local pending = doctors.menuItems()[3]
-check(text(pending.title) == "Updater doctor: 1 update pending" and not dimmed(pending.title) and not red(pending.title),
+check(text(pending.title) == "Updater doctor: update pending" and not dimmed(pending.title) and not red(pending.title),
   "a pending update is never a plain ok: " .. text(pending.title))
 check(text(pending.menu[1].title) == pendingRow.fact and dimmed(pending.menu[1].title), "the pending update is a watch row")
 pendingRow.state, pendingRow.fact = "new", pendingRow.fact .. " · 26h"
@@ -225,7 +225,7 @@ for _, item in ipairs(codex and codex.menu or {}) do sub[#sub + 1] = item.title 
 check(table.concat(sub, "|") == "gpt-6-astra|gpt-6-mini|-|codex-0.159.0 · open · 0.158.0 → 0.159.0 · 2d ago"
   .. "|codex-0.158.0 · closed · 0.157.0 → 0.158.0 · 4d ago", "vendor submenu: " .. table.concat(sub, "|"))
 check(codex and codex.menu[5].menu and text(codex.menu[5].menu[1].title) == "worker-pick table", "an event lists what it changed")
-local spots = find(up.menu, "not measured: 1 blind spot")
+local spots = find(up.menu, "not measured")
 check(spots and dimmed(spots.title) and #spots.menu == 1 and text(spots.menu[1].title) == "grok has no changelog to read"
   and text(spots.menu[1].menu[1].title) == "why: xAI publishes release notes only on X, which the doctor"
   and text(spots.menu[1].menu[#spots.menu[1].menu].title) == "would catch it: a feed",
@@ -476,11 +476,11 @@ write("/harness-doctor/latest.json", { contract = 1, doctor = "harness", as_of_s
 write("/harness-ledger.json", { rows = { { id = "suites-llm-legs-concurrent-load", status = "open" } } })
 items = doctors.menuItems()
 local quietLlm = items[1].menu[#items[1].menu - 2]
-check(text(quietLlm.title) == "2 known, quiet" and dimmed(quietLlm.title) and #quietLlm.menu == 2
+check(text(quietLlm.title) == "known, quiet" and dimmed(quietLlm.title) and #quietLlm.menu == 2
   and text(quietLlm.menu[1].title) == "V14 · the judge ruled on fewer claims than it was given"
   and text(quietLlm.menu[2].title) == "W1 · a worker row", "the LLM doctor's quiet rows: " .. text(quietLlm.title))
 local quietHarness = items[2].menu[#items[2].menu - 2]
-check(text(quietHarness.title) == "1 known, quiet" and text(quietHarness.menu[1].title) == "suites-llm-legs-concurrent-load",
+check(text(quietHarness.title) == "known, quiet" and text(quietHarness.menu[1].title) == "suites-llm-legs-concurrent-load",
   "the Harness doctor's quiet row: " .. text(quietHarness.title))
 check(text(items[3].menu[#items[3].menu - 2].title) == "Refresh", "no ledger rows, no quiet row")
 quietDoc.status = "error"

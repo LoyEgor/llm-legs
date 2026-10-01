@@ -1090,6 +1090,7 @@ local DOCTOR_BLOCK_NAMES = { reviewers = "Reviewers", workers = "Workers", light
 -- The collector's own column words, in its order; blank for zero so a class keeps its column.
 local DOCTOR_MODEL_COLUMNS = { "walled", "off", "cap", "stalled", "failed", "theirs", "slow", "escaped", "retried" }
 local TREND_MARK = { up = "↑", down = "↓" }
+local DOCTOR_COUNTED = { new = true, open = true, regressed = true }
 local lastLlmDoctorKick = 0
 
 local function plural(count, word)
@@ -1155,8 +1156,8 @@ local function kickLlmDoctor(document, force, stale)
   lastLlmDoctorKick = now
   startDiagnosticsTask("llmDoctorTask", path, { "--window", tostring(selected), "--quiet" }, force and function()
     local latest = readLlmDoctor()
-    local summary = latest and tostring(latest.summary or "") or ""
-    hs.alert.show("LLM doctor: " .. (not latest and "no data yet" or summary ~= "" and summary or "no bugs"), 2.5)
+    local count = latest and tonumber(latest.problem_count) or 0
+    hs.alert.show("LLM doctor: " .. (not latest and "no data yet" or count > 0 and plural(count, "problem") or "ok"), 2.5)
   end or nil)
 end
 
@@ -1312,13 +1313,12 @@ local function modelTableMenu(models)
   return items
 end
 
-local function blockMenu(entry, windowLabel, hours, lead)
+local function blockMenu(entry, windowLabel, hours)
   local block = tostring(entry.block)
   local items = {}
   local owner = tostring(entry.owner or "")
   items[#items + 1] = { title = infoTitle("owner: " .. (owner ~= "" and owner or "unset") .. " · "
     .. plural(tonumber(entry.legs) or 0, "leg") .. " in " .. windowLabel, false, true), disabled = true }
-  if lead then items[#items + 1] = lead end
   local bugRows, weatherRows, bugProblems, weatherProblems = {}, {}, {}, {}
   for _, problem in ipairs(type(entry.problems) == "table" and entry.problems or {}) do
     if type(problem) == "table" then
@@ -1382,11 +1382,11 @@ local function machineryStatuses(document)
   return nil
 end
 
--- review-bench doctor's classes as one submenu row. A class the ledger does not know is new — also
--- every class while llm-doctor has no document — and only new or regressed ones reach the title.
-local function machineryRow(snapshot, statuses)
+-- review-bench doctor's classes as one group row. A class the ledger does not know is new — also
+-- every class while llm-doctor has no document, when the row counts the snapshot's own classes.
+local function machineryRow(snapshot, statuses, counted)
   local items = {}
-  local total, fresh, regressed = 0, 0, 0
+  local found = 0
   if snapshot then
     local names, clean = {}, {}
     for name in pairs(snapshot.anomalies) do
@@ -1400,8 +1400,7 @@ local function machineryRow(snapshot, statuses)
         local known = statuses and statuses[name] or nil
         local status = known and tostring(known.status or "") or "new"
         local loud = status == "new" or status == "regressed"
-        total = total + count
-        if status == "new" then fresh = fresh + count elseif status == "regressed" then regressed = regressed + count end
+        if loud or status == "open" then found = found + 1 end
         items[#items + 1] = { title = infoTitle(string.format("%s: %d · %s", name, count, status), loud, not loud),
           disabled = true }
         local detail = {}
@@ -1432,21 +1431,19 @@ local function machineryRow(snapshot, statuses)
   else
     items[#items + 1] = { title = infoTitle("Refresh"), fn = function() M.rescanDoctor() end }
   end
-  local parts = {}
-  if fresh > 0 then parts[#parts + 1] = tostring(fresh) .. " new" end
-  if regressed > 0 then parts[#parts + 1] = tostring(regressed) .. " regressed" end
-  local text = not snapshot and "no data yet" or total == 0 and "ok"
-    or tostring(total) .. (#parts > 0 and (" · " .. table.concat(parts, " · ")) or "")
-  local loud = fresh + regressed
-  return { title = infoTitle("Review machinery: " .. text, loud > 0, loud == 0), menu = items }, loud
+  local count = counted or found
+  local text = count > 0 and plural(count, "problem") or not snapshot and "no data yet" or "ok"
+  return { title = infoTitle("Review machinery: " .. text, count > 0, count == 0), menu = items }, count
 end
 
--- The four blocks of bin/llm-doctor's document, one submenu each, then the window and the refresh.
--- The machinery row opens inside Reviewers, or stands first while there is no document.
--- Returns the bug count and the machinery count the parent title shows.
+-- One row per group of the document; each counts the problems the collector filed under it (never
+-- legs or events), so the rows sum to problem_count. Returns that sum.
 local function appendDoctorBlocks(items, snapshot)
   local document = readLlmDoctor()
-  local machinery, issues = machineryRow(snapshot, machineryStatuses(document))
+  local groups = document and type(document.groups) == "table" and document.groups or {}
+  local machinery, total = machineryRow(snapshot, machineryStatuses(document),
+    document and (tonumber(groups.machinery) or 0) or nil)
+  local shown = { machinery = true }
   local judged
   for _, entry in ipairs(document and document.blocks or {}) do
     if type(entry) == "table" and entry.block == "reviewers" and type(entry.machinery) == "table" then
@@ -1459,29 +1456,26 @@ local function appendDoctorBlocks(items, snapshot)
   local selected = M.doctorWindowH or DOCTOR_DEFAULT_H
   local hours = document and tonumber(document.window_h) or selected
   local windowLabel = doctorWindowLabel(hours)
-  local bugs = 0
   if not document then
     items[#items + 1] = machinery
     items[#items + 1] = { title = infoTitle("Blocks: no data yet", false, true), disabled = true }
   end
   for _, entry in ipairs(document and document.blocks or {}) do
-    if type(entry) == "table" and DOCTOR_BLOCK_NAMES[entry.block] then
-      local count = tonumber(entry.bugs) or 0
-      bugs = bugs + count
-      local parts = { plural(count, "bug"), tostring(tonumber(entry.weather) or 0) .. " weather" }
-      if (tonumber(entry.new) or 0) > 0 then parts[#parts + 1] = tostring(entry.new) .. " new" end
-      if (tonumber(entry.regressed) or 0) > 0 then parts[#parts + 1] = tostring(entry.regressed) .. " regressed" end
-      local text = DOCTOR_BLOCK_NAMES[entry.block] .. ": " .. table.concat(parts, " · ")
-      if (tonumber(entry.legs) or 0) == 0 and count == 0 and (tonumber(entry.weather) or 0) == 0 then
-        text = DOCTOR_BLOCK_NAMES[entry.block] .. ": no legs"
-      end
-      items[#items + 1] = { title = infoTitle(text, count > 0, count == 0),
-        menu = blockMenu(entry, windowLabel, hours, entry.block == "reviewers" and machinery or nil) }
+    if type(entry) == "table" and DOCTOR_BLOCK_NAMES[entry.block] and not shown[entry.block] then
+      shown[entry.block] = true
+      local count = tonumber(groups[entry.block]) or 0
+      total = total + count
+      local text = count > 0 and plural(count, "problem") or (tonumber(entry.legs) or 0) == 0 and "no legs" or "ok"
+      items[#items + 1] = { title = infoTitle(DOCTOR_BLOCK_NAMES[entry.block] .. ": " .. text, count > 0, count == 0),
+        menu = blockMenu(entry, windowLabel, hours) }
+      if entry.block == "reviewers" then items[#items + 1] = machinery end
     end
   end
+  if document and not shown.reviewers then items[#items + 1] = machinery end
   for _, row in ipairs(document and type(document.health) == "table" and document.health or {}) do
-    if type(row) == "table" and type(row.name) == "string" then
-      local count = tonumber(row.count) or 0
+    if type(row) == "table" and type(row.name) == "string" and not shown[row.name] then
+      shown[row.name] = true
+      local count = tonumber(groups[row.name]) or 0
       local sub = {}
       for _, item in ipairs(type(row.items) == "table" and row.items or {}) do
         if type(item) == "table" then
@@ -1502,8 +1496,25 @@ local function appendDoctorBlocks(items, snapshot)
       local name = row.name:sub(1, 1):upper() .. row.name:sub(2)
       items[#items + 1] = { title = infoTitle(name .. ": " .. (count > 0 and plural(count, "problem") or "ok"),
         count > 0, count == 0), menu = sub }
-      issues = issues + count
+      total = total + count
     end
+  end
+  local rest = {}
+  for group, value in pairs(groups) do
+    if type(group) == "string" and not shown[group] and (tonumber(value) or 0) > 0 then rest[#rest + 1] = group end
+  end
+  table.sort(rest)
+  for _, group in ipairs(rest) do
+    local count = tonumber(groups[group])
+    local sub = {}
+    for _, problem in ipairs(type(document.problems) == "table" and document.problems or {}) do
+      if type(problem) == "table" and problem.group == group and DOCTOR_COUNTED[problem.state] then
+        sub[#sub + 1] = { title = infoTitle(clipHead(tostring(problem.fact or problem.id or ""), 110)), disabled = true }
+      end
+    end
+    items[#items + 1] = { title = infoTitle(group:sub(1, 1):upper() .. group:sub(2) .. ": " .. plural(count, "problem"),
+      true), menu = sub }
+    total = total + count
   end
   if document and type(document.not_measurable) == "table" and #document.not_measurable > 0 then
     items[#items + 1] = { title = infoTitle("not measurable yet: " .. table.concat(document.not_measurable, ", "),
@@ -1518,7 +1529,7 @@ local function appendDoctorBlocks(items, snapshot)
   else
     items[#items + 1] = { title = infoTitle("Refresh"), fn = function() kickLlmDoctor(readLlmDoctor(), true) end }
   end
-  return bugs, issues, document
+  return total, document
 end
 
 local function reviewFlashItem()
@@ -1541,11 +1552,11 @@ end
 
 local DOCTOR_STATUSES = { ok = true, problems = true, blind = true, error = true }
 
--- LLM doctor's four blocks (the review machinery inside Reviewers), for the Doctors entry.
+-- LLM doctor's groups, for the Doctors entry.
 function M.llmDoctorEntry()
   local snapshot = readDoctorSnapshot()
   local items = {}
-  local bugs, issues, document = appendDoctorBlocks(items, snapshot)
+  local total, document = appendDoctorBlocks(items, snapshot)
 
   local parts = {}
   local status = document and document.status
@@ -1555,15 +1566,14 @@ function M.llmDoctorEntry()
   elseif problems then
     if problems > 0 then parts[#parts + 1] = plural(problems, "problem") end
     if status == "blind" then parts[#parts + 1] = "blind" end
-  else
-    if bugs > 0 then parts[#parts + 1] = plural(bugs, "bug") end
-    if issues > 0 then parts[#parts + 1] = plural(issues, "issue") end
+  elseif total > 0 then
+    parts[#parts + 1] = plural(total, "problem")
   end
   if not snapshot then parts[#parts + 1] = "no data yet" end
   local doctorText = "LLM doctor: " .. (#parts > 0 and table.concat(parts, " · ") or "ok")
   local title = doctorText .. (snapshot and doctorStaleSuffix(snapshot.as_of) or "")
     .. (taskRunning(M.doctorRescanTask) and " · rescanning" or "")
-  local count = problems or bugs + issues
+  local count = problems or total
   local quiet = count == 0 and status ~= "error" and status ~= "blind"
   local state = DOCTOR_STATUSES[status] and status or not document and count == 0 and "nodata"
     or count > 0 and "problems" or "ok"

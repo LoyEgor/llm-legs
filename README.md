@@ -176,14 +176,9 @@ local submenu = { title = "LLM Limits", menu = limits.menuItems() }
 The `LLM doctor: …` row opens ONE submenu: LLM doctor's four blocks, then the Gemini pin:
 
 ```text
-LLM doctor: 5 bugs · 2 issues
-  Reviewers: 1 bug · 97 weather · 1 new
+LLM doctor: 6 problems
+  Reviewers: 1 problem
     owner: Review-bench improvements phase 4 · 212 legs in 3 d
-    Review machinery: 76 · 2 new
-      closure_pending: 23 · open  M2
-        <age>  <project>  <chat>  <label>
-      debt_line: 2 · new
-      Rescan now
     failed · pool empty   3  ↑   █   █  58m  new                 V2  grok47
     ───
     failed · bad output  17     ▁▃▅▄▃▆   5h  fixed 0d · 0 since  R1  flash37, opus
@@ -192,8 +187,13 @@ LLM doctor: 5 bugs · 2 issues
     ───
     By model
     Copy brief for the owner
-  Workers: 1 bug · 61 weather
-  Light: 3 bugs · 5 weather · 2 new
+  Review machinery: 2 problems
+    closure_pending: 23 · open  M2
+      <age>  <project>  <chat>  <label>
+    debt_line: 2 · new
+    Rescan now
+  Workers: ok
+  Light: 3 problems
   Image: no legs
   window: 3 d → 3 h / 6 h / 12 h / 24 h / 3 d / 7 d
   Refresh blocks
@@ -209,8 +209,9 @@ stalled, `failed · theirs`, slow, and a leg a retry superseded — is weather, 
 never a bug. Each bug row carries its state against `share/doctor-ledger.json`: `new` (no ledger
 row), `open`, `regressed` (legs after the row's `fixed_at`) or `fixed`. A row opens its last 15
 incidents and `Copy for an LLM`; `Copy brief for the owner` hands the whole block to the chat that
-owns it. `Review machinery` is review-bench doctor's snapshot inside Reviewers, each class held
-against the same ledger; the title counts only its new and regressed classes. The window selection lasts for this module session and forces a collection. The doctor
+owns it. `Review machinery` is review-bench doctor's snapshot, a row of its own right after
+Reviewers, each class held against the same ledger. Every row counts problems — one cause each,
+never legs or weather — and the rows sum to the title. The window selection lasts for this module session and forces a collection. The doctor
 row appends ` · rescanning` during rescans; action rows are disabled and read `rescanning…` or
 `refreshing…` while their tasks run.
 

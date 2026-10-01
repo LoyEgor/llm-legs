@@ -294,7 +294,7 @@ local function updaterTitle(document)
   local parts = {}
   if count > 0 then parts[#parts + 1] = plural(count, "problem") end
   local pending = updatesPending(document)
-  if pending > 0 then parts[#parts + 1] = plural(pending, "update") .. " pending" end
+  if pending > 0 then parts[#parts + 1] = (pending == 1 and "update" or "updates") .. " pending" end
   if document.status == "blind" then parts[#parts + 1] = "blind" end
   if document.status == "error" then parts[#parts + 1] = "collector failed" end
   local title = "Updater doctor: " .. (#parts > 0 and table.concat(parts, " · ") or "ok")
@@ -447,7 +447,7 @@ local function updaterEntry(now)
       end
     end
     if #spots > 0 then
-      items[#items + 1] = { title = infoTitle("not measured: " .. plural(#spots, "blind spot"), false, true), menu = spots }
+      items[#items + 1] = { title = infoTitle("not measured", false, true), menu = spots }
     end
   end
   items[#items + 1] = { title = "-" }
@@ -490,7 +490,7 @@ local function quietRow(doctor)
     end
   end
   if #rows == 0 then return nil end
-  return { title = infoTitle(#rows .. " known, quiet", false, true), menu = rows }
+  return { title = infoTitle("known, quiet", false, true), menu = rows }
 end
 
 local BUILDERS = {

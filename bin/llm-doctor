@@ -1920,6 +1920,10 @@ def problem(pid, rule, state, fact, value, limit, unit, window_h, exposure, coun
     return entry
 
 
+def block_group(blocks):
+    return min(blocks, key=lambda block: BLOCKS.index(block) if block in BLOCKS else len(BLOCKS))
+
+
 def leg_problems(ledger, legs, window_cutoff, window_h, now):
     """The contract's problems for legs: one per bug id in the window, a cause retries keep hiding as
     `watch`, and every fixed row still short of its proof."""
@@ -1941,7 +1945,8 @@ def leg_problems(ledger, legs, window_cutoff, window_h, now):
                                        window_text(window_h), " · " + row["title"] if row else "")
         problems.append(problem(pid, leg_rule(rows[0]), state, fact, len(rows), 0, "legs", window_h, exposure,
                                 len(rows), span.get(pid), evidence_of(rows), row["id"] if row else None,
-                                recovered=len(lost), lost_s=int(sum(item["duration"] or 0 for item in lost))))
+                                group=block_group(blocks), recovered=len(lost),
+                                lost_s=int(sum(item["duration"] or 0 for item in lost))))
     for pid, rows in sorted(hidden.items()):
         if pid in by_pid or len(rows) < RECOVERED_MIN:
             continue
@@ -1952,7 +1957,7 @@ def leg_problems(ledger, legs, window_cutoff, window_h, now):
         problems.append(problem(pid, leg_rule(rows[0]), "watch", fact, len(rows), RECOVERED_MIN, "attempts", window_h,
                                 len(rows), len(rows), (min(leg_start(item) for item in rows),
                                                        max(item["at"] for item in rows)),
-                                evidence_of(rows), pid if pid in ledger["by_id"] else None,
+                                evidence_of(rows), pid if pid in ledger["by_id"] else None, group=block_group(blocks),
                                 recovered=len(rows), lost_s=int(sum(item["duration"] or 0 for item in rows))))
     listed = {item["id"] for item in problems}
     for row in ledger["rows"]:
@@ -1964,7 +1969,7 @@ def leg_problems(ledger, legs, window_cutoff, window_h, now):
         state = "fixed-pending" if row["status"] == "fixed-pending" else "watch"
         problems.append(problem(row["id"], "fix-proof", state, "%s · %s" % (row["title"], proof_text(row, legs, now)),
                                 events, PROOF_MIN, "events since the fix", window_h, events, 0, span.get(row["id"]),
-                                [], row["id"]))
+                                [], row["id"], group=row.get("block") if row.get("block") in BLOCKS else "ledger"))
     return problems
 
 
@@ -1975,10 +1980,11 @@ def pending_fix_problems(ledger, problems, window_h, now):
     for row in list(ledger["machinery"].values()) + ledger["health"]:
         if row.get("status") != "fixed-pending" or row["id"] in listed:
             continue
+        group = row["match"]["health"] if "health" in row["match"] else "machinery"
         since = days_since(row["fixes"][-1].get("at"), now)
         found.append(problem(row["id"], "fix-proof", "fixed-pending", "%s · fix pending commit%s" % (
             row["title"], " %dd" % since if since is not None else ""), 0, 0, "events since the fix", window_h, 0, 0,
-            None, [], row["id"]))
+            None, [], row["id"], group=group))
     return found
 
 
@@ -1992,7 +1998,7 @@ def fault_problems(faults, window_h, now):
         problems.append(problem("ledger:%s" % where, "ledger", "new", "ledger %s" % fault, len(whys), 0, "faults",
                                 window_h, 0, len(whys), (now, now), [{"at": iso_time(now), "ref": "ledger:%s" % where,
                                                                       "account": "", "excerpt": fault[:EXCERPT_MAX]}],
-                                None))
+                                None, group="ledger"))
     return problems
 
 
@@ -2054,7 +2060,8 @@ def machinery_problems(found, window_h):
         fact = "review machinery %s: %d in the snapshot%s" % (
             item["class"], item["count"], " · " + item["ledger"]["title"] if item["ledger"] else "")
         problems.append(problem(ledger_id or "machinery:%s" % item["class"], "machinery", item["status"], fact,
-                                item["count"], 0, "anomalies", window_h, 0, item["count"], span, evidence, ledger_id))
+                                item["count"], 0, "anomalies", window_h, 0, item["count"], span, evidence, ledger_id,
+                                group="machinery"))
     for item in found["classes"]:
         item.pop("rows", None)
     return problems
@@ -2161,7 +2168,8 @@ def health_problems(row, ledger, window_h):
         problems.append(problem(match["id"] if match else computed, rule["rule"], state,
                                 "%s: %s ×%d in %s" % (row["name"], label, rule["count"], window_text(window_h)),
                                 rule["count"], 0, "events", window_h, row["exposure"], rule["count"],
-                                (rule["first"], rule["last"]), evidence, match["id"] if match else None))
+                                (rule["first"], rule["last"]), evidence, match["id"] if match else None,
+                                group=row["name"]))
     return problems
 
 
@@ -2393,12 +2401,16 @@ def collect(window_h, now, write_daily=False):
         write_settled(settled, source)
     inputs = inputs_of(found, window_cutoff)
     count = sum(1 for item in problems if item["state"] in COUNTED)
+    groups = dict.fromkeys(BLOCKS + ("machinery",) + tuple(row["name"] for row in health) + ("ledger",), 0)
+    for item in problems:
+        if item["state"] in COUNTED:
+            groups[item["group"]] = groups.get(item["group"], 0) + 1
     blind = [item["name"] for item in inputs if item["required"] and item["state"] != "ok"]
     summary = " · ".join("%s %d" % (block["block"], block["bugs"]) for block in blocks if block["bugs"])
     spots = ledger["blind_spots"]
     return {"contract": CONTRACT, "doctor": "llm", "as_of": iso_time(now), "as_of_s": int(now),
             "judge": judge_digest(ledger), "status": "blind" if blind else ("problems" if count else "ok"),
-            "problem_count": count, "problems": problems, "blind_spots": spots,
+            "problem_count": count, "groups": groups, "problems": problems, "blind_spots": spots,
             "self": {"collector_s": round(time.monotonic() - began, 2), "error": None},
             "owner": ledger["owner"], "limits": limits(), "near": [_NEAR[name] for name in sorted(_NEAR)],
             "inputs": inputs, "blind": blind,
@@ -2416,7 +2428,7 @@ def error_report(window_h, now, error):
     except Exception:  # noqa: BLE001 - the error document must be written whatever broke
         judge = None
     return {"contract": CONTRACT, "doctor": "llm", "as_of": iso_time(now), "as_of_s": int(now), "judge": judge,
-            "status": "error", "problem_count": 0, "problems": [], "blind_spots": ledger["blind_spots"],
+            "status": "error", "problem_count": 0, "groups": {}, "problems": [], "blind_spots": ledger["blind_spots"],
             "self": {"collector_s": None, "error": ("%s: %s" % (type(error).__name__, error)).splitlines()[0][:300]},
             "window_h": window_h, "trend_days": TREND_DAYS, "bugs": 0, "summary": "", "not_measurable": [],
             "blocks": [], "health": []}

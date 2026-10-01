@@ -32,21 +32,23 @@ doctor (§8).
 The top-level entry is one line: `Harness doctor: OK` (dim) or `Harness doctor: N problems` (red),
 plus `· stale N min` once the data is over 30 minutes old. N is the document's `problem_count`:
 problems in state `new`, `open` or `regressed` (§10), so a second red row in one area counts too.
+Each area line counts its own problems the same way: every problem carries the one area that
+judged it (`group`), so the area lines sum to N.
 `Harness doctor: blind · <areas>` (dim) means an input is missing, and `Harness doctor: error · …`
 (red) that the collector failed. Its submenu is a dashboard, one line per area:
 
 ```
-Waits         ok       a Bash call waits 1.7 s, fine under 3.0 s
-Slow periods  watch    tool calls were slow 20 h 19 min of the last 24 h, last until 22:00
-Hook waits    problem  10 trivial Bash calls waited 375 ms on hooks in the last hour · since 14:40
-Hooks         problem  52 tool calls waited 1.5 s for commit-journal in the last hour (+2 more) · since 00:12
-Load          problem  5.3 of 10 cores go to short-lived processes and the kernel · since 22:27
-Tests         ok       284 runs today, 10 h 08 min of wall clock, none slower than usual; 3 running now
-Growth        problem  logo-vectorizer-bench: 16 433 loose git objects slow its git, limit 13 400
+Waits: ok · a Bash call waits 1.7 s, fine under 3.0 s
+Slow periods: watch · tool calls were slow 20 h 19 min of the last 24 h, last until 22:00
+Hook waits: 1 problem · 10 trivial Bash calls waited 375 ms on hooks in the last hour · since 14:40
+Hooks: 3 problems · 52 tool calls waited 1.5 s for commit-journal in the last hour · since 00:12
+Load: 1 problem · 5.3 of 10 cores go to short-lived processes and the kernel · since 22:27
+Tests: ok · 284 runs today, 10 h 08 min of wall clock, none slower than usual; 3 running now
+Growth: 1 problem · logo-vectorizer-bench: 16 433 loose git objects slow its git, limit 13 400
 -
-24 h vs prev 24 h · 3 worse, 3 better
-changes, 7 d: 164
-not measured: 4 blind spots
+24 h vs prev 24 h · worse, better
+changes, 7 d
+not measured
 -
 as of 23:12
 window: 24 h
@@ -73,14 +75,15 @@ changes, so the block's `menu.txt` stays near 300 lines.
 ### 2.1 Row grammar
 
 - An area line is `Area: state · fact` (the menu convention in
-  `docs/handoffs/2026-09-30-menu-consistency.md`). The state is one of these words, each with one
-  look: `problem` (the word is red), `watch` (normal colour), `blind`, and `ok` (dim, the area
-  name undimmed).
+  `docs/handoffs/2026-09-30-menu-consistency.md`). The state is `N problems` (red), the area's
+  problems counted as the title counts them, or one of these words: `watch` (normal colour; also
+  an area whose red rows the ledger dismissed or holds as fixed-pending), `blind`, and `ok` (dim,
+  the area name undimmed). A problem no area judged has a line of its own in the same grammar:
+  `Limiter holds` (its hold lines inside), `Collector`, `Ledger`.
 - The fact is one plain sentence Egor can act on: the row that decided the state, its number with
   the unit, and the limit or the usual value beside it (`waits 22 s, fine under 3.0 s, only 2
   calls`). It names no hook, script, file or internal term: a row whose own `say` does carries a
-  plain `head` for this line, and the submenu rows keep the detail. A second row in the same state
-  adds `· N more`. A problem that started after the collector's first run ends with `· since HH:MM`.
+  plain `head` for this line, and the submenu rows keep the detail. A problem that started after the collector's first run ends with `· since HH:MM`.
 - Levels: `problem` means a hard limit broken on the last hour. `watch` means a soft limit, or a
   hard one on too few calls or over 24 h. A fixed problem clears within the hour.
 - A submenu shows one table of at most 5 columns. The unit sits in the header (`wait s`,
@@ -99,7 +102,7 @@ picker selects (3 h, 6 h, 12 h, 24 h, 3 d, 7 d; default 24 h). One selection ser
 blocks: `window: <W>` sits at the bottom of each, above Refresh. Choosing it in LLM doctor re-runs
 that collector; in this block it only switches which precomputed comparison shows. The columns are
 `<W> · prev <W> · Δ`, the Δ text and tone are tokenmap `tracking.py`'s `delta` (`×N` from 11 times,
-a tone only from 10 %), worse red and better green. The line counts them: `· 3 worse, 2 better`.
+a tone only from 10 %), worse red and better green. The line names them without a count: `· worse, better`.
 
 - The current period is `[now − W, now]`, the previous one `[now − 2W, now − W]`.
 - `3 d` and `7 d` read the day summaries: today and the N − 1 local days before, against the N
@@ -440,7 +443,7 @@ a harness asks about speed without reading the code, then checked the block agai
 
 ## 8. Blind spots and next stages
 
-The `not measured: N blind spots` line lists the document's `blind_spots`: the rows of
+The `not measured` line lists the document's `blind_spots`: the rows of
 `share/harness-ledger.json` `blind_spots` (interpreter start, MCP and worker spawn and relay,
 worker-run loops, launchd and Hammerspoon tasks, calls from sessions outside bypassPermissions,
 spool stdout, join precision), plus the ones the collector finds:
@@ -607,7 +610,7 @@ job of one chat for about 4 h under memory pressure and nothing reached Egor.
   are absolute, like every limit here: 60 s is twelve times the red tool-call wait and the holder's
   own report cadence, so a hold that long is no scheduling blip; 300 s outlives one collector cycle,
   and a chat waiting on a notification that never comes is lost well before the hours of the
-  incident. An extras line per judged limiter names what it holds, for how long and why.
+  incident. A line per judged limiter, inside the `Limiter holds` line, names what it holds, for how long and why.
 - **Menu, live.** The collector runs every 5 min, so the LLM Limits menu build reads the directory
   itself (`readHolds`, under pcall, cached per second and listing): one line per limiter whose
   longest hold passed 60 s, worded like the doctor's fact with every live job counted, red past

@@ -388,6 +388,14 @@ for item in doc["problems"]:
     assert len(refs) == len(set(refs)) and all(set(event) == {"at", "ref", "account", "excerpt"}
                                                and len(event["excerpt"]) <= 300 for event in item["evidence"]), item
 assert doc["problem_count"] == sum(1 for item in doc["problems"] if item["state"] in ("new", "open", "regressed")) > 0
+tally = {}
+for item in doc["problems"]:
+    assert item["group"] in doc["groups"], item
+    if item["state"] in ("new", "open", "regressed"):
+        tally[item["group"]] = tally.get(item["group"], 0) + 1
+assert {group: count for group, count in doc["groups"].items() if count} == tally, (doc["groups"], tally)
+assert sum(doc["groups"].values()) == doc["problem_count"], doc["groups"]
+assert {"reviewers", "workers", "machinery", "debt"} <= set(tally), tally
 states = {pid: (item["state"], item["rule"], item["ledger"]) for pid, item in found.items()}
 assert states["X1"] == ("regressed", "leg-failure", "X1"), states
 assert states["leg-failure:reviewers/pool empty"] == ("new", "leg-failure", None), states

@@ -61,6 +61,7 @@ Problem fields:
 | `evidence` | Up to 3 items of `{at, ref, account, excerpt}`. `ref` names exactly ONE event (a run id, a log line's ts plus account, a `tool_use_id`). `excerpt` is at most 300 characters of the raw text the matcher read. |
 | `ledger` | row id or null |
 | `near` | optional: rolling p50/p95 of the rule's value, so a cost under the limit stays visible |
+| `group` | LLM and Harness doctors: the one menu group (block, area) that counts the problem; a group row counts its `new`/`open`/`regressed` problems, so the rows sum to `problem_count` |
 
 `new` means that no ledger row matched. Catch-all rows are not allowed (§2), so an unseen cause is
 always `new`.

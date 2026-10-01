@@ -204,7 +204,7 @@ assert_eq '[1,"harness",true,true,true,"number","array","array",["collector_s","
            (.judge | test("^[0-9a-f]{64}$")), (.status | IN("ok", "problems", "blind", "error")),
            (.problem_count | type), (.problems | type), (.blind_spots | type), (.self | keys)]' | jq -c .)" \
   "the document carries every contract envelope key"
-assert_eq '[["count","evidence","exposure","fact","first_seen","id","last_seen","ledger","limit","near","rule","runs_red","state","unit","value","window_h"]]' \
+assert_eq '[["count","evidence","exposure","fact","first_seen","group","id","last_seen","ledger","limit","near","rule","runs_red","state","unit","value","window_h"]]' \
   "$(doc '[.problems[] | keys] | unique' | jq -c .)" "every problem carries every contract field"
 assert_eq "$(doc '[.problems[] | select(.state | IN("new", "open", "regressed"))] | length')" "$(doc .problem_count)" \
   "problem_count counts new, open and regressed problems"
@@ -225,10 +225,10 @@ assert_eq '[2,20]' "$(jq -c '[.v, .waits["bash:alpha"][0]]' "$HARNESS_DOCTOR_DIR
   "a finished day is summarized as histograms per waiter"
 assert_eq '6' "$(jq --arg d "$(date -u -r "$T" +%Y-%m-%d)" '.journal.days[$d]["post-fast.sh"][0]' "$HARNESS_DOCTOR_DIR/state.json")" \
   "journal runs also add up per day, for the day summary"
-assert_eq '["7 d vs prev 7 d · 1 worse",["Bash wait s","1.9","0.5","+275%"],[3]]' \
+assert_eq '["7 d vs prev 7 d · worse",["Bash wait s","1.9","0.5","+275%"],[3]]' \
   "$(doc '.periods["168"] | [.cells[0], .menu.rows[0].cells, .menu.rows[0].red]')" \
   "the week comparison marks a material rise red against the stored summary of the week before"
-assert_eq '["3 h vs prev 3 h · 1 better",[3],"7 d vs prev 7 d · 1 worse"]' \
+assert_eq '["3 h vs prev 3 h · better",[3],"7 d vs prev 7 d · worse"]' \
   "$(doc '[.periods["3"].cells[0], (.periods["3"].menu.rows[] | select(.cells[0] == "CPU busy %") | .green),
            .periods["168"].cells[0]]')" \
   "the last 3 h beat the 3 h before on CPU, green, while the week is worse"
@@ -288,23 +288,26 @@ for line in lines[1:]:
 assert red >= 8, red
 EOF
 asserts=$((asserts + 1))
-python3 - "$HARNESS_DOCTOR_DIR/menu.txt" <<'EOF' || fail "an area's top line is not 'Name: state · fact' in plain words"
+python3 - "$HARNESS_DOCTOR_DIR/menu.txt" <<'EOF' || fail "an area's top line is not 'Name: N problems|state · fact' in plain words, or the areas do not sum to the title"
 import re, sys
-areas = 0
-for line in open(sys.argv[1]).read().split("\n")[1:]:
+lines = open(sys.argv[1]).read().split("\n")
+areas, problems = 0, 0
+for line in lines[1:]:
     depth, flags, spans, text = line.split("\t", 3)
     if depth != "0":
         continue
     if flags.startswith("s"):
         break
     areas += 1
-    match = re.fullmatch(r"([A-Z][a-z]+(?: [a-z]+)*): (ok|watch|problem|blind)(?: · (.+))?", text)
+    match = re.fullmatch(r"([A-Z][a-z]+(?: [a-z]+)*): (ok|watch|blind|[1-9]\d* problems?)(?: · (.+))?", text)
     assert match, text
-    assert not re.search(r"\(\+\d|×\d|\.sh\b|deferred|bg-task", text), text
-    if match.group(2) == "problem":
+    assert not re.search(r"\(\+\d|×\d|\.sh\b|deferred|bg-task|\d+ more\b", text), text
+    if match.group(2)[0].isdigit():
+        problems += int(match.group(2).split()[0])
         start = len(match.group(1)) + 2
-        assert "r:%d:7" % start in spans.split(","), (spans, text)
+        assert "r:%d:%d" % (start, len(match.group(2))) in spans.split(","), (spans, text)
 assert areas >= 8, areas
+assert problems == int(lines[0].split("\t")[1]) > 0, (problems, lines[0])
 EOF
 asserts=$((asserts + 1))
 python3 - "$HARNESS_DOCTOR_DIR/menu.txt" <<'EOF' || fail "menu.txt does not tag every line of a window block, and only those"
@@ -393,7 +396,7 @@ entries, cur = module.periods_section(summaries, {}, [], T, [])
 entry = entries["168"]
 rows = {r["cells"][0]: r for r in entry["menu"]["rows"]}
 assert sorted(entries, key=int) == ["3", "6", "12", "24", "72", "168"], sorted(entries)
-assert entry["cells"][0] == "7 d vs prev 7 d · 1 worse, 1 better", entry["cells"]
+assert entry["cells"][0] == "7 d vs prev 7 d · worse, better", entry["cells"]
 assert entry["menu"]["columns"] == ["", "7 d", "prev 7 d", "Δ"], entry["menu"]["columns"]
 assert entries["72"]["cells"][0] == "3 d vs prev 3 d" and not entries["72"]["menu"]["nav"], entries["72"]
 import os, re

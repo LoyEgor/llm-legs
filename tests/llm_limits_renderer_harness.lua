@@ -2708,10 +2708,10 @@ do
     }}
   local module = doctorModule(doctorFixture, captureTasks(tasks), nil, nil, nil, nil, nil, nil, dirty)
   local row = doctorRow(module.menuItems())
-  assert(titleText(row) == "LLM doctor: 14 issues", titleText(row))
+  assert(titleText(row) == "LLM doctor: 2 problems", titleText(row))
   assert(isRed(row.title.runs[1].attributes), "an LLM doctor with problems is not red")
   assert(row.disabled == nil, "the doctor line with findings cannot be opened")
-  assert(titleText(row.menu[1]) == "Review machinery: 14 · 14 new", titleText(row.menu[1]))
+  assert(titleText(row.menu[1]) == "Review machinery: 2 problems", titleText(row.menu[1]))
   row = row.menu[1]
   local titles = submenuTitles(row)
   assert(titles[1] == "anchors: 3 · new", titles[1])
@@ -2766,7 +2766,7 @@ do
   local single = { as_of = os.time(), total = 1, anomalies = { orphan_debt = 1 }}
   local row = doctorRow(doctorModule(doctorFixture, nil, nil, nil, nil, nil, nil, nil,
     single).menuItems())
-  assert(titleText(row) == "LLM doctor: 1 issue", titleText(row))
+  assert(titleText(row) == "LLM doctor: 1 problem", titleText(row))
   assert(titleText(row.menu[1].menu[1]) == "orphan_debt: 1 · new", titleText(row.menu[1].menu[1]))
 end
 
@@ -2808,7 +2808,14 @@ local function blockRow(menu, name)
 end
 
 local function doctorDocument(asOf)
-  return { as_of = asOf or os.time(), window_h = 24, trend_days = 14, bugs = 3, summary = "reviewers 2 · light 1",
+  return { contract = 1, doctor = "llm", as_of_s = asOf or os.time(), status = "problems", problem_count = 8,
+    window_h = 24, trend_days = 14, bugs = 3, summary = "reviewers 2 · light 1",
+    groups = { reviewers = 2, workers = 0, light = 1, image = 0, machinery = 1, hooks = 2, debt = 1, ledger = 1 },
+    problems = {
+      { id = "M1", rule = "machinery", state = "open", group = "machinery", fact = "review machinery anchors: 3" },
+      { id = "ledger:R9", rule = "ledger", state = "new", group = "ledger", fact = "ledger R9: no title" },
+      { id = "ledger:R8", rule = "ledger", state = "watch", group = "ledger", fact = "ledger R8: quiet" },
+    },
     not_measurable = { "worker false-green reports", "weakened tests" },
     blocks = {
       { block = "reviewers", owner = "Review-bench improvements", legs = 120, bugs = 2, weather = 40, new = 1,
@@ -2863,11 +2870,12 @@ end
 do
   local document = doctorDocument()
   document.health[2] = { name = "debt", status = "ok", count = 0, items = {}, notes = {} }
+  document.groups.debt, document.problem_count = 0, 7
   local module = doctorModule(doctorFixture, captureTasks({}), nil, nil, nil, nil, nil, nil, nil, document)
   local row = doctorRow(module.menuItems())
-  assert(titleText(row.menu[6]) == "Debt: ok", titleText(row.menu[6]))
-  assert(isDimmed(row.menu[6].title.runs[1].attributes, 0), "a clean health row is not dimmed")
-  local debt = submenuTitles(row.menu[6])
+  assert(titleText(row.menu[7]) == "Debt: ok", titleText(row.menu[7]))
+  assert(isDimmed(row.menu[7].title.runs[1].attributes, 0), "a clean health row is not dimmed")
+  local debt = submenuTitles(row.menu[7])
   assert(debt[1] == "nothing in the window" and #debt == 1, table.concat(debt, "|"))
 end
 
@@ -2883,57 +2891,67 @@ do
   local module = doctorModule(doctorFixture, captureTasks(tasks), nil, nil, nil, nil, nil, nil, nil, doctorDocument())
   local menu = module.menuItems()
   local row = doctorRow(menu)
-  assert(titleText(row) == "LLM doctor: 3 bugs · 4 issues · no data yet", titleText(row))
-  assert(not isDimmed(row.title.runs[1].attributes, 0), "the doctor line is dimmed over open bugs")
+  assert(titleText(row) == "LLM doctor: 8 problems · no data yet", titleText(row))
+  assert(not isDimmed(row.title.runs[1].attributes, 0), "the doctor line is dimmed over open problems")
   local titles = submenuTitles(row)
-  assert(titles[1] == "Reviewers: 2 bugs · 40 weather · 1 new · 1 regressed", titles[1])
-  assert(titles[2] == "Workers: 0 bugs · 2 weather" and titles[3] == "Light: 1 bug · 0 weather"
-    and titles[4] == "Image: no legs", table.concat(titles, "|"))
-  assert(titles[5] == "Hooks: 3 problems" and titles[6] == "Debt: 1 problem", table.concat(titles, "|"))
-  assert(not isDimmed(row.menu[5].title.runs[1].attributes, 0), "a health row with problems is dimmed")
-  local hooks = submenuTitles(row.menu[5])
+  assert(titles[1] == "Reviewers: 2 problems" and titles[2] == "Review machinery: 1 problem", table.concat(titles, "|"))
+  assert(titles[3] == "Workers: ok" and titles[4] == "Light: 1 problem" and titles[5] == "Image: no legs",
+    table.concat(titles, "|"))
+  assert(titles[6] == "Hooks: 2 problems" and titles[7] == "Debt: 1 problem" and titles[8] == "Ledger: 1 problem",
+    table.concat(titles, "|"))
+  local sum = 0
+  for index = 1, 8 do
+    assert(not titles[index]:find("bug") and not titles[index]:find("weather") and not titles[index]:find("issue"),
+      titles[index])
+    sum = sum + (tonumber(titles[index]:match(": (%d+) problems?$")) or 0)
+  end
+  assert(sum == tonumber(titleText(row):match("^LLM doctor: (%d+) problems")) and sum == row.problems,
+    "the group rows do not sum to the header: " .. sum .. " vs " .. titleText(row))
+  assert(not isDimmed(row.menu[6].title.runs[1].attributes, 0), "a health row with problems is dimmed")
+  local hooks = submenuTitles(row.menu[6])
   assert(hooks[1] == "2 · 2h ago · Design system · ask-english-report.sh: exit 124"
     and hooks[2] == "1 · 2h ago · word notice with no reading: ⚡ review" and #hooks == 2, table.concat(hooks, "|"))
-  local debt = submenuTitles(row.menu[6])
+  local debt = submenuTitles(row.menu[7])
   assert(debt[1] == "1 · 3d ago · Logo bench · not recorded: hash-cap in logo-vectorizer-bench · seen 1090×" and #debt == 1, table.concat(debt, "|"))
-  assert(titles[7] == "not measurable yet: worker false-green reports, weakened tests", titles[7])
-  assert(titles[8] == "window: 24h" and titles[9] == "-" and titles[10] == "Refresh" and #titles == 10,
+  local ledger = submenuTitles(row.menu[8])
+  assert(ledger[1] == "ledger R9: no title" and #ledger == 1, table.concat(ledger, "|"))
+  assert(titles[9] == "not measurable yet: worker false-green reports, weakened tests", titles[9])
+  assert(titles[10] == "window: 24h" and titles[11] == "-" and titles[12] == "Refresh" and #titles == 12,
     table.concat(titles, "|"))
-  assert(not isDimmed(row.menu[1].title.runs[1].attributes, 0), "a block with bugs is dimmed")
-  assert(isDimmed(row.menu[2].title.runs[1].attributes, 0), "a block with no bugs is not dimmed")
+  assert(not isDimmed(row.menu[1].title.runs[1].attributes, 0), "a block with problems is dimmed")
+  assert(isDimmed(row.menu[3].title.runs[1].attributes, 0), "a block with no problems is not dimmed")
   local reviewers = blockRow(menu, "Reviewers")
   local inside = submenuTitles(reviewers)
   assert(inside[1] == "owner: Review-bench improvements · 120 legs in 24h", inside[1])
-  assert(inside[2] == "Review machinery: no data yet", inside[2])
-  assert(inside[3] == "failed · crashed      1           █   2h  regressed ×1  opus", inside[3])
-  assert(inside[4] == "failed · pool empty   1  ↑  █        22m  new           grok47", inside[4])
-  assert(inside[5] == "-", inside[5])
-  assert(inside[6] == "cap                  12  ↓  ▁▃█       1h                grok, flash38", inside[6])
-  assert(inside[7] == "top: grok47 pool empty ×1 · opus crashed ×1" and inside[8] == "-"
-    and inside[9] == "By model" and inside[10] == "Copy brief for the owner" and #inside == 10,
+  assert(inside[2] == "failed · crashed      1           █   2h  regressed ×1  opus", inside[2])
+  assert(inside[3] == "failed · pool empty   1  ↑  █        22m  new           grok47", inside[3])
+  assert(inside[4] == "-", inside[4])
+  assert(inside[5] == "cap                  12  ↓  ▁▃█       1h                grok, flash38", inside[5])
+  assert(inside[6] == "top: grok47 pool empty ×1 · opus crashed ×1" and inside[7] == "-"
+    and inside[8] == "By model" and inside[9] == "Copy brief for the owner" and #inside == 9,
     table.concat(inside, "|"))
-  assert(not isDimmed(reviewers.menu[3].title.runs[1].attributes, 0), "a regressed bug is dimmed")
-  assert(isDimmed(reviewers.menu[6].title.runs[1].attributes, 0), "a weather row is not dimmed")
-  local problem = submenuTitles(reviewers.menu[3])
+  assert(not isDimmed(reviewers.menu[2].title.runs[1].attributes, 0), "a regressed bug is dimmed")
+  assert(isDimmed(reviewers.menu[5].title.runs[1].attributes, 0), "a weather row is not dimmed")
+  local problem = submenuTitles(reviewers.menu[2])
   assert(problem[1] == "an export refusal worded crashed", problem[1])
   assert(problem[2] == "fixed · fixed in review-bench@08d37c3 · looked at 1d ago · by Review-bench improvements", problem[2])
   assert(problem[3] == "-" and problem[4] == "2h  opus  llm-legs  T2  Design system  crashed", table.concat(problem, "|"))
   assert(problem[5] == "latest 1 of 3", table.concat(problem, "|"))
   assert(problem[6] == "-" and problem[7] == "Copy for an LLM" and #problem == 7, table.concat(problem, "|"))
-  local chunk = submenuTitles(reviewers.menu[4])
+  local chunk = submenuTitles(reviewers.menu[3])
   assert(chunk[1] == "22m  grok47  claude-setup  T2  judge: pool empty · chunk", chunk[1])
   for _, text in ipairs({ problem[4], chunk[1] }) do
     assert(not text:find("20260924T", 1, true), "an incident row shows a run id: " .. text)
   end
-  reviewers.menu[3].menu[7].fn()
+  reviewers.menu[2].menu[7].fn()
   assert(pasteboardContents:find("run 20260924T100000Z-1234567", 1, true)
     and pasteboardContents:find("share/doctor-ledger.json", 1, true)
     and pasteboardContents:find("ledger R7: an export refusal worded crashed", 1, true), pasteboardContents)
-  local models = submenuTitles(reviewers.menu[9])
+  local models = submenuTitles(reviewers.menu[8])
   assert(models[1] == "model   legs  bugs  walled  off  cap  stalled  failed  theirs  slow  escaped  retried", models[1])
   assert(models[2] == "grok47    10     1                 2                                                1", models[2])
   assert(models[3] == "opus      30     1                                  1", models[3])
-  reviewers.menu[10].fn()
+  reviewers.menu[9].fn()
   assert(pasteboardContents:find("--block reviewers --window 24", 1, true)
     and pasteboardContents:find("caps are caps", 1, true)
     and pasteboardContents:find("(owner: Review-bench improvements)", 1, true), pasteboardContents)
@@ -2947,16 +2965,16 @@ do
     if tasks[index].path:match("/bin/llm%-doctor$") then table.remove(tasks, index) end
   end
   assert(#tasks == 0, "a fresh doctor cache still launched the collector")
-  row.menu[10].fn()
+  row.menu[12].fn()
   assert(#tasks == 1 and tasks[1].path:match("/bin/llm%-doctor$")
     and table.concat(tasks[1].args, " ") == "--window 24 --quiet", "Refresh blocks did not launch bin/llm-doctor over the window")
-  local choices = row.menu[8].menu
-  assert(table.concat(submenuTitles(row.menu[8]), "|") == "3h|6h|12h|24h|3d|7d", "the window choices changed")
+  local choices = row.menu[10].menu
+  assert(table.concat(submenuTitles(row.menu[10]), "|") == "3h|6h|12h|24h|3d|7d", "the window choices changed")
   assert(choices[4].checked == true and choices[5].checked == false)
   choices[5].fn()
   assert(module.doctorWindowH == 72 and #tasks == 2 and table.concat(tasks[2].args, " ") == "--window 72 --quiet",
     "choosing 3 d did not recollect over 72 h")
-  assert(submenuTitles(doctorRow(module.menuItems()))[8] == "window: 3d")
+  assert(submenuTitles(doctorRow(module.menuItems()))[10] == "window: 3d")
 end
 
 do
@@ -2969,7 +2987,8 @@ do
   assert(titleText(row) == "LLM doctor: ok", titleText(row))
   assert(isDimmed(row.title.runs[1].attributes, 0), "the clean doctor line is not dimmed")
   local titles = submenuTitles(row)
-  assert(titles[1] == "Workers: 0 bugs · 0 weather" and titles[2] == "window: 24h · stale · ran 2d ago", table.concat(titles, "|"))
+  assert(titles[1] == "Workers: ok" and titles[2] == "Review machinery: ok"
+    and titles[3] == "window: 24h · stale · ran 2d ago", table.concat(titles, "|"))
 end
 
 -- A contract document: the title counts problem_count, says blind or a failed collector, and the age is as_of_s
@@ -2978,6 +2997,7 @@ do
   local now = 1800000000
   local document = { contract = 1, doctor = "llm", as_of = "2027-01-13T08:00:00+00:00", as_of_s = now - 2 * 86400,
     status = "problems", problem_count = 20, window_h = 24, bugs = 3, summary = "", not_measurable = {},
+    groups = { workers = 20 },
     blocks = { { block = "workers", owner = "", legs = 3, bugs = 3, weather = 0, new = 3, regressed = 0, top = "",
       problems = {}, models = {} } } }
   local snapshot = { as_of = now, total = 0, anomalies = { anchors = 0 } }
@@ -2986,12 +3006,13 @@ do
   end
   assert(titleText(row()) == "LLM doctor: 20 problems", titleText(row()))
   assert(row().problems == 20 and row().status == "problems", "the entry did not hand the Doctors title its count")
-  assert(submenuTitles(row())[2] == "window: 24h · stale · ran 2d ago", table.concat(submenuTitles(row()), "|"))
+  assert(submenuTitles(row())[1] == "Workers: 20 problems"
+    and submenuTitles(row())[3] == "window: 24h · stale · ran 2d ago", table.concat(submenuTitles(row()), "|"))
   document.status = "blind"
   assert(titleText(row()) == "LLM doctor: 20 problems · blind" and not isDimmed(row().title.runs[1].attributes, 0),
     titleText(row()))
   assert(row().status == "blind", tostring(row().status))
-  document.status, document.problem_count = "ok", 0
+  document.status, document.problem_count, document.groups = "ok", 0, {}
   assert(titleText(row()) == "LLM doctor: ok" and isDimmed(row().title.runs[1].attributes, 0), titleText(row()))
   assert(row().problems == 0 and row().status == "ok", tostring(row().status))
   document.status = "error"
@@ -2999,8 +3020,6 @@ do
   assert(row().status == "error", tostring(row().status))
 end
 
--- A class the ledger holds as open stays in the Reviewers block and out of the title; an
--- unlisted one is new and counts there.
 do
   local document = doctorDocument()
   document.blocks[1].machinery = { classes = {
@@ -3009,12 +3028,12 @@ do
   local snapshot = { as_of = os.time(), total = 14, anomalies = { anchors = 3, closure_pending = 11 },
     rows = { anchors = {}, closure_pending = {} } }
   local healthy = doctorModule(doctorFixture, nil, nil, nil, nil, nil, nil, nil, snapshot, document).menuItems()
-  assert(titleText(doctorRow(healthy)) == "LLM doctor: 3 bugs · 15 issues", titleText(doctorRow(healthy)))
-  document.health = nil
+  assert(titleText(doctorRow(healthy)) == "LLM doctor: 8 problems", titleText(doctorRow(healthy)))
+  document.groups.machinery, document.problem_count = 2, 9
   local menu = doctorModule(doctorFixture, nil, nil, nil, nil, nil, nil, nil, snapshot, document).menuItems()
-  assert(titleText(doctorRow(menu)) == "LLM doctor: 3 bugs · 11 issues", titleText(doctorRow(menu)))
-  local machinery = blockRow(menu, "Reviewers").menu[2]
-  assert(titleText(machinery) == "Review machinery: 14 · 11 new", titleText(machinery))
+  assert(titleText(doctorRow(menu)) == "LLM doctor: 9 problems", titleText(doctorRow(menu)))
+  local machinery = doctorRow(menu).menu[2]
+  assert(titleText(machinery) == "Review machinery: 2 problems", titleText(machinery))
   local inside = submenuTitles(machinery)
   assert(inside[1] == "anchors: 3 · open" and inside[3] == "closure_pending: 11 · new", table.concat(inside, "|"))
   assert(isDimmed(machinery.menu[1].title.runs[1].attributes, 0), "an open machinery class is loud")
@@ -3023,7 +3042,6 @@ do
   document.blocks[1].machinery.as_of = snapshot.as_of
   local tasks = {}
   menu = doctorModule(doctorFixture, captureTasks(tasks), nil, nil, nil, nil, nil, nil, snapshot, document).menuItems()
-  assert(titleText(doctorRow(menu)) == "LLM doctor: 3 bugs", titleText(doctorRow(menu)))
   assert(#tasks == 0, "statuses judged off the shown snapshot still relaunched llm-doctor")
   document.blocks[1].machinery.as_of = snapshot.as_of - 3600
   doctorModule(doctorFixture, captureTasks(tasks), nil, nil, nil, nil, nil, nil, snapshot, document).menuItems()

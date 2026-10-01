@@ -1612,9 +1612,6 @@ def section(name, rows, columns, right, lead=(), nav=(), ok="", blind=""):
     state = "problem" if problems else "watch" if watches else "blind" if blind else "ok"
     first = (problems or watches or [None])[0]
     fact = (first.get("head") or first.get("say") if first else None) or (blind if state == "blind" else ok)
-    extra = len(problems or watches) - 1
-    if first and extra > 0:
-        fact += " · %d more" % extra
     return {"name": name, "state": state, "fact": fact, "lead": list(lead), "columns": columns, "right": right,
             "rows": rows, "nav": list(nav)}
 
@@ -3337,9 +3334,9 @@ def compare_entry(cur, prev, hours, names, nav):
     better = sum(1 for r in rows if r["tone"] == "better")
     parts = [("%s vs prev %s" % (window_label(hours), window_label(hours)), "")]
     if worse:
-        parts.append((" · %d worse" % worse, "r"))
+        parts.append((" · worse", "r"))
     if better:
-        parts.append(((", " if worse else " · ") + "%d better" % better, "g"))
+        parts.append(((", " if worse else " · ") + "better", "g"))
     entry = line("".join(p[0] for p in parts), dim=False, menu=out)
     entry.update(parts=parts, hours=hours)
     return entry
@@ -3473,6 +3470,9 @@ def load_changes(now):
     return rows
 
 
+HOLDS_GROUP = "Limiter holds"
+
+
 def menu_text(document):
     """The menu as laid-out lines: `depth<TAB>flags<TAB>spans<TAB>text`, spans as `style:byte:bytes`.
     hs.json.decode of the document costs ~40 ms per menu open; these lines cost a match each."""
@@ -3538,11 +3538,22 @@ def menu_text(document):
         for item in part.get("nav", ()):
             free(item, depth)
 
+    counted = {}
+    for problem in document["problems"]:
+        if problem["state"] in ("new", "open", "regressed"):
+            counted.setdefault(problem.get("group"), []).append(problem)
     for part in document["sections"]:
-        state = part["state"]
-        parts = [(part["name"], "n" if state == "ok" else ""), (": ", ""), (state, "r" if state == "problem" else "")]
+        count = len(counted.pop(part["name"], ()))
+        state = "%d problem%s" % (count, "" if count == 1 else "s") if count else (
+            "watch" if part["state"] == "problem" else part["state"])
+        parts = [(part["name"], "n" if state == "ok" else ""), (": ", ""), (state, "r" if count else "")]
         parts += [(" · " + part["fact"], "")] if part["fact"] else []
         free({"cells": ["".join(p for p, _ in parts)], "parts": parts, "dim": state == "ok", "menu": part}, 0)
+    for group, problems in sorted(counted.items(), key=lambda item: str(item[0])):
+        state = "%d problem%s" % (len(problems), "" if len(problems) == 1 else "s")
+        parts = [(str(group or "Other"), ""), (": ", ""), (state, "r")]
+        free({"cells": ["".join(p for p, _ in parts)], "parts": parts,
+              "menu": {"lead": [line(p["fact"] or p["id"], dim=False) for p in problems], "rows": []}}, 0)
     emit(0, "s", [], "-")
     for hours in sorted(document.get("periods", {}), key=int):
         tag[0] = "w" + hours
@@ -3680,17 +3691,17 @@ def last_fix_at(entry):
 
 
 def all_verdicts(sections):
-    merged, stack = {}, list(sections)
+    merged, stack = {}, [(part.get("name"), part) for part in sections]
     while stack:
-        part = stack.pop(0)
+        group, part = stack.pop(0)
         for item in part.get("lead", []) + part.get("rows", []) + part.get("extra_red", []) + part.get("nav", []):
             for v in item.get("judge") or ():
-                v = dict(v, fact=v.get("fact") or item.get("say") or item["cells"][0])
+                v = dict(v, fact=v.get("fact") or item.get("say") or item["cells"][0], group=group)
                 key = (v["rule"], v["ident"])
                 if key not in merged or LEVELS.get(v["level"], 0) > LEVELS.get(merged[key]["level"], 0):
                     merged[key] = v
             if isinstance(item.get("menu"), dict):
-                stack.append(item["menu"])
+                stack.append((group, item["menu"]))
     return [merged[k] for k in sorted(merged)]
 
 
@@ -3786,7 +3797,7 @@ def problems_from(sections, ledger, state, now, extra=()):
                       "limit": v["limit"], "unit": v["unit"], "window_h": v["window_h"], "exposure": v["exposure"],
                       "count": None, "runs_red": 0, "first_seen": None, "last_seen": None,
                       "evidence": v["evidence"][:3], "ledger": entry["id"] if entry else None, "near": v["near"],
-                      "_level": v["level"], "_times": times, "_entry": entry, "_bad": sum(bad) if bad else None}
+                      "group": v.get("group"), "_level": v["level"], "_times": times, "_entry": entry, "_bad": sum(bad) if bad else None}
     problems = []
     for pid, problem in sorted(by_id.items()):
         times = problem.pop("_times")
@@ -3833,7 +3844,7 @@ def problems_from(sections, ledger, state, now, extra=()):
             "window_h": last and last["window_h"], "exposure": proof["events"],
             "count": sum(v.get("bad") or 0 for v in after if v["level"]), "runs_red": proof["matched"],
             "first_seen": iso_time(fix_at), "last_seen": iso_time(now), "evidence": [],
-            "ledger": entry["id"], "near": last and last["near"]})
+            "ledger": entry["id"], "near": last and last["near"], "group": last and last.get("group")})
     return problems
 
 
@@ -4067,14 +4078,17 @@ def collect(write, now):
                            "red" if elapsed > LIMITS["collector_s"] and not backfill else None,
                            fact="the collector took %.1f s, limit %d s" % (elapsed, LIMITS["collector_s"]),
                            bad=int(elapsed > LIMITS["collector_s"]))
+    self_verdict["group"] = "Collector"
     by_row = {}
     for where, fault in faults:
         by_row.setdefault(where, []).append(fault)
     fault_verdicts = [dict(verdict("ledger_fault", where, len(why), 0, "faults", 0, 1, "red",
                                    fact="ledger %s dropped: %s" % (where, "; ".join(why)),
                                    evidence=[evidence(now, "ledger:" + where, "; ".join(why))], bad=1),
-                           pid="ledger:" + where) for where, why in sorted(by_row.items())]
+                           pid="ledger:" + where, group="Ledger") for where, why in sorted(by_row.items())]
     holds, leaked_holds = hold_verdicts(now)
+    for v in holds:
+        v["group"] = HOLDS_GROUP
     problems = problems_from(sections, judging, state, now, [self_verdict] + fault_verdicts + holds)
     problem_count = sum(1 for p in problems if p["state"] in ("new", "open", "regressed"))
     changed = write and settle_fixes(judging)
@@ -4087,12 +4101,16 @@ def collect(write, now):
         write_fix_fields(judging)
     blind_areas = [s["name"] for s in sections if s["state"] == "blind"]
     status = "problems" if problem_count else "blind" if blind_areas else "ok"
-    extras = [line("changes, 7 d: %d" % len(recent), menu=change_table(recent[:CHANGE_ROWS], impact) if recent else None),
-              line("not measured: %d blind spots" % len(blind),
+    extras = [line("changes, 7 d", menu=change_table(recent[:CHANGE_ROWS], impact) if recent else None),
+              line("not measured" if blind else "not measured: nothing",
                    menu=section("", [row([b["what"]], dim=True) for b in blind], ["blind spot"], [False])),
               line("collector: %.1f s a run, limit %d s" % (elapsed, LIMITS["collector_s"]),
                    dim=self_verdict["level"] is None, red=self_verdict["level"] == "red")]
-    extras[:0] = [line(v["fact"], dim=False, red=v["level"] == "red") for v in holds if v["level"]]
+    shown_holds = [v for v in holds if v["level"]]
+    if shown_holds:
+        sections.append({"name": HOLDS_GROUP, "state": "problem" if any(v["level"] == "red" for v in shown_holds)
+                         else "watch", "fact": "", "columns": [], "right": [], "rows": [], "nav": [],
+                         "lead": [line(v["fact"], dim=False, red=v["level"] == "red") for v in shown_holds]})
     document = {
         "contract": CONTRACT, "doctor": "harness", "as_of": iso_time(now), "as_of_s": int(now),
         "judge": judge_digest(ledger_raw), "status": status, "problem_count": problem_count,
