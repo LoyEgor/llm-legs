@@ -195,6 +195,8 @@ command -v worker_walls_record >/dev/null ||
   fail 'share/codex-accounts.sh is missing: worker-run cannot tell whether codex main was removed'
 . "$SCRIPT_DIRECTORY/../share/store-lock.sh" ||
   fail 'share/store-lock.sh is missing: worker-run cannot rotate the worker-attempts journal safely'
+. "$SCRIPT_DIRECTORY/../share/slots.sh" || fail 'share/slots.sh is missing'
+NIGHT_SLOT=''
 . "$SCRIPT_DIRECTORY/../share/worktree-branch.sh" ||
   fail 'share/worktree-branch.sh is missing: worker-run cannot find a sibling worktree on its branch'
 . "$SCRIPT_DIRECTORY/../share/worker-claims.sh" ||
@@ -533,6 +535,8 @@ run_with_deadline() {
         idle_since=$wd_now
         silent_since=$idle_since
       fi
+      # A tool call waiting in a limiter (a suite slot) is no hung worker.
+      ! holds_in_tree "$child" || { idle_since=$wd_now silent_since=$wd_now; }
       # SILENT catches a hung START only: once the run has shown activity, a single long tool call
       # (a suite) freezes every source for many minutes and only IDLE may judge it (live 2026-09-24:
       # two sweep fixers killed mid `tests/run-all`).
@@ -1258,6 +1262,19 @@ supervise() {
   # Even the run that never started answers for itself: absent, its record is indistinguishable from
   # the record of a run still going, and a reader takes that for a run that wrote nothing.
   cd "$workdir" || { persist_run_files "$directory"; return 4; }
+  # At most NIGHT_FIXER_SLOTS workers on night branches at once (cores / 2, 2 to 8): a night worker is
+  # model-bound between suite runs, which run-suites caps on its own; its deadline starts at its slot.
+  local branch
+  branch=$(git -C "$workdir" symbolic-ref -q --short HEAD 2>/dev/null) || branch=''
+  # A run nested under a slot holder's worker inherits NIGHT_FIXER_SLOT: waiting would deadlock on its ancestor.
+  if [[ $branch == night/*/* ]] && [ -z "${NIGHT_FIXER_SLOT:-}" ]; then
+    NIGHT_SLOT=$(slot_wait "${NIGHT_FIXER_SLOTS_DIR:-${DOCTORS_DIR:-$HOME/.cache/doctors}/fixer-slots}" \
+      "${NIGHT_FIXER_SLOTS:-$(slots_from_cores 2 2 8)}" $((2 * DEADLINE + 900)) night-workers \
+      "worker run ${directory##*/} on $branch" meta_update "$directory" '.started_at = (now | floor)' 2>/dev/null) ||
+      { persist_run_files "$directory"; return 4; }
+    export NIGHT_FIXER_SLOT=$NIGHT_SLOT
+    meta_update "$directory" '.started_at = (now | floor)' || :
+  fi
   while :; do
     light_sandbox_prepare "$directory" || { persist_run_files "$directory"; return 4; }
     case "$vendor" in
@@ -5636,6 +5653,6 @@ case "${1:-}" in
   claim) shift; claim_run "$@"; exit $? ;;
   browse) shift; browse_run "$@"; exit $? ;;
   _deliver) complete_run "$2" "$3"; exit 0 ;;
-  _supervise) shift; supervise "$@"; exit $? ;;
+  _supervise) shift; supervise "$@"; rc=$?; slot_release "$NIGHT_SLOT"; exit "$rc" ;;
   *) usage ;;
 esac

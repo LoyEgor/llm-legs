@@ -330,7 +330,8 @@ end
 local function nightEntry()
   local jobs, resumable, others = {}, 0, 0
   local idle = not night.running and not running(fixTasks.night)
-  for _, job in ipairs(night.jobs) do
+  for index, job in ipairs(night.jobs) do
+    if index > 1 and night.jobs[index - 1].kind == "doctor" and job.kind ~= "doctor" then jobs[#jobs + 1] = { title = "-" } end
     local item = { title = infoTitle(job.text, job.red, not job.red) }
     if job.detail ~= "" then item.menu = detailRows(job.detail) end
     if job.resumable and idle then
