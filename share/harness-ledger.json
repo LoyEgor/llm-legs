@@ -142,10 +142,25 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-09-30",
-      "reviewed_by": "Harness doctor night fixer",
-      "note": "60 s process census 2026-09-30 03:25-03:31: 1 081 new processes a second; test suites 61 % (four night worktrees in run-suites at once), statusline 20 % (5 sessions), hooks 8.5 %, worker-run 5.8 %, review-bench 3.8 %. The statusline share is item 2 of docs/handoffs/2026-09-28-harness-performance-fix.md.",
+      "last_reviewed": "2026-10-01",
+      "reviewed_by": "Harness doctor night fixer harness-load-20261001T020658Z-45f1",
+      "note": "60 s process census 2026-09-30 03:25-03:31: 1 081 new processes a second; test suites 61 % (four night worktrees in run-suites at once), statusline 20 % (5 sessions), hooks 8.5 %, worker-run 5.8 %, review-bench 3.8 %. The statusline share is item 2 of docs/handoffs/2026-09-28-harness-performance-fix.md. Cause still stands on 2026-10-01: 5.5 of 10 cores unaccounted under night concurrency.",
       "handoff": "docs/handoffs/2026-09-30-load-unseen-census.md"
+    },
+    {
+      "id": "load-busy-night-concurrency",
+      "title": "CPU 96 % busy under concurrent night test suites and worker runs",
+      "match": {
+        "rule": "load",
+        "ident": "busy"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-01",
+      "reviewed_by": "Harness doctor night fixer harness-load-20261001T020658Z-45f1",
+      "note": "CPU 96.2 % busy (limit 90 %) in the night window: 4+ concurrent night worktrees running test suites and model workers on a 10-core machine. Corresponds to load-unseen-suites-statusline. Handed off to Harness Doctor: concurrency cap or limit adjustment is the owner's decision.",
+      "handoff": "docs/handoffs/2026-10-01-load-busy-night-concurrency.md"
     },
     {
       "id": "guards-tripwire-rejournal",
