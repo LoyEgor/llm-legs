@@ -450,6 +450,7 @@ jq -n --argjson s "$(now)" '{contract: 1, doctor: "harness", as_of_s: $s, judge:
     {id: "test_slow:proj:test_x", rule: "test_slow", state: "new", fact: "slow suite"},
     {id: "test_long_pole:proj:test_x", rule: "test_long_pole", state: "new", fact: "the long pole"},
     {id: "test_daily_cost:proj:test_x", rule: "test_daily_cost", state: "new", fact: "a costly suite"},
+    {id: "menu_build:automation", rule: "menu_build", state: "new", fact: "11 menu opens waited 450 ms"},
     {id: "floor:tool", rule: "floor", state: "watch", fact: "floor", value: 100, exposure: 100},
     {id: "load:quiet", rule: "load", state: "watch", fact: "quiet", value: 1000, exposure: 1000}]
     + [range(10) | {id: "hook_p50:w\(.)", rule: "hook_p50", state: "watch", fact: "w", value: ., exposure: 10}])}' \
@@ -457,6 +458,14 @@ jq -n --argjson s "$(now)" '{contract: 1, doctor: "harness", as_of_s: $s, judge:
 mkdir -p "$WORK/projects/proj/tests" && printf '#!/bin/bash\n' >"$WORK/projects/proj/tests/test_x.sh"
 printf '{"owner": "H owner", "rows": [{"id": "gate-row", "status": "open", "match": {"rule": "hook_every_call", "ident": "gate\\\\.sh"}}, {"id": "quiet-hook", "title": "a hook gone quiet", "status": "open", "match": {"rule": "hook_every_call", "ident": "gate\\\\.sh"}}]}\n' \
   >"$WORK/ledgers/harness.json"
+mkdir -p "$WORK/projects/hammerspoon" "$L/hammerspoon"
+: >"$WORK/projects/hammerspoon/automation_menu.lua"
+: >"$L/hammerspoon/llm-limits.lua"
+O="$WORK/projects/other"
+git init -q "$O" && git -C "$O" -c user.name=t -c user.email=t@t commit -q --allow-empty -m base
+git -C "$O" update-ref refs/night/n3/base HEAD
+printf '%s\n' "$L" "$O" >"$WORK/sweep-repos"
+export NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-repos"
 for n in 1 2 3 4; do bash "$FIX" launch harness --night n3 >"$DATA/h-$n" 2>/dev/null & done
 wait
 assert [ "$(cat "$DATA"/h-* | cut -f1 | sed -E 's/^harness-([a-z-]+)-[0-9]{8}.*/\1/' | sort | xargs)" = "doctor hook-waits hooks load" ]
@@ -474,7 +483,25 @@ assert jqe --arg f "$WORK/projects/claude-setup/hooks/gate.sh" '[.problems[].id]
 self=$(cat "$DATA"/h-* | awk -F'\t' '$1 ~ /^harness-doctor-/ {print $1}')
 assert jqe --arg c "$(cd -P "$ROOT" && pwd | sed -E 's#/\.claude/worktrees/[^/]+$##')/bin/harness-doctor" --arg t "$WORK/projects/proj/tests/test_x.sh" \
   '[.problems[] | {id, files: .component.files}] == [{id: "collector:run", files: [$c]}, {id: "test_slow:proj:test_x", files: [$t]},
-  {id: "test_long_pole:proj:test_x", files: [$t]}, {id: "test_daily_cost:proj:test_x", files: [$t]}]' "$(record "$self")"
+  {id: "test_long_pole:proj:test_x", files: [$t]}, {id: "test_daily_cost:proj:test_x", files: [$t]},
+  {id: "menu_build:automation", files: [$h, $m]}]' --arg h "$WORK/projects/hammerspoon/automation_menu.lua" \
+  --arg m "$L/hammerspoon/llm-limits.lua" "$(record "$self")"
+assert grep -qF "Test speed is this run's to fix, never a handoff" "$RUNS/$self.brief.md"
+assert grep -qF "Menu delays (\`menu_build\`) are this run's to fix, never a handoff" "$RUNS/$self.brief.md"
+assert [ "$(grep -c 'never a handoff' "$RUNS/$hk.brief.md")" = 0 ]
+assert jqe --arg o "$O/.claude/worktrees/night-n3-$self" '.worktrees | index($o) != null' "$(record "$self")"
+assert jqe '.worktrees | length == 1' "$(record "$hk")"
+jq -n --argjson s $(($(now) + 5)) '{contract: 1, doctor: "harness", as_of_s: $s, judge: "base-harness", problems: []}' \
+  >"$DATA/harness-doc.json"
+printf '%s\thandoff\tproj/tests/test_x.sh\tdocs/handoffs/x.md\n' test_slow:proj:test_x test_long_pole:proj:test_x \
+  test_daily_cost:proj:test_x >"$WORK/hd"
+printf 'menu_build:automation\thandoff\thammerspoon/automation_menu.lua\tdocs/handoffs/x.md\n' >>"$WORK/hd"
+printf 'collector:run\thandoff\tllm-legs/bin/harness-doctor\tdocs/handoffs/x.md\n' >>"$WORK/hd"
+assert_fails fix close "$self" --decisions "$WORK/hd" "handed off" 2>"$WORK/err"
+assert [ "$(grep -c "handoff refused: test speed and menu delays are this run's to fix" "$WORK/err")" = 4 ]
+assert grep -qF 'line 4 (menu_build:automation): handoff refused' "$WORK/err"
+assert_fails grep -qF "(collector:run): handoff refused" "$WORK/err"
+rm "$DATA/harness-doc.json"
 load=$(cat "$DATA"/h-* | awk -F'\t' '$1 ~ /^harness-load-/ {print $1}')
 assert jqe '.problems[0].id == "load:host" and .problems[0].component.files == []' "$(record "$load")"
 fix touches "$(record "$load")" load:host proj/README

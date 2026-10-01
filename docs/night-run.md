@@ -107,7 +107,11 @@ This design folds in two frontier hunts (runs 20260929T225123Z-3e30191 and 20260
 `~/.cache/doctors/nights/<night-id>.json`:
 - `id`, `started_at`, `finished_at`, the orchestrator's `session` and, once resumed, the earlier
   ones in `previous_sessions`;
-- `doctors_before` and `doctors_after` (problem counts);
+- `doctors_before` and `doctors_after` (problem counts), and `doctor_states_before`/`doctor_states_after`:
+  per doctor the problems of its `latest.json` by ledger state, `proved` (a harness fix proven,
+  `fixed · E events since · 0 matched`), `pending` (`fixed-pending` or rule `fix-proof`), `open`,
+  `new`, `regressed`. `report` and the menu's Last night print one line per doctor,
+  `harness 35 → 38 · proved 4 · pending 18 · new 16 · regressed 5`;
 - `jobs[]`, each with:
   - `kind` (fixer, vendor, debt or leftover) and `ref` (run id, event id, review round or
     `leftover-<slug>`); a leftover job also carries `adopted[]` ({repo, branch, worktree, tip,
@@ -129,7 +133,7 @@ process lives, so a start killed mid-open never blocks the next one. Only a runn
 
 ## Continue and Cleanup
 - `night-run start --resume <id> [--job <ref>]` reopens the SAME night for a new orchestrator
-  (prompt `сделай чистку — night run <id> resume`): `finished_at` and `doctors_after` go null, the old
+  (prompt `сделай чистку — night run <id> resume`): `finished_at`, `doctors_after` and `doctor_states_after` go null, the old
   `session` is appended to `previous_sessions`, and the unfinished (`left`, `pending`) jobs, or the one
   `--job` names, go back to `pending` with their reasons kept. Without `--job` a `debt-<n>` job is
   added when no debt job is pending. The review-flow gate needs no change: it reads the night's

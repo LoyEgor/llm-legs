@@ -30,6 +30,9 @@ Exit 1 if any suite failed, with the last 30 lines of each failure.
   --all         also run the suites skipped by default because they read live machine state
                 (llm-legs e2e_surfaces.sh, test_instruction_rates_live.sh)
   suite ...     explicit suite names or paths; skips discovery
+
+Machine-wide at most RUN_SUITES_SLOTS runs at once (default cores / 3, 2 to 4); a run waits for a free
+slot under RUN_SUITES_SLOTS_DIR, its wait a limiter hold.
 USAGE
   exit 2
 }
@@ -122,6 +125,20 @@ serial_suite() {
   esac
 }
 
+# Machine-wide, at most RUN_SUITES_SLOTS runs at once: each already fans out -j cores/2 suites, so
+# cores/3 runs (2 to 4) fill the cores and a third keeps a short named run from queueing behind two
+# full ones. A nested run (a suite testing this runner) inherits its parent's slot.
+own_slot=''
+if [ -z "${RUN_SUITES_SLOT:-}" ]; then
+  . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/slots.sh"
+  own_slot=$(slot_wait "${RUN_SUITES_SLOTS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/run-suites/slots}" \
+    "${RUN_SUITES_SLOTS:-$(slots_from_cores 3 2 4)}" $((6 * 3600)) run-suites "suites of $repo") ||
+    fail 'could not take a suite slot'
+  trap 'slot_release "$own_slot"' EXIT
+  export RUN_SUITES_SLOT=$own_slot
+  printf -v run_suites_start '%(%s)T' -1
+fi
+
 declare -a suites=()
 if [ "${#explicit[@]}" -gt 0 ]; then
   for entry in "${explicit[@]}"; do
@@ -188,8 +205,8 @@ logdir=$(mktemp -d "${TMPDIR:-/tmp}/run-suites.XXXXXX") || fail 'could not creat
 # names the repository from here: this process never leaves the caller's directory.
 progress_file="${STATUSLINE_CACHE_DIR:-$HOME/.cache/claude-statusline}/suites-$$"
 mkdir -p "${progress_file%/*}" 2>/dev/null &&
-  printf '%s\t%s\t%s\t%(%s)T\n' "$logdir" "${#suites[@]}" "$repo" -1 >"$progress_file" 2>/dev/null
-trap 'rm -f "$progress_file"' EXIT
+  printf '%s\t%s\t%s\t%s\n' "$logdir" "${#suites[@]}" "$repo" "$run_suites_start" >"$progress_file" 2>/dev/null
+trap 'rm -f "$progress_file"; [ -z "$own_slot" ] || slot_release "$own_slot"' EXIT
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/test-scope.sh"
 if [ "${#explicit[@]}" -gt 0 ]; then scope=named; elif $changed; then scope=changed; elif $include_live; then scope=all
 else scope=full; fi

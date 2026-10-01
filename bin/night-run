@@ -85,16 +85,27 @@ all_nights() { # -> every night as one JSON array, newest first
   jq -s 'sort_by(.started_at, .id) | reverse' "${files[@]}"
 }
 
-doctor_counts() { # -> {"llm": N|null, "harness": N|null, "updater": N|null}
+doctor_read() { # jq-filter -> {"llm": value|null, "harness": value|null, "updater": value|null} off each latest.json
   local llm harness updater
   llm="${LLM_DOCTOR_DIR:-$HOME/.cache/llm-doctor}/latest.json"
   harness="${HARNESS_DOCTOR_DIR:-$HOME/.cache/harness-doctor}/latest.json"
   updater="${UPDATER_DOCTOR_DIR:-$HOME/.cache/updater-doctor}/latest.json"
-  jq -n --arg l "$llm" --arg h "$harness" --arg u "$updater" \
-    --argjson ln "$(jq '.problem_count // null' "$llm" 2>/dev/null || echo null)" \
-    --argjson hn "$(jq '.problem_count // null' "$harness" 2>/dev/null || echo null)" \
-    --argjson un "$(jq '.problem_count // null' "$updater" 2>/dev/null || echo null)" \
+  jq -n \
+    --argjson ln "$(jq -c "$1" "$llm" 2>/dev/null || echo null)" \
+    --argjson hn "$(jq -c "$1" "$harness" 2>/dev/null || echo null)" \
+    --argjson un "$(jq -c "$1" "$updater" 2>/dev/null || echo null)" \
     '{llm: $ln, harness: $hn, updater: $un}'
+}
+
+doctor_counts() { doctor_read '.problem_count // null'; }
+
+# proved: a fix the doctor proved (harness `fixed · E events since · 0 matched`; the LLM doctor drops a
+# proved row instead); pending: a fix awaiting its commit or its proof.
+doctor_states() {
+  doctor_read '[.problems[]? | (.fact // "") as $f
+    | if (.state == "fixed-pending" or .state == "watch") and ($f | test("^fixed · [0-9]+ events since · 0 matched")) then "proved"
+      elif .state == "fixed-pending" or .rule == "fix-proof" then "pending" else .state end] as $s
+    | reduce ("proved", "pending", "open", "new", "regressed") as $k ({}; .[$k] = ($s | map(select(. == $k)) | length))'
 }
 
 main_checkout() {
@@ -134,7 +145,7 @@ resume_night() { # id job-ref-or-empty (locked): reopens the night for a new orc
     jq -e "$JQ_UNFINISHED"' any(.jobs[]; unfinished)' "$file" >/dev/null || die "night $id has no unfinished job"
   fi
   night_set "$id" "$JQ_UNFINISHED"' .previous_sessions = ((.previous_sessions // []) + [.session | values])
-    | .session = null | .opener = $opener | .finished_at = null | .doctors_after = null | .note = null
+    | .session = null | .opener = $opener | .finished_at = null | .doctors_after = null | .doctor_states_after = null | .note = null
     | .jobs |= map(if unfinished and ($job == "" or .ref == $job) then .state = "pending" else . end)
     | if $job == "" and ([.jobs[] | select(.kind == "debt" and .state == "pending")] | length) == 0
       then .jobs += [{kind: "debt", ref: "debt-\([.jobs[] | select(.kind == "debt")] | length + 1)", state: "pending",
@@ -165,9 +176,10 @@ cmd_start() {
     id="$(date -u +%Y%m%dT%H%M%SZ)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
     file=$(night_file "$id")
     [ ! -e "$file" ] || die "night id $id is taken"
-    jq -n --arg id "$id" --arg t "$(stamp)" --argjson before "$(doctor_counts)" --argjson opener "$$" \
-      '{id: $id, started_at: $t, finished_at: null, session: null, account: null, command: null, note: null,
-        doctors_before: $before, doctors_after: null, jobs: [], opener: $opener}' >"$file.tmp" && mv -f "$file.tmp" "$file" ||
+    jq -n --arg id "$id" --arg t "$(stamp)" --argjson before "$(doctor_counts)" --argjson states "$(doctor_states)" \
+      --argjson opener "$$" '{id: $id, started_at: $t, finished_at: null, session: null, account: null, command: null, note: null,
+        doctors_before: $before, doctors_after: null, doctor_states_before: $states, doctor_states_after: null, jobs: [],
+        opener: $opener}' >"$file.tmp" && mv -f "$file.tmp" "$file" ||
       { rm -f "$file.tmp"; die "cannot write $file"; }
   fi
   unlock
@@ -396,9 +408,9 @@ cmd_finish() {
   known_night "$id"
   lock
   jq -e '.finished_at == null' "$(night_file "$id")" >/dev/null || die "night $id is already finished"
-  night_set "$id" '.finished_at = $t | .doctors_after = $after
+  night_set "$id" '.finished_at = $t | .doctors_after = $after | .doctor_states_after = $states
     | .jobs |= map(if .state == "pending" then .state = "left" | .reason = "no outcome recorded by the close" else . end)' \
-    --arg t "$(stamp)" --argjson after "$(doctor_counts)" || die "cannot write night $id"
+    --arg t "$(stamp)" --argjson after "$(doctor_counts)" --argjson states "$(doctor_states)" || die "cannot write night $id"
   unlock
   printf 'night %s finished\n' "$id"
   pruned=$(prune_landed)
@@ -512,6 +524,10 @@ JQ_TOTALS='def totals: [.jobs[] | .state] as $s
      unpushed: ([.jobs[] | select(.state == "merged" and .pushed != true)] | length),
      unfinished: ($status == "unfinished"), running: ($status == "running")};
 def hm: if . == null then "-" else fromdateiso8601 | strflocaltime("%H:%M") end;
+def doctor_lines: . as $n | ["llm", "harness", "updater"][] as $d
+  | "\($d) \($n.doctors_before[$d] // "-") → \(if $n.doctors_after then ($n.doctors_after[$d] // "-") else "?" end)"
+    + ($n.doctor_states_after[$d]? // null | if . then " · proved \(.proved) · pending \(.pending) · new \(.new) · regressed \(.regressed)"
+       else "" end);
 def count(n; word): if n > 0 then "\(n) \(word)" else empty end;'
 
 pick_night() { # [id] -> night file
@@ -552,8 +568,7 @@ cmd_report() {
     | "night \(.id) · \(.started_at | hm)–\(.finished_at | hm)"
       + (if $t.running then " · running" elif $t.unfinished then " · UNFINISHED" else "" end),
       (if .note then "note · \(.note)" else empty end),
-      ("doctors · " + ([["llm", "harness", "updater"][] as $d
-        | "\($d) \(.doctors_before[$d] // "-")→\(if .doctors_after then (.doctors_after[$d] // "-") else "?" end)"] | join(" · "))),
+      doctor_lines,
       (.jobs[] | ([.state, .kind, .ref]
         + (if .branch and .state != "merged" then [.branch] else [] end)
         + (if .review then ["review \(.review)"] else [] end)
@@ -605,6 +620,7 @@ cmd_latest() {
     | "\($when): \($parts | join(" · "))\t\(if $t.failed + $t.blocked > 0 or .note != null then 1 else 0 end)\t\(
         if $t.running then 1 else 0 end)\t\(.id)",
       (if .note then "orchestrator chat did not open\t1\t\(.note | flat)" else empty end),
+      (doctor_lines | "\(.)\t0\t\t\tdoctor\t0"),
       (.jobs[] | "\(name) · \(word)\(if .reason then " · " + (.reason | flat | gist) else "" end)\t\(
         if .state == "failed-launch" or .state == "blocked-on-egor" then 1 else 0 end)\t\(.reason // "" | flat)\t\(
         .ref | flat)\t\(.kind)\t\(if unfinished and ($t.running | not) then 1 else 0 end)")' \

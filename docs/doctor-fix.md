@@ -42,7 +42,7 @@ recorded `component: unverified`, shown by `doctor-fix show` and `night-run repo
 | `ruled-out` | not a bug of ours | an `open` ledger row narrowed to this cause, the reason in its `note`, and a handoff proposing the dismissal to the owner |
 | `weather` | vendor-side or external | the same as `ruled-out` |
 | `blind-spot` | cannot be measured yet | a ledger `blind_spots` row with `would_catch_if` |
-| `handoff` | ambiguous, owned by another chat (a goal miss included), needs Egor's word, or would loosen the judge | `docs/handoffs/<date>-<topic>.md` with a `Status: open` line, addressed to the ledger's `owner` or `owners`, and the row's `handoff` pointing at it |
+| `handoff` | ambiguous, owned by another chat (a goal miss included), needs Egor's word, or would loosen the judge; never test speed or `menu_build` (`close` refuses it) | `docs/handoffs/<date>-<topic>.md` with a `Status: open` line, addressed to the ledger's `owner` or `owners`, and the row's `handoff` pointing at it |
 
 Clear bugs are fixed, never handed off. A fixer never writes a `not-a-bug` or `weather` row: the
 narrowed `open` row keeps the cause on record without loosening the judge, and the owner decides the
@@ -102,7 +102,7 @@ one line of why and where it was fixed and tested; handoffs and blind spots adde
 The brief (`<runs>/<id>.brief.md`) names your area, worktree and branch `night/<night-id>/<run-id>`.
 It replaces the pour:
 - Work only in that worktree and the `ADD-DIR:` worktrees at the top of the brief: one per other
-  repository the components name, on the same branch, started from that repository's
+  repository the components name (every sweep repository for a run holding test speed), on the same branch, started from that repository's
   `refs/night/<night>/base` (main as pressed, uncommitted work included). A change in any other
   repository is a handoff. Never write a main checkout: hooks and other chats read it.
 - Commit on your branch (one long line). Never push, review or merge: the orchestrator reviews the
@@ -155,6 +155,15 @@ Proof (the doctor's, later): `fixed · E events since · 0 matched` with E ≥ 2
 over a window after the fix's `at`; a quiet row alone proves nothing. Record a `fixes[]` entry with
 `in: null` and status `fixed-pending`; the doctor fills `in` once every listed file is committed.
 Never edit `in` by hand.
+
+### Test speed and menu delays are yours
+
+`test_long_pole`, `test_daily_cost`, `test_slow`, `suites_at_once` and `menu_build` are fixed by the
+run that holds them, never handed off: `close` refuses a `handoff` line for them. Test speed: split a
+long pole into independent suite files `tests/run-all` runs in parallel, cut redundant cases, make
+timing asserts load-robust, cache fixtures, in any sweep repository (a night run holding one gets a
+worktree in each); every assert keeps its coverage. Menu delays: the packet names the menu's build
+files (`hammerspoon/automation_menu.lua`, `llm-legs/hammerspoon/llm-limits.lua`).
 
 ### The judge is not yours to loosen
 

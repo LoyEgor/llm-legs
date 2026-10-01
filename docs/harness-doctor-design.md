@@ -619,7 +619,11 @@ job of one chat for about 4 h under memory pressure and nothing reached Egor.
   `refreshWarning` for the refresh's own warning. `refreshTitle` shows ⚠ for a hold even while a
   refresh is busy (⟳ otherwise), and its tooltip carries the hold's text and, when both hold, the
   refresh warning's under it; `refreshState().prefix` follows the same order.
-- **llm-legs limiters.** None writes a hold today. `share/store-lock.sh` waits at most 60 s and
+- **llm-legs limiters.** `share/slots.sh` `slot_wait` writes one: `run-suites` (at most
+  `RUN_SUITES_SLOTS` suite runs machine-wide, cores / 3 clamped 2–4) and `night-workers` (`worker-run`
+  on a `night/*/*` branch, at most `NIGHT_FIXER_SLOTS`, cores / 2 clamped 2–8). A queued suite run is
+  no test yet (no `suites-<pid>` pointer); the `worker-run` watchdog counts a live hold in its run's
+  process tree as activity. `share/store-lock.sh` waits at most 60 s and
   then fails visibly; `claudeb`'s refresh convergence backoff (≤ 240 s) runs under the menu's ⟳ busy
   title; `share/run-suites.sh` queues suites behind its own `-j` inside one run the statusline
   shows as `suites n/m`; browser and deadline waits in `worker-run`/`codex-image` are bounded

@@ -3274,4 +3274,17 @@ else
   echo "   (skipped: Hammerspoon is not reachable from this shell)"
 fi
 
+# The menubar's synchronous scan read always ends: the guard kills the scan's whole process group,
+# a pipeline subshell still holding the pipe included, and the scan runs with a locale in its
+# environment so bash never asks CoreFoundation for one.
+scan_guard=$(awk '/^local SCAN_GUARD = \[\[/ { on = 1; sub(/^local SCAN_GUARD = \[\[/, "") } on { print } /\]\]$/ && on { exit }' \
+  "$ROOT/hammerspoon/instruction-watch.lua" | sed '$ s/\]\]$//')
+assert_eq "out rc=3" "$(/usr/bin/perl -e "$scan_guard" 5 bash -c 'printf out; exit 3'; echo " rc=$?")"
+SECONDS=0
+guard_out=$(/usr/bin/perl -e "$scan_guard" 1 bash -c 'echo early; sleep 60 | cat; echo late'; echo "rc=$?")
+assert test "$SECONDS" -lt 5
+assert_eq "early rc=124" "$(printf '%s' "$guard_out" | tr '\n' ' ')"
+assert grep -q '"PATH=" .. WATCH_PATH .. ":$PATH; export PATH; LC_ALL=C; export LC_ALL; exec /usr/bin/perl -e",' \
+  "$ROOT/hammerspoon/instruction-watch.lua"
+
 echo "OK ($asserts assertions)"

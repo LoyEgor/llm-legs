@@ -32,6 +32,8 @@ JQ_EPOCH='def epoch: if type == "number" then . elif type == "string" then
 JQ_OPEN='def open: .closed_at == null and .abandoned_at == null and .failed_at == null;'
 JQ_AREA='def area: .area // (if .doctor == "updater" then "release" else "all" end);'
 JQ_COUNTS='"\(.problems | length) problems" + (if (.quiet // []) | length > 0 then " · \(.quiet | length) known, quiet" else "" end)'
+TEST_SPEED_RULES=' test_long_pole test_daily_cost test_slow suites_at_once '
+JQ_HAS_RULES='any(.problems[]; .rule as $r | $rules | split(" ") | index($r))'
 
 die() { printf 'doctor-fix: %s\n' "$*" >&2; exit 1; }
 stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -122,6 +124,8 @@ LLM_ENTRIES = {"reviewers": "review-bench/bin/review-bench", "workers": "llm-leg
 with open(os.path.join(ROOT, "share", "doctor-areas.json")) as _areas:
     OWN_AREA = json.load(_areas)["own"]
 BROWSER_ENGINE = ("llm-legs/share/gemini_web.py", "llm-legs/share/gemini_music.py", "llm-legs/share/flow_music.py")
+MENU_BUILDERS = {"automation": ("hammerspoon/automation_menu.lua", "llm-legs/hammerspoon/llm-limits.lua"),
+                 "llm-limits": ("llm-legs/hammerspoon/llm-limits.lua",)}
 UPDATER_MACHINERY = {rule: "llm-legs/bin/vendor-cli-update" for rule in ("pass-stale", "pass-failed", "cli-behind", "client-too-old")}
 UPDATER_MACHINERY.update({rule: "llm-legs/bin/vendor-fingerprint" for rule in ("probe-broken", "catalog-missing", "event-stuck", "foreign-client")})
 WIDTH = 200
@@ -266,6 +270,9 @@ def snapshot(doctor, doc_file):
                 repo, test = ident.split(":")
                 files += [f for f in (os.path.join(repos_dir(doctor), repo, "tests", test + ext) for ext in (".sh", ".py", ""))
                           if os.path.isfile(f)][:1]
+            if rule == "menu_build":
+                files += [f for f in (os.path.join(repos_dir(doctor), name) for name in MENU_BUILDERS.get(
+                    ident, MENU_BUILDERS["automation"])) if os.path.isfile(f)]
             if rule == "collector":
                 files.append(doctor_script(doctor))
         else:
@@ -495,6 +502,10 @@ write_brief() { # id worktree -> the brief file
     printf '   Close reruns `bin/%s-doctor --json` in this worktree itself; a `fixed` problem must read fixed-pending or be gone there.\n' "$doctor"
     printf '5. Whatever you found but did not fix, and every cause you ruled out, goes into the ledger (a row'"'"'s `note`, a new row or a `blind_spots` row), so the next fixer does not dig the same ground.\n'
     printf '6. Report: per problem the verdict and one line of why, the commits (repo@hash) and every handoff.\n\n'
+    ! jq -e --arg rules "$TEST_SPEED_RULES" "$JQ_HAS_RULES" "$file" >/dev/null ||
+      printf 'Test speed is this run'"'"'s to fix, never a handoff (`close` refuses one): for `test_long_pole`, `test_daily_cost`, `test_slow` and `suites_at_once` make the suites faster yourself in any sweep repository (an `ADD-DIR:` worktree each): split a long pole into independent suite files that `tests/run-all` runs in parallel, cut redundant cases, make timing asserts load-robust, cache fixtures; every assert keeps its coverage.\n\n'
+    ! jq -e --arg rules ' menu_build ' "$JQ_HAS_RULES" "$file" >/dev/null ||
+      printf 'Menu delays (`menu_build`) are this run'"'"'s to fix, never a handoff (`close` refuses one): make the build in the files the packet names faster, measured by the menu journal the doctor reads.\n\n'
     [ "$doctor/$area" != llm/reviewers ] ||
       printf 'Settle every stuck review round (`machinery:closure_pending`) of the sweep repositories yourself, not only its machinery; never touch a round of another project: the LLM doctor section "Stuck review rounds".\n\n'
     printf '## Packet\n\n'
@@ -538,7 +549,9 @@ launch_night() { # doctor night
       continue
     fi
     repos=()
-    while IFS= read -r repo; do repos+=("$repo"); done < <(component_repos "$id" "$top")
+    while IFS= read -r repo; do repos+=("$repo"); done < <({ component_repos "$id" "$top"
+      ! jq -e --arg rules "$TEST_SPEED_RULES" "$JQ_HAS_RULES" "$(record_file "$id")" >/dev/null ||
+        grep -vxF -e "$top" -e '' "${NIGHT_RUN_SWEEP_REPOS:-$HOME/.claude/sweep-repos}" 2>/dev/null; } | sort -u)
     siblings=$(night_sibling_worktrees "$night" "$branch" "$id" ${repos[@]+"${repos[@]}"})
     [ -z "$siblings" ] || locked record_set "$id" '.worktrees += ($s | split("\n"))' --arg s "$siblings"
     [ -n "$judge" ] || judge=$( (cd "$wt" && "bin/$doctor-doctor" --json 2>/dev/null) | jq -r '.judge // empty' 2>/dev/null)
@@ -691,6 +704,10 @@ close_run() { # id --decisions <file> note...
       [ "$verdict" = changed ] || { bad+=("line $line_no (judge): verdict must be changed"); continue; }
     elif [[ $VERDICTS != *" $verdict "* ]]; then
       bad+=("line $line_no ($pid): verdict '$verdict' is not one of fixed|ruled-out|weather|blind-spot|handoff")
+      continue
+    elif [ "$verdict" = handoff ] && [[ "$TEST_SPEED_RULES menu_build " == *" $(jq -r --arg p "$pid" \
+      'first(.problems[] | select(.id == $p) | .rule) // ""' "$file") "* ]]; then
+      bad+=("line $line_no ($pid): handoff refused: test speed and menu delays are this run's to fix")
       continue
     fi
     py touches "$file" "$pid" "$purpose"

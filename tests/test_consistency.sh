@@ -1507,6 +1507,15 @@ CLAUDE_SETUP="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}"
 RJOURNAL="$CLAUDE_SETUP/hooks/lib/review-journal.sh"
 FLOW_GATE="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/review-flow-gate.sh"
 
+# The review floor's one home is review-bench store.REVIEW_FLOOR_LINES; span-off and the sweep mirror it.
+review_floor=$(sed -n 's/^REVIEW_FLOOR_LINES = \([0-9][0-9]*\)$/\1/p' "$RB_STORE")
+assert test -n "$review_floor"
+if test -r "$RJOURNAL"; then
+  assert grep -Fxq "RJ_SPAN_DEBT_LINES=$review_floor" "$RJOURNAL"
+  assert grep -Fq "under the ${review_floor}-line review floor" "$CLAUDE_SETUP/skills-on-demand/night-sweep/SKILL.md"
+  assert grep -Fq "owe ${review_floor} lines or more" "$CLAUDE_SETUP/skills-on-demand/night-sweep/SKILL.md"
+fi
+
 # --- Row ah: one repository, one attributed count -----------------------------
 assert doc_has 'The statusline speaks the gate'
 assert grep -Fq '"$gate" verdict "$1" "$2"' "$STATUSLINE"

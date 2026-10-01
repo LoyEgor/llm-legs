@@ -4,7 +4,8 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 WORK=$(cd "$(mktemp -d)" && pwd -P)
 trap 'rm -rf "$WORK"' EXIT
 export STATUSLINE_CACHE_DIR="$WORK/sl"
-export RUN_SUITES_TIMES="$WORK/times.tsv"
+export RUN_SUITES_TIMES="$WORK/times.tsv" RUN_SUITES_SLOTS_DIR="$WORK/slots" HARNESS_HOLDS_DIR="$WORK/holds"
+unset RUN_SUITES_SLOT
 asserts=0
 assert() { asserts=$((asserts + 1)); "$@" || { printf 'FAIL: assert %s: %s\n' "$asserts" "$*"; exit 1; }; }
 

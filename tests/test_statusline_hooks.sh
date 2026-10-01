@@ -3731,7 +3731,7 @@ printf 'acc · astra · high\nrun=codex-7-7-done\n' > "$HOME/.cache/claude-worke
 WP_LOGS="$WORK/wp-logs"
 mkdir -p "$WP_LOGS"
 printf '0\t3\n' > "$WP_LOGS/test_a.sh.status"; printf '1\t2\n' > "$WP_LOGS/test_b.sh.status"
-printf '%s\t5\t%s\t%s\n' "$WP_LOGS" "$WP_REPO" "$(date +%s)" > "$STATE_DIR/suites-1101"
+printf '%s\t5\t%s\t%s\n' "$WP_LOGS" "$WP_REPO" "$(($(date +%s) - 299))" > "$STATE_DIR/suites-1101"
 printf '%s\t4\t%s\t1000\n' "$WP_LOGS" "$WORK/wp-other" > "$STATE_DIR/suites-1321"
 WP_SNAP='wrap() { printf "%s %s %s /bin/zsh -c source /h/.claude/shell-snapshots/snapshot-zsh-1.sh 2>/dev/null || true && eval %s\n" "$@"; }'
 FAKE_PS_WORK="$FIXTURES/work-ps"
@@ -3800,7 +3800,7 @@ chmod +x "$FAKE_PS_WORK"
 FAKE_LSOF_WORK="$FIXTURES/work-lsof"
 cat > "$FAKE_LSOF_WORK" <<LSEOF
 #!/usr/bin/env bash
-printf 'p1101\nfcwd\nn%s\n' "$WP_REPO"
+printf 'p1101\nfcwd\nn%s\n' "$WORK/wp-plain"
 printf 'p1200\nfcwd\nn%s\n' "$WP_REPO/.claude/worktrees/wt-one"
 printf 'p1231\nfcwd\nn%s\n' "$WORK/wp-plain"
 printf 'p1260\nfcwd\nn%s\n' "$WORK/wp-plain"
@@ -3818,12 +3818,13 @@ STATUSLINE_PS="$FAKE_PS_WORK" STATUSLINE_LSOF="$FAKE_LSOF_WORK" WORKER_RUN_DIR="
 # environment names another chat (3100), a finished run's supervisor (2100), and another chat's
 # tests (4002). A test file only NAMED by a command (`sed … tests/test_x.sh`) is no test. Nor a hook
 # younger than 5s (1281) or a review panel's cell test, whose waiter row carries it (5001).
-# A suite run or a script under another repository is that repository's whatever the cwd (1321,
-# 1311); a test that exec'd over its snapshot shell is still a test (1270); a shell label takes the
+# A suite run is the repository it was handed whatever the cwd (1101); one with no pointer of its own
+# (1321: older than its process) is still queued for a slot. A script under another repository is that
+# repository's whatever the cwd (1311); a test that exec'd over its snapshot shell is still a test (1270); a shell label takes the
 # plain word after the program only, never an option's operand (1300).
 assert_eq "$(printf '%s\n' \
   $'main\ttests\twp repo\tsuites\t2\t1\t5' \
-  $'main\ttests\twp-other\tsuites\t2\t1\t4' \
+  $'main\ttests\twp repo\tsuites queued\t\t\t' \
   $'main\ttests\twp repo\ttest_orphan\t\t\t' \
   $'main\ttests\twp-other\ttest_y\t\t\t' \
   $'main\ttests\twp repo\ttest_sid\t\t\t' \
@@ -3839,7 +3840,7 @@ wp_start=$(awk -F'\t' '$4 == "wp repo" && $5 == "suites" { print $3 }' "$STATE_D
 assert test "$wp_start" -ge "$((wp_now - 301))" -a "$wp_start" -le "$((wp_now - 297))"
 wp_run_start=$(awk -F'\t' '$1 == "run" { print $3 }' "$STATE_DIR/work-wp-sess")
 assert test "$wp_run_start" -ge "$((wp_now - 91))" -a "$wp_run_start" -le "$((wp_now - 87))"
-# A pointer older than its process (1321) names no log directory the journal may judge by.
+# A suite run counts from its pointer's stamp, the moment it took its slot.
 assert_eq "$WP_LOGS" "$(awk -F'\t' '$1 == "main" && $9 != "" { printf "%s%s", s, $9; s = " " }' "$STATE_DIR/work-wp-sess")"
 wp_real=$(cd "$WP_REPO" && pwd -P)
 assert_eq "$wp_real $wp_real" \

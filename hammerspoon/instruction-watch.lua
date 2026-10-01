@@ -518,9 +518,19 @@ local function shellQuote(value)
     return "'" .. (tostring(value):gsub("'", "'\\''")) .. "'"
 end
 
+-- This read blocks Hammerspoon's main thread, so the scan's whole process group dies past SCAN_LIMIT_S.
+-- LC_ALL=C: with no locale in a launchd app's environment, bash's setlocale asks CoreFoundation, which
+-- deadlocks in a forked pipeline subshell (2026-10-01: the menubar froze 35 minutes).
+local SCAN_LIMIT_S = 20
+local SCAN_GUARD = [[my $limit = shift; my $pid = fork() // exit 125;
+if (!$pid) { setpgrp(0, 0); exec @ARGV or exit 127 }
+$SIG{ALRM} = sub { kill 'TERM', -$pid; select(undef, undef, undef, 0.5); kill 'KILL', -$pid };
+alarm $limit; waitpid($pid, 0); exit($? & 127 ? 124 : $? >> 8)]]
+
 local function runScan(mode, args)
     if not ROOT then return nil, "repository root unresolved" end
-    local parts = { "PATH=" .. WATCH_PATH .. ":$PATH; export PATH; exec bash -c", shellQuote(WATCH_SCRIPT),
+    local parts = { "PATH=" .. WATCH_PATH .. ":$PATH; export PATH; LC_ALL=C; export LC_ALL; exec /usr/bin/perl -e",
+        shellQuote(SCAN_GUARD), tostring(SCAN_LIMIT_S), "bash -c", shellQuote(WATCH_SCRIPT),
         "instruction-watcher", shellQuote(ROOT), shellQuote(homeDir()), shellQuote(stateDir), mode }
     for _, arg in ipairs(args or {}) do parts[#parts + 1] = shellQuote(arg) end
     local handle = io.popen(table.concat(parts, " ") .. " 2>/dev/null")
