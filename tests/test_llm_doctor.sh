@@ -34,9 +34,10 @@ cat "$ANCHORS_ROWS"
 SH
 chmod +x "$WORK/bin/review-anchors"
 export PATH="$WORK/bin:$PATH" ANCHORS_ARGS="$WORK/anchors-args" ANCHORS_ROWS="$WORK/anchors-rows.jsonl"
-printf '{"session":"s1","kind":"touch-failed","detail":"/repo: review-anchors exited 1","count":2,"first":%d,"last":%d}\n{"session":"s1","kind":"hash-cap","detail":"/repo: more than 500 dirty paths","count":1090,"first":%d,"last":%d}\n{"session":"s1","kind":"hash-cap","detail":"/repo: 2 capped paths changed, first a.py","count":1,"first":%d,"last":%d}\n{"session":"s1","kind":"fixer-missing","detail":"R1 run-a","count":1,"first":%d,"last":%d}\n{"session":"s1","kind":"fixer-missing","detail":"R2 run-b","count":1,"first":%d,"last":%d}\n' \
+printf '{"session":"s1","kind":"touch-failed","detail":"/repo: review-anchors exited 1","count":2,"first":%d,"last":%d}\n{"session":"s1","kind":"hash-cap","detail":"/repo: more than 500 dirty paths","count":1090,"first":%d,"last":%d}\n{"session":"s1","kind":"hash-cap","detail":"/repo: 2 capped paths changed, first a.py","count":1,"first":%d,"last":%d}\n{"session":"s1","kind":"fixer-missing","detail":"R1 run-a","count":1,"first":%d,"last":%d}\n{"session":"s1","kind":"fixer-missing","detail":"R2 run-b","count":1,"first":%d,"last":%d}\n{"session":"s1","kind":"run-fold","detail":"w-1 /r: snapshots unreadable","count":1,"first":%d,"last":%d}\n{"session":"s1","kind":"run-fold","detail":"w-2 /r: review-anchors exited 1: boom","count":1,"first":%d,"last":%d}\n' \
   "$((NOW - 1800))" "$((NOW - 900))" "$((NOW - 259200))" "$((NOW - 259140))" "$((NOW - 259000))" "$((NOW - 259000))" \
-  "$((NOW - 3000))" "$((NOW - 3000))" "$((NOW - 2000))" "$((NOW - 2000))" >"$ANCHORS_ROWS"
+  "$((NOW - 3000))" "$((NOW - 3000))" "$((NOW - 2000))" "$((NOW - 2000))" "$((NOW - 1500))" "$((NOW - 1500))" \
+  "$((NOW - 1400))" "$((NOW - 1400))" >"$ANCHORS_ROWS"
 
 export LLM_DOCTOR_REPOS="$WORK/repos"
 FIXREPO="$LLM_DOCTOR_REPOS/review-bench"
@@ -210,6 +211,7 @@ json.dump({"owner": "Doctor owner", "owners": {"reviewers": "Review owner", "wor
     entry("X8", "reviewers", {"word": "auth", "detail": "HTTP 401"}, "still uncommitted", "fixed-pending",
           [fix(5000, ["review-bench/share/rbench/report.py"])]),
     entry("H1", "any", {"health": "debt", "key": "^debt-gap:fixer-missing"}, "fixer gaps", "open"),
+    entry("H2", "any", {"health": "debt", "key": "^debt-gap:run-fold:snapshots unreadable$"}, "fold gaps", "open"),
     entry("M1", "reviewers", {"machinery": "anchors"}, "anchor warnings", "open"),
     entry("M2", "reviewers", {"machinery": "integrity"}, "tree moved", "fixed", [fix(7200, runtime, commits["runtime"])]),
     entry("M3", "reviewers", {"machinery": "debt_scope"}, "debt scope", "fixed",
@@ -273,8 +275,10 @@ assert [row["name"] for row in doc["health"]] == ["debt"]
 debt = {(item["label"], item["chat"]): (item["count"], item["repeats"]) for item in health["debt"]["items"]}
 assert debt == {("not recorded: touch-failed in repo", "unnamed chat"): (1, 2),
                 ("not recorded: hash-cap in repo", "unnamed chat"): (1, 1091),
-                ("not recorded: fixer-missing", "unnamed chat"): (2, 2)}, debt
-assert health["debt"]["count"] == 4 and health["debt"]["notes"] == [], health["debt"]
+                ("not recorded: fixer-missing", "unnamed chat"): (2, 2),
+                ("not recorded: run-fold: snapshots unreadable", "unnamed chat"): (1, 1),
+                ("not recorded: run-fold: review-anchors exited 1", "unnamed chat"): (1, 1)}, debt
+assert health["debt"]["count"] == 6 and health["debt"]["notes"] == [], health["debt"]
 
 def problems(block):
     return {(item["label"], (item["ledger"] or {}).get("id", "")): item for item in blocks[block]["problems"]}
@@ -392,6 +396,8 @@ assert states["X2"] == ("open", "leg-failure", "X2") and states["X4"] == ("open"
 assert states["X8"] == ("fixed-pending", "fix-proof", "X8") and states.get("X7", ("",))[0] != "fixed-pending", states
 assert states["H1"] == ("open", "debt-gap", "H1") and "debt-gap:fixer-missing" not in states, states
 assert states["debt-gap:touch-failed/repo"] == ("new", "debt-gap", None), states
+assert states["H2"] == ("open", "debt-gap", "H2") and "debt-gap:run-fold:snapshots unreadable" not in states, states
+assert states["debt-gap:run-fold:review-anchors exited 1"] == ("new", "debt-gap", None), states
 assert states["M1"][0] == "open" and states["M2"][0] == "regressed" and "M3" not in states, states
 assert states["machinery:closure_pending"] == ("new", "machinery", None), states
 assert states["machinery:debt_scope"] == ("new", "machinery", None), states
@@ -452,6 +458,8 @@ items = {(item["label"], item["chat"]): (item["count"], item["lines"]) for item 
 assert items == {("not recorded: touch-failed in repo", "unnamed chat"): (1, 0),
                  ("not recorded: hash-cap in repo", "unnamed chat"): (1, 0),
                  ("not recorded: fixer-missing", "unnamed chat"): (2, 0),
+                 ("not recorded: run-fold: snapshots unreadable", "unnamed chat"): (1, 0),
+                 ("not recorded: run-fold: review-anchors exited 1", "unnamed chat"): (1, 0),
                  ("lost unreviewed: run-fold-skip", "unnamed chat"): (2, 14),
                  ("lost unreviewed: untouch", "unnamed chat"): (1, 12), ("lost unreviewed: migrate", "r1"): (1, 3),
                  ("lost unreviewed: migrate", "r2"): (1, 4)} and debt["notes"] == [], debt
@@ -987,4 +995,4 @@ assert (failed["status"], failed["self"]["error"], failed["problem_count"]) == (
 
 PY
 
-echo "PASS: $asserts asserts; four blocks off fixture bench, worker-run, prelaunch and image-leg stores, bug vs weather, ledger new/open/regressed/fixed/dismissed, per-pass slow, superseded retries, chunk and judge legs, escape filtering, frozen daily history, rate trend against the rollup, files-note escapes, machinery classes held against the ledger, dry-run writes nothing, text view without run ids, debt health (open gaps from review-anchors counted once per cause (kind and repository, or kind and run) with their repeats, old open gaps kept, a failing reader noted, logged losses once per drop with their lines, sessionless losses grouped by repository) and one bug-or-weather rule per record shape (login, status anchors, provider clock, turn budgets, owner switches, killed early, chunk readings, escapes, run records, prelaunch and image refusals, machinery age), the doctors' contract envelope (stable ids, states, evidence one per event ref, a missing required store blind, judge digest, a near miss under NO_EXIT_S), ledger faults for broad dismissals and fix records, a re-fixed row judged by its last fix and by leg start, causes retries hid, pending fixes settled from a fixture repo, the pinned judge (dismissal rows, theirs words, exemptions, prelaunch skips, limits) and the collector's error document"
+echo "PASS: $asserts asserts; four blocks off fixture bench, worker-run, prelaunch and image-leg stores, bug vs weather, ledger new/open/regressed/fixed/dismissed, per-pass slow, superseded retries, chunk and judge legs, escape filtering, frozen daily history, rate trend against the rollup, files-note escapes, machinery classes held against the ledger, dry-run writes nothing, text view without run ids, debt health (open gaps from review-anchors counted once per cause (kind and repository, or kind and run, a run gap's why its own ledger key) with their repeats, old open gaps kept, a failing reader noted, logged losses once per drop with their lines, sessionless losses grouped by repository) and one bug-or-weather rule per record shape (login, status anchors, provider clock, turn budgets, owner switches, killed early, chunk readings, escapes, run records, prelaunch and image refusals, machinery age), the doctors' contract envelope (stable ids, states, evidence one per event ref, a missing required store blind, judge digest, a near miss under NO_EXIT_S), ledger faults for broad dismissals and fix records, a re-fixed row judged by its last fix and by leg start, causes retries hid, pending fixes settled from a fixture repo, the pinned judge (dismissal rows, theirs words, exemptions, prelaunch skips, limits) and the collector's error document"

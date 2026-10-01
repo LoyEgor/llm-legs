@@ -2204,13 +2204,17 @@ def debt_health(cutoff, now, window_h):
         repo = detail.split(": ", 1)[0] if detail.startswith("/") and ": " in detail else ""
         kind = str(row.get("kind") or "gap")
         label = "not recorded: %s" % kind
+        # worker-run's run gaps read "<run id> <path>: <why>": the why's head, before any stderr, is the cause.
+        why = detail.split(": ", 2)[1] if not repo and ": " in detail else ""
         if repo:
             label += " in %s" % os.path.basename(repo.rstrip("/"))
-        cause = causes.setdefault((row.get("session"), label, repo or detail), [label, 0, 0, kind, repo, detail])
+        elif why:
+            label += ": %s" % why
+        cause = causes.setdefault((row.get("session"), label, repo or detail), [label, 0, 0, kind, repo, why, detail])
         cause[1] = max(cause[1], row["last"])
         cause[2] += as_int(row.get("count")) or 1
-    for (session, _, _), (label, last, repeats, kind, repo, detail) in causes.items():
-        key = "%s/%s" % (kind, os.path.basename(repo.rstrip("/"))) if repo else kind
+    for (session, _, _), (label, last, repeats, kind, repo, why, detail) in causes.items():
+        key = "%s/%s" % (kind, os.path.basename(repo.rstrip("/"))) if repo else "%s:%s" % (kind, why) if why else kind
         add_item(items, label, last, session=session, repeats=repeats, rule="debt-gap", key=key,
                  ref="gaps:%s/%s/%s" % (session or "-", kind, event_stamp(last)), excerpt=detail)
     if note:

@@ -663,11 +663,11 @@
    "handoff": "docs/handoffs/2026-10-01-worker-json-auth-diagnostic.md"
   },
   {
-   "id": "H8",
+   "id": "H11",
    "block": "any",
    "match": {
     "health": "debt",
-    "key": "^debt-gap:run-fold$"
+    "key": "^debt-gap:run-fold:snapshots unreadable$"
    },
    "title": "run fold has no after snapshot; capture failure cause unconfirmed",
    "status": "open",
