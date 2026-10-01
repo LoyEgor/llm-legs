@@ -256,7 +256,7 @@ toast. A run that saved nothing locally but shows a track in the chat can be rea
 reply parser works on a reloaded chat's batchexecute.
 
 Failures: every failed attempt of either engine, an account the rotation skipped included, prints one
-`BROWSER_FAILURE route=<flow|gemini-app> account= code= shot= reason=` line on stderr (`BROWSER_WARNING`
+`BROWSER_FAILURE route=<flow|gemini-app|flow-music> account= code= shot= reason=` line on stderr (`BROWSER_WARNING`
 when the run still succeeded: the clone could not be hidden, the cover mp4 missed), saved in the image-leg
 log; `shot=` is a screenshot in `~/.gemini-web/failures/` beside a `.txt` page dump (dialogs, toasts,
 buttons, text), kept 14 days. llm-doctor turns the lines into `browser …` words in its image block.
@@ -272,11 +272,55 @@ Chrome's download is only the fallback, announced by a `the 1080p file went thro
 line. A crash there still gets two relaunches, then a `gemini-web fetch … --resolution 1080p` recovery line.
 gemini-sfx keeps every rejected take (no soundtrack, silent, loudness not measurable) in the failures folder.
 
-**Flow Music** (flowmusic.app) is signed in on com, egbogd, jihangarangan and locomthebest (Continue with
-Google → the account → Continue → tick "See your Google One membership…" → Continue → Privacy Notice
-Agree). The PLUS tier shows after a reload. It offers Lyria 3.5 and Lyria 3 Pro, audio uploads up to 40 MB
-and image uploads, and per song M4A/MP3/WAV, a video download and split stems, but no video input. It is not
-wired yet. It is the route for WAV masters, stems and a reference track.
+### Flow Music route (`--route flow`)
+
+`bin/gemini-music --route flow` → `share/flow_music.py` drives flowmusic.app's compose panel in the same
+hidden Chrome, profiles and account locks. `--model lyria-3-pro` implies the route; the app route stays the
+default until the reliability bench says otherwise. Use it for Lyria 3 Pro, WAV masters, stems, an exact
+length, lyrics, BPM and seed.
+
+| Fact (2026-10-01) | Evidence |
+| --- | --- |
+| Models: "Lyria 3.5" (labelled "Top performing, flagship model", the default) and "Lyria 3 Pro" (labelled "Legacy model") | the model menu and `/__api/models` |
+| Price: 5 credits a song for either model (a 3 min and a 1 min song alike); Split stems is free | `/settings` balance before and after 2 probe songs, 4 wrapper songs and 5 splits |
+| Pool: Flow Music's own credits, separate from Flow video credits: PLUS gives 10000 a month, plus a 500 bonus and 30 free daily; the balance is `music_credits` in the account meta | `/settings` Usage table, `/__api/billing/credits` |
+| A song renders in about 30 s; a wrapper run takes about 75 s (WAV), stems add about 60 s | `seconds=` footers |
+| Length takes m:ss from 1:00 to 3:00 and is a target, not exact: 75 s asked gave 100.7 s, 60 s gave 57–62 s | ffprobe of the takes |
+| Downloads: M4A, MP3 and WAV (48 kHz s16 stereo) come from the song's ⋯ → Download menu as a blob link that the page clicks; the engine catches the link (`gw.CATCH_DOWNLOAD`) and reads the file out of the page | 3 formats on 5 songs, stems included |
+| Stems: other, drums, vocals and bass, each listed in the library as "<title> - <stem>" | 5 splits |
+| One Generate makes one song (`clip_id_b` was null); the page's `/__api/clips` reply and the library row identify it by the run's unique title | traffic of the probe songs |
+
+Controls (role, name): button "Toggle compose panel"; textbox "Lyrics", switch "Toggle instrumental mode";
+textbox "Sound description" (`--genre` is put in front of the prompt); switch "Toggle advanced sound mode",
+then the BPM, Length and Seed inputs, which follow their labels, and button "Lyria 3.5" opens the model
+menuitems; button "Expand Details section" shows the title field (the dest's name plus 4 hex digits); button
+"Generate". Every control is set on each take because the panel keeps the last values. A menu item inside the
+Download submenu is chosen by focus and Enter, because a pointer click there lands on `<html>`.
+
+Flags (flow only): `--model lyria-3.5|lyria-3-pro`, `--format` (must match the dest: .mp3 .wav .m4a),
+`--duration 60-180`, `--length short` (1:00), `--lyrics`, `--bpm`, `--seed`, `--stems`
+(`<dest>-<stem>.<ext>` beside the track, `stem=` footer lines), `--ref-audio <≤ 40 MB audio>`, `--accounts 1-4`.
+`--ref-image` and `--video` stay app-only. `--accounts N` starts N engine processes at once, one per account,
+idle accounts first. It keeps every take as dest, dest-2, … (`variant= … account=`) and cancels nothing. It
+exits 0 when any take saved, and a `short=` line names the accounts that failed.
+
+Rotation: signed-in Gemini profiles in the gemini worker pool, without a Flow wall (Flow's unusual-activity flag
+holds here too) or a Flow Music wall (`~/.gemini-web/flow-music-walls.json`, 6 h, set on exit 3). A balance read
+in the last 6 h that is under the price of one song skips the account. Accounts with a known balance come first,
+then least recently used. An account Flow Music shows as signed out is marked `music_signed_in: false` and
+skipped until a balance read (`uv run --script share/flow_music.py status --account <name>`) finds it signed in.
+Signed in on 2026-10-01: com, egbogd, jihangarangan and locomthebest (Continue with Google → the account →
+Continue → tick "See your Google One membership…" → Continue → Privacy Notice Agree; PLUS shows after a reload).
+
+A song that finished after its run gave up is saved again without spending: `uv run --script
+share/flow_music.py fetch --account <a> --title <title> --out-dir <dir> --format wav [--stems]` (the title is
+in `jobs.jsonl` `kind: flow-music` rows). Message streams are never read, because a Producer stream can stay
+open and block the run. Split stems is awaited as library rows.
+
+`--ref-audio` goes through the chat (Add audio or image → Audio, then a message to Producer). The first upload
+opens Flow Music's "necessary rights" notice. The engine clicks I agree only for accounts that the owner lists
+under `agreed_flow_music` in `~/.gemini-web/notices.json` (his Gemini-app yes in `agreed` does not cover Flow
+Music); any other account exits 4. No account is listed yet, so the reference-track path is unverified live.
 
 **Sound effects** — `bin/gemini-sfx` runs `bin/gemini-video --model omni --resolution 360p` (4/6/8/10 s =
 4/5/6/7 credits) with a prompt that asks for an isolated sound on a close-up of its source. It keeps only the

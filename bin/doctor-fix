@@ -120,7 +120,7 @@ HOOK_AREAS = ("Hooks", "Hook waits")
 LLM_ENTRIES = {"reviewers": "review-bench/bin/review-bench", "workers": "llm-legs/bin/worker-run",
                "light": "llm-legs/bin/light-research", "image": "llm-legs/share/image-leg.sh",
                "health": "llm-legs/bin/llm-doctor"}
-BROWSER_ENGINE = ("llm-legs/share/gemini_web.py", "llm-legs/share/gemini_music.py")
+BROWSER_ENGINE = ("llm-legs/share/gemini_web.py", "llm-legs/share/gemini_music.py", "llm-legs/share/flow_music.py")
 UPDATER_MACHINERY = {rule: "llm-legs/bin/vendor-cli-update" for rule in ("pass-stale", "pass-failed", "cli-behind", "client-too-old")}
 UPDATER_MACHINERY.update({rule: "llm-legs/bin/vendor-fingerprint" for rule in ("probe-broken", "catalog-missing", "event-stuck", "foreign-client")})
 WIDTH = 200
@@ -242,7 +242,7 @@ def snapshot(doctor, doc_file):
             word = str((match if isinstance(match, dict) else {}).get("word") or pid.partition("/")[2])
             if area == "image" and word.startswith("browser "):
                 files += [os.path.join(repos_dir(doctor), path) for path in BROWSER_ENGINE]
-                what = "hidden-Chrome route (Flow, the Gemini app), step %s · %s" % (word[8:], what)
+                what = "hidden-Chrome route (Flow, the Gemini app, Flow Music), step %s · %s" % (word[8:], what)
             if pid.startswith("machinery:"):
                 what = "review-bench doctor class %s · %s" % (pid[10:], what)
         elif doctor == "harness":

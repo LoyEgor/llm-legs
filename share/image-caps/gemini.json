@@ -278,6 +278,11 @@
       "verified": "2026-10-01",
       "method": "live in the gemini-web clone: chip menus read, one generation (StreamGenerate reply: music_gen tool, lyria_3_5_fullsong, music.mp3 + output.mp4); video input: --video with a 46s cut gave a 60.4s named track and a cover mp4 (sections near the cuts, runs past the picture); rights notices answered from notices.json"
     },
+    "flow_music": {
+      "location": "https://www.flowmusic.app/session (Toggle compose panel; Advanced: BPM, Length, Seed, Model)",
+      "verified": "2026-10-01",
+      "method": "live in the gemini-web clone: /settings balance before and after one Lyria 3.5 and one Lyria 3 Pro song (5 credits each, about 3 min, about 30 s to render); Split stems left the balance unchanged (other, drums, vocals, bass); M4A, MP3 and WAV caught from the page's blob download link; Length takes m:ss from 1:00 to 3:00; /__api/models lists both models"
+    },
     "sfx": {
       "location": "bin/gemini-sfx over bin/gemini-video (Flow Omni)",
       "verified": "2026-10-01",
@@ -422,6 +427,40 @@
       "stems",
       "wav-download"
     ]
+  },
+  "flow_music": {
+    "surface": "flow-music",
+    "engine": "share/flow_music.py",
+    "models": {
+      "lyria-3.5": "Lyria 3.5",
+      "lyria-3-pro": "Lyria 3 Pro"
+    },
+    "default_model": "lyria-3.5",
+    "formats": {
+      "mp3": "MP3",
+      "wav": "WAV 48 kHz s16 stereo",
+      "m4a": "M4A"
+    },
+    "lengths": {
+      "short": "1:00",
+      "standard": ""
+    },
+    "duration_s": [
+      60,
+      180
+    ],
+    "price_per_song": 5,
+    "stems_price": 0,
+    "stems": [
+      "other",
+      "drums",
+      "vocals",
+      "bass"
+    ],
+    "ref_audio_max_mb": 40,
+    "timeout_s": 600,
+    "upload_wait_s": 300,
+    "max_accounts": 4
   },
   "sfx": {
     "script": "bin/gemini-sfx",

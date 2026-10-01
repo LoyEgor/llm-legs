@@ -223,7 +223,7 @@ IMAGE_REASONS = (
                                 re.IGNORECASE)),
 )
 IMAGE_ORIGIN = {"bad output": "ours"}
-# The hidden-Chrome routes (gemini-web: Flow, the Gemini app) print one BROWSER_FAILURE or BROWSER_WARNING
+# The hidden-Chrome routes (gemini-web: Flow, the Gemini app, Flow Music) print one BROWSER_FAILURE or BROWSER_WARNING
 # line per failed attempt; the words name the browser step, ordered most specific first.
 BROWSER_LINE_RE = re.compile(r"^BROWSER_(FAILURE|WARNING) route=(\S+) account=(\S+) code=(\d+) shot=(\S+) reason=(.*)$",
                              re.MULTILINE)

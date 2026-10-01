@@ -20,9 +20,14 @@ image_leg_start gemini-music audio observed_model
 caps() { image_caps_get "$root" gemini "$1"; }
 
 usage() {
-  printf 'usage: gemini-music --dest <absolute .wav|.mp3|.mp4 path> --prompt <brief> [--length short|standard] [--instrumental | --vocals] [--genre <%s>] [--ref-image <absolute image>] [--video <absolute mp4>] [--count 1|2|3] [--account <profile>] [--dry-run]\n' \
-    "$(caps '.music.genres | join("|")')" >&2
-  printf '  the Gemini app'\''s Create music tool (Lyria 3.5) on a subscription account, through the hidden Chrome of gemini-web\n' >&2
+  printf 'usage: gemini-music --dest <absolute .wav|.mp3|.mp4 path> --prompt <brief> [--route app|flow] [--model %s] [--length short|standard] [--instrumental | --vocals] [--genre <%s>] [--ref-image <absolute image>] [--video <absolute mp4>] [--count 1|2|3] [--account <profile>] [--dry-run]\n' \
+    "$(caps '.flow_music.models | keys | join("|")')" "$(caps '.music.genres | join("|")')" >&2
+  printf '  flow only: [--format %s] [--duration <%s-%s s>] [--lyrics <text>] [--bpm <n>] [--seed <n>] [--ref-audio <absolute audio, <= %s MB>] [--stems] [--accounts 1-%s]\n' \
+    "$(caps '.flow_music.formats | keys | join("|")')" "$(caps '.flow_music.duration_s[0]')" "$(caps '.flow_music.duration_s[1]')" \
+    "$(caps '.flow_music.ref_audio_max_mb')" "$(caps '.flow_music.max_accounts')" >&2
+  printf '  --route app (default): the Gemini app'\''s Create music tool (Lyria 3.5) on a subscription account, through the hidden Chrome of gemini-web\n' >&2
+  printf '  --route flow: Google Flow Music (flowmusic.app; --model lyria-3-pro implies it), %s credits a song from its own pool; the dest extension is the download format (.mp3 .wav .m4a); --stems saves <dest>-<stem>.<ext> next to the track; --accounts N runs N accounts at once and keeps every take\n' \
+    "$(caps '.flow_music.price_per_song')" >&2
   printf '  short is about 60 s, standard 2-3 min; the track comes as mp3 192 kb/s (a .wav dest is decoded from it) or an mp4 with cover art\n' >&2
   printf '  <dest>.txt keeps the tool'\''s own description of the take (tempo, sections with start times) and Gemini'\''s reply\n' >&2
   printf '  timed hit points belong in the prompt as words ("at 24 s the energy builds"); see docs/image-vendors/gemini.md\n' >&2
@@ -43,6 +48,17 @@ account=''
 count=1
 dry_run=false
 attach=()
+route=''
+model=''
+format=''
+duration=''
+lyrics=''
+bpm=''
+seed=''
+ref_audio=''
+stems=false
+accounts=1
+flow_flags=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --dest) [ "$#" -ge 2 ] || usage; dest=$2; shift 2 ;;
@@ -55,9 +71,16 @@ while [ "$#" -gt 0 ]; do
     --count) [ "$#" -ge 2 ] || usage; count=$2; shift 2 ;;
     --account) [ "$#" -ge 2 ] || usage; account=$2; shift 2 ;;
     --dry-run) dry_run=true; shift ;;
-    --duration) say "the music tool takes no exact length: --length short (about 60 s) or standard (2-3 min), then cut to picture" ;;
-    --ref-audio | --stems)
-      say "$1 is not offered by the Gemini app's music tool; Google Flow Music (flowmusic.app) has it but needs a one-time sign-in by the owner" ;;
+    --route) [ "$#" -ge 2 ] || usage; route=$2; shift 2 ;;
+    --model) [ "$#" -ge 2 ] || usage; model=$2; shift 2 ;;
+    --format) [ "$#" -ge 2 ] || usage; format=$2; flow_flags+=(--format); shift 2 ;;
+    --duration) [ "$#" -ge 2 ] || usage; duration=$2; flow_flags+=(--duration); shift 2 ;;
+    --lyrics) [ "$#" -ge 2 ] || usage; lyrics=$2; flow_flags+=(--lyrics); shift 2 ;;
+    --bpm) [ "$#" -ge 2 ] || usage; bpm=$2; flow_flags+=(--bpm); shift 2 ;;
+    --seed) [ "$#" -ge 2 ] || usage; seed=$2; flow_flags+=(--seed); shift 2 ;;
+    --ref-audio) [ "$#" -ge 2 ] || usage; ref_audio=$2; flow_flags+=(--ref-audio); shift 2 ;;
+    --stems) stems=true; flow_flags+=(--stems); shift ;;
+    --accounts) [ "$#" -ge 2 ] || usage; accounts=$2; shift 2 ;;
     *) usage ;;
   esac
 done
@@ -65,8 +88,43 @@ done
 [ -n "$dest" ] && [ -n "$prompt" ] || usage
 [[ "$dest" = /* ]] && [ -d "$(dirname "$dest")" ] || say "--dest needs an absolute path in an existing folder"
 ext=$(printf '%s' "${dest##*.}" | tr '[:upper:]' '[:lower:]')
-jq -e --arg ext "$ext" '.music.dests | index($ext) != null' "$(image_caps_file "$root" gemini)" >/dev/null ||
-  say "--dest must end in .$(caps '.music.dests | join(" .")')"
+[ -z "$model" ] || jq -e --arg v "$model" '.flow_music.models | has($v)' "$(image_caps_file "$root" gemini)" >/dev/null ||
+  say "--model is one of: $(caps '.flow_music.models | keys | join(", ")')"
+if [ "$model" = lyria-3-pro ]; then
+  [ "$route" != app ] || say "lyria-3-pro is not offered by the Gemini app's music tool; it runs on --route flow"
+  route=flow
+fi
+route=${route:-app}
+case "$route" in app | flow) ;; *) say "--route is app or flow" ;; esac
+[[ "$accounts" =~ ^[1-9][0-9]*$ ]] && [ "$accounts" -le "$(caps '.flow_music.max_accounts')" ] ||
+  say "--accounts is 1 to $(caps '.flow_music.max_accounts')"
+if [ "$route" = app ]; then
+  [ "${flow_flags[0]:-}" != --duration ] ||
+    say "the app's music tool takes no exact length: --length short (about 60 s) or standard (2-3 min), then cut to picture; --route flow takes --duration"
+  [ "${#flow_flags[@]}" -eq 0 ] ||
+    say "${flow_flags[0]} runs on --route flow (Google Flow Music); the Gemini app's music tool takes no exact length, lyrics, bpm, seed, reference audio, stems or download format"
+  [ "$accounts" -eq 1 ] || say "--accounts runs on --route flow; the app route moves to the next account on its own"
+  jq -e --arg ext "$ext" '.music.dests | index($ext) != null' "$(image_caps_file "$root" gemini)" >/dev/null ||
+    say "--dest must end in .$(caps '.music.dests | join(" .")')"
+else
+  [ "${#attach[@]}" -eq 0 ] || say "${attach[0]%%=*} runs on the app route; Flow Music takes reference audio (--ref-audio), no image or video"
+  jq -e --arg ext "$ext" '.flow_music.formats | has($ext)' "$(image_caps_file "$root" gemini)" >/dev/null ||
+    say "--dest on --route flow must end in .$(caps '.flow_music.formats | keys | join(" .")')"
+  [ -z "$format" ] || [ "$format" = "$ext" ] || say "--format $format needs a .$format dest"
+  [ -z "$duration" ] || { [[ "$duration" =~ ^[0-9]+$ ]] && [ "$duration" -ge "$(caps '.flow_music.duration_s[0]')" ] &&
+    [ "$duration" -le "$(caps '.flow_music.duration_s[1]')" ]; } ||
+    say "--duration is $(caps '.flow_music.duration_s[0]') to $(caps '.flow_music.duration_s[1]') seconds on Flow Music"
+  [ -z "$duration" ] || [ -z "$length" ] || say "--duration and --length are one choice"
+  for number in "$bpm" "$seed"; do [ -z "$number" ] || [[ "$number" =~ ^[0-9]+$ ]] || say "--bpm and --seed are whole numbers"; done
+  [ -z "$lyrics" ] || [ "$vocals" != instrumental ] || say "--lyrics and --instrumental are one choice"
+  if [ -n "$ref_audio" ]; then
+    [[ "$ref_audio" = /* ]] && [ -f "$ref_audio" ] || say "--ref-audio needs an absolute path to a file"
+    case "$(printf '%s' "${ref_audio##*.}" | tr '[:upper:]' '[:lower:]')" in mp3 | wav | m4a | aac | flac | ogg) ;;
+      *) say "--ref-audio takes an mp3, wav, m4a, aac, flac or ogg file" ;; esac
+    [ "$(wc -c <"$ref_audio")" -le $(($(caps '.flow_music.ref_audio_max_mb') * 1048576)) ] ||
+      say "--ref-audio is over Flow Music's $(caps '.flow_music.ref_audio_max_mb') MB upload limit"
+  fi
+fi
 [ -z "$length" ] || jq -e --arg v "$length" '.music.lengths | has($v)' "$(image_caps_file "$root" gemini)" >/dev/null ||
   say "--length is short or standard"
 [ -z "$genre" ] || jq -e --arg v "$genre" '.music.genres | index($v) != null' "$(image_caps_file "$root" gemini)" >/dev/null ||
@@ -74,6 +132,7 @@ jq -e --arg ext "$ext" '.music.dests | index($ext) != null' "$(image_caps_file "
 jq -e --argjson n "${count//[^0-9]/0}" '.music.counts | index($n) != null' "$(image_caps_file "$root" gemini)" >/dev/null 2>&1 ||
   say "--count is 1, 2 or 3"
 [ -z "$account" ] || [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]] || usage
+[ -z "$account" ] || [ "$accounts" -eq 1 ] || say "--account names one account; --accounts picks several"
 engine_args=(generate --prompt "$prompt" --count "$count")
 for item in ${attach[@]+"${attach[@]}"}; do
   path=${item#*=}
@@ -87,6 +146,17 @@ done
 [ -z "$length" ] || engine_args+=(--length "$length")
 [ -z "$vocals" ] || engine_args+=(--vocals "$vocals")
 [ -z "$genre" ] || engine_args+=(--genre "$genre")
+if [ "$route" = flow ]; then
+  [ "$vocals" != custom ] || vocals=''
+  engine_args+=(--format "$ext" --title "$(basename "${dest%.*}")" --accounts "$accounts")
+  [ -z "$model" ] || engine_args+=(--model "$model")
+  [ -z "$duration" ] || engine_args+=(--duration "$duration")
+  [ -z "$lyrics" ] || engine_args+=(--lyrics "$lyrics")
+  [ -z "$bpm" ] || engine_args+=(--bpm "$bpm")
+  [ -z "$seed" ] || engine_args+=(--seed "$seed")
+  [ -z "$ref_audio" ] || engine_args+=(--ref-audio "$ref_audio")
+  [ "$stems" = false ] || engine_args+=(--stems)
+fi
 [ -z "$account" ] || engine_args+=(--account "$account")
 [ "$dry_run" = false ] || engine_args+=(--dry-run)
 command -v ffmpeg >/dev/null 2>&1 || { printf 'gemini-music: ffmpeg is required\n' >&2; exit 1; }
@@ -95,13 +165,19 @@ started=$(date +%s)
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/gemini-music.XXXXXX")
 trap 'image_leg_exit; rm -rf "$tmp_dir"' EXIT
 engine_args+=(--out-dir "$tmp_dir")
-image_leg_mark "$count"
+image_leg_mark "$((count * accounts))"
 rc=0
-if [ -n "${GEMINI_MUSIC_ENGINE:-}" ]; then
-  "$GEMINI_MUSIC_ENGINE" "${engine_args[@]}" >"$tmp_dir/engine.out" 2>"$tmp_dir/engine.err" || rc=$?
+engine_file=gemini_music.py
+engine_override=${GEMINI_MUSIC_ENGINE:-}
+if [ "$route" = flow ]; then
+  engine_file=flow_music.py
+  engine_override=${FLOW_MUSIC_ENGINE:-}
+fi
+if [ -n "$engine_override" ]; then
+  "$engine_override" "${engine_args[@]}" >"$tmp_dir/engine.out" 2>"$tmp_dir/engine.err" || rc=$?
 else
   uv_cmd=${GEMINI_WEB_UV:-$(command -v uv || printf /opt/homebrew/bin/uv)}
-  "$uv_cmd" run -q --script "$root/share/gemini_music.py" "${engine_args[@]}" >"$tmp_dir/engine.out" 2>"$tmp_dir/engine.err" || rc=$?
+  "$uv_cmd" run -q --script "$root/share/$engine_file" "${engine_args[@]}" >"$tmp_dir/engine.out" 2>"$tmp_dir/engine.err" || rc=$?
 fi
 grep '^BROWSER_' "$tmp_dir/engine.err" >&2 || true
 result=$(grep '^{' "$tmp_dir/engine.out" | tail -n 1 || true)
@@ -121,7 +197,11 @@ if [ "$(jq -r '.ok' <<<"$result")" != true ]; then
 fi
 account=$(jq -r '.account' <<<"$result")
 if [ "$(jq -r '.dry_run // false' <<<"$result")" = true ]; then
-  printf 'dry_run=ok\naccount=%s\nchips=%s\n' "$account" "$(jq -c '.chips' <<<"$result")"
+  if [ "$route" = flow ]; then
+    printf 'dry_run=ok\naccount=%s\ncontrols=%s\n' "$account" "$(jq -c '.controls // .runs' <<<"$result")"
+  else
+    printf 'dry_run=ok\naccount=%s\nchips=%s\n' "$account" "$(jq -c '.chips' <<<"$result")"
+  fi
   exit 0
 fi
 
@@ -138,11 +218,12 @@ while [ "$index" -lt "$takes" ]; do
   out=$(variant_of "$index")
   audio=$(jq -r '.audio' <<<"$take")
   [ -s "$audio" ] || { printf 'gemini-music: take %s has no audio file\n' "$index" >&2; exit 1; }
-  case "$ext" in
-    mp3) cp "$audio" "$out" ;;
-    wav) ffmpeg -v error -y -i "$audio" -c:a pcm_s16le -ar 48000 -ac 2 "$out" ||
+  case "$route:$ext" in
+    flow:*) cp "$audio" "$out" ;;
+    *:mp3) cp "$audio" "$out" ;;
+    *:wav) ffmpeg -v error -y -i "$audio" -c:a pcm_s16le -ar 48000 -ac 2 "$out" ||
       { printf 'gemini-music: could not decode take %s to wav\n' "$index" >&2; exit 1; } ;;
-    mp4)
+    *:mp4)
       video=$(jq -r '.video // empty' <<<"$take")
       [ -n "$video" ] && [ -s "$video" ] ||
         { printf 'gemini-music: take %s came without its mp4: %s\n' "$index" "$(jq -r '.video_error // "none offered"' <<<"$take")" >&2; exit 1; }
@@ -150,17 +231,28 @@ while [ "$index" -lt "$takes" ]; do
   esac
   [ "$ext" = mp4 ] || [ "$(jq -r '.video_error // empty' <<<"$take")" = '' ] ||
     printf 'gemini-music: take %s: the cover-art mp4 did not download (%s); the audio is fine\n' "$index" "$(jq -r '.video_error' <<<"$take")" >&2
-  jq -r '"Model: \(.model // "unknown")\nChat: \(.url)\n\nThe music tool'"'"'s description of the take:\n\(.description)\n\nGemini'"'"'s reply:\n\(.text)"' <<<"$take" >"$out.txt"
+  if [ "$route" = flow ]; then
+    jq -r '.notes' <<<"$take" >"$out.txt"
+  else
+    jq -r '"Model: \(.model // "unknown")\nChat: \(.url)\n\nThe music tool'"'"'s description of the take:\n\(.description)\n\nGemini'"'"'s reply:\n\(.text)"' <<<"$take" >"$out.txt"
+  fi
+  stem_lines=''
+  while IFS=$'\t' read -r stem_name stem_file; do
+    [ -n "$stem_name" ] || continue
+    [ -s "$stem_file" ] || { printf 'gemini-music: take %s has no %s stem file\n' "$index" "$stem_name" >&2; exit 1; }
+    cp "$stem_file" "${out%.*}-$stem_name.$ext"
+    stem_lines+="stem=${out%.*}-$stem_name.$ext"$'\n'
+  done < <(jq -r '(.stems // {}) | to_entries[] | "\(.key)\t\(.value)"' <<<"$take")
   seconds=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$out" 2>/dev/null | head -n 1)
   observed_model=$(jq -r '.model // empty' <<<"$take")
   if [ "$index" -eq 1 ]; then
     footer+="dest=$out"$'\n'"duration=$(awk -v s="$seconds" 'BEGIN { printf "%.2f", s }')"$'\n'
-    footer+="format=$ext"$'\n'"chat=$(jq -r '.url' <<<"$take")"$'\n'
+    footer+="format=$ext"$'\n'"chat=$(jq -r '.url' <<<"$take")"$'\n'"$stem_lines"
   else
     take_account=$(jq -r '.account // empty' <<<"$take")
     footer+="variant=$out duration=$(awk -v s="$seconds" 'BEGIN { printf "%.2f", s }') chat=$(jq -r '.url' <<<"$take")"
     [ -z "$take_account" ] || [ "$take_account" = "$account" ] || footer+=" account=$take_account"
-    footer+=$'\n'
+    footer+=$'\n'"$stem_lines"
   fi
 done
 short=$(jq -r '.short // empty' <<<"$result")
@@ -168,5 +260,10 @@ if [ -n "$short" ]; then
   printf 'gemini-music: only %s\n' "$short" >&2
   footer+="short=$short"$'\n'
 fi
-printf '%saccount=%s\nmodel=%s\ncredits=unmetered (the Gemini app shows no music balance)\nseconds=%s\n' \
-  "$footer" "$account" "${observed_model:-unknown}" "$(($(date +%s) - started))"
+if [ "$route" = flow ]; then
+  credits=$(jq -r '"\([.takes[] | (.charged // 0) + (.stems_charged // 0)] | add) charged from the Flow Music pool; left: \([.takes[] | "\(.account) \(.credits)"] | unique | join(", "))"' <<<"$result")
+else
+  credits='unmetered (the Gemini app shows no music balance)'
+fi
+printf '%saccount=%s\nmodel=%s\ncredits=%s\nseconds=%s\n' \
+  "$footer" "$account" "${observed_model:-unknown}" "$credits" "$(($(date +%s) - started))"

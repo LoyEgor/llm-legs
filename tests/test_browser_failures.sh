@@ -100,7 +100,7 @@ with open(log, "w") as handle:
                                  "size": 1, "account": account, "served": "", "err": err}) + "\n")
 # Every reason either engine can raise lands on a named browser step; an unnamed one is a new word to add.
 literal = re.compile(r"""(?:Failure\((\d),|fail\((\d),|drift\()\s*f?(["'])(.+?)\3""")
-for name in ("gemini_web.py", "gemini_music.py"):
+for name in ("gemini_web.py", "gemini_music.py", "flow_music.py"):
     for match in literal.finditer(open(os.path.join(root, "share", name)).read()):
         code = int(match.group(1) or match.group(2) or 1)
         reason = re.sub(r"\{[^}]*\}", "7", match.group(4))
@@ -257,7 +257,7 @@ assert bash "$ROOT/bin/doctor-fix" launch llm >"$WORK/fix.out"
 run=$(sed -n 's/^llm fixer opened: run \(llm-[a-z]*-[0-9TZ]*-[0-9a-f]*\),.*/\1/p' "$WORK/fix.out")
 assert test -n "$run"
 assert jq -e --arg p "$WORK/projects" '.problems[] | select(.id == "leg-failure:image/browser upload") | .component
-  | .files == ([$p + "/llm-legs/share/gemini_music.py", $p + "/llm-legs/share/gemini_web.py", $p + "/llm-legs/share/image-leg.sh"])
-    and (.what | startswith("hidden-Chrome route (Flow, the Gemini app), step upload · image block"))' "$DOCTORS_DIR/runs/$run.json" >/dev/null
+  | .files == ([$p + "/llm-legs/share/flow_music.py", $p + "/llm-legs/share/gemini_music.py", $p + "/llm-legs/share/gemini_web.py", $p + "/llm-legs/share/image-leg.sh"])
+    and (.what | startswith("hidden-Chrome route (Flow, the Gemini app, Flow Music), step upload · image block"))' "$DOCTORS_DIR/runs/$run.json" >/dev/null
 
 printf 'PASS: test_browser_failures (%s asserts)\n' "$asserts"

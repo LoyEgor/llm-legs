@@ -264,6 +264,26 @@ local function rowTitle(account, label, bucket, dim, atLimit, barWarning, column
   return infoTitle(prefix .. bar .. suffix, false, dim, atLimit)
 end
 
+local function geminiMediaRow(media, now)
+  if not media then return nil end
+  local title
+  local function add(text, wall)
+    local run = infoTitle((title and " · " or "        ") .. text, wall)
+    title = title and title .. run or run
+  end
+  local function credits(pool, left, at)
+    if left then
+      add(string.format("%s %d cr", pool, math.floor(left)) .. (at and " · " .. style.ago(now - at) or ""))
+    end
+  end
+  credits("Flow", media.credits, media.creditsAt)
+  credits("Flow Music", media.musicCredits, media.musicCreditsAt)
+  if media.videoWall then add("video wall until " .. style.clock(media.videoWall, now), true) end
+  if media.musicWall then add("music wall until " .. style.clock(media.musicWall, now), true) end
+  if media.flowMusicWall then add("Flow Music wall until " .. style.clock(media.flowMusicWall, now), true) end
+  return title and { title = title, disabled = true } or nil
+end
+
 local vendorRefreshErrors, refreshErrorItem, appendRefreshErrorRows
 
 -- Parked is read from worker-model and never from the store: the collector writes no entry for a
@@ -856,6 +876,60 @@ local function readTextFile(path)
   local contents = file:read("*a")
   file:close()
   return contents
+end
+
+-- Flow credits and the media walls (shared-invariants row `de`) are only ever read here: the one
+-- way to refresh them launches Chrome, so the row states the reading's age instead.
+local function geminiWebDir()
+  local override = os.getenv("GEMINI_WEB_DIR")
+  if override and override ~= "" then return override end
+  return home .. "/.gemini-web"
+end
+
+local function readJsonTable(path)
+  local contents = readTextFile(path)
+  if not contents then return nil end
+  local ok, decoded = pcall(hs.json.decode, contents)
+  return ok and type(decoded) == "table" and decoded or nil
+end
+
+-- A gemini-web profile matching no roster name, even by its email's local part, gets no row: the
+-- store's roster is the only roster.
+local function geminiMediaState(roster, now)
+  local dir, state = geminiWebDir(), {}
+  local ok, names = pcall(function()
+    local found = {}
+    for file in hs.fs.dir(dir .. "/accounts") do
+      local name = file:match("^(.+)%.json$")
+      if name then found[#found + 1] = name end
+    end
+    table.sort(found)
+    return found
+  end)
+  if not ok then return state end
+  local videoWalls = readJsonTable(dir .. "/walls.json") or {}
+  local musicWalls = readJsonTable(dir .. "/music-walls.json") or {}
+  local flowMusicWalls = readJsonTable(dir .. "/flow-music-walls.json") or {}
+  local function standing(walls, name)
+    local untilEpoch = tonumber(walls[name])
+    return untilEpoch and untilEpoch > now and untilEpoch or nil
+  end
+  for _, name in ipairs(names) do
+    local meta = readJsonTable(dir .. "/accounts/" .. name .. ".json") or {}
+    local acct = name
+    if not roster[acct] then
+      acct = type(meta.email) == "string" and meta.email:lower():match("^([^@]+)@") or nil
+    end
+    if acct and roster[acct] and not state[acct] then
+      state[acct] = {
+        credits = tonumber(meta.credits), creditsAt = tonumber(meta.credits_at),
+        musicCredits = tonumber(meta.music_credits), musicCreditsAt = tonumber(meta.music_credits_at),
+        videoWall = standing(videoWalls, name), musicWall = standing(musicWalls, name),
+        flowMusicWall = standing(flowMusicWalls, name),
+      }
+    end
+  end
+  return state
 end
 
 -- The slug shape is the fallback: an entry cached before geminib carried labels has none.
@@ -2754,6 +2828,14 @@ local function buildMenuItems()
           end
           blocks = visible
         end
+        local geminiMedia, mediaNow = {}, os.time()
+        if isGeminiAccounts then
+          local roster = {}
+          for _, block in ipairs(blocks) do
+            if type(block.account) == "string" then roster[block.account] = true end
+          end
+          geminiMedia = geminiMediaState(roster, mediaNow)
+        end
         if not isAccountRows then
           blocks = {{ account = entry.label, five_hour = vendor.five_hour,
             weekly = vendor.weekly, fable = vendor.fable, as_of = vendor.as_of,
@@ -2999,6 +3081,10 @@ local function buildMenuItems()
               local fableWarning = (tonumber(block.fable.effective_pct) or 0) >= 80
               table.insert(menu, { title = tailRow("fb", block.fable, fableWarning), disabled = true })
             end
+          end
+          if isGeminiAccounts then
+            local mediaRow = geminiMediaRow(geminiMedia[acct], mediaNow)
+            if mediaRow then table.insert(menu, mediaRow) end
           end
           if isAccountRows then
             appendRefreshErrorRows(menu, vendorErrs, entry.key, acct)

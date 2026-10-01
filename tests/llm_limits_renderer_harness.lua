@@ -26,6 +26,10 @@ local chatsFake = { snapshot = nil }
 -- What the fake hs.timer.secondsSinceEpoch returns; nil keeps the menu journal silent.
 local harnessClock = nil
 
+-- The gemini-web store the fake io.open and hs.fs.dir serve under GEMINI_WEB_DIR: path -> document;
+-- nil is no store at all. Nothing under a real ~/.gemini-web is ever served.
+local geminiWebFake = { root = "/fixture/gemini-web", files = nil }
+
 -- What the fake io.open serves for geminib's review Flash pin file and family cache, the two files
 -- the Gemini submenu reads; nil is the file being absent — no cache is what the
 -- `review flash T0–T1: unavailable` row is rendered off.
@@ -129,6 +133,15 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
       return "", false
     end,
     fs = { attributes = fsAttributes or function() return nil end, dir = function(path)
+      if path:match("gemini%-web/accounts$") then
+        assert(path == geminiWebFake.root .. "/accounts" and geminiWebFake.files, "no such directory: " .. path)
+        local names = {}
+        for file in pairs(geminiWebFake.files) do
+          names[#names + 1] = file:match("/accounts/([^/]+%.json)$")
+        end
+        table.sort(names)
+        return function() return table.remove(names, 1) end
+      end
       assert(path:match("/holds$") and holdFake.files, "no such directory: " .. path)
       holdFake.dir = path
       local names = {}
@@ -143,6 +156,8 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
       if text == LLM_DOCTOR_CONTENTS then return llmDoctor end
       if text == "CHATS_SNAPSHOT" then return chatsFake.snapshot end
       if text == geminibFiles.MODELS then return geminibFiles.models end
+      local geminiWebPath = type(text) == "string" and text:match("^GEMINI_WEB:(.+)$")
+      if geminiWebPath then return geminiWebFake.files and geminiWebFake.files[geminiWebPath] end
       local holdName = type(text) == "string" and text:match("^HOLD:(.+)$")
       if holdName then return holdFake.files and holdFake.files[holdName] end
       local catalog = type(text) == "string" and text:match("^CODEX_CATALOG:(.+)$")
@@ -187,6 +202,13 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
       if holdName then
         if not (holdFake.files and holdFake.files[holdName]) then return nil end
         contents = "HOLD:" .. holdName
+      end
+      if path:match("gemini%-web/") then
+        if path:sub(1, #geminiWebFake.root + 1) ~= geminiWebFake.root .. "/"
+            or not (geminiWebFake.files and geminiWebFake.files[path]) then
+          return nil
+        end
+        contents = "GEMINI_WEB:" .. path
       end
       if path:match("/memlogd/chats%.json$") then
         if chatsFake.snapshot == nil then return nil end
@@ -4135,6 +4157,84 @@ do
     geminibFiles.models = brokenModels
   end)()
 
+end
+
+-- Flow credits and the media walls ride on the Gemini rows the store already lists, read from the
+-- gemini-web files alone: no row of their own, no email, the age and the wall clock times stated.
+do
+  local now = 1790000000
+  local clock = require("menu-style").clock
+  local root = geminiWebFake.root
+  local mediaFixture = { schema = 1, vendors = {
+    claude = { available = false }, codex = { available = false },
+    gemini = { available = true, accounts = {
+      { account = "abel", five_hour = bucket(10), weekly = bucket(20) },
+      { account = "egbor", five_hour = bucket(10), weekly = bucket(20) },
+      { account = "mish", auth_needed = true },
+      { account = "quiet", five_hour = bucket(10), weekly = bucket(20) },
+    } },
+  } }
+  geminiWebFake.files = {
+    [root .. "/accounts/abel.json"] = { credits = 120, credits_at = now - 3 * 3600,
+      music_credits = 10510, music_credits_at = now - 3600,
+      email = "abel.secret@example.com", project = "proj-secret" },
+    [root .. "/accounts/egbor-web.json"] = { credits = 50, credits_at = now - 600,
+      email = "Egbor@example.com", project = "proj-secret" },
+    [root .. "/accounts/mish.json"] = { email = "mish@example.com" },
+    [root .. "/accounts/stray.json"] = { credits = 999, credits_at = now, email = "nobody@example.com" },
+    [root .. "/walls.json"] = { abel = now + 7200, ["egbor-web"] = now - 60, stray = now + 7200 },
+    [root .. "/music-walls.json"] = { mish = now + 26 * 3600, abel = now - 1 },
+    [root .. "/flow-music-walls.json"] = { ["egbor-web"] = now + 3600, abel = now - 1 },
+  }
+  local function mediaMenu()
+    holdFake.getenv = function(name)
+      if name == "GEMINI_WEB_DIR" then return root end
+      return os.getenv(name)
+    end
+    local module = loadModule(mediaFixture, nil, now)
+    holdFake.getenv = nil
+    return module.menuItems()
+  end
+  local function mediaRows(menu, account)
+    local rows = {}
+    for index = accountIndex(menu, account) + 1, #menu do
+      local text = titleText(menu[index])
+      if not text:match("^%s") then break end
+      if text:match("^        Flow ") or text:match("^        %a+ wall until ") then
+        rows[#rows + 1] = menu[index]
+      end
+    end
+    return rows
+  end
+  local menu = mediaMenu()
+  local abel = mediaRows(menu, "abel")
+  assert(#abel == 1 and titleText(abel[1]) == "        Flow 120 cr · 3h ago · Flow Music 10510 cr · 1h ago"
+      .. " · video wall until "
+      .. clock(now + 7200, now) and abel[1].disabled == true,
+    "abel's Flow row is wrong: " .. (abel[1] and titleText(abel[1]) or "missing"))
+  local red = redRuns(abel[1].title)
+  assert(#red == 1 and red[1] == " · video wall until " .. clock(now + 7200, now),
+    "a standing video wall is not the row's one red run: " .. table.concat(red, "|"))
+  local egbor = mediaRows(menu, "egbor")
+  assert(#egbor == 1 and titleText(egbor[1]) == "        Flow 50 cr · 10m ago · Flow Music wall until "
+      .. clock(now + 3600, now) and #redRuns(egbor[1].title) == 1,
+    "a gemini-web profile named apart from the roster did not map by its email, or kept an expired wall: "
+      .. (egbor[1] and titleText(egbor[1]) or "missing"))
+  local mish = mediaRows(menu, "mish")
+  assert(#mish == 1 and titleText(mish[1]) == "        music wall until " .. clock(now + 26 * 3600, now),
+    "a logged-out account lost its music wall: " .. (mish[1] and titleText(mish[1]) or "missing"))
+  assert(#mediaRows(menu, "quiet") == 0, "an account without a gemini-web reading grew a Flow row")
+  for _, item in ipairs(menu) do
+    local text = titleText(item)
+    assert(not text:find("@", 1, true) and not text:find("secret", 1, true) and not text:find("999", 1, true)
+        and not text:find("stray", 1, true),
+      "the menu showed an email, a project or an unmapped gemini-web profile: " .. text)
+  end
+  geminiWebFake.files = nil
+  local bare = mediaMenu()
+  for _, account in ipairs({ "abel", "egbor", "mish", "quiet" }) do
+    assert(#mediaRows(bare, account) == 0, "a missing gemini-web store still drew a Flow row")
+  end
 end
 
 return "PASS: Hammerspoon projection contract"
