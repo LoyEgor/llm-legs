@@ -684,7 +684,8 @@
    "match": {
     "word": "bad command",
     "model": "^(codex-image|grok-video|gemini-(image|video|music|sfx|listen))$",
-    "detail": "usage:|takes duration 8, not 6|is not an absolute path"
+    "detail": "usage:|takes duration 8, not 6|is not an absolute path",
+    "until": "2026-10-01T05:13:28+03:00"
    },
    "title": "Image wrapper argument refusals lack invocation provenance",
    "status": "open",
@@ -692,7 +693,7 @@
    "same_cause": [],
    "last_reviewed": "2026-10-01",
    "reviewed_by": "Night image fixer",
-   "note": "Launch had 84 exits; fresh scan had 85. Live image journal contains mostly usage text (57 codex-image), one Veo duration refusal and one space-joined gemini-listen path. These happen before image_leg_mark; vendor failure is ruled out for these messages. Journal has no argv, cwd or caller, so help probes versus malformed production calls versus tests cannot be confirmed. Existing image suites explicitly isolate IMAGE_LEG_LOG, so their current setup is not evidence of leakage. Suppressing rc=2 or changing the judge is not authorized. Owner should reconstruct callers before proposing a narrow dismissal.",
+   "note": "Launch had 84 exits; fresh scan had 85. Live image journal contains mostly usage text (57 codex-image), one Veo duration refusal and one space-joined gemini-listen path. These happen before image_leg_mark; vendor failure is ruled out for these messages. Journal has no argv, cwd or caller, so help probes versus malformed production calls versus tests cannot be confirmed. Existing image suites explicitly isolate IMAGE_LEG_LOG, so their current setup is not evidence of leakage. Suppressing rc=2 or changing the judge is not authorized. Owner should reconstruct callers before proposing a narrow dismissal. `until` bounds the row to the exits triaged here: every rc=2 is `bad command` and every wrapper prints `usage:` for any argument error, so a later one reads new.",
    "handoff": "docs/handoffs/2026-10-01-image-failure-triage.md"
   },
   {
@@ -726,7 +727,7 @@
    "same_cause": [],
    "last_reviewed": "2026-10-01",
    "reviewed_by": "Night image fixer",
-   "note": "Event image:1790815478/gemini-music/egbogd returned HTTP 404 and 2860 bytes, not a missing executable or local path. Base c340869 already retries the cover-art MP4 six times with 10-second waits, retains successful audio and reports video_error; bin/gemini-music rejects a requested MP4 when absent. Cannot prove delayed publication versus an invalid/expired URL from the retained journal; no response artifact is retained. Existing retry is not proven obsolete. Owner should verify audio-only success and an existing cover download without spending on another generation.",
+   "note": "Event image:1790815478/gemini-music/egbogd returned HTTP 404 and 2860 bytes, not a missing executable or local path. Base c340869 already retries the cover-art MP4 six times with 10-second waits, retains successful audio and reports video_error; bin/gemini-music rejects a requested MP4 when absent. Cannot prove delayed publication versus an invalid/expired URL from the retained journal; no response artifact is retained. Existing retry is not proven obsolete. Owner should verify audio-only success and an existing cover download without spending on another generation. The detail matches both the recorded line and the current one: share/gemini_music.py save() raises `video download failed (HTTP …)` and bin/gemini-music relays it as `take N came without its mp4: …`; Flow's `clip download failed` is gemini-video, another cause.",
    "handoff": "docs/handoffs/2026-10-01-image-failure-triage.md"
   },
   {
@@ -743,7 +744,7 @@
    "same_cause": [],
    "last_reviewed": "2026-10-01",
    "reviewed_by": "Night image fixer",
-   "note": "Four incidents: Add to prompt at 1790795541, 1080p Download media click at 1790808722, Short chip at 1790813256, filechooser at 1790813446. Base already replaced mandatory Add to prompt with optional click plus attachment verification; music attach handles rights notices and chooser events. No saved screenshot/TXT exists for these older incidents (failure directory contains only the three Length captures). Current Short selection and upscale readiness cannot be verified from traceback alone. Longer vendor generation caps would not fix these UI waits. Do not restore old mandatory attachment clicks or blanket-increase timeouts.",
+   "note": "Four incidents: Add to prompt at 1790795541, 1080p Download media click at 1790808722, Short chip at 1790813256, filechooser at 1790813446. Base already replaced mandatory Add to prompt with optional click plus attachment verification; music attach handles rights notices and chooser events. No saved screenshot/TXT exists for these older incidents (failure directory contains only the three Length captures). Current Short selection and upscale readiness cannot be verified from traceback alone. Longer vendor generation caps would not fix these UI waits. Do not restore old mandatory attachment clicks or blanket-increase timeouts. The 1080p alternative catches the pre-structured record (plain stderr, classified timeout); today's route reports the same step as a BROWSER_FAILURE line the doctor reads as `browser download`, which no row names, so a fresh one reads new with its screenshot.",
    "handoff": "docs/handoffs/2026-10-01-image-failure-triage.md"
   },
   {

@@ -755,6 +755,9 @@ assert sorted((row["id"], row["match"].get("until")) for row in committed["rows"
               if row["status"] in doctor.DISMISSALS) == [
     ("N4", "2026-09-16T23:59:59+03:00"), ("N5", None), ("N6", "2026-09-14T23:59:59+03:00"),
     ("N7", "2026-09-13T23:59:59+03:00")]
+# Every image rc=2 reads `bad command` and every wrapper prints `usage:` on any bad argv: such a row ends at its triage.
+assert all(row["match"].get("until") for row in committed["rows"]
+           if row["block"] == "image" and row["match"].get("word") == "bad command")
 assert sorted(word for word, origin in doctor.FAILURE_ORIGIN.items() if origin == "theirs") == [
     "bare 429", "cancelled", "capacity", "mismatch", "refused", "server error", "throttled", "walled"]
 assert set(doctor.FAILURE_ORIGIN.values()) == {"ours", "theirs"} and doctor.IMAGE_ORIGIN == dict.fromkeys(
