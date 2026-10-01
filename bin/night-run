@@ -16,11 +16,12 @@ repo_root=$(cd "$(dirname "$script_path")/.." && pwd)
 nights_dir="${DOCTORS_DIR:-$HOME/.cache/doctors}/nights"
 lock_dir="$nights_dir/.lock"
 sweep_repos="${NIGHT_RUN_SWEEP_REPOS:-$HOME/.claude/sweep-repos}"
-KINDS=' fixer vendor debt '
+KINDS=' fixer vendor debt leftover '
 STATES=' pending merged left failed-launch blocked-on-egor nothing-to-do '
 . "$repo_root/share/chat-open.sh"
 . "$repo_root/share/store-lock.sh"
 . "$repo_root/share/test-scope.sh"
+. "$repo_root/share/night-worktree.sh"
 
 die() { printf 'night-run: %s\n' "$*" >&2; exit 1; }
 stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -29,9 +30,10 @@ usage() {
   cat >&2 <<'EOF'
 usage: night-run start [--cleanup | --resume <id> [--job <ref>]]
        night-run base <id>
-       night-run job <id> add <fixer|vendor|debt> <ref> [--branch B]
+       night-run job <id> add <fixer|vendor|debt|leftover> <ref> [--branch B]
        night-run job <id> set <ref> key=value...   (state, reason, branch, review, commits, pushed)
        night-run finish <id>
+       night-run leftovers [--json]
        night-run report [<id>]
        night-run latest --menu
 
@@ -42,6 +44,11 @@ Nights live in ${DOCTORS_DIR:-~/.cache/doctors}/nights/<id>.json.
 states: pending merged left failed-launch blocked-on-egor nothing-to-do (left needs reason=)
 commits=<repo>:<hash>[,<repo>:<hash>...]  replaces the job's list; <repo> is a sweep-repos
   basename or an absolute path; a changed list clears pushed unless pushed=true comes with it
+leftover: ref is a leftover branch, adopted in every sweep repository where it is one: its WIP
+  committed, night/<id>/leftover-<slug> made at its tip with its night worktree, the old worktree and
+  branch removed; the job's ref becomes leftover-<slug>
+leftovers lists every non-main branch and worktree of the sweep repositories: live ones stay, landed
+  ones go at finish, every other is a leftover to carry; finish records those under the night's leftovers
 pushed=true is refused unless every commit of the job is on its repository's origin main and not
   in the night's refs/night/<id>/base
 EOF
@@ -204,7 +211,7 @@ push_refusal() { # dir hash night -> why hash is no pushed night commit, empty w
 
 SNAPSHOT_MAX_BYTES=$((5 * 1024 * 1024))
 
-snapshot() { # dir id -> commit of the checkout as it stands, uncommitted and untracked included
+tree_commit() { # dir message what -> commit on HEAD of the checkout as it stands, uncommitted and untracked included
   local dir index tree commit meta path sha status size reason drops=()
   dir=$(mktemp -d) || return 1
   index=$dir/index
@@ -223,17 +230,22 @@ snapshot() { # dir id -> commit of the checkout as it stands, uncommitted and un
     fi
     [ -n "$reason" ] || continue
     drops+=("$path")
-    printf 'night-run: the base of %s drops %s: %s\n' "$1" "$path" "$reason" >&2
+    printf 'night-run: %s of %s drops %s: %s\n' "$3" "$1" "$path" "$reason" >&2
   done < <(GIT_INDEX_FILE=$index git -C "$1" diff-index -z --cached HEAD)
   [ ${#drops[@]} -eq 0 ] || GIT_INDEX_FILE=$index git --literal-pathspecs -C "$1" reset -q HEAD -- "${drops[@]}" ||
     { rm -rf "$dir"; return 1; }
   tree=$(GIT_INDEX_FILE=$index git -C "$1" write-tree) &&
-    commit=$(git -C "$1" -c user.name=night-run -c user.email=night-run@localhost commit-tree "$tree" -p HEAD -m "night $2 base: the checkout as pressed") &&
-    git -C "$1" update-ref "refs/night/$2/base" "$commit" &&
+    commit=$(git -C "$1" -c user.name=night-run -c user.email=night-run@localhost commit-tree "$tree" -p HEAD -m "$2") &&
     printf '%s\n' "$commit"
   local rc=$?
   rm -rf "$dir"
   return "$rc"
+}
+
+snapshot() { # dir id -> refs/night/<id>/base: the checkout as it stands
+  local commit
+  commit=$(tree_commit "$1" "night $2 base: the checkout as pressed" 'the base') &&
+    git -C "$1" update-ref "refs/night/$2/base" "$commit" && printf '%s\n' "$commit"
 }
 
 # Night worktrees start from refs/night/<id>/base, not HEAD: main carries days of uncommitted work
@@ -252,8 +264,47 @@ cmd_base() {
   night_set "$id" '.bases = $b' --argjson b "$bases" || die "cannot write night $id"
 }
 
+# A leftover moves into the night's own namespace, where the review-flow gate lets workers commit:
+# night/<id>/leftover-<slug> at its tip, its WIP committed first, in every sweep repository where the
+# branch is a leftover; the old worktree and branch go once the night branch holds every commit.
+adopt_leftover() { # id branch -> sets branch and adopted (JSON)
+  local id=$1 old=$2 rows row repo br wt landed ahead behind dirty state why tip wip path
+  branch="night/$id/leftover-${old//\//-}" adopted='[]'
+  rows=$(branch_rows | awk -F '\t' -v b="$old" '$2 == b')
+  [ -n "$rows" ] || die "no branch $old in the sweep repositories besides main"
+  row=$(awk -F '\t' '$8 == "live"' <<<"$rows" | head -1)
+  [ -z "$row" ] || die "$old is live in $(basename "${row%%$'\t'*}"): $(cut -f9 <<<"$row")"
+  rows=$(awk -F '\t' '$8 == "leftover"' <<<"$rows")
+  [ -n "$rows" ] || die "$old is no leftover: landed, finish prunes it"
+  jq -e --arg r "${branch##*/}" 'any(.jobs[]; .ref == $r)' "$(night_file "$id")" >/dev/null &&
+    die "night $id already has job ${branch##*/}"
+  while IFS=$'\t' read -r repo _ _ _ _ _ _ _ _; do
+    git -C "$repo" rev-parse -q --verify "refs/night/$id/base^{commit}" >/dev/null ||
+      die "no refs/night/$id/base in $repo: run night-run base $id first"
+    ! git -C "$repo" show-ref --verify --quiet "refs/heads/$branch" || die "$branch already exists in $repo"
+  done <<<"$rows"
+  while IFS=$'\t' read -r repo br wt landed ahead behind dirty state why; do
+    tip=$(git -C "$repo" rev-parse "refs/heads/$old")
+    if [ "$dirty" != 0 ]; then
+      wip=$(tree_commit "$wt" "Leftover WIP from $old, adopted by night $id" 'the WIP commit') &&
+        git -C "$wt" update-ref "refs/heads/$old" "$wip" "$tip" && git -C "$wt" reset -q &&
+        tip=$wip || die "cannot commit the WIP of $wt"
+    fi
+    path="$repo/.claude/worktrees/night-$id-${branch##*/}"
+    git -C "$repo" branch -q "$branch" "$tip" && night_worktree_add "$repo" "$id" "$branch" "$path" ||
+      die "cannot make $branch in $repo"
+    adopted=$(jq -c --arg r "$repo" --arg b "$old" --arg w "$wt" --arg t "$tip" --arg p "$path" \
+      '. + [{repo: $r, branch: $b, worktree: (if $w == "-" then null else $w end), tip: $t, night_worktree: $p}]' <<<"$adopted")
+    if { [ "$wt" = - ] || git -C "$repo" worktree remove "$wt"; } && git -C "$repo" branch -q -D "$old"; then
+      printf 'adopted %s %s into %s at %s\n' "$(basename "$repo")" "$old" "$branch" "$path"
+    else
+      printf 'adopted %s %s into %s at %s; the old one stays, git refused its removal\n' "$(basename "$repo")" "$old" "$branch" "$path"
+    fi
+  done <<<"$rows"
+}
+
 cmd_job() {
-  local id=${1:-} verb=${2:-} kind ref branch=''
+  local id=${1:-} verb=${2:-} kind ref branch='' adopted=''
   [ -n "$id" ] || usage
   known_night "$id"
   case $verb in
@@ -267,12 +318,18 @@ cmd_job() {
           *) usage ;;
         esac
       done
+      if [ "$kind" = leftover ]; then
+        [ -z "$branch" ] || usage
+        adopt_leftover "$id" "$ref"
+        ref=${branch##*/}
+      fi
       lock
       jq -e --arg r "$ref" 'any(.jobs[]; .ref == $r)' "$(night_file "$id")" >/dev/null &&
         die "night $id already has job $ref"
       night_set "$id" '.jobs += [{kind: $k, ref: $r, state: "pending", reason: null,
-        branch: (if $b == "" then null else $b end), review: null, commits: [], pushed: false}]' \
-        --arg k "$kind" --arg r "$ref" --arg b "$branch" || die "cannot write night $id"
+        branch: (if $b == "" then null else $b end), review: null, commits: [], pushed: false}
+        + (if $a == null then {} else {adopted: $a} end)]' \
+        --arg k "$kind" --arg r "$ref" --arg b "$branch" --argjson a "${adopted:-null}" || die "cannot write night $id"
       printf 'night %s: job %s %s added\n' "$id" "$kind" "$ref" ;;
     set) shift 2; job_set "$id" "$@" ;;
     *) usage ;;
@@ -334,7 +391,7 @@ job_set() { # id ref key=value...
 }
 
 cmd_finish() {
-  local id=${1:-}
+  local id=${1:-} pruned
   [ -n "$id" ] && [ $# -eq 1 ] || usage
   known_night "$id"
   lock
@@ -344,34 +401,106 @@ cmd_finish() {
     --arg t "$(stamp)" --argjson after "$(doctor_counts)" || die "cannot write night $id"
   unlock
   printf 'night %s finished\n' "$id"
-  prune_landed
+  pruned=$(prune_landed)
+  [ -z "$pruned" ] || printf '%s\n' "$pruned"
+  lock
+  night_set "$id" '.leftovers = [$p | split("\n")[] | capture("^leftover (?<repo>[^ ]+) (?<branch>[^:]+): (?<why>.*)$")]' \
+    --arg p "$pruned" || die "cannot write night $id"
 }
 
-# Every night's worktrees, not only this one's: a branch the cleanup landed from an earlier night is
-# done too. Base-equal branches count as landed, since a nothing-to-do job never committed.
-prune_landed() {
-  local repo line wt branch night cwds
+# A chat at work moves its branch (create, commit and rebase each write the reflog) or leaves files dirty:
+# their newest time marks a non-night branch live, without walking the tree or reading `git status`'s
+# own index refresh.
+LIVE_S=$((6 * 3600))
+
+branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locked(0|1) cwds now -> TSV row
+  local repo=$1 wt=$2 branch=$3 ref head behind ahead landed=false dirty=0 night='' why='' state=live newest t
+  ref=${branch:+refs/heads/$branch}
+  head=$(git -C "${wt:-$repo}" rev-parse -q --verify "${ref:-HEAD}^{commit}") || return 0
+  read -r behind ahead < <(git -C "$repo" rev-list --left-right --count "refs/heads/main...$head")
+  [[ $branch == night/*/* ]] && night=${branch#night/} && night=${night%%/*}
+  if git -C "$repo" merge-base --is-ancestor "$head" refs/heads/main; then landed=true
+  elif [ -n "$night" ] && [ "$head" = "$(git -C "$repo" rev-parse -q --verify "refs/night/$night/base")" ]; then landed=true; fi
+  [ -z "$wt" ] || dirty=$(GIT_OPTIONAL_LOCKS=0 git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$4" = 1 ]; then why='main checkout'
+  elif [ "$5" = 1 ]; then why='locked'
+  elif [ -n "$wt" ] && grep -qxE "$(printf '%s' "$wt" | sed 's/[][\.*^$+?(){}|]/\\&/g')(/.*)?" <<<"$6"; then why='a process inside'
+  elif [ -n "$night" ]; then
+    [ ! -s "$(night_file "$night")" ] || [ "$(night_status "$(night_file "$night")" 2>/dev/null)" != running ] || why="night $night running"
+  else
+    newest=$(git -C "${wt:-$repo}" log -g -1 --date=unix --format=%gd "${ref:-HEAD}" 2>/dev/null)
+    newest=${newest##*@\{} newest=${newest%\}}
+    [[ $newest =~ ^[0-9]+$ ]] || newest=0
+    if [ "$dirty" != 0 ]; then
+      t=$(cd "$wt" && { git ls-files -z -m -o --exclude-standard; git diff -z --cached --name-only; } |
+        xargs -0 stat -f %m 2>/dev/null | sort -n | tail -1)
+      [ "${t:-0}" -le "$newest" ] || newest=$t
+    fi
+    [ $(($7 - newest)) -ge "$LIVE_S" ] || why="active $((($7 - newest) / 60))m ago"
+  fi
+  if [ -z "$why" ]; then
+    state=landed
+    $landed || { state=leftover why="$ahead unlanded commits"; }
+    [ "$dirty" = 0 ] || { state=leftover why="${why:+$why, }$dirty uncommitted files"; }
+    [ "$state" = landed ] || [ -n "$branch" ] || why="$why, detached HEAD"
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$repo" "${branch:--}" "${wt:--}" "$landed" "$ahead" "$behind" "$dirty" "$state" "$why"
+}
+
+# Every non-main branch and worktree of the sweep repositories, every night's included: repo branch|-
+# worktree|- landed ahead behind dirty live|landed|leftover why. Landed = in main, or a night branch still
+# at its night's base, since a nothing-to-do job never committed. `-`, not an empty field: a tab is IFS
+# whitespace, so read would shift every field after an empty one.
+branch_rows() {
+  local repo line wt branch main locked cwds now seen
+  [ -r "$sweep_repos" ] || return 0
   cwds=$(lsof -a -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
+  now=$(date +%s)
   while IFS= read -r repo; do
     [ -n "$repo" ] && [ -d "$repo" ] || continue
     git -C "$repo" rev-parse -q --verify refs/heads/main >/dev/null || continue
-    wt=''
+    wt='' branch='' main=1 locked=0 seen=' main '
     while IFS= read -r line; do
       case $line in
-        "worktree "*) wt=${line#worktree } ;;
-        "branch refs/heads/night/"*/*)
-          branch=${line#branch refs/heads/} night=${branch#night/} night=${night%%/*}
-          git -C "$repo" merge-base --is-ancestor "$branch" refs/heads/main 2>/dev/null ||
-            [ "$(git -C "$repo" rev-parse "$branch")" = "$(git -C "$repo" rev-parse -q --verify "refs/night/$night/base")" ] ||
-            continue
-          [ -z "$(git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null)" ] &&
-            ! grep -qxE "$(printf '%s' "$wt" | sed 's/[][\.*^$+?(){}|]/\\&/g')(/.*)?" <<<"$cwds" ||
-            { printf 'kept %s %s: uncommitted work or a process inside\n' "$(basename "$repo")" "$branch"; continue; }
-          git -C "$repo" worktree remove "$wt" && git -C "$repo" branch -q -D "$branch" &&
-            printf 'pruned %s %s\n' "$(basename "$repo")" "$branch" ;;
+        "worktree "*) wt=${line#worktree } branch='' locked=0 ;;
+        "branch refs/heads/"*) branch=${line#branch refs/heads/} ;;
+        locked | "locked "*) locked=1 ;;
+        '')
+          [ -z "$wt" ] || [ "$branch" = main ] || [ ! -d "$wt" ] ||
+            { seen="$seen$branch "; branch_row "$repo" "$wt" "$branch" "$main" "$locked" "$cwds" "$now"; }
+          wt='' main=0 ;;
       esac
-    done < <(git -C "$repo" worktree list --porcelain)
+    done < <(git -C "$repo" worktree list --porcelain; echo)
+    while IFS= read -r branch; do
+      [[ "$seen" == *" $branch "* ]] || branch_row "$repo" '' "$branch" 0 0 "$cwds" "$now"
+    done < <(git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads)
   done <"$sweep_repos"
+}
+
+cmd_leftovers() {
+  case ${1:-} in
+    '') branch_rows | awk -F '\t' '{ n = split($1, p, "/")
+      printf "%s %s · %s · %s · +%s/-%s main · %s dirty · %s%s\n", p[n], ($2 == "-" ? "(detached)" : $2),
+        ($3 == "-" ? "no worktree" : $3), ($4 == "true" ? "landed" : "unlanded"), $5, $6, $7, $8, ($9 == "" ? "" : " (" $9 ")") }' ;;
+    --json) branch_rows | jq -Rsc '[split("\n")[] | select(. != "") | split("\t")
+      | {repo: .[0], branch: (if .[1] == "-" then null else .[1] end), worktree: (if .[2] == "-" then null else .[2] end),
+         landed: (.[3] == "true"), ahead: (.[4] | tonumber), behind: (.[5] | tonumber), dirty: (.[6] | tonumber),
+         live: (.[7] == "live"), state: .[7], why: (if .[8] == "" then null else .[8] end)}]' ;;
+    *) usage ;;
+  esac
+}
+
+prune_landed() {
+  local repo branch wt landed ahead behind dirty state why name
+  while IFS=$'\t' read -r repo branch wt landed ahead behind dirty state why; do
+    [ "$branch" != - ] && name="$(basename "$repo") $branch" || name="$(basename "$repo") $wt"
+    case $state in
+      live | leftover) printf '%s %s: %s\n' "$state" "$name" "$why" ;;
+      landed)
+        { [ "$wt" = - ] || git -C "$repo" worktree remove "$wt"; } &&
+          { [ "$branch" = - ] || git -C "$repo" branch -q -D "$branch"; } && printf 'pruned %s\n' "$name" ;;
+    esac
+  done < <(branch_rows)
 }
 
 JQ_TOTALS='def totals: [.jobs[] | .state] as $s
@@ -433,6 +562,7 @@ cmd_report() {
             elif $lines[$r] == null then ["code ?"] else ["code +\($lines[$r][0])/-\($lines[$r][1])"] end)
         + (if .state == "merged" then [if .pushed then "pushed" else "NOT PUSHED" end] else [] end)
         + (if .reason then [.reason] else [] end)) | join(" · ")),
+      (.leftovers[]? | "leftover · \(.repo) · \(.branch) · \(.why)"),
       ($u | to_entries[] | select(.value | length > 0) | "unverified component · \(.key) · \(.value | join(", "))"),
       ("total · " + ([count($t.merged; "merged"), count($t.left; "left"), count($t.failed; "failed-launch"),
         count($t.blocked; "blocked-on-egor"), count($t.nothing; "nothing-to-do"), count($t.pending; "pending")]
@@ -450,6 +580,7 @@ cmd_latest() {
     def gist: split(":")[0] | split(",")[0] | split(";")[0] | split(" ") | map(select(. != ""))
       | if length > 6 then .[0:6] + ["…"] else . end | join(" ");
     def name: .ref as $r | if .kind == "debt" then (if $r | test("^debt(-[0-9]+)?$") then "cleanup" else "cleanup \($r)" end)
+      elif .kind == "leftover" then "leftover \(.adopted[0].branch // $r)"
       elif .kind == "vendor" then "\(.branch // "" | split("/") | if length > 2 then last else $r | sub("-[0-9]{8}T[0-9]{6}Z.*$"; "") end) update"
       else ($r | capture("^(?<d>llm|harness|updater)(-(?<a>.+?))?-[0-9]{8}T[0-9]{6}Z(-[0-9a-f]+)?$")
         | ({llm: "LLM", harness: "Harness", updater: "Updater"}[.d] + " fixer"
@@ -485,5 +616,6 @@ case "${1:-}" in
   finish) shift; cmd_finish "$@" ;;
   report) shift; cmd_report "$@" ;;
   latest) shift; cmd_latest "$@" ;;
+  leftovers) shift; [ $# -le 1 ] || usage; cmd_leftovers "$@" ;;
   *) usage ;;
 esac

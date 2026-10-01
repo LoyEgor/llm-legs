@@ -38,7 +38,8 @@ This design folds in two frontier hunts (runs 20260929T225123Z-3e30191 and 20260
      worktree starts there: main carries days of uncommitted work, and a branch from HEAD would fix
      code that no longer exists. A branch merges only after its repository's press-time debt is
      committed, by `git rebase --onto main refs/night/<id>/base`.
-   - `night-run job` records every expected job before dispatch.
+   - `night-run job` records every expected job before dispatch, a `leftover` job among them for
+     every leftover branch `night-run leftovers` lists, adopted into the night (see Leftovers).
 3. **Dispatch.** Everything below starts in parallel at about t+10 min.
    - **Fixers.**
      - `doctor-fix launch <llm|harness|updater> --night <night-id>` makes one run per area that has
@@ -79,9 +80,11 @@ This design folds in two frontier hunts (runs 20260929T225123Z-3e30191 and 20260
 6. **Close.**
    - Rerun the three doctors. This settles the ledger's `fixed-pending` rows. Commit and push that
      bookkeeping as well, so nothing is dirty after the last push.
-   - `night-run finish` writes the morning result, then `span-off`. It also removes every night's
-     worktree and branch that landed (in main, or still at its night's base) and is clean with no
-     process inside; the rest stay, named `kept`, for the next Continue or Cleanup.
+   - `night-run finish` writes the morning result, then `span-off`. It also removes every landed,
+     clean, not live branch of the sweep repositories with its worktree (see Leftovers); it prints
+     each live one `live <repo> <branch>: <why>` and each leftover `leftover <repo> <branch>: <why>`,
+     records the leftovers under the night's `leftovers`, and `night-run report` lists them as
+     unfinished work.
 
 ## Isolation rules
 - At night a worker never writes the main checkout.
@@ -102,7 +105,9 @@ This design folds in two frontier hunts (runs 20260929T225123Z-3e30191 and 20260
   ones in `previous_sessions`;
 - `doctors_before` and `doctors_after` (problem counts);
 - `jobs[]`, each with:
-  - `kind` (fixer, vendor or debt) and `ref` (run id, event id or review round);
+  - `kind` (fixer, vendor, debt or leftover) and `ref` (run id, event id, review round or
+    `leftover-<slug>`); a leftover job also carries `adopted[]` ({repo, branch, worktree, tip,
+    night_worktree}), where its branch came from;
   - `state`: `merged`, `left` (with a reason), `failed-launch`, `blocked-on-egor` or `nothing-to-do`;
   - `branch`, `review` (run id), `commits[]` ({repo, hash}) and `pushed` (bool, as verified against
     the remote).
@@ -126,12 +131,37 @@ process lives, so a start killed mid-open never blocks the next one. Only a runn
   added when no debt job is pending. The review-flow gate needs no change: it reads the night's
   `finished_at` and live `session`, so resumed workers commit on their `night/<id>/…` branches again.
 - `night-run start --cleanup` opens a new night with the prompt `сделай чистку — night run <id>
-  cleanup`: the orchestrator lands the finished night branches and runs the debt round, no fixers, no
-  updates.
+  cleanup`: the orchestrator lands the finished night branches and every leftover, and runs the debt
+  round, no fixers, no updates.
 - The Doctors menu: `Cleanup now (land night branches · debt round)` above `Run everything`, behind
   the same Cancel-first confirmation and off while a night runs; under the last night, while it does
   not run, each unfinished job gets `Continue this job` one level down, and one item `Continue
   unfinished (N jobs) + cleanup` resumes them all.
+
+## Leftovers
+Egor (2026-10-01): in the sweep repositories no branch or worktree but main outlives the work going on
+right now; a kept worktree once held a review fix that then got lost from every branch.
+`night-run leftovers [--json]` lists every non-main branch and worktree with its repository, worktree,
+landed (in main, or a night branch still at its night's base), ahead/behind main, dirty count and a
+state, the one predicate `finish` prunes by:
+- `live`, never touched: the main checkout, a locked worktree, a process with its cwd inside, a branch
+  of a running night, or a non-night branch whose newest branch-reflog entry or dirty file is under
+  6 h old. A chat at work moves its branch (create, commit, rebase) or leaves files dirty, so a fresh
+  worktree with no commit yet is live from its creation.
+- `landed`: landed, clean, not live; `finish` removes its worktree and deletes the branch.
+- `leftover`: everything else (unlanded commits or uncommitted files). It is unfinished work and goes
+  into main as a night job. `night-run job <id> add leftover <branch>` adopts it into the night's own
+  namespace, where the review-flow gate lets workers commit, in every sweep repository where that
+  branch is a leftover (one job; refused if it is live in any of them, or landed, or unknown). Per
+  repository: uncommitted files (`.gitignore` honoured, secret names and big blobs dropped as for the
+  base) become one commit `Leftover WIP from <branch>, adopted by night <id>` on the branch;
+  `night/<id>/leftover-<slug>` (`/` → `-`) is made at its tip with its worktree at
+  `<repo>/.claude/worktrees/night-<id>-leftover-<slug>`, like every night worktree; then the old
+  worktree and branch are removed. It needs `night-run base <id>` first. The job's ref is
+  `leftover-<slug>`. From there it is a night branch like any other, through the per-branch flow;
+  its worker first runs `git rebase refs/night/<id>/base`, so the review range and the later
+  `--onto` hold only its own change. A landing that fails stays `left`, and a later Cleanup takes it
+  like any other night branch.
 
 `night-run report [<id>]` prints it narrowly: one line per job, then the totals. A job with commits
 shows `code +A/-R`: lines its commits add and remove, test paths (`tests/`, `test_*`) left out;

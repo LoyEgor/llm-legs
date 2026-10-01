@@ -374,9 +374,12 @@ assert jqe '.jobs == [] and .finished_at == null' "$(record "$idc")"
 assert_fails night start --cleanup 2>/dev/null
 stop_chat "$(jq -r .session "$(record "$idc")")"
 
-# finish prunes every night's landed, clean worktrees: merged into main, or still at its base; a dirty
-# one, an unlanded one and one a process sits in stay.
+# finish prunes every landed (in main, or a night branch still at its base), clean, not live branch of
+# the sweep repositories, night or not, with its worktree. Live = the main checkout, a process inside, a
+# running night's branch, or a non-night branch whose reflog or dirty files moved within 6 h; every other
+# branch is a leftover to carry into main, never kept.
 wt="$WORK/repo/.claude/worktrees"
+old() { GIT_COMMITTER_DATE='2026-01-01T00:00:00Z' git -C "$WORK/repo" "$@"; }
 printf '%s\n' "$WORK/repo" >"$WORK/sweep-repos"
 git -C "$WORK/repo" update-ref "refs/night/$idc/base" "$based_hash"
 git -C "$WORK/repo" worktree add -q -b "night/$id/landed" "$wt/landed" "$pushed_hash"
@@ -385,17 +388,125 @@ git -C "$WORK/repo" worktree add -q -b "night/$idc/dirty" "$wt/dirty" "$pushed_h
 : >"$wt/dirty/wip"
 git -C "$WORK/repo" worktree add -q -b "night/$idc/open" "$wt/open" "$side_hash"
 git -C "$WORK/repo" worktree add -q -b "night/$idc/busy" "$wt/busy" "$pushed_hash"
+old worktree add -q -b merged-old "$wt/merged-old" "$pushed_hash"
+old branch merged-bare "$pushed_hash"
+git -C "$WORK/repo" worktree add -q -b fresh "$wt/fresh" "$pushed_hash"
+old worktree add -q -b stale-open "$wt/stale-open" "$side_hash"
+old branch stale-bare "$side_hash"
+old worktree add -q -b stale-dirty "$wt/stale-dirty" "$pushed_hash"
+printf 'wip\n' >"$wt/stale-dirty/wip"
+touch -t 202601010000 "$wt/stale-dirty/wip"
+old worktree add -q -b edited "$wt/edited" "$pushed_hash"
+printf 'wip\n' >"$wt/edited/wip"
+old worktree add -q -b plain-busy "$wt/plain-busy" "$pushed_hash"
 (cd "$wt/busy" && exec sleep 600) &
 busy=$!
+(cd "$wt/plain-busy/" && exec sleep 600) &
+plain_busy=$!
+printf '%s\n' "$busy" "$plain_busy" >>"$DATA/orchestrators"
+behind=$(git -C "$WORK/repo" rev-list --count "$pushed_hash..main")
+night leftovers >"$WORK/left" || fail "leftovers"
+night leftovers --json >"$WORK/left.json" || fail "leftovers --json"
+assert grep -qxF "repo merged-bare · no worktree · landed · +0/-$behind main · 0 dirty · landed" "$WORK/left"
+assert grep -qxF "repo stale-open · $wt/stale-open · unlanded · +1/-3 main · 0 dirty · leftover (1 unlanded commits)" "$WORK/left"
+assert grep -qxF "repo stale-bare · no worktree · unlanded · +1/-3 main · 0 dirty · leftover (1 unlanded commits)" "$WORK/left"
+assert grep -qxF "repo stale-dirty · $wt/stale-dirty · landed · +0/-$behind main · 1 dirty · leftover (1 uncommitted files)" "$WORK/left"
+assert grep -qxF "repo plain-busy · $wt/plain-busy · landed · +0/-$behind main · 0 dirty · live (a process inside)" "$WORK/left"
+assert grep -qxE "repo fresh · $wt/fresh · landed · \+0/-$behind main · 0 dirty · live \(active [0-9]+m ago\)" "$WORK/left"
+assert grep -qxE "repo edited · .* · 1 dirty · live \(active [0-9]+m ago\)" "$WORK/left"
+assert_fails grep -q '^repo main ' "$WORK/left"
+assert [ "$(wc -l <"$WORK/left" | tr -d ' ')" = 13 ]
+assert jqe --arg w "$wt" 'length == 13 and (map(.branch) | index("main")) == null
+  and (.[] | select(.branch == "stale-open")) == {repo: ($w | sub("/.claude/worktrees$"; "")), branch: "stale-open",
+    worktree: "\($w)/stale-open", landed: false, ahead: 1, behind: 3, dirty: 0, live: false, state: "leftover",
+    why: "1 unlanded commits"}
+  and ((.[] | select(.branch == "merged-bare")) | .worktree == null and .landed and .state == "landed" and .why == null)
+  and ((.[] | select(.branch == "fresh")) | .live and .state == "live")' "$WORK/left.json"
 night finish "$idc" >"$WORK/out" || fail "finish with worktrees"
-kill "$busy" 2>/dev/null
+kill "$busy" "$plain_busy" 2>/dev/null
 assert grep -qxF "pruned repo night/$id/landed" "$WORK/out"
 assert grep -qxF "pruned repo night/$idc/at-base" "$WORK/out"
-assert grep -qxF "kept repo night/$idc/dirty: uncommitted work or a process inside" "$WORK/out"
-assert grep -qxF "kept repo night/$idc/busy: uncommitted work or a process inside" "$WORK/out"
-assert [ ! -e "$wt/landed" ] && [ ! -e "$wt/at-base" ] && [ -e "$wt/dirty/wip" ] && [ -d "$wt/open" ]
-assert_fails git -C "$WORK/repo" rev-parse -q --verify "refs/heads/night/$id/landed"
-assert git -C "$WORK/repo" rev-parse -q --verify "refs/heads/night/$idc/open" >/dev/null
+assert grep -qxF "pruned repo merged-old" "$WORK/out"
+assert grep -qxF "pruned repo merged-bare" "$WORK/out"
+assert grep -qxF "leftover repo night/$idc/dirty: 1 uncommitted files" "$WORK/out"
+assert grep -qxF "leftover repo night/$idc/open: 1 unlanded commits" "$WORK/out"
+assert grep -qxF "leftover repo stale-open: 1 unlanded commits" "$WORK/out"
+assert grep -qxF "leftover repo stale-bare: 1 unlanded commits" "$WORK/out"
+assert grep -qxF "leftover repo stale-dirty: 1 uncommitted files" "$WORK/out"
+assert grep -qxF "live repo night/$idc/busy: a process inside" "$WORK/out"
+assert grep -qxF "live repo plain-busy: a process inside" "$WORK/out"
+assert grep -qxE "live repo fresh: active [0-9]+m ago" "$WORK/out"
+assert grep -qxE "live repo edited: active [0-9]+m ago" "$WORK/out"
+assert_fails grep -q '^kept ' "$WORK/out"
+assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 14 ]
+assert [ ! -e "$wt/landed" ] && [ ! -e "$wt/at-base" ] && [ ! -e "$wt/merged-old" ]
+assert [ -e "$wt/dirty/wip" ] && [ -d "$wt/open" ] && [ -d "$wt/fresh" ] && [ -d "$wt/stale-open" ] && [ -e "$wt/stale-dirty/wip" ]
+for gone in "night/$id/landed" merged-old merged-bare; do
+  assert_fails git -C "$WORK/repo" rev-parse -q --verify "refs/heads/$gone"
+done
+for stays in "night/$idc/open" stale-open stale-bare stale-dirty fresh edited plain-busy; do
+  assert git -C "$WORK/repo" rev-parse -q --verify "refs/heads/$stays" >/dev/null
+done
+assert jqe '([.leftovers[] | .branch] | sort) == (["night/'"$idc"'/dirty", "night/'"$idc"'/open", "stale-bare", "stale-dirty", "stale-open"] | sort)' "$(record "$idc")"
+assert grep -qxF "leftover · repo · stale-open · 1 unlanded commits" <(night report "$idc")
+
+# A leftover job adopts the branch into the night's namespace, where workers may commit: its WIP
+# committed, night/<id>/leftover-<slug> at its tip in a night worktree, the old worktree and branch gone.
+nwt="$wt/night-$idc-leftover-stale-dirty"
+night job "$idc" add leftover stale-dirty >"$WORK/out" || fail "adopt a dirty leftover"
+assert grep -qxF "adopted repo stale-dirty into night/$idc/leftover-stale-dirty at $nwt" "$WORK/out"
+assert grep -qxF "night $idc: job leftover leftover-stale-dirty added" "$WORK/out"
+assert [ "$(git -C "$WORK/repo" show "night/$idc/leftover-stale-dirty:wip")" = wip ]
+assert [ "$(git -C "$WORK/repo" log -1 --format=%s "night/$idc/leftover-stale-dirty")" = "Leftover WIP from stale-dirty, adopted by night $idc" ]
+assert [ "$(git -C "$WORK/repo" rev-parse "night/$idc/leftover-stale-dirty^")" = "$pushed_hash" ]
+assert [ "$(git -C "$nwt" symbolic-ref --short HEAD)" = "night/$idc/leftover-stale-dirty" ] && [ "$(cat "$nwt/wip")" = wip ]
+assert [ -z "$(git -C "$nwt" status --porcelain)" ]
+assert [ ! -e "$wt/stale-dirty" ]
+assert_fails git -C "$WORK/repo" rev-parse -q --verify refs/heads/stale-dirty
+assert jqe --arg r "$WORK/repo" --arg w "$wt/stale-dirty" --arg n "$nwt" --arg t "$(git -C "$WORK/repo" rev-parse "night/$idc/leftover-stale-dirty")" \
+  '.jobs[-1] == {kind: "leftover", ref: "leftover-stale-dirty", state: "pending", reason: null,
+    branch: "night/'"$idc"'/leftover-stale-dirty", review: null, commits: [], pushed: false,
+    adopted: [{repo: $r, branch: "stale-dirty", worktree: $w, tip: $t, night_worktree: $n}]}' "$(record "$idc")"
+assert grep -q "^leftover stale-dirty · unfinished	0		leftover-stale-dirty	leftover	1$" <(night latest --menu)
+night job "$idc" add leftover stale-bare >"$WORK/out" || fail "adopt a bare leftover"
+assert [ "$(git -C "$WORK/repo" rev-parse "night/$idc/leftover-stale-bare")" = "$side_hash" ]
+assert [ -d "$wt/night-$idc-leftover-stale-bare" ]
+assert_fails git -C "$WORK/repo" rev-parse -q --verify refs/heads/stale-bare
+assert jqe '.jobs[-1].adopted[0] | .branch == "stale-bare" and .worktree == null' "$(record "$idc")"
+# Refused, nothing touched: a live branch, a landed one, main, an unknown name, a job already there.
+old branch landed-x "$pushed_hash"
+for refused in "fresh:fresh is live in repo: active" "landed-x:landed-x is no leftover: landed" \
+  "main:no branch main in the sweep repositories" "nosuch:no branch nosuch in the sweep repositories"; do
+  assert_fails night job "$idc" add leftover "${refused%%:*}" 2>"$WORK/err"
+  assert grep -qF "${refused#*:}" "$WORK/err"
+done
+assert_fails night job "$idc" add leftover stale-open --branch x 2>/dev/null
+assert git -C "$WORK/repo" rev-parse -q --verify refs/heads/landed-x >/dev/null
+assert [ -d "$wt/fresh" ] && [ -d "$wt/stale-open" ]
+# One name, every sweep repository: a leftover branch in two repositories is adopted in both as one job;
+# live in any of them, it is refused everywhere.
+git init -q -b main "$WORK/repo2"
+git -C "$WORK/repo2" -c user.name=t -c user.email=t@t commit -q --allow-empty -m root
+git -C "$WORK/repo2" update-ref "refs/night/$idc/base" HEAD
+for r in repo repo2; do
+  c=$(git -C "$WORK/$r" -c user.name=t -c user.email=t@t commit-tree "main^{tree}" -p main -m "$r work")
+  GIT_COMMITTER_DATE='2026-01-01T00:00:00Z' git -C "$WORK/$r" branch both "$c"
+done
+GIT_COMMITTER_DATE='2026-01-01T00:00:00Z' git -C "$WORK/repo" branch split "$side_hash"
+git -C "$WORK/repo2" worktree add -q -b split "$WORK/repo2/.claude/worktrees/split"
+printf '%s\n' "$WORK/repo" "$WORK/repo2" >"$WORK/sweep-repos"
+assert_fails night job "$idc" add leftover split 2>"$WORK/err"
+assert grep -qF "split is live in repo2: active" "$WORK/err"
+assert git -C "$WORK/repo" rev-parse -q --verify refs/heads/split >/dev/null
+night job "$idc" add leftover both >"$WORK/out" || fail "adopt in every repository"
+assert [ "$(grep -c '^adopted repo2\{0,1\} both into night/'"$idc"'/leftover-both at ' "$WORK/out")" = 2 ]
+for r in repo repo2; do
+  assert [ "$(git -C "$WORK/$r" log -1 --format=%s "night/$idc/leftover-both")" = "$r work" ]
+  assert_fails git -C "$WORK/$r" rev-parse -q --verify refs/heads/both
+done
+assert jqe '.jobs[-1] | .ref == "leftover-both" and ([.adopted[] | .repo | split("/") | last] == ["repo", "repo2"])' "$(record "$idc")"
+assert_fails night job "$idc" add leftover both 2>/dev/null
+printf '%s\n' "$WORK/repo" >"$WORK/sweep-repos"
 
 # A vendor job is named by its branch's vendor, whatever run ref its updater fixer got.
 night job "$idc" add vendor updater-release-20261001T020703Z-0d10 --branch "night/$idc/codex" >/dev/null
