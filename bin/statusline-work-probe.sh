@@ -220,6 +220,8 @@ while IFS= read -r found_line; do
       logdir="" stamp=""
       [ "$c" != suites ] || [ ! -f "$cache_dir/suites-$d" ] || IFS=$'\t' read -r logdir _ _ stamp < "$cache_dir/suites-$d" || :
       [ -n "$logdir" ] && [ -d "$logdir" ] && [[ "$stamp" =~ ^[0-9]+$ ]] && [ "$stamp" -ge "$((now - b - 3))" ] || logdir=""
+      # A suite run counts from the progress file it writes once it holds a slot; before that it is queued.
+      [ "$c" != suites ] || { [ -n "$logdir" ] && b=$((now - stamp)); } || c='suites queued'
       runs_out+="run"$'\t'"$a"$'\t'"$((now - b))"$'\t'"$c"${logdir:+$'\t\t\t\t\t'"$logdir"}$'\n' ;;
   esac
 done <<< "$found"
@@ -251,6 +253,9 @@ while IFS=$'\037' read -r pid class elapsed label tpath; do
     [[ "$stamp" =~ ^[0-9]+$ ]] && [ "$stamp" -ge "$((now - elapsed - 3))" ] && outcome_dir=$logdir
   else
     total="" srepo=""
+  fi
+  if [ "$label" = suites ]; then
+    if [ -n "$outcome_dir" ]; then elapsed=$((now - stamp)); else label='suites queued' done_n=$'\t' total="" srepo=""; fi
   fi
   # A run started from another repository's directory is that repository's: the script it runs or
   # the one run-suites was handed names it, the cwd only when neither does.
@@ -286,6 +291,7 @@ fi
 if [[ "$old_mtime" =~ ^[0-9]+$ ]] && [ "$((now - old_mtime))" -le 15 ]; then
   finished=$({ printf 'OLD\n'; printf '%s' "$old_cache"; printf 'NEW\n%s\n' "$new_cache"; } | awk -F'\t' '
     $0 == "OLD" || $0 == "NEW" { side = $0; next }
+    $1 == "main" && $5 == "suites queued" || $1 == "run" && $4 == "suites queued" { next }
     $1 == "main" && $2 == "tests" { key = "chat\t" $4 "\t" $5 }
     $1 == "run" { key = "worker\t" $2 "\t" $4 }
     $1 != "run" && !($1 == "main" && $2 == "tests") { next }

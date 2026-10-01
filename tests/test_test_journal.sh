@@ -54,8 +54,8 @@ probe
 assert_eq test_twin "$(sed -n 3p "$STATUSLINE_CACHE_DIR/test-history.jsonl" | jq -r .label)"
 assert_eq '[]' "$(jq -sc 'map(select(has("ok")))' "$STATUSLINE_CACHE_DIR/test-history.jsonl")"
 # A run-suites run's outcome is its suites' .status codes once it is gone: every one 0 is ok, any
-# plain failure is not, and a run short of its total, killed, with its logs gone or whose pointer
-# predates the process (a killed runner's, its pid reused) has none.
+# plain failure is not, and a run short of its total, killed or with its logs gone has none. One whose
+# pointer predates the process (still queued for a slot, or a killed runner's pid reused) is no run.
 suite_run() { # pid repo total stamp codes...
   local pid=$1 repo=$2 total=$3 stamp=$4 rc i=0; shift 4
   mkdir -p "$WORK/$repo" "$WORK/logs-$pid"; git -C "$WORK/$repo" init -q
@@ -75,7 +75,7 @@ printf '0\t1\n' > "$WORK/logs-21/test_2.sh.status"; printf '1\t1\n' > "$WORK/log
 rm -rf "$WORK/logs-25"
 { printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; shell_line 128 02:01; printf '28 128 02:00 bash tests/run-all -j 5\n'; } > "$WORK/snap"
 probe
-assert_eq '{"repo":"r-fail","total":3,"failed":1,"ok":false} {"repo":"r-gone","total":1,"failed":0,"ok":null} {"repo":"r-killed","total":2,"failed":1,"ok":null} {"repo":"r-pass","total":2,"failed":0,"ok":true} {"repo":"r-short","total":3,"failed":0,"ok":null} {"repo":"r-stale","total":1,"failed":0,"ok":null} {"repo":"r-twin","total":1,"failed":0,"ok":true}' \
+assert_eq '{"repo":"r-fail","total":3,"failed":1,"ok":false} {"repo":"r-gone","total":1,"failed":0,"ok":null} {"repo":"r-killed","total":2,"failed":1,"ok":null} {"repo":"r-pass","total":2,"failed":0,"ok":true} {"repo":"r-short","total":3,"failed":0,"ok":null} {"repo":"r-twin","total":1,"failed":0,"ok":true}' \
   "$(jq -c 'select(.label == "suites") | {repo, total, failed, ok}' "$STATUSLINE_CACHE_DIR/test-history.jsonl" | sort | paste -sd' ' -)"
 assert_eq 3 "$(jq -s 'map(select(has("ok"))) | length' "$STATUSLINE_CACHE_DIR/test-history.jsonl")"
 # Every row names the repository it ran in by its main checkout, so a worktree's runs fold into it;

@@ -41,9 +41,9 @@ chmod +x "$FAKE_BIN"/*
 
 night() { bash "$ROOT/bin/night-run" "$@"; }
 record() { printf '%s/%s.json' "$NIGHTS" "$1"; }
-doc() { jq -n --argjson n "$2" '{contract: 1, problem_count: $n}' >"$WORK/$1/latest.json"; }
+doc() { jq -n --argjson n "$2" --argjson p "${3:-[]}" '{contract: 1, problem_count: $n, problems: $p}' >"$WORK/$1/latest.json"; }
 doc llm 5
-doc harness 3
+doc harness 3 '[{"state": "new"}, {"state": "open"}, {"state": "regressed"}, {"state": "watch", "fact": "fine"}]'
 
 # start: the record, the orchestrator chat on the main checkout with the sweep word, the session.
 night start >"$WORK/out" || fail "start failed"
@@ -51,7 +51,9 @@ id=$(sed -n 's/^night \([0-9]\{8\}T[0-9]\{6\}Z-[0-9a-f]\{4\}\) started: orchestr
 assert [ -n "$id" ]
 R=$(record "$id")
 assert jqe 'keys == (["id", "started_at", "finished_at", "session", "account", "command", "note",
-  "doctors_before", "doctors_after", "jobs"] | sort)' "$R"
+  "doctors_before", "doctors_after", "doctor_states_before", "doctor_states_after", "jobs"] | sort)' "$R"
+assert jqe '.doctor_states_before == {llm: {proved: 0, pending: 0, open: 0, new: 0, regressed: 0},
+  harness: {proved: 0, pending: 0, open: 1, new: 1, regressed: 1}, updater: null} and .doctor_states_after == null' "$R"
 assert jqe '.doctors_before == {llm: 5, harness: 3, updater: null} and .doctors_after == null and .jobs == []
   and .finished_at == null and .account == "acct-n"' "$R"
 session=$(jq -r .session "$R")
@@ -180,12 +182,17 @@ assert grep -qxF "$(printf 'cleanup debt-round · unfinished · hung\t0\thung: i
 assert grep -qxF "$(printf 'harness-r1 · failed to launch · opener\t1\topener\tharness-r1\tfixer\t0')" "$WORK/menu"
 assert grep -qxF "$(printf 'cleanup p1 · needs you · step 10 needs his word\t1\tstep 10 needs his word\tp1\tdebt\t0')" "$WORK/menu"
 assert grep -qxF "$(printf 'cleanup p2 · in progress\t0\t\tp2\tdebt\t0')" "$WORK/menu"
-assert [ "$(wc -l <"$WORK/menu" | tr -d ' ')" = 13 ]
+assert grep -qxF "$(printf 'harness 3 → ?\t0\t\t\tdoctor\t0')" "$WORK/menu"
+assert [ "$(sed -n 2,4p "$WORK/menu" | cut -f5 | sort -u)" = doctor ]
+assert [ "$(wc -l <"$WORK/menu" | tr -d ' ')" = 16 ]
 
 # finish: doctors after, pending becomes left with a reason; a second finish refuses.
 doc llm 1
-doc harness 0
-doc updater 2
+doc harness 0 '[{"state": "fixed-pending", "fact": "fixed · 25 events since · 0 matched · a fix"},
+  {"state": "fixed-pending", "fact": "unproven · 3 events since · 0 matched, needs 20 events and none matched · b"},
+  {"state": "fixed-pending", "fact": "fixed · 30 events since · 2 matched · c"}, {"state": "new"}, {"state": "new"}]'
+doc updater 2 '[{"state": "watch", "rule": "fix-proof", "fact": "W1 · fixed 0d · 0 since · 0 matched · unproven"}]'
+
 night finish "$id" >/dev/null || fail "finish"
 assert_fails night finish "$id" 2>/dev/null
 assert jqe '.doctors_after == {llm: 1, harness: 0, updater: 2} and .finished_at != null
@@ -198,12 +205,15 @@ printf '{"decisions": [{"id": "R2"}]}\n' >"$DOCTORS_DIR/runs/harness-r1.json"
 night report "$id" >"$WORK/report" || fail "report"
 assert grep -qxF "unverified component · llm-20260930T010203Z · load:busy, reading-miss:x" "$WORK/report"
 assert [ "$(grep -c '^unverified' "$WORK/report")" = 1 ]
-assert grep -qxF "doctors · llm 5→1 · harness 3→0 · updater -→2" "$WORK/report"
+assert grep -qxF "llm 5 → 1 · proved 0 · pending 0 · new 0 · regressed 0" "$WORK/report"
+assert grep -qxF "harness 3 → 0 · proved 1 · pending 2 · new 2 · regressed 0" "$WORK/report"
+assert grep -qxF "updater - → 2 · proved 0 · pending 1 · new 0 · regressed 0" "$WORK/report"
+assert grep -qxF "$(printf 'harness 3 → 0 · proved 1 · pending 2 · new 2 · regressed 0\t0\t\t\tdoctor\t0')" <(night latest --menu)
 assert grep -qxF "merged · fixer · llm-20260930T010203Z · review rb-1 · repo@${pushed_hash:0:7} · code +0/-0 · pushed" "$WORK/report"
 assert grep -qxF "left · debt · debt-round · hung: idle 1800" "$WORK/report"
 assert grep -qxF "failed-launch · fixer · harness-r1 · night/$id/harness-r1 · opener" "$WORK/report"
 assert grep -qxF "total · 2 merged · 8 left · 1 failed-launch · 1 blocked-on-egor · pushed" "$WORK/report"
-assert [ "$(wc -l <"$WORK/report" | tr -d ' ')" = 16 ]
+assert [ "$(wc -l <"$WORK/report" | tr -d ' ')" = 18 ]
 assert [ "$(awk '{ print length }' "$WORK/report" | sort -n | tail -1)" -le 100 ]
 assert cmp -s "$WORK/report" <(night report)
 jq '.started_at = "2026-01-01T00:00:00Z"' "$R" >"$WORK/tmp" && mv "$WORK/tmp" "$R"

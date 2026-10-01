@@ -371,6 +371,15 @@ for _, item in ipairs(jobs[2] and jobs[2].menu or {}) do reasonRows[#reasonRows 
 check(table.concat(reasonRows, " ") == reason and widest(jobs[2].menu) <= 64, "a job's whole reason one level down")
 check(text(doctors.title()) == quietTitle, "the Night row changed the Doctors title")
 doctors.refreshNight()
+tasks[#tasks]:finish(0, "Last night 30 Sep: 1 of 1 done and pushed\t0\t0\n"
+  .. "llm 24 → 28 · proved 0 · pending 1 · new 9 · regressed 0\t0\t\t\tdoctor\t0\n"
+  .. "harness 35 → 38 · proved 4 · pending 18 · new 16 · regressed 5\t0\t\t\tdoctor\t0\n"
+  .. "LLM fixer: health · done and pushed\t0\t\tllm-1\tfixer\t0\n")
+jobs = doctors.menuItems()[4].menu or {}
+check(#jobs == 4 and text(jobs[2].title) == "harness 35 → 38 · proved 4 · pending 18 · new 16 · regressed 5"
+  and dimmed(jobs[2].title) and jobs[2].disabled and jobs[3].title == "-"
+  and text(jobs[4].title) == "LLM fixer: health · done and pushed", "the doctor lines head the night's rows, a separator before the jobs")
+doctors.refreshNight()
 tasks[#tasks]:finish(0, "Last night 30 Sep: 4 of 4 done and pushed\t0\t0\n")
 nightRow = doctors.menuItems()[4]
 check(nightRow and text(nightRow.title) == "Last night 30 Sep: 4 of 4 done and pushed" and dimmed(nightRow.title)
