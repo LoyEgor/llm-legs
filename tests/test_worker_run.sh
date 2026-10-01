@@ -5103,10 +5103,10 @@ clear_stub
 printf 'delete me\n' >"$DIRT_REPO/bin/deletion-is-work"
 git -C "$DIRT_REPO" add bin/deletion-is-work
 git -C "$DIRT_REPO" -c user.email=t@t -c user.name=t commit -qm 'track deletion liveness'
-# Every probe below has to land while the run is still going, and there are a dozen of them: at 4s
-# the block failed under a parallel suite wave (2026-09-04) purely on machine load, while
-# `await_done` at the end of it budgets ~20s.
-export STUB_SLEEP=12
+# Every probe below has to land while the run is still going, and there are a dozen of them: 4s
+# failed under a parallel suite wave (2026-09-04) and 12s at load average 130 (2026-10-01), purely
+# on machine load; `await_done` at the end budgets 100+ s.
+export STUB_SLEEP=40
 start_ok claudeb --workdir "$DIRT_REPO"
 idle=$("$RUNNER" wait "$RUN_ID" --max 0)
 assert grep -qx 'STATUS: running' <<<"$idle"

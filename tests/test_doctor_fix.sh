@@ -468,7 +468,7 @@ assert jqe --arg f "$WORK/projects/claude-setup/hooks/gate.sh" '[.problems[].id]
   and .problems[0].component.files == [$f]' "$(cat "$DATA"/h-* | awk -F'\t' '$1 ~ /^harness-hook-waits-/ {print $1".json"}' | sed "s#^#$RUNS/#")"
 # Every other harness row gets the file it names; one that names none closes, marked component unverified.
 self=$(cat "$DATA"/h-* | awk -F'\t' '$1 ~ /^harness-self-/ {print $1}')
-assert jqe --arg c "$(cd -P "$ROOT" && pwd)/bin/harness-doctor" --arg t "$WORK/projects/proj/tests/test_x.sh" \
+assert jqe --arg c "$(cd -P "$ROOT" && pwd | sed -E 's#/\.claude/worktrees/[^/]+$##')/bin/harness-doctor" --arg t "$WORK/projects/proj/tests/test_x.sh" \
   '[.problems[] | {id, files: .component.files}] == [{id: "collector:run", files: [$c]}, {id: "test_slow:proj:test_x", files: [$t]},
   {id: "test_long_pole:proj:test_x", files: [$t]}, {id: "test_daily_cost:proj:test_x", files: [$t]}]' "$(record "$self")"
 load=$(cat "$DATA"/h-* | awk -F'\t' '$1 ~ /^harness-load-/ {print $1}')

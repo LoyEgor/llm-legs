@@ -225,7 +225,7 @@
         "rule": "ask-deferred",
         "ident": "busy-bg-task"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-09-30T04:05:00+03:00",
@@ -244,7 +244,7 @@
           "files": [
             "claude-setup/hooks/stop-dispatch.sh"
           ],
-          "in": null,
+          "in": "claude-setup@c9603b7",
           "regressed_at": null
         }
       ],
@@ -624,7 +624,7 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/skills/hyperframes$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-01T02:17:46+00:00",
@@ -633,7 +633,7 @@
             "claude-setup/hooks/skill-install-scope-gate.sh",
             "claude-setup/tests/test_skill_install_scope_gate.sh"
           ],
-          "in": null,
+          "in": "claude-setup@c9603b7",
           "regressed_at": null
         }
       ],
@@ -650,7 +650,7 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/skills/hyperframes\\-animation$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-01T02:17:46+00:00",
@@ -659,7 +659,7 @@
             "claude-setup/hooks/skill-install-scope-gate.sh",
             "claude-setup/tests/test_skill_install_scope_gate.sh"
           ],
-          "in": null,
+          "in": "claude-setup@c9603b7",
           "regressed_at": null
         }
       ],
@@ -676,7 +676,7 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/skills/hyperframes\\-audio$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-01T02:17:46+00:00",
@@ -685,7 +685,7 @@
             "claude-setup/hooks/skill-install-scope-gate.sh",
             "claude-setup/tests/test_skill_install_scope_gate.sh"
           ],
-          "in": null,
+          "in": "claude-setup@c9603b7",
           "regressed_at": null
         }
       ],
@@ -702,7 +702,7 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/skills/hyperframes\\-cli$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-01T02:17:46+00:00",
@@ -711,7 +711,7 @@
             "claude-setup/hooks/skill-install-scope-gate.sh",
             "claude-setup/tests/test_skill_install_scope_gate.sh"
           ],
-          "in": null,
+          "in": "claude-setup@c9603b7",
           "regressed_at": null
         }
       ],
@@ -728,7 +728,7 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/skills/hyperframes\\-core$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-01T02:17:46+00:00",
@@ -737,7 +737,7 @@
             "claude-setup/hooks/skill-install-scope-gate.sh",
             "claude-setup/tests/test_skill_install_scope_gate.sh"
           ],
-          "in": null,
+          "in": "claude-setup@c9603b7",
           "regressed_at": null
         }
       ],
@@ -754,7 +754,7 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/skills/hyperframes\\-creative$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-01T02:17:46+00:00",
@@ -763,7 +763,7 @@
             "claude-setup/hooks/skill-install-scope-gate.sh",
             "claude-setup/tests/test_skill_install_scope_gate.sh"
           ],
-          "in": null,
+          "in": "claude-setup@c9603b7",
           "regressed_at": null
         }
       ],
@@ -780,7 +780,7 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/skills/hyperframes\\-keyframes$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-01T02:17:46+00:00",
@@ -789,7 +789,7 @@
             "claude-setup/hooks/skill-install-scope-gate.sh",
             "claude-setup/tests/test_skill_install_scope_gate.sh"
           ],
-          "in": null,
+          "in": "claude-setup@c9603b7",
           "regressed_at": null
         }
       ],
@@ -806,7 +806,7 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/skills/hyperframes\\-registry$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-01T02:17:46+00:00",
@@ -815,7 +815,7 @@
             "claude-setup/hooks/skill-install-scope-gate.sh",
             "claude-setup/tests/test_skill_install_scope_gate.sh"
           ],
-          "in": null,
+          "in": "claude-setup@c9603b7",
           "regressed_at": null
         }
       ],
@@ -832,7 +832,7 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/skills/hyperframes\\-studio$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-01T02:17:46+00:00",
@@ -841,7 +841,7 @@
             "claude-setup/hooks/skill-install-scope-gate.sh",
             "claude-setup/tests/test_skill_install_scope_gate.sh"
           ],
-          "in": null,
+          "in": "claude-setup@c9603b7",
           "regressed_at": null
         }
       ],
@@ -858,7 +858,7 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/skills/media\\-use$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-01T02:17:46+00:00",
@@ -867,7 +867,7 @@
             "claude-setup/hooks/skill-install-scope-gate.sh",
             "claude-setup/tests/test_skill_install_scope_gate.sh"
           ],
-          "in": null,
+          "in": "claude-setup@c9603b7",
           "regressed_at": null
         }
       ],
