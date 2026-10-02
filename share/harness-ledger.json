@@ -324,7 +324,7 @@
         "rule": "ask-deferred",
         "ident": "busy-bg-task"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-09-30T04:05:00+03:00",
@@ -345,15 +345,62 @@
           ],
           "in": "claude-setup@c9603b7",
           "regressed_at": "2026-10-01T15:56:11+03:00"
+        },
+        {
+          "at": "2026-10-02T14:11:40+03:00",
+          "by": "night fixer harness-stop-hooks-20261002T093037Z-0eb0",
+          "files": [
+            "claude-setup/hooks/stop-dispatch.sh"
+          ],
+          "in": null
         }
       ],
       "same_cause": [
         "word-miss-deferred-reading-lost"
       ],
-      "last_reviewed": "2026-10-01",
-      "reviewed_by": "night fixer harness-stop-hooks-20261001T020700Z-5bfd",
-      "note": "stop-dispatch.sh holds asks for background work at most STOP_DISPATCH_HELD_CAP (3600 s), then runs them at that stop with busy empty and the journal line's held naming what it would have called busy, and the hold restarts; ask-span-drill stays silent under STOP_HELD; ask-run-unfinished also sees waiter tasks under the 2.1.285 label subagent. The doctor's ask-busy rule does not see asks run under held, by design. The 2026-09-30 06:55-08:16 regression (10417 s in 2ddedf36, 8646 s in 233cceb1, 7237 s in e4fb4c87) was transitional: all three background tasks started before e5909cd landed at 06:15:31, so the new hold granted them another cap from their first post-land stop while the doctor measured the whole pre-land streak; zero streaks >= 3600 s since 08:16. stop-dispatch guards held_file read so fresh holds no longer log No such file or directory to stderr.",
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "night fixer harness-stop-hooks-20261002T093037Z-0eb0",
+      "note": "stop-dispatch.sh holds asks for background work at most STOP_DISPATCH_HELD_CAP (3600 s), then runs them at that stop with busy empty and the journal line's held naming what it would have called busy, and the hold restarts; ask-span-drill stays silent under STOP_HELD; ask-run-unfinished also sees waiter tasks under the 2.1.285 label subagent. The doctor's ask-busy rule does not see asks run under held, by design. The 2026-09-30 06:55-08:16 regression was transitional (tasks started before e5909cd landed). The 2026-10-01 regression (10896605, 10:17-13:08Z, 10269 s) was the 959efae stale-hold rule misfiring: no stop from 10:32 to 12:11Z because a task notification at 11:40Z opened a 31-min turn, the old tasks ended inside it and a new one started, so 'no stop for the cap and none of its tasks live' restarted the hold of a live chat. The held file is now 'since chat-pid' ($PPID, the Claude Code process: hook-time rows show one stable ppid per chat process) and only a different process (a closed chat resumed) restarts it; old-format files restart once. Ruled out: notice timing, ask-span-drill, worker-run holds (busy was bg-task throughout). Risk to watch: a harness that wrapped hooks in a per-call shell would restart every hold and bring the unbounded hold back; this rule would show it.",
       "handoff": null
+    },
+    {
+      "id": "hook-error-notice-word-journal-timeout",
+      "title": "notice-word-journal.sh timed out (exit 124) at the stops of a chat with a 47 MB transcript",
+      "match": {
+        "rule": "hook-error",
+        "ident": "notice-word-journal\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-02T14:11:40+03:00",
+          "by": "night fixer harness-stop-hooks-20261002T093037Z-0eb0",
+          "files": [
+            "claude-setup/hooks/lib/words_journal.py"
+          ],
+          "in": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "night fixer harness-stop-hooks-20261002T093037Z-0eb0",
+      "note": "All 16 exit-124 lines since 2026-10-01 are session 233cceb1 (Updater doctor), a 47 MB transcript whose turns are mostly silent rows: main() then ran readings() twice over the whole file (reading lines and the GUESS pattern), about 1 s each when idle and past the 5 s cap under night load. readings() without a tail now reads back from words.TAIL_BYTES x4 until his last message is in it (649 KB there): 0.97 s -> 0.008 s, identical results on the 40 largest transcripts. Ruled out: chat-name (0.13 s, own 2 s cap), the words journal (212 KB). The two older 'not executable' lines (2026-09-17) were the hook's creation.",
+      "handoff": null
+    },
+    {
+      "id": "hook-error-ask-pr-mattermost-creation",
+      "title": "ask-pr-mattermost.sh journalled 'not executable' at the stop that caught it mid-creation",
+      "match": {
+        "rule": "hook-error",
+        "ident": "ask-pr-mattermost\\.sh"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "night fixer harness-stop-hooks-20261002T093037Z-0eb0",
+      "note": "One line, 2026-10-01T19:25:41Z in 2ddedf36: ~/.claude/hooks/stop.d gained the file at 22:25 local (directory mtime) and it is 0755 since; the hook is untracked WIP of another chat in claude-setup main. The dispatcher did what it says (a hook without +x is journalled, never skipped in silence); the file was written before its chmod, as notice-word-journal.sh was on 2026-09-17. Not a bug of ours; dismissal proposed to the owner.",
+      "handoff": "docs/handoffs/2026-10-02-stop-hook-born-without-x.md"
     },
     {
       "id": "word-miss-deferred-reading-lost",
