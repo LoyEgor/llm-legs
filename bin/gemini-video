@@ -44,7 +44,7 @@ usage() {
   printf '  --count 2-4 renders variants in one send (dest, then <stem>-2, ...) at that multiple of the credits; default 1\n' >&2
   printf '  --resolution 1080p renders 720p and downloads Flow'\''s own upscale (no extra credits)\n' >&2
   printf '  prompting guide (read before writing a prompt): %s/docs/video-prompting.md\n' "$root" >&2
-  printf '  one-time per account: gemini-web login <account>; readiness: gemini-web status <account>\n' >&2
+  printf '  one-time per account: geminib web <account>; readiness: gemini-web status <account>\n' >&2
   exit 2
 }
 

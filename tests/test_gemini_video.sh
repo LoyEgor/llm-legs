@@ -6,6 +6,7 @@ SCRIPT="$ROOT/bin/gemini-video"
 MANIFEST="$ROOT/share/image-caps/gemini.json"
 WORK="$(mktemp -d)"
 export IMAGE_LEG_LOG="$WORK/image-legs.jsonl"
+export LLM_LIMITS_GEMINI_REMOVED="$WORK/gemini-main.removed"
 export GEMINIB_PROFILES_DIR="$WORK/gemini-profiles" WORKER_PICK_CONFIG_FILE="$WORK/pins" LLM_LIMITS_FILE="$WORK/limits.json" CHAT_PINS_DIR="$WORK/chat-pins"
 mkdir -p "$GEMINIB_PROFILES_DIR/.geminib"
 : >"$WORKER_PICK_CONFIG_FILE"
@@ -347,6 +348,7 @@ EOF
 
 GW="$WORK/gemini-web-root"
 mkdir -p "$GW/profiles/walled/Default" "$GW/profiles/rich/Default" "$GW/profiles/nologin" "$GW/accounts"
+mkdir -p "$GEMINIB_PROFILES_DIR/walled" "$GEMINIB_PROFILES_DIR/rich" "$GEMINIB_PROFILES_DIR/nologin"
 : >"$GW/profiles/walled/Default/Cookies"
 : >"$GW/profiles/rich/Default/Cookies"
 printf '{"email": "w@example.com", "credits": 900}' >"$GW/accounts/walled.json"
@@ -359,8 +361,25 @@ import gemini_web as g
 assert g.rotation(20) == ["rich"], g.rotation(20)
 assert g.bound_accounts() == ["rich", "walled"], g.bound_accounts()
 g.set_wall("walled", None)
+g.write_meta("rich", generation_started_at=100)
+g.write_meta("walled", generation_started_at=200)
+assert g.rotation(20) == ["rich", "walled"], "the richer balance went first, not the least recently started"
+g.write_meta("walled", generation_started_at=50)
 assert g.rotation(20) == ["walled", "rich"], g.rotation(20)
+assert g.least_recent(["rich", "fresh"]) == ["fresh", "rich"], "a never-used account went after a used one"
 import argparse, io, contextlib, time
+started = []
+real_render_on, g.render_on = g.render_on, lambda account, *rest: started.append(account) or {"ok": True}
+def stamp(account, extend=None, dry=False):
+    before = g.read_meta(account).get("generation_started_at")
+    g.generate_on(account, {"extend": extend}, argparse.Namespace(dest="/tmp/x.mp4", dry_run=dry))
+    return before, g.read_meta(account).get("generation_started_at")
+assert stamp("rich", extend={"account": "rich"}) == (100, 100), "an extend stamped a new generation"
+assert stamp("rich", dry=True) == (100, 100), "a dry run stamped a new generation"
+before, after = stamp("rich")
+assert after >= time.time() - 60 and started == ["rich"] * 3, (before, after, started)
+g.write_meta("rich", generation_started_at=100)
+g.render_on = real_render_on
 tried = []
 def fake_generate_on(account, plan, args):
     tried.append(account)
@@ -377,82 +396,68 @@ assert tried == ["walled", "rich"] and '"account": "rich"' in out.getvalue(), (t
 assert g.walls()["walled"] > time.time() + g.WALL_SECONDS, g.walls()
 EOF
 
-# Flow credit totals: the allowance the activity page states, once a day, and a refill jump as the cycle's start.
+# The gemini roster the menubar lists bounds every pick: a signed-in, bound Flow profile it does not list
+# (an account removed in the menu, or main behind its removal marker) is never rotated and refused by name.
+GWX="$WORK/gemini-web-offroster"
+for name in rich blocked main; do
+  mkdir -p "$GWX/profiles/$name/Default" "$GWX/accounts"
+  : >"$GWX/profiles/$name/Default/Cookies"
+  printf '{"email": "%s@example.com", "credits": 5000}' "$name" >"$GWX/accounts/$name.json"
+done
+: >"$LLM_LIMITS_GEMINI_REMOVED"
+assert env GEMINI_WEB_DIR="$GWX" python3 - "$ROOT/share" <<'EOF'
+import argparse, sys
+sys.path.insert(0, sys.argv[1])
+import gemini_web as g
+assert "blocked" not in g.roster() and "main" not in g.roster() and "rich" in g.roster(), g.roster()
+assert g.bound_accounts() == ["rich"], g.bound_accounts()
+assert g.rotation(20) == ["rich"], g.rotation(20)
+tried = []
+g.generate_on = lambda account, plan, args: tried.append(account) or {"ok": True, "account": account}
+for name in ("blocked", "main"):
+    args = argparse.Namespace(model="fast", duration=8, aspect="16:9", resolution="720p", first_frame=None,
+                              last_frame=None, ref=[], edit=None, account=name, count=1, extend=None)
+    try:
+        g.cmd_generate(args)
+        raise AssertionError(f"{name} off the roster was run")
+    except g.Failure as failure:
+        assert failure.code == 2 and f"unknown account: {name}" in failure.reason, failure.reason
+    try:
+        with g.browser(name):
+            raise AssertionError(f"a browser opened on {name} off the roster")
+    except g.Failure as failure:
+        assert failure.code == 2, failure.reason
+assert tried == [], tried
+EOF
+assert test "$(GEMINI_WEB_DIR="$GWX" GEMINI_WEB_CHROME="$WORK/no-chrome.app" python3 "$ROOT/share/gemini_web.py" login ghost >/dev/null 2>&1; echo $?)" = 2
+assert test ! -e "$GWX/profiles/ghost"
+assert test -e "$GWX/profiles/blocked/Default/Cookies"
+rm -f "$LLM_LIMITS_GEMINI_REMOVED"
+
+# Flow credit totals: a refill jump starts the cycle, and its balance is the cycle's total.
 assert env GEMINI_WEB_DIR="$GW" python3 - "$ROOT/share" <<'EOF'
-import sys, time
+import sys
 sys.path.insert(0, sys.argv[1])
 import gemini_web as g
 
-
-class Body:
-    def __init__(self, page):
-        self.page = page
-
-    def inner_text(self, timeout=None):
-        self.page.reads += 1
-        return self.page.text if self.page.reads > 1 else "Loading"
-
-
-class Page:
-    def __init__(self, text):
-        self.text, self.reads, self.urls, self.closed = text, 0, [], False
-
-    def goto(self, url, wait_until=None, timeout=None):
-        self.urls.append(url)
-
-    def locator(self, selector):
-        return Body(self)
-
-    def wait_for_timeout(self, ms):
-        pass
-
-    def close(self):
-        self.closed = True
-
-
-class Context:
-    def __init__(self, text):
-        self.pages_made = []
-        self.text = text
-
-    def new_page(self):
-        self.pages_made.append(Page(self.text))
-        return self.pages_made[-1]
-
-
-stated = ("Google Flow activity 1,000 Google Flow credits are included as part of your Google AI plan and\n"
-          "refresh monthly. You also receive an additional 50 Google Flow credits daily.")
-context = Context(stated)
-g.read_allowance(context, "totals")
-meta = g.read_meta("totals")
-assert (meta["credits_total"], meta["credits_total_source"]) == (1000, "site"), meta
-assert context.pages_made[0].urls == [g.ALLOWANCE_URL] and context.pages_made[0].closed, context.pages_made[0].urls
-g.read_allowance(context, "totals")
-assert len(context.pages_made) == 1, "the allowance was read again within a day"
-g.write_meta("totals", credits_total_checked_at=0)
-missed = Context("Upgrade your plan for more Google Flow credits")
-g.read_allowance(missed, "totals")
-assert g.read_meta("totals")["credits_total"] == 1000, "a page without the allowance erased the total"
-g.read_allowance(missed, "totals")
-assert len(missed.pages_made) == 1, "a page without the allowance was opened again within a day"
-assert "hl=en" in g.ALLOWANCE_URL, "the allowance page opens in the account's language, the English match misses"
-
-g.note_credits("totals", 828)
+g.write_meta("totals", credits=828)
 g.note_credits("totals", 700)
-assert "credits_refilled_at" not in g.read_meta("totals"), "a spend counted as a refill"
-g.note_credits("totals", 1650)
+assert "credits_refilled_at" not in g.read_meta("totals") and "credits_total" not in g.read_meta("totals"), \
+    "a spend counted as a refill"
+g.note_credits("totals", 1050)
 meta = g.read_meta("totals")
-assert meta["credits_renews_at"] == g.month_after(meta["credits_refilled_at"]) and meta["credits_total"] == 1000, meta
-g.write_meta("fresh", credits=20)
-g.note_credits("fresh", 1050)
-meta = g.read_meta("fresh")
-assert (meta["credits_total"], meta["credits_total_source"]) == (1050, "balance after refill"), meta
-g.note_credits("fresh", None)
-assert g.read_meta("fresh")["credits"] == 1050
+assert meta["credits_total"] == 1050 and meta["credits_renews_at"] == g.month_after(meta["credits_refilled_at"]), meta
+g.note_credits("totals", 1000)
+g.note_credits("totals", 1040)
+meta = g.read_meta("totals")
+assert (meta["credits"], meta["credits_total"]) == (1040, 1050), "a spend or the daily top-up moved the cycle's total"
+g.note_credits("totals", None)
+assert g.read_meta("totals")["credits"] == 1040
+assert not hasattr(g, "read_allowance"), "one.google.com states no Flow allowance; opening it only unhides Chrome"
 assert g.month_after(1769817600) == 1772236800, g.month_after(1769817600)
 EOF
 
-# Rotation by cached balance, past a sign-in step, and inside the gemini worker pool; the clone stays while in use.
+# Rotation by cached balance gate and least recent start, past a sign-in step, and inside the gemini worker pool; the clone stays while in use.
 assert env GEMINI_WEB_DIR="$GW" python3 - "$ROOT/share" "$GEMINIB_PROFILES_DIR/.geminib/disabled" <<'EOF'
 import argparse, contextlib, fcntl, io, os, sys, time
 sys.path.insert(0, sys.argv[1])
@@ -462,7 +467,7 @@ g.set_wall("walled", None)
 now = int(time.time())
 g.write_meta("walled", credits=0, credits_at=now - 2 * g.WALL_SECONDS)
 g.write_meta("rich", credits=5, credits_at=now)
-assert g.rotation(4) == ["rich", "walled"], g.rotation(4)
+assert g.rotation(4) == ["walled", "rich"], g.rotation(4)
 assert g.rotation(20) == ["walled"], g.rotation(20)
 g.write_meta("walled", credits=0, credits_at=now)
 assert g.rotation(20) == [], g.rotation(20)
@@ -495,7 +500,7 @@ tried.clear()
 def signed_out(account, plan, args):
     tried.append(account)
     if account == "walled":
-        raise g.Failure(4, "Google signed walled out; run: gemini-web login walled")
+        raise g.Failure(4, "Google signed walled out; run: geminib web walled")
     return {"ok": True, "account": account}
 g.generate_on = signed_out
 assert run()[0] == 0 and tried == ["walled", "rich"], tried
@@ -627,7 +632,13 @@ def fake_generate_on(account, plan, args):
     tried.append(account)
     return {"ok": True, "account": account}
 g.generate_on = fake_generate_on
+until = g.walls()["walled"]
+g.set_wall("walled", None)
+g.write_meta("walled", generation_started_at=1)
+g.write_meta("rich", generation_started_at=2)
+assert g.rotation(10)[0] == "walled", g.rotation(10)
 assert run() == (0, "") and tried == ["rich"], tried
+g.set_wall("walled", until)
 assert run(account="walled")[0] == 2 and tried == ["rich"]
 code, reason = run(extend=walled)
 assert code == 3 and "the only account holding walled.mp4" in reason and tried == ["rich"], (code, reason)
@@ -793,8 +804,8 @@ assert test "$(engine_rc generate --prompt x --dest "$OUT/x.mp4" --count 7)" = 2
 assert test "$(engine_rc generate --prompt x --dest "$OUT/x.mp4" --extend "$CLIP")" = 2
 assert jq -e '.reason | test("not a clip gemini-video saved")' "$WORK/engine.out" >/dev/null
 assert test "$(engine_rc generate --prompt x --dest "$OUT/x.mp4" --account nologin)" = 4
-assert jq -e '.code == 4 and (.reason | test("gemini-web login nologin"))' "$WORK/engine.out" >/dev/null
-assert grep -q '^BROWSER_FAILURE route=flow account=nologin code=4 shot=- reason=.*gemini-web login nologin' "$WORK/engine.err"
+assert jq -e '.code == 4 and (.reason | test("geminib web nologin"))' "$WORK/engine.out" >/dev/null
+assert grep -q '^BROWSER_FAILURE route=flow account=nologin code=4 shot=- reason=.*geminib web nologin' "$WORK/engine.err"
 EMPTY="$WORK/empty-root"
 mkdir -p "$EMPTY"
 assert test "$(GEMINI_WEB_DIR="$EMPTY" python3 "$ROOT/share/gemini_web.py" generate --prompt x --dest "$OUT/x.mp4" >/dev/null 2>&1; printf '%s' "$?")" = 4
@@ -810,4 +821,4 @@ assert jq -e '.video as $v | ([$v.models[].refs_max] | max) == $v.refs_max
   and ($v.extend.sources | all($v.models[.] != null))
   and ($v.counts | index(1))' "$MANIFEST" >/dev/null
 
-echo "PASS: $asserts asserts; manifest gates refused before any spend (frames vs ingredients, refs per model, resolution, edit source length), 1080p as a 720p render plus upscale, manifest-driven model choice, lone --ref as first frame, refs and --edit passed through, the measured footer with wire-pattern freshness, exit 3 kept to credit walls and exit 4 to unsigned profiles, the engine's media readers on real Flow traffic (the new clip from the generation reply, else by prompt and freshness), the generation request's wire key, the engine's plan and costs, pre-browser engine gates, flagged-account detection (a whole failed envelope, never an old tile) and walled-account rotation, --extend found through the job ledger (Veo sources only, untouched files, never an extension, pinned to its account and its walls, 720p) with the extend reply read from real traffic, --count variants priced and listed, a charge that differs from the manifest reported, and the manifest's model/duration/resolution/extend coverage"
+echo "PASS: $asserts asserts; manifest gates refused before any spend (frames vs ingredients, refs per model, resolution, edit source length), 1080p as a 720p render plus upscale, manifest-driven model choice, lone --ref as first frame, refs and --edit passed through, the measured footer with wire-pattern freshness, exit 3 kept to credit walls and exit 4 to unsigned profiles, the engine's media readers on real Flow traffic (the new clip from the generation reply, else by prompt and freshness), the generation request's wire key, the engine's plan and costs, pre-browser engine gates, flagged-account detection (a whole failed envelope, never an old tile) and walled-account rotation least recently started first (a new generation stamps it, an extend or dry run never), --extend found through the job ledger (Veo sources only, untouched files, never an extension, pinned to its account and its walls, 720p) with the extend reply read from real traffic, --count variants priced and listed, a charge that differs from the manifest reported, and the manifest's model/duration/resolution/extend coverage"

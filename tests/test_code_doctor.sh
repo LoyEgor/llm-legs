@@ -131,10 +131,11 @@ day=$((now / 86400 - 2))
 mkdir -p "$C/harness/hooks"
 printf '%s000000\t%s500000\tguard.sh\t0\t111\n' "$((day * 86400))" "$((day * 86400))" >"$C/harness/hooks/$day.tsv"
 printf '%s000000\t%s900000\tguard.sh\t0\t112\n' "$((day * 86400 + 60))" "$((day * 86400 + 60))" >>"$C/harness/hooks/$day.tsv"
+printf '%s000000\t%s900000\t \t0\t113\n' "$((day * 86400 + 90))" "$((day * 86400 + 90))" >>"$C/harness/hooks/$day.tsv"
 date_of_day=$(date -u -r $((day * 86400)) +%F)
 mkdir -p "$C/harness/statusline"
 printf '1\t2\ts-a\n3\t4\ts-b\n5\t6\ts-a\n' >"$C/harness/statusline/$date_of_day.tsv"
-"$CD" rollup >/dev/null
+assert "$CD" rollup >/dev/null
 assert jqe '.sources.hooks.hits["hook:guard.sh"] == 2 and .sources.hooks.sessions == null
   and .sources.statusline.sessions == 2 and .complete' "$CODE_DOCTOR_DIR/rollup/$date_of_day.json"
 rm "$C/harness/hooks/$day.tsv" "$C/harness/statusline/$date_of_day.tsv"
@@ -368,6 +369,12 @@ jq --slurpfile d "$LATEST" '.problems = [$d[0].problems[] | select(.id == "cause
   | .units |= map(select(.unit == "alpha/bin/old-sync"))]' "$C/record.json" >"$C/record-snap.json"
 "$CD" check "$C/record-snap.json" --base refs/night/n1/base >"$WORK/check.out"
 assert grep -qF 'alpha/lib/old_sync_lib.sh: deleted, but no judged problem of this run names it' "$WORK/check.out"
+jq --slurpfile d "$LATEST" '.problems = [$d[0].problems[] | select(.id == "cause:alpha/bin/old-sync") | .cause = .id | .id = "row-x"]' \
+  "$C/record.json" >"$C/record-row.json"
+assert "$CD" check "$C/record-row.json" --base refs/night/n1/base
+jq 'del(.launched_at)' "$C/record-day.json" >"$C/record-nolaunch.json"
+"$CD" check "$C/record-nolaunch.json" >"$WORK/check.out"
+assert grep -qF 'the run records no launch time' "$WORK/check.out"
 
 # The snapshot never hands a needs-Egor problem to the fixer, whatever its value.
 jq -n '{problems: [{id: "cause:registration:/gone", state: "new", needs_egor: true, value: 99, units: [], files: []}]}' \
@@ -380,6 +387,48 @@ ln -s "$A/lib/drive_a.py" "$REPOS/beta/lib/drive_link.py"
 assert grep -qF '"cause:alpha/lib/drive_a.py#load_drivers"' "$CODE_DOCTOR_DIR/candidates.jsonl"
 assert test "$(jq -r '.units[].unit' "$CODE_DOCTOR_DIR/candidates.jsonl" | grep -c 'drive_link.py')" = 0
 rm "$REPOS/beta/lib/drive_link.py"
+
+# A ~/.local/bin link to an existing file the index skips (binary) is a working registration, never a dangling one.
+printf 'x\0y' >"$REPOS/beta/lib/blob.bin"
+ln -s "$REPOS/beta/lib/blob.bin" "$HOME/.local/bin/blob"
+"$CD" refresh --quiet
+assert test "$(grep -c 'blob.bin' "$CODE_DOCTOR_DIR/candidates.jsonl")" = 0
+rm "$HOME/.local/bin/blob" "$REPOS/beta/lib/blob.bin"
+
+# Index and revalidation units: identical bytes keep each path's own kind, a link follows its target's edits,
+# whole-file digests hash raw bytes, a same-named symbol resolves to its own span, a pre-history day base diffs.
+U="$WORK/units"
+mkdir -p "$U/repo/bin" "$U/repo/tests/fixtures" "$U/state"
+printf '#!/bin/bash\necho same\n' >"$U/repo/bin/same.sh"
+cp "$U/repo/bin/same.sh" "$U/repo/tests/fixtures/same.sh"
+printf 'echo one\n' >"$U/repo/bin/real.sh"
+ln -s real.sh "$U/repo/bin/link.sh"
+printf 'line one\r\nbad \xff byte\r\n' >"$U/repo/bin/crlf.txt"
+printf 'class A:\n    def run(self):\n        return 1\n\n\nclass B:\n    def run(self):\n        return 2\n' >"$U/repo/bin/two.py"
+git -C "$U/repo" init -q -b main && git -C "$U/repo" add -A && commit "$U/repo" base
+CODE_DOCTOR_DIR="$U/state" python3 - "$CD" "$U/repo" >"$WORK/units.out" 2>&1 <<'PY'
+import importlib.machinery, os, sys
+
+cd = importlib.machinery.SourceFileLoader("code_doctor", sys.argv[1]).load_module()
+top = sys.argv[2]
+doc, _, _ = cd.index_repo(top, {})
+files = doc["files"]
+assert files["bin/same.sh"]["kind"] != files["tests/fixtures/same.sh"]["kind"], "identical bytes shared one kind"
+with open(os.path.join(top, "bin/real.sh"), "a") as handle:
+    handle.write("echo two\n" * 20)
+doc, _, _ = cd.index_repo(top, {})
+assert doc["files"]["bin/link.sh"]["digest"] == doc["files"]["bin/real.sh"]["digest"], "the link kept its stale record"
+fid = "repo/bin/crlf.txt"
+span = cd.unit_span(fid, doc["files"]["bin/crlf.txt"])
+assert cd.unit_digest_at(top, None, span) == span["digest"], "whole-file digest differs from the index on CRLF bytes"
+assert cd.unit_digest_at(top, "HEAD", span) == span["digest"], "whole-file digest at a ref differs from the index"
+second = [s for s in doc["files"]["bin/two.py"]["symbols"] if s["name"] == "run"][1]
+span = cd.unit_span("repo/bin/two.py", doc["files"]["bin/two.py"], second)
+assert cd.unit_digest_at(top, None, span) == second["digest"], "the second same-named symbol read as the first"
+assert cd.diff_entries(top, cd.EMPTY_TREE), "a diff from the empty tree listed nothing"
+print("ok")
+PY
+assert grep -qx ok "$WORK/units.out"
 
 # Hot runtime counts only rollup days after the hook's last commit, and waits for enough of them.
 day0=$((now / 86400))
@@ -425,4 +474,4 @@ assert jqe --arg a "$first" --arg b "$second" 'has($a) or has($b) | not' "$CODE_
 "$CD" judge --night b2 >"$WORK/judge.out"
 assert grep -qF 'judge: 2 judged · 0 waiting' "$WORK/judge.out"
 
-echo "PASS: $asserts asserts; calibration $(grep -c '^PASS' "$WORK/calibration")/6 cases, a healthy repository with 0 problems, the incremental index, the needs-Egor registration, the judge's batched sessions with their token, wall and launch-failure stops, the durable rollup and its coverage blind spot, the top-K snapshot with active work out, the safety gate (suites, a deletion no problem names, an edit through a cross-repo symlink, active work), the structural digest (rollup no, caller yes), revalidation against the night base, the ledger's fixed-pending, regressed and faulty rows, the canonical mechanisms, review claims through review-anchors, tokenmap-measured instruction weight, a hook rooted through its ~/.claude link, a runner-less test of live code, PyObjC selectors, a symlink never pairing with its target, hot cost only from days after the last commit"
+echo "PASS: $asserts asserts; calibration $(grep -c '^PASS' "$WORK/calibration")/6 cases, a healthy repository with 0 problems, the incremental index, the needs-Egor registration, the judge's batched sessions with their token, wall and launch-failure stops, the durable rollup and its coverage blind spot, the top-K snapshot with active work out, the safety gate (suites, a deletion no problem names, an edit through a cross-repo symlink, active work), the structural digest (rollup no, caller yes), revalidation against the night base, the ledger's fixed-pending, regressed and faulty rows, the canonical mechanisms, review claims through review-anchors, tokenmap-measured instruction weight, a hook rooted through its ~/.claude link, a runner-less test of live code, PyObjC selectors, a symlink never pairing with its target, hot cost only from days after the last commit, per-path kinds for identical bytes, link-target edits, raw-byte and same-named-symbol digests, ledger-renamed causes, launch-less day runs"

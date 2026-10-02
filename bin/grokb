@@ -31,6 +31,7 @@ grokb_root=$(resolve_root)
 . "$grokb_root/share/worker-pool.sh"
 . "$grokb_root/share/worker-model.sh"
 . "$grokb_root/share/account-announce.sh"
+. "$grokb_root/share/account-roster.sh"
 pool_dir=$(worker_pool_dir grok)
 
 is_disabled() { worker_pool_is_disabled "$pool_dir" "$1"; }
@@ -73,15 +74,7 @@ format_reset_time() {
   fi
 }
 
-account_names() {
-  local path
-  printf 'main\n'
-  if [ -d "$profiles_dir" ]; then
-    for path in "$profiles_dir"/*; do
-      [ -d "$path" ] && basename "$path"
-    done | LC_ALL=C sort
-  fi
-}
+account_names() { GROKB_PROFILES_DIR="$profiles_dir" account_roster grok; }
 
 account_home() {
   if [ "$1" = main ]; then
@@ -196,6 +189,7 @@ remove_account() {
       rm -f "$tmp"
     fi
   fi
+  GROKB_PROFILES_DIR="$profiles_dir" account_purge grokb grok "$name" || true
   announce_account_removed "$grokb_root"
   printf 'grokb: removed %s\n' "$name"
 }

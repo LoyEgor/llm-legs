@@ -27,7 +27,6 @@ gw.ROUTE = "gemini-app"
 
 APP = "https://gemini.google.com/app?hl=en"
 WALLS = "music-walls.json"
-WALL_SECONDS = 6 * 3600
 LIMIT_TEXT = re.compile(r"\b(limit|quota)\b|try again (later|tomorrow)|come back (later|tomorrow)", re.I)
 
 
@@ -46,31 +45,13 @@ def set_music_wall(account: str, until: float) -> None:
     gw.update_json(WALLS, lambda data: data.update({account: int(until)}))
 
 
-def last_music_use() -> dict:
-    used: dict[str, int] = {}
-    try:
-        lines = (gw.ROOT / "jobs.jsonl").read_text().splitlines()
-    except OSError:
-        return used
-    for line in lines:
-        try:
-            with_ts = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(with_ts, dict):
-            continue
-        if with_ts.get("kind") == "music" and with_ts.get("account"):
-            used[with_ts["account"]] = with_ts.get("ts", 0)
-    return used
-
-
 def rotation() -> list[str]:
     now = time.time()
-    flow_walls, walls_now, used = gw.walls(), music_walls(), last_music_use()
+    flow_walls, walls_now = gw.walls(), music_walls()
     # A Flow wall can be an "unusual activity" flag; music stays off that account too.
     ready = [n for n in gw.bound_accounts()
              if flow_walls.get(n, 0) <= now and walls_now.get(n, 0) <= now and gw.in_pool(n)]
-    return sorted(ready, key=lambda n: used.get(n, 0))
+    return gw.least_recent(ready)
 
 
 def stream_chunks(body: str) -> list:
@@ -206,7 +187,7 @@ def pick_music(page, account: str) -> None:
     deadline = time.time() + 45
     while time.time() < deadline:
         if page.url.split("://", 1)[-1].startswith("accounts.google.com"):
-            raise gw.Failure(4, f"Google signed {account} out; run: gemini-web login {account}")
+            raise gw.Failure(4, f"Google signed {account} out; run: geminib web {account}")
         if tools.count():
             break
         page.wait_for_timeout(500)
@@ -321,6 +302,8 @@ def generate_on(account: str, plan: dict) -> dict:
     takes: list[dict] = []
     first = plan.get("first_take", 1)
     with gw.file_lock(gw.ROOT / "locks" / f"{account}.lock", wait_s=900), gw.browser(account) as context:
+        if not plan["dry_run"]:
+            gw.note_started(account)
         for take in range(first, first + plan["count"]):
             try:
                 result = one_take(context, account, plan, take)
@@ -410,51 +393,8 @@ def cmd_generate(args) -> None:
     plan = {"prompt": args.prompt, "chips": chips, "attach": args.attach or [], "count": args.count,
             "out_dir": args.out_dir, "dry_run": args.dry_run, "timeout_s": c["timeout_s"],
             "upload_wait_s": c["upload_wait_s"]}
-    if args.account:
-        gw.refuse_out_of_pool(args.account)
-    accounts = [args.account] if args.account else gw.free_first(rotation())
-    if not accounts:
-        bound = gw.bound_accounts()
-        if not bound:
-            gw.fail(4, "no Gemini account is signed in; run: gemini-web login <account>")
-        if not any(gw.in_pool(name) for name in bound):
-            gw.fail(4, 'every signed-in Gemini account is out of the gemini worker pool; turn "In pool" back on '
-                       "for one, or pin it in ~/.claude/worker-model")
-        gw.fail(3, "no signed-in account is free of music and Flow walls")
-    done: list[dict] = []
-    last: gw.Failure | None = None
-    for account in accounts:
-        try:
-            result = generate_on(account, {**plan, "first_take": len(done) + 1, "count": plan["count"] - len(done)})
-        except Exception as error:
-            done += getattr(error, "takes", [])
-            if not isinstance(error, gw.Failure):
-                if not done:
-                    raise
-                gw.report(account, error)
-                last = gw.Failure(1, gw.failure_text(error)[:300])
-                break
-            gw.report(account, error)
-            last = error
-            if error.code == 3 and not args.account:
-                set_music_wall(account, time.time() + WALL_SECONDS)
-                continue
-            if error.code == 4 and not args.account:
-                continue
-            if done:
-                break
-            gw.fail(error.code, error.reason, account=account)
-        else:
-            if result.get("dry_run"):
-                gw.emit(result)
-                return
-            gw.emit({"ok": True, "account": done[0]["account"] if done else account, "takes": done + result["takes"]})
-            return
-    if done:
-        gw.emit({"ok": True, "account": done[0]["account"], "takes": done,
-                 "short": f"{len(done)} of {plan['count']} takes; the next one failed: {last.reason}"})
-        return
-    gw.fail(last.code if last else 3, last.reason if last else "no account")
+    accounts = gw.take_accounts(args.account, rotation, "no signed-in account is free of music and Flow walls")
+    gw.take_failover(accounts, plan, generate_on, set_music_wall, bool(args.account))
 
 
 def main() -> None:

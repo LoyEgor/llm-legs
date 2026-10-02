@@ -21,6 +21,7 @@ gemini_base_home=$base_home
 gemini_profiles_dir=$profiles_dir
 gemini_accounts_cache_dir="${LLM_LIMITS_GEMINI_ACCOUNTS_DIR:-$base_home/.llm-limits-gemini}"
 . "$geminib_root/share/gemini-accounts.sh"
+. "$geminib_root/share/account-roster.sh"
 . "$geminib_root/share/worker-pool.sh"
 . "$geminib_root/share/worker-model.sh"
 . "$geminib_root/share/account-announce.sh"
@@ -89,7 +90,7 @@ disable_account() {
 
 reserved_name() {
   case "$1" in
-    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use|export-token|agy-launch|families|review-flash) return 0 ;;
+    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use|export-token|agy-launch|families|review-flash|web) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -354,6 +355,8 @@ remove_account() {
   if is_disabled "$name"; then set_disabled "$name" off; fi
   mkdir -p "$(dirname "$marker")"
   : >"$marker"
+  GEMINIB_PROFILES_DIR="$profiles_dir" LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$gemini_accounts_cache_dir" \
+    account_purge geminib gemini "$name" || true
   announce_account_removed "$geminib_root"
   printf 'geminib: removed %s\n' "$name"
   if [ "$name" = main ]; then
@@ -835,7 +838,7 @@ agy_launch() {
 }
 
 run_account() {
-  local allow_create="$1" name="${2:-}" directory created=false arg
+  local allow_create="$1" name="${2:-}" directory created=false arg interactive=true rc=0
   if [ "$allow_create" = true ] && { [ "$name" = -h ] || [ "$name" = --help ]; }; then
     show_help
     return
@@ -853,6 +856,7 @@ run_account() {
   for arg in "$@"; do
     case "$arg" in
       --print|--print=*)
+        interactive=false
         worker_pool_refuse_headless gemini "$name" "$(worker_model_pinned_account gemini_profile)" || exit 2
         break
         ;;
@@ -887,6 +891,11 @@ run_account() {
   ensure_profile "$directory"
   [ "$created" != true ] || announce_account_added "$geminib_root" gemini "$name"
   agy_env=(HOME="$directory" GEMINIB_BASE_HOME="$base_home")
+  if [ "$created" = true ] && [ "$interactive" = true ] && [ -t 0 ] && [ -t 2 ]; then
+    (launch_agy "$@") || rc=$?
+    [ "$rc" -ne 0 ] || account_web_offer geminib gemini "$name"
+    exit "$rc"
+  fi
   launch_agy "$@"
 }
 
@@ -1095,6 +1104,7 @@ show_help() {
     'geminib <name> exec [args...]' \
     'geminib agy-launch --agy <path> -- <agy args...>  Run an already-resolved agy binary with the capacity fallback, leaving the environment (its HOME) untouched; for a sandboxed consumer that seeds its own auth.' \
     'geminib add <name>                    Create a profile without launching; prints the login command.' \
+    'geminib web <name>                    Sign an account into the web routes (Flow video, Flow Music, Gemini app music/sfx/listen) with one Google sign-in in its hidden-Chrome profile; `geminib p` offers it after a first login.' \
     'geminib remove <name>                 Forget a profile and prune its cached quota; main leaves only a marker.' \
     'geminib enable <name>|--all           Return an account (or every account) to worker selection.' \
     'geminib disable <name>|--all          Exclude an account (or every account) from the worker pool; headless runs are then refused, your own sessions are not.' \
@@ -1163,6 +1173,10 @@ case "${1:-}" in
   profile|p|run)
     shift
     run_account true "$@"
+    ;;
+  web)
+    shift
+    account_web_login geminib gemini "$@"
     ;;
   help|-h|--help|'')
     show_help

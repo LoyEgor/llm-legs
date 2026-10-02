@@ -3018,6 +3018,23 @@ do
   document.status = "error"
   assert(titleText(row()) == "LLM doctor: collector failed", titleText(row()))
   assert(row().status == "error", tostring(row().status))
+
+  local exits, alerts = {}, {}
+  local function forcedRefreshAlert()
+    local module = doctorModule(doctorFixture, function(path, callback, args)
+      table.insert(exits, callback)
+      return { setEnvironment = function(self) return self end, start = function() return true end,
+        isRunning = function() return false end }
+    end, now, function(text) table.insert(alerts, text) end, nil, nil, nil, nil, snapshot, document)
+    for _, item in ipairs(doctorRow(module.menuItems()).menu) do
+      if titleText(item) == "Refresh" then item.fn() end
+    end
+    exits[#exits](0)
+    return alerts[#alerts]
+  end
+  assert(forcedRefreshAlert() == "LLM doctor: collector failed", tostring(alerts[#alerts]))
+  document.status, document.problem_count = "blind", 0
+  assert(forcedRefreshAlert() == "LLM doctor: blind", tostring(alerts[#alerts]))
 end
 
 do
@@ -3604,6 +3621,7 @@ do
   local journalPath = "/fixture/harness-doctor/menu/" .. os.date("%Y-%m-%d", 1790700000) .. ".tsv"
   assert(table.concat(timed.__writes[journalPath] or {}, "") == "1790700000250000\t1790700000500000\tllm-limits\n",
     "a menu build did not append its start, end and name to the harness doctor's menu journal")
+  harnessClock = function() return 1790700001 end
   local quiet = loadModule(roleFixture)
   quiet.harnessDoctorDir = "/fixture/harness-doctor"
   assert(#quiet.backgroundMenu(quiet.menuItems) > 0 and next(quiet.__writes) == nil,
@@ -4275,11 +4293,11 @@ end
     mediaFixture.vendors.gemini.accounts[#mediaFixture.vendors.gemini.accounts + 1] =
       { account = "refill", five_hour = bucket(10), weekly = bucket(20) }
     geminiWebFake.files[root .. "/accounts/bars.json"] = { credits = 828, credits_at = now - 3 * 3600,
-      credits_total = 1000, credits_total_source = "site",
+      credits_total = 1000,
       music_credits = 10510, music_credits_at = now - 3600, music_credits_total = 10530,
       music_credits_renews_at = now + 30 * 86400 }
     geminiWebFake.files[root .. "/accounts/refill.json"] = { credits = 1000, credits_at = now - 600,
-      credits_total = 1050, credits_total_source = "balance after refill", credits_refilled_at = now - 86400,
+      credits_total = 1050, credits_refilled_at = now - 86400,
       credits_renews_at = now + 3 * 86400 }
     geminiWebFake.files[root .. "/flow-music-walls.json"]["refill"] = now + 3600
     menu = mediaMenu()

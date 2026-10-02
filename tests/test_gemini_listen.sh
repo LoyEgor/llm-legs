@@ -57,7 +57,11 @@ expect_rc 2 'what is heard?' "$M/tone.wav" --model ultra
 expect_rc 2 'what is heard?' "$M/tone.wav" --account 'bad name'
 expect_rc 2 'what is heard?' "$M/notes.txt"
 assert grep -q 'no picture or sound' "$WORK/err"
-expect_rc 1 'what is heard?' "$M/tone.wav" --account unknown
+expect_rc 2 'what is heard?' "$M/tone.wav" --account unknown
+assert grep -q 'unknown account: unknown (not on the gemini roster' "$WORK/err"
+: >"$LLM_LIMITS_GEMINI_REMOVED"
+expect_rc 2 'what is heard?' "$M/tone.wav" --account main
+rm -f "$LLM_LIMITS_GEMINI_REMOVED"
 assert test ! -s "$FAKE_GEMINIB_CALLS"
 assert test ! -s "$PICK_CALLS"
 

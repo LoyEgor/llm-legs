@@ -15,6 +15,7 @@ resolve_root() {
 }
 claudeb_root=$(resolve_root)
 . "$claudeb_root/share/worker-pool.sh"
+. "$claudeb_root/share/account-roster.sh"
 . "$claudeb_root/share/worker-model.sh"
 . "$claudeb_root/share/account-announce.sh"
 . "$claudeb_root/share/limits-view.sh"
@@ -47,29 +48,7 @@ disabled_file="$(worker_pool_file "$pool_dir")"
 # dir, so enumerating tokens alone hid such accounts from status/enable/warm while
 # the limits menu (which reads snapshots) still showed them. `main` and `-` are
 # reserved non-accounts on every surface.
-account_names() {
-  local path name
-  {
-    if [ -d "$tokens_dir" ]; then
-      for path in "$tokens_dir"/*; do
-        if [ -f "$path" ]; then basename "$path"; fi
-      done
-    fi
-    if [ -d "$limits_dir" ]; then
-      for path in "$limits_dir"/*.json; do
-        if [ -f "$path" ]; then
-          name=$(basename "$path")
-          printf '%s\n' "${name%.json}"
-        fi
-      done
-    fi
-    if [ -d "$profiles_root" ]; then
-      for path in "$profiles_root"/*; do
-        if [ -d "$path" ]; then basename "$path"; fi
-      done
-    fi
-  } | LC_ALL=C sort -u | { grep -vx -e main -e - || true; }
-}
+account_names() { claude_account_names; }
 
 account_exists() {
   local name
@@ -1792,6 +1771,7 @@ remove_account() {
     [ "$state" = "$name" ] && rm -f "$fable_state_file"
   fi
 
+  account_purge claudeb claude "$name" || true
   announce_account_removed "$claudeb_root"
   printf 'claudeb: removed %s\n' "$name"
 }

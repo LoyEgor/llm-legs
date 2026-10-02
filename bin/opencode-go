@@ -33,16 +33,17 @@ WALLS_FILE=$WALL_STATE_DIR/walls.jsonl
 SEEN_FILE=$WALL_STATE_DIR/opencode-seen/$KEY_SERVICE
 LIMITS_CACHE=${LLM_LIMITS_CACHE:-$HOME/.llm-limits.json}
 PROFILES_FILE=${OPENCODE_GO_PROFILES:-$HOME/.config/opencode-go/profiles}
-# The roster the collector reads, parsed the way llm-limits.sh parses it (shared-invariants row
-# al): read any other way, this probes accounts no surface renders and skips ones it does.
-roster_profiles() {
-  if [[ -r $PROFILES_FILE ]]; then
-    sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$PROFILES_FILE" |
-      grep -v -e '^#' -e '^$' || true
-  else
-    printf -- '-\n'
-  fi
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
 }
+. "$(resolve_root)/share/account-roster.sh"
+roster_profiles() { account_roster opencode; }
 # Whether a recorded wall still stands is llm-limits.sh's to decide; this file only writes down
 # what one finished request showed. A stated horizon is capped here, once, by the window it
 # belongs to (shared-invariants row ai): a garbled far-future date would otherwise retire the
@@ -136,6 +137,7 @@ usage() {
 Usage:
   opencode-go profile <name>  Open a profile; creates it if missing. Alias: p.
   opencode-go key
+  opencode-go profiles        The roster, one profile per line (`-` is the default account).
   opencode-go export-key --to <path>  Write this account's key to a private file.
   opencode-go models [--json]
   opencode-go wall-check [--all] [--probe-clear]
@@ -776,6 +778,7 @@ wall_check_all() {
 case ${1:-} in
   profile|p) shift; ensure_profile "$@" ;;
   key) shift; [[ $# -eq 0 ]] || usage; store_key ;;
+  profiles) shift; [[ $# -eq 0 ]] || usage; roster_profiles ;;
   export-key) shift; export_key "$@" ;;
   models) shift; models "$@" ;;
   wall-check)

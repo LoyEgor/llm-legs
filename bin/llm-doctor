@@ -223,7 +223,7 @@ IMAGE_REASONS = (
                                 re.IGNORECASE)),
 )
 IMAGE_ORIGIN = {"bad output": "ours"}
-# The hidden-Chrome routes (gemini-web: Flow, the Gemini app, Flow Music) print one BROWSER_FAILURE or BROWSER_WARNING
+# The hidden-Chrome routes (gemini-web: Flow, the Gemini app, Flow Music; chatgpt-web) print one BROWSER_FAILURE or BROWSER_WARNING
 # line per failed attempt; the words name the browser step, ordered most specific first.
 BROWSER_LINE_RE = re.compile(r"^BROWSER_(FAILURE|WARNING) route=(\S+) account=(\S+) code=(\d+) shot=(\S+) reason=(.*)$",
                              re.MULTILINE)
@@ -237,7 +237,8 @@ BROWSER_REASONS = (
     ("browser download", re.compile(r"download|no video URL|not an mp4", re.IGNORECASE)),
     ("browser no output", re.compile(r"no track|without running the music tool|showed up in the project within"
                                      r"|not ready after|no longer lists clip|no finished video|refused the clip"
-                                     r"|returned no take", re.IGNORECASE)),
+                                     r"|returned no take|answered without an image|no image after"
+                                     r"|is not on \S+ any more", re.IGNORECASE)),
     ("browser hide", re.compile(r"could not hide", re.IGNORECASE)),
     ("browser drift", re.compile(r"UI drift|waiting for|Timeout \d+ ?ms|did not load within|does not stick"
                                  r"|stays (?:on|disabled)|composer|chip|menu item|toggle|frame slot", re.IGNORECASE)),
@@ -2002,6 +2003,29 @@ def fault_problems(faults, window_h, now):
     return problems
 
 
+def remnant_problems(window_h, now):
+    """One problem per account the menubar roster no longer lists that a per-account store still holds
+    (shared-invariants row di): `<vendor>b remove` purges them, so one left over is a cause of its own."""
+    import account_roster
+    import account_stores
+    ref = "share/account_stores.py"
+    try:
+        found = account_stores.remnants()
+    except account_roster.Unreadable as exc:
+        return [problem("remnant:roster", "account-remnant", "new", "account roster unreadable: %s" % exc, 1, 0,
+                        "rosters", window_h, 0, 1, (now, now), [], None, group="accounts")]
+    problems = []
+    for vendor in sorted(found):
+        for name, labels in sorted(found[vendor].items()):
+            fact = "%s %s is off the roster the menubar lists, still held by: %s · purge: python3 %s purge %s %s" % (
+                vendor, name, ", ".join(labels), ref, vendor, name)
+            problems.append(problem("remnant:%s:%s" % (vendor, name), "account-remnant", "new", fact, len(labels), 0,
+                                    "stores", window_h, 0, len(labels), (now, now),
+                                    [{"at": iso_time(now), "ref": "remnant:%s:%s" % (vendor, name), "account": name,
+                                      "excerpt": fact[:EXCERPT_MAX]}], None, group="accounts"))
+    return problems
+
+
 def machinery_state(row, details, as_of):
     if row is None:
         return "new"
@@ -2397,11 +2421,12 @@ def collect(window_h, now, write_daily=False):
         problems.extend(health_problems(row, ledger, window_h))
     problems.extend(pending_fix_problems(ledger, problems, window_h, now))
     problems.extend(fault_problems(ledger["faults"] + commit_faults, window_h, now))
+    problems.extend(remnant_problems(window_h, now))
     if write_daily:
         write_settled(settled, source)
     inputs = inputs_of(found, window_cutoff)
     count = sum(1 for item in problems if item["state"] in COUNTED)
-    groups = dict.fromkeys(BLOCKS + ("machinery",) + tuple(row["name"] for row in health) + ("ledger",), 0)
+    groups = dict.fromkeys(BLOCKS + ("machinery",) + tuple(row["name"] for row in health) + ("ledger", "accounts"), 0)
     for item in problems:
         if item["state"] in COUNTED:
             groups[item["group"]] = groups.get(item["group"], 0) + 1

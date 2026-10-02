@@ -150,7 +150,7 @@
         "rule": "test_daily_cost",
         "ident": "llm-legs:test_worker_run(_(entry|reliability|browse|attribution|watchdog|websearch|lifecycle|pool|outcomes|files|claims|vendor_files|rounds|grok|grok_outcomes|stamps))?"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-01T14:10:00+03:00",
@@ -175,7 +175,7 @@
             "llm-legs/tests/test_worker_run_grok_outcomes.sh",
             "llm-legs/tests/test_worker_run_stamps.sh"
           ],
-          "in": null,
+          "in": "llm-legs@8f113a1",
           "regressed_at": null
         }
       ],
@@ -194,7 +194,7 @@
         "rule": "test_long_pole",
         "ident": "llm-legs:test_worker_run(_(entry|reliability|browse|attribution|watchdog|websearch|lifecycle|pool|outcomes|files|claims|vendor_files|rounds|grok|grok_outcomes|stamps))?"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-01T14:10:00+03:00",
@@ -219,8 +219,8 @@
             "llm-legs/tests/test_worker_run_grok_outcomes.sh",
             "llm-legs/tests/test_worker_run_stamps.sh"
           ],
-          "in": null,
-          "regressed_at": null
+          "in": "llm-legs@8f113a1",
+          "regressed_at": "2026-10-02T15:28:39+03:00"
         }
       ],
       "same_cause": [
@@ -344,7 +344,7 @@
             "claude-setup/hooks/stop-dispatch.sh"
           ],
           "in": "claude-setup@c9603b7",
-          "regressed_at": null
+          "regressed_at": "2026-10-01T15:56:11+03:00"
         }
       ],
       "same_cause": [

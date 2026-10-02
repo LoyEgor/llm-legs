@@ -6,7 +6,7 @@ which needs `OPENAI_API_KEY` and is a different model surface with different kno
 script enforces come from `share/image-caps/codex.json` at runtime; this file says where every value
 in that manifest came from and how to check it again.
 
-Verified against `codex-cli 0.159.3` on 2026-10-01 (first pass: 0.156.1, 2026-09-23).
+Verified against `codex-cli 0.160.0` on 2026-10-02, unchanged from 0.159.3 (first pass: 0.156.1, 2026-09-23).
 
 ## Capabilities
 
@@ -27,7 +27,8 @@ Verified against `codex-cli 0.159.3` on 2026-10-01 (first pass: 0.156.1, 2026-09
 
 ## Not supported
 
-- **Aspect ratio** — no argument at all; the manifest's `aspects` is `null`. Orientation is prose.
+- **Aspect ratio** — no argument at all; the manifest's `aspects` is `null`. `--aspect W:H` is worded by
+  the script's one sentence builder (see "Aspect, size, transparency, region: one sentence builder").
 - **Exact size, quality, `n`, masks, `input_fidelity`, `background=transparent`** — every one of them is
   a fallback-CLI/API parameter. `--size` is passed to the model as a sentence and is a request, not a
   guarantee; with no `--size` the prompt asks for low quality, which is likewise only prose.
@@ -127,3 +128,71 @@ and the vendor docs instead of from `--help`.
 One branch is deliberately untested: `transparent: "chroma"` (strip the word, generate on green).
 The shipped manifest never selects it — it exists so a manifest that ever says `chroma` is honoured
 rather than ignored.
+
+## Aspect, size, transparency, region: one sentence builder
+
+The tool takes none of these as arguments, so `request_sentences` in `bin/codex-image` turns `--aspect`,
+`--size`, `--transparent` and `--region` into prompt sentences, and both routes append the very same text
+(`tests/test_chatgpt_web.sh` asserts every web sentence appears verbatim in the CLI prompt; the fan-out passes
+`--aspect` instead of its own wording):
+
+- `--aspect 16:9` → `Make the image a 16:9 landscape frame: its width to height ratio exactly 16:9.`
+  (portrait/square by the ratio; decimals like `2.39:1` allowed; `--aspect` and `--size` are exclusive)
+- `--size 640x480` → `Make the image exactly 640x480 pixels.`
+- `--transparent` → `Give it a genuinely transparent background: a PNG with an alpha channel.` + the chroma fallback
+- `--region` → `Change only the area outlined in red; keep everything outside it exactly as it is, and leave no red outline in the result.`
+
+Every run with `--aspect` or `--size` prints a last line `aspect=<W:H> achieved=<w/h> fit=ok|miss` (2%
+tolerance). A miss is reported on stderr and the image is kept as generated — never cropped.
+
+Verified live 2026-10-02 (`aspects_by_prompt` in the manifest): web 16:9 → 1672×941, web 9:16 → 941×1672,
+cli 16:9 → 1664×936, all `fit=ok`; `--transparent` gave real alpha on both routes (web 1278×1230, cli
+1313×1198, the page's own blob already carrying alpha). Unverified: cli 9:16.
+
+**Web-only** (`web_only` in the manifest; the CLI refuses both with exit 2, never as prose):
+
+- `--region x,y,w,h` (fractions of the image) with `--resume <chat>` (the chat's last image) or exactly one
+  `--ref`: the viewer's Markup draws a red outline (clamped 16 px inside the canvas — its left edge is the
+  panel resizer), the stroke must enable Undo or the run fails unsent, then the prompt goes with it. Live
+  2026-10-02: the cube chat's front band became walnut (24% change inside, 0.6% outside, no red left).
+  `--region` with `--ref` is unverified end to end.
+- Re-aspect: `--resume <chat> --aspect W:H` with no `--prompt` runs `chatgpt-web resize`, the viewer's
+  Resize menu (1:1, 3:4, 9:16, 4:3, 16:9 seen live); a ratio it does not offer exits 2 listing the offered
+  ones (verified live). The pick-and-deliver path itself is unverified.
+
+## Web route (fallback, explicit only)
+
+`codex-image --route web …` drives chatgpt.com itself, in the same hidden Chrome clone as Google Flow
+(`share/gemini_web.py`: one clone app, one hide watcher, one toast log, one failure-snapshot path), through
+`bin/chatgpt-web` → `share/chatgpt_web.py`. The default stays `--route cli`; nothing ever falls back to
+the web on its own.
+
+- **Accounts** are the codex profile names (`main` = `~/.codex`, the rest `$CODEX_PROFILES_DIR/*`), each with
+  its own Chrome profile under `${CHATGPT_WEB_DIR:-~/.chatgpt-web}/profiles/<name>`. The owner signs one in
+  once: `codexb web <name>` (a visible Chrome; it refuses a name off the codex roster and runs
+  `chatgpt-web login`, and a first `codexb p <name>` on a tty offers it, default no), then `chatgpt-web status <name>` binds the login's
+  email to it (stored in `accounts/<name>.json`, printed masked). `chatgpt-web accounts` lists them.
+- **Flags** are the CLI route's: `--dest --prompt --ref… --resume --account`; `--aspect`, `--size` and
+  `--transparent` become the builder's sentences (the page has no knobs), `--region` and re-aspect are web-only, and delivery (alpha check, chroma fallback, format conversion)
+  is the CLI route's own. Output is the same block with `session=` = the ChatGPT chat id, plus `route=web`
+  and no `caps=` line (no CLI to version).
+- **New chat vs resume**: no `--resume` opens a new chat; `--resume <chat id>` opens `chatgpt.com/c/<id>` on
+  the account the job ledger (`jobs.jsonl`) names for it, else `--account` is required.
+- **References** are uploaded through the composer's file input one at a time, in the order given, before
+  the prompt is typed; a draft attachment a crashed run left in the chat is removed first.
+- **Chat mode**: chatgpt.com can open in Work mode, whose composer makes no images; the run presses the
+  `Chat` toggle when it is off.
+- **Rotation** without `--account`: signed-in, bound, unwalled accounts inside the codex worker pool, least
+  recently started first (`generation_started_at` in `accounts/<name>.json`, stamped when a new chat starts;
+  a `--resume` stamps nothing), accounts busy with another run last.
+- **Exit codes**: 3 (`CODEX_USAGE_LIMIT`) when the page shows its image limit — the stated reset time
+  becomes the account's wall in `walls.json`, else `gw.WALL_SECONDS` — and 4 when the profile is signed out
+  or was never signed in.
+- **Never**: a call of a ChatGPT backend endpoint or a replayed request. The page's own `/backend-api/me`
+  reply is read passively for the email and its `accounts/check` replies for the plan; the image is the
+  page's own `blob:` src of the generated-image gallery, read inside the page (full size, e.g. 1374×1145).
+
+Verified live 2026-10-01 (burkhartor, Plus): the session read, Chat mode, composer, file input, attachment
+chip, send, the gallery image and its blob download, new chat and resume with a ref. Still unseen: the
+stop button's label (streaming also counts the idle composer button being absent) and the limit wording
+(`LIMIT`, `LIMIT_CUE`, `LIMIT_WHEN`).

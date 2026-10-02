@@ -74,11 +74,6 @@ _load_worker_model() {
   . "$SELF_DIR/../share/worker-model.sh" 2>/dev/null
 }
 _load_worker_model || true
-media_model() { # vendor image|video
-  local model
-  model=$(jq -r --arg kind "$2" '.short[$kind] // empty' "$SELF_DIR/../share/image-caps/$1.json" 2>/dev/null)
-  printf '%s' "${model:-$2}"
-}
 # worker-run refuses start and wait inside Claude Code to anything but a relay named by this token, so
 # every call of a relay carries it: the text gates never read a script's body, the environment reaches
 # it. An ATTACH relay's token says so, and worker-run starts nothing for it.
@@ -349,11 +344,11 @@ elif printf '%s' "$launch" | grep -qE "${cmd_word}"'((codex|gemini|grok)-image|g
   script=$(grab "${cmd_word}"'((codex|gemini|grok)-image|grok-video|gemini-(video|music|sfx|listen))' | grep -oE '(codex|gemini|grok)-(image|video|music|sfx|listen)$')
   vendor=${script%-*}
   acct=$(grab '\-\-account[= ]+["'\'' ]*[a-z0-9][a-z0-9-]*' | grep -oE '[a-z0-9][a-z0-9-]*$')
-  [ -z "$acct" ] || [ -z "$vendor" ] || tag="$acct · $(media_model "$vendor" "${script##*-}")"
+  [ -z "$acct" ] || [ -z "$vendor" ] || tag="$acct · $(worker_media_tag "$vendor" "${script##*-}" "$launch")"
   if printf '%s' "$launch" | grep -qE -- '--(ref|resume|edit|extend|for-video)([=[:space:]]|$)'; then extra+=(media=edit); else extra+=(media=gen); fi
   extra+=(exit=)
 elif printf '%s' "$launch" | grep -qE "${cmd_word}"'image-fanout([[:space:]]|$)'; then
-  if printf '%s' "$launch" | grep -qE -- '--video([[:space:]]|$)'; then tag="fanout · video"; else tag="fanout · image"; fi
+  if printf '%s' "$launch" | grep -qE -- '--video([[:space:]]|$)'; then tag="fanout · vid"; else tag="fanout · img"; fi
   dest_dir=$(grab '\-\-dest-dir[= ]+("[^"]+"|'\''[^'\'']+'\''|[^[:space:];&|]+)' | sed -E 's/^--dest-dir[= ]+//; s/^["'\'']//; s/["'\'']$//')
   [ -z "$dest_dir" ] || [[ "$dest_dir" = /* ]] || dest_dir="$(field '.cwd')/$dest_dir"
   if printf '%s' "$launch" | grep -qE -- '--dry-run([[:space:]]|$)'; then extra+=(image=); else extra+=("image=$dest_dir"); fi

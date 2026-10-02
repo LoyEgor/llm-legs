@@ -39,8 +39,9 @@ grok_media_select_account() { # tool root worker-pick-cmd profiles-dir requested
   # `grokb profile` creates what it cannot find, so an unchecked typo here does not fail: it mkdirs
   # a ghost account that then stands in grokb list, the quota scan and the limits menu asking for a
   # login.
-  if [ "$grok_media_account" != main ] && [ ! -d "$profiles_dir/$grok_media_account" ]; then
-    printf '%s: account directory does not exist: %s\n' "$tool" "$profiles_dir/$grok_media_account" >&2
+  . "$root/share/account-roster.sh"
+  if ! GROKB_PROFILES_DIR="$profiles_dir" account_roster_refuse "$tool" grok "$grok_media_account"; then
+    [ -z "$requested" ] || return 2
     return 1
   fi
   # The claim is recorded once the account is known to be usable, which is why the pick above does

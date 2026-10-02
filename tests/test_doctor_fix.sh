@@ -497,10 +497,12 @@ printf '%s\thandoff\tproj/tests/test_x.sh\tdocs/handoffs/x.md\n' test_slow:proj:
   test_daily_cost:proj:test_x >"$WORK/hd"
 printf 'menu_build:automation\thandoff\thammerspoon/automation_menu.lua\tdocs/handoffs/x.md\n' >>"$WORK/hd"
 printf 'collector:run\thandoff\tllm-legs/bin/harness-doctor\tdocs/handoffs/x.md\n' >>"$WORK/hd"
+printf 'quiet-hook\thandoff\tproj/README\tdocs/handoffs/x.md\n' >>"$WORK/hd"
 assert_fails fix close "$self" --decisions "$WORK/hd" "handed off" 2>"$WORK/err"
 assert [ "$(grep -c "handoff refused: test speed and menu delays are this run's to fix" "$WORK/err")" = 4 ]
 assert grep -qF 'line 4 (menu_build:automation): handoff refused' "$WORK/err"
 assert_fails grep -qF "(collector:run): handoff refused" "$WORK/err"
+assert_fails grep -qF "(quiet-hook): handoff refused" "$WORK/err"
 rm "$DATA/harness-doc.json"
 load=$(cat "$DATA"/h-* | awk -F'\t' '$1 ~ /^harness-load-/ {print $1}')
 assert jqe '.problems[0].id == "load:host" and .problems[0].component.files == []' "$(record "$load")"
@@ -694,5 +696,13 @@ printf '{"rows": [{"id": "code-q", "title": "an open row past top-K", "status": 
   >"$CODE_DOCTOR_LEDGER"
 fix launch code --night n6 >"$WORK/out" 2>"$WORK/err" || fail "code night n6 failed"
 assert jqe '.quiet == [] and (.problems | length) == 3' "$(record "$(cut -f1 "$WORK/out")")"
+for open in $(fix runs code --open --json | jq -r '.[].id'); do fix abandon "$open" >/dev/null; done
+printf '{"rows": []}\n' >"$CODE_DOCTOR_LEDGER"
+jq '.problems |= map(select(.needs_egor)) | .problem_count = 1' "$WORK/code/latest.json" >"$WORK/code/egor.json" &&
+  mv "$WORK/code/egor.json" "$WORK/code/latest.json"
+before=$(ls "$RUNS"/code-*.json)
+assert_fails fix launch code 2>"$WORK/err"
+assert grep -qF 'nothing to fix: every code doctor problem is held back' "$WORK/err"
+assert [ "$(ls "$RUNS"/code-*.json)" = "$before" ]
 
 echo "PASS: $asserts asserts; code runs (one area, top-K, needs-Egor out, close through code-doctor check); launch refusals (no or foreign or stale document, nothing to fix, open run under 12 h), an old run abandoned, the snapshot without watch/fixed-pending, the chat through the shared opener, the record fields, a failed opener, close refusals (doctor not rerun, undecided id, missing path, missing commit, a directory, no evidence, bad verdict, judge changed without its line), a clean close, show, runs, updater records and launch, parallel ids, night launch (areas, worktrees, branches, briefs, the packet, one open run per area), night vendor records, a night without a base ref, llm components with their block's entry file, fixed only once the doctor reads it fixed-pending or gone, night close (the doctor rerun once in the worktree, a handed-in document refused, purpose touching its component, judge), abandon, a failed worktree, harness sections and top watch rows under parallel launch, updater machinery, a legacy release run, a merge citation, a malformed ledger row, a failed collector, an unwritten launched_at, a launcher killed under the lock, quiet open ledger rows (their own brief section, the day launch)"

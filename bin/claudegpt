@@ -249,6 +249,12 @@ def main():
         return 0
     if not args.account:
         fail("an account name is required")
+    try:
+        listed = gateway_auth.account_roster.roster("codex", fresh=True)
+    except gateway_auth.account_roster.Unreadable as error:
+        fail(str(error))
+    if args.account not in listed:
+        fail(f"unknown account: {args.account} (not on the codex roster the menubar lists: {','.join(listed)})")
     account = account_dir(args.account)
     auth = account / "auth"
     logins = list(auth.glob("*.json"))

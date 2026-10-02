@@ -176,8 +176,13 @@ class GatewayAuthResolverTests(unittest.TestCase):
                 self.assertTrue(roster[name].ready, roster[name].detail)
                 self.assertEqual(roster[name].source, "codex")
 
-    def test_gateway_only_account_keeps_working(self):
+    def test_a_gateway_login_serves_only_a_roster_account(self):
         write_gateway_login(self.home, "legacy", account_id="acct-legacy")
+        entry = app.gateway_auth.resolve("legacy", home=str(self.home))
+        self.assertFalse(entry.ready)
+        self.assertIn("not on the codex roster", entry.detail)
+        self.assertNotIn("legacy", [e.name for e in app.gateway_auth.roster(home=str(self.home))])
+        (self.profiles / "legacy").mkdir()
         entry = app.gateway_auth.resolve("legacy", home=str(self.home))
         self.assertTrue(entry.ready)
         self.assertEqual(entry.source, "gateway")
@@ -335,6 +340,15 @@ class GatewayAuthResolverTests(unittest.TestCase):
             launch.assert_not_called()
         self.assertFalse((self.home / "accounts/unknown").exists())
 
+    def test_unreadable_roster_fails_with_one_line(self):
+        unreadable = app.gateway_auth.account_roster.Unreadable("cannot read the codex account roster: 3")
+        with patch.object(app, "STATE", self.home), \
+             patch.object(sys, "argv", [str(source), "p", "anyone"]), \
+             patch.object(app.gateway_auth.account_roster, "roster", side_effect=unreadable):
+            with self.assertRaises(SystemExit) as failure:
+                app.main()
+        self.assertEqual(str(failure.exception), "claudegpt: cannot read the codex account roster: 3")
+
     def test_two_renewals_share_one_canonical_refresh(self):
         from concurrent.futures import ThreadPoolExecutor
         write_codex_profile(self.profiles, "burkhartor", expires_in=-60)
@@ -375,7 +389,8 @@ class GatewayAuthResolverTests(unittest.TestCase):
     def test_removed_main_gateway_only_and_invalid_gateway(self):
         Path(os.environ["LLM_LIMITS_CODEX_REMOVED"]).write_text("")
         write_gateway_login(self.home, "main")
-        self.assertTrue(app.gateway_auth.resolve("main").ready)
+        self.assertFalse(app.gateway_auth.resolve("main").ready)
+        (self.profiles / "broken").mkdir()
         p = write_gateway_login(self.home, "broken")
         p.write_text("{}")
         self.assertFalse(app.gateway_auth.resolve("broken").ready)
@@ -466,6 +481,7 @@ class LauncherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             state = Path(temporary)
             for name in ("first", "second", "new-account"):
+                Path(os.environ["CODEXB_PROFILES_DIR"], name).mkdir()
                 auth = state / "accounts" / name / "auth"
                 auth.mkdir(parents=True)
                 (auth / "fixture.json").write_text(json.dumps({"type": "codex", "access_token": "fixture", "account_id": f"acct-{name}"}))
@@ -554,6 +570,7 @@ class LauncherTests(unittest.TestCase):
             state = Path(temporary) / "store"
             configuration = Path(temporary) / "claude"
             corpus = configuration / "projects"
+            Path(os.environ["CODEXB_PROFILES_DIR"], "work4").mkdir()
             (state / "accounts/work4/auth").mkdir(parents=True)
             (state / "accounts/work4/auth/fixture.json").write_text(json.dumps({"type": "codex", "access_token": "fixture", "account_id": "acct-work4"}))
             stamps = state / "sessions"
@@ -600,6 +617,7 @@ class LauncherTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             state = Path(temporary) / "store"
+            Path(os.environ["CODEXB_PROFILES_DIR"], "work4").mkdir()
             (state / "accounts/work4/auth").mkdir(parents=True)
             (state / "accounts/work4/auth/fixture.json").write_text(
                 json.dumps({"type": "codex", "access_token": "fixture", "account_id": "acct-work4"}))
@@ -643,6 +661,7 @@ class LauncherTests(unittest.TestCase):
             self.assertEqual(command[-2:], ["--resume", session])
 
     def test_failed_first_login_does_not_start_chat(self):
+        Path(os.environ["CODEXB_PROFILES_DIR"], "new-account").mkdir()
         with tempfile.TemporaryDirectory() as temporary, \
              patch.object(app, "STATE", Path(temporary)), \
              patch.object(app.os, "access", return_value=True), \
@@ -711,6 +730,7 @@ class ConcurrentLauncherSubprocessTests(unittest.TestCase):
             wrapper.write_text("#!/bin/sh\nexit 0\n")
             wrapper.chmod(0o755)
         for name in ("first", "second"):
+            (self.root / "codex-profiles" / name).mkdir(parents=True)
             auth = self.home / "accounts" / name / "auth"
             auth.mkdir(parents=True)
             (auth / "login.json").write_text(json.dumps({"type": "codex",
@@ -883,6 +903,12 @@ class ConcurrentLauncherSubprocessTests(unittest.TestCase):
 
     def test_exclusive_lock_blocks_conflicting_operations(self):
         import fcntl
+        off_roster = subprocess.run([sys.executable, str(source), "login", "fresh"], env=self.env,
+                                    cwd=str(self.project), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(off_roster.returncode, 1)
+        self.assertIn("unknown account: fresh (not on the codex roster", off_roster.stderr.decode())
+        self.assertFalse((self.home / "accounts" / "fresh").exists())
+        (self.root / "codex-profiles" / "fresh").mkdir()
         fresh = self.home / "accounts" / "fresh"
         (fresh / "auth").mkdir(parents=True)
         lock_file = (fresh / "active.lock").open("a")

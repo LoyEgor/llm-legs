@@ -3,7 +3,7 @@ set -u
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 WORK=$(cd "$(mktemp -d)" && pwd -P)
 pids=()
-trap 'kill "${pids[@]}" $(cat "$WORK/holders" 2>/dev/null) 2>/dev/null; rm -rf "$WORK"' EXIT
+trap 'kill ${pids[@]+"${pids[@]}"} $(cat "$WORK/holders" 2>/dev/null) 2>/dev/null; rm -rf "$WORK"' EXIT
 asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
@@ -24,8 +24,13 @@ holder() { # dir count -> pid of a process holding one slot until killed
 until_gone() { local i; for i in $(seq 1 100); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.1; done; return 1; }
 holds_of() { cat "$HARNESS_HOLDS_DIR"/"$1"-*.json 2>/dev/null | jq -s length; }
 
+sysctl() { echo 12; }
 assert [ "$(slots_from_cores 1000 2 4)" = 2 ]
 assert [ "$(slots_from_cores 1 2 4)" = 4 ]
+assert [ "$(slots_from_cores 1 2)" = 12 ]
+sysctl() { echo 3; }
+assert [ "$(slots_from_cores 1 2 4)" = 3 ]
+unset -f sysctl
 
 mkdir -p "$WORK/s"
 h1=$(holder "$WORK/s" 2)
@@ -37,6 +42,13 @@ slot=$(slot_take "$WORK/s" 2 3600) || fail "a dead holder's slot stayed taken"
 assert [ "$(cat "$slot/pid")" = $$ ]
 slot_release "$slot"
 assert [ ! -e "$slot" ]
+# A live holder's slot breaks past the holder's own ceiling, never a waiter's shorter one.
+mkdir -p "$WORK/c"
+h10=$(holder "$WORK/c" 1)
+perl -e 'utime(time - 100, time - 100, $ARGV[0])' "$WORK/c/1"
+assert_fails slot_take "$WORK/c" 1 10
+assert [ "$(cat "$WORK/c/1/pid")" = "$h10" ]
+kill "$h10"; until_gone "$h10"
 
 h3=$(holder "$WORK/s" 2)
 (slot_wait "$WORK/s" 2 3600 test-limiter "a test job" >"$WORK/waited" 2>"$WORK/wait.err") &
@@ -58,6 +70,7 @@ h9=$(holder "$WORK/s" 1)
 bash -c '. "$1/share/slots.sh"; slot=$(slot_wait "$2" 1 3600 orphan-limiter "a killed job"); exec sleep 300' \
   _ "$ROOT" "$WORK/s" >/dev/null 2>&1 &
 caller=$!
+pids+=("$caller")
 for i in $(seq 1 50); do [ "$(holds_of orphan-limiter)" = 1 ] && break; sleep 0.1; done
 assert [ "$(holds_of orphan-limiter)" = 1 ]
 kill "$caller"; until_gone "$caller"
@@ -70,8 +83,7 @@ rm -rf "$WORK/s/1"
 bash -c 'bash -c "exec sleep 300" & wait' &
 tree=$!
 pids+=("$tree")
-sleep 0.3
-leaf=$(pgrep -P "$tree" | head -1)
+for i in $(seq 1 100); do leaf=$(pgrep -P "$tree" | head -1); [ -z "$leaf" ] || break; sleep 0.1; done
 mkdir -p "$HARNESS_HOLDS_DIR"
 printf '{"limiter": "x", "pid": %s}\n' "$leaf" >"$HARNESS_HOLDS_DIR/x-$leaf.json"
 assert holds_in_tree "$tree"
@@ -88,8 +100,9 @@ printf '#!/usr/bin/env bash\necho "PASS: slot=$RUN_SUITES_SLOT"\n' >"$WORK/repo/
 export RUN_SUITES_SLOTS_DIR="$WORK/rs" RUN_SUITES_SLOTS=1
 mkdir -p "$RUN_SUITES_SLOTS_DIR"
 h4=$(holder "$RUN_SUITES_SLOTS_DIR" 1)
-(bash "$ROOT/share/run-suites.sh" --repo "$WORK/repo" >"$WORK/rs.out" 2>&1) &
+bash "$ROOT/share/run-suites.sh" --repo "$WORK/repo" >"$WORK/rs.out" 2>&1 &
 run=$!
+pids+=("$run")
 for i in $(seq 1 50); do [ "$(holds_of run-suites)" = 1 ] && break; sleep 0.1; done
 assert [ "$(holds_of run-suites)" = 1 ]
 assert jqe --arg r "$WORK/repo" '.held.what == "suites of \($r)"' "$HARNESS_HOLDS_DIR"/run-suites-*.json
@@ -98,6 +111,8 @@ assert kill -0 "$run"
 kill "$h4"
 wait "$run" || fail "run-suites failed: $(cat "$WORK/rs.out")"
 assert grep -q "PASS: slot=$RUN_SUITES_SLOTS_DIR/1" "$WORK/rs.out"
+# Its pointer outlives it, so a probe that only ever saw it queued still journals it.
+assert [ "$(cut -f2 "$STATUSLINE_CACHE_DIR/suites-$run.done")" = 1 ]
 assert [ ! -e "$RUN_SUITES_SLOTS_DIR/1" ]
 assert [ "$(holds_of run-suites)" = 0 ]
 # A nested run inside a suite inherits its parent's slot instead of queueing behind it.
@@ -107,7 +122,7 @@ RUN_SUITES_SLOT="$RUN_SUITES_SLOTS_DIR/1" bash "$ROOT/share/run-suites.sh" --rep
 assert grep -q '1 PASS' "$WORK/nested.out"
 # Its progress file still carries a start stamp, or the statusline shows it queued until it ends.
 mkdir -p "$WORK/stamp/tests"
-printf '#!/usr/bin/env bash\necho "PASS: stamp=$(cut -f4 "$STATUSLINE_CACHE_DIR"/suites-*)"\n' >"$WORK/stamp/tests/test_s.sh"
+printf '#!/usr/bin/env bash\necho "PASS: stamp=$(cut -f4 "$STATUSLINE_CACHE_DIR"/suites-*[0-9])"\n' >"$WORK/stamp/tests/test_s.sh"
 RUN_SUITES_SLOT="$RUN_SUITES_SLOTS_DIR/1" bash "$ROOT/share/run-suites.sh" --repo "$WORK/stamp" >"$WORK/stamp.out" 2>&1 ||
   fail "a nested run failed: $(cat "$WORK/stamp.out")"
 assert grep -Eq 'PASS: stamp=[0-9]+$' "$WORK/stamp.out"
@@ -116,14 +131,15 @@ kill "$h5"; until_gone "$h5"
 # worker-run: a run on a night branch waits for one of NIGHT_FIXER_SLOTS, its deadline counted from
 # the slot; its slot goes when it ends. Any other branch never waits.
 git -C "$WORK" init -q night && git -C "$WORK/night" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
-git -C "$WORK/night" checkout -q -b night/n1/llm-health-1
+git -C "$WORK/night" worktree add -q -b night/n1/llm-health-1 "$WORK/night-wt"
 mkdir -p "$WORK/run"
-jq -n --arg w "$WORK/night" '{vendor: "none", workdir: $w, started_at: 1}' >"$WORK/run/meta.json"
+jq -n --arg w "$WORK/night-wt" '{vendor: "none", workdir: $w, started_at: 1}' >"$WORK/run/meta.json"
 export NIGHT_FIXER_SLOTS_DIR="$WORK/fs" NIGHT_FIXER_SLOTS=1
 mkdir -p "$NIGHT_FIXER_SLOTS_DIR"
 h6=$(holder "$NIGHT_FIXER_SLOTS_DIR" 1)
-(bash "$ROOT/bin/worker-run" _supervise "$WORK/run" >/dev/null 2>&1) &
+bash "$ROOT/bin/worker-run" _supervise "$WORK/run" >/dev/null 2>&1 &
 sup=$!
+pids+=("$sup")
 for i in $(seq 1 50); do [ "$(holds_of night-workers)" = 1 ] && break; sleep 0.1; done
 assert [ "$(holds_of night-workers)" = 1 ]
 assert jqe '.held.what | test("^worker run run on night/n1/llm-health-1$")' "$HARNESS_HOLDS_DIR"/night-workers-*.json
@@ -145,7 +161,7 @@ assert [ $? = 4 ]
 assert [ "$(holds_of night-workers)" = 0 ]
 assert [ "$(cat "$NIGHT_FIXER_SLOTS_DIR/1/pid")" = "$h8" ]
 kill "$h8"; until_gone "$h8"
-git -C "$WORK/night" checkout -q -b day-branch
+git -C "$WORK/night-wt" checkout -q -b day-branch
 h7=$(holder "$NIGHT_FIXER_SLOTS_DIR" 1)
 bash "$ROOT/bin/worker-run" _supervise "$WORK/run" >/dev/null 2>&1
 assert [ $? = 4 ]

@@ -222,7 +222,7 @@ Drive Egor'"'"'s Mac apps through Codex Computer Use: the CUA REPL `js` tool, wh
 - First js call must be exactly: `await cua.getState()`
 - Attach to an app with `await cua.getApp("<App name>")` and read it (getAXState / getScreenshot) before acting.
 - Do only what the brief allows. Never log in, enter credentials, approve payments or answer admin password prompts; the surface refuses Terminal. Report such a step instead of working around it.
-- Close the windows and tabs you opened unless the brief says to keep them.
+- Close the windows and tabs you opened once the task is complete, unless the brief says to keep them; a stop for Egor'"'"'s input leaves them open.
 - Return the evidence the brief asks for and end with: `OUTCOME: COMPUTER_OK` or `OUTCOME: COMPUTER_UNAVAILABLE reason=<text>`'
 # The harness's own prompt steers a bypass-mode model toward sed and heredocs, which worker-edit-guard
 # only records; said up front, a text edit stays an Edit call the transcript names.
@@ -1265,7 +1265,7 @@ supervise() {
   # At most NIGHT_FIXER_SLOTS workers on night branches at once (cores / 2, 2 to 8): a night worker is
   # model-bound between suite runs, which run-suites caps on its own; its deadline starts at its slot.
   local branch
-  branch=$(git -C "$workdir" symbolic-ref -q --short HEAD 2>/dev/null) || branch=''
+  branch=$(linked_worktree_branch "$workdir")
   # A run nested under a slot holder's worker inherits NIGHT_FIXER_SLOT: waiting would deadlock on its ancestor.
   if [[ $branch == night/*/* ]] && [ -z "${NIGHT_FIXER_SLOT:-}" ]; then
     NIGHT_SLOT=$(slot_wait "${NIGHT_FIXER_SLOTS_DIR:-${DOCTORS_DIR:-$HOME/.cache/doctors}/fixer-slots}" \
@@ -1276,6 +1276,8 @@ supervise() {
     meta_update "$directory" '.started_at = (now | floor)' || :
   fi
   while :; do
+    # The slot's ceiling runs from its mtime, and each walled reroute is an attempt with a deadline of its own.
+    [ -z "$NIGHT_SLOT" ] || touch "$NIGHT_SLOT" 2>/dev/null
     light_sandbox_prepare "$directory" || { persist_run_files "$directory"; return 4; }
     case "$vendor" in
       claudeb) supervise_claudeb "$directory" ;;
@@ -4698,11 +4700,42 @@ browse_device_cache() (
   jq --arg op "$operation" --arg dev "$device" --arg acct "$account" \
     --arg seen "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '
       if $op == "record" then . + {($dev): {account: $acct, seen: $seen}}
-      elif $op == "drop" and (.[$dev] == null or .[$dev].account == $acct) then
-        . + {($dev): {account: $acct, seen: $seen, denied: true}}
+      elif $op == "drop" and (.[$dev] == null or .[$dev].account == $acct or .[$dev].denied == true) then
+        . + {($dev): {account: $acct, seen: $seen, denied: true,
+          denied_accounts: (((.[$dev].denied_accounts // [.[$dev] | select(.denied == true) | .account]) + [$acct]) | unique)}}
+      elif $op == "drop" then
+        .[$dev] += {denied_accounts: (((.[$dev].denied_accounts // []) + [$acct]) | unique), denied_seen: $seen}
       else . end
     ' <<<"$existing" >"$tmp_file" && mv -f "$tmp_file" "$dev_file"
 )
+
+browse_ext_account() {
+  local ext_dir="$1" account_uuid json
+  account_uuid=$(LC_ALL=C grep -a -h -o -E "accountUuid.{0,150}" "$ext_dir"/*.ldb "$ext_dir"/*.log 2>/dev/null |
+    LC_ALL=C tr -d "\0" | tail -n 1 |
+    LC_ALL=C grep -Eo "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" | head -n 1)
+  [ -n "$account_uuid" ] || return 0
+  for json in "${CLAUDEB_PROFILES_ROOT:-$HOME/.claude-profiles}"/*/.claude.json; do
+    [ -f "$json" ] || continue
+    [ "$(jq -r '.oauthAccount.accountUuid // empty' "$json" 2>/dev/null)" = "$account_uuid" ] || continue
+    json=${json%/.claude.json}
+    printf '%s\n' "${json##*/}"
+    return 0
+  done
+}
+
+# The extension's own sign-in names the account outright; the cache only remembers probes, so a
+# denial recorded under one sign-in must not shadow the account the extension holds now.
+browse_device_account() {
+  local dev_file="$1" device="$2" ext_account="$3" existing='{}'
+  [ ! -f "$dev_file" ] || existing=$(cat "$dev_file" 2>/dev/null) || existing='{}'
+  jq -r --arg dev "$device" --arg ext "$ext_account" '
+    (.[$dev] // {}) as $e
+    | ($e.denied_accounts // (if $e.denied == true then [$e.account] else [] end)) as $d
+    | (if $ext != "" then $ext else ($e.account // "") end) as $a
+    | "\($a)|\(($a != "") and ($d | index($a)) != null)"
+  ' <<<"$existing" 2>/dev/null || printf '%s|false\n' "$ext_account"
+}
 
 browse_cache_output() {
   local line device account
@@ -4973,8 +5006,8 @@ browse_run() {
   fi
 
   local dia_profile_name='' dia_profile_dir='' dia_profile_reason=''
-  local dia_device_id='' dia_device_name='' dia_device_reason=''
-  local -a dia_profiles=() dia_names=() dia_devices=() dia_device_names=() dia_accounts=()
+  local dia_device_id='' dia_device_name='' dia_device_reason='' dia_ext_account=''
+  local -a dia_profiles=() dia_names=() dia_devices=() dia_device_names=() dia_accounts=() dia_ext_accounts=()
   local local_state="$dia_user_data/Local State"
   if [ ! -f "$local_state" ]; then
     dia_profile_reason='dia profile unreadable — Local State missing'
@@ -4984,7 +5017,7 @@ browse_run() {
     while IFS= read -r dia_profile_dir; do
       [ -n "$dia_profile_dir" ] || continue
       dia_profile_name=$(jq -r --arg d "$dia_profile_dir" '.profile.info_cache[$d].name // $d' "$local_state")
-      dia_device_id='' dia_device_name=''
+      dia_device_id='' dia_device_name='' dia_ext_account=''
       local ext_settings="$dia_user_data/$dia_profile_dir/Local Extension Settings/fcoeoabgfenejglbffodgkkbkcdhcgfn"
       if [ -d "$ext_settings" ]; then
         local last_match
@@ -4993,7 +5026,9 @@ browse_run() {
           dia_device_id=$(LC_ALL=C grep -Eo "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" <<<"$last_match" | head -n 1)
           dia_device_name=$(LC_ALL=C sed -E -n "s/.*[dD]?isplayName[^\"]*\"([^\"]+)\".*/\1/p" <<<"$last_match")
         fi
+        [ -z "$dia_device_id" ] || dia_ext_account=$(browse_ext_account "$ext_settings")
       fi
+      dia_ext_accounts+=("$dia_ext_account")
       dia_profiles+=("$dia_profile_dir")
       dia_names+=("$dia_profile_name")
       dia_devices+=("$dia_device_id")
@@ -5018,7 +5053,7 @@ browse_run() {
     fi
   fi
 
-  local chrome_profile_dir='' chrome_profile_name='' chrome_device_id='' chrome_device_name=''
+  local chrome_profile_dir='' chrome_profile_name='' chrome_device_id='' chrome_device_name='' chrome_ext_account=''
   local chrome_ext_dir chrome_scan_dir chrome_last
   local uuid_re='[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
   if [ -d "$chrome_user_data" ]; then
@@ -5029,6 +5064,7 @@ browse_run() {
       chrome_device_id=$(LC_ALL=C grep -Eo "$uuid_re" <<<"$chrome_last" | head -n 1)
       [ -n "$chrome_device_id" ] || continue
       chrome_device_name=$(LC_ALL=C sed -E -n 's/.*[dD]?isplayName[^"]*"([^"]+)".*/\1/p' <<<"$chrome_last")
+      chrome_ext_account=$(browse_ext_account "$chrome_ext_dir")
       chrome_scan_dir=${chrome_ext_dir%/Local Extension Settings/*}
       chrome_profile_dir=${chrome_scan_dir##*/}
       break
@@ -5259,11 +5295,9 @@ browse_run() {
   local -a dia_other_lines=()
   for i in "${!dia_profiles[@]}"; do
     cached_acct='' cached_denied=false
-    if [ -n "${dia_devices[$i]}" ] && [ -f "$dev_file" ]; then
-      cached_acct=$(jq -r --arg dev "${dia_devices[$i]}" '.[$dev].account // empty' "$dev_file" 2>/dev/null)
-      if [ "$(jq -r --arg dev "${dia_devices[$i]}" '.[$dev].denied // false' "$dev_file" 2>/dev/null)" = true ]; then
-        cached_denied=true
-      fi
+    if [ -n "${dia_devices[$i]}" ]; then
+      IFS='|' read -r cached_acct cached_denied < <(browse_device_account "$dev_file" "${dia_devices[$i]}" "${dia_ext_accounts[$i]}")
+      [ "$cached_denied" = true ] || cached_denied=false
     fi
     dia_accounts+=("$cached_acct")
     if [ "$cached_denied" = true ]; then
@@ -5307,9 +5341,9 @@ browse_run() {
     # Chrome carries one extension profile, so the whole cached/denied question is that one
     # device's; the Dia profile walk above answered a question about another browser.
     is_cached=false any_cached=false cached_acct=''
-    if [ -n "$target_device_id" ] && [ -f "$dev_file" ]; then
-      cached_acct=$(jq -r --arg dev "$target_device_id" \
-        'if .[$dev].denied == true then empty else .[$dev].account // empty end' "$dev_file" 2>/dev/null)
+    if [ -n "$target_device_id" ]; then
+      IFS='|' read -r cached_acct cached_denied < <(browse_device_account "$dev_file" "$target_device_id" "$chrome_ext_account")
+      [ "$cached_denied" != true ] || cached_acct=''
     fi
     if [ -n "$cached_acct" ]; then
       any_cached=true
@@ -5338,23 +5372,24 @@ browse_run() {
   elif [ "$any_cached" = true ]; then
     reasons_list+=("REASON: claudeb skipped — no open $target_label device has a usable cached account")
   fi
-  local denied_acct='' denied_seen='' signin_needed=false
+  local denied_list='' denied_seen='' signin_needed=false d
+  local -a denied_accts=()
   if [ -n "$target_device_id" ] && [ -f "$dev_file" ]; then
-    denied_acct=$(jq -r --arg dev "$target_device_id" 'if .[$dev].denied == true then .[$dev].account // empty else empty end' "$dev_file" 2>/dev/null)
-    denied_seen=$(jq -r --arg dev "$target_device_id" 'if .[$dev].denied == true then .[$dev].seen // empty else empty end' "$dev_file" 2>/dev/null)
+    denied_list=$(jq -r --arg dev "$target_device_id" '(.[$dev] // {}) as $e
+      | ($e.denied_accounts // (if $e.denied == true then [$e.account // empty] else [] end)) | join(" ")' "$dev_file" 2>/dev/null)
+    denied_seen=$(jq -r --arg dev "$target_device_id" '.[$dev] // {} | if .denied == true then .seen // empty else .denied_seen // empty end' "$dev_file" 2>/dev/null)
   fi
-  if [ -n "$denied_acct" ]; then
-    reasons_list+=("REASON: claudeb/$denied_acct skipped — device $target_device_id not visible (probe failed ${denied_seen:-unknown})")
+  read -r -a denied_accts <<<"$denied_list"
+  if [ "${#denied_accts[@]}" -gt 0 ]; then
+    for d in "${denied_accts[@]}"; do
+      reasons_list+=("REASON: claudeb/$d skipped — device $target_device_id not visible (probe failed ${denied_seen:-unknown})")
+    done
     if [ "${#usable_claude[@]}" -gt 0 ]; then
-      local -a denied_last=()
-      local had_denied=false
+      local -a denied_first=() denied_last=()
       for a in "${usable_claude[@]}"; do
-        if [ "$a" = "$denied_acct" ]; then had_denied=true; else denied_last+=("$a"); fi
+        if [[ " $denied_list " == *" $a "* ]]; then denied_last+=("$a"); else denied_first+=("$a"); fi
       done
-      if [ "$had_denied" = true ]; then
-        denied_last+=("$denied_acct")
-        usable_claude=("${denied_last[@]}")
-      fi
+      usable_claude=("${denied_first[@]}" "${denied_last[@]}")
     fi
   fi
   # A device no pool account can see is a login, and a login is Egor's to make: naming the browser,
@@ -5362,10 +5397,10 @@ browse_run() {
   if [ -n "$target_device_id" ] && [ "${#usable_claude[@]}" -gt 0 ]; then
     if [ "$any_cached" = true ] && [ "$is_cached" = false ]; then
       signin_needed=true
-    elif [ -n "$denied_acct" ]; then
+    elif [ "${#denied_accts[@]}" -gt 0 ]; then
       signin_needed=true
       for a in "${usable_claude[@]}"; do
-        [ "$a" = "$denied_acct" ] || { signin_needed=false; break; }
+        [[ " $denied_list " == *" $a "* ]] || { signin_needed=false; break; }
       done
     fi
   fi
@@ -5453,7 +5488,7 @@ Drive Egor's visible browser ($target_label) using CUA REPL (\`js\` tool).
 - Never drive $off_label. Never perform logins or credential entry.
 - All test/probing navigations must use https://example.com (Dia blocks httpbin.org / postman-echo.com for extension tabs).
 - Extension path first; use computer surface fallback (\`await cua.getApp("$target_label")\`, pressKey/typeText/getAXState) via SkyComputerUseService if needed.
-- Always close any created tabs before finishing.
+- Close the tabs you created only once the task is complete; when you stop for Egor's input (sign-in, approval, a blocker) or the result is not final, leave them open and name the tab that holds the work.
 - End the answer with: \`OUTCOME: BROWSER_OK_EXTENSION|BROWSER_OK_COMPUTER|BROWSER_UNAVAILABLE reason=<text>\`
 EOF
     elif [ "$plan_vendor" = claudeb ]; then
@@ -5469,12 +5504,13 @@ Drive Egor's visible browser ($target_label) using Claude in Chrome extension.
   \`OUTCOME: BROWSER_DEVICE_NOT_IN_ACCOUNT device=$plan_device account=$plan_account\`
   and stop immediately.
 - Never \`switch_browser\` to an unlisted device, and never run pairing or login flows headless.
+- After any extension reconnect or tool error, call \`list_connected_browsers\` again and re-select \`$plan_device\` before the next action: a reconnect silently falls back to the account's default browser.
 - Off-target extension device IDs ($off_label — never drive one, never \`switch_browser\` to it): $off_str
 - Target $target_label device ID: $plan_device
 - Never drive $off_label.
 - All test/probing navigations must use https://example.com.
 - On success print \`BROWSER-DEVICE-ACCOUNT: $plan_device $plan_account\` and end with \`OUTCOME: BROWSER_OK\`.
-- Always close any created tabs before finishing.
+- Close the tabs you created only once the task is complete; when you stop for Egor's input (sign-in, approval, a blocker) or the result is not final, leave them open and name the tab that holds the work.
 EOF
     fi
   fi
@@ -5609,13 +5645,13 @@ relay_door() { # subcommand
   RELAY_AGENT=${rest%%:*}
   case "$token" in *:attach) RELAY_ATTACH=true ;; esac
   case "$RELAY_TYPE" in
-    claudeb-worker | codex-worker | gemini-worker | grok-worker | light-worker | light-research | end-report) ;;
+    claudeb-worker | codex-worker | gemini-worker | grok-worker | light-worker | light-research | end-report | code-doctor-judge) ;;
     *) RELAY_TYPE='' ;;
   esac
   if [ -z "$RELAY_TYPE" ] || [ "$token" = "$RELAY_TYPE" ] || [[ ! "$RELAY_AGENT" =~ ^[A-Za-z0-9_-]+$ ]]; then
     fail "\`worker-run $1\` runs only inside the relay agent that owns the run — the owner is what draws its magenta task row and wakes the chat when it ends. Spawn the Agent instead: claudeb-worker, codex-worker, gemini-worker, grok-worker or light-worker (light-research for a read-only research brief), the vendor worker-pick's NEXT row names; it runs worker-run itself. A run already in flight is re-attached by the same agent type with a brief starting \`ATTACH <run-id>:\`. A script, eval, interpreter, Monitor or background shell reaching worker-run is this same launch. Nothing was launched and no account was spent."
   fi
-  [ -n "${CLAUDE_AGENT_ID:-}" ] || [ "$RELAY_TYPE" = end-report ] || CLAUDE_AGENT_ID=$RELAY_AGENT
+  case "$RELAY_TYPE" in end-report | code-doctor-judge) ;; *) [ -n "${CLAUDE_AGENT_ID:-}" ] || CLAUDE_AGENT_ID=$RELAY_AGENT ;; esac
 }
 
 # The run a relay starts is the one its agent type names: a claudeb-worker relabelled as a codex run,
@@ -5627,7 +5663,7 @@ relay_start_door() { # vendor role
     fail "this $RELAY_TYPE was spawned with an \`ATTACH <run-id>:\` brief: it waits on that run (\`worker-run wait <run-id>\`) and starts nothing. A new run needs a new spawn with its own brief. Nothing was launched and no account was spent."
   case "$RELAY_TYPE:$1:$2" in
     claudeb-worker:claudeb:workers | codex-worker:codex:workers | gemini-worker:gemini:workers | \
-      grok-worker:grok:workers | light-worker:light:workers | light-research:*:research | end-report:*:workers) ;;
+      grok-worker:grok:workers | light-worker:light:workers | light-research:*:research | end-report:*:workers | code-doctor-judge:*:workers) ;;
     light-research:*)
       fail "a light-research relay starts research runs only, through light-research itself. Nothing was launched and no account was spent." ;;
     *:*:research)

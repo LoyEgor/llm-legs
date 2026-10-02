@@ -811,7 +811,7 @@
     "detail": "1080p upscaled download|Chrome crashed on every 1080p"
    },
    "title": "Hidden Chrome segfaults inside its own download of Flow's 1080p upscale",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-01T13:14:04+03:00",
@@ -819,7 +819,7 @@
      "files": [
       "llm-legs/share/gemini_web.py"
      ],
-     "in": null,
+     "in": "llm-legs@a8c1ee1",
      "regressed_at": null
     }
    ],

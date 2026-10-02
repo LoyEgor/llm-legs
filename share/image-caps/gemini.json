@@ -12,13 +12,6 @@
     "image": "gemini-3.1-flash-image",
     "video": "veo_3_1_t2v_fast"
   },
-  "short": {
-    "image": "flash-image-3.1",
-    "video": "veo-3.1-fast",
-    "music": "lyria-3.5",
-    "sfx": "omni-1.1-flash",
-    "listen": "agy"
-  },
   "refs": {
     "max": 3,
     "verified_max": true

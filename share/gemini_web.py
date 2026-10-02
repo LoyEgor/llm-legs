@@ -30,9 +30,13 @@ import time
 import urllib.parse
 from pathlib import Path
 
+import account_roster
+
 ROOT = Path(os.environ.get("GEMINI_WEB_DIR", "~/.gemini-web")).expanduser()
 SOURCE_APP = Path(os.environ.get("GEMINI_WEB_CHROME", "/Applications/Google Chrome.app"))
-CLONE_APP = ROOT / "Gemini Web Automation.app"
+# Engines that keep their store elsewhere (chatgpt_web) rebind ROOT but share this one clone.
+CLONE_ROOT = ROOT
+CLONE_APP = CLONE_ROOT / "Gemini Web Automation.app"
 CLONE_ID = "com.google.Chrome.gemini-web"
 MANIFEST = Path(__file__).resolve().parent / "image-caps" / "gemini.json"
 REPO = Path(__file__).resolve().parent.parent
@@ -54,16 +58,18 @@ class Failure(Exception):
 
 FAILURES_KEEP_S = 14 * 86400
 ROUTES = (("flow.google.com", "flow"), ("labs.google", "flow"), ("gemini.google.com", "gemini-app"),
-          ("flowmusic.app", "flow-music"))
+          ("flowmusic.app", "flow-music"), ("chatgpt.com", "chatgpt-web"), ("openai.com", "chatgpt-web"))
 ROUTE = "flow"
+TOOL = "gemini-web"
 _reported: set[tuple[str, str]] = set()
 DIALOGS = "[role=dialog],[role=alertdialog],mat-dialog-container"
+TOASTS = "[role=alert],[role=status],mat-snack-bar-container,simple-snack-bar"
 PAGE_DUMP = """() => {
   const seen = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
   const texts = sel => [...document.querySelectorAll(sel)].filter(seen).map(e => e.innerText.trim()).filter(Boolean);
   return {title: document.title,
           dialogs: texts('""" + DIALOGS + """'),
-          toasts: texts('[role=alert],[role=status],mat-snack-bar-container,simple-snack-bar'),
+          toasts: texts('""" + TOASTS + """'),
           buttons: [...document.querySelectorAll('button,[role=button],[role=menuitem]')].filter(seen)
             .map(b => (b.getAttribute('aria-label') || b.innerText || '').trim().slice(0, 60)).filter(Boolean).slice(0, 80),
           body: (document.body ? document.body.innerText : '').slice(0, 4000)};
@@ -73,7 +79,7 @@ PAGE_DUMP = """() => {
 # A toast that came and went during a run that still succeeded leaves no failure note, so every page
 # keeps the texts it showed; sessionStorage outlives the run's own navigations.
 TOAST_LOG = """(() => {
-  const sel = '[role=alert],[role=status],mat-snack-bar-container,simple-snack-bar';
+  const sel = '""" + TOASTS + """';
   let queued = false;
   const scan = () => {
     queued = false;
@@ -255,14 +261,23 @@ def free_first(accounts: list[str]) -> list[str]:
     return sorted(accounts, key=busy)
 
 
+def note_started(account: str) -> None:
+    write_meta(account, generation_started_at=int(time.time()))
+
+
+def least_recent(accounts: list[str]) -> list[str]:
+    """The owner's rule (2026-10-01): the account that least recently started a new generation goes first."""
+    return sorted(accounts, key=lambda name: read_meta(name).get("generation_started_at", 0))
+
+
 @contextlib.contextmanager
 def chrome_clone():
     if not SOURCE_APP.exists():
         raise Failure(1, f"Google Chrome not found at {SOURCE_APP}")
     want = app_version(SOURCE_APP)
-    ROOT.mkdir(parents=True, exist_ok=True)
-    with open(ROOT / ".clone-use.lock", "w") as use:
-        with file_lock(ROOT / ".clone.lock"):
+    CLONE_ROOT.mkdir(parents=True, exist_ok=True)
+    with open(CLONE_ROOT / ".clone-use.lock", "w") as use:
+        with file_lock(CLONE_ROOT / ".clone.lock"):
             try:
                 fcntl.flock(use, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 idle = True
@@ -316,18 +331,25 @@ COMMON_FLAGS = ["--use-mock-keychain", "--no-first-run", "--no-default-browser-c
                 "--disable-blink-features=AutomationControlled"]
 
 
-def profile_in_use(profile: Path) -> bool:
+def chrome_pid(profile: Path) -> int | None:
     lock = profile / "SingletonLock"
     if not lock.is_symlink():
-        return False
-    pid = os.readlink(lock).rsplit("-", 1)[-1]
+        return None
     try:
-        os.kill(int(pid), 0)
-        return True
-    except (ValueError, ProcessLookupError):
-        return False
+        pid = int(os.readlink(lock).rsplit("-", 1)[-1])
+    except (OSError, ValueError):
+        return None
+    try:
+        os.kill(pid, 0)
     except PermissionError:
-        return True
+        return pid
+    except OSError:
+        return None
+    return pid
+
+
+def profile_in_use(profile: Path) -> bool:
+    return chrome_pid(profile) is not None
 
 
 def has_login(account: str) -> bool:
@@ -336,11 +358,12 @@ def has_login(account: str) -> bool:
 
 @contextlib.contextmanager
 def browser(account: str, visible: bool = False):
+    refuse_off_roster(account)
     from playwright.sync_api import sync_playwright
 
     profile = profile_dir(account)
     if not has_login(account):
-        raise Failure(4, f"account {account} has no browser login; run: gemini-web login {account}")
+        raise Failure(4, f"account {account} has no browser login; run: {TOOL} login {account}")
     if profile_in_use(profile):
         raise Failure(1, f"profile {account} is open in another Chrome (the login window?); close it")
     flags = [*COMMON_FLAGS, "--window-size=1440,1000", "--disable-renderer-backgrounding",
@@ -357,9 +380,10 @@ def browser(account: str, visible: bool = False):
             context.add_init_script(TOAST_LOG)
         watcher = None
         if not visible:
-            hide_clone(account)
-            context.on("page", lambda page: hide_clone(account))
-            watcher = keep_hidden(account)
+            pid = chrome_pid(profile)
+            hide_clone(account, pid)
+            context.on("page", lambda page: hide_clone(account, pid))
+            watcher = keep_hidden(account, pid)
         try:
             yield context
         except Exception as error:
@@ -380,15 +404,17 @@ def browser(account: str, visible: bool = False):
 
 # Chrome brings itself forward on a new window, a download or a dialog. One osascript polls for the
 # whole run: an osascript spawned every 3 s left the page up long enough for the owner to read it.
-# It quits once no clone runs, so a killed run cannot leave it polling forever. The hide is
-# unconditional: filtered on `visible is true` it left the clone's window up (2026-10-01).
+# It quits once its Chrome exits, so a killed run cannot leave it polling forever. The hide is
+# unconditional: filtered on `visible is true` it left the clone's window up (2026-10-01). It hides
+# this run's Chrome by pid only: every clone shares one bundle id, and a `status --visible` window of
+# another account was hidden every 0.2 s.
 HIDE_WATCH = """on run argv
-  set bundleId to item 1 of argv
+  set chromePid to (item 1 of argv) as integer
   repeat
     tell application "System Events"
-      if not (exists (first process whose bundle identifier is bundleId)) then return
+      if not (exists (first process whose unix id is chromePid)) then return
       try
-        set visible of (every process whose bundle identifier is bundleId) to false
+        set visible of (every process whose unix id is chromePid) to false
       end try
     end tell
     delay 0.2
@@ -396,9 +422,12 @@ HIDE_WATCH = """on run argv
 end run"""
 
 
-def keep_hidden(account: str) -> subprocess.Popen | None:
+def keep_hidden(account: str, pid: int | None) -> subprocess.Popen | None:
+    if pid is None:
+        warn(account, "could not keep the automation Chrome hidden: its pid is unknown")
+        return None
     try:
-        return subprocess.Popen(["osascript", "-e", HIDE_WATCH, CLONE_ID],
+        return subprocess.Popen(["osascript", "-e", HIDE_WATCH, str(pid)],
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError as error:
         warn(account, f"could not keep the automation Chrome hidden: {error}")
@@ -407,9 +436,9 @@ def keep_hidden(account: str) -> subprocess.Popen | None:
 
 # macOS Chrome pulls --window-position back until 40 px of the window are on screen, so only hiding
 # the app (what Cmd-H does) keeps the window out of the owner's sight; the page stays "visible".
-def hide_clone(account: str = "-") -> None:
-    script = ('tell application "System Events" to set visible of '
-              f'(every process whose bundle identifier is "{CLONE_ID}") to false')
+def hide_clone(account: str = "-", pid: int | None = None) -> None:
+    which = f"unix id is {pid}" if pid else f'bundle identifier is "{CLONE_ID}"'
+    script = f'tell application "System Events" to set visible of (every process whose {which}) to false'
     try:
         result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=15)
     except (OSError, subprocess.TimeoutExpired) as error:
@@ -438,7 +467,7 @@ def goto_flow(page, path: str = "/", timeout_s: float = 45.0) -> dict:
     while time.time() < deadline:
         state = page_state(page)
         if signed_out(state):
-            raise Failure(4, "Google signed this profile out; run: gemini-web login <account>")
+            raise Failure(4, "Google signed this profile out; run: geminib web <account>")
         if state["has_at"]:
             return state
         page.wait_for_timeout(250)
@@ -672,11 +701,7 @@ def open_project(page, account: str) -> str:
     return project
 
 
-# The page follows the account's language, not Chrome's --lang, and the allowance text is matched in English.
-ALLOWANCE_URL = "https://one.google.com/ai/activity?hl=en"
-ALLOWANCE_TEXT = re.compile(r"([\d,]+) Google Flow credits are included as part of your Google AI plan and refresh (\w+)")
 REFILL_JUMP = 200
-ALLOWANCE_EVERY_S = 24 * 3600
 
 
 def month_after(epoch: float) -> int:
@@ -693,34 +718,8 @@ def note_credits(account: str, credits: int | None) -> None:
     fields = {"credits": credits, "credits_at": now}
     previous = meta.get("credits")
     if isinstance(previous, int) and credits - previous >= REFILL_JUMP:
-        fields.update(credits_refilled_at=now, credits_renews_at=month_after(now),
-                      credits_renews_source="refill observed")
-        if meta.get("credits_total_source") != "site":
-            fields.update(credits_total=credits, credits_total_source="balance after refill")
+        fields.update(credits_refilled_at=now, credits_renews_at=month_after(now), credits_total=credits)
     write_meta(account, **fields)
-
-
-def read_allowance(context, account: str) -> None:
-    if time.time() - read_meta(account).get("credits_total_checked_at", 0) < ALLOWANCE_EVERY_S:
-        return
-    write_meta(account, credits_total_checked_at=int(time.time()))
-    page = context.new_page()
-    try:
-        page.goto(ALLOWANCE_URL, wait_until="domcontentloaded", timeout=30000)
-        found = None
-        for _ in range(20):
-            found = ALLOWANCE_TEXT.search(" ".join(page.locator("body").inner_text(timeout=5000).split()))
-            if found:
-                break
-            page.wait_for_timeout(500)
-        if found and found[2] == "monthly":
-            write_meta(account, credits_total=int(found[1].replace(",", "")), credits_total_source="site",
-                       credits_total_at=int(time.time()))
-    except Exception as error:  # noqa: BLE001
-        warn(account, f"could not read the Flow credit allowance: {str(error)[:120]}")
-    finally:
-        with contextlib.suppress(Exception):
-            page.close()
 
 
 def read_credits(page) -> int | None:
@@ -948,18 +947,19 @@ def set_wall(account: str, until: float | None) -> None:
                 else data.update({account: int(until)}))
 
 
+POOL_VENDOR = "gemini"
 POOL_READ = ('. "$0/share/worker-model.sh" && . "$0/share/worker-pool.sh" && '
-             'worker_pool_disabled_json "$(worker_pool_dir gemini)" && echo && { worker_model_pins gemini || true; }')
+             'worker_pool_disabled_json "$(worker_pool_dir "$1")" && echo && { worker_model_pins "$1" || true; }')
 _pool: tuple | None = None
 
 
 def pool() -> tuple[set[str] | None, set[str]]:
-    """The gemini worker pool's exclusions (None: unreadable, so every account is out) and its pins."""
+    """The POOL_VENDOR worker pool's exclusions (None: unreadable, so every account is out) and its pins."""
     global _pool
     if _pool is None:
         try:
-            out = subprocess.run(["bash", "-c", POOL_READ, str(REPO)], capture_output=True, text=True,
-                                 timeout=30, check=True).stdout
+            out = subprocess.run(["bash", "-c", POOL_READ, str(REPO), POOL_VENDOR], capture_output=True,
+                                 text=True, timeout=30, check=True).stdout
             excluded, end = json.JSONDecoder().raw_decode(out.lstrip())
             _pool = (set(excluded) if isinstance(excluded, list) else None, set(out.lstrip()[end:].split()))
         except (OSError, subprocess.SubprocessError, ValueError):
@@ -974,14 +974,26 @@ def in_pool(account: str) -> bool:
 
 def refuse_out_of_pool(account: str) -> None:
     if not in_pool(account):
-        raise Failure(4, f"{account} is out of the gemini worker pool, so no headless run may use it. Turn "
+        raise Failure(4, f"{account} is out of the {POOL_VENDOR} worker pool, so no headless run may use it. Turn "
                          '"In pool" back on for it, or pin it in ~/.claude/worker-model.')
 
 
+def roster() -> list[str]:
+    try:
+        return account_roster.roster(POOL_VENDOR)
+    except account_roster.Unreadable as exc:
+        raise Failure(1, str(exc)) from exc
+
+
+def refuse_off_roster(account: str) -> None:
+    if account not in roster():
+        raise Failure(2, f"unknown account: {account} (not on the {POOL_VENDOR} roster the menubar lists: "
+                         f"{', '.join(roster()) or 'none'})")
+
+
 def bound_accounts() -> list[str]:
-    profiles = ROOT / "profiles"
-    names = sorted(p.name for p in profiles.iterdir() if p.is_dir()) if profiles.exists() else []
-    return [n for n in names if valid_account(n) and has_login(n) and read_meta(n).get("email")]
+    return [n for n in sorted(roster()) if valid_account(n) and (ROOT / "profiles" / n).is_dir() and has_login(n)
+            and read_meta(n).get("email")]
 
 
 def rotation(cost: int) -> list[str]:
@@ -996,7 +1008,63 @@ def rotation(cost: int) -> list[str]:
         return balance(name) >= cost or now - read_meta(name).get("credits_at", 0) > WALL_SECONDS
 
     ready = [n for n in bound_accounts() if walled.get(n, 0) <= now and in_pool(n) and affordable(n)]
-    return sorted(ready, key=lambda n: -balance(n))
+    return least_recent(ready)
+
+
+def take_accounts(pinned: str | None, rotated, walled: str) -> list[str]:
+    if pinned:
+        refuse_off_roster(pinned)
+        refuse_out_of_pool(pinned)
+        return [pinned]
+    accounts = free_first(rotated())
+    if not accounts:
+        bound = bound_accounts()
+        if not bound:
+            fail(4, "no Gemini account is signed in; run: geminib web <account>")
+        if not any(in_pool(name) for name in bound):
+            fail(4, 'every signed-in Gemini account is out of the gemini worker pool; turn "In pool" back on '
+                    "for one, or pin it in ~/.claude/worker-model")
+        fail(3, walled)
+    return accounts
+
+
+def take_failover(accounts: list[str], plan: dict, generate_on, set_wall, pinned: bool,
+                  wall_pinned: bool = False) -> None:
+    """Takes left over by a failed account move on to the next one; a credit wall (3) or a dead login (4) skips
+    to the next account unless one was pinned."""
+    done: list[dict] = []
+    last: Failure | None = None
+    for account in accounts:
+        try:
+            result = generate_on(account, {**plan, "first_take": len(done) + 1, "count": plan["count"] - len(done)})
+        except Exception as error:
+            done += getattr(error, "takes", [])
+            if not isinstance(error, Failure):
+                if not done:
+                    raise
+                report(account, error)
+                last = Failure(1, failure_text(error)[:300])
+                break
+            report(account, error)
+            last = error
+            if error.code == 3 and (wall_pinned or not pinned):
+                set_wall(account, time.time() + WALL_SECONDS)
+            if error.code in (3, 4) and not pinned:
+                continue
+            if done:
+                break
+            fail(error.code, error.reason, account=account)
+        else:
+            if result.get("dry_run"):
+                emit(result)
+                return
+            emit({"ok": True, "account": done[0]["account"] if done else account, "takes": done + result["takes"]})
+            return
+    if done:
+        emit({"ok": True, "account": done[0]["account"], "takes": done,
+              "short": f"{len(done)} of {plan['count']} takes; the next one failed: {last.reason}"})
+        return
+    fail(last.code if last else 3, last.reason if last else "no account")
 
 
 def save_or_defer(page, account: str, project: str, upscale: dict, model: str) -> bool:
@@ -1052,11 +1120,15 @@ def ledger(entry: dict) -> None:
         f.write(json.dumps({"ts": int(time.time()), **entry}) + "\n")
 
 
-def save_video(context, url: str, dest: Path) -> int:
+def is_mp4(head: bytes) -> bool:
+    return head[4:8] == b"ftyp"
+
+
+def save_video(context, url: str, dest: Path, is_kind=is_mp4, what: str = "clip") -> int:
     response = context.request.get(url, timeout=120000)
     body = response.body()
-    if response.status != 200 or body[4:8] != b"ftyp":
-        raise Failure(1, f"clip download failed (HTTP {response.status}, {len(body)} bytes)")
+    if response.status != 200 or not is_kind(body[:12]):
+        raise Failure(1, f"{what} download failed (HTTP {response.status}, {len(body)} bytes)")
     part = dest.with_name(f".{dest.name}.part")
     part.write_bytes(body)
     part.replace(dest)
@@ -1121,10 +1193,11 @@ def read_caught(page, url: str, part: Path, chunk: int = 4 << 20) -> None:
             start += len(data)
 
 
-def save_upscaled(page, project: str, scene: str, dest: Path) -> int:
-    """Flow's own 1080p upscaled download from the clip's editor (free on PRO, 2026-10-01). The hidden Chrome
-    segfaults inside its own download manager (10 crashes on 2026-10-01, all in Download.save_as), so the file is
-    caught from the page's download link and read out of the page; Chrome's download is the fallback only."""
+def save_caught(page, trigger, dest: Path, what: str, kind: str, is_kind, fetch, of: str = "", fail=None,
+                timeout_s: float = 600.0, prepare=None) -> int:
+    """`prepare()` opens the page (a navigation drops the catcher), `trigger()` makes the page download a file. The hidden Chrome segfaults inside its own download manager
+    (10 crashes on 2026-10-01, all in Download.save_as), so the file is caught from the page's download link and
+    read out of the page; an http link goes to `fetch(url, dest)`, Chrome's own download is the fallback only."""
     part = dest.with_name(f".{dest.name}.part")
     downloads: list = []
 
@@ -1132,39 +1205,57 @@ def save_upscaled(page, project: str, scene: str, dest: Path) -> int:
         downloads.append(download)
 
     try:
-        goto_flow(page, f"/project/{project}/edit/{scene}")
-        close_promos(page)
+        if prepare:
+            prepare()
         page.evaluate(CATCH_DOWNLOAD)
         page.on("download", listener)
-        page.get_by_role("button", name="Download media", exact=True).click(timeout=30000)
-        page.get_by_role("menuitem", name="1080p Upscaled", exact=True).click(timeout=10000)
-        caught = wait_download(page, downloads)
+        trigger()
+        try:
+            caught = wait_download(page, downloads, timeout_s)
+        except TimeoutError as exc:
+            raise Failure(1, f"no {what} download{of} within {timeout_s:.0f}s") from exc
         if caught:
             read_caught(page, caught, part)
         elif downloads[0].url.startswith("http"):
             url = downloads[0].url
             with contextlib.suppress(Exception):
                 downloads[0].cancel()
-            return save_video(page.context, url, dest)
+            return fetch(url, dest)
         else:
-            print(f"gemini-web: the 1080p file went through Chrome's download ({downloads[0].url.split(':')[0]})",
+            print(f"{ROUTE}: the {what} download{of} went through Chrome's download ({downloads[0].url.split(':')[0]})",
                   file=sys.stderr, flush=True)
             downloads[0].save_as(str(part))
     except Failure:
         raise
+    except OSError as exc:
+        raise Failure(1, f"the {what} download{of} could not be written to {part.parent}: {exc}") from exc
     except Exception as exc:
-        error = drift(f"the 1080p upscaled download ({exc.__class__.__name__}: "
-                      f"{(str(exc).strip().splitlines() or [''])[0][:120]})")
+        error = (fail or drift)(f"the {what} download{of} ({exc.__class__.__name__}: "
+                                f"{(str(exc).strip().splitlines() or [''])[0][:120]})")
         error.extra["crashed"] = exc.__class__.__name__ == "TargetClosedError"
         raise error from exc
     finally:
         with contextlib.suppress(Exception):
             page.remove_listener("download", listener)
-    if part.read_bytes()[4:8] != b"ftyp":
+    if not is_kind(part.read_bytes()[:12]):
         part.unlink()
-        raise Failure(1, "the 1080p upscaled download is not an mp4")
+        raise Failure(1, f"the {what} download{of} is not {kind}")
     part.replace(dest)
     return dest.stat().st_size
+
+
+def save_upscaled(page, project: str, scene: str, dest: Path) -> int:
+    """Flow's own 1080p upscaled download from the clip's editor (free on PRO, 2026-10-01)."""
+    def prepare():
+        goto_flow(page, f"/project/{project}/edit/{scene}")
+        close_promos(page)
+
+    def trigger():
+        page.get_by_role("button", name="Download media", exact=True).click(timeout=30000)
+        page.get_by_role("menuitem", name="1080p Upscaled", exact=True).click(timeout=10000)
+
+    return save_caught(page, trigger, dest, "1080p upscaled", "an mp4", is_mp4,
+                       lambda url, dest: save_video(page.context, url, dest), prepare=prepare)
 
 
 def media_entry(page, media_id: str) -> list | None:
@@ -1232,12 +1323,14 @@ def recover_hint(account: str, clips: list[str], dest: Path) -> str:
 def generate_on(account: str, plan: dict, args) -> dict:
     started = time.time()
     if not has_login(account):
-        raise Failure(4, f"account {account} has no browser login; run: gemini-web login {account}")
+        raise Failure(4, f"account {account} has no browser login; run: geminib web {account}")
     meta = read_meta(account)
     if not meta.get("email"):
         raise Failure(4, f"account {account} is not bound to a Google account; run: gemini-web status {account}")
     dest = Path(args.dest)
     with file_lock(ROOT / "locks" / f"{account}.lock", wait_s=900):
+        if not (plan["extend"] or args.dry_run):
+            note_started(account)
         return render_on(account, plan, args, meta, dest, started)
 
 
@@ -1255,7 +1348,6 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
                 raise Failure(1, f"profile {account} is signed in as {state['email']}, bound to {meta['email']}")
             credits = read_credits(page)
             note_credits(account, credits)
-            read_allowance(context, account)
             if credits is not None and credits < cost:
                 raise Failure(3, f"{account} has {credits} Flow credits; {plan['what']} costs {cost}",
                               credits=credits)
@@ -1443,12 +1535,13 @@ def cmd_generate(args) -> None:
         raise Failure(3, f"{pinned}, the only account holding {Path(args.extend).name}, is walled; chain "
                          "from its last frame instead: video-chain last-frame")
     if pinned:
+        refuse_off_roster(pinned)
         refuse_out_of_pool(pinned)
     candidates = [pinned] if pinned else free_first(rotation(plan["cost"]))
     if not candidates:
         bound = bound_accounts()
         if not bound:
-            raise Failure(4, "no Flow account is signed in; run: gemini-web login <account>")
+            raise Failure(4, "no Flow account is signed in; run: geminib web <account>")
         if not any(in_pool(name) for name in bound):
             raise Failure(4, 'every signed-in Flow account is out of the gemini worker pool; turn "In pool" '
                              "back on for one, or pin it in ~/.claude/worker-model")
@@ -1487,7 +1580,6 @@ def cmd_status(args) -> None:
         dismiss_dialogs(page, args.account)
         credits = read_credits(page)
         note_credits(args.account, credits)
-        read_allowance(context, args.account)
         bound = state["email"] == meta.get("email")
         emit({"ok": bound, "account": args.account, "email": state["email"],
               "bound_to": meta.get("email"), "credits": credits, "build": state["build"],
@@ -1524,6 +1616,7 @@ def cmd_fetch(args) -> None:
 
 
 def cmd_login(args) -> None:
+    refuse_off_roster(args.account)
     profile = profile_dir(args.account)
     if profile_in_use(profile):
         raise Failure(1, f"profile {args.account} is already open")
@@ -1533,7 +1626,7 @@ def cmd_login(args) -> None:
         [chrome_binary(SOURCE_APP), f"--user-data-dir={profile}", *COMMON_FLAGS, "--new-window",
          LOGIN_URL], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     emit({"ok": True, "account": args.account, "profile": str(profile),
-          "next": f"sign in in the window that opened, quit it (Cmd+Q), then: gemini-web status {args.account}"})
+          "next": f"sign in in the window that opened, quit it (Cmd+Q), then: {TOOL} status {args.account}"})
 
 
 def cmd_accounts(args) -> None:
@@ -1542,8 +1635,9 @@ def cmd_accounts(args) -> None:
     for p in sorted(profiles.iterdir()) if profiles.exists() else []:
         if p.is_dir() and valid_account(p.name):
             meta = read_meta(p.name)
-            rows.append({"account": p.name, "login": has_login(p.name), "email": meta.get("email"),
-                         "credits": meta.get("credits"), "walled_until": walls().get(p.name)})
+            rows.append({"account": p.name, "roster": p.name in roster(), "login": has_login(p.name),
+                         "email": meta.get("email"), "credits": meta.get("credits"),
+                         "walled_until": walls().get(p.name)})
     emit({"ok": True, "accounts": rows})
 
 

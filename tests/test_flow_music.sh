@@ -14,6 +14,7 @@ export HOME="$WORK/home" TMPDIR="$WORK/tmp" GEMINI_WEB_DIR="$WORK/home/.gemini-w
 export IMAGE_LEG_LOG="$WORK/image-legs.jsonl" FAKE_CALLS="$WORK/calls"
 export FLOW_MUSIC_ENGINE="$WORK/flow-engine" GEMINI_MUSIC_ENGINE="$WORK/app-engine"
 mkdir -p "$HOME" "$TMPDIR" "$WORK/media" "$WORK/out" "$GEMINI_WEB_DIR"
+mkdir -p "$HOME/.gemini-profiles"/{good,poor,gone,walled,flagged,fresh,dry,flaky}
 M=$WORK/media
 ffmpeg -v error -f lavfi -i 'sine=frequency=440:sample_rate=48000:duration=2' -ac 2 -c:a pcm_s16le "$M/take.wav" || exit 1
 printf 'ID3fake' >"$M/ref.mp3"
@@ -354,6 +355,10 @@ plan_args = fm.make_plan(type("A", (), dict(duration=75, length=None, genre="Jaz
                                             title="My Song!.v2"))())
 assert (plan_args["length"], plan_args["sound"], plan_args["seed"], plan_args["model_label"], plan_args["title"],
         plan_args["price"]) == ("1:15", "Jazz. a beat", "3", "Lyria 3 Pro", "My-Song-v2", 5), plan_args
+zero = fm.make_plan(type("A", (), dict(duration=None, length=None, genre=None, prompt="a beat", lyrics=None,
+                                      vocals=None, bpm=None, seed=0, model="lyria-3-pro", format="wav", stems=False,
+                                      ref_audio=None, count=1, out_dir="/o", dry_run=False, title=None))())
+assert zero["seed"] == "0", zero
 
 # Download: the page's blob link is caught and read out of the page, never saved through Chrome.
 dest = os.path.join(work, "caught.wav")
@@ -373,9 +378,16 @@ try:
 except gw.Failure as failure:
     assert failure.reason == "the wav download of song-ab12 is not a wav file", failure.reason
 assert not os.path.exists(dest + "2") and not os.path.exists(os.path.join(work, ".caught.wav2.part"))
+page = Page()
+try:
+    fm.download(page, "song-ab12", "wav", fm.Path(work, "no-such-dir", "song.wav"))
+    raise AssertionError("a download into a missing folder must fail")
+except gw.Failure as failure:
+    assert "UI drift" not in failure.reason and failure.reason.startswith(
+        f"the wav download of song-ab12 could not be written to {work}/no-such-dir: "), failure.reason
 
 # Credit meta, walls and the rotation built from them.
-for name in ("good", "poor", "gone", "walled", "flagged", "fresh", "dry"):
+for name in ("good", "poor", "gone", "walled", "flagged", "fresh", "dry", "blocked"):
     os.makedirs(os.path.join(gw.ROOT, "profiles", name, "Default"), exist_ok=True)
     open(os.path.join(gw.ROOT, "profiles", name, "Default", "Cookies"), "w").close()
     gw.write_meta(name, email=name + "@example.com")
@@ -410,6 +422,19 @@ fm.set_wall("walled", now + 3600)
 gw.set_wall("flagged", now + 3600)
 gw.ledger({"kind": "flow-music", "event": "saved", "account": "good"})
 gw.write_meta("fresh", music_credits=900, music_credits_at=now)
+gw.write_meta("blocked", music_credits=9000, music_credits_at=now)
+for name, at in (("good", 1), ("dry", 3), ("fresh", 2)):
+    gw.write_meta(name, generation_started_at=at)
+assert fm.rotation(5) == ["good", "fresh", "dry"], "Flow Music ordered by its ledger, not the least recent start"
+real_browser, real_take = gw.browser, fm.one_take
+gw.browser = lambda account: contextlib.nullcontext()
+fm.one_take = lambda context, account, plan, take: {"ok": True, "take": take, **({"dry_run": True} if plan["dry_run"] else {})}
+fm.generate_on("good", {"count": 1, "dry_run": True})
+assert gw.read_meta("good")["generation_started_at"] == 1, "a dry run stamped a new generation"
+fm.generate_on("good", {"count": 1, "dry_run": False})
+assert gw.read_meta("good")["generation_started_at"] >= now, "a new song did not stamp its start"
+gw.browser, fm.one_take = real_browser, real_take
+gw.write_meta("dry", generation_started_at=1)
 assert fm.rotation(5) == ["dry", "fresh", "good"], fm.rotation(5)
 
 # The single-account run walls an account out of credits and moves on; a named account is never walled.
@@ -440,6 +465,13 @@ with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.St
     except SystemExit as stop:
         assert stop.code == 3, stop.code
 assert fm.walls()["dry"] == 0, fm.walls()
+args.account, calls[:] = "blocked", []
+try:
+    fm.cmd_generate(args)
+    raise AssertionError("an account off the gemini roster was run")
+except gw.Failure as failure:
+    assert failure.code == 2 and "unknown account: blocked" in failure.reason and calls == [], failure.reason
+args.account = None
 
 # Fan-out: one process per account, all takes kept, exit 0 while any account delivered.
 engine = os.path.join(root, "share", "flow_music.py")
@@ -664,6 +696,7 @@ words = {"Flow Music UI drift: no compose panel (Toggle compose panel)": "browse
          "the prompt was never sent on com: no generation call within 60s": "browser not sent",
          "no wav download of song-ab12 within 180s": "browser download",
          "the wav download of song-ab12 is not a wav file": "browser download",
+         "the wav download of song-ab12 could not be written to /o: [Errno 28] No space left on device": "browser download",
          "the reference audio upload did not finish within 300s": "browser upload",
          "the stem split returned no take on com within 600s": "browser no output",
          "com: Flow Music UI drift: the library lists no song 'x'; egbogd: no track after 600s": "browser no output"}

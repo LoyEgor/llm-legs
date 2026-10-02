@@ -76,8 +76,6 @@ def note_balance(account: str, credits: int | None, grants: list | None = None) 
 
 def rotation(price: int) -> list[str]:
     now, flow_walls, own = time.time(), gw.walls(), walls()
-    used = {row["account"]: row.get("ts", 0) for row in gw.job_rows()
-            if isinstance(row, dict) and row.get("kind") == "flow-music" and row.get("account")}
 
     def ready(name: str) -> bool:
         meta = gw.read_meta(name)
@@ -88,8 +86,7 @@ def rotation(price: int) -> list[str]:
             return False
         return flow_walls.get(name, 0) <= now and own.get(name, 0) <= now and gw.in_pool(name)
 
-    names = [name for name in gw.bound_accounts() if ready(name)]
-    return sorted(names, key=lambda name: ("music_credits_at" not in gw.read_meta(name), used.get(name, 0)))
+    return gw.least_recent([name for name in gw.bound_accounts() if ready(name)])
 
 
 class Traffic:
@@ -410,54 +407,17 @@ def to_library(page, traffic: Traffic, account: str, title: str) -> None:
 
 
 def download(page, title: str, fmt: str, dest: Path) -> int:
-    """The page builds the file in a blob and clicks a download link; the hidden Chrome's own download manager
-    crashed on 1080p video saves, so the link is caught and read out of the page (gw.save_upscaled)."""
-    part = dest.with_name(f".{dest.name}.part")
-    downloads: list = []
-
-    def listener(item):
-        downloads.append(item)
-
-    try:
-        page.evaluate(gw.CATCH_DOWNLOAD)
-        page.on("download", listener)
+    def trigger():
         song_menu(page, title)
         submenu_pick(page, "Download", fmt.upper())
-        try:
-            caught = gw.wait_download(page, downloads, timeout_s=180)
-        except TimeoutError as error:
-            raise gw.Failure(1, f"no {fmt} download of {title} within 180s") from error
-        if caught:
-            gw.read_caught(page, caught, part)
-        elif downloads[0].url.startswith("http"):
-            url = downloads[0].url
-            with contextlib.suppress(Exception):
-                downloads[0].cancel()
-            response = page.context.request.get(url, timeout=180000)
-            if response.status != 200:
-                raise gw.Failure(1, f"{fmt} download failed (HTTP {response.status})")
-            part.write_bytes(response.body())
-        else:
-            print(f"flow-music: the {fmt} file went through Chrome's download ({downloads[0].url.split(':')[0]})",
-                  file=sys.stderr, flush=True)
-            downloads[0].save_as(str(part))
-    except gw.Failure:
-        raise
-    except Exception as error:
-        failure = drift(f"the {fmt} download ({error.__class__.__name__}: "
-                        f"{(str(error).strip().splitlines() or [''])[0][:120]})")
-        failure.extra["crashed"] = error.__class__.__name__ == "TargetClosedError"
-        raise failure from error
+
+    try:
+        return gw.save_caught(page, trigger, dest, fmt, f"a {fmt} file", MAGIC[fmt],
+                              lambda url, dest: gw.save_video(page.context, url, dest, MAGIC[fmt], fmt),
+                              of=f" of {title}", fail=drift, timeout_s=180)
     finally:
         with contextlib.suppress(Exception):
-            page.remove_listener("download", listener)
-        with contextlib.suppress(Exception):
             page.keyboard.press("Escape")
-    if not MAGIC[fmt](part.read_bytes()[:12]):
-        part.unlink()
-        raise gw.Failure(1, f"the {fmt} download of {title} is not a {fmt} file")
-    part.replace(dest)
-    return dest.stat().st_size
 
 
 def split_stems(page, traffic: Traffic, account: str, title: str, names: list[str], timeout_s: float) -> list[str]:
@@ -543,6 +503,8 @@ def generate_on(account: str, plan: dict) -> dict:
     takes: list[dict] = []
     first = plan.get("first_take", 1)
     with gw.file_lock(gw.ROOT / "locks" / f"{account}.lock", wait_s=900), gw.browser(account) as context:
+        if not plan["dry_run"]:
+            gw.note_started(account)
         for take in range(first, first + plan["count"]):
             try:
                 result = one_take(context, account, plan, take)
@@ -619,7 +581,7 @@ def make_plan(args) -> dict:
         length = c["lengths"][args.length]
     sound = f"{args.genre}. {args.prompt}" if args.genre else args.prompt
     return {"sound": sound, "lyrics": args.lyrics or "", "instrumental": args.vocals == "instrumental",
-            "bpm": str(args.bpm) if args.bpm else "", "length": length or "", "seed": str(args.seed) if args.seed else "",
+            "bpm": str(args.bpm) if args.bpm else "", "length": length or "", "seed": "" if args.seed is None else str(args.seed),
             "model": args.model, "model_label": c["models"][args.model], "format": args.format, "stems": args.stems,
             "ref_audio": args.ref_audio, "count": args.count, "out_dir": args.out_dir, "dry_run": args.dry_run,
             "price": c["price_per_song"], "timeout_s": c["timeout_s"], "upload_wait_s": c["upload_wait_s"],
@@ -628,53 +590,12 @@ def make_plan(args) -> dict:
 
 def cmd_generate(args) -> None:
     plan = make_plan(args)
-    if args.account:
-        gw.refuse_out_of_pool(args.account)
-    accounts = [args.account] if args.account else gw.free_first(rotation(plan["price"]))
-    if not accounts:
-        bound = gw.bound_accounts()
-        if not bound:
-            gw.fail(4, "no Gemini account is signed in; run: gemini-web login <account>")
-        if not any(gw.in_pool(name) for name in bound):
-            gw.fail(4, 'every signed-in Gemini account is out of the gemini worker pool; turn "In pool" back on '
-                       "for one, or pin it in ~/.claude/worker-model")
-        gw.fail(3, "no Flow Music account is free of walls and holds a song's credits")
+    accounts = gw.take_accounts(args.account, lambda: rotation(plan["price"]),
+                                "no Flow Music account is free of walls and holds a song's credits")
     if args.accounts > 1 and not args.account:
         fan_out(args, accounts[:args.accounts])
         return
-    done: list[dict] = []
-    last: gw.Failure | None = None
-    for account in accounts:
-        try:
-            result = generate_on(account, {**plan, "first_take": len(done) + 1, "count": plan["count"] - len(done)})
-        except Exception as error:
-            done += getattr(error, "takes", [])
-            if not isinstance(error, gw.Failure):
-                if not done:
-                    raise
-                gw.report(account, error)
-                last = gw.Failure(1, gw.failure_text(error)[:300])
-                break
-            gw.report(account, error)
-            last = error
-            if error.code == 3 and (args.fanned or not args.account):
-                set_wall(account, time.time() + gw.WALL_SECONDS)
-            if error.code in (3, 4) and not args.account:
-                continue
-            if done:
-                break
-            gw.fail(error.code, error.reason, account=account)
-        else:
-            if result.get("dry_run"):
-                gw.emit(result)
-                return
-            gw.emit({"ok": True, "account": done[0]["account"] if done else account, "takes": done + result["takes"]})
-            return
-    if done:
-        gw.emit({"ok": True, "account": done[0]["account"], "takes": done,
-                 "short": f"{len(done)} of {plan['count']} takes; the next one failed: {last.reason}"})
-        return
-    gw.fail(last.code if last else 3, last.reason if last else "no account")
+    gw.take_failover(accounts, plan, generate_on, set_wall, bool(args.account), wall_pinned=args.fanned)
 
 
 def cmd_status(args) -> None:
@@ -688,6 +609,7 @@ def cmd_status(args) -> None:
 
 def cmd_fetch(args) -> None:
     plan = {"out_dir": args.out_dir, "format": args.format, "stems": args.stems, "timeout_s": caps()["timeout_s"]}
+    Path(args.out_dir).mkdir(parents=True, exist_ok=True)
     with gw.file_lock(gw.ROOT / "locks" / f"{args.account}.lock", wait_s=900), gw.browser(args.account) as context:
         page = context.new_page()
         traffic = Traffic(page)

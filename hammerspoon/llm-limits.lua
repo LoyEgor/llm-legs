@@ -1140,6 +1140,21 @@ local function readLlmDoctor()
   return decoded
 end
 
+local function llmDoctorSummary(document, total)
+  local parts = {}
+  local status = document and document.status
+  local problems = document and tonumber(document.problem_count)
+  if status == "error" then
+    parts[#parts + 1] = "collector failed"
+  elseif problems then
+    if problems > 0 then parts[#parts + 1] = plural(problems, "problem") end
+    if status == "blind" then parts[#parts + 1] = "blind" end
+  elseif total > 0 then
+    parts[#parts + 1] = plural(total, "problem")
+  end
+  return parts
+end
+
 local function kickLlmDoctor(document, force, stale)
   local now = os.time()
   local asOf = type(document) == "table" and (tonumber(document.as_of_s) or tonumber(document.as_of)) or 0
@@ -1156,8 +1171,9 @@ local function kickLlmDoctor(document, force, stale)
   lastLlmDoctorKick = now
   startDiagnosticsTask("llmDoctorTask", path, { "--window", tostring(selected), "--quiet" }, force and function()
     local latest = readLlmDoctor()
-    local count = latest and tonumber(latest.problem_count) or 0
-    hs.alert.show("LLM doctor: " .. (not latest and "no data yet" or count > 0 and plural(count, "problem") or "ok"), 2.5)
+    local parts = llmDoctorSummary(latest, 0)
+    hs.alert.show("LLM doctor: " .. (not latest and "no data yet" or #parts > 0 and table.concat(parts, " · ") or "ok"),
+      2.5)
   end or nil)
 end
 
@@ -1558,17 +1574,9 @@ function M.llmDoctorEntry()
   local items = {}
   local total, document = appendDoctorBlocks(items, snapshot)
 
-  local parts = {}
+  local parts = llmDoctorSummary(document, total)
   local status = document and document.status
   local problems = document and tonumber(document.problem_count)
-  if status == "error" then
-    parts[#parts + 1] = "collector failed"
-  elseif problems then
-    if problems > 0 then parts[#parts + 1] = plural(problems, "problem") end
-    if status == "blind" then parts[#parts + 1] = "blind" end
-  elseif total > 0 then
-    parts[#parts + 1] = plural(total, "problem")
-  end
   if not snapshot then parts[#parts + 1] = "no data yet" end
   local doctorText = "LLM doctor: " .. (#parts > 0 and table.concat(parts, " · ") or "ok")
   local title = doctorText .. (snapshot and doctorStaleSuffix(snapshot.as_of) or "")

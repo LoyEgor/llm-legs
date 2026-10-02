@@ -12,6 +12,7 @@ refute() { asserts=$((asserts + 1)); ! "$@" || fail "refute $asserts: $*"; }
 export HOME="$WORK/home" TMPDIR="$WORK/tmp" GEMINI_WEB_DIR="$WORK/gemini-web"
 export FAKE_ENGINE_CALLS="$WORK/calls" GEMINI_MUSIC_ENGINE="$WORK/engine"
 mkdir -p "$HOME" "$TMPDIR" "$WORK/media" "$WORK/out"
+mkdir -p "$HOME/.gemini-profiles"/{alpha,beta,gamma,delta}
 M=$WORK/media
 ffmpeg -v error -f lavfi -i 'sine=frequency=440:sample_rate=44100:duration=3' -ac 2 -c:a libmp3lame -b:a 192k "$M/take.mp3" || exit 1
 ffmpeg -v error -f lavfi -i color=c=black:size=64x64:rate=1 -i "$M/take.mp3" -t 3 -c:v libx264 -pix_fmt yuv420p -c:a aac "$M/take.mp4" || exit 1
@@ -32,7 +33,7 @@ while [ "$#" -gt 0 ]; do
 done
 case "${FAKE_ENGINE_MODE:-ok}" in
   limit) printf '{"ok": false, "reason": "fakeacct is out of Gemini music generations: limit reached"}\n'; exit 3 ;;
-  login) printf '{"ok": false, "reason": "Google signed fakeacct out; run: gemini-web login fakeacct"}\n'; exit 4 ;;
+  login) printf '{"ok": false, "reason": "Google signed fakeacct out; run: geminib web fakeacct"}\n'; exit 4 ;;
   usage) printf '{"ok": false, "reason": "bad plan"}\n'; exit 2 ;;
   crash) printf 'noise\nBROWSER_FAILURE route=gemini-app account=fakeacct code=1 shot=- reason=Gemini app UI drift: no Length chip\n' >&2
     printf '{"ok": false, "reason": "Gemini app UI drift: no Length chip in the music composer"}\n'; exit 1 ;;
@@ -130,7 +131,7 @@ FAKE_ENGINE_MODE=limit expect_rc 3 --dest "$out" --prompt 'a theme'
 assert grep -qx 'GEMINI_USAGE_LIMIT' "$WORK/err"
 assert grep -q 'out of Gemini music generations' "$WORK/err"
 FAKE_ENGINE_MODE=login expect_rc 4 --dest "$out" --prompt 'a theme'
-assert grep -q 'gemini-web login fakeacct' "$WORK/err"
+assert grep -q 'geminib web fakeacct' "$WORK/err"
 FAKE_ENGINE_MODE=usage expect_rc 2 --dest "$out" --prompt 'a theme'
 FAKE_ENGINE_MODE=crash expect_rc 1 --dest "$out" --prompt 'a theme'
 assert grep -q 'UI drift' "$WORK/err"
@@ -313,7 +314,7 @@ except g.Failure as stuck:
 m.pick_music = real_pick
 assert m.answer_notice(Page("Some other dialog"), "stranger") is False
 
-for name, email in (("alpha", "a@x"), ("beta", "b@x"), ("gamma", "c@x"), ("delta", "d@x")):
+for name, email in (("alpha", "a@x"), ("beta", "b@x"), ("gamma", "c@x"), ("delta", "d@x"), ("blocked", "x@x")):
     (g.ROOT / "profiles" / name / "Default").mkdir(parents=True)
     (g.ROOT / "profiles" / name / "Default" / "Cookies").write_text("")
     g.meta_path(name).parent.mkdir(parents=True, exist_ok=True)
@@ -321,12 +322,24 @@ for name, email in (("alpha", "a@x"), ("beta", "b@x"), ("gamma", "c@x"), ("delta
 now = time.time()
 (g.ROOT / "walls.json").write_text(json.dumps({"delta": now + 3600}))
 m.set_music_wall("gamma", now + 3600)
+g.write_meta("alpha", generation_started_at=int(now) - 5)
+g.write_meta("beta", generation_started_at=int(now) - 10)
 with open(g.ROOT / "jobs.jsonl", "a") as ledger:
-    ledger.write(json.dumps({"ts": now - 10, "kind": "music", "event": "saved", "account": "alpha"}) + "\n")
-    ledger.write(json.dumps({"ts": now - 5, "kind": "video", "event": "saved", "account": "beta"}) + "\n")
-with open(g.ROOT / "jobs.jsonl", "a") as ledger:
-    ledger.write('{"ts": 1, "kind": "mus\n["not a row"]\n')
+    ledger.write(json.dumps({"ts": now, "kind": "music", "event": "saved", "account": "beta"}) + "\n")
+assert m.rotation() == ["beta", "alpha"], "music ordered by its ledger, not the Flow family's least recent start"
+g.write_meta("beta", generation_started_at=int(now) - 1)
+assert m.rotation() == ["alpha", "beta"], m.rotation()
+
+import contextlib
+real_browser, real_take = g.browser, m.one_take
+g.browser = lambda account: contextlib.nullcontext()
+m.one_take = lambda context, account, plan, take: {"ok": True, "take": take, **({"dry_run": True} if plan["dry_run"] else {})}
+m.generate_on("alpha", {"count": 1, "dry_run": True})
+assert g.read_meta("alpha")["generation_started_at"] == int(now) - 5, "a dry run stamped a new generation"
+m.generate_on("alpha", {"count": 1, "dry_run": False})
+assert g.read_meta("alpha")["generation_started_at"] >= int(now), "a new song did not stamp its start"
 assert m.rotation() == ["beta", "alpha"], m.rotation()
+g.browser, m.one_take = real_browser, real_take
 
 import contextlib, io, os, types
 home = Path(os.environ["HOME"])
@@ -361,6 +374,12 @@ def run(**overrides):
 
 code, result = run(account="beta")
 assert code == 4 and "out of the gemini worker pool" in result["reason"], result
+real_generate_on, launched = m.generate_on, []
+m.generate_on = lambda account, plan: launched.append(account) or {"ok": True, "account": account, "takes": []}
+code, result = run(account="blocked")
+assert code == 2 and "unknown account: blocked" in result["reason"] and launched == [], (result, launched)
+m.generate_on = real_generate_on
+assert "blocked" not in g.bound_accounts(), g.bound_accounts()
 calls = []
 def takes(account, plan):
     calls.append((account, plan["first_take"], plan["count"]))
@@ -386,7 +405,7 @@ assert [t["audio"] for t in result["takes"]] == ["take1.mp3"], result
 m.rotation = lambda: []
 g.bound_accounts = lambda: []
 code, result = run()
-assert code == 4 and "gemini-web login" in result["reason"], result
+assert code == 4 and "geminib web" in result["reason"], result
 EOF
 
 printf 'PASS test_gemini_music (%s asserts)\n' "$asserts"

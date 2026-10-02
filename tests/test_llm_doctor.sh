@@ -10,7 +10,11 @@ asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
 
-export HOME="$WORK/home"
+unset XDG_CACHE_HOME WORKER_CLAIMS_DIR WORKER_WALLS_DIR GEMINI_WEB_DIR CHATGPT_WEB_DIR CLAUDEGPT_HOME \
+  CODEXB_PROFILES_DIR GEMINIB_PROFILES_DIR GROKB_PROFILES_DIR LLM_LIMITS_GEMINI_ACCOUNTS_DIR \
+  LLM_LIMITS_CODEX_CACHE LLM_LIMITS_CODEX_REMOVED LLM_LIMITS_GROK_CACHE GROKB_MAIN_GROK_HOME OPENCODE_GO_PROFILES \
+  STATUSLINE_CACHE_DIR
+export HOME="$WORK/home" CLAUDEB_DIR="$WORK/home/.claude-profiles/.claudeb"
 export WORKER_STATS_DIR="$HOME/stats" WORKER_RUN_DIR="$HOME/runs" LLM_DOCTOR_DIR="$HOME/doctor"
 export IMAGE_LEG_LOG="$HOME/image-legs/legs.jsonl" LLM_DOCTOR_LEDGER="$WORK/ledger.json"
 export GEMINIB_CACHE_DIR="$WORK/geminib"
@@ -433,6 +437,16 @@ assert jq -e '[.contract, .doctor, .as_of, .as_of_s, .judge, .status, .problem_c
 # A required store that is missing leaves its rules unable to see: blind, and named.
 assert env WORKER_RUN_DIR="$WORK/no-runs" "$DOCTOR" --dry-run --json >"$WORK/blind.json"
 assert jq -e '.status == "blind" and .blind == ["worker runs"]' "$WORK/blind.json" >/dev/null
+# A per-account store holding a name the roster no longer lists is one problem in its own group,
+# whatever how many stores hold it; a roster account's data is no remnant (row di).
+mkdir -p "$HOME/.codex-profiles/alive" "$HOME/.codex-profiles/.codexb/fast-mode" "$HOME/.cache/worker-claims/codex"
+touch "$HOME/.codex-profiles/.codexb/fast-mode/ghost" "$HOME/.cache/worker-claims/codex/ghost" \
+  "$HOME/.cache/worker-claims/codex/alive"
+assert env LLM_LIMITS_CODEX_REMOVED="$WORK/codex-main.removed" "$DOCTOR" --dry-run --json >"$WORK/remnants.json"
+assert jq -e '[.problems[] | select(.group == "accounts")] as $rows | .groups.accounts == 1 and ($rows | length) == 1
+  and $rows[0].id == "remnant:codex:ghost" and $rows[0].value == 2
+  and ($rows[0].fact | contains("purge: python3 share/account_stores.py purge codex ghost"))' "$WORK/remnants.json" >/dev/null
+rm -rf "$HOME/.codex-profiles" "$HOME/.cache/worker-claims"
 # Days the bench store covers whole are frozen to disk; the older image day stays as it was.
 assert test "$(find "$LLM_DOCTOR_DIR/daily" -name '*.json' | wc -l | tr -d ' ')" -ge 3
 assert grep -q '"image|grok-image|failed|bad output|ours|X4": 5' "$LLM_DOCTOR_DIR/daily/$(python3 -c 'import time,sys; print(time.strftime("%Y-%m-%d", time.localtime(int(sys.argv[1]) - 10 * 86400)))' "$NOW").json"

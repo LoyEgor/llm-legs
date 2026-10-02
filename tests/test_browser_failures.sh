@@ -100,7 +100,7 @@ with open(log, "w") as handle:
                                  "size": 1, "account": account, "served": "", "err": err}) + "\n")
 # Every reason either engine can raise lands on a named browser step; an unnamed one is a new word to add.
 literal = re.compile(r"""(?:Failure\((\d),|fail\((\d),|drift\()\s*f?(["'])(.+?)\3""")
-for name in ("gemini_web.py", "gemini_music.py", "flow_music.py"):
+for name in ("gemini_web.py", "gemini_music.py", "flow_music.py", "chatgpt_web.py"):
     for match in literal.finditer(open(os.path.join(root, "share", name)).read()):
         code = int(match.group(1) or match.group(2) or 1)
         reason = re.sub(r"\{[^}]*\}", "7", match.group(4))
@@ -198,20 +198,34 @@ assert gw.close_promos(promo, "egbogd") == 0 and promo.pressed == ["Escape", "No
 import subprocess, tempfile, time
 launched, real_popen = [], gw.subprocess.Popen
 gw.subprocess.Popen = lambda argv, **kw: launched.append(argv) or "watcher"
-assert gw.keep_hidden("com") == "watcher" and launched == [["osascript", "-e", gw.HIDE_WATCH, gw.CLONE_ID]], launched
+assert gw.keep_hidden("com", 4242) == "watcher" and launched == [["osascript", "-e", gw.HIDE_WATCH, "4242"]], launched
 def refused(argv, **kw): raise OSError("no osascript")
 gw.subprocess.Popen = refused
 warned, real_warn = [], gw.warn
 gw.warn = lambda account, reason, route=None: warned.append((account, reason))
-assert gw.keep_hidden("com") is None and warned == [("com", "could not keep the automation Chrome hidden: no osascript")], warned
+assert gw.keep_hidden("com", 4242) is None and warned == [("com", "could not keep the automation Chrome hidden: no osascript")], warned
+assert gw.keep_hidden("com", None) is None and warned[-1] == ("com", "could not keep the automation Chrome hidden: its pid is unknown"), warned
 gw.subprocess.Popen, gw.warn = real_popen, real_warn
 script = gw.HIDE_WATCH
 assert "delay 0.2" in script and "then return" in script and "visible is true" not in script, script
+assert "unix id is chromePid" in script and "bundle identifier" not in script, script
+ran, real_run = [], gw.subprocess.run
+gw.subprocess.run = lambda argv, **kw: ran.append(argv[-1]) or subprocess.CompletedProcess(argv, 0, "", "")
+gw.hide_clone("com", 4242)
+gw.hide_clone("com")
+gw.subprocess.run = real_run
+assert ran == ['tell application "System Events" to set visible of (every process whose unix id is 4242) to false',
+               f'tell application "System Events" to set visible of (every process whose bundle identifier is "{gw.CLONE_ID}") to false'], ran
+with tempfile.TemporaryDirectory() as scratch:
+    lockdir = gw.Path(scratch)
+    assert gw.chrome_pid(lockdir) is None
+    (lockdir / "SingletonLock").symlink_to(f"host.local-{os.getpid()}")
+    assert gw.chrome_pid(lockdir) == os.getpid() and gw.profile_in_use(lockdir)
 with tempfile.TemporaryDirectory() as scratch:
     compiled = subprocess.run(["osacompile", "-o", scratch + "/watch.scpt", "-e", script], capture_output=True, text=True)
     assert compiled.returncode == 0, compiled.stderr
     started = time.time()
-    lone = subprocess.run(["osascript", "-e", script, "com.example.no-such-clone"], capture_output=True, timeout=20)
+    lone = subprocess.run(["osascript", "-e", script, "999999"], capture_output=True, timeout=20)
     assert time.time() - started < 15, "the hide watcher kept polling with no clone running"
 
 class ToastPage:
@@ -281,7 +295,7 @@ assert bash "$ROOT/bin/doctor-fix" launch llm >"$WORK/fix.out"
 run=$(sed -n 's/^llm fixer opened: run \(llm-[a-z]*-[0-9TZ]*-[0-9a-f]*\),.*/\1/p' "$WORK/fix.out")
 assert test -n "$run"
 assert jq -e --arg p "$WORK/projects" '.problems[] | select(.id == "leg-failure:image/browser upload") | .component
-  | .files == ([$p + "/llm-legs/share/flow_music.py", $p + "/llm-legs/share/gemini_music.py", $p + "/llm-legs/share/gemini_web.py", $p + "/llm-legs/share/image-leg.sh"])
-    and (.what | startswith("hidden-Chrome route (Flow, the Gemini app, Flow Music), step upload · image block"))' "$DOCTORS_DIR/runs/$run.json" >/dev/null
+  | .files == ([$p + "/llm-legs/share/chatgpt_web.py", $p + "/llm-legs/share/flow_music.py", $p + "/llm-legs/share/gemini_music.py", $p + "/llm-legs/share/gemini_web.py", $p + "/llm-legs/share/image-leg.sh"])
+    and (.what | startswith("hidden-Chrome route (Flow, the Gemini app, Flow Music, ChatGPT), step upload · image block"))' "$DOCTORS_DIR/runs/$run.json" >/dev/null
 
 printf 'PASS: test_browser_failures (%s asserts)\n' "$asserts"

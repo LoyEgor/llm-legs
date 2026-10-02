@@ -84,7 +84,8 @@ mkdir -p "$WORK/count/tests"
 printf '#!/usr/bin/env bash\ncat "$STATUSLINE_CACHE_DIR"/suites-* >"$SEEN"; echo PASS\n' >"$WORK/count/tests/test_c.sh"
 (cd "$WORK" && SEEN="$WORK/seen" bash "$ROOT/share/run-suites.sh" --repo "$WORK/count" >/dev/null 2>&1)
 assert grep -Eq $'^/.*/run-suites\\.[A-Za-z0-9]+\t1\t/.*/count\t[0-9]+$' "$WORK/seen"
-assert test -z "$(ls "$WORK/sl" | grep -v '^test-scope\.jsonl$')"
+assert test -z "$(ls "$WORK/sl" | grep -v '^test-scope\.jsonl$' | grep -vE '^suites-[0-9]+\.done$')"
+assert test "$(ls "$WORK/sl" | grep -cE '^suites-[0-9]+\.done$')" -ge 1
 assert test "$(jq -sc 'map(.scope) | unique' "$WORK/sl/test-scope.jsonl")" = '["full"]'
 
 # The wave starts the longest suite first by its last passing duration, an unknown one before all;

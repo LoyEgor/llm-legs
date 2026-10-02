@@ -567,6 +567,33 @@ for r in repo repo2; do
 done
 assert jqe '.jobs[-1] | .ref == "leftover-both" and ([.adopted[] | .repo | split("/") | last] == ["repo", "repo2"])' "$(record "$idc")"
 assert_fails night job "$idc" add leftover both 2>/dev/null
+# A failure in a later repository undoes the night branches made so far, so the job can be retried.
+for r in repo repo2; do
+  c=$(git -C "$WORK/$r" -c user.name=t -c user.email=t@t commit-tree "main^{tree}" -p main -m "$r half")
+  GIT_COMMITTER_DATE='2026-01-01T00:00:00Z' git -C "$WORK/$r" branch half "$c"
+done
+chmod 555 "$WORK/repo2/.claude/worktrees"
+assert_fails night job "$idc" add leftover half 2>"$WORK/err"
+chmod 755 "$WORK/repo2/.claude/worktrees"
+assert grep -qF "cannot make night/$idc/leftover-half in $WORK/repo2" "$WORK/err"
+for r in repo repo2; do
+  assert_fails git -C "$WORK/$r" rev-parse -q --verify "refs/heads/night/$idc/leftover-half"
+  assert git -C "$WORK/$r" rev-parse -q --verify refs/heads/half >/dev/null
+  assert [ ! -e "$WORK/$r/.claude/worktrees/night-$idc-leftover-half" ]
+done
+night job "$idc" add leftover half >/dev/null || fail "a retry adopts after the undo"
+# An old worktree holding ignored files stays, removing it would delete them; so does a Code fixer
+# run's own worktree, which code-doctor check proves the run from.
+printf 'local.env\n' >>"$WORK/repo/.git/info/exclude"
+old worktree add -q -b ignoring "$wt/ignoring" "$side_hash"
+printf 'secret\n' >"$wt/ignoring/local.env"
+night job "$idc" add leftover ignoring >"$WORK/out" || fail "adopt a leftover holding ignored files"
+assert grep -qF "; the old one stays: it holds ignored files (local.env)" "$WORK/out"
+assert [ "$(cat "$wt/ignoring/local.env")" = secret ]
+old worktree add -q -b night/n0/code-code-20261001T020700Z-0b0b "$wt/code-old" "$side_hash"
+night job "$idc" add leftover night/n0/code-code-20261001T020700Z-0b0b >"$WORK/out" || fail "adopt a Code fixer leftover"
+assert grep -qF "; the old one stays: code-doctor check reads the Code fixer run from it" "$WORK/out"
+assert [ -d "$wt/code-old" ]
 printf '%s\n' "$WORK/repo" >"$WORK/sweep-repos"
 
 # A vendor job is named by its branch's vendor, whatever run ref its updater fixer got.

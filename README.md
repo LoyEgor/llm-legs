@@ -290,7 +290,15 @@ The claude-setup agent definitions call these bare, so each needs its PATH link
 - `bin/gemini-music` → `~/.local/bin/gemini-music` — music through the Gemini app's Lyria tool.
 - `bin/gemini-sfx` → `~/.local/bin/gemini-sfx` — sound effects from a Flow Omni render.
 - `bin/gemini-listen` → `~/.local/bin/gemini-listen` — a Gemini model's judgement of video or audio.
-- `bin/gemini-web` → `~/.local/bin/gemini-web` — the hidden Chrome behind the Gemini media scripts (`login <profile>`).
+- `bin/gemini-web` → `~/.local/bin/gemini-web` — the hidden Chrome behind the Gemini media scripts (`login <profile>`, which `geminib web <profile>` runs for a roster account).
+- `bin/chatgpt-web` → `~/.local/bin/chatgpt-web` — the same hidden Chrome on chatgpt.com, behind `codex-image --route web` (`login <codex profile>`, which `codexb web <codex profile>` runs for a roster account).
+- `bin/llm-doctor` → `~/.local/bin/llm-doctor` — LLM doctor; claude-setup's night-sweep skill runs it and the six below by name.
+- `bin/harness-doctor` → `~/.local/bin/harness-doctor` — Harness doctor.
+- `bin/updater-doctor` → `~/.local/bin/updater-doctor` — Updater doctor.
+- `bin/code-doctor` → `~/.local/bin/code-doctor` — Code doctor.
+- `bin/doctor-fix` → `~/.local/bin/doctor-fix` — doctor fixer briefs and their close gate.
+- `bin/vendor-fingerprint` → `~/.local/bin/vendor-fingerprint` — vendor CLI fingerprint requests.
+- `bin/night-run` → `~/.local/bin/night-run` — the night run's jobs, base and report.
 - `bin/pkill` → `~/.local/bin/pkill` — shadows `/usr/bin/pkill` for every model and vendor: refuses an option after the first pattern (macOS stops option parsing there, and a stray `-P` pattern matches every Claude Bash shell's `pwd -P`), else execs the real tool.
 - `bin/pgrep` → `~/.local/bin/pgrep` — the same guard for `/usr/bin/pgrep` (a link to `bin/pkill`).
 
@@ -308,7 +316,8 @@ always available as `main` and is never modified.
 
 Adding an account: `codexb profile work` creates it and launches codex, which prompts login in one
 step (mirrors `claudeb profile <name>`); `codexb profile work login` runs the browser OAuth flow the
-menu uses. Afterward `codexb status` should show both accounts. Worker agents pick the freest account automatically (`codexb pick`) unless
+menu uses. On a tty a first `codexb profile work` then offers `codexb web work`, the hidden-Chrome
+sign-in the ChatGPT web image route needs. Afterward `codexb status` should show both accounts. Worker agents pick the freest account automatically (`codexb pick`) unless
 pinned via `codex_profile=` in the worker toggle file; the menubar shows per-account rows once more
 than one account exists.
 
@@ -342,7 +351,8 @@ has to sign in once more. macOS refuses `security unlock-keychain` on anything n
   unavailable, 5 for a read-only violation, and 124 for timeout.
 
 Adding an account: `geminib profile work` opens an isolated, logged-out Antigravity profile and
-prompts for Google login. Then run `geminib status` and
+prompts for Google login; on a tty it then offers `geminib web work`, the one hidden-Chrome sign-in the
+media routes (Flow video, Flow Music, Gemini app music) need. Then run `geminib status` and
 `llm-limits --refresh-account gemini/work --table`. Worker routing follows
 `docs/routing-contract.md` (pool toggle, lowest spending bucket, walls only at 100%/dead
 auth), prints `ACCOUNT: work`, and ranks `main` last on a tie unless `gemini_profile=`

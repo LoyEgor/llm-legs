@@ -1,0 +1,12 @@
+codexb: purged /var/folders/hh/q3xt7hzn7yvd37f9nrccw7ww0000gn/T/tmp.YYnCZR3b8Y/home/.cache/worker-claims/codex/gone
+codexb: purged /var/folders/hh/q3xt7hzn7yvd37f9nrccw7ww0000gn/T/tmp.YYnCZR3b8Y/home/.cache/claude-worker-runs/walls/codex-gone
+codexb: purged /var/folders/hh/q3xt7hzn7yvd37f9nrccw7ww0000gn/T/tmp.YYnCZR3b8Y/home/.codex-profiles/.codexb/shielded/gone
+codexb: purged /var/folders/hh/q3xt7hzn7yvd37f9nrccw7ww0000gn/T/tmp.YYnCZR3b8Y/home/.codex-profiles/.codexb/shield-override/gone
+codexb: purged /var/folders/hh/q3xt7hzn7yvd37f9nrccw7ww0000gn/T/tmp.YYnCZR3b8Y/home/.chatgpt-web/profiles/gone
+codexb: purged /var/folders/hh/q3xt7hzn7yvd37f9nrccw7ww0000gn/T/tmp.YYnCZR3b8Y/home/.chatgpt-web/accounts/gone.json
+codexb: purged /var/folders/hh/q3xt7hzn7yvd37f9nrccw7ww0000gn/T/tmp.YYnCZR3b8Y/home/.chatgpt-web/locks/gone.lock
+codexb: purged /var/folders/hh/q3xt7hzn7yvd37f9nrccw7ww0000gn/T/tmp.YYnCZR3b8Y/home/.chatgpt-web/walls.json[gone]
+codexb: purged /var/folders/hh/q3xt7hzn7yvd37f9nrccw7ww0000gn/T/tmp.YYnCZR3b8Y/home/.codex-profiles/.codexb/fast-mode/gone
+codexb: purged /var/folders/hh/q3xt7hzn7yvd37f9nrccw7ww0000gn/T/tmp.YYnCZR3b8Y/home/.local/share/claudegpt/accounts/gone
+codexb: purged /var/folders/hh/q3xt7hzn7yvd37f9nrccw7ww0000gn/T/tmp.YYnCZR3b8Y/home/.cache/claude-statusline/codex-quota-kick-gone
+codexb: removed gone

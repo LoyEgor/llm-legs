@@ -67,7 +67,7 @@ started=$(date +%s)
 base_home=$HOME
 gemini_base_home=$base_home
 gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$base_home/.gemini-profiles}"
-. "$root/share/gemini-accounts.sh"
+. "$root/share/account-roster.sh"
 . "$root/share/worker-model.sh"
 . "$root/share/worker-pool.sh"
 . "$root/share/worker-claims.sh"
@@ -160,6 +160,8 @@ for file in "${media[@]}"; do
   printf '%s\t%s\n' "$send" "$file" >>"$tmp_dir/sent"
 done
 
+off_roster_rc=1
+[ -z "$account" ] || off_roster_rc=2
 picked=false
 if [ -z "$account" ]; then
   pick_rc=0
@@ -177,7 +179,7 @@ if [ -z "$account" ]; then
     picked=true
   fi
 fi
-grep -Fqx -- "$account" <<<"$(gemini_account_names)" || say "unknown account: $account" 1
+account_roster_refuse gemini-listen gemini "$account" || exit "$off_roster_rc"
 worker_pool_refuse_headless gemini "$account" "$(worker_model_pin_csv < <(worker_model_pins gemini))" || exit 4
 if [ "$picked" = true ] && ! worker_claims_record gemini "$account"; then
   printf 'gemini-listen: could not record the claim on %s\n' "$account" >&2

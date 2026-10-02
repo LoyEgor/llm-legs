@@ -151,6 +151,11 @@ run_switch -- nope
 assert test "$RC" -eq 1
 assert grep -q "no profile 'nope'" <<<"$OUT"
 assert grep -q "existing profiles:" <<<"$OUT"
+mkdir -p "$CLAUDEB_DIR/tokens"; printf 'tok' >"$CLAUDEB_DIR/tokens/tokenonly"
+run_switch -- nope
+assert grep -qx "  olx" <<<"$OUT"
+assert test "$(grep -cx "  tokenonly" <<<"$OUT")" -eq 0
+rm -f "$CLAUDEB_DIR/tokens/tokenonly"
 
 run_switch -- main abc12345
 assert test "$RC" -eq 1
@@ -242,8 +247,10 @@ assert test -z "$PAYLOAD"
 # The gateway store is the OTHER place an account can live, and `claudeb profile` on a
 # claudegpt chat opens the same transcript on a Claude account and a Claude model.
 GW_HOME="$HOME/.local/share/claudegpt"
-mkdir -p "$GW_HOME/accounts/work4/auth" "$GW_HOME/accounts/main/auth" "$GW_HOME/sessions"
-for gw_account in work4 main; do
+# A gateway login serves only an account the codex roster lists (shared-invariants row dg).
+mkdir -p "$GW_HOME/accounts/work4/auth" "$GW_HOME/accounts/main/auth" "$GW_HOME/accounts/ghost/auth" \
+  "$GW_HOME/sessions" "$HOME/.codex-profiles/work4"
+for gw_account in work4 main ghost; do
   printf '{"type":"codex","access_token":"fixture","account_id":"acct-%s"}\n' "$gw_account" \
     >"$GW_HOME/accounts/$gw_account/auth/codex-$gw_account-plus.json"
 done
@@ -266,6 +273,9 @@ GWSID="cccccccc-dddd-eeee-ffff-000000000000"
 run_switch -- --gateway nope "$GWSID"
 assert test "$RC" -eq 1
 assert grep -q "no usable OpenAI account 'nope'" <<<"$OUT"
+run_switch -- --gateway ghost "$GWSID"
+assert test "$RC" -eq 1
+assert grep -q "no usable OpenAI account 'ghost'" <<<"$OUT"
 assert grep -q "existing gateway accounts:" <<<"$OUT"
 
 # The systemic bug this resolver closes: a Codex account with no gateway login of its own

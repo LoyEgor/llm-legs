@@ -82,10 +82,8 @@ if common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir 2>/
 fi
 
 [[ "$jobs" =~ ^[0-9]+$ ]] || usage
-if [ "$jobs" -eq 0 ]; then
-  jobs=$(( $(sysctl -n hw.ncpu 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4) / 2 ))
-  [ "$jobs" -ge 2 ] || jobs=2
-fi
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/slots.sh"
+[ "$jobs" -ne 0 ] || jobs=$(slots_from_cores 2 2)
 
 # Each suite's last passing duration, keyed by the main checkout so a worktree shares it: the wave
 # starts the longest first, since alphabetical order left the slowest suite starting last.
@@ -130,7 +128,6 @@ serial_suite() {
 # full ones. A nested run (a suite testing this runner) inherits its parent's slot.
 own_slot=''
 if [ -z "${RUN_SUITES_SLOT:-}" ]; then
-  . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/slots.sh"
   own_slot=$(slot_wait "${RUN_SUITES_SLOTS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/run-suites/slots}" \
     "${RUN_SUITES_SLOTS:-$(slots_from_cores 3 2 4)}" $((6 * 3600)) run-suites "suites of $repo") ||
     fail 'could not take a suite slot'
@@ -206,7 +203,8 @@ logdir=$(mktemp -d "${TMPDIR:-/tmp}/run-suites.XXXXXX") || fail 'could not creat
 progress_file="${STATUSLINE_CACHE_DIR:-$HOME/.cache/claude-statusline}/suites-$$"
 mkdir -p "${progress_file%/*}" 2>/dev/null &&
   printf '%s\t%s\t%s\t%s\n' "$logdir" "${#suites[@]}" "$repo" "$run_suites_start" >"$progress_file" 2>/dev/null
-trap 'rm -f "$progress_file"; [ -z "$own_slot" ] || slot_release "$own_slot"' EXIT
+find "${progress_file%/*}" -maxdepth 1 -name 'suites-*.done' -mmin +1 -delete 2>/dev/null
+trap 'mv -f "$progress_file" "$progress_file.done" 2>/dev/null; [ -z "$own_slot" ] || slot_release "$own_slot"' EXIT
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/test-scope.sh"
 if [ "${#explicit[@]}" -gt 0 ]; then scope=named; elif $changed; then scope=changed; elif $include_live; then scope=all
 else scope=full; fi

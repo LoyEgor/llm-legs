@@ -938,6 +938,56 @@ EOF
   printf '{}\n' >"$cache"
   BROWSE_CODEX_CONFIG="$BT_CODEX_CONF"
 
+  # 22: the extension's stored accountUuid names the account, over a denial left by another sign-in
+  BROWSE_CODEX_CONFIG="$BT_CODEX_CONF.nocua"
+  local spare_uuid=5f1c2b3a-9d8e-4c7b-a6f5-0e1d2c3b4a59
+  mkdir -p "$CLAUDEB_PROFILES_ROOT/spare"
+  jq -n --arg u "$spare_uuid" '{oauthAccount:{accountUuid:$u}}' >"$CLAUDEB_PROFILES_ROOT/spare/.claude.json"
+  cp "$BT_CHROME_EXT/000001.log" "$BT_WORK/chrome-ext.log.orig"
+  printf '\x07accountUuid\x01\x0c\x0d\x3f\xd0%s"\x02' "$spare_uuid" >>"$BT_CHROME_EXT/000001.log"
+  jq -n --arg dev "$chrome_dev" --arg seen '2026-09-01T00:00:00Z' \
+    '{($dev): {account:"com", seen:$seen, denied:true}}' >"$cache"
+  out=$(BROWSE_WORKER_PICK="$BT_WP.multi" "$RUNNER" browse --target chrome --vendor claudeb)
+  assert grep -qx "PLAN: claudeb account=spare device=$chrome_dev source=cached" <<<"$out"
+  assert test "$(grep -c 'sign in the Claude extension' <<<"$out")" -eq 0
+  cp "$BT_WORK/chrome-ext.log.orig" "$BT_CHROME_EXT/000001.log"
+  rm -rf "$CLAUDEB_PROFILES_ROOT/spare"
+
+  # 23: probe denials from different accounts accumulate instead of the first one sticking
+  cp -R "$fixture" "$fixture-deny-com"
+  fixture="$fixture-deny-com"
+  rm -f "$fixture/result"
+  jq -n --arg result "OUTCOME: BROWSER_DEVICE_NOT_IN_ACCOUNT device=$chrome_dev account=spare" '{result:$result}' >"$fixture/out"
+  assert "$RUNNER" _deliver "$fixture" 0 >/dev/null
+  assert jq -e --arg dev "$chrome_dev" '.[$dev].denied == true and .[$dev].denied_accounts == ["com","spare"]' "$cache" >/dev/null
+  rc=0
+  out=$(BROWSE_WORKER_PICK="$BT_WP.multi" "$RUNNER" browse --target chrome --vendor claudeb) || rc=$?
+  assert test "$rc" -eq 2
+  assert grep -qx "REASON: claudeb/com skipped — device $chrome_dev not visible (probe failed $(jq -r --arg dev "$chrome_dev" '.[$dev].seen' "$cache"))" <<<"$out"
+  assert grep -q "^REASON: sign in the Claude extension in Google Chrome (Egor work) as com,spare — device $chrome_dev is visible to no pool account" <<<"$out"
+  assert grep -qx 'PLAN: none' <<<"$out"
+  printf '{}\n' >"$cache"
+
+  # 23b: a probe failing for the account the extension now holds is remembered over another account's record
+  mkdir -p "$CLAUDEB_PROFILES_ROOT/spare"
+  jq -n --arg u "$spare_uuid" '{oauthAccount:{accountUuid:$u}}' >"$CLAUDEB_PROFILES_ROOT/spare/.claude.json"
+  printf '\x07accountUuid\x01\x0c\x0d\x3f\xd0%s"\x02' "$spare_uuid" >>"$BT_CHROME_EXT/000001.log"
+  jq -n --arg dev "$chrome_dev" '{($dev): {account:"com", seen:"2026-09-01T00:00:00Z"}}' >"$cache"
+  cp -R "$fixture" "$fixture-deny-held"
+  rm -f "$fixture-deny-held/result"
+  jq -n --arg result "OUTCOME: BROWSER_DEVICE_NOT_IN_ACCOUNT device=$chrome_dev account=spare" '{result:$result}' >"$fixture-deny-held/out"
+  assert "$RUNNER" _deliver "$fixture-deny-held" 0 >/dev/null
+  assert jq -e --arg dev "$chrome_dev" '.[$dev].account == "com" and .[$dev].denied != true and .[$dev].denied_accounts == ["spare"]' "$cache" >/dev/null
+  out=$(BROWSE_WORKER_PICK="$BT_WP.multi" "$RUNNER" browse --target chrome --vendor claudeb)
+  assert grep -qx "PLAN: claudeb account=com device=$chrome_dev source=probe" <<<"$out"
+  cp "$BT_WORK/chrome-ext.log.orig" "$BT_CHROME_EXT/000001.log"
+  rm -rf "$CLAUDEB_PROFILES_ROOT/spare"
+  printf '{}\n' >"$cache"
+  BROWSE_CODEX_CONFIG="$BT_CODEX_CONF"
+
+  # 24: a quote broken inside a top-level preamble string runs its words as commands at startup
+  assert test "$("$RUNNER" report no-such-run 2>&1 | grep -c 'command not found')" -eq 0
+
 }
 browse_tests
 

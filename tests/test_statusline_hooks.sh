@@ -3731,7 +3731,8 @@ printf 'acc · astra · high\nrun=codex-7-7-done\n' > "$HOME/.cache/claude-worke
 WP_LOGS="$WORK/wp-logs"
 mkdir -p "$WP_LOGS"
 printf '0\t3\n' > "$WP_LOGS/test_a.sh.status"; printf '1\t2\n' > "$WP_LOGS/test_b.sh.status"
-printf '%s\t5\t%s\t%s\n' "$WP_LOGS" "$WP_REPO" "$(($(date +%s) - 299))" > "$STATE_DIR/suites-1101"
+WP_STAMP=$(($(date +%s) - 240))
+printf '%s\t5\t%s\t%s\n' "$WP_LOGS" "$WP_REPO" "$WP_STAMP" > "$STATE_DIR/suites-1101"
 printf '%s\t4\t%s\t1000\n' "$WP_LOGS" "$WORK/wp-other" > "$STATE_DIR/suites-1321"
 WP_SNAP='wrap() { printf "%s %s %s /bin/zsh -c source /h/.claude/shell-snapshots/snapshot-zsh-1.sh 2>/dev/null || true && eval %s\n" "$@"; }'
 FAKE_PS_WORK="$FIXTURES/work-ps"
@@ -3837,7 +3838,7 @@ assert_eq "$(printf '%s\n' \
   $'main\tshell\twp-plain\thook instruction-watch\t\t\t' \
   $'run\tcodex-7-7-live\tpnpm test')" "$(cut -f1,2,4-8 "$STATE_DIR/work-wp-sess")"
 wp_start=$(awk -F'\t' '$4 == "wp repo" && $5 == "suites" { print $3 }' "$STATE_DIR/work-wp-sess")
-assert test "$wp_start" -ge "$((wp_now - 301))" -a "$wp_start" -le "$((wp_now - 297))"
+assert_eq "$WP_STAMP" "$wp_start"
 wp_run_start=$(awk -F'\t' '$1 == "run" { print $3 }' "$STATE_DIR/work-wp-sess")
 assert test "$wp_run_start" -ge "$((wp_now - 91))" -a "$wp_run_start" -le "$((wp_now - 87))"
 # A suite run counts from its pointer's stamp, the moment it took its slot.
@@ -4532,7 +4533,7 @@ assert jq -e '.hookSpecificOutput.updatedInput.description == "seeded · flash38
 # image-gen is a relay too: `<account> · <short model>`, the short name from the vendor's caps
 # manifest (VENDOR: line, codex by default), account from a pin in the brief — an `ACCOUNT:` line or
 # an `--account` on the launch line — else the router's `--role image` answer, else the word `pool`;
-# never `?`. A FANOUT: brief is `fanout · image`.
+# never `?`. A FANOUT: brief is `fanout · img`.
 image_spawn() { # session prompt [worker-pick]
   jq -cn --arg session "$1" --arg prompt "$2" '{
     hook_event_name:"PreToolUse",session_id:$session,
@@ -4547,45 +4548,45 @@ chmod +x "$IMAGE_PICK"
 # Unpinned: the router's `--role image` answer is the prediction, and the tag keeps its shape so
 # the renderer still colours the row.
 image_routed=$(image_spawn img-routed $'Draw a cat.\nsize: model\'s choice' "$IMAGE_PICK")
-assert jq -e '.hookSpecificOutput.updatedInput.description == "cxroute · gpt-image-2: Draw the icon"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "cxroute · img·cli: Draw the icon"' \
   <<< "$image_routed" >/dev/null
-assert_eq 'cxroute · gpt-image-2' "$(seed_of img-routed image-gen)"
+assert_eq 'cxroute · img·cli' "$(seed_of img-routed image-gen)"
 
 image_vendor=$(image_spawn img-vendor $'VENDOR: gemini\nDraw a cat.' "$IMAGE_PICK")
-assert jq -e '.hookSpecificOutput.updatedInput.description == "gmroute · flash-image-3.1: Draw the icon"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "gmroute · img·gem: Draw the icon"' \
   <<< "$image_vendor" >/dev/null
-assert_eq 'gmroute · flash-image-3.1' "$(seed_of img-vendor image-gen)"
+assert_eq 'gmroute · img·gem' "$(seed_of img-vendor image-gen)"
 
 # An AUDIO: brief runs a gemini script: its short name is that kind's, never the codex image default.
 # Music and sfx pick their own gemini-web profile, so an unpinned row says pool; listen asks the router.
 image_music=$(image_spawn img-music $'AUDIO: music\nA 60 s score.' "$IMAGE_PICK")
-assert_eq 'pool · lyria-3.5' "$(seed_of img-music image-gen)"
+assert_eq 'pool · mus·app' "$(seed_of img-music image-gen)"
 image_listen=$(image_spawn img-listen $'AUDIO: listen\nIs the mix clean?' "$IMAGE_PICK")
-assert_eq 'gmroute · agy' "$(seed_of img-listen image-gen)"
+assert_eq 'gmroute · listen' "$(seed_of img-listen image-gen)"
 image_sfx=$(image_spawn img-sfx $'AUDIO: sfx\nACCOUNT: com\nA door knock.' "$IMAGE_PICK")
-assert_eq 'com · omni-1.1-flash' "$(seed_of img-sfx image-gen)"
+assert_eq 'com · sfx' "$(seed_of img-sfx image-gen)"
 
 image_fanout=$(image_spawn img-fanout $'FANOUT: all\nACCOUNTS: all\nDraw a cat.' "$IMAGE_PICK")
-assert_eq 'fanout · image' "$(seed_of img-fanout image-gen)"
+assert_eq 'fanout · img' "$(seed_of img-fanout image-gen)"
 image_fanout_pick=$(image_spawn img-fanout-pick $'FANOUT: codex|grok\nACCOUNTS: pick\nDraw a cat.' "$IMAGE_PICK")
-assert_eq 'fanout · image' "$(seed_of img-fanout-pick image-gen)"
+assert_eq 'fanout · img' "$(seed_of img-fanout-pick image-gen)"
 
 # The brief's own ACCOUNT: line is the pin the script will be given, so it is the one prediction
 # this hook may make — and `--account` on the launch line spelled in the brief is the same pin.
 image_acct=$(image_spawn img-acct $'ACCOUNT: pinned\nVENDOR: grok\nDraw a cat.' "$IMAGE_PICK")
-assert jq -e '.hookSpecificOutput.updatedInput.description == "pinned · imagine-image-2.0: Draw the icon"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "pinned · img·grok: Draw the icon"' \
   <<< "$image_acct" >/dev/null
-assert_eq 'pinned · imagine-image-2.0' "$(seed_of img-acct image-gen)"
+assert_eq 'pinned · img·grok' "$(seed_of img-acct image-gen)"
 
 image_flag=$(image_spawn img-flag \
   $'VENDOR: codex\nRun codex-image --account alt2 --dest /tmp/a.png --prompt "a cat"' "$IMAGE_PICK")
-assert_eq 'alt2 · gpt-image-2' "$(seed_of img-flag image-gen)"
+assert_eq 'alt2 · img·cli' "$(seed_of img-flag image-gen)"
 
 # Router silent (exit 3 for grok in the fake) or absent: `pool` — the script will pick from it.
 image_unknown=$(image_spawn img-unknown $'VENDOR: grok\nDraw a cat.' "$IMAGE_PICK")
-assert_eq 'pool · imagine-image-2.0' "$(seed_of img-unknown image-gen)"
+assert_eq 'pool · img·grok' "$(seed_of img-unknown image-gen)"
 image_nopick=$(image_spawn img-nopick $'VENDOR: grok\nDraw a cat.')
-assert_eq 'pool · imagine-image-2.0' "$(seed_of img-nopick image-gen)"
+assert_eq 'pool · img·grok' "$(seed_of img-nopick image-gen)"
 
 # An image brief edits no instruction file, so the MD guard is not injected into it.
 assert jq -e '(.hookSpecificOutput.updatedInput.prompt | test("MD-GUARD")) | not' \
@@ -4595,14 +4596,14 @@ assert jq -e '(.hookSpecificOutput.updatedInput.prompt | test("MD-GUARD")) | not
 image_tag=$(worker_payload image-gen worker/img 'Generate the icon' \
   'codex-image --dest /tmp/icon.png --prompt "an icon" --account alt')
 image_tag_out=$(printf '%s' "$image_tag" | "$WORKER_HOOK") || fail "image tag hook exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "alt · gpt-image-2 — Generate the icon"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "alt · img·cli — Generate the icon"' \
   <<< "$image_tag_out" >/dev/null
-assert_eq $'alt · gpt-image-2\nmedia=gen' "$(cat "$TAGDIR/workerimg")"
+assert_eq $'alt · img·cli\nmedia=gen' "$(cat "$TAGDIR/workerimg")"
 
 image_grok_tag=$(worker_payload image-gen worker/imggrok 'Generate the icon' \
   '/usr/local/bin/grok-image --account sg1 --dest /tmp/icon.png --prompt "an icon"')
 image_grok_out=$(printf '%s' "$image_grok_tag" | "$WORKER_HOOK") || fail "grok image tag hook exited nonzero"
-assert_eq 'sg1 · imagine-image-2.0' "$(head -n1 "$TAGDIR/workerimggrok")"
+assert_eq 'sg1 · img·grok' "$(head -n1 "$TAGDIR/workerimggrok")"
 
 # The image scripts are called with every argument quoted, so a quoted account is the ORDINARY
 # spelling here, not an edge case — read past the quote as the vendor branches above do.
@@ -4610,16 +4611,16 @@ for image_quoted in '--account "alt2"' "--account 'alt2'" '--account="alt2"'; do
   image_quoted_tag=$(worker_payload image-gen worker/imgq 'Generate the icon' \
     "codex-image ${image_quoted} --dest /tmp/icon.png --prompt \"an icon\"")
   printf '%s' "$image_quoted_tag" | "$WORKER_HOOK" >/dev/null || fail "quoted image tag hook exited nonzero"
-  assert_eq 'alt2 · gpt-image-2' "$(head -n1 "$TAGDIR/workerimgq")"
+  assert_eq 'alt2 · img·cli' "$(head -n1 "$TAGDIR/workerimgq")"
   rm -f "$TAGDIR/workerimgq"
 done
 
 # No `--account`: the script routes itself at run time, so the seed the spawn hook wrote stands.
-printf 'gmroute · flash-image-3.1\n' > "$TAGDIR/pending-image-gen"
+printf 'gmroute · img·gem\n' > "$TAGDIR/pending-image-gen"
 image_seeded=$(worker_payload image-gen worker/imgseed 'Generate the icon' \
   'gemini-image --dest /tmp/icon.png --prompt "an icon"')
 image_seeded_out=$(printf '%s' "$image_seeded" | "$WORKER_HOOK") || fail "seeded image tag hook exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "gmroute · flash-image-3.1 — Generate the icon"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "gmroute · img·gem — Generate the icon"' \
   <<< "$image_seeded_out" >/dev/null
 
 # A stored tag carrying regex-special chars is matched literally, so an
@@ -6652,13 +6653,28 @@ assert_eq 'pickedacct · opus · high' "$(head -n1 "$TR_HOME_CACHE/tr-pick/trpic
 mkdir -p "$TR_HOME_CACHE/tr-media"
 printf 'old · x\nexit=3\n' > "$TR_HOME_CACHE/tr-media/trvid"
 printf '%s' "$(worker_payload image-gen trvid 'Clip' 'grok-video --account sg2 --dest /tmp/a.mp4 --ref /tmp/a.png' tr-media)" | "$WORKER_HOOK" >/dev/null
-assert_eq $'sg2 · imagine-video-1.5\nmedia=edit' "$(cat "$TR_HOME_CACHE/tr-media/trvid")"
+assert_eq $'sg2 · vid·grok\nmedia=edit' "$(cat "$TR_HOME_CACHE/tr-media/trvid")"
 printf '%s' "$(worker_payload image-gen trvid 'Clip' 'grok-image --dest /tmp/a.png --prompt x' tr-media)" | "$WORKER_HOOK" >/dev/null
-assert_eq $'sg2 · imagine-video-1.5\nmedia=gen' "$(cat "$TR_HOME_CACHE/tr-media/trvid")"
+assert_eq $'sg2 · vid·grok\nmedia=gen' "$(cat "$TR_HOME_CACHE/tr-media/trvid")"
 printf '%s' "$(worker_payload image-gen trfan 'Fan' 'image-fanout --dest-dir "/tmp/fan out" --prompt x' tr-media)" | "$WORKER_HOOK" >/dev/null
-assert_eq $'fanout · image\nimage=/tmp/fan out' "$(cat "$TR_HOME_CACHE/tr-media/trfan")"
+assert_eq $'fanout · img\nimage=/tmp/fan out' "$(cat "$TR_HOME_CACHE/tr-media/trfan")"
 printf '%s' "$(worker_payload image-gen trfan 'Fan' 'image-fanout --dest-dir /tmp/v --video --ref /tmp/a.png --prompt x --dry-run' tr-media)" | "$WORKER_HOOK" >/dev/null
-assert_eq 'fanout · video' "$(cat "$TR_HOME_CACHE/tr-media/trfan")"
+assert_eq 'fanout · vid' "$(cat "$TR_HOME_CACHE/tr-media/trfan")"
+# The row says what runs where, off the launch's own flags: the route for codex images and music,
+# the model for Flow video.
+media_tag_of() { # launch line → the tag's first line
+  printf '%s' "$(worker_payload image-gen trwhere 'Media' "$1" tr-media)" | "$WORKER_HOOK" >/dev/null
+  head -n1 "$TR_HOME_CACHE/tr-media/trwhere"
+}
+assert_eq 'cx1 · img·cli' "$(media_tag_of 'codex-image --account cx1 --dest /tmp/a.png --prompt x')"
+assert_eq 'cx1 · img·web' "$(media_tag_of 'codex-image --account cx1 --route web --dest /tmp/a.png --prompt x')"
+assert_eq 'gv1 · vid·veo' "$(media_tag_of 'gemini-video --account gv1 --dest /tmp/a.mp4 --prompt x')"
+assert_eq 'gv1 · vid·omni' "$(media_tag_of 'gemini-video --account gv1 --model omni --dest /tmp/a.mp4 --prompt x')"
+assert_eq 'gm1 · mus·app' "$(media_tag_of 'gemini-music --account gm1 --dest /tmp/a.mp3 --prompt x')"
+assert_eq 'gm1 · mus·flow' "$(media_tag_of 'gemini-music --account gm1 --route flow --dest /tmp/a.mp3 --prompt x')"
+assert_eq 'gm1 · mus·flow' "$(media_tag_of 'gemini-music --account gm1 --model lyria-3-pro --dest /tmp/a.mp3 --prompt x')"
+assert_eq 'gs1 · sfx' "$(media_tag_of 'gemini-sfx --account gs1 --dest /tmp/a.wav --prompt x')"
+assert_eq 'gi1 · img·gem' "$(media_tag_of 'gemini-image --account gi1 --dest /tmp/a.png --prompt x')"
 
 # worker-run start marks the agent's tag file; wait names the run, by literal id or through the state
 # file that names this agent when the id is a shell variable.
@@ -6706,14 +6722,14 @@ media_payload() { # event command [extra-json]
     session_id:"tr-exit",agent_id:"m1",agent_type:"image-gen",cwd:"/tmp",tool_input:{command:$command}} + $extra'
 }
 mkdir -p "$TR_HOME_CACHE/tr-exit"
-printf 'notcom · gpt-image-2\nmedia=gen\n' > "$TR_HOME_CACHE/tr-exit/m1"
+printf 'notcom · img·cli\nmedia=gen\n' > "$TR_HOME_CACHE/tr-exit/m1"
 run_workdir_hook "$(media_payload PostToolUse 'ls /tmp')"
 run_workdir_hook "$(media_payload PostToolUse 'codex-image --dest /tmp/a.png --prompt x' '{"tool_input":{"command":"codex-image --dest /tmp/a.png","run_in_background":true}}')"
-assert_eq $'notcom · gpt-image-2\nmedia=gen' "$(cat "$TR_HOME_CACHE/tr-exit/m1")"
+assert_eq $'notcom · img·cli\nmedia=gen' "$(cat "$TR_HOME_CACHE/tr-exit/m1")"
 run_workdir_hook "$(media_payload PostToolUse '/opt/bin/codex-image --dest /tmp/a.png --prompt x')"
-assert_eq $'notcom · gpt-image-2\nmedia=gen\nexit=0' "$(cat "$TR_HOME_CACHE/tr-exit/m1")"
+assert_eq $'notcom · img·cli\nmedia=gen\nexit=0' "$(cat "$TR_HOME_CACHE/tr-exit/m1")"
 run_workdir_hook "$(media_payload PostToolUseFailure 'grok-video --dest /tmp/a.mp4' '{"error":"Exit code 3\nUSAGE_LIMIT"}')"
-assert_eq $'notcom · gpt-image-2\nmedia=gen\nexit=3' "$(cat "$TR_HOME_CACHE/tr-exit/m1")"
+assert_eq $'notcom · img·cli\nmedia=gen\nexit=3' "$(cat "$TR_HOME_CACHE/tr-exit/m1")"
 printf 'acct · opus · high\n' > "$TR_HOME_CACHE/tr-exit/m1"
 run_workdir_hook "$(media_payload PostToolUse 'codex-image --dest /tmp/a.png --prompt x')"
 assert_eq 'acct · opus · high' "$(cat "$TR_HOME_CACHE/tr-exit/m1")"
@@ -6787,13 +6803,13 @@ printf '{"phase":"wait","round":1,"round_id":"%s"}\n' "$TR_REVIEW" > "$tr_runs/c
 printf 'rawilimo · flash38 · high\nlight=research\nrun=gemini-9-9-res\n' > "$TR_HOME_CACHE/$TR_RSESS/g1"
 printf '{"phase":"wait","round":2}\n' > "$tr_runs/gemini-9-9-res/state.json"
 mkdir -p "$WORK/tr fan"
-printf 'fanout · image\nimage=%s\n' "$WORK/tr fan" > "$TR_HOME_CACHE/$TR_RSESS/i1"
+printf 'fanout · img\nimage=%s\n' "$WORK/tr fan" > "$TR_HOME_CACHE/$TR_RSESS/i1"
 jq -cn '{kind:"image",cells:[{vendor:"codex",account:"notcom",status:"done",exit:0},{vendor:"gemini",account:"a",status:"running"},
   {vendor:"gemini",account:"b",status:"done",exit:0},{vendor:"grok",account:"c",status:"failed",exit:1}]}' > "$WORK/tr fan/fanout.state.json"
-printf 'notcom · gpt-image-2\nmedia=gen\n' > "$TR_HOME_CACHE/$TR_RSESS/i2"
-printf 'notcom · gpt-image-2\nmedia=edit\n' > "$TR_HOME_CACHE/$TR_RSESS/i3"
-printf 'notcom · gpt-image-2\nmedia=gen\nexit=0\n' > "$TR_HOME_CACHE/$TR_RSESS/i4"
-printf 'rawilimo · imagine-video-1.5\nmedia=edit\nexit=3\n' > "$TR_HOME_CACHE/$TR_RSESS/i5"
+printf 'notcom · img·cli\nmedia=gen\n' > "$TR_HOME_CACHE/$TR_RSESS/i2"
+printf 'notcom · img·cli\nmedia=edit\n' > "$TR_HOME_CACHE/$TR_RSESS/i3"
+printf 'notcom · img·cli\nmedia=gen\nexit=0\n' > "$TR_HOME_CACHE/$TR_RSESS/i4"
+printf 'rawilimo · vid·grok\nmedia=edit\nexit=3\n' > "$TR_HOME_CACHE/$TR_RSESS/i5"
 tr_render() { # columns
   local start=$(( ($(date +%s) - 65) * 1000 ))
   jq -cn --argjson cols "$1" --argjson start "$start" --arg sess "$TR_RSESS" --arg rev "$TR_REVIEW" '{session_id:$sess,columns:$cols,tasks:[
@@ -6807,7 +6823,7 @@ tr_render() { # columns
     {id:"f1",type:"local_agent",status:"running",description:"acc · astra · high — Patch the gate",label:"Reading files",startTime:$start,tokenCount:900},
     {id:"f2",type:"local_agent",status:"running",description:"fix: e66f8e6 Patch again",startTime:$start},
     {id:"g1",type:"local_agent",status:"running",description:"light research · 3.8-flash · rawilimo: Map the hooks",startTime:$start,model:"claude-sonnet-5"},
-    {id:"i1",type:"local_agent",status:"running",description:"fanout · image: Draw the menubar icon",startTime:$start},
+    {id:"i1",type:"local_agent",status:"running",description:"fanout · img: Draw the menubar icon",startTime:$start},
     {id:"i2",type:"local_agent",status:"running",description:"Draw one icon",startTime:$start},
     {id:"i3",type:"local_agent",status:"running",description:"Edit one icon",startTime:$start},
     {id:"i4",type:"local_agent",status:"running",description:"Draw one icon",startTime:$start},
@@ -6844,10 +6860,10 @@ assert_eq 'acc · astra · high — Implement the parser fix · wait 3 · 1m 5s 
 rm -f "$STATE_DIR/work-$TR_RSESS"
 assert grep -Fq "${MAGENTA}fix: acc · astra · high${RESET} ${DIM}· e66f8e6${RESET}" <<<"$(jq -r 'select(.id == "f1") | .content' <<<"$tr_wide")"
 assert_fails grep -Fq 'Patch again' <<<"$(tr_row "$tr_wide" f2)"
-assert_eq 'fanout · image · all 3/4 codex ✓ gemini 1/2 grok ✗1 · 1m 5s' "$(tr_row "$tr_wide" i1)"
-assert_eq 'notcom · gpt-image-2 · gen · 1m 5s' "$(tr_row "$tr_wide" i2)"
-assert_eq 'notcom · gpt-image-2 · edit · 1m 5s' "$(tr_row "$tr_wide" i3)"
-assert_eq 'notcom · gpt-image-2 · 1m 5s' "$(tr_row "$tr_wide" i4)"
+assert_eq 'fanout · img · all 3/4 codex ✓ gemini 1/2 grok ✗1 · 1m 5s' "$(tr_row "$tr_wide" i1)"
+assert_eq 'notcom · img·cli · gen · 1m 5s' "$(tr_row "$tr_wide" i2)"
+assert_eq 'notcom · img·cli · edit · 1m 5s' "$(tr_row "$tr_wide" i3)"
+assert_eq 'notcom · img·cli · 1m 5s' "$(tr_row "$tr_wide" i4)"
 assert_fails grep -Fq 'one icon' <<<"$(tr_row "$tr_wide" i2)$(tr_row "$tr_wide" i4)"
 assert_fails grep -Fq 'WAIT' <<<"$(tr_row "$tr_wide" r1)"
 assert_fails grep -Fq 'Patch the gate' <<<"$(tr_row "$tr_wide" f1)"
@@ -6867,8 +6883,8 @@ assert_eq 'T2 · double · task · all 2/4 opus 0/1 sol 0/1 agy ✓ grok ✗1' "
 assert_eq 'T2 · double · task · all 2/4 opus 0/1 sol 0/1 agy ✓ grok ✗1' "$(tr_row "$(tr_render 59)" r1)"
 assert_eq 'T2 · double · task · all 2/4' "$(tr_row "$(tr_render 58)" r1)"
 assert_eq 'T2 · double · task · all 2/4' "$(tr_row "$(tr_render 30)" r1)"
-assert_eq 'fanout · image · all 3/4 codex ✓ gemini 1/2 grok ✗1' "$(tr_row "$(tr_render 51)" i1)"
-assert_eq 'fanout · image · all 3/4' "$(tr_row "$(tr_render 40)" i1)"
+assert_eq 'fanout · img · all 3/4 codex ✓ gemini 1/2 grok ✗1' "$(tr_row "$(tr_render 51)" i1)"
+assert_eq 'fanout · img · all 3/4' "$(tr_row "$(tr_render 40)" i1)"
 tr_60=$(tr_render 60) tr_40=$(tr_render 40) tr_30=$(tr_render 30)
 assert_eq 'acc · astra · high — Impleme… · wait 3 · 1m 5s · ↓ 12.3k tok' "$(tr_row "$tr_60" w1)"
 assert_eq 'acc · astra · high · wait 3 · 1m 5s' "$(tr_row "$tr_40" w1)"

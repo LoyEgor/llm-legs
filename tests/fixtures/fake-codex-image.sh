@@ -32,6 +32,10 @@ case "${FAKE_CODEX_MODE:-image}" in
     printf "You've hit your usage limit. Try again later.\n" >&2
     exit 1
     ;;
+  credits)
+    printf '%s\n' '{"type":"turn.failed","error":{"message":"Your workspace is out of credits. Ask your workspace owner to refill in order to continue."}}'
+    exit 1
+    ;;
   fail)
     printf 'stream disconnected before completion\n' >&2
     exit 1

@@ -12,7 +12,7 @@ resolve_self() {
 }
 
 usage() {
-  printf 'usage: image-fanout --dest-dir <abs dir> --prompt <text> [--vendors all|codex,gemini,grok] [--accounts all|pick] [--ref <abs img>]... [--aspect <W:H>] [--size <WxH>] [--transparent] [--video] [--duration <s>] [--max-parallel <n>] [--dry-run]\n' >&2
+  printf 'usage: image-fanout --dest-dir <abs dir> --prompt <text> [--vendors all|codex,gemini,grok] [--accounts all|pick] [--takes <n>] [--ref <abs img>]... [--aspect <W:H>] [--size <WxH>] [--transparent] [--video] [--duration <s>] [--max-parallel <n>] [--dry-run]\n' >&2
   exit 2
 }
 
@@ -39,6 +39,7 @@ video=false
 transparent=false
 dry_run=false
 max_parallel=6
+takes=''
 refs=()
 
 while [ "$#" -gt 0 ]; do
@@ -52,6 +53,7 @@ while [ "$#" -gt 0 ]; do
     --size) [ "$#" -ge 2 ] || usage; size=$2; shift 2 ;;
     --duration) [ "$#" -ge 2 ] || usage; duration=$2; shift 2 ;;
     --max-parallel) [ "$#" -ge 2 ] || usage; max_parallel=$2; shift 2 ;;
+    --takes) [ "$#" -ge 2 ] || usage; takes=$2; shift 2 ;;
     --transparent) transparent=true; shift ;;
     --video) video=true; shift ;;
     --dry-run) dry_run=true; shift ;;
@@ -64,6 +66,9 @@ done
 [[ "$dest_dir" = /* ]] || usage
 [ -d "$dest_dir" ] || { printf 'image-fanout: --dest-dir is not a directory: %s\n' "$dest_dir" >&2; exit 2; }
 case "$accounts_mode" in all|pick) ;; *) usage ;; esac
+if [ -n "$takes" ]; then
+  [[ "$takes" =~ ^[1-9][0-9]*$ ]] && [ "$accounts_mode" = all ] || usage
+fi
 [[ "$max_parallel" =~ ^[1-9][0-9]*$ ]] || usage
 if [ -n "$size" ] && [ -n "$aspect" ]; then
   printf 'image-fanout: pass --aspect or --size, not both\n' >&2
@@ -227,6 +232,7 @@ list_accounts() { # vendor
       gsub(/^[[:space:]]+/, "", rest)
       if (name == "") next
       if (rest ~ /^(login needed|Not logged in)/) print name "\tlogin needed"
+      else if (rest ~ /\(out of pool\)/) print name "\tout of pool"
       else print name
     }
   '
@@ -353,8 +359,8 @@ write_argv() { # dest file, then args
   done
 }
 
-launch_job() { # vendor account reason dest argv-file
-  local vendor=$1 account=$2 reason=$3 dest=$4 argv=$5
+launch_job() { # vendor account reason dest argv-file [spare-accounts-file]
+  local vendor=$1 account=$2 reason=$3 dest=$4 argv=$5 spares=${6:-}
   job_n=$((job_n + 1))
   local id dir
   id=$(printf '%03d' "$job_n")
@@ -365,6 +371,10 @@ launch_job() { # vendor account reason dest argv-file
   printf '%s\n' "$reason" >"$dir/reason"
   printf '%s\n' "$dest" >"$dir/dest"
   cp "$argv" "$dir/argv"
+  : >"$dir/spares"
+  if [ -n "$spares" ] && [ -f "$spares" ]; then
+    awk -F'\t' -v t="$account" '$1 == t { print $2 }' "$spares" >"$dir/spares"
+  fi
   if [ "$dry_run" = true ]; then
     write_row "$dir/row.tsv" "$vendor" "$account" ok "$reason" "$dest" "" "" "" "" ""
     : >"$dir/skipped"
@@ -380,6 +390,20 @@ launch_job() { # vendor account reason dest argv-file
     done <"$dir/argv"
     rc=0
     "${args[@]}" >"$dir/out" 2>"$dir/err" || rc=$?
+    if [ "$rc" -eq 3 ] && [ -s "$dir/spares" ]; then
+      while IFS= read -r spare; do
+        for i in "${!args[@]}"; do
+          case "${args[$i]}" in
+            --account) args[i + 1]=$spare ;;
+            --dest) args[i + 1]="${dest%/*}/$vendor-$spare.${dest##*.}" ;;
+          esac
+        done
+        printf '%s\n' "$spare" >>"$dir/moved"
+        rc=0
+        "${args[@]}" >"$dir/out" 2>"$dir/err" </dev/null || rc=$?
+        [ "$rc" -eq 3 ] || break
+      done <"$dir/spares"
+    fi
     printf '%s\n' "$rc" >"$dir/rc.tmp" && mv -f "$dir/rc.tmp" "$dir/rc"
   ) &
   live_pids="${live_pids:+$live_pids }$!"
@@ -425,6 +449,20 @@ for vendor in $vendors; do
     if [ "$list_rc" -ne 0 ] || [ -z "$accounts" ]; then
       queue_skip "$vendor" "-" "no accounts"
       continue
+    fi
+    if [ -n "$takes" ]; then
+      accounts=$(printf '%s\n' "$accounts" | awk -F'\t' -v n="$takes" -v spares="$jobs_dir/spares-$vendor" '
+        $2 == "" && $1 != "" { ok[++k] = $1 }
+        END {
+          for (i = 0; i < n && k > 0; i++) {
+            a = ok[i % k + 1]; c[a]++; t = (c[a] > 1 ? a "#" c[a] : a); print t
+            for (j = i + n; j < k; j += n) print t "\t" ok[j + 1] > spares
+          }
+        }')
+      if [ -z "$accounts" ]; then
+        queue_skip "$vendor" "-" "no accounts"
+        continue
+      fi
     fi
   fi
 
@@ -497,7 +535,8 @@ for vendor in $vendors; do
         adapt_aspect="aspect auto dropped (vendor default)"
       fi
     elif [ "$is_video" = false ] && [ "$aspects_null" = yes ]; then
-      used_prompt="$used_prompt (aspect ratio $want_aspect)"
+      # No aspect argument in the tool: the script's own prompt builder words it, the same on every route.
+      used_aspect=$want_aspect
       if [ -n "$size" ]; then
         adapt_size="size ${size}→prompt ${want_aspect}"
       else
@@ -551,7 +590,7 @@ for vendor in $vendors; do
     if [ "$accounts_mode" = pick ]; then
       dest="$dest_dir/${vendor}-pick.$ext"
     else
-      dest="$dest_dir/${vendor}-${account}.$ext"
+      dest="$dest_dir/${vendor}-${account/\#/-}.$ext"
     fi
     if [ -z "$bin" ]; then
       queue_fail "$vendor" "$account" "missing $( [ "$is_video" = true ] && printf '%s-video' "$vendor" || printf '%s-image' "$vendor" )"
@@ -559,7 +598,7 @@ for vendor in $vendors; do
     fi
     argv_args=("$bin" --dest "$dest" --prompt "$used_prompt")
     if [ "$accounts_mode" != pick ]; then
-      argv_args+=(--account "$account")
+      argv_args+=(--account "${account%%#*}")
     fi
     if [ "$n_used" -gt 0 ]; then
       for ref in "${used_refs[@]}"; do
@@ -576,7 +615,7 @@ for vendor in $vendors; do
     fi
     argv_file="$jobs_dir/argv-tmp"
     write_argv "$argv_file" "${argv_args[@]}"
-    launch_job "$vendor" "$account" "$reason" "$dest" "$argv_file"
+    launch_job "$vendor" "$account" "$reason" "$dest" "$argv_file" "$jobs_dir/spares-$vendor"
   done <<<"$accounts"
 done
 
@@ -637,6 +676,10 @@ fi
     got_caps=$(kv_last caps $combined)
     got_account=$(kv_last account $combined)
     [ -n "$got_dest" ] || got_dest=$dest
+    if [ -s "$dir/moved" ]; then
+      reason=$(join_adapt "$reason" "moved from ${account%%#*} after a usage limit")
+      account=$(tail -n1 "$dir/moved")
+    fi
     [ -n "$got_account" ] && account=$got_account
     status=failed
     case "$rc" in

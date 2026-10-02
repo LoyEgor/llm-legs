@@ -14,7 +14,6 @@ vendor CLI docs). Re-verify when `caps=stale` or `model_caps=stale` shows up; th
   "verified": "2026-09-11",
   "cli": {"name": "grok", "version": "1.0.13", "version_args": ["--version"]},
   "model": {"image": "…", "video": "…"},
-  "short": {"image": "…", "video": "…"},
   "refs": {"max": 7, "verified_max": false},
   "aspects": {"generate": ["1:1", "16:9"], "edit": ["1:1", "4:3"], "default": "auto"},
   "exact_size": false,
@@ -25,10 +24,12 @@ vendor CLI docs). Re-verify when `caps=stale` or `model_caps=stale` shows up; th
 }
 ```
 
-- `short`: the task-row name of each `model` kind; a kind with a model and no short is `model_caps=stale`.
 - `refs.max`: null when the CLI states no cap; `verified_max` false when the number is a
   safe working cap rather than a documented limit.
 - `aspects`: null when the CLI has no aspect parameter (Codex takes size only as prose).
+- `aspects_by_prompt` (codex): ratios a live run delivered from the `--aspect` sentence alone, checked by
+  the script's `aspect=… fit=` line; `web_only`: features only the ChatGPT web route drives —
+  `region` (`--region`, a Markup outline) and `reaspect` (the viewer's Resize ratios).
 - `transparent`: `native` (the tool returns alpha), `chroma` (green background + key), `native+chroma`
   (try native, key when the result carries no alpha).
 - `video`: null when the vendor has no video tool. `keyframes_max`: mid-clip anchors a pinned-frame

@@ -71,11 +71,6 @@ case "$subagent" in
       exit 0
     fi ;;
 esac
-image_model() { # vendor [music|sfx|listen]
-  local model
-  model=$(jq -r --arg kind "${2:-image}" '.short[$kind] // empty' "$SELF_DIR/../share/image-caps/$1.json" 2>/dev/null)
-  printf '%s' "${model:-image}"
-}
 session_account() {
   local acct=${CLAUDE_LIMITS_ACCOUNT:-}
   if [ -z "$acct" ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ "$CLAUDE_CONFIG_DIR" != "$HOME/.claude" ]; then
@@ -167,12 +162,12 @@ elif [ "$subagent" = grok-worker ]; then
   [ -n "$effort" ] || effort=$(worker_model_default_effort grok "$(worker_model_default_model grok)")
   prefix="${acct:-?} · $model · $effort"
 elif [ "$subagent" = image-gen ]; then
-  # An image run has no effort knob: the second segment is the `short` model name from the vendor's
-  # capability manifest; a `FANOUT:` brief spends every vendor at once.
+  # An image run has no effort knob: the second segment is what runs where (`img·cli`, `mus·app`);
+  # a `FANOUT:` brief spends every vendor at once.
   fanout=$(printf '%s' "$prompt" | grep -m1 -oE '^FANOUT:[[:space:]]*[A-Za-z,|]+' || true)
   if [ -n "$fanout" ]; then
     acct=fanout
-    media=image
+    media=img
   else
     vendor=$(printf '%s' "$prompt" | grep -m1 -oE '^VENDOR:[[:space:]]*(codex|gemini|grok)' |
       grep -oE '(codex|gemini|grok)$')
@@ -188,7 +183,7 @@ elif [ "$subagent" = image-gen ]; then
     [ -n "$acct" ] || acct=$(flag_account)
     case "$audio" in music | sfx) ;; *) [ -n "$acct" ] || acct=$(route_account "$vendor" --role image) ;; esac
     [ -n "$acct" ] || acct=pool
-    media=$(image_model "$vendor" "$audio")
+    media=$(worker_media_tag "$vendor" "${audio:-image}")
   fi
   prefix="$acct · $media"
 elif [ "$subagent" = fork ]; then

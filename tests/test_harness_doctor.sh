@@ -1294,7 +1294,7 @@ assert_eq "$(jq -cn --arg b "gone-$dead_pid.json" --arg d "reused-$reused_pid.js
   "$(jq -c '[.problems[] | select(.rule | startswith("limiter_hold")) | [.id, .state, .count, .evidence[0].ref, .fact]] | sort' \
     "$WORK/held/latest.json")" \
   "a hold over 60 s is a watch, past 5 min red, one under 60 s nothing; a dead pid's file and one whose pid started after since a leak"
-assert_eq 2 "$(grep -c 'holds [0-9]* jobs*, longest [0-9]* min: memory pressure' "$WORK/held/menu.txt")" \
+assert_eq 2 "$(grep -c $'^[1-9][0-9]*\t.*holds [0-9]* jobs*, longest [0-9]* min: memory pressure' "$WORK/held/menu.txt")" \
   "the doctor's menu names each hold over 60 s, what it holds, for how long and why"
 assert_eq "bench-throttle-1-7001.json bench-throttle-1-7002.json bench-throttle-1.json quick-1.json suite-slots-1.json" \
   "$(ls "$holds" | tr '\n' ' ' | sed 's/ $//')" "a run that reported a leak did not sweep its files, or swept a live hold"

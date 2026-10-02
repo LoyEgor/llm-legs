@@ -187,6 +187,12 @@ relay_door_tests() {
     start codex --role research --brief "$WORK/brief" --workdir "$WORK/workdir"
   relay_refused 'a light-research relay starts research runs only' CLAUDECODE=1 WORKER_RUN_RELAY=light-research:ag1 -- \
     start codex --brief "$WORK/brief" --workdir "$WORK/workdir"
+  relay_refused 'the research role belongs to the light-research Agent' CLAUDECODE=1 WORKER_RUN_RELAY=code-doctor-judge:42 -- \
+    start claudeb --role research --brief "$WORK/brief" --workdir "$WORK/workdir"
+  clear_stub
+  CLAUDECODE=1 WORKER_RUN_RELAY=code-doctor-judge:42 start_ok claudeb
+  await_done || fail "the code-doctor-judge run never finished"
+  assert grep -q '^STATUS: done' "$WORK/wait.out"
   clear_stub
   CLAUDECODE=1 WORKER_RUN_RELAY=claudeb-worker:ag1 start_ok claudeb
   local output index

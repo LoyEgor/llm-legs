@@ -5,7 +5,7 @@ under [`docs/image-vendors/`](image-vendors/):
 
 | Vendor | Wrapper | Notes |
 | --- | --- | --- |
-| [Codex](image-vendors/codex.md) | `bin/codex-image` | Built-in `image_gen`; no aspect argument; `--size` is prose; no video |
+| [Codex](image-vendors/codex.md) | `bin/codex-image` | Built-in `image_gen`; no aspect argument — `--aspect`/`--size` are one builder's prose on both routes, checked by `aspect=`; `--region` web-only; no video |
 | [Gemini](image-vendors/gemini.md) | `bin/gemini-image`, `bin/gemini-video` | agy `generate_image`; 3 refs; seven aspect ratios; video on Google Flow (Veo 3.1 / Omni) through a hidden Chrome |
 | [Grok](image-vendors/grok.md) | `bin/grok-image`, `bin/grok-video` | Imagine image + video; chroma transparency |
 
@@ -19,8 +19,8 @@ vendor API has and its CLI does not carry). No vendor has a mask, a fidelity fla
 
 | Capability | codex | gemini | grok |
 | --- | --- | --- | --- |
-| Extend / outpaint the frame | ref + "extend the scene"; ratio as prose only | ref + a wider `--aspect` (7 ratios) | `--ref` ×2+ with a wider `--aspect`; a single-ref edit keeps the source ratio |
-| Edit a region | prompt only | prompt only | prompt only (`image_edit`) |
+| Extend / outpaint the frame | ref + "extend the scene" + `--aspect` (prose, `fit=` checked); web: viewer Resize via `--resume --aspect` | ref + a wider `--aspect` (7 ratios) | `--ref` ×2+ with a wider `--aspect`; a single-ref edit keeps the source ratio |
+| Edit a region | web route only: `--region x,y,w,h` (Markup outline); CLI exit 2 | prompt only | prompt only (`image_edit`) |
 | Keep identity across edits | ref + "preserve identity", `--resume` | ref, `--resume` needs `--account` | first choice: `image_edit` + `--resume` |
 | References max | 5 (unverified) | 3 | 3 (API: 5) |
 | Transparency | native alpha, chroma fallback | chroma | chroma (API background removal: `api_only`) |
@@ -38,7 +38,7 @@ adapting each call from that vendor's manifest.
 - **Hard** — skip the vendor. `video: null` against `--video` is the one hard skip.
 - **Soft** — still run, and report the change in the row's reason:
   - too many `--ref` → truncate to `refs.max` (or `video.refs_max` on `--video`)
-  - unsupported `--aspect` → nearest value in `aspects.generate` / `aspects.edit` (edit when any `--ref` is kept); when `aspects` is `null` (Codex), append ` (aspect ratio W:H)` to the prompt
+  - unsupported `--aspect` → nearest value in `aspects.generate` / `aspects.edit` (edit when any `--ref` is kept); when `aspects` is `null` (Codex), pass `--aspect W:H` and the script's own sentence builder words it
   - `--size WxH` → passed only if `exact_size` is true; otherwise treated as an aspect and mapped as above
   - `--transparent` → forwarded to every image wrapper; each wrapper applies its own `transparent` mode (`native`, `chroma`, `native+chroma`)
 
@@ -58,6 +58,11 @@ bin/image-fanout --dest-dir /tmp/badge-fanout --video --duration 6 \
 
 `--accounts pick` launches one job per vendor **without** `--account`: each wrapper
 routes through `worker-pick --account <vendor> --role image` and records a claim.
+
+`--takes N` (with `--accounts all` only) runs N independent takes per vendor at once,
+round-robin over its logged-in accounts: `<vendor>-<account>.<ext>`, then
+`<vendor>-<account>-2.<ext>` when there are fewer accounts than takes. Edits of a delivered
+take resume that take's session instead.
 An explicit `--account` (including `--accounts all`) is a pin and is not claimed.
 `--dry-run` prints the per-row command and adaptations, spends nothing, and writes
 nothing under `--dest-dir`. `--video` requires at least one `--ref` (usage error,

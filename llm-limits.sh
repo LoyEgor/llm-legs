@@ -483,6 +483,7 @@ agy_bin=${AGY_BIN:-$HOME/.local/bin/agy}
 . "$script_dir/share/gemini-accounts.sh"
 gemini_legacy_removed=$(gemini_removal_marker main)
 . "$script_dir/share/codex-accounts.sh"
+. "$script_dir/share/account-roster.sh"
 codex_legacy_removed=$(codex_removal_marker main)
 . "$script_dir/share/worker-pool.sh"
 . "$script_dir/share/experiments.sh"
@@ -522,21 +523,6 @@ claude_profiles_root="${CLAUDE_PROFILES_DIR:-$HOME/.claude-profiles}"
 codex_profiles_dir="${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}"
 grok_profiles_dir="${GROKB_PROFILES_DIR:-$HOME/.grok-profiles}"
 
-# The roster grok-quota.py itself would walk: `main` is the real ~/.grok and counts only once it
-# carries a login, dotted names are grokb's own state, and `main` under the profiles directory is
-# a name nothing can address.
-grok_account_names() {
-  local path name
-  [ -f "$HOME/.grok/auth.json" ] && printf 'main\n'
-  if [ -d "$grok_profiles_dir" ]; then
-    for path in "$grok_profiles_dir"/*; do
-      [ -d "$path" ] || continue
-      name=$(basename "$path")
-      case "$name" in .*|main) continue ;; esac
-      printf '%s\n' "$name"
-    done | LC_ALL=C sort
-  fi
-}
 
 if [ -n "${LLM_LIMITS_GROKB:-}" ]; then
   grokb_cmd=$LLM_LIMITS_GROKB
@@ -734,6 +720,7 @@ if [ "$gemini_remove" -eq 1 ]; then
     echo "llm-limits.sh: failed to write gemini removed-marker: $gemini_legacy_removed" >&2
     exit 1
   fi
+  LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$gemini_accounts_cache_dir" account_purge llm-limits.sh gemini main >&2 || true
 fi
 # The codex half of the same rule, and written at the same point in the run: `--codex-remove` is
 # the menubar's spelling of `codexb remove main`, and both write and read the one marker
@@ -744,6 +731,7 @@ if [ "$codex_remove" -eq 1 ]; then
     echo "llm-limits.sh: failed to write codex removed-marker: $codex_legacy_removed" >&2
     exit 1
   fi
+  account_purge llm-limits.sh codex main >&2 || true
 fi
 gemini_refresh_accounts_list=''
 gemini_accounts_list=''
@@ -1976,15 +1964,7 @@ fi
 # stands is decided HERE and nowhere else, by reading the two against each other (shared-invariants
 # row al) — the menubar and bin/llm-refresh render these rows like every other vendor's.
 opencode_state_dir=${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}
-opencode_profiles_file=${OPENCODE_GO_PROFILES:-$HOME/.config/opencode-go/profiles}
-opencode_profiles() {
-  if [ -r "$opencode_profiles_file" ]; then
-    sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$opencode_profiles_file" |
-      grep -v -e '^#' -e '^$'
-  else
-    printf -- '-\n'
-  fi
-}
+opencode_profiles() { account_roster opencode; }
 
 opencode_seen_tsv=''
 if ! vendor_paused opencode; then

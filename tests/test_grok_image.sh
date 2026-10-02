@@ -141,8 +141,8 @@ assert test ! -s "$FAKE_GROKB_CALLS"
 # ghost profile behind, asking for a login in grokb list and in the menu.
 image_rc=0
 image_run --dest "$OUTPUT_DIR/ghostacct.png" --prompt badge --account ghostacct || image_rc=$?
-assert test "$image_rc" -eq 1
-assert grep -q 'account directory does not exist' "$IMAGE_ERR"
+assert test "$image_rc" -eq 2
+assert grep -q 'unknown account: ghostacct (not on the grok roster' "$IMAGE_ERR"
 assert test ! -s "$FAKE_GROKB_CALLS"
 assert test ! -e "$GROK_PROFILES/ghostacct"
 # The conversion tool is checked before the spend, not after it. The stub is not enough here: the
@@ -175,7 +175,7 @@ export PICK_ACCOUNT
 image_rc=0
 image_run --dest "$OUTPUT_DIR/ghost.png" --prompt badge || image_rc=$?
 assert test "$image_rc" -eq 1
-assert grep -q 'account directory does not exist' "$IMAGE_ERR"
+assert grep -q 'unknown account: ghostpick' "$IMAGE_ERR"
 assert test ! -e "$CLAIMS_DIR/grok/ghostpick"
 assert test ! -s "$FAKE_GROKB_CALLS"
 PICK_ACCOUNT=picked

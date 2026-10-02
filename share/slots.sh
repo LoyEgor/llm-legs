@@ -4,19 +4,21 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/store-lock.sh"
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/limiter-hold.sh"
 
-slots_from_cores() { # divisor floor ceiling -> cores / divisor, clamped
+slots_from_cores() { # divisor floor [ceiling] -> cores / divisor, clamped
   local n
   n=$(( $(sysctl -n hw.ncpu 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4) / $1 ))
   [ "$n" -ge "$2" ] || n=$2
-  [ "$n" -le "$3" ] || n=$3
+  [ -z "${3:-}" ] || [ "$n" -le "$3" ] || n=$3
   printf '%s\n' "$n"
 }
 
 slot_take() { # dir count ceiling-seconds -> the slot taken; fails while all are held
-  local i
+  local i ceiling
   for ((i = 1; i <= $2; i++)); do
-    LLM_STORE_LOCK_RETRIES=1 LLM_STORE_LOCK_CEILING_SECONDS=$3 store_lock_acquire "$1/$i" &&
-      { printf '%s\n' "$1/$i"; return 0; }
+    # The holder's own ceiling, not the waiter's: a waiter with a shorter one would break a live slot.
+    read -r ceiling 2>/dev/null <"$1/$i/ceiling" && [[ "$ceiling" =~ ^[1-9][0-9]*$ ]] || ceiling=$3
+    LLM_STORE_LOCK_RETRIES=1 LLM_STORE_LOCK_CEILING_SECONDS=$ceiling store_lock_acquire "$1/$i" &&
+      { printf '%s\n' "$3" >"$1/$i/ceiling"; printf '%s\n' "$1/$i"; return 0; }
   done
   return 1
 }

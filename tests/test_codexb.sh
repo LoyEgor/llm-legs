@@ -508,8 +508,60 @@ if grep -q "new profile" <<<"$reopen_output"; then fail "reopen reprinted the cr
 sleep 0.3
 assert test "$(grep -cxF -- '--refresh-account codex/alpha' "$ANNOUNCE_LOG")" = 1
 
+# `codexb web` signs a roster account into the ChatGPT web route through chatgpt-web login (the
+# helper geminib web shares), and a first interactive `codexb p` offers it once, only on a tty, default no.
+WEB_CALLS="$WORK/web-calls"
+CHATGPT_WEB_UV="$FAKE_BIN/uv"
+CHATGPT_WEB_DIR="$WORK/chatgpt-web"
+export WEB_CALLS CHATGPT_WEB_UV CHATGPT_WEB_DIR
+cat >"$CHATGPT_WEB_UV" <<'EOF'
+#!/usr/bin/env bash
+shift 3
+printf '%s %s%s\n' "$(basename "$1")" "$2" "${3:+ $3}" >>"$WEB_CALLS"
+empty='{"ok": true, "accounts": []}'
+[ "$2" != accounts ] || printf '%s\n' "${WEB_ACCOUNTS:-$empty}"
+EOF
+chmod +x "$CHATGPT_WEB_UV"
+: >"$WEB_CALLS"
+assert bash "$SCRIPT" web alpha
+assert bash "$SCRIPT" web main
+assert test "$(cat "$WEB_CALLS")" = "chatgpt_web.py login alpha
+chatgpt_web.py login main"
+: >"$WEB_CALLS"
+web_err=$(bash "$SCRIPT" web ghost 2>&1); web_rc=$?
+assert test "$web_rc" -eq 2
+assert grep -q '^codexb: unknown account: ghost (not on the codex roster the menubar lists: ' <<<"$web_err"
+assert test "$(bash "$SCRIPT" web 2>&1; echo "rc=$?")" = "usage: codexb web <name>
+rc=2"
+assert test ! -s "$WEB_CALLS"
+assert test ! -e "$HOME/.codex-profiles/ghost"
+assert grep -q '^codexb web <name> ' <<<"$(bash "$SCRIPT" help)"
+notty_output=$(bash "$SCRIPT" p notty </dev/null 2>&1) || fail "profile notty failed"
+assert grep -q "CALL account=notty " "$CODEX_CALLS"
+if grep -q "web routes" <<<"$notty_output" || test -s "$WEB_CALLS"; then fail "no tty, yet it asked"; fi
+on_tty() { python3 "$ROOT/tests/fixtures/answer-pty.py" "$@"; }
+: >"$CODEX_CALLS"
+tty_output=$(on_tty '' bash "$SCRIPT" p ttyno) || fail "tty profile ttyno failed"
+assert grep -q "CALL account=ttyno " "$CODEX_CALLS"
+assert grep -q "Also sign ttyno into the web routes now? \[y/N\]" <<<"$tty_output"
+assert test "$(cat "$WEB_CALLS")" = "chatgpt_web.py accounts"
+: >"$WEB_CALLS"
+on_tty y bash "$SCRIPT" p ttyyes >/dev/null
+assert test "$(cat "$WEB_CALLS")" = "chatgpt_web.py accounts
+chatgpt_web.py login ttyyes"
+: >"$WEB_CALLS"
+again_output=$(on_tty y bash "$SCRIPT" p ttyno)
+if grep -q "web routes" <<<"$again_output" || test -s "$WEB_CALLS"; then fail "a second open asked again"; fi
+headless_output=$(on_tty y bash "$SCRIPT" p ttyexec exec hi)
+if grep -q "web routes" <<<"$headless_output" || test -s "$WEB_CALLS"; then fail "a headless exec was offered"; fi
+signed_output=$(WEB_ACCOUNTS='{"ok": true, "accounts": [{"account": "ttysigned", "login": true}]}' \
+  on_tty y bash "$SCRIPT" p ttysigned)
+if grep -q "web routes" <<<"$signed_output" || grep -q login "$WEB_CALLS"; then fail "a signed-in web profile was offered"; fi
+assert test -d "$HOME/.codex-profiles/ttysigned"
+for name in ttyno ttyyes ttyexec ttysigned notty; do bash "$SCRIPT" remove "$name" --force >/dev/null 2>&1; done
+
 # Reserved words are rejected by BOTH the profile path and add, with parallel wording; no dir leaks.
-for reserved in profile p run add remove list status pick help login; do
+for reserved in profile p run add remove list status pick help login web; do
   assert_fails bash "$SCRIPT" profile "$reserved" </dev/null >/dev/null 2>&1
   assert_fails bash "$SCRIPT" add "$reserved" </dev/null >/dev/null 2>&1
 done
@@ -933,7 +985,7 @@ assert test "$(grep -A1 -x -- 'ARG=-m' "$IMAGE_CALLS" | sed -n 2p)" = 'ARG=gpt-6
 assert grep -qx 'ARG=fast_mode' "$IMAGE_CALLS"
 assert test ! -s "$IMAGE_PICK_CALLS"
 assert grep -q 'built-in image_gen tool' "$IMAGE_PROMPT"
-assert grep -q 'exact size 1536x1024' "$IMAGE_PROMPT"
+assert grep -q 'exactly 1536x1024 pixels' "$IMAGE_PROMPT"
 assert_fails grep -q 'Use low quality' "$IMAGE_PROMPT"
 assert grep -q -- "- $WORK/reference.jpg" "$IMAGE_PROMPT"
 assert grep -qx 'generated:explicit' "$WORK/image-output/explicit.jpg"
@@ -980,7 +1032,7 @@ export IMAGE_PICK_MODE IMAGE_PICK_ACCOUNT
 image_rc=0
 image_run --dest "$WORK/image-output/ghost.jpg" --prompt landscape || image_rc=$?
 assert test "$image_rc" -eq 1
-assert grep -q 'account directory does not exist' "$IMAGE_ERR"
+assert grep -q 'unknown account: ghostpick (not on the codex roster' "$IMAGE_ERR"
 assert test ! -e "$IMAGE_CLAIMS/codex/ghostpick"
 assert test ! -s "$IMAGE_CALLS"
 
@@ -1139,4 +1191,4 @@ for flag in --account --model --runs; do
   assert test "$rc" -eq 2
 done
 
-echo "PASS: $asserts asserts; add and shared-link trap, worker-pool exclusion and shield override (pick skips it, headless runs are refused however named, interactive and pinned runs pass, the last member goes out too, visible in list/status), list/status, quota-aware authenticated pick by descending daily budget, reset credits, auth-needed cache markers, dead-token classification (short cause, no raw RPC blob) with list/status/pick honoring the marker over lying local auth.json, a transient non-auth error preserving the definite auth verdict while fresh weather on a never-marked account stays non-auth, and marker recovery only on a genuinely good probe, exact run environments/arguments, one-step profile auto-create with shared links, browser-OAuth menu login passthrough with device-auth de-advertised everywhere yet still working manually, and missing-name guard, existing-profile relaunch stays quiet, creation-only reserved-name guards, leading-hyphen and charset rejection parity, multi-account cache compatibility, remove forgets profiles including reserved legacy names and prunes the cache entry, the base account removed by marker alone (hidden from list/status/pin/pick/launch, the real ~/.codex untouched, the cache's current falling to the first account left, undone by deleting the marker), use pin set/show/clear/refusal parity, and Codex image generation routing with claimed automatic picks, prompt, account environments, rescue, generation deadline with garbage-value fallback, destination checks made before a generation is spent, and limits"
+echo "PASS: $asserts asserts; add and shared-link trap, codexb web (a roster-gated chatgpt-web login, offered once after a first interactive login on a tty, default no),worker-pool exclusion and shield override (pick skips it, headless runs are refused however named, interactive and pinned runs pass, the last member goes out too, visible in list/status), list/status, quota-aware authenticated pick by descending daily budget, reset credits, auth-needed cache markers, dead-token classification (short cause, no raw RPC blob) with list/status/pick honoring the marker over lying local auth.json, a transient non-auth error preserving the definite auth verdict while fresh weather on a never-marked account stays non-auth, and marker recovery only on a genuinely good probe, exact run environments/arguments, one-step profile auto-create with shared links, browser-OAuth menu login passthrough with device-auth de-advertised everywhere yet still working manually, and missing-name guard, existing-profile relaunch stays quiet, creation-only reserved-name guards, leading-hyphen and charset rejection parity, multi-account cache compatibility, remove forgets profiles including reserved legacy names and prunes the cache entry, the base account removed by marker alone (hidden from list/status/pin/pick/launch, the real ~/.codex untouched, the cache's current falling to the first account left, undone by deleting the marker), use pin set/show/clear/refusal parity, and Codex image generation routing with claimed automatic picks, prompt, account environments, rescue, generation deadline with garbage-value fallback, destination checks made before a generation is spent, and limits"

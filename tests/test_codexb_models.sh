@@ -147,6 +147,14 @@ assert_eq "$(FAKE_CODEX_VERSION='' ranked --family astra)" gpt-6.1-astra
 jq '.client_version = "0.154.0" | .fetched_at = "2026-09-24T12:00:00.000000Z"' "$CODEXB_PROFILES_DIR/beta/models_cache.json" >"$WORK/c" &&
   mv "$WORK/c" "$CODEXB_PROFILES_DIR/beta/models_cache.json"
 assert_eq "$(FAKE_CODEX_VERSION=0.156.1 ranked --family astra)" gpt-6.1-astra
+# A longer list fetched over a day before the freshest is an unused home's: a model the server has
+# since dropped must not stay the machine-wide choice for good.
+jq '.fetched_at = "2026-09-23T23:00:00.000000Z"' "$CODEXB_PROFILES_DIR/beta/models_cache.json" >"$WORK/c" &&
+  mv "$WORK/c" "$CODEXB_PROFILES_DIR/beta/models_cache.json"
+assert_eq "$(FAKE_CODEX_VERSION=0.156.1 ranked --family astra)" gpt-6-astra
+assert_eq "$(CODEXB_MODELS_WINDOW=172800 FAKE_CODEX_VERSION=0.156.1 ranked --family astra)" gpt-6.1-astra
+jq '.fetched_at = "2026-09-24T12:00:00.000000Z"' "$CODEXB_PROFILES_DIR/beta/models_cache.json" >"$WORK/c" &&
+  mv "$WORK/c" "$CODEXB_PROFILES_DIR/beta/models_cache.json"
 jq '.models |= map(select(.slug != "gpt-reserve"))' "$CODEXB_PROFILES_DIR/beta/models_cache.json" >"$WORK/c" &&
   mv "$WORK/c" "$CODEXB_PROFILES_DIR/beta/models_cache.json"
 assert_eq "$(FAKE_CODEX_VERSION=0.156.1 ranked --family astra)" gpt-6-astra

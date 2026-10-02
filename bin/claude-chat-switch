@@ -37,11 +37,11 @@ EOF
 }
 
 list_profiles() {
-  local d
-  for d in "$PROFILES_DIR"/*/; do
-    [ -d "$d" ] || continue
-    printf '  %s\n' "$(basename "$d")"
+  local name
+  for name in $(bash -c '. "$1/account-roster.sh" && account_roster claude' _ "$(dirname "$CHAT_RESUME")"); do
+    [ -d "$PROFILES_DIR/$name" ] && printf '  %s\n' "$name"
   done
+  return 0
 }
 
 list_gateway_accounts() {

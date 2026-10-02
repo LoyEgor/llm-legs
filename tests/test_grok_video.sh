@@ -221,8 +221,8 @@ assert grep -q 'ffprobe or mdls is required' "$VIDEO_ERR"
 video_rc=0
 video_run --dest "$OUTPUT_DIR/ghostacct.$CONTAINER" --prompt 'push in' \
   --ref "$WORK/ref-a.jpg" --account ghostacct || video_rc=$?
-assert test "$video_rc" -eq 1
-assert grep -q 'account directory does not exist' "$VIDEO_ERR"
+assert test "$video_rc" -eq 2
+assert grep -q 'unknown account: ghostacct (not on the grok roster' "$VIDEO_ERR"
 assert test ! -e "$GROK_PROFILES/ghostacct"
 assert test ! -s "$FAKE_GROKB_CALLS"
 

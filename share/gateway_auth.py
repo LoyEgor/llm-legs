@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 
+import account_roster
 import codex_appserver
 
 ACCOUNT_RE = re.compile(r"[a-z0-9][a-z0-9._-]*\Z")
@@ -174,9 +175,12 @@ def _gateway_record(name, home=None):
     return data
 
 
-def resolve(name, home=None):
+def resolve(name, home=None, listed=None):
     if not ACCOUNT_RE.fullmatch(name or ""):
         return Account(name, "", MALFORMED, "invalid account name")
+    # A gateway login alone never makes an account: one the menubar does not list is gone.
+    if name not in (account_roster.roster("codex", fresh=True) if listed is None else listed):
+        return Account(name, "", MISSING, "not on the codex roster the menubar lists")
     try:
         gateway = _gateway_record(name, home)
     except ValueError as error:
@@ -232,19 +236,11 @@ def prepare(name, home=None, expected_id=None):
 
 
 def roster(home=None):
-    """Every selectable target: the Codex profiles plus gateway-only leftovers."""
-    names = set()
-    if not main_removed() and os.path.exists(codex_auth_path("main")):
-        names.add("main")
-    for directory in (codex_profiles_dir(), gateway_accounts_dir(home)):
-        try:
-            entries = os.listdir(directory)
-        except OSError:
-            continue
-        for entry in entries:
-            if ACCOUNT_RE.match(entry) and os.path.isdir(os.path.join(directory, entry)):
-                names.add(entry)
-    return [resolve(name, home) for name in sorted(names)]
+    """Every selectable target: the codex roster, main once it carries a login of its own."""
+    listed = account_roster.roster("codex", fresh=True)
+    names = [name for name in listed
+             if ACCOUNT_RE.fullmatch(name) and (name != "main" or os.path.exists(codex_auth_path("main")))]
+    return [resolve(name, home, listed) for name in sorted(names)]
 
 
 def is_gateway_account(name, home=None):

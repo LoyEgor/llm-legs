@@ -277,7 +277,59 @@ local function fixItem(doctor, label, run, now)
   return { title = infoTitle(label), fn = function() M.fix(doctor) end }
 end
 
-local updaterTask = nil
+local refreshTasks = {}
+
+local function refreshDoctor(key, args, title, documentPath)
+  if running(refreshTasks[key]) then return end
+  local name = key:sub(1, 1):upper() .. key:sub(2) .. " doctor"
+  local path = M[key .. "DoctorCmd"] or (repoRoot and repoRoot .. "/bin/" .. key .. "-doctor")
+  local ok, task = pcall(hs.task.new, path, function(code, stdout, stderr)
+    refreshTasks[key], built = nil, nil
+    if code ~= 0 then
+      hs.alert.show(name .. " failed: " .. (lastLine(stderr) or lastLine(stdout) or ("exit " .. tostring(code))), 5)
+    else
+      hs.alert.show(title(readJson(documentPath())), 2.5)
+    end
+  end, args)
+  if not ok or not task then
+    hs.alert.show(name .. ": could not start " .. tostring(path), 5)
+    return
+  end
+  task:setEnvironment(limits.diagnosticsEnvironment())
+  refreshTasks[key], built = task, nil
+  if not task:start() then
+    refreshTasks[key] = nil
+    hs.alert.show(name .. ": could not start " .. tostring(path), 5)
+  end
+end
+
+local function refreshRows(items, key, refresh)
+  items[#items + 1] = { title = "-" }
+  items[#items + 1] = running(refreshTasks[key]) and dim("refreshing…") or { title = infoTitle("Refresh"), fn = refresh }
+end
+
+local function blindSpotsRow(document)
+  local spots = {}
+  for _, spot in ipairs(type(document.blind_spots) == "table" and document.blind_spots or {}) do
+    if type(spot) == "table" then
+      local detail = {}
+      if type(spot.reason) == "string" then detail = detailRows("why: " .. spot.reason) end
+      if type(spot.would_catch_if) == "string" then
+        for _, row in ipairs(detailRows("would catch it: " .. spot.would_catch_if)) do detail[#detail + 1] = row end
+      end
+      spots[#spots + 1] = fitRow({ title = infoTitle(tostring(spot.what or spot.id or "?"), false, true),
+        menu = #detail > 0 and detail or nil, disabled = #detail == 0 or nil })
+    end
+  end
+  return #spots > 0 and { title = infoTitle("not measured", false, true), menu = spots } or nil
+end
+
+local function documentStatus(document)
+  local count = document and tonumber(document.problem_count) or 0
+  local status = not document and "nodata" or ({ ok = true, problems = true, blind = true, error = true })[document.status]
+    and document.status or count > 0 and "problems" or "ok"
+  return count, status, count > 0 or status == "error"
+end
 
 local function updaterPath()
   return dirFor("updaterDoctorDir", "UPDATER_DOCTOR_DIR", "/.cache/updater-doctor") .. "/latest.json"
@@ -308,28 +360,7 @@ local function updaterTitle(document)
   return title
 end
 
-function M.refreshUpdater()
-  if running(updaterTask) then return end
-  local path = M.updaterDoctorCmd or (repoRoot and repoRoot .. "/bin/updater-doctor")
-  local ok, task = pcall(hs.task.new, path, function(code, stdout, stderr)
-    updaterTask, built = nil, nil
-    if code ~= 0 then
-      hs.alert.show("Updater doctor failed: " .. (lastLine(stderr) or lastLine(stdout) or ("exit " .. tostring(code))), 5)
-    else
-      hs.alert.show(updaterTitle(readJson(updaterPath())), 2.5)
-    end
-  end, {})
-  if not ok or not task then
-    hs.alert.show("Updater doctor: could not start " .. tostring(path), 5)
-    return
-  end
-  task:setEnvironment(limits.diagnosticsEnvironment())
-  updaterTask, built = task, nil
-  if not task:start() then
-    updaterTask = nil
-    hs.alert.show("Updater doctor: could not start " .. tostring(path), 5)
-  end
-end
+function M.refreshUpdater() refreshDoctor("updater", {}, updaterTitle, updaterPath) end
 
 local function nightEntry()
   local jobs, resumable, others = {}, 0, 0
@@ -437,34 +468,14 @@ local function updaterEntry(now)
         items[#items + 1] = { title = infoTitle(text, false, not behind), menu = vendorMenu(vendor, now) }
       end
     end
-    local spots = {}
-    for _, spot in ipairs(type(document.blind_spots) == "table" and document.blind_spots or {}) do
-      if type(spot) == "table" then
-        local detail = {}
-        if type(spot.reason) == "string" then detail = detailRows("why: " .. spot.reason) end
-        if type(spot.would_catch_if) == "string" then
-          for _, row in ipairs(detailRows("would catch it: " .. spot.would_catch_if)) do detail[#detail + 1] = row end
-        end
-        spots[#spots + 1] = fitRow({ title = infoTitle(tostring(spot.what or spot.id or "?"), false, true),
-          menu = #detail > 0 and detail or nil, disabled = #detail == 0 or nil })
-      end
-    end
-    if #spots > 0 then
-      items[#items + 1] = { title = infoTitle("not measured", false, true), menu = spots }
-    end
+    items[#items + 1] = blindSpotsRow(document)
   end
-  items[#items + 1] = { title = "-" }
-  items[#items + 1] = running(updaterTask) and dim("refreshing…") or { title = infoTitle("Refresh"), fn = M.refreshUpdater }
-  local count = document and tonumber(document.problem_count) or 0
-  local status = not document and "nodata" or ({ ok = true, problems = true, blind = true, error = true })[document.status]
-    and document.status or count > 0 and "problems" or "ok"
-  local loud = count > 0 or status == "error"
+  refreshRows(items, "updater", M.refreshUpdater)
+  local count, status, loud = documentStatus(document)
   local quiet = not loud and status ~= "blind" and not (document and updatesPending(document) > 0)
   return { title = infoTitle(updaterTitle(document), loud, quiet), menu = items,
     problems = count, status = status }
 end
-
-local codeTask = nil
 
 local function codePath()
   return dirFor("codeDoctorDir", "CODE_DOCTOR_DIR", "/.cache/code-doctor") .. "/latest.json"
@@ -479,28 +490,7 @@ local function codeTitle(document)
   return title
 end
 
-function M.refreshCode()
-  if running(codeTask) then return end
-  local path = M.codeDoctorCmd or (repoRoot and repoRoot .. "/bin/code-doctor")
-  local ok, task = pcall(hs.task.new, path, function(code, stdout, stderr)
-    codeTask, built = nil, nil
-    if code ~= 0 then
-      hs.alert.show("Code doctor failed: " .. (lastLine(stderr) or lastLine(stdout) or ("exit " .. tostring(code))), 5)
-    else
-      hs.alert.show(codeTitle(readJson(codePath())), 2.5)
-    end
-  end, { "refresh", "--quiet" })
-  if not ok or not task then
-    hs.alert.show("Code doctor: could not start " .. tostring(path), 5)
-    return
-  end
-  task:setEnvironment(limits.diagnosticsEnvironment())
-  codeTask, built = task, nil
-  if not task:start() then
-    codeTask = nil
-    hs.alert.show("Code doctor: could not start " .. tostring(path), 5)
-  end
-end
+function M.refreshCode() refreshDoctor("code", { "refresh", "--quiet" }, codeTitle, codePath) end
 
 local function codeEntry()
   local document = readJson(codePath())
@@ -546,26 +536,10 @@ local function codeEntry()
     items[#items + 1] = dim(string.format("cost %dk tokens · %d min · yield %d lines, %d causes closed",
       math.floor((tonumber(cost.tokens) or 0) / 1000), math.floor((tonumber(cost.wall_s) or 0) / 60),
       tonumber(gained.lines_removed) or 0, tonumber(gained.causes_closed) or 0))
-    local spots = {}
-    for _, spot in ipairs(type(document.blind_spots) == "table" and document.blind_spots or {}) do
-      if type(spot) == "table" then
-        local detail = {}
-        if type(spot.reason) == "string" then detail = detailRows("why: " .. spot.reason) end
-        if type(spot.would_catch_if) == "string" then
-          for _, row in ipairs(detailRows("would catch it: " .. spot.would_catch_if)) do detail[#detail + 1] = row end
-        end
-        spots[#spots + 1] = fitRow({ title = infoTitle(tostring(spot.what or spot.id or "?"), false, true),
-          menu = #detail > 0 and detail or nil, disabled = #detail == 0 or nil })
-      end
-    end
-    if #spots > 0 then items[#items + 1] = { title = infoTitle("not measured", false, true), menu = spots } end
+    items[#items + 1] = blindSpotsRow(document)
   end
-  items[#items + 1] = { title = "-" }
-  items[#items + 1] = running(codeTask) and dim("refreshing…") or { title = infoTitle("Refresh"), fn = M.refreshCode }
-  local count = document and tonumber(document.problem_count) or 0
-  local status = not document and "nodata" or ({ ok = true, problems = true, blind = true, error = true })[document.status]
-    and document.status or count > 0 and "problems" or "ok"
-  local loud = count > 0 or status == "error"
+  refreshRows(items, "code", M.refreshCode)
+  local count, status, loud = documentStatus(document)
   return { title = infoTitle(codeTitle(document), loud, not loud and status ~= "blind"), menu = items,
     problems = count, status = status }
 end

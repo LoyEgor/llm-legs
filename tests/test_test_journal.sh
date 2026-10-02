@@ -99,6 +99,25 @@ probe
 probe
 assert_eq '{"total":2,"failed":1,"ok":false}' \
   "$(jq -c 'select(.repo == "r-255") | {total, failed, ok}' "$STATUSLINE_CACHE_DIR/test-history.jsonl")"
+# A run seen only queued that took its slot and ended before the next probe is journaled off the
+# pointer run-suites leaves on exit, timed from its slot; one still queued, or now slotted, is not.
+{ printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28
+  suite_run 60 r-late 1 1000 0; suite_run 61 r-wait 1 1000 0; suite_run 62 r-slot 1 1000 0; } > "$WORK/snap"
+probe
+slotted=$(($(date +%s) - 50))
+printf '%s\t1\t%s\t%s\n' "$WORK/logs-60" "$WORK/r-late" "$slotted" > "$STATUSLINE_CACHE_DIR/suites-60.done"
+rm -f "$STATUSLINE_CACHE_DIR/suites-60"
+printf '%s\t1\t%s\t%s\n' "$WORK/logs-62" "$WORK/r-slot" "$slotted" > "$STATUSLINE_CACHE_DIR/suites-62"
+{ printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28
+  shell_line 161 02:01; printf '61 161 02:00 bash tests/run-all -j 5\n'
+  shell_line 162 02:01; printf '62 162 02:00 bash tests/run-all -j 5\n'; } > "$WORK/snap"
+probe
+assert_eq '{"repo":"r-late","total":1,"ok":true}' \
+  "$(jq -c 'select(.repo == "r-late" or .repo == "r-wait" or .repo == "r-slot" or .repo == "") | {repo, total, ok}' \
+    "$STATUSLINE_CACHE_DIR/test-history.jsonl")"
+late_secs=$(jq -r 'select(.repo == "r-late") | .secs' "$STATUSLINE_CACHE_DIR/test-history.jsonl")
+[ "$late_secs" -ge 49 ] && [ "$late_secs" -le 53 ] || fail "a late run is timed from its slot: $late_secs"
+asserts=$((asserts + 1))
 # A run-suites run, chat or worker, carries each suite's seconds from its .status files.
 assert_eq 'r-gone null r-pass {"test_1.sh":3,"test_2.sh":1}' \
   "$(jq -r 'select(.repo == "r-pass" or .repo == "r-gone") | "\(.repo) \(.suite_secs | tojson)"' \

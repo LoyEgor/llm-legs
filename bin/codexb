@@ -16,6 +16,7 @@ resolve_root() {
 
 codexb_root=$(resolve_root)
 . "$codexb_root/share/codex-accounts.sh"
+. "$codexb_root/share/account-roster.sh"
 . "$codexb_root/share/worker-pool.sh"
 . "$codexb_root/share/worker-model.sh"
 . "$codexb_root/share/account-announce.sh"
@@ -41,15 +42,7 @@ auth_marker() {
     "$codex_cache" >/dev/null 2>&1
 }
 
-account_names() {
-  local path
-  codex_main_removed || printf 'main\n'
-  if [ -d "$profiles_dir" ]; then
-    for path in "$profiles_dir"/*; do
-      [ -d "$path" ] && basename "$path"
-    done | LC_ALL=C sort
-  fi
-}
+account_names() { CODEXB_PROFILES_DIR="$profiles_dir" account_roster codex; }
 
 account_home() {
   if [ "$1" = main ]; then
@@ -61,7 +54,7 @@ account_home() {
 
 reserved_name() {
   case "$1" in
-    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use|fast-mode|export-auth|models|refuse-model) return 0 ;;
+    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use|fast-mode|export-auth|models|refuse-model|web) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -230,6 +223,7 @@ remove_account() {
       rm -f "$tmp"
     fi
   fi
+  CODEXB_PROFILES_DIR="$profiles_dir" account_purge codexb codex "$name" || true
   announce_account_removed "$codexb_root"
   printf 'codexb: removed %s\n' "$name"
   if [ -n "$marker" ]; then
@@ -461,7 +455,7 @@ codex_launch_needs_fast_mode_off() {
 }
 
 run_account() {
-  local allow_create="$1" name="${2:-}" directory created=false
+  local allow_create="$1" name="${2:-}" directory created=false interactive=true rc=0
   if [ "$allow_create" = true ] && { [ "$name" = -h ] || [ "$name" = --help ]; }; then
     show_help
     return
@@ -478,6 +472,7 @@ run_account() {
   # `codex exec` is a program calling codexb; an interactive session is Egor, and only the
   # program half answers to the pool.
   if [ "${1:-}" = exec ]; then
+    interactive=false
     worker_pool_refuse_headless codex "$name" "$(worker_model_pinned_account codex_profile)" || exit 2
   fi
   if [ "$name" = main ]; then
@@ -529,6 +524,11 @@ run_account() {
       ${after[@]+"${after[@]}"}
   fi
   [ "$created" != true ] || announce_account_added "$codexb_root" codex "$name"
+  if [ "$created" = true ] && [ "$interactive" = true ] && [ -t 0 ] && [ -t 2 ]; then
+    env CODEX_HOME="$directory" codex "$@" || rc=$?
+    [ "$rc" -ne 0 ] || account_web_offer codexb codex "$name"
+    exit "$rc"
+  fi
   exec env CODEX_HOME="$directory" codex "$@"
 }
 
@@ -538,6 +538,7 @@ show_help() {
     'codexb profile <name> login            Browser OAuth login for that account (menu Codex login uses this).' \
     'codexb <name> exec [args...]' \
     'codexb add <name>                      Create a profile without launching; prints the login command.' \
+    'codexb web <name>                      Sign an account into the web route (ChatGPT images) with one sign-in in its hidden-Chrome profile; `codexb p` offers it after a first login.' \
     'codexb remove <name> [--force]         Forget a profile and prune its cached quota; --force overrides the logged-in guard. main leaves only a marker.' \
     'codexb enable <name>|--all             Return an account (or every account) to worker selection.' \
     'codexb disable <name>|--all            Exclude an account (or every account) from the worker pool; headless runs are then refused, your own sessions are not.' \
@@ -570,6 +571,7 @@ models_cache_rows() { # cache -> the builtin's columns, nothing when unusable
        ([.supported_reasoning_levels[]? | .effort? // . | strings] | join(","))]
     | select(.[0] | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$")) | @tsv' "$1" 2>/dev/null
 }
+cache_epoch() { jq -r '(.fetched_at | strings | sub("\\.[0-9]+"; "") | fromdateiso8601?) // 0' "$1" 2>/dev/null || printf '0\n'; }
 
 cache_field() { jq -r --arg key "$2" '.[$key] // "" | tostring' "$1" 2>/dev/null; }
 timeout_command() {
@@ -581,9 +583,10 @@ timeout_command() {
 # A cache holds what the server listed to the client that wrote it, and the server hides every model
 # whose minimal_client_version is above that client. ~/.codex is also written by the ChatGPT app's
 # own bundled codex, so the freshest file can be an older client's shorter list: the newest writer
-# not above the installed CLI wins, then its longest list: a lapsed plan's home lists the free models
-# only and, fetched last, would hide every paid family machine-wide. fetched_at breaks a tie. No
-# network here.
+# not above the installed CLI wins. Among its files fetched within a day of its freshest the longest
+# list wins, since a lapsed plan's home lists the free models only and, fetched last, would hide every
+# paid family machine-wide; the day keeps an unused home's list of a model the server has since
+# dropped from outliving every fresher one. fetched_at breaks a tie. No network here.
 models_source() { # -> path of the cache to read, or nothing
   local path rows='' kept='' client count stamp installed listed
   if [ -n "${CODEXB_MODELS_CACHE:-}" ]; then
@@ -592,7 +595,7 @@ models_source() { # -> path of the cache to read, or nothing
   fi
   for path in "$HOME/.codex/models_cache.json" "$profiles_dir"/*/models_cache.json; do
     [ -r "$path" ] && listed=$(models_cache_rows "$path") && [ -n "$listed" ] || continue
-    rows+="$(cache_field "$path" client_version)"$'\t'"$(wc -l <<<"$listed" | tr -d ' ')"$'\t'"$(cache_field "$path" fetched_at)"$'\t'"$path"$'\n'
+    rows+="$(cache_field "$path" client_version)"$'\t'"$(wc -l <<<"$listed" | tr -d ' ')"$'\t'"$(cache_epoch "$path")"$'\t'"$path"$'\n'
   done
   [ -n "$rows" ] || return 0
   if [ "$(printf '%s' "$rows" | cut -f1 | LC_ALL=C sort -u | wc -l)" -gt 1 ] &&
@@ -602,7 +605,11 @@ models_source() { # -> path of the cache to read, or nothing
       kept+="$client"$'\t'"$count"$'\t'"$stamp"$'\t'"$path"$'\n'
     done <<<"${rows%$'\n'}"
   fi
-  printf '%s' "${kept:-$rows}" | LC_ALL=C sort -t $'\t' -k1,1V -k2,2n -k3,3 | tail -n 1 | cut -f4
+  printf '%s' "${kept:-$rows}" | LC_ALL=C sort -t $'\t' -k1,1V -k3,3n |
+    awk -F'\t' -v window="${CODEXB_MODELS_WINDOW:-86400}" '
+      { row[NR] = $0; client[NR] = $1; stamp[NR] = $3 }
+      END { for (i = 1; i <= NR; i++) if (client[i] == client[NR] && stamp[i] >= stamp[NR] - window) print row[i] }' |
+    LC_ALL=C sort -t $'\t' -k2,2n -k3,3n | tail -n 1 | cut -f4
 }
 
 # An account may be served a catalog of its own (its plan), so a launch resolves against that
@@ -847,6 +854,10 @@ case "${1:-}" in
     shift
     [ "$#" -eq 1 ] || { printf 'usage: codexb add <name>\n' >&2; exit 2; }
     add_account "$1"
+    ;;
+  web)
+    shift
+    account_web_login codexb codex "$@"
     ;;
   remove)
     shift

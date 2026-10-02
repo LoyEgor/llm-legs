@@ -3,7 +3,7 @@
 
 image_leg_start() { # tool kind [served-model-variable]
   IMAGE_LEG_TOOL=$1 IMAGE_LEG_KIND=$2 IMAGE_LEG_MODEL_VAR=${3:-} IMAGE_LEG_STARTED=$(date +%s)
-  IMAGE_LEG_ERR='' IMAGE_LEG_TEE='' IMAGE_LEG_QUEUED=0 IMAGE_LEG_SIZE=''
+  IMAGE_LEG_ERR='' IMAGE_LEG_TEE='' IMAGE_LEG_QUEUED=0 IMAGE_LEG_SIZE='' IMAGE_LEG_ROUTE=''
   trap image_leg_exit EXIT
   IMAGE_LEG_ERR=$(mktemp "${TMPDIR:-/tmp}/image-leg.XXXXXX" 2>/dev/null) || { IMAGE_LEG_ERR=''; return 0; }
   # A process substitution that cannot open /dev/fd complains on the live stderr; probe it silenced.
@@ -51,8 +51,10 @@ image_leg_exit() {
   case $log in */*) mkdir -p "${log%/*}" 2>/dev/null || return 0 ;; esac
   jq -cn --arg tool "$IMAGE_LEG_TOOL" --arg kind "$IMAGE_LEG_KIND" --argjson rc "$rc" \
     --argjson started "$IMAGE_LEG_STARTED" --argjson queued "${IMAGE_LEG_QUEUED:-0}" --arg size "${IMAGE_LEG_SIZE:-}" --arg account "${account:-}" --arg served "$model" --arg err "$err" \
+    --arg route "${IMAGE_LEG_ROUTE:-}" \
     '{ts: (now | floor), tool: $tool, kind: $kind, rc: $rc, seconds: ((now | floor) - $started),
-      queued: $queued, size: ($size | tonumber? // null), account: $account, served: $served, err: $err}' 2>/dev/null >>"$log" || true
+      queued: $queued, size: ($size | tonumber? // null), account: $account, served: $served, err: $err}
+     + (if $route == "" then {} else {route: $route} end)' 2>/dev/null >>"$log" || true
   IMAGE_LEG_TOOL=''
   return 0
 }

@@ -59,9 +59,14 @@ expect_rc 2 "${args[@]}" --resume ../bad --account explicit
 expect_rc 2 "${args[@]}" --resume absent --account explicit
 expect_rc 2 --dest "$WORK/output/noext" --prompt badge
 expect_rc 2 --dest "$WORK/output/bad.jpg" --prompt badge --transparent
-expect_rc 1 "${args[@]}" --account unknown
+expect_rc 2 "${args[@]}" --account unknown
+assert grep -q 'unknown account: unknown (not on the gemini roster' "$WORK/err"
 assert test ! -s "$FAKE_GEMINIB_CALLS"
 assert test ! -d "$GEMINIB_PROFILES_DIR/unknown"
+: >"$LLM_LIMITS_GEMINI_REMOVED"
+expect_rc 2 "${args[@]}" --account main
+rm -f "$LLM_LIMITS_GEMINI_REMOVED"
+assert test ! -s "$FAKE_GEMINIB_CALLS"
 
 assert image_run "${args[@]}" --aspect 16:9 --ref "$ref" --ref "$ref" --ref "$ref"
 assert grep -qx 'ImagePaths:' "$FAKE_GEMINIB_PROMPT"
@@ -141,7 +146,7 @@ mkdir -p "$WORK/repo/bin" "$WORK/repo/share/image-caps"
 cp "$ROOT/bin/gemini-image" "$WORK/repo/bin/"
 printf '#!/usr/bin/env bash\nexec bash "%s" "$@"\n' "$ROOT/bin/geminib" >"$WORK/repo/bin/geminib"
 chmod +x "$WORK/repo/bin/geminib"
-cp "$ROOT/share/"{image-caps,image-chroma,image-leg,gemini-accounts,codex-accounts,worker-model,worker-pool,worker-walls,worker-claims}.sh "$WORK/repo/share/"
+cp "$ROOT/share/"{image-caps,image-chroma,image-leg,account-roster,gemini-accounts,codex-accounts,worker-model,worker-pool,worker-walls,worker-claims}.sh "$WORK/repo/share/"
 jq '.refs.max=1 | .aspects.generate=["5:4"] | .aspects.edit=["5:4"] | .aspects.default="5:4"' "$ROOT/share/image-caps/gemini.json" >"$WORK/repo/share/image-caps/gemini.json"
 SCRIPT="$WORK/repo/bin/gemini-image"
 assert image_run "${args[@]}" --ref "$ref" --account explicit

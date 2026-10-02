@@ -4108,9 +4108,8 @@ def collect(write, now):
                    dim=self_verdict["level"] is None, red=self_verdict["level"] == "red")]
     shown_holds = [v for v in holds if v["level"]]
     if shown_holds:
-        sections.append({"name": HOLDS_GROUP, "state": "problem" if any(v["level"] == "red" for v in shown_holds)
-                         else "watch", "fact": "", "columns": [], "right": [], "rows": [], "nav": [],
-                         "lead": [line(v["fact"], dim=False, red=v["level"] == "red") for v in shown_holds]})
+        sections.append(section(HOLDS_GROUP, [row([v["fact"]], red=[0] if v["level"] == "red" else (),
+                                                  say=v["fact"]) for v in shown_holds], [""], [False]))
     document = {
         "contract": CONTRACT, "doctor": "harness", "as_of": iso_time(now), "as_of_s": int(now),
         "judge": judge_digest(ledger_raw), "status": status, "problem_count": problem_count,

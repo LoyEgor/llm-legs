@@ -285,9 +285,11 @@ EOF
     git -C "$fixture" init -q
     export STUB_SLEEP=8
     WORKER_RUN_IDLE_S=2 start_ok codex --account wedged --workdir "$fixture"
-    for started in 1 2 3 4; do
+    # Edited until the run ends: counted as its activity, they keep it alive past STUB_SLEEP's clean exit.
+    for started in $(seq 1 40); do
+      [ ! -e "$RUN_DIR/exit_code" ] || break
       printf '%s\n' "$started" >"$fixture/cotenant-edit"
-      sleep 1
+      sleep 0.5
     done
     result=$("$RUNNER" wait "$RUN_ID" --max 60)
     assert grep -q '^KILLED: idle watchdog' <<<"$result"

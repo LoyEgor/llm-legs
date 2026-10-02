@@ -76,6 +76,20 @@ chmod +x "$FAKE_BIN/security"
 AGY_BIN="$FAKE_BIN/agy"
 export AGY_BIN
 
+WEB_CALLS="$WORK/web-calls"
+cat >"$FAKE_BIN/uv" <<'EOF'
+#!/usr/bin/env bash
+shift 3
+printf '%s %s\n' "$2" "${3:-}" >>"$WEB_CALLS"
+empty='{"ok": true, "accounts": []}'
+[ "$2" != accounts ] || printf '%s\n' "${WEB_ACCOUNTS:-$empty}"
+EOF
+chmod +x "$FAKE_BIN/uv"
+GEMINI_WEB_UV="$FAKE_BIN/uv"
+GEMINI_WEB_CHROME="$WORK/no-chrome.app"
+GEMINI_WEB_DIR="$WORK/gemini-web"
+export WEB_CALLS GEMINI_WEB_UV GEMINI_WEB_CHROME GEMINI_WEB_DIR
+
 ANNOUNCE_LOG="$WORK/announce-log"
 LLM_LIMITS_ANNOUNCE_CMD="$WORK/fake-announce"
 export ANNOUNCE_LOG LLM_LIMITS_ANNOUNCE_CMD
@@ -528,7 +542,48 @@ if grep -q "new profile" <<<"$reopen_output"; then fail "reopen reprinted the cr
 sleep 0.3
 assert test "$(grep -cxF -- '--refresh-account gemini/alpha' "$ANNOUNCE_LOG")" = 1
 
-for reserved in profile p run add remove list status pick help login agy-launch; do
+# `geminib web` signs a roster account into the web routes through gemini-web login, and a first
+# `geminib p` offers it once, only on a tty, defaulting to no. `flow`/`f` are gone, not aliases.
+: >"$WEB_CALLS"
+assert bash "$SCRIPT" web alpha
+assert bash "$SCRIPT" web main
+assert test "$(cat "$WEB_CALLS")" = "login alpha
+login main"
+: >"$WEB_CALLS"
+web_err=$(bash "$SCRIPT" web ghost 2>&1); web_rc=$?
+assert test "$web_rc" -eq 2
+assert grep -q '^geminib: unknown account: ghost (not on the gemini roster the menubar lists: ' <<<"$web_err"
+assert test "$(bash "$SCRIPT" web 2>&1; echo "rc=$?")" = "usage: geminib web <name>
+rc=2"
+for gone in flow f; do
+  assert test "$(bash "$SCRIPT" "$gone" alpha </dev/null 2>&1; echo "rc=$?")" = "usage: geminib <name> exec [args...]
+rc=2"
+  assert bash "$SCRIPT" add "$gone" </dev/null >/dev/null 2>&1
+  assert bash "$SCRIPT" remove "$gone" </dev/null >/dev/null 2>&1
+done
+assert test ! -s "$WEB_CALLS"
+assert test ! -e "$HOME/.gemini-profiles/ghost"
+assert grep -q '^geminib web <name> ' <<<"$(bash "$SCRIPT" help)"
+if grep -q '^geminib flow\|Alias: f\.' <<<"$(bash "$SCRIPT" help)"; then fail "help still lists flow"; fi
+notty_output=$(bash "$SCRIPT" p notty </dev/null 2>&1) || fail "profile notty failed"
+assert grep -qx "CALL home=$HOME/.gemini-profiles/notty argc=0" "$AGY_CALLS"
+if grep -q "web routes" <<<"$notty_output" || grep -q login "$WEB_CALLS"; then fail "no tty, yet it asked"; fi
+on_tty() { python3 "$ROOT/tests/fixtures/answer-pty.py" "$@"; }
+tty_output=$(on_tty '' bash "$SCRIPT" p ttyno)
+assert grep -q "Also sign ttyno into the web routes now? \[y/N\]" <<<"$tty_output"
+assert test "$(cat "$WEB_CALLS")" = "accounts "
+: >"$WEB_CALLS"
+on_tty y bash "$SCRIPT" p ttyyes >/dev/null
+assert test "$(cat "$WEB_CALLS")" = "accounts 
+login ttyyes"
+: >"$WEB_CALLS"
+again_output=$(on_tty y bash "$SCRIPT" p ttyno)
+if grep -q "web routes" <<<"$again_output" || test -s "$WEB_CALLS"; then fail "a second open asked again"; fi
+signed_output=$(WEB_ACCOUNTS='{"ok": true, "accounts": [{"account": "ttysigned", "login": true}]}' \
+  on_tty y bash "$SCRIPT" p ttysigned)
+if grep -q "web routes" <<<"$signed_output" || grep -q login "$WEB_CALLS"; then fail "a signed-in web profile was offered"; fi
+
+for reserved in profile p run add remove list status pick help login agy-launch web; do
   assert_fails bash "$SCRIPT" profile "$reserved" </dev/null >/dev/null 2>&1
   assert_fails bash "$SCRIPT" add "$reserved" </dev/null >/dev/null 2>&1
 done
@@ -844,7 +899,7 @@ assert grep -q '^usage: gemini-image ' "$IMAGE_ERR"
 : >"$IMAGE_CALLS"
 image_rc=0
 image_run --dest "$WORK/image-output/ghost.jpg" --prompt badge --account ghostacct || image_rc=$?
-assert test "$image_rc" -eq 1
+assert test "$image_rc" -eq 2
 assert grep -q 'unknown account: ghostacct' "$IMAGE_ERR"
 assert test ! -d "$HOME/.gemini-profiles/ghostacct"
 assert test ! -s "$IMAGE_CALLS"
@@ -1211,4 +1266,4 @@ assert_fails test -e "$XPORT_OUT/unknown"
 assert jq -se --arg home "$XPORT_HOME" 'all(.[]; .home == $home)
   and (.[0:2] | map(.args[0])) == ["unlock-keychain", "find-generic-password"]' "$XPORT_LOG" >/dev/null
 
-echo "PASS: $asserts asserts; base and isolated HOME routing, worker-pool exclusion (own file beside the profiles, headless runs refused, interactive and pinned runs pass, the last member goes out too, visible in list/status), shared configuration and Playwright caches, a private MCP config per leg listing no server at all (main untouched even when unparsable, an already-empty file not rewritten), dead project records swept once a day (vanished temp paths only, both /var/folders spellings; live, non-temp and unparsable records kept), per-profile keychain kept unlockable behind a login.keychain-db symlink, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, persistent remove markers, a base profile removed by marker alone (hidden from list/status/pin/launch, the real HOME untouched, undone by deleting the marker), use pin set/show/clear/refusal parity, and one-image generation routing, refused unknown accounts, destination checks made before a generation is spent, prompt, rescue, and conversion, and keychain-first export-token with HOME-pinned read/unlock, 0600 nested access-only output retaining ID tokens, trusted-side refresh without profile writes (a wrong-first embedded client secret skipped on invalid_client), safe grant and lifetime refusals, no overwrite, and nested/flat legacy fallback only for an absent keychain item"
+echo "PASS: $asserts asserts; base and isolated HOME routing, geminib web (a roster-gated gemini-web login, offered once after a first login on a tty, default no; flow/f gone and free as names), worker-pool exclusion (own file beside the profiles, headless runs refused, interactive and pinned runs pass, the last member goes out too, visible in list/status), shared configuration and Playwright caches, a private MCP config per leg listing no server at all (main untouched even when unparsable, an already-empty file not rewritten), dead project records swept once a day (vanished temp paths only, both /var/folders spellings; live, non-temp and unparsable records kept), per-profile keychain kept unlockable behind a login.keychain-db symlink, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, persistent remove markers, a base profile removed by marker alone (hidden from list/status/pin/launch, the real HOME untouched, undone by deleting the marker), use pin set/show/clear/refusal parity, and one-image generation routing, refused unknown accounts, destination checks made before a generation is spent, prompt, rescue, and conversion, and keychain-first export-token with HOME-pinned read/unlock, 0600 nested access-only output retaining ID tokens, trusted-side refresh without profile writes (a wrong-first embedded client secret skipped on invalid_client), safe grant and lifetime refusals, no overwrite, and nested/flat legacy fallback only for an absent keychain item"

@@ -278,8 +278,11 @@ fix_owned_tests() {
   assert_fails "$RUNNER" claim "$fixer" --paths "$b/theirs.txt/nope" 2>/dev/null
   assert_fails grep -q '^fix:' <<<"$(fix_kinds "$a" theirs.txt)"
   # A run outside any round claiming in the sibling repository: the launcher's touch, and no fold.
+  export STUB_GATE="$WORK/manual-gate"
   WORKER_TEST_WORKDIR=$a start_ok codex
   printf 'manual\n' >"$b/manual.txt"
+  : >"$STUB_GATE"
+  unset STUB_GATE
   assert await_done
   review-anchors untouch --repo "$b" --session fix-chat manual.txt
   folded=$(jq -r --arg r "$RUN_ID" '.runs[$r].folded' "$b/.git/review-anchors.json")

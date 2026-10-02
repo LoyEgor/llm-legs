@@ -214,14 +214,18 @@ The page's traffic is read passively, never replayed: the generation reply names
 the generation RPCs from outside the page fails Google's reCAPTCHA check (`PUBLIC_ERROR_UNUSUAL_ACTIVITY`),
 which is why the route clicks the UI.
 
-Operations: `gemini-web login <account>` once (a visible Chrome; sign in to the Google account whose geminib
-profile has that name, then Cmd+Q), then `gemini-web status <account>` binds the email and reads credits
+Operations: `geminib web <account>` once (a visible Chrome; sign in to the Google account whose geminib
+profile has that name, then Cmd+Q; it refuses a name off the gemini roster and runs `gemini-web login`, and
+`geminib p` offers it once after a first Antigravity login on a tty, default no), then `gemini-web status <account>` binds the email and reads credits
 without spending; `gemini-web accounts` lists profiles, credits and walls; `gemini-web generate … --dry-run`
 sets the composer up and prints Flow's quote without sending (with `--extend` it opens extend mode, which adds an empty "Untitled Scene" to the project); a clip that finished after a timeout is
 recovered with `gemini-web fetch <account> <media_id> --dest <abs .mp4>`. Rotation (no `--account`) keeps to
 the gemini worker pool ("In pool", read through `share/worker-pool.sh`; a pin in `worker-model` overrides it,
 and a named account out of the pool exits 4), skips an account whose balance read in the last 6 h is under
-the job's price, and moves past an account that needs a sign-in step (exit 4) to the next. A balance short
+the job's price, and moves past an account that needs a sign-in step (exit 4) to the next. Candidates go least recently started
+first, never used first (the owner's rule, 2026-10-01): `generation_started_at` in `accounts/<name>.json` is
+stamped when a new generation starts on Flow video, Flow Music or Gemini app music, never by an `--extend`, a
+fetch or a `--dry-run`; an idle account still goes before one another run holds. A balance short
 of one job's price is never walled, so a cheaper job still runs there. Exit 3 otherwise walls an account in
 `~/.gemini-web/walls.json` (writes serialised by a lock file): 6 h when it is out of credits, 24 h when Flow flags it
 (`PUBLIC_ERROR_UNUSUAL_ACTIVITY` on a whole failed envelope or on the new clip — "We noticed some unusual
@@ -240,7 +244,7 @@ briefs), and `worker-launch-gate.sh` blocks them in any other Bash.
 **Music** — `bin/gemini-music` → `share/gemini_music.py` drives gemini.google.com/app (Upload & tools → More
 tools → Create music, Lyria 3.5) in the same hidden Chrome and profiles as Flow. Rotation skips accounts
 with a Flow wall, a 6 h music wall (`~/.gemini-web/music-walls.json`) or out of the gemini worker pool, and
-takes the one least recently used for music. With `--count`, takes that finished before a later take failed
+takes the one that least recently started any generation (Flow's rule and stamp). With `--count`, takes that finished before a later take failed
 are kept: the rest go to the next account, and if none is left the run delivers what it has with a `short=`
 footer line. Images and a video for the tool to watch are attached through Upload files; Playwright's
 filechooser event answers the native chooser.
@@ -311,8 +315,8 @@ exits 0 when any take saved, and a `short=` line names the accounts that failed.
 
 Rotation: signed-in Gemini profiles in the gemini worker pool, without a Flow wall (Flow's unusual-activity flag
 holds here too) or a Flow Music wall (`~/.gemini-web/flow-music-walls.json`, 6 h, set on exit 3). A balance read
-in the last 6 h that is under the price of one song skips the account. Accounts with a known balance come first,
-then least recently used. An account Flow Music shows as signed out is marked `music_signed_in: false` and
+in the last 6 h that is under the price of one song skips the account. The account that least recently started any
+generation goes first (Flow's rule and stamp). An account Flow Music shows as signed out is marked `music_signed_in: false` and
 skipped until a balance read (`uv run --script share/flow_music.py status --account <name>`) finds it signed in.
 Signed in on 2026-10-01: com, egbogd, jihangarangan and locomthebest (Continue with Google → the account →
 Continue → tick "See your Google One membership…" → Continue → Privacy Notice Agree; PLUS shows after a reload).

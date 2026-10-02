@@ -12,7 +12,8 @@ resolve_root() {
 }
 
 usage() {
-  printf 'usage: codex-image --dest <absolute path> --prompt <description> [--size <WxH>] [--ref <absolute image path>]... [--transparent] [--resume <session id>] [--account <profile>]\n' >&2
+  printf 'usage: codex-image --dest <absolute path> --prompt <description> [--aspect <W:H> | --size <WxH>] [--ref <absolute image path>]... [--transparent] [--resume <session id>] [--account <profile>] [--route cli|web] [--region <x,y,w,h>]\n' >&2
+  printf '       codex-image --route web --resume <chat id> --aspect <W:H> --dest <absolute path>   (re-aspect the chat'"'"'s last image)\n' >&2
   printf '       references: at most %s; transparency mode: %s\n' "$ref_max" "$transparent_mode" >&2
   exit 2
 }
@@ -84,6 +85,68 @@ has_usable_alpha() { # path
   awk -v value="$minima" 'BEGIN { exit !(value + 0 < 0.99) }'
 }
 
+deliver_generated() {
+  if [ "$remove_green" = true ]; then
+    if [ "$transparent_native" = true ] && has_usable_alpha "$generated"; then
+      if [ "$(actual_format "$generated")" = png ]; then
+        cp "$generated" "$dest"
+      else
+        magick "$generated" "PNG:$dest"
+      fi
+    elif [ "$transparent_chroma" = true ]; then
+      chroma_key_to_png "$generated" "$tmp_dir" "$dest"
+    else
+      printf 'codex-image: the generation carries no alpha and the manifest allows no chroma fallback\n' >&2
+      exit 1
+    fi
+  elif [ "$extension" != "$(actual_format "$generated")" ]; then
+    magick "$generated" "$dest"
+  else
+    cp "$generated" "$dest"
+  fi
+
+  sips_output=$(sips -g pixelWidth -g pixelHeight -g format "$dest")
+  width=$(awk '/pixelWidth:/ {print $2; exit}' <<<"$sips_output")
+  height=$(awk '/pixelHeight:/ {print $2; exit}' <<<"$sips_output")
+  format=$(awk '/format:/ {print $2; exit}' <<<"$sips_output")
+  [ -n "$width" ] && [ -n "$height" ] && [ -n "$format" ] || {
+    printf 'codex-image: could not inspect output\n' >&2
+    exit 1
+  }
+  printf 'dest=%s\nsize=%sx%s\nformat=%s\naccount=%s\nsession=%s\n' \
+    "$dest" "$width" "$height" "$format" "$account" "${session:-none}"
+}
+
+# Delivered as generated: a ratio off by more than 2% is reported, never cropped or resized.
+aspect_check() {
+  local want=$aspect fit
+  [ -n "$want" ] || [ -z "$size" ] ||
+    want=$(awk -v w="${size%x*}" -v h="${size#*x}" 'BEGIN { a = w; b = h; while (b) { t = a % b; a = b; b = t }; print w / a ":" h / a }')
+  [ -n "$want" ] || return 0
+  fit=$(awk -v w="$width" -v h="$height" -v want="$want" 'BEGIN {
+    split(want, r, ":"); got = w / h; asked = r[1] / r[2]; d = got / asked - 1; if (d < 0) d = -d
+    printf "%.3f %s", got, (d <= 0.02 ? "ok" : "miss") }')
+  printf 'aspect=%s achieved=%s fit=%s\n' "$want" "${fit% *}" "${fit#* }"
+  [ "${fit#* }" = ok ] ||
+    printf 'codex-image: asked for %s, delivered %sx%s (%s); kept as generated\n' "$want" "$width" "$height" "${fit% *}" >&2
+}
+
+# The one place --aspect, --size and --transparent become prompt text: both routes send these words.
+request_sentences() {
+  local shape
+  if [ "$remove_green" = true ] && [ "$transparent_native" = true ]; then
+    printf 'Give it a genuinely transparent background: a PNG with an alpha channel.'
+    [ "$transparent_chroma" = false ] || printf ' %s' "$chroma_fallback"
+    printf '\n'
+  fi
+  if [ -n "$aspect" ]; then
+    shape=$(awk -v w="${aspect%:*}" -v h="${aspect#*:}" 'BEGIN { print (w > h ? "landscape" : w < h ? "portrait" : "square") }')
+    printf 'Make the image a %s %s frame: its width to height ratio exactly %s.\n' "$aspect" "$shape" "$aspect"
+  fi
+  [ -z "$size" ] || printf 'Make the image exactly %s pixels.\n' "$size"
+  [ -z "$region" ] || printf 'Change only the area outlined in red; keep everything outside it exactly as it is, and leave no red outline in the result.\n'
+}
+
 command -v jq >/dev/null 2>&1 || {
   printf 'codex-image: jq is required to read the capability manifest\n' >&2
   exit 1
@@ -114,8 +177,11 @@ esac
 dest=''
 prompt=''
 size=''
+aspect=''
+region=''
 account=''
 resume_id=''
+route=cli
 remove_green=false
 refs=()
 
@@ -155,11 +221,58 @@ while [ "$#" -gt 0 ]; do
       account=$2
       shift 2
       ;;
+    --route)
+      [ "$#" -ge 2 ] || usage
+      route=$2
+      shift 2
+      ;;
+    --aspect)
+      [ "$#" -ge 2 ] || usage
+      aspect=$2
+      shift 2
+      ;;
+    --region)
+      [ "$#" -ge 2 ] || usage
+      region=$2
+      shift 2
+      ;;
     *) usage ;;
   esac
 done
 
-[ -n "$dest" ] && [ -n "$prompt" ] || usage
+case "$route" in cli|web) IMAGE_LEG_ROUTE=$route ;; *) usage ;; esac
+reaspect=false
+if [ -z "$prompt" ] && [ -n "$resume_id" ] && [ -n "$aspect" ] && [ -z "$size$region" ] &&
+  [ "$remove_green" = false ] && [ "${#refs[@]}" -eq 0 ]; then
+  reaspect=true
+  if [ "$route" = cli ]; then
+    printf 'codex-image: re-aspecting an existing image is web-only (the ChatGPT viewer'"'"'s Resize); pass --route web, or a --prompt to generate anew\n' >&2
+    exit 2
+  fi
+fi
+[ -n "$dest" ] && { [ -n "$prompt" ] || [ "$reaspect" = true ]; } || usage
+if [ -n "$aspect" ] && ! [[ "$aspect" =~ ^[0-9]+(\.[0-9]+)?:[0-9]+(\.[0-9]+)?$ && "$aspect" =~ [1-9].*:.*[1-9] ]]; then
+  usage
+fi
+if [ -n "$aspect" ] && [ -n "$size" ]; then
+  printf 'codex-image: pass --aspect or --size, not both\n' >&2
+  exit 2
+fi
+if [ -n "$region" ]; then
+  if [ "$route" = cli ]; then
+    printf 'codex-image: --region is web-only (ChatGPT'"'"'s Markup); the CLI image_gen takes no mask or region, and prose is no region\n' >&2
+    exit 2
+  fi
+  python3 -c 'import sys; v = [float(n) for n in sys.argv[1].split(",")]; x, y, w, h = v; sys.exit(not (len(v) == 4 and x >= 0 and y >= 0 and w > 0 and h > 0 and x + w <= 1 and y + h <= 1))' \
+    "$region" 2>/dev/null || {
+    printf 'codex-image: --region takes x,y,w,h as fractions of the image (0..1, inside it), not %s\n' "$region" >&2
+    exit 2
+  }
+  if ! { [ -n "$resume_id" ] && [ "${#refs[@]}" -eq 0 ]; } && [ "${#refs[@]}" -ne 1 ]; then
+    printf 'codex-image: --region edits one image: the chat'"'"'s last one (--resume <chat id>) or a single --ref\n' >&2
+    exit 2
+  fi
+fi
 [[ "$dest" = /* ]] || usage
 extension=$(normalized_extension "${dest##*/}")
 # An extensionless destination — a bare trailing dot included — names no format for `magick` to
@@ -204,6 +317,57 @@ fi
 base_home=$HOME
 profiles_dir="${CODEX_PROFILES_DIR:-$base_home/.codex-profiles}"
 . "$root/share/image-chroma.sh"
+
+content=$prompt
+# Only the chroma-ONLY mode edits the request: the word names the very thing the built-in tool is
+# being asked for wherever native alpha is on offer, and stripping it there would spend the
+# generation on an opaque image.
+if [ "$remove_green" = true ] && [ "$transparent_native" = false ]; then
+  content=$(printf '%s' "$content" | sed 's/[[:<:]][Tt][Rr][Aa][Nn][Ss][Pp][Aa][Rr][Ee][Nn][Tt][[:>:]]//g')
+  content="$content on a flat solid #00FF00 green background"
+fi
+chroma_fallback='Only if real transparency is impossible, fill the background with one flat solid #00FF00 green instead.'
+
+# The web route is chatgpt.com in the hidden Chrome: bin/chatgpt-web owns its accounts, rotation, pool
+# check, lock and walls, so none of the CLI route's machinery below applies to it.
+if [ "$route" = web ]; then
+  tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/codex-image.XXXXXX")
+  trap 'image_leg_exit; rm -rf "$tmp_dir"' EXIT
+  sentences=$(request_sentences)
+  web_prompt=$content
+  [ -z "$sentences" ] || web_prompt+=$'\n\n'"$sentences"
+  if [ "$reaspect" = true ]; then
+    web_args=(resize --aspect "$aspect" --dest "$tmp_dir/web-image")
+  else
+    web_args=(generate --prompt "$web_prompt" --dest "$tmp_dir/web-image")
+  fi
+  [ -z "$region" ] || web_args+=(--region "$region")
+  [ "$ref_count" -eq 0 ] || for ref in "${refs[@]}"; do web_args+=(--ref "$ref"); done
+  [ -z "$resume_id" ] || web_args+=(--resume "$resume_id")
+  [ -z "$account" ] || web_args+=(--account "$account")
+  image_leg_mark $((ref_count + 1))
+  web_rc=0
+  "${CODEX_IMAGE_WEB:-$root/bin/chatgpt-web}" "${web_args[@]}" >"$tmp_dir/web.out" || web_rc=$?
+  web_result=$(tail -n 1 "$tmp_dir/web.out")
+  account=$(jq -r '.account // empty' <<<"$web_result" 2>/dev/null) || account=''
+  session=$(jq -r '.chat // empty' <<<"$web_result" 2>/dev/null) || session=''
+  if [ "$web_rc" -ne 0 ]; then
+    printf 'codex-image: web route: %s\n' \
+      "$(jq -r '.reason // empty' <<<"$web_result" 2>/dev/null || true)" >&2
+    case "$web_rc" in
+      3) printf 'CODEX_USAGE_LIMIT\n' >&2; exit 3 ;;
+      2|4) exit "$web_rc" ;;
+      *) exit 1 ;;
+    esac
+  fi
+  generated=$tmp_dir/web-image
+  [ -s "$generated" ] || { printf 'codex-image: the web route saved no image\n' >&2; exit 1; }
+  deliver_generated
+  image_caps_model_check "$root" codex image "$(c2pa_model "$generated")"
+  printf 'route=web\n'
+  aspect_check
+  exit 0
+fi
 # Image generation is a worker launch like any other — it runs `codex` headless with CODEX_HOME
 # set, never through codexb — so the pool answers here too.
 . "$root/share/worker-pool.sh" ||
@@ -211,15 +375,16 @@ profiles_dir="${CODEX_PROFILES_DIR:-$base_home/.codex-profiles}"
 . "$root/share/worker-model.sh" ||
   { printf 'codex-image: share/worker-model.sh is missing; refusing to run unchecked\n' >&2; exit 4; }
 . "$root/share/worker-claims.sh"
+. "$root/share/account-roster.sh"
 
 # A session lives inside one account's CODEX_HOME, and `codex exec resume` answers an id it cannot
 # find by silently starting a NEW thread (openai/codex#15538) — so the account is recovered from
 # the store rather than routed for, and an ambiguous answer is asked about instead of guessed.
 resume_account_candidates() { # session id
   local id=$1 home name
-  for home in "$base_home/.codex" "$profiles_dir"/*; do
+  for name in $(CODEXB_PROFILES_DIR="$profiles_dir" account_roster codex); do
+    if [ "$name" = main ]; then home="$base_home/.codex"; else home="$profiles_dir/$name"; fi
     [ -d "$home" ] || continue
-    if [ "$home" = "$base_home/.codex" ]; then name=main; else name=${home##*/}; fi
     if [ -d "$home/generated_images/$id" ] ||
       [ -n "$(find "$home/sessions" -type f -name "*$id*" -print -quit 2>/dev/null)" ]; then
       printf '%s\n' "$name"
@@ -239,6 +404,8 @@ if [ -n "$resume_id" ] && [ -z "$account" ]; then
   fi
 fi
 
+off_roster_rc=1
+[ -z "$account" ] || off_roster_rc=2
 picked=false
 if [ -z "$account" ]; then
   pick_rc=0
@@ -263,6 +430,7 @@ if [ -z "$account" ]; then
   fi
 fi
 
+CODEXB_PROFILES_DIR="$profiles_dir" account_roster_refuse codex-image codex "$account" || exit "$off_roster_rc"
 worker_pool_refuse_headless codex "$account" "$(worker_model_pin_csv < <(worker_model_pins codex))" || exit 4
 
 # The model that drives image_gen: the table's family at its newest listed slug on this account, never
@@ -307,30 +475,16 @@ stdout_file="$tmp_dir/stdout"
 cli_stdout="$tmp_dir/codex.stdout"
 cli_stderr="$tmp_dir/codex.stderr"
 requested_file="$tmp_dir/generated.${dest##*.}"
-content=$prompt
-# Only the chroma-ONLY mode edits the request: the word names the very thing the built-in tool is
-# being asked for wherever native alpha is on offer, and stripping it there would spend the
-# generation on an opaque image.
-if [ "$remove_green" = true ] && [ "$transparent_native" = false ]; then
-  content=$(printf '%s' "$content" | sed 's/[[:<:]][Tt][Rr][Aa][Nn][Ss][Pp][Aa][Rr][Ee][Nn][Tt][[:>:]]//g')
-  content="$content on a flat solid #00FF00 green background"
-fi
 
 {
   printf 'Use your built-in image_gen tool (imagegen skill). Generate one image with this content:\n%s\n\n' "$content"
+  # The fallback key in these sentences has to be ORDERED: asked for alpha and unable to deliver it,
+  # the tool answers with an opaque background of its own choosing, and keying that costs the subject.
+  request_sentences
   if [ "$remove_green" = true ] && [ "$transparent_native" = true ]; then
-    printf 'Ask image_gen for a genuinely transparent background by setting its transparent_background argument to true, and preserve the alpha channel it returns; never flatten it onto a color.\n'
-    if [ "$transparent_chroma" = true ]; then
-      # The fallback key has to be ORDERED here: asked for alpha and unable to deliver it, the tool
-      # answers with an opaque background of its own choosing, and keying that costs the subject.
-      printf 'Only if real transparency is impossible, fill the background with one flat solid #00FF00 green instead.\n'
-    fi
+    printf 'Ask image_gen for it by setting its transparent_background argument to true, and preserve the alpha channel it returns; never flatten it onto a color.\n'
   fi
-  if [ -n "$size" ]; then
-    printf 'Generate at the exact size %s.\n' "$size"
-  else
-    printf 'Use low quality.\n'
-  fi
+  [ -n "$size" ] || printf 'Use low quality.\n'
   if [ "$ref_count" -gt 0 ]; then
     printf 'Reference images: call view_image on each path below first, then pass exactly those paths as the image_gen referenced_image_paths argument and leave num_last_images_to_include unset.\n'
     printf -- '- %s\n' "${refs[@]}"
@@ -411,7 +565,7 @@ if [ "$codex_rc" -ne 0 ]; then
     printf 'codex-image: generation exceeded %ss deadline\n' "$codex_deadline" >&2
     exit 1
   fi
-  if grep -Eqi 'hit your usage limit|usage_limit' "$stdout_file" "$cli_stdout" "$cli_stderr" 2>/dev/null; then
+  if grep -Eqi 'hit your usage limit|usage_limit|workspace is out of credits' "$stdout_file" "$cli_stdout" "$cli_stderr" 2>/dev/null; then
     printf 'CODEX_USAGE_LIMIT\n' >&2
     exit 3
   fi
@@ -456,34 +610,7 @@ if [ -z "$generated" ]; then
   exit 1
 fi
 
-if [ "$remove_green" = true ]; then
-  if [ "$transparent_native" = true ] && has_usable_alpha "$generated"; then
-    if [ "$(actual_format "$generated")" = png ]; then
-      cp "$generated" "$dest"
-    else
-      magick "$generated" "PNG:$dest"
-    fi
-  elif [ "$transparent_chroma" = true ]; then
-    chroma_key_to_png "$generated" "$tmp_dir" "$dest"
-  else
-    printf 'codex-image: the generation carries no alpha and the manifest allows no chroma fallback\n' >&2
-    exit 1
-  fi
-elif [ "$extension" != "$(actual_format "$generated")" ]; then
-  magick "$generated" "$dest"
-else
-  cp "$generated" "$dest"
-fi
-
-sips_output=$(sips -g pixelWidth -g pixelHeight -g format "$dest")
-width=$(awk '/pixelWidth:/ {print $2; exit}' <<<"$sips_output")
-height=$(awk '/pixelHeight:/ {print $2; exit}' <<<"$sips_output")
-format=$(awk '/format:/ {print $2; exit}' <<<"$sips_output")
-[ -n "$width" ] && [ -n "$height" ] && [ -n "$format" ] || {
-  printf 'codex-image: could not inspect output\n' >&2
-  exit 1
-}
-printf 'dest=%s\nsize=%sx%s\nformat=%s\naccount=%s\nsession=%s\n' \
-  "$dest" "$width" "$height" "$format" "$account" "${session:-none}"
+deliver_generated
 image_caps_model_check "$root" codex image "$(c2pa_model "$generated")"
 image_caps_check "$root" codex "$codex_cmd"
+aspect_check

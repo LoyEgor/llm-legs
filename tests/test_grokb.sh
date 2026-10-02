@@ -68,7 +68,8 @@ cat >"$GROKB_PROFILES_DIR/beta/auth.json" <<'JSON'
 JSON
 
 list_output=$(bash "$SCRIPT" list) || fail "list failed"
-assert grep -qx 'main: login needed' <<<"$list_output"
+# The roster the menubar lists (shared-invariants row dg): main counts once ~/.grok carries a login.
+assert_fails grep -q '^main:' <<<"$list_output"
 assert grep -qx 'alpha: Logged in as alpha@example.com' <<<"$list_output"
 assert grep -qx 'beta: Logged in as beta@example.com (no refresh token)' <<<"$list_output"
 assert_fails grep -q '^\.grokb:' <<<"$list_output"
@@ -78,7 +79,7 @@ assert_fails grep -q '^\.grokb:' <<<"$list_output"
 # column grok has no bucket for. Token timestamps stay out of it: the CLI heals an expired access
 # token itself, so only a missing refresh token is a human's business.
 status_output=$(bash "$SCRIPT" status) || fail "status failed"
-assert grep -qx 'main: login needed | WEEKLY - reset unknown' <<<"$status_output"
+assert_fails grep -q '^main:' <<<"$status_output"
 assert grep -qE '^alpha: Logged in as alpha@example\.com \| WEEKLY 61% reset ' <<<"$status_output"
 assert grep -qE '^beta: Logged in as beta@example\.com \(no refresh token\) \| WEEKLY 61% reset ' <<<"$status_output"
 assert_fails grep -q '5H' <<<"$status_output"
@@ -146,7 +147,7 @@ assert env GROK_HOME=poison bash "$SCRIPT" run main -p fixture
 assert grep -qx 'CALL home=<unset> mcps=0 skills=0 updater=1 worker=1 argc=2' "$GROK_CALLS"
 
 assert run_grokb disable --all
-assert test "$(LC_ALL=C sort "$GROKB_PROFILES_DIR/.grokb/disabled")" = $'alpha\nbeta\nmain'
+assert test "$(LC_ALL=C sort "$GROKB_PROFILES_DIR/.grokb/disabled")" = $'alpha\nbeta'
 assert run_grokb enable --all
 assert test ! -s "$GROKB_PROFILES_DIR/.grokb/disabled"
 assert_fails run_grokb disable missing

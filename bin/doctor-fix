@@ -124,7 +124,8 @@ LLM_ENTRIES = {"reviewers": "review-bench/bin/review-bench", "workers": "llm-leg
 with open(os.path.join(ROOT, "share", "doctor-areas.json")) as _areas:
     _vocabulary = json.load(_areas)
 OWN_AREA, WHOLE_AREA = _vocabulary["own"], _vocabulary.get("whole") or {}
-BROWSER_ENGINE = ("llm-legs/share/gemini_web.py", "llm-legs/share/gemini_music.py", "llm-legs/share/flow_music.py")
+BROWSER_ENGINE = ("llm-legs/share/gemini_web.py", "llm-legs/share/gemini_music.py", "llm-legs/share/flow_music.py",
+                  "llm-legs/share/chatgpt_web.py")
 MENU_BUILDERS = {"automation": ("hammerspoon/automation_menu.lua", "llm-legs/hammerspoon/llm-limits.lua"),
                  "llm-limits": ("llm-legs/hammerspoon/llm-limits.lua",)}
 UPDATER_MACHINERY = {rule: "llm-legs/bin/vendor-cli-update" for rule in ("pass-stale", "pass-failed", "cli-behind", "client-too-old")}
@@ -258,7 +259,7 @@ def snapshot(doctor, doc_file, night=None):
             word = str(match.get("word") or pid.partition("/")[2])
             if area == "image" and word.startswith("browser "):
                 files += [os.path.join(repos_dir(doctor), path) for path in BROWSER_ENGINE]
-                what = "hidden-Chrome route (Flow, the Gemini app, Flow Music), step %s · %s" % (word[8:], what)
+                what = "hidden-Chrome route (Flow, the Gemini app, Flow Music, ChatGPT), step %s · %s" % (word[8:], what)
             if pid.startswith("machinery:"):
                 what = "review-bench doctor class %s · %s" % (pid[10:], what)
         elif doctor == "harness":
@@ -470,6 +471,8 @@ launch_day() { # llm|harness|code
   py snapshot "$doctor" "$(doc_path "$doctor")" >"$runs_dir/.$$.problems" || die "cannot snapshot the $doctor doctor"
   [ "$count" != none ] || [ "$(jq 'map(select(.state == "quiet")) | length' "$runs_dir/.$$.problems")" != 0 ] ||
     { rm -f "$runs_dir/.$$.problems"; die "nothing to fix: the $doctor doctor reads ok with 0 problems and no quiet open ledger row."; }
+  [ "$(jq length "$runs_dir/.$$.problems")" != 0 ] ||
+    { rm -f "$runs_dir/.$$.problems"; die "nothing to fix: every $doctor doctor problem is held back (needs Egor, under active work or over its budget)."; }
   id=$(locked claim_run "$doctor" all '' "$runs_dir/.$$.problems") || { rm -f "$runs_dir/.$$.problems"; exit 1; }
   rm -f "$runs_dir/.$$.problems"
   pending_id=$id
@@ -686,7 +689,7 @@ rerun_doc() { # id doctor -> the document the doctor prints from the run's workt
 
 close_run() { # id --decisions <file> note...
   local id=${1:-} decisions='' doc file doctor as_of launched judge_then judge_now line_no=0
-  local pid verdict purpose evidence decided='' unverified='' problems bad=() touch state failure line
+  local pid verdict purpose evidence decided='' unverified='' problems bad=() touch state failure line rule
   file=$(record_file "$id")
   [ -n "$id" ] && [ -f "$file" ] || die "no run $id"
   shift
@@ -721,8 +724,9 @@ close_run() { # id --decisions <file> note...
     elif [[ $VERDICTS != *" $verdict "* ]]; then
       bad+=("line $line_no ($pid): verdict '$verdict' is not one of fixed|ruled-out|weather|blind-spot|handoff")
       continue
-    elif [ "$verdict" = handoff ] && [[ "$TEST_SPEED_RULES menu_build " == *" $(jq -r --arg p "$pid" \
-      'first(.problems[] | select(.id == $p) | .rule) // ""' "$file") "* ]]; then
+    elif [ "$verdict" = handoff ] && rule=$(jq -r --arg p "$pid" \
+      'first((.problems + (.quiet // []))[] | select(.id == $p) | .rule) // ""' "$file") && [ -n "$rule" ] &&
+      [[ "$TEST_SPEED_RULES menu_build " == *" $rule "* ]]; then
       bad+=("line $line_no ($pid): handoff refused: test speed and menu delays are this run's to fix")
       continue
     fi

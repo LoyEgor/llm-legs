@@ -163,8 +163,8 @@ assert grep -Fq -- '--aspect 16:9' <<<"$(plan_cmd grok delta)"
 cx_reason=$(plan_reason codex alpha)
 assert grep -Fq 'aspect 20:9→prompt' <<<"$cx_reason"
 cx_cmd=$(plan_cmd codex alpha)
-assert grep -E -q 'aspect(\\)? ratio(\\)? 20:9' <<<"$cx_cmd"
-assert_fails "$cx_cmd" --aspect
+assert grep -Fq -- '--aspect 20:9' <<<"$cx_cmd"
+assert_fails "$cx_cmd" 'aspect ratio'
 
 # grok edit list includes 20:9, so a ref keeps it
 rc=0
@@ -181,6 +181,7 @@ assert grep -Fq 'size 1920x1080→aspect 16:9' <<<"$(plan_reason gemini gamma)"
 assert grep -Fq -- '--aspect 16:9' <<<"$(plan_cmd gemini gamma)"
 assert_fails "$(plan_cmd gemini gamma)" --size
 assert grep -Fq 'size 1920x1080→prompt 16:9' <<<"$(plan_reason codex alpha)"
+assert grep -Fq -- '--aspect 16:9' <<<"$(plan_cmd codex alpha)"
 
 # --- dry-run: video skips vendors without video ------------------------------
 rc=0
@@ -266,6 +267,21 @@ rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --vendors grok || rc=$?
 assert test "$rc" -eq 1
 assert grep -Fq $'grok\tdisabled\tskipped' "$DEST/fanout.tsv"
+assert grep -Fq 'out of pool' "$DEST/fanout.tsv"
+assert_fails "$(cat "$CALLS")" 'ARG=disabled'
+
+# --takes never hands a take to an out-of-pool account while a pooled one is free
+cat >"$FAKE_LIST/grokb" <<'EOF'
+#!/usr/bin/env bash
+[ "${1:-}" = list ] || exit 2
+printf 'disabled: Logged in (out of pool)\ndelta: Logged in\n'
+EOF
+: >"$CALLS"
+rc=0
+fanout --dest-dir "$DEST" --prompt 'badge' --vendors grok --takes 1 || rc=$?
+assert test "$rc" -eq 0
+assert grep -Fq $'grok\tdelta\tok' "$DEST/fanout.tsv"
+assert_fails "$(cat "$CALLS")" 'ARG=disabled'
 
 # restore grok lister for pick
 cat >"$FAKE_LIST/grokb" <<'EOF'
@@ -294,6 +310,28 @@ assert test "$rc" -eq 0
 assert_fails "$(cat "$CALLS")" 'ARG=--account'
 assert grep -Fq $'grok\trouted\tok' "$DEST/fanout.tsv"
 assert grep -Fq "grok-pick.png" "$DEST/fanout.tsv"
+
+# --- --takes N runs N takes in parallel, round-robin over the logged-in accounts
+rc=0
+fanout --dest-dir "$DEST" --prompt 'badge' --vendors grok --takes 3 --dry-run || rc=$?
+assert test "$rc" -eq 0
+assert grep -Fq 'grok-delta.png' <<<"$(plan_cmd grok delta)"
+assert grep -Fq 'grok-delta-2.png' <<<"$(plan_cmd grok 'delta#2')"
+assert grep -Fq 'grok-delta-3.png' <<<"$(plan_cmd grok 'delta#3')"
+assert grep -Fq -- '--account delta' <<<"$(plan_cmd grok 'delta#3')"
+assert_fails "$(plan_cmd grok 'delta#3')" 'delta#'
+: >"$CALLS"
+rc=0
+fanout --dest-dir "$DEST" --prompt 'badge' --vendors grok --takes 2 || rc=$?
+assert test "$rc" -eq 0
+assert test "$(grep -c '^ARG=delta$' "$CALLS")" -eq 2
+assert test -e "$DEST/grok-delta-2.png"
+rc=0
+fanout --dest-dir "$DEST" --prompt 'badge' --accounts pick --takes 2 --dry-run || rc=$?
+assert test "$rc" -eq 2
+rc=0
+fanout --dest-dir "$DEST" --prompt 'badge' --takes 0 --dry-run || rc=$?
+assert test "$rc" -eq 2
 
 # --- --video without --ref is a usage error before planning -----------------
 : >"$CALLS"
@@ -427,19 +465,12 @@ fanout --dest-dir "$STATE_DEST" --prompt 'motion' --video --ref "$WORK/refs/r1.p
 assert test "$rc" -eq 0
 assert test ! -e "$STATE_DEST/fanout.state.json"
 
-# --- a manifest kind with a model and no short name is stale caps -------------
-CAPS_ROOT="$WORK/caps-root"
-mkdir -p "$CAPS_ROOT/share/image-caps"
-jq 'del(.short.video)' "$ROOT/share/image-caps/grok.json" >"$CAPS_ROOT/share/image-caps/grok.json"
+# --- the caps model check: fresh, stale and unknown ---------------------------
 # shellcheck source=share/image-caps.sh
 . "$ROOT/share/image-caps.sh"
 video_model=$(jq -r '.model.video' "$ROOT/share/image-caps/grok.json")
-assert test "$(image_caps_model_check "$CAPS_ROOT" grok video "$video_model")" = "model=$video_model model_caps=stale short=missing"
-assert test "$(image_caps_model_check "$CAPS_ROOT" grok video '')" = 'model=unknown model_caps=stale short=missing'
 assert test "$(image_caps_model_check "$ROOT" grok video "$video_model")" = "model=$video_model model_caps=fresh"
-for caps_vendor in codex gemini grok; do
-  assert jq -e '[.model | to_entries[] | select(.value != null) | .key] - (.short | keys) == []' \
-    "$ROOT/share/image-caps/$caps_vendor.json" >/dev/null
-done
+assert test "$(image_caps_model_check "$ROOT" grok video '')" = 'model=unknown model_caps=unknown'
+assert test "$(image_caps_model_check "$ROOT" grok video 'other-model')" = "model=other-model model_caps=stale verified=$video_model"
 
-printf 'PASS: %s asserts; dry-run plans/adaptations (refs, aspect auto, Codex prose, size, video skip/ref), tsv columns, dest spaces, login-needed skip, dry-run dest-dir untouched, exit 0/3/1/2, STALE value, pick without --account, live fanout.state.json cells (none on dry-run, a queued cell waiting), short-name caps check\n' "$asserts"
+printf 'PASS: %s asserts; dry-run plans/adaptations (refs, aspect auto, Codex prose, size, video skip/ref), tsv columns, dest spaces, login-needed skip, dry-run dest-dir untouched, exit 0/3/1/2, STALE value, pick without --account, live fanout.state.json cells (none on dry-run, a queued cell waiting), caps model check\n' "$asserts"

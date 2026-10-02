@@ -14,6 +14,17 @@ codex_removal_marker() {
 
 codex_main_removed() { [ -e "$(codex_removal_marker main)" ]; }
 
+codex_account_names() {
+  local dir="${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}" path
+  codex_main_removed || printf 'main\n'
+  if [ -d "$dir" ]; then
+    for path in "$dir"/*; do
+      [ -d "$path" ] || continue
+      basename "$path"
+    done | LC_ALL=C sort
+  fi
+}
+
 codex_fast_mode_helper() {
   local share_dir
   share_dir=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)

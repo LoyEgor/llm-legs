@@ -138,11 +138,13 @@ base_home=$HOME
 . "$root/share/image-chroma.sh"
 gemini_base_home=$base_home
 gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$base_home/.gemini-profiles}"
-. "$root/share/gemini-accounts.sh"
+. "$root/share/account-roster.sh"
 . "$root/share/worker-model.sh"
 . "$root/share/worker-pool.sh"
 . "$root/share/worker-claims.sh"
 
+off_roster_rc=1
+[ -z "$account" ] || off_roster_rc=2
 picked=false
 if [ -z "$account" ]; then
   pick_rc=0
@@ -167,12 +169,7 @@ if [ -z "$account" ]; then
   fi
 fi
 
-# Collected before the match, never piped into it: `grep -q` leaves on the first line and the
-# roster writing into a closed pipe fails the whole pipeline under `pipefail`.
-if ! grep -Fqx -- "$account" <<<"$(gemini_account_names)"; then
-  printf 'gemini-image: unknown account: %s\n' "$account" >&2
-  exit 1
-fi
+account_roster_refuse gemini-image gemini "$account" || exit "$off_roster_rc"
 worker_pool_refuse_headless gemini "$account" "$(worker_model_pin_csv < <(worker_model_pins gemini))" || exit 4
 if [ "$picked" = true ] && ! worker_claims_record gemini "$account"; then
   printf 'gemini-image: could not record the claim on %s\n' "$account" >&2

@@ -144,10 +144,19 @@ assert test ! -s "$FAKE_CODEX_CALLS"
 
 image_rc=0
 image_run --dest "$OUTPUT_DIR/ghostacct.png" --prompt badge --account ghostacct || image_rc=$?
-assert test "$image_rc" -eq 1
-assert grep -q 'account directory does not exist' "$IMAGE_ERR"
+assert test "$image_rc" -eq 2
+assert grep -q 'unknown account: ghostacct (not on the codex roster' "$IMAGE_ERR"
 assert test ! -s "$FAKE_CODEX_CALLS"
 assert test ! -e "$CODEX_PROFILES/ghostacct"
+# Removing codex main writes its marker: main leaves the roster while ~/.codex stays on disk.
+mkdir -p "$FAKE_HOME/.codex"
+: >"$FAKE_HOME/.llm-limits-codex.json.removed"
+image_rc=0
+image_run --dest "$OUTPUT_DIR/removedmain.png" --prompt badge --account main || image_rc=$?
+assert test "$image_rc" -eq 2
+assert grep -q 'unknown account: main' "$IMAGE_ERR"
+assert test ! -s "$FAKE_CODEX_CALLS"
+rm -f "$FAKE_HOME/.llm-limits-codex.json.removed"
 
 # The conversion tool is checked before the spend, not after it. The stub is not enough here: the
 # script's own probe would find the real binary further down the inherited PATH.
@@ -167,7 +176,7 @@ export PICK_ACCOUNT
 image_rc=0
 image_run --dest "$OUTPUT_DIR/ghost.png" --prompt badge || image_rc=$?
 assert test "$image_rc" -eq 1
-assert grep -q 'account directory does not exist' "$IMAGE_ERR"
+assert grep -q 'unknown account: ghostpick' "$IMAGE_ERR"
 assert test ! -e "$CLAIMS_DIR/codex/ghostpick"
 assert test ! -s "$FAKE_CODEX_CALLS"
 PICK_ACCOUNT=picked
@@ -197,7 +206,7 @@ assert grep -qx "CODEX_HOME=$CODEX_PROFILES/picked" "$FAKE_CODEX_CALLS"
 assert_fails grep -qx 'ARG=resume' "$FAKE_CODEX_CALLS"
 assert grep -q 'built-in image_gen tool' "$FAKE_CODEX_PROMPT"
 assert grep -q 'flat blue circle on green' "$FAKE_CODEX_PROMPT"
-assert grep -q 'exact size 640x480' "$FAKE_CODEX_PROMPT"
+assert grep -q 'Make the image exactly 640x480 pixels.' "$FAKE_CODEX_PROMPT"
 # The final block is a contract: existing consumers read the first four lines by position.
 assert test "$(sed -n 1p "$IMAGE_OUT")" = "dest=$OUTPUT_DIR/generated.png"
 assert test "$(sed -n 2p "$IMAGE_OUT")" = 'size=64x64'
@@ -207,7 +216,9 @@ assert test "$(sed -n 5p "$IMAGE_OUT")" = "session=$THREAD"
 # A PNG without a C2PA softwareAgent says unknown rather than echoing the manifest back.
 assert test "$(sed -n 6p "$IMAGE_OUT")" = 'model=unknown model_caps=unknown'
 assert test "$(sed -n 7p "$IMAGE_OUT")" = 'caps=fresh'
-assert test "$(wc -l <"$IMAGE_OUT")" -eq 7
+# A missed ratio is reported last and delivered as generated, never cropped to fit.
+assert test "$(sed -n 8p "$IMAGE_OUT")" = 'aspect=4:3 achieved=1.000 fit=miss'
+assert test "$(wc -l <"$IMAGE_OUT")" -eq 8
 assert test -z "$(find "$TMP_ROOT" -mindepth 1 -maxdepth 1 -name 'codex-image.*' -print -quit)"
 
 # The model names itself in the PNG's C2PA softwareAgent; `2.0` is the manifest's `gpt-image-2`.
@@ -366,6 +377,13 @@ FAKE_CODEX_MODE=limit
 export FAKE_CODEX_MODE
 image_rc=0
 image_run --dest "$OUTPUT_DIR/limit.png" --prompt badge --account explicit || image_rc=$?
+assert test "$image_rc" -eq 3
+assert grep -qx CODEX_USAGE_LIMIT "$IMAGE_ERR"
+
+FAKE_CODEX_MODE=credits
+export FAKE_CODEX_MODE
+image_rc=0
+image_run --dest "$OUTPUT_DIR/credits.png" --prompt badge --account explicit || image_rc=$?
 assert test "$image_rc" -eq 3
 assert grep -qx CODEX_USAGE_LIMIT "$IMAGE_ERR"
 

@@ -209,12 +209,14 @@ def sha(text):
     return hashlib.sha256(text.encode() if isinstance(text, str) else text).hexdigest()
 
 
-def git(folder, *args, timeout=60):
+def git(folder, *args, timeout=60, raw=False):
     try:
         out = subprocess.run(["git", "-C", folder] + list(args), capture_output=True, timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return None
-    return out.stdout.decode("utf-8", "replace") if out.returncode == 0 else None
+    if out.returncode != 0:
+        return None
+    return out.stdout if raw else out.stdout.decode("utf-8", "replace")
 
 
 def repo_name(top):
@@ -445,14 +447,16 @@ def index_repo(top, cache):
     for rel in list_files(top):
         full = os.path.join(top, rel)
         try:
-            info = os.lstat(full)
+            info = os.stat(full)
         except OSError:
             continue
         if not os.path.isfile(full):
             continue
         prior = old_files.get(rel)
         link = os.path.islink(full)
-        if prior and prior.get("size") == info.st_size and prior.get("mtime_ns") == info.st_mtime_ns and prior.get("link") == link:
+        target = os.path.realpath(full) if link else None
+        if prior and prior.get("size") == info.st_size and prior.get("mtime_ns") == info.st_mtime_ns and prior.get("link") == link \
+                and prior.get("target") == target:
             files[rel] = prior
             reused += 1
             continue
@@ -467,16 +471,17 @@ def index_repo(top, cache):
         if b"\0" in data[:8192]:
             continue
         digest = sha(data)
+        lang = file_lang(rel, data.decode("utf-8", "replace")[:200])
+        key = (digest, lang, file_kind(rel, lang))
         if prior and prior.get("digest") == digest:
             record = dict(prior)
-        elif digest in cache:
-            record = dict(cache[digest])
+        elif key in cache:
+            record = dict(cache[key])
         else:
             record = parse_file(rel, data)
             record["digest"] = digest
-        record.update(size=info.st_size, mtime_ns=info.st_mtime_ns, link=link,
-                      target=os.path.realpath(full) if link else None, exec=bool(info.st_mode & 0o111))
-        cache[digest] = record
+        record.update(size=info.st_size, mtime_ns=info.st_mtime_ns, link=link, target=target, exec=bool(info.st_mode & 0o111))
+        cache[key] = record
         files[rel] = record
         if not prior or prior.get("digest") != digest:
             changed.append(rel)
@@ -547,6 +552,8 @@ def run_rollup():
                         if len(fields) < 3 or not fields[0].isdigit() or not fields[1].isdigit():
                             continue
                         if source == "hooks":
+                            if not fields[2].split():
+                                continue
                             key = "hook:" + fields[2].split()[0]
                         elif source == "menu":
                             key = "menu:" + fields[2]
@@ -813,7 +820,7 @@ def entry_roots(graph):
         if kind == "path" and os.path.isabs(text) and "\n" not in text:
             if text in graph.by_real:
                 found.add(graph.by_real[text])
-            elif any(text.startswith(top + "/") for top in graph.tops.values()):
+            elif any(text.startswith(top + "/") for top in graph.tops.values()) and not os.path.exists(text):
                 dangling.append({"kind": kind, "source": source, "target": text})
         else:
             for token in tokens_of(text):
@@ -1764,6 +1771,7 @@ def apply_ledger(problems, candidates, ledger, indexes):
             if status in DISMISSED:
                 continue
             seen_rows.add(row.get("id"))
+            problem["cause"] = problem["id"]
             problem["ledger"] = problem["id"] = row.get("id")
             if status == "fixed-pending":
                 problem["state"] = "fixed-pending"
@@ -1877,7 +1885,8 @@ def porcelain(top, *paths):
 
 
 def diff_entries(tree, base):
-    fields = (git(tree, "diff", "--name-status", "-z", "--no-renames", base + "...HEAD") or "").split("\0")
+    span = [base, "HEAD"] if base == EMPTY_TREE else [base + "...HEAD"]
+    fields = (git(tree, "diff", "--name-status", "-z", "--no-renames", *span) or "").split("\0")
     return [(fields[i], fields[i + 1]) for i in range(0, len(fields) - 1, 2) if fields[i]]
 
 
@@ -1922,23 +1931,22 @@ def review_claims(top):
 def unit_digest_at(top, ref, span):
     rel = span["file"].split("/", 1)[1]
     if ref:
-        text = git(top, "show", "%s:%s" % (ref, rel))
-        if text is None:
+        data = git(top, "show", "%s:%s" % (ref, rel), raw=True)
+        if data is None:
             return None
     else:
         try:
-            with open(os.path.join(top, rel), encoding="utf-8", errors="replace") as handle:
-                text = handle.read()
+            with open(os.path.join(top, rel), "rb") as handle:
+                data = handle.read()
         except OSError:
             return None
     if "#" not in span["unit"]:
-        return sha(text.encode())[:16]
-    record = parse_file(rel, text.encode())
+        return sha(data)[:16]
     name = span["unit"].rsplit("#", 1)[1]
-    for symbol in record.get("symbols") or ():
-        if symbol["name"] == name:
-            return symbol["digest"]
-    return None
+    named = [s for s in parse_file(rel, data).get("symbols") or () if s["name"] == name]
+    if not named:
+        return None
+    return min(named, key=lambda s: (s["digest"] != span["digest"], abs(s["start"] - span["start"])))["digest"]
 
 
 def revalidate(problem, ref=None, tops=None):
@@ -1984,7 +1992,7 @@ def night_snapshot(problems, night):
         ref = "refs/night/%s/base" % night if night else None
         changed = revalidate(problem, ref, {r: d["top"] for r, d in indexes.items()}) if problem.get("units") else []
         if changed:
-            send_back(problem["id"], "; ".join(changed))
+            send_back(problem.get("cause") or problem["id"], "; ".join(changed))
             continue
         kept.append(problem)
     kept.sort(key=lambda p: (-(p.get("value") or 0), p["id"]))
@@ -2063,10 +2071,10 @@ def removed_symbols(tree, base, rel):
 def day_trees(record, tops):
     launched = record.get("launched_at") or record.get("created_at")
     out = {}
-    for top in tops.values():
+    for top in tops.values() if launched else ():
         if not git(top, "rev-parse", "--verify", "--quiet", "HEAD"):
             continue
-        before = (git(top, "rev-list", "-1", "--before=%s" % launched, "HEAD") or "").strip() if launched else ""
+        before = (git(top, "rev-list", "-1", "--before=%s" % launched, "HEAD") or "").strip()
         out[top] = before or EMPTY_TREE
     return out
 
@@ -2100,7 +2108,7 @@ def check_run(record, base, landing, suites_passed):
 
     def deletion_proof(label, fid, owners, whole_file):
         for pid, problem in owners:
-            verdict = verdicts.get(pid) or {}
+            verdict = verdicts.get(problem.get("cause") or pid) or {}
             if problem.get("needs_egor"):
                 errors.append("%s: %s needs Egor, the fixer never edits it" % (label, pid))
             record_of = graph.files.get(fid) if graph and whole_file else None
@@ -2127,6 +2135,8 @@ def check_run(record, base, landing, suites_passed):
                     errors.append("%s: cross-repo merge: the old copy is deleted on a later night, after the new path is proven" % label)
 
     day = {} if record.get("worktrees") else day_trees(record, tops)
+    if not record.get("worktrees") and not (record.get("launched_at") or record.get("created_at")):
+        errors.append("the run records no launch time: nothing bounds its changes in the main checkouts")
     tree_of = {}
     for tree in record.get("worktrees") or sorted(day):
         if not os.path.isdir(tree):
@@ -2174,9 +2184,9 @@ def check_run(record, base, landing, suites_passed):
         elif landing:
             changed += [c for c in revalidate(problem, None, tops) if c not in changed]
         if changed:
-            send_back(pid, "; ".join(changed))
+            send_back(problem.get("cause") or pid, "; ".join(changed))
             errors.append("%s: its input changed since the judgment (%s): sent back to the judge" % (pid, "; ".join(changed)))
-        candidate = candidates.get(pid)
+        candidate = candidates.get(problem.get("cause") or pid)
         if candidate and candidate.get("evidence_digest") != problem.get("digest") and problem.get("digest"):
             errors.append("%s: its evidence changed since the snapshot: sent back to the judge" % pid)
         fixed = any(isinstance(row, dict) and pid in (row.get("id"), (row.get("match") or {}).get("cause"))

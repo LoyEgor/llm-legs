@@ -305,7 +305,7 @@ cmd_base() {
 # night/<id>/leftover-<slug> at its tip, its WIP committed first, in every sweep repository where the
 # branch is a leftover; the old worktree and branch go once the night branch holds every commit.
 adopt_leftover() { # id branch -> sets branch and adopted (JSON)
-  local id=$1 old=$2 rows row repo br wt landed ahead behind dirty state why tip wip path
+  local id=$1 old=$2 rows row repo br wt landed ahead behind dirty state why tip wip path keep ignored
   branch="night/$id/leftover-${old//\//-}" adopted='[]'
   rows=$(branch_rows | awk -F '\t' -v b="$old" '$2 == b')
   [ -n "$rows" ] || die "no branch $old in the sweep repositories besides main"
@@ -319,25 +319,48 @@ adopt_leftover() { # id branch -> sets branch and adopted (JSON)
     git -C "$repo" rev-parse -q --verify "refs/night/$id/base^{commit}" >/dev/null ||
       die "no refs/night/$id/base in $repo: run night-run base $id first"
     ! git -C "$repo" show-ref --verify --quiet "refs/heads/$branch" || die "$branch already exists in $repo"
+    path="$repo/.claude/worktrees/night-$id-${branch##*/}"
+    [ ! -e "$path" ] || die "$path already exists"
   done <<<"$rows"
   while IFS=$'\t' read -r repo br wt landed ahead behind dirty state why; do
     tip=$(git -C "$repo" rev-parse "refs/heads/$old")
     if [ "$dirty" != 0 ]; then
       wip=$(tree_commit "$wt" "Leftover WIP from $old, adopted by night $id" 'the WIP commit') &&
         git -C "$wt" update-ref "refs/heads/$old" "$wip" "$tip" && git -C "$wt" reset -q &&
-        tip=$wip || die "cannot commit the WIP of $wt"
+        tip=$wip || { adopt_undo "$branch" "$adopted"; die "cannot commit the WIP of $wt"; }
     fi
     path="$repo/.claude/worktrees/night-$id-${branch##*/}"
-    git -C "$repo" branch -q "$branch" "$tip" && night_worktree_add "$repo" "$id" "$branch" "$path" ||
-      die "cannot make $branch in $repo"
     adopted=$(jq -c --arg r "$repo" --arg b "$old" --arg w "$wt" --arg t "$tip" --arg p "$path" \
       '. + [{repo: $r, branch: $b, worktree: (if $w == "-" then null else $w end), tip: $t, night_worktree: $p}]' <<<"$adopted")
-    if { [ "$wt" = - ] || git -C "$repo" worktree remove "$wt"; } && git -C "$repo" branch -q -D "$old"; then
+    git -C "$repo" branch -q "$branch" "$tip" && night_worktree_add "$repo" "$id" "$branch" "$path" ||
+      { adopt_undo "$branch" "$adopted"; die "cannot make $branch in $repo"; }
+  done <<<"$rows"
+  while IFS=$'\t' read -r repo wt path; do
+    keep=''
+    if [ "$wt" != - ]; then
+      if [[ $old =~ code-code-[0-9]{8}T[0-9]{6}Z(-[0-9a-f]+)?$ ]]; then
+        keep='code-doctor check reads the Code fixer run from it'
+      else
+        ignored=$(git -C "$wt" ls-files -o -i --exclude-standard --directory | head -3 | paste -sd ' ' -)
+        [ -z "$ignored" ] || keep="it holds ignored files ($ignored)"
+      fi
+    fi
+    if [ -n "$keep" ]; then
+      printf 'adopted %s %s into %s at %s; the old one stays: %s\n' "$(basename "$repo")" "$old" "$branch" "$path" "$keep"
+    elif { [ "$wt" = - ] || git -C "$repo" worktree remove "$wt"; } && git -C "$repo" branch -q -D "$old"; then
       printf 'adopted %s %s into %s at %s\n' "$(basename "$repo")" "$old" "$branch" "$path"
     else
       printf 'adopted %s %s into %s at %s; the old one stays, git refused its removal\n' "$(basename "$repo")" "$old" "$branch" "$path"
     fi
-  done <<<"$rows"
+  done < <(jq -r '.[] | [.repo, (.worktree // "-"), .night_worktree] | @tsv' <<<"$adopted")
+}
+
+adopt_undo() { # branch adopted -> drops the night branch and worktree of every repository adopted so far
+  local repo path
+  while IFS=$'\t' read -r repo path; do
+    git -C "$repo" worktree remove --force "$path" 2>/dev/null
+    git -C "$repo" branch -q -D "$1" 2>/dev/null
+  done < <(jq -r '.[] | [.repo, .night_worktree] | @tsv' <<<"$2")
 }
 
 cmd_job() {
