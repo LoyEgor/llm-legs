@@ -1236,6 +1236,7 @@
       ],
       "same_cause": [],
       "note": "Event at 2026-10-02T00:20:09Z: code-doctor fixture corpus written in the code-doctor worktree. Cause: instruction_repo_files matched `/.claude/` on the absolute path, and every worktree sits under `<repo>/.claude/worktrees/`, so a session rooted in a worktree watched every markdown file of the repository (64 files in an llm-legs worktree against 2 in the main checkout) and reported ordinary repository work as instruction growth, against instruction_carved_out. Fixed: the segment is matched below the repository root in both the git listing and the walk; test_repository_under_a_claude_directory red on the old code. ",
+      "handoff": "docs/handoffs/2026-10-02-harness-guards-gate-scope.md",
       "last_reviewed": "2026-10-02",
       "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
     },
@@ -1261,6 +1262,7 @@
       ],
       "same_cause": [],
       "note": "Event at 2026-10-01T13:33:03Z: review-anchors-contract.md in the review-bench debt-moved-lines worktree. Cause: instruction_repo_files matched `/.claude/` on the absolute path, and every worktree sits under `<repo>/.claude/worktrees/`, so a session rooted in a worktree watched every markdown file of the repository (64 files in an llm-legs worktree against 2 in the main checkout) and reported ordinary repository work as instruction growth, against instruction_carved_out. Fixed: the segment is matched below the repository root in both the git listing and the walk; test_repository_under_a_claude_directory red on the old code. ",
+      "handoff": "docs/handoffs/2026-10-02-harness-guards-gate-scope.md",
       "last_reviewed": "2026-10-02",
       "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
     },
@@ -1286,6 +1288,7 @@
       ],
       "same_cause": [],
       "note": "Event fd835cdde55996f2 at 2026-10-01T19:19:17Z, ADDED from an unrelated arbostar session (observer 2168b6c1). Cause: the hook tripwire reported ADDED for a file that only the shared ranked cache names after ANOTHER session re-cut it mid-session; the file mtime (2026-09-30 13:46Z) precedes both events. Fixed: inside a check a ranked-only newcomer last written before this session baseline is recorded silently, as at session start; test_instruction_gate.sh case \"another session's re-cut\" red on the old code. The original creation by hyperframes init on 2026-09-30 was outside the 24 h window and is not claimed here. ",
+      "handoff": "docs/handoffs/2026-10-02-harness-guards-gate-scope.md",
       "last_reviewed": "2026-10-02",
       "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
     },
@@ -1311,6 +1314,7 @@
       ],
       "same_cause": [],
       "note": "Event fd835cdde55996f2 at 2026-10-01T19:19:17Z, ADDED from an unrelated arbostar session (observer 2168b6c1). Cause: the hook tripwire reported ADDED for a file that only the shared ranked cache names after ANOTHER session re-cut it mid-session; the file mtime (2026-09-30 13:46Z) precedes both events. Fixed: inside a check a ranked-only newcomer last written before this session baseline is recorded silently, as at session start; test_instruction_gate.sh case \"another session's re-cut\" red on the old code. The original creation by hyperframes init on 2026-09-30 was outside the 24 h window and is not claimed here. ",
+      "handoff": "docs/handoffs/2026-10-02-harness-guards-gate-scope.md",
       "last_reviewed": "2026-10-02",
       "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
     },

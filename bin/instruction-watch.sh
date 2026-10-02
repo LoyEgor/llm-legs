@@ -911,12 +911,11 @@ cmd_check() {
   # or inside a check another session's, since the cache is shared; a file last written before this
   # baseline was is that. Against no reference at all there is nothing to call new.
   if [ -n "$b_all" ]; then
-    local root_new='' ranked_set='' st ht size mtime ino p base_mtime
+    local root_new='' ranked_set='' st ht size mtime ino p base_mtime=''
     if [ -n "$repo_root" ]; then
       case "$_watch_nl$roots_known" in *"$_watch_nl$repo_root$_watch_nl"*) ;; *) root_new=1 ;; esac
     fi
     ranked_set="$_watch_nl$(instruction_ranked_names "$RANKED_CACHE")$_watch_nl"
-    base_mtime=$(stat -f %Fm -- "$ref" 2>/dev/null) || base_mtime=''
     while IFS= read -r vis; do
       [ -n "$vis" ] || continue
       if [ -n "$root_new" ]; then
@@ -925,6 +924,7 @@ cmd_check() {
       case "$vis" in
         "$HOME"/.claude/*) ;;
         *) case "$ranked_set" in *"$_watch_nl$vis$_watch_nl"*)
+             [ -n "$base_mtime" ] || base_mtime=$(stat -f %Fm -- "$ref" 2>/dev/null) || base_mtime=''
              if [ "$mode" != check ] || { [ -n "$base_mtime" ] &&
                  awk -v a="$(stat -L -f %Fm -- "$vis" 2>/dev/null)" -v b="$base_mtime" 'BEGIN { exit !(a != "" && a + 0 < b + 0) }'; }; then
                moved=1; continue
