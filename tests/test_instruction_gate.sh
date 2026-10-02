@@ -2862,6 +2862,42 @@ out=$(raw_check sid-recut-live Bash command "$ANY_CALL" "$NOSPAN_T" \
       | jq -r '.hookSpecificOutput.additionalContext // ""')
 assert_contains "CHANGED $WORK/proj-old/CLAUDE.md" "$out"
 
+echo "== tripwire: a ranked name put back with an old mtime after a later check is still ADDED"
+mkdir -p "$WORK/proj-back"
+printf '#1\n%s\n' "$WORK/proj-back/CLAUDE.md" > "$RANKED"
+span_base sid-put-back >/dev/null
+raw_check sid-put-back Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
+printf 'restored rules\n' > "$WORK/proj-back/CLAUDE.md"
+touch -t "$(date -v-1d +%Y%m%d%H%M.%S)" "$WORK/proj-back/CLAUDE.md"
+out=$(raw_check sid-put-back Bash command "$ANY_CALL" "$NOSPAN_T" \
+      | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "ADDED $WORK/proj-back/CLAUDE.md" "$out"
+
+echo "== tripwire: a ranked file written before the baseline's last touch but unseen is ADDED"
+rm -f "$WORK/proj-back/CLAUDE.md"
+span_base sid-mid-check >/dev/null
+printf 'written mid-check\n' > "$WORK/proj-back/CLAUDE.md"
+touch -A 01 "$INSTRUCTION_WATCH_STATE/session-sid-mid-check.tsv"
+out=$(raw_check sid-mid-check Bash command "$ANY_CALL" "$NOSPAN_T" \
+      | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "ADDED $WORK/proj-back/CLAUDE.md" "$out"
+
+echo "== tripwire: a ranked arrival deferred past the budget is ADDED on the next call"
+rm -f "$WORK/proj-back/CLAUDE.md"
+mkdir -p "$WORK/proj-back2"
+printf '#1\n%s\n%s\n' "$WORK/proj-back/CLAUDE.md" "$WORK/proj-back2/CLAUDE.md" > "$RANKED"
+span_base sid-defer >/dev/null
+printf 'one\n' > "$WORK/proj-back/CLAUDE.md"
+printf 'two\n' > "$WORK/proj-back2/CLAUDE.md"
+out=$(INSTRUCTION_WATCH_BUDGET=0 raw_check sid-defer Bash command "$ANY_CALL" "$NOSPAN_T" \
+      | jq -r '.hookSpecificOutput.additionalContext // ""')
+out="$out $(raw_check sid-defer Bash command "$ANY_CALL" "$NOSPAN_T" \
+      | jq -r '.hookSpecificOutput.additionalContext // ""')"
+assert_contains "ADDED $WORK/proj-back/CLAUDE.md" "$out"
+assert_contains "ADDED $WORK/proj-back2/CLAUDE.md" "$out"
+rm -rf "$WORK/proj-back" "$WORK/proj-back2"
+printf '#1\n' > "$RANKED"
+
 echo "== tripwire: a same-path delete after restore is journaled again"
 printf 'del-restore\n' > "$DOC"
 span_base sid-delrep >/dev/null

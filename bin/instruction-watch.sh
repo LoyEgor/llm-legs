@@ -55,9 +55,10 @@ STATE_DIR=$(instruction_watch_state)
 RANKED_CACHE="$STATE_DIR/ranked.txt"
 repo_root=''
 
-visible_set='' visible_ready=''
+visible_set='' visible_ready='' ranked_names=''
 # Enumerated once per run: the check, the between-sessions check and the rewrite all ask for it.
 load_visible() {
+  ranked_names=$(instruction_ranked_names "$RANKED_CACHE")
   visible_set=$(instruction_visible_paths "$HOME" "$RANKED_CACHE" "$repo_root")
   visible_ready=1
 }
@@ -182,7 +183,8 @@ park_current() {
 # them. Its next check then sees a fingerprint that moved and reports what it finds.
 # Every path the prior baseline watched stays in, whatever the ranked cache says now, and so does
 # every repository root it recorded (`#root`); a path that exists but cannot be read or hashed is
-# recorded as `#unwatchable`, so it is reported once rather than on every call.
+# recorded as `#unwatchable`, so it is reported once rather than on every call. The `#ranked` rows,
+# led by an empty one marking that they were recorded, are the names the ranked cache held.
 write_baseline() {
   local out=$1 tmp=$2 prior=${3:-} pinned=${4:-} p real mtime size ino link hash trust ht line i k t
   local trusted='' had_prior='' kept='' roots=''
@@ -208,8 +210,10 @@ write_baseline() {
     [ -z "$line" ] || had_prior=''
   fi
   [ -n "$repo_root" ] && roots="$roots$repo_root$nl"
+  [ -n "$visible_ready" ] || load_visible
   : >"$tmp" || return 1
   printf '%s' "$roots" | LC_ALL=C awk 'length && !seen[$0]++ { print "#root\t" $0 }' >>"$tmp"
+  printf '\n%s\n' "$ranked_names" | LC_ALL=C awk 'NR == 1 || (length && !seen[$0]++) { print "#ranked\t" $0 }' >>"$tmp"
   mkdir -p "$SNAP_DIR" 2>/dev/null
 
   local -a wp=() wpin=() wst=() wtrust=()
@@ -767,6 +771,7 @@ load_baseline() { # file
       IFS=$'\t' read -r mtime size ino trust hash link vis real <<<"${line%%$'\036'*}"
       case "$mtime" in
         '#root') roots_known="$roots_known$size$_watch_nl"; continue ;;
+        '#ranked') ranked_rec=1; [ -z "$size" ] || ranked_known="$ranked_known$size$_watch_nl"; continue ;;
         '#unwatchable') unw_known="$unw_known$size$_watch_nl"; continue ;;
         '#'*) continue ;;
       esac
@@ -793,6 +798,7 @@ cmd_check() {
   local -a reports=() keys=() deltas=() restores=() reverted=() r_attr=() r_cands=() r_restore=() r_revert=()
   local -a b_mtime=() b_size=() b_ino=() b_trust=() b_hash=() b_link=() b_vis=() b_real=() c_real=() c_vis=()
   local roots_known='' unw_known='' pinned='' b_all='' kind=change sfx='' moved=0 top_rate=''
+  local ranked_known='' ranked_rec=''
   local relay_revert='' grown_key=''
   local attr='' own_start='' now_ns='' pending_attr='' pending_cands=''
   local -a other_sids=() other_starts=() other_ends=()
@@ -801,7 +807,7 @@ cmd_check() {
   if [ "$mode" = check ] && [ -z "$b_all" ]; then
     mode=missing
     report "BASELINE-MISSING $baseline" "$baseline" "missing@$$.$(date +%s)" 0
-    roots_known=''; unw_known=''
+    roots_known=''; unw_known=''; ranked_known=''; ranked_rec=''
     ref=$(newest_baseline "$baseline") && load_baseline "$ref"
   fi
   case "$mode" in
@@ -908,14 +914,15 @@ cmd_check() {
   # nobody approved still lands in every context window from then on. Two arrivals are not: a
   # repository root no baseline has recorded brings its files in with it — this session just
   # opened it — and a path only the ranked cache names is the cache's own re-cut: at session start,
-  # or inside a check another session's, since the cache is shared; a file last written before this
-  # baseline was is that. Against no reference at all there is nothing to call new.
+  # or inside a check another session's, since the cache is shared. The baseline's `#ranked` rows
+  # are the names the cache held when this session last fixed its watch set: a newcomer among them
+  # was added, whatever its mtime says. Against no reference at all there is nothing to call new.
   if [ -n "$b_all" ]; then
-    local root_new='' ranked_set='' st ht size mtime ino p base_mtime=''
+    local root_new='' ranked_set='' st ht size mtime ino p
     if [ -n "$repo_root" ]; then
       case "$_watch_nl$roots_known" in *"$_watch_nl$repo_root$_watch_nl"*) ;; *) root_new=1 ;; esac
     fi
-    ranked_set="$_watch_nl$(instruction_ranked_names "$RANKED_CACHE")$_watch_nl"
+    ranked_set="$_watch_nl$ranked_names$_watch_nl"
     while IFS= read -r vis; do
       [ -n "$vis" ] || continue
       if [ -n "$root_new" ]; then
@@ -924,9 +931,8 @@ cmd_check() {
       case "$vis" in
         "$HOME"/.claude/*) ;;
         *) case "$ranked_set" in *"$_watch_nl$vis$_watch_nl"*)
-             [ -n "$base_mtime" ] || base_mtime=$(stat -f %Fm -- "$ref" 2>/dev/null) || base_mtime=''
-             if [ "$mode" != check ] || { [ -n "$base_mtime" ] &&
-                 awk -v a="$(stat -L -f %Fm -- "$vis" 2>/dev/null)" -v b="$base_mtime" 'BEGIN { exit !(a != "" && a + 0 < b + 0) }'; }; then
+             if [ "$mode" != check ] || { [ -n "$ranked_rec" ] &&
+                 case "$_watch_nl$ranked_known" in *"$_watch_nl$vis$_watch_nl"*) false ;; esac; }; then
                moved=1; continue
              fi ;;
            esac ;;
