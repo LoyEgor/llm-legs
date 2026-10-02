@@ -53,6 +53,8 @@ pushed=true is refused unless every commit of the job is on its repository's ori
   in the night's refs/night/<id>/base
 state=merged with a review is refused while `review-bench fix <review> --print` names open findings:
   the round is fixed through its brief or closed with `review-bench close <review> --nofix`
+state=merged of a Code fixer job (ref code-*, or a leftover carrying a code-* branch) is refused unless `code-doctor check` passes on its run
+  record against refs/night/<id>/base and the main checkouts now; suites=passed attests its green suites
 EOF
   exit 2
 }
@@ -87,16 +89,18 @@ all_nights() { # -> every night as one JSON array, newest first
   jq -s 'sort_by(.started_at, .id) | reverse' "${files[@]}"
 }
 
-doctor_read() { # jq-filter -> {"llm": value|null, "harness": value|null, "updater": value|null} off each latest.json
-  local llm harness updater
+doctor_read() { # jq-filter -> {"llm": value|null, "harness": value|null, "updater": value|null, "code": value|null} off each latest.json
+  local llm harness updater code
   llm="${LLM_DOCTOR_DIR:-$HOME/.cache/llm-doctor}/latest.json"
   harness="${HARNESS_DOCTOR_DIR:-$HOME/.cache/harness-doctor}/latest.json"
   updater="${UPDATER_DOCTOR_DIR:-$HOME/.cache/updater-doctor}/latest.json"
+  code="${CODE_DOCTOR_DIR:-$HOME/.cache/code-doctor}/latest.json"
   jq -n \
     --argjson ln "$(jq -c "$1" "$llm" 2>/dev/null || echo null)" \
     --argjson hn "$(jq -c "$1" "$harness" 2>/dev/null || echo null)" \
     --argjson un "$(jq -c "$1" "$updater" 2>/dev/null || echo null)" \
-    '{llm: $ln, harness: $hn, updater: $un}'
+    --argjson cn "$(jq -c "$1" "$code" 2>/dev/null || echo null)" \
+    '{llm: $ln, harness: $hn, updater: $un, code: $cn}'
 }
 
 doctor_counts() { doctor_read '.problem_count // null'; }
@@ -218,6 +222,15 @@ review_refusal() { # ref round -> why the merged job's review round blocks it, e
   rm -f "$err"
   [ -z "$open" ] || printf "job %s cannot be merged while its review round %s has open findings: fix them (review-bench fix %s --brief <file>, its worker RESUMEd on that brief) or close the round (review-bench close %s --nofix --reason '<why>')\n" \
     "$1" "$2" "$2" "$2"
+}
+
+code_refusal() { # night run-id suites -> why the Code fixer run cannot land, empty when code-doctor check passes
+  local record="${DOCTORS_DIR:-$HOME/.cache/doctors}/runs/$2.json" out night
+  [ -s "$record" ] || { printf 'job %s: no doctor-fix run record %s for code-doctor check\n' "$2" "$record"; return; }
+  night=$(jq -r '.night // empty' "$record" 2>/dev/null)
+  out=$("${NIGHT_RUN_CODE_DOCTOR:-$repo_root/bin/code-doctor}" check "$record" --base "refs/night/${night:-$1}/base" --landing \
+    $([ "$3" != passed ] || printf -- --suites-passed) 2>&1) ||
+    printf 'job %s cannot land, code-doctor check refuses (suites=passed attests green suites):\n%s\n' "$2" "$out"
 }
 
 push_refusal() { # dir hash night -> why hash is no pushed night commit, empty when it is one
@@ -365,7 +378,7 @@ job_of() { # night-file ref patch -> the job with patch applied, empty when ther
 }
 
 job_set() { # id ref key=value...
-  local id=$1 ref=${2:-} pair key value patch='{}' item repo hash dir commits_set=false pushed=''
+  local id=$1 ref=${2:-} pair key value patch='{}' item repo hash dir commits_set=false pushed='' suites=''
   [ -n "$ref" ] && [ $# -ge 3 ] || usage
   shift 2
   for pair in "$@"; do
@@ -381,10 +394,12 @@ job_set() { # id ref key=value...
           die "commits takes <repo>:<hash>[,<repo>:<hash>...], not $value" ;;
       pushed) case $value in true | false) pushed=$value ;; *) die "pushed takes true or false, not $value" ;; esac
         patch=$(jq -c --argjson v "$value" '.pushed = $v' <<<"$patch") ;;
-      *) die "no job key $key: state, reason, branch, review, commits or pushed" ;;
+      suites) [ "$value" = passed ] || die "suites takes passed, not $value"
+        suites=$value patch=$(jq -c '.suites = "passed"' <<<"$patch") ;;
+      *) die "no job key $key: state, reason, branch, review, commits, pushed or suites" ;;
     esac
   done
-  local file job checked='' refusal='' round
+  local file job checked='' refusal='' round code_run
   file=$(night_file "$id")
   if [ "$pushed" = true ]; then
     job=$(job_of "$file" "$ref" "$patch")
@@ -403,6 +418,12 @@ job_set() { # id ref key=value...
     round=$(jq -r 'select(.state == "merged") | .review // empty' <<<"$job")
     [ -z "$round" ] || refusal=$(review_refusal "$ref" "$round")
     [ -z "$refusal" ] || die "$refusal"
+    code_run=$(jq -r 'select(.state == "merged") | [.ref, .adopted[]?.branch]
+      | map(strings | capture("(?<r>code-code-[0-9]{8}T[0-9]{6}Z(-[0-9a-f]+)?)$").r) | first // empty' <<<"$job")
+    if [ -n "$code_run" ]; then
+      refusal=$(code_refusal "$id" "$code_run" "${suites:-$(jq -r '.suites // ""' <<<"$job")}")
+      [ -z "$refusal" ] || die "$refusal"
+    fi
   fi
   lock
   job=$(job_of "$file" "$ref" "$patch")
@@ -543,7 +564,7 @@ JQ_TOTALS='def totals: [.jobs[] | .state] as $s
      unpushed: ([.jobs[] | select(.state == "merged" and .pushed != true)] | length),
      unfinished: ($status == "unfinished"), running: ($status == "running")};
 def hm: if . == null then "-" else fromdateiso8601 | strflocaltime("%H:%M") end;
-def doctor_lines: . as $n | ["llm", "harness", "updater"][] as $d
+def doctor_lines: . as $n | ["llm", "harness", "updater", "code"][] as $d
   | "\($d) \($n.doctors_before[$d] // "-") → \(if $n.doctors_after then ($n.doctors_after[$d] // "-") else "?" end)"
     + ($n.doctor_states_after[$d]? // null | if . then " · proved \(.proved) · pending \(.pending) · new \(.new) · regressed \(.regressed)"
        else "" end);
@@ -617,10 +638,10 @@ cmd_latest() {
     def name: .ref as $r | if .kind == "debt" then (if $r | test("^debt(-[0-9]+)?$") then "cleanup" else "cleanup \($r)" end)
       elif .kind == "leftover" then "leftover \(.adopted[0].branch // $r)"
       elif .kind == "vendor" then "\(.branch // "" | split("/") | if length > 2 then last else $r | sub("-[0-9]{8}T[0-9]{6}Z.*$"; "") end) update"
-      else ($r | capture("^(?<d>llm|harness|updater)(-(?<a>.+?))?-[0-9]{8}T[0-9]{6}Z(-[0-9a-f]+)?$")
+      else ($r | capture("^(?<d>llm|harness|updater|code)(-(?<a>.+?))?-[0-9]{8}T[0-9]{6}Z(-[0-9a-f]+)?$")
         | ($areas[0].renamed["\(.d)-\(.a)"] // .a) as $a
-        | ({llm: "LLM", harness: "Harness", updater: "Updater"}[.d] + " fixer"
-          + (if $a and $a != $areas[0].own then ": " + ($a | gsub("-"; " ")) else "" end))) // $r end;
+        | ({llm: "LLM", harness: "Harness", updater: "Updater", code: "Code"}[.d] + " fixer"
+          + (if $a and $a != $areas[0].own and $a != ($areas[0].whole[.d] // null) then ": " + ($a | gsub("-"; " ")) else "" end))) // $r end;
     def word: {merged: (if .pushed then "" else "not pushed yet" end), left: "unfinished",
       "failed-launch": "failed to launch", "blocked-on-egor": "needs you", "nothing-to-do": "nothing to do",
       pending: (if $status == "running" then "in progress" else "unfinished" end)}[.state] // .state;

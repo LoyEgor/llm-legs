@@ -1,8 +1,8 @@
 # Doctors contract
 
-What the LLM doctor (`bin/llm-doctor`), the Harness doctor (`bin/harness-doctor`) and the Updater
-doctor (`bin/updater-doctor`) share, so that one menu entry and one fixer
-procedure can serve all three. Version 1, written 2026-09-29 by the chat «Updater doctor» from two
+What the LLM doctor (`bin/llm-doctor`), the Harness doctor (`bin/harness-doctor`), the Updater
+doctor (`bin/updater-doctor`) and the Code doctor (`bin/code-doctor`) share, so that one menu entry and one fixer
+procedure can serve all four. Version 1, written 2026-09-29 by the chat «Updater doctor» from two
 T2 hunts over both doctors. A doctor's owner chat may amend it here; the other owners follow the
 amended text.
 
@@ -26,7 +26,7 @@ Who builds what:
 ## 1. Document envelope
 
 Each doctor keeps writing its `latest.json` (`~/.cache/llm-doctor/`, `~/.cache/harness-doctor/`,
-`~/.cache/updater-doctor/`)
+`~/.cache/updater-doctor/`, `~/.cache/code-doctor/`)
 and adds these top-level keys. Its own keys stay as they are.
 
 | key | value |
@@ -71,7 +71,9 @@ always `new`.
 There is one file per doctor, with the same row shape:
 - `share/doctor-ledger.json` for the LLM doctor;
 - `share/harness-ledger.json` for the Harness doctor;
-- `share/updater-ledger.json` for the Updater doctor, whose rows match an exact `{rule, key}`.
+- `share/updater-ledger.json` for the Updater doctor, whose rows match an exact `{rule, key}`;
+- `share/code-ledger.json` for the Code doctor, whose rows match an exact `{cause}` or a structural
+  `{identity}` (§6).
 
 The top level is `{owner, rows, blind_spots}`:
 - `owner` is the chat that owns the doctor, and every handoff about the doctor goes to it.
@@ -146,20 +148,29 @@ read-modify-write holds the runs directory's lock (`share/store-lock.sh`). Field
 Areas: the LLM doctor's block (from the ledger row, the id or the document's blocks), else its health
 row (the ledger row's `match.health`, or the `health[]` row whose `rules` hold the problem's rule); the
 Harness doctor's section of the rule; else `doctor` (`share/doctor-areas.json` `own`), which is every
-Updater rule but `event-waiting`. Old runs' `health`, `self` and `machinery` read as `debt`, `doctor`
+Updater rule but `event-waiting`; the Code doctor's one area `code` (`whole`), labelled a bare
+`Code fixer`. Old runs' `health`, `self` and `machinery` read as `debt`, `doctor`
 and `doctor` (`renamed`). The snapshot keeps the problems not `watch` or
 `fixed-pending`, plus, for the Harness doctor, the top 8 `watch` rows of Hooks and Hook waits by
 value × exposure.
+
+**Top-K exception (the Code doctor only).** Its snapshot takes at most K problems per run, by judged
+`value`: `TOP_K` 3, or `TOP_K_LOW_YIELD` 1 while its yield per 1000 tokens spent is under
+`LOW_YIELD_PER_KTOK` (`bin/code-doctor` `queue_k`). Before ranking it drops the problems in active
+work (an uncommitted path of a main checkout or another worktree, a path a live branch changed, an open
+review claim), the needs-Egor problems, and the problems whose units changed since the night base,
+whose verdicts go back to the judge. The rest stay counted and wait for a later night: a code queue is
+months of work, and a run sized to the whole of it never closes.
 
 The menu reads `doctor-fix runs [doctor] [--open] [--json]` (newest first) to show "fixer ran N d ago
 · closed / still open". `doctor-fix show <id>` prints the run and, per problem, the packet: its
 ledger row, earlier decisions on the id, the component and its git history, and the handoffs,
 invariant rows and memory files naming it. Launch:
-- `launch llm|harness`: the day chat. Refused when the document's `contract` is not 1 or it is
+- `launch llm|harness|code`: the day chat. Refused when the document's `contract` is not 1 or it is
   older than 2 h, when it reads `ok` with no problem and no quiet open row, or while a run of that doctor opened less than
   12 h ago is open; an older open run is marked `abandoned_at`. The chat opens through
   `share/chat-open.sh` on `docs/doctor-fix.md`.
-- `launch llm|harness|updater --night <night-id>`: no chat. Per area with problems or quiet rows and no open run
+- `launch llm|harness|updater|code --night <night-id>`: no chat. Per area with problems or quiet rows and no open run
   of (doctor, area), a record, a worktree `<repo>/.claude/worktrees/night-<night>-<id>` on its branch,
   and `<runs>/<id>.brief.md`; one line `<id>\t<brief>\t<worktree>` each. Nothing to do prints
   nothing; a failed worktree or brief fails its run and the exit status.
@@ -186,6 +197,8 @@ invariant rows and memory files naming it. Launch:
   touching the doctor's code or ledger.
 - It refuses while any line is undecided or unresolvable, listing every one, the same gate as
   `vendor-fingerprint close`. `doctor-fix touches <record> <id> <purpose>` exposes the purpose rule.
+- A Code run also refuses while `bin/code-doctor check <record> --base refs/night/<night>/base`
+  prints a line (§6).
 
 ## 5. Fixer procedure
 
@@ -258,3 +271,27 @@ Updater doctor (added 2026-09-30 by «Updater doctor»):
   `pass-stale`.
 - Its own key `vendors[]` carries, per vendor, what the menu shows: installed, latest, result, the
   catalog newest first (12 at most) and the last 5 events.
+
+Code doctor (added 2026-10-02, design `docs/code-doctor-design.md`):
+- Groups `dead`, `heavy`, `duplicate` (plus `ledger` for a faulty row) under the own key `groups`;
+  they sum to `problem_count`, one unit: a problem is one cause, however many units it spans.
+- A problem exists only once the judge (worker-run, under the night's token and wall budget) ruled
+  it `problem`; an unjudged candidate is the own key `candidates.waiting`, never counted. A
+  dangling outside registration (settings hook, LaunchAgent, PATH link) needs no judge: it is a
+  `needs Egor:` problem whose `steps` hold the exact command, and no fixer takes it.
+- `judge` is sha256 over `bin/code-doctor`, the ledger's `protected`, `keep`, `intentional`,
+  `retired` and dismissal rows, and `LIMITS`; fix tracking leaves it unchanged.
+- ids are `cause:<smallest unit>` (`<repo>/<path>[#<symbol>]`), stable while that unit lives; a
+  ledger row matches `{cause}` exactly or `{identity}` (sketch overlap ≥ `clone_jaccard`), so a cause
+  that returns under a new id is still `regressed`. A row with neither is a fault, `ledger:<id>`.
+- A verdict is cached under a structural digest (unit digests, callers, registrations, purpose
+  records, detector version), never counts or timestamps; `not-now` expires after 90 days.
+- `count` and `window_h` are null; `exposure` is the cause's unit count; `value` is the judged net
+  benefit. Own keys: `candidates`, `cost`, `cost_per_cause`, `yield`, `queue_k`, `coverage`
+  (rollup window, deep-pass slices), `index`, `last_judge`.
+- Fixer safety is mechanical, `code-doctor check`: a deletion needs a judged problem naming the
+  unit, no live entry point, no rollup hits, a quoted purpose or retirement reason and, at landing,
+  `--suites-passed`; no edit through a symlink into another repository; active work blocks; a
+  cross-repository merge deletes the old copy only on a later night than its `migrated` stage.
+- `bin/code-doctor record-fix` writes the fixed-pending row (with its identity and yield) and, with
+  `--mechanism`, `share/canonical-mechanisms.json`, which review-bench's fit lens reads.

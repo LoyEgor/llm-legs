@@ -1,0 +1,14 @@
+{
+  "cases": [
+    {"case": "partial duplicate pair", "cause": "cause:alpha/lib/drive_a.py#load_drivers", "expect": "problem", "group": "duplicate",
+     "units": ["alpha/lib/drive_a.py#load_drivers", "alpha/lib/drive_b.py#load_drivers"]},
+    {"case": "dead script with a dead cycle", "cause": "cause:alpha/bin/old-sync", "expect": "problem", "group": "dead",
+     "units": ["alpha/bin/old-sync", "alpha/lib/old_sync_lib.sh", "alpha/tests/test_old_sync.sh"]},
+    {"case": "protected manual CLI", "files": ["alpha/bin/manual-tool", "alpha/lib/manual_helpers.sh"], "expect": "absent"},
+    {"case": "intentional copy", "files": ["alpha/lib/mirror_a.sh", "alpha/hooks/mirror_b.sh"], "expect": "absent"},
+    {"case": "heavy test that must be kept", "cause": "cause:alpha/tests/test_isolation.sh", "expect": "protected"},
+    {"case": "retired-situation branch with a surviving exception", "cause": "cause:alpha/lib/refresh.sh#robot_curl_refresh",
+     "expect": "problem", "group": "dead", "units": ["alpha/lib/refresh.sh#robot_curl_refresh"],
+     "files_absent": ["alpha/lib/refresh.sh#user_curl_refresh"]}
+  ]
+}

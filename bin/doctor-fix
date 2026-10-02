@@ -57,7 +57,7 @@ locked() { # command... -> runs it under the runs-dir lock
 }
 
 doctor_env() { # doctor -> the env var of its state dir
-  case $1 in llm) printf 'LLM_DOCTOR_DIR' ;; harness) printf 'HARNESS_DOCTOR_DIR' ;; updater) printf 'UPDATER_DOCTOR_DIR' ;; *) return 1 ;; esac
+  case $1 in llm) printf 'LLM_DOCTOR_DIR' ;; harness) printf 'HARNESS_DOCTOR_DIR' ;; updater) printf 'UPDATER_DOCTOR_DIR' ;; code) printf 'CODE_DOCTOR_DIR' ;; *) return 1 ;; esac
 }
 
 doc_path() { # doctor -> its latest.json
@@ -117,12 +117,13 @@ import glob, importlib.machinery, importlib.util, json, os, re, subprocess, sys
 ROOT, PROJECTS, RUNS, HOME, DOCS = (os.environ["DF_" + k] for k in ("ROOT", "PROJECTS", "RUNS", "HOME", "DOCS"))
 sys.path.insert(0, os.path.join(ROOT, "share"))
 from report_frame import fit
-DOCTORS = ("llm", "harness", "updater")
+DOCTORS = ("llm", "harness", "updater", "code")
 HOOK_AREAS = ("Hooks", "Hook waits")
 LLM_ENTRIES = {"reviewers": "review-bench/bin/review-bench", "workers": "llm-legs/bin/worker-run",
                "light": "llm-legs/bin/light-research", "image": "llm-legs/share/image-leg.sh"}
 with open(os.path.join(ROOT, "share", "doctor-areas.json")) as _areas:
-    OWN_AREA = json.load(_areas)["own"]
+    _vocabulary = json.load(_areas)
+OWN_AREA, WHOLE_AREA = _vocabulary["own"], _vocabulary.get("whole") or {}
 BROWSER_ENGINE = ("llm-legs/share/gemini_web.py", "llm-legs/share/gemini_music.py", "llm-legs/share/flow_music.py")
 MENU_BUILDERS = {"automation": ("hammerspoon/automation_menu.lua", "llm-legs/hammerspoon/llm-limits.lua"),
                  "llm-limits": ("llm-legs/hammerspoon/llm-limits.lua",)}
@@ -196,8 +197,15 @@ def strings(value):
     return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
 
 
-def snapshot(doctor, doc_file):
+def snapshot(doctor, doc_file, night=None):
     doc, ledger = load(doc_file, {}), load(ledger_path(doctor), {}) or {}
+    if doctor == "code" and doc.get("status") != "error":
+        module = doctor_module("code")
+        taken = [p.get("id") for path in glob.glob(os.path.join(RUNS, "*.json")) for run in [load(path, {})]
+                 if night and isinstance(run, dict) and run.get("doctor") == "code" and run.get("night") == night
+                 and run.get("launched_at") for p in run.get("problems") or () if isinstance(p, dict)]
+        ranked = [p for p in module.night_snapshot(doc.get("problems") or [], night) if p.get("id") not in taken]
+        doc["problems"] = ranked[:max(0, module.queue_k(module.accounting_summary(module.load_ledger())) - len(taken))]
     if doc.get("status") == "error":
         doc["problems"] = [{"id": "collector:error", "rule": "collector", "state": "new",
                             "fact": "the collector failed: %s" % ((doc.get("self") or {}).get("error") or "no error text")}]
@@ -219,7 +227,7 @@ def snapshot(doctor, doc_file):
         except Exception:
             hooks = []
     problems = list(doc.get("problems") or ())
-    if doc.get("status") != "error":
+    if doc.get("status") != "error" and doctor != "code":
         seen = {p.get("ledger") for p in problems} | {str(p.get("id"))[7:] for p in problems if str(p.get("id")).startswith("ledger:")}
         problems += [{"id": r["id"], "rule": (r.get("match") if isinstance(r.get("match"), dict) else {}).get("rule"),
                       "ledger": r["id"], "state": "quiet", "fact": r.get("title")}
@@ -275,6 +283,10 @@ def snapshot(doctor, doc_file):
                     ident, MENU_BUILDERS["automation"])) if os.path.isfile(f)]
             if rule == "collector":
                 files.append(doctor_script(doctor))
+        elif doctor == "code":
+            area = WHOLE_AREA.get("code", "code")
+            files += doctor_module("code").unit_paths(problem)
+            what = "%s · %s" % (problem.get("group") or rule, problem.get("plan") or "plan in the judgment")
         else:
             if rule == "event-waiting":
                 continue
@@ -285,6 +297,8 @@ def snapshot(doctor, doc_file):
         entry = {"id": pid, "state": state, "fact": problem.get("fact"), "rule": rule, "ledger": problem.get("ledger"),
                  "area": slug(area), "component": {"what": what, "files": sorted({norm(f) for f in files}),
                                                    "rule_at": rule_at(doctor, rule)}}
+        if doctor == "code":
+            entry.update({key: problem.get(key) for key in ("group", "units", "files", "repos", "digest", "needs_egor")})
         if state not in ("watch", "fixed-pending"):
             kept.append(entry)
         elif state == "watch" and doctor == "harness" and area in HOOK_AREAS:
@@ -409,7 +423,7 @@ def touches(record_file, pid, purpose):
 if __name__ == "__main__":
     command = sys.argv[1]
     if command == "snapshot":
-        snapshot(sys.argv[2], sys.argv[3])
+        snapshot(sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else None)
     elif command == "packet":
         packet(sys.argv[2], sys.argv[3])
     elif command == "touches":
@@ -450,7 +464,7 @@ claim_run() { # doctor area night problems-file -> id; refuses (exit 3) while an
   printf '%s\n' "$id"
 }
 
-launch_day() { # llm|harness
+launch_day() { # llm|harness|code
   local doctor=$1 id prompt opened account session n count
   count=$(check_doc "$doctor") || exit 1
   py snapshot "$doctor" "$(doc_path "$doctor")" >"$runs_dir/.$$.problems" || die "cannot snapshot the $doctor doctor"
@@ -486,7 +500,7 @@ write_brief() { # id worktree -> the brief file
   IFS=$'\t' read -r doctor area night branch < <(jq -r '[.doctor, .area, .night, .branch] | @tsv' "$file")
   mkdir -p "$runs_dir/$id.d" || return 1
   decisions="$runs_dir/$id.d/decisions.tsv"
-  case $doctor in llm) title=LLM ;; harness) title=Harness ;; *) title=Updater ;; esac
+  case $doctor in llm) title=LLM ;; harness) title=Harness ;; code) title=Code ;; *) title=Updater ;; esac
   {
     printf 'ROUND: none\n'
     jq -r '.worktrees[1:][] | "ADD-DIR: \(.)"' "$file"
@@ -502,6 +516,8 @@ write_brief() { # id worktree -> the brief file
     printf '   Close reruns `bin/%s-doctor --json` in this worktree itself; a `fixed` problem must read fixed-pending or be gone there.\n' "$doctor"
     printf '5. Whatever you found but did not fix, and every cause you ruled out, goes into the ledger (a row'"'"'s `note`, a new row or a `blind_spots` row), so the next fixer does not dig the same ground.\n'
     printf '6. Report: per problem the verdict and one line of why, the commits (repo@hash) and every handoff.\n\n'
+    [ "$doctor" != code ] ||
+      printf 'Code runs: every problem carries its judged plan and proof obligations; a deletion lands only through `bin/code-doctor check` (close runs it against `refs/night/%s/base`), never edit through a symlink into another repository, and a cross-repository merge lands in stages over nights (the shared module and the callers first, `merges: [{stage: "migrated", night}]` in the ledger row, the old copy on a later night). Record each landed cleanup with `bin/code-doctor record-fix <cause> --by <run> --files ... --lines-removed N [--mechanism M --canonical PATH --replaced PATH...]`.\n\n' "$night"
     ! jq -e --arg rules "$TEST_SPEED_RULES" "$JQ_HAS_RULES" "$file" >/dev/null ||
       printf 'Test speed is this run'"'"'s to fix, never a handoff (`close` refuses one): for `test_long_pole`, `test_daily_cost`, `test_slow` and `suites_at_once` make the suites faster yourself in any sweep repository (an `ADD-DIR:` worktree each): split a long pole into independent suite files that `tests/run-all` runs in parallel, cut redundant cases, make timing asserts load-robust, cache fixtures; every assert keeps its coverage.\n\n'
     ! jq -e --arg rules ' menu_build ' "$JQ_HAS_RULES" "$file" >/dev/null ||
@@ -527,7 +543,7 @@ launch_night() { # doctor night
   local doctor=$1 night=$2 snap area id top wt branch err judge='' brief siblings repo repos failed=0
   [[ $night =~ ^[A-Za-z0-9._-]+$ ]] || die "night id '$night' is not branch-safe"
   check_doc "$doctor" >/dev/null || exit 1
-  snap=$(py snapshot "$doctor" "$(doc_path "$doctor")") || die "cannot snapshot the $doctor doctor"
+  snap=$(py snapshot "$doctor" "$(doc_path "$doctor")" "$night") || die "cannot snapshot the $doctor doctor"
   [ "$snap" != '[]' ] || return 0
   top=$(worktree_top) || die "no repository at $repo_root"
   for area in $(jq -r 'map(.area) | unique[]' <<<"$snap"); do
@@ -575,13 +591,13 @@ launch_night() { # doctor night
   return "$failed"
 }
 
-launch() { # llm|harness|updater [--night <id>]
+launch() { # llm|harness|updater|code [--night <id>]
   local doctor=${1:-}
   mkdir -p "$runs_dir" || die "cannot make $runs_dir"
   case "$doctor:${2:-}" in
-    llm: | harness:) launch_day "$doctor" ;;
+    llm: | harness: | code:) launch_day "$doctor" ;;
     updater:) "${DOCTOR_FIX_VENDOR_CLI_UPDATE:-$repo_root/bin/vendor-cli-update}" now ;;
-    llm:--night | harness:--night | updater:--night) [ -n "${3:-}" ] || usage; launch_night "$doctor" "$3" ;;
+    llm:--night | harness:--night | updater:--night | code:--night) [ -n "${3:-}" ] || usage; launch_night "$doctor" "$3" ;;
     *) usage ;;
   esac
 }
@@ -670,7 +686,7 @@ rerun_doc() { # id doctor -> the document the doctor prints from the run's workt
 
 close_run() { # id --decisions <file> note...
   local id=${1:-} decisions='' doc file doctor as_of launched judge_then judge_now line_no=0
-  local pid verdict purpose evidence decided='' unverified='' problems bad=() touch state failure
+  local pid verdict purpose evidence decided='' unverified='' problems bad=() touch state failure line
   file=$(record_file "$id")
   [ -n "$id" ] && [ -f "$file" ] || die "no run $id"
   shift
@@ -680,7 +696,7 @@ close_run() { # id --decisions <file> note...
   [ -r "$decisions" ] || die "cannot read $decisions"
   doctor=$(jq -r .doctor "$file")
   case $doctor in
-    llm | harness) ;;
+    llm | harness | code) ;;
     updater) [ "$(jq -r "$JQ_AREA area" "$file")" != release ] ||
       die "run $id is an updater release run: it closes with its last event, through vendor-fingerprint close" ;;
     *) die "run $id names no doctor" ;;
@@ -739,6 +755,12 @@ close_run() { # id --decisions <file> note...
   if [ "$judge_then" != "$judge_now" ] && ! printf '%s' "$decided" | grep -qxF judge; then
     bad+=("judge: the $doctor doctor's judge changed since launch (${judge_then:0:12} -> ${judge_now:0:12}); add judge<TAB>changed<TAB>purpose<TAB>why")
   fi
+  if [ "$doctor" = code ]; then
+    while IFS= read -r line; do
+      [ -z "$line" ] || bad+=("code-doctor check: $line")
+    done < <("${DOCTOR_FIX_CODE_DOCTOR:-$repo_root/bin/code-doctor}" check "$file" \
+      $(jq -r 'if .night then "--base\nrefs/night/\(.night)/base" else empty end' "$file") 2>&1)
+  fi
   if [ ${#bad[@]} -gt 0 ]; then
     printf 'doctor-fix: run %s stays open; rows are id<TAB>fixed|ruled-out|weather|blind-spot|handoff<TAB>purpose<TAB>evidence, purpose a repo@hash or a file of the component stating why it exists:\n' "$id" >&2
     printf '%s\n' "${bad[@]}" >&2
@@ -793,7 +815,7 @@ list_runs() { # [doctor] [--open] [--json]
     case $1 in
       --open) open=true ;;
       --json) json=true ;;
-      llm | harness | updater) doctor=$1 ;;
+      llm | harness | updater | code) doctor=$1 ;;
       *) usage ;;
     esac
     shift
@@ -807,9 +829,9 @@ list_runs() { # [doctor] [--open] [--json]
 
 usage_text() {
   cat <<'EOF'
-usage: doctor-fix launch llm|harness|updater [--night <night-id>]
+usage: doctor-fix launch llm|harness|updater|code [--night <night-id>]
        doctor-fix show <id>
-       doctor-fix runs [llm|harness|updater] [--open] [--json]
+       doctor-fix runs [llm|harness|updater|code] [--open] [--json]
        doctor-fix close <id> --decisions <file> <note...>   (a night run reruns its doctor in its worktree)
        doctor-fix abandon <id> [--reason TEXT]
        doctor-fix record updater --session <s> --account <a> --command <file> --problems <event id>...   (internal)

@@ -32,7 +32,10 @@ This design folds in two frontier hunts (runs 20260929T225123Z-3e30191 and 20260
 2. **Prep** (serial, a few minutes; the orchestrator does it):
    - `vendor-cli-update now --night` runs first and blocks, so CLI installs finish before any worker holds a CLI busy;
      it opens no integration chat, which would claim the events `request --night` hands to workers.
-   - Refresh all three doctors so their documents are fresh.
+   - Refresh all four doctors so their documents are fresh. The Code doctor's refresh is
+     `bin/code-doctor refresh` (index, journal rollup, candidates), then
+     `bin/code-doctor judge --night <night-id>`: worker-run judgments of the waiting candidates,
+     stopped by its token and wall budget (`BUDGET`), so a Code fixer only ever sees judged problems.
    - `night-run base <id>` snapshots every sweep repository as it stands, uncommitted work
      included, into `refs/night/<id>/base`, touching neither index nor working tree. Every night
      worktree starts there: main carries days of uncommitted work, and a branch from HEAD would fix
@@ -42,13 +45,16 @@ This design folds in two frontier hunts (runs 20260929T225123Z-3e30191 and 20260
      every leftover branch `night-run leftovers` lists, adopted into the night (see Leftovers).
 3. **Dispatch.** Everything below starts in parallel at about t+10 min.
    - **Fixers.**
-     - `doctor-fix launch <llm|harness|updater> --night <night-id>` makes one run per area that has
+     - `doctor-fix launch <llm|harness|updater|code> --night <night-id>` makes one run per area that has
        problems. The areas are the doctor's own menu words, so the night's `<Doctor> fixer: <area>` row
        names a row of that doctor's menu:
        - the LLM doctor's block, or its health row (`debt`);
        - the Harness doctor's section;
        - else `doctor`, the doctor's own problems (the Updater's machinery: `pass-stale`, `cli-behind`, …),
-         shown as a bare `<Doctor> fixer`. `share/doctor-areas.json` holds that word and the renamed old
+         shown as a bare `<Doctor> fixer`;
+       - the Code doctor's one area `code` (`whole` in the same file), also a bare `Code fixer`, its
+         run holding the top-K problems only (`docs/doctors-contract.md` §4).
+         `share/doctor-areas.json` holds those words and the renamed old
          areas (`llm-health` → `debt`, `harness-self` and `updater-machinery` → `doctor`), so old runs
          keep their label; `tests/test_doctors_menu.sh` checks every label against the rendered menu.
      - Each run gets a worktree on branch `night/<night-id>/<run-id>` and a brief file.
@@ -71,6 +77,10 @@ This design folds in two frontier hunts (runs 20260929T225123Z-3e30191 and 20260
      `ROUND:` line folds its fixer rows; a fix made any other way leaves the round open, and
      `night-run job set … state=merged` refuses a job whose `review` round still has open findings
      until the round is fixed that way or closed `review-bench close <round> --nofix --reason '…'`.
+   - A Code fixer job (`code-*`) merges only through `bin/code-doctor check --landing` on its run
+     record, against its night base and the main checkouts as they are then (active work,
+     revalidation, deletion proof); `night-run job set … state=merged suites=passed` attests the
+     suites that passed after the rebase.
    - The branch is rebased onto main's HEAD. The same worker resolves conflicts, since it knows its
      intent. Suites must pass.
    - Commit (one long line) and push.
@@ -85,7 +95,7 @@ This design folds in two frontier hunts (runs 20260929T225123Z-3e30191 and 20260
      run (`doctor-fix abandon`) and records the job `left` with the watchdog's reason; its branch
      stays unmerged and is named in the report.
 6. **Close.**
-   - Rerun the three doctors. This settles the ledger's `fixed-pending` rows. Commit and push that
+   - Rerun the four doctors. This settles the ledger's `fixed-pending` rows. Commit and push that
      bookkeeping as well, so nothing is dirty after the last push.
    - `night-run finish` writes the morning result, then `span-off`. It also removes every landed,
      clean, not live branch of the sweep repositories with its worktree (see Leftovers); it prints

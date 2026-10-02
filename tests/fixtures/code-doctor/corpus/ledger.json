@@ -1,0 +1,10 @@
+{
+  "owner": "fixture",
+  "protected": [{"path": "alpha/bin/manual-tool", "why": "Egor runs it by hand"}],
+  "keep": [],
+  "intentional": [],
+  "retired": [{"id": "robot-curl", "behavior": "automated curl refresh", "record": "CLAUDE.md: robot curl refresh is permanently disabled",
+               "match": "curl_refresh$", "exceptions": ["alpha/lib/refresh.sh#user_curl_refresh"]}],
+  "rows": [],
+  "blind_spots": []
+}

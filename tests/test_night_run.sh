@@ -59,8 +59,8 @@ R=$(record "$id")
 assert jqe 'keys == (["id", "started_at", "finished_at", "session", "account", "command", "note",
   "doctors_before", "doctors_after", "doctor_states_before", "doctor_states_after", "jobs"] | sort)' "$R"
 assert jqe '.doctor_states_before == {llm: {proved: 0, pending: 0, open: 0, new: 0, regressed: 0},
-  harness: {proved: 0, pending: 0, open: 1, new: 1, regressed: 1}, updater: null} and .doctor_states_after == null' "$R"
-assert jqe '.doctors_before == {llm: 5, harness: 3, updater: null} and .doctors_after == null and .jobs == []
+  harness: {proved: 0, pending: 0, open: 1, new: 1, regressed: 1}, updater: null, code: null} and .doctor_states_after == null' "$R"
+assert jqe '.doctors_before == {llm: 5, harness: 3, updater: null, code: null} and .doctors_after == null and .jobs == []
   and .finished_at == null and .account == "acct-n"' "$R"
 session=$(jq -r .session "$R")
 assert [ "${#session}" = 36 ]
@@ -158,6 +158,38 @@ assert_fails night job "$id" set p7 state=merged review=rb-gone 2>"$WORK/err"
 assert grep -qF "job p7: review round rb-gone cannot be read: no round rb-gone" "$WORK/err"
 assert jqe '[.jobs[] | select(.ref == "p7")][0] | .state == "pending" and .review == "rb-open"' "$R"
 night job "$id" set p7 review= >/dev/null || fail "clear review"
+# A Code fixer job lands only through code-doctor check on its run record; suites=passed attests green suites.
+cat >"$FAKE_BIN/code-doctor" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$DATA/code-checks"
+case " $* " in *" --suites-passed "*) exit 0 ;; esac
+echo "alpha/bin/x: deletion proof: green suites not confirmed (--suites-passed)"
+exit 1
+EOF
+chmod +x "$FAKE_BIN/code-doctor"
+export NIGHT_RUN_CODE_DOCTOR="$FAKE_BIN/code-doctor"
+jq '.id = "ncode" | .started_at = "2020-01-01T00:00:00Z" | .jobs = []' "$R" >"$NIGHTS/ncode.json"
+cref=code-code-20261001T020700Z-0b0b
+night job ncode add fixer "$cref" >/dev/null || fail "add the code job"
+assert_fails night job ncode set "$cref" state=merged 2>"$WORK/err"
+assert grep -qF "job $cref: no doctor-fix run record" "$WORK/err"
+mkdir -p "$DOCTORS_DIR/runs"
+printf '{"id": "%s", "doctor": "code"}\n' "$cref" >"$DOCTORS_DIR/runs/$cref.json"
+assert_fails night job ncode set "$cref" state=merged 2>"$WORK/err"
+assert grep -qF "green suites not confirmed" "$WORK/err"
+assert grep -qxF "check $DOCTORS_DIR/runs/$cref.json --base refs/night/ncode/base --landing" "$DATA/code-checks"
+night job ncode set "$cref" state=merged suites=passed >/dev/null || fail "a code job with its suites passed lands"
+assert jqe --arg r "$cref" '[.jobs[] | select(.ref == $r)][0] | .state == "merged" and .suites == "passed"' "$NIGHTS/ncode.json"
+assert_fails night job ncode set "$cref" suites=green 2>/dev/null
+lref="leftover-night-n0-$cref"
+printf '{"id": "%s", "doctor": "code", "night": "n0"}\n' "$cref" >"$DOCTORS_DIR/runs/$cref.json"
+jq --arg r "$lref" --arg b "night/n0/$cref" '.jobs += [{kind: "leftover", ref: $r, state: "pending", reason: null, branch: null,
+  review: null, commits: [], pushed: false, adopted: [{repo: "/x", branch: $b}]}]' "$NIGHTS/ncode.json" >"$WORK/tmp" &&
+  mv "$WORK/tmp" "$NIGHTS/ncode.json"
+assert_fails night job ncode set "$lref" state=merged 2>"$WORK/err"
+assert grep -qF "job $cref cannot land, code-doctor check refuses" "$WORK/err"
+assert grep -qxF "check $DOCTORS_DIR/runs/$cref.json --base refs/night/n0/base --landing" "$DATA/code-checks"
+rm "$NIGHTS/ncode.json"
 assert_fails night job "$id" set llm-20260930T010203Z pushed=true 2>"$WORK/err"
 assert grep -qF "commit $local_hash is not on origin" "$WORK/err"
 assert_fails night job "$id" set llm-20260930T010203Z "commits=repo:$side_hash" pushed=true 2>"$WORK/err"
@@ -213,7 +245,7 @@ doc updater 2 '[{"state": "watch", "rule": "fix-proof", "fact": "W1 · fixed 0d 
 
 night finish "$id" >/dev/null || fail "finish"
 assert_fails night finish "$id" 2>/dev/null
-assert jqe '.doctors_after == {llm: 1, harness: 0, updater: 2} and .finished_at != null
+assert jqe '.doctors_after == {llm: 1, harness: 0, updater: 2, code: null} and .finished_at != null
   and ([.jobs[] | select(.state == "pending")] | length) == 0
   and ([.jobs[] | select(.ref == "p2")][0] | .state == "left" and .reason == "no outcome recorded by the close")' "$R"
 mkdir -p "$DOCTORS_DIR/runs"
@@ -226,12 +258,13 @@ assert [ "$(grep -c '^unverified' "$WORK/report")" = 1 ]
 assert grep -qxF "llm 5 → 1 · proved 0 · pending 0 · new 0 · regressed 0" "$WORK/report"
 assert grep -qxF "harness 3 → 0 · proved 1 · pending 2 · new 2 · regressed 0" "$WORK/report"
 assert grep -qxF "updater - → 2 · proved 0 · pending 1 · new 0 · regressed 0" "$WORK/report"
+assert grep -qxF "code - → -" "$WORK/report"
 assert [ -z "$(night latest --menu | grep -F 'harness 3 →')" ]
 assert grep -qxF "merged · fixer · llm-20260930T010203Z · review rb-1 · repo@${pushed_hash:0:7} · code +0/-0 · pushed" "$WORK/report"
 assert grep -qxF "left · debt · debt-round · hung: idle 1800" "$WORK/report"
 assert grep -qxF "failed-launch · fixer · harness-r1 · night/$id/harness-r1 · opener" "$WORK/report"
 assert grep -qxF "total · 2 merged · 8 left · 1 failed-launch · 1 blocked-on-egor · pushed" "$WORK/report"
-assert [ "$(wc -l <"$WORK/report" | tr -d ' ')" = 18 ]
+assert [ "$(wc -l <"$WORK/report" | tr -d ' ')" = 19 ]
 assert [ "$(awk '{ print length }' "$WORK/report" | sort -n | tail -1)" -le 100 ]
 assert cmp -s "$WORK/report" <(night report)
 jq '.started_at = "2026-01-01T00:00:00Z"' "$R" >"$WORK/tmp" && mv "$WORK/tmp" "$R"
@@ -542,11 +575,11 @@ assert grep -q "^codex update · " <(night latest --menu)
 
 # Fixer runs recorded under an area's old name keep their menu word; the doctor's own area names no word.
 for ref in llm-health-20261001T020632Z-3671 harness-self-20261001T020659Z-1dba updater-machinery-20261001T020659Z-1dba \
-    llm-doctor-20261001T030000Z-0a0a harness-hook-waits-20261001T020655Z-4a9f; do
+    llm-doctor-20261001T030000Z-0a0a harness-hook-waits-20261001T020655Z-4a9f code-code-20261001T020700Z-0b0b; do
   night job "$idc" add fixer "$ref" >/dev/null || fail "job add $ref"
 done
 assert [ "$(night latest --menu | cut -f1 | grep ' fixer' | sed 's/ · .*//' | paste -sd, -)" \
-  = "LLM fixer: debt,Harness fixer,Updater fixer,LLM fixer,Harness fixer: hook waits" ]
+  = "LLM fixer: debt,Harness fixer,Updater fixer,LLM fixer,Harness fixer: hook waits,Code fixer" ]
 
 # A start killed before it recorded the session leaves a night that runs only while that start lives.
 rm "$NIGHTS"/*.json

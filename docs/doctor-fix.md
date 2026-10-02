@@ -266,3 +266,36 @@ weather, never a reason to drop a cell or a vendor or to raise a cap.
 
 When the cause you fixed was not a problem in `latest.json`, ask that question before closing and
 add a `blind_spots` row to the ledger with `would_catch_if` (§3: record, do not build).
+
+## Code doctor
+
+Owner: `share/code-ledger.json` `owner`. Design: `docs/code-doctor-design.md`. Scope: the problems the
+snapshot hands you, top-K by judged value (`docs/doctors-contract.md` §4): dead units, heavy tests,
+hooks and always-loaded text, duplicate mechanisms, each with the judge's `plan` and `proofs`.
+
+### Read first, in this order
+1. Each problem's `plan`, `proofs` and units in `latest.json`, and the judgment in
+   `~/.cache/code-doctor/verdicts.json` (its `reason` quotes the purpose or retirement record).
+2. The ledger row, if any: `protected`, `keep`, `intentional` and `retired` say what must stay.
+3. The units' git history (`doctor-fix show <id>`).
+
+### Recompute and prove
+- `bin/code-doctor refresh` reindexes and recomputes; `bin/code-doctor check <record> --base
+  refs/night/<night>/base` is the proof close runs: a deletion names a judged unit with no live entry
+  point, no rollup hits and a quoted reason. Run the suites of every repository you touched; the
+  orchestrator lands the job with `night-run job set … state=merged suites=passed`, which reruns the
+  check against main as it is then.
+  The check reads the run's own snapshot, never the live document; a run whose worktree is gone fails it,
+  and a day run (no worktree) is checked over main's commits since its launch. A night-run `leftover` job
+  carrying a `code-*` branch lands through the same check.
+- A unit that changed since the night base is not yours: its verdict went back to the judge.
+- After a landed cleanup, `bin/code-doctor record-fix <cause> --by <run id> --files … --lines-removed N`
+  (plus `--mechanism`, `--canonical`, `--replaced` when one module now owns the job), so the doctor
+  reads it `fixed-pending`, counts the yield, and review-bench's fit lens learns the canonical module.
+
+### Never
+- Edit through a symlink into another repository, or touch a registration outside the repositories
+  (settings, LaunchAgents, PATH links): those are `needs Egor:` problems with their exact step.
+- Delete both copies' old paths of a cross-repository merge in one night: the shared module and the
+  callers land first (ledger row `merges: [{stage: "migrated", night}]`), the old copy on a later night.
+- Loosen `LIMITS`, the ledger's protections or a verdict: that is a handoff to the owner.

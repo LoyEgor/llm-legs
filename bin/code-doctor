@@ -1,0 +1,2253 @@
+#!/usr/bin/env python3
+"""Code doctor: finds dead, heavy and duplicate code in the sweep repositories (docs/code-doctor-design.md)
+and writes ~/.cache/code-doctor/latest.json in the shape of docs/doctors-contract.md. The index and the
+candidates use no LLM; only `judge` reads candidates, through worker-run, under a token and wall budget."""
+
+import argparse
+import datetime
+import fnmatch
+import glob
+import hashlib
+import heapq
+import json
+import math
+import os
+import plistlib
+import re
+import resource
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import zlib
+
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+
+DETECTOR_VERSION = 2
+PARSER_VERSION = 3
+LIMITS = {
+    "silent_days": 14,
+    "hot_ms_day": 60000,
+    "heavy_test_s": 120,
+    "token_day": 500000,
+    "complex_lines": 300,
+    "clone_min_lines": 8,
+    "clone_jaccard": 0.6,
+    "clone_shared": 4,
+    "touch_min_idf": 12.0,
+    "touch_jaccard": 0.4,
+    "touch_shared": 3,
+}
+TOP_K = 3
+TOP_K_LOW_YIELD = 1
+LOW_YIELD_PER_KTOK = 0.2
+NOT_NOW_DAYS = 90
+BUDGET = {"tokens": 400000, "wall_s": 3600}
+TOKEN_ESTIMATE_FACTOR = 3
+SKETCH_K = 32
+SHINGLE = 4
+COMMON_DF = 50
+TOUCH_COMMON_DF = 30
+MAX_FILE_BYTES = 2 << 20
+COUNTED = ("new", "open", "regressed")
+DISMISSED = ("not-a-bug", "weather")
+GROUPS = ("dead", "heavy", "duplicate")
+GROUP_RANK = {"dead": 0, "duplicate": 1, "heavy": 2}
+EVIDENCE_MAX = 3
+EXCERPT_MAX = 300
+DECLARED = ("bash", "python", "lua", "js", "jq")
+KEEP_WORDS = re.compile(r"isolation|data loss|recovery|must be kept", re.I)
+
+EXT_LANG = {".sh": "bash", ".bash": "bash", ".py": "python", ".lua": "lua", ".js": "js", ".mjs": "js",
+            ".cjs": "js", ".ts": "js", ".jq": "jq", ".md": "doc", ".json": "data", ".jsonl": "data",
+            ".txt": "data", ".tsv": "data", ".plist": "data", ".yml": "data", ".yaml": "data", ".toml": "data",
+            ".png": "data", ".jpg": "data", ".css": "data", ".html": "data", ".svg": "data"}
+SHEBANG_LANG = (("python", "python"), ("bash", "bash"), ("/sh", "bash"), ("zsh", "bash"), ("node", "js"),
+                ("lua", "lua"), ("jq", "jq"))
+COMMENT = {"bash": "#", "python": "#", "jq": "#", "lua": "--", "js": "//"}
+TOKEN_RE = re.compile(r"~?/?\.?[A-Za-z0-9_][A-Za-z0-9_.\-/]*")
+WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|\d+|\S")
+GLOB_RE = re.compile(r"([A-Za-z0-9_.\-/~]*)/([A-Za-z0-9_.\-]*)\*([A-Za-z0-9_.\-]*)")
+TEMPLATE_RE = re.compile(r"\$\{[^}\n]*\}|\$\([^)\n]*\)|\$[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][\w.\[\]'\"]*\}|%[sd]"
+                         r"|[\"']\s*(?:\.\.|\+)\s*[A-Za-z_][\w.\[\]]*\s*(?:\.\.|\+)\s*[\"']")
+STRING_RE = re.compile(r"\"([^\"\n]{8,80})\"|'([^'\n]{8,80})'")
+SYMBOL_RE = {
+    "bash": re.compile(r"^\s*(?:function\s+)?([A-Za-z_][A-Za-z0-9_:\-]*)\s*\(\)\s*\{?"),
+    "python": re.compile(r"^(\s*)(?:async\s+)?(?:def|class)\s+([A-Za-z_][A-Za-z0-9_]*)"),
+    "lua": re.compile(r"^\s*(?:local\s+)?function\s+([A-Za-z_][A-Za-z0-9_.:]*)\s*\(|^\s*(?:local\s+)?([A-Za-z_][A-Za-z0-9_.]*)\s*=\s*function\s*\("),
+    "js": re.compile(r"^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)|^\s*(?:export\s+)?(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\("),
+}
+HEREDOC_RE = re.compile(r"\b(python3?|jq|lua|node)\b[^\n]*<<-?\s*['\"]?([A-Z_][A-Z0-9_]*)['\"]?")
+ASSIGN_BLOCK_RE = re.compile(r"^([A-Z_][A-Z0-9_]*)='$")
+BASH_WORDS = {"if", "then", "else", "elif", "fi", "for", "while", "do", "done", "case", "esac", "in", "local",
+              "return", "exit", "echo", "printf", "read", "set", "shift", "export", "test", "true", "false",
+              "cd", "trap", "eval", "exec", "source", "declare", "unset", "break", "continue", "function",
+              "wait", "command", "type", "let", "until", "select", "time", "builtin", "mkdir", "rm", "mv", "cp",
+              "cat", "grep", "sed", "awk", "sort", "head", "tail", "tr", "cut", "wc", "date", "sleep", "kill",
+              "ls", "basename", "dirname", "touch", "printf", "xargs", "find", "chmod", "ln", "env"}
+TEST_PART = re.compile(r"(^|/)tests?/|(^|/)test_[^/]*$|_test\.[a-z]+$")
+INSTRUCTION_PART = re.compile(r"(^|/)CLAUDE(\.local)?\.md$|(^|/)(skills|agents|commands)/.*\.md$")
+FIXTURE_PART = re.compile(r"(^|/)tests/fixtures/")
+
+
+def base_home():
+    return os.environ.get("HOME") or os.path.expanduser("~")
+
+
+def state_dir():
+    return os.environ.get("CODE_DOCTOR_DIR") or os.path.join(base_home(), ".cache", "code-doctor")
+
+
+def ledger_path():
+    return os.environ.get("CODE_DOCTOR_LEDGER") or os.path.join(ROOT_DIR, "share", "code-ledger.json")
+
+
+def mechanisms_path():
+    return os.environ.get("CODE_DOCTOR_MECHANISMS") or os.path.join(ROOT_DIR, "share", "canonical-mechanisms.json")
+
+
+def harness_dir():
+    return os.environ.get("HARNESS_DOCTOR_DIR") or os.path.join(base_home(), ".cache", "harness-doctor")
+
+
+def statusline_cache():
+    return os.environ.get("STATUSLINE_CACHE_DIR") or os.path.join(base_home(), ".cache", "claude-statusline")
+
+
+def worker_run_cmd():
+    return os.environ.get("CODE_DOCTOR_WORKER_RUN") or os.path.join(ROOT_DIR, "bin", "worker-run")
+
+
+def repos_dir():
+    return os.environ.get("DOCTOR_FIX_PROJECTS") or "/Volumes/Work/Projects"
+
+
+def repo_paths():
+    listed = os.environ.get("CODE_DOCTOR_REPOS")
+    if listed:
+        paths = [p for p in listed.split(":") if p]
+    else:
+        sweep = os.environ.get("NIGHT_RUN_SWEEP_REPOS") or os.path.join(base_home(), ".claude", "sweep-repos")
+        try:
+            with open(sweep) as handle:
+                paths = [line.strip() for line in handle if line.strip()]
+        except OSError:
+            paths = []
+    return [os.path.realpath(p) for p in paths if os.path.isdir(p)]
+
+
+def now_s():
+    return float(os.environ.get("CODE_DOCTOR_NOW") or time.time())
+
+
+def read_json(path, default=None):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return default
+
+
+def write_json(path, value):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    handle, temporary = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp.")
+    with os.fdopen(handle, "w", encoding="utf-8") as out:
+        json.dump(value, out, ensure_ascii=False, indent=1, sort_keys=True)
+        out.write("\n")
+    os.replace(temporary, path)
+
+
+def append_jsonl(path, row):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def read_jsonl(path):
+    rows = []
+    try:
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict):
+                    rows.append(row)
+    except OSError:
+        pass
+    return rows
+
+
+def iso_time(epoch):
+    if epoch is None:
+        return None
+    return datetime.datetime.fromtimestamp(epoch).astimezone().isoformat(timespec="seconds")
+
+
+def iso_epoch(text):
+    if not isinstance(text, str) or not text:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def clip(text, limit=EXCERPT_MAX):
+    text = text or ""
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def sha(text):
+    return hashlib.sha256(text.encode() if isinstance(text, str) else text).hexdigest()
+
+
+def git(folder, *args, timeout=60):
+    try:
+        out = subprocess.run(["git", "-C", folder] + list(args), capture_output=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.decode("utf-8", "replace") if out.returncode == 0 else None
+
+
+def repo_name(top):
+    return os.path.basename(top.rstrip("/"))
+
+
+
+
+def file_lang(rel, head):
+    ext = os.path.splitext(rel)[1].lower()
+    if ext in EXT_LANG:
+        return EXT_LANG[ext]
+    first = head.split("\n", 1)[0]
+    if first.startswith("#!"):
+        for word, lang in SHEBANG_LANG:
+            if word in first:
+                return lang
+        return "undeclared:" + first[2:].split()[0].rsplit("/", 1)[-1] if first[2:].split() else "undeclared:?"
+    return "undeclared:" + (ext.lstrip(".") or "none")
+
+
+def file_kind(rel, lang):
+    if FIXTURE_PART.search(rel):
+        return "fixture"
+    if INSTRUCTION_PART.search(rel):
+        return "instruction"
+    if rel.endswith("tests/run-all"):
+        return "code"
+    if TEST_PART.search(rel) and lang not in ("doc", "data"):
+        return "test"
+    if lang == "doc":
+        return "doc"
+    if lang == "data":
+        return "data"
+    return "code"
+
+
+def comment_line(line, lang):
+    mark = COMMENT.get(lang)
+    stripped = line.lstrip()
+    return bool(mark) and stripped.startswith(mark) and not stripped.startswith("#!")
+
+
+def tokens_of(text):
+    found = set()
+    for token in TOKEN_RE.findall(text):
+        token = token.rstrip(".-/")
+        if len(token) >= 3:
+            found.add(token)
+    return found
+
+
+def normalize(text, lang):
+    words = []
+    for line in text.splitlines():
+        if comment_line(line, lang) or not line.strip():
+            continue
+        line = STRING_RE.sub(" S ", line)
+        for word in WORD_RE.findall(line):
+            words.append("N" if word.isdigit() else word.lower())
+    return words
+
+
+def sketch(words):
+    if len(words) < SHINGLE:
+        return []
+    hashes = {zlib.crc32(" ".join(words[i:i + SHINGLE]).encode()) for i in range(len(words) - SHINGLE + 1)}
+    return sorted(heapq.nsmallest(SKETCH_K, hashes))
+
+
+def touchpoints(text, lang):
+    found = set()
+    for line in text.splitlines():
+        if comment_line(line, lang):
+            continue
+        for match in STRING_RE.finditer(line):
+            literal = match.group(1) or match.group(2)
+            if " " not in literal and re.search(r"[-./:]", literal):
+                found.add("lit:" + literal)
+        if lang == "bash":
+            for segment in re.split(r"\|\||&&|[|;]|\$\(|`", line):
+                words = segment.strip().split()
+                while words and "=" in words[0]:
+                    words = words[1:]
+                if words and re.fullmatch(r"[a-z][a-z0-9_.\-]+", words[0]) and words[0] not in BASH_WORDS:
+                    found.add("cmd:" + words[0])
+        elif lang == "python":
+            for module in re.findall(r"^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))", line):
+                found.add("mod:" + (module[0] or module[1]))
+            for call in re.findall(r"\[\s*[\"']([a-z][\w.\-]+)[\"']\s*,", line):
+                found.add("cmd:" + call)
+            for call in re.findall(r"\b([a-z_]\w*\.[a-z_]\w*)\(", line):
+                found.add("call:" + call)
+        elif lang == "lua":
+            for call in re.findall(r"\b(hs\.[\w.]+)", line):
+                found.add("call:" + call)
+        elif lang == "js":
+            for call in re.findall(r"\b(?:page|browser|context)\.(\w+)\(", line):
+                found.add("call:" + call)
+            for module in re.findall(r"require\(\s*[\"']([^\"']+)[\"']\)|from\s+[\"']([^\"']+)[\"']", line):
+                found.add("mod:" + (module[0] or module[1]))
+    return found
+
+
+def block_end(lines, start, lang, indent):
+    if lang == "python":
+        for index in range(start + 1, len(lines)):
+            line = lines[index]
+            if line.strip() and not line.lstrip().startswith("#") and len(line) - len(line.lstrip()) <= indent:
+                return index
+        return len(lines)
+    depth, opened = 0, False
+    closer = "end" if lang == "lua" else "}"
+    for index in range(start, len(lines)):
+        line = lines[index]
+        if comment_line(line, lang):
+            continue
+        if lang == "lua":
+            depth += len(re.findall(r"\b(function|do|then)\b", line)) - len(re.findall(r"\belseif\b", line))
+            depth -= len(re.findall(r"\bend\b", line))
+            opened = True
+        else:
+            depth += line.count("{") - line.count("}")
+            opened = opened or "{" in line
+        if opened and depth <= 0 and (closer in line or index > start):
+            return index + 1
+    return len(lines)
+
+
+def symbols_of(text, lang, offset=0):
+    lines = text.splitlines()
+    pattern = SYMBOL_RE.get(lang)
+    out = []
+    if not pattern:
+        return out
+    for index, line in enumerate(lines):
+        match = pattern.match(line)
+        if not match:
+            continue
+        if lang == "python":
+            indent, name = len(match.group(1)), match.group(2)
+        else:
+            indent, name = 0, next(g for g in match.groups() if g)
+        end = block_end(lines, index, lang, indent)
+        body = "\n".join(lines[index:end])
+        words = normalize(body, lang)
+        out.append({"name": name, "start": offset + index + 1, "end": offset + end, "lines": end - index,
+                    "lang": lang, "digest": sha(body)[:16], "sketch": sketch(words) if end - index >= LIMITS["clone_min_lines"] else [],
+                    "touch": sorted(touchpoints(body, lang)),
+                    "branches": len(re.findall(r"\b(if|elif|elseif|case|while|for)\b", body))})
+    return out
+
+
+def embedded_blocks(text):
+    lines = text.splitlines()
+    out, index = [], 0
+    while index < len(lines):
+        line = lines[index]
+        match = HEREDOC_RE.search(line)
+        assign = ASSIGN_BLOCK_RE.match(line)
+        if match:
+            lang = {"python": "python", "python3": "python", "jq": "jq", "lua": "lua", "node": "js"}[match.group(1)]
+            tag = match.group(2)
+            end = next((j for j in range(index + 1, len(lines)) if lines[j].strip() == tag), len(lines))
+            out.append((lang, index + 1, "\n".join(lines[index + 1:end])))
+            index = end + 1
+            continue
+        if assign:
+            end = next((j for j in range(index + 1, len(lines)) if lines[j].strip() == "'"), None)
+            if end is not None:
+                body = "\n".join(lines[index + 1:end])
+                if re.search(r"^\s*(def |import |from \w+ import )", body, re.M):
+                    out.append(("python", index + 1, body))
+                    index = end + 1
+                    continue
+        index += 1
+    return out
+
+
+def parse_file(rel, data):
+    text = data.decode("utf-8", "replace")
+    lang = file_lang(rel, text[:200])
+    kind = file_kind(rel, lang)
+    code, comment = set(), set()
+    globs = []
+    code_lang = lang if lang in DECLARED else None
+    for line in text.splitlines():
+        target = comment if code_lang and comment_line(line, code_lang) else code
+        target.update(tokens_of(line))
+        if target is code and code_lang:
+            for match in GLOB_RE.finditer(line):
+                globs.append([match.group(1).split("/")[-1], match.group(2), match.group(3)])
+            templated = TEMPLATE_RE.sub("*", line)
+            if templated != line:
+                for match in GLOB_RE.finditer(templated):
+                    spec = [match.group(1).split("/")[-1] or "@here", match.group(2), match.group(3)]
+                    if (spec[0] != "@here" or spec[1] or spec[2]) and spec not in globs:
+                        globs.append(spec)
+    record = {"lang": lang, "kind": kind, "lines": text.count("\n") + 1, "symbols": [], "touch": [],
+              "refs": {"code": sorted(code), "comment": sorted(comment - code)}, "globs": globs}
+    if lang in DECLARED:
+        record["symbols"] = symbols_of(text, lang)
+        if lang == "bash":
+            for inner, offset, body in embedded_blocks(text):
+                record["symbols"] += symbols_of(body, inner, offset)
+        record["touch"] = sorted(touchpoints(text, lang))
+    return record
+
+
+def list_files(top):
+    out = git(top, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+    if out is None:
+        found = []
+        for folder, dirs, files in os.walk(top):
+            dirs[:] = [d for d in dirs if d not in (".git", "node_modules") and not (d == "worktrees" and folder.endswith(".claude"))]
+            found += [os.path.relpath(os.path.join(folder, f), top) for f in files]
+        return sorted(found)
+    return sorted({p for p in out.split("\0") if p and "/.claude/worktrees/" not in "/" + p
+                   and not p.startswith("node_modules/") and "/node_modules/" not in p})
+
+
+def index_repo(top, cache):
+    name = repo_name(top)
+    path = os.path.join(state_dir(), "index", name + ".json")
+    old = read_json(path, {}) or {}
+    old_files = (old.get("files") or {}) if old.get("parser") == PARSER_VERSION else {}
+    files, changed, reused, skipped = {}, [], 0, []
+    for rel in list_files(top):
+        full = os.path.join(top, rel)
+        try:
+            info = os.lstat(full)
+        except OSError:
+            continue
+        if not os.path.isfile(full):
+            continue
+        prior = old_files.get(rel)
+        link = os.path.islink(full)
+        if prior and prior.get("size") == info.st_size and prior.get("mtime_ns") == info.st_mtime_ns and prior.get("link") == link:
+            files[rel] = prior
+            reused += 1
+            continue
+        if info.st_size > MAX_FILE_BYTES:
+            skipped.append(rel)
+            continue
+        try:
+            with open(full, "rb") as handle:
+                data = handle.read()
+        except OSError:
+            continue
+        if b"\0" in data[:8192]:
+            continue
+        digest = sha(data)
+        if prior and prior.get("digest") == digest:
+            record = dict(prior)
+        elif digest in cache:
+            record = dict(cache[digest])
+        else:
+            record = parse_file(rel, data)
+            record["digest"] = digest
+        record.update(size=info.st_size, mtime_ns=info.st_mtime_ns, link=link,
+                      target=os.path.realpath(full) if link else None, exec=bool(info.st_mode & 0o111))
+        cache[digest] = record
+        files[rel] = record
+        if not prior or prior.get("digest") != digest:
+            changed.append(rel)
+    snapshot = sha("\n".join("%s %s" % (rel, files[rel]["digest"]) for rel in sorted(files)))
+    previous = old.get("cursor") or {}
+    cursor = {"snapshot": snapshot, "head": (git(top, "rev-parse", "HEAD") or "").strip() or None,
+              "at": iso_time(now_s()), "previous": previous.get("snapshot"),
+              "changed": sorted(set(changed) | set(old_files) - set(files)) if previous else None}
+    doc = {"repo": name, "top": top, "parser": PARSER_VERSION, "cursor": cursor, "files": files, "skipped": skipped}
+    write_json(path, doc)
+    return doc, len(changed), reused
+
+
+def run_index():
+    started = time.time()
+    cache, summary = {}, []
+    for top in repo_paths():
+        doc, changed, reused = index_repo(top, cache)
+        summary.append({"repo": doc["repo"], "files": len(doc["files"]), "parsed": changed, "reused": reused,
+                        "snapshot": doc["cursor"]["snapshot"][:12]})
+    account(None, None, "collector", cpu_s=cpu_seconds(), wall_s=time.time() - started, note="index")
+    return summary
+
+
+def load_indexes():
+    out = {}
+    for top in repo_paths():
+        doc = read_json(os.path.join(state_dir(), "index", repo_name(top) + ".json"))
+        if isinstance(doc, dict) and doc.get("top") == top:
+            out[doc["repo"]] = doc
+    return out
+
+
+def cpu_seconds():
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    return round(usage.ru_utime + usage.ru_stime, 3)
+
+
+
+
+def journal_sources():
+    base = harness_dir()
+    out = {}
+    for path in glob.glob(os.path.join(base, "hooks", "*.tsv")) + glob.glob(os.path.join(base, "hooks", "folded", "*.tsv")):
+        stem = os.path.basename(path)[:-4]
+        if stem.isdigit():
+            day = time.strftime("%Y-%m-%d", time.gmtime(int(stem) * 86400))
+            out.setdefault(("hooks", day), []).append(path)
+    for sub in ("menu", "statusline"):
+        for path in glob.glob(os.path.join(base, sub, "*.tsv")):
+            day = os.path.basename(path)[:10]
+            if re.fullmatch(r"\d{4}-\d\d-\d\d", day):
+                out.setdefault((sub, day), []).append(path)
+    return out
+
+
+def run_rollup():
+    folder = os.path.join(state_dir(), "rollup")
+    today = time.strftime("%Y-%m-%d", time.localtime(now_s()))
+    written = 0
+    for (source, day), paths in sorted(journal_sources().items()):
+        hits, ms, sessions = {}, {}, set()
+        for path in paths:
+            try:
+                with open(path, errors="replace") as handle:
+                    for line in handle:
+                        fields = line.rstrip("\n").split("\t")
+                        if len(fields) < 3 or not fields[0].isdigit() or not fields[1].isdigit():
+                            continue
+                        if source == "hooks":
+                            key = "hook:" + fields[2].split()[0]
+                        elif source == "menu":
+                            key = "menu:" + fields[2]
+                        else:
+                            key = "statusline"
+                            sessions.add(fields[2])
+                        hits[key] = hits.get(key, 0) + 1
+                        ms[key] = ms.get(key, 0) + max(0, (int(fields[1]) - int(fields[0])) // 1000)
+            except OSError:
+                continue
+        path = os.path.join(folder, day + ".json")
+        doc = read_json(path, {}) or {"day": day, "sources": {}}
+        doc["sources"][source] = {"hits": hits, "ms": ms, "sessions": len(sessions) if source == "statusline" else None}
+        doc["complete"] = day < today
+        write_json(path, doc)
+        written += 1
+    return written
+
+
+def rollup_days():
+    days = {}
+    for path in glob.glob(os.path.join(state_dir(), "rollup", "*.json")):
+        doc = read_json(path)
+        if isinstance(doc, dict) and doc.get("day"):
+            days[doc["day"]] = doc
+    return days
+
+
+def coverage(days, source="hooks"):
+    covered = sorted(day for day, doc in days.items() if source in (doc.get("sources") or {}) and doc.get("complete"))
+    if not covered:
+        return {"source": source, "start": None, "end": None, "days": 0, "gaps": [], "tail_days": 0}
+    start = datetime.date.fromisoformat(covered[0])
+    end = datetime.date.fromisoformat(covered[-1])
+    present = set(covered)
+    gaps, tail, day = [], 0, end
+    probe = start
+    while probe <= end:
+        if probe.isoformat() not in present:
+            gaps.append(probe.isoformat())
+        probe += datetime.timedelta(days=1)
+    while day.isoformat() in present:
+        tail += 1
+        day -= datetime.timedelta(days=1)
+    return {"source": source, "start": covered[0], "end": covered[-1], "days": len(covered), "gaps": gaps,
+            "tail_days": tail, "tail_start": (end - datetime.timedelta(days=tail - 1)).isoformat()}
+
+
+def rollup_totals(days, since=None):
+    hits, ms, sessions, counted = {}, {}, [], 0
+    for day, doc in days.items():
+        if since and day < since or not doc.get("complete"):
+            continue
+        counted += 1
+        for source in (doc.get("sources") or {}).values():
+            for key, value in (source.get("hits") or {}).items():
+                hits[key] = hits.get(key, 0) + value
+            for key, value in (source.get("ms") or {}).items():
+                ms[key] = ms.get(key, 0) + value
+            if source.get("sessions"):
+                sessions.append(source["sessions"])
+    return hits, ms, (sum(sessions) / len(sessions)) if sessions else None, counted
+
+
+
+
+def settings_commands(tops=()):
+    claude = os.path.join(base_home(), ".claude")
+    files = [("settings.json", os.path.join(claude, "settings.json")),
+             ("settings.local.json", os.path.join(claude, "settings.local.json"))]
+    for top in tops:
+        for name in ("settings.json", "settings.local.json"):
+            files.append(("%s/.claude/%s" % (repo_name(top), name), os.path.join(top, ".claude", name)))
+    out = []
+    for label, path in files:
+        settings = read_json(path, {})
+        if not isinstance(settings, dict):
+            continue
+        hooks = settings.get("hooks")
+        for event, groups in (hooks.items() if isinstance(hooks, dict) else ()):
+            for group in groups if isinstance(groups, list) else ():
+                for hook in (group.get("hooks") if isinstance(group, dict) else None) or []:
+                    if isinstance(hook, dict) and hook.get("command"):
+                        out.append(("settings", "%s hooks.%s" % (label, event), str(hook["command"])))
+        status = settings.get("statusLine")
+        if isinstance(status, dict) and status.get("command"):
+            out.append(("settings", "%s statusLine" % label, str(status["command"])))
+    return out
+
+
+def launch_agents():
+    out = []
+    folder = os.path.join(base_home(), "Library", "LaunchAgents")
+    for path in sorted(glob.glob(os.path.join(folder, "*.plist"))):
+        try:
+            with open(path, "rb") as handle:
+                plist = plistlib.load(handle)
+        except Exception:
+            continue
+        args = [str(a) for a in (plist.get("ProgramArguments") or [])] + ([str(plist["Program"])] if plist.get("Program") else [])
+        text = " ".join(args)
+        for arg in args:
+            arg = os.path.expanduser(arg)
+            if os.path.isfile(arg) and os.path.dirname(os.path.realpath(arg)) == os.path.realpath(os.path.join(base_home(), ".local", "libexec")):
+                try:
+                    with open(arg, errors="replace") as handle:
+                        text += "\n" + handle.read(20000)
+                except OSError:
+                    pass
+        out.append(("launchd", path, text))
+    return out
+
+
+def path_links():
+    out = []
+    folder = os.path.join(base_home(), ".local", "bin")
+    for path in sorted(glob.glob(os.path.join(folder, "*"))):
+        if os.path.islink(path):
+            out.append(("path", path, os.path.realpath(path)))
+        elif os.path.isfile(path) and os.path.getsize(path) < 200000:
+            try:
+                with open(path, errors="replace") as handle:
+                    text = handle.read()
+            except OSError:
+                continue
+            if "\0" not in text[:2000]:
+                out.append(("path", path, text))
+    return out
+
+
+def claude_instructions():
+    out = []
+    claude = os.path.join(base_home(), ".claude")
+    for pattern in ("CLAUDE.md", "skills/*/SKILL.md", "skills/*/*.md", "commands/*.md", "agents/*.md", "docs/*.md"):
+        for path in sorted(glob.glob(os.path.join(claude, pattern))):
+            try:
+                with open(path, errors="replace") as handle:
+                    out.append(("instructions", path, handle.read(200000)))
+            except OSError:
+                pass
+    return out
+
+
+def outside_roots(tops=()):
+    return settings_commands(tops) + launch_agents() + path_links() + claude_instructions()
+
+
+
+
+class Graph:
+    def __init__(self, indexes, ledger):
+        self.indexes = indexes
+        self.ledger = ledger
+        self.files = {}
+        self.by_base, self.by_stem, self.by_real, self.pkg = {}, {}, {}, {}
+        for repo, doc in indexes.items():
+            top = doc["top"]
+            for rel, record in doc["files"].items():
+                fid = "%s/%s" % (repo, rel)
+                self.files[fid] = record
+                base = os.path.basename(rel)
+                self.by_base.setdefault(base, []).append(fid)
+                stem = os.path.splitext(base)[0]
+                self.by_stem.setdefault(stem, []).append(fid)
+                real = os.path.realpath(os.path.join(top, rel))
+                if not record.get("link") or real not in self.by_real:
+                    self.by_real[real] = fid
+                if base == "__init__.py":
+                    self.pkg.setdefault(os.path.basename(os.path.dirname(rel)), []).append(fid)
+        self.tops = {repo: doc["top"] for repo, doc in indexes.items()}
+
+    def top_of(self, fid):
+        return self.tops[fid.split("/", 1)[0]]
+
+    def is_cli(self, fid):
+        record = self.files[fid]
+        return "/bin/" in "/" + fid.split("/", 1)[1] and record.get("exec")
+
+    def resolve(self, token, source_repo=None, anywhere=False):
+        if token.startswith(("/", "~/")):
+            real = os.path.realpath(os.path.expanduser(token))
+            if real in self.by_real:
+                return [self.by_real[real]]
+            for prefix in list(self.tops.values()):
+                if real.startswith(prefix + "/"):
+                    return []
+        name = token.rsplit("/", 1)[-1]
+        if "/" in token or "." in name:
+            hits = self.by_base.get(name, [])
+            if "/" in token and len(hits) > 1:
+                tail = token.lstrip("~./")
+                narrowed = [h for h in hits if h.endswith("/" + tail) or h.split("/", 1)[1] == tail]
+                hits = narrowed or [h for h in hits if h.endswith("/" + "/".join(tail.split("/")[-2:]))] or hits
+            return hits
+        out = []
+        for fid in self.by_stem.get(name, []) + self.pkg.get(name, []):
+            if anywhere or fid.split("/", 1)[0] == source_repo or self.is_cli(fid):
+                out.append(fid)
+        return out
+
+    def glob_targets(self, source, spec):
+        folder, prefix, suffix = spec
+        repo, here = source.split("/", 1)[0], os.path.dirname(source.split("/", 1)[1])
+        out = []
+        for fid in self.files:
+            if fid.split("/", 1)[0] != repo:
+                continue
+            rel = fid.split("/", 1)[1]
+            parent, base = os.path.split(rel)
+            if folder == "@here":
+                if parent != here:
+                    continue
+            elif folder and not parent.endswith(folder):
+                continue
+            if base.startswith(prefix) and base.endswith(suffix):
+                out.append(fid)
+        return out
+
+    def edges(self):
+        out = {}
+        for fid, record in self.files.items():
+            repo = fid.split("/", 1)[0]
+            targets = set()
+            for token in (record.get("refs") or {}).get("code") or ():
+                targets.update(self.resolve(token, repo))
+            for spec in record.get("globs") or ():
+                targets.update(self.glob_targets(fid, spec))
+            if record.get("link") and record.get("target") in self.by_real:
+                targets.add(self.by_real[record["target"]])
+            targets.discard(fid)
+            out[fid] = targets
+        return out
+
+    def comment_edges(self):
+        out = {}
+        for fid, record in self.files.items():
+            repo = fid.split("/", 1)[0]
+            targets = set()
+            for token in (record.get("refs") or {}).get("comment") or ():
+                targets.update(self.resolve(token, repo))
+            targets.discard(fid)
+            out[fid] = targets
+        return out
+
+
+def repo_entry_roots(graph):
+    roots = {}
+    for fid, record in graph.files.items():
+        rel = fid.split("/", 1)[1]
+        if rel == "tests/run-all" or rel == "init.lua" and os.path.realpath(graph.top_of(fid)) == os.path.realpath(
+                os.path.join(base_home(), ".hammerspoon")) or record.get("kind") == "instruction":
+            roots.setdefault(fid, []).append("repo entry %s" % rel)
+    return roots
+
+
+def entry_roots(graph):
+    roots = repo_entry_roots(graph)
+    dangling = []
+    for kind, source, text in outside_roots(graph.tops.values()):
+        found = set()
+        if kind == "path" and os.path.isabs(text) and "\n" not in text:
+            if text in graph.by_real:
+                found.add(graph.by_real[text])
+            elif any(text.startswith(top + "/") for top in graph.tops.values()):
+                dangling.append({"kind": kind, "source": source, "target": text})
+        else:
+            for token in tokens_of(text):
+                hits = graph.resolve(token, anywhere=True)
+                found.update(hits)
+                if not hits and token.startswith(("/", "~/")):
+                    real = os.path.realpath(os.path.expanduser(token))
+                    if any(real.startswith(top + "/") for top in graph.tops.values()) and not os.path.exists(real):
+                        dangling.append({"kind": kind, "source": source, "target": real})
+        for fid in found:
+            roots.setdefault(fid, []).append("%s %s" % (kind, source))
+    return roots, dangling
+
+
+def protected_units(ledger):
+    out = {}
+    for row in ledger.get("protected") or ():
+        if isinstance(row, dict) and row.get("path"):
+            out[row["path"]] = "protected: %s" % (row.get("why") or "listed in the ledger")
+    for row in ledger.get("retired") or ():
+        for unit in (row or {}).get("exceptions") or ():
+            out[unit] = "retirement exception of %s" % row.get("id")
+    return out
+
+
+def reachable(graph, edges, roots):
+    seen = set(roots)
+    queue = list(roots)
+    while queue:
+        fid = queue.pop()
+        source_kind = graph.files[fid].get("kind")
+        for target in edges.get(fid, ()):
+            if target in seen:
+                continue
+            target_kind = graph.files[target].get("kind")
+            if source_kind == "test" and target_kind not in ("test", "fixture"):
+                continue
+            if source_kind in ("doc", "data", "fixture"):
+                continue
+            seen.add(target)
+            queue.append(target)
+    return seen
+
+
+def components(nodes, edges):
+    parent = {n: n for n in nodes}
+
+    def find(n):
+        while parent[n] != n:
+            parent[n] = parent[parent[n]]
+            n = parent[n]
+        return n
+
+    for node in nodes:
+        for target in edges.get(node, ()):
+            if target in parent:
+                parent[find(node)] = find(target)
+    groups = {}
+    for node in nodes:
+        groups.setdefault(find(node), []).append(node)
+    return list(groups.values())
+
+
+
+
+def unit_id(fid, symbol=None):
+    return fid + ("#" + symbol["name"] if symbol else "")
+
+
+def unit_span(fid, record, symbol=None):
+    if symbol:
+        return {"unit": unit_id(fid, symbol), "file": fid, "start": symbol["start"], "end": symbol["end"],
+                "digest": symbol["digest"], "lines": symbol["lines"]}
+    return {"unit": fid, "file": fid, "start": 1, "end": record.get("lines") or 1, "digest": record["digest"][:16],
+            "lines": record.get("lines") or 0}
+
+
+def overlaps(a, b):
+    return a["file"] == b["file"] and a["start"] <= b["end"] and b["start"] <= a["end"]
+
+
+def shared_invariant_rows(indexes):
+    rows = []
+    for repo, doc in indexes.items():
+        path = os.path.join(doc["top"], "docs", "shared-invariants.md")
+        try:
+            with open(path, errors="replace") as handle:
+                for line in handle:
+                    if line.startswith("| ") and line.count("|") >= 5:
+                        rows.append(tokens_of(line))
+        except OSError:
+            pass
+    return rows
+
+
+def names_file(tokens, fid):
+    rel = fid.split("/", 1)[1]
+    for token in tokens:
+        bare = token.lstrip("~./")
+        if token == fid or bare == rel or "/" in bare and rel.endswith("/" + bare):
+            return True
+    return False
+
+
+def intentional(a, b, rows, ledger):
+    if any(names_file(tokens, a) and names_file(tokens, b) for tokens in rows):
+        return True
+    for row in ledger.get("intentional") or ():
+        units = (row or {}).get("units") or ()
+        if any(a == u or a.startswith(u + "#") for u in units) and any(b == u or b.startswith(u + "#") for u in units):
+            return True
+    return False
+
+
+def clone_pairs(graph):
+    symbols, postings = [], {}
+    for fid, record in graph.files.items():
+        if record.get("kind") not in ("code", "test"):
+            continue
+        for symbol in record.get("symbols") or ():
+            if symbol.get("sketch"):
+                index = len(symbols)
+                symbols.append((fid, record, symbol))
+                for value in symbol["sketch"]:
+                    postings.setdefault(value, []).append(index)
+    shared = {}
+    for members in postings.values():
+        if len(members) > COMMON_DF or len(members) < 2:
+            continue
+        for i in range(len(members)):
+            for j in range(i + 1, len(members)):
+                key = (members[i], members[j])
+                shared[key] = shared.get(key, 0) + 1
+    pairs = []
+    for (i, j), count in shared.items():
+        if count < LIMITS["clone_shared"]:
+            continue
+        a, b = symbols[i], symbols[j]
+        if a[2]["lang"] != b[2]["lang"]:
+            continue
+        span_a, span_b = unit_span(a[0], a[1], a[2]), unit_span(b[0], b[1], b[2])
+        if overlaps(span_a, span_b):
+            continue
+        union = sorted(set(a[2]["sketch"]) | set(b[2]["sketch"]))[:SKETCH_K]
+        both = set(a[2]["sketch"]) & set(b[2]["sketch"])
+        estimate = sum(1 for v in union if v in both) / float(len(union) or 1)
+        if estimate >= LIMITS["clone_jaccard"]:
+            pairs.append((span_a, span_b, "clone", round(estimate, 2)))
+    return pairs
+
+
+def touch_pairs(graph):
+    symbols, df = [], {}
+    for fid, record in graph.files.items():
+        if record.get("kind") != "code":
+            continue
+        for symbol in record.get("symbols") or ():
+            if symbol["lines"] >= LIMITS["clone_min_lines"] and symbol.get("touch"):
+                symbols.append((fid, record, symbol))
+                for touch in set(symbol["touch"]):
+                    df[touch] = df.get(touch, 0) + 1
+    total = max(len(symbols), 1)
+    idf = {t: math.log(total / float(n)) for t, n in df.items()}
+    postings = {}
+    for index, (_, _, symbol) in enumerate(symbols):
+        for touch in set(symbol["touch"]):
+            if df[touch] <= TOUCH_COMMON_DF and df[touch] >= 2:
+                postings.setdefault(touch, []).append(index)
+    shared = {}
+    for touch, members in postings.items():
+        for i in range(len(members)):
+            for j in range(i + 1, len(members)):
+                shared.setdefault((members[i], members[j]), []).append(touch)
+    pairs = []
+    for (i, j), common in shared.items():
+        if len(common) < LIMITS["touch_shared"]:
+            continue
+        a, b = symbols[i], symbols[j]
+        score = sum(idf[t] for t in common)
+        union = set(a[2]["touch"]) | set(b[2]["touch"])
+        weighted = score / sum(idf.get(t, 0) for t in union) if union else 0
+        if score < LIMITS["touch_min_idf"] or weighted < LIMITS["touch_jaccard"]:
+            continue
+        span_a, span_b = unit_span(a[0], a[1], a[2]), unit_span(b[0], b[1], b[2])
+        if overlaps(span_a, span_b):
+            continue
+        pairs.append((span_a, span_b, "touchpoints", round(weighted, 2)))
+    return pairs
+
+
+def heavy_tests(graph):
+    rows = read_jsonl(os.path.join(statusline_cache(), "test-history.jsonl"))
+    cutoff = now_s() - 28 * 86400
+    secs = {}
+    for row in rows:
+        if isinstance(row.get("secs"), (int, float)) and (row.get("end") or 0) >= cutoff and row.get("label"):
+            repo = row.get("repo") or os.path.basename(str(row.get("repo_root") or ""))
+            secs.setdefault((repo, row["label"]), []).append(row["secs"])
+    out = []
+    for (repo, label), values in secs.items():
+        values.sort()
+        median = values[len(values) // 2]
+        if median < LIMITS["heavy_test_s"]:
+            continue
+        fid = next((f for f in ("%s/tests/%s.sh" % (repo, label), "%s/tests/%s.py" % (repo, label)) if f in graph.files), None)
+        if fid:
+            out.append((fid, median, len(values)))
+    return out
+
+
+def test_requirement(graph, fid):
+    for row in graph.ledger.get("keep") or ():
+        if isinstance(row, dict) and row.get("path") == fid:
+            return row.get("requirement") or "kept by the ledger"
+    try:
+        with open(os.path.join(graph.top_of(fid), fid.split("/", 1)[1]), errors="replace") as handle:
+            head = "".join(handle.readline() for _ in range(15))
+    except OSError:
+        return None
+    match = KEEP_WORDS.search(head)
+    return ("protects %s" % match.group(0)) if match else None
+
+
+def instruction_costs(graph, sessions):
+    out = []
+    for fid, record in graph.files.items():
+        rel = fid.split("/", 1)[1]
+        weight = None
+        if os.path.basename(rel) in ("CLAUDE.md", "CLAUDE.local.md"):
+            weight = 1.0
+        elif rel.endswith("SKILL.md"):
+            weight = 0.05
+        if weight is None:
+            continue
+        out.append((fid, record, weight))
+        if os.path.basename(rel) == "CLAUDE.md":
+            try:
+                with open(os.path.join(graph.top_of(fid), rel), errors="replace") as handle:
+                    text = handle.read()
+            except OSError:
+                continue
+            for line in text.splitlines():
+                if re.search(r"\bread\b", line, re.I):
+                    for token in re.findall(r"`([^`]+\.md)`", line):
+                        for target in graph.resolve(token, fid.split("/", 1)[0]):
+                            out.append((target, graph.files[target], 1.0))
+    found = {}
+    measured = read_rates()
+    for fid, record, weight in out:
+        tokens = (record.get("size") or 0) / 4.0
+        entry = measured.get(os.path.join(graph.top_of(fid), fid.split("/", 1)[1])) if measured is not None else None
+        if measured is None:
+            per_day, source = tokens * weight * (sessions or 1), None
+        elif not entry:
+            continue
+        else:
+            month = entry.get("monthly") or {}
+            loaded = tokens * (month.get("loads") or 0) if entry.get("mode") == "always_on" else 0
+            per_day, source = (loaded + (month.get("read_tokens") or 0)) / 30.0, entry.get("mode")
+        if per_day >= LIMITS["token_day"]:
+            found[fid] = (round(tokens), round(per_day), source)
+    return found
+
+
+def read_rates():
+    path = os.environ.get("TOKENMAP_RATES") or os.path.join(base_home(), ".local", "share", "tokenmap", "read-rates.json")
+    doc = read_json(path)
+    entries = ((doc or {}).get("paths") or {}).get("entries") if isinstance(doc, dict) else None
+    return entries if isinstance(entries, dict) else None
+
+
+def retired_hits(graph):
+    out = []
+    for row in graph.ledger.get("retired") or ():
+        if not isinstance(row, dict) or not row.get("match"):
+            continue
+        try:
+            pattern = re.compile(row["match"])
+        except re.error:
+            continue
+        exceptions = set(row.get("exceptions") or ())
+        for fid, record in graph.files.items():
+            if record.get("kind") != "code":
+                continue
+            for symbol in record.get("symbols") or ():
+                unit = unit_id(fid, symbol)
+                if unit in exceptions or not pattern.search(symbol["name"]):
+                    continue
+                out.append((unit_span(fid, record, symbol), row))
+    return out
+
+
+def dead_symbols(graph, live, edges_all_tokens):
+    out = []
+    for fid in live:
+        record = graph.files[fid]
+        if record.get("kind") != "code" or record.get("lang") not in DECLARED:
+            continue
+        for symbol in record.get("symbols") or ():
+            name = symbol["name"].rsplit(".", 1)[-1].rsplit(":", 1)[-1]
+            if len(name) < 4 or name.startswith("__") or symbol["lines"] < 3:
+                continue
+            # PyObjC selectors (mouseUp_) are called by the Objective-C runtime, never by name.
+            if record.get("lang") == "python" and name.endswith("_") and not name.startswith("_"):
+                continue
+            if edges_all_tokens.get(name, 0) <= 1:
+                out.append(unit_span(fid, record, symbol))
+    return out
+
+
+def code_token_counts(graph):
+    counts = {}
+    for fid, record in graph.files.items():
+        if record.get("kind") not in ("code", "instruction"):
+            continue
+        for token in (record.get("refs") or {}).get("code") or ():
+            for part in re.split(r"[./:]", token):
+                if part:
+                    counts[part] = counts.get(part, 0) + 1
+    return counts
+
+
+def symbol_mentions(graph, fid, name):
+    try:
+        with open(os.path.join(graph.top_of(fid), fid.split("/", 1)[1]), errors="replace") as handle:
+            text = handle.read()
+    except OSError:
+        return 2
+    return len(re.findall(r"(?<![\w-])%s(?![\w-])" % re.escape(name), text))
+
+
+def build_candidates():
+    started = time.time()
+    indexes = load_indexes()
+    ledger = load_ledger()
+    if not indexes:
+        return None
+    graph = Graph(indexes, ledger)
+    edges = graph.edges()
+    roots, dangling = entry_roots(graph)
+    protected = protected_units(ledger)
+    live = reachable(graph, edges, set(roots) | {u for u in protected if u in graph.files})
+    days = rollup_days()
+    cover = coverage(days)
+    hits, ms, sessions, counted = rollup_totals(days)
+    signals = []
+
+    dead_files = [fid for fid, record in graph.files.items()
+                  if record.get("kind") == "code" and fid not in live and record.get("lang") in DECLARED
+                  and not record.get("link")]
+    dead_set = set(dead_files)
+    for fid, record in graph.files.items():
+        if record.get("kind") != "test" or fid in dead_set:
+            continue
+        targets = [t for t in edges.get(fid, ()) if graph.files[t].get("kind") == "code"]
+        if targets and all(t in dead_set for t in targets):
+            dead_files.append(fid)
+    for group in components(dead_files, edges):
+        spans = [unit_span(f, graph.files[f]) for f in sorted(group)]
+        kept = [s for s in spans if s["unit"] in protected]
+        spans = [s for s in spans if s["unit"] not in protected]
+        if spans:
+            signals.append({"group": "dead", "rule": "unreachable", "units": spans,
+                            "detail": "no entry point reaches %s" % ", ".join(s["unit"] for s in spans[:4]),
+                            "value": sum(s["lines"] for s in spans)})
+        for span in kept:
+            signals.append({"group": "dead", "rule": "unreachable", "units": [span], "protected": protected[span["unit"]],
+                            "detail": "no entry point reaches %s" % span["unit"], "value": 0})
+    token_counts = code_token_counts(graph)
+    for span in dead_symbols(graph, live, token_counts):
+        if span["unit"] in protected or span["file"] in protected:
+            continue
+        name = span["unit"].rsplit("#", 1)[1].rsplit(".", 1)[-1].rsplit(":", 1)[-1]
+        if symbol_mentions(graph, span["file"], name) <= 1:
+            signals.append({"group": "dead", "rule": "uncalled", "units": [span],
+                            "detail": "%s is defined and never called" % span["unit"], "value": span["lines"]})
+    for span, row in retired_hits(graph):
+        signals.append({"group": "dead", "rule": "retired", "units": [span], "record": row.get("id"),
+                        "detail": "%s matches the retired behavior %s (%s)" % (span["unit"], row.get("id"), row.get("record")),
+                        "value": span["lines"]})
+    for item in dangling:
+        signals.append({"group": "dead", "rule": "registration", "units": [], "needs_egor": True,
+                        "registration": item, "anchor": "registration:%s" % item["target"],
+                        "detail": "%s registration %s points at %s, which no repository holds" % (item["kind"], item["source"], item["target"]),
+                        "step": registration_step(item), "value": 1})
+    if cover["tail_days"] >= LIMITS["silent_days"]:
+        for kind, source, command in settings_commands(graph.tops.values()):
+            words = command.split()
+            script = os.path.realpath(os.path.expanduser(words[0])) if words else ""
+            fid = graph.by_real.get(script)
+            if not fid:
+                continue
+            try:
+                with open(script, errors="replace") as handle:
+                    journaled = "hook-time.sh" in handle.read(200000)
+            except OSError:
+                journaled = False
+            key = "hook:" + os.path.basename(script)
+            if journaled and not hits.get(key):
+                item = {"kind": "settings", "source": source, "target": script, "command": command}
+                signals.append({"group": "dead", "rule": "silent", "units": [unit_span(fid, graph.files[fid])], "needs_egor": True,
+                                "registration": item, "step": registration_step(item),
+                                "detail": "%s fired 0 times over %d covered days since %s" % (
+                                    os.path.basename(script), cover["tail_days"], cover["tail_start"]),
+                                "value": graph.files[fid].get("lines") or 0})
+
+    for fid, median, runs in heavy_tests(graph):
+        requirement = test_requirement(graph, fid)
+        signal = {"group": "heavy", "rule": "test", "units": [unit_span(fid, graph.files[fid])],
+                  "detail": "%s takes %ds per run (median of %d runs in 28 d)" % (fid, median, runs), "value": round(median / 6.0)}
+        if requirement:
+            signal["protected"] = requirement
+        signals.append(signal)
+    daily = max(counted, 1)
+    for key, total in ms.items():
+        if not key.startswith("hook:") or total / daily < LIMITS["hot_ms_day"]:
+            continue
+        target = next(iter(graph.resolve(key[5:], anywhere=True)), None)
+        if target:
+            signals.append({"group": "heavy", "rule": "hot", "units": [unit_span(target, graph.files[target])],
+                            "detail": "%s costs %ds a day (%d runs a day)" % (key[5:], total / daily / 1000, hits.get(key, 0) / daily),
+                            "value": round(total / daily / 1000 / 6.0)})
+    for fid, (tokens, per_day, source) in instruction_costs(graph, sessions).items():
+        how = ("measured %s by tokenmap over 30 d" % source.replace("_", "-")) if source else \
+            "estimated as read by %s sessions a day" % (round(sessions) if sessions else "an unknown number of")
+        signals.append({"group": "heavy", "rule": "tokens", "units": [unit_span(fid, graph.files[fid])],
+                        "detail": "%s is ~%d tokens, ~%d a day, %s" % (fid, tokens, per_day, how),
+                        "value": round(per_day / 100000.0)})
+    for fid, record in graph.files.items():
+        if record.get("kind") != "code":
+            continue
+        for symbol in record.get("symbols") or ():
+            if symbol["lines"] >= LIMITS["complex_lines"]:
+                signals.append({"group": "heavy", "rule": "complex", "units": [unit_span(fid, record, symbol)],
+                                "detail": "%s is %d lines with %d branches" % (unit_id(fid, symbol), symbol["lines"], symbol["branches"]),
+                                "value": 0})
+
+    rows = shared_invariant_rows(indexes)
+    for a, b, rule, score in clone_pairs(graph) + touch_pairs(graph):
+        if intentional(a["file"], b["file"], rows, ledger):
+            continue
+        signals.append({"group": "duplicate", "rule": rule, "units": [a, b],
+                        "detail": "%s and %s share %s (%.2f)" % (a["unit"], b["unit"], rule, score),
+                        "value": min(a["lines"], b["lines"])})
+
+    candidates = cluster(signals, graph, edges, roots, ledger, indexes, hits)
+    path = os.path.join(state_dir(), "candidates.jsonl")
+    os.makedirs(state_dir(), exist_ok=True)
+    with open(path + ".tmp", "w", encoding="utf-8") as handle:
+        for candidate in candidates:
+            handle.write(json.dumps(candidate, ensure_ascii=False, sort_keys=True) + "\n")
+    os.replace(path + ".tmp", path)
+    blind = blind_languages(graph)
+    write_json(os.path.join(state_dir(), "graph.json"), {
+        "at": iso_time(now_s()), "files": len(graph.files), "live": len(live), "roots": len(roots),
+        "blind_languages": blind, "coverage": cover,
+        "snapshots": {repo: doc["cursor"]["snapshot"] for repo, doc in indexes.items()}})
+    account(None, None, "collector", cpu_s=cpu_seconds(), wall_s=time.time() - started, note="candidates")
+    return candidates
+
+
+def registration_step(item):
+    if item["kind"] == "settings":
+        label, _, key = item["source"].partition(" ")
+        return "remove the hook command %r from %s in %s" % (item.get("command") or item["target"], key,
+                                                              label if "/" in label else "~/.claude/" + label)
+    if item["kind"] == "launchd":
+        label = os.path.basename(item["source"])[:-6]
+        return "launchctl bootout gui/$(id -u)/%s && rm %s (and its ~/.local/libexec wrapper)" % (label, item["source"])
+    if item["kind"] == "path":
+        return "rm %s" % item["source"]
+    return "remove the reference to %s from %s" % (item["target"], item["source"])
+
+
+def blind_languages(graph):
+    out = {}
+    for fid, record in graph.files.items():
+        lang = record.get("lang") or ""
+        if lang.startswith("undeclared:") and record.get("kind") not in ("fixture",):
+            out.setdefault(lang[11:], []).append(fid)
+    return {lang: {"files": len(fids), "examples": sorted(fids)[:3]} for lang, fids in sorted(out.items())}
+
+
+def cluster(signals, graph, edges, roots, ledger, indexes, hits):
+    parent = list(range(len(signals)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    spans = [(i, span) for i, signal in enumerate(signals) for span in signal["units"]]
+    by_file = {}
+    for i, span in spans:
+        by_file.setdefault(span["file"], []).append((i, span))
+    for members in by_file.values():
+        for x in range(len(members)):
+            for y in range(x + 1, len(members)):
+                if overlaps(members[x][1], members[y][1]) and members[x][0] != members[y][0]:
+                    parent[find(members[x][0])] = find(members[y][0])
+    groups = {}
+    for i in range(len(signals)):
+        groups.setdefault(find(i), []).append(signals[i])
+    inbound = {}
+    for source, targets in edges.items():
+        for target in targets:
+            inbound.setdefault(target, set()).add(source)
+    snapshots = {repo: doc["cursor"]["snapshot"] for repo, doc in indexes.items()}
+    changed = {repo: set(doc["cursor"].get("changed") or ()) for repo, doc in indexes.items()}
+    out = []
+    for members in groups.values():
+        units = {}
+        for signal in members:
+            for span in signal["units"]:
+                units.setdefault(span["unit"], span)
+        anchors = sorted(units) or sorted(s.get("anchor") for s in members if s.get("anchor"))
+        if not anchors:
+            continue
+        group = min((s["group"] for s in members), key=lambda g: GROUP_RANK[g])
+        files = sorted({span["file"] for span in units.values()})
+        protected = [s.get("protected") for s in members if s.get("protected")]
+        rules = sorted({s["rule"] for s in members})
+        registrations = sorted({json.dumps(s["registration"], sort_keys=True) for s in members if s.get("registration")}
+                               | {r for f in files for r in roots.get(f, ())})
+        purpose = sorted({s["record"] for s in members if s.get("record")}
+                         | {row.get("id") for row in ledger.get("keep") or () if isinstance(row, dict) and row.get("path") in files}
+                         | {u for u in protected_units(ledger) if u in units or u in files})
+        refs = sorted({r for f in files for r in inbound.get(f, ())})
+        repos = sorted({f.split("/", 1)[0] for f in files})
+        candidate = {
+            "id": "cause:" + anchors[0], "group": group, "rules": rules,
+            "units": [units[u] for u in sorted(units)], "files": files, "repos": repos,
+            "detail": "; ".join(dict.fromkeys(s["detail"] for s in members))[:600],
+            "value": sum(s.get("value") or 0 for s in members),
+            "protected": "; ".join(protected) if protected and len(protected) == len(members) else None,
+            "needs_egor": any(s.get("needs_egor") for s in members),
+            "steps": [s["step"] for s in members if s.get("step")],
+            "callers": refs[:40], "registrations": registrations, "purpose": purpose,
+            "snapshot": {repo: snapshots.get(repo) for repo in repos},
+            "new": any(f.split("/", 1)[1] in changed.get(f.split("/", 1)[0], ()) for f in files),
+            "slice": "/".join(files[0].split("/")[:2]) if files else anchors[0],
+            "runtime_hits": {k: hits[k] for k in ("hook:" + os.path.basename(f) for f in files) if k in hits},
+        }
+        candidate["evidence_digest"] = evidence_digest(candidate)
+        out.append(candidate)
+    out.sort(key=lambda c: (-c["value"], c["id"]))
+    return out
+
+
+def evidence_digest(candidate):
+    structural = {
+        "units": [[u["unit"], u["digest"]] for u in candidate["units"]],
+        "callers": candidate["callers"],
+        "registrations": candidate["registrations"],
+        "purpose": candidate["purpose"],
+        "rules": candidate["rules"],
+        "detector": DETECTOR_VERSION,
+    }
+    return sha(json.dumps(structural, sort_keys=True))[:24]
+
+
+def load_candidates():
+    return read_jsonl(os.path.join(state_dir(), "candidates.jsonl"))
+
+
+
+
+def load_ledger():
+    ledger = read_json(ledger_path(), {}) or {}
+    return ledger if isinstance(ledger, dict) else {}
+
+
+def ledger_faults(ledger):
+    faults = []
+    for index, row in enumerate(ledger.get("rows") or ()):
+        if not isinstance(row, dict) or not row.get("id"):
+            faults.append(("rows[%d]" % index, "no id"))
+            continue
+        match = row.get("match")
+        cause = match.get("cause") if isinstance(match, dict) else None
+        identity = match.get("identity") if isinstance(match, dict) else None
+        if not (isinstance(cause, str) and cause.startswith("cause:") and len(cause) > 8) and not (
+                isinstance(identity, dict) and identity.get("sketch")):
+            faults.append((row["id"], "match names no exact cause and no identity"))
+        elif row.get("status") in DISMISSED and not cause:
+            faults.append((row["id"], "a dismissal row needs an exact cause"))
+    return faults
+
+
+def identity_of(candidate, indexes):
+    sketches, touch = set(), set()
+    for span in candidate.get("units") or ():
+        repo, rel = span["file"].split("/", 1)
+        record = ((indexes.get(repo) or {}).get("files") or {}).get(rel) or {}
+        symbols = [s for s in record.get("symbols") or () if unit_id(span["file"], s) == span["unit"]] or record.get("symbols") or []
+        for symbol in symbols:
+            sketches.update(symbol.get("sketch") or ())
+            touch.update(symbol.get("touch") or ())
+    return {"sketch": sorted(sketches)[:SKETCH_K * 2], "touch": sorted(touch)[:40]}
+
+
+def identity_match(identity, candidate, indexes):
+    if not identity or not identity.get("sketch"):
+        return False
+    mine = identity_of(candidate, indexes)
+    a, b = set(identity["sketch"]), set(mine["sketch"])
+    return bool(a and b) and len(a & b) / float(min(len(a), len(b))) >= LIMITS["clone_jaccard"]
+
+
+
+
+def verdicts_path():
+    return os.path.join(state_dir(), "verdicts.json")
+
+
+def load_verdicts():
+    return read_json(verdicts_path(), {}) or {}
+
+
+def verdict_valid(verdict, candidate, now):
+    if not isinstance(verdict, dict) or verdict.get("digest") != candidate["evidence_digest"]:
+        return False
+    if verdict.get("verdict") == "not-now":
+        return (iso_epoch(verdict.get("expires")) or 0) > now
+    return verdict.get("verdict") == "problem"
+
+
+def git_history(top, rel):
+    born = git(top, "log", "--follow", "--diff-filter=A", "--format=%h %ad %s", "--date=short", "--", rel, timeout=20) or ""
+    last = git(top, "log", "-3", "--format=%h %ad %s", "--date=short", "--", rel, timeout=20) or ""
+    lines = born.strip().splitlines()[-1:] + last.strip().splitlines()
+    return [clip(line, 160) for line in lines]
+
+
+def judge_brief(candidate, indexes):
+    lines = ["# Code doctor judge: %s" % candidate["id"], "",
+             "You judge ONE candidate of the Code doctor (llm-legs docs/code-doctor-design.md). Read-only: change nothing.",
+             "Group: %s · rules: %s" % (candidate["group"], ", ".join(candidate["rules"])),
+             "Signal: %s" % candidate["detail"], "", "Units (repo/path#symbol lines digest):"]
+    for span in candidate["units"]:
+        lines.append("- %s L%d-%d digest %s" % (span["unit"], span["start"], span["end"], span["digest"]))
+    lines += ["", "Callers (code files that reference it): %s" % (", ".join(candidate["callers"][:20]) or "none"),
+              "Entry points and registrations: %s" % (", ".join(candidate["registrations"][:10]) or "none"),
+              "Purpose and retirement records: %s" % (", ".join(candidate["purpose"]) or "none"),
+              "Runtime hits (rollup): %s" % (json.dumps(candidate.get("runtime_hits") or {}) or "none")]
+    for fid in candidate["files"][:3]:
+        repo, rel = fid.split("/", 1)
+        top = (indexes.get(repo) or {}).get("top")
+        if top:
+            lines.append("History of %s: %s" % (fid, " | ".join(git_history(top, rel)) or "untracked"))
+    lines += ["", "Decide from the code, its git history and its records:",
+              "- `problem`: real dead, heavy or duplicate code whose fix is clear. Give a concrete plan and its proof obligations "
+              "(deletion: no live entry point, no rollup hits over a covered window, the purpose or retirement record you quote, "
+              "green suites; a merge: the shared module first, callers migrated, the old copy deleted on a later night).",
+              "- `not-now`: anything else, with the reason and what would re-open it.",
+              "A test is kept for the requirement it protects, never for being quiet; a merge needs net benefit.",
+              "", "End your answer with ONE JSON object on its own line:",
+              '{"verdict": "problem" | "not-now", "fact": "<one English line for the menu>", "plan": "<the fix>", '
+              '"proofs": ["<obligation>", ...], "reason": "<why, quoting the record>", "triggers": ["<what re-opens it>"], '
+              '"value": <net lines or minutes saved>}']
+    return "\n".join(lines) + "\n"
+
+
+def parse_result(text):
+    found = None
+    decoder = json.JSONDecoder()
+    position = 0
+    while True:
+        start = text.find("{", position)
+        if start < 0:
+            break
+        try:
+            value, consumed = decoder.raw_decode(text[start:])
+        except ValueError:
+            position = start + 1
+            continue
+        if isinstance(value, dict) and value.get("verdict") in ("problem", "not-now"):
+            found = value
+        position = start + max(consumed, 1)
+    return found
+
+
+def report_tokens(report, brief, result):
+    match = re.search(r"^COST: ([0-9.]+)(k|M)? tok-eq", report, re.M)
+    if match:
+        return int(float(match.group(1)) * {"k": 1e3, "M": 1e6, None: 1}[match.group(2)])
+    return int((len(brief) + len(result)) / 4)
+
+
+def run_judge(night, max_tokens, max_wall, vendor, limit=None):
+    started = time.time()
+    now = now_s()
+    indexes = load_indexes()
+    verdicts = load_verdicts()
+    candidates = [c for c in load_candidates() if not c.get("protected")]
+    pending = [c for c in candidates if not verdict_valid(verdicts.get(c["id"]), c, now) and not auto_verdict(c)]
+    slices = read_json(os.path.join(state_dir(), "slices.json"), {}) or {}
+    pending.sort(key=lambda c: (c["slice"] in slices, not c.get("new"), -c["value"], c["id"]))
+    spent, judged, stop = 0, 0, "done"
+    folder = os.path.join(state_dir(), "judge", night or "day")
+    os.makedirs(folder, exist_ok=True)
+    for candidate in pending:
+        if limit is not None and judged >= limit:
+            stop = "limit"
+            break
+        brief = judge_brief(candidate, indexes)
+        if spent + len(brief) / 4.0 * TOKEN_ESTIMATE_FACTOR > max_tokens:
+            stop = "tokens"
+            break
+        remaining = max_wall - (time.time() - started)
+        if remaining <= 0:
+            stop = "wall"
+            break
+        brief_file = os.path.join(folder, re.sub(r"[^A-Za-z0-9._-]+", "_", candidate["id"])[:120] + ".md")
+        with open(brief_file, "w", encoding="utf-8") as handle:
+            handle.write(brief)
+        repo_top = (indexes.get(candidate["repos"][0]) or {}).get("top") if candidate["repos"] else ROOT_DIR
+        call_start = time.time()
+        launch = subprocess.run([worker_run_cmd(), "start", vendor, "--brief", brief_file, "--workdir", repo_top or ROOT_DIR,
+                                 "--effort", "low"], capture_output=True, text=True)
+        run_id = next((l[5:].strip() for l in launch.stdout.splitlines() if l.startswith("RUN: ")), None)
+        if launch.returncode != 0 or not run_id:
+            account(night, candidate["id"], "judge", tokens=0, wall_s=time.time() - call_start, note="launch failed")
+            stop = "launch-failed"
+            break
+        subprocess.run([worker_run_cmd(), "wait", run_id, "--max", str(int(max(1, remaining)))], capture_output=True, text=True)
+        report = subprocess.run([worker_run_cmd(), "report", run_id], capture_output=True, text=True).stdout
+        result = report.split("RESULT:\n", 1)[1] if "RESULT:\n" in report else ""
+        tokens = report_tokens(report, brief, result)
+        spent += tokens
+        wall = time.time() - call_start
+        if re.search(r"^STATUS: running", report, re.M):
+            account(night, candidate["id"], "judge", tokens=tokens, wall_s=wall, note="wall budget hit mid-judgment, run %s" % run_id)
+            stop = "wall"
+            break
+        verdict = parse_result(result)
+        account(night, candidate["id"], "judge", tokens=tokens, wall_s=wall, note=run_id)
+        if not verdict:
+            account(night, candidate["id"], "retries", tokens=0, wall_s=0, note="no verdict in the result")
+            continue
+        judged += 1
+        entry = {"verdict": verdict["verdict"], "digest": candidate["evidence_digest"], "at": iso_time(now_s()),
+                 "fact": clip(verdict.get("fact") or candidate["detail"], 200), "plan": verdict.get("plan"),
+                 "proofs": verdict.get("proofs") or [], "reason": verdict.get("reason"),
+                 "triggers": verdict.get("triggers") or [], "value": verdict.get("value"), "run": run_id,
+                 "group": candidate["group"], "snapshot": candidate["snapshot"], "night": night,
+                 "first_at": (verdicts.get(candidate["id"]) or {}).get("first_at") or iso_time(now_s())}
+        if verdict["verdict"] == "not-now":
+            entry["expires"] = iso_time(now_s() + NOT_NOW_DAYS * 86400)
+        verdicts[candidate["id"]] = entry
+        slices[candidate["slice"]] = {"at": iso_time(now_s()), "snapshot": candidate["snapshot"]}
+        write_json(verdicts_path(), verdicts)
+        write_json(os.path.join(state_dir(), "slices.json"), slices)
+        if spent >= max_tokens:
+            stop = "tokens"
+            break
+    record = {"night": night, "at": iso_time(now_s()), "stop": stop, "judged": judged, "pending": len(pending) - judged,
+              "tokens": spent, "wall_s": round(time.time() - started, 1), "max_tokens": max_tokens, "max_wall_s": max_wall}
+    append_jsonl(os.path.join(state_dir(), "judge-runs.jsonl"), record)
+    return record
+
+
+
+
+def account(night, cause, stage, tokens=0, wall_s=0.0, cpu_s=0.0, note=None, **extra):
+    row = {"at": iso_time(now_s()), "night": night, "cause": cause, "stage": stage, "tokens": int(tokens or 0),
+           "wall_s": round(float(wall_s or 0), 2), "cpu_s": round(float(cpu_s or 0), 3), "note": note}
+    row.update(extra)
+    append_jsonl(os.path.join(state_dir(), "accounting.jsonl"), row)
+
+
+def accounting_summary(ledger):
+    rows = read_jsonl(os.path.join(state_dir(), "accounting.jsonl"))
+    per_cause, totals = {}, {"tokens": 0, "wall_s": 0.0, "cpu_s": 0.0}
+    for row in rows:
+        totals["tokens"] += row.get("tokens") or 0
+        totals["wall_s"] += row.get("wall_s") or 0
+        totals["cpu_s"] += row.get("cpu_s") or 0
+        if row.get("cause"):
+            entry = per_cause.setdefault(row["cause"], {})
+            stage = entry.setdefault(row.get("stage") or "?", {"tokens": 0, "wall_s": 0.0})
+            stage["tokens"] += row.get("tokens") or 0
+            stage["wall_s"] += row.get("wall_s") or 0
+    gained = {"lines_removed": 0, "suite_s_saved": 0, "tokens_cut": 0, "causes_closed": 0}
+    for row in ledger.get("rows") or ():
+        if not isinstance(row, dict):
+            continue
+        if row.get("status") in ("fixed", "fixed-pending"):
+            gained["causes_closed"] += 1
+        for fix in row.get("fixes") or ():
+            for key in ("lines_removed", "suite_s_saved", "tokens_cut"):
+                gained[key] += int(((fix or {}).get("yield") or {}).get(key) or 0)
+    totals = {k: round(v, 1) if isinstance(v, float) else v for k, v in totals.items()}
+    return {"totals": totals, "per_cause": per_cause, "yield": gained}
+
+
+def queue_k(summary):
+    spent = summary["totals"]["tokens"]
+    if spent < 100000:
+        return TOP_K
+    gained = summary["yield"]["lines_removed"] + summary["yield"]["suite_s_saved"] / 6.0 + summary["yield"]["tokens_cut"] / 1000.0
+    return TOP_K if gained / (spent / 1000.0) >= LOW_YIELD_PER_KTOK else TOP_K_LOW_YIELD
+
+
+
+
+def judge_digest():
+    digest = hashlib.sha256()
+    with open(os.path.realpath(__file__), "rb") as handle:
+        digest.update(handle.read())
+    ledger = load_ledger()
+    judged = {key: ledger.get(key) for key in ("protected", "keep", "intentional", "retired")}
+    judged["rows"] = [{k: row.get(k) for k in ("id", "match", "status")} for row in ledger.get("rows") or ()
+                      if isinstance(row, dict) and row.get("status") in DISMISSED]
+    digest.update(json.dumps(judged, sort_keys=True).encode())
+    digest.update(json.dumps({"limits": LIMITS, "detector": DETECTOR_VERSION, "top_k": TOP_K}, sort_keys=True).encode())
+    return digest.hexdigest()
+
+
+def problem_of(candidate, verdict):
+    units = candidate["units"]
+    evidence = [{"at": verdict.get("at"), "ref": "%s@%s" % (span["unit"], span["digest"][:8]), "account": None,
+                 "excerpt": clip(verdict.get("reason") or candidate["detail"])} for span in units[:EVIDENCE_MAX]]
+    if not units and candidate.get("registrations"):
+        evidence = [{"at": verdict.get("at"), "ref": candidate["id"], "account": None, "excerpt": clip(candidate["detail"])}]
+    fact = verdict.get("fact") or candidate["detail"]
+    if candidate.get("needs_egor"):
+        fact = "needs Egor: " + fact
+    return {"id": candidate["id"], "rule": candidate["rules"][0], "rules": candidate["rules"], "group": candidate["group"],
+            "state": "new", "fact": clip(fact, 200), "value": verdict.get("value") if isinstance(verdict.get("value"), (int, float)) else candidate["value"],
+            "limit": 0, "unit": "lines", "window_h": None, "exposure": max(len(units), 1), "count": None,
+            "first_seen": verdict.get("first_at") or verdict.get("at"), "last_seen": verdict.get("at"),
+            "evidence": evidence, "ledger": None, "plan": verdict.get("plan"), "proofs": verdict.get("proofs") or [],
+            "needs_egor": candidate.get("needs_egor") or False, "steps": candidate.get("steps") or [],
+            "units": units, "files": candidate["files"], "repos": candidate["repos"], "snapshot": candidate["snapshot"],
+            "digest": candidate["evidence_digest"]}
+
+
+def auto_verdict(candidate):
+    if candidate["rules"] == ["registration"]:
+        return {"verdict": "problem", "digest": candidate["evidence_digest"], "at": iso_time(now_s()),
+                "fact": candidate["detail"], "plan": "; ".join(candidate["steps"]),
+                "reason": "the registration's target does not exist", "proofs": ["the target path is absent"]}
+    return None
+
+
+def apply_ledger(problems, candidates, ledger, indexes):
+    rows = [r for r in ledger.get("rows") or () if isinstance(r, dict)]
+    faulty = {rid for rid, _ in ledger_faults(ledger)}
+    by_id = {c["id"]: c for c in candidates}
+    kept = []
+    for rid, why in ledger_faults(ledger):
+        kept.append({"id": "ledger:%s" % rid, "rule": "ledger", "group": "ledger", "state": "new",
+                     "fact": "ledger row %s: %s, so it judges nothing" % (rid, why), "value": 1, "limit": 0, "unit": "rows",
+                     "window_h": None, "exposure": len(rows), "count": 1, "first_seen": None, "last_seen": None,
+                     "evidence": [], "ledger": rid})
+    seen_rows = set()
+    for problem in problems:
+        row = None
+        for candidate_row in rows:
+            if candidate_row.get("id") in faulty:
+                continue
+            match = candidate_row.get("match") or {}
+            if match.get("cause") == problem["id"] or (match.get("identity") and by_id.get(problem["id"])
+                                                       and identity_match(match["identity"], by_id[problem["id"]], indexes)):
+                row = candidate_row
+                break
+        if row:
+            status = row.get("status")
+            if status in DISMISSED:
+                continue
+            seen_rows.add(row.get("id"))
+            problem["ledger"] = problem["id"] = row.get("id")
+            if status == "fixed-pending":
+                problem["state"] = "fixed-pending"
+            elif status == "fixed":
+                problem["state"] = "regressed"
+            else:
+                problem["state"] = "open"
+        kept.append(problem)
+    for row in rows:
+        if row.get("status") == "fixed-pending" and row.get("id") not in seen_rows and row.get("id") not in faulty:
+            kept.append({"id": row["id"], "rule": "fix-proof", "group": (row.get("group") or "dead"), "state": "fixed-pending",
+                         "fact": "%s · fixed, its candidate is gone" % (row.get("title") or row["id"]), "value": 0, "limit": 0,
+                         "unit": "lines", "window_h": None, "exposure": 1, "count": None, "first_seen": None,
+                         "last_seen": None, "evidence": [], "ledger": row["id"], "units": [], "files": row.get("files") or []})
+    return kept
+
+
+def document(started):
+    now = now_s()
+    ledger = load_ledger()
+    indexes = load_indexes()
+    graph_info = read_json(os.path.join(state_dir(), "graph.json"), {}) or {}
+    candidates = load_candidates()
+    verdicts = load_verdicts()
+    blind = []
+    if not indexes:
+        blind.append("index")
+    if not os.path.exists(os.path.join(state_dir(), "candidates.jsonl")):
+        blind.append("candidates")
+    problems, waiting, protected = [], [], 0
+    for candidate in candidates:
+        if candidate.get("protected"):
+            protected += 1
+            continue
+        verdict = verdicts.get(candidate["id"])
+        if not verdict_valid(verdict, candidate, now):
+            verdict = auto_verdict(candidate)
+        if verdict and verdict.get("verdict") == "problem":
+            problems.append(problem_of(candidate, verdict))
+        elif not verdict_valid(verdicts.get(candidate["id"]), candidate, now):
+            waiting.append(candidate)
+    problems = apply_ledger(problems, candidates, ledger, indexes)
+    groups = {g: 0 for g in GROUPS}
+    for problem in problems:
+        if problem["state"] in COUNTED:
+            groups[problem.get("group") or "dead"] = groups.get(problem.get("group") or "dead", 0) + 1
+    count = sum(groups.values())
+    summary = accounting_summary(ledger)
+    days = rollup_days()
+    cover = coverage(days)
+    spots = list(ledger.get("blind_spots") or [])
+    for lang, info in (graph_info.get("blind_languages") or {}).items():
+        spots.append({"id": "language:%s" % lang, "what": "%s: %d files no detector reads" % (lang, info["files"]),
+                      "reason": "only bash, python, lua, js and jq are parsed; e.g. %s" % ", ".join(info["examples"]),
+                      "since": None, "would_catch_if": "a parser for %s" % lang})
+    if not cover["start"]:
+        spots.append({"id": "rollup:none", "what": "runtime silence: no rollup day yet",
+                      "reason": "the harness journals were never rolled up", "since": None,
+                      "would_catch_if": "code-doctor rollup runs before the journals' 3-day prune"})
+    elif cover["tail_days"] < LIMITS["silent_days"]:
+        spots.append({"id": "rollup:short", "what": "runtime silence: %d covered days since %s, %d needed" % (
+            cover["tail_days"], cover.get("tail_start"), LIMITS["silent_days"]),
+            "reason": "silence is never claimed past the rollup's start" + (" (gaps: %s)" % ", ".join(cover["gaps"][:3]) if cover["gaps"] else ""),
+            "since": cover["start"], "would_catch_if": "%d more covered days" % (LIMITS["silent_days"] - cover["tail_days"])})
+    for what, why in (("CLI invocations through the PATH shims", "no shim journals a CLI call"),
+                      ("gate branches", "no journal records which branch of a gate fired"),
+                      ("superseded machinery", "no detector reads vendor capability changes yet")):
+        spots.append({"id": "runtime:" + re.sub(r"\W+", "-", what.lower()).strip("-"), "what": what + ": not measured",
+                      "reason": why, "since": None, "would_catch_if": "a journal or detector for it"})
+    status = "blind" if blind else ("problems" if count else "ok")
+    slices = read_json(os.path.join(state_dir(), "slices.json"), {}) or {}
+    all_slices = sorted({c["slice"] for c in candidates})
+    last_judge = (read_jsonl(os.path.join(state_dir(), "judge-runs.jsonl")) or [None])[-1]
+    return {
+        "contract": 1, "doctor": "code", "as_of": iso_time(now), "as_of_s": int(now), "judge": judge_digest(),
+        "status": status, "problem_count": count, "groups": groups, "problems": problems,
+        "blind_spots": spots, "blind": blind,
+        "candidates": {"total": len(candidates), "waiting": len(waiting), "protected": protected,
+                       "judged": len(candidates) - len(waiting) - protected,
+                       "waiting_by_group": {g: sum(1 for c in waiting if c["group"] == g) for g in GROUPS},
+                       "top": [{"id": c["id"], "group": c["group"], "detail": clip(c["detail"], 160), "value": c["value"]}
+                               for c in waiting[:5]]},
+        "cost": summary["totals"], "cost_per_cause": summary["per_cause"], "yield": summary["yield"],
+        "queue_k": queue_k(summary), "last_judge": last_judge,
+        "coverage": {"rollup": cover, "deep_pass": {"slices": len(all_slices), "covered": sum(1 for s in all_slices if s in slices)}},
+        "index": {repo: {"files": len(doc.get("files") or {}), "snapshot": (doc.get("cursor") or {}).get("snapshot"),
+                         "at": (doc.get("cursor") or {}).get("at")} for repo, doc in indexes.items()},
+        "self": {"collector_s": round(time.time() - started, 3), "error": None},
+    }
+
+
+def write_document(doc):
+    write_json(os.path.join(state_dir(), "latest.json"), doc)
+
+
+def view(doc):
+    lines = ["Code doctor: %s · %d problems · %d candidates waiting" % (
+        doc["status"], doc["problem_count"], (doc.get("candidates") or {}).get("waiting", 0))]
+    for group in GROUPS:
+        lines.append("  %-9s %d" % (group, doc["groups"].get(group, 0)))
+    for problem in doc["problems"]:
+        lines.append("  %-13s %-9s %s" % (problem["state"], problem.get("group"), problem["fact"]))
+    return "\n".join(lines)
+
+
+
+
+def porcelain(top, *paths):
+    entries = (git(top, "status", "--porcelain", "-z", "--no-renames", "--untracked-files=all", "--", *paths) or "").split("\0")
+    return [(entry[:2].strip() or "M", entry[3:]) for entry in entries if len(entry) > 3]
+
+
+def diff_entries(tree, base):
+    fields = (git(tree, "diff", "--name-status", "-z", "--no-renames", base + "...HEAD") or "").split("\0")
+    return [(fields[i], fields[i + 1]) for i in range(0, len(fields) - 1, 2) if fields[i]]
+
+
+def active_work(indexes, exclude_branch=None):
+    out = {}
+    for repo, doc in indexes.items():
+        top = doc["top"]
+        paths = {}
+        for _, rel in porcelain(top):
+            paths[rel] = "uncommitted in %s" % top
+        listing = git(top, "worktree", "list", "--porcelain") or ""
+        for block in listing.strip().split("\n\n"):
+            fields = dict(line.split(" ", 1) for line in block.splitlines() if " " in line)
+            tree, branch = fields.get("worktree"), (fields.get("branch") or "").replace("refs/heads/", "")
+            if not tree or os.path.realpath(tree) == os.path.realpath(top) or branch == exclude_branch:
+                continue
+            for _, rel in porcelain(tree):
+                paths.setdefault(rel, "uncommitted in worktree %s" % tree)
+            if branch:
+                for rel in (git(top, "diff", "--name-only", "-z", "--no-renames", "HEAD..." + branch) or "").split("\0"):
+                    if rel:
+                        paths.setdefault(rel, "changed on live branch %s" % branch)
+        for rel, claim in review_claims(top).items():
+            if isinstance(claim, dict) and (claim.get("until") or 0) > now_s():
+                paths.setdefault(rel, "under an open review claim of %s" % claim.get("session"))
+        out[repo] = paths
+    return out
+
+
+def review_claims(top):
+    search = os.pathsep.join((os.environ.get("PATH", ""), os.path.join(base_home(), ".local", "bin")))
+    binary = shutil.which("review-anchors", path=search)
+    if not binary:
+        return {}
+    try:
+        done = subprocess.run([binary, "list", "--repo", top, "--json"], capture_output=True, text=True, timeout=30)
+        return (json.loads(done.stdout) or {}).get("claims") or {} if done.returncode == 0 else {}
+    except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
+        return {}
+
+
+def unit_digest_at(top, ref, span):
+    rel = span["file"].split("/", 1)[1]
+    if ref:
+        text = git(top, "show", "%s:%s" % (ref, rel))
+        if text is None:
+            return None
+    else:
+        try:
+            with open(os.path.join(top, rel), encoding="utf-8", errors="replace") as handle:
+                text = handle.read()
+        except OSError:
+            return None
+    if "#" not in span["unit"]:
+        return sha(text.encode())[:16]
+    record = parse_file(rel, text.encode())
+    name = span["unit"].rsplit("#", 1)[1]
+    for symbol in record.get("symbols") or ():
+        if symbol["name"] == name:
+            return symbol["digest"]
+    return None
+
+
+def revalidate(problem, ref=None, tops=None):
+    tops = tops or {repo: doc["top"] for repo, doc in load_indexes().items()}
+    changed = []
+    for span in problem.get("units") or ():
+        top = tops.get(span["file"].split("/", 1)[0])
+        if not top:
+            changed.append("%s: its repository is not indexed" % span["unit"])
+            continue
+        at = ref if ref and git(top, "rev-parse", "--verify", "--quiet", ref + "^{commit}") else None
+        if unit_digest_at(top, at, span) != span["digest"]:
+            changed.append("%s changed since the judgment" % span["unit"])
+    return changed
+
+
+def send_back(cause, why):
+    verdicts = load_verdicts()
+    if cause in verdicts:
+        verdicts[cause]["digest"] = None
+        verdicts[cause]["sent_back"] = {"at": iso_time(now_s()), "why": why}
+        write_json(verdicts_path(), verdicts)
+
+
+def unit_paths(problem):
+    tops = {repo: doc["top"] for repo, doc in load_indexes().items()}
+    out = []
+    for fid in problem.get("files") or ():
+        repo, rel = fid.split("/", 1)
+        out.append(os.path.join(tops.get(repo) or os.path.join(repos_dir(), repo), rel))
+    return out
+
+
+def night_snapshot(problems, night):
+    indexes = load_indexes()
+    work = active_work(indexes)
+    kept = []
+    for problem in problems:
+        if problem.get("state") not in COUNTED or problem.get("needs_egor"):
+            continue
+        if any(f.split("/", 1)[1] in work.get(f.split("/", 1)[0], {}) for f in problem.get("files") or ()):
+            continue
+        ref = "refs/night/%s/base" % night if night else None
+        changed = revalidate(problem, ref, {r: d["top"] for r, d in indexes.items()}) if problem.get("units") else []
+        if changed:
+            send_back(problem["id"], "; ".join(changed))
+            continue
+        kept.append(problem)
+    kept.sort(key=lambda p: (-(p.get("value") or 0), p["id"]))
+    return kept
+
+
+def symlink_escape(top, rel):
+    path = top
+    for part in rel.split("/"):
+        path = os.path.join(path, part)
+        if os.path.islink(path):
+            real = os.path.realpath(path)
+            if not real.startswith(os.path.realpath(top) + "/"):
+                return "%s is a symlink into %s" % (os.path.relpath(path, top), real)
+    return None
+
+
+def files_under(path, limit=20000):
+    if not os.path.isdir(path):
+        return [path]
+    out = []
+    for folder, dirs, files in os.walk(path):
+        dirs[:] = [d for d in dirs if d != ".git"]
+        out += [os.path.join(folder, name) for name in files]
+        if len(out) >= limit:
+            break
+    return out
+
+
+def symlink_edits(tree, since):
+    out = []
+    for line in (git(tree, "ls-files", "-s", "-z") or "").split("\0"):
+        meta, _, rel = line.partition("\t")
+        if not meta.startswith("120000"):
+            continue
+        real = os.path.realpath(os.path.join(tree, rel))
+        if real.startswith(os.path.realpath(tree) + "/") or not os.path.exists(real):
+            continue
+        top = (git(real if os.path.isdir(real) else os.path.dirname(real), "rev-parse", "--show-toplevel") or "").strip()
+        inside = os.path.relpath(real, top) if top else None
+        if top and git(top, "ls-files", "-z", "--", inside):
+            paths = [os.path.join(top, path) for _, path in porcelain(top, inside)]
+        else:
+            top, paths = top or real, files_under(real)
+        for path in paths:
+            try:
+                touched = os.path.getmtime(path) >= since
+            except OSError:
+                touched = True
+            if touched:
+                out.append("%s: edited through the symlink %s into %s: refused, a change there is that repository's own run"
+                           % (path, rel, top))
+    return out
+
+
+EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+
+def removed_symbols(tree, base, rel):
+    before = git(tree, "show", "%s:%s" % (base, rel))
+    try:
+        with open(os.path.join(tree, rel), "rb") as handle:
+            after = handle.read()
+    except OSError:
+        return []
+    if before is None:
+        return []
+    names = {}
+    for symbol in parse_file(rel, before.encode()).get("symbols") or ():
+        names[symbol["name"]] = names.get(symbol["name"], 0) + 1
+    for symbol in parse_file(rel, after).get("symbols") or ():
+        names[symbol["name"]] = names.get(symbol["name"], 0) - 1
+    return sorted(name for name, left in names.items() if left > 0)
+
+
+def day_trees(record, tops):
+    launched = record.get("launched_at") or record.get("created_at")
+    out = {}
+    for top in tops.values():
+        if not git(top, "rev-parse", "--verify", "--quiet", "HEAD"):
+            continue
+        before = (git(top, "rev-list", "-1", "--before=%s" % launched, "HEAD") or "").strip() if launched else ""
+        out[top] = before or EMPTY_TREE
+    return out
+
+
+def check_run(record, base, landing, suites_passed):
+    errors = []
+    since = iso_epoch(record.get("launched_at")) or iso_epoch(record.get("created_at")) or 0
+    indexes = load_indexes()
+    tops = {repo: doc["top"] for repo, doc in indexes.items()}
+    doc = read_json(os.path.join(state_dir(), "latest.json"), {}) or {}
+    problems = {p["id"]: p for p in (record.get("problems") or ())}
+    current = {p["id"]: p for p in doc.get("problems") or ()}
+    judged = {pid: snap if snap.get("units") else current.get(pid) or snap for pid, snap in problems.items()}
+    deleted_ok, unit_ok = {}, {}
+    for pid, problem in judged.items():
+        for span in problem.get("units") or ():
+            deleted_ok.setdefault(span["file"], []).append((pid, problem))
+            unit_ok.setdefault(span["unit"], []).append((pid, problem))
+    ledger = load_ledger()
+    verdicts = load_verdicts()
+    work = active_work(indexes, exclude_branch=record.get("branch"))
+    candidates = {c["id"]: c for c in load_candidates()}
+    graph = Graph(indexes, ledger) if indexes else None
+    live, edges = set(), {}
+    if graph:
+        roots, _ = entry_roots(graph)
+        edges = graph.edges()
+        live = reachable(graph, edges, set(roots) | {u for u in protected_units(ledger) if u in graph.files})
+    hits, _, _, _ = rollup_totals(rollup_days())
+    cover = coverage(rollup_days())
+
+    def deletion_proof(label, fid, owners, whole_file):
+        for pid, problem in owners:
+            verdict = verdicts.get(pid) or {}
+            if problem.get("needs_egor"):
+                errors.append("%s: %s needs Egor, the fixer never edits it" % (label, pid))
+            record_of = graph.files.get(fid) if graph and whole_file else None
+            if record_of and record_of.get("kind") == "test":
+                covered = [t for t in edges.get(fid, ()) if graph.files[t].get("kind") == "code" and t in live]
+                if covered:
+                    errors.append("%s: deletion proof: it still tests live code (%s)" % (label, ", ".join(covered[:3])))
+            elif whole_file and fid in live:
+                errors.append("%s: deletion proof: a live entry point still reaches it" % label)
+            key = "hook:" + os.path.basename(fid.split("/", 1)[1])
+            if whole_file and hits.get(key):
+                errors.append("%s: deletion proof: %d rollup hits since %s" % (label, hits[key], cover.get("start")))
+            if not (verdict.get("reason") or "").strip():
+                errors.append("%s: deletion proof: the judgment quotes no purpose or retirement reason" % label)
+            if landing and not suites_passed:
+                errors.append("%s: deletion proof: green suites not confirmed (--suites-passed)" % label)
+            if len(problem.get("repos") or ()) > 1 and problem.get("group") == "duplicate":
+                staged = [m for row in ledger.get("rows") or ()
+                          if isinstance(row, dict) and row.get("id") in (pid, problem.get("ledger"))
+                          for m in row.get("merges") or ()
+                          if isinstance(m, dict) and m.get("stage") == "migrated"
+                          and m.get("night") and m.get("night") != record.get("night")]
+                if not staged:
+                    errors.append("%s: cross-repo merge: the old copy is deleted on a later night, after the new path is proven" % label)
+
+    day = {} if record.get("worktrees") else day_trees(record, tops)
+    tree_of = {}
+    for tree in record.get("worktrees") or sorted(day):
+        if not os.path.isdir(tree):
+            errors.append("%s: the run's worktree is gone, nothing proves its changes: they land through a new Code fixer run" % tree)
+            continue
+        common = (git(tree, "rev-parse", "--path-format=absolute", "--git-common-dir") or "").strip()
+        repo = os.path.basename(os.path.dirname(common)) if common else os.path.basename(os.path.realpath(tree))
+        tree_of[repo] = tree
+        tree_base = day.get(tree) or base
+        entries = diff_entries(tree, tree_base) if tree_base else []
+        if tree not in day:
+            entries += porcelain(tree)
+            errors += symlink_edits(tree, since)
+        for kind, rel in entries:
+            escape = symlink_escape(tree, rel)
+            if escape:
+                errors.append("%s/%s: edit through a cross-repo symlink refused (%s)" % (repo, rel, escape))
+                continue
+            fid = "%s/%s" % (repo, rel)
+            busy = work.get(repo, {}).get(rel)
+            if busy and landing:
+                errors.append("%s: in active work (%s)" % (fid, busy))
+            if "D" in kind:
+                owners = deleted_ok.get(fid)
+                if not owners:
+                    errors.append("%s: deleted, but no judged problem of this run names it" % fid)
+                else:
+                    deletion_proof(fid, fid, owners, True)
+                continue
+            if not any(span["unit"] == fid for _, problem in deleted_ok.get(fid, ()) for span in problem.get("units") or ()):
+                for name in removed_symbols(tree, tree_base or "HEAD", rel):
+                    unit = "%s#%s" % (fid, name)
+                    owners = unit_ok.get(unit)
+                    if not owners:
+                        errors.append("%s: deleted, but no judged problem of this run names it" % unit)
+                    else:
+                        deletion_proof(unit, fid, owners, False)
+    for pid, problem in judged.items():
+        if not problem.get("units"):
+            continue
+        changed = revalidate(problem, base, tops) if base else []
+        busy = [f for f in problem.get("files") or () if f.split("/", 1)[1] in work.get(f.split("/", 1)[0], {})]
+        if busy:
+            errors.append("%s: in active work (%s): it waits, its verdict stands" % (pid, ", ".join(busy)))
+        elif landing:
+            changed += [c for c in revalidate(problem, None, tops) if c not in changed]
+        if changed:
+            send_back(pid, "; ".join(changed))
+            errors.append("%s: its input changed since the judgment (%s): sent back to the judge" % (pid, "; ".join(changed)))
+        candidate = candidates.get(pid)
+        if candidate and candidate.get("evidence_digest") != problem.get("digest") and problem.get("digest"):
+            errors.append("%s: its evidence changed since the snapshot: sent back to the judge" % pid)
+        fixed = any(isinstance(row, dict) and pid in (row.get("id"), (row.get("match") or {}).get("cause"))
+                    and any(isinstance(fix, dict) and fix.get("by") == record.get("id") for fix in row.get("fixes") or ())
+                    for row in ledger.get("rows") or ())
+        if fixed and record.get("id") and all(
+                unit_digest_at(tree_of.get(span["file"].split("/", 1)[0]) or tops.get(span["file"].split("/", 1)[0]) or "",
+                               None, span) == span["digest"] for span in problem["units"]):
+            errors.append("%s: recorded fixed by this run, but the re-check reads every unit as judged" % pid)
+    return errors
+
+
+
+
+def record_fix(cause, by, files, lines_removed, suite_s, tokens_cut, mechanism, canonical, replaced):
+    ledger = load_ledger()
+    rows = ledger.setdefault("rows", [])
+    candidates = {c["id"]: c for c in load_candidates()}
+    candidate = candidates.get(cause) or {}
+    row = next((r for r in rows if isinstance(r, dict) and (r.get("id") == cause or (r.get("match") or {}).get("cause") == cause)), None)
+    if not row:
+        row = {"id": cause, "title": clip(candidate.get("detail") or cause, 160), "match": {"cause": cause},
+               "group": candidate.get("group"), "status": "open", "fixes": [], "same_cause": [], "last_reviewed": None,
+               "reviewed_by": None, "note": None, "handoff": None}
+        rows.append(row)
+    if candidate:
+        row["match"]["identity"] = identity_of(candidate, load_indexes())
+    row["status"] = "fixed-pending"
+    row.setdefault("fixes", []).append({"at": iso_time(now_s()), "by": by, "files": files, "in": None, "regressed_at": None,
+                                        "yield": {"lines_removed": lines_removed, "suite_s_saved": suite_s, "tokens_cut": tokens_cut}})
+    write_json(ledger_path(), ledger)
+    if mechanism and canonical:
+        registry = read_json(mechanisms_path(), {}) or {}
+        entries = registry.setdefault("mechanisms", [])
+        entries[:] = [e for e in entries if not (isinstance(e, dict) and e.get("mechanism") == mechanism)]
+        entries.append({"mechanism": mechanism, "canonical": canonical, "replaced": replaced, "cause": cause,
+                        "at": iso_time(now_s())})
+        registry.setdefault("about", "Canonical modules recorded by landed Code doctor cleanups; review-bench's fit lens reads it.")
+        write_json(mechanisms_path(), registry)
+    return row
+
+
+
+
+def doc_or_error(started):
+    try:
+        return document(started)
+    except Exception as error:
+        now = now_s()
+        return {"contract": 1, "doctor": "code", "as_of": iso_time(now), "as_of_s": int(now), "judge": None,
+                "status": "error", "problem_count": 0, "groups": {g: 0 for g in GROUPS}, "problems": [],
+                "blind_spots": [], "blind": [],
+                "self": {"collector_s": round(time.time() - started, 3),
+                         "error": clip("%s: %s" % (type(error).__name__, error), 200)}}
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="code-doctor", description=__doc__.split("\n")[0])
+    parser.add_argument("--json", action="store_true", help="print the document and write nothing")
+    parser.add_argument("--quiet", action="store_true", help="print nothing")
+    sub = parser.add_subparsers(dest="command")
+    sub.add_parser("index", help="index the sweep repositories incrementally (working tree included)")
+    sub.add_parser("rollup", help="roll the harness journals up into durable daily hit counts")
+    sub.add_parser("candidates", help="recompute candidates.jsonl from the index and the rollup")
+    refresh = sub.add_parser("refresh", help="index, rollup, candidates, then the document (night start, menu Refresh)")
+    refresh.add_argument("--quiet", action="store_true", dest="refresh_quiet")
+    judge = sub.add_parser("judge", help="judge waiting candidates through worker-run under the night's budget")
+    judge.add_argument("--night")
+    judge.add_argument("--max-tokens", type=int, default=BUDGET["tokens"])
+    judge.add_argument("--max-wall", type=float, default=BUDGET["wall_s"])
+    judge.add_argument("--vendor", default=os.environ.get("CODE_DOCTOR_JUDGE_VENDOR") or "claudeb")
+    judge.add_argument("--limit", type=int)
+    check = sub.add_parser("check", help="the fixer's safety gate over a doctor-fix run record")
+    check.add_argument("record")
+    check.add_argument("--base")
+    check.add_argument("--landing", action="store_true")
+    check.add_argument("--suites-passed", action="store_true")
+    snap = sub.add_parser("snapshot", help="internal: the problems a fixer run takes, top-K by value, revalidated")
+    snap.add_argument("doc")
+    snap.add_argument("--night")
+    fix = sub.add_parser("record-fix", help="the fixer records a landed cleanup: ledger row and canonical mechanism")
+    fix.add_argument("cause")
+    fix.add_argument("--by", required=True)
+    fix.add_argument("--files", nargs="+", required=True)
+    fix.add_argument("--lines-removed", type=int, default=0)
+    fix.add_argument("--suite-s-saved", type=int, default=0)
+    fix.add_argument("--tokens-cut", type=int, default=0)
+    fix.add_argument("--mechanism")
+    fix.add_argument("--canonical")
+    fix.add_argument("--replaced", nargs="*", default=[])
+    acct = sub.add_parser("account", help="record a cost the doctor did not see (fix, review, tests, retries)")
+    acct.add_argument("--cause", required=True)
+    acct.add_argument("--stage", required=True, choices=("fix", "review", "tests", "retries"))
+    acct.add_argument("--tokens", type=int, default=0)
+    acct.add_argument("--wall", type=float, default=0)
+    acct.add_argument("--night")
+    args = parser.parse_args(argv)
+    started = time.time()
+
+    if args.command == "index":
+        for row in run_index():
+            print("%(repo)s: %(files)d files · %(parsed)d parsed · %(reused)d reused · snapshot %(snapshot)s" % row)
+        return 0
+    if args.command == "rollup":
+        print("rollup: %d day-sources written" % run_rollup())
+        return 0
+    if args.command == "candidates":
+        candidates = build_candidates()
+        if candidates is None:
+            print("code-doctor: no index yet, run code-doctor index", file=sys.stderr)
+            return 1
+        print("candidates: %d (%s)" % (len(candidates), ", ".join("%s %d" % (g, sum(1 for c in candidates if c["group"] == g)) for g in GROUPS)))
+        return 0
+    if args.command == "refresh":
+        run_index()
+        run_rollup()
+        build_candidates()
+        doc = doc_or_error(started)
+        write_document(doc)
+        if not (args.quiet or args.refresh_quiet):
+            print(view(doc) if doc["status"] != "error" else "Code doctor: error · %s" % doc["self"]["error"])
+        return 0 if doc["status"] != "error" else 1
+    if args.command == "judge":
+        record = run_judge(args.night, args.max_tokens, args.max_wall, args.vendor, args.limit)
+        write_document(doc_or_error(started))
+        print("judge: %(judged)d judged · %(pending)d waiting · %(tokens)d tokens · %(wall_s)ss · stop %(stop)s" % record)
+        return 0
+    if args.command == "check":
+        record = read_json(args.record, {}) or {}
+        errors = check_run(record, args.base, args.landing, args.suites_passed)
+        for line in errors:
+            print(line)
+        return 1 if errors else 0
+    if args.command == "snapshot":
+        doc = read_json(args.doc, {}) or {}
+        kept = night_snapshot(doc.get("problems") or [], args.night)
+        print(json.dumps(kept[: queue_k(accounting_summary(load_ledger()))]))
+        return 0
+    if args.command == "record-fix":
+        row = record_fix(args.cause, args.by, args.files, args.lines_removed, args.suite_s_saved, args.tokens_cut,
+                         args.mechanism, args.canonical, args.replaced)
+        print("%s: fixed-pending" % row["id"])
+        return 0
+    if args.command == "account":
+        account(args.night, args.cause, args.stage, tokens=args.tokens, wall_s=args.wall)
+        return 0
+
+    doc = doc_or_error(started)
+    if args.json:
+        print(json.dumps(doc, ensure_ascii=False, indent=1))
+        return 0 if doc["status"] != "error" else 1
+    write_document(doc)
+    if not args.quiet:
+        print(view(doc) if doc["status"] != "error" else "Code doctor: error · %s" % doc["self"]["error"])
+    return 0 if doc["status"] != "error" else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

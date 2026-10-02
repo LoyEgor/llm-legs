@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+. "$(dirname "$0")/../lib/old_sync_lib.sh"
+old_sync_all "$@"

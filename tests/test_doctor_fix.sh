@@ -142,7 +142,7 @@ hash=$(git -C "$WORK/projects/proj" rev-parse --short HEAD)
 # The llm-legs repository: its doctors are the doctor area's entry and what night worktrees rerun.
 L="$WORK/projects/llm-legs"
 mkdir -p "$L/bin"
-for d in llm harness updater; do
+for d in llm harness updater code; do
   cat >"$L/bin/$d-doctor" <<EOF
 #!/bin/bash
 printf '%s\n' "\$PWD" >>"\$DATA/$d-doctor-runs"
@@ -655,4 +655,44 @@ DOCTORS_DIR="$WORK/doctors-q" LLM_DOCTOR_LEDGER="$WORK/ledgers/q.json" bash "$FI
 assert grep -qF 'known, quiet (1): ' "$WORK/show"
 assert grep -qxF "$(printf '  Q7\tquiet\tquiet')" "$WORK/show"
 
-echo "PASS: $asserts asserts; launch refusals (no or foreign or stale document, nothing to fix, open run under 12 h), an old run abandoned, the snapshot without watch/fixed-pending, the chat through the shared opener, the record fields, a failed opener, close refusals (doctor not rerun, undecided id, missing path, missing commit, a directory, no evidence, bad verdict, judge changed without its line), a clean close, show, runs, updater records and launch, parallel ids, night launch (areas, worktrees, branches, briefs, the packet, one open run per area), night vendor records, a night without a base ref, llm components with their block's entry file, fixed only once the doctor reads it fixed-pending or gone, night close (the doctor rerun once in the worktree, a handed-in document refused, purpose touching its component, judge), abandon, a failed worktree, harness sections and top watch rows under parallel launch, updater machinery, a legacy release run, a merge citation, a malformed ledger row, a failed collector, an unwritten launched_at, a launcher killed under the lock, quiet open ledger rows (their own brief section, the day launch)"
+# Code: one area, top-K by value, needs-Egor problems stay out, close runs code-doctor check.
+export CODE_DOCTOR_DIR="$WORK/code" CODE_DOCTOR_REPOS="" CODE_DOCTOR_LEDGER="$WORK/ledgers/code.json"
+mkdir -p "$WORK/code"
+printf '{"rows": []}\n' >"$CODE_DOCTOR_LEDGER"
+jq -n --argjson s "$(now)" '{contract: 1, doctor: "code", as_of_s: $s, judge: "c1", status: "problems", problem_count: 5,
+  problems: ([range(4) | {id: "cause:proj/f\(.)", rule: "unreachable", group: "dead", state: "new", fact: "f\(.) is dead",
+    value: (10 + .), units: [], files: ["proj/README"]}]
+    + [{id: "cause:registration:/x", rule: "registration", group: "dead", state: "new", fact: "needs Egor: x", value: 99,
+       needs_egor: true, units: [], files: []}])}' >"$WORK/code/latest.json"
+fix launch code --night n5 >"$WORK/out" || fail "code night failed"
+cid=$(cut -f1 "$WORK/out")
+assert grep -qE '^code-code-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{4}$' <<<"$cid"
+assert jqe --arg f "$WORK/projects/proj/README" '[.problems[].id] == ["cause:proj/f3", "cause:proj/f2", "cause:proj/f1"]
+  and .problems[0].component.files == [$f] and .area == "code" and .judge_at_launch == "base-code"' "$(record "$cid")"
+assert grep -qF 'Code runs: every problem carries its judged plan' "$RUNS/$cid.brief.md"
+assert grep -qF 'sections 0-6, "Night" and "Code doctor" only.' "$RUNS/$cid.brief.md"
+jq -n --argjson s "$(($(now) + 5))" '{contract: 1, doctor: "code", as_of_s: $s, judge: "base-code", status: "ok", problem_count: 0,
+  problems: []}' >"$DATA/code-doc.json"
+printf 'cause:proj/f%s\tfixed\tproj/README\tdeleted, the suites pass\n' 3 2 1 >"$WORK/cd-decisions"
+printf '#!/bin/bash\nprintf "%%s\\n" "$*" >>"$DATA/code-checks"\necho "proj/f3: deletion proof: a live entry point still reaches it"\nexit 1\n' \
+  >"$FAKE_BIN/code-check-refuses"
+printf '#!/bin/bash\nprintf "%%s\\n" "$*" >>"$DATA/code-checks"\n' >"$FAKE_BIN/code-check-passes"
+chmod +x "$FAKE_BIN/code-check-refuses" "$FAKE_BIN/code-check-passes"
+DOCTOR_FIX_CODE_DOCTOR="$FAKE_BIN/code-check-refuses" fix close "$cid" --decisions "$WORK/cd-decisions" "done" 2>"$WORK/err" &&
+  fail "a refused code-doctor check closed the run"
+assert grep -qF 'code-doctor check: proj/f3: deletion proof: a live entry point still reaches it' "$WORK/err"
+assert grep -qxF "check $RUNS/$cid.json --base refs/night/n5/base" "$DATA/code-checks"
+DOCTOR_FIX_CODE_DOCTOR="$FAKE_BIN/code-check-passes" fix close "$cid" --decisions "$WORK/cd-decisions" "done" >/dev/null ||
+  fail "a passing code-doctor check left the run open"
+assert jqe '.closed_at != null and (.decisions | length) == 3' "$(record "$cid")"
+assert jqe '.problems[0] | has("units") and has("digest") and .needs_egor == null' "$(record "$cid")"
+fix launch code --night n5 >"$WORK/out" || fail "a second code launch in one night failed"
+assert test ! -s "$WORK/out"
+assert test "$(ls "$RUNS"/code-*.json | wc -l | tr -d ' ')" = 1
+printf '{"rows": [{"id": "code-q", "title": "an open row past top-K", "status": "open", "match": {"cause": "cause:proj/f0"}},
+  {"id": "code-egor", "title": "needs Egor: a registration", "status": "open", "match": {"cause": "cause:registration:/x"}}]}\n' \
+  >"$CODE_DOCTOR_LEDGER"
+fix launch code --night n6 >"$WORK/out" 2>"$WORK/err" || fail "code night n6 failed"
+assert jqe '.quiet == [] and (.problems | length) == 3' "$(record "$(cut -f1 "$WORK/out")")"
+
+echo "PASS: $asserts asserts; code runs (one area, top-K, needs-Egor out, close through code-doctor check); launch refusals (no or foreign or stale document, nothing to fix, open run under 12 h), an old run abandoned, the snapshot without watch/fixed-pending, the chat through the shared opener, the record fields, a failed opener, close refusals (doctor not rerun, undecided id, missing path, missing commit, a directory, no evidence, bad verdict, judge changed without its line), a clean close, show, runs, updater records and launch, parallel ids, night launch (areas, worktrees, branches, briefs, the packet, one open run per area), night vendor records, a night without a base ref, llm components with their block's entry file, fixed only once the doctor reads it fixed-pending or gone, night close (the doctor rerun once in the worktree, a handed-in document refused, purpose touching its component, judge), abandon, a failed worktree, harness sections and top watch rows under parallel launch, updater machinery, a legacy release run, a merge citation, a malformed ledger row, a failed collector, an unwritten launched_at, a launcher killed under the lock, quiet open ledger rows (their own brief section, the day launch)"

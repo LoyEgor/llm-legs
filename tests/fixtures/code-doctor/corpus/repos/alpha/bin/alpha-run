@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+here="$(cd "$(dirname "$0")/.." && pwd)"
+. "$here/lib/refresh.sh"
+case "${1:-}" in
+  a) python3 "$here/lib/drive_a.py" "$2" ;;
+  b) python3 "$here/lib/drive_b.py" "$2" ;;
+  refresh) user_curl_refresh ;;
+  auto) robot_curl_refresh ;;
+  fetch) bash "$here/vendor/vendor.sh" ;;
+  *) bash "$here/lib/mirror_a.sh" ;;
+esac

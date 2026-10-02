@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+cd "$(dirname "$0")/.." || exit 1
+for suite in tests/test_*.sh; do bash "$suite" || exit 1; done

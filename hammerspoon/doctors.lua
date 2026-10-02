@@ -17,7 +17,10 @@ local DOCTORS = {
   { key = "harness", fix = "Fix — open a fixer chat", env = "HARNESS_DOCTOR", ledgerEnv = "HARNESS_LEDGER",
     ledger = "harness-ledger.json" },
   { key = "updater", fix = "Fix — update and integrate all vendors", env = "UPDATER_DOCTOR", ledger = "updater-ledger.json" },
+  { key = "code", fix = "Fix — open a fixer chat", env = "CODE_DOCTOR", ledger = "code-ledger.json" },
 }
+local CODE_GROUPS = { { key = "dead", name = "Dead" }, { key = "heavy", name = "Heavy" },
+  { key = "duplicate", name = "Duplicate" }, { key = "ledger", name = "Ledger" } }
 
 local fixTasks, jsonCache, built = {}, {}, nil
 local night, nightTask = { at = 0 }, nil
@@ -461,6 +464,112 @@ local function updaterEntry(now)
     problems = count, status = status }
 end
 
+local codeTask = nil
+
+local function codePath()
+  return dirFor("codeDoctorDir", "CODE_DOCTOR_DIR", "/.cache/code-doctor") .. "/latest.json"
+end
+
+local function codeTitle(document)
+  if not document then return "Code doctor: no data yet" end
+  local count = tonumber(document.problem_count) or 0
+  local title = "Code doctor: " .. (count > 0 and plural(count, "problem") or "ok")
+  if document.status == "blind" then title = title .. " · blind" end
+  if document.status == "error" then title = title .. " · collector failed" end
+  return title
+end
+
+function M.refreshCode()
+  if running(codeTask) then return end
+  local path = M.codeDoctorCmd or (repoRoot and repoRoot .. "/bin/code-doctor")
+  local ok, task = pcall(hs.task.new, path, function(code, stdout, stderr)
+    codeTask, built = nil, nil
+    if code ~= 0 then
+      hs.alert.show("Code doctor failed: " .. (lastLine(stderr) or lastLine(stdout) or ("exit " .. tostring(code))), 5)
+    else
+      hs.alert.show(codeTitle(readJson(codePath())), 2.5)
+    end
+  end, { "refresh", "--quiet" })
+  if not ok or not task then
+    hs.alert.show("Code doctor: could not start " .. tostring(path), 5)
+    return
+  end
+  task:setEnvironment(limits.diagnosticsEnvironment())
+  codeTask, built = task, nil
+  if not task:start() then
+    codeTask = nil
+    hs.alert.show("Code doctor: could not start " .. tostring(path), 5)
+  end
+end
+
+local function codeEntry()
+  local document = readJson(codePath())
+  local items = {}
+  if not document then
+    items[1] = dim("no data yet")
+  else
+    local failure = type(document.self) == "table" and document.self.error
+    if document.status == "error" and type(failure) == "string" then
+      items[#items + 1] = { title = infoTitle(failure, true), disabled = true }
+    end
+    local groups = type(document.groups) == "table" and document.groups or {}
+    local listed = {}
+    for _, problem in ipairs(type(document.problems) == "table" and document.problems or {}) do
+      if type(problem) == "table" then
+        local group = tostring(problem.group or "dead")
+        listed[group] = listed[group] or {}
+        local loud = LOUD[problem.state] == true
+        local rows = type(problem.plan) == "string" and detailRows("plan: " .. problem.plan) or {}
+        listed[group][#listed[group] + 1] = fitRow({ title = infoTitle(tostring(problem.fact or problem.id or "?"), loud,
+          not loud), menu = #rows > 0 and rows or nil, disabled = #rows == 0 or nil })
+      end
+    end
+    for _, group in ipairs(CODE_GROUPS) do
+      local count = tonumber(groups[group.key]) or 0
+      if group.key ~= "ledger" or count > 0 then
+        items[#items + 1] = { title = infoTitle(group.name .. ": " .. plural(count, "problem"), count > 0, count == 0),
+          menu = listed[group.key], disabled = not listed[group.key] or nil }
+      end
+    end
+    local candidates = type(document.candidates) == "table" and document.candidates or {}
+    local waiting = {}
+    for _, candidate in ipairs(type(candidates.top) == "table" and candidates.top or {}) do
+      if type(candidate) == "table" then
+        waiting[#waiting + 1] = fitRow({ title = infoTitle(tostring(candidate.group or "?") .. " · " ..
+          tostring(candidate.detail or candidate.id or "?"), false, true), disabled = true })
+      end
+    end
+    items[#items + 1] = { title = infoTitle("candidates waiting: " .. tostring(tonumber(candidates.waiting) or 0), false, true),
+      menu = #waiting > 0 and waiting or nil, disabled = #waiting == 0 or nil }
+    local cost = type(document.cost) == "table" and document.cost or {}
+    local gained = type(document.yield) == "table" and document.yield or {}
+    items[#items + 1] = dim(string.format("cost %dk tokens · %d min · yield %d lines, %d causes closed",
+      math.floor((tonumber(cost.tokens) or 0) / 1000), math.floor((tonumber(cost.wall_s) or 0) / 60),
+      tonumber(gained.lines_removed) or 0, tonumber(gained.causes_closed) or 0))
+    local spots = {}
+    for _, spot in ipairs(type(document.blind_spots) == "table" and document.blind_spots or {}) do
+      if type(spot) == "table" then
+        local detail = {}
+        if type(spot.reason) == "string" then detail = detailRows("why: " .. spot.reason) end
+        if type(spot.would_catch_if) == "string" then
+          for _, row in ipairs(detailRows("would catch it: " .. spot.would_catch_if)) do detail[#detail + 1] = row end
+        end
+        spots[#spots + 1] = fitRow({ title = infoTitle(tostring(spot.what or spot.id or "?"), false, true),
+          menu = #detail > 0 and detail or nil, disabled = #detail == 0 or nil })
+      end
+    end
+    if #spots > 0 then items[#items + 1] = { title = infoTitle("not measured", false, true), menu = spots } end
+  end
+  items[#items + 1] = { title = "-" }
+  items[#items + 1] = running(codeTask) and dim("refreshing…") or { title = infoTitle("Refresh"), fn = M.refreshCode }
+  local count = document and tonumber(document.problem_count) or 0
+  local status = not document and "nodata" or ({ ok = true, problems = true, blind = true, error = true })[document.status]
+    and document.status or count > 0 and "problems" or "ok"
+  local loud = count > 0 or status == "error"
+  return { title = infoTitle(codeTitle(document), loud, not loud and status ~= "blind"), menu = items,
+    problems = count, status = status }
+end
+
 local function ledgerPath(doctor)
   local override = M[doctor.key .. "Ledger"] or os.getenv(doctor.ledgerEnv or doctor.env .. "_LEDGER")
   if override and override ~= "" then return override end
@@ -497,8 +606,9 @@ local BUILDERS = {
   llm = function() return limits.llmDoctorEntry() end,
   harness = function() return limits.harnessDoctorEntry() end,
   updater = updaterEntry,
+  code = codeEntry,
 }
-local NAMES = { llm = "LLM doctor", harness = "Harness doctor", updater = "Updater doctor" }
+local NAMES = { llm = "LLM doctor", harness = "Harness doctor", updater = "Updater doctor", code = "Code doctor" }
 
 local function compute()
   local now = os.time()

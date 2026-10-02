@@ -16,6 +16,11 @@ mkdir -p "$VOCAB/home" "$VOCAB/runs" "$VOCAB/projects" "$VOCAB/doctors/nights"
 printf '{"owner": "o", "owners": {}, "rows": [], "blind_spots": []}\n' >"$VOCAB/llm-ledger.json"
 printf '{"rows": []}\n' >"$VOCAB/harness-ledger.json"
 printf '{"rows": []}\n' >"$VOCAB/updater-ledger.json"
+printf '{"owner": "o", "rows": []}\n' >"$VOCAB/code-ledger.json"
+jq -n --argjson s "$now" '{contract: 1, doctor: "code", as_of_s: $s, judge: "c", status: "problems", problem_count: 1,
+  groups: {dead: 1, heavy: 0, duplicate: 0}, blind_spots: [],
+  problems: [{id: "cause:repo/bin/x", rule: "unreachable", group: "dead", state: "new", fact: "x is dead", value: 9,
+    units: [], files: ["repo/bin/x"]}]}' >"$VOCAB/code.json"
 printf '{}\n' >"$VOCAB/settings.json"
 jq -n --argjson s "$now" '["reviewers", "workers", "light", "image"] as $blocks
   | {contract: 1, doctor: "llm", as_of_s: $s, judge: "j", status: "problems", problem_count: 6, window_h: 24,
@@ -47,15 +52,16 @@ json.dump(document, open(out + "/harness.json", "w"))
 open(out + "/menu.txt", "w").write(module.menu_text(document))
 PY
 eval "$(sed -n "/^PY='\$/,/^'\$/p" "$ROOT/bin/doctor-fix")"
-for doctor in llm harness updater; do
+for doctor in llm harness updater code; do
   HOME="$VOCAB/home" LLM_DOCTOR_LEDGER="$VOCAB/llm-ledger.json" HARNESS_LEDGER="$VOCAB/harness-ledger.json" \
     UPDATER_DOCTOR_LEDGER="$VOCAB/updater-ledger.json" HARNESS_SETTINGS="$VOCAB/settings.json" \
+    CODE_DOCTOR_LEDGER="$VOCAB/code-ledger.json" CODE_DOCTOR_DIR="$VOCAB/code-doctor" CODE_DOCTOR_REPOS="" \
     DF_ROOT="$ROOT" DF_PROJECTS="$VOCAB/projects" DF_RUNS="$VOCAB/runs" DF_HOME="$VOCAB/home" DF_DOCS="$ROOT/docs" \
     python3 -c "$PY" snapshot "$doctor" "$VOCAB/$doctor.json" |
     jq -r --arg d "$doctor" '[.[].area] | unique[] | "\($d)-\(.)-20261001T020000Z-abcd"' ||
     fail "doctor-fix did not snapshot the $doctor fixture"
 done >"$VOCAB/refs"
-[ "$(wc -l <"$VOCAB/refs" | tr -d ' ')" = 11 ] || fail "doctor-fix areas of the fixtures: $(tr '\n' ' ' <"$VOCAB/refs")"
+[ "$(wc -l <"$VOCAB/refs" | tr -d ' ')" = 12 ] || fail "doctor-fix areas of the fixtures: $(tr '\n' ' ' <"$VOCAB/refs")"
 printf '%s\n' llm-health-20261001T020000Z-abcd harness-self-20261001T020000Z-abcd \
   updater-machinery-20261001T020000Z-abcd >>"$VOCAB/refs"
 jq -Rn --arg s "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{id: "n1", started_at: $s, finished_at: $s, note: null,
@@ -63,7 +69,7 @@ jq -Rn --arg s "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{id: "n1", started_at: $s, fini
     + [{kind: "vendor", ref: "updater-release-20261001T020000Z-abcd", branch: "night/n1/codex", state: "pending", reason: null}])}' \
   <"$VOCAB/refs" >"$VOCAB/doctors/nights/n1.json"
 DOCTORS_DIR="$VOCAB/doctors" bash "$ROOT/bin/night-run" latest --menu | tail -n +2 | awk -F'\t' '$5 != "doctor"' | cut -f1 >"$VOCAB/labels.txt"
-[ "$(wc -l <"$VOCAB/labels.txt" | tr -d ' ')" = 15 ] || fail "night-run labels: $(tr '\n' ' ' <"$VOCAB/labels.txt")"
+[ "$(wc -l <"$VOCAB/labels.txt" | tr -d ' ')" = 16 ] || fail "night-run labels: $(tr '\n' ' ' <"$VOCAB/labels.txt")"
 
 output=$(python3 - "$ROOT/tests/doctors_menu_harness.lua" "$VOCAB" <<'HSPY'
 import subprocess

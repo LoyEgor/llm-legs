@@ -1,0 +1,14 @@
+{
+  "cause:alpha/bin/old-sync": {"verdict": "problem", "fact": "bin/old-sync and its lib: no entry point reaches them",
+    "plan": "delete bin/old-sync, lib/old_sync_lib.sh and tests/test_old_sync.sh; drop the doc", "value": 15,
+    "proofs": ["no live entry point", "no rollup hits", "green suites"],
+    "reason": "docs/old-sync.md: the sync moved into alpha-run; nothing calls old-sync since"},
+  "cause:alpha/lib/refresh.sh#robot_curl_refresh": {"verdict": "problem", "fact": "robot_curl_refresh is a retired robot refresh",
+    "plan": "delete robot_curl_refresh and the auto branch of alpha-run", "value": 8,
+    "reason": "CLAUDE.md: robot curl refresh is permanently disabled; user_curl_refresh stays"},
+  "cause:alpha/lib/drive_a.py#load_drivers": {"verdict": "problem", "fact": "load_drivers is written twice",
+    "plan": "one lib/drivers.py load_drivers, both callers import it", "value": 14,
+    "reason": "the two copies differ only in an empty-seats default"},
+  "cause:alpha/tests/test_slow.sh": {"verdict": "problem", "fact": "test_slow.sh sleeps 300 s for nothing",
+    "plan": "drop the sleep", "value": 50, "reason": "the sleep waits on nothing"}
+}
