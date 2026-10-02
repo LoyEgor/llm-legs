@@ -90,7 +90,7 @@
    "same_cause": [],
    "last_reviewed": "2026-09-25",
    "reviewed_by": "LLM Doctor меню refactoring",
-   "note": "kept apart from R1, which is about review-cell shapes. 2026-10-01: the cause still stands in code: review-bench judge.py parse_judge_answer refuses a partial answer whole, and the batch's ruled claims go to the manual path with the missing ones. Since 2e32983 (2026-09-22) a session judges at most JUDGE_BATCH_CLAIMS = 40 claims and none fell short in the window. Keeping a batch's ruled part is a design change for the owner, not a bug fix.",
+   "note": "kept apart from R1, which is about review-cell shapes. 2026-10-01: the cause still stands in code: review-bench judge.py parse_judge_answer refuses a partial answer whole, and the batch's ruled claims go to the manual path with the missing ones. Since 2e32983 (2026-09-22) a session judges at most JUDGE_BATCH_CLAIMS = 40 claims and none fell short in the window. Keeping a batch's ruled part is a design change for the owner, not a bug fix. 2026-10-02: unchanged in review-bench share/rbench/judge.py (parse_judge_answer raises `the judge ruled on N of M claims`, JUDGE_BATCH_CLAIMS = 40); no occurrence in the window.",
    "handoff": null
   },
   {
@@ -468,9 +468,9 @@
    "status": "open",
    "fixes": [],
    "same_cause": [],
-   "last_reviewed": "2026-10-01",
-   "reviewed_by": "Night fixer llm-reviewers-20261001T020642Z-32c1",
-   "note": "2026-09-30: 321 of 324 are gap-stale rows of one chat in logo-vectorizer-bench (299 hash-cap, one row per Bash call), 3 claim-expired claims of the never-recorded round 20260923T105514Z-950f26a; no machinery bug found; row grouping and abandoned-round release proposed to the owner. 2026-10-01: 465 at launch, 12 in the 23:27 snapshot, every one a gap-stale row of the same chat («Vector Magic macOS ARM migration», logo-vectorizer-bench): the repository tracks 12 files and leaves 14 107 bench outputs (results/, tracers/) untracked and unignored; no new cause.",
+   "last_reviewed": "2026-10-02",
+   "reviewed_by": "Night fixer llm-reviewers-20261002T093027Z-53a0",
+   "note": "2026-09-30: 321 of 324 are gap-stale rows of one chat in logo-vectorizer-bench (299 hash-cap, one row per Bash call), 3 claim-expired claims of the never-recorded round 20260923T105514Z-950f26a; no machinery bug found; row grouping and abandoned-round release proposed to the owner. 2026-10-01: 465 at launch, 12 in the 23:27 snapshot, every one a gap-stale row of the same chat («Vector Magic macOS ARM migration», logo-vectorizer-bench): the repository tracks 12 files and leaves 14 107 bench outputs (results/, tracers/) untracked and unignored; no new cause. 2026-10-02: 788 = 785 gap-stale + 3 claim-expired. 784 gap-stale are the same chat in logo-vectorizer-bench (714 hash-cap, 710 of them `N capped paths changed, first X`, one per Bash call, written by claude-setup hooks/lib/review-journal.sh:583; 47 run-fold; 7 touch-failed; pre-missing); the tree is now past 20 000 dirty paths and a cleanup chat that only ran a Bash call there got a hash-cap gap too. The 3 claim-expired claims (llm-legs, round 20260923T105514Z-950f26a: no bench dir, chat dead) were released by this run with `review-anchors release --round`. The last one, the `toolu_probe_timing` pre-missing gap in llm-legs, is NOT settled: the 2026-09-30 handoff's amnesty claim is wrong (newest llm-legs amnesty 2026-09-16, gap 2026-09-28); no probe source is left in any sweep repo, and it ages out of `check` once the session is dead past GAP_DEAD_WINDOW (7 d); an amnesty now would settle every session's llm-legs gaps, so none was written. Info orphan rows (5942, the night worktrees under llm-legs .claude/worktrees) are not counted.",
    "handoff": "docs/handoffs/2026-09-30-review-machinery-classes.md"
   },
   {
@@ -483,9 +483,9 @@
    "status": "open",
    "fixes": [],
    "same_cause": [],
-   "last_reviewed": "2026-10-01",
-   "reviewed_by": "Night fixer llm-reviewers-20261001T020642Z-32c1",
-   "note": "2026-09-30: 5 of 35 were a stale stored closure word (fixer rows appended by hand, no fold); the doctor now recomputes it (review-bench share/rbench/debt.py doctor_pending_rows); the other 30 are real unfinished rounds whose --nofix decision is the owner's or Egor's. 2026-10-01: 32 at launch, 12 in the 23:27 snapshot, the same class (rounds with confirmed findings and no fix or --nofix recorded); no machinery bug found. 2026-10-01 contract: the reviewers fixer settles each round itself (docs/doctor-fix.md \"Stuck review rounds\"); this row stays open.",
+   "last_reviewed": "2026-10-02",
+   "reviewed_by": "Night fixer llm-reviewers-20261002T093027Z-53a0",
+   "note": "2026-09-30: 5 of 35 were a stale stored closure word (fixer rows appended by hand, no fold); the doctor now recomputes it (review-bench share/rbench/debt.py doctor_pending_rows); the other 30 are real unfinished rounds whose --nofix decision is the owner's or Egor's. 2026-10-01: 32 at launch, 12 in the 23:27 snapshot, the same class (rounds with confirmed findings and no fix or --nofix recorded); no machinery bug found. 2026-10-01 contract: the reviewers fixer settles each round itself (docs/doctor-fix.md \"Stuck review rounds\"); this row stays open. 2026-10-02: 1 round, 20261001T093742Z-64ee7b1 (llm-legs, «Чистка», chat dead): finding 2 (share/gemini_web.py upscale_later kept handing the dead page to save_or_defer) is resolved in main (`if left or not save_or_defer(...)` defers the rest after the first crash; goto_flow sits inside save_upscaled's try), recorded fixed; closure fixed. The class worked as specified.",
    "handoff": "docs/handoffs/2026-09-30-review-machinery-classes.md"
   },
   {
@@ -498,9 +498,9 @@
    "status": "open",
    "fixes": [],
    "same_cause": [],
-   "last_reviewed": "2026-10-01",
-   "reviewed_by": "Night fixer llm-reviewers-20261001T020642Z-32c1",
-   "note": "2026-09-30: the suspect rule flags most debt rounds in a shared checkout (shared lines over half) and every round fixed outside worker-run (no fix:R anchor); whether that is a defect is the owner's call. 2026-10-01: 30 at launch (the a9fe8ce «Чистка» pair and bbeb0eb «Updater doctor» among them), 12 in the 23:27 snapshot; same rule, no new cause.",
+   "last_reviewed": "2026-10-02",
+   "reviewed_by": "Night fixer llm-reviewers-20261002T093027Z-53a0",
+   "note": "2026-09-30: the suspect rule flags most debt rounds in a shared checkout (shared lines over half) and every round fixed outside worker-run (no fix:R anchor); whether that is a defect is the owner's call. 2026-10-01: 30 at launch (the a9fe8ce «Чистка» pair and bbeb0eb «Updater doctor» among them), 12 in the 23:27 snapshot; same rule, no new cause. 2026-10-02: 27 at launch, 29 at 09:33Z (two new rounds of the live «Сделай чистку» chat); e.g. 20261001T093742Z-64ee7b1: 1810 lines, 99 % shared, 1303 unanchored; same rule, no new cause; the owner has not answered the handoff since 2026-09-30.",
    "handoff": "docs/handoffs/2026-09-30-review-machinery-classes.md"
   },
   {
@@ -513,9 +513,9 @@
    "status": "open",
    "fixes": [],
    "same_cause": [],
-   "last_reviewed": "2026-10-01",
-   "reviewed_by": "Night fixer llm-reviewers-20261001T020642Z-32c1",
-   "note": "2026-09-30: concurrent edits by other chats in the shared checkout plus ignored files tools write themselves (claude-setup skills/synced by the Claude app, .nx daemon.log); narrowing the class is the owner's call. 2026-10-01: 11, the same two causes: shared-checkout edits (transcriptions-gpt EXPERIMENTS.json and README.md, llm-legs bin/harness-doctor, hammerspoon, logo-vectorizer-bench report/judge-exam.html) and ignored trees written during the review (claude-setup skills/synced, and a night fixer worktree under claude-setup .claude/worktrees, which integrity.py scans because ignored files are in scope by design).",
+   "last_reviewed": "2026-10-02",
+   "reviewed_by": "Night fixer llm-reviewers-20261002T093027Z-53a0",
+   "note": "2026-09-30: concurrent edits by other chats in the shared checkout plus ignored files tools write themselves (claude-setup skills/synced by the Claude app, .nx daemon.log); narrowing the class is the owner's call. 2026-10-01: 11, the same two causes: shared-checkout edits (transcriptions-gpt EXPERIMENTS.json and README.md, llm-legs bin/harness-doctor, hammerspoon, logo-vectorizer-bench report/judge-exam.html) and ignored trees written during the review (claude-setup skills/synced, and a night fixer worktree under claude-setup .claude/worktrees, which integrity.py scans because ignored files are in scope by design). 2026-10-02: 2, both shared-checkout edits of tracked files: token-map data/calibration.json (+7 lines during round 20261001T212442Z-1409073) and llm-legs docs/image-vendors/gemini.md (during 20261001T093742Z-64ee7b1); no ignored-file case this time, no new cause.",
    "handoff": "docs/handoffs/2026-09-30-review-machinery-classes.md"
   },
   {
@@ -640,9 +640,9 @@
    "status": "open",
    "fixes": [],
    "same_cause": [],
-   "last_reviewed": "2026-10-01",
-   "reviewed_by": "Night fixer llm-reviewers-20261001T020642Z-32c1",
-   "note": "2026-09-30: 3 chats, all WHY=gap: the logo-vectorizer-bench hash-cap gaps of M1, a fixer-missing gap of round 20260924T222306Z-8877b05 and a pre-missing gap a latency probe (toolu_probe_timing) recorded against the live store; no machinery bug found. 2026-10-01: 1 row, `review-debt answered 'TimeoutExpired'` for the M1 chat: `review-debt <session>` took 165 s (cached) and 106 s (--no-cache), past the collector's 60 s (debt.py doctor_debt_line_rows), because it counts the 14 107 untracked bench outputs of logo-vectorizer-bench (LINES=1667946 FILES=14186); its line reads WHY=gap, the class the 2026-09-30 note already names. The fix is that repository's ignore list, its chat's work.",
+   "last_reviewed": "2026-10-02",
+   "reviewed_by": "Night fixer llm-reviewers-20261002T093027Z-53a0",
+   "note": "2026-09-30: 3 chats, all WHY=gap: the logo-vectorizer-bench hash-cap gaps of M1, a fixer-missing gap of round 20260924T222306Z-8877b05 and a pre-missing gap a latency probe (toolu_probe_timing) recorded against the live store; no machinery bug found. 2026-10-01: 1 row, `review-debt answered 'TimeoutExpired'` for the M1 chat: `review-debt <session>` took 165 s (cached) and 106 s (--no-cache), past the collector's 60 s (debt.py doctor_debt_line_rows), because it counts the 14 107 untracked bench outputs of logo-vectorizer-bench (LINES=1667946 FILES=14186); its line reads WHY=gap, the class the 2026-09-30 note already names. The fix is that repository's ignore list, its chat's work. 2026-10-02: 2 rows: the same TimeoutExpired for the M1 chat, and the live «Сделай чистку» chat (llm-legs) at WHY=gap whose only gap is `hash-cap /Volumes/Work/Projects/logo-vectorizer-bench: more than 20000 dirty paths` (2026-10-02 09:33Z): the M1 tree's untracked outputs now spill into any chat that runs a Bash call there; same cause, no machinery bug.",
    "handoff": "docs/handoffs/2026-09-30-review-machinery-classes.md"
   },
   {

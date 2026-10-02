@@ -64,3 +64,24 @@ The same five classes, no machinery bug found. Rows: M1 465, M2 32, M3 30, M4 11
 - **M4 adds a third kind of ignored write:** a night fixer worktree under claude-setup
   `.claude/worktrees/` changed during a claude-setup review. It is covered by the item 5 proposal
   (leave ignored paths out of the class).
+
+## 2026-10-02, night fixer run `llm-reviewers-20261002T093027Z-53a0`
+
+Rows at launch: M1 788, M2 1, M3 27, M4 2, M5 1. Third night with no machinery bug; items 2-5
+still wait for the owner.
+
+- **M2 settled, not handed off.** Round `20261001T093742Z-64ee7b1` (llm-legs, «Чистка», chat dead):
+  its one finding is resolved in main and was recorded fixed through `review-bench record`.
+- **Item 2, claims half, done.** The 3 expired claims of `20260923T105514Z-950f26a` (llm-legs,
+  no bench dir, chat dead) were released with `review-anchors release --round`. Releasing an
+  abandoned round's claims automatically is still the owner's proposal.
+- **Correction to item 3.** The `toolu_probe_timing` gap was never settled: the newest llm-legs
+  amnesty is from 2026-09-16 and the gap from 2026-09-28. No amnesty was written, because one would
+  settle every session's llm-legs gaps. The gap leaves `check` once its session has been dead for 7
+  days (`GAP_DEAD_WINDOW`).
+- **The logo-vectorizer-bench tree now spills over.** It is past 20 000 dirty paths. A live
+  llm-legs cleanup chat («Сделай чистку») got a `hash-cap` gap (WHY=gap, M5) from one Bash call in
+  that tree. 710 of the 788 M1 rows are `capped paths changed` gaps, one per Bash call, written by
+  claude-setup `hooks/lib/review-journal.sh:583`. Proposal for the owner: record that gap once per
+  (session, checkout) in the hook, not once per call. That change is in claude-setup and lowers a
+  count, so it is yours.
