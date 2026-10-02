@@ -24,7 +24,18 @@ sid=$(printf '%s' "$input" | jq -r '.session_id // ""' 2>/dev/null) || sid=''
 # DELEGATED_CLAIM_SECONDS (review-bench) and dead after.
 claim_delegated_triage() {
   case "$worker" in claudeb-worker|codex-worker|gemini-worker|grok-worker) ;; *) return 0 ;; esac
-  local claimed_run claim_stamp
+  local claimed_run claim_stamp brief_text brief_file real_brief
+  # The brief is the prompt plus every readable file an absolute path in it names: a worker is
+  # routinely told "follow the brief at /path" and the review-bench commands stand in that file.
+  brief_text=$prompt
+  for brief_file in $(printf '%s\n' "$prompt" | grep -Eo '/[^[:space:]"'"'"'`<>]+' |
+      sed -E 's/[.,;:)]+$//' | sort -u); do
+    [ -f "$brief_file" ] || continue
+    real_brief=$(realpath "$brief_file" 2>/dev/null) || continue
+    [ -f "$real_brief" ] && [ -r "$real_brief" ] || continue
+    [ "$(wc -c <"$real_brief" | tr -d '[:space:]')" -le 1048576 ] || continue
+    brief_text="$brief_text"$'\n'"$(cat "$real_brief")"
+  done
   for claimed_run in $(printf '%s' "$brief_text" |
       grep -Eo "review-bench[[:blank:]]+record[[:blank:]]+$run_id_re" | awk '{print $NF}' | sort -u); do
     claim_stamp="$REVIEW_STATE/benches/$claimed_run/delegated"
@@ -56,21 +67,8 @@ deny() {
   exit 0
 }
 
-# The brief is the prompt plus every readable file an absolute path in it names: a worker is
-# routinely told "follow the brief at /path" and the review-bench commands stand in that file.
 REVIEW_STATE="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}"
-brief_text=$(printf '%s' "$input" | jq -r '.tool_input.prompt // empty' 2>/dev/null) || brief_text=''
-# The prompt as it was TYPED, before the file expansion below folds whole briefs into it: a gate
-# that judged the expanded text would refuse an English spawn over a Russian line in some file the
-# prompt merely names.
-spawn_prompt=$brief_text
-for brief_file in $(printf '%s\n' "$brief_text" | grep -Eo '/[^[:space:]"'"'"'`<>]+' |
-    sed -E 's/[.,;:)]+$//' | sort -u); do
-  real_brief=$(realpath "$brief_file" 2>/dev/null) || continue
-  [ -f "$real_brief" ] && [ -r "$real_brief" ] || continue
-  [ "$(wc -c <"$real_brief" | tr -d '[:space:]')" -le 1048576 ] || continue
-  brief_text="$brief_text"$'\n'"$(cat "$real_brief")"
-done
+prompt=$(printf '%s' "$input" | jq -r '.tool_input.prompt // empty' 2>/dev/null) || prompt=''
 run_id_re='[0-9]{8}T[0-9]{6}Z-[0-9a-f]+(-[0-9]+)?'
 
 # 0 = deny or re-arm, 1 = pass the retry, 2 = cache error.
@@ -216,8 +214,6 @@ case "$toggle_worker" in
     ;;
 esac
 
-
-prompt=$(printf '%s' "$input" | jq -r '.tool_input.prompt // empty' 2>/dev/null) || prompt=''
 if [ "$worker" = codex-worker ] && grep -Eq '^COMPUTER:[[:space:]]*yes[[:space:]]*$' <<<"$prompt"; then
   role_arg=computer
   toggle_note=''

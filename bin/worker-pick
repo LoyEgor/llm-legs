@@ -336,9 +336,10 @@ gr_walls=$(walls_json grok)
 # A codex catalog is per account (a lapsed plan lists the free models alone), so an account whose own
 # cache lacks the worker family is no candidate: its ACCOUNT: line would launch an id it does not
 # serve. No cache of its own (exit 3), or a miss in a list an older client wrote (exit 4: nothing here
-# refreshes it), is no evidence and keeps it.
+# refreshes it), is no evidence and keeps it. A codexb call per codex account, so an --account answer
+# for another vendor, which never reads it, skips it: every worker-limit-gate run paid ~1 s for it.
 cx_unlisted='[]'
-if [ "$cx_paused" = false ] && [ -n "$cx_model" ]; then
+if [ "$cx_paused" = false ] && [ -n "$cx_model" ] && { [ -z "$query_vendor" ] || [ "$query_vendor" = codex ]; }; then
   cx_family=$(worker_model_codex_family "$cx_model")
   cx_unlisted=$(jq -r '.vendors.codex.accounts[]? | .account // "main"' "$LIMITS_FILE" 2>/dev/null |
     while IFS= read -r account; do

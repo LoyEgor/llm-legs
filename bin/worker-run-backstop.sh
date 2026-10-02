@@ -72,7 +72,9 @@ run_root=${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}
 for run in "$run_root"/*/; do
   run=${run%/}
   [ -f "$run/state.json" ] && [ ! -e "$run/exit_code" ] || continue
-  [ "$(tr -d '[:space:]' <"$run/launcher" 2>/dev/null)" = "$session" ] || continue
+  launcher=""
+  { read -r launcher <"$run/launcher"; } 2>/dev/null
+  [ "$launcher" = "$session" ] || continue
   pid=$(jq -r '.pid // 0' "$run/meta.json" 2>/dev/null)
   [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && supervisor_running "$run" "$pid" || continue
   id=${run##*/}

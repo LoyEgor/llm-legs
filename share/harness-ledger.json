@@ -1162,9 +1162,9 @@
       "same_cause": [
         "hook-grows-size-worker-launch-gate"
       ],
-      "last_reviewed": "2026-10-01",
-      "reviewed_by": "Night fixer harness-hooks-20261001T020656Z-42ed",
-      "note": "Narrowed to a confound: the gate reads only the command text; no repository, no registry, and a transcript only for a relay agent's worker-run start or a legs/scheduler hit. The chats with 5+ repositories are the orchestrators, whose calls run beside more sibling hooks and carry longer commands (+10-20 %). Dismissal proposed in the handoff.",
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "Night fixer harness-hooks-20261002T093036Z-5607",
+      "note": "Narrowed to a confound: the gate reads only the command text; no repository, no registry, and a transcript only for a relay agent's worker-run start or a legs/scheduler hit. The chats with 5+ repositories are the orchestrators, whose calls run beside more sibling hooks and carry longer commands (+10-20 %). Dismissal proposed in the handoff. 2026-10-02 (harness-hooks-20261002T093036Z-5607): still stands, the gate code is unchanged and reads no repository. Tonight's 5+-repository splits of stop-dispatch and worker-limit-gate had real causes (worker-run record walks, worker-pick's codex catalogs) this gate does not share.",
       "handoff": "docs/handoffs/2026-10-01-hook-cost-rows.md"
     },
     {
@@ -1347,6 +1347,221 @@
       "handoff": "docs/handoffs/2026-10-02-harness-guards-gate-scope.md",
       "last_reviewed": "2026-10-02",
       "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
+    },
+    {
+      "id": "hook-sync-stop-dispatch",
+      "title": "stop-dispatch ran its hooks one after another and forked per worker-run record",
+      "match": {
+        "rule": "hook_sync",
+        "ident": "stop-dispatch\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-02T14:36:11+03:00",
+          "by": "Night fixer harness-hooks-20261002T093036Z-5607",
+          "files": [
+            "claude-setup/hooks/stop-dispatch.sh",
+            "claude-setup/hooks/stop.d/ask-run-unfinished.sh",
+            "claude-setup/hooks/lib/words_journal.py",
+            "llm-legs/bin/worker-run-backstop.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "hook-grows-repos-stop-dispatch",
+        "hook-grows-size-stop-dispatch",
+        "hook-p50-stop-dispatch"
+      ],
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "Night fixer harness-hooks-20261002T093036Z-5607",
+      "note": "The dispatcher's critical path was serial: the backstop, then the notices, then every ask one after another, and three of them (dispatcher, backstop, ask-run-unfinished) forked tr per unfinished worker-run record (22 of 732 tonight) to read its launcher; plus a jq per journal record and four for the payload. Now the launcher is read with a builtin, the backstop runs beside the notices, the asks run at once after them, and one jq builds the journal line. A/B at load 50-60 on the real run root: 1.24 s to 0.34 s on a small transcript. Ruled out as the dispatcher's own: Python start of the notices (~70-140 ms each, parallel).",
+      "handoff": null
+    },
+    {
+      "id": "hook-grows-repos-stop-dispatch",
+      "title": "stop-dispatch slower in chats with 5+ repositories",
+      "match": {
+        "rule": "hook_grows_repos",
+        "ident": "stop-dispatch\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-02T14:36:11+03:00",
+          "by": "Night fixer harness-hooks-20261002T093036Z-5607",
+          "files": [
+            "claude-setup/hooks/stop-dispatch.sh",
+            "claude-setup/hooks/stop.d/ask-run-unfinished.sh",
+            "claude-setup/hooks/lib/words_journal.py",
+            "llm-legs/bin/worker-run-backstop.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "hook-sync-stop-dispatch",
+        "hook-grows-size-stop-dispatch"
+      ],
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "Night fixer harness-hooks-20261002T093036Z-5607",
+      "note": "No repository read: the dispatcher reads no .repos registry. The 5+-repository chats are the orchestrators, with the largest transcripts and the most worker runs; both costs are cut by hook-sync-stop-dispatch and hook-grows-size-stop-dispatch.",
+      "handoff": null
+    },
+    {
+      "id": "hook-grows-size-stop-dispatch",
+      "title": "stop-dispatch slower in transcripts over 10 MB",
+      "match": {
+        "rule": "hook_grows_size",
+        "ident": "stop-dispatch\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-02T14:36:11+03:00",
+          "by": "Night fixer harness-hooks-20261002T093036Z-5607",
+          "files": [
+            "claude-setup/hooks/stop-dispatch.sh",
+            "claude-setup/hooks/stop.d/ask-run-unfinished.sh",
+            "claude-setup/hooks/lib/words_journal.py",
+            "llm-legs/bin/worker-run-backstop.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "hook-sync-stop-dispatch",
+        "hook-grows-repos-stop-dispatch"
+      ],
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "Night fixer harness-hooks-20261002T093036Z-5607",
+      "note": "words_journal.readings parsed the whole transcript on the first stop of a turn the word intake printed a notice on (38 of 432 stops in 24 h): 0.9 s on 31 MB, 3.7 s on 129 MB, under notices running at once so the dispatcher's critical path. It now reads from the end, the window growing until it holds his last message (what precedes it never counts): 129 MB 3.7 s to 12 ms, identical lines on 24 real transcripts. With the hook-sync-stop-dispatch cuts, 31 MB with a notice ~2.0 s to ~0.9 s. Not cut: a transcript whose last human message is far back still walks to it (an autonomous span); the notice fires on his message, so the real case is near the end.",
+      "handoff": null
+    },
+    {
+      "id": "hook-sync-worker-limit-gate",
+      "title": "worker-limit-gate waits on worker-pick's codex catalog walk",
+      "match": {
+        "rule": "hook_sync",
+        "ident": "worker-limit-gate\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-02T14:36:11+03:00",
+          "by": "Night fixer harness-hooks-20261002T093036Z-5607",
+          "files": [
+            "llm-legs/bin/worker-pick",
+            "llm-legs/bin/worker-limit-gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "hook-grows-repos-worker-limit-gate",
+        "hook-sync-worker-spawn-hook"
+      ],
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "Night fixer harness-hooks-20261002T093036Z-5607",
+      "note": "worker-pick --account <vendor> ran `codexb models --own` once per codex account (7 here, ~130 ms each at load 50) for the codex catalog check added 2026-10-01 (e961a07), whatever vendor was asked; only the codex answer reads it. Now skipped for --account claudeb|gemini|grok: 1.4 s to 0.7 s. worker-limit-gate asks worker-pick on every vendor-worker spawn, and also expanded every absolute path of every spawn's prompt (realpath, wc, tr, cat each) though only a vendor worker's triage claim reads it; now done there alone. Gate with a stub picker: ~320 ms of its own at load 50, about 25 process starts, no single hot spot. What stays is worker-pick's own ~0.7 s floor (the whole table for one answer): the owner's, see the handoff.",
+      "handoff": "docs/handoffs/2026-10-02-hook-cost-rows.md"
+    },
+    {
+      "id": "hook-grows-repos-worker-limit-gate",
+      "title": "worker-limit-gate slower in chats with 5+ repositories",
+      "match": {
+        "rule": "hook_grows_repos",
+        "ident": "worker-limit-gate\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-02T14:36:11+03:00",
+          "by": "Night fixer harness-hooks-20261002T093036Z-5607",
+          "files": [
+            "llm-legs/bin/worker-pick",
+            "llm-legs/bin/worker-limit-gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "hook-sync-worker-limit-gate",
+        "hook-sync-worker-spawn-hook"
+      ],
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "Night fixer harness-hooks-20261002T093036Z-5607",
+      "note": "No repository read. The 5+-repository chats are the orchestrators: they spawn vendor workers (each pays worker-pick, cut in hook-sync-worker-limit-gate) with long briefs naming many paths (the expansion, now done for a vendor worker's triage claim alone).",
+      "handoff": null
+    },
+    {
+      "id": "hook-sync-worker-spawn-hook",
+      "title": "worker-spawn-hook waits on worker-pick's codex catalog walk",
+      "match": {
+        "rule": "hook_sync",
+        "ident": "worker-spawn-hook\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-02T14:36:11+03:00",
+          "by": "Night fixer harness-hooks-20261002T093036Z-5607",
+          "files": [
+            "llm-legs/bin/worker-pick"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "hook-sync-worker-limit-gate",
+        "hook-grows-repos-worker-limit-gate"
+      ],
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "Night fixer harness-hooks-20261002T093036Z-5607",
+      "note": "With a stub picker the hook takes ~55 ms at load 50 for every agent type; its cost is route_account, worker-pick --account for a brief with no ACCOUNT line (image-gen, light, plain relays). Cut with hook-sync-worker-limit-gate for every vendor but codex, whose answer needs the catalogs. The picker's ~0.7 s floor stays: handoff docs/handoffs/2026-10-02-hook-cost-rows.md.",
+      "handoff": "docs/handoffs/2026-10-02-hook-cost-rows.md"
+    },
+    {
+      "id": "hook-sync-edit-conflict-notice",
+      "title": "edit-conflict-notice over 150 ms a run",
+      "match": {
+        "rule": "hook_sync",
+        "ident": "edit-conflict-notice\\.sh"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [
+        "floor-edit-hooks"
+      ],
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "Night fixer harness-hooks-20261002T093036Z-5607",
+      "note": "Narrowed to its process floor: 195 ms p50 in 24 h at night load 50-60; a probe on a dirty file took 426 ms spread over six git calls, shasum, two jq, one find over the review journal and the library source, none over 65 ms. The per-record forks were cut 2026-09-30 (floor-edit-hooks). Under 150 ms needs fewer git calls per Edit (one status for owner and dirtiness): a design change for the owner.",
+      "handoff": "docs/handoffs/2026-10-02-hook-cost-rows.md"
+    },
+    {
+      "id": "hook-sync-instruction-watch-baseline",
+      "title": "instruction-watch baseline over 150 ms a run",
+      "match": {
+        "rule": "hook_sync",
+        "ident": "instruction-watch\\.sh baseline"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [
+        "hook-p50-instruction-watch-baseline",
+        "hook-sync-instruction-watch-check"
+      ],
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "Night fixer harness-hooks-20261002T093036Z-5607",
+      "note": "Narrowed: a SessionStart hook, once per session. Probe at load 50 with its own state dir: 2.6 s cold (ranked refresh, every snapshot written), 530-600 ms warm, spread over ~20 process starts (find x4, perl, awk, tr, mv, touch), none over 125 ms; the walk itself was cut 2026-10-01. Under 150 ms needs the cached enumeration hook-sync-instruction-watch-check names: the owner's. Not touched: reverts/ holds 84 027 entries, 663 MB (store_size row, another area).",
+      "handoff": "docs/handoffs/2026-10-02-hook-cost-rows.md"
     }
   ],
   "blind_spots": [

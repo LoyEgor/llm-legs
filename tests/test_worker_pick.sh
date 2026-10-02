@@ -630,6 +630,13 @@ query_case codex_credit --account codex
 assert test "$query_out" = with-credit
 run_case codex_credit
 assert contains "$(nrow 1)" 'codex/with-credit'
+# Only the codex answer reads the catalogs, a codexb start per account: the claudeb answer every
+# worker-limit-gate run asks for paid them all (~1 s at load 50, 2026-10-02).
+sync_fixture_pool
+env "${run_env[@]}" "LLM_LIMITS_FILE=$STORE" bash -x "$SCRIPT" --account claudeb >/dev/null 2>"$WORK/pick-trace"
+assert not_contains "$(cat "$WORK/pick-trace")" 'bin/codexb models'
+env "${run_env[@]}" "LLM_LIMITS_FILE=$STORE" bash -x "$SCRIPT" --account codex >/dev/null 2>"$WORK/pick-trace"
+assert contains "$(cat "$WORK/pick-trace")" 'bin/codexb models'
 # The same miss in a list an older client wrote proves nothing: the picker never refreshes it.
 jq '.client_version = "0.150.0"' "$HOME_FIXTURE/.codex-profiles/plain/models_cache.json" >"$WORK/c" &&
   mv "$WORK/c" "$HOME_FIXTURE/.codex-profiles/plain/models_cache.json"
