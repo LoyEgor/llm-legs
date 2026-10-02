@@ -132,6 +132,9 @@ probe
 probe
 assert_eq '{"test_w.sh":7}' \
   "$(jq -c 'select(.label == "suites" and .who == "worker") | .suite_secs' "$STATUSLINE_CACHE_DIR/test-history.jsonl")"
+# The worker's workdir is find-truth; the row names the repository its run-all tested.
+assert_eq "repo $WORK/repo" \
+  "$(jq -r 'select(.label == "suites" and .who == "worker") | "\(.repo) \(.repo_root)"' "$STATUSLINE_CACHE_DIR/test-history.jsonl")"
 
 # repo_root is the main checkout for every layout: a submodule's and a separate git dir's own
 # toplevel, a .bare layout's project directory, a linked worktree's main checkout.

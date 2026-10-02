@@ -217,13 +217,13 @@ while IFS= read -r found_line; do
       items+="$b"$'\037'"$a"$'\037'"$c"$'\037'"$d"$'\037'"$e"$'\n'
       pids="${pids:+$pids,}$b" ;;
     R)
-      logdir="" stamp=""
-      [ "$c" != suites ] || [ ! -f "$cache_dir/suites-$d" ] || IFS=$'\t' read -r logdir _ _ stamp < "$cache_dir/suites-$d" || :
+      logdir="" srepo="" stamp=""
+      [ "$c" != suites ] || [ ! -f "$cache_dir/suites-$d" ] || IFS=$'\t' read -r logdir _ srepo stamp < "$cache_dir/suites-$d" || :
       [ -n "$logdir" ] && [ -d "$logdir" ] && [[ "$stamp" =~ ^[0-9]+$ ]] && [ "$stamp" -ge "$((now - b - 3))" ] || logdir=""
       # A suite run counts from the progress file it writes once it holds a slot; before that it is queued.
       [ "$c" != suites ] || { [ -n "$logdir" ] && b=$((now - stamp)); } || c='suites queued'
       if [ "$c" = suites ] || [ "$c" = 'suites queued' ]; then
-        runs_out+="run"$'\t'"$a"$'\t'"$((now - b))"$'\t'"$c"$'\t\t\t\t\t'"$logdir"$'\t\t'"$d"$'\n'
+        runs_out+="run"$'\t'"$a"$'\t'"$((now - b))"$'\t'"$c"$'\t\t\t\t\t'"$logdir"$'\t'"$srepo"$'\t'"$d"$'\n'
       else
         runs_out+="run"$'\t'"$a"$'\t'"$((now - b))"$'\t'"$c"$'\n'
       fi ;;
@@ -328,7 +328,7 @@ if [[ "$old_mtime" =~ ^[0-9]+$ ]] && [ "$((now - old_mtime))" -le 15 ]; then
         [ -f "$cache_dir/suites-$spid.done" ] && IFS=$'\t' read -r h g srepo stamp < "$cache_dir/suites-$spid.done" || :
         [ -n "$h" ] && [[ "$stamp" =~ ^[0-9]+$ ]] && [ "$stamp" -ge "$((start - 3))" ] || continue
         start=$stamp
-        if [ "$kind" = run ]; then c=suites
+        if [ "$kind" = run ]; then c=suites root=$srepo
         else
           d=suites
           if [ -z "$c" ] && [ -n "$srepo" ]; then
@@ -363,7 +363,9 @@ if [[ "$old_mtime" =~ ^[0-9]+$ ]] && [ "$((now - old_mtime))" -le 15 ]; then
       suite_secs='if $times == "" then {} else {suite_secs: ($times | rtrimstr("\n") | split("\n")
         | map(split("\t") | {(.[0]): (.[1] | tonumber)}) | add)} end'
       if [ "$kind" = run ]; then
-        workdir=$(jq -r '.workdir // empty' "$runs_root/$a/meta.json" 2>/dev/null)
+        # A worker's run-all may test another repository than its workdir (ADD-DIR worktrees).
+        workdir=$root
+        [ -n "$workdir" ] || workdir=$(jq -r '.workdir // empty' "$runs_root/$a/meta.json" 2>/dev/null)
         root=""
         [ -z "$workdir" ] || git_top "$workdir" || :
         jq -cn --argjson end "$now" --argjson start "$start" --arg repo "${workdir##*/}" --arg label "$c" --arg root "$root" \

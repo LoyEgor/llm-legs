@@ -377,7 +377,8 @@ rb_pkg_only() {
 # spelled so this file's own text cannot match them.
 assert test -r "$RB_PKG/name-to-module.json"
 rb_patch_audit=$(python3 - "$RB_PKG/name-to-module.json" \
-  "$REVIEW_ROOT/tests/test_review_bench.sh" "$ROOT/tests/test_consistency.sh" <<'PATCHPY'
+  "$REVIEW_ROOT"/tests/test_review_bench*.sh "$REVIEW_ROOT/tests/review_bench_harness.py" \
+  "$ROOT/tests/test_consistency.sh" <<'PATCHPY'
 import json
 import re
 import sys
