@@ -352,7 +352,8 @@
           "files": [
             "claude-setup/hooks/stop-dispatch.sh"
           ],
-          "in": null
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [
@@ -378,7 +379,8 @@
           "files": [
             "claude-setup/hooks/lib/words_journal.py"
           ],
-          "in": null
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [],
