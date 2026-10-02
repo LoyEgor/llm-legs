@@ -1554,7 +1554,11 @@ unshaped_digest() { # top list
 
 snapshot_workdir() { # directory workdir side
   local directory="$1" workdir="$2" side="$3" shas head
+  # A moved unshaped digest fails the after side itself: a claim reads an absent head-after as "no
+  # snapshot" and takes the --complete/PARTIAL path, while a written one demands a diff never computed.
   shas=$(workdir_dirty_shas "$workdir" "$directory/unshaped-$side.tmp.$$") &&
+    { [ "$side" != after ] ||
+      [ "$(cat "$directory/unshaped-before" 2>/dev/null)" = "$(cat "$directory/unshaped-$side.tmp.$$")" ]; } &&
     mv -f "$directory/unshaped-$side.tmp.$$" "$directory/unshaped-$side" || {
     rm -f "$directory/unshaped-$side.tmp.$$"
     [ "$side" = after ] && rm -f "$directory/produced" "$directory/dirty"
@@ -1651,8 +1655,6 @@ snapshot_changed_paths() { # directory top
   local directory="$1" top="$2" before after changed paths path
   [ -f "$directory/dirty-before-shas" ] && [ -f "$directory/dirty-after-shas" ] &&
     [ -f "$directory/head-after" ] || return 1
-  [ "$(cat "$directory/unshaped-before" 2>/dev/null)" = "$(cat "$directory/unshaped-after" 2>/dev/null)" ] ||
-    return 1
   before=$(cat "$directory/head-before" 2>/dev/null) || before=''
   after=$(cat "$directory/head-after" 2>/dev/null) || return 1
   changed=''

@@ -455,6 +455,10 @@ printf 'rewritten\n' >"$ATTR_REPO/-odd-name"
 assert await_done
 assert grep -q '^UNKNOWN: ' "$RUN_DIR/files"
 assert test ! -e "$RUN_DIR/produced"
+# The launching chat can still name what the unknown snapshot could not.
+assert test ! -e "$RUN_DIR/head-after"
+assert "$RUNNER" claim "$RUN_ID" --paths bin/keep --complete >/dev/null
+assert grep -qx 'bin/keep' "$RUN_DIR/files"
 git -C "$ATTR_REPO" checkout -q -- bin/keep
 rm -f "$ATTR_REPO/-odd-name"
 
