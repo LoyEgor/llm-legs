@@ -27,7 +27,13 @@ needless complexity or token waste.
    copied mechanism) cluster into ONE cause, never N² pairs. Candidates bind to the index snapshot.
 3. **Judge** (LLM, night only, enforced token AND wall-clock budget per night — counts do not bound
    cost). Reads a candidate with its context (callers, entry points, git history of why it was added,
-   retirement records, runtime rollups) and returns:
+   retirement records, runtime rollups) and returns one verdict per candidate id. One worker session
+   judges a batch of candidates of one repository (`JUDGE_BATCH`), since the worker's fixed base
+   context dominates a session's cost; its tokens are accounted evenly across the batch, and a
+   missing or malformed verdict leaves that candidate waiting. A launch stops the night when the
+   tokens spent plus the mean recorded session cost (the brief plus a base-context constant before
+   any history) would cross the cap; a failed launch records worker-run's return code and output.
+   Each verdict is:
    - `problem` with a concrete fix plan and its proof obligations, or
    - `not-now` with the reason and re-open triggers (caller, registration, purpose record or detector
      version change) and an expiry (90 days). This is a candidate verdict, never a problem dismissal:
@@ -66,7 +72,9 @@ needless complexity or token waste.
   process groups, locks or shell compatibility are the point), split, or dedupe at the assertion /
   requirement level with a witness showing which remaining test covers it; timing claims need
   comparable baselines (same scope, population, concurrency, recorded load);
-- hot code: time per call × calls per day from the hook, statusline, menu and worker journals;
+- hot code: time per call × calls per day from the hook, statusline, menu and worker journals,
+  counted only over rollup days after the unit's last commit (an optimised hook is never charged for
+  its old cost); with fewer than `hot_min_days` such days the hot signal waits;
 - token cost: always-loaded instructions (CLAUDE.md files, skill descriptions, hook-injected text)
   and docs read every session (DIAGNOSTICS.md), sized and weighed by how often they are read;
   mechanisms whose purpose costs more than it saves (a gate forcing rewrites that cost more tokens
@@ -83,6 +91,7 @@ needless complexity or token waste.
   informative overlap; near-clone shingles within one language; the judge confirms semantic
   duplicates across languages;
 - new vs. old: everything indexed since the repo's cursor is matched against the rest;
+- a symlink and its target are one file (resolved by realpath), never a duplicate pair;
 - a merge needs a net-benefit and dependency decision; intentional copies (the LLM doctor copies
   review-bench tables because review-bench is not importable there, guarded by test_consistency)
   are recorded in `docs/shared-invariants.md` and never re-flagged.

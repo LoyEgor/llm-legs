@@ -1,8 +1,18 @@
 #!/usr/bin/env bash
-# worker-run for tests/test_code_doctor.sh: answers each judge brief from CODE_DOCTOR_FAKE_VERDICTS by its cause id.
+# worker-run for tests/test_code_doctor.sh: answers each candidate of a judge brief from CODE_DOCTOR_FAKE_VERDICTS by
+# its cause id; CODE_DOCTOR_FAKE_LAUNCH_FAIL fails the launch, CODE_DOCTOR_FAKE_DROP omits that cause's block and
+# CODE_DOCTOR_FAKE_MANGLE answers that cause with a malformed one.
 set -u
+case ${1:-}:${WORKER_RUN_RELAY:-} in
+  start:code-doctor-judge:?* | wait:code-doctor-judge:?* | report:*) ;;
+  *) echo "worker-run: $1 runs only inside its relay" >&2; exit 2 ;;
+esac
 case ${1:-} in
   start)
+    if [ -n "${CODE_DOCTOR_FAKE_LAUNCH_FAIL:-}" ]; then
+      echo "worker-run: $CODE_DOCTOR_FAKE_LAUNCH_FAIL" >&2
+      exit 3
+    fi
     shift 2
     brief=''
     while [ $# -gt 0 ]; do
@@ -10,13 +20,22 @@ case ${1:-} in
       shift 2
     done
     id="fake-$(date +%s)-$RANDOM$RANDOM"
-    printf '%s\t%s\n' "$id" "$(head -1 "$brief" | sed 's/^# Code doctor judge: //')" >>"$CODE_DOCTOR_FAKE_LOG"
+    sed -n 's/^## Candidate //p' "$brief" | while IFS= read -r cause; do
+      printf '%s\t%s\n' "$id" "$cause" >>"$CODE_DOCTOR_FAKE_LOG"
+    done
     printf 'RUN: %s\nDIR: /tmp\n' "$id" ;;
   wait) exit 0 ;;
   report)
-    cause=$(awk -F'\t' -v id="$2" '$1 == id { print $2 }' "$CODE_DOCTOR_FAKE_LOG")
-    printf 'ACCOUNT: fake\nSTATUS: done\nCOST: %s tok-eq\nRESULT:\nJudged from the fixture.\n%s\n' "${CODE_DOCTOR_FAKE_COST:-1000}" \
-      "$(jq -c --arg c "$cause" '.[$c] // {verdict: "not-now", fact: "fixture", reason: "no fixture verdict", triggers: ["a fixture verdict"]}' \
-        "$CODE_DOCTOR_FAKE_VERDICTS")" ;;
+    printf 'ACCOUNT: fake\nSTATUS: done\nCOST: %s tok-eq\nRESULT:\nJudged from the fixture.\n' "${CODE_DOCTOR_FAKE_COST:-1000}"
+    awk -F'\t' -v id="$2" '$1 == id { print $2 }' "$CODE_DOCTOR_FAKE_LOG" | while IFS= read -r cause; do
+      if [ "$cause" = "${CODE_DOCTOR_FAKE_DROP:-}" ]; then
+        continue
+      elif [ "$cause" = "${CODE_DOCTOR_FAKE_MANGLE:-}" ]; then
+        printf '{"id": "%s", "verdict": "maybe"}\n' "$cause"
+      else
+        jq -c --arg c "$cause" '(.[$c] // {verdict: "not-now", fact: "fixture", reason: "no fixture verdict",
+          triggers: ["a fixture verdict"]}) + {id: $c}' "$CODE_DOCTOR_FAKE_VERDICTS"
+      fi
+    done ;;
   *) exit 2 ;;
 esac

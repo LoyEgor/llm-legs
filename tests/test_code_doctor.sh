@@ -71,17 +71,25 @@ assert jqe '.candidates.waiting == 4 and .candidates.protected == 1 and .problem
 assert jqe '[.problems[] | select(.needs_egor and (.fact | startswith("needs Egor: ")) and (.steps[0] | contains("settings.json")))] | length == 1' "$LATEST"
 assert jqe '[.blind_spots[].id] | index("rollup:none") != null' "$LATEST"
 
-# The judge's budget: a token stop before the next launch would cross it, a wall stop, then the rest.
-CODE_DOCTOR_FAKE_COST=4500 "$CD" judge --night n0 --max-tokens 5000 >"$WORK/judge.out"
+# The judge's budget: with no session history the estimate carries the worker's base context, so a cap under it
+# launches nothing; a token stop before the next launch would cross it (estimated from the recorded session), a wall
+# stop, then the rest in one batched session whose tokens split evenly over its candidates.
+"$CD" judge --night n00 --max-tokens 60000 >"$WORK/judge.out"
+assert grep -q 'stop tokens' "$WORK/judge.out"
+assert test "$(judged)" = 0
+CODE_DOCTOR_FAKE_COST=90000 "$CD" judge --night n0 --max-tokens 100000 --batch 1 >"$WORK/judge.out"
 assert grep -q 'stop tokens' "$WORK/judge.out"
 assert test "$(judged)" = 1
 "$CD" judge --night n0 --max-wall 0 >"$WORK/judge.out"
 assert grep -q 'stop wall' "$WORK/judge.out"
 assert test "$(judged)" = 1
-assert jqe 'select(.night == "n0" and .stop == "tokens" and .tokens == 4500)' "$CODE_DOCTOR_DIR/judge-runs.jsonl"
+assert jqe 'select(.night == "n0" and .stop == "tokens" and .tokens == 90000)' "$CODE_DOCTOR_DIR/judge-runs.jsonl"
 "$CD" judge --night n1 >"$WORK/judge.out"
 assert grep -q 'stop done' "$WORK/judge.out"
 assert test "$(judged)" = 4
+assert test "$(tail -3 "$CODE_DOCTOR_FAKE_LOG" | cut -f1 | sort -u | wc -l | tr -d ' ')" = 1
+assert jqe -s '[.[] | select(.night == "n1" and .stage == "judge") | .tokens] | (add == 1000 and length == 3 and min >= 333)' \
+  "$CODE_DOCTOR_DIR/accounting.jsonl"
 "$CD" judge --night n1 >/dev/null
 assert test "$(judged)" = 4
 
@@ -116,7 +124,7 @@ cat "$WORK/calibration"
 assert test "$calibration" = 0
 assert jqe '.problem_count == 5 and .groups == {dead: 3, heavy: 1, duplicate: 1}
   and ([.groups[]] | add) == .problem_count and .status == "problems"' "$LATEST"
-assert jqe '.cost.tokens == 7500 and .cost_per_cause["cause:alpha/bin/old-sync"].judge.tokens > 0' "$LATEST"
+assert jqe '.cost.tokens == 91000 and .cost_per_cause["cause:alpha/bin/old-sync"].judge.tokens > 0' "$LATEST"
 
 # The rollup outlives the journal's prune and claims no silence past its window.
 day=$((now / 86400 - 2))
@@ -366,4 +374,55 @@ jq -n '{problems: [{id: "cause:registration:/gone", state: "new", needs_egor: tr
   >"$C/egor-doc.json"
 assert test "$("$CD" snapshot "$C/egor-doc.json")" = '[]'
 
-echo "PASS: $asserts asserts; calibration $(grep -c '^PASS' "$WORK/calibration")/6 cases, a healthy repository with 0 problems, the incremental index, the needs-Egor registration, the judge's token and wall stops, the durable rollup and its coverage blind spot, the top-K snapshot with active work out, the safety gate (suites, a deletion no problem names, an edit through a cross-repo symlink, active work), the structural digest (rollup no, caller yes), revalidation against the night base, the ledger's fixed-pending, regressed and faulty rows, the canonical mechanisms, review claims through review-anchors, tokenmap-measured instruction weight, a hook rooted through its ~/.claude link, a runner-less test of live code, PyObjC selectors"
+# A symlink to an indexed file is that file: it never pairs with its own target as a duplicate.
+ln -s "$A/lib/drive_a.py" "$REPOS/beta/lib/drive_link.py"
+"$CD" refresh --quiet
+assert grep -qF '"cause:alpha/lib/drive_a.py#load_drivers"' "$CODE_DOCTOR_DIR/candidates.jsonl"
+assert test "$(jq -r '.units[].unit' "$CODE_DOCTOR_DIR/candidates.jsonl" | grep -c 'drive_link.py')" = 0
+rm "$REPOS/beta/lib/drive_link.py"
+
+# Hot runtime counts only rollup days after the hook's last commit, and waits for enough of them.
+day0=$((now / 86400))
+for name in tuned busy fresh; do printf '#!/bin/bash\necho %s\n' "$name" >"$A/hooks/$name.sh"; done
+git -C "$A" add hooks/tuned.sh hooks/busy.sh
+GIT_AUTHOR_DATE="$((now - 6 * 86400)) +0000" GIT_COMMITTER_DATE="$((now - 6 * 86400)) +0000" commit "$A" "tuned and busy"
+git -C "$A" add hooks/fresh.sh
+GIT_AUTHOR_DATE="$((now - 2 * 86400)) +0000" GIT_COMMITTER_DATE="$((now - 2 * 86400)) +0000" commit "$A" "fresh"
+for ago in 9 8 5 4 3 1; do
+  case $ago in 9 | 8) tuned=900000 busy=0 ;; 1) tuned=0 busy=0 ;; *) tuned=1000 busy=900000 ;; esac
+  jq -n --arg d "$(date -u -r $(((day0 - ago) * 86400)) +%F)" --argjson t "$tuned" --argjson b "$busy" '{day: $d, complete: true,
+    sources: {hooks: {hits: {"hook:tuned.sh": 10, "hook:busy.sh": 10, "hook:fresh.sh": 10},
+    ms: {"hook:tuned.sh": $t, "hook:busy.sh": $b, "hook:fresh.sh": 900000}, sessions: null}}}' \
+    >"$CODE_DOCTOR_DIR/rollup/hot-$ago.json"
+done
+"$CD" refresh --quiet
+assert grep -qF 'busy.sh costs 540s a day' "$CODE_DOCTOR_DIR/candidates.jsonl"
+assert test "$(grep -c 'tuned.sh costs' "$CODE_DOCTOR_DIR/candidates.jsonl")" = 0
+assert test "$(grep -c 'fresh.sh costs' "$CODE_DOCTOR_DIR/candidates.jsonl")" = 0
+rm "$CODE_DOCTOR_DIR"/rollup/hot-*.json
+
+# A failed launch records worker-run's code and output; the recorded session history, not the base fallback, sizes the
+# next session; a batch answer missing or mangling a candidate's block leaves that candidate waiting, never invents
+# its verdict.
+lay_out "$FIX/corpus" "$WORK/batch"
+init_repos
+"$CD" refresh --quiet
+ids=$(jq -r 'select(.protected == null and .rules != ["registration"]) | .id' "$CODE_DOCTOR_DIR/candidates.jsonl")
+first=$(sed -n 1p <<<"$ids")
+second=$(sed -n 2p <<<"$ids")
+CODE_DOCTOR_FAKE_LAUNCH_FAIL='no account has quota' "$CD" judge --night b0 >"$WORK/judge.out"
+assert grep -q 'stop launch-failed' "$WORK/judge.out"
+assert jqe 'select(.night == "b0") | .error | test("^worker-run start rc 3: .*no account has quota")' \
+  "$CODE_DOCTOR_DIR/judge-runs.jsonl"
+assert jqe -s '[.[] | select(.night == "b0" and .stage == "judge")] | length == 1 and (.[0].note | contains("no account has quota"))' \
+  "$CODE_DOCTOR_DIR/accounting.jsonl"
+printf '{"stage": "judge", "night": "seed", "cause": "seed", "tokens": 20000, "run": "seed-run"}\n' \
+  >>"$CODE_DOCTOR_DIR/accounting.jsonl"
+CODE_DOCTOR_FAKE_DROP="$first" CODE_DOCTOR_FAKE_MANGLE="$second" "$CD" judge --night b1 --max-tokens 30000 >"$WORK/judge.out"
+assert grep -qF "judge: $(($(wc -l <<<"$ids") - 2)) judged · 2 waiting" "$WORK/judge.out"
+assert grep -q 'stop done' "$WORK/judge.out"
+assert jqe --arg a "$first" --arg b "$second" 'has($a) or has($b) | not' "$CODE_DOCTOR_DIR/verdicts.json"
+"$CD" judge --night b2 >"$WORK/judge.out"
+assert grep -qF 'judge: 2 judged · 0 waiting' "$WORK/judge.out"
+
+echo "PASS: $asserts asserts; calibration $(grep -c '^PASS' "$WORK/calibration")/6 cases, a healthy repository with 0 problems, the incremental index, the needs-Egor registration, the judge's batched sessions with their token, wall and launch-failure stops, the durable rollup and its coverage blind spot, the top-K snapshot with active work out, the safety gate (suites, a deletion no problem names, an edit through a cross-repo symlink, active work), the structural digest (rollup no, caller yes), revalidation against the night base, the ledger's fixed-pending, regressed and faulty rows, the canonical mechanisms, review claims through review-anchors, tokenmap-measured instruction weight, a hook rooted through its ~/.claude link, a runner-less test of live code, PyObjC selectors, a symlink never pairing with its target, hot cost only from days after the last commit"
