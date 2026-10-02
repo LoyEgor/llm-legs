@@ -875,7 +875,8 @@
    "match": {
     "word": "bad command",
     "model": "^(codex-image|grok-(image|video)|gemini-(image|video|music|sfx|listen))$",
-    "detail": "^usage: "
+    "detail": "^usage: ",
+    "until": "2026-10-02T14:41:31+03:00"
    },
    "title": "Image wrappers journaled --help probes as bad-command legs",
    "status": "fixed-pending",
@@ -901,7 +902,7 @@
    "same_cause": [],
    "last_reviewed": "2026-10-02",
    "reviewed_by": "Night image fixer",
-   "note": "Launch window: 83 rc=2 legs, every one bare usage text with seconds 0. Matching them against the Bash calls in Claude transcripts (±40 s, same tool) traced 78 to `<wrapper> --help` probes by image-gen agents and video chats before a real call (35 codex-image, 19 gemini-video, 13 gemini-music, 6 gemini-listen, 3 gemini-image, 2 gemini-sfx); the other 5 had no Claude transcript call nearby (likely codex/agy callers, unconfirmed). --help fell through to `*) usage` (exit 2) and the exit trap journaled it. Fix: image_leg_help prints usage on stdout, exits 0 and records no leg (tests/test_codex_image.sh, all eight wrappers, mutation-checked). A real malformed call still prints bare usage and exits 2, so a later match here is a caller's argument error, not a probe.",
+   "note": "Launch window: 83 rc=2 legs, every one bare usage text with seconds 0. Matching them against the Bash calls in Claude transcripts (±40 s, same tool) traced 78 to `<wrapper> --help` probes by image-gen agents and video chats before a real call (35 codex-image, 19 gemini-video, 13 gemini-music, 6 gemini-listen, 3 gemini-image, 2 gemini-sfx); the other 5 had no Claude transcript call nearby (likely codex/agy callers, unconfirmed). --help fell through to `*) usage` (exit 2) and the exit trap journaled it. Fix: image_leg_help prints usage on stdout, exits 0 and records no leg (tests/test_codex_image.sh, all eight wrappers, mutation-checked). A real malformed call still prints bare usage and exits 2; `until` ends the row at this triage (the image bad-command pin in tests/test_llm_doctor.sh), so a later one reads new: a probe if the fix had not reached main yet, else a caller's argument error.",
    "handoff": null
   },
   {
