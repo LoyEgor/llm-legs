@@ -45,6 +45,7 @@ account=''
 for_video=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    -h | --help) image_leg_help usage ;;
     --dest) [ "$#" -ge 2 ] || usage; dest=$2; shift 2 ;;
     --prompt) [ "$#" -ge 2 ] || usage; prompt=$2; shift 2 ;;
     --duration) [ "$#" -ge 2 ] || usage; duration=$2; shift 2 ;;
@@ -121,7 +122,8 @@ clean() { # source.mp4 out.wav keep_length
     return 1
   fi
   filters=''
-  [ "$3" = true ] || filters="$(caps '.sfx.trim'),"
+  # loudnorm gates in 400 ms blocks: a sound the trim left shorter than one read -inf LUFS, "silent".
+  [ "$3" = true ] || filters="$(caps '.sfx.trim'),apad=whole_dur=0.4,"
   measured=$(ffmpeg -hide_banner -nostats -i "$1" -vn -af "${filters}loudnorm=$(caps '.sfx.loudnorm'):print_format=json" \
     -f null - 2>&1 | sed -n '/^{/,/^}/p')
   level=$(jq -r '.input_i // empty' 2>/dev/null <<<"$measured")

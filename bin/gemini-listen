@@ -42,7 +42,7 @@ while [ "$#" -gt 0 ]; do
     -o | --out) [ "$#" -ge 2 ] || usage; out=$2; shift 2 ;;
     --model) [ "$#" -ge 2 ] || usage; model_key=$2; shift 2 ;;
     --account) [ "$#" -ge 2 ] || usage; account=$2; shift 2 ;;
-    -h | --help) usage ;;
+    -h | --help) image_leg_help usage ;;
     -*) usage ;;
     *)
       if [ -z "$question" ]; then question=$1; else media+=("$1"); fi

@@ -187,6 +187,7 @@ refs=()
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    -h | --help) image_leg_help usage ;;
     --dest)
       [ "$#" -ge 2 ] || usage
       dest=$2

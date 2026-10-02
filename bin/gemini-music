@@ -61,6 +61,7 @@ accounts=1
 flow_flags=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    -h | --help) image_leg_help usage ;;
     --dest) [ "$#" -ge 2 ] || usage; dest=$2; shift 2 ;;
     --prompt) [ "$#" -ge 2 ] || usage; prompt=$2; shift 2 ;;
     --length) [ "$#" -ge 2 ] || usage; length=$2; shift 2 ;;

@@ -20,9 +20,12 @@ ffmpeg -v error -f lavfi -i color=c=black:size=64x48:rate=24 -f lavfi -i anullsr
   -c:v libx264 -pix_fmt yuv420p -c:a aac "$M/mute.mp4" || exit 1
 ffmpeg -v error -f lavfi -i color=c=black:size=64x48:rate=24 -f lavfi -i 'sine=frequency=880:sample_rate=48000:duration=4' \
   -af 'volume=-75dB' -t 4 -c:v libx264 -pix_fmt yuv420p -c:a aac "$M/faint.mp4" || exit 1
+ffmpeg -v error -f lavfi -i color=c=black:size=64x48:rate=24 -f lavfi -i 'sine=frequency=880:sample_rate=48000:duration=0.15' \
+  -af 'volume=-20dB,adelay=1500|1500,apad=whole_dur=4' -t 4 -c:v libx264 -pix_fmt yuv420p -c:a aac "$M/short.mp4" || exit 1
 ffmpeg -v error -f lavfi -i testsrc2=size=64x48:rate=24 -t 3 -c:v libx264 -pix_fmt yuv420p "$M/scene.mp4" || exit 1
 ffmpeg -v error -f lavfi -i testsrc2=size=64x48:rate=24 -t 12 -c:v libx264 -pix_fmt yuv420p "$M/long.mp4" || exit 1
 export FAKE_VIDEO_SOURCE="$M/take.mp4" FAKE_VIDEO_NOAUDIO="$M/noaudio.mp4" FAKE_VIDEO_MUTE="$M/mute.mp4" FAKE_VIDEO_FAINT="$M/faint.mp4"
+export FAKE_VIDEO_SHORT="$M/short.mp4"
 : >"$FAKE_VIDEO_CALLS"
 : >"$WORK/err"
 
@@ -110,6 +113,9 @@ assert grep -Eq 'is silent \(-?[0-9.inf]+ LUFS\) \(kept: '"$HOME"'/\.gemini-web/
 assert test -s "$(sed -n 's/.*(kept: \(.*\))$/\1/p' "$WORK/err" | head -n 1)"
 FAKE_VIDEO_MODE=faint expect_rc 1 --dest "$WORK/out/none.wav" --prompt 'a knock' --for-video "$M/scene.mp4"
 assert grep -q 'is silent' "$WORK/err"
+FAKE_VIDEO_MODE=short assert sfx --dest "$WORK/out/click.wav" --prompt 'a click'
+refute grep -q 'is silent' "$WORK/err"
+assert test -s "$WORK/out/click.wav"
 # A silent first take leaves the usable ones; a temp folder with a space keeps its variant paths whole.
 mkdir -p "$WORK/tmp space"
 TMPDIR="$WORK/tmp space" FAKE_VIDEO_MODE=first-mute assert sfx --dest "$WORK/out/kept.wav" --prompt 'a knock' --count 3

@@ -69,6 +69,7 @@ refs=()
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    -h | --help) image_leg_help usage ;;
     --dest) [ "$#" -ge 2 ] || usage; dest=$2; shift 2 ;;
     --prompt) [ "$#" -ge 2 ] || usage; prompt=$2; shift 2 ;;
     --first-frame) [ "$#" -ge 2 ] || usage; first_frame=$2; shift 2 ;;

@@ -3,7 +3,7 @@
 
 image_leg_start() { # tool kind [served-model-variable]
   IMAGE_LEG_TOOL=$1 IMAGE_LEG_KIND=$2 IMAGE_LEG_MODEL_VAR=${3:-} IMAGE_LEG_STARTED=$(date +%s)
-  IMAGE_LEG_ERR='' IMAGE_LEG_TEE='' IMAGE_LEG_QUEUED=0 IMAGE_LEG_SIZE='' IMAGE_LEG_ROUTE=''
+  IMAGE_LEG_ERR='' IMAGE_LEG_TEE='' IMAGE_LEG_QUEUED=0 IMAGE_LEG_SIZE='' IMAGE_LEG_ROUTE='' IMAGE_LEG_SKIP=''
   trap image_leg_exit EXIT
   IMAGE_LEG_ERR=$(mktemp "${TMPDIR:-/tmp}/image-leg.XXXXXX" 2>/dev/null) || { IMAGE_LEG_ERR=''; return 0; }
   # A process substitution that cannot open /dev/fd complains on the live stderr; probe it silenced.
@@ -31,6 +31,13 @@ image_leg_mark() { # [size]
   IMAGE_LEG_QUEUED=$((now - IMAGE_LEG_STARTED)) IMAGE_LEG_STARTED=$now IMAGE_LEG_SIZE=${1:-}
 }
 
+# --help is not a leg: callers probe it before a real call, and a refusal it recorded read as a bad command.
+image_leg_help() { # usage-function
+  IMAGE_LEG_SKIP=1
+  ("$1") 2>&1 || true
+  exit 0
+}
+
 # A wrapper that sets its own EXIT trap calls this first in it: `$?` must still be the wrapper's
 # status, and it returns 0 because errexit inside the trap would skip the wrapper's own cleanup.
 image_leg_exit() {
@@ -46,6 +53,7 @@ image_leg_exit() {
     err=$(tail -c 2000 "$IMAGE_LEG_ERR" 2>/dev/null) || err=''
     rm -f "$IMAGE_LEG_ERR" || true
   fi
+  [ -z "${IMAGE_LEG_SKIP:-}" ] || { IMAGE_LEG_TOOL=''; return 0; }
   [ -z "$IMAGE_LEG_MODEL_VAR" ] || model=${!IMAGE_LEG_MODEL_VAR:-}
   log=${IMAGE_LEG_LOG:-$HOME/.cache/image-legs/legs.jsonl}
   case $log in */*) mkdir -p "${log%/*}" 2>/dev/null || return 0 ;; esac

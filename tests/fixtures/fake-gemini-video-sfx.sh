@@ -27,6 +27,7 @@ case "${FAKE_VIDEO_MODE:-ok}" in
   noaudio) source=$FAKE_VIDEO_NOAUDIO ;;
   mute) source=$FAKE_VIDEO_MUTE ;;
   faint) source=$FAKE_VIDEO_FAINT ;;
+  short) source=$FAKE_VIDEO_SHORT ;;
 esac
 cp "$source" "$dest"
 printf 'dest=%s\nsize=640x360\nformat=mp4\nduration=4\naccount=fakeacct\nmedia=MEDIA1\nmodel=abra_t2v_4s_360p model_caps=fresh\n' "$dest"

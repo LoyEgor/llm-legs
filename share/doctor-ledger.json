@@ -723,7 +723,7 @@
    "same_cause": [],
    "last_reviewed": "2026-10-01",
    "reviewed_by": "Night image fixer",
-   "note": "Launch had 84 exits; fresh scan had 85. Live image journal contains mostly usage text (57 codex-image), one Veo duration refusal and one space-joined gemini-listen path. These happen before image_leg_mark; vendor failure is ruled out for these messages. Journal has no argv, cwd or caller, so help probes versus malformed production calls versus tests cannot be confirmed. Existing image suites explicitly isolate IMAGE_LEG_LOG, so their current setup is not evidence of leakage. Suppressing rc=2 or changing the judge is not authorized. Owner should reconstruct callers before proposing a narrow dismissal. `until` bounds the row to the exits triaged here: every rc=2 is `bad command` and every wrapper prints `usage:` for any argument error, so a later one reads new.",
+   "note": "Launch had 84 exits; fresh scan had 85. Live image journal contains mostly usage text (57 codex-image), one Veo duration refusal and one space-joined gemini-listen path. These happen before image_leg_mark; vendor failure is ruled out for these messages. Journal has no argv, cwd or caller, so help probes versus malformed production calls versus tests cannot be confirmed. Existing image suites explicitly isolate IMAGE_LEG_LOG, so their current setup is not evidence of leakage. Suppressing rc=2 or changing the judge is not authorized. Owner should reconstruct callers before proposing a narrow dismissal. `until` bounds the row to the exits triaged here: every rc=2 is `bad command` and every wrapper prints `usage:` for any argument error, so a later one reads new. 2026-10-02 (Night image fixer): provenance recovered by matching the 24 h window's rc=2 legs against Claude transcript Bash calls: 78 of 83 were `<wrapper> --help` probes, now unjournaled (I8). The Veo duration and space-joined path refusals are callers' own argument errors, refused before spend as designed: propose dismissal of those two to the owner.",
    "handoff": "docs/handoffs/2026-10-01-image-failure-triage.md"
   },
   {
@@ -776,7 +776,7 @@
    "same_cause": [],
    "last_reviewed": "2026-10-01",
    "reviewed_by": "Night image fixer",
-   "note": "Event image:1790815478/gemini-music/egbogd returned HTTP 404 and 2860 bytes, not a missing executable or local path. Base c340869 already retries the cover-art MP4 six times with 10-second waits, retains successful audio and reports video_error; bin/gemini-music rejects a requested MP4 when absent. Cannot prove delayed publication versus an invalid/expired URL from the retained journal; no response artifact is retained. Existing retry is not proven obsolete. Owner should verify audio-only success and an existing cover download without spending on another generation. The detail matches both the recorded line and the current one: share/gemini_music.py save() raises `video download failed (HTTP …)` and bin/gemini-music relays it as `take N came without its mp4: …`; Flow's `clip download failed` is gemini-video, another cause.",
+   "note": "Event image:1790815478/gemini-music/egbogd returned HTTP 404 and 2860 bytes, not a missing executable or local path. Base c340869 already retries the cover-art MP4 six times with 10-second waits, retains successful audio and reports video_error; bin/gemini-music rejects a requested MP4 when absent. Cannot prove delayed publication versus an invalid/expired URL from the retained journal; no response artifact is retained. Existing retry is not proven obsolete. Owner should verify audio-only success and an existing cover download without spending on another generation. The detail matches both the recorded line and the current one: share/gemini_music.py save() raises `video download failed (HTTP …)` and bin/gemini-music relays it as `take N came without its mp4: …`; Flow's `clip download failed` is gemini-video, another cause. 2026-10-02 (Night image fixer): no recurrence; no gemini-music leg has run since 13:42Z 2026-10-01, so the retry still stands unproven either way.",
    "handoff": "docs/handoffs/2026-10-01-image-failure-triage.md"
   },
   {
@@ -793,7 +793,7 @@
    "same_cause": [],
    "last_reviewed": "2026-10-01",
    "reviewed_by": "Night image fixer",
-   "note": "Four incidents: Add to prompt at 1790795541, 1080p Download media click at 1790808722, Short chip at 1790813256, filechooser at 1790813446. Base already replaced mandatory Add to prompt with optional click plus attachment verification; music attach handles rights notices and chooser events. No saved screenshot/TXT exists for these older incidents (failure directory contains only the three Length captures). Current Short selection and upscale readiness cannot be verified from traceback alone. Longer vendor generation caps would not fix these UI waits. Do not restore old mandatory attachment clicks or blanket-increase timeouts. The 1080p alternative catches the pre-structured record (plain stderr, classified timeout); today's route reports the same step as a BROWSER_FAILURE line the doctor reads as `browser download`, which no row names, so a fresh one reads new with its screenshot.",
+   "note": "Four incidents: Add to prompt at 1790795541, 1080p Download media click at 1790808722, Short chip at 1790813256, filechooser at 1790813446. Base already replaced mandatory Add to prompt with optional click plus attachment verification; music attach handles rights notices and chooser events. No saved screenshot/TXT exists for these older incidents (failure directory contains only the three Length captures). Current Short selection and upscale readiness cannot be verified from traceback alone. Longer vendor generation caps would not fix these UI waits. Do not restore old mandatory attachment clicks or blanket-increase timeouts. The 1080p alternative catches the pre-structured record (plain stderr, classified timeout); today's route reports the same step as a BROWSER_FAILURE line the doctor reads as `browser download`, which no row names, so a fresh one reads new with its screenshot. 2026-10-02 (Night image fixer): no timeout of these steps in the last 24 h; the 1080p download step now reads I7 (fixed, a8c1ee1), and 22 later gemini-video legs passed it.",
    "handoff": "docs/handoffs/2026-10-01-image-failure-triage.md"
   },
   {
@@ -812,7 +812,7 @@
    ],
    "last_reviewed": "2026-10-01",
    "reviewed_by": "Google video generation integration",
-   "note": "Launch six incidents; fresh scan seven adds silent SFX at 1790820477. Earlier Length failures lack BROWSER_FAILURE markers; current base emits structured failures. no track after 600s at 1790814959 stayed on /app?hl=en: submission/notice is plausible, vendor rendering delay unproved; current message distinguishes an unsent prompt. Flow upload b-stopwatch.png at 1790808648 has no capture. Silent take.mp4 messages at 1790820305/352/477 come from bin/gemini-sfx loudnorm measurement: malformed/missing measurement and actual input_i <= -70 share the same message, so vendor silence is not established. No original clip or measurement is linked by image-leg. Owner should retain/recover media and ffmpeg diagnostics before blaming vendor or changing threshold. 2026-10-01 (Google video generation integration): the Length alternative predates BROWSER_ lines and is I2's cause; the silent-take alternative moved to I6, since bin/gemini-sfx wording now classifies it as bad output. no track after 600s and the stopwatch upload stay open.",
+   "note": "Launch six incidents; fresh scan seven adds silent SFX at 1790820477. Earlier Length failures lack BROWSER_FAILURE markers; current base emits structured failures. no track after 600s at 1790814959 stayed on /app?hl=en: submission/notice is plausible, vendor rendering delay unproved; current message distinguishes an unsent prompt. Flow upload b-stopwatch.png at 1790808648 has no capture. Silent take.mp4 messages at 1790820305/352/477 come from bin/gemini-sfx loudnorm measurement: malformed/missing measurement and actual input_i <= -70 share the same message, so vendor silence is not established. No original clip or measurement is linked by image-leg. Owner should retain/recover media and ffmpeg diagnostics before blaming vendor or changing threshold. 2026-10-01 (Google video generation integration): the Length alternative predates BROWSER_ lines and is I2's cause; the silent-take alternative moved to I6, since bin/gemini-sfx wording now classifies it as bad output. no track after 600s and the stopwatch upload stay open. 2026-10-02 (Night image fixer): neither recurred in the plain-stderr form; today's route reports both as BROWSER_ lines (Flow Music's 600 s wait is I12, a Flow asset upload that never finished is I16).",
    "handoff": "docs/handoffs/2026-10-01-image-failure-triage.md"
   },
   {
@@ -824,12 +824,22 @@
     "detail": "soundtrack of \\S+ is silent|without a soundtrack|loudness of \\S+ could not be measured"
    },
    "title": "Flow sound-effect takes rejected as silent",
-   "status": "open",
-   "fixes": [],
+   "status": "fixed-pending",
+   "fixes": [
+    {
+     "at": "2026-10-02T12:52:00+03:00",
+     "by": "Night image fixer",
+     "files": [
+      "llm-legs/bin/gemini-sfx"
+     ],
+     "in": null,
+     "regressed_at": null
+    }
+   ],
    "same_cause": [],
-   "last_reviewed": "2026-10-01",
-   "reviewed_by": "Google video generation integration",
-   "note": "Three takes at 05:05-05:07 (jihangarangan x2, egbogd) were rejected by bin/gemini-sfx's loudnorm check before a rejected take was kept and before the message told an unmeasurable level from a measured silent one. Since 6dbbf73 the take is kept under ~/.gemini-web/failures/ and the message names the LUFS level; the next one decides whether Flow returned silence (theirs) or the measurement is ours.",
+   "last_reviewed": "2026-10-02",
+   "reviewed_by": "Night image fixer",
+   "note": "Three takes at 05:05-05:07 (jihangarangan x2, egbogd) were rejected by bin/gemini-sfx's loudnorm check before a rejected take was kept and before the message told an unmeasurable level from a measured silent one. Since 6dbbf73 the take is kept under ~/.gemini-web/failures/ and the message names the LUFS level; the next one decides whether the measurement is ours. 2026-10-02: it is ours. The kept take 20261001T111913Z-com-76702-take.mp4 (rejected as -inf LUFS) peaks at -19.2 dB, RMS -51 dB, -40.3 LUFS untrimmed; the .sfx.trim chain (silenceremove at -50 dB both ends) leaves 0.17 s, and loudnorm's 400 ms gating blocks read that as -inf. Fix: apad=whole_dur=0.4 after the trim, so a short sound measures (-39.35 LUFS) while a mute take stays -inf (tests/test_gemini_sfx.sh short click, red without the pad). The 05:05-05:07 takes were not kept; same cause presumed.",
    "handoff": null
   },
   {
@@ -858,6 +868,231 @@
    "reviewed_by": "Google video generation integration",
    "note": "14 Chrome crash reports 12:09-12:58 (EXC_BAD_ACCESS on CrBrowserMain, Chrome 154.0.8037.58), each while Download.save_as ran; about half the 1080p downloads still saved. The link is not http, so the http takeover never applied, and the relaunch deferral (6dbbf73) crashed on all 3 launches at 12:58. The fix catches the file from the page's own download link (createObjectURL and anchor-click hook) and reads it out of the page in chunks, so Chrome's download manager never runs; Chrome's download stays as the fallback and prints the link's scheme.",
    "handoff": null
+  },
+  {
+   "id": "I8",
+   "block": "image",
+   "match": {
+    "word": "bad command",
+    "model": "^(codex-image|grok-(image|video)|gemini-(image|video|music|sfx|listen))$",
+    "detail": "^usage: "
+   },
+   "title": "Image wrappers journaled --help probes as bad-command legs",
+   "status": "fixed-pending",
+   "fixes": [
+    {
+     "at": "2026-10-02T12:48:09+03:00",
+     "by": "Night image fixer",
+     "files": [
+      "llm-legs/share/image-leg.sh",
+      "llm-legs/bin/codex-image",
+      "llm-legs/bin/gemini-image",
+      "llm-legs/bin/gemini-listen",
+      "llm-legs/bin/gemini-music",
+      "llm-legs/bin/gemini-sfx",
+      "llm-legs/bin/gemini-video",
+      "llm-legs/bin/grok-image",
+      "llm-legs/bin/grok-video"
+     ],
+     "in": null,
+     "regressed_at": null
+    }
+   ],
+   "same_cause": [],
+   "last_reviewed": "2026-10-02",
+   "reviewed_by": "Night image fixer",
+   "note": "Launch window: 83 rc=2 legs, every one bare usage text with seconds 0. Matching them against the Bash calls in Claude transcripts (±40 s, same tool) traced 78 to `<wrapper> --help` probes by image-gen agents and video chats before a real call (35 codex-image, 19 gemini-video, 13 gemini-music, 6 gemini-listen, 3 gemini-image, 2 gemini-sfx); the other 5 had no Claude transcript call nearby (likely codex/agy callers, unconfirmed). --help fell through to `*) usage` (exit 2) and the exit trap journaled it. Fix: image_leg_help prints usage on stdout, exits 0 and records no leg (tests/test_codex_image.sh, all eight wrappers, mutation-checked). A real malformed call still prints bare usage and exits 2, so a later match here is a caller's argument error, not a probe.",
+   "handoff": null
+  },
+  {
+   "id": "I9",
+   "block": "image",
+   "match": {
+    "word": "browser no output",
+    "model": "^gemini-video$",
+    "detail": "Flow refused the clip: PUBLIC_ERROR_AUDIO_FILTERED"
+   },
+   "title": "Flow's audio filter refused generated clips",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-10-02",
+   "reviewed_by": "Night image fixer",
+   "note": "7 legs 09:36-10:38Z on 2026-10-01 across locomthebest, jihangarangan, egbogd (plus 5 earlier), each a different prompt of the video/alona campaign. share/gemini_web.py raises it only when every take came back with a PUBLIC_ERROR media error and none saved; the page offered the clip nothing to click. Vendor-side content filter on the generated soundtrack: proposed to the owner as weather. Not checked: whether Flow charged credits for a filtered take.",
+   "handoff": "docs/handoffs/2026-10-02-image-night-triage.md"
+  },
+  {
+   "id": "I10",
+   "block": "image",
+   "match": {
+    "word": "browser drift",
+    "model": "^gemini-music$",
+    "detail": "Flow Music UI drift: no title field in the compose panel"
+   },
+   "title": "Flow Music compose panel once showed no title field",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-10-02",
+   "reviewed_by": "Night image fixer",
+   "note": "One leg, com at 11:04Z 2026-10-01, an hour before the route landed (d25b8c7, 12:12Z), so a development run. Capture 20261001T110432Z-com-43694.txt: Details expanded, Upload image/Prompt image shown, no 'Add title (optional)' text, account at 0 credits. The same locator in share/flow_music.py then filled the title of all 22 queued songs on com, egbogd and locomthebest (jobs.jsonl flow-music 'queued' rows with titles, 11:06-13:38Z, the first on com two minutes later). Not reproduced: proposed to the owner for dismissal.",
+   "handoff": "docs/handoffs/2026-10-02-image-night-triage.md"
+  },
+  {
+   "id": "I11",
+   "block": "image",
+   "match": {
+    "word": "browser no output",
+    "model": "^gemini-music$",
+    "detail": "the Gemini music tool returned no track on \\S+: |Gemini answered without running the music tool"
+   },
+   "title": "The Gemini app's music tool failed on its side",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-10-02",
+   "reviewed_by": "Night image fixer",
+   "note": "4 legs 2026-10-01 on the app route: 'request hit a pause button' and 'Something went wrong while generating the track' (the tool ran and failed), 'I encountered an error doing what you asked' (Gemini's own error), and one egbogd reply at 12:54Z that described the music in prose after open_music had seen the Length chip (6dbbf73), so the tool was selected. All four are Gemini's answers shown verbatim: proposed to the owner as weather.",
+   "handoff": "docs/handoffs/2026-10-02-image-night-triage.md"
+  },
+  {
+   "id": "I12",
+   "block": "image",
+   "match": {
+    "word": "browser no output",
+    "model": "^gemini-music$",
+    "detail": "no track after \\d+s on \\S+ \\(https://www\\.flowmusic\\.app/"
+   },
+   "title": "Flow Music waited 600 s for a song its Generate click never made",
+   "status": "fixed-pending",
+   "fixes": [
+    {
+     "at": "2026-10-01T16:42:00+03:00",
+     "by": "Google video generation integration",
+     "files": [
+      "llm-legs/share/flow_music.py"
+     ],
+     "in": null,
+     "regressed_at": null
+    }
+   ],
+   "same_cause": [],
+   "last_reviewed": "2026-10-02",
+   "reviewed_by": "Night image fixer",
+   "note": "3 legs 12:37-12:54Z 2026-10-01 (locomthebest x2, com), after the route landed and before ffca51e. Captures show the library without the run's title: no song was made. ffca51e regenerates once when no song shows in traffic within START_S (90 s) and then fails as 'no track started', so this 600 s timeout now fires only after a song started (tests/test_flow_music.sh regenerate case). Recorded by the night fixer for that commit; no gemini-music leg has run since.",
+   "handoff": null
+  },
+  {
+   "id": "I13",
+   "block": "image",
+   "match": {
+    "word": "browser profile",
+    "model": "^gemini-(video|sfx|music)$",
+    "detail": "timed out waiting for \\S+\\.lock|is open in another Chrome \\(the login window\\?\\)"
+   },
+   "title": "An account's Chrome profile was busy for the whole wait",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-10-02",
+   "reviewed_by": "Night image fixer",
+   "note": "3 legs 2026-10-01: two 900 s waits for jihangarangan.lock and egbogd.lock while callers ran more parallel gemini-video jobs than accounts (free_first already puts idle accounts first; generate_on waits 900 s by design, one Chrome per profile), and one locomthebest sfx run that found the profile open in another Chrome at the second a gemini-music engine on it died (exit 143, I18). The guard working on caller contention: proposed to the owner for dismissal. Not changed: moving to another busy account after a timeout.",
+   "handoff": "docs/handoffs/2026-10-02-image-night-triage.md"
+  },
+  {
+   "id": "I14",
+   "block": "image",
+   "match": {
+    "word": "browser upload",
+    "model": "^gemini-music$",
+    "detail": "the Audio upload opened no file chooser|the reference audio upload did not finish within \\d+s"
+   },
+   "title": "Flow Music reference audio upload stalled behind its consent notice",
+   "status": "fixed-pending",
+   "fixes": [
+    {
+     "at": "2026-10-01T16:42:00+03:00",
+     "by": "Google video generation integration",
+     "files": [
+      "llm-legs/share/flow_music.py"
+     ],
+     "in": null,
+     "regressed_at": null
+    }
+   ],
+   "same_cause": [],
+   "last_reviewed": "2026-10-02",
+   "reviewed_by": "Night image fixer",
+   "note": "com 12:56Z (no file chooser) and locomthebest 13:07Z (300 s upload wait), both before ffca51e. jobs.jsonl shows the first notice-agreed rows right after (13:01Z, 13:24Z, 13:36Z). ffca51e finds the 'necessary rights' notice by its I agree button (it is no role=dialog), sets files on the last chooser, and reads upload-check-status, failing fast on a refused upload (tests/test_flow_music.sh consent and refused-upload cases). Recorded by the night fixer for that commit; no gemini-music leg has run since.",
+   "handoff": null
+  },
+  {
+   "id": "I15",
+   "block": "image",
+   "match": {
+    "word": "browser upload",
+    "model": "^gemini-music$",
+    "detail": "Flow Music refused the reference audio upload: This track contains vocals"
+   },
+   "title": "Flow Music refuses reference audio with vocals in this region",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-10-02",
+   "reviewed_by": "Night image fixer",
+   "note": "egbogd 13:37Z 2026-10-01: Flow's own toast 'Uploading tracks with vocals is not available in your region', relayed by the fast-fail ffca51e added. Vendor regional policy on the caller's reference: proposed to the owner as weather.",
+   "handoff": "docs/handoffs/2026-10-02-image-night-triage.md"
+  },
+  {
+   "id": "I16",
+   "block": "image",
+   "match": {
+    "word": "browser upload",
+    "model": "^gemini-video$",
+    "detail": "the upload of \\S+ never finished in the asset list"
+   },
+   "title": "A Flow frame image upload never reached the asset list",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-10-02",
+   "reviewed_by": "Night image fixer",
+   "note": "egbogd 16:48Z 2026-10-01 (codex-com.png, 960 s leg, most of it the account lock). Capture 20261001T164839Z-egbogd-81655.txt: the picker open, newest asset end-1790866224…png from 14:50Z, no Uploading row and no toast for the staged start-/end- name, so set_files left no trace. One incident, cause unknown; upload() is unchanged since e961a07 and served every other frame upload that day. Handed to the owner.",
+   "handoff": "docs/handoffs/2026-10-02-image-night-triage.md"
+  },
+  {
+   "id": "I17",
+   "block": "image",
+   "match": {
+    "word": "unclassified",
+    "model": "^gemini-listen$",
+    "detail": "the model answered without opening \\S+; the answer is not grounded"
+   },
+   "title": "gemini-listen's model answered without opening the media",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-10-02",
+   "reviewed_by": "Night image fixer",
+   "note": "egbogd 18:21Z 2026-10-01: bin/gemini-listen found no view_file event for the clip in agy's events and refused the answer, as designed (docs/image-vendors/gemini.md). The model skipped the tool: proposed to the owner as weather. The word is unclassified because IMAGE_REASONS has no pattern for it; adding one is the judge's change, the owner's.",
+   "handoff": "docs/handoffs/2026-10-02-image-night-triage.md"
+  },
+  {
+   "id": "I18",
+   "block": "image",
+   "match": {
+    "word": "unclassified",
+    "model": "^gemini-music$",
+    "detail": "the engine printed no result \\(exit 143\\)"
+   },
+   "title": "The gemini-music engine was killed by SIGTERM mid-run",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-10-02",
+   "reviewed_by": "Night image fixer",
+   "note": "locomthebest 11:33Z 2026-10-01, 832 s: the engine died by SIGTERM while the wrapper survived (rc 1), the same second a gemini-sfx run on the same profile failed with 'open in another Chrome'. Nothing records who sent the signal; bin/gemini-music reports any engine exit without a result line this way. Cause unknown: handed to the owner, blind spot image-engine-signal-sender.",
+   "handoff": "docs/handoffs/2026-10-02-image-night-triage.md"
   }
  ],
  "blind_spots": [
@@ -905,10 +1140,17 @@
   },
   {
    "id": "image-invocation-and-artifact-provenance",
-   "what": "Image failures cannot distinguish help probes from real calls, or silent media from failed measurement",
-   "reason": "share/image-leg.sh records tool/status/stderr but no sanitized invocation provenance or retained diagnostic artifact reference; bad-command and SFX investigations cannot establish their caller or source measurement.",
+   "what": "Image failures cannot name the caller of a malformed call, or tell silent media from failed measurement",
+   "reason": "share/image-leg.sh records tool/status/stderr but no sanitized invocation provenance or retained diagnostic artifact reference; bad-command and SFX investigations cannot establish their caller or source measurement. Help probes are no longer journaled (I8, 2026-10-02); the 2026-10-02 fixer traced them through Claude transcripts by time, which misses codex/agy callers.",
    "since": "2026-10-01",
    "would_catch_if": "Image journal links a sanitized caller/invocation record and retained browser/media measurement diagnostics without credentials or prompt contents."
+  },
+  {
+   "id": "image-engine-signal-sender",
+   "what": "A media engine killed by a signal names no sender",
+   "reason": "bin/gemini-music and the gemini-web engine journal only the engine's exit status, so a SIGTERM from a caller's stop, another run or the owner reads the same (I18).",
+   "since": "2026-10-02",
+   "would_catch_if": "the engine logged a received SIGTERM/SIGINT with its parent and process-group state into jobs.jsonl and the image-leg line carried it"
   }
  ]
 }

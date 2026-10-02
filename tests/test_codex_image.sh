@@ -96,6 +96,15 @@ assert grep -q '^usage: codex-image ' "$IMAGE_ERR"
 # where a caller reads it.
 assert grep -q "references: at most $REF_MAX" "$IMAGE_ERR"
 
+legs_before=$(wc -l <"$IMAGE_LEG_LOG")
+for wrapper in codex-image gemini-image gemini-listen gemini-music gemini-sfx gemini-video grok-image grok-video; do
+  help_rc=0
+  help_out=$(HOME="$FAKE_HOME" bash "$ROOT/bin/$wrapper" --help 2>/dev/null) || help_rc=$?
+  assert test "$help_rc" -eq 0
+  assert grep -q "^usage: $wrapper " <<<"$help_out"
+done
+assert test "$(wc -l <"$IMAGE_LEG_LOG")" -eq "$legs_before"
+
 # A generation is billed the moment it is sent, so everything the arguments alone can refuse is
 # refused before anything goes out — the proof is that the CLI was never called.
 : >"$FAKE_CODEX_CALLS"
