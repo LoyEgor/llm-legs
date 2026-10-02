@@ -312,9 +312,9 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-01",
-      "reviewed_by": "night fixer harness-self-20261001T020659Z-1dba",
-      "note": "Narrowed to one cause: every baseline-missing record since 2026-09-28T23:00Z names a sid no chat owns (perf-big-93348, perf-big-8746, perf-lvb, hlprof-a): check runs with made-up session ids against ~/.cache/claude-instruction-watch rather than INSTRUCTION_WATCH_STATE. Re-checked 2026-10-01: cause stands, zero new records since 2026-09-29T15:05Z (quiet past 24h window). Cannot fix in harness-doctor by filtering without loosening the judge; handoff docs/handoffs/2026-09-30-harness-guards-vendor-sync-and-probe-sids.md remains open for owner decision. A real chat losing its baseline would match this row too, so it stays open.",
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "night fixer harness-doctor-20261002T093028Z-749a",
+      "note": "Narrowed to one cause: every baseline-missing record since 2026-09-28T23:00Z names a sid no chat owns (perf-big-93348, perf-big-8746, perf-lvb, hlprof-a): check runs with made-up session ids against ~/.cache/claude-instruction-watch rather than INSTRUCTION_WATCH_STATE. Re-checked 2026-10-01: cause stands, zero new records since 2026-09-29T15:05Z (quiet past 24h window). Cannot fix in harness-doctor by filtering without loosening the judge; handoff docs/handoffs/2026-09-30-harness-guards-vendor-sync-and-probe-sids.md remains open for owner decision. A real chat losing its baseline would match this row too, so it stays open. Re-checked 2026-10-02: events.jsonl still ends its baseline-missing records at hlprof-a 2026-09-29T15:05Z (3 days quiet); still no committed code in llm-legs (HEAD, git log -S hlprof) emitting perf-big/perf-lvb/hlprof sids, so there is no producer to fix; the producer-side report in bin/instruction-watch.sh (BASELINE-MISSING) cannot tell a synthetic sid from a real chat whose baseline was swept without a transcript lookup, which is the judge narrowing the handoff already proposes.",
       "handoff": "docs/handoffs/2026-09-30-harness-guards-vendor-sync-and-probe-sids.md"
     },
     {
