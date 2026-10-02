@@ -297,9 +297,9 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-01",
-      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8",
-      "note": "Narrowed to one cause: 2026-09-29 20:14/20:20/20:33Z the harness itself synced the newly published org skill google-workspace (SKILL.md + references/*.md, 13-47 kB each) into the three synced/<org>_<account>/ dirs beside manifest.json and .last-complete-round; the dir is gitignored in claude-setup and written by no tool call. Dismissal proposed in the handoff. Follow-up 2026-10-01: Current retained events include vendor docs/docx syncs at 2026-09-30T00:44-03:59Z, including watcher 6abc6f522478d465 and tripwire bba946b035711a7e. This extends the prior google-workspace-only note: the match still names the vendor-owned synced tree, not a model file writer. No native PreToolUse event is available for org synchronization; retain open row and propose dismissal to Harness Doctor without broadening its match. Duplicate observations and missing write keys are separately handed off; the source cannot prove all sync records are distinct writes.",
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00",
+      "note": "2026-10-02 check: still vendor sync, pptx SKILL.md into all three synced dirs at 2026-10-01T21:06-21:10Z; cause stands, row kept open, judge unchanged. ~/.claude/plugins/synced/ (cowork-plugin-management, 2026-10-02T09:31Z) is the same vendor sync on a new tree, appeared after launch, for the next run. Earlier: Narrowed to one cause: 2026-09-29 20:14/20:20/20:33Z the harness itself synced the newly published org skill google-workspace (SKILL.md + references/*.md, 13-47 kB each) into the three synced/<org>_<account>/ dirs beside manifest.json and .last-complete-round; the dir is gitignored in claude-setup and written by no tool call. Dismissal proposed in the handoff. Follow-up 2026-10-01: Current retained events include vendor docs/docx syncs at 2026-09-30T00:44-03:59Z, including watcher 6abc6f522478d465 and tripwire bba946b035711a7e. This extends the prior google-workspace-only note: the match still names the vendor-owned synced tree, not a model file writer. No native PreToolUse event is available for org synchronization; retain open row and propose dismissal to Harness Doctor without broadening its match. Duplicate observations and missing write keys are separately handed off; the source cannot prove all sync records are distinct writes.",
       "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md"
     },
     {
@@ -573,13 +573,24 @@
         "rule": "growth-ungated",
         "ident": "^/Volumes/Work/Projects/film\\-lab/08a95dd4/hf/CLAUDE\\.md$"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-02T12:15:43+00:00",
+          "by": "night fixer harness-guards-20261002T093034Z-0c00",
+          "files": [
+            "llm-legs/bin/instruction-watch.sh",
+            "llm-legs/tests/test_instruction_gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "note": "Event 078d5d2199bf5f20 at 2026-09-30T14:48:58Z reports an 8238-byte addition, writer ambiguous. Both current video/alona/R1-{A,B}/hf/CLAUDE.md copies are 8238 bytes; their filesystem mtimes precede the observer call. The observer transcript at 14:48:55 edits harness/skill/SKILL.md and briefs/alona.md, not these files, so observer identity is not writer evidence. No file history was returned by git log for the current paths. Originating initializer/copy is unconfirmed; video/film-lab is outside authorized worktrees. Ask its owner to identify the creator and gate generated instruction copies; do not trim its content here.",
+      "note": "Same cause as guards-growth-video-r1-a-hf-claude-md: event 078d5d2199bf5f20 also post-dates the files' mtimes. Cause: the hook tripwire reported ADDED for a file that only the shared ranked cache names after ANOTHER session re-cut it mid-session; the file mtime (2026-09-30 13:46Z) precedes both events. Fixed: inside a check a ranked-only newcomer last written before this session baseline is recorded silently, as at session start; test_instruction_gate.sh case \"another session's re-cut\" red on the old code. The original creation by hyperframes init on 2026-09-30 was outside the 24 h window and is not claimed here.  Earlier: Event 078d5d2199bf5f20 at 2026-09-30T14:48:58Z reports an 8238-byte addition, writer ambiguous. Both current video/alona/R1-{A,B}/hf/CLAUDE.md copies are 8238 bytes; their filesystem mtimes precede the observer call. The observer transcript at 14:48:55 edits harness/skill/SKILL.md and briefs/alona.md, not these files, so observer identity is not writer evidence. No file history was returned by git log for the current paths. Originating initializer/copy is unconfirmed; video/film-lab is outside authorized worktrees. Ask its owner to identify the creator and gate generated instruction copies; do not trim its content here.",
       "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
-      "last_reviewed": "2026-10-01",
-      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
     },
     {
       "id": "guards-growth-film-a19f6d01",
@@ -588,13 +599,24 @@
         "rule": "growth-ungated",
         "ident": "^/Volumes/Work/Projects/film\\-lab/a19f6d01/hf/CLAUDE\\.md$"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-02T12:15:43+00:00",
+          "by": "night fixer harness-guards-20261002T093034Z-0c00",
+          "files": [
+            "llm-legs/bin/instruction-watch.sh",
+            "llm-legs/tests/test_instruction_gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "note": "Event 078d5d2199bf5f20 at 2026-09-30T14:48:58Z reports an 8238-byte addition, writer ambiguous. Both current video/alona/R1-{A,B}/hf/CLAUDE.md copies are 8238 bytes; their filesystem mtimes precede the observer call. The observer transcript at 14:48:55 edits harness/skill/SKILL.md and briefs/alona.md, not these files, so observer identity is not writer evidence. No file history was returned by git log for the current paths. Originating initializer/copy is unconfirmed; video/film-lab is outside authorized worktrees. Ask its owner to identify the creator and gate generated instruction copies; do not trim its content here.",
+      "note": "Same cause as guards-growth-video-r1-a-hf-claude-md: event 078d5d2199bf5f20 also post-dates the files' mtimes. Cause: the hook tripwire reported ADDED for a file that only the shared ranked cache names after ANOTHER session re-cut it mid-session; the file mtime (2026-09-30 13:46Z) precedes both events. Fixed: inside a check a ranked-only newcomer last written before this session baseline is recorded silently, as at session start; test_instruction_gate.sh case \"another session's re-cut\" red on the old code. The original creation by hyperframes init on 2026-09-30 was outside the 24 h window and is not claimed here.  Earlier: Event 078d5d2199bf5f20 at 2026-09-30T14:48:58Z reports an 8238-byte addition, writer ambiguous. Both current video/alona/R1-{A,B}/hf/CLAUDE.md copies are 8238 bytes; their filesystem mtimes precede the observer call. The observer transcript at 14:48:55 edits harness/skill/SKILL.md and briefs/alona.md, not these files, so observer identity is not writer evidence. No file history was returned by git log for the current paths. Originating initializer/copy is unconfirmed; video/film-lab is outside authorized worktrees. Ask its owner to identify the creator and gate generated instruction copies; do not trim its content here.",
       "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
-      "last_reviewed": "2026-10-01",
-      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
     },
     {
       "id": "guards-growth-volumes-work-projects-llm-legs-docs",
@@ -603,13 +625,24 @@
         "rule": "growth-ungated",
         "ident": "^/Volumes/Work/Projects/llm\\-legs/docs$"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-02T12:15:43+00:00",
+          "by": "night fixer harness-guards-20261002T093034Z-0c00",
+          "files": [
+            "llm-legs/share/instruction-files.sh",
+            "llm-legs/tests/test_instruction_watch_perf.py"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "note": "Event 8eacc04fff044452 at 2026-09-30T02:49:37Z is +396 bytes in the previous night Codex worktree docs/shared-invariants.md, writer ambiguous. gates.jsonl has no matching pass in the existing 900s-before/60s-after window; later 04:25 growth has exact-worktree passes. Main-checkout passes are different paths and cannot authorize this copy. The tripwire caught actual external-worker growth; hook coverage of that writer remains unconfirmed. Owner must decide how non-Claude workers attest instruction audits; widening the temporal/path join would loosen the judge.",
+      "note": "Every event in the window (00:36:51, 00:45:16, 09:37:55Z) and the 2026-09-30 one are worktree paths. Cause: instruction_repo_files matched `/.claude/` on the absolute path, and every worktree sits under `<repo>/.claude/worktrees/`, so a session rooted in a worktree watched every markdown file of the repository (64 files in an llm-legs worktree against 2 in the main checkout) and reported ordinary repository work as instruction growth, against instruction_carved_out. Fixed: the segment is matched below the repository root in both the git listing and the walk; test_repository_under_a_claude_directory red on the old code.  Earlier: Event 8eacc04fff044452 at 2026-09-30T02:49:37Z is +396 bytes in the previous night Codex worktree docs/shared-invariants.md, writer ambiguous. gates.jsonl has no matching pass in the existing 900s-before/60s-after window; later 04:25 growth has exact-worktree passes. Main-checkout passes are different paths and cannot authorize this copy. The tripwire caught actual external-worker growth; hook coverage of that writer remains unconfirmed. Owner must decide how non-Claude workers attest instruction audits; widening the temporal/path join would loosen the judge.",
       "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
-      "last_reviewed": "2026-10-01",
-      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
     },
     {
       "id": "guards-growth-claude-agents-image-gen-md",
@@ -621,10 +654,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "note": "Watcher events 6abd878e5e994831, 6abd92505a9ae4b5 and 6abdaf3873a00c54 report +443/+428/+1830 bytes at 22:05:02/22:50:56/00:54:16Z. The 19:17:25 Edit in Google video generation integration has a bloat passed record and is correctly absent from the packet; no equivalent matched pass exists for the three packet events. This rules out a general agents symlink join failure. Exact later writers remain unconfirmed; active image-agent work belongs to that chat. Retain detection and ask the owner for those writes/audits, not a blanket exemption.",
-      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
-      "last_reviewed": "2026-10-01",
-      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+      "note": "Window events 13:26:44 and 14:20:08Z (+451/+339 B) are python3 heredocs with p='agents/image-gen.md' by chat \"Claude Sonnet 5.5 launch video\" (7c93bbe2) in the claude-setup main checkout; 21:11:32Z (+400 B) by \"Google video generation integration\" (10896605), writer shape not confirmed. Cause: an interpreter heredoc writing through a path held in a variable (`p='...'; open(p,'w')`), which bin/instruction-write-gate.sh leaves out of scope by design, so only the tripwire saw it. Owner decision in docs/handoffs/2026-10-02-harness-guards-gate-scope.md.  Earlier: Watcher events 6abd878e5e994831, 6abd92505a9ae4b5 and 6abdaf3873a00c54 report +443/+428/+1830 bytes at 22:05:02/22:50:56/00:54:16Z. The 19:17:25 Edit in Google video generation integration has a bloat passed record and is correctly absent from the packet; no equivalent matched pass exists for the three packet events. This rules out a general agents symlink join failure. Exact later writers remain unconfirmed; active image-agent work belongs to that chat. Retain detection and ask the owner for those writes/audits, not a blanket exemption.",
+      "handoff": "docs/handoffs/2026-10-02-harness-guards-gate-scope.md",
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
     },
     {
       "id": "guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-readme-md",
@@ -636,10 +669,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "note": "Watcher event 6abd5e9b7ca01b57 at 2026-09-30T19:10:19Z added all six math-proof instruction roots. Packet history places each in official marketplace commit ab024cd (2026-09-30), outside both authorized repositories. No model tool gate can preflight a vendor marketplace refresh. Propose owner dismissal for this exact identity only; retain open status and unchanged judge. The later between-session observation is separately tracked under guards-tripwire-rejournal.",
+      "note": "2026-10-02 check: cause gone from the watch set: llm-legs 2267da0 (2026-10-01) prunes ~/.claude/plugins/marketplaces from instruction_visible_paths (INSTRUCTION_HOME_UNLOADED_ERE), so a marketplace refresh can no longer journal these; dismissal still the owner's. Earlier: Watcher event 6abd5e9b7ca01b57 at 2026-09-30T19:10:19Z added all six math-proof instruction roots. Packet history places each in official marketplace commit ab024cd (2026-09-30), outside both authorized repositories. No model tool gate can preflight a vendor marketplace refresh. Propose owner dismissal for this exact identity only; retain open status and unchanged judge. The later between-session observation is separately tracked under guards-tripwire-rejournal.",
       "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
-      "last_reviewed": "2026-10-01",
-      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
     },
     {
       "id": "guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-agents-math-proof-judge-md",
@@ -651,10 +684,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "note": "Watcher event 6abd5e9b7ca01b57 at 2026-09-30T19:10:19Z added all six math-proof instruction roots. Packet history places each in official marketplace commit ab024cd (2026-09-30), outside both authorized repositories. No model tool gate can preflight a vendor marketplace refresh. Propose owner dismissal for this exact identity only; retain open status and unchanged judge. The later between-session observation is separately tracked under guards-tripwire-rejournal.",
+      "note": "2026-10-02 check: cause gone from the watch set: llm-legs 2267da0 (2026-10-01) prunes ~/.claude/plugins/marketplaces from instruction_visible_paths (INSTRUCTION_HOME_UNLOADED_ERE), so a marketplace refresh can no longer journal these; dismissal still the owner's. Earlier: Watcher event 6abd5e9b7ca01b57 at 2026-09-30T19:10:19Z added all six math-proof instruction roots. Packet history places each in official marketplace commit ab024cd (2026-09-30), outside both authorized repositories. No model tool gate can preflight a vendor marketplace refresh. Propose owner dismissal for this exact identity only; retain open status and unchanged judge. The later between-session observation is separately tracked under guards-tripwire-rejournal.",
       "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
-      "last_reviewed": "2026-10-01",
-      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
     },
     {
       "id": "guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-agents-math-proof-worker-deep-md",
@@ -666,10 +699,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "note": "Watcher event 6abd5e9b7ca01b57 at 2026-09-30T19:10:19Z added all six math-proof instruction roots. Packet history places each in official marketplace commit ab024cd (2026-09-30), outside both authorized repositories. No model tool gate can preflight a vendor marketplace refresh. Propose owner dismissal for this exact identity only; retain open status and unchanged judge. The later between-session observation is separately tracked under guards-tripwire-rejournal.",
+      "note": "2026-10-02 check: cause gone from the watch set: llm-legs 2267da0 (2026-10-01) prunes ~/.claude/plugins/marketplaces from instruction_visible_paths (INSTRUCTION_HOME_UNLOADED_ERE), so a marketplace refresh can no longer journal these; dismissal still the owner's. Earlier: Watcher event 6abd5e9b7ca01b57 at 2026-09-30T19:10:19Z added all six math-proof instruction roots. Packet history places each in official marketplace commit ab024cd (2026-09-30), outside both authorized repositories. No model tool gate can preflight a vendor marketplace refresh. Propose owner dismissal for this exact identity only; retain open status and unchanged judge. The later between-session observation is separately tracked under guards-tripwire-rejournal.",
       "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
-      "last_reviewed": "2026-10-01",
-      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
     },
     {
       "id": "guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-agents-math-proof-worker-md",
@@ -681,10 +714,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "note": "Watcher event 6abd5e9b7ca01b57 at 2026-09-30T19:10:19Z added all six math-proof instruction roots. Packet history places each in official marketplace commit ab024cd (2026-09-30), outside both authorized repositories. No model tool gate can preflight a vendor marketplace refresh. Propose owner dismissal for this exact identity only; retain open status and unchanged judge. The later between-session observation is separately tracked under guards-tripwire-rejournal.",
+      "note": "2026-10-02 check: cause gone from the watch set: llm-legs 2267da0 (2026-10-01) prunes ~/.claude/plugins/marketplaces from instruction_visible_paths (INSTRUCTION_HOME_UNLOADED_ERE), so a marketplace refresh can no longer journal these; dismissal still the owner's. Earlier: Watcher event 6abd5e9b7ca01b57 at 2026-09-30T19:10:19Z added all six math-proof instruction roots. Packet history places each in official marketplace commit ab024cd (2026-09-30), outside both authorized repositories. No model tool gate can preflight a vendor marketplace refresh. Propose owner dismissal for this exact identity only; retain open status and unchanged judge. The later between-session observation is separately tracked under guards-tripwire-rejournal.",
       "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
-      "last_reviewed": "2026-10-01",
-      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
     },
     {
       "id": "guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-skills-siege",
@@ -696,10 +729,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "note": "Watcher event 6abd5e9b7ca01b57 at 2026-09-30T19:10:19Z added all six math-proof instruction roots. Packet history places each in official marketplace commit ab024cd (2026-09-30), outside both authorized repositories. No model tool gate can preflight a vendor marketplace refresh. Propose owner dismissal for this exact identity only; retain open status and unchanged judge. The later between-session observation is separately tracked under guards-tripwire-rejournal.",
+      "note": "2026-10-02 check: cause gone from the watch set: llm-legs 2267da0 (2026-10-01) prunes ~/.claude/plugins/marketplaces from instruction_visible_paths (INSTRUCTION_HOME_UNLOADED_ERE), so a marketplace refresh can no longer journal these; dismissal still the owner's. Earlier: Watcher event 6abd5e9b7ca01b57 at 2026-09-30T19:10:19Z added all six math-proof instruction roots. Packet history places each in official marketplace commit ab024cd (2026-09-30), outside both authorized repositories. No model tool gate can preflight a vendor marketplace refresh. Propose owner dismissal for this exact identity only; retain open status and unchanged judge. The later between-session observation is separately tracked under guards-tripwire-rejournal.",
       "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
-      "last_reviewed": "2026-10-01",
-      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
     },
     {
       "id": "guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-skills-solo",
@@ -711,10 +744,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "note": "Watcher event 6abd5e9b7ca01b57 at 2026-09-30T19:10:19Z added all six math-proof instruction roots. Packet history places each in official marketplace commit ab024cd (2026-09-30), outside both authorized repositories. No model tool gate can preflight a vendor marketplace refresh. Propose owner dismissal for this exact identity only; retain open status and unchanged judge. The later between-session observation is separately tracked under guards-tripwire-rejournal.",
+      "note": "2026-10-02 check: cause gone from the watch set: llm-legs 2267da0 (2026-10-01) prunes ~/.claude/plugins/marketplaces from instruction_visible_paths (INSTRUCTION_HOME_UNLOADED_ERE), so a marketplace refresh can no longer journal these; dismissal still the owner's. Earlier: Watcher event 6abd5e9b7ca01b57 at 2026-09-30T19:10:19Z added all six math-proof instruction roots. Packet history places each in official marketplace commit ab024cd (2026-09-30), outside both authorized repositories. No model tool gate can preflight a vendor marketplace refresh. Propose owner dismissal for this exact identity only; retain open status and unchanged judge. The later between-session observation is separately tracked under guards-tripwire-rejournal.",
       "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
-      "last_reviewed": "2026-10-01",
-      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
     },
     {
       "id": "guards-growth-claude-skills-hyperframes",
@@ -1180,6 +1213,136 @@
       "reviewed_by": "Night fixer harness-growth-20261002T093034Z-140d",
       "note": "Narrowed: all loose objects since the 2026-09-29 manual cruft pack are blobs of untracked bench outputs, written by claude-setup review-journal rj_hash_paths (hash-object -w on every tool call of a chat in the repository; 9 296 blobs 12:52-12:56Z 10-02). They never pack because git runs gc --auto only after commit/merge/fetch-like commands and this repository has its initial commit only; objects/17 estimate ~16 600 > gc.auto 6 700. Ruled out: gc.log, gc.auto=0, stashes, worktrees, night-run base snapshots, llm-legs worker-run (no run there since 09-30, same -w pattern elsewhere). Fix proposed: detached git gc --auto after snapshot writes, shared by review-journal and worker-run (claude-setup, no worktree this run).",
       "handoff": "docs/handoffs/2026-10-02-loose-objects-no-auto-gc.md"
+    },
+    {
+      "id": "guards-growth-alpha-fixture-docs",
+      "title": "alpha/docs (2 files) grew with no gate seeing it, 2 files in 24 h",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^/Volumes/Work/Projects/llm\\-legs/tests/fixtures/code\\-doctor/corpus/repos/alpha/docs$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-02T12:15:43+00:00",
+          "by": "night fixer harness-guards-20261002T093034Z-0c00",
+          "files": [
+            "llm-legs/share/instruction-files.sh",
+            "llm-legs/tests/test_instruction_watch_perf.py"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "note": "Event at 2026-10-02T00:20:09Z: code-doctor fixture corpus written in the code-doctor worktree. Cause: instruction_repo_files matched `/.claude/` on the absolute path, and every worktree sits under `<repo>/.claude/worktrees/`, so a session rooted in a worktree watched every markdown file of the repository (64 files in an llm-legs worktree against 2 in the main checkout) and reported ordinary repository work as instruction growth, against instruction_carved_out. Fixed: the segment is matched below the repository root in both the git listing and the walk; test_repository_under_a_claude_directory red on the old code. ",
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
+    },
+    {
+      "id": "guards-growth-review-bench-docs",
+      "title": "review-bench/docs grew with no gate seeing it, 1 file in 24 h",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^/Volumes/Work/Projects/review\\-bench/docs$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-02T12:15:43+00:00",
+          "by": "night fixer harness-guards-20261002T093034Z-0c00",
+          "files": [
+            "llm-legs/share/instruction-files.sh",
+            "llm-legs/tests/test_instruction_watch_perf.py"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "note": "Event at 2026-10-01T13:33:03Z: review-anchors-contract.md in the review-bench debt-moved-lines worktree. Cause: instruction_repo_files matched `/.claude/` on the absolute path, and every worktree sits under `<repo>/.claude/worktrees/`, so a session rooted in a worktree watched every markdown file of the repository (64 files in an llm-legs worktree against 2 in the main checkout) and reported ordinary repository work as instruction growth, against instruction_carved_out. Fixed: the segment is matched below the repository root in both the git listing and the walk; test_repository_under_a_claude_directory red on the old code. ",
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
+    },
+    {
+      "id": "guards-growth-video-r1-a-hf-claude-md",
+      "title": "hf/CLAUDE.md grew with no gate seeing it, 1 file in 24 h",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^/Volumes/Work/Projects/video/alona/R1\\-A/hf/CLAUDE\\.md$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-02T12:15:43+00:00",
+          "by": "night fixer harness-guards-20261002T093034Z-0c00",
+          "files": [
+            "llm-legs/bin/instruction-watch.sh",
+            "llm-legs/tests/test_instruction_gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "note": "Event fd835cdde55996f2 at 2026-10-01T19:19:17Z, ADDED from an unrelated arbostar session (observer 2168b6c1). Cause: the hook tripwire reported ADDED for a file that only the shared ranked cache names after ANOTHER session re-cut it mid-session; the file mtime (2026-09-30 13:46Z) precedes both events. Fixed: inside a check a ranked-only newcomer last written before this session baseline is recorded silently, as at session start; test_instruction_gate.sh case \"another session's re-cut\" red on the old code. The original creation by hyperframes init on 2026-09-30 was outside the 24 h window and is not claimed here. ",
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
+    },
+    {
+      "id": "guards-growth-video-r1-b-hf-claude-md",
+      "title": "hf/CLAUDE.md grew with no gate seeing it, 1 file in 24 h",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^/Volumes/Work/Projects/video/alona/R1\\-B/hf/CLAUDE\\.md$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-02T12:15:43+00:00",
+          "by": "night fixer harness-guards-20261002T093034Z-0c00",
+          "files": [
+            "llm-legs/bin/instruction-watch.sh",
+            "llm-legs/tests/test_instruction_gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "note": "Event fd835cdde55996f2 at 2026-10-01T19:19:17Z, ADDED from an unrelated arbostar session (observer 2168b6c1). Cause: the hook tripwire reported ADDED for a file that only the shared ranked cache names after ANOTHER session re-cut it mid-session; the file mtime (2026-09-30 13:46Z) precedes both events. Fixed: inside a check a ranked-only newcomer last written before this session baseline is recorded silently, as at session start; test_instruction_gate.sh case \"another session's re-cut\" red on the old code. The original creation by hyperframes init on 2026-09-30 was outside the 24 h window and is not claimed here. ",
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
+    },
+    {
+      "id": "guards-growth-claude-agents-claudeb-worker-md",
+      "title": "agents/claudeb-worker.md grew with no gate seeing it, 1 file in 24 h",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^\\~/\\.claude/agents/claudeb\\-worker\\.md$"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "note": "Cause: an interpreter heredoc writing through a path held in a variable (`p='...'; open(p,'w')`), which bin/instruction-write-gate.sh leaves out of scope by design, so only the tripwire saw it. Owner decision in docs/handoffs/2026-10-02-harness-guards-gate-scope.md. Writer: chat \"Claude Sonnet 5.5 launch video\" (7c93bbe2), Bash python3 heredoc at 2026-10-01T15:27:58Z in the claude-setup main checkout (+129 B, retry-on-signal rule); still uncommitted there, foreign WIP, left in place.",
+      "handoff": "docs/handoffs/2026-10-02-harness-guards-gate-scope.md",
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
+    },
+    {
+      "id": "guards-growth-claude-setup-night-sweep-skill",
+      "title": "skills-on-demand/night-sweep grew with no gate seeing it, 3 files in 24 h",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^/Volumes/Work/Projects/claude\\-setup/skills\\-on\\-demand/night\\-sweep$"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "note": "Cause: an interpreter heredoc writing through a path held in a variable (`p='...'; open(p,'w')`), which bin/instruction-write-gate.sh leaves out of scope by design, so only the tripwire saw it. Owner decision in docs/handoffs/2026-10-02-harness-guards-gate-scope.md. Writer: chat \"Updater doctor\" (233cceb1), python3 heredoc at 2026-10-02T01:06:15Z in the claude-setup main checkout (+268 B), moved by patch into the code-doctor worktree at 01:06:32Z (-268 B), landed back by `git merge code-doctor` (fast-forward 8b7c744) at 09:26:13Z (+268 B): git merge is no landing instruction_git_landing reads.",
+      "handoff": "docs/handoffs/2026-10-02-harness-guards-gate-scope.md",
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
     }
   ],
   "blind_spots": [
@@ -1287,6 +1450,13 @@
       "reason": "growth samples carry the count and size only; the 2026-10-02 fixer attributed the writer by blob mtimes and content against review-journal .repos mtimes and worker-run workdirs",
       "since": "2026-10-02",
       "would_catch_if": "the snapshot writers journaled blobs written per repository per call, and the growth sample recorded each repository's last gc (newest pack mtime)"
+    },
+    {
+      "id": "watcher-off-history",
+      "what": "why and for how long the instruction watcher was off",
+      "reason": "watcher/heartbeat is overwritten every tick, so a changed-while-watcher-off record (2026-10-01T12:51:14Z, claude-setup review-floor merge 6413519 at 12:40:33Z) cannot name the off interval or its cause",
+      "since": "2026-10-02",
+      "would_catch_if": "the watcher journaled each start and stop (with the reason: Hammerspoon reload, load error, busy tick) beside its heartbeat"
     }
   ]
 }

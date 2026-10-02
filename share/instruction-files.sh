@@ -116,28 +116,33 @@ instruction_repo_root() { # cwd
   git -C "$1" rev-parse --show-toplevel 2>/dev/null
 }
 
-_instruction_find_files() { # dir
+# A `.claude/` segment counts below the repository root alone: a worktree lives under
+# `<repo>/.claude/worktrees/`, and matched on the absolute path every markdown file in it read as
+# instruction content, which instruction_carved_out says it is not.
+_instruction_find_files() { # dir [repo-root]
   local e
   local -a md_args=(-name review-debt-ignore)
   for e in $INSTRUCTION_MD_EXTENSIONS; do md_args+=(-o -iname "*.$e"); done
   find "$1" \( -name .git -o -name node_modules -o -name worktrees \) -prune -o \
     -type f \( -iname CLAUDE.md -o -iname CLAUDE.local.md -o -iname SKILL.md -o \
-    \( -path '*/.claude/*' ! -path '*/.claude/local/*' \( "${md_args[@]}" \) \) \) -print0 2>/dev/null | _instruction_emit_paths
+    \( -path '*/.claude/*' ! -path '*/.claude/local/*' \( "${md_args[@]}" \) \) \) -print0 2>/dev/null |
+    perl -0ne 'BEGIN { $n = length shift } print if m{/(?:claude|claude\.local|skill)\.md\0$}i || substr($_, $n) =~ m{/\.claude/}' \
+      "${2:-$1}" | _instruction_emit_paths
 }
 
 # git instead of a walk: a walk descends every ignored tree (570k files, 20 s a call). The set is
 # the walk's minus files under an ignored directory, save under `.claude` — a gitignored `.claude/`
 # or CLAUDE.local.md is kept on purpose. All-or-nothing: a git failing midway falls back to the
 # walk, never to a partial set.
-instruction_repo_files() { # repo-root
-  local root=${1:-} kind p listing
+instruction_repo_files() { # repo-root [outer-root]
+  local root=${1:-} top=${2:-${1:-}} kind p listing
   [ -n "$root" ] && [ -d "$root" ] || return 0
   if [ ! -L "$root" ] && [ -e "$root/.git" ] && listing=$(
       { git -C "$root" ls-files -c -s -z && printf '\035\0' &&
         git -C "$root" ls-files -o --exclude-standard -z && printf '\035\0' &&
         git -C "$root" ls-files -o -i --exclude-standard --directory -z && printf '\035\0'; } 2>/dev/null |
       perl -0ne '
-        BEGIN { ($root, $md) = splice @ARGV, 0, 2; $md = join "|", split / /, $md }
+        BEGIN { ($root, $top, $md) = splice @ARGV, 0, 3; $md = join "|", split / /, $md }
         chomp;
         if ($_ eq "\035") { $part++; next }
         $link = $part == 0 && m{^160000 };
@@ -148,21 +153,22 @@ instruction_repo_files() { # repo-root
         if ($link || ($part == 1 && m{/$})) { push @out, "r\t$full\n" if -d $full; next }
         if ($part == 2 && m{/$}) { push @out, "d\t$full\n" if m{(?:^|/)\.claude/}; next }
         ($base = $_) =~ s{.*/}{};
+        $rel = substr("$root/$_", length $top);
         next unless $base =~ /^(?:claude|claude\.local|skill)\.md$/i
-          || ("$root/$_" =~ m{/\.claude/} && "$root/$_" !~ m{/\.claude/local/} && ($base eq "review-debt-ignore" || $base =~ /\.(?:$md)$/i));
+          || ($rel =~ m{/\.claude/} && $rel !~ m{/\.claude/local/} && ($base eq "review-debt-ignore" || $base =~ /\.(?:$md)$/i));
         push @out, "f\t$full\n" if lstat "$root/$_" and -f _;
         END { exit 1 if $part != 3; print @out }
-      ' "$root" "$INSTRUCTION_MD_EXTENSIONS"); then
+      ' "$root" "$top" "$INSTRUCTION_MD_EXTENSIONS"); then
     while IFS=$'\t' read -r kind p; do
       case "$kind" in
         f) printf '%s\n' "$p" ;;
-        r) instruction_repo_files "$p" ;;
-        d) _instruction_find_files "$p" ;;
+        r) instruction_repo_files "$p" "$top" ;;
+        d) _instruction_find_files "$p" "$top" ;;
       esac
     done <<<"$listing"
     return 0
   fi
-  _instruction_find_files "$root"
+  _instruction_find_files "$root" "$top"
 }
 
 # What the TRIPWIRE watches: the guarded set plus settings.json, which no gate speaks for.

@@ -101,14 +101,19 @@ class InstructionPerformance(unittest.TestCase):
         self.repo = self.work / '.claude/worktrees/task'
         self.repo.mkdir(parents=True)
         self.git('init', '-q')
-        self.put(self.repo / '.gitignore', 'build/\n')
-        for name in ('notes.md', 'docs/plan.markdown', 'build/out.md'):
+        self.put(self.repo / '.gitignore', 'build/\n.claude/\n')
+        for name in ('notes.md', 'docs/plan.markdown', 'build/out.md', 'CLAUDE.md', '.claude/rule.md'):
             self.put(self.repo / name)
-        output = subprocess.check_output(['bash', '-c', '. "$1"; instruction_repo_files "$2"', '_',
-                                          str(ROOT / 'share/instruction-files.sh'), str(self.repo)],
-                                         env=self.env, text=True)
-        self.assertEqual({str(self.repo / 'notes.md'), str(self.repo / 'docs/plan.markdown')},
-                         set(output.splitlines()))
+
+        def listing():
+            output = subprocess.check_output(['bash', '-c', '. "$1"; instruction_repo_files "$2"', '_',
+                                              str(ROOT / 'share/instruction-files.sh'), str(self.repo)],
+                                             env=self.env, text=True)
+            return set(output.splitlines())
+        expected = {str(self.repo / 'CLAUDE.md'), str(self.repo / '.claude/rule.md')}
+        self.assertEqual(expected, listing())
+        shutil.rmtree(self.repo / '.git')
+        self.assertEqual(expected, listing())
 
     def test_nested_repository_and_submodule(self):
         self.git('init', '-q')

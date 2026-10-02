@@ -2847,6 +2847,21 @@ out=$(raw_check sid-add-ranked Bash command "$ANY_CALL" "$NOSPAN_T" \
 assert_contains "ADDED" "$out"
 assert_contains "CLAUDE.local.md" "$out"
 
+echo "== tripwire: another session's re-cut naming an old file mid-session is not an ADDED"
+mkdir -p "$WORK/proj-old"
+printf 'old rules\n' > "$WORK/proj-old/CLAUDE.md"
+touch -t "$(date -v-1d +%Y%m%d%H%M.%S)" "$WORK/proj-old/CLAUDE.md"
+printf '#1\n' > "$RANKED"
+span_base sid-recut-live >/dev/null
+printf '#1\n%s\n' "$WORK/proj-old/CLAUDE.md" > "$RANKED"
+out=$(raw_check sid-recut-live Bash command "$ANY_CALL" "$NOSPAN_T" \
+      | jq -r '.hookSpecificOutput.additionalContext // ""')
+case "$out" in *ADDED*) fail "a file another session's re-cut brought in was reported added: $out" ;; esac
+printf 'old rules edited\n' > "$WORK/proj-old/CLAUDE.md"
+out=$(raw_check sid-recut-live Bash command "$ANY_CALL" "$NOSPAN_T" \
+      | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "CHANGED $WORK/proj-old/CLAUDE.md" "$out"
+
 echo "== tripwire: a same-path delete after restore is journaled again"
 printf 'del-restore\n' > "$DOC"
 span_base sid-delrep >/dev/null
