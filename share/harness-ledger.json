@@ -1165,6 +1165,21 @@
       "reviewed_by": "Night fixer harness-hooks-20261001T020656Z-42ed",
       "note": "Narrowed: the per-repository snapshot is already parallel (hook-grows-repos-review-flow-gate, claude-setup@4ca8de1, fixed-pending); what stays is its floor on a one-repository call (bash, the 2.3k-line review-journal.sh source, jq, git status), the same floor hook-every-call-commit-journal names, measured at night load 100-330. Design or limit: the owner's.",
       "handoff": "docs/handoffs/2026-10-01-hook-cost-rows.md"
+    },
+    {
+      "id": "loose-objects-logo-vectorizer-bench",
+      "title": "logo-vectorizer-bench over 13 400 loose git objects",
+      "match": {
+        "rule": "loose_objects",
+        "ident": "loose-git-objects-logo-vectorizer-bench"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "Night fixer harness-growth-20261002T093034Z-140d",
+      "note": "Narrowed: all loose objects since the 2026-09-29 manual cruft pack are blobs of untracked bench outputs, written by claude-setup review-journal rj_hash_paths (hash-object -w on every tool call of a chat in the repository; 9 296 blobs 12:52-12:56Z 10-02). They never pack because git runs gc --auto only after commit/merge/fetch-like commands and this repository has its initial commit only; objects/17 estimate ~16 600 > gc.auto 6 700. Ruled out: gc.log, gc.auto=0, stashes, worktrees, night-run base snapshots, llm-legs worker-run (no run there since 09-30, same -w pattern elsewhere). Fix proposed: detached git gc --auto after snapshot writes, shared by review-journal and worker-run (claude-setup, no worktree this run).",
+      "handoff": "docs/handoffs/2026-10-02-loose-objects-no-auto-gc.md"
     }
   ],
   "blind_spots": [
@@ -1265,6 +1280,13 @@
       "reason": "The 2026-10-02 hook-waits fixer read floor:bash:other at 1512 ms in the 1 h window under load average 46-65 (the night's own parallel workers) against 794 ms over 24 h; the same hooks at day load read 605-961 ms. The floor rule judges the last hour with no load context, so a night run measures its own concurrency.",
       "since": "2026-10-02",
       "would_catch_if": "each floor sample carried the sampler's load average at its call time and the floor drill split its median by load band"
+    },
+    {
+      "id": "loose-object-writer",
+      "what": "which hook or worker wrote a repository's loose objects, and whether anything ever packs them",
+      "reason": "growth samples carry the count and size only; the 2026-10-02 fixer attributed the writer by blob mtimes and content against review-journal .repos mtimes and worker-run workdirs",
+      "since": "2026-10-02",
+      "would_catch_if": "the snapshot writers journaled blobs written per repository per call, and the growth sample recorded each repository's last gc (newest pack mtime)"
     }
   ]
 }
