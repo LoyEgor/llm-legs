@@ -324,7 +324,7 @@
         "rule": "ask-deferred",
         "ident": "busy-bg-task"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-09-30T04:05:00+03:00",
@@ -352,7 +352,7 @@
           "files": [
             "claude-setup/hooks/stop-dispatch.sh"
           ],
-          "in": null,
+          "in": "claude-setup@a43059a",
           "regressed_at": null
         }
       ],
@@ -371,7 +371,7 @@
         "rule": "hook-error",
         "ident": "notice-word-journal\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-02T14:11:40+03:00",
@@ -379,7 +379,7 @@
           "files": [
             "claude-setup/hooks/lib/words_journal.py"
           ],
-          "in": null,
+          "in": "claude-setup@89ddec5",
           "regressed_at": null
         }
       ],
@@ -622,7 +622,7 @@
         "rule": "growth-ungated",
         "ident": "^/Volumes/Work/Projects/film\\-lab/08a95dd4/hf/CLAUDE\\.md$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-02T12:15:43+00:00",
@@ -631,7 +631,7 @@
             "llm-legs/bin/instruction-watch.sh",
             "llm-legs/tests/test_instruction_gate.sh"
           ],
-          "in": null,
+          "in": "llm-legs@2471178",
           "regressed_at": null
         }
       ],
@@ -648,7 +648,7 @@
         "rule": "growth-ungated",
         "ident": "^/Volumes/Work/Projects/film\\-lab/a19f6d01/hf/CLAUDE\\.md$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-02T12:15:43+00:00",
@@ -657,7 +657,7 @@
             "llm-legs/bin/instruction-watch.sh",
             "llm-legs/tests/test_instruction_gate.sh"
           ],
-          "in": null,
+          "in": "llm-legs@2471178",
           "regressed_at": null
         }
       ],
@@ -674,7 +674,7 @@
         "rule": "growth-ungated",
         "ident": "^/Volumes/Work/Projects/llm\\-legs/docs$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-02T12:15:43+00:00",
@@ -683,7 +683,7 @@
             "llm-legs/share/instruction-files.sh",
             "llm-legs/tests/test_instruction_watch_perf.py"
           ],
-          "in": null,
+          "in": "llm-legs@8b2c390",
           "regressed_at": null
         }
       ],
@@ -1255,7 +1255,7 @@
         "rule": "test_long_pole",
         "ident": "review-bench:test_review_bench(_(panels|lifecycle|rounds))?"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-02T16:41:46+03:00",
@@ -1268,7 +1268,7 @@
             "review-bench/tests/review_bench_harness.sh",
             "review-bench/tests/review_bench_harness.py"
           ],
-          "in": null,
+          "in": "review-bench@1504a4e",
           "regressed_at": null
         }
       ],
@@ -1287,7 +1287,7 @@
         "rule": "test_long_pole",
         "ident": "llm-legs:test_review_bench"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-02T16:41:46+03:00",
@@ -1302,7 +1302,7 @@
             "review-bench/tests/review_bench_harness.sh",
             "review-bench/tests/review_bench_harness.py"
           ],
-          "in": null,
+          "in": "llm-legs@1320a30",
           "regressed_at": null
         }
       ],
@@ -1336,7 +1336,7 @@
         "rule": "growth-ungated",
         "ident": "^/Volumes/Work/Projects/llm\\-legs/tests/fixtures/code\\-doctor/corpus/repos/alpha/docs$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-02T12:15:43+00:00",
@@ -1345,7 +1345,7 @@
             "llm-legs/share/instruction-files.sh",
             "llm-legs/tests/test_instruction_watch_perf.py"
           ],
-          "in": null,
+          "in": "llm-legs@8b2c390",
           "regressed_at": null
         }
       ],
@@ -1362,7 +1362,7 @@
         "rule": "growth-ungated",
         "ident": "^/Volumes/Work/Projects/review\\-bench/docs$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-02T12:15:43+00:00",
@@ -1371,7 +1371,7 @@
             "llm-legs/share/instruction-files.sh",
             "llm-legs/tests/test_instruction_watch_perf.py"
           ],
-          "in": null,
+          "in": "llm-legs@8b2c390",
           "regressed_at": null
         }
       ],
@@ -1388,7 +1388,7 @@
         "rule": "growth-ungated",
         "ident": "^/Volumes/Work/Projects/video/alona/R1\\-A/hf/CLAUDE\\.md$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-02T12:15:43+00:00",
@@ -1397,7 +1397,7 @@
             "llm-legs/bin/instruction-watch.sh",
             "llm-legs/tests/test_instruction_gate.sh"
           ],
-          "in": null,
+          "in": "llm-legs@2471178",
           "regressed_at": null
         }
       ],
@@ -1414,7 +1414,7 @@
         "rule": "growth-ungated",
         "ident": "^/Volumes/Work/Projects/video/alona/R1\\-B/hf/CLAUDE\\.md$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-02T12:15:43+00:00",
@@ -1423,7 +1423,7 @@
             "llm-legs/bin/instruction-watch.sh",
             "llm-legs/tests/test_instruction_gate.sh"
           ],
-          "in": null,
+          "in": "llm-legs@2471178",
           "regressed_at": null
         }
       ],
@@ -1470,7 +1470,7 @@
         "rule": "hook_sync",
         "ident": "stop-dispatch\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-02T14:36:11+03:00",
@@ -1481,7 +1481,7 @@
             "claude-setup/hooks/lib/words_journal.py",
             "llm-legs/bin/worker-run-backstop.sh"
           ],
-          "in": null,
+          "in": "claude-setup@a43059a",
           "regressed_at": null
         }
       ],
@@ -1502,7 +1502,7 @@
         "rule": "hook_grows_repos",
         "ident": "stop-dispatch\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-02T14:36:11+03:00",
@@ -1513,7 +1513,7 @@
             "claude-setup/hooks/lib/words_journal.py",
             "llm-legs/bin/worker-run-backstop.sh"
           ],
-          "in": null,
+          "in": "claude-setup@a43059a",
           "regressed_at": null
         }
       ],
@@ -1533,7 +1533,7 @@
         "rule": "hook_grows_size",
         "ident": "stop-dispatch\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-02T14:36:11+03:00",
@@ -1544,7 +1544,7 @@
             "claude-setup/hooks/lib/words_journal.py",
             "llm-legs/bin/worker-run-backstop.sh"
           ],
-          "in": null,
+          "in": "claude-setup@a43059a",
           "regressed_at": null
         }
       ],
@@ -1564,7 +1564,7 @@
         "rule": "hook_sync",
         "ident": "worker-limit-gate\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-02T14:36:11+03:00",
@@ -1573,7 +1573,7 @@
             "llm-legs/bin/worker-pick",
             "llm-legs/bin/worker-limit-gate.sh"
           ],
-          "in": null,
+          "in": "llm-legs@504a065",
           "regressed_at": null
         }
       ],
@@ -1593,7 +1593,7 @@
         "rule": "hook_grows_repos",
         "ident": "worker-limit-gate\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-02T14:36:11+03:00",
@@ -1602,7 +1602,7 @@
             "llm-legs/bin/worker-pick",
             "llm-legs/bin/worker-limit-gate.sh"
           ],
-          "in": null,
+          "in": "llm-legs@504a065",
           "regressed_at": null
         }
       ],
@@ -1622,7 +1622,7 @@
         "rule": "hook_sync",
         "ident": "worker-spawn-hook\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-02T14:36:11+03:00",
@@ -1630,7 +1630,7 @@
           "files": [
             "llm-legs/bin/worker-pick"
           ],
-          "in": null,
+          "in": "llm-legs@504a065",
           "regressed_at": null
         }
       ],

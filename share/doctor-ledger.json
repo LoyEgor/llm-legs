@@ -387,7 +387,7 @@
     "detail": "^wrote [^/]+/[^/]+$"
    },
    "title": "a cross-repository brief named its second repository's task worktree only in prose, or resumed a granted session without repeating the grant, so worker-run granted it nothing and every write there read as escaped",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-09-30T03:33:34+03:00",
@@ -406,7 +406,7 @@
       "llm-legs/bin/worker-run",
       "llm-legs/share/worker-policy.md"
      ],
-     "in": null,
+     "in": "llm-legs@91858c3",
      "regressed_at": null
     }
    ],
@@ -700,7 +700,7 @@
     "key": "^debt-gap:run-fold:snapshots unreadable$"
    },
    "title": "one untracked file named '-' failed every logo-vectorizer-bench snapshot closed",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-02T12:49:56+03:00",
@@ -708,7 +708,7 @@
      "files": [
       "llm-legs/bin/worker-run"
      ],
-     "in": null,
+     "in": "llm-legs@91858c3",
      "regressed_at": null
     }
    ],
@@ -726,7 +726,7 @@
     "key": "^debt-gap:claim-touch$"
    },
    "title": "worker-run claim accepted directories the anchors touch refuses",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-02T12:49:56+03:00",
@@ -734,7 +734,7 @@
      "files": [
       "llm-legs/bin/worker-run"
      ],
-     "in": null,
+     "in": "llm-legs@91858c3",
      "regressed_at": null
     }
    ],
@@ -878,7 +878,7 @@
     "detail": "soundtrack of \\S+ is silent"
    },
    "title": "Flow sound-effect takes rejected as silent",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-02T12:52:00+03:00",
@@ -886,7 +886,7 @@
      "files": [
       "llm-legs/bin/gemini-sfx"
      ],
-     "in": null,
+     "in": "llm-legs@601831e",
      "regressed_at": null
     }
    ],
@@ -933,7 +933,7 @@
     "until": "2026-10-02T14:41:31+03:00"
    },
    "title": "Image wrappers journaled --help probes as bad-command legs",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-02T12:48:09+03:00",
@@ -949,7 +949,7 @@
       "llm-legs/bin/grok-image",
       "llm-legs/bin/grok-video"
      ],
-     "in": null,
+     "in": "llm-legs@601831e",
      "regressed_at": null
     }
    ],
@@ -1019,7 +1019,7 @@
     "detail": "no track after \\d+s on \\S+ \\(https://www\\.flowmusic\\.app/"
    },
    "title": "Flow Music waited 600 s for a song its Generate click never made",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-01T16:42:00+03:00",
@@ -1027,7 +1027,7 @@
      "files": [
       "llm-legs/share/flow_music.py"
      ],
-     "in": null,
+     "in": "llm-legs@bb3bf76",
      "regressed_at": null
     }
    ],
@@ -1063,7 +1063,7 @@
     "detail": "the Audio upload opened no file chooser|the reference audio upload did not finish within \\d+s"
    },
    "title": "Flow Music reference audio upload stalled behind its consent notice",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-01T16:42:00+03:00",
@@ -1071,7 +1071,7 @@
      "files": [
       "llm-legs/share/flow_music.py"
      ],
-     "in": null,
+     "in": "llm-legs@bb3bf76",
      "regressed_at": null
     }
    ],
