@@ -116,6 +116,7 @@ assert grep -q 'is silent' "$WORK/err"
 FAKE_VIDEO_MODE=short assert sfx --dest "$WORK/out/click.wav" --prompt 'a click'
 refute grep -q 'is silent' "$WORK/err"
 assert test -s "$WORK/out/click.wav"
+assert near "$(seconds "$WORK/out/click.wav")" 0.15 0.1
 # A silent first take leaves the usable ones; a temp folder with a space keeps its variant paths whole.
 mkdir -p "$WORK/tmp space"
 TMPDIR="$WORK/tmp space" FAKE_VIDEO_MODE=first-mute assert sfx --dest "$WORK/out/kept.wav" --prompt 'a knock' --count 3

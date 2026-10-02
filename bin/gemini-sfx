@@ -122,9 +122,10 @@ clean() { # source.mp4 out.wav keep_length
     return 1
   fi
   filters=''
-  # loudnorm gates in 400 ms blocks: a sound the trim left shorter than one read -inf LUFS, "silent".
-  [ "$3" = true ] || filters="$(caps '.sfx.trim'),apad=whole_dur=0.4,"
-  measured=$(ffmpeg -hide_banner -nostats -i "$1" -vn -af "${filters}loudnorm=$(caps '.sfx.loudnorm'):print_format=json" \
+  [ "$3" = true ] || filters="$(caps '.sfx.trim'),"
+  # loudnorm gates in 400 ms blocks: a sound the trim left shorter than one read -inf LUFS, "silent". The pad is
+  # for the measurement only; the delivered wav keeps the trimmed length.
+  measured=$(ffmpeg -hide_banner -nostats -i "$1" -vn -af "${filters}apad=whole_dur=0.4,loudnorm=$(caps '.sfx.loudnorm'):print_format=json" \
     -f null - 2>&1 | sed -n '/^{/,/^}/p')
   level=$(jq -r '.input_i // empty' 2>/dev/null <<<"$measured")
   [ -n "$level" ] || { rejected "$1" "the loudness of $(basename "$1") could not be measured"; return 1; }
