@@ -37,11 +37,12 @@ state() { # grok-checked-seconds-ago
     claude: {result: "install-failed", installed: "2.1.283", latest: "2.1.284", checked_at: $c}}' >"$STATE/state.json"
 }
 state 3600
+logged=$(date +%s)
 {
-  printf '%s grok busy 1.0.40 -> 1.0.44\n' "$(ago $((60 * H)))"
+  printf '%s grok busy 1.0.40 -> 1.0.44\n' "$(date -u -r $((logged - 60 * H)) +%Y-%m-%dT%H:%M:%SZ)"
   printf '%s grok busy 1.0.40 -> 1.0.44\n' "$(ago $((36 * H)))"
   printf '%s grok busy 1.0.40 -> 1.0.44\n' "$(ago $((12 * H)))"
-  printf '%s claude install-failed 2.1.283 -> 2.1.284\n' "$(ago $H)"
+  printf '%s claude install-failed 2.1.283 -> 2.1.284\n' "$(date -u -r $((logged - H)) +%Y-%m-%dT%H:%M:%SZ)"
   printf '%s fingerprint gemini event gemini-x open: catalog\n' "$(ago $H)"
 } >"$STATE/update.log"
 fingerprint() { # vendor facets-json remote-failures-json
@@ -136,8 +137,8 @@ assert_fails has catalog-missing:grok
 assert [ "$(state_of foreign-client:codex)" = watch ]
 assert jqe '(.fact | test("ChatGPT.app/codex 0.158.0")) and .value == 1' <<<"$(problem foreign-client:codex)"
 assert jqe '.state == "new" and .value > 24 and .limit == 24 and .count == 3 and .evidence[0].excerpt == "\(.evidence[0].ref) grok busy 1.0.40 -> 1.0.44"' <<<"$(problem cli-behind:grok)"
-assert jqe --arg t "$(date -r $(($(date +%s) - 60 * H)) +%H:%M)" '.fact == "grok 1.0.40 → 1.0.44 waiting: busy since \($t) · 60h"' <<<"$(problem cli-behind:grok)"
-assert jqe --arg t "$(date -r $(($(date +%s) - H)) +%H:%M)" '.state == "watch" and .fact == "claude 2.1.283 → 2.1.284 waiting: install-failed since \($t)"' <<<"$(problem cli-behind:claude)"
+assert jqe --arg t "$(date -r $((logged - 60 * H)) +%H:%M)" '.fact == "grok 1.0.40 → 1.0.44 waiting: busy since \($t) · 60h"' <<<"$(problem cli-behind:grok)"
+assert jqe --arg t "$(date -r $((logged - H)) +%H:%M)" '.state == "watch" and .fact == "claude 2.1.283 → 2.1.284 waiting: install-failed since \($t)"' <<<"$(problem cli-behind:claude)"
 assert_fails has cli-behind:codex
 assert jqe '.state == "new" and (.fact | test("install-failed")) and (.evidence[0].excerpt | test("claude install-failed"))' <<<"$(problem pass-failed:claude)"
 assert_fails has pass-failed:grok
