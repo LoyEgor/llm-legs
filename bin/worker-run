@@ -124,7 +124,9 @@ brief_review_round() {
 }
 
 # Header-only, as ROUND: is: a brief's prose names other repositories to read far more often than to
-# write, and a grant is also what exempts a write there from the doctor's escape count.
+# write, and a grant is also what exempts a write there from the doctor's escape count. The one
+# prose exception is brief_worktree_roots: a task worktree exists to be written; a main checkout
+# named in prose stays ungranted, so a write there still reads as escaped.
 brief_add_dirs() { # brief
   local line
   while IFS= read -r line || [ -n "$line" ]; do
@@ -139,6 +141,25 @@ brief_add_dirs() { # brief
     esac
     [[ "$line" =~ ^[A-Z][A-Z-]*: ]] || return 0
   done <"$1"
+}
+
+# light-* worktrees are worker-run's own throwaway Light trees, never a task's.
+brief_worktree_roots() { # brief
+  local value
+  grep -oE '/[A-Za-z0-9._~+/-]+/\.claude/worktrees/[A-Za-z0-9._-]+' "$1" 2>/dev/null | sed 's/\.*$//' | sort -u |
+    while IFS= read -r value; do
+      case "${value##*/}" in light-*) continue ;; esac
+      [ -e "$value/.git" ] && printf '%s\n' "$value"
+    done
+}
+
+# A resumed session keeps every grant its earlier runs had: a RESUME brief rarely repeats them.
+resumed_add_dirs() { # resume
+  local entry
+  [ -n "$1" ] || return 0
+  while IFS= read -r entry; do
+    [ -n "$entry" ] && jq -r '.add_dirs[]? // empty' "${entry%/worker-session}/meta.json" 2>/dev/null
+  done < <(refuse_live_matches "$1" "${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}" worker-session)
 }
 
 # Every round-shaped WHOLE token of the brief, deduplicated: a longer token that merely contains a
@@ -2275,7 +2296,7 @@ start_run() {
   local recipe='' recipe_brief='' light_scope='' light_verify='' light_worktree='' light_shared_top='' light_offrow=false
   local light_relative='' light_base=''
   local -a recipe_sets=()
-  local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc launcher_session
+  local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc launcher_session entry
   local web_search=false web_search_flag=false web_search_off_flag=false web_search_asked=''
   local web_search_state='' brief_cyrillic=''
   local chrome=false browser=false browser_json='' browser_preamble='' browser_device='' browser_account=''
@@ -2461,6 +2482,13 @@ start_run() {
       [ -d "$value" ] && ! same_repository "$value" "$workdir" ${add_dirs[@]+"${add_dirs[@]}"} &&
         add_dirs+=("$value")
     done < <(jq -r '.repos[]? | objects | .repo // empty' "$(review_bench_dir "$review_round")/meta.json" 2>/dev/null)
+  fi
+  if [ -z "$light" ] && [ "$vendor" != grok ] && { [ "$vendor" != codex ] || [ -z "$resume" ]; }; then
+    while IFS= read -r value; do
+      [ -d "$value" ] && value=$(cd "$value" && pwd -P) && [ "$value" != "$workdir" ] || continue
+      for entry in ${add_dirs[@]+"${add_dirs[@]}"}; do (cd "$entry" 2>/dev/null && pwd -P); done |
+        grep -qxF -- "$value" || add_dirs+=("$value")
+    done < <(brief_worktree_roots "$brief"; resumed_add_dirs "$resume")
   fi
   web_search_column "$vendor" on >/dev/null ||
     fail "share/web-search.sh has no row for $vendor: a launch with an unknown search state would take whichever one the CLI happens to stand in. Nothing was launched and no account was spent."

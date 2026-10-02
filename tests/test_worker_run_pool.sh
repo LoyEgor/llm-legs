@@ -294,6 +294,33 @@ assert grep -qF "'ADD-DIR: rel-extra' names no absolute directory" "$WORK/start.
 assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 0
 cp "$WORK/brief.plain" "$WORK/brief"
 
+# The 2026-10-01 escapes: hand-written briefs named another repository's task worktree only in prose,
+# and a RESUME of a granted session repeated no grant. A main checkout or a Light tree named in
+# prose, or a worktree that does not exist, is still granted nothing.
+other="$WORK/other-repo"
+mkdir -p "$other/.claude/worktrees/task-wt" "$other/.claude/worktrees/light-x" "$WORK/inherited"
+printf 'gitdir: x\n' >"$other/.claude/worktrees/task-wt/.git"
+printf 'gitdir: x\n' >"$other/.claude/worktrees/light-x/.git"
+mkdir -p "$other/.git"
+{ printf 'ACCOUNT: options\n\nWork in worktree %s/.claude/worktrees/task-wt. Read %s and %s/.claude/worktrees/light-x and %s/.claude/worktrees/gone.\n' \
+    "$other" "$other" "$other" "$other"; cat "$WORK/brief.plain"; } >"$WORK/brief"
+clear_stub
+set_config 'codex_effort=high'
+start_ok codex
+assert await_done
+assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" = "$(jq -cn --arg d "$(cd "$other/.claude/worktrees/task-wt" && pwd -P)" '[$d]')"
+mkdir -p "$WORKER_RUN_DIR/prior-granted"
+printf 'claude-granted\n' >"$WORKER_RUN_DIR/prior-granted/worker-session"
+jq -n --arg d "$(cd "$WORK/inherited" && pwd -P)" '{add_dirs: [$d]}' >"$WORKER_RUN_DIR/prior-granted/meta.json"
+cp "$WORK/brief.plain" "$WORK/brief"
+clear_stub
+set_config 'claudeb_model=opus' 'claudeb_effort=high'
+start_ok claudeb --account resumeacct --resume claude-granted
+assert await_done
+assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" = "$(jq -cn --arg d "$(cd "$WORK/inherited" && pwd -P)" '[$d]')"
+assert grep -qxF "ARG=$(cd "$WORK/inherited" && pwd -P)" "$CALL_LOG"
+rm -rf "$WORKER_RUN_DIR/prior-granted"
+
 # These picks keep naming the one account that walls — a picker that ignores
 # --exclude — so the run has nowhere to reroute and the limit outcome reaches
 # the caller.

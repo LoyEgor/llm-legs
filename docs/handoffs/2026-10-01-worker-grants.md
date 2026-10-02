@@ -21,3 +21,15 @@ Current `bin/doctor-fix:480` and `bin/vendor-fingerprint:456` already emit sibli
 Acceptance: a fresh and resumed cross-repository brief carries the intended grant into metadata and snapshots; a read-only prose reference grants nothing; a genuinely ungranted main-checkout write remains escaped.
 
 No claude-setup ADD-DIR worktree is authorized for this run, so changes there are handed off. Historical launcher revisions cannot be established from the run metadata (existing blind spot B3); timestamps alone do not prove which code ran. Context-nudge scratch files also appear in files-note, but the reported incidents name repository files, so scratch filtering does not explain W3.
+
+## 2026-10-02 update (night 20261002T092633Z-e367)
+
+The worktree half is fixed in llm-legs `bin/worker-run`: an existing task worktree
+(`<repo>/.claude/worktrees/<name>`, not `light-*`) that the brief names by absolute path is granted, and a RESUME
+inherits the grants of its session's earlier runs. W3 is narrowed to that class (`fixed-pending`).
+What is still open is the new row W5: writes to another repository's main checkout, or to a non-repository directory, that a day
+chat's brief authorized only in prose (2026-10-01: review-bench main, hammerspoon main,
+`video/alona/R7-A`). worker-run must not infer those: night and fixer briefs name main checkouts in
+order to forbid writes there. The remaining ask goes to the owner of brief composition (the orchestrator chat or the claude-setup
+relay `agents/claudeb-worker.md`): carry a main-checkout destination as an `ADD-DIR:` header line.
+A worktree that the run creates mid-run, and that the brief names only as a template, is still ungranted.

@@ -44,8 +44,10 @@ explicit word; otherwise no `MODEL:` line. Neither Codex model allows `max`.
 and the model list (`OUTCOME: MODEL_REFUSED`) before spending an account; `/worker` refuses to
 store values outside them. Word requirements are orchestrator policy.
 A brief that writes a second repository names it in its header, one `ADD-DIR: <absolute dir>` line
-each: `worker-run` grants it as `--add-dir` and baselines it; a repository named only in the prose
-is ungranted, and the run's writes there count as escaped.
+each: `worker-run` grants it as `--add-dir` and baselines it. It also grants, unasked, every
+existing task worktree (`<repo>/.claude/worktrees/<name>`) the brief names by absolute path and
+every grant of the session a RESUME continues; a main checkout or other directory named only in the
+prose is ungranted, and the run's writes there count as escaped.
 The canonical knob-to-agy mapping lives in `worker-run`.
 
 ## Brief sizing and test loop
