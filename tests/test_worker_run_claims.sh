@@ -281,6 +281,10 @@ assert_fails "$RUNNER" claim "$RUN_ID" --paths /etc/hosts
 assert_fails "$RUNNER" claim "$RUN_ID" --paths bin/claimed-one ../outside-the-workdir
 assert_fails grep -qx 'bin/claimed-one' "$RUN_DIR/files"
 assert_fails "$RUNNER" claim "$RUN_ID"
+# A directory is no row the anchors store can hold: refused whole, before the listing is touched.
+assert_fails "$RUNNER" claim "$RUN_ID" --paths bin/claimed-one bin
+assert grep -q 'bin/ is a directory' <<<"$("$RUNNER" claim "$RUN_ID" --paths bin/ 2>&1 >/dev/null)"
+assert_fails grep -qx 'bin/claimed-one' "$RUN_DIR/files"
 
 # The claim itself: an ordinary listing row, the caveat beside it untouched, and the path gone from
 # the dirt record — it carries an owner now.

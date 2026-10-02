@@ -430,6 +430,32 @@ assert await_done
 assert grep -q '^UNKNOWN: ' "$RUN_DIR/files"
 assert_fails grep -q -- '-odd-name' "$RUN_DIR/files"
 assert test ! -e "$RUN_DIR/produced"
+
+# Present before the run and untouched by it, the same file leaves the rest of the snapshot standing.
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Edit file_path "$ATTR_TOP/bin/keep" \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export STUB_SLEEP=1
+start_ok claudeb --workdir "$ATTR_REPO"
+printf 'kept-by-run\n' >"$ATTR_REPO/bin/keep"
+assert await_done
+assert_fails grep -q '^UNKNOWN: ' "$RUN_DIR/files"
+assert grep -qx 'bin/keep' "$RUN_DIR/files"
+assert_fails grep -q -- '-odd-name' "$RUN_DIR/files" "$RUN_DIR/produced"
+assert grep -q $'\tbin/keep$' "$RUN_DIR/produced"
+
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Edit file_path "$ATTR_TOP/bin/keep" \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export STUB_SLEEP=1
+start_ok claudeb --workdir "$ATTR_REPO"
+printf 'rewritten\n' >"$ATTR_REPO/-odd-name"
+assert await_done
+assert grep -q '^UNKNOWN: ' "$RUN_DIR/files"
+assert test ! -e "$RUN_DIR/produced"
+git -C "$ATTR_REPO" checkout -q -- bin/keep
 rm -f "$ATTR_REPO/-odd-name"
 
 clear_stub

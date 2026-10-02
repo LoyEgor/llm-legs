@@ -1129,14 +1129,16 @@ non_git_tree_digest() { # dir
 }
 
 research_tree_digest() { # root...
-  local root head
+  local root head unshaped
   for root in "$@"; do
     [ -d "$root" ] || return 1
     printf '%s\n' "$root"
     if git -C "$root" rev-parse --show-toplevel >/dev/null 2>&1; then
       head=$(git -C "$root" rev-parse --verify --quiet HEAD 2>/dev/null) || head=empty
       printf '%s\n' "$head"
-      workdir_dirty_shas "$root" || return 1
+      unshaped=$(mktemp) || return 1
+      workdir_dirty_shas "$root" "$unshaped" && cat "$unshaped" || { rm -f "$unshaped"; return 1; }
+      rm -f "$unshaped"
     else
       non_git_tree_digest "$root" || return 1
     fi
@@ -1437,7 +1439,10 @@ workdir_escape_line() { # directory
 # nothing tracks is exactly the work that reaches no other record at all.
 #
 # Same arms as ../claude-setup/hooks/lib/review-journal.sh `rj_path_shape_ok`: a path the reader
-# would skip must fail the snapshot closed, not land in `produced` and then vanish from the ledger.
+# would skip must never land in `produced` and then vanish from the ledger. It stays out of the
+# listing and goes into the snapshot's `unshaped` digest instead: a run that changed one fails the
+# snapshot closed, and one stray `-` file no longer blinds every run in its tree (logo-vectorizer-bench
+# 2026-10-01: 47 runs a day folded as `snapshots unreadable`).
 path_shape_ok() { # path
   case $1 in
     ''|.|..) return 1 ;;
@@ -1462,14 +1467,17 @@ hash_workdir_path() { # top path
 
 # Nonzero where git could not answer at all, never an empty answer: read as a clean tree, a status
 # that failed at launch makes every file Egor already had open content this run gained.
-workdir_dirty_paths() { # workdir
+workdir_dirty_paths() { # workdir [unshaped-list]
   local answer
   [ -n "${1:-}" ] && [ "$1" != null ] || return 1
   answer=$(git -C "$1" status --porcelain --no-renames -uall -z 2>/dev/null |
     (while IFS= read -r -d '' entry; do
       path=${entry:3}
       [ -z "$path" ] && continue
-      path_shape_ok "$path" || exit 1
+      if ! path_shape_ok "$path"; then
+        [ -z "${2:-}" ] || printf '%s\0' "$path" >>"$2" || exit 1
+        continue
+      fi
       printf '%s\n' "$path"
     done); status=("${PIPESTATUS[@]}");
     [ "${status[0]}" = 0 ] && [ "${status[1]}" = 0 ]) || return 1
@@ -1483,12 +1491,18 @@ workdir_dirty_paths() { # workdir
 # its own worker's fixes as debt owed by nobody, and a closed round covered none of them (live case
 # 2026-08-22). A path git cannot hash (gone, a directory, a special file) records `-`, which
 # compares equal only to itself.
-workdir_dirty_shas() { # workdir
+workdir_dirty_shas() { # workdir [unshaped-digest-out]
   local top paths path sha line fi=0
   local -a all=() files=() file_shas=()
   top=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || return 1
   [ -n "$top" ] || return 1
-  paths=$(workdir_dirty_paths "$1") || return 1
+  if [ -n "${2:-}" ]; then
+    : >"$2.list" && paths=$(workdir_dirty_paths "$1" "$2.list") &&
+      unshaped_digest "$top" "$2.list" >"$2" || { rm -f "$2.list"; return 1; }
+    rm -f "$2.list"
+  else
+    paths=$(workdir_dirty_paths "$1") || return 1
+  fi
   [ -n "$paths" ] || return 0
   while IFS= read -r path; do
     [ -n "$path" ] || continue
@@ -1529,9 +1543,20 @@ workdir_dirty_shas() { # workdir
   done
 }
 
+unshaped_digest() { # top list
+  local path
+  [ -s "$2" ] || return 0
+  while IFS= read -r -d '' path; do
+    printf '%s\0' "$path"
+    hash_workdir_path "$1" "$path"
+  done <"$2" | git -C "$1" hash-object --stdin
+}
+
 snapshot_workdir() { # directory workdir side
   local directory="$1" workdir="$2" side="$3" shas head
-  shas=$(workdir_dirty_shas "$workdir") || {
+  shas=$(workdir_dirty_shas "$workdir" "$directory/unshaped-$side.tmp.$$") &&
+    mv -f "$directory/unshaped-$side.tmp.$$" "$directory/unshaped-$side" || {
+    rm -f "$directory/unshaped-$side.tmp.$$"
     [ "$side" = after ] && rm -f "$directory/produced" "$directory/dirty"
     return 1
   }
@@ -1626,6 +1651,8 @@ snapshot_changed_paths() { # directory top
   local directory="$1" top="$2" before after changed paths path
   [ -f "$directory/dirty-before-shas" ] && [ -f "$directory/dirty-after-shas" ] &&
     [ -f "$directory/head-after" ] || return 1
+  [ "$(cat "$directory/unshaped-before" 2>/dev/null)" = "$(cat "$directory/unshaped-after" 2>/dev/null)" ] ||
+    return 1
   before=$(cat "$directory/head-before" 2>/dev/null) || before=''
   after=$(cat "$directory/head-after" 2>/dev/null) || return 1
   changed=''
@@ -2940,9 +2967,9 @@ start_run() {
   workdir_dirty_paths "$workdir" >"$directory/dirty-before.tmp.$$" 2>/dev/null &&
     mv -f "$directory/dirty-before.tmp.$$" "$directory/dirty-before" 2>/dev/null ||
     rm -f "$directory/dirty-before.tmp.$$" 2>/dev/null
-  workdir_dirty_shas "$workdir" >"$directory/dirty-before-shas.tmp.$$" 2>/dev/null &&
+  workdir_dirty_shas "$workdir" "$directory/unshaped-before" >"$directory/dirty-before-shas.tmp.$$" 2>/dev/null &&
     mv -f "$directory/dirty-before-shas.tmp.$$" "$directory/dirty-before-shas" 2>/dev/null ||
-    rm -f "$directory/dirty-before-shas.tmp.$$" 2>/dev/null
+    rm -f "$directory/dirty-before-shas.tmp.$$" "$directory/unshaped-before" 2>/dev/null
   # And the commit the tree stood on, which is what a path NOT already dirty is measured against.
   # Never restamped by a reroute: an attempt's floor is the run's floor, and read off the end of the
   # run instead every link the run itself committed would be measured against its own result.
@@ -4396,8 +4423,8 @@ claim_family_anchors() { # directory snap repo top launcher path...
   local -a touched=()
   shift 5
   for path in "$@"; do touched+=("./$path"); done
-  review_anchors touch --repo "$top" --session "$launcher" -- "${touched[@]}" >/dev/null 2>&1 ||
-    debt_gap "$launcher" claim-touch "${directory##*/}"
+  anchors_why touch --repo "$top" --session "$launcher" -- "${touched[@]}" ||
+    debt_gap "$launcher" claim-touch "${directory##*/} $top: $ANCHORS_WHY"
   round=$(jq -r '.review_round // empty' "$directory/meta.json" 2>/dev/null) || round=''
   [ -z "$round" ] || fold_family_anchors "$directory" "$snap" "$repo" "$top" "$launcher" "$round" "$@"
 }
@@ -4469,6 +4496,10 @@ claim_run() {
       /*) absolute=$(normalize_path "$path") ;;
       *) absolute=$(normalize_path "$workdir/$path") ;;
     esac
+    # The anchors store holds files only: a claimed directory reached `files` and was then refused
+    # by the touch, leaving everything under it nobody's (live 2026-10-01, a claim-touch gap).
+    [ ! -d "$absolute" ] || [ -L "$absolute" ] ||
+      fail "$path is a directory; claim the files under it, one path each"
     case "$absolute" in
       "$workdir"/*) under=true ;;
       *) under=false ;;
