@@ -108,10 +108,10 @@
       "same_cause": [
         "floor-edit-hooks"
       ],
-      "last_reviewed": "2026-10-01",
-      "reviewed_by": "night fixer harness-hook-waits 20261001",
-      "note": "2026-09-30 03:18: 867 ms p50 over 346 calls = review-flow-gate 253 ms (p90 841) before + commit-journal 178 / instruction-watch check 170 ms (p90 843 / 344) after; every other hook ends under 180 ms. All three hooks are the problems of the night's hooks run, so this run changed none of them. 2026-10-01: 761.713 ms over 749 calls; before median 413 ms (review-flow-gate sets 25%), after 305 ms (commit-journal sets 28%). Read-only classifier still loads; repository snapshot fan-out already exists in commit-journal, so restoring the old serial-to-parallel fix would duplicate it. The same night harness-hooks-20261001T020656Z-42ed owns hook_sync:review-flow-gate.sh and instruction-watch check. Keep this floor open for integrated evidence; per-side medians do not sum to the paired median. No evidence for vendor replacement of attribution snapshots.",
-      "handoff": "docs/handoffs/2026-10-01-hook-waits-shared-components.md"
+      "last_reviewed": "2026-10-02",
+      "reviewed_by": "night fixer harness-hook-waits 20261002",
+      "note": "2026-09-30 03:18: 867 ms p50 over 346 calls = review-flow-gate 253 ms (p90 841) before + commit-journal 178 / instruction-watch check 170 ms (p90 843 / 344) after; every other hook ends under 180 ms. All three hooks are the problems of the night's hooks run, so this run changed none of them. 2026-10-01: 761.713 ms over 749 calls; before median 413 ms (review-flow-gate sets 25%), after 305 ms (commit-journal sets 28%). Read-only classifier still loads; repository snapshot fan-out already exists in commit-journal, so restoring the old serial-to-parallel fix would duplicate it. The same night harness-hooks-20261001T020656Z-42ed owns hook_sync:review-flow-gate.sh and instruction-watch check. Keep this floor open for integrated evidence; per-side medians do not sum to the paired median. No evidence for vendor replacement of attribution snapshots. 2026-10-02: 24 h before 13:55, before p50 411 ms (276 without review-flow-gate), after 352 ms (235 without commit-journal, 341 without instruction-watch check); with both setters at zero the paired floor still reads ~460-510 ms at day load, so the cause is the setters plus the ~15-hook bash fan-out per side. Night hours read 2x under the night's own load (load average 46-65). Ruled out: instruction-watch check (11 ms), the 4ca8de1 session-repo fan-out (most calls are in 1-2 repo sessions: review-flow-gate 381 vs 459 ms at 5+). Both setters and their shared content snapshot live in claude-setup, outside a hook-waits run; see the handoff.",
+      "handoff": "docs/handoffs/2026-10-02-floor-bash-other-setters.md"
     },
     {
       "id": "unjournaled-sessionstart-branch-check",
@@ -1258,6 +1258,13 @@
       "reason": "The 2026-10-01 guards fixer reproduced HYPERFRAMES_SKIP_SKILLS=1 in the hook environment followed by an explicit =0 init command passing the old gate. Existing growth records identify installed files, not the initializer effective environment; this specific bypass was found by a fixture probe, not established as the historical writer. The dedicated skill-install-scope gate does not emit the instruction gates journal.",
       "since": "2026-10-01",
       "would_catch_if": "The install-scope gate journaled its effective skip decision and initializer identity, allowing the doctor to correlate allowed init calls with subsequent global SKILL.md growth."
+    },
+    {
+      "id": "floor-under-load",
+      "what": "A hook floor's share that is machine load rather than hook work",
+      "reason": "The 2026-10-02 hook-waits fixer read floor:bash:other at 1512 ms in the 1 h window under load average 46-65 (the night's own parallel workers) against 794 ms over 24 h; the same hooks at day load read 605-961 ms. The floor rule judges the last hour with no load context, so a night run measures its own concurrency.",
+      "since": "2026-10-02",
+      "would_catch_if": "each floor sample carried the sampler's load average at its call time and the floor drill split its median by load band"
     }
   ]
 }
