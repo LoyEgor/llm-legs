@@ -487,11 +487,11 @@ def scan_transcripts(state, now, events, versions):
             c1_expire(files[path]["c1"], events, now)
 
 
-def read_transcript(path, rec, events, versions, boots=()):
+def read_transcript(path, rec, events, versions, boots=(), limit=-1):
     try:
         with open(path, "rb") as handle:
             handle.seek(rec["off"])
-            data = handle.read()
+            data = handle.read(limit)
     except OSError:
         return
     end = data.rfind(b"\n") + 1
@@ -869,7 +869,8 @@ def c1_entry(c, out, entry, t, session, boots):
 
 
 def owner_spans(rows, r_index):
-    """`(spans, extra)` as `(start, end, row)` at C1_R_S[r_index], docs/speed-doctor-design.md §1: spans the
+    """`(spans, extra)` as `(start, end, row)` at C1_R_S[r_index] (an index, or a function of the row giving
+    one), docs/speed-doctor-design.md §1: spans the
     attended turns, each clipped after his last prompt in another chat and holed; extra the attended
     delegations, each from max(launch, his last prompt anywhere) to its notification, counted only when the
     notification opened its follow-up turn."""
@@ -877,7 +878,7 @@ def owner_spans(rows, r_index):
     times = [x for x, _ in typed]
     spans, extra = [], []
     for row in rows:
-        if row[0] not in ("t", "d") or not row[5][r_index] or row[6]:
+        if row[0] not in ("t", "d") or not row[5][r_index(row) if callable(r_index) else r_index] or row[6]:
             continue
         if row[0] == "d":
             if not row[9]:
@@ -5202,6 +5203,9 @@ def main():
     return 1 if document["status"] == "error" else 0
 
 
+BACKGROUND_QOS = ["/usr/sbin/taskpolicy", "-b"]
+
+
 def exec_speed():
     """Speed reads what this run derived, so it follows each successful run, in the background QoS band.
     A fixture Harness directory with no SPEED_DOCTOR_DIR of its own never reaches the live Speed store."""
@@ -5213,7 +5217,8 @@ def exec_speed():
     os.environ["DOCTOR_TRIGGER"] = "harness"
     os.environ[collector_runs.CPU_BASE_ENV] = repr(collector_runs.cpu_total())
     try:
-        os.execv("/usr/sbin/taskpolicy", ["taskpolicy", "-b", script, "--quiet"])
+        argv = BACKGROUND_QOS + [script, "--quiet"]
+        os.execv(argv[0], argv)
     except OSError:
         pass
 

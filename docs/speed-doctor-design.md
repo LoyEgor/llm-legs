@@ -27,7 +27,7 @@ Sources: the 2026-10-02 research notes, now retired: [CT] chat turns, [HC] hooks
 
 **OM/d** = |A ∪ B ∪ C| per local day. Parallel blocked chats share each minute equally, for attribution only.
 
-**Presence (C8)**: a per-minute HID-idle and frontmost-bundle log, no window titles. Once it exists, a candidate minute counts only if HID idle < 2 min or it falls in the last R minutes before his reaction, for A and B alike.
+**Presence (C8)**: a per-minute HID-idle and frontmost-bundle log, no window titles. Once it exists, a candidate minute counts only if HID idle < 2 min or it falls in the last R minutes before his reaction, for A and B alike. Only a row the log covers is judged this way; a row or minute it did not log is unknown, never away, and keeps the R proxy.
 
 **Today [V]:**
 
@@ -107,7 +107,7 @@ Sources: the 2026-10-02 research notes, now retired: [CT] chat turns, [HC] hooks
 - **C10, background journals**: every doctor appends `{doctor, start, wall_s, cpu_s, trigger}` to `~/.cache/doctors/collector-runs.jsonl`; the actions log gains pid, source and sub-second times, and Hammerspoon test harnesses redirect it; `backgroundMenu` builds journal as `doctors:bg`, plus an hs-lag probe line over 50 ms; the merge-kick journals each `llm-limits.sh` run; `llm-refresh` journals a tick id.
 - **C11, chat start**: `claudeb` stamps `EPOCHREALTIME` at entry and before exec; an MCP log fold of the newest `mcp-logs` lines.
 
-**Cost.** Harness is already at its 30 s collector limit, so its extension carries its own measured per-phase budget, ≤ +1 s per run (stage 1 gate). `bin/speed-doctor` reads only derived files and the new journals by offset, ≤ 2 s; Harness execs it after each successful run (no own `StartInterval`), at `ProcessType Background`. It is a consumer in P and judges its own `collector_time:speed`.
+**Cost.** Harness is already at its 30 s collector limit, so its extension carries its own measured per-phase budget, ≤ +1 s per run (stage 1 gate). `bin/speed-doctor` reads only derived files and the new journals by offset, ≤ 2 s; Harness execs it after each successful run (no own `StartInterval`), at `ProcessType Background`. It is a consumer in P and judges its own `collector_time:speed`. Its first run backfills the turn and delegation rows of the 28-day baseline window from the owner transcripts through Harness's C1 reader (Harness's offsets predate C1), at most 20 s a run in 4 MB reads, resumed by later runs, rows Harness already holds counted once; later runs read only its own backfill files.
 
 ## 3. Judging, proof, selection
 

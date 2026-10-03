@@ -175,6 +175,53 @@ away, _ = speed("speed-present")
 check(0 < away["headline"] < doc["headline"] and
       abs(sum(v for a in away["partition"].values() for v in a.values()) - away["headline"]) < 0.1,
       "presence, idle all along: only the last R before each reaction counts, still partitioned: %s" % away["headline"])
+with open(os.path.join(presence, "2026-10-02.tsv")) as handle:
+    one_day = handle.read()
+for path in glob.glob(os.path.join(presence, "*.tsv")):
+    os.unlink(path)
+with open(os.path.join(presence, "2026-10-02.tsv"), "w") as handle:
+    handle.write(one_day)
+part, _ = speed("speed-present")
+check(away["headline"] < part["headline"] < doc["headline"] and part["r_band"] is not None
+      and "R 2/10" in part["head"],
+      "presence logged on one day only: the other days keep the R = 5 min proxy, unknown is never away: %s %s"
+      % (part["headline"], part["r_band"]))
+
+transcripts = {"CLAUDE_PROJECTS_DIR": os.environ["CLAUDE_PROJECTS_DIR"], "HARNESS_DOCTOR_BOOTS": "1790882097",
+               "DOCTORS_DIR": os.path.join(work, "doctors-backfill")}
+blank_dir = os.path.join(work, "harness-blank")
+os.makedirs(blank_dir)
+cold, _ = speed("speed-cold", HARNESS_DOCTOR_DIR=blank_dir, **transcripts)
+check(cold["headline"] * cold["window"]["days"] >= doc["headline"] * doc["window"]["days"] > 0
+      and cold["selection"] == doc["selection"] == ["opportunity:chat/hooks"]
+      and "backfill" not in [b["id"] for b in cold["blind_spots"]],
+      "a fresh state with no Harness turn rows backfills every calibration minute from the transcripts: %s %s"
+      % (cold["headline"], cold["selection"]))
+for folder, harness_at in (("speed-cold", blank_dir), ("speed-both", os.path.join(work, "harness"))):
+    speed(folder, "--quiet", HARNESS_DOCTOR_DIR=harness_at, **transcripts)
+stored = lambda folder: {os.path.basename(p): json.load(open(p))
+                         for p in glob.glob(os.path.join(work, folder, "days", "*.json"))}
+both, _ = speed("speed-both", **transcripts)
+check(both["headline"] == cold["headline"] and stored("speed-both") == stored("speed-cold")
+      and "2026-10-01.json" in stored("speed-both"),
+      "backfilled turns Harness already holds count once, prompts included: %s vs %s"
+      % (both["headline"], cold["headline"]))
+resumed = os.path.join(work, "speed-resumed")
+speed("speed-resumed", "--quiet", HARNESS_DOCTOR_DIR=blank_dir, SPEED_DOCTOR_BACKFILL_S="0", **transcripts)
+job = json.load(open(os.path.join(resumed, "state.json")))["backfill"]
+step, _ = speed("speed-resumed", HARNESS_DOCTOR_DIR=blank_dir, SPEED_DOCTOR_BACKFILL_S="0", **transcripts)
+check(job["files"] == len(job["todo"]) + 1 and not job.get("stored")
+      and "backfill" in [b["id"] for b in step["blind_spots"]],
+      "a backfill run stops at its budget after one step and leaves the rest for the next run: %d of %d left"
+      % (len(job["todo"]), job["files"]))
+speed("speed-resumed", "--quiet", HARNESS_DOCTOR_DIR=blank_dir, **transcripts)
+os.rename(os.environ["CLAUDE_PROJECTS_DIR"], os.environ["CLAUDE_PROJECTS_DIR"] + "-hidden")
+done, _ = speed("speed-resumed", HARNESS_DOCTOR_DIR=blank_dir, **transcripts)
+os.rename(os.environ["CLAUDE_PROJECTS_DIR"] + "-hidden", os.environ["CLAUDE_PROJECTS_DIR"])
+job = json.load(open(os.path.join(resumed, "state.json")))["backfill"]
+check(not job["todo"] and job["stored"] and done["headline"] == cold["headline"]
+      and done["selection"] == cold["selection"] and "backfill" not in [b["id"] for b in done["blind_spots"]],
+      "the resumed backfill finishes and later runs read its rows, never the transcripts again: %s" % done["headline"])
 
 days = os.path.join(work, "speed-judged", "days")
 os.makedirs(days)
@@ -417,4 +464,4 @@ print(count[0])
 EOF
 ) || { printf 'FAIL: the Speed block misjudged the calibration fixture\n' >&2; exit 1; }
 
-printf 'PASS: %s asserts; speed-doctor turns Harness'"'"'s owner turns and delegations into 179.3 OM/d with its R band, a partition that sums to it, a scored backlog of equivalent levers only (forbidden model/effort/thinking/vendor levers rejected at load, risk levers only as evidenced needs-Egor proposals, yield proven only with output equivalence), presence, two-day regressions, a merge into the Harness document and the top of its menu with each rule counted once, heavy-suite and hot-hook opportunities with their protections, offset reads, a 35-day journal prune and its exec from Harness\n' "$asserts"
+printf 'PASS: %s asserts; speed-doctor turns Harness'"'"'s owner turns and delegations into 179.3 OM/d with its R band, a partition that sums to it, a scored backlog of equivalent levers only (forbidden model/effort/thinking/vendor levers rejected at load, risk levers only as evidenced needs-Egor proposals, yield proven only with output equivalence), presence, presence judged per row (unlogged days keep the R proxy), a resumable transcript backfill for a fresh state counting each turn once, two-day regressions, a merge into the Harness document and the top of its menu with each rule counted once, heavy-suite and hot-hook opportunities with their protections, offset reads, a 35-day journal prune and its exec from Harness\n' "$asserts"

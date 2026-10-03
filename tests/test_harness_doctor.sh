@@ -176,6 +176,8 @@ import importlib.machinery, importlib.util, os, sys, time
 loader = importlib.machinery.SourceFileLoader("harness_doctor", sys.argv[1])
 module = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_doctor", loader))
 loader.exec_module(module)
+# Background QoS starves this python exec for minutes on a loaded machine; the CPU split needs no QoS.
+module.BACKGROUND_QOS = []
 pid = os.fork()
 if pid == 0:
     end = time.process_time() + 0.6
