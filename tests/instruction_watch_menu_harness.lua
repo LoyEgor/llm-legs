@@ -751,6 +751,23 @@ local ok, err = pcall(function()
         and not (readFile(wf.state .. "/watcher/snapshot.tsv") or ""):find("marketplaces", 1, true),
         "a snapshot row under plugins/marketplaces stayed watched: " .. tostring(pruned[#pruned].summary))
 
+    M.stop()
+    write(wf.state .. "/watcher/snapshot.tsv", table.concat({ catalog, string.rep("0", 64), "1", "1", "1", catalog },
+        "\t") .. "\n", "a")
+    local realIo = io
+    io = setmetatable({ popen = function(command, ...)
+        if command:find(quoted(wf.state) .. " unloaded ", 1, true) then return nil end
+        return realIo.popen(command, ...)
+    end }, { __index = realIo })
+    local started, startErr = pcall(M.start)
+    io = realIo
+    check(started and (readFile(heartbeat) or ""):find("error=unloaded scan", 1, true) ~= nil,
+        "a failed unloaded scan left no trace in the heartbeat: " .. tostring(started and readFile(heartbeat) or startErr))
+    M.watchTick()
+    check(not (readFile(wf.state .. "/watcher/snapshot.tsv") or ""):find("marketplaces", 1, true)
+        and not (readFile(heartbeat) or ""):find("error=", 1, true),
+        "the next tick did not retry the failed unloaded scan")
+
     local fresh = os.time()
     hs.fs.touch(heartbeat, fresh - 10 * 60, fresh - 10 * 60)
     local downTitle = M.menuItems()[1].title

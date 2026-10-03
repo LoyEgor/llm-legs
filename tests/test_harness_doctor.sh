@@ -1110,6 +1110,10 @@ check(judged(health(G, gates=[{"at": T - 700, "decision": "denied", "gate": "wri
       == {("growth-denied", "~/p/docs"): "red"}, "Guards: growth after denials in one tree is one problem")
 passed ={"at": T - 700, "decision": "passed", "gate": "write", "file": cmd}
 check(judged(health(G, gates=[passed], events=[change(T - 600)])) == {}, "J Guards: growth a gate passed is quiet")
+small = dict(passed, gate="bloat", delta=10)
+check(judged(health(G, gates=[small], events=[change(T - 600, delta=2000)])) == {("growth-ungated", "~/.claude/CLAUDE.md"): "red"}
+      and judged(health(G, gates=[small, dict(small, at=T - 650, delta=490)], events=[change(T - 600)])) == {},
+      "Guards: a priced pass covers only the bytes it priced, never a larger write beside it")
 denied = dict(passed, decision="denied")
 check(judged(health(G, gates=[denied], events=[change(T - 600)])) == {("growth-denied", "~/.claude/CLAUDE.md"): "red"},
       "Guards: growth after a denial is red")

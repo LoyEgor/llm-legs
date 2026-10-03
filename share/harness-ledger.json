@@ -2008,10 +2008,10 @@
     },
     {
       "id": "gate-pass-masks-file",
-      "what": "a gate pass record covers any other write to the same file from 15 min before to 1 min after it",
-      "reason": "harness-doctor gate_verdict joins gates.jsonl to a watched change by file and time only (GATE_BEFORE_S/GATE_AFTER_S), never by delta or tool_use id, so a small passed Edit hides a heredoc write beside it",
+      "what": "a gate pass covers another write to the same file from 15 min before to 1 min after it, up to the bytes it priced, or any size when it carries no delta (the write gate's span-pass and granted)",
+      "reason": "harness-doctor gate_verdict joins gates.jsonl to a watched change by file, time and the priced byte sum, never by tool_use id, so a large passed Edit still hides a smaller heredoc write beside it",
       "since": "2026-10-03",
-      "would_catch_if": "a gate record carried the tool_use id or expected delta and the watcher event the write it saw"
+      "would_catch_if": "a gate record carried the tool_use id and the watcher event the write it saw"
     }
   ]
 }

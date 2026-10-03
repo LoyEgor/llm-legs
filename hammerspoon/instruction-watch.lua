@@ -631,7 +631,7 @@ local function writeHeartbeat()
     for _ in pairs(W.prev) do files = files + 1 end
     hs.fs.mkdir(watchDir())
     writeFile(heartbeatPath(), string.format("since=%d roots=%d files=%d%s\n", W.since, roots, files,
-        W.error and (" error=" .. W.error) or ""))
+        (W.error or W.pruneError) and (" error=" .. (W.error or W.pruneError)) or ""))
 end
 
 local function refreshInflight()
@@ -923,12 +923,27 @@ local function watchRefresh()
     return true
 end
 
+-- watchPaths keeps every snapshot row watched, so a row under a tree the list now prunes
+-- (plugins/marketplaces) would be journaled forever unless the snapshot drops it; a failed scan
+-- stays in the heartbeat and is retried every tick.
+local function pruneUnloaded(rows)
+    local paths = {}
+    for path in pairs(rows) do paths[#paths + 1] = path end
+    local out, err = runScan("unloaded", paths)
+    if not out then W.pruneError = "unloaded scan: " .. tostring(err); return end
+    W.pruneError = nil
+    for _, path in ipairs(outputLines(out)) do
+        if rows[path] then rows[path], W.dirty = nil, true end
+    end
+end
+
 watchTick = function()
     if not W or W.busy then return end
     W.busy = true
     pcall(function()
         refreshInflight()
         if watchRefresh() then watchCheck(watchPaths(), false, "", "change", W.listedBefore) end
+        if W.pruneError then pruneUnloaded(W.prev) end
         if W.dirty then writeSnapshot() end
     end)
     if W then
@@ -948,13 +963,7 @@ watchStart = function()
     local ok = pcall(function()
         refreshInflight()
         if not watchRefresh() then return end
-        -- watchPaths keeps every snapshot row watched, so a row under a tree the list now prunes
-        -- (plugins/marketplaces) would be journaled forever unless the loaded snapshot drops it.
-        if snapshot then
-            local rows = {}
-            for path in pairs(snapshot) do rows[#rows + 1] = path end
-            for _, path in ipairs(outputLines(runScan("unloaded", rows))) do snapshot[path] = nil end
-        end
+        if snapshot then pruneUnloaded(snapshot) end
         local paths, seen = {}, {}
         for _, path in ipairs(W.list) do seen[path] = true; paths[#paths + 1] = path end
         for path in pairs(snapshot or {}) do

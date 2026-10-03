@@ -3664,17 +3664,23 @@ def file_key(path):
     return "~" + path[len(home):] if path.startswith(home + "/") else path
 
 
-def gate_verdict(decisions, path, at):
+def gate_verdict(decisions, path, at, delta):
+    """A pass the bloat gate priced covers only the bytes it priced (summed over the window), so a small
+    passed Edit cannot clear a larger write of the same file beside it; a pass with no delta covers any."""
     names = {path, os.path.realpath(path)}
-    found = None
+    found, priced = None, 0
     for entry in decisions:
         if not at - GATE_BEFORE_S <= entry["at"] <= at + GATE_AFTER_S or not names & {entry.get("file"),
                                                                                          entry.get("real")}:
             continue
         if entry.get("decision") in ("passed", "span-pass", "granted"):
-            return "passed"
+            size = entry.get("delta")
+            if not isinstance(size, (int, float)) or isinstance(size, bool):
+                return "passed"
+            priced += max(size, 0)
+            continue
         found = "denied"
-    return found
+    return "passed" if priced >= delta else found
 
 
 def write_classes(paths):
@@ -3749,7 +3755,7 @@ def guards_section(now):
                 if (not isinstance(delta, (int, float)) or delta <= 0 or not classes.get(path, "?")
                         or FIXTURE_PATH_RE.search(file_key(path))):
                     continue
-                gate = gate_verdict(decisions, path, at)
+                gate = gate_verdict(decisions, path, at, delta)
                 if gate == "passed":
                     continue
                 root, on_demand = growth_root(path, skills)
