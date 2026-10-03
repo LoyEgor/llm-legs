@@ -118,7 +118,7 @@ ln -s "$ROOT/share" "$MIRROR/share"
 cp "$SCRIPT" "$MIRROR/bin/codex-image"
 cat >"$WORK/slow-codex" <<EOF
 #!/usr/bin/env bash
-[ "\${1-}" = --version ] || { : >"$WORK/codex-started"; while [ ! -e "$WORK/wrapper-edited" ]; do sleep 0.1; done; }
+[ "\${1-}" = --version ] || { : >"$WORK/codex-started"; while [ ! -e "$WORK/wrapper-edited" ] && [ -d "$WORK" ]; do sleep 0.1; done; }
 exec "$FIXTURE" "\$@"
 EOF
 chmod +x "$WORK/slow-codex"

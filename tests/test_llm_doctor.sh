@@ -785,9 +785,20 @@ assert sorted((row["id"], row["match"].get("until")) for row in committed["rows"
               if row["status"] in doctor.DISMISSALS) == [
     ("N4", "2026-09-16T23:59:59+03:00"), ("N5", None), ("N6", "2026-09-14T23:59:59+03:00"),
     ("N7", "2026-09-13T23:59:59+03:00")]
-# Every image rc=2 reads `bad command` and every wrapper prints `usage:` on any bad argv: such a row ends at its triage.
-assert all(row["match"].get("until") for row in committed["rows"]
-           if row["block"] == "image" and row["match"].get("word") == "bad command")
+# Every image rc=2 reads `bad command` and every wrapper prints `usage:` on any bad argv: a row that catches that
+# usage text ends at its triage. A row narrowed to another cause keeps no `until`, or its own regression reads new.
+WRAPPERS = ("codex-image", "gemini-image", "gemini-listen", "gemini-music", "gemini-sfx", "gemini-video",
+            "grok-image", "grok-video")
+for row in ledger["rows"]:
+    if row["block"] == "image" and row["match"].get("word") == "bad command" and any(
+            (not row["_model"] or row["_model"].search(w))
+            and (not row["_detail"] or row["_detail"].search("usage: %s --dest" % w))
+            for w in WRAPPERS):
+        assert row["_until"] is not None, row["id"]
+eof = doctor.leg("image", "image", "codex-image", now, "failed", "bad command", "bad arguments", "ours",
+                 text="/x/bin/codex-image: line 689: unexpected EOF while looking for matching `\"'")
+assert doctor.ledger_match(ledger, eof)["id"] == "I20"
+assert doctor.judge_leg_state(ledger, eof)[0] == "regressed"
 assert sorted(word for word, origin in doctor.FAILURE_ORIGIN.items() if origin == "theirs") == [
     "bare 429", "cancelled", "capacity", "mismatch", "refused", "server error", "throttled", "walled"]
 assert set(doctor.FAILURE_ORIGIN.values()) == {"ours", "theirs"} and doctor.IMAGE_ORIGIN == dict.fromkeys(
