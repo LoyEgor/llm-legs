@@ -184,6 +184,7 @@ FLOOR_ROWS = (("bash:trivial", "Bash · trivial", "a trivial Bash call"),
 FAST_PATH_PROBES = {"readonly-command.sh": 'rc_readonly_command ls && ! rc_readonly_command "rm x"'}
 SECRET_SETTING = re.compile(r"(?i)^env\.|token|secret|passw|credential|api.?key")
 SUITE_EXT = re.compile(r"\.(sh|bash|py|lua)$")
+SUITE_HARNESS = re.compile(r"(?m)^\s*(?:\.|source)\s.*?\b([A-Za-z0-9_]+)_harness\.sh\b")
 QUIET_SOURCE = re.compile(r"(?m)(?:^|[\s;&|!(])(?:\.|source)\s+([^\s;&|].*?)\s+2>\s?/dev/null")
 OWNER_ENTRIES = ("cli", "claude-desktop")
 C1_R_S = (120, 300, 600)
@@ -3310,9 +3311,23 @@ def pole_line(tests, now):
     return out
 
 
+def split_suites(root):
+    name = os.path.basename((root or "").rstrip("/"))
+    members = {}
+    for path in glob.glob(os.path.join(repos_dir(), name, "tests", "test_*.sh")) if name else ():
+        try:
+            with open(path, errors="replace") as handle:
+                found = SUITE_HARNESS.search(handle.read(4096))
+        except OSError:
+            continue
+        if found:
+            members.setdefault("test_" + found.group(1), []).append(SUITE_EXT.sub("", os.path.basename(path)))
+    return {label: family for family, labels in members.items() if len(labels) > 1 for label in labels}
+
+
 def cost_line(tests, now):
     window = LIMITS["test_cost_window_s"]
-    costs, bare = {}, []
+    costs, bare, families = {}, [], {}
     for t in tests:
         if t["end"] < now - window:
             continue
@@ -3323,7 +3338,10 @@ def cost_line(tests, now):
             parts = [(SUITE_EXT.sub("", name), secs) for name, secs in t["suite_secs"].items()]
         else:
             parts = [(t.get("label") or "?", t["secs"])]
+        if t.get("repo_root") not in families:
+            families[t.get("repo_root")] = split_suites(t.get("repo_root"))
         for label, secs in parts:
+            label = families[t.get("repo_root")].get(label, label)
             costs.setdefault(test_ident(t.get("repo"), label, t.get("repo_root")), (label, test_where(t), []))[2].append(
                 (secs, t))
     ranked = []

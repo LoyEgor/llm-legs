@@ -242,4 +242,19 @@ wait
 assert test "$(jq -cR 'fromjson? | .w' "$WORK/race.jsonl" | wc -l | tr -d ' ')" = 160
 assert test -z "$(ls "$WORK" | grep '\.row$')"
 
+# --changed keeps a split suite whose sourced harness names the changed file, and drops the bystander.
+R4="$WORK/r4"
+new_repo "$R4"
+mkdir -p "$R4/bin"
+printf 'echo v1\n' >"$R4/bin/tool.sh"
+printf 'SCRIPT="$(dirname "$0")/../bin/tool.sh"\n' >"$R4/tests/tool_harness.sh"
+suite "$R4" test_tool_part.sh '. "$(dirname "$0")/tool_harness.sh"; exit 0'
+suite "$R4" test_other.sh 'exit 0'
+git -C "$R4" add -A
+git -C "$R4" -c user.name=t -c user.email=t@t -c core.hooksPath=/dev/null commit -q -m suites
+printf 'echo v2\n' >"$R4/bin/tool.sh"
+changed_out=$(bash "$ROOT/share/run-suites.sh" --repo "$R4" -j 2 --changed 2>&1)
+assert grep -q 'test_tool_part.sh .*PASS' <<<"$changed_out"
+assert_fails grep -q 'test_other.sh' <<<"$changed_out"
+
 printf 'PASS: %s asserts; run-suites and direct suite runs journal one row each\n' "$asserts"

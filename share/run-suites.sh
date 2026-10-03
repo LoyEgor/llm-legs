@@ -25,8 +25,8 @@ Exit 1 if any suite failed, with the last 30 lines of each failure.
 
   --repo <dir>  repository root (default: the git root of the current directory)
   -j <n>        parallel jobs (default: cores / 2, minimum 2)
-  --changed     only suites whose text mentions the basename of a path in
-                `git diff --name-only HEAD` or an untracked file. A HEURISTIC: a suite that
+  --changed     only suites whose text, or a tests/ helper file they name, mentions the basename
+                of a path in `git diff --name-only HEAD` or an untracked file. A HEURISTIC: a suite that
                 exercises a file it never names by basename is missed, so --changed is for
                 iterating, never for the final gate.
   --all         also run the suites skipped by default because they read live machine state
@@ -169,11 +169,22 @@ if [ "$changed" = true ]; then
     names+=("$(basename "$entry")")
   done < <({ git -C "$repo" diff --name-only HEAD 2>/dev/null
              git -C "$repo" ls-files --others --exclude-standard 2>/dev/null; } | sort -u)
+  helpers=$(cd "$repo/tests" && for helper in *; do
+    [ -f "$helper" ] || continue
+    case "$helper" in test_*|e2e_*) ;; *) printf '%s\n' "$helper" ;; esac
+  done)
   declare -a kept=()
   for entry in "${suites[@]}"; do
+    # A split suite names its target only inside the harness it sources, so that text counts too.
+    declare -a texts=("$entry")
+    if [ -n "$helpers" ]; then
+      while IFS= read -r helper; do
+        texts+=("$repo/tests/$helper")
+      done < <(grep -oF -- "$helpers" "$entry" 2>/dev/null | sort -u)
+    fi
     for name in ${names[@]+"${names[@]}"}; do
       # A changed suite always runs; otherwise the suite has to name the changed file.
-      if [ "$name" = "$(basename "$entry")" ] || grep -qF -- "$name" "$entry" 2>/dev/null; then
+      if [ "$name" = "$(basename "$entry")" ] || grep -qF -- "$name" "${texts[@]}" 2>/dev/null; then
         kept+=("$entry")
         break
       fi

@@ -1278,6 +1278,17 @@ check((cost["llm-legs:test_mid"]["level"], cost["llm-legs:test_mid"]["value"]) =
       "daily cost: over 1 h is a watch counting the suite's share of full runs, and a run that ended before the window is left out")
 check("llm-legs:suites" not in cost and lead["menu"]["rows"][-1]["cells"][:2] == ["suites runs without suite times", "1"],
       "daily cost: a suites run without suite times is shown unattributed, never judged as a suite")
+for suite, head in (("test_tool.sh", '. "$(dirname "$0")/tool_harness.sh"'), ("test_tool_render.sh", '. "$(dirname "$0")/tool_harness.sh"'),
+                    ("test_tool_extra.sh", "echo 'not sourced: tool_harness.sh'"), ("test_lone.sh", '. "$(dirname "$0")/lone_harness.sh"')):
+    put(os.path.join(work, "split-repo", "tests", suite), "#!/usr/bin/env bash\n%s\n" % head)
+split = [dict(full_run(T - 3600 * i, 2600, {"test_tool.sh": 1300, "test_tool_render.sh": 1300, "test_tool_extra.sh": 1300,
+                                             "test_lone.sh": 1300}), repo_root="/r/split-repo") for i in (1, 2)]
+part, lead, cost = cost_judges(split + [dict(test_row("split", "test_tool_render", T - 1500, T - 900), repo_root="/r/split-repo")],
+                               "tests:cost")
+check((cost.get("split-repo:test_tool", {}).get("value"), cost["split-repo:test_tool"]["level"]) == (5800, "watch")
+      and "split-repo:test_tool_render" not in cost and cost["split-repo:test_tool_extra"]["value"] == 2600
+      and cost["split-repo:test_lone"]["value"] == 2600,
+      "daily cost: the parts sourcing one tests/<x>_harness.sh are one suite test_<x>, their wall clock summed")
 for key, value in saved_env.items():
     if value is None:
         os.environ.pop(key, None)
