@@ -776,6 +776,8 @@ assert doctor.judge_leg_state(ledger, unseen) == ("new", None)
 assert doctor.leg_id(unseen, None) == "leg-failure:reviewers/pool empty"
 committed = json.load(open(os.environ["LLM_DOCTOR_LEDGER"]))
 assert doctor.ledger_faults(committed) == [], doctor.ledger_faults(committed)
+# A judge edit is no fix of the row it unmasked: recorded as one, it would move H11's fix time past real recurrences.
+assert ledger["by_id"]["H11"]["fixes"][-1]["files"] == ["llm-legs/bin/worker-run"], ledger["by_id"]["H11"]["fixes"]
 
 # The judge is pinned: loosening a dismissal, a theirs word, an exemption or a limit is an edit here.
 assert sorted((row["id"], row["match"].get("until")) for row in committed["rows"]
@@ -1012,16 +1014,26 @@ assert [(item["id"], item["state"]) for item in doctor.pending_fix_problems(awai
     == [("MP", "fixed-pending"), ("HP", "fixed-pending")]
 assert doctor.pending_fix_problems(awaiting, [{"id": "MP"}, {"id": "HP"}], 24, now) == []
 
-# A run gap regresses a debt fix only when its run started after the fix, like a leg.
+# A run gap the launch-time code made (no before listing) regresses a debt fix only when its run started after
+# the fix, like a leg; one the fold made ran on the code current at the fold and is dated by it.
 fixed_fold = fixture_ledger([entry({"health": "debt", "key": "^debt-gap:run-fold:snapshots unreadable$"}, "fixed",
                                    fixes=[fix_at(7200)], id="HF", block="any")])
-def fold_states(run):
+def fold_states(run, before=False, family=False):
+    snap = os.path.join(os.environ["WORKER_RUN_DIR"], run, *(["families", "1"] if family else []))
+    os.makedirs(snap, exist_ok=True)
+    if family:
+        open(os.path.join(snap, "top"), "w").write("/r\n")
+    if before:
+        open(os.path.join(snap, "dirty-before-shas"), "w").close()
     with open(os.environ["ANCHORS_ROWS"], "w") as rows:
         rows.write(json.dumps({"session": "s9", "kind": "run-fold", "detail": "%s /r: snapshots unreadable" % run,
                                "count": 1, "first": now - 100, "last": now - 100}) + "\n")
     row = doctor.debt_health(now - 86400, now, 24)
     return [(item["id"], item["state"]) for item in doctor.health_problems(row, fixed_fold, 24) if item["rule"] == "debt-gap"]
 assert fold_states("claudeb-%d-1-ab" % (now - 9000)) == []
+assert fold_states("claudeb-%d-2-ab" % (now - 9000), family=True) == []
+assert fold_states("claudeb-%d-3-ab" % (now - 9000), before=True) == [("HF", "regressed")]
+assert fold_states("claudeb-%d-4-ab" % (now - 9000), before=True, family=True) == [("HF", "regressed")]
 assert fold_states("claudeb-%d-1-ab" % (now - 3000)) == [("HF", "regressed")]
 assert fold_states("w-1") == [("HF", "regressed")]
 

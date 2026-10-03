@@ -2227,6 +2227,21 @@ def open_gaps(window_h):
     return rows, "review-anchors skipped %d unreadable gap stores" % skipped if skipped else ""
 
 
+def run_gap_start(detail):
+    """The run's start for a gap the launch-time code made (its snapshot lacks the before listing), else None.
+    The fold re-executes worker-run from disk, so a gap it made ran on the code current at the fold."""
+    head, _, rest = detail.partition(" ")
+    run = WORKER_ID_RE.match(head)
+    run_dir = os.path.join(runs_dir(), head)
+    if not run or not os.path.isdir(run_dir):
+        return None
+    path = rest.split(": ", 1)[0]
+    families = os.path.join(run_dir, "families")
+    subs = [os.path.join(families, name) for name in sorted(os.listdir(families))] if os.path.isdir(families) else []
+    snap = next((sub for sub in subs if (read_text(os.path.join(sub, "top")) or "").strip() == path), run_dir)
+    return None if os.path.exists(os.path.join(snap, "dirty-before-shas")) else int(run.group(1))
+
+
 def debt_health(cutoff, now, window_h):
     """Debt that recording failed to capture and nobody has reviewed since (open gaps), or that a store
     dropped unreviewed (losses)."""
@@ -2252,10 +2267,9 @@ def debt_health(cutoff, now, window_h):
         cause[2] += as_int(row.get("count")) or 1
     for (session, _, _), (label, last, repeats, kind, repo, why, detail) in causes.items():
         key = "%s/%s" % (kind, os.path.basename(repo.rstrip("/"))) if repo else "%s:%s" % (kind, why) if why else kind
-        run = WORKER_ID_RE.match(detail.split(" ", 1)[0])
         add_item(items, label, last, session=session, repeats=repeats, rule="debt-gap", key=key,
                  ref="gaps:%s/%s/%s" % (session or "-", kind, event_stamp(last)), excerpt=detail,
-                 start=int(run.group(1)) if run else None)
+                 start=run_gap_start(detail))
     if note:
         notes.append(note)
     drops = {}

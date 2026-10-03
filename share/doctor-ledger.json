@@ -714,7 +714,7 @@
     "key": "^debt-gap:run-fold:snapshots unreadable$"
    },
    "title": "one untracked file named '-' failed every logo-vectorizer-bench snapshot closed",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-02T12:49:56+03:00",
@@ -724,21 +724,12 @@
      ],
      "in": "llm-legs@91858c3",
      "regressed_at": null
-    },
-    {
-     "at": "2026-10-03T07:39:06+03:00",
-     "by": "night fixer llm-debt-20261003T042526Z-2fc2",
-     "files": [
-      "llm-legs/bin/llm-doctor"
-     ],
-     "in": null,
-     "regressed_at": null
     }
    ],
    "same_cause": [],
    "last_reviewed": "2026-10-03",
    "reviewed_by": "night fixer llm-debt-20261003T042526Z-2fc2",
-   "note": "Cause: /Volumes/Work/Projects/logo-vectorizer-bench/- (a stray SVG, the project's) fails path_shape_ok, so workdir_dirty_paths failed every snapshot there; fixed in worker-run 91858c3 (unshaped-before/after digest, tests/test_worker_run_stamps.sh). 2026-10-03 'regressed' was the judge's: both post-landing gaps (claudeb-1790946312-74943-3dd7, claudeb-1790946317-81390-7558) are runs started 16:05, before 91858c3 reached main at 17:25:36, and folded after it; claudeb-1790988185-61098-645b there wrote full snapshots with unshaped digests. debt_health now dates a run gap by its run id's start, as judge_leg_state dates a leg (tests/test_llm_doctor.sh, mutation-checked).",
+   "note": "Cause: /Volumes/Work/Projects/logo-vectorizer-bench/- (a stray SVG, the project's) fails path_shape_ok, so workdir_dirty_paths failed every snapshot there; fixed in worker-run 91858c3 (unshaped-before/after digest, tests/test_worker_run_stamps.sh). 2026-10-03 'regressed' was the judge's: both post-landing gaps (claudeb-1790946312-74943-3dd7, claudeb-1790946317-81390-7558) are runs started 16:05, before 91858c3 reached main at 17:25:36, and folded after it; claudeb-1790988185-61098-645b there wrote full snapshots with unshaped digests. debt_health now dates a run gap whose snapshot lacks its before listing (launch-time code) by the run's start, any other by its fold, which re-executes worker-run from disk; the judge edit is no H11 fix entry (tests/test_llm_doctor.sh, mutation-checked).",
    "handoff": "docs/handoffs/2026-10-01-debt-health-followup.md"
   },
   {

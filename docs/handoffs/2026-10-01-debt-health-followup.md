@@ -43,6 +43,6 @@ timeouts and do not exempt the tree.
 
 - H11: fixed in worker-run 91858c3 (the unshaped `-` file). Its 2026-10-03 "regressed" came from the
   judge, not the fix: runs started before the landing were dated by their fold time. `debt_health`
-  now dates a run gap by its run's start, the way leg rules already do.
+  dates a launch-time run gap by its run's start.
 - H13 (losses from family folds) is in `2026-10-02-debt-run-fold-skip-families.md`.
 - Open runs left by worker runs that never completed are blind spot B7.
