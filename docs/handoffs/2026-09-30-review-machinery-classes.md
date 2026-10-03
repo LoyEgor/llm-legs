@@ -7,23 +7,8 @@ which owns review-bench `share/rbench/debt.py` `DOCTOR_CHECKS`. Written 2026-09-
 run `llm-reviewers-20260930T001641Z-5fac` from the snapshot of 2026-09-29 22:47 local (`total` 400).
 Nothing here was dismissed; every ledger row stays `open` (M5 is new, for `debt_line`).
 
-## Fixed in this run
-
-`closure_pending` (M2) counted rounds whose stored `closure` word was stale: 5 of the 35
-(`20260916T233511Z-de8379a`, `20260925T005220Z-e7a8840`, `20260927T151347Z-ff2b386`,
-`20260927T172301Z-99a590c`, `20260929T043901Z-3aa6fef`) have a fixer row for every confirmed
-finding, but `closure` is written only by a fold (`review-anchors run-fold`, `record`), and rows a
-chat appends to `<bench>/verdicts.jsonl` by hand never rewrite it. `doctor_pending_rows` now skips a
-round whose fixer rows settle every confirmed finding (review-bench branch
-`night/20260930T001419Z-8480/llm-reviewers-20260930T001641Z-5fac`, `share/rbench/debt.py`,
-test `test_doctor_runs_its_checks`, red on the old code). Only the doctor read the stored word.
-
 ## Yours to decide
 
-1. **M2 residue (30 rounds).** Real unfinished rounds: confirmed findings with no fixer row, the
-   oldest from 2026-09-16. The class does what it says; whether they close `--nofix` is Egor's or a
-   span's decision (`review-anchors-contract.md` table), and a fixed-pending row would hide them.
-   Superseded 2026-10-01: the night reviewers fixer settles them (`docs/doctor-fix.md` "Stuck review rounds").
 2. **M1 `anchors` (324).** 321 are `gap-stale` of ONE chat, «Vector Magic macOS ARM migration», in
    `logo-vectorizer-bench`: 299 `hash-cap` gaps (a bench tree with 164+ dirty result files; each
    Bash call records one gap with a different detail, so `doctor_check_row` keys each apart),
@@ -40,7 +25,7 @@ test `test_doctor_runs_its_checks`, red on the old code). Only the doctor read t
 4. **M3 `debt_scope` (30).** `debt_round_suspect` flags a round when shared lines exceed half of it
    or any unanchored fix line exists. In a checkout many chats share, that is most debt rounds (for
    example the «Чистка» round at 20 824 lines, 99.9 % shared). Unanchored fix lines also follow from
-   hand-written fixer rows (item 0 above): a chat that fixes a round itself leaves no `fix:R:*`
+   hand-written fixer rows: a chat that fixes a round itself leaves no `fix:R:*`
    anchor. Decide whether the class measures a defect or the normal shape of a shared checkout.
 5. **M4 `integrity` (8).** Two kinds: concurrent edits by other chats in the shared checkout
    (`docs/harness-doctor-design.md`, `bin/harness-doctor` in llm-legs), which the record itself
@@ -85,3 +70,17 @@ still wait for the owner.
   claude-setup `hooks/lib/review-journal.sh:583`. Proposal for the owner: record that gap once per
   (session, checkout) in the hook, not once per call. That change is in claude-setup and lowers a
   count, so it is yours.
+
+## 2026-10-03, night fixer run `llm-reviewers-20261003T042533Z-1621`
+
+Rows: M1 788 (all the logo-vectorizer-bench chat), M2 0, M3 27, M4 1, M5 3. No new machinery bug.
+
+- **M5, new gap kind.** «Updater doctor» reads WHY=gap from one `run-fold` gap: worker run
+  `claudeb-1790995896-49842-2cf6` snapshotted the chat's claude-setup worktree `speed-doctor` as a
+  family, and the chat removed it mid-run. llm-legs `bin/worker-run` `fold_run_anchors` files the gap
+  but, unlike its workdir-gone branch, never folds the run in that family's store, so the run stays
+  `folded: null` in claude-setup's store (no pid file, so never `run-dead`). Harmless today.
+- **R1 floor on edited docs (your call).** A clean docs chunk was refused at 12 KB read against a
+  22.8 KB floor: `docs/shared-invariants.md` rows run to 17 KB, so 24 changed lines are 152 KB of
+  diff. The cell did check the claims against code. Pricing edited `.md` or only changed lines would
+  lower the floor, so it is yours.
