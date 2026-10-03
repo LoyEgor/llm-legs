@@ -6,7 +6,7 @@ home_fixture_after_first_suite
 seed_claudeb_store
 
 # zoe: distant 5h reset but imminent weekly reset — --sort reset must use min(5h, weekly).
-printf '{"five_hour":{"used_percentage":11,"resets_at":%s},"seven_day":{"used_percentage":97,"resets_at":%s}}\n' "$((now + 50000))" "$((now + 500))" >"$CLAUDEB/limits/zoe.json"
+printf '{"five_hour":{"used_percentage":11,"resets_at":%s},"seven_day":{"used_percentage":97,"resets_at":%s}}\n' "$((now + 50000))" "$((now + 990))" >"$CLAUDEB/limits/zoe.json"
 reset_sorted=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table --sort reset) || fail "reset-sorted table collection failed"
 order=$(awk 'NR > 1 {print $1}' <<<"$reset_sorted" | paste -sd, -)
 [ "$order" = "claude/zoe,codex,claude/alona*,gemini,grok" ] || fail "--sort reset min(5h, weekly) order mismatch: $order"
