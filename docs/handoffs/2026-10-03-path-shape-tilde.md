@@ -1,6 +1,6 @@
 # Path-shape check spends a user lookup per path; claude-setup symlinks write llm-legs main
 
-Status: open
+Status: open (item 1 done: claude-setup@34b29e2 and llm-legs W6; item 2 open)
 
 To: `share/doctor-ledger.json` `owners.workers` and the claude-setup owner (`share/harness-ledger.json` `owner`).
 

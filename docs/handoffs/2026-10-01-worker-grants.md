@@ -14,7 +14,7 @@ six Vector Magic briefs said `Repo <path>` in prose, and one RESUME launched fre
 dropped `--resume`). Night and fixer briefs name main checkouts in order to forbid writes there, so
 worker-run still never infers a main-checkout grant from prose.
 
-Open for the claude-setup relay owner (`agents/*-worker.md`): `--workdir <dir>` is the relay's guess
+Open (ledger W7) for the claude-setup relay owner (`agents/*-worker.md`): `--workdir <dir>` is the relay's guess
 from the brief; a brief that works in a main checkout should carry it as the workdir or as `ADD-DIR:`.
 The relays' "pass `--resume` for a RESUME brief" step is now redundant (worker-run reads the line)
 and can go. A worktree the run creates mid-run, named only as a template, stays ungranted.
