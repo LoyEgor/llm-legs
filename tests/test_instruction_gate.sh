@@ -3186,9 +3186,12 @@ assert_eq "bloat denied 399 cost $(realpath "$REAL_MD")" "$(gj_last '"\(.gate) \
 age_stamps "$BLOAT_STAMPS"
 assert_eq pass "$(bloat_decision "$CLAUDE_MD")"
 assert_eq "granted $CLAUDE_MD" "$(gj_last '"\(.decision) \(.file)"')"
-n=$(wc -l <"$GJ")
 assert_eq "" "$(jq -cn --arg p "$CLAUDE_MD" \
   '{tool_name:"Edit",cwd:"/tmp",tool_input:{file_path:$p,old_string:"x",new_string:"yy"}}' | bash "$BLOAT")"
+assert_eq "passed 1 threshold 120" "$(gj_last '"\(.decision) \(.delta) \(.detail)"')"
+n=$(wc -l <"$GJ")
+assert_eq "" "$(jq -cn --arg p "$CLAUDE_MD" \
+  '{tool_name:"Edit",cwd:"/tmp",tool_input:{file_path:$p,old_string:"xy",new_string:"z"}}' | bash "$BLOAT")"
 assert_eq "$n" "$(wc -l <"$GJ")"
 cmd="echo journaled >> $CLAUDE_MD"
 assert_eq deny "$(decision "$cmd")"

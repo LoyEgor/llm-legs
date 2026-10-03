@@ -297,9 +297,9 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-02",
-      "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00",
-      "note": "2026-10-02 check: still vendor sync, pptx SKILL.md into all three synced dirs at 2026-10-01T21:06-21:10Z; cause stands, row kept open, judge unchanged. ~/.claude/plugins/synced/ (cowork-plugin-management, 2026-10-02T09:31Z) is the same vendor sync on a new tree, appeared after launch, for the next run. Earlier: Narrowed to one cause: 2026-09-29 20:14/20:20/20:33Z the harness itself synced the newly published org skill google-workspace (SKILL.md + references/*.md, 13-47 kB each) into the three synced/<org>_<account>/ dirs beside manifest.json and .last-complete-round; the dir is gitignored in claude-setup and written by no tool call. Dismissal proposed in the handoff. Follow-up 2026-10-01: Current retained events include vendor docs/docx syncs at 2026-09-30T00:44-03:59Z, including watcher 6abc6f522478d465 and tripwire bba946b035711a7e. This extends the prior google-workspace-only note: the match still names the vendor-owned synced tree, not a model file writer. No native PreToolUse event is available for org synchronization; retain open row and propose dismissal to Harness Doctor without broadening its match. Duplicate observations and missing write keys are separately handed off; the source cannot prove all sync records are distinct writes.",
+      "last_reviewed": "2026-10-03",
+      "reviewed_by": "night fixer harness-guards-20261003T042540Z-6416",
+      "note": "2026-10-03 check: pptx SKILL.md +2282 B into all three synced dirs at 2026-10-02T22:14-22:22Z, still vendor sync, cause stands; the plugins/synced tree has its own row guards-synced-plugins-vendor-sync. Narrowed to one cause: 2026-09-29 20:14/20:20/20:33Z the harness itself synced the newly published org skill google-workspace (SKILL.md + references/*.md, 13-47 kB each) into the three synced/<org>_<account>/ dirs beside manifest.json and .last-complete-round; the dir is gitignored in claude-setup and written by no tool call. Dismissal proposed in the handoff. Follow-up 2026-10-01: Current retained events include vendor docs/docx syncs at 2026-09-30T00:44-03:59Z, including watcher 6abc6f522478d465 and tripwire bba946b035711a7e. This extends the prior google-workspace-only note: the match still names the vendor-owned synced tree, not a model file writer. No native PreToolUse event is available for org synchronization; retain open row and propose dismissal to Harness Doctor without broadening its match. Duplicate observations and missing write keys are separately handed off; the source cannot prove all sync records are distinct writes.",
       "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md"
     },
     {
@@ -770,10 +770,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "note": "Window events 13:26:44 and 14:20:08Z (+451/+339 B) are python3 heredocs with p='agents/image-gen.md' by chat \"Claude Sonnet 5.5 launch video\" (7c93bbe2) in the claude-setup main checkout; 21:11:32Z (+400 B) by \"Google video generation integration\" (10896605), writer shape not confirmed. Cause: an interpreter heredoc writing through a path held in a variable (`p='...'; open(p,'w')`), which bin/instruction-write-gate.sh leaves out of scope by design, so only the tripwire saw it. Owner decision in docs/handoffs/2026-10-02-harness-guards-gate-scope.md.  Earlier: Watcher events 6abd878e5e994831, 6abd92505a9ae4b5 and 6abdaf3873a00c54 report +443/+428/+1830 bytes at 22:05:02/22:50:56/00:54:16Z. The 19:17:25 Edit in Google video generation integration has a bloat passed record and is correctly absent from the packet; no equivalent matched pass exists for the three packet events. This rules out a general agents symlink join failure. Exact later writers remain unconfirmed; active image-agent work belongs to that chat. Retain detection and ask the owner for those writes/audits, not a blanket exemption.",
+      "note": "2026-10-03 check: window events 20:26:18Z (+85 B) and 23:27:46Z (+135 B), both chat \"Google video generation integration\" (10896605). The 20:26:16Z one was an Edit the bloat gate passed under its 120 B threshold without a gates.jsonl record, so the doctor read it ungated; fixed in this run (bin/instruction-bloat-gate.sh journals a growing sub-threshold pass, tests/test_instruction_gate.sh). The 23:27:45Z one is a python3 heredoc with p='agents/image-gen.md': the variable-path cause stands. Earlier: Window events 13:26:44 and 14:20:08Z (+451/+339 B) are python3 heredocs with p='agents/image-gen.md' by chat \"Claude Sonnet 5.5 launch video\" (7c93bbe2) in the claude-setup main checkout; 21:11:32Z (+400 B) by \"Google video generation integration\" (10896605), writer shape not confirmed. Cause: an interpreter heredoc writing through a path held in a variable (`p='...'; open(p,'w')`), which bin/instruction-write-gate.sh leaves out of scope by design, so only the tripwire saw it. Owner decision in docs/handoffs/2026-10-02-harness-guards-gate-scope.md.  Earlier: Watcher events 6abd878e5e994831, 6abd92505a9ae4b5 and 6abdaf3873a00c54 report +443/+428/+1830 bytes at 22:05:02/22:50:56/00:54:16Z. The 19:17:25 Edit in Google video generation integration has a bloat passed record and is correctly absent from the packet; no equivalent matched pass exists for the three packet events. This rules out a general agents symlink join failure. Exact later writers remain unconfirmed; active image-agent work belongs to that chat. Retain detection and ask the owner for those writes/audits, not a blanket exemption.",
       "handoff": "docs/handoffs/2026-10-02-harness-guards-gate-scope.md",
-      "last_reviewed": "2026-10-02",
-      "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
+      "last_reviewed": "2026-10-03",
+      "reviewed_by": "night fixer harness-guards-20261003T042540Z-6416"
     },
     {
       "id": "guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-readme-md",
@@ -782,13 +782,23 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/plugins/marketplaces/claude\\-plugins\\-official/plugins/math\\-proof/README\\.md$"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-03T07:40:00+03:00",
+          "by": "Night fixer harness-guards-20261003T042540Z-6416",
+          "files": [
+            "llm-legs/hammerspoon/instruction-watch.lua"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "note": "2026-10-02 check: cause gone from the watch set: llm-legs 2267da0 (2026-10-01) prunes ~/.claude/plugins/marketplaces from instruction_visible_paths (INSTRUCTION_HOME_UNLOADED_ERE), so a marketplace refresh can no longer journal these; dismissal still the owner's. Earlier: Watcher event 6abd5e9b7ca01b57 at 2026-09-30T19:10:19Z added all six math-proof instruction roots. Packet history places each in official marketplace commit ab024cd (2026-09-30), outside both authorized repositories. No model tool gate can preflight a vendor marketplace refresh. Propose owner dismissal for this exact identity only; retain open status and unchanged judge. The later between-session observation is separately tracked under guards-tripwire-rejournal.",
+      "note": "2026-10-03: the 2026-10-02 'cause gone from the watch set' was wrong. Cause: llm-legs 2267da0 pruned plugins/marketplaces from instruction_visible_paths, but the Hammerspoon watcher (hammerspoon/instruction-watch.lua watchPaths) keeps every row of its persisted watcher/snapshot.tsv watched, and the live snapshot still held 240 marketplace rows, so marketplace pulls kept journaling. Fixed: watchStart drops loaded snapshot rows under INSTRUCTION_HOME_UNLOADED_ERE (tests/instruction_watch_menu_harness.lua).",
       "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
-      "last_reviewed": "2026-10-02",
-      "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
+      "last_reviewed": "2026-10-03",
+      "reviewed_by": "night fixer harness-guards-20261003T042540Z-6416"
     },
     {
       "id": "guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-agents-math-proof-judge-md",
@@ -797,13 +807,23 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/plugins/marketplaces/claude\\-plugins\\-official/plugins/math\\-proof/agents/math\\-proof\\-judge\\.md$"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-03T07:40:00+03:00",
+          "by": "Night fixer harness-guards-20261003T042540Z-6416",
+          "files": [
+            "llm-legs/hammerspoon/instruction-watch.lua"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "note": "2026-10-02 check: cause gone from the watch set: llm-legs 2267da0 (2026-10-01) prunes ~/.claude/plugins/marketplaces from instruction_visible_paths (INSTRUCTION_HOME_UNLOADED_ERE), so a marketplace refresh can no longer journal these; dismissal still the owner's. Earlier: Watcher event 6abd5e9b7ca01b57 at 2026-09-30T19:10:19Z added all six math-proof instruction roots. Packet history places each in official marketplace commit ab024cd (2026-09-30), outside both authorized repositories. No model tool gate can preflight a vendor marketplace refresh. Propose owner dismissal for this exact identity only; retain open status and unchanged judge. The later between-session observation is separately tracked under guards-tripwire-rejournal.",
+      "note": "2026-10-03: the 2026-10-02 'cause gone from the watch set' was wrong. Cause: llm-legs 2267da0 pruned plugins/marketplaces from instruction_visible_paths, but the Hammerspoon watcher (hammerspoon/instruction-watch.lua watchPaths) keeps every row of its persisted watcher/snapshot.tsv watched, and the live snapshot still held 240 marketplace rows, so marketplace pulls kept journaling. Fixed: watchStart drops loaded snapshot rows under INSTRUCTION_HOME_UNLOADED_ERE (tests/instruction_watch_menu_harness.lua).",
       "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
-      "last_reviewed": "2026-10-02",
-      "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
+      "last_reviewed": "2026-10-03",
+      "reviewed_by": "night fixer harness-guards-20261003T042540Z-6416"
     },
     {
       "id": "guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-agents-math-proof-worker-deep-md",
@@ -812,13 +832,23 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/plugins/marketplaces/claude\\-plugins\\-official/plugins/math\\-proof/agents/math\\-proof\\-worker\\-deep\\.md$"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-03T07:40:00+03:00",
+          "by": "Night fixer harness-guards-20261003T042540Z-6416",
+          "files": [
+            "llm-legs/hammerspoon/instruction-watch.lua"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "note": "2026-10-02 check: cause gone from the watch set: llm-legs 2267da0 (2026-10-01) prunes ~/.claude/plugins/marketplaces from instruction_visible_paths (INSTRUCTION_HOME_UNLOADED_ERE), so a marketplace refresh can no longer journal these; dismissal still the owner's. Earlier: Watcher event 6abd5e9b7ca01b57 at 2026-09-30T19:10:19Z added all six math-proof instruction roots. Packet history places each in official marketplace commit ab024cd (2026-09-30), outside both authorized repositories. No model tool gate can preflight a vendor marketplace refresh. Propose owner dismissal for this exact identity only; retain open status and unchanged judge. The later between-session observation is separately tracked under guards-tripwire-rejournal.",
+      "note": "2026-10-03: the 2026-10-02 'cause gone from the watch set' was wrong. Cause: llm-legs 2267da0 pruned plugins/marketplaces from instruction_visible_paths, but the Hammerspoon watcher (hammerspoon/instruction-watch.lua watchPaths) keeps every row of its persisted watcher/snapshot.tsv watched, and the live snapshot still held 240 marketplace rows, so marketplace pulls kept journaling. Fixed: watchStart drops loaded snapshot rows under INSTRUCTION_HOME_UNLOADED_ERE (tests/instruction_watch_menu_harness.lua).",
       "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
-      "last_reviewed": "2026-10-02",
-      "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
+      "last_reviewed": "2026-10-03",
+      "reviewed_by": "night fixer harness-guards-20261003T042540Z-6416"
     },
     {
       "id": "guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-agents-math-proof-worker-md",
@@ -827,13 +857,23 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/plugins/marketplaces/claude\\-plugins\\-official/plugins/math\\-proof/agents/math\\-proof\\-worker\\.md$"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-03T07:40:00+03:00",
+          "by": "Night fixer harness-guards-20261003T042540Z-6416",
+          "files": [
+            "llm-legs/hammerspoon/instruction-watch.lua"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "note": "2026-10-02 check: cause gone from the watch set: llm-legs 2267da0 (2026-10-01) prunes ~/.claude/plugins/marketplaces from instruction_visible_paths (INSTRUCTION_HOME_UNLOADED_ERE), so a marketplace refresh can no longer journal these; dismissal still the owner's. Earlier: Watcher event 6abd5e9b7ca01b57 at 2026-09-30T19:10:19Z added all six math-proof instruction roots. Packet history places each in official marketplace commit ab024cd (2026-09-30), outside both authorized repositories. No model tool gate can preflight a vendor marketplace refresh. Propose owner dismissal for this exact identity only; retain open status and unchanged judge. The later between-session observation is separately tracked under guards-tripwire-rejournal.",
+      "note": "2026-10-03: the 2026-10-02 'cause gone from the watch set' was wrong. Cause: llm-legs 2267da0 pruned plugins/marketplaces from instruction_visible_paths, but the Hammerspoon watcher (hammerspoon/instruction-watch.lua watchPaths) keeps every row of its persisted watcher/snapshot.tsv watched, and the live snapshot still held 240 marketplace rows, so marketplace pulls kept journaling. Fixed: watchStart drops loaded snapshot rows under INSTRUCTION_HOME_UNLOADED_ERE (tests/instruction_watch_menu_harness.lua).",
       "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
-      "last_reviewed": "2026-10-02",
-      "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
+      "last_reviewed": "2026-10-03",
+      "reviewed_by": "night fixer harness-guards-20261003T042540Z-6416"
     },
     {
       "id": "guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-skills-siege",
@@ -842,13 +882,23 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/plugins/marketplaces/claude\\-plugins\\-official/plugins/math\\-proof/skills/siege$"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-03T07:40:00+03:00",
+          "by": "Night fixer harness-guards-20261003T042540Z-6416",
+          "files": [
+            "llm-legs/hammerspoon/instruction-watch.lua"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "note": "2026-10-02 check: cause gone from the watch set: llm-legs 2267da0 (2026-10-01) prunes ~/.claude/plugins/marketplaces from instruction_visible_paths (INSTRUCTION_HOME_UNLOADED_ERE), so a marketplace refresh can no longer journal these; dismissal still the owner's. Earlier: Watcher event 6abd5e9b7ca01b57 at 2026-09-30T19:10:19Z added all six math-proof instruction roots. Packet history places each in official marketplace commit ab024cd (2026-09-30), outside both authorized repositories. No model tool gate can preflight a vendor marketplace refresh. Propose owner dismissal for this exact identity only; retain open status and unchanged judge. The later between-session observation is separately tracked under guards-tripwire-rejournal.",
+      "note": "2026-10-03: the 2026-10-02 'cause gone from the watch set' was wrong. Cause: llm-legs 2267da0 pruned plugins/marketplaces from instruction_visible_paths, but the Hammerspoon watcher (hammerspoon/instruction-watch.lua watchPaths) keeps every row of its persisted watcher/snapshot.tsv watched, and the live snapshot still held 240 marketplace rows, so marketplace pulls kept journaling. Fixed: watchStart drops loaded snapshot rows under INSTRUCTION_HOME_UNLOADED_ERE (tests/instruction_watch_menu_harness.lua).",
       "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
-      "last_reviewed": "2026-10-02",
-      "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
+      "last_reviewed": "2026-10-03",
+      "reviewed_by": "night fixer harness-guards-20261003T042540Z-6416"
     },
     {
       "id": "guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-skills-solo",
@@ -857,13 +907,23 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/plugins/marketplaces/claude\\-plugins\\-official/plugins/math\\-proof/skills/solo$"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-03T07:40:00+03:00",
+          "by": "Night fixer harness-guards-20261003T042540Z-6416",
+          "files": [
+            "llm-legs/hammerspoon/instruction-watch.lua"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "note": "2026-10-02 check: cause gone from the watch set: llm-legs 2267da0 (2026-10-01) prunes ~/.claude/plugins/marketplaces from instruction_visible_paths (INSTRUCTION_HOME_UNLOADED_ERE), so a marketplace refresh can no longer journal these; dismissal still the owner's. Earlier: Watcher event 6abd5e9b7ca01b57 at 2026-09-30T19:10:19Z added all six math-proof instruction roots. Packet history places each in official marketplace commit ab024cd (2026-09-30), outside both authorized repositories. No model tool gate can preflight a vendor marketplace refresh. Propose owner dismissal for this exact identity only; retain open status and unchanged judge. The later between-session observation is separately tracked under guards-tripwire-rejournal.",
+      "note": "2026-10-03: the 2026-10-02 'cause gone from the watch set' was wrong. Cause: llm-legs 2267da0 pruned plugins/marketplaces from instruction_visible_paths, but the Hammerspoon watcher (hammerspoon/instruction-watch.lua watchPaths) keeps every row of its persisted watcher/snapshot.tsv watched, and the live snapshot still held 240 marketplace rows, so marketplace pulls kept journaling. Fixed: watchStart drops loaded snapshot rows under INSTRUCTION_HOME_UNLOADED_ERE (tests/instruction_watch_menu_harness.lua).",
       "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
-      "last_reviewed": "2026-10-02",
-      "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
+      "last_reviewed": "2026-10-03",
+      "reviewed_by": "night fixer harness-guards-20261003T042540Z-6416"
     },
     {
       "id": "guards-growth-claude-skills-hyperframes",
@@ -1535,10 +1595,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "note": "Cause: an interpreter heredoc writing through a path held in a variable (`p='...'; open(p,'w')`), which bin/instruction-write-gate.sh leaves out of scope by design, so only the tripwire saw it. Owner decision in docs/handoffs/2026-10-02-harness-guards-gate-scope.md. Writer: chat \"Claude Sonnet 5.5 launch video\" (7c93bbe2), Bash python3 heredoc at 2026-10-01T15:27:58Z in the claude-setup main checkout (+129 B, retry-on-signal rule); still uncommitted there, foreign WIP, left in place.",
+      "note": "2026-10-03 check: no event in the window; bin/instruction-write-gate.sh still leaves a variable path out of scope, owner decision pending. Cause: an interpreter heredoc writing through a path held in a variable (`p='...'; open(p,'w')`), which bin/instruction-write-gate.sh leaves out of scope by design, so only the tripwire saw it. Owner decision in docs/handoffs/2026-10-02-harness-guards-gate-scope.md. Writer: chat \"Claude Sonnet 5.5 launch video\" (7c93bbe2), Bash python3 heredoc at 2026-10-01T15:27:58Z in the claude-setup main checkout (+129 B, retry-on-signal rule); still uncommitted there, foreign WIP, left in place.",
       "handoff": "docs/handoffs/2026-10-02-harness-guards-gate-scope.md",
-      "last_reviewed": "2026-10-02",
-      "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
+      "last_reviewed": "2026-10-03",
+      "reviewed_by": "night fixer harness-guards-20261003T042540Z-6416"
     },
     {
       "id": "guards-growth-claude-setup-night-sweep-skill",
@@ -1550,10 +1610,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "note": "Cause: an interpreter heredoc writing through a path held in a variable (`p='...'; open(p,'w')`), which bin/instruction-write-gate.sh leaves out of scope by design, so only the tripwire saw it. Owner decision in docs/handoffs/2026-10-02-harness-guards-gate-scope.md. Writer: chat \"Updater doctor\" (233cceb1), python3 heredoc at 2026-10-02T01:06:15Z in the claude-setup main checkout (+268 B), moved by patch into the code-doctor worktree at 01:06:32Z (-268 B), landed back by `git merge code-doctor` (fast-forward 8b7c744) at 09:26:13Z (+268 B): git merge is no landing instruction_git_landing reads.",
+      "note": "2026-10-03 check: the only window event is the 2026-10-02T09:26:14Z git merge landing (+268 B), handoff section 2; cause stands. Cause: an interpreter heredoc writing through a path held in a variable (`p='...'; open(p,'w')`), which bin/instruction-write-gate.sh leaves out of scope by design, so only the tripwire saw it. Owner decision in docs/handoffs/2026-10-02-harness-guards-gate-scope.md. Writer: chat \"Updater doctor\" (233cceb1), python3 heredoc at 2026-10-02T01:06:15Z in the claude-setup main checkout (+268 B), moved by patch into the code-doctor worktree at 01:06:32Z (-268 B), landed back by `git merge code-doctor` (fast-forward 8b7c744) at 09:26:13Z (+268 B): git merge is no landing instruction_git_landing reads.",
       "handoff": "docs/handoffs/2026-10-02-harness-guards-gate-scope.md",
-      "last_reviewed": "2026-10-02",
-      "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
+      "last_reviewed": "2026-10-03",
+      "reviewed_by": "night fixer harness-guards-20261003T042540Z-6416"
     },
     {
       "id": "hook-sync-stop-dispatch",
@@ -1769,6 +1829,61 @@
       "reviewed_by": "Night fixer harness-hooks-20261002T093036Z-5607",
       "note": "Narrowed: a SessionStart hook, once per session. Probe at load 50 with its own state dir: 2.6 s cold (ranked refresh, every snapshot written), 530-600 ms warm, spread over ~20 process starts (find x4, perl, awk, tr, mv, touch), none over 125 ms; the walk itself was cut 2026-10-01. Under 150 ms needs the cached enumeration hook-sync-instruction-watch-check names: the owner's. Not touched: reverts/ holds 84 027 entries, 663 MB (store_size row, another area).",
       "handoff": "docs/handoffs/2026-10-02-hook-cost-rows.md"
+    },
+    {
+      "id": "guards-growth-claude-plugins-marketplaces-security-guidance-readme-md",
+      "title": "security-guidance/README.md grew with no gate seeing it, 1 file in 24 h",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^\\~/\\.claude/plugins/marketplaces/claude\\-plugins\\-official/plugins/security\\-guidance/README\\.md$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-03T07:40:00+03:00",
+          "by": "Night fixer harness-guards-20261003T042540Z-6416",
+          "files": [
+            "llm-legs/hammerspoon/instruction-watch.lua"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "note": "Event 2026-10-02T21:27:54Z +639 B, official marketplace merge d182ca4. Cause: llm-legs 2267da0 pruned plugins/marketplaces from instruction_visible_paths, but the Hammerspoon watcher (hammerspoon/instruction-watch.lua watchPaths) keeps every row of its persisted watcher/snapshot.tsv watched, and the live snapshot still held 240 marketplace rows, so marketplace pulls kept journaling. Fixed: watchStart drops loaded snapshot rows under INSTRUCTION_HOME_UNLOADED_ERE (tests/instruction_watch_menu_harness.lua).",
+      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "last_reviewed": "2026-10-03",
+      "reviewed_by": "night fixer harness-guards-20261003T042540Z-6416"
+    },
+    {
+      "id": "guards-synced-plugins-vendor-sync",
+      "title": "Claude Code org-plugin sync writes ~/.claude/plugins/synced, which no gate can see",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^\\~/\\.claude/plugins/synced/0c354f45\\-a323\\-4361\\-bb4e\\-e5c3c45d1ea3_c67795da\\-c5c3\\-456a\\-98a7\\-ad7e1a722bb0/cowork\\-plugin\\-management/skills/(cowork\\-plugin\\-customizer|create\\-cowork\\-plugin)$"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "note": "Watcher event 2026-10-02T09:31:02Z (sid empty, no tool call in any transcript) ADDED cowork-plugin-management SKILL.md +9698/+13350 B with references/*.md beside manifest.json and .last-complete-round in the org/account bucket; its ~g2 staging copy was deleted at 10:45:58Z. Vendor org sync, the plugins twin of guards-synced-skills-vendor-sync; dismissal proposed in the handoff, judge unchanged.",
+      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "last_reviewed": "2026-10-03",
+      "reviewed_by": "night fixer harness-guards-20261003T042540Z-6416"
+    },
+    {
+      "id": "guards-denied-claude-agents-image-gen-md",
+      "title": "agents/image-gen.md grew after a denial, 1 file in 24 h",
+      "match": {
+        "rule": "growth-denied",
+        "ident": "^\\~/\\.claude/agents/image\\-gen\\.md$"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "note": "2026-10-02T10:34:40Z +142 B: relay worker 93deda55 of chat \"Google video generation integration\" (10896605) was refused at 10:31:45Z (bloat relay-refused) and returned an MD-PROPOSAL; the orchestrator applied it by Bash python3 heredoc with p = \"agents/image-gen.md\" at 10:34:39Z. The designed flow, but through the variable-path heredoc the write gate leaves out of scope, so no pass record; same cause as guards-growth-claude-agents-image-gen-md.",
+      "handoff": "docs/handoffs/2026-10-02-harness-guards-gate-scope.md",
+      "last_reviewed": "2026-10-03",
+      "reviewed_by": "night fixer harness-guards-20261003T042540Z-6416"
     }
   ],
   "blind_spots": [
@@ -1890,6 +2005,13 @@
       "reason": "the hook journal times the whole hook only; one tree with 33 704 untracked paths (logo-vectorizer-bench, 0.5-1.5 s a git status) was found 2026-10-03 only by timing each registered tree by hand",
       "since": "2026-10-03",
       "would_catch_if": "rj_snapshot_repos journaled each repository's snapshot wall time beside the hook row"
+    },
+    {
+      "id": "gate-pass-masks-file",
+      "what": "a gate pass record covers any other write to the same file from 15 min before to 1 min after it",
+      "reason": "harness-doctor gate_verdict joins gates.jsonl to a watched change by file and time only (GATE_BEFORE_S/GATE_AFTER_S), never by delta or tool_use id, so a small passed Edit hides a heredoc write beside it",
+      "since": "2026-10-03",
+      "would_catch_if": "a gate record carried the tool_use id or expected delta and the watcher event the write it saw"
     }
   ]
 }

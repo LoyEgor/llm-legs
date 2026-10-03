@@ -241,8 +241,12 @@ fi
 # Nothing below the base threshold is ever denied: a measured rate only raises the bound above it,
 # and the cheap notice speaks past it too. Deciding that here is what keeps an ordinary edit to an
 # ordinary markdown file — which every session makes, on the pre-tool path — from paying for a
-# lookup over the whole rate index to be told what its size already settled.
-[ "$delta" -gt "$THRESHOLD_BYTES" ] 2>/dev/null || pass
+# lookup over the whole rate index to be told what its size already settled. A growing one is still
+# journaled: harness-doctor watches growth from 60 B and reads a growth with no record as ungated.
+if ! [ "$delta" -gt "$THRESHOLD_BYTES" ] 2>/dev/null; then
+  [ "$delta" -gt 0 ] 2>/dev/null && pass passed "threshold $THRESHOLD_BYTES"
+  pass
+fi
 
 # An unpinned memory entry reaches a session only when its topic is recalled, so the base threshold
 # denied nearly every new one for a cost it never has; a pinned entry rides every session and stays

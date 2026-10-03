@@ -19,7 +19,10 @@ guarded file as a whole string literal and writes it through a variable.
 
 `bin/instruction-write-gate.sh` and `share/instruction-files.sh` (`_instruction_interp_construct`)
 leave a variable path out of scope on purpose, so only the tripwire sees these, and growth-ungated
-reports them every time. Proposal: in an interpreter payload, a quoted literal that is WHOLLY a
+reports them every time. Night 2026-10-03 adds two by chat «Google video generation integration»
+(10896605) on `agents/image-gen.md`: 23:27:46Z (+135 B, `p='agents/image-gen.md'`) and
+2026-10-02T10:34:40Z (+142 B), its relay worker's refused MD-PROPOSAL applied by `python3` heredoc,
+which reads `growth-denied` (the worker's `relay-refused` record is within 900 s). Proposal: in an interpreter payload, a quoted literal that is WHOLLY a
 guarded name, plus a write construct whose destination is a bare identifier (`open(p,'w')`,
 `Path(p).write_text`, `p.write_text`, `writeFile(p`), reads as a write to that name. Its false
 catch is the one the gate already accepts (an interpreter that reads a guarded file and writes
@@ -37,11 +40,3 @@ read from `git diff --name-only HEAD MERGE_HEAD`-style ranges, so a landing gets
 (span-pass inside the span, one denial outside it); or (b) keep merges out and treat a landing of
 bytes already judged in a worktree as no new growth in the doctor. (b) loosens the judge.
 
-## Fixed in the same run
-
-- `share/instruction-files.sh`: `.claude/` matched below the repository root, so a worktree session
-  no longer watches every markdown file (rows guards-growth-volumes-work-projects-llm-legs-docs,
-  guards-growth-alpha-fixture-docs, guards-growth-review-bench-docs).
-- `bin/instruction-watch.sh`: another session's ranked re-cut no longer reads ADDED mid-session
-  (rows guards-growth-video-r1-{a,b}-hf-claude-md, guards-growth-film-*).
-- Blind spot `watcher-off-history` added for the changed-while-watcher-off record.

@@ -739,6 +739,18 @@ local ok, err = pcall(function()
         and tostring(off[#off].summary):find("CHANGED-WHILE-WATCHER-OFF " .. doc, 1, true) ~= nil,
         "a change while the watcher was off was not journaled against its snapshot")
 
+    M.stop()
+    local catalog = wf.home .. "/.claude/plugins/marketplaces/official/README.md"
+    os.execute("mkdir -p " .. quoted(wf.home .. "/.claude/plugins/marketplaces/official"))
+    write(catalog, "catalog clone grew\n", "w")
+    write(wf.state .. "/watcher/snapshot.tsv", table.concat({ catalog, string.rep("0", 64), "1", "1", "1", catalog },
+        "\t") .. "\n")
+    M.start()
+    local pruned = records()
+    check(not tostring(pruned[#pruned].summary):find("marketplaces", 1, true)
+        and not (readFile(wf.state .. "/watcher/snapshot.tsv") or ""):find("marketplaces", 1, true),
+        "a snapshot row under plugins/marketplaces stayed watched: " .. tostring(pruned[#pruned].summary))
+
     local fresh = os.time()
     hs.fs.touch(heartbeat, fresh - 10 * 60, fresh - 10 * 60)
     local downTitle = M.menuItems()[1].title

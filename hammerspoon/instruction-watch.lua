@@ -461,6 +461,10 @@ done
 SNAP_DIR=$state/snapshot REVERT_DIR=$state/reverts SNAP_MAX_BYTES=1048576 ALERT_DIR=$state/alerts
 case $mode in
   list) instruction_visible_paths "$home" "$state/ranked.txt" '' ;;
+  unloaded)
+    [ $# -gt 0 ] || exit 0
+    printf '%s\n' "$@" | _INSTRUCTION_HOME=$home _INSTRUCTION_UNLOADED_ERE=$INSTRUCTION_HOME_UNLOADED_ERE \
+      awk "$_instruction_unloaded_awk"' unloaded($0)' ;;
   repo) for r; do instruction_repo_files "$r"; done ;;
   hash)
     [ $# -gt 0 ] || exit 0
@@ -944,6 +948,13 @@ watchStart = function()
     local ok = pcall(function()
         refreshInflight()
         if not watchRefresh() then return end
+        -- watchPaths keeps every snapshot row watched, so a row under a tree the list now prunes
+        -- (plugins/marketplaces) would be journaled forever unless the loaded snapshot drops it.
+        if snapshot then
+            local rows = {}
+            for path in pairs(snapshot) do rows[#rows + 1] = path end
+            for _, path in ipairs(outputLines(runScan("unloaded", rows))) do snapshot[path] = nil end
+        end
         local paths, seen = {}, {}
         for _, path in ipairs(W.list) do seen[path] = true; paths[#paths + 1] = path end
         for path in pairs(snapshot or {}) do
