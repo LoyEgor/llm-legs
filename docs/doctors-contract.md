@@ -277,8 +277,8 @@ Code doctor (added 2026-10-02, design `docs/code-doctor-design.md`):
   they sum to `problem_count`, one unit: a problem is one cause, however many units it spans.
 - A problem exists only once the judge (worker-run, under the night's token and wall budget) ruled
   it `problem`; an unjudged candidate is the own key `candidates.waiting`, never counted. A
-  dangling outside registration (settings hook, LaunchAgent, PATH link) needs no judge: it is a
-  `needs Egor:` problem whose `steps` hold the exact command, and no fixer takes it.
+  dangling outside registration needs no judge: its git research is the proof; `needs Egor:` is
+  only a trade (its `trade` field) research could not settle, never no fixer by rule.
 - `judge` is sha256 over `bin/code-doctor`, the ledger's `protected`, `keep`, `intentional`,
   `retired` and dismissal rows, and `LIMITS`; fix tracking leaves it unchanged.
 - ids are `cause:<smallest unit>` (`<repo>/<path>[#<symbol>]`), stable while that unit lives; a

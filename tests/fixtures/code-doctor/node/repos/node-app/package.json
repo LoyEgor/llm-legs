@@ -1,0 +1,6 @@
+{
+  "name": "node-app",
+  "private": true,
+  "bin": {"node-app": "bin/cli.js"},
+  "scripts": {"build": "node scripts/build.mjs", "test": "node --test"}
+}

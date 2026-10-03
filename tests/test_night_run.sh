@@ -221,6 +221,8 @@ night job "$id" set llm-20260930T010203Z "commits=repo:$local_hash" >"$WORK/out"
 assert jqe '.jobs[0].pushed == false' "$R"
 assert grep -qxF "night $id: job llm-20260930T010203Z merged" "$WORK/out"
 night job "$id" set llm-20260930T010203Z "commits=repo:$pushed_hash" pushed=true >/dev/null || fail "pushed again"
+assert_fails night job "$id" set p1 state=blocked-on-egor 2>"$WORK/err"
+assert grep -qF 'state blocked-on-egor needs reason=' "$WORK/err"
 night job "$id" set p1 state=blocked-on-egor reason="step 10 needs his word" >/dev/null || fail "set blocked"
 
 # Menu and report while running.
@@ -264,6 +266,7 @@ assert grep -qxF "merged · fixer · llm-20260930T010203Z · review rb-1 · repo
 assert grep -qxF "left · debt · debt-round · hung: idle 1800" "$WORK/report"
 assert grep -qxF "failed-launch · fixer · harness-r1 · night/$id/harness-r1 · opener" "$WORK/report"
 assert grep -qxF "total · 2 merged · 8 left · 1 failed-launch · 1 blocked-on-egor · pushed" "$WORK/report"
+assert grep -qE "^blocked-on-egor · debt · p1( · [^ ]+)* · step 10 needs his word$" "$WORK/report"
 assert [ "$(wc -l <"$WORK/report" | tr -d ' ')" = 19 ]
 assert [ "$(awk '{ print length }' "$WORK/report" | sort -n | tail -1)" -le 100 ]
 assert cmp -s "$WORK/report" <(night report)

@@ -1,0 +1,8 @@
+[project]
+name = "gen"
+
+[project.scripts]
+gen-cli = "gen_pkg.cli:main"
+
+[project.entry-points."gen.plugins"]
+csv = "gen_pkg.plugin:Plugin"

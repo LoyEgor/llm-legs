@@ -26,7 +26,8 @@ lay_out() { # fixture dest -> the fixture copied, its env exported
     sed "s#@REPOS@#$REPOS#g" "$2/home/.claude/settings.json.in" >"$2/home/.claude/settings.json"
   mkdir -p "$2/home/.local/bin" "$2/state" "$2/harness" "$2/sl"
   : >"$2/judged.tsv"
-  export HOME="$2/home" CODE_DOCTOR_DIR="$2/state" CODE_DOCTOR_LEDGER="$2/ledger.json" \
+  printf '#!/bin/sh\necho "$*" >>"%s/launchctl.log"\n' "$2" >"$2/launchctl" && chmod +x "$2/launchctl"
+  export HOME="$2/home" CODE_DOCTOR_DIR="$2/state" CODE_DOCTOR_LEDGER="$2/ledger.json" CODE_DOCTOR_LAUNCHCTL="$2/launchctl" \
     CODE_DOCTOR_MECHANISMS="$2/mechanisms.json" HARNESS_DOCTOR_DIR="$2/harness" STATUSLINE_CACHE_DIR="$2/sl" \
     CODE_DOCTOR_WORKER_RUN="$FIX/fake-worker-run" CODE_DOCTOR_FAKE_LOG="$2/judged.tsv" \
     CODE_DOCTOR_FAKE_VERDICTS="$2/verdicts.json" CODE_DOCTOR_REPOS="$(printf '%s:' "$REPOS"/*)"
@@ -68,7 +69,8 @@ assert grep -q '^alpha: [0-9]* files · 0 parsed' "$WORK/index2.out"
 "$CD" refresh --quiet || fail "refresh failed on the corpus"
 LATEST="$CODE_DOCTOR_DIR/latest.json"
 assert jqe '.candidates.waiting == 4 and .candidates.protected == 1 and .problem_count == 1 and .groups.dead == 1' "$LATEST"
-assert jqe '[.problems[] | select(.needs_egor and (.fact | startswith("needs Egor: ")) and (.steps[0] | contains("settings.json")))] | length == 1' "$LATEST"
+assert jqe '[.problems[] | select(.needs_egor and (.fact | startswith("needs Egor: Cost: settings.json is in no repository")) and (.trade | contains("Recommendation: remove it"))
+  and (.proofs | any(contains("never tracked"))) and (.steps[0] | contains("settings.json")))] | length == 1' "$LATEST"
 assert jqe '[.blind_spots[].id] | index("rollup:none") != null' "$LATEST"
 
 # The judge's budget: with no session history the estimate carries the worker's base context, so a cap under it
@@ -474,4 +476,151 @@ assert jqe --arg a "$first" --arg b "$second" 'has($a) or has($b) | not' "$CODE_
 "$CD" judge --night b2 >"$WORK/judge.out"
 assert grep -qF 'judge: 2 judged · 0 waiting' "$WORK/judge.out"
 
-echo "PASS: $asserts asserts; calibration $(grep -c '^PASS' "$WORK/calibration")/6 cases, a healthy repository with 0 problems, the incremental index, the needs-Egor registration, the judge's batched sessions with their token, wall and launch-failure stops, the durable rollup and its coverage blind spot, the top-K snapshot with active work out, the safety gate (suites, a deletion no problem names, an edit through a cross-repo symlink, active work), the structural digest (rollup no, caller yes), revalidation against the night base, the ledger's fixed-pending, regressed and faulty rows, the canonical mechanisms, review claims through review-anchors, tokenmap-measured instruction weight, a hook rooted through its ~/.claude link, a runner-less test of live code, PyObjC selectors, a symlink never pairing with its target, hot cost only from days after the last commit, per-path kinds for identical bytes, link-target edits, raw-byte and same-named-symbol digests, ledger-renamed causes, launch-less day runs"
+# A dangling registration is researched, never asked: the commit that deleted or renamed its target and the
+# tracked non-markdown files outside docs/ still naming it. Only the night judge of the sweep scope settles a link.
+lay_out "$FIX/healthy" "$WORK/reg"
+echo '{}' >"$CODE_DOCTOR_FAKE_VERDICTS"
+init_repos
+G="$REPOS/good"
+LB="$HOME/.local/bin"
+printf '#!/usr/bin/env bash\necho old\n' >"$G/bin/old-tool"
+printf '#!/usr/bin/env bash\necho a\n' >"$G/bin/tool-a"
+git -C "$G" add bin && commit "$G" "old-tool and tool-a land"
+git -C "$G" rm -q bin/old-tool && commit "$G" "old-tool folds into good-tool --old"
+gone=$(git -C "$G" rev-parse --short HEAD)
+git -C "$G" mv bin/tool-a bin/tool-b && commit "$G" "tool-a becomes tool-b"
+moved=$(git -C "$G" rev-parse --short HEAD)
+mkdir -p "$G/docs" && printf 'old-tool\n' >"$G/docs/old.txt" && printf 'old-tool\n' >>"$G/README.md"
+git -C "$G" add -A && commit "$G" "docs name old-tool"
+ln -s "$G/bin/old-tool" "$LB/old-tool"
+ln -s "$G/bin/tool-a" "$LB/tool-a"
+ln -s "$G/bin/good-tool" "$LB/good-tool"
+mv "$G/bin/good-tool" "$WORK/reg/good-tool"
+"$CD" refresh --quiet
+P="$CODE_DOCTOR_DIR/latest.json"
+assert jqe --arg id "cause:registration:$G/bin/old-tool" --arg h "good@$gone" --arg l "$LB/old-tool" \
+  '[.problems[] | select(.id == $id)] | length == 1 and (.[0] | .needs_egor == false and .steps == ["rm " + $l]
+    and (.fact | contains($h) and contains("«old-tool folds into good-tool --old»") and contains("nothing references old-tool"))
+    and (.proofs | any(contains($h))))' "$P"
+assert jqe --arg id "cause:registration:$G/bin/tool-a" --arg h "good@$moved" --arg l "$LB/tool-a" --arg n "$G/bin/tool-b" \
+  '[.problems[] | select(.id == $id)] | length == 1 and (.[0] | .needs_egor == false and .steps == ["ln -sfn " + $n + " " + $l]
+    and (.fact | contains("renamed to bin/tool-b by " + $h)))' "$P"
+assert test "$(grep -cF "\"cause:registration:$G/bin/good-tool\"" "$CODE_DOCTOR_DIR/candidates.jsonl")" = 0
+mv "$WORK/reg/good-tool" "$G/bin/good-tool"
+cp "$G/tests/test_greet.sh" "$WORK/reg/test_greet.sh"
+printf 'command -v old-tool >/dev/null || true\n' >>"$G/tests/test_greet.sh"
+git -C "$G" add -A && commit "$G" "a test still calls old-tool"
+"$CD" refresh --quiet
+assert jqe --arg id "cause:registration:$G/bin/old-tool" --arg s "migrate good/tests/test_greet.sh off old-tool as good@$gone says, then rm $LB/old-tool" \
+  '[.problems[] | select(.id == $id)] | length == 1 and (.[0] | .needs_egor == false and .steps == [$s]
+    and (.fact | contains("referenced by good/tests/test_greet.sh") and (contains("docs/") or contains("README")) == false))' "$P"
+"$CD" judge --night r1 >/dev/null
+assert test -L "$LB/old-tool"
+assert test "$(readlink "$LB/tool-a")" = "$G/bin/tool-b"
+ln -sfn "$G/bin/tool-a" "$LB/tool-a"
+cp "$WORK/reg/test_greet.sh" "$G/tests/test_greet.sh"
+# A settings file inside a repository is the code fixer's edit; a LaunchAgent whose program is gone the night
+# judge boots out, its plist kept in the state dir; one whose argument is gone is a trade for Egor.
+mkdir -p "$G/hooks" "$G/data" "$G/.claude" "$HOME/Library/LaunchAgents"
+printf 'x\n' >"$G/hooks/gone-hook.sh" && printf 'x\n' >"$G/bin/old-job" && printf 'x\n' >"$G/data/feed.txt"
+printf '#!/bin/bash\n. "$HOME/.claude/hooks/lib/hook-time.sh"\n' >"$G/hooks/quiet.sh"
+git -C "$G" add -A && commit "$G" "hooks, job and feed land"
+git -C "$G" rm -q hooks/gone-hook.sh bin/old-job data/feed.txt && commit "$G" "gone-hook, old-job and feed retire"
+jq -n --arg c "$G/hooks/gone-hook.sh" --arg q "$G/hooks/quiet.sh" \
+  '{hooks: {Stop: [{hooks: [{type: "command", command: $c}, {type: "command", command: $q}]}]}}' >"$G/.claude/settings.json"
+mkdir -p "$CODE_DOCTOR_DIR/rollup"
+for d in $(seq 1 15); do
+  printf '{"day": "%s", "complete": true, "sources": {"hooks": {"hits": {}, "ms": {}, "sessions": 1}}}\n' \
+    "$(date -u -r $(($(date +%s) - d * 86400)) +%F)" >"$CODE_DOCTOR_DIR/rollup/quiet-$d.json"
+done
+agent() { # label program args... -> a LaunchAgent plist in the fixture HOME
+  local label=$1 arg
+  shift
+  { printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>Label</key><string>%s</string>' "$label"
+    printf '<key>ProgramArguments</key><array>'
+    for arg in "$@"; do printf '<string>%s</string>' "$arg"; done
+    printf '</array></dict></plist>\n'; } >"$HOME/Library/LaunchAgents/$label.plist"
+}
+agent com.test.oldjob /bin/bash "$G/bin/old-job"
+agent com.test.feed /bin/cat "$G/data/feed.txt"
+printf '#!/usr/bin/env bash\necho a\n' >"$G/bin/spare-a" && printf '#!/usr/bin/env bash\necho b\n' >"$G/bin/spare-b"
+git -C "$G" add -A && commit "$G" "the test no longer calls old-tool"
+jq -n '{"cause:good/bin/spare-a": {verdict: "problem", fact: "spare-a is dead", plan: "rm bin/spare-a", proofs: [],
+    needs_egor: true, trade: "Cost: a; Loss: b; Recommendation: c"},
+  "cause:good/bin/spare-b": {verdict: "problem", fact: "spare-b is dead", plan: "rm bin/spare-b", proofs: [], needs_egor: true}}' \
+  >"$CODE_DOCTOR_FAKE_VERDICTS"
+"$CD" refresh --quiet
+assert jqe --arg id "cause:registration:$G/hooks/gone-hook.sh" \
+  '[.problems[] | select(.id == $id)] | length == 1 and (.[0] | .needs_egor == false and .files == ["good/.claude/settings.json"]
+    and .repos == ["good"] and (.fact | contains("nothing references gone-hook.sh")))' "$P"
+assert jqe 'select(.rules | index("silent")) | .needs_egor == false and .units[0].unit == "good/hooks/quiet.sh"' \
+  "$CODE_DOCTOR_DIR/candidates.jsonl"
+assert jqe --arg id "cause:registration:$G/bin/old-job" '[.problems[] | select(.id == $id)] | length == 1 and .[0].needs_egor == false' "$P"
+assert jqe --arg id "cause:registration:$G/data/feed.txt" '[.problems[] | select(.id == $id)] | length == 1
+  and (.[0] | .needs_egor and (.fact | startswith("needs Egor: Cost: ") and contains("Recommendation: boot it out")))' "$P"
+"$CD" judge >/dev/null
+assert grep -qF 'find why it exists (`git log -S<its name>`' "$CODE_DOCTOR_DIR"/judge/day/batch-*.md
+assert grep -qF 'Egor decides only what research cannot settle, and only as a trade' "$CODE_DOCTOR_DIR"/judge/day/batch-*.md
+assert jqe '[.problems[] | select(.id == "cause:good/bin/spare-a")] | length == 1
+  and (.[0] | .needs_egor and .fact == "needs Egor: Cost: a; Loss: b; Recommendation: c")' "$P"
+assert jqe '[.problems[] | select(.id == "cause:good/bin/spare-b")] | length == 1 and (.[0] | .needs_egor == false and .fact == "spare-b is dead")' "$P"
+"$CD" judge --repo "$G" --night r2 >/dev/null
+assert test -L "$LB/old-tool"
+assert test "$(readlink "$LB/tool-a")" = "$G/bin/tool-a"
+assert test -f "$HOME/Library/LaunchAgents/com.test.oldjob.plist" -a ! -e "$WORK/reg/launchctl.log"
+"$CD" judge --night r3 >"$WORK/judge.out"
+assert grep -qxF "registration: unlinked $LB/old-tool -> $G/bin/old-tool" "$WORK/judge.out"
+assert test ! -e "$LB/old-tool" -a ! -L "$LB/old-tool"
+assert test "$(readlink "$LB/tool-a")" = "$G/bin/tool-b"
+assert jqe -s --arg l "$LB/old-tool" --arg t "$G/bin/old-tool" \
+  'map(select(.night == "r3" and .stage == "fix" and .link == $l and .readlink == $t)) | length == 1' "$CODE_DOCTOR_DIR/accounting.jsonl"
+assert test "$(cat "$WORK/reg/launchctl.log")" = "bootout gui/$(id -u)/com.test.oldjob"
+assert test ! -e "$HOME/Library/LaunchAgents/com.test.oldjob.plist" -a -f "$CODE_DOCTOR_DIR/retired-launchagents/com.test.oldjob.plist"
+assert test -f "$HOME/Library/LaunchAgents/com.test.feed.plist"
+assert jqe -s --arg p "$HOME/Library/LaunchAgents/com.test.oldjob.plist" --arg m "$CODE_DOCTOR_DIR/retired-launchagents/com.test.oldjob.plist" \
+  'map(select(.night == "r3" and .stage == "fix" and .plist == $p and .moved_to == $m and .label == "com.test.oldjob")) | length == 1' \
+  "$CODE_DOCTOR_DIR/accounting.jsonl"
+rm "$G/.claude/settings.json" "$HOME/Library/LaunchAgents/com.test.feed.plist"
+"$CD" refresh --quiet
+assert jqe '[.problems[] | select(.rule == "registration")] == []' "$P"
+
+# Any repository through --repo: its own state under scopes/, generic entry points and JS/TS imports, no runtime
+# journal claimed, and report-only: judged problems show, but no snapshot and no check hands them to a fixer.
+lay_out "$FIX/node" "$WORK/node"
+init_repos
+NODE="$REPOS/node-app"
+export CODE_DOCTOR_REPOS="$WORK/healthy/repos/good"
+"$CD" refresh --quiet
+base_sum=$(shasum "$CODE_DOCTOR_DIR/latest.json")
+assert jqe '.scope.report_only == null and .scope.foreign == []' "$CODE_DOCTOR_DIR/latest.json"
+"$CD" refresh --quiet --repo "$NODE/src" || fail "scoped refresh failed"
+SCOPED=$(ls -d "$CODE_DOCTOR_DIR"/scopes/node-app-*)
+assert test "$(shasum "$CODE_DOCTOR_DIR/latest.json")" = "$base_sum"
+assert jqe -s 'map({id, group, units: [.units[].unit]}) | sort_by(.id) == [
+  {id: "cause:node-app/src/lib/helpers/index.ts#formatElapsed", group: "duplicate",
+   units: ["node-app/src/lib/helpers/index.ts#formatElapsed", "node-app/src/lib/live.ts#formatDuration"]},
+  {id: "cause:node-app/src/lib/orphan.ts", group: "dead", units: ["node-app/src/lib/orphan.ts"]}]' "$SCOPED/candidates.jsonl"
+assert jqe '([.blind_spots[].id] | index("runtime:no-journal") != null and index("tests:untimed") != null
+  and index("rollup:none") == null) and (.scope.report_only | contains("not a sweep repository"))' "$SCOPED/latest.json"
+"$CD" refresh --quiet --repo "$WORK/healthy/repos/good"
+assert test "$(ls "$CODE_DOCTOR_DIR/scopes" | wc -l | tr -d ' ')" = 1
+"$CD" judge --repo "$NODE" --night s1 >/dev/null
+assert jqe '.problem_count == 2 and .groups.dead == 1 and .groups.duplicate == 1' "$SCOPED/latest.json"
+assert test "$("$CD" snapshot --repo "$NODE" "$SCOPED/latest.json")" = '[]'
+jq -n '{id: "code-s", doctor: "code", worktrees: [], launched_at: "2026-01-01T00:00:00Z", problems: []}' >"$WORK/node/record.json"
+"$CD" check --repo "$NODE" "$WORK/node/record.json" >"$WORK/check.out"
+assert grep -qF "report-only scope: $NODE is not a sweep repository" "$WORK/check.out"
+
+lay_out "$FIX/generic" "$WORK/generic"
+init_repos
+export CODE_DOCTOR_REPOS="$WORK/healthy/repos/good"
+"$CD" refresh --quiet --repo "$REPOS/gen"
+jq -r '.units[].unit' "$CODE_DOCTOR_DIR"/scopes/gen-*/candidates.jsonl >"$WORK/generic.units"
+assert grep -qx 'gen/src/gen_pkg/unused.py' "$WORK/generic.units"
+for live in src/gen_pkg/__init__.py src/gen_pkg/cli.py src/gen_pkg/plugin.py src/gen_pkg/legacy.py src/gen_pkg/web.py \
+  src/gen_pkg/formats/__init__.py src/gen_pkg/formats/table.py src/gen_pkg/formats/grid.py tools/lint.sh src/gen_pkg/checks.py server/serve.py ci/verify.sh \
+  web/app/page.tsx web/src/ui/card.tsx web/next.config.mjs web/widget.spec.ts src/pages/index.tsx routes/health.py api/ping.ts; do
+  assert test "$(grep -c "^gen/$live\$" "$WORK/generic.units")" = 0
+done
+
+echo "PASS: $asserts asserts; calibration $(grep -c '^PASS' "$WORK/calibration")/6 cases, a healthy repository with 0 problems, the incremental index, the needs-Egor registration with its research, a dangling registration researched (deleting or renaming commit, live references, an uncommitted deletion no problem) and settled only by the sweep-scope night judge, the judge's batched sessions with their token, wall and launch-failure stops, the durable rollup and its coverage blind spot, the top-K snapshot with active work out, the safety gate (suites, a deletion no problem names, an edit through a cross-repo symlink, active work), the structural digest (rollup no, caller yes), revalidation against the night base, the ledger's fixed-pending, regressed and faulty rows, the canonical mechanisms, review claims through review-anchors, tokenmap-measured instruction weight, a hook rooted through its ~/.claude link, a runner-less test of live code, PyObjC selectors, a symlink never pairing with its target, hot cost only from days after the last commit, per-path kinds for identical bytes, link-target edits, raw-byte and same-named-symbol digests, ledger-renamed causes, launch-less day runs, a --repo scope (its own state dir, the Node/TS calibration, generic entry points, no runtime journal claimed, report-only snapshot and check)"

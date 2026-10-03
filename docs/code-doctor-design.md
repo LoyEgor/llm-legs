@@ -1,17 +1,10 @@
-# Code doctor — design (2026-10-02, v2 after the frontier and T2 design reviews)
+# Code doctor — design
 
 ## Why (Egor, 2026-10-02)
 
-The four sweep repos (llm-legs, claude-setup, review-bench, hammerspoon) only grow. Models rarely
-search what exists and write a new copy (the hidden-Chrome driver for video generation and another
-for images; a hook re-implementing a hook class that lives elsewhere). Code for situations that no
-longer exist stays. Tests grew into monsters: a 7-minute edit, 20 minutes of tests. He wants a
-fourth doctor beside LLM, Harness and Updater that finds this and lets the night fix it — and that
-stays efficient: once the repos are in order its cost falls to near zero.
-
-Today the sweep's `fit` lens sees only NEW lines against the codebase (never two old mechanisms),
-the Harness Tests area only speeds suites up, and nothing looks for dead code, retired situations,
-needless complexity or token waste.
+The sweep repos only grow: models write a new copy instead of finding the existing one, code for
+retired situations stays, tests outgrow the edits they guard. This doctor finds that and lets the
+night fix it, its cost falling to near zero once the repos are in order.
 
 ## Pipeline: index → candidates → judge → problems → fixer
 
@@ -53,8 +46,9 @@ needless complexity or token waste.
 - liveness is a typed reachability graph from REAL entry points, not text matches: settings.json
   hooks, the stop dispatcher's directory globs, tests/run-all discovery, launchd plists and their
   `~/.local/libexec` wrappers, PATH links (`~/.local/bin`), Hammerspoon `init.lua` requires and menu
-  actions, skills/commands/agents by name, night-run/doctor-fix job tables. Edges from tests,
-  comments and docs do not keep production code alive; unreachable cycles are dead together;
+  actions, skills/commands/agents by name, night-run/doctor-fix job tables, and any repository's
+  manifests, build/CI files, tests, tool configs and route directories (`generic_roots`). Edges from
+  tests, comments and docs do not keep production code alive; unreachable cycles are dead together;
 - protected roots: user-facing CLIs in `bin/` that Egor runs by hand (a list in the ledger), public
   Hammerspoon globals, anything a retirement record keeps as an exception;
 - retired situations: only an explicit record (EXIT-PLAN, memory, the doctors' ledgers) matched to
@@ -100,6 +94,12 @@ needless complexity or token waste.
 One initial coverage pass over all four repos, slice by slice on successive nights; afterwards only
 slices whose digest changed are re-read. A clean, unchanged tree costs no LLM read.
 
+## Any repository: `--repo PATH`
+Every subcommand but `record-fix`/`account` takes `--repo PATH` (repeatable): that scope instead of
+sweep-repos, its state in `scopes/<names>-<hash>/`, the menu's document untouched. A repository outside
+sweep-repos makes it report-only (`scope.report_only`): no snapshot, `check` and `launch code` refuse.
+No harness journal covers it, so no hot or silent signal; its blind spots say so.
+
 ## Recurrence prevention
 Every landed cleanup records its canonical module in `share/canonical-mechanisms.json` (mechanism,
 canonical path, what it replaced). The sweep's `fit` lens reads that registry, so a new copy of a
@@ -107,7 +107,6 @@ merged mechanism is flagged at review time; a deleted mechanism's identity stays
 the same cause re-appearing under another name is a `regressed` problem, not a new one.
 
 ## Efficiency
-- the LLM reads only candidates and changed slices; verdicts are cached structurally;
 - per-night token and wall-clock budgets for judge and fixer, enforced, with the stop recorded;
 - the doctor accounts its own cost per cause (judge, fix, review, tests, retries, collector CPU) and
   its yield (lines removed, suite minutes saved under comparable baselines, always-loaded tokens cut,
@@ -123,8 +122,12 @@ the same cause re-appearing under another name is a `regressed` problem, not a n
 - judgments and fix plans bind to the index snapshot and are revalidated against the night base and
   again before landing; a changed input sends the cause back to the judge;
 - edit targets are resolved to their owning repo; an edit through a cross-repo symlink is refused;
-- registrations outside the repos (settings.json, LaunchAgents, libexec wrappers) are never edited by
-  the fixer: removing one is a `needs Egor` problem with the exact step;
+- what research settles the machine does; `needs Egor` only carries a trade (cost, loss,
+  recommendation), never set by rule. A dangling registration's proofs are the commit that deleted or
+  renamed its target and the tracked non-markdown files outside `docs/` still naming it; the night
+  judge (sweep scope) removes or relinks such a `~/.local/bin` link and boots out a LaunchAgent whose
+  program is gone (plist into the state dir), journaled in `accounting.jsonl`; an in-repo settings
+  file is the fixer's edit. A silent hook goes to the judge, which researches before any trade;
 - cross-repo merges land in safe order: shared module and migrated callers first, the old copy is
   deleted on a later night after the new path is proven;
 - every fix stays under review-bench's scope limit and goes through a review round whose lens reads
@@ -132,7 +135,5 @@ the same cause re-appearing under another name is a `regressed` problem, not a n
 - never other projects; never foreign uncommitted work.
 
 ## Calibration before thresholds
-A versioned corpus (`tests/fixtures/code-doctor/`) of known cases — a partial duplicate pair, a dead
-script with a dead cycle, a protected manual CLI, an intentional copy, a heavy test that must be
-kept, a retired-situation branch with a surviving exception — is the acceptance test: each is found
-or protected as labelled, and a healthy fixture repo yields no problems.
+The corpus `tests/fixtures/code-doctor/` (six labelled cases and a healthy repository with no
+problems) is the acceptance test.

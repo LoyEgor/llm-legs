@@ -23,9 +23,10 @@ import time
 import zlib
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+SCOPE = []
 
 DETECTOR_VERSION = 2
-PARSER_VERSION = 3
+PARSER_VERSION = 4
 LIMITS = {
     "silent_days": 14,
     "hot_ms_day": 60000,
@@ -65,8 +66,8 @@ DECLARED = ("bash", "python", "lua", "js", "jq")
 KEEP_WORDS = re.compile(r"isolation|data loss|recovery|must be kept", re.I)
 
 EXT_LANG = {".sh": "bash", ".bash": "bash", ".py": "python", ".lua": "lua", ".js": "js", ".mjs": "js",
-            ".cjs": "js", ".ts": "js", ".jq": "jq", ".md": "doc", ".json": "data", ".jsonl": "data",
-            ".txt": "data", ".tsv": "data", ".plist": "data", ".yml": "data", ".yaml": "data", ".toml": "data",
+            ".cjs": "js", ".ts": "js", ".tsx": "js", ".jsx": "js", ".mts": "js", ".cts": "js", ".jq": "jq", ".md": "doc", ".json": "data", ".jsonl": "data",
+            ".txt": "data", ".tsv": "data", ".plist": "data", ".yml": "data", ".yaml": "data", ".toml": "data", ".cfg": "data", ".ini": "data",
             ".png": "data", ".jpg": "data", ".css": "data", ".html": "data", ".svg": "data"}
 SHEBANG_LANG = (("python", "python"), ("bash", "bash"), ("/sh", "bash"), ("zsh", "bash"), ("node", "js"),
                 ("lua", "lua"), ("jq", "jq"))
@@ -91,7 +92,15 @@ BASH_WORDS = {"if", "then", "else", "elif", "fi", "for", "while", "do", "done", 
               "wait", "command", "type", "let", "until", "select", "time", "builtin", "mkdir", "rm", "mv", "cp",
               "cat", "grep", "sed", "awk", "sort", "head", "tail", "tr", "cut", "wc", "date", "sleep", "kill",
               "ls", "basename", "dirname", "touch", "printf", "xargs", "find", "chmod", "ln", "env"}
-TEST_PART = re.compile(r"(^|/)tests?/|(^|/)test_[^/]*$|_test\.[a-z]+$")
+TEST_PART = re.compile(r"(^|/)(tests?|__tests__)/|(^|/)test_[^/]*$|_test\.[a-z]+$|\.(test|spec)\.[a-z]+$|(^|/)conftest\.py$")
+JS_IMPORT_RE = re.compile(r"\bfrom\s*[\"']([^\"'\n]+)[\"']|\bimport\s*\(?\s*[\"']([^\"'\n]+)[\"']|\brequire\(\s*[\"']([^\"'\n]+)[\"']\s*\)")
+PY_IMPORT_RE = re.compile(r"^[ \t]*from[ \t]+(\.*[\w.]*)[ \t]+import[ \t]+(?:\(([^)]*)\)|([\w \t,]*))"
+                          r"|^[ \t]*import[ \t]+([\w.]+(?:[ \t]*,[ \t]*[\w.]+)*)", re.M)
+JS_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".json")
+ROUTE_DIRS = ("pages", "app", "routes", "api")
+TOOL_CONFIG_RE = re.compile(r"^[\w.-]+\.config\.(js|cjs|mjs|ts|cts|mts)$|^\.[\w-]+rc\.(js|cjs|mjs)$")
+MAKE_FILES = re.compile(r"^(GNUmakefile|[Mm]akefile|.+\.mk|Procfile(\..+)?|Justfile|justfile)$")
+DOCKER_FILES = re.compile(r"^(Dockerfile(\..+)?|.+\.Dockerfile|Containerfile)$")
 INSTRUCTION_PART = re.compile(r"(^|/)CLAUDE(\.local)?\.md$|(^|/)(skills|agents|commands)/.*\.md$")
 FIXTURE_PART = re.compile(r"(^|/)tests/fixtures/")
 
@@ -101,7 +110,10 @@ def base_home():
 
 
 def state_dir():
-    return os.environ.get("CODE_DOCTOR_DIR") or os.path.join(base_home(), ".cache", "code-doctor")
+    base = os.environ.get("CODE_DOCTOR_DIR") or os.path.join(base_home(), ".cache", "code-doctor")
+    if SCOPE and sorted(SCOPE) != sorted(default_repos()):
+        return os.path.join(base, "scopes", scope_slug(SCOPE))
+    return base
 
 
 def ledger_path():
@@ -128,7 +140,7 @@ def repos_dir():
     return os.environ.get("DOCTOR_FIX_PROJECTS") or "/Volumes/Work/Projects"
 
 
-def repo_paths():
+def default_repos():
     listed = os.environ.get("CODE_DOCTOR_REPOS")
     if listed:
         paths = [p for p in listed.split(":") if p]
@@ -142,6 +154,39 @@ def repo_paths():
     return [os.path.realpath(p) for p in paths if os.path.isdir(p)]
 
 
+def repo_paths():
+    return SCOPE or default_repos()
+
+
+def scope_slug(tops):
+    names = re.sub(r"[^A-Za-z0-9._+-]+", "-", "+".join(repo_name(t) for t in sorted(tops)))[:60]
+    return "%s-%s" % (names, sha(":".join(sorted(tops)))[:8])
+
+
+def set_scope(paths):
+    tops = []
+    for path in paths or ():
+        if not os.path.isdir(path):
+            raise SystemExit("code-doctor: --repo %s is not a directory" % path)
+        top = (git(path, "rev-parse", "--show-toplevel") or "").strip() or path
+        tops.append(os.path.realpath(top))
+    SCOPE[:] = sorted(set(tops))
+
+
+def foreign_repos(doc=None):
+    home = set(default_repos())
+    found = {top for top in repo_paths() if top not in home}
+    found.update(((doc or {}).get("scope") or {}).get("foreign") or ())
+    return sorted(found)
+
+
+def report_only(doc=None):
+    foreign = foreign_repos(doc)
+    if not foreign:
+        return None
+    return "report-only scope: %s is not a sweep repository, so no fixer edits it" % ", ".join(foreign)
+
+
 def now_s():
     return float(os.environ.get("CODE_DOCTOR_NOW") or time.time())
 
@@ -152,6 +197,20 @@ def read_json(path, default=None):
             return json.load(handle)
     except (OSError, ValueError):
         return default
+
+
+def loose_json(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            text = handle.read(500000)
+    except OSError:
+        return None
+    text = re.sub(r"(\"(?:\\.|[^\"\\])*\")|//[^\n]*|/\*.*?\*/", lambda m: m.group(1) or "", text, flags=re.S)
+    try:
+        value = json.loads(re.sub(r",(\s*[}\]])", r"\1", text))
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
 
 
 def write_json(path, value):
@@ -423,7 +482,28 @@ def parse_file(rel, data):
             for inner, offset, body in embedded_blocks(text):
                 record["symbols"] += symbols_of(body, inner, offset)
         record["touch"] = sorted(touchpoints(text, lang))
+        record["imports"] = imports_of(text, lang)
     return record
+
+
+def imports_of(text, lang):
+    found = set()
+    if lang == "bash":
+        found.update("-m " + module for module in re.findall(r"\bpython[\d.]*(?:\s+-\w+)*\s+-m\s+([A-Za-z_][\w.]*)", text))
+    elif lang == "js":
+        for line in text.splitlines():
+            if not comment_line(line, lang):
+                found.update(g for match in JS_IMPORT_RE.finditer(line) for g in match.groups() if g)
+    elif lang == "python":
+        for source, grouped, names, plain in PY_IMPORT_RE.findall(text):
+            if plain:
+                found.update(m.strip() for m in plain.split(","))
+                continue
+            found.add(source)
+            for name in re.split(r"[\s,]+", re.sub(r"#[^\n]*", "", grouped or names)):
+                if re.fullmatch(r"[A-Za-z_]\w*", name) and name != "as":
+                    found.add(source + name if source.endswith(".") else source + "." + name)
+    return sorted(found)
 
 
 def list_files(top):
@@ -539,6 +619,8 @@ def journal_sources():
 
 
 def run_rollup():
+    if foreign_repos():
+        return 0
     folder = os.path.join(state_dir(), "rollup")
     today = time.strftime("%Y-%m-%d", time.localtime(now_s()))
     written = 0
@@ -648,10 +730,8 @@ def launch_agents():
     out = []
     folder = os.path.join(base_home(), "Library", "LaunchAgents")
     for path in sorted(glob.glob(os.path.join(folder, "*.plist"))):
-        try:
-            with open(path, "rb") as handle:
-                plist = plistlib.load(handle)
-        except Exception:
+        plist = read_plist(path)
+        if plist is None:
             continue
         args = [str(a) for a in (plist.get("ProgramArguments") or [])] + ([str(plist["Program"])] if plist.get("Program") else [])
         text = " ".join(args)
@@ -724,6 +804,88 @@ class Graph:
                 if base == "__init__.py":
                     self.pkg.setdefault(os.path.basename(os.path.dirname(rel)), []).append(fid)
         self.tops = {repo: doc["top"] for repo, doc in indexes.items()}
+        self.aliases = None
+
+    def local(self, repo, rel):
+        rel = os.path.normpath(rel)
+        fid = "%s/%s" % (repo, rel)
+        return fid if not rel.startswith("..") and fid in self.files else None
+
+    def js_file(self, repo, rel):
+        stem, ext = os.path.splitext(rel)
+        tries = [rel] + [rel + e for e in JS_EXTS] + [os.path.join(rel, "index" + e) for e in JS_EXTS]
+        if ext in (".js", ".jsx", ".mjs", ".cjs"):
+            tries += [stem + e for e in (".ts", ".tsx", ".mts", ".cts")]
+        return next((fid for fid in (self.local(repo, path) for path in tries) if fid), None)
+
+    def py_module(self, repo, here, spec):
+        hits = self.py_files(repo, here, spec)
+        for fid in list(hits):
+            folder = os.path.dirname(fid.split("/", 1)[1])
+            if os.path.basename(fid) == "__init__.py":
+                folder = os.path.dirname(folder)
+            while folder and self.local(repo, os.path.join(folder, "__init__.py")):
+                hits.append(self.local(repo, os.path.join(folder, "__init__.py")))
+                folder = os.path.dirname(folder)
+        return hits
+
+    def py_files(self, repo, here, spec):
+        dots = len(spec) - len(spec.lstrip("."))
+        parts = [p for p in spec[dots:].split(".") if p]
+        if dots:
+            base = here
+            for _ in range(dots - 1):
+                base = os.path.dirname(base)
+            path = os.path.join(base, *parts) if parts else base
+            return [f for f in (self.local(repo, path + ".py"), self.local(repo, os.path.join(path, "__init__.py"))) if f]
+        if not parts:
+            return []
+        tail = "/".join(parts)
+        hits = [f for f in self.by_base.get(parts[-1] + ".py", []) if f.startswith(repo + "/")
+                and ("/" + f.split("/", 1)[1]).endswith("/" + tail + ".py")]
+        return hits + [f for f in self.pkg.get(parts[-1], []) if f.startswith(repo + "/")
+                       and ("/" + f.split("/", 1)[1]).endswith("/" + tail + "/__init__.py")]
+
+    def alias_paths(self, repo, rel, spec):
+        if self.aliases is None:
+            self.aliases = {}
+            for fid in self.files:
+                if os.path.basename(fid) in ("tsconfig.json", "jsconfig.json") and self.files[fid].get("kind") != "fixture":
+                    options = (loose_json(os.path.join(self.top_of(fid), fid.split("/", 1)[1])) or {}).get("compilerOptions") or {}
+                    folder = os.path.dirname(fid.split("/", 1)[1])
+                    base = os.path.join(folder, options.get("baseUrl") or ".") if isinstance(options.get("baseUrl"), str) else folder
+                    paths = options.get("paths") if isinstance(options.get("paths"), dict) else {}
+                    self.aliases.setdefault(fid.split("/", 1)[0], []).append((folder, base, paths, "baseUrl" in options))
+        out = []
+        for folder, base, paths, has_base in self.aliases.get(repo, ()):
+            if folder and not rel.startswith(folder + "/"):
+                continue
+            for pattern, targets in paths.items():
+                prefix, star, suffix = pattern.partition("*")
+                if star and spec.startswith(prefix) and spec.endswith(suffix) and len(spec) >= len(prefix) + len(suffix):
+                    rest = spec[len(prefix):len(spec) - len(suffix)]
+                elif not star and spec == pattern:
+                    rest = ""
+                else:
+                    continue
+                out += [os.path.join(base, t.replace("*", rest)) for t in targets if isinstance(t, str)]
+            if has_base:
+                out.append(os.path.join(base, spec))
+        return out
+
+    def import_targets(self, fid, record):
+        repo, rel = fid.split("/", 1)
+        here, out = os.path.dirname(rel), set()
+        for spec in record.get("imports") or ():
+            if record.get("lang") in ("python", "bash"):
+                out.update(self.py_module(repo, here, spec[3:] if spec.startswith("-m ") else spec))
+                continue
+            for path in [os.path.join(here, spec)] if spec.startswith(".") else self.alias_paths(repo, rel, spec):
+                hit = self.js_file(repo, path)
+                if hit:
+                    out.add(hit)
+                    break
+        return out
 
     def top_of(self, fid):
         return self.tops[fid.split("/", 1)[0]]
@@ -784,6 +946,7 @@ class Graph:
                 targets.update(self.resolve(token, repo))
             for spec in record.get("globs") or ():
                 targets.update(self.glob_targets(fid, spec))
+            targets.update(self.import_targets(fid, record))
             if record.get("link") and record.get("target") in self.by_real:
                 targets.add(self.by_real[record["target"]])
             targets.discard(fid)
@@ -809,6 +972,134 @@ def repo_entry_roots(graph):
         if rel == "tests/run-all" or rel == "init.lua" and os.path.realpath(graph.top_of(fid)) == os.path.realpath(
                 os.path.join(base_home(), ".hammerspoon")) or record.get("kind") == "instruction":
             roots.setdefault(fid, []).append("repo entry %s" % rel)
+    for fid, why in generic_roots(graph):
+        roots.setdefault(fid, []).append(why)
+    return roots
+
+
+def command_files(graph, repo, base, text):
+    out = set()
+    words = re.findall(r"[\w@~.\-/:]+", text)
+    for index, word in enumerate(words):
+        if index and words[index - 1] == "-m":
+            out.update(graph.py_module(repo, base, word))
+            continue
+        word = word.split("=", 1)[-1].rstrip(".:")
+        if "/" not in word and "." not in word.lstrip("."):
+            continue
+        if word.startswith("/"):
+            parts = word.strip("/").split("/")
+            tries = ["/".join(parts[i:]) for i in range(len(parts))]
+        else:
+            tries = [os.path.join(base, word), word]
+        hit = next((f for f in (graph.js_file(repo, t) for t in tries if t) if f), None)
+        if hit:
+            out.add(hit)
+    return out
+
+
+def package_refs(value, key=None):
+    if isinstance(value, str):
+        return [value] if key != "types" else []
+    if isinstance(value, dict):
+        return [ref for k, v in value.items() if k not in ("types", "typings") for ref in package_refs(v, k)]
+    if isinstance(value, list):
+        return [ref for item in value for ref in package_refs(item)]
+    return []
+
+
+def entry_specs(rel, text):
+    name = os.path.basename(rel)
+    if name == "pyproject.toml":
+        try:
+            import tomllib
+            doc = tomllib.loads(text)
+        except Exception:
+            return []
+        project, poetry = doc.get("project") or {}, ((doc.get("tool") or {}).get("poetry")) or {}
+        groups = [project.get("scripts"), project.get("gui-scripts"), poetry.get("scripts")]
+        groups += list((project.get("entry-points") or {}).values()) + list((poetry.get("plugins") or {}).values())
+        values = [v for group in groups if isinstance(group, dict) for v in group.values()]
+        return [v if isinstance(v, str) else (v or {}).get("reference") or (v or {}).get("callable") or "" for v in values]
+    if name == "setup.cfg":
+        section = re.search(r"^\[options\.entry_points\][^\n]*\n(.*?)(?=^\[|\Z)", text, re.M | re.S)
+        return re.findall(r"=\s*([\w.]+(?::[\w.]+)?)\s*$", section.group(1), re.M) if section else []
+    return re.findall(r"[\"'][\w.\- ]+=\s*([\w.]+:[\w.]+)", text)
+
+
+def workflow_runs(text):
+    out, block, indent = [], None, 0
+    for line in text.splitlines():
+        if block is not None:
+            if not line.strip() or len(line) - len(line.lstrip()) > indent:
+                block.append(line)
+                continue
+            out.append("\n".join(block))
+            block = None
+        match = re.match(r"^(\s*)(?:-\s*)?run:\s*(.*)$", line)
+        if match:
+            if match.group(2).strip()[:1] in ("|", ">"):
+                block, indent = [], len(match.group(1))
+            else:
+                out.append(match.group(2))
+    if block:
+        out.append("\n".join(block))
+    return out
+
+
+def generic_roots(graph):
+    roots, bases = [], {}
+    for fid, record in graph.files.items():
+        if record.get("kind") == "fixture":
+            continue
+        repo, rel = fid.split("/", 1)
+        name, here = os.path.basename(rel), os.path.dirname(rel)
+        if name in ("package.json", "pyproject.toml", "setup.cfg", "setup.py"):
+            bases.setdefault(repo, set()).add(here)
+        if record.get("kind") == "test":
+            roots.append((fid, "test file"))
+        elif record.get("kind") == "code" and (TOOL_CONFIG_RE.match(name) or name == "__main__.py"):
+            roots.append((fid, "tool convention %s" % name))
+        reader = name in ("package.json", "pyproject.toml", "setup.cfg", "setup.py") or MAKE_FILES.match(name) \
+            or DOCKER_FILES.match(name) or re.match(r"^\.github/workflows/[^/]+\.ya?ml$", rel)
+        if not reader:
+            continue
+        try:
+            with open(os.path.join(graph.top_of(fid), rel), encoding="utf-8", errors="replace") as handle:
+                text = handle.read(500000)
+        except OSError:
+            continue
+        found = set()
+        if name == "package.json":
+            doc = loose_json(os.path.join(graph.top_of(fid), rel)) or {}
+            for ref in package_refs([doc.get(k) for k in ("bin", "main", "module", "browser", "exports")]):
+                if "*" in ref:
+                    pattern = os.path.normpath(os.path.join(here, ref))
+                    found.update(f for f in graph.files if f.startswith(repo + "/") and fnmatch.fnmatch(f.split("/", 1)[1], pattern))
+                else:
+                    found.update(f for f in [graph.js_file(repo, os.path.join(here, ref))] if f)
+            scripts = doc.get("scripts") if isinstance(doc.get("scripts"), dict) else {}
+            found.update(command_files(graph, repo, here, "\n".join(str(v) for v in scripts.values())))
+        elif name in ("pyproject.toml", "setup.cfg", "setup.py"):
+            for spec in entry_specs(rel, text):
+                found.update(graph.py_module(repo, here, spec.split(":", 1)[0].strip()))
+        elif DOCKER_FILES.match(name):
+            lines = [l for l in text.splitlines() if re.match(r"^\s*(CMD|ENTRYPOINT)\b", l, re.I)]
+            found.update(command_files(graph, repo, here, "\n".join(lines)))
+        elif MAKE_FILES.match(name):
+            found.update(command_files(graph, repo, here, text))
+        else:
+            found.update(command_files(graph, repo, "", "\n".join(workflow_runs(text))))
+        roots += [(f, "%s %s" % (name, rel)) for f in found if f != fid]
+    for fid, record in graph.files.items():
+        if record.get("kind") != "code":
+            continue
+        repo, rel = fid.split("/", 1)
+        for base in bases.get(repo, set()) | {""}:
+            sub = rel[len(base) + 1:] if base and rel.startswith(base + "/") else rel if not base else None
+            if sub and re.match(r"^(src/)?(%s)/" % "|".join(ROUTE_DIRS), sub):
+                roots.append((fid, "route %s" % sub.split("/", 2)[0 if not sub.startswith("src/") else 1]))
+                break
     return roots
 
 
@@ -1052,7 +1343,7 @@ def heavy_tests(graph):
         fid = next((f for f in ("%s/tests/%s.sh" % (repo, label), "%s/tests/%s.py" % (repo, label)) if f in graph.files), None)
         if fid:
             out.append((fid, median, len(values)))
-    return out
+    return out, sorted({repo for repo, _ in secs})
 
 
 def test_requirement(graph, fid):
@@ -1226,10 +1517,15 @@ def build_candidates():
                         "detail": "%s matches the retired behavior %s (%s)" % (span["unit"], row.get("id"), row.get("record")),
                         "value": span["lines"]})
     for item in dangling:
-        signals.append({"group": "dead", "rule": "registration", "units": [], "needs_egor": True,
+        research = registration_research(item, graph)
+        if research is None:
+            continue
+        step = registration_step(item, research)
+        edit, trade = registration_owner(item, research, graph, step)
+        signals.append({"group": "dead", "rule": "registration", "units": [], "research": research,
+                        "needs_egor": bool(trade), "trade": trade, "files": [edit] if edit else [],
                         "registration": item, "anchor": "registration:%s" % item["target"],
-                        "detail": "%s registration %s points at %s, which no repository holds" % (item["kind"], item["source"], item["target"]),
-                        "step": registration_step(item), "value": 1})
+                        "detail": registration_detail(item, research), "step": step, "value": 1})
     if cover["tail_days"] >= LIMITS["silent_days"]:
         for kind, source, command in settings_commands(graph.tops.values()):
             words = command.split()
@@ -1245,13 +1541,14 @@ def build_candidates():
             key = "hook:" + os.path.basename(script)
             if journaled and not hits.get(key):
                 item = {"kind": "settings", "source": source, "target": script, "command": command}
-                signals.append({"group": "dead", "rule": "silent", "units": [unit_span(fid, graph.files[fid])], "needs_egor": True,
+                signals.append({"group": "dead", "rule": "silent", "units": [unit_span(fid, graph.files[fid])],
                                 "registration": item, "step": registration_step(item),
                                 "detail": "%s fired 0 times over %d covered days since %s" % (
                                     os.path.basename(script), cover["tail_days"], cover["tail_start"]),
                                 "value": graph.files[fid].get("lines") or 0})
 
-    for fid, median, runs in heavy_tests(graph):
+    slow, timed = heavy_tests(graph)
+    for fid, median, runs in slow:
         requirement = test_requirement(graph, fid)
         signal = {"group": "heavy", "rule": "test", "units": [unit_span(fid, graph.files[fid])],
                   "detail": "%s takes %ds per run (median of %d runs in 28 d)" % (fid, median, runs), "value": round(median / 6.0)}
@@ -1295,13 +1592,135 @@ def build_candidates():
     blind = blind_languages(graph)
     write_json(os.path.join(state_dir(), "graph.json"), {
         "at": iso_time(now_s()), "files": len(graph.files), "live": len(live), "roots": len(roots),
-        "blind_languages": blind, "coverage": cover,
+        "blind_languages": blind, "coverage": cover, "timed_repos": timed,
         "snapshots": {repo: doc["cursor"]["snapshot"] for repo, doc in indexes.items()}})
     account(None, None, "collector", cpu_s=cpu_seconds(), wall_s=time.time() - started, note="candidates")
     return candidates
 
 
-def registration_step(item):
+def registration_file(item, graph):
+    if item["kind"] != "settings":
+        return item["source"]
+    label = item["source"].partition(" ")[0]
+    repo, _, rest = label.partition("/")
+    return os.path.join(graph.tops.get(repo, "/nonexistent"), rest) if rest else os.path.join(base_home(), ".claude", label)
+
+
+def registration_research(item, graph):
+    target = item["target"]
+    top = max((t for t in graph.tops.values() if target.startswith(t + "/")), key=len, default=None)
+    if not top:
+        return {}
+    rel = os.path.relpath(target, top)
+    if git(top, "cat-file", "-e", "HEAD:" + rel) is not None:
+        return None
+    found = {"repo": repo_name(top), "rel": rel, "name": os.path.basename(target), "refs": []}
+    log = (git(top, "log", "-1", "-M", "--diff-filter=DR", "--date=short", "--format=%h%x1f%ad%x1f%s", "--", rel) or "").strip()
+    if log:
+        found["commit"], found["date"], found["subject"] = log.split("\x1f", 2)
+        for line in (git(top, "show", "-M", "--name-status", "--format=", found["commit"]) or "").splitlines():
+            parts = line.split("\t")
+            if len(parts) == 3 and parts[0].startswith("R") and parts[1] == rel and os.path.exists(os.path.join(top, parts[2])):
+                found["renamed_to"], found["renamed_rel"] = os.path.join(top, parts[2]), parts[2]
+    elif not (git(top, "log", "-1", "--format=%h", "--", rel) or "").strip():
+        found["never_tracked"] = True
+    source = os.path.realpath(registration_file(item, graph))
+    for repo, repo_top in sorted(graph.tops.items()):
+        out = git(repo_top, "grep", "-l", "-z", "-w", "-F", "-e", found["name"], "--", ".",
+                  ":(exclude,glob)**/docs/**", ":(exclude,glob)**/*.md") or ""
+        found["refs"] += ["%s/%s" % (repo, p) for p in out.split("\0")
+                          if p and os.path.realpath(os.path.join(repo_top, p)) != source]
+    return found
+
+
+def read_plist(path):
+    try:
+        with open(path, "rb") as handle:
+            plist = plistlib.load(handle)
+    except Exception:
+        return None
+    return plist if isinstance(plist, dict) else None
+
+
+def launchd_programs(path):
+    plist = read_plist(path) or {}
+    args = [os.path.expanduser(str(a)) for a in (plist.get("ProgramArguments") or [])]
+    if plist.get("Program"):
+        args.insert(0, os.path.expanduser(str(plist["Program"])))
+    found = set(os.path.realpath(a) for a in args[:1])
+    if args and re.match(r"^((ba|z)?sh|python[\d.]*|node|perl|ruby|osascript)$", os.path.basename(args[0])):
+        found.update(os.path.realpath(a) for a in args[1:2])
+    if args and os.path.dirname(os.path.realpath(args[0])) == os.path.realpath(os.path.join(base_home(), ".local", "libexec")):
+        try:
+            with open(args[0], errors="replace") as handle:
+                found.update(os.path.realpath(os.path.expanduser(t)) for t in tokens_of(handle.read(20000)) if t.startswith(("/", "~/")))
+        except OSError:
+            pass
+    return found
+
+
+def registration_owner(item, research, graph, step):
+    settled = research.get("commit") or research.get("never_tracked")
+    if not settled:
+        return None, "Cost: removing it stops nothing that runs; Loss: no commit says why %s went, so a planned restore " \
+            "loses it; Recommendation: remove it (steps)" % research.get("name")
+    if item["kind"] == "path":
+        return None, None
+    if item["kind"] == "launchd":
+        if item["target"] in launchd_programs(item["source"]):
+            return None, None
+        return None, "Cost: bootout stops %s, whose program still exists; Loss: keeping it, each run misses %s; " \
+            "Recommendation: boot it out (steps)" % (os.path.basename(item["source"])[:-6], research["name"])
+    path = os.path.realpath(registration_file(item, graph))
+    for repo, top in sorted(graph.tops.items()):
+        if path.startswith(top + "/"):
+            return "%s/%s" % (repo, os.path.relpath(path, top)), None
+    return None, "Cost: %s is in no repository, so no fixer may edit it; Loss: keeping it, each call misses %s; " \
+        "Recommendation: remove it (steps)" % (os.path.basename(path), research["name"])
+
+
+def registration_detail(item, research):
+    detail = "%s registration %s points at %s, which no repository holds" % (item["kind"], item["source"], item["target"])
+    if not (research.get("commit") or research.get("never_tracked")):
+        return detail
+    home = base_home().rstrip("/") + "/"
+    source = "~/" + item["source"][len(home):] if item["source"].startswith(home) else item["source"]
+    if research.get("never_tracked"):
+        why = "never tracked by %s" % research["repo"]
+    else:
+        why = "%s by %s@%s %s «%s»" % ("renamed to %s" % research["renamed_rel"]
+                                      if research.get("renamed_to") else "removed", research["repo"], research["commit"],
+                                      research["date"], clip(research["subject"], 60))
+    refs = research["refs"]
+    used = "referenced by %s%s" % (", ".join(refs[:5]), " (+%d)" % (len(refs) - 5) if len(refs) > 5 else "") if refs else \
+        "nothing references %s" % research["name"]
+    return "%s → %s/%s %s; %s" % (source, research["repo"], research["rel"], why, used)
+
+
+def registration_proofs(research):
+    if not research or not (research.get("commit") or research.get("never_tracked")):
+        return ["the target path is absent"]
+    proofs = ["the target path is absent and untracked at %s HEAD" % research["repo"]]
+    if research.get("never_tracked"):
+        proofs.append("git log of %s/%s is empty: never tracked" % (research["repo"], research["rel"]))
+    else:
+        proofs.append("git log -1 --diff-filter=DR -- %s: %s@%s %s «%s»%s" % (
+            research["rel"], research["repo"], research["commit"], research["date"], research["subject"],
+            ", new path %s" % research["renamed_to"] if research.get("renamed_to") else ""))
+    proofs.append("tracked non-markdown files outside docs/ naming %s: %s" % (research["name"], ", ".join(research["refs"]) or "none"))
+    return proofs
+
+
+def registration_step(item, research=None):
+    research = research or {}
+    if research.get("refs"):
+        why = " as %s@%s says" % (research["repo"], research["commit"]) if research.get("commit") else ""
+        return "migrate %s off %s%s, then %s" % (", ".join(research["refs"][:5]), research["name"], why,
+                                                registration_step(item, dict(research, refs=[])))
+    if research.get("renamed_to"):
+        if item["kind"] == "path":
+            return "ln -sfn %s %s" % (research["renamed_to"], item["source"])
+        return "point %s at %s instead of %s" % (item["source"], research["renamed_to"], item["target"])
     if item["kind"] == "settings":
         label, _, key = item["source"].partition(" ")
         return "remove the hook command %r from %s in %s" % (item.get("command") or item["target"], key,
@@ -1360,7 +1779,7 @@ def cluster(signals, graph, edges, roots, ledger, indexes, hits):
         if not anchors:
             continue
         group = min((s["group"] for s in members), key=lambda g: GROUP_RANK[g])
-        files = sorted({span["file"] for span in units.values()})
+        files = sorted({span["file"] for span in units.values()} | {f for s in members for f in s.get("files") or ()})
         protected = [s.get("protected") for s in members if s.get("protected")]
         rules = sorted({s["rule"] for s in members})
         registrations = sorted({json.dumps(s["registration"], sort_keys=True) for s in members if s.get("registration")}
@@ -1379,6 +1798,8 @@ def cluster(signals, graph, edges, roots, ledger, indexes, hits):
             "needs_egor": any(s.get("needs_egor") for s in members),
             "steps": [s["step"] for s in members if s.get("step")],
             "callers": refs[:40], "registrations": registrations, "purpose": purpose,
+            "research": next((s["research"] for s in members if s.get("research")), None),
+            "trade": next((s["trade"] for s in members if s.get("trade")), None),
             "snapshot": {repo: snapshots.get(repo) for repo in repos},
             "new": any(f.split("/", 1)[1] in changed.get(f.split("/", 1)[0], ()) for f in files),
             "slice": "/".join(files[0].split("/")[:2]) if files else anchors[0],
@@ -1505,6 +1926,12 @@ def judge_brief(batch, indexes):
               "green suites; a merge: the shared module first, callers migrated, the old copy deleted on a later night).",
               "- `not-now`: anything else, with the reason and what would re-open it.",
               "A test is kept for the requirement it protects, never for being quiet; a merge needs net benefit.",
+              "Research before any verdict, and decide what it settles. A hook that never fired (`silent`): find why it "
+              "exists (`git log -S<its name>` in its repository, the commit subjects, the docs) and how often the event it "
+              "guards happens (the hook, statusline and menu journals), and quote both in `reason`.",
+              "Egor decides only what research cannot settle, and only as a trade: then add `\"needs_egor\": true, \"trade\": "
+              "\"Cost: <each way's cost>; Loss: <what each way loses>; Recommendation: <yours>\"`. Without a trade the plan is "
+              "the fixer's.",
               "", "End your answer with ONE JSON object per candidate, each on its own line, its `id` copied exactly "
               "from the candidate's heading:",
               '{"id": "<candidate id>", "verdict": "problem" | "not-now", "fact": "<one English line for the menu>", '
@@ -1643,6 +2070,7 @@ def run_judge(night, max_tokens, max_wall, vendor, limit=None, batch_size=JUDGE_
                      "fact": clip(verdict.get("fact") or candidate["detail"], 200), "plan": verdict.get("plan"),
                      "proofs": verdict.get("proofs") or [], "reason": verdict.get("reason"),
                      "triggers": verdict.get("triggers") or [], "value": verdict.get("value"), "run": run_id,
+                     "needs_egor": verdict.get("needs_egor") is True, "trade": verdict.get("trade"),
                      "group": candidate["group"], "snapshot": candidate["snapshot"], "night": night,
                      "first_at": (verdicts.get(candidate["id"]) or {}).get("first_at") or iso_time(now_s())}
             if verdict["verdict"] == "not-now":
@@ -1725,14 +2153,16 @@ def problem_of(candidate, verdict):
     if not units and candidate.get("registrations"):
         evidence = [{"at": verdict.get("at"), "ref": candidate["id"], "account": None, "excerpt": clip(candidate["detail"])}]
     fact = verdict.get("fact") or candidate["detail"]
-    if candidate.get("needs_egor"):
-        fact = "needs Egor: " + fact
+    trade = candidate.get("trade") or (verdict.get("needs_egor") and verdict.get("trade")) or None
+    needs_egor = bool(candidate.get("needs_egor") or trade)
+    if needs_egor:
+        fact = "needs Egor: " + (trade or fact)
     return {"id": candidate["id"], "rule": candidate["rules"][0], "rules": candidate["rules"], "group": candidate["group"],
             "state": "new", "fact": clip(fact, 200), "value": verdict.get("value") if isinstance(verdict.get("value"), (int, float)) else candidate["value"],
             "limit": 0, "unit": "lines", "window_h": None, "exposure": max(len(units), 1), "count": None,
             "first_seen": verdict.get("first_at") or verdict.get("at"), "last_seen": verdict.get("at"),
             "evidence": evidence, "ledger": None, "plan": verdict.get("plan"), "proofs": verdict.get("proofs") or [],
-            "needs_egor": candidate.get("needs_egor") or False, "steps": candidate.get("steps") or [],
+            "needs_egor": needs_egor, "trade": trade, "steps": candidate.get("steps") or [],
             "units": units, "files": candidate["files"], "repos": candidate["repos"], "snapshot": candidate["snapshot"],
             "digest": candidate["evidence_digest"]}
 
@@ -1741,8 +2171,52 @@ def auto_verdict(candidate):
     if candidate["rules"] == ["registration"]:
         return {"verdict": "problem", "digest": candidate["evidence_digest"], "at": iso_time(now_s()),
                 "fact": candidate["detail"], "plan": "; ".join(candidate["steps"]),
-                "reason": "the registration's target does not exist", "proofs": ["the target path is absent"]}
+                "reason": "the registration's target does not exist", "proofs": registration_proofs(candidate.get("research"))}
     return None
+
+
+def retire_launch_agent(night, cause, item):
+    plist = item["source"]
+    if not os.path.isfile(plist) or os.path.exists(item["target"]) or item["target"] not in launchd_programs(plist):
+        return None
+    label = str((read_plist(plist) or {}).get("Label") or os.path.basename(plist)[:-6])
+    bootout = subprocess.run([os.environ.get("CODE_DOCTOR_LAUNCHCTL") or "launchctl", "bootout", "gui/%d/%s" % (os.getuid(), label)],
+                             capture_output=True, text=True)
+    folder = os.path.join(state_dir(), "retired-launchagents")
+    os.makedirs(folder, exist_ok=True)
+    dest = os.path.join(folder, os.path.basename(plist))
+    if os.path.exists(dest):
+        dest = "%s.%d" % (dest, int(now_s()))
+    shutil.move(plist, dest)
+    what = "booted out %s (launchctl rc %d), %s moved to %s" % (label, bootout.returncode, plist, dest)
+    account(night, cause, "fix", note=what, plist=plist, moved_to=dest, label=label, bootout_rc=bootout.returncode)
+    return what
+
+
+def settle_registrations(night):
+    done = []
+    for candidate in load_candidates():
+        research = candidate.get("research") or {}
+        if candidate["rules"] != ["registration"] or candidate.get("needs_egor") or research.get("refs"):
+            continue
+        for text in candidate["registrations"]:
+            item = json.loads(text)
+            if item["kind"] == "launchd":
+                what = retire_launch_agent(night, candidate["id"], item)
+                done += [what] if what else []
+                continue
+            link = item["source"]
+            if item["kind"] != "path" or not os.path.islink(link) or os.path.exists(link) or os.path.realpath(link) != item["target"]:
+                continue
+            old = os.readlink(link)
+            os.unlink(link)
+            if research.get("renamed_to"):
+                os.symlink(research["renamed_to"], link)
+            what = "relinked %s -> %s (was %s)" % (link, research["renamed_to"], old) if research.get("renamed_to") else \
+                "unlinked %s -> %s" % (link, old)
+            account(night, candidate["id"], "fix", note=what, link=link, readlink=old, relinked=research.get("renamed_to"))
+            done.append(what)
+    return done
 
 
 def apply_ledger(problems, candidates, ledger, indexes):
@@ -1822,12 +2296,22 @@ def document(started):
     summary = accounting_summary(ledger)
     days = rollup_days()
     cover = coverage(days)
-    spots = list(ledger.get("blind_spots") or [])
+    foreign = foreign_repos()
+    spots = [] if foreign else list(ledger.get("blind_spots") or [])
     for lang, info in (graph_info.get("blind_languages") or {}).items():
         spots.append({"id": "language:%s" % lang, "what": "%s: %d files no detector reads" % (lang, info["files"]),
                       "reason": "only bash, python, lua, js and jq are parsed; e.g. %s" % ", ".join(info["examples"]),
                       "since": None, "would_catch_if": "a parser for %s" % lang})
-    if not cover["start"]:
+    if foreign:
+        spots.append({"id": "runtime:no-journal", "what": "heavy: hot code and runtime silence not measured in %s" % (
+            ", ".join(repo_name(t) for t in foreign)), "reason": "no hook, menu or statusline journal records its runtime",
+            "since": None, "would_catch_if": "a runtime journal of that repository"})
+        untimed = [repo_name(t) for t in foreign if repo_name(t) not in (graph_info.get("timed_repos") or ())]
+        if untimed:
+            spots.append({"id": "tests:untimed", "what": "heavy tests: no timing source for %s" % ", ".join(untimed),
+                          "reason": "no suite run of it is in the statusline test history", "since": None,
+                          "would_catch_if": "its suites run under statusline-work-probe's journal"})
+    elif not cover["start"]:
         spots.append({"id": "rollup:none", "what": "runtime silence: no rollup day yet",
                       "reason": "the harness journals were never rolled up", "since": None,
                       "would_catch_if": "code-doctor rollup runs before the journals' 3-day prune"})
@@ -1836,9 +2320,9 @@ def document(started):
             cover["tail_days"], cover.get("tail_start"), LIMITS["silent_days"]),
             "reason": "silence is never claimed past the rollup's start" + (" (gaps: %s)" % ", ".join(cover["gaps"][:3]) if cover["gaps"] else ""),
             "since": cover["start"], "would_catch_if": "%d more covered days" % (LIMITS["silent_days"] - cover["tail_days"])})
-    for what, why in (("CLI invocations through the PATH shims", "no shim journals a CLI call"),
-                      ("gate branches", "no journal records which branch of a gate fired"),
-                      ("superseded machinery", "no detector reads vendor capability changes yet")):
+    for what, why in () if foreign else (("CLI invocations through the PATH shims", "no shim journals a CLI call"),
+                                         ("gate branches", "no journal records which branch of a gate fired"),
+                                         ("superseded machinery", "no detector reads vendor capability changes yet")):
         spots.append({"id": "runtime:" + re.sub(r"\W+", "-", what.lower()).strip("-"), "what": what + ": not measured",
                       "reason": why, "since": None, "would_catch_if": "a journal or detector for it"})
     status = "blind" if blind else ("problems" if count else "ok")
@@ -1849,6 +2333,7 @@ def document(started):
         "contract": 1, "doctor": "code", "as_of": iso_time(now), "as_of_s": int(now), "judge": judge_digest(),
         "status": status, "problem_count": count, "groups": groups, "problems": problems,
         "blind_spots": spots, "blind": blind,
+        "scope": {"repos": repo_paths(), "foreign": foreign, "report_only": report_only()},
         "candidates": {"total": len(candidates), "waiting": len(waiting), "protected": protected,
                        "judged": len(candidates) - len(waiting) - protected,
                        "waiting_by_group": {g: sum(1 for c in waiting if c["group"] == g) for g in GROUPS},
@@ -2080,7 +2565,7 @@ def day_trees(record, tops):
 
 
 def check_run(record, base, landing, suites_passed):
-    errors = []
+    errors = [report_only()] if report_only() else []
     since = iso_epoch(record.get("launched_at")) or iso_epoch(record.get("created_at")) or 0
     indexes = load_indexes()
     tops = {repo: doc["top"] for repo, doc in indexes.items()}
@@ -2248,24 +2733,27 @@ def main(argv=None):
     parser.add_argument("--json", action="store_true", help="print the document and write nothing")
     parser.add_argument("--quiet", action="store_true", help="print nothing")
     sub = parser.add_subparsers(dest="command")
-    sub.add_parser("index", help="index the sweep repositories incrementally (working tree included)")
-    sub.add_parser("rollup", help="roll the harness journals up into durable daily hit counts")
-    sub.add_parser("candidates", help="recompute candidates.jsonl from the index and the rollup")
-    refresh = sub.add_parser("refresh", help="index, rollup, candidates, then the document (night start, menu Refresh)")
+    scoped = argparse.ArgumentParser(add_help=False)
+    scoped.add_argument("--repo", action="append", default=[], metavar="PATH",
+                        help="scope to this repository instead of the sweep repositories (repeatable); state goes to scopes/<slug>/")
+    sub.add_parser("index", parents=[scoped], help="index the sweep repositories incrementally (working tree included)")
+    sub.add_parser("rollup", parents=[scoped], help="roll the harness journals up into durable daily hit counts")
+    sub.add_parser("candidates", parents=[scoped], help="recompute candidates.jsonl from the index and the rollup")
+    refresh = sub.add_parser("refresh", parents=[scoped], help="index, rollup, candidates, then the document (night start, menu Refresh)")
     refresh.add_argument("--quiet", action="store_true", dest="refresh_quiet")
-    judge = sub.add_parser("judge", help="judge waiting candidates through worker-run under the night's budget")
+    judge = sub.add_parser("judge", parents=[scoped], help="judge waiting candidates through worker-run under the night's budget")
     judge.add_argument("--night")
     judge.add_argument("--max-tokens", type=int, default=BUDGET["tokens"])
     judge.add_argument("--max-wall", type=float, default=BUDGET["wall_s"])
     judge.add_argument("--vendor", default=os.environ.get("CODE_DOCTOR_JUDGE_VENDOR") or "claudeb")
     judge.add_argument("--limit", type=int)
     judge.add_argument("--batch", type=int, default=JUDGE_BATCH, help="candidates per worker session")
-    check = sub.add_parser("check", help="the fixer's safety gate over a doctor-fix run record")
+    check = sub.add_parser("check", parents=[scoped], help="the fixer's safety gate over a doctor-fix run record")
     check.add_argument("record")
     check.add_argument("--base")
     check.add_argument("--landing", action="store_true")
     check.add_argument("--suites-passed", action="store_true")
-    snap = sub.add_parser("snapshot", help="internal: the problems a fixer run takes, top-K by value, revalidated")
+    snap = sub.add_parser("snapshot", parents=[scoped], help="internal: the problems a fixer run takes, top-K by value, revalidated")
     snap.add_argument("doc")
     snap.add_argument("--night")
     fix = sub.add_parser("record-fix", help="the fixer records a landed cleanup: ledger row and canonical mechanism")
@@ -2286,13 +2774,15 @@ def main(argv=None):
     acct.add_argument("--night")
     args = parser.parse_args(argv)
     started = time.time()
+    set_scope(getattr(args, "repo", None))
 
     if args.command == "index":
         for row in run_index():
             print("%(repo)s: %(files)d files · %(parsed)d parsed · %(reused)d reused · snapshot %(snapshot)s" % row)
         return 0
     if args.command == "rollup":
-        print("rollup: %d day-sources written" % run_rollup())
+        print("rollup: %d day-sources written%s" % (run_rollup(), " (no runtime journal outside the sweep repositories)"
+                                                     if foreign_repos() else ""))
         return 0
     if args.command == "candidates":
         candidates = build_candidates()
@@ -2312,6 +2802,9 @@ def main(argv=None):
         return 0 if doc["status"] != "error" else 1
     if args.command == "judge":
         record = run_judge(args.night, args.max_tokens, args.max_wall, args.vendor, args.limit, args.batch)
+        if args.night and not args.repo:
+            for line in settle_registrations(args.night):
+                print("registration: " + line)
         write_document(doc_or_error(started))
         print("judge: %(judged)d judged · %(pending)d waiting · %(tokens)d tokens · %(wall_s)ss · stop %(stop)s" % record)
         return 0
@@ -2323,6 +2816,9 @@ def main(argv=None):
         return 1 if errors else 0
     if args.command == "snapshot":
         doc = read_json(args.doc, {}) or {}
+        if report_only(doc):
+            print("[]")
+            return 0
         kept = night_snapshot(doc.get("problems") or [], args.night)
         print(json.dumps(kept[: queue_k(accounting_summary(load_ledger()))]))
         return 0

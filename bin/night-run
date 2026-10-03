@@ -41,7 +41,7 @@ start opens the orchestrator chat: --cleanup lands finished night branches and r
   only; --resume reopens night <id> under a new orchestrator for its unfinished jobs (one with --job,
   else all plus a cleanup job), the old session kept in previous_sessions
 Nights live in ${DOCTORS_DIR:-~/.cache/doctors}/nights/<id>.json.
-states: pending merged left failed-launch blocked-on-egor nothing-to-do (left needs reason=)
+states: pending merged left failed-launch blocked-on-egor nothing-to-do (left and blocked-on-egor need reason=)
 commits=<repo>:<hash>[,<repo>:<hash>...]  replaces the job's list; <repo> is a sweep-repos
   basename or an absolute path; a changed list clears pushed unless pushed=true comes with it
 leftover: ref is a leftover branch, adopted in every sweep repository where it is one: its WIP
@@ -456,8 +456,11 @@ job_set() { # id ref key=value...
     patch=$(jq -c '.pushed = false' <<<"$patch")
     job=$(jq -c '.pushed = false' <<<"$job")
   fi
-  [ "$(jq -r '.state' <<<"$job")" != left ] || [ "$(jq -r '.reason // ""' <<<"$job")" != "" ] ||
-    die "state left needs reason=<why it stayed>"
+  case $(jq -r '.state' <<<"$job") in
+    left) [ "$(jq -r '.reason // ""' <<<"$job")" != "" ] || die "state left needs reason=<why it stayed>" ;;
+    blocked-on-egor) [ "$(jq -r '.reason // ""' <<<"$job")" != "" ] ||
+      die "state blocked-on-egor needs reason=<the trade Egor decides: each way's cost and loss, the recommendation>" ;;
+  esac
   [ "$pushed" != true ] || [ "$(jq -c '.commits' <<<"$job")" = "$checked" ] ||
     die "the job's commits changed while origin was checked: set pushed=true again"
   night_set "$id" '.jobs |= map(if .ref == $r then . + $p else . end)' --arg r "$ref" --argjson p "$patch" ||

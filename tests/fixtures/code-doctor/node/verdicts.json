@@ -1,0 +1,8 @@
+{
+  "cause:node-app/src/lib/orphan.ts": {"verdict": "problem", "fact": "src/lib/orphan.ts: nothing imports it", "value": 4,
+    "plan": "delete src/lib/orphan.ts", "proofs": ["no live entry point", "green suites"],
+    "reason": "legacyBanner lost its last caller"},
+  "cause:node-app/src/lib/helpers/index.ts#formatElapsed": {"verdict": "problem", "fact": "formatElapsed copies formatDuration",
+    "value": 10, "plan": "summarize calls formatDuration; delete formatElapsed", "proofs": ["green suites"],
+    "reason": "the two bodies are identical"}
+}

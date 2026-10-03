@@ -195,7 +195,10 @@ sed -i '' 's#^judge\tchanged\tdocs/doctors-contract.md#judge\tchanged\tbin/llm-d
 assert_fails fix close "$id2" --decisions "$WORK/decisions" "done" 2>"$WORK/err"
 assert grep -qxF 'line 1 (A): fixed, but the rerun llm doctor still reads it new: a fix leaves it fixed-pending or gone' "$WORK/err"
 jq '(.problems[] | select(.id == "A") | .state) = "fixed-pending"' "$WORK/llm/latest.json" >"$WORK/l" && mv "$WORK/l" "$WORK/llm/latest.json"
+# A day run's markdown is nobody's to measure: only a night run is net zero.
+printf '%0500d\n' 0 >"$L/DAY.md"
 fix close "$id2" --decisions "$WORK/decisions" "three fixed or ruled out" >"$WORK/out" || fail "clean close failed"
+rm "$L/DAY.md"
 assert grep -qxF "run $id2 closed: 4 decisions" "$WORK/out"
 assert jqe '.closed_at != null and .judge_at_close == "j2" and .note == "three fixed or ruled out"' "$R2"
 assert jqe --arg h "llm-legs@$lhash" '.decisions == [
@@ -292,6 +295,8 @@ assert_fails fix launch llm --night n0 >/dev/null 2>"$WORK/err"
 assert grep -qF "worktree not created: no refs/night/n0/base in $L" "$WORK/err"
 for f in $(comm -13 <(printf '%s\n' "$before") <(ls "$RUNS"/*.json)); do assert jqe '.failed_at != null and .launched_at == null' "$f"; done
 assert [ -z "$(git -C "$L" branch --list 'night/n0/*')" ]
+mkdir -p "$L/docs" && printf '%0199d\n' 0 >"$L/docs/stale.md"
+git -C "$L" add docs && git -C "$L" -c user.name=t -c user.email=t@t commit -qm stale
 for n in n1 n3 n4; do git -C "$L" update-ref "refs/night/$n/base" HEAD; done
 git -C "$WORK/projects/proj" update-ref refs/night/n1/base HEAD
 eval "$(sed -n '/^brief_add_dirs() {/,/^}/p' "$ROOT/bin/worker-run")"
@@ -349,6 +354,8 @@ assert grep -qF "docs/doctor-fix.md\`: sections 0-6, \"Night\" and \"LLM doctor\
 assert grep -qF "cd $WT && DOCTORS_DIR=$WORK/doctors bin/doctor-fix close $rid --decisions $RUNS/$rid.d/decisions.tsv <one-line note>" "$B"
 assert grep -qF 'Close reruns `bin/llm-doctor --json` in this worktree itself' "$B"
 assert grep -qF 'Look at the older blocks around what you touch, not only at what you add' "$B"
+assert grep -qF 'hand off only to an owner; Egor gets only a trade, a handoff whose `To:` names him carrying `Cost:`, `Loss:` and `Recommendation:` lines.' "$B"
+assert grep -qF 'Markdown is net zero at night: close refuses a worktree whose *.md bytes (handoffs included) grew since `refs/night/n1/base`, so for every line you add cut stale ones' "$B"
 assert grep -qF 'Settle every stuck review round (`machinery:closure_pending`) of the sweep repositories yourself' "$B"
 assert grep -qF 'never touch a round of another project' "$B"
 assert [ "$(grep -c 'Settle every stuck review round' "$WB")" = 0 ]
@@ -402,10 +409,33 @@ night_doc fixed-pending loosened
 assert_fails fix close "$rid" --decisions "$WORK/nd" "x" 2>"$WORK/err"
 assert grep -qF "judge changed since launch (base-llm -> loosened)" "$WORK/err"
 night_doc fixed-pending base-llm
-fix close "$rid" --decisions "$WORK/nd" "R9 fixed" >"$WORK/out" 2>"$WORK/err" || fail "night close failed: $(cat "$WORK/err")"
+# Night markdown is net zero against the night base in every worktree of the run: committed, deleted and
+# untracked *.md bytes all count.
+printf '%099d\n' 0 >"$WT/docs/grown.md"
+git -C "$WT" add docs/grown.md && git -C "$WT" -c user.name=t -c user.email=t@t commit -qm grown
+assert_fails fix close "$rid" --decisions "$WORK/nd" "x" 2>"$WORK/err"
+assert grep -qF "markdown grew by 100 bytes since refs/night/n1/base in $WT (docs/grown.md +100): markdown is net zero at night" "$WORK/err"
+printf '%049d\n' 0 >"$WT/docs/stale.md"
+printf '%079d\n' 0 >"$WT/new.md"
+assert_fails fix close "$rid" --decisions "$WORK/nd" "x" 2>"$WORK/err"
+assert grep -qF "markdown grew by 30 bytes since refs/night/n1/base in $WT (docs/grown.md +100, new.md +80)" "$WORK/err"
+rm "$WT/new.md"
+git -C "$PW" update-ref -d refs/night/n1/base
+assert_fails fix close "$rid" --decisions "$WORK/nd" "x" 2>"$WORK/err"
+assert grep -qxF "markdown: no refs/night/n1/base in $PW to measure it against" "$WORK/err"
+assert [ "$(grep -c 'markdown grew' "$WORK/err")" = 0 ]
+git -C "$PW" update-ref refs/night/n1/base "$(git -C "$WORK/projects/proj" rev-parse HEAD)"
+# A handoff addressed to Egor is a trade or nothing: its Cost:, Loss: and Recommendation: lines.
+printf '# anchors\n\nTo: Egor.\nStatus: open\nShould anchors stay?\n' >"$WORK/docs/handoffs/2026-10-02-egor.md"
+sed 's#docs/handoffs/2026-09-30-r9.md#(docs/handoffs/2026-10-02-egor.md),#' "$WORK/nd" >"$WORK/nd-egor"
+assert_fails fix close "$rid" --decisions "$WORK/nd-egor" "x" 2>"$WORK/err"
+assert grep -qxF "line 2 (machinery:anchors): handoff to Egor docs/handoffs/2026-10-02-egor.md lacks Cost: Loss: Recommendation:: Egor decides only a trade (each way's cost and loss, the recommendation); otherwise hand it to an owner or decide what research settles" "$WORK/err"
+printf 'Cost: keeping anchors costs 2 s a run.\n- **Loss:** dropping them loses the round links.\nRecommendation: keep.\n' >>"$WORK/docs/handoffs/2026-10-02-egor.md"
+assert jqe '.closed_at == null' "$RR"
+fix close "$rid" --decisions "$WORK/nd-egor" "R9 fixed" >"$WORK/out" 2>"$WORK/err" || fail "night close failed: $(cat "$WORK/err")"
 assert grep -qxF "run $rid closed: 2 decisions" "$WORK/out"
 assert jqe '.closed_at != null and .judge_at_close == "base-llm"' "$RR"
-assert [ "$(wc -l <"$DATA/llm-doctor-runs" | tr -d ' ')" = 5 ]
+assert [ "$(wc -l <"$DATA/llm-doctor-runs" | tr -d ' ')" = 9 ]
 
 # abandon: the deadline's verb. An abandoned run closes no more; a closed one cannot be abandoned.
 fix abandon "$wid" --reason "deadline passed" >"$WORK/out" || fail "abandon failed"
@@ -704,5 +734,12 @@ before=$(ls "$RUNS"/code-*.json)
 assert_fails fix launch code 2>"$WORK/err"
 assert grep -qF 'nothing to fix: every code doctor problem is held back' "$WORK/err"
 assert [ "$(ls "$RUNS"/code-*.json)" = "$before" ]
+jq '.problems |= map(del(.needs_egor)) | .scope = {foreign: ["/x/web"], report_only: "report-only scope: /x/web is not a sweep repository, so no fixer edits it"}' \
+  "$WORK/code/latest.json" >"$WORK/code/scoped.json" && mv "$WORK/code/scoped.json" "$WORK/code/latest.json"
+assert_fails fix launch code 2>"$WORK/err"
+assert [ "$(cat "$WORK/err")" = 'doctor-fix: report-only scope: /x/web is not a sweep repository, so no fixer edits it' ]
+assert_fails fix launch code --night n7 2>"$WORK/err"
+assert grep -qF 'report-only scope' "$WORK/err"
+assert [ "$(ls "$RUNS"/code-*.json)" = "$before" ]
 
-echo "PASS: $asserts asserts; code runs (one area, top-K, needs-Egor out, close through code-doctor check); launch refusals (no or foreign or stale document, nothing to fix, open run under 12 h), an old run abandoned, the snapshot without watch/fixed-pending, the chat through the shared opener, the record fields, a failed opener, close refusals (doctor not rerun, undecided id, missing path, missing commit, a directory, no evidence, bad verdict, judge changed without its line), a clean close, show, runs, updater records and launch, parallel ids, night launch (areas, worktrees, branches, briefs, the packet, one open run per area), night vendor records, a night without a base ref, llm components with their block's entry file, fixed only once the doctor reads it fixed-pending or gone, night close (the doctor rerun once in the worktree, a handed-in document refused, purpose touching its component, judge), abandon, a failed worktree, harness sections and top watch rows under parallel launch, updater machinery, a legacy release run, a merge citation, a malformed ledger row, a failed collector, an unwritten launched_at, a launcher killed under the lock, quiet open ledger rows (their own brief section, the day launch)"
+echo "PASS: $asserts asserts; code runs (one area, top-K, needs-Egor out, close through code-doctor check); launch refusals (no or foreign or stale document, nothing to fix, open run under 12 h), an old run abandoned, the snapshot without watch/fixed-pending, the chat through the shared opener, the record fields, a failed opener, close refusals (doctor not rerun, undecided id, missing path, missing commit, a directory, no evidence, bad verdict, judge changed without its line), a clean close, show, runs, updater records and launch, parallel ids, night launch (areas, worktrees, branches, briefs, the packet, one open run per area), night vendor records, a night without a base ref, llm components with their block's entry file, fixed only once the doctor reads it fixed-pending or gone, night close (markdown net zero per worktree: committed, untracked and cut bytes, a worktree without its base; a day run unmeasured; the doctor rerun once in the worktree, a handed-in document refused, purpose touching its component, judge), abandon, a failed worktree, harness sections and top watch rows under parallel launch, updater machinery, a legacy release run, a merge citation, a malformed ledger row, a failed collector, an unwritten launched_at, a launcher killed under the lock, quiet open ledger rows (their own brief section, the day launch)"

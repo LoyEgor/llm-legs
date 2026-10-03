@@ -512,7 +512,7 @@ write_brief() { # id worktree -> the brief file
       "$night" "$doctor" "$area" "$(jq -r "$JQ_COUNTS" "$file")" "$wt" "$branch"
     printf '1. Read `%s/docs/doctor-fix.md`: sections 0-6, "Night" and "%s doctor" only.\n' "$wt" "$title"
     printf '2. Your scope is the problems below and the known quiet rows after them, nothing else. Work only in the worktree and the `ADD-DIR:` worktrees of the other repositories your component lives in, all on the branch `%s`, started from their `refs/night/%s/base`; a change another repository needs is a handoff. Look at the older blocks around what you touch, not only at what you add: is a workaround there obsolete now, because the vendor does it natively or its reason is gone? Then remove it.\n' "$branch" "$night"
-    printf '3. Commit on that branch; never push, never touch a main checkout, never ask Egor: decide, or hand off.\n'
+    printf '3. Commit on that branch; never push, never touch a main checkout, never ask Egor: decide what research settles (git log -S, the journals, the docs, the owning chat) and hand off only to an owner; Egor gets only a trade, a handoff whose `To:` names him carrying `Cost:`, `Loss:` and `Recommendation:` lines. Markdown is net zero at night: close refuses a worktree whose *.md bytes (handoffs included) grew since `refs/night/%s/base`, so for every line you add cut stale ones (closed handoffs first, then history, restated code, duplicated rules; ~/.claude/docs/context-file-hygiene.md).\n' "$night"
     printf '4. Close, from the worktree:\n\n'
     printf '       cd %q && DOCTORS_DIR=%q bin/doctor-fix close %s --decisions %q <one-line note>\n\n' \
       "$wt" "${runs_dir%/runs}" "$id" "$decisions"
@@ -595,8 +595,12 @@ launch_night() { # doctor night
 }
 
 launch() { # llm|harness|updater|code [--night <id>]
-  local doctor=${1:-}
+  local doctor=${1:-} reason
   mkdir -p "$runs_dir" || die "cannot make $runs_dir"
+  if [ "$doctor" = code ]; then
+    reason=$(jq -r '.scope.report_only // empty' "$(doc_path code)" 2>/dev/null)
+    [ -z "$reason" ] || die "$reason"
+  fi
   case "$doctor:${2:-}" in
     llm: | harness: | code:) launch_day "$doctor" ;;
     updater:) "${DOCTOR_FIX_VENDOR_CLI_UPDATE:-$repo_root/bin/vendor-cli-update}" now ;;
@@ -687,9 +691,46 @@ rerun_doc() { # id doctor -> the document the doctor prints from the run's workt
   printf '%s\n' "$out"
 }
 
+md_growth() { # worktree base -> the net *.md byte growth, then the 3 largest growers; fails without the base ref
+  local wt=$1 base=$2 f old new delta total=0 rows=''
+  git -C "$wt" rev-parse -q --verify "$base^{commit}" >/dev/null 2>&1 || return 1
+  while IFS= read -r -d '' f; do
+    old=$(git -C "$wt" cat-file -s "$base:$f" 2>/dev/null) || old=0
+    new=0
+    [ ! -f "$wt/$f" ] || new=$(wc -c <"$wt/$f" | tr -d ' ')
+    delta=$((new - old))
+    total=$((total + delta))
+    [ "$delta" -le 0 ] || rows+="$delta"$'\t'"$f"$'\n'
+  done < <({ git -C "$wt" diff -z --name-only --no-renames "$base" -- '*.md'
+    git -C "$wt" ls-files -z --others --exclude-standard -- '*.md'; } | sort -zu)
+  printf '%s\n' "$total"
+  printf '%s' "$rows" | sort -t$'\t' -k1,1nr | head -n 3 | awk -F'\t' '{ printf "%s +%s\n", $2, $1 }'
+}
+
+untraded_handoff() { # record evidence -> the cited handoff addressed to Egor that lacks Cost:/Loss:/Recommendation:
+  local word dir path key missing words
+  read -ra words <<<"$2"
+  for word in ${words[@]+"${words[@]}"}; do
+    word=${word#[(\`]}
+    word=${word%%[,;:)\`]*}
+    [[ $word == *.md ]] || continue
+    for path in "$word" $(jq -r '.worktrees[]? + "/" + $w' --arg w "$word" "$1") "$repo_root/$word" \
+      "${DOCTOR_FIX_DOCS:-$repo_root/docs}/${word#docs/}"; do
+      [ -f "$path" ] || continue
+      grep -iE '^[*_ ]*To[*_ ]*:' "$path" | grep -qiw egor || break
+      missing=''
+      for key in Cost Loss Recommendation; do
+        grep -qE "^[*_ >-]*$key[*_ ]*:" "$path" || missing+=" $key:"
+      done
+      [ -z "$missing" ] || { printf '%s lacks%s\n' "$word" "$missing"; return; }
+      break
+    done
+  done
+}
+
 close_run() { # id --decisions <file> note...
   local id=${1:-} decisions='' doc file doctor as_of launched judge_then judge_now line_no=0
-  local pid verdict purpose evidence decided='' unverified='' problems bad=() touch state failure line rule
+  local pid verdict purpose evidence decided='' unverified='' problems bad=() touch state failure line rule base wt growth
   file=$(record_file "$id")
   [ -n "$id" ] && [ -f "$file" ] || die "no run $id"
   shift
@@ -738,6 +779,10 @@ close_run() { # id --decisions <file> note...
     [ "$touch" = 0 ] ||
       { bad+=("line $line_no ($pid): purpose '$purpose' does not touch the component: cite one of its files or a commit that changed one (doctor-fix show $id)"); continue; }
     [ -n "$evidence" ] || { bad+=("line $line_no ($pid): no evidence"); continue; }
+    if [ "$verdict" = handoff ] && failure=$(untraded_handoff "$file" "$evidence") && [ -n "$failure" ]; then
+      bad+=("line $line_no ($pid): handoff to Egor $failure: Egor decides only a trade (each way's cost and loss, the recommendation); otherwise hand it to an owner or decide what research settles")
+      continue
+    fi
     if [ "$verdict" = fixed ]; then
       failure=$(jq -r 'if .status == "error" then (.self.error // "no error text") else "" end' "$doc")
       [ -z "$failure" ] ||
@@ -764,6 +809,14 @@ close_run() { # id --decisions <file> note...
       [ -z "$line" ] || bad+=("code-doctor check: $line")
     done < <("${DOCTOR_FIX_CODE_DOCTOR:-$repo_root/bin/code-doctor}" check "$file" \
       $(jq -r 'if .night then "--base\nrefs/night/\(.night)/base" else empty end' "$file") 2>&1)
+  fi
+  if jq -e '.night != null' "$file" >/dev/null; then
+    base="refs/night/$(jq -r .night "$file")/base"
+    while IFS= read -r wt; do
+      growth=$(md_growth "$wt" "$base") || { bad+=("markdown: no $base in $wt to measure it against"); continue; }
+      [ "${growth%%$'\n'*}" -gt 0 ] || continue
+      bad+=("markdown grew by ${growth%%$'\n'*} bytes since $base in $wt ($(sed 1d <<<"$growth" | paste -sd, - | sed 's/,/, /g')): markdown is net zero at night — cut stale lines (closed handoffs first, then history, restated code, duplicated rules; ~/.claude/docs/context-file-hygiene.md) until it does not grow")
+    done < <(jq -r '.worktrees[]?' "$file")
   fi
   if [ ${#bad[@]} -gt 0 ]; then
     printf 'doctor-fix: run %s stays open; rows are id<TAB>fixed|ruled-out|weather|blind-spot|handoff<TAB>purpose<TAB>evidence, purpose a repo@hash or a file of the component stating why it exists:\n' "$id" >&2

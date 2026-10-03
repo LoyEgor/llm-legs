@@ -42,7 +42,7 @@ recorded `component: unverified`, shown by `doctor-fix show` and `night-run repo
 | `ruled-out` | not a bug of ours | an `open` ledger row narrowed to this cause, the reason in its `note`, and a handoff proposing the dismissal to the owner |
 | `weather` | vendor-side or external | the same as `ruled-out` |
 | `blind-spot` | cannot be measured yet | a ledger `blind_spots` row with `would_catch_if` |
-| `handoff` | ambiguous, owned by another chat (a goal miss included), needs Egor's word, or would loosen the judge; never test speed or `menu_build` (`close` refuses it) | `docs/handoffs/<date>-<topic>.md` with a `Status: open` line, addressed to the ledger's `owner` or `owners`, and the row's `handoff` pointing at it |
+| `handoff` | owned by another chat (a goal miss included), research cannot settle it, or it would loosen the judge; to Egor only as a trade (`Cost:`/`Loss:`/`Recommendation:` lines); never test speed or `menu_build` (`close` refuses it) | `docs/handoffs/<date>-<topic>.md` with a `Status: open` line, addressed to the ledger's `owner` or `owners`, and the row's `handoff` pointing at it |
 
 Clear bugs are fixed, never handed off. A fixer never writes a `not-a-bug` or `weather` row: the
 narrowed `open` row keeps the cause on record without loosening the judge, and the owner decides the
@@ -112,6 +112,8 @@ It replaces the pour:
   `<runs>/<id>.d/latest.json` (live journals, your branch's code and ledger, nothing shared written),
   never the shared `latest.json` that launchd and other fixers rewrite. The judge is compared with
   your branch's base, so a limit or dismissal you changed shows.
+- Markdown is net zero: `close` refuses a worktree whose `*.md` bytes (committed, untracked, deleted)
+  grew since `refs/night/<night>/base`; cut stale lines (`~/.claude/docs/context-file-hygiene.md`).
 - No deadline ends a run. A worker the `worker-run` watchdog stopped for no progress is hung: the
   orchestrator abandons its run, which closes no more, and its branch stays unmerged.
 
@@ -172,11 +174,6 @@ The judge is `LIMITS` and the rules in `bin/harness-doctor`, the dismissal rows 
 `PROOF_MIN_EXPOSURE`, the ledger guards). `latest.json` `judge` changes whenever any of them does.
 A fixer never raises a limit, widens a `match`, or adds a `not-a-bug`/`weather` row to make a
 problem go away; a loosening goes to the owner chat as a handoff.
-
-### Would the doctor have caught this?
-
-When the cause you fixed was not a problem in `latest.json`, ask that question before closing and
-add a `blind_spots` row to the ledger with `would_catch_if` (§3: record, do not build).
 
 ## LLM doctor
 
@@ -262,16 +259,13 @@ raises a limit, widens a `match`, moves a word to `theirs`, or adds a dismissal 
 away; a loosening goes to the ledger's `owner` as a handoff. Caps are caps: an agy cap kill is
 weather, never a reason to drop a cell or a vendor or to raise a cap.
 
-### Would the doctor have caught this?
-
-When the cause you fixed was not a problem in `latest.json`, ask that question before closing and
-add a `blind_spots` row to the ledger with `would_catch_if` (§3: record, do not build).
-
 ## Code doctor
 
 Owner: `share/code-ledger.json` `owner`. Design: `docs/code-doctor-design.md`. Scope: the problems the
 snapshot hands you, top-K by judged value (`docs/doctors-contract.md` §4): dead units, heavy tests,
 hooks and always-loaded text, duplicate mechanisms, each with the judge's `plan` and `proofs`.
+A `code-doctor --repo` document of a repository outside sweep-repos is report-only (`launch code`
+refuses it, its snapshot is empty, `check` fails): its problems are for Egor to read.
 
 ### Read first, in this order
 1. Each problem's `plan`, `proofs` and units in `latest.json`, and the judgment in
@@ -286,16 +280,15 @@ hooks and always-loaded text, duplicate mechanisms, each with the judge's `plan`
   orchestrator lands the job with `night-run job set … state=merged suites=passed`, which reruns the
   check against main as it is then.
   The check reads the run's own snapshot, never the live document; a run whose worktree is gone fails it,
-  and a day run (no worktree) is checked over main's commits since its launch. A night-run `leftover` job
-  carrying a `code-*` branch lands through the same check.
+  and a day run (no worktree) is checked over main's commits since its launch.
 - A unit that changed since the night base is not yours: its verdict went back to the judge.
 - After a landed cleanup, `bin/code-doctor record-fix <cause> --by <run id> --files … --lines-removed N`
   (plus `--mechanism`, `--canonical`, `--replaced` when one module now owns the job), so the doctor
   reads it `fixed-pending`, counts the yield, and review-bench's fit lens learns the canonical module.
 
 ### Never
-- Edit through a symlink into another repository, or touch a registration outside the repositories
-  (settings, LaunchAgents, PATH links): those are `needs Egor:` problems with their exact step.
+- Edit through a symlink into another repository, or a registration outside the repositories (the
+  night judge settles dangling PATH links and LaunchAgents; you edit an in-repo settings file).
 - Delete both copies' old paths of a cross-repository merge in one night: the shared module and the
   callers land first (ledger row `merges: [{stage: "migrated", night}]`), the old copy on a later night.
 - Loosen `LIMITS`, the ledger's protections or a verdict: that is a handoff to the owner.

@@ -129,7 +129,7 @@ This design folds in two frontier hunts (runs 20260929T225123Z-3e30191 and 20260
   - `kind` (fixer, vendor, debt or leftover) and `ref` (run id, event id, review round or
     `leftover-<slug>`); a leftover job also carries `adopted[]` ({repo, branch, worktree, tip,
     night_worktree}), where its branch came from;
-  - `state`: `merged`, `left` (with a reason), `failed-launch`, `blocked-on-egor` or `nothing-to-do`;
+  - `state`: `merged`, `left` (with a reason), `failed-launch`, `blocked-on-egor` (its reason the trade) or `nothing-to-do`;
   - `branch`, `review` (run id), `commits[]` ({repo, hash}) and `pushed` (bool, as verified against
     the remote).
 

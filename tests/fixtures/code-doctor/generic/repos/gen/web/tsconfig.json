@@ -1,0 +1,7 @@
+{
+  // Next.js writes comments and trailing commas here
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {"@/*": ["./src/*"]},
+  }
+}
