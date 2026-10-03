@@ -782,7 +782,7 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/plugins/marketplaces/claude\\-plugins\\-official/plugins/math\\-proof/README\\.md$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-03T07:40:00+03:00",
@@ -790,7 +790,7 @@
           "files": [
             "llm-legs/hammerspoon/instruction-watch.lua"
           ],
-          "in": null,
+          "in": "llm-legs@4216586f",
           "regressed_at": null
         }
       ],
@@ -807,7 +807,7 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/plugins/marketplaces/claude\\-plugins\\-official/plugins/math\\-proof/agents/math\\-proof\\-judge\\.md$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-03T07:40:00+03:00",
@@ -815,7 +815,7 @@
           "files": [
             "llm-legs/hammerspoon/instruction-watch.lua"
           ],
-          "in": null,
+          "in": "llm-legs@4216586f",
           "regressed_at": null
         }
       ],
@@ -832,7 +832,7 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/plugins/marketplaces/claude\\-plugins\\-official/plugins/math\\-proof/agents/math\\-proof\\-worker\\-deep\\.md$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-03T07:40:00+03:00",
@@ -840,7 +840,7 @@
           "files": [
             "llm-legs/hammerspoon/instruction-watch.lua"
           ],
-          "in": null,
+          "in": "llm-legs@4216586f",
           "regressed_at": null
         }
       ],
@@ -857,7 +857,7 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/plugins/marketplaces/claude\\-plugins\\-official/plugins/math\\-proof/agents/math\\-proof\\-worker\\.md$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-03T07:40:00+03:00",
@@ -865,7 +865,7 @@
           "files": [
             "llm-legs/hammerspoon/instruction-watch.lua"
           ],
-          "in": null,
+          "in": "llm-legs@4216586f",
           "regressed_at": null
         }
       ],
@@ -882,7 +882,7 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/plugins/marketplaces/claude\\-plugins\\-official/plugins/math\\-proof/skills/siege$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-03T07:40:00+03:00",
@@ -890,7 +890,7 @@
           "files": [
             "llm-legs/hammerspoon/instruction-watch.lua"
           ],
-          "in": null,
+          "in": "llm-legs@4216586f",
           "regressed_at": null
         }
       ],
@@ -907,7 +907,7 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/plugins/marketplaces/claude\\-plugins\\-official/plugins/math\\-proof/skills/solo$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-03T07:40:00+03:00",
@@ -915,7 +915,7 @@
           "files": [
             "llm-legs/hammerspoon/instruction-watch.lua"
           ],
-          "in": null,
+          "in": "llm-legs@4216586f",
           "regressed_at": null
         }
       ],
@@ -1837,7 +1837,7 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/plugins/marketplaces/claude\\-plugins\\-official/plugins/security\\-guidance/README\\.md$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-03T07:40:00+03:00",
@@ -1845,7 +1845,7 @@
           "files": [
             "llm-legs/hammerspoon/instruction-watch.lua"
           ],
-          "in": null,
+          "in": "llm-legs@4216586f",
           "regressed_at": null
         }
       ],
