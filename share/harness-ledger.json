@@ -565,10 +565,25 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-09-30",
-      "reviewed_by": "Night fixer harness-hooks-20260930T001647Z-0f22",
-      "note": "Narrowed: the multi-repository part is cut by hook-grows-repos-commit-journal; what stays is its floor on a one-repository call (bash, the 2.3k-line review-journal.sh source at ~40 ms under load, jq, one git status). Under 50 ms needs a design change or a different limit for hooks that must do work per write call: the owner's.",
-      "handoff": "docs/handoffs/2026-09-30-hook-cost-rows.md"
+      "last_reviewed": "2026-10-03",
+      "reviewed_by": "Night fixer harness-hooks-20261003T042542Z-1344",
+      "note": "Narrowed: the multi-repository part is cut by hook-grows-repos-commit-journal; what stays is its floor on a one-repository call (bash, the 2.4k-line review-journal.sh source at ~20-40 ms, jq, one git status). 2026-10-03: the 811-853 ms p50 was the night orchestrator (191 of 355 heavy runs, p50 1050 ms wall / 972 ms CPU): a worker records under its launcher, so the launcher's .repos named 11 worker worktrees, each snapshotted before and after every launcher call; claude-setup@9171da1 snapshots over .repos.own (trees the chat wrote in itself) and lets a read-only Bash call out before the library. Other chats: p50 363 ms, dominated by the repositories they register (logo-vectorizer-bench: 33 704 untracked paths, 0.5-1.5 s a snapshot). Under 50 ms needs a design change or a different limit: the owner's.",
+      "handoff": "docs/handoffs/2026-10-03-hook-cost-rows.md"
+    },
+    {
+      "id": "hook-sync-commit-journal",
+      "title": "commit-journal over 150 ms a run",
+      "match": {
+        "rule": "hook_sync",
+        "ident": "commit-journal\\.sh"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": ["hook-every-call-commit-journal"],
+      "last_reviewed": "2026-10-03",
+      "reviewed_by": "Night fixer harness-hooks-20261003T042542Z-1344",
+      "note": "853 ms p50 at first sight (2026-10-03), the same runs as hook-every-call-commit-journal: the orchestrator's launcher-registry sweep (cut in claude-setup@9171da1) plus the snapshot floor of the repositories a chat registers. What stays after the cut is that floor (p50 363 ms outside the orchestrator at load 60-90), driven by large untracked trees such as logo-vectorizer-bench. Under 150 ms needs a cheaper snapshot (an untracked-cache or fsmonitor git status, or skipping trees over a size) or a different limit: the owner's.",
+      "handoff": "docs/handoffs/2026-10-03-hook-cost-rows.md"
     },
     {
       "id": "hook-every-call-instruction-watch",
@@ -580,10 +595,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-09-30",
-      "reviewed_by": "Night fixer harness-hooks-20260930T001647Z-0f22",
-      "note": "Narrowed: the ~/.claude walk no longer descends file-history (3 596 of 5 784 walked entries, no watched file) and its path spelling runs tr instead of perl (llm-legs share/instruction-files.sh); what stays is the enumeration (three git ls-files, perl) plus one stat and two awk per call. Under 50 ms needs a design change or a different limit: the owner's. 2026-10-01 (harness-hooks-20261001T020656Z-42ed): the watch set is cut 468 to 183 rows (hook-p50-instruction-watch-baseline), about 17 % of the quiet check; the floor of about 20 process starts stays.",
-      "handoff": "docs/handoffs/2026-10-01-hook-cost-rows.md"
+      "last_reviewed": "2026-10-03",
+      "reviewed_by": "Night fixer harness-hooks-20261003T042542Z-1344",
+      "note": "Narrowed: the ~/.claude walk no longer descends file-history and its path spelling runs tr instead of perl (llm-legs share/instruction-files.sh); the watch set is cut 468 to 183 rows (hook-p50-instruction-watch-baseline). What stays is the floor of about 20 process starts; 2026-10-03 profile (224 ms at load 90): library source ~21 ms, instruction_repo_files' three git ls-files ~31 ms, the $(instruction_watch_state) subshells ~28 ms. Under 50 ms needs a cached enumeration (keyed on the repos' index mtimes) or a different limit: the owner's.",
+      "handoff": "docs/handoffs/2026-10-03-hook-cost-rows.md"
     },
     {
       "id": "hook-grows-repos-report-flush",
@@ -592,13 +607,20 @@
         "rule": "hook_grows_repos",
         "ident": "report-flush\\.sh"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-03T07:15:20Z",
+          "by": "Night fixer harness-hooks-20261003T042542Z-1344",
+          "files": ["llm-legs/bin/report-bus"],
+          "in": null
+        }
+      ],
       "same_cause": [],
-      "last_reviewed": "2026-09-30",
-      "reviewed_by": "Night fixer harness-hooks-20260930T001647Z-0f22",
-      "note": "Narrowed to contention: report-flush and report-bus read no repository and no registry. Its PostToolUse sibling commit-journal did: report-flush p50 90 ms beside a commit-journal run over 300 ms, 49-57 ms beside shorter ones (journal 2026-09-29 19:00 to 2026-09-30 03:20). Dismissal proposed in the handoff.",
-      "handoff": "docs/handoffs/2026-09-30-hook-cost-rows.md"
+      "last_reviewed": "2026-10-03",
+      "reviewed_by": "Night fixer harness-hooks-20261003T042542Z-1344",
+      "note": "Not contention (the 2026-09-30 theory): report-bus flush ran prune on every call, one stat per delivered report, so the cost grew with a chat's age and its worker count, largest in orchestrators (the 5+-repository chats). Prune now runs only over its 200-report cap and a flush with nothing pending and no cap returns before any read: 789-1211 ms to 40-72 ms in a chat with 86 delivered reports at load 90; test_report_bus asserts no stat on a 199-report flush.",
+      "handoff": null
     },
     {
       "id": "hook-grows-size-instruction-watch",
@@ -610,10 +632,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-09-30",
-      "reviewed_by": "Night fixer harness-hooks-20260930T001647Z-0f22",
-      "note": "Narrowed to a confound: the quiet check reads no transcript (only revert_growth does, on a changed guarded file) and its baseline is dominated by the constant ~/.claude set; the same split shows on report-flush, which reads neither. Dismissal proposed in the handoff. 2026-10-01 (harness-hooks-20261001T020656Z-42ed): still no transcript read on the quiet path; the constant set itself is cut 468 to 183 rows (see hook-p50-instruction-watch-baseline).",
-      "handoff": "docs/handoffs/2026-09-30-hook-cost-rows.md"
+      "last_reviewed": "2026-10-03",
+      "reviewed_by": "Night fixer harness-hooks-20261003T042542Z-1344",
+      "note": "Narrowed to a confound: the quiet check reads no transcript (only revert_growth does, on a changed guarded file); its cost is the constant watch-set enumeration plus load_inflight's scan of machine-wide marks, the same for every chat. Sessions over 10 MB are the orchestrators, whose calls run under more sibling hooks and load. 2026-10-03: code path re-read, still no transcript read on the quiet path. Dismissal proposed in the handoff.",
+      "handoff": "docs/handoffs/2026-10-03-hook-cost-rows.md"
     },
     {
       "id": "guards-growth-film-08a95dd4",
@@ -1182,7 +1204,7 @@
       "last_reviewed": "2026-10-01",
       "reviewed_by": "Night fixer harness-hooks-20261001T020656Z-42ed",
       "note": "Narrowed: the watch set is cut 468 to 183 rows (hook-p50-instruction-watch-baseline), about 17 % of the quiet check under load. What stays is a process floor of about 20 starts (jq, git rev-parse, three git ls-files, perl, find, tr, realpath, stat, three awk, mkdir, touch) whatever the set; at load 100-300 each start costs 10 ms and more. Under 150 ms needs the cached enumeration of the 2026-09-30 handoff: the owner's.",
-      "handoff": "docs/handoffs/2026-10-01-hook-cost-rows.md"
+      "handoff": "docs/handoffs/2026-10-03-hook-cost-rows.md"
     },
     {
       "id": "hook-sync-worker-launch-gate",
@@ -1197,7 +1219,7 @@
       "last_reviewed": "2026-10-01",
       "reviewed_by": "Night fixer harness-hooks-20261001T020656Z-42ed",
       "note": "Narrowed to its process count: about 60 starts on a plain non-read-only Bash call (30 grep, 7 tr, 6 sed, 5 head, 5 awk, 4 jq, 2 realpath), most of them the owned-class checks run unconditionally; command length adds 10-20 % (13 KB heredoc vs 39 bytes). Not cut in a night run: it is a deny gate, and the cut (one jq, one grep -Eq over every owned regex before the per-class greps, wait_default read only for relay polls) needs its adversarial pass. Proposed in the handoff.",
-      "handoff": "docs/handoffs/2026-10-01-hook-cost-rows.md"
+      "handoff": "docs/handoffs/2026-10-03-hook-cost-rows.md"
     },
     {
       "id": "hook-grows-repos-worker-launch-gate",
@@ -1211,10 +1233,25 @@
       "same_cause": [
         "hook-grows-size-worker-launch-gate"
       ],
-      "last_reviewed": "2026-10-02",
-      "reviewed_by": "Night fixer harness-hooks-20261002T093036Z-5607",
-      "note": "Narrowed to a confound: the gate reads only the command text; no repository, no registry, and a transcript only for a relay agent's worker-run start or a legs/scheduler hit. The chats with 5+ repositories are the orchestrators, whose calls run beside more sibling hooks and carry longer commands (+10-20 %). Dismissal proposed in the handoff. 2026-10-02 (harness-hooks-20261002T093036Z-5607): still stands, the gate code is unchanged and reads no repository. Tonight's 5+-repository splits of stop-dispatch and worker-limit-gate had real causes (worker-run record walks, worker-pick's codex catalogs) this gate does not share.",
-      "handoff": "docs/handoffs/2026-10-01-hook-cost-rows.md"
+      "last_reviewed": "2026-10-03",
+      "reviewed_by": "Night fixer harness-hooks-20261003T042542Z-1344",
+      "note": "Narrowed to a confound: the gate reads only the command text; no repository, no registry, and a transcript only for a relay agent's worker-run start or a legs/scheduler hit. The chats with 5+ repositories are the orchestrators, whose calls run beside more sibling hooks and carry longer commands (+10-20 %). 2026-10-03: still stands, gate code unchanged; the real 5+-repository causes found in its siblings (stop-dispatch, worker-limit-gate 2026-10-02; report-flush's prune, commit-journal's launcher registry 2026-10-03) are not on its path. Dismissal proposed in the handoff.",
+      "handoff": "docs/handoffs/2026-10-03-hook-cost-rows.md"
+    },
+    {
+      "id": "hook-grows-repos-english-gate",
+      "title": "english-gate slower in chats with 5+ repositories",
+      "match": {
+        "rule": "hook_grows_repos",
+        "ident": "english-gate\\.sh"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-03",
+      "reviewed_by": "Night fixer harness-hooks-20261003T042542Z-1344",
+      "note": "Narrowed to a command-mix confound (259 ms against 96 at first sight, 2026-10-03): the gate reads no repository; its expensive path is a model launch (launch_args python plus cyrillic-share on the brief, ~400-600 ms), and 82 % of the night orchestrator's Bash calls are launches (review-bench fix/review/report, worker-run claim/report) against 1 % in other chats; common-path wall 132 ms there against 118 ms elsewhere. claude-setup@9171da1 cut the common path anyway (a launcher-token screen before the 2.4k-line library, 82-88 to 53-61 ms; er_over asks no --max for a zero share). Dismissal proposed in the handoff.",
+      "handoff": "docs/handoffs/2026-10-03-hook-cost-rows.md"
     },
     {
       "id": "hook-grows-size-worker-launch-gate",
@@ -1231,7 +1268,7 @@
       "last_reviewed": "2026-10-01",
       "reviewed_by": "Night fixer harness-hooks-20261001T020656Z-42ed",
       "note": "Narrowed to a confound, as hook-grows-repos-worker-launch-gate: no transcript read on the path every call takes. Dismissal proposed in the handoff.",
-      "handoff": "docs/handoffs/2026-10-01-hook-cost-rows.md"
+      "handoff": "docs/handoffs/2026-10-03-hook-cost-rows.md"
     },
     {
       "id": "hook-sync-review-flow-gate",
@@ -1243,10 +1280,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-01",
-      "reviewed_by": "Night fixer harness-hooks-20261001T020656Z-42ed",
-      "note": "Narrowed: the per-repository snapshot is already parallel (hook-grows-repos-review-flow-gate, claude-setup@4ca8de1, fixed-pending); what stays is its floor on a one-repository call (bash, the 2.3k-line review-journal.sh source, jq, git status), the same floor hook-every-call-commit-journal names, measured at night load 100-330. Design or limit: the owner's.",
-      "handoff": "docs/handoffs/2026-10-01-hook-cost-rows.md"
+      "last_reviewed": "2026-10-03",
+      "reviewed_by": "Night fixer harness-hooks-20261003T042542Z-1344",
+      "note": "Narrowed: the per-repository snapshot is parallel (claude-setup@4ca8de1); 2026-10-03 the 573-760 ms p50 was the orchestrator snapshotting its workers' worktrees from its own .repos; claude-setup@9171da1 snapshots over .repos.own and lets a read-only call out before the library (write call with 5 registered trees 460-516 to 283-287 ms, read-only 67-70 to 43-44 ms, load 90). What stays is the snapshot floor of the trees a chat writes in (the same one hook-sync-commit-journal names). Design or limit: the owner's.",
+      "handoff": "docs/handoffs/2026-10-03-hook-cost-rows.md"
     },
     {
       "id": "test_long_pole-review-bench",
@@ -1655,9 +1692,9 @@
       "same_cause": [
         "floor-edit-hooks"
       ],
-      "last_reviewed": "2026-10-02",
-      "reviewed_by": "Night fixer harness-hooks-20261002T093036Z-5607",
-      "note": "Narrowed to its process floor: 195 ms p50 in 24 h at night load 50-60; a probe on a dirty file took 426 ms spread over six git calls, shasum, two jq, one find over the review journal and the library source, none over 65 ms. The per-record forks were cut 2026-09-30 (floor-edit-hooks). Under 150 ms needs fewer git calls per Edit (one status for owner and dirtiness): a design change for the owner.",
+      "last_reviewed": "2026-10-03",
+      "reviewed_by": "Night fixer harness-hooks-20261003T042542Z-1344",
+      "note": "2026-10-03: cause stands, hooks/edit-conflict-notice.sh unchanged since claude-setup@e746412, 188 ms p50 over 11 runs in the last hour. Narrowed to its process floor: 195 ms p50 in 24 h at night load 50-60; a probe on a dirty file took 426 ms spread over six git calls, shasum, two jq, one find over the review journal and the library source, none over 65 ms. The per-record forks were cut 2026-09-30 (floor-edit-hooks). Under 150 ms needs fewer git calls per Edit (one status for owner and dirtiness): a design change for the owner.",
       "handoff": "docs/handoffs/2026-10-02-hook-cost-rows.md"
     },
     {
@@ -1791,6 +1828,13 @@
       "reason": "watcher/heartbeat is overwritten every tick, so a changed-while-watcher-off record (2026-10-01T12:51:14Z, claude-setup review-floor merge 6413519 at 12:40:33Z) cannot name the off interval or its cause",
       "since": "2026-10-02",
       "would_catch_if": "the watcher journaled each start and stop (with the reason: Hammerspoon reload, load error, busy tick) beside its heartbeat"
+    },
+    {
+      "id": "snapshot-cost-per-repo",
+      "what": "which registered repository makes commit-journal and review-flow-gate slow",
+      "reason": "the hook journal times the whole hook only; one tree with 33 704 untracked paths (logo-vectorizer-bench, 0.5-1.5 s a git status) was found 2026-10-03 only by timing each registered tree by hand",
+      "since": "2026-10-03",
+      "would_catch_if": "rj_snapshot_repos journaled each repository's snapshot wall time beside the hook row"
     }
   ]
 }

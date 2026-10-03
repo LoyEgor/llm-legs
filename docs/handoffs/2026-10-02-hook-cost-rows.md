@@ -6,7 +6,7 @@ For the chat «Harness Doctor» (owner of `share/harness-ledger.json`). Written 
 fixer run `harness-hooks-20261002T093036Z-5607`. It fixed six of its eight problems (rows
 `hook-sync-stop-dispatch`, `hook-grows-repos-stop-dispatch`, `hook-grows-size-stop-dispatch`,
 `hook-sync-worker-limit-gate`, `hook-grows-repos-worker-limit-gate`, `hook-sync-worker-spawn-hook`).
-Every number below was measured at night load 50-60. This continues `2026-10-01-hook-cost-rows.md`.
+Every number below was measured at night load 50-60. Its siblings are in `2026-10-03-hook-cost-rows.md`.
 
 ## 1. worker-pick's own floor (rows `hook-sync-worker-limit-gate`, `hook-sync-worker-spawn-hook`)
 

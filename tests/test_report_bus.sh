@@ -251,6 +251,14 @@ touch -t 202001010001 "$source_file"
 flush pruned >/dev/null
 assert test "$(count "$STORE/pruned/delivered")" = 200
 assert test ! -e "$source_file"
+# The flush every tool call runs, with nothing pending under the cap: no stat per delivered report.
+mkdir -p "$WORK/stat-log"
+printf '#!/bin/sh\necho x >>"%s"\nexec /usr/bin/stat "$@"\n' "$WORK/stat-log/calls" >"$WORK/stat-log/stat"
+chmod +x "$WORK/stat-log/stat"
+rm -f "$STORE/pruned/delivered/1__notice__fixture-1.txt"
+PATH="$WORK/stat-log:$PATH" flush pruned >/dev/null
+assert test ! -e "$WORK/stat-log/calls"
+assert test "$(count "$STORE/pruned/delivered")" = 199
 post pruned retained
 assert test "$(count "$STORE/pruned/pending")" = 0
 assert test -n "$("$BUS" list --session pruned)"

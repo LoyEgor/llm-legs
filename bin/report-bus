@@ -137,8 +137,22 @@ pending_files() {
     [ "$session" != _orphan ] || break
   done | LC_ALL=C sort -n -k1,1 -k2 | cut -f2-
 }
+# Every PostToolUse flushes: with nothing pending and nothing to prune it takes no lock, and the
+# delivered reports are stat'ed only past the cap, never one stat per report on every call.
+has_pending() {
+  local entry
+  for entry in "$ROOT/$session/pending"/*.txt "$ROOT/_orphan/pending"/*.txt; do
+    [ -f "$entry" ] && return 0
+  done
+  return 1
+}
+over_cap() {
+  set -- "$ROOT/$session/delivered"/*.txt
+  [ "$#" -gt 200 ]
+}
 prune() {
   local entry n=0
+  over_cap || return 0
   while IFS= read -r entry; do
     n=$((n + 1))
     [ "$n" -le 200 ] || rm -f "$entry"
@@ -224,6 +238,7 @@ case "$verb" in
     [ -n "$session" ] || resolve_session
     valid_name "$session" || exit 0
     [ -d "$ROOT" ] || exit 0
+    has_pending || over_cap || exit 0
     lock_store || { printf 'report-bus: cannot acquire flush lock\n' >&2; exit 0; }
     blocks='' files=() selected=() rows=() total=0 remaining=0
     while IFS= read -r entry; do
