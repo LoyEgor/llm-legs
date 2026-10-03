@@ -1202,7 +1202,8 @@
    "match": {
     "word": "bad command",
     "model": "^codex-image$",
-    "detail": "bin/codex-image: line \\d+: unexpected EOF while looking for matching"
+    "detail": "bin/codex-image: line \\d+: unexpected EOF while looking for matching",
+    "until": "2026-10-03T07:43:33+03:00"
    },
    "title": "An image wrapper rewritten in place mid-run fed its running leg shifted bytes",
    "status": "fixed-pending",
