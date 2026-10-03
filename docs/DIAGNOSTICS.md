@@ -238,7 +238,7 @@ beside the MAIN checkout (`tests/test_run_suites_nice.sh`).
 
 Suites (run from repo root):
 - `bash tests/test_report_bus.sh` — fixture HOME/XDG queue, dedup, event rendering, worker skips, launcher chains, cap, failed-render retention, history, doctor and pruning.
-- `bash tests/test_llm_limits.sh` — hermetic collector tests: schema, per-vendor normalization, freshness/`stale`, `usable_now`, table/plain/sort formatting.
+- `tests/run-all tests/test_llm_limits*.sh` — hermetic collector tests: schema, per-vendor normalization, freshness/`stale`, `usable_now`, table/plain/sort formatting.
 - `bash tests/test_claudeb.sh` — `bin/claudeb` sourced as a bash library against a fixture `CLAUDEB_DIR` with stubbed `curl`/`security`/`claude`: merge/store/OAuth-attempt logic.
 - `bash tests/test_claude_session_driver.sh` — `bin/claude-session-driver` against a fake `claudeb` session on a real PTY and a fake `security`: argument validation, the /exit→interrupt→signal ladder, login-screen detection, and the keychain re-read that decides exit 0/4/5.
 - `bash tests/e2e_surfaces.sh` — drives the **REAL** running Hammerspoon menubar (via `hs -c`), the real `llm-limits` CLI, and `claudeb status` against the real `~/.llm-limits.json`. Golden rule: every `hs -c` snippet only reads `package.loaded["llm-limits"]` and calls `menuItems()` — never assigns to a module field, or it silently breaks the user's live menubar.
