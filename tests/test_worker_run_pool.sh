@@ -322,6 +322,42 @@ assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" = "$(jq -cn --arg d "$(c
 assert grep -qxF "ARG=$(cd "$WORK/inherited" && pwd -P)" "$CALL_LOG"
 rm -rf "$WORKER_RUN_DIR/prior-granted"
 
+# The W5 escapes of 2026-10-02: a relay dropped --resume for a 'RESUME <sid>:' brief and launched it
+# fresh in the chat's home directory, away from the repository the session had worked in.
+session_repo="$WORK/session-repo"
+git init -q "$session_repo"
+mkdir -p "$WORKER_RUN_DIR/prior-workdir" "$WORK/scratch-workdir"
+printf 'claude-moved\n' >"$WORKER_RUN_DIR/prior-workdir/worker-session"
+jq -n --arg d "$session_repo" '{workdir: $d, add_dirs: []}' >"$WORKER_RUN_DIR/prior-workdir/meta.json"
+{ printf 'RESUME claude-moved:\nACCOUNT: resumeacct\n\n'; cat "$WORK/brief.plain"; } >"$WORK/brief"
+clear_stub
+start_ok claudeb
+assert await_done
+assert test "$(jq -r '.resume' "$RUN_DIR/meta.json")" = claude-moved
+assert grep -q '^ARG=claude-moved$' "$CALL_LOG"
+assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" = "$(jq -cn --arg d "$(cd "$session_repo" && pwd -P)" '[$d]')"
+cp "$WORK/brief.plain" "$WORK/brief"
+printf 'claude-scratch\n' >"$WORKER_RUN_DIR/prior-workdir/worker-session"
+jq -n --arg d "$WORK/scratch-workdir" '{workdir: $d, add_dirs: []}' >"$WORKER_RUN_DIR/prior-workdir/meta.json"
+clear_stub
+start_ok claudeb --account resumeacct --resume claude-scratch
+assert await_done
+assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" = '[]'
+{ printf 'RESUME claude-moved:\nACCOUNT: resumeacct\n\n'; cat "$WORK/brief.plain"; } >"$WORK/brief"
+clear_stub
+rc=0
+"$RUNNER" start claudeb --brief "$WORK/brief" --workdir "$WORK/workdir" --resume claude-other >"$WORK/start.out" 2>"$WORK/start.err" || rc=$?
+assert test "$rc" -eq 4
+assert grep -qF "contradicts the brief's first line 'RESUME claude-moved:'" "$WORK/start.err"
+rm -rf "$WORKER_RUN_DIR/prior-workdir"
+cp "$WORK/brief.plain" "$WORK/brief"
+clear_stub
+rc=0
+"$RUNNER" start claudeb --brief "$WORK/brief" --workdir "$HOME" --account resumeacct >"$WORK/start.out" 2>"$WORK/start.err" || rc=$?
+assert test "$rc" -eq 4
+assert grep -qF 'workdir is the home directory' "$WORK/start.err"
+assert_fails grep -q "^ARG=" "$CALL_LOG"
+
 # These picks keep naming the one account that walls — a picker that ignores
 # --exclude — so the run has nowhere to reroute and the limit outcome reaches
 # the caller.

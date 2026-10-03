@@ -436,14 +436,25 @@
     "detail": "^wrote [^/]+$"
    },
    "title": "a cross-repository brief authorized a write to another repository's main checkout or a non-repository directory only in prose, so worker-run granted it nothing and every write there read as escaped",
-   "status": "open",
-   "fixes": [],
+   "status": "fixed-pending",
+   "fixes": [
+    {
+     "at": "2026-10-03T07:52:21+03:00",
+     "by": "LLM doctor",
+     "files": [
+      "llm-legs/bin/worker-run",
+      "llm-legs/share/worker-policy.md"
+     ],
+     "in": null,
+     "regressed_at": null
+    }
+   ],
    "same_cause": [
     "W3"
    ],
-   "last_reviewed": "2026-10-02",
+   "last_reviewed": "2026-10-03",
    "reviewed_by": "LLM doctor",
-   "note": "Split from W3 on 2026-10-02: 7ea3 (review-bench main, brief 'Repos: ... review-bench at <path>'), 7c1f (hammerspoon main, brief 'Code: <path>'), 3f6b (video/alona/R7-A/clips.json named as a draft target, workdir video/harness): all authorized in prose, all day chat briefs with no ADD-DIR header. Not inferred in worker-run on purpose: night and fixer briefs name main checkouts to read and forbid writing them, and a write there must stay escaped. Fix belongs where the brief is composed (orchestrator chat / claude-setup relay): carry the destination as ADD-DIR. Detail is the doctor's project_of of the first outside path: a file in a main checkout yields its basename, a task worktree yields repo/worktree (W3).",
+   "note": "2026-10-01 legs (7ea3 review-bench main, 7c1f hammerspoon main, 3f6b video/alona) were day briefs authorizing a main-checkout write in prose only. 2026-10-03 (night 20261003T042136Z-e9f1): of 7 legs, 6 were Vector Magic launches in workdir $HOME (every $HOME run ever recorded is that chat: 19 runs, all `UNKNOWN: the workdir after snapshot could not be established`) writing logo-vectorizer-bench named as `Repo <path>` in prose or in a scratchpad lane brief; one of them (645b) carried `RESUME 29bd168e…:` but its relay dropped --resume, so it ran as a fresh session away from the session's logo-vectorizer-bench workdir. worker-run now refuses a writing run in $HOME, reads a RESUME first line itself (a contradicting --resume refused) and grants a resumed session's earlier repository workdirs (test_worker_run_pool.sh, each of the three mutation-checked). Still not inferred: a main checkout named in prose from a repository workdir. The 7th leg (1632, night fixer harness-hooks-5607) is a genuine escape the detector caught right: an edit through claude-setup's absolute symlink hooks/worker-run-backstop.sh landed in llm-legs main (handoff docs/handoffs/2026-10-03-path-shape-tilde.md); such a leg matches this row and will read as a regression.",
    "handoff": "docs/handoffs/2026-10-01-worker-grants.md"
   },
   {
@@ -701,9 +712,9 @@
    "status": "open",
    "fixes": [],
    "same_cause": [],
-   "last_reviewed": "2026-10-02",
+   "last_reviewed": "2026-10-03",
    "reviewed_by": "LLM doctor",
-   "note": "claudeb-1790757454-79915-4251 on com: exit 1, empty err, nonempty JSON/result says Failed to authenticate: OAuth session expired and could not be refreshed; is_error true despite subtype success. Fixture reproduces no output; feeding the error to current vocabulary yields unclassified, ruling out an evidence-source-only fix. No recorded watchdog/memory kill or missing vendor answer. OAuth refresh cause unconfirmed in retained out/result/err; no credentials opened or refresh attempted. Shared auth vocabulary correction needs review-bench, outside authorized worktrees. Matcher is the narrowest available emitted model/detail, not proof every matching future run has this cause. 2026-10-02 recheck: cause stands; classify_worker still feeds only err to classify_failure_text, and the auth vocabulary (bin/llm-doctor:126/171, review-bench panel.py:524) still lacks this wording; it is judge vocabulary under invariant cq, so not changed by a fixer; handoff still open.",
+   "note": "claudeb-1790757454-79915-4251 on com: exit 1, empty err, nonempty JSON/result says Failed to authenticate: OAuth session expired and could not be refreshed; is_error true despite subtype success. Fixture reproduces no output; feeding the error to current vocabulary yields unclassified, ruling out an evidence-source-only fix. No recorded watchdog/memory kill or missing vendor answer. OAuth refresh cause unconfirmed in retained out/result/err; no credentials opened or refresh attempted. Shared auth vocabulary correction needs review-bench, outside authorized worktrees. Matcher is the narrowest available emitted model/detail, not proof every matching future run has this cause. 2026-10-02 recheck: cause stands; classify_worker still feeds only err to classify_failure_text, and the auth vocabulary (bin/llm-doctor:126/171, review-bench panel.py:524) still lacks this wording; it is judge vocabulary under invariant cq, so not changed by a fixer; handoff still open. 2026-10-03 recheck: unchanged, classify_worker (bin/llm-doctor:970) still classifies err alone and no auth pattern covers the wording; judge vocabulary, handoff open.",
    "handoff": "docs/handoffs/2026-10-01-worker-json-auth-diagnostic.md"
   },
   {
@@ -1195,6 +1206,22 @@
    "reviewed_by": "Night image fixer",
    "note": "Split from I6 (2026-10-02): bin/gemini-sfx rejects a take whose mp4 has no audio stream ('without a soundtrack', Flow's output) or whose loudnorm printed no input_i ('could not be measured', ffmpeg's side). Neither occurred in the 2026-10-01/02 window and the 0.4 s measurement pad touches neither; the kept take decides the side when one does. 2026-10-03: no gemini-sfx leg since 2026-10-01T20:18Z.",
    "handoff": null
+  },
+  {
+   "id": "W6",
+   "block": "workers",
+   "match": {
+    "word": "crashed",
+    "detail": "^no exit: supervisor gone$"
+   },
+   "title": "worker-run start holds the caller through a minutes-long launch floor on a large dirty tree, and a start interrupted there leaves a run with no supervisor",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-10-03",
+   "reviewed_by": "LLM doctor",
+   "note": "gemini-1790973856-19814-0ac9 and gemini-1790973885-71908-0dd5 (Vector Magic, jihangarangan, logo-vectorizer-bench, 2026-10-02 23:44): meta pid 0, dirty-before-shas.tmp left; memlogd frame 23:45:28 shows both starts alive mid-floor, the relay transcript shows the user interrupting both tool calls at 23:45:41. The tree holds 33.6k untracked paths (1.47 GB). workdir_dirty_paths takes ~15 s per 20k paths because path_shape_ok's `~*` arm is tilde-expanded as user `*` (a getpwnam per call), and a launch lists twice; quoting it cuts that to 0.33 s, but test_consistency pins the arm equal to claude-setup rj_path_shape_ok, so the paired change is handed off. Ruled out: memory guard (no KILLED that day), bash read byte-per-syscall (mapfile measured no faster), reboot. Hashing 1.47 GB stays ~28 s under load 73 even after the fix; moving the floor into the detached supervisor would remove the wait entirely and also register it with the memory guard (start's foreground is unregistered while meta pid is 0). The detail is the narrowest the leg carries: a supervisor that dies mid-run also lands here.",
+   "handoff": "docs/handoffs/2026-10-03-path-shape-tilde.md"
   },
   {
    "id": "I20",
