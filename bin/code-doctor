@@ -2368,6 +2368,16 @@ def diff_entries(tree, base):
     return [(fields[i], fields[i + 1]) for i in range(0, len(fields) - 1, 2) if fields[i]]
 
 
+def rebase_onto(tree):
+    branch = (git(tree, "symbolic-ref", "-q", "HEAD") or "").strip()
+    for line in (git(tree, "reflog", "show", "--format=%gs", branch) or "").splitlines() if branch else ():
+        match = re.match(r"rebase \(finish\): \S+ onto ([0-9a-f]{40})$", line)
+        if match:
+            onto = match.group(1)
+            return onto if git(tree, "merge-base", "--is-ancestor", onto, "HEAD") is not None else None
+    return None
+
+
 def active_work(indexes, exclude_branch=None):
     out = {}
     for repo, doc in indexes.items():
@@ -2435,7 +2445,8 @@ def revalidate(problem, ref=None, tops=None):
         if not top:
             changed.append("%s: its repository is not indexed" % span["unit"])
             continue
-        at = ref if ref and git(top, "rev-parse", "--verify", "--quiet", ref + "^{commit}") else None
+        repo_ref = ref.get(span["file"].split("/", 1)[0]) if isinstance(ref, dict) else ref
+        at = repo_ref if repo_ref and git(top, "rev-parse", "--verify", "--quiet", repo_ref + "^{commit}") else None
         if unit_digest_at(top, at, span) != span["digest"]:
             changed.append("%s changed since the judgment" % span["unit"])
     return changed
@@ -2615,7 +2626,7 @@ def check_run(record, base, landing, suites_passed):
     day = {} if record.get("worktrees") else day_trees(record, tops)
     if not record.get("worktrees") and not (record.get("launched_at") or record.get("created_at")):
         errors.append("the run records no launch time: nothing bounds its changes in the main checkouts")
-    tree_of = {}
+    tree_of, landed_onto = {}, {}
     for tree in record.get("worktrees") or sorted(day):
         if not os.path.isdir(tree):
             errors.append("%s: the run's worktree is gone, nothing proves its changes: they land through a new Code fixer run" % tree)
@@ -2623,7 +2634,10 @@ def check_run(record, base, landing, suites_passed):
         common = (git(tree, "rev-parse", "--path-format=absolute", "--git-common-dir") or "").strip()
         repo = os.path.basename(os.path.dirname(common)) if common else os.path.basename(os.path.realpath(tree))
         tree_of[repo] = tree
-        tree_base = day.get(tree) or base
+        onto = rebase_onto(tree) if base and tree not in day else None
+        if onto:
+            landed_onto[repo] = onto
+        tree_base = day.get(tree) or onto or base
         entries = diff_entries(tree, tree_base) if tree_base else []
         if tree not in day:
             entries += porcelain(tree)
@@ -2660,7 +2674,7 @@ def check_run(record, base, landing, suites_passed):
         if busy:
             errors.append("%s: in active work (%s): it waits, its verdict stands" % (pid, ", ".join(busy)))
         elif landing:
-            changed += [c for c in revalidate(problem, None, tops) if c not in changed]
+            changed += [c for c in revalidate(problem, landed_onto or None, tops) if c not in changed]
         if changed:
             send_back(problem.get("cause") or pid, "; ".join(changed))
             errors.append("%s: its input changed since the judgment (%s): sent back to the judge" % (pid, "; ".join(changed)))

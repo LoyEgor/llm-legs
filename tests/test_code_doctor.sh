@@ -320,6 +320,16 @@ git -C "$WT" rm -q --cached lïnk outside && rm "$WT/lïnk" "$WT/outside"
 git -C "$REPOS/beta" checkout -q -- extra
 assert "$CD" check "$C/record.json" --base refs/night/n1/base
 
+# Landing after other night jobs: the run is its commits on top of the rebase onto, never the jobs it was rebased over.
+main_before=$(git -C "$A" rev-parse HEAD) wt_before=$(git -C "$WT" rev-parse HEAD)
+git -C "$A" rm -q lib/manual_helpers.sh && commit "$A" "another night job"
+git -C "$WT" -c user.name=t -c user.email=t@t rebase -q --onto main refs/night/n1/base || fail "rebase onto main"
+git -C "$A" merge -q --ff-only night/n1/code-x || fail "ff-merge"
+"$CD" check "$C/record.json" --base refs/night/n1/base --landing --suites-passed >"$WORK/check.out"
+assert test "$(grep -c 'manual_helpers.sh\|changed since the judgment' "$WORK/check.out")" = 0
+git -C "$A" reset -q --hard "$main_before" && git -C "$WT" reset -q --hard "$wt_before"
+assert "$CD" check "$C/record.json" --base refs/night/n1/base
+
 # Active work on a repository whose default branch is not main.
 git -C "$A" branch -m main master
 git -C "$A" worktree add -q -b live-x "$C/live" master || fail "worktree add live-x"
