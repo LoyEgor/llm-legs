@@ -1013,12 +1013,13 @@ echo "PASS: claude-chat-switch shell ($asserts assertions); checking Hammerspoon
 WALL_OUT=$(python3 - "$REAL_HS" "$HARNESS" <<'PYHS'
 import subprocess, sys
 try:
-    result = subprocess.run([sys.argv[1], "-c", "return dofile([[" + sys.argv[2] + "]])"],
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30)
+    # Hammerspoon answers one `hs -c` at a time: test_instruction_gate's menu harness may hold it.
+    result = subprocess.run([sys.argv[1], "-t", "120", "-c", "return dofile([[" + sys.argv[2] + "]])"],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=130)
     print(result.stdout, end="")
     sys.exit(result.returncode)
 except subprocess.TimeoutExpired:
-    print("FAIL: Hammerspoon IPC did not answer within 30 seconds")
+    print("FAIL: Hammerspoon IPC did not answer within 130 seconds")
     sys.exit(1)
 PYHS
 ); WALL_RC=$?

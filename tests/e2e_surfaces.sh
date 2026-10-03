@@ -305,8 +305,10 @@ STUB
   printf '%s\n' "$((now - 900))" >"$sandbox/worker-stats/opencode-seen/opencode-go-tied"
   printf '# roster\n-\nalt\nclear\nfar\nevyoxqy\nfresh\nserved\ntied\n' >"$sandbox/profiles"
   local rows
+  # A chat exports WORKER_PICK_CONFIG_FILE at the live worker-model, whose opencode_paused=on
+  # drops the vendor from the store this fixture reads.
   rows=$(HOME="$sandbox/home" WORKER_STATS_DIR="$sandbox/worker-stats" \
-    OPENCODE_GO_PROFILES="$sandbox/profiles" LLM_LIMITS_CACHE="$sandbox/cache.json" \
+    WORKER_PICK_CONFIG_FILE="$sandbox/worker-model" OPENCODE_GO_PROFILES="$sandbox/profiles" LLM_LIMITS_CACHE="$sandbox/cache.json" \
     LLM_LIMITS_NOW="$now" bash "$repo/llm-limits.sh" --json 2>/dev/null |
     jq -c '.vendors.opencode')
   # The evyoxqy horizon as it was actually recorded: opencode-go stamps its own clock inside the
@@ -318,15 +320,17 @@ STUB
 }
 
 assert_isolated_menu_contracts() {
-  local output opencode_fixture opencode_now opencode_evyoxqy_reset opencode_rows
+  local output opencode_fixture opencode_now opencode_evyoxqy_reset opencode_rows hs_err
+  hs_err=$(mktemp)
   opencode_fixture=$(opencode_vendor_fixture)
   opencode_now=${opencode_fixture%%	*}
   opencode_rows=${opencode_fixture#*	}
   opencode_evyoxqy_reset=${opencode_rows%%	*}
   opencode_rows=${opencode_rows#*	}
-  [ -n "$opencode_rows" ] || fail "llm-limits.sh emitted no OpenCode rows for the menu fixture"
-  output=$(hs -c '
-local path = "/Volumes/Work/Projects/llm-legs/hammerspoon/llm-limits.lua"
+  case "$opencode_rows" in ''|null) fail "llm-limits.sh emitted no OpenCode rows for the menu fixture" ;; esac
+  [ -n "$opencode_evyoxqy_reset" ] || fail "the OpenCode fixture recorded no evyoxqy horizon: $opencode_rows"
+  output=$(hs -q -t 120 -c '
+local path = "'"$(cd "$(dirname "$0")/.." && pwd)"'/hammerspoon/llm-limits.lua"
 local realJsonDecode = hs.json.decode
 local function styled(text, attributes)
   local value = { text = text, attributes = attributes }
@@ -403,7 +407,7 @@ local expiredState = { starts = {}, alerts = {} }
 local expired = loadModule({ schema = 1, vendors = {
   claude = { available = true, source = "claudeb-store", accounts = {{
     account = "alona", enabled = true, five_hour = {
-      effective_pct = 100, resets_at = nil, stale = false, expired = true,
+      used_pct = 100, effective_pct = 100, resets_at = nil, stale = false, expired = true,
     },
   }}},
   codex = { available = false }, gemini = { available = false },
@@ -484,16 +488,16 @@ for _, item in ipairs(fallback.menuItems()) do
     end
   end
 end
-if #fallbackState.starts ~= 6 then error("menu collect and fallback actions did not start six tasks") end
-local passive, a, b, c, d, e = fallbackState.starts[1], fallbackState.starts[2],
-  fallbackState.starts[3], fallbackState.starts[4], fallbackState.starts[5], fallbackState.starts[6]
-if passive.command ~= "/Volumes/Work/Projects/llm-legs/llm-limits.sh" or #passive.args ~= 0 then
-  error("menu-open collector was not a direct argument-free task")
+if #fallbackState.starts ~= 5 then error("fallback actions did not start five tasks: " .. #fallbackState.starts) end
+local a, b, c, d, e = fallbackState.starts[1], fallbackState.starts[2],
+  fallbackState.starts[3], fallbackState.starts[4], fallbackState.starts[5]
+if a.command ~= "/Volumes/Work/Projects/llm-legs/llm-limits.sh" then
+  error("hard refresh was not a direct collector task")
 end
-passive.running = false
+a.running = false
 local beforeCompletion = changes
-passive.callback(0, "", "")
-if changes ~= beforeCompletion + 1 then error("menu-open collector completion did not trigger a re-render") end
+a.callback(0, "", "")
+if changes ~= beforeCompletion + 1 then error("collector completion did not trigger a re-render") end
 if a.args[1] ~= "--refresh-account" or a.args[2] ~= "claude/com" then error("Claude fallback dispatch mismatch") end
 if b.args[1] ~= "--refresh-account" or b.args[2] ~= "codex/main" then error("Codex fallback dispatch mismatch") end
 if c.args[1] ~= "--refresh-account" or c.args[2] ~= "grok" then error("Grok vendor dispatch mismatch") end
@@ -509,14 +513,12 @@ end
 local globalState = { starts = {}, alerts = {} }
 local global = loadModule({ schema = 1, vendors = {} }, globalState)
 local globalMenu = global.menuItems()
+if #globalState.starts ~= 0 then error("menu construction started a collector task") end
 for _, item in ipairs(globalMenu) do
-  if title(item) == "Refresh" or title(item) == "Refresh + Start Windows" then item.fn() end
+  if title(item) == "Refresh" or title(item) == "Refresh + start windows" then item.fn() end
 end
-if #globalState.starts ~= 3 then error("global refresh actions did not start two collector tasks") end
-if globalState.starts[1].environment.CLAUDEB_WARM_USER_EXPLICIT ~= nil then
-  error("passive menu collect inherited the user-explicit warm signal")
-end
-for index = 2, 3 do
+if #globalState.starts ~= 2 then error("global refresh actions did not start two collector tasks") end
+for index = 1, 2 do
   if globalState.starts[index].environment.CLAUDEB_WARM_USER_EXPLICIT ~= "true" then
     error("global refresh action omitted the user-explicit warm signal")
   end
@@ -527,15 +529,6 @@ guarded.hardRefreshClaude("com")
 guarded.hardRefreshClaude("com")
 if #guardState.starts ~= 1 then error("duplicate hard refresh started another task") end
 if #guardState.alerts ~= 0 then error("duplicate hard refresh emitted an alert") end
-local openState = { starts = {}, alerts = {} }
-local openGuard = loadModule({ schema = 1, vendors = {} }, openState)
-openGuard.menuItems()
-openGuard.menuItems()
-if #openState.starts ~= 1 then error("running menu-open collector did not suppress the next open") end
-openState.starts[1].running = false
-openState.now = openState.now + 5
-openGuard.menuItems()
-if #openState.starts ~= 2 then error("exited menu-open collector blocked the next open") end
 local ocNow = '"$opencode_now"'
 local ocEvyoxqyReset = '"$opencode_evyoxqy_reset"'
 local wallState = { starts = {}, alerts = {}, now = ocNow }
@@ -588,9 +581,9 @@ local expectedBlocks = {
     .. "\n        wk  ▓▓▓▓▓        " .. resetColumn(ocNow + 2 * 86400) },
   -- The only thing that opens a walled account: a completion the plan served after the refusal.
   -- The age is that same served call — the wall is older and says nothing about being alive.
-  { "clear", "clear  30m\n            ░░░░░" },
+  { "clear", "clear  30m ago\n            ░░░░░" },
   -- The only other thing the Go plan tells an unwalled account about itself is when it was served.
-  { "served", "served  1h\n            ░░░░░" },
+  { "served", "served  1h ago\n            ░░░░░" },
   -- The collector takes the recorded reset as its writer capped it, however far out it reaches.
   { "far", "far  never\n        mo  ▓▓▓▓▓        " .. resetColumn(ocNow + 19 * 86400) },
   -- Written by bin/opencode-go itself, from a 429 the stubbed gateway answered this run.
@@ -600,7 +593,7 @@ local expectedBlocks = {
   -- `never` where an age would go rather than leaving the column blank.
   { "fresh", "fresh  never\n        wk  ▓▓▓▓▓        " .. resetColumn(ocNow - 3600) },
   -- A refusal in the very second of the served stamp: the tie keeps the wall standing.
-  { "tied", "tied  15m\n        wk  ▓▓▓▓▓        " .. resetColumn(ocNow + 86400) },
+  { "tied", "tied  15m ago\n        wk  ▓▓▓▓▓        " .. resetColumn(ocNow + 86400) },
 }
 for _, case in ipairs(expectedBlocks) do
   local rendered = wallBlock(case[1])
@@ -665,17 +658,18 @@ if #wallState.starts ~= startsBefore + 1
     or recollect.command ~= "/Volumes/Work/Projects/llm-legs/llm-limits.sh" then
   error("a failed leg refresh did not recollect")
 end
-return "OK open-guard running=1->1 exited=1->2"
-' </dev/null 2>/dev/null) || fail "isolated Hammerspoon contract checks threw"
-  [ "$output" = "OK open-guard running=1->1 exited=1->2" ] \
+return "OK isolated menu contracts"
+' </dev/null 2>"$hs_err") || fail "isolated Hammerspoon contract checks threw: $(grep -v '^-- Loading' "$hs_err")"
+  rm -f "$hs_err"
+  [ "$output" = "OK isolated menu contracts" ] \
     || fail "isolated Hammerspoon contract checks: $output"
 }
 
 # 1. hs CLI reachable and Hammerspoon responding.
-[ "$(hs -c 'return "ok"' </dev/null 2>/dev/null)" = "ok" ] || fail "Hammerspoon not responding to hs -c"
+[ "$(hs -q -t 120 -c 'return "ok"' </dev/null 2>/dev/null)" = "ok" ] || fail "Hammerspoon not responding to hs -c"
 pass "hs CLI reachable, Hammerspoon responding"
 assert_isolated_menu_contracts
-pass "isolated menu contracts: open-collect guard running 1->1, exited 1->2; completion re-rendered"
+pass "isolated menu contracts: menu build starts no collector; refresh actions dispatch; completion re-rendered"
 if [ "${LLM_LIMITS_E2E_ISOLATED_ONLY:-0}" = 1 ]; then
   pass "e2e isolated-only mode: live singleton and stores skipped"
   exit 0

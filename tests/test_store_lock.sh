@@ -27,7 +27,8 @@ common_env=(HOME="$HOME_FIXTURE" GEMINIB_PROFILES_DIR="$PROFILES"
   LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_CACHES"
   LLM_LIMITS_GEMINI_CACHE="$WORK/gemini-main.json"
   LLM_LIMITS_GEMINI_REFRESH=0 LLM_LIMITS_CODEX_REFRESH=0
-  LLM_LIMITS_CACHE="$CACHE" LLM_STORE_LOCK_DELAY=0.02 LLM_STORE_LOCK_RETRIES=1000)
+  LLM_LIMITS_CACHE="$CACHE" LLM_STORE_LOCK_DELAY=0.02 LLM_STORE_LOCK_RETRIES=6000
+  LLM_STORE_LOCK_STALE_SECONDS=600)
 
 env "${common_env[@]}" bash "$SCRIPT" --json >/dev/null || fail "fixture cache creation failed"
 cache_tmp="$WORK/limits-with-errors.json"
@@ -61,7 +62,8 @@ env "${common_env[@]}" PATH="$JQ_BIN:$PATH" LLM_TEST_REAL_JQ="$REAL_JQ" \
   LLM_TEST_SIGNALS="$SIGNALS" bash "$SCRIPT" --refresh-account gemini/b --json \
   >"$WORK/b.out" 2>"$WORK/b.err" &
 pid_b=$!
-for _ in $(seq 1 200); do
+SECONDS=0
+while [ "$SECONDS" -lt 120 ]; do
   [ "$(find "$SIGNALS" -type f | wc -l | tr -d ' ')" -ge 2 ] && break
   sleep 0.02
 done
@@ -121,9 +123,10 @@ for _ in 1 2 3 4; do
   env LLM_STORE_LOCK_STALE_SECONDS=60 LLM_STORE_LOCK_RETRIES=1 LLM_STORE_LOCK_DELAY=0.02 \
     bash -c '. "$1/share/store-lock.sh"
       while [ ! -e "$4" ]; do :; done
-      store_lock_acquire "$2" || exit 0
+      store_lock_acquire "$2" || { printf "lost %s\n" "$$" >>"$3"; exit 0; }
       printf "enter %s\n" "$$" >>"$3"
-      sleep 0.3
+      SECONDS=0
+      while [ "$(grep -c "^lost" "$3")" -lt 3 ] && [ "$SECONDS" -lt 120 ]; do sleep 0.05; done
       printf "leave %s\n" "$$" >>"$3"
       store_lock_release "$2"' _ "$ROOT" "$RACE_LOCK" "$RACE_LOG" "$GO" &
 done
@@ -136,7 +139,7 @@ wait
 
 CAPTURE_LOCK="$WORK/capture.lock"
 mkdir "$CAPTURE_LOCK"
-sleep 30 &
+sleep 600 &
 capture_pid=$!
 printf '%s\n' "$capture_pid" >"$CAPTURE_LOCK/pid"
 env LLM_STORE_LOCK_STALE_SECONDS=60 LLM_STORE_LOCK_RETRIES=2 LLM_STORE_LOCK_DELAY=0.02 \
@@ -166,7 +169,7 @@ rm -rf "$DEAD_LOCK"
 
 LIVE_LOCK="$WORK/live.lock"
 mkdir "$LIVE_LOCK"
-sleep 30 &
+sleep 600 &
 live_pid=$!
 printf '%s\n' "$live_pid" >"$LIVE_LOCK/pid"
 old_stamp=$(date -v-10M +%Y%m%d%H%M 2>/dev/null || date -d '-10 minutes' +%Y%m%d%H%M)

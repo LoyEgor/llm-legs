@@ -3277,9 +3277,11 @@ import subprocess
 import sys
 
 try:
-    # hs's own IPC timeout defaults to 4s, below the bound this wrapper is for.
-    result = subprocess.run(["hs", "-t", "10", *sys.argv[1:]], stdin=subprocess.DEVNULL,
-                            capture_output=True, text=True, timeout=15)
+    # Hammerspoon answers one `hs -c` at a time, so this bound also covers another suite's harness
+    # (test_claude_chat_switch) queued ahead of ours; the menu harness alone takes ~11s. -q: that
+    # harness's print() lines otherwise reach this instance too.
+    result = subprocess.run(["hs", "-q", "-t", "120", *sys.argv[1:]], stdin=subprocess.DEVNULL,
+                            capture_output=True, text=True, timeout=130)
 except (FileNotFoundError, subprocess.TimeoutExpired):
     raise SystemExit(124)
 sys.stdout.write(result.stdout)

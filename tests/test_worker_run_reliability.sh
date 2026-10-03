@@ -33,13 +33,16 @@ reliability_tests() {
     fixture="$WORK/live-edits"
     mkdir -p "$fixture"
     git -C "$fixture" init -q
-    STUB_SLEEP=7 STUB_SESSION=live-edits STUB_TRANSCRIPT_SESSION=live-edits STUB_TRANSCRIPT_ACCOUNT=edits \
-      STUB_EDIT_PATH=owned WORKER_RUN_IDLE_S=3 start_ok claudeb --account edits --workdir "$fixture"
+    mkdir -p "$WORK/live-edits-gate"
+    STUB_GATE="$WORK/live-edits-gate/go" STUB_SESSION=live-edits STUB_TRANSCRIPT_SESSION=live-edits \
+      STUB_TRANSCRIPT_ACCOUNT=edits STUB_EDIT_PATH=owned WORKER_RUN_IDLE_S=3 WORKER_RUN_DEADLINE=120 \
+      start_ok claudeb --account edits --workdir "$fixture"
     for started in 1 2 3 4 5 6; do
       printf '%s\n' "$started" >"$fixture/owned"
       assert test ! -e "$RUN_DIR/files"
       sleep 1
     done
+    : >"$WORK/live-edits-gate/go"
     result=$("$RUNNER" wait "$RUN_ID" --max 60)
     assert grep -qx 'STATUS: done' <<<"$result"
     assert test ! -e "$RUN_DIR/killed"
@@ -184,8 +187,8 @@ EOF
 
   if reliability_case B; then
     clear_stub
-    export STUB_SLEEP=8
-    WORKER_RUN_SILENT_S=2 start_ok codex --account silent
+    export STUB_SLEEP=60
+    WORKER_RUN_SILENT_S=2 WORKER_RUN_DEADLINE=120 start_ok codex --account silent
     result=$("$RUNNER" wait "$RUN_ID" --max 60)
     assert grep -qx 'KILLED: silent — no output in 2s' <<<"$result"
     assert grep -qx 'silent 2' "$RUN_DIR/killed"
@@ -215,7 +218,7 @@ EOF
     assert grep -qx "OUTCOME: RESUME_BUSY $old_id" "$WORK/busy.out"
     assert grep -qx "ATTACH $old_id" "$WORK/busy.out"
     kill -TERM "$(jq -r '.pid' "$old_dir/meta.json")"
-    "$RUNNER" wait "$old_id" --max 6 >/dev/null
+    "$RUNNER" wait "$old_id" --max 60 >/dev/null
     unset STUB_SLEEP
     start_ok codex --account busy --resume busy-session
     assert await_done
@@ -249,12 +252,12 @@ EOF
     WORKER_RUN_ALLOW_DUPLICATE=0 start_ok codex --account duplicate --brief "$WORK/different-brief"
     assert await_done
     kill -TERM "$(jq -r '.pid' "$old_dir/meta.json")"
-    "$RUNNER" wait "$old_id" --max 6 >/dev/null
+    "$RUNNER" wait "$old_id" --max 60 >/dev/null
     WORKER_RUN_ALLOW_DUPLICATE=0 start_ok codex --account duplicate
     assert await_done
     fixture="$WORKER_RUN_DIR/old-live"
     mkdir -p "$fixture"
-    sleep 30 & live_pid=$!
+    sleep 600 & live_pid=$!
     cp "$WORK/brief" "$fixture/brief"
     printf '%s\n' "$CLAUDE_CODE_SESSION_ID" >"$fixture/launcher"
     jq -cn --argjson pid "$live_pid" --argjson start "$(($(date +%s) - 1800))" '{pid:$pid,started_at:$start}' >"$fixture/meta.json"
@@ -285,7 +288,7 @@ EOF
     mkdir -p "$fixture"
     git -C "$fixture" init -q
     export STUB_SLEEP=8
-    WORKER_RUN_IDLE_S=2 start_ok codex --account wedged --workdir "$fixture"
+    WORKER_RUN_IDLE_S=2 WORKER_RUN_DEADLINE=120 start_ok codex --account wedged --workdir "$fixture"
     # Edited until the run ends: counted as its activity, they keep it alive past STUB_SLEEP's clean exit.
     for started in $(seq 1 40); do
       [ ! -e "$RUN_DIR/exit_code" ] || break
@@ -299,9 +302,9 @@ EOF
 
   if reliability_case E3; then
     clear_stub
-    export STUB_SLEEP=8
-    start_ok codex --account main
-    for started in $(seq 1 100); do [ -s "$STUB_DIR/codex.child.pid" ] && break; sleep 0.05; done
+    export STUB_SLEEP=60
+    WORKER_RUN_DEADLINE=120 start_ok codex --account main
+    for started in $(seq 1 1200); do [ -s "$STUB_DIR/codex.child.pid" ] && break; sleep 0.05; done
     cli_pid=$(cat "$STUB_DIR/codex.pid")
     child_pid=$(cat "$STUB_DIR/codex.child.pid")
     kill -TERM "$(jq -r '.pid' "$RUN_DIR/meta.json")"
