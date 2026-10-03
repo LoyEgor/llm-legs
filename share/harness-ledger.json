@@ -567,7 +567,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-03",
       "reviewed_by": "Night fixer harness-hooks-20261003T042542Z-1344",
-      "note": "Narrowed: the multi-repository part is cut by hook-grows-repos-commit-journal; what stays is its floor on a one-repository call (bash, the 2.4k-line review-journal.sh source at ~20-40 ms, jq, one git status). 2026-10-03: the 811-853 ms p50 was the night orchestrator (191 of 355 heavy runs, p50 1050 ms wall / 972 ms CPU): a worker records under its launcher, so the launcher's .repos named 11 worker worktrees, each snapshotted before and after every launcher call; claude-setup@9171da1 snapshots over .repos.own (trees the chat wrote in itself) and lets a read-only Bash call out before the library. Other chats: p50 363 ms, dominated by the repositories they register (logo-vectorizer-bench: 33 704 untracked paths, 0.5-1.5 s a snapshot). Under 50 ms needs a design change or a different limit: the owner's.",
+      "note": "Narrowed: the multi-repository part is cut by hook-grows-repos-commit-journal; what stays is its floor on a one-repository call (bash, the 2.4k-line review-journal.sh source at ~20-40 ms, jq, one git status). 2026-10-03: the 811-853 ms p50 was the night orchestrator (191 of 355 heavy runs, p50 1050 ms wall / 972 ms CPU): a worker records under its launcher, so the launcher's .repos named 11 worker worktrees, each snapshotted before and after every launcher call; claude-setup@9171da1 lets a read-only Bash call out before the library, and claude-setup@7837e81 snapshots over .repos minus .repos.workers (trees first listed by a worker and not written in by the launcher since; a tree already listed before stays snapshotted). Other chats: p50 363 ms, dominated by the repositories they register (logo-vectorizer-bench: 33 704 untracked paths, 0.5-1.5 s a snapshot). Under 50 ms needs a design change or a different limit: the owner's.",
       "handoff": "docs/handoffs/2026-10-03-hook-cost-rows.md"
     },
     {
@@ -1283,7 +1283,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-03",
       "reviewed_by": "Night fixer harness-hooks-20261003T042542Z-1344",
-      "note": "Narrowed: the per-repository snapshot is parallel (claude-setup@4ca8de1); 2026-10-03 the 573-760 ms p50 was the orchestrator snapshotting its workers' worktrees from its own .repos; claude-setup@9171da1 snapshots over .repos.own and lets a read-only call out before the library (write call with 5 registered trees 460-516 to 283-287 ms, read-only 67-70 to 43-44 ms, load 90). What stays is the snapshot floor of the trees a chat writes in (the same one hook-sync-commit-journal names). Design or limit: the owner's.",
+      "note": "Narrowed: the per-repository snapshot is parallel (claude-setup@4ca8de1); 2026-10-03 the 573-760 ms p50 was the orchestrator snapshotting its workers' worktrees from its own .repos; claude-setup@9171da1 and @7837e81 drop the workers' trees from that set (.repos.workers) and let a read-only call out before the library (write call with 5 registered trees 460-516 to 283-287 ms, read-only 67-70 to 43-44 ms, load 90). What stays is the snapshot floor of the trees a chat writes in (the same one hook-sync-commit-journal names). Design or limit: the owner's.",
       "handoff": "docs/handoffs/2026-10-03-hook-cost-rows.md"
     },
     {
