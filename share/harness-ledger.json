@@ -613,7 +613,8 @@
           "at": "2026-10-03T07:15:20Z",
           "by": "Night fixer harness-hooks-20261003T042542Z-1344",
           "files": ["llm-legs/bin/report-bus"],
-          "in": null
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [],
