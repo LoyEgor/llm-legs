@@ -52,6 +52,7 @@ image_name=$(sed -n 's/^ImageName: //p' "$FAKE_GEMINIB_PROMPT")
 image_dir="$profile_home/.gemini/antigravity-cli/brain/$session"
 mkdir -p "$image_dir"
 image_path="$image_dir/${image_name}_123.jpg"
+[ "$mode" != subagent ] || image_path="$image_dir/poster_from_subagent_123.jpg"
 if [ "$mode" != no-image ]; then
   "$REAL_MAGICK" -size 16x12 xc:'#00FF00' -fill blue -draw 'rectangle 5,4 10,8' "$image_path"
 fi
@@ -86,7 +87,7 @@ PY
 fi
 response="$image_path"
 case "$mode" in
-  rescue|init-only|no-image) response='The image is ready.' ;;
+  rescue|init-only|no-image|subagent) response='The image is ready.' ;;
   stream) response='Image generated.' ;;
 esac
 if [ "$mode" = stream ] || [ "$mode" = saved-then-error ] || [ "$mode" = saved-then-quota ]; then

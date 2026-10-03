@@ -195,7 +195,7 @@ assert image_run --dest "$WORK/output/both.png" --prompt 'merge' --ref "$WORK/gr
 assert grep -qx 'composite=skipped reason=several-inputs' "$WORK/out"
 expect_rc 2 "${args[@]}" --ref "$WORK/green.png" --composite --no-composite --account explicit
 
-for mode in stream rescue init-only; do
+for mode in stream rescue init-only subagent; do
   FAKE_GEMINIB_MODE=$mode assert image_run "${args[@]}" --account explicit
   assert grep -qx 'session=fixture-session' "$WORK/out"
   assert grep -qx 'model=gemini-3.1-flash-image model_caps=fresh' "$WORK/out"

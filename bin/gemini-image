@@ -290,6 +290,7 @@ Reply with ONLY the absolute path of the generated file on the last line."
 
 # Backdated a second: -newer misses files that land in the marker's own mtime quantum.
 : >"$launch_marker"
+cp -p "$launch_marker" "$tmp_dir/launch-exact"
 touch -A -01 "$launch_marker" 2>/dev/null || true
 generation_rc=0
 resume_args=()
@@ -329,13 +330,16 @@ if [[ "$generated" != /* ]] || [ ! -f "$generated" ] || [ "$generated" -ot "$lau
   generated=''
 fi
 if [ -z "$generated" ] && [ -d "$brain_dir" ]; then
+  # agy >= 1.2.16 hands generate_image to its image-generator subagent, which names the file itself
+  # in this conversation's own brain directory. With no name to match there, the unbackdated marker
+  # keeps a resumed conversation's previous image out.
   while IFS= read -r candidate; do
     if [ -z "$generated" ] || [ "$candidate" -nt "$generated" ]; then
       generated=$candidate
     fi
-  done < <(find "$brain_dir" -type f -iname "${image_name}*" \
-    \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \) \
-    -newer "$launch_marker" -print 2>/dev/null)
+  done < <(find "$brain_dir" -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \) \
+    \( \( -iname "${image_name}*" -newer "$launch_marker" \) \
+    -o \( -path "$brain_dir/$session/*" -newer "$tmp_dir/launch-exact" \) \) -print 2>/dev/null)
 fi
 # agy >= 1.2.10 exits 3 when the turn ends on a model error after a tool already saved the image;
 # the paid generation is delivered, never regenerated, whatever the error was.
