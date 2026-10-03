@@ -437,7 +437,7 @@
     "until": "2026-10-03T07:52:21+03:00"
    },
    "title": "a writing run launched in $HOME, or a RESUME brief launched fresh because its relay dropped --resume, so worker-run granted it nothing and every write read as escaped",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-03T07:52:21+03:00",
@@ -446,7 +446,7 @@
       "llm-legs/bin/worker-run",
       "llm-legs/share/worker-policy.md"
      ],
-     "in": null,
+     "in": "llm-legs@96ef9df6",
      "regressed_at": null
     }
    ],
@@ -1217,7 +1217,7 @@
     "detail": "^no exit: supervisor gone$"
    },
    "title": "worker-run start holds the caller through a minutes-long launch floor on a large dirty tree, and a start interrupted there leaves a run with no supervisor",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-03T12:58:27+03:00",
@@ -1225,7 +1225,7 @@
      "files": [
       "llm-legs/bin/worker-run"
      ],
-     "in": null,
+     "in": "llm-legs@96ef9df6",
      "regressed_at": null
     }
    ],
@@ -1263,13 +1263,22 @@
     "detail": "bin/codex-image: line \\d+: unexpected EOF while looking for matching"
    },
    "title": "An image wrapper rewritten in place mid-run fed its running leg shifted bytes",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-03T07:43:33+03:00",
      "by": "Night image fixer",
-     "files": ["llm-legs/bin/codex-image", "llm-legs/bin/gemini-image", "llm-legs/bin/gemini-listen", "llm-legs/bin/gemini-music", "llm-legs/bin/gemini-sfx", "llm-legs/bin/gemini-video", "llm-legs/bin/grok-image", "llm-legs/bin/grok-video"],
-     "in": null,
+     "files": [
+      "llm-legs/bin/codex-image",
+      "llm-legs/bin/gemini-image",
+      "llm-legs/bin/gemini-listen",
+      "llm-legs/bin/gemini-music",
+      "llm-legs/bin/gemini-sfx",
+      "llm-legs/bin/gemini-video",
+      "llm-legs/bin/grok-image",
+      "llm-legs/bin/grok-video"
+     ],
+     "in": "llm-legs@11da78d9",
      "regressed_at": null
     }
    ],
@@ -1288,17 +1297,28 @@
     "detail": "bin/codex-image: line \\d+: \\S+: command not found"
    },
    "title": "An image wrapper rewritten in place mid-run ran a fragment of a line",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-03T07:43:33+03:00",
      "by": "Night image fixer",
-     "files": ["llm-legs/bin/codex-image", "llm-legs/bin/gemini-image", "llm-legs/bin/gemini-listen", "llm-legs/bin/gemini-music", "llm-legs/bin/gemini-sfx", "llm-legs/bin/gemini-video", "llm-legs/bin/grok-image", "llm-legs/bin/grok-video"],
-     "in": null,
+     "files": [
+      "llm-legs/bin/codex-image",
+      "llm-legs/bin/gemini-image",
+      "llm-legs/bin/gemini-listen",
+      "llm-legs/bin/gemini-music",
+      "llm-legs/bin/gemini-sfx",
+      "llm-legs/bin/gemini-video",
+      "llm-legs/bin/grok-image",
+      "llm-legs/bin/grok-video"
+     ],
+     "in": "llm-legs@11da78d9",
      "regressed_at": null
     }
    ],
-   "same_cause": ["I20"],
+   "same_cause": [
+    "I20"
+   ],
    "last_reviewed": "2026-10-03",
    "reviewed_by": "Night image fixer",
    "note": "The rc 127 twin of I20 (word unclassified: a shell exit, not an argument refusal).",
@@ -1348,13 +1368,15 @@
     "detail": "the 2K Upscaled download|stayed empty, so no"
    },
    "title": "Flow's 2K download clicked a fresh image's still-black editor",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-02T23:24:56+03:00",
      "by": "Google video generation integration",
-     "files": ["llm-legs/share/flow_image.py"],
-     "in": null,
+     "files": [
+      "llm-legs/share/flow_image.py"
+     ],
+     "in": "llm-legs@1cda77fd",
      "regressed_at": null
     }
    ],
@@ -1373,13 +1395,15 @@
     "detail": "the Markup canvas took no stroke"
    },
    "title": "ChatGPT's Markup canvas dropped the --region stroke",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-02T17:45:46+03:00",
      "by": "Google video generation integration",
-     "files": ["llm-legs/share/chatgpt_web.py"],
-     "in": null,
+     "files": [
+      "llm-legs/share/chatgpt_web.py"
+     ],
+     "in": "llm-legs@1cda77fd",
      "regressed_at": null
     }
    ],
@@ -1415,13 +1439,15 @@
     "detail": "the layer sits at \\(|Image Editor frame stays \\d+ px wide"
    },
    "title": "Flow's Image Editor frame kept a squashed width and the layer landed off-canvas",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-03T03:55:52+03:00",
      "by": "Google video generation integration",
-     "files": ["llm-legs/share/flow_image.py"],
-     "in": null,
+     "files": [
+      "llm-legs/share/flow_image.py"
+     ],
+     "in": "llm-legs@1cda77fd",
      "regressed_at": null
     }
    ],
@@ -1457,13 +1483,15 @@
     "detail": "You said to keep everything else exactly as it is, but didn.t specify the edit"
    },
    "title": "A --point edit sent with a --prompt note reached ChatGPT without its pins",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-02T22:24:30+03:00",
      "by": "Google video generation integration",
-     "files": ["llm-legs/bin/codex-image"],
-     "in": null,
+     "files": [
+      "llm-legs/bin/codex-image"
+     ],
+     "in": "llm-legs@11da78d9",
      "regressed_at": null
     }
    ],
@@ -1499,13 +1527,15 @@
     "detail": "\\d+ of \\d+ images came back within \\d+s"
    },
    "title": "Flow image route waited out its 300 s after Flow had failed the generation",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-03T01:28:50+03:00",
      "by": "Google video generation integration",
-     "files": ["llm-legs/share/flow_image.py"],
-     "in": null,
+     "files": [
+      "llm-legs/share/flow_image.py"
+     ],
+     "in": "llm-legs@1cda77fd",
      "regressed_at": null
     }
    ],
@@ -1541,13 +1571,15 @@
     "detail": "the upload of reference \\d+ \\(\\S+\\) never showed in the composer"
    },
    "title": "ChatGPT's composer dropped a reference set straight on its file input",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-02T20:58:38+03:00",
      "by": "Google video generation integration",
-     "files": ["llm-legs/share/chatgpt_web.py"],
-     "in": null,
+     "files": [
+      "llm-legs/share/chatgpt_web.py"
+     ],
+     "in": "llm-legs@1cda77fd",
      "regressed_at": null
     }
    ],

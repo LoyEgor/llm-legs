@@ -176,7 +176,7 @@
             "llm-legs/tests/test_worker_run_stamps.sh"
           ],
           "in": "llm-legs@8f113a1",
-          "regressed_at": null
+          "regressed_at": "2026-10-03T14:30:10+03:00"
         }
       ],
       "same_cause": [
@@ -1837,7 +1837,7 @@
         "rule": "test_daily_cost",
         "ident": "llm-legs:test_llm_limits(_(claudeb|refresh|render|grok))?"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-03T11:30:00+03:00",
@@ -1852,7 +1852,7 @@
             "llm-legs/bin/llm-selfcheck",
             "llm-legs/tests/test_llm_selfcheck.sh"
           ],
-          "in": null,
+          "in": "llm-legs@b66c3b9c",
           "regressed_at": null
         }
       ],
@@ -1869,7 +1869,7 @@
         "rule": "test_long_pole",
         "ident": "claude-setup:test_commit_report(_(worktrees|span))?"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-03T11:30:00+03:00",
@@ -1880,7 +1880,7 @@
             "claude-setup/tests/test_commit_report_worktrees.sh",
             "claude-setup/tests/test_commit_report_span.sh"
           ],
-          "in": null,
+          "in": "claude-setup@056dd9b",
           "regressed_at": null
         }
       ],
