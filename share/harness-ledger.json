@@ -579,7 +579,9 @@
       },
       "status": "open",
       "fixes": [],
-      "same_cause": ["hook-every-call-commit-journal"],
+      "same_cause": [
+        "hook-every-call-commit-journal"
+      ],
       "last_reviewed": "2026-10-03",
       "reviewed_by": "Night fixer harness-hooks-20261003T042542Z-1344",
       "note": "853 ms p50 at first sight (2026-10-03), the same runs as hook-every-call-commit-journal: the orchestrator's launcher-registry sweep (cut in claude-setup@9171da1) plus the snapshot floor of the repositories a chat registers. What stays after the cut is that floor (p50 363 ms outside the orchestrator at load 60-90), driven by large untracked trees such as logo-vectorizer-bench. Under 150 ms needs a cheaper snapshot (an untracked-cache or fsmonitor git status, or skipping trees over a size) or a different limit: the owner's.",
@@ -607,13 +609,15 @@
         "rule": "hook_grows_repos",
         "ident": "report-flush\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-03T07:15:20Z",
           "by": "Night fixer harness-hooks-20261003T042542Z-1344",
-          "files": ["llm-legs/bin/report-bus"],
-          "in": null,
+          "files": [
+            "llm-legs/bin/report-bus"
+          ],
+          "in": "llm-legs@bc4a5c7",
           "regressed_at": null
         }
       ],
