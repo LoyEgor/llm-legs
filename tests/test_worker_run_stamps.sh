@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 . "$(dirname "$0")/worker_run_harness.sh"
 
 # A model no implementation worker may run is refused before the account is resolved: an explicit
@@ -614,5 +615,60 @@ assert test "$(grep -c '^CLAUDEB_CALL$' "$CALL_LOG")" -eq 2
 assert test "$(grep -c '^ARG=--chrome$' "$CALL_LOG")" -eq 2
 assert jq -e '.effort_flag_dropped == true' "$RUN_DIR/meta.json" >/dev/null
 assert jq -e '.chrome == true' "$RUN_DIR/meta.json" >/dev/null
+# Each CLI launch is stamped, the effort-flag retry inside one attempt included, with its own
+# duration and exit code; the run's end and its terminal reason beside them.
+assert jq -e '(.cli_starts | length) == 2 and (.attempt_secs | length) == 2 and .attempt_rcs[-1] == 0
+  and (.cli_starts | all(type == "number" and . >= $m.pid_started_at))
+  and .ended_at >= .cli_starts[-1] and .terminal_reason == "done"' --argjson m "$(cat "$RUN_DIR/meta.json")" \
+  "$RUN_DIR/meta.json" >/dev/null
+# Every child of the run knows which run it belongs to.
+assert test "$(cat "$STUB_DIR/run_id_env")" = "$RUN_ID"
+
+# runs.jsonl: one row per finished run, the record's timings with it; never a second row for one run.
+RUNS_JOURNAL="$CLAUDEB_DIR/worker-stats/runs.jsonl"
+assert jq -se --arg r "$RUN_ID" '[.[] | select(.run == $r)] | length == 1' "$RUNS_JOURNAL" >/dev/null
+assert jq -se --arg r "$RUN_ID" --argjson m "$(cat "$RUN_DIR/meta.json")" 'map(select(.run == $r))[0] as $row
+  | ($row | keys) == (["run", "vendor", "account", "role", "model", "effort", "light", "workdir", "launcher", "resume",
+      "round", "pid_started_at", "started_at", "cli_starts", "attempt_secs", "attempt_rcs", "walled", "ended_at",
+      "exit_code", "status", "reason"] | sort)
+  and $row.vendor == "claudeb" and $row.status == "done" and $row.reason == "done" and $row.exit_code == 0
+  and $row.cli_starts == $m.cli_starts and $row.attempt_secs == $m.attempt_secs and $row.ended_at == $m.ended_at
+  and $row.started_at == $m.started_at and $row.pid_started_at == $m.pid_started_at and $row.resume == false' \
+  "$RUNS_JOURNAL" >/dev/null
+
+# A walled attempt rerouted: two launches on two accounts, the wall named in the row, and started_at
+# restamped for the rescue attempt as the watchdog's deadline needs.
+clear_stub
+printf 'wall\n' >"$STUB_DIR/wall_accounts"
+PICK_ACCOUNT=rescue start_ok codex --account wall
+assert await_done
+assert jq -e '(.cli_starts | length) == 2 and .attempt_rcs[0] != 0 and .attempt_rcs[1] == 0
+  and .started_at >= .cli_starts[0] and .walled_accounts == ["wall"] and .terminal_reason == "done"' \
+  "$RUN_DIR/meta.json" >/dev/null
+assert jq -se --arg r "$RUN_ID" 'map(select(.run == $r)) | length == 1 and .[0].walled == ["wall"]
+  and (.[0].attempt_rcs | length) == 2' "$RUNS_JOURNAL" >/dev/null
+
+# A run that never reached its CLI ends as no-start, and still gets its row.
+clear_stub
+no_start="$WORKER_RUN_DIR/codex-no-start"
+mkdir -p "$no_start"
+jq -n --arg w "$WORK/workdir" '{vendor: "codex", account: "a", workdir: $w, started_at: 1, pid_started_at: 1}' \
+  >"$no_start/meta.json"
+"$RUNNER" _deliver "$no_start" 4 >/dev/null 2>&1
+assert jq -e '.terminal_reason == "no-start" and (.ended_at | type) == "number"' "$no_start/meta.json" >/dev/null
+assert jq -se 'map(select(.run == "codex-no-start")) | length == 1 and .[0].reason == "no-start" and .[0].cli_starts == []' \
+  "$RUNS_JOURNAL" >/dev/null
+
+# Rows are kept 35 days: the first run end of a day drops older ones, a later one leaves the file alone.
+now=$(date +%s)
+jq -nc --argjson t "$((now - 36 * 86400))" '{run: "old", ended_at: $t}' >>"$RUNS_JOURNAL"
+jq -nc --argjson t "$((now - 34 * 86400))" '{run: "kept", ended_at: $t}' >>"$RUNS_JOURNAL"
+rm -f "$RUNS_JOURNAL.pruned"
+"$RUNNER" _deliver "$no_start" 4 >/dev/null 2>&1
+assert jq -se 'map(.run) | index("old") == null and index("kept") != null' "$RUNS_JOURNAL" >/dev/null
+jq -nc --argjson t "$((now - 40 * 86400))" '{run: "old-again", ended_at: $t}' >>"$RUNS_JOURNAL"
+"$RUNNER" _deliver "$no_start" 4 >/dev/null 2>&1
+assert jq -se 'map(.run) | index("old-again") != null' "$RUNS_JOURNAL" >/dev/null
+assert test ! -e "$RUNS_JOURNAL.lock"
 
 echo "PASS: $asserts asserts; refused models, the launcher stamp on every relay, fix anchors, snapshot attribution"

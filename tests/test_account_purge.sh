@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # The menu's Remove (`<vendor>b remove <name>`) empties every per-account store share/account_stores.py
 # lists for that vendor (shared-invariants row di), and an account still on the roster keeps its data.
 # The stores are filled from the table itself, so a store added there is covered here unasked.

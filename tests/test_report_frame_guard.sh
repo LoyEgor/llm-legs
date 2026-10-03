@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # Every block Egor reads is drawn by share/report_frame.py alone. Fails on a frame drawn, a frame
 # constant defined or the module copied anywhere else in llm-legs, review-bench or claude-setup,
 # and on a known producer that stopped reaching the module. Text posted to report-bus is refused at

@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 set -u
 # worker-run opens start and wait outside Claude Code only; its relay door is tested with CLAUDECODE set.
 unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDEB_WORKER WORKER_RUN_RELAY
 unset WORKER_PICK_CONFIG_FILE WORKER_RUN_CONFIG_FILE
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
+export WORKER_STATS_DIR="$WORK/worker-stats"
 # Every `worker_model_*` call shells `grokb models`: the fixture list answers it, and the
 # `grok` CLI behind it can never be reached (row `cu`).
 export GROKB_CACHE_DIR="$WORK/grokb-cache"
@@ -143,7 +145,7 @@ assert jq -e '.walled_accounts == ["researcher"] and .account == "rescuer"' "$RU
 
 # A research brief names a round to read its logs, never to fix it: the prose scan that binds a
 # hand-written fix brief to an open round is a workers-role door, and a ROUND: line here is refused.
-mkdir -p "$HOME/.claude-profiles/.claudeb/worker-stats/benches/20260801T140000Z-0a1b2c3"
+mkdir -p "$WORKER_STATS_DIR/benches/20260801T140000Z-0a1b2c3"
 printf '#!/usr/bin/env bash\nprintf "STUB FIX RULE %%s\\nwrite verdicts.jsonl rows\\n" "$*"\n' >"$BIN/review-bench"; chmod +x "$BIN/review-bench"
 printf 'Read the cell logs of round 20260801T140000Z-0a1b2c3 and report how many steps each took.\n' >"$WORK/prompt"
 run; rc=$?; assert test "$rc" -eq 0

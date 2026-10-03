@@ -105,6 +105,7 @@ store=${LLM_LIMITS_CACHE:-$HOME/.llm-limits.json}
 state_file=${LLM_LIMITS_REFRESH_STATE:-${LLM_REFRESH_STATE:-$HOME/.llm-limits-refresh.state}}
 journal_file=${LLM_LIMITS_REFRESH_JOURNAL:-${LLM_REFRESH_JOURNAL:-$HOME/.llm-limits-refresh.jsonl}}
 now=${LLM_LIMITS_REFRESH_NOW:-${LLM_REFRESH_NOW:-$(date +%s)}}
+tick_id="$now-$$"
 agent_plist="$HOME/Library/LaunchAgents/com.llm-refresh.plist"
 wrapper="$HOME/.local/libexec/llm-refresh-heartbeat"
 label=com.llm-refresh
@@ -439,9 +440,9 @@ journal_attempt() {
   mkdir -p "$(dirname "$journal_file")"
   jq -cn --argjson ts "$now" --arg vendor "$vendor" --argjson step "$step" \
     --argjson accounts "$accounts" --arg outcome "$outcome" --arg detail "$detail" \
-    --argjson interval "$interval" \
+    --argjson interval "$interval" --arg tick "$tick_id" \
     '{ts:$ts,vendor:$vendor,step:$step,accounts_tried:$accounts,outcome:$outcome,
-      detail:$detail,interval_min:$interval}' >>"$journal_file"
+      detail:$detail,interval_min:$interval,tick:$tick}' >>"$journal_file"
 }
 
 # Read and normalize the on-disk tick state. Also used mid-tick: a revive hands the lock back,

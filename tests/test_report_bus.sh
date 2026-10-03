@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 BUS=${REPORT_BUS_BIN:-$ROOT/bin/report-bus}

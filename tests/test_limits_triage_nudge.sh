@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 set -u
 
 HOOK="${LIMITS_TRIAGE_NUDGE_HOOK:-$HOME/.claude/hooks/limits-triage-nudge.sh}"

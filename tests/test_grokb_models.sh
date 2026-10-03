@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # `grokb models` (shared-invariants row `cu`): the one Grok model list, fetched from a fake `grok`
 # inside a fake signed-in profile, cached in a temp GROKB_CACHE_DIR, never ~/.cache/grokb.
 set -u

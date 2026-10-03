@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # grok-quota.py against a local stand-in for cli-chat-proxy.grok.com: the real endpoint is never
 # reached, and the access token in auth.json may never appear in anything the helper prints.
 set -u

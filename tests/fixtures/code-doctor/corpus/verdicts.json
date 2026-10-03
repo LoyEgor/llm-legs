@@ -8,7 +8,5 @@
     "reason": "CLAUDE.md: robot curl refresh is permanently disabled; user_curl_refresh stays"},
   "cause:alpha/lib/drive_a.py#load_drivers": {"verdict": "problem", "fact": "load_drivers is written twice",
     "plan": "one lib/drivers.py load_drivers, both callers import it", "value": 14,
-    "reason": "the two copies differ only in an empty-seats default"},
-  "cause:alpha/tests/test_slow.sh": {"verdict": "problem", "fact": "test_slow.sh sleeps 300 s for nothing",
-    "plan": "drop the sleep", "value": 50, "reason": "the sleep waits on nothing"}
+    "reason": "the two copies differ only in an empty-seats default"}
 }

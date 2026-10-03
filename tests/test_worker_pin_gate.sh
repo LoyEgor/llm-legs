@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # The account pin is Egor's own override, and a session must not move it on its own. All three
 # doors are tested here: bin/worker-pin-gate.sh (his words grant; a hand-written edit of the file
 # and a shell redirect over it are both denied) and worker_model_pin_account (the command path

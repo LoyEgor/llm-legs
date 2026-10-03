@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -46,11 +47,32 @@ printf 'Pages active: 100.\n'
 printf 'Pages inactive: 2.\n'
 printf 'Pages speculative: 1.\n'
 printf 'Pages wired down: 200.\n'
+if [ -n "${SWAPINS_FILE:-}" ]; then
+  read -r -a swapins <<<"$(cat "$SWAPINS_FILE")"
+  index=$count
+  [ "$index" -lt "${#swapins[@]}" ] || index=$(( ${#swapins[@]} - 1 ))
+  printf 'Swapins: %s.\n' "${swapins[$index]}"
+fi
+EOF
+
+cat >"$FAKE_BIN/notifyutil" <<'EOF'
+#!/usr/bin/env bash
+printf 'com.apple.system.thermalpressurelevel %s\n' "${THERMAL:-0}"
+EOF
+
+cat >"$FAKE_BIN/jq" <<'EOF'
+#!/usr/bin/env bash
+[ -z "${JQ_FAILS:-}" ] || exit 1
+exec /usr/bin/jq "$@"
 EOF
 
 cat >"$FAKE_BIN/sysctl" <<'EOF'
 #!/usr/bin/env bash
 set -u
+case "$*" in
+  *vm.loadavg*) [ -n "${LOADAVG:-}" ] || exit 1; printf '{ %s 1.00 0.50 }\n' "$LOADAVG"; exit 0 ;;
+  *kern.boottime*) printf '8\n{ sec = 1790882097, usec = 398498 } Thu Oct  1 22:14:57 2026\n'; exit 0 ;;
+esac
 count=$(cat "$SWAP_TICK" 2>/dev/null || echo 0)
 printf '%s' "$((count + 1))" >"$SWAP_TICK"
 read -r -a values <<<"$(cat "$SWAP_FILE")"
@@ -167,7 +189,8 @@ if [ "$#" -eq 3 ] && [ "$1" = "-r" ] && [ "$3" = "+%Y-%m-%dT%H%M%S" ] && [ -n "$
 fi
 exec /bin/date "$@"
 EOF
-chmod +x "$FAKE_BIN/vm_stat" "$FAKE_BIN/sysctl" "$FAKE_BIN/ps" "$FAKE_BIN/date" "$FAKE_BIN/stat"
+chmod +x "$FAKE_BIN/vm_stat" "$FAKE_BIN/sysctl" "$FAKE_BIN/ps" "$FAKE_BIN/date" "$FAKE_BIN/stat" \
+  "$FAKE_BIN/notifyutil" "$FAKE_BIN/jq"
 PATH="$FAKE_BIN:$PATH"
 export PATH
 
@@ -241,6 +264,32 @@ assert test "$(wc -l <"$quiet_log")" -eq 2
 assert grep -qE '^[0-9]{10} quiet avail_mb=8192 swap_used_mb=1024 node_count=3 node_rss_mb=1500$' \
   "$quiet_log"
 assert_fails grep -q 'INCIDENT' "$quiet_log"
+
+# --- machine sampler: its own day file, swap-in rate from deltas, the probe once a minute ---------
+MACHINE_DIR="$WORK/machine"
+printf '1000 1000 1600' >"$WORK/swapins"
+probes 8192 1024
+assert run_memlogd "$MACHINE_DIR" MEMLOGD_MAX_TICKS=3 MEMLOGD_QUIET_INTERVAL=1 MEMLOGD_MACHINE_INTERVAL=0 \
+  LOADAVG=3.25 THERMAL=2 SWAPINS_FILE="$WORK/swapins"
+machine_log="$MACHINE_DIR/machine/$run_day.log"
+assert test "$(wc -l <"$machine_log")" -eq 3
+assert grep -qE '^[0-9]{10} load1=3.25 ncpu=8 swap_mb=1024 swapin_pages_s=-1 thermal=2 boot=1790882097 probe_ms=[0-9]+$' \
+  <(sed -n 1p "$machine_log")
+assert grep -qE ' swapin_pages_s=0 thermal=2 boot=1790882097$' <(sed -n 2p "$machine_log")
+assert grep -qE ' swapin_pages_s=(600|300|200) thermal=2 boot=1790882097$' <(sed -n 3p "$machine_log")
+assert test "$(grep -c ' probe_ms=' "$machine_log")" -eq 1
+assert test "$(wc -l <"$(log_file "$MACHINE_DIR")")" -eq 3
+
+MACHINE_GATE_DIR="$WORK/machine-gate"
+probes 8192 1024
+assert run_memlogd "$MACHINE_GATE_DIR" MEMLOGD_MAX_TICKS=3 LOADAVG=1.5
+assert test "$(wc -l <"$MACHINE_GATE_DIR/machine/$run_day.log")" -eq 1
+
+MACHINE_FAIL_DIR="$WORK/machine-fail"
+probes 8192 1024
+assert run_memlogd "$MACHINE_FAIL_DIR" MEMLOGD_MAX_TICKS=1 JQ_FAILS=1
+assert grep -qE '^[0-9]{10} load1=-1 ncpu=8 swap_mb=1024 swapin_pages_s=-1 thermal=0 boot=1790882097 probe_ms=-1$' \
+  "$MACHINE_FAIL_DIR/machine/$run_day.log"
 
 # --- a failed probe never reads as zero available ------------------------------------------------
 PROBE_DIR="$WORK/probe"
@@ -382,6 +431,9 @@ printf 'INCIDENT 946684800 avail_mb=100 swap_used_mb=7000\n' >"$ROTATE_DIR/2000-
 printf '%s\n' "$quiet_line" >"$ROTATE_DIR/$inside_edge.log"
 printf 'INCIDENT 1700000000 avail_mb=100 swap_used_mb=7000\n' >"$ROTATE_DIR/$outside_edge.log"
 printf 'keep me\n' >"$ROTATE_DIR/notes.txt"
+mkdir -p "$ROTATE_DIR/machine"
+printf '1700000000 load1=1\n' >"$ROTATE_DIR/machine/$outside_edge.log"
+printf '1700000000 load1=1\n' >"$ROTATE_DIR/machine/$inside_edge.log"
 # Today's file is the one the incident evidence is read from, whatever it holds.
 printf 'INCIDENT 1700000000 avail_mb=100 swap_used_mb=7000\n' >"$ROTATE_DIR/$(date +%F).log"
 probes 8192 1024
@@ -391,6 +443,8 @@ assert_fails test -e "$ROTATE_DIR/2000-01-02.log"
 assert test -f "$ROTATE_DIR/$inside_edge.log"
 assert_fails test -e "$ROTATE_DIR/$outside_edge.log"
 assert test -f "$ROTATE_DIR/notes.txt"
+assert_fails test -e "$ROTATE_DIR/machine/$outside_edge.log"
+assert test -f "$ROTATE_DIR/machine/$inside_edge.log"
 rotate_log=$(log_file "$ROTATE_DIR")
 assert test -f "$rotate_log"
 assert grep -q '^INCIDENT 1700000000 ' "$rotate_log"

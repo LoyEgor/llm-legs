@@ -40,7 +40,7 @@ end
 
 local dir = os.tmpname()
 os.remove(dir)
-for _, sub in ipairs({ "", "/llm-doctor", "/harness-doctor", "/harness-doctor/menu", "/updater-doctor", "/code-doctor", "/doctors",
+for _, sub in ipairs({ "", "/llm-doctor", "/harness-doctor", "/harness-doctor/menu", "/updater-doctor", "/code-doctor", "/doctors", "/speed-doctor",
     "/doctors/runs" }) do
   assert(hs.fs.mkdir(dir .. sub))
 end
@@ -58,8 +58,16 @@ local function iso(epoch) return os.date("!%Y-%m-%dT%H:%M:%SZ", epoch) end
 -- Tasks and alerts never leave the harness; pathwatcher off keeps the loaded llm-limits copy from
 -- watching or collecting anything.
 local tasks, alerts, dialogs, answer = {}, {}, {}, "Cancel"
+local lagTimers, fakeClock = {}, nil
 local fakeHs = setmetatable({
   pathwatcher = false,
+  timer = setmetatable({
+    doEvery = function(interval, fn)
+      lagTimers[#lagTimers + 1] = { interval = interval, fn = fn }
+      return { stop = function() end }
+    end,
+    secondsSinceEpoch = function() return fakeClock or hs.timer.secondsSinceEpoch() end,
+  }, { __index = hs.timer }),
   alert = { show = function(message) alerts[#alerts + 1] = message end },
   dialog = { blockAlert = function(...) dialogs[#dialogs + 1] = { ... }; return answer end },
   task = { new = function(path, callback, args)
@@ -101,6 +109,7 @@ local function loadDoctors()
   doctors.harnessLedger = dir .. "/harness-ledger.json"
   doctors.updaterLedger = dir .. "/updater-ledger.json"
   doctors.cacheSeconds = 0
+  doctors.speedDoctorDir = dir .. "/speed-doctor"
   return doctors
 end
 
@@ -188,6 +197,64 @@ local journalText = journal and journal:read("*a") or ""
 if journal then journal:close() end
 check(journalText:find("\tdoctors\n", 1, true) ~= nil, "the build is not timed into the menu journal")
 
+-- A background build journals `doctors:bg` into the speed journal and nothing into the click journal.
+local function slurpAt(path)
+  local handle = io.open(dir .. path)
+  local body = handle and handle:read("*a") or ""
+  if handle then handle:close() end
+  return body
+end
+local function count(body, line) return select(2, body:gsub(line:gsub("%p", "%%%0"), "")) end
+local hsDay = "/speed-doctor/hs/" .. os.date("%Y-%m-%d") .. ".tsv"
+local clickDay = "/harness-doctor/menu/" .. os.date("%Y-%m-%d") .. ".tsv"
+check(count(slurpAt(hsDay), "\tdoctors:bg\n") == 0, "a click build journaled as doctors:bg")
+local clicks = count(slurpAt(clickDay), "\tdoctors\n")
+limits.backgroundMenu(doctors.menuItems)
+check(count(slurpAt(hsDay), "\tdoctors:bg\n") == 1, "a background build is not journaled once as doctors:bg: " .. slurpAt(hsDay))
+check(slurpAt(hsDay):match("^%d+\t%d+\tdoctors:bg\n$") ~= nil, "doctors:bg line shape: " .. slurpAt(hsDay))
+check(count(slurpAt(clickDay), "\tdoctors\n") == clicks, "a background build timed into the click journal")
+
+-- The lag probe: a 1 s timer, a line only past 50 ms of lag, the oldest days pruned.
+check(#lagTimers > 0 and lagTimers[#lagTimers].interval == 1, "no 1 s lag probe timer")
+local lagBase = math.floor(os.time()) + 0.0
+fakeClock = lagBase
+doctors.lagTick()
+fakeClock = lagBase + 1.02
+doctors.lagTick()
+fakeClock = lagBase + 2.12
+doctors.lagTick()
+fakeClock = nil
+local lagStart, lagEnd = slurpAt(hsDay):match("(%d+)\t(%d+)\ths%-lag\n")
+check(count(slurpAt(hsDay), "\ths-lag\n") == 1 and lagStart and math.abs(tonumber(lagEnd) - tonumber(lagStart) - 100000) < 1000,
+  "one hs-lag line of 100 ms: " .. slurpAt(hsDay))
+write("/speed-doctor/hs/2000-01-01.tsv", "1\t2\tdoctors:bg\n")
+limits.backgroundMenu(loadDoctors().menuItems)
+check(slurpAt("/speed-doctor/hs/2000-01-01.tsv") ~= "", "the hs writer pruned a day: bin/speed-doctor owns the prune")
+os.remove(dir .. "/speed-doctor/hs/2000-01-01.tsv")
+
+-- The latest run per doctor is cached until bin/doctor-fix writes a record into the runs directory.
+local realDir, runScans = hs.fs.dir, 0
+fakeHs.fs = setmetatable({ dir = function(path, ...)
+  if path:match("/doctors/runs$") then runScans = runScans + 1 end
+  return realDir(path, ...)
+end }, { __index = hs.fs })
+local pinRuns = "touch -mt 202601010000 " .. dir .. "/doctors/runs"
+os.execute(pinRuns)
+local cached = loadDoctors()
+cached.menuItems()
+local firstScans = runScans
+cached.menuItems()
+check(firstScans == 4 and runScans == firstScans, "a second menu build rescanned the runs directory: "
+  .. firstScans .. " then " .. runScans)
+write("/doctors/runs/llm-all-20261001T020000Z-c0de.json", { id = "llm-all-20261001T020000Z-c0de", doctor = "llm",
+  area = "all", created_at = iso(now - 60), launched_at = iso(now - 60), problems = {} })
+os.execute(pinRuns)
+local fresh = cached.menuItems()
+check(runScans == firstScans + 4 and text(fixer(fresh[1].menu).title):match("^fixer: running"),
+  "a new run record is read on the next build, inside the same directory mtime: " .. text(fixer(fresh[1].menu).title))
+remove("/doctors/runs/llm-all-20261001T020000Z-c0de.json")
+fakeHs.fs = nil
+
 -- N problems, blind, failed.
 write("/llm-doctor/latest.json", llmDocument("problems", 2))
 write("/harness-doctor/menu.txt", harnessMenu(3, "Harness doctor: 3 problems"))
@@ -255,6 +322,7 @@ check(text(refresh.title) == "Refresh" and refresh.fn and (up.menu[#up.menu - 3]
 tasks = {}
 refresh.fn()
 check(#tasks == 1 and tasks[1].path == "/fixture/bin/updater-doctor" and #tasks[1].args == 0, "Refresh runs bin/updater-doctor")
+check((tasks[1].env or {}).DOCTOR_TRIGGER == "menu", "a menu Refresh does not tag its collector run as menu")
 check(text(refreshRow(doctors.menuItems()[3].menu).title) == "refreshing…", "a running Refresh")
 tasks[1]:finish(0)
 updater.as_of_s = now - 3 * 86400
@@ -570,6 +638,9 @@ if vocab then
     local shown = menu ~= nil and want == ""
     for _, item in ipairs(menu or {}) do
       shown = shown or item.title ~= "-" and text(item.title):lower():sub(1, #want) == want
+      for _, sub in ipairs(text(item.title):match("^Speed: ") and item.menu or {}) do
+        shown = shown or sub.title ~= "-" and text(sub.title):lower():sub(1, #want) == want
+      end
     end
     check(shown, "night label «" .. label .. "» names no row of its doctor's menu")
   end

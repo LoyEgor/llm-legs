@@ -135,6 +135,7 @@ printf '%s\n' "${CLAUDE_LAUNCHER_SESSION-}" >"$STUB_DIR/launcher_env"
 # worker's own verdict rows go.
 printf '%s\n' "${CLAUDE_DEBT_OWNER-}" >"$STUB_DIR/debt_owner_env"
 printf '%s\n' "${WORKER_RUN_RECORD-}" >"$STUB_DIR/run_record_env"
+printf '%s\n' "${WORKER_RUN_ID-}" >"$STUB_DIR/run_id_env"
 printf '%s\n' "${WORKER_RUN_RELAY-__unset__}" >"$STUB_DIR/relay_env"
 printf '%s\n' "${CLAUDE_CODE_DISABLE_BACKGROUND_TASKS-__unset__}" >"$STUB_DIR/background_env"
 # What a relay's own journal hook is: a process inside the launched CLI, reaching the launching

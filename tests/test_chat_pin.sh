@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # bin/chat-pin: one chat's own pin line, moved only with the grant Egor's words wrote for that chat
 # and that target. Every path is a fixture: HOME, CLAUDEB_DIR, CHAT_PINS_DIR and the limits store.
 set -u

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 . "$(dirname "$0")/worker_run_harness.sh"
 
 # A brief with no first line cannot identify its run: RESUME/ATTACH are read off the top of it, and

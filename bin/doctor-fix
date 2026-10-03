@@ -128,6 +128,19 @@ BROWSER_ENGINE = ("llm-legs/share/gemini_web.py", "llm-legs/share/gemini_music.p
                   "llm-legs/share/chatgpt_web.py")
 MENU_BUILDERS = {"automation": ("hammerspoon/automation_menu.lua", "llm-legs/hammerspoon/llm-limits.lua"),
                  "llm-limits": ("llm-legs/hammerspoon/llm-limits.lua",)}
+SPEED_FILES = {"background/statusline": ("llm-legs/bin/statusline.sh",)}
+KNOBS = (
+    ("settings model/effort/thinking", r"(^|/)settings(\.[\w-]+)?\.json$",
+     r"\"(model|effortLevel|alwaysThinkingEnabled|MAX_THINKING_TOKENS|modelSettings)\"\s*:"),
+    ("worker-model", r"(^|/)worker-model$", r"\S"),
+    ("share/worker-model.sh table", r"(^|/)share/worker-model\.sh$", r"^(?!\s*#).*\b(low|medium|high|xhigh|max)\b"),
+    ("share/worker-policy.md effort", r"(^|/)share/worker-policy\.md$", r"(?i)\beffort|^\|.*\b(low|medium|high|xhigh|max)\b"),
+    ("review-bench tier effort/rater", r"(^|/)share/rbench/catalog\.py$",
+     r"\"(low|medium|high|xhigh|max)\"|ROSTER|RATER|EFFORT|^\s*\(\"[\w.-]+\",\s*\d+\)"),
+    ("agent model frontmatter", r"(^|/)agents/[^/]+\.md$", r"^(model|effort):"),
+    ("claudeb default model", r"(^|/)(bin/claudeb|share/chat-open\.sh)$", r"CLAUDEB_CLAUDE_MODEL|--model|--effort"),
+    ("brief-template EFFORT/MODEL", r"", r"^\s*(printf\s+[\x27\"])?(EFFORT|MODEL):\s*\S"),
+)
 UPDATER_MACHINERY = {rule: "llm-legs/bin/vendor-cli-update" for rule in ("pass-stale", "pass-failed", "cli-behind", "client-too-old")}
 UPDATER_MACHINERY.update({rule: "llm-legs/bin/vendor-fingerprint" for rule in ("probe-broken", "catalog-missing", "event-stuck", "foreign-client")})
 WIDTH = 200
@@ -233,7 +246,8 @@ def snapshot(doctor, doc_file, night=None):
         problems += [{"id": r["id"], "rule": (r.get("match") if isinstance(r.get("match"), dict) else {}).get("rule"),
                       "ledger": r["id"], "state": "quiet", "fact": r.get("title")}
                      for r in rows.values() if r.get("status") == "open" and r.get("id") and r["id"] not in seen]
-    kept, watched = [], []
+    kept, watched, opportunities = [], [], {}
+    chosen = strings((doc.get("speed") or {}).get("selection")) if doctor == "harness" else []
     for problem in problems:
         pid, rule, state = problem.get("id"), problem.get("rule"), problem.get("state")
         row = rows.get(problem.get("ledger")) or (rows.get(pid[7:]) if str(pid).startswith("ledger:") else None)
@@ -263,8 +277,10 @@ def snapshot(doctor, doc_file, night=None):
             if pid.startswith("machinery:"):
                 what = "review-bench doctor class %s · %s" % (pid[10:], what)
         elif doctor == "harness":
-            area = sections.get(rule) or OWN_AREA
-            ident = pid.split(":", 1)[1] if ":" in pid else ""
+            area = problem.get("group") if problem.get("speed") else sections.get(rule) or OWN_AREA
+            kind, _, target = str((problem.get("opportunity") or {}).get("target") or "").partition("/")
+            ident = target if kind == "hooks" else target.replace("/", ":", 1) if kind == "tests" else \
+                pid.split(":", 1)[1] if ":" in pid else ""
             match = (row or {}).get("match")
             pattern = str((match if isinstance(match, dict) else {}).get("ident") or "")
             try:
@@ -275,7 +291,8 @@ def snapshot(doctor, doc_file, night=None):
                       and (ident.split(":")[0] == key or ident == key or ident == "event:" + event))]
             if ident.startswith(("/", "~/")) and os.path.isfile(os.path.expanduser(ident)):
                 files.append(ident)
-            if rule in ("test_slow", "test_load_fail", "test_long_pole", "test_daily_cost") and ident.count(":") == 1:
+            if (rule in ("test_slow", "test_load_fail", "test_long_pole", "test_daily_cost") or kind == "tests") \
+                    and ident.count(":") == 1:
                 repo, test = ident.split(":")
                 files += [f for f in (os.path.join(repos_dir(doctor), repo, "tests", test + ext) for ext in (".sh", ".py", ""))
                           if os.path.isfile(f)][:1]
@@ -284,6 +301,10 @@ def snapshot(doctor, doc_file, night=None):
                     ident, MENU_BUILDERS["automation"])) if os.path.isfile(f)]
             if rule == "collector":
                 files.append(doctor_script(doctor))
+            if problem.get("speed") and rule == "opportunity":
+                files += [os.path.join(repos_dir(doctor), name) for name in SPEED_FILES.get(pid[12:], ())]
+            elif problem.get("speed"):
+                files.append(doctor_script("speed"))
         elif doctor == "code":
             area = WHOLE_AREA.get("code", "code")
             files += doctor_module("code").unit_paths(problem)
@@ -302,10 +323,14 @@ def snapshot(doctor, doc_file, night=None):
             entry.update({key: problem.get(key) for key in ("group", "units", "files", "repos", "digest", "needs_egor")})
         if state not in ("watch", "fixed-pending"):
             kept.append(entry)
+        elif rule == "opportunity" and problem.get("speed") \
+                and (problem.get("opportunity") or {}).get("quality") == "equivalent":
+            opportunities[pid] = entry
         elif state == "watch" and doctor == "harness" and area in HOOK_AREAS:
             watched.append(((problem.get("value") or 0) * (problem.get("exposure") or 0), entry))
     watched.sort(key=lambda pair: -pair[0])
-    print(json.dumps(kept + [entry for _, entry in watched[:8]]))
+    print(json.dumps(kept + [opportunities[pid] for pid in chosen if pid in opportunities]
+                     + [entry for _, entry in watched[:8]]))
 
 
 def git(folder, *args):
@@ -421,6 +446,68 @@ def touches(record_file, pid, purpose):
     return 0 if not component or any(norm(f) in component for f in found) else 2
 
 
+def live_knob_files():
+    return {"settings": os.environ.get("HARNESS_SETTINGS") or os.path.join(HOME, ".claude", "settings.json"),
+            "worker-model": os.environ.get("WORKER_PICK_CONFIG_FILE") or os.path.join(HOME, ".claude", "worker-model")}
+
+
+def knob_site(path, text):
+    return next((site for site, where, what in KNOBS if re.search(where, path) and re.search(what, text)), None)
+
+
+def knob_lines():
+    found = {}
+    for site, path in live_knob_files().items():
+        try:
+            with open(path, errors="replace") as handle:
+                found[path] = [line.rstrip("\n") for line in handle if knob_site(path, line.rstrip("\n"))]
+        except OSError:
+            found[path] = []
+    return found
+
+
+def knobs(record_file):
+    """Lines of the run that set a model, effort or thinking knob: its worktrees against the night base (untracked
+    files count as added), and the live settings and worker-model files against their lines at launch."""
+    record = load(record_file, {})
+    base = "refs/night/%s/base" % record.get("night")
+    hits = []
+    for tree in strings(record.get("worktrees")):
+        name = os.path.basename(os.path.dirname("".join(git(tree, "rev-parse", "--path-format=absolute", "--git-common-dir"))))
+        path, old, new, header = "", 0, 0, False
+        for line in git(tree, "diff", "-U0", "--no-color", "--no-ext-diff", base):
+            hunk = re.match(r"^@@ -(\d+)(?:,\d+)? \+(\d+)", line)
+            if line.startswith("diff --git "):
+                header = True
+            elif header and line.startswith(("--- a/", "+++ b/")):
+                path = line[6:]
+            elif hunk:
+                old, new, header = int(hunk.group(1)), int(hunk.group(2)), False
+            elif not header and line.startswith("+"):
+                hits.append((knob_site(path, line[1:]), "%s/%s:%d" % (name, path, new), line))
+                new += 1
+            elif not header and line.startswith("-"):
+                hits.append((knob_site(path, line[1:]), "%s/%s:%d" % (name, path, old), line))
+                old += 1
+        for rel in git(tree, "ls-files", "--others", "--exclude-standard"):
+            try:
+                with open(os.path.join(tree, rel), errors="replace") as handle:
+                    hits += [(knob_site(rel, text.rstrip("\n")), "%s/%s:%d" % (name, rel, number), "+" + text.rstrip("\n"))
+                             for number, text in enumerate(handle, 1)]
+            except OSError:
+                pass
+    now = knob_lines()
+    for path, then in (record.get("knobs_at_launch") or {}).items():
+        lines = now.get(path, [])
+        whole = texts(path).get(path, "").split("\n")
+        hits += [(knob_site(path, l), "%s:%d" % (path, whole.index(l) + 1), "+" + l) for l in lines if l not in then]
+        hits += [(knob_site(path, l), path, "-" + l) for l in then if l not in lines]
+    for site, where, line in hits:
+        if site:
+            print("model/effort knob, %s: %s: %s · speed never trades intelligence, the change is Egor alone to make"
+                  % (site, where, fit(line, 120)))
+
+
 if __name__ == "__main__":
     command = sys.argv[1]
     if command == "snapshot":
@@ -429,6 +516,10 @@ if __name__ == "__main__":
         packet(sys.argv[2], sys.argv[3])
     elif command == "touches":
         sys.exit(touches(sys.argv[2], sys.argv[3], sys.argv[4]))
+    elif command == "knob-lines":
+        print(json.dumps(knob_lines()))
+    elif command == "knobs":
+        knobs(sys.argv[2])
 '
 
 py() { DF_ROOT=$repo_root DF_PROJECTS=$projects_dir DF_RUNS=$runs_dir DF_HOME=$HOME DF_DOCS=${DOCTOR_FIX_DOCS:-$repo_root/docs} python3 -c "$PY" "$@"; }
@@ -558,6 +649,7 @@ launch_night() { # doctor night
       *) failed=1; continue ;;
     esac
     pending_id=$id
+    [ "$doctor" != harness ] || locked record_set "$id" '.knobs_at_launch = $k' --argjson k "$(py knob-lines)"
     branch="night/$night/$id"
     wt="$top/.claude/worktrees/night-$night-$id"
     locked record_set "$id" '.branch = $b | .worktrees = [$w]' --arg b "$branch" --arg w "$wt"
@@ -817,6 +909,11 @@ close_run() { # id --decisions <file> note...
       [ "${growth%%$'\n'*}" -gt 0 ] || continue
       bad+=("markdown grew by ${growth%%$'\n'*} bytes since $base in $wt ($(sed 1d <<<"$growth" | paste -sd, - | sed 's/,/, /g')): markdown is net zero at night — cut stale lines (closed handoffs first, then history, restated code, duplicated rules; ~/.claude/docs/context-file-hygiene.md) until it does not grow")
     done < <(jq -r '.worktrees[]?' "$file")
+  fi
+  if [ "$doctor" = harness ] && jq -e '.night != null' "$file" >/dev/null; then
+    while IFS= read -r line; do
+      [ -z "$line" ] || bad+=("$line")
+    done < <(py knobs "$file")
   fi
   if [ ${#bad[@]} -gt 0 ]; then
     printf 'doctor-fix: run %s stays open; rows are id<TAB>fixed|ruled-out|weather|blind-spot|handoff<TAB>purpose<TAB>evidence, purpose a repo@hash or a file of the component stating why it exists:\n' "$id" >&2

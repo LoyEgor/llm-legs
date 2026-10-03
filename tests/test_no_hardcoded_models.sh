@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # Egor's rule: every model is resolved at run time from live catalogs, so no production file of
 # llm-legs, review-bench (share/rbench) or claude-setup (agents, commands, hooks) names a model id
 # (or a vendor CLI version) outside tests/hardcode-allowlist.txt. The allowlist's KNOWN_DEBT section

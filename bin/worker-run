@@ -478,7 +478,7 @@ end_child() { # pid signal
 }
 
 run_with_deadline() {
-  local child watchdog='' rc rc_reaped signalled=''
+  local child watchdog='' rc rc_reaped signalled='' began ended
   # Per ATTEMPT, so a reroute's fresh launch cannot inherit the previous one's verdict.
   [ -z "$RUN_DIRECTORY" ] || rm -f "$RUN_DIRECTORY/killed" 2>/dev/null || :
   # <&0 is load-bearing: without an explicit stdin redirect, a background
@@ -495,8 +495,10 @@ run_with_deadline() {
   # outlive the kill to see its command die by signal 9 and read the preamble's answer to it.
   # The launch instant stands beside the number: pids are reused within the day, and the guard skips
   # a root whose process did not start when its registration says it did.
-  [ -z "$RUN_DIRECTORY" ] || meta_update "$RUN_DIRECTORY" '.cli_pid = $pid | .cli_pid_started_at = $began' \
-    --argjson pid "$child" --argjson began "$(date +%s)" || :
+  printf -v began '%(%s)T' -1
+  [ -z "$RUN_DIRECTORY" ] || meta_update "$RUN_DIRECTORY" \
+    '.cli_pid = $pid | .cli_pid_started_at = $began | .cli_starts = ((.cli_starts // []) + [$began])' \
+    --argjson pid "$child" --argjson began "$began" || :
   # A signal aimed at this supervisor is aimed at its run: the child goes with it, or the run keeps
   # writing to a workdir whose supervisor is gone and its record never gets an exit code (live
   # 2026-09-04: claudeb-1788518882-986-6f32, TERMed at 41s, worker landed edits afterwards).
@@ -597,6 +599,10 @@ run_with_deadline() {
   trap - TERM INT
   kill "$watchdog" 2>/dev/null
   wait "$watchdog" 2>/dev/null
+  printf -v ended '%(%s)T' -1
+  [ -z "$RUN_DIRECTORY" ] || meta_update "$RUN_DIRECTORY" \
+    '.attempt_secs = ((.attempt_secs // []) + [$secs]) | .attempt_rcs = ((.attempt_rcs // []) + [$rc])' \
+    --argjson secs "$((ended - began))" --argjson rc "$rc" || :
   return "$rc"
 }
 
@@ -1894,6 +1900,41 @@ journal_worker_attempt() { # directory session
     "$directory/meta.json" >>"$journal" 2>/dev/null || :
 }
 
+WORKER_RUNS_KEEP_DAYS=35
+
+# Appends and the daily prune share one lock: a prune rewriting the file under an unlocked append
+# would drop that row.
+journal_worker_run() { # directory status exit-code
+  local directory="$1" journal now row marker reason
+  journal="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}/runs.jsonl"
+  printf -v now '%(%s)T' -1
+  reason=$2
+  case "$3" in 143|137) IFS=' ' read -r reason _ <"$directory/killed" 2>/dev/null || reason=$2 ;; esac
+  meta_update "$directory" '.ended_at = $now
+    | .terminal_reason = (if $reason == "failed" and $code == "4" and ((.cli_starts // []) | length) == 0
+        then "no-start" else $reason end)' \
+    --argjson now "$now" --arg reason "$reason" --arg code "$3" 2>/dev/null || return 0
+  row=$(jq -c --arg run "${directory##*/}" --arg status "$2" --arg code "$3" \
+    --arg launcher "$(head -n1 "$directory/launcher" 2>/dev/null)" \
+    '{run: $run, vendor, account, role, model, effort, light: (.light // null), workdir,
+      launcher: (($launcher | select(. != "")) // null), resume: ((.resume // "") != ""),
+      round: (.review_round // null), pid_started_at: (.pid_started_at // null), started_at,
+      cli_starts: (.cli_starts // []), attempt_secs: (.attempt_secs // []), attempt_rcs: (.attempt_rcs // []),
+      walled: (.walled_accounts // []), ended_at, exit_code: (($code | tonumber?) // null), status: $status,
+      reason: .terminal_reason}' "$directory/meta.json" 2>/dev/null) || return 0
+  mkdir -p "${journal%/*}" 2>/dev/null || return 0
+  LLM_STORE_LOCK_RETRIES=40 store_lock_acquire "$journal.lock" || return 0
+  marker="$journal.pruned"
+  if [ -s "$journal" ] && { [ ! -f "$marker" ] || [ -n "$(find "$marker" -mtime +1 2>/dev/null)" ]; }; then
+    touch "$marker" 2>/dev/null
+    jq -cR --argjson cut "$((now - WORKER_RUNS_KEEP_DAYS * 86400))" 'fromjson? | select((.ended_at // 0) >= $cut)' \
+      "$journal" >"$journal.tmp.$$" 2>/dev/null && mv -f "$journal.tmp.$$" "$journal" || rm -f "$journal.tmp.$$"
+  fi
+  printf '%s\n' "$row" >>"$journal" 2>/dev/null
+  store_lock_release "$journal.lock"
+  return 0
+}
+
 # The task row the chat paints for this run reads this file, so every transition rewrites it whole.
 write_run_state() { # directory phase [exit-code]
   local directory="$1" phase="$2" code="${3:-}" tag='' rest round agent session tmp
@@ -2962,7 +3003,7 @@ start_run() {
   # `WORKER_RUN_DIR`: that name is the store ROOT everywhere on this machine (claude-setup's
   # hooks, `share/chat_names.py`), and overwritten here every reader inside the worker would look
   # for run records under one run.
-  export WORKER_RUN_RECORD="$directory"
+  export WORKER_RUN_RECORD="$directory" WORKER_RUN_ID="$run_id"
   # What was already uncommitted here before this run touched anything. It is the floor the dirt
   # snapshot at the end is measured against: without it, every file Egor or a co-tenant chat had
   # open would be evidence produced by whichever run happened to finish beside them.
@@ -4996,6 +5037,7 @@ complete_run() {
   lang_line "$directory"
   run_status=$(terminal_status "$directory" "$vendor" "$code")
   write_run_state "$directory" "$run_status" "$code"
+  journal_worker_run "$directory" "$run_status" "$code"
   # Last, because everything above reads the workdir this may remove. `exit_code` is written by
   # the supervisor only after this returns, so the run's verdict has to arrive as an argument.
   light_gate "$directory" "$run_status" || :

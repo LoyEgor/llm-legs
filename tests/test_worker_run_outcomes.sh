@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 . "$(dirname "$0")/worker_run_harness.sh"
 # A Light edit launches under the SCOPE/VERIFY contract and inside a worktree off the workdir's
 # HEAD, so it needs a repository with a commit; tests/test_light_edit.sh owns that contract.

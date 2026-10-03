@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
+export WORKER_STATS_DIR="$WORK/worker-stats"
 HOLDER=""
 trap '[ -n "$HOLDER" ] && kill "$HOLDER" 2>/dev/null; rm -rf "$WORK"' EXIT
 WORK="$(cd -P "$WORK" && pwd)"

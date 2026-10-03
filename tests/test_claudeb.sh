@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -136,6 +137,15 @@ for settings in '{"model":"claude-fable-5-1[1m]"}' '{}' '{invalid'; do
   assert test "$(cat "$MODEL_ARGV")" = "$(printf '%s\n' -p noop)"
   assert test "$(cat "$MODEL_HOME/.claude/settings.json")" = "$settings"
 done
+model_starts="$MODEL_HOME/.cache/claudeb/starts.tsv"
+assert grep -qE $'^[0-9]+\\.[0-9]{6}\t[0-9]+\\.[0-9]{6}\t[0-9]+\tmodel-test\tchat$' "$model_starts"
+assert grep -qE $'^[0-9]+\\.[0-9]{6}\t[0-9]+\\.[0-9]{6}\t[0-9]+\tmodel-test\tworker$' "$model_starts"
+assert awk -F'\t' '$1 > $2 { exit 1 }' "$model_starts"
+starts_lines=$(wc -l <"$model_starts")
+assert env CLAUDEB_STARTS_LOG="$WORK/starts-override.tsv" HOME="$MODEL_HOME" CLAUDEB_DIR="$MODEL_HOME/store" \
+  PATH="$MODEL_BIN:$PATH" MODEL_ARGV="$MODEL_ARGV" bash "$SCRIPT" profile model-test -p noop
+assert test "$(wc -l <"$WORK/starts-override.tsv")" -eq 1
+assert test "$(wc -l <"$model_starts")" -eq "$starts_lines"
 rm "$MODEL_HOME/.claude/settings.json"
 assert model_run -p 'noop'
 assert test "$(cat "$MODEL_ARGV")" = "$(printf '%s\n' -p noop)"

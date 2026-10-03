@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # bin/code-doctor over the calibration corpus (tests/fixtures/code-doctor): the six labelled cases, a
 # healthy repository with zero problems, clustering, reachability, protected roots, the durable rollup,
 # the judge budget, the structural verdict digest, the fixer's safety gate and the ledger's recurrence.
@@ -60,7 +61,6 @@ init_repos
 now=$(date +%s)
 for secs in 300 310 290; do
   printf '{"end":%s,"secs":%s,"who":"chat","repo":"alpha","label":"test_isolation"}\n' "$now" "$secs"
-  printf '{"end":%s,"secs":200,"who":"chat","repo":"alpha","label":"test_slow"}\n' "$now"
 done >"$C/sl/test-history.jsonl"
 "$CD" index >"$WORK/index.out" || fail "index failed"
 assert grep -q '^alpha: [0-9]* files' "$WORK/index.out"
@@ -68,7 +68,7 @@ assert grep -q '^alpha: [0-9]* files' "$WORK/index.out"
 assert grep -q '^alpha: [0-9]* files · 0 parsed' "$WORK/index2.out"
 "$CD" refresh --quiet || fail "refresh failed on the corpus"
 LATEST="$CODE_DOCTOR_DIR/latest.json"
-assert jqe '.candidates.waiting == 4 and .candidates.protected == 1 and .problem_count == 1 and .groups.dead == 1' "$LATEST"
+assert jqe '.candidates.waiting == 3 and .candidates.protected == 0 and .problem_count == 1 and .groups.dead == 1' "$LATEST"
 assert jqe '[.problems[] | select(.needs_egor and (.fact | startswith("needs Egor: Cost: settings.json is in no repository")) and (.trade | contains("Recommendation: remove it"))
   and (.proofs | any(contains("never tracked"))) and (.steps[0] | contains("settings.json")))] | length == 1' "$LATEST"
 assert jqe '[.blind_spots[].id] | index("rollup:none") != null' "$LATEST"
@@ -88,12 +88,12 @@ assert test "$(judged)" = 1
 assert jqe 'select(.night == "n0" and .stop == "tokens" and .tokens == 90000)' "$CODE_DOCTOR_DIR/judge-runs.jsonl"
 "$CD" judge --night n1 >"$WORK/judge.out"
 assert grep -q 'stop done' "$WORK/judge.out"
-assert test "$(judged)" = 4
-assert test "$(tail -3 "$CODE_DOCTOR_FAKE_LOG" | cut -f1 | sort -u | wc -l | tr -d ' ')" = 1
-assert jqe -s '[.[] | select(.night == "n1" and .stage == "judge") | .tokens] | (add == 1000 and length == 3 and min >= 333)' \
+assert test "$(judged)" = 3
+assert test "$(tail -2 "$CODE_DOCTOR_FAKE_LOG" | cut -f1 | sort -u | wc -l | tr -d ' ')" = 1
+assert jqe -s '[.[] | select(.night == "n1" and .stage == "judge") | .tokens] | (add == 1000 and length == 2 and min >= 500)' \
   "$CODE_DOCTOR_DIR/accounting.jsonl"
 "$CD" judge --night n1 >/dev/null
-assert test "$(judged)" = 4
+assert test "$(judged)" = 3
 
 # The six labelled cases.
 python3 - "$FIX/labels.json" "$CODE_DOCTOR_DIR" >"$WORK/calibration" <<'PY'
@@ -124,7 +124,7 @@ PY
 calibration=$?
 cat "$WORK/calibration"
 assert test "$calibration" = 0
-assert jqe '.problem_count == 5 and .groups == {dead: 3, heavy: 1, duplicate: 1}
+assert jqe '.problem_count == 4 and .groups == {dead: 3, heavy: 0, duplicate: 1}
   and ([.groups[]] | add) == .problem_count and .status == "problems"' "$LATEST"
 assert jqe '.cost.tokens == 91000 and .cost_per_cause["cause:alpha/bin/old-sync"].judge.tokens > 0' "$LATEST"
 
@@ -148,7 +148,7 @@ assert jqe '[.blind_spots[] | select(.id == "rollup:short" and (.what | contains
 
 # The fixer's snapshot: top-K by value, revalidated, active work out.
 "$CD" snapshot "$LATEST" --night n1 >"$WORK/snap.json"
-assert jqe 'map(.id) == ["cause:alpha/tests/test_slow.sh", "cause:alpha/bin/old-sync", "cause:alpha/lib/drive_a.py#load_drivers"]' \
+assert jqe 'map(.id) == ["cause:alpha/bin/old-sync", "cause:alpha/lib/drive_a.py#load_drivers", "cause:alpha/lib/refresh.sh#robot_curl_refresh"]' \
   "$WORK/snap.json"
 printf '# local edit\n' >>"$A/bin/old-sync"
 "$CD" snapshot "$LATEST" >"$WORK/snap.json"
@@ -202,12 +202,12 @@ printf '{"day": "%s", "complete": true, "sources": {"hooks": {"hits": {"hook:old
 "$CD" candidates >/dev/null
 assert jqe 'select(.id == "cause:alpha/bin/old-sync") | .runtime_hits["hook:old-sync"] == 5' "$CODE_DOCTOR_DIR/candidates.jsonl"
 "$CD" judge >/dev/null
-assert test "$(judged)" = 4
+assert test "$(judged)" = 3
 rm "$CODE_DOCTOR_DIR/rollup/extra.json"
 printf 'from drive_a import load_drivers\n\nprint(load_drivers("/dev/null"))\n' >"$A/lib/extra.py"
 "$CD" refresh --quiet
 "$CD" judge >/dev/null
-assert grep -qF "$(printf '\tcause:alpha/lib/drive_a.py#load_drivers')" <(tail -n +5 "$CODE_DOCTOR_FAKE_LOG")
+assert grep -qF "$(printf '\tcause:alpha/lib/drive_a.py#load_drivers')" <(tail -n +4 "$CODE_DOCTOR_FAKE_LOG")
 assert test "$(grep -c 'drive_a.py#load_drivers' "$CODE_DOCTOR_FAKE_LOG")" = 2
 rm "$A/lib/extra.py"
 "$CD" refresh --quiet
@@ -432,26 +432,6 @@ print("ok")
 PY
 assert grep -qx ok "$WORK/units.out"
 
-# Hot runtime counts only rollup days after the hook's last commit, and waits for enough of them.
-day0=$((now / 86400))
-for name in tuned busy fresh; do printf '#!/bin/bash\necho %s\n' "$name" >"$A/hooks/$name.sh"; done
-git -C "$A" add hooks/tuned.sh hooks/busy.sh
-GIT_AUTHOR_DATE="$((now - 6 * 86400)) +0000" GIT_COMMITTER_DATE="$((now - 6 * 86400)) +0000" commit "$A" "tuned and busy"
-git -C "$A" add hooks/fresh.sh
-GIT_AUTHOR_DATE="$((now - 2 * 86400)) +0000" GIT_COMMITTER_DATE="$((now - 2 * 86400)) +0000" commit "$A" "fresh"
-for ago in 9 8 5 4 3 1; do
-  case $ago in 9 | 8) tuned=900000 busy=0 ;; 1) tuned=0 busy=0 ;; *) tuned=1000 busy=900000 ;; esac
-  jq -n --arg d "$(date -u -r $(((day0 - ago) * 86400)) +%F)" --argjson t "$tuned" --argjson b "$busy" '{day: $d, complete: true,
-    sources: {hooks: {hits: {"hook:tuned.sh": 10, "hook:busy.sh": 10, "hook:fresh.sh": 10},
-    ms: {"hook:tuned.sh": $t, "hook:busy.sh": $b, "hook:fresh.sh": 900000}, sessions: null}}}' \
-    >"$CODE_DOCTOR_DIR/rollup/hot-$ago.json"
-done
-"$CD" refresh --quiet
-assert grep -qF 'busy.sh costs 540s a day' "$CODE_DOCTOR_DIR/candidates.jsonl"
-assert test "$(grep -c 'tuned.sh costs' "$CODE_DOCTOR_DIR/candidates.jsonl")" = 0
-assert test "$(grep -c 'fresh.sh costs' "$CODE_DOCTOR_DIR/candidates.jsonl")" = 0
-rm "$CODE_DOCTOR_DIR"/rollup/hot-*.json
-
 # A failed launch records worker-run's code and output; the recorded session history, not the base fallback, sizes the
 # next session; a batch answer missing or mangling a candidate's block leaves that candidate waiting, never invents
 # its verdict.
@@ -612,6 +592,8 @@ jq -n '{id: "code-s", doctor: "code", worktrees: [], launched_at: "2026-01-01T00
 assert grep -qF "report-only scope: $NODE is not a sweep repository" "$WORK/check.out"
 
 lay_out "$FIX/generic" "$WORK/generic"
+mkdir -p "$REPOS/gen/tests" && printf '#!/usr/bin/env bash\nsleep 200\n' >"$REPOS/gen/tests/test_big.sh"
+printf '{"end":%s,"secs":200,"who":"chat","repo":"gen","label":"test_big"}\n' "$now" "$now" "$now" >"$WORK/generic/sl/test-history.jsonl"
 init_repos
 export CODE_DOCTOR_REPOS="$WORK/healthy/repos/good"
 "$CD" refresh --quiet --repo "$REPOS/gen"
@@ -622,5 +604,16 @@ for live in src/gen_pkg/__init__.py src/gen_pkg/cli.py src/gen_pkg/plugin.py src
   web/app/page.tsx web/src/ui/card.tsx web/next.config.mjs web/widget.spec.ts src/pages/index.tsx routes/health.py api/ping.ts; do
   assert test "$(grep -c "^gen/$live\$" "$WORK/generic.units")" = 0
 done
+assert jqe -s '[.[] | select(.id == "cause:gen/tests/test_big.sh") | .rules | index("test") != null] == [true]' \
+  "$CODE_DOCTOR_DIR"/scopes/gen-*/candidates.jsonl
 
-echo "PASS: $asserts asserts; calibration $(grep -c '^PASS' "$WORK/calibration")/6 cases, a healthy repository with 0 problems, the incremental index, the needs-Egor registration with its research, a dangling registration researched (deleting or renaming commit, live references, an uncommitted deletion no problem) and settled only by the sweep-scope night judge, the judge's batched sessions with their token, wall and launch-failure stops, the durable rollup and its coverage blind spot, the top-K snapshot with active work out, the safety gate (suites, a deletion no problem names, an edit through a cross-repo symlink, active work), the structural digest (rollup no, caller yes), revalidation against the night base, the ledger's fixed-pending, regressed and faulty rows, the canonical mechanisms, review claims through review-anchors, tokenmap-measured instruction weight, a hook rooted through its ~/.claude link, a runner-less test of live code, PyObjC selectors, a symlink never pairing with its target, hot cost only from days after the last commit, per-path kinds for identical bytes, link-target edits, raw-byte and same-named-symbol digests, ledger-renamed causes, launch-less day runs, a --repo scope (its own state dir, the Node/TS calibration, generic entry points, no runtime journal claimed, report-only snapshot and check)"
+# Collector runs journal one row each, the subcommand in the trigger; the fixer's tools journal none.
+RUNS="$WORK/doctors-runs"
+unset DOCTOR_TRIGGER
+DOCTORS_DIR="$RUNS" DOCTOR_TRIGGER=night "$CD" --json </dev/null >/dev/null || true
+DOCTORS_DIR="$RUNS" "$CD" rollup </dev/null >/dev/null
+DOCTORS_DIR="$RUNS" "$CD" check "$WORK/no-record.json" </dev/null >/dev/null || true
+assert jqe -s 'length == 2 and all(.[]; (keys == ["cpu_s", "doctor", "start", "trigger", "wall_s"]) and .doctor == "code")
+  and .[0].trigger == "night" and .[1].trigger == "background:rollup"' "$RUNS/collector-runs.jsonl"
+
+echo "PASS: $asserts asserts; calibration $(grep -c '^PASS' "$WORK/calibration")/5 cases, a healthy repository with 0 problems, the incremental index, the needs-Egor registration with its research, a dangling registration researched (deleting or renaming commit, live references, an uncommitted deletion no problem) and settled only by the sweep-scope night judge, the judge's batched sessions with their token, wall and launch-failure stops, the durable rollup and its coverage blind spot, the top-K snapshot with active work out, the safety gate (suites, a deletion no problem names, an edit through a cross-repo symlink, active work), the structural digest (rollup no, caller yes), revalidation against the night base, the ledger's fixed-pending, regressed and faulty rows, the canonical mechanisms, review claims through review-anchors, tokenmap-measured instruction weight, a hook rooted through its ~/.claude link, a runner-less test of live code, PyObjC selectors, a symlink never pairing with its target, per-path kinds for identical bytes, link-target edits, raw-byte and same-named-symbol digests, ledger-renamed causes, launch-less day runs, a --repo scope (its own state dir, the Node/TS calibration, generic entry points, no runtime journal claimed, report-only snapshot and check), heavy tests judged only in a --repo scope (a sweep repository's are the Harness Speed block's), collector runs journalled"

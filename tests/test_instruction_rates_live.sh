@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # Every file the instruction gates guard must get a price from the LIVE export on this machine.
 #
 # test_instruction_gate.sh builds its own $HOME and its own read-rates.json, so it proves the code

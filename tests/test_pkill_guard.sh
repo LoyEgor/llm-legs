@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # bin/pkill (and bin/pgrep, a link to it) refuses an option placed after the first pattern and
 # otherwise execs the real tool with its arguments untouched. The real tool is always a fake
 # that prints its argv: this suite never lists or signals a real process.

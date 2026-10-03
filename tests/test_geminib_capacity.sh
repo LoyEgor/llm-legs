@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # The Gemini capacity fallback (shared-invariants row `cn`): a 503 `No capacity available for model`
 # walks the launch one Flash family down instead of leaving agy stalling in its own retry backoff.
 # Everything here runs against a fake agy under a temp HOME; no real profile, keychain or account

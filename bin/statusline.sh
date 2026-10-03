@@ -619,6 +619,21 @@ unpushed_marker() { # toplevel session now
   fi
 }
 
+self_cpu_ms() {
+  local text part sec IFS=$' \n'
+  cpu_ms=-
+  (( BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1] >= 503 )) || return 0
+  # $(times) would time a forked child; ${ cmd; } runs here but is a bash 5.3 parse, hence the eval.
+  eval 'text=${ times; }'
+  cpu_ms=0
+  for part in $text; do
+    sec=${part#*m}
+    sec=${sec%s}
+    sec=${sec/,/.}
+    cpu_ms=$(( cpu_ms + 10#${part%%m*} * 60000 + 10#${sec%.*} * 1000 + 10#${sec#*.} ))
+  done
+}
+
 # Propagate just-merged headers to all surfaces via the zero-network collector
 # (never --refresh); full contract: docs/statusline-contract.md "Store merge-kick".
 # Every failure is silent — the statusline must never break because a nudge failed.
@@ -648,9 +663,17 @@ store_merge_kick() {
   # Orphaned double-fork with own fds so the collector never holds the render's
   # stdout open or adds latency (same detach idiom as the ports probe).
   ( (
+    local start_us=${EPOCHREALTIME//[!0-9]/} end_us journal day
     PATH="/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin:/usr/sbin" \
       "$collector" >/dev/null 2>&1
+    end_us=${EPOCHREALTIME//[!0-9]/}
     rmdir "$stamp.lock" 2>/dev/null
+    self_cpu_ms
+    journal="${SPEED_DOCTOR_DIR:-$HOME/.cache/speed-doctor}/merge-kick"
+    printf -v day '%(%Y-%m-%d)T' -1
+    mkdir -p "$journal" 2>/dev/null &&
+      printf '%s\t%s\t%s\n' "$start_us" "$(( (end_us - start_us) / 1000 ))" "$cpu_ms" \
+        >> "$journal/$day.tsv" 2>/dev/null
   ) & ) >/dev/null 2>&1
 }
 
@@ -2683,9 +2706,11 @@ statusline_rc=$?
 statusline_timing_dir="${HARNESS_DOCTOR_DIR:-$HOME/.cache/harness-doctor}/statusline"
 printf -v statusline_day '%(%Y-%m-%d)T' -1
 statusline_end_us=${EPOCHREALTIME//[!0-9]/}
-printf '%s\t%s\t%s\n' "$statusline_start_us" "$statusline_end_us" "$session_id" \
+self_cpu_ms
+statusline_cpu_ms=$cpu_ms
+printf '%s\t%s\t%s\t%s\n' "$statusline_start_us" "$statusline_end_us" "$session_id" "$statusline_cpu_ms" \
   2>/dev/null >> "$statusline_timing_dir/$statusline_day.tsv" ||
   { mkdir -p "$statusline_timing_dir" 2>/dev/null &&
-    printf '%s\t%s\t%s\n' "$statusline_start_us" "$statusline_end_us" "$session_id" \
+    printf '%s\t%s\t%s\t%s\n' "$statusline_start_us" "$statusline_end_us" "$session_id" "$statusline_cpu_ms" \
       2>/dev/null >> "$statusline_timing_dir/$statusline_day.tsv"; }
 exit "$statusline_rc"

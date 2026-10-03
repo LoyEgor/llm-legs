@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # The test journal bin/harness-doctor's Tests section reads: the work probe writes one line per test
 # it saw end, chat or worker.
 set -u
@@ -182,6 +183,29 @@ PATH="$WORK/slow-git:$PATH" RUN_SUITES_TIMES="$WORK/times.tsv" bash "$ROOT/share
   --changed >/dev/null 2>&1 || fail "run-suites --changed under a slow git failed"
 assert_eq yes "$(jq -r --argjson at "$launched" 'if .start - $at <= 1 then "yes" else "\(.start - $at) s late" end' \
   "$STATUSLINE_CACHE_DIR/test-scope.jsonl")" "run-suites stamps its scope marker with its own start, not after a slow discovery"
+
+# A run with its own row in the run-suites journal gets none here: run-suites by its pid, a test
+# sourcing tests/lib/suite-journal.sh by its name, each within 3s of the start this probe saw.
+c5_journal="$HOME/.cache/run-suites/runs.jsonl"
+mkdir -p "${c5_journal%/*}"
+c5_now=$(date +%s)
+c5_row() { # kind pid started suite
+  printf '{"kind":"%s","pid":%s,"started_at":%s.250,"suites":{"%s":{"rc":0}}}\n' "$1" "$2" "$3" "$4" >>"$c5_journal"
+}
+c5_row suites 90 "$((c5_now - 112))" test_1.sh
+c5_row suites 91 "$((c5_now - 300))" test_1.sh
+c5_row direct 93 "$((c5_now - 41))" test_dup.sh
+c5_row direct 702 "$((c5_now - 109))" test_wdup.sh
+{ printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28
+  suite_run 90 r-c5 1 "$((c5_now - 110))" 0; suite_run 91 r-c5-reused 1 "$((c5_now - 110))" 0
+  shell_line 92 00:41; printf '93 92 00:40 bash tests/test_dup.sh\n'
+  shell_line 94 00:41; printf '95 94 00:40 bash tests/test_undup.sh\n'
+  printf '700 1 03:00 bash -c supervisor\n703 700 01:50 bash tests/test_wdup.sh\n'; } > "$WORK/snap"
+probe
+{ printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28; printf '700 1 03:00 bash -c supervisor\n'; } > "$WORK/snap"
+probe
+assert_eq 'r-c5-reused test_undup' "$(jq -r 'select((.repo | startswith("r-c5")) or (.label | test("^test_w?u?n?dup$")))
+  | if .label == "suites" then .repo else .label end' "$STATUSLINE_CACHE_DIR/test-history.jsonl" | paste -sd' ' -)"
 
 # A test script that runs part of itself is partial whichever selector it reads narrowed it.
 selectors=$(cd "$ROOT/tests" && grep -Eo 'WORKER_RUN_TEST_([A-Z_]*_)?(CASE|ONLY)' test_worker_run_*.sh | sort -u)

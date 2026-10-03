@@ -24,13 +24,13 @@ import zlib
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 SCOPE = []
+sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
+import collector_runs  # noqa: E402
 
 DETECTOR_VERSION = 2
 PARSER_VERSION = 4
 LIMITS = {
     "silent_days": 14,
-    "hot_ms_day": 60000,
-    "hot_min_days": 3,
     "heavy_test_s": 120,
     "token_day": 500000,
     "complex_lines": 300,
@@ -62,8 +62,8 @@ GROUPS = ("dead", "heavy", "duplicate")
 GROUP_RANK = {"dead": 0, "duplicate": 1, "heavy": 2}
 EVIDENCE_MAX = 3
 EXCERPT_MAX = 300
-DECLARED = ("bash", "python", "lua", "js", "jq")
 KEEP_WORDS = re.compile(r"isolation|data loss|recovery|must be kept", re.I)
+DECLARED = ("bash", "python", "lua", "js", "jq")
 
 EXT_LANG = {".sh": "bash", ".bash": "bash", ".py": "python", ".lua": "lua", ".js": "js", ".mjs": "js",
             ".cjs": "js", ".ts": "js", ".tsx": "js", ".jsx": "js", ".mts": "js", ".cts": "js", ".jq": "jq", ".md": "doc", ".json": "data", ".jsonl": "data",
@@ -1302,30 +1302,6 @@ def touch_pairs(graph):
     return pairs
 
 
-def last_commit_day(top, rel):
-    out = (git(top, "log", "-1", "--format=%ct", "--", rel, timeout=20) or "").strip()
-    return time.strftime("%Y-%m-%d", time.gmtime(int(out))) if out.isdigit() else None
-
-
-def hot_hooks(graph, days):
-    peak = {}
-    for doc in days.values():
-        if doc.get("complete"):
-            for key, value in ((((doc.get("sources") or {}).get("hooks") or {}).get("ms")) or {}).items():
-                peak[key] = max(peak.get(key, 0), value)
-    out = []
-    for key in sorted(k for k, v in peak.items() if v >= LIMITS["hot_ms_day"]):
-        target = next(iter(graph.resolve(key[5:], anywhere=True)), None)
-        if not target:
-            continue
-        target = graph.canonical(target)
-        since = last_commit_day(graph.top_of(target), target.split("/", 1)[1])
-        hits, ms, _, counted = rollup_totals({day: doc for day, doc in days.items() if not since or day > since})
-        if counted >= LIMITS["hot_min_days"] and ms.get(key, 0) / counted >= LIMITS["hot_ms_day"]:
-            out.append((key, target, ms[key] / counted, hits.get(key, 0) / counted))
-    return out
-
-
 def heavy_tests(graph):
     rows = read_jsonl(os.path.join(statusline_cache(), "test-history.jsonl"))
     cutoff = now_s() - 28 * 86400
@@ -1548,17 +1524,16 @@ def build_candidates():
                                 "value": graph.files[fid].get("lines") or 0})
 
     slow, timed = heavy_tests(graph)
+    foreign = set(foreign_repos())
     for fid, median, runs in slow:
+        if graph.top_of(fid) not in foreign:
+            continue
         requirement = test_requirement(graph, fid)
         signal = {"group": "heavy", "rule": "test", "units": [unit_span(fid, graph.files[fid])],
                   "detail": "%s takes %ds per run (median of %d runs in 28 d)" % (fid, median, runs), "value": round(median / 6.0)}
         if requirement:
             signal["protected"] = requirement
         signals.append(signal)
-    for key, target, ms_day, runs_day in hot_hooks(graph, days):
-        signals.append({"group": "heavy", "rule": "hot", "units": [unit_span(target, graph.files[target])],
-                        "detail": "%s costs %ds a day (%d runs a day)" % (key[5:], ms_day / 1000, runs_day),
-                        "value": round(ms_day / 1000 / 6.0)})
     for fid, (tokens, per_day, source) in instruction_costs(graph, sessions).items():
         how = ("measured %s by tokenmap over 30 d" % source.replace("_", "-")) if source else \
             "estimated as read by %s sessions a day" % (round(sessions) if sessions else "an unknown number of")
@@ -2841,5 +2816,12 @@ def main(argv=None):
     return 0 if doc["status"] != "error" else 1
 
 
+COLLECTOR_COMMANDS = (None, "index", "rollup", "candidates", "refresh", "judge")
+
 if __name__ == "__main__":
-    sys.exit(main())
+    started = time.time()
+    command = next((word for word in sys.argv[1:] if not word.startswith("-")), None)
+    code = main()
+    if command in COLLECTOR_COMMANDS:
+        collector_runs.record("code", started, command)
+    sys.exit(code)

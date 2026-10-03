@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -27,7 +28,8 @@ export DOCTORS_DIR="$WORK/doctors" LLM_DOCTOR_DIR="$WORK/llm" HARNESS_DOCTOR_DIR
   DOCTOR_FIX_VENDOR_CLI_UPDATE="$FAKE_BIN/vendor-cli-update" DOCTOR_FIX_DOCS="$WORK/docs" \
   LLM_DOCTOR_LEDGER="$WORK/ledgers/llm.json" HARNESS_LEDGER="$WORK/ledgers/harness.json" \
   UPDATER_DOCTOR_LEDGER="$WORK/ledgers/updater.json" HARNESS_SETTINGS="$WORK/settings.json" \
-  DOCTOR_FIX_WORKTREE_REPO="$WORK/projects/llm-legs" LLM_DOCTOR_REPOS="$WORK/projects" HARNESS_REPOS_DIR="$WORK/projects"
+  DOCTOR_FIX_WORKTREE_REPO="$WORK/projects/llm-legs" LLM_DOCTOR_REPOS="$WORK/projects" HARNESS_REPOS_DIR="$WORK/projects" \
+  WORKER_PICK_CONFIG_FILE="$HOME/.claude/worker-model"
 PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
 mkdir -p "$FAKE_BIN" "$DATA" "$HOME" "$WORK/llm" "$WORK/harness" "$WORK/updater" "$WORK/vcu/events" "$WORK/projects" \
   "$WORK/docs/handoffs" "$WORK/ledgers"
@@ -742,4 +744,99 @@ assert_fails fix launch code --night n7 2>"$WORK/err"
 assert grep -qF 'report-only scope' "$WORK/err"
 assert [ "$(ls "$RUNS"/code-*.json)" = "$before" ]
 
-echo "PASS: $asserts asserts; code runs (one area, top-K, needs-Egor out, close through code-doctor check); launch refusals (no or foreign or stale document, nothing to fix, open run under 12 h), an old run abandoned, the snapshot without watch/fixed-pending, the chat through the shared opener, the record fields, a failed opener, close refusals (doctor not rerun, undecided id, missing path, missing commit, a directory, no evidence, bad verdict, judge changed without its line), a clean close, show, runs, updater records and launch, parallel ids, night launch (areas, worktrees, branches, briefs, the packet, one open run per area), night vendor records, a night without a base ref, llm components with their block's entry file, fixed only once the doctor reads it fixed-pending or gone, night close (markdown net zero per worktree: committed, untracked and cut bytes, a worktree without its base; a day run unmeasured; the doctor rerun once in the worktree, a handed-in document refused, purpose touching its component, judge), abandon, a failed worktree, harness sections and top watch rows under parallel launch, updater machinery, a legacy release run, a merge citation, a malformed ledger row, a failed collector, an unwritten launched_at, a launcher killed under the lock, quiet open ledger rows (their own brief section, the day launch)"
+# Speed: a harness night takes the loud regressions and Speed's chosen opportunities as area speed. Over the calibration
+# transcripts, a quiet-band contention probe and a heavy llm-legs suite, that is design §6's Night 1: #2, #1, #5 stage 1.
+S="$WORK/speed-cal"
+mkdir -p "$L/tests" && : >"$L/tests/test_llm_limits.sh"
+python3 - "$ROOT" "$S" <<'EOF' || fail "the calibration fixture did not build"
+import json, os, sys, time
+root, work = sys.argv[1:3]
+sys.path.insert(0, os.path.join(root, "tests", "lib"))
+from speed_calibration import HI, fold, harness
+h = harness(root)
+fold(h, root, work)
+os.makedirs(os.path.join(work, "harness", "speed-days"))
+probe = lambda ms: [1, ms, ms, ms, 0, 0, []]
+for ago in (3, 2, 1):
+    with open(os.path.join(work, "harness", "speed-days", h.local_day(HI - ago * 86400) + ".json"), "w") as handle:
+        json.dump({"machine": {"band_s": {"<1": 8200, "2-4": 1800}, "probe_ms": {"<1": probe(10), "2-4": probe(40)}}}, handle)
+os.makedirs(os.path.join(work, "sl"))
+with open(os.path.join(work, "sl", "test-history.jsonl"), "w") as handle:
+    for secs in (300, 310, 290):
+        handle.write(json.dumps({"end": HI - 3600, "secs": secs, "who": "chat", "repo": "llm-legs",
+                                 "label": "test_llm_limits"}) + "\n")
+with open(os.path.join(work, "harness", "latest.json"), "w") as handle:
+    json.dump({"contract": 1, "doctor": "harness", "as_of_s": int(time.time()), "judge": "base-harness", "status": "ok",
+               "problem_count": 0, "problems": [], "blind_spots": [], "sections": [], "periods": {}, "extras": [],
+               "title": "Harness doctor: OK", "footer": ""}, handle)
+with open(os.path.join(work, "ledger.json"), "w") as handle:
+    json.dump({"owner": "H", "rows": [], "blind_spots": []}, handle)
+EOF
+speed_env=(HARNESS_DOCTOR_DIR="$S/harness" HARNESS_LEDGER="$S/ledger.json")
+env "${speed_env[@]}" CODE_LEDGER="$S/none.json" STATUSLINE_CACHE_DIR="$S/sl" SPEED_DOCTOR_NOW=1790967000 \
+  SPEED_DOCTOR_DIR="$S/speed" WORKER_STATS_DIR="$S/ws" CODE_DOCTOR_DIR="$S/code" "$ROOT/bin/speed-doctor" --quiet ||
+  fail "speed-doctor did not merge its section"
+night1='["opportunity:machine/contention", "opportunity:chat/hooks", "opportunity:tests/llm-legs/test_llm_limits"]'
+assert jqe --argjson n "$night1" '.speed.selection == $n' "$S/harness/latest.json"
+mkdir -p "$L/share/rbench" "$L/share/light-recipes" "$L/agents"
+printf '# the per-model call\nclaudeb opus high high,xhigh low,medium,max no\n' >"$L/share/worker-model.sh"
+printf '| claudeb / opus | high | high, xhigh |\nPlain prose.\n' >"$L/share/worker-policy.md"
+printf '    "T0": {"efforts": {"claude": "low", "codex": "low"}},\n' >"$L/share/rbench/catalog.py"
+printf -- '---\nname: w\nmodel: opus\n---\nbody\n' >"$L/agents/w.md"
+printf "CLAUDEB_CLAUDE_MODEL='fable'\n" >"$L/bin/claudeb"
+printf 'EFFORT: high\nDo the thing.\n' >"$L/share/light-recipes/r.md"
+git -C "$L" add share agents bin/claudeb && git -C "$L" -c user.name=t -c user.email=t@t commit -qm knobs
+jq '. + {model: "opus"}' "$WORK/settings.json" >"$WORK/settings.new" && mv "$WORK/settings.new" "$WORK/settings.json"
+git -C "$L" update-ref refs/night/n8/base HEAD
+env "${speed_env[@]}" bash "$FIX" launch harness --night n8 >"$WORK/out" 2>"$WORK/err" ||
+  fail "the speed night did not launch: $(cat "$WORK/err")"
+assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 1 ]
+sid=$(cut -f1 "$WORK/out")
+assert jqe --argjson n "$night1" --arg t "$L/tests/test_llm_limits.sh" '.area == "speed" and [.problems[].id] == $n
+  and [.problems[].component.files] == [[], [], [$t]]' "$(record "$sid")"
+
+# Its close refuses any added or removed line that sets a model, effort or thinking knob, committed, uncommitted,
+# untracked or in the live settings and worker-model files; a speed diff touching none of them closes.
+swt="$L/.claude/worktrees/night-n8-$sid"
+gw() { git -C "$swt" -c user.name=t -c user.email=t@t "$@"; }
+sed -i '' 's/opus high high/opus medium high/' "$swt/share/worker-model.sh"
+sed -i '' 's/model: opus/model: haiku/' "$swt/agents/w.md"
+gw commit -qam "tune"
+sed -i '' 's/| high |/| medium |/' "$swt/share/worker-policy.md"
+sed -i '' 's/"claude": "low"/"claude": "medium"/' "$swt/share/rbench/catalog.py"
+sed -i '' 's/fable/haiku/' "$swt/bin/claudeb"
+printf 'MODEL: haiku\n' >"$swt/share/light-recipes/new.md"
+sed -i '' 's/"opus"/"haiku"/' "$WORK/settings.json"
+mkdir -p "$HOME/.claude" && printf 'claudeb_model=sonnet\n' >"$HOME/.claude/worker-model"
+jq -n --argjson s $(($(now) + 5)) '{contract: 1, doctor: "harness", as_of_s: $s, judge: "base-harness", problems: []}' \
+  >"$DATA/harness-doc.json"
+printf '%s\truled-out\tnone\tthe lever is elsewhere\n' opportunity:machine/contention opportunity:chat/hooks >"$WORK/sd"
+printf 'opportunity:tests/llm-legs/test_llm_limits\truled-out\tllm-legs/tests/test_llm_limits.sh\tno sleeps\n' >>"$WORK/sd"
+assert_fails fix close "$sid" --decisions "$WORK/sd" "tuned" 2>"$WORK/err"
+knob() { grep -qF "model/effort knob, $1: $2" "$WORK/err"; }
+assert knob "share/worker-model.sh table" "llm-legs/share/worker-model.sh:2: +claudeb opus medium"
+assert knob "agent model frontmatter" "llm-legs/agents/w.md:3: -model: opus"
+assert knob "share/worker-policy.md effort" "llm-legs/share/worker-policy.md:1: +| claudeb / opus | medium |"
+assert knob "review-bench tier effort/rater" "llm-legs/share/rbench/catalog.py:1: -"
+assert knob "claudeb default model" "llm-legs/bin/claudeb:1: +CLAUDEB_CLAUDE_MODEL='haiku'"
+assert knob "brief-template EFFORT/MODEL" "llm-legs/share/light-recipes/new.md:1: +MODEL: haiku"
+assert knob "settings model/effort/thinking" "$WORK/settings.json:$(grep -n '"model"' "$WORK/settings.json" | cut -d: -f1): +"
+assert knob "worker-model" "$HOME/.claude/worker-model:1: +claudeb_model=sonnet"
+assert [ "$(grep -c '^model/effort knob, ' "$WORK/err")" = 14 ]
+gw reset -q --hard refs/night/n8/base && gw clean -qfd
+sed -i '' 's/"haiku"/"opus"/' "$WORK/settings.json" && rm "$HOME/.claude/worker-model"
+sed -i '' 's/the per-model call/the per-model table/' "$swt/share/worker-model.sh"
+sed -i '' 's/Plain prose/Plain words/' "$swt/share/worker-policy.md"
+gw commit -qam "words"
+printf 'cache=1\n' >"$swt/bin/statusline-cache.sh"
+fix close "$sid" --decisions "$WORK/sd" "a speed diff" >/dev/null 2>"$WORK/err" ||
+  fail "a speed diff touching no knob stays open: $(cat "$WORK/err")"
+rm "$DATA/harness-doc.json"
+jq --argjson s "$(now)" '.as_of_s = $s | .speed.selection += ["opportunity:chat/tests"]
+  | (.problems[] | select(.id == "opportunity:chat/tests") | .opportunity.quality) = "risk"' "$S/harness/latest.json" >"$S/risk.json" &&
+  mv "$S/risk.json" "$S/harness/latest.json"
+git -C "$L" update-ref refs/night/n9/base HEAD
+env "${speed_env[@]}" bash "$FIX" launch harness --night n9 >"$WORK/out" 2>"$WORK/err" || fail "speed night n9: $(cat "$WORK/err")"
+assert jqe --argjson n "$night1" '[.problems[].id] == $n' "$(record "$(cut -f1 "$WORK/out")")"
+
+echo "PASS: $asserts asserts; code runs (one area, top-K, needs-Egor out, close through code-doctor check); launch refusals (no or foreign or stale document, nothing to fix, open run under 12 h), an old run abandoned, the snapshot without watch/fixed-pending, the chat through the shared opener, the record fields, a failed opener, close refusals (doctor not rerun, undecided id, missing path, missing commit, a directory, no evidence, bad verdict, judge changed without its line), a clean close, show, runs, updater records and launch, parallel ids, night launch (areas, worktrees, branches, briefs, the packet, one open run per area), night vendor records, a night without a base ref, llm components with their block's entry file, fixed only once the doctor reads it fixed-pending or gone, night close (markdown net zero per worktree: committed, untracked and cut bytes, a worktree without its base; a day run unmeasured; the doctor rerun once in the worktree, a handed-in document refused, purpose touching its component, judge), abandon, a failed worktree, harness sections and top watch rows under parallel launch, updater machinery, a legacy release run, a merge citation, a malformed ledger row, a failed collector, an unwritten launched_at, a launcher killed under the lock, quiet open ledger rows (their own brief section, the day launch), a speed night (design Night 1 over the calibration fixture, a refusal per model/effort knob site, a knob-free diff closes)"

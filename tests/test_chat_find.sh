@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # Hermetic tests for bin/chat-find against a fixture corpus. The point of the tool
 # is that it answers with the LAST REAL MESSAGE and a verbatim quote, so those are
 # what the assertions pin — plus every way a match can be a lie: tool output that

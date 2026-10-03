@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # The ChatGPT web image route: share/chatgpt_web.py on gemini_web's hidden-Chrome core, and
 # `codex-image --route web` in front of it. Playwright is faked; fixture stores only, under a temp HOME.
 set -u

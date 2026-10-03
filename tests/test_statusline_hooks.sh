@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 set -u
 unset WORKER_PICK_CONFIG_FILE WORKER_RUN_CONFIG_FILE
 
@@ -2915,12 +2916,19 @@ kick_payload=$(statusline_payload status-kick \
 
 # A: absent stamp -> stamp written synchronously and the collector runs.
 kick_reset
-kick_out=$(STORE_MERGE_CMD="$FAKE_COLLECTOR" run_statusline "$kick_payload" kickacct) \
+kick_out=$(SPEED_DOCTOR_DIR="$WORK/speed-doctor" STORE_MERGE_CMD="$FAKE_COLLECTOR" run_statusline "$kick_payload" kickacct) \
   || fail "statusline kick render failed"
 assert grep -Fq 'Fixture' <<< "$kick_out"
 assert test -f "$KICK_STAMP"
 assert wait_for_mark
 assert_eq ran "$(cat "$KICK_MARK")"
+# Each kick journals `start_us<TAB>wall_ms<TAB>cpu_ms` under ${SPEED_DOCTOR_DIR:-~/.cache/speed-doctor}/merge-kick/.
+kick_journal="$WORK/speed-doctor/merge-kick/$(date +%Y-%m-%d).tsv"
+for _ in $(seq 1 60); do [ -s "$kick_journal" ] && break; sleep 0.05; done
+assert_eq 1 "$(wc -l < "$kick_journal" | tr -d ' ')"
+assert grep -Eq $'^[0-9]{16}\t[0-9]+\t[0-9]+$' "$kick_journal"
+IFS=$'\t' read -r _ _ kick_cpu < "$kick_journal"
+assert test "$kick_cpu" -gt 0
 
 # B: a fresh stamp debounces — no second kick, and the stamp is not rewritten.
 : > "$KICK_STAMP"
@@ -3287,7 +3295,7 @@ v1git rm -q --cached conflict >/dev/null; v1git add conflict
 assert test -z "$(git -C "$V1_REPO" status --porcelain=v2 | grep '^u ')"
 v1_case
 
-# Render timing for the Harness doctor: one `start_us<TAB>end_us<TAB>session` line per render under
+# Render timing for the Harness doctor: one `start_us<TAB>end_us<TAB>session<TAB>cpu_ms` line per render under
 # $HARNESS_DOCTOR_DIR (default ~/.cache/harness-doctor)/statusline/<local date>.tsv, never on stdout.
 TIMING_DIR="$WORK/harness-doctor"
 timing_file="$TIMING_DIR/statusline/$(date +%Y-%m-%d).tsv"
@@ -3298,8 +3306,16 @@ assert_eq "$timing_plain" "$timing_out"
 assert_eq "$timing_plain_rc" "$timing_rc"
 assert_eq "" "$(cat "$WORK/timing.err")"
 assert_eq 1 "$(wc -l < "$timing_file" | tr -d ' ')"
-IFS=$'\t' read -r timing_start timing_end timing_sid < "$timing_file"
+IFS=$'\t' read -r timing_start timing_end timing_sid timing_cpu < "$timing_file"
 assert_eq timing-sess "$timing_sid"
+assert grep -Eq '^[0-9]+$' <<< "$timing_cpu"
+assert test "$timing_cpu" -gt 0
+# A decimal-comma locale prints `times` as 0m0,019s.
+LC_ALL=ru_RU.UTF-8 HARNESS_DOCTOR_DIR="$WORK/timing-ru" run_statusline "$(statusline_payload timing-sess)" \
+  >/dev/null 2>"$WORK/timing-ru.err"
+assert_eq "" "$(cat "$WORK/timing-ru.err")"
+IFS=$'\t' read -r _ _ _ timing_ru_cpu < "$WORK/timing-ru/statusline/$(date +%Y-%m-%d).tsv"
+assert test "$timing_ru_cpu" -gt 0
 assert grep -Eq '^[0-9]{16}$' <<< "$timing_start"
 assert test "$timing_end" -ge "$timing_start"
 HARNESS_DOCTOR_DIR="$TIMING_DIR" run_statusline "$(statusline_payload timing-sess)" >/dev/null

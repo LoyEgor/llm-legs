@@ -4,6 +4,7 @@ machine for everyone. Collects into ~/.cache/harness-doctor/latest.json and lays
 which the LLM Limits menu renders as its Harness doctor block. Design: docs/harness-doctor-design.md."""
 
 import argparse
+import ast
 import bisect
 import calendar
 import ctypes
@@ -13,6 +14,8 @@ import glob
 import hashlib
 import json
 import os
+import pickle
+import plistlib
 import random
 import re
 import shutil
@@ -25,6 +28,7 @@ import traceback
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 
+import collector_runs
 from fix_commit import fix_commit, fix_landed
 from limiter_hold import hold_dir
 
@@ -124,6 +128,22 @@ SLOT_S = 600
 JOURNAL_FILE_DAYS = 3
 SPOOL_STALE_S = 900
 SUMMARY_V = 2
+RUNS_V = 2
+STOP_PART = "stop.d/"
+SPEED_DAYS = 28
+TICK_JOIN_S = 60
+MACHINE_TICK_S = 15
+TICKS_KEEP_S = 6 * 3600
+IDLE_GAP_S = 60
+ACTIVE_KEEP_S = 2 * 3600
+START_WAIT_S = 600
+MCP_BACKFILL_S = 2 * 86400
+MCP_SLACK_S = 120
+QUEUE_MIN_S = 0.5
+UNATTRIBUTED = "unattributed"
+MCP_RESULT = re.compile(r'"debug":\s*"(Successfully connected|Connection failed)[^"]*?(?:in|after) (\d+)ms')
+PS_ROW = re.compile(r"^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\w{3} \w{3}\s+\d+ [\d:]+ \d{4})\s+(.*)$")
+INTERPRETER = re.compile(r"/(?:env|bash|sh|zsh|dash|python[\d.]*|node|perl|ruby|osascript)$")
 BY_WEEKS = 8
 DELTA_MATERIAL = 0.10
 DELTA_TIMES_FROM = 11
@@ -165,6 +185,20 @@ FAST_PATH_PROBES = {"readonly-command.sh": 'rc_readonly_command ls && ! rc_reado
 SECRET_SETTING = re.compile(r"(?i)^env\.|token|secret|passw|credential|api.?key")
 SUITE_EXT = re.compile(r"\.(sh|bash|py|lua)$")
 QUIET_SOURCE = re.compile(r"(?m)(?:^|[\s;&|!(])(?:\.|source)\s+([^\s;&|].*?)\s+2>\s?/dev/null")
+OWNER_ENTRIES = ("cli", "claude-desktop")
+C1_R_S = (120, 300, 600)
+C1_MACHINE = ("сделай чистку — night run", "Doctor fixer run", "Vendor release event")
+C1_ASK = {"AskUserQuestion", "ExitPlanMode"}
+C1_LAYERS = ("dark", "ask", "stop", "test", "media", "tool", "compact", "gen")
+C1_BG_KEEP_S = 2 * 86400
+C1_BOOTS_KEPT = 64
+C1_QUEUE_KEPT = 20
+C1_NOTE_IDS = re.compile(r"<(tool-use-id|task-id)>([^<]+)</")
+C1_SUITE = re.compile(r"(?:^|[;&|(\n])\s*(?:\w+=\S*\s+)*(?:(?:bash|sh|python3?|env|nice|timeout\s+\S+)\s+)*"
+                      r"(?:\S*/)?(?:run-all|run-suites\.sh|test_[\w.-]+\.(?:sh|bash|py|lua))(?=\s|$|[;&|)])")
+MEDIA_TOOL = re.compile(r"(?:^|[\s/;&|(])(codex-image|gemini-image|grok-image|image-fanout|gemini-video|grok-video|"
+                        r"video-chain|gemini-music|gemini-sfx|gemini-listen|chatgpt-web|gemini-web)(?=\s|$|[;&|)])")
+C1_BYTES = (b'"user"', b'"assistant"', b'"system"', b'"queue-operation"', b'"queued_command"')
 
 
 def base_home():
@@ -425,6 +459,7 @@ def scan_transcripts(state, now, events, versions):
     first = not files
     horizon = now - BACKFILL_DAYS * 86400
     seen = set()
+    boots = c1_boots(state)
     for path in transcript_files():
         seen.add(path)
         try:
@@ -443,13 +478,15 @@ def scan_transcripts(state, now, events, versions):
             rec = {"off": 0}
         rec.update(size=st.st_size, mtime=st.st_mtime_ns, head=head)
         files[path] = rec
-        read_transcript(path, rec, events, versions)
+        read_transcript(path, rec, events, versions, boots)
     for path in list(files):
         if path not in seen:
             del files[path]
+        elif files[path].get("c1", {}).get("wait"):
+            c1_expire(files[path]["c1"], events, now)
 
 
-def read_transcript(path, rec, events, versions):
+def read_transcript(path, rec, events, versions, boots=()):
     try:
         with open(path, "rb") as handle:
             handle.seek(rec["off"])
@@ -464,12 +501,16 @@ def read_transcript(path, rec, events, versions):
     pend = rec.setdefault("pend", {})
     last_t = 0.0
     subagent = os.sep + "subagents" + os.sep in path
+    if subagent and "agent" not in rec:
+        meta = read_json(path[:-6] + ".meta.json", {})
+        rec["agent"], rec["ptid"] = str(meta.get("agentType") or ""), str(meta.get("toolUseId") or "")
     session = os.path.basename(os.path.dirname(os.path.dirname(path)) if subagent else path[:-6])[:8]
     for line in data[:end].split(b"\n"):
         at = pos
         pos += len(line) + 1
+        owner = not subagent and rec.get("entry", OWNER_ENTRIES[0]) in OWNER_ENTRIES
         if not line or not (b'"tool_use' in line or b'"tool_result"' in line or b'"hook_' in line
-                            or b'"permissionMode"' in line):
+                            or b'"permissionMode"' in line or owner and any(b in line for b in C1_BYTES)):
             continue
         try:
             entry = json.loads(line)
@@ -490,6 +531,9 @@ def read_transcript(path, rec, events, versions):
         version = entry.get("version")
         if isinstance(version, str) and version and (version not in versions or t < versions[version]):
             versions[version] = t
+        if not subagent and rec.get("entry") in OWNER_ENTRIES:
+            c1_entry(rec.setdefault("c1", c1_new()), events, entry, t, session, boots)
+            c1_add(rec.setdefault("act", []), t, t + IDLE_GAP_S)
         project = project_of(rec.get("top", ""))
         attachment = entry.get("attachment")
         if isinstance(attachment, dict):
@@ -506,13 +550,24 @@ def read_transcript(path, rec, events, versions):
                 name = str(block.get("name") or "")
                 command = (block.get("input") or {}).get("command") if name == "Bash" else None
                 pend[block["id"]] = [t, name, 1 if trivial_bash(command) else 0, None if subagent else at // 1024]
+                if rec.get("agent") == "image-gen":
+                    media = MEDIA_TOOL.search(str(command or ""))
+                    pend[block["id"]].append(media.group(1) if media else "prep:" + name)
             elif block.get("type") == "tool_result" and block.get("tool_use_id") in pend:
-                start, name, trivial, kb = (pend.pop(block["tool_use_id"]) + [None])[:4]
+                start, name, trivial, kb, phase = (pend.pop(block["tool_use_id"]) + [None, None])[:5]
                 who = session_kind(rec)
+                if "act" in rec:
+                    c1_add(rec["act"], start, t)
+                if rec.get("agent") == "image-gen":
+                    events.append(["g", round(start, 3), session, round(t, 3), rec.get("ptid", "")[-10:], phase])
                 events.append(["c", round(start, 3), project, name, trivial, round(max(0.0, t - start), 3),
                                who, block["tool_use_id"][-10:], session, kb])
     for key in [k for k, v in pend.items() if v[0] < last_t - PENDING_TTL_S]:
         del pend[key]
+    if "c1" in rec:
+        c1_prune(rec["c1"], last_t)
+    if "act" in rec:
+        rec["act"] = [seg for seg in rec["act"] if seg[1] >= last_t - ACTIVE_KEEP_S]
 
 
 def session_kind(rec):
@@ -542,6 +597,322 @@ def hook_event(attachment, t, project, events):
         events.append(["x", round(t, 3), project, event, command, ms, timeout, tool, tid])
     elif ms > 0:
         events.append(["h", round(t, 3), project, event, command, ms, tool, tid])
+
+
+# ---------------------------------------------------------------- owner turns and delegations (C1)
+
+
+def c1_boots(state):
+    """The dark slices of a turn as sorted `[start, end]`: a boot is `[b, b]` and darkens the whole line gap
+    around it, a sleep its own span. HARNESS_DOCTOR_BOOTS (comma list, may be empty) and HARNESS_DOCTOR_SLEEPS
+    (`start-end` comma list) replace kern.boottime and kern.sleeptime/kern.waketime, which hold only the last
+    sleep, so a run every few minutes keeps the history."""
+    fixed = os.environ.get("HARNESS_DOCTOR_BOOTS")
+    if fixed is not None:
+        sleeps = [[float(x) for x in pair.split("-")] for pair in os.environ.get("HARNESS_DOCTOR_SLEEPS", "").split(",")
+                  if pair.strip()]
+        return sorted([[float(b), float(b)] for b in fixed.split(",") if b.strip()] + sleeps)
+    boots, sleeps = state.setdefault("boots", []), state.setdefault("sleeps", [])
+    found = [re.search(r"sec = (\d+)", text) for text in sysctl("kern.boottime", "kern.sleeptime", "kern.waketime")]
+    boot, slept, woke = (float(f.group(1)) if f else 0.0 for f in found)
+    if boot and boot not in boots:
+        boots.append(boot)
+        del boots[:-C1_BOOTS_KEPT]
+    if 0 < slept < woke and [slept, woke] not in sleeps:
+        sleeps.append([slept, woke])
+        del sleeps[:-C1_BOOTS_KEPT]
+    return sorted([[b, b] for b in boots] + sleeps)
+
+
+def c1_new():
+    return {"own": None, "turn": None, "end": 0.0, "prev": 0.0, "typed": [], "q": [], "wait": [], "bg": {},
+            "task": {}, "dn": {}}
+
+
+def c1_text(content):
+    if isinstance(content, str):
+        return content
+    for block in content if isinstance(content, list) else ():
+        if isinstance(block, dict) and block.get("type") == "text":
+            return str(block.get("text") or "")
+    return ""
+
+
+def c1_meta(value):
+    if isinstance(value, dict):
+        return value
+    try:
+        found = ast.literal_eval(value) if isinstance(value, str) else None
+    except (ValueError, SyntaxError):
+        found = None
+    return found if isinstance(found, dict) else {}
+
+
+def c1_emit(c, out, row, reaction):
+    delay = None if reaction is None else max(0.0, reaction - row[3])
+    row[5] = [int(delay is not None and delay <= r) for r in C1_R_S]
+    if c["own"] is not False:
+        out.append(row)
+
+
+def c1_settle(c, out, at):
+    for row in c["wait"]:
+        c1_emit(c, out, row, at)
+    c["wait"] = []
+
+
+def c1_expire(c, out, now):
+    late = [row for row in c["wait"] if now - row[3] > C1_R_S[-1]]
+    for row in late:
+        c1_emit(c, out, row, None)
+    c["wait"] = [row for row in c["wait"] if row not in late]
+
+
+def c1_typed(c, out, t):
+    (c["turn"]["ty"] if c["turn"] else c["typed"]).append(round(t, 3))
+    c1_settle(c, out, t)
+
+
+def c1_open(c, out, t, origin, session):
+    if c["turn"]:
+        c1_close(c, out, c["prev"] or t, session)
+    c["turn"] = {"s": max(t, c["end"]), "o": origin, "ty": c["typed"], "iv": {k: [] for k in C1_LAYERS},
+                 "open": {}, "rq": {}, "dl": [], "calls": []}
+    c["typed"] = []
+
+
+def c1_add(segs, a, b):
+    if b <= a:
+        return
+    if segs and a <= segs[-1][1] and b >= segs[-1][0]:
+        segs[-1] = [min(segs[-1][0], a), max(segs[-1][1], b)]
+    else:
+        segs.append([a, b])
+
+
+def c1_merge(segs, start, end):
+    out = []
+    for a, b in sorted((max(a, start), min(b, end)) for a, b in segs):
+        if b <= a:
+            continue
+        if out and a <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return out
+
+
+def c1_inside(segs, x):
+    i = bisect.bisect_right(segs, [x, float("inf")]) - 1
+    return i >= 0 and segs[i][0] <= x < segs[i][1]
+
+
+def c1_close(c, out, end, session):
+    turn, c["turn"] = c["turn"], None
+    start = turn["s"]
+    end = max(end, start)
+    c["end"] = end
+    layers = [(k, c1_merge(turn["iv"][k], start, end)) for k in C1_LAYERS]
+    points = sorted({start, end} | {x for _, segs in layers for seg in segs for x in seg})
+    part = {}
+    for a, b in zip(points, points[1:]):
+        key = next((k for k, segs in layers if c1_inside(segs, (a + b) / 2)), "resid")
+        part[key] = part.get(key, 0.0) + b - a
+    use = {}
+    for key, n_out, think, cw, cr in turn["rq"].values():
+        sums = use.setdefault(key, [0, 0, 0, 0, 0])
+        for i, v in enumerate((1, n_out, think, cw, cr)):
+            sums[i] += v
+    holes = c1_merge(turn["iv"]["dark"] + turn["iv"]["ask"], start, end)
+    c["wait"].append(["t", round(start, 3), session, round(end, 3), turn["o"], None, 0, turn["ty"],
+                      [[round(a, 3), round(b, 3)] for a, b in holes],
+                      {k: round(v, 1) for k, v in part.items() if v >= 0.05}, use, turn.get("calls", [])])
+    for launch, what, notified, tid, opened in turn["dl"]:
+        c["wait"].append(["d", round(launch, 3), session, round(end, 3), what, None, 0, round(notified, 3),
+                          tid[-10:], opened])
+
+
+def c1_note(c, ids, t):
+    found = []
+    for ident in ids:
+        tid = ident if ident in c["bg"] or ident in c["dn"] else c["task"].get(ident)
+        if tid in c["bg"]:
+            launch, what = c["bg"].pop(tid)[:2]
+            c["dn"][tid] = [launch, what, t]
+        if tid in c["dn"] and tid not in found:
+            found.append(tid)
+    return found
+
+
+def c1_take(c, tids, opened):
+    if c["turn"]:
+        c["turn"]["dl"] += [c["dn"].pop(tid) + [tid, opened] for tid in tids if tid in c["dn"]]
+
+
+def c1_entry(c, out, entry, t, session, boots):
+    kind = entry.get("type")
+    c1_expire(c, out, t)
+    turn = c["turn"]
+    if turn and boots and c["prev"]:
+        i = max(bisect.bisect_right(boots, [c["prev"], float("inf")]) - 1, 0)
+        while i < len(boots) and boots[i][0] < t:
+            start, end = boots[i]
+            if start == end and start > c["prev"]:
+                c1_add(turn["iv"]["dark"], c["prev"], t)
+            elif end > c["prev"] and start < end:
+                c1_add(turn["iv"]["dark"], max(start, c["prev"]), min(end, t))
+            i += 1
+    if kind == "queue-operation":
+        text = str(entry.get("content") or "")
+        if entry.get("operation") == "enqueue":
+            if text.startswith("<task-notification"):
+                c1_note(c, [v for _, v in C1_NOTE_IDS.findall(text)], t)
+            elif not text.startswith("<cross-session-message"):
+                c["q"] = (c["q"] + [t])[-C1_QUEUE_KEPT:]
+                c1_typed(c, out, t)
+        return
+    if kind == "system" and entry.get("subtype") == "away_summary":
+        for row in c["wait"]:
+            row[6] = 1
+        return
+    message = entry.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if kind == "attachment":
+        attachment = entry.get("attachment") or {}
+        if attachment.get("type") != "queued_command":
+            return
+        c["prev"] = t
+        origin = c1_meta(attachment.get("origin")).get("kind")
+        if origin == "human":
+            if c["q"]:
+                c["q"].pop(0)
+                c1_settle(c, out, t)
+            else:
+                c1_typed(c, out, iso_epoch(attachment.get("timestamp")) or t)
+        elif origin == "task-notification":
+            c1_take(c, c1_note(c, [v for _, v in C1_NOTE_IDS.findall(str(attachment.get("prompt") or ""))], t), 0)
+        return
+    prev, c["prev"] = c["prev"], t
+    if kind == "assistant":
+        if not turn:
+            return
+        c1_add(turn["iv"]["gen"], prev or t, t)
+        usage = message.get("usage") or {}
+        if entry.get("requestId"):
+            turn["rq"][entry["requestId"]] = [
+                "%s/%s" % (message.get("model") or "?", entry.get("effort") or "?"),
+                int(usage.get("output_tokens") or 0),
+                int((usage.get("output_tokens_details") or {}).get("thinking_tokens") or 0),
+                int(usage.get("cache_creation_input_tokens") or 0), int(usage.get("cache_read_input_tokens") or 0)]
+        for block in content if isinstance(content, list) else ():
+            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("id"):
+                name, args = str(block.get("name") or ""), block.get("input") or {}
+                command = str(args.get("command") or "") if name == "Bash" else ""
+                layer = "ask" if name in C1_ASK else "test" if C1_SUITE.search(command) else "media" if (
+                    MEDIA_TOOL.search(command) or args.get("subagent_type") == "image-gen") else "tool"
+                what = name + (":" + str(args["subagent_type"]) if args.get("subagent_type") else "")
+                turn["open"][block["id"]] = [t, layer, what]
+        return
+    if kind == "system":
+        sub = entry.get("subtype")
+        if sub == "turn_duration" and turn:
+            c1_close(c, out, t, session)
+        elif sub == "stop_hook_summary" and turn:
+            ms = max([float(h.get("durationMs") or 0) for h in entry.get("hookInfos") or () if isinstance(h, dict)]
+                     or [0.0])
+            c1_add(turn["iv"]["stop"], t - ms / 1000.0, t)
+        elif sub == "compact_boundary" and turn:
+            ms = float(c1_meta(entry.get("compactMetadata")).get("durationMs") or 0)
+            c1_add(turn["iv"]["compact"], t - ms / 1000.0, t)
+        return
+    if kind != "user":
+        return
+    results = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_result"] \
+        if isinstance(content, list) else []
+    if results:
+        for block in results:
+            tid = block.get("tool_use_id")
+            started = turn and turn["open"].pop(tid, None)
+            if not started:
+                continue
+            c1_add(turn["iv"][started[1]], started[0], t)
+            if started[1] != "ask":
+                turn.setdefault("calls", []).append([tid[-10:], started[1]])
+            if started[1] == "ask":
+                c1_typed(c, out, t)
+            result = entry.get("toolUseResult")
+            if isinstance(result, dict) and (result.get("backgroundTaskId") or result.get("isAsync")):
+                c["bg"][tid] = [started[0], started[2]]
+                task = result.get("backgroundTaskId") or result.get("agentId")
+                if task:
+                    c["task"][str(task)] = tid
+        return
+    text = c1_text(content)
+    origin = (entry.get("origin") or {}).get("kind") if isinstance(entry.get("origin"), dict) else None
+    source = entry.get("promptSource")
+    if text.startswith("[Request interrupted"):
+        if turn:
+            c1_typed(c, out, t)
+            c1_close(c, out, t, session)
+            c1_settle(c, out, t)
+    elif origin == "human" or source in ("typed", "queued"):
+        if c["own"] is None:
+            c["own"] = not text.lstrip().startswith(C1_MACHINE)
+        if source == "queued" and c["q"]:
+            c["q"].pop(0)
+            c1_settle(c, out, t)
+        else:
+            c1_typed(c, out, t)
+        c1_open(c, out, t, "h", session)
+    elif origin in ("task-notification", "peer"):
+        tids = c1_note(c, [v for _, v in C1_NOTE_IDS.findall(text)], t)
+        c1_open(c, out, t, "n" if origin == "task-notification" else "p", session)
+        c1_take(c, tids, 1)
+
+
+def owner_spans(rows, r_index):
+    """`(spans, extra)` as `(start, end, row)` at C1_R_S[r_index], docs/speed-doctor-design.md §1: spans the
+    attended turns, each clipped after his last prompt in another chat and holed; extra the attended
+    delegations, each from max(launch, his last prompt anywhere) to its notification, counted only when the
+    notification opened its follow-up turn."""
+    typed = sorted((x, row[2]) for row in rows if row[0] == "t" for x in row[7])
+    times = [x for x, _ in typed]
+    spans, extra = [], []
+    for row in rows:
+        if row[0] not in ("t", "d") or not row[5][r_index] or row[6]:
+            continue
+        if row[0] == "d":
+            if not row[9]:
+                continue
+            i = bisect.bisect_left(times, row[7]) - 1
+            extra.append((max(row[1], times[i]) if i >= 0 else row[1], row[7], row))
+            continue
+        cursor, i = row[1], bisect.bisect_left(times, row[3]) - 1
+        while i >= 0 and times[i] > row[1]:
+            if typed[i][1] != row[2]:
+                cursor = times[i]
+                break
+            i -= 1
+        for a, b in row[8] + [[row[3], row[3]]]:
+            if b > cursor:
+                if min(a, row[3]) > cursor:
+                    spans.append((cursor, min(a, row[3]), row))
+                cursor = b
+    return spans, extra
+
+
+def owner_minutes(rows, r_index, lo, hi):
+    """(A, B) in minutes inside (lo, hi): A the union of owner_spans' turns, B what its delegations add."""
+    spans, extra = owner_spans(rows, r_index)
+    inside = lambda items: [(max(a, lo), min(b, hi)) for a, b, _ in items if min(b, hi) > max(a, lo)]
+    a_s = union_secs(inside(spans))
+    return a_s / 60.0, (union_secs(inside(spans + extra)) - a_s) / 60.0
+
+
+def c1_prune(c, now):
+    c["bg"] = {k: v for k, v in c["bg"].items() if now - v[0] <= C1_BG_KEEP_S}
+    c["dn"] = {k: v for k, v in c["dn"].items() if now - v[2] <= C1_BG_KEEP_S}
+    c["task"] = {k: v for k, v in c["task"].items() if v in c["bg"] or v in c["dn"]}
 
 
 # ---------------------------------------------------------------- event store
@@ -685,7 +1056,7 @@ def day_summaries(state, now, write, samples, windows, today_rows):
 def prune(now):
     old = []
     for sub, keep in (("events", EVENT_DAYS), ("days", DAY_SUMMARY_DAYS), ("statusline", JOURNAL_FILE_DAYS),
-                      ("menu", JOURNAL_FILE_DAYS)):
+                      ("menu", JOURNAL_FILE_DAYS), ("speed-days", SPEED_DAYS)):
         cutoff = local_day(now - keep * 86400)
         old += [p for p in glob.glob(os.path.join(state_dir(), sub, "*")) if os.path.basename(p)[:10] < cutoff]
     old += [p for p in glob.glob(os.path.join(state_dir(), "hooks", "*.tsv"))
@@ -931,7 +1302,7 @@ def running_tests(now):
     return count
 
 
-def take_sample(state, now):
+def take_sample(state, now, phase=lambda name: None, burst=None):
     fake = os.environ.get("HARNESS_DOCTOR_FAKE_SAMPLE")
     if fake is not None:
         sample = json.loads(fake) if fake else None
@@ -941,8 +1312,15 @@ def take_sample(state, now):
     ncpu = os.cpu_count() or 1
     ticks = host_ticks()
     start_pid, started = spawn_pid(), time.monotonic()
-    time.sleep(2)
-    forks = ((spawn_pid() - start_pid) % 99999) / (time.monotonic() - started)
+    phase("sample")
+    if burst is None:
+        time.sleep(2)
+    else:
+        for at in (0.0, 1.0, 2.0):
+            time.sleep(max(0.0, started + at - time.monotonic()))
+            burst.append((time.time(), ps_snapshot()))
+    phase("sleep")
+    forks = ((spawn_pid() - start_pid - len(burst or ())) % 99999) / (time.monotonic() - started)
     sample = {"t": now, "forks": round(forks), "ncpu": ncpu, "tests": running_tests(now)}
     previous = state.get("ticks")
     if ticks and previous and 0 < now - previous[0] <= SAMPLE_GAP_S:
@@ -1044,11 +1422,11 @@ def hist_percentile(entry, q):
     return entry[3] / 1000.0
 
 
-def fold_tsv(journal, sub, parse):
+def fold_tsv(journal, sub, parse, folder=None, pattern="*.tsv", sep="\t"):
     offsets = journal.setdefault("offsets", {})
-    folder = os.path.join(state_dir(), sub)
+    folder = folder or os.path.join(state_dir(), sub)
     names = set()
-    for path in sorted(glob.glob(os.path.join(folder, "*.tsv"))):
+    for path in sorted(glob.glob(os.path.join(folder, pattern))):
         name = sub + "/" + os.path.basename(path)
         names.add(name)
         start = offsets.get(name, 0)
@@ -1064,8 +1442,8 @@ def fold_tsv(journal, sub, parse):
         offsets[name] = start + end
         for text in data[:end].decode("utf-8", "replace").splitlines():
             try:
-                parse(text.split("\t"))
-            except (ValueError, IndexError):
+                parse(text.split(sep) if sep else text)
+            except (ValueError, IndexError, TypeError, AttributeError, KeyError):
                 pass
     for name in [n for n in offsets if n.startswith(sub + "/") and n not in names]:
         del offsets[name]
@@ -1088,7 +1466,7 @@ def fold_spool(add, now, write):
         if done:
             add(info.st_mtime, fields[0], (info.st_mtime - birth) * 1000.0, fields[1] != "0")
             runs.append((int(birth * 1e6), int(info.st_mtime * 1e6), fields[0], fields[1],
-                         fields[2] if len(fields) > 2 else ""))
+                         fields[2] if len(fields) > 2 else "", fields[3] if len(fields) > 3 else ""))
         else:
             add(birth, fields[0] or "?", None)
         done_paths.append(path)
@@ -1100,7 +1478,7 @@ def fold_spool(add, now, write):
             by_day.setdefault(run[1] // 86400000000, []).append(run)
         for day, items in by_day.items():
             with open(os.path.join(folder, "%d.tsv" % day), "a") as handle:
-                handle.write("".join("%d\t%d\t%s\t%s\t%s\n" % run for run in sorted(items)))
+                handle.write("".join("%d\t%d\t%s\t%s\t%s\t%s\n" % run for run in sorted(items)))
     if write:
         for path in done_paths:
             try:
@@ -1136,13 +1514,17 @@ def read_journals(state, now, write):
         hist_add(slots, t, key, ms, failed)
         hist_put(days.setdefault(local_day(t), {}).setdefault(key, hist_new()), ms, failed)
 
+    renders = []
+
     def hook_row(fields):
         start, end = int(fields[0]), int(fields[1])
         add(end / 1e6, fields[2], (end - start) / 1000.0, fields[3] != "0")
+        hook_cpu(state, end / 1e6, fields[2], fields[5] if len(fields) > 5 else "")
 
     def statusline_row(fields):
         start, end = int(fields[0]), int(fields[1])
         add(end / 1e6, STATUSLINE_KEY, (end - start) / 1000.0)
+        renders.append((end / 1e6, fields[2] if len(fields) > 2 else "", fields[3] if len(fields) > 3 else "-"))
 
     fold_tsv(journal, "hooks", hook_row)
     def menu_row(fields):
@@ -1152,28 +1534,482 @@ def read_journals(state, now, write):
     fold_tsv(journal, "statusline", statusline_row)
     fold_tsv(journal, "menu", menu_row)
     fresh = fold_spool(add, now, write)
+    for run in fresh:
+        hook_cpu(state, run[1] / 1e6, run[2], run[5])
+    statusline_fold(state, renders, now)
     for slot in [k for k in slots if int(k) < now - JOURNAL_KEEP_S]:
         del slots[slot]
     return hist_merge(slots, now - 86400), hist_merge(slots, now - 3600), fresh
 
 
-def journal_runs(since, extra=()):
-    """Every journal line again, so never the state's offsets: `(end, key, ms, failed, start, ppid)`.
-    `extra` are spool runs a non-persisting run folded but did not write to hooks/folded."""
-    runs, first = [], [None]
+def run_row(fields):
+    start, end = int(fields[0]) / 1e6, int(fields[1]) / 1e6
+    cpu = fields[5] if len(fields) > 5 else ""
+    return (end, sys.intern(fields[2]), (end - start) * 1000.0, fields[3] != "0", start,
+            sys.intern(fields[4]) if len(fields) > 4 else "", int(cpu) / 1000.0 if cpu.isdigit() else None)
 
-    def hook_row(fields):
-        start, end = int(fields[0]) / 1e6, int(fields[1]) / 1e6
-        first[0] = start if first[0] is None else min(first[0], start)
-        if end > since:
-            runs.append((end, fields[2], (end - start) * 1000.0, fields[3] != "0", start,
-                         fields[4] if len(fields) > 4 else ""))
 
-    fold_tsv({}, "hooks", hook_row)
-    fold_tsv({}, "hooks/folded", hook_row)
+def cached_runs(path, cache, write):
+    """One journal file's rows: the cache's pickled chunks `(RUNS_V, ino, head, from, to, first, rows)` up to its
+    last offset, plus the bytes after it; a changed inode or head, or a shorter file, reads it again from 0."""
+    try:
+        info = os.stat(path)
+        with open(path, "rb") as handle:
+            head = handle.read(64)
+            off, first, rows, reset = 0, None, [], False
+            try:
+                with open(cache, "rb") as stored:
+                    while True:
+                        try:
+                            version, ino, was, start, stop, low, part = pickle.load(stored)
+                        except EOFError:
+                            break
+                        if version != RUNS_V or ino != info.st_ino or not head.startswith(was):
+                            raise ValueError(cache)
+                        if start == off:
+                            off = stop
+                            rows.extend(part)
+                            first = low if first is None or (low is not None and low < first) else first
+            except FileNotFoundError:
+                pass
+            except Exception:
+                off, first, rows, reset = 0, None, [], True
+            if info.st_size < off:
+                off, first, rows, reset = 0, None, [], True
+            handle.seek(off)
+            data = handle.read()
+    except OSError:
+        return [], None
+    end = data.rfind(b"\n") + 1
+    new = []
+    for text in data[:end].decode("utf-8", "replace").splitlines():
+        try:
+            new.append(run_row(text.split("\t")))
+        except (ValueError, IndexError):
+            pass
+    low = min((r[4] for r in new), default=None)
+    if write and (end or reset):
+        os.makedirs(os.path.dirname(cache), exist_ok=True)
+        with open(cache, "wb" if reset or not off else "ab") as stored:
+            pickle.dump((RUNS_V, info.st_ino, head, off, off + end, low, new), stored,
+                        protocol=pickle.HIGHEST_PROTOCOL)
+    first = low if first is None or (low is not None and low < first) else first
+    return rows + new, first
+
+
+def journal_runs(since, extra=(), write=False):
+    """`(end, key, ms, failed, start, ppid, cpu_ms)` of every journal line ending after `since`, and the earliest start;
+    hook-runs/ caches each file's parsed lines, so a pass parses only new bytes. `extra` are spool runs a
+    non-persisting run folded but did not write to hooks/folded."""
+    runs, first, names = [], None, set()
+    folder = os.path.join(state_dir(), "hook-runs")
+    for sub in ("hooks", "hooks/folded"):
+        for path in sorted(glob.glob(os.path.join(state_dir(), sub, "*.tsv"))):
+            name = sub.replace("/", "-") + "-" + os.path.basename(path)[:-4] + ".pickle"
+            names.add(name)
+            rows, low = cached_runs(path, os.path.join(folder, name), write)
+            runs += [r for r in rows if r[0] > since]
+            first = low if first is None or (low is not None and low < first) else first
     for run in extra:
-        hook_row([str(field) for field in run])
-    return runs, first[0]
+        row = run_row([str(field) for field in run])
+        first = row[4] if first is None else min(first, row[4])
+        if row[0] > since:
+            runs.append(row)
+    if write:
+        for path in glob.glob(os.path.join(folder, "*.pickle")):
+            if os.path.basename(path) not in names:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+    return runs, first
+
+
+# ---------------------------------------------------------------- speed journals (C2 CPU, C5 queues, C6, C7, C11)
+
+
+def speed_state(state):
+    return state.setdefault("speed", {})
+
+
+def speed_day(state, t):
+    """The day's accumulator, written to speed-days/<day>.json; a day dropped from the state reopens its file."""
+    day = local_day(t)
+    days = speed_state(state).setdefault("days", {})
+    if day not in days:
+        days[day] = read_json(os.path.join(state_dir(), "speed-days", day + ".json"), {})
+    return days[day]
+
+
+def speed_flush(state, now, write):
+    days = speed_state(state).get("days", {})
+    for day in sorted(days):
+        if write:
+            os.makedirs(os.path.join(state_dir(), "speed-days"), exist_ok=True)
+            write_json(os.path.join(state_dir(), "speed-days", day + ".json"), days[day])
+        if day < local_day(now - 86400):
+            del days[day]
+
+
+def load_band(ratio):
+    if ratio is None:
+        return "?"
+    return "<1" if ratio < 1 else "1-2" if ratio < 2 else "2-4" if ratio < 4 else ">4"
+
+
+def size_band(kb):
+    if kb is None:
+        return "?"
+    return "<1" if kb < SIZE_SMALL_KB else ">10" if kb >= SIZE_BIG_KB else "1-10"
+
+
+def band_at(ticks, t):
+    i = bisect.bisect_left(ticks, [t])
+    near = [ticks[j] for j in (i - 1, i) if 0 <= j < len(ticks) and abs(ticks[j][0] - t) <= TICK_JOIN_S]
+    return load_band(min(near, key=lambda k: abs(k[0] - t))[1]) if near else "?"
+
+
+def hook_cpu(state, t, key, cpu_us):
+    """Per-key CPU; stop.d/<name> parts are kept apart from the total, the dispatcher's own row already holds them."""
+    if not str(cpu_us).isdigit():
+        return
+    acc = speed_day(state, t)
+    items = [acc.setdefault("hook_cpu_us", {}).setdefault(key, [0, 0])]
+    if not key.startswith(STOP_PART):
+        items.append(acc.setdefault("hook_cpu_us_total", [0, 0]))
+    for item in items:
+        item[0] += 1
+        item[1] += int(cpu_us)
+
+
+def speed_floor(state, floor, ticks):
+    band = "%s|%s|%s" % (floor["cls"], band_at(ticks, floor["t"]), size_band(floor.get("kb")))
+    acc = speed_day(state, floor["t"])
+    hist_put(acc.setdefault("floors", {}).setdefault(band, hist_new()), floor["ms"])
+    for hook, (own, without) in batch_parts(floor.get("batches") or ()).items():
+        own_h, without_h, floor_h = acc.setdefault("floor_hooks", {}).setdefault(
+            band + "|" + hook, [hist_new(), hist_new(), hist_new()])
+        hist_put(own_h, own)
+        hist_put(without_h, without)
+        hist_put(floor_h, floor["ms"])
+
+
+def fold_machine(state, journal, now):
+    """memlogd's machine lines: load ratio ticks for banding, and per day the seconds in each load band, the
+    contention probe per band, swap and thermal."""
+    ticks = speed_state(state).setdefault("ticks", [])
+    boots = state.setdefault("boots", [])
+
+    def parse(words):
+        t, facts = float(words[0]), dict(w.split("=", 1) for w in words[1:] if "=" in w)
+        load, ncpu = float(facts.get("load1", -1)), float(facts.get("ncpu", -1))
+        ratio = round(load / ncpu, 3) if load >= 0 and ncpu > 0 else None
+        acc = speed_day(state, t).setdefault("machine", {"band_s": {}, "probe_ms": {}, "swap_mb_max": 0,
+                                                         "swapin_max": 0, "thermal_ticks": 0})
+        last = ticks[-1][0] if ticks else None
+        band = load_band(ratio)
+        acc["band_s"][band] = round(acc["band_s"].get(band, 0) + (min(t - last, TICK_JOIN_S) if last and t > last
+                                                                     else MACHINE_TICK_S), 1)
+        if ratio is not None:
+            ticks.append([t, ratio])
+        if int(facts.get("probe_ms", -1)) >= 0:
+            hist_put(acc["probe_ms"].setdefault(band, hist_new()), int(facts["probe_ms"]))
+        acc["swap_mb_max"] = max(acc["swap_mb_max"], float(facts.get("swap_mb", -1)))
+        acc["swapin_max"] = max(acc["swapin_max"], float(facts.get("swapin_pages_s", -1)))
+        acc["thermal_ticks"] += int(facts.get("thermal", -1)) > 0
+        boot = float(facts.get("boot", -1))
+        if boot > 0 and boot not in boots:
+            boots.append(boot)
+            del boots[:-C1_BOOTS_KEPT]
+
+    fold_tsv(journal, "machine", parse, os.path.join(memlogd_dir(), "machine"), "????-??-??.log", " ")
+    ticks.sort()
+    del ticks[:bisect.bisect_left(ticks, [now - TICKS_KEEP_S])]
+    return ticks
+
+
+def statusline_fold(state, renders, now):
+    """Renders per day: count, CPU (bash 5.3 rows only), session-hours, and the idle ones: no transcript line
+    within IDLE_GAP_S before the render, no tool call or background task open in the chat."""
+    files = state.get("files", {})
+    busy, opened = {}, {}
+    for path, rec in files.items():
+        if os.sep + "subagents" + os.sep in path or not (rec.get("act") or rec.get("pend") or rec.get("c1")):
+            continue
+        session = os.path.basename(path)[:8]
+        c = rec.get("c1") or {}
+        busy.setdefault(session, []).extend(rec.get("act") or [])
+        busy[session].extend([v[0], v[2]] for v in (c.get("dn") or {}).values())
+        starts = [v[0] for v in (rec.get("pend") or {}).values()] + [v[0] for v in (c.get("bg") or {}).values()]
+        if starts:
+            opened[session] = min(starts + [opened.get(session, now)])
+    busy = {k: c1_merge(v, 0, float("inf")) for k, v in busy.items()}
+    hours = {}
+    for t, session, cpu in renders:
+        acc = speed_day(state, t).setdefault("statusline", {"renders": 0, "idle": 0, "cpu_ms": 0, "cpu_n": 0,
+                                                             "idle_cpu_ms": 0, "session_hours": []})
+        session = session[:8]
+        idle = not (c1_inside(busy.get(session, []), t) or opened.get(session, float("inf")) <= t)
+        acc["renders"] += 1
+        acc["idle"] += idle
+        if cpu.isdigit():
+            acc["cpu_ms"] += int(cpu)
+            acc["cpu_n"] += 1
+            acc["idle_cpu_ms"] += int(cpu) if idle else 0
+        seen = hours.setdefault(id(acc), set(acc["session_hours"]))
+        hour = "%s:%d" % (session, t // 3600)
+        if hour not in seen:
+            seen.add(hour)
+            acc["session_hours"].append(hour)
+
+
+def fold_starts(state, journal, floors, now):
+    """claudeb's start stamps joined to the SessionStart batch of the process it exec'd: `s` rows
+    [s, entry, profile, kind, exec - entry s, SessionStart end - entry s or None, pid]."""
+    pending = speed_state(state).setdefault("starts", [])
+
+    def parse(fields):
+        pending.append([float(fields[0].replace(",", ".")), float(fields[1].replace(",", ".")), fields[2],
+                        fields[3], fields[4]])
+
+    path = os.environ.get("CLAUDEB_STARTS_LOG") or os.path.join(base_home(), ".cache", "claudeb", "starts.tsv")
+    fold_tsv(journal, "claudeb", parse, os.path.dirname(path), os.path.basename(path))
+    ready = {}
+    for floor in floors:
+        if floor["cls"] == "event:SessionStart" and floor.get("ppid"):
+            ready.setdefault(str(floor["ppid"]), []).append(floor["t"] + floor["ms"] / 1000.0)
+    rows, left = [], []
+    for entry, launched, pid, profile, kind in pending:
+        found = [x for x in ready.get(pid, ()) if launched <= x <= launched + START_WAIT_S]
+        if found or now - launched > START_WAIT_S:
+            rows.append(["s", round(entry, 3), profile, kind, round(launched - entry, 3),
+                         round(min(found) - entry, 3) if found else None, pid])
+        else:
+            left.append([entry, launched, pid, profile, kind])
+    pending[:] = left
+    return rows
+
+
+def fold_mcp(state, now):
+    """MCP connect results from Claude Code's mcp-logs: `m` rows [m, t, session, server, ms, ok]. Listed are the
+    log directories changed since the last pass and those holding a file already seen: an append leaves the
+    directory's mtime alone. A file is read from its last offset."""
+    root = os.environ.get("CLAUDE_CLI_CACHE_DIR") or os.path.join(base_home(), "Library", "Caches", "claude-cli-nodejs")
+    mcp = speed_state(state).setdefault("mcp", {"at": now - MCP_BACKFILL_S, "off": {}})
+    since, offsets, rows = mcp["at"] - MCP_SLACK_S, mcp["off"], []
+    seen = {os.path.dirname(p) for p in offsets}
+    try:
+        tops = list(os.scandir(root))
+    except OSError:
+        tops = []
+    for top in tops:
+        try:
+            subs = [e for e in os.scandir(top.path) if e.name.startswith("mcp-logs-")
+                    and (e.path in seen or e.stat().st_mtime >= since)]
+        except OSError:
+            continue
+        for sub in subs:
+            try:
+                logs = [(e.path, e.stat()) for e in os.scandir(sub.path)]
+            except OSError:
+                continue
+            for path, info in logs:
+                start = offsets.get(path, [0])[0]
+                if info.st_mtime < since and path not in offsets:
+                    continue
+                if info.st_size <= start:
+                    offsets.setdefault(path, [start, info.st_mtime])
+                    continue
+                try:
+                    with open(path, "rb") as handle:
+                        handle.seek(start)
+                        data = handle.read()
+                except OSError:
+                    continue
+                end = data.rfind(b"\n") + 1
+                offsets[path] = [start + end, info.st_mtime]
+                for text in data[:end].split(b"\n"):
+                    found = MCP_RESULT.search(text.decode("utf-8", "replace")) if b"ms" in text else None
+                    if not found:
+                        continue
+                    try:
+                        entry = json.loads(text)
+                    except ValueError:
+                        continue
+                    t = iso_epoch(entry.get("timestamp"))
+                    if t is not None:
+                        rows.append(["m", round(t, 3), str(entry.get("sessionId") or "")[:8], sub.name[9:],
+                                     int(found.group(2)), int(found.group(1) == "Successfully connected")])
+    mcp["at"] = now
+    for path in [p for p, v in offsets.items() if v[1] < now - MCP_BACKFILL_S]:
+        del offsets[path]
+    return rows
+
+
+def fold_suites(state, journal, now):
+    """C5 suite runs a chat waited on for a slot: per session `[queued_at, started_at]`, the queue layer of its
+    turns."""
+    queues = speed_state(state).setdefault("queues", {})
+
+    def parse(text):
+        run = json.loads(text)
+        session, queued, started = run.get("session"), run.get("queued_at"), run.get("started_at")
+        if session and queued and started and started - queued >= QUEUE_MIN_S:
+            queues.setdefault(session[:8], []).append([queued, started])
+
+    path = os.environ.get("RUN_SUITES_JOURNAL") or os.path.join(os.path.dirname(
+        os.environ.get("RUN_SUITES_TIMES") or os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(
+            base_home(), ".cache"), "run-suites", "times.tsv")), "runs.jsonl")
+    fold_tsv(journal, "suites", parse, os.path.dirname(path), os.path.basename(path), None)
+    for session in list(queues):
+        queues[session] = [q for q in queues[session] if q[1] >= now - C1_BG_KEEP_S]
+        if not queues[session]:
+            del queues[session]
+    return queues
+
+
+def turn_layers(rows, by_call, queues):
+    """Moves a new turn row's hook-batch and suite-queue seconds out of its tool layers, in the partition's
+    precedence (hook batch > queue > suite > media > other tool)."""
+    for row in rows:
+        if row[0] != "t" or len(row) < 12:
+            continue
+        part = row[9]
+        hook = {}
+        for tid, layer in row[11]:
+            hook[layer] = hook.get(layer, 0.0) + by_call.get(tid, 0.0) / 1000.0
+        queued = sum(max(0.0, min(b, row[3]) - max(a, row[1])) for a, b in queues.get(row[2], ()))
+        moves = [("hook", layer, secs) for layer, secs in sorted(hook.items())]
+        for layer in ("test", "media", "tool"):
+            take = min(part.get(layer, 0.0), queued)
+            moves.append(("queue", layer, take))
+            queued -= take
+        for name, layer, secs in moves:
+            take = min(part.get(layer, 0.0), secs)
+            if take >= 0.05:
+                part[layer] = round(part[layer] - take, 1)
+                part[name] = round(part.get(name, 0.0) + take, 1)
+        for layer in [k for k, v in part.items() if v < 0.05]:
+            del part[layer]
+
+
+def wrapper_targets(path):
+    """Absolute paths a ~/.local/libexec wrapper's exec lines run, literal or through a variable assigned one."""
+    try:
+        with open(path, errors="replace") as handle:
+            text = handle.read(20000)
+    except OSError:
+        return set()
+    assigned = dict(re.findall(r"(?m)^\s*(\w+)=[\"']?(/[^\s\"';]+)", text))
+    found = set()
+    for line in re.findall(r"(?m)^\s*exec\s+(.*)$", text):
+        for word in re.findall(r"\$\{?\w+\}?|/[^\s\"';]+", line):
+            target = assigned.get(word.strip("${}")) if word.startswith("$") else word
+            if target and not INTERPRETER.search(target):
+                found.add(target)
+    return found
+
+
+def launchd_labels():
+    """[(label, paths)] of the LaunchAgents: the program, plus a ~/.local/libexec wrapper's exec targets."""
+    home = base_home()
+    libexec = os.path.join(home, ".local", "libexec")
+    out = []
+    for path in sorted(glob.glob(os.path.join(home, "Library", "LaunchAgents", "*.plist"))):
+        try:
+            with open(path, "rb") as handle:
+                plist = plistlib.load(handle)
+        except Exception:
+            continue
+        args = plist.get("ProgramArguments") or [plist.get("Program")]
+        program = os.path.expanduser(str(args[0] or "")) if args else ""
+        if not program.startswith("/"):
+            continue
+        paths = {program} | (wrapper_targets(program) if os.path.dirname(program) == libexec else set())
+        out.append((str(plist.get("Label") or os.path.basename(path)[:-6]), sorted(paths)))
+    return out
+
+
+def cpu_secs(text):
+    days, _, rest = text.rpartition("-")
+    secs = 0.0
+    for part in rest.split(":"):
+        secs = secs * 60 + float(part.replace(",", "."))
+    return secs + (int(days) * 86400 if days else 0)
+
+
+def ps_snapshot():
+    """{pid: (ppid, cpu s, start, command)}."""
+    try:
+        text = subprocess.run(["/bin/ps", "-A", "-o", "pid=,ppid=,time=,lstart=,command="], capture_output=True,
+                              text=True, timeout=5, env=dict(os.environ, LC_ALL="C")).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    procs = {}
+    for line in text.splitlines():
+        found = PS_ROW.match(line)
+        if found:
+            try:
+                procs[found.group(1)] = (found.group(2), cpu_secs(found.group(3)), found.group(4), found.group(5))
+            except ValueError:
+                continue
+    return procs
+
+
+def label_resolver(labels):
+    memo = {}
+
+    def resolve(procs, pid):
+        chain, label = [], None
+        while label is None:
+            if pid in memo:
+                label = memo[pid]
+            elif pid not in procs or pid in ("0", "1") or len(chain) > 64:
+                label = UNATTRIBUTED
+            else:
+                chain.append(pid)
+                ppid, _, _, command = procs[pid]
+                label = next((name for name, paths in labels if any(p in command for p in paths)), None)
+                pid = ppid
+        for item in chain:
+            memo[item] = label
+        return label
+
+    return resolve
+
+
+def speed_census(state, snaps, now, labels):
+    """`snaps` [(t, ps snapshot)] taken across the sampler's sleep: processes born between two snapshots count
+    as forks of their ancestor chain's launchd label; long-lived ones add their CPU since the last run's
+    snapshot, keyed (pid, start), to their label. Unresolved is `unattributed`."""
+    if len(snaps) < 2:
+        return
+    resolve = label_resolver(labels)
+    acc = speed_day(state, now)
+    census = acc.setdefault("census", {})
+    for (_, before), (_, after) in zip(snaps, snaps[1:]):
+        for pid in after.keys() - before.keys():
+            origin = resolve(after, pid)
+            census[origin] = census.get(origin, 0) + 1
+    acc["census_s"] = round(acc.get("census_s", 0) + snaps[-1][0] - snaps[0][0], 3)
+    speed = speed_state(state)
+    previous, previous_t, current = speed.get("ps", {}), speed.get("ps_t"), {}
+    cpu = acc.setdefault("label_cpu_s", {})
+    for pid, (_, secs, start, _) in snaps[-1][1].items():
+        key = pid + "|" + start
+        current[key] = secs
+        if key in previous:
+            used = secs - previous[key]
+        else:
+            try:
+                used = secs if previous_t and time.mktime(time.strptime(start, "%a %b %d %H:%M:%S %Y")) >= previous_t \
+                    else 0.0
+            except ValueError:
+                used = 0.0
+        if used > 0:
+            label = resolve(snaps[-1][1], pid)
+            cpu[label] = round(cpu.get(label, 0.0) + used, 2)
+    speed["ps"], speed["ps_t"] = current, now
 
 
 # ---------------------------------------------------------------- hook batches
@@ -1198,7 +2034,7 @@ def hook_batches(runs, slots, now):
     of the batch's first run, no key twice, and share at least one (event, tool) they could all run for."""
     by_ppid = {}
     for run in runs:
-        if run[1] in slots and run[0] <= now:
+        if run[1] in slots and run[0] <= now and not run[1].startswith(STOP_PART):
             by_ppid.setdefault(run[5], []).append(run)
     batches = []
     for ppid, items in by_ppid.items():
@@ -1274,6 +2110,24 @@ def join_calls(batches, calls):
     return owner
 
 
+def batch_parts(batches):
+    """{hook: [its ms, the floor's ms without it]} over a floor's batches: a batch without the hook ends at its
+    other runs' last end, from their first start."""
+    keys = {key for batch in batches for key in batch["runs"]}
+    parts = {}
+    for key in keys:
+        own = cf = 0.0
+        for batch in batches:
+            others = [r for k, r in batch["runs"].items() if k != key]
+            if key in batch["runs"]:
+                own += batch["runs"][key][2]
+                cf += (max(r[0] for r in others) - min(r[4] for r in others)) * 1000.0 if others else 0.0
+            else:
+                cf += batch["ms"]
+        parts[key] = [round(own, 1), round(cf, 1)]
+    return parts
+
+
 def floor_class(call):
     if call[3] == "Bash":
         return "bash:trivial" if call[4] else "bash:other"
@@ -1328,7 +2182,8 @@ def hook_view(hooks, runs, calls, now, repos=None, since=None):
             kb = size_at(session, batch["t0"]) if session else None
             if event not in TOOL_EVENTS:
                 batch["event"] = event
-                floors.append({"t": batch["t0"], "cls": "event:" + event, "ms": batch["ms"], "by": batch["by"]})
+                floors.append({"t": batch["t0"], "cls": "event:" + event, "ms": batch["ms"], "by": batch["by"],
+                               "kb": kb, "batches": [batch], "ppid": batch["ppid"]})
         if since is not None and batch["t0"] <= since:
             continue
         if call is not None or batch.get("event") is None:
@@ -1352,8 +2207,10 @@ def hook_view(hooks, runs, calls, now, repos=None, since=None):
             continue
         floors.append({"t": call[1], "cls": floor_class(call), "ms": sum(b["ms"] for b in (pre, post) if b),
                        "pre": pre and pre["ms"], "post": post and post["ms"],
-                       "pre_by": pre and pre["by"], "post_by": post and post["by"], "id": call[7]})
-    return {"floors": floors, "split": split, "joined": joined, "tool_batches": tool_batches}
+                       "pre_by": pre and pre["by"], "post_by": post and post["by"], "id": call[7],
+                       "kb": call[9] if len(call) > 9 else None, "batches": [b for b in (pre, post) if b]})
+    by_call = {tid: sum(b["ms"] for b in (pre, post) if b) for tid, (_, pre, post) in per_call.items()}
+    return {"floors": floors, "split": split, "joined": joined, "tool_batches": tool_batches, "by_call": by_call}
 
 
 def session_repos(journal, calls, now):
@@ -1613,7 +2470,7 @@ def section(name, rows, columns, right, lead=(), nav=(), ok="", blind=""):
     first = (problems or watches or [None])[0]
     fact = (first.get("head") or first.get("say") if first else None) or (blind if state == "blind" else ok)
     return {"name": name, "state": state, "fact": fact, "lead": list(lead), "columns": columns, "right": right,
-            "rows": rows, "nav": list(nav)}
+            "rows": rows, "nav": list(nav), "ok": ok, "blind": blind}
 
 
 WAIT_COLUMNS = ["", "calls 1 h", "wait s 1 h", "wait s 7 d", "cuts 1 h"]
@@ -3471,20 +4328,98 @@ def load_changes(now):
 
 
 HOLDS_GROUP = "Limiter holds"
+SPEED_GROUP = "Speed"
+SPEED_SECTIONS = ("Waits", "Slow periods", "Hook waits", "Hooks", "Load", "Tests", "Collector")
+SPLITS = (("Hooks", "Hook health", ("hooks:fastpath", "hooks:unjournaled"), "every hook keeps its fast path and journal"),
+          ("Tests", "Test flakes", ("tests:load",), "no suite failed under load"),
+          ("Load", "Memory guard", ("load:memory",), "no memory guard alarm"))
+LOUD_STATES = ("new", "open", "regressed")
 
 
-def menu_text(document):
+def regroup(sections):
+    """The Speed sections keep the rules that judge time; the lines that judge health move to sections of their own."""
+    by_name = {part["name"]: part for part in sections}
+    out = list(sections)
+    for source, name, keys, ok in SPLITS:
+        part = by_name.get(source) or section(source, [], [""], [False])
+        rows = [r for r in part["rows"] if r.get("key") in keys]
+        lead = [i for i in part["lead"] if i.get("key") in keys]
+        if rows or lead:
+            part["rows"] = [r for r in part["rows"] if r not in rows]
+            part["lead"] = [i for i in part["lead"] if i not in lead]
+            part["extra_red"] = [i for i in part.get("extra_red", []) if i not in lead]
+            settled = section(source, part["rows"], part["columns"], part["right"], ok=part.get("ok", ""),
+                              blind=part.get("blind", ""))
+            if part["extra_red"] and settled["state"] != "problem":
+                settled.update(state="problem", fact=part["extra_red"][0].get("say") or part["extra_red"][0]["cells"][0])
+            part.update(state=settled["state"], fact=settled["fact"])
+        moved = section(name, rows, part["columns"], part["right"], lead=lead, ok=ok)
+        red = [i for i in lead if i.get("red")]
+        if red:
+            moved["extra_red"] = red
+            if moved["state"] != "problem":
+                moved.update(state="problem", fact=red[0].get("say") or red[0]["cells"][0])
+        elif moved["state"] == "ok" and [i for i in lead if not i.get("dim") and i.get("say")]:
+            moved.update(state="watch", fact=next(i["say"] for i in lead if not i.get("dim") and i.get("say")))
+        out.append(moved)
+    return out
+
+
+def in_speed(problem):
+    return problem.get("group") in SPEED_SECTIONS or problem.get("group") == SPEED_GROUP
+
+
+def settle_title(document):
+    count = sum(1 for p in document["problems"] if p["state"] in LOUD_STATES)
+    blind_areas = [s["name"] for s in document["sections"] if s["state"] == "blind"]
+    document.update(problem_count=count, status="problems" if count else "blind" if blind_areas else "ok",
+                    title="Harness doctor: " + ("%d problem%s" % (count, "" if count == 1 else "s") if count
+                                                else "blind · " + ", ".join(blind_areas) if blind_areas else "OK"))
+
+
+def apply_speed(document, speed):
+    """Lays bin/speed-doctor's section into a Harness document. Whatever an earlier section added or demoted is
+    undone first, so a carried-over or repeated section never stacks; a rule whose component Speed judges against
+    a baseline keeps its verdict only as `was_state`, so each rule is counted once."""
+    problems = []
+    for p in document["problems"]:
+        if p.get("speed"):
+            continue
+        if "judged_by" in p:
+            p = {k: v for k, v in dict(p, state=p["was_state"]).items() if k not in ("judged_by", "was_state")}
+        problems.append(p)
+    blind = [b for b in document.get("blind_spots") or () if not str(b.get("id", "")).startswith("speed:")]
+    document.pop("speed", None)
+    if speed:
+        covers = {(rule, ident): component for rule, ident, component in speed.get("covers") or ()}
+        for i, p in enumerate(problems):
+            component = covers.get((p.get("rule"), p.get("ident"))) or covers.get((p.get("rule"), "*"))
+            if component and p["state"] != "fixed-pending":
+                problems[i] = dict(p, state="watch", was_state=p["state"], judged_by="speed:" + component)
+        problems += [dict(p, speed=True, group=SPEED_GROUP) for p in speed.get("problems") or ()]
+        blind += [dict(b, id="speed:%s" % b.get("id")) for b in speed.get("blind_spots") or ()]
+        document["speed"] = speed
+    document["problems"], document["blind_spots"] = problems, blind
+    settle_title(document)
+    return document
+
+
+class MenuLines:
     """The menu as laid-out lines: `depth<TAB>flags<TAB>spans<TAB>text`, spans as `style:byte:bytes`.
     hs.json.decode of the document costs ~40 ms per menu open; these lines cost a match each."""
-    count = document["problem_count"] or (1 if document["status"] == "error" else 0)
-    lines = ["T\t%d\t%d\t%s" % (count, document["as_of_s"], document["title"])]
-    tag = [""]
 
-    def emit(depth, flags, spans, text):
-        lines.append("%d\t%s\t%s\t%s" % (depth, flags + tag[0], ",".join("%s:%d:%d" % s for s in spans),
-                                         text.replace("\t", " ").replace("\n", " ") or " "))
+    def __init__(self, count, as_of_s, title):
+        self.lines = ["T\t%d\t%d\t%s" % (count, as_of_s, title)]
+        self.tag = ""
 
-    def free(item, depth):
+    def text(self):
+        return "\n".join(self.lines) + "\n"
+
+    def emit(self, depth, flags, spans, text):
+        self.lines.append("%d\t%s\t%s\t%s" % (depth, flags + self.tag, ",".join("%s:%d:%d" % s for s in spans),
+                                              text.replace("\t", " ").replace("\n", " ") or " "))
+
+    def free(self, item, depth):
         text = item["cells"][0]
         spans = [("r", 0, len(text.encode()))] if item.get("red") else []
         if item.get("parts"):
@@ -3495,11 +4430,11 @@ def menu_text(document):
                     lead = len(piece[:len(piece) - len(piece.lstrip(" ·,"))].encode())
                     spans.append((style, at + lead, size - lead))
                 at += size
-        emit(depth, "d" if item.get("dim") else "", spans, text)
+        self.emit(depth, "d" if item.get("dim") else "", spans, text)
         if item.get("menu"):
-            layout(item["menu"], depth + 1)
+            self.layout(item["menu"], depth + 1)
 
-    def grid_rows(columns, right, rows, depth, header=True):
+    def grid_rows(self, columns, right, rows, depth, header=True):
         grid = ([[str(c) for c in columns]] if header else []) + [r["cells"] for r in rows]
         if not grid:
             return
@@ -3522,48 +4457,86 @@ def menu_text(document):
                     spans.append((style, len((text + piece[:lead]).encode()), len(piece.strip(" ").encode())))
                 text += piece
             if source is None:
-                emit(depth, "d", [], text)
+                self.emit(depth, "d", [], text)
             else:
-                emit(depth, "d" if source.get("dim") else "", spans, text)
+                self.emit(depth, "d" if source.get("dim") else "", spans, text)
                 if source.get("menu"):
-                    layout(source["menu"], depth + 1)
+                    self.layout(source["menu"], depth + 1)
 
-    def layout(part, depth):
+    def layout(self, part, depth):
         for item in part.get("lead", ()):
-            free(item, depth)
+            self.free(item, depth)
         if part["rows"]:
-            grid_rows(part["columns"], part["right"], part["rows"], depth)
+            self.grid_rows(part["columns"], part["right"], part["rows"], depth)
         if part.get("nav"):
-            emit(depth, "s", [], "-")
+            self.emit(depth, "s", [], "-")
         for item in part.get("nav", ()):
-            free(item, depth)
+            self.free(item, depth)
 
-    counted = {}
-    for problem in document["problems"]:
-        if problem["state"] in ("new", "open", "regressed"):
-            counted.setdefault(problem.get("group"), []).append(problem)
-    for part in document["sections"]:
-        count = len(counted.pop(part["name"], ()))
-        state = "%d problem%s" % (count, "" if count == 1 else "s") if count else (
-            "watch" if part["state"] == "problem" else part["state"])
-        parts = [(part["name"], "n" if state == "ok" else ""), (": ", ""), (state, "r" if count else "")]
-        parts += [(" · " + part["fact"], "")] if part["fact"] else []
-        free({"cells": ["".join(p for p, _ in parts)], "parts": parts, "dim": state == "ok", "menu": part}, 0)
-    for group, problems in sorted(counted.items(), key=lambda item: str(item[0])):
-        state = "%d problem%s" % (len(problems), "" if len(problems) == 1 else "s")
-        parts = [(str(group or "Other"), ""), (": ", ""), (state, "r")]
-        free({"cells": ["".join(p for p, _ in parts)], "parts": parts,
-              "menu": {"lead": [line(p["fact"] or p["id"], dim=False) for p in problems], "rows": []}}, 0)
-    emit(0, "s", [], "-")
-    for hours in sorted(document.get("periods", {}), key=int):
-        tag[0] = "w" + hours
-        free(document["periods"][hours], 0)
-    tag[0] = ""
+    def areas(self, sections, problems, depth=0, group_of=lambda p: p.get("group")):
+        """One `Area: state · fact` line per section, opening it; problems no section names get lines of their own."""
+        counted = {}
+        for problem in problems:
+            if problem["state"] in ("new", "open", "regressed"):
+                counted.setdefault(group_of(problem), []).append(problem)
+        for part in sections:
+            count = len(counted.pop(part["name"], ()))
+            state = "%d problem%s" % (count, "" if count == 1 else "s") if count else (
+                "watch" if part["state"] == "problem" else part["state"])
+            parts = [(part["name"], "n" if state == "ok" else ""), (": ", ""), (state, "r" if count else "")]
+            parts += [(" · " + part["fact"], "")] if part["fact"] else []
+            self.free({"cells": ["".join(p for p, _ in parts)], "parts": parts, "dim": state == "ok", "menu": part},
+                      depth)
+        return counted
+
+    def groups(self, counted, depth):
+        """Problems whose group no section names, one line per group."""
+        for group, problems in sorted(counted.items(), key=lambda item: str(item[0])):
+            state = "%d problem%s" % (len(problems), "" if len(problems) == 1 else "s")
+            parts = [(str(group or "Other"), ""), (": ", ""), (state, "r")]
+            self.free({"cells": ["".join(p for p, _ in parts)], "parts": parts,
+                       "menu": {"lead": [line(p["fact"] or p["id"], dim=False) for p in problems], "rows": []}}, depth)
+
+    def periods(self, periods, depth=0):
+        for hours in sorted(periods or {}, key=int):
+            self.tag = "w" + hours
+            self.free(periods[hours], depth)
+        self.tag = ""
+
+
+def speed_block(menu, document, parts):
+    """The top line: Speed's headline, then its own lines as bin/speed-doctor laid them out, then the sections
+    whose rules judge time."""
+    speed = document.get("speed") or {}
+    loud = [p for p in document["problems"] if p["state"] in LOUD_STATES and in_speed(p)]
+    state = "%d problem%s" % (len(loud), "" if len(loud) == 1 else "s") if loud else "ok"
+    head = [(SPEED_GROUP, ""), (": ", ""), (state, "r" if loud else ""),
+            (" · " + (speed.get("head") or "not measured yet"), "")]
+    menu.free({"cells": ["".join(p for p, _ in head)], "parts": head}, 0)
+    for depth, flags, red, text in speed.get("menu") or ():
+        menu.emit(1 + depth, flags, [("r", 0, len(text.encode()))] if red else [], text)
+    if speed.get("menu") and parts:
+        menu.emit(1, "s", [], "-")
+    counted = menu.areas(parts, [p for p in document["problems"] if in_speed(p) and p.get("group") != SPEED_GROUP], 1)
+    menu.groups(counted, 1)
+
+
+def menu_text(document):
+    count = document["problem_count"] or (1 if document["status"] == "error" else 0)
+    menu = MenuLines(count, document["as_of_s"], document["title"])
+    sections = document.get("sections") or ()
+    if document["status"] != "error":
+        speed_block(menu, document, [s for s in sections if s["name"] in SPEED_SECTIONS])
+    counted = menu.areas([s for s in sections if s["name"] not in SPEED_SECTIONS],
+                         [p for p in document["problems"] if not in_speed(p)])
+    menu.groups(counted, 0)
+    menu.emit(0, "s", [], "-")
+    menu.periods(document.get("periods"))
     for item in document.get("extras", ()):
-        free(item, 0)
-    emit(0, "s", [], "-")
-    emit(0, "d", [], document["footer"])
-    return "\n".join(lines) + "\n"
+        menu.free(item, 0)
+    menu.emit(0, "s", [], "-")
+    menu.emit(0, "d", [], document["footer"])
+    return menu.text()
 
 
 # ---------------------------------------------------------------- contract (docs/doctors-contract.md)
@@ -3793,7 +4766,7 @@ def problems_from(sections, ledger, state, now, extra=()):
             old["evidence"] = (old["evidence"] + v["evidence"])[:3]
             old["_bad"] = sum(bad) if bad else None
             continue
-        by_id[pid] = {"id": pid, "rule": v["rule"], "state": state_name, "fact": v["fact"], "value": v["value"],
+        by_id[pid] = {"id": pid, "rule": v["rule"], "ident": v["ident"], "state": state_name, "fact": v["fact"], "value": v["value"],
                       "limit": v["limit"], "unit": v["unit"], "window_h": v["window_h"], "exposure": v["exposure"],
                       "count": None, "runs_red": 0, "first_seen": None, "last_seen": None,
                       "evidence": v["evidence"][:3], "ledger": entry["id"] if entry else None, "near": v["near"],
@@ -3836,7 +4809,8 @@ def problems_from(sections, ledger, state, now, extra=()):
             continue
         last = max(after, key=lambda v: v["exposure"]) if after else (touched.get(entry["id"]) or [None])[0]
         problems.append({
-            "id": entry["id"], "rule": (entry.get("match") or {}).get("rule"), "state": "fixed-pending",
+            "id": entry["id"], "rule": (entry.get("match") or {}).get("rule"),
+            "ident": (entry.get("match") or {}).get("ident"), "state": "fixed-pending",
             "fact": "%s · %d events since · %d matched%s · %s" % (
                 "fixed" if proven else "unproven", proof["events"], proof["matched"],
                 "" if proven else ", needs %d events and none matched" % PROOF_MIN_EXPOSURE, entry.get("title")),
@@ -3971,8 +4945,23 @@ def publish(folder, document):
     os.replace(tmp, os.path.join(folder, "menu.txt"))
 
 
+def cpu_s():
+    times = os.times()
+    return times.user + times.system + times.children_user + times.children_system
+
+
+class Phases:
+    def __init__(self):
+        self.mark, self.secs = time.monotonic(), {}
+
+    def __call__(self, name):
+        now = time.monotonic()
+        self.secs[name] = round(self.secs.get(name, 0.0) + now - self.mark, 3)
+        self.mark = now
+
+
 def collect(write, now):
-    started = time.monotonic()
+    started, cpu_start, phase = time.monotonic(), cpu_s(), Phases()
     folder = state_dir()
     if write:
         os.makedirs(folder, exist_ok=True)
@@ -3987,15 +4976,26 @@ def collect(write, now):
     backfill = not state.get("files")
     if not state.get("files"):
         state["rebuilt"] = SUMMARY_V
+    phase("setup")
     scan_transcripts(state, now, new_events, versions)
+    phase("transcripts")
     hooks = settings_hooks()
     changes = watch_changes(state, now, versions, hooks)
-    sample = take_sample(state, now)
+    phase("changes")
+    burst = []
+    sample = take_sample(state, now, phase, burst)
     samples = load_samples(now) + ([sample] if sample else [])
+    phase("sample")
     timed24, timed1, fresh_spool = read_journals(state, now, write)
+    phase("journals")
+    journal = state.setdefault("journal", {})
+    ticks = fold_machine(state, journal, now)
+    speed_census(state, burst, now, launchd_labels() if burst else [])
+    queues = fold_suites(state, journal, now)
+    new_events += fold_mcp(state, now)
+    phase("speed")
 
     if write:
-        append_events(new_events)
         if changes:
             with open(os.path.join(folder, "changes.jsonl"), "a") as handle:
                 handle.write("".join(json.dumps(c, separators=(",", ":")) + "\n" for c in changes))
@@ -4007,26 +5007,36 @@ def collect(write, now):
         if write:
             with open(os.path.join(folder, "growth.jsonl"), "a") as handle:
                 handle.write(json.dumps(growth[-1], separators=(",", ":")) + "\n")
+    phase("growth")
     reach = RAW_REACH_S
-    journal = state.setdefault("journal", {})
     settled, upto = now - FLOOR_SETTLE_S, journal.get("floor_upto", now - reach)
     since = max(min(upto, now - reach), now - JOURNAL_FILE_DAYS * 86400)
     days = days_between(since, now)
-    events = load_events(days) if write else load_events(days) + new_events
+    events = load_events(days) + new_events
     today = local_day(now)
     today_rows = [e for e in events if local_day(e[1]) == today]
     logged = sorted(glob.glob(os.path.join(folder, "events", "*.jsonl")))
     raw = {"events": [e for e in events if now - e[1] <= reach], "samples": samples,
            "events_since": day_start(os.path.basename(logged[0])[:-6]) if logged
            else min((e[1] for e in new_events), default=None)}
-    raw["hooks"], raw["hooks_since"] = journal_runs(since, () if write else fresh_spool)
+    phase("events")
+    raw["hooks"], raw["hooks_since"] = journal_runs(since, () if write else fresh_spool, write)
+    phase("hook_runs")
     raw["hook_slots"] = state["journal"]["slots"]
     calls_since = [e for e in events if e[0] == "c" and e[1] > since]
     view = hook_view(hooks, raw["hooks"], calls_since, now, session_repos(journal, calls_since, now), now - 86400)
+    starts = fold_starts(state, journal, view["floors"], now)
+    new_events += starts
+    events += starts
+    turn_layers(new_events, view["by_call"], queues)
+    if write:
+        append_events(new_events)
+    phase("hook_view")
     for floor in view["floors"]:
         if upto < floor["t"] <= settled:
             day = journal.setdefault("floor_days", {}).setdefault(local_day(floor["t"]), {})
             hist_put(day.setdefault(floor["cls"], hist_new()), floor["ms"])
+            speed_floor(state, floor, ticks)
     journal["floor_upto"] = max(upto, settled)
     floors_reach = [f for f in view["floors"] if now - f["t"] <= reach]
     raw["floors"] = [(f["t"], f["cls"], f["ms"]) for f in floors_reach]
@@ -4042,6 +5052,7 @@ def collect(write, now):
     if write:
         prune(now)
     tests = load_tests(now)
+    phase("summaries")
     dismissed, blind = unjournaled_dismissals(hooks, judging)
     raw["windows"] = slow_periods
     periods, week = periods_section(summaries, raw, tests, now, hooks)
@@ -4057,8 +5068,10 @@ def collect(write, now):
     growth_part = growth_section(growth, now, spool_backlog(now))
     if growth_part:
         sections.append(growth_part)
+    sections = regroup(sections)
     impact = change_impact(calls, samples, now, floors_reach, tests)
     attach_causes(state, sections, changes_log, impact, now)
+    phase("sections")
     red = sum(1 for s in sections if s["state"] == "problem")
     recent = sorted([c for c in changes_log if c["at"] >= now - 7 * 86400], key=lambda c: -c["at"])
     if STATUSLINE_KEY not in timed24:
@@ -4110,10 +5123,13 @@ def collect(write, now):
     if shown_holds:
         sections.append(section(HOLDS_GROUP, [row([v["fact"]], red=[0] if v["level"] == "red" else (),
                                                   say=v["fact"]) for v in shown_holds], [""], [False]))
+    phase("judge")
     document = {
         "contract": CONTRACT, "doctor": "harness", "as_of": iso_time(now), "as_of_s": int(now),
         "judge": judge_digest(ledger_raw), "status": status, "problem_count": problem_count,
         "problems": problems, "blind_spots": blind, "self": {"collector_s": round(elapsed, 2), "error": None},
+        "timing": {"cpu_s": round(cpu_s() - cpu_start, 2), "sleep_s": phase.secs.get("sleep", 0),
+                   "phases": phase.secs},
         "collector_s": round(elapsed, 2), "red": red, "local_slow": slow_periods,
         "title": "Harness doctor: " + ("%d problem%s" % (problem_count, "" if problem_count == 1 else "s")
                                        if problem_count else "blind · " + ", ".join(blind_areas) if blind_areas
@@ -4121,6 +5137,8 @@ def collect(write, now):
         "sections": sections, "periods": periods, "extras": extras,
         "footer": "as of %s" % time.strftime("%H:%M", time.localtime(now)),
     }
+    apply_speed(document, read_json(os.path.join(folder, "latest.json"), {}).get("speed"))
+    speed_flush(state, now, write)
     if write:
         write_json(os.path.join(folder, "state.json"), state)
         if sample:
@@ -4143,7 +5161,7 @@ def main():
     parser.add_argument("--menu", action="store_true", help="print the menu lines and persist nothing")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
-    now = now_s()
+    now, started = now_s(), time.time()
     if args.json or args.menu:
         document = guarded_collect(False, now)
         print(menu_text(document) if args.menu else json.dumps(document, indent=1, ensure_ascii=False), end="")
@@ -4158,10 +5176,28 @@ def main():
                 print("harness-doctor: another run holds the lock", file=sys.stderr)
             return 0
         document = guarded_collect(True, now)
+    collector_runs.record("harness", started)
     if not args.quiet or document["status"] == "error":
         print(document["title"] + " · " + document["footer"], file=sys.stderr if document["status"] == "error"
               else sys.stdout)
+    if document["status"] != "error":
+        exec_speed()
     return 1 if document["status"] == "error" else 0
+
+
+def exec_speed():
+    """Speed reads what this run derived, so it follows each successful run, in the background QoS band.
+    A fixture Harness directory with no SPEED_DOCTOR_DIR of its own never reaches the live Speed store."""
+    if os.environ.get("HARNESS_DOCTOR_DIR") and not os.environ.get("SPEED_DOCTOR_DIR"):
+        return
+    script = os.environ.get("SPEED_DOCTOR_CMD") or os.path.join(ROOT_DIR, "bin", "speed-doctor")
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.environ["DOCTOR_TRIGGER"] = "harness"
+    try:
+        os.execv("/usr/sbin/taskpolicy", ["taskpolicy", "-b", script, "--quiet"])
+    except OSError:
+        pass
 
 
 def guarded_collect(write, now):

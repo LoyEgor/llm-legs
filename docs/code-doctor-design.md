@@ -60,15 +60,11 @@ night fix it, its cost falling to near zero once the repos are in order.
 - docs and tests that point at removed code.
 
 ### heavy — cost out of proportion to purpose
-- tests: a suite's retention is decided by the requirement it protects and the failure impact, never
-  by "caught nothing lately" (account isolation, data loss and recovery tests are kept). Preferred
-  fixes: make it faster while keeping the behavior it verifies (real processes stay where races,
-  process groups, locks or shell compatibility are the point), split, or dedupe at the assertion /
-  requirement level with a witness showing which remaining test covers it; timing claims need
-  comparable baselines (same scope, population, concurrency, recorded load);
-- hot code: time per call × calls per day from the hook, statusline, menu and worker journals,
-  counted only over rollup days after the unit's last commit (an optimised hook is never charged for
-  its old cost); with fewer than `hot_min_days` such days the hot signal waits;
+- slow tests and hot hooks of the sweep repositories are the Harness doctor's Speed opportunities
+  since 2026-10-03 (`docs/speed-doctor-design.md` §4); this doctor judges slow tests only in a
+  `--repo` scope outside them. Both keep the same rules: a suite's `test_requirement`
+  (keep row or head words) marks it `protected` and its lever speeds it up, never drops it; a hook is
+  charged only for days after its script's last commit;
 - token cost: always-loaded instructions (CLAUDE.md files, skill descriptions, hook-injected text)
   and docs read every session (DIAGNOSTICS.md), sized and weighed by how often they are read;
   mechanisms whose purpose costs more than it saves (a gate forcing rewrites that cost more tokens
@@ -135,5 +131,6 @@ the same cause re-appearing under another name is a `regressed` problem, not a n
 - never other projects; never foreign uncommitted work.
 
 ## Calibration before thresholds
-The corpus `tests/fixtures/code-doctor/` (six labelled cases and a healthy repository with no
-problems) is the acceptance test.
+The corpus `tests/fixtures/code-doctor/` (five labelled cases and a healthy repository with no
+problems) is the acceptance test; its heavy test that must be kept is the protected case of
+`tests/test_speed_doctor.sh`.

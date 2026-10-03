@@ -10,6 +10,7 @@ local FIX_BUSY_S = 12 * 3600
 local NIGHT_REFRESH_S = 60
 local UPDATER_STALE_S = 2 * 86400
 local ROW_CELLS = 64
+local LAG_EVERY_S, LAG_MIN_S = 1, 0.05
 local VERDICTS = { "fixed", "ruled-out", "weather", "blind-spot", "handoff" }
 local LOUD = { new = true, open = true, regressed = true }
 local DOCTORS = {
@@ -132,11 +133,20 @@ local function readJson(path)
   return value
 end
 
--- Run ids are <doctor>-<area>-<stamp>-<hex>, so a name sort orders areas, not time.
+-- Run ids are <doctor>-<area>-<stamp>-<hex>, so a name sort orders areas, not time. A new record moves
+-- the directory's size; a record rewritten by rename does not, so the hit re-reads the newest file by name.
+local RUNS_RESCAN_S = 60
+local runsCache = {}
 local function latestRun(doctor)
   local runs = dirFor("doctorsDir", "DOCTORS_DIR", "/.cache/doctors") .. "/runs"
+  local attrs = hs.fs.attributes(runs)
+  local key = attrs and string.format("%s:%s:%s:%s", runs, attrs.ino or "", attrs.modification or "", attrs.size or "")
+  local hit = runsCache[doctor]
+  if hit and key and hit.key == key and clock() - hit.at < RUNS_RESCAN_S then
+    return hit.name and readJson(runs .. "/" .. hit.name)
+  end
   local ok, iter, state = pcall(hs.fs.dir, runs)
-  if not ok or not iter then return nil end
+  if not ok or not iter then runsCache[doctor] = nil return nil end
   local prefix, newest, newestAt, newestName = doctor .. "-", nil, nil, nil
   for name in iter, state do
     if name:sub(1, #prefix) == prefix and name:match("%.json$") then
@@ -147,6 +157,7 @@ local function latestRun(doctor)
       end
     end
   end
+  runsCache[doctor] = key and { key = key, at = clock(), name = newestName } or nil
   return newest
 end
 
@@ -295,7 +306,9 @@ local function refreshDoctor(key, args, title, documentPath)
     hs.alert.show(name .. ": could not start " .. tostring(path), 5)
     return
   end
-  task:setEnvironment(limits.diagnosticsEnvironment())
+  local environment = limits.diagnosticsEnvironment()
+  environment.DOCTOR_TRIGGER = "menu"
+  task:setEnvironment(environment)
   refreshTasks[key], built = task, nil
   if not task:start() then
     refreshTasks[key] = nil
@@ -544,6 +557,8 @@ local function codeEntry()
     problems = count, status = status }
 end
 
+local function speedDir() return dirFor("speedDoctorDir", "SPEED_DOCTOR_DIR", "/.cache/speed-doctor") end
+
 local function ledgerPath(doctor)
   local override = M[doctor.key .. "Ledger"] or os.getenv(doctor.ledgerEnv or doctor.env .. "_LEDGER")
   if override and override ~= "" then return override end
@@ -615,13 +630,53 @@ local function compute()
   return style.mono(entries, infoTitle)
 end
 
+-- Contract row `ea`: one `start_us<TAB>end_us<TAB>name` line per background build or main-thread lag;
+-- bin/speed-doctor prunes the days.
+local journalDay = nil
+local function hsJournal(name, startedAt, endedAt)
+  pcall(function()
+    local base = speedDir()
+    local folder = base .. "/hs"
+    local day = os.date("%Y-%m-%d", math.floor(endedAt))
+    if day ~= journalDay then
+      journalDay = day
+      hs.fs.mkdir(base)
+      hs.fs.mkdir(folder)
+    end
+    local file = io.open(folder .. "/" .. day .. ".tsv", "a")
+    if not file then return end
+    file:write(string.format("%d\t%d\t%s\n", math.floor(startedAt * 1e6), math.floor(endedAt * 1e6), name))
+    file:close()
+  end)
+end
+
+-- backgroundMenu's depth is private to llm-limits: read here, never written.
+local function inBackground()
+  for index = 1, 32 do
+    local name, value = debug.getupvalue(limits.timedMenu, index)
+    if name == nil then return false end
+    if name == "backgroundDepth" then return type(value) == "number" and value > 0 end
+  end
+  return false
+end
+
 local function entries()
   local now = clock()
   if built and now - built.at < M.cacheSeconds then return built.entries end
+  local background = inBackground()
   local list = limits.timedMenu("doctors", compute)
+  if background then hsJournal("doctors:bg", now, clock()) end
   built = { at = now, entries = list }
   return list
 end
+
+local lagLast = nil
+function M.lagTick()
+  local at = clock()
+  if lagLast and at - lagLast - LAG_EVERY_S > LAG_MIN_S then hsJournal("hs-lag", lagLast + LAG_EVERY_S, at) end
+  lagLast = at
+end
+M.lagTimer = hs.timer.doEvery(LAG_EVERY_S, M.lagTick)
 
 function M.title()
   local problems, blind, failed = 0, false, false

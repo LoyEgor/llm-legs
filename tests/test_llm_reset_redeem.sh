@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # bin/llm-reset-redeem against local stand-ins for both backends: a fake grok.com and a fake
 # `codex` binary. Neither vendor's real write is ever called, because it spends a one-per-period
 # consumable on the owner's own account. Every profile, token and collector here is a fixture.

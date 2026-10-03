@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 HOOK="$ROOT/bin/worker-relay-hold.sh"
@@ -61,9 +62,18 @@ assert_eq block "$(stop claudeb-worker a-live | decision)"
 
 # A relay let go is marked stopped for the Stop backstop; a held one is not.
 assert_eq 1 "$(grep -c '^stopped=' "$TAGS/a-done")"
+# Beside it, the instant the relay returned to the chat, to the millisecond, for the Speed doctor's relay tail.
+returned=$(sed -n 's/^relay_returned_at=//p' "$TAGS/a-done")
+assert_eq 1 "$(grep -cE '^relay_returned_at=[0-9]{10}\.[0-9]{3}$' "$TAGS/a-done")"
+assert_eq "$(sed -n 's/^stopped=//p' "$TAGS/a-done")" "${returned%.*}"
 rm -f "$TAGS/a-live.holds"
 stop claudeb-worker a-live >/dev/null
 assert_eq 0 "$(grep -c '^stopped=' "$TAGS/a-live")"
+# A relay let go and then held again has not returned: both marks go.
+rm -f "$TAGS/a-live.holds"
+printf 'stopped=1\nrelay_returned_at=1.000\n' >>"$TAGS/a-live"
+stop claudeb-worker a-live >/dev/null
+assert_eq 0 "$(grep -c '^stopped=\|^relay_returned_at=' "$TAGS/a-live")"
 
 # Any live run the tag names holds it, not only the last one written.
 printf 'locomthebest · opus · high\nrun=run-live\nrun=run-done\n' >"$TAGS/a-many"

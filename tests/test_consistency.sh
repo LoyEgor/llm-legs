@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # Guards docs/shared-invariants.md: values duplicated across independent
 # implementations (bash/jq/Lua/prose) must not drift apart. Each check
 # re-extracts the live value from every site and asserts they agree with each
@@ -3055,18 +3056,42 @@ if [ -f "$HOOK_TIME_LIB_FILE" ]; then
   assert grep -Fq '>>"$HOOK_TIME_DIR/$((end / 86400000000)).tsv"' "$HOOK_TIME_LIB_FILE"
   assert grep -Fq 'HOOK_TIME_FILE=$HOOK_TIME_DIR/spool/$$.$RANDOM' "$HOOK_TIME_LIB_FILE"
   assert grep -Fq 'HOOK_TIME_KEY=${0##*/}${1:+ $1}' "$HOOK_TIME_LIB_FILE"
+  assert grep -Fq '"${HOOK_TIME_PPID:-$PPID}" "$HOOK_TIME_CPU" >>"$HOOK_TIME_DIR/$((end / 86400000000)).tsv"' "$HOOK_TIME_LIB_FILE"
+  assert grep -Fq 'HOOK_TIME_KEY=stop.d/$1' "${HOOK_TIME_LIB_FILE%/lib/hook-time.sh}/stop-dispatch.sh"
 fi
+assert grep -Fxq 'STOP_PART = "stop.d/"' "$HARNESS_DOCTOR_BIN"
+assert grep -Fq 'handle.write("".join("%d\t%d\t%s\t%s\t%s\t%s\n" % run for run in sorted(items)))' "$HARNESS_DOCTOR_BIN"
 assert grep -Fq 'HOOK_TIME_LIB = "hooks/lib/hook-time.sh"' "$HARNESS_DOCTOR_BIN"
 assert grep -Fq 'fold_tsv(journal, "hooks", hook_row)' "$HARNESS_DOCTOR_BIN"
 assert grep -Fq 'fold_tsv(journal, "statusline", statusline_row)' "$HARNESS_DOCTOR_BIN"
 assert grep -Fq 'os.path.join(state_dir(), "hooks", "spool", "*")' "$HARNESS_DOCTOR_BIN"
-assert doc_has '`start_us<TAB>end_us<TAB>script[ first arg]<TAB>exit<TAB>ppid`'
+assert doc_has '`start_us<TAB>end_us<TAB>script[ first arg]<TAB>exit<TAB>ppid<TAB>cpu_us`'
+assert doc_has '`script[ arg]<TAB>exit<TAB>ppid<TAB>cpu_us`'
 assert doc_has '`start_us<TAB>end_us<TAB>session`'
+assert doc_has 'a trailing `<TAB>cpu_ms`'
+assert grep -Fq '"$statusline_start_us" "$statusline_end_us" "$session_id" "$statusline_cpu_ms"' "$ROOT/bin/statusline.sh"
 assert grep -Fq 'fold_tsv(journal, "menu", menu_row)' "$HARNESS_DOCTOR_BIN"
 assert grep -Fq 'os.makedirs(os.path.join(state_dir(), "menu"), exist_ok=True)' "$HARNESS_DOCTOR_BIN"
 assert grep -Fq 'local file = io.open(harnessDoctorDir() .. "/menu/" .. os.date("%Y-%m-%d", math.floor(endedAt)) .. ".tsv", "a")' "$ROOT/hammerspoon/llm-limits.lua"
 assert grep -Fq 'file:write(string.format("%d\t%d\t%s\n", math.floor(startedAt * 1e6), math.floor(endedAt * 1e6), name))' "$ROOT/hammerspoon/llm-limits.lua"
 assert doc_has '`start_us<TAB>end_us<TAB>menu`'
+assert grep -Fq 'collector_runs.record("harness", started)' "$HARNESS_DOCTOR_BIN"
+assert doc_has '`${DOCTORS_DIR:-~/.cache/doctors}/collector-runs.jsonl`'
+assert grep -Fq 'folder = os.path.join(state_dir(), "hook-runs")' "$HARNESS_DOCTOR_BIN"
+assert grep -Fq 'c["wait"].append(["t", round(start, 3), session, round(end, 3), turn["o"], None, 0, turn["ty"],' "$HARNESS_DOCTOR_BIN"
+assert grep -Fq 'c["wait"].append(["d", round(launch, 3), session, round(end, 3), what, None, 0, round(notified, 3),' "$HARNESS_DOCTOR_BIN"
+assert grep -Fq '{k: round(v, 1) for k, v in part.items() if v >= 0.05}, use, turn.get("calls", [])])' "$HARNESS_DOCTOR_BIN"
+assert grep -Fq 'events.append(["g", round(start, 3), session, round(t, 3), rec.get("ptid", "")[-10:], phase])' "$HARNESS_DOCTOR_BIN"
+assert grep -Fq 'rows.append(["s", round(entry, 3), profile, kind, round(launched - entry, 3),' "$HARNESS_DOCTOR_BIN"
+assert grep -Fq 'rows.append(["m", round(t, 3), str(entry.get("sessionId") or "")[:8], sub.name[9:],' "$HARNESS_DOCTOR_BIN"
+assert grep -Fq '("menu", JOURNAL_FILE_DAYS), ("speed-days", SPEED_DAYS)):' "$HARNESS_DOCTOR_BIN"
+assert grep -Fxq 'SPEED_DAYS = 28' "$HARNESS_DOCTOR_BIN"
+assert doc_has '`["t", start, session, end, origin, [r2, r5, r10], away, typed, holes, part, use, [[tool_id, layer]]]`'
+assert doc_has '`["g", start, session, end, parent_tool_id, phase]`'
+assert doc_has '`["s", entry, profile, kind, exec_s, sessionstart_s, pid]`'
+assert doc_has '`["m", t, session, server, ms, ok]`'
+assert doc_has '`speed-days/<YYYY-MM-DD>.json` (28 days)'
+assert doc_has '`["d", launch, session, end, what, [r2, r5, r10], away, notified, tool_id, opened]`'
 
 # --- Row db: the week-over-week Δ ------------------------------------------------------
 TOKENMAP_TRACKING="${TOKENMAP_ROOT:-$ROOT/../token-map}/tokenmap/tracking.py"
@@ -3240,5 +3265,24 @@ done
 unlinked_run_names=$(for name in $(printf "%s\n" $agent_run_names | sort -u); do grep -qxF "$name" <<<"$readme_links" || printf '%s ' "$name"; done)
 assert eq "unlinked: $unlinked_run_names" "unlinked: "
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the anchors store under the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot envelope the menubar reads, the one resolver every surface names a chat through, the review round a fixing worker'"'"'s brief carries in the one field both repositories read, the launchers a headless vendor run may reach the machine through, the one anchors store per git family every side resolves with the same command and one writer holds a lock over, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types the spawn hook alone admits and no second gate judges, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the five carriers that spell the gateway model-id prefix, the one Gemini family list `geminib families` prints, the one file that pins which Flash family the review cells run and no worker reads, the one Grok model list `grokb models` prints and the single rule that collapses its default to the vendor word, the one web-search table every vendor and every worker-run entry point resolves through, the Hammerspoon entry points this repository calls, pinned fail-closed at their install path, the hook and statusline journals the Harness doctor reads, the week-over-week Δ Token tracking and the Harness doctor share, the one limiter hold directory every writer raises a hold in and both the doctor and the menu read, the one red every Hammerspoon menu paints with styled text that always names its font, the one gemini-web media store the engines write and the menu only reads, the chatgpt-web image store beside it that shares its one Chrome clone, the one least-recently-started order every media route picks by, the one per-account store table every Remove purges through and the doctor checks against the roster, the four-doctor roster every lister spells in one order, and the README PATH link of every script a claude-setup agent runs by name) and match %s
+# Row ec: the worker-run journal's horizon and the suite journal's key order, as both writers spell them.
+assert doc_has 'WORKER_RUNS_KEEP_DAYS=35'
+assert grep -qx 'WORKER_RUNS_KEEP_DAYS=35' "$ROOT/bin/worker-run"
+dk_keys=$(grep -o "'{\"kind\":\"%s\".*}}'" "$ROOT/tests/lib/suite-journal.sh" | grep -o '"[a-z_]*":' | tr -d '":' | paste -sd' ' -)
+assert eq "$dk_keys" 'kind pid queued_at started_at ended_at repo repo_root head scope suite_set worker_run session j slot signal complete suites'
+assert doc_has "key order \`${dk_keys// /, }\`"
+# Row eb: the presence journal's path, line shape and keep, as the writer and the reader spell them.
+assert grep -qF 'base .. "/presence"' "$ROOT/hammerspoon/presence.lua"
+assert grep -qF 'os.path.join(state_dir(), "presence")' "$ROOT/bin/speed-doctor"
+assert grep -qF 'string.format("%d\t%d\t%s\n", minute, idle, bundle)' "$ROOT/hammerspoon/presence.lua"
+assert grep -qx 'local KEEP_DAYS = 35' "$ROOT/hammerspoon/presence.lua"
+assert grep -qx 'JOURNAL_DAYS = 35' "$ROOT/bin/speed-doctor"
+assert doc_has '`<minute epoch, a multiple of 60><TAB><HID idle s><TAB><frontmost bundle id, or ->`'
+assert doc_has '`KEEP_DAYS = 35` in the writer'
+unjournaled=$(for f in "$ROOT"/tests/test_*.sh "$ROOT"/tests/e2e_*.sh; do
+  [ "$(sed -n 2p "$f")" = '. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"' ] || printf '%s ' "${f##*/}"
+done)
+assert eq "suites without the journal line 2: $unjournaled" "suites without the journal line 2: "
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the anchors store under the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot envelope the menubar reads, the one resolver every surface names a chat through, the review round a fixing worker'"'"'s brief carries in the one field both repositories read, the launchers a headless vendor run may reach the machine through, the one anchors store per git family every side resolves with the same command and one writer holds a lock over, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types the spawn hook alone admits and no second gate judges, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the five carriers that spell the gateway model-id prefix, the one Gemini family list `geminib families` prints, the one file that pins which Flash family the review cells run and no worker reads, the one Grok model list `grokb models` prints and the single rule that collapses its default to the vendor word, the one web-search table every vendor and every worker-run entry point resolves through, the Hammerspoon entry points this repository calls, pinned fail-closed at their install path, the hook and statusline journals the Harness doctor reads, the week-over-week Δ Token tracking and the Harness doctor share, the one limiter hold directory every writer raises a hold in and both the doctor and the menu read, the one red every Hammerspoon menu paints with styled text that always names its font, the one gemini-web media store the engines write and the menu only reads, the chatgpt-web image store beside it that shares its one Chrome clone, the one least-recently-started order every media route picks by, the one per-account store table every Remove purges through and the doctor checks against the roster, the four-doctor roster every lister spells in one order, the speed doctor collector journals, the presence journal Speed reads, and the README PATH link of every script a claude-setup agent runs by name) and match %s
 ' "$asserts" "$DOC"

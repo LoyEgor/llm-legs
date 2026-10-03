@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 . "$(dirname "$0")/worker_run_harness.sh"
 
 watchdog_tests() {
@@ -6,6 +7,7 @@ watchdog_tests() {
 clear_stub
 set_config 'codex_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=wedged STUB_SLEEP=30 WORKER_RUN_DEADLINE=1
+launched=$(date +%s)
 start_ok codex
 unset STUB_SLEEP WORKER_RUN_DEADLINE
 deadline_wait=$("$RUNNER" wait "$RUN_ID" --max 30)
@@ -13,6 +15,9 @@ assert grep -q '^STATUS: failed$' <<<"$deadline_wait"
 assert grep -qx 'OUTCOME: CODEX_UNAVAILABLE' <<<"$deadline_wait"
 # And says which watchdog did it: a bare 143 sends the reader hunting a vendor fault.
 assert grep -q '^KILLED: deadline — the 1s ceiling' <<<"$deadline_wait"
+# The end and its reason are stamped apart: started_at keeps the launch it budgets the deadline from.
+assert jq -e --argjson l "$launched" '.terminal_reason == "deadline" and .started_at >= $l
+  and .started_at <= .cli_starts[0] and .ended_at >= .started_at + 1 and .attempt_rcs == [143]' "$RUN_DIR/meta.json" >/dev/null
 
 # A worker that keeps writing is working, however long it takes: the idle watchdog reads the run's
 # own files, and a suite that runs for minutes returns through them.
@@ -23,6 +28,7 @@ start_ok codex
 unset STUB_HEARTBEAT WORKER_RUN_IDLE_S WORKER_RUN_DEADLINE
 busy_wait=$("$RUNNER" wait "$RUN_ID" --max 60)
 assert grep -q '^STATUS: done$' <<<"$busy_wait"
+assert jq -e '.terminal_reason == "done" and .attempt_secs[0] >= 7 and .ended_at - .started_at >= 7' "$RUN_DIR/meta.json" >/dev/null
 
 # A worker that writes nothing at all is wedged, and the ceiling is hours away.
 clear_stub
@@ -35,6 +41,8 @@ assert grep -q '^STATUS: failed$' <<<"$idle_wait"
 assert grep -qx 'OUTCOME: CODEX_UNAVAILABLE' <<<"$idle_wait"
 assert grep -q '^KILLED: idle watchdog — nothing this run writes changed for 2s' <<<"$idle_wait"
 assert grep -q '^KILLED: idle watchdog' <<<"$("$RUNNER" report "$RUN_ID")"
+assert jq -se --arg r "$RUN_ID" 'map(select(.run == $r)) | length == 1 and .[0].reason == "idle" and .[0].status == "failed"' \
+  "$CLAUDEB_DIR/worker-stats/runs.jsonl" >/dev/null
 
 # WORKER_RUN_IDLE_S=0 disarms the idle half alone: the same silent stub runs to its own end.
 clear_stub
@@ -282,6 +290,7 @@ signal_wait=$("$RUNNER" wait "$RUN_ID" --max 30)
 assert grep -q '^STATUS: failed$' <<<"$signal_wait"
 assert grep -q '^KILLED: signal TERM' <<<"$signal_wait"
 assert grep -qx term "$RUN_DIR/killed"
+assert jq -e '.terminal_reason == "term"' "$RUN_DIR/meta.json" >/dev/null
 assert grep -q '^KILLED: signal TERM' <<<"$("$RUNNER" report "$RUN_ID")"
 assert_fails kill -0 "$stub_pid"
 # Not the wrapper alone: the CLI's own children go with its group, or the `sleep` here — a worker

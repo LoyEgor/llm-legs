@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # bin/harness-doctor over a fixture HOME: transcript waits, hook cut attribution, levels, the tests
 # journal, steps against the change log, the local_slow windows LLM doctor reads, incremental
 # reads, the lock and the laid-out menu lines.
@@ -14,6 +15,7 @@ export CLAUDE_PROJECTS_DIR="$HOME/.claude/projects" HARNESS_SETTINGS="$HOME/.cla
 export STATUSLINE_CACHE_DIR="$WORK/statusline" MEMLOGD_DIR="$WORK/memlogd" INSTRUCTION_WATCH_STATE="$WORK/watch"
 export CLAUDEB_DIR="$WORK/claudeb" HARNESS_WATCH_ROOTS="$HOME/hooks" HARNESS_DOCTOR_DIR="$WORK/state"
 export HARNESS_LEDGER="$WORK/ledger.json" HARNESS_REPOS_DIR="$WORK"
+export DOCTORS_DIR="$WORK/doctors" HARNESS_DOCTOR_BOOTS= DOCTOR_TRIGGER=fixture
 cp "$ROOT/share/harness-ledger.json" "$HARNESS_LEDGER"
 mkdir -p "$HOME/hooks" "$CLAUDE_PROJECTS_DIR" "$STATUSLINE_CACHE_DIR" "$MEMLOGD_DIR" "$CLAUDEB_DIR"
 for repo in alpha beta gamma; do git init -q "$WORK/$repo"; done
@@ -124,7 +126,7 @@ with open(os.path.join(journal, "hooks", "%d.tsv" % (T // 86400)), "w") as handl
     handle.write("%d\t%d\tpost-fast.sh\t0" % (T * 1000000, T * 1000000))
 spool = os.path.join(journal, "hooks", "spool", "1.1")
 with open(spool, "w") as handle:
-    handle.write("post-edit.sh\t0\t77\n")
+    handle.write("post-edit.sh\t0\t77\t4200\n")
 # utime can only move a birth time back, so the spool run is pinned before today 00:00 UTC.
 born = T - 43260
 os.utime(spool, (born, born))
@@ -154,6 +156,16 @@ rowq() { printf '.sections[] | select(.name == "%s") | .rows[] | select(.cells[0
 
 HARNESS_DOCTOR_NOW=$T HARNESS_DOCTOR_FAKE_SAMPLE=$(sample 0.89 8 false) "$DOCTOR" --quiet || fail "first run failed"
 
+assert_eq '[true,true,0]' \
+  "$(doc '[(.timing.phases | has("transcripts") and has("hook_runs") and has("judge")), (.timing.cpu_s | type == "number"), .timing.sleep_s]')" \
+  "the document times each collector phase, its CPU apart, and no sampler sleep on a fake sample"
+assert_eq '["cpu_s","doctor","start","trigger","wall_s"] harness true fixture 1' \
+  "$(jq -sr '.[-1] as $r | "\($r | keys | tojson) \($r.doctor) \($r.start > 1e9) \($r.trigger) \(length)"' \
+     "$DOCTORS_DIR/collector-runs.jsonl")" \
+  "a persisting run appends its C10 row to collector-runs.jsonl"
+HARNESS_DOCTOR_NOW=$T HARNESS_DOCTOR_FAKE_SAMPLE="" "$DOCTOR" --json >/dev/null
+assert_eq 1 "$(wc -l < "$DOCTORS_DIR/collector-runs.jsonl" | tr -d ' ')" "a --json run persists no C10 row"
+
 assert_eq '["Bash · alpha","15","8.0","1.9","4"]' \
   "$(doc "$(rowq Waits "Bash · alpha") | .cells")" \
   "trivial Bash in a worktree folds into its repo; the 7-day median is read off the day histograms"
@@ -176,8 +188,8 @@ assert_eq '[["each open","40"],true]' "$(doc "$(hooknav "menu build: llm-limits"
 assert_eq 'true' "$(doc '.extras[1].menu.rows[0].cells[0] | startswith("hook time of ")')" \
   "hooks that do not source the timing lib are a blind spot"
 assert_eq '0' "$(find "$HARNESS_DOCTOR_DIR/hooks/spool" -type f | wc -l | tr -d ' ')" "a folded spool file is removed"
-assert_eq 'post-edit.sh	0	77' "$(cut -f3- "$HARNESS_DOCTOR_DIR"/hooks/folded/*.tsv)" \
-  "a folded spool run is kept per run for the batch join"
+assert_eq 'post-edit.sh	0	77	4200' "$(cut -f3- "$HARNESS_DOCTOR_DIR"/hooks/folded/*.tsv)" \
+  "a folded spool run is kept per run for the batch join, its CPU column carried"
 assert_eq '"3"' "$(doc "$(rowq Hooks "post-slow") | .cells[4]")" "a Post cut goes to the hook whose limit the call reached"
 assert_eq '[4]' "$(doc "$(rowq Hooks "post-slow") | .red")" "three cuts in the hour make the hook red"
 assert_eq '"1"' "$(doc "$(rowq Hooks "(which hook") | .cells[4]")" \
@@ -204,7 +216,7 @@ assert_eq '[1,"harness",true,true,true,"number","array","array",["collector_s","
            (.judge | test("^[0-9a-f]{64}$")), (.status | IN("ok", "problems", "blind", "error")),
            (.problem_count | type), (.problems | type), (.blind_spots | type), (.self | keys)]' | jq -c .)" \
   "the document carries every contract envelope key"
-assert_eq '[["count","evidence","exposure","fact","first_seen","group","id","last_seen","ledger","limit","near","rule","runs_red","state","unit","value","window_h"]]' \
+assert_eq '[["count","evidence","exposure","fact","first_seen","group","id","ident","last_seen","ledger","limit","near","rule","runs_red","state","unit","value","window_h"]]' \
   "$(doc '[.problems[] | keys] | unique' | jq -c .)" "every problem carries every contract field"
 assert_eq "$(doc '[.problems[] | select(.state | IN("new", "open", "regressed"))] | length')" "$(doc .problem_count)" \
   "problem_count counts new, open and regressed problems"
@@ -263,7 +275,7 @@ assert_eq "[[$((T - 3000)),$((T + 11))]]" "$(doc .local_slow)" \
 assert_eq '6' "$(jq '[.journal.slots[] | .["post-fast.sh"][0] // 0] | add' "$HARNESS_DOCTOR_DIR/state.json")" \
   "a second run reads only the journal lines appended since, and leaves a torn line for later"
 assert_eq '[1]' "$(doc "$(rowq Load "CPU busy") | .red")" "the hour's mean busy share over the limit is red"
-assert_eq '[1]' "$(doc "$(rowq Load "memory") | .red")" "the memory guard's alarm is red"
+assert_eq '[1]' "$(doc "$(rowq "Memory guard" "memory") | .red")" "the memory guard's alarm is red, in a section of its own"
 assert_eq 'edited' "$(doc '.sections[] | select(.name == "Load") | .lead[0].menu.rows[0].cells[1]' | tr -d '"')" \
   "an area that turned red lists the changes before it"
 assert_eq 'true' "$(doc '.sections[] | select(.name == "Load") | .lead[0].cells[0] | test("^started [0-9]{2}:[0-9]{2} · [0-9]+ changes? before it$")')" \
@@ -288,26 +300,30 @@ for line in lines[1:]:
 assert red >= 8, red
 EOF
 asserts=$((asserts + 1))
-python3 - "$HARNESS_DOCTOR_DIR/menu.txt" <<'EOF' || fail "an area's top line is not 'Name: N problems|state · fact' in plain words, or the areas do not sum to the title"
+python3 - "$HARNESS_DOCTOR_DIR/menu.txt" <<'EOF' || fail "an area's top line is not 'Name: N problems|state · fact' in plain words, the menu does not open on Speed, or the areas do not sum to the title and to Speed's count"
 import re, sys
 lines = open(sys.argv[1]).read().split("\n")
-areas, problems = 0, 0
+areas, problems, top = 0, {"0": 0, "1": 0}, None
 for line in lines[1:]:
     depth, flags, spans, text = line.split("\t", 3)
-    if depth != "0":
-        continue
-    if flags.startswith("s"):
+    if depth == "0" and flags.startswith("s"):
         break
+    if depth not in ("0", "1") or depth == "1" and top != "Speed":
+        continue
     areas += 1
     match = re.fullmatch(r"([A-Z][a-z]+(?: [a-z]+)*): (ok|watch|blind|[1-9]\d* problems?)(?: · (.+))?", text)
     assert match, text
     assert not re.search(r"\(\+\d|×\d|\.sh\b|deferred|bg-task|\d+ more\b", text), text
+    if depth == "0":
+        top, speed = match.group(1), match.group(2)
     if match.group(2)[0].isdigit():
-        problems += int(match.group(2).split()[0])
+        problems[depth] += int(match.group(2).split()[0])
         start = len(match.group(1)) + 2
         assert "r:%d:%d" % (start, len(match.group(2))) in spans.split(","), (spans, text)
 assert areas >= 8, areas
-assert problems == int(lines[0].split("\t")[1]) > 0, (problems, lines[0])
+assert lines[1].split("\t")[3].startswith("Speed: "), lines[1]
+assert problems["0"] == int(lines[0].split("\t")[1]) > 0, (problems, lines[0])
+assert problems["1"] == int(lines[1].split("\t")[3].split(": ")[1].split()[0].replace("ok", "0")), (problems, lines[1])
 EOF
 asserts=$((asserts + 1))
 python3 - "$HARNESS_DOCTOR_DIR/menu.txt" <<'EOF' || fail "menu.txt does not tag every line of a window block, and only those"
@@ -620,8 +636,8 @@ check(m.growth_section(runaway(2400, 40), T)["state"] == "ok", "J G: a store its
 os.environ["HARNESS_DOCTOR_DIR"] = os.path.join(work, "spool-fixture")
 put(os.path.join(work, "spool-fixture", "hooks", "spool", "9.9"), "gate-a.sh verdict\tSTATUS=open LINES=4\n1\t4242\n")
 folded = m.fold_spool(lambda *a: None, T + 9999, False)
-check([r[2:] for r in folded] == [("gate-a.sh verdict", "1", "4242")],
-      "a spool file carrying a hook's stray output still folds to its key, exit and ppid")
+check([r[2:] for r in folded] == [("gate-a.sh verdict", "1", "4242", "")],
+      "a spool file carrying a hook's stray output still folds to its key, exit and ppid, with no CPU")
 os.environ["HARNESS_DOCTOR_DIR"] = os.path.join(work, "state")
 
 def state_of(part):
@@ -1412,6 +1428,427 @@ assert_eq '["floor:event:SessionStart=watch","hook-every-call-instruction-watch=
 assert_eq '["test_daily_cost-worker-run 8714.0 24","test_daily_cost:llm-legs:test_instruction_gate 10377.0 38","test_long_pole-worker-run 0.957 1","test_long_pole-review-bench null 0","test_long_pole-review-bench-in-llm-legs null 0"]' \
   "$(jq -c '[.problems[] | select(.id | startswith("test_")) | "\(.id) \(.value) \(.exposure)"]' "$WORK/replay-1.json")" \
   "the calibration's 24 h of llm-legs tests: test_worker_run is the long pole, both suites cost over 2 h"
+
+assert_eq '' "$(for f in "$ROOT"/tests/fixtures/speed-calibration/*.jsonl.gz; do gzip -dc "$f"; done |
+  jq -r '.. | strings | select(length > 60 and (startswith("<task-notification>") | not))' | head -3)" \
+  "the public calibration transcripts carry no chat text: peer bodies, prompts and tool inputs are stripped"
+
+speed=$(python3 - "$DOCTOR" "$T" "$WORK" "$ROOT/tests/fixtures/speed-calibration" <<'EOF'
+import gzip, glob, importlib.machinery, importlib.util, json, os, sys, time
+loader = importlib.machinery.SourceFileLoader("harness_doctor", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_doctor", loader))
+loader.exec_module(m)
+T, work, calibration = int(sys.argv[2]), sys.argv[3], sys.argv[4]
+count = [0]
+
+def check(cond, what):
+    count[0] += 1
+    if not cond:
+        print("FAIL: %s" % what, file=sys.stderr)
+        sys.exit(1)
+
+os.environ["HARNESS_DOCTOR_DIR"] = os.path.join(work, "runs-state")
+tsv = os.path.join(work, "runs-state", "hooks", "%d.tsv" % (T // 86400))
+os.makedirs(os.path.dirname(tsv))
+line = lambda n, key: "%d\t%d\t%s\t0\t77\n" % ((T - 100 + n) * 10 ** 6, (T - 99 + n) * 10 ** 6, key)
+
+def keys(write=True):
+    return [r[1] for r in sorted(m.journal_runs(T - 1000, (), write)[0], key=lambda r: r[4])]
+
+with open(tsv, "w") as handle:
+    handle.write(line(1, "k1") + line(2, "k2") + line(3, "k3"))
+check(keys() == ["k1", "k2", "k3"], "journal runs: a first pass reads every line")
+text = open(tsv).read()
+with open(tsv, "r+") as handle:
+    handle.seek(text.index("k3"))
+    handle.write("z3")
+with open(tsv, "a") as handle:
+    handle.write(line(4, "k4"))
+check(keys() == ["k1", "k2", "k3", "k4"], "journal runs: a pass reads only the bytes after its offset")
+check(keys(False) == keys(), "journal runs: a non-persisting pass reads the same rows off the cache")
+with open(tsv, "w") as handle:
+    handle.write(line(1, "k1") + line(2, "k2"))
+check(keys() == ["k1", "k2"], "journal runs: a file truncated below its offset, head kept, is read again from its start")
+with open(tsv, "a") as handle:
+    handle.write(line(5, "k5"))
+check(keys() == ["k1", "k2", "k5"], "journal runs: a line appended after a truncation is read once")
+with open(tsv + ".new", "w") as handle:
+    handle.write(line(1, "k1") + line(2, "k2") + line(5, "q5"))
+os.replace(tsv + ".new", tsv)
+check(keys() == ["k1", "k2", "q5"],
+      "journal runs: a rotated file (new inode, same head and size) is read again from its start")
+cache = glob.glob(os.path.join(work, "runs-state", "hook-runs", "*.pickle"))
+with open(cache[0], "wb") as handle:
+    handle.write(b"garbage")
+check(len(cache) == 1 and keys() == ["k1", "k2", "q5"], "journal runs: a broken cache is rebuilt off the journal")
+os.remove(tsv)
+check(keys() == [] and not glob.glob(os.path.join(work, "runs-state", "hook-runs", "*")),
+      "journal runs: a pruned journal file drops its cache")
+
+phases = m.Phases()
+real_sleep, m.time.sleep = m.time.sleep, lambda secs: None
+saved = os.environ.pop("HARNESS_DOCTOR_FAKE_SAMPLE", None)
+m.take_sample({}, T, phases)
+m.time.sleep = real_sleep
+check(set(phases.secs) == {"sample", "sleep"}, "the sampler's sleep is timed apart from its work: %s" % phases.secs)
+
+def stamp(t):
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + ".%03dZ" % int(round((t % 1) * 1000))
+
+def rec(t, **kw):
+    return dict(kw, timestamp=stamp(t))
+
+def human(t, source="typed", text="go"):
+    return rec(t, type="user", origin={"kind": "human"}, promptSource=source, message={"content": text})
+
+def note(t, tid="", task=""):
+    body = "<task-notification><task-id>%s</task-id><tool-use-id>%s</tool-use-id></task-notification>" % (task, tid)
+    return rec(t, type="user", origin={"kind": "task-notification"}, promptSource="system", message={"content": body})
+
+def say(t, rid="req_x", tools=(), out=1, model="claude-opus-5-5", effort="xhigh"):
+    blocks = [{"type": "tool_use", "id": i, "name": n, "input": a} for i, n, a in tools]
+    return rec(t, type="assistant", requestId=rid, effort=effort, message={
+        "model": model, "content": blocks or [{"type": "text", "text": "x"}],
+        "usage": {"output_tokens": out, "output_tokens_details": {"thinking_tokens": 40},
+                  "cache_creation_input_tokens": 5, "cache_read_input_tokens": 7}})
+
+def result(t, tid, **tur):
+    return rec(t, type="user", toolUseResult=tur, message={"content": [{"type": "tool_result", "tool_use_id": tid}]})
+
+def done(t, ms=20000):
+    return rec(t, type="system", subtype="turn_duration", durationMs=ms)
+
+def system(t, sub, **kw):
+    return rec(t, type="system", subtype=sub, **kw)
+
+def queue(t, op, content=""):
+    return rec(t, type="queue-operation", operation=op, content=content)
+
+projects = os.path.join(work, "c1-projects")
+os.environ["CLAUDE_PROJECTS_DIR"] = projects
+
+def chat(name, lines, boots=(), cut=None):
+    path = os.path.join(projects, "p", name + ".jsonl")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    lines = [dict(lines[0], entrypoint="cli")] + lines[1:]
+    text = "".join(json.dumps(l, ensure_ascii=False) + "\n" for l in lines)
+    state, events = {"off": 0}, []
+    for part in ([text[:cut], text] if cut else [text]):
+        with open(path, "w") as handle:
+            handle.write(part)
+        m.read_transcript(path, state, events, {}, sorted([b, b] for b in boots))
+        state = json.loads(json.dumps(state))
+    m.c1_expire(state["c1"], events, T + 86400)
+    return [e for e in events if e[0] in ("t", "d")]
+
+def by(rows, kind, at):
+    return next(r for r in rows if r[0] == kind and abs(r[1] - at) < 0.01)
+
+B = T - 40000
+stale = chat("stale", [human(B), say(B + 10), done(B + 20), human(B + 18), say(B + 25), done(B + 130, ms=999999),
+                       human(B + 200), say(B + 210), done(B + 220)])
+second = by(stale, "t", B + 20)
+check(second[3] == B + 130 and second[5] == [1, 1, 1],
+      "C1 stale start: a turn starts at max(its prompt, the previous end); durationMs is never read: %s" % second)
+check(by(stale, "t", B + 200)[5] == [0, 0, 0], "C1: a turn nobody answers expires with no R flag")
+
+Q = B + 1000
+queued = chat("queue", [human(Q), say(Q + 5), queue(Q + 30, "enqueue"), say(Q + 40), done(Q + 60),
+                        queue(Q + 60.1, "dequeue"), human(Q + 60.2, source="queued"), say(Q + 70), done(Q + 80),
+                        human(Q + 500), say(Q + 505), done(Q + 510)])
+first, dequeued = by(queued, "t", Q), by(queued, "t", Q + 60.2)
+check(first[5] == [1, 1, 1] and first[7] == [Q, Q + 30],
+      "C1 queued prompt: typed while busy, it answers the running turn and is stamped at enqueue: %s" % first)
+check(dequeued[3] == Q + 80 and dequeued[5] == [0, 0, 1], "C1 queued prompt: its turn starts at dequeue")
+
+N = B + 3000
+agent = ("toolu_bg1", "Agent", {"subagent_type": "claudeb-worker", "run_in_background": True})
+notes_lines = [human(N), say(N + 5, tools=[agent, ("toolu_bg2", "Bash", {"command": "sleep 100"})]),
+               result(N + 6, "toolu_bg1", isAsync=True, agentId="ag1"), result(N + 6, "toolu_bg2", backgroundTaskId="bt2"),
+               say(N + 10), done(N + 20),
+               rec(N + 100, type="user", origin={"kind": "peer"}, promptSource="system", message={"content": "hi"}),
+               say(N + 110),
+               queue(N + 150, "enqueue", "<task-notification><task-id>bt2</task-id></task-notification>"),
+               rec(N + 151, type="attachment", attachment={
+                   "type": "queued_command", "origin": {"kind": "task-notification"},
+                   "prompt": "<task-notification><task-id>bt2</task-id></task-notification>"}),
+               say(N + 160), done(N + 200), human(N + 230), say(N + 240), done(N + 250),
+               queue(N + 1000, "enqueue", "<task-notification><tool-use-id>toolu_bg1</tool-use-id></task-notification>"),
+               queue(N + 1000.4, "dequeue"), note(N + 1000.5, task="ag1"), say(N + 1010), done(N + 1100),
+               human(N + 1280)]
+notes = chat("notes", notes_lines)
+mid, cont = by(notes, "d", N + 5), [r for r in notes if r[0] == "d" and r[4] == "Agent:claudeb-worker"]
+bash = [r for r in notes if r[0] == "d" and r[4] == "Bash"][0]
+check(bash[3] == N + 200 and bash[7] == N + 150 and bash[9] == 0,
+      "C1 notification mid-turn: consumed by the running turn, its delegation row is not an opened follow-up: %s" % bash)
+check(len(cont) == 1 and cont[0][3] == N + 1100 and cont[0][7] == N + 1000 and cont[0][9] == 1 and cont[0][5] == [0, 1, 1],
+      "C1 continuation: the notification opens its follow-up turn, answered after 3 min: %s" % cont)
+check(by(notes, "t", N + 1000.5)[4] == "n", "C1 continuation: the turn a notification opens has origin n")
+a_min, b_min = m.owner_minutes(notes, 1, N - 1, N + 5000)
+check(abs(a_min * 60 - (20 + 100 + 99.5)) < 0.01 and abs(b_min * 60 - (1000 - 230)) < 0.01,
+      "C1 B: an opened delegation adds from his last prompt to its notification, a mid-turn one nothing: %s %s"
+      % (a_min * 60, b_min * 60))
+two_pass = chat("notes2", notes_lines, cut=sum(len(json.dumps(l, ensure_ascii=False)) + 1 for l in notes_lines[:10]) + 20)
+check([r[3:] for r in two_pass] == [r[3:] for r in notes],
+      "C1: in-flight state carried across two passes gives the rows of one pass")
+
+C = B + 6000
+clip = chat("clip-a", [human(C), say(C + 10), done(C + 300), human(C + 320)]) + \
+    chat("clip-b", [human(C + 250), say(C + 260), done(C + 270), human(C + 280)])
+check(abs(m.owner_minutes(clip, 1, C - 1, C + 1000)[0] * 60 - 50) < 0.01,
+      "C1 other-chat clip: a turn counts only after his last prompt in another chat")
+
+D = B + 8000
+gone = chat("away", [human(D), say(D + 10), done(D + 60), system(D + 90, "away_summary"), human(D + 120)])
+check(by(gone, "t", D)[6] == 1 and m.owner_minutes(gone, 1, D - 1, D + 1000)[0] == 0,
+      "C1 away_summary between a turn's end and his answer drops the turn")
+
+E = B + 10000
+boot = chat("boot", [human(E), say(E + 10, tools=[("tb", "Bash", {"command": "make"})]), result(E + 400, "tb"),
+                     say(E + 410), done(E + 420), human(E + 430)], boots=[E + 100])
+row = by(boot, "t", E)
+check(row[8] == [[E + 10, E + 400]] and row[9].get("dark") == 390.0
+      and abs(m.owner_minutes(boot, 1, E - 1, E + 1000)[0] * 60 - 30) < 0.01,
+      "C1 a boot inside a turn drops only the dark slice around it: %s" % row)
+
+F = B + 12000
+usage = chat("usage", [human(F), say(F + 5, "req_1", out=100), say(F + 6, "req_1", out=100), say(F + 7, "req_1", out=100),
+                       say(F + 9, "req_2", out=10, model="claude-fable-5-1", effort="high"), done(F + 30), human(F + 40)])
+check(by(usage, "t", F)[10] == {"claude-opus-5-5/xhigh": [1, 100, 40, 5, 7], "claude-fable-5-1/high": [1, 10, 40, 5, 7]},
+      "C1 usage repeats per block line and counts once per requestId, per model and effort: %s" % by(usage, "t", F)[10])
+
+G = B + 14000
+compact = chat("compact", [human(G), system(G + 50, "compact_boundary", compactMetadata={"durationMs": 30000}),
+                           say(G + 60), done(G + 70), human(G + 80),
+                           system(G + 150, "compact_boundary", compactMetadata="{'trigger': 'auto', 'durationMs': 30000}"),
+                           say(G + 160), done(G + 170), human(G + 180)])
+check(by(compact, "t", G)[9].get("compact") == 30.0 and by(compact, "t", G + 80)[9].get("compact") == 30.0,
+      "C1 compactMetadata reads as a dict and as its Python-repr string")
+
+H = B + 16000
+asked = chat("ask", [human(H), say(H + 10, tools=[("tq", "AskUserQuestion", {}),
+                                               ("ts", "Bash", {"command": "cd x && bash tests/run-all --all"})]),
+                     result(H + 70, "tq"), result(H + 80, "ts"), say(H + 90), done(H + 100), human(H + 110)])
+row = by(asked, "t", H)
+check(row[8] == [[H + 10, H + 70]] and row[9].get("ask") == 60.0 and row[9].get("test") == 10.0 and H + 70 in row[7],
+      "C1 an owner question is a hole and his answer a prompt; a suite run is its own partition layer: %s" % row)
+check(not m.C1_SUITE.search("sed -n 1,9p tests/test_x.sh"), "C1 a test file read is no suite run")
+check(chat("night", [human(H + 500, text="сделай чистку — night run 1"), say(H + 510), done(H + 520), human(H + 530)]) == [],
+      "C1 machine-opened chats write no rows")
+
+K = B + 18000
+slept = chat("sleep", [human(K), say(K + 10, tools=[("tk", "Bash", {"command": "make"})]), result(K + 400, "tk"),
+                       say(K + 410), done(K + 420), human(K + 430)], boots=[])
+os.environ["HARNESS_DOCTOR_SLEEPS"] = "%d-%d" % (K + 100, K + 200)
+dark = m.c1_boots({})
+del os.environ["HARNESS_DOCTOR_SLEEPS"]
+path = os.path.join(projects, "p", "sleep2.jsonl")
+with open(path, "w") as handle:
+    handle.write("".join(json.dumps(dict(l, entrypoint="cli") if i == 0 else l) + "\n" for i, l in enumerate(
+        [human(K), say(K + 10, tools=[("tk", "Bash", {"command": "make"})]), result(K + 400, "tk"),
+         say(K + 410), done(K + 420), human(K + 430)])))
+rows = []
+m.read_transcript(path, {"off": 0}, rows, {}, dark)
+row = by(rows, "t", K)
+check(dark == [[K + 100, K + 200]] and row[8] == [[K + 100, K + 200]] and row[9].get("dark") == 100.0
+      and by(slept, "t", K)[8] == [],
+      "C1 a sleep inside a turn darkens only its own span, not the whole line gap: %s" % row)
+
+M = B + 20000
+media = chat("media", [human(M), say(M + 10, tools=[("tm", "Bash", {"command": "codex-image --dest /x.png --prompt p"}),
+                                                   ("ta", "Agent", {"subagent_type": "image-gen"})]),
+                       result(M + 70, "tm"), result(M + 90, "ta"), say(M + 95), done(M + 100), human(M + 110)])
+check(by(media, "t", M)[9].get("media") == 80.0 and by(media, "t", M)[11] == [["tm", "media"], ["ta", "media"]],
+      "C1 a media tool and an image-gen subagent are the media layer, and the row lists its calls")
+
+sub = os.path.join(projects, "p", "parent-s", "subagents", "agent-x.jsonl")
+os.makedirs(os.path.dirname(sub))
+with open(sub[:-6] + ".meta.json", "w") as handle:
+    json.dump({"agentType": "image-gen", "toolUseId": "toolu_parent0123456789"}, handle)
+with open(sub, "w") as handle:
+    handle.write("".join(json.dumps(l) + "\n" for l in [
+        say(M, tools=[("g1", "Bash", {"command": "cd /x && gemini-image --dest a.png"})]), result(M + 60, "g1"),
+        say(M + 61, tools=[("g2", "Read", {"file_path": "/x/a.png"})]), result(M + 62, "g2")]))
+rows = []
+m.read_transcript(sub, {"off": 0}, rows, {})
+check([r for r in rows if r[0] == "g"] == [["g", M, "parent-s", M + 60, "0123456789", "gemini-image"],
+                                           ["g", M + 61, "parent-s", M + 62, "0123456789", "prep:Read"]],
+      "C1 an image-gen subagent's calls are its phase spans, keyed by the parent's tool id: %s" % rows)
+
+row = ["t", 1000.0, "sess", 1100.0, "h", [1, 1, 1], 0, [], [], {"test": 30.0, "tool": 10.0, "gen": 5.0}, {},
+       [["tid1", "test"], ["tid2", "tool"]]]
+m.turn_layers([row], {"tid1": 2000.0, "tid2": 3000.0}, {"sess": [[1001.0, 1011.0], [2000.0, 2050.0]]})
+check(row[9] == {"test": 18.0, "tool": 7.0, "gen": 5.0, "hook": 5.0, "queue": 10.0},
+      "the hook-batch and suite-queue layers come out of a turn's tool layers in precedence: %s" % row[9])
+
+os.environ["HARNESS_DOCTOR_DIR"] = sd = os.path.join(work, "speed-state")
+runs = [m.run_row(f.split("\t")) for f in ("1000000000\t1003000000\tstop-dispatch.sh\t0\t9\t5000",
+                                           "1000500000\t1002000000\tstop.d/a\t0\t9\t3000",
+                                           "1000000000\t1001000000\tpre-a.sh\t0\t9")]
+check(runs[0][6] == 5.0 and runs[2][6] is None, "C2 a row's sixth column is its CPU, absent on bash before 5.3")
+batches = m.hook_batches(runs, {"stop-dispatch.sh": {("Stop", "")}, "stop.d/a": {("Stop", "")}}, 2000)
+check([sorted(b["runs"]) for b in batches] == [["stop-dispatch.sh"]],
+      "C2 stop.d parts are never batched with their dispatcher: %s" % [sorted(b["runs"]) for b in batches])
+st = {}
+for run in runs:
+    m.hook_cpu(st, run[0], run[1], "" if run[6] is None else int(run[6] * 1000))
+day = m.speed_day(st, 1000)
+check(day["hook_cpu_us"] == {"stop-dispatch.sh": [1, 5000], "stop.d/a": [1, 3000]}
+      and day["hook_cpu_us_total"] == [1, 5000],
+      "C2 hook CPU per key, the dispatcher's total never summed with its parts: %s" % day)
+batch = {"t0": 0.0, "ms": 3000.0, "runs": {"a": (1.0, "a", 1000.0, False, 0.0, "9"), "b": (3.0, "b", 3000.0, False, 0.0, "9")}}
+check(m.batch_parts([batch]) == {"a": [1000.0, 3000.0], "b": [3000.0, 1000.0]},
+      "C2 the counterfactual floor without a hook ends at the batch's other runs")
+
+ticks = [[T - 10, 2.5]]
+floor = {"t": T, "cls": "bash:other", "ms": 3000.0, "kb": 2048, "batches": [batch]}
+m.speed_floor(st, floor, ticks)
+m.speed_floor(st, dict(floor, t=T + 500), ticks)
+m.speed_flush(st, T, True)
+written = json.load(open(os.path.join(sd, "speed-days", m.local_day(T) + ".json")))
+check(sorted(written["floors"]) == ["bash:other|2-4|1-10", "bash:other|?|1-10"]
+      and [h[0] for h in written["floor_hooks"]["bash:other|2-4|1-10|b"]] == [1, 1, 1]
+      and written["floor_hooks"]["bash:other|2-4|1-10|b"][1][1] == 1000,
+      "C2 floors and per-hook (own, without, floor) histograms per (class, load, size) band reach the day file")
+check(m.local_day(1000) not in st["speed"]["days"] and m.local_day(T) in st["speed"]["days"],
+      "a day older than yesterday leaves the state once written")
+
+mdir = os.path.join(work, "memlogd", "machine")
+os.makedirs(mdir)
+day_name = time.strftime("%Y-%m-%d", time.localtime(T))
+with open(os.path.join(mdir, day_name + ".log"), "w") as handle:
+    handle.write("%d load1=5.0 ncpu=10 swap_mb=900 swapin_pages_s=4 thermal=0 boot=1790882097 probe_ms=40\n" % (T - 30))
+    handle.write("%d load1=30.0 ncpu=10 swap_mb=1200 swapin_pages_s=-1 thermal=2 boot=1790882097\n" % (T - 15))
+    handle.write("%d load1=-1 ncpu=10 swap_mb=1200 swapin_pages_s=1 thermal=0 boot=1790999999 probe_ms=-1\n" % T)
+st = {}
+ticks = m.fold_machine(st, {}, T)
+mach = st["speed"]["days"][day_name]["machine"]
+check(ticks == [[T - 30, 0.5], [T - 15, 3.0]] and mach["band_s"] == {"<1": 15, "2-4": 15, "?": 15}
+      and mach["probe_ms"]["<1"][0] == 1 and mach["swap_mb_max"] == 1200 and mach["thermal_ticks"] == 1
+      and st["boots"] == [1790882097.0, 1790999999.0],
+      "C6 memlogd machine lines fold into load bands, the probe per band, swap, thermal and boots: %s %s" % (ticks, mach))
+journal = {}
+m.fold_machine(st, journal, T)
+m.fold_machine(st, journal, T)
+check(st["speed"]["days"][day_name]["machine"]["band_s"]["<1"] == 30, "C6 machine lines are read once by offset")
+
+st = {"files": {"/p/sess1234-x.jsonl": {"act": [[T - 100, T - 40]], "pend": {}},
+                "/p/sess5678-x.jsonl": {"act": [], "pend": {"t1": [T - 20, "Bash", 0, 1]}}}}
+m.statusline_fold(st, [(T - 50, "sess1234-full", "12"), (T - 10, "sess1234-full", "-"), (T - 10, "sess5678-full", "8"),
+                       (T - 30, "sess5678-full", "3")], T)
+line = m.speed_day(st, T)["statusline"]
+check([line[k] for k in ("renders", "idle", "cpu_ms", "cpu_n", "idle_cpu_ms")] == [4, 2, 23, 3, 3]
+      and len(line["session_hours"]) == len({"sess1234:%d" % ((T - 50) // 3600), "sess1234:%d" % ((T - 10) // 3600),
+                                              "sess5678:%d" % ((T - 10) // 3600), "sess5678:%d" % ((T - 30) // 3600)}),
+      "statusline renders fold with their CPU, session-hours, and idle when no line or open call is near: %s" % line)
+
+os.environ["CLAUDEB_STARTS_LOG"] = starts = os.path.join(work, "claudeb-starts", "starts.tsv")
+os.makedirs(os.path.dirname(starts))
+with open(starts, "w") as handle:
+    handle.write("%d.100000\t%d.150000\t4242\tlocomthebest\tchat\n" % (T - 900, T - 900))
+    handle.write("%d.000000\t%d.050000\t4343\tnotcom\tworker\n" % (T - 1300, T - 1300))
+    handle.write("%d.000000\t%d.020000\t4444\tnotcom\tchat\n" % (T - 60, T - 60))
+st = {}
+got = m.fold_starts(st, {}, [{"t": T - 897.0, "ms": 2500.0, "cls": "event:SessionStart", "ppid": "4242"},
+                             {"t": T - 50.0, "ms": 100.0, "cls": "event:Stop", "ppid": "4444"}], T)
+check([r[2:4] + r[6:] for r in got] == [["locomthebest", "chat", "4242"], ["notcom", "worker", "4343"]]
+      and abs(got[0][1] - (T - 899.9)) < 1e-3 and [r[4] for r in got] == [0.05, 0.05] and got[0][5] == 5.4
+      and got[1][5] is None and [p[2] for p in st["speed"]["starts"]] == ["4444"],
+      "C11 a start joins its process's SessionStart batch, expires unjoined, or waits: %s" % got)
+
+cache = os.path.join(work, "cli-cache", "-Volumes-x", "mcp-logs-codex")
+os.makedirs(cache)
+os.environ["CLAUDE_CLI_CACHE_DIR"] = os.path.dirname(os.path.dirname(cache))
+def mcp_line(t, text):
+    return json.dumps({"debug": text, "timestamp": stamp(t), "sessionId": "abcdef12-9", "cwd": "/x"}) + "\n"
+log = os.path.join(cache, "a.jsonl")
+with open(log, "w") as handle:
+    handle.write(mcp_line(T - 5, "Starting connection with timeout of 30000ms")
+                 + mcp_line(T - 4, "Successfully connected (transport: stdio) in 462ms")
+                 + mcp_line(T - 3, "Connection failed after 3ms (ECONNREFUSED): x"))
+st = {}
+first = m.fold_mcp(st, T)
+with open(log, "a") as handle:
+    handle.write(mcp_line(T - 2, "Successfully connected (transport: stdio) in 90ms"))
+for path in (log, cache):
+    os.utime(path, (T - 2, T - 2))
+check(first == [["m", T - 4, "abcdef12", "codex", 462, 1], ["m", T - 3, "abcdef12", "codex", 3, 0]]
+      and m.fold_mcp(st, T + 1) == [["m", T - 2, "abcdef12", "codex", 90, 1]],
+      "C11 MCP connect results fold once per line from the changed log directories: %s" % first)
+other = os.path.join(os.path.dirname(cache), "mcp-logs-other")
+os.makedirs(other)
+fresh = os.path.join(other, "b.jsonl")
+open(fresh, "w").close()
+os.utime(fresh, (T + 2, T + 2))
+os.utime(other, (T + 2, T + 2))
+check(m.fold_mcp(st, T + 3) == [], "C11 an empty new log yields nothing yet")
+for path, line in ((log, mcp_line(T + 100, "Successfully connected (transport: stdio) in 70ms")),
+                   (fresh, mcp_line(T + 101, "Connection failed after 5ms (ECONNREFUSED): y"))):
+    with open(path, "a") as handle:
+        handle.write(line)
+    os.utime(path, (T + 101, T + 101))
+for path in (cache, other):
+    os.utime(path, (T - 7200, T - 7200))
+check(sorted(m.fold_mcp(st, T + 600)) == [["m", T + 100, "abcdef12", "codex", 70, 1], ["m", T + 101, "abcdef12", "other", 5, 0]],
+      "C11 lines appended to logs already seen, an empty one included, fold although the directory's mtime stayed old")
+
+os.environ["RUN_SUITES_JOURNAL"] = suites = os.path.join(work, "suites-journal.jsonl")
+with open(suites, "w") as handle:
+    handle.write(json.dumps({"session": "sessQQQQ-1", "queued_at": T - 50, "started_at": T - 20}) + "\n"
+                 + json.dumps({"session": "sessQQQQ-1", "queued_at": T - 10, "started_at": T - 10}) + "\n"
+                 + json.dumps({"session": None, "queued_at": T - 50, "started_at": T - 20}) + "\n")
+check(m.fold_suites({}, {}, T) == {"sessQQQQ": [[T - 50, T - 20]]}, "C5 a chat's suite slot wait is its queue span")
+
+check(m.cpu_secs("1-02:03:04.50") == 86400 + 7384.5 and m.cpu_secs("12:34,5") == 754.5, "ps CPU times parse")
+fake_home = os.path.join(work, "label-home")
+os.makedirs(os.path.join(fake_home, "Library", "LaunchAgents"))
+os.makedirs(os.path.join(fake_home, ".local", "libexec"))
+wrapper = os.path.join(fake_home, ".local", "libexec", "tool-runner")
+with open(wrapper, "w") as handle:
+    handle.write('#!/bin/bash\nscript=/opt/x/bin/tool\npython=/opt/homebrew/bin/python3\nexec "$python" "$script" --quiet\n')
+import plistlib
+for label, args in (("com.x.tool", [wrapper]), ("homebrew.redis", ["/opt/homebrew/bin/redis-server", "/etc/r.conf"])):
+    with open(os.path.join(fake_home, "Library", "LaunchAgents", label + ".plist"), "wb") as handle:
+        plistlib.dump({"Label": label, "ProgramArguments": args}, handle)
+saved_home, os.environ["HOME"] = os.environ["HOME"], fake_home
+labels = m.launchd_labels()
+os.environ["HOME"] = saved_home
+check(labels == [("com.x.tool", sorted([wrapper, "/opt/x/bin/tool"])), ("homebrew.redis", ["/opt/homebrew/bin/redis-server"])],
+      "C7 a LaunchAgent maps to its program and its libexec wrapper's exec target, never the interpreter: %s" % labels)
+early, late = "Sat Oct  3 01:00:00 2026", "Sat Oct  3 02:30:00 2026"
+mark = time.mktime(time.strptime("Sat Oct  3 02:00:00 2026", "%a %b %d %H:%M:%S %Y"))
+before = {"100": ("1", 5.0, early, "/opt/homebrew/bin/python3 /opt/x/bin/tool --quiet"), "1": ("0", 0.0, early, "launchd")}
+after = dict(before, **{"101": ("100", 0.1, late, "/usr/bin/true"), "102": ("1", 0.3, late, "/usr/local/bin/other")})
+last = dict(after, **{"100": ("1", 7.5, early, before["100"][3])})
+st = {"speed": {"ps": {"100|" + early: 5.0}, "ps_t": mark}}
+m.speed_census(st, [(T - 2, before), (T - 1, after), (T, last)], T, labels)
+acc = m.speed_day(st, T)
+check(acc["census"] == {"com.x.tool": 1, "unattributed": 1} and acc["census_s"] == 2
+      and acc["label_cpu_s"] == {"com.x.tool": 2.6, "unattributed": 0.3},
+      "C7 census forks and ps CPU deltas go to the launchd label of their ancestor chain: %s" % acc)
+os.environ["HARNESS_DOCTOR_DIR"] = os.path.join(work, "state")
+
+home = os.path.join(work, "calibration")
+os.makedirs(os.path.join(home, "p"))
+for name in glob.glob(os.path.join(calibration, "*.jsonl.gz")):
+    data = gzip.open(name).read()
+    path = os.path.join(home, "p", os.path.basename(name)[:-3])
+    with open(path, "wb") as handle:
+        handle.write(data)
+    last = m.iso_epoch(json.loads(data.rstrip(b"\n").rsplit(b"\n", 1)[-1])["timestamp"])
+    os.utime(path, (last, last))
+os.environ.update(CLAUDE_PROJECTS_DIR=home, HARNESS_DOCTOR_BOOTS="1790882097")
+LO, HI = 1790629200, 1790967000
+events = []
+m.scan_transcripts({}, HI + 3600, events, {})
+a_min, b_min = (x / ((HI - LO) / 86400.0) for x in m.owner_minutes(events, 1, LO, HI))
+check(94 <= a_min <= 104 and 63 <= b_min <= 77,
+      "C1 calibration 2026-09-29 00:00 to 10-02 21:50 +0300 at R = 5: A %.1f (99 ± 5), B +%.1f (70 ± 7) OM/d"
+      % (a_min, b_min))
+print(count[0])
+EOF
+) || fail "the transcript rows (C1) or the journal offsets misjudged"
+asserts=$((asserts + speed))
 
 # A Background agent gets no CPU under a saturated machine: on 2026-09-30 a run starved for 48 min
 # holding the lock, and the menu froze exactly when load was what it had to show.

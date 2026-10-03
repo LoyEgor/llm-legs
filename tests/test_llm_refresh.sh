@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -326,6 +327,9 @@ grep -q -- '--refresh-account' "$case_dir/calls.log" && \
 jq -eR 'fromjson | select(.vendor == "claude" and .step == 1 and
   .outcome == "refreshed" and .accounts_tried == ["alpha"])' \
   "$case_dir/journal.jsonl" >/dev/null || fail 'Claude revive was not journaled as refreshed'
+jq -esR --arg now "$NOW" '[split("\n")[] | select(length > 0) | fromjson]
+  | length > 0 and all(.[]; .tick | test("^" + $now + "-[0-9]+$")) and ([.[].tick] | unique | length) == 1' \
+  "$case_dir/journal.jsonl" >/dev/null || fail 'the rows of one tick do not share its tick id'
 # An interactive session runs for minutes: the other vendors' tick must not queue behind it,
 # and the tick's own collect replaces the announce revive would otherwise detach.
 grep -qx 'lock-free' "$case_dir/claudeb-env.log" || \

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 set -u
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 WORK=$(cd "$(mktemp -d)" && pwd -P)
@@ -108,9 +109,13 @@ assert [ "$(holds_of run-suites)" = 1 ]
 assert jqe --arg r "$WORK/repo" '.held.what == "suites of \($r)"' "$HARNESS_HOLDS_DIR"/run-suites-*.json
 assert [ -z "$(ls "$STATUSLINE_CACHE_DIR" 2>/dev/null | grep '^suites-')" ]
 assert kill -0 "$run"
+sleep 1
 kill "$h4"
 wait "$run" || fail "run-suites failed: $(cat "$WORK/rs.out")"
 assert grep -q "PASS: slot=$RUN_SUITES_SLOTS_DIR/1" "$WORK/rs.out"
+# Its journal row keeps the queue apart from the run: queued at launch, started once slotted.
+assert jqe --arg slot "$RUN_SUITES_SLOTS_DIR/1" --argjson pid "$run" \
+  '.pid == $pid and .slot == $slot and .started_at - .queued_at >= 1 and .ended_at >= .started_at' "$WORK/runs.jsonl"
 # Its pointer outlives it, so a probe that only ever saw it queued still journals it.
 assert [ "$(cut -f2 "$STATUSLINE_CACHE_DIR/suites-$run.done")" = 1 ]
 assert [ ! -e "$RUN_SUITES_SLOTS_DIR/1" ]
@@ -120,6 +125,7 @@ h5=$(holder "$RUN_SUITES_SLOTS_DIR" 1)
 RUN_SUITES_SLOT="$RUN_SUITES_SLOTS_DIR/1" bash "$ROOT/share/run-suites.sh" --repo "$WORK/repo" >"$WORK/nested.out" 2>&1 ||
   fail "a nested run failed: $(cat "$WORK/nested.out")"
 assert grep -q '1 PASS' "$WORK/nested.out"
+assert jqe --arg slot "$RUN_SUITES_SLOTS_DIR/1" '.slot == $slot and .started_at - .queued_at < 0.5' <(tail -1 "$WORK/runs.jsonl")
 # Its progress file still carries a start stamp, or the statusline shows it queued until it ends.
 mkdir -p "$WORK/stamp/tests"
 printf '#!/usr/bin/env bash\necho "PASS: stamp=$(cut -f4 "$STATUSLINE_CACHE_DIR"/suites-*[0-9])"\n' >"$WORK/stamp/tests/test_s.sh"

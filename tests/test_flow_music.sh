@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # The Flow Music route of gemini-music: wrapper flags and outputs on a fake engine, then the engine's own
 # controls, download catch, credit meta, walls, fan-out and failure words on fakes. Fixture stores only.
 set -u

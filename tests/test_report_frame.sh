@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # share/report_frame.py, the one renderer of every block Egor reads: frame, width, label column,
 # fitting, number and time words, and the CLI report-bus and the claude-setup hooks call.
 set -u

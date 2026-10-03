@@ -1,0 +1,1053 @@
+#!/usr/bin/env python3
+"""The Speed block of the Harness doctor, docs/speed-doctor-design.md: every owner minute lost to waiting, as OM/d.
+
+Reads only Harness's derived files (events, speed-days) and the speed journals, by offset, keeps its own state and
+journals under ${SPEED_DOCTOR_DIR:-~/.cache/speed-doctor}, and lays its result into Harness's latest.json (own key
+`speed`) and the top of its menu.txt through harness-doctor's apply_speed."""
+
+import argparse
+import bisect
+import glob
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
+import collector_runs  # noqa: E402
+
+_loader = importlib.machinery.SourceFileLoader("harness_doctor", os.path.join(ROOT_DIR, "bin", "harness-doctor"))
+H = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_doctor", _loader))
+_loader.exec_module(H)
+
+WINDOW_D = 7
+ROW_DAYS = WINDOW_D + 1
+JOURNAL_DAYS = 35
+R_INDEX, R_LOW, R_HIGH = 1, 0, 2
+PRESENCE_IDLE_S = 120
+LIMITS = {"regression_ratio": 1.3, "regression_days": 2, "worth_om_day": 0.5, "blind_om_day": 1.0,
+          "residual_share": 0.05, "baseline_days": 28, "baseline_min_days": 7, "seen_days": 3, "seen_sessions": 3,
+          "collector_s": 2.0}
+SCORE_MIN, BUDGET_H, TOP_K, HOOK_LEVERS = 0.2, 6.0, 4, 1
+EFFORT_H = {"S": 1.0, "M": 3.0}
+CONFIDENCE = {"measured": 0.8, "estimated": 0.5, "unmeasured": 0.3}
+BANDS = {"load": ("<1", "1-2", "2-4", ">4"), "size": ("<1", "1-10", ">10")}
+PROOF = {"latency": "paired replay, >= 200 pairs, then 3 band-matched days", "frequency": "runs and CPU-s per session-hour",
+         "elimination": "zero occurrences and a parent drop", "contention": "probe slowdown at matched load",
+         "tail": "attended aggregate and p95", "tests": "suite CPU-s per (suite set, sha), 3 complete runs",
+         "orchestration": "fixture replay plus the passive window", "media": "offline local-phase benches"}
+OUTPUT_PROOF = "identical decisions or results on the replay, recorded as the fix's equivalence {compared, data, result}"
+LEVERS = [
+    {"component": "chat/hooks", "lever": "provable-absence fast path for the hook setting the Pre-Bash floor",
+     "effort": "S", "confidence": "measured", "saving": 0.77, "night_cost_h": 0.0, "proof": "latency", "hooks": True,
+     "quality": "equivalent"},
+    {"component": "machine/contention", "lever": "background QoS for unattended work, attended suite priority",
+     "effort": "S", "confidence": "estimated", "saving": 0.6, "night_cost_h": 0.0, "proof": "contention",
+     "quality": "equivalent"},
+    {"component": "chat/tests", "lever": "mock sleeps and clocks in the heaviest suites",
+     "effort": "M", "confidence": "estimated", "saving": 0.17, "night_cost_h": 0.0, "proof": "tests",
+     "quality": "equivalent"},
+    {"component": "chat/queue", "lever": "attended suites take a reserved slot",
+     "effort": "M", "confidence": "estimated", "saving": 0.5, "night_cost_h": 0.0, "proof": "tail",
+     "quality": "equivalent"},
+    {"component": "chat/start", "lever": "instruction-watch baseline off the start path",
+     "effort": "S", "confidence": "estimated", "saving": 0.5, "night_cost_h": 0.0, "proof": "latency", "hooks": True,
+     "quality": "equivalent"},
+    {"component": "delegation/workers", "lever": "relays return the report without re-verifying",
+     "effort": "M", "confidence": "unmeasured", "saving": 0.05, "night_cost_h": 0.0, "proof": "orchestration",
+     "quality": "risk"},
+    {"component": "delegation/media", "lever": "lock-aware account pick, event-driven hiding",
+     "effort": "M", "confidence": "unmeasured", "saving": 0.2, "night_cost_h": 0.0, "proof": "media",
+     "quality": "equivalent"},
+    {"component": "chat/compaction", "lever": "compaction window and context size", "needs_egor": True,
+     "effort": "S", "confidence": "unmeasured", "saving": 0.3, "night_cost_h": 0.0, "proof": "tail",
+     "quality": "risk"},
+    {"component": "background/statusline", "lever": "segment caches, contract-safe idle reprint",
+     "effort": "M", "confidence": "unmeasured", "saving": 0.4, "night_cost_h": 0.0, "proof": "frequency", "hooks": True,
+     "quality": "equivalent"},
+]
+CHAT_LEAVES = (("hook", "hooks"), ("stop", "hooks"), ("queue", "queue"), ("test", "tests"), ("media", "media"),
+               ("tool", "tools"), ("compact", "compaction"), ("gen", "model"), ("resid", "residual"))
+HOLE_LAYERS = ("dark", "ask")
+LOCAL_LEAVES = ("hooks", "tests", "media", "tools", "residual", "start")
+METRICS = {"chat.om_per_100_prompts": ("chat", 30), "delegation.pre_cli_s": ("delegation/workers", 10),
+           "background.statusline_cpu_ms_per_sh": ("background/statusline", 200),
+           "background.merge_kick_cpu_ms": ("background/statusline", 20), "machine.probe_ms": ("machine/contention", 30),
+           "night.wall_h_per_job": ("night", 5)}
+QUALITY = ("equivalent", "risk")
+EVIDENCE_KEYS = ("compared", "data", "result")
+FORBIDDEN_LEVER = re.compile(r"(?i)\b(models?|opus|sonnet|haiku|fable|flash|gpt[\w.-]*|cheaper|downgrades?|effort|"
+                             r"reasoning|xhigh|thinking|think|vendors?)\b")
+FORBIDDEN_COMPONENTS = ("chat/model",)
+
+
+def validate_levers(levers):
+    """Egor's rule (2026-10-03): speed of the current setup at the same intelligence. A lever that touches the
+    model, effort, thinking or vendor of a role is no lever; a lever's quality class is declared, never implied."""
+    for lever in levers:
+        text = " ".join(str(lever.get(k) or "") for k in ("component", "lever"))
+        hit = FORBIDDEN_LEVER.search(text)
+        if hit or lever.get("component") in FORBIDDEN_COMPONENTS:
+            raise ValueError("forbidden lever class (model, effort, thinking or vendor): %r names %r"
+                             % (lever.get("lever"), hit.group(0) if hit else lever.get("component")))
+        if lever.get("quality") not in QUALITY:
+            raise ValueError("lever %r has no quality: equivalent|risk" % lever.get("lever"))
+    return levers
+
+
+def lever_evidence(lever):
+    evidence = lever.get("quality_evidence")
+    return isinstance(evidence, dict) and all(str(evidence.get(k) or "").strip() for k in EVIDENCE_KEYS)
+
+
+def shown_levers(levers):
+    """An equivalent lever ranks for the night; a risk lever is only a needs-Egor proposal, and only with evidence."""
+    return [l if l["quality"] == "equivalent" else dict(l, needs_egor=True) for l in levers
+            if l["quality"] == "equivalent" or lever_evidence(l)]
+
+
+SPEED_RULES = ("regression", "opportunity")
+COVERS = {"chat": (("wait", "*"), ("wait_cut", "*"), ("local_slow", "*")),
+          "background/statusline": (("statusline", "*"),),
+          "machine/contention": (("load", "busy"), ("load", "kernel"), ("load", "forks"), ("load", "unseen"))}
+HEAVY_TEST_S, HOT_CPU_MS_DAY, HOT_MIN_DAYS = 120.0, 60000.0, 3
+KEEP_WORDS = re.compile(r"isolation|data loss|recovery|must be kept", re.I)
+TEST_LEVER = {"component": "chat/tests", "lever": "speed up the suite and keep every check", "effort": "M",
+              "confidence": "estimated", "saving": 0.3, "night_cost_h": 0.0, "proof": "tests", "quality": "equivalent"}
+HOOK_LEVER = {"component": "chat/hooks", "lever": "fast path for the hook", "effort": "S", "confidence": "estimated",
+              "saving": 0.5, "night_cost_h": 0.0, "proof": "latency", "hooks": True, "quality": "equivalent"}
+validate_levers(LEVERS + [TEST_LEVER, HOOK_LEVER])
+
+
+def state_dir():
+    return os.environ.get("SPEED_DOCTOR_DIR") or os.path.join(os.path.expanduser("~"), ".cache", "speed-doctor")
+
+
+def doctors_dir():
+    return os.environ.get("DOCTORS_DIR") or os.path.join(os.path.expanduser("~"), ".cache", "doctors")
+
+
+def worker_runs_path():
+    base = os.environ.get("WORKER_STATS_DIR") or os.path.join(
+        os.environ.get("CLAUDEB_DIR") or os.path.join(os.path.expanduser("~"), ".claude-profiles", ".claudeb"),
+        "worker-stats")
+    return os.path.join(base, "runs.jsonl")
+
+
+def code_ledger_path():
+    return os.environ.get("CODE_LEDGER") or os.path.join(ROOT_DIR, "share", "code-ledger.json")
+
+
+def now_s():
+    fixed = os.environ.get("SPEED_DOCTOR_NOW")
+    return float(fixed) if fixed else time.time()
+
+
+def read_new(path, mark):
+    """New complete lines of path since mark; a new inode, a changed head or a shrunk file reads from 0."""
+    try:
+        with open(path, "rb") as handle:
+            stat = os.fstat(handle.fileno())
+            head = handle.read(64).hex()
+            same = mark.get("ino") == stat.st_ino and mark.get("head") == head and stat.st_size >= mark.get("off", 0)
+            offset = mark.get("off", 0) if same else 0
+            handle.seek(offset)
+            data = handle.read()
+    except OSError:
+        return None, [], True
+    cut = data.rfind(b"\n") + 1
+    return {"ino": stat.st_ino, "head": head, "off": offset + cut}, data[:cut].splitlines(), not same
+
+
+def json_lines(lines):
+    for raw in lines:
+        try:
+            yield json.loads(raw)
+        except ValueError:
+            continue
+
+
+def fold_events(state, now):
+    """Harness's t, d and s rows by offset, kept per day file for ROW_DAYS."""
+    cache = state.setdefault("events", {})
+    folder = os.path.join(H.state_dir(), "events")
+    oldest = H.local_day(now - ROW_DAYS * 86400)
+    present = set()
+    for path in sorted(glob.glob(os.path.join(folder, "????-??-??.jsonl"))):
+        day = os.path.basename(path)[:10]
+        if day < oldest:
+            continue
+        present.add(day)
+        entry = cache.setdefault(day, {"mark": {}, "rows": []})
+        mark, lines, reset = read_new(path, entry["mark"])
+        if mark is None:
+            continue
+        if reset:
+            entry["rows"] = []
+        entry["mark"] = mark
+        entry["rows"] += [r for r in json_lines(l for l in lines if l[:5] in (b'["t",', b'["d",', b'["s",'))]
+    for day in [d for d in cache if d not in present]:
+        del cache[day]
+    return [row for day in sorted(cache) for row in cache[day]["rows"]]
+
+
+def fold_jsonl(state, key, path, keep, stamp):
+    entry = state.setdefault(key, {"mark": {}, "rows": []})
+    mark, lines, reset = read_new(path, entry["mark"])
+    if mark is None:
+        entry["rows"] = []
+        return []
+    if reset:
+        entry["rows"] = []
+    entry["mark"] = mark
+    entry["rows"] = [r for r in entry["rows"] + [r for r in json_lines(lines) if isinstance(r, dict)]
+                     if (stamp(r) or 0) >= keep]
+    return entry["rows"]
+
+
+def tsv_days(folder, lo):
+    out = []
+    for path in sorted(glob.glob(os.path.join(folder, "????-??-??.tsv"))):
+        if os.path.basename(path)[:10] < H.local_day(lo):
+            continue
+        try:
+            with open(path) as handle:
+                out += [line.rstrip("\n").split("\t") for line in handle if line.strip()]
+        except OSError:
+            continue
+    return out
+
+
+def prune_journals(now):
+    cutoff = H.local_day(now - JOURNAL_DAYS * 86400)
+    for sub in ("hs", "merge-kick", "presence"):
+        for path in glob.glob(os.path.join(state_dir(), sub, "????-??-??.tsv")):
+            if os.path.basename(path)[:10] < cutoff:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
+
+def presence_minutes(lo):
+    minutes = {}
+    for fields in tsv_days(os.path.join(state_dir(), "presence"), lo):
+        try:
+            minute, idle = float(fields[0]), float(fields[1])
+        except (IndexError, ValueError):
+            continue
+        minute = minute * 60 if minute < 1e8 else minute
+        minutes[int(minute // 60 * 60)] = idle
+    return minutes
+
+
+def reactions(rows):
+    typed = {}
+    for row in rows:
+        if row[0] == "t":
+            typed.setdefault(row[2], []).extend(row[7])
+    return {k: sorted(v) for k, v in typed.items()}
+
+
+def reaction_of(typed, row):
+    times = typed.get(row[2], [])
+    i = bisect.bisect_left(times, row[3])
+    return times[i] if i < len(times) else None
+
+
+def with_presence(spans, typed, minutes, tail):
+    """Keep a candidate minute only while he was at the machine (HID idle < 2 min) or in the last R before
+    his reaction; a minute the watcher did not log is unknown coverage and stays."""
+    out = []
+    for a, b, row in spans:
+        rho = reaction_of(typed, row)
+        m = int(a // 60 * 60)
+        while m < b:
+            x0, x1 = max(a, m), min(b, m + 60)
+            idle = minutes.get(m)
+            if idle is not None and idle >= PRESENCE_IDLE_S:
+                x0 = max(x0, rho - tail) if rho is not None else x1
+            if x1 > x0:
+                if out and out[-1][2] is row and abs(out[-1][1] - x0) < 1e-6:
+                    out[-1] = (out[-1][0], x1, row)
+                else:
+                    out.append((x0, x1, row))
+            m += 60
+    return out
+
+
+def chat_fractions(row):
+    part = {k: v for k, v in (row[9] or {}).items() if k not in HOLE_LAYERS and v > 0}
+    total = sum(part.values())
+    if not total:
+        return {"residual": 1.0}
+    out = {}
+    for key, leaf in CHAT_LEAVES:
+        if part.get(key):
+            out[leaf] = out.get(leaf, 0.0) + part[key] / total
+    rest = sum(v for k, v in part.items() if k not in dict(CHAT_LEAVES))
+    if rest:
+        out["residual"] = out.get("residual", 0.0) + rest / total
+    return out
+
+
+def delegation_leaf(what):
+    if what == "Bash":
+        return "background Bash"
+    if what == "Agent:image-gen":
+        return "media"
+    if what == "Agent:review-waiter":
+        return "reviews"
+    if what.startswith("Agent:") and what.endswith("-worker"):
+        return "workers"
+    return "other"
+
+
+def partition(spans, extra, lo, hi):
+    """Each blocked second once: A before B, parallel spans sharing it equally; credit per (day, area, leaf)."""
+    items = [(max(a, lo), min(b, hi), "chat", row) for a, b, row in spans if min(b, hi) > max(a, lo)]
+    items += [(max(a, lo), min(b, hi), "delegation", row) for a, b, row in extra if min(b, hi) > max(a, lo)]
+    bounds = {x for item in items for x in item[:2]}
+    day = H.day_start(H.local_day(lo))
+    while day < hi:
+        bounds.add(max(lo, day))
+        day = H.day_end(H.local_day(day))
+    bounds = sorted(bounds)
+    order = sorted(range(len(items)), key=lambda i: items[i][0])
+    credit, sessions, active, at = {}, {}, set(), 0
+    shares = {}
+    for left, right in zip(bounds, bounds[1:]):
+        while at < len(order) and items[order[at]][0] <= left:
+            active.add(order[at])
+            at += 1
+        active = {i for i in active if items[i][1] > left}
+        if not active:
+            continue
+        chat = [i for i in active if items[i][2] == "chat"]
+        share = chat or list(active)
+        secs, today = (right - left) / len(share), H.local_day(left)
+        for i in share:
+            _, _, area, row = items[i]
+            if area == "chat":
+                fractions = shares.get(id(row)) or shares.setdefault(id(row), chat_fractions(row))
+            else:
+                fractions = {delegation_leaf(row[4]): 1.0}
+            for leaf, fraction in fractions.items():
+                key = (today, area, leaf)
+                credit[key] = credit.get(key, 0.0) + secs * fraction
+                sessions.setdefault((area, leaf), set()).add(row[2])
+    return credit, sessions
+
+
+def union_minutes(spans, extra, lo, hi):
+    inside = [(max(a, lo), min(b, hi)) for a, b, _ in spans + extra if min(b, hi) > max(a, lo)]
+    return H.union_secs(inside) / 60.0
+
+
+def speed_days(lo, now):
+    out = {}
+    for path in glob.glob(os.path.join(H.state_dir(), "speed-days", "????-??-??.json")):
+        day = os.path.basename(path)[:10]
+        if day >= H.local_day(lo):
+            out[day] = H.read_json(path, {})
+    return out
+
+
+def hist_mean(entry):
+    return entry[1] / float(entry[0]) if entry and entry[0] else None
+
+
+def machine_view(days, local_min_day):
+    """P: local attended minutes times each load band's share of time and its probe slowdown over the quiet floor."""
+    bands, probes = {}, {}
+    for acc in days.values():
+        machine = acc.get("machine") or {}
+        for band, secs in (machine.get("band_s") or {}).items():
+            bands[band] = bands.get(band, 0.0) + secs
+        for band, hist in (machine.get("probe_ms") or {}).items():
+            merged = probes.setdefault(band, H.hist_new())
+            H.hist_join(merged, hist)
+    floor = hist_mean(probes.get("<1"))
+    known = sum(v for k, v in bands.items() if k != "?")
+    view = {"band_share": {k: round(v / known, 3) for k, v in sorted(bands.items()) if k != "?"} if known else {},
+            "probe_ms": {k: round(hist_mean(v), 1) for k, v in sorted(probes.items()) if hist_mean(v) is not None},
+            "p_om_day": None, "unattributed_share": None, "swap_mb_max": None}
+    if floor and known:
+        excess = 0.0
+        for band, secs in bands.items():
+            slow = hist_mean(probes.get(band))
+            if band != "?" and slow and slow > floor:
+                excess += secs / known * (1 - floor / slow)
+        view["p_om_day"] = round(local_min_day * excess, 2)
+    labels = {}
+    for acc in days.values():
+        for label, secs in (acc.get("label_cpu_s") or {}).items():
+            labels[label] = labels.get(label, 0.0) + secs
+        swap = (acc.get("machine") or {}).get("swap_mb_max")
+        if swap is not None and swap >= 0:
+            view["swap_mb_max"] = max(view["swap_mb_max"] or 0, swap)
+    if sum(labels.values()):
+        view["unattributed_share"] = round(labels.get("unattributed", 0.0) / sum(labels.values()), 3)
+    view["label_cpu_s"] = {k: round(v, 1) for k, v in sorted(labels.items(), key=lambda x: -x[1])[:8]}
+    return view
+
+
+def background_view(days, lo, now, collector_rows, covered_days):
+    statusline = {"renders": 0, "idle": 0, "cpu_ms": 0, "cpu_n": 0, "session_hours": 0}
+    for acc in days.values():
+        line = acc.get("statusline") or {}
+        for key in ("renders", "idle", "cpu_ms", "cpu_n"):
+            statusline[key] += line.get(key) or 0
+        statusline["session_hours"] += len(line.get("session_hours") or ())
+    cpu_ms = statusline["cpu_ms"] / statusline["cpu_n"] * statusline["renders"] if statusline["cpu_n"] else None
+    kicks = [f for f in tsv_days(os.path.join(state_dir(), "merge-kick"), lo) if len(f) >= 3]
+    kick_cpu = sum(float(f[2]) for f in kicks if f[2].replace(".", "", 1).isdigit())
+    hs = [f for f in tsv_days(os.path.join(state_dir(), "hs"), lo) if len(f) >= 3 and f[0].isdigit() and f[1].isdigit()]
+    lag = [(int(f[1]) - int(f[0])) / 1e6 for f in hs if f[2] == "hs-lag" and int(f[0]) / 1e6 >= lo]
+    builds = [(int(f[1]) - int(f[0])) / 1e6 for f in hs if f[2] == "doctors:bg" and int(f[0]) / 1e6 >= lo]
+    collectors = {}
+    for row in collector_rows:
+        if (row.get("start") or 0) >= lo and isinstance(row.get("doctor"), str):
+            c = collectors.setdefault(row["doctor"], {"runs": 0, "walls": [], "cpu_s": 0.0})
+            c["runs"] += 1
+            c["walls"].append(float(row.get("wall_s") or 0))
+            c["cpu_s"] += float(row.get("cpu_s") or 0)
+    per_day = lambda x: round(x / covered_days, 2) if covered_days else None
+    return {
+        "statusline": {"renders_day": per_day(statusline["renders"]),
+                       "idle_share": round(statusline["idle"] / float(statusline["renders"]), 3) if statusline["renders"] else None,
+                       "cpu_min_day": per_day(cpu_ms / 60000.0) if cpu_ms is not None else None,
+                       "cpu_ms_per_session_hour": round(cpu_ms / statusline["session_hours"], 1)
+                       if cpu_ms is not None and statusline["session_hours"] else None},
+        "merge_kick": {"runs_day": per_day(len(kicks)), "cpu_min_day": per_day(kick_cpu / 60000.0)},
+        "hs": {"lag_events_day": per_day(len(lag)), "lag_min_day": per_day(sum(lag) / 60.0),
+               "bg_builds_day": per_day(len(builds)), "bg_build_p50_ms": round(H.median(builds) * 1000) if builds else None},
+        "collectors": {k: {"runs_day": per_day(v["runs"]), "wall_p50_s": round(H.median(v["walls"]), 2),
+                           "cpu_min_day": per_day(v["cpu_s"] / 60.0)} for k, v in sorted(collectors.items())},
+    }
+
+
+def iso_epoch(text):
+    return H.at_epoch(text) if isinstance(text, str) else (float(text) if isinstance(text, (int, float)) else None)
+
+
+def night_view():
+    nights = []
+    for path in glob.glob(os.path.join(doctors_dir(), "nights", "*.json")):
+        night = H.read_json(path, {})
+        events = [e for e in night.get("events") or () if isinstance(e, dict)]
+        start = iso_epoch(night.get("started_at"))
+        finish = next((iso_epoch(e.get("at")) for e in reversed(events) if e.get("phase") == "finish"), None) \
+            or iso_epoch(night.get("finished_at"))
+        if not start or not finish:
+            continue
+        landing = min([iso_epoch(e.get("at")) for e in events if e.get("phase") == "landing"
+                       and iso_epoch(e.get("at"))] or [None], key=lambda x: x or 0)
+        done = sum(1 for j in night.get("jobs") or () if isinstance(j, dict) and j.get("state") in ("merged", "nothing-to-do"))
+        nights.append({"id": night.get("id"), "started": start, "wall_h": round((finish - start) / 3600.0, 2),
+                       "first_landing_h": round((landing - start) / 3600.0, 2) if landing else None, "jobs_done": done})
+    nights.sort(key=lambda n: n["started"])
+    return {"last": nights[-1] if nights else None, "nights": len(nights)}
+
+
+def delegation_view(runs, lo):
+    pre, attempts, by_vendor = [], 0, {}
+    for run in runs:
+        if (run.get("ended_at") or 0) < lo:
+            continue
+        starts = run.get("cli_starts") or []
+        if starts and run.get("pid_started_at"):
+            secs = float(starts[0]) - float(run["pid_started_at"])
+            if secs >= 0:
+                pre.append(secs)
+                by_vendor.setdefault(str(run.get("vendor")), []).append(secs)
+        attempts += max(0, len(starts) - 1)
+    return {"runs": len([r for r in runs if (r.get("ended_at") or 0) >= lo]),
+            "pre_cli_p50_s": round(H.median(pre), 1) if pre else None, "reroutes": attempts,
+            "pre_cli_p50_s_by_vendor": {k: round(H.median(v), 1) for k, v in sorted(by_vendor.items())}}
+
+
+def day_values(day, credit, prompts, machine_day, statusline_day, kicks_day, runs, night):
+    """Unit metrics of one closed day, keyed metric|ident|band, with their exposure."""
+    out = {}
+    chat_min = sum(v for (d, area, _), v in credit.items() if d == day and area == "chat") / 60.0
+    if prompts.get(day):
+        out["chat.om_per_100_prompts|all|-"] = [round(chat_min / prompts[day] * 100, 3), prompts[day]]
+    by_vendor = {}
+    for run in runs:
+        if H.local_day(run.get("ended_at") or 0) == day and run.get("cli_starts") and run.get("pid_started_at"):
+            by_vendor.setdefault(str(run.get("vendor")), []).append(float(run["cli_starts"][0]) - float(run["pid_started_at"]))
+    for vendor, values in by_vendor.items():
+        out["delegation.pre_cli_s|%s|-" % vendor] = [round(H.median(values), 2), len(values)]
+    line = statusline_day or {}
+    if line.get("cpu_n") and line.get("session_hours"):
+        cpu = line["cpu_ms"] / float(line["cpu_n"]) * line["renders"]
+        out["background.statusline_cpu_ms_per_sh|all|-"] = [round(cpu / len(line["session_hours"]), 1), line["renders"]]
+    if kicks_day:
+        out["background.merge_kick_cpu_ms|all|-"] = [round(sum(kicks_day), 1), len(kicks_day)]
+    for band, hist in ((machine_day or {}).get("probe_ms") or {}).items():
+        if band != "?" and hist_mean(hist) is not None:
+            out["machine.probe_ms|probe|%s" % band] = [round(hist_mean(hist), 1), hist[0]]
+    if night and night.get("jobs_done") and H.local_day(night["started"]) == day:
+        out["night.wall_h_per_job|all|-"] = [round(night["wall_h"] / night["jobs_done"], 3), night["jobs_done"]]
+    return out
+
+
+def stored_days(now):
+    folder = os.path.join(state_dir(), "days")
+    cutoff = H.local_day(now - (LIMITS["baseline_days"] + LIMITS["regression_days"] + 1) * 86400)
+    out = {}
+    for path in glob.glob(os.path.join(folder, "????-??-??.json")):
+        day = os.path.basename(path)[:10]
+        if day >= cutoff:
+            out[day] = H.read_json(path, {})
+    return out
+
+
+def judge_regressions(days, today, component_om):
+    """A unit metric over 1.3 x its trailing 28-day median on the two latest closed days, each with its
+    exposure minimum, on a component worth >= 0.5 OM/d with a lever."""
+    closed = sorted(d for d in days if d < today)
+    judged, baselines, out = closed[-LIMITS["regression_days"]:], {}, []
+    history = closed[:-LIMITS["regression_days"]][-LIMITS["baseline_days"]:]
+    keys = {k for d in closed for k in (days[d].get("values") or {})}
+    for key in sorted(keys):
+        metric = key.split("|")[0]
+        component, exposure_min = METRICS.get(metric, (None, 0))
+        past = [days[d]["values"][key][0] for d in history if key in (days[d].get("values") or {})]
+        if not past:
+            continue
+        base = H.median(past)
+        baselines[key] = {"median": base, "days": len(past)}
+        if len(past) < LIMITS["baseline_min_days"] or len(judged) < LIMITS["regression_days"] or not base:
+            continue
+        seen = [(days[d].get("values") or {}).get(key) for d in judged]
+        if not all(v and v[1] >= exposure_min and v[0] > LIMITS["regression_ratio"] * base for v in seen):
+            continue
+        worth = component_om(component)
+        lever = any(l["component"] == component or l["component"].startswith(component + "/")
+                    for l in shown_levers(LEVERS))
+        if worth < LIMITS["worth_om_day"] or not lever:
+            continue
+        out.append({"key": key, "component": component, "value": seen[-1][0], "limit": round(LIMITS["regression_ratio"] * base, 3),
+                    "exposure": seen[-1][1], "days": judged, "om_day": round(worth, 2)})
+    return out, baselines
+
+
+def opportunity_fields(om_day, lever):
+    saving = round(om_day * lever["saving"], 2)
+    effort = EFFORT_H[lever["effort"]]
+    confidence = CONFIDENCE[lever["confidence"]]
+    return {"om_day": round(om_day, 2), "saving": saving, "confidence": confidence, "effort_h": effort,
+            "night_cost_h": lever["night_cost_h"], "score": score_of(saving, confidence, effort, lever["night_cost_h"]),
+            "levers": [lever["lever"]], "needs_egor": bool(lever.get("needs_egor")),
+            "proof": [PROOF[lever["proof"]], OUTPUT_PROOF],
+            "hooks": bool(lever.get("hooks")), "quality": lever["quality"],
+            "quality_evidence": lever.get("quality_evidence")}
+
+
+def score_of(saving, confidence, effort_h, night_cost_h):
+    return round(saving * confidence / (effort_h + night_cost_h), 3)
+
+
+def select(opportunities, regressions=()):
+    """Night pick (§3 Selection): the loud regressions first, each at its component's cheapest lever, then
+    opportunities by score, within the worker-hour budget, K, and one hook lever per night."""
+    chosen, spent, hooks = [], 0.0, 0
+    for reg in regressions:
+        levers = sorted((EFFORT_H[l["effort"]] + l["night_cost_h"], bool(l.get("hooks"))) for l in LEVERS
+                        if l["quality"] == "equivalent" and (l["component"] == reg["component"]
+                                                             or l["component"].startswith(reg["component"] + "/")))
+        cost, hook = levers[0] if levers else (0.0, False)
+        spent, hooks = spent + cost, hooks + hook
+    taken = len(regressions)
+    for o in opportunities:
+        fields = o["opportunity"]
+        cost = fields["effort_h"] + fields["night_cost_h"]
+        if fields["needs_egor"] or fields["quality"] != "equivalent" or fields["score"] < SCORE_MIN \
+                or taken + len(chosen) >= TOP_K or spent + cost > BUDGET_H:
+            continue
+        if fields["hooks"] and hooks >= HOOK_LEVERS:
+            continue
+        chosen.append(o["id"])
+        spent += cost
+        hooks += fields["hooks"]
+    return chosen
+
+
+def test_requirement(repo, rel):
+    for row in H.read_json(code_ledger_path(), {}).get("keep") or ():
+        if isinstance(row, dict) and row.get("path") == "%s/%s" % (repo, rel):
+            return row.get("requirement") or "kept by the ledger"
+    try:
+        with open(os.path.join(H.repos_dir(), repo, rel), errors="replace") as handle:
+            head = "".join(handle.readline() for _ in range(15))
+    except OSError:
+        return None
+    match = KEEP_WORDS.search(head)
+    return ("protects %s" % match.group(0)) if match else None
+
+
+def target_opportunity(target, om, lever, exposure, protected=None):
+    fields = dict(opportunity_fields(om, lever), target=target)
+    if protected:
+        fields["protected"] = protected
+    return {"id": "opportunity:%s" % target, "rule": "opportunity", "state": "watch",
+            "fact": "%s · %s min/day → saves %s · %s%s" % (target, fmt(om), fmt(fields["saving"]), lever["lever"],
+                                                          " · " + protected if protected else ""),
+            "value": fields["om_day"], "limit": LIMITS["worth_om_day"], "unit": "OM/d", "window_h": WINDOW_D * 24,
+            "exposure": exposure, "count": None, "first_seen": None, "last_seen": None, "evidence": [],
+            "ledger": None, "group": lever["component"].split("/")[0], "opportunity": fields}
+
+
+def moved_opportunities(component_om, days, now):
+    """The heavy-test and hot-hook rules bin/code-doctor judged until 2026-10-03: one opportunity per suite or hook,
+    priced at its share of the attended test or hook minutes. A suite whose keep row or head names a requirement
+    carries it as `protected`: its lever speeds the suite up and never drops it."""
+    out, secs = [], {}
+    for row in H.load_tests(now):
+        if row.get("label"):
+            secs.setdefault((row.get("repo") or os.path.basename(str(row.get("repo_root") or "")), row["label"]),
+                            []).append(row["secs"])
+    total = sum(sum(v) for v in secs.values())
+    for (repo, label), values in sorted(secs.items()):
+        rel = next((r for r in ("tests/%s.sh" % label, "tests/%s.py" % label)
+                    if os.path.isfile(os.path.join(H.repos_dir(), repo, r))), None)
+        if sorted(values)[len(values) // 2] >= HEAVY_TEST_S and rel:
+            om = (component_om("chat/tests") + component_om("chat/queue")) * sum(values) / total
+            out.append(target_opportunity("tests/%s/%s" % (repo, label), om, TEST_LEVER, len(values),
+                                          test_requirement(repo, rel)))
+    ms = {}
+    for day, acc in days.items():
+        for key, (_, us) in (acc.get("hook_cpu_us") or {}).items():
+            ms.setdefault(key, {})[day] = us / 1000.0
+    total = sum(sum(v.values()) for v in ms.values())
+    for key in sorted(k for k, v in ms.items() if max(v.values()) >= HOT_CPU_MS_DAY):
+        since = hook_changed_day(key)
+        kept = [v for day, v in ms[key].items() if not since or day > since]
+        if len(kept) >= HOT_MIN_DAYS and sum(kept) / len(kept) >= HOT_CPU_MS_DAY:
+            om = component_om("chat/hooks") * sum(ms[key].values()) / total
+            out.append(target_opportunity("hooks/%s" % key, om, HOOK_LEVER, len(kept)))
+    return out
+
+
+def hook_changed_day(key):
+    """An optimised hook is never charged for its old cost: only days after its script's last commit count."""
+    script = next((H.hook_script(h["command"]) for h in H.settings_hooks() if H.hook_key(h["command"]) == key), "")
+    if not script:
+        return None
+    real = os.path.realpath(script)
+    try:
+        out = subprocess.run(["git", "-C", os.path.dirname(real), "log", "-1", "--format=%ct", "--",
+                              os.path.basename(real)], capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return H.local_day(int(out)) if out.isdigit() else None
+
+
+def speed_rows(ledger):
+    return [r for r in ledger.get("rows") or () if isinstance(r, dict)
+            and (r.get("match") or {}).get("rule") in SPEED_RULES]
+
+
+def judge_digest(ledger):
+    digest = hashlib.sha256()
+    with open(os.path.realpath(__file__), "rb") as handle:
+        digest.update(handle.read())
+    dismissals = [r for r in speed_rows(ledger) if r.get("status") in ("not-a-bug", "weather")]
+    digest.update(json.dumps([dismissals, LIMITS, LEVERS, SCORE_MIN, BUDGET_H, TOP_K, H.C1_R_S, BANDS, PROOF, OUTPUT_PROOF],
+                             sort_keys=True).encode())
+    return digest.hexdigest()
+
+
+def equivalent(fix):
+    proof = fix.get("equivalence") if isinstance(fix, dict) else None
+    return isinstance(proof, dict) and all(str(proof.get(k) or "").strip() for k in EVIDENCE_KEYS)
+
+
+def speed_yield(ledger):
+    """A fixed row is proven only with its output-equivalence proof (identical decisions or results on the replay)
+    beside the time saving; without it the row stays pending."""
+    proven = pending = 0.0
+    for row in speed_rows(ledger):
+        om = float(row.get("om_day") or 0)
+        if row.get("status") == "fixed" and equivalent((row.get("fixes") or [None])[-1]):
+            proven += om
+        elif row.get("status") in ("fixed", "fixed-pending"):
+            pending += om
+    return {"proven_om_day": round(proven, 2), "pending_om_day": round(pending, 2)}
+
+
+def covers(baselines):
+    """The Harness rules a component judged against a baseline replaces: they turn watch with `judged_by`."""
+    judged = {METRICS[key.split("|")[0]][0] for key, base in baselines.items()
+              if key.split("|")[0] in METRICS and base["days"] >= LIMITS["baseline_min_days"]}
+    return [[rule, ident, component] for component, pairs in sorted(COVERS.items()) if component in judged
+            for rule, ident in pairs]
+
+
+def fmt(minutes):
+    if minutes is None:
+        return "–"
+    return "<1" if 0 < minutes < 1 else "%.0f" % minutes if minutes >= 10 else "%.1f" % minutes
+
+
+def hours(h):
+    return "%d h %02d m" % (int(h), round((h - int(h)) * 60)) if h is not None else "–"
+
+
+def collect(write, now):
+    started, cpu_start = time.monotonic(), collector_runs_cpu()
+    folder = state_dir()
+    state = H.read_json(os.path.join(folder, "state.json"), {})
+    ledger = H.load_ledger()[0] or {}
+    rows = fold_events(state, now)
+    collector_rows = fold_jsonl(state, "collector", os.path.join(doctors_dir(), "collector-runs.jsonl"),
+                                now - JOURNAL_DAYS * 86400, lambda r: r.get("start"))
+    runs = fold_jsonl(state, "worker_runs", worker_runs_path(), now - JOURNAL_DAYS * 86400, lambda r: r.get("ended_at"))
+    files = sorted(glob.glob(os.path.join(H.state_dir(), "events", "????-??-??.jsonl")))
+    lo = now - WINDOW_D * 86400
+    if files:
+        lo = max(lo, H.day_start(os.path.basename(files[0])[:10]))
+    covered = max((now - lo) / 86400.0, 1e-9)
+    typed = reactions(rows)
+    minutes = presence_minutes(lo)
+    presence = bool(minutes)
+    spans, extra = H.owner_spans(rows, R_HIGH if presence else R_INDEX)
+    if presence:
+        tail = H.C1_R_S[R_INDEX]
+        spans, extra = with_presence(spans, typed, minutes, tail), with_presence(extra, typed, minutes, tail)
+    credit, sessions = partition(spans, extra, lo, now)
+    starts = [r for r in rows if r[0] == "s" and r[3] == "chat" and r[1] >= lo]
+    start_s = {}
+    for r in starts:
+        start_s[H.local_day(r[1])] = start_s.get(H.local_day(r[1]), 0.0) + (r[4] or 0) + (r[5] or 0)
+        sessions.setdefault(("chat", "start"), set()).add(str(r[6]))
+    for day, secs in start_s.items():
+        credit[(day, "chat", "start")] = secs
+    days = speed_days(lo, now)
+    background = background_view(days, lo, now, collector_rows, covered)
+    if background["hs"]["lag_min_day"]:
+        for f in tsv_days(os.path.join(state_dir(), "hs"), lo):
+            if len(f) >= 3 and f[2] == "hs-lag" and f[0].isdigit() and int(f[0]) / 1e6 >= lo:
+                key = (H.local_day(int(f[0]) / 1e6), "background", "hs lag")
+                credit[key] = credit.get(key, 0.0) + (int(f[1]) - int(f[0])) / 1e6
+    tree = {}
+    for (day, area, leaf), secs in credit.items():
+        tree.setdefault(area, {})[leaf] = tree.get(area, {}).get(leaf, 0.0) + secs / 60.0 / covered
+    leaf_days = {}
+    for (day, area, leaf), secs in credit.items():
+        if secs >= 1:
+            leaf_days.setdefault((area, leaf), set()).add(day)
+    headline = sum(sum(v.values()) for v in tree.values())
+    areas = {area: round(sum(v.values()), 2) for area, v in tree.items()}
+    r_band = None if presence else [round(union_minutes(*H.owner_spans(rows, i), lo, now) / covered, 1) for i in (R_LOW, R_HIGH)]
+    local = sum(tree.get("chat", {}).get(leaf, 0.0) for leaf in LOCAL_LEAVES)
+    machine = machine_view(days, local)
+    night = night_view()
+    delegation = delegation_view(runs, lo)
+
+    def component_om(component):
+        if component is None:
+            return 0.0
+        if component == "machine/contention":
+            return machine["p_om_day"] or 0.0
+        if component == "background/statusline":
+            share = background_share(background, machine, covered)
+            return (machine["p_om_day"] or 0.0) * share if share is not None else 0.0
+        area, _, leaf = component.partition("/")
+        return sum(tree.get(area, {}).values()) if not leaf else tree.get(area, {}).get(leaf, 0.0)
+
+    today = H.local_day(now)
+    prompts = {}
+    for row in rows:
+        if row[0] == "t":
+            for x in row[7]:
+                prompts[H.local_day(x)] = prompts.get(H.local_day(x), 0) + 1
+    kicks = {}
+    for f in tsv_days(os.path.join(state_dir(), "merge-kick"), lo):
+        if len(f) >= 3 and f[0].isdigit() and f[2].replace(".", "", 1).isdigit():
+            kicks.setdefault(H.local_day(int(f[0]) / 1e6), []).append(float(f[2]))
+    stored = stored_days(now)
+    for day in sorted({d for d, _, _ in credit} | set(days)):
+        if day < today and H.day_start(day) >= lo and (day not in stored or write):
+            last = night["last"] if night["last"] and H.local_day(night["last"]["started"]) == day else None
+            stored[day] = {"day": day, "values": day_values(day, credit, prompts, (days.get(day) or {}).get("machine"),
+                                                            (days.get(day) or {}).get("statusline"), kicks.get(day),
+                                                            runs, last)}
+    regressions, baselines = judge_regressions(stored, today, component_om)
+
+    problems = []
+    for reg in regressions:
+        row = H.ledger_row(ledger, "regression", reg["key"])
+        metric, ident, band = reg["key"].split("|")
+        state_word = "new" if not row else "open" if row.get("status") == "open" else \
+            "fixed-pending" if row.get("status") == "fixed-pending" else "regressed" if row.get("status") == "fixed" else "watch"
+        problems.append({"id": row["id"] if row else "regression:%s" % reg["key"], "rule": "regression", "state": state_word,
+                         "fact": "%s %s over %s on %s (%s OM/d)" % (metric, reg["value"], reg["limit"], ", ".join(reg["days"]),
+                                                                  reg["om_day"]),
+                         "value": reg["value"], "limit": reg["limit"], "unit": metric.split(".")[-1], "window_h": 48,
+                         "exposure": reg["exposure"], "count": len(reg["days"]), "first_seen": reg["days"][0],
+                         "last_seen": reg["days"][-1], "evidence": [], "ledger": row["id"] if row else None,
+                         "group": reg["component"].split("/")[0], "component": reg["component"],
+                         "band": band, "ident": ident})
+    opportunities = []
+    components = {}
+    for lever in shown_levers(LEVERS):
+        components.setdefault(lever["component"], []).append(lever)
+    for component, levers in components.items():
+        om = component_om(component)
+        area, _, leaf = component.partition("/")
+        seen = len(leaf_days[(area, leaf)]) if (area, leaf) in leaf_days else len(days)
+        users = len(sessions.get((area, leaf), ()))
+        if om < LIMITS["worth_om_day"] or (seen < LIMITS["seen_days"] and users < LIMITS["seen_sessions"]):
+            continue
+        ranked = sorted((opportunity_fields(om, l) for l in levers), key=lambda f: (f["needs_egor"], -f["score"]))
+        best = dict(ranked[0], levers=[f["levers"][0] for f in ranked])
+        opportunities.append({"id": "opportunity:%s" % component, "rule": "opportunity", "state": "watch",
+                              "fact": "%s · %s min/day → saves %s · %s" % (component, fmt(om), fmt(best["saving"]), best["levers"][0]),
+                              "value": best["om_day"], "limit": LIMITS["worth_om_day"], "unit": "OM/d", "window_h": WINDOW_D * 24,
+                              "exposure": seen, "count": None, "first_seen": None, "last_seen": None, "evidence": [],
+                              "ledger": None, "group": area, "opportunity": best})
+    opportunities += moved_opportunities(component_om, days, now)
+    opportunities.sort(key=lambda o: (o["opportunity"]["needs_egor"], -o["opportunity"]["score"], o["id"]))
+    selection = select(opportunities, [p for p in problems if p["state"] in H.LOUD_STATES])
+    problems += opportunities
+    problem_count = sum(1 for p in problems if p["state"] in ("new", "open", "regressed"))
+
+    blind = []
+    residual = tree.get("chat", {}).get("residual", 0.0)
+    if residual >= LIMITS["blind_om_day"] and residual > LIMITS["residual_share"] * sum(tree.get("chat", {}).values()):
+        blind.append({"id": "residual", "what": "chat turn time no layer explains (%s min/day)" % fmt(residual),
+                      "reason": "residual is %.0f %% of attended turns" % (100 * residual / max(sum(tree["chat"].values()), 1e-9)),
+                      "since": None, "would_catch_if": "C1 names the layer: thinking, TTFR, or a tool without a result"})
+    if not presence:
+        blind.append({"id": "presence", "what": "whether he was at the machine during a blocked minute",
+                      "reason": "no presence journal; the R = 5 min reaction proxy and its R band stand in", "since": None,
+                      "would_catch_if": "the C8 watcher writes presence/<day>.tsv"})
+    if not days:
+        blind.append({"id": "speed-days", "what": "machine contention, statusline and census CPU",
+                      "reason": "no Harness speed-days file in the window", "since": None,
+                      "would_catch_if": "harness-doctor folds C6/C7 into speed-days/<day>.json"})
+    elif machine["p_om_day"] is None:
+        blind.append({"id": "contention-probe", "what": "contention pool P", "reason": "no probe in the lowest load band",
+                      "since": None, "would_catch_if": "memlogd writes probe_ms during a quiet hour"})
+    if not rows:
+        status = "blind"
+    else:
+        status = "problems" if problem_count else "ok"
+    elapsed = time.monotonic() - started
+    own = background["collectors"].get("speed") or {}
+    document = {
+        "as_of_s": int(now), "judge": judge_digest(ledger), "status": status, "problem_count": problem_count,
+        "problems": problems, "blind_spots": blind,
+        "self": {"collector_s": round(elapsed, 2), "error": None},
+        "covers": covers(baselines),
+        "window": {"from_s": int(lo), "to_s": int(now), "days": round(covered, 2)},
+        "presence": presence,
+        "headline": round(headline, 1),
+        "r_band": r_band,
+        "areas": areas,
+        "partition": {area: {leaf: round(v, 2) for leaf, v in sorted(leaves.items(), key=lambda x: -x[1])}
+                      for area, leaves in sorted(tree.items())},
+        "of_which": {"hooks": round(tree.get("chat", {}).get("hooks", 0.0), 2),
+                     "tests": round(tree.get("chat", {}).get("tests", 0.0) + tree.get("chat", {}).get("queue", 0.0), 2),
+                     "machine": machine["p_om_day"]},
+        "machine": machine, "background": background, "night": night, "delegation": delegation,
+        "baselines": baselines, "selection": selection,
+        "cost": {"collector_cpu_min_day": own.get("cpu_min_day") or 0.0, "fixer_worker_min": 0, "review_min": 0,
+                 "slot_queue_min": 0, "landing_delay_min": 0},
+        "yield": speed_yield(ledger),
+        "head": head_of(headline, r_band, presence, status),
+    }
+    document["menu"] = menu_lines(document)
+    document["timing"] = {"cpu_s": round(collector_runs_cpu() - cpu_start, 2)}
+    if write:
+        os.makedirs(folder, exist_ok=True)
+        for day, entry in stored.items():
+            if day < today:
+                os.makedirs(os.path.join(folder, "days"), exist_ok=True)
+                H.write_json(os.path.join(folder, "days", day + ".json"), entry)
+        H.write_json(os.path.join(folder, "state.json"), state)
+        prune_journals(now)
+        cutoff = H.local_day(now - (LIMITS["baseline_days"] + LIMITS["regression_days"] + 1) * 86400)
+        for path in glob.glob(os.path.join(folder, "days", "????-??-??.json")):
+            if os.path.basename(path)[:10] < cutoff:
+                os.unlink(path)
+    return document
+
+
+def collector_runs_cpu():
+    times = os.times()
+    return times.user + times.system + times.children_user + times.children_system
+
+
+def background_share(background, machine, covered):
+    statusline = (background["statusline"].get("cpu_min_day") or 0.0) + (background["merge_kick"].get("cpu_min_day") or 0.0)
+    labels = sum((machine.get("label_cpu_s") or {}).values()) / 60.0 / covered
+    total = statusline + labels
+    return statusline / total if total else None
+
+
+def head_of(headline, r_band, presence, status):
+    if status == "blind":
+        return "blind · no owner turns from Harness"
+    return "%s min/day" % fmt(headline) + (" · presence" if presence else " · R 2/10: %s/%s" % (fmt(r_band[0]),
+                                                                                              fmt(r_band[1])))
+
+
+def leaf_line(leaves, top=3):
+    return " · ".join("%s %s" % (leaf, fmt(v)) for leaf, v in sorted(leaves.items(), key=lambda x: -x[1])[:top])
+
+
+def menu_lines(document):
+    """The Speed block's own lines as [depth, flags, red, text] under its header line; harness-doctor's menu_text
+    lays them out at the top of the Harness menu."""
+    lines = []
+
+    def emit(depth, text, flags="", red=False):
+        lines.append([depth, flags, bool(red), text.replace("\t", " ").replace("\n", " ") or " "])
+
+    part = document.get("partition") or {}
+    chat, delegation = part.get("chat", {}), part.get("delegation", {})
+    emit(0, "Chat turns: %s min/day · %s" % (fmt(sum(chat.values())), leaf_line(chat)))
+    for leaf, v in chat.items():
+        emit(1, "%s %s min/day" % (leaf, fmt(v)), "d")
+    emit(0, "Delegation: +%s min/day · %s" % (fmt(sum(delegation.values())), leaf_line(delegation)))
+    for leaf, v in delegation.items():
+        emit(1, "%s %s min/day" % (leaf, fmt(v)), "d")
+    d = document["delegation"]
+    emit(1, "%d worker runs · pre-CLI p50 %s s · %d reroutes" % (d["runs"], d["pre_cli_p50_s"] if d["pre_cli_p50_s"] is not None
+                                                                 else "–", d["reroutes"]), "d")
+    of = document["of_which"]
+    emit(0, "Hooks and tests: of which %s and %s min/day" % (fmt(of["hooks"]), fmt(of["tests"])))
+    m = document["machine"]
+    high = sum(v for k, v in (m["band_share"] or {}).items() if k in ("2-4", ">4"))
+    emit(0, "Machine: %s · %s · %s unattributed" % (
+        "%s min/day contention" % fmt(m["p_om_day"]) if m["p_om_day"] is not None else "contention not measured",
+        "load ≥ 2/core %d %% of the time" % round(100 * high) if m["band_share"] else "load not measured",
+        "%d %%" % round(100 * m["unattributed_share"]) if m["unattributed_share"] is not None else "–"))
+    for band, share in (m["band_share"] or {}).items():
+        emit(1, "load %s/core: %d %% of the time · probe %s ms" % (band, round(100 * share), m["probe_ms"].get(band, "–")), "d")
+    b = document["background"]
+    emit(0, "Background: statusline %s CPU-min/day · merge-kick %s runs/day · hs lag %s/day" % (
+        fmt(b["statusline"]["cpu_min_day"]), fmt(b["merge_kick"]["runs_day"]), fmt(b["hs"]["lag_events_day"])))
+    for doctor, c in b["collectors"].items():
+        emit(1, "%s collector: %s runs/day · p50 %s s · %s CPU-min/day" % (doctor, fmt(c["runs_day"]), c["wall_p50_s"],
+                                                                          fmt(c["cpu_min_day"])), "d")
+    last = document["night"]["last"]
+    emit(0, "Night: last %s · first landing %s" % (hours(last["wall_h"]), hours(last["first_landing_h"]))
+         if last else "Night: no finished night")
+    emit(0, "-", "s")
+    opportunities = [p for p in document["problems"] if p["rule"] == "opportunity"]
+    ranked = [p for p in opportunities if not p["opportunity"]["needs_egor"]]
+    emit(0, "Opportunities · top %d of %d" % (min(len(ranked), 10), len(ranked)))
+    for rank, p in enumerate(ranked[:10], 1):
+        o = p["opportunity"]
+        emit(1, "%d · %s · saves %s min/day · %s · %s%s" % (
+            rank, p["id"].split(":", 1)[1], fmt(o["saving"]), next(k for k, v in EFFORT_H.items() if v == o["effort_h"]),
+            o["levers"][0], " · " + o["protected"] if o.get("protected") else ""), "d")
+    proposals = [p for p in opportunities if p["opportunity"]["needs_egor"]]
+    emit(0, "Needs Egor · %d proposal%s" % (len(proposals), "" if len(proposals) == 1 else "s")
+         if proposals else "Needs Egor: nothing", "" if proposals else "d")
+    for p in proposals:
+        o = p["opportunity"]
+        evidence = o.get("quality_evidence") or {}
+        emit(1, "%s · saves %s min/day · %s · %s: %s" % (p["id"].split(":", 1)[1], fmt(o["saving"]), o["levers"][0],
+                                                         evidence.get("compared", "–"), evidence.get("result", "–")), "d")
+    for p in document["problems"]:
+        if p["rule"] == "regression":
+            emit(0, p["fact"], red=p["state"] in ("new", "open", "regressed"))
+    emit(0, "not measured" if document["blind_spots"] else "not measured: nothing", "d")
+    for spot in document["blind_spots"]:
+        emit(1, spot["what"], "d")
+    cost, gain = document["cost"], document["yield"]
+    emit(0, "cost %s CPU-min/day · yield %s proven, %s pending min/day" % (
+        fmt(cost["collector_cpu_min_day"]), fmt(gain["proven_om_day"]), fmt(gain["pending_om_day"])), "d")
+    emit(0, "as of %s · window: %.1f d" % (time.strftime("%H:%M", time.localtime(document["as_of_s"])),
+                                           document["window"]["days"]), "d")
+    return lines
+
+
+def error_section(now, started, error):
+    return {"as_of_s": int(now), "judge": judge_digest(H.load_ledger()[0] or {}), "status": "error",
+            "problem_count": None, "problems": [], "blind_spots": [], "covers": [],
+            "self": {"collector_s": round(time.monotonic() - started, 2), "error": error},
+            "head": "error · " + error[:80], "menu": [[0, "", True, error]]}
+
+
+def guarded_collect(write, now):
+    started = time.monotonic()
+    try:
+        return collect(write, now)
+    except Exception as exc:
+        return error_section(now, started, H.error_line(exc))
+
+
+def blank_harness(now):
+    return {"status": "ok", "as_of_s": int(now), "problem_count": 0, "problems": [], "blind_spots": [], "sections": [],
+            "periods": {}, "extras": [], "title": "Harness doctor: OK", "footer": "as of %s" % time.strftime(
+                "%H:%M", time.localtime(now))}
+
+
+def merge(speed):
+    """Into Harness's latest.json and menu.txt under Harness's lock. A held lock is a Harness run in flight: it
+    carries the previous section over and execs this collector again when it ends, so the merge skips."""
+    import fcntl
+    folder = H.state_dir()
+    try:
+        lock = open(os.path.join(folder, "lock"), "a")
+    except OSError:
+        return False
+    with lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return False
+        document = H.read_json(os.path.join(folder, "latest.json"), None)
+        if not isinstance(document, dict) or document.get("status") == "error" or "sections" not in document:
+            return False
+        H.publish(folder, H.apply_speed(document, speed))
+    return True
+
+
+def main():
+    parser = argparse.ArgumentParser(description="The Speed block of the Harness doctor")
+    parser.add_argument("--json", action="store_true", help="print the speed section and persist nothing")
+    parser.add_argument("--menu", action="store_true", help="print the Harness menu with this section, persist nothing")
+    parser.add_argument("--quiet", action="store_true")
+    args = parser.parse_args()
+    now, started = now_s(), time.time()
+    if args.json or args.menu:
+        speed = guarded_collect(False, now)
+        if args.menu:
+            document = H.read_json(os.path.join(H.state_dir(), "latest.json"), None)
+            if not isinstance(document, dict) or "sections" not in document:
+                document = blank_harness(now)
+            print(H.menu_text(H.apply_speed(document, speed)), end="")
+        else:
+            print(json.dumps(speed, indent=1, ensure_ascii=False), end="")
+        return 1 if speed["status"] == "error" else 0
+    os.makedirs(state_dir(), exist_ok=True)
+    import fcntl
+    with open(os.path.join(state_dir(), "lock"), "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return 0
+        speed = guarded_collect(True, now)
+        merge(speed)
+    collector_runs.record("speed", started)
+    if not args.quiet or speed["status"] == "error":
+        print("Speed: " + speed["head"], file=sys.stderr if speed["status"] == "error" else sys.stdout)
+    return 1 if speed["status"] == "error" else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

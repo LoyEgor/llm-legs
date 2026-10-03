@@ -143,6 +143,8 @@ read-modify-write holds the runs directory's lock (`share/store-lock.sh`). Field
 - `quiet`: the same shape with state `quiet`: the ledger's `open` rows no problem of the document
   names (its window did not see them), assigned to areas like problems; they need no decision line;
 - `decisions`: `[{id, verdict, purpose, evidence}]`;
+- `knobs_at_launch` (a Harness night run): `{path: [lines]}`, the model, effort and thinking lines of
+  the live settings and worker-model files at launch;
 - `note`.
 
 Areas: the LLM doctor's block (from the ledger row, the id or the document's blocks), else its health
@@ -154,7 +156,11 @@ and `doctor` (`renamed`). The snapshot keeps the problems not `watch` or
 `fixed-pending`, plus, for the Harness doctor, the top 8 `watch` rows of Hooks and Hook waits by
 value × exposure.
 
-**Top-K exception (the Code doctor only).** Its snapshot takes at most K problems per run, by judged
+**Top-K exception (the Code doctor and Harness's Speed block).** Speed's `watch` opportunities enter
+the snapshot only as its `speed.selection` names them, in that order and `quality: equivalent` only,
+after the loud regressions, in area `speed`: `bin/speed-doctor` `select` charges each regression its
+component's cheapest lever, then takes opportunities by score while Σ (effort + night cost) ≤ 6 h,
+K ≤ 4, score ≥ `SCORE_MIN` and one hook lever per night. The Code doctor's snapshot takes at most K problems per run, by judged
 `value`: `TOP_K` 3, or `TOP_K_LOW_YIELD` 1 while its yield per 1000 tokens spent is under
 `LOW_YIELD_PER_KTOK` (`bin/code-doctor` `queue_k`). Before ranking it drops the problems in active
 work (an uncommitted path of a main checkout or another worktree, a path a live branch changed, an open
@@ -199,6 +205,15 @@ invariant rows and memory files naming it. Launch:
   `vendor-fingerprint close`. `doctor-fix touches <record> <id> <purpose>` exposes the purpose rule.
 - A Code run also refuses while `bin/code-doctor check <record> --base refs/night/<night>/base`
   prints a line (§6).
+- A Harness night run also refuses every added or removed line that sets a model, effort or thinking
+  knob (`KNOBS` in `bin/doctor-fix`): in its worktrees against `refs/night/<night>/base`, committed,
+  uncommitted or untracked, and in the live settings and worker-model files against
+  `knobs_at_launch`. Sites: settings `model`, `effortLevel`, `alwaysThinkingEnabled`,
+  `MAX_THINKING_TOKENS`, `modelSettings`; `worker-model`; the `share/worker-model.sh` table;
+  `share/worker-policy.md` effort lines; review-bench `share/rbench/catalog.py` tier efforts and
+  rosters; agent `model:`/`effort:` frontmatter; claudeb's default model (`bin/claudeb`,
+  `share/chat-open.sh`); brief-template `EFFORT:`/`MODEL:` lines. Each refusal names the site and
+  `file:line`.
 
 ## 5. Fixer procedure
 
@@ -232,6 +247,11 @@ Harness doctor (added 2026-09-29 by its owner chat):
   `hook_grows_size`, `hook_grows_repos`, `statusline`, `menu_build`, `fastpath`, `unjournaled`.
   The number of collector runs in the last 24 h that judged the problem is the doctor's own key
   `runs_red`.
+- Own key `speed` (design `docs/speed-doctor-design.md`): `bin/speed-doctor`, run after each Harness run,
+  writes it and lays its block at the top of `menu.txt`. Its problems carry `"speed": true` and group `Speed`:
+  `regression:<metric>|<ident>|<band>` counts, `opportunity:<component>` is `watch`. A rule whose component
+  Speed judges against a baseline is `watch` with `judged_by`, its own state kept as `was_state`, so no rule
+  counts twice in `problem_count`; each problem carries its verdict's `ident`, which Speed's `covers` match.
 
 LLM doctor (added 2026-09-29 by its owner chat):
 - `as_of` is ISO as §1 says; the epoch stays under the doctor's own key `as_of_s`, which the menu

@@ -320,6 +320,19 @@ if [[ "$old_mtime" =~ ^[0-9]+$ ]] && [ "$((now - old_mtime))" -le 15 ]; then
       for (i = 1; i <= q; i++) if (!(qpid[i] in npid)) print qline[i]
     }')
   if [ -n "$finished" ]; then
+    # run-suites and a test sourcing tests/lib/suite-journal.sh journal their own row before they exit.
+    declare -A journaled=()
+    suite_journal=${RUN_SUITES_JOURNAL:-${XDG_CACHE_HOME:-$HOME/.cache}/run-suites/runs.jsonl}
+    if [ -s "$suite_journal" ]; then
+      while IFS=$'\t' read -r jkind jid jstart; do journaled[$jkind/$jid]+=" $jstart"; done < <(tail -c 262144 "$suite_journal" 2>/dev/null |
+        jq -rR 'fromjson? | select(.started_at | type == "number") | (.started_at | floor) as $t
+          | if .kind == "suites" then "suites\t\(.pid)\t\($t)" else .suites | keys[] | "direct\t\(sub("\\.[a-z]+$"; ""))\t\($t)" end' 2>/dev/null)
+    fi
+    journaled_run() { # kind id start
+      local t
+      for t in ${journaled[$1/$2]-}; do [ "$((t - $3))" -le 3 ] && [ "$(($3 - t))" -le 3 ] && return 0; done
+      return 1
+    }
     while IFS=$'\037' read -r kind a start c d e f g h root spid _; do
       # A run seen only queued may have taken its slot and ended between two probes: run-suites leaves
       # its pointer as suites-<pid>.done on exit. A run killed while queued has none and is no run.
@@ -337,6 +350,10 @@ if [[ "$old_mtime" =~ ^[0-9]+$ ]] && [ "$((now - old_mtime))" -le 15 ]; then
             case "$top" in */.claude/worktrees/*) c="⧉ ${top##*/}" ;; *) c=${top##*/} ;; esac
           fi
         fi
+      fi
+      if [ "$d" = suites ] || [ "$kind/$c" = run/suites ]; then journaled_run suites "$spid" "$start" && continue
+      elif [ "$kind" = run ]; then journaled_run direct "$c" "$start" && continue
+      else journaled_run direct "$d" "$start" && continue
       fi
       # A code of 129-192 is a kill by signal (interrupt, memory guard), no verdict on the code under test.
       ok="" times=""

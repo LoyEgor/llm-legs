@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # bin/workflow-burn-gate.sh: a Workflow fan-out spends the SESSION's own account, so the gate warns
 # at 70% and denies at 95%. No network; every limits reading comes from a fixture file.
 set -u

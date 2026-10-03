@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # gemini-probe against a fake agy under a temp HOME: no real profile, keychain, log root or account
 # store is reachable.
 set -u

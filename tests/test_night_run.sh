@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -6,7 +7,9 @@ WORK="$(mktemp -d)"
 trap 'xargs kill 2>/dev/null <"$WORK/data/orchestrators"; rm -rf "$WORK"' EXIT
 WORK="$(cd -P "$WORK" && pwd)"
 asserts=0
-fail() { echo "FAIL: $*" >&2; exit 1; }
+exec 8>&2
+# fd 8: an assertion run as `assert_fails cmd 2>file` would otherwise send its FAIL line into the file.
+fail() { echo "FAIL: $*" >&8; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 assert_fails() {
   asserts=$((asserts + 1))
@@ -180,6 +183,11 @@ assert grep -qF "green suites not confirmed" "$WORK/err"
 assert grep -qxF "check $DOCTORS_DIR/runs/$cref.json --base refs/night/ncode/base --landing" "$DATA/code-checks"
 night job ncode set "$cref" state=merged suites=passed >/dev/null || fail "a code job with its suites passed lands"
 assert jqe --arg r "$cref" '[.jobs[] | select(.ref == $r)][0] | .state == "merged" and .suites == "passed"' "$NIGHTS/ncode.json"
+# Each code-doctor check is a timed repository validation, a refused one included; the suite pass and the
+# landing follow the passing one.
+assert jqe --arg r "$cref" '[.events[] | select(.job == $r) | [.phase, .check, .ok]]
+  == [["add", null, null], ["validate", "code", false], ["validate", "code", false], ["validate", "code", true], ["suites", null, null], ["landing", null, null]]
+  and (.events | all(.secs == null or (.secs | type) == "number"))' "$NIGHTS/ncode.json"
 assert_fails night job ncode set "$cref" suites=green 2>/dev/null
 lref="leftover-night-n0-$cref"
 printf '{"id": "%s", "doctor": "code", "night": "n0"}\n' "$cref" >"$DOCTORS_DIR/runs/$cref.json"
@@ -270,6 +278,32 @@ assert grep -qE "^blocked-on-egor · debt · p1( · [^ ]+)* · step 10 needs his
 assert [ "$(wc -l <"$WORK/report" | tr -d ' ')" = 19 ]
 assert [ "$(awk '{ print length }' "$WORK/report" | sort -n | tail -1)" -le 100 ]
 assert cmp -s "$WORK/report" <(night report)
+
+# Phase events: appended in order, numbered by position, stamped, each job event chained to that
+# job's previous one; job add and set leave one each, and the job objects stay as they were.
+assert jqe '[.events[].id] == [range(1; (.events | length) + 1)]
+  and (.events | all(.at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")))
+  and .events[0] == {id: 1, at: .events[0].at, phase: "add", job: "llm-20260930T010203Z", pred: [], kind: "fixer"}
+  and ([.events[] | select(.phase == "add") | .job] == [.jobs[].ref])
+  and (.events as $e | [range(0; $e | length) as $i | $e[$i] | select(.job != null)
+    | .pred == ([$e[:$i][] | select(.job == $e[$i].job) | .id] | .[-1:])] | all)
+  and (.jobs | all(has("added_at") or has("events") | not))' "$R"
+assert jqe '[.events[] | select(.job == "llm-20260930T010203Z") | [.phase, .check, .ok]][0:5]
+  == [["add", null, null], ["validate", "review", true], ["landing", null, null], ["set", null, null], ["validate", "push", false]]
+  and ([.events[] | select(.job == "llm-20260930T010203Z" and .phase == "set")][0].keys == ["commits", "pushed", "review"])' "$R"
+assert jqe 'any(.events[]; .job == "p7" and .phase == "validate" and .check == "review" and .ok == false)
+  and any(.events[]; .job == "p1" and .phase == "owner-pause")
+  and any(.events[]; .job == "debt-round" and .phase == "state" and .state == "left")' "$R"
+# A refusal behind a held lock is not recorded: it never waits for the lock.
+assert jqe '[.events[] | select(.job == "llm-20260930T010203Z" and .phase == "validate" and .check == "push") | .ok]
+  == [false, false, false, true, true]' "$R"
+# The close follows every job's last event; the branch pruning after it is timed.
+assert jqe '.events[-2].phase == "finish" and .events[-1].phase == "prune" and .events[-1].pred == [.events[-2].id]
+  and (.events[-1].secs | type) == "number"
+  and .events[-2].pred == ([.events[:-2][] | select(.job != null)] | group_by(.job) | map(last.id) | sort)' "$R"
+# Leaving an owner pause is a phase of its own.
+night job "$id" set p1 state=nothing-to-do >/dev/null || fail "resume p1"
+assert jqe '[.events[] | select(.job == "p1") | .phase][-2:] == ["owner-resume", "state"]' "$R"
 jq '.started_at = "2026-01-01T00:00:00Z"' "$R" >"$WORK/tmp" && mv "$WORK/tmp" "$R"
 
 # A clean night reads green; a merged job not pushed turns it red.
@@ -377,6 +411,8 @@ assert [ "$(wc -l <"$WORK/base.err" | tr -d ' ')" = 5 ]
 assert [ "$(git -C "$WORK/snap" rev-parse "refs/night/$id6/base^")" = "$(git -C "$WORK/snap" rev-parse HEAD)" ]
 assert [ "$(git -C "$WORK/snap" status --porcelain)" = "$before_status" ]
 assert jqe --arg c "$(git -C "$WORK/snap" rev-parse "refs/night/$id6/base")" '.bases.snap == $c' "$(record "$id6")"
+assert jqe '.events[-1] | .phase == "base" and .repos == 1 and .pred == [] and .job == null and (.secs | type) == "number"' \
+  "$(record "$id6")"
 night finish "$id6" >/dev/null
 
 # Resume: the SAME night reopens under a new orchestrator for its unfinished jobs, the old session kept
@@ -417,6 +453,8 @@ night start --resume "$id6" >/dev/null || fail "resume every unfinished job"
 assert jqe --arg o "$old_session" --arg n "$new_session" '.previous_sessions == [$o, $n]
   and ([.jobs[] | [.ref, .kind, .state]] == [["codex-e1", "vendor", "pending"], ["f-done", "fixer", "nothing-to-do"],
     ["debt", "debt", "pending"]])' "$R6"
+assert jqe '[.events[] | select(.phase == "resume")] | length == 2 and .[0].scope == "codex-e1" and (.[1] | has("scope") | not)
+  and (.[1].pred | length) == 1' "$R6"
 stop_chat "$(jq -r .session "$R6")"
 night finish "$id6" >/dev/null
 night job "$id6" set debt state=nothing-to-do >/dev/null

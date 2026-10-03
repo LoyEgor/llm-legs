@@ -24,7 +24,11 @@ session_id=$(field '.session_id' | tr -cd 'A-Za-z0-9_-')
 tag_file="$HOME/.cache/claude-worker-tags/$session_id/$agent_id"
 [ -f "$tag_file" ] || exit 0
 release() {
-  grep -q '^stopped=' "$tag_file" 2>/dev/null || printf 'stopped=%s\n' "$(date +%s)" >>"$tag_file" 2>/dev/null
+  local returned=${EPOCHREALTIME:-}
+  returned=${returned/,/.}
+  if [ -n "$returned" ]; then returned=${returned%???}; else returned=$(date +%s); fi
+  grep -q '^stopped=' "$tag_file" 2>/dev/null ||
+    printf 'stopped=%s\nrelay_returned_at=%s\n' "${returned%.*}" "$returned" >>"$tag_file" 2>/dev/null
   exit 0
 }
 
@@ -62,7 +66,7 @@ if [ $((now - last)) -lt 60 ]; then count=$((count + 1)); else count=1; fi
 printf '%s %s\n' "$now" "$count" >"$holds" 2>/dev/null || exit 0
 [ "$count" -le 5 ] || release
 if grep -q '^stopped=' "$tag_file" 2>/dev/null; then
-  grep -v '^stopped=' "$tag_file" >"$tag_file.tmp.$$" 2>/dev/null && mv -f "$tag_file.tmp.$$" "$tag_file"
+  grep -v '^stopped=\|^relay_returned_at=' "$tag_file" >"$tag_file.tmp.$$" 2>/dev/null && mv -f "$tag_file.tmp.$$" "$tag_file"
 fi
 
 case "$agent_type" in

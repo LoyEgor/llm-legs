@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # `geminib families` (shared-invariants row `cr`): the one Gemini family list, fetched from a fake
 # `agy models`, cached in a temp GEMINIB_CACHE_DIR, never the real ~/.cache/geminib.
 set -u

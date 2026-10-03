@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # agy-quota.py against a stub agy: quota comes from print mode `/usage`, and a logged-out leg is
 # the stderr line, read before the timeout, never a browser window.
 set -u

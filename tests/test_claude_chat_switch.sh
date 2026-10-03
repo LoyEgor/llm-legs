@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # Hermetic tests for bin/claude-chat-switch: fixture HOME/profiles/projects, a
 # stub `hs` that captures the exact invocation payload, and a stub `ps` so the
 # claude-ancestor walk resolves deterministically. Nothing touches the real

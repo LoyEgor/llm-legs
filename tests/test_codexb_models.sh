@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # `codexb models` (shared-invariants row `cv`): the one Codex model list, read from the newest
 # models_cache.json of fixture homes, never ~/.codex or a real codexb profile.
 set -u

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # Standing reminder for every active experiment in this repo: an entry past its
 # review_by fails here, so the owner gets asked for a decision instead of the
 # scaffolding quietly becoming architecture. Never bump a date or weaken a check

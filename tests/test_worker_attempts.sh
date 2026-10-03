@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # The worker-attempts journal tokenmap zones worker sessions by: one line per attempt session, written
 # with the account the attempt ran on, never twice for one session of a run, and bounded by rotation.
 set -u

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # share/chat-account.sh: the one answer to which vendor and account THIS chat spends. Every surface
 # that reads a usage row for its own session asks it, so the order of the facts is the contract.
 set -u

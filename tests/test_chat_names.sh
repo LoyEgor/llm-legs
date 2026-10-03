@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # Hermetic tests for share/chat_names.py — the one resolver every surface names a chat through.
 #
 # The rule it enforces: a chat surfaces under the name Claude Code gave it and under nothing else.

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # `grokb export-token` for a confined run: what leaves the machine, and what the command does when
 # the saved access token is shorter than the run that asked for it.
 set -u

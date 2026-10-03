@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # gemini-weather reads fixture agy logs under a temp HOME: no real log root, profile or account
 # store is reachable.
 set -u

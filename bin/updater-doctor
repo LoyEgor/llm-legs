@@ -14,6 +14,9 @@ import sys
 import time
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
+import collector_runs  # noqa: E402
+
 HOME = os.path.expanduser("~")
 
 LIMITS = {
@@ -475,4 +478,7 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    started = time.time()
+    code = main()
+    collector_runs.record("updater", started)
+    sys.exit(code)

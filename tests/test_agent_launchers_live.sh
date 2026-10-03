@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # A relay agent spells its launcher as a bare word, so a rename that leaves no link in
 # ~/.local/bin fails only inside the agent, as `command not found`, and no fixture suite sees it.
 set -u

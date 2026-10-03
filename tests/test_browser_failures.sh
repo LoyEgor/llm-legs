@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # The hidden-Chrome routes report every failed attempt as a BROWSER_ line; llm-doctor turns those lines into
 # browser words and doctor-fix sends their fixer to the engine. Fixture stores only, under a temp HOME.
 set -u

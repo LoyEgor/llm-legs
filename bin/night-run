@@ -77,6 +77,19 @@ night_set() { # id jq-filter args...
   jq "$@" "$filter" "$file" >"$tmp" && mv -f "$tmp" "$file" || { rm -f "$tmp"; return 1; }
 }
 
+# pred: the job's previous event, `"last"` the night's previous one, `"jobs"` every job's last.
+JQ_EVENTS='def events($new; $t): reduce $new[] as $x (.; (.events // []) as $e
+  | .events = $e + [{id: ($e | length + 1), at: ($x.at // $t), phase: $x.phase, job: ($x.job // null),
+      pred: (if $x.pred == "last" then [$e[-1].id // empty]
+        elif $x.pred == "jobs" then [$e | map(select(.job != null)) | group_by(.job)[] | last.id] | sort
+        elif ($x.job // null) == null then []
+        else [$e[] | select(.job == $x.job) | .id] | .[-1:] end)}
+    + ($x | del(.at, .phase, .job, .pred))]);'
+
+night_events() { # id events-json (locked)
+  night_set "$1" "$JQ_EVENTS"' events($e; $t)' --argjson e "$2" --arg t "$(stamp)"
+}
+
 known_night() { # id
   case $1 in */* | '' | .*) die "not a night id: $1" ;; esac
   [ -s "$(night_file "$1")" ] || die "no night $1 under $nights_dir"
@@ -150,13 +163,14 @@ resume_night() { # id job-ref-or-empty (locked): reopens the night for a new orc
   else
     jq -e "$JQ_UNFINISHED"' any(.jobs[]; unfinished)' "$file" >/dev/null || die "night $id has no unfinished job"
   fi
-  night_set "$id" "$JQ_UNFINISHED"' .previous_sessions = ((.previous_sessions // []) + [.session | values])
+  night_set "$id" "$JQ_UNFINISHED$JQ_EVENTS"' .previous_sessions = ((.previous_sessions // []) + [.session | values])
     | .session = null | .opener = $opener | .finished_at = null | .doctors_after = null | .doctor_states_after = null | .note = null
     | .jobs |= map(if unfinished and ($job == "" or .ref == $job) then .state = "pending" else . end)
     | if $job == "" and ([.jobs[] | select(.kind == "debt" and .state == "pending")] | length) == 0
       then .jobs += [{kind: "debt", ref: "debt-\([.jobs[] | select(.kind == "debt")] | length + 1)", state: "pending",
-        reason: null, branch: null, review: null, commits: [], pushed: false}] else . end' --arg job "$job" \
-    --argjson opener "$$" ||
+        reason: null, branch: null, review: null, commits: [], pushed: false}] else . end
+    | events([{phase: "resume", pred: "last"} + (if $job == "" then {} else {scope: $job} end)]; $t)' --arg job "$job" \
+    --argjson opener "$$" --arg t "$(stamp)" ||
     die "cannot write night $id"
 }
 
@@ -288,7 +302,7 @@ snapshot() { # dir id -> refs/night/<id>/base: the checkout as it stands
 # Night worktrees start from refs/night/<id>/base, not HEAD: main carries days of uncommitted work
 # (the doctors themselves among it), and a branch from HEAD would fix code that no longer exists.
 cmd_base() {
-  local id=$1 line commit bases='{}'
+  local id=$1 line commit bases='{}' at=$(stamp) began=$SECONDS
   known_night "$id" || die "no night $id"
   [ -r "$sweep_repos" ] || die "cannot read $sweep_repos"
   while IFS= read -r line; do
@@ -298,7 +312,8 @@ cmd_base() {
     printf '%s\t%s\n' "$(basename "$line")" "$commit"
   done <"$sweep_repos"
   lock
-  night_set "$id" '.bases = $b' --argjson b "$bases" || die "cannot write night $id"
+  night_set "$id" "$JQ_EVENTS"' .bases = $b | events([{phase: "base", at: $at, secs: $s, repos: ($b | length)}]; $t)' \
+    --argjson b "$bases" --arg at "$at" --argjson s "$((SECONDS - began))" --arg t "$(stamp)" || die "cannot write night $id"
 }
 
 # A leftover moves into the night's own namespace, where the review-flow gate lets workers commit:
@@ -364,7 +379,7 @@ adopt_undo() { # branch adopted -> drops the night branch and worktree of every 
 }
 
 cmd_job() {
-  local id=${1:-} verb=${2:-} kind ref branch='' adopted=''
+  local id=${1:-} verb=${2:-} kind ref branch='' adopted='' at=$(stamp) began=$SECONDS adopt='{}'
   [ -n "$id" ] || usage
   known_night "$id"
   case $verb in
@@ -382,14 +397,17 @@ cmd_job() {
         [ -z "$branch" ] || usage
         adopt_leftover "$id" "$ref"
         ref=${branch##*/}
+        adopt="{\"adopt_secs\": $((SECONDS - began))}"
       fi
       lock
       jq -e --arg r "$ref" 'any(.jobs[]; .ref == $r)' "$(night_file "$id")" >/dev/null &&
         die "night $id already has job $ref"
-      night_set "$id" '.jobs += [{kind: $k, ref: $r, state: "pending", reason: null,
+      night_set "$id" "$JQ_EVENTS"' .jobs += [{kind: $k, ref: $r, state: "pending", reason: null,
         branch: (if $b == "" then null else $b end), review: null, commits: [], pushed: false}
-        + (if $a == null then {} else {adopted: $a} end)]' \
-        --arg k "$kind" --arg r "$ref" --arg b "$branch" --argjson a "${adopted:-null}" || die "cannot write night $id"
+        + (if $a == null then {} else {adopted: $a} end)]
+        | events([{phase: "add", at: $at, job: $r, kind: $k} + $adopt]; $t)' \
+        --arg k "$kind" --arg r "$ref" --arg b "$branch" --argjson a "${adopted:-null}" \
+        --arg at "$at" --argjson adopt "$adopt" --arg t "$(stamp)" || die "cannot write night $id"
       printf 'night %s: job %s %s added\n' "$id" "$kind" "$ref" ;;
     set) shift 2; job_set "$id" "$@" ;;
     *) usage ;;
@@ -398,6 +416,18 @@ cmd_job() {
 
 job_of() { # night-file ref patch -> the job with patch applied, empty when there is none
   jq -c --arg r "$2" --argjson p "$3" 'first(.jobs[] | select(.ref == $r)) + $p' "$1"
+}
+
+# A refusal never waits on a held nights lock, so it is recorded only when the lock is free at once.
+checked_event() { # check; reads job_set's id, ref, at, began and refusal, appends to its events
+  events=$(jq -c --arg r "$ref" --arg c "$1" --arg at "$at" --argjson s "$((SECONDS - began))" --arg why "$refusal" \
+    '. + [{phase: "validate", at: $at, job: $r, check: $c, ok: ($why == ""), secs: $s}]' <<<"$events")
+  [ -n "$refusal" ] || return 0
+  if LLM_STORE_LOCK_RETRIES=1 store_lock_acquire "$lock_dir"; then
+    night_events "$id" "$events" || :
+    store_lock_release "$lock_dir"
+  fi
+  die "$refusal"
 }
 
 job_set() { # id ref key=value...
@@ -422,30 +452,36 @@ job_set() { # id ref key=value...
       *) die "no job key $key: state, reason, branch, review, commits, pushed or suites" ;;
     esac
   done
-  local file job checked='' refusal='' round code_run
+  local file job checked='' refusal='' round code_run events='[]' at began
   file=$(night_file "$id")
   if [ "$pushed" = true ]; then
     job=$(job_of "$file" "$ref" "$patch")
     [ -n "$job" ] || die "night $id has no job $ref"
     checked=$(jq -c '.commits' <<<"$job")
     [ "$checked" != '[]' ] || die "pushed=true needs the job's commits first"
+    at=$(stamp) began=$SECONDS
     while IFS=$'\t' read -r repo hash; do
       dir=$(repo_dir "$repo") || die "no repository $repo: not an absolute path nor a basename in $sweep_repos"
       refusal=$(push_refusal "$dir" "$hash" "$id")
-      [ -z "$refusal" ] || die "$refusal"
+      [ -z "$refusal" ] || break
     done < <(jq -r '.commits[] | [.repo, .hash] | @tsv' <<<"$job")
+    checked_event push
   fi
   if jq -e 'has("state") or has("review")' <<<"$patch" >/dev/null; then
     job=$(job_of "$file" "$ref" "$patch")
     [ -n "$job" ] || die "night $id has no job $ref"
     round=$(jq -r 'select(.state == "merged") | .review // empty' <<<"$job")
-    [ -z "$round" ] || refusal=$(review_refusal "$ref" "$round")
-    [ -z "$refusal" ] || die "$refusal"
+    if [ -n "$round" ]; then
+      at=$(stamp) began=$SECONDS
+      refusal=$(review_refusal "$ref" "$round")
+      checked_event review
+    fi
     code_run=$(jq -r 'select(.state == "merged") | [.ref, .adopted[]?.branch]
       | map(strings | capture("(?<r>code-code-[0-9]{8}T[0-9]{6}Z(-[0-9a-f]+)?)$").r) | first // empty' <<<"$job")
     if [ -n "$code_run" ]; then
+      at=$(stamp) began=$SECONDS
       refusal=$(code_refusal "$id" "$code_run" "${suites:-$(jq -r '.suites // ""' <<<"$job")}")
-      [ -z "$refusal" ] || die "$refusal"
+      checked_event code
     fi
   fi
   lock
@@ -463,27 +499,40 @@ job_set() { # id ref key=value...
   esac
   [ "$pushed" != true ] || [ "$(jq -c '.commits' <<<"$job")" = "$checked" ] ||
     die "the job's commits changed while origin was checked: set pushed=true again"
-  night_set "$id" '.jobs |= map(if .ref == $r then . + $p else . end)' --arg r "$ref" --argjson p "$patch" ||
+  night_set "$id" "$JQ_EVENTS"' (first(.jobs[] | select(.ref == $r)) | .state) as $was
+    | .jobs |= map(if .ref == $r then . + $p else . end)
+    | events($ev + [
+        (if $p.suites == "passed" then {phase: "suites", job: $r} else empty end),
+        (if ($p | has("state")) and $was == "blocked-on-egor" and $p.state != $was then {phase: "owner-resume", job: $r} else empty end),
+        (if $p.state == "merged" then {phase: "landing", job: $r}
+         elif $p.state == "blocked-on-egor" then {phase: "owner-pause", job: $r}
+         elif $p | has("state") then {phase: "state", job: $r, state: $p.state} else empty end),
+        (if $p.pushed == true then {phase: "pushed", job: $r} else empty end),
+        ($p | del(.state, .suites) | if .pushed == true then del(.pushed) else . end | keys | if length > 0 then {phase: "set", job: $r, keys: .} else empty end)]; $t)' \
+    --arg r "$ref" --argjson p "$patch" --argjson ev "$events" --arg t "$(stamp)" ||
     die "cannot write night $id"
   printf 'night %s: job %s %s\n' "$id" "$ref" "$(jq -r '[.state, (if .pushed then "pushed" else empty end)] | join(" ")' <<<"$job")"
 }
 
 cmd_finish() {
-  local id=${1:-} pruned
+  local id=${1:-} pruned at began
   [ -n "$id" ] && [ $# -eq 1 ] || usage
   known_night "$id"
   lock
   jq -e '.finished_at == null' "$(night_file "$id")" >/dev/null || die "night $id is already finished"
-  night_set "$id" '.finished_at = $t | .doctors_after = $after | .doctor_states_after = $states
-    | .jobs |= map(if .state == "pending" then .state = "left" | .reason = "no outcome recorded by the close" else . end)' \
+  night_set "$id" "$JQ_EVENTS"' .finished_at = $t | .doctors_after = $after | .doctor_states_after = $states
+    | .jobs |= map(if .state == "pending" then .state = "left" | .reason = "no outcome recorded by the close" else . end)
+    | events([{phase: "finish", pred: "jobs"}]; $t)' \
     --arg t "$(stamp)" --argjson after "$(doctor_counts)" --argjson states "$(doctor_states)" || die "cannot write night $id"
   unlock
   printf 'night %s finished\n' "$id"
+  at=$(stamp) began=$SECONDS
   pruned=$(prune_landed)
   [ -z "$pruned" ] || printf '%s\n' "$pruned"
   lock
-  night_set "$id" '.leftovers = [$p | split("\n")[] | capture("^leftover (?<repo>[^ ]+) (?<branch>[^:]+): (?<why>.*)$")]' \
-    --arg p "$pruned" || die "cannot write night $id"
+  night_set "$id" "$JQ_EVENTS"' .leftovers = [$p | split("\n")[] | capture("^leftover (?<repo>[^ ]+) (?<branch>[^:]+): (?<why>.*)$")]
+    | events([{phase: "prune", at: $at, pred: "last", secs: $s}]; $t)' \
+    --arg p "$pruned" --arg at "$at" --argjson s "$((SECONDS - began))" --arg t "$(stamp)" || die "cannot write night $id"
 }
 
 # A chat at work moves its branch (create, commit and rebase each write the reflog) or leaves files dirty:

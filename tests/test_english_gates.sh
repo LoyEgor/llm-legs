@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # Model-to-model text is English in both directions: the brief a worker is handed, and the result
 # it hands back. The measurement itself is `bin/cyrillic-share`.
 set -u
@@ -9,6 +10,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUNNER="$ROOT/bin/worker-run"
 SHARE="$ROOT/bin/cyrillic-share"
 WORK="$(mktemp -d)"
+export WORKER_STATS_DIR="$WORK/worker-stats"
 export GEMINIB_CACHE_DIR="$WORK/geminib-cache"
 . "$ROOT/tests/fixtures/geminib-families.sh"
 trap 'rm -rf "$WORK"' EXIT

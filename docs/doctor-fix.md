@@ -167,6 +167,13 @@ timing asserts load-robust, cache fixtures, in any sweep repository (a night run
 worktree in each); every assert keeps its coverage. Menu delays: the packet names the menu's build
 files (`hammerspoon/automation_menu.lua`, `llm-legs/hammerspoon/llm-limits.lua`).
 
+### Speed: same intelligence, less waiting
+
+A `speed` run holds the Speed block's regressions and its chosen `opportunity:` rows; each carries
+its lever, saving and proof in `opportunity` and `docs/speed-doctor-design.md` §5 bounds what may
+change. Never touch a model, effort or thinking knob: a night `close` refuses any such added or
+removed line and names it (`docs/doctors-contract.md` §4).
+
 ### The judge is not yours to loosen
 
 The judge is `LIMITS` and the rules in `bin/harness-doctor`, the dismissal rows of

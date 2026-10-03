@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # llm-doctor reads fixture bench, worker-run and image-leg stores under a temp HOME: no real store is reachable.
 set -u
 
@@ -248,6 +249,10 @@ assert "$DOCTOR" --dry-run --json >"$WORK/doc.json"
 assert test "$(find "$LLM_DOCTOR_DIR" -type f | sort | tr '\n' ' ')" = "$before"
 # --json only prints: the menu's cache keeps its own window.
 assert "$DOCTOR" --block reviewers --json >"$WORK/doc-block.json"
+RUNS="$WORK/doctors-runs"
+DOCTORS_DIR="$RUNS" DOCTOR_TRIGGER=menu "$DOCTOR" --dry-run --json </dev/null >/dev/null
+assert jq -es 'length == 1 and (.[0] | (keys == ["cpu_s", "doctor", "start", "trigger", "wall_s"])
+  and .doctor == "llm" and .trigger == "menu" and .wall_s > 0 and .cpu_s > 0)' "$RUNS/collector-runs.jsonl" >/dev/null
 assert test "$(find "$LLM_DOCTOR_DIR" -type f | sort | tr '\n' ' ')" = "$before"
 # An unwritable rollup directory costs the frozen days, never the collection.
 chmod 500 "$LLM_DOCTOR_DIR/daily"

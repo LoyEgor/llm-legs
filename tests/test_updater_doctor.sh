@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -224,4 +225,14 @@ rm -f "$DOC"
 "$DOCTOR" --json | jqe '.doctor == "updater"'
 assert [ ! -e "$DOC" ]
 
-echo "PASS: $asserts asserts; envelope, every rule (event-waiting, event-stuck, probe-broken, catalog-missing, cli-behind as a watch row from the first skip and red past a day, client-too-old, pass-stale, pass-failed, foreign-client) with its negatives, vendors for the menu, blind on a stale or missing pass, judge over code and ledger, ledger open/dismissed/regressed/fault, pinned ledger shape, under 1 s"
+# One collector-runs row per run, keys exactly {doctor, start, wall_s, cpu_s, trigger}.
+RUNS="$WORK/doctors-runs"
+unset DOCTOR_TRIGGER
+DOCTORS_DIR="$RUNS" DOCTOR_TRIGGER=menu "$DOCTOR" --quiet </dev/null || true
+assert jqe -s 'length == 1 and (.[0] | (keys == ["cpu_s", "doctor", "start", "trigger", "wall_s"])
+  and .doctor == "updater" and .trigger == "menu" and .wall_s >= 0 and .cpu_s > 0 and .start > 1700000000)' \
+  "$RUNS/collector-runs.jsonl"
+DOCTORS_DIR="$RUNS" "$DOCTOR" --json </dev/null >/dev/null || true
+assert jqe -s 'length == 2 and .[1].trigger == "background"' "$RUNS/collector-runs.jsonl"
+
+echo "PASS:$asserts asserts; envelope, every rule (event-waiting, event-stuck, probe-broken, catalog-missing, cli-behind as a watch row from the first skip and red past a day, client-too-old, pass-stale, pass-failed, foreign-client) with its negatives, vendors for the menu, blind on a stale or missing pass, judge over code and ledger, ledger open/dismissed/regressed/fault, pinned ledger shape, under 1 s"

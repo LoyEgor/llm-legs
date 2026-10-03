@@ -441,9 +441,9 @@ own rows are re-read often enough to stay bright, and when no gateway chat is op
 
 ## Render timing journal (background, not a rendered segment)
 
-Every render appends one `<start_us>\t<end_us>\t<session_id>` line (from `$EPOCHREALTIME`) to
-`${HARNESS_DOCTOR_DIR:-~/.cache/harness-doctor}/statusline/<local YYYY-MM-DD>.tsv` for the Harness
-doctor, which owns pruning. One `printf` append per render, a `mkdir -p` only when it fails, no
+Every render appends `<start_us>\t<end_us>\t<session_id>\t<cpu_ms>` (`$EPOCHREALTIME`; cpu_ms = bash
+`times` shell+children user+sys, `-` under bash < 5.3) to `${HARNESS_DOCTOR_DIR:-~/.cache/harness-doctor}/statusline/<local YYYY-MM-DD>.tsv`
+for the Harness doctor, which owns pruning. One `printf` append, a `mkdir -p` only when it fails, no
 lock; a failed write is silent and never changes the output or exit code.
 
 ## Server TTL evidence and learned bounds

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # Fixture-based tests for the Fable-rework leaderboard.
 #   bin/worker-stats     — aggregation math (fault/infra/retry/patch/dur/complexity),
 #                          killed-exclusion, outlier guard, sanity markers, collect.

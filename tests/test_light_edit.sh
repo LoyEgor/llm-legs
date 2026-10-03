@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # The Light edit contract: a run lands on the shared checkout only through its own worktree, and
 # only when the brief's SCOPE fence held and its VERIFY command passed. Every case here proves the
 # shared tree is either advanced by a green run or byte-identical after a red one.

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # worker_model_set_role — the one writer of the per-role vetoes in ~/.claude/worker-model, shelled
 # out to by the menubar so the write happens under the same lock as the pin. Every file here is a
 # fixture named through WORKER_PICK_CONFIG_FILE; the real worker-model is never opened.

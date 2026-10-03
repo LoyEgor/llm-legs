@@ -37,6 +37,9 @@ jump_nodes="${MEMLOGD_JUMP_NODES:-8}"
 jump_rss_mb="${MEMLOGD_JUMP_RSS_MB:-1024}"
 max_ticks="${MEMLOGD_MAX_TICKS:-0}"
 sync_writes="${MEMLOGD_SYNC:-1}"
+machine_interval="${MEMLOGD_MACHINE_INTERVAL:-15}"
+probe_interval="${MEMLOGD_PROBE_INTERVAL:-60}"
+probe_forks="${MEMLOGD_PROBE_FORKS:-10}"
 
 label=com.egor.memlogd
 agent_plist="$HOME/Library/LaunchAgents/$label.plist"
@@ -50,11 +53,17 @@ last_frame_at=""
 prev_node_count=""
 prev_node_rss=""
 episode_capped=0
+machine_at=""
+probe_at=""
+prev_swapins=""
+prev_swapins_at=""
+ncpu=-1
+boot_id=-1
 
 # -1 is "the probe failed", and every threshold test rejects it: a vm_stat that returns nothing
 # must not read as zero bytes available and fake an incident.
 available_mb() {
-  vm_stat 2>/dev/null | awk '
+  printf '%s\n' "$1" | awk '
     NR == 1 { for (i = 1; i <= NF; i++) if ($i == "of") page = $(i + 1) + 0 }
     /^Pages free:/ { free = $3 + 0; seen = 1 }
     /^Pages inactive:/ { inactive = $3 + 0 }
@@ -106,6 +115,53 @@ chat_load_tick() { # now avail swap
     append "$line"
     flush
   done < <("$chat_load" sample --now "$1" --avail "$2" --swap "$3" 2>/dev/null)
+}
+
+boot_facts() {
+  local text
+  text=$(sysctl -n hw.ncpu kern.boottime 2>/dev/null) || text=""
+  [[ "$text" =~ ^([0-9]+) ]] && ncpu=${BASH_REMATCH[1]}
+  [[ "$text" =~ sec\ =\ ([0-9]+) ]] && boot_id=${BASH_REMATCH[1]}
+}
+
+contention_probe_ms() {
+  local start end i=0
+  start=$(date +%s%N 2>/dev/null)
+  while [ "$i" -lt "$probe_forks" ]; do
+    /usr/bin/true
+    i=$((i + 1))
+  done
+  printf '{"a":[1,2,3]}' | jq -e '.a | add == 6' >/dev/null 2>&1 || { printf '%s\n' -1; return 0; }
+  end=$(date +%s%N 2>/dev/null)
+  if [[ "$start" =~ ^[0-9]+$ ]] && [[ "$end" =~ ^[0-9]+$ ]] && [ "$end" -ge "$start" ]; then
+    printf '%s\n' $(((end - start) / 1000000))
+  else
+    printf '%s\n' -1
+  fi
+}
+
+machine_tick() { # now swap vm_text
+  local now="$1" swap="$2" load1=-1 swapins=-1 rate=-1 thermal=-1 text probe=""
+  [ -z "$machine_at" ] || [ $((now - machine_at)) -ge "$machine_interval" ] || return 0
+  machine_at=$now
+  text=$(sysctl -n vm.loadavg 2>/dev/null) || text=""
+  [[ "$text" =~ ^\{\ *([0-9.]+) ]] && load1=${BASH_REMATCH[1]}
+  [[ "$3" =~ Swapins:\ *([0-9]+) ]] && swapins=${BASH_REMATCH[1]}
+  if [ "$swapins" -ge 0 ] && [ -n "$prev_swapins" ] && [ "$prev_swapins" -ge 0 ] && \
+     [ "$now" -gt "$prev_swapins_at" ] && [ "$swapins" -ge "$prev_swapins" ]; then
+    rate=$(((swapins - prev_swapins) / (now - prev_swapins_at)))
+  fi
+  prev_swapins=$swapins
+  prev_swapins_at=$now
+  text=$(notifyutil -g com.apple.system.thermalpressurelevel 2>/dev/null) || text=""
+  [[ "$text" =~ \ ([0-9]+)$ ]] && thermal=${BASH_REMATCH[1]}
+  if [ -z "$probe_at" ] || [ $((now - probe_at)) -ge "$probe_interval" ]; then
+    probe_at=$now
+    probe=" probe_ms=$(contention_probe_ms)"
+  fi
+  mkdir -p "$log_dir/machine"
+  printf '%s load1=%s ncpu=%s swap_mb=%s swapin_pages_s=%s thermal=%s boot=%s%s\n' \
+    "$now" "$load1" "$ncpu" "$swap" "$rate" "$thermal" "$boot_id" "$probe" >>"$log_dir/machine/$today.log"
 }
 
 log_path() { printf '%s/%s.log\n' "$log_dir" "$1"; }
@@ -183,6 +239,12 @@ rotate() {
     [[ "$base" < "$cutoff" ]] || continue
     rm -f "$file"
   done
+  for file in "$log_dir"/machine/????-??-??.log; do
+    [ -f "$file" ] || continue
+    base=${file##*/}
+    [[ "${base%.log}" < "$cutoff" ]] || continue
+    rm -f "$file"
+  done
   for file in "$(frames_dir)"/*.log; do
     [ -f "$file" ] || continue
     base=${file##*/}
@@ -226,10 +288,11 @@ acquire_lock() {
 }
 
 run_loop() {
-  local today day now avail swap counts node_count node_rss stamp jump_file
+  local today day now avail swap counts node_count node_rss stamp jump_file vm_text
   local state=quiet recover_since=0 ticks=0 interval
   mkdir -p "$log_dir" || return 1
   acquire_lock
+  boot_facts
   today=$(date +%F)
   rotate
   current_file=$(log_path "$today")
@@ -246,7 +309,8 @@ run_loop() {
         flush
       fi
     fi
-    avail=$(available_mb)
+    vm_text=$(vm_stat 2>/dev/null) || vm_text=""
+    avail=$(available_mb "$vm_text")
     swap=$(swap_used_mb)
     counts=$(node_stats)
     node_count=${counts% *}
@@ -322,6 +386,7 @@ run_loop() {
     fi
     prev_node_count=$node_count
     prev_node_rss=$node_rss
+    machine_tick "$now" "$swap" "$vm_text"
 
     ticks=$((ticks + 1))
     if [ "$max_ticks" -gt 0 ] && [ "$ticks" -ge "$max_ticks" ]; then break; fi

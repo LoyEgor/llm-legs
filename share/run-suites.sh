@@ -13,6 +13,8 @@ if ! eval "$have_wait_n"; then
 fi
 set -u
 printf -v run_suites_start '%(%s)T' -1
+run_suites_queued=${EPOCHREALTIME:-$run_suites_start} run_suites_began=${EPOCHREALTIME:-$run_suites_start}
+run_worker=${WORKER_RUN_ID:-} run_session=${CLAUDE_CODE_SESSION_ID:-${CLAUDE_LAUNCHER_SESSION:-}}
 
 usage() {
   cat >&2 <<'USAGE'
@@ -62,6 +64,7 @@ repo=$(cd "$repo" && pwd -P) || fail "unreadable repo: $repo"
 [ -d "$repo/tests" ] || fail "no tests directory under $repo"
 
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/worktree-branch.sh"
+journal_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/tests/lib/suite-journal.sh"
 
 # A linked worktree has no sibling checkout beside it. Another repo's worktree on this same
 # branch is the set under test; otherwise the main checkout. An exported variable wins either way.
@@ -88,6 +91,8 @@ fi
 # Each suite's last passing duration, keyed by the main checkout so a worktree shares it: the wave
 # starts the longest first, since alphabetical order left the slowest suite starting last.
 times_file=${RUN_SUITES_TIMES:-${XDG_CACHE_HOME:-$HOME/.cache}/run-suites/times.tsv}
+run_journal=${RUN_SUITES_JOURNAL:-${times_file%/*}/runs.jsonl}
+. "$journal_lib" --lib || fail "unreadable $journal_lib"
 times_key=$repo
 [ "${common:-}" = "${common%/.git}/.git" ] && times_key=${common%/.git}
 declare -A last_secs=()
@@ -134,7 +139,9 @@ if [ -z "${RUN_SUITES_SLOT:-}" ]; then
   trap 'slot_release "$own_slot"' EXIT
   export RUN_SUITES_SLOT=$own_slot
   printf -v run_suites_start '%(%s)T' -1
+  run_suites_began=${EPOCHREALTIME:-$run_suites_start}
 fi
+run_slot=${RUN_SUITES_SLOT:-}
 
 declare -a suites=()
 if [ "${#explicit[@]}" -gt 0 ]; then
@@ -204,26 +211,66 @@ progress_file="${STATUSLINE_CACHE_DIR:-$HOME/.cache/claude-statusline}/suites-$$
 mkdir -p "${progress_file%/*}" 2>/dev/null &&
   printf '%s\t%s\t%s\t%s\n' "$logdir" "${#suites[@]}" "$repo" "$run_suites_start" >"$progress_file" 2>/dev/null
 find "${progress_file%/*}" -maxdepth 1 -name 'suites-*.done' -mmin +1 -delete 2>/dev/null
-trap 'mv -f "$progress_file" "$progress_file.done" 2>/dev/null; [ -z "$own_slot" ] || slot_release "$own_slot"' EXIT
+journal_run() {
+  local entry name rc secs real cpu complete=true queued began ended
+  local -a names=()
+  suite_journal_suites=''
+  for entry in "${suites[@]}"; do
+    name=${entry##*/}
+    names+=("$name")
+    rc='' real='' cpu=''
+    [ -r "$logdir/$name.status" ] && IFS=$'\t' read -r rc secs real cpu <"$logdir/$name.status"
+    if [[ "$rc" =~ ^[0-9]+$ ]]; then suite_journal_suite "$name" "$rc" "${real:-$secs}" "$cpu"; else complete=false; fi
+  done
+  [ -z "$run_signal" ] || complete=false
+  mapfile -t names < <(printf '%s\n' "${names[@]}" | LC_ALL=C sort)
+  suite_journal_digest "${names[@]}"
+  suite_journal_git "$repo"
+  suite_journal_ms queued "$run_suites_queued"; suite_journal_secs queued "$queued"
+  suite_journal_ms began "$run_suites_began"; suite_journal_secs began "$began"
+  suite_journal_ms ended; [ -n "$ended" ] || suite_journal_ms ended "$(date +%s)"; suite_journal_secs ended "$ended"
+  suite_journal_row suites "$$" "$queued" "$began" "$ended" "$repo" "$times_key" "$suite_journal_head" "${scope:-}" \
+    "$run_worker" "$run_session" "$jobs" "$run_slot" "$run_signal" "$complete"
+  suite_journal_append "$run_journal"
+}
+run_signal='' run_finished=''
+finish_run() {
+  [ -z "$run_finished" ] || return 0
+  run_finished=1
+  journal_run
+  mv -f "$progress_file" "$progress_file.done" 2>/dev/null
+  [ -z "$own_slot" ] || slot_release "$own_slot"
+}
+on_signal() { # number name
+  run_signal=$1
+  finish_run
+  trap - EXIT "$2"
+  kill -"$2" "$$"
+}
+trap finish_run EXIT
+trap 'on_signal 1 HUP' HUP
+trap 'on_signal 2 INT' INT
+trap 'on_signal 15 TERM' TERM
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/test-scope.sh"
 if [ "${#explicit[@]}" -gt 0 ]; then scope=named; elif $changed; then scope=changed; elif $include_live; then scope=all
 else scope=full; fi
 test_scope_mark "$scope" suites "$repo" "$run_suites_start"
 
 run_one() { # suite-path
-  local path="$1" name start finish rc
+  local path="$1" name start finish rc began ended cpu
   name=$(basename "$path")
-  start=$(date +%s)
+  printf -v start '%(%s)T' -1
+  suite_journal_ms began
   # Its own TMPDIR, never its own HOME: several suites here read the real ~/.claude on purpose
   # (test_consistency prices the INSTALLED hooks), and a fabricated HOME would make them pass
   # against nothing. TMPDIR is what mktemp fixtures collide on, and it is safe to move.
   (
-    export TMPDIR="$logdir/tmp-$name"
+    export TMPDIR="$logdir/tmp-$name" SUITE_JOURNAL_PID=$$
     # A suite judges hooks the way a chat meets them; run from inside a worker it would inherit the
     # worker's markers and be judged as one, and a fixture HOME would still read the real toggle.
     # The chat's session id would hand every suite that chat's own worker pin; bytecode a suite's
     # SourceFileLoader import leaves in bin/ reads to a review's integrity check as a new file.
-    unset CLAUDEB_WORKER WORKER_RUN_RECORD CLAUDE_LAUNCHER_SESSION WORKER_PICK_CONFIG_FILE CLAUDE_CODE_SESSION_ID
+    unset CLAUDEB_WORKER WORKER_RUN_RECORD WORKER_RUN_ID CLAUDE_LAUNCHER_SESSION WORKER_PICK_CONFIG_FILE CLAUDE_CODE_SESSION_ID
     export PYTHONDONTWRITEBYTECODE=1
     mkdir -p "$TMPDIR"
     cd "$repo" || exit 4
@@ -231,6 +278,7 @@ run_one() { # suite-path
     # $$ in this subshell is the parent, and nice only rises, so a parent dropped to 10
     # would pin the wall-clock tail behind every other invocation's wave. No lock.
     serial_suite "$name" || renice 10 -p "$BASHPID" >/dev/null 2>&1 || :
+    ! serial_suite "$name" || trap - INT QUIT
     case "$path" in
       *.py) exec "$python" -m pytest -q "$path" ;;
       # $BASH and not `bash`: the header verified THIS interpreter, and a sub-suite resolving its
@@ -239,8 +287,12 @@ run_one() { # suite-path
     esac
   ) >"$logdir/$name.log" 2>&1
   rc=$?
-  finish=$(date +%s)
-  printf '%s\t%s\n' "$rc" "$((finish - start))" >"$logdir/$name.status"
+  printf -v finish '%(%s)T' -1
+  suite_journal_ms ended
+  # run_one runs as its own subshell, so the children line of `times` is this one suite's tree.
+  suite_journal_cpu cpu "$logdir/$name.time" children
+  [ -z "$began" ] || suite_journal_secs began "$(( ended - began ))"
+  printf '%s\t%s\t%s\t%s\n' "$rc" "$((finish - start))" "$began" "$cpu" >"$logdir/$name.status"
 }
 
 declare -a wave=() tail_wave=()
@@ -268,10 +320,13 @@ for entry in ${wave[@]+"${wave[@]}"}; do
   running=$((running + 1))
 done
 wait
-for entry in ${tail_wave[@]+"${tail_wave[@]}"}; do run_one "$entry"; done
+# In the background so a trapped signal ends this wait at once, as it did a foreground suite at HEAD;
+# run_one gives the tail suite back the Ctrl-C a background job ignores.
+for entry in ${tail_wave[@]+"${tail_wave[@]}"}; do run_one "$entry" & wait "$!"; done
 wall=$(( $(date +%s) - wall_start ))
 
 declare -a failed=()
+declare -A ran=()
 serial_total=0
 width=0
 for entry in "${suites[@]}"; do
@@ -281,9 +336,10 @@ done
 printf '\n%-*s  %-6s  %5s  %s\n' "$width" suite result secs 'last line'
 for entry in "${suites[@]}"; do
   name=$(basename "$entry")
+  ran[$name]=1
   rc=1
   seconds=0
-  IFS=$'\t' read -r rc seconds <"$logdir/$name.status" 2>/dev/null || { rc=1; seconds=0; }
+  IFS=$'\t' read -r rc seconds _ <"$logdir/$name.status" 2>/dev/null || { rc=1; seconds=0; }
   serial_total=$((serial_total + seconds))
   verdict=PASS
   [ "$rc" -eq 0 ] || { verdict="FAIL $rc"; failed+=("$name"); }
@@ -297,7 +353,10 @@ printf '\n%s suites · %s PASS · %s FAIL · %ss wall (%ss serial)\n' \
 if [ "${#last_secs[@]}" -gt 0 ] && mkdir -p "${times_file%/*}" 2>/dev/null &&
     times_tmp=$(mktemp "$times_file.XXXXXX" 2>/dev/null); then
   { [ -r "$times_file" ] && TIMES_KEY=$times_key awk -F'\t' '$1 != ENVIRON["TIMES_KEY"]' "$times_file"
-    for name in "${!last_secs[@]}"; do printf '%s\t%s\t%s\n' "$times_key" "$name" "${last_secs[$name]}"; done
+    for name in "${!last_secs[@]}"; do
+      [ -n "${ran[$name]:-}" ] || [ -e "$repo/tests/$name" ] || continue
+      printf '%s\t%s\t%s\n' "$times_key" "$name" "${last_secs[$name]}"
+    done
   } >"$times_tmp" 2>/dev/null && mv -f "$times_tmp" "$times_file" 2>/dev/null || rm -f "$times_tmp"
 fi
 

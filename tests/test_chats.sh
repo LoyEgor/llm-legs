@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # Tests for the parts of bin/chats that are not curses: the row a chat becomes,
 # the column widths, the filter, and argument handling.
 # The picker's drawing is left to a terminal; what breaks silently is the data
