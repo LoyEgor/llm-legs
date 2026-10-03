@@ -2130,15 +2130,17 @@ def health_row(name, items, notes=(), exposure=0):
     merged, rules = {}, {}
     for item in items.values():
         rule = rules.setdefault((item["rule"], item["key"]), {"rule": item["rule"], "key": item["key"], "count": 0,
-                                                              "first": None, "last": 0, "value": None, "events": []})
+                                                              "first": None, "last": 0, "start": 0, "value": None,
+                                                              "events": []})
         rule["count"] += item["count"]
         rule["first"] = min(rule["first"] or item["first"], item["first"])
         rule["last"] = max(rule["last"], item["last"])
+        rule["start"] = max(rule["start"], item["start"])
         if item["value"] is not None:
             rule["value"] = max(rule["value"] or item["value"], item["value"])
         rule["events"].extend(item["events"])
         into = merged.setdefault((item["label"], item["chat"]), dict(
-            {key: value for key, value in item.items() if key not in ("events", "first", "value")},
+            {key: value for key, value in item.items() if key not in ("events", "first", "start", "value")},
             count=0, last=0, lines=0, repeats=0))
         for key in ("count", "lines", "repeats"):
             into[key] += item[key]
@@ -2153,17 +2155,18 @@ def health_row(name, items, notes=(), exposure=0):
 
 
 def add_item(items, label, at, lines=0, session="", chat="", repeats=1, rule="", key="", value=None, ref="",
-             excerpt=""):
+             excerpt="", start=None):
     session = str(session or "")
     chat = re.sub(r" \([0-9a-f]{8}\)$", "", str(chat or ""))
     item = items.setdefault((label, session or chat), {"label": label, "session": session, "chat": "", "rule": rule,
-                                                       "key": key, "count": 0, "first": at, "last": 0, "lines": 0,
+                                                       "key": key, "count": 0, "first": at, "last": 0, "start": 0, "lines": 0,
                                                        "repeats": 0, "value": None, "events": []})
     if chat and chat != session and not item["chat"]:
         item["chat"] = chat
     item["count"] += 1
     item["first"] = min(item["first"], at)
     item["last"] = max(item["last"], at)
+    item["start"] = max(item["start"], at if start is None else start)
     item["lines"] += lines
     item["repeats"] += repeats
     if isinstance(value, (int, float)):
@@ -2182,7 +2185,7 @@ def health_problems(row, ledger, window_h):
         if status in DISMISSALS:
             continue
         if status in FIXED_STATUSES:
-            if match["_fixed_at"] is not None and rule["last"] <= match["_fixed_at"]:
+            if match["_fixed_at"] is not None and rule["start"] <= match["_fixed_at"]:
                 continue
             state = "regressed"
         else:
@@ -2249,8 +2252,10 @@ def debt_health(cutoff, now, window_h):
         cause[2] += as_int(row.get("count")) or 1
     for (session, _, _), (label, last, repeats, kind, repo, why, detail) in causes.items():
         key = "%s/%s" % (kind, os.path.basename(repo.rstrip("/"))) if repo else "%s:%s" % (kind, why) if why else kind
+        run = WORKER_ID_RE.match(detail.split(" ", 1)[0])
         add_item(items, label, last, session=session, repeats=repeats, rule="debt-gap", key=key,
-                 ref="gaps:%s/%s/%s" % (session or "-", kind, event_stamp(last)), excerpt=detail)
+                 ref="gaps:%s/%s/%s" % (session or "-", kind, event_stamp(last)), excerpt=detail,
+                 start=int(run.group(1)) if run else None)
     if note:
         notes.append(note)
     drops = {}

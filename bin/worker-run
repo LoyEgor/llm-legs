@@ -4881,6 +4881,7 @@ snapshot_other_families() { # directory workdir launcher add-dir...
     sub="$directory/families/$n"
     mkdir -p "$sub" 2>/dev/null && printf '%s\n' "$top" >"$sub/top" 2>/dev/null || continue
     snapshot_workdir "$sub" "$top" before 2>/dev/null || continue
+    printf '%s\n' "$common" >"$sub/anchors-common" 2>/dev/null || :
     anchors_why run-start --repo "$top" --run "${directory##*/}" --session "$launcher" ||
       debt_gap "$launcher" run-start "${directory##*/} $top: $ANCHORS_WHY"
   done < <(printf '%s\n' "$@"; cat "$HOME/.cache/claude/review-journal/$launcher.repos" 2>/dev/null)
@@ -4969,8 +4970,17 @@ fold_family_anchors() { # directory snap repo top launcher round [path...]
 # end was — a clean exit, a nonzero one, an operator's kill, the launch timeout. The changed set is
 # the run's OWN before/after listings and never the transcript's `files`/`produced`: a heredoc no
 # tool call names still moved content, and those lines are the launching chat's to answer for.
+# The run was opened in a checkout's store; a checkout gone since must still close it there.
+fold_gone_checkout() { # directory anchors-common-file launcher
+  local common workdir=''
+  IFS= read -r common <"$2" 2>/dev/null || common=''
+  case "$common" in */.git) workdir=$(git -C "${common%/.git}" rev-parse --show-toplevel 2>/dev/null) ;; esac
+  [ -z "$workdir" ] ||
+    review_anchors run-fold --repo "$workdir" --run "${1##*/}" --session "$3" >/dev/null 2>&1 || :
+}
+
 fold_run_anchors() { # directory
-  local directory="$1" launcher workdir top round common sub gone
+  local directory="$1" launcher workdir top round sub
   launcher=''
   [ -f "$directory/launcher" ] && IFS= read -r launcher <"$directory/launcher"
   [ -n "$launcher" ] || return 0
@@ -4986,19 +4996,14 @@ fold_run_anchors() { # directory
   elif [ -n "$top" ]; then
     fold_family_anchors "$directory" "$directory" "$workdir" "$top" "$launcher" "$round"
   elif [ -f "$directory/anchors-common" ]; then
-    # The run was opened in the family's store; a workdir gone since must still close it there.
-    IFS= read -r common <"$directory/anchors-common" 2>/dev/null || common=''
-    gone=$workdir
-    workdir=''
-    case "$common" in */.git) workdir=$(git -C "${common%/.git}" rev-parse --show-toplevel 2>/dev/null) ;; esac
-    [ -z "$workdir" ] ||
-      review_anchors run-fold --repo "$workdir" --run "${directory##*/}" --session "$launcher" >/dev/null 2>&1 || :
-    debt_gap "$launcher" run-fold "${directory##*/} $gone: not a repository"
+    fold_gone_checkout "$directory" "$directory/anchors-common" "$launcher"
+    debt_gap "$launcher" run-fold "${directory##*/} $workdir: not a repository"
   fi
   for sub in "$directory"/families/*; do
     [ -f "$sub/top" ] || continue
     IFS= read -r top <"$sub/top" 2>/dev/null || continue
     if ! git -C "$top" rev-parse --show-toplevel >/dev/null 2>&1; then
+      fold_gone_checkout "$directory" "$sub/anchors-common" "$launcher"
       debt_gap "$launcher" run-fold "${directory##*/} $top: not a repository"
       continue
     fi

@@ -1,58 +1,48 @@
-# Debt health follow-up: fresh evidence supersedes the September 30 triage
+# Debt health: open recording gaps and who settles them
 
 Status: open
 
-For the owner in `share/doctor-ledger.json`, routing recording-side work to Debt hardening handoff,
-Harness Doctor, Review-bench improvements phase 4, and the round owners named below.
-Run: llm-health-20261001T020632Z-3671. No ADD-DIR worktrees were authorized.
+For the ledger owner «LLM Doctor меню refactoring» (`share/doctor-ledger.json`), routing hook work
+to Debt hardening handoff (claude-setup recording hooks) and loss semantics to Review-bench
+improvements phase 4. Last updated by night fixer llm-debt-20261003T042526Z-2fc2; the ledger rows
+carry each row's full evidence. No claude-setup ADD-DIR worktree was ever authorized, so every
+hook-side item below is a handoff, not a local fix.
 
-Purpose: `bin/llm-doctor:2193` (`debt_health`) exposes work that recording failed to capture or
-that a store dropped before review; `docs/shared-invariants.md` rows cq/cw define the contract.
-The detector reads real gaps correctly. Their existence is not a reason to suppress them.
-This is an evidence and ownership handoff, not a new procedural rule; the recording hook and
-worker snapshot machinery are the mechanisms that must preserve the missing evidence.
+## Hook timeouts in logo-vectorizer-bench (H5, H6, H7) — for the hook owner
 
-## Decisions in packet order
+The transcripts show these are the settings timeouts. They are not teardown:
 
-| Problem | Verdict | Evidence and next action |
-| --- | --- | --- |
-| H1 | handoff | Four visible gaps include two new September 30 runs for Updater doctor round `20260930T002018Z-a9fe8ce`. Both worker meta files retain `review_round`; lost ROUND propagation does not explain these. Inspect fixer rows in review-bench and let the round owner close or rerun. The earlier claim of no recurrence since September 27 is obsolete. |
-| H2 | ruled-out | Open gaps still name the 500-dirty-path bound and actual capped-path changes on October 1. The cap is recording its known coverage gap. Project owner must address research output or the ledger owner decide dismissal; do not raise the cap. |
-| H3 | handoff | Same September 25 sparse-clone call, `toolu_019LXUXzq7R1DrdhbN49RLPN`. The proposed created-by-call explanation needs a claude-setup fixture for a sparse clone inside a subshell. Current hook behavior is unconfirmed here. |
-| H4 | ruled-out | Exactly the same two probe IDs, `toolu_probe_timing` and `toolu_perf_big`. The September 30 handoff identifies their live-store timing probes. Propose owner dismissal of those incidents only; no live store was edited. |
-| H5 | handoff | Raw gap groups contain twelve calls, not one initialization: two on September 25 and ten on September 28 UTC, ending at epoch 1790635543. The doctor combines the first detail with the latest timestamp. Hook owner must investigate those later calls too; creation cannot explain the whole row. |
-| debt-gap:run-fold:snapshots unreadable | handoff | Run `claudeb-1790808567-98231-124d` has exit 0, a 1,080,670-byte before listing and head-before, but neither after file. The failure is real, its cause ambiguous; see below. Ledger H11 now preserves it, keyed to this why only (other run-fold whys stay new). |
-| H6 | handoff | Six distinct stopped calls from `/Users/egorloy`, latest epoch 1790653046. The prior read-only wait explanation proves neither the other five calls nor a current fix. Hook owner must distinguish timeout from teardown and verify applicability of claude-setup 48bfc77. |
-| H7 | handoff | Same stopped-call incident `toolu_01GVuJcSDXUxgTUmy7TqNhZD`. TERM 102 seconds after start is prior evidence; a 60-second timeout and lstat cost are hypotheses, not confirmed causes. Measure a large-tree fixture in claude-setup. |
-| debt-loss:run-fold-skip | handoff | Fresh window contains 83 co-tenant path rows AND 49 committed-since path rows. These are not 132 independent runs. Review-bench must decide loss semantics and separate reasons before any selective dismissal; B5 records the missing distinction. |
+- H5: 2026-09-28 Pre snapshots (session c25416e4) logged `hook_cancelled PreToolUse` ~31.5 s after the
+  call, past `review-flow-gate.sh`'s 30 s timeout. That gate takes the Pre snapshot, so Post found none.
+- H6: six `worker-run wait … --max 540` calls of chat 2ddedf36's subagents (cwd `/Users/egorloy`)
+  ran 611-626 s: the wait plus a cancelled PostToolUse at the 60 s `commit-journal.sh` timeout. The
+  chat's `.repos` lists logo-vectorizer-bench, so its snapshot was consumed from a non-repository cwd.
+  claude-setup 48bfc77 does not cover them, because `rc_readonly_command` classes `worker-run wait`
+  as heavy.
+- H7: 2026-10-03 01:16, toolu_013xec5vq812MjH26xwGK67g, a cp+sed call. PreToolUse ended 22:16:16.757Z;
+  PostToolUse `commit-journal` was cancelled 62 s later.
 
-## Missing after snapshot
+Ruled out: listing and stamping cost. With a sandboxed HOME and `GIT_OPTIONAL_LOCKS=0`,
+`rj_snapshot_content` takes 1.2 s on the real tree (33,642 dirty paths). On a 34k-path fixture it
+takes 1.1 s, even with `RJ_STAMP_CAP` raised past the count. Still unmeasured: the Post consume path
+(it writes the live anchors store) and machine load at those moments. Ask: reproduce the Post path in
+a fixture with a timer per step, then make the step that is over budget bounded. Do not raise the
+timeouts and do not exempt the tree.
 
-Read-only inspection of the worker cache found `dirty-before-shas`, `head-before`, `exit_code` 0,
-and an empty `files-note`; `dirty-after-shas` and `head-after` are absent. The retained error log
-contains no matching snapshot/hash/fatal diagnostic. `bin/worker-run` `persist_run_files` attempts
-`snapshot_workdir` after each vendor attempt. `snapshot_changed_paths` correctly refuses absent
-after files, and `fold_family_anchors` correctly emits the gap instead of claiming nothing changed.
+## Proposed for the owner's decision
 
-`workdir_dirty_shas` can fail repository/path enumeration; hash failures have a per-path fallback.
-An interrupted capture or a path-shape rejection cannot be established retrospectively. A current
-snapshot of the shared project would attribute later edits to this run and cannot repair its
-historical evidence. Handoff to the worker recording owner: reproduce capture failure in a fixture
-and retain its actual error at the existing snapshot boundary. Do not retry writes on the live tree.
-No clear local code defect was established and no fallback was deleted speculatively.
+| Row | Proposal |
+| --- | --- |
+| H2 | The hash cap is working on research output (33,642 dirty paths). Either the project cleans that output, or the owner accepts the bound and dismisses the row. Never raise the cap. |
+| H4 | Dismiss the two hand-run probe ids, `toolu_probe_timing` and `toolu_perf_big`. They are not model calls. |
+| H14 | A family worktree that was landed (claude-setup 10ed01b) and then removed mid-run leaves a truthful `not a repository` gap. Dismiss these when the checkout's branch landed, or keep them. The run it left open is fixed in worker-run. |
+| H1 | No fixer-missing gap has been open in 14 days. Close the row once the round owners confirm their September rounds were settled, not merely aged out. |
+| H3 | One sparse clone on 2026-09-25. It needs a claude-setup fixture for a clone made inside a subshell. |
 
-## Evidence limits and remaining work
+## Settled
 
-The fresh full `bin/llm-doctor --dry-run --json` document had status `problems`, no collector error,
-and all nine packet causes. `--block debt` is unsupported; health is in the full document.
-`review-anchors gaps --days 7 --json` supplied the raw groups; losses were grouped read-only from
-`~/.cache/claude/review-debt/losses.jsonl` using that document's `as_of_s` minus 86400.
-The loss count fell from 40 at launch to 39 in the fresh read as the window advanced.
-No additional quiet rows were in the packet.
-
-B6 records two presentation/evidence limits: representative details can hide later distinct calls,
-and the title says 24 hours for seven-day open gaps. Those are detector-owner work, not permission
-to change the judge in this run. Current creation-hook behavior, the six stopped calls' individual
-causes, large-tree hook timing, and whether every skipped path retains another owner's anchor were
-not confirmed. The older September 30 handoff remains open for its unresolved ownership actions;
-this follow-up supersedes its H1, H5, H6 and co-tenant-only scope assumptions.
+- H11: fixed in worker-run 91858c3 (the unshaped `-` file). Its 2026-10-03 "regressed" came from the
+  judge, not the fix: runs started before the landing were dated by their fold time. `debt_health`
+  now dates a run gap by its run's start, the way leg rules already do.
+- H13 (losses from family folds) is in `2026-10-02-debt-run-fold-skip-families.md`.
+- Open runs left by worker runs that never completed are blind spot B7.

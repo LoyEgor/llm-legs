@@ -569,9 +569,9 @@
    "status": "open",
    "fixes": [],
    "same_cause": [],
-   "last_reviewed": "2026-10-02",
-   "reviewed_by": "night fixer llm-debt-20261002T093021Z-7720",
-   "note": "2026-10-02: `review-anchors gaps --days 14 --json` holds no open fixer-missing group, so the September 30 gaps are no longer open; whether their rounds were settled or only aged out was not established, and the producer (review-bench fold_bench) was not changed, so the row stays open. Fresh gaps on 2026-09-30 invalidate the prior none-new-since-09-27 note: round 20260930T002018Z-a9fe8ce, runs claudeb-1790757454-79915-4251 and claudeb-1790760125-68537-1734 (Updater doctor). Both meta.json files retain review_round, so missing ROUND propagation is ruled out for these two. Older visible rounds are 20260924T222306Z-8877b05 and 20260925T152101Z-06f549b; 20260923T143320Z-c52158a is outside this read, not proven settled. Round owners must inspect fixer rows before closing; no --nofix performed.",
+   "last_reviewed": "2026-10-03",
+   "reviewed_by": "night fixer llm-debt-20261003T042526Z-2fc2",
+   "note": "2026-10-02 and 2026-10-03: `review-anchors gaps --days 14 --json` holds no open fixer-missing group (producer unchanged, review-anchors:645), so the September 30 gaps are no longer open; whether their rounds were settled or only aged out was not established, and the producer (review-bench fold_bench) was not changed, so the row stays open. Fresh gaps on 2026-09-30 invalidate the prior none-new-since-09-27 note: round 20260930T002018Z-a9fe8ce, runs claudeb-1790757454-79915-4251 and claudeb-1790760125-68537-1734 (Updater doctor). Both meta.json files retain review_round, so missing ROUND propagation is ruled out for these two. Older visible rounds are 20260924T222306Z-8877b05 and 20260925T152101Z-06f549b; 20260923T143320Z-c52158a is outside this read, not proven settled. Round owners must inspect fixer rows before closing; no --nofix performed.",
    "handoff": "docs/handoffs/2026-10-01-debt-health-followup.md"
   },
   {
@@ -585,9 +585,9 @@
    "status": "open",
    "fixes": [],
    "same_cause": [],
-   "last_reviewed": "2026-10-01",
-   "reviewed_by": "night fixer llm-health-20261001T020632Z-3671",
-   "note": "2026-10-02: latest gap 06:26 +03:00; the checkout holds 23,336 dirty paths (git status -uall), so the cap stands for the same research output. Fresh gaps still report more than 500 dirty paths and capped-path changes, latest 2026-10-01. Cap accounting is working; raising the cap or suppressing this judge would conceal uncaptured debt. Project owner must decide research-output hygiene or accept the recording bound; no project checkout changed.",
+   "last_reviewed": "2026-10-03",
+   "reviewed_by": "night fixer llm-debt-20261003T042526Z-2fc2",
+   "note": "2026-10-03: latest gap 07:25 +03:00, now 33,642 dirty paths (git status -uall, 0.22 s). 2026-10-02: the checkout held 23,336 dirty paths, so the cap stands for the same research output. Fresh gaps still report more than 500 dirty paths and capped-path changes, latest 2026-10-01. Cap accounting is working; raising the cap or suppressing this judge would conceal uncaptured debt. Project owner must decide research-output hygiene or accept the recording bound; no project checkout changed.",
    "handoff": "docs/handoffs/2026-10-01-debt-health-followup.md"
   },
   {
@@ -603,7 +603,7 @@
    "same_cause": [],
    "last_reviewed": "2026-10-01",
    "reviewed_by": "night fixer llm-health-20261001T020632Z-3671",
-   "note": "Same single 2026-09-25 sparse-clone gap toolu_019LXUXzq7R1DrdhbN49RLPN. The earlier handoff attributes it to a checkout born inside a subshell; current created_by_call behavior is unconfirmed because claude-setup has no authorized ADD-DIR worktree. Requires the hook owner fixture, not a doctor exemption.",
+   "note": "2026-10-03: still open in the 14-day gaps read, outside the doctor's 7-day window; no claude-setup ADD-DIR again. Same single 2026-09-25 sparse-clone gap toolu_019LXUXzq7R1DrdhbN49RLPN. The earlier handoff attributes it to a checkout born inside a subshell; current created_by_call behavior is unconfirmed because claude-setup has no authorized ADD-DIR worktree. Requires the hook owner fixture, not a doctor exemption.",
    "handoff": "docs/handoffs/2026-10-01-debt-health-followup.md"
   },
   {
@@ -617,9 +617,9 @@
    "status": "open",
    "fixes": [],
    "same_cause": [],
-   "last_reviewed": "2026-10-01",
-   "reviewed_by": "night fixer llm-health-20261001T020632Z-3671",
-   "note": "Fresh gaps remain exactly toolu_probe_timing and toolu_perf_big on 2026-09-28/29. Earlier handoff identifies live-store timing probes; these are not model-issued calls. Recording the unpaired probes is correct. Dismissal belongs to the ledger owner; live records were not deleted.",
+   "last_reviewed": "2026-10-03",
+   "reviewed_by": "night fixer llm-debt-20261003T042526Z-2fc2",
+   "note": "2026-10-03: unchanged, the same two gaps, no new one. Fresh gaps remain exactly toolu_probe_timing and toolu_perf_big on 2026-09-28/29. Earlier handoff identifies live-store timing probes; these are not model-issued calls. Recording the unpaired probes is correct. Dismissal belongs to the ledger owner; live records were not deleted.",
    "handoff": "docs/handoffs/2026-10-01-debt-health-followup.md"
   },
   {
@@ -633,9 +633,9 @@
    "status": "open",
    "fixes": [],
    "same_cause": [],
-   "last_reviewed": "2026-10-01",
-   "reviewed_by": "night fixer llm-health-20261001T020632Z-3671",
-   "note": "The init-only diagnosis was incomplete: raw gaps contain 12 distinct calls in logo-vectorizer-bench, two on 2026-09-25 (init and clone) and ten on 2026-09-28 UTC through epoch 1790635543. debt_health retains the first detail while taking the latest timestamp, so its excerpt cannot identify every cause. Missing Pre on the later calls remains unconfirmed; claude-setup hook owner must inspect them. No creation-only exemption proposed for the entire row.",
+   "last_reviewed": "2026-10-03",
+   "reviewed_by": "night fixer llm-debt-20261003T042526Z-2fc2",
+   "note": "2026-10-03: the 2026-09-28 calls are Pre timeouts: toolu_016XRUtejsanYrJG7y21n1Gj and toolu_01428SL3HxVMKN2nYMA2tsKu (session c25416e4) each logged PreToolUse hook_cancelled ~31.5 s after the call, past review-flow-gate.sh's 30 s settings timeout, and review-flow-gate takes the Pre snapshot, so Post found none. No pre-missing there since 2026-09-29; the snapshot now runs in 1.2 s on the real tree (see H7), so its 09-28 cost is not reproduced. The init-only diagnosis was incomplete: raw gaps contain 12 distinct calls in logo-vectorizer-bench, two on 2026-09-25 (init and clone) and ten on 2026-09-28 UTC through epoch 1790635543. debt_health retains the first detail while taking the latest timestamp, so its excerpt cannot identify every cause. Missing Pre on the later calls remains unconfirmed; claude-setup hook owner must inspect them. No creation-only exemption proposed for the entire row.",
    "handoff": "docs/handoffs/2026-10-01-debt-health-followup.md"
   },
   {
@@ -648,10 +648,12 @@
    "title": "six stopped commit-journal calls from a non-repository cwd",
    "status": "open",
    "fixes": [],
-   "same_cause": [],
-   "last_reviewed": "2026-10-01",
-   "reviewed_by": "night fixer llm-health-20261001T020632Z-3671",
-   "note": "Raw gaps contain six distinct stopped calls from /Users/egorloy, not just toolu_01KsrAub334fEQgEbyWzun1F; last epoch 1790653046. Prior read-only wait explanation and claude-setup 48bfc77 may cover that one call, not proven for all six. TERM recording is real; timeout versus teardown and current hook behavior require the hook owner, with no authorized claude-setup worktree.",
+   "same_cause": [
+    "H7"
+   ],
+   "last_reviewed": "2026-10-03",
+   "reviewed_by": "night fixer llm-debt-20261003T042526Z-2fc2",
+   "note": "2026-10-03: all six are `worker-run wait … --max 540` calls of chat 2ddedf36's subagents (agent-a066ae94ebad12704, agent-a428940b2782fd00a) on 2026-09-29, each 611-626 s from PreToolUse to a cancelled PostToolUse: the 540 s wait plus the 60 s hook timeout. The chat's .repos lists logo-vectorizer-bench, so the Post hook consumed that 23k+-dirty-path snapshot from a non-repository cwd: H7's cause. claude-setup 48bfc77 does not cover them: rc_readonly_command classes `worker-run wait` as heavy. Raw gaps contain six distinct stopped calls from /Users/egorloy, not just toolu_01KsrAub334fEQgEbyWzun1F; last epoch 1790653046. Prior read-only wait explanation and claude-setup 48bfc77 may cover that one call, not proven for all six. TERM recording is real; timeout versus teardown and current hook behavior require the hook owner, with no authorized claude-setup worktree.",
    "handoff": "docs/handoffs/2026-10-01-debt-health-followup.md"
   },
   {
@@ -661,13 +663,15 @@
     "health": "debt",
     "key": "^debt-gap:touch-failed/logo-vectorizer-bench$"
    },
-   "title": "commit-journal stopped in a tree past the hash cap; timeout cause unconfirmed",
+   "title": "commit-journal PostToolUse hits its 60 s timeout in a tree past the hash cap",
    "status": "open",
    "fixes": [],
-   "same_cause": [],
-   "last_reviewed": "2026-10-01",
-   "reviewed_by": "night fixer llm-health-20261001T020632Z-3671",
-   "note": "Same toolu_01GVuJcSDXUxgTUmy7TqNhZD stopped-call gap at epoch 1790649789. Previous handoff measured TERM 102 s after start; this alone does not prove a 60 s hook timeout or lstat cost. Large-tree latency remains a hypothesis requiring a fixture measurement by the hook owner; neither cap increase nor doctor dismissal is a fix.",
+   "same_cause": [
+    "H6"
+   ],
+   "last_reviewed": "2026-10-03",
+   "reviewed_by": "night fixer llm-debt-20261003T042526Z-2fc2",
+   "note": "2026-10-03: timeout confirmed by a fresh call, toolu_013xec5vq812MjH26xwGK67g (session 83028d18, debt owner 2ddedf36, epoch 1790979378): a cp+sed Bash call whose PreToolUse ended 22:16:16.757Z had its PostToolUse commit-journal cancelled at 22:17:18.888Z, about the hook's 60 s settings timeout, in the 33,642-dirty-path tree; git status -uall there takes 0.22 s, and rj_snapshot_content (sandboxed HOME, GIT_OPTIONAL_LOCKS=0) takes 1.2 s on the real tree and 1.1 s on a 34k-untracked fixture even with RJ_STAMP_CAP raised past it, so listing and lstat stamping are ruled out; the Post consume path (review-anchors touch writes the live store) and machine load stay unmeasured. Earlier: toolu_01GVuJcSDXUxgTUmy7TqNhZD (epoch 1790649789). Fix is in claude-setup hooks/commit-journal.sh (no ADD-DIR): handoff; neither cap increase nor doctor dismissal is a fix.",
    "handoff": "docs/handoffs/2026-10-01-debt-health-followup.md"
   },
   {
@@ -710,7 +714,7 @@
     "key": "^debt-gap:run-fold:snapshots unreadable$"
    },
    "title": "one untracked file named '-' failed every logo-vectorizer-bench snapshot closed",
-   "status": "fixed",
+   "status": "fixed-pending",
    "fixes": [
     {
      "at": "2026-10-02T12:49:56+03:00",
@@ -720,12 +724,21 @@
      ],
      "in": "llm-legs@91858c3",
      "regressed_at": null
+    },
+    {
+     "at": "2026-10-03T07:39:06+03:00",
+     "by": "night fixer llm-debt-20261003T042526Z-2fc2",
+     "files": [
+      "llm-legs/bin/llm-doctor"
+     ],
+     "in": null,
+     "regressed_at": null
     }
    ],
    "same_cause": [],
-   "last_reviewed": "2026-10-02",
-   "reviewed_by": "night fixer llm-debt-20261002T093021Z-7720",
-   "note": "Cause confirmed: /Volumes/Work/Projects/logo-vectorizer-bench/- (an SVG, born epoch 1790808728, 161 s into claudeb-1790808567-98231-124d, which therefore lost only its after snapshot) fails path_shape_ok (`-*`), and workdir_dirty_paths exited 1 on it, so every later run there had neither before nor after listing: all 47 gaps of 2026-10-01/02 are that repository. Fix: such paths stay out of the listings and go into an unshaped-before/after digest; the snapshot fails closed only when that digest moved (tests/test_worker_run_stamps.sh, mutation-checked). The stray file itself is the project's, not deleted here.",
+   "last_reviewed": "2026-10-03",
+   "reviewed_by": "night fixer llm-debt-20261003T042526Z-2fc2",
+   "note": "Cause: /Volumes/Work/Projects/logo-vectorizer-bench/- (a stray SVG, the project's) fails path_shape_ok, so workdir_dirty_paths failed every snapshot there; fixed in worker-run 91858c3 (unshaped-before/after digest, tests/test_worker_run_stamps.sh). 2026-10-03 'regressed' was the judge's: both post-landing gaps (claudeb-1790946312-74943-3dd7, claudeb-1790946317-81390-7558) are runs started 16:05, before 91858c3 reached main at 17:25:36, and folded after it; claudeb-1790988185-61098-645b there wrote full snapshots with unshaped digests. debt_health now dates a run gap by its run id's start, as judge_leg_state dates a leg (tests/test_llm_doctor.sh, mutation-checked).",
    "handoff": "docs/handoffs/2026-10-01-debt-health-followup.md"
   },
   {
@@ -767,10 +780,26 @@
    "status": "open",
    "fixes": [],
    "same_cause": [],
-   "last_reviewed": "2026-10-02",
-   "reviewed_by": "night fixer llm-debt-20261002T093021Z-7720",
-   "note": "24 h window 2026-10-02: 35 runs, 141 co-tenant + 283 committed-since path rows; 34 of 47 (run, repository) pairs are FAMILY folds (launcher .repos), e.g. claudeb-1790842639-39826-35a2, workdir video/alona/R7-B (no git), 4.5 h, folded the whole llm-legs and claude-setup main-checkout diffs. bin/worker-run fold_run_anchors folds a family unnarrowed when there is no round, and review-anchors cmd_run_fold appends a loss for every skipped path although the skip drops no owner (a co-tenant keeps its touch; a commit goes to commit review). Fix belongs to review-bench (loss only where no other owner holds the path, B5) or to a worker-run narrowing that would lose unnamed shell writes: owner decision, not loosened here.",
+   "last_reviewed": "2026-10-03",
+   "reviewed_by": "night fixer llm-debt-20261003T042526Z-2fc2",
+   "note": "2026-10-03: 21 drops in 24 h (e.g. claudeb-1790995896-49842-2cf6's llm-legs family fold, committed-since); review-anchors cmd_run_fold unchanged since the handoff (dd00c32 touched other code). 24 h window 2026-10-02: 35 runs, 141 co-tenant + 283 committed-since path rows; 34 of 47 (run, repository) pairs are FAMILY folds (launcher .repos), e.g. claudeb-1790842639-39826-35a2, workdir video/alona/R7-B (no git), 4.5 h, folded the whole llm-legs and claude-setup main-checkout diffs. bin/worker-run fold_run_anchors folds a family unnarrowed when there is no round, and review-anchors cmd_run_fold appends a loss for every skipped path although the skip drops no owner (a co-tenant keeps its touch; a commit goes to commit review). Fix belongs to review-bench (loss only where no other owner holds the path, B5) or to a worker-run narrowing that would lose unnamed shell writes: owner decision, not loosened here.",
    "handoff": "docs/handoffs/2026-10-02-debt-run-fold-skip-families.md"
+  },
+  {
+   "id": "H14",
+   "block": "any",
+   "match": {
+    "health": "debt",
+    "key": "^debt-gap:run-fold:not a repository$"
+   },
+   "title": "a family worktree landed and removed mid-run has no after snapshot",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-10-03",
+   "reviewed_by": "night fixer llm-debt-20261003T042526Z-2fc2",
+   "note": "2026-10-03: claudeb-1790995896-49842-2cf6 had ADD-DIR claude-setup/.claude/worktrees/speed-doctor; its chat landed it as claude-setup 10ed01b and removed the worktree while the worker still ran, so the family fold found no checkout. The gap is the recorder telling the truth (the changed set is unreadable; landed work goes to commit review). The adjacent bug is fixed: a gone family left its run-start unfolded in the family's store forever (claudeb-1790995896-49842-2cf6 and claudeb-1790641384-16893-1a7d still open in the live claude-setup store, not edited here); worker-run now records the family's anchors-common and folds it in the surviving checkout like a gone workdir (tests/test_worker_run_attribution.sh, mutation-checked). Dismissing gone-landed-checkout gaps is the owner's call.",
+   "handoff": "docs/handoffs/2026-10-01-debt-health-followup.md"
   },
   {
    "id": "I1",
@@ -1219,6 +1248,13 @@
    "reason": "bin/llm-doctor debt_health keeps the first detail but the latest timestamp per session/repository/kind; H5 aggregates 12 calls and H6 aggregates six. health_problems labels seven-day open-gap reads as in 24 h. --block debt is unsupported; inspect health in the full --json document. Handoff: docs/handoffs/2026-10-01-debt-health-followup.md",
    "since": "2026-10-01",
    "would_catch_if": "health evidence preserved individual gap references with their own timestamps and reported the actual open-gap lookback separately from the loss window"
+  },
+  {
+   "id": "B7",
+   "what": "worker runs that never reached complete_run stay open in review-anchors stores",
+   "reason": "2026-10-03: claudeb-1790592981-97977-6fd2 and claudeb-1790881453-55915-4b21 have no exit_code and are still unfolded runs in the claude-setup store; review-anchors check reports run-dead, but llm-doctor reads only gaps and losses, so no row names them",
+   "since": "2026-10-03",
+   "would_catch_if": "debt_health counted review-anchors check run-dead findings of the sweep repositories as a debt-gap kind"
   },
   {
    "id": "image-invocation-and-artifact-provenance",

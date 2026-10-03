@@ -1012,6 +1012,19 @@ assert [(item["id"], item["state"]) for item in doctor.pending_fix_problems(awai
     == [("MP", "fixed-pending"), ("HP", "fixed-pending")]
 assert doctor.pending_fix_problems(awaiting, [{"id": "MP"}, {"id": "HP"}], 24, now) == []
 
+# A run gap regresses a debt fix only when its run started after the fix, like a leg.
+fixed_fold = fixture_ledger([entry({"health": "debt", "key": "^debt-gap:run-fold:snapshots unreadable$"}, "fixed",
+                                   fixes=[fix_at(7200)], id="HF", block="any")])
+def fold_states(run):
+    with open(os.environ["ANCHORS_ROWS"], "w") as rows:
+        rows.write(json.dumps({"session": "s9", "kind": "run-fold", "detail": "%s /r: snapshots unreadable" % run,
+                               "count": 1, "first": now - 100, "last": now - 100}) + "\n")
+    row = doctor.debt_health(now - 86400, now, 24)
+    return [(item["id"], item["state"]) for item in doctor.health_problems(row, fixed_fold, 24) if item["rule"] == "debt-gap"]
+assert fold_states("claudeb-%d-1-ab" % (now - 9000)) == []
+assert fold_states("claudeb-%d-1-ab" % (now - 3000)) == [("HF", "regressed")]
+assert fold_states("w-1") == [("HF", "regressed")]
+
 # A collector that throws leaves an error document, never an older document's colour.
 os.environ["LLM_DOCTOR_DIR"] = os.path.join(unit, "doctor-error")
 def broken(*args, **kwargs):

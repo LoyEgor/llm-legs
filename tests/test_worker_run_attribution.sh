@@ -164,9 +164,13 @@ ANCHORS
   assert grep -qxF "run-start${anchors_tab}--repo${anchors_tab}${other_wt}${anchors_tab}--run${anchors_tab}${RUN_ID}${anchors_tab}--session${anchors_tab}anchors-chat" "$ANCHOR_LOG"
   assert_fails grep -qF "run-start${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}" "$ANCHOR_LOG"
   assert grep -qxF "$other_wt" "$RUN_DIR/families/1/top"
-  assert await_done
-  git -C "$repo" worktree remove --force "$repo_wt" >/dev/null 2>&1
+  # A family worktree landed and removed mid-run still has its run closed in the family's store.
+  : >"$gaps"
   git -C "$other" worktree remove --force "$other_wt" >/dev/null 2>&1
+  assert await_done
+  assert grep -qF "run-fold${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}--run${anchors_tab}${RUN_ID}" "$ANCHOR_LOG"
+  assert grep -qxF "run-fold${anchors_tab}${RUN_ID} $other_wt: not a repository" <<<"$(cut -f2- "$gaps")"
+  git -C "$repo" worktree remove --force "$repo_wt" >/dev/null 2>&1
   rm -f "$HOME/.cache/claude/review-journal/anchors-chat.repos"
 
   # A run that failed is folded like any other — the store's question is what content moved, never
