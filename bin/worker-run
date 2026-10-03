@@ -1575,6 +1575,17 @@ snapshot_workdir() { # directory workdir side
     mv -f "$directory/dirty-$side-shas.tmp.$$" "$directory/dirty-$side-shas" || return 1
   printf '%s\n' "$head" >"$directory/head-$side.tmp.$$" &&
     mv -f "$directory/head-$side.tmp.$$" "$directory/head-$side" || return 1
+  [ "$side" != after ] || pack_loose_objects "$workdir"
+}
+
+# The snapshots' `hash-object -w` blobs are unreachable, and `gc --auto` leaves unreachable objects
+# younger than gc.pruneExpire loose, so a repository nobody commits to never packs them. The
+# loose-objects task packs any loose object; gc.auto keeps git's threshold, its 0 still means never.
+pack_loose_objects() { # workdir
+  local at
+  at=$(git -C "$1" config --get gc.auto 2>/dev/null) || at=6700
+  (nice -n 10 git -C "$1" -c maintenance.loose-objects.auto="$at" maintenance run --auto --task=loose-objects \
+    --quiet >/dev/null 2>&1 && git -C "$1" prune-packed --quiet >/dev/null 2>&1 &)
 }
 
 # LC_ALL=C on each awk path match (here and in produced_edit_rows): macOS awk compares strings with

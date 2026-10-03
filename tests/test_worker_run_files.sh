@@ -556,5 +556,25 @@ EOF
 }
 guard_top_recorded_tests
 
+snapshot_blobs_packed_tests() {
+  local repo="$WORK/never-committed" tries=0
+  mkdir -p "$repo"
+  git -C "$repo" init -q .
+  git -C "$repo" config gc.auto 1
+  printf 'one\n' >"$repo/a" && printf 'two\n' >"$repo/b" && printf 'three\n' >"$repo/c"
+  clear_stub
+  set_config 'claudeb_model=opus' 'claudeb_effort=high'
+  start_ok claudeb --workdir "$repo"
+  assert await_done
+  until git -C "$repo" count-objects -v | grep -qx 'count: 0' || [ "$tries" -ge 50 ]; do
+    sleep 0.1
+    tries=$((tries + 1))
+  done
+  assert grep -qx 'count: 0' <<<"$(git -C "$repo" count-objects -v)"
+  assert test "$(git -C "$repo" cat-file -p "$(git -C "$repo" hash-object "$repo/b")")" = two
+  clear_stub
+}
+snapshot_blobs_packed_tests
+
 
 echo "PASS: $asserts asserts; served model and cost, transcript file lists, snapshot and guard attribution"

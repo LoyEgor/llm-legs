@@ -1363,12 +1363,22 @@
         "rule": "loose_objects",
         "ident": "loose-git-objects-logo-vectorizer-bench"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-03T11:49:06+03:00",
+          "by": "Night fixer harness-growth-20261003T042540Z-0368",
+          "files": [
+            "llm-legs/bin/worker-run"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "last_reviewed": "2026-10-02",
-      "reviewed_by": "Night fixer harness-growth-20261002T093034Z-140d",
-      "note": "Narrowed: all loose objects since the 2026-09-29 manual cruft pack are blobs of untracked bench outputs, written by claude-setup review-journal rj_hash_paths (hash-object -w on every tool call of a chat in the repository; 9 296 blobs 12:52-12:56Z 10-02). They never pack because git runs gc --auto only after commit/merge/fetch-like commands and this repository has its initial commit only; objects/17 estimate ~16 600 > gc.auto 6 700. Ruled out: gc.log, gc.auto=0, stashes, worktrees, night-run base snapshots, llm-legs worker-run (no run there since 09-30, same -w pattern elsewhere). Fix proposed: detached git gc --auto after snapshot writes, shared by review-journal and worker-run (claude-setup, no worktree this run).",
+      "last_reviewed": "2026-10-03",
+      "reviewed_by": "Night fixer harness-growth-20261003T042540Z-0368",
+      "note": "Writers: unreachable hash-object -w blobs of untracked bench outputs from llm-legs worker-run snapshots (14 620 of the 15 975 loose objects written 07-10 local on 10-03 are shas in dirty-before/after-shas of the 213 runs with workdir logo-vectorizer-bench since 10-01 22:00; the 10-02 fixer's 'no worker run since 09-30' was wrong) and claude-setup review-journal rj_hash_paths (the 10-02 burst). git gc --auto does not fix it: it only repacks reachable objects and leaves unreachable ones younger than gc.pruneExpire loose with a 'too many unreachable loose objects' warning, which under autoDetach becomes a gc.log that blocks auto gc for a day (git 2.49, reproduced in a scratch repo). Fix: worker-run pack_loose_objects runs the maintenance loose-objects task (threshold gc.auto, default 6 700) plus prune-packed after every after-snapshot, which packs any loose object of the repository, review-journal blobs included; tested in test_worker_run_files snapshot_blobs_packed_tests. Left: review-journal still never packs in a repository with chats and no worker runs (handoff); in a repository with no commits the loose-* packs are only consolidated by a manual gc (gc.autoPackLimit needs a commit or fetch to fire). Ruled out: gc.log, gc.auto=0, stashes, worktrees, night-run base snapshots.",
       "handoff": "docs/handoffs/2026-10-02-loose-objects-no-auto-gc.md"
     },
     {
