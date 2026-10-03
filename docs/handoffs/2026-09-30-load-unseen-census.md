@@ -1,63 +1,36 @@
-# Hand-off: what the unaccounted CPU of load:unseen was made of on the night of 2026-09-30
+# Hand-off: load:unseen and load:busy are the night's requested work, not a bug
 
 Status: open
 
-For «Harness Doctor» (`share/harness-ledger.json` `owner`). Written 2026-09-30 by the night fixer
-run harness-load-20260930T001649Z-57dc. Ledger row: `load-unseen-suites-statusline` (open).
-Changed nothing but the ledger and this file.
+For «Harness Doctor» (`share/harness-ledger.json` `owner`). Rows `load-unseen-suites-statusline`
+and `load-busy-night-concurrency`, both `open`. Load fixers 2026-09-30, 10-01, 10-02 and 10-03
+(harness-load-20261003T042543Z-5d17) each found nothing to fix; no limit, match or status moved.
 
-## 0. The problem
+## Facts (2026-10-03 07:30-09:30 local, night 20261003T042136Z-e9f1)
 
-`load:unseen` red since 2026-09-29 21:17: 6.3 of 10 cores in the last hour are busy × ncpu minus
-the cores memlogd sees per process. The kernel took 39-59 % of CPU and new processes ran at
-1 100-2 900 a second over the same hours (samples 00:01-02:34 and 03:16). The rule does what the
-design (§3 "unaccounted CPU") says: it shows CPU that per-process sampling misses. Most of that
-CPU is kernel time spent on fork and exec, so the number follows the fork rate.
+- Unseen 8.4 of 10 cores (limit 5), busy 100 % (limit 90 %), kernel 60 %, load average ~63.
+- Page faults ~745 000/s, ~180 000/s copy-on-write: kernel time is fork and exec. Memory
+  compression is not it (~200 decompressions/s).
+- Live 30 s ancestor census (`proc_listallpids` + `KERN_PROCARGS2`, 1 350-1 840 new processes/s):
+  test suites 44-62 %, statusline 19-25 %, hooks 8-19 %, worker-run 9 %, review-bench under 1 %.
+- Both caps hold: three `run-suites` slots taken (`RUN_SUITES_SLOTS`, share/run-suites.sh) and
+  night workers under `NIGHT_FIXER_SLOTS` (bin/worker-run, Egor 2026-10-01 in badbf8f). The
+  concurrency question is settled; what remains is requested parallel work.
+- The statusline is llm-legs `bin/statusline.sh` (`~/.claude/statusline.sh` links to it), not
+  claude-setup. Per render: ~65-100 bash subshells; repo debt starts a `review-debt` Python walk
+  every 15 s per shown tree (0.73 CPU-s, 0.40 of it kernel). Cuts that keep every segment as fresh
+  (`$(file_mtime)` and `$(pct_colored)` forks) save about 1 % of the machine's forks; anything
+  larger makes a segment staler, item 2 of `2026-09-28-harness-performance-fix.md`, Egor's word.
 
-## 1. Census
+## Proposed to the owner
 
-No root, so no dtrace or eslogger. A Python poll of `proc_listallpids` at about 1 100 polls a
-second recorded each new pid with its parent and read the ancestor chain through `KERN_PROCARGS2`.
-It caught about 1 400 new processes a second, which is close to the sampler's own rate (so the
-poll saw most of them). Each process was put in the first class its ancestor chain matched:
+The judge re-launches a night load fixer every night for these two rows, and each one costs a
+worker run to re-measure the same workload. Decide one of:
 
-| origin (60 s, 03:25-03:31 local) | new/s | share |
-|---|---|---|
-| test suites (`tests/`, `run-suites`, `run-all` in the chain) | 658 | 61 % |
-| statusline (`statusline.sh`, its work and ports probes) | 215 | 20 % |
-| hooks | 92 | 8.5 % |
-| worker-run outside its CLI's hooks (supervise, watchdog, wait) | 62 | 5.8 % |
-| review-bench | 42 | 3.8 % |
-| everything else | < 12 | 1 % |
+1. Judge `load:unseen` and `load:busy` only over samples where no suite slot and no night worker
+   slot is held (`share/slots.sh` store locks under `~/.cache/run-suites/slots` and
+   `<doctors>/fixer-slots`), so a red row means load nobody asked for.
+2. Or accept both as night workload by your own dismissal.
 
-At that time, four night worktrees (`-claude`, `-gemini`, `harness-tests-…`, `llm-health-…`)
-had `share/run-suites.sh` running at the same time. The sampler's `tests` field read 0.
-
-Statusline journal, same hour: 5 243 renders over 5 sessions (1.5 a second, about one per 3 s per
-session, which is `refreshInterval: 3`). Mean render wall time was 628 ms, and about 140 new
-processes a second went to each render and its probes.
-
-Hook journal, same hour: about 2 300 s of hook wall time in total. `review-flow-gate.sh verdict`
-had the most: 568 s over 305 runs, 1.9 s each.
-
-The 21:17-00:00 part of the episode ran before the night run started. This census cannot
-attribute it.
-
-## 2. What is ours to change, and whose it is
-
-1. **Statusline, about 20 % and steady while sessions are open.** This is item 2 of
-   `docs/handoffs/2026-09-28-harness-performance-fix.md` (still open). The fork cuts the contract
-   allows (one `git status --porcelain=v2`, fewer jq runs, a longer work-probe TTL) go to whoever
-   takes that item. A longer `refreshInterval` needs Egor's word (§6 there).
-2. **Test suites, about 61 %, only while fixers or chats run suites.** The fixer preamble tells
-   every run to finish with `tests/run-all`, so each night run adds one full parallel `run-all`.
-   `nice 10` makes the suites yield CPU but does not remove the kernel's fork cost, and nobody
-   waited on this CPU at 03:30. Recommendation: treat night-window `load:unseen` as workload and
-   leave the limit where it is. If the night orchestrator should cap how many `run-all`s run at
-   once, that is the night-run owner's decision. The owner's rule "parallel load beats serial"
-   argues for no cap.
-3. **Doctor blind spots** added to the ledger: `short-lived-origin` (Load cannot say which process
-   tree the unaccounted CPU belongs to) and `headless-suites` (`tests running` and test-history
-   never see a suite started by a `claude -p` session).
-
-No dismissal is proposed. The row stays `open`, so the problem stays red, and no limit moved.
+Either loosens the judge, so a fixer may not do it. Recommendation: 1, since it keeps the daytime
+signal that an idle chat waits on someone else's forks.

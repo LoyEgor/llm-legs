@@ -241,9 +241,9 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-02",
-      "reviewed_by": "Harness doctor night fixer harness-load-20261002T093037Z-196d",
-      "note": "60 s process census 2026-09-30 03:25-03:31: 1 081 new processes a second; test suites 61 % (four night worktrees in run-suites at once), statusline 20 % (5 sessions), hooks 8.5 %, worker-run 5.8 %, review-bench 3.8 %. The statusline share is item 2 of docs/handoffs/2026-09-28-harness-performance-fix.md (statusline lives in claude-setup hooks, outside a load fixer's worktree; still open). Cause still stands on 2026-10-01: 5.5 of 10 cores unaccounted under night concurrency. 2026-10-02 ~13:50 local: 7.9 cores unaccounted (limit 5.0), kernel 56 %, 2 075 new proc/s, run-suites live at once in the main checkout (x2) and night worktrees llm-debt and llm-image, plus review-bench --debt and headless claude -p workers; no fix of ours lowers it without a night-run concurrency cap or a limit change, both the owner's.",
+      "last_reviewed": "2026-10-03",
+      "reviewed_by": "Harness doctor night fixer harness-load-20261003T042543Z-5d17",
+      "note": "Fork and exec of requested parallel work. 2026-10-03 07:30-09:30 local: 8.4 of 10 cores unseen, kernel 60 %, ~745 000 page faults/s (~180 000 copy-on-write); 30 s ancestor census 1 350-1 840 new proc/s: test suites 44-62 %, statusline 19-25 %, hooks 8-19 %, worker-run 9 %. Ruled out: memory compression (~200 decompressions/s); a run-suites over-subscription (three RUN_SUITES_SLOTS held, as capped); night worker count (NIGHT_FIXER_SLOTS, badbf8f); worker-run's supervisor 10 ms poll (start-up only). The statusline is llm-legs bin/statusline.sh, not claude-setup: ~65-100 bash subshells a render, review-debt Python every 15 s per shown tree (0.73 CPU-s); staleness-free fork cuts save ~1 % of forks, larger ones are item 2 of docs/handoffs/2026-09-28-harness-performance-fix.md (Egor's word). Same ground re-measured by load fixers 2026-09-30 to 2026-10-03; the remaining decision is the judge's, in the handoff.",
       "handoff": "docs/handoffs/2026-09-30-load-unseen-census.md"
     },
     {
@@ -256,10 +256,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-02",
-      "reviewed_by": "Harness doctor night fixer harness-load-20261002T093037Z-196d",
-      "note": "CPU 96.2 % busy (limit 90 %) in the night window: 4+ concurrent night worktrees running test suites and model workers on a 10-core machine. Corresponds to load-unseen-suites-statusline. Handed off to Harness Doctor: concurrency cap or limit adjustment is the owner's decision. 2026-10-02 ~13:50 local: recompute reads 100 % busy, same cause (night 20261002T092633Z-e367 fixers and the main checkout running run-suites at once); quiet at launch only because the launch window missed it. Not fixable inside a load run: the busy CPU is parallel suites and workers doing requested work, per the owner's 'parallel load beats serial'.",
-      "handoff": "docs/handoffs/2026-10-01-load-busy-night-concurrency.md"
+      "last_reviewed": "2026-10-03",
+      "reviewed_by": "Harness doctor night fixer harness-load-20261003T042543Z-5d17",
+      "note": "Twin of load-unseen-suites-statusline: 100 % busy on 2026-10-03 07:30-09:30 local under night 20261003T042136Z-e9f1 (three run-suites slots, night workers, review-bench --debt), both slot caps holding. Requested parallel work per the owner's 'parallel load beats serial'; the judge decision is in the shared handoff.",
+      "handoff": "docs/handoffs/2026-09-30-load-unseen-census.md"
     },
     {
       "id": "guards-tripwire-rejournal",
