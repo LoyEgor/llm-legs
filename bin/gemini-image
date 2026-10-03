@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# One group, parsed whole before it runs: bash reads a script as it goes, so an in-place edit
+# mid-run fed a running leg shifted bytes (2026-10-02). The closing `exit` and `}` stay last.
+{
 set -euo pipefail
 
 usage() {
@@ -481,3 +484,5 @@ lineage_region=$region
 image_leg_lineage gemini "$route" "$dest" "$session" "$prompt" "$lineage_region" \
   "$(printf '%s\n' ${points[@]+"${points[@]}"})" \
   ${edit_input:+"$edit_input"} ${refs[@]+"${refs[@]}"}
+exit
+}

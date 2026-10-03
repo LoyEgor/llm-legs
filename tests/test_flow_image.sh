@@ -724,6 +724,43 @@ except gw.Failure as failure:
     assert failure.code == 4, failure.code
 gw.goto_flow, gw.dismiss_dialogs = saved_nav
 assert gw.read_meta("new").get("image_editor") is True, "one slow My Tools load dropped the account for good"
+
+# 2026-10-02 jihangarangan: the 2K download clicked a fresh image's black editor, Download media disabled.
+class EditorPage:
+    loads, settles_at = 0, 3
+
+    def get_by_text(self, text, exact):
+        return types.SimpleNamespace(wait_for=self.wait_for)
+
+    def wait_for(self, timeout):
+        if self.loads < self.settles_at:
+            raise TimeoutError("black editor")
+
+
+gw.goto_flow = lambda page, path: setattr(page, "loads", page.loads + 1)
+gw.close_promos = lambda page, account: None
+editor = EditorPage()
+assert fi.open_editor(editor, "new", "p", "i", wait_s=60) and editor.loads == 3, editor.loads
+editor.loads, editor.settles_at = 0, float("inf")
+assert not fi.open_editor(editor, "new", "p", "i", wait_s=0) and editor.loads == 1, editor.loads
+
+# 2026-10-03 com: the Image Editor frame kept a squashed width, and the layer landed at (108, 108, 864, 864).
+def frames(*widths):
+    queue = [types.SimpleNamespace(width=w, frame_element=lambda w=w: types.SimpleNamespace(
+        bounding_box=lambda: {"width": w})) for w in widths]
+    fi.open_editor_once = lambda page, account, project: queue.pop(0)
+    return queue
+
+
+wide = fi.TOOL_VIEWPORT["width"] * 0.88
+left = frames(wide * 0.5, wide)
+assert fi.open_editor_tool(None, "new", "p").width == wide and not left, left
+frames(wide * 0.5, wide * 0.5)
+try:
+    fi.open_editor_tool(None, "new", "p")
+    raise AssertionError("a squashed frame twice")
+except gw.Failure as failure:
+    assert "Image Editor frame stays" in failure.reason, failure.reason
 PY
 
 # The card finder on a fake DOM shaped like the live editor history (2026-10-02 failure shot): a Failed card

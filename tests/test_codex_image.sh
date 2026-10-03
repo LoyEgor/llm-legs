@@ -105,8 +105,34 @@ for wrapper in codex-image gemini-image gemini-listen gemini-music gemini-sfx ge
   help_out=$(HOME="$FAKE_HOME" bash "$ROOT/bin/$wrapper" --help 2>/dev/null) || help_rc=$?
   assert test "$help_rc" -eq 0
   assert grep -q "^usage: $wrapper " <<<"$help_out"
+  assert test "$(grep -v '^#' "$ROOT/bin/$wrapper" | head -n 1)" = '{'
+  assert test "$(tail -n 2 "$ROOT/bin/$wrapper" | tr '\n' ' ')" = 'exit } '
 done
 assert test "$(wc -l <"$IMAGE_LEG_LOG")" -eq "$legs_before"
+
+# 2026-10-02: a chat rewrote bin/codex-image in place while two legs ran, and both died on shifted
+# bytes ("line 559: the: command not found"). The leg here is rewritten while its codex runs.
+MIRROR="$WORK/mirror"
+mkdir -p "$MIRROR/bin"
+ln -s "$ROOT/share" "$MIRROR/share"
+cp "$SCRIPT" "$MIRROR/bin/codex-image"
+cat >"$WORK/slow-codex" <<EOF
+#!/usr/bin/env bash
+[ "\${1-}" = --version ] || { : >"$WORK/codex-started"; while [ ! -e "$WORK/wrapper-edited" ]; do sleep 0.1; done; }
+exec "$FIXTURE" "\$@"
+EOF
+chmod +x "$WORK/slow-codex"
+SCRIPT="$MIRROR/bin/codex-image" FIXTURE="$WORK/slow-codex" \
+  image_run --dest "$OUTPUT_DIR/edited-mid-run.png" --prompt badge --account explicit &
+run_pid=$!
+for _ in $(seq 600); do [ -e "$WORK/codex-started" ] && break; sleep 0.1; done
+assert test -e "$WORK/codex-started"
+yes 'exit 97' | head -n 20000 >"$MIRROR/bin/codex-image"
+: >"$WORK/wrapper-edited"
+run_rc=0
+wait "$run_pid" || run_rc=$?
+assert test "$run_rc" -eq 0
+assert test -s "$OUTPUT_DIR/edited-mid-run.png"
 
 # A generation is billed the moment it is sent, so everything the arguments alone can refuse is
 # refused before anything goes out — the proof is that the CLI was never called.

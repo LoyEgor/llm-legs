@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# One group, parsed whole before it runs: bash reads a script as it goes, so an in-place edit
+# mid-run fed a running leg shifted bytes (2026-10-02). The closing `exit` and `}` stay last.
+{
 set -euo pipefail
 
 resolve_root() {
@@ -696,3 +699,5 @@ image_caps_model_check "$root" codex image "$(c2pa_model "$generated")"
 image_caps_check "$root" codex "$codex_cmd"
 aspect_check
 lineage
+exit
+}
