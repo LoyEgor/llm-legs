@@ -411,7 +411,7 @@
         "rule": "hook-error",
         "ident": "worker-run-backstop\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-03T09:35:00+03:00",
@@ -419,8 +419,8 @@
           "files": [
             "llm-legs/bin/worker-run-backstop.sh"
           ],
-          "in": null,
-          "regressed_at": null
+          "in": "llm-legs@24571d6",
+          "regressed_at": "2026-10-03T13:13:58+03:00"
         }
       ],
       "same_cause": [],
@@ -1403,7 +1403,7 @@
         "rule": "loose_objects",
         "ident": "loose-git-objects-logo-vectorizer-bench"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-03T11:49:06+03:00",
@@ -1411,7 +1411,7 @@
           "files": [
             "llm-legs/bin/worker-run"
           ],
-          "in": null,
+          "in": "llm-legs@727ddde",
           "regressed_at": null
         }
       ],
