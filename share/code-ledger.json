@@ -1,9 +1,117 @@
 {
-  "owner": "the Code doctor chat",
-  "protected": [],
-  "keep": [],
-  "intentional": [],
-  "retired": [],
-  "rows": [],
-  "blind_spots": []
+ "blind_spots": [],
+ "intentional": [],
+ "keep": [],
+ "owner": "the Code doctor chat",
+ "protected": [],
+ "retired": [],
+ "rows": [
+  {
+   "fixes": [
+    {
+     "at": "2026-10-03T08:43:16+03:00",
+     "by": "code-code-20261003T042547Z-2738",
+     "files": [
+      "hammerspoon/type_whisper.lua",
+      "hammerspoon/README.md"
+     ],
+     "in": null,
+     "regressed_at": null,
+     "yield": {
+      "lines_removed": 209,
+      "suite_s_saved": 0,
+      "tokens_cut": 0
+     }
+    }
+   ],
+   "group": "dead",
+   "handoff": "docs/handoffs/2026-10-03-type-whisper-leftovers.md",
+   "id": "cause:hammerspoon/type_whisper.lua",
+   "last_reviewed": null,
+   "match": {
+    "cause": "cause:hammerspoon/type_whisper.lua",
+    "identity": {
+     "sketch": [
+      27350774,
+      30131760,
+      40590437,
+      55339452,
+      92711464,
+      93364414,
+      102173774,
+      112590026,
+      118735075,
+      141107779,
+      151603543,
+      152555188,
+      185847468,
+      202572828,
+      204313227,
+      236067079,
+      236279449,
+      243392870,
+      249082086,
+      267999653,
+      273295900,
+      293803948,
+      306791959,
+      315771268,
+      326533554,
+      351443004,
+      356234735,
+      371388222,
+      394090554,
+      401347448,
+      425848212,
+      428386056,
+      439093235,
+      456259173,
+      495714884,
+      521345784,
+      538148588,
+      568294622,
+      570377159,
+      578377767,
+      579652487,
+      579862110,
+      593977481,
+      606006634,
+      632879334,
+      650963692,
+      689548830,
+      693126395,
+      701013288,
+      714973158,
+      716925725,
+      727512616,
+      735043956,
+      737767286,
+      808248627,
+      812410562,
+      816076421,
+      818875803,
+      824526385,
+      825687057,
+      836724616,
+      836977848,
+      842340514,
+      858464290
+     ],
+     "touch": [
+      "call:hs.eventtap.keyStroke",
+      "call:hs.pasteboard.changeCount",
+      "call:hs.pasteboard.readAllData",
+      "call:hs.pasteboard.writeAllData",
+      "call:hs.timer.doEvery",
+      "call:hs.timer.secondsSinceEpoch"
+     ]
+    }
+   },
+   "note": "Judge trigger met and ruled harmless: BTT gesture (keyCode 50+Cmd+Shift) runs hs -c 'TypeWhisper.toggle()', which already errors (global nil in live Hammerspoon, no init.lua ever loaded the file), then sends Page Up, the TypeWhisper app's own hotkey (com.typewhisper.mac hybridHotkey keyCode 116). Leftovers: claude-setup NOT_A_CHAT entry and the BTT hs action, see handoff.",
+   "reviewed_by": null,
+   "same_cause": [],
+   "status": "fixed-pending",
+   "title": "no entry point reaches hammerspoon/type_whisper.lua"
+  }
+ ]
 }
