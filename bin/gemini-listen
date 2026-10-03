@@ -218,7 +218,7 @@ last_line=$(printf '%s\n' "$answer" | awk 'NF { line = $0 } END { print line }' 
 
 # Stream events echo the prompt, so of stdout only the lines that are not events count.
 grep -v '^[[:space:]]*{' "$tmp_dir/stdout" >"$tmp_dir/stdout-text" || :
-limit_re='GEMINI_USAGE_LIMIT|RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota exceeded|rate limit'
+limit_re='GEMINI_USAGE_LIMIT|RESOURCE_EXHAUSTED|Individual quota reached|credits balance is too low|usage limit|quota exceeded|rate limit'
 limited() {
   [ "$last_line" = QUOTA ] || grep -Eqi "$limit_re" "$tmp_dir/errors" ||
     { [ "$rc" -ne 0 ] && grep -Eqi "$limit_re" "$tmp_dir/stdout-text" "$tmp_dir/stderr"; }

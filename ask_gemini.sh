@@ -50,7 +50,7 @@ fi
 AGY_PRINT_TIMEOUT="${AGY_PRINT_TIMEOUT:-5m}"
 WEAK_RE='(^|[^a-z])(flash|lite|nano|mini|small|tiny)([^a-z]|$)'
 # Broad, for stderr only (legacy behavior): stderr is terse, so false positives are unlikely.
-QUOTA_RE='quota|exhausted|capacity|rate.?limit|resource.?exhausted|429'
+QUOTA_RE='quota|exhausted|capacity|credits balance is too low|rate.?limit|resource.?exhausted|429'
 # Strict, for the verbose --log-file: anchored to the measured error shape
 # ("RESOURCE_EXHAUSTED (code 429): Individual quota reached ...") so debug-log noise can't trip it.
 QUOTA_LOG_RE='RESOURCE_EXHAUSTED|Individual quota reached|\(code 429\)'

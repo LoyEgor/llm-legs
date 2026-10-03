@@ -344,14 +344,14 @@ if [ -z "$generated" ]; then
   # Exit 3 is not a limit: agy >= 1.2.6 exits 3 on every model API failure (AGY_ERROR on stderr).
   if [ "$(printf '%s\n' "$response" | tail -n 1 | tr -d '\r')" = QUOTA ] ||
      grep -Eq '^QUOTA[[:space:]]*$' "$stdout_file" ||
-     grep -Eqi 'GEMINI_USAGE_LIMIT|RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota exceeded|image generation quota.*exceeded|rate limit' "$tmp_dir/errors"; then
+     grep -Eqi 'GEMINI_USAGE_LIMIT|RESOURCE_EXHAUSTED|Individual quota reached|credits balance is too low|usage limit|quota exceeded|image generation quota.*exceeded|rate limit' "$tmp_dir/errors"; then
     printf 'GEMINI_USAGE_LIMIT\n' >&2
     exit 3
   fi
   if [ "$generation_rc" -ne 0 ]; then
     # Stream events echo the prompt; their errors were read above, so only non-event lines count here.
     grep -v '^[[:space:]]*{' "$stdout_file" >"$tmp_dir/stdout-text" || :
-    if grep -Eqi 'GEMINI_USAGE_LIMIT|RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota exceeded|image generation quota.*exceeded|rate limit' \
+    if grep -Eqi 'GEMINI_USAGE_LIMIT|RESOURCE_EXHAUSTED|Individual quota reached|credits balance is too low|usage limit|quota exceeded|image generation quota.*exceeded|rate limit' \
         "$tmp_dir/stdout-text" "$log_file" "$tmp_dir/stderr" 2>/dev/null; then
       printf 'GEMINI_USAGE_LIMIT\n' >&2
       exit 3

@@ -58,6 +58,7 @@ done
 if [ -n "${FAKE_EDIT:-}" ]; then printf 'Operation not permitted: %s\n' "$FAKE_EDIT" >&2; exit 5; fi
 case $brief in
   *QUOTA-Q*) [ -z "$log" ] || printf 'RESOURCE_EXHAUSTED\n' >"$log"; exit 1 ;;
+  *CREDITS-Q*) printf 'AGY_ERROR: {"short_error":"Your AI credits balance is too low to continue."}\n' >&2; exit 3 ;;
   *UNAVAIL-Q*) exit 1 ;;
   *APIERR-Q*) printf 'AGY_ERROR: {"short_error":"INTERNAL (code 500): backend error"}
 ' >&2; exit 3 ;;
@@ -406,6 +407,9 @@ printf 'APIERR-Q: agy >= 1.2.6 exits 3 on a model API failure that is no quota w
 ' >"$WORK/prompt-apierr"
 rm -f "$WORK/answer"; run --prompt-file "$WORK/prompt-apierr"; rc=$?; assert test "$rc" -eq 4
 assert grep -q '^OUTCOME: GEMINI_UNAVAILABLE$' "$WORK/out"; assert test ! -e "$WORK/answer"
+printf 'CREDITS-Q: agy >= 1.2.15 words a spent plan as a credits shortfall.\n' >"$WORK/prompt-credits"
+rm -f "$WORK/answer"; run --prompt-file "$WORK/prompt-credits"; rc=$?; assert test "$rc" -eq 3
+assert grep -q '^OUTCOME: GEMINI_USAGE_LIMIT$' "$WORK/out"; assert test ! -e "$WORK/answer"
 rm -f "$WORK/answer"; run --prompt-file "$WORK/prompt-unavail" --prompt-file "$WORK/prompt-quota"; rc=$?; assert test "$rc" -eq 3
 assert test ! -e "$WORK/answer"
 

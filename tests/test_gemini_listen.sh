@@ -119,6 +119,8 @@ assert grep -qx GEMINI_USAGE_LIMIT "$WORK/err"
 assert grep -q 'retry with --model flash' "$WORK/err"
 FAKE_GEMINIB_MODE=quota-stderr expect_rc 3 'q' "$M/tone.wav" --account explicit --model flash
 assert grep -q 'retry with --model pro' "$WORK/err"
+FAKE_GEMINIB_MODE=quota-credits expect_rc 3 'q' "$M/tone.wav" --account explicit
+assert grep -qx GEMINI_USAGE_LIMIT "$WORK/err"
 FAKE_GEMINIB_MODE=pool expect_rc 4 'q' "$M/tone.wav" --account explicit
 FAKE_GEMINIB_MODE=cannot-open expect_rc 1 'q' "$M/tone.wav" --account explicit
 assert grep -q 'could not open a file: 1 file size' "$WORK/err"

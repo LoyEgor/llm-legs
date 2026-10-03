@@ -3219,7 +3219,7 @@ has_limit_signature() {
     # fatal error is.
     codex) pattern='hit your usage limit|usage limit (reached|exceeded)|usage_limit_reached|quota (exhausted|exceeded|reached)|rate limit (exceeded|reached)|too many requests|out of credits|402 Payment Required|deactivated_workspace'; scan=("$directory/err"); tail_lines=40 ;;
     claudeb) pattern='hit your session limit|hit your usage limit|usage limit|(^|[^0-9])429([^0-9]|$)'; scan=("$directory/out" "$directory/err") ;;
-    gemini) pattern='RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota|rate.?limit|(^|[^0-9])429([^0-9]|$)'; scan=("$directory/err") ;;
+    gemini) pattern='RESOURCE_EXHAUSTED|Individual quota reached|credits balance is too low|usage limit|quota|rate.?limit|(^|[^0-9])429([^0-9]|$)'; scan=("$directory/err") ;;
     # grok states a failure in two places — stderr and the stream's own error events — so its text
     # is assembled rather than read from a file list.
     grok) grok_error_text "$directory" "$bytes" | grep -Eiq "$GROK_LIMIT_RE"; return ;;

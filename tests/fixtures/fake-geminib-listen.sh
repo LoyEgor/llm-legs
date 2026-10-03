@@ -19,6 +19,7 @@ done
 mode=${FAKE_GEMINIB_MODE:-ok}
 case "$mode" in
   quota-stderr) printf 'AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached"}\n' >&2; exit 3 ;;
+  quota-credits) printf 'AGY_ERROR: {"short_error":"Your AI credits balance is too low to continue."}\n' >&2; exit 3 ;;
   pool) printf 'gemini: fixture is out of the worker pool, so no headless run may use it.\n' >&2; exit 2 ;;
   error) printf 'transport failed\n' >&2; exit 1 ;;
 esac

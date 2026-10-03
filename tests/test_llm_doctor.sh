@@ -539,6 +539,7 @@ assert doctor.failure_reason("finding at panel.py:401 and 403 lines") == "unclas
 assert doctor.failure_reason("HTTP 403 Forbidden") == "auth"
 assert doctor.failure_reason("rater task crashed: File /Volumes/Work/runner.py:429: ValueError") == "crashed"
 assert doctor.failure_reason("HTTP 429") == "bare 429"
+assert doctor.failure_reason("Your AI credits balance is too low to continue.") == "walled"
 assert doctor.failure_reason('{"is_error":true,"api_error_status":429}') == "bare 429"
 # The provider's own clock is theirs.
 for text in ("upstream request timeout", "rpc error: DEADLINE_EXCEEDED", "504 Gateway Timeout", "gateway time-out"):

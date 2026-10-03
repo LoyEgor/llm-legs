@@ -28,6 +28,8 @@ case "$mode" in
   quota-log) printf 'image generation quota exceeded\n' >"$log_file"; exit 1 ;;
   quota-exit) printf 'AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached"}
 ' >&2; exit 3 ;;
+  quota-credits) printf 'AGY_ERROR: {"short_error":"Your AI credits balance is too low to continue."}
+' >&2; exit 3 ;;
   api-error) printf 'AGY_ERROR: {"short_error":"INTERNAL (code 500): backend error"}
 ' >&2; exit 3 ;;
   error) printf 'transport failed\n' >&2; exit 1 ;;

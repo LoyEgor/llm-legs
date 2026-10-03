@@ -216,7 +216,7 @@ FAKE_IMAGE_MODEL=gemini-future-image FAKE_AGY_VERSION=1.3.0 assert image_run "${
 assert grep -qx 'model=gemini-future-image model_caps=stale verified=gemini-3.1-flash-image' "$WORK/out"
 assert grep -qx "caps=stale cli=1.3.0 verified=$MANIFEST_CLI_VERSION" "$WORK/out"
 
-for mode in quota quota-plain quota-stderr quota-log quota-exit quota-tool; do
+for mode in quota quota-plain quota-stderr quota-log quota-exit quota-credits quota-tool; do
   FAKE_GEMINIB_MODE=$mode expect_rc 3 "${args[@]}" --account explicit
   assert grep -qx GEMINI_USAGE_LIMIT "$WORK/err"
   assert test ! -s "$WORK/out"

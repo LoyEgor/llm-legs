@@ -55,6 +55,9 @@ case "${STUB_MODE:-quota}" in
   quota)
     # Silent quota on every model: rc 0, empty stdout+stderr; error lives ONLY in the log file.
     [ -n "$logf" ] && printf '%s\n' "$QLINE" >> "$logf" ;;
+  credits)
+    printf '%s\n' 'AGY_ERROR: {"short_error":"Your AI credits balance is too low to continue."}' >&2
+    exit 3 ;;
   high_quota_low_ok)
     # Per-model quota: (High) is capped (log line, empty stdout), (Low) still answers.
     case "$model" in
@@ -133,6 +136,15 @@ rc=$?
 ! grep -q 'account-wide' "$err1d" || fail "quota+partial case: reported an account-wide quota: $(cat "$err1d")"
 grep -q '"served":"FAILED"' "$DATA1d/served-models.jsonl" || fail "quota+partial case: audit row FAILED not logged"
 
+# --- Case 1e: agy >= 1.2.15 says the plan is spent on stderr alone -> quota on both, exit 5 ---
+DATA1e="$WORK/data-credits"
+err1e="$WORK/err1e.txt"
+STUB_MODE=credits LLM_LEGS_DATA_DIR="$DATA1e" \
+  bash "$SCRIPT" "test prompt" >/dev/null 2>"$err1e"
+rc=$?
+[ "$rc" -eq 5 ] || fail "credits case: expected exit 5, got $rc; stderr: $(cat "$err1e")"
+grep -q 'QUOTA_EXHAUSTED' "$DATA1e/served-models.jsonl" || fail "credits case: audit row QUOTA_EXHAUSTED not logged"
+
 # --- Case 2: plain empty (no quota markers) -> tries both models, exit 1 ---
 DATA2="$WORK/data-empty"
 err2="$WORK/err2.txt"
@@ -171,5 +183,5 @@ rc=$?
 grep -q 'no `pro` row' "$err4" || fail "no-pro case: refusal does not name the missing row: $(cat "$err4")"
 [ ! -s "$WORK/data-no-pro/served-models.jsonl" ] || fail "no-pro case: a model was called anyway"
 
-echo "PASS: quota-chain->5, quota-fallback-ok->0, partial-fallback->0, empty->1, probe->0, no-pro-row->1"
+echo "PASS: quota-chain->5, quota-fallback-ok->0, partial-fallback->0, credits->5, empty->1, probe->0, no-pro-row->1"
 exit 0

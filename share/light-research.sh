@@ -184,7 +184,7 @@ supervise_gemini_research() {
     research_failure "$directory" READ_ONLY_VIOLATION 5; return $?
   fi
   if [ "$rc" -ne 0 ] || [ ! -s "$directory/out" ]; then
-    if grep -Eiq 'RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota[[:space:]_-]*(exhausted|exceeded|reached)|rate.?limit|rateLimiter|HTTP[[:space:]]+429|(^|[^[:alnum:]_.])429([^[:alnum:]_.]|$)' \
+    if grep -Eiq 'RESOURCE_EXHAUSTED|Individual quota reached|credits balance is too low|usage limit|quota[[:space:]_-]*(exhausted|exceeded|reached)|rate.?limit|rateLimiter|HTTP[[:space:]]+429|(^|[^[:alnum:]_.])429([^[:alnum:]_.]|$)' \
         "$directory/err" "$directory/out" "$directory/log"; then
       research_failure "$directory" GEMINI_USAGE_LIMIT 3; return $?
     fi

@@ -87,6 +87,7 @@ FAILURE_REASONS = (
     ("walled", re.compile(
         r"GoUsageLimitError|limitName|usage limit|out of credits|usage balance exhaust"
         r"|402 Payment Required|Individual quota reached|RESOURCE_EXHAUSTED"
+        r"|credits balance is too low"
         r"|exhausted your capacity on this model|walled off while"
         r"|hit the (?:rate|credit) limit for your plan|free-usage-exhausted", re.IGNORECASE)),
     ("throttled", re.compile(

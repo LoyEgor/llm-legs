@@ -327,7 +327,7 @@ rm -rf "$WORKER_RUN_DIR/prior-granted"
 # the caller.
 # Codex's "out of credits" is the same wall in other words: the plan's window is spent and it
 # offers paid credits to continue — the account is back at the reset, not broken.
-for spec in 'claudeb:usage limit reached:CLAUDEB_USAGE_LIMIT' 'codex:quota exhausted:CODEX_USAGE_LIMIT' 'codex:Your workspace is out of credits:CODEX_USAGE_LIMIT' 'gemini:RESOURCE_EXHAUSTED:GEMINI_USAGE_LIMIT'; do
+for spec in 'claudeb:usage limit reached:CLAUDEB_USAGE_LIMIT' 'codex:quota exhausted:CODEX_USAGE_LIMIT' 'codex:Your workspace is out of credits:CODEX_USAGE_LIMIT' 'gemini:RESOURCE_EXHAUSTED:GEMINI_USAGE_LIMIT' 'gemini:Your AI credits balance is too low to continue.:GEMINI_USAGE_LIMIT'; do
   IFS=: read -r vendor error outcome <<<"$spec"
   clear_stub
   set_config 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=medium' 'gemini_model=flash38' 'gemini_effort=high'
