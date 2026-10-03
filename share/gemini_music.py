@@ -408,7 +408,7 @@ def main() -> None:
     p.add_argument("--genre")
     p.add_argument("--attach", action="append")
     p.add_argument("--count", type=int, default=1)
-    p.add_argument("--account")
+    p.add_argument("--account", type=gw.account_arg)
     p.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     try:

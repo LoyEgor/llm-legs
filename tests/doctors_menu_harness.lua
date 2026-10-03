@@ -58,7 +58,7 @@ local function iso(epoch) return os.date("!%Y-%m-%dT%H:%M:%SZ", epoch) end
 -- Tasks and alerts never leave the harness; pathwatcher off keeps the loaded llm-limits copy from
 -- watching or collecting anything.
 local tasks, alerts, dialogs, answer = {}, {}, {}, "Cancel"
-local lagTimers, fakeClock = {}, nil
+local lagTimers, fakeClock, fakeUp = {}, nil, nil
 local fakeHs = setmetatable({
   pathwatcher = false,
   timer = setmetatable({
@@ -67,6 +67,7 @@ local fakeHs = setmetatable({
       return { stop = function() end }
     end,
     secondsSinceEpoch = function() return fakeClock or hs.timer.secondsSinceEpoch() end,
+    absoluteTime = function() return fakeUp and fakeUp * 1e9 or hs.timer.absoluteTime() end,
   }, { __index = hs.timer }),
   alert = { show = function(message) alerts[#alerts + 1] = message end },
   dialog = { blockAlert = function(...) dialogs[#dialogs + 1] = { ... }; return answer end },
@@ -217,16 +218,18 @@ check(count(slurpAt(clickDay), "\tdoctors\n") == clicks, "a background build tim
 -- The lag probe: a 1 s timer, a line only past 50 ms of lag, the oldest days pruned.
 check(#lagTimers > 0 and lagTimers[#lagTimers].interval == 1, "no 1 s lag probe timer")
 local lagBase = math.floor(os.time()) + 0.0
-fakeClock = lagBase
+fakeClock, fakeUp = lagBase, 500
 doctors.lagTick()
-fakeClock = lagBase + 1.02
+fakeClock, fakeUp = lagBase + 1.02, 501.02
 doctors.lagTick()
-fakeClock = lagBase + 2.12
+fakeClock, fakeUp = lagBase + 2.12, 502.12
 doctors.lagTick()
-fakeClock = nil
+fakeClock, fakeUp = lagBase + 2.12 + 3600, 503.12
+doctors.lagTick()
+fakeClock, fakeUp = nil, nil
 local lagStart, lagEnd = slurpAt(hsDay):match("(%d+)\t(%d+)\ths%-lag\n")
 check(count(slurpAt(hsDay), "\ths-lag\n") == 1 and lagStart and math.abs(tonumber(lagEnd) - tonumber(lagStart) - 100000) < 1000,
-  "one hs-lag line of 100 ms: " .. slurpAt(hsDay))
+  "one hs-lag line of 100 ms, none for an hour of sleep: " .. slurpAt(hsDay))
 write("/speed-doctor/hs/2000-01-01.tsv", "1\t2\tdoctors:bg\n")
 limits.backgroundMenu(loadDoctors().menuItems)
 check(slurpAt("/speed-doctor/hs/2000-01-01.tsv") ~= "", "the hs writer pruned a day: bin/speed-doctor owns the prune")

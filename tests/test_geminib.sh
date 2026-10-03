@@ -78,15 +78,7 @@ AGY_BIN="$FAKE_BIN/agy"
 export AGY_BIN
 
 WEB_CALLS="$WORK/web-calls"
-cat >"$FAKE_BIN/uv" <<'EOF'
-#!/usr/bin/env bash
-shift 3
-printf '%s %s\n' "$2" "${3:-}" >>"$WEB_CALLS"
-empty='{"ok": true, "accounts": []}'
-[ "$2" != accounts ] || printf '%s\n' "${WEB_ACCOUNTS:-$empty}"
-EOF
-chmod +x "$FAKE_BIN/uv"
-GEMINI_WEB_UV="$FAKE_BIN/uv"
+GEMINI_WEB_UV="$ROOT/tests/fixtures/fake-web-uv.sh"
 GEMINI_WEB_CHROME="$WORK/no-chrome.app"
 GEMINI_WEB_DIR="$WORK/gemini-web"
 export WEB_CALLS GEMINI_WEB_UV GEMINI_WEB_CHROME GEMINI_WEB_DIR
@@ -545,11 +537,18 @@ assert test "$(grep -cxF -- '--refresh-account gemini/alpha' "$ANNOUNCE_LOG")" =
 
 # `geminib web` signs a roster account into the web routes through gemini-web login, and a first
 # `geminib p` offers it once, only on a tty, defaulting to no. `flow`/`f` are gone, not aliases.
+# It holds until the login window is quit, then binds and reads the account through status itself.
 : >"$WEB_CALLS"
-assert bash "$SCRIPT" web alpha
+assert test "$(bash "$SCRIPT" web alpha 2>/dev/null)" = "geminib: alpha ready — fi…@example.com, 1000 credits"
 assert bash "$SCRIPT" web main
-assert test "$(cat "$WEB_CALLS")" = "login alpha
-login main"
+assert test "$(cat "$WEB_CALLS")" = "gemini_web login --wait alpha
+gemini_web status alpha
+gemini_web login --wait main
+gemini_web status main"
+: >"$WEB_CALLS"
+web_err=$(WEB_STATUS_FAIL='Google signed this profile out; run: geminib web alpha' bash "$SCRIPT" web alpha 2>&1)
+assert test "$?" -eq 4
+assert test "$web_err" = "geminib: alpha is not ready: Google signed this profile out; run: geminib web alpha"
 : >"$WEB_CALLS"
 web_err=$(bash "$SCRIPT" web ghost 2>&1); web_rc=$?
 assert test "$web_rc" -eq 2
@@ -572,11 +571,13 @@ if grep -q "web routes" <<<"$notty_output" || grep -q login "$WEB_CALLS"; then f
 on_tty() { python3 "$ROOT/tests/fixtures/answer-pty.py" "$@"; }
 tty_output=$(on_tty '' bash "$SCRIPT" p ttyno)
 assert grep -q "Also sign ttyno into the web routes now? \[y/N\]" <<<"$tty_output"
-assert test "$(cat "$WEB_CALLS")" = "accounts "
+assert test "$(cat "$WEB_CALLS")" = "gemini_web accounts"
 : >"$WEB_CALLS"
-on_tty y bash "$SCRIPT" p ttyyes >/dev/null
-assert test "$(cat "$WEB_CALLS")" = "accounts 
-login ttyyes"
+yes_output=$(on_tty y bash "$SCRIPT" p ttyyes)
+assert grep -q "geminib: ttyyes ready — fi…@example.com, 1000 credits" <<<"$yes_output"
+assert test "$(cat "$WEB_CALLS")" = "gemini_web accounts
+gemini_web login --wait ttyyes
+gemini_web status ttyyes"
 : >"$WEB_CALLS"
 again_output=$(on_tty y bash "$SCRIPT" p ttyno)
 if grep -q "web routes" <<<"$again_output" || test -s "$WEB_CALLS"; then fail "a second open asked again"; fi
@@ -875,7 +876,7 @@ image_run() {
     IMAGE_PICK_MODE="${IMAGE_PICK_MODE:-ok}" IMAGE_PICK_ACCOUNT="${IMAGE_PICK_ACCOUNT:-picked}" \
     IMAGE_RESCUE_FILE="${IMAGE_RESCUE_FILE:-}" WORKER_PICK_CONFIG_FILE="$HOME/.claude/worker-model" \
     WORKER_CLAIMS_DIR="$IMAGE_CLAIMS" \
-    bash "$IMAGE_SCRIPT" "$@" >"$IMAGE_OUT" 2>"$IMAGE_ERR"
+    bash "$IMAGE_SCRIPT" --route cli "$@" >"$IMAGE_OUT" 2>"$IMAGE_ERR"
 }
 
 image_rc=0
@@ -1267,4 +1268,4 @@ assert_fails test -e "$XPORT_OUT/unknown"
 assert jq -se --arg home "$XPORT_HOME" 'all(.[]; .home == $home)
   and (.[0:2] | map(.args[0])) == ["unlock-keychain", "find-generic-password"]' "$XPORT_LOG" >/dev/null
 
-echo "PASS: $asserts asserts; base and isolated HOME routing, geminib web (a roster-gated gemini-web login, offered once after a first login on a tty, default no; flow/f gone and free as names), worker-pool exclusion (own file beside the profiles, headless runs refused, interactive and pinned runs pass, the last member goes out too, visible in list/status), shared configuration and Playwright caches, a private MCP config per leg listing no server at all (main untouched even when unparsable, an already-empty file not rewritten), dead project records swept once a day (vanished temp paths only, both /var/folders spellings; live, non-temp and unparsable records kept), per-profile keychain kept unlockable behind a login.keychain-db symlink, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, persistent remove markers, a base profile removed by marker alone (hidden from list/status/pin/launch, the real HOME untouched, undone by deleting the marker), use pin set/show/clear/refusal parity, and one-image generation routing, refused unknown accounts, destination checks made before a generation is spent, prompt, rescue, and conversion, and keychain-first export-token with HOME-pinned read/unlock, 0600 nested access-only output retaining ID tokens, trusted-side refresh without profile writes (a wrong-first embedded client secret skipped on invalid_client), safe grant and lifetime refusals, no overwrite, and nested/flat legacy fallback only for an absent keychain item"
+echo "PASS: $asserts asserts; base and isolated HOME routing, geminib web (a roster-gated gemini-web login held until its window is quit, then status: ready with the credits or the reason and exit 4; offered once after a first login on a tty, default no; flow/f gone and free as names), worker-pool exclusion (own file beside the profiles, headless runs refused, interactive and pinned runs pass, the last member goes out too, visible in list/status), shared configuration and Playwright caches, a private MCP config per leg listing no server at all (main untouched even when unparsable, an already-empty file not rewritten), dead project records swept once a day (vanished temp paths only, both /var/folders spellings; live, non-temp and unparsable records kept), per-profile keychain kept unlockable behind a login.keychain-db symlink, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, persistent remove markers, a base profile removed by marker alone (hidden from list/status/pin/launch, the real HOME untouched, undone by deleting the marker), use pin set/show/clear/refusal parity, and one-image generation routing, refused unknown accounts, destination checks made before a generation is spent, prompt, rescue, and conversion, and keychain-first export-token with HOME-pinned read/unlock, 0600 nested access-only output retaining ID tokens, trusted-side refresh without profile writes (a wrong-first embedded client secret skipped on invalid_client), safe grant and lifetime refusals, no overwrite, and nested/flat legacy fallback only for an absent keychain item"

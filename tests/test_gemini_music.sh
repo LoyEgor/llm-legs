@@ -87,6 +87,11 @@ expect_rc 2 --dest "$out" --prompt 'a theme' --ref-image "$M/cover.gif"
 expect_rc 2 --dest "$out" --prompt 'a theme' --video "$M/missing.mp4"
 expect_rc 2 --dest "$out" --prompt 'a theme' --video relative.mp4
 expect_rc 2 --dest "$out" --prompt 'a theme' --account 'bad name'
+expect_rc 2 --dest "$out" --prompt "a theme" --account ""
+assert grep -q -- "--account needs a profile name" "$WORK/err"
+assert test "$(python3 "$ROOT/share/gemini_music.py" generate --prompt p --out-dir "$WORK/x" --account "" 2>"$WORK/err" >"$WORK/stdout"; printf "%s" "$?")" = 2
+assert grep -q "needs a profile name" "$WORK/err"
+assert test ! -s "$WORK/stdout"
 assert test ! -s "$FAKE_ENGINE_CALLS"
 
 assert music --dest "$out" --prompt 'a driving string theme' --length short --instrumental --genre Cinematic \

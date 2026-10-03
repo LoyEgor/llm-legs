@@ -220,6 +220,7 @@ journal_run() {
     names+=("$name")
     rc='' real='' cpu=''
     [ -r "$logdir/$name.status" ] && IFS=$'\t' read -r rc secs real cpu <"$logdir/$name.status"
+    [ "$real" != - ] || real=''
     if [[ "$rc" =~ ^[0-9]+$ ]]; then suite_journal_suite "$name" "$rc" "${real:-$secs}" "$cpu"; else complete=false; fi
   done
   [ -z "$run_signal" ] || complete=false
@@ -292,7 +293,8 @@ run_one() { # suite-path
   # run_one runs as its own subshell, so the children line of `times` is this one suite's tree.
   suite_journal_cpu cpu "$logdir/$name.time" children
   [ -z "$began" ] || suite_journal_secs began "$(( ended - began ))"
-  printf '%s\t%s\t%s\t%s\n' "$rc" "$((finish - start))" "$began" "$cpu" >"$logdir/$name.status"
+  # `-`, never empty: IFS=$'\t' is whitespace to read, so an empty field collapses and cpu lands in it.
+  printf '%s\t%s\t%s\t%s\n' "$rc" "$((finish - start))" "${began:--}" "$cpu" >"$logdir/$name.status"
 }
 
 declare -a wave=() tail_wave=()

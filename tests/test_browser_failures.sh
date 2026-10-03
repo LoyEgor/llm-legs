@@ -88,13 +88,35 @@ hide = captured(lambda: gw.warn("com", "could not hide the automation Chrome: no
 drift = captured(lambda: gw.report("-", timeout))
 assert hide.startswith("BROWSER_WARNING route=flow account=com code=0 shot=- reason=could not hide"), hide
 assert drift.startswith("BROWSER_FAILURE route=flow account=- code=1 shot=- reason=Exception: Timeout 30000ms"), drift
+# chatgpt-web rebinds gemini_web's globals on import, so it comes after every gemini line and they are put back.
+saved = {name: getattr(gw, name) for name in ("ROOT", "ROUTE", "TOOL", "POOL_VENDOR", "LOGIN_URL")}
+import chatgpt_web as cw
+
+
+class ChatPage(Page):
+    url = "https://chatgpt.com/c/0a0b0c0d-1111-2222-3333-444455556666"
+
+
+class ChatContext:
+    pages = [ChatPage()]
+
+
+chat_error = cw.drift("the composer never took the prompt")
+chat_error.route = gw.route_of(ChatContext.pages[0].url)
+chat_error.shot = gw.snapshot(ChatContext(), "work4", gw.failure_text(chat_error))
+chat = captured(lambda: gw.report("work4", chat_error))
+assert re.fullmatch(r"BROWSER_FAILURE route=chatgpt-web account=work4 code=1 shot=\S+/\.chatgpt-web/failures/\S+\.png "
+                    r"reason=ChatGPT UI drift: the composer never took the prompt\n", chat), chat
+for name, value in saved.items():
+    setattr(gw, name, value)
 
 legs = [(now - 600, "gemini-music", "audio", 0, "", notice + walled + "music.mp3 saved\n"),
         (now - 500, "gemini-music", "audio", 1, "", upload + "gemini-music: Upload files opened no file chooser\n"),
         (now - 400, "gemini-video", "video", 1, "egbogd", drift + "gemini-video: Flow UI drift\n"),
         (now - 300, "gemini-video", "video", 4, "", notice),
         (now - 200, "gemini-video", "video", 0, "com", hide),
-        (now - 100, "codex-image", "image", 4, "", "codex-image: not set up")]
+        (now - 100, "codex-image", "image", 4, "", "codex-image: not set up"),
+        (now - 50, "codex-image", "image", 1, "", chat + "chatgpt-web: ChatGPT UI drift: the composer never took the prompt\n")]
 with open(log, "w") as handle:
     for ts, tool, kind, rc, account, err in legs:
         handle.write(json.dumps({"ts": ts, "tool": tool, "kind": kind, "rc": rc, "seconds": 30, "queued": 0,
@@ -266,7 +288,10 @@ assert got == [
     ("gemini-video", "final", "failed", "browser drift", "egbogd"),
     ("gemini-video", "final", "failed", "browser owner step", "locomthebest"),
     ("gemini-video", "superseded", "failed", "browser hide", "com"),
-    ("gemini-video", "final", None, "", "com")], got
+    ("gemini-video", "final", None, "", "com"),
+    ("codex-image", "final", "failed", "browser drift", "work4")], got
+assert doctor.excerpt_of(legs[-1]).startswith("browser route=chatgpt-web account=work4 shot=~/.chatgpt-web/failures/")
+assert doctor.excerpt_of(legs[-1]).endswith(".png reason=ChatGPT UI drift: the composer never took the prompt")
 upload = legs[3]
 assert upload["ref"] == "image:%d/gemini-music/egbogd" % (now - 500) and legs[0]["ref"].endswith("/locomthebest#1")
 assert upload["detail"] == "Upload files opened no file chooser"
@@ -281,6 +306,13 @@ assert jq -e '[.problems[] | select(.id | startswith("leg-failure:image/browser"
 assert jq -e '.problems[] | select(.id == "leg-failure:image/browser upload")
   | .state == "new" and (.evidence[0].excerpt | test("shot=~/.*[.]png reason=Upload files"))' "$WORK/doc.json" >/dev/null
 assert jq -e '[.problems[] | select(.id == "leg-failure:image/browser owner step") | .recovered] == [1]' "$WORK/doc.json" >/dev/null
+# A ChatGPT drift joins the Flow one under the same cause, and its evidence names the snapshot the fixer opens.
+assert jq -e '.problems[] | select(.id == "leg-failure:image/browser drift")
+  | .value == 2 and ([.evidence[].excerpt | select(test("^browser route=chatgpt-web account=work4 shot=~/[.]chatgpt-web/failures/[^ ]+[.]png reason=ChatGPT UI drift"))] | length) == 1' \
+  "$WORK/doc.json" >/dev/null
+assert jq -e '[.problems[] | select(.id | startswith("leg-failure:image/browser")) | .group] == ["image", "image", "image"]
+  and .groups.image == ([.problems[] | select(.group == "image" and (.state | IN("new", "open", "regressed")))] | length)
+  and ([.groups[]] | add) == .problem_count' "$WORK/doc.json" >/dev/null
 assert jq -e '[.problems[] | select(.id | test("codex-image|walled"))] == []' "$WORK/doc.json" >/dev/null
 
 # The fixer of a browser word is sent to the engine that drives the page, not to the leg recorder.

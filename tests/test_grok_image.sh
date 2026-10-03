@@ -138,6 +138,12 @@ image_rc=0
 image_run --dest "$OUTPUT_DIR/badacct.png" --prompt badge --account 'Ghost Acct' || image_rc=$?
 assert test "$image_rc" -eq 2
 assert test ! -s "$FAKE_GROKB_CALLS"
+image_rc=0
+image_run --dest "$OUTPUT_DIR/emptyacct.png" --prompt badge --account "" || image_rc=$?
+assert test "$image_rc" -eq 2
+assert grep -q -- "--account needs a profile name" "$IMAGE_ERR"
+assert test ! -s "$FAKE_GROKB_CALLS"
+assert test ! -s "$PICK_CALLS"
 # A well-formed name that is on no roster creates just as surely: a typo would leave a permanent
 # ghost profile behind, asking for a login in grokb list and in the menu.
 image_rc=0
@@ -245,7 +251,9 @@ mkdir -p "$GROK_PROFILES/explicit/sessions/%2Ftmp%2Fwork/$RESUMED_SESSION"
 : >"$FAKE_GROKB_CALLS"
 : >"$PICK_CALLS"
 : >"$FAKE_GROKB_PROMPT"
+rm -rf "$WORK/media-starts"
 assert image_run --dest "$OUTPUT_DIR/resumed.jpg" --prompt 'now make it bluer' --resume "$RESUMED_SESSION"
+assert test ! -e "$WORK/media-starts/grok/explicit"
 assert test ! -s "$PICK_CALLS"
 assert grep -qx 'ARG=--resume' "$FAKE_GROKB_CALLS"
 assert grep -qx "ARG=$RESUMED_SESSION" "$FAKE_GROKB_CALLS"
@@ -253,6 +261,36 @@ assert grep -qx 'ARG=explicit' "$FAKE_GROKB_CALLS"
 assert grep -qx 'ARG=image_edit' "$FAKE_GROKB_CALLS"
 assert grep -qx 'account=explicit' "$IMAGE_OUT"
 assert grep -q 'image you produced most recently in this session' "$FAKE_GROKB_PROMPT"
+
+# Composite is on by default for every edit, as on every vendor: the session's last delivered image
+# (this machine's lineage record) or a single --ref is the input, the render kept beside the dest.
+"$REAL_MAGICK" -size 64x64 'xc:#00FF00' "PNG24:$WORK/green.png"
+"$REAL_MAGICK" -size 64x64 'xc:#00FF00' -fill blue -draw 'circle 32,32 32,14' "PNG24:$WORK/circle.png"
+FAKE_GROKB_IMAGE_FORMAT=png FAKE_GROKB_IMAGE_FROM="$WORK/green.png" \
+  assert image_run --dest "$OUTPUT_DIR/g0.png" --prompt 'a green field' --account explicit
+assert grep -qx 'composite=skipped reason=new-generation' "$IMAGE_OUT"
+assert test "$(tail -n 1 "$IMAGE_OUT")" = "edit_depth=0 root=$OUTPUT_DIR/g0.png"
+FAKE_GROKB_IMAGE_FORMAT=png FAKE_GROKB_IMAGE_FROM="$WORK/circle.png" \
+  assert image_run --dest "$OUTPUT_DIR/g1.png" --prompt 'add a blue circle' --resume "$RESUMED_SESSION"
+assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$IMAGE_OUT"
+assert grep -qx "rendered=$OUTPUT_DIR/g1.rendered.png" "$IMAGE_OUT"
+assert cmp "$WORK/circle.png" "$OUTPUT_DIR/g1.rendered.png"
+assert test "$(tail -n 1 "$IMAGE_OUT")" = "edit_depth=1 root=$OUTPUT_DIR/g0.png"
+assert test "$(jq -r '.edits[0] | "\(.vendor) \(.composite.kind)"' "$OUTPUT_DIR/g1.png.edit.json")" = 'grok auto'
+FAKE_GROKB_IMAGE_FORMAT=png FAKE_GROKB_IMAGE_FROM="$WORK/circle.png" \
+  assert image_run --dest "$OUTPUT_DIR/g2.png" --prompt 'add a blue circle' --ref "$WORK/green.png" --account explicit
+assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$IMAGE_OUT"
+FAKE_GROKB_IMAGE_FORMAT=png FAKE_GROKB_IMAGE_FROM="$WORK/circle.png" \
+  assert image_run --dest "$OUTPUT_DIR/g3.png" --prompt 'add a blue circle' --ref "$WORK/green.png" --account explicit --no-composite
+assert_fails grep -q '^composite=\|^rendered=' "$IMAGE_OUT"
+assert cmp "$WORK/circle.png" "$OUTPUT_DIR/g3.png"
+FAKE_GROKB_IMAGE_FORMAT=png FAKE_GROKB_IMAGE_FROM="$WORK/circle.png" \
+  assert image_run --dest "$OUTPUT_DIR/g4.png" --prompt 'a circle' --ref "$WORK/green.png" --account explicit --transparent
+assert_fails grep -q '^composite=' "$IMAGE_OUT"
+image_rc=0
+image_run --dest "$OUTPUT_DIR/g5.png" --prompt x --account explicit --composite || image_rc=$?
+assert test "$image_rc" -eq 2
+assert grep -q 'composite needs the image being edited' "$IMAGE_ERR"
 # A resumed run is an edit even with no --ref, so image_edit's wider ratio list applies to it.
 assert image_run --dest "$OUTPUT_DIR/resumedwide.jpg" --prompt bluer --aspect 20:9 --resume "$RESUMED_SESSION"
 # A session id no store holds cannot be routed by guessing an account.
@@ -284,6 +322,7 @@ assert test ! -s "$MAGICK_CALLS"
 # The claim is taken after the account has proved usable, not by the pick itself.
 assert grep -qx -- '--account grok --role image' "$PICK_CALLS"
 assert test -e "$CLAIMS_DIR/grok/picked"
+assert test -e "$WORK/media-starts/grok/picked"
 assert grep -qx 'ARG=profile' "$FAKE_GROKB_CALLS"
 assert grep -qx 'ARG=picked' "$FAKE_GROKB_CALLS"
 assert grep -qx 'ARG=--tools' "$FAKE_GROKB_CALLS"
@@ -301,8 +340,9 @@ assert grep -q 'Generate exactly one image and stop' "$FAKE_GROKB_PROMPT"
 assert grep -q 'Aspect ratio: 1:1' "$FAKE_GROKB_PROMPT"
 assert grep -qx 'account=picked' "$IMAGE_OUT"
 # The footer is the shared image-script contract: the four keys existing consumers already read,
-# in their old positions, then session, model and caps.
-assert test "$(cut -d= -f1 "$IMAGE_OUT" | tr '\n' ' ')" = 'dest size format account session model caps '
+# in their old positions, then session, model, caps, the composite decision and the lineage.
+assert test "$(cut -d= -f1 "$IMAGE_OUT" | tr '\n' ' ')" = 'dest size format account session model caps composite edit_depth '
+assert grep -qx 'composite=skipped reason=new-generation' "$IMAGE_OUT"
 assert grep -qx "session=$SESSION_UUID" "$IMAGE_OUT"
 assert grep -qx "model=$(jq -r '.model.image' "$MANIFEST") model_caps=fresh" "$IMAGE_OUT"
 assert grep -qx 'caps=fresh' "$IMAGE_OUT"

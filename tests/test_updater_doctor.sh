@@ -27,7 +27,7 @@ DOCTOR="$ROOT/bin/updater-doctor"
 DOC="$OUT/latest.json"
 mkdir -p "$STATE/fingerprints" "$STATE/events" "$HOME/.codex" "$WORK/profiles/a" "$WORK/grokb"
 
-ago() { date -u -r $(($(date +%s) - $1)) +%Y-%m-%dT%H:%M:%SZ; }
+ago() { date -u -r $((${2:-$(date +%s)} - $1)) +%Y-%m-%dT%H:%M:%SZ; } # seconds [base-epoch]
 H=3600
 D=86400
 
@@ -40,10 +40,10 @@ state() { # grok-checked-seconds-ago
 state 3600
 logged=$(date +%s)
 {
-  printf '%s grok busy 1.0.40 -> 1.0.44\n' "$(date -u -r $((logged - 60 * H)) +%Y-%m-%dT%H:%M:%SZ)"
+  printf '%s grok busy 1.0.40 -> 1.0.44\n' "$(ago $((60 * H)) "$logged")"
   printf '%s grok busy 1.0.40 -> 1.0.44\n' "$(ago $((36 * H)))"
   printf '%s grok busy 1.0.40 -> 1.0.44\n' "$(ago $((12 * H)))"
-  printf '%s claude install-failed 2.1.283 -> 2.1.284\n' "$(date -u -r $((logged - H)) +%Y-%m-%dT%H:%M:%SZ)"
+  printf '%s claude install-failed 2.1.283 -> 2.1.284\n' "$(ago $H "$logged")"
   printf '%s fingerprint gemini event gemini-x open: catalog\n' "$(ago $H)"
 } >"$STATE/update.log"
 fingerprint() { # vendor facets-json remote-failures-json

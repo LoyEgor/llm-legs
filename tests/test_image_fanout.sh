@@ -135,23 +135,32 @@ REFS=(
   --ref "$WORK/refs/r5.png"
 )
 GEMINI_MAX=$(jq -r '.refs.max' "$ROOT/share/image-caps/gemini.json")
+GEMINI_FLOW_MAX=$(jq -r '.flow_image.refs_max' "$ROOT/share/image-caps/gemini.json")
 CODEX_MAX=$(jq -r '.refs.max' "$ROOT/share/image-caps/codex.json")
 assert test "$GEMINI_MAX" = 3
+assert test "$GEMINI_FLOW_MAX" = 10
+assert test "$(jq -r '.default_route' "$ROOT/share/image-caps/gemini.json")" = flow
 assert test "$CODEX_MAX" = 5
 
 # --- dry-run: refs truncation per manifest -----------------------------------
+# gemini-image runs Flow by default (default_route), so its rows take Flow's 10 refs, not the CLI route's 3.
 : >"$CALLS"
 rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --dry-run "${REFS[@]}" || rc=$?
 assert test "$rc" -eq 0
 assert test ! -s "$CALLS"
-assert grep -Fq 'refs 5→3' <<<"$(plan_reason gemini gamma)"
+assert_fails "$(plan_reason gemini gamma)" 'refs '
 gemini_cmd=$(plan_cmd gemini gamma)
-assert test "$(grep -o -- '--ref' <<<"$gemini_cmd" | wc -l | tr -d ' ')" -eq "$GEMINI_MAX"
+assert test "$(grep -o -- '--ref' <<<"$gemini_cmd" | wc -l | tr -d ' ')" -eq 5
 codex_cmd=$(plan_cmd codex alpha)
 assert test "$(grep -o -- '--ref' <<<"$codex_cmd" | wc -l | tr -d ' ')" -eq 5
 reason_cx=$(plan_reason codex alpha)
 assert_fails "$reason_cx" 'refs '
+rc=0
+fanout --dest-dir "$DEST" --prompt 'badge' --dry-run "${REFS[@]}" "${REFS[@]}" --ref "$WORK/refs/r1.png" || rc=$?
+assert test "$rc" -eq 0
+assert grep -Fq 'refs 11→10' <<<"$(plan_reason gemini gamma)"
+assert test "$(grep -o -- '--ref' <<<"$(plan_cmd gemini gamma)" | wc -l | tr -d ' ')" -eq "$GEMINI_FLOW_MAX"
 
 # --- dry-run: aspect mapping + Codex prose -----------------------------------
 rc=0
@@ -160,6 +169,16 @@ assert test "$rc" -eq 0
 assert grep -Fq 'aspect 20:9→16:9' <<<"$(plan_reason gemini gamma)"
 assert grep -Fq -- '--aspect 16:9' <<<"$(plan_cmd gemini gamma)"
 assert grep -Fq 'aspect 20:9→16:9' <<<"$(plan_reason grok delta)"
+# Flow's five aspects, not the CLI route's seven: 2:3 is a CLI ratio Flow lacks.
+for pair in 21:9=16:9 2:3=3:4; do
+  rc=0
+  fanout --dest-dir "$DEST" --prompt 'badge' --dry-run --aspect "${pair%=*}" || rc=$?
+  assert test "$rc" -eq 0
+  assert grep -Fq "aspect ${pair%=*}→${pair#*=}" <<<"$(plan_reason gemini gamma)"
+  assert grep -Fq -- "--aspect ${pair#*=}" <<<"$(plan_cmd gemini gamma)"
+done
+rc=0
+fanout --dest-dir "$DEST" --prompt 'badge' --dry-run --aspect 20:9 || rc=$?
 assert grep -Fq -- '--aspect 16:9' <<<"$(plan_cmd grok delta)"
 cx_reason=$(plan_reason codex alpha)
 assert grep -Fq 'aspect 20:9→prompt' <<<"$cx_reason"
@@ -333,6 +352,11 @@ assert test "$rc" -eq 2
 rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --takes 0 --dry-run || rc=$?
 assert test "$rc" -eq 2
+: >"$CALLS"
+rc=0
+fanout --dest-dir "$DEST" --prompt badge --accounts "" || rc=$?
+assert test "$rc" -eq 2
+assert test ! -s "$CALLS"
 
 # --- --video without --ref is a usage error before planning -----------------
 : >"$CALLS"

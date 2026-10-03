@@ -2,7 +2,12 @@
 set -euo pipefail
 
 usage() {
-  printf 'usage: gemini-image --dest <absolute path> --prompt <description> [--aspect <%s>] [--ref <absolute image path>]... [--transparent] [--account <profile>] [--resume <conversation-id> --account <profile>]\n' "$aspect_choices" >&2
+  printf 'usage: gemini-image --dest <absolute path> --prompt <description> [--aspect <%s>] [--ref <absolute image path>]... [--transparent] [--composite[=auto|x,y,w,h] | --no-composite] [--account <profile>] [--resume <conversation-id> --account <profile>]\n' "$aspect_choices" >&2
+  printf '  [--route flow|cli] flow only: [--model %s] [--count 1-4] [--upscale 2k]; flow (the default) is Google Flow (Nano Banana, 0 credits) in the hidden Chrome of gemini-web and maps --aspect to the nearest of %s, cli is agy; --resume <id> continues on the route that made it\n' \
+    "$(image_caps_get "$root" gemini '.flow_image.models | keys_unsorted | join("|")')" \
+    "$(image_caps_get "$root" gemini '.flow_image.aspects | join("|")')" >&2
+  printf '  Image Editor on --route flow, one image (--ref or --resume): --region x,y,w,h --prompt <text> | --point x,y=<text>... (inpaint, composited); --aspect W:H with no --prompt (outpaint); --remove-bg [--bg-model %s] (cutout, .png)\n' \
+    "$(image_caps_get "$root" gemini '.flow_image.tools.bg_models | keys_unsorted | join("|")')" >&2
   exit 2
 }
 
@@ -33,6 +38,7 @@ resolve_root() {
 
 root=$(resolve_root)
 . "$root/share/image-leg.sh"
+. "$root/share/account-arg.sh"
 image_leg_start gemini-image image observed_model
 . "$root/share/image-caps.sh"
 aspect_choices=$(image_caps_get "$root" gemini '.aspects.generate | join("|")')
@@ -44,6 +50,14 @@ account=''
 resume=''
 remove_green=false
 refs=()
+route=''
+model=''
+count=1
+upscale=''
+region=''
+points=()
+remove_bg=false
+bg_model=''
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -73,8 +87,13 @@ while [ "$#" -gt 0 ]; do
       remove_green=true
       shift
       ;;
+    --composite | --composite=* | --no-composite)
+      image_leg_composite_arg "$1" || usage
+      shift
+      ;;
     --account)
       [ "$#" -ge 2 ] || usage
+      account_arg "$2"
       account=$2
       shift 2
       ;;
@@ -83,17 +102,42 @@ while [ "$#" -gt 0 ]; do
       resume=$2
       shift 2
       ;;
+    --route) [ "$#" -ge 2 ] || usage; route=$2; shift 2 ;;
+    --model) [ "$#" -ge 2 ] || usage; model=$2; shift 2 ;;
+    --count) [ "$#" -ge 2 ] || usage; count=$2; shift 2 ;;
+    --upscale) [ "$#" -ge 2 ] || usage; upscale=$2; shift 2 ;;
+    --region) [ "$#" -ge 2 ] || usage; region=$2; shift 2 ;;
+    --point) [ "$#" -ge 2 ] || usage; points+=("$2"); shift 2 ;;
+    --remove-bg) remove_bg=true; shift ;;
+    --bg-model) [ "$#" -ge 2 ] || usage; bg_model=$2; shift 2 ;;
     *) usage ;;
   esac
 done
 
-[ -n "$dest" ] && [ -n "$prompt" ] || usage
+tool_op=''
+if [ "$remove_bg" = true ]; then
+  tool_op=cutout
+elif [ -n "$region" ] || [ "${#points[@]}" -gt 0 ]; then
+  tool_op=inpaint
+elif [ -z "$prompt" ] && [ "$aspect_given" = true ] && { [ -n "$resume" ] || [ "${#refs[@]}" -gt 0 ]; }; then
+  tool_op=outpaint
+fi
+[ -n "$dest" ] && { [ -n "$prompt" ] || [ -n "$tool_op" ]; } || usage
 [[ "$dest" = /* ]] || usage
 extension=$(normalized_extension "${dest##*/}")
 # An extensionless destination — a bare trailing dot included — names no format for `magick` to
 # infer, and the mismatch below would hand it one anyway.
 { [[ "${dest##*/}" = *.* ]] && [ -n "$extension" ]; } || usage
 [ -d "$(dirname "$dest")" ] || usage
+gemini_base_home=$HOME
+gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$gemini_base_home/.gemini-profiles}"
+. "$root/share/gemini-accounts.sh"
+. "$root/share/flow-image.sh"
+tool_input=''
+if [ -n "$tool_op" ]; then flow_image_tool_route; else flow_image_route; fi
+IMAGE_LEG_ROUTE=$route
+flow_image_flags
+flow_image_tool_flags
 if [ "$remove_green" = true ] && [ "$extension" != png ]; then
   printf 'gemini-image: --transparent requires a .png destination\n' >&2
   exit 2
@@ -111,10 +155,10 @@ aspect_kind=generate
 # A resumed turn with no --aspect names none: the manifest default is 1:1, and sending it
 # repainted a 16:9 result square (live, 2026-09-11); the conversation keeps its own ratio.
 [ -z "$resume" ] || [ "$aspect_given" = true ] || aspect=''
-[ -z "$aspect" ] || jq -e --arg aspect "$aspect" --arg kind "$aspect_kind" \
+[ "$route" = flow ] || [ -z "$aspect" ] || jq -e --arg aspect "$aspect" --arg kind "$aspect_kind" \
   '.aspects[$kind] | index($aspect) != null' "$(image_caps_file "$root" gemini)" >/dev/null || usage
 ref_max=$(image_caps_get "$root" gemini '.refs.max')
-[ "$ref_max" = null ] || [ "$ref_count" -le "$ref_max" ] || usage
+[ "$route" = flow ] || [ "$ref_max" = null ] || [ "$ref_count" -le "$ref_max" ] || usage
 if [ "$remove_green" = true ] && [ "$(image_caps_get "$root" gemini '.transparent')" != chroma ]; then
   printf 'gemini-image: unsupported manifest transparency mode\n' >&2
   exit 1
@@ -134,11 +178,38 @@ if [ -n "$resume" ]; then
     exit 2
   fi
 fi
+case $tool_op in
+  inpaint)
+    IMAGE_LEG_COMPOSITE_ARGS=()
+    [ -z "$region" ] || IMAGE_LEG_COMPOSITE_ARGS=(--mask "$region")
+    for point in ${points[@]+"${points[@]}"}; do IMAGE_LEG_COMPOSITE_ARGS+=(--point "$point"); done
+    ;;
+  outpaint)
+    [ -z "${IMAGE_LEG_COMPOSITE_ASK:-}" ] ||
+      flow_image_say "an outpaint changes the canvas, so nothing composites onto the input: no --composite"
+    IMAGE_LEG_COMPOSITE_OFF=true
+    ;;
+esac
+if [ -n "$tool_input" ]; then
+  image_leg_composite_plan gemini '' "$remove_bg" "$tool_input"
+else
+  image_leg_composite_plan gemini "$resume" "$remove_green" ${refs[@]+"${refs[@]}"}
+fi
+edit_input=$IMAGE_LEG_COMPOSITE_INPUT
 
-base_home=$HOME
 . "$root/share/image-chroma.sh"
-gemini_base_home=$base_home
-gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$base_home/.gemini-profiles}"
+content=$prompt
+if [ "$remove_green" = true ]; then
+  content=$(printf '%s' "$content" | sed 's/[[:<:]][Tt][Rr][Aa][Nn][Ss][Pp][Aa][Rr][Ee][Nn][Tt][[:>:]]//g')
+  content="$content on a flat solid #00FF00 green background"
+fi
+
+if [ -n "$tool_op" ]; then
+flow_image_tool
+elif [ "$route" = flow ]; then
+flow_image_generate
+else
+base_home=$HOME
 . "$root/share/account-roster.sh"
 . "$root/share/worker-model.sh"
 . "$root/share/worker-pool.sh"
@@ -175,6 +246,9 @@ worker_pool_refuse_headless gemini "$account" "$(worker_model_pin_csv < <(worker
 if [ "$picked" = true ] && ! worker_claims_record gemini "$account"; then
   printf 'gemini-image: could not record the claim on %s\n' "$account" >&2
 fi
+if [ -z "$resume" ] && ! worker_starts_record gemini "$account"; then
+  printf 'gemini-image: could not stamp the start on %s\n' "$account" >&2
+fi
 
 profile_home=$(gemini_account_home "$account")
 brain_dir="$profile_home/.gemini/antigravity-cli/brain"
@@ -188,11 +262,6 @@ trap 'image_leg_exit; rm -rf "$tmp_dir"' EXIT
 launch_marker="$tmp_dir/launch"
 stdout_file="$tmp_dir/stdout"
 log_file="$tmp_dir/agy.log"
-content=$prompt
-if [ "$remove_green" = true ]; then
-  content=$(printf '%s' "$content" | sed 's/[[:<:]][Tt][Rr][Aa][Nn][Ss][Pp][Aa][Rr][Ee][Nn][Tt][[:>:]]//g')
-  content="$content on a flat solid #00FF00 green background"
-fi
 
 if [ "$ref_count" -eq 0 ]; then
   image_paths='Omit ImagePaths.'
@@ -308,6 +377,7 @@ if [ "$generation_rc" -ne 0 ]; then
   printf 'gemini-image: agy exited %s after the image was saved; delivering it\n' "$generation_rc" >&2
   tail -n 5 "$tmp_dir/stderr" >&2
 fi
+fi
 
 if [ "$remove_green" = true ]; then
   chroma_key_to_png "$generated" "$tmp_dir" "$dest"
@@ -316,6 +386,7 @@ elif [ "$extension" != "$(actual_format "$generated")" ]; then
 else
   cp "$generated" "$dest"
 fi
+IMAGE_LEG_COMPOSITE_LINES=$(image_leg_composite_take "$root" "$dest")
 
 sips_output=$(sips -g pixelWidth -g pixelHeight -g format "$dest")
 width=$(awk '/pixelWidth:/ {print $2; exit}' <<<"$sips_output")
@@ -327,6 +398,9 @@ format=$(awk '/format:/ {print $2; exit}' <<<"$sips_output")
 }
 printf 'dest=%s\nsize=%sx%s\nformat=%s\naccount=%s\n' "$dest" "$width" "$height" "$format" "$account"
 printf 'session=%s\n' "$session"
+if [ "$route" = flow ]; then
+flow_image_footer
+else
 observed_model=''
 # The stream's init.model is the chat model. Image provenance lives in the saved tool step.
 if [[ "$session" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] && [ -f "$conversations_dir/$session.db" ] && command -v python3 >/dev/null 2>&1; then
@@ -397,3 +471,9 @@ PY
 fi
 image_caps_model_check "$root" gemini image "$observed_model"
 image_caps_check "$root" gemini "${AGY_BIN:-$base_home/.local/bin/agy}"
+fi
+lineage_region=$region
+[ "${IMAGE_LEG_COMPOSITE_ASK:-auto}" = auto ] || lineage_region=$IMAGE_LEG_COMPOSITE_ASK
+image_leg_lineage gemini "$route" "$dest" "$session" "$prompt" "$lineage_region" \
+  "$(printf '%s\n' ${points[@]+"${points[@]}"})" \
+  ${edit_input:+"$edit_input"} ${refs[@]+"${refs[@]}"}

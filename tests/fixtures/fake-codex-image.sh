@@ -98,6 +98,10 @@ chunk = struct.pack(">I", len(cbor)) + b"caBX" + cbor + struct.pack(">I", zlib.c
 open(path, "wb").write(data[:end] + chunk + data[end:])
 PY
 fi
+if [ "${FAKE_CODEX_MODE:-image}" = decoy ]; then
+  image_path="$home/decoy.png"
+  "$REAL_MAGICK" -size 32x32 xc:red "PNG24:$image_path"
+fi
 printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message"}}'
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
 

@@ -51,6 +51,9 @@ expect_rc 2 --dest "$out" --prompt 'a knock' --duration 5
 assert grep -q 'one of 4, 6, 8, 10' "$WORK/err"
 expect_rc 2 --dest "$out" --prompt 'a knock' --count 9
 expect_rc 2 --dest "$out" --prompt 'a knock' --account 'bad name'
+expect_rc 2 --dest "$out" --prompt "a knock" --account ""
+assert grep -q -- "--account needs a profile name" "$WORK/err"
+assert test ! -s "$FAKE_VIDEO_CALLS"
 expect_rc 2 --dest "$out" --prompt 'a knock' --for-video "$M/scene.mp4" --duration 4
 expect_rc 2 --dest "$out" --prompt 'a knock' --for-video "$M/scene.mp4" --count 2
 expect_rc 2 --dest "$out" --prompt 'a knock' --for-video "$M/missing.mp4"

@@ -20,7 +20,7 @@ Verified against `codex-cli 0.160.0` on 2026-10-02, unchanged from 0.159.3 (firs
 | Local-file edits | `view_image` the file first, then pass it in `referenced_image_paths` | binary tool description: "If you have not seen a local image yet, use `view_image` to inspect it before editing"; `SKILL.md` "Built-in edit semantics" |
 | Transparency | native alpha through the tool's `transparent_background` argument, which the instruction names (the model fills tool arguments, so a sentence is the only way to set it); keyed as a fallback | binary 0.159.0 `ImagegenArgs` above and `ImageGenerationItem.transparentBackground`; `SKILL.md` "For transparent images, ask built-in `image_gen` for a transparent background and preserve the generated alpha" |
 | Failure | `ImageGenerationFailure` is `usageLimitExceeded` (`limitId`, `resetsAt`) or other; a failed item may end a turn with exit 0, so a missing image with that tag in the JSONL is `CODEX_USAGE_LIMIT` (exit 3) | binary 0.159.0: `internally tagged enum ImageGenerationFailure`, `usageLimitExceeded limitId resetsAt`; whether `codex exec` JSONL carries the item is unproven (`docs/vendor-release-open.md`) |
-| Output location | `$CODEX_HOME/generated_images/<thread_id>/<name>.png` | `SKILL.md` save-path policy; live store: `~/.codex/generated_images/019f3d39-…/exec-<uuid>.png` |
+| Output location | `$CODEX_HOME/generated_images/<thread_id>/<name>.png`; codex-image takes the newest one there itself and tells the model neither to copy it nor to read the imagegen `SKILL.md` first (each cost a 10–18 s turn, 2026-10-02: 57.7 s → 38 s) | `SKILL.md` save-path policy; live store: `~/.codex/generated_images/019f3d39-…/exec-<uuid>.png` |
 | Session id | `thread.started` → `thread_id`, on `codex exec --experimental-json` | binary: the exec event enum `thread.started turn.started turn.completed turn.failed item.*`; [vendor docs](https://developers.openai.com/codex/noninteractive) |
 | Resume | `codex exec [OPTIONS] resume <SESSION_ID> [PROMPT]`, `--last` for the newest | binary `ResumeArgs`: "Conversation/session id (UUID) or thread name … If omitted, use `--last`"; vendor docs |
 | Exact size | no — prose only | `SKILL.md`: "Do not treat `Quality:`, size … as built-in `image_gen` tool arguments"; size/quality exist on the API fallback (`gpt-image-2`: edges multiple of 16, max edge 3840) and nowhere on the built-in tool |
@@ -149,16 +149,55 @@ Verified live 2026-10-02 (`aspects_by_prompt` in the manifest): web 16:9 → 167
 cli 16:9 → 1664×936, all `fit=ok`; `--transparent` gave real alpha on both routes (web 1278×1230, cli
 1313×1198, the page's own blob already carrying alpha). Unverified: cli 9:16.
 
-**Web-only** (`web_only` in the manifest; the CLI refuses both with exit 2, never as prose):
+**Web-only** (`web_only` in the manifest; the CLI refuses each with exit 2 and one stderr line naming
+`--route web`, never as prose). Each edits one image: the chat's last one (`--resume <chat>`) or exactly one
+`--ref`.
 
-- `--region x,y,w,h` (fractions of the image) with `--resume <chat>` (the chat's last image) or exactly one
-  `--ref`: the viewer's Markup draws a red outline (clamped 16 px inside the canvas — its left edge is the
-  panel resizer), the stroke must enable Undo or the run fails unsent, then the prompt goes with it. Live
-  2026-10-02: the cube chat's front band became walnut (24% change inside, 0.6% outside, no red left).
-  `--region` with `--ref` is unverified end to end.
+- `--region x,y,w,h` (fractions of the image): the viewer's Markup draws a red outline (clamped 16 px inside the canvas — its left edge is the
+  panel resizer, and each corner moved inward off overlays such as the Stroke width slider, which covers a
+  full-width image's left side), the stroke must enable Undo or the run fails unsent, then the prompt goes
+  with it. Live 2026-10-02: the cube chat's front band became walnut (24% change inside, 0.6% outside, no red
+  left); a ref 16:9 seascape with band `0,0.6,1,0.4` → calm sea (12.9% inside, 2.5% outside — the calm
+  spread to the water just above the band; rocks at the band's left kept). The outline steers, it does not mask.
 - Re-aspect: `--resume <chat> --aspect W:H` with no `--prompt` runs `chatgpt-web resize`, the viewer's
   Resize menu (1:1, 3:4, 9:16, 4:3, 16:9 seen live); a ratio it does not offer exits 2 listing the offered
-  ones (verified live). The pick-and-deliver path itself is unverified.
+  ones. Live 2026-10-02: a 1672×941 image → 1:1 gave 1254×1254 in the same chat, `fit=ok`.
+  Markup scope, live 2026-10-02 (`--region 0.6,0.05,0.35,0.3` "hang a framed picture here" on a 1374×1145
+  chat image): mean abs RGB change 40.0 inside the box (53% of pixels moved >20) vs 5.2 outside (3.8%).
+- Point edits: `--point x,y=<text>` (repeatable; fractions of the image) runs `chatgpt-web comment`, the
+  viewer's Comment tool: one numbered pin per point, each with its own text box (kept with Enter), then the
+  Comment toolbar's Send — ONE message `Image 1:` + `1. (x: 50%, y: 19.9%) <text>` per pin with an annotated
+  thumbnail, one generation however many pins. A pin is placed 16 px inside the image and moved off an
+  earlier pin or the toolbar lying over the image's foot. The pins go alone: that Send drops a composer draft
+  and the composer's own send drops the pins (both seen live), so `--point` refuses `--prompt`, `--aspect`,
+  `--size`, `--transparent` and `--region` — an overall note goes into a pin. Live 2026-10-02: two pins (helmet
+  → orange, top → green) in 87 s; a 1536×1024 cube ref with "matte yellow" on the cube and "a white mug here"
+  on the table → both done, 1374×1145, 67 s.
+- `--remove-bg` (a `.png` destination, nothing else) runs `chatgpt-web remove-bg`, the viewer's Remove BG:
+  one click sends its fixed prompt "Remove the background from this image. Keep all foreground subjects
+  unchanged and fully intact, with clean, smooth edges. Make the background transparent." It is a
+  REGENERATION, not a cut-out: one image generation, 47–73 s, a PNG with real alpha that reframes the subject
+  (a pure-cut fidelity of ≈0 measured 31–79 mean abs RGB). It has no text field and drops a composer draft,
+  so `--remove-bg` refuses `--prompt`; delivery fails (exit 1, nothing written) when the image has no
+  transparency. Free and pixel-exact instead: macOS Vision's subject lift (`VNGenerateForegroundInstanceMaskRequest`),
+  which keeps every pixel but leaves background inside a logo's holes.
+
+## Local composite and edit lineage
+
+Markup's outline and the pins steer, they do not mask: the whole image is re-rendered (2.5–3.8% of pixels
+outside a region still moved, above), and over chained edits the face blurs and the skin drifts warm. So every
+edit of an existing image is composited by default, on both routes, by the decision every image wrapper shares
+([gemini page](gemini.md#local-composite-and-edit-lineage)): `share/image_composite.py` pastes only the changed
+part of the delivered image back onto a snapshot of the input (the single `--ref`, or on `--resume` the last
+image this machine delivered in that chat). A `--region` edit masks its rectangle and a `--point` edit the
+changed areas touching the points; any other edit masks the difference map. A new generation, several
+references, a resume with no recorded image or a changed aspect (the viewer's Resize) print
+`composite=skipped reason=...`; `--no-composite`, `--remove-bg` and `--transparent` never composite.
+`--composite[=auto|x,y,w,h]` forces it and picks the mask (refused, exit 2, with no input image). The run
+prints `composite=<region|points|auto> changed=<percent>` plus `rendered=<dest stem>.rendered.<ext>` (the
+model's own image), or `composite=refused reason=global|no-local-change changed=<percent> kind=<mask>`
+(more than 60% changed or nothing local found: the model's image is delivered), right before the last line
+`edit_depth=<n> root=<path>` of `<dest>.edit.json`.
 
 ## Web route (fallback, explicit only)
 
@@ -170,10 +209,11 @@ the web on its own.
 - **Accounts** are the codex profile names (`main` = `~/.codex`, the rest `$CODEX_PROFILES_DIR/*`), each with
   its own Chrome profile under `${CHATGPT_WEB_DIR:-~/.chatgpt-web}/profiles/<name>`. The owner signs one in
   once: `codexb web <name>` (a visible Chrome; it refuses a name off the codex roster and runs
-  `chatgpt-web login`, and a first `codexb p <name>` on a tty offers it, default no), then `chatgpt-web status <name>` binds the login's
-  email to it (stored in `accounts/<name>.json`, printed masked). `chatgpt-web accounts` lists them.
+  `chatgpt-web login --wait`, and a first `codexb p <name>` on a tty offers it, default no); it holds until that
+  window is quit, then runs `chatgpt-web status <name>` itself, which binds the login's email (stored in
+  `accounts/<name>.json`, printed masked) and prints `<name> ready` with the plan, or the reason and exit 4. `chatgpt-web accounts` lists them.
 - **Flags** are the CLI route's: `--dest --prompt --ref… --resume --account`; `--aspect`, `--size` and
-  `--transparent` become the builder's sentences (the page has no knobs), `--region` and re-aspect are web-only, and delivery (alpha check, chroma fallback, format conversion)
+  `--transparent` become the builder's sentences (the page has no knobs), `--region`, `--point`, `--remove-bg` and re-aspect are web-only, and delivery (alpha check, chroma fallback, format conversion)
   is the CLI route's own. Output is the same block with `session=` = the ChatGPT chat id, plus `route=web`
   and no `caps=` line (no CLI to version).
 - **New chat vs resume**: no `--resume` opens a new chat; `--resume <chat id>` opens `chatgpt.com/c/<id>` on

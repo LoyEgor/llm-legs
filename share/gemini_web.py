@@ -17,20 +17,26 @@ import base64
 import calendar
 import contextlib
 import datetime
+import faulthandler
 import fcntl
 import json
 import os
 import plistlib
 import re
+import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 from pathlib import Path
 
 import account_roster
+
+faulthandler.register(signal.SIGTERM, all_threads=True, chain=True)
 
 ROOT = Path(os.environ.get("GEMINI_WEB_DIR", "~/.gemini-web")).expanduser()
 SOURCE_APP = Path(os.environ.get("GEMINI_WEB_CHROME", "/Applications/Google Chrome.app"))
@@ -57,6 +63,8 @@ class Failure(Exception):
 
 
 FAILURES_KEEP_S = 14 * 86400
+LOGIN_POLL_S = 1.5
+TEARDOWN_S = 45
 ROUTES = (("flow.google.com", "flow"), ("labs.google", "flow"), ("gemini.google.com", "gemini-app"),
           ("flowmusic.app", "flow-music"), ("chatgpt.com", "chatgpt-web"), ("openai.com", "chatgpt-web"))
 ROUTE = "flow"
@@ -170,6 +178,13 @@ def warn(account: str, reason: str, route: str | None = None) -> None:
     report(account, Failure(0, reason), kind="WARNING", route=route)
 
 
+def mask_email(email: str | None) -> str | None:
+    if not email or "@" not in email:
+        return email
+    local, domain = email.split("@", 1)
+    return f"{local[:2]}…@{domain}"
+
+
 def emit(payload: dict) -> None:
     print(json.dumps(payload), flush=True)
 
@@ -181,6 +196,12 @@ def fail(code: int, reason: str, **extra) -> None:
 
 def valid_account(account: str) -> bool:
     return bool(re.fullmatch(r"[a-z0-9][a-z0-9-]*", account or ""))
+
+
+def account_arg(value: str) -> str:
+    if not valid_account(value):
+        raise argparse.ArgumentTypeError(f"needs a profile name matching ^[a-z0-9][a-z0-9-]*$, got {value!r}")
+    return value
 
 
 def profile_dir(account: str) -> Path:
@@ -373,14 +394,17 @@ def browser(account: str, visible: bool = False):
         flags.append("--window-position=-30000,-30000")
     with chrome_clone() as clone, sync_playwright() as pw:
         context = pw.chromium.launch_persistent_context(
-            str(profile), executable_path=chrome_binary(clone), headless=False, args=flags,
+            str(profile), executable_path=quiet_chrome(chrome_binary(clone), account), headless=False, args=flags,
             ignore_default_args=["--enable-automation"],
             viewport=None, accept_downloads=True, locale="en-US")
         with contextlib.suppress(Exception):
             context.add_init_script(TOAST_LOG)
+        pid = chrome_pid(profile)
+        driver = parent_pid(pid)
+        if parent_pid(driver) != os.getpid():
+            driver = None
         watcher = None
         if not visible:
-            pid = chrome_pid(profile)
             hide_clone(account, pid)
             context.on("page", lambda page: hide_clone(account, pid))
             watcher = keep_hidden(account, pid)
@@ -394,12 +418,70 @@ def browser(account: str, visible: bool = False):
             report(account, error)
             raise
         finally:
-            with contextlib.suppress(Exception):
-                note_toasts(context, account)
-            with contextlib.suppress(Exception):
-                context.close()
+            with bounded(account, "closing the browser", pid, driver, TEARDOWN_S):
+                with contextlib.suppress(Exception):
+                    note_toasts(context, account)
+                with contextlib.suppress(Exception):
+                    context.close()
             if watcher:
-                watcher.terminate()
+                stop_process(watcher)
+
+
+# Chrome hands its stdout/stderr to the GoogleUpdater --wake-all it spawns mid-run (the user-level one in
+# ~/Library/Application Support/Google/GoogleUpdater, which stripping the clone's own does not reach), and
+# Playwright's close waits for EOF on those pipes: two runs at once both hung 10 min (2026-10-02).
+def quiet_chrome(binary: str, account: str) -> str:
+    logs = ROOT / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    script = logs / f"{account}-chrome.sh"
+    body = (f'#!/bin/sh\nexec {shlex.quote(binary)} "$@" '
+            f'>{shlex.quote(str(logs / f"{account}-chrome.log"))} 2>&1 </dev/null\n')
+    if not script.is_file() or script.read_text() != body:
+        part = script.with_name(f".{script.name}.{os.getpid()}")
+        part.write_text(body)
+        part.chmod(0o755)
+        part.replace(script)
+    return str(script)
+
+
+def parent_pid(pid: int | None) -> int | None:
+    if not pid:
+        return None
+    with contextlib.suppress(OSError, subprocess.SubprocessError, ValueError):
+        return int(subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], capture_output=True, text=True,
+                                  timeout=5).stdout)
+    return None
+
+
+@contextlib.contextmanager
+def bounded(account: str, what: str, chrome: int | None, driver: int | None, seconds: float):
+    """Past `seconds` the stacks go to stderr and Chrome's process group and the Playwright driver are
+    killed, so the blocked Playwright call raises instead of waiting forever."""
+    def expire():
+        warn(account, f"{what} still running after {seconds:.0f}s; killing Chrome and the Playwright driver")
+        faulthandler.dump_traceback(all_threads=True)
+        for kill, target in ((os.killpg, chrome), (os.kill, driver)):
+            if target:
+                with contextlib.suppress(OSError):
+                    kill(target, signal.SIGKILL)
+
+    timer = threading.Timer(seconds, expire)
+    timer.daemon = True
+    timer.start()
+    try:
+        yield
+    finally:
+        timer.cancel()
+
+
+def stop_process(process: subprocess.Popen, wait_s: float = 5) -> None:
+    process.terminate()
+    try:
+        process.wait(timeout=wait_s)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=wait_s)
 
 
 # Chrome brings itself forward on a new window, a download or a dialog. One osascript polls for the
@@ -1036,7 +1118,8 @@ def take_failover(accounts: list[str], plan: dict, generate_on, set_wall, pinned
     last: Failure | None = None
     for account in accounts:
         try:
-            result = generate_on(account, {**plan, "first_take": len(done) + 1, "count": plan["count"] - len(done)})
+            result = generate_on(account, {**plan, "first_take": len(done) + 1,
+                                           "count": plan.get("count", 1) - len(done)})
         except Exception as error:
             done += getattr(error, "takes", [])
             if not isinstance(error, Failure):
@@ -1048,7 +1131,7 @@ def take_failover(accounts: list[str], plan: dict, generate_on, set_wall, pinned
             report(account, error)
             last = error
             if error.code == 3 and (wall_pinned or not pinned):
-                set_wall(account, time.time() + WALL_SECONDS)
+                set_wall(account, time.time() + error.extra.get("wall_s", WALL_SECONDS))
             if error.code in (3, 4) and not pinned:
                 continue
             if done:
@@ -1058,11 +1141,11 @@ def take_failover(accounts: list[str], plan: dict, generate_on, set_wall, pinned
             if result.get("dry_run"):
                 emit(result)
                 return
-            emit({"ok": True, "account": done[0]["account"] if done else account, "takes": done + result["takes"]})
+            emit({**result, "account": done[0]["account"] if done else account, "takes": done + result["takes"]})
             return
     if done:
         emit({"ok": True, "account": done[0]["account"], "takes": done,
-              "short": f"{len(done)} of {plan['count']} takes; the next one failed: {last.reason}"})
+              "short": f"{len(done)} of {plan.get('count', 1)} takes; the next one failed: {last.reason}"})
         return
     fail(last.code if last else 3, last.reason if last else "no account")
 
@@ -1581,8 +1664,8 @@ def cmd_status(args) -> None:
         credits = read_credits(page)
         note_credits(args.account, credits)
         bound = state["email"] == meta.get("email")
-        emit({"ok": bound, "account": args.account, "email": state["email"],
-              "bound_to": meta.get("email"), "credits": credits, "build": state["build"],
+        emit({"ok": bound, "account": args.account, "email": mask_email(state["email"]),
+              "bound_to": mask_email(meta.get("email")), "credits": credits, "build": state["build"],
               "seconds": round(time.time() - started, 1)})
         sys.exit(0 if bound else 1)
 
@@ -1622,9 +1705,17 @@ def cmd_login(args) -> None:
         raise Failure(1, f"profile {args.account} is already open")
     profile.mkdir(parents=True, exist_ok=True)
     os.chmod(profile.parent, 0o700)
-    subprocess.Popen(
+    chrome = subprocess.Popen(
         [chrome_binary(SOURCE_APP), f"--user-data-dir={profile}", *COMMON_FLAGS, "--new-window",
          LOGIN_URL], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    if getattr(args, "wait", False):
+        print(f"{TOOL}: sign {args.account} in in the Chrome window that opened, then quit it with Cmd+Q; "
+              "waiting for it to close…", file=sys.stderr, flush=True)
+        # The launched process can hand the window to another one, so the profile lock decides too.
+        while chrome.poll() is None or profile_in_use(profile):
+            time.sleep(LOGIN_POLL_S)
+        emit({"ok": True, "account": args.account, "login": has_login(args.account)})
+        return
     emit({"ok": True, "account": args.account, "profile": str(profile),
           "next": f"sign in in the window that opened, quit it (Cmd+Q), then: {TOOL} status {args.account}"})
 
@@ -1646,6 +1737,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("login", help="open a visible Chrome to sign an account in once")
     p.add_argument("account")
+    p.add_argument("--wait", action="store_true", help="return only once that Chrome has quit")
     p.set_defaults(func=cmd_login)
     p = sub.add_parser("status", help="free check: signed in, bound email, credits")
     p.add_argument("account")
@@ -1654,7 +1746,7 @@ def main() -> None:
     p = sub.add_parser("accounts", help="profiles with their cached email, credits and walls")
     p.set_defaults(func=cmd_accounts)
     p = sub.add_parser("generate")
-    p.add_argument("--account")
+    p.add_argument("--account", type=account_arg)
     p.add_argument("--prompt", required=True)
     p.add_argument("--dest", required=True)
     p.add_argument("--first-frame")

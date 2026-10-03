@@ -512,22 +512,20 @@ assert test "$(grep -cxF -- '--refresh-account codex/alpha' "$ANNOUNCE_LOG")" = 
 # `codexb web` signs a roster account into the ChatGPT web route through chatgpt-web login (the
 # helper geminib web shares), and a first interactive `codexb p` offers it once, only on a tty, default no.
 WEB_CALLS="$WORK/web-calls"
-CHATGPT_WEB_UV="$FAKE_BIN/uv"
+CHATGPT_WEB_UV="$ROOT/tests/fixtures/fake-web-uv.sh"
 CHATGPT_WEB_DIR="$WORK/chatgpt-web"
 export WEB_CALLS CHATGPT_WEB_UV CHATGPT_WEB_DIR
-cat >"$CHATGPT_WEB_UV" <<'EOF'
-#!/usr/bin/env bash
-shift 3
-printf '%s %s%s\n' "$(basename "$1")" "$2" "${3:+ $3}" >>"$WEB_CALLS"
-empty='{"ok": true, "accounts": []}'
-[ "$2" != accounts ] || printf '%s\n' "${WEB_ACCOUNTS:-$empty}"
-EOF
-chmod +x "$CHATGPT_WEB_UV"
 : >"$WEB_CALLS"
-assert bash "$SCRIPT" web alpha
+assert test "$(bash "$SCRIPT" web alpha 2>/dev/null)" = "codexb: alpha ready — fi…@example.com, plan plus"
 assert bash "$SCRIPT" web main
-assert test "$(cat "$WEB_CALLS")" = "chatgpt_web.py login alpha
-chatgpt_web.py login main"
+assert test "$(cat "$WEB_CALLS")" = "chatgpt_web login --wait alpha
+chatgpt_web status alpha
+chatgpt_web login --wait main
+chatgpt_web status main"
+: >"$WEB_CALLS"
+web_err=$(WEB_STATUS_FAIL='ChatGPT shows alpha signed out; run: codexb web alpha' bash "$SCRIPT" web alpha 2>&1)
+assert test "$?" -eq 4
+assert test "$web_err" = "codexb: alpha is not ready: ChatGPT shows alpha signed out; run: codexb web alpha"
 : >"$WEB_CALLS"
 web_err=$(bash "$SCRIPT" web ghost 2>&1); web_rc=$?
 assert test "$web_rc" -eq 2
@@ -545,11 +543,13 @@ on_tty() { python3 "$ROOT/tests/fixtures/answer-pty.py" "$@"; }
 tty_output=$(on_tty '' bash "$SCRIPT" p ttyno) || fail "tty profile ttyno failed"
 assert grep -q "CALL account=ttyno " "$CODEX_CALLS"
 assert grep -q "Also sign ttyno into the web routes now? \[y/N\]" <<<"$tty_output"
-assert test "$(cat "$WEB_CALLS")" = "chatgpt_web.py accounts"
+assert test "$(cat "$WEB_CALLS")" = "chatgpt_web accounts"
 : >"$WEB_CALLS"
-on_tty y bash "$SCRIPT" p ttyyes >/dev/null
-assert test "$(cat "$WEB_CALLS")" = "chatgpt_web.py accounts
-chatgpt_web.py login ttyyes"
+yes_output=$(on_tty y bash "$SCRIPT" p ttyyes)
+assert grep -q "codexb: ttyyes ready — fi…@example.com, plan plus" <<<"$yes_output"
+assert test "$(cat "$WEB_CALLS")" = "chatgpt_web accounts
+chatgpt_web login --wait ttyyes
+chatgpt_web status ttyyes"
 : >"$WEB_CALLS"
 again_output=$(on_tty y bash "$SCRIPT" p ttyno)
 if grep -q "web routes" <<<"$again_output" || test -s "$WEB_CALLS"; then fail "a second open asked again"; fi
@@ -888,9 +888,10 @@ case "${IMAGE_MODE:-reply}" in
     printf 'status\n/nonexistent/generated.jpg\n' >"$output"
     ;;
   *)
-    requested=$(printf '%s\n' "$prompt" | sed -n 's/^Copy the final image to \([^ ]*\) and reply.*/\1/p')
-    printf 'generated:%s\n' "$account" >"$requested"
-    printf 'status\n%s\n' "$requested" >"$output"
+    image_dir="${CODEX_HOME:-$HOME/.codex}/generated_images/fake-thread"
+    mkdir -p "$image_dir"
+    printf 'generated:%s\n' "$account" >"$image_dir/exec-fake.${IMAGE_REPLY_EXT:-png}"
+    printf 'done\n' >"$output"
     ;;
 esac
 EOF
@@ -939,8 +940,13 @@ IMAGE_PATH="$IMAGE_BIN:/usr/bin:/bin"
 IMAGE_OUT="$WORK/image.out"
 IMAGE_ERR="$WORK/image.err"
 image_run() {
+  local previous='' argument reply_ext=png
+  for argument in "$@"; do
+    [ "$previous" != --dest ] || reply_ext=${argument##*.}
+    previous=$argument
+  done
   env PATH="$IMAGE_PATH" TMPDIR="$IMAGE_TMPDIR" CODEX_IMAGE_CODEX="$IMAGE_BIN/codex" \
-    CODEX_PROFILES_DIR="$WORK/image-profiles" IMAGE_MODE="${IMAGE_MODE:-reply}" \
+    CODEX_PROFILES_DIR="$WORK/image-profiles" IMAGE_MODE="${IMAGE_MODE:-reply}" IMAGE_REPLY_EXT="$reply_ext" \
     IMAGE_PICK_MODE="${IMAGE_PICK_MODE:-ok}" IMAGE_PICK_ACCOUNT="${IMAGE_PICK_ACCOUNT:-picked}" \
     WORKER_PICK_CONFIG_FILE="$HOME/.claude/worker-model" WORKER_CLAIMS_DIR="$IMAGE_CLAIMS" \
     bash "$IMAGE_SCRIPT" "$@" >"$IMAGE_OUT" 2>"$IMAGE_ERR"
@@ -992,9 +998,8 @@ assert grep -q -- "- $WORK/reference.jpg" "$IMAGE_PROMPT"
 assert grep -qx 'generated:explicit' "$WORK/image-output/explicit.jpg"
 assert grep -qx 'account=explicit' "$IMAGE_OUT"
 
-# An answer already in the destination's own format is delivered byte for byte, png included: the
-# generator is told to save under that extension, and re-encoding a matching answer changes pixels
-# nobody asked to change. Same rule in gemini-image and grok-image.
+# An answer already in the destination's own format is delivered byte for byte, png included:
+# re-encoding a matching answer changes pixels nobody asked to change. Same rule in gemini-image and grok-image.
 : >"$IMAGE_MAGICK_CALLS"
 assert image_run --dest "$WORK/image-output/asis.png" --prompt 'simple badge' --account explicit
 assert grep -qx 'generated:explicit' "$WORK/image-output/asis.png"
@@ -1192,4 +1197,4 @@ for flag in --account --model --runs; do
   assert test "$rc" -eq 2
 done
 
-echo "PASS: $asserts asserts; add and shared-link trap, codexb web (a roster-gated chatgpt-web login, offered once after a first interactive login on a tty, default no),worker-pool exclusion and shield override (pick skips it, headless runs are refused however named, interactive and pinned runs pass, the last member goes out too, visible in list/status), list/status, quota-aware authenticated pick by descending daily budget, reset credits, auth-needed cache markers, dead-token classification (short cause, no raw RPC blob) with list/status/pick honoring the marker over lying local auth.json, a transient non-auth error preserving the definite auth verdict while fresh weather on a never-marked account stays non-auth, and marker recovery only on a genuinely good probe, exact run environments/arguments, one-step profile auto-create with shared links, browser-OAuth menu login passthrough with device-auth de-advertised everywhere yet still working manually, and missing-name guard, existing-profile relaunch stays quiet, creation-only reserved-name guards, leading-hyphen and charset rejection parity, multi-account cache compatibility, remove forgets profiles including reserved legacy names and prunes the cache entry, the base account removed by marker alone (hidden from list/status/pin/pick/launch, the real ~/.codex untouched, the cache's current falling to the first account left, undone by deleting the marker), use pin set/show/clear/refusal parity, and Codex image generation routing with claimed automatic picks, prompt, account environments, rescue, generation deadline with garbage-value fallback, destination checks made before a generation is spent, and limits"
+echo "PASS: $asserts asserts; add and shared-link trap, codexb web (a roster-gated chatgpt-web login held until its window is quit, then status: ready with the plan or the reason and exit 4; offered once after a first interactive login on a tty, default no), worker-pool exclusion and shield override (pick skips it, headless runs are refused however named, interactive and pinned runs pass, the last member goes out too, visible in list/status), list/status, quota-aware authenticated pick by descending daily budget, reset credits, auth-needed cache markers, dead-token classification (short cause, no raw RPC blob) with list/status/pick honoring the marker over lying local auth.json, a transient non-auth error preserving the definite auth verdict while fresh weather on a never-marked account stays non-auth, and marker recovery only on a genuinely good probe, exact run environments/arguments, one-step profile auto-create with shared links, browser-OAuth menu login passthrough with device-auth de-advertised everywhere yet still working manually, and missing-name guard, existing-profile relaunch stays quiet, creation-only reserved-name guards, leading-hyphen and charset rejection parity, multi-account cache compatibility, remove forgets profiles including reserved legacy names and prunes the cache entry, the base account removed by marker alone (hidden from list/status/pin/pick/launch, the real ~/.codex untouched, the cache's current falling to the first account left, undone by deleting the marker), use pin set/show/clear/refusal parity, and Codex image generation routing with claimed automatic picks, prompt, account environments, rescue, generation deadline with garbage-value fallback, destination checks made before a generation is spent, and limits"

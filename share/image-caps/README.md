@@ -29,7 +29,16 @@ vendor CLI docs). Re-verify when `caps=stale` or `model_caps=stale` shows up; th
 - `aspects`: null when the CLI has no aspect parameter (Codex takes size only as prose).
 - `aspects_by_prompt` (codex): ratios a live run delivered from the `--aspect` sentence alone, checked by
   the script's `aspect=… fit=` line; `web_only`: features only the ChatGPT web route drives —
-  `region` (`--region`, a Markup outline) and `reaspect` (the viewer's Resize ratios).
+  `region` (`--region`, a Markup outline), `reaspect` (the viewer's Resize ratios), `point` (`--point`,
+  Comment pins) and `remove_bg` (`--remove-bg`, the viewer's Remove BG: a regeneration delivered with alpha).
+- `flow_image` (gemini): the `--route flow` contract — model labels and their observed `wire` keys, the
+  five aspects, counts, `refs_max`, `upscale` menu items, `price` (a different composer quote stops the run).
+  `flow_image.tools`: the Image Editor Tool behind `--region`/`--point`/`--remove-bg`/prompt-less `--aspect` —
+  its `models` and outpaint `aspects`, `bg_models` (our name → the applet's label), `bg_models_broken` (name →
+  why it is refused), `default_bg_model`, `brush_px`, `cutout_max_side`, `unsupported`, `timeout_s`.
+- `default_route` (gemini): the route the image script runs without `--route`. Absent means the CLI the
+  top-level fields describe; `flow` makes `flow_image` (`refs_max`, `aspects`) what the script and the fan-out
+  adapt a request to, while the top-level `refs`/`aspects` stay the `--route cli` contract.
 - `transparent`: `native` (the tool returns alpha), `chroma` (green background + key), `native+chroma`
   (try native, key when the result carries no alpha).
 - `video`: null when the vendor has no video tool. `keyframes_max`: mid-clip anchors a pinned-frame

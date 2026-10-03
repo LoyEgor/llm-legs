@@ -189,9 +189,15 @@ cannot spend the generation on the tool whose ratio enum the gate just refused.
 
 ## Final lines
 
-`grok-image` prints exactly seven lines: `dest`, `size`, `format`, `account`, `session`,
-`model=... model_caps=...`, `caps=...`. `grok-video` prints eight, inserting `duration=` after
-`format=`. `session=none` means the stream carried no `sessionId`.
+`grok-image` prints `dest`, `size`, `format`, `account`, `session`, `model=... model_caps=...`,
+`caps=...`, then the composite decision and, last, `edit_depth=<n> root=<path>`. Every edit of an
+existing image (a single `--ref`, or `--resume` of a session whose last image this machine delivered)
+is composited by default like on every vendor — `composite=auto changed=<percent>` and
+`rendered=<dest stem>.rendered.<ext>`, `composite=refused reason=global ...` for a global edit,
+`composite=skipped reason=...` otherwise, nothing with `--no-composite` or `--transparent`; rules,
+`--composite[=auto|x,y,w,h]` and the `<dest>.edit.json` lineage are on the
+[gemini page](gemini.md#local-composite-and-edit-lineage). `grok-video` prints eight lines,
+inserting `duration=` after `format=`. `session=none` means the stream carried no `sessionId`.
 
 ## Resume example
 

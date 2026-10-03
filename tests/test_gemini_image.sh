@@ -11,13 +11,15 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; cat "$WORK/err" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
 REAL_MAGICK=$(command -v magick) || exit 1
 export REAL_MAGICK
+UV_CACHE_DIR=${UV_CACHE_DIR:-$(uv cache dir 2>/dev/null)}
+export UV_CACHE_DIR
 export HOME="$WORK/home" GEMINIB_PROFILES_DIR="$WORK/profiles"
 export WORKER_CLAIMS_DIR="$WORK/claims" WORKER_PICK_CONFIG_FILE="$WORK/worker-model"
 export LLM_LIMITS_GEMINI_CACHE="$WORK/main-cache" LLM_LIMITS_GEMINI_REMOVED="$WORK/main-removed"
 export LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$WORK/account-caches" TMPDIR="$WORK/tmp"
 export FAKE_GEMINIB_CALLS="$WORK/calls" FAKE_GEMINIB_PROMPT="$WORK/prompt"
 export PICK_CALLS="$WORK/picks" AGY_BIN="$WORK/bin/agy"
-export GEMINIB_CACHE_DIR="$WORK/geminib-cache"
+export GEMINIB_CACHE_DIR="$WORK/geminib-cache" FLOW_IMAGE_ENGINE="$WORK/bin/no-flow"
 MANIFEST_CLI_VERSION=$(jq -r '.cli.version' "$ROOT/share/image-caps/gemini.json")
 export MANIFEST_CLI_VERSION
 . "$ROOT/tests/fixtures/geminib-families.sh"
@@ -34,12 +36,15 @@ printf '%s\n' "$*" >>"$PICK_CALLS"
 [ "${PICK_MODE:-ok}" != limit ] || exit 3
 printf 'picked\n'
 STUB
-chmod +x "$WORK/bin/agy" "$WORK/bin/worker-pick"
+printf '#!/usr/bin/env bash\necho flow >>"%s"\nexit 1\n' "$WORK/flow-calls" >"$WORK/bin/no-flow"
+chmod +x "$WORK/bin/agy" "$WORK/bin/worker-pick" "$WORK/bin/no-flow"
 export PATH="$WORK/bin:$PATH"
 : >"$FAKE_GEMINIB_CALLS"
 : >"$PICK_CALLS"
 : >"$WORK/err"
-image_run() { bash "${SCRIPT:-$ROOT/bin/gemini-image}" "$@" >"$WORK/out" 2>"$WORK/err"; }
+# The agy route; Flow is gemini-image's default and has its own suite (test_flow_image.sh).
+route_args=(--route cli)
+image_run() { bash "${SCRIPT:-$ROOT/bin/gemini-image}" ${route_args[@]+"${route_args[@]}"} "$@" >"$WORK/out" 2>"$WORK/err"; }
 expect_rc() {
   local expected=$1 result=0
   shift
@@ -55,6 +60,10 @@ expect_rc 2 "${args[@]}" --ref "$ref" --ref "$ref" --ref "$ref" --ref "$ref"
 expect_rc 2 "${args[@]}" --ref relative.png
 expect_rc 2 "${args[@]}" --ref "$WORK/missing.jpg"
 expect_rc 2 "${args[@]}" --account 'bad name'
+expect_rc 2 "${args[@]}" --account ""
+assert grep -q -- "--account needs a profile name" "$WORK/err"
+assert test ! -s "$FAKE_GEMINIB_CALLS"
+assert test ! -s "$PICK_CALLS"
 expect_rc 2 "${args[@]}" --resume fixture-session
 expect_rc 2 "${args[@]}" --resume ../bad --account explicit
 expect_rc 2 "${args[@]}" --resume absent --account explicit
@@ -68,6 +77,13 @@ assert test ! -d "$GEMINIB_PROFILES_DIR/unknown"
 expect_rc 2 "${args[@]}" --account main
 rm -f "$LLM_LIMITS_GEMINI_REMOVED"
 assert test ! -s "$FAKE_GEMINIB_CALLS"
+expect_rc 2 "${args[@]}" --composite --account explicit
+assert grep -q 'composite needs the image being edited' "$WORK/err"
+expect_rc 2 "${args[@]}" --composite --resume fixture-session --account explicit
+expect_rc 2 "${args[@]}" --ref "$ref" --composite=0.5,0.5,0.6,0.1 --account explicit
+expect_rc 2 "${args[@]}" --ref "$ref" --composite= --account explicit
+expect_rc 2 "${args[@]}" --ref "$ref" --composite --transparent --account explicit
+assert test ! -s "$FAKE_GEMINIB_CALLS"
 
 assert image_run "${args[@]}" --aspect 16:9 --ref "$ref" --ref "$ref" --ref "$ref"
 assert grep -qx 'ImagePaths:' "$FAKE_GEMINIB_PROMPT"
@@ -75,16 +91,20 @@ assert test "$(grep -Fxc -- "- $ref" "$FAKE_GEMINIB_PROMPT")" -eq 3
 assert grep -qx 'AspectRatio: 16:9' "$FAKE_GEMINIB_PROMPT"
 assert grep -qx -- '--account gemini --role image' "$PICK_CALLS"
 assert test -e "$WORKER_CLAIMS_DIR/gemini/picked"
+assert test -e "$WORK/media-starts/gemini/picked"
 assert grep -qx 'ARG=stream-json' "$FAKE_GEMINIB_CALLS"
-printf 'dest=%s\nsize=16x12\nformat=png\naccount=picked\nsession=fixture-session\nmodel=gemini-3.1-flash-image model_caps=fresh\ncaps=fresh\n' "$WORK/output/result.png" >"$WORK/expected"
+printf 'dest=%s\nsize=16x12\nformat=png\naccount=picked\nsession=fixture-session\nmodel=gemini-3.1-flash-image model_caps=fresh\ncaps=fresh\ncomposite=skipped reason=several-inputs\nedit_depth=1 root=%s\n' "$WORK/output/result.png" "$ref" >"$WORK/expected"
 assert cmp "$WORK/expected" "$WORK/out"
 
 : >"$PICK_CALLS"
 assert image_run "${args[@]}" --account explicit
 assert grep -qx 'Omit ImagePaths.' "$FAKE_GEMINIB_PROMPT"
 assert test ! -s "$PICK_CALLS"
+assert test -e "$WORK/media-starts/gemini/explicit"
+rm -rf "$WORK/media-starts"
 : >"$FAKE_GEMINIB_CALLS"
 assert image_run "${args[@]}" --prompt 'now make it bluer' --resume fixture-session --account explicit
+assert test ! -e "$WORK/media-starts/gemini/explicit"
 assert grep -qx 'ARG=--conversation' "$FAKE_GEMINIB_CALLS"
 assert grep -qx 'ARG=fixture-session' "$FAKE_GEMINIB_CALLS"
 assert grep -qx 'ARG=explicit' "$FAKE_GEMINIB_CALLS"
@@ -93,6 +113,87 @@ assert test "$(grep -c '^AspectRatio:' "$FAKE_GEMINIB_PROMPT")" -eq 0
 assert image_run "${args[@]}" --prompt 'wider' --resume fixture-session --account explicit --aspect 16:9
 assert grep -qx 'AspectRatio: 16:9' "$FAKE_GEMINIB_PROMPT"
 assert grep -qx 'session=fixture-session' "$WORK/out"
+
+# Without --route a resume lands on the route that made the session (Flow is the default), and a record
+# from before routes were kept falls back to the agy conversation on the account; a contradicting --route
+# is refused before anything runs.
+route_args=()
+session_record="$WORK/sessions/gemini/fixture-session"
+assert test "$(sed -n 2p "$session_record")" = cli
+: >"$FAKE_GEMINIB_CALLS"
+assert image_run "${args[@]}" --prompt 'bluer still' --resume fixture-session --account explicit
+assert grep -qx 'ARG=fixture-session' "$FAKE_GEMINIB_CALLS"
+head -n 1 "$session_record" >"$session_record.old" && mv "$session_record.old" "$session_record"
+: >"$FAKE_GEMINIB_CALLS"
+assert image_run "${args[@]}" --prompt 'bluer again' --resume fixture-session --account explicit
+assert grep -qx 'ARG=fixture-session' "$FAKE_GEMINIB_CALLS"
+: >"$FAKE_GEMINIB_CALLS"
+expect_rc 2 "${args[@]}" --prompt 'x' --resume fixture-session --account explicit --route flow
+assert test "$(cat "$WORK/err")" = 'gemini-image: --resume fixture-session was made on --route cli and continues there; drop --route flow'
+assert test ! -s "$FAKE_GEMINIB_CALLS"
+assert test ! -e "$WORK/flow-calls"
+route_args=(--route cli)
+
+result="$WORK/output/result.png"
+assert image_run "${args[@]}" --account explicit
+assert test "$(tail -n 1 "$WORK/out")" = "edit_depth=0 root=$result"
+assert test "$(jq -c . "$result.edit.json")" = "{\"root\":\"$result\",\"depth\":0,\"edits\":[]}"
+assert image_run --dest "$WORK/output/step1.png" --prompt 'red hair' --resume fixture-session --account explicit
+assert test "$(tail -n 1 "$WORK/out")" = "edit_depth=1 root=$result"
+assert image_run --dest "$WORK/output/step2.png" --prompt 'moon pendant' --ref "$WORK/output/step1.png" --account explicit
+assert test "$(tail -n 1 "$WORK/out")" = "edit_depth=2 root=$result"
+assert test "$(jq -c '[.edits[] | [.prompt, .region, .points, .route, .vendor, .account]]' "$WORK/output/step2.png.edit.json")" = \
+  '[["red hair",null,[],"cli","gemini","explicit"],["moon pendant",null,[],"cli","gemini","explicit"]]'
+
+"$REAL_MAGICK" -size 256x192 xc:'#00FF00' "$WORK/green.png"
+assert image_run --dest "$WORK/output/composite.png" --prompt 'add a blue patch' --ref "$WORK/green.png" --composite --account explicit
+assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$WORK/out"
+assert grep -qx 'size=256x192' "$WORK/out"
+assert test "$("$REAL_MAGICK" "$WORK/output/composite.png" -depth 8 -format '%[pixel:p{3,3}]' info:)" = 'srgb(0,255,0)'
+assert test "$("$REAL_MAGICK" "$WORK/output/composite.png" -depth 8 -format '%[fx:int(255*p{128,96}.b)]' info:)" -gt 200
+assert test "$(tail -n 1 "$WORK/out")" = "edit_depth=1 root=$WORK/green.png"
+assert test "$(jq -r '.edits[0].region' "$WORK/output/composite.png.edit.json")" = null
+# The fixture paints blue over x 80..175 of 256: the 0..0.2 corner rectangle keeps the whole input green,
+# and the resumed edit's 0.25..0.5 band takes only the blue left of x 128 — the rest stays the input's.
+assert image_run --dest "$WORK/output/composite.png" --prompt 'corner' --ref "$WORK/green.png" --composite=0,0,0.2,0.2 --account explicit
+assert image_run --dest "$WORK/output/composite.png" --prompt 'again' --resume fixture-session --composite=0.25,0.25,0.25,0.5 --account explicit
+assert grep -Eq '^composite=region changed=' "$WORK/out"
+assert test "$("$REAL_MAGICK" "$WORK/output/composite.png" -depth 8 -format '%[fx:int(255*p{100,96}.b)]' info:)" -gt 200
+assert test "$("$REAL_MAGICK" "$WORK/output/composite.png" -depth 8 -format '%[pixel:p{150,96}]' info:)" = 'srgb(0,255,0)'
+assert test "$(tail -n 1 "$WORK/out")" = "edit_depth=2 root=$WORK/green.png"
+assert test "$(jq -r '.edits[1].region' "$WORK/output/composite.png.edit.json")" = 0.25,0.25,0.25,0.5
+# Composite is on by default for every edit: a single --ref or the resumed session's last image, the
+# vendor's render kept beside the dest; a global change is refused and delivered as rendered.
+assert image_run --dest "$WORK/output/default.png" --prompt 'add a blue patch' --ref "$WORK/green.png" --account explicit
+assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$WORK/out"
+assert grep -qx "rendered=$WORK/output/default.rendered.png" "$WORK/out"
+assert test "$("$REAL_MAGICK" "$WORK/output/default.png" -depth 8 -format '%[pixel:p{3,3}]' info:)" = 'srgb(0,255,0)'
+assert test "$("$REAL_MAGICK" "$WORK/output/default.rendered.png" -format '%wx%h' info:)" = 16x12
+assert test "$(jq -r '.edits[0].composite.kind' "$WORK/output/default.png.edit.json")" = auto
+"$REAL_MAGICK" -size 256x192 xc:'#00FF00' "$WORK/output/default.png"
+assert image_run --dest "$WORK/output/default2.png" --prompt 'again' --resume fixture-session --account explicit
+assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$WORK/out"
+assert grep -qx "rendered=$WORK/output/default2.rendered.png" "$WORK/out"
+assert test "$("$REAL_MAGICK" "$WORK/output/default2.png" -format '%wx%h' info:)" = 256x192
+assert image_run --dest "$WORK/output/optout.png" --prompt 'add a blue patch' --ref "$WORK/green.png" --no-composite --account explicit
+assert test "$(grep -c '^composite=\|^rendered=' "$WORK/out")" -eq 0
+assert test ! -e "$WORK/output/optout.rendered.png"
+assert test "$(jq -c '.edits[0].composite' "$WORK/output/optout.png.edit.json")" = '{"kind":"skipped","changed":null,"reason":"opted-out"}'
+assert image_run --dest "$WORK/output/keyed.png" --prompt 'a patch' --ref "$WORK/green.png" --transparent --account explicit
+assert test "$(grep -c '^composite=' "$WORK/out")" -eq 0
+"$REAL_MAGICK" -size 256x192 xc:red "$WORK/red.png"
+assert image_run --dest "$WORK/output/global.png" --prompt 'repaint' --ref "$WORK/red.png" --account explicit
+assert grep -Eqx 'composite=refused reason=global changed=[0-9.]+% kind=auto' "$WORK/out"
+assert test ! -e "$WORK/output/global.rendered.png"
+assert test "$("$REAL_MAGICK" "$WORK/output/global.png" -format '%wx%h' info:)" = 16x12
+assert test "$(jq -r '.edits[0].composite.kind' "$WORK/output/global.png.edit.json")" = refused
+"$REAL_MAGICK" -size 256x256 xc:'#00FF00' "$WORK/square.png"
+assert image_run --dest "$WORK/output/outpaint.png" --prompt 'widen' --ref "$WORK/square.png" --account explicit
+assert grep -qx 'composite=skipped reason=aspect-changed from=256x256 to=16x12' "$WORK/out"
+assert test ! -e "$WORK/output/outpaint.rendered.png"
+assert image_run --dest "$WORK/output/both.png" --prompt 'merge' --ref "$WORK/green.png" --ref "$WORK/square.png" --account explicit
+assert grep -qx 'composite=skipped reason=several-inputs' "$WORK/out"
+expect_rc 2 "${args[@]}" --ref "$WORK/green.png" --composite --no-composite --account explicit
 
 for mode in stream rescue init-only; do
   FAKE_GEMINIB_MODE=$mode assert image_run "${args[@]}" --account explicit
@@ -147,7 +248,7 @@ mkdir -p "$WORK/repo/bin" "$WORK/repo/share/image-caps"
 cp "$ROOT/bin/gemini-image" "$WORK/repo/bin/"
 printf '#!/usr/bin/env bash\nexec bash "%s" "$@"\n' "$ROOT/bin/geminib" >"$WORK/repo/bin/geminib"
 chmod +x "$WORK/repo/bin/geminib"
-cp "$ROOT/share/"{image-caps,image-chroma,image-leg,account-roster,gemini-accounts,codex-accounts,worker-model,worker-pool,worker-walls,worker-claims}.sh "$WORK/repo/share/"
+cp "$ROOT/share/"{image-caps,image-chroma,image-leg,account-arg,account-roster,gemini-accounts,codex-accounts,worker-model,worker-pool,worker-walls,worker-claims,flow-image}.sh "$WORK/repo/share/"
 jq '.refs.max=1 | .aspects.generate=["5:4"] | .aspects.edit=["5:4"] | .aspects.default="5:4"' "$ROOT/share/image-caps/gemini.json" >"$WORK/repo/share/image-caps/gemini.json"
 SCRIPT="$WORK/repo/bin/gemini-image"
 assert image_run "${args[@]}" --ref "$ref" --account explicit
@@ -173,4 +274,4 @@ mkdir -p "$WORK/bare-log"
 assert test -f "$WORK/bare-log/legs.jsonl"
 assert test "$(jq -r '"\(.tool) \(.rc)"' "$WORK/bare-log/legs.jsonl")" = 'probe 4'
 
-printf 'PASS: %s asserts; manifest limits, account isolation, stream paths, resume, brain rescue, model provenance, quota, chroma, no Flash family, and output contract\n' "$asserts"
+printf 'PASS: %s asserts; manifest limits, account isolation, stream paths, resume, brain rescue, model provenance, quota, chroma, no Flash family, composite, edit lineage, and output contract\n' "$asserts"

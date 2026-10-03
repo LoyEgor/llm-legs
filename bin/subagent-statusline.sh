@@ -80,14 +80,14 @@ set_state() { # plain color [short-plain short-color]
 }
 
 worker_state() { # run-id
-  local dir="$runs_root/$1" phase round
+  local dir="$runs_root/$1" phase tests
   [ -r "$dir/state.json" ] || return 1
-  IFS=$'\x1f' read -r phase round fix_round < <(jq -r '[.phase // "", (.round // 0 | tostring),
+  IFS=$'\x1f' read -r phase fix_round < <(jq -r '[.phase // "",
     (.round_id // "" | tostring | gsub("[^A-Za-z0-9_-]"; ""))] | join("\u001f")' "$dir/state.json" 2>/dev/null) || return 1
   [ ! -f "$dir/exit_code" ] || return 1
   case "$phase" in
     start) set_state start start ;;
-    wait) set_state "wait $round" "wait $round" ;;
+    wait) set_state "" "" ;;
     *) return 1 ;;
   esac
   local work="${STATUSLINE_CACHE_DIR:-$HOME/.cache/claude-statusline}/work-$sid" mtime since
@@ -95,8 +95,9 @@ worker_state() { # run-id
   [[ "$mtime" =~ ^[0-9]+$ ]] && [ "$((now_ms / 1000 - mtime))" -le 15 ] || return 0
   since=$(awk -F'\t' -v run="$1" '$1 == "run" && $2 == run { print $3; exit }' "$work" 2>/dev/null)
   [[ "$since" =~ ^[0-9]+$ ]] && [ "$((now_ms / 1000))" -ge "$since" ] || return 0
-  set_state "$state_plain · tests $(elapsed_str "$((now_ms / 1000 - since))")" \
-    "$state_color · tests $(elapsed_str "$((now_ms / 1000 - since))")" "$state_plain · tests" "$state_color · tests"
+  tests="tests $(elapsed_str "$((now_ms / 1000 - since))")"
+  set_state "${state_plain:+$state_plain · }$tests" "${state_color:+$state_color · }$tests" \
+    "${state_plain:+$state_plain · }tests" "${state_color:+$state_color · }tests"
 }
 
 cells_state() { # stdin: label, done|failed|other, chunk passes read, chunk passes total, late, verifying

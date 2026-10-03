@@ -298,7 +298,8 @@ POLICY="$ROOT/share/worker-policy.md"
 CONTRACT="$ROOT/docs/routing-contract.md"
 # `auth_late` ranks a grok account whose access token expired behind every signed-in one without
 # walling it — the CLI refreshes it silently — and reads as false on every other vendor's rows.
-assert test "$(grep -Fc 'def rank_keys: [(if .defer5h then 1 else 0 end), (if .claimed then 1 else 0 end), (if .auth_late then 1 else 0 end), (0 - (.budget // 0)), .name];' "$WORKERPICK")" -eq 1
+assert test "$(grep -Fc '  def rank_keys: (if $media_order == "true" then [(if .claimed then 1 else 0 end), (.started // 0)] else [] end) +' "$WORKERPICK")" -eq 1
+assert test "$(grep -Fxc '    [(if .defer5h then 1 else 0 end), (if .claimed then 1 else 0 end), (if .auth_late then 1 else 0 end), (0 - (.budget // 0)), .name];' "$WORKERPICK")" -eq 1
 assert test "$(grep -Fc 'def rank: sort_by(rank_keys);' "$WORKERPICK")" -eq 1
 assert grep -Fq '`[five-hour deferral, fresh claim, late auth, −budget, name]`' "$CONTRACT"
 # The five-hour deferral that heads the vector is one number, and the contract quotes it.
@@ -3072,7 +3073,8 @@ assert doc_has 'a trailing `<TAB>cpu_ms`'
 assert grep -Fq '"$statusline_start_us" "$statusline_end_us" "$session_id" "$statusline_cpu_ms"' "$ROOT/bin/statusline.sh"
 assert grep -Fq 'fold_tsv(journal, "menu", menu_row)' "$HARNESS_DOCTOR_BIN"
 assert grep -Fq 'os.makedirs(os.path.join(state_dir(), "menu"), exist_ok=True)' "$HARNESS_DOCTOR_BIN"
-assert grep -Fq 'local file = io.open(harnessDoctorDir() .. "/menu/" .. os.date("%Y-%m-%d", math.floor(endedAt)) .. ".tsv", "a")' "$ROOT/hammerspoon/llm-limits.lua"
+assert grep -Fq 'M.journalLine(harnessDoctorDir() .. "/menu", name, startedAt, epochNow())' "$ROOT/hammerspoon/llm-limits.lua"
+assert grep -Fq 'local file = io.open(folder .. "/" .. os.date("%Y-%m-%d", math.floor(endedAt)) .. ".tsv", "a")' "$ROOT/hammerspoon/llm-limits.lua"
 assert grep -Fq 'file:write(string.format("%d\t%d\t%s\n", math.floor(startedAt * 1e6), math.floor(endedAt * 1e6), name))' "$ROOT/hammerspoon/llm-limits.lua"
 assert doc_has '`start_us<TAB>end_us<TAB>menu`'
 assert grep -Fq 'collector_runs.record("harness", started)' "$HARNESS_DOCTOR_BIN"
@@ -3190,7 +3192,7 @@ assert "roster" in calls("bound_accounts"), "bound_accounts must intersect the r
 assert calls("browser")[0] == "refuse_off_roster", "browser must refuse an off-roster account first"
 for fn in ("cmd_login", "cmd_generate", "take_accounts"):
     assert "refuse_off_roster" in calls(fn), fn
-for engine in ("flow_music", "gemini_music", "chatgpt_web"):
+for engine in ("flow_music", "gemini_music", "chatgpt_web", "flow_image"):
     text = open(f"{sys.argv[1]}/{engine}.py").read()
     assert "iterdir" not in text and ".codex-profiles" not in text and "_PROFILES_DIR" not in text, engine
     assert "gw.refuse_off_roster(" in text or "gw.take_accounts(args.account," in text, engine
@@ -3218,14 +3220,29 @@ assert doc_has '`share/account_stores.py` `stores(vendor)` is the one table'
 # Row dh: every media route orders its candidates by the one least-recently-started helper and stamps it.
 assert python3 - "$ROOT/share" <<'ROTATION_PY'
 import ast, sys
-for engine in ("gemini_web", "gemini_music", "flow_music", "chatgpt_web"):
+for engine in ("gemini_web", "gemini_music", "flow_music", "chatgpt_web", "flow_image"):
     src = open(f"{sys.argv[1]}/{engine}.py").read()
     fns = {n.name: n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.FunctionDef)}
     rotation, start = (ast.get_source_segment(src, fns[name]) for name in ("rotation", "generate_on"))
     assert ("least_recent(" in rotation or "gw.rotation(" in rotation) and "sorted(" not in rotation, engine
     assert "note_started(" in start, engine
+    if engine == "flow_image":
+        assert "note_started(" in ast.get_source_segment(src, fns["cmd_tool"]), "flow_image cmd_tool"
 ROTATION_PY
 assert doc_has 'orders its ready candidates with `gemini_web.least_recent`'
+# Row dh, CLI half: `worker-pick --role image` ranks by the one stamp every CLI media route writes on a new generation.
+assert doc_has 'through `worker-pick --account <vendor> --role image`'
+assert grep -Fq 'if $media_order == "true" then [(if .claimed then 1 else 0 end), (.started // 0)]' "$ROOT/bin/worker-pick"
+assert eq "$(grep -c '\.started = \$\(cx\|gm\|gr\)_starts\[\.name\] |' "$ROOT/bin/worker-pick")" 3
+assert grep -Fq 'if [ -z "$resume_id" ] && ! worker_starts_record codex "$account"; then' "$ROOT/bin/codex-image"
+assert grep -Fq 'if [ -z "$resume" ] && ! worker_starts_record gemini "$account"; then' "$ROOT/bin/gemini-image"
+assert grep -Fq 'worker_starts_record gemini "$account" ||' "$ROOT/bin/gemini-listen"
+assert grep -Fq 'if [ -z "$resume" ] && ! worker_starts_record grok "$grok_media_account"; then' "$ROOT/share/grok-media.sh"
+for grok_site in grok-image grok-video; do
+  assert grep -Fq "grok_media_select_account $grok_site \"\$root\" \"\$worker_pick_cmd\" \"\$grok_profiles_dir\" \"\$account\" \"\$resume\"" "$ROOT/bin/$grok_site"
+done
+assert eq "$(cd "$ROOT" && grep -rlF 'media-starts' bin share | sort | tr '\n' ' ')" "share/worker-claims.sh "
+assert eq "$(grep -A1 -Fx '    if [ "$accounts_mode" != pick ]; then' "$ROOT/bin/image-fanout" | tail -1)" '      argv_args+=(--account "${account%%#*}")'
 # Row dh: one sign-in shape, `<vendor>b web <name>`, behind one roster-gated helper; no hint names the bare CLI.
 for web_site in "bin/geminib geminib gemini" "bin/codexb codexb codex"; do
   set -- $web_site
@@ -3249,6 +3266,25 @@ assert grep -Fq 'code="${CODE_DOCTOR_DIR:-$HOME/.cache/code-doctor}/latest.json"
 assert grep -Fq 'dirFor("codeDoctorDir", "CODE_DOCTOR_DIR", "/.cache/code-doctor")' "$ROOT/hammerspoon/doctors.lua"
 assert jq -e '.whole == {"code": "code"}' "$ROOT/share/doctor-areas.json" >/dev/null
 assert doc_has '| dj | Doctor roster |'
+
+# Row dk: an explicit --account is never read as "none": every media entry point refuses an empty or
+# malformed name through the one shared check before anything is spent.
+media_account_scripts="codex-image gemini-image grok-image grok-video gemini-video gemini-music gemini-sfx gemini-listen"
+assert eq "$(cd "$ROOT/bin" && grep -lE -- '^ *--account\)' $(grep -lF '. "$root/share/image-leg.sh"' -- *) | sort | tr '\n' ' ')" \
+  "$(printf '%s\n' $media_account_scripts | sort | tr '\n' ' ')"
+for name in $media_account_scripts; do
+  assert grep -qxF '. "$root/share/account-arg.sh"' "$ROOT/bin/$name"
+  assert eq "$(grep -cE -- '--account\)' "$ROOT/bin/$name")" "$(grep -cE -- '--account\).*account_arg "\$2"|^ +account_arg "\$2"$' "$ROOT/bin/$name")"
+done
+assert grep -qF '[[ "${1-}" =~ ^[a-z0-9][a-z0-9-]*$ ]]' "$ROOT/share/account-arg.sh"
+for engine in gemini_web chatgpt_web gemini_music flow_music flow_image; do
+  assert eq "$(grep -E 'add_argument\("--account"' "$ROOT/share/$engine.py" | grep -cv 'type=\(gw\.\)\?account_arg')" 0
+  assert grep -qE 'add_argument\("--account"' "$ROOT/share/$engine.py"
+done
+assert grep -Fq 'if not valid_account(value):' <<<"$(awk '/^def account_arg/,/^    return value/' "$ROOT/share/gemini_web.py")"
+assert eq "$(sed -nE 's/^ +--accounts\) .*accounts_mode=\$2.*/ok/p' "$ROOT/bin/image-fanout")" ok
+assert grep -Fq 'case "$accounts_mode" in all|pick) ;; *) usage ;; esac' "$ROOT/bin/image-fanout"
+assert doc_has '| dk | Explicit --account |'
 
 # Every script a claude-setup agent runs by bare name has its README PATH link, the inventory
 # llm-selfcheck's path-links step checks; image-gen names the image scripts only as "that vendor's
@@ -3275,14 +3311,14 @@ assert doc_has "key order \`${dk_keys// /, }\`"
 assert grep -qF 'base .. "/presence"' "$ROOT/hammerspoon/presence.lua"
 assert grep -qF 'os.path.join(state_dir(), "presence")' "$ROOT/bin/speed-doctor"
 assert grep -qF 'string.format("%d\t%d\t%s\n", minute, idle, bundle)' "$ROOT/hammerspoon/presence.lua"
-assert grep -qx 'local KEEP_DAYS = 35' "$ROOT/hammerspoon/presence.lua"
+assert eq "$(grep -cE 'KEEP_DAYS|os\.remove' "$ROOT/hammerspoon/presence.lua")" 0
 assert grep -qx 'JOURNAL_DAYS = 35' "$ROOT/bin/speed-doctor"
 assert doc_has '`<minute epoch, a multiple of 60><TAB><HID idle s><TAB><frontmost bundle id, or ->`'
-assert doc_has '`KEEP_DAYS = 35` in the writer'
+assert doc_has 'Days past 35 go by `JOURNAL_DAYS = 35` in `bin/speed-doctor` `prune_journals` alone'
 unjournaled=$(for f in "$ROOT"/tests/test_*.sh "$ROOT"/tests/e2e_*.sh; do
   [ "$(sed -n 2p "$f")" = '. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"' ] || printf '%s ' "${f##*/}"
 done)
 assert eq "suites without the journal line 2: $unjournaled" "suites without the journal line 2: "
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the anchors store under the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot envelope the menubar reads, the one resolver every surface names a chat through, the review round a fixing worker'"'"'s brief carries in the one field both repositories read, the launchers a headless vendor run may reach the machine through, the one anchors store per git family every side resolves with the same command and one writer holds a lock over, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types the spawn hook alone admits and no second gate judges, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the five carriers that spell the gateway model-id prefix, the one Gemini family list `geminib families` prints, the one file that pins which Flash family the review cells run and no worker reads, the one Grok model list `grokb models` prints and the single rule that collapses its default to the vendor word, the one web-search table every vendor and every worker-run entry point resolves through, the Hammerspoon entry points this repository calls, pinned fail-closed at their install path, the hook and statusline journals the Harness doctor reads, the week-over-week Δ Token tracking and the Harness doctor share, the one limiter hold directory every writer raises a hold in and both the doctor and the menu read, the one red every Hammerspoon menu paints with styled text that always names its font, the one gemini-web media store the engines write and the menu only reads, the chatgpt-web image store beside it that shares its one Chrome clone, the one least-recently-started order every media route picks by, the one per-account store table every Remove purges through and the doctor checks against the roster, the four-doctor roster every lister spells in one order, the speed doctor collector journals, the presence journal Speed reads, and the README PATH link of every script a claude-setup agent runs by name) and match %s
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the anchors store under the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot envelope the menubar reads, the one resolver every surface names a chat through, the review round a fixing worker'"'"'s brief carries in the one field both repositories read, the launchers a headless vendor run may reach the machine through, the one anchors store per git family every side resolves with the same command and one writer holds a lock over, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types the spawn hook alone admits and no second gate judges, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the five carriers that spell the gateway model-id prefix, the one Gemini family list `geminib families` prints, the one file that pins which Flash family the review cells run and no worker reads, the one Grok model list `grokb models` prints and the single rule that collapses its default to the vendor word, the one web-search table every vendor and every worker-run entry point resolves through, the Hammerspoon entry points this repository calls, pinned fail-closed at their install path, the hook and statusline journals the Harness doctor reads, the week-over-week Δ Token tracking and the Harness doctor share, the one limiter hold directory every writer raises a hold in and both the doctor and the menu read, the one red every Hammerspoon menu paints with styled text that always names its font, the one gemini-web media store the engines write and the menu only reads, the chatgpt-web image store beside it that shares its one Chrome clone, the one least-recently-started order every media route picks by, the one per-account store table every Remove purges through and the doctor checks against the roster, the four-doctor roster every lister spells in one order, the explicit --account every media entry point refuses empty before a spend, the speed doctor collector journals, the presence journal Speed reads, and the README PATH link of every script a claude-setup agent runs by name) and match %s
 ' "$asserts" "$DOC"

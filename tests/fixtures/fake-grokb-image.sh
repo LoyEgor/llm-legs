@@ -51,6 +51,7 @@ if [ "$image_format" = png ]; then
   image_path="$image_dir/1.png"
   printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAQAAAAEAQMAAACTPww9AAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGUExURQAA/////3vcmSwAAAABdFJOU4CtXltGAAAAAWJLR0QB/wIt3gAAAAd0SU1FB+oIHw8eLkDK62EAAAAldEVYdGRhdGU6Y3JlYXRlADIwMjYtMDgtMzFUMTU6MzA6NDYrMDA6MDB0ZuRGAAAAJXRFWHRkYXRlOm1vZGlmeQAyMDI2LTA4LTMxVDE1OjMwOjQ2KzAwOjAwBTtc+gAAACh0RVh0ZGF0ZTp0aW1lc3RhbXAAMjAyNi0wOC0zMVQxNTozMDo0NiswMDowMFIufSUAAAALSURBVAjXY2CAAAAACAABLyDdMQAAAABJRU5ErkJggg==' | base64 -D -o "$image_path"
 fi
+[ -z "${FAKE_GROKB_IMAGE_FROM:-}" ] || cp "$FAKE_GROKB_IMAGE_FROM" "$image_path"
 image_name=${image_path##*/}
 
 printf '%s\n' '{"type":"tool_call","toolCallId":"call-895c6af1-3625-4f14-9c9c-69ed9576ca08-2","title":"image_gen","kind":"image_gen","status":"pending","toolName":"image_gen","rawInput":{"prompt":"A perfectly centered flat solid red circle on a pure white background. Simple geometric shape, no shading, no gradients, no outlines, no texture, no shadows. The circle is a uniform bright red (#FF0000) filled disk, occupying most of the square canvas with a small white margin around it. Clean vector-like flat design, minimal, exact geometry.","aspect_ratio":"1:1"},"content":[],"locations":[]}'

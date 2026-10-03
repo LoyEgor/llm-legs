@@ -17,11 +17,25 @@ def trigger_word(command=None):
     return "%s:%s" % (source, command) if command else source
 
 
-def record(doctor, started, command=None):
+CPU_BASE_ENV = "DOCTOR_CPU_BASE"
+
+
+def cpu_total():
     times = os.times()
+    return times.user + times.system + times.children_user + times.children_system
+
+
+# os.times() survives execv: a doctor exec'd by another (harness -> speed) inherits the caller's CPU,
+# which the caller hands over here to be subtracted; popped so no grandchild subtracts it again.
+try:
+    CPU_BASE = float(os.environ.pop(CPU_BASE_ENV, "") or 0)
+except ValueError:
+    CPU_BASE = 0.0
+
+
+def record(doctor, started, command=None):
     row = {"doctor": doctor, "start": round(started, 3), "wall_s": round(time.time() - started, 3),
-           "cpu_s": round(times.user + times.system + times.children_user + times.children_system, 3),
-           "trigger": trigger_word(command)}
+           "cpu_s": round(max(0.0, cpu_total() - CPU_BASE), 3), "trigger": trigger_word(command)}
     folder = os.environ.get("DOCTORS_DIR") or os.path.join(os.path.expanduser("~"), ".cache", "doctors")
     try:
         os.makedirs(folder, exist_ok=True)

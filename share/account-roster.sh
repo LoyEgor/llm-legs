@@ -106,10 +106,26 @@ account_web_cli() { # vendor
   esac
 }
 
+# The login alone binds nothing: only `status` writes the email and the balance the rotation and
+# the menu read, so the owner is held here until the window is quit and status has run.
 account_web_login() { # tool vendor name
+  local cli out rc=0
   [ "$#" -eq 3 ] || { printf 'usage: %s web <name>\n' "$1" >&2; exit 2; }
   account_roster_refuse "$1" "$2" "$3" || exit 2
-  exec "$(account_web_cli "$2")" login "$3"
+  cli=$(account_web_cli "$2")
+  out=$("$cli" login --wait "$3") || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf '%s: %s\n' "$1" "$(jq -r '.reason' <<<"$out" 2>/dev/null || printf 'the login window did not open')" >&2
+    exit "$rc"
+  fi
+  out=$("$cli" status "$3") || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf '%s: %s is not ready: %s\n' "$1" "$3" "$(jq -r '.reason // "signed in as \(.email), bound to \(.bound_to)"' \
+      <<<"$out" 2>/dev/null || printf 'status failed')" >&2
+    exit 4
+  fi
+  jq -r --arg tool "$1" --arg name "$3" '"\($tool): \($name) ready — \(.bound_to // .email), "
+    + (if .plan then "plan \(.plan)" elif .credits != null then "\(.credits) credits" else "no balance read" end)' <<<"$out"
 }
 
 account_web_offer() { # tool vendor name

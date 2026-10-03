@@ -1,21 +1,10 @@
 local M = {}
 
-local KEEP_DAYS = 35
-
-local timer, lastMinute, lastPruneDay
+local timer, lastMinute
 
 local function presenceDir()
   local base = os.getenv("SPEED_DOCTOR_DIR") or (os.getenv("HOME") .. "/.cache/speed-doctor")
   return base, base .. "/presence"
-end
-
-local function prune(dir, now)
-  local cutoff = os.date("%Y-%m-%d", now - KEEP_DAYS * 86400) .. ".tsv"
-  local ok, iter, state = pcall(hs.fs.dir, dir)
-  if not ok or not iter then return end
-  for name in iter, state do
-    if name:match("^%d%d%d%d%-%d%d%-%d%d%.tsv$") and name < cutoff then os.remove(dir .. "/" .. name) end
-  end
 end
 
 function M.tick()
@@ -38,10 +27,6 @@ function M.tick()
     if handle then
       handle:write(string.format("%d\t%d\t%s\n", minute, idle, bundle))
       handle:close()
-    end
-    if day ~= lastPruneDay then
-      lastPruneDay = day
-      prune(dir, minute)
     end
   end)
   if not ok then print("presence: tick failed: " .. tostring(err)) end

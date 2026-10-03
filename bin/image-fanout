@@ -122,39 +122,6 @@ reduce_ratio() { # W:H or WxH
   }' <<<"$spec"
 }
 
-nearest_aspect() { # want list-csv
-  local want=$1 list=$2
-  awk -v want="$want" -v list="$list" '
-    function ratio(s,   a) {
-      split(s, a, ":")
-      if ((a[2]+0)==0) return 0
-      return a[1]/a[2]
-    }
-    BEGIN {
-      n = split(list, arr, ",")
-      if (want == "auto") {
-        for (i = 1; i <= n; i++) {
-          a = arr[i]
-          gsub(/^ +| +$/, "", a)
-          if (a == "auto") { print "auto"; exit }
-        }
-        print ""
-        exit
-      }
-      want_r = ratio(want)
-      best = ""; bestd = 1e99
-      for (i = 1; i <= n; i++) {
-        a = arr[i]
-        gsub(/^ +| +$/, "", a)
-        if (a == "" || a == "auto") continue
-        d = want_r - ratio(a); if (d < 0) d = -d
-        if (d < bestd) { bestd = d; best = a }
-      }
-      print best
-    }
-  '
-}
-
 nearest_int() { # want csv-or-range
   local want=$1 list=$2
   awk -v want="$want" -v list="$list" '
@@ -188,7 +155,8 @@ aspect_list_for() { # vendor video? nrefs
   fi
   local kind=generate
   [ "$nrefs" -gt 0 ] && kind=edit
-  caps_get "$vendor" ".aspects | if . == null then empty else (.$kind // .generate // []) | join(\",\") end"
+  caps_get "$vendor" "if .default_route == \"flow\" then .flow_image.aspects | join(\",\")
+    else .aspects | if . == null then empty else (.$kind // .generate // []) | join(\",\") end end"
 }
 
 join_adapt() {
@@ -468,7 +436,7 @@ for vendor in $vendors; do
 
   is_video=$video
   n_in=${#refs[@]}
-  refs_max=$(caps_get "$vendor" '.refs.max // empty')
+  refs_max=$(caps_get "$vendor" 'if .default_route == "flow" then .flow_image.refs_max else .refs.max // empty end')
   if [ "$is_video" = true ]; then
     vrefs=$(caps_get "$vendor" '.video.refs_max // empty')
     [ -n "$vrefs" ] && refs_max=$vrefs
@@ -528,7 +496,7 @@ for vendor in $vendors; do
       adapt_aspect="aspect ${want_aspect} dropped (image_to_video)"
     elif [ "$want_aspect" = auto ]; then
       list=$(aspect_list_for "$vendor" "$is_video" "$n_used")
-      mapped=$(nearest_aspect auto "$list")
+      mapped=$(image_caps_nearest_aspect auto "$list")
       if [ "$mapped" = auto ]; then
         used_aspect=auto
       else
@@ -546,7 +514,7 @@ for vendor in $vendors; do
       list=$(aspect_list_for "$vendor" "$is_video" "$n_used")
       mapped=$want_aspect
       if [ -n "$list" ]; then
-        mapped=$(nearest_aspect "$want_aspect" "$list")
+        mapped=$(image_caps_nearest_aspect "$want_aspect" "$list")
         [ -n "$mapped" ] || mapped=$want_aspect
       fi
       used_aspect=$mapped

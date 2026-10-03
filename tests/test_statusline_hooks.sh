@@ -4568,10 +4568,16 @@ assert jq -e '.hookSpecificOutput.updatedInput.description == "cxroute · img·c
   <<< "$image_routed" >/dev/null
 assert_eq 'cxroute · img·cli' "$(seed_of img-routed image-gen)"
 
+# A gemini image runs Flow by default, rotating gemini-web's profiles: unpinned it says pool, and only
+# `ROUTE: cli` (agy) asks the router.
 image_vendor=$(image_spawn img-vendor $'VENDOR: gemini\nDraw a cat.' "$IMAGE_PICK")
-assert jq -e '.hookSpecificOutput.updatedInput.description == "gmroute · img·gem: Draw the icon"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "pool · img·gem: Draw the icon"' \
   <<< "$image_vendor" >/dev/null
-assert_eq 'gmroute · img·gem' "$(seed_of img-vendor image-gen)"
+assert_eq 'pool · img·gem' "$(seed_of img-vendor image-gen)"
+image_cli=$(image_spawn img-cli $'VENDOR: gemini\nROUTE: cli\nDraw a cat.' "$IMAGE_PICK")
+assert jq -e '.hookSpecificOutput.updatedInput.description == "gmroute · img·gem: Draw the icon"' \
+  <<< "$image_cli" >/dev/null
+assert_eq 'gmroute · img·gem' "$(seed_of img-cli image-gen)"
 
 # An AUDIO: brief runs a gemini script: its short name is that kind's, never the codex image default.
 # Music and sfx pick their own gemini-web profile, so an unpinned row says pool; listen asks the router.
@@ -6851,7 +6857,8 @@ tr_render() { # columns
 tr_row() { jq -r --arg id "$2" 'select(.id == $id) | .content' <<<"$1" | perl -pe 's/\e\[[0-9;]*m//g; s/(?<!tests )1m [0-9]+s/1m 5s/'; }
 tr_wide=$(tr_render 300) || fail "renderer exited nonzero"
 assert_eq 15 "$(grep -c . <<<"$tr_wide")"
-assert_eq 'acc · astra · high — Implement the parser fix · wait 3 · 1m 5s · ↓ 12.3k tok' "$(tr_row "$tr_wide" w1)"
+# A worker at work has no state word: the elapsed time says it all.
+assert_eq 'acc · astra · high — Implement the parser fix · 1m 5s · ↓ 12.3k tok' "$(tr_row "$tr_wide" w1)"
 # Only running tasks have rows; a run that ended under a running agent shows no state.
 assert_eq 'acc · astra · high — Done run · 1m 5s' "$(tr_row "$tr_wide" w2)"
 # A finished task is answered with an empty content, never left out: the harness draws its own
@@ -6864,15 +6871,15 @@ assert_eq 'agent · haiku · rowacct — Look around · 1m 5s' "$(tr_row "$tr_wi
 assert_fails grep -Fq 'Running suites' <<<"$tr_wide"
 # Review, fix and image rows carry no title; worker and light rows keep theirs. A fix row is
 # `fix: <tag> · <round hash> · <state>`.
-assert_eq 'fix: acc · astra · high · e66f8e6 · wait 1 · 1m 5s · ↓ 900 tok' "$(tr_row "$tr_wide" f1)"
-assert_eq 'fix: acc · astra · high · e66f8e6 · wait 1 · 1m 5s' "$(tr_row "$tr_wide" f2)"
-# A worker whose run is running tests says so after its wait round, from the work probe's cache;
+assert_eq 'fix: acc · astra · high · e66f8e6 · 1m 5s · ↓ 900 tok' "$(tr_row "$tr_wide" f1)"
+assert_eq 'fix: acc · astra · high · e66f8e6 · 1m 5s' "$(tr_row "$tr_wide" f2)"
+# A worker whose run is running tests says so, from the work probe's cache;
 # a cache the probe stopped refreshing says nothing.
 printf 'run\tcodex-9-9-wait\t%s\tpnpm test\n' "$(( $(date +%s) - 75 ))" > "$STATE_DIR/work-$TR_RSESS"
-assert_eq 'acc · astra · high — Implement the parser fix · wait 3 · tests 1m 15s · 1m 5s · ↓ 12.3k tok' \
+assert_eq 'acc · astra · high — Implement the parser fix · tests 1m 15s · 1m 5s · ↓ 12.3k tok' \
   "$(tr_row "$(tr_render 300)" w1 | perl -pe 's/tests 1m [0-9]+s/tests 1m 15s/')"
 touch -t 202001010000 "$STATE_DIR/work-$TR_RSESS"
-assert_eq 'acc · astra · high — Implement the parser fix · wait 3 · 1m 5s · ↓ 12.3k tok' "$(tr_row "$(tr_render 300)" w1)"
+assert_eq 'acc · astra · high — Implement the parser fix · 1m 5s · ↓ 12.3k tok' "$(tr_row "$(tr_render 300)" w1)"
 rm -f "$STATE_DIR/work-$TR_RSESS"
 assert grep -Fq "${MAGENTA}fix: acc · astra · high${RESET} ${DIM}· e66f8e6${RESET}" <<<"$(jq -r 'select(.id == "f1") | .content' <<<"$tr_wide")"
 assert_fails grep -Fq 'Patch again' <<<"$(tr_row "$tr_wide" f2)"
@@ -6886,7 +6893,7 @@ assert_fails grep -Fq 'Patch the gate' <<<"$(tr_row "$tr_wide" f1)"
 assert_fails grep -Fq 'menubar icon' <<<"$(tr_row "$tr_wide" i1)"
 assert grep -Fq 'Implement the parser fix' <<<"$(tr_row "$tr_wide" w1)"
 # The light leg names the model doing the work and never the relay agent's shell model.
-assert_eq 'light research · 3.8-flash · rawilimo — Map the hooks · wait 2 · 1m 5s' "$(tr_row "$tr_wide" g1)"
+assert_eq 'light research · 3.8-flash · rawilimo — Map the hooks · 1m 5s' "$(tr_row "$tr_wide" g1)"
 assert grep -Fq "${MAGENTA}T2 · double · task${RESET}" <<<"$(jq -r 'select(.id == "r1") | .content' <<<"$tr_wide")"
 assert grep -Fq "${GREEN}✓${RESET}" <<<"$(jq -r 'select(.id == "i1") | .content' <<<"$tr_wide")"
 assert grep -Fq "${RED}✗${RESET}" <<<"$(jq -r 'select(.id == "i1") | .content' <<<"$tr_wide")"
@@ -6902,15 +6909,15 @@ assert_eq 'T2 · double · task · all 2/4' "$(tr_row "$(tr_render 30)" r1)"
 assert_eq 'fanout · img · all 3/4 codex ✓ gemini 1/2 grok ✗1' "$(tr_row "$(tr_render 51)" i1)"
 assert_eq 'fanout · img · all 3/4' "$(tr_row "$(tr_render 40)" i1)"
 tr_60=$(tr_render 60) tr_40=$(tr_render 40) tr_30=$(tr_render 30)
-assert_eq 'acc · astra · high — Impleme… · wait 3 · 1m 5s · ↓ 12.3k tok' "$(tr_row "$tr_60" w1)"
-assert_eq 'acc · astra · high · wait 3 · 1m 5s' "$(tr_row "$tr_40" w1)"
-assert_eq 'acc · astra · high · wait 3' "$(tr_row "$tr_30" w1)"
-assert_eq 'fix: acc · astra · high · e66f8e6 · wait 1 · 1m 5s · ↓ 900 tok' "$(tr_row "$(tr_render 62)" f1)"
-assert_eq 'fix: acc · astra · high · e66f8e6 · wait 1 · 1m 5s' "$(tr_row "$tr_60" f1)"
-assert_eq 'fix: acc · astra · high · e66f8e6 · wait 1' "$(tr_row "$(tr_render 45)" f1)"
-assert_eq 'fix: acc · astra · high · wait 1' "$(tr_row "$tr_40" f1)"
-assert_eq 'fix: acc · astra · high · wait 1' "$(tr_row "$tr_30" f1)"
-assert_eq 'light research · 3.8-flash · rawilimo · wait 2' "$(tr_row "$tr_40" g1)"
+assert_eq 'acc · astra · high — Implement the pa… · 1m 5s · ↓ 12.3k tok' "$(tr_row "$tr_60" w1)"
+assert_eq 'acc · astra · high · 1m 5s · ↓ 12.3k tok' "$(tr_row "$tr_40" w1)"
+assert_eq 'acc · astra · high · 1m 5s' "$(tr_row "$tr_30" w1)"
+assert_eq 'fix: acc · astra · high · e66f8e6 · 1m 5s · ↓ 900 tok' "$(tr_row "$(tr_render 53)" f1)"
+assert_eq 'fix: acc · astra · high · e66f8e6 · 1m 5s' "$(tr_row "$(tr_render 52)" f1)"
+assert_eq 'fix: acc · astra · high · e66f8e6' "$(tr_row "$tr_40" f1)"
+assert_eq 'fix: acc · astra · high · e66f8e6' "$(tr_row "$(tr_render 33)" f1)"
+assert_eq 'fix: acc · astra · high' "$(tr_row "$(tr_render 32)" f1)"
+assert_eq 'light research · 3.8-flash · rawilimo' "$(tr_row "$tr_40" g1)"
 # A chunked panel's fraction counts chunk passes; the row total stays cells.
 jq '.chunks = {"claude-opus-high":[2,5],"codex-sol-high":[1,5],"agy-flash38-high":[5,5]}' "$TR_STATS/progress/llm-legs__x-1.json" > "$TR_STATS/progress/tmp" &&
   mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-1.json"

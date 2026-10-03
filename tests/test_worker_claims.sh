@@ -67,6 +67,16 @@ assert test ! -e "$WORKER_CLAIMS_DIR/gemini/stale-other"
 assert test -e "$outside"
 assert test -e "$WORK/outside-dir/stale"
 
+assert test "$(worker_starts_json codex)" = '{}'
+assert worker_starts_record codex alpha
+touch -t 200001010000 "$WORK/media-starts/codex/alpha"
+assert worker_starts_record codex beta
+assert test "$(worker_starts_json codex | jq -cS 'map_values(. > 1000000000)')" = '{"alpha":false,"beta":true}'
+assert worker_claims_prune
+assert test -e "$WORK/media-starts/codex/alpha"
+assert_fails worker_starts_record codex '../alpha'
+assert test "$(WORKER_STARTS_DIR="$WORK/elsewhere" worker_starts_json codex)" = '{}'
+
 before="$(find "$WORKER_CLAIMS_DIR" -print | sort)"
 assert_fails worker_claims_record 'bad/vendor' account
 assert_fails worker_claims_record vendor 'bad/account'

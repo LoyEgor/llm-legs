@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # hammerspoon/presence.lua over stubbed hs.* and a fixture SPEED_DOCTOR_DIR: line shape, alignment, nil app,
-# no window API, 35-day pruning, write failures, tick cost.
+# no window API, no pruning of its own, write failures, tick cost.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

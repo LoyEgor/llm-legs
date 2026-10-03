@@ -56,6 +56,10 @@ expect_rc 2 'what is heard?' "$M/tone.wav" -o relative.md
 expect_rc 2 'what is heard?' "$M/tone.wav" -o "$WORK/no-such-dir/a.md"
 expect_rc 2 'what is heard?' "$M/tone.wav" --model ultra
 expect_rc 2 'what is heard?' "$M/tone.wav" --account 'bad name'
+expect_rc 2 "what is heard?" "$M/tone.wav" --account ""
+assert grep -q -- "--account needs a profile name" "$WORK/err"
+assert test ! -s "$FAKE_GEMINIB_CALLS"
+assert test ! -s "$PICK_CALLS"
 expect_rc 2 'what is heard?' "$M/notes.txt"
 assert grep -q 'no picture or sound' "$WORK/err"
 expect_rc 2 'what is heard?' "$M/tone.wav" --account unknown
@@ -70,6 +74,7 @@ answer="$WORK/out/answer.md"
 assert listen 'what happens?' "$M/clip.mp4" "$M/tone.wav" "$M/still.png" "$M/cover.mp3" -o "$answer"
 assert grep -qx -- '--account gemini --role image' "$PICK_CALLS"
 assert test -e "$WORKER_CLAIMS_DIR/gemini/picked"
+assert test -e "$WORK/media-starts/gemini/picked"
 assert grep -qx 'ARG=gemini-3.1-pro-high' "$FAKE_GEMINIB_CALLS"
 assert grep -qx 'ARG=stream-json' "$FAKE_GEMINIB_CALLS"
 assert grep -q "^PWD=$TMPDIR/gemini-listen\." "$FAKE_GEMINIB_CALLS"

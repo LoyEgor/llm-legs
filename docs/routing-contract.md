@@ -64,6 +64,9 @@ only pace math anywhere — one formula in one shared home, never a per-surface 
    carrying a run this data has not seen, so it ranks behind every unclaimed candidate (see
    Claims).
    **Late auth** is the grok-only softening below. Then the largest budget, then the name.
+   `--role image` alone prepends the media rotation, `[fresh claim, last start]`: the least
+   recently started account first, a never-started one before any, so the vector above only
+   breaks ties (shared-invariants row `dh`).
    An account with no budget is not a candidate (rule 1), so a vendor with no usage numbers
    answers exit 3 / no quota data. Fable exhaustion alone never disqualifies an account from
    ordinary work.
@@ -164,7 +167,7 @@ wall — a claimed account is still the answer when nothing else is selectable.
 is the entire state. A claim nobody renews simply ages out; nothing releases it explicitly.
 
 `--claim` is valid only with `--account`, and only a caller that is about to launch passes it.
-`worker-run` and `light-research` are those callers. The image launchers (`codex-image`, `gemini-image`, `grok-image`) pick
+`worker-run` and `light-research` are those callers. The image launchers (`codex-image`, `gemini-image --route cli`, `grok-image`) pick
 without `--claim`, validate the profile they would launch, then call `worker_claims_record` themselves
 so a missing account directory does not burn the TTL. The human table
 **never** claims: it reports a decision, it does not take one. A query that cannot read the claims

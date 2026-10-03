@@ -285,6 +285,7 @@ The claude-setup agent definitions call these bare, so each needs its PATH link
 - `bin/grok-image` → `~/.local/bin/grok-image` — image generation and editing on Grok.
 - `bin/grok-video` → `~/.local/bin/grok-video` — video clips on Grok Imagine.
 - `bin/image-fanout` → `~/.local/bin/image-fanout` — one request across every vendor and account.
+- `bin/image-cutout` → `~/.local/bin/image-cutout` — exact-pixel background removal with macOS Vision (no generation).
 - `bin/gemini-video` → `~/.local/bin/gemini-video` — Veo/Omni clips through Google Flow.
 - `bin/video-chain` → `~/.local/bin/video-chain` — frame extraction for chaining clips.
 - `bin/gemini-music` → `~/.local/bin/gemini-music` — music through the Gemini app's Lyria tool.

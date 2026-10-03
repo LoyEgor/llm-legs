@@ -674,8 +674,6 @@ def c1_typed(c, out, t):
 
 
 def c1_open(c, out, t, origin, session):
-    if c["turn"]:
-        c1_close(c, out, c["prev"] or t, session)
     c["turn"] = {"s": max(t, c["end"]), "o": origin, "ty": c["typed"], "iv": {k: [] for k in C1_LAYERS},
                  "open": {}, "rq": {}, "dl": [], "calls": []}
     c["typed"] = []
@@ -691,15 +689,8 @@ def c1_add(segs, a, b):
 
 
 def c1_merge(segs, start, end):
-    out = []
-    for a, b in sorted((max(a, start), min(b, end)) for a, b in segs):
-        if b <= a:
-            continue
-        if out and a <= out[-1][1]:
-            out[-1][1] = max(out[-1][1], b)
-        else:
-            out.append([a, b])
-    return out
+    clipped = ((max(a, start), min(b, end)) for a, b in segs)
+    return merge_windows((a, b) for a, b in clipped if a < b)
 
 
 def c1_inside(segs, x):
@@ -855,7 +846,13 @@ def c1_entry(c, out, entry, t, session, boots):
             c1_typed(c, out, t)
             c1_close(c, out, t, session)
             c1_settle(c, out, t)
-    elif origin == "human" or source in ("typed", "queued"):
+        return
+    prompt = origin == "human" or source in ("typed", "queued")
+    if not prompt and origin not in ("task-notification", "peer"):
+        return
+    if turn:
+        c1_close(c, out, prev or t, session)
+    if prompt:
         if c["own"] is None:
             c["own"] = not text.lstrip().startswith(C1_MACHINE)
         if source == "queued" and c["q"]:
@@ -864,7 +861,7 @@ def c1_entry(c, out, entry, t, session, boots):
         else:
             c1_typed(c, out, t)
         c1_open(c, out, t, "h", session)
-    elif origin in ("task-notification", "peer"):
+    else:
         tids = c1_note(c, [v for _, v in C1_NOTE_IDS.findall(text)], t)
         c1_open(c, out, t, "n" if origin == "task-notification" else "p", session)
         c1_take(c, tids, 1)
@@ -1879,16 +1876,19 @@ def turn_layers(rows, by_call, queues):
         for tid, layer in row[11]:
             hook[layer] = hook.get(layer, 0.0) + by_call.get(tid, 0.0) / 1000.0
         queued = sum(max(0.0, min(b, row[3]) - max(a, row[1])) for a, b in queues.get(row[2], ()))
-        moves = [("hook", layer, secs) for layer, secs in sorted(hook.items())]
-        for layer in ("test", "media", "tool"):
-            take = min(part.get(layer, 0.0), queued)
-            moves.append(("queue", layer, take))
-            queued -= take
-        for name, layer, secs in moves:
+
+        def move(name, layer, secs):
             take = min(part.get(layer, 0.0), secs)
-            if take >= 0.05:
-                part[layer] = round(part[layer] - take, 1)
-                part[name] = round(part.get(name, 0.0) + take, 1)
+            if take < 0.05:
+                return 0.0
+            part[layer] = round(part[layer] - take, 1)
+            part[name] = round(part.get(name, 0.0) + take, 1)
+            return take
+
+        for layer, secs in sorted(hook.items()):
+            move("hook", layer, secs)
+        for layer in ("test", "media", "tool"):
+            queued -= move("queue", layer, queued)
         for layer in [k for k, v in part.items() if v < 0.05]:
             del part[layer]
 
@@ -1925,17 +1925,15 @@ def launchd_labels():
         program = os.path.expanduser(str(args[0] or "")) if args else ""
         if not program.startswith("/"):
             continue
+        if INTERPRETER.search(program):
+            script = next((os.path.expanduser(str(a)) for a in args[1:] if str(a).startswith(("/", "~/"))
+                           and not INTERPRETER.search(str(a))), None)
+            if not script:
+                continue
+            program = script
         paths = {program} | (wrapper_targets(program) if os.path.dirname(program) == libexec else set())
         out.append((str(plist.get("Label") or os.path.basename(path)[:-6]), sorted(paths)))
     return out
-
-
-def cpu_secs(text):
-    days, _, rest = text.rpartition("-")
-    secs = 0.0
-    for part in rest.split(":"):
-        secs = secs * 60 + float(part.replace(",", "."))
-    return secs + (int(days) * 86400 if days else 0)
 
 
 def ps_snapshot():
@@ -1950,7 +1948,7 @@ def ps_snapshot():
         found = PS_ROW.match(line)
         if found:
             try:
-                procs[found.group(1)] = (found.group(2), cpu_secs(found.group(3)), found.group(4), found.group(5))
+                procs[found.group(1)] = (found.group(2), etime_s(found.group(3)), found.group(4), found.group(5))
             except ValueError:
                 continue
     return procs
@@ -4353,7 +4351,7 @@ def regroup(sections):
             if part["extra_red"] and settled["state"] != "problem":
                 settled.update(state="problem", fact=part["extra_red"][0].get("say") or part["extra_red"][0]["cells"][0])
             part.update(state=settled["state"], fact=settled["fact"])
-        moved = section(name, rows, part["columns"], part["right"], lead=lead, ok=ok)
+        moved = section(name, rows, part["columns"], part["right"], lead=lead, ok=ok, blind=part.get("blind", ""))
         red = [i for i in lead if i.get("red")]
         if red:
             moved["extra_red"] = red
@@ -4477,7 +4475,7 @@ class MenuLines:
         """One `Area: state · fact` line per section, opening it; problems no section names get lines of their own."""
         counted = {}
         for problem in problems:
-            if problem["state"] in ("new", "open", "regressed"):
+            if problem["state"] in LOUD_STATES:
                 counted.setdefault(group_of(problem), []).append(problem)
         for part in sections:
             count = len(counted.pop(part["name"], ()))
@@ -4840,10 +4838,11 @@ def held_of(hold):
 
 
 def etime_s(text):
+    """ps's [dd-]hh:mm:ss clock, for both etime and the fractional, maybe comma-decimal, cpu time."""
     days, _, clock = text.rpartition("-")
-    total = 0
+    total = 0.0
     for part in clock.split(":"):
-        total = total * 60 + int(part)
+        total = total * 60 + float(part.replace(",", "."))
     return int(days or 0) * 86400 + total
 
 
@@ -5103,7 +5102,6 @@ def collect(write, now):
     for v in holds:
         v["group"] = HOLDS_GROUP
     problems = problems_from(sections, judging, state, now, [self_verdict] + fault_verdicts + holds)
-    problem_count = sum(1 for p in problems if p["state"] in ("new", "open", "regressed"))
     changed = write and settle_fixes(judging)
     for problem in problems:
         entry = problem["state"] == "regressed" and ledger_row_by_id(judging, problem["ledger"])
@@ -5112,8 +5110,6 @@ def collect(write, now):
             changed = True
     if changed:
         write_fix_fields(judging)
-    blind_areas = [s["name"] for s in sections if s["state"] == "blind"]
-    status = "problems" if problem_count else "blind" if blind_areas else "ok"
     extras = [line("changes, 7 d", menu=change_table(recent[:CHANGE_ROWS], impact) if recent else None),
               line("not measured" if blind else "not measured: nothing",
                    menu=section("", [row([b["what"]], dim=True) for b in blind], ["blind spot"], [False])),
@@ -5126,14 +5122,11 @@ def collect(write, now):
     phase("judge")
     document = {
         "contract": CONTRACT, "doctor": "harness", "as_of": iso_time(now), "as_of_s": int(now),
-        "judge": judge_digest(ledger_raw), "status": status, "problem_count": problem_count,
+        "judge": judge_digest(ledger_raw),
         "problems": problems, "blind_spots": blind, "self": {"collector_s": round(elapsed, 2), "error": None},
         "timing": {"cpu_s": round(cpu_s() - cpu_start, 2), "sleep_s": phase.secs.get("sleep", 0),
                    "phases": phase.secs},
         "collector_s": round(elapsed, 2), "red": red, "local_slow": slow_periods,
-        "title": "Harness doctor: " + ("%d problem%s" % (problem_count, "" if problem_count == 1 else "s")
-                                       if problem_count else "blind · " + ", ".join(blind_areas) if blind_areas
-                                       else "OK"),
         "sections": sections, "periods": periods, "extras": extras,
         "footer": "as of %s" % time.strftime("%H:%M", time.localtime(now)),
     }
@@ -5194,6 +5187,7 @@ def exec_speed():
     sys.stdout.flush()
     sys.stderr.flush()
     os.environ["DOCTOR_TRIGGER"] = "harness"
+    os.environ[collector_runs.CPU_BASE_ENV] = repr(collector_runs.cpu_total())
     try:
         os.execv("/usr/sbin/taskpolicy", ["taskpolicy", "-b", script, "--quiet"])
     except OSError:

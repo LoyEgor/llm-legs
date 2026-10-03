@@ -177,11 +177,15 @@ elif [ "$subagent" = image-gen ]; then
     # A pin — an `ACCOUNT:` line or `--account` on the launch line — is the account for sure. Without
     # one the row predicts the router's `--role image` answer, as the research row does: the script
     # asks the same router a second later, so the two differ only under a race, and a row that
-    # says `?` tells Egor nothing (2026-09-11). Music and sfx never ask it: they rotate gemini-web's
-    # own signed-in profiles, so the router's name would be a wrong one.
+    # says `?` tells Egor nothing (2026-09-11). Music, sfx and a gemini image off `ROUTE: cli` (Flow is
+    # gemini-image's default) never ask it: they rotate gemini-web's own signed-in profiles, so the
+    # router's name would be a wrong one.
     acct=$(brief_line ACCOUNT)
     [ -n "$acct" ] || acct=$(flag_account)
-    case "$audio" in music | sfx) ;; *) [ -n "$acct" ] || acct=$(route_account "$vendor" --role image) ;; esac
+    case "$vendor:${audio:-image}:$(brief_line ROUTE)" in
+      gemini:music:* | gemini:sfx:* | gemini:image:flow | gemini:image:) ;;
+      *) [ -n "$acct" ] || acct=$(route_account "$vendor" --role image) ;;
+    esac
     [ -n "$acct" ] || acct=pool
     media=$(worker_media_tag "$vendor" "${audio:-image}")
   fi

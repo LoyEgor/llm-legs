@@ -142,9 +142,9 @@ start_ok claudeb
 assert await_done
 assert test "$(cat "$RUN_DIR/launcher")" = chat-abc
 assert test "$(cat "$STUB_DIR/launcher_env")" = chat-abc
-# The task row's state file ends where the run ended, rounds counted by the waits.
+# The task row's state file ends where the run ended.
 assert jq -e '.phase == "done" and .exit_code == 0 and .session == "chat-abc" and .account == "recordacct"
-  and .model == "opus" and .effort == "high" and .round >= 1 and (.started_epoch | type) == "number"' \
+  and .model == "opus" and .effort == "high" and (.started_epoch | type) == "number"' \
   "$RUN_DIR/state.json" >/dev/null
 assert test "$(cat "$RUN_DIR/worker-session")" = claude-session
 printf 'walled-session\n' >>"$RUN_DIR/worker-session"
@@ -163,7 +163,7 @@ printf 'seed · opus · high\nstart=%s\nedit=1\n' "$(date +%s)" >"$TR_TAGS/agent
 printf 'other · opus · high\nstart=%s\n' "$(($(date +%s) - 600))" >"$TR_TAGS/agent-stale"
 CLAUDE_LAUNCHER_SESSION=chat-main start_ok claudeb
 assert test "$(cat "$RUN_DIR/launcher")" = chat-main
-assert jq -e --arg run "$RUN_ID" '.phase == "start" and .round == 0 and .agent_task_id == "agent-x" and .session == "chat-main"' \
+assert jq -e --arg run "$RUN_ID" '.phase == "start" and .agent_task_id == "agent-x" and .session == "chat-main"' \
   "$RUN_DIR/state.json" >/dev/null
 assert test "$(head -n1 "$TR_TAGS/agent-x")" = "recordacct · opus · high"
 assert test "$(grep -c '^start=' "$TR_TAGS/agent-x")" = 0
@@ -171,9 +171,9 @@ assert grep -qx "run=$RUN_ID" "$TR_TAGS/agent-x"
 assert grep -qx 'edit=1' "$TR_TAGS/agent-x"
 assert grep -q '^start=' "$TR_TAGS/agent-stale"
 "$RUNNER" wait "$RUN_ID" --max 0 >/dev/null
-assert jq -e '.phase == "wait" and .round == 1 and .agent_task_id == "agent-x"' "$RUN_DIR/state.json" >/dev/null
+assert jq -e '.phase == "wait" and (has("round") | not) and .agent_task_id == "agent-x"' "$RUN_DIR/state.json" >/dev/null
 assert await_done
-assert jq -e '.phase == "done" and .exit_code == 0 and .round >= 2' "$RUN_DIR/state.json" >/dev/null
+assert jq -e '.phase == "done" and .exit_code == 0 and (has("round") | not)' "$RUN_DIR/state.json" >/dev/null
 unset STUB_SLEEP
 # Two launches of one chat claiming at once take two rows, never the newest one twice; the sed shim
 # widens the read-then-swap window so the race is not left to timing.

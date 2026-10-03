@@ -12,8 +12,10 @@ resolve_root() {
 }
 
 usage() {
-  printf 'usage: codex-image --dest <absolute path> --prompt <description> [--aspect <W:H> | --size <WxH>] [--ref <absolute image path>]... [--transparent] [--resume <session id>] [--account <profile>] [--route cli|web] [--region <x,y,w,h>]\n' >&2
+  printf 'usage: codex-image --dest <absolute path> --prompt <description> [--aspect <W:H> | --size <WxH>] [--ref <absolute image path>]... [--transparent] [--resume <session id>] [--account <profile>] [--route cli|web] [--region <x,y,w,h>] [--composite[=auto|x,y,w,h] | --no-composite]\n' >&2
   printf '       codex-image --route web --resume <chat id> --aspect <W:H> --dest <absolute path>   (re-aspect the chat'"'"'s last image)\n' >&2
+  printf '       codex-image --route web (--resume <chat id> | --ref <image>) --point <x,y=text>... --dest <absolute path>   (point edits)\n' >&2
+  printf '       codex-image --route web (--resume <chat id> | --ref <image>) --remove-bg --dest <absolute .png path>   (Remove BG)\n' >&2
   printf '       references: at most %s; transparency mode: %s\n' "$ref_max" "$transparent_mode" >&2
   exit 2
 }
@@ -77,15 +79,11 @@ PY
 
 # `%A` alone reports the channel, not its contents: a PNG carrying a fully opaque alpha channel
 # answers `Blend` and would be delivered as a transparent asset that is nothing of the kind.
-has_usable_alpha() { # path
-  local flag minima
-  flag=$(magick identify -format '%A' "$1" 2>/dev/null) || return 1
-  case "$flag" in Undefined|undefined|False|false) return 1 ;; esac
-  minima=$(magick "$1" -alpha extract -format '%[fx:minima]' info: 2>/dev/null) || return 1
-  awk -v value="$minima" 'BEGIN { exit !(value + 0 < 0.99) }'
-}
-
 deliver_generated() {
+  if [ "$remove_bg" = true ] && ! has_usable_alpha "$generated"; then
+    printf 'codex-image: Remove BG returned no transparency; nothing delivered\n' >&2
+    exit 1
+  fi
   if [ "$remove_green" = true ]; then
     if [ "$transparent_native" = true ] && has_usable_alpha "$generated"; then
       if [ "$(actual_format "$generated")" = png ]; then
@@ -104,6 +102,7 @@ deliver_generated() {
   else
     cp "$generated" "$dest"
   fi
+  IMAGE_LEG_COMPOSITE_LINES=$(image_leg_composite_take "$root" "$dest")
 
   sips_output=$(sips -g pixelWidth -g pixelHeight -g format "$dest")
   width=$(awk '/pixelWidth:/ {print $2; exit}' <<<"$sips_output")
@@ -117,18 +116,21 @@ deliver_generated() {
     "$dest" "$width" "$height" "$format" "$account" "${session:-none}"
 }
 
+lineage() {
+  local lineage_region=$region
+  [ -n "$lineage_region" ] || [ "${IMAGE_LEG_COMPOSITE_ASK:-auto}" = auto ] || lineage_region=$IMAGE_LEG_COMPOSITE_ASK
+  image_leg_lineage codex "$route" "$dest" "${session:-none}" "$prompt" "$lineage_region" \
+    "$(printf '%s\n' ${points[@]+"${points[@]}"})" ${edit_input:+"$edit_input"} ${refs[@]+"${refs[@]}"}
+}
+
 # Delivered as generated: a ratio off by more than 2% is reported, never cropped or resized.
 aspect_check() {
-  local want=$aspect fit
+  local want=$aspect
   [ -n "$want" ] || [ -z "$size" ] ||
     want=$(awk -v w="${size%x*}" -v h="${size#*x}" 'BEGIN { a = w; b = h; while (b) { t = a % b; a = b; b = t }; print w / a ":" h / a }')
   [ -n "$want" ] || return 0
-  fit=$(awk -v w="$width" -v h="$height" -v want="$want" 'BEGIN {
-    split(want, r, ":"); got = w / h; asked = r[1] / r[2]; d = got / asked - 1; if (d < 0) d = -d
-    printf "%.3f %s", got, (d <= 0.02 ? "ok" : "miss") }')
-  printf 'aspect=%s achieved=%s fit=%s\n' "$want" "${fit% *}" "${fit#* }"
-  [ "${fit#* }" = ok ] ||
-    printf 'codex-image: asked for %s, delivered %sx%s (%s); kept as generated\n' "$want" "$width" "$height" "${fit% *}" >&2
+  image_leg_aspect_fit "$want" "$width" "$height" ||
+    printf 'codex-image: asked for %s, delivered %sx%s (%s); kept as generated\n' "$want" "$width" "$height" "$IMAGE_LEG_ACHIEVED" >&2
 }
 
 # The one place --aspect, --size and --transparent become prompt text: both routes send these words.
@@ -153,6 +155,7 @@ command -v jq >/dev/null 2>&1 || {
 }
 root=$(resolve_root)
 . "$root/share/image-leg.sh"
+. "$root/share/account-arg.sh"
 image_leg_start codex-image image text_model
 . "$root/share/image-caps.sh" ||
   { printf 'codex-image: share/image-caps.sh is missing; refusing to run unchecked\n' >&2; exit 4; }
@@ -179,6 +182,8 @@ prompt=''
 size=''
 aspect=''
 region=''
+points=()
+remove_bg=false
 account=''
 resume_id=''
 route=cli
@@ -219,6 +224,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     --account)
       [ "$#" -ge 2 ] || usage
+      account_arg "$2"
       account=$2
       shift 2
       ;;
@@ -237,6 +243,19 @@ while [ "$#" -gt 0 ]; do
       region=$2
       shift 2
       ;;
+    --point)
+      [ "$#" -ge 2 ] || usage
+      points+=("$2")
+      shift 2
+      ;;
+    --remove-bg)
+      remove_bg=true
+      shift
+      ;;
+    --composite | --composite=* | --no-composite)
+      image_leg_composite_arg "$1" || usage
+      shift
+      ;;
     *) usage ;;
   esac
 done
@@ -244,14 +263,19 @@ done
 case "$route" in cli|web) IMAGE_LEG_ROUTE=$route ;; *) usage ;; esac
 reaspect=false
 if [ -z "$prompt" ] && [ -n "$resume_id" ] && [ -n "$aspect" ] && [ -z "$size$region" ] &&
-  [ "$remove_green" = false ] && [ "${#refs[@]}" -eq 0 ]; then
+  [ "$remove_green" = false ] && [ "${#refs[@]}" -eq 0 ] && [ "${#points[@]}" -eq 0 ] && [ "$remove_bg" = false ]; then
   reaspect=true
   if [ "$route" = cli ]; then
     printf 'codex-image: re-aspecting an existing image is web-only (the ChatGPT viewer'"'"'s Resize); pass --route web, or a --prompt to generate anew\n' >&2
     exit 2
   fi
+  if [ -n "${IMAGE_LEG_COMPOSITE_ASK:-}" ]; then
+    printf 'codex-image: a re-aspect changes the canvas, so nothing composites onto the input: no --composite\n' >&2
+    exit 2
+  fi
 fi
-[ -n "$dest" ] && { [ -n "$prompt" ] || [ "$reaspect" = true ]; } || usage
+[ -n "$dest" ] && { [ -n "$prompt" ] || [ "$reaspect" = true ] || [ "${#points[@]}" -gt 0 ] || [ "$remove_bg" = true ]; } ||
+  usage
 if [ -n "$aspect" ] && ! [[ "$aspect" =~ ^[0-9]+(\.[0-9]+)?:[0-9]+(\.[0-9]+)?$ && "$aspect" =~ [1-9].*:.*[1-9] ]]; then
   usage
 fi
@@ -261,16 +285,54 @@ if [ -n "$aspect" ] && [ -n "$size" ]; then
 fi
 if [ -n "$region" ]; then
   if [ "$route" = cli ]; then
-    printf 'codex-image: --region is web-only (ChatGPT'"'"'s Markup); the CLI image_gen takes no mask or region, and prose is no region\n' >&2
+    printf 'codex-image: --region is web-only (ChatGPT'"'"'s Markup): pass --route web; the CLI image_gen takes no mask or region, and prose is no region\n' >&2
     exit 2
   fi
-  python3 -c 'import sys; v = [float(n) for n in sys.argv[1].split(",")]; x, y, w, h = v; sys.exit(not (len(v) == 4 and x >= 0 and y >= 0 and w > 0 and h > 0 and x + w <= 1 and y + h <= 1))' \
-    "$region" 2>/dev/null || {
+  image_leg_region_ok "$region" || {
     printf 'codex-image: --region takes x,y,w,h as fractions of the image (0..1, inside it), not %s\n' "$region" >&2
     exit 2
   }
   if ! { [ -n "$resume_id" ] && [ "${#refs[@]}" -eq 0 ]; } && [ "${#refs[@]}" -ne 1 ]; then
     printf 'codex-image: --region edits one image: the chat'"'"'s last one (--resume <chat id>) or a single --ref\n' >&2
+    exit 2
+  fi
+fi
+if [ "${#points[@]}" -gt 0 ]; then
+  if [ "$route" = cli ]; then
+    printf 'codex-image: --point is web-only (ChatGPT'"'"'s Comment pins): pass --route web; the CLI image_gen takes no pinned comments\n' >&2
+    exit 2
+  fi
+  for point in "${points[@]}"; do
+    python3 -c 'import sys; s, _, t = sys.argv[1].partition("="); x, y = (float(n) for n in s.split(",")); sys.exit(not (0 <= x <= 1 and 0 <= y <= 1 and t.strip()))' \
+      "$point" 2>/dev/null || {
+      printf 'codex-image: --point takes x,y=<text> with x,y fractions of the image (0..1), not %s\n' "$point" >&2
+      exit 2
+    }
+  done
+  if [ -n "$prompt$aspect$size$region" ] || [ "$remove_green" = true ]; then
+    printf 'codex-image: --point sends its pins alone (the Comment Send drops any other text): no --prompt, --aspect, --size, --transparent or --region; put a note into a pin\n' >&2
+    exit 2
+  fi
+  if ! { [ -n "$resume_id" ] && [ "${#refs[@]}" -eq 0 ]; } && [ "${#refs[@]}" -ne 1 ]; then
+    printf 'codex-image: --point edits one image: the chat'"'"'s last one (--resume <chat id>) or a single --ref\n' >&2
+    exit 2
+  fi
+fi
+if [ "$remove_bg" = true ]; then
+  if [ "$route" = cli ]; then
+    printf 'codex-image: --remove-bg is web-only (ChatGPT'"'"'s Remove BG): pass --route web; on the CLI ask for --transparent with a --prompt\n' >&2
+    exit 2
+  fi
+  if [ -n "$prompt" ]; then
+    printf 'codex-image: --remove-bg takes no --prompt: the viewer sends its own fixed instruction and drops a typed one\n' >&2
+    exit 2
+  fi
+  if [ -n "$aspect$size$region" ] || [ "$remove_green" = true ] || [ "${#points[@]}" -gt 0 ]; then
+    printf 'codex-image: --remove-bg runs alone: no --aspect, --size, --transparent, --region or --point\n' >&2
+    exit 2
+  fi
+  if ! { [ -n "$resume_id" ] && [ "${#refs[@]}" -eq 0 ]; } && [ "${#refs[@]}" -ne 1 ]; then
+    printf 'codex-image: --remove-bg edits one image: the chat'"'"'s last one (--resume <chat id>) or a single --ref\n' >&2
     exit 2
   fi
 fi
@@ -284,6 +346,10 @@ if [ "$remove_green" = true ] && [ "$extension" != png ]; then
   printf 'codex-image: --transparent requires a .png destination\n' >&2
   exit 2
 fi
+if [ "$remove_bg" = true ] && [ "$extension" != png ]; then
+  printf 'codex-image: --remove-bg requires a .png destination\n' >&2
+  exit 2
+fi
 # Unconditional because the answer's own extension is what decides the conversion and no check here
 # can know it yet: a `.jpg` destination answered with a `.png` needs `magick` too. A generation is
 # billed the moment it is sent, so the missing tool costs a whole image if it is found afterwards.
@@ -291,7 +357,7 @@ command -v magick >/dev/null 2>&1 || {
   printf 'codex-image: magick is required for this output\n' >&2
   exit 1
 }
-if [ -n "$size" ] && ! [[ "$size" =~ ^[0-9]+x[0-9]+$ ]]; then
+if [ -n "$size" ] && ! [[ "$size" =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]]; then
   usage
 fi
 ref_count=${#refs[@]}
@@ -314,6 +380,13 @@ if [ -n "$resume_id" ] &&
   printf 'codex-image: --resume takes the session UUID printed as session=, not %s\n' "$resume_id" >&2
   exit 2
 fi
+IMAGE_LEG_COMPOSITE_ARGS=()
+[ -z "$region" ] || IMAGE_LEG_COMPOSITE_ARGS=(--mask "$region")
+[ "${#points[@]}" -eq 0 ] || for point in "${points[@]}"; do IMAGE_LEG_COMPOSITE_ARGS+=(--point "$point"); done
+repaint=false
+[ "$remove_bg" = false ] && [ "$remove_green" = false ] || repaint=true
+image_leg_composite_plan codex "$resume_id" "$repaint" ${refs[@]+"${refs[@]}"}
+edit_input=$IMAGE_LEG_COMPOSITE_INPUT
 
 base_home=$HOME
 profiles_dir="${CODEX_PROFILES_DIR:-$base_home/.codex-profiles}"
@@ -339,6 +412,11 @@ if [ "$route" = web ]; then
   [ -z "$sentences" ] || web_prompt+=$'\n\n'"$sentences"
   if [ "$reaspect" = true ]; then
     web_args=(resize --aspect "$aspect" --dest "$tmp_dir/web-image")
+  elif [ "$remove_bg" = true ]; then
+    web_args=(remove-bg --dest "$tmp_dir/web-image")
+  elif [ "${#points[@]}" -gt 0 ]; then
+    web_args=(comment --dest "$tmp_dir/web-image")
+    for point in "${points[@]}"; do web_args+=(--point "$point"); done
   else
     web_args=(generate --prompt "$web_prompt" --dest "$tmp_dir/web-image")
   fi
@@ -367,6 +445,7 @@ if [ "$route" = web ]; then
   image_caps_model_check "$root" codex image "$(c2pa_model "$generated")"
   printf 'route=web\n'
   aspect_check
+  lineage
   exit 0
 fi
 # Image generation is a worker launch like any other — it runs `codex` headless with CODEX_HOME
@@ -457,6 +536,9 @@ fi
 if [ "$picked" = true ] && ! worker_claims_record codex "$account"; then
   printf 'codex-image: could not record the claim on %s\n' "$account" >&2
 fi
+if [ -z "$resume_id" ] && ! worker_starts_record codex "$account"; then
+  printf 'codex-image: could not stamp the start on %s\n' "$account" >&2
+fi
 
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/codex-image.XXXXXX")
 lock_dir="${TMPDIR:-/tmp}/codex-image.$account.lock"
@@ -475,10 +557,11 @@ instruction_file="$tmp_dir/instruction"
 stdout_file="$tmp_dir/stdout"
 cli_stdout="$tmp_dir/codex.stdout"
 cli_stderr="$tmp_dir/codex.stderr"
-requested_file="$tmp_dir/generated.${dest##*.}"
 
+# Naming the imagegen skill cost a turn reading its SKILL.md, and asking for a copy another turn
+# after the image (10-18 s each, 2026-10-02): the image is taken from generated_images/<thread> below.
 {
-  printf 'Use your built-in image_gen tool (imagegen skill). Generate one image with this content:\n%s\n\n' "$content"
+  printf 'Call your built-in image_gen tool directly; do not read the imagegen skill or any SKILL.md first. Generate one image with this content:\n%s\n\n' "$content"
   # The fallback key in these sentences has to be ORDERED: asked for alpha and unable to deliver it,
   # the tool answers with an opaque background of its own choosing, and keying that costs the subject.
   request_sentences
@@ -492,7 +575,7 @@ requested_file="$tmp_dir/generated.${dest##*.}"
   elif [ -n "$resume_id" ]; then
     printf 'Edit the image generated earlier in this thread: set num_last_images_to_include to 1 and pass no referenced_image_paths.\n'
   fi
-  printf 'Copy the final image to %s and reply with the absolute path of the file you actually saved on the last line.\n' "$requested_file"
+  printf 'Leave the image where image_gen saved it: do not copy, move or convert it. Once image_gen has returned, reply with just: done\n'
 } >"$instruction_file"
 
 # Rescue has no per-invocation filename key, so one account generates at a time.
@@ -586,13 +669,10 @@ newest_since_launch() { # directory
   printf '%s' "$newest"
 }
 
-generated=$(tail -n 1 "$stdout_file" 2>/dev/null | tr -d '\r')
-if [[ "$generated" != /* ]] || [ ! -f "$generated" ] || [ "$generated" -ot "$launch_marker" ]; then
-  generated=''
-fi
+generated=''
 # The built-in tool keys its output directory on the thread, so the harvested session narrows the
 # search to this run's own images before the whole store is swept.
-if [ -z "$generated" ] && [ -n "$session" ] && [ -d "$generated_images_dir/$session" ]; then
+if [ -n "$session" ] && [ -d "$generated_images_dir/$session" ]; then
   generated=$(newest_since_launch "$generated_images_dir/$session")
 fi
 if [ -z "$generated" ] && [ -d "$generated_images_dir" ]; then
@@ -615,3 +695,4 @@ deliver_generated
 image_caps_model_check "$root" codex image "$(c2pa_model "$generated")"
 image_caps_check "$root" codex "$codex_cmd"
 aspect_check
+lineage

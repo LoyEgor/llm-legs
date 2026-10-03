@@ -26,6 +26,7 @@ resolve_root() {
 
 root=$(resolve_root)
 . "$root/share/image-leg.sh"
+. "$root/share/account-arg.sh"
 image_leg_start gemini-listen listen observed_model
 . "$root/share/image-caps.sh"
 limit_bytes=$(image_caps_get "$root" gemini '.listen.view_max_bytes')
@@ -41,7 +42,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     -o | --out) [ "$#" -ge 2 ] || usage; out=$2; shift 2 ;;
     --model) [ "$#" -ge 2 ] || usage; model_key=$2; shift 2 ;;
-    --account) [ "$#" -ge 2 ] || usage; account=$2; shift 2 ;;
+    --account) [ "$#" -ge 2 ] || usage; account_arg "$2"; account=$2; shift 2 ;;
     -h | --help) image_leg_help usage ;;
     -*) usage ;;
     *)
@@ -184,6 +185,8 @@ worker_pool_refuse_headless gemini "$account" "$(worker_model_pin_csv < <(worker
 if [ "$picked" = true ] && ! worker_claims_record gemini "$account"; then
   printf 'gemini-listen: could not record the claim on %s\n' "$account" >&2
 fi
+worker_starts_record gemini "$account" ||
+  printf 'gemini-listen: could not stamp the start on %s\n' "$account" >&2
 
 prefix=$("$root/bin/geminib" families 2>/dev/null |
   awk -F'\t' -v kind="$family_kind" '$1 ~ ("-" kind "$") && !done { print $3; done = 1 }')

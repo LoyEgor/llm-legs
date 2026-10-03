@@ -37,3 +37,36 @@ image_caps_model_check() { # root vendor kind observed -> "model=<observed> mode
     printf 'model=%s model_caps=stale verified=%s\n' "$observed" "${expected:-none}"
   fi
 }
+
+image_caps_nearest_aspect() { # want list-csv -> the listed W:H closest to want (auto only if listed)
+  local want=$1 list=$2
+  awk -v want="$want" -v list="$list" '
+    function ratio(s,   a) {
+      split(s, a, ":")
+      if ((a[2]+0)==0) return 0
+      return a[1]/a[2]
+    }
+    BEGIN {
+      n = split(list, arr, ",")
+      if (want == "auto") {
+        for (i = 1; i <= n; i++) {
+          a = arr[i]
+          gsub(/^ +| +$/, "", a)
+          if (a == "auto") { print "auto"; exit }
+        }
+        print ""
+        exit
+      }
+      want_r = ratio(want)
+      best = ""; bestd = 1e99
+      for (i = 1; i <= n; i++) {
+        a = arr[i]
+        gsub(/^ +| +$/, "", a)
+        if (a == "" || a == "auto") continue
+        d = want_r - ratio(a); if (d < 0) d = -d
+        if (d < bestd) { bestd = d; best = a }
+      }
+      print best
+    }
+  '
+}

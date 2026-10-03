@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+
+usage() {
+  printf 'usage: image-cutout --in <absolute image> --dest <absolute .png> [--keep x,y]... [--drop x,y]... [--edge soft|hard] [--holes] [--dry-run]\n' >&2
+  printf '  exact-pixel background removal with macOS Vision; points are fractions of the image (0,0 top left)\n' >&2
+  printf '  --keep picks the instances under the points (default: every instance), --drop removes them\n' >&2
+  printf '  --holes also clears interior pixels matching the removed background (logos, decals; eats photos)\n' >&2
+  printf '  --dry-run lists the instances (center, box, area) and writes nothing\n' >&2
+  exit 2
+}
+
+point='^(0(\.[0-9]+)?|1(\.0+)?|\.[0-9]+),(0(\.[0-9]+)?|1(\.0+)?|\.[0-9]+)$'
+input='' dest='' edge=soft
+args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --in) [ $# -ge 2 ] || usage; input=$2; shift 2 ;;
+    --dest) [ $# -ge 2 ] || usage; dest=$2; shift 2 ;;
+    --keep|--drop)
+      [ $# -ge 2 ] && [[ "$2" =~ $point ]] || { printf 'image-cutout: %s needs x,y fractions in 0..1, got '\''%s'\''\n' "$1" "${2-}" >&2; exit 2; }
+      args+=("$1" "$2"); shift 2 ;;
+    --edge)
+      [ $# -ge 2 ] && [[ "$2" =~ ^(soft|hard)$ ]] || usage
+      edge=$2; shift 2 ;;
+    --holes|--dry-run) args+=("$1"); shift ;;
+    -h|--help) usage ;;
+    *) printf 'image-cutout: unknown argument %s\n' "$1" >&2; usage ;;
+  esac
+done
+[[ "$input" = /* ]] || usage
+[[ "$dest" = /* && "$dest" = *.[pP][nN][gG] ]] || usage
+[ -f "$input" ] || { printf 'image-cutout: no such file %s\n' "$input" >&2; exit 2; }
+[ -d "$(dirname "$dest")" ] || { printf 'image-cutout: no directory for %s\n' "$dest" >&2; exit 2; }
+
+if [ "$(uname -s)" != Darwin ]; then
+  printf 'image-cutout: needs macOS Vision (this is %s)\n' "$(uname -s)" >&2
+  exit 1
+fi
+
+source_file="$(resolve_root)/share/image-cutout.swift"
+set -- --in "$input" --dest "$dest" --edge "$edge" ${args[@]+"${args[@]}"}
+if ! command -v swiftc >/dev/null 2>&1; then
+  exec swift "$source_file" "$@"
+fi
+hash=$(shasum -a 256 "$source_file" | cut -c1-16)
+cache="${XDG_CACHE_HOME:-$HOME/.cache}/image-cutout/$hash"
+binary="$cache/image-cutout"
+if [ ! -x "$binary" ]; then
+  mkdir -p "$cache"
+  swiftc -O -o "$binary.$$" "$source_file" >&2
+  mv -f "$binary.$$" "$binary"
+fi
+exec "$binary" "$@"

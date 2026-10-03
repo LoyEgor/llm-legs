@@ -1334,6 +1334,62 @@ assert test "$query_rc" -eq 0
 assert test "$query_out" = work
 write_config
 
+# Media rotation (shared-invariants row dh): `--role image` answers the least recently started
+# eligible account, a never-started one first, the budget only breaking ties.
+STARTS="$WORK/media-starts"
+stamp_start() { # vendor account YYYYMMDDhhmm
+  mkdir -p "$STARTS/$1" && touch -t "$3" "$STARTS/$1/$2"
+}
+clear_starts() { rm -rf "$STARTS"; }
+clear_claims; clear_walls; clear_starts
+GEMINI_TRIO='.vendors.gemini = {available:true,accounts:[
+  {account:"main",group:"Gemini Models",enabled:true,five_hour:{used_pct:10},weekly:{used_pct:10}},
+  {account:"work",group:"Gemini Models",enabled:true,five_hour:{used_pct:40},weekly:{used_pct:40}},
+  {account:"spare",group:"Gemini Models",enabled:true,five_hour:{used_pct:60},weekly:{used_pct:60}}]}'
+run_filter gemini_fresh "$GEMINI_TRIO"
+query --account gemini --role image
+assert test "$query_out" = main
+stamp_start gemini main 202609300000
+stamp_start gemini work 202609200000
+query --account gemini --role image
+assert test "$query_out" = spare
+stamp_start gemini spare 202610010000
+query --account gemini --role image
+assert test "$query_out" = work
+query --account gemini
+assert test "$query_out" = main
+printf '2000003600\n' >"$WALLS/gemini-work"
+query --account gemini --role image
+assert test "$query_out" = main
+clear_walls
+run_filter gemini_fresh '.vendors.gemini = {available:true,accounts:[
+  {account:"main",group:"Gemini Models",enabled:true,five_hour:{used_pct:10},weekly:{used_pct:10}},
+  {account:"work",group:"Gemini Models",enabled:true,five_hour:{used_pct:100},weekly:{used_pct:100}},
+  {account:"spare",group:"Gemini Models",enabled:true,five_hour:{used_pct:60},weekly:{used_pct:60}}]}'
+query --account gemini --role image
+assert test "$query_out" = main
+run_filter gemini_fresh "$GEMINI_TRIO"
+query --account gemini --role image --claim
+assert test "$query_out" = work
+query --account gemini --role image --claim
+assert test "$query_out" = main
+query --account gemini --role image --claim
+assert test "$query_out" = spare
+clear_claims; clear_starts
+run_filter gemini_fresh ".vendors.grok = $GROK_PAIR"
+stamp_start grok spare 202610010000
+query --account grok --role image
+assert test "$query_out" = supergrok
+query --account grok
+assert test "$query_out" = spare
+run_filter gemini_fresh '.vendors.codex = {available:true,accounts:[
+  {account:"main",enabled:true,five_hour:{used_pct:10},weekly:{used_pct:10}},
+  {account:"work",enabled:true,five_hour:{used_pct:40},weekly:{used_pct:40}}]}'
+stamp_start codex main 202610010000
+query --account codex --role image
+assert test "$query_out" = work
+clear_starts
+
 # Computer Use reads like image: workers-off is no wall, the pin no override, pause still is.
 write_config 'codex_profile=with-credit' 'codex_workers=off'
 query_case codex_credit --account codex --role computer

@@ -1,10 +1,13 @@
 # Gemini images through Antigravity CLI
 
-Verified on 2026-09-30 against **agy 1.2.13** (binary schema, help and model ids; the last live
+Verified on 2026-10-02 against **agy 1.2.15** (binary schema, help and model ids; the last live
 generation is the 2026-09-11 one below), launched by `geminib` with a Google
 subscription. The runtime contract is [gemini.json](../../share/image-caps/gemini.json);
 its `field_sources` maps each capability to evidence. This page concerns the subscription
 CLI, not the Gemini Developer API, Vertex API, or the Python SDK's configurable models.
+
+Since 2026-10-03 `gemini-image` runs [Google Flow](#images-on-google-flow-the-default-route) by default
+(`default_route` in the manifest); the agy path on this page is `--route cli`.
 
 ## Capabilities and evidence
 
@@ -122,7 +125,7 @@ available, save the first invocation's result in an existing output directory:
 ```bash
 cd /Volumes/Work/Projects/llm-legs
 mkdir -p /tmp/gemini-image-example
-bin/gemini-image --dest /tmp/gemini-image-example/first.png \
+bin/gemini-image --route cli --dest /tmp/gemini-image-example/first.png \
   --prompt 'A blue ceramic bird on a wooden table' > /tmp/gemini-image-example/first.result
 image_account=$(sed -n 's/^account=//p' /tmp/gemini-image-example/first.result)
 image_session=$(sed -n 's/^session=//p' /tmp/gemini-image-example/first.result)
@@ -132,21 +135,71 @@ if [ -n "$image_session" ] && [ "$image_session" != none ]; then
 fi
 ```
 
-No `--ref` is needed on the second call: the instruction asks the agent to reuse the last
+The second call needs no `--route`: a `--resume` continues on the route that made the session. No `--ref` is
+needed on it either: the instruction asks the agent to reuse the last
 generated image from its conversation. Context reuse is native conversation functionality;
 image continuity still depends on the agent following that instruction. An explicit ref
 on a resumed call takes precedence. The script requires the original account and an
 existing conversation DB there. `main` uses the original HOME; named accounts use
 `$GEMINIB_PROFILES_DIR/<account>`, normally `~/.gemini-profiles/<account>`.
 
-Success prints exactly seven lines: `dest`, `size`, `format`, `account`, `session`,
-`model=... model_caps=...`, `caps=...`. `QUOTA`, vendor exhaustion, or selector exit 3
+Success prints `dest`, `size`, `format`, `account`, `session`, `model=... model_caps=...`,
+`caps=...` and, last, `edit_depth=<n> root=<path>` (see [Local composite and edit
+lineage](#local-composite-and-edit-lineage)), right after the `composite=` (and `rendered=`) lines of
+an edit. `QUOTA`, vendor exhaustion, or selector exit 3
 produces `GEMINI_USAGE_LIMIT`, exit 3, and no success footer. Since agy 1.2.10 a turn that
 ends on a model error after `generate_image` saved its file exits 3 (`AGY_ERROR` on stderr); the
 saved image is still delivered with the success footer, plus a stderr note naming the exit, so a
 paid generation is never repeated. Without a saved file any other nonzero exit is
 `generation failed`, exit 1. A limit is read from stderr, the log and the stream's error fields,
 never from stream events, which echo the prompt.
+
+## Local composite and edit lineage
+
+Every vendor's edit repaints the whole picture: over three chained edits the face loses detail and
+the skin drifts warm, even where nothing was asked to change (measured 2026-10-02). So every edit of
+an existing image is composited by default, on every image wrapper and route (`gemini-image` Flow and
+agy, `codex-image` CLI and web, `grok-image`): `share/image_composite.py` pastes only the changed part
+of the delivered image back onto the input it was edited from, so everything else stays
+pixel-identical. One decision serves them all (`image_leg_composite_plan` and
+`image_leg_composite_take` in [`share/image-leg.sh`](../../share/image-leg.sh), guarded by
+`tests/test_image_composite.sh`):
+
+- An edit has exactly one input — the single `--ref`, else on `--resume` the last image this machine
+  delivered in that session — and an output of the input's aspect (±1%). Anything else prints
+  `composite=skipped reason=new-generation|several-inputs|input-unknown|aspect-changed` (a re-aspect or
+  outpaint is `aspect-changed`) and delivers the model's image.
+- `--no-composite` opts out; `--transparent` and `--remove-bg` never composite (they repaint the whole
+  background); neither prints a composite line. `--composite[=auto|x,y,w,h]` forces it (the first of
+  several `--ref`s) and picks the mask; it is refused before spending (exit 2) without an input image,
+  with `--transparent`/`--remove-bg` or with `--no-composite`. `codex-image --region`/`--point` feed the
+  mask unless `--composite` names one.
+
+- `auto` masks the difference map: the median Lab tint the model adds everywhere is subtracted,
+  the threshold adapts above the image-wide median, specks without a strong core are dropped, holes
+  closed, the mask dilated and feathered; the patch is colour-matched to the input along the mask
+  border. `x,y,w,h` (fractions, the shape of `codex-image --region`) pastes that rectangle.
+- Lines, right before `edit_depth=`: `composite=<auto|region|points> changed=<percent of pixels taken
+  from the edited image>` and `rendered=<dest stem>.rendered.<ext>`, the model's own image kept beside
+  the dest. An edit that is global (more than 60% of the picture changed) prints
+  `composite=refused reason=global changed=<percent> kind=<mask>`, one with no local change
+  `reason=no-local-change`; both deliver the model's image and keep no `rendered=` file. A failing
+  composite prints `composite=failed` and keeps the model's image, with a stderr note. Each Flow
+  `--count` take is composited, its lines after its `variant=` line.
+
+Every delivered image gets `<dest>.edit.json`:
+`{"root": <path>, "depth": <n>, "edits": [{"prompt", "region", "points", "route", "vendor", "account", "composite"}]}`,
+`composite` = `{kind: auto|region|points|refused|skipped|failed, changed, reason}`.
+The first input (the `--ref`s, the resumed conversation's last image) that has a sidecar is the
+parent: same root, depth + 1, its edits plus this one. An input without one is a root at depth 0,
+and a plain generation is its own root. The resume lookup lives next to the image-leg log
+(`<dirname of IMAGE_LEG_LOG>/sessions/<vendor>/<session>`). A composited chain keeps the untouched
+parts pixel-identical, so small edits keep chaining on the last result. Only after a refused (global)
+composite or with `--no-composite` — an `edits[].composite.kind` of `refused` or `skipped` — does the
+drift rule hold: from depth 2 on, go back to `root` and apply every `edits[].prompt` in one edit
+instead of a third chained one. The engine is [`share/image_composite.py`](../../share/image_composite.py)
+behind `image_leg_composite_take` and `image_leg_lineage` in [`share/image-leg.sh`](../../share/image-leg.sh),
+shared by every image wrapper.
 
 ## Re-verification and live-call status
 
@@ -178,6 +231,85 @@ generated on all eight pool accounts (`1264x848` for `--aspect 3:2`, refs trunca
 account is structurally unable to generate images today. Every call reported
 `caps=stale cli=1.2.1 verified=1.2.0` — the version check works; the manifest is re-verified
 against 1.2.1 below.
+
+## Images on Google Flow (the default route)
+
+`gemini-image` (`--route flow`, the default since 2026-10-03) draws with Nano Banana in Google Flow
+(flow.google.com), driven like a person in the hidden Chrome of `gemini-web`: the same profiles, account lock,
+walls (`~/.gemini-web/walls.json`), least-recently-started rotation (`generation_started_at`) and job ledger as
+the video route. `--route cli` is the agy path above. A `--resume` continues on the route that made the session:
+the session record (`sessions/gemini/<id>` beside the image-leg log: dest, then route), else an agy conversation
+of that id on `--account` (cli), else the default; a `--route` that contradicts the record exits 2. Flow and agy ids are both UUIDs, so the id's shape decides nothing. Engine: [`share/flow_image.py`](../../share/flow_image.py); wrapper half:
+[`share/flow-image.sh`](../../share/flow-image.sh); contract: `flow_image` in
+[gemini.json](../../share/image-caps/gemini.json).
+
+```bash
+bin/gemini-image --dest /abs/out.png --prompt '...' [--model pro|nb2|lite] [--count 1-4] \
+  [--aspect W:H] [--ref /abs/img.png]... [--upscale 2k] [--transparent] [--composite[=auto|x,y,w,h] | --no-composite] [--account <p>]
+bin/gemini-image --dest /abs/edit.png --prompt 'make it red' --resume <session> --account <p>
+```
+
+| Capability | Result (live 2026-10-02) |
+| --- | --- |
+| Models | `pro` = Nano Banana Pro (wire `GEM_PIX_2`), `nb2` = Nano Banana 2 (`NARWHAL`), `lite` = Nano Banana 2 Lite (`HARBOR_SEAL`); `model=` reads the wire key from the page's own generation request |
+| Price | 0 credits on every model and count (the composer quote is checked before the send; a non-zero quote stops the run, nothing spent) |
+| Aspects | 16:9, 4:3, 1:1, 3:4, 9:16; any other W:H goes as the nearest of them, named on the `aspect=` line (`aspect=3:4 achieved=… fit=… asked=2:3`); a value that is not W:H exits 2 |
+| Count | x1-x4 per send; take N lands as `<dest-stem>-N.<ext>` with a `variant=` line |
+| References | up to 10 ingredients on all three models (an 11th chip greys out); exit 2 above |
+| Delivery | 1K = the reply's signed image URL, byte-identical to Download > 1K Original size (1024x1024 at 1:1, 1376x768 at 16:9, 1200x896 at 4:3); `--upscale 2k` = the editor's Download > 2K Upscaled (1792x2400 at 3:4); 4K Upscaled needs a higher plan |
+| Resume | `--resume <session> --account <p>`: the image's editor (`/project/<p>/edit/<id>`, "What do you want to change?") takes the new prompt; aspect and model only, no count or refs; never stamps the rotation |
+| Transparency | Flow delivers no alpha: `--transparent` (PNG destination) asks for a flat #00FF00 background and keys it locally with the CLI route's [chroma key](../../share/image-chroma.sh), every take included |
+| Failed card | Flow's own "Failed — Sorry, this image failed to generate. You have not been charged" card is read from the page; the engine presses its Retry once (a `retried` ledger row) and a second failure exits 1 at once with `flow_generation_failed (not charged)`; with `--count` >1 the takes that came back are delivered and a `failed=<n>` line counts the rest |
+| Timing | render 6-21 s after the send; 18-62 s end to end (the 2K download adds ~40 s) |
+
+The new images are read from the page's own `ogiZ0b` reply (media id, workflow id, signed URL, `[W,H]`); the
+engine issues no request of its own. A fresh image's editor opens black with Download disabled until Flow
+settles it, so the engine reloads it until the prompt box shows. The project composer stays in Image mode after
+a run; the video engine's settings pick Video first (a dry run on the same account read `Video · 720p · 8s`).
+Exit codes: 2 usage, 3 walled/flagged (the account gets a wall, the next one runs), 4 signed out, 1 other.
+Guard: `tests/test_flow_image.sh`.
+
+Why Flow is the default (chain test, 2026-10-03, measured and checked by eye): over three chained small edits
+of one portrait, Flow (Nano Banana Pro) kept the face sharp (Laplacian sharpness +4…+7% vs the CLI's −8…−12%),
+drifted less (face diff from the pre-edit image 4.8–7.6 vs 12–13) and recoloured nothing it was not asked to
+(the CLI dyed the eyebrows orange on a hair-colour edit).
+
+### Image Editor tools on Flow
+
+Flow's "Image Editor" Tool (Tools > Templates; a React applet in a sandboxed `*.usercontent.goog` frame on the
+flow-sdk) runs on an account's own copy in My Tools. Opening the template saves a remix, so the engine opens
+only My Tools: an account without a copy exits 4 and gets `image_editor: false` in its meta, and the first
+success sets it to `true`. Without `--account` the run picks among accounts marked `true` (today: `com`). The
+input is the image this machine holds (`--ref`, or `--resume` of a session it delivered, on any account), so no
+`--account` is needed. These flags pick the tool; each one exits 2 on `--route cli`:
+
+```bash
+bin/gemini-image --dest /abs/out.png --ref /abs/in.jpg --region x,y,w,h --prompt 'a gold pendant' [--model pro|nb2]
+bin/gemini-image --dest /abs/out.png --ref /abs/in.jpg --point 'x,y=copper red hair'... [--model pro|nb2]
+bin/gemini-image --dest /abs/out.png --ref /abs/in.jpg --aspect 16:9|4:3|1:1|3:4|9:16 [--model pro|nb2]   # no --prompt
+bin/gemini-image --dest /abs/cut.png --ref /abs/in.jpg --remove-bg [--bg-model modnet]
+```
+
+| Tool | What the applet does, and what we drive (live 2026-10-03, account `com`) |
+| --- | --- |
+| Inpaint | brush strokes on the layer (44 px brush; `--region` is a serpentine fill, `--point` two rings round each point). The textbox "What should appear in the painted area?" takes the prompt (several `--point` texts are joined with `; `). The applet sends the canvas plus the mask (strokes on black) as refs with `Use mask to inpaint: <prompt>` to Nano Banana, and the whole image comes back re-rendered (1024x1024 at 1:1). The local composite then keeps every pixel outside the mask (`composite=region\|points`) |
+| Outpaint | the canvas is set to the asked aspect around the image at its own size, and the applet sends the canvas on black plus an uncovered-area mask. The 1K result is 1376x768 (16:9) or 768x1376 (9:16). It triggers only without `--prompt`; with a prompt the same flags stay a ref-guided generation. 3:2 is refused: the applet's 3:2 preset renders at 4:3. Nothing is composited (the canvas changed) |
+| Cutout | on-device transformers.js in the frame, 0 credits, no Nano Banana. Input capped at 768 px. The engine reads the layer's PNG data URL, because Save to gallery flattens it onto black. The wrapper lays that matte over the full-size input (opaque pixels are the input's own) and exits 1 without real alpha |
+| Refine | `Refine this image: <p>` with no mask: the same as a prompt edit (`--resume`/`--ref` + `--prompt`), so not wired |
+| Crop | local geometry; out of scope |
+| Mask Magic (separate Tool) | SAM click segmentation (`Xenova/slimsam-77-uniform`) builds a mask for the same Nano Banana mask edit (also a "move object" mode). Nothing new on the backend, so not wired |
+
+| Evidence | Result |
+| --- | --- |
+| Price | 0 credits for every tool: the balance read 819 before every one of 21 runs |
+| Models | `pro` (GEM_PIX_2) and `nb2` (NARWHAL) from the applet's "Image Model" picker; no Lite; render 38-46 s, 57-103 s end to end |
+| Inpaint `--region` (pendant, 8% box) | pro 1/1 and nb2 1/1 ok: a clean gold crescent, every pixel outside the box plus its feather identical to the input after the composite (0 differing) |
+| Inpaint `--point` (hair colour) | pro 1/1 ok: only the hair recoloured (diff mask = hair; face, background and pendant unchanged). nb2 1/2: once it pasted hair-texture discs over the forehead and eyes. The painted mask sat exactly on the points (screenshot check), so the error is the model's. Use pro |
+| Outpaint 16:9 | pro 2/2, nb2 1/1 plus an engine-level run ok: a plausible wider room, no seams |
+| Outpaint 9:16 | nb2 1/1 filled, with visible seams at the original's top and bottom edges. pro 1/3: twice it left the added top/bottom black (whole or in part). The wrapper now exits 1 on that ("left the bottom band unfilled"): the outer 16 px of an added side ≥90% black |
+| Cutout `modnet` | 8/8 runs, byte-identical across runs; ~25 s. Poor on both test images: on the portrait it ate half the hair and kept background fragments; on a flat teapot scene it melted the object. `image-cutout` was clean on both, so prefer it for people and objects alike |
+| Cutout `ben2` | Flow's BEN2 fails for anyone in this Chrome. With WebGPU (the default) onnxruntime-web reports `Invalid ShaderModule "LayerNorm"`; the wasm path asks for a `model_quantized.onnx` that BEN2-ONNX does not publish. Refused with exit 2 (`bg_models_broken` in the caps) |
+| Layout flake | the frame sometimes keeps the window's old size (a squashed canvas); every drag missed once. The engine now checks the frame width and reopens once |
 
 ## Video on Google Flow
 
@@ -215,9 +347,11 @@ the generation RPCs from outside the page fails Google's reCAPTCHA check (`PUBLI
 which is why the route clicks the UI.
 
 Operations: `geminib web <account>` once (a visible Chrome; sign in to the Google account whose geminib
-profile has that name, then Cmd+Q; it refuses a name off the gemini roster and runs `gemini-web login`, and
-`geminib p` offers it once after a first Antigravity login on a tty, default no), then `gemini-web status <account>` binds the email and reads credits
-without spending; `gemini-web accounts` lists profiles, credits and walls; `gemini-web generate … --dry-run`
+profile has that name, then Cmd+Q; it refuses a name off the gemini roster and runs `gemini-web login --wait`, and
+`geminib p` offers it once after a first Antigravity login on a tty, default no); it holds until that window is
+quit, then runs `gemini-web status <account>` itself, which binds the email and reads credits without spending,
+and prints `<account> ready` with the credits (the menu's `fv` row appears, unmeasured until a balance is
+read), or the reason and exit 4; `gemini-web accounts` lists profiles, credits and walls; `gemini-web generate … --dry-run`
 sets the composer up and prints Flow's quote without sending (with `--extend` it opens extend mode, which adds an empty "Untitled Scene" to the project); a clip that finished after a timeout is
 recovered with `gemini-web fetch <account> <media_id> --dest <abs .mp4>`. Rotation (no `--account`) keeps to
 the gemini worker pool ("In pool", read through `share/worker-pool.sh`; a pin in `worker-model` overrides it,
@@ -346,6 +480,11 @@ woke `GoogleUpdater --wake-all`, which inherited Chrome's stdio sockets, so Play
 until the updater exited, about 10 minutes later. Since then `build_clone` strips GoogleUpdater.app and the
 privileged helper from the clone (recipe `no-updater` in its Info.plist forces one rebuild of an older clone),
 and a flow Generate that starts no song is clicked once more at 90 s and fails 90 s later instead of at 600 s.
+Stripping the clone's updater did not reach the user-level one in `~/Library/Application Support/Google/
+GoogleUpdater`, and two chatgpt-web runs at once both hung the same way (2026-10-02). Since then Chrome
+starts through `<store>/logs/<account>-chrome.sh`, which points its stdio at `<account>-chrome.log`, so no
+child Chrome spawns holds Playwright's pipes; a teardown still running after 45 s prints the Python stacks
+and kills Chrome's process group and the Playwright driver, and a SIGTERM prints the stacks before dying.
 Default: the app route stays the default. It succeeds more often, it fails fast, and it spends no credits.
 Use flow when its features are needed, or with `--accounts 2+` when the time to a take matters: one Flow
 failure costs 600 s, and in this bench a fan-out never lost a take.

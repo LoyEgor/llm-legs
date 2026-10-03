@@ -62,15 +62,15 @@ doc, wall = speed("speed")
 check(doc["status"] == "ok" and doc["problem_count"] == 0 and not {"contract", "doctor", "title"} & set(doc),
       "the calibration section has nothing counted and no document keys of its own: %s" % doc["status"])
 check(wall <= 2.0, "speed-doctor reads its inputs in <= 2 s: %.2f s" % wall)
-check(doc["headline"] == 178.8 and doc["areas"] == {"chat": 103.76, "delegation": 75.01},
-      "calibration headline at R = 5 min: A 103.8 + B 75.0 = 178.8 OM/d: %s %s" % (doc["headline"], doc["areas"]))
-check(doc["r_band"] == [83.5, 237.4] and doc["presence"] is False,
-      "with no presence journal the R band is shown: R 2 min 83.5, R 10 min 237.4: %s" % doc["r_band"])
+check(doc["headline"] == 179.3 and doc["areas"] == {"chat": 103.42, "delegation": 75.91},
+      "calibration headline at R = 5 min: A 103.4 + B 75.9 = 179.3 OM/d: %s %s" % (doc["headline"], doc["areas"]))
+check(doc["r_band"] == [87.9, 237.9] and doc["presence"] is False,
+      "with no presence journal the R band is shown: R 2 min 87.9, R 10 min 237.9: %s" % doc["r_band"])
 leaves = sum(v for area in doc["partition"].values() for v in area.values())
 check(abs(leaves - doc["headline"]) < 0.1 and all(abs(sum(doc["partition"][a].values()) - v) < 0.05
                                                    for a, v in doc["areas"].items()),
       "the partition's leaves sum to their areas and to the headline: %.2f vs %.1f" % (leaves, doc["headline"]))
-check(doc["head"] == "179 min/day · R 2/10: 84/237", "the headline: %s" % doc["head"])
+check(doc["head"] == "179 min/day · R 2/10: 88/238", "the headline: %s" % doc["head"])
 backlog = [p for p in doc["problems"] if p["rule"] == "opportunity"]
 check([p["id"] for p in backlog] == ["opportunity:chat/hooks", "opportunity:chat/tests"],
       "the backlog by score holds only equivalent levers; risk levers with no quality evidence are not shown: %s"
@@ -148,9 +148,9 @@ check(module.covers({"chat.om_per_100_prompts|all|-": {"days": 6}}) == []
 
 menu, _ = speed("speed", "--menu")
 lines = menu.stdout.splitlines()
-check(lines[0] == "T\t0\t%d\tHarness doctor: OK" % HI and lines[1] == "0\t\t\tSpeed: ok · 179 min/day · R 2/10: 84/237"
-      and "1\t\t\tChat turns: 104 min/day · model 64 · tools 30 · tests 5.4" in lines
-      and "1\t\t\tDelegation: +75 min/day · workers 54 · background Bash 16 · media 2.7" in lines
+check(lines[0] == "T\t0\t%d\tHarness doctor: OK" % HI and lines[1] == "0\t\t\tSpeed: ok · 179 min/day · R 2/10: 88/238"
+      and "1\t\t\tChat turns: 103 min/day · model 64 · tools 30 · tests 5.4" in lines
+      and "1\t\t\tDelegation: +76 min/day · workers 54 · background Bash 17 · media 2.7" in lines
       and "2\td\t\t1 · chat/hooks · saves <1 min/day · S · provable-absence fast path for the hook setting the Pre-Bash floor"
       in lines and "1\td\t\tNeeds Egor: nothing" in lines,
       "the Harness menu opens on the Speed line with the area lines and the ranked backlog under it: %s" % lines[:3])
@@ -201,6 +201,13 @@ check([(p["id"], p["state"]) for p in regs] == [("regression:" + key, "new")] an
 calm = judged(12.0)
 check(not [p for p in calm["problems"] if p["rule"] == "regression"] and calm["problem_count"] == 0,
       "one day over 1.3 x the baseline is no regression")
+history = {h.local_day(LO - offset * 86400): {"values": {key: [10.0, 100]}} for offset in range(3, 17)}
+history.update({"2026-09-30": {"values": {key: [20.0, 100]}}, "2026-10-01": {"values": {key: [20.0, 100]}}})
+check([r["key"] for r in module.judge_regressions(history, "2026-10-02", lambda c: 10.0)[0]] == [key]
+      and module.judge_regressions(history, "2026-10-05", lambda c: 10.0)[0] == []
+      and module.judge_regressions(dict(history, **{"2026-10-02": history.pop("2026-10-01")}), "2026-10-03",
+                                   lambda c: 10.0)[0] == [],
+      "only the two closed days right before today, consecutive, are judged: an old or gapped pair stays quiet")
 
 harness = {"status": "problems", "as_of_s": HI, "problem_count": 3, "blind_spots": [], "periods": {}, "extras": [],
            "title": "Harness doctor: 3 problems", "footer": "as of 21:50",
@@ -263,7 +270,7 @@ latest = json.load(open(os.path.join(harness_dir, "latest.json")))
 first = latest["speed"]
 menu_txt = open(os.path.join(harness_dir, "menu.txt")).read().splitlines()
 check(out.returncode == 0 and first["headline"] == doc["headline"] and counted_once(latest)
-      and menu_txt[1] == "0\t\tr:7:9\tSpeed: 1 problem · 179 min/day · R 2/10: 84/237"
+      and menu_txt[1] == "0\t\tr:7:9\tSpeed: 1 problem · 179 min/day · R 2/10: 88/238"
       and latest["problems"][0]["state"] == "new" and latest["problem_count"] == 3
       and not os.path.exists(os.path.join(own, "latest.json")) and not os.path.exists(os.path.join(own, "menu.txt")),
       "a persisting run lays its section into Harness's latest.json and the top of its menu.txt and writes neither "
@@ -303,11 +310,16 @@ shutil.copytree(os.path.join(root, "tests", "fixtures", "code-doctor", "corpus",
                 os.path.join(repos, "alpha"))
 os.makedirs(base["STATUSLINE_CACHE_DIR"])
 with open(os.path.join(base["STATUSLINE_CACHE_DIR"], "test-history.jsonl"), "w") as handle:
-    for secs in (300, 310, 290):
-        handle.write(json.dumps({"end": HI - 3600, "secs": secs, "who": "chat", "repo": "alpha",
+    for ago, secs in enumerate((300, 310, 290)):
+        end = HI - 3600 - ago * 86400
+        handle.write(json.dumps({"end": end, "secs": secs, "who": "chat", "repo": "alpha",
                                  "label": "test_isolation"}) + "\n")
-        handle.write(json.dumps({"end": HI - 3600, "secs": 200, "who": "chat", "repo": "alpha", "label": "test_slow"}) + "\n")
-        handle.write(json.dumps({"end": HI - 3600, "secs": 30, "who": "chat", "repo": "alpha", "label": "test_old_sync"}) + "\n")
+        handle.write(json.dumps({"end": end, "secs": 200, "who": "chat", "repo": "alpha", "label": "test_slow"}) + "\n")
+        handle.write(json.dumps({"end": end, "secs": 30, "who": "chat", "repo": "alpha", "label": "test_old_sync"}) + "\n")
+    for _ in range(2):
+        handle.write(json.dumps({"end": HI - 3600, "secs": 400, "who": "chat", "repo": "alpha", "label": "test_once"}) + "\n")
+with open(os.path.join(repos, "alpha", "tests", "test_once.sh"), "w") as handle:
+    handle.write("#!/bin/bash\n")
 hooks_repo = os.path.join(work, "hooks-repo")
 os.makedirs(hooks_repo)
 git = lambda *a, **env: subprocess.run(["git", "-C", hooks_repo] + list(a), check=True, capture_output=True,
@@ -327,15 +339,21 @@ with open(settings, "w") as handle:
         {"type": "command", "command": os.path.join(hooks_repo, n + ".sh")} for n in ("tuned", "busy", "fresh")]}]}}, handle)
 speed_days = {}
 for ago in (9, 8, 5, 4, 3, 1):
-    tuned, busy = (900000, 0) if ago in (9, 8) else (0, 0) if ago == 1 else (1000, 900000)
+    tuned, busy = (900000, 900000) if ago in (9, 8) else (0, 0) if ago == 1 else (1000, 900000)
     speed_days[h.local_day(HI - ago * 86400)] = {"hook_cpu_us": {"tuned.sh": [10, tuned * 1000], "busy.sh": [10, busy * 1000],
-                                                                 "fresh.sh": [10, 900000 * 1000]}}
+                                                                 "fresh.sh": [10, 900000 * 1000],
+                                                                 "stop.d/part": [10, 50000 * 1000]}}
 os.environ.update({k: v for k, v in base.items() if k not in ("HOME", "PATH")}, HARNESS_SETTINGS=settings)
 moved = {p["id"]: p for p in module.moved_opportunities(lambda component: 10.0, speed_days, HI)}
 check(sorted(moved) == ["opportunity:hooks/busy.sh", "opportunity:tests/alpha/test_isolation",
                         "opportunity:tests/alpha/test_slow"],
-      "heavy suites (median >= 120 s) and hot hooks become Speed opportunities; a hook counts only days after its "
-      "last commit and waits for 3 of them: %s" % sorted(moved))
+      "heavy suites (median >= 120 s) seen on 3 days or in 3 runs and hot hooks become Speed opportunities; a hook counts only days "
+      "after its last commit and waits for 3 of them: %s" % sorted(moved))
+check(moved["opportunity:hooks/busy.sh"]["opportunity"]["om_day"] == round(10.0 * 2.7e6 / 11.703e6, 2),
+      "a hot hook is priced on its days after its last commit, over hook CPU that never sums stop.d parts with "
+      "their dispatcher: %s" % moved["opportunity:hooks/busy.sh"]["opportunity"]["om_day"])
+check(module.moved_opportunities(lambda component: 0.01, speed_days, HI) == [],
+      "a heavy suite or hot hook worth under 0.5 OM/d is no opportunity")
 iso, slow = moved["opportunity:tests/alpha/test_isolation"], moved["opportunity:tests/alpha/test_slow"]
 check(iso["opportunity"]["protected"] == "protects isolation" and "protected" not in slow["opportunity"]
       and "protects isolation" in iso["fact"] and iso["opportunity"]["quality"] == "equivalent"
@@ -346,6 +364,37 @@ with open(base["CODE_LEDGER"], "w") as handle:
 moved = {p["id"]: p for p in module.moved_opportunities(lambda component: 10.0, {}, HI)}
 check(moved["opportunity:tests/alpha/test_slow"]["opportunity"]["protected"] == "kept for the lock race",
       "a code-ledger keep row protects its suite with its requirement")
+
+kick_dir = os.path.join(work, "speed-kicks")
+os.makedirs(os.path.join(kick_dir, "merge-kick"))
+mid = h.day_start("2026-10-01") + 43200
+with open(os.path.join(kick_dir, "merge-kick", "2026-10-01.tsv"), "w") as handle:
+    handle.write("%d\t%d\t3\n%d\t%d\t3\n" % ((mid - 600) * 1e6, (mid - 590) * 1e6, (mid + 600) * 1e6, (mid + 610) * 1e6))
+os.environ["SPEED_DOCTOR_DIR"] = kick_dir
+check(module.background_view({}, mid, mid + 86400, [], 1.0)["merge_kick"]["runs_day"] == 1.0,
+      "merge-kick rows before the window's start on its first day are not counted")
+
+nights = os.path.join(work, "doctors", "nights")
+os.makedirs(nights, exist_ok=True)
+for day in ("2026-09-30", "2026-10-01"):
+    start = h.day_start(day) + 7200
+    with open(os.path.join(nights, day + ".json"), "w") as handle:
+        json.dump({"id": day, "started_at": start, "events": [{"phase": "finish", "at": start + 3 * 3600}],
+                   "jobs": [{"state": "merged"}, {"state": "merged"}]}, handle)
+speed("speed-nights", "--quiet")
+stored = {d: json.load(open(os.path.join(work, "speed-nights", "days", d + ".json")))["values"]
+          for d in ("2026-09-30", "2026-10-01")}
+check(all(v.get("night.wall_h_per_job|all|-") == [1.5, 2] for v in stored.values()),
+      "every closed day keeps the night that started on it, not only the latest night's day: %s" % stored)
+
+events_file = os.path.join(work, "harness", "events", "2026-10-02.jsonl")
+before = speed("speed-start")[0]["partition"]["chat"].get("start", 0.0)
+with open(events_file, "a") as handle:
+    handle.write(json.dumps(["s", Q + 1000, "prof", "chat", 150.0, 400.0, "4242"]) + "\n")
+after = speed("speed-start")[0]
+check(abs(after["partition"]["chat"].get("start", 0.0) - before - 400.0 / 60.0 / after["window"]["days"]) < 0.02,
+      "a chat start waits until its SessionStart ends, never exec plus ready: %s -> %s"
+      % (before, after["partition"]["chat"].get("start")))
 
 stub = os.path.join(work, "speed-stub")
 with open(stub, "w") as handle:
@@ -368,4 +417,4 @@ print(count[0])
 EOF
 ) || { printf 'FAIL: the Speed block misjudged the calibration fixture\n' >&2; exit 1; }
 
-printf 'PASS: %s asserts; speed-doctor turns Harness'"'"'s owner turns and delegations into 178.8 OM/d with its R band, a partition that sums to it, a scored backlog of equivalent levers only (forbidden model/effort/thinking/vendor levers rejected at load, risk levers only as evidenced needs-Egor proposals, yield proven only with output equivalence), presence, two-day regressions, a merge into the Harness document and the top of its menu with each rule counted once, heavy-suite and hot-hook opportunities with their protections, offset reads, a 35-day journal prune and its exec from Harness\n' "$asserts"
+printf 'PASS: %s asserts; speed-doctor turns Harness'"'"'s owner turns and delegations into 179.3 OM/d with its R band, a partition that sums to it, a scored backlog of equivalent levers only (forbidden model/effort/thinking/vendor levers rejected at load, risk levers only as evidenced needs-Egor proposals, yield proven only with output equivalence), presence, two-day regressions, a merge into the Harness document and the top of its menu with each rule counted once, heavy-suite and hot-hook opportunities with their protections, offset reads, a 35-day journal prune and its exec from Harness\n' "$asserts"

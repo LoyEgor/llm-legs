@@ -13,3 +13,11 @@ chroma_key_to_png() {
   magick "$tmp_dir/keyed.png" -channel G -fx 'min(g,max(r,b))' +channel "$tmp_dir/despilled.png"
   magick "$tmp_dir/keyed.png" "$tmp_dir/despilled.png" "$tmp_dir/edge.png" -composite "PNG:$dest"
 }
+
+has_usable_alpha() { # path
+  local flag minima
+  flag=$(magick identify -format '%A' "$1" 2>/dev/null) || return 1
+  case "$flag" in Undefined|undefined|False|false) return 1 ;; esac
+  minima=$(magick "$1" -alpha extract -format '%[fx:minima]' info: 2>/dev/null) || return 1
+  awk -v value="$minima" 'BEGIN { exit !(value + 0 < 0.99) }'
+}

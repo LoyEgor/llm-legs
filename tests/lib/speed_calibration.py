@@ -11,7 +11,8 @@ def harness(root):
     return module
 
 
-def fold(h, root, work):
+def scan(h, root, work):
+    """Every event Harness's C1 reader takes from the calibration transcripts, staged under <work>/projects."""
     projects = os.path.join(work, "projects", "p")
     os.makedirs(projects)
     for name in glob.glob(os.path.join(root, "tests", "fixtures", "speed-calibration", "*.jsonl.gz")):
@@ -25,6 +26,11 @@ def fold(h, root, work):
                       HARNESS_DOCTOR_DIR=os.path.join(work, "harness"))
     events = []
     h.scan_transcripts({}, HI + 3600, events, {})
+    return events
+
+
+def fold(h, root, work):
+    events = scan(h, root, work)
     h.append_events([e for e in events if e[0] in ("t", "d", "s") and LO <= e[1] < HI])
 
 

@@ -27,7 +27,7 @@ SCOPE = []
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 import collector_runs  # noqa: E402
 
-DETECTOR_VERSION = 2
+DETECTOR_VERSION = 3
 PARSER_VERSION = 4
 LIMITS = {
     "silent_days": 14,
@@ -1590,15 +1590,24 @@ def registration_research(item, graph):
     if git(top, "cat-file", "-e", "HEAD:" + rel) is not None:
         return None
     found = {"repo": repo_name(top), "rel": rel, "name": os.path.basename(target), "refs": []}
-    log = (git(top, "log", "-1", "-M", "--diff-filter=DR", "--date=short", "--format=%h%x1f%ad%x1f%s", "--", rel) or "").strip()
-    if log:
-        found["commit"], found["date"], found["subject"] = log.split("\x1f", 2)
-        for line in (git(top, "show", "-M", "--name-status", "--format=", found["commit"]) or "").splitlines():
+    log = git(top, "log", "-1", "-M", "--diff-filter=DR", "--date=short", "--format=%h%x1f%ad%x1f%s", "--", rel)
+    if log is None:
+        return None
+    if log.strip():
+        found["commit"], found["date"], found["subject"] = log.strip().split("\x1f", 2)
+        shown = git(top, "show", "-M", "--name-status", "--format=", found["commit"])
+        if shown is None:
+            return None
+        for line in shown.splitlines():
             parts = line.split("\t")
             if len(parts) == 3 and parts[0].startswith("R") and parts[1] == rel and os.path.exists(os.path.join(top, parts[2])):
                 found["renamed_to"], found["renamed_rel"] = os.path.join(top, parts[2]), parts[2]
-    elif not (git(top, "log", "-1", "--format=%h", "--", rel) or "").strip():
-        found["never_tracked"] = True
+    else:
+        ever = git(top, "log", "-1", "--format=%h", "--", rel)
+        if ever is None:
+            return None
+        if not ever.strip():
+            found["never_tracked"] = True
     source = os.path.realpath(registration_file(item, graph))
     for repo, repo_top in sorted(graph.tops.items()):
         out = git(repo_top, "grep", "-l", "-z", "-w", "-F", "-e", found["name"], "--", ".",
@@ -1642,6 +1651,10 @@ def registration_owner(item, research, graph, step):
     if item["kind"] == "path":
         return None, None
     if item["kind"] == "launchd":
+        if research.get("renamed_to"):
+            return None, "Cost: repointing reloads %s; Loss: keeping it, each run misses %s, now %s; " \
+                "Recommendation: point it at the new path (steps)" % (
+                    os.path.basename(item["source"])[:-6], research["name"], research["renamed_rel"])
         if item["target"] in launchd_programs(item["source"]):
             return None, None
         return None, "Cost: bootout stops %s, whose program still exists; Loss: keeping it, each run misses %s; " \
@@ -2175,7 +2188,12 @@ def settle_registrations(night):
         if candidate["rules"] != ["registration"] or candidate.get("needs_egor") or research.get("refs"):
             continue
         for text in candidate["registrations"]:
-            item = json.loads(text)
+            try:
+                item = json.loads(text)
+            except ValueError:
+                continue
+            if not isinstance(item, dict):
+                continue
             if item["kind"] == "launchd":
                 what = retire_launch_agent(night, candidate["id"], item)
                 done += [what] if what else []

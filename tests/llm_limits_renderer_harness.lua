@@ -4216,6 +4216,7 @@ end
       { account = "egbor", five_hour = bucket(10), weekly = bucket(20) },
       { account = "mish", auth_needed = true },
       { account = "quiet", five_hour = bucket(10), weekly = bucket(20) },
+      { account = "fresh", five_hour = bucket(10), weekly = bucket(20) },
     } },
   } }
   geminiWebFake.files = {
@@ -4225,6 +4226,8 @@ end
     [root .. "/accounts/egbor-web.json"] = { credits = 50, credits_at = now - 600,
       email = "Egbor@example.com", project = "proj-secret" },
     [root .. "/accounts/mish.json"] = { email = "mish@example.com" },
+    [root .. "/accounts/fresh.json"] = { email = "fresh@example.com" },
+    [root .. "/profiles/fresh/Default/Cookies"] = "",
     [root .. "/accounts/stray.json"] = { credits = 999, credits_at = now, email = "nobody@example.com" },
     [root .. "/walls.json"] = { abel = now + 7200, ["egbor-web"] = now - 60, stray = now + 7200 },
     [root .. "/music-walls.json"] = { mish = now + 26 * 3600, abel = now - 1 },
@@ -4280,6 +4283,9 @@ end
   local mish = mediaRows(menu, "mish")
   assert(#mish == 1 and titleText(mish[1]) == walled("gm", now + 26 * 3600) and isRed(mish[1]),
     "a logged-out account lost its music wall: " .. texts(mish))
+  local fresh = mediaRows(menu, "fresh")
+  assert(#fresh == 2 and titleText(fresh[1]) == unmeasured("fv") and titleText(fresh[2]) == unmeasured("fm"),
+    "a bound, signed-in web profile with no balance read yet lacks its unmeasured fv and fm rows: " .. texts(fresh))
   assert(#mediaRows(menu, "quiet") == 0, "an account without a gemini-web reading grew a media row")
   for _, item in ipairs(menu) do
     local text = titleText(item)
@@ -4316,7 +4322,7 @@ end
   end)()
   geminiWebFake.files = nil
   local bare = mediaMenu()
-  for _, account in ipairs({ "abel", "egbor", "mish", "quiet" }) do
+  for _, account in ipairs({ "abel", "egbor", "mish", "quiet", "fresh" }) do
     assert(#mediaRows(bare, account) == 0, "a missing gemini-web store still drew a media row")
   end
 end)()

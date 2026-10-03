@@ -20,7 +20,8 @@ suite_journal_ms() { # var [epoch-seconds] -> milliseconds now, or of the given 
 
 suite_journal_secs() { printf -v "$1" '%d.%03d' "$(( $2 / 1000 ))" "$(( $2 % 1000 ))"; }
 
-suite_journal_cpu() { # var scratch-file [children] -> CPU seconds of this shell and its children, or children only
+suite_journal_cpu_ms() { # var scratch-file [children] -> CPU ms of this shell and its children, or children only;
+  # empty when unmeasured, and always under bash < 5.3 with no scratch file
   local shell_user shell_sys user sys t s ms=0
   printf -v "$1" ''
   # bash 5.3 captures without a fork; eval keeps the syntax from older parsers.
@@ -28,6 +29,7 @@ suite_journal_cpu() { # var scratch-file [children] -> CPU seconds of this shell
     eval 't=${ times; }'
     read -r shell_user shell_sys user sys <<<"${t//$'\n'/ }"
   else
+    [ -n "$2" ] || return 0
     times >"$2" 2>/dev/null || return 0
     { read -r shell_user shell_sys; read -r user sys; } <"$2"
     rm -f "$2"
@@ -38,7 +40,14 @@ suite_journal_cpu() { # var scratch-file [children] -> CPU seconds of this shell
     [[ $t =~ ^[0-9]+m[0-9]+\.[0-9]{3}$ ]] || return 0
     ms=$(( ms + 10#${t%m*} * 60000 + 10#${s%.*} * 1000 + 10#${s#*.} ))
   done
-  suite_journal_secs "$1" "$ms"
+  printf -v "$1" '%s' "$ms"
+}
+
+suite_journal_cpu() { # var scratch-file [children] -> CPU seconds of this shell and its children, or children only
+  local journal_ms
+  suite_journal_cpu_ms journal_ms "$2" "${3:-}"
+  printf -v "$1" ''
+  [ -z "${journal_ms:-}" ] || suite_journal_secs "$1" "$journal_ms"
 }
 
 suite_journal_git() { # checkout -> suite_journal_head, and suite_journal_root: the main checkout
@@ -94,8 +103,10 @@ suite_journal_row() {
 }
 
 suite_journal_append() { # journal -> appends suite_journal_line
+  local LC_ALL=C
   [ -d "${1%/*}" ] || mkdir -p "${1%/*}" 2>/dev/null || return 0
   # bash's printf writes in 1 KiB pieces, which a concurrent append splits; dd writes the row in one.
+  # LC_ALL=C makes the length count bytes, not characters.
   if [ "${#suite_journal_line}" -lt 1000 ]; then
     printf '%s\n' "$suite_journal_line" >>"$1" 2>/dev/null
   elif printf '%s\n' "$suite_journal_line" >"$1.$$.row" 2>/dev/null; then
@@ -168,9 +179,9 @@ trap() {
   for sig in "$@"; do
     case $sig in
       EXIT|SIGEXIT|0)
-        [ "$action" != - ] || action=''
         suite_journal_exit=$action
-        [ -n "$action" ] || { builtin trap 'suite_journal_end $?' EXIT; continue; }
+        [ "$action" != - ] || suite_journal_exit=''
+        [ -n "$suite_journal_exit" ] || { builtin trap 'suite_journal_end $?' EXIT; continue; }
         # `&& :` keeps set -e from ending the trap before the test's own cleanup when the run failed.
         builtin trap -- "suite_journal_end \$? && :; $action" EXIT; continue ;;
       HUP|SIGHUP|1) number=1 ;;
@@ -180,9 +191,13 @@ trap() {
     esac
     if [ -n "$number" ] && [ "$action" = - ]; then builtin trap -- "suite_journal_die $number" "$sig"
     elif [ -z "$number" ] || [ -z "$action" ]; then builtin trap -- "$action" "$sig"
-    else builtin trap -- "suite_journal_signal=$number; $action" "$sig"
+    else builtin trap -- "suite_journal_mark $number \$?; $action" "$sig"
     fi
   done
+}
+suite_journal_mark() { # signal-number status -> returns status, so the test's own action still reads its $?
+  suite_journal_signal=$1
+  return "$2"
 }
 builtin trap 'suite_journal_end $?' EXIT
 builtin trap 'suite_journal_die 1' HUP

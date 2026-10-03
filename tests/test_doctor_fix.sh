@@ -432,12 +432,15 @@ printf '# anchors\n\nTo: Egor.\nStatus: open\nShould anchors stay?\n' >"$WORK/do
 sed 's#docs/handoffs/2026-09-30-r9.md#(docs/handoffs/2026-10-02-egor.md),#' "$WORK/nd" >"$WORK/nd-egor"
 assert_fails fix close "$rid" --decisions "$WORK/nd-egor" "x" 2>"$WORK/err"
 assert grep -qxF "line 2 (machinery:anchors): handoff to Egor docs/handoffs/2026-10-02-egor.md lacks Cost: Loss: Recommendation:: Egor decides only a trade (each way's cost and loss, the recommendation); otherwise hand it to an owner or decide what research settles" "$WORK/err"
+sed 's#docs/handoffs/2026-09-30-r9.md#see docs/handoffs/2026-10-02-egor.md.#' "$WORK/nd" >"$WORK/nd-dot"
+assert_fails fix close "$rid" --decisions "$WORK/nd-dot" "x" 2>"$WORK/err"
+assert grep -qF "handoff to Egor docs/handoffs/2026-10-02-egor.md lacks Cost:" "$WORK/err"
 printf 'Cost: keeping anchors costs 2 s a run.\n- **Loss:** dropping them loses the round links.\nRecommendation: keep.\n' >>"$WORK/docs/handoffs/2026-10-02-egor.md"
 assert jqe '.closed_at == null' "$RR"
 fix close "$rid" --decisions "$WORK/nd-egor" "R9 fixed" >"$WORK/out" 2>"$WORK/err" || fail "night close failed: $(cat "$WORK/err")"
 assert grep -qxF "run $rid closed: 2 decisions" "$WORK/out"
 assert jqe '.closed_at != null and .judge_at_close == "base-llm"' "$RR"
-assert [ "$(wc -l <"$DATA/llm-doctor-runs" | tr -d ' ')" = 9 ]
+assert [ "$(wc -l <"$DATA/llm-doctor-runs" | tr -d ' ')" = 10 ]
 
 # abandon: the deadline's verb. An abandoned run closes no more; a closed one cannot be abandoned.
 fix abandon "$wid" --reason "deadline passed" >"$WORK/out" || fail "abandon failed"
@@ -820,17 +823,19 @@ assert knob "share/worker-policy.md effort" "llm-legs/share/worker-policy.md:1: 
 assert knob "review-bench tier effort/rater" "llm-legs/share/rbench/catalog.py:1: -"
 assert knob "claudeb default model" "llm-legs/bin/claudeb:1: +CLAUDEB_CLAUDE_MODEL='haiku'"
 assert knob "brief-template EFFORT/MODEL" "llm-legs/share/light-recipes/new.md:1: +MODEL: haiku"
-assert knob "settings model/effort/thinking" "$WORK/settings.json:$(grep -n '"model"' "$WORK/settings.json" | cut -d: -f1): +"
-assert knob "worker-model" "$HOME/.claude/worker-model:1: +claudeb_model=sonnet"
-assert [ "$(grep -c '^model/effort knob, ' "$WORK/err")" = 14 ]
+assert [ "$(grep -c '^model/effort knob, ' "$WORK/err")" = 11 ]
 gw reset -q --hard refs/night/n8/base && gw clean -qfd
-sed -i '' 's/"haiku"/"opus"/' "$WORK/settings.json" && rm "$HOME/.claude/worker-model"
 sed -i '' 's/the per-model call/the per-model table/' "$swt/share/worker-model.sh"
 sed -i '' 's/Plain prose/Plain words/' "$swt/share/worker-policy.md"
 gw commit -qam "words"
 printf 'cache=1\n' >"$swt/bin/statusline-cache.sh"
+# A live settings or worker-model change since launch may be Egor's own /model: a note, never a refusal.
 fix close "$sid" --decisions "$WORK/sd" "a speed diff" >/dev/null 2>"$WORK/err" ||
   fail "a speed diff touching no knob stays open: $(cat "$WORK/err")"
+live() { grep -qF "doctor-fix: note: live model/effort knob changed since launch, $1: $2" "$WORK/err"; }
+assert live "settings model/effort/thinking" "$WORK/settings.json:$(grep -n '"model"' "$WORK/settings.json" | cut -d: -f1): +"
+assert live "worker-model" "$HOME/.claude/worker-model:1: +claudeb_model=sonnet"
+sed -i '' 's/"haiku"/"opus"/' "$WORK/settings.json" && rm "$HOME/.claude/worker-model"
 rm "$DATA/harness-doc.json"
 jq --argjson s "$(now)" '.as_of_s = $s | .speed.selection += ["opportunity:chat/tests"]
   | (.problems[] | select(.id == "opportunity:chat/tests") | .opportunity.quality) = "risk"' "$S/harness/latest.json" >"$S/risk.json" &&
@@ -839,4 +844,4 @@ git -C "$L" update-ref refs/night/n9/base HEAD
 env "${speed_env[@]}" bash "$FIX" launch harness --night n9 >"$WORK/out" 2>"$WORK/err" || fail "speed night n9: $(cat "$WORK/err")"
 assert jqe --argjson n "$night1" '[.problems[].id] == $n' "$(record "$(cut -f1 "$WORK/out")")"
 
-echo "PASS: $asserts asserts; code runs (one area, top-K, needs-Egor out, close through code-doctor check); launch refusals (no or foreign or stale document, nothing to fix, open run under 12 h), an old run abandoned, the snapshot without watch/fixed-pending, the chat through the shared opener, the record fields, a failed opener, close refusals (doctor not rerun, undecided id, missing path, missing commit, a directory, no evidence, bad verdict, judge changed without its line), a clean close, show, runs, updater records and launch, parallel ids, night launch (areas, worktrees, branches, briefs, the packet, one open run per area), night vendor records, a night without a base ref, llm components with their block's entry file, fixed only once the doctor reads it fixed-pending or gone, night close (markdown net zero per worktree: committed, untracked and cut bytes, a worktree without its base; a day run unmeasured; the doctor rerun once in the worktree, a handed-in document refused, purpose touching its component, judge), abandon, a failed worktree, harness sections and top watch rows under parallel launch, updater machinery, a legacy release run, a merge citation, a malformed ledger row, a failed collector, an unwritten launched_at, a launcher killed under the lock, quiet open ledger rows (their own brief section, the day launch), a speed night (design Night 1 over the calibration fixture, a refusal per model/effort knob site, a knob-free diff closes)"
+echo "PASS: $asserts asserts; code runs (one area, top-K, needs-Egor out, close through code-doctor check); launch refusals (no or foreign or stale document, nothing to fix, open run under 12 h), an old run abandoned, the snapshot without watch/fixed-pending, the chat through the shared opener, the record fields, a failed opener, close refusals (doctor not rerun, undecided id, missing path, missing commit, a directory, no evidence, bad verdict, judge changed without its line), a clean close, show, runs, updater records and launch, parallel ids, night launch (areas, worktrees, branches, briefs, the packet, one open run per area), night vendor records, a night without a base ref, llm components with their block's entry file, fixed only once the doctor reads it fixed-pending or gone, night close (markdown net zero per worktree: committed, untracked and cut bytes, a worktree without its base; a day run unmeasured; the doctor rerun once in the worktree, a handed-in document refused, purpose touching its component, judge), abandon, a failed worktree, harness sections and top watch rows under parallel launch, updater machinery, a legacy release run, a merge citation, a malformed ledger row, a failed collector, an unwritten launched_at, a launcher killed under the lock, quiet open ledger rows (their own brief section, the day launch), a speed night (design Night 1 over the calibration fixture, a refusal per worktree model/effort knob site, a live settings change only a note, a knob-free diff closes)"

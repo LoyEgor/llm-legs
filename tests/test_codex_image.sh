@@ -39,6 +39,8 @@ FAKE_CODEX_PROMPT="$WORK/codex-prompt"
 PICK_CALLS="$WORK/worker-pick-calls"
 MAGICK_CALLS="$WORK/magick-calls"
 REAL_MAGICK=$(command -v magick) || fail "magick is required for this suite"
+UV_CACHE_DIR=${UV_CACHE_DIR:-$(uv cache dir 2>/dev/null)}
+export UV_CACHE_DIR
 export FAKE_CODEX_CALLS FAKE_CODEX_PROMPT PICK_CALLS MAGICK_CALLS REAL_MAGICK
 mkdir -p "$FAKE_BIN" "$OUTPUT_DIR" "$TMP_ROOT" "$FAKE_HOME/.claude" \
   "$CODEX_PROFILES/explicit" "$CODEX_PROFILES/picked" "$CODEX_PROFILES/other" \
@@ -118,6 +120,11 @@ done
 image_rc=0
 image_run --dest "$OUTPUT_DIR/badsize.png" --prompt badge --size 800 || image_rc=$?
 assert test "$image_rc" -eq 2
+for zero in 0x512 512x0; do
+  image_rc=0
+  image_run --dest "$OUTPUT_DIR/badsize.png" --prompt badge --size "$zero" || image_rc=$?
+  assert test "$image_rc" -eq 2
+done
 # Alpha, native or keyed, only a .png destination can hold.
 image_rc=0
 image_run --dest "$OUTPUT_DIR/flat.jpg" --prompt badge --transparent || image_rc=$?
@@ -144,6 +151,11 @@ assert test "$image_rc" -eq 2
 image_rc=0
 image_run --dest "$OUTPUT_DIR/badacct.png" --prompt badge --account 'Ghost Acct' || image_rc=$?
 assert test "$image_rc" -eq 2
+image_rc=0
+image_run --dest "$OUTPUT_DIR/emptyacct.png" --prompt badge --account "" || image_rc=$?
+assert test "$image_rc" -eq 2
+assert grep -q -- "--account needs a profile name" "$IMAGE_ERR"
+assert test ! -s "$PICK_CALLS"
 # A thread NAME resumes in the CLI but cannot be traced back to the account holding it, and the
 # session ids this script prints are always UUIDs.
 image_rc=0
@@ -202,6 +214,7 @@ assert test ! -s "$MAGICK_CALLS"
 # The claim is taken after the account has proved usable, not by the pick itself.
 assert grep -qx -- '--account codex --role image' "$PICK_CALLS"
 assert test -e "$CLAIMS_DIR/codex/picked"
+assert test -e "$WORK/media-starts/codex/picked"
 assert grep -qx 'ARG=exec' "$FAKE_CODEX_CALLS"
 assert grep -qx 'ARG=--skip-git-repo-check' "$FAKE_CODEX_CALLS"
 # The session id rides on the JSONL stream and nowhere else, so the flag that turns it on is not
@@ -226,9 +239,11 @@ assert test "$(sed -n 5p "$IMAGE_OUT")" = "session=$THREAD"
 # A PNG without a C2PA softwareAgent says unknown rather than echoing the manifest back.
 assert test "$(sed -n 6p "$IMAGE_OUT")" = 'model=unknown model_caps=unknown'
 assert test "$(sed -n 7p "$IMAGE_OUT")" = 'caps=fresh'
-# A missed ratio is reported last and delivered as generated, never cropped to fit.
+# A missed ratio is reported and delivered as generated, never cropped to fit; the lineage closes the block.
 assert test "$(sed -n 8p "$IMAGE_OUT")" = 'aspect=4:3 achieved=1.000 fit=miss'
-assert test "$(wc -l <"$IMAGE_OUT")" -eq 8
+assert test "$(sed -n 9p "$IMAGE_OUT")" = 'composite=skipped reason=new-generation'
+assert test "$(sed -n 10p "$IMAGE_OUT")" = "edit_depth=0 root=$OUTPUT_DIR/generated.png"
+assert test "$(wc -l <"$IMAGE_OUT")" -eq 10
 assert test -z "$(find "$TMP_ROOT" -mindepth 1 -maxdepth 1 -name 'codex-image.*' -print -quit)"
 
 # The model names itself in the PNG's C2PA softwareAgent; `2.0` is the manifest's `gpt-image-2`.
@@ -331,8 +346,11 @@ export FAKE_CODEX_IMAGE_FORMAT
 RESUME_ID=01a09ccc-3333-7000-8000-00000000000c
 mkdir -p "$CODEX_PROFILES/other/sessions/2026/09/11"
 : >"$CODEX_PROFILES/other/sessions/2026/09/11/rollout-2026-09-11T00-00-00-$RESUME_ID.jsonl"
+FAKE_CODEX_THREAD=$RESUME_ID assert image_run --dest "$OUTPUT_DIR/first.png" --prompt 'a badge' --account other
+assert test "$(tail -n 1 "$IMAGE_OUT")" = "edit_depth=0 root=$OUTPUT_DIR/first.png"
 : >"$FAKE_CODEX_CALLS"
 : >"$PICK_CALLS"
+rm -rf "$WORK/media-starts"
 assert image_run --dest "$OUTPUT_DIR/resumed.png" --prompt 'now make it bluer' --resume "$RESUME_ID"
 assert test ! -s "$PICK_CALLS"
 assert grep -qx 'ARG=resume' "$FAKE_CODEX_CALLS"
@@ -341,6 +359,10 @@ assert_fails grep -qx 'ARG=-m' "$FAKE_CODEX_CALLS"
 assert grep -qx "CODEX_HOME=$CODEX_PROFILES/other" "$FAKE_CODEX_CALLS"
 assert grep -qx 'account=other' "$IMAGE_OUT"
 assert grep -qx "session=$RESUME_ID" "$IMAGE_OUT"
+assert test ! -e "$WORK/media-starts/codex/other"
+assert test "$(tail -n 1 "$IMAGE_OUT")" = "edit_depth=1 root=$OUTPUT_DIR/first.png"
+assert test "$(jq -c '.edits | map([.prompt, .route, .vendor, .account])' "$OUTPUT_DIR/resumed.png.edit.json")" = \
+  '[["now make it bluer","cli","codex","other"]]'
 # With no reference the edit target is the thread's own last image, which is what
 # num_last_images_to_include names — referenced_image_paths would need a local path per target.
 assert grep -q 'set num_last_images_to_include to 1' "$FAKE_CODEX_PROMPT"
@@ -349,6 +371,30 @@ assert_fails grep -q 'call view_image on each path below first' "$FAKE_CODEX_PRO
 # accepts; taken from the argv the fixture recorded rather than from the script's own text.
 assert test "$(grep -n 'ARG=--experimental-json' "$FAKE_CODEX_CALLS" | cut -d: -f1)" \
   -lt "$(grep -n 'ARG=resume' "$FAKE_CODEX_CALLS" | cut -d: -f1)"
+
+# Composite is on by default for every edit, after the contract block: the thread's last delivered
+# image or a single --ref is the input, and the vendor's render is kept beside the dest.
+"$REAL_MAGICK" -size 64x64 'xc:#00FF00' "PNG24:$OUTPUT_DIR/resumed.png"
+assert image_run --dest "$OUTPUT_DIR/resumed2.png" --prompt 'add a blue circle' --resume "$RESUME_ID"
+assert test "$(sed -n 1p "$IMAGE_OUT")" = "dest=$OUTPUT_DIR/resumed2.png"
+assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$IMAGE_OUT"
+assert grep -qx "rendered=$OUTPUT_DIR/resumed2.rendered.png" "$IMAGE_OUT"
+assert cmp "$CODEX_PROFILES/other/generated_images/$RESUME_ID/exec-fixture.png" "$OUTPUT_DIR/resumed2.rendered.png"
+assert test "$(tail -n 1 "$IMAGE_OUT")" = "edit_depth=2 root=$OUTPUT_DIR/first.png"
+assert test "$(jq -r '.edits[1].composite.kind' "$OUTPUT_DIR/resumed2.png.edit.json")" = auto
+"$REAL_MAGICK" -size 64x64 'xc:#00FF00' "PNG24:$WORK/green-ref.png"
+assert image_run --dest "$OUTPUT_DIR/composited.png" --prompt 'add a blue circle' --ref "$WORK/green-ref.png" --account explicit
+assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$IMAGE_OUT"
+assert test -e "$OUTPUT_DIR/composited.rendered.png"
+assert image_run --dest "$OUTPUT_DIR/optout.png" --prompt 'add a blue circle' --ref "$WORK/green-ref.png" --account explicit --no-composite
+assert_fails grep -q '^composite=\|^rendered=' "$IMAGE_OUT"
+assert cmp "$CODEX_PROFILES/explicit/generated_images/$FAKE_CODEX_THREAD/exec-fixture.png" "$OUTPUT_DIR/optout.png"
+assert test ! -e "$OUTPUT_DIR/optout.rendered.png"
+assert image_run --dest "$OUTPUT_DIR/keyedref.png" --prompt 'a transparent circle' --ref "$WORK/green-ref.png" --account explicit --transparent
+assert_fails grep -q '^composite=' "$IMAGE_OUT"
+assert image_run --dest "$OUTPUT_DIR/tworefs.png" --prompt 'merge' --ref "$WORK/green-ref.png" --ref "$WORK/reference.png" --account explicit
+assert grep -qx 'composite=skipped reason=several-inputs' "$IMAGE_OUT"
+assert test ! -e "$OUTPUT_DIR/tworefs.rendered.png"
 
 # An id the store cannot resolve is answered by the CLI with a brand-new thread (openai/codex#15538),
 # so the account is never guessed for it.
@@ -369,12 +415,18 @@ assert grep -qx 'session=01a09aaa-1111-7000-8000-00000000000a' "$IMAGE_OUT"
 FAKE_CODEX_MODE=image
 export FAKE_CODEX_MODE
 
-# The last agent message is a cross-check, not the discovery: the built-in tool keys its output
-# directory on the thread, so the harvested session finds the file the answer failed to name.
+# The answer is never the discovery: the built-in tool keys its output directory on the thread, so
+# the harvested session finds the image whatever the model replies, a fresh file it names included.
 FAKE_CODEX_MODE=nopath
 export FAKE_CODEX_MODE
 assert image_run --dest "$OUTPUT_DIR/rescued.png" --prompt badge --account explicit
 assert cmp "$CODEX_PROFILES/explicit/generated_images/$THREAD/exec-fixture.png" "$OUTPUT_DIR/rescued.png"
+FAKE_CODEX_MODE=decoy
+assert image_run --dest "$OUTPUT_DIR/decoy.png" --prompt badge --account explicit
+assert cmp "$CODEX_PROFILES/explicit/generated_images/$THREAD/exec-fixture.png" "$OUTPUT_DIR/decoy.png"
+assert grep -q 'do not read the imagegen skill or any SKILL.md first' "$FAKE_CODEX_PROMPT"
+assert grep -qx 'Leave the image where image_gen saved it: do not copy, move or convert it. Once image_gen has returned, reply with just: done' "$FAKE_CODEX_PROMPT"
+assert_fails grep -qi 'copy the final image\|(imagegen skill)' "$FAKE_CODEX_PROMPT"
 
 FAKE_CODEX_MODE=no-image
 export FAKE_CODEX_MODE
@@ -435,4 +487,24 @@ CLAUDE_LAUNCHER_SESSION=image-launching-chat \
 assert test "$image_rc" -eq 0
 assert grep -qx 'CLAUDE_LAUNCHER_SESSION=image-launching-chat' "$FAKE_CODEX_CALLS"
 
-echo "PASS: $asserts asserts; manifest-driven usage and reference cap, pre-spend argument refusals, routing and account pinning, exact codex exec launch controls with --experimental-json, the seven-line contract block including session/model/caps, caps staleness on a changed CLI, byte-identical same-format delivery, differing-format conversion, the view_image + referenced_image_paths reference instruction, native alpha kept unkeyed, chroma fallback on an opaque answer, resume account recovery from the session store, resume argv order, unresolvable and silently-new threads, thread-keyed output rescue, missing image, usage-limit and generic failure classification, worker-pick limit propagation, and the launching chat's stamp passed through"
+# A leg killed by a caller's timeout is logged with the signal's status, never as a success.
+killed_log="$WORK/killed-legs.jsonl"
+for signal_rc in TERM:143 HUP:129; do
+  # A worker's suite runs under worker-run's nohup: a HUP ignored on entry cannot be trapped by
+  # bash, so the leg would sleep out and exit 0 unless the disposition is reset before it starts.
+  IMAGE_LEG_LOG="$killed_log" perl -e '$SIG{HUP} = $SIG{TERM} = "DEFAULT"; exec @ARGV or die' \
+    bash -c '. "$1/share/image-leg.sh"; image_leg_start killed-leg image
+    trap "image_leg_exit" EXIT; sleep 30' _ "$ROOT" 2>/dev/null &
+  leg_pid=$!
+  leg_ready=0
+  for _ in $(seq 600); do pgrep -qP "$leg_pid" sleep && { leg_ready=1; break; }; sleep 0.1; done
+  [ "$leg_ready" -eq 1 ] || fail "killed-leg $signal_rc: the leg never reached its sleep within 60 s"
+  kill -"${signal_rc%:*}" "$leg_pid"
+  pkill -"${signal_rc%:*}" -P "$leg_pid" sleep
+  leg_rc=0
+  wait "$leg_pid" || leg_rc=$?
+  assert test "$leg_rc" -eq "${signal_rc#*:}"
+  assert test "$(tail -n1 "$killed_log" | jq -r '"\(.tool) \(.rc)"')" = "killed-leg ${signal_rc#*:}"
+done
+
+echo "PASS:$asserts asserts; manifest-driven usage and reference cap, pre-spend argument refusals, routing and account pinning, exact codex exec launch controls with --experimental-json, the seven-line contract block including session/model/caps, caps staleness on a changed CLI, byte-identical same-format delivery, differing-format conversion, the view_image + referenced_image_paths reference instruction, native alpha kept unkeyed, chroma fallback on an opaque answer, resume account recovery from the session store, edit lineage through a resume, resume argv order, unresolvable and silently-new threads, thread-keyed output rescue, missing image, usage-limit and generic failure classification, worker-pick limit propagation, and the launching chat's stamp passed through"

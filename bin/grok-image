@@ -18,6 +18,7 @@ resolve_root() {
 
 root=$(resolve_root)
 . "$root/share/image-leg.sh"
+. "$root/share/account-arg.sh"
 image_leg_start grok-image image pin_model
 . "$root/share/image-caps.sh"
 . "$root/share/image-chroma.sh"
@@ -32,7 +33,7 @@ refs_max=$(caps '.refs.max')
 default_aspect=$(caps '.aspects.default')
 
 usage() {
-  printf 'usage: grok-image --dest <absolute path> --prompt <description> [--aspect <ratio>] [--ref <absolute image path>]... [--transparent] [--account <profile>] [--resume <session-id>]\n' >&2
+  printf 'usage: grok-image --dest <absolute path> --prompt <description> [--aspect <ratio>] [--ref <absolute image path>]... [--transparent] [--composite[=auto|x,y,w,h] | --no-composite] [--account <profile>] [--resume <session-id>]\n' >&2
   printf '  --aspect without --ref/--resume (image_gen): %s\n' "$generate_aspects" >&2
   printf '  --aspect with --ref/--resume (image_edit):    %s\n' "$edit_aspects" >&2
   printf '  --ref up to %s; --resume takes the session id printed as session= by an earlier run\n' "$refs_max" >&2
@@ -89,8 +90,13 @@ while [ "$#" -gt 0 ]; do
       remove_green=true
       shift
       ;;
+    --composite | --composite=* | --no-composite)
+      image_leg_composite_arg "$1" || usage
+      shift
+      ;;
     --account)
       [ "$#" -ge 2 ] || usage
+      account_arg "$2"
       account=$2
       shift 2
       ;;
@@ -160,6 +166,8 @@ fi
 if [ -n "$account" ] && ! grok_media_valid_account "$account"; then
   usage
 fi
+image_leg_composite_plan grok "$resume" "$remove_green" ${refs[@]+"${refs[@]}"}
+edit_input=$IMAGE_LEG_COMPOSITE_INPUT
 
 worker_pick_cmd="${GROK_IMAGE_WORKER_PICK:-worker-pick}"
 grokb_cmd="${GROK_IMAGE_GROKB:-grokb}"
@@ -177,7 +185,7 @@ if [ -n "$resume" ] && [ -z "$account" ]; then
 fi
 
 select_rc=0
-grok_media_select_account grok-image "$root" "$worker_pick_cmd" "$grok_profiles_dir" "$account" || select_rc=$?
+grok_media_select_account grok-image "$root" "$worker_pick_cmd" "$grok_profiles_dir" "$account" "$resume" || select_rc=$?
 [ "$select_rc" -eq 0 ] || exit "$select_rc"
 account=$grok_media_account
 grok_home=$main_grok_home
@@ -261,6 +269,7 @@ elif [ "$extension" != "$(actual_format "$generated")" ]; then
 else
   cp "$generated" "$dest"
 fi
+IMAGE_LEG_COMPOSITE_LINES=$(image_leg_composite_take "$root" "$dest")
 
 sips_output=$(sips -g pixelWidth -g pixelHeight -g format "$dest")
 width=$(awk '/pixelWidth:/ {print $2; exit}' <<<"$sips_output")
@@ -278,7 +287,12 @@ observed_model=$(grok_media_model_override "$grok_home" "$override_key")
 # An unverified CLI may no longer read the override knob at all.
 [ "$caps_line" = 'caps=fresh' ] || observed_model=''
 
+session=$(grok_media_session_id "$stream_file")
 printf 'dest=%s\nsize=%sx%s\nformat=%s\naccount=%s\nsession=%s\n' \
-  "$dest" "$width" "$height" "$format" "$account" "$(grok_media_session_id "$stream_file")"
+  "$dest" "$width" "$height" "$format" "$account" "$session"
 image_caps_model_check "$root" grok image "$observed_model"
 printf '%s\n' "$caps_line"
+lineage_region=''
+[ "${IMAGE_LEG_COMPOSITE_ASK:-auto}" = auto ] || lineage_region=$IMAGE_LEG_COMPOSITE_ASK
+image_leg_lineage grok cli "$dest" "${session:-none}" "$prompt" "$lineage_region" '' \
+  ${edit_input:+"$edit_input"} ${refs[@]+"${refs[@]}"}

@@ -25,6 +25,9 @@ import collector_runs  # noqa: E402
 _loader = importlib.machinery.SourceFileLoader("harness_doctor", os.path.join(ROOT_DIR, "bin", "harness-doctor"))
 H = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_doctor", _loader))
 _loader.exec_module(H)
+_loader = importlib.machinery.SourceFileLoader("code_doctor", os.path.join(ROOT_DIR, "bin", "code-doctor"))
+C = importlib.util.module_from_spec(importlib.util.spec_from_loader("code_doctor", _loader))
+_loader.exec_module(C)
 
 WINDOW_D = 7
 ROW_DAYS = WINDOW_D + 1
@@ -116,8 +119,8 @@ SPEED_RULES = ("regression", "opportunity")
 COVERS = {"chat": (("wait", "*"), ("wait_cut", "*"), ("local_slow", "*")),
           "background/statusline": (("statusline", "*"),),
           "machine/contention": (("load", "busy"), ("load", "kernel"), ("load", "forks"), ("load", "unseen"))}
-HEAVY_TEST_S, HOT_CPU_MS_DAY, HOT_MIN_DAYS = 120.0, 60000.0, 3
-KEEP_WORDS = re.compile(r"isolation|data loss|recovery|must be kept", re.I)
+HEAVY_TEST_S, HOT_CPU_MS_DAY, HOT_MIN_DAYS = float(C.LIMITS["heavy_test_s"]), 60000.0, 3
+KEEP_WORDS = C.KEEP_WORDS
 TEST_LEVER = {"component": "chat/tests", "lever": "speed up the suite and keep every check", "effort": "M",
               "confidence": "estimated", "saving": 0.3, "night_cost_h": 0.0, "proof": "tests", "quality": "equivalent"}
 HOOK_LEVER = {"component": "chat/hooks", "lever": "fast path for the hook", "effort": "S", "confidence": "estimated",
@@ -134,10 +137,7 @@ def doctors_dir():
 
 
 def worker_runs_path():
-    base = os.environ.get("WORKER_STATS_DIR") or os.path.join(
-        os.environ.get("CLAUDEB_DIR") or os.path.join(os.path.expanduser("~"), ".claude-profiles", ".claudeb"),
-        "worker-stats")
-    return os.path.join(base, "runs.jsonl")
+    return os.path.join(H.worker_stats_dir(), "runs.jsonl")
 
 
 def code_ledger_path():
@@ -345,11 +345,6 @@ def partition(spans, extra, lo, hi):
     return credit, sessions
 
 
-def union_minutes(spans, extra, lo, hi):
-    inside = [(max(a, lo), min(b, hi)) for a, b, _ in spans + extra if min(b, hi) > max(a, lo)]
-    return H.union_secs(inside) / 60.0
-
-
 def speed_days(lo, now):
     out = {}
     for path in glob.glob(os.path.join(H.state_dir(), "speed-days", "????-??-??.json")):
@@ -406,7 +401,8 @@ def background_view(days, lo, now, collector_rows, covered_days):
             statusline[key] += line.get(key) or 0
         statusline["session_hours"] += len(line.get("session_hours") or ())
     cpu_ms = statusline["cpu_ms"] / statusline["cpu_n"] * statusline["renders"] if statusline["cpu_n"] else None
-    kicks = [f for f in tsv_days(os.path.join(state_dir(), "merge-kick"), lo) if len(f) >= 3]
+    kicks = [f for f in tsv_days(os.path.join(state_dir(), "merge-kick"), lo)
+             if len(f) >= 3 and f[0].isdigit() and int(f[0]) / 1e6 >= lo]
     kick_cpu = sum(float(f[2]) for f in kicks if f[2].replace(".", "", 1).isdigit())
     hs = [f for f in tsv_days(os.path.join(state_dir(), "hs"), lo) if len(f) >= 3 and f[0].isdigit() and f[1].isdigit()]
     lag = [(int(f[1]) - int(f[0])) / 1e6 for f in hs if f[2] == "hs-lag" and int(f[0]) / 1e6 >= lo]
@@ -453,7 +449,8 @@ def night_view():
         nights.append({"id": night.get("id"), "started": start, "wall_h": round((finish - start) / 3600.0, 2),
                        "first_landing_h": round((landing - start) / 3600.0, 2) if landing else None, "jobs_done": done})
     nights.sort(key=lambda n: n["started"])
-    return {"last": nights[-1] if nights else None, "nights": len(nights)}
+    return {"last": nights[-1] if nights else None, "nights": len(nights),
+            "by_day": {H.local_day(n["started"]): n for n in nights}}
 
 
 def delegation_view(runs, lo):
@@ -515,6 +512,11 @@ def judge_regressions(days, today, component_om):
     exposure minimum, on a component worth >= 0.5 OM/d with a lever."""
     closed = sorted(d for d in days if d < today)
     judged, baselines, out = closed[-LIMITS["regression_days"]:], {}, []
+    recent = [today]
+    while len(recent) <= LIMITS["regression_days"]:
+        recent.insert(0, H.local_day(H.day_start(recent[0]) - 43200))
+    if judged != recent[:-1]:
+        judged = []
     history = closed[:-LIMITS["regression_days"]][-LIMITS["baseline_days"]:]
     keys = {k for d in closed for k in (days[d].get("values") or {})}
     for key in sorted(keys):
@@ -610,30 +612,34 @@ def moved_opportunities(component_om, days, now):
     """The heavy-test and hot-hook rules bin/code-doctor judged until 2026-10-03: one opportunity per suite or hook,
     priced at its share of the attended test or hook minutes. A suite whose keep row or head names a requirement
     carries it as `protected`: its lever speeds the suite up and never drops it."""
-    out, secs = [], {}
+    out, secs, seen = [], {}, {}
     for row in H.load_tests(now):
         if row.get("label"):
-            secs.setdefault((row.get("repo") or os.path.basename(str(row.get("repo_root") or "")), row["label"]),
-                            []).append(row["secs"])
+            suite = (row.get("repo") or os.path.basename(str(row.get("repo_root") or "")), row["label"])
+            secs.setdefault(suite, []).append(row["secs"])
+            seen.setdefault(suite, set()).add(H.local_day(row["end"]))
     total = sum(sum(v) for v in secs.values())
     for (repo, label), values in sorted(secs.items()):
         rel = next((r for r in ("tests/%s.sh" % label, "tests/%s.py" % label)
                     if os.path.isfile(os.path.join(H.repos_dir(), repo, r))), None)
         if sorted(values)[len(values) // 2] >= HEAVY_TEST_S and rel:
             om = (component_om("chat/tests") + component_om("chat/queue")) * sum(values) / total
-            out.append(target_opportunity("tests/%s/%s" % (repo, label), om, TEST_LEVER, len(values),
-                                          test_requirement(repo, rel)))
+            if om >= LIMITS["worth_om_day"] and (len(seen[(repo, label)]) >= LIMITS["seen_days"]
+                                                 or len(values) >= LIMITS["seen_sessions"]):
+                out.append(target_opportunity("tests/%s/%s" % (repo, label), om, TEST_LEVER, len(values),
+                                              test_requirement(repo, rel)))
     ms = {}
     for day, acc in days.items():
         for key, (_, us) in (acc.get("hook_cpu_us") or {}).items():
             ms.setdefault(key, {})[day] = us / 1000.0
-    total = sum(sum(v.values()) for v in ms.values())
+    total = sum(sum(v.values()) for k, v in ms.items() if not k.startswith(H.STOP_PART))
     for key in sorted(k for k, v in ms.items() if max(v.values()) >= HOT_CPU_MS_DAY):
         since = hook_changed_day(key)
         kept = [v for day, v in ms[key].items() if not since or day > since]
         if len(kept) >= HOT_MIN_DAYS and sum(kept) / len(kept) >= HOT_CPU_MS_DAY:
-            om = component_om("chat/hooks") * sum(ms[key].values()) / total
-            out.append(target_opportunity("hooks/%s" % key, om, HOOK_LEVER, len(kept)))
+            om = component_om("chat/hooks") * sum(kept) / total if total else 0.0
+            if om >= LIMITS["worth_om_day"]:
+                out.append(target_opportunity("hooks/%s" % key, om, HOOK_LEVER, len(kept)))
     return out
 
 
@@ -660,8 +666,8 @@ def judge_digest(ledger):
     digest = hashlib.sha256()
     with open(os.path.realpath(__file__), "rb") as handle:
         digest.update(handle.read())
-    dismissals = [r for r in speed_rows(ledger) if r.get("status") in ("not-a-bug", "weather")]
-    digest.update(json.dumps([dismissals, LIMITS, LEVERS, SCORE_MIN, BUDGET_H, TOP_K, H.C1_R_S, BANDS, PROOF, OUTPUT_PROOF],
+    dismissals = [r for r in speed_rows(ledger) if r.get("status") in H.DISMISSED]
+    digest.update(json.dumps([dismissals, LIMITS, HEAVY_TEST_S, KEEP_WORDS.pattern, LEVERS, SCORE_MIN, BUDGET_H, TOP_K, H.C1_R_S, BANDS, PROOF, OUTPUT_PROOF],
                              sort_keys=True).encode())
     return digest.hexdigest()
 
@@ -703,7 +709,7 @@ def hours(h):
 
 
 def collect(write, now):
-    started, cpu_start = time.monotonic(), collector_runs_cpu()
+    started, cpu_start = time.monotonic(), H.cpu_s()
     folder = state_dir()
     state = H.read_json(os.path.join(folder, "state.json"), {})
     ledger = H.load_ledger()[0] or {}
@@ -727,7 +733,7 @@ def collect(write, now):
     starts = [r for r in rows if r[0] == "s" and r[3] == "chat" and r[1] >= lo]
     start_s = {}
     for r in starts:
-        start_s[H.local_day(r[1])] = start_s.get(H.local_day(r[1]), 0.0) + (r[4] or 0) + (r[5] or 0)
+        start_s[H.local_day(r[1])] = start_s.get(H.local_day(r[1]), 0.0) + (r[5] if r[5] is not None else r[4] or 0)
         sessions.setdefault(("chat", "start"), set()).add(str(r[6]))
     for day, secs in start_s.items():
         credit[(day, "chat", "start")] = secs
@@ -747,7 +753,7 @@ def collect(write, now):
             leaf_days.setdefault((area, leaf), set()).add(day)
     headline = sum(sum(v.values()) for v in tree.values())
     areas = {area: round(sum(v.values()), 2) for area, v in tree.items()}
-    r_band = None if presence else [round(union_minutes(*H.owner_spans(rows, i), lo, now) / covered, 1) for i in (R_LOW, R_HIGH)]
+    r_band = None if presence else [round(sum(H.owner_minutes(rows, i, lo, now)) / covered, 1) for i in (R_LOW, R_HIGH)]
     local = sum(tree.get("chat", {}).get(leaf, 0.0) for leaf in LOCAL_LEAVES)
     machine = machine_view(days, local)
     night = night_view()
@@ -777,7 +783,7 @@ def collect(write, now):
     stored = stored_days(now)
     for day in sorted({d for d, _, _ in credit} | set(days)):
         if day < today and H.day_start(day) >= lo and (day not in stored or write):
-            last = night["last"] if night["last"] and H.local_day(night["last"]["started"]) == day else None
+            last = night["by_day"].get(day)
             stored[day] = {"day": day, "values": day_values(day, credit, prompts, (days.get(day) or {}).get("machine"),
                                                             (days.get(day) or {}).get("statusline"), kicks.get(day),
                                                             runs, last)}
@@ -819,7 +825,7 @@ def collect(write, now):
     opportunities.sort(key=lambda o: (o["opportunity"]["needs_egor"], -o["opportunity"]["score"], o["id"]))
     selection = select(opportunities, [p for p in problems if p["state"] in H.LOUD_STATES])
     problems += opportunities
-    problem_count = sum(1 for p in problems if p["state"] in ("new", "open", "regressed"))
+    problem_count = sum(1 for p in problems if p["state"] in H.LOUD_STATES)
 
     blind = []
     residual = tree.get("chat", {}).get("residual", 0.0)
@@ -867,7 +873,7 @@ def collect(write, now):
         "head": head_of(headline, r_band, presence, status),
     }
     document["menu"] = menu_lines(document)
-    document["timing"] = {"cpu_s": round(collector_runs_cpu() - cpu_start, 2)}
+    document["timing"] = {"cpu_s": round(H.cpu_s() - cpu_start, 2)}
     if write:
         os.makedirs(folder, exist_ok=True)
         for day, entry in stored.items():
@@ -881,11 +887,6 @@ def collect(write, now):
             if os.path.basename(path)[:10] < cutoff:
                 os.unlink(path)
     return document
-
-
-def collector_runs_cpu():
-    times = os.times()
-    return times.user + times.system + times.children_user + times.children_system
 
 
 def background_share(background, machine, covered):
@@ -963,7 +964,7 @@ def menu_lines(document):
                                                          evidence.get("compared", "–"), evidence.get("result", "–")), "d")
     for p in document["problems"]:
         if p["rule"] == "regression":
-            emit(0, p["fact"], red=p["state"] in ("new", "open", "regressed"))
+            emit(0, p["fact"], red=p["state"] in H.LOUD_STATES)
     emit(0, "not measured" if document["blind_spots"] else "not measured: nothing", "d")
     for spot in document["blind_spots"]:
         emit(1, spot["what"], "d")

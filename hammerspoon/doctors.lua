@@ -643,38 +643,33 @@ local function hsJournal(name, startedAt, endedAt)
       hs.fs.mkdir(base)
       hs.fs.mkdir(folder)
     end
-    local file = io.open(folder .. "/" .. day .. ".tsv", "a")
-    if not file then return end
-    file:write(string.format("%d\t%d\t%s\n", math.floor(startedAt * 1e6), math.floor(endedAt * 1e6), name))
-    file:close()
+    limits.journalLine(folder, name, startedAt, endedAt)
   end)
-end
-
--- backgroundMenu's depth is private to llm-limits: read here, never written.
-local function inBackground()
-  for index = 1, 32 do
-    local name, value = debug.getupvalue(limits.timedMenu, index)
-    if name == nil then return false end
-    if name == "backgroundDepth" then return type(value) == "number" and value > 0 end
-  end
-  return false
 end
 
 local function entries()
   local now = clock()
   if built and now - built.at < M.cacheSeconds then return built.entries end
-  local background = inBackground()
+  local background = limits.inBackground()
   local list = limits.timedMenu("doctors", compute)
   if background then hsJournal("doctors:bg", now, clock()) end
   built = { at = now, entries = list }
   return list
 end
 
-local lagLast = nil
+-- The gap is measured on mach absolute time, which stops while the Mac sleeps: a wall-clock gap would
+-- journal every night's sleep (or a clock jump) as main-thread lag.
+local function uptime()
+  local timer = hs.timer
+  return timer and timer.absoluteTime and timer.absoluteTime() / 1e9 or nil
+end
+
+local lagLast, lagUp = nil, nil
 function M.lagTick()
-  local at = clock()
-  if lagLast and at - lagLast - LAG_EVERY_S > LAG_MIN_S then hsJournal("hs-lag", lagLast + LAG_EVERY_S, at) end
-  lagLast = at
+  local at, up = clock(), uptime()
+  local gap = up and lagUp and up - lagUp or lagLast and at - lagLast
+  if gap and gap - LAG_EVERY_S > LAG_MIN_S then hsJournal("hs-lag", at - gap + LAG_EVERY_S, at) end
+  lagLast, lagUp = at, up
 end
 M.lagTimer = hs.timer.doEvery(LAG_EVERY_S, M.lagTick)
 

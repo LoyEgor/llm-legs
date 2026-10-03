@@ -297,6 +297,15 @@ cx_claims=$(claims_json codex)
 gm_claims=$(claims_json gemini)
 gr_claims=$(claims_json grok)
 
+media_order=false
+cx_starts='{}'; gm_starts='{}'; gr_starts='{}'
+if [ "$query_role" = image ]; then
+  media_order=true
+  cx_starts=$(worker_starts_json codex 2>/dev/null) || cx_starts='{}'
+  gm_starts=$(worker_starts_json gemini 2>/dev/null) || gm_starts='{}'
+  gr_starts=$(worker_starts_json grok 2>/dev/null) || gr_starts='{}'
+fi
+
 # A wall worker-run just watched, before llm-limits has caught up. Unexpired record → walled —
 # until a reading of that account newer than the record shows EVERY window it records open; then
 # the collector has caught up and the record lapses (an unparseable RESET falls back to now+3600,
@@ -492,6 +501,8 @@ summary=$(jq -r \
   --arg gr_par "$gr_paused" \
   --argjson cb_claims "$cb_claims" --argjson cx_claims "$cx_claims" \
   --argjson gm_claims "$gm_claims" --argjson gr_claims "$gr_claims" \
+  --arg media_order "$media_order" --argjson cx_starts "$cx_starts" \
+  --argjson gm_starts "$gm_starts" --argjson gr_starts "$gr_starts" \
   --argjson cb_walls "$cb_walls" --argjson cx_walls "$cx_walls" \
   --argjson gm_walls "$gm_walls" --argjson gr_walls "$gr_walls" --argjson cx_unlisted "$cx_unlisted" \
   --argjson qx "$query_exclude_json" --arg fable_view "$query_fable_view" "$LIMITS_VIEW_JQ"'
@@ -529,7 +540,11 @@ summary=$(jq -r \
   # false, so the key is a no-op there rather than a ranking function of its own. The budget is
   # negated because the sort ascends, and coalesced for the unmeasured rows the display sort
   # carries: jq refuses to negate null.
-  def rank_keys: [(if .defer5h then 1 else 0 end), (if .claimed then 1 else 0 end), (if .auth_late then 1 else 0 end), (0 - (.budget // 0)), .name];
+  # `--role image` puts the media rotation (shared-invariants row dh) in front: least recently
+  # started first, never started first, the rule-2 keys only breaking ties. The claim stays ahead
+  # of the stamp, which a parallel run writes only once its launch is checked.
+  def rank_keys: (if $media_order == "true" then [(if .claimed then 1 else 0 end), (.started // 0)] else [] end) +
+    [(if .defer5h then 1 else 0 end), (if .claimed then 1 else 0 end), (if .auth_late then 1 else 0 end), (0 - (.budget // 0)), .name];
   def rank: sort_by(rank_keys);
   # Display bands are applied only while rendering, and within a band the order stays the
   # selection order (shared-invariants g), so the render sorts on the same keys.
@@ -777,6 +792,7 @@ summary=$(jq -r \
      rs:reset_str(.weekly)} |
     .spend = spending | .budget = spend_budget | .budget_days = spend_days |
     .claimed = claimed_in($cx_claims) |
+    .started = $cx_starts[.name] |
     .observed = (.name | IN($cx_walls[])) |
     .walled = (usage_walled(.spend) or .observed) | eligibility |
     .unlisted = (.name | IN($cx_unlisted[])) | .eligible = (.eligible and (.unlisted | not))]) as $cx_accounts |
@@ -808,6 +824,7 @@ summary=$(jq -r \
      rs:reset_str(.weekly)} |
     .spend = spending | .budget = spend_budget | .budget_days = spend_days |
     .claimed = claimed_in($gm_claims) |
+    .started = $gm_starts[.name] |
     .observed = (.name | IN($gm_walls[])) |
     .walled = (usage_walled(.spend) or .observed) | eligibility]) as $gm_accounts |
   ($gm_accounts | map(select(.eligible)) | rank) as $gm_eligible |
@@ -841,6 +858,7 @@ summary=$(jq -r \
      wk:eff(.weekly),wk_reset:((.weekly.resets_at? // null) | epoch),rs:reset_str(.weekly)} |
     .spend = spending | .budget = spend_budget | .budget_days = spend_days |
     .claimed = claimed_in($gr_claims) |
+    .started = $gr_starts[.name] |
     .observed = (.name | IN($gr_walls[])) |
     .walled = (usage_walled(.spend) or .observed) | eligibility]) as $gr_accounts |
   ($gr_accounts | map(select(.eligible)) | rank) as $gr_eligible |

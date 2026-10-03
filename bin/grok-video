@@ -18,6 +18,7 @@ resolve_root() {
 
 root=$(resolve_root)
 . "$root/share/image-leg.sh"
+. "$root/share/account-arg.sh"
 image_leg_start grok-video video observed_model
 . "$root/share/image-caps.sh"
 . "$root/share/worker-claims.sh"
@@ -78,7 +79,7 @@ while [ "$#" -gt 0 ]; do
     --duration) [ "$#" -ge 2 ] || usage; duration=$2; shift 2 ;;
     --resolution) [ "$#" -ge 2 ] || usage; resolution=$2; shift 2 ;;
     --aspect) [ "$#" -ge 2 ] || usage; aspect=$2; shift 2 ;;
-    --account) [ "$#" -ge 2 ] || usage; account=$2; shift 2 ;;
+    --account) [ "$#" -ge 2 ] || usage; account_arg "$2"; account=$2; shift 2 ;;
     --resume) [ "$#" -ge 2 ] || usage; resume=$2; shift 2 ;;
     *) usage ;;
   esac
@@ -206,7 +207,7 @@ if [ -n "$resume" ] && [ -z "$account" ]; then
 fi
 
 select_rc=0
-grok_media_select_account grok-video "$root" "$worker_pick_cmd" "$grok_profiles_dir" "$account" || select_rc=$?
+grok_media_select_account grok-video "$root" "$worker_pick_cmd" "$grok_profiles_dir" "$account" "$resume" || select_rc=$?
 [ "$select_rc" -eq 0 ] || exit "$select_rc"
 account=$grok_media_account
 

@@ -468,7 +468,8 @@ def knob_lines():
 
 def knobs(record_file):
     """Lines of the run that set a model, effort or thinking knob: its worktrees against the night base (untracked
-    files count as added), and the live settings and worker-model files against their lines at launch."""
+    files count as added); the live settings and worker-model files against their lines at launch only as notes, since
+    a /model or effort change by Egor lands there too and no record says who wrote it."""
     record = load(record_file, {})
     base = "refs/night/%s/base" % record.get("night")
     hits = []
@@ -496,16 +497,20 @@ def knobs(record_file):
                              for number, text in enumerate(handle, 1)]
             except OSError:
                 pass
-    now = knob_lines()
-    for path, then in (record.get("knobs_at_launch") or {}).items():
-        lines = now.get(path, [])
-        whole = texts(path).get(path, "").split("\n")
-        hits += [(knob_site(path, l), "%s:%d" % (path, whole.index(l) + 1), "+" + l) for l in lines if l not in then]
-        hits += [(knob_site(path, l), path, "-" + l) for l in then if l not in lines]
     for site, where, line in hits:
         if site:
             print("model/effort knob, %s: %s: %s · speed never trades intelligence, the change is Egor alone to make"
                   % (site, where, fit(line, 120)))
+    now = knob_lines()
+    for path, then in (record.get("knobs_at_launch") or {}).items():
+        lines = now.get(path, [])
+        whole = texts(path).get(path, "").split("\n")
+        live = [(knob_site(path, l), "%s:%d" % (path, whole.index(l) + 1), "+" + l) for l in lines if l not in then]
+        live += [(knob_site(path, l), path, "-" + l) for l in then if l not in lines]
+        for site, where, line in live:
+            if site:
+                print("doctor-fix: note: live model/effort knob changed since launch, %s: %s: %s · anyone may have made it, "
+                      "so it holds no run open; Egor checks it" % (site, where, fit(line, 120)), file=sys.stderr)
 
 
 if __name__ == "__main__":
@@ -805,6 +810,7 @@ untraded_handoff() { # record evidence -> the cited handoff addressed to Egor th
   for word in ${words[@]+"${words[@]}"}; do
     word=${word#[(\`]}
     word=${word%%[,;:)\`]*}
+    while [[ $word == *[.!?\"\'] ]]; do word=${word%?}; done
     [[ $word == *.md ]] || continue
     for path in "$word" $(jq -r '.worktrees[]? + "/" + $w' --arg w "$word" "$1") "$repo_root/$word" \
       "${DOCTOR_FIX_DOCS:-$repo_root/docs}/${word#docs/}"; do

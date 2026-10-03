@@ -85,27 +85,18 @@ check(read(dir .. "/" .. day(t0) .. ".tsv") == string.format("%d\t1\tcom.apple.T
   "the aligned tick did not write its minute")
 presence.stop()
 
--- Pruning at 35 days, once a day.
+-- Pruning is bin/speed-doctor's prune_journals alone: the writer deletes nothing.
 os.execute("rm -rf '" .. dir .. "'")
 assert(hs.fs.mkdir(dir))
 local function touch(name) local h = assert(io.open(dir .. "/" .. name, "w")); h:write("x\n"); h:close() end
 local today = t0 + 12 * 3600
-for _, ago in ipairs({ 36, 35, 34 }) do touch(day(today - ago * 86400) .. ".tsv") end
-touch("notes.txt")
+touch(day(today - 40 * 86400) .. ".tsv")
 presence = load()
 now, idle, bundle = today, 5, "com.apple.Safari"
 presence.tick()
-check(read(dir .. "/" .. day(today - 36 * 86400) .. ".tsv") == nil, "a 36-day-old file survived")
-check(read(dir .. "/" .. day(today - 35 * 86400) .. ".tsv") ~= nil, "a 35-day-old file was deleted")
-check(read(dir .. "/" .. day(today - 34 * 86400) .. ".tsv") ~= nil, "a 34-day-old file was deleted")
-check(read(dir .. "/notes.txt") ~= nil, "a foreign file was deleted")
-touch(day(today - 40 * 86400) .. ".tsv")
-now = today + 60
-presence.tick()
-check(read(dir .. "/" .. day(today - 40 * 86400) .. ".tsv") ~= nil, "pruned twice in one day")
 now = today + 86400
 presence.tick()
-check(read(dir .. "/" .. day(today - 40 * 86400) .. ".tsv") == nil, "the next day did not prune")
+check(read(dir .. "/" .. day(today - 40 * 86400) .. ".tsv") ~= nil, "the writer pruned a day file")
 
 -- A write failure and a raising API never raise.
 local blocker = base .. "/blocker"

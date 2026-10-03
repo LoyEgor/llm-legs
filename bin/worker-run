@@ -1452,7 +1452,7 @@ workdir_escape_line() { # directory
 path_shape_ok() { # path
   case $1 in
     ''|.|..) return 1 ;;
-    /*|~*|-*) return 1 ;;
+    /*|\~*|-*) return 1 ;;
     ../*|*/../*|*/..) return 1 ;;
     *[[:cntrl:]]*) return 1 ;;
   esac
@@ -1937,11 +1937,8 @@ journal_worker_run() { # directory status exit-code
 
 # The task row the chat paints for this run reads this file, so every transition rewrites it whole.
 write_run_state() { # directory phase [exit-code]
-  local directory="$1" phase="$2" code="${3:-}" tag='' rest round agent session tmp
+  local directory="$1" phase="$2" code="${3:-}" tag='' rest agent session tmp
   [ -d "$directory" ] || return 0
-  round=$(jq -r '.round // 0' "$directory/state.json" 2>/dev/null) || round=0
-  [[ "$round" =~ ^[0-9]+$ ]] || round=0
-  [ "$phase" != wait ] || round=$((round + 1))
   agent=$(jq -r '.agent_task_id // empty' "$directory/state.json" 2>/dev/null) || agent=''
   [ -n "$agent" ] || agent=$(cat "$directory/agent-task" 2>/dev/null) || agent=''
   [ -n "$agent" ] || agent=${CLAUDE_AGENT_ID:-}
@@ -1949,12 +1946,12 @@ write_run_state() { # directory phase [exit-code]
   rest=${tag#* · }
   session=$(cat "$directory/launcher" 2>/dev/null) || session=''
   tmp="$directory/state.json.tmp.$$"
-  if jq -n --arg phase "$phase" --argjson round "$round" --arg code "$code" --arg agent "$agent" \
+  if jq -n --arg phase "$phase" --arg code "$code" --arg agent "$agent" \
     --arg session "$session" --arg account "${tag%% · *}" --arg model "${rest%% · *}" --arg effort "${rest##* · }" \
     --arg round_id "$(jq -r '.review_round // empty' "$directory/meta.json" 2>/dev/null)" \
     --arg started "$(jq -r '.pid_started_at // .started_at // empty' "$directory/meta.json" 2>/dev/null)" \
     'def opt: if . == "" then null else . end;
-     {phase: $phase, round: $round, exit_code: ($code | opt | if . == null then . else (tonumber? // .) end),
+     {phase: $phase, exit_code: ($code | opt | if . == null then . else (tonumber? // .) end),
       agent_task_id: ($agent | opt), session: ($session | opt), account: ($account | opt),
       model: ($model | opt), effort: ($effort | opt), round_id: ($round_id | opt),
       started_epoch: ($started | opt | if . == null then . else (tonumber? // null) end),

@@ -89,6 +89,9 @@ assert grep -q 'Veo 3.1 - Fast takes at most 3 --ref images' "$VIDEO_ERR"
 assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'drift' --first-frame "$WORK/missing.png")" = 2
 assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'drift' --last-frame "$WORK/missing.png")" = 2
 assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'drift' --account 'Bad Name')" = 2
+assert test "$(video_rc --dest "$OUT/a.mp4" --prompt drift --account "")" = 2
+assert grep -q -- "--account needs a profile name" "$VIDEO_ERR"
+assert test ! -s "$ENGINE_CALLS"
 assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'drift' --first-frame "$FRAME" --ref "$FRAME" --ref "$FRAME")" = 2
 assert grep -q 'separate Flow modes' "$VIDEO_ERR"
 assert test "$(video_rc --dest "$OUT/a.mp4" --prompt 'drift' --last-frame "$FRAME" --edit "$CLIP")" = 2
@@ -804,6 +807,9 @@ assert test "$(engine_rc generate --prompt x --dest "$OUT/x.mp4" --first-frame "
 assert test "$(engine_rc generate --prompt x --dest "$OUT/x.mp4" --count 7)" = 2
 assert test "$(engine_rc generate --prompt x --dest "$OUT/x.mp4" --extend "$CLIP")" = 2
 assert jq -e '.reason | test("not a clip gemini-video saved")' "$WORK/engine.out" >/dev/null
+assert test "$(engine_rc generate --prompt x --dest "$OUT/x.mp4" --account "")" = 2
+assert grep -q "needs a profile name" "$WORK/engine.err"
+assert test ! -s "$WORK/engine.out"
 assert test "$(engine_rc generate --prompt x --dest "$OUT/x.mp4" --account nologin)" = 4
 assert jq -e '.code == 4 and (.reason | test("geminib web nologin"))' "$WORK/engine.out" >/dev/null
 assert grep -q '^BROWSER_FAILURE route=flow account=nologin code=4 shot=- reason=.*geminib web nologin' "$WORK/engine.err"

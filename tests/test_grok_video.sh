@@ -153,6 +153,12 @@ assert test "$video_rc" -eq 2
 video_rc=0
 video_run --dest "$OUTPUT_DIR/missingref.$CONTAINER" --prompt 'push in' --ref "$WORK/absent.jpg" || video_rc=$?
 assert test "$video_rc" -eq 2
+video_rc=0
+video_run --dest "$OUTPUT_DIR/emptyacct.$CONTAINER" --prompt "push in" --ref "$WORK/ref-a.jpg" --account "" || video_rc=$?
+assert test "$video_rc" -eq 2
+assert grep -q -- "--account needs a profile name" "$VIDEO_ERR"
+assert test ! -s "$FAKE_GROKB_CALLS"
+assert test ! -s "$PICK_CALLS"
 
 # image_to_video takes 6 or 10 seconds and nothing between; reference_to_video takes 1 to 15. The
 # wrong one for the tool the refs select is refused rather than sent to be billed and rejected.
@@ -249,6 +255,7 @@ assert grep -qx "ARG=$SINGLE_TOOL" "$FAKE_GROKB_CALLS"
 assert_fails grep -qx "ARG=$MULTI_TOOL" "$FAKE_GROKB_CALLS"
 assert grep -qx -- '--account grok --role image' "$PICK_CALLS"
 assert test -e "$CLAIMS_DIR/grok/picked"
+assert test -e "$WORK/media-starts/grok/picked"
 assert grep -qx 'ARG=profile' "$FAKE_GROKB_CALLS"
 assert grep -qx 'ARG=picked' "$FAKE_GROKB_CALLS"
 assert grep -qx 'ARG=--always-approve' "$FAKE_GROKB_CALLS"
@@ -355,8 +362,10 @@ assert video_run --dest "$OUTPUT_DIR/nearedge.$CONTAINER" --prompt 'push in' --a
 mkdir -p "$GROK_PROFILES/explicit/sessions/%2Ftmp%2Fwork/$SESSION_UUID"
 : >"$FAKE_GROKB_CALLS"
 : >"$PICK_CALLS"
+rm -rf "$WORK/media-starts"
 assert video_run --dest "$OUTPUT_DIR/resumed.$CONTAINER" --prompt 'now pan left' \
   --ref "$WORK/ref-a.jpg" --resume "$SESSION_UUID"
+assert test ! -e "$WORK/media-starts/grok/explicit"
 assert test ! -s "$PICK_CALLS"
 assert grep -qx 'ARG=--resume' "$FAKE_GROKB_CALLS"
 assert grep -qx "ARG=$SESSION_UUID" "$FAKE_GROKB_CALLS"

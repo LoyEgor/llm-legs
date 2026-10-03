@@ -14,13 +14,15 @@ worker_claims_ttl() {
   printf '%s\n' "${WORKER_CLAIMS_TTL:-600}"
 }
 
-worker_claims_record() {
-  local vendor="$1" account="$2" root
-  worker_claims_valid_name "$vendor" || return 1
-  worker_claims_valid_name "$account" || return 1
-  root=$(worker_claims_dir) || return 1
-  mkdir -p -- "$root/$vendor" && touch -- "$root/$vendor/$account"
+worker_claims_touch() { # root-function vendor account
+  local root
+  worker_claims_valid_name "$2" || return 1
+  worker_claims_valid_name "$3" || return 1
+  root=$("$1") || return 1
+  mkdir -p -- "$root/$2" && touch -- "$root/$2/$3"
 }
+
+worker_claims_record() { worker_claims_touch worker_claims_dir "$1" "$2"; }
 
 worker_claims_release() {
   local vendor="$1" account="$2" root
@@ -46,6 +48,30 @@ worker_claims_fresh() {
     fi
   done < <(find -- "$root/$vendor" -mindepth 1 -maxdepth 1 -type f -print 2>/dev/null)
   return 0
+}
+
+# The media rotation stamp (shared-invariants row dh): one file per account whose mtime is when a NEW
+# generation last started on it. Never under the claims root: a claims prune deletes every stale file
+# there, and an idle account's stamp is old by definition.
+worker_starts_dir() {
+  local claims
+  if [ -n "${WORKER_STARTS_DIR:-}" ]; then printf '%s\n' "$WORKER_STARTS_DIR"; return 0; fi
+  claims=$(worker_claims_dir)
+  printf '%s/media-starts\n' "${claims%/*}"
+}
+
+worker_starts_record() { worker_claims_touch worker_starts_dir "$1" "$2"; }
+
+worker_starts_json() { # vendor -> {"account": epoch, ...}; a never-started account is absent
+  local vendor="$1" root file mtime
+  worker_claims_valid_name "$vendor" || return 1
+  root=$(worker_starts_dir) || return 1
+  [ -d "$root/$vendor" ] || { printf '{}\n'; return 0; }
+  while IFS= read -r file; do
+    mtime=$(stat -f '%m' "$file" 2>/dev/null) || continue
+    printf '%s\t%s\n' "${file##*/}" "$mtime"
+  done < <(find -- "$root/$vendor" -mindepth 1 -maxdepth 1 -type f -print 2>/dev/null) |
+    jq -Rsc 'split("\n") | map(select(length > 0) | split("\t") | {(.[0]): (.[1] | tonumber)}) | add // {}'
 }
 
 worker_claims_prune() {

@@ -40,6 +40,7 @@ statusline_self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) || statusline_self="
 statusline_dir=${statusline_self%/*}
 . "$statusline_dir/../share/limits-view.sh"
 . "$statusline_dir/../share/codex-accounts.sh"
+. "$statusline_dir/../tests/lib/suite-journal.sh" --lib
 
 statusline_parent_dir() {
   local path="$1"
@@ -620,18 +621,8 @@ unpushed_marker() { # toplevel session now
 }
 
 self_cpu_ms() {
-  local text part sec IFS=$' \n'
-  cpu_ms=-
-  (( BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1] >= 503 )) || return 0
-  # $(times) would time a forked child; ${ cmd; } runs here but is a bash 5.3 parse, hence the eval.
-  eval 'text=${ times; }'
-  cpu_ms=0
-  for part in $text; do
-    sec=${part#*m}
-    sec=${sec%s}
-    sec=${sec/,/.}
-    cpu_ms=$(( cpu_ms + 10#${part%%m*} * 60000 + 10#${sec%.*} * 1000 + 10#${sec#*.} ))
-  done
+  suite_journal_cpu_ms cpu_ms ''
+  cpu_ms=${cpu_ms:--}
 }
 
 # Propagate just-merged headers to all surfaces via the zero-network collector

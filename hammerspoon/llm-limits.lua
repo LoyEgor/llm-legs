@@ -269,22 +269,22 @@ end
 local function geminiMediaRows(media)
   local rows = {}
   if not media then return rows end
-  local function row(label, left, total, renewsAt, wall)
+  local function row(label, left, total, renewsAt, wall, bound)
     local title
     if wall then
       title = rowTitle("", label, { effective_pct = 100, resets_at = wall }, false, true, false, { pct = "" })
     elseif left and total and total > 0 then
       local used = math.max(0, total - left)
       title = rowTitle("", label, { effective_pct = used / total * 100, resets_at = renewsAt }, false, used >= total)
-    elseif left then
+    elseif left or bound then
       title = rowTitle("", label, nil, false, false, false, { pct = "", reset = "" })
     else
       return
     end
     rows[#rows + 1] = { title = title, disabled = true }
   end
-  row("fv", media.credits, media.creditsTotal, media.creditsRenewsAt, media.videoWall)
-  row("fm", media.musicCredits, media.musicCreditsTotal, media.musicCreditsRenewsAt, media.flowMusicWall)
+  row("fv", media.credits, media.creditsTotal, media.creditsRenewsAt, media.videoWall, media.bound)
+  row("fm", media.musicCredits, media.musicCreditsTotal, media.musicCreditsRenewsAt, media.flowMusicWall, media.bound)
   row("gm", nil, nil, nil, media.musicWall)
   return rows
 end
@@ -926,7 +926,10 @@ local function geminiMediaState(roster, now)
       acct = type(meta.email) == "string" and meta.email:lower():match("^([^@]+)@") or nil
     end
     if acct and roster[acct] and not state[acct] then
+      local cookies = type(meta.email) == "string" and io.open(dir .. "/profiles/" .. name .. "/Default/Cookies", "r")
+      if cookies then cookies:close() end
       state[acct] = {
+        bound = cookies and true or false,
         credits = tonumber(meta.credits),
         creditsTotal = tonumber(meta.credits_total), creditsRenewsAt = tonumber(meta.credits_renews_at),
         musicCredits = tonumber(meta.music_credits),
@@ -3180,18 +3183,25 @@ end
 
 -- Contract row `da`: bin/harness-doctor reads menu/<YYYY-MM-DD>.tsv and makes the folder; a
 -- missing folder or any error drops the line, never the menu.
-function M.menuJournal(name, startedAt)
+function M.journalLine(folder, name, startedAt, endedAt)
   pcall(function()
-    local endedAt = epochNow()
     if not startedAt or not endedAt then return end
-    local file = io.open(harnessDoctorDir() .. "/menu/" .. os.date("%Y-%m-%d", math.floor(endedAt)) .. ".tsv", "a")
+    local file = io.open(folder .. "/" .. os.date("%Y-%m-%d", math.floor(endedAt)) .. ".tsv", "a")
     if not file then return end
     file:write(string.format("%d\t%d\t%s\n", math.floor(startedAt * 1e6), math.floor(endedAt * 1e6), name))
     file:close()
   end)
 end
 
+function M.menuJournal(name, startedAt)
+  pcall(function() M.journalLine(harnessDoctorDir() .. "/menu", name, startedAt, epochNow()) end)
+end
+
 local backgroundDepth = 0
+
+function M.inBackground()
+  return backgroundDepth > 0
+end
 
 -- The journal is the time a click waits: a build off the click path runs here and writes no line.
 function M.backgroundMenu(build, ...)
@@ -3203,7 +3213,7 @@ function M.backgroundMenu(build, ...)
 end
 
 function M.timedMenu(name, build, ...)
-  if backgroundDepth > 0 then return build(...) end
+  if M.inBackground() then return build(...) end
   local _, startedAt = pcall(epochNow)
   local menu = build(...)
   M.menuJournal(name, startedAt)

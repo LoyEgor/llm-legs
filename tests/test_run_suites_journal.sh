@@ -48,6 +48,10 @@ assert jqe --argjson keys "$KEYS" --arg repo "$REPO" --arg sha "$SHA" --arg slot
   and .suites["test_cpu.sh"].cpu_s > 0 and .suites["test_cpu.sh"].secs > 0' "$JOURNAL"
 run_pid=$(jq -r .pid "$JOURNAL")
 assert test "$(cat "$WORK/env.out")" = "SUITE_JOURNAL_PID=$run_pid"
+# A bash with wait -n but no EPOCHREALTIME (4.3, 4.4) leaves a suite's start empty; its CPU stays CPU.
+bash -c 'unset EPOCHREALTIME; . "$0" "$@"' "$ROOT/share/run-suites.sh" --repo "$REPO" -j 2 >/dev/null 2>&1
+assert jqe '.suites["test_cpu.sh"] | (.cpu_s | type == "number") and .cpu_s > 0' <(tail -1 "$JOURNAL")
+sed -i '' '$d' "$JOURNAL"
 assert test ! -e "$XDG_CACHE_HOME/run-suites/runs.jsonl"
 # times.tsv forgets a suite whose file is gone, for this checkout only.
 assert grep -qx $'/elsewhere\ttest_gone.sh\t5' "$RUN_SUITES_TIMES"
@@ -142,7 +146,7 @@ touch \"$WORK/marker-\$1\"
 exit \"\${3:-0}\""
 for b in /bin/bash "$BASH"; do
   tag=${b//\//_}
-  rm -f "$WORK/h/.cache/run-suites/runs.jsonl"
+  rm -f "$WORK/h/.cache/run-suites/runs.jsonl" "$WORK/rcs$tag"
   for args in "a$tag 0 0" "b$tag 1 0" "c$tag 0 5"; do
     env -u XDG_CACHE_HOME HOME="$WORK/h" "$b" "$REPO/tests/test_trap.sh" $args
     printf '%s\n' "$?" >>"$WORK/rcs$tag"
@@ -173,6 +177,27 @@ for b in /bin/bash "$BASH"; do
   wait "$pid"
 done
 assert jqe -s 'length == 2 and all(.[]; .signal == 15 and .complete == false and .suites["test_term.sh"].rc == 143)' "$WORK/term.jsonl"
+# `trap - EXIT HUP` gives HUP back to the journal, never ignores it; a test's own signal action still reads its $?.
+# HUP, not INT: run-suites starts suites in the background, where INT is ignored and untrappable.
+suite "$REPO" test_untrap.sh "trap 'true' EXIT
+trap - EXIT HUP
+trap -p HUP >\"$WORK/untrap-\$1\"
+trap 'printf %s \"\$?\" >\"$WORK/sig-rc-\$1\"' TERM
+sh -c 'kill -TERM \$PPID; exit 7'"
+for b in /bin/bash "$BASH"; do
+  tag=${b//\//_}
+  SUITE_JOURNAL="$WORK/untrap.jsonl" "$b" "$REPO/tests/test_untrap.sh" "$tag"
+  assert grep -q 'suite_journal_die 1' "$WORK/untrap-$tag"
+  assert test "$(cat "$WORK/sig-rc-$tag")" = 7
+done
+# A row over 1 KiB in bytes goes through the single dd write, however few characters it has.
+LC_ALL=en_US.UTF-8 bash -c '. "$1" --lib
+  log=$2
+  dd() { echo dd >>"$log"; command dd "$@"; }
+  suite_journal_line=$(printf "é%.0s" $(seq 1 600))
+  suite_journal_append "$3"' _ "$ROOT/tests/lib/suite-journal.sh" "$WORK/dd.log" "$WORK/mb.jsonl"
+assert grep -qx dd "$WORK/dd.log"
+assert test "$(wc -c <"$WORK/mb.jsonl" | tr -d ' ')" = 1201
 # One that traps nothing, or resets its own trap, is journaled as stopped by the signal, never with its last status: its EXIT
 # action still runs and it still dies of the signal. A SIGKILL leaves no row.
 suite "$REPO" test_sig.sh "trap : HUP INT TERM

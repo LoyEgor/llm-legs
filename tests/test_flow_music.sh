@@ -490,6 +490,10 @@ def fan(*accounts, extra=()):
                          capture_output=True, text=True, env=env, timeout=60)
     return run.returncode, json.loads(run.stdout.strip().splitlines()[-1])
 
+for sub in (["generate", "--prompt", "p", "--out-dir", os.path.join(work, "fan")], ["status"], ["fetch", "--title", "t", "--out-dir", work]):
+    run = subprocess.run([sys.executable, engine, *sub, "--account", ""], capture_output=True, text=True, env=env, timeout=60)
+    assert run.returncode == 2 and run.stdout == "" and "needs a profile name" in run.stderr, (sub, run.returncode, run.stderr)
+
 
 for name in ("flaky",):
     os.makedirs(os.path.join(gw.ROOT, "profiles", name, "Default"), exist_ok=True)

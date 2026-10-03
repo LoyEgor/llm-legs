@@ -408,6 +408,8 @@ ln -s real.sh "$U/repo/bin/link.sh"
 printf 'line one\r\nbad \xff byte\r\n' >"$U/repo/bin/crlf.txt"
 printf 'class A:\n    def run(self):\n        return 1\n\n\nclass B:\n    def run(self):\n        return 2\n' >"$U/repo/bin/two.py"
 git -C "$U/repo" init -q -b main && git -C "$U/repo" add -A && commit "$U/repo" base
+printf 'x\n' >"$U/repo/bin/gone.sh" && git -C "$U/repo" add -A && commit "$U/repo" gone
+git -C "$U/repo" rm -q bin/gone.sh && commit "$U/repo" "gone goes"
 CODE_DOCTOR_DIR="$U/state" python3 - "$CD" "$U/repo" >"$WORK/units.out" 2>&1 <<'PY'
 import importlib.machinery, os, sys
 
@@ -428,6 +430,15 @@ second = [s for s in doc["files"]["bin/two.py"]["symbols"] if s["name"] == "run"
 span = cd.unit_span("repo/bin/two.py", doc["files"]["bin/two.py"], second)
 assert cd.unit_digest_at(top, None, span) == second["digest"], "the second same-named symbol read as the first"
 assert cd.diff_entries(top, cd.EMPTY_TREE), "a diff from the empty tree listed nothing"
+real_git = cd.git
+class Graph:
+    tops = {"repo": top}
+gone = {"kind": "path", "source": "/nonexistent/link", "target": top + "/bin/gone.sh"}
+assert cd.registration_research(gone, Graph)["commit"], "the deleting commit went unfound"
+for failing in ("log", "show"):
+    cd.git = lambda folder, *args, **kw: None if args[0] == failing else real_git(folder, *args, **kw)
+    assert cd.registration_research(gone, Graph) is None, "a failed git %s settled the registration" % failing
+cd.git = real_git
 print("ok")
 PY
 assert grep -qx ok "$WORK/units.out"
@@ -503,9 +514,12 @@ cp "$WORK/reg/test_greet.sh" "$G/tests/test_greet.sh"
 # judge boots out, its plist kept in the state dir; one whose argument is gone is a trade for Egor.
 mkdir -p "$G/hooks" "$G/data" "$G/.claude" "$HOME/Library/LaunchAgents"
 printf 'x\n' >"$G/hooks/gone-hook.sh" && printf 'x\n' >"$G/bin/old-job" && printf 'x\n' >"$G/data/feed.txt"
+printf 'x\n' >"$G/bin/runner-a"
 printf '#!/bin/bash\n. "$HOME/.claude/hooks/lib/hook-time.sh"\n' >"$G/hooks/quiet.sh"
 git -C "$G" add -A && commit "$G" "hooks, job and feed land"
 git -C "$G" rm -q hooks/gone-hook.sh bin/old-job data/feed.txt && commit "$G" "gone-hook, old-job and feed retire"
+git -C "$G" mv bin/runner-a bin/runner-b && commit "$G" "runner-a becomes runner-b"
+printf 'settings.json holds the hooks\n' >>"$HOME/.claude/CLAUDE.md"
 jq -n --arg c "$G/hooks/gone-hook.sh" --arg q "$G/hooks/quiet.sh" \
   '{hooks: {Stop: [{hooks: [{type: "command", command: $c}, {type: "command", command: $q}]}]}}' >"$G/.claude/settings.json"
 mkdir -p "$CODE_DOCTOR_DIR/rollup"
@@ -523,6 +537,7 @@ agent() { # label program args... -> a LaunchAgent plist in the fixture HOME
 }
 agent com.test.oldjob /bin/bash "$G/bin/old-job"
 agent com.test.feed /bin/cat "$G/data/feed.txt"
+agent com.test.runner /bin/bash "$G/bin/runner-a"
 printf '#!/usr/bin/env bash\necho a\n' >"$G/bin/spare-a" && printf '#!/usr/bin/env bash\necho b\n' >"$G/bin/spare-b"
 git -C "$G" add -A && commit "$G" "the test no longer calls old-tool"
 jq -n '{"cause:good/bin/spare-a": {verdict: "problem", fact: "spare-a is dead", plan: "rm bin/spare-a", proofs: [],
@@ -538,6 +553,10 @@ assert jqe 'select(.rules | index("silent")) | .needs_egor == false and .units[0
 assert jqe --arg id "cause:registration:$G/bin/old-job" '[.problems[] | select(.id == $id)] | length == 1 and .[0].needs_egor == false' "$P"
 assert jqe --arg id "cause:registration:$G/data/feed.txt" '[.problems[] | select(.id == $id)] | length == 1
   and (.[0] | .needs_egor and (.fact | startswith("needs Egor: Cost: ") and contains("Recommendation: boot it out")))' "$P"
+assert jqe --arg id "cause:registration:$G/bin/runner-a" '[.problems[] | select(.id == $id)] | length == 1
+  and (.[0] | .needs_egor and (.fact | contains("now bin/runner-b") and contains("Recommendation: point it at the new path")))' "$P"
+assert jqe --arg id "cause:registration:$G/hooks/gone-hook.sh" 'select(.id == $id) | .registrations | any(startswith("{") | not)' \
+  "$CODE_DOCTOR_DIR/candidates.jsonl"
 "$CD" judge >/dev/null
 assert grep -qF 'find why it exists (`git log -S<its name>`' "$CODE_DOCTOR_DIR"/judge/day/batch-*.md
 assert grep -qF 'Egor decides only what research cannot settle, and only as a trade' "$CODE_DOCTOR_DIR"/judge/day/batch-*.md
@@ -556,11 +575,11 @@ assert jqe -s --arg l "$LB/old-tool" --arg t "$G/bin/old-tool" \
   'map(select(.night == "r3" and .stage == "fix" and .link == $l and .readlink == $t)) | length == 1' "$CODE_DOCTOR_DIR/accounting.jsonl"
 assert test "$(cat "$WORK/reg/launchctl.log")" = "bootout gui/$(id -u)/com.test.oldjob"
 assert test ! -e "$HOME/Library/LaunchAgents/com.test.oldjob.plist" -a -f "$CODE_DOCTOR_DIR/retired-launchagents/com.test.oldjob.plist"
-assert test -f "$HOME/Library/LaunchAgents/com.test.feed.plist"
+assert test -f "$HOME/Library/LaunchAgents/com.test.feed.plist" -a -f "$HOME/Library/LaunchAgents/com.test.runner.plist"
 assert jqe -s --arg p "$HOME/Library/LaunchAgents/com.test.oldjob.plist" --arg m "$CODE_DOCTOR_DIR/retired-launchagents/com.test.oldjob.plist" \
   'map(select(.night == "r3" and .stage == "fix" and .plist == $p and .moved_to == $m and .label == "com.test.oldjob")) | length == 1' \
   "$CODE_DOCTOR_DIR/accounting.jsonl"
-rm "$G/.claude/settings.json" "$HOME/Library/LaunchAgents/com.test.feed.plist"
+rm "$G/.claude/settings.json" "$HOME/Library/LaunchAgents/com.test.feed.plist" "$HOME/Library/LaunchAgents/com.test.runner.plist"
 "$CD" refresh --quiet
 assert jqe '[.problems[] | select(.rule == "registration")] == []' "$P"
 

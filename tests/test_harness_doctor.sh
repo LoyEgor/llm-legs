@@ -166,6 +166,28 @@ assert_eq '["cpu_s","doctor","start","trigger","wall_s"] harness true fixture 1'
 HARNESS_DOCTOR_NOW=$T HARNESS_DOCTOR_FAKE_SAMPLE="" "$DOCTOR" --json >/dev/null
 assert_eq 1 "$(wc -l < "$DOCTORS_DIR/collector-runs.jsonl" | tr -d ' ')" "a --json run persists no C10 row"
 
+mkdir -p "$WORK/exec-cpu"
+printf '#!/usr/bin/env python3\nimport sys, time\nsys.path.insert(0, %s)\nimport collector_runs\ncollector_runs.record("speed", time.time())\n' \
+  "'$ROOT/share'" > "$WORK/exec-cpu/speed"
+chmod +x "$WORK/exec-cpu/speed"
+DOCTORS_DIR="$WORK/exec-cpu" SPEED_DOCTOR_DIR="$WORK/exec-cpu" SPEED_DOCTOR_CMD="$WORK/exec-cpu/speed" \
+  python3 - "$DOCTOR" <<'EOF' || fail "the exec'd collector run could not be launched"
+import importlib.machinery, importlib.util, os, sys, time
+loader = importlib.machinery.SourceFileLoader("harness_doctor", sys.argv[1])
+module = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_doctor", loader))
+loader.exec_module(module)
+pid = os.fork()
+if pid == 0:
+    end = time.process_time() + 0.6
+    while time.process_time() < end:
+        pass
+    module.exec_speed()
+    os._exit(9)
+os.waitpid(pid, 0)
+EOF
+assert_eq true "$(jq -r '.cpu_s < 0.4' "$WORK/exec-cpu/collector-runs.jsonl")" \
+  "a doctor exec'd by Harness journals its own CPU, not the Harness run's it inherited across execv"
+
 assert_eq '["Bash · alpha","15","8.0","1.9","4"]' \
   "$(doc "$(rowq Waits "Bash · alpha") | .cells")" \
   "trivial Bash in a worktree folds into its repo; the 7-day median is read off the day histograms"
@@ -1433,12 +1455,12 @@ assert_eq '' "$(for f in "$ROOT"/tests/fixtures/speed-calibration/*.jsonl.gz; do
   jq -r '.. | strings | select(length > 60 and (startswith("<task-notification>") | not))' | head -3)" \
   "the public calibration transcripts carry no chat text: peer bodies, prompts and tool inputs are stripped"
 
-speed=$(python3 - "$DOCTOR" "$T" "$WORK" "$ROOT/tests/fixtures/speed-calibration" <<'EOF'
-import gzip, glob, importlib.machinery, importlib.util, json, os, sys, time
-loader = importlib.machinery.SourceFileLoader("harness_doctor", sys.argv[1])
-m = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_doctor", loader))
-loader.exec_module(m)
-T, work, calibration = int(sys.argv[2]), sys.argv[3], sys.argv[4]
+speed=$(python3 - "$ROOT" "$T" "$WORK" <<'EOF'
+import gzip, glob, json, os, sys, time
+root, T, work = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+sys.path.insert(0, os.path.join(root, "tests", "lib"))
+from speed_calibration import HI, LO, harness, scan
+m = harness(root)
 count = [0]
 
 def check(cond, what):
@@ -1661,6 +1683,12 @@ media = chat("media", [human(M), say(M + 10, tools=[("tm", "Bash", {"command": "
 check(by(media, "t", M)[9].get("media") == 80.0 and by(media, "t", M)[11] == [["tm", "media"], ["ta", "media"]],
       "C1 a media tool and an image-gen subagent are the media layer, and the row lists its calls")
 
+P = B + 22000
+killed = chat("killed", [human(P), say(P + 10), human(P + 300), say(P + 310), done(P + 320), human(P + 330)])
+row = by(killed, "t", P)
+check(row[3] == P + 10 and row[7] == [P] and row[5] == [0, 1, 1] and by(killed, "t", P + 300)[7] == [P + 300],
+      "C1 a turn left open (no turn_duration) ends at its last entry, and the next prompt opens and answers it: %s" % row)
+
 sub = os.path.join(projects, "p", "parent-s", "subagents", "agent-x.jsonl")
 os.makedirs(os.path.dirname(sub))
 with open(sub[:-6] + ".meta.json", "w") as handle:
@@ -1680,6 +1708,15 @@ row = ["t", 1000.0, "sess", 1100.0, "h", [1, 1, 1], 0, [], [], {"test": 30.0, "t
 m.turn_layers([row], {"tid1": 2000.0, "tid2": 3000.0}, {"sess": [[1001.0, 1011.0], [2000.0, 2050.0]]})
 check(row[9] == {"test": 18.0, "tool": 7.0, "gen": 5.0, "hook": 5.0, "queue": 10.0},
       "the hook-batch and suite-queue layers come out of a turn's tool layers in precedence: %s" % row[9])
+row = ["t", 1000.0, "sess", 1100.0, "h", [1, 1, 1], 0, [], [], {"test": 5.0, "tool": 10.0}, {}, [["tid1", "test"]]]
+m.turn_layers([row], {"tid1": 5000.0}, {"sess": [[1010.0, 1016.0]]})
+check(row[9] == {"tool": 4.0, "hook": 5.0, "queue": 6.0},
+      "queue seconds a hook-emptied layer cannot hold move on to the next tool layer: %s" % row[9])
+load = m.section("Load", [{"key": "load:memory", "dim": True, "cells": ["memory"]}], ["", "a", "b"], [False, True, True],
+                 blind="no load sample in the last hour")
+guard = next(s for s in m.regroup([load]) if s["name"] == "Memory guard")
+check(guard["state"] == "blind" and guard["fact"] == "no load sample in the last hour",
+      "a section split out of a blind one is blind, never ok: %s" % guard)
 
 os.environ["HARNESS_DOCTOR_DIR"] = sd = os.path.join(work, "speed-state")
 runs = [m.run_row(f.split("\t")) for f in ("1000000000\t1003000000\tstop-dispatch.sh\t0\t9\t5000",
@@ -1799,7 +1836,7 @@ with open(suites, "w") as handle:
                  + json.dumps({"session": None, "queued_at": T - 50, "started_at": T - 20}) + "\n")
 check(m.fold_suites({}, {}, T) == {"sessQQQQ": [[T - 50, T - 20]]}, "C5 a chat's suite slot wait is its queue span")
 
-check(m.cpu_secs("1-02:03:04.50") == 86400 + 7384.5 and m.cpu_secs("12:34,5") == 754.5, "ps CPU times parse")
+check(m.etime_s("1-02:03:04.50") == 86400 + 7384.5 and m.etime_s("12:34,5") == 754.5, "ps CPU times parse")
 fake_home = os.path.join(work, "label-home")
 os.makedirs(os.path.join(fake_home, "Library", "LaunchAgents"))
 os.makedirs(os.path.join(fake_home, ".local", "libexec"))
@@ -1807,14 +1844,17 @@ wrapper = os.path.join(fake_home, ".local", "libexec", "tool-runner")
 with open(wrapper, "w") as handle:
     handle.write('#!/bin/bash\nscript=/opt/x/bin/tool\npython=/opt/homebrew/bin/python3\nexec "$python" "$script" --quiet\n')
 import plistlib
-for label, args in (("com.x.tool", [wrapper]), ("homebrew.redis", ["/opt/homebrew/bin/redis-server", "/etc/r.conf"])):
+for label, args in (("com.x.tool", [wrapper]), ("homebrew.redis", ["/opt/homebrew/bin/redis-server", "/etc/r.conf"]),
+                    ("com.x.bash", ["/bin/bash", "/opt/y/job.sh"]), ("com.x.env", ["/usr/bin/env", "python3", "/opt/z/run.py"]),
+                    ("com.x.inline", ["/bin/sh", "-c", "echo hi"])):
     with open(os.path.join(fake_home, "Library", "LaunchAgents", label + ".plist"), "wb") as handle:
         plistlib.dump({"Label": label, "ProgramArguments": args}, handle)
 saved_home, os.environ["HOME"] = os.environ["HOME"], fake_home
 labels = m.launchd_labels()
 os.environ["HOME"] = saved_home
-check(labels == [("com.x.tool", sorted([wrapper, "/opt/x/bin/tool"])), ("homebrew.redis", ["/opt/homebrew/bin/redis-server"])],
-      "C7 a LaunchAgent maps to its program and its libexec wrapper's exec target, never the interpreter: %s" % labels)
+check(labels == [("com.x.bash", ["/opt/y/job.sh"]), ("com.x.env", ["/opt/z/run.py"]),
+                 ("com.x.tool", sorted([wrapper, "/opt/x/bin/tool"])), ("homebrew.redis", ["/opt/homebrew/bin/redis-server"])],
+      "C7 a LaunchAgent maps to its program (an interpreter's script) and its libexec wrapper's exec target, never the interpreter: %s" % labels)
 early, late = "Sat Oct  3 01:00:00 2026", "Sat Oct  3 02:30:00 2026"
 mark = time.mktime(time.strptime("Sat Oct  3 02:00:00 2026", "%a %b %d %H:%M:%S %Y"))
 before = {"100": ("1", 5.0, early, "/opt/homebrew/bin/python3 /opt/x/bin/tool --quiet"), "1": ("0", 0.0, early, "launchd")}
@@ -1826,21 +1866,7 @@ acc = m.speed_day(st, T)
 check(acc["census"] == {"com.x.tool": 1, "unattributed": 1} and acc["census_s"] == 2
       and acc["label_cpu_s"] == {"com.x.tool": 2.6, "unattributed": 0.3},
       "C7 census forks and ps CPU deltas go to the launchd label of their ancestor chain: %s" % acc)
-os.environ["HARNESS_DOCTOR_DIR"] = os.path.join(work, "state")
-
-home = os.path.join(work, "calibration")
-os.makedirs(os.path.join(home, "p"))
-for name in glob.glob(os.path.join(calibration, "*.jsonl.gz")):
-    data = gzip.open(name).read()
-    path = os.path.join(home, "p", os.path.basename(name)[:-3])
-    with open(path, "wb") as handle:
-        handle.write(data)
-    last = m.iso_epoch(json.loads(data.rstrip(b"\n").rsplit(b"\n", 1)[-1])["timestamp"])
-    os.utime(path, (last, last))
-os.environ.update(CLAUDE_PROJECTS_DIR=home, HARNESS_DOCTOR_BOOTS="1790882097")
-LO, HI = 1790629200, 1790967000
-events = []
-m.scan_transcripts({}, HI + 3600, events, {})
+events = scan(m, root, os.path.join(work, "calibration"))
 a_min, b_min = (x / ((HI - LO) / 86400.0) for x in m.owner_minutes(events, 1, LO, HI))
 check(94 <= a_min <= 104 and 63 <= b_min <= 77,
       "C1 calibration 2026-09-29 00:00 to 10-02 21:50 +0300 at R = 5: A %.1f (99 ± 5), B +%.1f (70 ± 7) OM/d"

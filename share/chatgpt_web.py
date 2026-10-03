@@ -45,7 +45,8 @@ SELECTORS = {
     "chat_mode": "Chat",
     "composer": "div[contenteditable='true'][aria-label='Ask ChatGPT'], div[contenteditable='true'][aria-label='Add instructions'], "
                 "#prompt-textarea, div[contenteditable='true'].ProseMirror",
-    "file_input": "form input[type=file][accept^='image/']",
+    "add_files": "Add files and more",
+    "upload": "Add photos & files",
     "attachment": "form [data-testid*=attachment], form img[alt]",
     "send": "form button[aria-label='Send'], button[data-testid=send-button], button[aria-label='Send prompt']",
     "stop": "form button[aria-label^='Stop'], button[data-testid=stop-button]",
@@ -61,8 +62,12 @@ SELECTORS = {
     "preview": "[data-testid=generated-image-preview]",
     "editor_image": "img[class*=ZoomableImage]",
     "menu_item": "[data-radix-popper-content-wrapper] [role^=menuitem], [role=menu] [role^=menuitem]",
+    "comment_text": "input[name=image-comment-instruction]",
+    "comment_pin": "button[aria-label^='Edit comment ']",
 }
-EDITOR = {"markup": "Markup", "canvas": "Draw on image", "undo": "Undo", "resize": "Resize", "close": "Close viewer"}
+EDITOR = {"markup": "Markup", "canvas": "Draw on image", "undo": "Undo", "resize": "Resize", "close": "Close viewer",
+          "comment": "Comment", "comment_surface": "Image comment surface", "tools": "Image editing tools",
+          "send": "Send", "remove_bg": "Remove BG"}
 IMAGE_SRC = r"^blob:https://chatgpt\.com/|/backend-api/estuary/content|oaiusercontent\.com|/files/"
 LIMIT = re.compile(r"(?:image|images|generation|request)[^.\n]{0,80}\blimit\b|\blimit\b[^.\n]{0,80}image", re.I)
 LIMIT_CUE = re.compile(r"try again|again later|resets?\b|upgrade|your plan|plan limit|wait until", re.I)
@@ -88,11 +93,7 @@ def drift(what: str) -> gw.Failure:
     return gw.Failure(1, f"ChatGPT UI drift: {what}")
 
 
-def mask_email(email: str | None) -> str | None:
-    if not email or "@" not in email:
-        return email
-    local, domain = email.split("@", 1)
-    return f"{local[:2]}…@{domain}"
+mask_email = gw.mask_email
 
 
 def known_account(account: str) -> None:
@@ -148,8 +149,24 @@ class Session:
         self.pending: list = []
         self.seen = False
         self.email: str | None = None
-        self.plan: str | None = None
+        self.plans: dict[str, str] = {}
+        self.default: str | None = None
+        self.active: str | None = None
         page.on("response", lambda response: self.pending.append(response))
+        page.on("request", self.note_account)
+
+    # accounts/check v4 keys its PERSONAL account as "default" even when the page works in a team
+    # workspace: only the account id the page's own requests carry names the plan it runs on.
+    def note_account(self, request) -> None:
+        with contextlib.suppress(Exception):
+            self.active = request.headers.get("chatgpt-account-id") or self.active
+
+    @property
+    def plan(self) -> str | None:
+        chosen = self.active or self.default
+        if chosen in self.plans:
+            return self.plans[chosen]
+        return next(iter(self.plans.values())) if len(self.plans) == 1 else None
 
     def poll(self) -> None:
         while self.pending:
@@ -172,15 +189,18 @@ class Session:
         self.email = (body.get("email") or None) if isinstance(body, dict) else None
 
     def feed_plan(self, body) -> None:
-        accounts = body.get("accounts") if isinstance(body, dict) else None
+        body = body if isinstance(body, dict) else {}
+        accounts = body.get("accounts")
         if isinstance(accounts, dict):
-            accounts = [accounts.get("default"), *accounts.values()]
+            accounts = list(accounts.values())
+        self.default = body.get("default_account_id") or self.default
         for entry in accounts if isinstance(accounts, list) else []:
             entry = entry if isinstance(entry, dict) else {}
             account = entry.get("account") if isinstance(entry.get("account"), dict) else entry
-            if account.get("plan_type"):
-                self.plan = account["plan_type"]
-                return
+            ident = account.get("account_id") or account.get("id")
+            named = (account.get("plan_display_name") or "").lower() or account.get("plan_type")
+            if ident and named and (account.get("plan_display_name") or ident not in self.plans):
+                self.plans[ident] = named
 
 
 def visible(page, selector: str) -> bool:
@@ -240,10 +260,15 @@ def attach(page, refs: list[str], wait_s: float = 120) -> None:
         raise drift("a draft attachment left in the composer cannot be removed")
     for index, ref in enumerate(refs):
         before = attached.count()
+        # The composer's image/* file inputs stay in the page but ignore a file set on them (live 2026-10-02):
+        # only the chooser its own menu opens takes the upload.
         try:
-            page.locator(SELECTORS["file_input"]).first.set_input_files(ref, timeout=15000)
+            page.get_by_role("button", name=SELECTORS["add_files"], exact=True).first.click(timeout=10000)
+            with page.expect_file_chooser(timeout=10000) as chooser:
+                page.get_by_text(SELECTORS["upload"], exact=True).first.click(timeout=5000)
+            chooser.value.set_files(ref, timeout=15000)
         except Exception as error:  # noqa: BLE001
-            raise drift(f"no file input in the composer for the upload of {Path(ref).name}") from error
+            raise drift(f"no '{SELECTORS['upload']}' chooser in the composer for {Path(ref).name}") from error
         deadline = time.time() + wait_s
         while attached.count() <= before:
             if time.time() > deadline:
@@ -300,6 +325,23 @@ def stroke(page, points: list[tuple[float, float]], steps: int = 12) -> None:
     page.wait_for_timeout(1000)
 
 
+ON_CANVAS = "(canvas, [x, y]) => { const hit = document.elementFromPoint(x, y); return !!hit && canvas.contains(hit); }"
+
+
+def clear_point(canvas, x: float, y: float, dx: int, dy: int) -> tuple[float, float]:
+    """The corner moved inward off the viewer's overlays (the Stroke width slider sits on a full-width image)."""
+    for sx, sy in ((dx, 0), (0, dy)):
+        for step in range(40):
+            if canvas.evaluate(ON_CANVAS, [x + sx * 8 * step, y + sy * 8 * step]):
+                return x + sx * 8 * step, y + sy * 8 * step
+    return x, y
+
+
+# The viewer panel's left edge is a resizer: a stroke or click starting there drags the panel, draws nothing.
+def inside(value: float, start: float, size: float) -> float:
+    return min(max(value, start + 16), start + size - 16)
+
+
 def mark_region(page, region: tuple[float, float, float, float]) -> None:
     """The region outlined with the Markup pen; the prompt then goes into the composer Markup opens."""
     try:
@@ -311,10 +353,6 @@ def mark_region(page, region: tuple[float, float, float, float]) -> None:
     except Exception as error:  # noqa: BLE001
         raise drift("no Markup canvas in the image viewer") from error
     x, y, w, h = region
-
-    # The viewer panel's left edge is a resizer: a stroke starting there drags the panel, draws nothing.
-    def inside(value: float, start: float, size: float) -> float:
-        return min(max(value, start + 16), start + size - 16)
     left = inside(box["x"] + x * box["width"] + 4, frame["x"], frame["width"])
     right = inside(box["x"] + (x + w) * box["width"] - 4, frame["x"], frame["width"])
     top = inside(box["y"] + y * box["height"] + 4, frame["y"], frame["height"])
@@ -322,10 +360,65 @@ def mark_region(page, region: tuple[float, float, float, float]) -> None:
     for _ in range(2):
         # Live, a stroke drawn the moment the canvas appeared was dropped.
         page.wait_for_timeout(2000)
-        stroke(page, [(left, top), (right, top), (right, bottom), (left, bottom), (left, top)])
+        corners = [clear_point(canvas, left, top, 1, 1), clear_point(canvas, right, top, -1, 1),
+                   clear_point(canvas, right, bottom, -1, -1), clear_point(canvas, left, bottom, 1, -1)]
+        stroke(page, corners + corners[:1])
         if editor_button(page, "undo").is_enabled():
             return
     raise drift("the Markup canvas took no stroke")
+
+
+def place_comments(page, points: list[tuple[float, float, str]], wait_s: float = 10) -> None:
+    """One Comment pin per point, each given its own text and kept with Enter before the next is placed."""
+    try:
+        editor_button(page, "comment").click(timeout=10000)
+        surface = editor_button(page, "comment_surface")
+        surface.wait_for(timeout=10000)
+        box = surface.bounding_box()
+    except Exception as error:  # noqa: BLE001
+        raise drift("no Comment surface in the image viewer") from error
+    text_box, pins = page.locator(SELECTORS["comment_text"]), page.locator(SELECTORS["comment_pin"])
+    for index, (x, y, text) in enumerate(points, 1):
+        # Off an earlier pin and the toolbar lying over the image's foot: a click there would edit or miss.
+        spot = clear_point(surface, inside(box["x"] + x * box["width"], box["x"], box["width"]),
+                           inside(box["y"] + y * box["height"], box["y"], box["height"]),
+                           1 if x < 0.5 else -1, 1 if y < 0.5 else -1)
+        page.mouse.click(*spot)
+        try:
+            text_box.first.wait_for(timeout=5000)
+        except Exception as error:  # noqa: BLE001
+            raise drift(f"comment {index} opened no text box") from error
+        page.keyboard.insert_text(text)
+        page.keyboard.press("Enter")
+        deadline = time.time() + wait_s
+        while pins.count() < index or text_box.count():
+            if time.time() > deadline:
+                raise drift(f"comment {index} was not kept on the image")
+            page.wait_for_timeout(250)
+
+
+def send_comments(page) -> None:
+    """Only the pins go: this Send drops a composer draft, and the composer's own send drops the pins (live)."""
+    try:
+        page.get_by_role("toolbar", name=EDITOR["tools"]).get_by_role("button", name=EDITOR["send"], exact=True) \
+            .first.click(timeout=10000)
+    except Exception as error:  # noqa: BLE001
+        raise drift("no Send on the Comment toolbar") from error
+
+
+def remove_background(page, before: dict, wait_s: float = 20) -> None:
+    """One click sends the viewer's own fixed prompt: no text field, and a composer draft is not sent with it."""
+    try:
+        editor_button(page, "remove_bg").click(timeout=10000)
+    except Exception as error:  # noqa: BLE001
+        raise drift("no Remove BG in the image viewer") from error
+    deadline = time.time() + wait_s
+    while time.time() < deadline:
+        state = probe(page)
+        if state["streaming"] or len(state["replies"]) > len(before["replies"]) or state["images"] != before["images"]:
+            return
+        page.wait_for_timeout(500)
+    raise drift(f"Remove BG started nothing within {wait_s:.0f}s")
 
 
 def resize_options(page) -> list[str]:
@@ -437,20 +530,28 @@ def render_on(account: str, args, meta: dict) -> dict:
         bind(account, session, meta)
         gw.close_promos(page, account)
         attach(page, args.ref)
-        if args.prompt is None:
-            open_editor(page, on_ref=False)
+        if args.tool != "generate" or args.region:
+            open_editor(page, on_ref=bool(args.ref))
+        if args.tool == "resize":
             offered = resize_options(page)
             if args.aspect not in offered:
                 raise gw.Failure(2, f"the viewer's Resize offers {', '.join(offered) or 'nothing'}, not {args.aspect}",
                                  offered=offered)
             before = probe(page)
             pick_resize(page, args.aspect)
+        elif args.tool == "remove-bg":
+            before = probe(page)
+            remove_background(page, before)
         else:
             if args.region:
-                open_editor(page, on_ref=bool(args.ref))
                 mark_region(page, args.region)
+            if args.point:
+                place_comments(page, args.point)
             before = probe(page)
-            send(page, args.prompt)
+            if args.point:
+                send_comments(page)
+            else:
+                send(page, args.prompt)
         sent = time.time()
         gw.ledger({"kind": KIND, "event": "sent", "account": account, "chat": args.resume,
                    "refs": len(args.ref), "resume": bool(args.resume)})
@@ -498,6 +599,17 @@ def region_arg(text: str) -> tuple[float, float, float, float]:
     return x, y, w, h
 
 
+def point_arg(text: str) -> tuple[float, float, str]:
+    spot, _, note = text.partition("=")
+    try:
+        x, y = (float(value) for value in spot.split(","))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"x,y=<text> with x,y fractions, not {text}") from None
+    if not (0 <= x <= 1 and 0 <= y <= 1 and note.strip()):
+        raise argparse.ArgumentTypeError(f"{text} is not a point inside the image (fractions 0..1) with a text")
+    return x, y, note.strip()
+
+
 def check_args(args) -> None:
     dest = Path(args.dest)
     if not dest.is_absolute() or not dest.parent.is_dir():
@@ -507,8 +619,9 @@ def check_args(args) -> None:
             raise gw.Failure(2, f"--ref {ref} is not an absolute path to a file")
     if args.resume and not CHAT_ID.fullmatch(args.resume):
         raise gw.Failure(2, f"--resume takes the chat id printed as chat=, not {args.resume}")
-    if args.region and not (args.resume and not args.ref or len(args.ref) == 1):
-        raise gw.Failure(2, "--region edits one image: the chat's last one (--resume) or a single --ref")
+    edit = "--region" if args.region else args.tool
+    if edit in ("--region", "comment", "remove-bg") and not (args.resume and not args.ref or len(args.ref) == 1):
+        raise gw.Failure(2, f"{edit} edits one image: the chat's last one (--resume) or a single --ref")
     if args.account:
         known_account(args.account)
 
@@ -594,6 +707,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("login", help="open a visible Chrome to sign an account in once")
     p.add_argument("account")
+    p.add_argument("--wait", action="store_true", help="return only once that Chrome has quit")
     p.set_defaults(func=gw.cmd_login)
     p = sub.add_parser("status", help="free check: signed in, bound email, plan")
     p.add_argument("account")
@@ -606,17 +720,32 @@ def main() -> None:
     p.add_argument("--dest", required=True)
     p.add_argument("--ref", action="append", default=[])
     p.add_argument("--resume", help="continue the chat printed as chat= by an earlier run")
-    p.add_argument("--account")
+    p.add_argument("--account", type=gw.account_arg)
     p.add_argument("--region", type=region_arg, help="x,y,w,h fractions of the image, outlined with Markup")
     p.add_argument("--timeout", type=int, default=600)
-    p.set_defaults(func=cmd_generate, aspect=None)
+    p.set_defaults(func=cmd_generate, tool="generate", aspect=None, point=[])
     p = sub.add_parser("resize", help="re-aspect a chat's last image through the viewer's Resize (a generation)")
     p.add_argument("--resume", required=True)
     p.add_argument("--aspect", required=True)
     p.add_argument("--dest", required=True)
-    p.add_argument("--account")
+    p.add_argument("--account", type=gw.account_arg)
     p.add_argument("--timeout", type=int, default=600)
-    p.set_defaults(func=cmd_generate, prompt=None, ref=[], region=None)
+    p.set_defaults(func=cmd_generate, tool="resize", prompt=None, ref=[], region=None, point=[])
+    p = sub.add_parser("comment", help="point edits: Comment pins on one image, each with its text, sent as one edit")
+    p.add_argument("--point", action="append", required=True, type=point_arg, help="x,y=<text>, fractions of the image")
+    p.add_argument("--dest", required=True)
+    p.add_argument("--ref", action="append", default=[])
+    p.add_argument("--resume")
+    p.add_argument("--account", type=gw.account_arg)
+    p.add_argument("--timeout", type=int, default=600)
+    p.set_defaults(func=cmd_generate, tool="comment", prompt=None, region=None, aspect=None)
+    p = sub.add_parser("remove-bg", help="the viewer's Remove BG on one image (a generation; it takes no instruction)")
+    p.add_argument("--dest", required=True)
+    p.add_argument("--ref", action="append", default=[])
+    p.add_argument("--resume")
+    p.add_argument("--account", type=gw.account_arg)
+    p.add_argument("--timeout", type=int, default=600)
+    p.set_defaults(func=cmd_generate, tool="remove-bg", prompt=None, region=None, point=[], aspect=None)
     args = parser.parse_args()
     try:
         args.func(args)
