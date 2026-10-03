@@ -53,17 +53,15 @@ seed_age=${WORKER_TAG_SEED_MAX_AGE_S:-600}
 now=$(date +%s)
 owned() { # key id
   local file mtime
-  for file in "$tags"/*; do
-    [ -f "$file" ] || continue
+  while IFS= read -r file; do
     case "${file##*/}" in *.holds | *.tmp.* | git-unlock-*) continue ;; esac
-    grep -qxF "$1=$2" "$file" 2>/dev/null || continue
     case "${file##*/}" in
       pending-*)
         mtime=$(stat -f %m "$file" 2>/dev/null || stat -c %Y "$file" 2>/dev/null) || continue
         [ $((now - mtime)) -le "$seed_age" ] && return 0 ;;
       *) grep -q '^stopped=' "$file" 2>/dev/null || return 0 ;;
     esac
-  done
+  done < <(grep -lxF -- "$1=$2" "$tags"/* 2>/dev/null)
   return 1
 }
 

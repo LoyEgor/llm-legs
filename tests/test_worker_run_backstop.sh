@@ -108,5 +108,17 @@ for _ in 1 2 3; do assert_eq block "$(stop | jq -r .decision)"; done
 assert_eq "" "$(stop)"
 printf '%s 9\n' "$(($(date +%s) - 900))" >"$HOME/.cache/claude/stop-backstop/s1"
 assert_eq block "$(stop | jq -r .decision)"
+rm -rf "$WORKER_RUN_DIR/r3"; forget
+
+# An orchestrator's tag cache holds hundreds of files; a grep per file per run outran the stop's
+# 5 s hook cap under load (exit 124), so the lookup stays a few processes whatever the cache size.
+for i in $(seq 300); do printf 'acct · astra · high\nrun=old%s\nstopped=1\n' "$i" >"$TAGS/agent$i"; done
+printf 'acct · astra · high\nrun=r4\n' >"$TAGS/agent301"
+run r4 s1 codex
+mkdir -p "$WORK/shim"
+printf '#!/bin/sh\necho >>"%s/greps"\nexec %s "$@"\n' "$WORK" "$(command -v grep)" >"$WORK/shim/grep"
+chmod +x "$WORK/shim/grep"
+assert_eq "" "$(PATH="$WORK/shim:$PATH" stop)"
+asserts=$((asserts + 1)); [ "$(wc -l <"$WORK/greps")" -le 5 ] || fail "$(wc -l <"$WORK/greps" | tr -d ' ') greps for one run over 301 tag files"
 
 printf 'PASS: %s asserts; a live worker or review run of this chat that no live relay tag or fresh ATTACH seed owns holds the stop naming the ATTACH spawn, while another chat'"'"'s, a finished, a dead or a still-starting run, a stale panel, a worker and a subagent pass, and three holds in a row release the fourth\n' "$asserts"
