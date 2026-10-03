@@ -312,9 +312,9 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-02",
-      "reviewed_by": "night fixer harness-doctor-20261002T093028Z-749a",
-      "note": "Narrowed to one cause: every baseline-missing record since 2026-09-28T23:00Z names a sid no chat owns (perf-big-93348, perf-big-8746, perf-lvb, hlprof-a): check runs with made-up session ids against ~/.cache/claude-instruction-watch rather than INSTRUCTION_WATCH_STATE. Re-checked 2026-10-01: cause stands, zero new records since 2026-09-29T15:05Z (quiet past 24h window). Cannot fix in harness-doctor by filtering without loosening the judge; handoff docs/handoffs/2026-09-30-harness-guards-vendor-sync-and-probe-sids.md remains open for owner decision. A real chat losing its baseline would match this row too, so it stays open. Re-checked 2026-10-02: events.jsonl still ends its baseline-missing records at hlprof-a 2026-09-29T15:05Z (3 days quiet); still no committed code in llm-legs (HEAD, git log -S hlprof) emitting perf-big/perf-lvb/hlprof sids, so there is no producer to fix; the producer-side report in bin/instruction-watch.sh (BASELINE-MISSING) cannot tell a synthetic sid from a real chat whose baseline was swept without a transcript lookup, which is the judge narrowing the handoff already proposes.",
+      "last_reviewed": "2026-10-03",
+      "reviewed_by": "night fixer harness-doctor-20261003T042535Z-0f8b",
+      "note": "Narrowed to one cause: every baseline-missing record since 2026-09-28T23:00Z names a sid no chat owns (perf-big-93348, perf-big-8746, perf-lvb, hlprof-a): ad-hoc hook profiling ran instruction-watch.sh check with made-up session ids against ~/.cache/claude-instruction-watch rather than INSTRUCTION_WATCH_STATE. Re-checked 2026-10-01, 10-02 and 10-03: events.jsonl still ends its baseline-missing records at hlprof-a 2026-09-29T15:05Z, and git log --all -S hlprof/perf-big in llm-legs and claude-setup finds only ledger commits, so there is no producer to fix. bin/instruction-watch.sh cmd_check (BASELINE-MISSING) cannot tell a synthetic sid from a real chat whose baseline was swept without a transcript lookup, and filtering in harness-doctor would loosen the judge: both are the owner's call in the open handoff. A real chat losing its baseline matches this row too, so it stays open.",
       "handoff": "docs/handoffs/2026-09-30-harness-guards-vendor-sync-and-probe-sids.md"
     },
     {
