@@ -246,6 +246,13 @@ Below the red band, since 2026-09-29: one or two cuts of a hook or a call in the
 and a test run over 2 × its usual but under 10 min is a watch. The collector's own run is judged
 too: over 30 s (`collector_s`), except the first backfill, is a problem.
 
+Requested work is not judged as load, since 2026-10-04: each sample records the run-suites and
+night-fixer slots a live process holds (`held`), and `load:busy` and `load:unseen` judge only the
+samples whose window no held slot touched (the rows still show the whole hour). A collector run
+over `collector_s` while a slot is held is a watch. A full `suites` run that another run-suites run of
+the same `repo_root` overlapped (`runs.jsonl`) stays a watch however slow, and `suites at once`
+counts the runs that journal holds as well as `test-history.jsonl`.
+
 The hook-wait bands come from the hand-off of 2026-09-29 and were replayed with `--json` on the
 preserved journal (`~/.cache/harness-hook-calibration-2026-09-29/`), `HARNESS_DOCTOR_NOW` at 15:55
 over all of it and at 18:26 over the runs from 18:00:
@@ -569,6 +576,17 @@ up to three events as evidence (`stop:<ts>/<session>`, `words:<ts>/<session>`, `
   and the worktree segment dropped, or `between-sessions`; `stamp-forged` by file;
   `changed-while-watcher-off`, `baseline-missing`, `dropped` and `baseline-silent` are `tripwire`;
   `watcher-down` is `never-started`, `stale`, `error` or `no-root`. No state directory reads `blind`.
+  Not judged: ungated growth of a skill or plugin under `~/.claude/{skills,plugins}/synced/<bucket>`
+  that the bucket's `manifest.json` lists, with a `lastUpdated` no older than 15 min before the
+  growth (Claude Code's org sync bumps it only when content lands; the manifest's mtime moves every
+  round and proves nothing); growth that re-lands bytes the same key grew by in another checkout
+  within 24 h (a merge, patch or copy between a worktree and its main checkout), each sibling growth
+  excusing one landing of its bytes; a `baseline-missing` whose sid no chat transcript owns. Known
+  hole: a hand edit to a listed synced skill followed by a content sync of that bucket reads as the
+  sync. Shapes the write gate does not read, so only the tripwire reports them as `growth-ungated`:
+  a name built at run time (`'CLAU'+'DE.md'`, `os.path.join(d,'CLAUDE.md')`, `Path(d)/'CLAUDE.md'`),
+  a prefixed literal (`r'…'`, `f'…'`), an annotated assignment (`p: str = '…'`) and perl's
+  parenthesis-free `open my $f, ">>", $p`.
 - **Growth roots.** One change is one problem per root: the skill directory (the nearest one holding a
   `SKILL.md`), else the `docs` tree it sits in, else the file. Its value is the bytes the change added
   under that root, its count the files, and the files are listed in the evidence. Incident

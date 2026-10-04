@@ -1,6 +1,6 @@
 # Guard growth provenance: vendor syncs into ~/.claude
 
-Status: open
+Status: done 2026-10-04 — guards-synced-skills-vendor-sync, guards-synced-plugins-vendor-sync
 
 For «Harness Doctor» (`share/harness-ledger.json` `owner`). Written by run
 harness-guards-20261001T020645Z-3cf8, cut to its open part by harness-guards-20261003T042540Z-6416:

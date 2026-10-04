@@ -1,6 +1,6 @@
 # Hand-off: two Guards causes that are not bugs of ours, each proposed for dismissal
 
-Status: open
+Status: done 2026-10-04 — guards-synced-skills-vendor-sync, guards-baseline-missing-probe-sids
 
 For «Harness Doctor» (`share/harness-ledger.json` `owner`). Written 2026-09-30 by night fixer run
 harness-guards-20260930T001642Z-7d95. Both are judge decisions, so the fixer loosened nothing and

@@ -1,6 +1,6 @@
 # Hand-off: ask-word-reading drops owed turns at a chat's first idle stop
 
-Status: open
+Status: done 2026-10-04 — word-miss-first-idle-stop-no-checkpoint
 
 For the chat «Harness Doctor» (owner of `share/harness-ledger.json`), to land in claude-setup at the
 next stop-hooks run that has a claude-setup worktree. Written 2026-10-04 by night fixer run

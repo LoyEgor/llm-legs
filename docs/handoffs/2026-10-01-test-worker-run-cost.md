@@ -1,6 +1,6 @@
 # Hand-off: test_worker_run daily wall clock and long pole share under load
 
-Status: open
+Status: done 2026-10-04 — test_daily_cost-worker-run, test_long_pole-worker-run (split into 16 suites, llm-legs@8f113a19)
 
 For the chat «Harness Doctor» (owner of `share/harness-ledger.json`) and «llm-workers» (owner of `bin/worker-run` and `tests/test_worker_run.sh`). From night fixer run `harness-tests-20261001T020701Z-4cc4` (night 20261001T020350Z-7640).
 

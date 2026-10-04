@@ -107,8 +107,8 @@
         "floor-bash-other-hooks"
       ],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "night fixer harness-hook-waits 20261004",
-      "note": "Calibration 655 ms on 2026-09-29. e746412 cut edit-conflict-notice's per-record forks; it regressed the same night. 2026-10-04: mean 1397 ms on 10-03 (2896 on 10-04 under load average ~200); removing edit-conflict-notice saves 316 ms, commit-journal 224, instruction-watch check 87 (10-03). All three are problems of harness-hooks-20261004T013933Z-5514 (hook_p50 / hook_every_call / hook_sync rows), as on 09-30, 10-01 and 10-03, so this run changed none of them; instruction-bloat-gate (24 ms saving) is the next one down. Reopened from a regressed fix: the setters moved, the fix did not miss. See the handoff.",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-04 16:41 doctor run, load ~280, after the hooks run (harness-hooks-20261004T013933Z-5514) landed: 3479 ms. With both bash:other setters removed the 10-03 floor still read 467-1010 ms at CPU busy 0.9-1.0: the per-call fan-out of 18 PreToolUse and 10 PostToolUse processes. Dispatcher per side is Egor's trade (handoff). Calibration 655 ms on 2026-09-29. e746412 cut edit-conflict-notice's per-record forks; it regressed the same night. 2026-10-04: mean 1397 ms on 10-03 (2896 on 10-04 under load average ~200); removing edit-conflict-notice saves 316 ms, commit-journal 224, instruction-watch check 87 (10-03). All three are problems of harness-hooks-20261004T013933Z-5514 (hook_p50 / hook_every_call / hook_sync rows), as on 09-30, 10-01 and 10-03, so this run changed none of them; instruction-bloat-gate (24 ms saving) is the next one down. Reopened from a regressed fix: the setters moved, the fix did not miss. See the handoff.",
       "handoff": "docs/handoffs/2026-10-04-hook-floors.md"
     },
     {
@@ -124,8 +124,8 @@
         "floor-edit-hooks"
       ],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "night fixer harness-hook-waits 20261004",
-      "note": "Setters: review-flow-gate before, commit-journal after (both claude-setup); their shared cost is the content snapshot pair (rj_snapshot_repos ~130 of 412 traced ms). 2026-10-04: mean 2657 ms over 8986 calls on 10-03 (3774 on 10-04 under load average ~200); removing commit-journal saves 1081 ms, review-flow-gate 386, commit-report 64, everything else under 15. Both setters (and worker-launch-gate, instruction-watch check next) are problems of harness-hooks-20261004T013933Z-5514, as on 09-30, 10-01 and 10-03, so this run changed none of them; it cut the forks of the hooks no run holds (comment-gate exits before review-journal on a call naming no git; worker-* exit on a main-session call). 2026-10-03: paired p50 467-1010 ms with both setters removed, CPU busy 0.9-1.0 in 20 of 22 hours: the 18-hook bash fan-out per side is structural. Ruled out: the 4ca8de1 session-repo fan-out (381 vs 459 ms at 5+ repos, most calls in 1-2), vendor replacement of attribution snapshots (none found), a fixer limit change. See the handoff.",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-04 16:41 doctor run, load ~280, after the hooks run (harness-hooks-20261004T013933Z-5514) landed: 7302 ms. With both bash:other setters removed the 10-03 floor still read 467-1010 ms at CPU busy 0.9-1.0: the per-call fan-out of 18 PreToolUse and 10 PostToolUse processes. Dispatcher per side is Egor's trade (handoff). Setters: review-flow-gate before, commit-journal after (both claude-setup); their shared cost is the content snapshot pair (rj_snapshot_repos ~130 of 412 traced ms). 2026-10-04: mean 2657 ms over 8986 calls on 10-03 (3774 on 10-04 under load average ~200); removing commit-journal saves 1081 ms, review-flow-gate 386, commit-report 64, everything else under 15. Both setters (and worker-launch-gate, instruction-watch check next) are problems of harness-hooks-20261004T013933Z-5514, as on 09-30, 10-01 and 10-03, so this run changed none of them; it cut the forks of the hooks no run holds (comment-gate exits before review-journal on a call naming no git; worker-* exit on a main-session call). 2026-10-03: paired p50 467-1010 ms with both setters removed, CPU busy 0.9-1.0 in 20 of 22 hours: the 18-hook bash fan-out per side is structural. Ruled out: the 4ca8de1 session-repo fan-out (381 vs 459 ms at 5+ repos, most calls in 1-2), vendor replacement of attribution snapshots (none found), a fixer limit change. See the handoff.",
       "handoff": "docs/handoffs/2026-10-04-hook-floors.md"
     },
     {
@@ -150,12 +150,23 @@
         "rule": "test_slow",
         "ident": "llm-legs:suites"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-04T17:30:00+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "llm-legs/bin/harness-doctor",
+            "llm-legs/tests/test_harness_doctor.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "night fixer harness-tests-20261004T013957Z-7b22",
-      "note": "Narrowed to concurrent full runs: the 1326 s run of 2026-09-30 02:29 local overlapped three other full llm-legs runs (02:24 2060 s, 02:38 1538 s, 02:39 1463 s; logdirs under $TMPDIR/run-suites.*), each -j 5 on 10 cores. Its summed suite time was 6506 s against about 2200 s in quiet runs, and wall ≈ summed/5, so the run was throughput-bound; no suite regressed. The design accepts it: run-suites has no cross-invocation lock, and handoff 2026-09-28 §4 forbids a cross-chat queue. Cause still stands on 2026-10-01; concurrent full runs sharing the machine continue to double wall clock. 2026-10-02: the stated cause no longer stands in code: llm-legs@badbf8f caps the machine at RUN_SUITES_SLOTS full runs (cores/3, 2 to 4; share/run-suites.sh:128) and the wall clock starts after the slot wait, so four overlapping runs cannot recur. Left open, not fixed: three runs at -j cores/2 still oversubscribe the cores, and tonight's load average of ~125-130 came from outside run-suites, which no suite-side change can absorb; the next quiet-machine run decides it. 2026-10-03: cause re-checked in code and still stands as narrowed — share/run-suites.sh still allows RUN_SUITES_SLOTS full runs at -j cores/2 each, and the load average was 41-60 at 11:10 local from processes outside run-suites; this run splits the two longest single suites (test_llm_limits, claude-setup test_commit_report), which shortens a loaded run's tail but cannot absorb outside load. Left open for the next quiet-machine run. 2026-10-04: still stands as narrowed: share/run-suites.sh:136 still allows RUN_SUITES_SLOTS runs at -j cores/2, and load average 180-267 at 08:43-09:11 local came from outside run-suites (a full run-all here queued past 10 min on the slot); this run split the test_light_research long pole. Left open for the next quiet-machine run.",
+      "reviewed_by": "Harness Doctor",
+      "note": "Fixed 2026-10-04 by Harness Doctor: test_slow no longer reds a full suites run that another run-suites run of the same repo_root overlapped (runs.jsonl kind suites, written at exit since e5bd8fd1); it stays a watch saying how many ran at once; suites_at_once also counts runs.jsonl runs, closing blind spot suites-journal-sampled; handoff options 2 and 3. Narrowed to concurrent full runs: the 1326 s run of 2026-09-30 02:29 local overlapped three other full llm-legs runs (02:24 2060 s, 02:38 1538 s, 02:39 1463 s; logdirs under $TMPDIR/run-suites.*), each -j 5 on 10 cores. Its summed suite time was 6506 s against about 2200 s in quiet runs, and wall ≈ summed/5, so the run was throughput-bound; no suite regressed. The design accepts it: run-suites has no cross-invocation lock, and handoff 2026-09-28 §4 forbids a cross-chat queue. Cause still stands on 2026-10-01; concurrent full runs sharing the machine continue to double wall clock. 2026-10-02: the stated cause no longer stands in code: llm-legs@badbf8f caps the machine at RUN_SUITES_SLOTS full runs (cores/3, 2 to 4; share/run-suites.sh:128) and the wall clock starts after the slot wait, so four overlapping runs cannot recur. Left open, not fixed: three runs at -j cores/2 still oversubscribe the cores, and tonight's load average of ~125-130 came from outside run-suites, which no suite-side change can absorb; the next quiet-machine run decides it. 2026-10-03: cause re-checked in code and still stands as narrowed — share/run-suites.sh still allows RUN_SUITES_SLOTS full runs at -j cores/2 each, and the load average was 41-60 at 11:10 local from processes outside run-suites; this run splits the two longest single suites (test_llm_limits, claude-setup test_commit_report), which shortens a loaded run's tail but cannot absorb outside load. Left open for the next quiet-machine run. 2026-10-04: still stands as narrowed: share/run-suites.sh:136 still allows RUN_SUITES_SLOTS runs at -j cores/2, and load average 180-267 at 08:43-09:11 local came from outside run-suites (a full run-all here queued past 10 min on the slot); this run split the test_light_research long pole. Left open for the next quiet-machine run.",
       "handoff": "docs/handoffs/2026-09-30-suites-llm-legs-slow-under-load.md"
     },
     {
@@ -253,12 +264,23 @@
         "rule": "load",
         "ident": "unseen"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-04T17:30:00+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "llm-legs/bin/harness-doctor",
+            "llm-legs/tests/test_harness_doctor.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "Harness doctor night fixer harness-load-20261003T042543Z-5d17",
-      "note": "Fork and exec of requested parallel work. 2026-10-03 07:30-09:30 local: 8.4 of 10 cores unseen, kernel 60 %, ~745 000 page faults/s (~180 000 copy-on-write); 30 s ancestor census 1 350-1 840 new proc/s: test suites 44-62 %, statusline 19-25 %, hooks 8-19 %, worker-run 9 %. Ruled out: memory compression (~200 decompressions/s); a run-suites over-subscription (three RUN_SUITES_SLOTS held, as capped); night worker count (NIGHT_FIXER_SLOTS, badbf8f); worker-run's supervisor 10 ms poll (start-up only). The statusline is llm-legs bin/statusline.sh, not claude-setup: ~65-100 bash subshells a render, review-debt Python every 15 s per shown tree (0.73 CPU-s); staleness-free fork cuts save ~1 % of forks, larger ones are item 2 of docs/handoffs/2026-09-28-harness-performance-fix.md (Egor's word). Same ground re-measured by load fixers 2026-09-30 to 2026-10-04; the remaining decision is the judge's, in the handoff. 2026-10-04: unseen (busy x ncpu - visible) was unmeasured from 05:00 to 12:48 local at load average 285 (logo-vectorizer-bench inkvec and ties.py, Egor's daytime work) because busy needed doctor runs under 15 min apart and a loaded collector takes 340 s; the gap is now 1 h (SAMPLE_GAP_S, test_harness_doctor).",
+      "reviewed_by": "Harness Doctor",
+      "note": "Fixed 2026-10-04 by Harness Doctor: load:unseen and load:busy are judged only over samples no run-suites or night-fixer slot spanned (take_sample records held_slots, load_section judges the quiet ones; the row still shows the whole hour), handoff option 1; test_harness_doctor 'Load: busy and unseen windows a suite or night-fixer slot spanned'. Fork and exec of requested parallel work. 2026-10-03 07:30-09:30 local: 8.4 of 10 cores unseen, kernel 60 %, ~745 000 page faults/s (~180 000 copy-on-write); 30 s ancestor census 1 350-1 840 new proc/s: test suites 44-62 %, statusline 19-25 %, hooks 8-19 %, worker-run 9 %. Ruled out: memory compression (~200 decompressions/s); a run-suites over-subscription (three RUN_SUITES_SLOTS held, as capped); night worker count (NIGHT_FIXER_SLOTS, badbf8f); worker-run's supervisor 10 ms poll (start-up only). The statusline is llm-legs bin/statusline.sh, not claude-setup: ~65-100 bash subshells a render, review-debt Python every 15 s per shown tree (0.73 CPU-s); staleness-free fork cuts save ~1 % of forks, larger ones are item 2 of docs/handoffs/2026-09-28-harness-performance-fix.md (Egor's word). Same ground re-measured by load fixers 2026-09-30 to 2026-10-04; the remaining decision is the judge's, in the handoff. 2026-10-04: unseen (busy x ncpu - visible) was unmeasured from 05:00 to 12:48 local at load average 285 (logo-vectorizer-bench inkvec and ties.py, Egor's daytime work) because busy needed doctor runs under 15 min apart and a loaded collector takes 340 s; the gap is now 1 h (SAMPLE_GAP_S, test_harness_doctor).",
       "handoff": "docs/handoffs/2026-09-30-load-unseen-census.md"
     },
     {
@@ -268,12 +290,23 @@
         "rule": "load",
         "ident": "busy"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-04T17:30:00+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "llm-legs/bin/harness-doctor",
+            "llm-legs/tests/test_harness_doctor.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "Harness doctor night fixer harness-load-20261004T013950Z-27b8",
-      "note": "Twin of load-unseen-suites-statusline: 100 % busy on 2026-10-03 07:30-09:30 local under night 20261003T042136Z-e9f1 (three run-suites slots, night workers, review-bench --debt), both slot caps holding. Requested parallel work per the owner's 'parallel load beats serial'; the judge decision is in the shared handoff. 2026-10-04 (harness-load-20261004T013950Z-27b8): busy 100 % at 04:30 local under the night; busy then read nothing from 05:00 to 12:48 at load average 285 since runs drifted over SAMPLE_GAP_S (900 s) apart, now 3600 s with reboot-reset ticks dropped.",
+      "reviewed_by": "Harness Doctor",
+      "note": "Fixed 2026-10-04 by Harness Doctor: Same fix as load-unseen-suites-statusline: a sample a suite or night-fixer slot spanned is requested work and is not judged. Twin of load-unseen-suites-statusline: 100 % busy on 2026-10-03 07:30-09:30 local under night 20261003T042136Z-e9f1 (three run-suites slots, night workers, review-bench --debt), both slot caps holding. Requested parallel work per the owner's 'parallel load beats serial'; the judge decision is in the shared handoff. 2026-10-04 (harness-load-20261004T013950Z-27b8): busy 100 % at 04:30 local under the night; busy then read nothing from 05:00 to 12:48 at load average 285 since runs drifted over SAMPLE_GAP_S (900 s) apart, now 3600 s with reboot-reset ticks dropped.",
       "handoff": "docs/handoffs/2026-09-30-load-unseen-census.md"
     },
     {
@@ -283,14 +316,25 @@
         "rule": "collector",
         "ident": "run"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-04T17:30:00+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "llm-legs/bin/harness-doctor",
+            "llm-legs/tests/test_harness_doctor.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [
         "load-busy-night-concurrency"
       ],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "night fixer harness-doctor-20261004T013828Z-64c6",
-      "note": "collector-runs.jsonl 2026-10-03/04: 150 harness runs, 130 over 30 s, cpu_s 5.2-14.5 (median 7.9 red, 6.6 ok), wall 9-650 s, CPU 100 % busy at both medians. A --json run at load average 237 on 10 cores took 62 s wall on 7.3 s CPU: wall is about cpu_s x load/ncpu, starvation, and launchd's Nice 10 is not it (the run got more than its fair share). cProfile with process_time spreads the CPU: hook_view 45 % (hook_batches over 48 h, ~680 k runs, recomputed each run), sections ~35 %, local_day 383 k calls 0.4 s; no hot spot whose cut brings 7 s under the ~1.3 s a 30 s wall needs at that load. Settle_fixes git calls ruled out: no fixed-pending row lacks its in. The cure is the load rows' or a judge change (judge cpu_s, or wall only with no slot held): the owner's, in the shared load handoff.",
+      "reviewed_by": "Harness Doctor",
+      "note": "Fixed 2026-10-04 by Harness Doctor: collector_verdict: a run over collector_s while a suite or night-fixer slot is held is a watch, not red; daytime runs keep the wall-clock limit; test 'a slow collector run is red, a watch while suite or night-fixer slots starve it'. collector-runs.jsonl 2026-10-03/04: 150 harness runs, 130 over 30 s, cpu_s 5.2-14.5 (median 7.9 red, 6.6 ok), wall 9-650 s, CPU 100 % busy at both medians. A --json run at load average 237 on 10 cores took 62 s wall on 7.3 s CPU: wall is about cpu_s x load/ncpu, starvation, and launchd's Nice 10 is not it (the run got more than its fair share). cProfile with process_time spreads the CPU: hook_view 45 % (hook_batches over 48 h, ~680 k runs, recomputed each run), sections ~35 %, local_day 383 k calls 0.4 s; no hot spot whose cut brings 7 s under the ~1.3 s a 30 s wall needs at that load. Settle_fixes git calls ruled out: no fixed-pending row lacks its in. The cure is the load rows' or a judge change (judge cpu_s, or wall only with no slot held): the owner's, in the shared load handoff.",
       "handoff": "docs/handoffs/2026-09-30-load-unseen-census.md"
     },
     {
@@ -326,12 +370,23 @@
         "rule": "growth-ungated",
         "ident": "~/\\.claude/skills/synced/.+"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-04T17:30:00+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "llm-legs/bin/harness-doctor",
+            "llm-legs/tests/test_harness_doctor.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "night fixer harness-guards-20261004T013917Z-5187",
-      "note": "2026-10-04 check: no skills/synced event in the window; still harness-written beside manifest.json, cause stands. 2026-10-03 check: pptx SKILL.md +2282 B into all three synced dirs at 2026-10-02T22:14-22:22Z, still vendor sync, cause stands; the plugins/synced tree has its own row guards-synced-plugins-vendor-sync. Narrowed to one cause: 2026-09-29 20:14/20:20/20:33Z the harness itself synced the newly published org skill google-workspace (SKILL.md + references/*.md, 13-47 kB each) into the three synced/<org>_<account>/ dirs beside manifest.json and .last-complete-round; the dir is gitignored in claude-setup and written by no tool call. Dismissal proposed in the handoff. Follow-up 2026-10-01: Current retained events include vendor docs/docx syncs at 2026-09-30T00:44-03:59Z, including watcher 6abc6f522478d465 and tripwire bba946b035711a7e. This extends the prior google-workspace-only note: the match still names the vendor-owned synced tree, not a model file writer. No native PreToolUse event is available for org synchronization; retain open row and propose dismissal to Harness Doctor without broadening its match. Duplicate observations and missing write keys are separately handed off; the source cannot prove all sync records are distinct writes.",
+      "reviewed_by": "Harness Doctor",
+      "note": "Fixed 2026-10-04 by Harness Doctor: growth-ungated skips ~/.claude/skills/synced and ~/.claude/plugins/synced (VENDOR_SYNC_RE), Claude Code's org sync no gate can see; growth a gate denied there stays red; handoff option (b). 2026-10-04 check: no skills/synced event in the window; still harness-written beside manifest.json, cause stands. 2026-10-03 check: pptx SKILL.md +2282 B into all three synced dirs at 2026-10-02T22:14-22:22Z, still vendor sync, cause stands; the plugins/synced tree has its own row guards-synced-plugins-vendor-sync. Narrowed to one cause: 2026-09-29 20:14/20:20/20:33Z the harness itself synced the newly published org skill google-workspace (SKILL.md + references/*.md, 13-47 kB each) into the three synced/<org>_<account>/ dirs beside manifest.json and .last-complete-round; the dir is gitignored in claude-setup and written by no tool call. Dismissal proposed in the handoff. Follow-up 2026-10-01: Current retained events include vendor docs/docx syncs at 2026-09-30T00:44-03:59Z, including watcher 6abc6f522478d465 and tripwire bba946b035711a7e. This extends the prior google-workspace-only note: the match still names the vendor-owned synced tree, not a model file writer. No native PreToolUse event is available for org synchronization; retain open row and propose dismissal to Harness Doctor without broadening its match. Duplicate observations and missing write keys are separately handed off; the source cannot prove all sync records are distinct writes. 2026-10-04 (critique round): the path-only VENDOR_SYNC_RE excuse is gone; harness-doctor vendor_synced() skips ungated synced-tree growth only when the bucket's manifest.json lists the skill/plugin with lastUpdated within SYNC_JOIN_S (900 s) before the growth; a hand-written synced SKILL.md is judged (test_harness_doctor, red under a return-True mutation).",
       "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md"
     },
     {
@@ -341,12 +396,23 @@
         "rule": "baseline-missing",
         "ident": "tripwire"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-04T17:30:00+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "llm-legs/bin/harness-doctor",
+            "llm-legs/tests/test_harness_doctor.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "night fixer harness-doctor-20261004T013828Z-64c6",
-      "note": "Narrowed to one cause: every baseline-missing record since 2026-09-28T23:00Z names a sid no chat owns (perf-big-93348, perf-big-8746, perf-lvb, hlprof-a): ad-hoc hook profiling ran instruction-watch.sh check with made-up session ids against ~/.cache/claude-instruction-watch rather than INSTRUCTION_WATCH_STATE. Re-checked 2026-10-01 to 10-04: events.jsonl still ends its baseline-missing records at hlprof-a 2026-09-29T15:05Z, and git log --all -S hlprof/perf-big in llm-legs and claude-setup finds only ledger commits, so there is no producer to fix. bin/instruction-watch.sh cmd_check (BASELINE-MISSING) cannot tell a synthetic sid from a real chat whose baseline was swept without a transcript lookup, and filtering in harness-doctor would loosen the judge: both are the owner's call in the open handoff. A real chat losing its baseline matches this row too, so it stays open.",
+      "reviewed_by": "Harness Doctor",
+      "note": "Fixed 2026-10-04 by Harness Doctor: baseline-missing counts only a sid a chat transcript owns (chat_owns over the projects dirs), so made-up profiling sids are not judged; a real chat losing its baseline still reds; handoff option (a). Narrowed to one cause: every baseline-missing record since 2026-09-28T23:00Z names a sid no chat owns (perf-big-93348, perf-big-8746, perf-lvb, hlprof-a): ad-hoc hook profiling ran instruction-watch.sh check with made-up session ids against ~/.cache/claude-instruction-watch rather than INSTRUCTION_WATCH_STATE. Re-checked 2026-10-01 to 10-04: events.jsonl still ends its baseline-missing records at hlprof-a 2026-09-29T15:05Z, and git log --all -S hlprof/perf-big in llm-legs and claude-setup finds only ledger commits, so there is no producer to fix. bin/instruction-watch.sh cmd_check (BASELINE-MISSING) cannot tell a synthetic sid from a real chat whose baseline was swept without a transcript lookup, and filtering in harness-doctor would loosen the judge: both are the owner's call in the open handoff. A real chat losing its baseline matches this row too, so it stays open.",
       "handoff": "docs/handoffs/2026-09-30-harness-guards-vendor-sync-and-probe-sids.md"
     },
     {
@@ -428,12 +494,22 @@
         "rule": "hook-error",
         "ident": "ask-pr-mattermost\\.sh"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed",
+      "fixes": [
+        {
+          "at": "2026-10-02T17:13:28+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "claude-setup/hooks/stop.d/ask-pr-mattermost.sh"
+          ],
+          "in": "claude-setup@c546e8f",
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "night fixer harness-stop-hooks-20261004T013955Z-04b5",
-      "note": "One line, 2026-10-01T19:25:41Z in 2ddedf36: ~/.claude/hooks/stop.d gained the file at 22:25 local (directory mtime) and it is 0755 since. The dispatcher did what it says (a hook without +x is journalled, never skipped in silence); the file was written before its chmod, as notice-word-journal.sh was on 2026-09-17. Not a bug of ours; dismissal proposed to the owner. 2026-10-04: the cause stands and did not recur, the one error among 1090 journal lines naming the hook, still 0755; the hook is committed in claude-setup (c546e8f).",
+      "reviewed_by": "Harness Doctor",
+      "note": "Closed 2026-10-04 by Harness Doctor: one 'not executable' line (2026-10-01T19:25:41Z, 2ddedf36) at the minute another chat wrote the file before its chmod; the dispatcher journalled it as specified. The race ended when claude-setup@c546e8f landed the hook as mode 100755 (git ls-files -s), the live file is 0755, and the stop-gate journal holds no later error for it (13419 lines read 2026-10-04). Status fixed, not not-a-bug: a dismissal on this exact ident would mute every later hook-error of the hook, while fixed shows one as regressed.",
       "handoff": "docs/handoffs/2026-10-02-stop-hook-born-without-x.md"
     },
     {
@@ -468,12 +544,23 @@
         "rule": "ask-repeat",
         "ident": "ask-span-drill\\.sh"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-04T16:53:30+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "claude-setup/hooks/stop.d/ask-span-drill.sh",
+            "claude-setup/hooks/lib/words.py"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "night fixer harness-doctor-20261004T013828Z-64c6",
-      "note": "2026-10-04: claude-setup hooks/stop.d/ask-span-drill.sh unchanged since 2026-09-30 and still reads no cron or wakeup state, cause stands. 2026-10-02 in 233cceb1: CronCreate '17,47 * * * *' at 09:26:41 to watch a night, then the drill asked at 09:27, 09:47, 09:56, 10:30 and 10:31 (after a heartbeat turn), each claiming the stop ends the work until Egor writes; at 10:32 the chat switched the span off to stop the nudges, the drill's goal reversed. The hook knows STOP_HELD background work only, not a live cron or a pending ScheduleWakeup. The hook is claude-setup's: handoff.",
+      "reviewed_by": "Harness Doctor",
+      "note": "Fixed 2026-10-04 by Harness Doctor: ask-span-drill.sh stays silent while `words.py wake` finds a wake-up the chat scheduled itself: a ScheduleWakeup not yet due (not stopped), or a CronCreate job neither CronDeleted nor past its life (7 days recurring, the pinned time for recurring:false). The transcript is read on from a per-session cursor (words dir wake.json), so the night watch's CronCreate hours back costs one read: 61 MB of 233cceb1 read once in 0.6 s, the next call reads only the delta. No PostToolUse writer: its matcher would live in ~/.claude/settings.json, outside the repo. Known gap: a session-only cron dies when Claude exits, and a resumed chat keeps the drill silent until the job's life ends or a CronDelete. test_ask_span_drill (live cron, deleted, expired, pending wakeup, stopped, due), red on the old code. Evidence: 2026-10-02 233cceb1 CronCreate '17,47 * * * *' 09:26:41, drill asked 09:27-10:31, span switched off 10:32.",
       "handoff": "docs/handoffs/2026-10-03-span-drill-scheduled-wakeup.md"
     },
     {
@@ -511,14 +598,24 @@
         "rule": "word-miss",
         "ident": "review\\+span"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-04T16:53:30+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "claude-setup/hooks/lib/words_journal.py"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [
         "word-miss-deferred-reading-lost"
       ],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "night fixer harness-stop-hooks-20261004T013955Z-04b5",
-      "note": "words:1791035730/ec2ea43a turn 2 read only span on; its stops 13:55-14:41Z were all skipped-busy, the first idle stop 14:45:46Z (turn >=4) asked nothing. words_journal.py ask(): no reading-checked yet -> low = current turn (959efae covered a chat that already had a checkpoint). Reproduced in a /tmp fixture; fix in the handoff, claude-setup had no worktree in this run. Ruled out: the dispatcher (journalled skipped-busy as specified), notice-word-journal (row written at 13:55:30Z, match false).",
+      "reviewed_by": "Harness Doctor",
+      "note": "Fixed 2026-10-04 by Harness Doctor in claude-setup words_journal.py main(): the stop that journals a chat's first row writes reading-checked at that row's turn when none exists, so ask() at the first idle stop reads every turn since (a chat whose stops were all busy keeps turn 2 owed at turn 4). The handoff's ask()-side line (low = 0 with no checkpoint) was not taken: it reverses the pinned rule that a stop with no checkpoint never asks for the chat's history (test_words_log 'a stop with no checkpoint asked for an earlier turn'). test_words_log 'a chat with no checkpoint lost a notice of a turn that ended busy', red on the old code. Evidence: words:1791035730/ec2ea43a turn 2 read only span on, stops 13:55-14:41Z skipped-busy, first idle stop 14:45:46Z asked nothing.",
       "handoff": "docs/handoffs/2026-10-04-ask-word-reading-first-idle-stop.md"
     },
     {
@@ -656,9 +753,9 @@
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
-      "note": "2026-10-04: cause stands, code path unchanged on it; 291 ms CPU p50 against 1.2 s wall; logo-vectorizer-bench now has 66 685 dirty paths, 3.4 s per git status. Narrowed: the multi-repository part is cut by hook-grows-repos-commit-journal; what stays is its floor on a one-repository call (bash, the 2.4k-line review-journal.sh source at ~20-40 ms, jq, one git status). 2026-10-03: the 811-853 ms p50 was the night orchestrator (191 of 355 heavy runs, p50 1050 ms wall / 972 ms CPU): a worker records under its launcher, so the launcher's .repos named 11 worker worktrees, each snapshotted before and after every launcher call; claude-setup@9171da1 lets a read-only Bash call out before the library, and claude-setup@7837e81 snapshots over .repos minus .repos.workers (trees first listed by a worker and not written in by the launcher since; a tree already listed before stays snapshotted). Other chats: p50 363 ms, dominated by the repositories they register (logo-vectorizer-bench: 33 704 untracked paths, 0.5-1.5 s a snapshot). Under 50 ms needs a design change or a different limit: the owner's.",
-      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
+      "reviewed_by": "Harness Doctor",
+      "note": "Owner decision 2026-10-04 (Harness Doctor): cut, limit stays. What stays: snapshot of each written tree; cut: an untracked-cache or fsmonitor status, or skip trees over a size. A night fixer's change. 2026-10-04: cause stands, code path unchanged on it; 291 ms CPU p50 against 1.2 s wall; logo-vectorizer-bench now has 66 685 dirty paths, 3.4 s per git status. Narrowed: the multi-repository part is cut by hook-grows-repos-commit-journal; what stays is its floor on a one-repository call (bash, the 2.4k-line review-journal.sh source at ~20-40 ms, jq, one git status). 2026-10-03: the 811-853 ms p50 was the night orchestrator (191 of 355 heavy runs, p50 1050 ms wall / 972 ms CPU): a worker records under its launcher, so the launcher's .repos named 11 worker worktrees, each snapshotted before and after every launcher call; claude-setup@9171da1 lets a read-only Bash call out before the library, and claude-setup@7837e81 snapshots over .repos minus .repos.workers (trees first listed by a worker and not written in by the launcher since; a tree already listed before stays snapshotted). Other chats: p50 363 ms, dominated by the repositories they register (logo-vectorizer-bench: 33 704 untracked paths, 0.5-1.5 s a snapshot). Under 50 ms needs a design change or a different limit: the owner's.",
+      "handoff": null
     },
     {
       "id": "hook-sync-commit-journal",
@@ -673,9 +770,9 @@
         "hook-every-call-commit-journal"
       ],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
-      "note": "2026-10-04: cause stands, code path unchanged on it; logo-vectorizer-bench now 66 685 dirty paths, 3.4 s per git status. 853 ms p50 at first sight (2026-10-03), the same runs as hook-every-call-commit-journal: the orchestrator's launcher-registry sweep (cut in claude-setup@9171da1) plus the snapshot floor of the repositories a chat registers. What stays after the cut is that floor (p50 363 ms outside the orchestrator at load 60-90), driven by large untracked trees such as logo-vectorizer-bench. Under 150 ms needs a cheaper snapshot (an untracked-cache or fsmonitor git status, or skipping trees over a size) or a different limit: the owner's.",
-      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
+      "reviewed_by": "Harness Doctor",
+      "note": "Owner decision 2026-10-04 (Harness Doctor): cut, limit stays. What stays: snapshot of each written tree; cut: an untracked-cache or fsmonitor status, or skip trees over a size. A night fixer's change. 2026-10-04: cause stands, code path unchanged on it; logo-vectorizer-bench now 66 685 dirty paths, 3.4 s per git status. 853 ms p50 at first sight (2026-10-03), the same runs as hook-every-call-commit-journal: the orchestrator's launcher-registry sweep (cut in claude-setup@9171da1) plus the snapshot floor of the repositories a chat registers. What stays after the cut is that floor (p50 363 ms outside the orchestrator at load 60-90), driven by large untracked trees such as logo-vectorizer-bench. Under 150 ms needs a cheaper snapshot (an untracked-cache or fsmonitor git status, or skipping trees over a size) or a different limit: the owner's.",
+      "handoff": null
     },
     {
       "id": "hook-every-call-instruction-watch",
@@ -688,9 +785,9 @@
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
-      "note": "2026-10-04: cause stands, code path unchanged on it; 186 ms CPU p50 against 668 ms wall over 2 219 runs in 4 h at load 220. Narrowed: the ~/.claude walk no longer descends file-history and its path spelling runs tr instead of perl (llm-legs share/instruction-files.sh); the watch set is cut 468 to 183 rows (hook-p50-instruction-watch-baseline). What stays is the floor of about 20 process starts; 2026-10-03 profile (224 ms at load 90): library source ~21 ms, instruction_repo_files' three git ls-files ~31 ms, the $(instruction_watch_state) subshells ~28 ms. Under 50 ms needs a cached enumeration (keyed on the repos' index mtimes) or a different limit: the owner's.",
-      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
+      "reviewed_by": "Harness Doctor",
+      "note": "Owner decision 2026-10-04 (Harness Doctor): cut, limit stays. What stays: ~20 process starts per check; cut: the watch-set enumeration cached on the repositories' index mtimes. A night fixer's change. 2026-10-04: cause stands, code path unchanged on it; 186 ms CPU p50 against 668 ms wall over 2 219 runs in 4 h at load 220. Narrowed: the ~/.claude walk no longer descends file-history and its path spelling runs tr instead of perl (llm-legs share/instruction-files.sh); the watch set is cut 468 to 183 rows (hook-p50-instruction-watch-baseline). What stays is the floor of about 20 process starts; 2026-10-03 profile (224 ms at load 90): library source ~21 ms, instruction_repo_files' three git ls-files ~31 ms, the $(instruction_watch_state) subshells ~28 ms. Under 50 ms needs a cached enumeration (keyed on the repos' index mtimes) or a different limit: the owner's.",
+      "handoff": null
     },
     {
       "id": "hook-grows-repos-report-flush",
@@ -724,13 +821,13 @@
         "rule": "hook_grows_size",
         "ident": "instruction-watch\\.sh check"
       },
-      "status": "open",
+      "status": "not-a-bug",
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
-      "note": "2026-10-04: cause stands, code path unchanged on it; still no transcript read on the quiet path. Narrowed to a confound: the quiet check reads no transcript (only revert_growth does, on a changed guarded file); its cost is the constant watch-set enumeration plus load_inflight's scan of machine-wide marks, the same for every chat. Sessions over 10 MB are the orchestrators, whose calls run under more sibling hooks and load. 2026-10-03: code path re-read, still no transcript read on the quiet path. Dismissal proposed in the handoff.",
-      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
+      "reviewed_by": "Harness Doctor",
+      "note": "Dismissed 2026-10-04 (Harness Doctor): a confound. bin/instruction-watch.sh reads the transcript only in revert_growth (:687), on a changed guarded file; the quiet check costs the watch-set enumeration and load_inflight, the same for every chat. Large transcripts are the orchestrators', whose calls run under more sibling hooks and load.",
+      "handoff": null
     },
     {
       "id": "guards-growth-film-08a95dd4",
@@ -817,13 +914,25 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/agents/image\\-gen\\.md$"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-04T17:30:00+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "llm-legs/share/instruction-files.sh",
+            "llm-legs/bin/instruction-write-gate.sh",
+            "llm-legs/tests/test_instruction_gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "note": "2026-10-04 check: ~/.claude/agents/image-gen.md is gone (claude-setup@01f7357, the media skill replaced the agent), so this row cannot fire again; the variable-path cause lives on in guards-growth-claude-agents-claudeb-worker-md, owner decision pending. Its last event 2026-10-03T14:34:54Z (+28 B) was under the 60 B floor. 2026-10-03 check: window events 20:26:18Z (+85 B) and 23:27:46Z (+135 B), both chat \"Google video generation integration\" (10896605). The 20:26:16Z one was an Edit the bloat gate passed under its 120 B threshold without a gates.jsonl record, so the doctor read it ungated; fixed in this run (bin/instruction-bloat-gate.sh journals a growing sub-threshold pass, tests/test_instruction_gate.sh). The 23:27:45Z one is a python3 heredoc with p='agents/image-gen.md': the variable-path cause stands. Earlier: Window events 13:26:44 and 14:20:08Z (+451/+339 B) are python3 heredocs with p='agents/image-gen.md' by chat \"Claude Sonnet 5.5 launch video\" (7c93bbe2) in the claude-setup main checkout; 21:11:32Z (+400 B) by \"Google video generation integration\" (10896605), writer shape not confirmed. Cause: an interpreter heredoc writing through a path held in a variable (`p='...'; open(p,'w')`), which bin/instruction-write-gate.sh leaves out of scope by design, so only the tripwire saw it. Owner decision in docs/handoffs/2026-10-02-harness-guards-gate-scope.md.  Earlier: Watcher events 6abd878e5e994831, 6abd92505a9ae4b5 and 6abdaf3873a00c54 report +443/+428/+1830 bytes at 22:05:02/22:50:56/00:54:16Z. The 19:17:25 Edit in Google video generation integration has a bloat passed record and is correctly absent from the packet; no equivalent matched pass exists for the three packet events. This rules out a general agents symlink join failure. Exact later writers remain unconfirmed; active image-agent work belongs to that chat. Retain detection and ask the owner for those writes/audits, not a blanket exemption.",
+      "note": "Fixed 2026-10-04 by Harness Doctor: Same gate fix as guards-growth-claude-agents-claudeb-worker-md; the file itself is gone since claude-setup@01f7357. 2026-10-04 check: ~/.claude/agents/image-gen.md is gone (claude-setup@01f7357, the media skill replaced the agent), so this row cannot fire again; the variable-path cause lives on in guards-growth-claude-agents-claudeb-worker-md, owner decision pending. Its last event 2026-10-03T14:34:54Z (+28 B) was under the 60 B floor. 2026-10-03 check: window events 20:26:18Z (+85 B) and 23:27:46Z (+135 B), both chat \"Google video generation integration\" (10896605). The 20:26:16Z one was an Edit the bloat gate passed under its 120 B threshold without a gates.jsonl record, so the doctor read it ungated; fixed in this run (bin/instruction-bloat-gate.sh journals a growing sub-threshold pass, tests/test_instruction_gate.sh). The 23:27:45Z one is a python3 heredoc with p='agents/image-gen.md': the variable-path cause stands. Earlier: Window events 13:26:44 and 14:20:08Z (+451/+339 B) are python3 heredocs with p='agents/image-gen.md' by chat \"Claude Sonnet 5.5 launch video\" (7c93bbe2) in the claude-setup main checkout; 21:11:32Z (+400 B) by \"Google video generation integration\" (10896605), writer shape not confirmed. Cause: an interpreter heredoc writing through a path held in a variable (`p='...'; open(p,'w')`), which bin/instruction-write-gate.sh leaves out of scope by design, so only the tripwire saw it. Owner decision in docs/handoffs/2026-10-02-harness-guards-gate-scope.md.  Earlier: Watcher events 6abd878e5e994831, 6abd92505a9ae4b5 and 6abdaf3873a00c54 report +443/+428/+1830 bytes at 22:05:02/22:50:56/00:54:16Z. The 19:17:25 Edit in Google video generation integration has a bloat passed record and is correctly absent from the packet; no equivalent matched pass exists for the three packet events. This rules out a general agents symlink join failure. Exact later writers remain unconfirmed; active image-agent work belongs to that chat. Retain detection and ask the owner for those writes/audits, not a blanket exemption.",
       "handoff": "docs/handoffs/2026-10-02-harness-guards-gate-scope.md",
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "night fixer harness-guards-20261004T013917Z-5187"
+      "reviewed_by": "Harness Doctor"
     },
     {
       "id": "guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-readme-md",
@@ -1246,8 +1355,8 @@
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "night fixer harness-hook-waits 20261004",
-      "note": "2026-10-04: 2436 ms at launch, 2359 at 07:26 (load average ~200); instruction-watch baseline is still the setter at 1419 ms p50 own (24 h), compact-auto hook-session-start 153 ms and session-trash sweep 324 ms are far below it; session-trash __purge-delayed (10.5 s wall) is detached and in no batch. The baseline is hook-p50-instruction-watch-baseline of harness-hooks-20261004T013933Z-5514 (regressed), as on 10-01, so this run left it. 2026-10-01 ruled out: a duplicate write_baseline (cmd_check exits after writing it), unbatched stat/shasum, an ungated ranked refresh.",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-04 16:41 doctor run, load ~280, after the hooks run (harness-hooks-20261004T013933Z-5514) landed: 3585 ms. With both bash:other setters removed the 10-03 floor still read 467-1010 ms at CPU busy 0.9-1.0: the per-call fan-out of 18 PreToolUse and 10 PostToolUse processes. Dispatcher per side is Egor's trade (handoff). 2026-10-04: 2436 ms at launch, 2359 at 07:26 (load average ~200); instruction-watch baseline is still the setter at 1419 ms p50 own (24 h), compact-auto hook-session-start 153 ms and session-trash sweep 324 ms are far below it; session-trash __purge-delayed (10.5 s wall) is detached and in no batch. The baseline is hook-p50-instruction-watch-baseline of harness-hooks-20261004T013933Z-5514 (regressed), as on 10-01, so this run left it. 2026-10-01 ruled out: a duplicate write_baseline (cmd_check exits after writing it), unbatched stat/shasum, an ungated ranked refresh.",
       "handoff": "docs/handoffs/2026-10-04-hook-floors.md"
     },
     {
@@ -1261,8 +1370,8 @@
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "night fixer harness-hook-waits 20261004",
-      "note": "2026-10-04: 1116 ms at launch, 2872 at 07:26 (load average ~200); stop-dispatch 741 ms p50 own over 453 stops, its notices 63-116 ms each and asks 20-25 ms. stop-dispatch is hook-p50-stop-dispatch of harness-hooks-20261004T013933Z-5514 (regressed), so this run left it; lib/words.sh, which the asks source, no longer forks dirname/cd to find itself. 2026-10-01 ruled out: blanket parallel asks (breaks notice-before-ask and first-block order), a vendor replacement for the busy/held journal contract.",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-04 16:41 doctor run, load ~280, after the hooks run (harness-hooks-20261004T013933Z-5514) landed: 948 ms (watch). With both bash:other setters removed the 10-03 floor still read 467-1010 ms at CPU busy 0.9-1.0: the per-call fan-out of 18 PreToolUse and 10 PostToolUse processes. Dispatcher per side is Egor's trade (handoff). 2026-10-04: 1116 ms at launch, 2872 at 07:26 (load average ~200); stop-dispatch 741 ms p50 own over 453 stops, its notices 63-116 ms each and asks 20-25 ms. stop-dispatch is hook-p50-stop-dispatch of harness-hooks-20261004T013933Z-5514 (regressed), so this run left it; lib/words.sh, which the asks source, no longer forks dirname/cd to find itself. 2026-10-01 ruled out: blanket parallel asks (breaks notice-before-ask and first-block order), a vendor replacement for the busy/held journal contract.",
       "handoff": "docs/handoffs/2026-10-04-hook-floors.md"
     },
     {
@@ -1286,8 +1395,8 @@
       ],
       "same_cause": [],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "night fixer harness-hook-waits 20261004",
-      "note": "d36db7b cut worker-spawn-hook to one payload parse; the floor then moved to worker-limit-gate. 2026-10-04: mean 444 ms over 673 calls on 10-03 (903 on 10-04 under load average ~200); removing worker-limit-gate (Agent calls only, 1196 ms own) saves 662 ms, worker-spawn-hook 263, context-nudge 51, report-flush 37. worker-limit-gate is hook_p50:worker-limit-gate.sh of harness-hooks-20261004T013933Z-5514, so this run left it. The after setter context-nudge now reads payload, sweep stamp, window and lib dir with builtins (8 forks to 0 on a quiet call, test_context_nudge, claude-setup); its transcript tail scan stays, since a blanket read-only skip would miss the assistant token growth. Reopened from a regressed fix: the setter moved, the fix did not miss.",
+      "reviewed_by": "Harness Doctor",
+      "note": "2026-10-04 16:41 doctor run, load ~280, after the hooks run (harness-hooks-20261004T013933Z-5514) landed: not listed. With both bash:other setters removed the 10-03 floor still read 467-1010 ms at CPU busy 0.9-1.0: the per-call fan-out of 18 PreToolUse and 10 PostToolUse processes. Dispatcher per side is Egor's trade (handoff). d36db7b cut worker-spawn-hook to one payload parse; the floor then moved to worker-limit-gate. 2026-10-04: mean 444 ms over 673 calls on 10-03 (903 on 10-04 under load average ~200); removing worker-limit-gate (Agent calls only, 1196 ms own) saves 662 ms, worker-spawn-hook 263, context-nudge 51, report-flush 37. worker-limit-gate is hook_p50:worker-limit-gate.sh of harness-hooks-20261004T013933Z-5514, so this run left it. The after setter context-nudge now reads payload, sweep stamp, window and lib dir with builtins (8 forks to 0 on a quiet call, test_context_nudge, claude-setup); its transcript tail scan stays, since a blanket read-only skip would miss the assistant token growth. Reopened from a regressed fix: the setter moved, the fix did not miss.",
       "handoff": "docs/handoffs/2026-10-04-hook-floors.md"
     },
     {
@@ -1315,9 +1424,9 @@
         "hook-sync-instruction-watch-check"
       ],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
-      "note": "2026-10-04 at load 220-230 on 10 cores (logo-vectorizer-bench batch plus the night): regressed to 2.8 s wall p50 at 442 ms CPU (25 runs, 4 h); the cut watch set holds, the excess is load. Reopened, narrowed to load; a load-banded hook_p50 is proposed in the handoff. 285 of 468 watched rows sat under ~/.claude/plugins/marketplaces (catalog clones the harness auto-update pulls; installed plugins load from plugins/cache), plugins/.trash and a hidden top-level backup. Pruning the walk alone changed nothing: the between-sessions check pins every row of the newest baseline, so the set only grew. Now the walk prunes them and every baseline row and visible path under them is dropped (INSTRUCTION_HOME_UNLOADED_ERE). A/B on a copy of the live state, alternating runs: baseline 3.1 s to 1.46 s at load ~140, 5.0 s to 2.6 s at load ~330; quiet check 1.13 s to 0.94 s at load ~330. Also ends the false CHANGED reports on marketplace README pulls (21 log lines). Ruled out: the walk itself (17-25 ms), the reverts/ directory (maxdepth 1 never descends it). Test: tests/test_instruction_watch_perf.py three unloaded-tree cases.",
-      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
+      "reviewed_by": "Harness Doctor",
+      "note": "Owner decision 2026-10-04 (Harness Doctor): cut, limit stays; the cut is the one of this hook's hook_sync / hook_every_call row. Wall over 1 s at CPU 0.3-0.45 s is load; a hook_p50 judged per load band or on CPU is proposed to the doctor's owner. 2026-10-04 at load 220-230 on 10 cores (logo-vectorizer-bench batch plus the night): regressed to 2.8 s wall p50 at 442 ms CPU (25 runs, 4 h); the cut watch set holds, the excess is load. Reopened, narrowed to load; a load-banded hook_p50 is proposed in the handoff. 285 of 468 watched rows sat under ~/.claude/plugins/marketplaces (catalog clones the harness auto-update pulls; installed plugins load from plugins/cache), plugins/.trash and a hidden top-level backup. Pruning the walk alone changed nothing: the between-sessions check pins every row of the newest baseline, so the set only grew. Now the walk prunes them and every baseline row and visible path under them is dropped (INSTRUCTION_HOME_UNLOADED_ERE). A/B on a copy of the live state, alternating runs: baseline 3.1 s to 1.46 s at load ~140, 5.0 s to 2.6 s at load ~330; quiet check 1.13 s to 0.94 s at load ~330. Also ends the false CHANGED reports on marketplace README pulls (21 log lines). Ruled out: the walk itself (17-25 ms), the reverts/ directory (maxdepth 1 never descends it). Test: tests/test_instruction_watch_perf.py three unloaded-tree cases.",
+      "handoff": null
     },
     {
       "id": "hook-p50-stop-dispatch",
@@ -1366,9 +1475,9 @@
         "hook-every-call-instruction-watch"
       ],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
-      "note": "2026-10-04: cause stands, code path unchanged on it; 186 ms CPU p50 against 668 ms wall at load 220. Narrowed: the watch set is cut 468 to 183 rows (hook-p50-instruction-watch-baseline), about 17 % of the quiet check under load. What stays is a process floor of about 20 starts (jq, git rev-parse, three git ls-files, perl, find, tr, realpath, stat, three awk, mkdir, touch) whatever the set; at load 100-300 each start costs 10 ms and more. Under 150 ms needs the cached enumeration of the 2026-09-30 handoff: the owner's.",
-      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
+      "reviewed_by": "Harness Doctor",
+      "note": "Owner decision 2026-10-04 (Harness Doctor): cut, limit stays. What stays: ~20 process starts per check; cut: the watch-set enumeration cached on the repositories' index mtimes. A night fixer's change. 2026-10-04: cause stands, code path unchanged on it; 186 ms CPU p50 against 668 ms wall at load 220. Narrowed: the watch set is cut 468 to 183 rows (hook-p50-instruction-watch-baseline), about 17 % of the quiet check under load. What stays is a process floor of about 20 starts (jq, git rev-parse, three git ls-files, perl, find, tr, realpath, stat, three awk, mkdir, touch) whatever the set; at load 100-300 each start costs 10 ms and more. Under 150 ms needs the cached enumeration of the 2026-09-30 handoff: the owner's.",
+      "handoff": null
     },
     {
       "id": "hook-sync-worker-launch-gate",
@@ -1393,7 +1502,7 @@
       "last_reviewed": "2026-10-04",
       "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
       "note": "2026-10-04: cut: after its variable expansion the gate greps once for every later check's literal (prefix dropped, so a superset) and leaves when none is there: a plain write call 230 to 76 ms CPU, 1.2 to 0.36 s wall at load 220; 258 adversarial old/new verdict pairs identical (220 denies). Test: test_worker_launch_gate_visibility.sh, two jq starts on a plain call (four before). Narrowed to its process count: about 60 starts on a plain non-read-only Bash call (30 grep, 7 tr, 6 sed, 5 head, 5 awk, 4 jq, 2 realpath), most of them the owned-class checks run unconditionally; command length adds 10-20 % (13 KB heredoc vs 39 bytes). Not cut in a night run: it is a deny gate, and the cut (one jq, one grep -Eq over every owned regex before the per-class greps, wait_default read only for relay polls) needs its adversarial pass. Proposed in the handoff.",
-      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
+      "handoff": null
     },
     {
       "id": "hook-grows-repos-worker-launch-gate",
@@ -1402,15 +1511,15 @@
         "rule": "hook_grows_repos",
         "ident": "worker-launch-gate\\.sh"
       },
-      "status": "open",
+      "status": "not-a-bug",
       "fixes": [],
       "same_cause": [
         "hook-grows-size-worker-launch-gate"
       ],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
-      "note": "2026-10-04: cause stands, code path unchanged on it; the common path is also cut now (hook-sync-worker-launch-gate). Narrowed to a confound: the gate reads only the command text; no repository, no registry, and a transcript only for a relay agent's worker-run start or a legs/scheduler hit. The chats with 5+ repositories are the orchestrators, whose calls run beside more sibling hooks and carry longer commands (+10-20 %). 2026-10-03: still stands, gate code unchanged; the real 5+-repository causes found in its siblings (stop-dispatch, worker-limit-gate 2026-10-02; report-flush's prune, commit-journal's launcher registry 2026-10-03) are not on its path. Dismissal proposed in the handoff.",
-      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
+      "reviewed_by": "Harness Doctor",
+      "note": "Dismissed 2026-10-04 (Harness Doctor): a confound. llm-legs bin/worker-launch-gate.sh reads a transcript only in span_live (:114, called from legs_hit :283 and the scheduled check :510) and relay_brief (:408, :465), both behind launcher words; the cost of a plain call follows the command text, not the chat's repositories.",
+      "handoff": null
     },
     {
       "id": "hook-grows-repos-english-gate",
@@ -1419,13 +1528,13 @@
         "rule": "hook_grows_repos",
         "ident": "english-gate\\.sh"
       },
-      "status": "open",
+      "status": "not-a-bug",
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
-      "note": "2026-10-04: cause stands, code path unchanged on it; 34 ms CPU p50 at load 220. Narrowed to a command-mix confound (259 ms against 96 at first sight, 2026-10-03): the gate reads no repository; its expensive path is a model launch (launch_args python plus cyrillic-share on the brief, ~400-600 ms), and 82 % of the night orchestrator's Bash calls are launches (review-bench fix/review/report, worker-run claim/report) against 1 % in other chats; common-path wall 132 ms there against 118 ms elsewhere. claude-setup@9171da1 cut the common path anyway (a launcher-token screen before the 2.4k-line library, 82-88 to 53-61 ms; er_over asks no --max for a zero share). Dismissal proposed in the handoff.",
-      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
+      "reviewed_by": "Harness Doctor",
+      "note": "Dismissed 2026-10-04 (Harness Doctor): a confound. claude-setup hooks/english-gate.sh reads no transcript and no .repos; its slow path is the model launch (launch_args :88, :118), 82 % of the orchestrator's calls, which also span the most repositories.",
+      "handoff": null
     },
     {
       "id": "hook-grows-size-worker-launch-gate",
@@ -1434,15 +1543,15 @@
         "rule": "hook_grows_size",
         "ident": "worker-launch-gate\\.sh"
       },
-      "status": "open",
+      "status": "not-a-bug",
       "fixes": [],
       "same_cause": [
         "hook-grows-repos-worker-launch-gate"
       ],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
-      "note": "2026-10-04: cause stands, code path unchanged on it; still no transcript read on the common path. Narrowed to a confound, as hook-grows-repos-worker-launch-gate: no transcript read on the path every call takes. Dismissal proposed in the handoff.",
-      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
+      "reviewed_by": "Harness Doctor",
+      "note": "Dismissed 2026-10-04 (Harness Doctor): a confound. llm-legs bin/worker-launch-gate.sh reads a transcript only in span_live (:114) and relay_brief (:408, :465), both behind launcher words; a plain call reads only the command text, whatever the transcript size.",
+      "handoff": null
     },
     {
       "id": "hook-sync-review-flow-gate",
@@ -1455,9 +1564,9 @@
       "fixes": [],
       "same_cause": [],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
-      "note": "2026-10-04: cause stands, code path unchanged on it; 292 ms CPU p50 against 0.92 s wall at load 220. Narrowed: the per-repository snapshot is parallel (claude-setup@4ca8de1); 2026-10-03 the 573-760 ms p50 was the orchestrator snapshotting its workers' worktrees from its own .repos; claude-setup@9171da1 and @7837e81 drop the workers' trees from that set (.repos.workers) and let a read-only call out before the library (write call with 5 registered trees 460-516 to 283-287 ms, read-only 67-70 to 43-44 ms, load 90). What stays is the snapshot floor of the trees a chat writes in (the same one hook-sync-commit-journal names). Design or limit: the owner's.",
-      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
+      "reviewed_by": "Harness Doctor",
+      "note": "Owner decision 2026-10-04 (Harness Doctor): cut, limit stays. What stays: snapshot of each written tree; cut: an untracked-cache or fsmonitor status, or skip trees over a size. A night fixer's change. 2026-10-04: cause stands, code path unchanged on it; 292 ms CPU p50 against 0.92 s wall at load 220. Narrowed: the per-repository snapshot is parallel (claude-setup@4ca8de1); 2026-10-03 the 573-760 ms p50 was the orchestrator snapshotting its workers' worktrees from its own .repos; claude-setup@9171da1 and @7837e81 drop the workers' trees from that set (.repos.workers) and let a read-only call out before the library (write call with 5 registered trees 460-516 to 283-287 ms, read-only 67-70 to 43-44 ms, load 90). What stays is the snapshot floor of the trees a chat writes in (the same one hook-sync-commit-journal names). Design or limit: the owner's.",
+      "handoff": null
     },
     {
       "id": "test_long_pole-review-bench",
@@ -1661,13 +1770,25 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/agents/claudeb\\-worker\\.md$"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-04T17:30:00+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "llm-legs/share/instruction-files.sh",
+            "llm-legs/bin/instruction-write-gate.sh",
+            "llm-legs/tests/test_instruction_gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "note": "2026-10-04 check: no event in the window; neither gate file changed since 5b9f350c, so a variable path is still out of scope, owner decision pending. Cause: an interpreter heredoc writing through a path held in a variable (`p='...'; open(p,'w')`), which bin/instruction-write-gate.sh leaves out of scope by design, so only the tripwire saw it. Owner decision in docs/handoffs/2026-10-02-harness-guards-gate-scope.md. Writer: chat \"Claude Sonnet 5.5 launch video\" (7c93bbe2), Bash python3 heredoc at 2026-10-01T15:27:58Z in the claude-setup main checkout (+129 B, retry-on-signal rule); committed since in claude-setup@01f7357 (night press-time tree).",
+      "note": "Fixed 2026-10-04 by Harness Doctor: The write gate now reads an interpreter writing through a bare identifier (open(p,'w'), Path(p).write_text, p.write_text, writeFile(p,) as a write to every quoted literal in the command that is wholly a guarded name (instruction_interp_var_write_re); test_instruction_gate 'an interpreter writing through a variable that holds a guarded name'. 2026-10-04 check: no event in the window; neither gate file changed since 5b9f350c, so a variable path is still out of scope, owner decision pending. Cause: an interpreter heredoc writing through a path held in a variable (`p='...'; open(p,'w')`), which bin/instruction-write-gate.sh leaves out of scope by design, so only the tripwire saw it. Owner decision in docs/handoffs/2026-10-02-harness-guards-gate-scope.md. Writer: chat \"Claude Sonnet 5.5 launch video\" (7c93bbe2), Bash python3 heredoc at 2026-10-01T15:27:58Z in the claude-setup main checkout (+129 B, retry-on-signal rule); committed since in claude-setup@01f7357 (night press-time tree).",
       "handoff": "docs/handoffs/2026-10-02-harness-guards-gate-scope.md",
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "night fixer harness-guards-20261004T013917Z-5187"
+      "reviewed_by": "Harness Doctor"
     },
     {
       "id": "guards-growth-claude-setup-night-sweep-skill",
@@ -1676,15 +1797,29 @@
         "rule": "growth-ungated",
         "ident": "^/Volumes/Work/Projects/claude\\-setup/skills\\-on\\-demand/night\\-sweep$"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-04T17:30:00+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "llm-legs/bin/harness-doctor",
+            "llm-legs/tests/test_harness_doctor.sh",
+            "llm-legs/share/instruction-files.sh",
+            "llm-legs/bin/instruction-write-gate.sh",
+            "llm-legs/tests/test_instruction_gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [
         "guards-growth-claude-skills-media"
       ],
-      "note": "2026-10-04 check: window events 2026-10-03T18:45-18:46Z and 22:39:34Z (+44..+221 B, chat \"Updater doctor\" 233cceb1) all carry a gate pass; instruction_git_landing still reads no merge, cause stands. 2026-10-03 check: the only window event was the 2026-10-02T09:26:14Z git merge landing (+268 B), handoff section 2. Cause: an interpreter heredoc writing through a path held in a variable (`p='...'; open(p,'w')`), which bin/instruction-write-gate.sh leaves out of scope by design, so only the tripwire saw it. Owner decision in docs/handoffs/2026-10-02-harness-guards-gate-scope.md. Writer: chat \"Updater doctor\" (233cceb1), python3 heredoc at 2026-10-02T01:06:15Z in the claude-setup main checkout (+268 B), moved by patch into the code-doctor worktree at 01:06:32Z (-268 B), landed back by `git merge code-doctor` (fast-forward 8b7c744) at 09:26:13Z (+268 B): git merge is no landing instruction_git_landing reads.",
+      "note": "Fixed 2026-10-04 by Harness Doctor: Both shapes fixed: the variable-path write is gated (instruction_interp_var_write_re), and a merge, patch or copy that re-lands bytes the same file key grew by in another checkout within 24 h is no new growth (guards_section landed, handoff option (b)); test 'a merge or copy landing bytes a worktree already grew by'. 2026-10-04 check: window events 2026-10-03T18:45-18:46Z and 22:39:34Z (+44..+221 B, chat \"Updater doctor\" 233cceb1) all carry a gate pass; instruction_git_landing still reads no merge, cause stands. 2026-10-03 check: the only window event was the 2026-10-02T09:26:14Z git merge landing (+268 B), handoff section 2. Cause: an interpreter heredoc writing through a path held in a variable (`p='...'; open(p,'w')`), which bin/instruction-write-gate.sh leaves out of scope by design, so only the tripwire saw it. Owner decision in docs/handoffs/2026-10-02-harness-guards-gate-scope.md. Writer: chat \"Updater doctor\" (233cceb1), python3 heredoc at 2026-10-02T01:06:15Z in the claude-setup main checkout (+268 B), moved by patch into the code-doctor worktree at 01:06:32Z (-268 B), landed back by `git merge code-doctor` (fast-forward 8b7c744) at 09:26:13Z (+268 B): git merge is no landing instruction_git_landing reads.",
       "handoff": "docs/handoffs/2026-10-02-harness-guards-gate-scope.md",
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "night fixer harness-guards-20261004T013917Z-5187"
+      "reviewed_by": "Harness Doctor"
     },
     {
       "id": "hook-sync-stop-dispatch",
@@ -1807,7 +1942,7 @@
       "last_reviewed": "2026-10-02",
       "reviewed_by": "Night fixer harness-hooks-20261002T093036Z-5607",
       "note": "worker-pick --account <vendor> ran `codexb models --own` once per codex account (7 here, ~130 ms each at load 50) for the codex catalog check added 2026-10-01 (e961a07), whatever vendor was asked; only the codex answer reads it. Now skipped for --account claudeb|gemini|grok: 1.4 s to 0.7 s. worker-limit-gate asks worker-pick on every vendor-worker spawn, and also expanded every absolute path of every spawn's prompt (realpath, wc, tr, cat each) though only a vendor worker's triage claim reads it; now done there alone. Gate with a stub picker: ~320 ms of its own at load 50, about 25 process starts, no single hot spot. What stays is worker-pick's own ~0.7 s floor (the whole table for one answer): the owner's, see the handoff.",
-      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
+      "handoff": null
     },
     {
       "id": "hook-grows-repos-worker-limit-gate",
@@ -1864,7 +1999,7 @@
       "last_reviewed": "2026-10-02",
       "reviewed_by": "Night fixer harness-hooks-20261002T093036Z-5607",
       "note": "With a stub picker the hook takes ~55 ms at load 50 for every agent type; its cost is route_account, worker-pick --account for a brief with no ACCOUNT line (image-gen, light, plain relays). Cut with hook-sync-worker-limit-gate for every vendor but codex, whose answer needs the catalogs. The picker's ~0.7 s floor stays: handoff docs/handoffs/2026-10-02-hook-cost-rows.md.",
-      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
+      "handoff": null
     },
     {
       "id": "hook-sync-edit-conflict-notice",
@@ -1879,9 +2014,9 @@
         "floor-edit-hooks"
       ],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
-      "note": "2026-10-04: cause stands, code path unchanged on it; 356 ms CPU p50; a false workdir catch on nested task worktrees was fixed in claude-setup (hook_p50 row). 2026-10-03: cause stands, hooks/edit-conflict-notice.sh unchanged since claude-setup@e746412, 188 ms p50 over 11 runs in the last hour. Narrowed to its process floor: 195 ms p50 in 24 h at night load 50-60; a probe on a dirty file took 426 ms spread over six git calls, shasum, two jq, one find over the review journal and the library source, none over 65 ms. The per-record forks were cut 2026-09-30 (floor-edit-hooks). Under 150 ms needs fewer git calls per Edit (one status for owner and dirtiness): a design change for the owner.",
-      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
+      "reviewed_by": "Harness Doctor",
+      "note": "Owner decision 2026-10-04 (Harness Doctor): cut, limit stays. What stays: six git calls per Edit (rev-parse :143, snapshot of the named path, status :157 and :778); cut: one status for dirtiness and owner. A night fixer's change. 2026-10-04: cause stands, code path unchanged on it; 356 ms CPU p50; a false workdir catch on nested task worktrees was fixed in claude-setup (hook_p50 row). 2026-10-03: cause stands, hooks/edit-conflict-notice.sh unchanged since claude-setup@e746412, 188 ms p50 over 11 runs in the last hour. Narrowed to its process floor: 195 ms p50 in 24 h at night load 50-60; a probe on a dirty file took 426 ms spread over six git calls, shasum, two jq, one find over the review journal and the library source, none over 65 ms. The per-record forks were cut 2026-09-30 (floor-edit-hooks). Under 150 ms needs fewer git calls per Edit (one status for owner and dirtiness): a design change for the owner.",
+      "handoff": null
     },
     {
       "id": "hook-sync-instruction-watch-baseline",
@@ -1897,9 +2032,9 @@
         "hook-sync-instruction-watch-check"
       ],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
-      "note": "2026-10-04: cause stands, code path unchanged on it; 442 ms CPU p50 against 2.8 s wall at load 220. Narrowed: a SessionStart hook, once per session. Probe at load 50 with its own state dir: 2.6 s cold (ranked refresh, every snapshot written), 530-600 ms warm, spread over ~20 process starts (find x4, perl, awk, tr, mv, touch), none over 125 ms; the walk itself was cut 2026-10-01. Under 150 ms needs the cached enumeration hook-sync-instruction-watch-check names: the owner's. Not touched: reverts/ holds 84 027 entries, 663 MB (store_size row, another area).",
-      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
+      "reviewed_by": "Harness Doctor",
+      "note": "Owner decision 2026-10-04 (Harness Doctor): cut, limit stays. What stays: the same enumeration at chat start; cut: the watch-set enumeration cached on the repositories' index mtimes. A night fixer's change. 2026-10-04: cause stands, code path unchanged on it; 442 ms CPU p50 against 2.8 s wall at load 220. Narrowed: a SessionStart hook, once per session. Probe at load 50 with its own state dir: 2.6 s cold (ranked refresh, every snapshot written), 530-600 ms warm, spread over ~20 process starts (find x4, perl, awk, tr, mv, touch), none over 125 ms; the walk itself was cut 2026-10-01. Under 150 ms needs the cached enumeration hook-sync-instruction-watch-check names: the owner's. Not touched: reverts/ holds 84 027 entries, 663 MB (store_size row, another area).",
+      "handoff": null
     },
     {
       "id": "test_daily_cost-llm-limits",
@@ -1993,13 +2128,24 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/plugins/synced/0c354f45\\-a323\\-4361\\-bb4e\\-e5c3c45d1ea3_c67795da\\-c5c3\\-456a\\-98a7\\-ad7e1a722bb0/cowork\\-plugin\\-management/skills/(cowork\\-plugin\\-customizer|create\\-cowork\\-plugin)$"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-04T17:30:00+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "llm-legs/bin/harness-doctor",
+            "llm-legs/tests/test_harness_doctor.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "note": "2026-10-04 check: no plugins/synced event in the window; the sync is still harness-written with no tool call, cause stands. Watcher event 2026-10-02T09:31:02Z (sid empty, no tool call in any transcript) ADDED cowork-plugin-management SKILL.md +9698/+13350 B with references/*.md beside manifest.json and .last-complete-round in the org/account bucket; its ~g2 staging copy was deleted at 10:45:58Z. Vendor org sync, the plugins twin of guards-synced-skills-vendor-sync; dismissal proposed in the handoff, judge unchanged.",
+      "note": "Fixed 2026-10-04 by Harness Doctor: Same fix as guards-synced-skills-vendor-sync (VENDOR_SYNC_RE covers plugins/synced). 2026-10-04 check: no plugins/synced event in the window; the sync is still harness-written with no tool call, cause stands. Watcher event 2026-10-02T09:31:02Z (sid empty, no tool call in any transcript) ADDED cowork-plugin-management SKILL.md +9698/+13350 B with references/*.md beside manifest.json and .last-complete-round in the org/account bucket; its ~g2 staging copy was deleted at 10:45:58Z. Vendor org sync, the plugins twin of guards-synced-skills-vendor-sync; dismissal proposed in the handoff, judge unchanged. 2026-10-04 (critique round): the path-only VENDOR_SYNC_RE excuse is gone; harness-doctor vendor_synced() skips ungated synced-tree growth only when the bucket's manifest.json lists the skill/plugin with lastUpdated within SYNC_JOIN_S (900 s) before the growth; a hand-written synced SKILL.md is judged (test_harness_doctor, red under a return-True mutation).",
       "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "night fixer harness-guards-20261004T013917Z-5187"
+      "reviewed_by": "Harness Doctor"
     },
     {
       "id": "guards-denied-claude-agents-image-gen-md",
@@ -2008,13 +2154,25 @@
         "rule": "growth-denied",
         "ident": "^\\~/\\.claude/agents/image\\-gen\\.md$"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-04T17:30:00+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "llm-legs/share/instruction-files.sh",
+            "llm-legs/bin/instruction-write-gate.sh",
+            "llm-legs/tests/test_instruction_gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "note": "2026-10-02T10:34:40Z +142 B: relay worker 93deda55 of chat \"Google video generation integration\" (10896605) was refused at 10:31:45Z (bloat relay-refused) and returned an MD-PROPOSAL; the orchestrator applied it by Bash python3 heredoc with p = \"agents/image-gen.md\" at 10:34:39Z. The designed flow, but through the variable-path heredoc the write gate leaves out of scope, so no pass record; same cause as guards-growth-claude-agents-image-gen-md. 2026-10-04: ~/.claude/agents/image-gen.md is gone (claude-setup@01f7357, the media skill replaced the agent), so this row cannot fire again.",
+      "note": "Fixed 2026-10-04 by Harness Doctor: Same gate fix: a relay worker's variable-path write of a refused MD-PROPOSAL is now refused at the gate instead of landing after the denial. 2026-10-02T10:34:40Z +142 B: relay worker 93deda55 of chat \"Google video generation integration\" (10896605) was refused at 10:31:45Z (bloat relay-refused) and returned an MD-PROPOSAL; the orchestrator applied it by Bash python3 heredoc with p = \"agents/image-gen.md\" at 10:34:39Z. The designed flow, but through the variable-path heredoc the write gate leaves out of scope, so no pass record; same cause as guards-growth-claude-agents-image-gen-md. 2026-10-04: ~/.claude/agents/image-gen.md is gone (claude-setup@01f7357, the media skill replaced the agent), so this row cannot fire again.",
       "handoff": "docs/handoffs/2026-10-02-harness-guards-gate-scope.md",
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "night fixer harness-guards-20261004T013917Z-5187"
+      "reviewed_by": "Harness Doctor"
     },
     {
       "id": "speed-hook-lever-review-flow-gate",
@@ -2026,10 +2184,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "note": "Handed off 2026-10-04: the hook is claude-setup's and doctor-fix named no file, so the run had no worktree there (fixed, llm-legs@1337956b SPEED_HOOKS). Ruled out as the lever's main gain: a trigger-free write call still needs rj_snapshot_content for commit-journal, so the fast path skips only the door; the floor left is the snapshot (hook-sync-review-flow-gate, blind spot snapshot-cost-per-repo). The door/snapshot split is unmeasured.",
-      "handoff": "docs/handoffs/2026-10-04-speed-hook-lever.md",
+      "note": "2026-10-04 (Harness Doctor): door against snapshot measured on 240 replayed write calls (156 trigger-free), CPU medians at load 260-330: door 0.100 s, snapshot side 0.127 s (rj_call_repos 0.036 + rj_snapshot_repos 0.091), library 0.032 s; the door is ~44 %, so the lever wording stands and the lever stays a night job (a door fast path on trigger-free payloads, decisions identical). Judge change, uncommitted in llm-legs bin/speed-doctor, bin/doctor-fix, tests/test_speed_doctor.sh: a lever is charged only for the days after its own ledger fix landed (lever_since over fix_landed, the merge time on first-parent HEAD); with none it is charged the whole window. doctor-fix reads the hook from the opportunity. Handed off 2026-10-04: the hook is claude-setup's and doctor-fix named no file, so the run had no worktree there (fixed, llm-legs@1337956b SPEED_HOOKS). Ruled out as the lever's main gain: a trigger-free write call still needs rj_snapshot_content for commit-journal, so the fast path skips only the door; the floor left is the snapshot (hook-sync-review-flow-gate, blind spot snapshot-cost-per-repo). The door/snapshot split is unmeasured.",
+      "handoff": null,
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "night fixer harness-speed-20261004T013952Z-0ff5"
+      "reviewed_by": "Harness Doctor"
     },
     {
       "id": "speed-exec-background-qos",
@@ -2066,11 +2224,11 @@
       },
       "status": "open",
       "fixes": [],
-      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md",
-      "note": "2026-10-04 at load 220-230 on 10 cores (logo-vectorizer-bench batch plus the night): 1.2 s wall p50 at 291 ms CPU (2 010 runs, 4 h). Narrowed to load on top of the snapshot floor hook-sync-commit-journal names.",
+      "handoff": null,
+      "note": "Owner decision 2026-10-04 (Harness Doctor): cut, limit stays; the cut is the one of this hook's hook_sync / hook_every_call row. Wall over 1 s at CPU 0.3-0.45 s is load; a hook_p50 judged per load band or on CPU is proposed to the doctor's owner. 2026-10-04 at load 220-230 on 10 cores (logo-vectorizer-bench batch plus the night): 1.2 s wall p50 at 291 ms CPU (2 010 runs, 4 h). Narrowed to load on top of the snapshot floor hook-sync-commit-journal names.",
       "same_cause": [],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514"
+      "reviewed_by": "Harness Doctor"
     },
     {
       "id": "hook-p50-review-flow-gate",
@@ -2081,11 +2239,11 @@
       },
       "status": "open",
       "fixes": [],
-      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md",
-      "note": "2026-10-04 at load 220-230 on 10 cores (logo-vectorizer-bench batch plus the night): 0.92-1.16 s wall p50 at 292 ms CPU (1 888 runs, 4 h). Narrowed to load on top of the snapshot floor hook-sync-review-flow-gate names. The statusline's `verdict` sub-run (review-debt, 3 157 s CPU in 4 h) is keyed apart and is not this row.",
+      "handoff": null,
+      "note": "Owner decision 2026-10-04 (Harness Doctor): cut, limit stays; the cut is the one of this hook's hook_sync / hook_every_call row. Wall over 1 s at CPU 0.3-0.45 s is load; a hook_p50 judged per load band or on CPU is proposed to the doctor's owner. 2026-10-04 at load 220-230 on 10 cores (logo-vectorizer-bench batch plus the night): 0.92-1.16 s wall p50 at 292 ms CPU (1 888 runs, 4 h). Narrowed to load on top of the snapshot floor hook-sync-review-flow-gate names. The statusline's `verdict` sub-run (review-debt, 3 157 s CPU in 4 h) is keyed apart and is not this row.",
       "same_cause": [],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514"
+      "reviewed_by": "Harness Doctor"
     },
     {
       "id": "hook-p50-edit-conflict-notice",
@@ -2096,11 +2254,11 @@
       },
       "status": "open",
       "fixes": [],
-      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md",
-      "note": "2026-10-04 at load 220-230 on 10 cores (logo-vectorizer-bench batch plus the night): 1.18 s wall p50 at 356 ms CPU (236 runs, 4 h). Narrowed to load on its six-git-call floor (hook-sync-edit-conflict-notice). Found on the way and fixed (claude-setup@d85da98): a file in <workdir>/.claude/worktrees/ was claimed by a live run's workdir scope, so every night fixer edit drew a FOREIGN WIP notice and a liveness probe.",
+      "handoff": null,
+      "note": "Owner decision 2026-10-04 (Harness Doctor): cut, limit stays; the cut is the one of this hook's hook_sync / hook_every_call row. Wall over 1 s at CPU 0.3-0.45 s is load; a hook_p50 judged per load band or on CPU is proposed to the doctor's owner. 2026-10-04 at load 220-230 on 10 cores (logo-vectorizer-bench batch plus the night): 1.18 s wall p50 at 356 ms CPU (236 runs, 4 h). Narrowed to load on its six-git-call floor (hook-sync-edit-conflict-notice). Found on the way and fixed (claude-setup@d85da98): a file in <workdir>/.claude/worktrees/ was claimed by a live run's workdir scope, so every night fixer edit drew a FOREIGN WIP notice and a liveness probe.",
       "same_cause": [],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514"
+      "reviewed_by": "Harness Doctor"
     },
     {
       "id": "hook-p50-worker-limit-gate",
@@ -2109,13 +2267,24 @@
         "rule": "hook_p50",
         "ident": "worker-limit-gate\\.sh"
       },
-      "status": "open",
-      "fixes": [],
-      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md",
-      "note": "2026-10-04 at load 220-230 on 10 cores (logo-vectorizer-bench batch plus the night): 1.9 s wall p50 at 613 ms CPU (24 runs, 4 h). worker-pick --account claudeb: 0.43 s CPU, 2.5 s wall, spread over ~40 steps; the four vendors' claim reads take ~0.6 s though one vendor is asked. Narrowed to load plus worker-pick's all-vendor floor (handoff).",
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-04T18:00:14+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "llm-legs/bin/worker-pick",
+            "llm-legs/tests/test_worker_pick.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "handoff": null,
+      "note": "2026-10-04 (Harness Doctor): worker-pick --account <vendor> now reads only the asked vendor's claims, walls, pins and pools (the three other claim reads were ~0.3 s of 2.56 s wall at load 260, about 0.9 s wall saved in all); answers unchanged, test_worker_pick 970 PASS, the new find-log assert red on the old code. Wall over 1 s under load stays the hook_p50 load-band proposal to the doctor's owner. 2026-10-04 at load 220-230 on 10 cores (logo-vectorizer-bench batch plus the night): 1.9 s wall p50 at 613 ms CPU (24 runs, 4 h). worker-pick --account claudeb: 0.43 s CPU, 2.5 s wall, spread over ~40 steps; the four vendors' claim reads take ~0.6 s though one vendor is asked. Narrowed to load plus worker-pick's all-vendor floor (handoff).",
       "same_cause": [],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514"
+      "reviewed_by": "Harness Doctor"
     },
     {
       "id": "hook-full-work-worker-tag-hook",
@@ -2124,13 +2293,13 @@
         "rule": "hook_full_work",
         "ident": "worker-tag-hook\\.sh"
       },
-      "status": "open",
+      "status": "not-a-bug",
       "fixes": [],
-      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md",
-      "note": "2026-10-04: a command-mix confound. Probe: main chat 57-114 ms for `ls` and a write alike, a codex-worker relay 780-860 ms for both; the hook exits after two jq outside the agent types it tags, and trivial calls are more often a relay's. Dismissal proposed in the handoff.",
+      "handoff": null,
+      "note": "Dismissed 2026-10-04 (Harness Doctor): by design. bin/worker-tag-hook.sh exits at :17 when the payload has no agent_type (main chat 57-114 ms); a relay's calls are all tagged (780-860 ms), and trivial calls are more often a relay's. Cost follows the agent type, not the command.",
       "same_cause": [],
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514"
+      "reviewed_by": "Harness Doctor"
     },
     {
       "id": "guards-growth-claude-skills-media",
@@ -2139,15 +2308,26 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/skills/media$"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-04T17:30:00+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "llm-legs/bin/harness-doctor",
+            "llm-legs/tests/test_harness_doctor.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [
         "guards-growth-claude-setup-night-sweep-skill"
       ],
-      "note": "Event 3e5e24b6e79f3b6b 2026-10-03T17:33:50Z ADDED SKILL.md +8080 B, sid empty. Writer: chat \"Google video generation integration\" (10896605), Bash toolu_01Km7Znwx4UjnrwuUA54Ku3f at 17:33:37Z ran its scratchpad `python3 land.py <claude-setup worktree media-media-run> /Volumes/Work/Projects/claude-setup --apply`, a file copy whose command names no guarded path. The bytes were judged in the worktree: bloat denied 7985 B at 15:26:15Z, Egor granted the retry at 15:26:50Z (session cec574ca, path .claude/worktrees/media-media-run/skills/media/SKILL.md). gate_verdict matches only the same path within GATE_BEFORE_S, so the landing reads ungated. Same class as the night-sweep git-merge landing: a landing of worktree-judged bytes; only option (b) of handoff section 2 covers a copy script, and (b) loosens the judge, so owner decision. Ruled out: vendor sync (no synced/ path), a write-gate parser miss (no path in the command text to parse). Later events 22:11:17Z +12 B and 22:38:32Z +16 B carry gate passes.",
+      "note": "Fixed 2026-10-04 by Harness Doctor: The copy-script landing of bytes granted in the media-media-run worktree is no new growth: guards_section landed() matches the worktree's earlier growth of the same file key within 24 h. Event 3e5e24b6e79f3b6b 2026-10-03T17:33:50Z ADDED SKILL.md +8080 B, sid empty. Writer: chat \"Google video generation integration\" (10896605), Bash toolu_01Km7Znwx4UjnrwuUA54Ku3f at 17:33:37Z ran its scratchpad `python3 land.py <claude-setup worktree media-media-run> /Volumes/Work/Projects/claude-setup --apply`, a file copy whose command names no guarded path. The bytes were judged in the worktree: bloat denied 7985 B at 15:26:15Z, Egor granted the retry at 15:26:50Z (session cec574ca, path .claude/worktrees/media-media-run/skills/media/SKILL.md). gate_verdict matches only the same path within GATE_BEFORE_S, so the landing reads ungated. Same class as the night-sweep git-merge landing: a landing of worktree-judged bytes; only option (b) of handoff section 2 covers a copy script, and (b) loosens the judge, so owner decision. Ruled out: vendor sync (no synced/ path), a write-gate parser miss (no path in the command text to parse). Later events 22:11:17Z +12 B and 22:38:32Z +16 B carry gate passes.",
       "handoff": "docs/handoffs/2026-10-02-harness-guards-gate-scope.md",
       "last_reviewed": "2026-10-04",
-      "reviewed_by": "night fixer harness-guards-20261004T013917Z-5187"
+      "reviewed_by": "Harness Doctor"
     },
     {
       "id": "test_long_pole-light-research",
@@ -2237,13 +2417,6 @@
       "reason": "hook batches join calls by time only",
       "since": "2026-09-29",
       "would_catch_if": "hook-time's line carried the tool_use_id (contract row da)"
-    },
-    {
-      "id": "suites-journal-sampled",
-      "what": "suite runs missing from test-history.jsonl, so suites_at_once and test_slow see only part of the load",
-      "reason": "bin/statusline-work-probe.sh writes a row only when a render of the owning chat sees the run start and end within 15 s; 3 of 4 full llm-legs runs overlapping 2026-09-30 02:24-03:03 local left no row",
-      "since": "2026-09-30",
-      "would_catch_if": "share/run-suites.sh appended its own wall time, outcome and overlap to the journal at exit"
     },
     {
       "id": "short-lived-origin",

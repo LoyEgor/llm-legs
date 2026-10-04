@@ -707,10 +707,32 @@ for key, bad in (("busy", 0.95), ("kernel", 0.6), ("forks", 3000), ("visible", 1
     check(state_of(m.load_section(red, T)) == "problem", "Load: %s over its limit is red" % key)
     check(state_of(m.load_section(red + [sample(T + 3000), sample(T + 3300)], T + 3600)) == "ok",
           "J Load: %s clears when the next hour is calm" % key)
+def load_levels(samples):
+    return {j["ident"]: j["level"] for r in m.load_section(samples, T)["rows"] for j in r.get("judge", [])
+            if j["ident"] in ("busy", "unseen")}
+night = [sample(T - 900, busy=0.95, visible=1.0, held=1), sample(T - 600, busy=0.95, visible=1.0, held=2),
+         sample(T - 300, busy=0.95, visible=1.0)]
+check(load_levels(night) == {"busy": None, "unseen": None} and state_of(m.load_section(night, T)) != "blind",
+      "Load: busy and unseen windows a suite or night-fixer slot spanned are requested work, not judged")
+check(load_levels([dict(s, held=0) for s in night]) == {"busy": "red", "unseen": "red"},
+      "J Load: the same load with no slot held is red")
+slots = os.path.join(work, "held-slots")
+put(os.path.join(slots, "suites", "1", "pid"), "%d\n" % os.getpid())
+put(os.path.join(slots, "suites", "2", "pid"), "999999\n")
+put(os.path.join(slots, "fixers", "1", "pid"), "%d\n" % os.getppid())
+put(os.path.join(slots, "fixers", "2", "pid"), "junk\n")
+os.environ.update(RUN_SUITES_SLOTS_DIR=os.path.join(slots, "suites"), NIGHT_FIXER_SLOTS_DIR=os.path.join(slots, "fixers"))
+check(m.held_slots() == 2, "a slot counts as held only while the pid in it runs")
+os.environ.pop("RUN_SUITES_SLOTS_DIR")
+os.environ.pop("NIGHT_FIXER_SLOTS_DIR")
 
 suites = [test_row(r, "suites", T - 900, T - 100) for r in ("a", "b", "c", "d", "e")]
 check(state_of(m.tests_section(suites, T)) == "problem", "Tests: 5 suites at once are red")
 check(state_of(m.tests_section(suites, T + 7 * 3600)) == "ok", "J Tests: the suite peak clears after 6 h")
+unprobed = [{"kind": "suites", "repo_root": "/r/%s" % r, "started_at": T - 900, "ended_at": T - 100} for r in "abcde"]
+check(state_of(m.tests_section(suites[:1], T, (), unprobed)) == "problem"
+      and state_of(m.tests_section(suites[:1], T, (), [dict(r, kind="direct") for r in unprobed])) == "ok",
+      "Tests: suite runs only run-suites' own journal saw count toward the peak")
 runs_slow = [test_row("a", "t", T - d * 86400 - 300, T - d * 86400) for d in (3, 2, 1)] + [test_row("a", "t", T - 1600, T - 100)]
 check(state_of(m.tests_section(runs_slow, T)) == "problem", "Tests: a run twice its usual is red")
 check(state_of(m.tests_section(runs_slow, T + 7 * 3600)) == "ok", "J Tests: a slow run clears after 6 h")
@@ -821,6 +843,9 @@ check([p["state"] for p in m.problems_from([{"rows": [back]}], {"rows": [fixed_r
       == ["fixed-pending"], "only an event that started after the fix regresses it")
 selfp = m.problems_from([], ledger0, {}, T, [m.verdict("collector", "run", 45.0, 30.0, "s", 0, 1, "red")])
 check([(p["id"], p["state"]) for p in selfp] == [("collector:run", "new")], "a slow collector run is a problem")
+check([m.collector_verdict(45.0, False, held)["level"] for held in (0, 2)] == ["red", "watch"]
+      and m.collector_verdict(45.0, True, 0)["level"] is None and m.collector_verdict(10.0, False, 0)["level"] is None,
+      "a slow collector run is red, a watch while suite or night-fixer slots starve it")
 
 subprocess = m.subprocess
 repo = os.path.join(work, "fixrepo")
@@ -949,6 +974,16 @@ def suites_mix(last_secs, last_scope="full"):
     return marked_history("mix-%d-%s" % (last_secs, last_scope), rows, marks)
 check(slow_level(suites_mix(950)) == [None], "a full suites run is compared with full runs, never with named-suite ones")
 check(slow_level(suites_mix(2500)) == ["red"], "a genuinely slow full suites run among named ones stays red")
+slow_mix = suites_mix(2500)
+own = {"kind": "suites", "repo_root": "/r/llm-legs", "started_at": T - 2590, "ended_at": T - 110}
+peer = {"kind": "suites", "repo_root": "/r/llm-legs", "started_at": T - 2000, "ended_at": T + 300}
+crowded = [j["level"] for r in m.tests_section(slow_mix, T, (), [own, peer])["rows"] for j in r.get("judge", [])
+           if j["rule"] == "test_slow"]
+check(crowded == ["watch"], "a slow full suites run another full run of the same repo overlapped is a watch, not red")
+check(slow_level(slow_mix) == ["red"] and [j["level"] for r in m.tests_section(slow_mix, T, (), [
+          own, dict(peer, repo_root="/r/other"), dict(peer, kind="direct"), dict(peer, started_at=T - 90)])["rows"]
+          for j in r.get("judge", []) if j["rule"] == "test_slow"] == ["red"],
+      "J its own journal row, another repo's run, a direct run or one after it ends leaves the slow run red")
 check(slow_level(suites_mix(700, "named")) == ["red"]
       and [r["say"] for r in m.tests_section(suites_mix(700, "named"), T)["rows"]][0].endswith("for a named-suites run"),
       "a named-suites run is judged against named-suite runs and says so")
@@ -1123,9 +1158,38 @@ check(judged(health(G, events=[change(T - 600, kind="stamp-forged")])) == {("sta
       and judged(health(G, events=[change(T - 90000, kind="stamp-forged")])) == {},
       "Guards: a forged stamp is red and clears after 24 h")
 for kind in ("changed-while-watcher-off", "baseline-missing", "dropped"):
-    check(judged(health(G, events=[change(T - 600, kind=kind)])) == {(kind, "tripwire"): "red"}
-          and judged(health(G, events=[change(T - 90000, kind=kind)])) == {},
+    check(judged(health(G, events=[change(T - 600, kind=kind, sid="t")], transcript_at=T - 100)) == {(kind, "tripwire"): "red"}
+          and judged(health(G, events=[change(T - 90000, kind=kind, sid="t")], transcript_at=T - 100)) == {},
           "Guards: %s is red and clears after 24 h" % kind)
+check(all(judged(health(G, events=[change(T - 600, kind="baseline-missing", sid=sid)], transcript_at=T - 100)) == {}
+          for sid in ("hlprof-a", "t*", None)),
+      "Guards: a lost baseline of a session id no chat transcript owns is not judged")
+synced = [os.path.join(home, ".claude", "skills", "synced", "org_acct", "pptx", "SKILL.md"),
+          os.path.join(home, ".claude", "plugins", "synced", "org_acct", "kit", "skills", "make", "SKILL.md")]
+put(os.path.join(home, ".claude", "skills", "synced", "org_acct", "manifest.json"),
+    json.dumps({"lastUpdated": (T - 500) * 1000, "skills": [{"name": "pptx"}]}))
+put(os.path.join(home, ".claude", "plugins", "synced", "org_acct", "manifest.json"),
+    json.dumps({"lastUpdated": (T - 600) * 1000, "plugins": [{"name": "kit"}]}))
+put(os.path.join(home, ".claude", "skills", "synced", "org_old", "manifest.json"),
+    json.dumps({"lastUpdated": (T - 90000) * 1000, "skills": [{"name": "pptx"}]}))
+check(judged(health(G, events=[dict(change(T - 600), files=synced, bytes=[2282, 9698])])) == {},
+      "Guards: Claude Code's org sync into skills/synced and plugins/synced, which no gate sees, is not judged")
+check(judged(health(G, events=[change(T - 600, os.path.join(home, ".claude", "skills", "synced", "org_acct", "handmade", "SKILL.md"), 5000),
+                               change(T - 600, os.path.join(home, ".claude", "skills", "synced", "org_old", "pptx", "SKILL.md"), 5000)]))
+      == {("growth-ungated", "~/.claude/skills/synced/org_acct/handmade"): "red",
+          ("growth-ungated", "~/.claude/skills/synced/org_old/pptx"): "red"},
+      "Guards: synced-tree growth the bucket manifest does not show the sync landing is judged")
+tree, landing = os.path.join(home, "p", ".claude", "worktrees", "b1", "AGENTS.md"), os.path.join(home, "p", "AGENTS.md")
+check(judged(health(G, gates=[dict(passed, file=tree, at=T - 80050)], events=[change(T - 80000, tree), change(T - 600, landing)]))
+      == {}, "Guards: a merge or copy landing bytes a worktree already grew by, up to a day before, is not new growth")
+check(judged(health(G, gates=[dict(passed, file=tree, at=T - 4050)], events=[change(T - 4000, tree, 100), change(T - 600, landing)]))
+      == {("growth-ungated", "~/p/AGENTS.md"): "red"}, "J Guards: a landing larger than the worktree's growth is judged")
+check(judged(health(G, gates=[dict(passed, file=tree, at=T - 4050)], events=[change(T - 4000, tree, 600),
+                                                                          change(T - 2000, landing, 600), change(T - 600, landing, 600)]))
+      == {("growth-ungated", "~/p/AGENTS.md"): "red"}, "Guards: one worktree growth excuses one landing of its bytes, never a second")
+check(judged(health(G, gates=[dict(denied, file=synced[0])], events=[change(T - 600, synced[0], 2282)]))
+      == {("growth-denied", "~/.claude/skills/synced/org_acct/pptx"): "red"},
+      "J Guards: growth a gate denied in a synced tree stays red")
 for beat, beat_at, ident in ((None, T, "never-started"), ("roots=2\n", T - 1000, "stale"),
                              ("roots=2\nerror=fsevents gone\n", T - 30, "error"), ("roots=0\n", T - 30, "no-root")):
     check(judged(health(G, beat=beat, beat_at=beat_at)) == {("watcher-down", ident): "red"},
@@ -1460,7 +1524,7 @@ replay() {
 }
 first_ids=$(replay 1)
 assert_eq "$first_ids" "$(replay 2)" "the committed calibration fixture replays with the same problem ids"
-assert_eq '["floor:event:SessionStart=watch","hook-every-call-instruction-watch=watch","hook-sync-instruction-watch-check=watch","hook_every_call:statusline-workdir-hook.sh=watch","test_daily_cost-worker-run=fixed-pending","test_daily_cost:llm-legs:test_instruction_gate=new","test_long_pole-worker-run=fixed-pending","floor-trivial-bash-readonly-fastpath=fixed-pending","hook-every-call-context-nudge=fixed-pending","guards-tripwire-rejournal=fixed-pending","ask-deferred-bg-task-hold-cap=fixed-pending","hook-error-notice-word-journal-timeout=fixed-pending","hook-error-worker-run-backstop-timeout=fixed-pending","word-miss-deferred-reading-lost=fixed-pending","hook-grows-repos-commit-journal=fixed-pending","hook-grows-repos-review-flow-gate=fixed-pending","hook-grows-size-commit-journal=fixed-pending","hook-grows-size-review-flow-gate=fixed-pending","hook-grows-repos-report-flush=fixed-pending","guards-growth-film-08a95dd4=fixed-pending","guards-growth-film-a19f6d01=fixed-pending","guards-growth-volumes-work-projects-llm-legs-docs=fixed-pending","guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-readme-md=fixed-pending","guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-agents-math-proof-judge-md=fixed-pending","guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-agents-math-proof-worker-deep-md=fixed-pending","guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-agents-math-proof-worker-md=fixed-pending","guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-skills-siege=fixed-pending","guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-skills-solo=fixed-pending","guards-growth-claude-skills-hyperframes=fixed-pending","guards-growth-claude-skills-hyperframes-animation=fixed-pending","guards-growth-claude-skills-hyperframes-audio=fixed-pending","guards-growth-claude-skills-hyperframes-cli=fixed-pending","guards-growth-claude-skills-hyperframes-core=fixed-pending","guards-growth-claude-skills-hyperframes-creative=fixed-pending","guards-growth-claude-skills-hyperframes-keyframes=fixed-pending","guards-growth-claude-skills-hyperframes-registry=fixed-pending","guards-growth-claude-skills-hyperframes-studio=fixed-pending","guards-growth-claude-skills-media-use=fixed-pending","hook-p50-stop-dispatch=fixed-pending","hook-sync-worker-launch-gate=fixed-pending","test_long_pole-review-bench=fixed-pending","test_long_pole-review-bench-in-llm-legs=fixed-pending","loose-objects-logo-vectorizer-bench=fixed-pending","guards-growth-alpha-fixture-docs=fixed-pending","guards-growth-review-bench-docs=fixed-pending","guards-growth-video-r1-a-hf-claude-md=fixed-pending","guards-growth-video-r1-b-hf-claude-md=fixed-pending","hook-sync-stop-dispatch=fixed-pending","hook-grows-repos-stop-dispatch=fixed-pending","hook-grows-size-stop-dispatch=fixed-pending","hook-sync-worker-limit-gate=fixed-pending","hook-grows-repos-worker-limit-gate=fixed-pending","hook-sync-worker-spawn-hook=fixed-pending","test_daily_cost-llm-limits=fixed-pending","test_long_pole-commit-report=fixed-pending","guards-growth-claude-plugins-marketplaces-security-guidance-readme-md=fixed-pending","speed-exec-background-qos=fixed-pending","test_long_pole-light-research=fixed-pending"]' \
+assert_eq '["floor:event:SessionStart=watch","hook-every-call-instruction-watch=watch","hook-sync-instruction-watch-check=watch","hook_every_call:statusline-workdir-hook.sh=watch","test_daily_cost-worker-run=fixed-pending","test_daily_cost:llm-legs:test_instruction_gate=new","test_long_pole-worker-run=fixed-pending","floor-trivial-bash-readonly-fastpath=fixed-pending","hook-every-call-context-nudge=fixed-pending","suites-llm-legs-concurrent-load=fixed-pending","load-unseen-suites-statusline=fixed-pending","load-busy-night-concurrency=fixed-pending","collector-run-cpu-starved=fixed-pending","guards-tripwire-rejournal=fixed-pending","guards-synced-skills-vendor-sync=fixed-pending","guards-baseline-missing-probe-sids=fixed-pending","ask-deferred-bg-task-hold-cap=fixed-pending","hook-error-notice-word-journal-timeout=fixed-pending","hook-error-ask-pr-mattermost-creation=fixed-pending","hook-error-worker-run-backstop-timeout=fixed-pending","ask-repeat-span-drill-scheduled-wakeup=fixed-pending","word-miss-deferred-reading-lost=fixed-pending","word-miss-first-idle-stop-no-checkpoint=fixed-pending","hook-grows-repos-commit-journal=fixed-pending","hook-grows-repos-review-flow-gate=fixed-pending","hook-grows-size-commit-journal=fixed-pending","hook-grows-size-review-flow-gate=fixed-pending","hook-grows-repos-report-flush=fixed-pending","guards-growth-film-08a95dd4=fixed-pending","guards-growth-film-a19f6d01=fixed-pending","guards-growth-volumes-work-projects-llm-legs-docs=fixed-pending","guards-growth-claude-agents-image-gen-md=fixed-pending","guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-readme-md=fixed-pending","guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-agents-math-proof-judge-md=fixed-pending","guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-agents-math-proof-worker-deep-md=fixed-pending","guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-agents-math-proof-worker-md=fixed-pending","guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-skills-siege=fixed-pending","guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-skills-solo=fixed-pending","guards-growth-claude-skills-hyperframes=fixed-pending","guards-growth-claude-skills-hyperframes-animation=fixed-pending","guards-growth-claude-skills-hyperframes-audio=fixed-pending","guards-growth-claude-skills-hyperframes-cli=fixed-pending","guards-growth-claude-skills-hyperframes-core=fixed-pending","guards-growth-claude-skills-hyperframes-creative=fixed-pending","guards-growth-claude-skills-hyperframes-keyframes=fixed-pending","guards-growth-claude-skills-hyperframes-registry=fixed-pending","guards-growth-claude-skills-hyperframes-studio=fixed-pending","guards-growth-claude-skills-media-use=fixed-pending","hook-p50-stop-dispatch=fixed-pending","hook-sync-worker-launch-gate=fixed-pending","test_long_pole-review-bench=fixed-pending","test_long_pole-review-bench-in-llm-legs=fixed-pending","loose-objects-logo-vectorizer-bench=fixed-pending","guards-growth-alpha-fixture-docs=fixed-pending","guards-growth-review-bench-docs=fixed-pending","guards-growth-video-r1-a-hf-claude-md=fixed-pending","guards-growth-video-r1-b-hf-claude-md=fixed-pending","guards-growth-claude-agents-claudeb-worker-md=fixed-pending","guards-growth-claude-setup-night-sweep-skill=fixed-pending","hook-sync-stop-dispatch=fixed-pending","hook-grows-repos-stop-dispatch=fixed-pending","hook-grows-size-stop-dispatch=fixed-pending","hook-sync-worker-limit-gate=fixed-pending","hook-grows-repos-worker-limit-gate=fixed-pending","hook-sync-worker-spawn-hook=fixed-pending","test_daily_cost-llm-limits=fixed-pending","test_long_pole-commit-report=fixed-pending","guards-growth-claude-plugins-marketplaces-security-guidance-readme-md=fixed-pending","guards-synced-plugins-vendor-sync=fixed-pending","guards-denied-claude-agents-image-gen-md=fixed-pending","speed-exec-background-qos=fixed-pending","hook-p50-worker-limit-gate=fixed-pending","guards-growth-claude-skills-media=fixed-pending","test_long_pole-light-research=fixed-pending"]' \
   "$first_ids" "the 2026-09-29 18:27 calibration reads its known watches and every night fix as pending proof"
 assert_eq '["test_daily_cost-worker-run 8714.0 24","test_daily_cost:llm-legs:test_instruction_gate 10377.0 38","test_long_pole-worker-run 0.957 1","test_long_pole-review-bench null 0","test_long_pole-review-bench-in-llm-legs null 0","test_daily_cost-llm-limits 314.0 0","test_long_pole-commit-report null 0","test_long_pole-light-research null 0"]' \
   "$(jq -c '[.problems[] | select(.id | startswith("test_")) | "\(.id) \(.value) \(.exposure)"]' "$WORK/replay-1.json")" \

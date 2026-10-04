@@ -2187,6 +2187,17 @@ run_store wall-one-line-record
 assert contains "$(vsection claude)" 'session* opus·high WALLED'
 assert test -e "$WALLS/claudeb-session"
 clear_walls
+write_config 'codex_profile=main'
+jq -c '.golden | .vendors.codex.accounts |= map(if .account == "main" then
+  .five_hour += {as_of: 2000000100, effective_pct: 10} | .weekly += {as_of: 2000000100, effective_pct: 10}
+  else . end)' "$FIXTURES" >"$STORE"
+sync_fixture_pool
+printf '2000003600\n2000000000\n' >"$WALLS/codex-main"
+env "${run_env[@]}" "LLM_LIMITS_FILE=$STORE" "$SCRIPT" --account claudeb >/dev/null 2>"$WORK/note.err"
+assert test "$(sed -n 's/^codex_profile=//p' "$CONFIG")" = main
+assert not_contains "$(cat "$WORK/note.err")" 'hit its wall'
+clear_walls
+write_config
 
 # The reading that lapses a record covers every window the account HAS, not a fixed pair: grok
 # measures weekly alone, and demanding a five-hour one too left its walls standing until reset.
@@ -2431,5 +2442,25 @@ env "${run_env[@]}" GROKB_CACHE_DIR="$stale_grok" GROK_FETCH_MARKER="$grok_mark"
   "LLM_LIMITS_FILE=$STORE" "$SCRIPT" --account codex >"$WORK/nofetch.out" 2>"$WORK/nofetch.err"
 assert test ! -s "$grok_mark"
 assert test "$(cat "$WORK/nofetch.out")" = "$(env "${run_env[@]}" "LLM_LIMITS_FILE=$STORE" "$SCRIPT" --account codex)"
+
+find_shim=$WORK/find-shim
+mkdir -p "$find_shim"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"$FIND_LOG"\nexec /usr/bin/find "$@"\n' >"$find_shim/find"
+chmod +x "$find_shim/find"
+clear_claims
+for vendor in claudeb codex gemini grok; do mkdir -p "$CLAIMS/$vendor" && : >"$CLAIMS/$vendor/tie-a"; done
+find_log=$WORK/find.log
+: >"$find_log"
+asked_out=$(env "${run_env[@]}" "PATH=$find_shim:$WORK/bin:$PATH" "FIND_LOG=$find_log" "LLM_LIMITS_FILE=$STORE" \
+  "$SCRIPT" --account claudeb 2>/dev/null)
+assert test -n "$asked_out"
+assert grep -q "$CLAIMS/claudeb" "$find_log"
+assert not_contains "$(cat "$find_log")" "$CLAIMS/codex"
+assert not_contains "$(cat "$find_log")" "$CLAIMS/gemini"
+assert not_contains "$(cat "$find_log")" "$CLAIMS/grok"
+: >"$find_log"
+env "${run_env[@]}" "PATH=$find_shim:$WORK/bin:$PATH" "FIND_LOG=$find_log" "LLM_LIMITS_FILE=$STORE" "$SCRIPT" >/dev/null 2>&1
+assert grep -q "$CLAIMS/grok" "$find_log"
+clear_claims
 
 printf 'PASS:%s assertions; the routing-contract rules (pool-toggle candidacy with a computable daily budget, pin-or-largest-budget selection where a nearer reset outranks an equal percentage and equal budgets order by name, walls only at effective 100%% with dead auth its own state), the five-hour deferral at 80%% with its `5h!` tag, claims as the second soft key (fresh demotes, TTL-expired does not, per-vendor, table never writes one, a refused query records nothing), the session account as an ordinary candidate in every role with no reserve anywhere, the seven roles including chat, research, light and computer without pins or role keys and light, image and computer ignoring workers-off and the pin alike, loud pin lapses, the fable bucket on explicit ask, --exclude re-queries and ALL WALLED exit 3, an emptied pool named as the switch it is rather than a limit, a NEXT block that ranks the top five ACCOUNTS across the vendors with several rows per vendor allowed, pins above budget and walls out of it, grok as the fourth vendor (weekly-only ranking, refreshable `expired` auth behind `ok`, mode arm, and absence that renders as absence), data hygiene and DATA age sourcing that a parked vendor contributes nothing to, the all-paused run naming the pause once and nothing else in the render and in the fail-safe alike, model/effort straight from worker-model, account rows that print the daily budget that ranked them with WALLED kept to the usage wall, a DATA line that names the stale rows instead of branding the table, the vendor and account a gateway chat owns rather than a Claude row it never spends, and the output/decision golden contract with no routing prose\n' "$asserts"

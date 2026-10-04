@@ -10,8 +10,8 @@
 # reports every change however it was made and now keeps the previous bytes, so anything that
 # slips past here is one command away from being put back.
 #
-# Not covered, on purpose: rm, truncate, sed -i, perl -pi, ex, ed. Nor a path held in a variable,
-# or a new file created by bare name from inside a guarded directory. When this gate cannot tell
+# Not covered, on purpose: rm, truncate, sed -i, perl -pi, ex, ed. Nor a shell path held in a
+# variable, or a new file created by bare name from inside a guarded directory. When this gate cannot tell
 # — its library, jq or the payload missing — it refuses the call rather than passing it. The
 # accepted false denials run the other
 # way: an interpreter that READS a guarded file and writes the result elsewhere
@@ -268,6 +268,29 @@ if [ -z "$denied" ] && printf '%s' "$flat" | grep -Eiq "${interp_write}"; then
       break
     fi
   done < <(printf '%s' "$flat" | grep -Eio "$interp_cons")
+fi
+if [ -z "$denied" ] && printf '%s' "$flat" | grep -Eiq "$(instruction_interp_var_write_re)"; then
+  var_trunc=$(instruction_interp_var_construct_re trunc)
+  var_starts=$(printf '%s' "$flat" | grep -Eob "$_INSTRUCTION_INTERP" | cut -d: -f1)
+  while IFS=: read -r var_at construct; do
+    var=$(instruction_interp_var_name "$construct") || continue
+    var_from=0 var_bound=
+    for var_start in $var_starts; do [ "$var_start" -le "$var_at" ] && var_from=$var_start; done
+    while IFS=: read -r var_bind _; do
+      [ "$var_bind" -ge "$var_from" ] && [ "$var_bind" -lt "$var_at" ] && var_bound=$var_bind
+    done < <(printf '%s' "$flat" | grep -Eiob "$(instruction_interp_var_bind_re "$var")")
+    [ -n "$var_bound" ] || continue
+    var_mode=append
+    printf '%s' "$construct" | grep -Eiq "$var_trunc" && var_mode=trunc
+    while IFS=: read -r var_bind assigned; do
+      [ "$var_bind" = "$var_bound" ] || continue
+      var_name=$(name_in "$assigned") || continue
+      if judge_row "$var_name" "$var_mode"; then
+        denied=1
+        break 2
+      fi
+    done < <(printf '%s' "$flat" | grep -Eiob "$(instruction_interp_var_assign_re "$var" "$TARGET")")
+  done < <(printf '%s' "$flat" | grep -Eiob "$(instruction_interp_var_construct_re)")
 fi
 if [ -z "$denied" ]; then
   while IFS= read -r landing; do

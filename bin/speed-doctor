@@ -52,7 +52,7 @@ OUTPUT_PROOF = "identical decisions or results on the replay, recorded as the fi
 LEVERS = [
     {"component": "chat/hooks", "lever": "provable-absence fast path for the hook setting the Pre-Bash floor",
      "effort": "S", "confidence": "measured", "saving": 0.77, "night_cost_h": 0.0, "proof": "latency", "hooks": True,
-     "quality": "equivalent"},
+     "hook": "review-flow-gate.sh", "quality": "equivalent"},
     {"component": "machine/contention", "lever": "background QoS for unattended work, attended suite priority",
      "effort": "S", "confidence": "estimated", "saving": 0.6, "night_cost_h": 0.0, "proof": "contention",
      "quality": "equivalent"},
@@ -64,7 +64,7 @@ LEVERS = [
      "quality": "equivalent"},
     {"component": "chat/start", "lever": "instruction-watch baseline off the start path",
      "effort": "S", "confidence": "estimated", "saving": 0.5, "night_cost_h": 0.0, "proof": "latency", "hooks": True,
-     "quality": "equivalent"},
+     "hook": "instruction-watch.sh baseline", "quality": "equivalent"},
     {"component": "delegation/workers", "lever": "relays return the report without re-verifying",
      "effort": "M", "confidence": "unmeasured", "saving": 0.05, "night_cost_h": 0.0, "proof": "orchestration",
      "quality": "risk"},
@@ -656,7 +656,7 @@ def opportunity_fields(om_day, lever):
             "levers": [lever["lever"]], "needs_egor": bool(lever.get("needs_egor")),
             "proof": [PROOF[lever["proof"]], OUTPUT_PROOF],
             "hooks": bool(lever.get("hooks")), "quality": lever["quality"],
-            "quality_evidence": lever.get("quality_evidence")}
+            "quality_evidence": lever.get("quality_evidence"), **({"hook": lever["hook"]} if lever.get("hook") else {})}
 
 
 def score_of(saving, confidence, effort_h, night_cost_h):
@@ -768,11 +768,18 @@ def hook_changed_day(key):
         return None
     real = os.path.realpath(script)
     try:
-        out = subprocess.run(["git", "-C", os.path.dirname(real), "log", "-1", "--format=%ct", "--",
-                              os.path.basename(real)], capture_output=True, text=True, timeout=5).stdout.strip()
+        out = subprocess.run(["git", "-C", os.path.dirname(real), "log", "-1", "--first-parent", "--format=%ct", "HEAD",
+                              "--", os.path.basename(real)], capture_output=True, text=True, timeout=5).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return None
     return H.local_day(int(out)) if out.isdigit() else None
+
+
+def lever_since(ledger, component):
+    """A lever whose own ledger row records a landed fix is charged only for the days after it landed."""
+    fixes = (H.ledger_row(ledger, "opportunity", component) or {}).get("fixes") or ()
+    landed = [H.fix_landed(f["in"], H.repos_dir()) for f in fixes if f.get("in") and not f.get("regressed_at")]
+    return max((H.local_day(t) for t in landed if t), default=None)
 
 
 def speed_rows(ledger):
@@ -944,6 +951,11 @@ def collect(write, now):
         area, _, leaf = component.partition("/")
         seen = len(leaf_days[(area, leaf)]) if (area, leaf) in leaf_days else len(days)
         users = len(sessions.get((area, leaf), ()))
+        since = lever_since(ledger, component)
+        if since:
+            secs = sum(s for (day, a, l), s in credit.items() if (a, l) == (area, leaf) and day > since)
+            om = secs / 60.0 / max((now - max(lo, H.day_end(since))) / 86400.0, 1e-9)
+            seen, users = len([d for d in leaf_days.get((area, leaf), ()) if d > since]), 0
         if om < LIMITS["worth_om_day"] or (seen < seen_need("seen_days", covered)
                                            and users < seen_need("seen_sessions", covered)):
             continue

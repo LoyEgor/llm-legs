@@ -585,10 +585,11 @@ INSTRUCTION_NAME_END="($|[[:space:]>|;&),}\"'\`\\\\])"
 # `open('/tmp/scratch','w').write('see CLAUDE.md')` writes a scratch file and mentions a guarded
 # one, and the loose rule read that as a write to the guarded file. The path has to be quoted,
 # which is how a one-liner is actually written and which also keeps a `.tmp` sibling out; a path
-# held in a variable is out of scope here as it is everywhere else in these hooks.
+# held in a variable has its own looser rule, `instruction_interp_var_write_re`.
 # The verb boundary carries a slash because `/usr/bin/python3` is the same call typed another way,
 # and a backtick and a brace because so are `` `…` `` and `{ …; }`.
-_INSTRUCTION_IW="(^|[[:space:]|;&({\`/])(python[0-9.]*|perl|ruby|node|bun|deno)[[:space:]][^|]*"
+_INSTRUCTION_INTERP="(^|[[:space:]|;&({\`/])(python[0-9.]*|perl|ruby|node|bun|deno)[[:space:]]"
+_INSTRUCTION_IW="$_INSTRUCTION_INTERP[^|]*"
 # The quote around a path or a mode arrives escaped as often as bare: the one-liner is itself a
 # double-quoted argument, so `open(\"x\",\"w\")` is the ordinary spelling.
 _INSTRUCTION_Q="\\\\?['\"]"
@@ -632,6 +633,36 @@ instruction_interp_write_construct_re() { # names-alternation → ERE matching O
 
 instruction_interp_trunc_construct_re() { # names-alternation → ERE matching one shrinking one
   _instruction_interp_construct "$1" "$_INSTRUCTION_TRUNC_MODE" "writeFile(Sync)?"
+}
+
+# A path held in a variable (`p='agents/x.md'` … `open(p,'w')`): each write through a bare
+# identifier is a write to what its last assignment before the write, in the same interpreter
+# invocation, gave it.
+_INSTRUCTION_ID="[A-Za-z_][A-Za-z_0-9]*"
+instruction_interp_var_construct_re() { # [trunc] → ERE matching ONE write through a variable
+  local s="[[:space:]]*" mode=$_INSTRUCTION_MODE node="(write|append)File(Sync)?"
+  [ "${1:-}" != trunc ] || mode=$_INSTRUCTION_TRUNC_MODE node="writeFile(Sync)?"
+  printf '%s' "(open\($s(file$s=$s)?$_INSTRUCTION_ID$s,([^()]*,)?$s(mode$s=$s)?$mode|open\([^(),]*,$s$mode$s,$s\\\$$_INSTRUCTION_ID|Path\($s$_INSTRUCTION_ID$s\)$s\.(write_text|write_bytes|open\($s$mode)|File\.write\($s$_INSTRUCTION_ID$s,|(^|[^A-Za-z_0-9.\$])$_INSTRUCTION_ID\.(write_text|write_bytes)\(|$node\($s$_INSTRUCTION_ID$s,)"
+}
+
+instruction_interp_var_write_re() { # → ERE matching an interpreter that writes through a variable
+  printf '%s%s' "$_INSTRUCTION_IW" "$(instruction_interp_var_construct_re)"
+}
+
+instruction_interp_var_name() { # one construct of instruction_interp_var_construct_re → its variable
+  local s="[[:space:]]*" id="([\$]?$_INSTRUCTION_ID)"
+  local perl="^open\([^(),]*,$s$_INSTRUCTION_MODE$s,$s([\$]$_INSTRUCTION_ID)" call="^(File\.write|Path)\($s$id"
+  local py="^open\($s(file$s=$s)?$id" node="File(Sync)?\($s$id" method="^[^A-Za-z_0-9.]?$id\."
+  [[ $1 =~ $perl ]] || [[ $1 =~ $call ]] || [[ $1 =~ $py ]] || [[ $1 =~ $node ]] || [[ $1 =~ $method ]] || return 1
+  printf '%s' "${BASH_REMATCH[${#BASH_REMATCH[@]}-1]}"
+}
+
+instruction_interp_var_assign_re() { # variable names-alternation → ERE matching it assigned one of the names
+  printf '%s' "(^|[^A-Za-z_0-9.\$])${1//\$/\\\$}[[:space:]]*=[[:space:]]*(Path\([[:space:]]*)?$_INSTRUCTION_Q($2)$_INSTRUCTION_Q"
+}
+
+instruction_interp_var_bind_re() { # variable → ERE matching any assignment to it, at the same offset as the one above
+  printf '%s' "(^|[^A-Za-z_0-9.\$])${1//\$/\\\$}[[:space:]]*=([^=]|\$)"
 }
 
 # WHERE A COMMAND LEAVES ITS BYTES: the one parse both doors on these files ask. Two parses of one

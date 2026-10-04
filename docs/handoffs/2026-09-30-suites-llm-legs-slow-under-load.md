@@ -1,6 +1,6 @@
 # Hand-off: `suites · llm-legs` at 22 min is concurrent load, not a slower suite
 
-Status: open
+Status: done 2026-10-04 — suites-llm-legs-concurrent-load (options 2 and 3: runs.jsonl since llm-legs@e5bd8fd1; blind spot suites-journal-sampled closed)
 
 For the chat «Harness Doctor» (owner of `share/harness-ledger.json`). From night fixer run
 `harness-tests-20260930T001649Z-7ba4` (night 20260930T001419Z-8480).

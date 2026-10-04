@@ -1,6 +1,6 @@
 # Hand-off: a stop hook journalled "not executable" at its own creation
 
-Status: open
+Status: done 2026-10-04 — hook-error-ask-pr-mattermost-creation
 
 For the chat «Harness Doctor» (owner of `share/harness-ledger.json`). Written 2026-10-02 by night
 fixer run `harness-stop-hooks-20261002T093037Z-0eb0`.

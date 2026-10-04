@@ -1,6 +1,6 @@
 # Hand-off: load:unseen and load:busy are the night's requested work, not a bug
 
-Status: open
+Status: done 2026-10-04 — load-unseen-suites-statusline, load-busy-night-concurrency, collector-run-cpu-starved (option 1, and collector:run a watch while a slot is held)
 
 For «Harness Doctor» (`share/harness-ledger.json` `owner`). Rows `load-unseen-suites-statusline`
 and `load-busy-night-concurrency`, both `open`. Load fixers 2026-09-30, 10-01, 10-02 and 10-03

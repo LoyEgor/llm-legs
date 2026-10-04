@@ -1,6 +1,6 @@
 # Guards: interpreter writes through a variable path, and git merge landings
 
-Status: open
+Status: done 2026-10-04 — guards-growth-claude-agents-claudeb-worker-md, guards-growth-claude-agents-image-gen-md, guards-denied-claude-agents-image-gen-md, guards-growth-claude-setup-night-sweep-skill, guards-growth-claude-skills-media (§1 as proposed, §2 option b)
 
 For «Harness Doctor» (`share/harness-ledger.json` `owner`). Written 2026-10-02 by night fixer run
 harness-guards-20261002T093034Z-0c00. Both are gate-scope decisions, so the fixer changed no gate.

@@ -292,18 +292,21 @@ claims_json() {
   list=$(worker_claims_fresh "$1" 2>/dev/null) || true
   json_names "$list"
 }
-cb_claims=$(claims_json claudeb)
-cx_claims=$(claims_json codex)
-gm_claims=$(claims_json gemini)
-gr_claims=$(claims_json grok)
+# An --account answer reads only its own vendor's section of the table below.
+asked() { [ -z "$query_vendor" ] || [ "$query_vendor" = "$1" ]; }
+cb_claims='[]'; cx_claims='[]'; gm_claims='[]'; gr_claims='[]'
+! asked claudeb || cb_claims=$(claims_json claudeb)
+! asked codex || cx_claims=$(claims_json codex)
+! asked gemini || gm_claims=$(claims_json gemini)
+! asked grok || gr_claims=$(claims_json grok)
 
 media_order=false
 cx_starts='{}'; gm_starts='{}'; gr_starts='{}'
 if [ "$query_role" = image ]; then
   media_order=true
-  cx_starts=$(worker_starts_json codex 2>/dev/null) || cx_starts='{}'
-  gm_starts=$(worker_starts_json gemini 2>/dev/null) || gm_starts='{}'
-  gr_starts=$(worker_starts_json grok 2>/dev/null) || gr_starts='{}'
+  ! asked codex || cx_starts=$(worker_starts_json codex 2>/dev/null) || cx_starts='{}'
+  ! asked gemini || gm_starts=$(worker_starts_json gemini 2>/dev/null) || gm_starts='{}'
+  ! asked grok || gr_starts=$(worker_starts_json grok 2>/dev/null) || gr_starts='{}'
 fi
 
 # A wall worker-run just watched, before llm-limits has caught up. Unexpired record → walled —
@@ -337,10 +340,11 @@ walls_json() {
   done) || true
   json_names "$list"
 }
-cb_walls=$(walls_json claudeb)
-cx_walls=$(walls_json codex)
-gm_walls=$(walls_json gemini)
-gr_walls=$(walls_json grok)
+cb_walls='[]'; cx_walls='[]'; gm_walls='[]'; gr_walls='[]'
+! asked claudeb || cb_walls=$(walls_json claudeb)
+! asked codex || cx_walls=$(walls_json codex)
+! asked gemini || gm_walls=$(walls_json gemini)
+! asked grok || gr_walls=$(walls_json grok)
 
 # A codex catalog is per account (a lapsed plan lists the free models alone), so an account whose own
 # cache lacks the worker family is no candidate: its ACCOUNT: line would launch an id it does not
@@ -373,10 +377,10 @@ clear_observed_pins() {
 # A paused vendor spends nothing either — pause blanks the in-memory pins only, deliberately
 # keeping them on disk for when it resumes.
 if [ "$query_role" = workers ]; then
-  [ "$cb_paused" = true ] || clear_observed_pins claudeb
-  [ "$cx_paused" = true ] || clear_observed_pins codex
-  [ "$gm_paused" = true ] || clear_observed_pins gemini
-  [ "$gr_paused" = true ] || clear_observed_pins grok
+  ! asked claudeb || [ "$cb_paused" = true ] || clear_observed_pins claudeb
+  ! asked codex || [ "$cx_paused" = true ] || clear_observed_pins codex
+  ! asked gemini || [ "$gm_paused" = true ] || clear_observed_pins gemini
+  ! asked grok || [ "$gr_paused" = true ] || clear_observed_pins grok
 fi
 worker_model_prime_pins "$(worker_model_file)"
 
@@ -385,10 +389,11 @@ pins_json() {
   list=$(worker_model_pins "$1" 2>/dev/null) || true
   json_names "$list"
 }
-cb_pins=$(pins_json claudeb)
-cx_pins=$(pins_json codex)
-gm_pins=$(pins_json gemini)
-gr_pins=$(pins_json grok)
+cb_pins='[]'; cx_pins='[]'; gm_pins='[]'; gr_pins='[]'
+! asked claudeb || cb_pins=$(pins_json claudeb)
+! asked codex || cx_pins=$(pins_json codex)
+! asked gemini || gm_pins=$(pins_json gemini)
+! asked grok || gr_pins=$(pins_json grok)
 [ "$cb_paused" = false ] || cb_pins='[]'
 [ "$cx_paused" = false ] || cx_pins='[]'
 [ "$gm_paused" = false ] || gm_pins='[]'
@@ -403,10 +408,11 @@ cb_scope=$(pin_scope claudeb "$cb_pins")
 cx_scope=$(pin_scope codex "$cx_pins")
 gm_scope=$(pin_scope gemini "$gm_pins")
 gr_scope=$(pin_scope grok "$gr_pins")
-cb_pin=$(jq -r '.[0] // empty' <<<"$cb_pins")
-cx_pin=$(jq -r '.[0] // empty' <<<"$cx_pins")
-gm_pin=$(jq -r '.[0] // empty' <<<"$gm_pins")
-gr_pin=$(jq -r '.[0] // empty' <<<"$gr_pins")
+cb_pin=; cx_pin=; gm_pin=; gr_pin=
+[ "$cb_pins" = '[]' ] || cb_pin=$(jq -r '.[0] // empty' <<<"$cb_pins")
+[ "$cx_pins" = '[]' ] || cx_pin=$(jq -r '.[0] // empty' <<<"$cx_pins")
+[ "$gm_pins" = '[]' ] || gm_pin=$(jq -r '.[0] // empty' <<<"$gm_pins")
+[ "$gr_pins" = '[]' ] || gr_pin=$(jq -r '.[0] // empty' <<<"$gr_pins")
 
 fail_safe() {
   # A query has no fail-safe: printing a guessed account would send a caller at an account this
@@ -448,6 +454,7 @@ fail_safe() {
 
 live_pools='{}'
 for pool_vendor in claudeb codex gemini grok; do
+  asked "$pool_vendor" || continue
   pool_dir=$(worker_pool_dir "$pool_vendor")
   [ -e "$pool_dir" ] || [ -L "$pool_dir" ] || continue
   if [ -d "$pool_dir" ] && [ -r "$pool_dir" ] && [ -x "$pool_dir" ]; then

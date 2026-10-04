@@ -1,6 +1,6 @@
 # Loose objects in a repository nobody commits to
 
-Status: open
+Status: done 2026-10-04 — loose-objects-logo-vectorizer-bench (claude-setup `rj_pack_loose`, uncommitted)
 
 To: the claude-setup review-journal owner. From: night fixers harness-growth (2026-10-02, 2026-10-03).
 Ledger row `loose-objects-logo-vectorizer-bench` (its note holds the evidence).

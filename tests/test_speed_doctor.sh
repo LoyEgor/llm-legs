@@ -105,6 +105,61 @@ with open(os.path.join(early_dir, "events", h.local_day(HI - 6 * 86400) + ".json
 early, _ = speed("speed-early", HARNESS_DOCTOR_DIR=early_dir)
 check(early["window"] == doc["window"] and early["headline"] == doc["headline"],
       "an events file from before Harness's turn rows began never widens the window: %s" % early["window"])
+lever_repo = os.path.join(base["HARNESS_REPOS_DIR"], "lever-hooks")
+os.makedirs(lever_repo)
+lever_hook = os.path.join(lever_repo, "review-flow-gate.sh")
+lever_settings = os.path.join(work, "lever-settings.json")
+with open(lever_settings, "w") as handle:
+    json.dump({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": lever_hook}]}]}}, handle)
+
+
+def lever_git(ago, *args):
+    stamp = "%d +0000" % (HI - ago * 86400)
+    return subprocess.run(["git", "-C", lever_repo] + list(args), check=True, capture_output=True, text=True,
+                          env=dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t",
+                                   GIT_COMMITTER_EMAIL="t@t", GIT_AUTHOR_DATE=stamp, GIT_COMMITTER_DATE=stamp)).stdout.strip()
+
+
+def lever_commit(ago, text):
+    with open(lever_hook, "a") as handle:
+        handle.write(text + "\n")
+    lever_git(ago, "add", "-A")
+    lever_git(ago, "commit", "-q", "-m", text)
+
+
+lever_git(6, "init", "-q")
+lever_commit(6, "#!/bin/bash")
+lever_git(6, "checkout", "-q", "-b", "lever-fix")
+lever_commit(6, "# the lever's fix")
+lever_fix = lever_git(6, "rev-parse", "HEAD")
+lever_git(6, "checkout", "-q", "-")
+lever_git(2, "merge", "-q", "--no-ff", "-m", "land the lever's fix", "lever-fix")
+lever_commit(1.5, "# unrelated")
+base_om = [p["opportunity"]["om_day"] for p in backlog if p["id"] == "opportunity:chat/hooks"]
+lever_doc, _ = speed("speed-lever-unfixed", HARNESS_SETTINGS=lever_settings)
+check([p["opportunity"]["om_day"] for p in lever_doc["problems"] if p["id"] == "opportunity:chat/hooks"] == base_om,
+      "a lever with no landed fix in its ledger row is charged the whole window, whatever its hook's later commits")
+lever_ledger = os.path.join(work, "lever-ledger.json")
+with open(lever_ledger, "w") as handle:
+    json.dump({"owner": "Harness Doctor", "blind_spots": [], "rows": [
+        {"id": "lever", "match": {"rule": "opportunity", "ident": "chat/hooks"}, "status": "fixed",
+         "fixes": [{"in": "lever-hooks@" + lever_fix, "regressed_at": None}]}]}, handle)
+saved_env, captured = dict(os.environ), []
+os.environ.update({k: v for k, v in base.items() if k != "PATH"}, HARNESS_SETTINGS=lever_settings,
+                  HARNESS_LEDGER=lever_ledger, SPEED_DOCTOR_DIR=os.path.join(work, "speed-lever-fixed"))
+partition = module.partition
+module.partition = lambda *a: captured.append((a, partition(*a))) or captured[-1][1]
+lever_doc = module.collect(False, HI)
+module.partition = partition
+os.environ.clear()
+os.environ.update(saved_env)
+(_, _, lever_lo, _), (lever_credit, _) = captured[0]
+landed = h.local_day(HI - 2 * 86400)
+lever_secs = sum(s for (day, a, l), s in lever_credit.items() if (a, l) == ("chat", "hooks") and day > landed)
+lever_om = [p["opportunity"]["om_day"] for p in lever_doc["problems"] if p["id"] == "opportunity:chat/hooks"]
+check(lever_om and lever_om != base_om
+      and abs(lever_om[0] - lever_secs / 60.0 / ((HI - max(lever_lo, h.day_end(landed))) / 86400.0)) < 0.01,
+      "a lever is charged per day only after its own fix landed through the merge that brought it in: %s" % lever_om)
 spike, pattern = ({"id": i, "opportunity": {"needs_egor": False, "score": 0.5, "data_confidence": c}}
                   for i, c in (("a-spike", round(1 / 7.0, 2)), ("b-pattern", round(4 / 7.0, 2))))
 check([o["id"] for o in sorted([spike, pattern], key=module.rank_key)] == ["b-pattern", "a-spike"],
@@ -429,6 +484,14 @@ check(moved["opportunity:hooks/busy.sh"]["opportunity"]["om_day"] == round(10.0 
       "their dispatcher: %s" % moved["opportunity:hooks/busy.sh"]["opportunity"]["om_day"])
 check(module.moved_opportunities(lambda component: 0.01, speed_days, HI) == [],
       "a heavy suite or hot hook worth under 0.5 OM/d is no opportunity")
+git("checkout", "-q", "-b", "side")
+with open(os.path.join(hooks_repo, "fresh.sh"), "a") as handle:
+    handle.write("echo side\n")
+git("commit", "-q", "-am", "side", GIT_AUTHOR_DATE="%d +0000" % (HI - 3 * 86400), GIT_COMMITTER_DATE="%d +0000" % (HI - 3 * 86400))
+git("checkout", "-q", "-")
+git("merge", "-q", "--no-ff", "-m", "land", "side", GIT_AUTHOR_DATE="%d +0000" % (HI - 86400), GIT_COMMITTER_DATE="%d +0000" % (HI - 86400))
+check(module.hook_changed_day("fresh.sh") == h.local_day(HI - 86400),
+      "a hook commit merged later counts from the merge that landed it: %s" % module.hook_changed_day("fresh.sh"))
 iso, slow = moved["opportunity:tests/alpha/test_isolation"], moved["opportunity:tests/alpha/test_slow"]
 check(iso["opportunity"]["protected"] == "protects isolation" and "protected" not in slow["opportunity"]
       and "protects isolation" in iso["fact"] and iso["opportunity"]["quality"] == "equivalent"

@@ -217,6 +217,42 @@ assert_eq deny "$(decision "python3 - <<'EOF'
 open('$REAL_MD','w').write('x')
 EOF")"
 
+echo "== write gate: an interpreter writing through a variable that holds a guarded name"
+assert_eq deny "$(decision "python3 - <<'EOF'
+p='$CLAUDE_MD'
+open(p,'w').write('x')
+EOF")"
+assert_eq deny "$(decision "python3 -c \"from pathlib import Path; p=Path('$CLAUDE_MD'); p.write_text('x')\"")"
+assert_eq deny "$(decision "python3 -c \"from pathlib import Path; p='$CLAUDE_MD'; Path(p).write_text('x')\"")"
+assert_eq deny "$(decision "node -e \"const p='$CLAUDE_MD'; require('fs').writeFileSync(p, 'x')\"")"
+assert_eq pass "$(decision "python3 -c \"p='$CLAUDE_MD'; print(open(p).read())\"")"
+assert_eq pass "$(decision "python3 -c \"p='$CLAUDE_MD'; open(p,'r').read()\"")"
+assert_eq pass "$(decision "python3 -c \"p='${CLAUDE_MD}.tmp'; open(p,'w').write('x')\"")"
+assert_eq pass "$(decision "echo \"p='$CLAUDE_MD'; open(p,'w')\" > $WORK/notes.txt")"
+assert_eq deny "$(decision "python3 -c \"p='$CLAUDE_MD'; open(file=p, mode='a').write('x')\"")"
+assert_eq deny "$(decision "python3 -c \"p='$CLAUDE_MD'; open(p, encoding='utf-8', mode='a').write('x')\"")"
+assert_eq deny "$(decision "perl -e \"my \$p='$CLAUDE_MD'; open(my \$f,'>>',\$p)\"")"
+assert_eq deny "$(decision "ruby -e \"p='$CLAUDE_MD'; File.write(p,'x')\"")"
+assert_eq pass "$(decision "CLAUDEB_WORKER=1 python3 -c \"names=['$CLAUDE_MD']; out='/tmp/s'; open(out,'w')\"")"
+assert_eq pass "$(decision "grep x '$CLAUDE_MD'
+python3 -c \"out='/tmp/s'; open(out,'w').write('x')\"")"
+assert_eq pass "$(decision "python3 -c \"f='$CLAUDE_MD';print(open(f).read())\" && python3 -c \"f='/tmp/o.json';open(f,'w')\"")"
+assert_eq 0 "$(CLAUDEB_WORKER=1 gate "python3 -c \"f='$CLAUDE_MD';print(open(f).read())\" && python3 -c \"f='/tmp/o.json';open(f,'w')\"" >/dev/null 2>&1; echo $?)"
+assert_eq pass "$(decision "python3 -c \"f='$CLAUDE_MD'\" && python3 -c \"open(f,'w')\"")"
+assert_eq pass "$(decision "python3 - <<'EOF'
+path='$CLAUDE_MD'
+print(open(path).read())
+path='/tmp/o.json'
+open(path,'w').write('x')
+EOF")"
+assert_eq deny "$(decision "python3 - <<'EOF'
+path='/tmp/o.json'
+path='$CLAUDE_MD'
+open(path,'w').write('x')
+path='/tmp/o.json'
+EOF")"
+assert_eq deny "$(decision "python3 -c \"f='/tmp/o.json';open(f,'w')\" && python3 -c \"f='$CLAUDE_MD';open(f,'a')\"")"
+
 echo "== write gate: the spelling of the path does not matter"
 # The first live test walked through the gate on exactly this line: the expanded path was
 # the only form it knew, and nobody types that.
@@ -1707,6 +1743,9 @@ assert_eq deny "$(in_span decision "python3 -c \"open('$DOC','a').write('x')\"")
 assert_eq deny "$(in_span decision "python3 -c \"open('$DOC','r+').write('x')\"")"
 assert_eq pass "$(in_span decision "python3 -c \"Path('$DOC').write_text('x')\"")"
 assert_eq pass "$(in_span decision "node -e \"fs.writeFileSync('$DOC','x')\"")"
+assert_eq pass "$(in_span decision "python3 -c \"p='$DOC'; open(p,'w').write('x')\"")"
+assert_eq deny "$(in_span decision "python3 -c \"p='$DOC'; open(p,'a').write('x')\"")"
+assert_eq deny "$(in_span decision "python3 -c \"p='$DOC'; t='/tmp/t'; open(t,'w'); open(p,'a')\"")"
 assert_eq deny "$(in_span decision "node -e \"fs.appendFileSync('$DOC','x')\"")"
 assert_eq pass "$(in_span decision "perl -e \"open(my \$f, '>', '$DOC')\"")"
 assert_eq deny "$(in_span decision "perl -e \"open(my \$f, '>>', '$DOC')\"")"

@@ -1,6 +1,13 @@
 # Hand-off: fix the harness's own performance
 
-Status: open
+Status: done 2026-10-04 — superseded: load-unseen-suites-statusline, load-busy-night-concurrency, loose-objects-logo-vectorizer-bench, test_daily_cost-worker-run, test_long_pole-worker-run, and the hook rows of 2026-10-04-hook-cost-rows.md and 2026-10-04-hook-floors.md
+
+Closed by Harness Doctor 2026-10-04. Each §3 item is fixed or carried by a narrower row: 1 `bin/worker-pick`
+exports `GROKB_MODELS_NO_FETCH`; 2 and the load targets are judged by the load rows (live 17:08: 962 forks/s,
+6.4 unseen cores, statusline cuts that cost freshness stay Egor's §6 trade); 3 `instruction_repo_files` lists by
+`git ls-files` (share/instruction-files.sh:141); 4 `pack_loose_objects` (llm-legs@727ddde) plus claude-setup
+`rj_pack_loose`, logo-vectorizer-bench at 6 469 loose (was 16 433); 5, 6 the hook_sync/hook_p50/floor rows;
+9 the test_worker_run split (llm-legs@8f113a19); 10 memlogd `sync_writes`. 7 and 8 raise no doctor signal.
 
 For: an autonomous LLM that fixes, tests and verifies the problems below without supervision.
 Written 2026-09-28 from the speed investigation

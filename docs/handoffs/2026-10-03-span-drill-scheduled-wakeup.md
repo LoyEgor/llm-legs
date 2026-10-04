@@ -1,6 +1,6 @@
 # Hand-off: the span drill nudges a chat that waits on its own scheduled heartbeat
 
-Status: open
+Status: done 2026-10-04 — ask-repeat-span-drill-scheduled-wakeup
 
 To: Harness Doctor (owner of `share/harness-ledger.json`) and the claude-setup owner of the
 autonomous span (`hooks/stop.d/ask-span-drill.sh`). From night fixer run
