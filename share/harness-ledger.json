@@ -8,7 +8,7 @@
         "rule": "floor",
         "ident": "bash:trivial"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-09-29T18:52:42+03:00",
@@ -32,15 +32,29 @@
           ],
           "in": "llm-legs@d36db7b",
           "regressed_at": "2026-10-01T10:33:21+03:00"
+        },
+        {
+          "at": "2026-10-04T11:37:00+03:00",
+          "by": "Night fixer harness-hook-waits-20261004T013922Z-5155",
+          "files": [
+            "llm-legs/bin/worker-tag-hook.sh",
+            "llm-legs/bin/worker-git-guard.sh",
+            "claude-setup/hooks/worker-edit-guard.sh",
+            "claude-setup/hooks/context-nudge.sh",
+            "claude-setup/hooks/comment-gate.sh",
+            "claude-setup/hooks/word-gate.sh",
+            "claude-setup/hooks/lib/words.sh"
+          ],
+          "in": null
         }
       ],
       "same_cause": [
         "hook-every-call-context-nudge"
       ],
-      "last_reviewed": "2026-10-01",
-      "reviewed_by": "night fixer harness-hook-waits 20261001",
-      "note": "The llm-legs half of the same pour is llm-legs@c85ff90 (instruction-write-gate read-only note, worker-launch-gate early exit, instruction-files batched realpath). 2026-10-01 (second fix): the 48bfc77 fast path covered the heavy hooks, but the setters had moved to hooks that still forked per payload field. commit-report parses its payload once (jq 4 -> 1 on ls, 138 -> 75 ms isolated); english-gate exits on the shared readonly-command classifier before sourcing review-journal for launch parsing (git status 101 -> 56 ms, a non-read-only call unchanged at 91 ms; a read-only command never names a launcher, so no launch is missed); worker-git-guard, the before-side setter at 394 ms (34%), parses once instead of a jq -e validation plus a jq per field (main-session ls 167 -> 72 ms). Process-count asserts in test_commit_report, test_english_gates and test_worker_git_guard are red on the old hooks. At 08:37 the floor read 790 ms under 100% CPU (10 suites at once). Left: worker-tag-hook forks 2 jq before its exit on a plain Bash call; worker-edit-guard none.",
-      "handoff": "docs/handoffs/2026-09-28-harness-performance-fix.md"
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "night fixer harness-hook-waits 20261004",
+      "note": "Earlier fixes: 48bfc77 gave the heavy hooks the readonly fast path; d36db7b cut commit-report, english-gate and worker-git-guard to one payload parse. 2026-10-04 (third fix): the regression was the hooks that still forked on every call before deciding they had nothing to do. worker-tag-hook (the before setter, 42 ms mean saving 10-03, 132 on 10-04), worker-edit-guard and worker-git-guard now exit on builtins when the payload has no agent_type key and no worker env (3-4 forks to 0); context-nudge, on every tool call, reads payload, sweep stamp (an epoch inside .sweep-stamp now), window and lib dir with builtins (8 forks to 0 on a quiet call); comment-gate exits before sourcing the 2.4k-line review-journal when the command never names git (7 forks to 1); word-gate and lib/words.sh drop their dirname/cd subshells. Fork-count asserts red on the old hooks: test_worker_tag_marks, test_worker_git_guard (llm-legs), test_worker_edit_guard, test_context_nudge, test_comment_gate, test_word_triggers (claude-setup). The after-side setter pr-ready-mattermost is 1 ms own: it ends last because a 1465 forks/s storm spawns it last (blind spot floor-setter-last-ending). Launch read 628 ms; 1364 ms at 07:26 under load average 192. What remains is the 18-hook fan-out per side: docs/handoffs/2026-10-04-hook-floors.md.",
+      "handoff": "docs/handoffs/2026-10-04-hook-floors.md"
     },
     {
       "id": "hook-every-call-context-nudge",
@@ -76,7 +90,7 @@
         "rule": "floor",
         "ident": "edit"
       },
-      "status": "fixed",
+      "status": "open",
       "fixes": [
         {
           "at": "2026-09-30T03:40:00+03:00",
@@ -91,10 +105,10 @@
       "same_cause": [
         "floor-bash-other-hooks"
       ],
-      "last_reviewed": "2026-09-30",
-      "reviewed_by": "night fixer harness-hook-waits",
-      "note": "Design §7.1 calibration: 655 ms on 2026-09-29; 549 ms in the live run of 2026-09-29 21:18. 2026-09-30: 768 ms p50 = edit-conflict-notice 390 ms before + commit-journal 280 / instruction-watch check 237 ms after. The before side was live_run_holder forking head, sed and a same_owner subshell per unswept worker-run record of every repository (46 records); it now reads them with builtins and asks same_owner only of a record that concerns the file. The after side is the hooks run of the same night (hook_every_call / hook_grows_* on commit-journal and instruction-watch check); see the handoff.",
-      "handoff": "docs/handoffs/2026-09-30-floor-bash-other-hooks.md"
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "night fixer harness-hook-waits 20261004",
+      "note": "Calibration 655 ms on 2026-09-29. e746412 cut edit-conflict-notice's per-record forks; it regressed the same night. 2026-10-04: mean 1397 ms on 10-03 (2896 on 10-04 under load average ~200); removing edit-conflict-notice saves 316 ms, commit-journal 224, instruction-watch check 87 (10-03). All three are problems of harness-hooks-20261004T013933Z-5514 (hook_p50 / hook_every_call / hook_sync rows), as on 09-30, 10-01 and 10-03, so this run changed none of them; instruction-bloat-gate (24 ms saving) is the next one down. Reopened from a regressed fix: the setters moved, the fix did not miss. See the handoff.",
+      "handoff": "docs/handoffs/2026-10-04-hook-floors.md"
     },
     {
       "id": "floor-bash-other-hooks",
@@ -108,10 +122,10 @@
       "same_cause": [
         "floor-edit-hooks"
       ],
-      "last_reviewed": "2026-10-03",
-      "reviewed_by": "night fixer harness-hook-waits 20261003",
-      "note": "Setters: review-flow-gate before, commit-journal after (both claude-setup); their shared cost is the content snapshot pair (rj_snapshot_repos ~130 of 412 traced ms). 2026-10-03 09:45, 24 h: before p50 462 ms (338 without review-flow-gate), after 376 ms (269 without commit-journal); paired p50 over 500 ms in all 22 hours (558-1849), 467-1010 with both setters removed, CPU busy 0.9-1.0 in 20 of them and 791 ms at busy 0.57: the ~17-hook bash fan-out per side is structural, not only night load. Next setters once both drop: worker-launch-gate before (302 ms), instruction-watch check after (271 ms). Every one of them is a problem of the same night's hooks run (09-30, 10-01 and 10-03 alike), which holds the claude-setup worktree; no hook-waits run had one, so none changed a hook. Ruled out: the 4ca8de1 session-repo fan-out (381 vs 459 ms at 5+ repos, most calls in 1-2), instruction-watch check as a setter while commit-journal is slower (moves the after side 9-11 ms), vendor replacement of attribution snapshots (none found), a fixer limit change. See the handoff.",
-      "handoff": "docs/handoffs/2026-10-02-floor-bash-other-setters.md"
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "night fixer harness-hook-waits 20261004",
+      "note": "Setters: review-flow-gate before, commit-journal after (both claude-setup); their shared cost is the content snapshot pair (rj_snapshot_repos ~130 of 412 traced ms). 2026-10-04: mean 2657 ms over 8986 calls on 10-03 (3774 on 10-04 under load average ~200); removing commit-journal saves 1081 ms, review-flow-gate 386, commit-report 64, everything else under 15. Both setters (and worker-launch-gate, instruction-watch check next) are problems of harness-hooks-20261004T013933Z-5514, as on 09-30, 10-01 and 10-03, so this run changed none of them; it cut the forks of the hooks no run holds (comment-gate exits before review-journal on a call naming no git; worker-* exit on a main-session call). 2026-10-03: paired p50 467-1010 ms with both setters removed, CPU busy 0.9-1.0 in 20 of 22 hours: the 18-hook bash fan-out per side is structural. Ruled out: the 4ca8de1 session-repo fan-out (381 vs 459 ms at 5+ repos, most calls in 1-2), vendor replacement of attribution snapshots (none found), a fixer limit change. See the handoff.",
+      "handoff": "docs/handoffs/2026-10-04-hook-floors.md"
     },
     {
       "id": "unjournaled-sessionstart-branch-check",
@@ -1212,10 +1226,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-01",
-      "reviewed_by": "night fixer harness-hook-waits 20261001",
-      "note": "2026-10-01: 1797.691 ms fresh floor, launch 1772.148 ms; 3300 ms at 08:37 with the CPU 100% busy under the night's suites. instruction-watch baseline remains the named setter; cmd_baseline compares with the newest baseline, and cmd_check exits after writing it, so the following write_baseline is not a duplicate on that path. Batched stat, shasum and snapshot-key hashing already exist; ranked refresh is mtime/version gated. No evidence that compact-auto or session-trash set this floor. Same-night harness-hooks-20261001T020656Z-42ed owns hook_p50:instruction-watch.sh baseline; changing its trust/snapshot path concurrently is handed off. That run committed llm-legs@d31376b on its branch (the baseline walk prunes ~/.claude trees nothing loads, 3.1 s -> 1.46 s); judge this floor after its merge.",
-      "handoff": "docs/handoffs/2026-10-01-hook-waits-shared-components.md"
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "night fixer harness-hook-waits 20261004",
+      "note": "2026-10-04: 2436 ms at launch, 2359 at 07:26 (load average ~200); instruction-watch baseline is still the setter at 1419 ms p50 own (24 h), compact-auto hook-session-start 153 ms and session-trash sweep 324 ms are far below it; session-trash __purge-delayed (10.5 s wall) is detached and in no batch. The baseline is hook-p50-instruction-watch-baseline of harness-hooks-20261004T013933Z-5514 (regressed), as on 10-01, so this run left it. 2026-10-01 ruled out: a duplicate write_baseline (cmd_check exits after writing it), unbatched stat/shasum, an ungated ranked refresh.",
+      "handoff": "docs/handoffs/2026-10-04-hook-floors.md"
     },
     {
       "id": "floor:event:Stop",
@@ -1227,10 +1241,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-01",
-      "reviewed_by": "night fixer harness-hook-waits 20261001",
-      "note": "2026-10-01: 1335.809 ms over 28 stops; 3510 ms at 08:37 under full CPU load. stop-dispatch runs notices in parallel already, then asks in order; blanket parallelization would change notice-before-ask and first-block behavior. It still launches jq per journal record (record() and final hooks_json); batching that encoding is a candidate for harness-hooks-20261001T020656Z-42ed, which owns hook_p50:stop-dispatch.sh. Stop guards also belong to harness-stop-hooks-20261001T020700Z-5bfd. No vendor replacement found for the custom busy/held and journal contract. The hooks run committed claude-setup@c9f579c on its branch (the chat-name notice parsed the whole transcript, 1.3 s of a 2.9 s stop); judge this floor after its merge.",
-      "handoff": "docs/handoffs/2026-10-01-hook-waits-shared-components.md"
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "night fixer harness-hook-waits 20261004",
+      "note": "2026-10-04: 1116 ms at launch, 2872 at 07:26 (load average ~200); stop-dispatch 741 ms p50 own over 453 stops, its notices 63-116 ms each and asks 20-25 ms. stop-dispatch is hook-p50-stop-dispatch of harness-hooks-20261004T013933Z-5514 (regressed), so this run left it; lib/words.sh, which the asks source, no longer forks dirname/cd to find itself. 2026-10-01 ruled out: blanket parallel asks (breaks notice-before-ask and first-block order), a vendor replacement for the busy/held journal contract.",
+      "handoff": "docs/handoffs/2026-10-04-hook-floors.md"
     },
     {
       "id": "floor:tool",
@@ -1239,7 +1253,7 @@
         "rule": "floor",
         "ident": "tool"
       },
-      "status": "fixed",
+      "status": "open",
       "fixes": [
         {
           "at": "2026-10-01T09:48:30+03:00",
@@ -1252,10 +1266,10 @@
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-01",
-      "reviewed_by": "night fixer harness-hook-waits 20261001",
-      "note": "2026-10-01: fresh floor 396.22 ms over 77 calls; worker-spawn-hook sets the before side and context-nudge the after side. worker-spawn-hook now parses its payload once (one @sh-quoted jq array instead of a jq per field); prompt newlines, ATTACH routing, model stripping and session sanitation kept. Isolated probe under load: fork spawn 254 -> 154 ms (jq 11 -> 2), codex-worker 286 -> 226 ms (jq 9 -> 2), Workflow early return jq 3 -> 1. At 08:37 (CPU 100% busy) the floor read 3485 ms over 12 calls with worker-limit-gate before (hook_p50:worker-limit-gate.sh, 3.5 s, new after this run's launch, left for the next run) and report-flush after. GROKB_MODELS_NO_FETCH already prevents a model refresh, so no network-refresh change is needed. context-nudge still needs the current token window after tools: a blanket read-only skip would miss the assistant token growth. Its 64 KiB tail/sidecar path remains. Live floor recovery is unconfirmed until post-merge exposure; no quiet rows were supplied in this packet.",
-      "handoff": null
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "night fixer harness-hook-waits 20261004",
+      "note": "d36db7b cut worker-spawn-hook to one payload parse; the floor then moved to worker-limit-gate. 2026-10-04: mean 444 ms over 673 calls on 10-03 (903 on 10-04 under load average ~200); removing worker-limit-gate (Agent calls only, 1196 ms own) saves 662 ms, worker-spawn-hook 263, context-nudge 51, report-flush 37. worker-limit-gate is hook_p50:worker-limit-gate.sh of harness-hooks-20261004T013933Z-5514, so this run left it. The after setter context-nudge now reads payload, sweep stamp, window and lib dir with builtins (8 forks to 0 on a quiet call, test_context_nudge, claude-setup); its transcript tail scan stays, since a blanket read-only skip would miss the assistant token growth. Reopened from a regressed fix: the setter moved, the fix did not miss.",
+      "handoff": "docs/handoffs/2026-10-04-hook-floors.md"
     },
     {
       "id": "hook-p50-instruction-watch-baseline",
@@ -2222,6 +2236,13 @@
       "reason": "The 2026-10-02 hook-waits fixer read floor:bash:other at 1512 ms in the 1 h window under load average 46-65 (the night's own parallel workers) against 794 ms over 24 h; the same hooks at day load read 605-961 ms. The floor rule judges the last hour with no load context, so a night run measures its own concurrency.",
       "since": "2026-10-02",
       "would_catch_if": "each floor sample carried the sampler's load average at its call time and the floor drill split its median by load band"
+    },
+    {
+      "id": "floor-setter-last-ending",
+      "what": "which hook a floor actually waits on, when the hook named as its setter is merely the last to end",
+      "reason": "hook_batches names a batch's setter by the run that ends last; on 2026-10-04 under 1465 forks/s pr-ready-mattermost (1 ms own) was the trivial Bash after-side setter only because it was spawned last, while batch_parts' 'without' figures, computed beside it, name the hook whose removal shortens the floor",
+      "since": "2026-10-04",
+      "would_catch_if": "the floor say and drill named the hook with the largest batch_parts saving rather than the last-ending run"
     },
     {
       "id": "loose-object-writer",
