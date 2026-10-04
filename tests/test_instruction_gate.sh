@@ -3,6 +3,8 @@
 set -u
 
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
+. "$ROOT/share/test-scope.sh"
+PROJECTS=$(git_projects "$ROOT")
 WRITE_GATE="$ROOT/bin/instruction-write-gate.sh"
 WATCH="$ROOT/bin/instruction-watch.sh"
 BLOAT="$ROOT/bin/instruction-bloat-gate.sh"
@@ -61,7 +63,7 @@ printf 'ordinary code\n' > "$WORK/unrelated.py"
 # `rj_autonomous` at its deployed path, so the fixture HOME carries the real library rather than a
 # copy of what it decides.
 JOURNAL_LIB=''
-for cand in "${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/lib/review-journal.sh" \
+for cand in "${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/lib/review-journal.sh" \
             "$REAL_HOME/.claude/hooks/lib/review-journal.sh"; do
   [ -r "$cand" ] && { JOURNAL_LIB=$cand; break; }
 done

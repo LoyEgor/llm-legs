@@ -6,6 +6,30 @@ import os
 import subprocess
 
 CLOCK_SLACK_S = 60
+FIX_KEYS = frozenset({"at", "by", "files", "in", "regressed_at"})
+
+
+@functools.lru_cache(maxsize=None)
+def siblings_dir(root):
+    """The directory the sibling repositories of checkout `root` sit in: beside its main checkout, so a linked
+    worktree resolves the same one."""
+    try:
+        common = subprocess.run(["git", "-C", root, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                                capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        common = ""
+    return os.path.dirname(os.path.dirname(common) if common else root.split("/.claude/worktrees/")[0])
+
+
+def fix_record_faults(ledger):
+    """`(row id, index, missing keys)` of every ledger fix record lacking a contract key."""
+    faults = []
+    for row in (ledger.get("rows") if isinstance(ledger, dict) else None) or ():
+        for index, fix in enumerate((row.get("fixes") if isinstance(row, dict) else None) or ()):
+            missing = sorted(FIX_KEYS - set(fix)) if isinstance(fix, dict) else sorted(FIX_KEYS)
+            if missing:
+                faults.append((row.get("id") or "?", index, missing))
+    return faults
 
 
 def fix_epoch(text):

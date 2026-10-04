@@ -117,6 +117,7 @@ import glob, importlib.machinery, importlib.util, json, os, re, subprocess, sys
 ROOT, PROJECTS, RUNS, HOME, DOCS = (os.environ["DF_" + k] for k in ("ROOT", "PROJECTS", "RUNS", "HOME", "DOCS"))
 sys.path.insert(0, os.path.join(ROOT, "share"))
 from report_frame import fit
+from fix_commit import FIX_KEYS, fix_record_faults
 DOCTORS = ("llm", "harness", "updater", "code")
 HOOK_AREAS = ("Hooks", "Hook waits")
 LLM_ENTRIES = {"reviewers": ("review-bench/bin/review-bench",), "workers": ("llm-legs/bin/worker-run",),
@@ -520,6 +521,20 @@ def knobs(record_file):
                       "so it holds no run open; Egor checks it" % (site, where, fit(line, 120)), file=sys.stderr)
 
 
+def fix_faults(record_file, doctor):
+    """Each fix record breaking the fix contract in the ledger of the run: its worktree copy where one exists,
+    else the ledger the doctor reads."""
+    path = ledger_path(doctor)
+    if not path:
+        return
+    rel = os.path.relpath(os.path.realpath(path), os.path.realpath(ROOT))
+    trees = [] if rel.startswith("..") else strings(load(record_file, {}).get("worktrees"))
+    for ledger in [p for p in (os.path.join(tree, rel) for tree in trees) if os.path.isfile(p)] or [path]:
+        for row, index, missing in fix_record_faults(load(ledger, {})):
+            print("ledger %s: row %s fixes[%d] lacks %s: every fix record is {%s}"
+                  % (ledger, row, index, ", ".join(missing), ", ".join(sorted(FIX_KEYS))))
+
+
 if __name__ == "__main__":
     command = sys.argv[1]
     if command == "snapshot":
@@ -532,6 +547,8 @@ if __name__ == "__main__":
         print(json.dumps(knob_lines()))
     elif command == "knobs":
         knobs(sys.argv[2])
+    elif command == "fix-faults":
+        fix_faults(sys.argv[2], sys.argv[3])
 '
 
 py() { DF_ROOT=$repo_root DF_PROJECTS=$projects_dir DF_RUNS=$runs_dir DF_HOME=$HOME DF_DOCS=${DOCTOR_FIX_DOCS:-$repo_root/docs} python3 -c "$PY" "$@"; }
@@ -930,6 +947,9 @@ close_run() { # id --decisions <file> note...
       [ -z "$line" ] || bad+=("$line")
     done < <(py knobs "$file")
   fi
+  while IFS= read -r line; do
+    [ -z "$line" ] || bad+=("$line")
+  done < <(py fix-faults "$file" "$doctor")
   if [ ${#bad[@]} -gt 0 ]; then
     printf 'doctor-fix: run %s stays open; rows are id<TAB>fixed|ruled-out|weather|blind-spot|handoff<TAB>purpose<TAB>evidence, purpose a repo@hash or a file of the component stating why it exists:\n' "$id" >&2
     printf '%s\n' "${bad[@]}" >&2

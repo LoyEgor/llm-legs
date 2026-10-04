@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 . "$(dirname "$0")/worker_run_harness.sh"
+PROJECTS=$(git_projects "$ROOT")
 
 # A model no implementation worker may run is refused before the account is resolved: an explicit
 # --model, the vendor's own `*_model=` key, and the default a missing key falls back to are three
@@ -92,9 +93,9 @@ assert await_done
 # launching chat, a process inside that CLI edits a file in a git fixture and records it exactly as
 # the relay's own PostToolUse hook would, and the touch that reaches the store must carry the
 # LAUNCHER's id. Break the stamp for one relay and only that relay's case fails.
-STAMP_HOOK="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/commit-journal.sh"
-STAMP_LIB="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/lib/review-journal.sh"
-STAMP_ANCHORS="${REVIEW_BENCH_ROOT:-$ROOT/../review-bench}/bin/review-anchors"
+STAMP_HOOK="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/commit-journal.sh"
+STAMP_LIB="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/lib/review-journal.sh"
+STAMP_ANCHORS="${REVIEW_BENCH_ROOT:-$PROJECTS/review-bench}/bin/review-anchors"
 if [ -r "$STAMP_HOOK" ] && [ -r "$STAMP_LIB" ] && [ -x "$STAMP_ANCHORS" ]; then
   STAMP_REPO="$WORK/stamp-repo"
   mkdir -p "$STAMP_REPO" "$WORK/stamp-bin"

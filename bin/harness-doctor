@@ -29,7 +29,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 
 import collector_runs
-from fix_commit import fix_commit, fix_landed
+from fix_commit import fix_commit, fix_landed, siblings_dir
 from limiter_hold import hold_dir, wait_dir
 
 LIMITS = {
@@ -4077,7 +4077,7 @@ def test_ident(repo, label, root=None):
     if root:
         return "%s:%s" % (slug(os.path.basename(root.rstrip("/"))), label)
     repo = repo or ""
-    home = os.path.dirname(ROOT_DIR)
+    home = siblings_dir(ROOT_DIR)
     main = repo and not repo.startswith("⧉") and os.path.isdir(os.path.join(home, repo, ".git"))
     return "%s:%s" % (slug(repo) if main else "worktree:" + (slug(repo.replace("⧉", "")) or "?"), label)
 
@@ -4691,7 +4691,7 @@ def ledger_path():
 
 
 def repos_dir():
-    return os.environ.get("HARNESS_REPOS_DIR") or os.path.dirname(ROOT_DIR)
+    return os.environ.get("HARNESS_REPOS_DIR") or siblings_dir(ROOT_DIR)
 
 
 def load_ledger():

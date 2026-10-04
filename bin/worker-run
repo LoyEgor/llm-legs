@@ -1244,6 +1244,18 @@ record_run_wall() {
   worker_model_clear_walled_pin "$vendor" "$account" || true
 }
 
+CLAUDEB_AUTH_RE='OAuth session expired'
+
+record_claudeb_auth_dead() { # directory
+  local account
+  jq -Rne --arg re "$CLAUDEB_AUTH_RE" \
+    'any(inputs | fromjson? | objects | select(.is_error == true) | .result | strings; test($re; "i"))' \
+    >/dev/null 2>&1 <"$1/out" || return 0
+  account=$(jq -r '.account // empty' "$1/meta.json" 2>/dev/null)
+  [ -n "$account" ] || return 0
+  "$(jq -r '.cli' "$1/meta.json")" auth-needed "$account" "$CLAUDEB_AUTH_RE" </dev/null >/dev/null 2>&1 || true
+}
+
 reroute_walled() {
   # The run ends on a wall only once every account is walled; otherwise the brief
   # continues on the next one and no caller re-dispatches by hand. A named account
@@ -1339,6 +1351,7 @@ supervise() {
     # same way; the record is a union across attempts.
     persist_run_files "$directory"
     [ "$rc" -eq 0 ] && return 0
+    [ "$vendor" != claudeb ] || record_claudeb_auth_dead "$directory"
     # A run somebody signalled is over: rerouting it would answer an operator's kill by launching
     # the same brief again on another account.
     case "$(head -n1 "$directory/killed" 2>/dev/null)" in term|'signal '*) return "$rc" ;; esac

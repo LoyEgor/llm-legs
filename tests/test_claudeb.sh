@@ -2166,6 +2166,20 @@ source "$SCRIPT"
   assert jq -e '.auth.status == "ok" and (has("auth_needed") | not) and (has("auth_checked_at") | not)' "$limits_dir/lohealed.json" >/dev/null
 ) || exit 1
 
+# A run whose CLI could not refresh its login records the same verdict, and the next merge heals it.
+(
+  touch "$CLAUDEB_DIR/tokens/authdead"
+  printf '{"auth":{"status":"ok","checked_at":1},"five_hour":{"used_percentage":5,"resets_at":0,"as_of":123,"origin":"usage"}}' >"$limits_dir/authdead.json"
+  assert_fails bash "$SCRIPT" auth-needed nosuchaccount 2>/dev/null
+  assert test ! -e "$limits_dir/nosuchaccount.json"
+  assert bash "$SCRIPT" auth-needed authdead 'OAuth session expired'
+  assert jq -e '.auth_needed == true and .auth_cause == "OAuth session expired" and (has("auth") | not)
+    and .five_hour.used_percentage == 5' "$limits_dir/authdead.json" >/dev/null
+  assert merge_usage authdead "$usage"
+  assert jq -e '.auth.status == "ok" and (has("auth_needed") | not)' "$limits_dir/authdead.json" >/dev/null
+  rm -f "$CLAUDEB_DIR/tokens/authdead" "$limits_dir/authdead.json"
+) || exit 1
+
 # keychain item-not-found (security exit 44) → identical logged-out verdict.
 (
   lo_curl="$WORK/lo44-curl.log"; : >"$lo_curl"

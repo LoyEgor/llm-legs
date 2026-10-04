@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 . "$(dirname "$0")/light_research_harness.sh"
+. "$ROOT/share/test-scope.sh"
+PROJECTS=$(git_projects "$ROOT")
 
 # The toggle rows: absent means the gemini default, a vendor alone means its default model, and a
 # light-only model is valid on a light row without reaching the worker table.
@@ -69,7 +71,7 @@ printf 'Research the repository.\n' >"$WORK/prompt"
 # The rename leaves no trace of the vendor-bound name outside git history.
 old_name="gemini""-research"
 assert test -z "$(git -C "$ROOT" grep -l -F "$old_name" -- . 2>/dev/null)"
-setup_root=${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}
+setup_root=${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}
 if [ -d "$setup_root/agents" ]; then
   assert test ! -e "$setup_root/agents/$old_name.md"; assert test -f "$setup_root/agents/light-worker.md"
 fi

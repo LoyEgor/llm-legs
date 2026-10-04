@@ -197,6 +197,12 @@ sed -i '' 's#^judge\tchanged\tdocs/doctors-contract.md#judge\tchanged\tbin/llm-d
 assert_fails fix close "$id2" --decisions "$WORK/decisions" "done" 2>"$WORK/err"
 assert grep -qxF 'line 1 (A): fixed, but the rerun llm doctor still reads it new: a fix leaves it fixed-pending or gone' "$WORK/err"
 jq '(.problems[] | select(.id == "A") | .state) = "fixed-pending"' "$WORK/llm/latest.json" >"$WORK/l" && mv "$WORK/l" "$WORK/llm/latest.json"
+cp "$WORK/ledgers/llm.json" "$WORK/ledger-kept"
+jq '.rows = [{id: "R1", fixes: [{at: "2026-09-01T00:00:00+00:00", by: "c", files: ["llm-legs/bin/x"], in: null}]}]' \
+  "$WORK/ledger-kept" >"$WORK/ledgers/llm.json"
+assert_fails fix close "$id2" --decisions "$WORK/decisions" "x" 2>"$WORK/err"
+assert grep -qF "ledger $WORK/ledgers/llm.json: row R1 fixes[0] lacks regressed_at: every fix record is {at, by, files, in, regressed_at}" "$WORK/err"
+cp "$WORK/ledger-kept" "$WORK/ledgers/llm.json"
 # A day run's markdown is nobody's to measure: only a night run is net zero.
 printf '%0500d\n' 0 >"$L/DAY.md"
 fix close "$id2" --decisions "$WORK/decisions" "three fixed or ruled out" >"$WORK/out" || fail "clean close failed"
@@ -614,6 +620,7 @@ mid=$(cut -f1 "$WORK/out")
 assert jqe --arg w "$WORK/projects/llm-legs/bin/worker-run" --arg f "$WORK/projects/proj/README" \
   '.area == "workers" and [.problems[] | {id, files: .component.files}] == [{id: "ledger:R7", files: [$w, $f]}]' "$(record "$mid")"
 assert grep -qxF "$(printf '  ledger:R7\tnew\tfixes[0] is no object')" "$RUNS/$mid.brief.md"
+cp "$WORK/ledger-kept" "$WORK/ledgers/llm.json"
 
 # A collector that failed is a problem of its own, and a fix of it holds only once the rerun doctor stops failing.
 jq -n --argjson s "$(now)" '{contract: 1, doctor: "llm", as_of_s: $s, judge: null, status: "error", problem_count: 0, problems: [],

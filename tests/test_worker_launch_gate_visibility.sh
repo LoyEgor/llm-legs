@@ -2,6 +2,8 @@
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+. "$ROOT/share/test-scope.sh"
+PROJECTS=$(git_projects "$ROOT")
 GATE="$ROOT/bin/worker-launch-gate.sh"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
@@ -12,7 +14,7 @@ asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 # The deployed gate lets a provably read-only call skip its scan, so every denial below also proves
 # the skip swallows none.
-export READONLY_COMMAND_LIB="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/lib/readonly-command.sh"
+export READONLY_COMMAND_LIB="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/lib/readonly-command.sh"
 [ -r "$READONLY_COMMAND_LIB" ] || fail "readonly-command.sh not readable (set CLAUDE_SETUP_ROOT)"
 
 verdict() { # agent command [timeout-ms|null] [background]

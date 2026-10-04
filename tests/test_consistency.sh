@@ -7,6 +7,8 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+. "$ROOT/share/test-scope.sh"
+PROJECTS=$(git_projects "$ROOT")
 DOC="docs/shared-invariants.md"
 CLAUDEB="$ROOT/bin/claudeb"
 STATUSLINE="$ROOT/bin/statusline.sh"
@@ -37,7 +39,7 @@ assert() {
 }
 eq() { [ "$1" = "$2" ] || return 1; }
 
-REVIEW_ROOT="${REVIEW_ROOT:-$ROOT/../review-bench}"
+REVIEW_ROOT="${REVIEW_ROOT:-$PROJECTS/review-bench}"
 [ -r "$REVIEW_ROOT/bin/review-bench" ] || fail "review-bench root $REVIEW_ROOT is unreadable (set REVIEW_ROOT)"
 export RBENCH_SHARE="$REVIEW_ROOT/share"
 
@@ -71,8 +73,8 @@ assert doc_has '`GATEWAY_SWITCH_ALIAS`'
 
 REPORT_BUS="$ROOT/bin/report-bus"
 REPORT_DOC="$ROOT/docs/report-bus.md"
-REPORT_NOTICE="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/stop.d/ask-run-unfinished.sh"
-REPORT_TAG="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/worker-tag-hook.sh"
+REPORT_NOTICE="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/stop.d/ask-run-unfinished.sh"
+REPORT_TAG="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/worker-tag-hook.sh"
 assert grep -Fq 'ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/claude-reports"' "$REPORT_BUS"
 for site in "$REPORT_DOC" "$ROOT/docs/DIAGNOSTICS.md" "$ROOT/share/run-suites.sh"; do
   assert grep -Fq '${XDG_CACHE_HOME:-$HOME/.cache}/claude-reports' "$site"
@@ -184,7 +186,7 @@ assert grep -Fq '"models", "--family", family' "$CLAUDEGPT"
 # The nudge ceiling and Claude Code's autocompact trigger are the SAME number by construction: a
 # window raised in the launcher alone would leave the nudge speaking 33000 tokens off the cut.
 CG_DOC="$ROOT/docs/claudegpt.md"
-CG_NUDGE="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/context-nudge.sh"
+CG_NUDGE="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/context-nudge.sh"
 assert test -r "$CG_NUDGE"
 CG_WINDOW=$(grep -oE '^CONTEXT_WINDOW = [0-9]+' "$CLAUDEGPT" | grep -oE '[0-9]+')
 assert eq "$CG_WINDOW" 872000
@@ -590,7 +592,7 @@ assert doc_has 'Gemini capacity fallback'
 assert doc_has 'geminib: model <slug>'
 
 # --- Row cr: Gemini model families -------------------------------------------
-FAMILY_SETUP_ROOT="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}"
+FAMILY_SETUP_ROOT="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}"
 # The built-in list, both fixtures and what `geminib families` prints share one column format.
 family_rows_ok() {
   awk -F'\t' 'NF != 4 || $1 !~ /^gemini-[0-9]+\.[0-9]+-(flash|pro)$/ || $2 !~ /^(flash[0-9]+|pro)$/ ||
@@ -1193,8 +1195,8 @@ assert test "$(grep -Fc "runs on this session's own quota" "$WORKER_GATE")" -eq 
 assert test "$(grep -Fc 'light-research' "$WORKER_GATE")" -eq 0
 retired_research_name="gemini""-research"
 assert test -z "$(git -C "$ROOT" grep -l -F "$retired_research_name" -- . 2>/dev/null)"
-if [ -d "${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/.git" ] || [ -f "${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/.git" ]; then
-  assert test -z "$(git -C "${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}" grep -l -F "$retired_research_name" -- . 2>/dev/null)"
+if [ -d "${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/.git" ] || [ -f "${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/.git" ]; then
+  assert test -z "$(git -C "${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}" grep -l -F "$retired_research_name" -- . 2>/dev/null)"
 fi
 for retired_doc in "$ROOT/$DOC" "$ROUTING_DOC"; do
   assert test "$(grep -Fc 'NATIVE_EXPLORE_ESCAPE' "$retired_doc")" -eq 0
@@ -1507,9 +1509,9 @@ assert grep -Fq -- "/Library/Logs/$HS_LABEL.log" "$HS_GUARD"
 assert grep -Fq -- "$HS_LABEL" "$ROOT/docs/DIAGNOSTICS.md"
 assert doc_has 'Hammerspoon launchd agent identity'
 
-CLAUDE_SETUP="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}"
+CLAUDE_SETUP="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}"
 RJOURNAL="$CLAUDE_SETUP/hooks/lib/review-journal.sh"
-FLOW_GATE="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/review-flow-gate.sh"
+FLOW_GATE="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/review-flow-gate.sh"
 
 # The review floor's one home is review-bench store.REVIEW_FLOOR_LINES; span-off and the sweep mirror it.
 review_floor=$(sed -n 's/^REVIEW_FLOOR_LINES = \([0-9][0-9]*\)$/\1/p' "$RB_STORE")
@@ -2316,7 +2318,7 @@ assert grep -Fq 'log --raw -m --no-renames --no-abbrev --reverse -z --format=%H 
   "$WORKER_RUN"
 # Writer and reader must refuse the same path shapes, or a `-foo` row is dropped by the
 # sweep and the run is still stamped journaled.
-_shape_lib="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/lib/review-journal.sh"
+_shape_lib="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/lib/review-journal.sh"
 writer_shape=$(sed -n '/^path_shape_ok()/,/^}/p' "$WORKER_RUN" | sed -n '/case /,/esac/p')
 reader_shape=$(sed -n '/^rj_path_shape_ok()/,/^}/p' "$_shape_lib" | sed -n '/case /,/esac/p')
 assert eq "$writer_shape" "$reader_shape"
@@ -3052,7 +3054,7 @@ assert grep -Fq '.get("local_slow")' "$ROOT/bin/llm-doctor"
 assert doc_has '`local_slow: [[start_epoch, end_epoch], ...]`'
 
 # --- Row da: the hook and statusline journals -----------------------------------------
-HOOK_TIME_LIB_FILE="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/lib/hook-time.sh"
+HOOK_TIME_LIB_FILE="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/lib/hook-time.sh"
 if [ -f "$HOOK_TIME_LIB_FILE" ]; then
   assert grep -Fq 'HOOK_TIME_DIR=${HARNESS_DOCTOR_DIR:-$HOME/.cache/harness-doctor}/hooks' "$HOOK_TIME_LIB_FILE"
   assert grep -Fq '>>"$HOOK_TIME_DIR/$((end / 86400000000)).tsv"' "$HOOK_TIME_LIB_FILE"
@@ -3097,7 +3099,7 @@ assert doc_has '`speed-days/<YYYY-MM-DD>.json` (28 days)'
 assert doc_has '`["d", launch, session, end, what, [r2, r5, r10], away, notified, tool_id, opened]`'
 
 # --- Row db: the week-over-week Δ ------------------------------------------------------
-TOKENMAP_TRACKING="${TOKENMAP_ROOT:-$ROOT/../token-map}/tokenmap/tracking.py"
+TOKENMAP_TRACKING="${TOKENMAP_ROOT:-$PROJECTS/token-map}/tokenmap/tracking.py"
 if [ -f "$TOKENMAP_TRACKING" ]; then
   assert grep -Fxq 'TIMES_FROM = 11' "$TOKENMAP_TRACKING"
   assert grep -Fxq 'RELATIVE_MATERIAL = 0.10' "$TOKENMAP_TRACKING"
@@ -3125,7 +3127,7 @@ assert grep -Fq '{ "-o", "pid=,etime=", "-p", key }' "$ROOT/hammerspoon/llm-limi
 assert grep -Fq '["/bin/ps", "-o", "pid=,etime=", "-p",' "$HARNESS_DOCTOR_BIN"
 assert grep -Fq 'os.getenv("HARNESS_HOLDS_DIR")' "$ROOT/hammerspoon/llm-limits.lua"
 assert doc_has '`${HARNESS_HOLDS_DIR:-${HARNESS_DOCTOR_DIR:-$HOME/.cache/harness-doctor}/holds}/<limiter>-<pid>[-<key>].json`'
-THROTTLE_PY="${LOGO_BENCH_ROOT:-$ROOT/../logo-vectorizer-bench}/bench/throttle.py"
+THROTTLE_PY="${LOGO_BENCH_ROOT:-$PROJECTS/logo-vectorizer-bench}/bench/throttle.py"
 if [ -f "$THROTTLE_PY" ]; then
   assert grep -Fq "os.environ.get('HARNESS_DOCTOR_DIR') or os.path.expanduser('~/.cache/harness-doctor'), 'holds')" "$THROTTLE_PY"
 fi
@@ -3290,8 +3292,8 @@ assert doc_has '| dk | Explicit --account |'
 # Every script a claude-setup agent or the media skill runs by bare name has its README PATH link,
 # the inventory llm-selfcheck's path-links step checks; media-run reaches the media scripts as "that
 # vendor's script", hence the fixed floor.
-AGENT_DIR="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/agents"
-MEDIA_SKILL="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/skills/media/SKILL.md"
+AGENT_DIR="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/agents"
+MEDIA_SKILL="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/skills/media/SKILL.md"
 [ -r "$MEDIA_SKILL" ] || fail "agent run names: $MEDIA_SKILL is unreadable (set CLAUDE_SETUP_ROOT)"
 readme_links=$(LC_ALL=C sed -nE 's/^- `bin\/([^`]+)` → `~\/\.local\/bin\/([^`]+)`.*/\1 \2/p' "$ROOT/README.md" | awk '$1 == $2 { print $1 }')
 agent_run_names="media-run codex-image gemini-image grok-image grok-video image-fanout gemini-video gemini-music gemini-sfx gemini-listen worker-run worker-pick"

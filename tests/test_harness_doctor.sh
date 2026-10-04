@@ -5,6 +5,8 @@
 # reads, the lock and the laid-out menu lines.
 set -u
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+. "$ROOT/share/test-scope.sh"
+PROJECTS=$(git_projects "$ROOT")
 DOCTOR="$ROOT/bin/harness-doctor"
 # project_of names /private/tmp and /private/var paths "tmp", so the fixture repos must sit on the
 # unresolved /var/folders path.
@@ -865,6 +867,17 @@ dirty = {"rows": [dict(pending["rows"][0], status="fixed-pending",
                        fixes=[dict(pending["rows"][0]["fixes"][0], **{"in": None})])]}
 check(not m.settle_fixes(dirty) and dirty["rows"][0]["status"] == "fixed-pending",
       "an uncommitted fix stays fixed-pending")
+main = os.path.join(work, "projects", "llm-legs")
+subprocess.run(["git", "init", "-q", main], check=True)
+subprocess.run(["git", "-C", main, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x"],
+               check=True)
+subprocess.run(["git", "-C", main, "worktree", "add", "-q", os.path.join(main, ".claude", "worktrees", "n")], check=True)
+saved_root, saved_repos = m.ROOT_DIR, os.environ.pop("HARNESS_REPOS_DIR")
+m.ROOT_DIR = os.path.join(main, ".claude", "worktrees", "n")
+check(m.repos_dir() == os.path.realpath(os.path.join(work, "projects")),
+      "run in a linked worktree, the doctor finds the repositories beside the main checkout: %s" % m.repos_dir())
+m.ROOT_DIR = saved_root
+os.environ["HARNESS_REPOS_DIR"] = saved_repos
 
 race, prior_ledger = os.path.join(work, "race-ledger.json"), os.environ["HARNESS_LEDGER"]
 os.environ["HARNESS_LEDGER"] = race
@@ -1073,7 +1086,7 @@ put(families, json.dumps({"verbs": [], "families": {
     "panel": {"label": "panel", "panels": {"max": ["max", "макс"]}}}}))
 os.environ["WORDS_FAMILIES"] = families
 os.environ["WORDS_LIB"] = os.path.join(os.environ.get("CLAUDE_SETUP_ROOT") or os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(sys.argv[1]))), "claude-setup"), "hooks", "lib", "words.sh")
+    m.siblings_dir(os.path.dirname(os.path.dirname(sys.argv[1]))), "claude-setup"), "hooks", "lib", "words.sh")
 glyphs = [dict(word, hook="⚡ review  ⚡ commit+push"), dict(word, ts=T - 500, hook="⚡review ⚡   commit+push"),
           dict(word, ts=T - 400, hook="⚡ ревью · T2 · double ⚡ готово: коммит+пуш")]
 check(judged(health(S, stop=[], words=glyphs)) == {("word-miss", "commit+review"): "red"},
@@ -1471,8 +1484,10 @@ assert_eq 1 "$(jq '.floors["event:UserPromptSubmit"][0]' "$catchup/days/$(date -
   "a run after a gap longer than the raw reach still records the floors since its last run"
 
 ledger_guard() {
-python3 - "$1" "$(dirname "$ROOT")" <<'LEDGER'
+python3 - "$1" "$PROJECTS" "$ROOT/share" <<'LEDGER'
 import json, os, re, subprocess, sys
+sys.path.insert(0, sys.argv[3])
+from fix_commit import FIX_KEYS
 ledger = json.load(open(sys.argv[1]))
 assert ledger["owner"] == "Harness Doctor" and isinstance(ledger["rows"], list), "owner and rows"
 fields = {"id", "title", "match", "status", "fixes", "same_cause", "last_reviewed", "reviewed_by", "note", "handoff"}
@@ -1483,7 +1498,7 @@ for r in ledger["rows"]:
     if r["status"] in ("fixed", "fixed-pending"):
         assert r["fixes"], "a fixed row names its fix: %s" % r["id"]
     for i, fix in enumerate(r["fixes"]):
-        assert set(fix) == {"at", "by", "files", "in", "regressed_at"} and fix["files"], r["id"]
+        assert set(fix) == FIX_KEYS and fix["files"], r["id"]
         assert all(re.fullmatch(r"[\w.-]+/.+", f) for f in fix["files"]), r["id"]
         assert i < len(r["fixes"]) - 1 or (fix["in"] is None) == (r["status"] == "fixed-pending"), r["id"]
         if fix["in"]:

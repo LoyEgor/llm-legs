@@ -154,6 +154,9 @@ for dir in "$layouts/super/sub" "$layouts/sep" "$layouts/proj/main" "$WORK/repo/
   roots="$roots ${root#"$WORK/"}"
 done
 assert_eq " layouts/super/sub layouts/sep layouts/proj repo" "$roots"
+mkdir -p "$layouts/plain/tests"
+assert_eq "$WORK $WORK $layouts/plain" \
+  "$(git_projects "$WORK/repo/.claude/worktrees/wt-one") $(git_projects "$WORK/repo") $(git_projects "$layouts/plain/tests")"
 mkdir -p "$layouts/proj/main/tests"
 { printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28
   shell_line 50 00:41; printf '51 50 00:40 bash %s/tests/test_bare.sh\n' "$layouts/proj/main"; } > "$WORK/snap"

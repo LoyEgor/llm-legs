@@ -7,6 +7,8 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+. "$ROOT/share/test-scope.sh"
+PROJECTS=$(git_projects "$ROOT")
 GATE="$ROOT/bin/worker-pin-gate.sh"
 WORK="$(mktemp -d)"
 # Every `worker_model_*` call shells `grokb models`: the fixture list answers it, and the
@@ -455,7 +457,7 @@ assert denied "$(write_event "$PIN_FILE")"
 rm -f "$GRANT"
 
 # With the library, the grant is the pin grant claude-setup's word intake wrote for this chat.
-export WORDS_LIB="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/lib/words.sh" WORDS_DIR="$WORK/words"
+export WORDS_LIB="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/lib/words.sh" WORDS_DIR="$WORK/words"
 [ -r "$WORDS_LIB" ] || fail "the words library is missing: $WORDS_LIB"
 pin_grant() { # scope
   mkdir -p "$WORDS_DIR/s"

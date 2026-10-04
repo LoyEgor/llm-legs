@@ -9,8 +9,10 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-REVIEW_ROOT="${REVIEW_ROOT:-$ROOT/../review-bench}"
-SETUP_ROOT="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}"
+. "$ROOT/share/test-scope.sh"
+PROJECTS=$(git_projects "$ROOT")
+REVIEW_ROOT="${REVIEW_ROOT:-$PROJECTS/review-bench}"
+SETUP_ROOT="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}"
 ALLOWLIST="$ROOT/tests/hardcode-allowlist.txt"
 asserts=0
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }

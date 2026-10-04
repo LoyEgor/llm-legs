@@ -138,6 +138,19 @@ for spec in 'claudeb:CLAUDEB_FAILED' 'codex:CODEX_UNAVAILABLE' 'gemini:GEMINI_UN
   assert grep -q 'ordinary failure' "$WORK/wait.out"
 done
 
+# A claudeb run its CLI ended on a failed login refresh records the account login needed through claudeb;
+# the same words in a result that is no error record nothing.
+for spec in 'true:1' 'false:0'; do
+  IFS=: read -r is_error calls <<<"$spec"
+  clear_stub
+  set_config 'claudeb_model=opus' 'claudeb_effort=high'
+  export PICK_RC=0 PICK_ACCOUNT=authdead STUB_CODE=1 STUB_ERROR='' STUB_STDOUT="{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":$is_error,\"result\":\"Failed to authenticate: OAuth session expired and could not be refreshed\"}"
+  start_ok claudeb
+  assert await_done
+  assert test "$(grep -c '^ARG=auth-needed$' "$CALL_LOG")" -eq "$calls"
+  [ "$calls" = 0 ] || assert test "$(grep -A1 '^ARG=auth-needed$' "$CALL_LOG" | tail -n1)" = ARG=authdead
+done
+
 clear_stub
 set_config 'codex_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=trusted

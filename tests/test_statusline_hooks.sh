@@ -4,6 +4,8 @@ set -u
 unset WORKER_PICK_CONFIG_FILE WORKER_RUN_CONFIG_FILE
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+. "$ROOT/share/test-scope.sh"
+PROJECTS=$(git_projects "$ROOT")
 WORKDIR_HOOK="$ROOT/bin/statusline-workdir-hook.sh"
 WORKER_HOOK="$ROOT/bin/worker-tag-hook.sh"
 SPAWN_HOOK="$ROOT/bin/worker-spawn-hook.sh"
@@ -5201,7 +5203,7 @@ rm -f "$STATE_DIR/repo-debt-"* 2>/dev/null
 # The stub above proves the rendering; this proves the wiring against the hook that actually
 # answers for a commit. An unreadable neighbour is a FAIL naming CLAUDE_SETUP_ROOT, never a skip:
 # a silent green here is the drift this block exists to catch.
-REAL_GATE="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/review-flow-gate.sh"
+REAL_GATE="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/review-flow-gate.sh"
 if [ -x "$REAL_GATE" ]; then
   GATE_CMD="$REAL_GATE"
   GATE_BIN="$FIXTURES/gate-bin"

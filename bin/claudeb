@@ -1792,6 +1792,7 @@ show_help() {
   printf '                                          %sfalls back to a minimal paid prompt only if that fails.%s\n' "$dim" "$reset"
   printf '                                          %s--start-window pings an expired 5h window after a good warm.%s\n' "$dim" "$reset"
   printf '  %s%sclaudeb revive <name>%s                   %sRotate an expired token in a real session (no model tokens), then refresh limits.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
+  printf '  %s%sclaudeb auth-needed <name> [cause]%s     %sRecord a failed login seen in a run: the account reads login needed until a refresh or login succeeds.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb token-fresh <name>%s              %sExit 0 while the keychain token would still carry a request, 1 otherwise.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb export-token <name> --to <path> [--min-seconds <n>]%s\n' "$bold" "$cyan" "$reset"
   printf '                                          %sWrite this account'"'"'s bearer to a 0600 file for a sandboxed run;%s\n' "$dim" "$reset"
@@ -2610,6 +2611,12 @@ case "${1:-}" in
     # Revive rewrites the snapshot outside probe_accounts; same merged-cache sync as warm.
     announce_limits_probed "$claudeb_root"
     exit "$revive_rc"
+    ;;
+  auth-needed)
+    shift
+    account_exists "${1:-}" || { printf 'usage: claudeb auth-needed <account> [cause]\n' >&2; exit 2; }
+    mark_auth_needed "$1" "${2:-logged out}"
+    announce_limits_probed "$claudeb_root"
     ;;
   token-fresh)
     shift

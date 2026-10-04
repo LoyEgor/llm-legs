@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 
 import collector_runs
 import handoffs
-from fix_commit import fix_commit, fix_landed
+from fix_commit import FIX_KEYS, fix_commit, fix_landed, siblings_dir
 
 
 def load_gemini_weather():
@@ -374,7 +374,7 @@ def ledger_path():
 
 def repos_dir():
     """Where a fix's `repo/path` files live: the ledger names repositories by their directory name."""
-    return os.environ.get("LLM_DOCTOR_REPOS") or os.path.dirname(ROOT_DIR.split("/.claude/worktrees/")[0])
+    return os.environ.get("LLM_DOCTOR_REPOS") or siblings_dir(ROOT_DIR)
 
 
 def read_json(path):
@@ -1333,7 +1333,6 @@ LEDGER_WORDS = frozenset({word for word, origin in FAILURE_ORIGIN.items() if ori
                          | {word for word, origin in IMAGE_ORIGIN.items() if origin == "ours"}
                          | {"escaped", "unclassified", "no output", "killed early"})
 WORD_MATCH_KEYS = {"word", "model", "detail", "until"}
-FIX_KEYS = {"at", "by", "files", "in", "regressed_at"}
 BLIND_KEYS = ("id", "what", "reason", "since", "would_catch_if")
 
 

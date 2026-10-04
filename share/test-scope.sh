@@ -11,6 +11,12 @@ git_top() {
   if [ "$gitdir" = "$common" ]; then root=$top; else root=${common%/*}; fi
 }
 
+# dir -> the directory its main checkout sits in, holding the sibling repositories; dir/.. outside git.
+git_projects() {
+  local top root
+  if git_top "$1"; then printf '%s\n' "${root%/*}"; else (cd "$1/.." && pwd); fi
+}
+
 # scope [label] [dir] [start epoch]: full | all | changed | named | partial.
 test_scope_mark() {
   local cache="${STATUSLINE_CACHE_DIR:-$HOME/.cache/claude-statusline}" scope=$1 label="${2:-$0}" where="${3:-}" top root

@@ -6,8 +6,10 @@
 # runtime (tests/test_report_bus.sh); this closes the path around the bus.
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-REVIEW_BENCH=${REVIEW_BENCH_ROOT:-$ROOT/../review-bench}
-CLAUDE_SETUP=${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}
+. "$ROOT/share/test-scope.sh"
+PROJECTS=$(git_projects "$ROOT")
+REVIEW_BENCH=${REVIEW_BENCH_ROOT:-$PROJECTS/review-bench}
+CLAUDE_SETUP=${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}
 asserts=0
 assert() { asserts=$((asserts + 1)); "$@" || { printf 'FAIL: assert %s: %s\n' "$asserts" "$*" >&2; exit 1; }; }
 for repo in "$REVIEW_BENCH" "$CLAUDE_SETUP"; do
