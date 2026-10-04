@@ -477,7 +477,7 @@
     "detail": "no codex model for cell"
    },
    "title": "a codex family the catalog resolved to no slug crashed its cells instead of ending pool empty",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-01T05:45:00+03:00",
@@ -511,7 +511,7 @@
       "review-bench/tests/fixtures/review-bench/fake-codexb.sh",
       "review-bench/tests/test_review_bench.sh"
      ],
-     "in": null,
+     "in": "review-bench@1a76edc",
      "regressed_at": null
     }
    ],
@@ -747,7 +747,7 @@
     "detail": "^no output · exit 1$"
    },
    "title": "Claude JSON error result omitted from worker failure diagnostics",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-04T16:52:41+03:00",
@@ -764,7 +764,7 @@
      "files": [
       "review-bench/share/rbench/panel.py"
      ],
-     "in": null,
+     "in": "review-bench@1a76edc",
      "regressed_at": null
     }
    ],
@@ -836,7 +836,7 @@
     "key": "^debt-loss:run-fold-skip$"
    },
    "title": "family folds of long runs log other chats' work as run-fold-skip losses",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-04T17:38:01+03:00",
@@ -846,7 +846,7 @@
       "review-bench/docs/review-anchors-contract.md",
       "review-bench/tests/test_review_debt.sh"
      ],
-     "in": null,
+     "in": "review-bench@1a76edc",
      "regressed_at": null
     }
    ],
@@ -880,7 +880,7 @@
     "key": "^debt-gap:pre-missing/friend-cognitive-fatigue$"
    },
    "title": "a repository the call itself created, from a cwd with no Pre snapshot to date the call",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-04T18:04:19+03:00",
@@ -890,7 +890,7 @@
       "claude-setup/hooks/lib/review-journal.sh",
       "claude-setup/tests/test_commit_journal.sh"
      ],
-     "in": null,
+     "in": "claude-setup@091caf4",
      "regressed_at": null
     }
    ],
@@ -1340,7 +1340,7 @@
     "detail": "^wrote [^/]+$"
    },
    "title": "a run wrote another repository's main checkout or a non-repository directory that its brief authorized only in prose, or escaped through a tracked symlink, so worker-run granted it nothing and the write read as escaped",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-04T16:52:41+03:00",
@@ -1354,7 +1354,7 @@
       "claude-setup/hooks/worker-edit-guard.sh",
       "claude-setup/tests/test_worker_edit_guard.sh"
      ],
-     "in": null,
+     "in": "claude-setup@091caf4",
      "regressed_at": null
     }
    ],
