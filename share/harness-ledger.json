@@ -8,7 +8,7 @@
         "rule": "floor",
         "ident": "bash:trivial"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-09-29T18:52:42+03:00",
@@ -45,8 +45,8 @@
             "claude-setup/hooks/word-gate.sh",
             "claude-setup/hooks/lib/words.sh"
           ],
-          "in": null,
-          "regressed_at": null
+          "in": "llm-legs@3a3b8128",
+          "regressed_at": "2026-10-04T12:25:38+03:00"
         }
       ],
       "same_cause": [
@@ -2138,7 +2138,7 @@
         "rule": "test_long_pole",
         "ident": "llm-legs:test_light_research(_(vendors|citations|fanout|batch|attach))?"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-04T09:13:48+03:00",
@@ -2152,7 +2152,7 @@
             "llm-legs/tests/test_light_research_batch.sh",
             "llm-legs/tests/test_light_research_attach.sh"
           ],
-          "in": null,
+          "in": "llm-legs@b07e7de0",
           "regressed_at": null
         }
       ],
