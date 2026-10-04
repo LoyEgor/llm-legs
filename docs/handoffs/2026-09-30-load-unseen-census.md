@@ -34,3 +34,7 @@ worker run to re-measure the same workload. Decide one of:
 
 Either loosens the judge, so a fixer may not do it. Recommendation: 1, since it keeps the daytime
 signal that an idle chat waits on someone else's forks.
+
+The same saturation reds `collector:run` (row `collector-run-cpu-starved`, 2026-10-04): 130 of 150
+runs over 30 s on 5-14 s of CPU, wall about `cpu_s` × load / cores. Option 1 extends to it; or
+judge the collector's `cpu_s` from `collector-runs.jsonl` against its own limit.

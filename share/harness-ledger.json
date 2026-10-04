@@ -262,6 +262,23 @@
       "handoff": "docs/handoffs/2026-09-30-load-unseen-census.md"
     },
     {
+      "id": "collector-run-cpu-starved",
+      "title": "The collector's wall time is the saturated machine's, not its own cost",
+      "match": {
+        "rule": "collector",
+        "ident": "run"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [
+        "load-busy-night-concurrency"
+      ],
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "night fixer harness-doctor-20261004T013828Z-64c6",
+      "note": "collector-runs.jsonl 2026-10-03/04: 150 harness runs, 130 over 30 s, cpu_s 5.2-14.5 (median 7.9 red, 6.6 ok), wall 9-650 s, CPU 100 % busy at both medians. A --json run at load average 237 on 10 cores took 62 s wall on 7.3 s CPU: wall is about cpu_s x load/ncpu, starvation, and launchd's Nice 10 is not it (the run got more than its fair share). cProfile with process_time spreads the CPU: hook_view 45 % (hook_batches over 48 h, ~680 k runs, recomputed each run), sections ~35 %, local_day 383 k calls 0.4 s; no hot spot whose cut brings 7 s under the ~1.3 s a 30 s wall needs at that load. Settle_fixes git calls ruled out: no fixed-pending row lacks its in. The cure is the load rows' or a judge change (judge cpu_s, or wall only with no slot held): the owner's, in the shared load handoff.",
+      "handoff": "docs/handoffs/2026-09-30-load-unseen-census.md"
+    },
+    {
       "id": "guards-tripwire-rejournal",
       "title": "The tripwire journaled writes another record already carried, so one write counted as growth twice",
       "match": {
@@ -312,9 +329,9 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-03",
-      "reviewed_by": "night fixer harness-doctor-20261003T042535Z-0f8b",
-      "note": "Narrowed to one cause: every baseline-missing record since 2026-09-28T23:00Z names a sid no chat owns (perf-big-93348, perf-big-8746, perf-lvb, hlprof-a): ad-hoc hook profiling ran instruction-watch.sh check with made-up session ids against ~/.cache/claude-instruction-watch rather than INSTRUCTION_WATCH_STATE. Re-checked 2026-10-01, 10-02 and 10-03: events.jsonl still ends its baseline-missing records at hlprof-a 2026-09-29T15:05Z, and git log --all -S hlprof/perf-big in llm-legs and claude-setup finds only ledger commits, so there is no producer to fix. bin/instruction-watch.sh cmd_check (BASELINE-MISSING) cannot tell a synthetic sid from a real chat whose baseline was swept without a transcript lookup, and filtering in harness-doctor would loosen the judge: both are the owner's call in the open handoff. A real chat losing its baseline matches this row too, so it stays open.",
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "night fixer harness-doctor-20261004T013828Z-64c6",
+      "note": "Narrowed to one cause: every baseline-missing record since 2026-09-28T23:00Z names a sid no chat owns (perf-big-93348, perf-big-8746, perf-lvb, hlprof-a): ad-hoc hook profiling ran instruction-watch.sh check with made-up session ids against ~/.cache/claude-instruction-watch rather than INSTRUCTION_WATCH_STATE. Re-checked 2026-10-01 to 10-04: events.jsonl still ends its baseline-missing records at hlprof-a 2026-09-29T15:05Z, and git log --all -S hlprof/perf-big in llm-legs and claude-setup finds only ledger commits, so there is no producer to fix. bin/instruction-watch.sh cmd_check (BASELINE-MISSING) cannot tell a synthetic sid from a real chat whose baseline was swept without a transcript lookup, and filtering in harness-doctor would loosen the judge: both are the owner's call in the open handoff. A real chat losing its baseline matches this row too, so it stays open.",
       "handoff": "docs/handoffs/2026-09-30-harness-guards-vendor-sync-and-probe-sids.md"
     },
     {
@@ -439,9 +456,9 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-03",
-      "reviewed_by": "night fixer harness-stop-hooks-20261003T042544Z-18a9",
-      "note": "2026-10-02 in 233cceb1: CronCreate '17,47 * * * *' at 09:26:41 to watch a night, then the drill asked at 09:27, 09:47, 09:56, 10:30 and 10:31 (after a heartbeat turn), each claiming the stop ends the work until Egor writes; at 10:32 the chat switched the span off to stop the nudges, the drill's goal reversed. The hook knows STOP_HELD background work only, not a live cron or a pending ScheduleWakeup. The hook is claude-setup's: handoff.",
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "night fixer harness-doctor-20261004T013828Z-64c6",
+      "note": "2026-10-04: claude-setup hooks/stop.d/ask-span-drill.sh unchanged since 2026-09-30 and still reads no cron or wakeup state, cause stands. 2026-10-02 in 233cceb1: CronCreate '17,47 * * * *' at 09:26:41 to watch a night, then the drill asked at 09:27, 09:47, 09:56, 10:30 and 10:31 (after a heartbeat turn), each claiming the stop ends the work until Egor writes; at 10:32 the chat switched the span off to stop the nudges, the drill's goal reversed. The hook knows STOP_HELD background work only, not a live cron or a pending ScheduleWakeup. The hook is claude-setup's: handoff.",
       "handoff": "docs/handoffs/2026-10-03-span-drill-scheduled-wakeup.md"
     },
     {
@@ -1940,10 +1957,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "note": "2026-10-02T10:34:40Z +142 B: relay worker 93deda55 of chat \"Google video generation integration\" (10896605) was refused at 10:31:45Z (bloat relay-refused) and returned an MD-PROPOSAL; the orchestrator applied it by Bash python3 heredoc with p = \"agents/image-gen.md\" at 10:34:39Z. The designed flow, but through the variable-path heredoc the write gate leaves out of scope, so no pass record; same cause as guards-growth-claude-agents-image-gen-md.",
+      "note": "2026-10-02T10:34:40Z +142 B: relay worker 93deda55 of chat \"Google video generation integration\" (10896605) was refused at 10:31:45Z (bloat relay-refused) and returned an MD-PROPOSAL; the orchestrator applied it by Bash python3 heredoc with p = \"agents/image-gen.md\" at 10:34:39Z. The designed flow, but through the variable-path heredoc the write gate leaves out of scope, so no pass record; same cause as guards-growth-claude-agents-image-gen-md. 2026-10-04: no write-gate commit in llm-legs or claude-setup since, the gate-scope handoff still open, cause stands.",
       "handoff": "docs/handoffs/2026-10-02-harness-guards-gate-scope.md",
-      "last_reviewed": "2026-10-03",
-      "reviewed_by": "night fixer harness-guards-20261003T042540Z-6416"
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "night fixer harness-doctor-20261004T013828Z-64c6"
     }
   ],
   "blind_spots": [
