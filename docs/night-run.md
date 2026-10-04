@@ -7,8 +7,7 @@ Egor (2026-09-30) wants one button pressed before sleep. Behind it, every doctor
 vendor-release integration and the cleanup sweep run on their own. By morning everything is
 reviewed, committed and pushed in the four sweep repositories (`~/.claude/sweep-repos`).
 
-The whole wall clock stays short: about 3 hours, never a 12-hour chain. Chats never disturb each
-other. The morning report is trusted without reading chats.
+The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morning report is trusted without reading chats.
 
 ## Shape
 1. **Button.**
@@ -34,11 +33,13 @@ other. The morning report is trusted without reading chats.
      committed, by `git rebase --onto main refs/night/<id>/base`.
    - `night-run job` records every expected job before dispatch, a `leftover` job among them for
      every leftover branch `night-run leftovers` lists, adopted into the night (see Leftovers).
-   - `night-run carry <id>` records what earlier days left: a `handoff` job per open handoff of the
-     sweep repositories (a handoff is addressed to the next night, never to a sleeping chat; one whose
-     To/For names a chat live right now stays that chat's) and a `suite` job per suite the previous
-     night's full run failed, each with its night worktree and brief. A handoff job settles it with a
-     test, or lands it as a trade (`Cost:`/`Loss:`/`Recommendation:`) and goes `blocked-on-egor`.
+   - `night-run carry <id>` records what earlier days left. Handoffs go to the chat owning them, which
+     holds their context (Egor, 2026-10-04; owner: the ledger row naming the file, else the first
+     To/For chat): an owner with a decision section or ≥ 2 handoffs gets one `owner-chat` job, its chat
+     resumed with the batch or, live, sent it by the sweep; ≤ 3 pending, none while load > cores × 30.
+     Other handoffs (trivial, chat gone, owner deferred) are `handoff` jobs unless their To/For chat is
+     live; each suite the last full run failed is a `suite` job. A handoff settles with a test or as a
+     trade (`Cost:`/`Loss:`/`Recommendation:`).
 3. **Dispatch.** Everything below starts in parallel at about t+10 min.
    - **Fixers.**
      - `doctor-fix launch <llm|harness|updater|code> --night <night-id>` makes one run per area that has
@@ -63,10 +64,10 @@ other. The morning report is trusted without reading chats.
      per vendor.
    - **Press-time tree.** The orchestrator commits and pushes each sweep repository as it stood at
      press time, one commit each, unreviewed: every branch lands on it, and the debt pass reviews it.
-4. **Per branch, as soon as its worker returns** (a completion notification, never polling):
+4. **Per branch, as soon as its worker returns** (a completion notification, an owner chat's
+   SendMessage, never polling):
    - The run closed: its close gate reran the doctor inside the worktree and passed.
-   - No per-branch review (Egor, 2026-10-03: night 20261003T042136Z-e9f1 ran 12 rounds, nine of them
-     one per branch, about 60% of its spend; debt is cleaned in one chunked pass).
+   - No per-branch review (Egor, 2026-10-03: per-branch rounds took about 60% of a night's spend).
    - The orchestrator reads the decision table itself and checks every non-`fixed` verdict. That is
      the second model on a fixer's self-clearing; what it finds goes to the SAME worker (RESUME).
    - `night-run job set … state=merged` still refuses a job whose optional `review` round has open
@@ -85,8 +86,7 @@ other. The morning report is trusted without reading chats.
    step 3 once — one fit round, then one bugs round, each ONE chunked round across all sweep
    repositories, over the press-time debt plus everything the night landed — then one fix pass, the
    commit and push, and the recount. The 150-line floor stays: a round review-bench refuses is skipped.
-6. **No deadline** (Egor, 2026-09-30: a 4 h deadline closed a night while a debt round was still
-   running, and its findings sat unfixed until noon).
+6. **No deadline** (Egor, 2026-09-30: a 4 h deadline left a debt round's findings unfixed till noon).
    - The orchestrator works until every job is `merged`, `nothing-to-do` or `blocked-on-egor`; a
      job that finishes late is landed like any other, and the debt pass waits for it.
    - The only stop is for a hung job: `worker-run`'s watchdog ends a worker that shows no progress
@@ -127,8 +127,9 @@ other. The morning report is trusted without reading chats.
   `new`, `regressed`. `report` prints one line per doctor,
   `harness 35 → 38 · proved 4 · pending 18 · new 16 · regressed 5`; the menu's Last night shows only the jobs;
 - `jobs[]`, each with:
-  - `kind` (fixer, vendor, debt, leftover, handoff or suite) and `ref` (run id, event id, review round or
-    `leftover-<slug>`); a leftover job also carries `adopted[]` ({repo, branch, worktree, tip,
+  - `kind` (fixer, vendor, debt, leftover, handoff, suite, owner-chat) and `ref` (run id, event id,
+    review round or `leftover-<slug>`); an owner-chat job carries `owner`, `session`, `via` (open,
+    message), `handoffs[]`; a leftover job `adopted[]` ({repo, branch, worktree, tip,
     night_worktree}), where its branch came from, and `handover` ({by, at, why}) when adopted with `--ready`;
   - `state`: `merged`, `left` (with a reason), `failed-launch`, `blocked-on-egor` (its reason the trade) or `nothing-to-do`;
   - `branch`, `review` (run id, optional: a night branch gets no review of its own), `commits[]`
@@ -164,7 +165,7 @@ process lives, so a start killed mid-open never blocks the next one. Only a runn
 
 ## Leftovers
 Egor (2026-10-01): in the sweep repositories no branch or worktree but main outlives the work going on
-right now; a kept worktree once held a review fix that then got lost from every branch.
+right now; a kept worktree once lost a review fix.
 `night-run leftovers [--json]` lists every non-main branch and worktree with its repository, worktree,
 landed (in main, or a night branch still at its night's base), ahead/behind main, dirty count and a
 state, the one predicate `finish` prunes by:
@@ -213,8 +214,7 @@ Behind the spend lines, an observational churn block from `share/night_churn.py`
 night did real work or churn: per-branch review rounds versus other rounds; problems touched again without
 proof and regressions across doctor runs against the night's problem snapshots (`doctor_problems_before`
 and `doctor_problems_after`); fixer spend on runs that left every decided problem unproven; and lines deleted
-tonight that were written in the 7 days prior (with earlier night commits noted). The block is pure
-measurement and gates nothing: no refusal, no exit code change, no threshold.
+tonight that were written in the 7 days prior (with earlier night commits noted). It gates nothing.
 
 The Doctors menu shows the last night on one row from `night-run latest --menu`, such as
 `Last night 30 Sep: 11 of 13 · 2 unfinished`; its submenu lists every job, done or unfinished, with

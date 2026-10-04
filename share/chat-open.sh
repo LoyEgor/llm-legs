@@ -1,10 +1,10 @@
-# Sourced. chat_open <command-file> <workdir> <prompt> -> prints "<account> <session>", or one
+# Sourced. chat_open <command-file> <workdir> <prompt> [<session to resume>] -> prints "<account> <session>", or one
 # reason line on stderr and returns 1. The caller hands in CHAT_OPEN_OPENER (a command line),
 # CHAT_OPEN_WORKER_PICK (a path) and, optionally, CHAT_OPEN_PREFIX (words in front of claudeb).
 chat_open_repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 chat_open() {
-  local file=$1 workdir=$2 prompt=$3 claudeb account session word prefix_quoted='' model=opus
+  local file=$1 workdir=$2 prompt=$3 resume=${4:-} claudeb account session word prefix_quoted='' model=opus
   local -a opener prefix=()
   read -r -a opener <<<"${CHAT_OPEN_OPENER:-open -a Terminal}"
   # %q: a prefix word is data. The generated script is what actually runs.
@@ -19,14 +19,20 @@ chat_open() {
   # the marker ages out (WORKER_CLAIMS_TTL, default 600s); nothing releases it early.
   account=$("${CHAT_OPEN_WORKER_PICK:-$chat_open_repo/bin/worker-pick}" --account claudeb --role chat --model "$model" --claim 2>/dev/null) &&
     [ -n "$account" ] || { printf 'worker-pick names no Claude account\n' >&2; return 1; }
-  session=$(uuidgen | tr '[:upper:]' '[:lower:]')
+  session=${resume:-$(uuidgen | tr '[:upper:]' '[:lower:]')}
   {
     printf '#!/bin/bash\n'
     printf 'cd %q || exit 1\n' "$workdir"
     # No chat pin: an opened chat uses exactly what Egor's worker switches allow; `open=all` is his
     # word in a chat of his, never a launch default (2026-10-01).
-    printf 'exec %s%q profile %q --session-id %q --model %q --effort high %q\n' \
-      "$prefix_quoted" "$claudeb" "$account" "$session" "$model" "$prompt"
+    if [ -n "$resume" ]; then
+      # --resume keeps the chat's own model and effort; a --model here would switch it.
+      printf 'exec %s%q profile %q --resume %q --permission-mode bypassPermissions %q\n' \
+        "$prefix_quoted" "$claudeb" "$account" "$session" "$prompt"
+    else
+      printf 'exec %s%q profile %q --session-id %q --model %q --effort high %q\n' \
+        "$prefix_quoted" "$claudeb" "$account" "$session" "$model" "$prompt"
+    fi
   } >"$file" || { printf 'cannot write %s\n' "$file" >&2; return 1; }
   chmod 755 "$file"
   "${opener[@]}" "$file" >/dev/null 2>&1 || { printf 'the opener failed\n' >&2; return 1; }

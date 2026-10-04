@@ -1,12 +1,15 @@
 """Open handoffs of the sweep repositories: `docs/handoffs/*.md` whose first `Status:` line reads open.
 Each becomes a night job (`bin/night-run carry`); the LLM doctor's debt row names one open past STALE_S.
 A handoff addressed (its To/For paragraph) to a chat («name») that is live right now is that chat's, never a night job.
-`python3 share/handoffs.py` prints them as JSON lines."""
+`owner_batches` groups them by owner chat (the ledger row naming the file, else the first addressee) for
+`night-run carry`: an owner with a decision section or two or more handoffs, its chat found by exact name.
+`python3 share/handoffs.py [--batches]` prints handoffs, or those batches, as JSON lines."""
 import datetime
 import glob
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 
@@ -17,6 +20,8 @@ HEAD_LINES = 20
 STATUS_RE = re.compile(r"^\**Status:?\**\s*(.*)", re.I)
 NAME_RE = re.compile(r"«([^»]+)»")
 ADDRESS_RE = re.compile(r"^\**(To|For)\b", re.I)
+DECIDE_RE = re.compile(r"^#+\s.*(yours to decide|decision)", re.I | re.M)
+NAMED_RE = re.compile(r"handoffs/([A-Za-z0-9_.-]+?\.md)")
 
 
 def sweep_repos():
@@ -97,6 +102,82 @@ def open_handoffs(repos=None, now=None, live=None):
     return out
 
 
+def strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from strings(item)
+
+
+def ledger_owners(repos):
+    named = {}
+    for repo in repos:
+        for path in sorted(glob.glob(os.path.join(repo, "share", "*-ledger.json"))):
+            try:
+                with open(path) as handle:
+                    ledger = json.load(handle)
+            except (OSError, ValueError):
+                continue
+            for row in ledger.get("rows") or []:
+                owner = (ledger.get("owners") or {}).get(row.get("block")) or ledger.get("owner")
+                if not owner:
+                    continue
+                for name in {n for text in strings(row) for n in NAMED_RE.findall(text)}:
+                    counts = named.setdefault(name, {})
+                    counts[owner] = counts.get(owner, 0) + 1
+    return named
+
+
+def recent_chats():
+    try:
+        out = subprocess.run(["chat-find", "--recent", "--json"], capture_output=True, text=True, timeout=120).stdout
+        return json.loads(out or "[]")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+
+
+def decides(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return bool(DECIDE_RE.search(handle.read()))
+    except OSError:
+        return False
+
+
+def slugify(name, fallback):
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or fallback[:8]
+
+
+def owner_batches(handoffs, repos=None, chats=None, live=None):
+    named = ledger_owners(sweep_repos() if repos is None else repos)
+    groups = {}
+    for handoff in handoffs:
+        counts = named.get(os.path.basename(handoff["path"]), {})
+        owner = max(counts, key=lambda o: counts[o]) if counts else (handoff["to"] or [None])[0]
+        if owner:
+            groups.setdefault(owner, []).append(handoff)
+    groups = {o: hs for o, hs in groups.items() if len(hs) >= 2 or any(decides(h["path"]) for h in hs)}
+    if not groups:
+        return []
+    chats = recent_chats() if chats is None else chats
+    names = live_chats() if live is None else {n.lower() for n in live}
+    out = []
+    for owner, batch in groups.items():
+        chat = next((c for c in chats if c.get("name") == owner and c.get("session")), None)
+        if chat is None:
+            continue
+        out.append({"owner": owner, "slug": slugify(owner, chat["session"]), "session": chat["session"],
+                    "cwd": chat.get("cwd") or "", "live": owner.lower() in names,
+                    "at": min((h["at"] for h in batch if h["at"] is not None), default=None),
+                    "handoffs": [h["path"] for h in batch], "repos": sorted({h["repo"] for h in batch})})
+    return sorted(out, key=lambda b: (b["at"] is None, b["at"] or 0, b["owner"]))
+
+
 if __name__ == "__main__":
-    for handoff in open_handoffs():
-        print(json.dumps(handoff, ensure_ascii=False))
+    found = open_handoffs()
+    for item in owner_batches(found) if sys.argv[1:] == ["--batches"] else found:
+        print(json.dumps(item, ensure_ascii=False))

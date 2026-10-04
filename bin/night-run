@@ -16,7 +16,7 @@ repo_root=$(cd "$(dirname "$script_path")/.." && pwd)
 nights_dir="${DOCTORS_DIR:-$HOME/.cache/doctors}/nights"
 lock_dir="$nights_dir/.lock"
 sweep_repos="${NIGHT_RUN_SWEEP_REPOS:-$HOME/.claude/sweep-repos}"
-KINDS=' fixer vendor debt leftover handoff suite '
+KINDS=' fixer vendor debt leftover handoff suite owner-chat '
 STATES=' pending merged left failed-launch blocked-on-egor nothing-to-do '
 . "$repo_root/share/chat-open.sh"
 . "$repo_root/share/store-lock.sh"
@@ -30,7 +30,7 @@ usage() {
   cat >&2 <<'EOF'
 usage: night-run start [--cleanup | --resume <id> [--job <ref>]]
        night-run base <id>
-       night-run job <id> add <fixer|vendor|debt|leftover|handoff|suite> <ref> [--branch B] [--ready "<why>"]
+       night-run job <id> add <fixer|vendor|debt|leftover|handoff|suite|owner-chat> <ref> [--branch B] [--ready "<why>"]
        night-run carry <id>
        night-run suites <id> [--wait]
        night-run job <id> set <ref> key=value...   (state, reason, branch, review, commits, pushed)
@@ -55,10 +55,16 @@ leftover: ref is a leftover branch, adopted in every sweep repository where it i
   refused unless its owner hands it over with --ready "<why>", recorded as the job's handover {by, at, why}
 leftovers lists every non-main branch and worktree of the sweep repositories: live ones stay, landed
   ones go at finish, every other is a leftover to carry; finish records those under the night's leftovers
-carry: one handoff job per open docs/handoffs/*.md of the sweep repositories not addressed to a chat
-  live now, and one suite job per suite the newest earlier night's full run failed; each gets its night
-  worktree and a brief; prints <ref>\t<brief>\t<worktree>. A handoff job blocked-on-egor needs the
-  trade in reason= as Cost:, Loss: and Recommendation:
+carry: first an owner-chat job per owner chat (share/handoffs.py --batches: the ledger row naming the
+  handoff, else its first addressee) with a decision section or two or more open handoffs: its night
+  worktree, and its chat resumed with the batch (live: the sweep SendMessages it); at most
+  NIGHT_RUN_OWNER_CHATS (3) pending at once and none while the load average is over cores x
+  NIGHT_RUN_OWNER_LOAD_K (30), a deferred owner's handoffs staying night jobs; prints
+  <ref>\t<prompt>\topened <account> <session>|message <owner>. Then one handoff job per other open
+  docs/handoffs/*.md of the sweep repositories not addressed to a chat live now, and one suite job per
+  suite the newest earlier night's full run failed; each gets its night worktree and a brief; prints
+  <ref>\t<brief>\t<worktree>. A handoff job blocked-on-egor needs the trade in reason= as Cost:,
+  Loss: and Recommendation:
 suites: every sweep repository's tests/run-all, one after another, detached unless --wait, into the
   night's suites {started_at, finished_at, repos: [{repo, exit, passed, failed[], log}]}
 pushed=true is refused unless every commit of the job is on its repository's origin main and not
@@ -544,7 +550,9 @@ job_set() { # id ref key=value...
 }
 
 carry_list() { # id -> kind<TAB>slug<TAB>repo<TAB>what<TAB>log, one per job carry adds
-  python3 -B "$repo_root/share/handoffs.py" | jq -r 'select(.live == []) | ["handoff", .slug, .repo, .rel, ""] | @tsv'
+  python3 -B "$repo_root/share/handoffs.py" | jq -r --slurpfile n "$(night_file "$1")" '
+    [$n[0].jobs[] | select(.kind == "owner-chat" and .state != "failed-launch") | .handoffs[]?] as $owned
+    | select(.live == [] and (.path | IN($owned[]) | not)) | ["handoff", .slug, .repo, .rel, ""] | @tsv'
   all_nights | jq -r --arg id "$1" '[.[] | select(.id != $id and .suites != null)] | first // empty | .suites.repos[]?
     | .repo as $r | .log as $l | .failed[]? | ["suite", "\($r | split("/") | last)-\(sub("\\.[a-z]+$"; ""))", $r, ., $l] | @tsv'
 }
@@ -570,10 +578,82 @@ carry_brief() { # id kind ref repo what log worktree branch -> the brief file
   printf '%s\n' "$file"
 }
 
+owner_busy() { # night-file -> why no further owner chat starts now; nothing when one may
+  local max=${NIGHT_RUN_OWNER_CHATS:-3} k=${NIGHT_RUN_OWNER_LOAD_K:-30} load cores
+  [ "$(jq '[.jobs[] | select(.kind == "owner-chat" and .state == "pending")] | length' "$1")" -lt "$max" ] ||
+    { printf '%s owner chats at work\n' "$max"; return 0; }
+  load=$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}') cores=$(sysctl -n hw.ncpu 2>/dev/null)
+  awk -v l="${load:-0}" -v c="${cores:-1}" -v k="$k" 'BEGIN { exit !(l > c * k) }' &&
+    printf 'load %s over %s cores x %s\n' "$load" "$cores" "$k"
+}
+
+owner_prompt() { # id ref branch sweep batch-json worktrees -> the prompt file
+  local id=$1 ref=$2 branch=$3 file="$nights_dir/$1.$2.prompt.md"
+  {
+    printf 'Night %s: the night hands you your open handoffs as one batch; you own them and hold their context.\n\n' "$id"
+    jq -r '.handoffs[] | "- `\(.)`"' <<<"$5"
+    printf '\n1. Settle each one: fix it with a test red on the old code and set its `Status:` line to `Status: settled %s: <one line>`; or, when only Egor'"'"'s word can settle it, reduce it to a trade: `Status: trade for Egor` with `Cost:`, `Loss:` and `Recommendation:` lines; or close it with the evidence that its cause no longer stands.\n' "$id"
+    printf '2. Work on branch `%s` in its night worktrees: %s. Another repository gets `<repo>/.claude/worktrees/night-%s-%s` on the same branch from `refs/night/%s/base`. Run only the suites covering your change (`tests/affected <files>`), never `tests/run-all`. Commit on the branch (one long line); never push, never merge, never touch a main checkout, never ask Egor; markdown is net zero.\n' \
+      "$branch" "$(sed 's/.*/`&`/' <<<"$6" | paste -sd, - | sed 's/,/, /g')" "$id" "$ref" "$id"
+    printf '3. When done, SendMessage the sweep chat %s: per handoff its outcome, the commits as repo@hash, each trade'"'"'s three lines.\n' "$4"
+  } >"$file" || return 1
+  printf '%s\n' "$file"
+}
+
+carry_owner_chats() { # id -> <ref>\t<prompt>\topened <account> <session>|message <owner>, one per owner chat given its batch
+  local id=$1 file batch owner session ref branch wts prompt why opened sweep repo
+  local -a repos
+  file=$(night_file "$id")
+  sweep=$("$repo_root/bin/chat-name" "$(jq -r '.session // "-"' "$file")" 2>/dev/null) && sweep="«$sweep»" ||
+    sweep="running night $id"
+  while IFS= read -r batch; do
+    owner=$(jq -r .owner <<<"$batch") session=$(jq -r .session <<<"$batch")
+    ref="owner-chat-$(jq -r .slug <<<"$batch")" branch="night/$id/owner-chat-$(jq -r .slug <<<"$batch")"
+    ! jq -e --arg r "$ref" 'any(.jobs[]; .ref == $r)' "$file" >/dev/null || continue
+    why=$(owner_busy "$file")
+    if [ -n "$why" ]; then
+      printf 'night-run: owner chat «%s» deferred (%s): its handoffs are night jobs\n' "$owner" "$why" >&2
+      continue
+    fi
+    "$script_path" job "$id" add owner-chat "$ref" --branch "$branch" >/dev/null || continue
+    lock
+    night_set "$id" '.jobs |= map(if .ref == $r then . + {owner: $b.owner, session: $b.session,
+        via: (if $b.live then "message" else "open" end), handoffs: $b.handoffs} else . end)' \
+      --arg r "$ref" --argjson b "$batch" || die "cannot write night $id"
+    unlock
+    repos=()
+    while IFS= read -r repo; do
+      jq -e --arg r "$repo" 'IN(.repos[]; $r)' <<<"$batch" >/dev/null ||
+        grep -qF "$(basename "$repo")" $(jq -r '.handoffs[]' <<<"$batch") 2>/dev/null && repos+=("$repo")
+    done < <(grep -vxF '' "$sweep_repos" 2>/dev/null)
+    wts=$(night_sibling_worktrees "$id" "$branch" "$ref" ${repos[@]+"${repos[@]}"} 2>/dev/null)
+    if [ -z "$wts" ] || ! prompt=$(owner_prompt "$id" "$ref" "$branch" "$sweep" "$batch" "$wts"); then
+      "$script_path" job "$id" set "$ref" state=failed-launch reason="not carried: ${wts:+prompt not written}${wts:-no night worktree}" >/dev/null
+      continue
+    fi
+    if [ "$(jq -r .live <<<"$batch")" = true ]; then
+      printf '%s\t%s\tmessage %s\n' "$ref" "$prompt" "$owner"
+      continue
+    fi
+    if ! opened=$(CHAT_OPEN_OPENER="${NIGHT_RUN_OPENER:-open -a Terminal}" \
+        CHAT_OPEN_WORKER_PICK="${NIGHT_RUN_WORKER_PICK:-$repo_root/bin/worker-pick}" \
+        chat_open "$nights_dir/$id.$ref.command" "$(jq -r '.cwd' <<<"$batch")" "$(<"$prompt")" "$session" 2>&1); then
+      "$script_path" job "$id" set "$ref" state=failed-launch reason="owner chat did not open: $opened" >/dev/null
+      continue
+    fi
+    lock
+    night_set "$id" '.jobs |= map(if .ref == $r then . + {account: $a} else . end)' --arg r "$ref" --arg a "${opened%% *}" ||
+      die "cannot write night $id"
+    unlock
+    printf '%s\t%s\topened %s\n' "$ref" "$prompt" "$opened"
+  done < <(python3 -B "$repo_root/share/handoffs.py" --batches)
+}
+
 cmd_carry() {
   local id=${1:-} kind slug repo what log ref branch wt err brief
   [ -n "$id" ] && [ $# -eq 1 ] || usage
   known_night "$id"
+  carry_owner_chats "$id"
   while IFS=$'\t' read -r kind slug repo what log; do
     ref="$kind-$slug" branch="night/$id/$kind-$slug" wt="$repo/.claude/worktrees/night-$id-$kind-$slug"
     ! jq -e --arg r "$ref" 'any(.jobs[]; .ref == $r)' "$(night_file "$id")" >/dev/null || continue
@@ -791,6 +871,7 @@ cmd_report() {
       (.jobs[] | ([.state, .kind, .ref]
         + (if .branch and .state != "merged" then [.branch] else [] end)
         + (if .review then ["review \(.review)"] else [] end)
+        + (if .kind == "owner-chat" then ["«\(.owner)» \(.via) · \(.handoffs | length) handoffs"] else [] end)
         + (if .handover then ["handed over by \(.handover.by) at \(.handover.at | hm): \(.handover.why)"] else [] end)
         + [.commits[] | "\(.repo | split("/") | last)@\(.hash[0:7])"]
         + (.ref as $r | if ($lines | has($r)) | not then []
@@ -820,6 +901,7 @@ cmd_latest() {
       | if length > 6 then .[0:6] + ["…"] else . end | join(" ");
     def name: .ref as $r | if .kind == "debt" then (if $r | test("^debt(-[0-9]+)?$") then "cleanup" else "cleanup \($r)" end)
       elif .kind == "leftover" then "leftover \(.adopted[0].branch // $r)"
+      elif .kind == "owner-chat" then "\(.owner // $r) handoffs"
       elif .kind == "vendor" then "\(.branch // "" | split("/") | if length > 2 then last else $r | sub("-[0-9]{8}T[0-9]{6}Z.*$"; "") end) update"
       else ($r | capture("^(?<d>llm|harness|updater|code)(-(?<a>.+?))?-[0-9]{8}T[0-9]{6}Z(-[0-9a-f]+)?$")
         | ($areas[0].renamed["\(.d)-\(.a)"] // .a) as $a
