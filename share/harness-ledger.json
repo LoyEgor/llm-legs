@@ -150,7 +150,7 @@
         "rule": "test_slow",
         "ident": "llm-legs:suites"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-04T17:30:00+03:00",
@@ -159,7 +159,7 @@
             "llm-legs/bin/harness-doctor",
             "llm-legs/tests/test_harness_doctor.sh"
           ],
-          "in": null,
+          "in": "llm-legs@ac75a868",
           "regressed_at": null
         }
       ],
@@ -264,7 +264,7 @@
         "rule": "load",
         "ident": "unseen"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-04T17:30:00+03:00",
@@ -273,8 +273,8 @@
             "llm-legs/bin/harness-doctor",
             "llm-legs/tests/test_harness_doctor.sh"
           ],
-          "in": null,
-          "regressed_at": null
+          "in": "llm-legs@ac75a868",
+          "regressed_at": "2026-10-04T22:48:49+03:00"
         }
       ],
       "same_cause": [],
@@ -290,7 +290,7 @@
         "rule": "load",
         "ident": "busy"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-04T17:30:00+03:00",
@@ -299,8 +299,8 @@
             "llm-legs/bin/harness-doctor",
             "llm-legs/tests/test_harness_doctor.sh"
           ],
-          "in": null,
-          "regressed_at": null
+          "in": "llm-legs@ac75a868",
+          "regressed_at": "2026-10-04T22:48:49+03:00"
         }
       ],
       "same_cause": [],
@@ -316,7 +316,7 @@
         "rule": "collector",
         "ident": "run"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-04T17:30:00+03:00",
@@ -325,8 +325,8 @@
             "llm-legs/bin/harness-doctor",
             "llm-legs/tests/test_harness_doctor.sh"
           ],
-          "in": null,
-          "regressed_at": null
+          "in": "llm-legs@ac75a868",
+          "regressed_at": "2026-10-04T23:45:59+03:00"
         }
       ],
       "same_cause": [
@@ -370,7 +370,7 @@
         "rule": "growth-ungated",
         "ident": "~/\\.claude/skills/synced/.+"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-04T17:30:00+03:00",
@@ -379,7 +379,7 @@
             "llm-legs/bin/harness-doctor",
             "llm-legs/tests/test_harness_doctor.sh"
           ],
-          "in": null,
+          "in": "llm-legs@ac75a868",
           "regressed_at": null
         }
       ],
@@ -396,7 +396,7 @@
         "rule": "baseline-missing",
         "ident": "tripwire"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-04T17:30:00+03:00",
@@ -405,7 +405,7 @@
             "llm-legs/bin/harness-doctor",
             "llm-legs/tests/test_harness_doctor.sh"
           ],
-          "in": null,
+          "in": "llm-legs@ac75a868",
           "regressed_at": null
         }
       ],
@@ -544,7 +544,7 @@
         "rule": "ask-repeat",
         "ident": "ask-span-drill\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-04T16:53:30+03:00",
@@ -553,7 +553,7 @@
             "claude-setup/hooks/stop.d/ask-span-drill.sh",
             "claude-setup/hooks/lib/words.py"
           ],
-          "in": null,
+          "in": "claude-setup@c48deac",
           "regressed_at": null
         }
       ],
@@ -598,7 +598,7 @@
         "rule": "word-miss",
         "ident": "review\\+span"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-04T16:53:30+03:00",
@@ -606,7 +606,7 @@
           "files": [
             "claude-setup/hooks/lib/words_journal.py"
           ],
-          "in": null,
+          "in": "claude-setup@c48deac",
           "regressed_at": null
         }
       ],
@@ -914,7 +914,7 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/agents/image\\-gen\\.md$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-04T17:30:00+03:00",
@@ -924,7 +924,7 @@
             "llm-legs/bin/instruction-write-gate.sh",
             "llm-legs/tests/test_instruction_gate.sh"
           ],
-          "in": null,
+          "in": "llm-legs@ac75a868",
           "regressed_at": null
         }
       ],
@@ -1770,7 +1770,7 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/agents/claudeb\\-worker\\.md$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-04T17:30:00+03:00",
@@ -1780,8 +1780,8 @@
             "llm-legs/bin/instruction-write-gate.sh",
             "llm-legs/tests/test_instruction_gate.sh"
           ],
-          "in": null,
-          "regressed_at": null
+          "in": "llm-legs@ac75a868",
+          "regressed_at": "2026-10-04T22:48:49+03:00"
         }
       ],
       "same_cause": [],
@@ -1797,7 +1797,7 @@
         "rule": "growth-ungated",
         "ident": "^/Volumes/Work/Projects/claude\\-setup/skills\\-on\\-demand/night\\-sweep$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-04T17:30:00+03:00",
@@ -1809,8 +1809,8 @@
             "llm-legs/bin/instruction-write-gate.sh",
             "llm-legs/tests/test_instruction_gate.sh"
           ],
-          "in": null,
-          "regressed_at": null
+          "in": "llm-legs@ac75a868",
+          "regressed_at": "2026-10-04T22:48:49+03:00"
         }
       ],
       "same_cause": [
@@ -2128,7 +2128,7 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/plugins/synced/0c354f45\\-a323\\-4361\\-bb4e\\-e5c3c45d1ea3_c67795da\\-c5c3\\-456a\\-98a7\\-ad7e1a722bb0/cowork\\-plugin\\-management/skills/(cowork\\-plugin\\-customizer|create\\-cowork\\-plugin)$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-04T17:30:00+03:00",
@@ -2137,7 +2137,7 @@
             "llm-legs/bin/harness-doctor",
             "llm-legs/tests/test_harness_doctor.sh"
           ],
-          "in": null,
+          "in": "llm-legs@ac75a868",
           "regressed_at": null
         }
       ],
@@ -2154,7 +2154,7 @@
         "rule": "growth-denied",
         "ident": "^\\~/\\.claude/agents/image\\-gen\\.md$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-04T17:30:00+03:00",
@@ -2164,7 +2164,7 @@
             "llm-legs/bin/instruction-write-gate.sh",
             "llm-legs/tests/test_instruction_gate.sh"
           ],
-          "in": null,
+          "in": "llm-legs@ac75a868",
           "regressed_at": null
         }
       ],
@@ -2267,7 +2267,7 @@
         "rule": "hook_p50",
         "ident": "worker-limit-gate\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-04T18:00:14+03:00",
@@ -2276,8 +2276,8 @@
             "llm-legs/bin/worker-pick",
             "llm-legs/tests/test_worker_pick.sh"
           ],
-          "in": null,
-          "regressed_at": null
+          "in": "llm-legs@ac75a868",
+          "regressed_at": "2026-10-04T22:48:49+03:00"
         }
       ],
       "handoff": null,
@@ -2308,7 +2308,7 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/skills/media$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-04T17:30:00+03:00",
@@ -2317,7 +2317,7 @@
             "llm-legs/bin/harness-doctor",
             "llm-legs/tests/test_harness_doctor.sh"
           ],
-          "in": null,
+          "in": "llm-legs@ac75a868",
           "regressed_at": null
         }
       ],
