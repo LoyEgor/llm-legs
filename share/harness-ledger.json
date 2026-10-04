@@ -1984,7 +1984,7 @@
         "rule": "collector",
         "ident": "speed-exec-qos"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-04T05:20:00+03:00",
@@ -1993,7 +1993,7 @@
             "llm-legs/bin/harness-doctor",
             "llm-legs/tests/test_harness_doctor.sh"
           ],
-          "in": null,
+          "in": "llm-legs@02e294c9",
           "regressed_at": null
         }
       ],
