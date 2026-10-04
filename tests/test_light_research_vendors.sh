@@ -45,9 +45,7 @@ run; rc=$?; assert test "$rc" -eq 4; assert grep -q '^OUTCOME: MODEL_REFUSED$' "
 # Light edit: `worker-run start light` takes vendor, model and effort from the light_edit row, and a
 # light-only model stays refused on the full worker leg.
 printf 'light_edit=claudeb:sonnet\n' >"$TOGGLE"
-# A Light edit launches under the SCOPE/VERIFY contract (tests/test_light_edit.sh owns it): the
-# brief fences the paths the run may touch, and without that line there is no launch at all.
-printf 'SCOPE: file\nVERIFY: true\n\nEdit the repository file.\n' >"$WORK/edit-brief"
+printf 'Edit the repository file.\n' >"$WORK/edit-brief"
 : >"$WORK/vendor.log"
 wr start light --brief "$WORK/edit-brief" --workdir "$REPO"; rc=$?; assert test "$rc" -eq 0
 run_id=$(sed -n 's/^RUN: //p' "$WORK/out" | head -1)
@@ -61,4 +59,17 @@ wr start light --brief "$WORK/edit-brief" --workdir "$REPO"; rc=$?; assert test 
 assert grep -q '^OUTCOME: MODEL_REFUSED$' "$WORK/out"
 rm -f "$TOGGLE"
 
-printf 'PASS: %s asserts; Light off launching nothing, tracked research on claudeb/codex/grok with each read-only mechanism, and `worker-run start light` from the light_edit row\n' "$asserts"
+# Off the light row's vendor, a light run must be told which model to use.
+printf 'light_research=gemini\nlight_edit=claudeb:sonnet\n' >"$TOGGLE"
+wr start codex --role research --brief "$WORK/edit-brief" --workdir "$REPO"; rc=$?
+assert test "$rc" -eq 4
+assert grep -qx 'OUTCOME: MODEL_REFUSED' "$WORK/out"
+assert grep -q 'the light_research row names gemini, not codex' "$WORK/err"
+wr start codex --role research --model astra --brief "$WORK/edit-brief" --workdir "$REPO"; rc=$?
+assert test "$rc" -eq 0
+assert jq -e '.vendor == "codex" and .role == "research" and .model == "astra" and .model_id == "gpt-6.1-astra" and .light == "research"' \
+  "$RUNS/$(sed -n 's/^RUN: //p' "$WORK/out" | head -1)/meta.json" >/dev/null
+wr wait "$(sed -n 's/^RUN: //p' "$WORK/out" | head -1)" --max 60
+rm -f "$TOGGLE"
+
+printf 'PASS: %s asserts; Light off launching nothing, tracked research on claudeb/codex/grok with each read-only mechanism, `worker-run start light` from the light_edit row, and the off-row light vendor refusal\n' "$asserts"

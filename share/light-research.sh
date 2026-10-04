@@ -105,21 +105,16 @@ research_citation_body() { # checked-file
 }
 
 research_sandbox_profile() {
-  local path resolved escaped profile_home mode=${1:-research}
+  local path resolved escaped profile_home
   local -a writable
   writable=()
-  if [ "$mode" = light ]; then
-    shift
-    writable=("$@")
-  else
-    if [ "$account" != main ]; then
-      profile_home=$(readlink -f "$(gemini_account_home "$account")") || return 1
-      writable+=("$profile_home")
-    fi
-    mkdir -p "${GEMINIB_CACHE_DIR:-$HOME/.cache/geminib}" 2>/dev/null || :
-    writable+=("$HOME/.gemini" "${GEMINIB_CACHE_DIR:-$HOME/.cache/geminib}" "${TMPDIR:-/tmp}" /private/tmp
-      "$(getconf DARWIN_USER_TEMP_DIR)" "$(getconf DARWIN_USER_CACHE_DIR)" "$directory")
+  if [ "$account" != main ]; then
+    profile_home=$(readlink -f "$(gemini_account_home "$account")") || return 1
+    writable+=("$profile_home")
   fi
+  mkdir -p "${GEMINIB_CACHE_DIR:-$HOME/.cache/geminib}" 2>/dev/null || :
+  writable+=("$HOME/.gemini" "${GEMINIB_CACHE_DIR:-$HOME/.cache/geminib}" "${TMPDIR:-/tmp}" /private/tmp
+    "$(getconf DARWIN_USER_TEMP_DIR)" "$(getconf DARWIN_USER_CACHE_DIR)" "$directory")
   printf '(version 1)\n(allow default)\n(deny file-write*)\n'
   for path in "${writable[@]}"; do
     [ -n "$path" ] || return 1
@@ -129,7 +124,6 @@ research_sandbox_profile() {
     printf '(allow file-write* (subpath "%s"))\n' "$escaped"
   done
   printf '(allow file-write* (literal "/dev/null") (literal "/dev/tty") (literal "/dev/stdin") (literal "/dev/stdout") (literal "/dev/stderr"))\n'
-  [ "$mode" != light ] || return 0
   # A checkout inside an allowed temp root must still be read-only.
   for path in "${resolved_repos[@]}" "$HOME/.claude"; do
     resolved=$(resolve_path "$path") || return 1

@@ -791,13 +791,13 @@ env "${speed_env[@]}" CODE_LEDGER="$S/none.json" STATUSLINE_CACHE_DIR="$S/sl" SP
   fail "speed-doctor did not merge its section"
 night1='["opportunity:machine/contention", "opportunity:chat/hooks", "opportunity:tests/llm-legs/test_llm_limits"]'
 assert jqe --argjson n "$night1" '.speed.selection == $n' "$S/harness/latest.json"
-mkdir -p "$L/share/rbench" "$L/share/light-recipes" "$L/agents"
+mkdir -p "$L/share/rbench" "$L/share/briefs" "$L/agents"
 printf '# the per-model call\nclaudeb opus high high,xhigh low,medium,max no\n' >"$L/share/worker-model.sh"
 printf '| claudeb / opus | high | high, xhigh |\nPlain prose.\n' >"$L/share/worker-policy.md"
 printf '    "T0": {"efforts": {"claude": "low", "codex": "low"}},\n' >"$L/share/rbench/catalog.py"
 printf -- '---\nname: w\nmodel: opus\n---\nbody\n' >"$L/agents/w.md"
 printf "CLAUDEB_CLAUDE_MODEL='fable'\n" >"$L/bin/claudeb"
-printf 'EFFORT: high\nDo the thing.\n' >"$L/share/light-recipes/r.md"
+printf 'EFFORT: high\nDo the thing.\n' >"$L/share/briefs/r.md"
 git -C "$L" add share agents bin/claudeb && git -C "$L" -c user.name=t -c user.email=t@t commit -qm knobs
 rfg="$WORK/projects/claude-setup/hooks/review-flow-gate.sh"
 printf '#!/bin/bash\n' >"$rfg"
@@ -821,7 +821,7 @@ gw commit -qam "tune"
 sed -i '' 's/| high |/| medium |/' "$swt/share/worker-policy.md"
 sed -i '' 's/"claude": "low"/"claude": "medium"/' "$swt/share/rbench/catalog.py"
 sed -i '' 's/fable/haiku/' "$swt/bin/claudeb"
-printf 'MODEL: haiku\n' >"$swt/share/light-recipes/new.md"
+printf 'MODEL: haiku\n' >"$swt/share/briefs/new.md"
 sed -i '' 's/"opus"/"haiku"/' "$WORK/settings.json"
 mkdir -p "$HOME/.claude" && printf 'claudeb_model=sonnet\n' >"$HOME/.claude/worker-model"
 jq -n --argjson s $(($(now) + 5)) '{contract: 1, doctor: "harness", as_of_s: $s, judge: "base-harness", problems: []}' \
@@ -836,7 +836,7 @@ assert knob "agent model frontmatter" "llm-legs/agents/w.md:3: -model: opus"
 assert knob "share/worker-policy.md effort" "llm-legs/share/worker-policy.md:1: +| claudeb / opus | medium |"
 assert knob "review-bench tier effort/rater" "llm-legs/share/rbench/catalog.py:1: -"
 assert knob "claudeb default model" "llm-legs/bin/claudeb:1: +CLAUDEB_CLAUDE_MODEL='haiku'"
-assert knob "brief-template EFFORT/MODEL" "llm-legs/share/light-recipes/new.md:1: +MODEL: haiku"
+assert knob "brief-template EFFORT/MODEL" "llm-legs/share/briefs/new.md:1: +MODEL: haiku"
 assert [ "$(grep -c '^model/effort knob, ' "$WORK/err")" = 11 ]
 gw reset -q --hard refs/night/n8/base && gw clean -qfd
 sed -i '' 's/the per-model call/the per-model table/' "$swt/share/worker-model.sh"

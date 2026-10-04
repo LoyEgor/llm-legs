@@ -475,7 +475,7 @@ def project_of(path):
     parts = path.rstrip("/").split("/")
     name = parts[-1]
     for index in range(1, len(parts) - 2):
-        if parts[index] == ".claude" and parts[index + 1] == "worktrees" and not parts[index + 2].startswith("light-"):
+        if parts[index] == ".claude" and parts[index + 1] == "worktrees":
             name = "%s/%s" % (parts[index - 1], parts[index + 2])
     return "" if ID_LIKE_RE.search(name) else name
 
@@ -931,14 +931,6 @@ def worker_escape(run_dir):
     return [line for line in lines if line and not is_scratch_path(line) and not PROFILE_HOME_RE.search(line)]
 
 
-def light_verdict(run_dir):
-    verdict = {}
-    for line in (read_text(os.path.join(run_dir, "light-verdict")) or "").splitlines():
-        key, _, value = line.partition(":")
-        verdict[key.strip()] = value.strip()
-    return verdict
-
-
 def classify_worker(run_dir, meta, killed, exit_code):
     """(class, reason, detail, origin) of one worker-run leg, off the verdicts worker-run left beside it."""
     kill_word = killed.split()[0] if killed else ""
@@ -955,9 +947,6 @@ def classify_worker(run_dir, meta, killed, exit_code):
                if not any(path.startswith(root) for root in granted)]
     if outside:
         return "escaped", "escaped", "wrote %s" % project_of(outside[0]), ""
-    verdict = light_verdict(run_dir)
-    if (verdict.get("SCOPE") or "").split()[:1] == ["escaped"]:
-        return "escaped", "escaped", "light scope escaped", ""
     research = first_line(os.path.join(run_dir, "research-outcome"))
     if research == "READ_ONLY_VIOLATION":
         if DIGEST_RE.search(err):
@@ -972,10 +961,6 @@ def classify_worker(run_dir, meta, killed, exit_code):
         klass, reason, detail, origin = classify_failure_text(err, None)
         return klass, reason, "%s · failed under exit 0" % detail if klass == "failed" else detail, origin
     if exit_code == 0:
-        if verdict.get("VERIFIED") == "fail":
-            return "failed", "verify failed", "light verify failed", "ours"
-        if verdict.get("LANDED") == "conflict":
-            return "failed", "land conflict", "light landing conflict", "ours"
         return None, "", "", ""
     if os.path.exists(os.path.join(run_dir, "memguard")) and os.path.getsize(os.path.join(run_dir, "memguard")):
         return "failed", "killed memory", "killed memory", "ours"
@@ -1313,7 +1298,7 @@ BUG_STATES = ("new", "open", "regressed")
 # The words a bug leg can carry (word_of): a ledger row naming any other word never matches a leg.
 LEDGER_WORDS = frozenset({word for word, origin in FAILURE_ORIGIN.items() if origin == "ours"}
                          | {word for word, origin in IMAGE_ORIGIN.items() if origin == "ours"}
-                         | {"escaped", "unclassified", "no output", "killed early", "verify failed", "land conflict"})
+                         | {"escaped", "unclassified", "no output", "killed early"})
 WORD_MATCH_KEYS = {"word", "model", "detail", "until"}
 FIX_KEYS = {"at", "by", "files", "in", "regressed_at"}
 BLIND_KEYS = ("id", "what", "reason", "since", "would_catch_if")

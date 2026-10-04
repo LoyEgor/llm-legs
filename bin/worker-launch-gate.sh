@@ -414,11 +414,11 @@ relay_brief() {
 brief_value() { grep -m1 -oE "^$1:[[:space:]]*[A-Za-z0-9_.-]+" <<<"$brief" | sed -E "s/^$1:[[:space:]]*//"; }
 # worker-run reads a header line itself when its flag is absent, so a missing flag only matters when
 # the brief this start line launches does not carry the line the relay was handed. Only a heredoc
-# written in this call to the start line's own --brief counts, and research and recipe starts never
-# adopt a line in worker-run, so nothing is carried for them.
+# written in this call to the start line's own --brief counts, and research starts never adopt a line
+# in worker-run, so nothing is carried for them.
 carried() { # key value
   local target
-  case " $start_line " in *[[:space:]]--recipe[[:space:]=]* | *[[:space:]]--role[[:space:]=][\"\']research[\"\'][[:space:]]* | *[[:space:]]--role[[:space:]=]research[[:space:]]*) return 1 ;; esac
+  case " $start_line " in *[[:space:]]--role[[:space:]=][\"\']research[\"\'][[:space:]]* | *[[:space:]]--role[[:space:]=]research[[:space:]]*) return 1 ;; esac
   target=$(grep -oE -e "--brief(=|[[:space:]]+)(\"[^\"]*\"|'[^']*'|[^[:space:];&|]+)" <<<"$start_line" | head -n 1 |
     sed -E "s/^--brief(=|[[:space:]]+)//; s/^[\"']//; s/[\"']$//")
   [ -n "$target" ] || return 1

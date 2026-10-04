@@ -563,23 +563,6 @@ for bad_round in 'ROUND: 20260801T140000Z-0A1B2C3' 'ROUND: 20260801T140000Z-0a1b
   assert_fails grep -q '^RUN: ' "$WORK/round.out"
 done
 
-
-# A Light edit lands through one repository's worktree, so a multi-repository round grants it no
-# other: one Light edit per repository launches.
-clear_stub
-set_config 'light_edit=claudeb:sonnet' 'claudeb_workers=off' 'claudeb_model=opus' 'claudeb_effort=high'
-export PICK_ACCOUNT=picked PICK_RC=0
-printf 'base\n' >"$round_repos/alpha/file"
-git -C "$round_repos/alpha" add file
-git -C "$round_repos/alpha" -c user.email=t@t -c user.name=t commit -qm file
-printf 'ROUND: 20260801T160000Z-1b2c3d4\nSCOPE: file\nFix the confirmed findings.\n' >"$WORK/round-brief"
-"$RUNNER" start light --brief "$WORK/round-brief" --workdir "$round_repos/alpha" \
-  >"$WORK/start.out" 2>"$WORK/start.err" || fail "Light edit multi-repository round start failed: $(<"$WORK/start.err")"
-RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
-RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/start.out")
-assert jq -e '.light == "edit" and (.add_dirs // [] | length) == 0' "$RUN_DIR/meta.json" >/dev/null
-assert await_done
-
 clear_stub
 set_config 'grok_model=auto' 'grok_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=grokacct

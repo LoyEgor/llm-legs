@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 . "$(dirname "$0")/worker_run_harness.sh"
-# A Light edit launches under the SCOPE/VERIFY contract and inside a worktree off the workdir's
-# HEAD, so it needs a repository with a commit; tests/test_light_edit.sh owns that contract.
 light_workdir="$WORK/light-workdir"
 mkdir -p "$light_workdir"
 git -C "$light_workdir" init -q
@@ -83,9 +81,7 @@ clear_stub
 set_config 'light_edit=claudeb:sonnet'
 export PICK_RC=0 PICK_ACCOUNT=readonly-light STUB_TRANSCRIPT_SESSION=readonly-light STUB_SESSION=readonly-light
 export STUB_TRANSCRIPT_ACCOUNT=readonly-light
-printf 'SCOPE: file\ntest brief\nsecond line\n' >"$WORK/brief"
 WORKER_TEST_WORKDIR="$light_workdir" start_ok light
-printf 'test brief\nsecond line\n' >"$WORK/brief"
 assert await_done
 assert jq -e '.light == "edit"' "$RUN_DIR/meta.json" >/dev/null
 report=$("$RUNNER" report "$RUN_ID")

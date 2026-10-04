@@ -99,17 +99,13 @@ done
 clear_stub
 set_config 'light_edit=claudeb:sonnet' 'claudeb_workers=off' 'claudeb_model=opus' 'claudeb_effort=high'
 export PICK_ACCOUNT=picked PICK_RC=0
-# A Light edit launches under the SCOPE/VERIFY contract and inside a worktree off the workdir's
-# HEAD, so it needs a repository with a commit; tests/test_light_edit.sh owns that contract.
 light_workdir="$WORK/light-workdir"
 mkdir -p "$light_workdir"
 git -C "$light_workdir" init -q
 printf 'base\n' >"$light_workdir/file"
 git -C "$light_workdir" add file
 git -C "$light_workdir" -c user.name=fixture -c user.email=fixture@example.test commit -qm base
-printf 'SCOPE: file\ntest brief\nsecond line\n' >"$WORK/brief"
 WORKER_TEST_WORKDIR="$light_workdir" start_ok light
-printf 'test brief\nsecond line\n' >"$WORK/brief"
 assert meta_account_is picked
 assert grep -qx -- '--account claudeb --role light --claim' "$PICK_LOG"
 assert jq -e '.model == "sonnet" and .light == "edit"' "$RUN_DIR/meta.json" >/dev/null
@@ -120,7 +116,7 @@ assert await_done
 clear_stub
 set_config 'light_paused=on' 'light_edit=claudeb:sonnet' 'light_research=gemini' 'claudeb_model=opus' 'claudeb_effort=high'
 : >"$PICK_LOG"
-printf 'SCOPE: file\ntest brief\n' >"$WORK/brief"
+printf 'test brief\n' >"$WORK/brief"
 rc=0
 WORKER_TEST_WORKDIR="$light_workdir" "$RUNNER" start light --brief "$WORK/brief" --workdir "$light_workdir" \
   >"$WORK/lightoff.out" 2>"$WORK/lightoff.err" || rc=$?
@@ -131,22 +127,6 @@ printf 'test brief\nsecond line\n' >"$WORK/brief"
 start_ok claudeb --role research
 assert jq -e '.model == "opus" and (has("light") | not)' "$RUN_DIR/meta.json" >/dev/null
 assert await_done
-
-# The Light write sandbox never receives $HOME as a root. gemini's main account IS the real HOME
-# (shared-invariants row `m`), so it is granted the agy state directory a named profile's own home
-# holds anyway — the shape codex and grok main already have.
-clear_stub
-set_config 'light_edit=gemini:flash38' 'gemini_model=flash38' 'gemini_effort=high'
-export PICK_ACCOUNT=main PICK_RC=0
-printf 'SCOPE: file\ntest brief\n' >"$WORK/brief"
-WORKER_TEST_WORKDIR="$light_workdir" start_ok light
-printf 'test brief\nsecond line\n' >"$WORK/brief"
-home_real=$(cd "$HOME" && pwd -P)
-assert meta_account_is main
-assert_fails grep -qF "(subpath \"$home_real\")" "$RUN_DIR/light-sandbox.sb"
-assert grep -qF "(subpath \"$home_real/.gemini\")" "$RUN_DIR/light-sandbox.sb"
-assert await_done
-export PICK_ACCOUNT=picked
 
 # Legacy picker stderr remains visible but has no routing or report semantics.
 clear_stub

@@ -27,8 +27,8 @@ SANDBOX
   printf 'WEB: on\nprobe\nsecond line\n' >"$WORK/websearch/on"
   printf 'WEB: off\nprobe\nsecond line\n' >"$WORK/websearch/off"
   printf 'web: ON\nprobe\nsecond line\n' >"$WORK/websearch/on-lower"
-  printf 'SCOPE: file\nprobe\n' >"$WORK/websearch/light-plain"
-  printf 'WEB: on\nSCOPE: file\nprobe\n' >"$WORK/websearch/light-on"
+  printf 'probe\n' >"$WORK/websearch/light-plain"
+  printf 'WEB: on\nprobe\n' >"$WORK/websearch/light-on"
   printf 'websearch\n' >"$STUB_DIR/gemini_profiles"
   export PICK_RC=0 PICK_ACCOUNT=websearch
 

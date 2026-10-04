@@ -296,15 +296,14 @@ assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 0
 cp "$WORK/brief.plain" "$WORK/brief"
 
 # The 2026-10-01 escapes: hand-written briefs named another repository's task worktree only in prose,
-# and a RESUME of a granted session repeated no grant. A main checkout or a Light tree named in
-# prose, or a worktree that does not exist, is still granted nothing.
+# and a RESUME of a granted session repeated no grant. A main checkout named in prose, or a worktree
+# that does not exist, is still granted nothing.
 other="$WORK/other-repo"
-mkdir -p "$other/.claude/worktrees/task-wt" "$other/.claude/worktrees/light-x" "$WORK/inherited"
+mkdir -p "$other/.claude/worktrees/task-wt" "$WORK/inherited"
 printf 'gitdir: x\n' >"$other/.claude/worktrees/task-wt/.git"
-printf 'gitdir: x\n' >"$other/.claude/worktrees/light-x/.git"
 mkdir -p "$other/.git"
-{ printf 'ACCOUNT: options\n\nWork in worktree %s/.claude/worktrees/task-wt. Read %s and %s/.claude/worktrees/light-x and %s/.claude/worktrees/gone.\n' \
-    "$other" "$other" "$other" "$other"; cat "$WORK/brief.plain"; } >"$WORK/brief"
+{ printf 'ACCOUNT: options\n\nWork in worktree %s/.claude/worktrees/task-wt. Read %s and %s/.claude/worktrees/gone.\n' \
+    "$other" "$other" "$other"; cat "$WORK/brief.plain"; } >"$WORK/brief"
 clear_stub
 set_config 'codex_effort=high'
 start_ok codex

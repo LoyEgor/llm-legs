@@ -163,7 +163,6 @@ worker("claudeb", 3600, "sonnet", 0, {"files-note": outside + "/Volumes/Work/Pro
 worker("claudeb", 3650, "sonnet", 0, {"files-note": outside + "/Volumes/Work/Projects/granted/x.py\n"},
        {"add_dirs": ["/Volumes/Work/Projects/granted"]})
 worker("codex", 3700, "astra", 1, {"result": "the client now retries on rate limit exceeded\n", "err": "boom\n"})
-worker("codex", 3800, "astra", 0, {"light-verdict": "SCOPE: escaped other/stray.txt\n"}, {"light": "edit"})
 # The test shell is alive but younger than the recorded supervisor: its pid was reused.
 worker("claudeb", 30000, "opus", None, None, {"pid": os.getppid(), "pid_started_at": now - 30300})
 # Liveness is share/run-liveness.sh's: a legacy record of a live supervisor keeps running, pid 0 is gone.
@@ -331,7 +330,6 @@ assert workers[("off", "")]["incidents"][0]["detail"] == "model refused", sorted
 assert ("failed · bad command", "") not in workers, sorted(workers)
 light = problems("light")
 assert light[("failed · crashed", "")]["incidents"][0]["detail"] == "tree digest not taken", sorted(light)
-assert light[("escaped", "")]["incidents"][0]["detail"] == "light scope escaped", sorted(light)
 # Every incident names the chat that launched its run, where the run recorded one — by name, and a
 # launcher nothing here knows as an unnamed chat, never by its id.
 crashed = light[("failed · crashed", "")]["incidents"][0]
@@ -345,7 +343,7 @@ chats = [incident.get("chat") or "" for block in blocks.values() for problem in 
 assert not [chat for chat in chats if re.search(r"\b[0-9a-f]{8}\b", chat)], chats
 assert all(problem["incidents_total"] >= len(problem["incidents"])
            for block in blocks.values() for problem in block["problems"])
-assert blocks["light"]["bugs"] == 2 and blocks["light"]["new"] == 2, blocks["light"]
+assert blocks["light"]["bugs"] == 1 and blocks["light"]["new"] == 1, blocks["light"]
 assert workers[("failed · crashed", "")]["incidents"][0]["detail"] == "no exit: supervisor gone", sorted(workers)
 assert workers[("failed · crashed", "")]["count"] == 2, workers[("failed · crashed", "")]
 image = problems("image")
