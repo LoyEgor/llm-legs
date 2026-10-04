@@ -34,4 +34,12 @@ call light-research a3 'light-research --attach lr-20260924-ab12 --out /tmp/o'
 assert_eq 'run=lr-20260924-ab12' "$(grep '^run=' "$TAGS/a3")"
 assert_eq 0 "$(grep -c '^start=' "$TAGS/a3")"
 
+# A main-session payload carries no agent_type key: it exits on builtins, before any cat or jq.
+printf '%s\n' 'jq() { printf "call\n" >> "$FORKS"; command jq "$@"; }' \
+  'cat() { printf "call\n" >> "$FORKS"; command cat "$@"; }' >"$WORK/count-forks.sh"
+: >"$WORK/forks"
+jq -cn '{hook_event_name:"PreToolUse",tool_name:"Bash",session_id:"s1",tool_input:{command:"ls"}}' |
+  BASH_ENV="$WORK/count-forks.sh" FORKS="$WORK/forks" bash "$HOOK" >/dev/null 2>&1
+assert_eq 0 "$(grep -c '' "$WORK/forks")"
+
 printf 'PASS: %s asserts; a released relay'"'"'s stopped= mark clears on its next call, a light-research launch leaves start= for worker-run'"'"'s claim, and an --attach names run=<id>\n' "$asserts"

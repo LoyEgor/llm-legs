@@ -95,9 +95,21 @@ assert_deny 'checkout patch' gemini-worker 'git checkout -p'
 assert_deny 'checkout force cluster' claudeb-worker 'git checkout -fq main'
 
 assert_allow 'main session' '' 'git checkout -- f'
-printf '%s\n' 'jq() { printf "call\n" >> "$JQ_CALLS"; command jq "$@"; }' > "$HOME/count-jq.sh"
+printf '%s\n' 'jq() { printf "call\n" >> "$JQ_CALLS"; command jq "$@"; }' \
+  'cat() { printf "call\n" >> "$JQ_CALLS"; command cat "$@"; }' > "$HOME/count-jq.sh"
+: > "$HOME/jq-calls"
 payload '' 'ls' | BASH_ENV="$HOME/count-jq.sh" JQ_CALLS="$HOME/jq-calls" bash "$GUARD" >/dev/null
-if [ "$(wc -l < "$HOME/jq-calls" | tr -d ' ')" = 1 ]; then pass; else fail 'a main-session call parsed its payload more than once'; fi
+if [ "$(wc -l < "$HOME/jq-calls" | tr -d ' ')" = 1 ]; then pass; else fail 'an empty agent_type ran more than its one jq parse'; fi
+: > "$HOME/jq-calls"
+payload '' 'ls' | jq -c 'del(.agent_type)' |
+  BASH_ENV="$HOME/count-jq.sh" JQ_CALLS="$HOME/jq-calls" bash "$GUARD" >/dev/null
+if [ ! -s "$HOME/jq-calls" ]; then pass; else fail 'a main-session call with no agent_type forked before exiting'; fi
+: > "$HOME/jq-calls"
+payload '' 'git stash -u' | jq -c 'del(.agent_type)' |
+  CLAUDEB_WORKER=1 BASH_ENV="$HOME/count-jq.sh" JQ_CALLS="$HOME/jq-calls" bash "$GUARD" | grep -q '"deny"' &&
+  pass || fail 'a headless claudeb call with no agent_type key was not guarded'
+payload '' 'git stash -u' | jq -c 'del(.agent_type)' | GROK_WORKER=1 bash "$GUARD" | grep -q '"deny"' &&
+  pass || fail 'a headless grok call with no agent_type key was not guarded'
 assert_allow 'explore agent' Explore 'git checkout -- f'
 assert_allow 'branch checkout' codex-worker 'git checkout feature-branch'
 assert_allow 'new branch checkout' codex-worker 'git checkout -b new-branch'

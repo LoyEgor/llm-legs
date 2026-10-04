@@ -2,7 +2,9 @@
 [ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u
 
-input=$(cat) || exit 0
+IFS= read -r -d '' input || :
+[ "${CLAUDEB_WORKER:-}" = 1 ] || [ "${GROK_WORKER:-}" = 1 ] ||
+  case $input in *'"agent_type"'*) ;; *) exit 0 ;; esac
 
 command -v jq >/dev/null 2>&1 || exit 0
 parsed=$(jq -r '[.hook_event_name // "", .agent_type // "", .session_id // "", .tool_input.command // "",

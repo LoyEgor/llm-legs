@@ -13,7 +13,8 @@ set -u
 # and every concurrent hook would start its own.
 export GROKB_MODELS_NO_FETCH=1
 
-input=$(cat) || exit 0
+IFS= read -r -d '' input || :
+case $input in *'"agent_type"'*) ;; *) exit 0 ;; esac
 
 field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
 
