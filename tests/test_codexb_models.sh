@@ -225,46 +225,12 @@ chmod +x "$WORK/bin/codex"
 PATH="$WORK/bin:$PATH" bash "$SCRIPT" profile alpha >/dev/null 2>&1
 assert grep -qx 'ARG=gpt-6.1-astra' "$WORK/calls"
 
-# --- A slug the server refused (0.159.0 listed gpt-6.1-sol, then answered "not supported when using
-# Codex with a ChatGPT account") never answers a family word for a day ---
-refused_file="$CODEXB_PROFILES_DIR/.codexb/refused-models"
+# --- No refusal store: a listed slug answers its family word, and `refuse-model` is no command ---
 assert_eq "$(models --family astra)" gpt-6.1-astra
-# A lapsed plan refuses what its own catalog does not list: that stays its own, never the pool's.
-mkdir -p "$CODEXB_PROFILES_DIR/lapsed"
-jq '.models |= map(select(.slug | test("astra") | not))' "$FIXTURE" >"$CODEXB_PROFILES_DIR/lapsed/models_cache.json"
-assert bash "$SCRIPT" refuse-model lapsed gpt-6.1-astra
-assert_eq "$(models --family astra)" gpt-6.1-astra
-assert_eq "$(models --family astra --account beta --own)" gpt-6.1-astra
-rm -r "$CODEXB_PROFILES_DIR/lapsed"
-: >"$refused_file"
-# Refusals recorded at the same moment are all kept.
-for name in r1 r2 r3 r4 r5 r6 r7 r8 r9 r10 r11 r12 r13 r14 r15 r16; do
-  bash "$SCRIPT" refuse-model "$name" gpt-6.1-astra &
-done
-wait
-assert_eq "$(cut -f1 "$refused_file" | LC_ALL=C sort -u | wc -l | tr -d ' ')" 16
-: >"$refused_file"
-stamp "$CODEXB_PROFILES_DIR/alpha/models_cache.json" 2026-09-23T08:00:00.000000Z
-assert bash "$SCRIPT" refuse-model alpha gpt-6.1-astra
-assert grep -qx "alpha${TAB}gpt-6.1-astra${TAB}[0-9]*" "$refused_file"
-assert_eq "$(models --family astra --account alpha --own)" gpt-6-astra
-# Pool-wide, a refusal counts where the refusing account's own catalog lists the slug: review-bench
-# cells resolve with no account.
-assert_eq "$(models --family astra)" gpt-6-astra
-assert_eq "$(slug_of astra)" gpt-6-astra
-assert_eq "$(models --family astra --account beta --own)" gpt-6.1-astra
-# A slug named outright is a deliberate pin and launches unchanged.
-assert_eq "$(models --family gpt-6.1-astra)" gpt-6.1-astra
-assert_eq "$(CODEXB_REFUSED_TTL=0 bash "$SCRIPT" models --family astra 2>/dev/null)" gpt-6.1-astra
-# Recorded twice, kept once; an expired line is swept by the next write.
-bash "$SCRIPT" refuse-model alpha gpt-6.1-astra
-printf 'beta\tgpt-5.6-sol\t1\n' >>"$refused_file"
-bash "$SCRIPT" refuse-model alpha gpt-6-astra
-assert_eq "$(cut -f1,2 "$refused_file" | LC_ALL=C sort | tr '\n' ' ')" "alpha${TAB}gpt-6-astra alpha${TAB}gpt-6.1-astra "
-assert_fails() { asserts=$((asserts + 1)); ! "$@" || fail "assert $asserts should fail: $*"; }
-assert_fails models --family astra
-assert grep -q 'every listed codex model of family astra was refused' "$WORK/err"
-assert_fails bash -c 'bash "$0" refuse-model "Bad Name" gpt-6-astra 2>/dev/null' "$SCRIPT"
-rm -f "$refused_file"
+asserts=$((asserts + 1))
+rc=0; bash "$SCRIPT" refuse-model alpha gpt-6.1-astra >/dev/null 2>"$WORK/err" || rc=$?
+[ "$rc" -eq 2 ] && grep -q '^usage: codexb' "$WORK/err" || fail "assert $asserts: refuse-model exited $rc"
+assert test ! -e "$CODEXB_PROFILES_DIR/.codexb/refused-models"
+: >"$WORK/err"
 
 printf 'PASS: %s assertions\n' "$asserts"

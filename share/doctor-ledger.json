@@ -477,7 +477,7 @@
     "detail": "no codex model for cell"
    },
    "title": "a codex family the catalog resolved to no slug crashed its cells instead of ending pool empty",
-   "status": "fixed",
+   "status": "fixed-pending",
    "fixes": [
     {
      "at": "2026-10-01T05:45:00+03:00",
@@ -487,12 +487,38 @@
      ],
      "in": "review-bench@cdb8f19",
      "regressed_at": null
+    },
+    {
+     "at": "2026-10-04T17:38:01+03:00",
+     "by": "LLM Doctor меню refactoring",
+     "files": [
+      "llm-legs/bin/codexb",
+      "llm-legs/share/worker-model.sh",
+      "llm-legs/bin/worker-run",
+      "llm-legs/docs/shared-invariants.md",
+      "llm-legs/tests/test_codexb_models.sh",
+      "llm-legs/tests/test_worker_run_outcomes.sh"
+     ],
+     "in": null,
+     "regressed_at": null
+    },
+    {
+     "at": "2026-10-04T17:38:01+03:00",
+     "by": "LLM Doctor меню refactoring",
+     "files": [
+      "review-bench/share/rbench/catalog.py",
+      "review-bench/share/rbench/launch.py",
+      "review-bench/tests/fixtures/review-bench/fake-codexb.sh",
+      "review-bench/tests/test_review_bench.sh"
+     ],
+     "in": null,
+     "regressed_at": null
     }
    ],
    "same_cause": [],
-   "last_reviewed": "2026-10-01",
-   "reviewed_by": "Night fixer llm-reviewers-20261001T020642Z-32c1",
-   "note": "x2 sol-high cells of round 20260930T021101Z-8810740 (borodatch, burkhartor): `codexb models --family sol` printed nothing, most likely because the refusal store skipped gpt-6.1-sol pool-wide after its 01:36 UTC refusal (rollout lag); codex_account_serves swallowed the resolver's ValueError and run_codex raised it again. The family word is now recorded unlisted for every account, so the cell ends `pool empty` with `codex model sol is not served by any account`, as shared-invariants row cv says. The trigger, the refusal store itself, is proposed for removal in docs/handoffs/2026-09-30-codex-refusal-store-removal.md (llm-legs and review-bench together).",
+   "last_reviewed": "2026-10-04",
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "2026-10-04: the codex refusal store is gone from both repositories (codexb refuse-model, refused_slugs, worker_model_codex_refuse, catalog.codex_refuse): a listed slug always answers its family word and the account's own list judges; worker-run's unsupported-model retry no longer reruns the refused slug itself. x2 sol-high cells of round 20260930T021101Z-8810740 (borodatch, burkhartor): `codexb models --family sol` printed nothing, most likely because the refusal store skipped gpt-6.1-sol pool-wide after its 01:36 UTC refusal (rollout lag); codex_account_serves swallowed the resolver's ValueError and run_codex raised it again. The family word is now recorded unlisted for every account, so the cell ends `pool empty` with `codex model sol is not served by any account`, as shared-invariants row cv says. The trigger, the refusal store itself, is proposed for removal in docs/handoffs/2026-09-30-codex-refusal-store-removal.md (llm-legs and review-bench together).",
    "handoff": "docs/handoffs/2026-09-30-codex-refusal-store-removal.md"
   },
   {
@@ -593,8 +619,8 @@
    "fixes": [],
    "same_cause": [],
    "last_reviewed": "2026-10-04",
-   "reviewed_by": "night fixer llm-debt-20261004T013729Z-1f3a",
-   "note": "2026-10-04: `review-anchors gaps --days 14` still holds no fixer-missing group; review-bench fold_bench unchanged; settled versus aged out still unestablished. 2026-10-02 and 2026-10-03: `review-anchors gaps --days 14 --json` holds no open fixer-missing group (producer unchanged, review-anchors:645), so the September 30 gaps are no longer open; whether their rounds were settled or only aged out was not established, and the producer (review-bench fold_bench) was not changed, so the row stays open. Fresh gaps on 2026-09-30 invalidate the prior none-new-since-09-27 note: round 20260930T002018Z-a9fe8ce, runs claudeb-1790757454-79915-4251 and claudeb-1790760125-68537-1734 (Updater doctor). Both meta.json files retain review_round, so missing ROUND propagation is ruled out for these two. Older visible rounds are 20260924T222306Z-8877b05 and 20260925T152101Z-06f549b; 20260923T143320Z-c52158a is outside this read, not proven settled. Round owners must inspect fixer rows before closing; no --nofix performed.",
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "2026-10-04: review-anchors gaps --days 60 lists no fixer-missing gap: every September round's gap was settled, none only aged out of the 7-day window. The row stays open to catch a recurrence. 2026-10-04: `review-anchors gaps --days 14` still holds no fixer-missing group; review-bench fold_bench unchanged; settled versus aged out still unestablished. 2026-10-02 and 2026-10-03: `review-anchors gaps --days 14 --json` holds no open fixer-missing group (producer unchanged, review-anchors:645), so the September 30 gaps are no longer open; whether their rounds were settled or only aged out was not established, and the producer (review-bench fold_bench) was not changed, so the row stays open. Fresh gaps on 2026-09-30 invalidate the prior none-new-since-09-27 note: round 20260930T002018Z-a9fe8ce, runs claudeb-1790757454-79915-4251 and claudeb-1790760125-68537-1734 (Updater doctor). Both meta.json files retain review_round, so missing ROUND propagation is ruled out for these two. Older visible rounds are 20260924T222306Z-8877b05 and 20260925T152101Z-06f549b; 20260923T143320Z-c52158a is outside this read, not proven settled. Round owners must inspect fixer rows before closing; no --nofix performed.",
    "handoff": "docs/handoffs/2026-10-01-debt-health-followup.md"
   },
   {
@@ -609,8 +635,8 @@
    "fixes": [],
    "same_cause": [],
    "last_reviewed": "2026-10-04",
-   "reviewed_by": "night fixer llm-debt-20261004T013729Z-1f3a",
-   "note": "2026-10-04: 65,086 dirty paths (git status -uall 1.7 s), hash-cap gaps still written, latest 04:46 +03:00: the same research output. This run's dry-run read of `review-anchors gaps` took 23 s at load 240 and timed out at llm-doctor's 30 s, so every debt-gap row vanished from that document behind the health note 'gaps not read' (surfaced by design, text and menu): a gap row gone at close proves nothing. 2026-10-03: latest gap 07:25 +03:00, now 33,642 dirty paths (git status -uall, 0.22 s). 2026-10-02: the checkout held 23,336 dirty paths, so the cap stands for the same research output. Fresh gaps still report more than 500 dirty paths and capped-path changes, latest 2026-10-01. Cap accounting is working; raising the cap or suppressing this judge would conceal uncaptured debt. Project owner must decide research-output hygiene or accept the recording bound; no project checkout changed.",
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "2026-10-04: 33.3k untracked research outputs (results/lanes 8.1k, tracers/*) keep the tree past the cap; trade to Egor in 2026-10-01-debt-health-followup.md (ignore the output directories). Never raise the cap. 2026-10-04: 65,086 dirty paths (git status -uall 1.7 s), hash-cap gaps still written, latest 04:46 +03:00: the same research output. This run's dry-run read of `review-anchors gaps` took 23 s at load 240 and timed out at llm-doctor's 30 s, so every debt-gap row vanished from that document behind the health note 'gaps not read' (surfaced by design, text and menu): a gap row gone at close proves nothing. 2026-10-03: latest gap 07:25 +03:00, now 33,642 dirty paths (git status -uall, 0.22 s). 2026-10-02: the checkout held 23,336 dirty paths, so the cap stands for the same research output. Fresh gaps still report more than 500 dirty paths and capped-path changes, latest 2026-10-01. Cap accounting is working; raising the cap or suppressing this judge would conceal uncaptured debt. Project owner must decide research-output hygiene or accept the recording bound; no project checkout changed.",
    "handoff": "docs/handoffs/2026-10-01-debt-health-followup.md"
   },
   {
@@ -641,8 +667,8 @@
    "fixes": [],
    "same_cause": [],
    "last_reviewed": "2026-10-04",
-   "reviewed_by": "night fixer llm-debt-20261004T013729Z-1f3a",
-   "note": "2026-10-04: unchanged, the same two probe ids. 2026-10-03: unchanged, the same two gaps, no new one. Fresh gaps remain exactly toolu_probe_timing and toolu_perf_big on 2026-09-28/29. Earlier handoff identifies live-store timing probes; these are not model-issued calls. Recording the unpaired probes is correct. Dismissal belongs to the ledger owner; live records were not deleted.",
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "2026-10-04: kept open: the key cannot name a tool id, so a dismissal would hide every real pre-missing gap in llm-legs. The two probe gaps (toolu_probe_timing 2026-09-28, toolu_perf_big 2026-09-29) leave the 7-day window by 2026-10-06. 2026-10-04: unchanged, the same two probe ids. 2026-10-03: unchanged, the same two gaps, no new one. Fresh gaps remain exactly toolu_probe_timing and toolu_perf_big on 2026-09-28/29. Earlier handoff identifies live-store timing probes; these are not model-issued calls. Recording the unpaired probes is correct. Dismissal belongs to the ledger owner; live records were not deleted.",
    "handoff": "docs/handoffs/2026-10-01-debt-health-followup.md"
   },
   {
@@ -721,12 +747,31 @@
     "detail": "^no output · exit 1$"
    },
    "title": "Claude JSON error result omitted from worker failure diagnostics",
-   "status": "open",
-   "fixes": [],
+   "status": "fixed-pending",
+   "fixes": [
+    {
+     "at": "2026-10-04T16:52:41+03:00",
+     "by": "LLM Doctor меню refactoring",
+     "files": [
+      "llm-legs/bin/llm-doctor"
+     ],
+     "in": null,
+     "regressed_at": null
+    },
+    {
+     "at": "2026-10-04T16:52:41+03:00",
+     "by": "LLM Doctor меню refactoring",
+     "files": [
+      "review-bench/share/rbench/panel.py"
+     ],
+     "in": null,
+     "regressed_at": null
+    }
+   ],
    "same_cause": [],
    "last_reviewed": "2026-10-04",
-   "reviewed_by": "LLM doctor",
-   "note": "claudeb-1790757454-79915-4251 on com: exit 1, empty err, nonempty JSON/result says Failed to authenticate: OAuth session expired and could not be refreshed; is_error true despite subtype success. Fixture reproduces no output; feeding the error to current vocabulary yields unclassified, ruling out an evidence-source-only fix. No recorded watchdog/memory kill or missing vendor answer. OAuth refresh cause unconfirmed in retained out/result/err; no credentials opened or refresh attempted. Shared auth vocabulary correction needs review-bench, outside authorized worktrees. Matcher is the narrowest available emitted model/detail, not proof every matching future run has this cause. 2026-10-02 recheck: cause stands; classify_worker still feeds only err to classify_failure_text, and the auth vocabulary (bin/llm-doctor:126/171, review-bench panel.py:524) still lacks this wording; it is judge vocabulary under invariant cq, so not changed by a fixer; handoff still open. 2026-10-03 recheck: unchanged, classify_worker (bin/llm-doctor:970) still classifies err alone and no auth pattern covers the wording; judge vocabulary, handoff open. 2026-10-04 recheck: unchanged; classify_worker (bin/llm-doctor:942) still passes only err to classify_failure_text and the auth patterns (bin/llm-doctor:128/173) lack this wording; judge vocabulary, handoff open.",
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "2026-10-04: classify_worker reads a claudeb JSON result that calls itself an error (is_error true, subtype success) as evidence, and the auth vocabulary names `Failed to authenticate` / `OAuth session expired`: the 8 opus legs of 24 h (all that envelope) read walled · needs login. claudeb-1790757454-79915-4251 on com: exit 1, empty err, nonempty JSON/result says Failed to authenticate: OAuth session expired and could not be refreshed; is_error true despite subtype success. Fixture reproduces no output; feeding the error to current vocabulary yields unclassified, ruling out an evidence-source-only fix. No recorded watchdog/memory kill or missing vendor answer. OAuth refresh cause unconfirmed in retained out/result/err; no credentials opened or refresh attempted. Shared auth vocabulary correction needs review-bench, outside authorized worktrees. Matcher is the narrowest available emitted model/detail, not proof every matching future run has this cause. 2026-10-02 recheck: cause stands; classify_worker still feeds only err to classify_failure_text, and the auth vocabulary (bin/llm-doctor:126/171, review-bench panel.py:524) still lacks this wording; it is judge vocabulary under invariant cq, so not changed by a fixer; handoff still open. 2026-10-03 recheck: unchanged, classify_worker (bin/llm-doctor:970) still classifies err alone and no auth pattern covers the wording; judge vocabulary, handoff open. 2026-10-04 recheck: unchanged; classify_worker (bin/llm-doctor:942) still passes only err to classify_failure_text and the auth patterns (bin/llm-doctor:128/173) lack this wording; judge vocabulary, handoff open.",
    "handoff": "docs/handoffs/2026-10-01-worker-json-auth-diagnostic.md"
   },
   {
@@ -791,12 +836,24 @@
     "key": "^debt-loss:run-fold-skip$"
    },
    "title": "family folds of long runs log other chats' work as run-fold-skip losses",
-   "status": "open",
-   "fixes": [],
+   "status": "fixed-pending",
+   "fixes": [
+    {
+     "at": "2026-10-04T17:38:01+03:00",
+     "by": "LLM Doctor меню refactoring",
+     "files": [
+      "review-bench/bin/review-anchors",
+      "review-bench/docs/review-anchors-contract.md",
+      "review-bench/tests/test_review_debt.sh"
+     ],
+     "in": null,
+     "regressed_at": null
+    }
+   ],
    "same_cause": [],
    "last_reviewed": "2026-10-04",
-   "reviewed_by": "night fixer llm-debt-20261004T013729Z-1f3a",
-   "note": "2026-10-04: 275 rows in 24 h (131 co-tenant, 144 committed-since), all family folds of main checkouts (llm-legs, claude-setup); review-anchors cmd_run_fold unchanged (skip loop ~bin/review-anchors:905-941). A co-tenant skip has an owner by construction (another session's touch after the run's start stays in the store), so those 131 are never real drops. 2026-10-03: 21 drops in 24 h (e.g. claudeb-1790995896-49842-2cf6's llm-legs family fold, committed-since); review-anchors cmd_run_fold unchanged since the handoff (dd00c32 touched other code). 24 h window 2026-10-02: 35 runs, 141 co-tenant + 283 committed-since path rows; 34 of 47 (run, repository) pairs are FAMILY folds (launcher .repos), e.g. claudeb-1790842639-39826-35a2, workdir video/alona/R7-B (no git), 4.5 h, folded the whole llm-legs and claude-setup main-checkout diffs. bin/worker-run fold_run_anchors folds a family unnarrowed when there is no round, and review-anchors cmd_run_fold appends a loss for every skipped path although the skip drops no owner (a co-tenant keeps its touch; a commit goes to commit review). Fix belongs to review-bench (loss only where no other owner holds the path, B5) or to a worker-run narrowing that would lose unnamed shell writes: owner decision, not loosened here.",
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "2026-10-04: cmd_run_fold logs a run-fold-skip loss only where no session's touch and no reviewed (non-base) anchor of the current content holds the path (option 1); a commit no hook saw stays a loss. 2026-10-04: 275 rows in 24 h (131 co-tenant, 144 committed-since), all family folds of main checkouts (llm-legs, claude-setup); review-anchors cmd_run_fold unchanged (skip loop ~bin/review-anchors:905-941). A co-tenant skip has an owner by construction (another session's touch after the run's start stays in the store), so those 131 are never real drops. 2026-10-03: 21 drops in 24 h (e.g. claudeb-1790995896-49842-2cf6's llm-legs family fold, committed-since); review-anchors cmd_run_fold unchanged since the handoff (dd00c32 touched other code). 24 h window 2026-10-02: 35 runs, 141 co-tenant + 283 committed-since path rows; 34 of 47 (run, repository) pairs are FAMILY folds (launcher .repos), e.g. claudeb-1790842639-39826-35a2, workdir video/alona/R7-B (no git), 4.5 h, folded the whole llm-legs and claude-setup main-checkout diffs. bin/worker-run fold_run_anchors folds a family unnarrowed when there is no round, and review-anchors cmd_run_fold appends a loss for every skipped path although the skip drops no owner (a co-tenant keeps its touch; a commit goes to commit review). Fix belongs to review-bench (loss only where no other owner holds the path, B5) or to a worker-run narrowing that would lose unnamed shell writes: owner decision, not loosened here.",
    "handoff": "docs/handoffs/2026-10-02-debt-run-fold-skip-families.md"
   },
   {
@@ -811,8 +868,8 @@
    "fixes": [],
    "same_cause": [],
    "last_reviewed": "2026-10-04",
-   "reviewed_by": "night fixer llm-debt-20261004T013729Z-1f3a",
-   "note": "2026-10-04: the second gap, claudeb-1791046172-15719-5661 (2026-10-03 19:49-21:44 +03:00), had ADD-DIR claude-setup/.claude/worktrees/night-human-report, removed while it ran with no claude-setup commit in that window and no branch left: the same truthful class; landed versus poured not established. 2026-10-03: claudeb-1790995896-49842-2cf6 had ADD-DIR claude-setup/.claude/worktrees/speed-doctor; its chat landed it as claude-setup 10ed01b and removed the worktree while the worker still ran, so the family fold found no checkout. The gap is the recorder telling the truth (the changed set is unreadable; landed work goes to commit review). The adjacent bug is fixed: a gone family left its run-start unfolded in the family's store forever (claudeb-1790995896-49842-2cf6 and claudeb-1790641384-16893-1a7d still open in the live claude-setup store, not edited here); worker-run now records the family's anchors-common and folds it in the surviving checkout like a gone workdir (tests/test_worker_run_attribution.sh, mutation-checked). Dismissing gone-landed-checkout gaps is the owner's call.",
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "2026-10-04: kept open by the owner: the gap is truthful (the family top is gone at fold time) and a key-wide dismissal would hide a forced removal that lost work. 2026-10-04: the second gap, claudeb-1791046172-15719-5661 (2026-10-03 19:49-21:44 +03:00), had ADD-DIR claude-setup/.claude/worktrees/night-human-report, removed while it ran with no claude-setup commit in that window and no branch left: the same truthful class; landed versus poured not established. 2026-10-03: claudeb-1790995896-49842-2cf6 had ADD-DIR claude-setup/.claude/worktrees/speed-doctor; its chat landed it as claude-setup 10ed01b and removed the worktree while the worker still ran, so the family fold found no checkout. The gap is the recorder telling the truth (the changed set is unreadable; landed work goes to commit review). The adjacent bug is fixed: a gone family left its run-start unfolded in the family's store forever (claudeb-1790995896-49842-2cf6 and claudeb-1790641384-16893-1a7d still open in the live claude-setup store, not edited here); worker-run now records the family's anchors-common and folds it in the surviving checkout like a gone workdir (tests/test_worker_run_attribution.sh, mutation-checked). Dismissing gone-landed-checkout gaps is the owner's call.",
    "handoff": "docs/handoffs/2026-10-01-debt-health-followup.md"
   },
   {
@@ -823,14 +880,26 @@
     "key": "^debt-gap:pre-missing/friend-cognitive-fatigue$"
    },
    "title": "a repository the call itself created, from a cwd with no Pre snapshot to date the call",
-   "status": "open",
-   "fixes": [],
+   "status": "fixed-pending",
+   "fixes": [
+    {
+     "at": "2026-10-04T18:04:19+03:00",
+     "by": "LLM Doctor меню refactoring",
+     "files": [
+      "claude-setup/hooks/commit-journal.sh",
+      "claude-setup/hooks/lib/review-journal.sh",
+      "claude-setup/tests/test_commit_journal.sh"
+     ],
+     "in": null,
+     "regressed_at": null
+    }
+   ],
    "same_cause": [
     "H5"
    ],
    "last_reviewed": "2026-10-04",
-   "reviewed_by": "night fixer llm-debt-20261004T013729Z-1f3a",
-   "note": "2026-10-04: toolu_01XxvLpJanc6aeNPFrD8VdCT (session ec2ea43a, 2026-10-03 14:30:42Z, cwd /Users/egorloy) ran `git -C .../friend-cognitive-fatigue init`, then priced a bench run there. The session's .repos was born 17:31 +03:00, after the call, so Pre wrote no snapshot; claude-setup hooks/commit-journal.sh created_by_call (:713) returns 1 when PRE_AT is empty, and PRE_AT comes only from a consumed Pre snapshot's mtime (note_pre_at, :682), so a repository born in a call with nothing to snapshot always reads pre-missing. H5's 2026-09-25 init gap has the same shape. Fix: Post dates such a call by its PreToolUse moment; claude-setup, no ADD-DIR in this run: handoff.",
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "2026-10-04: the review flow gate stamps every Bash call's PreToolUse moment (review-journal <session>.<call>.pre, swept with the snapshots); Post dates a call with no snapshot by it, so a repository the call creates is the call's own, while a call whose Pre never ran still reads pre-missing. 2026-10-04: toolu_01XxvLpJanc6aeNPFrD8VdCT (session ec2ea43a, 2026-10-03 14:30:42Z, cwd /Users/egorloy) ran `git -C .../friend-cognitive-fatigue init`, then priced a bench run there. The session's .repos was born 17:31 +03:00, after the call, so Pre wrote no snapshot; claude-setup hooks/commit-journal.sh created_by_call (:713) returns 1 when PRE_AT is empty, and PRE_AT comes only from a consumed Pre snapshot's mtime (note_pre_at, :682), so a repository born in a call with nothing to snapshot always reads pre-missing. H5's 2026-09-25 init gap has the same shape. Fix: Post dates such a call by its PreToolUse moment; claude-setup, no ADD-DIR in this run: handoff.",
    "handoff": "docs/handoffs/2026-10-01-debt-health-followup.md"
   },
   {
@@ -843,12 +912,12 @@
     "until": "2026-10-01T05:13:28+03:00"
    },
    "title": "Image wrapper argument refusals lack invocation provenance",
-   "status": "open",
+   "status": "not-a-bug",
    "fixes": [],
    "same_cause": [],
    "last_reviewed": "2026-10-04",
-   "reviewed_by": "Night image fixer",
-   "note": "Launch had 84 exits; fresh scan had 85. Live image journal contains mostly usage text (57 codex-image), one Veo duration refusal and one space-joined gemini-listen path. These happen before image_leg_mark; vendor failure is ruled out for these messages. Journal has no argv, cwd or caller, so help probes versus malformed production calls versus tests cannot be confirmed. Existing image suites explicitly isolate IMAGE_LEG_LOG, so their current setup is not evidence of leakage. Suppressing rc=2 or changing the judge is not authorized. Owner should reconstruct callers before proposing a narrow dismissal. `until` bounds the row to the exits triaged here: every rc=2 is `bad command` and every wrapper prints `usage:` for any argument error, so a later one reads new. 2026-10-02 (Night image fixer): provenance recovered by matching the 24 h window's rc=2 legs against Claude transcript Bash calls: 78 of 83 were `<wrapper> --help` probes, now unjournaled (I8). The Veo duration and space-joined path refusals are callers' own argument errors, refused before spend as designed: propose dismissal of those two to the owner. 2026-10-03: the window's gemini-image refusals are I23, traced the same way. 2026-10-04 (Night image fixer): no exit in its until-bounded set; the window's four rc=2 legs are I35.",
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "2026-10-04: dismissed as not-a-bug per the 2026-10-03 image triage (a development run, caller fan-out lock waits, callers' argument errors refused before spend, or the owner's own probe). Launch had 84 exits; fresh scan had 85. Live image journal contains mostly usage text (57 codex-image), one Veo duration refusal and one space-joined gemini-listen path. These happen before image_leg_mark; vendor failure is ruled out for these messages. Journal has no argv, cwd or caller, so help probes versus malformed production calls versus tests cannot be confirmed. Existing image suites explicitly isolate IMAGE_LEG_LOG, so their current setup is not evidence of leakage. Suppressing rc=2 or changing the judge is not authorized. Owner should reconstruct callers before proposing a narrow dismissal. `until` bounds the row to the exits triaged here: every rc=2 is `bad command` and every wrapper prints `usage:` for any argument error, so a later one reads new. 2026-10-02 (Night image fixer): provenance recovered by matching the 24 h window's rc=2 legs against Claude transcript Bash calls: 78 of 83 were `<wrapper> --help` probes, now unjournaled (I8). The Veo duration and space-joined path refusals are callers' own argument errors, refused before spend as designed: propose dismissal of those two to the owner. 2026-10-03: the window's gemini-image refusals are I23, traced the same way. 2026-10-04 (Night image fixer): no exit in its until-bounded set; the window's four rc=2 legs are I35.",
    "handoff": "docs/handoffs/2026-10-03-image-night-triage.md"
   },
   {
@@ -1039,12 +1108,12 @@
     "detail": "Flow refused the clip: PUBLIC_ERROR_AUDIO_FILTERED"
    },
    "title": "Flow's audio filter refused generated clips",
-   "status": "open",
+   "status": "weather",
    "fixes": [],
    "same_cause": [],
    "last_reviewed": "2026-10-04",
-   "reviewed_by": "Night image fixer",
-   "note": "7 legs 09:36-10:38Z on 2026-10-01 across locomthebest, jihangarangan, egbogd (plus 5 earlier), each a different prompt of the video/alona campaign. share/gemini_web.py raises it only when every take came back with a PUBLIC_ERROR media error and none saved; the page offered the clip nothing to click. Vendor-side content filter on the generated soundtrack: proposed to the owner as weather. Not checked: whether Flow charged credits for a filtered take. 2026-10-03: no recurrence in 4 video legs; the image route's counterpart is I32. 2026-10-04 (Night image fixer): 4 gemini-video legs since 2026-10-03T02:17Z, all delivered; none at this step.",
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "2026-10-04: dismissed as weather per the 2026-10-03 image triage (vendor filter, tool error, region policy or load). 7 legs 09:36-10:38Z on 2026-10-01 across locomthebest, jihangarangan, egbogd (plus 5 earlier), each a different prompt of the video/alona campaign. share/gemini_web.py raises it only when every take came back with a PUBLIC_ERROR media error and none saved; the page offered the clip nothing to click. Vendor-side content filter on the generated soundtrack: proposed to the owner as weather. Not checked: whether Flow charged credits for a filtered take. 2026-10-03: no recurrence in 4 video legs; the image route's counterpart is I32. 2026-10-04 (Night image fixer): 4 gemini-video legs since 2026-10-03T02:17Z, all delivered; none at this step.",
    "handoff": "docs/handoffs/2026-10-03-image-night-triage.md"
   },
   {
@@ -1056,12 +1125,12 @@
     "detail": "Flow Music UI drift: no title field in the compose panel"
    },
    "title": "Flow Music compose panel once showed no title field",
-   "status": "open",
+   "status": "not-a-bug",
    "fixes": [],
    "same_cause": [],
    "last_reviewed": "2026-10-04",
-   "reviewed_by": "Night image fixer",
-   "note": "One leg, com at 11:04Z 2026-10-01, an hour before the route landed (d25b8c7, 12:12Z), so a development run. Capture 20261001T110432Z-com-43694.txt: Details expanded, Upload image/Prompt image shown, no 'Add title (optional)' text, account at 0 credits. The same locator in share/flow_music.py then filled the title of all 22 queued songs on com, egbogd and locomthebest (jobs.jsonl flow-music 'queued' rows with titles, 11:06-13:38Z, the first on com two minutes later). Not reproduced: proposed to the owner for dismissal. 2026-10-03: no gemini-music leg since; the base changed flow_music.py only in --account parsing. 2026-10-04 (Night image fixer): no gemini-music/sfx/listen leg since 2026-10-01; cause unchanged on the base.",
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "2026-10-04: dismissed as not-a-bug per the 2026-10-03 image triage (a development run, caller fan-out lock waits, callers' argument errors refused before spend, or the owner's own probe). One leg, com at 11:04Z 2026-10-01, an hour before the route landed (d25b8c7, 12:12Z), so a development run. Capture 20261001T110432Z-com-43694.txt: Details expanded, Upload image/Prompt image shown, no 'Add title (optional)' text, account at 0 credits. The same locator in share/flow_music.py then filled the title of all 22 queued songs on com, egbogd and locomthebest (jobs.jsonl flow-music 'queued' rows with titles, 11:06-13:38Z, the first on com two minutes later). Not reproduced: proposed to the owner for dismissal. 2026-10-03: no gemini-music leg since; the base changed flow_music.py only in --account parsing. 2026-10-04 (Night image fixer): no gemini-music/sfx/listen leg since 2026-10-01; cause unchanged on the base.",
    "handoff": "docs/handoffs/2026-10-03-image-night-triage.md"
   },
   {
@@ -1073,12 +1142,12 @@
     "detail": "the Gemini music tool returned no track on \\S+: |Gemini answered without running the music tool"
    },
    "title": "The Gemini app's music tool failed on its side",
-   "status": "open",
+   "status": "weather",
    "fixes": [],
    "same_cause": [],
    "last_reviewed": "2026-10-04",
-   "reviewed_by": "Night image fixer",
-   "note": "4 legs 2026-10-01 on the app route: 'request hit a pause button' and 'Something went wrong while generating the track' (the tool ran and failed), 'I encountered an error doing what you asked' (Gemini's own error), and one egbogd reply at 12:54Z that described the music in prose after open_music had seen the Length chip (6dbbf73), so the tool was selected. All four are Gemini's answers shown verbatim: proposed to the owner as weather. 2026-10-03: no gemini-music leg since. 2026-10-04 (Night image fixer): no gemini-music/sfx/listen leg since 2026-10-01; cause unchanged on the base.",
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "2026-10-04: dismissed as weather per the 2026-10-03 image triage (vendor filter, tool error, region policy or load). 4 legs 2026-10-01 on the app route: 'request hit a pause button' and 'Something went wrong while generating the track' (the tool ran and failed), 'I encountered an error doing what you asked' (Gemini's own error), and one egbogd reply at 12:54Z that described the music in prose after open_music had seen the Length chip (6dbbf73), so the tool was selected. All four are Gemini's answers shown verbatim: proposed to the owner as weather. 2026-10-03: no gemini-music leg since. 2026-10-04 (Night image fixer): no gemini-music/sfx/listen leg since 2026-10-01; cause unchanged on the base.",
    "handoff": "docs/handoffs/2026-10-03-image-night-triage.md"
   },
   {
@@ -1117,12 +1186,12 @@
     "detail": "timed out waiting for \\S+\\.lock|is open in another Chrome \\(the login window\\?\\)"
    },
    "title": "An account's Chrome profile was busy for the whole wait",
-   "status": "open",
+   "status": "not-a-bug",
    "fixes": [],
    "same_cause": [],
    "last_reviewed": "2026-10-04",
-   "reviewed_by": "Night image fixer",
-   "note": "3 legs 2026-10-01: two 900 s waits for jihangarangan.lock and egbogd.lock while callers ran more parallel gemini-video jobs than accounts (free_first already puts idle accounts first; generate_on waits 900 s by design, one Chrome per profile), and one locomthebest sfx run that found the profile open in another Chrome at the second a gemini-music engine on it died (exit 143, I18). The guard working on caller contention: proposed to the owner for dismissal. Not changed: moving to another busy account after a timeout. 2026-10-03: no browser profile leg in the window; codex-image's 600 s account lock under fan-out is I34. 2026-10-04 (Night image fixer): 4 gemini-video legs since 2026-10-03T02:17Z, all delivered; none at this step.",
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "2026-10-04: dismissed as not-a-bug per the 2026-10-03 image triage (a development run, caller fan-out lock waits, callers' argument errors refused before spend, or the owner's own probe). 3 legs 2026-10-01: two 900 s waits for jihangarangan.lock and egbogd.lock while callers ran more parallel gemini-video jobs than accounts (free_first already puts idle accounts first; generate_on waits 900 s by design, one Chrome per profile), and one locomthebest sfx run that found the profile open in another Chrome at the second a gemini-music engine on it died (exit 143, I18). The guard working on caller contention: proposed to the owner for dismissal. Not changed: moving to another busy account after a timeout. 2026-10-03: no browser profile leg in the window; codex-image's 600 s account lock under fan-out is I34. 2026-10-04 (Night image fixer): 4 gemini-video legs since 2026-10-03T02:17Z, all delivered; none at this step.",
    "handoff": "docs/handoffs/2026-10-03-image-night-triage.md"
   },
   {
@@ -1161,12 +1230,12 @@
     "detail": "Flow Music refused the reference audio upload: This track contains vocals"
    },
    "title": "Flow Music refuses reference audio with vocals in this region",
-   "status": "open",
+   "status": "weather",
    "fixes": [],
    "same_cause": [],
    "last_reviewed": "2026-10-04",
-   "reviewed_by": "Night image fixer",
-   "note": "egbogd 13:37Z 2026-10-01: Flow's own toast 'Uploading tracks with vocals is not available in your region', relayed by the fast-fail ffca51e added. Vendor regional policy on the caller's reference: proposed to the owner as weather. 2026-10-03: no gemini-music leg since. 2026-10-04 (Night image fixer): no gemini-music/sfx/listen leg since 2026-10-01; cause unchanged on the base.",
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "2026-10-04: dismissed as weather per the 2026-10-03 image triage (vendor filter, tool error, region policy or load). egbogd 13:37Z 2026-10-01: Flow's own toast 'Uploading tracks with vocals is not available in your region', relayed by the fast-fail ffca51e added. Vendor regional policy on the caller's reference: proposed to the owner as weather. 2026-10-03: no gemini-music leg since. 2026-10-04 (Night image fixer): no gemini-music/sfx/listen leg since 2026-10-01; cause unchanged on the base.",
    "handoff": "docs/handoffs/2026-10-03-image-night-triage.md"
   },
   {
@@ -1195,12 +1264,12 @@
     "detail": "the model answered without opening .+; the answer is not grounded"
    },
    "title": "gemini-listen's model answered without opening the media",
-   "status": "open",
+   "status": "weather",
    "fixes": [],
    "same_cause": [],
    "last_reviewed": "2026-10-04",
-   "reviewed_by": "Night image fixer",
-   "note": "egbogd 18:21Z 2026-10-01: bin/gemini-listen found no view_file event for the clip in agy's events and refused the answer, as designed (docs/image-vendors/gemini.md). The model skipped the tool: proposed to the owner as weather. The word is unclassified because IMAGE_REASONS has no pattern for it; adding one is the judge's change, the owner's. 2026-10-03: no gemini-listen leg since. 2026-10-04 (Night image fixer): no gemini-music/sfx/listen leg since 2026-10-01; cause unchanged on the base.",
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "2026-10-04: the judge now reads `answered without opening` as ungrounded, the vendor model's (IMAGE_REASONS). 2026-10-04: dismissed as weather per the 2026-10-03 image triage (vendor filter, tool error, region policy or load). egbogd 18:21Z 2026-10-01: bin/gemini-listen found no view_file event for the clip in agy's events and refused the answer, as designed (docs/image-vendors/gemini.md). The model skipped the tool: proposed to the owner as weather. The word is unclassified because IMAGE_REASONS has no pattern for it; adding one is the judge's change, the owner's. 2026-10-03: no gemini-listen leg since. 2026-10-04 (Night image fixer): no gemini-music/sfx/listen leg since 2026-10-01; cause unchanged on the base.",
    "handoff": "docs/handoffs/2026-10-03-image-night-triage.md"
   },
   {
@@ -1271,15 +1340,31 @@
     "detail": "^wrote [^/]+$"
    },
    "title": "a run wrote another repository's main checkout or a non-repository directory that its brief authorized only in prose, or escaped through a tracked symlink, so worker-run granted it nothing and the write read as escaped",
-   "status": "open",
-   "fixes": [],
+   "status": "fixed-pending",
+   "fixes": [
+    {
+     "at": "2026-10-04T16:52:41+03:00",
+     "by": "LLM Doctor меню refactoring",
+     "files": [
+      "claude-setup/agents/claudeb-worker.md",
+      "claude-setup/agents/codex-worker.md",
+      "claude-setup/agents/gemini-worker.md",
+      "claude-setup/agents/grok-worker.md",
+      "claude-setup/agents/light-worker.md",
+      "claude-setup/hooks/worker-edit-guard.sh",
+      "claude-setup/tests/test_worker_edit_guard.sh"
+     ],
+     "in": null,
+     "regressed_at": null
+    }
+   ],
    "same_cause": [
     "W3",
     "W5"
    ],
    "last_reviewed": "2026-10-04",
-   "reviewed_by": "LLM doctor",
-   "note": "Split from W5 on 2026-10-03, which matches only legs up to its fix. 2026-10-01: 7ea3 (review-bench main, brief 'Repos: ... review-bench at <path>'), 7c1f (hammerspoon main, brief 'Code: <path>'), 3f6b (video/alona/R7-A/clips.json, workdir video/harness): day briefs authorizing a main-checkout write in prose only, from a repository workdir. Not inferred in worker-run on purpose: night and fixer briefs name main checkouts to forbid writes there. 2026-10-02: 1632 (night fixer harness-hooks-5607) is a genuine escape caught right: an edit through claude-setup's absolute symlink hooks/worker-run-backstop.sh landed in llm-legs main (docs/handoffs/2026-10-03-path-shape-tilde.md). Detail is project_of of the first outside path: a main-checkout file yields its basename, a task worktree repo/worktree (W3). 2026-10-04 recheck: cause stands by design; the template/brief-file grant added for W3 resolves only existing .claude/worktrees/<name> trees, never a main checkout.",
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "2026-10-04: worker-edit-guard denies a worker's Edit/Write/MultiEdit/NotebookEdit or shell write that crosses a symlink under its tree into another checkout, unless an ADD-DIR grant covers the target; it acts once settings.json runs it on those tools (after the claude-setup branch lands). 2026-10-04: relays drop the redundant --resume flag and take --workdir from the directory the brief works in; tests/test_consistency.sh pins both. Split from W5 on 2026-10-03, which matches only legs up to its fix. 2026-10-01: 7ea3 (review-bench main, brief 'Repos: ... review-bench at <path>'), 7c1f (hammerspoon main, brief 'Code: <path>'), 3f6b (video/alona/R7-A/clips.json, workdir video/harness): day briefs authorizing a main-checkout write in prose only, from a repository workdir. Not inferred in worker-run on purpose: night and fixer briefs name main checkouts to forbid writes there. 2026-10-02: 1632 (night fixer harness-hooks-5607) is a genuine escape caught right: an edit through claude-setup's absolute symlink hooks/worker-run-backstop.sh landed in llm-legs main (docs/handoffs/2026-10-03-path-shape-tilde.md). Detail is project_of of the first outside path: a main-checkout file yields its basename, a task worktree repo/worktree (W3). 2026-10-04 recheck: cause stands by design; the template/brief-file grant added for W3 resolves only existing .claude/worktrees/<name> trees, never a main checkout.",
    "handoff": "docs/handoffs/2026-10-01-worker-grants.md"
   },
   {
@@ -1379,12 +1464,12 @@
     "until": "2026-10-03T07:25:31+03:00"
    },
    "title": "Callers' own argument errors refused before spend by gemini-image",
-   "status": "open",
+   "status": "not-a-bug",
    "fixes": [],
    "same_cause": [],
    "last_reviewed": "2026-10-04",
-   "reviewed_by": "Night image fixer",
-   "note": "8 legs 2026-10-02/03, traced through transcripts: 4 from an image-gen brief that passed prompt and destination positionally (20:25Z), 2 from the owner's own run into a folder it had not created (20:19Z, one under bash -x), the owner's intended --bg-model ben2 refusal check (00:51Z), and one loiyehor call at 22:07Z with no Claude transcript call near it (codex/agy caller, unconfirmed). Every refusal fired before spend as designed. gemini-image prints bare usage for an unknown argument or a missing destination folder without naming which; a named reason would save the caller a turn (owner's call). `until` bounds the row to this triage. 2026-10-04 (Night image fixer): its suggestion is on the base: gemini-image names the reason (`unknown argument X`, `missing --dest`, `--dest folder ... does not exist`) above the usage. The window's `unknown argument --dry-run` refusals are I35.",
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "2026-10-04: dismissed as not-a-bug per the 2026-10-03 image triage (a development run, caller fan-out lock waits, callers' argument errors refused before spend, or the owner's own probe). 8 legs 2026-10-02/03, traced through transcripts: 4 from an image-gen brief that passed prompt and destination positionally (20:25Z), 2 from the owner's own run into a folder it had not created (20:19Z, one under bash -x), the owner's intended --bg-model ben2 refusal check (00:51Z), and one loiyehor call at 22:07Z with no Claude transcript call near it (codex/agy caller, unconfirmed). Every refusal fired before spend as designed. gemini-image prints bare usage for an unknown argument or a missing destination folder without naming which; a named reason would save the caller a turn (owner's call). `until` bounds the row to this triage. 2026-10-04 (Night image fixer): its suggestion is on the base: gemini-image names the reason (`unknown argument X`, `missing --dest`, `--dest folder ... does not exist`) above the usage. The window's `unknown argument --dry-run` refusals are I35.",
    "handoff": "docs/handoffs/2026-10-03-image-night-triage.md"
   },
   {
@@ -1450,12 +1535,12 @@
     "detail": "Page\\.goto: Timeout \\d+ms exceeded"
    },
    "title": "chatgpt.com did not load within 45 s",
-   "status": "open",
+   "status": "weather",
    "fixes": [],
    "same_cause": [],
    "last_reviewed": "2026-10-04",
-   "reviewed_by": "Night image fixer",
-   "note": "com 19:23Z 2026-10-02, the only one in 143 codex-image legs of the window; the next web legs on com loaded. A page load stall (network or vendor), filed as drift only because the text says 'Timeout': proposed to the owner as weather. 2026-10-04 (Night image fixer): none in 115 codex-image legs (94 web) since 2026-10-03T02:20Z.",
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "2026-10-04: dismissed as weather per the 2026-10-03 image triage (vendor filter, tool error, region policy or load). com 19:23Z 2026-10-02, the only one in 143 codex-image legs of the window; the next web legs on com loaded. A page load stall (network or vendor), filed as drift only because the text says 'Timeout': proposed to the owner as weather. 2026-10-04 (Night image fixer): none in 115 codex-image legs (94 web) since 2026-10-03T02:20Z.",
    "handoff": "docs/handoffs/2026-10-03-image-night-triage.md"
   },
   {
@@ -1538,19 +1623,19 @@
     "detail": "may violate our content policies"
    },
    "title": "ChatGPT's content filter withheld a generated image",
-   "status": "open",
+   "status": "weather",
    "fixes": [],
    "same_cause": [],
    "last_reviewed": "2026-10-04",
-   "reviewed_by": "Night image fixer",
-   "note": "locomthebest 19:22Z 2026-10-02: ChatGPT's own 'may violate our content policies' answer, relayed verbatim. Vendor-side filter: proposed to the owner as weather. 2026-10-04 (Night image fixer): one more, notcom 13:00Z 2026-10-03 (capture 20261003T130056Z-notcom-36095), the same verbatim policy answer; 1 of 115 codex-image legs since.",
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "2026-10-04: dismissed as weather per the 2026-10-03 image triage (vendor filter, tool error, region policy or load). locomthebest 19:22Z 2026-10-02: ChatGPT's own 'may violate our content policies' answer, relayed verbatim. Vendor-side filter: proposed to the owner as weather. 2026-10-04 (Night image fixer): one more, notcom 13:00Z 2026-10-03 (capture 20261003T130056Z-notcom-36095), the same verbatim policy answer; 1 of 115 codex-image legs since.",
    "handoff": "docs/handoffs/2026-10-03-image-night-triage.md"
   },
   {
    "id": "I31",
    "block": "image",
    "match": {
-    "word": "browser other",
+    "word": "browser no output",
     "model": "^gemini-image$",
     "detail": "\\d+ of \\d+ images came back within \\d+s"
    },
@@ -1568,9 +1653,9 @@
     }
    ],
    "same_cause": [],
-   "last_reviewed": "2026-10-03",
-   "reviewed_by": "Night image fixer",
-   "note": "com 22:15Z 2026-10-02 (322 s): jobs.jsonl has Flow's toast 'Failed to generate image' 11 s before the give-up, so the wait could not end well. await_takes now finds Flow's Failed card, presses its own Retry once and fails by name after it (tests/test_flow_image.sh card finder). The word is 'browser other' because no BROWSER_REASONS pattern reads 'came back within': the judge's change, the owner's.",
+   "last_reviewed": "2026-10-04",
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "2026-10-04: BROWSER_REASONS reads `came back within` as browser no output, so the row matches by that word. com 22:15Z 2026-10-02 (322 s): jobs.jsonl has Flow's toast 'Failed to generate image' 11 s before the give-up, so the wait could not end well. await_takes now finds Flow's Failed card, presses its own Retry once and fails by name after it (tests/test_flow_image.sh card finder). The word is 'browser other' because no BROWSER_REASONS pattern reads 'came back within': the judge's change, the owner's.",
    "handoff": null
   },
   {
@@ -1582,12 +1667,12 @@
     "detail": "PUBLIC_ERROR_UNSAFE_GENERATION"
    },
    "title": "Flow's safety filter refused an image",
-   "status": "open",
+   "status": "weather",
    "fixes": [],
    "same_cause": [],
    "last_reviewed": "2026-10-04",
-   "reviewed_by": "Night image fixer",
-   "note": "egbogd 01:08Z 2026-10-03: Flow's own PUBLIC_ERROR_UNSAFE_GENERATION, the image counterpart of I9. Vendor-side filter: proposed to the owner as weather. 2026-10-04 (Night image fixer): none in 67 gemini-image legs (64 Flow) since 2026-10-03T02:20Z.",
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "2026-10-04: dismissed as weather per the 2026-10-03 image triage (vendor filter, tool error, region policy or load). egbogd 01:08Z 2026-10-03: Flow's own PUBLIC_ERROR_UNSAFE_GENERATION, the image counterpart of I9. Vendor-side filter: proposed to the owner as weather. 2026-10-04 (Night image fixer): none in 67 gemini-image legs (64 Flow) since 2026-10-03T02:20Z.",
    "handoff": "docs/handoffs/2026-10-03-image-night-triage.md"
   },
   {
@@ -1626,12 +1711,12 @@
     "detail": "timed out waiting for account lock: "
    },
    "title": "codex-image waited out its 600 s account lock under caller fan-out",
-   "status": "open",
+   "status": "not-a-bug",
    "fixes": [],
    "same_cause": [],
    "last_reviewed": "2026-10-04",
-   "reviewed_by": "Night image fixer",
-   "note": "4 legs 01:13-01:19Z 2026-10-03 (burkhartor x3, com): the video/alona R7-A worker ran more parallel codex-image jobs than the three CLI accounts not walled (egbogd, borodatch, locomthebest at their limit); queues reached 523 s before the 600 s cap, while 30 sibling legs in the burst delivered. One generation per account at a time is the rescue's design (output keyed by account): the guard working on caller contention, the codex counterpart of I13. Proposed to the owner for dismissal. 2026-10-04 (Night image fixer): no lock timeout in 21 codex-image CLI legs since 2026-10-03T02:20Z.",
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "2026-10-04: dismissed as not-a-bug per the 2026-10-03 image triage (a development run, caller fan-out lock waits, callers' argument errors refused before spend, or the owner's own probe). 4 legs 01:13-01:19Z 2026-10-03 (burkhartor x3, com): the video/alona R7-A worker ran more parallel codex-image jobs than the three CLI accounts not walled (egbogd, borodatch, locomthebest at their limit); queues reached 523 s before the 600 s cap, while 30 sibling legs in the burst delivered. One generation per account at a time is the rescue's design (output keyed by account): the guard working on caller contention, the codex counterpart of I13. Proposed to the owner for dismissal. 2026-10-04 (Night image fixer): no lock timeout in 21 codex-image CLI legs since 2026-10-03T02:20Z.",
    "handoff": "docs/handoffs/2026-10-03-image-night-triage.md"
   },
   {
@@ -1644,12 +1729,12 @@
     "until": "2026-10-04T01:39:27+03:00"
    },
    "title": "Callers' own argument errors refused before spend, 2026-10-03",
-   "status": "open",
+   "status": "not-a-bug",
    "fixes": [],
    "same_cause": [],
    "last_reviewed": "2026-10-04",
-   "reviewed_by": "Night image fixer",
-   "note": "4 legs, traced through transcripts: 2 codex-image --region edits with a second --ref (12:11Z, a «Claude Sonnet 5.5 launch video» subagent in video/alona R7-A), 2 gemini-image --dry-run through single-vendor media-run (22:11Z the image routes chat «Google video generation integration», 22:39Z «Updater doctor» wanting the caps= line). Each refused before spend with its reason named. gemini-image has no --dry-run (its Flow engine does); the media skill line «Run --dry-run first» means image-fanout but reads general: handed to the owner. `until` bounds the row to this triage.",
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "2026-10-04: claude-setup skills/media/SKILL.md now names image-fanout for --dry-run and says codex-image and gemini-image refuse it. 2026-10-04: dismissed as not-a-bug per the 2026-10-03 image triage (a development run, caller fan-out lock waits, callers' argument errors refused before spend, or the owner's own probe). 4 legs, traced through transcripts: 2 codex-image --region edits with a second --ref (12:11Z, a «Claude Sonnet 5.5 launch video» subagent in video/alona R7-A), 2 gemini-image --dry-run through single-vendor media-run (22:11Z the image routes chat «Google video generation integration», 22:39Z «Updater doctor» wanting the caps= line). Each refused before spend with its reason named. gemini-image has no --dry-run (its Flow engine does); the media skill line «Run --dry-run first» means image-fanout but reads general: handed to the owner. `until` bounds the row to this triage.",
    "handoff": "docs/handoffs/2026-10-03-image-night-triage.md"
   },
   {
@@ -1662,12 +1747,12 @@
     "until": "2026-10-03T16:33:01+03:00"
    },
    "title": "Codex CLI's image tool refused 16 references",
-   "status": "open",
+   "status": "not-a-bug",
    "fixes": [],
    "same_cause": [],
    "last_reviewed": "2026-10-04",
-   "reviewed_by": "Night image fixer",
-   "note": "borodatch 13:32Z 2026-10-03: the image routes chat's deliberate cap probe, run from its worktree with the CLI cap raised to 16 for the test. The tool's own answer settled the cap: share/image-caps/codex.json refs.max 5 verified_max true, web.refs_max 20, and codex-image refuses more before spend per route (tests/test_codex_image.sh, tests/test_chatgpt_web.sh 'references exceed'). A later one is a regression of that refusal.",
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "2026-10-04: dismissed as not-a-bug per the 2026-10-03 image triage (a development run, caller fan-out lock waits, callers' argument errors refused before spend, or the owner's own probe). borodatch 13:32Z 2026-10-03: the image routes chat's deliberate cap probe, run from its worktree with the CLI cap raised to 16 for the test. The tool's own answer settled the cap: share/image-caps/codex.json refs.max 5 verified_max true, web.refs_max 20, and codex-image refuses more before spend per route (tests/test_codex_image.sh, tests/test_chatgpt_web.sh 'references exceed'). A later one is a regression of that refusal.",
    "handoff": "docs/handoffs/2026-10-03-image-night-triage.md"
   },
   {
@@ -1788,6 +1873,13 @@
    "reason": "bin/gemini-music and the gemini-web engine journal only the engine's exit status, so a SIGTERM from a caller's stop, another run or the owner reads the same (I18).",
    "since": "2026-10-02",
    "would_catch_if": "the engine logged a received SIGTERM/SIGINT with its parent and process-group state into jobs.jsonl and the image-leg line carried it"
+  },
+  {
+   "id": "image-soft-trends",
+   "what": "image route fallbacks, slow phases and lock waits",
+   "reason": "legs.jsonl carries route/fallback_from, phases and queued only since 2026-10-03 17:35 UTC: too few records for a per-tool, route and account baseline",
+   "since": "2026-10-04",
+   "would_catch_if": "the image block compared each account's fallback_from share, each phase against its own median and sustained queued waits with their history"
   }
  ]
 }

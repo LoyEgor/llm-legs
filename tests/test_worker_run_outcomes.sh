@@ -176,37 +176,43 @@ clear_stub
 set_config 'codex_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=badmodel
 : >"$STUB_DIR/codex_bad_model"
-start_ok codex --model astra
+start_ok codex --model sol
 assert await_done
 assert grep -q '^STATUS: done$' "$WORK/wait.out"
 assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 2
 assert test "$(grep -c '^ARG=-m$' "$CALL_LOG")" -eq 1
-assert test "$(grep -c '^ARG=gpt-6.1-astra$' "$CALL_LOG")" -eq 1
+assert test "$(grep -c '^ARG=gpt-5.6-sol$' "$CALL_LOG")" -eq 1
+assert grep -qxF 'ARG=model=\"gpt-6.1-astra\"' "$CALL_LOG"
 assert jq -e '.model_flag_dropped == true' "$RUN_DIR/meta.json" >/dev/null
 assert_launched_brief "$STUB_DIR/codex.stdin"
 
-# The refused slug is recorded for the account (codex 0.159.0 listed gpt-6.1-sol and refused it),
-# the rerun takes the family's next slug rather than the config default, and the next launch on
-# that account resolves past it before spending an attempt.
-saved_codex_config=$(cat "$WORKER_RUN_CODEX_CONFIG")
-printf 'model = "gpt-5.6-sol"\n' >"$WORKER_RUN_CODEX_CONFIG"
+# The default resolving to the refused slug itself: the server would refuse it again.
 clear_stub
 set_config 'codex_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=badmodel
 : >"$STUB_DIR/codex_bad_model"
 start_ok codex --model astra
 assert await_done
+assert grep -q '^STATUS: failed$' "$WORK/wait.out"
+assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 1
+assert jq -e 'has("model_flag_dropped") | not' "$RUN_DIR/meta.json" >/dev/null
+
+# A refusal is never recorded (gpt-6.1-sol's on 2026-09-30 was rollout lag): the next launch on
+# that account asks for the same slug again.
+clear_stub
+set_config 'codex_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=badmodel
+: >"$STUB_DIR/codex_bad_model"
+start_ok codex --model sol
+assert await_done
 assert grep -q '^STATUS: done$' "$WORK/wait.out"
-assert grep -qx $'badmodel\tgpt-6.1-astra\t[0-9]*' "$HOME/.codex-profiles/.codexb/refused-models"
-assert grep -qxF 'ARG=model=\"gpt-6-astra\"' "$CALL_LOG"
+assert test ! -e "$HOME/.codex-profiles/.codexb/refused-models"
 : >"$CALL_LOG"
 rm -f "$STUB_DIR/codex_bad_model"
-start_ok codex --model astra
+start_ok codex --model sol
 assert await_done
 assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 1
-assert grep -qx 'ARG=gpt-6-astra' "$CALL_LOG"
-printf '%s\n' "$saved_codex_config" >"$WORKER_RUN_CODEX_CONFIG"
-rm -f "$HOME/.codex-profiles/.codexb/refused-models"
+assert grep -qx 'ARG=gpt-5.6-sol' "$CALL_LOG"
 
 # A clean exit whose stderr mentions the phrase is not rerun.
 clear_stub
@@ -224,7 +230,7 @@ clear_stub
 set_config 'codex_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=badmodel
 : >"$STUB_DIR/codex_bad_model_always"
-start_ok codex --model astra
+start_ok codex --model sol
 assert await_done
 assert grep -q '^STATUS: failed$' "$WORK/wait.out"
 assert grep -qx 'OUTCOME: CODEX_UNAVAILABLE' "$WORK/wait.out"

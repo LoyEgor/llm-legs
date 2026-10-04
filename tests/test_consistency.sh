@@ -898,6 +898,13 @@ for agent in "$CLAUDEB_AGENT" "$CODEX_AGENT" "$GEMINI_AGENT"; do
   assert grep -Fq "worker-run reads the brief's \`ACCOUNT:\`, \`MODEL:\` and \`EFFORT:\` header lines itself" "$agent"
   assert grep -Fq 'worker-run start' "$agent"
 done
+# worker-run reads a RESUME first line and refuses a --resume flag that disagrees with it; a relay told to
+# pass the flag launched a RESUME brief as a fresh session (2026-10-02).
+assert grep -Fq "drop the flag, worker-run reads the line itself" "$WORKER_RUN"
+for agent in "$CLAUDEB_AGENT" "$CODEX_AGENT" "$GEMINI_AGENT" "$GROK_AGENT"; do
+  assert test "$(grep -Fc -- '`--resume <' "$agent")" -eq 0
+  assert grep -Fq 'worker-run reads a `RESUME <id>:` first line' "$agent"
+done
 assert doc_has 'Worker account resolution'
 # A hit turn cap is the vendor serving, so it may never share a name with the outcomes the routers
 # read as "no capacity here": folded back into GROK_UNAVAILABLE the relay hunts a pool problem that

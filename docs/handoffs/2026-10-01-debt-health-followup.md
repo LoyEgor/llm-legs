@@ -1,6 +1,6 @@
 # Debt health: open recording gaps and who settles them
 
-Status: open
+Status: trade — To: Egor (H2 below); everything else settled 2026-10-04
 
 For the ledger owner «LLM Doctor меню refactoring» (`share/doctor-ledger.json`), routing hook work
 to Debt hardening handoff (claude-setup recording hooks) and loss semantics to Review-bench
@@ -40,3 +40,26 @@ and should fix the items below itself.
 - H11: fixed in worker-run 91858c3 (the unshaped `-` file).
 - H13 (losses from family folds) is in `2026-10-02-debt-run-fold-skip-families.md`.
 - Open runs left by worker runs that never completed are blind spot B7.
+
+## Settled 2026-10-04 («LLM Doctor меню refactoring», night sweep 20261004T003925Z-4646)
+
+- H15 fixed on branch `fix/llm-doctor-handoffs-20261004` (claude-setup): the review flow gate writes an empty
+  `<session>.<call>.pre` stamp for every Bash call, even with nothing to snapshot; commit-journal's Post dates
+  a call that has no snapshot by it, so `git -C <new dir> init` from `$HOME` is the call's own repository. Post
+  never writes the stamp, so a call whose Pre never ran still reads `pre-missing`; the 2 h and daily sweeps
+  remove stamps a cancelled Post left. `tests/test_commit_journal.sh` (248): main's hook writes the
+  `pre-missing` gap, and so does the hook without the stamp lookup.
+- H1: `review-anchors gaps --days 60` lists no fixer-missing gap; every September round's gap was settled,
+  none only aged out. The row stays open to catch a recurrence.
+- H4: kept open. Its key cannot name a tool id, so a dismissal would hide every real pre-missing gap in
+  llm-legs; the two probe gaps leave the 7-day window by 2026-10-06.
+- H14: kept open: the gap is truthful, and a key-wide dismissal would hide a forced removal that lost work.
+- H3, H5, H6, H7 stay open ledger rows for the nightly llm-debt fixer, which now gets claude-setup and
+  review-bench worktrees; the asks above stand as written.
+
+To: Egor
+- Cost: a `.gitignore` in logo-vectorizer-bench for its research output directories (`results/lanes`,
+  `tracers/*`, about 33k untracked files), a few lines in that project.
+- Loss: every call there keeps hitting the hash cap, so review debt in that project is priced from a capped
+  list and the H2 gap stays red.
+- Recommendation: ignore the output directories; never raise the cap.

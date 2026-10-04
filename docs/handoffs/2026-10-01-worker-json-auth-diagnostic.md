@@ -1,6 +1,6 @@
 # Claude JSON authentication error reported as no output
 
-Status: open
+Status: done 2026-10-04 (ledger W4 fixed-pending)
 
 To: `share/doctor-ledger.json` `owners.workers` and the review-bench failure-vocabulary owner.
 
@@ -13,3 +13,18 @@ Run `claudeb-1790757454-79915-4251` (account com) exited 1. Its `err` is empty, 
 Hand off the coordinated correction: consume the structured failed Claude result as diagnostic evidence, preserve stderr and existing kill/wall precedence, and update the auth wording in review-bench `share/rbench/panel.py` and its llm-legs copies together under invariant cq. Test the exact envelope, misleading success subtype, ordinary successful answers quoting errors, empty output, stderr errors, and existing wall/kill outcomes. Do not simply classify arbitrary successful result prose as a failure. Do not forward every result into stderr, retry OAuth automatically, or dismiss no-output failures wholesale.
 
 This run authorizes no review-bench worktree; changing its shared vocabulary needs an owner handoff. No classifier or dismissal was changed. The narrower ledger row stays open. Root cause of the failed OAuth refresh is unconfirmed: the retained out/result/err contain no refresh response or reason beyond the message. No credential stores were opened and no refresh was attempted. Exit 1 and no kill marker rule out a recorded watchdog or memory-guard kill; the result rules out a missing vendor answer. Existing launcher output capture is doing its job and is not obsolete.
+
+## Settled 2026-10-04 («LLM Doctor меню refactoring», night sweep 20261004T003925Z-4646)
+
+Fixed on branch `fix/llm-doctor-handoffs-20261004` (llm-legs and review-bench):
+- `bin/llm-doctor` `claude_error_result`: for a claudeb run, a JSON result in `out` with `is_error: true`
+  joins stderr as the failure's evidence, whatever its `subtype`. A result that is not an error, another
+  vendor's `out`, empty output, stderr errors and the kill/wall/memory verdicts keep their readings (they run
+  first).
+- The auth vocabulary names `oauth session expired` and `failed to authenticate`, in review-bench
+  `share/rbench/panel.py` `FAILURE_REASONS` and its llm-doctor copy together (`test_consistency` pins them
+  equal); `LOGIN_STATE_RE` reads the first as a login to renew, so the leg is `walled · needs login`.
+- `tests/test_llm_doctor.sh` covers the exact envelope, a non-error result, another vendor, empty output, a
+  stderr error, a wall and a deadline. On main the envelope and wording checks are red; dropping the envelope or
+  the `is_error` gate turns them red again.
+- All 8 `no output · exit 1` opus legs of the last 24 h carried this envelope; they now read needs login.

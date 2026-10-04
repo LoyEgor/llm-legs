@@ -1,6 +1,6 @@
 # Handoff: one visual and wording convention across the Hammerspoon menus
 
-Status: open. Two workers are applying the convention right now; their outcome is appended below.
+Status: trade — To: Egor (one item below); everything else done 2026-10-04
 
 ## Why
 Egor reads account, cost and health state only from the Automation menubar (LLM Limits, Better
@@ -173,3 +173,19 @@ gemini and grok legs were off. The judge confirmed 17 of the 36.
     - It is refreshed at most every 60 s and hidden while the output is empty.
     - It is painted like its neighbours (Menlo 13, `style.RED`), so it differs from the top-level `ALARM_RED` + `MENU_FONT` titles.
   - `doctors_menu_harness` pins all of this (57 checks). A mutation that reverts the name sort and the failed state turns it red.
+
+## Settled 2026-10-04 («LLM Doctor меню refactoring», night sweep 20261004T003925Z-4646)
+
+- The `test_doctors_menu.sh` failure both workers reported (`LLM doctor: ok: a separator, then Refresh, above
+  Fix`) is gone on main: 136 checks pass.
+- `Harness doctor: OK` now reads `Harness doctor: ok` (`bin/harness-doctor` title, `bin/speed-doctor`
+  `blank_harness`); `tests/test_speed_doctor.sh` pins the lowercase title and is red on the old code (branch `fix/llm-doctor-handoffs-20261004`).
+- The three "Left" items and step 3's guards were done by the menu-consistency chat on 2026-09-30 (above).
+
+To: Egor
+- Cost: a Harness doctor rule reading the limits store's `refresh_errors[]` per account and raising a problem
+  once one account's refresh has failed for hours (about 40 lines and a test in `bin/harness-doctor`).
+- Loss: an account whose login lapsed (notcom reads `login needed` today) stays a ⚠ row inside LLM Limits;
+  no doctor counts it, so nothing turns red until a worker lands on it.
+- Recommendation: build it in the Harness doctor (its owner chat), not in the LLM doctor, whose legs are
+  model calls.

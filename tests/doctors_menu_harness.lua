@@ -154,7 +154,7 @@ write("/snapshot.json", { as_of = now, total = 0, anomalies = {} })
 
 -- All quiet: the plain title the neighbouring entries use.
 write("/llm-doctor/latest.json", llmDocument("ok", 0))
-write("/harness-doctor/menu.txt", harnessMenu(0, "Harness doctor: OK"))
+write("/harness-doctor/menu.txt", harnessMenu(0, "Harness doctor: ok"))
 write("/updater-doctor/latest.json", { contract = 1, doctor = "updater", as_of_s = now, status = "ok",
   problem_count = 0, problems = {}, blind_spots = {}, vendors = {} })
 local doctors = loadDoctors()

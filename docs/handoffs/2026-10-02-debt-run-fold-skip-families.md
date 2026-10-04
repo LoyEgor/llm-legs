@@ -1,6 +1,6 @@
 # run-fold-skip losses come from family folds of long runs
 
-Status: open
+Status: done 2026-10-04 (option 1; ledger H13 fixed-pending)
 
 For the ledger owner «LLM Doctor меню refactoring», routing the loss semantics to Review-bench
 improvements phase 4 (`review-bench/bin/review-anchors` `cmd_run_fold`). Run:
@@ -34,3 +34,13 @@ review. Most of these rows record that the run did NOT take a path. They are not
    charged to the launcher.
 
 No ledger dismissal and no match narrowing beyond the kind were added.
+
+## Settled 2026-10-04 («LLM Doctor меню refactoring», ledger owner)
+
+Option 1 on branch `fix/llm-doctor-handoffs-20261004`: review-bench `bin/review-anchors` `cmd_run_fold` appends a `run-fold-skip` loss only
+where nothing else holds the skipped path: no session's touch under this checkout and no non-`base` anchor
+of its current content. A co-tenant's touch and a hook-seen commit (its touch, or its anchored blob) hold
+it; a commit no hook saw (pull, `am`, plain git) stays a loss. `tests/test_review_debt.sh`: on main it logs
+paths a, b, c, d, now only b; dropping the touch check or the anchor check turns it red. PASS 90;
+`test_review_anchors` 117, `test_review_bench_rounds` 331. Left: a touch under a removed worktree's key
+holds nothing, which can add a false loss, never hide a real one.

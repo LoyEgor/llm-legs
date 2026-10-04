@@ -54,7 +54,7 @@ account_home() {
 
 reserved_name() {
   case "$1" in
-    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use|fast-mode|export-auth|models|refuse-model|web) return 0 ;;
+    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use|fast-mode|export-auth|models|web) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -547,8 +547,7 @@ show_help() {
     'codexb list                            List profiles with login state.' \
     'codexb status                          Per-account login state and quota; on a TTY, Enter opens Claude Code on the selected account (claudegpt p <name> --model astra).' \
     'codexb pick                            Print the highest-priority usable account.' \
-    'codexb models [--json] [--all] [--family <word>] [--account <name> --own]  The codex model list from the cache of the newest client not above the installed CLI (builtin fallback); --family prints the newest slug of a family word; --account --own reads only that account'"'"'s own list, refreshed when another client wrote it (exit 3 when the account has none; with CODEXB_MODELS_NO_REFRESH a family missing from a list an older client wrote exits 4, no evidence); --family skips a slug the server refused (refuse-model) within 24 h.' \
-    'codexb refuse-model <name> <slug>     Record that the server refused <slug> on <name> ("model is not supported"); family resolution skips it for 24 h there, and on every account when <name>'"'"'s own list names it.' \
+    'codexb models [--json] [--all] [--family <word>] [--account <name> --own]  The codex model list from the cache of the newest client not above the installed CLI (builtin fallback); --family prints the newest slug of a family word; --account --own reads only that account'"'"'s own list, refreshed when another client wrote it (exit 3 when the account has none; with CODEXB_MODELS_NO_REFRESH a family missing from a list an older client wrote exits 4, no evidence).' \
     'codexb export-auth <name> --to <path> [--min-seconds N]  Write an access-only auth.json for a confined run.'
 }
 
@@ -663,42 +662,8 @@ models_ranked() { # all(true|false) source-path
       }' | LC_ALL=C sort -t $'\t' -k1,1 -k2,2 -k3,3 | cut -f4-
 }
 
-refused_models_file() { printf '%s/.codexb/refused-models\n' "$profiles_dir"; }
-
-# A listed slug the server still refuses (codex 0.159.0: gpt-6.1-sol listed, then "not supported
-# when using Codex with a ChatGPT account") would take its whole family down with it.
-refuse_model() { # name slug
-  local file now
-  [ "$#" -eq 2 ] && [[ "$1" =~ ^[a-z0-9][a-z0-9-]*$ ]] && [[ "$2" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ||
-    { printf 'usage: codexb refuse-model <name> <slug>\n' >&2; return 2; }
-  file=$(refused_models_file)
-  mkdir -p "${file%/*}" || return 1
-  now=$(date +%s)
-  (
-    /usr/bin/lockf -s -t 15 9 2>/dev/null || exit 1
-    { awk -F'\t' -v now="$now" -v ttl="${CODEXB_REFUSED_TTL:-86400}" -v name="$1" -v slug="$2" \
-        'now - $3 < ttl && !($1 == name && $2 == slug)' "$file" 2>/dev/null
-      printf '%s\t%s\t%s\n' "$1" "$2" "$now"; } >"$file.$$" && mv -f "$file.$$" "$file"
-  ) 9>"$file.lock"
-}
-
-# Pool-wide a refusal counts only where the refusing account's own catalog lists the slug: a lapsed
-# plan refuses every paid slug, and that says nothing of the accounts that serve it.
-refused_slugs() { # [name] -> slugs refused within the TTL, on that account or, with none, on any
-  local refuser slug
-  [ -r "$(refused_models_file)" ] || return 0
-  awk -F'\t' -v now="$(date +%s)" -v ttl="${CODEXB_REFUSED_TTL:-86400}" -v name="${1-}" \
-    'now - $3 < ttl && (name == "" || $1 == name) { print $1 "\t" $2 }' "$(refused_models_file)" 2>/dev/null |
-    while IFS=$'\t' read -r refuser slug; do
-      [ -n "${1-}" ] ||
-        models_cache_rows "${CODEXB_MODELS_CACHE:-$(models_home "$refuser")/models_cache.json}" |
-          cut -f1 | grep -xF -- "$slug" >/dev/null || continue
-      printf '%s\n' "$slug"
-    done | sort -u
-}
-
 show_models() {
-  local json=false all=false own=false family='' account='' source='' rows known refused installed client
+  local json=false all=false own=false family='' account='' source='' rows known installed client
   local usage='usage: codexb models [--json] [--all] [--family <word>] [--account <name> --own]'
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -726,15 +691,8 @@ show_models() {
     rows=$(models_ranked true "$source")
     awk -F'\t' -v want="$family" '$1 == want { print $1; found = 1; exit } END { exit !found }' \
       <<<"$rows" && return 0
-    refused=$(refused_slugs "$account" | tr '\n' ' ')
-    awk -F'\t' -v want="$family" -v refused=" $refused" \
-      '$2 == want && $8 == "list" && index(refused, " " $1 " ") == 0 { print $1; found = 1; exit } END { exit !found }' \
+    awk -F'\t' -v want="$family" '$2 == want && $8 == "list" { print $1; found = 1; exit } END { exit !found }' \
       <<<"$rows" && return 0
-    if awk -F'\t' -v want="$family" '$2 == want && $8 == "list" { found = 1 } END { exit !found }' <<<"$rows"; then
-      printf 'codexb: every listed codex model of family %s was refused by the server within the last day (%s)\n' \
-        "$family" "${refused% }" >&2
-      exit 1
-    fi
     if [ -n "$account" ] && [ -n "${CODEXB_MODELS_NO_REFRESH:-}" ] && installed=$(installed_client) &&
        [ -n "$installed" ] && client=$(cache_field "$source" client_version) &&
        [ "$client" != "$installed" ] && version_le "$client" "$installed"; then
@@ -828,11 +786,6 @@ PYTHON
 if [ "${1:-}" = models ]; then
   shift
   show_models "$@"
-  exit
-fi
-if [ "${1:-}" = refuse-model ]; then
-  shift
-  refuse_model "$@"
   exit
 fi
 if [ "${1:-}" = fast-mode ]; then

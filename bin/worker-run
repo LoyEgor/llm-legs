@@ -1069,12 +1069,12 @@ supervise_codex() {
       retry+=("$value")
     done
     if [ "$dropped" = true ]; then
-      worker_model_codex_refuse "$account" "$refused" || :
       value=$(worker_model_codex_slug "$model" "$account") || value=''
       if [ -z "$value" ] || [ "$value" = "$refused" ]; then
         value=$(codex_config_model)
         worker_model_allows codex "$value" || return "$rc"
-        value=$(worker_model_codex_slug "$value" "$account") && [ -n "$value" ] || return "$rc"
+        value=$(worker_model_codex_slug "$value" "$account") && [ -n "$value" ] && [ "$value" != "$refused" ] ||
+          return "$rc"
       fi
       retry+=(-c "model=\"$value\"")
       meta_update "$directory" '.model_flag_dropped = true' || return 4

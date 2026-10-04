@@ -1,6 +1,6 @@
 # Codex model refusal store: remove it whole
 
-Status: open
+Status: done 2026-10-04 (ledger R15 fixed-pending)
 
 Found 2026-09-30 while cutting codex model resolution down to one rule: a codex account is offered
 only a model in its OWN catalog (`codexb models --account <n> --own`), never a pool-wide guess.
@@ -43,3 +43,17 @@ The longest-list heuristic in `codexb`. review-bench still resolves `-m` machine
 - `bash tests/run-all` is green in both repositories.
 - A live `worker-run` on MODEL sol still serves the newest sol slug on an account that lists it, and
   an account without it (work4 today) is skipped before launch.
+
+## Settled 2026-10-04 («LLM Doctor меню refactoring», night sweep 20261004T003925Z-4646)
+
+Removed together on branch `fix/llm-doctor-handoffs-20261004`: llm-legs `bin/codexb` `refuse-model`/`refused_slugs` (now an unknown command,
+usage exit 2), `share/worker-model.sh` `worker_model_codex_refuse`, the recording in `bin/worker-run`
+`supervise_codex`, row `cv`; review-bench `catalog.py` `CODEX_MODEL_REFUSED`/`codex_refuse`, the `launch.py`
+call, the fixture's refuse branch. The "Done when" grep finds only the tests that pin the absence.
+With the store gone the family word resolves to the refused slug again, so the unsupported-model retry,
+which falls back to the table default, could rerun that same slug: it now gives up instead
+(`test_worker_run_outcomes.sh`, red without the guard). Red on main: `test_codexb_models` (refuse-model
+exited 0) and `test_review_bench` (the cell called refuse-model). Suites: `test_codexb_models` 75,
+`test_worker_run_outcomes` 115, `test_legs_routing` 108, review-bench `test_consistency` 365.
+`bash tests/run-all` was not run (the batch runs only covering suites); the live sol check waits for a
+sol launch.

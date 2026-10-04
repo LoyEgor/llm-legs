@@ -1147,7 +1147,7 @@ def guarded_collect(write, now):
 
 def blank_harness(now):
     return {"status": "ok", "as_of_s": int(now), "problem_count": 0, "problems": [], "blind_spots": [], "sections": [],
-            "periods": {}, "extras": [], "title": "Harness doctor: OK", "footer": "as of %s" % time.strftime(
+            "periods": {}, "extras": [], "title": "Harness doctor: ok", "footer": "as of %s" % time.strftime(
                 "%H:%M", time.localtime(now))}
 
 

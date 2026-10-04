@@ -4394,7 +4394,7 @@ def settle_title(document):
     blind_areas = [s["name"] for s in document["sections"] if s["state"] == "blind"]
     document.update(problem_count=count, status="problems" if count else "blind" if blind_areas else "ok",
                     title="Harness doctor: " + ("%d problem%s" % (count, "" if count == 1 else "s") if count
-                                                else "blind · " + ", ".join(blind_areas) if blind_areas else "OK"))
+                                                else "blind · " + ", ".join(blind_areas) if blind_areas else "ok"))
 
 
 def apply_speed(document, speed):

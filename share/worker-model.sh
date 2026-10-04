@@ -208,10 +208,6 @@ worker_model_codex_slug() { # word-or-slug [account]
   fi
 }
 
-worker_model_codex_refuse() { # account slug — the server refused slug there; family words skip it a day
-  "${BASH_SOURCE[0]%/*}/../bin/codexb" refuse-model "$1" "$2" >/dev/null 2>&1
-}
-
 worker_model_gemini_families() {
   if [ -n "${_WM_GEMINI_PRIMED+x}" ]; then
     printf '%s' "$_WM_GEMINI_FAMILIES"

@@ -540,6 +540,7 @@ def text_reading(text, exit_code=1):
 
 # Login states are the owner's to renew; a refused credential export is still ours (R12).
 for text in ("Error: not logged in; run grokb add", "Eligibility check failed: Verify your account to continue",
+             "Failed to authenticate: OAuth session expired and could not be refreshed",
              "open https://accounts.google.com/signin/continue to sign in", "you are not eligible for Antigravity"):
     assert text_reading(text) == ("walled", "login", "needs login", ""), (text, text_reading(text))
 assert text_reading("cell preparation refused: credential export: not logged in")[1:] == ("auth", "auth", "ours")
@@ -678,6 +679,22 @@ phase = worker("phase", files={"state.json": '{"phase": "failed"}', "err": "sand
 assert doctor.classify_worker(phase, {}, "", 0)[1:] == ("crashed", "crashed · failed under exit 0", "ours")
 cancel = worker("cancel", files={"state.json": '{"phase": "failed"}', "out": '{"type":"end","stopReason":"cancelled"}\n'})
 assert doctor.classify_worker(cancel, {}, "", 0)[1:] == ("cancelled", "cancelled before the first turn", "theirs")
+# A claudeb JSON result that calls itself an error is the failure's evidence, its success subtype notwithstanding;
+# a result that is not an error, another vendor's out, stderr and the kill and wall verdicts keep their readings.
+claude = {"vendor": "claudeb"}
+expired = worker("expired", files={"out": '{"type": "result", "subtype": "success", "is_error": true, "result": "Failed to authenticate: OAuth session expired and could not be refreshed"}', "result": "Failed to authenticate: OAuth session expired\n"})
+assert doctor.classify_worker(expired, claude, "", 1) == ("walled", "login", "needs login", ""), \
+    doctor.classify_worker(expired, claude, "", 1)
+quoted = worker("quoted", files={"out": '{"type": "result", "subtype": "success", "is_error": false, "result": "Failed to authenticate: OAuth session expired and could not be refreshed"}'})
+assert doctor.classify_worker(quoted, claude, "", 1) == ("failed", "no output", "no output · exit 1", ""), \
+    doctor.classify_worker(quoted, claude, "", 1)
+assert doctor.classify_worker(quoted, claude, "", 0)[0] is None
+assert doctor.classify_worker(expired, {"vendor": "codex"}, "", 1)[1:3] == ("no output", "no output · exit 1")
+assert doctor.classify_worker(worker("empty", files={"out": ""}), claude, "", 1)[2] == "no output · exit 1"
+stderr = worker("stderr", files={"out": '{"type": "result", "subtype": "success", "is_error": true, "result": "Failed to authenticate: OAuth session expired and could not be refreshed"}', "err": "account lookup failed: ValueError\n"})
+assert doctor.classify_worker(stderr, claude, "", 1)[:2] == ("failed", "crashed"), doctor.classify_worker(stderr, claude, "", 1)
+assert doctor.classify_worker(expired, claude, "wall 2026-10-04T09:00:00Z", 1)[:3] == ("walled", "walled", "usage limit")
+assert doctor.classify_worker(expired, claude, "deadline 3600s", 1)[:2] == ("cap", "timeout")
 # A retained old run id whose attempt ended inside the window still reaches the reader.
 old = os.path.join(unit, "runs", "codex-%d-1-abcd" % (now - 23 * 86400))
 os.makedirs(old)
@@ -747,6 +764,30 @@ with open(os.path.join(unit, "legs.jsonl"), "w") as handle:
 image = {row["at"]: (row["class"], row["reason"]) for row in doctor.image_legs(now - 86400, now)[0]}
 assert image == {now - 500: ("off", "off"), now - 600: ("failed", "pool empty"),
                  now - 700: ("walled", "not entitled")}, image
+# A run that exited 0 but did not do what was asked is a soft outcome; a new generation, a fitted ratio and every
+# take delivered are clean, and records from before the keys existed read as they did.
+with open(os.path.join(unit, "legs.jsonl"), "w") as handle:
+    for offset, extra in ((100, {"composite": {"kind": "skipped", "changed": None, "reason": "several-inputs"}}),
+                          (110, {"composite": {"kind": "refused", "changed": None, "reason": "new-generation"},
+                                 "aspect": {"asked": "16:9", "achieved": 1.0, "fit": "miss"}}),
+                          (120, {"requested": 3, "delivered": 1, "route": "web"}),
+                          (130, {"composite": {"kind": "skipped", "changed": None, "reason": "new-generation"},
+                                 "aspect": {"asked": "16:9", "achieved": 1.792, "fit": "ok"},
+                                 "requested": 3, "delivered": 3, "route": "web"}),
+                          (140, {})):
+        handle.write(json.dumps(dict({"ts": now - offset, "tool": "codex-image", "kind": "image", "rc": 0,
+                                      "account": "main", "err": ""}, **extra)) + "\n")
+soft = {now - row["at"]: (row["class"], row["reason"], row["detail"], doctor.verdict_of(row))
+        for row in doctor.image_legs(now - 86400, now)[0]}
+assert soft == {100: ("failed", "soft outcome", "composite skipped: several-inputs", "bug"),
+                110: ("failed", "soft outcome", "aspect missed: asked 16:9, got 1.0", "bug"),
+                120: ("failed", "soft outcome", "delivered 1 of 3 · web", "bug"),
+                130: (None, "", "", "clean"), 140: (None, "", "", "clean")}, soft
+# An answer the listening model gave without opening the clip is the vendor's; a short Flow batch is no output.
+ungrounded = doctor.leg("image", "listen", "gemini-listen", now, *doctor.classify_image(
+    1, "gemini-listen: the model answered without opening clip.m4a; the answer is not grounded"))
+assert (ungrounded["reason"], doctor.verdict_of(ungrounded)) == ("ungrounded", "weather"), ungrounded
+assert doctor.classify_browser(1, "2 of 4 images came back within 322s")[1] == "browser no output"
 
 # Machinery: an open class still counts; a snapshot older than the window counts nothing.
 ledger = doctor.load_ledger()
@@ -792,6 +833,9 @@ assert ledger["by_id"]["H11"]["fixes"][-1]["files"] == ["llm-legs/bin/worker-run
 # The judge is pinned: loosening a dismissal, a theirs word, an exemption or a limit is an edit here.
 assert sorted((row["id"], row["match"].get("until")) for row in committed["rows"]
               if row["status"] in doctor.DISMISSALS) == [
+    ("I1", "2026-10-01T05:13:28+03:00"), ("I10", None), ("I11", None), ("I13", None), ("I15", None), ("I17", None),
+    ("I23", "2026-10-03T07:25:31+03:00"), ("I26", None), ("I30", None), ("I32", None), ("I34", None),
+    ("I35", "2026-10-04T01:39:27+03:00"), ("I36", "2026-10-03T16:33:01+03:00"), ("I9", None),
     ("N4", "2026-09-16T23:59:59+03:00"), ("N5", None), ("N6", "2026-09-14T23:59:59+03:00"),
     ("N7", "2026-09-13T23:59:59+03:00")]
 # Every image rc=2 reads `bad command` and every wrapper prints `usage:` on any bad argv: a row that catches that
@@ -812,7 +856,8 @@ assert sorted(word for word, origin in doctor.FAILURE_ORIGIN.items() if origin =
     "bare 429", "cancelled", "capacity", "mismatch", "refused", "server error", "throttled", "walled"]
 assert set(doctor.FAILURE_ORIGIN.values()) == {"ours", "theirs"} and doctor.IMAGE_ORIGIN == dict.fromkeys(
     ("bad output", "browser not sent", "browser price", "browser profile", "browser upload", "browser download",
-     "browser no output", "browser hide", "browser drift", "browser owner step", "browser other"), "ours")
+     "browser no output", "browser hide", "browser drift", "browser owner step", "browser other", "soft outcome"),
+    "ours") | {"ungrounded": "theirs"}
 assert doctor.PRELAUNCH_SKIP == ("LIGHT_OFF", "RESUME_BUSY", "DUPLICATE_RUN")
 assert doctor.PROFILE_HOME_RE.pattern == r"/\.(?:claude|gemini|codex|grok|opencode)-profiles/|/\.gemini/(?:antigravity/brain|tmp)/"
 assert doctor.MAIN_STATE_RE.pattern == r"/\.gemini/(?:antigravity/brain|tmp)/"

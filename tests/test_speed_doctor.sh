@@ -164,7 +164,7 @@ check(module.covers({"chat.om_per_100_prompts|all|-": {"days": 6}}) == []
 
 menu, _ = speed("speed", "--menu")
 lines = menu.stdout.splitlines()
-check(lines[0] == "T\t0\t%d\tHarness doctor: OK" % HI and lines[1] == "0\t\t\tSpeed: ok · 179 OM/d · 3.9 of 7 days covered · R 2/10: 88/238"
+check(lines[0] == "T\t0\t%d\tHarness doctor: ok" % HI and lines[1] == "0\t\t\tSpeed: ok · 179 OM/d · 3.9 of 7 days covered · R 2/10: 88/238"
       and "1\t\t\tChat turns: 103 min/day · model 64 · tools 30 · tests 5.4" in lines
       and "1\t\t\tDelegation: +76 min/day · workers 54 · background Bash 17 · media 2.7" in lines
       and "2\td\t\t1 · chat/hooks · saves <1 min/day · S · provable-absence fast path for the hook setting the Pre-Bash floor"

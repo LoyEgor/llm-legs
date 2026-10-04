@@ -1,6 +1,6 @@
 # Worker grants still omitted by cross-repository briefs
 
-Status: open (W3 and W5 fixed-pending in llm-legs; the relay half below waits for claude-setup)
+Status: done 2026-10-04 (ledger W7 fixed-pending; one post-land step below)
 
 To: `share/doctor-ledger.json` `owners.workers`, with the claude-setup relay owner.
 
@@ -15,3 +15,14 @@ Open (ledger W7) for the claude-setup relay owner (`agents/*-worker.md`): `--wor
 from the brief; a brief that works in a main checkout should carry it as the workdir or as `ADD-DIR:`.
 The relays' "pass `--resume` for a RESUME brief" step is now redundant (worker-run reads the line)
 and can go. A worktree created after launch stays ungranted.
+
+## Settled 2026-10-04 («LLM Doctor меню refactoring», night sweep 20261004T003925Z-4646)
+
+- claude-setup `agents/{claudeb,codex,gemini,grok,light}-worker.md` (branch `fix/llm-doctor-handoffs-20261004`): no relay passes `--resume`
+  any more (worker-run reads a `RESUME <id>:` first line and the `ADD-DIR:` lines itself), and `--workdir` is
+  the directory the brief works in, its worktree or the checkout it names to write. `tests/test_consistency.sh`
+  pins both; red on main's agents.
+- claude-setup `hooks/worker-edit-guard.sh`: a worker's edit that crosses a symlink into another checkout is
+  denied unless an `ADD-DIR:` grant covers it (see `2026-10-03-path-shape-tilde.md` item 2).
+- A worktree created after launch stays ungranted by design: the brief names it as `ADD-DIR:` up front, or
+  the run edits only its own worktree.

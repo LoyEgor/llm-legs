@@ -125,8 +125,8 @@ FAILURE_REASONS = (
         r"rater task crashed|cell processing crashed|account lookup failed|codex_core::|sandbox_apply",
         re.IGNORECASE)),
     ("auth", re.compile(
-        r"not logged in|not signed in|credentials were rejected|session has expired"
-        r"|unauthor|cell preparation refused|not eligible for antigravity|verify your account"
+        r"not logged in|not signed in|credentials were rejected|session has expired|oauth session expired"
+        r"|failed to authenticate|unauthor|cell preparation refused|not eligible for antigravity|verify your account"
         r"|accounts\.google\.com/signin"
         r"|" + HTTP_STATUS_PREFIX + r"40[13]\b|\b40[13]\s+(?:Unauthorized|Forbidden)\b", re.IGNORECASE)),
     ("not found", re.compile(r"(?:" + HTTP_STATUS_PREFIX + r"404\b|\b404\s+Not\s+Found\b|\(code 404\))",
@@ -170,7 +170,8 @@ POOL_CRASH_RE = re.compile(dict(FAILURE_REASONS)["crashed"].pattern + r"|Traceba
 # An account's login is the owner's to renew (`grokb add`, a browser sign-in); a refused credential
 # export is our preparation failing to move to the next account (R12).
 LOGIN_STATE_RE = re.compile(
-    r"not logged in|not signed in|session has expired|credentials were rejected|not eligible for antigravity"
+    r"not logged in|not signed in|session has expired|oauth session expired|credentials were rejected"
+    r"|not eligible for antigravity"
     r"|verify your account|accounts\.google\.com/signin", re.IGNORECASE)
 EXPORT_REFUSAL_RE = re.compile(r"cell preparation refused|credential export", re.IGNORECASE)
 # The vendor's clock, not our cap (review-bench dropped its copy with the agy watchdog fallback).
@@ -223,8 +224,9 @@ IMAGE_REASONS = (
                               r"|soundtrack of \S+ is silent|without a soundtrack|loudness of \S+ could not be measured", re.IGNORECASE)),
     ("not entitled", re.compile(r"zero data retention|SuperGrok|entitlement|no video generation on its tier",
                                 re.IGNORECASE)),
+    ("ungrounded", re.compile(r"answered without opening", re.IGNORECASE)),
 )
-IMAGE_ORIGIN = {"bad output": "ours"}
+IMAGE_ORIGIN = {"bad output": "ours", "ungrounded": "theirs", "soft outcome": "ours"}
 # The hidden-Chrome routes (gemini-web: Flow, the Gemini app, Flow Music; chatgpt-web) print one BROWSER_FAILURE or BROWSER_WARNING
 # line per failed attempt; the words name the browser step, ordered most specific first.
 BROWSER_LINE_RE = re.compile(r"^BROWSER_(FAILURE|WARNING) route=(\S+) account=(\S+) code=(\d+) shot=(\S+) reason=(.*)$",
@@ -241,7 +243,7 @@ BROWSER_REASONS = (
                                      r"|not ready after|no longer lists clip|no finished video|refused the clip"
                                      r"|but no tile in|never listed its media|has no Flow project for clip"
                                      r"|returned no take|answered without an image|no image after"
-                                     r"|is not on \S+ any more", re.IGNORECASE)),
+                                     r"|is not on \S+ any more|images? came back within", re.IGNORECASE)),
     ("browser hide", re.compile(r"could not hide", re.IGNORECASE)),
     ("browser drift", re.compile(r"UI drift|waiting for|Timeout \d+ ?ms|did not load within|does not stick"
                                  r"|stays (?:on|disabled)|composer|chip|menu item|toggle|frame slot", re.IGNORECASE)),
@@ -931,6 +933,16 @@ def worker_escape(run_dir):
     return [line for line in lines if line and not is_scratch_path(line) and not PROFILE_HOME_RE.search(line)]
 
 
+def claude_error_result(run_dir, meta):
+    """The answer of a claudeb run's JSON result that calls itself an error; its `subtype` can still read success."""
+    if meta.get("vendor") != "claudeb":
+        return ""
+    envelope = read_json(os.path.join(run_dir, "out"))
+    if not isinstance(envelope, dict) or envelope.get("is_error") is not True:
+        return ""
+    return "\n" + str(envelope.get("result") or "")
+
+
 def classify_worker(run_dir, meta, killed, exit_code):
     """(class, reason, detail, origin) of one worker-run leg, off the verdicts worker-run left beside it."""
     kill_word = killed.split()[0] if killed else ""
@@ -980,7 +992,7 @@ def classify_worker(run_dir, meta, killed, exit_code):
         return "failed", "crashed", "abandoned before launch", "ours"
     if outcome == "GROK_MAX_TURNS":
         return "cap", "turns", "max turns", ""
-    klass, reason, detail, origin = classify_failure_text(err, exit_code)
+    klass, reason, detail, origin = classify_failure_text(err + claude_error_result(run_dir, meta), exit_code)
     if klass == "failed" and not origin and exit_code is not None:
         detail = "%s · exit %d" % (reason, exit_code) if "exit" not in detail else detail
     return klass, reason, detail, origin
@@ -1190,6 +1202,23 @@ def browser_text(route, account, shot, reason):
     return "browser route=%s account=%s shot=%s reason=%s" % (route, account, shot, reason)
 
 
+def soft_outcome(row):
+    """What a run that exited 0 still failed to do as asked: an edit's composite skipped or refused, the
+    aspect ratio missed, fewer takes than asked."""
+    composite = row.get("composite") if isinstance(row.get("composite"), dict) else {}
+    aspect = row.get("aspect") if isinstance(row.get("aspect"), dict) else {}
+    requested, delivered = as_int(row.get("requested")), as_int(row.get("delivered"))
+    if composite.get("kind") in ("skipped", "refused") and composite.get("reason") != "new-generation":
+        said = "composite %s: %s" % (composite["kind"], composite.get("reason") or "no reason")
+    elif aspect.get("fit") == "miss":
+        said = "aspect missed: asked %s, got %s" % (aspect.get("asked"), aspect.get("achieved"))
+    elif requested and delivered is not None and delivered < requested:
+        said = "delivered %d of %d" % (delivered, requested)
+    else:
+        return ""
+    return "%s · %s" % (said, row["route"]) if row.get("route") else said
+
+
 def image_legs(cutoff, now):
     legs, earliest = [], None
     for row in read_jsonl(image_log()):
@@ -1218,6 +1247,9 @@ def image_legs(cutoff, now):
                 row = dict(row, account=line_account)
         else:
             klass, reason, detail, origin = classify_image(rc, err)
+            soft = soft_outcome(row) if klass is None else ""
+            if soft:
+                klass, reason, detail, origin = "failed", "soft outcome", soft, "ours"
         if klass == "skip":
             continue
         if reason == "pool empty" and refused_by_switch(model.split("-")[0], str(row.get("account") or ""), at):

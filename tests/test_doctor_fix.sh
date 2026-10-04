@@ -781,7 +781,7 @@ with open(os.path.join(work, "sl", "test-history.jsonl"), "w") as handle:
 with open(os.path.join(work, "harness", "latest.json"), "w") as handle:
     json.dump({"contract": 1, "doctor": "harness", "as_of_s": int(time.time()), "judge": "base-harness", "status": "ok",
                "problem_count": 0, "problems": [], "blind_spots": [], "sections": [], "periods": {}, "extras": [],
-               "title": "Harness doctor: OK", "footer": ""}, handle)
+               "title": "Harness doctor: ok", "footer": ""}, handle)
 with open(os.path.join(work, "ledger.json"), "w") as handle:
     json.dump({"owner": "H", "rows": [], "blind_spots": []}, handle)
 EOF
