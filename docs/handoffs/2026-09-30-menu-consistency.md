@@ -1,6 +1,6 @@
 # Handoff: one visual and wording convention across the Hammerspoon menus
 
-Status: trade — To: Egor (one item below); everything else done 2026-10-04
+Status: done 2026-10-05
 
 ## Why
 Egor reads account, cost and health state only from the Automation menubar (LLM Limits, Better
@@ -189,3 +189,11 @@ To: Egor
   no doctor counts it, so nothing turns red until a worker lands on it.
 - Recommendation: build it in the Harness doctor (its owner chat), not in the LLM doctor, whose legs are
   model calls.
+
+## Decided 2026-10-05 (Egor)
+
+The trade above landed in the LLM doctor, not the Harness doctor: limits refresh is the LLM doctor's zone
+beside its heartbeat check. `bin/llm-doctor` `stale_account_problems` raises one `accounts` problem
+(`account-stale`, id `refresh:<vendor>:<account>`) per account whose data is older than the store's
+`account_stale_after_s`, skipping the accounts the menu's stale count skips (removed, waiting for a login, a
+removed vendor), and names the account's last refresh error. `tests/test_llm_doctor.sh`, red on the old code.

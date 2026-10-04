@@ -2067,6 +2067,53 @@ def refresh_problems(window_h, now):
                                          "excerpt": fact[:EXCERPT_MAX]}], None, group="accounts")]
 
 
+def stale_account_problems(window_h, now):
+    """One problem per account whose limits are older than the `account_stale_after_s` the collector
+    stamps into the store: the same accounts, by the same rule, as the menu's stale warning counts."""
+    path = os.environ.get("LLM_LIMITS_CACHE") or os.path.join(base_home(), ".llm-limits.json")
+    try:
+        with open(path) as handle:
+            store = json.load(handle)
+        limit, vendors = store.get("account_stale_after_s"), store.get("vendors")
+    except (OSError, ValueError, AttributeError):
+        return []
+    if isinstance(limit, bool) or not isinstance(limit, (int, float)) or not isinstance(vendors, dict):
+        return []
+    problems = []
+    for vendor_key in sorted(vendors):
+        vendor = vendors[vendor_key]
+        if not isinstance(vendor, dict) or vendor.get("removed") is True:
+            continue
+        accounts = vendor.get("accounts")
+        blocks = accounts if isinstance(accounts, list) and accounts else [vendor] if vendor.get("available") is True else []
+        causes = {}
+        for entry in vendor.get("refresh_errors") or []:
+            if isinstance(entry, dict) and entry.get("account") and entry.get("cause"):
+                causes[entry["account"]] = entry["cause"]
+        for block in blocks:
+            if not isinstance(block, dict) or block.get("removed") is True:
+                continue
+            auth = block.get("auth") if isinstance(block.get("auth"), dict) else {}
+            if vendor_key == "grok":
+                login = auth.get("status") == "needs_login" or (block.get("auth_needed") is True and
+                                                                auth.get("status") != "expired")
+            else:
+                login = block.get("auth_needed") is True
+            as_of = zoned_epoch(block.get("as_of"))
+            if login or as_of is None or now - as_of <= limit:
+                continue
+            name = block.get("account") or vendor_key
+            age = int(now - as_of)
+            fact = "%s %s limits not refreshed for %dh%02dm, over the %dh the menu calls stale — last data %s%s" % (
+                vendor_key, name, age // 3600, age % 3600 // 60, limit // 3600, iso_time(as_of),
+                " · last error: %s" % causes[name] if name in causes else "")
+            problems.append(problem("refresh:%s:%s" % (vendor_key, name), "account-stale", "new", fact, age, limit,
+                                    "s", window_h, 0, None, (as_of, now),
+                                    [{"at": iso_time(as_of), "ref": "account:%s:%s" % (vendor_key, name),
+                                      "account": name, "excerpt": fact[:EXCERPT_MAX]}], None, group="accounts"))
+    return problems
+
+
 def machinery_state(row, details, as_of):
     if row is None:
         return "new"
@@ -2490,6 +2537,7 @@ def collect(window_h, now, write_daily=False):
     problems.extend(fault_problems(ledger["faults"] + commit_faults, window_h, now))
     problems.extend(remnant_problems(window_h, now))
     problems.extend(refresh_problems(window_h, now))
+    problems.extend(stale_account_problems(window_h, now))
     if write_daily:
         write_settled(settled, source)
     inputs = inputs_of(found, window_cutoff)

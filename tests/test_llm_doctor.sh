@@ -461,6 +461,31 @@ assert jq -e '[.problems[] | select(.rule == "refresh-stalled")] as $rows | ($ro
 jq '.refresh_heartbeat.stalled = false' "$WORK/stalled-store.json" >"$WORK/ticking-store.json"
 assert env LLM_LIMITS_CACHE="$WORK/ticking-store.json" "$DOCTOR" --dry-run --json >"$WORK/ticking.json"
 assert jq -e '[.problems[] | select(.rule == "refresh-stalled")] == []' "$WORK/ticking.json" >/dev/null
+# An account older than the store's account_stale_after_s is an accounts problem naming its last error; a
+# fresh one, one waiting for a login, a removed one and a removed vendor's are not, as in the menu's count.
+python3 - "$NOW" "$WORK/stale-store.json" <<'PY'
+import json, sys, time
+now = int(sys.argv[1])
+def iso(age):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - age))
+json.dump({"schema": 1, "account_stale_after_s": 7200, "vendors": {
+    "gemini": {"accounts": [{"account": "abel", "as_of": iso(30000)}, {"account": "com", "as_of": iso(100)},
+                            {"account": "egbogd", "as_of": iso(30000), "auth_needed": True},
+                            {"account": "gone", "as_of": iso(30000), "removed": True}],
+               "refresh_errors": [{"account": "abel", "cause": "abel: agy /usage timed out after 45s", "at": now}]},
+    "codex": {"removed": True, "accounts": [{"account": "old", "as_of": iso(30000)}]},
+    "grok": {"available": True, "as_of": iso(9000), "accounts": []}}}, open(sys.argv[2], "w"))
+PY
+assert env LLM_LIMITS_CACHE="$WORK/stale-store.json" "$DOCTOR" --dry-run --json >"$WORK/stale.json"
+assert jq -e '[.problems[] | select(.rule == "account-stale")] as $rows
+  | ([$rows[].id] | sort) == ["refresh:gemini:abel", "refresh:grok:grok"]
+  and ($rows | all(.group == "accounts" and .state == "new" and .limit == 7200))
+  and ([$rows[] | select(.id == "refresh:gemini:abel")][0] | .value == 30000
+       and (.fact | startswith("gemini abel limits not refreshed for 8h20m"))
+       and (.fact | endswith("last error: abel: agy /usage timed out after 45s")))' "$WORK/stale.json" >/dev/null
+jq 'del(.account_stale_after_s)' "$WORK/stale-store.json" >"$WORK/unstamped-store.json"
+assert env LLM_LIMITS_CACHE="$WORK/unstamped-store.json" "$DOCTOR" --dry-run --json >"$WORK/unstamped.json"
+assert jq -e '[.problems[] | select(.rule == "account-stale")] == []' "$WORK/unstamped.json" >/dev/null
 # Days the bench store covers whole are frozen to disk; the older image day stays as it was.
 assert test "$(find "$LLM_DOCTOR_DIR/daily" -name '*.json' | wc -l | tr -d ' ')" -ge 3
 assert grep -q '"image|grok-image|failed|bad output|ours|X4": 5' "$LLM_DOCTOR_DIR/daily/$(python3 -c 'import time,sys; print(time.strftime("%Y-%m-%d", time.localtime(int(sys.argv[1]) - 10 * 86400)))' "$NOW").json"
