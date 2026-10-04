@@ -257,4 +257,17 @@ changed_out=$(bash "$ROOT/share/run-suites.sh" --repo "$R4" -j 2 --changed 2>&1)
 assert grep -q 'test_tool_part.sh .*PASS' <<<"$changed_out"
 assert_fails grep -q 'test_other.sh' <<<"$changed_out"
 
+# A suite that posts into the runner's own report queue fails though it exits 0; one on a cache of its
+# own passes, and the live queue receives nothing.
+R5="$WORK/r5"
+new_repo "$R5"
+post_leak="printf '{\"word\":\"t\",\"rows\":[[\"a\",\"b\"]]}' | bash '$ROOT/bin/report-bus' post --kind notice --id leak --session leaky"
+suite "$R5" test_leaks.sh "$post_leak; exit 0"
+suite "$R5" test_sandboxed.sh "XDG_CACHE_HOME=\"\$TMPDIR/cache\"; export XDG_CACHE_HOME; $post_leak; exit 0"
+leak_out=$(bash "$ROOT/share/run-suites.sh" --repo "$R5" -j 2 2>&1)
+assert grep -q 'test_leaks.sh .*FAIL' <<<"$leak_out"
+assert grep -q 'test_sandboxed.sh .*PASS' <<<"$leak_out"
+assert test ! -e "$XDG_CACHE_HOME/claude-reports/leaky"
+assert jqe '.suites["test_leaks.sh"].rc == 1 and .suites["test_sandboxed.sh"].rc == 0' <(tail -1 "$JOURNAL")
+
 printf 'PASS: %s asserts; run-suites and direct suite runs journal one row each\n' "$asserts"

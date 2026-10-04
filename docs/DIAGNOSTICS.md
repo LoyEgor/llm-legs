@@ -234,7 +234,8 @@ wave of suites runs at nice 10, so parallel runs from several chats keep Claude 
 wall-clock-budget suites stay at the caller's nice and the runner says so in one line; runs never
 queue. In a linked worktree the runner exports `CLAUDE_SETUP_ROOT`, `REVIEW_BENCH_ROOT`, `REVIEW_ROOT`
 and `LLM_LEGS_ROOT` (when unset) as that sibling's worktree on the same branch, else as the checkout
-beside the MAIN checkout (`tests/test_run_suites_nice.sh`).
+beside the MAIN checkout (`tests/test_run_suites_nice.sh`). A suite that writes into the runner's own
+report-bus queue fails (`REPORT_BUS_LIVE_ROOT`, docs/report-bus.md).
 
 Suites (run from repo root):
 - `bash tests/test_report_bus.sh` — fixture HOME/XDG queue, dedup, event rendering, worker skips, launcher chains, cap, failed-render retention, history, doctor and pruning.

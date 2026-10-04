@@ -91,6 +91,8 @@ fi
 # Each suite's last passing duration, keyed by the main checkout so a worktree shares it: the wave
 # starts the longest first, since alphabetical order left the slowest suite starting last.
 times_file=${RUN_SUITES_TIMES:-${XDG_CACHE_HOME:-$HOME/.cache}/run-suites/times.tsv}
+# The queue the runner's own chats read: a suite that posts into it files fixtures into live chats.
+live_reports=${XDG_CACHE_HOME:-$HOME/.cache}/claude-reports
 run_journal=${RUN_SUITES_JOURNAL:-${times_file%/*}/runs.jsonl}
 . "$journal_lib" --lib || fail "unreadable $journal_lib"
 times_key=$repo
@@ -278,6 +280,7 @@ run_one() { # suite-path
   # against nothing. TMPDIR is what mktemp fixtures collide on, and it is safe to move.
   (
     export TMPDIR="$logdir/tmp-$name" SUITE_JOURNAL_PID=$$
+    export REPORT_BUS_LIVE_ROOT=$live_reports REPORT_BUS_LEAK_LOG="$logdir/$name.bus-leak"
     # A suite judges hooks the way a chat meets them; run from inside a worker it would inherit the
     # worker's markers and be judged as one, and a fixture HOME would still read the real toggle.
     # The chat's session id would hand every suite that chat's own worker pin; bytecode a suite's
@@ -299,6 +302,10 @@ run_one() { # suite-path
     esac
   ) >"$logdir/$name.log" 2>&1
   rc=$?
+  if [ -s "$logdir/$name.bus-leak" ]; then
+    cat "$logdir/$name.bus-leak" >>"$logdir/$name.log"
+    [ "$rc" -ne 0 ] || rc=1
+  fi
   printf -v finish '%(%s)T' -1
   suite_journal_ms ended
   # run_one runs as its own subshell, so the children line of `times` is this one suite's tree.

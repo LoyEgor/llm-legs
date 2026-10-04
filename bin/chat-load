@@ -255,8 +255,9 @@ def post_notices(sids, identity, body):
             if proc.wait(timeout=max(0, deadline - time.monotonic())) == 0:
                 posted.append(sid)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+            # A post past the deadline is waiting on the queue lock; killed, its notice was gone
+            # without a trace. Left alone it lands or keeps it in lost.log; the alarm says not told.
+            pass
     return posted
 
 

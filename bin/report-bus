@@ -11,7 +11,7 @@ done
 FRAME=${REPORT_FRAME:-$(cd -P "${self%/*}/.." 2>/dev/null && pwd)/share/report_frame.py}
 locked=false
 tmp=''
-usage() { printf 'report-bus: invalid arguments (post | emit | flush | list | doctor); emit exits 3 on a duplicate\n' >&2; exit 2; }
+usage() { printf 'report-bus: invalid arguments (post | emit | lose | flush | list | doctor); emit exits 3 on a duplicate\n' >&2; exit 2; }
 refuse_body() { printf 'report-bus: the body must be a block document {"word":…,"rows":[[label,value],…]}: %s\n' "$1" >&2; exit 2; }
 valid_name() { case "$1" in ''|.|..|*[!A-Za-z0-9._-]*) return 1 ;; esac; }
 # shellcheck disable=SC2329
@@ -19,8 +19,23 @@ cleanup() {
   [ -z "$tmp" ] || rm -f "$tmp"
   if [ "$locked" = true ] && [ "$(cat "$ROOT/.lock/pid" 2>/dev/null)" = "$$" ]; then rm -f "$ROOT/.lock/pid"; rmdir "$ROOT/.lock" 2>/dev/null || :; fi
 }
+# A post signalled before its queue file landed exited 0 with the report gone and no trace of it.
+signalled() {
+  case "${verb:-}" in post|emit) [ "${landed:-false}" = true ] || [ -z "${body:-}" ] || problem 'interrupted before the report was queued' ;; esac
+  exit 0
+}
+live_guard() {
+  [ -n "${REPORT_BUS_LIVE_ROOT:-}" ] || return 0
+  local here live
+  here=$(cd -P "$ROOT" 2>/dev/null && pwd) || here=$ROOT
+  live=$(cd -P "$REPORT_BUS_LIVE_ROOT" 2>/dev/null && pwd) || live=$REPORT_BUS_LIVE_ROOT
+  [ "$here" = "$live" ] || return 0
+  printf 'report-bus: a suite reached the live queue %s: %s --kind %s --id %s\n' "$live" "$verb" "${kind:-}" "${id:-}" |
+    tee -a "${REPORT_BUS_LEAK_LOG:-/dev/null}" >&2
+  exit 4
+}
 trap 'cleanup' EXIT
-trap 'exit 0' HUP INT TERM
+trap 'signalled' HUP INT TERM
 problem() {
   printf 'report-bus: %s\n' "$1" >&2
   if ! { printf '%s\n' "${body:-}" >>"$ROOT/lost.log"; } 2>/dev/null; then
@@ -168,15 +183,16 @@ prune() {
   done | LC_ALL=C sort -rn -k1,1 -k2 | cut -f2-)
 }
 verb=${1:-}; [ "$#" -gt 0 ] || usage; shift
-kind='' id='' session='' file='' event='' context='' last=10
+kind='' id='' session='' file='' event='' context='' reason='' last=10
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --kind|--id|--session|--event|--context|--last)
+    --kind|--id|--session|--event|--context|--reason|--last)
       [ "$#" -ge 2 ] && [ -n "$2" ] || usage
       case "$verb:$1" in
-        post:--kind|emit:--kind) kind=$2 ;;
-        post:--id|emit:--id) id=$2 ;;
-        post:--session|flush:--session|list:--session) session=$2; valid_name "$session" || usage ;;
+        post:--kind|emit:--kind|lose:--kind) kind=$2 ;;
+        post:--id|emit:--id|lose:--id) id=$2 ;;
+        post:--session|lose:--session|flush:--session|list:--session) session=$2; valid_name "$session" || usage ;;
+        lose:--reason) reason=$2 ;;
         flush:--event|emit:--event) event=$2 ;;
         emit:--context) context=$2 ;;
         list:--last) last=$2; [[ "$last" =~ ^[0-9]+$ ]] || usage ;;
@@ -184,9 +200,10 @@ while [ "$#" -gt 0 ]; do
       esac
       shift 2 ;;
     -*) usage ;;
-    *) case "$verb" in post|emit) [ -z "$file" ] || usage; file=$1; shift ;; *) usage ;; esac ;;
+    *) case "$verb" in post|emit|lose) [ -z "$file" ] || usage; file=$1; shift ;; *) usage ;; esac ;;
   esac
 done
+case "$verb" in post|emit|lose|flush) live_guard ;; esac
 case "$verb" in
   post|emit)
     case "$kind" in review|commit|push|notice|unresolved) ;; *) usage ;; esac
@@ -223,7 +240,7 @@ case "$verb" in
     if [ "$verb" = post ]; then
       stamp=$(jq -r '.epoch * 1000000000 | floor' "$tmp") || problem 'cannot timestamp report'
       mv "$tmp" "$ROOT/$session/pending/${stamp}__${kind}__${id}.txt" 2>/dev/null || problem 'cannot write report'
-      tmp=''
+      tmp='' landed=true
     else
       block=$(render "$tmp" 2>/dev/null) || problem 'cannot render report'
       output=$(hook_output "$block" "$context" "${event:-PostToolUse}") || problem 'cannot encode hook output'
@@ -231,7 +248,23 @@ case "$verb" in
       row=$(history_row "$tmp" "$block") || problem 'cannot encode history'
       printf '%s\n' "$row" >>"$ROOT/history.log" || problem 'cannot append history'
       printf '%s\n' "$output"
+      landed=true
     fi ;;
+  lose)
+    case "$kind" in review|commit|push|notice|unresolved) ;; *) usage ;; esac
+    [ -n "$id" ] && [ -n "$reason" ] || usage
+    body=$(if [ -n "$file" ]; then cat "$file"; else cat; fi; printf '\001')
+    body=${body%$'\001'}
+    resolve_session
+    mkdir -p "$ROOT" 2>/dev/null
+    row=$(jq -cn --arg k "$kind" --arg i "$id" --arg s "$session" --arg r "$reason" --arg b "$body" \
+      '{epoch:now|floor, session:$s, kind:$k, id:$i, reason:$r, body:$b}') || row=$body
+    if ! { printf '%s\n' "$row" >>"$ROOT/lost.log"; } 2>/dev/null; then
+      printf 'report-bus: lost.log is unwritable; body follows\n%s\n' "$body" >&2
+    fi
+    jq -cn --arg what "$kind $id" --arg r "$reason" --arg log "$ROOT/lost.log" \
+      '{word:"report lost", rows:[["lost",$what],["why",$r],["kept in",$log]]}' |
+      "$self" post --kind notice --id "lost-$id" --session "$session" ;;
   flush)
     case "$event" in PostToolUse|SubagentStop|Stop|UserPromptSubmit) ;; *) usage ;; esac
     agent='' transcript='' agent_type=''
@@ -289,6 +322,14 @@ case "$verb" in
       '[.[] | select(.session == $s)] | if $n == 0 then [] else .[-$n:] end | map(.text) | join("\n\n")' "$ROOT/history.log" ;;
   doctor)
     now=$(date +%s)
+    live='|_orphan|' parked=0 ended=0
+    if [ -n "${REVIEW_BENCH_SESSION_DIR:-}" ]; then registries=("$REVIEW_BENCH_SESSION_DIR"/*.json)
+    else registries=("$HOME"/.claude/sessions/*.json "$HOME"/.claude-profiles/*/sessions/*.json); fi
+    for entry in "${registries[@]}"; do
+      pid=${entry##*/}; pid=${pid%.json}
+      [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null || continue
+      live="$live$(jq -r '.sessionId // empty' "$entry" 2>/dev/null)|"
+    done
     for directory in "$ROOT"/*/pending; do
       [ -d "$directory" ] || continue
       stale=0
@@ -297,8 +338,14 @@ case "$verb" in
         age=$((now - $(mtime "$entry")))
         [ "$age" -le 600 ] || stale=$((stale + 1))
       done
-      [ "$stale" -eq 0 ] || printf '%s: %s pending older than 10 min — %s\n' "$(basename "${directory%/pending}")" "$stale" "$directory"
+      [ "$stale" -gt 0 ] || continue
+      chat=$(basename "${directory%/pending}")
+      case "$live" in
+        *"|$chat|"*) printf '%s: %s pending older than 10 min — %s\n' "$chat" "$stale" "$directory" ;;
+        *) parked=$((parked + stale)); ended=$((ended + 1)) ;;
+      esac
     done
+    [ "$ended" -eq 0 ] || printf 'ended chats: %s report(s) kept for a resume in %s chat(s)\n' "$parked" "$ended"
     size=0; [ ! -f "$ROOT/lost.log" ] || size=$(wc -c <"$ROOT/lost.log" | tr -d ' ')
     orphan=0
     for entry in "$ROOT/_orphan/pending"/*.txt; do [ ! -f "$entry" ] || orphan=$((orphan + 1)); done

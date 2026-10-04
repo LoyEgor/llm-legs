@@ -257,10 +257,65 @@ fi
 
 post old aged
 touch -t 202001010001 "$STORE/old/pending/"*.txt
-output=$("$BUS" doctor)
+mkdir -p "$WORK/registry"
+printf '{"sessionId":"old"}\n' >"$WORK/registry/$$.json"
+output=$(REVIEW_BENCH_SESSION_DIR="$WORK/registry" "$BUS" doctor)
 assert grep -q '^old: 1 pending older than 10 min' <<<"$output"
 assert grep -qx 'orphans: 0' <<<"$output"
 assert grep -qx 'lost.log: 0 bytes' <<<"$output"
+# A chat whose CLI is gone keeps its reports for a resume, counted apart from a live chat's stuck queue.
+post ended aged
+touch -t 202001010001 "$STORE/ended/pending/"*.txt
+output=$(REVIEW_BENCH_SESSION_DIR="$WORK/registry" "$BUS" doctor)
+assert grep -q '^old: 1 pending older than 10 min' <<<"$output"
+assert test -z "$(grep '^ended: ' <<<"$output")"
+assert grep -qx 'ended chats: 1 report(s) kept for a resume in 1 chat(s)' <<<"$output"
+assert test "$(count "$STORE/ended/pending")" = 1
+rm -f "$STORE/ended/pending/"*.txt
+
+# A producer whose post failed hands the body to `lose`: kept in lost.log and the chat told.
+rc=0
+doc 'unposted body' | "$BUS" lose --kind review --id run-panel --session loser --reason 'exit 2: bad rows' || rc=$?
+assert test "$rc" = 0
+assert jq -e 'select(.id == "run-panel") | .session == "loser" and .kind == "review" and .reason == "exit 2: bad rows" and (.body | contains("unposted body"))' "$STORE/lost.log" >/dev/null
+assert test "$(count "$STORE/loser/pending")" = 1
+assert jq -e '(.id == "lost-run-panel") and (.body | contains("report lost")) and (.body | contains("review run-panel")) and (.body | contains("exit 2: bad rows"))' "$STORE/loser/pending/"*.txt >/dev/null
+rc=0
+doc x | "$BUS" lose --kind review --id run-panel --session loser 2>/dev/null || rc=$?
+assert test "$rc" = 2
+: >"$STORE/lost.log"
+
+# A post signalled while it waits on the lock keeps its report in lost.log instead of exiting 0 empty.
+mkdir "$STORE/.lock"
+printf '%s\n' "$$" >"$STORE/.lock/pid"
+doc 'signalled body' | "$BUS" post --kind notice --id signalled --session signalled 2>"$WORK/error" &
+signalled_pid=$!
+sleep 1
+kill -TERM "$signalled_pid"
+rc=0
+wait "$signalled_pid" || rc=$?
+rm -rf "$STORE/.lock"
+assert test "$rc" = 0
+assert grep -q 'signalled body' "$STORE/lost.log"
+assert grep -q 'interrupted before the report was queued' "$WORK/error"
+assert test "$(count "$STORE/signalled/pending")" = 0
+: >"$STORE/lost.log"
+
+# Under a suite runner the runner's own queue is the live one: every writing verb refuses it.
+for verb in post lose emit; do
+  rc=0
+  doc leak | REPORT_BUS_LIVE_ROOT="$STORE" REPORT_BUS_LEAK_LOG="$WORK/leak" "$BUS" "$verb" --kind notice --id leak \
+    $([ "$verb" = emit ] || printf -- '--session leak') $([ "$verb" = lose ] && printf -- '--reason x') 2>/dev/null || rc=$?
+  assert test "$rc" = 4
+done
+rc=0
+REPORT_BUS_LIVE_ROOT="$STORE/" REPORT_BUS_LEAK_LOG="$WORK/leak" "$BUS" flush --event Stop --session basic >/dev/null 2>&1 || rc=$?
+assert test "$rc" = 4
+assert test "$(grep -c 'a suite reached the live queue' "$WORK/leak")" = 4
+assert test ! -e "$STORE/leak"
+assert test ! -s "$STORE/lost.log"
+doc sandboxed | REPORT_BUS_LIVE_ROOT="$WORK/elsewhere" "$BUS" post --kind notice --id sandboxed --session sandboxed
+assert test "$(count "$STORE/sandboxed/pending")" = 1
 
 mkdir -p "$WORK/fail-cache/claude-reports"
 : >"$WORK/fail-cache/claude-reports/lost.log"

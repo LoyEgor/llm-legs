@@ -12,6 +12,7 @@ Requires Bash, jq and shasum.
 ```text
 report-bus post --kind <kind> [--id <id>] [--session <uuid>] [FILE]
 report-bus emit --kind <kind> [--id <id>] [--context <text>] [--event <event>] [FILE]
+report-bus lose --kind <kind> --id <id> [--session <uuid>] --reason <text> [FILE]
 report-bus flush --event <PostToolUse|SubagentStop|Stop|UserPromptSubmit> [--session <uuid>]
 report-bus list [--session <uuid>] [--last N]
 report-bus doctor
@@ -32,7 +33,17 @@ and queues nothing.
 `post` reads FILE or stdin, renders it and atomically writes one queue file, using a temporary file and
 rename. Directories are created on demand. Delivery errors exit 0 with `report-bus: <reason>`
 on stderr and the body appended to `lost.log`. If the filesystem also refuses that append,
-stderr carries the body; an unwritable filesystem cannot retain a log.
+stderr carries the body; an unwritable filesystem cannot retain a log. A `post` or `emit` ended by
+HUP, INT or TERM before its queue file landed keeps the body in `lost.log` the same way.
+
+`lose` is the producer's loss channel: a producer whose `post` failed (exit 2, a signal) hands it
+the same body with its kind, id and the reason. It appends one JSON line `{epoch, session, kind,
+id, reason, body}` to `lost.log` and posts a `report lost` notice (id `lost-<id>`) to the session,
+so the chat that was owed the report learns it was lost.
+
+Under `share/run-suites.sh` every suite runs with `REPORT_BUS_LIVE_ROOT` (the runner's own queue
+root) and `REPORT_BUS_LEAK_LOG`; `post`, `emit`, `lose` and `flush` against that root exit 4 and log
+the attempt, and the runner fails the suite, so a fixture never lands in a live chat's queue.
 
 Session resolution: explicit `--session`; `$WORKER_RUN_DIR/launcher` when that variable names
 a run, otherwise `CLAUDE_LAUNCHER_SESSION`; `CLAUDE_CODE_SESSION_ID`; `_orphan`.
@@ -88,8 +99,10 @@ stay pending. A single oversized block is delivered alone, exceeding the cap wit
 the next flush continues with the following report. Stop reserves space for its undelivered count. Delivered files are pruned to
 the newest 200 per session at flush. No undelivered file is pruned.
 
-`doctor` prints pending counts older than 10 minutes per session, `lost.log` size and orphan
-count. A Stop with files still pending includes this block in the same systemMessage:
+`doctor` prints pending counts older than 10 minutes per live session, `lost.log` size and orphan
+count. A session with no live CLI in the registries (`REVIEW_BENCH_SESSION_DIR`, else
+`~/.claude/sessions` and `~/.claude-profiles/*/sessions`) is an ended chat: its reports stay pending
+for a resume, never dropped, and are counted in one `ended chats:` line instead of a stuck queue. A Stop with files still pending includes this block in the same systemMessage:
 
 ```text
 ======================= reports ========================

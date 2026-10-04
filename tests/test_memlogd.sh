@@ -644,6 +644,7 @@ cat >"$FAKE_BIN/report-bus" <<'EOF'
 set -u
 body=$(cat)
 [ -z "${BUS_FAIL:-}" ] || exit 126
+[ -z "${BUS_SLOW:-}" ] || sleep "$BUS_SLOW"
 alive=0
 for pid in ${BUS_WATCH:-}; do
   state=$(/bin/ps -o state= -p "$pid" 2>/dev/null | tr -d '[:space:]')
@@ -1072,6 +1073,20 @@ probes 2000 1024
 assert guard_run "$UNTOLD_DIR" MEMLOGD_MAX_TICKS=1 BUS_FAIL=1 HEAVY_PIDS="$UNTOLD_KIDS"
 assert grep -qE '^KILLED .* chat=chat-untold .* notified=none$' "$(log_file "$UNTOLD_DIR")"
 assert jq -e '.rows[] | objects | select(.alarm) | .text | endswith(" · chat not told")' "$(chats_json "$UNTOLD_DIR")"
+
+# A post still waiting on the queue lock past the guard's deadline is left to land, never killed:
+# killed, its notice was gone without even a lost.log line.
+clear_registry
+spawn_leaf
+register_session chat-slow "$LEAF_ROOT"
+spawn_tree chat-slow
+SLOW_DIR="$WORK/guard-slow"
+: >"$BUS_LOG"
+probes 2000 1024
+assert guard_run "$SLOW_DIR" MEMLOGD_MAX_TICKS=1 BUS_SLOW=5 HEAVY_PIDS="$TREE_KIDS"
+assert grep -qE '^KILLED .* chat=chat-slow .* notified=none$' "$(log_file "$SLOW_DIR")"
+for _ in $(seq 1 100); do grep -q -- '--session chat-slow ' "$BUS_LOG" && break; sleep 0.1; done
+assert grep -qE -- '^post --kind notice --id memguard-[0-9]{10}-[0-9]+ --session chat-slow ' "$BUS_LOG"
 
 # --- MEMGUARD surfacing in worker-run report/wait -------------------------------------------------
 # The record is written by this daemon and read by worker-run, so the two ends are checked against
