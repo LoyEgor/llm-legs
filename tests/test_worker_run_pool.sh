@@ -310,6 +310,15 @@ set_config 'codex_effort=high'
 start_ok codex
 assert await_done
 assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" = "$(jq -cn --arg d "$(cd "$other/.claude/worktrees/task-wt" && pwd -P)" '[$d]')"
+# The 2026-10-03 escape: the brief handed over to a brief file, which listed the repository and named
+# the existing worktree only as `<repo>/.claude/worktrees/<name>`.
+mkdir -p "$WORK/nested"
+printf 'Repos:\n- %s\n\nReuse `<repo>/.claude/worktrees/task-wt`, not <repo>/.claude/worktrees/gone.\n' "$other" >"$WORK/nested/brief.md"
+{ printf 'ACCOUNT: options\n\nRead and follow exactly the brief at %s/nested/brief.md — in BOTH repos.\n' "$WORK"; cat "$WORK/brief.plain"; } >"$WORK/brief"
+clear_stub
+start_ok codex
+assert await_done
+assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" = "$(jq -cn --arg d "$(cd "$other/.claude/worktrees/task-wt" && pwd -P)" '[$d]')"
 mkdir -p "$WORKER_RUN_DIR/prior-granted"
 printf 'claude-granted\n' >"$WORKER_RUN_DIR/prior-granted/worker-session"
 jq -n --arg d "$(cd "$WORK/inherited" && pwd -P)" '{add_dirs: [$d]}' >"$WORKER_RUN_DIR/prior-granted/meta.json"

@@ -144,10 +144,24 @@ brief_add_dirs() { # brief
   done <"$1"
 }
 
-# light-* worktrees are worker-run's own throwaway Light trees, never a task's.
+# light-* worktrees are worker-run's own throwaway Light trees, never a task's. A named *.md is read
+# as part of the brief (relays hand over to brief files), and `<repo>/.claude/worktrees/<name>`
+# resolves in every repository the text names.
 brief_worktree_roots() { # brief
-  local value
-  grep -oE '/[A-Za-z0-9._~+/-]+/\.claude/worktrees/[A-Za-z0-9._-]+' "$1" 2>/dev/null | sed 's/\.*$//' | sort -u |
+  local text value name root
+  text=$(cat "$1" 2>/dev/null
+    grep -oE '/[A-Za-z0-9._~+/-]+\.md' "$1" 2>/dev/null | sort -u |
+      while IFS= read -r value; do [ -f "$value" ] && cat "$value" 2>/dev/null; done)
+  {
+    grep -oE '/[A-Za-z0-9._~+/-]+/\.claude/worktrees/[A-Za-z0-9._-]+' <<<"$text" | sed 's/\.*$//'
+    grep -oE '(^|[^A-Za-z0-9._~+/-])[^[:space:]/]*/\.claude/worktrees/[A-Za-z0-9._-]+' <<<"$text" |
+      sed 's/\.*$//' | sed 's#.*/##' | sort -u | while IFS= read -r name; do
+        grep -oE '/[A-Za-z0-9._~+-][A-Za-z0-9._~+/-]*' <<<"$text" | sed 's#[./]*$##' | sort -u |
+          while IFS= read -r root; do
+            [ -e "$root/.git" ] && printf '%s/.claude/worktrees/%s\n' "$root" "$name"
+          done
+      done
+  } | sort -u |
     while IFS= read -r value; do
       case "${value##*/}" in light-*) continue ;; esac
       [ -e "$value/.git" ] && printf '%s\n' "$value"
