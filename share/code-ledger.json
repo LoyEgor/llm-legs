@@ -112,6 +112,77 @@
    "same_cause": [],
    "status": "fixed-pending",
    "title": "no entry point reaches hammerspoon/type_whisper.lua"
+  },
+  {
+   "fixes": [
+    {
+     "at": "2026-10-04T09:47:36+03:00",
+     "by": "code-code-20261004T014010Z-10ff",
+     "files": [
+      "review-bench/share/rbench/store.py"
+     ],
+     "in": null,
+     "regressed_at": null,
+     "yield": {
+      "lines_removed": 14,
+      "suite_s_saved": 0,
+      "tokens_cut": 0
+     }
+    }
+   ],
+   "group": "dead",
+   "handoff": null,
+   "id": "cause:review-bench/share/rbench/store.py#_git_line",
+   "last_reviewed": null,
+   "match": {
+    "cause": "cause:review-bench/share/rbench/store.py#_git_line",
+    "identity": {
+     "sketch": [
+      3539175,
+      70848928,
+      96392722,
+      97892455,
+      98138608,
+      138760774,
+      222920233,
+      227301363,
+      295835569,
+      392156934,
+      395847166,
+      407150878,
+      455337947,
+      474405268,
+      522299010,
+      572165991,
+      586412490,
+      612604320,
+      648876110,
+      693791984,
+      716712723,
+      738132026,
+      790370382,
+      809920622,
+      913721614,
+      1011314342,
+      1061547691,
+      1110184590,
+      1324740332,
+      1374987849,
+      1409542921,
+      1476557125
+     ],
+     "touch": [
+      "call:stdout.strip",
+      "call:subprocess.run",
+      "cmd:git"
+     ]
+    }
+   },
+   "note": null,
+   "reviewed_by": null,
+   "same_cause": [],
+   "status": "fixed-pending",
+   "title": "review-bench/share/rbench/store.py#_git_line is defined and never called"
   }
  ]
 }
