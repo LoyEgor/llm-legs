@@ -283,9 +283,14 @@ changes() { # vendor previous current -> changed-json<TAB>substantive-json
   if [ "$1" = codex ] && jq -e 'index("catalog")' <<<"$substantive" >/dev/null && catalog_regrouped "$2" "$3"; then
     substantive=$(jq -c 'map(select(. != "catalog"))' <<<"$substantive")
   fi
-  # Only a newly lagging install is news; one catching up to the primary or still lagging is not.
+  # Only a newly lagging install is news; one catching up to the primary, still lagging, or ahead of it
+  # is not — the npm claude moves to npm's latest before the native one does, and the primary's own
+  # version event follows when it gets there.
   if jq -e 'index("installs")' <<<"$substantive" >/dev/null &&
-    jq -e -s '(.[0].facets.installs // {} | keys) as $p | (.[1].facets.installs // {} | keys) - $p == []' "$2" "$3" >/dev/null; then
+    jq -e -s 'def ver: if test("^[0-9]+(\\.[0-9]+)*$") then split(".") | map(tonumber) else null end;
+      (.[0].facets.installs // {} | keys) as $p | (.[1].facets.version // "" | ver) as $primary
+      | [.[1].facets.installs // {} | to_entries[] | select(.key as $k | $p | any(. == $k) | not)
+         | select((.value | ver) as $v | $v == null or $primary == null or $v < $primary)] == []' "$2" "$3" >/dev/null; then
     substantive=$(jq -c 'map(select(. != "installs"))' <<<"$substantive")
   fi
   printf '%s\t%s\n' "$changed" "$substantive"

@@ -351,6 +351,14 @@ second 2.1.281
 check
 assert [ "$(field '.changed | join(",")')" = installs ]
 assert [ "$(field .status)" = auto-closed ]
+# An install that moved ahead of the primary is no event: the primary's version event follows.
+second 2.1.289
+check
+assert [ "$(field '.changed | join(",")')" = installs ]
+assert [ "$(field .status)" = auto-closed ]
+assert grep -qxF "+$HOME/.nvm/versions/node/v24.0.0/bin/claude = \"2.1.289\"" "$(field .diff)"
+second 2.1.281
+check
 
 # A request for a vendor whose release event waits takes that event, never a manual one beside it. A
 # request with no Claude account to run on, or whose chat could not be opened, is opened by the next
@@ -640,4 +648,4 @@ codex_cache "$HOME/.codex-profiles/z" "$v" '[1]'
 bash "$SCRIPT" snapshot codex >"$WORK/broken.json"
 assert jqe '(.facets | has("catalog") | not) and ([.failed[] | select(.facet == "catalog")] == [{facet: "catalog", where: "local"}])' "$WORK/broken.json"
 
-echo "PASS: $asserts asserts; baseline, version-only releases close themselves, new ids/catalog fields/docs/help/newly lagging installs/divergence open an event each, an install catching up or still lagging closes itself, prompts and foreign clients are informational, unreadable facets keep their value, broken local probes are reported, manual requests, close, lock, check --here, no chat from check for a waiting event however old, a failed manual request retried by check, waiting events joined and reverts closed, every vendor in one chat on request --all, each chat a fixer run of doctor updater that closes with its last event, a request taking its vendor's waiting event, manual diffs that carry the whole fingerprint, decision purposes judged by doctor-fix, a bounded lock wait for check --here, one worktree, branch, brief and updater fixer run (the printed ref) per vendor on request --night and none without a base ref, a codex catalog merge across homes whose field shapes differ, a failed merge reported as a broken probe, a night request under the check lock, and purposes that cannot be judged holding the close"
+echo "PASS: $asserts asserts; baseline, version-only releases close themselves, new ids/catalog fields/docs/help/newly lagging installs/divergence open an event each, an install catching up, still lagging or ahead of the primary closes itself, prompts and foreign clients are informational, unreadable facets keep their value, broken local probes are reported, manual requests, close, lock, check --here, no chat from check for a waiting event however old, a failed manual request retried by check, waiting events joined and reverts closed, every vendor in one chat on request --all, each chat a fixer run of doctor updater that closes with its last event, a request taking its vendor's waiting event, manual diffs that carry the whole fingerprint, decision purposes judged by doctor-fix, a bounded lock wait for check --here, one worktree, branch, brief and updater fixer run (the printed ref) per vendor on request --night and none without a base ref, a codex catalog merge across homes whose field shapes differ, a failed merge reported as a broken probe, a night request under the check lock, and purposes that cannot be judged holding the close"
