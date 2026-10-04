@@ -178,7 +178,7 @@
      ]
     }
    },
-   "note": null,
+   "note": "last caller left in review-bench@b1bf9ae (git_common_dir became the one resolver); no getattr/string reference in either repo. Unrelated: test_review_bench.sh and test_review_bench_speed.sh fail in any .claude/worktrees checkout, base included, as they resolve llm-legs as the sibling lenses/../../llm-legs",
    "reviewed_by": null,
    "same_cause": [],
    "status": "fixed-pending",
