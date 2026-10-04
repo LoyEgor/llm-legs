@@ -34,10 +34,3 @@ only narrowed an `open` row to each cause.
   narrows the judge, so it is your call. Or (b) leave the row open and treat such records as
   operator noise. Either way, whoever profiles hooks should point `INSTRUCTION_WATCH_STATE` at a
   scratch dir. That habit belongs in the profiling tool, if one gets committed.
-
-## Fixed in the same run (for context)
-
-`guards-tripwire-rejournal`: the 17 `growth-ungated:between-sessions` hits were one compaction
-SessionStart record re-listing writes that earlier records already carried. Fixed in
-`bin/instruction-watch.sh` (`alert_once`) and `share/instruction-files.sh`
-(`instruction_mark_once`). Blind spot `tripwire-duplicate-records` added.

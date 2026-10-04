@@ -11,18 +11,15 @@ Four growth events in one window share one shape: a Bash `python3 - <<'EOF'` her
 guarded file as a whole string literal and writes it through a variable.
 
 - `~/.claude/agents/claudeb-worker.md`, 2026-10-01T15:27:58Z, chat «Claude Sonnet 5.5 launch video»
-  (7c93bbe2): `p='agents/claudeb-worker.md' … open(p,'w')`. Still uncommitted in the claude-setup
-  main checkout (its owner's WIP).
-- `~/.claude/agents/image-gen.md`, 13:26:44Z and 14:20:08Z, the same chat, `p='agents/image-gen.md'`.
+  (7c93bbe2): `p='agents/claudeb-worker.md' … open(p,'w')`.
+- `~/.claude/agents/image-gen.md` (deleted since, claude-setup 01f7357), the same chat.
 - `claude-setup/skills-on-demand/night-sweep/SKILL.md`, 2026-10-02T01:06:15Z, chat «Updater doctor»
   (233cceb1), `p='skills-on-demand/night-sweep/SKILL.md'`.
 
 `bin/instruction-write-gate.sh` and `share/instruction-files.sh` (`_instruction_interp_construct`)
 leave a variable path out of scope on purpose, so only the tripwire sees these, and growth-ungated
-reports them every time. Night 2026-10-03 adds two by chat «Google video generation integration»
-(10896605) on `agents/image-gen.md`: 23:27:46Z (+135 B, `p='agents/image-gen.md'`) and
-2026-10-02T10:34:40Z (+142 B), its relay worker's refused MD-PROPOSAL applied by `python3` heredoc,
-which reads `growth-denied` (the worker's `relay-refused` record is within 900 s). Proposal: in an interpreter payload, a quoted literal that is WHOLLY a
+reports them every time; a relay worker's refused MD-PROPOSAL applied this way reads
+`growth-denied` (image-gen.md, 2026-10-02T10:34:40Z). Proposal: in an interpreter payload, a quoted literal that is WHOLLY a
 guarded name, plus a write construct whose destination is a bare identifier (`open(p,'w')`,
 `Path(p).write_text`, `p.write_text`, `writeFile(p`), reads as a write to that name. Its false
 catch is the one the gate already accepts (an interpreter that reads a guarded file and writes
@@ -39,4 +36,10 @@ never merge, pull, rebase or cherry-pick. Proposal, your pick: (a) add merge-typ
 read from `git diff --name-only HEAD MERGE_HEAD`-style ranges, so a landing gets a gate record
 (span-pass inside the span, one denial outside it); or (b) keep merges out and treat a landing of
 bytes already judged in a worktree as no new growth in the doctor. (b) loosens the judge.
+
+Night 2026-10-04 adds a non-git landing (row `guards-growth-claude-skills-media`): chat «Google video
+generation integration» (10896605) copied its claude-setup `media-media-run` worktree into main with
+a scratchpad `python3 land.py … --apply` at 2026-10-03T17:33:37Z, landing `skills/media/SKILL.md`
++8080 B. Egor had granted those bytes in the worktree (bloat `granted`, 15:26:50Z), but a gate record
+covers only its own path within 900 s. (a) cannot see a copy script; only (b) covers it.
 
