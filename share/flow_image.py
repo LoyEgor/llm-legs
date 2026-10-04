@@ -8,7 +8,9 @@ Same hidden Chrome, profiles, locks, walls, rotation and job ledger as gemini_we
 composer is switched to Image and driven the way a person would; the new images are read from the page's own
 generation reply (ogiZ0b), the 1K original from its signed URL, the 2K upscale through the image editor's
 Download menu. A resume types the new prompt into an earlier image's editor (What do you want to change?).
-Prints one JSON line; exit 0 ok, 2 usage, 3 walled or flagged, 4 signed out or an owner step, 1 other.
+Prints one JSON line; exit 0 ok, 2 usage, 3 walled or flagged, 4 signed out or an owner step, 5 account busy (its
+lock not free within --lock-wait), 1 other. A --count run whose sibling takes never came back delivers the ones
+that did, with "failed" counting the rest.
 """
 from __future__ import annotations
 
@@ -17,6 +19,7 @@ import base64
 import contextlib
 import json
 import math
+import os
 import re
 import sys
 import time
@@ -28,7 +31,11 @@ import gemini_web as gw  # noqa: E402
 
 IMAGE_RPCS = {"ogiZ0b"}
 KIND = "flow-image"
+CARDS_SCAN_S = 3
 GENERATION_FAILED = "flow_generation_failed (not charged)"
+# No quota-shaped code has been seen live (2026-10-04: AUDIO_FILTERED, UNSAFE_GENERATION, UNUSUAL_ACTIVITY only);
+# one is a limit to move past, not a refusal of the prompt that would cost the whole job.
+QUOTA_ERROR = re.compile(r"PUBLIC_ERROR_\w*(?:QUOTA|LIMIT|EXHAUSTED)\w*")
 # Flow's "Failed / Sorry, this image failed to generate / You have not been charged" card and its Retry
 # button. Cards on the page before the send belong to earlier jobs: "mark" remembers them, "count" and
 # "retry" see only the rest.
@@ -124,6 +131,11 @@ class Images(gw.Watcher):
         return [record for key, record in self.images.items() if key not in known]
 
 
+def refusal(codes) -> gw.Failure:
+    code = 3 if any(QUOTA_ERROR.fullmatch(error) for error in codes) else 1
+    return gw.Failure(code, f"Flow refused the image: {', '.join(sorted(set(codes)))}")
+
+
 def rotation(price: int = 0) -> list[str]:
     return gw.rotation(price)
 
@@ -157,7 +169,7 @@ def settings(page, plan: dict, editor: bool) -> str:
         if not model_item(plan["label"]).match(chosen()):
             family.last.click()
             page.get_by_role("menuitem", name=model_item(plan["label"])).click(timeout=5000)
-            page.wait_for_timeout(600)
+            gw.settle(page, 600, lambda: model_item(plan["label"]).match(chosen()))
         if not model_item(plan["label"]).match(chosen()):
             raise gw.drift(f"the model family reads {chosen()!r}, not {plan['label']!r}")
         if plan["aspect"]:
@@ -173,7 +185,7 @@ def settings(page, plan: dict, editor: bool) -> str:
     finally:
         if family.count() and family.last.is_visible():
             trigger.click()
-            page.wait_for_timeout(500)
+            gw.settle(page, 500, lambda: not family.last.is_visible())
         gw.close_overlays(page)
     if cost != plan["price"]:
         raise gw.Failure(1, f"Flow quotes {cost} credits for {plan['label']} x{plan['count']}, the manifest says "
@@ -230,19 +242,20 @@ def retry_failed(page) -> int:
 def await_takes(page, watcher: Images, plan: dict, known: set, account: str, project: str) -> tuple[list, int]:
     """(images back, takes lost). A Failed card gets Flow's own Retry once; a failure after it is a lost take."""
     deadline = time.time() + plan["timeout_s"]
-    retried, floor = False, 0
+    retried, floor, failed, scanned = False, 0, 0, None
     while True:
         if watcher.blocked():
             raise watcher.blocked()
         images = watcher.new_images(known)
         done = [i for i in images if i.get("url") or i.get("error")]
-        failed = failed_cards(page)
+        if scanned is None or time.time() - scanned >= CARDS_SCAN_S:
+            failed, scanned = failed_cards(page), time.time()
         if failed and not retried:
             gw.ledger({"kind": KIND, "event": "retried", "account": account, "project": project, "failed": failed,
                        "resume_of": plan["resume"]})
             if not retry_failed(page):
                 raise gw.Failure(1, f"{GENERATION_FAILED}: Flow showed its Failed card with no Retry on {account}")
-            retried, floor, deadline = True, failed, time.time() + plan["timeout_s"]
+            retried, floor, deadline, scanned = True, failed, time.time() + plan["timeout_s"], None
             page.wait_for_timeout(1500)
             continue
         floor = min(floor, failed)
@@ -253,8 +266,13 @@ def await_takes(page, watcher: Images, plan: dict, known: set, account: str, pro
                                     f"{account}")
             return done[:plan["count"]], lost
         if watcher.errors and not images:
-            raise gw.Failure(1, f"Flow refused the image: {', '.join(sorted(watcher.errors))}")
+            raise refusal(watcher.errors)
         if time.time() > deadline:
+            if done:
+                missing = plan["count"] - len(done)
+                gw.warn(account, f"{missing} of {plan['count']} takes never came back within {plan['timeout_s']}s; "
+                                 f"delivering the {len(done)} that did (a late one lands in project {project})")
+                return done, missing
             if retried and failed:
                 raise gw.Failure(1, f"{GENERATION_FAILED}: Flow's Retry did not take on {account}")
             raise gw.Failure(1, f"sent, but {len(done)} of {plan['count']} images came back within "
@@ -277,15 +295,15 @@ def render_on(account: str, plan: dict, meta: dict, started: float) -> dict:
         state = gw.page_state(page)
         if state["email"] != meta["email"]:
             raise gw.Failure(1, f"profile {account} is signed in as {state['email']}, bound to {meta['email']}")
+        gw.phase("page")
         chip = settings(page, plan, editor=bool(plan["resume"]))
-        for ref in plan["refs"]:
-            gw.add_ingredient(page, Path(ref), "Image")
+        gw.add_ingredients(page, [Path(ref) for ref in plan["refs"]], "Image")
         if plan["refs"]:
             chip = settings(page, plan, editor=False)
+        button = page.get_by_role("button", name="Start generation", exact=True).last
         page.locator("[contenteditable=true]").last.click()
         page.keyboard.insert_text(plan["prompt"])
-        page.wait_for_timeout(400)
-        button = page.get_by_role("button", name="Start generation", exact=True).last
+        gw.settle(page, 400, button.is_enabled)
         if not button.is_enabled():
             raise gw.drift("Start generation stays disabled after setup")
         if plan["dry_run"]:
@@ -299,8 +317,10 @@ def render_on(account: str, plan: dict, meta: dict, started: float) -> dict:
         watcher.errors &= gw.BLOCK_ERRORS
         button.click()
         sent = time.time()
+        gw.phase("sent")
         done, lost = await_takes(page, watcher, plan, known, account, project)
         rendered = time.time()
+        gw.phase("media")
         takes, refused, unsaved = [], [], []
         for index, image in enumerate(done):
             if image.get("error"):
@@ -325,8 +345,9 @@ def render_on(account: str, plan: dict, meta: dict, started: float) -> dict:
         if not takes and unsaved:
             raise unsaved[0]
         if not takes:
-            raise gw.Failure(1, f"Flow refused the image: {refused[0]['error']}")
+            raise refusal(r["error"] for r in refused)
         finished = time.time()
+        gw.phase("saved")
         return {"ok": True, "account": account, "project": project, "takes": takes, "refused": refused, "failed": lost,
                 "unsaved": [failure.reason for failure in unsaved],
                 "model": (watcher.models or [None])[-1], "model_name": plan["model"], "label": plan["label"],
@@ -341,10 +362,9 @@ def generate_on(account: str, plan: dict) -> dict:
     meta = gw.read_meta(account)
     if not meta.get("email"):
         raise gw.Failure(4, f"account {account} is not bound to a Google account; run: gemini-web status {account}")
-    with gw.file_lock(gw.ROOT / "locks" / f"{account}.lock", wait_s=900):
-        if not (plan["resume"] or plan["dry_run"]):
-            gw.note_started(account)
-        return render_on(account, plan, meta, started)
+    if not (plan["resume"] or plan["dry_run"]):
+        gw.note_started(account)
+    return render_on(account, plan, meta, started)
 
 
 def make_plan(args) -> dict:
@@ -378,7 +398,8 @@ def cmd_generate(args) -> None:
     plan = make_plan(args)
     accounts = gw.take_accounts(args.account, lambda: rotation(plan["price"]),
                                 "every signed-in Flow account is walled (walls.json)")
-    gw.take_failover(accounts, plan, lambda account, plan: generate_on(account, plan), gw.set_wall, bool(args.account))
+    gw.take_failover(accounts, plan, lambda account, plan: generate_on(account, plan), gw.set_wall, bool(args.account),
+                     lock_wait=args.lock_wait)
 
 
 TOOL_VIEWPORT = {"width": 2200, "height": 1400}
@@ -472,7 +493,7 @@ def add_layer(page, frame, image: Path) -> None:
     page.wait_for_timeout(500)
     frame.get_by_role("button", name="Gallery", exact=True).click()
     page.get_by_role("button", name="Upload media", exact=True).last.wait_for(timeout=15000)
-    gw.upload(page, image, "edit", "", 180).click()
+    gw.upload(page, [image], "edit", "", 180)[0].click()
     page.wait_for_timeout(600)
     gw.click_if_visible(page, "button", "Add media")
     deadline = time.time() + 45
@@ -572,10 +593,10 @@ def await_render(page, frame, watcher: Images, known: set, plan: dict, account: 
         done = [i for i in watcher.new_images(known) if i.get("url") or i.get("error")]
         if done:
             if done[0].get("error"):
-                raise gw.Failure(1, f"Flow refused the image: {done[0]['error']}")
+                raise refusal([done[0]["error"]])
             return done[0]
         if watcher.errors:
-            raise gw.Failure(1, f"Flow refused the image: {', '.join(sorted(watcher.errors))}")
+            raise refusal(watcher.errors)
         error = tool_error(frame)
         if error:
             raise gw.Failure(1, f"the Image Editor's {plan['op']} failed: {error[:200]}")
@@ -588,6 +609,7 @@ def await_render(page, frame, watcher: Images, known: set, plan: dict, account: 
 def cutout(page, frame, plan: dict, console: list) -> str:
     before = frame.locator(LAYER + " img").last.get_attribute("src")
     frame.get_by_role("button", name="Cutout", exact=True).click()
+    gw.phase("sent")
     deadline = time.time() + plan["timeout_s"]
     while True:
         page.wait_for_timeout(1000)
@@ -625,6 +647,7 @@ def tool_on(account: str, plan: dict, meta: dict, started: float) -> dict:
         state = gw.page_state(page)
         if state["email"] != meta["email"]:
             raise gw.Failure(1, f"profile {account} is signed in as {state['email']}, bound to {meta['email']}")
+        gw.phase("page")
         credits = gw.read_credits(page)
         gw.note_credits(account, credits)
         frame = open_editor_tool(page, account, project)
@@ -648,8 +671,10 @@ def tool_on(account: str, plan: dict, meta: dict, started: float) -> dict:
         sent = time.time()
         if plan["op"] == "cutout":
             src = cutout(page, frame, plan, console)
+            gw.phase("media")
             out = out.with_suffix(".png")
             out.write_bytes(base64.b64decode(src.split(",", 1)[1]))
+            gw.phase("saved")
             gw.ledger({"kind": KIND, "event": "saved", "account": account, "project": project, "op": "cutout",
                        "bg_model": plan["bg_model"], "bytes": out.stat().st_size})
             return {"ok": True, "account": account, "project": project, "op": "cutout", "bg_model": plan["bg_model"],
@@ -674,9 +699,12 @@ def tool_on(account: str, plan: dict, meta: dict, started: float) -> dict:
             page.wait_for_timeout(300)
         watcher.errors &= gw.BLOCK_ERRORS
         frame.get_by_role("button", name="Enter", exact=True).click(timeout=10000)
+        gw.phase("sent")
         image = await_render(page, frame, watcher, known, plan, account)
         rendered = time.time()
+        gw.phase("media")
         size_bytes = gw.save_video(context, image["url"], out, is_image, "image")
+        gw.phase("saved")
         path = out.with_suffix(suffix_of(out.read_bytes()[:12]))
         out.replace(path)
         gw.ledger({"kind": KIND, "event": "saved", "account": account, "project": project, "id": image.get("id"),
@@ -727,16 +755,15 @@ def cmd_tool(args) -> None:
         meta = gw.read_meta(account)
         if not meta.get("email"):
             raise gw.Failure(4, f"account {account} is not bound to a Google account; run: gemini-web status {account}")
-        with gw.file_lock(gw.ROOT / "locks" / f"{account}.lock", wait_s=900):
-            if plan["op"] != "cutout" and not plan["dry_run"]:
-                gw.note_started(account)
-            return tool_on(account, plan, meta, started)
+        if plan["op"] != "cutout" and not plan["dry_run"]:
+            gw.note_started(account)
+        return tool_on(account, plan, meta, started)
 
     if not (args.account or any(gw.read_meta(n).get("image_editor") for n in gw.bound_accounts())):
         raise gw.Failure(4, f"no free Flow account has the {tool_caps()['editor']} in My Tools; open Tools > Templates "
                             f"> {tool_caps()['editor']} once on one, then pass --account <it>")
     accounts = gw.take_accounts(args.account, editor_accounts, "every Flow account with the Image Editor is walled")
-    gw.take_failover(accounts, plan, run, gw.set_wall, bool(args.account))
+    gw.take_failover(accounts, plan, run, gw.set_wall, bool(args.account), lock_wait=args.lock_wait)
 
 
 def main() -> None:
@@ -757,6 +784,7 @@ def main() -> None:
     t.add_argument("--account", type=gw.account_arg)
     t.add_argument("--timeout", type=int)
     t.add_argument("--dry-run", action="store_true")
+    gw.lock_wait_arg(t)
     p = sub.add_parser("generate")
     p.add_argument("--prompt", required=True)
     p.add_argument("--out-dir", required=True)
@@ -769,7 +797,9 @@ def main() -> None:
     p.add_argument("--account", type=gw.account_arg)
     p.add_argument("--timeout", type=int)
     p.add_argument("--dry-run", action="store_true")
+    gw.lock_wait_arg(p)
     args = parser.parse_args()
+    gw.TIMED = True
     try:
         (cmd_tool if args.command == "tool" else cmd_generate)(args)
     except gw.Failure as failure:

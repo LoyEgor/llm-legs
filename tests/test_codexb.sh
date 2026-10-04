@@ -949,7 +949,7 @@ image_run() {
     CODEX_PROFILES_DIR="$WORK/image-profiles" IMAGE_MODE="${IMAGE_MODE:-reply}" IMAGE_REPLY_EXT="$reply_ext" \
     IMAGE_PICK_MODE="${IMAGE_PICK_MODE:-ok}" IMAGE_PICK_ACCOUNT="${IMAGE_PICK_ACCOUNT:-picked}" \
     WORKER_PICK_CONFIG_FILE="$HOME/.claude/worker-model" WORKER_CLAIMS_DIR="$IMAGE_CLAIMS" \
-    bash "$IMAGE_SCRIPT" "$@" >"$IMAGE_OUT" 2>"$IMAGE_ERR"
+    bash "$IMAGE_SCRIPT" --route cli "$@" >"$IMAGE_OUT" 2>"$IMAGE_ERR"
 }
 
 image_rc=0
@@ -1169,7 +1169,7 @@ assert env CODEX_IMAGE_DEADLINE=garbage PATH="$IMAGE_PATH" TMPDIR="$IMAGE_TMPDIR
   CODEX_IMAGE_CODEX="$IMAGE_BIN/codex" CODEX_PROFILES_DIR="$WORK/image-profiles" \
   IMAGE_MODE=reply IMAGE_PICK_MODE=ok IMAGE_PICK_ACCOUNT=picked \
   WORKER_PICK_CONFIG_FILE="$HOME/.claude/worker-model" \
-  bash "$IMAGE_SCRIPT" --dest "$WORK/image-output/garbage-deadline.jpg" \
+  bash "$IMAGE_SCRIPT" --route cli --dest "$WORK/image-output/garbage-deadline.jpg" \
   --prompt landscape --account main >"$IMAGE_OUT" 2>"$IMAGE_ERR"
 assert grep -qx 'account=main' "$IMAGE_OUT"
 

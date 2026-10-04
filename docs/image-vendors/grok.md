@@ -189,9 +189,11 @@ cannot spend the generation on the tool whose ratio enum the gate just refused.
 
 ## Final lines
 
-`grok-image` prints `dest`, `size`, `format`, `account`, `session`, `model=... model_caps=...`,
+`grok-image` prints `dest`, `size`, `format`, `account`, `session`, `job=<id>`, `route=cli` (its one route:
+nothing falls back, `--lock-wait` is accepted and unused), `model=... model_caps=...`,
 `caps=...`, then the composite decision and, last, `edit_depth=<n> root=<path>`. Every edit of an
-existing image (a single `--ref`, or `--resume` of a session whose last image this machine delivered)
+existing image (`--edit <image>`, sent first to `image_edit` with every `--ref` a reference only; else a
+single `--ref`, or `--resume` of a session whose last image this machine delivered)
 is composited by default like on every vendor — `composite=auto changed=<percent>` and
 `rendered=<dest stem>.rendered.<ext>`, `composite=refused reason=global ...` for a global edit,
 `composite=skipped reason=...` otherwise, nothing with `--no-composite` or `--transparent`; rules,

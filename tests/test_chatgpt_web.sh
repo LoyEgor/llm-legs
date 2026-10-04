@@ -41,7 +41,7 @@ import gemini_web
 gw = cw.gw
 chat_root, gemini_root = Path(os.environ["CHATGPT_WEB_DIR"]), Path(os.environ["GEMINI_WEB_DIR"])
 
-# One hidden-Chrome core: the module, the clone app, its locks, the hide watcher, the snapshot path.
+# One hidden-Chrome core: the module, the clone app, its locks, the off-screen parking, the snapshot path.
 assert gw is gemini_web and gw.ROOT == chat_root and gw.ROUTE == "chatgpt-web"
 assert gw.CLONE_ROOT == gemini_root and gw.CLONE_APP.parent == gemini_root, gw.CLONE_APP
 app = Path(os.environ["HOME"]) / "Chrome.app"
@@ -55,13 +55,9 @@ with gw.chrome_clone() as clone:
 assert (gemini_root / ".clone-use.lock").exists() and not (chat_root / ".clone-use.lock").exists()
 assert not list(chat_root.glob("*.app")), list(chat_root.iterdir())
 gw.build_clone = real_build
-launched, real_popen = [], gw.subprocess.Popen
-gw.subprocess.Popen = lambda argv, **kw: launched.append(argv) or "watcher"
-assert gw.keep_hidden("alpha", 4242) == "watcher" and launched == [["osascript", "-e", gw.HIDE_WATCH, "4242"]]
-gw.subprocess.Popen = real_popen
 source = open(cw.__file__).read()
-for own in ("def build_clone", "def chrome_clone", "HIDE_WATCH =", "TOAST_LOG =", "def snapshot", "def browser",
-            "def keep_hidden", "CLONE_ID =", "launch_persistent_context"):
+for own in ("def build_clone", "def chrome_clone", "def park_window", "TOAST_LOG =", "def snapshot", "def browser",
+            "def reset_exit_type", "CLONE_ID =", "launch_persistent_context"):
     assert own not in source, f"chatgpt_web.py carries its own {own}"
 assert gw.route_of("https://chatgpt.com/c/x") == "chatgpt-web" and gw.route_of("https://auth.openai.com/") == "chatgpt-web"
 assert gw.route_of("https://flow.google.com/x") == "flow"
@@ -130,6 +126,7 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 64
 NEW_CHAT = "0b6f1d2e-1111-4222-8333-944455556666"
 OLD_CHAT = "1c7a2b3d-aaaa-4bbb-8ccc-ddddeeeeffff"
 KEY = {selector: key for key, selector in cw.SELECTORS.items()}
+TIMELINE = []
 
 
 class Response:
@@ -152,9 +149,14 @@ class Locator:
             return self
         return Locator(self.page, self.key, next(i for i, text in enumerate(self.page.menu) if has_text in text))
     def inner_text(self): return self.page.menu[self.index]
-    def wait_for(self, timeout=None):
-        if not self.count():
+    def wait_for(self, timeout=None, state=None):
+        if self.index is not None:
+            self.page.waits.append(("nth", self.key, self.index, timeout))
+        if self.count() <= (self.index or 0):
             raise TimeoutError(self.key)
+    def evaluate_all(self, script):
+        assert self.key == "attachment", self.key
+        return [Path(path).name for path in self.page.files]
     def bounding_box(self): return {"x": 100, "y": 100, "width": 400, "height": 300}
     def evaluate(self, script, arg):
         assert script is cw.ON_CANVAS and self.key in ("role:Draw on image", "role:Image comment surface"), script
@@ -164,7 +166,7 @@ class Locator:
         if self.key == "attachment":
             return len(self.page.files) + len(self.page.stale)
         if self.key == "remove":
-            return len(self.page.stale)
+            return len(self.page.stale) + len(self.page.files)
         if self.key == "menu_item":
             return len(self.page.menu) if self.page.menu_open else 0
         if self.key == "comment_text":
@@ -178,7 +180,8 @@ class Locator:
         return self.page.pressed if self.key == "chat_mode" and name == "aria-pressed" else None
     def hover(self, timeout=None): pass
     def is_visible(self): return self.page.viewer if self.key.startswith("role:") else self.page.shown.get(self.key, False)
-    def is_enabled(self): return self.page.strokes > 0 if self.key == "role:Undo" else True
+    def is_enabled(self):
+        return self.page.strokes > 0 if self.key == "role:Undo" else self.page.send_ready if self.key == "send" else True
     def get_by_role(self, role, name=None, exact=False):
         assert (self.key, role, name, exact) == ("role:Image editing tools", "button", "Send", True), (role, name)
         return Locator(self.page, "role:Send")
@@ -190,6 +193,8 @@ class Locator:
             self.page.viewer = True
         if self.key == "role:Resize":
             self.page.menu_open = True
+        if self.key == "decline":
+            self.page.shown["decline"] = False
         if self.key == "role:Comment":
             self.page.commenting = True
         if self.key == "role:Send" or self.key == "role:Remove BG" and self.page.remove_bg_starts:
@@ -197,7 +202,7 @@ class Locator:
         if self.index is not None:
             self.page.sent = True
         if self.key == "remove":
-            self.page.stale.pop()
+            (self.page.stale or self.page.files).pop()
         if self.key == "chat_mode":
             self.page.pressed = "true"
         if self.key == "add_files":
@@ -206,15 +211,19 @@ class Locator:
             self.page.upload_menu, self.page.chooser = False, Chooser(self.page)
         if self.key == "send":
             self.page.sent = True
+            TIMELINE.append(("send", self.page.chat))
             if "/c/" not in self.page.url:
-                self.page.url = f"{cw.SITE}/c/{NEW_CHAT}"
+                self.page.url = f"{cw.SITE}/c/{self.page.chat}"
 
 
 class Chooser:
     def __init__(self, page): self.page = page
+    def is_multiple(self): return self.page.multiple
     def set_files(self, path, timeout=None):
         self.page.events.append(("file", path))
-        self.page.files.append(path)
+        if self.page.uploads_land:
+            batch = path if isinstance(path, list) else [path]
+            self.page.files += batch[::-1] if self.page.scrambles else batch
 
 
 class Keyboard:
@@ -259,7 +268,19 @@ class Page:
         self.overlay = None
         self.commenting, self.comment_opens, self.comment_open, self.pins, self.typed = False, True, False, [], None
         self.remove_bg_starts = True
+        self.send_ready, self.uploads_land, self.multiple, self.scrambles, self.waits = True, True, False, False, []
+        self.chat, self.closed = NEW_CHAT, False
     def on(self, event, listener): self.listeners.append(listener)
+    def bring_to_front(self): self.events.append(("front",))
+    def close(self): self.closed = True
+    def wait_for_function(self, script, arg=None, timeout=None, polling=None):
+        self.waits.append((script, timeout, polling))
+        if script is cw.SEND_READY:
+            if not self.send_ready:
+                raise TimeoutError("send stays disabled")
+            return types.SimpleNamespace(json_value=lambda: True)
+        assert script is cw.RESIZE_STARTED and arg is cw.SELECTORS, script
+        return types.SimpleNamespace(json_value=lambda: "send")
     def goto(self, url, **kw):
         self.events.append(("goto", url))
         self.url = self.url_after_goto or url
@@ -275,6 +296,8 @@ class Page:
             return Locator(self, "chat_mode")
         if (role, name, exact) == ("button", cw.SELECTORS["add_files"], True):
             return Locator(self, "add_files")
+        if (role, name, exact) == ("button", cw.SELECTORS["decline"], True):
+            return Locator(self, "decline")
         assert name in cw.EDITOR.values() and (exact or role in ("application", "toolbar")), (role, name)
         return Locator(self, f"role:{name}")
     def get_by_text(self, text, exact=False):
@@ -287,17 +310,24 @@ class Page:
         if self.chooser is None:
             raise TimeoutError("no file chooser")
         event.value = self.chooser
-    def wait_for_timeout(self, ms): pass
+    def wait_for_timeout(self, ms): self.slept = getattr(self, "slept", []) + [ms]
     def evaluate(self, script, arg=None):
         if script is cw.BLOB_READ:
             self.events.append(("blob", arg))
             return base64.b64encode(PNG).decode()
+        if script is cw.OPEN_PROBE:
+            assert arg["login_button"] == cw.LOGIN_BUTTON and arg["composer"] == cw.SELECTORS["composer"], arg
+            self.open_probes = getattr(self, "open_probes", 0) + 1
+            return {"composer": self.shown.get("composer", False), "login": self.shown.get("login", False),
+                    "work_mode": self.shown.get("chat_mode", False) and self.pressed == "false",
+                    "offer": self.shown.get("decline", False)}
         assert script is cw.PAGE_PROBE and arg["image_src"] == cw.IMAGE_SRC, script
         old = {"src": "https://chatgpt.com/backend-api/estuary/content?id=file_old", "width": 1024, "height": 1024,
                "done": True}
         base = {"replies": ["an older reply"], "alerts": [], "images": [old], "streaming": False}
         if not self.sent:
             return base
+        TIMELINE.append(("poll", self.chat))
         self.probes += 1
         step = self.after[min(self.probes, len(self.after)) - 1]
         return {**base, "replies": base["replies"] + step.get("replies", []), "alerts": step.get("alerts", []),
@@ -323,7 +353,7 @@ def fake_browser(page):
 
 def args(**kw):
     base = dict(prompt="a round blue badge", dest=str(chat_root / "out.png"), ref=[], resume=None, account=None,
-                timeout=30, region=None, aspect=None, tool="generate", point=[])
+                timeout=30, region=None, aspect=None, tool="generate", point=[], count=1)
     return types.SimpleNamespace(**{**base, **kw})
 
 
@@ -392,6 +422,11 @@ assert ledger()[-1]["refs"] == 3
 assert [e for e in page.events if e[0] == "dead input"] == [], page.events
 assert all(page.events[i - 2:i] == [("click", "add_files"), ("click", "upload")]
            for i, e in enumerate(page.events) if e[0] == "file"), page.events
+# A connector offer (Google Drive, Notion) popping over the composer is declined before each click it would swallow.
+page = Page()
+page.shown["decline"] = True
+result, _ = render(page, ref=refs[:1])
+assert result["ok"] and page.events.index(("click", "decline")) < page.events.index(("click", "add_files")), page.events
 page = Page()
 page.chooser_opens = False
 failure, _ = render(page, ref=refs[:1])
@@ -530,6 +565,203 @@ try:
     raise AssertionError("a Remove BG that started nothing passed")
 except gw.Failure as failure:
     assert failure.code == 1 and "Remove BG started nothing" in failure.reason, failure
+
+# The send button and every upload are awaited as page events with the old caps and drift messages.
+STUCK = "ChatGPT UI drift: the send button stays disabled for {}s (an upload still running?)"
+page = Page()
+page.send_ready = False
+failure, _ = render(page)
+assert failure.code == 1 and failure.reason == STUCK.format(120), failure.reason
+assert (cw.SEND_READY, 120000, 100) in page.waits, page.waits
+page = Page()
+page.uploads_land = False
+failure, _ = render(page, ref=refs[:2])
+assert failure.reason == "ChatGPT UI drift: the upload of reference 1 (ref-2.png) never showed in the composer", failure
+assert ("nth", "attachment", 0, 120000) in page.waits and not page.sent, page.waits
+page = Page()
+result, _ = render(page, ref=refs)
+assert [w for w in page.waits if w[0] == "nth"] == [("nth", "attachment", i, 120000) for i in range(3)], page.waits
+
+# One chooser change for all refs when it takes several and the thumbnails then read in the refs' order; out of
+# order they are removed and go one by one; a single-file chooser goes one by one.
+page = Page()
+page.multiple = True
+result, _ = render(page, ref=refs)
+assert result["ok"] and [e for e in page.events if e[0] == "file"] == [("file", refs)] and page.files == refs
+page = Page()
+page.multiple = page.scrambles = True
+result, _ = render(page, ref=refs)
+assert [e for e in page.events if e[0] == "file"] == [("file", refs)] + [("file", ref) for ref in refs], page.events
+assert result["ok"] and page.files == refs, page.files
+page = Page()
+result, _ = render(page, ref=refs)
+assert [e for e in page.events if e[0] == "file"] == [("file", ref) for ref in refs], page.events
+
+# The reply poll runs every POLL_MS (500).
+streaming = [{"streaming": True}, {"streaming": True}, {"images": [{"src": "blob:https://chatgpt.com/x", "width": 1024,
+                                                                   "height": 1024, "done": True}]}]
+page = Page(after=streaming)
+render(page)
+assert cw.POLL_MS == 500 and 500 in page.slept and 250 not in page.slept, page.slept
+cw.POLL_MS = 250
+page = Page(after=streaming)
+render(page)
+cw.POLL_MS = 500
+assert 250 in page.slept and 1000 not in page.slept, page.slept
+# open_chat reads the page with one probe per tick.
+page = Page()
+render(page)
+assert page.open_probes == 1, page.open_probes
+
+# --count N: N new chats in N tabs of this one browser, all loading at once, then each bound and sent in tab order
+# before any reply is read, then one loop polls every tab; the first take saved goes to --dest, the next to
+# <stem>-2, <stem>-3.
+CHATS = [f"0b6f1d2e-1111-4222-8333-94445555666{n}" for n in range(1, 5)]
+LIMITED = [{"replies": ["You've hit the plus plan limit for image generations requests. You can create more "
+                        "images when the limit resets in 2 hours."]}]
+
+
+def tab_page(n, after=None):
+    page = Page(after=after or [{"images": [{"src": f"https://chatgpt.com/backend-api/estuary/content?id=file_t{n}",
+                                            "width": 1024, "height": 1024, "done": True}]}])
+    page.chat = CHATS[n - 1]
+    return page
+
+
+def render_tabs(pages, **kw):
+    spare = list(pages[1:])
+    context = types.SimpleNamespace(pages=[pages[0]], request=Request())
+    context.new_page = lambda: context.pages.append(spare.pop(0)) or context.pages[-1]
+
+    @contextlib.contextmanager
+    def browser(account, visible=False):
+        yield context
+    gw.browser = browser
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            return cw.render_on("alpha", args(**kw), {"email": "alpha@example.com"}), context
+    except gw.Failure as failure:
+        return failure, context
+
+
+rows_before = len(ledger())
+TIMELINE.clear()
+pages = [tab_page(n) for n in (1, 2, 3)]
+for page in pages:
+    page.goto = lambda url, _goto=page.goto, _chat=page.chat, **kw: \
+        TIMELINE.append(("goto", _chat, kw.get("wait_until"))) or _goto(url, **kw)
+result, context = render_tabs(pages, count=3, dest=str(chat_root / "many.png"))
+assert TIMELINE[:6] == [("goto", chat, "commit") for chat in CHATS[:3]] + [("send", chat) for chat in CHATS[:3]], \
+    "the tabs did not all start loading before the first send: %r" % TIMELINE[:6]
+assert all(page.events[:2] == [("goto", cw.SITE + "/"), ("front",)] and page.events.count(("goto", cw.SITE + "/")) == 1
+           for page in pages), [p.events[:3] for p in pages]
+paths = [str(chat_root / name) for name in ("many.png", "many-2.png", "many-3.png")]
+assert [take["path"] for take in result["takes"]] == paths and all(Path(p).read_bytes() == PNG for p in paths), result
+assert [take["chat"] for take in result["takes"]] == CHATS[:3] and result["failed"] == 0, result
+assert (result["dest"], result["chat"], result["count"]) == (paths[0], CHATS[0], 3), result
+assert context.request.got == [f"https://chatgpt.com/backend-api/estuary/content?id=file_t{n}" for n in (1, 2, 3)]
+rows = ledger()[rows_before:]
+assert [(row["event"], row["tab"]) for row in rows] == [("sent", 1), ("sent", 2), ("sent", 3), ("saved", 1),
+                                                        ("saved", 2), ("saved", 3)], rows
+assert not pages[0].closed and pages[1].closed and pages[2].closed
+# One tab walled by the image limit while the others deliver: the rest are delivered, the walled one reported
+# with its wall; with no tab delivering, the run fails as one take would, the limit as exit 3.
+rows_before = len(ledger())
+pages = [tab_page(1), tab_page(2, LIMITED), tab_page(3)]
+before = time.time()
+result, _ = render_tabs(pages, count=3, dest=str(chat_root / "some.png"))
+assert result["ok"] and [take["chat"] for take in result["takes"]] == [CHATS[0], CHATS[2]], result
+assert [take["path"] for take in result["takes"]] == [str(chat_root / "some.png"), str(chat_root / "some-2.png")]
+assert result["failed"] == 1 and [(f["tab"], f["code"], f["chat"]) for f in result["failures"]] == [(2, 3, CHATS[1])]
+assert before + 7200 - 5 <= result["walled_until"] <= time.time() + 7200 + 5, result
+failed = [row for row in ledger()[rows_before:] if row["event"] == "failed"]
+assert [(row["tab"], row["code"], row["chat"]) for row in failed] == [(2, 3, CHATS[1])], failed
+failure, _ = render_tabs([tab_page(1, LIMITED), tab_page(2, LIMITED)], count=2)
+assert isinstance(failure, gw.Failure) and failure.code == 3 and failure.extra["until"] > time.time(), failure
+failure, _ = render_tabs([tab_page(1, [{"replies": ["I can't make that."]}]) for _ in (1, 2)], count=2, timeout=0)
+assert isinstance(failure, gw.Failure) and failure.code == 1 and "no image after" in failure.reason, failure
+# A later tab that cannot even send fails alone: what was sent is still delivered.
+pages = [tab_page(1), tab_page(2)]
+pages[1].send_ready = False
+result, _ = render_tabs(pages, count=2, dest=str(chat_root / "half.png"))
+assert result["ok"] and len(result["takes"]) == 1 and result["failed"] == 1, result
+assert result["failures"][0]["tab"] == 2 and "send button stays disabled" in result["failures"][0]["reason"], result
+# A reply whose image landed server-side while the page never shows it: a new chat's page is reloaded after
+# STALL_S without an image and the image taken from the reloaded page, in one tab of many and on the one-tab path;
+# after a reload the page's interim text is no answer without an image. A resume or an edit is never reloaded.
+class StalledPage(Page):
+    def reload(self, **kw):
+        self.events.append(("reload", kw.get("wait_until")))
+        self.after = self.after_reload
+        self.probes = 0
+
+
+def stalled(n=None, after_reload=None):
+    page = StalledPage(after=[{"streaming": True}])
+    page.after_reload = after_reload or [{"images": [{"src": "https://chatgpt.com/backend-api/estuary/content?id="
+                                                        "file_late", "width": 1024, "height": 1024, "done": True}]}]
+    if n:
+        page.chat = CHATS[n - 1]
+    return page
+
+
+cw.STALL_S, cw.QUIET_S = 0.001, 0
+rows_before = len(ledger())
+pages = [tab_page(1), stalled(2), tab_page(3)]
+result, _ = render_tabs(pages, count=3, dest=str(chat_root / "late.png"), timeout=5)
+assert result["ok"] and result["failed"] == 0 and len(result["takes"]) == 3, result
+assert ("reloaded", CHATS[1]) in [(row["event"], row.get("chat")) for row in ledger()[rows_before:]], ledger()[rows_before:]
+assert ("reload", "domcontentloaded") in pages[1].events, pages[1].events
+page = stalled(after_reload=[{"replies": ["Creating image"]}, {"replies": ["Creating image"]},
+                             {"images": [{"src": "https://chatgpt.com/backend-api/estuary/content?id=file_late",
+                                          "width": 1024, "height": 1024, "done": True}]}])
+result, _ = render(page, timeout=5, dest=str(chat_root / "late1.png"))
+assert not isinstance(result, gw.Failure) and result["ok"] and ("reload", "domcontentloaded") in page.events, result
+page = stalled()
+failure, _ = render(page, timeout=0.2, resume=NEW_CHAT)
+assert isinstance(failure, gw.Failure) and "no image after" in failure.reason, failure
+assert not any(event[0] == "reload" for event in page.events), "a resumed chat was reloaded: %r" % page.events
+cw.STALL_S, cw.QUIET_S = 90, 30
+# --count 1 stays the one-tab path: no tab brought forward, no new page, no takes in the result.
+page = Page()
+result, _ = render(page)
+assert ("front",) not in page.events and "takes" not in result and "failed" not in result, (page.events, result)
+
+# Result, failure and ledger rows carry the job, the phases since engine start, the lock wait, and on a failure
+# whether the prompt was sent.
+def emitted(payload):
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        try:
+            gw.emit(payload) if payload.get("ok") else gw.fail(payload["code"], payload["reason"])
+        except SystemExit:
+            pass
+    return json.loads(out.getvalue())
+
+
+gw.TIMED, os.environ["IMAGE_JOB_ID"] = True, "job-7"
+gw.PHASES.clear()
+result, _ = render(Page())
+assert list(gw.PHASES) == ["page", "sent", "media", "saved"], gw.PHASES
+assert sorted(gw.PHASES.values()) == list(gw.PHASES.values()), gw.PHASES
+line = emitted(result)
+assert (line["job"], list(line["phases"]), line["lock_wait_s"]) == ("job-7", list(gw.PHASES), 0) and "sent" not in line
+row = ledger()[-1]
+assert row["event"] == "saved" and row["job"] == "job-7" and row["phases"] == gw.PHASES and "sent" not in row, row
+gw.PHASES.clear()
+failure, _ = render(Page(after=[{"alerts": ["You've reached our image generation limit. Please try again later."]}]))
+row = ledger()[-1]
+assert failure.code == 3 and row["event"] == "failed" and row["sent"] is True and row["job"] == "job-7", row
+assert emitted({"ok": False, "code": 3, "reason": failure.reason})["sent"] is True
+gw.PHASES.clear()
+page = Page()
+page.chooser_opens = False
+failure, _ = render(page, ref=refs[:1])
+line = emitted({"ok": False, "code": failure.code, "reason": failure.reason})
+assert line["sent"] is False and list(line["phases"]) == ["page"] and line["job"] == "job-7", line
+gw.TIMED = False
+del os.environ["IMAGE_JOB_ID"]
+assert "job" not in emitted({"ok": True})
 EOF
 
 # --- bounded teardown: Chrome's stdio off Playwright's pipes, a hung close killed, stacks on SIGTERM -----
@@ -562,7 +794,7 @@ released = threading.Event()
 class Context:
     pages = []
     def add_init_script(self, script): pass
-    def on(self, event, listener): pass
+    def on(self, event, listener): listened.append(event)
     def close(self):
         if hang.is_set():
             if not released.wait(5):
@@ -586,25 +818,13 @@ api.sync_playwright = sync_playwright
 sys.modules["playwright"], sys.modules["playwright.sync_api"] = types.ModuleType("playwright"), api
 
 
-class Watcher:
-    def __init__(self): self.calls = []
-    def terminate(self): self.calls.append("terminate")
-    def kill(self): self.calls.append("kill")
-    def wait(self, timeout):
-        self.calls.append("wait")
-        if "kill" not in self.calls:
-            raise subprocess.TimeoutExpired("osascript", timeout)
-
-
-watchers = []
+listened = []
 gw.refuse_off_roster = lambda account: None
 gw.has_login = lambda account: True
 gw.profile_in_use = lambda profile: False
 gw.chrome_clone = lambda: contextlib.nullcontext(work / "Clone.app")
 gw.chrome_pid = lambda profile: 4242
 gw.parent_pid = lambda pid: {4242: 777, 777: os.getpid()}.get(pid)
-gw.hide_clone = lambda *args: None
-gw.keep_hidden = lambda account, pid: watchers.append(Watcher()) or watchers[-1]
 gw.TEARDOWN_S = 0.3
 real_kill, real_killpg = os.kill, os.killpg
 
@@ -618,6 +838,7 @@ def fake_kill(name):
 
 
 os.kill, os.killpg = fake_kill("kill"), fake_kill("killpg")
+gw.TIMED = True
 saved, captured = os.dup(2), tempfile.TemporaryFile()
 os.dup2(captured.fileno(), 2)
 try:
@@ -641,7 +862,11 @@ assert took < 3, f"a hung close held the run {took:.1f}s"
 assert ("killpg", 4242, signal.SIGKILL) in killed and ("kill", 777, signal.SIGKILL) in killed, killed
 assert "BROWSER_WARNING" in err and "closing the browser still running" in err, err
 assert "in browser" in err and "File " in err, err
-assert [w.calls for w in watchers] == [["terminate", "wait", "kill", "wait"]] * 2, [w.calls for w in watchers]
+assert listened == ["page", "page"], listened
+# Each close is measured in its own teardown row (the hung one held to TEARDOWN_S), the browser phase beside it.
+teardowns = [row for row in gw.job_rows() if row.get("kind") == "teardown"]
+assert [row["account"] for row in teardowns] == ["alpha"] * 2 and "browser" in teardowns[0]["phases"], teardowns
+assert teardowns[0]["close_s"] < 0.25 <= teardowns[1]["close_s"], teardowns
 
 # A SIGTERM-killed engine names where it hung, and still dies by the signal.
 probe = subprocess.Popen([sys.executable, "-c", f"""
@@ -661,7 +886,7 @@ EOF
 
 # --- rotation, walls, resume ownership --------------------------------------------------------------
 assert python3 - "$ROOT/share" "$CODEXB_PROFILES_DIR/.codexb/disabled" <<'EOF'
-import argparse, contextlib, fcntl, io, json, os, sys, time
+import argparse, contextlib, fcntl, io, json, os, sys, threading, time
 sys.path.insert(0, sys.argv[1])
 import chatgpt_web as cw
 gw = cw.gw
@@ -687,7 +912,7 @@ gw.set_wall("beta", None)
 (gw.ROOT / "locks").mkdir(exist_ok=True)
 with open(gw.ROOT / "locks" / "beta.lock", "w") as held:
     fcntl.flock(held, fcntl.LOCK_EX)
-    assert cw.rotation() == ["alpha", "beta"], cw.rotation()
+    assert cw.rotation() == ["beta", "alpha"], "a busy account keeps its place; the run try-locks past it"
 open(disabled, "w").write("alpha\n")
 gw._pool = None
 assert cw.rotation() == ["beta"], cw.rotation()
@@ -706,7 +931,8 @@ def run(behaviour, **kw):
         return behaviour(account)
     cw.generate_on = fake
     ns = argparse.Namespace(**{**dict(prompt="x", dest=str(gw.ROOT / "o.png"), ref=[], resume=None, account=None,
-                                      timeout=30, region=None, tool="generate", point=[]), **kw})
+                                      timeout=30, region=None, tool="generate", point=[], lock_wait=900, count=1),
+                                 **kw})
     try:
         with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
             cw.cmd_generate(ns)
@@ -734,6 +960,18 @@ assert gw.walls()["beta"] == until, gw.walls()
 code, out = run(ok)
 assert tried == ["alpha"], tried
 gw.set_wall("beta", None)
+# A --count run some of whose tabs hit the limit delivers and still walls the account for the next run.
+code, out = run(lambda account: {**ok(account), "walled_until": until})
+assert code == 0 and tried == ["beta"] and gw.walls()["beta"] == until, (code, tried, gw.walls())
+gw.set_wall("beta", None)
+# --count is 1-4 new chats of one generate request: never with a resume, a region, pins or another tool.
+for kw in (dict(count=5), dict(count=0), dict(count=2, resume=CHAT), dict(count=2, resume=CHAT, region=(0, 0, 1, 1)),
+           dict(count=2, resume=CHAT, tool="comment", point=[(0.5, 0.5, "x")]),
+           dict(count=2, resume=CHAT, tool="resize", aspect="1:1"), dict(count=2, resume=CHAT, tool="remove-bg")):
+    code, reason = run(ok, **kw)
+    assert code == 2 and "--count" in reason and tried == [], (kw, code, reason)
+code, out = run(ok, count=4)
+assert code == 0 and tried == ["beta"], (code, tried)
 
 
 def signed_out(account):
@@ -756,6 +994,34 @@ code, reason = run(ok, account="alpha")
 assert code == 3 and tried == [] and "alpha is walled" in reason, (code, reason)
 gw.set_wall("alpha", None)
 gw.set_wall("beta", None)
+
+# Busy accounts: the first free one in rotation order is try-locked; a pinned one or all of them still busy after
+# --lock-wait is exit 5 unsent; with all busy the run waits on the first and takes it once it frees.
+def hold(*names):
+    handles = [open(gw.ROOT / "locks" / f"{name}.lock", "w") for name in names]
+    for handle in handles:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+    return handles
+
+
+held = hold("beta")
+started = time.time()
+code, out = run(ok, lock_wait=5)
+assert code == 0 and tried == ["alpha"] and time.time() - started < 2, (code, tried, time.time() - started)
+code, reason = run(ok, account="beta", lock_wait=0.3)
+assert code == 5 and tried == [] and reason.startswith("account busy: timed out waiting for beta.lock"), reason
+held += hold("alpha")
+started = time.time()
+code, reason = run(ok, lock_wait=0.3)
+assert code == 5 and tried == [] and "beta.lock" in reason and time.time() - started < 3, (code, reason)
+threading.Timer(0.4, held[0].close).start()
+waited = gw.lock_waited
+code, out = run(ok, lock_wait=5)
+assert code == 0 and tried == ["beta"] and 0.3 < gw.lock_waited - waited < 3, (code, tried, gw.lock_waited - waited)
+for handle in held:
+    handle.close()
+code, out = run(ok)
+assert code == 0 and tried == ["beta"] and not list(gw._held), (code, tried, gw._held)
 
 code, reason = run(ok, account="ghost")
 assert code == 2 and tried == [], reason
@@ -815,6 +1081,16 @@ rm -f "$HOME/.llm-limits-codex.json.removed"
 assert test "$(engine_rc accounts)" = 0
 assert jq -e '[.accounts[].account] == ["main", "acct", "alpha", "beta", "gamma"]' "$WORK/engine.out" >/dev/null
 assert_fails grep -q '@example.com' "$WORK/engine.out"
+# A pinned account whose lock another run holds past --lock-wait: exit 5 unsent, with the job and its phases.
+python3 -c 'import fcntl, sys, time; h = open(sys.argv[1], "w"); fcntl.flock(h, fcntl.LOCK_EX); print("held", flush=True); time.sleep(20)' \
+  "$CHATGPT_WEB_DIR/locks/alpha.lock" >"$WORK/held" &
+holder=$!
+until grep -q held "$WORK/held" 2>/dev/null; do sleep 0.1; done
+assert test "$(IMAGE_JOB_ID=j-9 engine_rc generate --prompt x --dest "$WORK/x.png" --account alpha --lock-wait 0.2)" = 5
+assert jq -e '.code == 5 and .sent == false and .job == "j-9" and .phases == {} and .lock_wait_s >= 0.2
+  and (.reason | startswith("account busy: timed out waiting for alpha.lock"))' "$WORK/engine.out" >/dev/null
+kill "$holder"
+wait "$holder" 2>/dev/null
 
 # --- login --wait, the step `<vendor>b web` holds on (both engines, one gw.cmd_login) -----------------
 # The fake Chrome exits at once and leaves its profile lock with a process that lives 3 s, as a real
@@ -886,7 +1162,12 @@ assert test "$(image_rc --dest "$OUT/a.png" --prompt badge --route nope)" = 2
 assert test ! -e "$WEB_CALLS"
 assert test "$(image_rc --dest "$OUT/a.png" --prompt badge --route web --resume my-thread)" = 2
 assert test ! -e "$WEB_CALLS"
-assert test "$(image_rc --dest "$OUT/a.png" --prompt badge --account acct)" = 1
+# Web is the manifest's routes[0], so no --route runs it; --route cli still reaches the CLI alone.
+assert test "$(image_rc --dest "$OUT/a.png" --prompt badge --account acct)" = 0
+assert test -s "$WEB_CALLS"
+assert test ! -e "$CLI_CALLS"
+assert jq -se '.[-1] | .tool == "codex-image" and .route == "web"' "$IMAGE_LEG_LOG" >/dev/null
+assert test "$(image_rc --route cli --dest "$OUT/a.png" --prompt badge --account acct)" = 1
 assert test -s "$CLI_CALLS"
 assert test ! -e "$WEB_CALLS"
 assert jq -se '.[-1] | .tool == "codex-image" and .route == "cli"' "$IMAGE_LEG_LOG" >/dev/null
@@ -911,6 +1192,24 @@ assert grep -q '^model=' "$IMAGE_OUT"
 assert_fails grep -q '^caps=' "$IMAGE_OUT"
 assert jq -se '.[-1] | .tool == "codex-image" and .route == "web" and .rc == 0 and .account == "alpha" and .size == 3' \
   "$IMAGE_LEG_LOG" >/dev/null
+
+# The web route takes its own reference cap (ChatGPT took 20, live 2026-10-03), the CLI keeps the tool's 5.
+CLI_REFS=$(jq -r '.refs.max' "$ROOT/share/image-caps/codex.json")
+WEB_REFS=$(jq -r '.web.refs_max' "$ROOT/share/image-caps/codex.json")
+assert test "$WEB_REFS" -gt "$CLI_REFS"
+many=()
+for index in $(seq 1 $((WEB_REFS + 1))); do
+  printf 'r\n' >"$WORK/many-$index.png"
+  many+=(--ref "$WORK/many-$index.png")
+done
+assert test "$(image_rc --route web --dest "$OUT/many.png" --prompt badge "${many[@]:0:$((2 * WEB_REFS))}")" = 0
+assert test "$(grep -c -x -- --ref "$WEB_CALLS")" = "$WEB_REFS"
+assert test "$(image_rc --route web --dest "$OUT/many.png" --prompt badge "${many[@]}")" = 2
+assert test ! -e "$WEB_CALLS"
+assert grep -q "references exceed the $WEB_REFS the ChatGPT web route takes" "$IMAGE_ERR"
+assert test "$(image_rc --route cli --dest "$OUT/many.png" --prompt badge "${many[@]:0:$((2 * CLI_REFS + 2))}")" = 2
+assert test ! -e "$CLI_CALLS"
+assert grep -q "references exceed the $CLI_REFS the imagegen tool takes" "$IMAGE_ERR"
 
 assert test "$(image_rc --route web --dest "$OUT/b.jpg" --prompt badge)" = 0
 assert grep -qx 'format=jpeg' "$IMAGE_OUT"
@@ -938,7 +1237,7 @@ assert test "$(image_rc --route web --dest "$OUT/p.png" --prompt badge --aspect 
 awk 'f && /^--dest$/ {exit} f {print} /^$/ {f=1}' "$WEB_CALLS" >"$WORK/web-sentences"
 assert grep -qx 'Make the image a 16:9 landscape frame: its width to height ratio exactly 16:9.' "$WORK/web-sentences"
 assert grep -q '^Give it a genuinely transparent background' "$WORK/web-sentences"
-assert test "$(image_rc --dest "$OUT/p.png" --prompt badge --aspect 16:9 --transparent --account acct)" = 1
+assert test "$(image_rc --route cli --dest "$OUT/p.png" --prompt badge --aspect 16:9 --transparent --account acct)" = 1
 while IFS= read -r sentence; do
   assert grep -Fqx -- "$sentence" "$CLI_CALLS.prompt"
 done <"$WORK/web-sentences"
@@ -955,7 +1254,7 @@ assert grep -q 'kept as generated' "$IMAGE_ERR"
 assert test "$(image_rc --route web --dest "$OUT/p.png" --prompt badge --aspect 16:9 --size 64x48)" = 2
 
 # --region is web-only, never prose on the CLI; on the web it edits one image (a chat's last or one ref).
-assert test "$(image_rc --dest "$OUT/p.png" --prompt badge --resume "$CHAT" --region 0,0.5,1,0.5 --account acct)" = 2
+assert test "$(image_rc --route cli --dest "$OUT/p.png" --prompt badge --resume "$CHAT" --region 0,0.5,1,0.5 --account acct)" = 2
 assert grep -q 'web-only.*pass --route web' "$IMAGE_ERR"
 assert test "$(wc -l <"$IMAGE_ERR" | tr -d ' ')" = 1
 assert test ! -e "$CLI_CALLS"
@@ -968,7 +1267,7 @@ assert grep -q '^Change only the area outlined in red' "$WEB_CALLS"
 
 # Re-aspect (--resume + --aspect, no --prompt) goes to the viewer's Resize on the web only; a ratio it does
 # not list comes back as exit 2 with the list.
-assert test "$(image_rc --dest "$OUT/p.png" --resume "$CHAT" --aspect 1:1 --account acct)" = 2
+assert test "$(image_rc --route cli --dest "$OUT/p.png" --resume "$CHAT" --aspect 1:1 --account acct)" = 2
 assert grep -q 'web-only' "$IMAGE_ERR"
 assert test ! -e "$CLI_CALLS"
 assert test "$(image_rc --route web --dest "$OUT/p.png" --resume "$CHAT" --aspect 1:1)" = 0
@@ -982,7 +1281,7 @@ assert grep -q 'a re-aspect changes the canvas.*no --composite' "$IMAGE_ERR"
 assert test ! -e "$WEB_CALLS"
 
 # --point: Comment pins, web-only like --region; every point reaches the engine in order, a note only if given.
-assert test "$(image_rc --dest "$OUT/p.png" --resume "$CHAT" --point '0.5,0.2=orange helmet' --account acct)" = 2
+assert test "$(image_rc --route cli --dest "$OUT/p.png" --resume "$CHAT" --point '0.5,0.2=orange helmet' --account acct)" = 2
 assert grep -q -- '--point is web-only.*pass --route web' "$IMAGE_ERR"
 assert test "$(wc -l <"$IMAGE_ERR" | tr -d ' ')" = 1
 assert test ! -e "$CLI_CALLS"
@@ -1004,7 +1303,7 @@ assert test "$(image_rc --route web --dest "$OUT/p.png" --ref "$WORK/r1.png" --p
 assert grep -A1 -x -- --ref "$WEB_CALLS" | grep -qx "$WORK/r1.png"
 
 # --remove-bg: web-only, alone, no instruction (the viewer drops one), a .png that must come back with alpha.
-assert test "$(image_rc --dest "$OUT/n.png" --resume "$CHAT" --remove-bg --account acct)" = 2
+assert test "$(image_rc --route cli --dest "$OUT/n.png" --resume "$CHAT" --remove-bg --account acct)" = 2
 assert grep -q -- '--remove-bg is web-only.*pass --route web' "$IMAGE_ERR"
 assert test "$(wc -l <"$IMAGE_ERR" | tr -d ' ')" = 1
 assert test ! -e "$CLI_CALLS"
@@ -1063,10 +1362,10 @@ for refused in "--ref $WORK/green.png --composite --no-composite" "--ref $WORK/g
 done
 assert test "$(image_rc --route web --dest "$OUT/c8.png" --ref "$WORK/green.png" --remove-bg --composite)" = 2
 assert grep -q 'never runs with --remove-bg or --transparent' "$IMAGE_ERR"
-assert test "$(image_rc --dest "$OUT/c8.png" --prompt x --ref "$WORK/green.png" --composite --account acct)" = 1
+assert test "$(image_rc --route cli --dest "$OUT/c8.png" --prompt x --ref "$WORK/green.png" --composite --account acct)" = 1
 assert test -s "$CLI_CALLS"
 
 # Every web-only tool in the manifest is one this suite drives and the CLI refuses.
 assert test "$(jq -c '.web_only | keys' "$ROOT/share/image-caps/codex.json")" = '["point","reaspect","region","remove_bg"]'
 
-echo "PASS: $asserts asserts; one hidden-Chrome core (gemini_web's module, clone app and its locks, hide watcher, snapshot path, no second copy), the codex roster, image-limit text read as a wall with its end and nothing else, the live session and plan replies, Work mode switched to Chat, new chat vs resume (the older image never taken), the gallery blob read in-page, a stale draft removed and refs uploaded one by one in order before the prompt, limit -> 3 with the chat kept for a resume, signed out -> 4, a profile bound to another login refused unsent with its email masked, rotation least recently started first (a resume never stamps) with walls, busy locks and the codex pool, resume pinned to its owner, and codex-image --route web: dispatch, flags, prompt mapping, the CLI route's output block, exit codes and the image-leg route; one sentence builder words --aspect/--size/--transparent/--region identically on both routes, the aspect= fit line (a miss kept, never cropped), --region web-only through a clamped Markup stroke that must take, re-aspect only through the viewer's Resize (exit 2 with the offered ratios), --point as Comment pins alone (each kept before the next, off the toolbar, no other text), --remove-bg as one Remove BG click with no instruction and delivered only with alpha, composite on by default for --region/--point (opt-out, explicit on either route, never with --remove-bg/--transparent) with lineage through --resume and --ref, every web-only flag refused by the CLI naming --route web, and a signed-out verdict only on 401/403"
+echo "PASS: $asserts asserts; one hidden-Chrome core (gemini_web's module, clone app and its locks, off-screen parking, snapshot path, no second copy), the codex roster, image-limit text read as a wall with its end and nothing else, the live session and plan replies, Work mode switched to Chat, new chat vs resume (the older image never taken), the gallery blob read in-page, a stale draft removed and refs uploaded one by one in order before the prompt, limit -> 3 with the chat kept for a resume, signed out -> 4, a profile bound to another login refused unsent with its email masked, rotation least recently started first (a resume never stamps) with walls, busy locks and the codex pool, resume pinned to its owner, and codex-image --route web: dispatch, flags, prompt mapping, the CLI route's output block, exit codes and the image-leg route; one sentence builder words --aspect/--size/--transparent/--region identically on both routes, the aspect= fit line (a miss kept, never cropped), --region web-only through a clamped Markup stroke that must take, re-aspect only through the viewer's Resize (exit 2 with the offered ratios), --point as Comment pins alone (each kept before the next, off the toolbar, no other text), --remove-bg as one Remove BG click with no instruction and delivered only with alpha, composite on by default for --region/--point (opt-out, explicit on either route, never with --remove-bg/--transparent) with lineage through --resume and --ref, every web-only flag refused by the CLI naming --route web, and a signed-out verdict only on 401/403"

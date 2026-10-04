@@ -197,7 +197,7 @@ C1_QUEUE_KEPT = 20
 C1_NOTE_IDS = re.compile(r"<(tool-use-id|task-id)>([^<]+)</")
 C1_SUITE = re.compile(r"(?:^|[;&|(\n])\s*(?:\w+=\S*\s+)*(?:(?:bash|sh|python3?|env|nice|timeout\s+\S+)\s+)*"
                       r"(?:\S*/)?(?:run-all|run-suites\.sh|test_[\w.-]+\.(?:sh|bash|py|lua))(?=\s|$|[;&|)])")
-MEDIA_TOOL = re.compile(r"(?:^|[\s/;&|(])(codex-image|gemini-image|grok-image|image-fanout|gemini-video|grok-video|"
+MEDIA_TOOL = re.compile(r"(?:^|[\s/;&|(])(media-run|codex-image|gemini-image|grok-image|image-fanout|gemini-video|grok-video|"
                         r"video-chain|gemini-music|gemini-sfx|gemini-listen|chatgpt-web|gemini-web)(?=\s|$|[;&|)])")
 C1_BYTES = (b'"user"', b'"assistant"', b'"system"', b'"queue-operation"', b'"queued_command"')
 
@@ -502,9 +502,6 @@ def read_transcript(path, rec, events, versions, boots=(), limit=-1):
     pend = rec.setdefault("pend", {})
     last_t = 0.0
     subagent = os.sep + "subagents" + os.sep in path
-    if subagent and "agent" not in rec:
-        meta = read_json(path[:-6] + ".meta.json", {})
-        rec["agent"], rec["ptid"] = str(meta.get("agentType") or ""), str(meta.get("toolUseId") or "")
     session = os.path.basename(os.path.dirname(os.path.dirname(path)) if subagent else path[:-6])[:8]
     for line in data[:end].split(b"\n"):
         at = pos
@@ -551,16 +548,16 @@ def read_transcript(path, rec, events, versions, boots=(), limit=-1):
                 name = str(block.get("name") or "")
                 command = (block.get("input") or {}).get("command") if name == "Bash" else None
                 pend[block["id"]] = [t, name, 1 if trivial_bash(command) else 0, None if subagent else at // 1024]
-                if rec.get("agent") == "image-gen":
-                    media = MEDIA_TOOL.search(str(command or ""))
-                    pend[block["id"]].append(media.group(1) if media else "prep:" + name)
+                media = MEDIA_TOOL.search(str(command or ""))
+                if media:
+                    pend[block["id"]].append(media.group(1))
             elif block.get("type") == "tool_result" and block.get("tool_use_id") in pend:
                 start, name, trivial, kb, phase = (pend.pop(block["tool_use_id"]) + [None, None])[:5]
                 who = session_kind(rec)
                 if "act" in rec:
                     c1_add(rec["act"], start, t)
-                if rec.get("agent") == "image-gen":
-                    events.append(["g", round(start, 3), session, round(t, 3), rec.get("ptid", "")[-10:], phase])
+                if phase:
+                    events.append(["g", round(start, 3), session, round(t, 3), block["tool_use_id"][-10:], phase])
                 events.append(["c", round(start, 3), project, name, trivial, round(max(0.0, t - start), 3),
                                who, block["tool_use_id"][-10:], session, kb])
     for key in [k for k, v in pend.items() if v[0] < last_t - PENDING_TTL_S]:
@@ -801,8 +798,8 @@ def c1_entry(c, out, entry, t, session, boots):
                 name, args = str(block.get("name") or ""), block.get("input") or {}
                 command = str(args.get("command") or "") if name == "Bash" else ""
                 layer = "ask" if name in C1_ASK else "test" if C1_SUITE.search(command) else "media" if (
-                    MEDIA_TOOL.search(command) or args.get("subagent_type") == "image-gen") else "tool"
-                what = name + (":" + str(args["subagent_type"]) if args.get("subagent_type") else "")
+                    MEDIA_TOOL.search(command)) else "tool"
+                what = name + (":" + str(args["subagent_type"]) if args.get("subagent_type") else ":media" if layer == "media" else "")
                 turn["open"][block["id"]] = [t, layer, what]
         return
     if kind == "system":

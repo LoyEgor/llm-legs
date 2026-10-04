@@ -65,18 +65,17 @@ This design folds in two frontier hunts (runs 20260929T225123Z-3e30191 and 20260
      run (the printed ref), a worktree on `night/<night-id>/<vendor>`, the same branch's worktrees in
      review-bench and claude-setup as the brief's `ADD-DIR:` lines, and a brief. One headless worker
      per vendor.
-   - **Existing debt.** The orchestrator runs the sweep's debt rounds (night-sweep step 3), each ONE
-     chunked round across all sweep repositories, over the debt that already sat in main at press
-     time. Workers never touch main, so this runs beside them.
+   - **Press-time tree.** The orchestrator commits and pushes each sweep repository as it stood at
+     press time, one commit each, unreviewed: every branch lands on it, and the debt pass reviews it.
 4. **Per branch, as soon as its worker returns** (a completion notification, never polling):
    - The run closed: its close gate reran the doctor inside the worktree and passed.
-   - One T2 bugs review of that branch.
+   - No per-branch review (Egor, 2026-10-03: night 20261003T042136Z-e9f1 ran 12 rounds, nine of them
+     one per branch, about 60% of its spend; debt is cleaned in one chunked pass).
    - The orchestrator reads the decision table itself and checks every non-`fixed` verdict. That is
-     the second model on a fixer's self-clearing.
-   - Findings are fixed by the SAME worker (RESUME) on the round's `review-bench fix` brief, whose
-     `ROUND:` line folds its fixer rows; a fix made any other way leaves the round open, and
-     `night-run job set … state=merged` refuses a job whose `review` round still has open findings
-     until the round is fixed that way or closed `review-bench close <round> --nofix --reason '…'`.
+     the second model on a fixer's self-clearing; what it finds goes to the SAME worker (RESUME).
+   - `night-run job set … state=merged` still refuses a job whose optional `review` round has open
+     findings, until it is fixed through `review-bench fix` or closed `review-bench close <round>
+     --nofix --reason '…'`; tonight's merged jobs carry no `review`.
    - A Code fixer job (`code-*`) merges only through `bin/code-doctor check --landing` on its run
      record, against its night base and the main checkouts as they are then (active work,
      revalidation, deletion proof); `night-run job set … state=merged suites=passed` attests the
@@ -86,15 +85,19 @@ This design folds in two frontier hunts (runs 20260929T225123Z-3e30191 and 20260
    - Commit (one long line) and push.
    - One commit per branch is fine: commit count does not matter to Egor. Merges into main are
      serial and short; everything else is parallel.
-5. **No deadline** (Egor, 2026-09-30: a 4 h deadline closed a night while a debt round was still
+5. **Debt pass, after the landings** (the `debt` job, once no other job is `pending`): night-sweep
+   step 3 once — one fit round, then one bugs round, each ONE chunked round across all sweep
+   repositories, over the press-time debt plus everything the night landed — then one fix pass, the
+   commit and push, and the recount. The 150-line floor stays: a round review-bench refuses is skipped.
+6. **No deadline** (Egor, 2026-09-30: a 4 h deadline closed a night while a debt round was still
    running, and its findings sat unfixed until noon).
    - The orchestrator works until every job is `merged`, `nothing-to-do` or `blocked-on-egor`; a
-     round that finishes late is fixed and landed like any other.
+     job that finishes late is landed like any other, and the debt pass waits for it.
    - The only stop is for a hung job: `worker-run`'s watchdog ends a worker that shows no progress
      (`WORKER_RUN_IDLE_S`, 30 min; a 6 h wall ceiling behind it). The orchestrator then abandons its
      run (`doctor-fix abandon`) and records the job `left` with the watchdog's reason; its branch
      stays unmerged and is named in the report.
-6. **Close.**
+7. **Close.**
    - Rerun the four doctors. This settles the ledger's `fixed-pending` rows. Commit and push that
      bookkeeping as well, so nothing is dirty after the last push.
    - `night-run finish` writes the morning result, then `span-off`. It also removes every landed,
@@ -128,10 +131,10 @@ This design folds in two frontier hunts (runs 20260929T225123Z-3e30191 and 20260
 - `jobs[]`, each with:
   - `kind` (fixer, vendor, debt or leftover) and `ref` (run id, event id, review round or
     `leftover-<slug>`); a leftover job also carries `adopted[]` ({repo, branch, worktree, tip,
-    night_worktree}), where its branch came from;
+    night_worktree}), where its branch came from, and `handover` ({by, at, why}) when adopted with `--ready`;
   - `state`: `merged`, `left` (with a reason), `failed-launch`, `blocked-on-egor` (its reason the trade) or `nothing-to-do`;
-  - `branch`, `review` (run id), `commits[]` ({repo, hash}) and `pushed` (bool, as verified against
-    the remote).
+  - `branch`, `review` (run id, optional: a night branch gets no review of its own), `commits[]`
+    ({repo, hash}) and `pushed` (bool, as verified against the remote).
 
 Jobs start `pending`; `finish` turns any still `pending` into `left`. `pushed` is set only after
 the commits are verified on the remote (`ls-remote`, the remote head fetched when it is missing
@@ -168,7 +171,11 @@ state, the one predicate `finish` prunes by:
 - `live`, never touched: the main checkout, a locked worktree, a process with its cwd inside, a branch
   of a running night, or a non-night branch whose newest branch-reflog entry or dirty file is under
   6 h old. A chat at work moves its branch (create, commit, rebase) or leaves files dirty, so a fresh
-  worktree with no commit yet is live from its creation.
+  worktree with no commit yet is live from its creation. Only that last, activity-only reason yields to
+  an owner handover: `night-run job <id> add leftover <branch> --ready "<why>"`, given when the owning
+  chat declared the branch finished, adopts it as a leftover and records `handover` {by (the caller's
+  `CLAUDE_CODE_SESSION_ID`, else `$USER`), at, why} on the job, shown in `night-run report`; the refusal
+  names the flag. Nobody vouching, the 6 h rule stands.
 - `landed`: landed, clean, not live; `finish` removes its worktree and deletes the branch.
 - `leftover`: everything else (unlanded commits or uncommitted files). It is unfinished work and goes
   into main as a night job. `night-run job <id> add leftover <branch>` adopts it into the night's own
@@ -184,9 +191,30 @@ state, the one predicate `finish` prunes by:
   `--onto` hold only its own change. A landing that fails stays `left`, and a later Cleanup takes it
   like any other night branch.
 
-`night-run report [<id>]` prints it narrowly: one line per job, then the totals. A job with commits
+`night-run report [<id>]` prints it narrowly. First a mechanical header from `share/night_spend.py`,
+the numbers of the morning message: duration (local start–finish, hours); jobs merged / left / other
+by kind; the worker runs whose `launcher` is one of the night's orchestrator sessions, started inside
+its window, by vendor/served model, with their summed wall-clock hours and any without a transcript;
+the review rounds started inside the window whose bench `meta.json` `session` is the night's (one
+without that field counts by window alone); token spend of fixers, reviews and orchestrator (output,
+cache write, cache read) and one weighted total in input-token equivalents (input 1, cache write
+1.25, cache read 0.1, output 5) with its ratio to the newest earlier finished night. Sources: each
+run's `session-file`, else `worker-run transcript <run>` (claudeb, codex, gemini and grok alike), a
+Claude transcript with its `subagents/`, one assistant message counted once across runs (a RESUME
+shares its transcript); a bench's `claude-usage-*.jsonl` by id, plus `usage-<label>.jsonl`
+`total_tokens` only where no `claude-usage-<label>.jsonl` holds the same calls (the judge's
+`usage-judge.jsonl` sums its `~bN` batches); the orchestrator transcript inside the window. Roots
+follow `WORKER_RUN_DIR`, `CLAUDEB_PROFILES_ROOT`, `WORKER_STATS_DIR`/`CLAUDEB_DIR` and the vendor
+profile overrides. Then one line per job, then the totals. A job with commits
 shows `code +A/-R`: lines its commits add and remove, test paths (`tests/`, `test_*`) left out;
 `code ?` when a commit cannot be read. Information only: no threshold.
+
+Behind the spend lines, an observational churn block from `share/night_churn.py` measures whether the
+night did real work or churn: per-branch review rounds versus other rounds; problems touched again without
+proof and regressions across doctor runs against the night's problem snapshots (`doctor_problems_before`
+and `doctor_problems_after`); fixer spend on runs that left every decided problem unproven; and lines deleted
+tonight that were written in the 7 days prior (with earlier night commits noted). The block is pure
+measurement and gates nothing: no refusal, no exit code change, no threshold.
 
 The Doctors menu shows the last night on one row from `night-run latest --menu`, such as
 `Last night 30 Sep: 11 of 13 · 2 unfinished`; its submenu lists every job, done or unfinished, with

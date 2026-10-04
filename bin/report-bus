@@ -29,22 +29,28 @@ problem() {
   exit 0
 }
 lock_store() {
-  local tries=0 owner age
+  local limit=${1:-100} tries=0 owner age
   mkdir -p "$ROOT" 2>/dev/null || return 1
-  while ! mkdir "$ROOT/.lock" 2>/dev/null; do
-    owner=$(cat "$ROOT/.lock/pid" 2>/dev/null) || owner=''
-    age=$(( $(date +%s) - $(mtime "$ROOT/.lock" || date +%s) ))
-    if [ "$age" -gt 60 ] || { [[ "$owner" =~ ^[0-9]+$ ]] && ! kill -0 "$owner" 2>/dev/null; }; then
-      rm -f "$ROOT/.lock/pid"
-      rmdir "$ROOT/.lock" 2>/dev/null || :
-      continue
+  while :; do
+    if mkdir "$ROOT/.lock" 2>/dev/null; then
+      if { printf '%s\n' "$$" >"$ROOT/.lock/pid"; } 2>/dev/null; then locked=true; return 0; fi
+    else
+      owner=$(cat "$ROOT/.lock/pid" 2>/dev/null) || owner=''
+      age=$(( $(date +%s) - $(mtime "$ROOT/.lock" || date +%s) ))
+      # The owner may have released and exited after the read, its successor's fresh lock in place:
+      # recover only while the dead pid is still the one recorded.
+      if [ "$age" -gt 60 ] || { [[ "$owner" =~ ^[0-9]+$ ]] && ! kill -0 "$owner" 2>/dev/null &&
+        [ "$(cat "$ROOT/.lock/pid" 2>/dev/null)" = "$owner" ]; }; then
+        rm -f "$ROOT/.lock/pid"
+        rmdir "$ROOT/.lock" 2>/dev/null || :
+        continue
+      fi
     fi
     tries=$((tries + 1))
-    [ "$tries" -lt 100 ] && [ -w "$ROOT" ] || return 1
+    [ -w "$ROOT" ] || return 1
+    [ "$tries" -lt "$limit" ] || return 1
     sleep 0.05
   done
-  locked=true
-  printf '%s\n' "$$" >"$ROOT/.lock/pid"
 }
 resolve_session() {
   local current='' next owner entry runroot seen='|' pid hop registry
@@ -90,7 +96,7 @@ skip_flush() {
   [ -z "$agent" ] || return 0
   case "$transcript" in */subagents/*) return 0 ;; esac
   case "$agent_type" in
-    codex-worker|claudeb-worker|gemini-worker|grok-worker|light-worker|image-gen|light-research) return 0 ;;
+    codex-worker|claudeb-worker|gemini-worker|grok-worker|light-worker|light-research) return 0 ;;
   esac
   return 1
 }
@@ -207,7 +213,7 @@ case "$verb" in
     rm -f "$tmp"
     tmp=''
     valid_name "$id" || problem 'cannot hash body'
-    lock_store || problem 'cannot write queue root or acquire lock'
+    lock_store 2400 || problem 'cannot write queue root or acquire lock'
     if duplicate; then case "$verb" in emit) exit 3 ;; *) exit 0 ;; esac; fi
     mkdir -p "$ROOT/$session/pending" "$ROOT/$session/delivered" 2>/dev/null || problem 'cannot create queue'
     tmp=$(mktemp "$ROOT/.post.XXXXXX") || problem 'cannot create temporary report'

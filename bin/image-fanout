@@ -12,7 +12,13 @@ resolve_self() {
 }
 
 usage() {
-  printf 'usage: image-fanout --dest-dir <abs dir> --prompt <text> [--vendors all|codex,gemini,grok] [--accounts all|pick] [--takes <n>] [--ref <abs img>]... [--aspect <W:H>] [--size <WxH>] [--transparent] [--video] [--duration <s>] [--max-parallel <n>] [--dry-run]\n' >&2
+  printf 'usage: image-fanout --dest-dir <abs dir> (--prompt <text> | --jobs <abs jsonl>) [--vendors all|<vendor,...>] [--accounts all|pick] [--takes <n>] [--spare <n>] [--pack <1-4>] [--ref <abs img>]... [--edit <abs img>] [--aspect <W:H>] [--size <WxH>] [--transparent] [--video] [--duration <s>] [--max-parallel <n>] [--dry-run]\n' >&2
+  printf '  --jobs: one JSON object per line {prompt, dest, refs, edit, aspect, size, transparent, vendor, account, takes}; vendors = share/image-caps/*.json\n' >&2
+  exit 2
+}
+
+usage_error() {
+  printf 'image-fanout: %s\n' "$1" >&2
   exit 2
 }
 
@@ -25,36 +31,54 @@ script_dir=$(resolve_self)
 root=$(cd "$script_dir/.." && pwd)
 . "$root/share/image-caps.sh"
 
+caps_root=${IMAGE_FANOUT_CAPS_ROOT:-$root}
 bin_dir=${IMAGE_FANOUT_BIN_DIR:-$script_dir}
 lister_dir=${IMAGE_FANOUT_LISTER_DIR:-$script_dir}
+gap_ms=${IMAGE_FANOUT_LAUNCH_GAP_MS:-3000}
+kill_wait_ms=${IMAGE_FANOUT_KILL_WAIT_MS:-5000}
+lazy_spare_ms=${IMAGE_FANOUT_LAZY_SPARE_MS:-20000}
+busy_retry_ms=${IMAGE_FANOUT_BUSY_RETRY_MS:-30000}
+busy_giveup_ms=${IMAGE_FANOUT_BUSY_GIVEUP_MS:-900000}
+mem_poll_ms=${IMAGE_FANOUT_MEM_POLL_MS:-1000}
+job_mb=${IMAGE_FANOUT_JOB_MB:-1200}
+lock_wait=5
 
 dest_dir=''
 prompt=''
+jobs_file=''
 vendors_arg=all
 accounts_mode=all
 aspect=''
 size=''
 duration=''
+edit=''
 video=false
 transparent=false
 dry_run=false
 max_parallel=6
 takes=''
+spare=''
+pack=''
 refs=()
+request_flags=false
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --dest-dir) [ "$#" -ge 2 ] || usage; dest_dir=$2; shift 2 ;;
-    --prompt) [ "$#" -ge 2 ] || usage; prompt=$2; shift 2 ;;
+    --prompt) [ "$#" -ge 2 ] || usage; prompt=$2; request_flags=true; shift 2 ;;
+    --jobs) [ "$#" -ge 2 ] || usage; jobs_file=$2; shift 2 ;;
     --vendors) [ "$#" -ge 2 ] || usage; vendors_arg=$2; shift 2 ;;
     --accounts) [ "$#" -ge 2 ] || usage; accounts_mode=$2; shift 2 ;;
-    --ref) [ "$#" -ge 2 ] || usage; refs+=("$2"); shift 2 ;;
-    --aspect) [ "$#" -ge 2 ] || usage; aspect=$2; shift 2 ;;
-    --size) [ "$#" -ge 2 ] || usage; size=$2; shift 2 ;;
+    --ref) [ "$#" -ge 2 ] || usage; refs+=("$2"); request_flags=true; shift 2 ;;
+    --edit) [ "$#" -ge 2 ] || usage; edit=$2; request_flags=true; shift 2 ;;
+    --aspect) [ "$#" -ge 2 ] || usage; aspect=$2; request_flags=true; shift 2 ;;
+    --size) [ "$#" -ge 2 ] || usage; size=$2; request_flags=true; shift 2 ;;
     --duration) [ "$#" -ge 2 ] || usage; duration=$2; shift 2 ;;
     --max-parallel) [ "$#" -ge 2 ] || usage; max_parallel=$2; shift 2 ;;
     --takes) [ "$#" -ge 2 ] || usage; takes=$2; shift 2 ;;
-    --transparent) transparent=true; shift ;;
+    --spare) [ "$#" -ge 2 ] || usage; spare=$2; shift 2 ;;
+    --pack) [ "$#" -ge 2 ] || usage; pack=$2; shift 2 ;;
+    --transparent) transparent=true; request_flags=true; shift ;;
     --video) video=true; shift ;;
     --dry-run) dry_run=true; shift ;;
     -h|--help) usage ;;
@@ -62,37 +86,126 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-[ -n "$dest_dir" ] && [ -n "$prompt" ] || usage
+[ -n "$dest_dir" ] || usage
 [[ "$dest_dir" = /* ]] || usage
 [ -d "$dest_dir" ] || { printf 'image-fanout: --dest-dir is not a directory: %s\n' "$dest_dir" >&2; exit 2; }
 case "$accounts_mode" in all|pick) ;; *) usage ;; esac
+if [ -n "$jobs_file" ]; then
+  [ "$request_flags" = false ] || usage_error '--jobs carries each request: drop --prompt, --ref, --edit, --aspect, --size and --transparent'
+  [[ "$jobs_file" = /* ]] && [ -f "$jobs_file" ] || usage
+else
+  [ -n "$prompt" ] || usage
+fi
 if [ -n "$takes" ]; then
   [[ "$takes" =~ ^[1-9][0-9]*$ ]] && [ "$accounts_mode" = all ] || usage
 fi
 [[ "$max_parallel" =~ ^[1-9][0-9]*$ ]] || usage
-if [ -n "$size" ] && [ -n "$aspect" ]; then
-  printf 'image-fanout: pass --aspect or --size, not both\n' >&2
-  exit 2
-fi
-if [ -n "$size" ] && ! [[ "$size" =~ ^[0-9]+x[0-9]+$ ]]; then usage; fi
-if [ -n "$aspect" ] && ! [[ "$aspect" =~ ^([0-9]+(\.[0-9]+)?:[0-9]+(\.[0-9]+)?|auto)$ ]]; then usage; fi
+[ -z "$spare" ] || [[ "$spare" =~ ^[0-9]+$ ]] || usage
+[ -z "$pack" ] || [[ "$pack" =~ ^[1-4]$ ]] || usage
 if [ -n "$duration" ] && ! [[ "$duration" =~ ^[0-9]+$ ]]; then usage; fi
-if [ ${#refs[@]} -gt 0 ]; then
-  for ref in "${refs[@]}"; do
-    [[ "$ref" = /* ]] && [ -f "$ref" ] || usage
-  done
-fi
+kind=image
+[ "$video" = false ] || kind=video
+ext=png
+[ "$video" = false ] || ext=mp4
 
-ALL_VENDORS='codex gemini grok'
-case "$vendors_arg" in
-  all) vendors=$ALL_VENDORS ;;
-  *)
-    vendors=$(printf '%s' "$vendors_arg" | tr ',' ' ')
-    for vendor in $vendors; do
-      case "$vendor" in codex|gemini|grok) ;; *) usage ;; esac
-    done
-    ;;
-esac
+all_vendors=''
+for manifest in "$caps_root"/share/image-caps/*.json; do
+  [ -e "$manifest" ] || continue
+  manifest=${manifest##*/}
+  all_vendors="${all_vendors:+$all_vendors }${manifest%.json}"
+done
+
+resolve_vendors() { # spec -> space-separated vendors, 1 on an unknown name
+  local spec=$1 vendor out=''
+  if [ "$spec" = all ]; then
+    printf '%s' "$all_vendors"
+    return 0
+  fi
+  for vendor in ${spec//,/ }; do
+    case " $all_vendors " in
+      *" $vendor "*) out="${out:+$out }$vendor" ;;
+      *) return 1 ;;
+    esac
+  done
+  [ -n "$out" ] || return 1
+  printf '%s' "$out"
+}
+
+resolve_vendors "$vendors_arg" >/dev/null || usage
+
+# rq_refs holds newline-separated paths; rq_account is '' (every account, or the pool with takes),
+# `pick`, or a pinned account name.
+rq_n=0
+rq_prompt=() rq_dest=() rq_refs=() rq_edit=() rq_aspect=() rq_size=() rq_transparent=() rq_vendors=() rq_account=() rq_takes=()
+
+check_request() { # prompt aspect size edit refs-lines -> 0, or 1 with $why
+  why=''
+  local ref
+  [ -n "$1" ] || { why='no prompt'; return 1; }
+  if [ -n "$3" ] && [ -n "$2" ]; then why='pass --aspect or --size, not both'; return 1; fi
+  if [ -n "$3" ] && ! [[ "$3" =~ ^[0-9]+x[0-9]+$ ]]; then why="bad size: $3"; return 1; fi
+  if [ -n "$2" ] && ! [[ "$2" =~ ^([0-9]+(\.[0-9]+)?:[0-9]+(\.[0-9]+)?|auto)$ ]]; then why="bad aspect: $2"; return 1; fi
+  if [ -n "$4" ] && { [[ "$4" != /* ]] || [ ! -f "$4" ]; }; then why="edit is not an absolute file: $4"; return 1; fi
+  while IFS= read -r ref; do
+    [ -n "$ref" ] || continue
+    [[ "$ref" = /* ]] && [ -f "$ref" ] || { why="ref is not an absolute file: $ref"; return 1; }
+  done <<<"$5"
+  if [ "$video" = true ] && [ -z "$5" ]; then why='--video requires --ref'; return 1; fi
+  return 0
+}
+
+add_request() { # prompt dest refs-lines edit aspect size transparent vendors account takes
+  rq_n=$((rq_n + 1))
+  rq_prompt[rq_n]=$1 rq_dest[rq_n]=$2 rq_refs[rq_n]=$3 rq_edit[rq_n]=$4 rq_aspect[rq_n]=$5
+  rq_size[rq_n]=$6 rq_transparent[rq_n]=$7 rq_vendors[rq_n]=$8 rq_account[rq_n]=$9 rq_takes[rq_n]=${10}
+}
+
+if [ -z "$jobs_file" ]; then
+  ref_lines=''
+  if [ ${#refs[@]} -gt 0 ]; then ref_lines=$(printf '%s\n' "${refs[@]}"); fi
+  if ! check_request "$prompt" "$aspect" "$size" "$edit" "$ref_lines"; then
+    case "$why" in
+      --video*|*' not both') usage_error "$why" ;;
+      *) usage ;;
+    esac
+  fi
+  account=''
+  [ "$accounts_mode" = all ] || account=pick
+  add_request "$prompt" '' "$ref_lines" "$edit" "$aspect" "$size" "$transparent" "$vendors_arg" "$account" "$takes"
+else
+  line_n=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    line_n=$((line_n + 1))
+    [ -n "${line//[[:space:]]/}" ] || continue
+    jq -e 'type == "object"' <<<"$line" >/dev/null 2>&1 || usage_error "--jobs line $line_n is not a JSON object"
+    j_prompt=$(jq -r '.prompt // ""' <<<"$line")
+    j_dest=$(jq -r '.dest // ""' <<<"$line")
+    j_refs=$(jq -r '(.refs // [])[]' <<<"$line")
+    j_edit=$(jq -r '.edit // ""' <<<"$line")
+    j_aspect=$(jq -r '.aspect // ""' <<<"$line")
+    j_size=$(jq -r '.size // ""' <<<"$line")
+    j_transparent=$(jq -r 'if .transparent == true then "true" else "false" end' <<<"$line")
+    j_vendors=$(jq -r '.vendor // "" | if type == "array" then join(",") else . end' <<<"$line")
+    j_account=$(jq -r '.account // ""' <<<"$line")
+    j_takes=$(jq -r '.takes // "" | tostring' <<<"$line")
+    check_request "$j_prompt" "$j_aspect" "$j_size" "$j_edit" "$j_refs" || usage_error "--jobs line $line_n: $why"
+    [[ "$j_dest" = /* ]] && [ -d "$(dirname "$j_dest")" ] && [[ "${j_dest##*/}" = *.* ]] ||
+      usage_error "--jobs line $line_n: dest must be an absolute file path in an existing directory"
+    [ -n "$j_vendors" ] || j_vendors=$vendors_arg
+    resolve_vendors "$j_vendors" >/dev/null || usage_error "--jobs line $line_n: unknown vendor in $j_vendors"
+    case "$j_account" in
+      ''|all) j_account='' ;;
+      pick) ;;
+      *) [[ "$j_account" =~ ^[a-z0-9][a-z0-9-]*$ ]] || usage_error "--jobs line $line_n: bad account: $j_account" ;;
+    esac
+    [ -n "$j_account" ] || [ "$accounts_mode" = all ] || j_account=pick
+    [ -n "$j_takes" ] || j_takes=${takes:-1}
+    [[ "$j_takes" =~ ^[1-9][0-9]*$ ]] || usage_error "--jobs line $line_n: bad takes: $j_takes"
+    [ "$j_account" != pick ] || [ "$j_takes" = 1 ] || usage_error "--jobs line $line_n: pick takes no takes"
+    add_request "$j_prompt" "$j_dest" "$j_refs" "$j_edit" "$j_aspect" "$j_size" "$j_transparent" "$j_vendors" "$j_account" "$j_takes"
+  done <"$jobs_file"
+  [ "$rq_n" -gt 0 ] || usage_error "--jobs holds no job"
+fi
 
 find_bin() {
   local dir=$1 name=$2
@@ -101,13 +214,26 @@ find_bin() {
 }
 
 caps_get() { # vendor jq-filter
-  image_caps_get "$root" "$1" "$2"
+  image_caps_get "$caps_root" "$1" "$2"
 }
 
-has_video() {
-  local v
-  v=$(caps_get "$1" '.video | if . == null then "null" else "yes" end')
-  [ "$v" = yes ]
+# The manifest block that holds a route's limits; the cli route's are top-level.
+route_block() {
+  case "$1" in
+    flow) printf 'flow_image' ;;
+    web) printf 'web' ;;
+    *) printf '' ;;
+  esac
+}
+
+route_get() { # vendor jq-path-under-block top-level-fallback-filter
+  local vendor=$1 path=$2 fallback=$3 block
+  block=$(route_block "$(caps_get "$vendor" '.routes[0] // empty')")
+  if [ -n "$block" ]; then
+    caps_get "$vendor" "if .$block$path != null then .$block$path else $fallback end"
+  else
+    caps_get "$vendor" "$fallback"
+  fi
 }
 
 reduce_ratio() { # W:H or WxH
@@ -147,16 +273,16 @@ nearest_int() { # want csv-or-range
   '
 }
 
-aspect_list_for() { # vendor video? nrefs
-  local vendor=$1 is_video=$2 nrefs=$3
-  if [ "$is_video" = true ]; then
+aspect_list_for() { # vendor nrefs
+  local vendor=$1 nrefs=$2
+  if [ "$video" = true ]; then
     caps_get "$vendor" '.video.aspects // empty | if type=="array" then join(",") else empty end'
     return
   fi
-  local kind=generate
-  [ "$nrefs" -gt 0 ] && kind=edit
-  caps_get "$vendor" "if .default_route == \"flow\" then .flow_image.aspects | join(\",\")
-    else .aspects | if . == null then empty else (.$kind // .generate // []) | join(\",\") end end"
+  local list_kind=generate
+  [ "$nrefs" -gt 0 ] && list_kind=edit
+  route_get "$vendor" '.aspects' ".aspects | if . == null then empty else (.$list_kind // .generate // []) end" |
+    jq -r 'join(",")'
 }
 
 join_adapt() {
@@ -172,6 +298,7 @@ kv_last() { # key files...
   local key=$1
   shift
   awk -v key="$key" '
+    /^variant=/ { next }
     {
       prefix = key "="
       n = split($0, a, /[[:space:]]+/)
@@ -187,10 +314,26 @@ kv_last() { # key files...
   ' "$@"
 }
 
+# Roster rows as `name<TAB>last used (ms, 0 unknown)<TAB>skip reason`; an empty reason is launchable.
 list_accounts() { # vendor
-  local vendor=$1 lister
-  lister=$(find_bin "$lister_dir" "${vendor}b") || return 1
-  "$lister" list 2>/dev/null | awk '
+  local vendor=$1 route lister out last item
+  local -a argv=()
+  route=$(caps_get "$vendor" '.routes[0] // empty')
+  while IFS= read -r item; do argv+=("$item"); done < <(caps_get "$vendor" ".rosters[\"$route\"] // [] | .[]")
+  [ ${#argv[@]} -gt 0 ] || return 1
+  lister=$(find_bin "$lister_dir" "${argv[0]}") || return 1
+  out=$("$lister" "${argv[@]:1}" 2>/dev/null) || return 1
+  last=$(printf '%s\n' "$out" | tail -n 1)
+  if jq -e '.accounts | type == "array"' <<<"$last" >/dev/null 2>&1; then
+    jq -r --argjson now "$(date +%s)" '.accounts[] | select((.account // "") != "")
+      | .account + "\t" + ((.last_used // 0 | tonumber? // 0) * 1000 | floor | tostring) + "\t"
+        + (if .login == false then "login needed"
+          elif .roster == false then "out of pool"
+          elif ((.walled_until // 0) | tonumber? // 0) > $now then "walled"
+          else "" end)' <<<"$last"
+    return 0
+  fi
+  printf '%s\n' "$out" | awk '
     {
       idx = index($0, ":")
       if (idx < 1) next
@@ -199,188 +342,20 @@ list_accounts() { # vendor
       gsub(/[[:space:]]+$/, "", name)
       gsub(/^[[:space:]]+/, "", rest)
       if (name == "") next
-      if (rest ~ /^(login needed|Not logged in)/) print name "\tlogin needed"
-      else if (rest ~ /\(out of pool\)/) print name "\tout of pool"
-      else print name
+      if (rest ~ /^(login needed|Not logged in)/) print name "\t0\tlogin needed"
+      else if (rest ~ /\(out of pool\)/) print name "\t0\tout of pool"
+      else print name "\t0"
     }
   '
 }
 
-vendor_script() { # vendor is_video
-  local vendor=$1 is_video=$2 name
-  if [ "$is_video" = true ]; then name="${vendor}-video"; else name="${vendor}-image"; fi
-  find_bin "$bin_dir" "$name"
-}
-
-count_live() {
-  local n=0 pid
-  for pid in ${live_pids:-}; do
-    if kill -0 "$pid" 2>/dev/null; then n=$((n + 1)); fi
-  done
-  printf '%s' "$n"
-}
-
-wait_slot() {
-  while [ "$(count_live)" -ge "$max_parallel" ]; do
-    refresh_state
-    sleep 0.05
-  done
-}
-
-jobs_dir=$(mktemp -d "${TMPDIR:-/tmp}/image-fanout.XXXXXX")
-job_n=0
-live_pids=''
-cleanup() { rm -rf "$jobs_dir"; }
-trap cleanup EXIT
-
-# Read by the launching agent's task row (bin/subagent-statusline.sh) while the cells run.
-state_file="$dest_dir/fanout.state.json"
-state_sig=''
-write_state() {
-  local i=1 dir rc kind=image
-  [ "$video" = true ] && kind=video
-  while [ "$i" -le "$job_n" ]; do
-    dir="$jobs_dir/$(printf '%03d' "$i")"
-    i=$((i + 1))
-    if [ -f "$dir/skipped" ]; then
-      awk -F'\t' '$3 == "usage_limit" { print $1 "\t" $2 "\tfailed\t3" } $3 == "failed" { print $1 "\t" $2 "\tfailed\t1" }' "$dir/row.tsv"
-    elif [ -f "$dir/rc" ]; then
-      rc=$(cat "$dir/rc")
-      case "$rc" in
-        0) printf '%s\t%s\tdone\t0\n' "$(cat "$dir/vendor")" "$(cat "$dir/account")" ;;
-        4) ;;
-        *) printf '%s\t%s\tfailed\t%s\n' "$(cat "$dir/vendor")" "$(cat "$dir/account")" "$rc" ;;
-      esac
-    elif [ -f "$dir/waiting" ]; then
-      printf '%s\t%s\twaiting\t\n' "$(cat "$dir/vendor")" "$(cat "$dir/account")"
-    elif [ -f "$dir/vendor" ]; then
-      printf '%s\t%s\trunning\t\n' "$(cat "$dir/vendor")" "$(cat "$dir/account")"
-    fi
-  done | jq -Rn --arg kind "$kind" '{kind: $kind, cells: [inputs | split("\t")
-    | {vendor: .[0], account: .[1], status: .[2]} + (if .[3] == "" then {} else {exit: (.[3] | tonumber)} end)]}' \
-    >"$state_file.tmp.$$" && mv -f "$state_file.tmp.$$" "$state_file"
-}
-refresh_state() {
-  [ "$dry_run" = false ] || return 0
-  local rcs=("$jobs_dir"/*/rc) waits=("$jobs_dir"/*/waiting) sig
-  [ -e "${rcs[0]}" ] || rcs=()
-  [ -e "${waits[0]}" ] || waits=()
-  sig="$job_n:${#rcs[@]}:${#waits[@]}"
-  [ "$sig" != "$state_sig" ] || return 0
-  if write_state; then state_sig=$sig; else rm -f "$state_file.tmp.$$"; fi
-}
-
-write_row() { # file vendor account status reason dest size session model model_caps caps
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" "${11}" >"$1"
-}
-
-queue_skip() { # vendor account reason
-  job_n=$((job_n + 1))
-  local id dir
-  id=$(printf '%03d' "$job_n")
-  dir="$jobs_dir/$id"
-  mkdir -p "$dir"
-  write_row "$dir/row.tsv" "$1" "$2" skipped "$3" "" "" "" "" "" ""
-  : >"$dir/skipped"
-  if [ "$dry_run" = true ]; then
-    printf '%s %s\tskipped: %s\n' "$1" "$2" "$3"
+now_ms() {
+  if [ -n "${EPOCHREALTIME:-}" ]; then
+    local t=${EPOCHREALTIME//[!0-9]/}
+    printf '%s' "${t:0:${#t}-3}"
+  else
+    printf '%s000' "$(date +%s)"
   fi
-}
-
-queue_limit() { # vendor account reason
-  job_n=$((job_n + 1))
-  local id dir
-  id=$(printf '%03d' "$job_n")
-  dir="$jobs_dir/$id"
-  mkdir -p "$dir"
-  write_row "$dir/row.tsv" "$1" "$2" usage_limit "$3" "" "" "" "" "" ""
-  : >"$dir/skipped"
-  if [ "$dry_run" = true ]; then
-    printf '%s %s\tusage_limit: %s\n' "$1" "$2" "$3"
-  fi
-  refresh_state
-}
-
-queue_fail() { # vendor account reason
-  job_n=$((job_n + 1))
-  local id dir
-  id=$(printf '%03d' "$job_n")
-  dir="$jobs_dir/$id"
-  mkdir -p "$dir"
-  write_row "$dir/row.tsv" "$1" "$2" failed "$3" "" "" "" "" "" ""
-  : >"$dir/skipped"
-  if [ "$dry_run" = true ]; then
-    printf '%s %s\tfailed: %s\n' "$1" "$2" "$3"
-  fi
-  refresh_state
-}
-
-# NUL-separated: a prompt newline must not split flags.
-write_argv() { # dest file, then args
-  local dest=$1
-  shift
-  : >"$dest"
-  local a
-  for a in "$@"; do
-    printf '%s\0' "$a" >>"$dest"
-  done
-}
-
-launch_job() { # vendor account reason dest argv-file [spare-accounts-file]
-  local vendor=$1 account=$2 reason=$3 dest=$4 argv=$5 spares=${6:-}
-  job_n=$((job_n + 1))
-  local id dir
-  id=$(printf '%03d' "$job_n")
-  dir="$jobs_dir/$id"
-  mkdir -p "$dir"
-  printf '%s\n' "$vendor" >"$dir/vendor"
-  printf '%s\n' "$account" >"$dir/account"
-  printf '%s\n' "$reason" >"$dir/reason"
-  printf '%s\n' "$dest" >"$dir/dest"
-  cp "$argv" "$dir/argv"
-  : >"$dir/spares"
-  if [ -n "$spares" ] && [ -f "$spares" ]; then
-    awk -F'\t' -v t="$account" '$1 == t { print $2 }' "$spares" >"$dir/spares"
-  fi
-  if [ "$dry_run" = true ]; then
-    write_row "$dir/row.tsv" "$vendor" "$account" ok "$reason" "$dest" "" "" "" "" ""
-    : >"$dir/skipped"
-    return
-  fi
-  : >"$dir/waiting"
-  wait_slot
-  rm -f "$dir/waiting"
-  (
-    args=()
-    while IFS= read -r -d '' item; do
-      args+=("$item")
-    done <"$dir/argv"
-    rc=0
-    "${args[@]}" >"$dir/out" 2>"$dir/err" || rc=$?
-    if [ "$rc" -eq 3 ] && [ -s "$dir/spares" ]; then
-      while IFS= read -r spare; do
-        for i in "${!args[@]}"; do
-          case "${args[$i]}" in
-            --account) args[i + 1]=$spare ;;
-            --dest) args[i + 1]="${dest%/*}/$vendor-$spare.${dest##*.}" ;;
-          esac
-        done
-        printf '%s\n' "$spare" >>"$dir/moved"
-        rc=0
-        "${args[@]}" >"$dir/out" 2>"$dir/err" </dev/null || rc=$?
-        [ "$rc" -eq 3 ] || break
-      done <"$dir/spares"
-    fi
-    printf '%s\n' "$rc" >"$dir/rc.tmp" && mv -f "$dir/rc.tmp" "$dir/rc"
-  ) &
-  live_pids="${live_pids:+$live_pids }$!"
-  refresh_state
-}
-
-print_plan() { # vendor account reason quoted-cmd
-  printf '%s %s\t%s\n' "$1" "$2" "$3"
-  printf '%s\n' "$4"
 }
 
 quote_cmd() {
@@ -391,209 +366,783 @@ quote_cmd() {
   printf '%s' "$out"
 }
 
-if [ "$video" = true ] && [ ${#refs[@]} -eq 0 ]; then
-  printf 'image-fanout: --video requires --ref\n' >&2
-  exit 2
+# NUL-separated: a prompt newline must not split flags.
+write_argv() { # dest file, then args
+  local dest=$1 a
+  shift
+  : >"$dest"
+  for a in "$@"; do
+    printf '%s\0' "$a" >>"$dest"
+  done
+}
+
+# The memory guard's reader and its kill line, read from their sources; admission keeps one job's
+# footprint above that line so a launch never walks the machine into the guard.
+eval "$(sed -n '/^available_mb() {/,/^}/p' "$root/bin/memlogd" 2>/dev/null)"
+guard_mb=$(sed -n 's/^GUARD_AVAIL_MB = \([0-9][0-9]*\).*/\1/p' "$root/bin/chat-load" 2>/dev/null | head -n 1)
+mem_floor_mb=$((${guard_mb:-0} + job_mb))
+mem_why=''
+
+mem_admits() {
+  local level avail
+  level=$(sysctl -n kern.memorystatus_vm_pressure_level 2>/dev/null) || level=''
+  if [[ "$level" =~ ^[0-9]+$ ]] && [ "$level" -gt 1 ]; then
+    mem_why="memory pressure level $level"
+    return 1
+  fi
+  declare -F available_mb >/dev/null || return 0
+  avail=$(available_mb "$(vm_stat 2>/dev/null || true)")
+  if [[ "$avail" =~ ^[0-9]+$ ]] && [ "$avail" -lt "$mem_floor_mb" ]; then
+    mem_why="available ${avail} MB < ${mem_floor_mb} MB"
+    return 1
+  fi
+  return 0
+}
+
+# perl and not setsid(1), absent on stock macOS (bin/worker-run's CHILD_GROUP_PREFIX).
+CHILD_GROUP_PREFIX=()
+if command -v perl >/dev/null 2>&1 && perl -MPOSIX -e 'exit 0' 2>/dev/null; then
+  CHILD_GROUP_PREFIX=(perl -MPOSIX -e 'POSIX::setsid(); exec {$ARGV[0]} @ARGV or exit 127' --)
 fi
 
-refresh_state
-for vendor in $vendors; do
-  manifest=$(image_caps_file "$root" "$vendor")
-  if [ ! -r "$manifest" ]; then
-    queue_fail "$vendor" "-" "no manifest"
-    continue
-  fi
-  if [ "$video" = true ] && ! has_video "$vendor"; then
-    queue_skip "$vendor" "-" "video unsupported"
-    continue
-  fi
+group_alive() { kill -0 -- "-$1" 2>/dev/null || kill -0 "$1" 2>/dev/null; }
 
-  accounts=''
-  if [ "$accounts_mode" = pick ]; then
-    accounts=pick
+# Playwright starts Chrome in a session of its own, out of the unit's process group: it is found as a
+# descendant by parent pid. Rows are `pid<TAB>command`, the command kept to tell a reused pid apart.
+proc_tree() { # pid -> its descendants
+  ps -Ao pid=,ppid=,comm= 2>/dev/null | awk -v root="$1" '
+    { pid = $1; parent[pid] = $2; $1 = ""; $2 = ""; sub(/^ +/, ""); cmd[pid] = $0 }
+    END {
+      for (p in parent) {
+        q = p; n = 0
+        while ((q in parent) && q != root && q > 1 && n++ < 64) q = parent[q]
+        if (q == root && p != root) print p "\t" cmd[p]
+      }
+    }' || :
+}
+
+tree_alive() { # tree rows -> the rows still running the same command
+  local pids
+  [ -n "$1" ] || return 0
+  pids=$(cut -f1 <<<"$1" | paste -sd, -)
+  ps -o pid=,comm= -p "$pids" 2>/dev/null | awk -v rows="$1" '
+    BEGIN { n = split(rows, r, "\n"); for (i = 1; i <= n; i++) { split(r[i], f, "\t"); want[f[1]] = f[2] } }
+    { pid = $1; $1 = ""; sub(/^ +/, ""); if (want[pid] == $0) print pid "\t" $0 }' || :
+}
+
+# The tree is recorded before the signal: a descendant whose parent dies first is reparented to
+# launchd and can only be found again from this record.
+signal_unit() { # unit signal: its process group and every descendant seen now or at an earlier signal
+  local u=$1 pid=${u_pid[$1]} d
+  u_tree[u]=$( { proc_tree "$pid"; tree_alive "${u_tree[u]:-}"; } | sort -u)
+  kill -"$2" -- "-$pid" 2>/dev/null || :
+  kill -"$2" "$pid" 2>/dev/null || :
+  for d in $(cut -f1 <<<"${u_tree[u]}"); do
+    kill -"$2" "$d" 2>/dev/null || :
+  done
+}
+
+unit_alive() { # unit -> 0 while its group or a recorded descendant runs
+  group_alive "${u_pid[$1]}" || [ -n "$(tree_alive "${u_tree[$1]:-}")" ]
+}
+
+jobs_dir=$(mktemp -d "${TMPDIR:-/tmp}/image-fanout.XXXXXX")
+run_id="fanout-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+state_file="$dest_dir/fanout.state.json"
+state_dirty=1
+
+# Groups: one request x one vendor. Units: one launch (a take, or several packed into one --count).
+g_n=0
+g_req=() g_vendor=() g_target=() g_cancelable=() g_delivered=() g_cancelled=() g_bin=() g_reason=() g_base=()
+u_n=0
+u_group=() u_take=() u_tid=() u_count=() u_mode=() u_pin=() u_state=() u_acct=() u_account=() u_dest=()
+u_pid=() u_rc=() u_delivered=() u_notes=() u_not_before=() u_busy_since=() u_job=() u_spare=() u_row=()
+u_route=() u_started=() u_kill_at=() u_tree=() u_killed=()
+a_n=0
+a_vendor=() a_name=() a_live=() a_excl=() a_cool=() a_launches=() a_used=() a_why=()
+limited_why=''
+rq_tid=()
+
+cleanup() { rm -rf "$jobs_dir"; }
+trap cleanup EXIT
+
+on_signal() {
+  local u
+  for ((u = 1; u <= u_n; u++)); do
+    case "${u_state[u]}" in running|stopping) signal_unit "$u" TERM ;; esac
+  done
+  exit 143
+}
+trap on_signal INT TERM
+
+account_index() { # vendor name -> index (a_n + 1 when unknown)
+  local i
+  for ((i = 1; i <= a_n; i++)); do
+    if [ "${a_vendor[i]}" = "$1" ] && [ "${a_name[i]}" = "$2" ]; then printf '%s' "$i"; return; fi
+  done
+  printf '%s' "$((a_n + 1))"
+}
+
+register_account() { # vendor name [last used ms]
+  local i used=${3:-0}
+  [[ "$used" =~ ^[0-9]+$ ]] || used=0
+  i=$(account_index "$1" "$2")
+  if [ "$i" -gt "$a_n" ]; then
+    a_n=$i
+    a_vendor[i]=$1 a_name[i]=$2 a_live[i]=0 a_excl[i]='' a_cool[i]=0 a_launches[i]=0 a_used[i]=$used
+  elif [ "$used" -gt "${a_used[i]}" ]; then
+    a_used[i]=$used
+  fi
+}
+
+add_static() { # vendor account status reason
+  u_n=$((u_n + 1))
+  u_group[u_n]=0 u_state[u_n]=static
+  u_row[u_n]=$(printf '%s\t%s\t%s\t%s\t\t\t\t\t\t\t\t\t\t' "$1" "$2" "$3" "$4")
+  if [ "$dry_run" = true ]; then
+    printf '%s %s\t%s: %s\n' "$1" "$2" "$3" "$4"
+  fi
+}
+
+add_unit() { # group take count mode pin spare
+  local r=${g_req[$1]}
+  u_n=$((u_n + 1))
+  rq_tid[r]=$(( ${rq_tid[r]:-0} + 1 ))
+  u_group[u_n]=$1 u_take[u_n]=$2 u_count[u_n]=$3 u_mode[u_n]=$4 u_pin[u_n]=$5 u_spare[u_n]=$6
+  u_tid[u_n]=${rq_tid[r]} u_state[u_n]=pending u_acct[u_n]=0 u_account[u_n]=$5 u_dest[u_n]=''
+  u_pid[u_n]='' u_rc[u_n]='' u_delivered[u_n]=0 u_notes[u_n]='' u_not_before[u_n]=0 u_busy_since[u_n]=''
+  u_route[u_n]='' u_started[u_n]=0 u_kill_at[u_n]=0 u_tree[u_n]='' u_killed[u_n]=0
+  u_job[u_n]="$run_id-$r-${rq_tid[r]}"
+  mkdir -p "$jobs_dir/u$u_n"
+  rq_tid[r]=$(( rq_tid[r] + $3 - 1 ))
+}
+
+unit_dest() { # unit account -> dest path
+  local u=$1 account=$2 g r base
+  g=${u_group[u]}
+  r=${g_req[g]}
+  if [ -n "${rq_dest[r]}" ]; then
+    base=${g_base[g]}
+  elif [ "${u_mode[u]}" = pick ]; then
+    base="$dest_dir/${g_vendor[g]}-pick.$ext"
   else
-    list_rc=0
-    accounts=$(list_accounts "$vendor") || list_rc=$?
-    if [ "$list_rc" -ne 0 ] || [ -z "$accounts" ]; then
-      queue_skip "$vendor" "-" "no accounts"
-      continue
+    base="$dest_dir/${g_vendor[g]}-$account.$ext"
+  fi
+  if [ "${u_take[u]}" -gt 1 ]; then
+    printf '%s-%s.%s' "${base%.*}" "${u_take[u]}" "${base##*.}"
+  else
+    printf '%s' "$base"
+  fi
+}
+
+spare_count() { # vendor takes
+  [ "$kind" = image ] || { printf 0; return; }
+  if [ -n "$spare" ]; then printf '%s' "$spare"; return; fi
+  caps_get "$1" ".spares.image // empty | [(.min // 0), (($2 * (.ratio // 0)) | ceil)] | max" | grep -E '^[0-9]+$' || printf 0
+}
+
+pack_size() { # vendor -> takes per launch, within the first route's counts (all of them by default)
+  local max
+  [ "$kind" = image ] && [ "$pack" != 1 ] || { printf 1; return; }
+  max=$(route_get "$1" '.counts' 'null' | jq -r 'if type == "array" then max else 1 end' 2>/dev/null) || max=1
+  [[ "$max" =~ ^[0-9]+$ ]] && [ "$max" -ge 1 ] || max=1
+  if [ -n "$pack" ] && [ "$pack" -le "$max" ]; then printf '%s' "$pack"; else printf '%s' "$max"; fi
+}
+
+add_takes() { # group total mode pin first-spare-take
+  local g=$1 total=$2 mode=$3 pin=$4 first_spare=$5 pack_n t c
+  pack_n=$(pack_size "${g_vendor[g]}")
+  for ((t = 1; t <= total; t += pack_n)); do
+    c=$pack_n
+    [ $((t + c - 1)) -le "$total" ] || c=$((total - t + 1))
+    if [ "$t" -ge "$first_spare" ]; then
+      add_unit "$g" "$t" "$c" "$mode" "$pin" 1
+    else
+      add_unit "$g" "$t" "$c" "$mode" "$pin" 0
     fi
-    if [ -n "$takes" ]; then
-      accounts=$(printf '%s\n' "$accounts" | awk -F'\t' -v n="$takes" -v spares="$jobs_dir/spares-$vendor" '
-        $2 == "" && $1 != "" { ok[++k] = $1 }
-        END {
-          for (i = 0; i < n && k > 0; i++) {
-            a = ok[i % k + 1]; c[a]++; t = (c[a] > 1 ? a "#" c[a] : a); print t
-            for (j = i + n; j < k; j += n) print t "\t" ok[j + 1] > spares
-          }
-        }')
-      if [ -z "$accounts" ]; then
-        queue_skip "$vendor" "-" "no accounts"
-        continue
-      fi
-    fi
+  done
+}
+
+plan_group() { # request vendor
+  local r=$1 vendor=$2 bin_name bin reason ref n_in n_used refs_max exact_size transparent_mode aspects_null
+  local used_aspect='' used_size='' used_duration='' pass_transparent=false
+  local adapt_refs='' adapt_aspect='' adapt_size='' adapt_duration='' adapt_trans='' size_aspect='' want_aspect list mapped
+  local r_size=${rq_size[r]} r_aspect=${rq_aspect[r]} r_edit=${rq_edit[r]} mode rows accounts g n spares_n acct skip
+  local -a used_refs=() extra=()
+
+  if [ "$video" = true ] && [ "$(caps_get "$vendor" '.video | if . == null then "no" else "yes" end')" != yes ]; then
+    add_static "$vendor" - skipped 'video unsupported'
+    return
+  fi
+  bin_name=$(caps_get "$vendor" ".scripts.$kind // empty")
+  bin=''
+  [ -z "$bin_name" ] || bin=$(find_bin "$bin_dir" "$bin_name") || bin=''
+  if [ -z "$bin" ]; then
+    add_static "$vendor" - failed "missing ${bin_name:-$kind script}"
+    return
   fi
 
-  is_video=$video
-  n_in=${#refs[@]}
-  refs_max=$(caps_get "$vendor" 'if .default_route == "flow" then .flow_image.refs_max else .refs.max // empty end')
-  if [ "$is_video" = true ]; then
-    vrefs=$(caps_get "$vendor" '.video.refs_max // empty')
-    [ -n "$vrefs" ] && refs_max=$vrefs
+  while IFS= read -r ref; do
+    [ -z "$ref" ] || used_refs+=("$ref")
+  done <<<"${rq_refs[r]}"
+  n_in=${#used_refs[@]}
+  refs_max=$(route_get "$vendor" '.refs_max' '.refs.max // empty')
+  if [ "$video" = true ]; then
+    list=$(caps_get "$vendor" '.video.refs_max // empty')
+    [ -z "$list" ] || refs_max=$list
   fi
+  if [ -n "$r_edit" ] && [[ "$refs_max" =~ ^[1-9][0-9]*$ ]]; then refs_max=$((refs_max - 1)); fi
+  if [[ "$refs_max" =~ ^[0-9]+$ ]] && [ "$n_in" -gt "$refs_max" ]; then
+    used_refs=("${used_refs[@]:0:$refs_max}")
+    adapt_refs="refs ${n_in}→${refs_max}"
+  fi
+  n_used=${#used_refs[@]}
+  [ -z "$r_edit" ] || n_used=$((n_used + 1))
+
   exact_size=$(caps_get "$vendor" '.exact_size')
   transparent_mode=$(caps_get "$vendor" '.transparent // empty')
   aspects_null=$(caps_get "$vendor" '.aspects | if . == null then "yes" else "no" end')
-  [ "$is_video" = true ] && aspects_null=no
+  [ "$video" = false ] || aspects_null=no
 
-  used_refs=()
-  adapt_refs=''
-  if [[ "$refs_max" =~ ^[0-9]+$ ]] && [ "$n_in" -gt "$refs_max" ]; then
-    i=0
-    for ref in "${refs[@]}"; do
-      [ "$i" -lt "$refs_max" ] || break
-      used_refs+=("$ref")
-      i=$((i + 1))
-    done
-    adapt_refs="refs ${n_in}→${refs_max}"
-  else
-    if [ "$n_in" -gt 0 ]; then
-      used_refs=("${refs[@]}")
-    fi
-  fi
-  n_used=${#used_refs[@]}
-
-  used_prompt=$prompt
-  used_aspect=''
-  used_size=''
-  used_duration=''
-  pass_transparent=false
-  adapt_aspect=''
-  adapt_size=''
-  adapt_duration=''
-  adapt_trans=''
-
-  if [ "$is_video" = false ] && [ "$transparent" = true ]; then
+  if [ "$video" = false ] && [ "${rq_transparent[r]}" = true ]; then
     pass_transparent=true
     [ -n "$transparent_mode" ] && adapt_trans="transparent $transparent_mode"
   fi
 
-  size_aspect=''
-  if [ -n "$size" ]; then
-    if [ "$exact_size" = true ] && [ "$is_video" = false ]; then
-      used_size=$size
+  if [ -n "$r_size" ]; then
+    if [ "$exact_size" = true ] && [ "$video" = false ]; then
+      used_size=$r_size
     else
-      size_aspect=$(reduce_ratio "$size")
+      size_aspect=$(reduce_ratio "$r_size")
     fi
   fi
-  want_aspect=$aspect
+  want_aspect=$r_aspect
   [ -n "$size_aspect" ] && want_aspect=$size_aspect
 
   if [ -n "$want_aspect" ]; then
-    drop_aspect=false
-    if [ "$is_video" = true ] && [ "$n_used" -eq 1 ]; then
-      drop_aspect=true
+    if [ "$video" = true ] && [ "$n_used" -eq 1 ]; then
       adapt_aspect="aspect ${want_aspect} dropped (image_to_video)"
     elif [ "$want_aspect" = auto ]; then
-      list=$(aspect_list_for "$vendor" "$is_video" "$n_used")
+      list=$(aspect_list_for "$vendor" "$n_used")
       mapped=$(image_caps_nearest_aspect auto "$list")
       if [ "$mapped" = auto ]; then
         used_aspect=auto
       else
         adapt_aspect="aspect auto dropped (vendor default)"
       fi
-    elif [ "$is_video" = false ] && [ "$aspects_null" = yes ]; then
+    elif [ "$video" = false ] && [ "$aspects_null" = yes ]; then
       # No aspect argument in the tool: the script's own prompt builder words it, the same on every route.
       used_aspect=$want_aspect
-      if [ -n "$size" ]; then
-        adapt_size="size ${size}→prompt ${want_aspect}"
+      if [ -n "$r_size" ]; then
+        adapt_size="size ${r_size}→prompt ${want_aspect}"
       else
         adapt_aspect="aspect ${want_aspect}→prompt"
       fi
     else
-      list=$(aspect_list_for "$vendor" "$is_video" "$n_used")
+      list=$(aspect_list_for "$vendor" "$n_used")
       mapped=$want_aspect
       if [ -n "$list" ]; then
         mapped=$(image_caps_nearest_aspect "$want_aspect" "$list")
         [ -n "$mapped" ] || mapped=$want_aspect
       fi
       used_aspect=$mapped
-      if [ -n "$size" ] && [ "$exact_size" != true ]; then
-        adapt_size="size ${size}→aspect ${mapped}"
+      if [ -n "$r_size" ] && [ "$exact_size" != true ]; then
+        adapt_size="size ${r_size}→aspect ${mapped}"
       elif [ "$mapped" != "$want_aspect" ]; then
         adapt_aspect="aspect ${want_aspect}→${mapped}"
       fi
     fi
   fi
 
-  if [ "$is_video" = true ] && [ -n "$duration" ]; then
+  if [ "$video" = true ] && [ -n "$duration" ]; then
     if [ "$n_used" -le 1 ]; then
-      dlist=$(caps_get "$vendor" '.video.durations | join(",")')
+      list=$(caps_get "$vendor" '.video.durations | join(",")')
     else
-      dlist=$(caps_get "$vendor" '.video.reference_durations // empty | join(",")')
-      if [ -z "$dlist" ]; then
-        dmin=$(caps_get "$vendor" '.video.reference_duration.min')
-        dmax=$(caps_get "$vendor" '.video.reference_duration.max')
-        dlist="${dmin}-${dmax}"
+      list=$(caps_get "$vendor" '.video.reference_durations // empty | join(",")')
+      if [ -z "$list" ]; then
+        list="$(caps_get "$vendor" '.video.reference_duration.min')-$(caps_get "$vendor" '.video.reference_duration.max')"
       fi
     fi
-    mapped_d=$(nearest_int "$duration" "$dlist")
-    used_duration=$mapped_d
-    if [ "$mapped_d" != "$duration" ]; then
-      adapt_duration="duration ${duration}→${mapped_d}"
+    used_duration=$(nearest_int "$duration" "$list")
+    if [ "$used_duration" != "$duration" ]; then
+      adapt_duration="duration ${duration}→${used_duration}"
     fi
   fi
 
   reason=$(join_adapt "$adapt_refs" "$adapt_size" "$adapt_aspect" "$adapt_duration" "$adapt_trans")
-  ext=png
-  [ "$is_video" = true ] && ext=mp4
-  bin=$(vendor_script "$vendor" "$is_video") || bin=''
 
-  while IFS=$'\t' read -r account skip_reason; do
-    [ -n "$account" ] || continue
-    if [ -n "${skip_reason:-}" ]; then
-      queue_skip "$vendor" "$account" "$skip_reason"
-      continue
+  g_n=$((g_n + 1))
+  g=$g_n
+  g_req[g]=$r g_vendor[g]=$vendor g_bin[g]=$bin g_reason[g]=$reason g_delivered[g]=0 g_cancelled[g]=0
+  g_cancelable[g]=0 g_target[g]=0 g_base[g]=''
+  if [ -n "${rq_dest[r]}" ]; then
+    g_base[g]=${rq_dest[r]}
+    if [ "$(resolve_vendors "${rq_vendors[r]}" | wc -w | tr -d ' ')" -gt 1 ]; then
+      g_base[g]="${rq_dest[r]%.*}-$vendor.${rq_dest[r]##*.}"
     fi
-    if [ "$accounts_mode" = pick ]; then
-      dest="$dest_dir/${vendor}-pick.$ext"
-    else
-      dest="$dest_dir/${vendor}-${account/\#/-}.$ext"
-    fi
-    if [ -z "$bin" ]; then
-      queue_fail "$vendor" "$account" "missing $( [ "$is_video" = true ] && printf '%s-video' "$vendor" || printf '%s-image' "$vendor" )"
-      continue
-    fi
-    argv_args=("$bin" --dest "$dest" --prompt "$used_prompt")
+  fi
+  if [ ${#used_refs[@]} -gt 0 ]; then
+    for ref in "${used_refs[@]}"; do extra+=(--ref "$ref"); done
+  fi
+  [ -z "$r_edit" ] || extra+=(--edit "$r_edit")
+  if [ -n "$used_aspect" ]; then extra+=(--aspect "$used_aspect"); fi
+  if [ -n "$used_size" ]; then extra+=(--size "$used_size"); fi
+  if [ -n "$used_duration" ]; then extra+=(--duration "$used_duration"); fi
+  if [ "$pass_transparent" = true ]; then extra+=(--transparent); fi
+  [ "$kind" != image ] || extra+=(--lock-wait "$lock_wait")
+  write_argv "$jobs_dir/g$g.extra" ${extra[@]+"${extra[@]}"}
+
+  mode=every
+  case "${rq_account[r]}" in
+    pick) mode=pick ;;
+    '') [ -z "${rq_takes[r]}" ] || mode=pool ;;
+    *) mode=pinned ;;
+  esac
+
+  case "$mode" in
+    pick)
+      g_target[g]=1
+      add_unit "$g" 1 1 pick pick 0
+      ;;
+    pinned)
+      register_account "$vendor" "${rq_account[r]}"
+      g_target[g]=${rq_takes[r]}
+      add_takes "$g" "${rq_takes[r]}" pinned "${rq_account[r]}" $((rq_takes[r] + 1))
+      ;;
+    every)
+      rows=$(list_accounts "$vendor") || rows=''
+      if [ -z "$rows" ]; then
+        add_static "$vendor" - skipped 'no accounts'
+        return
+      fi
+      while IFS=$'\t' read -r acct used skip; do
+        [ -n "$acct" ] || continue
+        if [ -n "${skip:-}" ]; then
+          add_static "$vendor" "$acct" skipped "$skip"
+          continue
+        fi
+        register_account "$vendor" "$acct" "$used"
+        g_target[g]=$((g_target[g] + 1))
+        add_unit "$g" 1 1 pinned "$acct" 0
+      done <<<"$rows"
+      ;;
+    pool)
+      rows=$(list_accounts "$vendor") || rows=''
+      accounts=$(printf '%s\n' "$rows" | awk -F'\t' '$1 != "" && $3 == "" { print $1 "\t" $2 }')
+      if [ -z "$accounts" ]; then
+        add_static "$vendor" - skipped 'no accounts'
+        return
+      fi
+      while IFS=$'\t' read -r acct used; do register_account "$vendor" "$acct" "$used"; done <<<"$accounts"
+      n=${rq_takes[r]}
+      g_target[g]=$n
+      spares_n=$(spare_count "$vendor" "$n")
+      [ "$spares_n" -eq 0 ] || g_cancelable[g]=1
+      add_takes "$g" $((n + spares_n)) pool '' $((n + 1))
+      ;;
+  esac
+}
+
+for ((r = 1; r <= rq_n; r++)); do
+  for vendor in $(resolve_vendors "${rq_vendors[r]}"); do
+    plan_group "$r" "$vendor"
+  done
+done
+
+build_argv() { # unit account -> argv_args
+  local u=$1 account=$2 g item accounts_mode
+  g=${u_group[u]}
+  accounts_mode=${u_mode[u]}
+  argv_args=("${g_bin[g]}" --dest "$(unit_dest "$u" "$account")" --prompt "${rq_prompt[${g_req[g]}]}")
+  {
     if [ "$accounts_mode" != pick ]; then
       argv_args+=(--account "${account%%#*}")
     fi
-    if [ "$n_used" -gt 0 ]; then
-      for ref in "${used_refs[@]}"; do
-        argv_args+=(--ref "$ref")
-      done
-    fi
-    if [ -n "$used_aspect" ]; then argv_args+=(--aspect "$used_aspect"); fi
-    if [ -n "$used_size" ]; then argv_args+=(--size "$used_size"); fi
-    if [ -n "$used_duration" ]; then argv_args+=(--duration "$used_duration"); fi
-    if [ "$pass_transparent" = true ]; then argv_args+=(--transparent); fi
+  }
+  [ "${u_count[u]}" -le 1 ] || argv_args+=(--count "${u_count[u]}")
+  [ -z "${u_route[u]}" ] || argv_args+=(--route "${u_route[u]}")
+  while IFS= read -r -d '' item; do
+    argv_args+=("$item")
+  done <"$jobs_dir/g$g.extra"
+}
 
-    if [ "$dry_run" = true ]; then
-      print_plan "$vendor" "$account" "$reason" "$(quote_cmd "${argv_args[@]}")"
+if [ "$dry_run" = true ]; then
+  for ((u = 1; u <= u_n; u++)); do
+    [ "${u_state[u]}" = pending ] || continue
+    g=${u_group[u]}
+    case "${u_mode[u]}" in
+      pick) key=pick account=pick ;;
+      pinned) key=${u_pin[u]} account=${u_pin[u]} ;;
+      pool)
+        key="take${u_take[u]}"
+        pool_accounts=()
+        while IFS=$'\t' read -r _ name; do pool_accounts+=("$name"); done < <(
+          for ((a = 1; a <= a_n; a++)); do
+            [ "${a_vendor[a]}" != "${g_vendor[g]}" ] || printf '%s\t%s\n' "${a_used[a]}" "${a_name[a]}"
+          done | sort -s -n -k1,1)
+        account=${pool_accounts[$(( (u_take[u] - 1) / u_count[u] % ${#pool_accounts[@]} ))]}
+        ;;
+    esac
+    build_argv "$u" "$account"
+    printf '%s %s\t%s%s\n' "${g_vendor[g]}" "$key" "${g_reason[g]}" "$([ "${u_spare[u]}" = 1 ] && printf '\tspare' || true)"
+    printf 'IMAGE_JOB_ID=%s %s\n' "${u_job[u]}" "$(quote_cmd "${argv_args[@]}")"
+  done
+fi
+
+unit_status() { # unit -> "status<TAB>exit" for the state file; nothing = no cell
+  local u=$1
+  case "${u_state[u]}" in
+    pending) printf 'waiting\t' ;;
+    running) printf 'running\t' ;;
+    cancelled|stopping) printf 'spare-cancelled\t' ;;
+    final)
+      if [ "${u_delivered[u]}" -gt 0 ] || [ "${u_rc[u]}" = 0 ]; then printf 'done\t0'
+      elif [ "${u_rc[u]}" != 4 ]; then printf 'failed\t%s' "${u_rc[u]}"
+      fi
+      ;;
+  esac
+}
+
+write_state() {
+  local u st
+  for ((u = 1; u <= u_n; u++)); do
+    if [ "${u_state[u]}" = static ]; then
+      awk -F'\t' '$3 == "usage_limit" { print $1 "\t" $2 "\tfailed\t3\t\t\t\t" } $3 == "failed" { print $1 "\t" $2 "\tfailed\t1\t\t\t\t" }' <<<"${u_row[u]}"
+      continue
     fi
-    argv_file="$jobs_dir/argv-tmp"
-    write_argv "$argv_file" "${argv_args[@]}"
-    launch_job "$vendor" "$account" "$reason" "$dest" "$argv_file" "$jobs_dir/spares-$vendor"
-  done <<<"$accounts"
-done
+    st=$(unit_status "$u")
+    [ -n "$st" ] || continue
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${g_vendor[${u_group[u]}]}" "${u_account[u]}" "$st" \
+      "${u_job[u]}" "${u_dest[u]}" "${u_tid[u]}" "${g_req[${u_group[u]}]}"
+  done | jq -Rn --arg kind "$kind" '{kind: $kind, cells: [inputs | split("\t")
+    | {vendor: .[0], account: (if .[1] == "" then null else .[1] end), status: .[2]}
+      + (if .[3] == "" then {} else {exit: (.[3] | tonumber)} end)
+      + (if .[4] == "" then {} else {job: .[4], take: (.[6] | tonumber), request: (.[7] | tonumber)} end)
+      + (if .[5] == "" then {} else {dest: .[5]} end)]}' \
+    >"$state_file.tmp.$$" && mv -f "$state_file.tmp.$$" "$state_file"
+}
+
+# Read by the launching agent's task row (bin/subagent-statusline.sh) while the jobs run.
+refresh_state() {
+  [ "$dry_run" = false ] && [ "$state_dirty" = 1 ] || return 0
+  if write_state; then state_dirty=0; else rm -f "$state_file.tmp.$$"; fi
+}
+
+add_note() { # unit note
+  case "; ${u_notes[$1]}; " in
+    *"; $2; "*) ;;
+    *) u_notes[$1]=$(join_adapt "${u_notes[$1]}" "$2") ;;
+  esac
+}
+
+variant_path() { # variant= line -> its path
+  local path=${1#variant=}
+  path=${path% session=*}
+  printf '%s' "${path% size=*}"
+}
+
+count_delivered() { # unit -> files its dest= and variant= lines name that exist
+  local dir="$jobs_dir/u$1" line path n=0
+  [ -f "$dir/out" ] || { printf 0; return; }
+  while IFS= read -r line; do
+    case "$line" in
+      dest=*) path=${line#dest=} ;;
+      variant=*) path=$(variant_path "$line") ;;
+      *) continue ;;
+    esac
+    [ -z "$path" ] || [ ! -e "$path" ] || n=$((n + 1))
+  done <"$dir/out"
+  printf '%s' "$n"
+}
+
+vendor_has_account() { # vendor -> 0 while any of its accounts is not excluded
+  local a
+  for ((a = 1; a <= a_n; a++)); do
+    [ "${a_vendor[a]}" = "$1" ] && [ -z "${a_excl[a]}" ] && return 0
+  done
+  return 1
+}
+
+finalize() { # unit rc delivered
+  local u=$1 g
+  g=${u_group[u]}
+  u_state[u]=final u_rc[u]=$2 u_delivered[u]=$3
+  g_delivered[g]=$((g_delivered[g] + $3))
+  state_dirty=1
+  if [ "${g_cancelable[g]}" = 1 ] && [ "${g_cancelled[g]}" = 0 ] && [ "${g_delivered[g]}" -ge "${g_target[g]}" ]; then
+    cancel_group "$g"
+  fi
+}
+
+# Only image groups ever get spares (g_cancelable); the kind check keeps any later edit from
+# reaching a video or audio job, which spends credits per take. A stopped unit keeps its account
+# and slot until drain_stopping reaps it (KILL after kill_wait_ms).
+cancel_group() { # group
+  local g=$1 u
+  [ "$kind" = image ] || return 0
+  g_cancelled[g]=1
+  for ((u = 1; u <= u_n; u++)); do
+    [ "${u_group[u]}" = "$g" ] || continue
+    case "${u_state[u]}" in
+      pending) u_state[u]=cancelled ;;
+      running)
+        signal_unit "$u" TERM
+        u_state[u]=stopping u_kill_at[u]=$(( $(now_ms) + kill_wait_ms ))
+        ;;
+    esac
+  done
+  state_dirty=1
+}
+
+drain_stopping() {
+  local u rc g now
+  for ((u = 1; u <= u_n; u++)); do
+    [ "${u_state[u]}" = stopping ] || continue
+    now=$(now_ms)
+    if unit_alive "$u"; then
+      if [ "$now" -ge "${u_kill_at[u]}" ]; then
+        signal_unit "$u" KILL
+        u_kill_at[u]=$((now + kill_wait_ms))
+        # A descendant still up one grace after its KILL is not this unit's to wait for.
+        [ "${u_killed[u]}" = 0 ] || u_tree[u]=''
+        u_killed[u]=1
+      fi
+      continue
+    fi
+    rc=0
+    wait "${u_pid[u]}" 2>/dev/null || rc=$?
+    g=${u_group[u]}
+    [ "${u_acct[u]}" -eq 0 ] || a_live[${u_acct[u]}]=0
+    u_rc[u]=$rc
+    u_delivered[u]=$(count_delivered "$u")
+    if [ "${u_delivered[u]}" -gt 0 ]; then
+      u_state[u]=final
+      g_delivered[g]=$((g_delivered[g] + u_delivered[u]))
+    else
+      u_state[u]=cancelled
+    fi
+    state_dirty=1
+  done
+}
+
+# Exit 3 is a usage limit or a flagged account; the wrapper's <VENDOR>_ACCOUNT_FLAGGED line tells them apart.
+flagged_unit() { grep -Eqx '[A-Z0-9]+_ACCOUNT_FLAGGED' "$jobs_dir/u$1/err" 2>/dev/null; }
+
+limit_cause() { # unit -> what its exit 3 was, after "after"
+  if flagged_unit "$1"; then printf 'an account flag (unusual activity)'; else printf 'a usage limit'; fi
+}
+
+vendor_limited() { # vendor -> 0 when exit 3 retired one of its accounts, its cause in limited_why
+  local a
+  for ((a = 1; a <= a_n; a++)); do
+    if [ "${a_vendor[a]}" = "$1" ] && [ "${a_excl[a]}" = 3 ]; then
+      limited_why=${a_why[a]:-a usage limit}
+      return 0
+    fi
+  done
+  return 1
+}
+
+# The fan-out's last resort once a usage limit leaves a take no account on its route: the vendor's
+# next route in the manifest, if that route can carry the unit's count. A pool take hands the
+# account choice to the wrapper there, since that route has a roster of its own.
+next_route() { # unit cause -> 0 with the unit pending on its vendor's next route
+  local u=$1 vendor current next block max
+  [ "$kind" = image ] || return 1
+  vendor=${g_vendor[${u_group[u]}]}
+  current=${u_route[u]:-$(caps_get "$vendor" '.routes[0] // empty')}
+  next=$(caps_get "$vendor" ".routes as \$r | (\$r | index(\"$current\")) as \$at
+    | if \$at == null then empty else (\$r[\$at + 1] // empty) end")
+  [ -n "$next" ] || return 1
+  block=$(route_block "$next")
+  max=$(caps_get "$vendor" "(${block:+.$block.counts // }.counts) | if type == \"array\" then max else 1 end")
+  [[ "$max" =~ ^[0-9]+$ ]] && [ "${u_count[u]}" -le "$max" ] || return 1
+  add_note "$u" "--route $next after $2"
+  u_route[u]=$next u_state[u]=pending
+  [ "${u_mode[u]}" != pool ] || u_mode[u]=pick
+}
+
+handle_exit() { # unit rc
+  local u=$1 rc=$2 a delivered now g
+  a=${u_acct[u]} g=${u_group[u]}
+  [ "$a" -eq 0 ] || a_live[a]=0
+  delivered=$(count_delivered "$u")
+  now=$(now_ms)
+  state_dirty=1
+  if [ "$rc" -eq 5 ] && [ "$delivered" -eq 0 ]; then
+    [ "$a" -eq 0 ] || a_cool[a]=$((now + busy_retry_ms))
+    [ -n "${u_busy_since[u]}" ] || u_busy_since[u]=$now
+    if [ $((now - u_busy_since[u])) -ge "$busy_giveup_ms" ]; then
+      finalize "$u" "$rc" 0
+      return
+    fi
+    add_note "$u" "requeued: ${u_account[u]} busy"
+    [ "${u_mode[u]}" = pool ] || u_not_before[u]=$((now + busy_retry_ms))
+    u_state[u]=pending
+    return
+  fi
+  if { [ "$rc" -eq 3 ] || [ "$rc" -eq 4 ]; } && [ "${u_mode[u]}" = pool ] && [ "$delivered" -eq 0 ]; then
+    a_excl[a]=$rc
+    [ "$rc" -ne 3 ] || a_why[a]=$(limit_cause "$u")
+    if vendor_has_account "${g_vendor[g]}"; then
+      if [ "$rc" -eq 3 ]; then
+        add_note "$u" "moved from ${u_account[u]} after ${a_why[a]}"
+      else
+        add_note "$u" "moved from ${u_account[u]} (pool disabled)"
+      fi
+      u_state[u]=pending
+      return
+    fi
+    if vendor_limited "${g_vendor[g]}" && next_route "$u" "$limited_why"; then return; fi
+  elif [ "$rc" -eq 3 ] && [ "$delivered" -eq 0 ] && next_route "$u" "$(limit_cause "$u")"; then
+    return
+  fi
+  finalize "$u" "$rc" "$delivered"
+}
+
+reap() {
+  local u rc
+  for ((u = 1; u <= u_n; u++)); do
+    [ "${u_state[u]}" = running ] || continue
+    ! kill -0 "${u_pid[u]}" 2>/dev/null || continue
+    rc=0
+    wait "${u_pid[u]}" 2>/dev/null || rc=$?
+    handle_exit "$u" "$rc"
+  done
+}
+
+pick_account() { # unit now -> account index (0 = the script picks); 1 = none free now, 2 = none left
+  local u=$1 now=$2 a best='' vendor
+  vendor=${g_vendor[${u_group[u]}]}
+  case "${u_mode[u]}" in
+    pick) printf 0; return 0 ;;
+    pinned)
+      a=$(account_index "$vendor" "${u_pin[u]}")
+      [ "${a_live[a]}" = 0 ] && [ "${a_cool[a]}" -le "$now" ] || return 1
+      printf '%s' "$a"
+      return 0
+      ;;
+  esac
+  vendor_has_account "$vendor" || return 2
+  for ((a = 1; a <= a_n; a++)); do
+    [ "${a_vendor[a]}" = "$vendor" ] && [ -z "${a_excl[a]}" ] && [ "${a_live[a]}" = 0 ] && [ "${a_cool[a]}" -le "$now" ] || continue
+    if [ -z "$best" ] || [ "${a_used[a]}" -lt "${a_used[best]}" ] ||
+      { [ "${a_used[a]}" -eq "${a_used[best]}" ] && [ "${a_launches[a]}" -lt "${a_launches[best]}" ]; }; then
+      best=$a
+    fi
+  done
+  [ -n "$best" ] || return 1
+  printf '%s' "$best"
+}
+
+launch_unit() { # unit account-index
+  local u=$1 a=$2 account dir
+  dir="$jobs_dir/u$u"
+  account=pick
+  [ "$a" -eq 0 ] || account=${a_name[a]}
+  build_argv "$u" "$account"
+  u_account[u]=$account u_acct[u]=$a
+  u_dest[u]=$(unit_dest "$u" "$account")
+  rm -f "$dir/out" "$dir/err"
+  IMAGE_JOB_ID=${u_job[u]} IMAGE_LEG_SCHEDULER=1 ${CHILD_GROUP_PREFIX[@]+"${CHILD_GROUP_PREFIX[@]}"} "${argv_args[@]}" >"$dir/out" 2>"$dir/err" </dev/null &
+  u_pid[u]=$!
+  u_state[u]=running
+  last_launch=$u
+  last_launch_at=$(now_ms)
+  u_started[u]=$last_launch_at
+  if [ "$a" -ne 0 ]; then
+    a_live[a]=$u
+    a_launches[a]=$((a_launches[a] + 1))
+    a_used[a]=$last_launch_at
+  fi
+  state_dirty=1
+}
+
+# Browser starts are the memory spike: the next launch waits for the previous job's Chrome (or the gap).
+last_launch=''
+last_launch_at=0
+gap_open() {
+  local u=$last_launch
+  [ -n "$u" ] && [ "$gap_ms" -gt 0 ] || return 1
+  [ "${u_state[u]}" = running ] || return 1
+  [ $(( $(now_ms) - last_launch_at )) -lt "$gap_ms" ] || return 1
+  ! proc_tree "${u_pid[u]}" | awk -F'\t' '{ n = split($2, p, "/"); if (tolower(p[n]) ~ /chrom/) up = 1 } END { exit !up }' || return 1
+  return 0
+}
+
+# A packed request's spare launches only once its pack ran lazy_spare_ms without delivering:
+# the pack usually lands first, and a spare cancelled after sending still spends an image.
+spare_waits() { # unit now
+  local u=$1 now=$2 v g
+  [ "${u_spare[u]}" = 1 ] || return 1
+  g=${u_group[u]}
+  for ((v = 1; v <= u_n; v++)); do
+    [ "${u_group[v]}" = "$g" ] && [ "${u_spare[v]}" = 0 ] && [ "${u_count[v]}" -gt 1 ] || continue
+    case "${u_state[v]}" in
+      pending) return 0 ;;
+      running) [ $((now - u_started[v])) -ge "$lazy_spare_ms" ] || return 0 ;;
+    esac
+  done
+  return 1
+}
+
+mem_checked_at=0
+mem_holding=0
+try_launch() { # -> 0 when a unit was launched; primary takes before spares
+  local u now a pick_rc candidate='' cand_a='' spare_pass
+  now=$(now_ms)
+  for spare_pass in 0 1; do
+    for ((u = 1; u <= u_n; u++)); do
+      [ "${u_state[u]}" = pending ] && [ "${u_not_before[u]}" -le "$now" ] && [ "${u_spare[u]}" = "$spare_pass" ] || continue
+      ! spare_waits "$u" "$now" || continue
+      pick_rc=0
+      a=$(pick_account "$u" "$now") || pick_rc=$?
+      if [ "$pick_rc" -eq 2 ]; then
+        if vendor_limited "${g_vendor[${u_group[u]}]}"; then
+          next_route "$u" "$limited_why" || { add_note "$u" 'no account left'; finalize "$u" 3 0; }
+        else
+          add_note "$u" 'no account left'
+          finalize "$u" 4 0
+        fi
+        continue
+      fi
+      [ "$pick_rc" -eq 0 ] || continue
+      candidate=$u cand_a=$a
+      break 2
+    done
+  done
+  [ -n "$candidate" ] || return 1
+  if [ "$mem_holding" = 1 ] && [ $((now - mem_checked_at)) -lt "$mem_poll_ms" ]; then return 1; fi
+  mem_checked_at=$now
+  if ! mem_admits; then
+    [ "$mem_holding" = 1 ] || printf 'image-fanout: holding launches: %s\n' "$mem_why" >&2
+    mem_holding=1
+    return 1
+  fi
+  mem_holding=0
+  launch_unit "$candidate" "$cand_a"
+  return 0
+}
 
 if [ "$dry_run" = false ]; then
-  while [ "$(count_live)" -gt 0 ]; do
+  refresh_state
+  while :; do
+    reap
+    drain_stopping
+    running=0 pending=0
+    for ((u = 1; u <= u_n; u++)); do
+      case "${u_state[u]}" in
+        running|stopping) running=$((running + 1)) ;;
+        pending) pending=$((pending + 1)) ;;
+      esac
+    done
+    [ $((running + pending)) -gt 0 ] || break
+    launched=0
+    if [ "$pending" -gt 0 ] && [ "$running" -lt "$max_parallel" ] && ! gap_open && try_launch; then
+      launched=1
+    fi
     refresh_state
-    sleep 0.05
-  done
-  for pid in ${live_pids:-}; do
-    wait "$pid" || true
+    [ "$launched" = 1 ] || sleep 0.1
   done
   refresh_state
 fi
@@ -603,6 +1152,7 @@ skipped_n=0
 limit_n=0
 failed_n=0
 attempted_n=0
+planned_n=0
 stale_lines=''
 
 if [ "$dry_run" = true ]; then
@@ -610,82 +1160,101 @@ if [ "$dry_run" = true ]; then
 else
   tsv="$dest_dir/fanout.tsv"
 fi
+
+count_status() {
+  case "$1" in
+    ok) ok_n=$((ok_n + 1)); attempted_n=$((attempted_n + 1)) ;;
+    skipped) skipped_n=$((skipped_n + 1)) ;;
+    usage_limit) limit_n=$((limit_n + 1)); attempted_n=$((attempted_n + 1)) ;;
+    failed) failed_n=$((failed_n + 1)); attempted_n=$((attempted_n + 1)) ;;
+  esac
+}
+
 {
-  printf 'vendor\taccount\tstatus\treason\tdest\tsize\tsession\tmodel\tmodel_caps\tcaps\n'
-  i=1
-  while [ "$i" -le "$job_n" ]; do
-    id=$(printf '%03d' "$i")
-    dir="$jobs_dir/$id"
-    i=$((i + 1))
-    if [ -f "$dir/skipped" ]; then
-      cat "$dir/row.tsv"
-      status=$(awk -F'\t' '{print $3}' "$dir/row.tsv")
-      case "$status" in
-        skipped) skipped_n=$((skipped_n + 1)) ;;
-        usage_limit) limit_n=$((limit_n + 1)); attempted_n=$((attempted_n + 1)) ;;
-        failed) failed_n=$((failed_n + 1)); attempted_n=$((attempted_n + 1)) ;;
-        ok) ok_n=$((ok_n + 1)) ;;
-      esac
+  printf 'vendor\taccount\tstatus\treason\tdest\tsize\tsession\tmodel\tmodel_caps\tcaps\tjob\troute\tfallback_from\tphases\n'
+  for ((u = 1; u <= u_n; u++)); do
+    if [ "${u_state[u]}" = static ]; then
+      printf '%s\n' "${u_row[u]}"
+      count_status "$(cut -f3 <<<"${u_row[u]}")"
       continue
     fi
-    vendor=$(cat "$dir/vendor")
-    account=$(cat "$dir/account")
-    reason=$(cat "$dir/reason")
-    dest=$(cat "$dir/dest")
-    rc=$(cat "$dir/rc" 2>/dev/null || printf '1')
-    combined="$dir/out"
-    [ -f "$dir/err" ] && combined="$dir/out $dir/err"
-    # shellcheck disable=SC2086
-    got_dest=$(kv_last dest $combined)
-    got_size=$(kv_last size $combined)
-    got_session=$(kv_last session $combined)
-    got_model=$(kv_last model $combined)
-    got_model_caps=$(kv_last model_caps $combined)
-    got_caps=$(kv_last caps $combined)
-    got_account=$(kv_last account $combined)
-    [ -n "$got_dest" ] || got_dest=$dest
-    if [ -s "$dir/moved" ]; then
-      reason=$(join_adapt "$reason" "moved from ${account%%#*} after a usage limit")
-      account=$(tail -n1 "$dir/moved")
+    planned_n=$((planned_n + 1))
+    [ "$dry_run" = false ] || continue
+    g=${u_group[u]}
+    vendor=${g_vendor[g]}
+    account=${u_account[u]:--}
+    reason=$(join_adapt "${g_reason[g]}" "${u_notes[u]}")
+    dir="$jobs_dir/u$u"
+    if [ "${u_state[u]}" = cancelled ]; then
+      reason=$(join_adapt "$reason" "spare-cancelled after ${g_delivered[g]} of ${g_target[g]} takes delivered")
+      printf '%s\t%s\tspare-cancelled\t%s\t%s\t\t\t\t\t\t%s\t\t\t\n' "$vendor" "$account" "$reason" "${u_dest[u]}" "${u_job[u]}"
+      continue
     fi
-    [ -n "$got_account" ] && account=$got_account
+    rc=${u_rc[u]:-1}
+    combined=(/dev/null)
+    [ ! -f "$dir/out" ] || combined+=("$dir/out")
+    [ ! -f "$dir/err" ] || combined+=("$dir/err")
+    got_dest=$(kv_last dest "${combined[@]}")
+    got_size=$(kv_last size "${combined[@]}")
+    got_session=$(kv_last session "${combined[@]}")
+    got_model=$(kv_last model "${combined[@]}")
+    got_model_caps=$(kv_last model_caps "${combined[@]}")
+    got_caps=$(kv_last caps "${combined[@]}")
+    got_account=$(kv_last account "${combined[@]}")
+    got_job=$(kv_last job "${combined[@]}")
+    got_route=$(kv_last route "${combined[@]}")
+    got_fallback=$(kv_last fallback_from "${combined[@]}")
+    got_phases=$(kv_last phases "${combined[@]}")
+    got_failed=$(kv_last failed "${combined[@]}")
+    [ -n "$got_dest" ] || got_dest=${u_dest[u]}
+    [ -n "$got_job" ] || got_job=${u_job[u]}
+    [ -z "$got_account" ] || account=$got_account
     status=failed
     case "$rc" in
       0) status=ok ;;
       3) status=usage_limit ;;
       4) status=skipped ;;
     esac
+    [ "${u_delivered[u]:-0}" -eq 0 ] || status=ok
     extra=''
     case "$status" in
       skipped) extra='pool disabled' ;;
-      usage_limit) extra='usage limit' ;;
-      failed) extra="exit $rc" ;;
+      usage_limit) extra='usage limit'; ! flagged_unit "$u" || extra='account flagged (unusual activity)' ;;
+      failed) extra="exit $rc"; [ "$rc" != 5 ] || extra='exit 5 (account busy)' ;;
+      ok) [ -z "$got_failed" ] || extra="failed=$got_failed of ${u_count[u]}" ;;
     esac
-    if [ "$status" != ok ] && [ -n "$extra" ]; then
+    if [ -n "$extra" ]; then
       case "; $reason; " in
         *"; $extra; "*) ;;
         *) reason=$(join_adapt "$reason" "$extra") ;;
       esac
-      if [ -s "$dir/err" ]; then
-        cp "$dir/err" "$dest_dir/$vendor-$account.stderr"
-        err_last=$(grep -v '^[[:space:]]*$' "$dir/err" | tail -n1 | tr '\t' ' ' | cut -c1-200)
-        [ -z "$err_last" ] || reason=$(join_adapt "$reason" "$err_last")
-      fi
     fi
-    write_row "$dir/row.tsv" "$vendor" "$account" "$status" "$reason" \
-      "$got_dest" "$got_size" "$got_session" "$got_model" "$got_model_caps" "$got_caps"
-    cat "$dir/row.tsv"
-    attempted_n=$((attempted_n + 1))
-    case "$status" in
-      ok) ok_n=$((ok_n + 1)) ;;
-      skipped) skipped_n=$((skipped_n + 1)); attempted_n=$((attempted_n - 1)) ;;
-      usage_limit) limit_n=$((limit_n + 1)) ;;
-      failed) failed_n=$((failed_n + 1)) ;;
-    esac
+    if [ "$status" != ok ] && [ -s "$dir/err" ]; then
+      stem=${u_dest[u]##*/}
+      cp "$dir/err" "$dest_dir/${stem%.*}.stderr"
+      err_last=$(grep -v '^[[:space:]]*$' "$dir/err" | tail -n1 | tr '\t' ' ' | cut -c1-200)
+      [ -z "$err_last" ] || reason=$(join_adapt "$reason" "$err_last")
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$vendor" "$account" "$status" "$reason" \
+      "$got_dest" "$got_size" "$got_session" "$got_model" "$got_model_caps" "$got_caps" \
+      "$got_job" "$got_route" "$got_fallback" "$got_phases"
+    count_status "$status"
+    if [ -f "$dir/out" ]; then
+      while IFS= read -r line; do
+        v_path=$(variant_path "$line")
+        [ -e "$v_path" ] || continue
+        v_size=$(sed -n 's/.* size=\([^ ]*\).*/\1/p' <<<"$line")
+        v_session=$(sed -n 's/.* session=\([^ ]*\).*/\1/p' <<<"$line")
+        printf '%s\t%s\tok\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$vendor" "$account" "$reason" \
+          "$v_path" "$v_size" "$v_session" "$got_model" "$got_model_caps" "$got_caps" \
+          "$got_job" "$got_route" "$got_fallback" "$got_phases"
+        count_status ok
+      done < <(grep '^variant=' "$dir/out" || true)
+    fi
     stale_hit=''
-    if grep -h -E -q '(^|[[:space:]])model_caps=stale' "$dir/out" "$dir/err" 2>/dev/null; then
+    if grep -h -E -q '(^|[[:space:]])model_caps=stale' "${combined[@]}" 2>/dev/null; then
       stale_hit=model_caps=stale
-    elif grep -h -E -q '(^|[[:space:]])caps=stale' "$dir/out" "$dir/err" 2>/dev/null; then
+    elif grep -h -E -q '(^|[[:space:]])caps=stale' "${combined[@]}" 2>/dev/null; then
       stale_hit=caps=stale
     fi
     if [ -n "$stale_hit" ]; then
@@ -703,8 +1272,7 @@ fi
 printf 'ok=%s skipped=%s usage_limit=%s failed=%s\n' "$ok_n" "$skipped_n" "$limit_n" "$failed_n"
 
 if [ "$dry_run" = true ]; then
-  [ "$job_n" -gt 0 ] && [ "$skipped_n" -lt "$job_n" ] && exit 0
-  [ "$ok_n" -gt 0 ] && exit 0
+  [ "$planned_n" -gt 0 ] && exit 0
   exit 1
 fi
 [ "$ok_n" -gt 0 ] && exit 0

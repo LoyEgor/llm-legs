@@ -95,7 +95,7 @@ assert test -z "$output"
 assert test "$(count "$STORE/skipped/pending")" = 1
 for payload in '{"agent_id":"child"}' '{"transcript_path":"/tmp/subagents/child.jsonl"}' \
   '{"agent_type":"codex-worker"}' '{"agent_type":"claudeb-worker"}' '{"agent_type":"gemini-worker"}' \
-  '{"agent_type":"grok-worker"}' '{"agent_type":"image-gen"}' '{"agent_type":"light-research"}' '{"agent_type":"light-worker"}'; do
+  '{"agent_type":"grok-worker"}' '{"agent_type":"light-research"}' '{"agent_type":"light-worker"}'; do
   output=$(jq '. + {session_id:"skipped"}' <<<"$payload" | "$BUS" flush --event Stop)
   assert test -z "$output"
   assert test "$(count "$STORE/skipped/pending")" = 1
@@ -197,6 +197,37 @@ assert test "$(jq -r .id "$STORE/hash/pending/"*.txt)" = "$hash"
 for n in 1 2 3 4; do post parallel same & done
 wait
 assert test "$(count "$STORE/parallel/pending")" = 1
+# A live holder outlasting 100 lock polls (a loaded machine) delays a post, never loses it.
+held=$WORK/held-lock
+mkdir -p "$held" "$STORE/.lock"
+cat >"$held/sleep" <<SLEEP
+#!/bin/sh
+echo x >>"$held/polls"
+[ "\$(wc -l <"$held/polls")" -lt 150 ] || { /bin/cat "$STORE/.lock/pid" >>"$held/released"; rm -f "$STORE/.lock/pid"; rmdir "$STORE/.lock"; }
+SLEEP
+chmod +x "$held/sleep"
+printf '%s\n' "$$" >"$STORE/.lock/pid"
+PATH="$held:$PATH" post held first
+assert test "$(count "$STORE/held/pending")" = 1
+assert test ! -s "$STORE/lost.log"
+assert test "$(cat "$held/released")" = "$$"
+# The owner read names a holder that has since exited, and a successor's lock already stands:
+# it is waited on, never recovered as the dead one's.
+rm -f "$held/polls" "$held/released"
+mkdir "$STORE/.lock"
+printf '99999999\n' >"$STORE/.lock/pid"
+cat >"$held/cat" <<CAT
+#!/bin/sh
+if [ "\$*" = "$STORE/.lock/pid" ] && [ ! -e "$held/swapped" ]; then
+  : >"$held/swapped"; /bin/cat "\$@"; printf '%s\n' "$$" >"\$1"; exit
+fi
+exec /bin/cat "\$@"
+CAT
+chmod +x "$held/cat"
+PATH="$held:$PATH" post held second
+assert test "$(count "$STORE/held/pending")" = 2
+assert test ! -s "$STORE/lost.log"
+assert test "$(cat "$held/released")" = "$$"
 
 post failed-output item
 real_jq=$(command -v jq)
@@ -247,6 +278,8 @@ source_file=$(find "$STORE/pruned/delivered" -name '*.txt')
 for ((n=1; n<=201; n++)); do
   cp "$source_file" "$STORE/pruned/delivered/${n}__notice__fixture-$n.txt"
 done
+# One mtime for all: a loop crossing a second would make fixture-1 the oldest and prune it.
+touch -t 202001010002 "$STORE/pruned/delivered/"*__fixture-*.txt
 touch -t 202001010001 "$source_file"
 flush pruned >/dev/null
 assert test "$(count "$STORE/pruned/delivered")" = 200

@@ -1,10 +1,13 @@
 {
   "vendor": "gemini",
-  "verified": "2026-10-02",
-  "default_route": "flow",
+  "verified": "2026-10-04",
+  "routes": ["flow", "cli"],
+  "scripts": {"image": "gemini-image", "video": "gemini-video", "music": "gemini-music", "sfx": "gemini-sfx", "listen": "gemini-listen"},
+  "rosters": {"flow": ["gemini-web", "accounts"], "cli": ["geminib", "list"]},
+  "spares": {"image": {"ratio": 0.25, "min": 1}},
   "cli": {
     "name": "agy",
-    "version": "1.2.15",
+    "version": "1.2.16",
     "version_args": [
       "--version"
     ]
@@ -242,7 +245,7 @@
     },
     "help": {
       "location": "agy --help; agy --version",
-      "observed": "1.2.15; --conversation, --continue, --output-format stream-json"
+      "observed": "1.2.16; --conversation, --continue, --output-format stream-json"
     },
     "headless": {
       "url": "https://antigravity.google/docs/cli/headless/"

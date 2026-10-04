@@ -4,10 +4,11 @@
 # ///
 """Images from chatgpt.com on the owner's ChatGPT subscription accounts, through gemini_web's hidden Chrome.
 
-One Chrome profile per codex account under CHATGPT_WEB_DIR; the clone app, its hide watcher, the toast log
+One Chrome profile per codex account under CHATGPT_WEB_DIR; the clone app, its off-screen parking, the toast log
 and the failure snapshots are gemini_web's own. A generation goes through the chat composer the way a person
 would and the image is saved from the URL the page itself shows; no ChatGPT endpoint is ever called from here.
-Prints one JSON line; exit 0 ok, 2 usage, 3 image limit (walled), 4 signed out or never signed in, 1 other.
+Prints one JSON line; exit 0 ok, 2 usage, 3 image limit (walled), 4 signed out or never signed in, 5 account busy
+(its lock not free within --lock-wait), 1 other.
 """
 from __future__ import annotations
 
@@ -38,8 +39,13 @@ CHAT_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 SIGNED_OUT_HOSTS = ("auth.openai.com", "chatgpt.com/auth")
 KIND = "chatgpt-image"
 MIN_EDGE = 256
+MAX_COUNT = 4
 QUIET_S = 30
+STALL_S = 90
 LOAD_S = 45
+POLL_MS = 500
+LOGIN_BUTTON, LOGIN_TEXT = "button[data-testid=login-button]", "Log in"
+OUTSIDE_CHAT = ":not(nav *, [data-message-author-role] *)"
 
 SELECTORS = {
     "chat_mode": "Chat",
@@ -47,13 +53,13 @@ SELECTORS = {
                 "#prompt-textarea, div[contenteditable='true'].ProseMirror",
     "add_files": "Add files and more",
     "upload": "Add photos & files",
+    "decline": "Not now",
     "attachment": "form [data-testid*=attachment], form img[alt]",
     "send": "form button[aria-label='Send'], button[data-testid=send-button], button[aria-label='Send prompt']",
     "stop": "form button[aria-label^='Stop'], button[data-testid=stop-button]",
     "idle": "form button[aria-label='Start Voice'], form button[aria-label='Send']",
     "remove": "form button[aria-label^='Remove']",
-    "login": "button[data-testid=login-button], button:text-is('Log in'):not(nav *, [data-message-author-role] *), "
-             "a:text-is('Log in'):not(nav *, [data-message-author-role] *)",
+    "login": f"{LOGIN_BUTTON}, button:text-is('{LOGIN_TEXT}'){OUTSIDE_CHAT}, a:text-is('{LOGIN_TEXT}'){OUTSIDE_CHAT}",
     "assistant": "[data-turn-key] [data-chatgpt-search-message-ids]:not([data-chatgpt-search-unit-key$=':user']), "
                  "[data-message-author-role=assistant]",
     "user": "[data-chatgpt-search-unit-key$=':user'], [data-message-author-role=user]",
@@ -87,6 +93,29 @@ PAGE_PROBE = """(sel) => {
           images, streaming: [...document.querySelectorAll(sel.stop)].some(seen)
             || ![...document.querySelectorAll(sel.idle)].some(seen)};
 }"""
+SEEN = """const seen = el => { const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'; };
+  const ready = sel => { const b = document.querySelector(sel);
+    return !!b && seen(b) && !b.disabled && !b.closest('[aria-disabled=true]'); };"""
+SEND_READY = "(sel) => { " + SEEN + " return ready(sel.send); }"
+RESIZE_STARTED = "(sel) => { " + SEEN + """
+  const any = s => [...document.querySelectorAll(s)].some(seen);
+  return any(sel.stop) || !any(sel.idle) ? 'streaming' : ready(sel.send) && 'send';
+}"""
+# One round trip per open_chat tick; the Playwright role and text-is lookups it stands in for still decide
+# before open_chat returns or gives up.
+OPEN_PROBE = "(sel) => { " + SEEN + r"""
+  const text = el => (el.textContent || '').replace(/\s+/g, ' ').trim();
+  const named = name => [...document.querySelectorAll('button, [role=button]')]
+    .filter(el => (el.getAttribute('aria-label') || text(el)) === name);
+  const chat = named(sel.chat_mode);
+  return {composer: [...document.querySelectorAll(sel.composer)].some(seen),
+          login: [...document.querySelectorAll(sel.login_button)].some(seen)
+            || [...document.querySelectorAll('button, a')].some(el => seen(el) && text(el) === sel.login_text
+                 && !(el.parentElement && el.parentElement.closest('nav, [data-message-author-role]'))),
+          work_mode: chat.length === 1 && seen(chat[0]) && chat[0].getAttribute('aria-pressed') === 'false',
+          offer: named(sel.decline).some(seen)};
+}"""
 
 
 def drift(what: str) -> gw.Failure:
@@ -112,7 +141,7 @@ def chat_owner(chat: str) -> str | None:
 
 
 def rotation() -> list[str]:
-    return gw.free_first(gw.rotation(0))
+    return gw.rotation(0)
 
 
 def limit_until(text: str, now: float) -> float | None:
@@ -214,11 +243,11 @@ def probe(page) -> dict:
     return page.evaluate(PAGE_PROBE, {**SELECTORS, "image_src": IMAGE_SRC})
 
 
-def signed_out(page, session: Session) -> bool:
+def signed_out(page, session: Session, login: bool | None = None) -> bool:
     host_path = page.url.split("://", 1)[-1]
     if host_path.startswith(SIGNED_OUT_HOSTS):
         return True
-    return (session.seen and not session.email) or visible(page, SELECTORS["login"])
+    return (session.seen and not session.email) or (visible(page, SELECTORS["login"]) if login is None else login)
 
 
 def chat_mode(page) -> None:
@@ -229,55 +258,112 @@ def chat_mode(page) -> None:
             button.click(timeout=5000)
 
 
-def open_chat(page, session: Session, account: str, chat: str | None) -> None:
-    page.goto(f"{SITE}/c/{chat}" if chat else f"{SITE}/", wait_until="domcontentloaded", timeout=LOAD_S * 1000)
+def decline_offers(page) -> None:
+    """A connector offer (Google Drive, Notion) pops over the composer at random and swallows its clicks (live 2026-10-03)."""
+    offer = page.get_by_role("button", name=SELECTORS["decline"], exact=True)
+    for _ in range(3):
+        with contextlib.suppress(Exception):
+            if not (offer.count() and offer.first.is_visible()):
+                return
+            offer.first.click(timeout=3000)
+            page.wait_for_timeout(300)
+
+
+def open_chat(page, session: Session, account: str, chat: str | None, navigate: bool = True) -> None:
+    if navigate:
+        page.goto(f"{SITE}/c/{chat}" if chat else f"{SITE}/", wait_until="domcontentloaded", timeout=LOAD_S * 1000)
+    out = gw.Failure(4, f"ChatGPT shows {account} signed out; run: codexb web {account}")
+    names = {"composer": SELECTORS["composer"], "login_button": LOGIN_BUTTON, "login_text": LOGIN_TEXT,
+             "chat_mode": SELECTORS["chat_mode"], "decline": SELECTORS["decline"]}
     deadline = time.time() + LOAD_S
     while time.time() < deadline:
         session.poll()
-        if signed_out(page, session):
-            raise gw.Failure(4, f"ChatGPT shows {account} signed out; run: codexb web {account}")
-        chat_mode(page)
-        if session.email and visible(page, SELECTORS["composer"]):
+        state = {}
+        with contextlib.suppress(Exception):
+            state = page.evaluate(OPEN_PROBE, names)
+        if signed_out(page, session, bool(state.get("login"))):
+            raise out
+        if state.get("work_mode"):
+            chat_mode(page)
+        if state.get("offer"):
+            decline_offers(page)
+        if session.email and state.get("composer"):
+            chat_mode(page)
+            decline_offers(page)
+            if signed_out(page, session):
+                raise out
             if chat and chat not in page.url:
                 raise gw.Failure(1, f"chat {chat} is not on {account} any more (the page went to {page.url})")
             return
         page.wait_for_timeout(250)
+    if signed_out(page, session):
+        raise out
     raise gw.Failure(1, f"chatgpt.com did not load within {LOAD_S}s ({page.url})")
 
 
-def attach(page, refs: list[str], wait_s: float = 120) -> None:
-    """One file per input change, each awaited, so the chat receives the refs in the caller's order."""
-    attached = page.locator(SELECTORS["attachment"])
-    stale = page.locator(SELECTORS["remove"])
+def clear_drafts(page) -> None:
+    attached, stale = page.locator(SELECTORS["attachment"]), page.locator(SELECTORS["remove"])
     for _ in range(20):
         if not stale.count():
-            break
+            return
         with contextlib.suppress(Exception):
             attached.first.hover(timeout=2000)
             stale.first.click(timeout=5000, force=True)
         page.wait_for_timeout(500)
-    else:
-        raise drift("a draft attachment left in the composer cannot be removed")
-    for index, ref in enumerate(refs):
-        before = attached.count()
+    raise drift("a draft attachment left in the composer cannot be removed")
+
+
+def await_more(page, items, more_than: int, wait_s: float, what: str) -> None:
+    try:
+        items.nth(more_than).wait_for(state="attached", timeout=wait_s * 1000)
+    except Exception as error:  # noqa: BLE001
+        raise drift(what) from error
+
+
+def in_order(page, refs: list[str]) -> bool:
+    """The composer's thumbnails name the refs in the caller's order."""
+    with contextlib.suppress(Exception):
+        names = page.locator(SELECTORS["attachment"]).evaluate_all(
+            "els => els.map(e => e.getAttribute('alt') || e.getAttribute('aria-label') || e.innerText || '')")
+        found = [next((i for i, name in enumerate(names) if Path(ref).name in name), -1) for ref in refs]
+        return -1 not in found and found == sorted(found)
+    return False
+
+
+def attach(page, refs: list[str], wait_s: float = 120) -> None:
+    """All refs in one chooser change when it takes several and the thumbnails then read in the caller's order,
+    otherwise one file per change, each awaited."""
+    attached = page.locator(SELECTORS["attachment"])
+    clear_drafts(page)
+    batch, index = len(refs) > 1, 0
+    while index < len(refs):
+        decline_offers(page)
+        before, files = attached.count(), [refs[index]]
         # The composer's image/* file inputs stay in the page but ignore a file set on them (live 2026-10-02):
         # only the chooser its own menu opens takes the upload.
         try:
             page.get_by_role("button", name=SELECTORS["add_files"], exact=True).first.click(timeout=10000)
             with page.expect_file_chooser(timeout=10000) as chooser:
                 page.get_by_text(SELECTORS["upload"], exact=True).first.click(timeout=5000)
-            chooser.value.set_files(ref, timeout=15000)
+            if batch and chooser.value.is_multiple():
+                files = refs
+            chooser.value.set_files(files if len(files) > 1 else files[0], timeout=15000)
         except Exception as error:  # noqa: BLE001
-            raise drift(f"no '{SELECTORS['upload']}' chooser in the composer for {Path(ref).name}") from error
-        deadline = time.time() + wait_s
-        while attached.count() <= before:
-            if time.time() > deadline:
-                raise drift(f"the upload of reference {index + 1} ({Path(ref).name}) never showed in the composer")
-            page.wait_for_timeout(500)
+            raise drift(f"no '{SELECTORS['upload']}' chooser in the composer for {Path(refs[index]).name}") \
+                from error
+        last = index + len(files) - 1
+        await_more(page, attached, before + len(files) - 1, wait_s,
+                   f"the upload of reference {last + 1} ({Path(refs[last]).name}) never showed in the composer")
+        batch = False
+        if len(files) > 1 and not in_order(page, refs):
+            clear_drafts(page)
+            continue
+        index += len(files)
 
 
 def send(page, prompt: str, wait_s: float = 120) -> None:
     composer = page.locator(SELECTORS["composer"]).first
+    decline_offers(page)
     try:
         composer.click(timeout=10000)
     except Exception as error:  # noqa: BLE001
@@ -286,14 +372,11 @@ def send(page, prompt: str, wait_s: float = 120) -> None:
     page.keyboard.press("Backspace")
     page.keyboard.insert_text(prompt)
     button = page.locator(SELECTORS["send"]).first
-    deadline = time.time() + wait_s
-    while True:
-        with contextlib.suppress(Exception):
-            if button.is_visible() and button.is_enabled():
-                break
-        if time.time() > deadline:
-            raise drift(f"the send button stays disabled for {wait_s:.0f}s (an upload still running?)")
-        page.wait_for_timeout(500)
+    stuck = f"the send button stays disabled for {wait_s:.0f}s (an upload still running?)"
+    try:
+        page.wait_for_function(SEND_READY, arg=SELECTORS, timeout=wait_s * 1000, polling=100)
+    except Exception as error:  # noqa: BLE001
+        raise drift(stuck) from error
     button.click(timeout=10000)
 
 
@@ -435,15 +518,10 @@ def pick_resize(page, aspect: str, wait_s: float = 10) -> None:
     """Resize starts a generation; should it only stage one in the composer, the staged request is sent."""
     page.locator(SELECTORS["menu_item"]).filter(has_text=aspect).first.click(timeout=10000)
     button = page.locator(SELECTORS["send"]).first
-    deadline = time.time() + wait_s
-    while time.time() < deadline:
-        if probe(page)["streaming"]:
-            return
-        with contextlib.suppress(Exception):
-            if button.is_visible() and button.is_enabled():
-                button.click(timeout=10000)
-                return
-        page.wait_for_timeout(500)
+    with contextlib.suppress(Exception):
+        if page.wait_for_function(RESIZE_STARTED, arg=SELECTORS, timeout=wait_s * 1000,
+                                  polling=100).json_value() == "send":
+            button.click(timeout=10000)
 
 
 def chat_of(url: str) -> str | None:
@@ -451,32 +529,64 @@ def chat_of(url: str) -> str | None:
     return found[1] if found else None
 
 
-def wait_image(page, account: str, before: dict, timeout_s: float) -> tuple[str, str | None]:
-    """The new image's src and the chat id, once the reply stopped streaming with a full-size image in it."""
-    known = {image["src"] for image in before["images"]}
-    replies = len(before["replies"])
-    started = quiet_since = time.time()
-    chat, settled = None, 0
-    while time.time() - started < timeout_s:
-        chat = chat or chat_of(page.url)
+class Watch:
+    """One sent request's reply, read one probe at a time: step() is the new image's src once the reply stopped
+    streaming with a full-size image in it, else None; a limit or an answer without an image raises.
+    With `reload_s` (a new chat only: a reload can re-issue an old chat's image srcs, read then as new) the page is
+    reloaded after that long without an image: the image often lands server-side while the page never shows it."""
+
+    def __init__(self, page, account: str, before: dict, reload_s: float | None = None):
+        self.page, self.account = page, account
+        self.known = {image["src"] for image in before["images"]}
+        self.replies = len(before["replies"])
+        self.started = self.quiet_since = self.reloaded = time.time()
+        self.chat, self.settled, self.reload_s, self.reloads = None, 0, reload_s, 0
+
+    def step(self) -> str | None:
+        page = self.page
+        self.chat = self.chat or chat_of(page.url)
+        if self.reload_s and self.chat and time.time() - self.reloaded >= self.reload_s:
+            self.reloaded = self.quiet_since = time.time()
+            self.reloads += 1
+            gw.ledger({"kind": KIND, "event": "reloaded", "account": self.account, "chat": self.chat,
+                       "after_s": round(self.reloaded - self.started)})
+            with contextlib.suppress(Exception):
+                page.reload(wait_until="domcontentloaded", timeout=LOAD_S * 1000)
         state = probe(page)
-        said = " ".join(state["replies"][replies:] + state["alerts"])
-        fresh = [image for image in state["images"] if image["src"] not in known and image["done"]
+        said = " ".join(state["replies"][self.replies:] + state["alerts"])
+        fresh = [image for image in state["images"] if image["src"] not in self.known and image["done"]
                  and min(image["width"], image["height"]) >= MIN_EDGE]
         until = None if fresh else limit_until(said, time.time())
         if until:
-            raise gw.Failure(3, f"ChatGPT image limit on {account}: {' '.join(said.split())[:200]}", until=int(until),
-                             chat=chat)
+            raise gw.Failure(3, f"ChatGPT image limit on {self.account}: {' '.join(said.split())[:200]}",
+                             until=int(until), chat=self.chat)
         if state["streaming"]:
-            quiet_since, settled = time.time(), 0
+            self.quiet_since, self.settled = time.time(), 0
         elif fresh:
-            settled += 1
-            if settled >= 2:
-                return fresh[-1]["src"], chat or chat_of(page.url)
-        elif state["replies"][replies:] and time.time() - quiet_since > QUIET_S:
-            raise gw.Failure(1, f"ChatGPT answered without an image: {' '.join(said.split())[:200]}", chat=chat)
-        page.wait_for_timeout(1000)
-    raise gw.Failure(1, f"no image after {timeout_s:.0f}s; it may still land in chat {chat or 'unknown'}", chat=chat)
+            self.settled += 1
+            if self.settled >= 2:
+                self.chat = self.chat or chat_of(page.url)
+                return fresh[-1]["src"]
+        elif state["replies"][self.replies:] and not self.reloads and time.time() - self.quiet_since > QUIET_S:
+            raise gw.Failure(1, f"ChatGPT answered without an image: {' '.join(said.split())[:200]}", chat=self.chat)
+        return None
+
+    def late(self, timeout_s: float) -> gw.Failure | None:
+        if time.time() - self.started < timeout_s:
+            return None
+        return gw.Failure(1, f"no image after {timeout_s:.0f}s; it may still land in chat {self.chat or 'unknown'}",
+                          chat=self.chat)
+
+
+def wait_image(page, account: str, before: dict, timeout_s: float,
+               reload_s: float | None = None) -> tuple[str, str | None]:
+    watch = Watch(page, account, before, reload_s)
+    while not watch.late(timeout_s):
+        src = watch.step()
+        if src:
+            return src, watch.chat
+        page.wait_for_timeout(POLL_MS)
+    raise watch.late(timeout_s)
 
 
 def image_format(body: bytes) -> str | None:
@@ -520,14 +630,108 @@ def bind(account: str, session: Session, meta: dict) -> None:
                             f"{mask_email(meta['email'])}")
 
 
+def take_failure(error: Exception) -> gw.Failure:
+    return error if isinstance(error, gw.Failure) else gw.Failure(1, gw.failure_text(error)[:300])
+
+
+def take_path(dest: Path, slot: int) -> Path:
+    return dest if slot == 1 else dest.with_name(f"{dest.stem}-{slot}{dest.suffix}")
+
+
+def render_takes(context, account: str, args, meta: dict, started: float) -> dict:
+    """--count N: N new chats of one request in N tabs of this one browser, all loading at once, each composed and
+    sent in tab order (each tab's Session listens before its first request), then every pending tab read in one
+    poll loop. A take that fails while another delivers is reported in `failed`; with
+    none delivered the run fails as one take would, a limit first. Saved in delivery order: the first to --dest."""
+    dest, tabs, failures, delivered, session, opened, sessions = Path(args.dest), [], [], [], None, [], []
+    for index in range(args.count):
+        page = context.pages[0] if not index and context.pages else context.new_page()
+        sessions.append(Session(page))
+        opened.append(page)
+        with contextlib.suppress(Exception):
+            page.goto(f"{SITE}/", wait_until="commit", timeout=LOAD_S * 1000)
+    for index, page in enumerate(opened):
+        try:
+            page.bring_to_front()
+            tab_session = sessions[index]
+            open_chat(page, tab_session, account, None, navigate=not page.url.startswith(SITE))
+            bind(account, tab_session, meta)
+            gw.phase("page")
+            gw.close_promos(page, account)
+            attach(page, args.ref)
+            before = probe(page)
+            send(page, args.prompt)
+        except Exception as error:  # noqa: BLE001
+            if not index:
+                raise
+            failure = take_failure(error)
+            failures += [(tab, failure, None) for tab in range(index + 1, args.count + 1)]
+            break
+        session = session or tab_session
+        gw.phase("sent")
+        gw.ledger({"kind": KIND, "event": "sent", "account": account, "chat": None, "refs": len(args.ref),
+                   "resume": False, "tab": index + 1})
+        tabs.append((index + 1, page, Watch(page, account, before, STALL_S)))
+    sent = time.time()
+    pending = list(tabs)
+    while pending:
+        for tab, page, watch in list(pending):
+            try:
+                src = watch.step()
+                if not src:
+                    if watch.late(args.timeout):
+                        raise watch.late(args.timeout)
+                    continue
+                gw.phase("media")
+                path = take_path(dest, len(delivered) + 1)
+                size, fmt = save_image(context, page, src, path)
+                gw.phase("saved")
+            except Exception as error:  # noqa: BLE001
+                failure = take_failure(error)
+                chat = failure.extra.get("chat") or watch.chat or chat_of(page.url)
+                pending.remove((tab, page, watch))
+                failures.append((tab, failure, chat))
+                gw.ledger({"kind": KIND, "event": "failed", "account": account, "chat": chat, "code": failure.code,
+                           "tab": tab})
+                continue
+            pending.remove((tab, page, watch))
+            delivered.append({"path": str(path), "chat": watch.chat, "bytes": size, "format": fmt, "tab": tab})
+            gw.ledger({"kind": KIND, "event": "saved", "account": account, "chat": watch.chat, "dest": str(path),
+                       "bytes": size, "format": fmt, "refs": len(args.ref), "resume": False, "tab": tab})
+        if pending:
+            pending[0][1].wait_for_timeout(POLL_MS)
+    for page in opened[1:]:
+        with contextlib.suppress(Exception):
+            page.close()
+    failures.sort(key=lambda row: row[0])
+    limits = [failure for _, failure, _ in failures if failure.code == 3]
+    if not delivered:
+        raise max(limits, key=lambda failure: failure.extra["until"]) if limits else failures[0][1]
+    if session.plan and session.plan != meta.get("plan"):
+        gw.write_meta(account, plan=session.plan)
+    first = delivered[0]
+    return {"ok": True, "account": account, "chat": first["chat"],
+            "url": f"{SITE}/c/{first['chat']}" if first["chat"] else None, "dest": first["path"],
+            "format": first["format"], "bytes": first["bytes"], "plan": session.plan, "count": args.count,
+            "takes": delivered, "failed": len(failures),
+            "failures": [{"tab": tab, "code": failure.code, "reason": failure.reason, "chat": chat}
+                         for tab, failure, chat in failures],
+            **({"walled_until": max(failure.extra["until"] for failure in limits)} if limits else {}),
+            "seconds": {"harness": round(sent - started, 1), "render": round(time.time() - sent, 1),
+                        "total": round(time.time() - started, 1)}}
+
+
 def render_on(account: str, args, meta: dict) -> dict:
     started = time.time()
     dest = Path(args.dest)
     with gw.browser(account) as context:
+        if args.count > 1:
+            return render_takes(context, account, args, meta, started)
         page = context.pages[0] if context.pages else context.new_page()
         session = Session(page)
         open_chat(page, session, account, args.resume)
         bind(account, session, meta)
+        gw.phase("page")
         gw.close_promos(page, account)
         attach(page, args.ref)
         if args.tool != "generate" or args.region:
@@ -553,12 +757,16 @@ def render_on(account: str, args, meta: dict) -> dict:
             else:
                 send(page, args.prompt)
         sent = time.time()
+        gw.phase("sent")
         gw.ledger({"kind": KIND, "event": "sent", "account": account, "chat": args.resume,
                    "refs": len(args.ref), "resume": bool(args.resume)})
         try:
-            src, chat = wait_image(page, account, before, args.timeout)
+            fresh = not args.resume and args.tool == "generate" and not args.region and not args.point
+            src, chat = wait_image(page, account, before, args.timeout, STALL_S if fresh else None)
             rendered = time.time()
+            gw.phase("media")
             size, fmt = save_image(context, page, src, dest)
+            gw.phase("saved")
         except gw.Failure as failure:
             gw.ledger({"kind": KIND, "event": "failed", "account": account,
                        "chat": failure.extra.get("chat") or chat_of(page.url) or args.resume, "code": failure.code})
@@ -583,10 +791,9 @@ def generate_on(account: str, args) -> dict:
     meta = gw.read_meta(account)
     if not meta.get("email"):
         raise gw.Failure(4, f"account {account} is not bound to a ChatGPT login yet; run: chatgpt-web status {account}")
-    with gw.file_lock(gw.ROOT / "locks" / f"{account}.lock", wait_s=900):
-        if not args.resume:
-            gw.note_started(account)
-        return render_on(account, args, meta)
+    if not args.resume:
+        gw.note_started(account)
+    return render_on(account, args, meta)
 
 
 def region_arg(text: str) -> tuple[float, float, float, float]:
@@ -622,6 +829,11 @@ def check_args(args) -> None:
     edit = "--region" if args.region else args.tool
     if edit in ("--region", "comment", "remove-bg") and not (args.resume and not args.ref or len(args.ref) == 1):
         raise gw.Failure(2, f"{edit} edits one image: the chat's last one (--resume) or a single --ref")
+    if not 1 <= args.count <= MAX_COUNT:
+        raise gw.Failure(2, f"--count is 1-{MAX_COUNT}, not {args.count}")
+    if args.count > 1 and (args.resume or args.region or args.point or args.tool != "generate"):
+        raise gw.Failure(2, "--count renders new chats of one generate request: no --resume, --region, --point, "
+                            "resize, comment or remove-bg")
     if args.account:
         known_account(args.account)
 
@@ -652,22 +864,25 @@ def cmd_generate(args) -> None:
                                 "back on for one, or pin it in ~/.claude/worker-model")
         raise gw.Failure(3, "every signed-in ChatGPT account is walled by its image limit (walls.json)")
     skipped: list[tuple[str, gw.Failure]] = []
-    for account in candidates:
-        try:
-            result = generate_on(account, args)
-        except gw.Failure as failure:
-            if failure.code != 2:
-                gw.report(account, failure)
-            if failure.code == 3:
-                gw.set_wall(account, failure.extra.get("until") or time.time() + gw.WALL_SECONDS)
-            if failure.code not in (3, 4) or pinned:
-                raise gw.Failure(failure.code, failure.reason, account=account, **failure.extra)
-            skipped.append((account, failure))
-            continue
-        gw.set_wall(account, None)
-        gw.emit(result)
-        return
-    raise gw.Failure(3 if any(failure.code == 3 for _, failure in skipped) else 4,
+    with contextlib.closing(gw.claimed(candidates, args.lock_wait)) as picks:
+        for account, refusal in picks:
+            try:
+                if refusal:
+                    raise refusal
+                result = generate_on(account, args)
+            except gw.Failure as failure:
+                if failure.code != 2:
+                    gw.report(account, failure)
+                if failure.code == 3:
+                    gw.set_wall(account, failure.extra.get("until") or time.time() + gw.WALL_SECONDS)
+                if failure.code not in (3, 4, 5) or pinned:
+                    raise gw.Failure(failure.code, failure.reason, account=account, **failure.extra)
+                skipped.append((account, failure))
+                continue
+            gw.set_wall(account, result.get("walled_until"))
+            gw.emit(result)
+            return
+    raise gw.Failure(min(failure.code for _, failure in skipped),
                      "no signed-in ChatGPT account could take the job ("
                      + "; ".join(f"{account}: {failure.reason}" for account, failure in skipped) + ")")
 
@@ -722,7 +937,9 @@ def main() -> None:
     p.add_argument("--resume", help="continue the chat printed as chat= by an earlier run")
     p.add_argument("--account", type=gw.account_arg)
     p.add_argument("--region", type=region_arg, help="x,y,w,h fractions of the image, outlined with Markup")
+    p.add_argument("--count", type=int, default=1, help=f"1-{MAX_COUNT} takes as new chats in tabs of one browser")
     p.add_argument("--timeout", type=int, default=600)
+    gw.lock_wait_arg(p)
     p.set_defaults(func=cmd_generate, tool="generate", aspect=None, point=[])
     p = sub.add_parser("resize", help="re-aspect a chat's last image through the viewer's Resize (a generation)")
     p.add_argument("--resume", required=True)
@@ -730,7 +947,9 @@ def main() -> None:
     p.add_argument("--dest", required=True)
     p.add_argument("--account", type=gw.account_arg)
     p.add_argument("--timeout", type=int, default=600)
-    p.set_defaults(func=cmd_generate, tool="resize", prompt=None, ref=[], region=None, point=[])
+    gw.lock_wait_arg(p)
+    p.set_defaults(func=cmd_generate, tool="resize", prompt=None, ref=[], region=None, point=[],
+                   count=1)
     p = sub.add_parser("comment", help="point edits: Comment pins on one image, each with its text, sent as one edit")
     p.add_argument("--point", action="append", required=True, type=point_arg, help="x,y=<text>, fractions of the image")
     p.add_argument("--dest", required=True)
@@ -738,15 +957,19 @@ def main() -> None:
     p.add_argument("--resume")
     p.add_argument("--account", type=gw.account_arg)
     p.add_argument("--timeout", type=int, default=600)
-    p.set_defaults(func=cmd_generate, tool="comment", prompt=None, region=None, aspect=None)
+    gw.lock_wait_arg(p)
+    p.set_defaults(func=cmd_generate, tool="comment", prompt=None, region=None, aspect=None, count=1)
     p = sub.add_parser("remove-bg", help="the viewer's Remove BG on one image (a generation; it takes no instruction)")
     p.add_argument("--dest", required=True)
     p.add_argument("--ref", action="append", default=[])
     p.add_argument("--resume")
     p.add_argument("--account", type=gw.account_arg)
     p.add_argument("--timeout", type=int, default=600)
-    p.set_defaults(func=cmd_generate, tool="remove-bg", prompt=None, region=None, point=[], aspect=None)
+    gw.lock_wait_arg(p)
+    p.set_defaults(func=cmd_generate, tool="remove-bg", prompt=None, region=None, point=[], aspect=None,
+                   count=1)
     args = parser.parse_args()
+    gw.TIMED = hasattr(args, "lock_wait")
     try:
         args.func(args)
     except gw.Failure as failure:

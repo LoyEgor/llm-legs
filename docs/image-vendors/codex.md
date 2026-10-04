@@ -15,7 +15,7 @@ Verified against `codex-cli 0.160.0` on 2026-10-02, unchanged from 0.159.3 (firs
 | Tool | `image_gen.imagegen` (built-in, no API key) | binary tool description, `ext/image-generation/src/tool.rs`; skill `SKILL.md` "Default built-in tool mode (preferred)" |
 | Arguments | `prompt`, `transparent_background` (bool, since 0.157–0.159), `referenced_image_paths`, `num_last_images_to_include` — and nothing else | binary 0.159.0: `struct ImagegenArgs with 4 elements` over `prompttransparent_backgroundreferenced_image_pathsnum_last_images_to_include` (0.156.1: 3 elements, no `transparent_background`), `properties`/`additionalProperties` schema strings |
 | Image model | `gpt-image-2` | binary: the literal sits inside `ext/image-generation/src/tool.rs`, beside the ImagegenArgs errors |
-| Reference images | local paths, at most 5 | binary: `` `referenced_image_paths` must contain at most `` (the number is formatted at runtime, so the 5 is the tool description's own "up to 5" for the sibling argument — hence `refs.verified_max: false`) |
+| Reference images | local paths, at most 5 on the CLI; 20 on `--route web` (`web.refs_max`) | live 2026-10-03 (borodatch, 0.160.0): 16 paths end the turn with `` `referenced_image_paths` must contain at most 5 paths ``, no image; the web route took 16 twice (burkhartor, Plus: 15 of 16 objects drawn once, 16 of 16 in order once) and 20 (notcom, Plus: 20 of 20 in order), so 20 is a verified working cap above the API's documented 16, not a probed ChatGPT ceiling; every ref counts against ChatGPT's own upload quota |
 | Conversation images | `num_last_images_to_include` 1–5, never together with `referenced_image_paths` | binary: `` `num_last_images_to_include` must be between 1 and ``; "Never provide both" |
 | Local-file edits | `view_image` the file first, then pass it in `referenced_image_paths` | binary tool description: "If you have not seen a local image yet, use `view_image` to inspect it before editing"; `SKILL.md` "Built-in edit semantics" |
 | Transparency | native alpha through the tool's `transparent_background` argument, which the instruction names (the model fills tool arguments, so a sentence is the only way to set it); keyed as a fallback | binary 0.159.0 `ImagegenArgs` above and `ImageGenerationItem.transparentBackground`; `SKILL.md` "For transparent images, ask built-in `image_gen` for a transparent background and preserve the generated alpha" |
@@ -188,7 +188,8 @@ Markup's outline and the pins steer, they do not mask: the whole image is re-ren
 outside a region still moved, above), and over chained edits the face blurs and the skin drifts warm. So every
 edit of an existing image is composited by default, on both routes, by the decision every image wrapper shares
 ([gemini page](gemini.md#local-composite-and-edit-lineage)): `share/image_composite.py` pastes only the changed
-part of the delivered image back onto a snapshot of the input (the single `--ref`, or on `--resume` the last
+part of the delivered image back onto a snapshot of the input (`--edit <image>`, which goes first among the
+references while every `--ref` stays a reference only; else the single `--ref`, or on `--resume` the last
 image this machine delivered in that chat). A `--region` edit masks its rectangle and a `--point` edit the
 changed areas touching the points; any other edit masks the difference map. A new generation, several
 references, a resume with no recorded image or a changed aspect (the viewer's Resize) print
@@ -199,12 +200,20 @@ model's own image), or `composite=refused reason=global|no-local-change changed=
 (more than 60% changed or nothing local found: the model's image is delivered), right before the last line
 `edit_depth=<n> root=<path>` of `<dest>.edit.json`.
 
-## Web route (fallback, explicit only)
+## Web route (the default) and the CLI fallback
 
-`codex-image --route web …` drives chatgpt.com itself, in the same hidden Chrome clone as Google Flow
-(`share/gemini_web.py`: one clone app, one hide watcher, one toast log, one failure-snapshot path), through
-`bin/chatgpt-web` → `share/chatgpt_web.py`. The default stays `--route cli`; nothing ever falls back to
-the web on its own.
+`codex-image` without `--route` runs `routes[0]`, `web`: chatgpt.com itself, in the same hidden Chrome clone
+as Google Flow (`share/gemini_web.py`: one clone app, one off-screen parking, one toast log, one failure-snapshot
+path), through `bin/chatgpt-web` → `share/chatgpt_web.py`. A route-level failure there — exit 4 (no account
+signed in), 5 (every account busy past `--lock-wait`), 3 (limit or wall) or exit 1 with `"sent": false` —
+reruns the same request once on `--route cli` (`fallback_from=web fallback_reason=…`, the same `--account`
+when one was given); inside `image-fanout` there is no such rerun, the scheduler moves the take to another
+account or route instead. It never falls back for the web-only tools, more refs than the CLI's 5, anything sent
+or refused, an exit 1 without `sent`, an explicit `--route` or a `--resume`: a resume follows the route that
+made the session (its record under the image-leg log's `sessions/`; a session no record names is the CLI's
+when a codex home holds it, else the web's). Exit 5 without a fallback prints `ACCOUNT_BUSY account=<name>`.
+`--lock-wait <s>` is forwarded to `chatgpt-web` and ignored by the CLI route. Rules and the run log:
+[image-vendors.md](../image-vendors.md#routes-fallback-and-the-run-log).
 
 - **Accounts** are the codex profile names (`main` = `~/.codex`, the rest `$CODEX_PROFILES_DIR/*`), each with
   its own Chrome profile under `${CHATGPT_WEB_DIR:-~/.chatgpt-web}/profiles/<name>`. The owner signs one in
@@ -214,8 +223,19 @@ the web on its own.
   `accounts/<name>.json`, printed masked) and prints `<name> ready` with the plan, or the reason and exit 4. `chatgpt-web accounts` lists them.
 - **Flags** are the CLI route's: `--dest --prompt --ref… --resume --account`; `--aspect`, `--size` and
   `--transparent` become the builder's sentences (the page has no knobs), `--region`, `--point`, `--remove-bg` and re-aspect are web-only, and delivery (alpha check, chroma fallback, format conversion)
-  is the CLI route's own. Output is the same block with `session=` = the ChatGPT chat id, plus `route=web`
-  and no `caps=` line (no CLI to version).
+  is the CLI route's own. Output is the same block with `session=` = the ChatGPT chat id, `job=`,
+  `route=web`, `phases=` when the engine reported them, and no `caps=` line (no CLI to version).
+- **`--count N`** (2-4, `web.counts`): N new chats of one request in N tabs of the one browser holding the
+  account's lock, all loading at once, then each bound and sent in tab order, then every tab polled in one loop. The first take
+  saved is `--dest`, the others print as `variant=<path> size=<WxH> session=<chat>` (`<stem>-2.<ext>`, …) the way
+  Flow's do; a take that fails (a limit on its tab) while others deliver is a `failed=<n>` line and its reason on
+  stderr, and a limit seen walls the account; none delivered fails as one take would. Never with `--resume`,
+  `--region`, `--point`, `--remove-bg` or re-aspect, never on `--route cli` (image_gen renders one image), and
+  no CLI fallback. `image-fanout` packs codex takes into one `--count` launch.
+- **Stalled replies**: a new chat's page that shows no image `STALL_S` (90 s) after the send is reloaded, again
+  every 90 s until `--timeout`: the image often lands server-side while the page never shows it (4 of 5 stalls on
+  2026-10-04; the fifth was ChatGPT itself stuck on "Thinking"). Each reload is a `reloaded` row in `jobs.jsonl`.
+  A resume or an editor tool is never reloaded: a reload can re-issue the old images' srcs, read then as new.
 - **New chat vs resume**: no `--resume` opens a new chat; `--resume <chat id>` opens `chatgpt.com/c/<id>` on
   the account the job ledger (`jobs.jsonl`) names for it, else `--account` is required.
 - **References** are uploaded through the composer's file input one at a time, in the order given, before
@@ -224,10 +244,16 @@ the web on its own.
   `Chat` toggle when it is off.
 - **Rotation** without `--account`: signed-in, bound, unwalled accounts inside the codex worker pool, least
   recently started first (`generation_started_at` in `accounts/<name>.json`, stamped when a new chat starts;
-  a `--resume` stamps nothing), accounts busy with another run last.
+  a `--resume` stamps nothing). The run try-locks the candidates in that order and takes the first free one;
+  when all are busy it waits on the first up to `--lock-wait SECONDS` (default 900, on `generate`, `resize`,
+  `comment`, `remove-bg`). A failure with exit 3, 4 or 5 moves on to the next candidate.
 - **Exit codes**: 3 (`CODEX_USAGE_LIMIT`) when the page shows its image limit — the stated reset time
   becomes the account's wall in `walls.json`, else `gw.WALL_SECONDS` — and 4 when the profile is signed out
-  or was never signed in.
+  or was never signed in. 5 = account busy: its lock (`<account>.lock`) was not taken within `--lock-wait`.
+  A pinned `--account` that is walled is refused unsent with exit 3 and the wall's end.
+- **Timing**: the JSON result carries `job` (`IMAGE_JOB_ID`), `phases` (seconds since engine start at `lock`,
+  `browser`, `page`, `sent`, `media`, `saved`), `lock_wait_s`, and on failure `sent`; the job ledger rows
+  carry the same, and a `{"kind": "teardown", "account", "route", "close_s"}` row times the browser close.
 - **Never**: a call of a ChatGPT backend endpoint or a replayed request. The page's own `/backend-api/me`
   reply is read passively for the email and its `accounts/check` replies for the plan; the image is the
   page's own `blob:` src of the generated-image gallery, read inside the page (full size, e.g. 1374×1145).

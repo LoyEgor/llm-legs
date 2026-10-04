@@ -8,7 +8,8 @@ One Chrome profile per geminib account under GEMINI_WEB_DIR. The owner signs eac
 (`login`); everything else runs the clone off-screen with no Dock icon. A generation goes through
 Flow's manual composer the way a person would: the page mints its own reCAPTCHA for every call, and
 the composer's own credit quote is checked against the manifest before anything is spent.
-Every command prints one JSON line; exit 0 ok, 2 usage, 3 out of credits, 4 login needed, 1 other.
+Every command prints one JSON line; exit 0 ok, 2 usage, 3 out of credits, 4 login needed, 5 account busy (its
+lock not free within --lock-wait), 1 other.
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ import contextlib
 import datetime
 import faulthandler
 import fcntl
+import hashlib
 import json
 import os
 import plistlib
@@ -53,6 +55,8 @@ BLOCK_WALL_SECONDS = 24 * 3600
 BLOCK_ERRORS = {"PUBLIC_ERROR_UNUSUAL_ACTIVITY"}
 # One generation rpc per composer mode: text, frames, ingredients, video edit, extend.
 GENERATE_RPCS = {"YhhmEf", "nprQif", "MZZa6b", "jIps6", "fZytfe"}
+LISTING_RPC = "Zzl0ze"
+ORIGINAL_SIZE = re.compile(r"^\d+p Original size$")
 DONE = 3
 
 
@@ -60,6 +64,47 @@ class Failure(Exception):
     def __init__(self, code: int, reason: str, **extra):
         super().__init__(reason)
         self.code, self.reason, self.extra = code, reason, extra
+
+
+STARTED = time.monotonic()
+PHASES: dict[str, float] = {}
+TIMED = False
+LOCK_WAIT_S = 900.0
+lock_waited = 0.0
+SETTLE_MS = 100
+
+
+def phase(name: str) -> None:
+    PHASES[name] = round(time.monotonic() - STARTED, 2)
+
+
+def timing(failed: bool = False) -> dict:
+    """What a generate-like command's result, failure and ledger rows carry: its job, the seconds since the
+    engine started at each phase reached, the time spent waiting for account locks, and on failure whether
+    the prompt went out."""
+    if not TIMED:
+        return {}
+    out = {"job": os.environ.get("IMAGE_JOB_ID") or None, "phases": dict(PHASES), "lock_wait_s": round(lock_waited, 2)}
+    if failed:
+        out["sent"] = "sent" in PHASES
+    return out
+
+
+def lock_wait_arg(parser) -> None:
+    parser.add_argument("--lock-wait", type=float, default=LOCK_WAIT_S, metavar="SECONDS",
+                        help="how long to wait for a busy account before exit 5")
+
+
+def settle(page, ms: int, done=None) -> None:
+    """Up to ms, back as soon as done() holds; without done it sleeps the whole ms."""
+    if done is None:
+        page.wait_for_timeout(ms)
+        return
+    for _ in range(max(1, ms // SETTLE_MS)):
+        with contextlib.suppress(Exception):
+            if done():
+                return
+        page.wait_for_timeout(SETTLE_MS)
 
 
 FAILURES_KEEP_S = 14 * 86400
@@ -186,7 +231,7 @@ def mask_email(email: str | None) -> str | None:
 
 
 def emit(payload: dict) -> None:
-    print(json.dumps(payload), flush=True)
+    print(json.dumps({**payload, **timing(payload.get("ok") is False)}), flush=True)
 
 
 def fail(code: int, reason: str, **extra) -> None:
@@ -252,6 +297,9 @@ def clone_current(want: str) -> bool:
 
 @contextlib.contextmanager
 def file_lock(path: Path, wait_s: float | None = None):
+    if str(path) in _held:
+        yield
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as handle:
         deadline = None if wait_s is None else time.time() + wait_s
@@ -266,8 +314,71 @@ def file_lock(path: Path, wait_s: float | None = None):
         yield
 
 
+_held: dict[str, object] = {}
+
+
+def lock_path(account: str) -> Path:
+    return ROOT / "locks" / f"{account}.lock"
+
+
+def try_lock(account: str) -> bool:
+    path = lock_path(account)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, "a")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return False
+    _held[str(path)] = handle
+    return True
+
+
+def release(account: str) -> None:
+    handle = _held.pop(str(lock_path(account)), None)
+    if handle:
+        handle.close()
+
+
+def claim(accounts: list[str], wait_s: float) -> str:
+    """The first account in order whose lock is free, now held by this run; with all of them busy, whichever
+    frees first within wait_s, else exit 5. A busy probe and then a blocking lock let two runs pick the same
+    idle account."""
+    global lock_waited
+    started = time.monotonic()
+    try:
+        account = next((name for name in accounts if try_lock(name)), None)
+        while account is None and time.monotonic() - started < wait_s:
+            time.sleep(min(0.5, max(0.0, wait_s - (time.monotonic() - started))))
+            account = next((name for name in accounts if try_lock(name)), None)
+    finally:
+        lock_waited += time.monotonic() - started
+    if account is None:
+        raise Failure(5, f"account busy: timed out waiting for {accounts[0]}.lock after {wait_s:.0f}s")
+    phase("lock")
+    return account
+
+
+def claimed(accounts: list[str], wait_s: float):
+    """(account, None) with its lock held until the caller moves on, in claim order; (account, Failure 5) for
+    each one still busy after the wait, which a failover passes like a wall. Close it (contextlib.closing)."""
+    left = list(accounts)
+    while left:
+        try:
+            account = claim(left, wait_s)
+        except Failure:
+            for account in left:
+                yield account, Failure(5, f"account busy: timed out waiting for {account}.lock after {wait_s:.0f}s")
+            return
+        left.remove(account)
+        try:
+            yield account, None
+        finally:
+            release(account)
+
+
 def busy(account: str) -> bool:
-    with contextlib.suppress(OSError), open(ROOT / "locks" / f"{account}.lock", "a") as handle:
+    with contextlib.suppress(OSError), open(lock_path(account), "a") as handle:
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -392,6 +503,8 @@ def browser(account: str, visible: bool = False):
     if not visible:
         # Off-screen, not headless: headless Chrome is served a different, bot-checked page.
         flags.append("--window-position=-30000,-30000")
+    reset_exit_type(account, profile)
+    threading.Thread(target=sweep_code_sign_clones, daemon=True).start()
     with chrome_clone() as clone, sync_playwright() as pw:
         context = pw.chromium.launch_persistent_context(
             str(profile), executable_path=quiet_chrome(chrome_binary(clone), account), headless=False, args=flags,
@@ -403,11 +516,11 @@ def browser(account: str, visible: bool = False):
         driver = parent_pid(pid)
         if parent_pid(driver) != os.getpid():
             driver = None
-        watcher = None
         if not visible:
-            hide_clone(account, pid)
-            context.on("page", lambda page: hide_clone(account, pid))
-            watcher = keep_hidden(account, pid)
+            for page in context.pages:
+                park_window(account, context, page)
+            context.on("page", lambda page: park_window(account, context, page))
+        phase("browser")
         try:
             yield context
         except Exception as error:
@@ -418,13 +531,16 @@ def browser(account: str, visible: bool = False):
             report(account, error)
             raise
         finally:
+            closing = time.monotonic()
             with bounded(account, "closing the browser", pid, driver, TEARDOWN_S):
                 with contextlib.suppress(Exception):
                     note_toasts(context, account)
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(Exception), reap_after_flush(profile, pid):
                     context.close()
-            if watcher:
-                stop_process(watcher)
+            if TIMED:
+                with contextlib.suppress(OSError):
+                    ledger({"kind": "teardown", "account": account, "route": ROUTE,
+                            "close_s": round(time.monotonic() - closing, 2)})
 
 
 # Chrome hands its stdout/stderr to the GoogleUpdater --wake-all it spawns mid-run (the user-level one in
@@ -453,6 +569,76 @@ def parent_pid(pid: int | None) -> int | None:
     return None
 
 
+# Chrome writes the profile (cookies, prefs, site storage) within its shutdown's first second, then mostly
+# sits until its own teardown watchdog terminates it ~10 s later; what that hang still writes is HSTS,
+# network hints, GPU caches and metrics (12 traced closes, 2026-10-03; median close was 11 s). So once
+# Cookies and Preferences are rewritten Chrome gets FLUSH_GRACE_S more, then its process group is killed.
+FLUSH_GRACE_S = 1.0
+
+
+@contextlib.contextmanager
+def reap_after_flush(profile: Path, chrome: int | None):
+    done = threading.Event()
+    begun = time.time()
+    flushed = [profile / "Default" / "Cookies", profile / "Default" / "Preferences"]
+
+    def watch():
+        while not done.wait(0.1):
+            with contextlib.suppress(OSError):
+                if all(path.stat().st_mtime >= begun for path in flushed):
+                    break
+        if not done.wait(FLUSH_GRACE_S):
+            with contextlib.suppress(OSError):
+                os.killpg(chrome, signal.SIGKILL)
+
+    if chrome:
+        threading.Thread(target=watch, daemon=True).start()
+    try:
+        yield
+    finally:
+        done.set()
+
+
+# A killed Chrome (by reap_after_flush, bounded or its own watchdog) never runs the helper that deletes its
+# per-launch code-sign clone of the app; 326 had piled up by 2026-10-03. A running browser maps its clone's
+# executable (lsof), and one younger than CLONE_SWEEP_MIN_AGE_S may belong to a launch not yet mapped.
+CLONE_SWEEP_MIN_AGE_S = 600
+
+
+def sweep_code_sign_clones() -> None:
+    """At most once per CLONE_SWEEP_MIN_AGE_S machine-wide (a stamp beside the clone both engines share):
+    every launch used to run ps and an lsof over every running Chrome."""
+    stamp = CLONE_ROOT / ".clone-sweep.stamp"
+    with contextlib.suppress(OSError):
+        if time.time() - stamp.stat().st_mtime < CLONE_SWEEP_MIN_AGE_S:
+            return
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        CLONE_ROOT.mkdir(parents=True, exist_ok=True)
+        stamp.touch()
+        temp = subprocess.run(["getconf", "DARWIN_USER_TEMP_DIR"], capture_output=True, text=True,
+                              timeout=10).stdout.strip()
+        if not temp:
+            return
+        cutoff = time.time() - CLONE_SWEEP_MIN_AGE_S
+        old = [path for path in (Path(temp).parent / "X" / f"{CLONE_ID}.code_sign_clone").glob("code_sign_clone.*")
+               if path.stat().st_mtime < cutoff]
+        if not old:
+            return
+        listing = subprocess.run(["ps", "-Ao", "pid=,command="], capture_output=True, text=True, timeout=10).stdout
+        browsers = [line.split(None, 1)[0] for line in listing.splitlines()
+                    if str(CLONE_APP) in line and "--type=" not in line]
+        mapped = ""
+        if browsers:
+            mapped = subprocess.run(["lsof", "-a", "-p", ",".join(browsers), "-d", "txt", "-Fn"],
+                                    capture_output=True, text=True, timeout=60).stdout
+            if "code_sign_clone." not in mapped:
+                return
+        stale = [str(path) for path in old if f"/{path.name}/" not in mapped]
+        if stale:
+            subprocess.Popen(["rm", "-rf", "--", *stale], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+
+
 @contextlib.contextmanager
 def bounded(account: str, what: str, chrome: int | None, driver: int | None, seconds: float):
     """Past `seconds` the stacks go to stderr and Chrome's process group and the Playwright driver are
@@ -474,60 +660,40 @@ def bounded(account: str, what: str, chrome: int | None, driver: int | None, sec
         timer.cancel()
 
 
-def stop_process(process: subprocess.Popen, wait_s: float = 5) -> None:
-    process.terminate()
+# The clone is LSBackgroundOnly, which macOS never hides (System Events reads `visible` false while its
+# window is on screen), so off-screen is the only hiding left. Playwright opens its window at the screen's
+# top left whatever --window-position says, so park_window moves each page's window off over CDP (Chrome
+# still keeps 40 px on screen); a Crashed exit_type would add a "Restore pages?" bubble that stays on
+# screen beside the parked window. Before this, whole runs sat in plain sight (2026-10-03).
+def reset_exit_type(account: str, profile: Path) -> None:
+    path = profile / "Default" / "Preferences"
     try:
-        process.wait(timeout=wait_s)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            process.wait(timeout=wait_s)
-
-
-# Chrome brings itself forward on a new window, a download or a dialog. One osascript polls for the
-# whole run: an osascript spawned every 3 s left the page up long enough for the owner to read it.
-# It quits once its Chrome exits, so a killed run cannot leave it polling forever. The hide is
-# unconditional: filtered on `visible is true` it left the clone's window up (2026-10-01). It hides
-# this run's Chrome by pid only: every clone shares one bundle id, and a `status --visible` window of
-# another account was hidden every 0.2 s.
-HIDE_WATCH = """on run argv
-  set chromePid to (item 1 of argv) as integer
-  repeat
-    tell application "System Events"
-      if not (exists (first process whose unix id is chromePid)) then return
-      try
-        set visible of (every process whose unix id is chromePid) to false
-      end try
-    end tell
-    delay 0.2
-  end repeat
-end run"""
-
-
-def keep_hidden(account: str, pid: int | None) -> subprocess.Popen | None:
-    if pid is None:
-        warn(account, "could not keep the automation Chrome hidden: its pid is unknown")
-        return None
-    try:
-        return subprocess.Popen(["osascript", "-e", HIDE_WATCH, str(pid)],
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except OSError as error:
-        warn(account, f"could not keep the automation Chrome hidden: {error}")
-        return None
-
-
-# macOS Chrome pulls --window-position back until 40 px of the window are on screen, so only hiding
-# the app (what Cmd-H does) keeps the window out of the owner's sight; the page stays "visible".
-def hide_clone(account: str = "-", pid: int | None = None) -> None:
-    which = f"unix id is {pid}" if pid else f'bundle identifier is "{CLONE_ID}"'
-    script = f'tell application "System Events" to set visible of (every process whose {which}) to false'
-    try:
-        result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=15)
-    except (OSError, subprocess.TimeoutExpired) as error:
-        warn(account, f"could not hide the automation Chrome: {error}")
+        prefs = json.loads(path.read_text())
+    except FileNotFoundError:
         return
-    if result.returncode:
-        warn(account, f"could not hide the automation Chrome: {result.stderr.strip()[:200]}")
+    except (OSError, ValueError) as error:
+        warn(account, f"could not mark the profile's last exit clean: {error}")
+        return
+    if not isinstance(prefs, dict) or not isinstance(prefs.get("profile"), dict) \
+            or prefs["profile"].get("exit_type") in (None, "Normal"):
+        return
+    prefs["profile"]["exit_type"] = "Normal"
+    part = path.with_name(f".{path.name}.{os.getpid()}")
+    try:
+        part.write_text(json.dumps(prefs))
+        part.replace(path)
+    except OSError as error:
+        warn(account, f"could not mark the profile's last exit clean: {error}")
+
+
+def park_window(account: str, context, page) -> None:
+    try:
+        cdp = context.new_cdp_session(page)
+        window = cdp.send("Browser.getWindowForTarget")["windowId"]
+        cdp.send("Browser.setWindowBounds", {"windowId": window, "bounds": {"left": -30000, "top": -30000}})
+        cdp.detach()
+    except Exception as error:
+        warn(account, f"could not move the automation Chrome off screen: {' '.join(str(error).split())[:200]}")
 
 
 def page_state(page) -> dict:
@@ -681,7 +847,7 @@ class Watcher:
         if not codes:
             return None
         return Failure(3, f"Flow flagged this account ({', '.join(sorted(codes))}); nothing was charged",
-                       wall_s=BLOCK_WALL_SECONDS)
+                       wall_s=BLOCK_WALL_SECONDS, flagged=True)
 
     def new_clips(self, known: set[str]) -> list[str]:
         return [k for k, r in self.media.items() if k not in known and r.get("created")]
@@ -699,14 +865,14 @@ class Watcher:
         return fresh[0] if len(fresh) == 1 else None
 
 
-def click_if_visible(page, role: str, name: str, exact: bool = True) -> bool:
+def click_if_visible(page, role: str, name: str, exact: bool = True, done=None) -> bool:
     target = page.get_by_role(role, name=name, exact=exact)
     for index in range(target.count()):
         item = target.nth(index)
         with contextlib.suppress(Exception):
             if item.is_visible():
                 item.click(timeout=3000)
-                page.wait_for_timeout(600)
+                settle(page, 600, done)
                 return True
     return False
 
@@ -784,6 +950,7 @@ def open_project(page, account: str) -> str:
 
 
 REFILL_JUMP = 200
+FLOW_MONTHLY_CREDITS = 1050
 
 
 def month_after(epoch: float) -> int:
@@ -797,7 +964,8 @@ def note_credits(account: str, credits: int | None) -> None:
     if credits is None:
         return
     meta, now = read_meta(account), int(time.time())
-    fields = {"credits": credits, "credits_at": now}
+    fields = {"credits": credits, "credits_at": now,
+              "credits_total": meta.get("credits_total") or max(FLOW_MONTHLY_CREDITS, credits)}
     previous = meta.get("credits")
     if isinstance(previous, int) and credits - previous >= REFILL_JUMP:
         fields.update(credits_refilled_at=now, credits_renews_at=month_after(now), credits_total=credits)
@@ -824,35 +992,37 @@ def drift(what: str) -> Failure:
 def close_overlays(page) -> None:
     backdrop = page.locator(".cdk-overlay-backdrop")
     for _ in range(3):
-        if not backdrop.count():
+        shown = backdrop.count()
+        if not shown:
             return
         backdrop.last.click(position={"x": 5, "y": 5})
-        page.wait_for_timeout(500)
+        settle(page, 500, lambda shown=shown: backdrop.count() < shown)
 
 
 def manual_composer(page) -> None:
     """Agent toggle off, nothing left in the prompt box from an earlier run."""
     agent = page.get_by_role("button", name="Agent", exact=True)
+    box = page.locator("[contenteditable=true]").last
     if not (agent.count() and agent.last.is_visible()):
-        click_if_visible(page, "button", "Close")
+        click_if_visible(page, "button", "Close", done=lambda: agent.count() and agent.last.is_visible())
     try:
         agent.last.wait_for(timeout=10000)
     except Exception:
         raise drift("no Agent toggle on the composer")
     if agent.last.get_attribute("aria-pressed") == "true":
         agent.last.click()
-        page.wait_for_timeout(800)
+        settle(page, 800, lambda: agent.last.get_attribute("aria-pressed") != "true")
     if agent.last.get_attribute("aria-pressed") == "true":
         raise drift("the Agent toggle stays on")
-    click_if_visible(page, "button", "Clear prompt")
-    if page.locator("[contenteditable=true]").last.inner_text().strip():
+    click_if_visible(page, "button", "Clear prompt", done=lambda: not box.inner_text().strip())
+    if box.inner_text().strip():
         raise drift("the prompt box kept earlier text after Clear prompt")
 
 
 def choose(page, name) -> None:
     radio = page.get_by_role("radio", name=name, exact=isinstance(name, str)).last
     radio.click(timeout=5000)
-    page.wait_for_timeout(300)
+    settle(page, 300, radio.is_checked)
     if not radio.is_checked():
         raise drift(f"the {getattr(name, 'pattern', name)} setting does not stick")
 
@@ -883,8 +1053,7 @@ def settings(page, plan: dict, full: bool) -> tuple[int, str]:
     except Failure:
         raise
     except Exception as exc:
-        raise drift(f"composer settings ({exc.__class__.__name__}: "
-                    f"{(str(exc).strip().splitlines() or [''])[0][:120]})")
+        raise drift(f"composer settings ({failure_text(exc)[:300]})")
     finally:
         if family.count() and family.last.is_visible():
             trigger.click()
@@ -893,36 +1062,45 @@ def settings(page, plan: dict, full: bool) -> tuple[int, str]:
     return cost, " ".join(trigger.inner_text().split())
 
 
-def upload(page, path: Path, stem: str, suffix: str, wait_s: float):
-    """Uploads through the open picker; returns the finished asset's option."""
-    # A unique upload name: the asset list is account-wide, so an older upload of the same file
-    # would match first, and one still at "Uploading" would be attached half-sent.
-    staged = Path(tempfile.mkdtemp(prefix="gemini-web-")) / f"{stem}-{time.time_ns()}{path.suffix.lower()}"
-    shutil.copyfile(path, staged)
+def upload(page, paths: list[Path], stem: str, suffix: str, wait_s: float) -> list:
+    """Uploads through the open picker in one batch; returns each path's finished asset option, in order."""
+    # The asset list is account-wide, so names carry the content hash: an earlier upload of the same bytes is
+    # picked instead of sent again (Flow spends ~6 s on each), and one still at "Uploading" is waited for,
+    # never attached half-sent.
+    def named(name: str, prefix: str = ""):
+        return page.get_by_role("option", name=re.compile(
+            "^" + prefix + re.escape(name) + r"(\.\w+)?" + re.escape(suffix) + "$"))
+
+    names = [f"{stem}-{hashlib.sha256(path.read_bytes()).hexdigest()[:16]}" for path in paths]
+    options = [named(name) for name in names]
+    uploading = [named(name, "Uploading ") for name in names]
+    staging = Path(tempfile.mkdtemp(prefix="gemini-web-"))
     try:
-        with page.expect_file_chooser(timeout=15000) as chooser:
-            page.get_by_role("button", name="Upload media", exact=True).last.click()
-        chooser.value.set_files(str(staged))
-        # Images keep their extension in the asset list, videos lose it.
-        name = re.escape(staged.stem) + r"(\.\w+)?" + re.escape(suffix) + "$"
-        option = page.get_by_role("option", name=re.compile("^" + name))
-        uploading = page.get_by_role("option", name=re.compile("^Uploading " + name))
-        deadline = time.time() + wait_s
-        while not option.count() or uploading.count():
+        send = {}
+        for path, name, option, busy in zip(paths, names, options, uploading):
+            if not option.count() and not busy.count() and name not in send:
+                send[name] = staging / f"{name}{path.suffix.lower()}"
+                shutil.copyfile(path, send[name])
+        if send:
+            with page.expect_file_chooser(timeout=15000) as chooser:
+                page.get_by_role("button", name="Upload media", exact=True).last.click()
+            chooser.value.set_files([str(staged) for staged in send.values()])
+        deadline = time.time() + wait_s + 30 * len(send)
+        while any(not option.count() or busy.count() for option, busy in zip(options, uploading)):
             if time.time() > deadline:
-                raise drift(f"the upload of {path.name} never finished in the asset list")
+                raise drift(f"the upload of {', '.join(path.name for path in paths)} never finished in the asset list")
             click_if_visible(page, "button", "I agree")
-            page.wait_for_timeout(500)
-        return option.first
+            page.wait_for_timeout(SETTLE_MS)
+        return [option.first for option in options]
     finally:
-        shutil.rmtree(staged.parent, ignore_errors=True)
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 def fill_frame(page, slot: str, image: Path) -> None:
     empty = page.get_by_role("button", name=slot, exact=True)
     empty.last.click()
     page.get_by_role("heading", name="Select a frame image").wait_for(timeout=10000)
-    upload(page, image, slot.lower(), "", 180).click()
+    upload(page, [image], slot.lower(), "", 180)[0].click()
     page.wait_for_timeout(800)
     if empty.count():
         click_if_visible(page, "button", "Add to prompt")
@@ -934,21 +1112,25 @@ def fill_frame(page, slot: str, image: Path) -> None:
     close_overlays(page)
 
 
-def add_ingredient(page, path: Path, kind: str) -> None:
+def add_ingredients(page, paths: list[Path], kind: str) -> None:
     chips = page.get_by_role("button", name=re.compile(r"ingredient$", re.IGNORECASE))
-    before = chips.count()
-    page.get_by_role("button", name="Add ingredients to the prompt box", exact=True).click()
-    page.get_by_role("button", name="Upload media", exact=True).last.wait_for(timeout=10000)
-    upload(page, path, kind.lower(), f" {kind}", 300 if kind == "Video" else 180).click()
-    page.wait_for_timeout(800)
-    if chips.count() == before:
-        click_if_visible(page, "button", "Add to prompt")
-    deadline = time.time() + 15
-    while chips.count() == before:
-        if time.time() > deadline:
-            raise drift(f"{path.name} never showed up as a prompt ingredient")
-        page.wait_for_timeout(500)
-    close_overlays(page)
+    options = None
+    for index, path in enumerate(paths):
+        before = chips.count()
+        page.get_by_role("button", name="Add ingredients to the prompt box", exact=True).click()
+        page.get_by_role("button", name="Upload media", exact=True).last.wait_for(timeout=10000)
+        if options is None:
+            options = upload(page, paths, kind.lower(), f" {kind}", 300 if kind == "Video" else 180)
+        options[index].click()
+        settle(page, 800, lambda: chips.count() != before)
+        if chips.count() == before:
+            click_if_visible(page, "button", "Add to prompt", done=lambda: chips.count() != before)
+        deadline = time.time() + 15
+        while chips.count() == before:
+            if time.time() > deadline:
+                raise drift(f"{path.name} never showed up as a prompt ingredient")
+            page.wait_for_timeout(SETTLE_MS)
+        close_overlays(page)
 
 
 def compose(page, plan: dict) -> tuple[int, str]:
@@ -958,10 +1140,9 @@ def compose(page, plan: dict) -> tuple[int, str]:
         fill_frame(page, "Start", Path(plan["first_frame"]))
     if plan["last_frame"]:
         fill_frame(page, "End", Path(plan["last_frame"]))
-    for ref in plan["refs"]:
-        add_ingredient(page, Path(ref), "Image")
+    add_ingredients(page, [Path(ref) for ref in plan["refs"]], "Image")
     if plan["edit"]:
-        add_ingredient(page, Path(plan["edit"]), "Video")
+        add_ingredients(page, [Path(plan["edit"])], "Video")
     cost, chip = settings(page, plan, full=False)
     tokens = chip.split()
     want = [plan["resolution"], f"x{plan['count']}"] + ([f"{plan['duration']}s"] if plan["duration"] else [])
@@ -972,13 +1153,10 @@ def compose(page, plan: dict) -> tuple[int, str]:
 
 def extend_composer(page, source: dict, label: str) -> str:
     """The source clip's editor in extend mode; Flow shows no credit quote there."""
-    scene = source.get("scene")
-    if not scene:
-        entry = media_entry(page, source["media_id"])
-        scene = entry[2] if entry and len(entry) > 2 and isinstance(entry[2], str) else None
-        if not scene:
-            raise Failure(1, f"Flow no longer lists clip {source['media_id']} on this account")
-    goto_flow(page, f"/project/{source['project']}/edit/{scene}")
+    if source.get("scene"):
+        goto_flow(page, f"/project/{source['project']}/edit/{source['scene']}")
+    else:
+        open_clip(page, source["project"], source["media_id"], source.get("account", "-"))
     item = page.get_by_role("menuitem", name=label, exact=True)
     try:
         page.get_by_role("button", name="Add clip", exact=True).last.click(timeout=30000)
@@ -1093,11 +1271,20 @@ def rotation(cost: int) -> list[str]:
     return least_recent(ready)
 
 
+def refuse_walled(account: str) -> None:
+    until = walls().get(account, 0)
+    if until > time.time():
+        raise Failure(3, f"{account} is walled until {time.strftime('%Y-%m-%d %H:%M', time.localtime(until))} "
+                         "(walls.json); nothing was sent", account=account, until=until)
+
+
 def take_accounts(pinned: str | None, rotated, walled: str) -> list[str]:
     if pinned:
         refuse_off_roster(pinned)
         refuse_out_of_pool(pinned)
+        refuse_walled(pinned)
         return [pinned]
+    # Idle first only for a fan-out, which hands accounts[:n] to child runs; a failover claims by try-lock.
     accounts = free_first(rotated())
     if not accounts:
         bound = bound_accounts()
@@ -1111,38 +1298,41 @@ def take_accounts(pinned: str | None, rotated, walled: str) -> list[str]:
 
 
 def take_failover(accounts: list[str], plan: dict, generate_on, set_wall, pinned: bool,
-                  wall_pinned: bool = False) -> None:
-    """Takes left over by a failed account move on to the next one; a credit wall (3) or a dead login (4) skips
-    to the next account unless one was pinned."""
+                  wall_pinned: bool = True, lock_wait: float = LOCK_WAIT_S) -> None:
+    """Takes left over by a failed account move on to the next one; a credit wall (3), a dead login (4) or an
+    account still busy after the lock wait (5) skips to the next account unless one was pinned."""
     done: list[dict] = []
     last: Failure | None = None
-    for account in accounts:
-        try:
-            result = generate_on(account, {**plan, "first_take": len(done) + 1,
-                                           "count": plan.get("count", 1) - len(done)})
-        except Exception as error:
-            done += getattr(error, "takes", [])
-            if not isinstance(error, Failure):
-                if not done:
-                    raise
+    with contextlib.closing(claimed(accounts, lock_wait)) as picks:
+        for account, refusal in picks:
+            try:
+                if refusal:
+                    raise refusal
+                result = generate_on(account, {**plan, "first_take": len(done) + 1,
+                                               "count": plan.get("count", 1) - len(done)})
+            except Exception as error:
+                done += getattr(error, "takes", [])
+                if not isinstance(error, Failure):
+                    if not done:
+                        raise
+                    report(account, error)
+                    last = Failure(1, failure_text(error)[:300])
+                    break
                 report(account, error)
-                last = Failure(1, failure_text(error)[:300])
-                break
-            report(account, error)
-            last = error
-            if error.code == 3 and (wall_pinned or not pinned):
-                set_wall(account, time.time() + error.extra.get("wall_s", WALL_SECONDS))
-            if error.code in (3, 4) and not pinned:
-                continue
-            if done:
-                break
-            fail(error.code, error.reason, account=account)
-        else:
-            if result.get("dry_run"):
-                emit(result)
+                last = error
+                if error.code == 3 and (wall_pinned or not pinned or error.extra.get("flagged")):
+                    set_wall(account, time.time() + error.extra.get("wall_s", WALL_SECONDS))
+                if error.code in (3, 4, 5) and not pinned:
+                    continue
+                if done:
+                    break
+                fail(error.code, error.reason, account=account)
+            else:
+                if result.get("dry_run"):
+                    emit(result)
+                    return
+                emit({**result, "account": done[0]["account"] if done else account, "takes": done + result["takes"]})
                 return
-            emit({**result, "account": done[0]["account"] if done else account, "takes": done + result["takes"]})
-            return
     if done:
         emit({"ok": True, "account": done[0]["account"], "takes": done,
               "short": f"{len(done)} of {plan.get('count', 1)} takes; the next one failed: {last.reason}"})
@@ -1200,7 +1390,7 @@ def job_rows() -> list:
 def ledger(entry: dict) -> None:
     ROOT.mkdir(parents=True, exist_ok=True)
     with open(ROOT / "jobs.jsonl", "a") as f:
-        f.write(json.dumps({"ts": int(time.time()), **entry}) + "\n")
+        f.write(json.dumps({"ts": int(time.time()), **entry, **timing(entry.get("event") == "failed")}) + "\n")
 
 
 def is_mp4(head: bytes) -> bool:
@@ -1327,42 +1517,86 @@ def save_caught(page, trigger, dest: Path, what: str, kind: str, is_kind, fetch,
     return dest.stat().st_size
 
 
-def save_upscaled(page, project: str, scene: str, dest: Path) -> int:
-    """Flow's own 1080p upscaled download from the clip's editor (free on PRO, 2026-10-01)."""
+def save_from_editor(page, prepare, dest: Path, upscaled: bool) -> int:
+    item, what = ("1080p Upscaled", "1080p upscaled") if upscaled else (ORIGINAL_SIZE, "original size")
+
+    def trigger():
+        page.get_by_role("button", name="Download media", exact=True).click(timeout=30000)
+        page.get_by_role("menuitem", name=item, exact=True).click(timeout=10000)
+
+    return save_caught(page, trigger, dest, what, "an mp4", is_mp4,
+                       lambda url, dest: save_video(page.context, url, dest), prepare=prepare)
+
+
+def save_from_scene(page, project: str, scene: str, dest: Path, upscaled: bool) -> int:
+    """Flow's own download from the clip's editor; its 1080p upscale is free on PRO (2026-10-01)."""
     def prepare():
         goto_flow(page, f"/project/{project}/edit/{scene}")
         close_promos(page)
 
-    def trigger():
-        page.get_by_role("button", name="Download media", exact=True).click(timeout=30000)
-        page.get_by_role("menuitem", name="1080p Upscaled", exact=True).click(timeout=10000)
-
-    return save_caught(page, trigger, dest, "1080p upscaled", "an mp4", is_mp4,
-                       lambda url, dest: save_video(page.context, url, dest), prepare=prepare)
+    return save_from_editor(page, prepare, dest, upscaled)
 
 
-def media_entry(page, media_id: str) -> list | None:
-    """Flow's own read-only media lookup (as29s), issued from the page; reads carry no reCAPTCHA."""
-    text = page.evaluate("""async (mediaId) => {
-        const wiz = globalThis.WIZ_global_data || {};
-        const freq = JSON.stringify([[["as29s", JSON.stringify([mediaId]), null, "generic"]]]);
-        const url = "/_/AiSandboxAngularFrontend/data/batchexecute?rpcids=as29s" +
-          `&source-path=${encodeURIComponent(location.pathname)}&bl=${encodeURIComponent(wiz.cfb2h || "")}` +
-          `&f.sid=${encodeURIComponent(wiz.FdrFJe || "")}&hl=en&_reqid=${100000 + Math.floor(Math.random() * 900000)}&rt=c`;
-        const resp = await fetch(url, {method: "POST", credentials: "include",
-          headers: {"content-type": "application/x-www-form-urlencoded;charset=UTF-8", "x-same-domain": "1"},
-          body: new URLSearchParams({"f.req": freq, at: wiz.SNlM0e || ""})});
-        return await resp.text();
-    }""", media_id)
-    for _, payload in batch_payloads(text):
-        if isinstance(payload, list) and payload[:1] == [media_id]:
-            return payload
-    return None
+def save_upscaled(page, project: str, scene: str, dest: Path) -> int:
+    return save_from_scene(page, project, scene, dest, upscaled=True)
 
 
-def media_url(page, media_id: str) -> str | None:
-    entry = media_entry(page, media_id)
-    return video_url(entry, media_id) if entry else None
+def listed_thumbs(body: str) -> dict[str, str]:
+    """media id -> the thumbnail token its project-grid tile shows, from Flow's own project listing."""
+    thumbs = {}
+    for rpcid, payload in batch_payloads(body):
+        if rpcid != LISTING_RPC or not (isinstance(payload, list) and len(payload) > 2
+                                        and isinstance(payload[2], list)):
+            continue
+        for entry in payload[2]:
+            token = re.search(r"/asb/([A-Za-z0-9_-]+)", json.dumps(entry))
+            if isinstance(entry, list) and entry and isinstance(entry[0], str) and token:
+                thumbs[entry[0]] = token.group(1)
+    return thumbs
+
+
+def open_clip(page, project: str, media_id: str, account: str = "-", timeout_s: float = 120.0) -> str:
+    """Opens the clip's editor from its tile in the project grid and returns its scene. A video tile carries
+    no media id, only a thumbnail, so the page's own listing reply says which thumbnail is the clip's."""
+    thumbs: dict[str, str] = {}
+
+    def listener(response):
+        if f"rpcids={LISTING_RPC}" in response.url:
+            with contextlib.suppress(Exception):
+                thumbs.update(listed_thumbs(response.text()))
+
+    page.on("response", listener)
+    try:
+        goto_flow(page, f"/project/{project}")
+        close_promos(page, account)
+        settle(page, 30000, lambda: media_id in thumbs)
+        if media_id not in thumbs:
+            raise Failure(1, f"Flow no longer lists clip {media_id} in project {project} on {account}" if thumbs
+                          else f"project {project} on {account} never listed its media")
+        tiles = page.locator("flow-grid-tile-container")
+        tile = tiles.filter(has=page.locator(f'img[src*="{thumbs[media_id]}"]'))
+        thumbnails = tiles.locator("img")
+        deadline, still = time.monotonic() + timeout_s, 0
+        while not tile.count():
+            shown = thumbnails.evaluate_all("imgs => imgs.map(i => i.src)")
+            if not shown or still >= 5 or time.monotonic() > deadline:
+                raise Failure(1, f"clip {media_id} is listed in project {project} on {account} but no tile in "
+                                 "its grid shows it")
+            tiles.last.hover()
+            page.mouse.wheel(0, 800)
+            page.wait_for_timeout(400)
+            still = still + 1 if thumbnails.evaluate_all("imgs => imgs.map(i => i.src)") == shown else 0
+        tile.first.click(timeout=30000)
+        page.wait_for_url(lambda url: "/edit/" in url, timeout=30000)
+    except Failure:
+        raise
+    except Exception as exc:
+        raise drift(f"the tile of clip {media_id} in project {project} ({exc.__class__.__name__})") from exc
+    finally:
+        with contextlib.suppress(Exception):
+            page.remove_listener("response", listener)
+    close_promos(page, account)
+    return re.search(r"/edit/([^/?#]+)", page.url).group(1)
 
 
 def extend_source(path: str, ext: dict) -> dict:
@@ -1410,11 +1644,9 @@ def generate_on(account: str, plan: dict, args) -> dict:
     meta = read_meta(account)
     if not meta.get("email"):
         raise Failure(4, f"account {account} is not bound to a Google account; run: gemini-web status {account}")
-    dest = Path(args.dest)
-    with file_lock(ROOT / "locks" / f"{account}.lock", wait_s=900):
-        if not (plan["extend"] or args.dry_run):
-            note_started(account)
-        return render_on(account, plan, args, meta, dest, started)
+    if not (plan["extend"] or args.dry_run):
+        note_started(account)
+    return render_on(account, plan, args, meta, Path(args.dest), started)
 
 
 def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: float) -> dict:
@@ -1429,6 +1661,7 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
             state = page_state(page)
             if state["email"] != meta["email"]:
                 raise Failure(1, f"profile {account} is signed in as {state['email']}, bound to {meta['email']}")
+            phase("page")
             credits = read_credits(page)
             note_credits(account, credits)
             if credits is not None and credits < cost:
@@ -1456,6 +1689,7 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
             known = set(watcher.media)
             button.click()
             sent = time.time()
+            phase("sent")
             deadline = sent + args.timeout
             while len(clips) < count:
                 if watcher.blocked():
@@ -1487,6 +1721,7 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
                 raise Failure(1, f"not ready after {args.timeout}s; recover later: "
                                  f"{recover_hint(account, clips, dest)}", media_id=clips[0])
             rendered = time.time()
+            phase("media")
             saved, refused, later = [], [], []
             for media_id in clips:
                 record = watcher.media[media_id]
@@ -1503,15 +1738,21 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
                     if later or not save_or_defer(page, account, project, upscale, plan["model"]):
                         later.append(upscale)
                     continue
-                url = record.get("url") or media_url(page, media_id)
-                if not url:
-                    raise Failure(1, f"clip {media_id} finished but Flow gave no video URL", media_id=media_id)
-                saved[-1]["bytes"] = save_video(context, url, path)
+                if record.get("url"):
+                    saved[-1]["bytes"] = save_video(context, record["url"], path)
+                elif record.get("scene"):
+                    saved[-1]["bytes"] = save_from_scene(page, project, record["scene"], path, upscaled=False)
+                else:
+                    raise Failure(1, f"clip {media_id} finished but Flow gave no video URL and no scene for it; "
+                                     f"recover: {recover_hint(account, [media_id], path)}",
+                                  media_id=media_id)
                 ledger({"account": account, "media_id": media_id, "dest": str(path), "state": "saved",
                         "model": plan["model"], "scene": record.get("scene"), "bytes": saved[-1]["bytes"]})
             if not saved:
                 raise Failure(1, f"Flow refused the clip: {refused[0]['error']}", media_id=refused[0]["media_id"])
             finished = time.time()
+            if not later:
+                phase("saved")
             charged = credits - watcher.reply_credits \
                 if credits is not None and watcher.reply_credits is not None else None
             after = watcher.credits if watcher.credits is not None else \
@@ -1542,6 +1783,7 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
                           media_id=clips[0] if clips else None)
     if later:
         upscale_later(account, project, later, plan["model"])
+        phase("saved")
     result["bytes"] = result["variants"][0]["bytes"]
     return result
 
@@ -1620,7 +1862,8 @@ def cmd_generate(args) -> None:
     if pinned:
         refuse_off_roster(pinned)
         refuse_out_of_pool(pinned)
-    candidates = [pinned] if pinned else free_first(rotation(plan["cost"]))
+        refuse_walled(pinned)
+    candidates = [pinned] if pinned else rotation(plan["cost"])
     if not candidates:
         bound = bound_accounts()
         if not bound:
@@ -1631,22 +1874,25 @@ def cmd_generate(args) -> None:
         raise Failure(3, f"every signed-in Flow account is walled (walls.json) or holds under {plan['cost']} "
                          "credits by its last balance read")
     skipped: list[tuple[str, Failure]] = []
-    for account in candidates:
-        try:
-            result = generate_on(account, plan, args)
-        except Failure as failure:
-            report(account, failure)
-            # A short balance is skipped by its cached credits; a wall would also refuse cheaper jobs.
-            if failure.code == 3 and not args.account and "credits" not in failure.extra:
-                set_wall(account, time.time() + failure.extra.get("wall_s", WALL_SECONDS))
-            if failure.code not in (3, 4) or pinned:
-                raise Failure(failure.code, failure.reason, account=account, **failure.extra)
-            skipped.append((account, failure))
-            continue
-        set_wall(account, None)
-        emit(result)
-        return
-    raise Failure(3 if any(failure.code == 3 for _, failure in skipped) else 4,
+    with contextlib.closing(claimed(candidates, args.lock_wait)) as picks:
+        for account, refusal in picks:
+            try:
+                if refusal:
+                    raise refusal
+                result = generate_on(account, plan, args)
+            except Failure as failure:
+                report(account, failure)
+                # A short balance is skipped by its cached credits; a wall would also refuse cheaper jobs.
+                if failure.code == 3 and "credits" not in failure.extra:
+                    set_wall(account, time.time() + failure.extra.get("wall_s", WALL_SECONDS))
+                if failure.code not in (3, 4, 5) or pinned:
+                    raise Failure(failure.code, failure.reason, account=account, **failure.extra)
+                skipped.append((account, failure))
+                continue
+            set_wall(account, None)
+            emit(result)
+            return
+    raise Failure(min(failure.code for _, failure in skipped),
                   "no signed-in Flow account could take the job ("
                   + "; ".join(f"{account}: {failure.reason}" for account, failure in skipped) + ")")
 
@@ -1670,30 +1916,27 @@ def cmd_status(args) -> None:
         sys.exit(0 if bound else 1)
 
 
-def job_project(account: str, media_id: str) -> str | None:
-    rows = job_rows()
-    known = [r["project"] for r in rows if isinstance(r, dict) and r.get("media_id") == media_id and r.get("project")]
-    return known[-1] if known else read_meta(account).get("project")
+def job_project(media_id: str) -> str | None:
+    known = [r["project"] for r in job_rows()
+             if isinstance(r, dict) and r.get("media_id") == media_id and r.get("project")]
+    return known[-1] if known else None
 
 
 def cmd_fetch(args) -> None:
+    project = job_project(args.media_id)
+    if not project:
+        raise Failure(1, f"the job ledger ({ROOT / 'jobs.jsonl'}) has no Flow project for clip {args.media_id}, "
+                         "so its tile cannot be found")
     with browser(args.account) as context:
         page = context.pages[0] if context.pages else context.new_page()
-        goto_flow(page, "/")
-        entry = media_entry(page, args.media_id)
-        url = video_url(entry, args.media_id) if entry else None
-        if not url:
-            raise Failure(1, f"no finished video {args.media_id} on {args.account}")
-        if args.resolution == "1080p":
-            project = job_project(args.account, args.media_id)
-            if not (project and len(entry) > 2 and entry[2]):
-                raise Failure(1, f"no project or scene known for the 1080p download of {args.media_id}; "
-                              "fetch it without --resolution")
-            size = save_upscaled(page, project, entry[2], Path(args.dest))
-        else:
-            size = save_video(context, url, Path(args.dest))
+        opened = {}
+
+        def prepare():
+            opened["scene"] = open_clip(page, project, args.media_id, args.account)
+
+        size = save_from_editor(page, prepare, Path(args.dest), args.resolution == "1080p")
         ledger({"account": args.account, "media_id": args.media_id, "dest": str(Path(args.dest)),
-                "state": "saved", "scene": entry[2] if len(entry) > 2 else None, "bytes": size})
+                "state": "saved", "scene": opened["scene"], "bytes": size})
         emit({"ok": True, "account": args.account, "dest": args.dest, "media_id": args.media_id,
               "bytes": size})
 
@@ -1728,7 +1971,7 @@ def cmd_accounts(args) -> None:
             meta = read_meta(p.name)
             rows.append({"account": p.name, "roster": p.name in roster(), "login": has_login(p.name),
                          "email": meta.get("email"), "credits": meta.get("credits"),
-                         "walled_until": walls().get(p.name)})
+                         "walled_until": walls().get(p.name), "last_used": meta.get("generation_started_at")})
     emit({"ok": True, "accounts": rows})
 
 
@@ -1762,6 +2005,7 @@ def main() -> None:
     p.add_argument("--timeout", type=int, default=900)
     p.add_argument("--dry-run", action="store_true",
                    help="set the composer up and read Flow's credit quote, send nothing")
+    lock_wait_arg(p)
     p.set_defaults(func=cmd_generate)
     p = sub.add_parser("fetch", help="download an already generated clip by media id")
     p.add_argument("account")
@@ -1771,6 +2015,8 @@ def main() -> None:
                    help="1080p downloads Flow's own upscale from the clip's editor")
     p.set_defaults(func=cmd_fetch)
     args = parser.parse_args()
+    global TIMED
+    TIMED = hasattr(args, "lock_wait")
     try:
         args.func(args)
     except Failure as failure:

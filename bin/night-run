@@ -30,7 +30,7 @@ usage() {
   cat >&2 <<'EOF'
 usage: night-run start [--cleanup | --resume <id> [--job <ref>]]
        night-run base <id>
-       night-run job <id> add <fixer|vendor|debt|leftover> <ref> [--branch B]
+       night-run job <id> add <fixer|vendor|debt|leftover> <ref> [--branch B] [--ready "<why>"]
        night-run job <id> set <ref> key=value...   (state, reason, branch, review, commits, pushed)
        night-run finish <id>
        night-run leftovers [--json]
@@ -41,12 +41,16 @@ start opens the orchestrator chat: --cleanup lands finished night branches and r
   only; --resume reopens night <id> under a new orchestrator for its unfinished jobs (one with --job,
   else all plus a cleanup job), the old session kept in previous_sessions
 Nights live in ${DOCTORS_DIR:-~/.cache/doctors}/nights/<id>.json.
+report opens with share/night_spend.py's header: duration, jobs, the orchestrator's worker runs and
+  hours, its review rounds, token spend of fixers, reviews and orchestrator weighted in input-token
+  equivalents (input 1, cache write 1.25, cache read 0.1, output 5) against the previous finished night
 states: pending merged left failed-launch blocked-on-egor nothing-to-do (left and blocked-on-egor need reason=)
 commits=<repo>:<hash>[,<repo>:<hash>...]  replaces the job's list; <repo> is a sweep-repos
   basename or an absolute path; a changed list clears pushed unless pushed=true comes with it
 leftover: ref is a leftover branch, adopted in every sweep repository where it is one: its WIP
   committed, night/<id>/leftover-<slug> made at its tip with its night worktree, the old worktree and
-  branch removed; the job's ref becomes leftover-<slug>
+  branch removed; the job's ref becomes leftover-<slug>; a branch live only by activity under 6 h is
+  refused unless its owner hands it over with --ready "<why>", recorded as the job's handover {by, at, why}
 leftovers lists every non-main branch and worktree of the sweep repositories: live ones stay, landed
   ones go at finish, every other is a leftover to carry; finish records those under the night's leftovers
 pushed=true is refused unless every commit of the job is on its repository's origin main and not
@@ -118,13 +122,19 @@ doctor_read() { # jq-filter -> {"llm": value|null, "harness": value|null, "updat
 
 doctor_counts() { doctor_read '.problem_count // null'; }
 
+JQ_PROBLEM_NORM='def norm_problem: (.fact // "") as $f
+  | if (.state == "fixed-pending" or .state == "watch") and ($f | test("^fixed · [0-9]+ events since · 0 matched")) then "proved"
+    elif .state == "fixed-pending" or .rule == "fix-proof" then "pending" else .state end;'
+
 # proved: a fix the doctor proved (harness `fixed · E events since · 0 matched`; the LLM doctor drops a
 # proved row instead); pending: a fix awaiting its commit or its proof.
 doctor_states() {
-  doctor_read '[.problems[]? | (.fact // "") as $f
-    | if (.state == "fixed-pending" or .state == "watch") and ($f | test("^fixed · [0-9]+ events since · 0 matched")) then "proved"
-      elif .state == "fixed-pending" or .rule == "fix-proof" then "pending" else .state end] as $s
+  doctor_read "$JQ_PROBLEM_NORM"' [.problems[]? | norm_problem] as $s
     | reduce ("proved", "pending", "open", "new", "regressed") as $k ({}; .[$k] = ($s | map(select(. == $k)) | length))'
+}
+
+doctor_problems() {
+  doctor_read "$JQ_PROBLEM_NORM"' reduce (.problems[]? | select(.id != null)) as $p ({}; .[$p.id] = ($p | norm_problem))'
 }
 
 main_checkout() {
@@ -164,7 +174,7 @@ resume_night() { # id job-ref-or-empty (locked): reopens the night for a new orc
     jq -e "$JQ_UNFINISHED"' any(.jobs[]; unfinished)' "$file" >/dev/null || die "night $id has no unfinished job"
   fi
   night_set "$id" "$JQ_UNFINISHED$JQ_EVENTS"' .previous_sessions = ((.previous_sessions // []) + [.session | values])
-    | .session = null | .opener = $opener | .finished_at = null | .doctors_after = null | .doctor_states_after = null | .note = null
+    | .session = null | .opener = $opener | .finished_at = null | .doctors_after = null | .doctor_states_after = null | .doctor_problems_after = null | .note = null
     | .jobs |= map(if unfinished and ($job == "" or .ref == $job) then .state = "pending" else . end)
     | if $job == "" and ([.jobs[] | select(.kind == "debt" and .state == "pending")] | length) == 0
       then .jobs += [{kind: "debt", ref: "debt-\([.jobs[] | select(.kind == "debt")] | length + 1)", state: "pending",
@@ -197,8 +207,10 @@ cmd_start() {
     file=$(night_file "$id")
     [ ! -e "$file" ] || die "night id $id is taken"
     jq -n --arg id "$id" --arg t "$(stamp)" --argjson before "$(doctor_counts)" --argjson states "$(doctor_states)" \
+      --argjson problems "$(doctor_problems)" \
       --argjson opener "$$" '{id: $id, started_at: $t, finished_at: null, session: null, account: null, command: null, note: null,
-        doctors_before: $before, doctors_after: null, doctor_states_before: $states, doctor_states_after: null, jobs: [],
+        doctors_before: $before, doctors_after: null, doctor_states_before: $states, doctor_states_after: null,
+        doctor_problems_before: $problems, doctor_problems_after: null, jobs: [],
         opener: $opener}' >"$file.tmp" && mv -f "$file.tmp" "$file" ||
       { rm -f "$file.tmp"; die "cannot write $file"; }
   fi
@@ -319,13 +331,16 @@ cmd_base() {
 # A leftover moves into the night's own namespace, where the review-flow gate lets workers commit:
 # night/<id>/leftover-<slug> at its tip, its WIP committed first, in every sweep repository where the
 # branch is a leftover; the old worktree and branch go once the night branch holds every commit.
-adopt_leftover() { # id branch -> sets branch and adopted (JSON)
-  local id=$1 old=$2 rows row repo br wt landed ahead behind dirty state why tip wip path keep ignored
+adopt_leftover() { # id branch ready-why -> sets branch and adopted (JSON)
+  local id=$1 old=$2 rows row repo br wt landed ahead behind dirty state why tip wip path keep ignored ready_branch=''
   branch="night/$id/leftover-${old//\//-}" adopted='[]'
+  [ -z "$3" ] || ready_branch=$old
   rows=$(branch_rows | awk -F '\t' -v b="$old" '$2 == b')
   [ -n "$rows" ] || die "no branch $old in the sweep repositories besides main"
   row=$(awk -F '\t' '$8 == "live"' <<<"$rows" | head -1)
-  [ -z "$row" ] || die "$old is live in $(basename "${row%%$'\t'*}"): $(cut -f9 <<<"$row")"
+  why=$(cut -f9 <<<"$row")
+  [[ $why != active* ]] || why="$why; its owner hands it over with --ready \"<why>\""
+  [ -z "$row" ] || die "$old is live in $(basename "${row%%$'\t'*}"): $why"
   rows=$(awk -F '\t' '$8 == "leftover"' <<<"$rows")
   [ -n "$rows" ] || die "$old is no leftover: landed, finish prunes it"
   jq -e --arg r "${branch##*/}" 'any(.jobs[]; .ref == $r)' "$(night_file "$id")" >/dev/null &&
@@ -379,7 +394,7 @@ adopt_undo() { # branch adopted -> drops the night branch and worktree of every 
 }
 
 cmd_job() {
-  local id=${1:-} verb=${2:-} kind ref branch='' adopted='' at=$(stamp) began=$SECONDS adopt='{}'
+  local id=${1:-} verb=${2:-} kind ref branch='' adopted='' at=$(stamp) began=$SECONDS adopt='{}' ready='' handover=null
   [ -n "$id" ] || usage
   known_night "$id"
   case $verb in
@@ -390,23 +405,27 @@ cmd_job() {
       while [ $# -gt 0 ]; do
         case $1 in
           --branch) [ -n "${2:-}" ] || usage; branch=$2; shift 2 ;;
+          --ready) [ -n "${2:-}" ] || usage; ready=$2; shift 2 ;;
           *) usage ;;
         esac
       done
+      [ -z "$ready" ] || [ "$kind" = leftover ] || usage
       if [ "$kind" = leftover ]; then
         [ -z "$branch" ] || usage
-        adopt_leftover "$id" "$ref"
+        adopt_leftover "$id" "$ref" "$ready"
         ref=${branch##*/}
         adopt="{\"adopt_secs\": $((SECONDS - began))}"
+        [ -z "$ready" ] || handover=$(jq -nc --arg by "${CLAUDE_CODE_SESSION_ID:-${USER:-?}}" --arg at "$at" --arg why "$ready" \
+          '{by: $by, at: $at, why: $why}')
       fi
       lock
       jq -e --arg r "$ref" 'any(.jobs[]; .ref == $r)' "$(night_file "$id")" >/dev/null &&
         die "night $id already has job $ref"
       night_set "$id" "$JQ_EVENTS"' .jobs += [{kind: $k, ref: $r, state: "pending", reason: null,
         branch: (if $b == "" then null else $b end), review: null, commits: [], pushed: false}
-        + (if $a == null then {} else {adopted: $a} end)]
+        + (if $a == null then {} else {adopted: $a} end) + (if $h == null then {} else {handover: $h} end)]
         | events([{phase: "add", at: $at, job: $r, kind: $k} + $adopt]; $t)' \
-        --arg k "$kind" --arg r "$ref" --arg b "$branch" --argjson a "${adopted:-null}" \
+        --arg k "$kind" --arg r "$ref" --arg b "$branch" --argjson a "${adopted:-null}" --argjson h "$handover" \
         --arg at "$at" --argjson adopt "$adopt" --arg t "$(stamp)" || die "cannot write night $id"
       printf 'night %s: job %s %s added\n' "$id" "$kind" "$ref" ;;
     set) shift 2; job_set "$id" "$@" ;;
@@ -521,9 +540,11 @@ cmd_finish() {
   lock
   jq -e '.finished_at == null' "$(night_file "$id")" >/dev/null || die "night $id is already finished"
   night_set "$id" "$JQ_EVENTS"' .finished_at = $t | .doctors_after = $after | .doctor_states_after = $states
+    | .doctor_problems_after = $problems
     | .jobs |= map(if .state == "pending" then .state = "left" | .reason = "no outcome recorded by the close" else . end)
     | events([{phase: "finish", pred: "jobs"}]; $t)' \
-    --arg t "$(stamp)" --argjson after "$(doctor_counts)" --argjson states "$(doctor_states)" || die "cannot write night $id"
+    --arg t "$(stamp)" --argjson after "$(doctor_counts)" --argjson states "$(doctor_states)" \
+    --argjson problems "$(doctor_problems)" || die "cannot write night $id"
   unlock
   printf 'night %s finished\n' "$id"
   at=$(stamp) began=$SECONDS
@@ -554,7 +575,7 @@ branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locke
   elif [ -n "$wt" ] && grep -qxE "$(printf '%s' "$wt" | sed 's/[][\.*^$+?(){}|]/\\&/g')(/.*)?" <<<"$6"; then why='a process inside'
   elif [ -n "$night" ]; then
     [ ! -s "$(night_file "$night")" ] || [ "$(night_status "$(night_file "$night")" 2>/dev/null)" != running ] || why="night $night running"
-  else
+  elif [ -z "${ready_branch:-}" ] || [ "$branch" != "$ready_branch" ]; then
     newest=$(git -C "${wt:-$repo}" log -g -1 --date=unix --format=%gd "${ref:-HEAD}" 2>/dev/null)
     newest=${newest##*@\{} newest=${newest%\}}
     [[ $newest =~ ^[0-9]+$ ]] || newest=0
@@ -678,6 +699,8 @@ cmd_report() {
     run="${nights_dir%/*}/runs/$ref.json"
     [ ! -f "$run" ] || jq -c --arg r "$ref" '{($r): [.decisions[]? | select(.component == "unverified") | .id]}' "$run"
   done | jq -sc 'add // {}')
+  python3 -B "$repo_root/share/night_spend.py" "$repo_root/bin/worker-run" "$file" || die "no spend header for $file"
+  python3 -B "$repo_root/share/night_churn.py" "$repo_root/bin/worker-run" "$file" 2>/dev/null || true
   jq -r --argjson u "$unverified" --argjson lines "$(code_lines "$file")" --arg status "$(night_status "$file")" \
     "$JQ_TOTALS"' totals as $t
     | "night \(.id) · \(.started_at | hm)–\(.finished_at | hm)"
@@ -687,6 +710,7 @@ cmd_report() {
       (.jobs[] | ([.state, .kind, .ref]
         + (if .branch and .state != "merged" then [.branch] else [] end)
         + (if .review then ["review \(.review)"] else [] end)
+        + (if .handover then ["handed over by \(.handover.by) at \(.handover.at | hm): \(.handover.why)"] else [] end)
         + [.commits[] | "\(.repo | split("/") | last)@\(.hash[0:7])"]
         + (.ref as $r | if ($lines | has($r)) | not then []
             elif $lines[$r] == null then ["code ?"] else ["code +\($lines[$r][0])/-\($lines[$r][1])"] end)

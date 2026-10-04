@@ -84,12 +84,67 @@ guard let observation = request.results?.first, !observation.allInstances.isEmpt
   fail(1, "Vision found no subject in \(input)")
 }
 
+func floats(_ buffer: CVPixelBuffer) -> (width: Int, height: Int, values: [Float]) {
+  CVPixelBufferLockBaseAddress(buffer, .readOnly)
+  defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+  let w = CVPixelBufferGetWidth(buffer), h = CVPixelBufferGetHeight(buffer)
+  let row = CVPixelBufferGetBytesPerRow(buffer)
+  let base = CVPixelBufferGetBaseAddress(buffer)!
+  var values = [Float](repeating: 0, count: w * h)
+  for y in 0..<h {
+    let line = (base + y * row).assumingMemoryBound(to: Float.self)
+    for x in 0..<w { values[y * w + x] = line[x] }
+  }
+  return (w, h, values)
+}
+
 let labelBuffer = observation.instanceMask
 CVPixelBufferLockBaseAddress(labelBuffer, .readOnly)
 let labelWidth = CVPixelBufferGetWidth(labelBuffer), labelHeight = CVPixelBufferGetHeight(labelBuffer)
 let labelRow = CVPixelBufferGetBytesPerRow(labelBuffer)
 let labelBase = CVPixelBufferGetBaseAddress(labelBuffer)!.assumingMemoryBound(to: UInt8.self)
-func label(_ x: Int, _ y: Int) -> Int { Int(labelBase[y * labelRow + x]) }
+var labels = (0..<labelWidth * labelHeight).map { Int(labelBase[$0 / labelWidth * labelRow + $0 % labelWidth]) }
+CVPixelBufferUnlockBaseAddress(labelBuffer, .readOnly)
+func label(_ x: Int, _ y: Int) -> Int { labels[y * labelWidth + x] }
+
+// The whole frame yields only its dominant subjects; a half or quadrant crop also yields the smaller
+// objects beside them. A crop's instance counts when it clears the crop's edges (a cut piece of a known
+// subject touches one) and lies mostly outside the instances already found.
+let firstExtra = observation.allInstances.max()! + 1
+var extras: [[Float]] = []
+let hx = width / 2, hy = height / 2
+for (x0, y0, w, h) in [
+  (0, 0, hx, height), (hx, 0, width - hx, height), (0, 0, width, hy), (0, hy, width, height - hy),
+  (0, 0, hx, hy), (hx, 0, width - hx, hy), (0, hy, hx, height - hy), (hx, hy, width - hx, height - hy),
+] {
+  let crop = VNGenerateForegroundInstanceMaskRequest()
+  crop.regionOfInterest = CGRect(
+    x: Double(x0) / Double(width), y: Double(height - y0 - h) / Double(height),
+    width: Double(w) / Double(width), height: Double(h) / Double(height))
+  guard (try? handler.perform([crop])) != nil, let found = crop.results?.first else { continue }
+  for index in found.allInstances {
+    guard let buffer = try? found.generateScaledMaskForImage(forInstances: IndexSet(integer: index), from: handler)
+    else { continue }
+    let local = floats(buffer)
+    guard local.width == w, local.height == h,
+      (0..<w).allSatisfy({ local.values[$0] <= 0.5 && local.values[(h - 1) * w + $0] <= 0.5 }),
+      (0..<h).allSatisfy({ local.values[$0 * w] <= 0.5 && local.values[$0 * w + w - 1] <= 0.5 })
+    else { continue }
+    var mask = [Float](repeating: 0, count: count)
+    for y in 0..<h {
+      for x in 0..<w { mask[(y0 + y) * width + x0 + x] = local.values[y * w + x] }
+    }
+    let cells = labels.indices.filter {
+      mask[
+        min(height - 1, ($0 / labelWidth * height + height / 2) / labelHeight) * width
+          + min(width - 1, ($0 % labelWidth * width + width / 2) / labelWidth)] > 0.5
+    }
+    guard !cells.isEmpty, cells.filter({ labels[$0] != 0 }).count * 10 < cells.count else { continue }
+    for cell in cells where labels[cell] == 0 { labels[cell] = firstExtra + extras.count }
+    extras.append(mask)
+  }
+}
+let instances = observation.allInstances.union(IndexSet(firstExtra..<firstExtra + extras.count))
 
 func instance(at point: (Double, Double)) -> Int {
   let px = min(labelWidth - 1, Int(point.0 * Double(labelWidth)))
@@ -105,10 +160,10 @@ func instance(at point: (Double, Double)) -> Int {
   return best
 }
 
-var kept = keeps.isEmpty ? observation.allInstances : IndexSet(keeps.map(instance))
+var kept = keeps.isEmpty ? instances : IndexSet(keeps.map(instance))
 for point in drops { kept.remove(instance(at: point)) }
 if dryRun {
-  for index in observation.allInstances {
+  for index in instances {
     var minX = labelWidth, minY = labelHeight, maxX = -1, maxY = -1, area = 0, sumX = 0, sumY = 0
     for y in 0..<labelHeight {
       for x in 0..<labelWidth where label(x, y) == index {
@@ -125,23 +180,20 @@ if dryRun {
         Double(area) / (lw * lh), kept.contains(index) ? "yes" : "no"))
   }
 }
-CVPixelBufferUnlockBaseAddress(labelBuffer, .readOnly)
 guard !kept.isEmpty else { fail(1, "the --keep/--drop points leave no instance to keep") }
 
 func scaledMask(_ instances: IndexSet) -> [Float] {
-  guard let buffer = try? observation.generateScaledMaskForImage(forInstances: instances, from: handler)
-  else { fail(1, "Vision could not scale the mask") }
-  CVPixelBufferLockBaseAddress(buffer, .readOnly)
-  defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
-  guard CVPixelBufferGetWidth(buffer) == width, CVPixelBufferGetHeight(buffer) == height else {
-    fail(1, "Vision mask size differs from the image")
-  }
-  let row = CVPixelBufferGetBytesPerRow(buffer)
-  let base = CVPixelBufferGetBaseAddress(buffer)!
   var mask = [Float](repeating: 0, count: count)
-  for y in 0..<height {
-    let line = (base + y * row).assumingMemoryBound(to: Float.self)
-    for x in 0..<width { mask[y * width + x] = line[x] }
+  let whole = instances.filteredIndexSet { $0 < firstExtra }
+  if !whole.isEmpty {
+    guard let buffer = try? observation.generateScaledMaskForImage(forInstances: whole, from: handler)
+    else { fail(1, "Vision could not scale the mask") }
+    let scaled = floats(buffer)
+    guard scaled.width == width, scaled.height == height else { fail(1, "Vision mask size differs from the image") }
+    mask = scaled.values
+  }
+  for index in instances where index >= firstExtra {
+    for i in 0..<count { mask[i] = max(mask[i], extras[index - firstExtra][i]) }
   }
   return mask
 }
@@ -237,7 +289,7 @@ if edge == "soft" { alpha = refine(alpha) }
 var holeShare = 0.0
 if holes {
   let before = alpha.filter { $0 >= 0.5 }.count
-  clearHoles(&alpha, background: scaledMask(observation.allInstances))
+  clearHoles(&alpha, background: scaledMask(instances))
   holeShare = Double(before - alpha.filter { $0 >= 0.5 }.count) / Double(max(before, 1))
 }
 var transparent = 0
@@ -265,5 +317,5 @@ if !dryRun {
 print(
   String(
     format: "dest=%@ size=%dx%d instances=%d/%d transparent=%.3f%@ seconds=%.2f", dest, width, height,
-    kept.count, observation.allInstances.count, Double(transparent) / Double(count),
+    kept.count, instances.count, Double(transparent) / Double(count),
     holes ? String(format: " holes=%.3f", holeShare) : "", Date().timeIntervalSince(start)))

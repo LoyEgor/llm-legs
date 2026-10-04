@@ -2,7 +2,7 @@
 # hidden Chrome of gemini-web. Reads and sets bin/gemini-image's own variables.
 
 flow_image_say() {
-  printf 'gemini-image: %s\n' "$1" >&2
+  image_leg_cause "$1"
   exit 2
 }
 
@@ -21,7 +21,7 @@ flow_image_route() {
   if [ -n "$owner" ] && [ -n "$given" ] && [ "$given" != "$owner" ]; then
     flow_image_say "--resume $resume was made on --route $owner and continues there; drop --route $given"
   fi
-  route=${given:-${owner:-$(image_caps_get "$root" gemini '.default_route // "cli"')}}
+  route=${given:-${owner:-$(image_caps_get "$root" gemini '.routes[0]')}}
 }
 
 # Before anything is spent: what the chosen route cannot honour exits 2 with one line.
@@ -195,10 +195,11 @@ flow_image_temp() {
 # Runs the engine on "$@" after the image count image_leg_mark wants; sets account, generated, session,
 # observed_model and flow_result.
 flow_image_engine() {
-  local marks=$1 rc=0 reason engine_args
+  local marks=$1 rc=0 reason engine_args busy_account
   shift
   engine_args=("$@")
   [ -z "$account" ] || engine_args+=(--account "$account")
+  [ -z "$IMAGE_LEG_LOCK_WAIT" ] || engine_args+=(--lock-wait "$IMAGE_LEG_LOCK_WAIT")
   image_leg_mark "$marks"
   if [ -n "${FLOW_IMAGE_ENGINE:-}" ]; then
     "$FLOW_IMAGE_ENGINE" "${engine_args[@]}" >"$tmp_dir/engine.out" 2>"$tmp_dir/engine.err" || rc=$?
@@ -213,12 +214,21 @@ flow_image_engine() {
     printf 'gemini-image: the Flow engine printed no result (exit %s)\n' "$rc" >&2
     exit 1
   fi
+  image_leg_engine_phases "$flow_result"
   if [ "$(jq -r '.ok' <<<"$flow_result")" != true ]; then
     reason=$(jq -r '.reason // "unknown failure"' <<<"$flow_result")
+    printf 'gemini-image: %s\n' "$reason" >&2
+    if image_leg_fallback "$rc" "$flow_result" "${fallback_next:-}"; then
+      route=$IMAGE_LEG_ROUTE
+      trap image_leg_exit EXIT
+      rm -rf "$tmp_dir"
+      return 0
+    fi
     case "$rc" in
-      3) printf 'GEMINI_USAGE_LIMIT\ngemini-image: %s\n' "$reason" >&2; exit 3 ;;
-      2 | 4) printf 'gemini-image: %s\n' "$reason" >&2; exit "$rc" ;;
-      *) printf 'gemini-image: %s\n' "$reason" >&2; exit 1 ;;
+      3) image_leg_limit GEMINI "$flow_result" ;;
+      5) busy_account=$(jq -r '.account // empty' <<<"$flow_result"); image_leg_busy "${busy_account:-$account}" ;;
+      2 | 4) exit "$rc" ;;
+      *) exit 1 ;;
     esac
   fi
   account=$(jq -r '.account' <<<"$flow_result")
@@ -244,9 +254,9 @@ flow_image_footer() {
   fi
   printf 'caps=fresh surface=%s\n' "$(jq -r '.build // "unknown"' <<<"$flow_result")"
   if [ -n "$tool_op" ]; then
-    printf 'route=flow tool=%s%s\n' "$tool_op" "${model:+ model=$model}"
+    image_leg_route_lines " tool=$tool_op${model:+ model=$model}"
   else
-    printf 'route=flow model=%s upscale=%s\n' "$model" "${upscale:-none}"
+    image_leg_route_lines " model=$model upscale=${upscale:-none}"
   fi
   while IFS= read -r take; do
     index=$((index + 1))
@@ -261,6 +271,7 @@ flow_image_footer() {
     fi
     vsize=$(sips -g pixelWidth -g pixelHeight "$out" | awk '/pixelWidth:/ {w = $2} /pixelHeight:/ {h = $2} END {print w "x" h}')
     printf 'variant=%s size=%s session=%s\n' "$out" "$vsize" "$(jq -r '.id // "none"' <<<"$take")"
+    IMAGE_LEG_DELIVERED=$index
     image_leg_composite_take "$root" "$out" variant </dev/null
   done < <(jq -c '.takes[1:][]' <<<"$flow_result")
   jq -r '(.refused // [])[] | "refused=\(.media_id) \(.error)"' <<<"$flow_result"

@@ -3812,6 +3812,16 @@ cat <<'SNAP'
 SNAP
 wrap 4001 4000 10:00 "'bash tests/test_b.sh'"
 printf '4002 4001 09:59 bash tests/test_b.sh\n'
+wrap 1400 1000 03:00 "'media-run image --vendor codex -- --prompt x'"
+printf '1401 1400 02:59 /bin/bash /x/bin/codex-image --prompt x\n'
+wrap 1410 1000 02:00 "'media-run image --vendors codex,grok -- --dest-dir /f'"
+printf '1411 1410 01:59 /bin/bash /x/bin/image-fanout --vendors codex,grok --dest-dir /f\n'
+printf '1412 1411 01:58 /bin/bash /x/bin/grok-image --dest /f/g.png\n'
+printf '1420 1000 01:00 /bin/bash /x/bin/gemini-music --dest /tmp/a.wav\n'
+wrap 1430 1000 01:00 "'media-run image --vendor grok -- --prompt x'"
+printf '1431 1430 00:59 /bin/bash /x/bin/grok-image --prompt x\n'
+wrap 1440 1000 01:00 "'media-run video --vendor grok -- --prompt x'"
+printf '1441 1440 00:59 /bin/bash /x/bin/grok-video --prompt x\n'
 PSEOF
 chmod +x "$FAKE_PS_WORK"
 FAKE_LSOF_WORK="$FIXTURES/work-lsof"
@@ -3828,6 +3838,15 @@ printf 'p3200\nfcwd\nn%s\n' "$WP_REPO"
 LSEOF
 chmod +x "$FAKE_LSOF_WORK"
 wp_now=$(date +%s)
+# media-run's pointers (bin/media-run): a pid whose pointer predates its process is a reused pid (1431),
+# a media process with no pointer at all draws nothing (1441), a fan-out counts its cells' state.
+WP_FAN="$WORK/wp-fan"
+mkdir -p "$WP_FAN"
+printf '{"kind":"image","cells":[{"status":"done"},{"status":"failed"},{"status":"running"},{"status":"spare-cancelled"}]}\n' > "$WP_FAN/fanout.state.json"
+printf '%s\tpool · img·web\tgen\t\tj1\n' "$((wp_now - 179))" > "$STATE_DIR/media-1401"
+printf '%s\tfanout · img\tall\t%s\t\n' "$((wp_now - 119))" "$WP_FAN/fanout.state.json" > "$STATE_DIR/media-1411"
+printf '%s\tcom · mus·app\tedit\t\tj3\n' "$((wp_now - 59))" > "$STATE_DIR/media-1420"
+printf '%s\tpool · img·grok\tgen\t\tj4\n' 1000 > "$STATE_DIR/media-1431"
 STATUSLINE_PS="$FAKE_PS_WORK" STATUSLINE_LSOF="$FAKE_LSOF_WORK" WORKER_RUN_DIR="$WP_RUNS" "$WORK_PROBE" wp-sess 1250
 # Tests first, oldest first, then plain shell work; the start column is checked apart from the rest.
 # Not shown: a call younger than 10s (1210), a relay's own worker-run wait, which its task row
@@ -3852,7 +3871,11 @@ assert_eq "$(printf '%s\n' \
   $'main\tshell\twp-plain\tcurl\t\t\t' \
   $'main\tshell\t⧉ wt-one\tgit push\t\t\t' \
   $'main\tshell\twp-plain\thook instruction-watch\t\t\t' \
+  $'main\tmedia\tpool · img·web\tgen\t\t\t' \
+  $'main\tmedia\tfanout · img\tall\t2\t1\t3' \
+  $'main\tmedia\tcom · mus·app\tedit\t\t\t' \
   $'run\tcodex-7-7-live\tpnpm test')" "$(cut -f1,2,4-8 "$STATE_DIR/work-wp-sess")"
+assert_eq "$((wp_now - 179))" "$(awk -F'\t' '$4 == "pool · img·web" { print $3 }' "$STATE_DIR/work-wp-sess")"
 wp_start=$(awk -F'\t' '$4 == "wp repo" && $5 == "suites" { print $3 }' "$STATE_DIR/work-wp-sess")
 assert_eq "$WP_STAMP" "$wp_start"
 wp_run_start=$(awk -F'\t' '$1 == "run" { print $3 }' "$STATE_DIR/work-wp-sess")
@@ -3916,6 +3939,16 @@ wl_narrow=$(FIT_COLUMNS=34 FIT_MARGIN=0 run_statusline "$(statusline_payload wl-
 assert grep -Eq '^tests · suites 2/5 ✗1 · 5m [0-9]+s$' <<< "$(sed -n 3p <<< "$wl_narrow" | wl_strip)"
 wl_narrow=$(FIT_COLUMNS=24 FIT_MARGIN=0 run_statusline "$(statusline_payload wl-two)")
 assert grep -Eq '^tests · 2/5 ✗1 · 5m [0-9]+s$' <<< "$(sed -n 3p <<< "$wl_narrow" | wl_strip)"
+# A media-run job: the tag `<acct> · <what>·<where>` stands in the repo's place and is never
+# dropped for width; a fan-out counts its cells.
+printf 'main\tmedia\t%s\tnotcom · img·web\tedit\t\t\t\nmain\tmedia\t%s\tfanout · img\tall\t2\t1\t3\n' \
+  "$((wl_now - 65))" "$((wl_now - 30))" > "$STATE_DIR/work-wl-media"
+wl_media=$(run_statusline "$(statusline_payload wl-media)")
+assert grep -Eq '^media · notcom · img·web · edit · 1m [0-9]+s$' <<< "$(sed -n 3p <<< "$wl_media" | wl_strip)"
+assert grep -Eq '^media · fanout · img · all 2/3 ✗1 · 3[0-9]s$' <<< "$(sed -n 4p <<< "$wl_media" | wl_strip)"
+assert grep -Fq "${MAGENTA}media · notcom · img·web${RESET}" <<< "$wl_media"
+wl_media=$(FIT_COLUMNS=30 FIT_MARGIN=0 run_statusline "$(statusline_payload wl-media)")
+assert grep -Eq '^media · notcom · img·web · 1m [0-9]+s$' <<< "$(sed -n 3p <<< "$wl_media" | wl_strip)"
 # At most three lines; the third says how many more are running.
 wl_now=$(date +%s)
 for wl_i in 1 2 3 4 5; do printf 'main\tshell\t%s\tr\tjob%s\t\t\t\n' "$((wl_now - 60 + wl_i))" "$wl_i"; done > "$STATE_DIR/work-wl-cap"
@@ -4117,7 +4150,7 @@ assert jq -e '.hookSpecificOutput.updatedInput.command == "export WORKER_RUN_REL
   <<< "$(relay_call codex-worker plain1)" >/dev/null
 assert jq -e '.hookSpecificOutput.updatedInput.command == "export WORKER_RUN_RELAY=light-research:plain1\nls" and
   (.hookSpecificOutput | has("permissionDecision") | not)' <<< "$(relay_call light-research plain1)" >/dev/null
-for non_relay in fork review-waiter general-purpose image-gen; do
+for non_relay in fork review-waiter general-purpose; do
   non_relay_out=$(relay_call "$non_relay" plain1)
   assert test -z "$(jq -r '.hookSpecificOutput.updatedInput.command // empty | select(test("WORKER_RUN_RELAY"))' <<< "$non_relay_out" 2>/dev/null)"
 done
@@ -4545,105 +4578,6 @@ research_seeded_out=$(printf '%s' "$research_seeded" | "$WORKER_HOOK") \
   || fail "seeded research tag hook exited nonzero"
 assert jq -e '.hookSpecificOutput.updatedInput.description == "seeded · flash38 · high — Search the tree"' \
   <<< "$research_seeded_out" >/dev/null
-
-# image-gen is a relay too: `<account> · <short model>`, the short name from the vendor's caps
-# manifest (VENDOR: line, codex by default), account from a pin in the brief — an `ACCOUNT:` line or
-# an `--account` on the launch line — else the router's `--role image` answer, else the word `pool`;
-# never `?`. A FANOUT: brief is `fanout · img`.
-image_spawn() { # session prompt [worker-pick]
-  jq -cn --arg session "$1" --arg prompt "$2" '{
-    hook_event_name:"PreToolUse",session_id:$session,
-    tool_input:{subagent_type:"image-gen",description:"Draw the icon",prompt:$prompt}}' |
-    WORKER_SPAWN_WORKER_PICK="${3:-$HOME/.local/bin/worker-pick}" "$SPAWN_HOOK"
-}
-IMAGE_PICK="$WORK/image-worker-pick"
-printf '#!/usr/bin/env bash\n[ "$1" = --account ] || exit 1\ncase "$2" in codex) echo cxroute ;; gemini) echo gmroute ;; *) exit 3 ;; esac\n' \
-  > "$IMAGE_PICK"
-chmod +x "$IMAGE_PICK"
-
-# Unpinned: the router's `--role image` answer is the prediction, and the tag keeps its shape so
-# the renderer still colours the row.
-image_routed=$(image_spawn img-routed $'Draw a cat.\nsize: model\'s choice' "$IMAGE_PICK")
-assert jq -e '.hookSpecificOutput.updatedInput.description == "cxroute · img·cli: Draw the icon"' \
-  <<< "$image_routed" >/dev/null
-assert_eq 'cxroute · img·cli' "$(seed_of img-routed image-gen)"
-
-# A gemini image runs Flow by default, rotating gemini-web's profiles: unpinned it says pool, and only
-# `ROUTE: cli` (agy) asks the router.
-image_vendor=$(image_spawn img-vendor $'VENDOR: gemini\nDraw a cat.' "$IMAGE_PICK")
-assert jq -e '.hookSpecificOutput.updatedInput.description == "pool · img·gem: Draw the icon"' \
-  <<< "$image_vendor" >/dev/null
-assert_eq 'pool · img·gem' "$(seed_of img-vendor image-gen)"
-image_cli=$(image_spawn img-cli $'VENDOR: gemini\nROUTE: cli\nDraw a cat.' "$IMAGE_PICK")
-assert jq -e '.hookSpecificOutput.updatedInput.description == "gmroute · img·gem: Draw the icon"' \
-  <<< "$image_cli" >/dev/null
-assert_eq 'gmroute · img·gem' "$(seed_of img-cli image-gen)"
-
-# An AUDIO: brief runs a gemini script: its short name is that kind's, never the codex image default.
-# Music and sfx pick their own gemini-web profile, so an unpinned row says pool; listen asks the router.
-image_music=$(image_spawn img-music $'AUDIO: music\nA 60 s score.' "$IMAGE_PICK")
-assert_eq 'pool · mus·app' "$(seed_of img-music image-gen)"
-image_listen=$(image_spawn img-listen $'AUDIO: listen\nIs the mix clean?' "$IMAGE_PICK")
-assert_eq 'gmroute · listen' "$(seed_of img-listen image-gen)"
-image_sfx=$(image_spawn img-sfx $'AUDIO: sfx\nACCOUNT: com\nA door knock.' "$IMAGE_PICK")
-assert_eq 'com · sfx' "$(seed_of img-sfx image-gen)"
-
-image_fanout=$(image_spawn img-fanout $'FANOUT: all\nACCOUNTS: all\nDraw a cat.' "$IMAGE_PICK")
-assert_eq 'fanout · img' "$(seed_of img-fanout image-gen)"
-image_fanout_pick=$(image_spawn img-fanout-pick $'FANOUT: codex|grok\nACCOUNTS: pick\nDraw a cat.' "$IMAGE_PICK")
-assert_eq 'fanout · img' "$(seed_of img-fanout-pick image-gen)"
-
-# The brief's own ACCOUNT: line is the pin the script will be given, so it is the one prediction
-# this hook may make — and `--account` on the launch line spelled in the brief is the same pin.
-image_acct=$(image_spawn img-acct $'ACCOUNT: pinned\nVENDOR: grok\nDraw a cat.' "$IMAGE_PICK")
-assert jq -e '.hookSpecificOutput.updatedInput.description == "pinned · img·grok: Draw the icon"' \
-  <<< "$image_acct" >/dev/null
-assert_eq 'pinned · img·grok' "$(seed_of img-acct image-gen)"
-
-image_flag=$(image_spawn img-flag \
-  $'VENDOR: codex\nRun codex-image --account alt2 --dest /tmp/a.png --prompt "a cat"' "$IMAGE_PICK")
-assert_eq 'alt2 · img·cli' "$(seed_of img-flag image-gen)"
-
-# Router silent (exit 3 for grok in the fake) or absent: `pool` — the script will pick from it.
-image_unknown=$(image_spawn img-unknown $'VENDOR: grok\nDraw a cat.' "$IMAGE_PICK")
-assert_eq 'pool · img·grok' "$(seed_of img-unknown image-gen)"
-image_nopick=$(image_spawn img-nopick $'VENDOR: grok\nDraw a cat.')
-assert_eq 'pool · img·grok' "$(seed_of img-nopick image-gen)"
-
-# An image brief edits no instruction file, so the MD guard is not injected into it.
-assert jq -e '(.hookSpecificOutput.updatedInput.prompt | test("MD-GUARD")) | not' \
-  <<< "$image_unknown" >/dev/null
-
-# In-flight, `--account` on the launch line is the account being spent, whatever the seed guessed.
-image_tag=$(worker_payload image-gen worker/img 'Generate the icon' \
-  'codex-image --dest /tmp/icon.png --prompt "an icon" --account alt')
-image_tag_out=$(printf '%s' "$image_tag" | "$WORKER_HOOK") || fail "image tag hook exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "alt · img·cli — Generate the icon"' \
-  <<< "$image_tag_out" >/dev/null
-assert_eq $'alt · img·cli\nmedia=gen' "$(cat "$TAGDIR/workerimg")"
-
-image_grok_tag=$(worker_payload image-gen worker/imggrok 'Generate the icon' \
-  '/usr/local/bin/grok-image --account sg1 --dest /tmp/icon.png --prompt "an icon"')
-image_grok_out=$(printf '%s' "$image_grok_tag" | "$WORKER_HOOK") || fail "grok image tag hook exited nonzero"
-assert_eq 'sg1 · img·grok' "$(head -n1 "$TAGDIR/workerimggrok")"
-
-# The image scripts are called with every argument quoted, so a quoted account is the ORDINARY
-# spelling here, not an edge case — read past the quote as the vendor branches above do.
-for image_quoted in '--account "alt2"' "--account 'alt2'" '--account="alt2"'; do
-  image_quoted_tag=$(worker_payload image-gen worker/imgq 'Generate the icon' \
-    "codex-image ${image_quoted} --dest /tmp/icon.png --prompt \"an icon\"")
-  printf '%s' "$image_quoted_tag" | "$WORKER_HOOK" >/dev/null || fail "quoted image tag hook exited nonzero"
-  assert_eq 'alt2 · img·cli' "$(head -n1 "$TAGDIR/workerimgq")"
-  rm -f "$TAGDIR/workerimgq"
-done
-
-# No `--account`: the script routes itself at run time, so the seed the spawn hook wrote stands.
-printf 'gmroute · img·gem\n' > "$TAGDIR/pending-image-gen"
-image_seeded=$(worker_payload image-gen worker/imgseed 'Generate the icon' \
-  'gemini-image --dest /tmp/icon.png --prompt "an icon"')
-image_seeded_out=$(printf '%s' "$image_seeded" | "$WORKER_HOOK") || fail "seeded image tag hook exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "gmroute · img·gem — Generate the icon"' \
-  <<< "$image_seeded_out" >/dev/null
 
 # A stored tag carrying regex-special chars is matched literally, so an
 # already-prefixed description never stacks.
@@ -6338,13 +6272,11 @@ for gate_agent in claudeb-worker codex-worker gemini-worker grok-worker; do
   gate_out=$(gate_agent_payload "$gate_agent" 'claudeb notcom -p go' | "$LAUNCH_GATE_BIN")
   assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
 done
-gate_out=$(gate_agent_payload image-gen 'codex-image --dest /tmp/a.png --prompt cat' | "$LAUNCH_GATE_BIN")
-assert_eq "" "$gate_out"
-# image-gen owns runs of its own, so the timeout guard covers its waits too: a poll the harness
-# kills leaves the same unwatched run whichever agent type started it.
-gate_out=$(gate_timeout_payload image-gen 'worker-run wait cb-20260901-abcdef --max 540' \
-  5000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+# A media script has one door, media-run, in every hand: a fork's call past it is refused.
+gate_out=$(gate_agent_payload fork 'codex-image --dest /tmp/a.png --prompt cat' | "$LAUNCH_GATE_BIN")
 assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
+gate_out=$(gate_agent_payload fork 'media-run image --vendor codex -- --dest /tmp/a.png --prompt cat' | "$LAUNCH_GATE_BIN")
+assert_eq "" "$gate_out"
 # An agent type nobody sanctioned owns no run either.
 gate_out=$(gate_agent_payload Explore 'worker-run wait cb-20260901-abcdef' | "$LAUNCH_GATE_BIN")
 assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
@@ -6632,13 +6564,13 @@ printf '%s' "$(worker_payload claudeb-worker agentS 'Save brief' 'true' tr-locke
 assert test ! -e "$TR_HOME_CACHE/tr-locked/agentS" -a -f "$TR_HOME_CACHE/tr-locked/pending-claudeb-worker-toolu_kept"
 rmdir "$TR_HOME_CACHE/tr-locked/.claim.lock"
 
-# review-waiter, light-research and image-gen run on their own frontmatter model: a tool-call model is
+# review-waiter and light-research run on their own frontmatter model: a tool-call model is
 # stripped; a fork keeps it.
-for tr_pinned in review-waiter light-research image-gen; do
+for tr_pinned in review-waiter light-research; do
   tr_spawn tr-pinned "$tr_pinned" 'WAIT 20260101T000000Z-abcdef1: x' '' opus > "$WORK/tr-pinned-$tr_pinned.json"
 done
-assert jq -se 'length == 3 and all(.[]; .hookSpecificOutput.updatedInput | has("model") | not)' \
-  "$WORK/tr-pinned-review-waiter.json" "$WORK/tr-pinned-light-research.json" "$WORK/tr-pinned-image-gen.json" >/dev/null
+assert jq -se 'length == 2 and all(.[]; .hookSpecificOutput.updatedInput | has("model") | not)' \
+  "$WORK/tr-pinned-review-waiter.json" "$WORK/tr-pinned-light-research.json" >/dev/null
 
 # The review-waiter's wait writes the run's tag and `review=`, names itself to review-bench through
 # `--waiter <agent id>`, and is granted nothing.
@@ -6670,33 +6602,20 @@ printf '%s' "$(worker_payload claudeb-worker trpick 'Go' 'claudeb --model opus -
   WORKER_TAG_WORKER_PICK=/nonexistent "$WORKER_HOOK" >/dev/null
 assert_eq 'pickedacct · opus · high' "$(head -n1 "$TR_HOME_CACHE/tr-pick/trpick")"
 
-# grok-video and image-fanout are launches too. A launch with `--ref` or `--resume` is an edit and
-# clears the last launch's `exit=`; a fan-out names its dest dir unless it is a dry run.
-mkdir -p "$TR_HOME_CACHE/tr-media"
-printf 'old · x\nexit=3\n' > "$TR_HOME_CACHE/tr-media/trvid"
-printf '%s' "$(worker_payload image-gen trvid 'Clip' 'grok-video --account sg2 --dest /tmp/a.mp4 --ref /tmp/a.png' tr-media)" | "$WORKER_HOOK" >/dev/null
-assert_eq $'sg2 · vid·grok\nmedia=edit' "$(cat "$TR_HOME_CACHE/tr-media/trvid")"
-printf '%s' "$(worker_payload image-gen trvid 'Clip' 'grok-image --dest /tmp/a.png --prompt x' tr-media)" | "$WORKER_HOOK" >/dev/null
-assert_eq $'sg2 · vid·grok\nmedia=gen' "$(cat "$TR_HOME_CACHE/tr-media/trvid")"
-printf '%s' "$(worker_payload image-gen trfan 'Fan' 'image-fanout --dest-dir "/tmp/fan out" --prompt x' tr-media)" | "$WORKER_HOOK" >/dev/null
-assert_eq $'fanout · img\nimage=/tmp/fan out' "$(cat "$TR_HOME_CACHE/tr-media/trfan")"
-printf '%s' "$(worker_payload image-gen trfan 'Fan' 'image-fanout --dest-dir /tmp/v --video --ref /tmp/a.png --prompt x --dry-run' tr-media)" | "$WORKER_HOOK" >/dev/null
-assert_eq 'fanout · vid' "$(cat "$TR_HOME_CACHE/tr-media/trfan")"
-# The row says what runs where, off the launch's own flags: the route for codex images and music,
-# the model for Flow video.
-media_tag_of() { # launch line → the tag's first line
-  printf '%s' "$(worker_payload image-gen trwhere 'Media' "$1" tr-media)" | "$WORKER_HOOK" >/dev/null
-  head -n1 "$TR_HOME_CACHE/tr-media/trwhere"
-}
-assert_eq 'cx1 · img·cli' "$(media_tag_of 'codex-image --account cx1 --dest /tmp/a.png --prompt x')"
-assert_eq 'cx1 · img·web' "$(media_tag_of 'codex-image --account cx1 --route web --dest /tmp/a.png --prompt x')"
-assert_eq 'gv1 · vid·veo' "$(media_tag_of 'gemini-video --account gv1 --dest /tmp/a.mp4 --prompt x')"
-assert_eq 'gv1 · vid·omni' "$(media_tag_of 'gemini-video --account gv1 --model omni --dest /tmp/a.mp4 --prompt x')"
-assert_eq 'gm1 · mus·app' "$(media_tag_of 'gemini-music --account gm1 --dest /tmp/a.mp3 --prompt x')"
-assert_eq 'gm1 · mus·flow' "$(media_tag_of 'gemini-music --account gm1 --route flow --dest /tmp/a.mp3 --prompt x')"
-assert_eq 'gm1 · mus·flow' "$(media_tag_of 'gemini-music --account gm1 --model lyria-3-pro --dest /tmp/a.mp3 --prompt x')"
-assert_eq 'gs1 · sfx' "$(media_tag_of 'gemini-sfx --account gs1 --dest /tmp/a.wav --prompt x')"
-assert_eq 'gi1 · img·gem' "$(media_tag_of 'gemini-image --account gi1 --dest /tmp/a.png --prompt x')"
+# The media tag of a media-run job says what runs where, off the launch's own flags: the route for
+# codex images (the manifest's first route when none is named) and music, the model for Flow video.
+media_tag_of() { ( . "$ROOT/share/worker-model.sh" && worker_media_tag "$@" ); }
+assert_eq "img·$(jq -r '.routes[0]' "$ROOT/share/image-caps/codex.json")" "$(media_tag_of codex image '--dest /tmp/a.png --prompt x')"
+assert_eq 'img·cli' "$(media_tag_of codex image '--route cli --dest /tmp/a.png --prompt x')"
+assert_eq 'img·web' "$(media_tag_of codex image '--route web --dest /tmp/a.png --prompt x')"
+assert_eq 'vid·veo' "$(media_tag_of gemini video '--dest /tmp/a.mp4 --prompt x')"
+assert_eq 'vid·omni' "$(media_tag_of gemini video '--model omni --dest /tmp/a.mp4 --prompt x')"
+assert_eq 'mus·app' "$(media_tag_of gemini music '--dest /tmp/a.mp3 --prompt x')"
+assert_eq 'mus·flow' "$(media_tag_of gemini music '--route flow --dest /tmp/a.mp3 --prompt x')"
+assert_eq 'mus·flow' "$(media_tag_of gemini music '--model lyria-3-pro --dest /tmp/a.mp3 --prompt x')"
+assert_eq 'sfx' "$(media_tag_of gemini sfx '--dest /tmp/a.wav --prompt x')"
+assert_eq 'img·gem' "$(media_tag_of gemini image '--dest /tmp/a.png --prompt x')"
+assert_eq 'vid·grok' "$(media_tag_of grok video '--dest /tmp/a.mp4 --prompt x')"
 
 # worker-run start marks the agent's tag file; wait names the run, by literal id or through the state
 # file that names this agent when the id is a shell variable.
@@ -6737,25 +6656,6 @@ wait
 assert_eq 'edit=12' "$(grep '^edit=' "$TR_HOME_CACHE/tr-edit/a1")"
 assert grep -q '^start=[0-9]*$' "$TR_HOME_CACHE/tr-edit/a1"
 assert test ! -e "$TR_HOME_CACHE/tr-edit/.claim.lock"
-# An image script's Bash call stamps `exit=N`: PostToolUse means 0, PostToolUseFailure carries it.
-media_payload() { # event command [extra-json]
-  local extra=${3:-'{}'}
-  jq -cn --arg event "$1" --arg command "$2" --argjson extra "$extra" '{hook_event_name:$event,tool_name:"Bash",
-    session_id:"tr-exit",agent_id:"m1",agent_type:"image-gen",cwd:"/tmp",tool_input:{command:$command}} + $extra'
-}
-mkdir -p "$TR_HOME_CACHE/tr-exit"
-printf 'notcom · img·cli\nmedia=gen\n' > "$TR_HOME_CACHE/tr-exit/m1"
-run_workdir_hook "$(media_payload PostToolUse 'ls /tmp')"
-run_workdir_hook "$(media_payload PostToolUse 'codex-image --dest /tmp/a.png --prompt x' '{"tool_input":{"command":"codex-image --dest /tmp/a.png","run_in_background":true}}')"
-assert_eq $'notcom · img·cli\nmedia=gen' "$(cat "$TR_HOME_CACHE/tr-exit/m1")"
-run_workdir_hook "$(media_payload PostToolUse '/opt/bin/codex-image --dest /tmp/a.png --prompt x')"
-assert_eq $'notcom · img·cli\nmedia=gen\nexit=0' "$(cat "$TR_HOME_CACHE/tr-exit/m1")"
-run_workdir_hook "$(media_payload PostToolUseFailure 'grok-video --dest /tmp/a.mp4' '{"error":"Exit code 3\nUSAGE_LIMIT"}')"
-assert_eq $'notcom · img·cli\nmedia=gen\nexit=3' "$(cat "$TR_HOME_CACHE/tr-exit/m1")"
-printf 'acct · opus · high\n' > "$TR_HOME_CACHE/tr-exit/m1"
-run_workdir_hook "$(media_payload PostToolUse 'codex-image --dest /tmp/a.png --prompt x')"
-assert_eq 'acct · opus · high' "$(cat "$TR_HOME_CACHE/tr-exit/m1")"
-
 # The gate: a Monitor on a wait is refused, and so is a review wait from the chat's own Bash.
 monitor_payload() { jq -cn --arg command "$1" '{hook_event_name:"PreToolUse",tool_name:"Monitor",tool_input:{command:$command}}'; }
 for tr_monitored in 'worker-run wait cb-1-2-abc --max 540' "review-bench wait $TR_REVIEW" 'until review-bench  wait x; do sleep 5; done'; do
@@ -6824,14 +6724,6 @@ printf 'acc · astra · high\nrun=codex-9-9-fix\n' > "$TR_HOME_CACHE/$TR_RSESS/f
 printf '{"phase":"wait","round":1,"round_id":"%s"}\n' "$TR_REVIEW" > "$tr_runs/codex-9-9-fix/state.json"
 printf 'rawilimo · flash38 · high\nlight=research\nrun=gemini-9-9-res\n' > "$TR_HOME_CACHE/$TR_RSESS/g1"
 printf '{"phase":"wait","round":2}\n' > "$tr_runs/gemini-9-9-res/state.json"
-mkdir -p "$WORK/tr fan"
-printf 'fanout · img\nimage=%s\n' "$WORK/tr fan" > "$TR_HOME_CACHE/$TR_RSESS/i1"
-jq -cn '{kind:"image",cells:[{vendor:"codex",account:"notcom",status:"done",exit:0},{vendor:"gemini",account:"a",status:"running"},
-  {vendor:"gemini",account:"b",status:"done",exit:0},{vendor:"grok",account:"c",status:"failed",exit:1}]}' > "$WORK/tr fan/fanout.state.json"
-printf 'notcom · img·cli\nmedia=gen\n' > "$TR_HOME_CACHE/$TR_RSESS/i2"
-printf 'notcom · img·cli\nmedia=edit\n' > "$TR_HOME_CACHE/$TR_RSESS/i3"
-printf 'notcom · img·cli\nmedia=gen\nexit=0\n' > "$TR_HOME_CACHE/$TR_RSESS/i4"
-printf 'rawilimo · vid·grok\nmedia=edit\nexit=3\n' > "$TR_HOME_CACHE/$TR_RSESS/i5"
 tr_render() { # columns
   local start=$(( ($(date +%s) - 65) * 1000 ))
   jq -cn --argjson cols "$1" --argjson start "$start" --arg sess "$TR_RSESS" --arg rev "$TR_REVIEW" '{session_id:$sess,columns:$cols,tasks:[
@@ -6845,31 +6737,26 @@ tr_render() { # columns
     {id:"f1",type:"local_agent",status:"running",description:"acc · astra · high — Patch the gate",label:"Reading files",startTime:$start,tokenCount:900},
     {id:"f2",type:"local_agent",status:"running",description:"fix: e66f8e6 Patch again",startTime:$start},
     {id:"g1",type:"local_agent",status:"running",description:"light research · 3.8-flash · rawilimo: Map the hooks",startTime:$start,model:"claude-sonnet-5"},
-    {id:"i1",type:"local_agent",status:"running",description:"fanout · img: Draw the menubar icon",startTime:$start},
-    {id:"i2",type:"local_agent",status:"running",description:"Draw one icon",startTime:$start},
-    {id:"i3",type:"local_agent",status:"running",description:"Edit one icon",startTime:$start},
-    {id:"i4",type:"local_agent",status:"running",description:"Draw one icon",startTime:$start},
-    {id:"i5",type:"local_agent",status:"completed",description:"Animate one icon",startTime:$start},
     {id:"b1",type:"local_bash",status:"running",label:"sleep"}]}' |
     WORKER_STATS_DIR="$TR_STATS" SUBAGENT_ROW_RESERVE=0 CLAUDE_LIMITS_ACCOUNT=rowacct "$RENDER_BIN"
 }
 # A second may tick between the fixture's clock and the renderer's; both spell the same width.
 tr_row() { jq -r --arg id "$2" 'select(.id == $id) | .content' <<<"$1" | perl -pe 's/\e\[[0-9;]*m//g; s/(?<!tests )1m [0-9]+s/1m 5s/'; }
 tr_wide=$(tr_render 300) || fail "renderer exited nonzero"
-assert_eq 15 "$(grep -c . <<<"$tr_wide")"
+assert_eq 10 "$(grep -c . <<<"$tr_wide")"
 # A worker at work has no state word: the elapsed time says it all.
 assert_eq 'acc · astra · high — Implement the parser fix · 1m 5s · ↓ 12.3k tok' "$(tr_row "$tr_wide" w1)"
 # Only running tasks have rows; a run that ended under a running agent shows no state.
 assert_eq 'acc · astra · high — Done run · 1m 5s' "$(tr_row "$tr_wide" w2)"
 # A finished task is answered with an empty content, never left out: the harness draws its own
 # native row for a listed id the renderer is silent about, and only "" removes the row.
-assert_eq '{"id":"w3","content":""}{"id":"w4","content":""}{"id":"i5","content":""}' \
-  "$(jq -c 'select(.id == "w3" or .id == "w4" or .id == "i5")' <<<"$tr_wide" | tr -d '\n')"
+assert_eq '{"id":"w3","content":""}{"id":"w4","content":""}' \
+  "$(jq -c 'select(.id == "w3" or .id == "w4")' <<<"$tr_wide" | tr -d '\n')"
 assert_eq 'T2 · double · task — hunt over the task rows · all 2/4 opus 0/1 sol 0/1 agy ✓ grok ✗1 · 1m 5s · ↓ 500 tok' "$(tr_row "$tr_wide" r1)"
 assert_eq 'fork · fable · acc — Refactor · edit 3 · 1m 5s' "$(tr_row "$tr_wide" l1)"
 assert_eq 'agent · haiku · rowacct — Look around · 1m 5s' "$(tr_row "$tr_wide" n1)"
 assert_fails grep -Fq 'Running suites' <<<"$tr_wide"
-# Review, fix and image rows carry no title; worker and light rows keep theirs. A fix row is
+# Review and fix rows carry no title; worker and light rows keep theirs. A fix row is
 # `fix: <tag> · <round hash> · <state>`.
 assert_eq 'fix: acc · astra · high · e66f8e6 · 1m 5s · ↓ 900 tok' "$(tr_row "$tr_wide" f1)"
 assert_eq 'fix: acc · astra · high · e66f8e6 · 1m 5s' "$(tr_row "$tr_wide" f2)"
@@ -6883,21 +6770,13 @@ assert_eq 'acc · astra · high — Implement the parser fix · 1m 5s · ↓ 12.
 rm -f "$STATE_DIR/work-$TR_RSESS"
 assert grep -Fq "${MAGENTA}fix: acc · astra · high${RESET} ${DIM}· e66f8e6${RESET}" <<<"$(jq -r 'select(.id == "f1") | .content' <<<"$tr_wide")"
 assert_fails grep -Fq 'Patch again' <<<"$(tr_row "$tr_wide" f2)"
-assert_eq 'fanout · img · all 3/4 codex ✓ gemini 1/2 grok ✗1 · 1m 5s' "$(tr_row "$tr_wide" i1)"
-assert_eq 'notcom · img·cli · gen · 1m 5s' "$(tr_row "$tr_wide" i2)"
-assert_eq 'notcom · img·cli · edit · 1m 5s' "$(tr_row "$tr_wide" i3)"
-assert_eq 'notcom · img·cli · 1m 5s' "$(tr_row "$tr_wide" i4)"
-assert_fails grep -Fq 'one icon' <<<"$(tr_row "$tr_wide" i2)$(tr_row "$tr_wide" i4)"
 assert_fails grep -Fq 'WAIT' <<<"$(tr_row "$tr_wide" r1)"
 assert_fails grep -Fq 'Patch the gate' <<<"$(tr_row "$tr_wide" f1)"
-assert_fails grep -Fq 'menubar icon' <<<"$(tr_row "$tr_wide" i1)"
 assert grep -Fq 'Implement the parser fix' <<<"$(tr_row "$tr_wide" w1)"
 # The light leg names the model doing the work and never the relay agent's shell model.
 assert_eq 'light research · 3.8-flash · rawilimo — Map the hooks · 1m 5s' "$(tr_row "$tr_wide" g1)"
 assert grep -Fq "${MAGENTA}T2 · double · task${RESET}" <<<"$(jq -r 'select(.id == "r1") | .content' <<<"$tr_wide")"
-assert grep -Fq "${GREEN}✓${RESET}" <<<"$(jq -r 'select(.id == "i1") | .content' <<<"$tr_wide")"
-assert grep -Fq "${RED}✗${RESET}" <<<"$(jq -r 'select(.id == "i1") | .content' <<<"$tr_wide")"
-assert_fails grep -Fq 'done' <<<"$(tr_row "$tr_wide" w2)$(tr_row "$tr_wide" i4)"
+assert_fails grep -Fq 'done' <<<"$(tr_row "$tr_wide" w2)"
 # Narrower: the title goes first, then tok, elapsed, a fix row's hash, and the cell detail last (counts stay); the state never.
 assert_eq 'T2 · double · task — hunt ov… · all 2/4 opus 0/1 sol 0/1 agy ✓ grok ✗1 · 1m 5s · ↓ 500 tok' "$(tr_row "$(tr_render 90)" r1)"
 assert_eq 'T2 · double · task · all 2/4 opus 0/1 sol 0/1 agy ✓ grok ✗1 · 1m 5s' "$(tr_row "$(tr_render 78)" r1)"
@@ -6906,8 +6785,6 @@ assert_eq 'T2 · double · task · all 2/4 opus 0/1 sol 0/1 agy ✓ grok ✗1' "
 assert_eq 'T2 · double · task · all 2/4 opus 0/1 sol 0/1 agy ✓ grok ✗1' "$(tr_row "$(tr_render 59)" r1)"
 assert_eq 'T2 · double · task · all 2/4' "$(tr_row "$(tr_render 58)" r1)"
 assert_eq 'T2 · double · task · all 2/4' "$(tr_row "$(tr_render 30)" r1)"
-assert_eq 'fanout · img · all 3/4 codex ✓ gemini 1/2 grok ✗1' "$(tr_row "$(tr_render 51)" i1)"
-assert_eq 'fanout · img · all 3/4' "$(tr_row "$(tr_render 40)" i1)"
 tr_60=$(tr_render 60) tr_40=$(tr_render 40) tr_30=$(tr_render 30)
 assert_eq 'acc · astra · high — Implement the pa… · 1m 5s · ↓ 12.3k tok' "$(tr_row "$tr_60" w1)"
 assert_eq 'acc · astra · high · 1m 5s · ↓ 12.3k tok' "$(tr_row "$tr_40" w1)"
@@ -7135,4 +7012,4 @@ progress_doc_clear
 # A payload whose tasks carry no status field is a running list (the harness omits the field on older builds).
 no_status=$(printf '{"session_id":"x","columns":80,"tasks":[{"id":"ns1","type":"local_agent","description":"acc · astra · high: No status","startTime":1789600000000}]}' | bash "$RENDER_BIN")
 assert grep -q 'acc · astra · high' <<<"$no_status"
-echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run over the shown tree, an ATOMIC middle block computed from ONE shown tree — the tree of the last line of this chat's place journal — a counter that is this chat's own run alone — its tier, its state as a mark and its cells — and one rendered form for every state the gate's debt line can name, the verdict asked about the shown tree, keyed on the checkout family's commit journal and review decision clock, this chat's own unread lines and nobody else's, with every unknown the known number followed by its dim \`?<why>\`, keyed on the commit journal and asked once per key with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini/grok worker tag propagation with the bare-launch gate that denies the spellings they replace, image-gen rows tagged account·short-model from the launch line with gen/edit/exit states and fan-out cells, task rows painted for every agent with run/review/light state fitted to the columns, native agent spawns refused but fork, Monitor and chat-Bash waits refused, an explicit-vendor pin hidden only by that vendor's ABSENCE from a loaded pick line and never by a field that is merely unusable, and a run's start/wait reserved to the relay agent that owns it through every wrapper, keyword and sh -c string that spells one, while a read-only report and a heredoc body quoting the spelling are not gated"
+echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run over the shown tree, an ATOMIC middle block computed from ONE shown tree — the tree of the last line of this chat's place journal — a counter that is this chat's own run alone — its tier, its state as a mark and its cells — and one rendered form for every state the gate's debt line can name, the verdict asked about the shown tree, keyed on the checkout family's commit journal and review decision clock, this chat's own unread lines and nobody else's, with every unknown the known number followed by its dim \`?<why>\`, keyed on the commit journal and asked once per key with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini/grok worker tag propagation with the bare-launch gate that denies the spellings they replace, media-run work lines tagged account·kind·route from the job pointer with gen/edit states and fan-out cells, task rows painted for every agent with run/review/light state fitted to the columns, native agent spawns refused but fork, Monitor and chat-Bash waits refused, an explicit-vendor pin hidden only by that vendor's ABSENCE from a loaded pick line and never by a field that is merely unusable, and a run's start/wait reserved to the relay agent that owns it through every wrapper, keyword and sh -c string that spells one, while a read-only report and a heredoc body quoting the spelling are not gated"

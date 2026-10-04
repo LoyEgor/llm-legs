@@ -179,7 +179,8 @@ invariant rows and memory files naming it. Launch:
 - `launch llm|harness|updater|code --night <night-id>`: no chat. Per area with problems or quiet rows and no open run
   of (doctor, area), a record, a worktree `<repo>/.claude/worktrees/night-<night>-<id>` on its branch,
   and `<runs>/<id>.brief.md`; one line `<id>\t<brief>\t<worktree>` each. Nothing to do prints
-  nothing; a failed worktree or brief fails its run and the exit status.
+  nothing, but a harness night whose Speed section selects nothing first prints `harness: Speed selects nothing:
+  <why_none>` on stderr; a failed worktree or brief fails its run and the exit status.
 - `launch updater`: runs `vendor-cli-update now`. Every chat `vendor-fingerprint` opens writes its
   record through `doctor-fix record updater` (area `release`): `problems` are the event ids, and each
   event's `run` names the record. It closes through `record-close` when `vendor-fingerprint close`

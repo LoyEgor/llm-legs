@@ -1695,10 +1695,10 @@ check(dark == [[K + 100, K + 200]] and row[8] == [[K + 100, K + 200]] and row[9]
 
 M = B + 20000
 media = chat("media", [human(M), say(M + 10, tools=[("tm", "Bash", {"command": "codex-image --dest /x.png --prompt p"}),
-                                                   ("ta", "Agent", {"subagent_type": "image-gen"})]),
+                                                   ("ta", "Bash", {"command": "media-run image --vendor codex -- --dest /x.png"})]),
                        result(M + 70, "tm"), result(M + 90, "ta"), say(M + 95), done(M + 100), human(M + 110)])
 check(by(media, "t", M)[9].get("media") == 80.0 and by(media, "t", M)[11] == [["tm", "media"], ["ta", "media"]],
-      "C1 a media tool and an image-gen subagent are the media layer, and the row lists its calls")
+      "C1 a media script and a media-run call are the media layer, and the row lists its calls")
 
 P = B + 22000
 killed = chat("killed", [human(P), say(P + 10), human(P + 300), say(P + 310), done(P + 320), human(P + 330)])
@@ -1706,19 +1706,16 @@ row = by(killed, "t", P)
 check(row[3] == P + 10 and row[7] == [P] and row[5] == [0, 1, 1] and by(killed, "t", P + 300)[7] == [P + 300],
       "C1 a turn left open (no turn_duration) ends at its last entry, and the next prompt opens and answers it: %s" % row)
 
-sub = os.path.join(projects, "p", "parent-s", "subagents", "agent-x.jsonl")
-os.makedirs(os.path.dirname(sub))
-with open(sub[:-6] + ".meta.json", "w") as handle:
-    json.dump({"agentType": "image-gen", "toolUseId": "toolu_parent0123456789"}, handle)
-with open(sub, "w") as handle:
+phases = os.path.join(projects, "p", "phase-s.jsonl")
+with open(phases, "w") as handle:
     handle.write("".join(json.dumps(l) + "\n" for l in [
-        say(M, tools=[("g1", "Bash", {"command": "cd /x && gemini-image --dest a.png"})]), result(M + 60, "g1"),
+        say(M, tools=[("toolu_g0123456789", "Bash", {"command": "cd /x && media-run image --vendor gemini -- --dest a.png"})]),
+        result(M + 60, "toolu_g0123456789"),
         say(M + 61, tools=[("g2", "Read", {"file_path": "/x/a.png"})]), result(M + 62, "g2")]))
 rows = []
-m.read_transcript(sub, {"off": 0}, rows, {})
-check([r for r in rows if r[0] == "g"] == [["g", M, "parent-s", M + 60, "0123456789", "gemini-image"],
-                                           ["g", M + 61, "parent-s", M + 62, "0123456789", "prep:Read"]],
-      "C1 an image-gen subagent's calls are its phase spans, keyed by the parent's tool id: %s" % rows)
+m.read_transcript(phases, {"off": 0}, rows, {})
+check([r for r in rows if r[0] == "g"] == [["g", M, "phase-s", M + 60, "0123456789", "media-run"]],
+      "C1 a media-run call is a media phase span keyed by its own tool id, and no other call is: %s" % rows)
 
 row = ["t", 1000.0, "sess", 1100.0, "h", [1, 1, 1], 0, [], [], {"test": 30.0, "tool": 10.0, "gen": 5.0}, {},
        [["tid1", "test"], ["tid2", "tool"]]]

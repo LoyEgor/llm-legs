@@ -63,8 +63,8 @@ expect deny '' 'gemini-probe --account rawi'
 expect deny codex-worker 'ask_gemini.sh q'
 expect pass '' 'ask_claude.sh --extract-served-model /tmp/out.json'
 
-# 13: image-gen owns the image scripts, not worker-run launches.
-expect deny image-gen 'worker-run start codex --brief /tmp/b --workdir /tmp'
+# 13: a review-waiter owns its review wait, not worker-run launches.
+expect deny review-waiter 'worker-run start codex --brief /tmp/b --workdir /tmp'
 
 # 23: a headless worker never launches a review panel; a plain wait stays open.
 expect pass '' 'review-bench review --mode diff'
@@ -249,4 +249,4 @@ done
 WORDS_LIB="$WORK/span-on.sh" expect deny '' 'claude -p hi'
 WORDS_LIB="$WORK/span-on.sh" expect deny '' 'echo hi | claude'
 
-printf 'PASS: %s asserts; the launch gate denies inline print flags, every headless codex subcommand, wrapped and program-string vendor calls, comment and operand exemptions, the ask_*/probe legs, image-gen worker-run launches, worker review panels, relay polls that are backgrounded (behind a redirection or a chain too) or outrun their timeout (--max=N read, review-waiter and light-research included), hand-set relay and review tokens, review launches from any agent or a Monitor (review-waiter keeps its recoveries), a launch chained after a sanctioned segment and the package-runner, flock and exec wrappers, a vendor fed through a pipe, at/batch/crontab scheduling and the codex MCP tools, with deny texts naming the relay Agents, while plain reads pass\n' "$asserts"
+printf 'PASS: %s asserts; the launch gate denies inline print flags, every headless codex subcommand, wrapped and program-string vendor calls, comment and operand exemptions, the ask_*/probe legs, review-waiter worker-run launches, worker review panels, relay polls that are backgrounded (behind a redirection or a chain too) or outrun their timeout (--max=N read, review-waiter and light-research included), hand-set relay and review tokens, review launches from any agent or a Monitor (review-waiter keeps its recoveries), a launch chained after a sanctioned segment and the package-runner, flock and exec wrappers, a vendor fed through a pipe, at/batch/crontab scheduling and the codex MCP tools, with deny texts naming the relay Agents, while plain reads pass\n' "$asserts"

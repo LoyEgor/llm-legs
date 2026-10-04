@@ -219,37 +219,157 @@ assert [(r["kind"], r["event"], r["account"], r["route"]) for r in rows[-2:]] ==
 assert gw.close_promos(promo, "egbogd") == 0 and promo.pressed == ["Escape", "Not now"]
 
 import subprocess, tempfile, time
-launched, real_popen = [], gw.subprocess.Popen
-gw.subprocess.Popen = lambda argv, **kw: launched.append(argv) or "watcher"
-assert gw.keep_hidden("com", 4242) == "watcher" and launched == [["osascript", "-e", gw.HIDE_WATCH, "4242"]], launched
-def refused(argv, **kw): raise OSError("no osascript")
-gw.subprocess.Popen = refused
+class CDP:
+    def __init__(self, fail=None): self.sent, self.fail, self.detached = [], fail, False
+    def send(self, method, params=None):
+        if method == self.fail:
+            raise RuntimeError("Target closed\n  details")
+        self.sent.append((method, params))
+        return {"windowId": 7} if method == "Browser.getWindowForTarget" else {}
+    def detach(self): self.detached = True
+
+
+class ParkContext:
+    def __init__(self, cdp): self.cdp, self.pages = cdp, []
+    def new_cdp_session(self, page):
+        self.pages.append(page)
+        return self.cdp
+
+
 warned, real_warn = [], gw.warn
 gw.warn = lambda account, reason, route=None: warned.append((account, reason))
-assert gw.keep_hidden("com", 4242) is None and warned == [("com", "could not keep the automation Chrome hidden: no osascript")], warned
-assert gw.keep_hidden("com", None) is None and warned[-1] == ("com", "could not keep the automation Chrome hidden: its pid is unknown"), warned
-gw.subprocess.Popen, gw.warn = real_popen, real_warn
-script = gw.HIDE_WATCH
-assert "delay 0.2" in script and "then return" in script and "visible is true" not in script, script
-assert "unix id is chromePid" in script and "bundle identifier" not in script, script
-ran, real_run = [], gw.subprocess.run
-gw.subprocess.run = lambda argv, **kw: ran.append(argv[-1]) or subprocess.CompletedProcess(argv, 0, "", "")
-gw.hide_clone("com", 4242)
-gw.hide_clone("com")
-gw.subprocess.run = real_run
-assert ran == ['tell application "System Events" to set visible of (every process whose unix id is 4242) to false',
-               f'tell application "System Events" to set visible of (every process whose bundle identifier is "{gw.CLONE_ID}") to false'], ran
+cdp = CDP()
+gw.park_window("com", ParkContext(cdp), "page-1")
+assert cdp.sent == [("Browser.getWindowForTarget", None),
+                    ("Browser.setWindowBounds", {"windowId": 7, "bounds": {"left": -30000, "top": -30000}})], cdp.sent
+assert cdp.detached and warned == [], warned
+gw.park_window("com", ParkContext(CDP(fail="Browser.setWindowBounds")), "page-2")
+assert warned == [("com", "could not move the automation Chrome off screen: Target closed details")], warned
+with tempfile.TemporaryDirectory() as scratch:
+    prefs_path = gw.Path(scratch) / "Default" / "Preferences"
+    gw.reset_exit_type("com", gw.Path(scratch))
+    prefs_path.parent.mkdir()
+    prefs = {"profile": {"exit_type": "Crashed", "name": "x"},
+             "browser": {"window_placement": {"left": -1242, "top": 30, "right": 40, "bottom": 876}}}
+    prefs_path.write_text(json.dumps(prefs))
+    gw.reset_exit_type("com", gw.Path(scratch))
+    after = json.loads(prefs_path.read_text())
+    assert after["profile"] == {"exit_type": "Normal", "name": "x"} and after["browser"] == prefs["browser"], after
+    assert sorted(p.name for p in prefs_path.parent.iterdir()) == ["Preferences"]
+    stamp = prefs_path.stat().st_mtime_ns
+    gw.reset_exit_type("com", gw.Path(scratch))
+    assert prefs_path.stat().st_mtime_ns == stamp, "a clean profile was rewritten"
+    prefs_path.write_text("{not json")
+    gw.reset_exit_type("com", gw.Path(scratch))
+    assert warned[-1][0] == "com" and warned[-1][1].startswith("could not mark the profile's last exit clean"), warned
+gw.warn = real_warn
+assert not hasattr(gw, "keep_hidden") and not hasattr(gw, "hide_clone") and not hasattr(gw, "HIDE_WATCH")
+
+import time
+killed, real_killpg, real_grace = [], gw.os.killpg, gw.FLUSH_GRACE_S
+gw.os.killpg = lambda pid, sig: killed.append((pid, sig, time.time()))
+gw.FLUSH_GRACE_S = 0.3
+with tempfile.TemporaryDirectory() as scratch:
+    profile = gw.Path(scratch)
+    (profile / "Default").mkdir()
+    flushed = [profile / "Default" / "Cookies", profile / "Default" / "Preferences"]
+    def stale():
+        for path in flushed:
+            path.write_text("x")
+            os.utime(path, (time.time() - 60, time.time() - 60))
+    stale()
+    with gw.reap_after_flush(profile, 4242):
+        pass
+    with gw.reap_after_flush(profile, None):
+        flushed[0].touch(); flushed[1].touch()
+        time.sleep(0.6)
+    stale()
+    with gw.reap_after_flush(profile, 4242):
+        time.sleep(0.15)
+        flushed[0].touch()
+        time.sleep(0.6)
+    time.sleep(0.2)
+    assert killed == [], "killed before the close finished, without a flush, or with no pid: %r" % killed
+    stale()
+    with gw.reap_after_flush(profile, 4242):
+        time.sleep(0.15)
+        flushed[0].touch(); flushed[1].touch()
+        touched = time.time()
+        time.sleep(1.0)
+    assert [k[:2] for k in killed] == [(4242, gw.signal.SIGKILL)], killed
+    assert killed[0][2] - touched >= 0.3, "killed inside the grace"
+gw.os.killpg, gw.FLUSH_GRACE_S = real_killpg, real_grace
+
+real_run, real_popen = gw.subprocess.run, gw.subprocess.Popen
+with tempfile.TemporaryDirectory() as scratch:
+    clones = gw.Path(scratch) / "X" / f"{gw.CLONE_ID}.code_sign_clone"
+    for name, age in (("code_sign_clone.OLD1", 3600), ("code_sign_clone.MAPPED", 3600), ("code_sign_clone.NEW", 60)):
+        (clones / name).mkdir(parents=True)
+        os.utime(clones / name, (time.time() - age, time.time() - age))
+    browser = f"{gw.CLONE_APP}/Contents/MacOS/Google Chrome"
+    calls, removed = [], []
+    def fake_run(argv, **kw):
+        calls.append(argv[0])
+        out = {"getconf": f"{scratch}/T/\n",
+               "ps": f"123 {browser} --user-data-dir=a\n124 {browser} --type=renderer\n999 /bin/zsh\n",
+               "lsof": lsof_out}[argv[0]]
+        if argv[0] == "lsof":
+            assert argv[argv.index("-p") + 1] == "123", argv
+        return gw.subprocess.CompletedProcess(argv, 0, out, "")
+    gw.subprocess.run = fake_run
+    gw.subprocess.Popen = lambda argv, **kw: removed.append(argv)
+    stamp = gw.CLONE_ROOT / ".clone-sweep.stamp"
+    stamp.unlink(missing_ok=True)
+    lsof_out = f"p123\nn/private{clones}/code_sign_clone.MAPPED/Gemini Web Automation.app.bundle/Contents/MacOS/Google Chrome\n"
+    gw.sweep_code_sign_clones()
+    assert removed == [["rm", "-rf", "--", str(clones / "code_sign_clone.OLD1")]], removed
+    calls.clear()
+    removed.clear()
+    gw.sweep_code_sign_clones()
+    assert calls == [] and removed == [], ("swept again inside CLONE_SWEEP_MIN_AGE_S", calls, removed)
+    os.utime(stamp, (time.time() - gw.CLONE_SWEEP_MIN_AGE_S - 5,) * 2)
+    lsof_out = "p123\nn/usr/lib/dyld\n"
+    gw.sweep_code_sign_clones()
+    assert "lsof" in calls and removed == [], ("swept while a running browser's clone was unreadable", calls, removed)
+    assert time.time() - stamp.stat().st_mtime < 60, "the sweep left its stamp aged"
+    browser = "/Applications/Other.app/Contents/MacOS/Other"
+    calls.clear()
+    stamp.unlink()
+    gw.sweep_code_sign_clones()
+    assert "lsof" not in calls and len(removed) == 1 and removed[0][:3] == ["rm", "-rf", "--"] \
+        and sorted(removed[0][3:]) == [str(clones / "code_sign_clone.MAPPED"), str(clones / "code_sign_clone.OLD1")], removed
+gw.subprocess.run, gw.subprocess.Popen = real_run, real_popen
 with tempfile.TemporaryDirectory() as scratch:
     lockdir = gw.Path(scratch)
     assert gw.chrome_pid(lockdir) is None
     (lockdir / "SingletonLock").symlink_to(f"host.local-{os.getpid()}")
     assert gw.chrome_pid(lockdir) == os.getpid() and gw.profile_in_use(lockdir)
-with tempfile.TemporaryDirectory() as scratch:
-    compiled = subprocess.run(["osacompile", "-o", scratch + "/watch.scpt", "-e", script], capture_output=True, text=True)
-    assert compiled.returncode == 0, compiled.stderr
-    started = time.time()
-    lone = subprocess.run(["osascript", "-e", script, "999999"], capture_output=True, timeout=20)
-    assert time.time() - started < 15, "the hide watcher kept polling with no clone running"
+
+# All candidates busy: an unpinned claim takes whichever frees first, not only the first in order; after a
+# timed-out wait over all of them, each is refused without waiting again.
+import fcntl, threading
+def hold(*names):
+    handles = {}
+    for name in names:
+        gw.lock_path(name).parent.mkdir(parents=True, exist_ok=True)
+        handles[name] = open(gw.lock_path(name), "w")
+        fcntl.flock(handles[name], fcntl.LOCK_EX)
+    return handles
+held = hold("busy-a", "busy-b")
+threading.Timer(0.6, held["busy-b"].close).start()
+started = time.monotonic()
+picks = gw.claimed(["busy-a", "busy-b"], 8)
+account, refusal = next(picks)
+assert account == "busy-b" and refusal is None and time.monotonic() - started < 3, \
+    (account, refusal, time.monotonic() - started)
+picks.close()
+assert not gw.busy("busy-b") and gw.busy("busy-a")
+held = {**held, **hold("busy-b")}
+waited = gw.lock_waited
+refused = [(name, refusal.code) for name, refusal in gw.claimed(["busy-a", "busy-b"], 1.0)]
+assert refused == [("busy-a", 5), ("busy-b", 5)] and gw.lock_waited - waited < 1.8, (refused, gw.lock_waited - waited)
+for handle in held.values():
+    handle.close()
 
 class ToastPage:
     def __init__(self, url, texts): self.url, self.texts = url, texts

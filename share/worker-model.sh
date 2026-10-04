@@ -909,8 +909,10 @@ worker_media_tag() { # vendor image|video|music|sfx|listen [launch line]
   local kind=$2 launch=${3:-} where
   case "$kind" in sfx | listen) printf '%s' "$kind"; return ;; esac
   case "$1:$kind" in
-    codex:image) where=cli
-      printf '%s' "$launch" | grep -qE -- '--route[= ]+["'\'']?web' && where=web ;;
+    codex:image)
+      where=$(printf '%s' "$launch" | grep -m1 -oE -- '--route[= ]+["'\'']?(web|cli)' | grep -oE '(web|cli)$')
+      [ -n "$where" ] || where=$(jq -r '.routes[0] // empty' "${BASH_SOURCE[0]%/*}/image-caps/codex.json" 2>/dev/null)
+      [ -n "$where" ] || where=cli ;;
     gemini:image) where=gem ;;
     gemini:video) where=veo
       printf '%s' "$launch" | grep -qE -- '--model[= ]+["'\'']?omni' && where=omni ;;

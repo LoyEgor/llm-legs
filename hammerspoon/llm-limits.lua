@@ -266,6 +266,7 @@ end
 
 -- Labels: fv Flow video credits, fm Flow Music credits, gm the Gemini app's music. A standing wall
 -- is the pool's limit hit, drawn like any walled window; a pool without a known total is unmeasured.
+-- Without a renewal date the reset column carries the balance left, so the menu grows no column.
 local function geminiMediaRows(media)
   local rows = {}
   if not media then return rows end
@@ -275,9 +276,10 @@ local function geminiMediaRows(media)
       title = rowTitle("", label, { effective_pct = 100, resets_at = wall }, false, true, false, { pct = "" })
     elseif left and total and total > 0 then
       local used = math.max(0, total - left)
-      title = rowTitle("", label, { effective_pct = used / total * 100, resets_at = renewsAt }, false, used >= total)
+      title = rowTitle("", label, { effective_pct = used / total * 100, resets_at = renewsAt }, false, used >= total,
+        false, { reset = not renewsAt and tostring(left) or nil })
     elseif left or bound then
-      title = rowTitle("", label, nil, false, false, false, { pct = "", reset = "" })
+      title = rowTitle("", label, nil, false, false, false, { pct = "", reset = left and tostring(left) or "" })
     else
       return
     end
@@ -290,6 +292,11 @@ local function geminiMediaRows(media)
 end
 
 local vendorRefreshErrors, refreshErrorItem, appendRefreshErrorRows
+
+local function lateAge(age, late)
+  if not late then return age end
+  return age and (age .. " ⧖") or "⧖"
+end
 
 -- Parked is read from worker-model and never from the store: the collector writes no entry for a
 -- parked vendor, so the store cannot tell "paused" from "not installed".
@@ -311,12 +318,14 @@ local function appendOpenCode(menu, limits, paused)
   -- One refresh for the leg, in the section header every other vendor carries its own in. Per
   -- account there is nothing to offer: a check is one real completion, and the leg is refreshed
   -- whole or not at all, never one row at a time.
-  local vendorErrs = vendorRefreshErrors("opencode", vendor)
+  local vendorErrs, late = vendorRefreshErrors("opencode", vendor)
   -- An empty roster is still a section when the leg reported an error: opencode lights the ⚠ in
   -- the title, and a warning with no row under it explaining it is unreachable.
-  if #accounts == 0 and #vendorErrs == 0 then return end
+  if #accounts == 0 and #vendorErrs == 0 and not late[""] then return end
+  local headerTitle = infoTitle("OpenCode Go")
+  if late[""] then headerTitle = headerTitle .. metaTitle("  ⧖") end
   table.insert(menu, {
-    title = infoTitle("OpenCode Go"),
+    title = headerTitle,
     menu = {
       { title = "Hard refresh", fn = M.hardRefreshOpenCode },
       { title = "Pause", fn = function() M.setWorkerPaused("opencode", true) end },
@@ -329,7 +338,8 @@ local function appendOpenCode(menu, limits, paused)
     local walled = account.walled == true
     local windows = type(account.windows) == "table" and account.windows or {}
     table.insert(menu, {
-      title = accountTitle(account.account, formatAccountAge(account.as_of), walled,
+      title = accountTitle(account.account,
+        lateAge(formatAccountAge(account.as_of), late[account.account]), walled,
         nil, nil, nil, nil, account.age_alarm == true),
       disabled = true,
     })
@@ -2488,7 +2498,7 @@ local function classifyLegacyAccount(cause, roster)
 end
 
 vendorRefreshErrors = function(vendorKey, vendor)
-  if type(vendor) ~= "table" then return {} end
+  if type(vendor) ~= "table" then return {}, {} end
   local roster = rosterSet(vendor)
   -- No roster is not an empty roster: a vendor that publishes no `accounts` (a sole-account leg,
   -- opencode before its first collector run) has nothing to check an error against, and checking
@@ -2510,6 +2520,7 @@ vendorRefreshErrors = function(vendorKey, vendor)
     end
   end
   local out = {}
+  local late = {}
   local seen = {}
   local function add(account, class, cause, at, needsUserEntry)
     if type(cause) ~= "string" or cause == "" then return end
@@ -2518,6 +2529,10 @@ vendorRefreshErrors = function(vendorKey, vendor)
     -- the warning in the title with nothing under it until the override expires.
     if account ~= nil and vendorKey and removalPending(vendorKey, account) then return end
     if type(class) ~= "string" or class == "" then class = "refresh failed" end
+    if class == "timeout" then
+      late[account or ""] = true
+      return
+    end
     local key = tostring(account or "") .. "\0" .. cause
     if seen[key] then return end
     seen[key] = true
@@ -2555,7 +2570,7 @@ vendorRefreshErrors = function(vendorKey, vendor)
       end
     end
   end
-  return out
+  return out, late
 end
 
 refreshErrorItem = function(err, fallbackWho, warning)
@@ -2786,7 +2801,8 @@ local function buildMenuItems()
         and type(vendor.accounts) == "table" and #vendor.accounts > 0
       local hasGrokAccounts = entry.key == "grok" and type(vendor) == "table"
         and type(vendor.accounts) == "table" and #vendor.accounts > 0
-      local vendorErrs = vendorRefreshErrors(entry.key, vendor)
+      local vendorErrs, late = vendorRefreshErrors(entry.key, vendor)
+      local anyLate = next(late) ~= nil
       -- Removing gemini's main empties the roster, and the collector states that emptiness as
       -- `removed` on the vendor: without it a removed Gemini rendered a "no live data" row with a
       -- Refresh submenu, which is the opposite of removed.
@@ -2797,7 +2813,8 @@ local function buildMenuItems()
         local authNeeded = type(vendor) == "table" and vendor.auth_needed == true
         local unavailableRow
         if entry.key == "gemini" and authNeeded then
-          local age, needsEntry = formatAccountAge(vendor.as_of), vendor.needs_user_entry == true
+          local age = lateAge(formatAccountAge(vendor.as_of), anyLate)
+          local needsEntry = vendor.needs_user_entry == true
           unavailableRow = geminiLoginNeededRow(entry.label, "main", pinSet["main"] == true,
             age, needsEntry, roleOff, vendor.age_alarm == true)
           if pinSet["main"] then renderedPins["main"] = true end
@@ -2809,10 +2826,11 @@ local function buildMenuItems()
           local unavailableTitle
           if authNeeded then
             unavailableTitle = loginNeededTitle(entry.label, vendorPins[entry.key] == true,
-              formatAccountAge(vendor.as_of), vendor.needs_user_entry == true, roleOff,
+              lateAge(formatAccountAge(vendor.as_of), anyLate), vendor.needs_user_entry == true, roleOff,
               vendor.age_alarm == true)
           else
             unavailableTitle = infoTitle(string.format("%-6s  no live data", entry.label))
+            if anyLate then unavailableTitle = unavailableTitle .. metaTitle("  ⧖") end
             if vendorPins[entry.key] then unavailableTitle = unavailableTitle .. pinTitle() end
           end
           unavailableRow = {
@@ -2877,6 +2895,7 @@ local function buildMenuItems()
             fn = function() M.refreshVendor(entry.key) end })
           local headerTitle = infoTitle(entry.label)
           if vendorPins[entry.key] then headerTitle = headerTitle .. pinTitle() end
+          if late[""] then headerTitle = headerTitle .. metaTitle("  ⧖") end
           table.insert(menu, { title = headerTitle, menu = sectionMenu })
           appendRefreshErrorRows(menu, vendorErrs, entry.key)
         else
@@ -2884,7 +2903,7 @@ local function buildMenuItems()
           -- the title instead of being appended behind the age.
           local geminiPinned = entry.key == "gemini" and pinSet["main"] == true
           local fallbackRow = {
-            title = accountTitle(entry.label, formatAccountAge(vendor.as_of), false,
+            title = accountTitle(entry.label, lateAge(formatAccountAge(vendor.as_of), anyLate), false,
               vendor.needs_user_entry == true,
               geminiPinned or vendorPins[entry.key] == true, nil, roleOff,
               vendor.age_alarm == true),
@@ -2939,7 +2958,7 @@ local function buildMenuItems()
             authNeeded = authStatus == "needs_login"
               or (block.auth_needed == true and authStatus ~= "expired")
           end
-          local accountAge = formatAccountAge(block.as_of)
+          local accountAge = lateAge(formatAccountAge(block.as_of), isAccountRows and late[acct])
           local accountAgeAlarm = block.age_alarm == true
             and not (entry.key == "grok" and authStatus == "expired")
           local generalAtLimit = bucketAtLimit(fiveHour) or bucketAtLimit(weekly)

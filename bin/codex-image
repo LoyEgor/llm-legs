@@ -15,11 +15,15 @@ resolve_root() {
 }
 
 usage() {
-  printf 'usage: codex-image --dest <absolute path> --prompt <description> [--aspect <W:H> | --size <WxH>] [--ref <absolute image path>]... [--transparent] [--resume <session id>] [--account <profile>] [--route cli|web] [--region <x,y,w,h>] [--composite[=auto|x,y,w,h] | --no-composite]\n' >&2
+  image_leg_cause "$@"
+  printf 'usage: codex-image --dest <absolute path> --prompt <description> [--aspect <W:H> | --size <WxH>] [--ref <absolute image path>]... [--transparent] [--edit <absolute image path>] [--resume <session id>] [--account <profile>] [--route web|cli] [--count <1-4>] [--lock-wait <seconds>] [--region <x,y,w,h>] [--composite[=auto|x,y,w,h] | --no-composite]\n' >&2
+  printf '       routes in order: %s; without --route the first runs and a route-level failure (sign-in, busy, limit, unsent) reruns the request on the next\n' \
+    "$(image_caps_get "$root" codex '.routes | join(", ")' 2>/dev/null)" >&2
   printf '       codex-image --route web --resume <chat id> --aspect <W:H> --dest <absolute path>   (re-aspect the chat'"'"'s last image)\n' >&2
   printf '       codex-image --route web (--resume <chat id> | --ref <image>) --point <x,y=text>... --dest <absolute path>   (point edits)\n' >&2
   printf '       codex-image --route web (--resume <chat id> | --ref <image>) --remove-bg --dest <absolute .png path>   (Remove BG)\n' >&2
-  printf '       references: at most %s; transparency mode: %s\n' "$ref_max" "$transparent_mode" >&2
+  printf '       references: at most %s (--route web %s); transparency mode: %s\n' "$ref_max" \
+    "$(image_caps_get "$root" codex '.web.refs_max // "none"' 2>/dev/null)" "$transparent_mode" >&2
   exit 2
 }
 
@@ -80,6 +84,44 @@ while at >= 0:
 PY
 }
 
+place_image() { # generated out
+  if [ "$remove_green" = true ]; then
+    if [ "$transparent_native" = true ] && has_usable_alpha "$1"; then
+      if [ "$(actual_format "$1")" = png ]; then
+        cp "$1" "$2"
+      else
+        magick "$1" "PNG:$2"
+      fi
+    elif [ "$transparent_chroma" = true ]; then
+      chroma_key_to_png "$1" "$tmp_dir" "$2"
+    else
+      printf 'codex-image: the generation carries no alpha and the manifest allows no chroma fallback\n' >&2
+      exit 1
+    fi
+  elif [ "$extension" != "$(actual_format "$1")" ]; then
+    magick "$1" "$2"
+  else
+    cp "$1" "$2"
+  fi
+}
+
+# The other takes of a --count run, after the shared lines, the way share/flow-image.sh prints Flow's.
+deliver_variants() {
+  local index=1 take out path vsize
+  while IFS= read -r take; do
+    index=$((index + 1))
+    out="${dest%.*}-$index.${dest##*.}"
+    path=$(jq -r '.path' <<<"$take")
+    place_image "$path" "$out"
+    vsize=$(sips -g pixelWidth -g pixelHeight "$out" | awk '/pixelWidth:/ {w = $2} /pixelHeight:/ {h = $2} END {print w "x" h}')
+    printf 'variant=%s size=%s session=%s\n' "$out" "$vsize" "$(jq -r '.chat // "none"' <<<"$take")"
+    IMAGE_LEG_DELIVERED=$index
+    image_leg_composite_take "$root" "$out" variant </dev/null
+  done < <(jq -c '(.takes // [])[1:][]' <<<"$web_result")
+  jq -r '(.failures // [])[] | "codex-image: take \(.tab) failed: \(.reason)"' <<<"$web_result" >&2
+  jq -r '.failed // 0 | select(. > 0) | "failed=\(.) reason=chatgpt_take_failed"' <<<"$web_result"
+}
+
 # `%A` alone reports the channel, not its contents: a PNG carrying a fully opaque alpha channel
 # answers `Blend` and would be delivered as a transparent asset that is nothing of the kind.
 deliver_generated() {
@@ -87,24 +129,7 @@ deliver_generated() {
     printf 'codex-image: Remove BG returned no transparency; nothing delivered\n' >&2
     exit 1
   fi
-  if [ "$remove_green" = true ]; then
-    if [ "$transparent_native" = true ] && has_usable_alpha "$generated"; then
-      if [ "$(actual_format "$generated")" = png ]; then
-        cp "$generated" "$dest"
-      else
-        magick "$generated" "PNG:$dest"
-      fi
-    elif [ "$transparent_chroma" = true ]; then
-      chroma_key_to_png "$generated" "$tmp_dir" "$dest"
-    else
-      printf 'codex-image: the generation carries no alpha and the manifest allows no chroma fallback\n' >&2
-      exit 1
-    fi
-  elif [ "$extension" != "$(actual_format "$generated")" ]; then
-    magick "$generated" "$dest"
-  else
-    cp "$generated" "$dest"
-  fi
+  place_image "$generated" "$dest"
   IMAGE_LEG_COMPOSITE_LINES=$(image_leg_composite_take "$root" "$dest")
 
   sips_output=$(sips -g pixelWidth -g pixelHeight -g format "$dest")
@@ -117,13 +142,20 @@ deliver_generated() {
   }
   printf 'dest=%s\nsize=%sx%s\nformat=%s\naccount=%s\nsession=%s\n' \
     "$dest" "$width" "$height" "$format" "$account" "${session:-none}"
+  IMAGE_LEG_DELIVERED=1
+  image_leg_route_lines
 }
 
 lineage() {
   local lineage_region=$region
   [ -n "$lineage_region" ] || [ "${IMAGE_LEG_COMPOSITE_ASK:-auto}" = auto ] || lineage_region=$IMAGE_LEG_COMPOSITE_ASK
-  image_leg_lineage codex "$route" "$dest" "${session:-none}" "$prompt" "$lineage_region" \
-    "$(printf '%s\n' ${points[@]+"${points[@]}"})" ${edit_input:+"$edit_input"} ${refs[@]+"${refs[@]}"}
+  if [ -n "$IMAGE_LEG_EDIT" ]; then
+    image_leg_lineage codex "$route" "$dest" "${session:-none}" "$prompt" "$lineage_region" \
+      "$(printf '%s\n' ${points[@]+"${points[@]}"})" "$edit_input"
+  else
+    image_leg_lineage codex "$route" "$dest" "${session:-none}" "$prompt" "$lineage_region" \
+      "$(printf '%s\n' ${points[@]+"${points[@]}"})" ${edit_input:+"$edit_input"} ${refs[@]+"${refs[@]}"}
+  fi
 }
 
 # Delivered as generated: a ratio off by more than 2% is reported, never cropped or resized.
@@ -150,6 +182,7 @@ request_sentences() {
   fi
   [ -z "$size" ] || printf 'Make the image exactly %s pixels.\n' "$size"
   [ -z "$region" ] || printf 'Change only the area outlined in red; keep everything outside it exactly as it is, and leave no red outline in the result.\n'
+  image_leg_edit_sentence "${#refs[@]}"
 }
 
 command -v jq >/dev/null 2>&1 || {
@@ -189,7 +222,9 @@ points=()
 remove_bg=false
 account=''
 resume_id=''
-route=cli
+route=''
+count=1
+edit=''
 remove_green=false
 refs=()
 
@@ -197,22 +232,22 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     -h | --help) image_leg_help usage ;;
     --dest)
-      [ "$#" -ge 2 ] || usage
+      [ "$#" -ge 2 ] || usage "$1 needs a value"
       dest=$2
       shift 2
       ;;
     --prompt)
-      [ "$#" -ge 2 ] || usage
+      [ "$#" -ge 2 ] || usage "$1 needs a value"
       prompt=$2
       shift 2
       ;;
     --size)
-      [ "$#" -ge 2 ] || usage
+      [ "$#" -ge 2 ] || usage "$1 needs a value"
       size=$2
       shift 2
       ;;
     --ref)
-      [ "$#" -ge 2 ] || usage
+      [ "$#" -ge 2 ] || usage "$1 needs a value"
       refs+=("$2")
       shift 2
       ;;
@@ -221,33 +256,38 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     --resume)
-      [ "$#" -ge 2 ] || usage
+      [ "$#" -ge 2 ] || usage "$1 needs a value"
       resume_id=$2
       shift 2
       ;;
     --account)
-      [ "$#" -ge 2 ] || usage
+      [ "$#" -ge 2 ] || usage "$1 needs a value"
       account_arg "$2"
       account=$2
       shift 2
       ;;
     --route)
-      [ "$#" -ge 2 ] || usage
+      [ "$#" -ge 2 ] || usage "$1 needs a value"
       route=$2
       shift 2
       ;;
     --aspect)
-      [ "$#" -ge 2 ] || usage
+      [ "$#" -ge 2 ] || usage "$1 needs a value"
       aspect=$2
       shift 2
       ;;
+    --count)
+      [ "$#" -ge 2 ] || usage "$1 needs a value"
+      count=$2
+      shift 2
+      ;;
     --region)
-      [ "$#" -ge 2 ] || usage
+      [ "$#" -ge 2 ] || usage "$1 needs a value"
       region=$2
       shift 2
       ;;
     --point)
-      [ "$#" -ge 2 ] || usage
+      [ "$#" -ge 2 ] || usage "$1 needs a value"
       points+=("$2")
       shift 2
       ;;
@@ -255,15 +295,60 @@ while [ "$#" -gt 0 ]; do
       remove_bg=true
       shift
       ;;
+    --edit)
+      [ "$#" -ge 2 ] || usage "$1 needs a value"
+      edit=$2
+      shift 2
+      ;;
+    --lock-wait)
+      [ "$#" -ge 2 ] && image_leg_lock_wait_arg "$2" || usage "--lock-wait needs whole seconds"
+      shift 2
+      ;;
     --composite | --composite=* | --no-composite)
-      image_leg_composite_arg "$1" || usage
+      image_leg_composite_arg "$1" || usage "unknown argument $1"
       shift
       ;;
-    *) usage ;;
+    *) usage "unknown argument $1" ;;
   esac
 done
 
-case "$route" in cli|web) IMAGE_LEG_ROUTE=$route ;; *) usage ;; esac
+# A session lives inside one account's CODEX_HOME, and `codex exec resume` answers an id it cannot
+# find by silently starting a NEW thread (openai/codex#15538) — so the account is recovered from
+# the store rather than routed for, and an ambiguous answer is asked about instead of guessed.
+resume_account_candidates() { # session id
+  local id=$1 home name
+  for name in $(CODEXB_PROFILES_DIR="$profiles_dir" account_roster codex); do
+    if [ "$name" = main ]; then home="$base_home/.codex"; else home="$profiles_dir/$name"; fi
+    [ -d "$home" ] || continue
+    if [ -d "$home/generated_images/$id" ] ||
+      [ -n "$(find "$home/sessions" -type f -name "*$id*" -print -quit 2>/dev/null)" ]; then
+      printf '%s\n' "$name"
+    fi
+  done
+}
+
+base_home=$HOME
+profiles_dir="${CODEX_PROFILES_DIR:-$base_home/.codex-profiles}"
+route_given=$route
+# Sessions from before route records were kept are CLI threads; the default route would lose them.
+if [ -z "$route" ] && [ -n "$resume_id" ] && [[ "$resume_id" =~ ^[0-9a-fA-F-]+$ ]]; then
+  route=$(image_leg_session_route codex "$resume_id") || route=''
+  if [ -z "$route" ]; then
+    . "$root/share/account-roster.sh"
+    [ -z "$(resume_account_candidates "$resume_id")" ] || route=cli
+  fi
+fi
+route=${route:-$(image_caps_get "$root" codex '.routes[0]' 2>/dev/null)}
+case "$route" in cli|web) IMAGE_LEG_ROUTE=$route ;; *) usage "--route takes cli or web, not $route" ;; esac
+[ -z "$edit" ] || { image_leg_edit_arg "$edit" "$resume_id"; refs=("$edit" ${refs[@]+"${refs[@]}"}); }
+if [ "$count" != 1 ]; then
+  [ "$route" = web ] ||
+    usage "--count runs on --route web (one browser, a chat per take); the CLI image_gen renders one image"
+  [[ "$count" =~ ^[0-9]+$ ]] && [ -n "$(image_caps_get "$root" codex ".web.counts | index($count) // empty")" ] ||
+    usage "--count on --route web is $(image_caps_get "$root" codex '.web.counts | "\(min)-\(max)"')"
+  [ -z "$resume_id$region" ] && [ "${#points[@]}" -eq 0 ] && [ "$remove_bg" = false ] ||
+    usage "--count renders new chats of one request: no --resume, --region, --point or --remove-bg"
+fi
 reaspect=false
 if [ -z "$prompt" ] && [ -n "$resume_id" ] && [ -n "$aspect" ] && [ -z "$size$region" ] &&
   [ "$remove_green" = false ] && [ "${#refs[@]}" -eq 0 ] && [ "${#points[@]}" -eq 0 ] && [ "$remove_bg" = false ]; then
@@ -277,10 +362,11 @@ if [ -z "$prompt" ] && [ -n "$resume_id" ] && [ -n "$aspect" ] && [ -z "$size$re
     exit 2
   fi
 fi
-[ -n "$dest" ] && { [ -n "$prompt" ] || [ "$reaspect" = true ] || [ "${#points[@]}" -gt 0 ] || [ "$remove_bg" = true ]; } ||
-  usage
+[ -n "$dest" ] || usage "missing --dest"
+[ -n "$prompt" ] || [ "$reaspect" = true ] || [ "${#points[@]}" -gt 0 ] || [ "$remove_bg" = true ] ||
+  usage "missing --prompt"
 if [ -n "$aspect" ] && ! [[ "$aspect" =~ ^[0-9]+(\.[0-9]+)?:[0-9]+(\.[0-9]+)?$ && "$aspect" =~ [1-9].*:.*[1-9] ]]; then
-  usage
+  usage "--aspect needs W:H, not $aspect"
 fi
 if [ -n "$aspect" ] && [ -n "$size" ]; then
   printf 'codex-image: pass --aspect or --size, not both\n' >&2
@@ -339,12 +425,12 @@ if [ "$remove_bg" = true ]; then
     exit 2
   fi
 fi
-[[ "$dest" = /* ]] || usage
+[[ "$dest" = /* ]] || usage "--dest must be an absolute path, not $dest"
 extension=$(normalized_extension "${dest##*/}")
 # An extensionless destination — a bare trailing dot included — names no format for `magick` to
 # infer, and the mismatch below would hand it one anyway.
-{ [[ "${dest##*/}" = *.* ]] && [ -n "$extension" ]; } || usage
-[ -d "$(dirname "$dest")" ] || usage
+{ [[ "${dest##*/}" = *.* ]] && [ -n "$extension" ]; } || usage "--dest $dest has no file extension"
+[ -d "$(dirname "$dest")" ] || usage "--dest folder $(dirname "$dest") does not exist"
 if [ "$remove_green" = true ] && [ "$extension" != png ]; then
   printf 'codex-image: --transparent requires a .png destination\n' >&2
   exit 2
@@ -361,20 +447,25 @@ command -v magick >/dev/null 2>&1 || {
   exit 1
 }
 if [ -n "$size" ] && ! [[ "$size" =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]]; then
-  usage
+  usage "--size needs WxH, not $size"
 fi
 ref_count=${#refs[@]}
-if [[ "$ref_max" =~ ^[0-9]+$ ]] && [ "$ref_count" -gt "$ref_max" ]; then
-  printf 'codex-image: %s references exceed the %s the imagegen tool takes\n' "$ref_count" "$ref_max" >&2
+ref_cap=$ref_max ref_taker='the imagegen tool takes'
+if [ "$route" = web ]; then
+  ref_cap=$(image_caps_get "$root" codex '.web.refs_max // "none"' 2>/dev/null) || ref_cap=''
+  ref_taker='the ChatGPT web route takes'
+fi
+if [[ "$ref_cap" =~ ^[0-9]+$ ]] && [ "$ref_count" -gt "$ref_cap" ]; then
+  printf 'codex-image: %s references exceed the %s %s\n' "$ref_count" "$ref_cap" "$ref_taker" >&2
   exit 2
 fi
 if [ "$ref_count" -gt 0 ]; then
   for ref in "${refs[@]}"; do
-    [[ "$ref" = /* ]] && [ -f "$ref" ] || usage
+    [[ "$ref" = /* ]] && [ -f "$ref" ] || usage "--ref $ref is not an absolute path to a file"
   done
 fi
 if [ -n "$account" ] && ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
-  usage
+  usage "--account $account is not a profile name"
 fi
 # A thread NAME is a resume target for the CLI but not one this script can trace back to the
 # account that holds it, and printed session ids are always UUIDs.
@@ -388,11 +479,21 @@ IMAGE_LEG_COMPOSITE_ARGS=()
 [ "${#points[@]}" -eq 0 ] || for point in "${points[@]}"; do IMAGE_LEG_COMPOSITE_ARGS+=(--point "$point"); done
 repaint=false
 [ "$remove_bg" = false ] && [ "$remove_green" = false ] || repaint=true
-image_leg_composite_plan codex "$resume_id" "$repaint" ${refs[@]+"${refs[@]}"}
+if [ -n "$IMAGE_LEG_EDIT" ]; then
+  image_leg_composite_plan codex '' "$repaint" "$IMAGE_LEG_EDIT"
+else
+  image_leg_composite_plan codex "$resume_id" "$repaint" ${refs[@]+"${refs[@]}"}
+fi
 edit_input=$IMAGE_LEG_COMPOSITE_INPUT
+cli_ref_ok=false
+[[ "$ref_max" =~ ^[0-9]+$ ]] && [ "$ref_count" -gt "$ref_max" ] || cli_ref_ok=true
+expressible=false
+[ "$reaspect" = true ] || [ -n "$region" ] || [ "${#points[@]}" -gt 0 ] || [ "$remove_bg" = true ] ||
+  [ "$cli_ref_ok" = false ] || [ "$count" != 1 ] || expressible=true
+fallback_next=$(image_leg_fallback_route "$root" codex "$route_given" "$resume_id" "$expressible")
+account_given=$account
+IMAGE_LEG_REQUESTED=$count
 
-base_home=$HOME
-profiles_dir="${CODEX_PROFILES_DIR:-$base_home/.codex-profiles}"
 . "$root/share/image-chroma.sh"
 
 content=$prompt
@@ -424,32 +525,41 @@ if [ "$route" = web ]; then
     web_args=(generate --prompt "$web_prompt" --dest "$tmp_dir/web-image")
   fi
   [ -z "$region" ] || web_args+=(--region "$region")
+  [ "$count" = 1 ] || web_args+=(--count "$count")
   [ "$ref_count" -eq 0 ] || for ref in "${refs[@]}"; do web_args+=(--ref "$ref"); done
   [ -z "$resume_id" ] || web_args+=(--resume "$resume_id")
   [ -z "$account" ] || web_args+=(--account "$account")
+  [ -z "$IMAGE_LEG_LOCK_WAIT" ] || web_args+=(--lock-wait "$IMAGE_LEG_LOCK_WAIT")
   image_leg_mark $((ref_count + 1))
   web_rc=0
   "${CODEX_IMAGE_WEB:-$root/bin/chatgpt-web}" "${web_args[@]}" >"$tmp_dir/web.out" || web_rc=$?
   web_result=$(tail -n 1 "$tmp_dir/web.out")
   account=$(jq -r '.account // empty' <<<"$web_result" 2>/dev/null) || account=''
   session=$(jq -r '.chat // empty' <<<"$web_result" 2>/dev/null) || session=''
-  if [ "$web_rc" -ne 0 ]; then
-    printf 'codex-image: web route: %s\n' \
-      "$(jq -r '.reason // empty' <<<"$web_result" 2>/dev/null || true)" >&2
+  image_leg_engine_phases "$web_result"
+  if [ "$web_rc" -eq 0 ]; then
+    generated=$tmp_dir/web-image
+    [ -s "$generated" ] || { printf 'codex-image: the web route saved no image\n' >&2; exit 1; }
+    deliver_generated
+    deliver_variants
+    image_caps_model_check "$root" codex image "$(c2pa_model "$generated")"
+    aspect_check
+    lineage
+    exit 0
+  fi
+  printf 'codex-image: web route: %s\n' \
+    "$(jq -r '.reason // empty' <<<"$web_result" 2>/dev/null || true)" >&2
+  if ! image_leg_fallback "$web_rc" "$web_result" "$fallback_next"; then
     case "$web_rc" in
       3) printf 'CODEX_USAGE_LIMIT\n' >&2; exit 3 ;;
+      5) image_leg_busy "${account:-$account_given}" ;;
       2|4) exit "$web_rc" ;;
       *) exit 1 ;;
     esac
   fi
-  generated=$tmp_dir/web-image
-  [ -s "$generated" ] || { printf 'codex-image: the web route saved no image\n' >&2; exit 1; }
-  deliver_generated
-  image_caps_model_check "$root" codex image "$(c2pa_model "$generated")"
-  printf 'route=web\n'
-  aspect_check
-  lineage
-  exit 0
+  route=$IMAGE_LEG_ROUTE account=$account_given session=''
+  trap image_leg_exit EXIT
+  rm -rf "$tmp_dir"
 fi
 # Image generation is a worker launch like any other — it runs `codex` headless with CODEX_HOME
 # set, never through codexb — so the pool answers here too.
@@ -459,21 +569,6 @@ fi
   { printf 'codex-image: share/worker-model.sh is missing; refusing to run unchecked\n' >&2; exit 4; }
 . "$root/share/worker-claims.sh"
 . "$root/share/account-roster.sh"
-
-# A session lives inside one account's CODEX_HOME, and `codex exec resume` answers an id it cannot
-# find by silently starting a NEW thread (openai/codex#15538) — so the account is recovered from
-# the store rather than routed for, and an ambiguous answer is asked about instead of guessed.
-resume_account_candidates() { # session id
-  local id=$1 home name
-  for name in $(CODEXB_PROFILES_DIR="$profiles_dir" account_roster codex); do
-    if [ "$name" = main ]; then home="$base_home/.codex"; else home="$profiles_dir/$name"; fi
-    [ -d "$home" ] || continue
-    if [ -d "$home/generated_images/$id" ] ||
-      [ -n "$(find "$home/sessions" -type f -name "*$id*" -print -quit 2>/dev/null)" ]; then
-      printf '%s\n' "$name"
-    fi
-  done
-}
 
 if [ -n "$resume_id" ] && [ -z "$account" ]; then
   candidates=$(resume_account_candidates "$resume_id")

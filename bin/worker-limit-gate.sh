@@ -10,7 +10,6 @@ LIMITS_FILE="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
 TOGGLE="${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}"
 WORKER_PICK="${WORKER_GATE_WORKER_PICK:-/Volumes/Work/Projects/llm-legs/bin/worker-pick}"
 
-STAMP_DIR="${WORKER_GATE_STAMPS:-$HOME/.cache/claude-worker-gate}"
 
 input=$(cat) || exit 0
 worker=$(printf '%s' "$input" | jq -r '.tool_input.subagent_type // empty' 2>/dev/null) || exit 0
@@ -71,86 +70,11 @@ REVIEW_STATE="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb
 prompt=$(printf '%s' "$input" | jq -r '.tool_input.prompt // empty' 2>/dev/null) || prompt=''
 run_id_re='[0-9]{8}T[0-9]{6}Z-[0-9a-f]+(-[0-9]+)?'
 
-# 0 = deny or re-arm, 1 = pass the retry, 2 = cache error.
-claim_once() {
-  local hash stamp now born age
-  hash=$(printf '%s\n%s\n' "$1" "$sid" | shasum -a 256 | cut -c1-16)
-  [[ "$hash" =~ ^[0-9a-f]{16}$ ]] || return 2
-  mkdir -p "$STAMP_DIR" 2>/dev/null || return 2
-  # The sweep is housekeeping: a hiccup in it (a racer already collected an entry) must not
-  # become a cache-error verdict that waves the spawn through.
-  find "$STAMP_DIR" -mindepth 1 -maxdepth 1 -type f \
-    -name 'session-account-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].stamp' \
-    -mmin +1440 -exec rm -f {} + 2>/dev/null
-
-  stamp="$STAMP_DIR/session-account-$hash.stamp"
-  (set -C; : >"$stamp") 2>/dev/null && return 0
-  [ -f "$stamp" ] && [ ! -L "$stamp" ] || return 2
-  now=$(date +%s 2>/dev/null) || return 2
-  born=$(stat -f %m "$stamp" 2>/dev/null || stat -c %Y "$stamp" 2>/dev/null) || return 2
-  case "$now$born" in *[!0-9]*) return 2 ;; esac
-  age=$((now - born))
-  # Duplicate calls in one tool batch must not consume the deny retry.
-  [ "$age" -ge 2 ] || return 0
-  rm "$stamp" 2>/dev/null && return 1
-  if [ -e "$stamp" ]; then
-    # A stamp that reappeared this young was re-armed by a racer that lost the same rm: that
-    # claim is a deny, not a cache fault to warn-and-allow over.
-    born=$(stat -f %m "$stamp" 2>/dev/null || stat -c %Y "$stamp" 2>/dev/null) || return 2
-    case "$born" in ''|*[!0-9]*) return 2 ;; esac
-    [ $((now - born)) -lt 2 ] && return 0
-    return 2
-  fi
-  (set -C; : >"$stamp") 2>/dev/null && return 0
-  [ -f "$stamp" ] && [ ! -L "$stamp" ] && return 0
-  return 2
-}
-
-# The session models the orchestrator doctrine binds: Fable, and the `claudegpt` gateway aliases
-# (`anthropic.ccr.sol` / `anthropic.ccr.astra`), which are Claude Code on an OpenAI subscription —
-# the same one scarce session quota a native agent would spend, so the same rule (docs/claudegpt.md,
-# docs/routing-contract.md). The shape lives here and nowhere else.
-orchestrator_model() {
-  case "$1" in
-    claude-fable-*|anthropic.ccr.*) return 0 ;;
-  esac
-  return 1
-}
-
-# Every assistant record carries the model, so the tail only has to reach the last one; 200
-# lines clears the longest stretch of tool traffic. Unreadable or model-less transcripts read
-# as empty and the caller stays silent — a gate that cannot tell must not block ordinary work.
-session_model() {
-  local transcript
-  transcript=$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null) || return 0
-  [ -r "$transcript" ] || return 0
-  # -R with fromjson? so a truncated or non-object line is skipped instead of ending the scan.
-  tail -n 200 "$transcript" 2>/dev/null | jq -rR '
-    fromjson? | select(type == "object" and .type == "assistant")
-    | .message | objects | .model // empty' 2>/dev/null | tail -n 1
-}
-
 case "$worker" in
   claudeb-worker|codex-worker|gemini-worker|grok-worker|light-worker) ;;
-  *)
-    # Which native types may spawn at all is worker-spawn-hook.sh's decision alone; a deny here
-    # would outrank its allow, so this branch only prices a model override on the session account.
-    [ "$worker" = image-gen ] || exit 0
-    current_session_model=$(session_model)
-    model_override=$(printf '%s' "$input" | jq -r '.tool_input.model // empty' 2>/dev/null) || model_override=''
-    [ -n "$model_override" ] || exit 0
-    orchestrator_model "$current_session_model" || exit 0
-    tool_fingerprint=$(printf '%s' "$input" | jq -cS '.tool_input' 2>/dev/null) ||
-      warn "The session-account gate could not fingerprint this Agent call, so it is letting the spawn through unjudged. ${worker:-This agent} with model=${model_override} runs on the SESSION account — check that is what Egor asked for."
-    # The session model belongs in the key: a stamp lives a day, and a chat that moved to Opus
-    # and back must not find its earlier deny already spent.
-    claim_once "session-account:$current_session_model:$tool_fingerprint"
-    case $? in
-      1) exit 0 ;;
-      2) warn "The session-account gate could not use its stamp cache at ${STAMP_DIR}, so it is letting this spawn through unjudged. ${worker:-This agent} with model=${model_override} runs on the SESSION account — check that is what Egor asked for." ;;
-    esac
-    deny "This spawns ${worker:-an agent} with model=${model_override} — a plain agent runs on the SESSION account, the one this chat is living on. Route implementation through the worker the toggle selects (claudeb-, codex-, gemini- or grok-worker on an account from worker-pick). If Egor asked for this spawn on purpose, retry the identical call — it passes once."
-    ;;
+  # Which native types may spawn at all is worker-spawn-hook.sh's decision alone; a deny here would
+  # outrank its allow.
+  *) exit 0 ;;
 esac
 
 pin=''

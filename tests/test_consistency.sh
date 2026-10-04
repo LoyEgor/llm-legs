@@ -88,9 +88,9 @@ for site in "$ROOT/bin/worker-launch-gate.sh" "$ROOT/bin/worker-tag-hook.sh"; do
   assert grep -Fq 'relay_first_prompt "' "$site"
   assert test "$(grep -c -e '/subagents/' -e 'fromjson?' "$site")" = 0
 done
-report_types='codex-worker|claudeb-worker|gemini-worker|grok-worker|light-worker|image-gen|light-research'
+report_types='codex-worker|claudeb-worker|gemini-worker|grok-worker|light-worker|light-research'
 for site in "$REPORT_BUS" "$REPORT_TAG"; do assert grep -Fq "$report_types)" "$site"; done
-for marker in CLAUDEB_WORKER=1 agent_id /subagents/ agent_type codex-worker claudeb-worker gemini-worker grok-worker light-worker image-gen light-research; do
+for marker in CLAUDEB_WORKER=1 agent_id /subagents/ agent_type codex-worker claudeb-worker gemini-worker grok-worker light-worker light-research; do
   assert doc_has "$marker"
   assert grep -Fq "$marker" "$REPORT_DOC"
 done
@@ -165,9 +165,9 @@ assert eq "$(grep -c 'anthropic\.ccr\.' "$ROOT/bin/chats" "$ROOT/bin/chat-find" 
 assert grep -Fq 'GATEWAY_PREFIX = "anthropic.ccr."' "$CHAT_RESUME"
 assert grep -Fq 'Sol' "$ROOT/docs/claudegpt.md"
 
-# --- Row cf: the anthropic.ccr. prefix and its five sites --------------------
-# Each reads a different carrier — session model, transcript, /model return id, harness payload,
-# and the picker the launcher writes — so a prefix that changes has to change in all five.
+# --- Row cf: the anthropic.ccr. prefix and its four sites --------------------
+# Each reads a different carrier — transcript, /model return id, harness payload, and the picker the
+# launcher writes — so a prefix that changes has to change in all four.
 CLAUDEGPT="$ROOT/bin/claudegpt"
 HS_COMPACT="${HS_ROOT:-$HOME/.hammerspoon}/claude_compact.lua"
 assert test -r "$HS_COMPACT"
@@ -1174,7 +1174,7 @@ ROUTING_DOC="$ROOT/docs/routing-contract.md"
 SPAWN_HOOK_BIN="$ROOT/bin/worker-spawn-hook.sh"
 native_list() { sed -nE "s/^$1='([^']*)'\$/\1/p" "$SPAWN_HOOK_BIN" | head -n1; }
 assert eq "$(native_list RELAY_TYPES)" 'claudeb-worker codex-worker gemini-worker grok-worker light-worker'
-assert eq "$(native_list NATIVE_ALLOWLIST)" 'fork review-waiter light-research image-gen'
+assert eq "$(native_list NATIVE_ALLOWLIST)" 'fork review-waiter light-research'
 for native in $(native_list NATIVE_ALLOWLIST); do
   assert grep -Fq "\`$native\`" "$ROOT/$DOC"
   assert grep -Fq "\`$native\`" "$ROUTING_DOC"
@@ -1193,15 +1193,8 @@ for retired_doc in "$ROOT/$DOC" "$ROUTING_DOC"; do
   assert test "$(grep -Fc 'NATIVE_EXPLORE_ESCAPE' "$retired_doc")" -eq 0
   assert test "$(grep -Fc 'NATIVE_RESEARCH' "$retired_doc")" -eq 0
 done
-assert grep -Fq '[ "$worker" = image-gen ] || exit 0' "$WORKER_GATE"
-assert grep -Fq 'orchestrator_model "$current_session_model" || exit 0' "$WORKER_GATE"
-# The doctrine binds one class of session models, and the shape lives in the gate alone: Fable and
-# the claudegpt gateway aliases, both spelled in row bt and in the routing contract.
-assert grep -Fq 'claude-fable-*|anthropic.ccr.*) return 0 ;;' "$WORKER_GATE"
-assert eq "$(grep -c 'claude-fable-\*' "$WORKER_GATE")" 1
-for model_doc in "$ROOT/$DOC" "$ROUTING_DOC"; do
-  assert grep -Fq 'anthropic.ccr.' "$model_doc"
-done
+# The limit gate prices no native type at all: with the media relay gone it has no session-model rule.
+assert test "$(grep -Ec 'orchestrator_model|claude-fable-|anthropic\.ccr' "$WORKER_GATE")" -eq 0
 assert grep -Fq 'explicit tool models' "$ROUTING_DOC"
 assert doc_has 'Native agent types'
 
@@ -2487,11 +2480,12 @@ for owned in codex-image gemini-image grok-image grok-video image-fanout gemini-
 done
 assert grep -Eq '^OWNED_IMAGE_RE=.*\(codex\|gemini\|grok\)-image' "$LAUNCH_GATE"
 assert grep -Eq '^OWNED_IMAGE_RE=.*gemini-\(video\|music\|sfx\|listen\)' "$LAUNCH_GATE"
-# The tag hook, the exit stamp and the work probe recognise the same media scripts the gate owns.
-for media_site in bin/worker-tag-hook.sh bin/statusline-workdir-hook.sh; do
-  assert grep -Fq '(codex|gemini|grok)-image|grok-video|gemini-(video|music|sfx|listen))' "$ROOT/$media_site"
-done
+# The work probe draws the same media scripts the gate owns, plus media-run, their one door; the gate
+# also owns the engine subcommands those scripts drive.
+assert grep -Fq 'media = "^(media-run|image-fanout|codex-image|gemini-image|grok-image|grok-video|gemini-video|gemini-music|gemini-sfx|gemini-listen)$"' "$ROOT/bin/statusline-work-probe.sh"
 assert grep -Fq 'grok-video|gemini-video|gemini-music|gemini-sfx|gemini-listen)$"' "$ROOT/bin/statusline-work-probe.sh"
+assert grep -Fq 'MEDIA_ENGINE_RE="${VENDOR_WORD}(chatgpt-web[[:space:]]+(generate|resize|comment|remove-bg)|gemini-web[[:space:]]+generate)${EDGE}"' "$LAUNCH_GATE"
+assert grep -Fq '`media-run`' "$ROOT/$DOC"
 assert grep -Eq '^OWNED_RUN_RE=.*worker-run.*\(start\|wait\)' "$LAUNCH_GATE"
 assert doc_has 'sanctioned only in the hand that owns them'
 # `claudeb revive` and `claudeb warm` are subcommands, not binaries: the gate must not exempt every
@@ -3083,13 +3077,13 @@ assert grep -Fq 'folder = os.path.join(state_dir(), "hook-runs")' "$HARNESS_DOCT
 assert grep -Fq 'c["wait"].append(["t", round(start, 3), session, round(end, 3), turn["o"], None, 0, turn["ty"],' "$HARNESS_DOCTOR_BIN"
 assert grep -Fq 'c["wait"].append(["d", round(launch, 3), session, round(end, 3), what, None, 0, round(notified, 3),' "$HARNESS_DOCTOR_BIN"
 assert grep -Fq '{k: round(v, 1) for k, v in part.items() if v >= 0.05}, use, turn.get("calls", [])])' "$HARNESS_DOCTOR_BIN"
-assert grep -Fq 'events.append(["g", round(start, 3), session, round(t, 3), rec.get("ptid", "")[-10:], phase])' "$HARNESS_DOCTOR_BIN"
+assert grep -Fq 'events.append(["g", round(start, 3), session, round(t, 3), block["tool_use_id"][-10:], phase])' "$HARNESS_DOCTOR_BIN"
 assert grep -Fq 'rows.append(["s", round(entry, 3), profile, kind, round(launched - entry, 3),' "$HARNESS_DOCTOR_BIN"
 assert grep -Fq 'rows.append(["m", round(t, 3), str(entry.get("sessionId") or "")[:8], sub.name[9:],' "$HARNESS_DOCTOR_BIN"
 assert grep -Fq '("menu", JOURNAL_FILE_DAYS), ("speed-days", SPEED_DAYS)):' "$HARNESS_DOCTOR_BIN"
 assert grep -Fxq 'SPEED_DAYS = 28' "$HARNESS_DOCTOR_BIN"
 assert doc_has '`["t", start, session, end, origin, [r2, r5, r10], away, typed, holes, part, use, [[tool_id, layer]]]`'
-assert doc_has '`["g", start, session, end, parent_tool_id, phase]`'
+assert doc_has '`["g", start, session, end, tool_id, phase]`'
 assert doc_has '`["s", entry, profile, kind, exec_s, sessionstart_s, pid]`'
 assert doc_has '`["m", t, session, server, ms, ok]`'
 assert doc_has '`speed-days/<YYYY-MM-DD>.json` (28 days)'
@@ -3286,17 +3280,18 @@ assert eq "$(sed -nE 's/^ +--accounts\) .*accounts_mode=\$2.*/ok/p' "$ROOT/bin/i
 assert grep -Fq 'case "$accounts_mode" in all|pick) ;; *) usage ;; esac' "$ROOT/bin/image-fanout"
 assert doc_has '| dk | Explicit --account |'
 
-# Every script a claude-setup agent runs by bare name has its README PATH link, the inventory
-# llm-selfcheck's path-links step checks; image-gen names the image scripts only as "that vendor's
-# script", hence the fixed floor.
+# Every script a claude-setup agent or the media skill runs by bare name has its README PATH link,
+# the inventory llm-selfcheck's path-links step checks; media-run reaches the media scripts as "that
+# vendor's script", hence the fixed floor.
 AGENT_DIR="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/agents"
-[ -r "$AGENT_DIR/image-gen.md" ] || fail "agent run names: $AGENT_DIR is unreadable (set CLAUDE_SETUP_ROOT)"
+MEDIA_SKILL="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/skills/media/SKILL.md"
+[ -r "$MEDIA_SKILL" ] || fail "agent run names: $MEDIA_SKILL is unreadable (set CLAUDE_SETUP_ROOT)"
 readme_links=$(LC_ALL=C sed -nE 's/^- `bin\/([^`]+)` → `~\/\.local\/bin\/([^`]+)`.*/\1 \2/p' "$ROOT/README.md" | awk '$1 == $2 { print $1 }')
-agent_run_names="codex-image gemini-image grok-image grok-video image-fanout gemini-video gemini-music gemini-sfx gemini-listen worker-run worker-pick"
+agent_run_names="media-run codex-image gemini-image grok-image grok-video image-fanout gemini-video gemini-music gemini-sfx gemini-listen worker-run worker-pick"
 for script in "$ROOT"/bin/*; do
   name=${script##*/}
   [ -f "$script" ] && [ -x "$script" ] && [[ "$name" != *.sh ]] || continue
-  grep -qE "(^|[^[:alnum:]_/.-])$name([^[:alnum:]_-]|\$)" "$AGENT_DIR"/*.md && agent_run_names+=" $name"
+  grep -qE "(^|[^[:alnum:]_/.-])$name([^[:alnum:]_-]|\$)" "$AGENT_DIR"/*.md "$MEDIA_SKILL" && agent_run_names+=" $name"
 done
 unlinked_run_names=$(for name in $(printf "%s\n" $agent_run_names | sort -u); do grep -qxF "$name" <<<"$readme_links" || printf '%s ' "$name"; done)
 assert eq "unlinked: $unlinked_run_names" "unlinked: "
@@ -3320,5 +3315,5 @@ unjournaled=$(for f in "$ROOT"/tests/test_*.sh "$ROOT"/tests/e2e_*.sh; do
 done)
 assert eq "suites without the journal line 2: $unjournaled" "suites without the journal line 2: "
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the anchors store under the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot envelope the menubar reads, the one resolver every surface names a chat through, the review round a fixing worker'"'"'s brief carries in the one field both repositories read, the launchers a headless vendor run may reach the machine through, the one anchors store per git family every side resolves with the same command and one writer holds a lock over, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types the spawn hook alone admits and no second gate judges, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the five carriers that spell the gateway model-id prefix, the one Gemini family list `geminib families` prints, the one file that pins which Flash family the review cells run and no worker reads, the one Grok model list `grokb models` prints and the single rule that collapses its default to the vendor word, the one web-search table every vendor and every worker-run entry point resolves through, the Hammerspoon entry points this repository calls, pinned fail-closed at their install path, the hook and statusline journals the Harness doctor reads, the week-over-week Δ Token tracking and the Harness doctor share, the one limiter hold directory every writer raises a hold in and both the doctor and the menu read, the one red every Hammerspoon menu paints with styled text that always names its font, the one gemini-web media store the engines write and the menu only reads, the chatgpt-web image store beside it that shares its one Chrome clone, the one least-recently-started order every media route picks by, the one per-account store table every Remove purges through and the doctor checks against the roster, the four-doctor roster every lister spells in one order, the explicit --account every media entry point refuses empty before a spend, the speed doctor collector journals, the presence journal Speed reads, and the README PATH link of every script a claude-setup agent runs by name) and match %s
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the anchors store under the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot envelope the menubar reads, the one resolver every surface names a chat through, the review round a fixing worker'"'"'s brief carries in the one field both repositories read, the launchers a headless vendor run may reach the machine through, the one anchors store per git family every side resolves with the same command and one writer holds a lock over, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types the spawn hook alone admits and no second gate judges, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the four carriers that spell the gateway model-id prefix, the one Gemini family list `geminib families` prints, the one file that pins which Flash family the review cells run and no worker reads, the one Grok model list `grokb models` prints and the single rule that collapses its default to the vendor word, the one web-search table every vendor and every worker-run entry point resolves through, the Hammerspoon entry points this repository calls, pinned fail-closed at their install path, the hook and statusline journals the Harness doctor reads, the week-over-week Δ Token tracking and the Harness doctor share, the one limiter hold directory every writer raises a hold in and both the doctor and the menu read, the one red every Hammerspoon menu paints with styled text that always names its font, the one gemini-web media store the engines write and the menu only reads, the chatgpt-web image store beside it that shares its one Chrome clone, the one least-recently-started order every media route picks by, the one per-account store table every Remove purges through and the doctor checks against the roster, the four-doctor roster every lister spells in one order, the explicit --account every media entry point refuses empty before a spend, the speed doctor collector journals, the presence journal Speed reads, and the README PATH link of every script a claude-setup agent runs by name) and match %s
 ' "$asserts" "$DOC"

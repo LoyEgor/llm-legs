@@ -50,7 +50,9 @@ history, with no pending file. Optional `--context` adds
 when `--session` is absent: `session_id`, `agent_id`, `transcript_path`, `agent_type`.
 It skips `CLAUDEB_WORKER=1`, nonempty `agent_id`, `/subagents/` in the transcript path, and
 the worker-tag agent types `codex-worker`, `claudeb-worker`, `gemini-worker`, `grok-worker`,
-`light-worker`, `image-gen`, `light-research`. Skipped queues stay pending.
+`light-worker`, `light-research`. Skipped queues stay pending. A `media-run` job is a Bash call
+of the chat itself, so nothing skips it: run in the background it lands as the harness's own task
+notification, and its account is the `media` work line (`docs/statusline-contract.md`).
 
 ## Rendering and storage
 
@@ -74,7 +76,11 @@ rendered `text` for replay and orphan dedup. `list` reprints the last 10 deliver
 resolved chat by default. `--last 0` prints nothing. History survives delivered-file pruning.
 
 A store lock serializes posting and draining, including orphan adoption. It records its owner
-PID and is recovered when that process is dead or the lock is older than 60 seconds. Flush visits this
+PID and is recovered when that process is dead or the lock is older than 60 seconds; a dead
+owner's lock is removed only while its PID is still the one recorded, so a successor's fresh lock
+is never taken for it. `post` and `emit` poll up to 2400 times (past the 60-second recovery), so
+contention never sends a report to `lost.log`; a flush gives up after 100 polls and leaves its
+queue pending. Flush visits this
 session's pending files and the orphan queue in mtime order. Any session can drain orphans;
 the first successful drain moves them into its own delivered directory. One hook JSON contains
 all selected blocks. The rendered payload is capped at 16000 bytes; whole remaining blocks

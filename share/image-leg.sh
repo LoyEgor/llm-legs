@@ -5,6 +5,10 @@ image_leg_start() { # tool kind [served-model-variable]
   IMAGE_LEG_TOOL=$1 IMAGE_LEG_KIND=$2 IMAGE_LEG_MODEL_VAR=${3:-} IMAGE_LEG_STARTED=$(date +%s)
   IMAGE_LEG_ERR='' IMAGE_LEG_TEE='' IMAGE_LEG_QUEUED=0 IMAGE_LEG_SIZE='' IMAGE_LEG_ROUTE='' IMAGE_LEG_SKIP=''
   IMAGE_LEG_COMPOSITE_ASK='' IMAGE_LEG_COMPOSITE_OFF='' IMAGE_LEG_COMPOSITE_BASE='' IMAGE_LEG_COMPOSITE_LINES=''
+  IMAGE_LEG_FALLBACK_FROM='' IMAGE_LEG_FALLBACK_REASON='' IMAGE_LEG_PHASES='' IMAGE_LEG_REQUESTED='' IMAGE_LEG_DELIVERED=''
+  IMAGE_LEG_FIT='' IMAGE_LEG_LOCK_WAIT='' IMAGE_LEG_EDIT=''
+  IMAGE_JOB_ID=${IMAGE_JOB_ID:-$1-$(date -u +%Y%m%dT%H%M%SZ)-$$}
+  export IMAGE_JOB_ID
   trap image_leg_exit EXIT
   # Untrapped, a SIGTERM still runs the EXIT trap but with the interrupted command's `$?`: two runs
   # killed by a 600 s timeout were logged rc=0 (2026-10-02).
@@ -48,10 +52,16 @@ image_leg_help() { # usage-function
   exit 0
 }
 
+# Every wrapper's usage() calls this first: a refusal names its cause on one `<tool>: <cause>` line
+# ahead of the usage text, so the leg log's err tail tells the doctor which argument was wrong.
+image_leg_cause() { # [cause...]
+  [ "$#" -eq 0 ] || printf '%s: %s\n' "${IMAGE_LEG_TOOL:-${0##*/}}" "$*" >&2
+}
+
 # A wrapper that sets its own EXIT trap calls this first in it: `$?` must still be the wrapper's
 # status, and it returns 0 because errexit inside the trap would skip the wrapper's own cleanup.
 image_leg_exit() {
-  local rc=$? log err='' model='' index
+  local rc=$? log err='' model='' index composite
   [ -z "${IMAGE_LEG_COMPOSITE_BASE:-}" ] || rm -rf "${IMAGE_LEG_COMPOSITE_BASE%/*}" || true
   [ -n "${IMAGE_LEG_TOOL:-}" ] || return 0
   if [ -n "${IMAGE_LEG_ERR:-}" ]; then
@@ -66,14 +76,24 @@ image_leg_exit() {
   fi
   [ -z "${IMAGE_LEG_SKIP:-}" ] || { IMAGE_LEG_TOOL=''; return 0; }
   [ -z "$IMAGE_LEG_MODEL_VAR" ] || model=${!IMAGE_LEG_MODEL_VAR:-}
+  composite=null
+  [ "$rc" -ne 0 ] || composite=$(image_leg_composite_record 2>/dev/null) || composite=null
   log=$(image_leg_log_path)
   case $log in */*) mkdir -p "${log%/*}" 2>/dev/null || return 0 ;; esac
   jq -cn --arg tool "$IMAGE_LEG_TOOL" --arg kind "$IMAGE_LEG_KIND" --argjson rc "$rc" \
     --argjson started "$IMAGE_LEG_STARTED" --argjson queued "${IMAGE_LEG_QUEUED:-0}" --arg size "${IMAGE_LEG_SIZE:-}" --arg account "${account:-}" --arg served "$model" --arg err "$err" \
-    --arg route "${IMAGE_LEG_ROUTE:-}" \
+    --arg route "${IMAGE_LEG_ROUTE:-}" --arg job "${IMAGE_JOB_ID:-}" --arg phases "${IMAGE_LEG_PHASES:-}" \
+    --arg from "${IMAGE_LEG_FALLBACK_FROM:-}" --arg why "${IMAGE_LEG_FALLBACK_REASON:-}" \
+    --arg requested "${IMAGE_LEG_REQUESTED:-}" --arg delivered "${IMAGE_LEG_DELIVERED:-}" --arg fit "${IMAGE_LEG_FIT:-}" \
+    --argjson composite "$composite" \
     '{ts: (now | floor), tool: $tool, kind: $kind, rc: $rc, seconds: ((now | floor) - $started),
-      queued: $queued, size: ($size | tonumber? // null), account: $account, served: $served, err: $err}
-     + (if $route == "" then {} else {route: $route} end)' 2>/dev/null >>"$log" || true
+      queued: $queued, size: ($size | tonumber? // null), account: $account, served: $served, err: $err, job: $job}
+     + (if $route == "" then {} else {route: $route} end)
+     + (if $from == "" then {} else {fallback_from: $from, fallback_reason: $why} end)
+     + (if $phases == "" then {} else {phases: ($phases | fromjson? // null)} end)
+     + (if $requested == "" then {} else {requested: ($requested | tonumber), delivered: ($delivered | tonumber? // 0)} end)
+     + (if $fit == "" then {} else ($fit | split(" ") | {aspect: {asked: .[0], achieved: (.[1] | tonumber), fit: .[2]}}) end)
+     + (if $composite == null then {} else {composite: $composite} end)' 2>/dev/null >>"$log" || true
   IMAGE_LEG_TOOL=''
   return 0
 }
@@ -89,7 +109,7 @@ image_leg_aspect_fit() { # want(w:h) width height [suffix]
   fit=$(awk -v w="$2" -v h="$3" -v want="$1" 'BEGIN {
     split(want, r, ":"); got = w / h; asked = r[1] / r[2]; d = got / asked - 1; if (d < 0) d = -d
     printf "%.3f %s", got, (d <= 0.02 ? "ok" : "miss") }')
-  IMAGE_LEG_ACHIEVED=${fit% *}
+  IMAGE_LEG_ACHIEVED=${fit% *} IMAGE_LEG_FIT="$1 $fit"
   printf 'aspect=%s achieved=%s fit=%s%s\n' "$1" "$IMAGE_LEG_ACHIEVED" "${fit#* }" "${4:-}"
   [ "${fit#* }" = ok ]
 }
@@ -193,6 +213,94 @@ image_leg_composite_take() { # root dest [variant]
   rm -f "$rendered"
 }
 
+image_leg_composite_record() {
+  jq -cn --arg composite "${IMAGE_LEG_COMPOSITE_LINES:-}" \
+    --arg quiet "${IMAGE_LEG_COMPOSITE_QUIET:+${IMAGE_LEG_COMPOSITE_SKIP:-}}" '
+    ($composite | (split("\n")[0] // "")
+        | capture("^composite=(?<kind>[a-z]+)(?: reason=(?<reason>[^ ]+))?(?: changed=(?<changed>[0-9.]+)%)?"))
+      // (if $quiet == "" then null else {kind: "skipped", reason: $quiet} end)
+      | if . == null then null
+        else {kind, changed: (.changed // "" | tonumber? // null), reason: (.reason // null)} end'
+}
+
+image_leg_edit_arg() { # image resume
+  local tool=${IMAGE_LEG_TOOL:-image}
+  [[ "$1" = /* ]] && [ -f "$1" ] || {
+    printf '%s: --edit takes an absolute image path, not %s\n' "$tool" "$1" >&2
+    exit 2
+  }
+  [ -z "$2" ] || {
+    printf '%s: --edit names the image to edit and --resume continues a session'"'"'s last one: pass one of them\n' "$tool" >&2
+    exit 2
+  }
+  IMAGE_LEG_EDIT=$1
+}
+
+image_leg_edit_sentence() { # reference count, the edited image included
+  [ -z "${IMAGE_LEG_EDIT:-}" ] || [ "$1" -le 1 ] ||
+    printf 'The first image is the one to edit; the other images are references only.\n'
+}
+
+image_leg_lock_wait_arg() { # seconds
+  [[ "$1" =~ ^[0-9]+$ ]] || return 1
+  IMAGE_LEG_LOCK_WAIT=$1
+}
+
+image_leg_fallback_route() { # root vendor route-given resume expressible(true|false)
+  [ -z "$3" ] && [ -z "$4" ] && [ "$5" = true ] || return 0
+  jq -r --arg route "${IMAGE_LEG_ROUTE:-}" '.routes as $all | ($all | index($route)) as $at
+    | if $at == null then empty else ($all[$at + 1] // empty) end' "$(image_caps_file "$1" "$2")" 2>/dev/null || true
+}
+
+# Only a failure that reached no vendor moves the request: anything sent may still bill or deliver.
+# Under bin/image-fanout (IMAGE_LEG_SCHEDULER) busy and limit exit as themselves: the scheduler moves
+# the take to another account and relaunches it with --route itself once none is left.
+image_leg_fallback() { # rc engine-json next-route
+  local rc=$1 result reason
+  [ -n "$3" ] && [ -z "${IMAGE_LEG_FALLBACK_FROM:-}" ] || return 1
+  case "$rc:${IMAGE_LEG_SCHEDULER:-}" in 3:?* | 5:?*) return 1 ;; esac
+  result=$(jq -c 'select(type == "object")' <<<"$2" 2>/dev/null) || result=''
+  [ -n "$result" ] || result='{}'
+  jq -e '.sent != true and ((.refused // []) | length) == 0 and ((.reason // "") | test("refus|polic"; "i") | not)' \
+    <<<"$result" >/dev/null || return 1
+  case $rc in
+    3) reason=limit; ! jq -e '.flagged == true' <<<"$result" >/dev/null || reason=flagged ;;
+    4) reason=sign-in ;;
+    5) reason=busy ;;
+    1) jq -e '.sent == false' <<<"$result" >/dev/null || return 1; reason=not-sent ;;
+    *) return 1 ;;
+  esac
+  printf '%s: --route %s failed (%s); the same request goes to --route %s\n' \
+    "${IMAGE_LEG_TOOL:-image}" "$IMAGE_LEG_ROUTE" "$reason" "$3" >&2
+  IMAGE_LEG_FALLBACK_FROM=$IMAGE_LEG_ROUTE IMAGE_LEG_FALLBACK_REASON=$reason IMAGE_LEG_ROUTE=$3 IMAGE_LEG_PHASES=''
+}
+
+# Exit 3 names its cause from the engine's own result: a flagged account (a 24 h wall) is no usage limit.
+image_leg_limit() { # LABEL engine-json
+  if jq -e '.flagged == true' <<<"${2:-}" >/dev/null 2>&1; then
+    printf '%s_ACCOUNT_FLAGGED\n' "$1" >&2
+  else
+    printf '%s_USAGE_LIMIT\n' "$1" >&2
+  fi
+  exit 3
+}
+
+image_leg_busy() { # account
+  printf 'ACCOUNT_BUSY account=%s\n' "${1:-unknown}" >&2
+  exit 5
+}
+
+image_leg_engine_phases() { # engine-json
+  IMAGE_LEG_PHASES=$(jq -c '.phases | select(type == "object")' <<<"$1" 2>/dev/null) || IMAGE_LEG_PHASES=''
+}
+
+image_leg_route_lines() { # [rest of the route= line]
+  printf 'job=%s\nroute=%s%s\n' "${IMAGE_JOB_ID:-}" "${IMAGE_LEG_ROUTE:-}" "${1:-}"
+  [ -z "${IMAGE_LEG_FALLBACK_FROM:-}" ] ||
+    printf 'fallback_from=%s\nfallback_reason=%s\n' "$IMAGE_LEG_FALLBACK_FROM" "$IMAGE_LEG_FALLBACK_REASON"
+  [ -z "${IMAGE_LEG_PHASES:-}" ] || printf 'phases=%s\n' "$IMAGE_LEG_PHASES"
+}
+
 image_leg_session_file() { # vendor session
   local log
   log=$(image_leg_log_path)
@@ -218,7 +326,7 @@ image_leg_session_route() { # vendor session
 # Parent = the first input with a sidecar; with none the first input is a root at depth 0, and no
 # input makes dest itself the root. Prints the main take's composite lines before edit_depth=.
 image_leg_lineage() { # vendor route dest session prompt region points(newline-separated) [input...]
-  local vendor=$1 route=$2 dest=$3 session=$4 prompt=$5 region=$6 points=$7 parent='' previous=null input sidecar file
+  local vendor=$1 route=$2 dest=$3 session=$4 prompt=$5 region=$6 points=$7 parent='' previous=null input sidecar file made
   shift 7
   for input in "$@"; do
     if jq -e '(.root | type) == "string" and (.depth | type) == "number" and (.edits | type) == "array"' \
@@ -228,16 +336,11 @@ image_leg_lineage() { # vendor route dest session prompt region points(newline-s
     fi
   done
   [ -n "$parent" ] || parent=${1:-}
+  made=$(image_leg_composite_record) || made=null
   sidecar=$(jq -n --arg dest "$dest" --arg parent "$parent" --argjson previous "$previous" \
     --arg vendor "$vendor" --arg route "$route" --arg account "${account:-}" --arg prompt "$prompt" \
-    --arg region "$region" --arg points "$points" --arg composite "${IMAGE_LEG_COMPOSITE_LINES:-}" \
-    --arg quiet "${IMAGE_LEG_COMPOSITE_QUIET:+${IMAGE_LEG_COMPOSITE_SKIP:-}}" '
-    (($composite | (split("\n")[0] // "")
-        | capture("^composite=(?<kind>[a-z]+)(?: reason=(?<reason>[^ ]+))?(?: changed=(?<changed>[0-9.]+)%)?"))
-      // (if $quiet == "" then null else {kind: "skipped", reason: $quiet} end)
-      | if . == null then null
-        else {kind, changed: (.changed // "" | tonumber? // null), reason: (.reason // null)} end) as $made
-    | if $parent == "" then {root: $dest, depth: 0, edits: []}
+    --arg region "$region" --arg points "$points" --argjson made "$made" '
+    if $parent == "" then {root: $dest, depth: 0, edits: []}
     else ($previous // {root: $parent, depth: 0, edits: []}) as $from
       | {root: $from.root, depth: ($from.depth + 1), edits: ($from.edits + [{prompt: $prompt,
           region: (if $region == "" then null else $region end),

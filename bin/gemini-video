@@ -39,6 +39,7 @@ edit_max=$(caps '.video.edit_source_max_s')
 counts=$(caps '.video.counts | map(tostring) | join("|")')
 
 usage() {
+  image_leg_cause "$@"
   printf 'usage: gemini-video --dest <absolute .%s path> --prompt <motion description> [--first-frame <absolute image path>] [--last-frame <absolute image path>] [--ref <absolute image path>]... [--edit <absolute video path>] [--extend <absolute path of a Flow Veo clip>] [--duration <%s>] [--resolution <%s>] [--aspect <%s>] [--model <%s>] [--count <%s>] [--account <geminib profile>]\n' \
     "$container" "$durations" "$resolutions" "$video_aspects" "$(caps '.video.models | keys | join("|")')" "$counts" >&2
   printf '  Google Flow on the account'\''s subscription, through a hidden Chrome (gemini-web)\n' >&2
@@ -53,7 +54,7 @@ usage() {
 }
 
 say() {
-  printf 'gemini-video: %s\n' "$1" >&2
+  image_leg_cause "$1"
   exit 2
 }
 
@@ -74,27 +75,28 @@ refs=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -h | --help) image_leg_help usage ;;
-    --dest) [ "$#" -ge 2 ] || usage; dest=$2; shift 2 ;;
-    --prompt) [ "$#" -ge 2 ] || usage; prompt=$2; shift 2 ;;
-    --first-frame) [ "$#" -ge 2 ] || usage; first_frame=$2; shift 2 ;;
-    --last-frame) [ "$#" -ge 2 ] || usage; last_frame=$2; shift 2 ;;
-    --ref) [ "$#" -ge 2 ] || usage; refs+=("$2"); shift 2 ;;
-    --edit) [ "$#" -ge 2 ] || usage; edit=$2; shift 2 ;;
-    --extend) [ "$#" -ge 2 ] || usage; extend=$2; shift 2 ;;
-    --count) [ "$#" -ge 2 ] || usage; count=$2; shift 2 ;;
-    --duration) [ "$#" -ge 2 ] || usage; duration=$2; shift 2 ;;
-    --resolution) [ "$#" -ge 2 ] || usage; resolution=$2; shift 2 ;;
-    --aspect) [ "$#" -ge 2 ] || usage; aspect=$2; shift 2 ;;
-    --account) [ "$#" -ge 2 ] || usage; account_arg "$2"; account=$2; shift 2 ;;
-    --model) [ "$#" -ge 2 ] || usage; model=$2; shift 2 ;;
-    *) usage ;;
+    --dest) [ "$#" -ge 2 ] || usage "$1 needs a value"; dest=$2; shift 2 ;;
+    --prompt) [ "$#" -ge 2 ] || usage "$1 needs a value"; prompt=$2; shift 2 ;;
+    --first-frame) [ "$#" -ge 2 ] || usage "$1 needs a value"; first_frame=$2; shift 2 ;;
+    --last-frame) [ "$#" -ge 2 ] || usage "$1 needs a value"; last_frame=$2; shift 2 ;;
+    --ref) [ "$#" -ge 2 ] || usage "$1 needs a value"; refs+=("$2"); shift 2 ;;
+    --edit) [ "$#" -ge 2 ] || usage "$1 needs a value"; edit=$2; shift 2 ;;
+    --extend) [ "$#" -ge 2 ] || usage "$1 needs a value"; extend=$2; shift 2 ;;
+    --count) [ "$#" -ge 2 ] || usage "$1 needs a value"; count=$2; shift 2 ;;
+    --duration) [ "$#" -ge 2 ] || usage "$1 needs a value"; duration=$2; shift 2 ;;
+    --resolution) [ "$#" -ge 2 ] || usage "$1 needs a value"; resolution=$2; shift 2 ;;
+    --aspect) [ "$#" -ge 2 ] || usage "$1 needs a value"; aspect=$2; shift 2 ;;
+    --account) [ "$#" -ge 2 ] || usage "$1 needs a value"; account_arg "$2"; account=$2; shift 2 ;;
+    --model) [ "$#" -ge 2 ] || usage "$1 needs a value"; model=$2; shift 2 ;;
+    *) usage "unknown argument $1" ;;
   esac
 done
 
-[ -n "$dest" ] && [ -n "$prompt" ] || usage
-[[ "$dest" = /* ]] || usage
-[ "$(printf '%s' "${dest##*.}" | tr '[:upper:]' '[:lower:]')" = "$container" ] || usage
-[ -d "$(dirname "$dest")" ] || usage
+[ -n "$dest" ] || usage "missing --dest"
+[ -n "$prompt" ] || usage "missing --prompt"
+[[ "$dest" = /* ]] || usage "--dest must be an absolute path, not $dest"
+[ "$(printf '%s' "${dest##*.}" | tr '[:upper:]' '[:lower:]')" = "$container" ] || usage "--dest $dest must end in .$container"
+[ -d "$(dirname "$dest")" ] || usage "--dest folder $(dirname "$dest") does not exist"
 [ "${#refs[@]}" -le "$refs_max" ] || say "Flow takes at most $refs_max --ref images"
 case "|$counts|" in
   *"|$count|"*) ;;
@@ -105,7 +107,7 @@ if [ -n "$extend" ]; then
     || say "--extend continues a clip from its own ending; it takes no frames, --ref or --edit"
   { [ -z "$duration" ] && [ -z "$model" ] && [ -z "$aspect" ] && [ "$count" = 1 ]; } \
     || say "--extend keeps the source's model and aspect and adds $(caps '.video.extend.seconds')s; drop --duration, --model, --aspect and --count"
-  { [[ "$extend" = /* ]] && [ -f "$extend" ]; } || usage
+  { [[ "$extend" = /* ]] && [ -f "$extend" ]; } || usage "--extend $extend is not an absolute path to a file"
 fi
 if [ "${#refs[@]}" -eq 1 ] && [ -z "$first_frame" ] && [ -z "$edit" ]; then
   first_frame=${refs[0]}
@@ -115,9 +117,9 @@ if { [ -n "$first_frame" ] || [ -n "$last_frame" ]; } && { [ "${#refs[@]}" -gt 0
   say "frames (--first-frame/--last-frame) and ingredients (--ref/--edit) are separate Flow modes; pick one"
 fi
 for input in "$first_frame" "$last_frame" "$edit" ${refs[@]+"${refs[@]}"}; do
-  [ -z "$input" ] || { [[ "$input" = /* ]] && [ -f "$input" ]; } || usage
+  [ -z "$input" ] || { [[ "$input" = /* ]] && [ -f "$input" ]; } || usage "input $input is not an absolute path to a file"
 done
-[ -z "$account" ] || [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]] || usage
+[ -z "$account" ] || [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]] || usage "--account $account is not a profile name"
 
 ffprobe_cmd="${GEMINI_VIDEO_FFPROBE:-ffprobe}"
 # Checked before the spend: a clip nobody can measure cannot be reported under the size=WxH contract.
@@ -173,7 +175,7 @@ else
     [ -n "$model" ] || say "no Flow model takes this combination (duration $duration, $render, ${#refs[@]} refs)"
   fi
   label=$(caps ".video.models[\"$model\"].label // empty")
-  [ -n "$label" ] || usage
+  [ -n "$label" ] || usage "--model $model is not a Flow video model"
   wire_path=".video.models[\"$model\"].wire"
   [ "${#refs[@]}" -le "$(caps ".video.models[\"$model\"].refs_max")" ] \
     || say "$label takes at most $(caps ".video.models[\"$model\"].refs_max") --ref images"
@@ -222,9 +224,8 @@ case "$engine_rc" in
     exit 2
     ;;
   3)
-    printf 'GEMINI_USAGE_LIMIT\n' >&2
     [ -z "$reason" ] || printf 'gemini-video: %s\n' "$reason" >&2
-    exit 3
+    image_leg_limit GEMINI "$result"
     ;;
   4)
     printf 'gemini-video: %s\n' "${reason:-account is not signed in to Flow}" >&2

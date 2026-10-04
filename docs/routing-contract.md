@@ -198,12 +198,14 @@ own launches, and this is the whole list: `worker-run`, `review-bench`,
 `light-research`, plus the
 OWNED pair — `worker-run start|wait`, which only a relay agent may spell, and the media scripts
 `codex-image` / `gemini-image` / `grok-image` / `grok-video` / `image-fanout` / `gemini-video` /
-`gemini-music` / `gemini-sfx` / `gemini-listen`, which only the `image-gen` agent may: a run, an
-image, a clip, a track or a listening started from the main chat's Bash belongs to a turn nothing
-renders. `bin/worker-launch-gate.sh` is the
+`gemini-music` / `gemini-sfx` / `gemini-listen` with the engine calls `chatgpt-web
+generate|resize|comment|remove-bg` and `gemini-web generate`, which no hand may spell: every
+session, the chat included, reaches them through `bin/media-run`, whose job pointer renders the
+account it spends as a `media` work line — an image, a clip, a track or a listening started past it
+belongs to a turn nothing renders. `bin/worker-launch-gate.sh` is the
 mechanical half — a PreToolUse Bash gate denying a bare launch in any segment of a command (a
 launcher in command position exempts only its own segment, and a comment or an operand naming one
-exempts nothing), and denying an owned one outside the agent type that owns it. The `ask_*.sh`
+exempts nothing), and denying an owned one outside the hand or door that owns it. The `ask_*.sh`
 legs, `codex-fast-probe` and `gemini-probe` are denied from every Claude Code Bash outside Egor's
 autonomy span (`words_span_live`), and no agent,
 no Monitor and no headless worker (`CLAUDEB_WORKER=1`) launches a review panel (`review-waiter`
@@ -231,7 +233,7 @@ Workers are unified: every run that edits, reviews, verifies or scans is a relay
 `worker-run`, so on every session a NATIVE agent type is refused outright, because it runs on the
 session's own model, which is the one quota the whole relay design exists to spare. Four
 `general-purpose` read-only checks at 35–45k tokens each on a live Fable chat is the case this
-closes. The allowlist is `fork`, `review-waiter`, `light-research` and `image-gen` (`fork` and
+closes. The allowlist is `fork`, `review-waiter` and `light-research` (`fork` and
 Workflow need no word of Egor's: neither can reach worker-run nor a review, so they spend only the
 session's quota); `Explore`, `Plan`, `general-purpose`, `claude-code-guide` and anything custom are
 denied with the ask to use a relay worker instead — read-only research goes to `light-research`
@@ -243,11 +245,8 @@ harness removes a denied type from every chat's agent list; switching Light on r
 Workflow `agent()` runs its own default type and is unaffected (probed 2026-09-29). A Light
 run still in flight is then attached through its vendor's plain relay. The refusal carries no retry and does not depend on the session model: a stamped
 one-shot deny is a rule a model walks through by calling twice. `bin/worker-limit-gate.sh` judges
-no native type, since a deny there would outrank the spawn hook's allow; it keeps only `image-gen`'s
-older session-account rule, scoped to an orchestrator session — Fable **or** a `claudegpt` gateway
-chat (`anthropic.ccr.sol` / `anthropic.ccr.astra`), Claude Code on an OpenAI subscription — whose
-model list lives in `orchestrator_model` in that gate and nowhere else; explicit tool models on a
-native spawn buy no bypass.
+no native type and has no session-model rule, since a deny there would outrank the spawn hook's
+allow; explicit tool models on a native spawn buy no bypass.
 
 ## Roles
 

@@ -36,10 +36,11 @@ refs_max=$(caps '.refs.max')
 default_aspect=$(caps '.aspects.default')
 
 usage() {
-  printf 'usage: grok-image --dest <absolute path> --prompt <description> [--aspect <ratio>] [--ref <absolute image path>]... [--transparent] [--composite[=auto|x,y,w,h] | --no-composite] [--account <profile>] [--resume <session-id>]\n' >&2
+  image_leg_cause "$@"
+  printf 'usage: grok-image --dest <absolute path> --prompt <description> [--aspect <ratio>] [--edit <absolute image path>] [--ref <absolute image path>]... [--transparent] [--composite[=auto|x,y,w,h] | --no-composite] [--account <profile>] [--resume <session-id>] [--lock-wait <seconds>]\n' >&2
   printf '  --aspect without --ref/--resume (image_gen): %s\n' "$generate_aspects" >&2
   printf '  --aspect with --ref/--resume (image_edit):    %s\n' "$edit_aspects" >&2
-  printf '  --ref up to %s; --resume takes the session id printed as session= by an earlier run\n' "$refs_max" >&2
+  printf '  --edit is the image edited and composited onto, sent first; it and the --ref images take up to %s; --lock-wait is accepted and unused (one route: cli); --resume takes the session id printed as session= by an earlier run\n' "$refs_max" >&2
   exit 2
 }
 
@@ -65,27 +66,28 @@ account=''
 resume=''
 remove_green=false
 refs=()
+edit=''
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -h | --help) image_leg_help usage ;;
     --dest)
-      [ "$#" -ge 2 ] || usage
+      [ "$#" -ge 2 ] || usage "$1 needs a value"
       dest=$2
       shift 2
       ;;
     --prompt)
-      [ "$#" -ge 2 ] || usage
+      [ "$#" -ge 2 ] || usage "$1 needs a value"
       prompt=$2
       shift 2
       ;;
     --aspect)
-      [ "$#" -ge 2 ] || usage
+      [ "$#" -ge 2 ] || usage "$1 needs a value"
       aspect=$2
       shift 2
       ;;
     --ref)
-      [ "$#" -ge 2 ] || usage
+      [ "$#" -ge 2 ] || usage "$1 needs a value"
       refs+=("$2")
       shift 2
       ;;
@@ -94,31 +96,43 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     --composite | --composite=* | --no-composite)
-      image_leg_composite_arg "$1" || usage
+      image_leg_composite_arg "$1" || usage "unknown argument $1"
       shift
       ;;
     --account)
-      [ "$#" -ge 2 ] || usage
+      [ "$#" -ge 2 ] || usage "$1 needs a value"
       account_arg "$2"
       account=$2
       shift 2
       ;;
     --resume)
-      [ "$#" -ge 2 ] || usage
+      [ "$#" -ge 2 ] || usage "$1 needs a value"
       resume=$2
       shift 2
       ;;
-    *) usage ;;
+    --edit)
+      [ "$#" -ge 2 ] || usage "$1 needs a value"
+      edit=$2
+      shift 2
+      ;;
+    --lock-wait)
+      [ "$#" -ge 2 ] && image_leg_lock_wait_arg "$2" || usage "--lock-wait needs whole seconds"
+      shift 2
+      ;;
+    *) usage "unknown argument $1" ;;
   esac
 done
 
-[ -n "$dest" ] && [ -n "$prompt" ] || usage
-[[ "$dest" = /* ]] || usage
+[ -n "$dest" ] || usage "missing --dest"
+[ -n "$prompt" ] || usage "missing --prompt"
+[[ "$dest" = /* ]] || usage "--dest must be an absolute path, not $dest"
+IMAGE_LEG_ROUTE=cli
+[ -z "$edit" ] || { image_leg_edit_arg "$edit" "$resume"; refs=("$edit" ${refs[@]+"${refs[@]}"}); }
 extension=$(normalized_extension "${dest##*/}")
 # An extensionless destination — a bare trailing dot included — names no format for `magick` to
 # infer, and the mismatch below would hand it one anyway.
-{ [[ "${dest##*/}" = *.* ]] && [ -n "$extension" ]; } || usage
-[ -d "$(dirname "$dest")" ] || usage
+{ [[ "${dest##*/}" = *.* ]] && [ -n "$extension" ]; } || usage "--dest $dest has no file extension"
+[ -d "$(dirname "$dest")" ] || usage "--dest folder $(dirname "$dest") does not exist"
 if [ "$remove_green" = true ] && [ "$extension" != png ]; then
   printf 'grok-image: --transparent requires a .png destination\n' >&2
   exit 2
@@ -138,7 +152,7 @@ if [ -n "$resume" ] && ! [[ "$resume" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA
   exit 2
 fi
 ref_count=${#refs[@]}
-[ "$ref_count" -le "$refs_max" ] || usage
+[ "$ref_count" -le "$refs_max" ] || usage "$ref_count references exceed the $refs_max allowed"
 # A resumed run edits what the session already produced, so it reaches image_edit with or without
 # a new reference — and image_edit is the tool whose wider ratio list applies.
 editing=false
@@ -158,19 +172,24 @@ case "|$allowed_aspects|" in
         exit 2
         ;;
     esac
-    usage
+    usage "--aspect $aspect is not one of $allowed_aspects"
     ;;
 esac
 if [ "$ref_count" -gt 0 ]; then
   for ref in "${refs[@]}"; do
-    [[ "$ref" = /* ]] && [ -f "$ref" ] || usage
+    [[ "$ref" = /* ]] && [ -f "$ref" ] || usage "--ref $ref is not an absolute path to a file"
   done
 fi
 if [ -n "$account" ] && ! grok_media_valid_account "$account"; then
-  usage
+  usage "--account $account is not a profile name"
 fi
-image_leg_composite_plan grok "$resume" "$remove_green" ${refs[@]+"${refs[@]}"}
+if [ -n "$IMAGE_LEG_EDIT" ]; then
+  image_leg_composite_plan grok '' "$remove_green" "$IMAGE_LEG_EDIT"
+else
+  image_leg_composite_plan grok "$resume" "$remove_green" ${refs[@]+"${refs[@]}"}
+fi
 edit_input=$IMAGE_LEG_COMPOSITE_INPUT
+IMAGE_LEG_REQUESTED=1
 
 worker_pick_cmd="${GROK_IMAGE_WORKER_PICK:-worker-pick}"
 grokb_cmd="${GROK_IMAGE_GROKB:-grokb}"
@@ -228,6 +247,8 @@ if [ "$editing" = true ]; then
       instruction+=$'\n- '
       instruction+="$ref"
     done
+    edit_sentence=$(image_leg_edit_sentence "$ref_count")
+    [ -z "$edit_sentence" ] || instruction+=$'\n'"$edit_sentence"
   else
     instruction+=$'\nUse image_edit on the image you produced most recently in this session, passing its absolute path in the image parameter.'
   fi
@@ -293,11 +314,15 @@ observed_model=$(grok_media_model_override "$grok_home" "$override_key")
 session=$(grok_media_session_id "$stream_file")
 printf 'dest=%s\nsize=%sx%s\nformat=%s\naccount=%s\nsession=%s\n' \
   "$dest" "$width" "$height" "$format" "$account" "$session"
+IMAGE_LEG_DELIVERED=1
+image_leg_route_lines
 image_caps_model_check "$root" grok image "$observed_model"
 printf '%s\n' "$caps_line"
 lineage_region=''
 [ "${IMAGE_LEG_COMPOSITE_ASK:-auto}" = auto ] || lineage_region=$IMAGE_LEG_COMPOSITE_ASK
+lineage_inputs=(${edit_input:+"$edit_input"} ${refs[@]+"${refs[@]}"})
+[ -z "$IMAGE_LEG_EDIT" ] || lineage_inputs=("$edit_input")
 image_leg_lineage grok cli "$dest" "${session:-none}" "$prompt" "$lineage_region" '' \
-  ${edit_input:+"$edit_input"} ${refs[@]+"${refs[@]}"}
+  ${lineage_inputs[@]+"${lineage_inputs[@]}"}
 exit
 }

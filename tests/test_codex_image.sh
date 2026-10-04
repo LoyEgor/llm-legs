@@ -74,8 +74,13 @@ IMAGE_ERR="$WORK/image.err"
 CLAIMS_DIR="$WORK/worker-claims"
 manifest_value() { jq -r "$1" "$ROOT/share/image-caps/codex.json"; }
 VERIFIED_CLI=$(manifest_value '.cli.version')
+# The CLI route throughout; web is the default and its fallback has its own block at the end.
+ROUTE_ARGS=(--route cli)
+WEB_CALLS="$WORK/web-calls"
+export WEB_CALLS
 image_run() {
   env PATH="${IMAGE_PATH:-$FAKE_BIN:$PATH}" TMPDIR="$TMP_ROOT" HOME="$FAKE_HOME" \
+    CODEX_IMAGE_WEB="$WORK/fake-web" \
     CODEX_PROFILES_DIR="$CODEX_PROFILES" CODEXB_PROFILES_DIR="$CODEX_PROFILES" \
     WORKER_CLAIMS_DIR="$CLAIMS_DIR" WORKER_PICK_CONFIG_FILE="$FAKE_HOME/.claude/worker-model" \
     CODEX_IMAGE_CODEX="$FIXTURE" \
@@ -83,8 +88,45 @@ image_run() {
     PICK_ACCOUNT="${PICK_ACCOUNT:-picked}" FAKE_CODEX_IMAGE_FORMAT="${FAKE_CODEX_IMAGE_FORMAT:-png}" \
     FAKE_CODEX_VERSION="${FAKE_CODEX_VERSION:-$VERIFIED_CLI}" \
     FAKE_CODEX_THREAD="${FAKE_CODEX_THREAD:-01a09aaa-1111-7000-8000-00000000000a}" \
-    bash "$SCRIPT" "$@" >"$IMAGE_OUT" 2>"$IMAGE_ERR"
+    bash "$SCRIPT" ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} "$@" >"$IMAGE_OUT" 2>"$IMAGE_ERR"
 }
+cat >"$WORK/fake-web" <<'EOF'
+#!/usr/bin/env bash
+{ printf 'JOB=%s\n' "${IMAGE_JOB_ID-unset}"; printf '%s\n' "$@"; } >"$WEB_CALLS"
+dest='' count=1
+while [ "$#" -gt 0 ]; do case "$1" in --dest) dest=$2; shift 2 ;; --count) count=$2; shift 2 ;; *) shift ;; esac; done
+fail() { printf '{"ok": false, "reason": "%s", "account": "webacct"%s}\n' "$2" "$3"; exit "$1"; }
+case "${WEB_MODE:-unset}" in
+  takes | takes-limit)
+    delivered=$count
+    [ "$WEB_MODE" = takes ] || delivered=$((count - 1))
+    takes=''
+    for k in $(seq 1 "$delivered"); do
+      path=$dest
+      [ "$k" = 1 ] || path=$dest-$k
+      "$REAL_MAGICK" -size $((60 + k))x64 "xc:#00FF0$k" "PNG24:$path"
+      takes="$takes${takes:+,}{\"path\": \"$path\", \"chat\": \"0c0c0c0c-1111-4222-8333-94445555666$k\", \"bytes\": 9, \"format\": \"png\"}"
+    done
+    failures=''
+    [ "$WEB_MODE" = takes ] || failures="{\"tab\": $count, \"code\": 3, \"reason\": \"ChatGPT image limit on webacct\"}"
+    printf '{"ok": true, "account": "webacct", "chat": "0c0c0c0c-1111-4222-8333-944455556661", "count": %s, "takes": [%s], "failed": %s, "failures": [%s]}\n' \
+      "$count" "$takes" "$((count - delivered))" "$failures"
+    exit 0 ;;
+  ok) "$REAL_MAGICK" -size 64x64 'xc:#00FF00' -fill blue -draw 'circle 32,32 32,22' "PNG24:$dest"
+    printf '{"ok": true, "account": "webacct", "chat": "0c0c0c0c-1111-4222-8333-944455556666", "job": "%s", "phases": {"lock": 0.1, "browser": 1.5, "sent": 4}}\n' "$IMAGE_JOB_ID"
+    exit 0 ;;
+  signin) fail 4 'no ChatGPT account is signed in' ', "sent": false' ;;
+  busy) fail 5 'every ChatGPT account is busy' ', "sent": false' ;;
+  limit) fail 3 'ChatGPT image limit' ', "sent": false' ;;
+  unsent) fail 1 'the composer never took the prompt' ', "sent": false' ;;
+  sent) fail 1 'no image came back' ', "sent": true' ;;
+  limit-sent) fail 3 'ChatGPT image limit after the prompt' ', "sent": true' ;;
+  unknown) fail 1 'crashed' '' ;;
+  refused) fail 1 'ChatGPT refused the image under its content policy' ', "sent": false' ;;
+  *) printf 'the web engine ran with no WEB_MODE\n' >&2; exit 99 ;;
+esac
+EOF
+chmod +x "$WORK/fake-web"
 
 REF_MAX=$(manifest_value '.refs.max')
 assert test "$REF_MAX" -ge 1
@@ -109,6 +151,31 @@ for wrapper in codex-image gemini-image gemini-listen gemini-music gemini-sfx ge
   assert test "$(tail -n 2 "$ROOT/bin/$wrapper" | tr '\n' ' ')" = 'exit } '
 done
 assert test "$(wc -l <"$IMAGE_LEG_LOG")" -eq "$legs_before"
+
+# I23: a refusal names its cause on the first stderr line, and the line reaches the leg log's err.
+refusal_log="$WORK/refusal-legs.jsonl"
+for wrapper in codex-image gemini-image gemini-listen gemini-music gemini-sfx gemini-video grok-image grok-video; do
+  case $wrapper in
+    gemini-listen) dest_args=(-o /nonexistent-i23/out.txt question "$WORK/clip.mp3") folder_flag=-o ;;
+    gemini-music) dest_args=(--dest /nonexistent-i23/out.mp3 --prompt tune) folder_flag=--dest ;;
+    gemini-sfx) dest_args=(--dest /nonexistent-i23/out.wav --prompt thud) folder_flag=--dest ;;
+    *-video) dest_args=(--dest /nonexistent-i23/out.mp4 --prompt clip --ref "$WORK/clip.png") folder_flag=--dest ;;
+    *) dest_args=(--dest /nonexistent-i23/out.png --prompt badge) folder_flag=--dest ;;
+  esac
+  for case_args in "--bogus-i23|unknown argument --bogus-i23" "DEST|$folder_flag folder /nonexistent-i23 does not exist"; do
+    want="$wrapper: ${case_args#*|}"
+    if [ "${case_args%%|*}" = DEST ]; then args=("${dest_args[@]}"); else args=("${case_args%%|*}"); fi
+    : >"$refusal_log"
+    refusal_rc=0
+    refusal_err=$(IMAGE_LEG_LOG="$refusal_log" HOME="$FAKE_HOME" bash "$ROOT/bin/$wrapper" "${args[@]}" 2>&1 >/dev/null) ||
+      refusal_rc=$?
+    assert test "$refusal_rc" -eq 2
+    assert test "$(head -n 1 <<<"$refusal_err")" = "$want"
+    assert test "$(jq -r '.err | split("\n") | map(select(startswith("'"$wrapper"': "))) | first' "$refusal_log")" = "$want"
+  done
+  assert grep -q "^usage: $wrapper " <<<"$(HOME="$FAKE_HOME" bash "$ROOT/bin/$wrapper" --bogus-i23 2>&1)"
+  assert_fails grep -nE '(^|[^-_[:alnum:]])usage[[:space:]]*(;|\)|$)' <(grep -vE 'usage\(\)|image_leg_help usage' "$ROOT/bin/$wrapper")
+done
 
 # 2026-10-02: a chat rewrote bin/codex-image in place while two legs ran, and both died on shifted
 # bytes ("line 559: the: command not found"). The leg here is rewritten while its codex runs.
@@ -262,14 +329,19 @@ assert test "$(sed -n 2p "$IMAGE_OUT")" = 'size=64x64'
 assert test "$(sed -n 3p "$IMAGE_OUT")" = 'format=png'
 assert test "$(sed -n 4p "$IMAGE_OUT")" = 'account=picked'
 assert test "$(sed -n 5p "$IMAGE_OUT")" = "session=$THREAD"
+assert grep -Eqx 'job=codex-image-[0-9]{8}T[0-9]{6}Z-[0-9]+' <<<"$(sed -n 6p "$IMAGE_OUT")"
+assert test "$(sed -n 7p "$IMAGE_OUT")" = 'route=cli'
 # A PNG without a C2PA softwareAgent says unknown rather than echoing the manifest back.
-assert test "$(sed -n 6p "$IMAGE_OUT")" = 'model=unknown model_caps=unknown'
-assert test "$(sed -n 7p "$IMAGE_OUT")" = 'caps=fresh'
+assert test "$(sed -n 8p "$IMAGE_OUT")" = 'model=unknown model_caps=unknown'
+assert test "$(sed -n 9p "$IMAGE_OUT")" = 'caps=fresh'
 # A missed ratio is reported and delivered as generated, never cropped to fit; the lineage closes the block.
-assert test "$(sed -n 8p "$IMAGE_OUT")" = 'aspect=4:3 achieved=1.000 fit=miss'
-assert test "$(sed -n 9p "$IMAGE_OUT")" = 'composite=skipped reason=new-generation'
-assert test "$(sed -n 10p "$IMAGE_OUT")" = "edit_depth=0 root=$OUTPUT_DIR/generated.png"
-assert test "$(wc -l <"$IMAGE_OUT")" -eq 10
+assert test "$(sed -n 10p "$IMAGE_OUT")" = 'aspect=4:3 achieved=1.000 fit=miss'
+assert test "$(sed -n 11p "$IMAGE_OUT")" = 'composite=skipped reason=new-generation'
+assert test "$(sed -n 12p "$IMAGE_OUT")" = "edit_depth=0 root=$OUTPUT_DIR/generated.png"
+assert test "$(wc -l <"$IMAGE_OUT")" -eq 12
+assert jq -se --arg job "$(sed -n 's/^job=//p' "$IMAGE_OUT")" '.[-1] | .job == $job and .route == "cli"
+  and .requested == 1 and .delivered == 1 and .aspect == {asked: "4:3", achieved: 1, fit: "miss"}
+  and .composite == {kind: "skipped", changed: null, reason: "new-generation"} and (has("phases") | not)' "$IMAGE_LEG_LOG" >/dev/null
 assert test -z "$(find "$TMP_ROOT" -mindepth 1 -maxdepth 1 -name 'codex-image.*' -print -quit)"
 
 # The model names itself in the PNG's C2PA softwareAgent; `2.0` is the manifest's `gpt-image-2`.
@@ -533,4 +605,170 @@ for signal_rc in TERM:143 HUP:129; do
   assert test "$(tail -n1 "$killed_log" | jq -r '"\(.tool) \(.rc)"')" = "killed-leg ${signal_rc#*:}"
 done
 
-echo "PASS:$asserts asserts; manifest-driven usage and reference cap, pre-spend argument refusals, routing and account pinning, exact codex exec launch controls with --experimental-json, the seven-line contract block including session/model/caps, caps staleness on a changed CLI, byte-identical same-format delivery, differing-format conversion, the view_image + referenced_image_paths reference instruction, native alpha kept unkeyed, chroma fallback on an opaque answer, resume account recovery from the session store, edit lineage through a resume, resume argv order, unresolvable and silently-new threads, thread-keyed output rescue, missing image, usage-limit and generic failure classification, worker-pick limit propagation, and the launching chat's stamp passed through"
+# Web is routes[0]: without --route it runs first, and a route-level failure there (sign-in, busy, limit,
+# unsent) reruns the same request on the CLI; anything sent, refused or unknown stays the web's verdict.
+FAKE_CODEX_MODE=image
+export FAKE_CODEX_MODE
+ROUTE_ARGS=()
+web_run() { # mode args...
+  local mode=$1
+  shift
+  rm -f "$WEB_CALLS"
+  : >"$FAKE_CODEX_CALLS"
+  image_rc=0
+  WEB_MODE=$mode image_run "$@" || image_rc=$?
+}
+web_run ok --dest "$OUTPUT_DIR/web.png" --prompt badge --aspect 16:9
+assert test "$image_rc" -eq 0
+assert test ! -s "$FAKE_CODEX_CALLS"
+assert grep -qx 'route=web' "$IMAGE_OUT"
+assert_fails grep -q '^fallback_' "$IMAGE_OUT"
+assert grep -qx 'phases={"lock":0.1,"browser":1.5,"sent":4}' "$IMAGE_OUT"
+web_job=$(sed -n 's/^job=//p' "$IMAGE_OUT")
+assert grep -Eqx 'codex-image-[0-9]{8}T[0-9]{6}Z-[0-9]+' <<<"$web_job"
+assert grep -qx "JOB=$web_job" "$WEB_CALLS"
+assert jq -se --arg job "$web_job" '.[-1] | .job == $job and .route == "web" and .phases == {lock: 0.1, browser: 1.5, sent: 4}
+  and .aspect.fit == "miss" and .aspect.asked == "16:9" and .requested == 1 and .delivered == 1' "$IMAGE_LEG_LOG" >/dev/null
+IMAGE_JOB_ID=fanout-7 web_run ok --dest "$OUTPUT_DIR/web.png" --prompt badge
+assert grep -qx 'job=fanout-7' "$IMAGE_OUT"
+assert grep -qx 'JOB=fanout-7' "$WEB_CALLS"
+assert test "$(tail -n 1 "$IMAGE_LEG_LOG" | jq -r .job)" = fanout-7
+
+for trigger in signin:sign-in busy:busy limit:limit unsent:not-sent; do
+  web_run "${trigger%:*}" --dest "$OUTPUT_DIR/fallback.png" --prompt badge --account explicit --lock-wait 30
+  assert test "$image_rc" -eq 0
+  assert grep -qx 30 <<<"$(grep -A1 -x -- --lock-wait "$WEB_CALLS")"
+  assert grep -qx "CODEX_HOME=$CODEX_PROFILES/explicit" "$FAKE_CODEX_CALLS"
+  assert_fails grep -qx -- 'ARG=--lock-wait' "$FAKE_CODEX_CALLS"
+  assert grep -qx 'route=cli' "$IMAGE_OUT"
+  assert grep -qx 'fallback_from=web' "$IMAGE_OUT"
+  assert grep -qx "fallback_reason=${trigger#*:}" "$IMAGE_OUT"
+  assert grep -qx 'account=explicit' "$IMAGE_OUT"
+  assert_fails grep -q '^phases=' "$IMAGE_OUT"
+  assert grep -q "route web failed (${trigger#*:}); the same request goes to --route cli" "$IMAGE_ERR"
+  assert jq -se --arg why "${trigger#*:}" '.[-1] | .rc == 0 and .route == "cli" and .fallback_from == "web"
+    and .fallback_reason == $why and .account == "explicit" and .delivered == 1' "$IMAGE_LEG_LOG" >/dev/null
+done
+assert test ! -e "$OUTPUT_DIR/fallback.rendered.png"
+
+for refusal in sent:1 limit-sent:3 unknown:1 refused:1; do
+  web_run "${refusal%:*}" --dest "$OUTPUT_DIR/stay.png" --prompt badge --account explicit
+  assert test "$image_rc" -eq "${refusal#*:}"
+  assert test -s "$WEB_CALLS"
+  assert test ! -s "$FAKE_CODEX_CALLS"
+  assert_fails grep -q 'the same request goes to' "$IMAGE_ERR"
+  assert jq -se '.[-1] | .route == "web" and (has("fallback_from") | not) and .delivered == 0' "$IMAGE_LEG_LOG" >/dev/null
+done
+"$REAL_MAGICK" -size 64x64 'xc:#00FF00' "PNG24:$WORK/edit-base.png"
+for blocked in "--route web" "--remove-bg --ref $WORK/edit-base.png" "--point 0.5,0.5=bluer --ref $WORK/edit-base.png" \
+    "--resume 0c0c0c0c-1111-4222-8333-944455556666"; do
+  read -r -a blocked_args <<<"$blocked"
+  web_run signin --dest "$OUTPUT_DIR/stay.png" ${blocked_args[@]+"${blocked_args[@]}"} \
+    $(case $blocked in --remove-bg* | --point*) ;; *) printf '%s\n' --prompt badge ;; esac)
+  assert test "$image_rc" -eq 4
+  assert test -s "$WEB_CALLS"
+  assert test ! -s "$FAKE_CODEX_CALLS"
+done
+# The resumed chat was made on the web (session record), so no --route still means web.
+assert grep -qx 0c0c0c0c-1111-4222-8333-944455556666 <<<"$(grep -A1 -x -- --resume "$WEB_CALLS")"
+cli_cap=$(manifest_value '.refs.max')
+over_cli=()
+for index in $(seq 0 "$cli_cap"); do over_cli+=(--ref "$WORK/edit-base.png"); done
+web_run signin --dest "$OUTPUT_DIR/stay.png" --prompt badge "${over_cli[@]}"
+assert test "$image_rc" -eq 4
+assert test ! -s "$FAKE_CODEX_CALLS"
+
+# Exit 5 is account busy, said once on stderr, wherever no fallback takes the request.
+web_run busy --route web --dest "$OUTPUT_DIR/stay.png" --prompt badge
+assert test "$image_rc" -eq 5
+assert grep -qx 'ACCOUNT_BUSY account=webacct' "$IMAGE_ERR"
+web_run busy --dest "$OUTPUT_DIR/stay.png" --ref "$WORK/edit-base.png" --remove-bg
+assert test "$image_rc" -eq 5
+assert grep -qx 'ACCOUNT_BUSY account=webacct' "$IMAGE_ERR"
+web_run ok --dest "$OUTPUT_DIR/stay.png" --prompt badge --lock-wait soon
+assert test "$image_rc" -eq 2
+assert test ! -e "$WEB_CALLS"
+
+# A session no record names is the CLI's when a codex home holds it.
+IMAGE_LEG_LOG="$WORK/fresh-legs/legs.jsonl" web_run ok --dest "$OUTPUT_DIR/legacy.png" --prompt bluer --resume "$RESUME_ID"
+assert test "$image_rc" -eq 0
+assert test ! -e "$WEB_CALLS"
+assert grep -qx 'ARG=resume' "$FAKE_CODEX_CALLS"
+
+# --edit is the composite base and the first reference; the other refs are references only.
+"$REAL_MAGICK" -size 64x64 'xc:#FF0000' "PNG24:$WORK/style-a.png"
+"$REAL_MAGICK" -size 64x64 'xc:#0000FF' "PNG24:$WORK/style-b.png"
+web_run ok --dest "$OUTPUT_DIR/edited-web.png" --prompt 'add a blue circle' --edit "$WORK/edit-base.png" \
+  --ref "$WORK/style-a.png" --ref "$WORK/style-b.png"
+assert test "$image_rc" -eq 0
+assert test "$(grep -A1 -x -- --ref "$WEB_CALLS" | grep -v -x -- --ref | grep -v -x -- -- | tr '\n' ' ')" = \
+  "$WORK/edit-base.png $WORK/style-a.png $WORK/style-b.png "
+assert grep -qx 'The first image is the one to edit; the other images are references only.' "$WEB_CALLS"
+assert grep -Eqx 'composite=auto changed=[0-9.]+%' "$IMAGE_OUT"
+assert grep -qx "rendered=$OUTPUT_DIR/edited-web.rendered.png" "$IMAGE_OUT"
+assert grep -qx "edit_depth=1 root=$WORK/edit-base.png" "$IMAGE_OUT"
+assert test "$(jq -r '.root' "$OUTPUT_DIR/edited-web.png.edit.json")" = "$WORK/edit-base.png"
+assert jq -se '.[-1] | .composite.kind == "auto" and (.composite.changed | type) == "number" and .size == 4' "$IMAGE_LEG_LOG" >/dev/null
+ROUTE_ARGS=(--route cli)
+web_run unset --dest "$OUTPUT_DIR/edited-cli.png" --prompt 'add a blue circle' --edit "$WORK/edit-base.png" \
+  --ref "$WORK/style-a.png" --ref "$WORK/style-b.png" --account explicit
+assert test "$image_rc" -eq 0
+assert test "$(grep -A1 -x -- '- '"$WORK/edit-base.png" "$FAKE_CODEX_PROMPT" | head -n 1)" = "- $WORK/edit-base.png"
+assert test "$(grep -x -- "- $WORK/[a-z-]*.png" "$FAKE_CODEX_PROMPT" | tr '\n' ' ')" = \
+  "- $WORK/edit-base.png - $WORK/style-a.png - $WORK/style-b.png "
+assert grep -Eqx 'composite=auto changed=[0-9.]+%' "$IMAGE_OUT"
+assert grep -qx "edit_depth=1 root=$WORK/edit-base.png" "$IMAGE_OUT"
+over_cli=()
+for index in $(seq 1 "$cli_cap"); do over_cli+=(--ref "$WORK/style-a.png"); done
+web_run unset --dest "$OUTPUT_DIR/stay.png" --prompt badge --edit "$WORK/edit-base.png" "${over_cli[@]}" --account explicit
+assert test "$image_rc" -eq 2
+assert grep -q "references exceed the $cli_cap" "$IMAGE_ERR"
+web_run unset --dest "$OUTPUT_DIR/stay.png" --prompt badge --edit "$WORK/edit-base.png" --resume "$RESUME_ID"
+assert test "$image_rc" -eq 2
+assert grep -q -- '--edit names the image to edit' "$IMAGE_ERR"
+web_run unset --dest "$OUTPUT_DIR/stay.png" --prompt badge --edit edit-base.png
+assert test "$image_rc" -eq 2
+assert test ! -s "$FAKE_CODEX_CALLS"
+
+# --count N on the web route: one engine launch, the other takes printed as variant= lines the way Flow's are,
+# requested/delivered in legs.jsonl, a failed= line when some take failed; no CLI fallback (it renders one image).
+ROUTE_ARGS=()
+web_run takes --dest "$OUTPUT_DIR/many.png" --prompt badge --count 3
+assert test "$image_rc" -eq 0
+assert grep -qx 3 <<<"$(grep -A1 -x -- --count "$WEB_CALLS")"
+assert grep -qx "dest=$OUTPUT_DIR/many.png" "$IMAGE_OUT"
+assert grep -qx "variant=$OUTPUT_DIR/many-2.png size=62x64 session=0c0c0c0c-1111-4222-8333-944455556662" "$IMAGE_OUT"
+assert grep -qx "variant=$OUTPUT_DIR/many-3.png size=63x64 session=0c0c0c0c-1111-4222-8333-944455556663" "$IMAGE_OUT"
+assert test "$(sips -g pixelWidth "$OUTPUT_DIR/many-3.png" | awk '/pixelWidth:/ {print $2}')" = 63
+assert_fails grep -q '^failed=' "$IMAGE_OUT"
+assert jq -se '.[-1] | .route == "web" and .requested == 3 and .delivered == 3' "$IMAGE_LEG_LOG" >/dev/null
+web_run takes-limit --dest "$OUTPUT_DIR/some.jpg" --prompt badge --count 3
+assert test "$image_rc" -eq 0
+assert grep -qx "variant=$OUTPUT_DIR/some-2.jpg size=62x64 session=0c0c0c0c-1111-4222-8333-944455556662" "$IMAGE_OUT"
+assert test "$(sips -g format "$OUTPUT_DIR/some-2.jpg" | awk '/format:/ {print $2}')" = jpeg
+assert_fails grep -q '^variant=.*some-3' "$IMAGE_OUT"
+assert grep -qx 'failed=1 reason=chatgpt_take_failed' "$IMAGE_OUT"
+assert grep -qx 'codex-image: take 3 failed: ChatGPT image limit on webacct' "$IMAGE_ERR"
+assert jq -se '.[-1] | .requested == 3 and .delivered == 2' "$IMAGE_LEG_LOG" >/dev/null
+web_run signin --dest "$OUTPUT_DIR/stay.png" --prompt badge --count 2
+assert test "$image_rc" -eq 4
+assert test ! -s "$FAKE_CODEX_CALLS"
+assert_fails grep -q 'the same request goes to' "$IMAGE_ERR"
+for refused in "--route cli --count 2" "--count 5" "--count 0" "--count two" \
+    "--count 2 --resume 0c0c0c0c-1111-4222-8333-944455556666" "--count 2 --region 0,0,1,1 --ref $WORK/edit-base.png"; do
+  read -r -a refused_args <<<"$refused"
+  web_run ok --dest "$OUTPUT_DIR/stay.png" --prompt badge "${refused_args[@]}"
+  assert test "$image_rc" -eq 2
+  assert grep -q -- '--count' "$IMAGE_ERR"
+  assert test ! -e "$WEB_CALLS"
+  assert test ! -s "$FAKE_CODEX_CALLS"
+done
+for refused in "--remove-bg" "--point 0.5,0.5=bluer"; do
+  read -r -a refused_args <<<"$refused"
+  web_run ok --dest "$OUTPUT_DIR/stay.png" --ref "$WORK/edit-base.png" --count 2 "${refused_args[@]}"
+  assert test "$image_rc" -eq 2
+  assert grep -q -- '--count renders new chats' "$IMAGE_ERR"
+  assert test ! -e "$WEB_CALLS"
+done
+
+echo "PASS:$asserts asserts; manifest-driven usage and reference cap, pre-spend argument refusals, routing and account pinning, exact codex exec launch controls with --experimental-json, the seven-line contract block including session/model/caps, caps staleness on a changed CLI, byte-identical same-format delivery, differing-format conversion, the view_image + referenced_image_paths reference instruction, native alpha kept unkeyed, chroma fallback on an opaque answer, resume account recovery from the session store, edit lineage through a resume, resume argv order, unresolvable and silently-new threads, thread-keyed output rescue, missing image, usage-limit and generic failure classification, worker-pick limit propagation, and the launching chat's stamp passed through; web-first routing with the CLI fallback on sign-in/busy/limit/unsent only, exit 5 ACCOUNT_BUSY, --lock-wait forwarded, job=/phases= and the legs.jsonl soft fields, and --edit as composite base and first reference"

@@ -244,7 +244,7 @@ and `bin/workflow-burn-gate.sh` (prices a fan-out against the codex account).
 Doctrine follows the same line: `anthropic.ccr.sol` / `anthropic.ccr.astra` is a session model the
 orchestrator rules bind exactly as they bind Fable — implementation through `worker-run` relay
 workers, native agents only for read-only helpers, read-only fan-out rewritten onto
-`light-research` — enforced by `orchestrator_model` in `bin/worker-limit-gate.sh`
+`light-research` — enforced for every session alike by `bin/worker-spawn-hook.sh`
 (`docs/shared-invariants.md` row `bt`).
 
 ## Reopening a gateway chat

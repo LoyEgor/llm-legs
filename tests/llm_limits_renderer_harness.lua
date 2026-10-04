@@ -1164,7 +1164,6 @@ local classCases = {
   { class = "402 payment required", cause = "rateLimits/read failed: 402 Payment Required; content-type=text/plain; body={\"error\":\"Payment Required\"}" },
   { class = "workspace deactivated", cause = "HTTP 402 {\"error\":{\"code\":\"deactivated_workspace\",\"message\":\"Payment Required\"}}" },
   { class = "429 rate limit", cause = "HTTP 429 rate limit" },
-  { class = "timeout", cause = "timed out during free refresh + heal (1s)" },
   { class = "login needed", cause = "login needed (not signed in)" },
   { class = "refresh failed", cause = "garbled upstream blob {{{" },
 }
@@ -1231,6 +1230,80 @@ for _, vendorKey in ipairs({ "claude", "codex", "gemini", "grok" }) do
   }
   assert(#errorItems(loadModule({ schema = 1, vendors = noRoster }, nil, nowErr).menuItems()) == 1, vendorKey .. " dropped an error because it has no roster tracking")
 end
+
+-- A timed-out refresh is a busy machine, not the account: no ⚠ row, an ⧖ after that row's age.
+for _, vendorKey in ipairs({ "claude", "codex", "gemini", "grok" }) do
+  local label = ({ claude = "Claude", codex = "Codex", gemini = "Gemini", grok = "Grok" })[vendorKey]
+  local vendors = { claude = { available = false }, codex = { available = false },
+    gemini = { available = false }, grok = { available = false } }
+  local late, fine = acct("late"), acct("fine")
+  late.as_of, fine.as_of = nowErr - 2100, nowErr - 2100
+  if vendorKey == "grok" then late.five_hour, fine.five_hour = nil, nil end
+  vendors[vendorKey] = {
+    available = true, source = vendorKey == "claude" and "claudeb-store" or nil,
+    refresh_errors = {
+      { account = "late", class = "timeout", cause = "codex app-server timed out", at = nowErr - 480 },
+      { account = "fine", class = "login needed", cause = "login needed (not signed in)",
+        at = nowErr - 60 },
+      { class = "refresh failed", cause = "garbled upstream blob {{{", at = nowErr - 60 },
+    },
+    accounts = { late, fine },
+  }
+  local mod = loadModule({ schema = 1, vendors = vendors }, nil, nowErr)
+  assert(mod.refreshState().prefix == "", vendorKey .. " timeout lit the title warning")
+  local menu = mod.menuItems()
+  local rows = errorItems(menu)
+  assert(#rows == 2 and titleText(rows[1]) == "⚠ " .. vendorKey .. ": refresh failed · 1m ago"
+      and titleText(rows[2]) == "⚠ fine: login needed · 1m ago",
+    vendorKey .. " timeout rendered a ⚠ row or dropped another class: " .. #rows)
+  for _, item in ipairs(menu) do
+    assert(not titleText(item):find("timeout", 1, true), vendorKey .. " timeout row: " .. titleText(item))
+  end
+  assert(titleText(accountItem(menu, "late")):find("35m ago ⧖", 1, true),
+    vendorKey .. " timed-out account lacks ⧖ after its age: " .. titleText(accountItem(menu, "late")))
+  assert(not titleText(accountItem(menu, "fine")):find("⧖", 1, true),
+    vendorKey .. " ⧖ on an account that did not time out")
+  for _, item in ipairs(menu) do
+    if titleText(item):sub(1, #label) == label then
+      assert(not titleText(item):find("⧖", 1, true), vendorKey .. " account timeout marked the header")
+    end
+  end
+
+  local vendorLevel = { claude = { available = false }, codex = { available = false },
+    gemini = { available = false }, grok = { available = false } }
+  vendorLevel[vendorKey] = {
+    available = true, source = vendorKey == "claude" and "claudeb-store" or nil,
+    refresh_errors = {{ class = "timeout", cause = "agy /usage timed out after 45s", at = nowErr - 60 }},
+    accounts = { acct("acct") },
+  }
+  if vendorKey == "grok" then vendorLevel.grok.accounts[1].five_hour = nil end
+  local vMenu = loadModule({ schema = 1, vendors = vendorLevel }, nil, nowErr).menuItems()
+  assert(#errorItems(vMenu) == 0, vendorKey .. " vendor-level timeout rendered a ⚠ row")
+  local headerMarked = false
+  for _, item in ipairs(vMenu) do
+    if titleText(item) == label .. "  ⧖" then headerMarked = true end
+  end
+  assert(headerMarked, vendorKey .. " vendor-level timeout did not mark the section header")
+end
+
+local soleLate = { schema = 1, vendors = {
+  claude = { available = false }, gemini = { available = false }, grok = { available = false },
+  codex = { available = true, as_of = nowErr - 2100, five_hour = bucket(10), weekly = bucket(20),
+    refresh_errors = {{ class = "timeout", cause = "codex app-server timed out", at = nowErr - 480 }} },
+}}
+local soleMenu = loadModule(soleLate, nil, nowErr).menuItems()
+assert(#errorItems(soleMenu) == 0, "sole-account timeout rendered a ⚠ row")
+assert(titleText(accountItem(soleMenu, "Codex")):find("35m ago ⧖", 1, true),
+  "sole-account timeout lacks ⧖ after the vendor row's age: " .. titleText(accountItem(soleMenu, "Codex")))
+
+local ocLate = { schema = 1, vendors = { opencode = { source = "opencode-go",
+  accounts = { { account = "oc-one", walled = false, windows = {}, as_of = nowErr - 2100 } },
+  refresh_errors = {{ account = "oc-one", class = "timeout", cause = "opencode probe timed out",
+    at = nowErr - 60 }} } } }
+local ocMenu = loadModule(ocLate, nil, nowErr).menuItems()
+assert(#errorItems(ocMenu) == 0, "OpenCode timeout rendered a ⚠ row")
+assert(titleText(accountItem(ocMenu, "oc-one")):find("35m ago ⧖", 1, true),
+  "OpenCode timed-out account lacks ⧖: " .. titleText(accountItem(ocMenu, "oc-one")))
 
 local blob = "rateLimits/read failed: {'code': -32603, 'message': 'failed to fetch c'}; content-type=text/plain; body={\n  \"error\": {\n    \"message\": \"Payment Required\"\n  }\n}"
 local legacyBlob = { schema = 1, vendors = {
@@ -4262,7 +4335,7 @@ end
     return string.format("        %s  %s  %4s  %9s", label, bar, pct, reset)
   end
   local function walled(label, untilEpoch) return row(label, "▓▓▓▓▓", "", resetText(untilEpoch)) end
-  local function unmeasured(label) return row(label, "░░░░░", "", "") end
+  local function unmeasured(label, left) return row(label, "░░░░░", "", left and tostring(left) or "") end
   local function texts(rows)
     local out = {}
     for index, item in ipairs(rows) do out[index] = titleText(item) end
@@ -4272,11 +4345,11 @@ end
   local menu = mediaMenu()
   local abel = mediaRows(menu, "abel")
   assert(#abel == 2 and titleText(abel[1]) == walled("fv", now + 7200) and isRed(abel[1])
-      and titleText(abel[2]) == unmeasured("fm") and #redRuns(abel[2].title) == 0
+      and titleText(abel[2]) == unmeasured("fm", 10510) and #redRuns(abel[2].title) == 0
       and abel[1].disabled == true and abel[2].disabled == true,
-    "a standing video wall is not fv's limit hit, or an unknown total drew a bar: " .. texts(abel))
+    "a standing video wall is not fv's limit hit, or an unknown total drew a bar or hid the balance in the reset column: " .. texts(abel))
   local egbor = mediaRows(menu, "egbor")
-  assert(#egbor == 2 and titleText(egbor[1]) == unmeasured("fv") and titleText(egbor[2]) == walled("fm", now + 3600)
+  assert(#egbor == 2 and titleText(egbor[1]) == unmeasured("fv", 50) and titleText(egbor[2]) == walled("fm", now + 3600)
       and isRed(egbor[2]),
     "a gemini-web profile named apart from the roster did not map by its email, or kept an expired wall: "
       .. texts(egbor))
@@ -4309,9 +4382,9 @@ end
     menu = mediaMenu()
     local weekly = titleText(menu[accountIndex(menu, "bars") + 2])
     local bars = mediaRows(menu, "bars")
-    assert(#bars == 2 and titleText(bars[1]) == row("fv", "▓░░░░", "17%", "–")
+    assert(#bars == 2 and titleText(bars[1]) == row("fv", "▓░░░░", "17%", "828")
         and titleText(bars[2]) == row("fm", "░░░░░", "0%", day(now + 30 * 86400)) and #redRuns(bars[1].title) == 0,
-      "the credit bars are wrong: " .. texts(bars))
+      "the credit bars are wrong, or a cycle without a renewal date hid its balance: " .. texts(bars))
     assert(weekly:match("^        wk  ") and #weekly == #titleText(bars[1])
         and weekly:find("[▓░]") == titleText(bars[1]):find("[▓░]"),
       "a credit bar is not cut to the weekly row's columns: " .. weekly .. " | " .. titleText(bars[1]))

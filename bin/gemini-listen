@@ -5,6 +5,7 @@
 set -euo pipefail
 
 usage() {
+  image_leg_cause "$@"
   printf 'usage: gemini-listen "<question>" <absolute media path>... [-o <absolute .md path>] [--model pro|flash] [--account <geminib profile>]\n' >&2
   printf '  Gemini watches and listens through agy on a subscription account: video with its sound, audio, images\n' >&2
   printf '  files over %s bytes (agy views at most 20 MB) are sent as a proxy: video 720p at the bitrate that fits, audio mp3\n' "$limit_bytes" >&2
@@ -13,7 +14,7 @@ usage() {
 }
 
 say() {
-  printf 'gemini-listen: %s\n' "$1" >&2
+  image_leg_cause "$1"
   exit "${2:-2}"
 }
 
@@ -43,20 +44,22 @@ account=''
 media=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    -o | --out) [ "$#" -ge 2 ] || usage; out=$2; shift 2 ;;
-    --model) [ "$#" -ge 2 ] || usage; model_key=$2; shift 2 ;;
-    --account) [ "$#" -ge 2 ] || usage; account_arg "$2"; account=$2; shift 2 ;;
+    -o | --out) [ "$#" -ge 2 ] || usage "$1 needs a value"; out=$2; shift 2 ;;
+    --model) [ "$#" -ge 2 ] || usage "$1 needs a value"; model_key=$2; shift 2 ;;
+    --account) [ "$#" -ge 2 ] || usage "$1 needs a value"; account_arg "$2"; account=$2; shift 2 ;;
     -h | --help) image_leg_help usage ;;
-    -*) usage ;;
+    -*) usage "unknown argument $1" ;;
     *)
       if [ -z "$question" ]; then question=$1; else media+=("$1"); fi
       shift
       ;;
   esac
 done
-[ -n "$question" ] && [ "${#media[@]}" -gt 0 ] || usage
-[ -z "$out" ] || { [[ "$out" = /* ]] && [ -d "$(dirname "$out")" ]; } || say "-o needs an absolute path in an existing folder"
-if [ -n "$account" ] && ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then usage; fi
+[ -n "$question" ] || usage "missing the question"
+[ "${#media[@]}" -gt 0 ] || usage "missing a media file"
+[ -z "$out" ] || [[ "$out" = /* ]] || say "-o must be an absolute path, not $out"
+[ -z "$out" ] || [ -d "$(dirname "$out")" ] || say "-o folder $(dirname "$out") does not exist"
+if [ -n "$account" ] && ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then usage "--account $account is not a profile name"; fi
 family_kind=$(image_caps_get "$root" gemini ".listen.models[\"$model_key\"].family // empty")
 [ -n "$family_kind" ] || say "--model is pro or flash"
 effort=$(image_caps_get "$root" gemini ".listen.models[\"$model_key\"].effort")

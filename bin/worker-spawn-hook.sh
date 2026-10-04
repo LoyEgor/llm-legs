@@ -27,7 +27,7 @@ hook_session=${fields[0]-}
 [ "${fields[1]-}" = PreToolUse ] || exit 0
 [ "${fields[2]-}" != Workflow ] || exit 0
 RELAY_TYPES='claudeb-worker codex-worker gemini-worker grok-worker light-worker'
-NATIVE_ALLOWLIST='fork review-waiter light-research image-gen'
+NATIVE_ALLOWLIST='fork review-waiter light-research'
 subagent=${fields[3]-}
 description=${fields[4]-}
 prompt=${fields[5]-}
@@ -161,35 +161,6 @@ elif [ "$subagent" = grok-worker ]; then
   [ -n "$effort" ] || effort=$(worker_conf grok_effort)
   [ -n "$effort" ] || effort=$(worker_model_default_effort grok "$(worker_model_default_model grok)")
   prefix="${acct:-?} · $model · $effort"
-elif [ "$subagent" = image-gen ]; then
-  # An image run has no effort knob: the second segment is what runs where (`img·cli`, `mus·app`);
-  # a `FANOUT:` brief spends every vendor at once.
-  fanout=$(printf '%s' "$prompt" | grep -m1 -oE '^FANOUT:[[:space:]]*[A-Za-z,|]+' || true)
-  if [ -n "$fanout" ]; then
-    acct=fanout
-    media=img
-  else
-    vendor=$(printf '%s' "$prompt" | grep -m1 -oE '^VENDOR:[[:space:]]*(codex|gemini|grok)' |
-      grep -oE '(codex|gemini|grok)$')
-    audio=$(printf '%s' "$prompt" | grep -m1 -oE '^AUDIO:[[:space:]]*(music|sfx|listen)' | grep -oE '(music|sfx|listen)$' || true)
-    [ -z "$audio" ] || vendor=gemini
-    [ -n "$vendor" ] || vendor=codex
-    # A pin — an `ACCOUNT:` line or `--account` on the launch line — is the account for sure. Without
-    # one the row predicts the router's `--role image` answer, as the research row does: the script
-    # asks the same router a second later, so the two differ only under a race, and a row that
-    # says `?` tells Egor nothing (2026-09-11). Music, sfx and a gemini image off `ROUTE: cli` (Flow is
-    # gemini-image's default) never ask it: they rotate gemini-web's own signed-in profiles, so the
-    # router's name would be a wrong one.
-    acct=$(brief_line ACCOUNT)
-    [ -n "$acct" ] || acct=$(flag_account)
-    case "$vendor:${audio:-image}:$(brief_line ROUTE)" in
-      gemini:music:* | gemini:sfx:* | gemini:image:flow | gemini:image:) ;;
-      *) [ -n "$acct" ] || acct=$(route_account "$vendor" --role image) ;;
-    esac
-    [ -n "$acct" ] || acct=pool
-    media=$(worker_media_tag "$vendor" "${audio:-image}")
-  fi
-  prefix="$acct · $media"
 elif [ "$subagent" = fork ]; then
   model=${fields[6]-}
   if [ -z "$model" ]; then
@@ -324,7 +295,7 @@ updated="$prefix: $title"
 # Inject the guard unless the brief explicitly unlocks editing; briefs carrying their own
 # MD-GUARD (a re-injection on RESUME) are left alone too.
 md_guard=''
-if [ "$subagent" != image-gen ] && [ "$subagent" != fork ] && [ "$subagent" != review-waiter ] &&
+if [ "$subagent" != fork ] && [ "$subagent" != review-waiter ] &&
    ! printf '%s' "$prompt" | grep -qE '^(MD-EDIT:[[:space:]]*allowed|MD-GUARD)'; then
   md_guard="MD-GUARD (hook-injected): CLAUDE.md / CLAUDE.local.md / MEMORY.md / files in memory/ dirs / anything under ~/.claude are READ-ONLY for this task. If your change makes one of them stale, return a DOCS IMPACT note proposing the edit instead of applying it. Only an explicit 'MD-EDIT: allowed' line in the brief unlocks them. The checkout is SHARED: uncommitted or untracked changes you did not make this run are other agents' live work — never git checkout/restore/reset/clean/stash over them, whatever git status suggests about authorship; report unexpected tree state in your OUTCOME and leave it in place."
 fi
@@ -332,7 +303,7 @@ fi
 # These types are pinned to their frontmatter model, which a tool-call model would override.
 strip_model=''
 case "$subagent" in
-  review-waiter|light-research|image-gen) [ -z "${fields[6]-}" ] || strip_model=1 ;;
+  review-waiter|light-research) [ -z "${fields[6]-}" ] || strip_model=1 ;;
 esac
 
 [ "$updated" = "$description" ] && [ -z "$md_guard" ] && [ -z "$cleanup_note" ] && [ -z "$strip_model" ] && exit 0

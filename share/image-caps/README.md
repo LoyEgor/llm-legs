@@ -31,14 +31,24 @@ vendor CLI docs). Re-verify when `caps=stale` or `model_caps=stale` shows up; th
   the script's `aspect=… fit=` line; `web_only`: features only the ChatGPT web route drives —
   `region` (`--region`, a Markup outline), `reaspect` (the viewer's Resize ratios), `point` (`--point`,
   Comment pins) and `remove_bg` (`--remove-bg`, the viewer's Remove BG: a regeneration delivered with alpha).
+- `web` (codex): the `--route web` (ChatGPT) contract — `refs_max` and `counts` (`--count`: takes as new chats in
+  tabs of one browser), while the top-level `refs` stay the CLI's.
+- `counts` in a route's block (`flow_image`, `web`): the `--count` values that route renders in one launch; the
+  fan-out packs that many takes of a request into one launch.
 - `flow_image` (gemini): the `--route flow` contract — model labels and their observed `wire` keys, the
   five aspects, counts, `refs_max`, `upscale` menu items, `price` (a different composer quote stops the run).
   `flow_image.tools`: the Image Editor Tool behind `--region`/`--point`/`--remove-bg`/prompt-less `--aspect` —
   its `models` and outpaint `aspects`, `bg_models` (our name → the applet's label), `bg_models_broken` (name →
   why it is refused), `default_bg_model`, `brush_px`, `cutout_max_side`, `unsupported`, `timeout_s`.
-- `default_route` (gemini): the route the image script runs without `--route`. Absent means the CLI the
-  top-level fields describe; `flow` makes `flow_image` (`refs_max`, `aspects`) what the script and the fan-out
-  adapt a request to, while the top-level `refs`/`aspects` stay the `--route cli` contract.
+- `scripts`: the vendor's media scripts in `bin/` by kind (`image`, `video`, `music`, `sfx`, `listen`); a kind
+  the vendor lacks is absent. The vendor list itself is the set of manifests in this directory.
+- `rosters`: per route, the argv (a `bin/` name and its arguments) that lists that route's accounts: the web
+  engines print `{"accounts": [{"account", "login", "walled_until", …}]}`, the CLI pools print `name: state` lines.
+- `spares`: per media kind, the extra takes a fan-out launches up front for N requested ones,
+  `max(min, ceil(N * ratio))`; a kind without an entry gets none (video and audio spend credits per take).
+- `routes`: the vendor's image routes in priority order; the script runs `routes[0]` without `--route` and the
+  fan-out adapts a request to that route's block (`flow` → `flow_image`, `web` → `web`, `cli` → the top-level
+  `refs`/`aspects`, which always stay the `--route cli` contract).
 - `transparent`: `native` (the tool returns alpha), `chroma` (green background + key), `native+chroma`
   (try native, key when the result carries no alpha).
 - `video`: null when the vendor has no video tool. `keyframes_max`: mid-clip anchors a pinned-frame

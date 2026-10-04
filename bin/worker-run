@@ -14,6 +14,7 @@ usage() {
     'usage: worker-run start <claudeb|codex|gemini|grok|light> --brief <file> | --recipe <name> [--set k=v]... [--workdir <dir>] [--account <n>] [--model <m>] [--effort <e>] [--resume <id>] [--round <review-round-id>] [--add-dir <d>]... [--image <p>]... [--web-search | --no-web-search] [--browser] [--target dia|chrome] [--chrome] [--computer] [--role research --research-timeout <duration>]' \
     '       worker-run wait <run-id> [--max <sec>]' \
     '       worker-run report <run-id>' \
+    '       worker-run transcript <run-id>' \
     '       worker-run claim <run-id> --paths <path>... [--complete]' \
     '       worker-run browse [--vendor codex|claudeb] [--target dia|chrome] [--dia-profile <dir>] [--record <deviceId> <account>] [--json]' >&2
   exit 2
@@ -4221,6 +4222,15 @@ wait_run() {
   done
 }
 
+transcript_run() {
+  [ "$#" -eq 1 ] || usage
+  local directory
+  directory=$(run_path "$1")
+  [ -r "$directory/meta.json" ] || fail "unknown run: $1"
+  session_transcript "$(jq -r '.vendor' "$directory/meta.json")" "$(jq -r '.account' "$directory/meta.json")" \
+    "$(session_id "$directory")" "$(jq -r '.workdir // empty' "$directory/meta.json")" && printf '\n'
+}
+
 report_run() {
   [ "$#" -eq 1 ] || usage
   local directory vendor account code status cost s5_rate pid
@@ -5814,6 +5824,7 @@ case "${1:-}" in
   start) shift; start_run "$@"; exit $? ;;
   wait) shift; wait_run "$@"; exit $? ;;
   report) shift; report_run "$@"; exit $? ;;
+  transcript) shift; transcript_run "$@"; exit $? ;;
   claim) shift; claim_run "$@"; exit $? ;;
   browse) shift; browse_run "$@"; exit $? ;;
   _deliver) complete_run "$2" "$3"; exit 0 ;;

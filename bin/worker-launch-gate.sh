@@ -26,11 +26,12 @@
 # worker, and are not this gate's business. Fail-open on its own errors, like the sibling gates.
 #
 # The same door has a second side, the OWNED class: a launcher that is sanctioned only in the hands
-# of the agent type owning it. `worker-run start|wait` belongs to the relay agents and the image
-# scripts to `image-gen`. A run started or awaited from the main chat's Bash is owned by a turn
-# instead of an agent — no magenta tagged row, and nothing to wake the chat when it ends — and an
-# image generated there spends an account nothing renders. `report` prints a finished record and
-# spends nothing, and the commit-journal and edit-conflict hooks name it to the chat itself.
+# of the agent type owning it. `worker-run start|wait` belongs to the relay agents. A run started or
+# awaited from the main chat's Bash is owned by a turn instead of an agent — no magenta tagged row,
+# and nothing to wake the chat when it ends. `report` prints a finished record and spends nothing,
+# and the commit-journal and edit-conflict hooks name it to the chat itself. The media scripts and
+# the generating subcommands of their web engines have one door for every session, `media-run`,
+# whose job pointer is what renders the account a generation spends.
 [ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u
 
@@ -78,11 +79,10 @@ OWNED_RUN_RE="${VENDOR_WORD}worker-run[[:space:]]+(start|wait)${EDGE}"
 # A variable this door could not expand, standing where worker-run would, is read as worker-run.
 UNREADABLE_RUN_RE="${VENDOR_WORD}[\$][{]?[A-Za-z_][A-Za-z0-9_]*[}]?[[:space:]]+(start|wait)${EDGE}"
 
-# The image scripts are owned the same way and by ONE agent. Run from the main chat's Bash they
-# spend an image account with nothing rendering the spend — no task row, no tag, no notification —
-# so `image-gen` is the only hand they pass in, a relay's included: a worker generating an image is
-# a launch inside a launch nobody can see.
+# Called past media-run, a media script or a web engine's generating subcommand spends an account
+# with no work line naming it, so every hand is refused, a relay's and a fork's included.
 OWNED_IMAGE_RE="${VENDOR_WORD}((codex|gemini|grok)-image|grok-video|gemini-(video|music|sfx|listen)|image-fanout)${EDGE}"
+MEDIA_ENGINE_RE="${VENDOR_WORD}(chatgpt-web[[:space:]]+(generate|resize|comment|remove-bg)|gemini-web[[:space:]]+generate)${EDGE}"
 
 # A review run's wait is owned the same way, by the `review-waiter` agent, and light-research by its
 # own agent type: from the chat's Bash neither has a row nor anything that wakes the chat.
@@ -273,27 +273,23 @@ legs_hit=$(grep -E "$OWNED_LEGS_RE" <<<"$scan" 2>/dev/null | grep -Ev -e "$LEGS_
 [ -z "$legs_hit" ] || span_live ||
   deny "Blocked: \`${legs_hit}\` spends a Claude, Codex or Gemini account from Claude Code's Bash with no worker-run record and no task row naming the account. A question for a model goes to ${RELAY_AGENTS}; a live probe is Egor's to run — hand him the paste-ready command for his own terminal."
 HELP_TAIL='([[:space:]]+[0-9]*[<>]+[[:space:]]*[^[:space:]]*)*[[:space:]]*$'
-case "$agent_type" in
-  image-gen) ;;
-  *)
-    # Exempt by line and only as typed: a wrapper (`xargs -J --help`) or an expanded `$VAR` makes a
-    # line that reads as help yet runs the script with other arguments.
-    image_help_re="^[[:space:]]*([^[:space:]/]*/)*${OWNED_IMAGE_RE#"$VENDOR_WORD"}"
-    image_help_re="${image_help_re%"$EDGE"}[[:space:]]+(-h|--help)${HELP_TAIL}"
-    typed=$(tr ';|&()`' '\n' <<<"$prestrip" | grep -v "[\\\\'\"]")
-    literal=()
-    while IFS= read -r line; do literal+=("$line"); done <<<"$scan_literal"
-    image_scan=$(i=0
-      while IFS= read -r line; do
-        [ "$line" = "${literal[i]-}" ] && [[ $line =~ $image_help_re ]] && grep -Fxq -- "$line" <<<"$typed" ||
-          printf '%s\n' "$line"
-        i=$((i + 1))
-      done <<<"$scan")
-    image_hit=$(scan=$image_scan; first_hit "$OWNED_IMAGE_RE")
-    [ -z "$image_hit" ] ||
-      deny "Blocked: \`${image_hit}\` generates or reads media from this chat's own Bash, where the account it spends renders as nothing — no tagged row, no notification when it lands. Spawn the \`image-gen\` Agent instead and put the description, the absolute destination path, the format, transparency yes/no and the size in its brief; it owns these media scripts and is the only agent type that may run them — a relay worker may not either. Quoting one inside a heredoc body is not running it."
-    ;;
-esac
+# Exempt by line and only as typed: a wrapper (`xargs -J --help`) or an expanded `$VAR` makes a line
+# that reads as help yet runs the script with other arguments.
+image_help_re="^[[:space:]]*([^[:space:]/]*/)*${OWNED_IMAGE_RE#"$VENDOR_WORD"}"
+image_help_re="${image_help_re%"$EDGE"}[[:space:]]+(-h|--help)${HELP_TAIL}"
+typed=$(tr ';|&()`' '\n' <<<"$prestrip" | grep -v "[\\\\'\"]")
+literal=()
+while IFS= read -r line; do literal+=("$line"); done <<<"$scan_literal"
+image_scan=$(i=0
+  while IFS= read -r line; do
+    [ "$line" = "${literal[i]-}" ] && [[ $line =~ $image_help_re ]] && grep -Fxq -- "$line" <<<"$typed" ||
+      printf '%s\n' "$line"
+    i=$((i + 1))
+  done <<<"$scan")
+image_hit=$(scan=$image_scan; first_hit "$OWNED_IMAGE_RE")
+[ -n "$image_hit" ] || image_hit=$(first_hit "$MEDIA_ENGINE_RE")
+[ -z "$image_hit" ] ||
+  deny "Blocked: \`${image_hit}\` runs media past \`media-run\`, the one door that renders the account it spends: load the media skill, write the prompt yourself and run \`media-run <image|video|music|sfx|listen> --vendor <v> -- <the script's own args>\` (several vendors, \`--takes\` or \`--jobs\` fan out). Quoting one inside a heredoc body is not running it."
 case "$agent_type" in
   review-waiter) ;;
   *)
@@ -516,6 +512,6 @@ for launch_re in ${LAUNCH_RES[@]+"${LAUNCH_RES[@]}"}; do
   hit=$(grep -Eo "$launch_re" <<<"$unsanctioned" 2>/dev/null) || continue
   hit=$(printf '%s\n' "${hit%%$'\n'*}" | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
   [ -n "$hit" ] || continue
-  deny "Blocked: \`${hit}\` is a bare headless vendor launch — it leaves no worker-run record, no statusline tag, no journal ownership, no pool refusal, no limit signature and no stall watch. ${launch_ask}; the other tools own their launches (review-bench, llm-limits, claudeb revive, claude-session-driver, opencode-go; the image scripts belong to the image-gen Agent). An interactive launch — no -p/--print/--prompt, no exec, no run — is not gated. Quotes and backslashes do not hide a launch: the gate strips them, then reads the first word of every chained command, and a sanctioned tool exempts only its own segment."
+  deny "Blocked: \`${hit}\` is a bare headless vendor launch — it leaves no worker-run record, no statusline tag, no journal ownership, no pool refusal, no limit signature and no stall watch. ${launch_ask}; the other tools own their launches (review-bench, llm-limits, claudeb revive, claude-session-driver, opencode-go; the media scripts are reached through media-run). An interactive launch — no -p/--print/--prompt, no exec, no run — is not gated. Quotes and backslashes do not hide a launch: the gate strips them, then reads the first word of every chained command, and a sanctioned tool exempts only its own segment."
 done
 exit 0

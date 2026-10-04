@@ -24,6 +24,7 @@ image_leg_start gemini-music audio observed_model
 caps() { image_caps_get "$root" gemini "$1"; }
 
 usage() {
+  image_leg_cause "$@"
   printf 'usage: gemini-music --dest <absolute .wav|.mp3|.mp4 path> --prompt <brief> [--route app|flow] [--model %s] [--length short|standard] [--instrumental | --vocals] [--genre <%s>] [--ref-image <absolute image>] [--video <absolute mp4>] [--count 1|2|3] [--account <profile>] [--dry-run]\n' \
     "$(caps '.flow_music.models | keys | join("|")')" "$(caps '.music.genres | join("|")')" >&2
   printf '  flow only: [--format %s] [--duration <%s-%s s>] [--lyrics <text>] [--bpm <n>] [--seed <n>] [--ref-audio <absolute audio, <= %s MB>] [--stems] [--accounts 1-%s]\n' \
@@ -39,7 +40,7 @@ usage() {
 }
 
 say() {
-  printf 'gemini-music: %s\n' "$1" >&2
+  image_leg_cause "$1"
   exit 2
 }
 
@@ -66,32 +67,34 @@ flow_flags=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -h | --help) image_leg_help usage ;;
-    --dest) [ "$#" -ge 2 ] || usage; dest=$2; shift 2 ;;
-    --prompt) [ "$#" -ge 2 ] || usage; prompt=$2; shift 2 ;;
-    --length) [ "$#" -ge 2 ] || usage; length=$2; shift 2 ;;
-    --instrumental) [ -z "$vocals" ] || usage; vocals=instrumental; shift ;;
-    --vocals) [ -z "$vocals" ] || usage; vocals=on; shift ;;
-    --genre) [ "$#" -ge 2 ] || usage; genre=$2; shift 2 ;;
-    --ref-image | --video) [ "$#" -ge 2 ] || usage; attach+=("$1=$2"); shift 2 ;;
-    --count) [ "$#" -ge 2 ] || usage; count=$2; shift 2 ;;
-    --account) [ "$#" -ge 2 ] || usage; account_arg "$2"; account=$2; shift 2 ;;
+    --dest) [ "$#" -ge 2 ] || usage "$1 needs a value"; dest=$2; shift 2 ;;
+    --prompt) [ "$#" -ge 2 ] || usage "$1 needs a value"; prompt=$2; shift 2 ;;
+    --length) [ "$#" -ge 2 ] || usage "$1 needs a value"; length=$2; shift 2 ;;
+    --instrumental) [ -z "$vocals" ] || usage "pass --instrumental or --vocals once"; vocals=instrumental; shift ;;
+    --vocals) [ -z "$vocals" ] || usage "pass --instrumental or --vocals once"; vocals=on; shift ;;
+    --genre) [ "$#" -ge 2 ] || usage "$1 needs a value"; genre=$2; shift 2 ;;
+    --ref-image | --video) [ "$#" -ge 2 ] || usage "$1 needs a value"; attach+=("$1=$2"); shift 2 ;;
+    --count) [ "$#" -ge 2 ] || usage "$1 needs a value"; count=$2; shift 2 ;;
+    --account) [ "$#" -ge 2 ] || usage "$1 needs a value"; account_arg "$2"; account=$2; shift 2 ;;
     --dry-run) dry_run=true; shift ;;
-    --route) [ "$#" -ge 2 ] || usage; route=$2; shift 2 ;;
-    --model) [ "$#" -ge 2 ] || usage; model=$2; shift 2 ;;
-    --format) [ "$#" -ge 2 ] || usage; format=$2; flow_flags+=(--format); shift 2 ;;
-    --duration) [ "$#" -ge 2 ] || usage; duration=$2; flow_flags+=(--duration); shift 2 ;;
-    --lyrics) [ "$#" -ge 2 ] || usage; lyrics=$2; flow_flags+=(--lyrics); shift 2 ;;
-    --bpm) [ "$#" -ge 2 ] || usage; bpm=$2; flow_flags+=(--bpm); shift 2 ;;
-    --seed) [ "$#" -ge 2 ] || usage; seed=$2; flow_flags+=(--seed); shift 2 ;;
-    --ref-audio) [ "$#" -ge 2 ] || usage; ref_audio=$2; flow_flags+=(--ref-audio); shift 2 ;;
+    --route) [ "$#" -ge 2 ] || usage "$1 needs a value"; route=$2; shift 2 ;;
+    --model) [ "$#" -ge 2 ] || usage "$1 needs a value"; model=$2; shift 2 ;;
+    --format) [ "$#" -ge 2 ] || usage "$1 needs a value"; format=$2; flow_flags+=(--format); shift 2 ;;
+    --duration) [ "$#" -ge 2 ] || usage "$1 needs a value"; duration=$2; flow_flags+=(--duration); shift 2 ;;
+    --lyrics) [ "$#" -ge 2 ] || usage "$1 needs a value"; lyrics=$2; flow_flags+=(--lyrics); shift 2 ;;
+    --bpm) [ "$#" -ge 2 ] || usage "$1 needs a value"; bpm=$2; flow_flags+=(--bpm); shift 2 ;;
+    --seed) [ "$#" -ge 2 ] || usage "$1 needs a value"; seed=$2; flow_flags+=(--seed); shift 2 ;;
+    --ref-audio) [ "$#" -ge 2 ] || usage "$1 needs a value"; ref_audio=$2; flow_flags+=(--ref-audio); shift 2 ;;
     --stems) stems=true; flow_flags+=(--stems); shift ;;
-    --accounts) [ "$#" -ge 2 ] || usage; accounts=$2; shift 2 ;;
-    *) usage ;;
+    --accounts) [ "$#" -ge 2 ] || usage "$1 needs a value"; accounts=$2; shift 2 ;;
+    *) usage "unknown argument $1" ;;
   esac
 done
 
-[ -n "$dest" ] && [ -n "$prompt" ] || usage
-[[ "$dest" = /* ]] && [ -d "$(dirname "$dest")" ] || say "--dest needs an absolute path in an existing folder"
+[ -n "$dest" ] || usage "missing --dest"
+[ -n "$prompt" ] || usage "missing --prompt"
+[[ "$dest" = /* ]] || say "--dest must be an absolute path, not $dest"
+[ -d "$(dirname "$dest")" ] || say "--dest folder $(dirname "$dest") does not exist"
 ext=$(printf '%s' "${dest##*.}" | tr '[:upper:]' '[:lower:]')
 [ -z "$model" ] || jq -e --arg v "$model" '.flow_music.models | has($v)' "$(image_caps_file "$root" gemini)" >/dev/null ||
   say "--model is one of: $(caps '.flow_music.models | keys | join(", ")')"
@@ -136,7 +139,7 @@ fi
   say "--genre is one of: $(caps '.music.genres | join(", ")')"
 jq -e --argjson n "${count//[^0-9]/0}" '.music.counts | index($n) != null' "$(image_caps_file "$root" gemini)" >/dev/null 2>&1 ||
   say "--count is 1, 2 or 3"
-[ -z "$account" ] || [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]] || usage
+[ -z "$account" ] || [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]] || usage "--account $account is not a profile name"
 [ -z "$account" ] || [ "$accounts" -eq 1 ] || say "--account names one account; --accounts picks several"
 engine_args=(generate --prompt "$prompt" --count "$count")
 for item in ${attach[@]+"${attach[@]}"}; do

@@ -291,6 +291,35 @@ image_rc=0
 image_run --dest "$OUTPUT_DIR/g5.png" --prompt x --account explicit --composite || image_rc=$?
 assert test "$image_rc" -eq 2
 assert grep -q 'composite needs the image being edited' "$IMAGE_ERR"
+# --edit is the composite base and the first image_edit source; the other refs are references only. Grok has
+# one route, so --lock-wait is accepted and nothing waits on it.
+"$REAL_MAGICK" -size 64x64 'xc:#FF0000' "PNG24:$WORK/style-a.png"
+: >"$FAKE_GROKB_PROMPT"
+FAKE_GROKB_IMAGE_FORMAT=png FAKE_GROKB_IMAGE_FROM="$WORK/circle.png" \
+  assert image_run --dest "$OUTPUT_DIR/g6.png" --prompt 'add a blue circle' --edit "$WORK/green.png" \
+  --ref "$WORK/style-a.png" --ref "$WORK/aspect-reference.jpg" --account explicit --lock-wait 30
+assert test "$(grep -x -- "- $WORK/[a-z-]*\.[a-z]*" "$FAKE_GROKB_PROMPT" | tr '\n' ' ')" = \
+  "- $WORK/green.png - $WORK/style-a.png - $WORK/aspect-reference.jpg "
+assert grep -qx 'The first image is the one to edit; the other images are references only.' "$FAKE_GROKB_PROMPT"
+assert grep -qx 'ARG=image_edit' "$FAKE_GROKB_CALLS"
+assert grep -Eqx 'composite=auto changed=[0-9.]+%' "$IMAGE_OUT"
+assert grep -qx "edit_depth=1 root=$WORK/green.png" "$IMAGE_OUT"
+assert grep -qx 'route=cli' "$IMAGE_OUT"
+assert grep -Eqx 'job=grok-image-[0-9]{8}T[0-9]{6}Z-[0-9]+' <<<"$(grep '^job=' "$IMAGE_OUT")"
+assert jq -e --arg job "$(sed -n 's/^job=//p' "$IMAGE_OUT")" '.job == $job and .route == "cli" and .composite.kind == "auto"
+  and .size == 4 and .requested == 1 and .delivered == 1' <<<"$(tail -n 1 "$IMAGE_LEG_LOG")" >/dev/null
+over_cap=()
+for _ in $(seq 1 "$REFS_MAX"); do over_cap+=(--ref "$WORK/style-a.png"); done
+image_rc=0
+image_run --dest "$OUTPUT_DIR/g7.png" --prompt x --edit "$WORK/green.png" "${over_cap[@]}" --account explicit || image_rc=$?
+assert test "$image_rc" -eq 2
+image_rc=0
+image_run --dest "$OUTPUT_DIR/g7.png" --prompt x --edit "$WORK/green.png" --resume "$RESUMED_SESSION" || image_rc=$?
+assert test "$image_rc" -eq 2
+assert grep -q -- '--edit names the image to edit' "$IMAGE_ERR"
+image_rc=0
+image_run --dest "$OUTPUT_DIR/g7.png" --prompt x --lock-wait later --account explicit || image_rc=$?
+assert test "$image_rc" -eq 2
 # A resumed run is an edit even with no --ref, so image_edit's wider ratio list applies to it.
 assert image_run --dest "$OUTPUT_DIR/resumedwide.jpg" --prompt bluer --aspect 20:9 --resume "$RESUMED_SESSION"
 # A session id no store holds cannot be routed by guessing an account.
@@ -341,7 +370,7 @@ assert grep -q 'Aspect ratio: 1:1' "$FAKE_GROKB_PROMPT"
 assert grep -qx 'account=picked' "$IMAGE_OUT"
 # The footer is the shared image-script contract: the four keys existing consumers already read,
 # in their old positions, then session, model, caps, the composite decision and the lineage.
-assert test "$(cut -d= -f1 "$IMAGE_OUT" | tr '\n' ' ')" = 'dest size format account session model caps composite edit_depth '
+assert test "$(cut -d= -f1 "$IMAGE_OUT" | tr '\n' ' ')" = 'dest size format account session job route model caps composite edit_depth '
 assert grep -qx 'composite=skipped reason=new-generation' "$IMAGE_OUT"
 assert grep -qx "session=$SESSION_UUID" "$IMAGE_OUT"
 assert grep -qx "model=$(jq -r '.model.image' "$MANIFEST") model_caps=fresh" "$IMAGE_OUT"

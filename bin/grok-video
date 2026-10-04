@@ -44,6 +44,7 @@ single_tool=$(caps '.video.tools.single_ref')
 multi_tool=$(caps '.video.tools.multi_ref')
 
 usage() {
+  image_leg_cause "$@"
   printf 'usage: grok-video --dest <absolute .%s path> --prompt <motion description> [--ref <absolute image path>]... [--voice <id>]... [--first-frame <absolute image path>] [--last-frame <absolute image path>] [--keyframe <absolute image path>@<seconds>]... [--duration <seconds>] [--resolution <%s>] [--aspect <ratio>] [--account <profile>] [--resume <session-id>]\n' \
     "$container" "$resolutions" >&2
   printf '  one --ref and no --voice: %s, duration %s, no aspect ratio (set it on the source image)\n' \
@@ -72,26 +73,27 @@ keyframes=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -h | --help) image_leg_help usage ;;
-    --dest) [ "$#" -ge 2 ] || usage; dest=$2; shift 2 ;;
-    --prompt) [ "$#" -ge 2 ] || usage; prompt=$2; shift 2 ;;
-    --ref) [ "$#" -ge 2 ] || usage; refs+=("$2"); shift 2 ;;
-    --voice) [ "$#" -ge 2 ] || usage; voices+=("$2"); shift 2 ;;
-    --first-frame) [ "$#" -ge 2 ] || usage; first_frame=$2; shift 2 ;;
-    --last-frame) [ "$#" -ge 2 ] || usage; last_frame=$2; shift 2 ;;
-    --keyframe) [ "$#" -ge 2 ] || usage; keyframes+=("$2"); shift 2 ;;
-    --duration) [ "$#" -ge 2 ] || usage; duration=$2; shift 2 ;;
-    --resolution) [ "$#" -ge 2 ] || usage; resolution=$2; shift 2 ;;
-    --aspect) [ "$#" -ge 2 ] || usage; aspect=$2; shift 2 ;;
-    --account) [ "$#" -ge 2 ] || usage; account_arg "$2"; account=$2; shift 2 ;;
-    --resume) [ "$#" -ge 2 ] || usage; resume=$2; shift 2 ;;
-    *) usage ;;
+    --dest) [ "$#" -ge 2 ] || usage "$1 needs a value"; dest=$2; shift 2 ;;
+    --prompt) [ "$#" -ge 2 ] || usage "$1 needs a value"; prompt=$2; shift 2 ;;
+    --ref) [ "$#" -ge 2 ] || usage "$1 needs a value"; refs+=("$2"); shift 2 ;;
+    --voice) [ "$#" -ge 2 ] || usage "$1 needs a value"; voices+=("$2"); shift 2 ;;
+    --first-frame) [ "$#" -ge 2 ] || usage "$1 needs a value"; first_frame=$2; shift 2 ;;
+    --last-frame) [ "$#" -ge 2 ] || usage "$1 needs a value"; last_frame=$2; shift 2 ;;
+    --keyframe) [ "$#" -ge 2 ] || usage "$1 needs a value"; keyframes+=("$2"); shift 2 ;;
+    --duration) [ "$#" -ge 2 ] || usage "$1 needs a value"; duration=$2; shift 2 ;;
+    --resolution) [ "$#" -ge 2 ] || usage "$1 needs a value"; resolution=$2; shift 2 ;;
+    --aspect) [ "$#" -ge 2 ] || usage "$1 needs a value"; aspect=$2; shift 2 ;;
+    --account) [ "$#" -ge 2 ] || usage "$1 needs a value"; account_arg "$2"; account=$2; shift 2 ;;
+    --resume) [ "$#" -ge 2 ] || usage "$1 needs a value"; resume=$2; shift 2 ;;
+    *) usage "unknown argument $1" ;;
   esac
 done
 
-[ -n "$dest" ] && [ -n "$prompt" ] || usage
-[[ "$dest" = /* ]] || usage
-[ "$(printf '%s' "${dest##*.}" | tr '[:upper:]' '[:lower:]')" = "$container" ] || usage
-[ -d "$(dirname "$dest")" ] || usage
+[ -n "$dest" ] || usage "missing --dest"
+[ -n "$prompt" ] || usage "missing --prompt"
+[[ "$dest" = /* ]] || usage "--dest must be an absolute path, not $dest"
+[ "$(printf '%s' "${dest##*.}" | tr '[:upper:]' '[:lower:]')" = "$container" ] || usage "--dest $dest must end in .$container"
+[ -d "$(dirname "$dest")" ] || usage "--dest folder $(dirname "$dest") does not exist"
 
 ref_count=${#refs[@]}
 voice_count=${#voices[@]}
@@ -99,24 +101,24 @@ keyframe_count=${#keyframes[@]}
 pinned_count=$keyframe_count
 [ -z "$first_frame" ] || pinned_count=$((pinned_count + 1))
 [ -z "$last_frame" ] || pinned_count=$((pinned_count + 1))
-[ "$ref_count" -le "$refs_max" ] || usage
-[ "$voice_count" -le "$voices_max" ] || usage
-[ "$keyframe_count" -le "$keyframes_max" ] || usage
-[ $((ref_count + voice_count + pinned_count)) -gt 0 ] || usage
+[ "$ref_count" -le "$refs_max" ] || usage "$ref_count --ref images exceed the $refs_max allowed"
+[ "$voice_count" -le "$voices_max" ] || usage "$voice_count --voice ids exceed the $voices_max allowed"
+[ "$keyframe_count" -le "$keyframes_max" ] || usage "$keyframe_count --keyframe images exceed the $keyframes_max allowed"
+[ $((ref_count + voice_count + pinned_count)) -gt 0 ] || usage "no input: pass a --ref, --voice, --first-frame, --last-frame or --keyframe"
 if [ "$ref_count" -gt 0 ]; then
   for ref in "${refs[@]}"; do
-    [[ "$ref" = /* ]] && [ -f "$ref" ] || usage
+    [[ "$ref" = /* ]] && [ -f "$ref" ] || usage "--ref $ref is not an absolute path to a file"
   done
 fi
 for ref in "$first_frame" "$last_frame"; do
-  [ -z "$ref" ] || { [[ "$ref" = /* ]] && [ -f "$ref" ]; } || usage
+  [ -z "$ref" ] || { [[ "$ref" = /* ]] && [ -f "$ref" ]; } || usage "frame $ref is not an absolute path to a file"
 done
 keyframe_times=''
 if [ "$keyframe_count" -gt 0 ]; then
   for keyframe in "${keyframes[@]}"; do
     ref=${keyframe%@*}
-    [ "$ref" != "$keyframe" ] && [[ "$ref" = /* ]] && [ -f "$ref" ] || usage
-    [[ "${keyframe##*@}" =~ ^[0-9]+(\.[0-9]+)?$ ]] || usage
+    [ "$ref" != "$keyframe" ] && [[ "$ref" = /* ]] && [ -f "$ref" ] || usage "--keyframe $keyframe is not <absolute image path>@<seconds>"
+    [[ "${keyframe##*@}" =~ ^[0-9]+(\.[0-9]+)?$ ]] || usage "--keyframe $keyframe has no time in seconds after @"
     keyframe_times+="${keyframe##*@}"$'\n'
   done
 fi
@@ -125,7 +127,7 @@ fi
 # is checked here.
 if [ "$voice_count" -gt 0 ]; then
   for voice in "${voices[@]}"; do
-    [[ "$voice" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || usage
+    [[ "$voice" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || usage "--voice $voice is not a voice id"
   done
 fi
 
@@ -151,7 +153,7 @@ if [ "$tool" = "$single_tool" ]; then
 else
   allowed_durations="$reference_min-$reference_max"
   if [ -n "$duration" ]; then
-    [[ "$duration" =~ ^[0-9]+$ ]] || usage
+    [[ "$duration" =~ ^[0-9]+$ ]] || usage "--duration needs whole seconds, not $duration"
     if [ "$duration" -lt "$reference_min" ] || [ "$duration" -gt "$reference_max" ]; then
       printf 'grok-video: %s takes duration %s, not %s\n' "$multi_tool" "$allowed_durations" "$duration" >&2
       exit 2
@@ -160,7 +162,7 @@ else
   if [ -n "$aspect" ]; then
     case "|$video_aspects|" in
       *"|$aspect|"*) ;;
-      *) usage ;;
+      *) usage "--aspect $aspect is not one of $video_aspects" ;;
     esac
   fi
 fi
@@ -177,14 +179,14 @@ if [ "$keyframe_count" -gt 0 ] && ! printf '%s' "$keyframe_times" | sort -n | aw
 fi
 case "|$resolutions|" in
   *"|$resolution|"*) ;;
-  *) usage ;;
+  *) usage "--resolution $resolution is not one of $resolutions" ;;
 esac
 if [ -n "$resume" ] && ! [[ "$resume" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
   printf 'grok-video: --resume takes the session UUID printed as session= by an earlier run\n' >&2
   exit 2
 fi
 if [ -n "$account" ] && ! grok_media_valid_account "$account"; then
-  usage
+  usage "--account $account is not a profile name"
 fi
 
 ffprobe_cmd="${GROK_VIDEO_FFPROBE:-ffprobe}"

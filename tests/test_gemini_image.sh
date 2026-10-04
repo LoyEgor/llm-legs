@@ -93,8 +93,12 @@ assert grep -qx -- '--account gemini --role image' "$PICK_CALLS"
 assert test -e "$WORKER_CLAIMS_DIR/gemini/picked"
 assert test -e "$WORK/media-starts/gemini/picked"
 assert grep -qx 'ARG=stream-json' "$FAKE_GEMINIB_CALLS"
-printf 'dest=%s\nsize=16x12\nformat=png\naccount=picked\nsession=fixture-session\nmodel=gemini-3.1-flash-image model_caps=fresh\ncaps=fresh\ncomposite=skipped reason=several-inputs\nedit_depth=1 root=%s\n' "$WORK/output/result.png" "$ref" >"$WORK/expected"
+job=$(sed -n 's/^job=//p' "$WORK/out")
+assert grep -Eqx 'gemini-image-[0-9]{8}T[0-9]{6}Z-[0-9]+' <<<"$job"
+printf 'dest=%s\nsize=16x12\nformat=png\naccount=picked\nsession=fixture-session\njob=%s\nroute=cli\nmodel=gemini-3.1-flash-image model_caps=fresh\ncaps=fresh\ncomposite=skipped reason=several-inputs\nedit_depth=1 root=%s\n' "$WORK/output/result.png" "$job" "$ref" >"$WORK/expected"
 assert cmp "$WORK/expected" "$WORK/out"
+assert jq -se --arg job "$job" '.[-1] | .job == $job and .route == "cli" and .requested == 1 and .delivered == 1
+  and .composite == {kind: "skipped", changed: null, reason: "several-inputs"} and (has("fallback_from") | not)' "$IMAGE_LEG_LOG" >/dev/null
 
 : >"$PICK_CALLS"
 assert image_run "${args[@]}" --account explicit
@@ -274,4 +278,94 @@ mkdir -p "$WORK/bare-log"
 assert test -f "$WORK/bare-log/legs.jsonl"
 assert test "$(jq -r '"\(.tool) \(.rc)"' "$WORK/bare-log/legs.jsonl")" = 'probe 4'
 
-printf 'PASS: %s asserts; manifest limits, account isolation, stream paths, resume, brain rescue, model provenance, quota, chroma, no Flash family, composite, edit lineage, and output contract\n' "$asserts"
+# Flow is routes[0]: a route-level failure there (sign-in, busy, limit, unsent) reruns a request the cli
+# route can express on agy; anything sent, refused or unknown, Flow-only flags and --route stay Flow's.
+unset SCRIPT
+route_args=()
+export FLOW_CALLS="$WORK/flow-engine-calls"
+cat >"$WORK/bin/fake-flow" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >"$FLOW_CALLS"
+fail() { printf '{"ok": false, "reason": "%s", "account": "flowacct"%s}\n' "$2" "$3"; exit "$1"; }
+case "${FLOW_MODE:-unset}" in
+  signin) fail 4 'no browser login' ', "sent": false' ;;
+  busy) fail 5 'every Flow account is busy' ', "sent": false' ;;
+  limit) fail 3 'every Flow account is walled' ', "sent": false' ;;
+  unsent) fail 1 'Flow UI drift before the prompt' ', "sent": false' ;;
+  sent) fail 1 'no image came back' ', "sent": true' ;;
+  limit-sent) fail 3 'walled after the prompt went' ', "sent": true' ;;
+  unknown) fail 1 'crashed' '' ;;
+  refused) fail 1 'Flow refused the image: PUBLIC_ERROR_UNSAFE' ', "sent": false' ;;
+  *) exit 99 ;;
+esac
+EOF
+chmod +x "$WORK/bin/fake-flow"
+export FLOW_IMAGE_ENGINE="$WORK/bin/fake-flow"
+flow_run() { # mode args...
+  local mode=$1
+  shift
+  rm -f "$FLOW_CALLS"
+  : >"$FAKE_GEMINIB_CALLS"
+  flow_rc=0
+  FLOW_MODE=$mode image_run "$@" || flow_rc=$?
+}
+for trigger in signin:sign-in busy:busy limit:limit unsent:not-sent; do
+  flow_run "${trigger%:*}" "${args[@]}" --aspect 2:3 --account explicit --lock-wait 45
+  assert test "$flow_rc" -eq 0
+  assert grep -qx 45 <<<"$(grep -A1 -x -- --lock-wait "$FLOW_CALLS")"
+  assert grep -qx 3:4 "$FLOW_CALLS"
+  assert grep -qx 'ARG=explicit' "$FAKE_GEMINIB_CALLS"
+  assert grep -qx 'AspectRatio: 2:3' "$FAKE_GEMINIB_PROMPT"
+  assert grep -qx 'route=cli' "$WORK/out"
+  assert grep -qx 'fallback_from=flow' "$WORK/out"
+  assert grep -qx "fallback_reason=${trigger#*:}" "$WORK/out"
+  assert grep -qx 'account=explicit' "$WORK/out"
+  assert jq -e --arg why "${trigger#*:}" '.rc == 0 and .route == "cli" and .fallback_from == "flow" and .fallback_reason == $why
+    and .requested == 1 and .delivered == 1' <<<"$(tail -n 1 "$IMAGE_LEG_LOG")" >/dev/null
+done
+for stays in sent:1 limit-sent:3 unknown:1 refused:1; do
+  flow_run "${stays%:*}" "${args[@]}" --account explicit
+  assert test "$flow_rc" -eq "${stays#*:}"
+  assert test -s "$FLOW_CALLS"
+  assert test ! -s "$FAKE_GEMINIB_CALLS"
+  assert jq -e '.route == "flow" and (has("fallback_from") | not) and .delivered == 0' <<<"$(tail -n 1 "$IMAGE_LEG_LOG")" >/dev/null
+done
+for blocked in "--route flow" "--count 2" "--model nb2" "--aspect 21:9" "--ref $ref --ref $ref --ref $ref --ref $ref"; do
+  read -r -a blocked_args <<<"$blocked"
+  flow_run signin "${args[@]}" "${blocked_args[@]}"
+  assert test "$flow_rc" -eq 4
+  assert test -s "$FLOW_CALLS"
+  assert test ! -s "$FAKE_GEMINIB_CALLS"
+done
+flow_run busy "${args[@]}" --route flow
+assert test "$flow_rc" -eq 5
+assert grep -qx 'ACCOUNT_BUSY account=flowacct' "$WORK/err"
+flow_run busy "${args[@]}" --count 3
+assert test "$flow_rc" -eq 5
+assert grep -qx 'ACCOUNT_BUSY account=flowacct' "$WORK/err"
+flow_run signin "${args[@]}" --lock-wait -1
+assert test "$flow_rc" -eq 2
+assert test ! -e "$FLOW_CALLS"
+
+# --edit is the composite base and the first reference on both routes; the other refs are references only.
+"$REAL_MAGICK" -size 16x12 'xc:#00FF00' "PNG24:$WORK/edit-base.png"
+"$REAL_MAGICK" -size 16x12 'xc:#FF0000' "PNG24:$WORK/style-a.png"
+"$REAL_MAGICK" -size 16x12 'xc:#0000FF' "PNG24:$WORK/style-b.png"
+edit_args=(--edit "$WORK/edit-base.png" --ref "$WORK/style-a.png" --ref "$WORK/style-b.png")
+flow_run signin "${args[@]}" --route flow "${edit_args[@]}"
+assert test "$(grep -A1 -x -- --ref "$FLOW_CALLS" | grep -v -x -- --ref | grep -v -x -- -- | tr '\n' ' ')" = \
+  "$WORK/edit-base.png $WORK/style-a.png $WORK/style-b.png "
+assert grep -qx 'The first image is the one to edit; the other images are references only.' "$FLOW_CALLS"
+route_args=(--route cli)
+assert image_run "${args[@]}" "${edit_args[@]}" --account explicit
+assert test "$(grep -x -- "- $WORK/[a-z-]*.png" "$FAKE_GEMINIB_PROMPT" | tr '\n' ' ')" = \
+  "- $WORK/edit-base.png - $WORK/style-a.png - $WORK/style-b.png "
+assert grep -qx 'The first image is the one to edit; the other images are references only.' "$FAKE_GEMINIB_PROMPT"
+assert grep -Eqx 'composite=auto changed=[0-9.]+%' "$WORK/out"
+assert grep -qx "edit_depth=1 root=$WORK/edit-base.png" "$WORK/out"
+assert jq -e '.composite.kind == "auto" and .size == 4' <<<"$(tail -n 1 "$IMAGE_LEG_LOG")" >/dev/null
+expect_rc 2 "${args[@]}" "${edit_args[@]}" --ref "$ref" --account explicit
+expect_rc 2 "${args[@]}" --edit "$WORK/edit-base.png" --resume fixture-session --account explicit
+assert grep -q -- '--edit names the image to edit' "$WORK/err"
+
+printf 'PASS: %s asserts; manifest limits, account isolation, stream paths, resume, brain rescue, model provenance, quota, chroma, no Flash family, composite, edit lineage, output contract, flow-to-cli fallback only on sign-in/busy/limit/unsent for a cli-expressible request, exit 5 ACCOUNT_BUSY, --lock-wait forwarded, and --edit as composite base and first reference\n' "$asserts"

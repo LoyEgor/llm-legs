@@ -52,7 +52,7 @@ night() { bash "$ROOT/bin/night-run" "$@"; }
 record() { printf '%s/%s.json' "$NIGHTS" "$1"; }
 doc() { jq -n --argjson n "$2" --argjson p "${3:-[]}" '{contract: 1, problem_count: $n, problems: $p}' >"$WORK/$1/latest.json"; }
 doc llm 5
-doc harness 3 '[{"state": "new"}, {"state": "open"}, {"state": "regressed"}, {"state": "watch", "fact": "fine"}]'
+doc harness 3 '[{"id": "h1", "state": "new"}, {"id": "h2", "state": "open"}, {"id": "h3", "state": "regressed"}, {"id": "h4", "state": "watch", "fact": "fine"}]'
 
 # start: the record, the orchestrator chat on the main checkout with the sweep word, the session.
 night start >"$WORK/out" || fail "start failed"
@@ -60,9 +60,12 @@ id=$(sed -n 's/^night \([0-9]\{8\}T[0-9]\{6\}Z-[0-9a-f]\{4\}\) started: orchestr
 assert [ -n "$id" ]
 R=$(record "$id")
 assert jqe 'keys == (["id", "started_at", "finished_at", "session", "account", "command", "note",
-  "doctors_before", "doctors_after", "doctor_states_before", "doctor_states_after", "jobs"] | sort)' "$R"
+  "doctors_before", "doctors_after", "doctor_states_before", "doctor_states_after",
+  "doctor_problems_before", "doctor_problems_after", "jobs"] | sort)' "$R"
 assert jqe '.doctor_states_before == {llm: {proved: 0, pending: 0, open: 0, new: 0, regressed: 0},
   harness: {proved: 0, pending: 0, open: 1, new: 1, regressed: 1}, updater: null, code: null} and .doctor_states_after == null' "$R"
+assert jqe '.doctor_problems_before == {llm: {}, harness: {h1: "new", h2: "open", h3: "regressed", h4: "watch"},
+  updater: null, code: null} and .doctor_problems_after == null' "$R"
 assert jqe '.doctors_before == {llm: 5, harness: 3, updater: null, code: null} and .doctors_after == null and .jobs == []
   and .finished_at == null and .account == "acct-n"' "$R"
 session=$(jq -r .session "$R")
@@ -248,16 +251,18 @@ assert [ "$(wc -l <"$WORK/menu" | tr -d ' ')" = 13 ]
 
 # finish: doctors after, pending becomes left with a reason; a second finish refuses.
 doc llm 1
-doc harness 0 '[{"state": "fixed-pending", "fact": "fixed · 25 events since · 0 matched · a fix"},
-  {"state": "fixed-pending", "fact": "unproven · 3 events since · 0 matched, needs 20 events and none matched · b"},
-  {"state": "fixed-pending", "fact": "fixed · 30 events since · 2 matched · c"}, {"state": "new"}, {"state": "new"}]'
-doc updater 2 '[{"state": "watch", "rule": "fix-proof", "fact": "W1 · fixed 0d · 0 since · 0 matched · unproven"}]'
+doc harness 0 '[{"id": "c1", "state": "fixed-pending", "fact": "fixed · 25 events since · 0 matched · a fix"},
+  {"id": "c2", "state": "fixed-pending", "fact": "unproven · 3 events since · 0 matched, needs 20 events and none matched · b"},
+  {"id": "c3", "state": "fixed-pending", "fact": "fixed · 30 events since · 2 matched · c"}, {"id": "c4", "state": "new"}, {"id": "c5", "state": "new"}]'
+doc updater 2 '[{"id": "u1", "state": "watch", "rule": "fix-proof", "fact": "W1 · fixed 0d · 0 since · 0 matched · unproven"}]'
 
 night finish "$id" >/dev/null || fail "finish"
 assert_fails night finish "$id" 2>/dev/null
 assert jqe '.doctors_after == {llm: 1, harness: 0, updater: 2, code: null} and .finished_at != null
   and ([.jobs[] | select(.state == "pending")] | length) == 0
   and ([.jobs[] | select(.ref == "p2")][0] | .state == "left" and .reason == "no outcome recorded by the close")' "$R"
+assert jqe '.doctor_problems_after == {llm: {}, harness: {c1: "proved", c2: "pending", c3: "pending", c4: "new", c5: "new"},
+  updater: {u1: "pending"}, code: null}' "$R"
 mkdir -p "$DOCTORS_DIR/runs"
 printf '{"decisions": [{"id": "load:busy", "component": "unverified"}, {"id": "R1"}, {"id": "reading-miss:x", "component": "unverified"}]}\n' \
   >"$DOCTORS_DIR/runs/llm-20260930T010203Z.json"
@@ -275,7 +280,9 @@ assert grep -qxF "left · debt · debt-round · hung: idle 1800" "$WORK/report"
 assert grep -qxF "failed-launch · fixer · harness-r1 · night/$id/harness-r1 · opener" "$WORK/report"
 assert grep -qxF "total · 2 merged · 8 left · 1 failed-launch · 1 blocked-on-egor · pushed" "$WORK/report"
 assert grep -qE "^blocked-on-egor · debt · p1( · [^ ]+)* · step 10 needs his word$" "$WORK/report"
-assert [ "$(wc -l <"$WORK/report" | tr -d ' ')" = 19 ]
+assert [ "$(wc -l <"$WORK/report" | tr -d ' ')" = 27 ]
+assert [ "$(sed -n 2p "$WORK/report")" = "jobs · merged 2 (fixer 1, vendor 1) · left 8 (debt 8) · other 2 (debt 1, fixer 1)" ]
+assert [ "$(sed -n 9p "$WORK/report" | cut -d' ' -f1-2)" = "night $id" ]
 assert [ "$(awk '{ print length }' "$WORK/report" | sort -n | tail -1)" -le 100 ]
 assert cmp -s "$WORK/report" <(night report)
 
@@ -319,7 +326,7 @@ night job "$id2" set v1 state=nothing-to-do >/dev/null
 night finish "$id2" >/dev/null
 day2=$(jq -r '.started_at | fromdateiso8601 | strflocaltime("%d %b") | ltrimstr("0")' "$(record "$id2")")
 assert [ "$(night latest --menu | head -1)" = "$(printf 'Last night %s: 2 of 2\t0\t0\t%s' "$day2" "$id2")" ]
-night report | head -1 | grep -q "^night $id2 " || fail "report without an id reads the latest night"
+night report | sed -n 9p | grep -q "^night $id2 " || fail "report without an id reads the latest night"
 night job "$id2" set v1 state=merged "commits=repo:$local_hash" >/dev/null
 assert [ "$(night latest --menu | head -1)" = "$(printf 'Last night %s: 2 of 2 · 1 not pushed yet\t2\t0\t%s' "$day2" "$id2")" ]
 assert grep -qxF "$(printf 'v1 update · not pushed yet\t2\t\tv1\tvendor\t0')" <(night latest --menu)
@@ -357,7 +364,7 @@ pkill -f -- "--session-id $(jq -r .session "$(record "$id3")")"
 while pgrep -f -- "--session-id $(jq -r .session "$(record "$id3")")" >/dev/null; do sleep 0.1; done
 night start >"$WORK/out" || fail "start after the orchestrator chat ended"
 id4=$(sed -n 's/^night \([^ ]*\) started:.*/\1/p' "$WORK/out")
-assert [ "$(night report "$id3" | head -1)" = "night $id3 · $(jq -r '.started_at | fromdateiso8601 | strflocaltime("%H:%M")' "$(record "$id3")")–- · UNFINISHED" ]
+assert [ "$(night report "$id3" | sed -n 9p)" = "night $id3 · $(jq -r '.started_at | fromdateiso8601 | strflocaltime("%H:%M")' "$(record "$id3")")–- · UNFINISHED" ]
 rm "$(record "$id")" "$(record "$id2")" "$(record "$id4")"
 IFS=$'\t' read -r text red running _ < <(night latest --menu)
 assert [ "$text" = "Last night $(jq -r '.started_at | fromdateiso8601 | strflocaltime("%d %b") | ltrimstr("0")' "$(record "$id3")"), stopped early: no jobs" ]
@@ -585,6 +592,28 @@ done
 assert_fails night job "$idc" add leftover stale-open --branch x 2>/dev/null
 assert git -C "$WORK/repo" rev-parse -q --verify refs/heads/landed-x >/dev/null
 assert [ -d "$wt/fresh" ] && [ -d "$wt/stale-open" ]
+# A branch live only by activity under 6 h is adopted once its owner hands it over with --ready, recorded
+# with who, when and why; any other live reason still refuses, and a quiet old branch needs no handover.
+assert_fails night job "$idc" add leftover edited 2>"$WORK/err"
+assert grep -qF "edited is live in repo: active" "$WORK/err"
+assert grep -qF -- 'its owner hands it over with --ready "<why>"' "$WORK/err"
+old worktree add -q -b held "$wt/held" "$side_hash"
+(cd "$wt/held" && exec sleep 600) >/dev/null 2>&1 &
+printf '%s\n' "$!" >>"$DATA/orchestrators"
+sleep 0.5
+assert_fails night job "$idc" add leftover held --ready "owner says done" 2>"$WORK/err"
+assert grep -qxF "night-run: held is live in repo: a process inside" "$WORK/err"
+assert_fails night job "$idc" add debt handed --ready "owner says done" 2>/dev/null
+assert [ -d "$wt/edited" ]
+CLAUDE_CODE_SESSION_ID=owner-1 night job "$idc" add leftover edited --ready "owner declared it finished" >"$WORK/out" ||
+  fail "a handed-over branch is adopted"
+assert grep -qxF "night $idc: job leftover leftover-edited added" "$WORK/out"
+assert [ "$(git -C "$WORK/repo" show "night/$idc/leftover-edited:wip")" = wip ]
+assert jqe '.jobs[-1] | .ref == "leftover-edited" and .handover.by == "owner-1"
+  and .handover.why == "owner declared it finished" and (.handover.at | test("^[0-9-]+T[0-9:]+Z$"))' "$(record "$idc")"
+assert jqe '[.jobs[] | select(.ref == "leftover-stale-dirty" or .ref == "leftover-stale-bare") | has("handover")] == [false, false]' "$(record "$idc")"
+assert grep -qE "^pending · leftover · leftover-edited · .* · handed over by owner-1 at [0-9]{2}:[0-9]{2}: owner declared it finished$" \
+  <(night report "$idc")
 # One name, every sweep repository: a leftover branch in two repositories is adopted in both as one job;
 # live in any of them, it is refused everywhere.
 git init -q -b main "$WORK/repo2"
@@ -668,6 +697,161 @@ for opener in "$dead" null; do
   assert [ "$(night latest --menu | head -1 | cut -f3)" = 0 ]
   assert grep -q 'UNFINISHED' <(night report 2>/dev/null; night latest --menu)
 done
+
+# report's header: the orchestrator's runs, rounds and transcripts in the night's window, one message
+# counted once, weighed against the newest earlier FINISHED night.
+SP="$WORK/spend"
+spend_night() { # id started finished-or-null session jobs
+  jq -n --arg i "$1" --arg s "$2" --argjson f "$3" --arg o "$4" --argjson j "${5:-[]}" '{id: $i, started_at: $s,
+    finished_at: $f, session: $o, account: null, command: null, note: null, doctors_before: {}, doctors_after: null,
+    jobs: $j}' >"$SP/doctors/nights/$1.json"
+}
+assistant() { # id timestamp usage-json
+  jq -nc --arg i "$1" --arg t "$2" --argjson u "$3" '{type: "assistant", timestamp: $t, message: {id: $i, usage: $u}}'
+}
+spend_run() { # run launcher meta-json
+  mkdir -p "$SP/runs/$1"
+  printf '%s\n' "$2" >"$SP/runs/$1/launcher"
+  printf '%s\n' "$3" >"$SP/runs/$1/meta.json"
+}
+mkdir -p "$SP/doctors/nights" "$SP/profiles/p1/projects/-x/S1/subagents" "$SP/profiles/p2/projects/-x" \
+  "$SP/profiles/p1/projects/-x/T1/subagents" "$SP/codex/acct/sessions/2026/01/02" "$SP/stats/benches"
+spend_night 20260101T000000Z-aaaa 2026-01-01T00:00:00Z '"2026-01-01T01:00:00Z"' S0
+spend_night 20260101T120000Z-cccc 2026-01-01T12:00:00Z null S9
+spend_night 20260103T000000Z-dddd 2026-01-03T00:00:00Z '"2026-01-03T01:00:00Z"' S9
+spend_night 20260102T000000Z-bbbb 2026-01-02T00:00:00Z '"2026-01-02T02:00:00Z"' S1 '[{"ref": "a", "kind": "fixer",
+  "state": "merged", "commits": []}, {"ref": "b", "kind": "fixer", "state": "merged", "commits": []}, {"ref": "c",
+  "kind": "vendor", "state": "merged", "commits": []}, {"ref": "d", "kind": "fixer", "state": "left", "commits": []},
+  {"ref": "e", "kind": "debt", "state": "blocked-on-egor", "commits": []}]'
+assistant o0 2026-01-01T00:10:00Z '{"output_tokens": 1600000}' >"$SP/profiles/p1/projects/-x/S0.jsonl"
+{ assistant o1 2026-01-02T00:10:00.000Z '{"output_tokens": 200000, "cache_read_input_tokens": 10000000}'
+  assistant o2 2026-01-02T03:00:00.000Z '{"output_tokens": 9000000}'; } >"$SP/profiles/p1/projects/-x/S1.jsonl"
+assistant o3 2026-01-02T00:20:00Z '{"cache_creation_input_tokens": 400000}' >"$SP/profiles/p1/projects/-x/S1/subagents/agent-a.jsonl"
+ln -s "$SP/profiles/p1/projects/-x/S1.jsonl" "$SP/profiles/p2/projects/-x/S1.jsonl"
+T1="$SP/profiles/p1/projects/-x/T1.jsonl"
+{ assistant m1 2026-01-02T00:02:00Z '{"cache_creation_input_tokens": 2000000, "cache_read_input_tokens": 10000000, "output_tokens": 200000}'
+  assistant m1 2026-01-02T00:02:00Z '{"cache_creation_input_tokens": 2000000, "cache_read_input_tokens": 10000000, "output_tokens": 200000}'
+  assistant m2 2026-01-02T00:03:00Z '{"output_tokens": 300000}'; } >"$T1"
+assistant m3 2026-01-02T00:04:00Z '{"output_tokens": 500000}' >"$SP/profiles/p1/projects/-x/T1/subagents/agent-b.jsonl"
+opus='"vendor": "claudeb", "account": "p1", "served_model": "claude-opus-5-5"'
+spend_run claudeb-1767312100-1-aaaa S1 "{$opus, \"started_at\": 1767312100, \"ended_at\": 1767315700}"
+printf '%s\n' "$T1" >"$SP/runs/claudeb-1767312100-1-aaaa/session-file"
+spend_run claudeb-1767312200-2-bbbb S1 "{$opus, \"started_at\": 1767315700, \"ended_at\": 1767317500}"
+printf '%s\n' "$T1" >"$SP/runs/claudeb-1767312200-2-bbbb/session-file"
+spend_run codex-1767312300-3-cccc S1 '{"vendor": "codex", "account": "acct", "served_model": "gpt-6-astra",
+  "started_at": 1767312300, "ended_at": 1767314100}'
+printf 'session id: c0dex-5e55\n' >"$SP/runs/codex-1767312300-3-cccc/err"
+{ jq -nc '{type: "event_msg", payload: {type: "token_count", info: {total_token_usage: {input_tokens: 1000000}}}}'
+  jq -nc '{type: "event_msg", payload: {type: "token_count", info: {total_token_usage: {input_tokens: 3000000,
+    cached_input_tokens: 2000000, output_tokens: 400000}}}}'; } >"$SP/codex/acct/sessions/2026/01/02/rollout-c0dex-5e55.jsonl"
+spend_run claudeb-1767312400-4-dddd S2 "{$opus, \"started_at\": 1767312400, \"ended_at\": 1767399999}"
+spend_run claudeb-1767305000-5-eeee S1 "{$opus, \"started_at\": 1767305000, \"ended_at\": 1767399999}"
+spend_run claudeb-1767312500-6-ffff S1 "{$opus, \"started_at\": 1767312500}"
+bench() { mkdir -p "$SP/stats/benches/$1"; printf '%s\n' "$2" >"$SP/stats/benches/$1/meta.json"; }
+bench 20260102T003000Z-1111111 '{"session": "S1"}'
+B="$SP/stats/benches/20260102T003000Z-1111111"
+row='{"id": "r1", "input": 0, "cache_read": 20000000, "cache_5m": 1000000, "cache_1h": 1000000, "output": 600000}'
+printf '%s\n' "$row" >"$B/claude-usage-opus-high~c0.jsonl"
+printf '%s\n' "$row" >"$B/claude-usage-opus-high~c0~a1.jsonl"
+printf '{"id": "j1", "cache_read": 5000000, "output": 400000}\n' >"$B/claude-usage-judge~b1.jsonl"
+printf '{"total_tokens": 5400000}\n' >"$B/usage-judge~b1.jsonl"
+printf '{"total_tokens": 5400000}\n' >"$B/usage-judge.jsonl"
+bench 20260102T010000Z-2222222 '{}'
+printf '{"total_tokens": 3000000}\n' >"$SP/stats/benches/20260102T010000Z-2222222/usage-judge.jsonl"
+bench 20260102T011500Z-3333333 '{"session": "S2"}'
+printf '%s\n' "$row" >"$SP/stats/benches/20260102T011500Z-3333333/claude-usage-x.jsonl"
+bench 20260102T050000Z-4444444 '{"session": "S1"}'
+printf '%s\n' "$row" >"$SP/stats/benches/20260102T050000Z-4444444/claude-usage-x.jsonl"
+TZ=UTC DOCTORS_DIR="$SP/doctors" WORKER_RUN_DIR="$SP/runs" CLAUDEB_PROFILES_ROOT="$SP/profiles" \
+  WORKER_STATS_DIR="$SP/stats" CODEX_PROFILES_DIR="$SP/codex" CHAT_NAME_ROOTS="$SP/profiles/p2/projects:$SP/profiles/p1/projects" \
+  CHAT_NAMES_CACHE="$SP/chat-names.json" night report 20260102T000000Z-bbbb >"$WORK/spend-report" ||
+  fail "spend report"
+assert [ "$(head -8 "$WORK/spend-report")" = "duration · 02 Jan 00:00 – 02 Jan 02:00 · 2.0 h
+jobs · merged 3 (fixer 2, vendor 1) · left 1 (fixer 1) · other 1 (debt 1)
+agents · 4 worker runs (3 claudeb/claude-opus-5-5, 1 codex/gpt-6-astra) · 2.0 h wall-clock · 1 without a transcript
+review rounds · 2
+spend fixers · out 1.4M · cache write 2.0M · cache read 12.0M · 11.7M weighted
+spend reviews · out 1.0M · cache write 2.0M · cache read 25.0M · 13.0M weighted
+spend orchestrator · out 0.2M · cache write 0.4M · cache read 10.0M · 2.5M weighted
+spend total · 27.2M weighted · 3.40× night 20260101T000000Z-aaaa (8.0M)" ]
+assert [ "$(sed -n '9,11p' "$WORK/spend-report")" = "reviews · per-branch 0 rounds (0.0M weighted) · other 2 rounds (13.0M weighted)
+problems · no snapshot
+fixer spend without proof · no snapshot" ]
+assert [ "$(sed -n 12p "$WORK/spend-report" | cut -d' ' -f1-2)" = "night 20260102T000000Z-bbbb" ]
+
+# Observational churn block: review rounds per-branch vs other, problems touched again without proof,
+# regressed from after snapshot, proved excluded, fixer spend without proof, and rewrites in past 7 days.
+CHURN="$WORK/churn"
+mkdir -p "$CHURN/doctors/nights" "$CHURN/doctors/runs" "$CHURN/runs" "$CHURN/stats/benches" "$CHURN/profiles/p1/projects/-x"
+git init -q -b main "$CHURN/repo"
+git -C "$CHURN/repo" config user.email "test@example.com"
+git -C "$CHURN/repo" config user.name "Test"
+printf 'ledger.json linguist-generated\n' >"$CHURN/repo/.gitattributes"
+printf 'line1 old\n' >"$CHURN/repo/code.txt"
+printf 'ignored\n' >"$CHURN/repo/ledger.json"
+git -C "$CHURN/repo" add .
+GIT_AUTHOR_DATE="2026-01-01T00:00:00Z" GIT_COMMITTER_DATE="2026-01-01T00:00:00Z" git -C "$CHURN/repo" commit -q -m "initial"
+printf 'line1 old\nline2 recent\n' >"$CHURN/repo/code.txt"
+git -C "$CHURN/repo" add code.txt
+GIT_AUTHOR_DATE="2026-01-28T00:00:00Z" GIT_COMMITTER_DATE="2026-01-28T00:00:00Z" git -C "$CHURN/repo" commit -q -m "Night sweep 20260128: add line 2"
+printf 'line replacement\n' >"$CHURN/repo/code.txt"
+printf 'new ledger\n' >"$CHURN/repo/ledger.json"
+git -C "$CHURN/repo" add code.txt ledger.json
+GIT_AUTHOR_DATE="2026-01-31T01:00:00Z" GIT_COMMITTER_DATE="2026-01-31T01:00:00Z" git -C "$CHURN/repo" commit -q -m "rewrite lines"
+h_rewrite=$(git -C "$CHURN/repo" rev-parse HEAD)
+printf '%s\n' "$CHURN/repo" >"$CHURN/sweep-repos"
+
+jq -n '{id: "20260130T000000Z-prev", started_at: "2026-01-30T00:00:00Z", finished_at: "2026-01-30T02:00:00Z",
+  session: "S_PREV", account: null, command: null, note: null, doctors_before: {}, doctors_after: null,
+  jobs: [{ref: "run-prev", kind: "fixer", state: "merged", commits: []}]}' >"$CHURN/doctors/nights/20260130T000000Z-prev.json"
+printf '{"id": "run-prev", "doctor": "harness", "decisions": [{"id": "P_OPEN"}, {"id": "P_PROVED"}]}\n' \
+  >"$CHURN/doctors/runs/run-prev.json"
+
+jq -n --arg h "$h_rewrite" --arg r "$CHURN/repo" '{id: "20260131T000000Z-now", started_at: "2026-01-31T00:00:00Z",
+  finished_at: "2026-01-31T02:00:00Z", session: "S_NOW", account: null, command: null, note: null,
+  doctors_before: {}, doctors_after: null,
+  doctor_problems_before: {harness: {P_OPEN: "open", P_PROVED: "open"}},
+  doctor_problems_after: {harness: {P_OPEN: "open", P_PROVED: "proved", P_REG: "regressed"}},
+  jobs: [
+    {ref: "run-unproven", kind: "fixer", state: "merged", branch: "night/20260131T000000Z-now/run-unproven",
+     review: null, commits: [{repo: $r, hash: $h}]},
+    {ref: "run-proven", kind: "fixer", state: "merged", branch: "night/20260131T000000Z-now/run-proven",
+     review: "20260131T003000Z-bench-per-branch", commits: []}
+  ]}' >"$CHURN/doctors/nights/20260131T000000Z-now.json"
+printf '{"id": "run-unproven", "doctor": "harness", "decisions": [{"id": "P_OPEN"}]}\n' \
+  >"$CHURN/doctors/runs/run-unproven.json"
+printf '{"id": "run-proven", "doctor": "harness", "decisions": [{"id": "P_PROVED"}]}\n' \
+  >"$CHURN/doctors/runs/run-proven.json"
+
+mkdir -p "$CHURN/runs/claudeb-1769821200-1-unproven" "$CHURN/runs/claudeb-1769822400-2-proven"
+printf 'S_NOW\n' >"$CHURN/runs/claudeb-1769821200-1-unproven/launcher"
+printf 'S_NOW\n' >"$CHURN/runs/claudeb-1769822400-2-proven/launcher"
+printf '{"vendor": "claudeb", "started_at": 1769821200, "ended_at": 1769822000, "ref": "run-unproven"}\n' \
+  >"$CHURN/runs/claudeb-1769821200-1-unproven/meta.json"
+printf '{"vendor": "claudeb", "started_at": 1769822400, "ended_at": 1769823000, "ref": "run-proven"}\n' \
+  >"$CHURN/runs/claudeb-1769822400-2-proven/meta.json"
+assistant u1 2026-01-31T00:10:00Z '{"output_tokens": 1000000}' >"$CHURN/profiles/p1/projects/-x/U1.jsonl"
+assistant u2 2026-01-31T00:20:00Z '{"output_tokens": 2000000}' >"$CHURN/profiles/p1/projects/-x/U2.jsonl"
+printf '%s\n' "$CHURN/profiles/p1/projects/-x/U1.jsonl" >"$CHURN/runs/claudeb-1769821200-1-unproven/session-file"
+printf '%s\n' "$CHURN/profiles/p1/projects/-x/U2.jsonl" >"$CHURN/runs/claudeb-1769822400-2-proven/session-file"
+
+mkdir -p "$CHURN/stats/benches/20260131T003000Z-bench-per-branch" "$CHURN/stats/benches/20260131T010000Z-bench-other"
+printf '{"session": "S_NOW"}\n' >"$CHURN/stats/benches/20260131T003000Z-bench-per-branch/meta.json"
+printf '{"session": "S_NOW"}\n' >"$CHURN/stats/benches/20260131T010000Z-bench-other/meta.json"
+printf '{"id": "b1", "output": 400000}\n' >"$CHURN/stats/benches/20260131T003000Z-bench-per-branch/claude-usage-x.jsonl"
+printf '{"id": "b2", "output": 600000}\n' >"$CHURN/stats/benches/20260131T010000Z-bench-other/claude-usage-x.jsonl"
+
+TZ=UTC DOCTORS_DIR="$CHURN/doctors" WORKER_RUN_DIR="$CHURN/runs" CLAUDEB_PROFILES_ROOT="$CHURN/profiles" \
+  WORKER_STATS_DIR="$CHURN/stats" NIGHT_RUN_SWEEP_REPOS="$CHURN/sweep-repos" \
+  CHAT_NAME_ROOTS="$CHURN/profiles/p1/projects" CHAT_NAMES_CACHE="$CHURN/chat-names.json" \
+  night report 20260131T000000Z-now >"$WORK/churn-report" || fail "churn report"
+
+assert [ "$(sed -n '9,14p' "$WORK/churn-report")" = "reviews · per-branch 1 rounds (2.0M weighted) · other 1 rounds (3.0M weighted)
+problems · 1 touched again without proof · 1 regressed
+problem · harness/P_OPEN · nights touched 2 · now open
+fixer spend without proof · 5.0M weighted of 15.0M
+rewrite · 1 of 2 lines deleted tonight were written in the 7 days before (1 by earlier night commits)
+night 20260131T000000Z-now · 00:00–02:00" ]
 
 # No night at all: the menu prints nothing.
 rm "$NIGHTS"/*.json

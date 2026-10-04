@@ -70,7 +70,7 @@ leaves = sum(v for area in doc["partition"].values() for v in area.values())
 check(abs(leaves - doc["headline"]) < 0.1 and all(abs(sum(doc["partition"][a].values()) - v) < 0.05
                                                    for a, v in doc["areas"].items()),
       "the partition's leaves sum to their areas and to the headline: %.2f vs %.1f" % (leaves, doc["headline"]))
-check(doc["head"] == "179 min/day · R 2/10: 88/238", "the headline: %s" % doc["head"])
+check(doc["head"] == "179 OM/d · 3.9 of 7 days covered · R 2/10: 88/238", "the headline: %s" % doc["head"])
 backlog = [p for p in doc["problems"] if p["rule"] == "opportunity"]
 check([p["id"] for p in backlog] == ["opportunity:chat/hooks", "opportunity:chat/tests"],
       "the backlog by score holds only equivalent levers; risk levers with no quality evidence are not shown: %s"
@@ -93,6 +93,22 @@ check(doc["partition"]["chat"]["model"] > 0 and not [p for p in doc["problems"] 
 module_loader = importlib.machinery.SourceFileLoader("speed_doctor", os.path.join(root, "bin", "speed-doctor"))
 module = importlib.util.module_from_spec(importlib.util.spec_from_loader("speed_doctor", module_loader))
 module_loader.exec_module(module)
+check(doc["coverage"] == {"days": 3.91, "window_days": 7, "backfill_files_done": 0, "backfill_files": 0}
+      and doc["why_none"] is None and all(0 < p["opportunity"]["data_confidence"] <= round(4 / 7.0, 2) for p in backlog)
+      and [module.seen_need("seen_days", d) for d in (7, 3.91, 1)] == [3, 2, 1],
+      "3.9 covered days still select, with a lower data confidence and the seen filters scaled to them: %s"
+      % [p["opportunity"].get("data_confidence") for p in backlog])
+early_dir = os.path.join(work, "harness-early")
+shutil.copytree(os.path.join(work, "harness"), early_dir)
+with open(os.path.join(early_dir, "events", h.local_day(HI - 6 * 86400) + ".jsonl"), "w") as handle:
+    handle.write(json.dumps(["w", HI - 6 * 86400, "x"]) + "\n")
+early, _ = speed("speed-early", HARNESS_DOCTOR_DIR=early_dir)
+check(early["window"] == doc["window"] and early["headline"] == doc["headline"],
+      "an events file from before Harness's turn rows began never widens the window: %s" % early["window"])
+spike, pattern = ({"id": i, "opportunity": {"needs_egor": False, "score": 0.5, "data_confidence": c}}
+                  for i, c in (("a-spike", round(1 / 7.0, 2)), ("b-pattern", round(4 / 7.0, 2))))
+check([o["id"] for o in sorted([spike, pattern], key=module.rank_key)] == ["b-pattern", "a-spike"],
+      "a pattern seen on several days ranks above a one-day spike of the same score")
 check(all(p["opportunity"]["quality"] == "equivalent" and module.OUTPUT_PROOF in p["opportunity"]["proof"]
           for p in backlog), "every ranked lever is equivalent and its proof demands output equivalence on the replay")
 for bad in ({"component": "chat/x", "lever": "switch Opus to Sonnet", "quality": "equivalent"},
@@ -148,7 +164,7 @@ check(module.covers({"chat.om_per_100_prompts|all|-": {"days": 6}}) == []
 
 menu, _ = speed("speed", "--menu")
 lines = menu.stdout.splitlines()
-check(lines[0] == "T\t0\t%d\tHarness doctor: OK" % HI and lines[1] == "0\t\t\tSpeed: ok · 179 min/day · R 2/10: 88/238"
+check(lines[0] == "T\t0\t%d\tHarness doctor: OK" % HI and lines[1] == "0\t\t\tSpeed: ok · 179 OM/d · 3.9 of 7 days covered · R 2/10: 88/238"
       and "1\t\t\tChat turns: 103 min/day · model 64 · tools 30 · tests 5.4" in lines
       and "1\t\t\tDelegation: +76 min/day · workers 54 · background Bash 17 · media 2.7" in lines
       and "2\td\t\t1 · chat/hooks · saves <1 min/day · S · provable-absence fast path for the hook setting the Pre-Bash floor"
@@ -222,6 +238,18 @@ job = json.load(open(os.path.join(resumed, "state.json")))["backfill"]
 check(not job["todo"] and job["stored"] and done["headline"] == cold["headline"]
       and done["selection"] == cold["selection"] and "backfill" not in [b["id"] for b in done["blind_spots"]],
       "the resumed backfill finishes and later runs read its rows, never the transcripts again: %s" % done["headline"])
+job = {"files": 1, "todo": [1]}
+while len(job["todo"]) * 2 > job["files"]:
+    speed("speed-half", "--quiet", HARNESS_DOCTOR_DIR=blank_dir, SPEED_DOCTOR_BACKFILL_S="0", **transcripts)
+    job = json.load(open(os.path.join(work, "speed-half", "state.json")))["backfill"]
+half, _ = speed("speed-half", HARNESS_DOCTOR_DIR=blank_dir, SPEED_DOCTOR_BACKFILL_S="0", **transcripts)
+same_days = sum(cold["om_by_day"][d] for d in half["om_by_day"]) / max(half["window"]["days"], 0.01)
+check(half["coverage"] == {"days": 2.91, "window_days": 7, "backfill_files_done": 21, "backfill_files": 40}
+      and half["selection"][:1] == cold["selection"] and half["why_none"] is None
+      and abs(half["headline"] - same_days) <= 0.1 * same_days and min(half["om_by_day"]) == "2026-09-30"
+      and "backfill" in [b["id"] for b in half["blind_spots"]] and half["head"].startswith("213 OM/d · 2.9 of 7 days"),
+      "a half-done backfill counts only the days it read in full: %s OM/d vs %s over the same days, %s"
+      % (half["headline"], round(same_days, 1), half["coverage"]))
 
 days = os.path.join(work, "speed-judged", "days")
 os.makedirs(days)
@@ -284,7 +312,7 @@ check([p["state"] for p in bare["problems"]] == ["new", "new", "open"] and "spee
       and not [p for p in bare["problems"] if "judged_by" in p] and bare["problem_count"] == 3,
       "without a section every rule gets its own verdict back")
 lines = h.menu_text(merged).splitlines()
-check(lines[1].startswith("0\t\tr:") and "Speed: 1 problem · 179 min/day" in lines[1]
+check(lines[1].startswith("0\t\tr:") and "Speed: 1 problem · 179 OM/d · 3.9 of 7 days covered" in lines[1]
       and lines.index("1\t\t\tWaits: watch · a wait") > 1 and any(l.startswith("0\t") and "Guards: 1 problem" in l
                                                                    for l in lines),
       "the Speed line heads the menu with its count, the Waits section under it, Guards after it: %s" % lines[1:3])
@@ -317,7 +345,7 @@ latest = json.load(open(os.path.join(harness_dir, "latest.json")))
 first = latest["speed"]
 menu_txt = open(os.path.join(harness_dir, "menu.txt")).read().splitlines()
 check(out.returncode == 0 and first["headline"] == doc["headline"] and counted_once(latest)
-      and menu_txt[1] == "0\t\tr:7:9\tSpeed: 1 problem · 179 min/day · R 2/10: 88/238"
+      and menu_txt[1] == "0\t\tr:7:9\tSpeed: 1 problem · 179 OM/d · 3.9 of 7 days covered · R 2/10: 88/238"
       and latest["problems"][0]["state"] == "new" and latest["problem_count"] == 3
       and not os.path.exists(os.path.join(own, "latest.json")) and not os.path.exists(os.path.join(own, "menu.txt")),
       "a persisting run lays its section into Harness's latest.json and the top of its menu.txt and writes neither "
@@ -464,4 +492,4 @@ print(count[0])
 EOF
 ) || { printf 'FAIL: the Speed block misjudged the calibration fixture\n' >&2; exit 1; }
 
-printf 'PASS: %s asserts; speed-doctor turns Harness'"'"'s owner turns and delegations into 179.3 OM/d with its R band, a partition that sums to it, a scored backlog of equivalent levers only (forbidden model/effort/thinking/vendor levers rejected at load, risk levers only as evidenced needs-Egor proposals, yield proven only with output equivalence), presence, presence judged per row (unlogged days keep the R proxy), a resumable transcript backfill for a fresh state counting each turn once, two-day regressions, a merge into the Harness document and the top of its menu with each rule counted once, heavy-suite and hot-hook opportunities with their protections, offset reads, a 35-day journal prune and its exec from Harness\n' "$asserts"
+printf 'PASS: %s asserts; speed-doctor turns Harness'"'"'s owner turns and delegations into 179.3 OM/d with its R band, a partition that sums to it, a scored backlog of equivalent levers only (forbidden model/effort/thinking/vendor levers rejected at load, risk levers only as evidenced needs-Egor proposals, yield proven only with output equivalence), presence, presence judged per row (unlogged days keep the R proxy), a resumable transcript backfill for a fresh state counting each turn once, newest files first, its window only the days it read in full (half done: same OM/d as the full fixture over those days, a non-empty pick), short coverage selecting with seen filters scaled and a lower data confidence, a several-day pattern above a one-day spike, two-day regressions, a merge into the Harness document and the top of its menu with each rule counted once, heavy-suite and hot-hook opportunities with their protections, offset reads, a 35-day journal prune and its exec from Harness\n' "$asserts"

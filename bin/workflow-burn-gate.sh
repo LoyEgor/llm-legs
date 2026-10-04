@@ -23,11 +23,11 @@ $(cat "$script_path" 2>/dev/null)"
 # A relay is reached by its agent type as a string of its own or by a launch; the same words inside
 # prose (a workflow told to review bin/worker-run) reach nothing.
 relay_word=$({
-  grep -oE "['\"\`]((claudeb|codex|gemini|grok|light)-worker|light-research|review-waiter|image-gen)['\"\`]" <<<"$script"
+  grep -oE "['\"\`]((claudeb|codex|gemini|grok|light)-worker|light-research|review-waiter)['\"\`]" <<<"$script"
   grep -oE 'worker-run[[:space:]]+(start|wait)([^A-Za-z0-9_-]|$)|light-research[[:space:]]+-' <<<"$script"
 } 2>/dev/null | head -n1 | grep -oE '[a-z]+-[a-z]+(-[a-z]+)?' | head -n1)
 if [ -n "$relay_word" ]; then
-  jq -cn --arg hook "${0##*/}" --arg r "Blocked: this workflow reaches \`$relay_word\`, but a workflow's agents never get the account·model task row a relay spawned with the Agent tool gets, so Egor could not see what it spends. Spawn relay workers (and review-waiter, light-research, image-gen) with the Agent tool; keep the workflow to native agents on this session's own account." \
+  jq -cn --arg hook "${0##*/}" --arg r "Blocked: this workflow reaches \`$relay_word\`, but a workflow's agents never get the account·model task row a relay spawned with the Agent tool gets, so Egor could not see what it spends. Spawn relay workers (and review-waiter, light-research) with the Agent tool; keep the workflow to native agents on this session's own account." \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:("[" + $hook + "] " + $r)}}' 2>/dev/null
   exit 0
 fi

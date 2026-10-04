@@ -2675,7 +2675,7 @@ if [ -n "$session_id" ]; then
       w_compose
       if [ -n "$fit_cols" ]; then
         fit_width "$w_row"
-        [ "$fit_len" -le "$fit_cols" ] || { w_repo=""; w_compose; fit_width "$w_row"; }
+        [ "$fit_len" -le "$fit_cols" ] || [ "$w_class" = media ] || { w_repo=""; w_compose; fit_width "$w_row"; }
         if [ "$fit_len" -gt "$fit_cols" ] && [ -n "$w_label" ]; then
           w_keep=$(( ${#w_label} - (fit_len - fit_cols) - 1 ))
           if [ "$w_keep" -ge 1 ]; then w_label="${w_label:0:w_keep}…"; else w_label=""; fi

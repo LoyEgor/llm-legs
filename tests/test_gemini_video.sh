@@ -308,7 +308,7 @@ frame, clip = sys.argv[2], sys.argv[3]
 
 def plan(**kw):
     base = dict(model="fast", duration=8, aspect="16:9", resolution="720p", first_frame=None,
-                last_frame=None, ref=[], edit=None, count=1, extend=None)
+                last_frame=None, ref=[], edit=None, count=1, extend=None, lock_wait=900)
     return g.make_plan(argparse.Namespace(**{**base, **kw}))
 
 def refused(**kw):
@@ -392,7 +392,7 @@ def fake_generate_on(account, plan, args):
     return {"ok": True, "account": account}
 g.generate_on = fake_generate_on
 args = argparse.Namespace(model="fast", duration=8, aspect="16:9", resolution="720p", first_frame=None,
-                          last_frame=None, ref=[], edit=None, account=None, count=1, extend=None)
+                          last_frame=None, ref=[], edit=None, account=None, count=1, extend=None, lock_wait=900)
 out = io.StringIO()
 with contextlib.redirect_stdout(out):
     g.cmd_generate(args)
@@ -420,7 +420,7 @@ tried = []
 g.generate_on = lambda account, plan, args: tried.append(account) or {"ok": True, "account": account}
 for name in ("blocked", "main"):
     args = argparse.Namespace(model="fast", duration=8, aspect="16:9", resolution="720p", first_frame=None,
-                              last_frame=None, ref=[], edit=None, account=name, count=1, extend=None)
+                              last_frame=None, ref=[], edit=None, account=name, count=1, extend=None, lock_wait=900)
     try:
         g.cmd_generate(args)
         raise AssertionError(f"{name} off the roster was run")
@@ -438,7 +438,7 @@ assert test ! -e "$GWX/profiles/ghost"
 assert test -e "$GWX/profiles/blocked/Default/Cookies"
 rm -f "$LLM_LIMITS_GEMINI_REMOVED"
 
-# Flow credit totals: a refill jump starts the cycle, and its balance is the cycle's total.
+# Flow credit totals: the plan's monthly credits until a refill jump starts the cycle, whose balance is then its total.
 assert env GEMINI_WEB_DIR="$GW" python3 - "$ROOT/share" <<'EOF'
 import sys
 sys.path.insert(0, sys.argv[1])
@@ -446,8 +446,21 @@ import gemini_web as g
 
 g.write_meta("totals", credits=828)
 g.note_credits("totals", 700)
-assert "credits_refilled_at" not in g.read_meta("totals") and "credits_total" not in g.read_meta("totals"), \
+assert "credits_refilled_at" not in g.read_meta("totals") and "credits_renews_at" not in g.read_meta("totals"), \
     "a spend counted as a refill"
+assert g.read_meta("totals")["credits_total"] == g.FLOW_MONTHLY_CREDITS == 1050, "no cycle total before a refill"
+g.write_meta("rich", credits=None)
+g.note_credits("rich", 24000)
+assert g.read_meta("rich")["credits_total"] == 24000, "a balance above the plan's credits made a used share below zero"
+import contextlib, io, json
+(g.ROOT / "profiles" / "totals").mkdir(parents=True, exist_ok=True)
+g.write_meta("totals", generation_started_at=1791000000)
+g.roster = lambda: ["totals"]
+listing = io.StringIO()
+with contextlib.redirect_stdout(listing):
+    g.cmd_accounts(None)
+row = next(r for r in json.loads(listing.getvalue())["accounts"] if r["account"] == "totals")
+assert row["last_used"] == 1791000000, "the fan-out cannot order Flow accounts least recently used first: %r" % row
 g.note_credits("totals", 1050)
 meta = g.read_meta("totals")
 assert meta["credits_total"] == 1050 and meta["credits_renews_at"] == g.month_after(meta["credits_refilled_at"]), meta
@@ -476,7 +489,7 @@ assert g.rotation(20) == ["walled"], g.rotation(20)
 g.write_meta("walled", credits=0, credits_at=now)
 assert g.rotation(20) == [], g.rotation(20)
 args = argparse.Namespace(model="fast", duration=8, aspect="16:9", resolution="720p", first_frame=None,
-                          last_frame=None, ref=[], edit=None, account=None, count=1, extend=None)
+                          last_frame=None, ref=[], edit=None, account=None, count=1, extend=None, lock_wait=900)
 
 def run(**kw):
     try:
@@ -508,6 +521,20 @@ def signed_out(account, plan, args):
     return {"ok": True, "account": account}
 g.generate_on = signed_out
 assert run()[0] == 0 and tried == ["walled", "rich"], tried
+# A walled pinned account is refused unsent; a pinned account's flag walls it like a rotated one's.
+tried.clear()
+g.set_wall("rich", time.time() + 3600)
+code, reason = run(account="rich")
+assert code == 3 and "rich is walled until" in reason and tried == [], (code, reason, tried)
+g.set_wall("rich", None)
+def flagged(account, plan, args):
+    tried.append(account)
+    raise g.Failure(3, "Flow flagged this account", wall_s=g.BLOCK_WALL_SECONDS)
+g.generate_on = flagged
+code, reason = run(account="rich")
+assert code == 3 and tried == ["rich"] and g.walls()["rich"] > time.time() + g.WALL_SECONDS, (code, tried, g.walls())
+g.set_wall("rich", None)
+g.generate_on = signed_out
 tried.clear()
 open(disabled, "w").write("walled\n")
 g._pool = None
@@ -595,7 +622,7 @@ veo, omni, edited, walled, clip, frame, grown = sys.argv[2:9]
 
 def ns(**kw):
     base = dict(model="fast", duration=8, aspect="16:9", resolution="720p", first_frame=None, last_frame=None,
-                ref=[], edit=None, count=1, extend=veo, account=None)
+                ref=[], edit=None, count=1, extend=veo, account=None, lock_wait=900)
     return argparse.Namespace(**{**base, **kw})
 
 def refusal(**kw):
@@ -652,7 +679,7 @@ g.generate_on = poor
 assert run()[0] == 3 and g.walls().get("rich"), g.walls()
 
 g.ledger({"account": "rich", "media_id": "m-up", "project": "p-9", "state": "queued"})
-assert g.job_project("rich", "m-up") == "p-9" and g.job_project("rich", "m-none") == g.read_meta("rich").get("project")
+assert g.job_project("m-up") == "p-9" and g.job_project("m-none") is None
 
 
 class Download:
@@ -791,6 +818,140 @@ try:
 except g.Failure as failure:
     assert "3 launches" in failure.reason and "m-hd --dest" in failure.reason and len(launches) == 2, failure.reason
 
+import json, re
+
+
+def listing(entries):
+    payload = [None, [], [[mid, "p-f", scene, "CAE", None, [[1, 0], "prompt", None, None, None,
+                                                           f"https://lh3.googleusercontent.com/asb/{token}"]]
+                         for mid, scene, token in entries]]
+    return ")]}'\n\n9\n" + json.dumps([["wrb.fr", g.LISTING_RPC, json.dumps(payload), None, None, None, "generic"]])
+
+
+class Grid:
+    """A Flow project page: the grid renders 2 tiles per wheel, the listing reply comes with the page load."""
+
+    def __init__(self, tiles, listed):
+        self.tiles, self.listed, self.shown = tiles, listed, 2
+        self.url, self.listeners, self.rpc, self.items, self.caught = "", [], [], [], None
+        self.mouse = types.SimpleNamespace(wheel=lambda dx, dy: setattr(self, "shown", self.shown + 2))
+        self.context = types.SimpleNamespace(request=types.SimpleNamespace(
+            get=lambda url, **kw: self.rpc.append(url) or types.SimpleNamespace(status=404, body=lambda: b"")))
+
+    def load(self, path):
+        self.url = g.FLOW + path
+        for listener in list(self.listeners):
+            listener(types.SimpleNamespace(url=f"{g.FLOW}/_/x/data/batchexecute?rpcids={g.LISTING_RPC}",
+                                           text=lambda: listing(self.listed)))
+
+    def on(self, event, listener):
+        self.listeners.append(listener)
+
+    def remove_listener(self, event, listener):
+        self.listeners.remove(listener)
+
+    def visible(self):
+        return self.tiles[:self.shown]
+
+    def locator(self, selector):
+        grid = self
+
+        class Tiles:
+            def __init__(self, token=None):
+                self.token = token
+
+            def mine(self):
+                return [t for t in grid.visible() if self.token is None or t[1] == self.token]
+
+            def filter(self, has):
+                return Tiles(re.search(r'src\*="([^"]+)"', has).group(1))
+
+            def locator(self, selector):
+                return self
+
+            def count(self):
+                return len(self.mine())
+
+            def evaluate_all(self, script):
+                return [f"https://flow.google.com/asb/{t[1]}" for t in self.mine()]
+
+            @property
+            def first(self):
+                return types.SimpleNamespace(click=lambda timeout=None: setattr(
+                    grid, "url", f"{g.FLOW}/project/p-f/edit/{self.mine()[0][0]}"))
+
+            @property
+            def last(self):
+                return types.SimpleNamespace(hover=lambda: None)
+
+        return Tiles() if selector == "flow-grid-tile-container" else selector
+
+    def wait_for_url(self, done, timeout=None):
+        assert done(self.url), self.url
+
+    def get_by_role(self, role, name, exact=True):
+        def click(timeout=None):
+            if role == "menuitem":
+                self.items.append(name)
+                self.caught = "blob:https://flow.google.com/clip"
+        return Clickable(click)
+
+    def evaluate(self, script, args=None):
+        if script is g.CATCH_DOWNLOAD:
+            self.caught = None
+        elif script is g.CAUGHT:
+            return self.caught
+        elif script is g.READ_CHUNK:
+            return [len(clip_bytes), base64.b64encode(clip_bytes[args[1]:args[1] + args[2]]).decode()]
+        else:
+            self.rpc.append(script)
+            return ""
+
+    def wait_for_timeout(self, ms):
+        pass
+
+
+clip_bytes = b"\0\0\0\x18ftypmp42" + bytes(range(256)) * 8
+tiles = [(f"s-{n}", f"T{n}") for n in range(7)]
+grid = Grid(tiles, [(f"m-{n}", f"s-{n}", f"T{n}") for n in range(7)] + [("m-gone", "s-gone", "Tgone")])
+
+
+@contextlib.contextmanager
+def grid_browser(account, visible=False):
+    yield types.SimpleNamespace(pages=[grid])
+
+
+g.browser, g.goto_flow = grid_browser, lambda page, path: page.load(path)
+for n in range(7):
+    g.ledger({"account": "rich", "media_id": f"m-{n}", "project": "p-f", "state": "queued"})
+g.ledger({"account": "rich", "media_id": "m-gone", "project": "p-f", "state": "queued"})
+out = io.StringIO()
+with contextlib.redirect_stdout(out):
+    g.cmd_fetch(types.SimpleNamespace(account="rich", media_id="m-5", dest=str(hd / "f.mp4"), resolution="720p"))
+assert not [s for s in grid.rpc if re.search(r"batchexecute|as29s|rpcids", s)], grid.rpc
+assert json.loads(out.getvalue()) == {"ok": True, "account": "rich", "dest": str(hd / "f.mp4"), "media_id": "m-5",
+                                      "bytes": len(clip_bytes)}, out.getvalue()
+assert (hd / "f.mp4").read_bytes() == clip_bytes and grid.shown == 6 and grid.items == [g.ORIGINAL_SIZE], vars(grid)
+assert grid.url.endswith("/project/p-f/edit/s-5") and grid.listeners == [], (grid.url, grid.listeners)
+row = g.job_rows()[-1]
+assert {k: row.get(k) for k in ("account", "media_id", "dest", "state", "scene", "bytes")} == \
+    {"account": "rich", "media_id": "m-5", "dest": str(hd / "f.mp4"), "state": "saved", "scene": "s-5",
+     "bytes": len(clip_bytes)}, row
+grid.shown, grid.items = 2, []
+with contextlib.redirect_stdout(io.StringIO()):
+    g.cmd_fetch(types.SimpleNamespace(account="rich", media_id="m-1", dest=str(hd / "u.mp4"), resolution="1080p"))
+assert grid.items == ["1080p Upscaled"] and grid.shown == 2 and not grid.rpc, vars(grid)
+for media_id, said in (("m-none", "has no Flow project for clip m-none"), ("m-gone", "no tile in its grid"),
+                       ("m-elsewhere", "Flow no longer lists clip m-elsewhere")):
+    if media_id == "m-elsewhere":
+        g.ledger({"account": "rich", "media_id": media_id, "project": "p-f", "state": "queued"})
+    try:
+        g.cmd_fetch(types.SimpleNamespace(account="rich", media_id=media_id, dest=str(hd / "x.mp4"),
+                                          resolution="720p"))
+        raise AssertionError(f"fetch of {media_id} passed")
+    except g.Failure as failure:
+        assert failure.code == 1 and said in failure.reason and not grid.rpc, (failure.reason, grid.rpc)
+
 import fcntl
 (g.ROOT / "locks").mkdir(parents=True, exist_ok=True)
 with open(g.ROOT / "locks" / "beta.lock", "w") as held:
@@ -828,4 +989,4 @@ assert jq -e '.video as $v | ([$v.models[].refs_max] | max) == $v.refs_max
   and ($v.extend.sources | all($v.models[.] != null))
   and ($v.counts | index(1))' "$MANIFEST" >/dev/null
 
-echo "PASS: $asserts asserts; manifest gates refused before any spend (frames vs ingredients, refs per model, resolution, edit source length), 1080p as a 720p render plus upscale, manifest-driven model choice, lone --ref as first frame, refs and --edit passed through, the measured footer with wire-pattern freshness, exit 3 kept to credit walls and exit 4 to unsigned profiles, the engine's media readers on real Flow traffic (the new clip from the generation reply, else by prompt and freshness), the generation request's wire key, the engine's plan and costs, pre-browser engine gates, flagged-account detection (a whole failed envelope, never an old tile) and walled-account rotation least recently started first (a new generation stamps it, an extend or dry run never), --extend found through the job ledger (Veo sources only, untouched files, never an extension, pinned to its account and its walls, 720p) with the extend reply read from real traffic, --count variants priced and listed, a charge that differs from the manifest reported, and the manifest's model/duration/resolution/extend coverage"
+echo "PASS: $asserts asserts; manifest gates refused before any spend (frames vs ingredients, refs per model, resolution, edit source length), 1080p as a 720p render plus upscale, manifest-driven model choice, lone --ref as first frame, refs and --edit passed through, the measured footer with wire-pattern freshness, exit 3 kept to credit walls and exit 4 to unsigned profiles, the engine's media readers on real Flow traffic (the new clip from the generation reply, else by prompt and freshness), the generation request's wire key, the engine's plan and costs, pre-browser engine gates, flagged-account detection (a whole failed envelope, never an old tile) and walled-account rotation least recently started first (a new generation stamps it, an extend or dry run never), --extend found through the job ledger (Veo sources only, untouched files, never an extension, pinned to its account and its walls, 720p) with the extend reply read from real traffic, --count variants priced and listed, a charge that differs from the manifest reported, fetch through the clip's grid tile and editor menu (never a batchexecute/as29s request; no ledger project, no listing entry or no tile = exit 1), and the manifest's model/duration/resolution/extend coverage"

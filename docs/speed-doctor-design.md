@@ -95,7 +95,7 @@ Sources: the 2026-10-02 research notes, now retired: [CT] chat turns, [HC] hooks
 **Clocks.** Durations come from monotonic or elapsed counters where the writer has them; wall jumps and `secs < 0` are flagged, never summed; a span crossing a boot or sleep boundary loses only that slice.
 
 **Collectors**, one append each, all with env overrides for fixtures:
-- **C1, transcript rows**, extending Harness's incremental pass (no second reader): `t` turn rows (session, start, end, origin, R = 2/5/10 flags, partition); `d` delegation rows (launch, notification, follow-up end, reaction); image-gen subagent phase spans by parent tool id; in-flight state kept in `state.json` across passes; model and effort per request (owner chats run Fable as well: ≈ 26.0 k opus xhigh vs ≈ 13.3 k Fable requests in 14 d).
+- **C1, transcript rows**, extending Harness's incremental pass (no second reader): `t` turn rows (session, start, end, origin, R = 2/5/10 flags, partition); `d` delegation rows (launch, notification, follow-up end, reaction); media phase spans by the `media-run` Bash call's tool id; in-flight state kept in `state.json` across passes; model and effort per request (owner chats run Fable as well: ≈ 26.0 k opus xhigh vs ≈ 13.3 k Fable requests in 14 d).
 - **C2, hooks**: `hook-time.sh` appends user+sys CPU (bash `times`); `stop-dispatch` exports `HOOK_TIME_PPID` and tags parts `stop.d/<name>`, kept out of floor batching; day summaries keep floor histograms per (class, band) and per hook, with the counterfactual, ≥ 28 days.
 - **C3, worker-run**: `started_at` keeps its watchdog meaning; adds `cli_starts[]` per attempt, `ended_at`, terminal reason, attempt durations; exports `WORKER_RUN_ID` to children; appends one row per finished run to `worker-stats/runs.jsonl`, kept ≥ 35 d (run dirs are pruned at 7). `worker-relay-hold.sh` adds `relay_returned_at` next to `stopped=`; `notified_at` comes from the transcript queue-operation.
 - **C4, night-run**: `job add/set` stamp their own times; append-only phase events with predecessor ids (debt rounds, repository validation, suite passes, landings, owner pauses).
@@ -107,13 +107,13 @@ Sources: the 2026-10-02 research notes, now retired: [CT] chat turns, [HC] hooks
 - **C10, background journals**: every doctor appends `{doctor, start, wall_s, cpu_s, trigger}` to `~/.cache/doctors/collector-runs.jsonl`; the actions log gains pid, source and sub-second times, and Hammerspoon test harnesses redirect it; `backgroundMenu` builds journal as `doctors:bg`, plus an hs-lag probe line over 50 ms; the merge-kick journals each `llm-limits.sh` run; `llm-refresh` journals a tick id.
 - **C11, chat start**: `claudeb` stamps `EPOCHREALTIME` at entry and before exec; an MCP log fold of the newest `mcp-logs` lines.
 
-**Cost.** Harness is already at its 30 s collector limit, so its extension carries its own measured per-phase budget, ≤ +1 s per run (stage 1 gate). `bin/speed-doctor` reads only derived files and the new journals by offset, ≤ 2 s; Harness execs it after each successful run (no own `StartInterval`), at `ProcessType Background`. It is a consumer in P and judges its own `collector_time:speed`. Its first run backfills the turn and delegation rows of the 28-day baseline window from the owner transcripts through Harness's C1 reader (Harness's offsets predate C1), at most 20 s a run in 4 MB reads, resumed by later runs, rows Harness already holds counted once; later runs read only its own backfill files.
+**Cost.** Harness is already at its 30 s collector limit, so its extension carries its own measured per-phase budget, ≤ +1 s per run (stage 1 gate). `bin/speed-doctor` reads only derived files and the new journals by offset, ≤ 2 s; Harness execs it after each successful run (no own `StartInterval`), at `ProcessType Background`. It is a consumer in P and judges its own `collector_time:speed`. Its first run backfills the turn and delegation rows of the 28-day baseline window from the owner transcripts through Harness's C1 reader (Harness's offsets predate C1), at most 20 s a run in 4 MB reads, resumed by later runs, rows Harness already holds counted once; later runs read only its own backfill files. It reads the newest transcripts first, and a day enters the window only once every transcript that could hold it is read, so OM/d is never diluted by unread days. Egor (2026-10-03): Speed fixes from whatever data exists; history only ranks recurring against one-off and proves before/after, so short coverage lowers confidence and never empties the selection.
 
 ## 3. Judging, proof, selection
 
 **Regression** (red, counted): a unit metric over 1.3 × baseline on two consecutive band-matched days with its class's exposure minimum (hooks 200 calls per band-day, tests 3 complete runs, delegation and media as above, nights ≥ 5), **and** the component is worth ≥ 0.5 OM/d with a lever path. Moved Harness absolute limits are pinned ceilings shown as `watch`, red only at ≥ 0.5 OM/d; collector ceilings are per doctor; the statusline contract's warm p95 ≤ 150 ms (lowest band) joins as a ceiling.
 
-**Opportunity** (`watch`, never counted): a component ≥ 0.5 OM/d, seen on ≥ 3 days or ≥ 3 sessions, with a `LEVERS` row. Id `opportunity:<area>/<component>`; field `opportunity {om_day, saving, confidence, effort_h, night_cost_h, score, levers[]}`, every field stored and the score recomputed from them.
+**Opportunity** (`watch`, never counted): a component ≥ 0.5 OM/d, seen on ≥ 3 days or ≥ 3 sessions (both scaled to the covered share of the 7 days, at least 1), with a `LEVERS` row. Id `opportunity:<area>/<component>`; field `opportunity {om_day, saving, confidence, effort_h, night_cost_h, score, levers[], seen_days, data_confidence}`, every field stored and the score recomputed from them; the backlog ranks by score × `data_confidence` (seen days of 7), `SCORE_MIN` judges the score alone.
 
 **Score** = saving × confidence ÷ (effort_h + night_cost_h), night_cost_h being the slot-queue and first-landing delay its run adds. Confidence 0.8 measured with a mechanical lever, 0.5 estimated, 0.3 unmeasured. Effort S 1 h, M 3 h; an L lever is split into budget-fitting stages; classes recalibrate to closed runs.
 
@@ -152,7 +152,7 @@ Proven reads `fixed · −X <unit> · ≈Y OM/d`. Only `disproven` counts toward
 Illustrative, the top of Harness's menu:
 ```
 Harness doctor: 2 problems
-Speed: 1 problem · 169 min/day · R 2/10: 88/287
+Speed: 1 problem · 169 OM/d · 3.9 of 7 days covered · R 2/10: 88/287
   Chat turns: 99 min/day · model 50 · tools 31 · compaction 4
   Delegation: +70 min/day · workers 56 · background Bash 14 · media <1
   Hooks and tests: of which 4.5 and 9 min/day
@@ -182,7 +182,7 @@ The headline is the strict OM/d. Area lines are "of which" and sum to it (Harnes
 - routing churn: `llm-limits.sh` skips the store rewrite when content minus timestamps is unchanged; `onStoreChanged` forks worker-pick only when the hash of its routing inputs changes;
 - Hammerspoon refresh throttles, under the one-lever-per-night rule and the Hammerspoon canary;
 - doctor collectors' read paths, proven by that doctor's suite and a phase timing;
-- media: absolute binary paths in `image-gen.md`; `timeout 590 tail -F log | grep -m1 '^exit='` instead of sleep polling; lock-aware atomic pick among eligible accounts for unpinned new requests only; fetch before regenerate; event-driven hiding instead of the 0.2 s `osascript` loop; Chrome reuse within a batch and a clone pre-built after an update;
+- media: absolute binary paths in the media instructions; `timeout 590 tail -F log | grep -m1 '^exit='` instead of sleep polling; lock-aware atomic pick among eligible accounts for unpinned new requests only; fetch before regenerate; event-driven hiding instead of the 0.2 s `osascript` loop; Chrome reuse within a batch and a clone pre-built after an update;
 - worker-run and night-run orchestration, within the Never list.
 
 **Never** (each a needs-Egor item with its exact step):
@@ -221,7 +221,7 @@ Saving is gross (direct + P part). Score = saving × confidence ÷ effort_h.
 | 9 | statusline idle work | P share ≈ 2–3 → 1.2 (*est.*) | ≈ 18–20 % of new processes; 54 % idle renders | segment caches, contract-safe reprint | M · 0.3 · 0.12 |
 | 10 | `verdict` poll forks | ≈ 0.4 (*est.*) | 22 855 runs/day, p95 8.9 s | `wait` + watchdog | S · 0.5 · 0.2 |
 
-**Below the 0.5 OM/d floor** (`watch`): `worker-pick --menu` churn (≈ 0.4); the codex-image lock (attended < 0.1; the lever is unattended throughput, others were idle in most queued waits); cache breaks from account or `/model` switches (≈ 0.2); image-gen poll overshoot (unattended).
+**Below the 0.5 OM/d floor** (`watch`): `worker-pick --menu` churn (≈ 0.4); the codex-image lock (attended < 0.1; the lever is unattended throughput, others were idle in most queued waits); cache breaks from account or `/model` switches (≈ 0.2); media poll overshoot (unattended).
 
 **Needs-Egor, ranked**: the owner-chat poll deny (≈ 1–2, overshoot only); compaction window and context (compaction 4.3 + context ≈ 5, optimum unknown until C1 measures injection volume); settings steps (Q3); non-repo daemons.
 

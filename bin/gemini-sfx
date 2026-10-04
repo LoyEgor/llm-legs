@@ -24,6 +24,7 @@ image_leg_start gemini-sfx audio observed_model
 caps() { image_caps_get "$root" gemini "$1"; }
 
 usage() {
+  image_leg_cause "$@"
   printf 'usage: gemini-sfx --dest <absolute .wav path> --prompt "<the sound>" [--duration %s] [--count %s] [--account <profile>]\n' \
     "$(caps '.sfx.durations | join("|")')" "$(caps '.video.counts | map(tostring) | join("|")')" >&2
   printf '       gemini-sfx --dest <absolute .wav path> --prompt "<the sounds>" --for-video <absolute video of up to %ss> [--account <profile>]\n' \
@@ -37,7 +38,7 @@ usage() {
 }
 
 say() {
-  printf 'gemini-sfx: %s\n' "$1" >&2
+  image_leg_cause "$1"
   exit 2
 }
 
@@ -50,20 +51,22 @@ for_video=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -h | --help) image_leg_help usage ;;
-    --dest) [ "$#" -ge 2 ] || usage; dest=$2; shift 2 ;;
-    --prompt) [ "$#" -ge 2 ] || usage; prompt=$2; shift 2 ;;
-    --duration) [ "$#" -ge 2 ] || usage; duration=$2; shift 2 ;;
-    --count) [ "$#" -ge 2 ] || usage; count=$2; shift 2 ;;
-    --account) [ "$#" -ge 2 ] || usage; account_arg "$2"; account=$2; shift 2 ;;
-    --for-video) [ "$#" -ge 2 ] || usage; for_video=$2; shift 2 ;;
-    *) usage ;;
+    --dest) [ "$#" -ge 2 ] || usage "$1 needs a value"; dest=$2; shift 2 ;;
+    --prompt) [ "$#" -ge 2 ] || usage "$1 needs a value"; prompt=$2; shift 2 ;;
+    --duration) [ "$#" -ge 2 ] || usage "$1 needs a value"; duration=$2; shift 2 ;;
+    --count) [ "$#" -ge 2 ] || usage "$1 needs a value"; count=$2; shift 2 ;;
+    --account) [ "$#" -ge 2 ] || usage "$1 needs a value"; account_arg "$2"; account=$2; shift 2 ;;
+    --for-video) [ "$#" -ge 2 ] || usage "$1 needs a value"; for_video=$2; shift 2 ;;
+    *) usage "unknown argument $1" ;;
   esac
 done
 
-[ -n "$dest" ] && [ -n "$prompt" ] || usage
-[[ "$dest" = /* ]] && [ -d "$(dirname "$dest")" ] || say "--dest needs an absolute path in an existing folder"
+[ -n "$dest" ] || usage "missing --dest"
+[ -n "$prompt" ] || usage "missing --prompt"
+[[ "$dest" = /* ]] || say "--dest must be an absolute path, not $dest"
+[ -d "$(dirname "$dest")" ] || say "--dest folder $(dirname "$dest") does not exist"
 [ "$(printf '%s' "${dest##*.}" | tr '[:upper:]' '[:lower:]')" = wav ] || say "--dest must end in .wav"
-[ -z "$account" ] || [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]] || usage
+[ -z "$account" ] || [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]] || usage "--account $account is not a profile name"
 for tool in ffmpeg ffprobe; do
   command -v "$tool" >/dev/null 2>&1 || { printf 'gemini-sfx: %s is required\n' "$tool" >&2; exit 1; }
 done

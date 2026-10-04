@@ -224,9 +224,11 @@ def backfill(state, now):
                     paths.append(path)
             except OSError:
                 continue
-        job = state["backfill"] = {"at": now, "files": len(paths), "todo": sorted(paths), "rec": None}
+        job = state["backfill"] = {"at": now, "files": len(paths), "todo": paths, "rec": None}
     if not job["todo"]:
         return []
+    held = job["todo"][:1] if job["rec"] else []
+    job["todo"] = held + sorted(job["todo"][len(held):], key=mtime, reverse=True)
     budget = float(os.environ.get("SPEED_DOCTOR_BACKFILL_S") or BACKFILL_S)
     boots = H.c1_boots(H.read_json(os.path.join(H.state_dir(), "state.json"), {}))
     started, horizon, rows = time.monotonic(), job["at"] - LIMITS["baseline_days"] * 86400, []
@@ -254,6 +256,13 @@ def backfill(state, now):
         if time.monotonic() - started >= budget:
             break
     return rows
+
+
+def mtime(path):
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
 
 
 def backfill_rows(since_day):
@@ -395,7 +404,8 @@ def chat_fractions(row):
 def delegation_leaf(what):
     if what == "Bash":
         return "background Bash"
-    if what == "Agent:image-gen":
+    # Agent:image-gen: transcripts from before media-run still sit inside the 28-day window.
+    if what in ("Bash:media", "Agent:image-gen"):
         return "media"
     if what == "Agent:review-waiter":
         return "reviews"
@@ -653,6 +663,19 @@ def score_of(saving, confidence, effort_h, night_cost_h):
     return round(saving * confidence / (effort_h + night_cost_h), 3)
 
 
+def seen_need(key, covered):
+    return max(1, round(LIMITS[key] * min(1.0, covered / WINDOW_D)))
+
+
+def seen_fields(fields, seen_days):
+    return dict(fields, seen_days=seen_days, data_confidence=round(min(1.0, seen_days / WINDOW_D), 2))
+
+
+def rank_key(o):
+    fields = o["opportunity"]
+    return fields["needs_egor"], -fields["score"] * fields.get("data_confidence", 1.0), o["id"]
+
+
 def select(opportunities, regressions=()):
     """Night pick (§3 Selection): the loud regressions first, each at its component's cheapest lever, then
     opportunities by score, within the worker-hour budget, K, and one hook lever per night."""
@@ -691,8 +714,8 @@ def test_requirement(repo, rel):
     return ("protects %s" % match.group(0)) if match else None
 
 
-def target_opportunity(target, om, lever, exposure, protected=None):
-    fields = dict(opportunity_fields(om, lever), target=target)
+def target_opportunity(target, om, lever, exposure, protected=None, seen_days=WINDOW_D):
+    fields = dict(seen_fields(opportunity_fields(om, lever), seen_days), target=target)
     if protected:
         fields["protected"] = protected
     return {"id": "opportunity:%s" % target, "rule": "opportunity", "state": "watch",
@@ -703,7 +726,7 @@ def target_opportunity(target, om, lever, exposure, protected=None):
             "ledger": None, "group": lever["component"].split("/")[0], "opportunity": fields}
 
 
-def moved_opportunities(component_om, days, now):
+def moved_opportunities(component_om, days, now, covered=WINDOW_D):
     """The heavy-test and hot-hook rules bin/code-doctor judged until 2026-10-03: one opportunity per suite or hook,
     priced at its share of the attended test or hook minutes. A suite whose keep row or head names a requirement
     carries it as `protected`: its lever speeds the suite up and never drops it."""
@@ -719,10 +742,10 @@ def moved_opportunities(component_om, days, now):
                     if os.path.isfile(os.path.join(H.repos_dir(), repo, r))), None)
         if sorted(values)[len(values) // 2] >= HEAVY_TEST_S and rel:
             om = (component_om("chat/tests") + component_om("chat/queue")) * sum(values) / total
-            if om >= LIMITS["worth_om_day"] and (len(seen[(repo, label)]) >= LIMITS["seen_days"]
-                                                 or len(values) >= LIMITS["seen_sessions"]):
+            if om >= LIMITS["worth_om_day"] and (len(seen[(repo, label)]) >= seen_need("seen_days", covered)
+                                                 or len(values) >= seen_need("seen_sessions", covered)):
                 out.append(target_opportunity("tests/%s/%s" % (repo, label), om, TEST_LEVER, len(values),
-                                              test_requirement(repo, rel)))
+                                              test_requirement(repo, rel), len(seen[(repo, label)])))
     ms = {}
     for day, acc in days.items():
         for key, (_, us) in (acc.get("hook_cpu_us") or {}).items():
@@ -734,7 +757,7 @@ def moved_opportunities(component_om, days, now):
         if len(kept) >= HOT_MIN_DAYS and sum(kept) / len(kept) >= HOT_CPU_MS_DAY:
             om = component_om("chat/hooks") * sum(kept) / total if total else 0.0
             if om >= LIMITS["worth_om_day"]:
-                out.append(target_opportunity("hooks/%s" % key, om, HOOK_LEVER, len(kept)))
+                out.append(target_opportunity("hooks/%s" % key, om, HOOK_LEVER, len(kept), seen_days=len(kept)))
     return out
 
 
@@ -819,12 +842,13 @@ def collect(write, now):
     collector_rows = fold_jsonl(state, "collector", os.path.join(doctors_dir(), "collector-runs.jsonl"),
                                 now - JOURNAL_DAYS * 86400, lambda r: r.get("start"))
     runs = fold_jsonl(state, "worker_runs", worker_runs_path(), now - JOURNAL_DAYS * 86400, lambda r: r.get("ended_at"))
-    files = sorted(glob.glob(os.path.join(H.state_dir(), "events", "????-??-??.jsonl")))
-    firsts = [os.path.basename(files[0])[:10]] if files else []
-    firsts += [H.local_day(min(r[1] for r in back))] if back else []
-    lo = now - WINDOW_D * 86400
-    if firsts:
-        lo = max(lo, H.day_start(min(firsts)))
+    turned = [d for d, e in sorted(state["events"].items()) if any(r[0] in ("t", "d") for r in e["rows"])]
+    froms = [H.day_start(turned[0])] if turned else []
+    if job["todo"]:
+        froms.append(H.day_end(H.local_day(max(mtime(p) for p in job["todo"]))))
+    elif back:
+        froms.append(H.day_start(H.local_day(min(r[1] for r in back))))
+    lo = min(now, max(now - WINDOW_D * 86400, min(froms))) if froms else now - WINDOW_D * 86400
     covered = max((now - lo) / 86400.0, 1e-9)
     typed = reactions(rows)
     minutes = presence_minutes(H.day_start(since))
@@ -920,18 +944,26 @@ def collect(write, now):
         area, _, leaf = component.partition("/")
         seen = len(leaf_days[(area, leaf)]) if (area, leaf) in leaf_days else len(days)
         users = len(sessions.get((area, leaf), ()))
-        if om < LIMITS["worth_om_day"] or (seen < LIMITS["seen_days"] and users < LIMITS["seen_sessions"]):
+        if om < LIMITS["worth_om_day"] or (seen < seen_need("seen_days", covered)
+                                           and users < seen_need("seen_sessions", covered)):
             continue
         ranked = sorted((opportunity_fields(om, l) for l in levers), key=lambda f: (f["needs_egor"], -f["score"]))
-        best = dict(ranked[0], levers=[f["levers"][0] for f in ranked])
+        best = seen_fields(dict(ranked[0], levers=[f["levers"][0] for f in ranked]), seen)
         opportunities.append({"id": "opportunity:%s" % component, "rule": "opportunity", "state": "watch",
                               "fact": "%s · %s min/day → saves %s · %s" % (component, fmt(om), fmt(best["saving"]), best["levers"][0]),
                               "value": best["om_day"], "limit": LIMITS["worth_om_day"], "unit": "OM/d", "window_h": WINDOW_D * 24,
                               "exposure": seen, "count": None, "first_seen": None, "last_seen": None, "evidence": [],
                               "ledger": None, "group": area, "opportunity": best})
-    opportunities += moved_opportunities(component_om, days, now)
-    opportunities.sort(key=lambda o: (o["opportunity"]["needs_egor"], -o["opportunity"]["score"], o["id"]))
+    opportunities += moved_opportunities(component_om, days, now, covered)
+    opportunities.sort(key=rank_key)
     selection = select(opportunities, [p for p in problems if p["state"] in H.LOUD_STATES])
+    coverage = {"days": round(covered, 2), "window_days": WINDOW_D, "backfill_files_done": job["files"] - len(job["todo"]),
+                "backfill_files": job["files"]}
+    gap = "%s of %d days covered" % (round(covered, 1), WINDOW_D) if covered < WINDOW_D else None
+    why_none = None if selection else "; ".join(filter(None, [
+        "no owner turns from Harness" if not rows else "no opportunity worth %s OM/d on enough days" % LIMITS["worth_om_day"]
+        if not opportunities else "no equivalent lever scores %s within the night budget" % SCORE_MIN, gap,
+        "transcript backfill at %d of %d files" % (coverage["backfill_files_done"], job["files"]) if job["todo"] else None]))
     problems += opportunities
     problem_count = sum(1 for p in problems if p["state"] in H.LOUD_STATES)
 
@@ -967,9 +999,11 @@ def collect(write, now):
         "problems": problems, "blind_spots": blind,
         "self": {"collector_s": round(elapsed, 2), "error": None},
         "covers": covers(baselines),
-        "window": {"from_s": int(lo), "to_s": int(now), "days": round(covered, 2)},
+        "window": {"from_s": int(lo), "to_s": int(now), "days": round(covered, 2)}, "coverage": coverage,
         "presence": presence,
         "headline": round(headline, 1),
+        "om_by_day": {day: round(sum(s for (d, _, _), s in credit.items() if d == day) / 60.0, 1)
+                      for day in sorted({d for d, _, _ in credit})},
         "r_band": r_band,
         "areas": areas,
         "partition": {area: {leaf: round(v, 2) for leaf, v in sorted(leaves.items(), key=lambda x: -x[1])}
@@ -978,11 +1012,11 @@ def collect(write, now):
                      "tests": round(tree.get("chat", {}).get("tests", 0.0) + tree.get("chat", {}).get("queue", 0.0), 2),
                      "machine": machine["p_om_day"]},
         "machine": machine, "background": background, "night": night, "delegation": delegation,
-        "baselines": baselines, "selection": selection,
+        "baselines": baselines, "selection": selection, "why_none": why_none,
         "cost": {"collector_cpu_min_day": own.get("cpu_min_day") or 0.0, "fixer_worker_min": 0, "review_min": 0,
                  "slot_queue_min": 0, "landing_delay_min": 0},
         "yield": speed_yield(ledger),
-        "head": head_of(headline, r_band, status),
+        "head": head_of(headline, r_band, status, gap),
     }
     document["menu"] = menu_lines(document)
     document["timing"] = {"cpu_s": round(H.cpu_s() - cpu_start, 2)}
@@ -1016,11 +1050,11 @@ def background_share(background, machine, covered):
     return statusline / total if total else None
 
 
-def head_of(headline, r_band, status):
+def head_of(headline, r_band, status, gap=None):
     if status == "blind":
         return "blind · no owner turns from Harness"
-    return "%s min/day" % fmt(headline) + (" · presence" if r_band is None else " · R 2/10: %s/%s" % (
-        fmt(r_band[0]), fmt(r_band[1])))
+    return "%s OM/d" % fmt(headline) + (" · " + gap if gap else "") + (
+        " · presence" if r_band is None else " · R 2/10: %s/%s" % (fmt(r_band[0]), fmt(r_band[1])))
 
 
 def leaf_line(leaves, top=3):

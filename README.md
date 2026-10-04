@@ -280,7 +280,8 @@ The claude-setup agent definitions call these bare, so each needs its PATH link
 - `bin/worker-run` → `~/.local/bin/worker-run` — relay launcher every worker agent drives (`start`, `wait`, `report`).
 - `bin/worker-pick` → `~/.local/bin/worker-pick` — account and vendor pick per `docs/routing-contract.md`.
 - `bin/grokb` → `~/.local/bin/grokb` — SuperGrok multi-account launcher.
-- `bin/codex-image` → `~/.local/bin/codex-image` — image generation and editing on Codex (image-gen default).
+- `bin/media-run` → `~/.local/bin/media-run` — the one door to every media script: picks the vendor's script from `share/image-caps/*.json`, passes the script's own args byte for byte, fans several vendors, `--takes` or `--jobs` out through `image-fanout`, and drops the job pointer the statusline's `media` line reads.
+- `bin/codex-image` → `~/.local/bin/codex-image` — image generation and editing on Codex (media-run's default image vendor).
 - `bin/gemini-image` → `~/.local/bin/gemini-image` — image generation and editing on Gemini.
 - `bin/grok-image` → `~/.local/bin/grok-image` — image generation and editing on Grok.
 - `bin/grok-video` → `~/.local/bin/grok-video` — video clips on Grok Imagine.

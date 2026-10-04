@@ -291,6 +291,12 @@ jq -n --argjson s "$(now)" '{contract: 1, doctor: "llm", as_of_s: $s, judge: "li
     {id: "W", rule: "leg-failure", state: "watch", fact: "watched", ledger: null},
     {id: "machinery:anchors", rule: "machinery", state: "new", fact: "anchors", ledger: null}]}' >"$WORK/llm/latest.json"
 
+# An unknown argument after the night id (a "--dry-run" probe) is refused before any run is launched.
+before=$(ls "$RUNS"/*.json)
+assert_fails fix launch harness --night n0 --dry-run >/dev/null 2>"$WORK/err"
+assert grep -qF 'usage: doctor-fix launch' "$WORK/err"
+assert [ "$(ls "$RUNS"/*.json)" = "$before" ]
+
 # A night with no base ref fails its runs instead of branching from HEAD.
 before=$(ls "$RUNS"/*.json)
 assert_fails fix launch llm --night n0 >/dev/null 2>"$WORK/err"
@@ -843,5 +849,13 @@ jq --argjson s "$(now)" '.as_of_s = $s | .speed.selection += ["opportunity:chat/
 git -C "$L" update-ref refs/night/n9/base HEAD
 env "${speed_env[@]}" bash "$FIX" launch harness --night n9 >"$WORK/out" 2>"$WORK/err" || fail "speed night n9: $(cat "$WORK/err")"
 assert jqe --argjson n "$night1" '[.problems[].id] == $n' "$(record "$(cut -f1 "$WORK/out")")"
+assert [ ! -s "$WORK/err" ]
+# A Speed section that selects nothing says why on stderr instead of skipping silently.
+jq --argjson s "$(now)" '.as_of_s = $s | .speed.selection = [] | .speed.why_none = "no equivalent lever scores 0.2 within the night budget; 1.2 of 7 days covered"' \
+  "$S/harness/latest.json" >"$S/picked-none.json" && mv "$S/picked-none.json" "$S/harness/latest.json"
+git -C "$L" update-ref refs/night/n10/base HEAD
+env "${speed_env[@]}" bash "$FIX" launch harness --night n10 >"$WORK/out" 2>"$WORK/err" || fail "speed night n10: $(cat "$WORK/err")"
+assert [ ! -s "$WORK/out" ]
+assert [ "$(cat "$WORK/err")" = "harness: Speed selects nothing: no equivalent lever scores 0.2 within the night budget; 1.2 of 7 days covered" ]
 
-echo "PASS: $asserts asserts; code runs (one area, top-K, needs-Egor out, close through code-doctor check); launch refusals (no or foreign or stale document, nothing to fix, open run under 12 h), an old run abandoned, the snapshot without watch/fixed-pending, the chat through the shared opener, the record fields, a failed opener, close refusals (doctor not rerun, undecided id, missing path, missing commit, a directory, no evidence, bad verdict, judge changed without its line), a clean close, show, runs, updater records and launch, parallel ids, night launch (areas, worktrees, branches, briefs, the packet, one open run per area), night vendor records, a night without a base ref, llm components with their block's entry file, fixed only once the doctor reads it fixed-pending or gone, night close (markdown net zero per worktree: committed, untracked and cut bytes, a worktree without its base; a day run unmeasured; the doctor rerun once in the worktree, a handed-in document refused, purpose touching its component, judge), abandon, a failed worktree, harness sections and top watch rows under parallel launch, updater machinery, a legacy release run, a merge citation, a malformed ledger row, a failed collector, an unwritten launched_at, a launcher killed under the lock, quiet open ledger rows (their own brief section, the day launch), a speed night (design Night 1 over the calibration fixture, a refusal per worktree model/effort knob site, a live settings change only a note, a knob-free diff closes)"
+echo "PASS: $asserts asserts; code runs (one area, top-K, needs-Egor out, close through code-doctor check); launch refusals (no or foreign or stale document, nothing to fix, open run under 12 h), an old run abandoned, the snapshot without watch/fixed-pending, the chat through the shared opener, the record fields, a failed opener, close refusals (doctor not rerun, undecided id, missing path, missing commit, a directory, no evidence, bad verdict, judge changed without its line), a clean close, show, runs, updater records and launch, parallel ids, night launch (areas, worktrees, branches, briefs, the packet, one open run per area), night vendor records, a night without a base ref, llm components with their block's entry file, fixed only once the doctor reads it fixed-pending or gone, night close (markdown net zero per worktree: committed, untracked and cut bytes, a worktree without its base; a day run unmeasured; the doctor rerun once in the worktree, a handed-in document refused, purpose touching its component, judge), abandon, a failed worktree, harness sections and top watch rows under parallel launch, updater machinery, a legacy release run, a merge citation, a malformed ledger row, a failed collector, an unwritten launched_at, a launcher killed under the lock, quiet open ledger rows (their own brief section, the day launch), a speed night (design Night 1 over the calibration fixture, an empty Speed pick named on stderr, a refusal per worktree model/effort knob site, a live settings change only a note, a knob-free diff closes)"

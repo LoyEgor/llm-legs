@@ -214,32 +214,15 @@ review_state() { # run-id session tag-cache-path
   fi
 }
 
-image_state() { # dest-dir
-  local cells
-  cells=$(jq -r '(.cells // [])[] | [(.vendor // "?" | tostring),
-    (if .status == "done" or .status == "failed" then .status else "running" end), "", "", "", ""] | join("\u001f")' \
-    "$1/fanout.state.json" 2>/dev/null) || return 1
-  cells_state <<<"$cells"
-}
-
-media_state() { # gen|edit exit
-  [ -z "$2" ] || return 1
-  set_state "$1" "$1"
-}
-
 while IFS=$'\x1f' read -r sid columns id description start_ms tokens status model; do
   [ -n "$id" ] || continue
 
-  tag="" run_id="" review_id="" image_dir="" media="" media_exit="" edits="" light_role="" fix_round=""
+  tag="" run_id="" review_id="" edits="" light_role="" fix_round=""
   cache="$cache_root/$sid/$id"
   if [ -n "$sid" ] && [ -f "$cache" ]; then
     IFS= read -r tag < "$cache"
     run_id=$(sed -n 's/^run=//p' "$cache" | tail -n1 | tr -cd 'a-z0-9-')
     review_id=$(sed -n 's/^review=//p' "$cache" | tail -n1 | tr -cd 'A-Za-z0-9-')
-    image_dir=$(sed -n 's/^image=//p' "$cache" | tail -n1)
-    [[ "$image_dir" = /* ]] || image_dir=""
-    media=$(sed -n 's/^media=//p' "$cache" | tail -n1 | tr -cd 'a-z')
-    media_exit=$(sed -n 's/^exit=//p' "$cache" | tail -n1 | tr -cd '0-9')
     edits=$(sed -n 's/^edit=//p' "$cache" | tail -n1 | tr -cd '0-9')
     light_role=$(sed -n 's/^light=//p' "$cache" | tail -n1 | tr -cd 'a-z')
   fi
@@ -278,8 +261,6 @@ while IFS=$'\x1f' read -r sid columns id description start_ms tokens status mode
   judge_since='' judge_hash='' j_account='' j_model='' j_effort=''
   if [ -n "$run_id" ] && worker_state "$run_id"; then :
   elif [ -n "$review_id" ] && review_state "$review_id" "$sid" "$cache"; then :
-  elif [ -n "$image_dir" ] && image_state "$image_dir"; then :
-  elif [ -n "$media" ] && media_state "$media" "$media_exit"; then :
   elif [ "${tag%% · *}" = fork ]; then
     if [ -n "$edits" ] && [ "$edits" -gt 0 ]; then set_state "edit $edits" "edit $edits"; else set_state explore explore; fi
   elif [ -n "$edits" ] && [ "$edits" -gt 0 ]; then
@@ -291,7 +272,7 @@ while IFS=$'\x1f' read -r sid columns id description start_ms tokens status mode
     title="" prefix="fix: " hash=${fix_round: -7}
   elif [ -z "$run_id" ] && [ -n "$review_id" ] && [ "${tag##* · }" = task ]; then
     title=$(printf '%s' "$title" | sed -E "s/^(WAIT|ATTACH) $review_id_re(: | — )?//")
-  elif [ -z "$run_id" ] && { [ -n "$review_id" ] || [ -n "$image_dir" ] || [ -n "$media" ]; }; then
+  elif [ -z "$run_id" ] && [ -n "$review_id" ]; then
     title=""
   fi
 

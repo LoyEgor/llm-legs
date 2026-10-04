@@ -20,7 +20,7 @@ field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
 [ "$(field '.hook_event_name')" = PreToolUse ] || exit 0
 agent_type=$(field '.agent_type')
 case "$agent_type" in
-  codex-worker|claudeb-worker|gemini-worker|grok-worker|light-worker|image-gen|light-research) ;;
+  codex-worker|claudeb-worker|gemini-worker|grok-worker|light-worker|light-research) ;;
   fork|review-waiter) ;;
   *) exit 0 ;;
 esac
@@ -329,8 +329,8 @@ elif is_grokb_launch &&
   [ -n "$effort" ] || effort=$(worker_model_default_effort grok "$(worker_model_default_model grok)")
   tag="$acct · $model · $effort"
 elif printf '%s' "$launch" | grep -qE "${cmd_word}"'light-research([[:space:]]|$)'; then
-  # Model and effort are the light_research row's, the launcher's own source; `--account` is read
-  # for the reason the image branch below reads it.
+  # Model and effort are the light_research row's, the launcher's own source; `--account` is the only
+  # account this text can vouch for, since without it the launcher asks worker-pick at run time.
   acct=$(grab '\-\-account[= ]+["'\'' ]*[a-z0-9][a-z0-9-]*' | grep -oE '[a-z0-9][a-z0-9-]*$')
   model=$(worker_light_model research 2>/dev/null) || model=''
   [ -z "$acct" ] || [ -z "$model" ] || tag="$acct · $model · $(worker_light_effort research)"
@@ -338,20 +338,6 @@ elif printf '%s' "$launch" | grep -qE "${cmd_word}"'light-research([[:space:]]|$
   # actually landed on, and an attach names the run it waits on.
   attach_run=$(grab '\-\-attach[= ]+["'\'' ]*[a-z0-9][a-z0-9-]*' | grep -oE '[a-z0-9][a-z0-9-]*$')
   if [ -n "$attach_run" ]; then extra+=("run=$attach_run"); else extra+=("start=$(date +%s)"); fi
-elif printf '%s' "$launch" | grep -qE "${cmd_word}"'((codex|gemini|grok)-image|grok-video|gemini-(video|music|sfx|listen))([[:space:]]|$)'; then
-  # `--account` is the only account this text can vouch for: without it the script asks worker-pick
-  # at run time, so the seed worker-spawn-hook wrote is the better answer and the tail below keeps it.
-  script=$(grab "${cmd_word}"'((codex|gemini|grok)-image|grok-video|gemini-(video|music|sfx|listen))' | grep -oE '(codex|gemini|grok)-(image|video|music|sfx|listen)$')
-  vendor=${script%-*}
-  acct=$(grab '\-\-account[= ]+["'\'' ]*[a-z0-9][a-z0-9-]*' | grep -oE '[a-z0-9][a-z0-9-]*$')
-  [ -z "$acct" ] || [ -z "$vendor" ] || tag="$acct · $(worker_media_tag "$vendor" "${script##*-}" "$launch")"
-  if printf '%s' "$launch" | grep -qE -- '--(ref|resume|edit|extend|for-video)([=[:space:]]|$)'; then extra+=(media=edit); else extra+=(media=gen); fi
-  extra+=(exit=)
-elif printf '%s' "$launch" | grep -qE "${cmd_word}"'image-fanout([[:space:]]|$)'; then
-  if printf '%s' "$launch" | grep -qE -- '--video([[:space:]]|$)'; then tag="fanout · vid"; else tag="fanout · img"; fi
-  dest_dir=$(grab '\-\-dest-dir[= ]+("[^"]+"|'\''[^'\'']+'\''|[^[:space:];&|]+)' | sed -E 's/^--dest-dir[= ]+//; s/^["'\'']//; s/["'\'']$//')
-  [ -z "$dest_dir" ] || [[ "$dest_dir" = /* ]] || dest_dir="$(field '.cwd')/$dest_dir"
-  if printf '%s' "$launch" | grep -qE -- '--dry-run([[:space:]]|$)'; then extra+=(image=); else extra+=("image=$dest_dir"); fi
 fi
 
 umask 077

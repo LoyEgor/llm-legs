@@ -70,8 +70,9 @@ cp "$FAKE_A" "$out/take1.jpg"
 cp "$FAKE_B" "$out/take2.jpg"
 jq -cn --arg o "$out" --argjson n "$count" '{ok: true, account: "flowacct", project: "p1", model: "NARWHAL",
   build: "boq_test", seconds: {render: 9.5, total: 20.1}, refused: [{media_id: "m9", error: "PUBLIC_ERROR_UNSAFE"}],
-  takes: [range($n) as $i | {path: "\($o)/take\(if $i == 0 then 1 else 2 end).jpg", id: "wf\($i + 1)",
-    media_id: "m\($i + 1)", size: [1200, 896]}]} + if env.FAKE_FAILED then {failed: (env.FAKE_FAILED | tonumber)} else {} end'
+  takes: [range($n - (if env.FAKE_SHORT then 1 else 0 end)) as $i | {path: "\($o)/take\(if $i == 0 then 1 else 2 end).jpg", id: "wf\($i + 1)",
+    media_id: "m\($i + 1)", size: [1200, 896]}]} + (if env.FAKE_FAILED then {failed: (env.FAKE_FAILED | tonumber)} else {} end)
+  + (if env.FAKE_PHASES then {phases: (env.FAKE_PHASES | fromjson)} else {} end)'
 EOF
 chmod +x "$FLOW_IMAGE_ENGINE"
 : >"$FAKE_CALLS"
@@ -227,6 +228,16 @@ assert grep -qx 'failed=1 reason=flow_generation_failed (not charged)' "$WORK/st
 assert test -s "$WORK/out/pic-2.jpg"
 assert image --dest "$dest" --prompt 'a vase'
 assert test "$(grep -c '^failed=' "$WORK/stdout")" -eq 0
+assert test "$(tail -n 1 "$IMAGE_LEG_LOG" | jq -c '[.requested, .delivered]')" = '[1,1]'
+# A short Flow batch is logged as requested vs delivered; the engine's phases reach stdout and the log.
+FAKE_FAILED=1 FAKE_SHORT=1 FAKE_PHASES='{"lock":0,"browser":2.5,"sent":5,"saved":31}' \
+  assert image --dest "$dest" --prompt 'three vases' --count 3
+assert grep -qx 'failed=1 reason=flow_generation_failed (not charged)' "$WORK/stdout"
+assert grep -qx 'phases={"lock":0,"browser":2.5,"sent":5,"saved":31}' "$WORK/stdout"
+assert grep -Eqx 'job=gemini-image-[0-9]{8}T[0-9]{6}Z-[0-9]+' <<<"$(grep -B1 -x 'route=flow model=pro upscale=none' "$WORK/stdout" | head -n 1)"
+assert jq -e --arg job "$(sed -n 's/^job=//p' "$WORK/stdout")" \
+  '.job == $job and .requested == 3 and .delivered == 2 and .phases.saved == 31 and .route == "flow"' \
+  <<<"$(tail -n 1 "$IMAGE_LEG_LOG")" >/dev/null
 assert test -z "$(ls "$TMPDIR")"
 
 # The Image Editor ops refuse before the engine starts, one line each.
@@ -367,7 +378,7 @@ assert fi.rotation() == ["walled", "old", "new"], fi.rotation()
 
 def args(**over):
     base_args = dict(prompt="a vase", out_dir=work, model="pro", aspect=None, count=1, ref=[], upscale=None,
-                     resume=None, account=None, timeout=None, dry_run=False)
+                     resume=None, account=None, timeout=None, dry_run=False, lock_wait=900)
     return argparse.Namespace(**{**base_args, **over})
 
 
@@ -438,8 +449,66 @@ def save_once(context, url, part, check, what):
 
 
 gw.save_video = save_once
+gw.PHASES.clear()
 kept = fi.render_on("new", fi.make_plan(args(count=2)), {"email": "new@example.com"}, time.time())
 assert [t["media_id"] for t in kept["takes"]] == ["m1"] and kept["unsaved"] == ["the download of u2 failed"], kept
+assert list(gw.PHASES) == ["page", "sent", "media", "saved"], gw.PHASES
+
+
+passes = []
+fi.settings = lambda page, plan, editor: passes.append(editor) or "chip"
+gw.add_ingredients = lambda page, paths, kind: passes.append([p.name for p in paths])
+gw.browser = lambda account: Anything()
+fi.render_on("new", fi.make_plan(args(count=2, ref=[ref])), {"email": "new@example.com"}, time.time())
+assert passes == [False, [Path(ref).name], False], passes
+# Uploads go out as one chooser batch named by content hash; bytes this account already holds are picked, not resent.
+class UploadPage:
+    def __init__(self): self.assets, self.sent, self.polls = {}, [], 0
+    def get_by_role(self, role, name=None, exact=False):
+        page = self
+        class Loc:
+            def count(self):
+                if role == "button":
+                    return 0 if name == "I agree" else 1
+                return sum(1 for asset in page.assets if name.search(asset))
+            @property
+            def last(self): return self
+            @property
+            def first(self): return [asset for asset in page.assets if name.search(asset)][0]
+            def click(self): pass
+        return Loc()
+    @contextlib.contextmanager
+    def expect_file_chooser(self, timeout=None):
+        page = self
+        class Chooser:
+            def set_files(self, files):
+                page.sent.append([os.path.basename(f) for f in files])
+                for f in files:
+                    page.assets[f"Uploading {os.path.basename(f)} Image"] = page.polls + 2
+        yield types.SimpleNamespace(value=Chooser())
+    def wait_for_timeout(self, ms):
+        self.polls += 1
+        for asset, ready in list(self.assets.items()):
+            if asset.startswith("Uploading ") and ready <= self.polls:
+                del self.assets[asset]
+                self.assets[asset[len("Uploading "):]] = 0
+
+
+import hashlib
+media = Path(work) / "media"
+blobs = {name: media / f"{name}.png" for name in ("a", "b", "c", "a-copy")}
+for name, path in blobs.items():
+    path.write_bytes(b"\x89PNG\r\n\x1a\n" + (b"a" if name == "a-copy" else name.encode()) * 64)
+named = {name: f"image-{hashlib.sha256(path.read_bytes()).hexdigest()[:16]}.png" for name, path in blobs.items()}
+up = UploadPage()
+picked = gw.upload(up, [blobs["a"], blobs["b"]], "image", " Image", 180)
+assert up.sent == [[named["a"], named["b"]]], up.sent
+assert picked == [f"{named['a']} Image", f"{named['b']} Image"] and up.polls >= 2, (picked, up.polls)
+picked = gw.upload(up, [blobs["c"], blobs["b"], blobs["a-copy"], blobs["c"]], "image", " Image", 180)
+assert up.sent[1:] == [[named["c"]]], up.sent
+assert picked == [f"{named[n]} Image" for n in ("c", "b", "a", "c")], picked
+before = list(up.sent)
+assert gw.upload(up, [blobs["b"]], "image", " Image", 180) == [f"{named['b']} Image"] and up.sent == before
 gw.browser, gw.open_project, gw.manual_composer, gw.page_state, gw.save_video = saved_gw
 fi.Images, fi.settings, fi.await_takes = saved_fi
 
@@ -523,7 +592,91 @@ try:
 except SystemExit as exit_:
     failure = json.loads(out.getvalue().strip().splitlines()[-1])
     assert (exit_.code, failure["reason"], failure["account"]) == (3, "Flow walled the image", "walled"), failure
-assert "walled" not in gw.walls()
+# A pinned account's wall is recorded like a rotated one's, and a walled pinned account is refused unsent.
+assert time.time() + 500 < gw.walls()["walled"] <= time.time() + 600, gw.walls()
+ran = []
+fi.generate_on = lambda account, plan: ran.append(account) or {"ok": True, "account": account, "takes": []}
+try:
+    fi.cmd_generate(args(account="walled"))
+    raise AssertionError("a walled pinned account ran")
+except gw.Failure as failure:
+    assert failure.code == 3 and "walled is walled until" in failure.reason and ran == [], failure.reason
+    assert failure.extra["until"] == gw.walls()["walled"], failure.extra
+gw.set_wall("walled", None)
+
+# take_failover try-locks in order (a busy account is passed at once), and a pinned or all-busy pick is exit 5.
+import fcntl
+def hold(*names):
+    handles = [open(gw.lock_path(name), "w") for name in names]
+    for handle in handles:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+    return handles
+
+
+def failover(accounts, pinned, lock_wait):
+    ran.clear()
+    out = io.StringIO()
+    started = time.time()
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            gw.take_failover(accounts, fi.make_plan(args()), fi.generate_on, gw.set_wall, pinned, lock_wait=lock_wait)
+        code = 0
+    except SystemExit as exit_:
+        code = exit_.code
+    return code, json.loads(out.getvalue().strip().splitlines()[-1]), time.time() - started
+
+
+held = hold("old")
+code, line, took = failover(["old", "new"], False, 5)
+assert code == 0 and ran == ["new"] and took < 2, (code, ran, took)
+code, line, took = failover(["old"], True, 0.2)
+assert code == 5 and ran == [] and line["reason"].startswith("account busy: timed out waiting for old.lock"), line
+held += hold("new")
+code, line, took = failover(["old", "new"], False, 0.2)
+assert code == 5 and ran == [] and line["code"] == 5, (code, line)
+for handle in held:
+    handle.close()
+assert not gw._held, gw._held
+
+
+# A quota-shaped refusal after the send is a limit: walled, and the job moves on instead of failing whole.
+def quota_then_ok(account, plan):
+    ran.append(account)
+    if account == "old":
+        raise fi.refusal({"PUBLIC_ERROR_QUOTA"})
+    return {"ok": True, "account": account, "model": "GEM_PIX_2", "takes": [{"path": "p", "account": account}]}
+
+
+fi.generate_on = quota_then_ok
+code, line, took = failover(["old", "new"], False, 5)
+assert code == 0 and ran == ["old", "new"] and line["account"] == "new", (code, ran, line)
+assert time.time() + gw.WALL_SECONDS - 60 < gw.walls()["old"] <= time.time() + gw.WALL_SECONDS, gw.walls()
+gw.set_wall("old", None)
+
+
+# Google's flag walls the account even on a pinned run that records no other wall.
+def flagged(account, plan):
+    ran.append(account)
+    raise gw.Failure(3, "Flow flagged this account (PUBLIC_ERROR_UNUSUAL_ACTIVITY)", wall_s=gw.BLOCK_WALL_SECONDS,
+                     flagged=True)
+
+
+fi.generate_on = flagged
+ran.clear()
+with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+    try:
+        gw.take_failover(["old"], fi.make_plan(args()), fi.generate_on, gw.set_wall, True, wall_pinned=False,
+                         lock_wait=5)
+    except SystemExit:
+        pass
+assert ran == ["old"] and gw.walls()["old"] > time.time() + gw.BLOCK_WALL_SECONDS - 60, gw.walls()
+gw.set_wall("old", None)
+watcher = gw.Watcher.__new__(gw.Watcher)
+watcher.errors = {"PUBLIC_ERROR_UNUSUAL_ACTIVITY"}
+assert watcher.blocked().extra.get("flagged") is True, watcher.blocked().extra
+assert fi.refusal(["PUBLIC_ERROR_UNSAFE_GENERATION", "PUBLIC_ERROR_RESOURCE_EXHAUSTED"]).code == 3
+assert fi.refusal(["PUBLIC_ERROR_UNSAFE_GENERATION", "PUBLIC_ERROR_UNSAFE_GENERATION"]).reason \
+    == "Flow refused the image: PUBLIC_ERROR_UNSAFE_GENERATION"
 
 
 class Clock:
@@ -542,6 +695,7 @@ class Page:
 
     def evaluate(self, script, op):
         assert (script, op) == (fi.FAILED_CARDS, "count"), op
+        self.scans = getattr(self, "scans", 0) + 1
         return self.failed
 
     def evaluate_handle(self, script, op):
@@ -597,16 +751,17 @@ def arrive(media_id, failed=None):
 clock = Clock()
 real_time, fi.time = fi.time, clock
 try:
-    # A second Failed card after Flow's own Retry ends the run at once, not at the 300 s timeout.
+    # A second Failed card after Flow's own Retry ends the run at once, not at the 300 s timeout. The page-wide
+    # card scan runs every CARDS_SCAN_S (3 s = 6 ticks), right after a Retry, and at the start.
     started = clock.now
-    result, page = wait_takes(1, {2: set_failed(1), 6: set_failed(1)}, set_failed(0))
+    result, page = wait_takes(1, {2: set_failed(1), 12: set_failed(1)}, set_failed(0))
     assert isinstance(result, gw.Failure) and result.code == 1, result
     assert result.reason.startswith("flow_generation_failed (not charged)") and "late one" not in result.reason, result
     assert page.clicks == 1 and clock.now - started < 30, (page.clicks, clock.now - started)
     retried = [r for r in gw.job_rows() if r.get("event") == "retried"]
     assert retried and retried[-1]["account"] == "old", retried
     # The retried take that comes back is delivered.
-    result, page = wait_takes(1, {2: set_failed(1), 5: arrive("r1")}, set_failed(0))
+    result, page = wait_takes(1, {2: set_failed(1), 9: arrive("r1")}, set_failed(0))
     assert [i["media_id"] for i in result[0]] == ["r1"] and result[1] == 0 and page.clicks == 1, result
     # Two takes, one fails twice (Flow keeping the first card beside the retried one): one delivered, one lost.
     result, page = wait_takes(2, {2: arrive("k1", failed=1), 7: set_failed(2)}, lambda page: None)
@@ -615,6 +770,21 @@ try:
     result, page = wait_takes(1, {}, lambda page: None)
     assert isinstance(result, gw.Failure) and "any late one lands in project p1" in result.reason, result
     assert page.clicks == 0
+    # A sibling that never comes back: the finished take is delivered at the timeout, the missing one counted.
+    started = clock.now
+    with contextlib.redirect_stderr(io.StringIO()) as err:
+        result, page = wait_takes(2, {2: arrive("k1")}, lambda page: None)
+    assert [i["media_id"] for i in result[0]] == ["k1"] and result[1] == 1, result
+    assert clock.now - started >= 300 and "1 of 2 takes never came back" in err.getvalue(), err.getvalue()
+    assert page.scans <= page.ticks / 5, (page.scans, page.ticks)
+    # A whole failed envelope: a quota-shaped code is exit 3 (the failover's limit), any other a refusal (1).
+    def denied(error):
+        return lambda page: page.watcher.feed(")]}'\n" + json.dumps(
+            [["wrb.fr", "ogiZ0b", None, None, None, [3, None, [["x", [error]]]], "generic"]]))
+    result, page = wait_takes(1, {2: denied("PUBLIC_ERROR_QUOTA")}, lambda page: None)
+    assert isinstance(result, gw.Failure) and result.code == 3 and "PUBLIC_ERROR_QUOTA" in result.reason, result
+    result, page = wait_takes(1, {2: denied("PUBLIC_ERROR_UNSAFE_GENERATION")}, lambda page: None)
+    assert isinstance(result, gw.Failure) and result.code == 1, result
 finally:
     fi.time = real_time
 Path(work, "failed-cards.js").write_text(fi.FAILED_CARDS)
@@ -624,7 +794,8 @@ image = os.path.join(work, "media", "scene.png")
 
 def tool_args(**over):
     base_args = dict(op="inpaint", image=image, size="1000x750", out_dir=work, prompt="a box", region="0.1,0.1,0.2,0.2",
-                     point=[], aspect=None, model="pro", bg_model=None, account=None, timeout=None, dry_run=False)
+                     point=[], aspect=None, model="pro", bg_model=None, account=None, timeout=None, dry_run=False,
+                     lock_wait=900)
     return argparse.Namespace(**{**base_args, **over})
 
 

@@ -237,7 +237,7 @@ real page). The excerpt is the engine's `BROWSER_FAILURE` line: route, account, 
 under `~/.gemini-web/failures/`, with a `.txt` beside it: URL, open dialogs, toasts, visible buttons, page
 text) and the reason. Read both files before touching a selector: most causes are a renamed button, a
 new dialog or notice, or a changed upload flow. Reproduce for free with `gemini-web generate … --dry-run`
-or `gemini-music --dry-run` through the `image-gen` agent; a live generation spends credits and needs
+or `media-run music --vendor gemini -- --dry-run …`; a live generation spends credits and needs
 Egor's word. Never replace a UI step with an RPC replay. `owner step` is an account that needs Egor's
 one-time action (sign-in, a rights notice: the excerpt names it); relay it to him, never click it yourself
 without his yes. Superseded attempts (`…#n` refs) are accounts the rotation skipped before another one

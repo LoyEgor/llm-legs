@@ -90,6 +90,17 @@ assert test "$(alpha_at "$WORK/dropped.png" 160,240)/$(alpha_at "$WORK/dropped.p
 assert exits 1 --in "$two" --dest "$WORK/none.png" --keep 0.25,0.5 --drop 0.26,0.5
 assert grep -q 'leave no instance' "$WORK/err"
 
+table="$WORK/table.png"
+magick -size 640x480 gradient:'#e6e0d4'-'#cfc4b0' -fill '#80522f' -draw 'rectangle 0,325 640,480' \
+  -fill '#2f6aa8' -draw 'ellipse 260,290 110,90 0,360' -fill '#d02020' -draw 'circle 490,340 490,380' "$table"
+assert cutout --in "$table" --dest "$WORK/table-all.png"
+assert grep -q ' instances=2/2 ' "$WORK/out"
+assert test "$(alpha_at "$WORK/table-all.png" 260,290)/$(alpha_at "$WORK/table-all.png" 490,340)/$(alpha_at "$WORK/table-all.png" 10,10)/$(alpha_at "$WORK/table-all.png" 600,420)" = 255/255/0/0
+assert cutout --in "$table" --dest "$WORK/table-ball.png" --keep 0.766,0.71
+assert test "$(alpha_at "$WORK/table-ball.png" 260,290)/$(alpha_at "$WORK/table-ball.png" 490,340)" = 0/255
+assert cutout --in "$table" --dest "$WORK/table-pot.png" --drop 0.766,0.71
+assert test "$(alpha_at "$WORK/table-pot.png" 260,290)/$(alpha_at "$WORK/table-pot.png" 490,340)" = 255/0
+
 magick -seed 7 -size 400x300 plasma:fractal -colorspace gray +level 10%,30% -fill '#1d3a24' -tint 60 -alpha off "$WORK/bg.png"
 magick -size 400x300 xc:black -fill white -draw 'roundrectangle 60,60 340,240 30,30' -fill black \
   -draw 'roundrectangle 80,80 320,220 20,20' -fill white -draw 'polygon 120,200 200,95 280,200' \

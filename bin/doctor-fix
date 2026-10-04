@@ -643,6 +643,8 @@ launch_night() { # doctor night
   [[ $night =~ ^[A-Za-z0-9._-]+$ ]] || die "night id '$night' is not branch-safe"
   check_doc "$doctor" >/dev/null || exit 1
   snap=$(py snapshot "$doctor" "$(doc_path "$doctor")" "$night") || die "cannot snapshot the $doctor doctor"
+  [ "$doctor" != harness ] || jq -r '.speed | select(. != null and (.selection // []) == [])
+    | "harness: Speed selects nothing: \(.why_none // "no reason recorded")"' "$(doc_path harness)" >&2 2>/dev/null || true
   [ "$snap" != '[]' ] || return 0
   top=$(worktree_top) || die "no repository at $repo_root"
   for area in $(jq -r 'map(.area) | unique[]' <<<"$snap"); do
@@ -701,7 +703,7 @@ launch() { # llm|harness|updater|code [--night <id>]
   case "$doctor:${2:-}" in
     llm: | harness: | code:) launch_day "$doctor" ;;
     updater:) "${DOCTOR_FIX_VENDOR_CLI_UPDATE:-$repo_root/bin/vendor-cli-update}" now ;;
-    llm:--night | harness:--night | updater:--night | code:--night) [ -n "${3:-}" ] || usage; launch_night "$doctor" "$3" ;;
+    llm:--night | harness:--night | updater:--night | code:--night) [ -n "${3:-}" ] && [ $# -eq 3 ] || usage; launch_night "$doctor" "$3" ;;
     *) usage ;;
   esac
 }

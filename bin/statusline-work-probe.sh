@@ -124,7 +124,10 @@ found=$(printf '%s\n' "$snapshot" | awk -v start="$start_pid" -v runs="$runs" '
   function visit(pid, tag, depth,   lbl, n, a, i, hit) {
     if (depth > 30 || (pid in seen)) return 0
     seen[pid] = 1
-    if (tag != "R" && prog(pid) ~ owned) return 1
+    if (tag != "R" && prog(pid) ~ owned) {
+      if (tag == "M" && prog(pid) ~ media) print "MEDIA\t" pid "\t" secs(et[pid])
+      return 1
+    }
     lbl = test_label(pid)
     if (lbl != "") {
       if (tag == "R") print "R\t" run_of_visit "\t" secs(et[pid]) "\t" lbl "\t" pid
@@ -150,7 +153,8 @@ found=$(printf '%s\n' "$snapshot" | awk -v start="$start_pid" -v runs="$runs" '
     kids[$2] = kids[$2] " " $1
   }
   END {
-    owned = "^(worker-run|review-bench|image-fanout|codex-image|gemini-image|grok-image|grok-video|gemini-video|gemini-music|gemini-sfx|gemini-listen)$"
+    media = "^(media-run|image-fanout|codex-image|gemini-image|grok-image|grok-video|gemini-video|gemini-music|gemini-sfx|gemini-listen)$"
+    owned = "^(worker-run|review-bench|media-run|image-fanout|codex-image|gemini-image|grok-image|grok-video|gemini-video|gemini-music|gemini-sfx|gemini-listen)$"
     pid = start; depth = 0; root = ""
     while (pid != "" && pid + 0 > 1 && depth < 30) {
       if (base_of(pid) == "claude") { root = pid; break }
@@ -168,6 +172,7 @@ found=$(printf '%s\n' "$snapshot" | awk -v start="$start_pid" -v runs="$runs" '
         # one still going at 5s holds the chat the way a tool call does.
         if (cmd[c] !~ /\/shell-snapshots\/snapshot-/) {
           if ((lbl = test_label(c)) != "") { print "M\ttests\t" c "\t" secs(et[c]) "\t" lbl "\t" tpath; continue }
+          if (prog(c) ~ media) { print "MEDIA\t" c "\t" secs(et[c]); continue }
           if (w[pi] ~ /\/hooks\/[^\/]+$/ && secs(et[c]) >= 5) {
             lbl = base(w[pi]); sub(/\.[a-z]+$/, "", lbl); print "M\tshell\t" c "\t" secs(et[c]) "\thook " lbl
           }
@@ -208,10 +213,19 @@ fi
 
 # pid of the cwd to read, class, elapsed, label, test script — one per main-line work item. Split on
 # \037, never on tab: tab is IFS whitespace, so `read` would fold an empty field into the next one.
-items=""; pids=""; runs_out=""
+items=""; pids=""; runs_out=""; media_records=""
 while IFS= read -r found_line; do
   IFS=$'\037' read -r kind a b c d e _ <<< "${found_line//$'\t'/$'\037'}"
   case "$kind" in
+    MEDIA)
+      # media-run's pointer for its own pid, stamped as it started: an older one belongs to a reused pid.
+      [ -f "$cache_dir/media-$a" ] || continue
+      IFS=$'\037' read -r m_stamp m_tag m_label m_state _ < <(tr '\t' '\037' < "$cache_dir/media-$a")
+      [[ "$m_stamp" =~ ^[0-9]+$ ]] && [ "$m_stamp" -ge "$((now - b - 3))" ] && [ -n "$m_tag" ] || continue
+      m_counts=$'\t\t'
+      [ -z "$m_state" ] || m_counts=$(jq -r '[(.cells // [])[] | .status // "" | select(. != "spare-cancelled")] | "\(map(select(. == "done" or . == "failed")) | length)\t\(map(select(. == "failed")) | length)\t\(length)"' \
+        "$m_state" 2>/dev/null) || m_counts=$'\t\t'
+      media_records+="main"$'\t'"media"$'\t'"$m_stamp"$'\t'"$m_tag"$'\t'"$m_label"$'\t'"$m_counts"$'\t\t'$'\n' ;;
     M|O)
       [ "$kind" = M ] || [[ " $mine " = *" $b "* ]] || continue
       items+="$b"$'\037'"$a"$'\037'"$c"$'\037'"$d"$'\037'"$e"$'\n'
@@ -281,6 +295,7 @@ while IFS=$'\037' read -r pid class elapsed label tpath; do
   records="${records}main"$'\t'"$class"$'\t'"$((now - elapsed))"$'\t'"$repo"$'\t'"$label"$'\t'"$done_n"$'\t'"$total"$'\t'"$outcome_dir"$'\t'"$root$spid"$'\n'
 done <<< "$items"
 
+records+=$media_records
 sorted_records=""
 [ -z "$records" ] || sorted_records=$(printf '%s' "$records" | sort -t$'\t' -k2,2r -k3,3n)
 new_cache="$sorted_records${runs_out:+

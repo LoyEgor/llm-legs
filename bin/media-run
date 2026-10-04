@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# The one door to the media scripts: the vendor list and each vendor's script per kind come from the
+# manifests (share/image-caps/*.json), the script's own arguments pass through untouched, and the job
+# leaves a pointer the statusline's work probe draws as a `media` line (docs/statusline-contract.md).
+set -euo pipefail
+
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+
+root=$(resolve_root)
+caps_dir=${MEDIA_RUN_CAPS_DIR:-$root/share/image-caps}
+bin_dir=${MEDIA_RUN_BIN_DIR:-$root/bin}
+worker_pick=${MEDIA_RUN_WORKER_PICK:-$root/bin/worker-pick}
+
+command -v jq >/dev/null 2>&1 || { printf 'media-run: jq is required\n' >&2; exit 1; }
+
+vendors_of() { # kind -> the vendors whose manifest names a script for it, one per line
+  local manifest
+  for manifest in "$caps_dir"/*.json; do
+    [ -f "$manifest" ] || continue
+    jq -e --arg kind "$1" '.scripts[$kind] // empty | strings' "$manifest" >/dev/null 2>&1 &&
+      printf '%s\n' "$(basename "$manifest" .json)"
+  done
+  return 0
+}
+all_kinds() { cat "$caps_dir"/*.json 2>/dev/null | jq -r '.scripts // {} | keys[]' 2>/dev/null | sort -u | paste -sd'|' -; }
+
+usage() {
+  printf 'usage: media-run <%s> [--vendor V | --vendors all|a,b] [--jobs <jsonl>] -- <the script'\''s own args>\n' "$(all_kinds)" >&2
+  printf '  one vendor runs its script; several vendors, --takes or --jobs run image-fanout\n' >&2
+  exit 2
+}
+
+[ "$#" -ge 1 ] || usage
+case "$1" in -h|--help) usage ;; esac
+kind=$1
+shift
+known=$(vendors_of "$kind")
+[ -n "$known" ] || { printf 'media-run: no manifest names a %s script (kinds: %s)\n' "$kind" "$(all_kinds)" >&2; exit 2; }
+
+vendor='' vendors_arg='' jobs=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --vendor) [ "$#" -ge 2 ] || usage; vendor=$2; shift 2 ;;
+    --vendors) [ "$#" -ge 2 ] || usage; vendors_arg=$2; shift 2 ;;
+    --jobs) [ "$#" -ge 2 ] || usage; jobs=$2; shift 2 ;;
+    --) shift; break ;;
+    -h|--help) usage ;;
+    *) printf 'media-run: unknown option %s before -- (the script'\''s own args go after --)\n' "$1" >&2; usage ;;
+  esac
+done
+[ -z "$vendor" ] || [ -z "$vendors_arg" ] || { printf 'media-run: --vendor and --vendors exclude each other\n' >&2; exit 2; }
+
+known_list=$(paste -sd' ' - <<<"$known")
+check_vendor() {
+  grep -qxF -- "$1" <<<"$known" ||
+    { printf 'media-run: vendor %s has no %s script (have: %s)\n' "$1" "$kind" "$known_list" >&2; exit 2; }
+}
+if [ -n "$vendor" ]; then
+  check_vendor "$vendor"
+  vendors=$vendor
+elif [ "$vendors_arg" = all ]; then
+  vendors=$known
+elif [ -n "$vendors_arg" ]; then
+  vendors=$(tr ',' '\n' <<<"$vendors_arg" | sed '/^$/d')
+  [ -n "$vendors" ] || usage
+  while IFS= read -r one; do check_vendor "$one"; done <<<"$vendors"
+elif [ "$(wc -l <<<"$known")" -eq 1 ]; then
+  vendors=$known
+else
+  printf 'media-run: name --vendor (one of: %s) or --vendors\n' "$known_list" >&2
+  exit 2
+fi
+
+takes=false dest_dir='' dry_run=false account='' route=''
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+  next=${args[i + 1]-}
+  case "${args[i]}" in
+    --takes | --takes=*) takes=true ;;
+    --dest-dir) dest_dir=$next ;;
+    --dest-dir=*) dest_dir=${args[i]#--dest-dir=} ;;
+    --dry-run) dry_run=true ;;
+    --account) account=$next ;;
+    --account=*) account=${args[i]#--account=} ;;
+    --route) route=$next ;;
+    --route=*) route=${args[i]#--route=} ;;
+  esac
+done
+
+fanout=false
+[ "$(wc -l <<<"$vendors")" -eq 1 ] && [ "$takes" = false ] && [ -z "$jobs" ] || fanout=true
+
+# The work probe matches this pointer to the process by pid and start, and `exec` keeps the pid.
+pointer_dir=${STATUSLINE_CACHE_DIR:-$HOME/.cache/claude-statusline}
+write_pointer() { # tag label state-file
+  mkdir -p "$pointer_dir" 2>/dev/null || return 0
+  find "$pointer_dir" -maxdepth 1 -name 'media-*' -mmin +1440 -delete 2>/dev/null || :
+  printf '%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$1" "$2" "$3" "${IMAGE_JOB_ID:-}" \
+    >"$pointer_dir/media-$$.tmp" 2>/dev/null && mv -f "$pointer_dir/media-$$.tmp" "$pointer_dir/media-$$" 2>/dev/null || :
+}
+
+if [ "$fanout" = true ]; then
+  fanout_args=(--vendors "$(paste -sd, - <<<"$vendors")")
+  [ -z "$jobs" ] || fanout_args+=(--jobs "$jobs")
+  case "$kind" in
+    image) short=img ;;
+    video) short=vid; fanout_args+=(--video) ;;
+    *) printf 'media-run: image-fanout runs image and video only; run one %s take per call, or the script'\''s own --count\n' "$kind" >&2
+       exit 2 ;;
+  esac
+  state=''
+  [ "$dry_run" = true ] || [ -z "$dest_dir" ] || state="$dest_dir/fanout.state.json"
+  write_pointer "fanout · $short" all "$state"
+  exec "$bin_dir/image-fanout" "${fanout_args[@]}" "$@"
+fi
+
+script=$(jq -r --arg kind "$kind" '.scripts[$kind]' "$caps_dir/$vendors.json")
+[ -x "$bin_dir/$script" ] || { printf 'media-run: %s is not an executable in %s\n' "$script" "$bin_dir" >&2; exit 1; }
+export IMAGE_JOB_ID=${IMAGE_JOB_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}
+
+# Without a pin the account is the script's own pick at run time: a CLI image route asks worker-pick,
+# which answers the same a second later; every browser route and the other kinds rotate their own pool.
+if [ -z "$account" ]; then
+  [ -n "$route" ] || [ "$kind" != image ] || route=$(jq -r '.routes[0] // empty' "$caps_dir/$vendors.json")
+  if [ "$kind" = image ] && [ "$route" = cli ] && [ -x "$worker_pick" ]; then
+    account=$("$worker_pick" --account "$vendors" --role image 2>/dev/null) || account=''
+  fi
+fi
+media_tag=$(set +eu; . "$root/share/worker-model.sh" 2>/dev/null && worker_media_tag "$vendors" "$kind" "$*" 2>/dev/null) ||
+  media_tag=''
+label=gen
+for arg in "$@"; do
+  case "$arg" in --ref | --ref=* | --resume | --resume=* | --edit | --edit=* | --extend | --extend=* | --for-video | --for-video=*) label=edit ;; esac
+done
+write_pointer "${account:-pool} · ${media_tag:-$kind·$vendors}" "$label" ''
+exec "$bin_dir/$script" "$@"

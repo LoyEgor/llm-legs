@@ -1,13 +1,13 @@
 # Gemini images through Antigravity CLI
 
-Verified on 2026-10-02 against **agy 1.2.15** (binary schema, help and model ids; the last live
-generation is the 2026-09-11 one below), launched by `geminib` with a Google
+Verified on 2026-10-04 against **agy 1.2.16** (help and a live `--route cli` generation; binary schema
+and model ids last read on 1.2.15), launched by `geminib` with a Google
 subscription. The runtime contract is [gemini.json](../../share/image-caps/gemini.json);
 its `field_sources` maps each capability to evidence. This page concerns the subscription
 CLI, not the Gemini Developer API, Vertex API, or the Python SDK's configurable models.
 
 Since 2026-10-03 `gemini-image` runs [Google Flow](#images-on-google-flow-the-default-route) by default
-(`default_route` in the manifest); the agy path on this page is `--route cli`.
+(`routes[0]` in the manifest); the agy path on this page is `--route cli`.
 
 ## Capabilities and evidence
 
@@ -239,7 +239,14 @@ against 1.2.1 below.
 walls (`~/.gemini-web/walls.json`), least-recently-started rotation (`generation_started_at`) and job ledger as
 the video route. `--route cli` is the agy path above. A `--resume` continues on the route that made the session:
 the session record (`sessions/gemini/<id>` beside the image-leg log: dest, then route), else an agy conversation
-of that id on `--account` (cli), else the default; a `--route` that contradicts the record exits 2. Flow and agy ids are both UUIDs, so the id's shape decides nothing. Engine: [`share/flow_image.py`](../../share/flow_image.py); wrapper half:
+of that id on `--account` (cli), else the default; a `--route` that contradicts the record exits 2. Flow and agy ids are both UUIDs, so the id's shape decides nothing.
+Without `--route`, a route-level Flow failure — exit 4 (sign-in), 5 (every account busy past `--lock-wait <s>`,
+which is forwarded to the engine), 3 (walled) or exit 1 with `"sent": false` — reruns the same request once on
+`--route cli` (`fallback_from=flow fallback_reason=…`, the asked `--aspect` unmapped), but only when agy can
+express it: no `--count` >1, `--model`, `--upscale` or Image Editor tool, at most 3 refs, an aspect of agy's
+seven; a refusal, anything sent, an explicit `--route` and `--resume` never fall back. Exit 5 without a fallback
+prints `ACCOUNT_BUSY account=<name>`. `--edit <image>` is the first `--ref` (ingredient) or the Image Editor input
+and the composite base; rules and the run log: [image-vendors.md](../image-vendors.md#routes-fallback-and-the-run-log). Engine: [`share/flow_image.py`](../../share/flow_image.py); wrapper half:
 [`share/flow-image.sh`](../../share/flow-image.sh); contract: `flow_image` in
 [gemini.json](../../share/image-caps/gemini.json).
 
@@ -266,7 +273,16 @@ The new images are read from the page's own `ogiZ0b` reply (media id, workflow i
 engine issues no request of its own. A fresh image's editor opens black with Download disabled until Flow
 settles it, so the engine reloads it until the prompt box shows. The project composer stays in Image mode after
 a run; the video engine's settings pick Video first (a dry run on the same account read `Video · 720p · 8s`).
-Exit codes: 2 usage, 3 walled/flagged (the account gets a wall, the next one runs), 4 signed out, 1 other.
+Exit codes: 2 usage, 3 walled/flagged (the account gets a wall, the next one runs; a pinned `--account` is
+walled too, and a pinned account already walled is refused unsent with the wall's end), 4 signed out,
+5 account busy (its lock was not taken within `--lock-wait SECONDS`, default 900; rotation try-locks the
+candidates in order, with all busy takes whichever frees first, and moves past 3, 4 and 5; after a timed-out
+wait every candidate is refused at once), 1 other. A `PUBLIC_ERROR_*` refusal after the send is 1 unless the code
+is quota-shaped (`QUOTA`, `LIMIT`, `EXHAUSTED`; none seen live by 2026-10-04), which is 3. With
+`--count` >1 a take still missing at the deadline does not fail the run: the finished takes are saved and
+`failed` counts the rest, exit 0. The JSON result carries `job` (`IMAGE_JOB_ID`), `phases` (`lock`, `browser`,
+`page`, `sent`, `media`, `saved`, seconds since engine start), `lock_wait_s` and on failure `sent`; ledger rows
+carry the same, plus a `teardown` row with the browser's `close_s`.
 Guard: `tests/test_flow_image.sh`.
 
 Why Flow is the default (chain test, 2026-10-03, measured and checked by eye): over three chained small edits
@@ -316,9 +332,14 @@ bin/gemini-image --dest /abs/cut.png --ref /abs/in.jpg --remove-bg [--bg-model m
 `bin/gemini-video` → `bin/gemini-web` (`share/gemini_web.py`, Playwright 1.61 via `uv run --script`)
 drives flow.google.com in a hidden copy of Google Chrome (`~/.gemini-web/Gemini Web Automation.app`,
 `LSBackgroundOnly`, rebuilt when Chrome's version changes), one profile per geminib account name under
-`~/.gemini-web/profiles/`. Chrome unhides itself on a new window, a download or a dialog, so one
-`osascript` watcher (`HIDE_WATCH`) re-hides the clone every 0.2 s for the whole run and quits once no clone
-runs; the earlier 3 s re-hide left a page up long enough for the owner to read a toast (2026-10-01). Every
+`~/.gemini-web/profiles/`. macOS never hides an `LSBackgroundOnly` app (System Events reads `visible` false
+while its window is on screen), and Playwright opens the window at the screen's top left whatever
+`--window-position` says, so `park_window` moves every page's window off screen over CDP
+(`Browser.setWindowBounds`; Chrome keeps a 40 px strip on screen, the window shows for ~0.2 s before it
+moves), and `reset_exit_type` marks the profile's last exit clean so no "Restore pages?" bubble opens beside
+it. The earlier System Events re-hide every 0.2 s never hid anything: whole runs sat in plain sight at the
+screen's top left (measured 2026-10-03 from the window server's on-screen list), and each watcher cost
+System Events about a quarter of a core. Every
 toast a page showed (`[role=alert]`, `[role=status]`, snackbars) is kept in its sessionStorage and written
 at the run's end as one `event: toasts` row (`account`, `route`, `texts`) in `jobs.jsonl`, the record of a
 message that came and went during a run that still succeeded. It uses Flow's manual composer (the Agent toggle off): the settings popover
@@ -333,7 +354,7 @@ manifest, so a misread setup spends nothing. Watermark: none on PRO.
 | Veo: 8 s 720p only, up to 3 image refs, no video ref; Omni: 360p/720p, 4–10 s, 4 image refs seen (true maximum unknown) plus 1 video | settings popover; ingredient warnings |
 | `--edit`: Omni reworks an uploaded video (any source; uploads over 30 s must be trimmed), the clip keeps the source length; 720p edit of an 8 s upload = 20 credits (Flow help says 40; the charge was 20) | real edit run, 1030 → 1010 |
 | `--resolution 1080p`: renders 720p, then the clip editor's "Download media → 1080p Upscaled" gives 1920x1080 at no charge (4K is disabled on PRO) | real runs, credits unchanged |
-| `--extend`: the source clip's editor → "Add clip" → "Extend (Veo 3.1 - Lite)" → prompt → send; 10 credits, a 7 s 720p clip holding only the continuation, which starts where the source ends (SSIM 0.91 and 0.92 against the source's last frame). Veo clips only: on Omni the item is disabled ("Only Veo-generated videos can be extended"); an extension opens as an empty editor (no Add clip, Download disabled), so it can be neither extended again nor downloaded upscaled. Extend mode shows no quote, so the charge is checked afterwards from the reply's credits. The source is looked up in `~/.gemini-web/jobs.jsonl` (account, project, scene, model, bytes), the scene of an older row through the page's `as29s` read | two real runs (the first 990 → 980) |
+| `--extend`: the source clip's editor → "Add clip" → "Extend (Veo 3.1 - Lite)" → prompt → send; 10 credits, a 7 s 720p clip holding only the continuation, which starts where the source ends (SSIM 0.91 and 0.92 against the source's last frame). Veo clips only: on Omni the item is disabled ("Only Veo-generated videos can be extended"); an extension opens as an empty editor (no Add clip, Download disabled), so it can be neither extended again nor downloaded upscaled. Extend mode shows no quote, so the charge is checked afterwards from the reply's credits. The source is looked up in `~/.gemini-web/jobs.jsonl` (account, project, scene, model, bytes); an older row without a scene opens the editor from the clip's tile in the project grid, as `fetch` does | two real runs (the first 990 → 980) |
 | `--count 2-4`: the x2–x4 setting; the reply names every take, saved as the dest, `<stem>-2.mp4`, …; Omni 360p 4 s x2 = 8 | real run on egbogd |
 | `--edit` + `--ref`: puts the ingredient into the uploaded video (a stopwatch onto a water clip's sand), same 20 credits as a plain edit | real run on jihangarangan |
 | Output: 1280x720 (640x360 at 360p) h264 with AAC | ffprobe of every run |
@@ -345,6 +366,15 @@ The page's traffic is read passively, never replayed: the generation reply names
 `jwpduf` carries media status and remaining credits, `as29s` the signed `flow-content.google` URL. Calling
 the generation RPCs from outside the page fails Google's reCAPTCHA check (`PUBLIC_ERROR_UNUSUAL_ACTIVITY`),
 which is why the route clicks the UI.
+
+`gemini-web fetch <account> <media_id> --dest <abs .mp4> [--resolution 1080p]` issues no request of its own
+either: it opens the clip's project from the ledger's `project` (none there = exit 1), finds the clip's tile in
+the grid, clicks it into the editor and saves the editor's Download media → "720p Original size" ("1080p
+Upscaled" with `--resolution 1080p`), then writes the `saved` row with the scene from the editor URL. A video
+tile carries no media id, only a thumbnail, so the tile is the one showing the thumbnail token that the page's
+own project listing (`Zzl0ze`, read passively) gives that media id; the grid is virtualized and scrolled until
+the tile renders. The original-size file is byte-identical to the signed URL's (2026-10-03, a 4 s Omni clip,
+2276674 bytes both ways). An extension has no tile in the grid (2026-10-03), so it cannot be fetched later.
 
 Operations: `geminib web <account>` once (a visible Chrome; sign in to the Google account whose geminib
 profile has that name, then Cmd+Q; it refuses a name off the gemini roster and runs `gemini-web login --wait`, and
@@ -372,8 +402,8 @@ update `share/image-caps/gemini.json` `.video`, run `tests/test_gemini_video.sh`
 
 ## Audio: music, sound effects, listening
 
-Three scripts, all on Gemini subscription accounts; the agent `image-gen` owns them (`AUDIO: music|sfx|listen`
-briefs), and `worker-launch-gate.sh` blocks them in any other Bash.
+Three scripts, all on Gemini subscription accounts; `bin/media-run music|sfx|listen` is their one
+door, and `worker-launch-gate.sh` blocks them in any other Bash.
 
 **Music** — `bin/gemini-music` → `share/gemini_music.py` drives gemini.google.com/app (Upload & tools → More
 tools → Create music, Lyria 3.5) in the same hidden Chrome and profiles as Flow. Rotation skips accounts
@@ -485,6 +515,13 @@ GoogleUpdater`, and two chatgpt-web runs at once both hung the same way (2026-10
 starts through `<store>/logs/<account>-chrome.sh`, which points its stdio at `<account>-chrome.log`, so no
 child Chrome spawns holds Playwright's pipes; a teardown still running after 45 s prints the Python stacks
 and kills Chrome's process group and the Playwright driver, and a SIGTERM prints the stacks before dying.
+A normal close is cut short too (2026-10-03): Chrome writes cookies, prefs and site storage within its
+shutdown's first second, then mostly sat until its own teardown watchdog killed it ~10 s later (median close
+11 s in the ledger's `teardown` rows), so `reap_after_flush` kills its process group 1 s after `Cookies` and
+`Preferences` are rewritten (close ~1.3 s, cookies and a clean exit type kept in 12 of 12 probes). A killed
+Chrome leaves its per-launch code-sign clone of the app under `$(getconf DARWIN_USER_TEMP_DIR)/../X/`;
+a launch sweeps, in the background and at most once per 10 min machine-wide (stamp
+`~/.gemini-web/.clone-sweep.stamp`), the ones older than 10 min that no running browser maps.
 Default: the app route stays the default. It succeeds more often, it fails fast, and it spends no credits.
 Use flow when its features are needed, or with `--accounts 2+` when the time to a take matters: one Flow
 failure costs 600 s, and in this bench a fan-out never lost a take.
