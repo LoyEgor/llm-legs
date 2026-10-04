@@ -622,10 +622,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-03",
-      "reviewed_by": "Night fixer harness-hooks-20261003T042542Z-1344",
-      "note": "Narrowed: the multi-repository part is cut by hook-grows-repos-commit-journal; what stays is its floor on a one-repository call (bash, the 2.4k-line review-journal.sh source at ~20-40 ms, jq, one git status). 2026-10-03: the 811-853 ms p50 was the night orchestrator (191 of 355 heavy runs, p50 1050 ms wall / 972 ms CPU): a worker records under its launcher, so the launcher's .repos named 11 worker worktrees, each snapshotted before and after every launcher call; claude-setup@9171da1 lets a read-only Bash call out before the library, and claude-setup@7837e81 snapshots over .repos minus .repos.workers (trees first listed by a worker and not written in by the launcher since; a tree already listed before stays snapshotted). Other chats: p50 363 ms, dominated by the repositories they register (logo-vectorizer-bench: 33 704 untracked paths, 0.5-1.5 s a snapshot). Under 50 ms needs a design change or a different limit: the owner's.",
-      "handoff": "docs/handoffs/2026-10-03-hook-cost-rows.md"
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
+      "note": "2026-10-04: cause stands, code path unchanged on it; 291 ms CPU p50 against 1.2 s wall; logo-vectorizer-bench now has 66 685 dirty paths, 3.4 s per git status. Narrowed: the multi-repository part is cut by hook-grows-repos-commit-journal; what stays is its floor on a one-repository call (bash, the 2.4k-line review-journal.sh source at ~20-40 ms, jq, one git status). 2026-10-03: the 811-853 ms p50 was the night orchestrator (191 of 355 heavy runs, p50 1050 ms wall / 972 ms CPU): a worker records under its launcher, so the launcher's .repos named 11 worker worktrees, each snapshotted before and after every launcher call; claude-setup@9171da1 lets a read-only Bash call out before the library, and claude-setup@7837e81 snapshots over .repos minus .repos.workers (trees first listed by a worker and not written in by the launcher since; a tree already listed before stays snapshotted). Other chats: p50 363 ms, dominated by the repositories they register (logo-vectorizer-bench: 33 704 untracked paths, 0.5-1.5 s a snapshot). Under 50 ms needs a design change or a different limit: the owner's.",
+      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
     },
     {
       "id": "hook-sync-commit-journal",
@@ -639,10 +639,10 @@
       "same_cause": [
         "hook-every-call-commit-journal"
       ],
-      "last_reviewed": "2026-10-03",
-      "reviewed_by": "Night fixer harness-hooks-20261003T042542Z-1344",
-      "note": "853 ms p50 at first sight (2026-10-03), the same runs as hook-every-call-commit-journal: the orchestrator's launcher-registry sweep (cut in claude-setup@9171da1) plus the snapshot floor of the repositories a chat registers. What stays after the cut is that floor (p50 363 ms outside the orchestrator at load 60-90), driven by large untracked trees such as logo-vectorizer-bench. Under 150 ms needs a cheaper snapshot (an untracked-cache or fsmonitor git status, or skipping trees over a size) or a different limit: the owner's.",
-      "handoff": "docs/handoffs/2026-10-03-hook-cost-rows.md"
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
+      "note": "2026-10-04: cause stands, code path unchanged on it; logo-vectorizer-bench now 66 685 dirty paths, 3.4 s per git status. 853 ms p50 at first sight (2026-10-03), the same runs as hook-every-call-commit-journal: the orchestrator's launcher-registry sweep (cut in claude-setup@9171da1) plus the snapshot floor of the repositories a chat registers. What stays after the cut is that floor (p50 363 ms outside the orchestrator at load 60-90), driven by large untracked trees such as logo-vectorizer-bench. Under 150 ms needs a cheaper snapshot (an untracked-cache or fsmonitor git status, or skipping trees over a size) or a different limit: the owner's.",
+      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
     },
     {
       "id": "hook-every-call-instruction-watch",
@@ -654,10 +654,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-03",
-      "reviewed_by": "Night fixer harness-hooks-20261003T042542Z-1344",
-      "note": "Narrowed: the ~/.claude walk no longer descends file-history and its path spelling runs tr instead of perl (llm-legs share/instruction-files.sh); the watch set is cut 468 to 183 rows (hook-p50-instruction-watch-baseline). What stays is the floor of about 20 process starts; 2026-10-03 profile (224 ms at load 90): library source ~21 ms, instruction_repo_files' three git ls-files ~31 ms, the $(instruction_watch_state) subshells ~28 ms. Under 50 ms needs a cached enumeration (keyed on the repos' index mtimes) or a different limit: the owner's.",
-      "handoff": "docs/handoffs/2026-10-03-hook-cost-rows.md"
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
+      "note": "2026-10-04: cause stands, code path unchanged on it; 186 ms CPU p50 against 668 ms wall over 2 219 runs in 4 h at load 220. Narrowed: the ~/.claude walk no longer descends file-history and its path spelling runs tr instead of perl (llm-legs share/instruction-files.sh); the watch set is cut 468 to 183 rows (hook-p50-instruction-watch-baseline). What stays is the floor of about 20 process starts; 2026-10-03 profile (224 ms at load 90): library source ~21 ms, instruction_repo_files' three git ls-files ~31 ms, the $(instruction_watch_state) subshells ~28 ms. Under 50 ms needs a cached enumeration (keyed on the repos' index mtimes) or a different limit: the owner's.",
+      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
     },
     {
       "id": "hook-grows-repos-report-flush",
@@ -694,10 +694,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-03",
-      "reviewed_by": "Night fixer harness-hooks-20261003T042542Z-1344",
-      "note": "Narrowed to a confound: the quiet check reads no transcript (only revert_growth does, on a changed guarded file); its cost is the constant watch-set enumeration plus load_inflight's scan of machine-wide marks, the same for every chat. Sessions over 10 MB are the orchestrators, whose calls run under more sibling hooks and load. 2026-10-03: code path re-read, still no transcript read on the quiet path. Dismissal proposed in the handoff.",
-      "handoff": "docs/handoffs/2026-10-03-hook-cost-rows.md"
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
+      "note": "2026-10-04: cause stands, code path unchanged on it; still no transcript read on the quiet path. Narrowed to a confound: the quiet check reads no transcript (only revert_growth does, on a changed guarded file); its cost is the constant watch-set enumeration plus load_inflight's scan of machine-wide marks, the same for every chat. Sessions over 10 MB are the orchestrators, whose calls run under more sibling hooks and load. 2026-10-03: code path re-read, still no transcript read on the quiet path. Dismissal proposed in the handoff.",
+      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
     },
     {
       "id": "guards-growth-film-08a95dd4",
@@ -1264,7 +1264,7 @@
         "rule": "hook_p50",
         "ident": "instruction-watch\\.sh baseline"
       },
-      "status": "fixed",
+      "status": "open",
       "fixes": [
         {
           "at": "2026-10-01T05:38:24+03:00",
@@ -1281,10 +1281,10 @@
         "hook-every-call-instruction-watch",
         "hook-sync-instruction-watch-check"
       ],
-      "last_reviewed": "2026-10-01",
-      "reviewed_by": "Night fixer harness-hooks-20261001T020656Z-42ed",
-      "note": "285 of 468 watched rows sat under ~/.claude/plugins/marketplaces (catalog clones the harness auto-update pulls; installed plugins load from plugins/cache), plugins/.trash and a hidden top-level backup. Pruning the walk alone changed nothing: the between-sessions check pins every row of the newest baseline, so the set only grew. Now the walk prunes them and every baseline row and visible path under them is dropped (INSTRUCTION_HOME_UNLOADED_ERE). A/B on a copy of the live state, alternating runs: baseline 3.1 s to 1.46 s at load ~140, 5.0 s to 2.6 s at load ~330; quiet check 1.13 s to 0.94 s at load ~330. Also ends the false CHANGED reports on marketplace README pulls (21 log lines). Ruled out: the walk itself (17-25 ms), the reverts/ directory (maxdepth 1 never descends it). Test: tests/test_instruction_watch_perf.py three unloaded-tree cases.",
-      "handoff": null
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
+      "note": "2026-10-04 at load 220-230 on 10 cores (logo-vectorizer-bench batch plus the night): regressed to 2.8 s wall p50 at 442 ms CPU (25 runs, 4 h); the cut watch set holds, the excess is load. Reopened, narrowed to load; a load-banded hook_p50 is proposed in the handoff. 285 of 468 watched rows sat under ~/.claude/plugins/marketplaces (catalog clones the harness auto-update pulls; installed plugins load from plugins/cache), plugins/.trash and a hidden top-level backup. Pruning the walk alone changed nothing: the between-sessions check pins every row of the newest baseline, so the set only grew. Now the walk prunes them and every baseline row and visible path under them is dropped (INSTRUCTION_HOME_UNLOADED_ERE). A/B on a copy of the live state, alternating runs: baseline 3.1 s to 1.46 s at load ~140, 5.0 s to 2.6 s at load ~330; quiet check 1.13 s to 0.94 s at load ~330. Also ends the false CHANGED reports on marketplace README pulls (21 log lines). Ruled out: the walk itself (17-25 ms), the reverts/ directory (maxdepth 1 never descends it). Test: tests/test_instruction_watch_perf.py three unloaded-tree cases.",
+      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
     },
     {
       "id": "hook-p50-stop-dispatch",
@@ -1293,7 +1293,7 @@
         "rule": "hook_p50",
         "ident": "stop-dispatch\\.sh"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-01T05:38:24+03:00",
@@ -1303,12 +1303,20 @@
           ],
           "in": "claude-setup@ca90fab",
           "regressed_at": "2026-10-01T12:01:15+03:00"
+        },
+        {
+          "at": "2026-10-04T07:56:00+03:00",
+          "by": "Night fixer harness-hooks-20261004T013933Z-5514",
+          "files": [
+            "llm-legs/bin/worker-run-backstop.sh"
+          ],
+          "in": null
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-01",
-      "reviewed_by": "Night fixer harness-hooks-20261001T020656Z-42ed",
-      "note": "notice-chat-names (lib/chat_names.py last_assistant_text) json-parsed every line of the transcript to find the last assistant row: 1.3 s of a 2.9 s stop on a 39 MB transcript, the longest of the parallel notices, so the dispatcher's critical path. It now reads from the end with a growing window: 938 ms to 240 ms on that transcript (Python start dominates the rest). Ruled out: the backstop (57-94 ms here; one live exit 124 at load 250 with 16 background tasks), the asks (under 200 ms), words_journal (full reads only on a turn a notice fired). Tests: test_stop_dispatch.sh, the tail-parse count (3002 parses on the old code) and an assistant row past the first window.",
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
+      "note": "2026-10-04: the regression's own cause was the run backstop, the one synchronous part ahead of the notices and timed only inside the dispatcher: for a chat with live relayed runs (the night orchestrator, 12) it ran jq and a ps liveness probe per run before asking whether a relay owned it, 2.2-2.7 s a stop at load 220. It now settles ownership first (llm-legs bin/worker-run-backstop.sh): 0.9-1.1 s. The stop.d parts stay under 240 ms p50. Test: test_worker_run_backstop.sh, no ps for an owned run. notice-chat-names (lib/chat_names.py last_assistant_text) json-parsed every line of the transcript to find the last assistant row: 1.3 s of a 2.9 s stop on a 39 MB transcript, the longest of the parallel notices, so the dispatcher's critical path. It now reads from the end with a growing window: 938 ms to 240 ms on that transcript (Python start dominates the rest). Ruled out: the backstop (57-94 ms here; one live exit 124 at load 250 with 16 background tasks), the asks (under 200 ms), words_journal (full reads only on a turn a notice fired). Tests: test_stop_dispatch.sh, the tail-parse count (3002 parses on the old code) and an assistant row past the first window.",
       "handoff": null
     },
     {
@@ -1323,10 +1331,10 @@
       "same_cause": [
         "hook-every-call-instruction-watch"
       ],
-      "last_reviewed": "2026-10-01",
-      "reviewed_by": "Night fixer harness-hooks-20261001T020656Z-42ed",
-      "note": "Narrowed: the watch set is cut 468 to 183 rows (hook-p50-instruction-watch-baseline), about 17 % of the quiet check under load. What stays is a process floor of about 20 starts (jq, git rev-parse, three git ls-files, perl, find, tr, realpath, stat, three awk, mkdir, touch) whatever the set; at load 100-300 each start costs 10 ms and more. Under 150 ms needs the cached enumeration of the 2026-09-30 handoff: the owner's.",
-      "handoff": "docs/handoffs/2026-10-03-hook-cost-rows.md"
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
+      "note": "2026-10-04: cause stands, code path unchanged on it; 186 ms CPU p50 against 668 ms wall at load 220. Narrowed: the watch set is cut 468 to 183 rows (hook-p50-instruction-watch-baseline), about 17 % of the quiet check under load. What stays is a process floor of about 20 starts (jq, git rev-parse, three git ls-files, perl, find, tr, realpath, stat, three awk, mkdir, touch) whatever the set; at load 100-300 each start costs 10 ms and more. Under 150 ms needs the cached enumeration of the 2026-09-30 handoff: the owner's.",
+      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
     },
     {
       "id": "hook-sync-worker-launch-gate",
@@ -1335,13 +1343,22 @@
         "rule": "hook_sync",
         "ident": "worker-launch-gate\\.sh"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-04T07:56:00+03:00",
+          "by": "Night fixer harness-hooks-20261004T013933Z-5514",
+          "files": [
+            "llm-legs/bin/worker-launch-gate.sh"
+          ],
+          "in": null
+        }
+      ],
       "same_cause": [],
-      "last_reviewed": "2026-10-01",
-      "reviewed_by": "Night fixer harness-hooks-20261001T020656Z-42ed",
-      "note": "Narrowed to its process count: about 60 starts on a plain non-read-only Bash call (30 grep, 7 tr, 6 sed, 5 head, 5 awk, 4 jq, 2 realpath), most of them the owned-class checks run unconditionally; command length adds 10-20 % (13 KB heredoc vs 39 bytes). Not cut in a night run: it is a deny gate, and the cut (one jq, one grep -Eq over every owned regex before the per-class greps, wait_default read only for relay polls) needs its adversarial pass. Proposed in the handoff.",
-      "handoff": "docs/handoffs/2026-10-03-hook-cost-rows.md"
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
+      "note": "2026-10-04: cut: after its variable expansion the gate greps once for every later check's literal (prefix dropped, so a superset) and leaves when none is there: a plain write call 230 to 76 ms CPU, 1.2 to 0.36 s wall at load 220; 258 adversarial old/new verdict pairs identical (220 denies). Test: test_worker_launch_gate_visibility.sh, two jq starts on a plain call (four before). Narrowed to its process count: about 60 starts on a plain non-read-only Bash call (30 grep, 7 tr, 6 sed, 5 head, 5 awk, 4 jq, 2 realpath), most of them the owned-class checks run unconditionally; command length adds 10-20 % (13 KB heredoc vs 39 bytes). Not cut in a night run: it is a deny gate, and the cut (one jq, one grep -Eq over every owned regex before the per-class greps, wait_default read only for relay polls) needs its adversarial pass. Proposed in the handoff.",
+      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
     },
     {
       "id": "hook-grows-repos-worker-launch-gate",
@@ -1355,10 +1372,10 @@
       "same_cause": [
         "hook-grows-size-worker-launch-gate"
       ],
-      "last_reviewed": "2026-10-03",
-      "reviewed_by": "Night fixer harness-hooks-20261003T042542Z-1344",
-      "note": "Narrowed to a confound: the gate reads only the command text; no repository, no registry, and a transcript only for a relay agent's worker-run start or a legs/scheduler hit. The chats with 5+ repositories are the orchestrators, whose calls run beside more sibling hooks and carry longer commands (+10-20 %). 2026-10-03: still stands, gate code unchanged; the real 5+-repository causes found in its siblings (stop-dispatch, worker-limit-gate 2026-10-02; report-flush's prune, commit-journal's launcher registry 2026-10-03) are not on its path. Dismissal proposed in the handoff.",
-      "handoff": "docs/handoffs/2026-10-03-hook-cost-rows.md"
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
+      "note": "2026-10-04: cause stands, code path unchanged on it; the common path is also cut now (hook-sync-worker-launch-gate). Narrowed to a confound: the gate reads only the command text; no repository, no registry, and a transcript only for a relay agent's worker-run start or a legs/scheduler hit. The chats with 5+ repositories are the orchestrators, whose calls run beside more sibling hooks and carry longer commands (+10-20 %). 2026-10-03: still stands, gate code unchanged; the real 5+-repository causes found in its siblings (stop-dispatch, worker-limit-gate 2026-10-02; report-flush's prune, commit-journal's launcher registry 2026-10-03) are not on its path. Dismissal proposed in the handoff.",
+      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
     },
     {
       "id": "hook-grows-repos-english-gate",
@@ -1370,10 +1387,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-03",
-      "reviewed_by": "Night fixer harness-hooks-20261003T042542Z-1344",
-      "note": "Narrowed to a command-mix confound (259 ms against 96 at first sight, 2026-10-03): the gate reads no repository; its expensive path is a model launch (launch_args python plus cyrillic-share on the brief, ~400-600 ms), and 82 % of the night orchestrator's Bash calls are launches (review-bench fix/review/report, worker-run claim/report) against 1 % in other chats; common-path wall 132 ms there against 118 ms elsewhere. claude-setup@9171da1 cut the common path anyway (a launcher-token screen before the 2.4k-line library, 82-88 to 53-61 ms; er_over asks no --max for a zero share). Dismissal proposed in the handoff.",
-      "handoff": "docs/handoffs/2026-10-03-hook-cost-rows.md"
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
+      "note": "2026-10-04: cause stands, code path unchanged on it; 34 ms CPU p50 at load 220. Narrowed to a command-mix confound (259 ms against 96 at first sight, 2026-10-03): the gate reads no repository; its expensive path is a model launch (launch_args python plus cyrillic-share on the brief, ~400-600 ms), and 82 % of the night orchestrator's Bash calls are launches (review-bench fix/review/report, worker-run claim/report) against 1 % in other chats; common-path wall 132 ms there against 118 ms elsewhere. claude-setup@9171da1 cut the common path anyway (a launcher-token screen before the 2.4k-line library, 82-88 to 53-61 ms; er_over asks no --max for a zero share). Dismissal proposed in the handoff.",
+      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
     },
     {
       "id": "hook-grows-size-worker-launch-gate",
@@ -1387,10 +1404,10 @@
       "same_cause": [
         "hook-grows-repos-worker-launch-gate"
       ],
-      "last_reviewed": "2026-10-01",
-      "reviewed_by": "Night fixer harness-hooks-20261001T020656Z-42ed",
-      "note": "Narrowed to a confound, as hook-grows-repos-worker-launch-gate: no transcript read on the path every call takes. Dismissal proposed in the handoff.",
-      "handoff": "docs/handoffs/2026-10-03-hook-cost-rows.md"
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
+      "note": "2026-10-04: cause stands, code path unchanged on it; still no transcript read on the common path. Narrowed to a confound, as hook-grows-repos-worker-launch-gate: no transcript read on the path every call takes. Dismissal proposed in the handoff.",
+      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
     },
     {
       "id": "hook-sync-review-flow-gate",
@@ -1402,10 +1419,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-03",
-      "reviewed_by": "Night fixer harness-hooks-20261003T042542Z-1344",
-      "note": "Narrowed: the per-repository snapshot is parallel (claude-setup@4ca8de1); 2026-10-03 the 573-760 ms p50 was the orchestrator snapshotting its workers' worktrees from its own .repos; claude-setup@9171da1 and @7837e81 drop the workers' trees from that set (.repos.workers) and let a read-only call out before the library (write call with 5 registered trees 460-516 to 283-287 ms, read-only 67-70 to 43-44 ms, load 90). What stays is the snapshot floor of the trees a chat writes in (the same one hook-sync-commit-journal names). Design or limit: the owner's.",
-      "handoff": "docs/handoffs/2026-10-03-hook-cost-rows.md"
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
+      "note": "2026-10-04: cause stands, code path unchanged on it; 292 ms CPU p50 against 0.92 s wall at load 220. Narrowed: the per-repository snapshot is parallel (claude-setup@4ca8de1); 2026-10-03 the 573-760 ms p50 was the orchestrator snapshotting its workers' worktrees from its own .repos; claude-setup@9171da1 and @7837e81 drop the workers' trees from that set (.repos.workers) and let a read-only call out before the library (write call with 5 registered trees 460-516 to 283-287 ms, read-only 67-70 to 43-44 ms, load 90). What stays is the snapshot floor of the trees a chat writes in (the same one hook-sync-commit-journal names). Design or limit: the owner's.",
+      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
     },
     {
       "id": "test_long_pole-review-bench",
@@ -1753,7 +1770,7 @@
       "last_reviewed": "2026-10-02",
       "reviewed_by": "Night fixer harness-hooks-20261002T093036Z-5607",
       "note": "worker-pick --account <vendor> ran `codexb models --own` once per codex account (7 here, ~130 ms each at load 50) for the codex catalog check added 2026-10-01 (e961a07), whatever vendor was asked; only the codex answer reads it. Now skipped for --account claudeb|gemini|grok: 1.4 s to 0.7 s. worker-limit-gate asks worker-pick on every vendor-worker spawn, and also expanded every absolute path of every spawn's prompt (realpath, wc, tr, cat each) though only a vendor worker's triage claim reads it; now done there alone. Gate with a stub picker: ~320 ms of its own at load 50, about 25 process starts, no single hot spot. What stays is worker-pick's own ~0.7 s floor (the whole table for one answer): the owner's, see the handoff.",
-      "handoff": "docs/handoffs/2026-10-02-hook-cost-rows.md"
+      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
     },
     {
       "id": "hook-grows-repos-worker-limit-gate",
@@ -1810,7 +1827,7 @@
       "last_reviewed": "2026-10-02",
       "reviewed_by": "Night fixer harness-hooks-20261002T093036Z-5607",
       "note": "With a stub picker the hook takes ~55 ms at load 50 for every agent type; its cost is route_account, worker-pick --account for a brief with no ACCOUNT line (image-gen, light, plain relays). Cut with hook-sync-worker-limit-gate for every vendor but codex, whose answer needs the catalogs. The picker's ~0.7 s floor stays: handoff docs/handoffs/2026-10-02-hook-cost-rows.md.",
-      "handoff": "docs/handoffs/2026-10-02-hook-cost-rows.md"
+      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
     },
     {
       "id": "hook-sync-edit-conflict-notice",
@@ -1824,10 +1841,10 @@
       "same_cause": [
         "floor-edit-hooks"
       ],
-      "last_reviewed": "2026-10-03",
-      "reviewed_by": "Night fixer harness-hooks-20261003T042542Z-1344",
-      "note": "2026-10-03: cause stands, hooks/edit-conflict-notice.sh unchanged since claude-setup@e746412, 188 ms p50 over 11 runs in the last hour. Narrowed to its process floor: 195 ms p50 in 24 h at night load 50-60; a probe on a dirty file took 426 ms spread over six git calls, shasum, two jq, one find over the review journal and the library source, none over 65 ms. The per-record forks were cut 2026-09-30 (floor-edit-hooks). Under 150 ms needs fewer git calls per Edit (one status for owner and dirtiness): a design change for the owner.",
-      "handoff": "docs/handoffs/2026-10-02-hook-cost-rows.md"
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
+      "note": "2026-10-04: cause stands, code path unchanged on it; 356 ms CPU p50; a false workdir catch on nested task worktrees was fixed in claude-setup (hook_p50 row). 2026-10-03: cause stands, hooks/edit-conflict-notice.sh unchanged since claude-setup@e746412, 188 ms p50 over 11 runs in the last hour. Narrowed to its process floor: 195 ms p50 in 24 h at night load 50-60; a probe on a dirty file took 426 ms spread over six git calls, shasum, two jq, one find over the review journal and the library source, none over 65 ms. The per-record forks were cut 2026-09-30 (floor-edit-hooks). Under 150 ms needs fewer git calls per Edit (one status for owner and dirtiness): a design change for the owner.",
+      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
     },
     {
       "id": "hook-sync-instruction-watch-baseline",
@@ -1842,10 +1859,10 @@
         "hook-p50-instruction-watch-baseline",
         "hook-sync-instruction-watch-check"
       ],
-      "last_reviewed": "2026-10-02",
-      "reviewed_by": "Night fixer harness-hooks-20261002T093036Z-5607",
-      "note": "Narrowed: a SessionStart hook, once per session. Probe at load 50 with its own state dir: 2.6 s cold (ranked refresh, every snapshot written), 530-600 ms warm, spread over ~20 process starts (find x4, perl, awk, tr, mv, touch), none over 125 ms; the walk itself was cut 2026-10-01. Under 150 ms needs the cached enumeration hook-sync-instruction-watch-check names: the owner's. Not touched: reverts/ holds 84 027 entries, 663 MB (store_size row, another area).",
-      "handoff": "docs/handoffs/2026-10-02-hook-cost-rows.md"
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
+      "note": "2026-10-04: cause stands, code path unchanged on it; 442 ms CPU p50 against 2.8 s wall at load 220. Narrowed: a SessionStart hook, once per session. Probe at load 50 with its own state dir: 2.6 s cold (ranked refresh, every snapshot written), 530-600 ms warm, spread over ~20 process starts (find x4, perl, awk, tr, mv, touch), none over 125 ms; the walk itself was cut 2026-10-01. Under 150 ms needs the cached enumeration hook-sync-instruction-watch-check names: the owner's. Not touched: reverts/ holds 84 027 entries, 663 MB (store_size row, another area).",
+      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md"
     },
     {
       "id": "test_daily_cost-llm-limits",
@@ -2002,6 +2019,81 @@
       "handoff": null,
       "last_reviewed": "2026-10-04",
       "reviewed_by": "night fixer harness-speed-20261004T013952Z-0ff5"
+    },
+    {
+      "id": "hook-p50-commit-journal",
+      "title": "commit-journal over 1 s p50 in the last hour",
+      "match": {
+        "rule": "hook_p50",
+        "ident": "commit-journal\\.sh"
+      },
+      "status": "open",
+      "fixes": [],
+      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md",
+      "note": "2026-10-04 at load 220-230 on 10 cores (logo-vectorizer-bench batch plus the night): 1.2 s wall p50 at 291 ms CPU (2 010 runs, 4 h). Narrowed to load on top of the snapshot floor hook-sync-commit-journal names.",
+      "same_cause": [],
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514"
+    },
+    {
+      "id": "hook-p50-review-flow-gate",
+      "title": "review-flow-gate over 1 s p50 in the last hour",
+      "match": {
+        "rule": "hook_p50",
+        "ident": "review-flow-gate\\.sh"
+      },
+      "status": "open",
+      "fixes": [],
+      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md",
+      "note": "2026-10-04 at load 220-230 on 10 cores (logo-vectorizer-bench batch plus the night): 0.92-1.16 s wall p50 at 292 ms CPU (1 888 runs, 4 h). Narrowed to load on top of the snapshot floor hook-sync-review-flow-gate names. The statusline's `verdict` sub-run (review-debt, 3 157 s CPU in 4 h) is keyed apart and is not this row.",
+      "same_cause": [],
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514"
+    },
+    {
+      "id": "hook-p50-edit-conflict-notice",
+      "title": "edit-conflict-notice over 1 s p50 in the last hour",
+      "match": {
+        "rule": "hook_p50",
+        "ident": "edit-conflict-notice\\.sh"
+      },
+      "status": "open",
+      "fixes": [],
+      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md",
+      "note": "2026-10-04 at load 220-230 on 10 cores (logo-vectorizer-bench batch plus the night): 1.18 s wall p50 at 356 ms CPU (236 runs, 4 h). Narrowed to load on its six-git-call floor (hook-sync-edit-conflict-notice). Found on the way and fixed (claude-setup@d85da98): a file in <workdir>/.claude/worktrees/ was claimed by a live run's workdir scope, so every night fixer edit drew a FOREIGN WIP notice and a liveness probe.",
+      "same_cause": [],
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514"
+    },
+    {
+      "id": "hook-p50-worker-limit-gate",
+      "title": "worker-limit-gate over 1 s p50 in the last hour",
+      "match": {
+        "rule": "hook_p50",
+        "ident": "worker-limit-gate\\.sh"
+      },
+      "status": "open",
+      "fixes": [],
+      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md",
+      "note": "2026-10-04 at load 220-230 on 10 cores (logo-vectorizer-bench batch plus the night): 1.9 s wall p50 at 613 ms CPU (24 runs, 4 h). worker-pick --account claudeb: 0.43 s CPU, 2.5 s wall, spread over ~40 steps; the four vendors' claim reads take ~0.6 s though one vendor is asked. Narrowed to load plus worker-pick's all-vendor floor (handoff).",
+      "same_cause": [],
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514"
+    },
+    {
+      "id": "hook-full-work-worker-tag-hook",
+      "title": "worker-tag-hook as slow on a trivial Bash call as on the rest",
+      "match": {
+        "rule": "hook_full_work",
+        "ident": "worker-tag-hook\\.sh"
+      },
+      "status": "open",
+      "fixes": [],
+      "handoff": "docs/handoffs/2026-10-04-hook-cost-rows.md",
+      "note": "2026-10-04: a command-mix confound. Probe: main chat 57-114 ms for `ls` and a write alike, a codex-worker relay 780-860 ms for both; the hook exits after two jq outside the agent types it tags, and trivial calls are more often a relay's. Dismissal proposed in the handoff.",
+      "same_cause": [],
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514"
     }
   ],
   "blind_spots": [
