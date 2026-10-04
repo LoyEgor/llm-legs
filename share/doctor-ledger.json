@@ -1679,7 +1679,7 @@
     "detail": "ChatGPT UI drift: no composer"
    },
    "title": "A ChatGPT connector offer swallowed the composer click",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-03T16:31:30+03:00",
@@ -1687,7 +1687,7 @@
      "files": [
       "llm-legs/share/chatgpt_web.py"
      ],
-     "in": null,
+     "in": "llm-legs@0d9e7c3c",
      "regressed_at": null
     }
    ],
@@ -1706,7 +1706,7 @@
     "detail": "no image after \\d+s; it may still land in chat"
    },
    "title": "ChatGPT's page never showed an image its reply made",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-04T02:53:03+03:00",
@@ -1714,7 +1714,7 @@
      "files": [
       "llm-legs/share/chatgpt_web.py"
      ],
-     "in": null,
+     "in": "llm-legs@0d9e7c3c",
      "regressed_at": null
     }
    ],
