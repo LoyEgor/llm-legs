@@ -2051,10 +2051,9 @@ def refresh_problems(window_h, now):
     """The limits heartbeat's verdict as the collector stamped it into the store: judged there once,
     so this doctor and the menu can never disagree about a stall."""
     path = os.environ.get("LLM_LIMITS_CACHE") or os.path.join(base_home(), ".llm-limits.json")
-    try:
-        with open(path) as handle:
-            beat = json.load(handle).get("refresh_heartbeat") or {}
-    except (OSError, ValueError, AttributeError):
+    doc = read_json(path)
+    beat = doc.get("refresh_heartbeat") if isinstance(doc, dict) else None
+    if not isinstance(beat, dict):
         return []
     last = beat.get("last_tick_at")
     if beat.get("stalled") is not True or not isinstance(last, (int, float)):

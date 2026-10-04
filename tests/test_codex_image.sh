@@ -142,7 +142,8 @@ assert grep -q '^usage: codex-image ' "$IMAGE_ERR"
 assert grep -q "references: at most $REF_MAX" "$IMAGE_ERR"
 
 legs_before=$(wc -l <"$IMAGE_LEG_LOG")
-for wrapper in codex-image gemini-image gemini-listen gemini-music gemini-sfx gemini-video grok-image grok-video; do
+wrappers=(codex-image gemini-image gemini-listen gemini-music gemini-sfx gemini-video grok-image grok-video)
+for wrapper in "${wrappers[@]}"; do
   help_rc=0
   help_out=$(HOME="$FAKE_HOME" bash "$ROOT/bin/$wrapper" --help 2>/dev/null) || help_rc=$?
   assert test "$help_rc" -eq 0
@@ -154,7 +155,7 @@ assert test "$(wc -l <"$IMAGE_LEG_LOG")" -eq "$legs_before"
 
 # I23: a refusal names its cause on the first stderr line, and the line reaches the leg log's err.
 refusal_log="$WORK/refusal-legs.jsonl"
-for wrapper in codex-image gemini-image gemini-listen gemini-music gemini-sfx gemini-video grok-image grok-video; do
+for wrapper in "${wrappers[@]}"; do
   case $wrapper in
     gemini-listen) dest_args=(-o /nonexistent-i23/out.txt question "$WORK/clip.mp3") folder_flag=-o ;;
     gemini-music) dest_args=(--dest /nonexistent-i23/out.mp3 --prompt tune) folder_flag=--dest ;;

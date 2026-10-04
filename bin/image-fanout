@@ -30,6 +30,8 @@ command -v jq >/dev/null 2>&1 || {
 script_dir=$(resolve_self)
 root=$(cd "$script_dir/.." && pwd)
 . "$root/share/image-caps.sh"
+. "$root/share/limiter-hold.sh"
+. "$root/share/image-leg.sh"
 
 caps_root=${IMAGE_FANOUT_CAPS_ROOT:-$root}
 bin_dir=${IMAGE_FANOUT_BIN_DIR:-$script_dir}
@@ -382,6 +384,7 @@ eval "$(sed -n '/^available_mb() {/,/^}/p' "$root/bin/memlogd" 2>/dev/null)"
 guard_mb=$(sed -n 's/^GUARD_AVAIL_MB = \([0-9][0-9]*\).*/\1/p' "$root/bin/chat-load" 2>/dev/null | head -n 1)
 mem_floor_mb=$((${guard_mb:-0} + job_mb))
 mem_why=''
+mem_hold=''
 
 mem_admits() {
   local level avail
@@ -463,7 +466,7 @@ a_vendor=() a_name=() a_live=() a_excl=() a_cool=() a_launches=() a_used=() a_wh
 limited_why=''
 rq_tid=()
 
-cleanup() { rm -rf "$jobs_dir"; }
+cleanup() { hold_clear "$mem_hold"; rm -rf "$jobs_dir"; }
 trap cleanup EXIT
 
 on_signal() {
@@ -951,8 +954,7 @@ next_route() { # unit cause -> 0 with the unit pending on its vendor's next rout
   [ "$kind" = image ] || return 1
   vendor=${g_vendor[${u_group[u]}]}
   current=${u_route[u]:-$(caps_get "$vendor" '.routes[0] // empty')}
-  next=$(caps_get "$vendor" ".routes as \$r | (\$r | index(\"$current\")) as \$at
-    | if \$at == null then empty else (\$r[\$at + 1] // empty) end")
+  next=$(IMAGE_LEG_ROUTE=$current image_leg_fallback_route "$caps_root" "$vendor" '' '' true)
   [ -n "$next" ] || return 1
   block=$(route_block "$next")
   max=$(caps_get "$vendor" "(${block:+.$block.counts // }.counts) | if type == \"array\" then max else 1 end")
@@ -1115,11 +1117,16 @@ try_launch() { # -> 0 when a unit was launched; primary takes before spares
   if [ "$mem_holding" = 1 ] && [ $((now - mem_checked_at)) -lt "$mem_poll_ms" ]; then return 1; fi
   mem_checked_at=$now
   if ! mem_admits; then
-    [ "$mem_holding" = 1 ] || printf 'image-fanout: holding launches: %s\n' "$mem_why" >&2
+    if [ "$mem_holding" = 0 ]; then
+      mem_hold=$(hold_raise image-fanout "$run_id" "$mem_why")
+      printf 'image-fanout: holding launches: %s\n' "$mem_why" >&2
+    fi
     mem_holding=1
     return 1
   fi
   mem_holding=0
+  hold_clear "$mem_hold"
+  mem_hold=''
   launch_unit "$candidate" "$cand_a"
   return 0
 }

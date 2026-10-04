@@ -188,7 +188,8 @@ class Locator:
     def set_input_files(self, path, timeout=None):
         self.page.events.append(("dead input", path))
     def click(self, timeout=None, force=False):
-        self.page.events.append(("click", self.key) if self.index is None else ("pick", self.page.menu[self.index]))
+        picked = self.index is not None and self.key == "menu_item"
+        self.page.events.append(("pick", self.page.menu[self.index]) if picked else ("click", self.key))
         if self.key in ("preview", "attachment"):
             self.page.viewer = True
         if self.key == "role:Resize":
@@ -199,7 +200,7 @@ class Locator:
             self.page.commenting = True
         if self.key == "role:Send" or self.key == "role:Remove BG" and self.page.remove_bg_starts:
             self.page.sent = True
-        if self.index is not None:
+        if picked:
             self.page.sent = True
         if self.key == "remove":
             (self.page.stale or self.page.files).pop()
@@ -998,7 +999,7 @@ gw.set_wall("beta", None)
 # Busy accounts: the first free one in rotation order is try-locked; a pinned one or all of them still busy after
 # --lock-wait is exit 5 unsent; with all busy the run waits on the first and takes it once it frees.
 def hold(*names):
-    handles = [open(gw.ROOT / "locks" / f"{name}.lock", "w") for name in names]
+    handles = [open(gw.lock_path(name), "w") for name in names]
     for handle in handles:
         fcntl.flock(handle, fcntl.LOCK_EX)
     return handles

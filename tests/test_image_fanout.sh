@@ -180,7 +180,7 @@ grok_roster 'delta: Logged in\nstaleacct: Logged in\n'
 
 FANOUT_ENV=(IMAGE_FANOUT_BIN_DIR="$FAKE_BIN" IMAGE_FANOUT_LISTER_DIR="$FAKE_LIST" PATH="$FAKE_SYS:$PATH"
   FANOUT_CALLS="$CALLS" PICK_CALLS="$PICK_CALLS" FANOUT_CHILDREN="$CHILDREN"
-  IMAGE_FANOUT_LAUNCH_GAP_MS=0 IMAGE_FANOUT_MEM_POLL_MS=100)
+  IMAGE_FANOUT_LAUNCH_GAP_MS=0 IMAGE_FANOUT_MEM_POLL_MS=100 HARNESS_HOLDS_DIR="$WORK/harness/holds" HARNESS_WAITS_DIR="$WORK/harness/waits")
 fanout() {
   env "${FANOUT_ENV[@]}" bash "$SCRIPT" "$@" >"$FANOUT_OUT" 2>"$FANOUT_ERR"
 }
@@ -676,6 +676,7 @@ for hold in "mem $((GUARD + 1199))" 'pressure 4'; do
   fanout_bg -- --dest-dir "$MEM_DEST" --prompt 'badge' --vendors grok
   fanout_pid=$!
   assert wait_for 5 grep -Fq "holding launches: $why" "$FANOUT_ERR"
+  assert test "$(jq -r '.why' "$WORK/harness/holds/image-fanout-$fanout_pid.json")" = "$why"
   sleep 0.5
   assert test ! -s "$CALLS"
   assert test "$(jq -r '.cells[0].status' "$MEM_DEST/fanout.state.json")" = waiting
@@ -685,6 +686,8 @@ for hold in "mem $((GUARD + 1199))" 'pressure 4'; do
   wait "$fanout_pid" || rc=$?
   assert test "$rc" -eq 0
   assert grep -Fq $'grok\tdelta\tok' "$MEM_DEST/fanout.tsv"
+  assert test ! -e "$WORK/harness/holds/image-fanout-$fanout_pid.json"
+  assert grep -Fq '"class":"image-fanout"' "$WORK/harness/waits/"*.jsonl
 done
 printf '65536\n' >"$MEM_MB"
 

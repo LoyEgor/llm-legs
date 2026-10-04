@@ -39,7 +39,6 @@ CHAT_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 SIGNED_OUT_HOSTS = ("auth.openai.com", "chatgpt.com/auth")
 KIND = "chatgpt-image"
 MIN_EDGE = 256
-MAX_COUNT = 4
 QUIET_S = 30
 STALL_S = 90
 LOAD_S = 45
@@ -260,13 +259,9 @@ def chat_mode(page) -> None:
 
 def decline_offers(page) -> None:
     """A connector offer (Google Drive, Notion) pops over the composer at random and swallows its clicks (live 2026-10-03)."""
-    offer = page.get_by_role("button", name=SELECTORS["decline"], exact=True)
     for _ in range(3):
-        with contextlib.suppress(Exception):
-            if not (offer.count() and offer.first.is_visible()):
-                return
-            offer.first.click(timeout=3000)
-            page.wait_for_timeout(300)
+        if not gw.click_if_visible(page, "button", SELECTORS["decline"]):
+            return
 
 
 def open_chat(page, session: Session, account: str, chat: str | None, navigate: bool = True) -> None:
@@ -630,12 +625,12 @@ def bind(account: str, session: Session, meta: dict) -> None:
                             f"{mask_email(meta['email'])}")
 
 
+def take_counts() -> list[int]:
+    return json.loads((gw.MANIFEST.parent / "codex.json").read_text())["web"]["counts"]
+
+
 def take_failure(error: Exception) -> gw.Failure:
     return error if isinstance(error, gw.Failure) else gw.Failure(1, gw.failure_text(error)[:300])
-
-
-def take_path(dest: Path, slot: int) -> Path:
-    return dest if slot == 1 else dest.with_name(f"{dest.stem}-{slot}{dest.suffix}")
 
 
 def render_takes(context, account: str, args, meta: dict, started: float) -> dict:
@@ -683,7 +678,7 @@ def render_takes(context, account: str, args, meta: dict, started: float) -> dic
                         raise watch.late(args.timeout)
                     continue
                 gw.phase("media")
-                path = take_path(dest, len(delivered) + 1)
+                path = gw.variant_path(dest, len(delivered))
                 size, fmt = save_image(context, page, src, path)
                 gw.phase("saved")
             except Exception as error:  # noqa: BLE001
@@ -829,8 +824,9 @@ def check_args(args) -> None:
     edit = "--region" if args.region else args.tool
     if edit in ("--region", "comment", "remove-bg") and not (args.resume and not args.ref or len(args.ref) == 1):
         raise gw.Failure(2, f"{edit} edits one image: the chat's last one (--resume) or a single --ref")
-    if not 1 <= args.count <= MAX_COUNT:
-        raise gw.Failure(2, f"--count is 1-{MAX_COUNT}, not {args.count}")
+    counts = take_counts()
+    if args.count not in counts:
+        raise gw.Failure(2, f"--count is {min(counts)}-{max(counts)}, not {args.count}")
     if args.count > 1 and (args.resume or args.region or args.point or args.tool != "generate"):
         raise gw.Failure(2, "--count renders new chats of one generate request: no --resume, --region, --point, "
                             "resize, comment or remove-bg")
@@ -937,7 +933,7 @@ def main() -> None:
     p.add_argument("--resume", help="continue the chat printed as chat= by an earlier run")
     p.add_argument("--account", type=gw.account_arg)
     p.add_argument("--region", type=region_arg, help="x,y,w,h fractions of the image, outlined with Markup")
-    p.add_argument("--count", type=int, default=1, help=f"1-{MAX_COUNT} takes as new chats in tabs of one browser")
+    p.add_argument("--count", type=int, default=1, help=f"{min(take_counts())}-{max(take_counts())} takes as new chats in tabs of one browser")
     p.add_argument("--timeout", type=int, default=600)
     gw.lock_wait_arg(p)
     p.set_defaults(func=cmd_generate, tool="generate", aspect=None, point=[])

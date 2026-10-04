@@ -139,14 +139,16 @@ def weighted(total):
     return sum(total[key] * weight for key, weight in WEIGHTS.items())
 
 
-def spend(night, worker_run):
+def window(night):
     low = epoch(night["started_at"])
     high = epoch(night["finished_at"]) if night.get("finished_at") else time.time()
     sessions = {night.get("session")} | set(night.get("previous_sessions") or [])
     sessions.discard(None)
-    kinds = {"fixers": collections.Counter(), "reviews": collections.Counter(),
-             "orchestrator": collections.Counter()}
-    models, hours, blind, seen = collections.Counter(), 0.0, 0, set()
+    return low, high, sessions
+
+
+def night_runs(low, high, sessions):
+    """(run, directory, meta, vendor) of each worker run the night's sessions launched in its window."""
     for directory in sorted(glob.glob(f"{RUNS}/*-*")):
         run = os.path.basename(directory)
         parts = run.split("-")
@@ -157,16 +159,11 @@ def spend(night, worker_run):
                 meta = json.load(handle)
         except (OSError, ValueError):
             meta = {}
-        vendor = meta.get("vendor") or parts[0]
-        models[f"{vendor}/{meta.get('served_model') or meta.get('model') or '?'}"] += 1
-        if meta.get("started_at") and meta.get("ended_at"):
-            hours += max(meta["ended_at"] - meta["started_at"], 0) / 3600
-        usage = run_usage(worker_run, run, vendor, seen)
-        if usage is None:
-            blind += 1
-        else:
-            kinds["fixers"] += usage
-    rounds = 0
+        yield run, directory, meta, meta.get("vendor") or parts[0]
+
+
+def night_benches(low, high, sessions):
+    """Each review round started in the window by one of the night's sessions, or by no recorded owner."""
     for bench in sorted(glob.glob(f"{BENCHES}/*")):
         try:
             started = dt.datetime.strptime(os.path.basename(bench)[:16], "%Y%m%dT%H%M%SZ").replace(
@@ -182,6 +179,25 @@ def spend(night, worker_run):
             owner = None
         if owner is not None and owner not in sessions:
             continue
+        yield bench
+
+
+def spend(night, worker_run):
+    low, high, sessions = window(night)
+    kinds = {"fixers": collections.Counter(), "reviews": collections.Counter(),
+             "orchestrator": collections.Counter()}
+    models, hours, blind, seen = collections.Counter(), 0.0, 0, set()
+    for run, _, meta, vendor in night_runs(low, high, sessions):
+        models[f"{vendor}/{meta.get('served_model') or meta.get('model') or '?'}"] += 1
+        if meta.get("started_at") and meta.get("ended_at"):
+            hours += max(meta["ended_at"] - meta["started_at"], 0) / 3600
+        usage = run_usage(worker_run, run, vendor, seen)
+        if usage is None:
+            blind += 1
+        else:
+            kinds["fixers"] += usage
+    rounds = 0
+    for bench in night_benches(low, high, sessions):
         rounds += 1
         kinds["reviews"] += bench_usage(bench)
     for session in sessions:

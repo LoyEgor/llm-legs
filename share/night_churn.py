@@ -6,7 +6,6 @@ Measurement only: printed as part of the report header, gates nothing.
 """
 
 import collections
-import datetime as dt
 import glob
 import json
 import os
@@ -15,24 +14,11 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import handoffs
 import night_spend
 
 HOME = os.path.expanduser("~")
 _attr_cache = {}
-
-
-def epoch(stamp):
-    s = (stamp or "1970-01-01T00:00:00Z")[:19] + "Z"
-    return dt.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc).timestamp()
-
-
-def benches_dir():
-    return (os.environ.get("WORKER_STATS_DIR")
-            or f"{os.environ.get('CLAUDEB_DIR') or HOME + '/.claude-profiles/.claudeb'}/worker-stats") + "/benches"
-
-
-def worker_runs_dir():
-    return os.environ.get("WORKER_RUN_DIR") or f"{HOME}/.cache/claude-worker-runs"
 
 
 def doctors_dir(night_path=None):
@@ -45,28 +31,10 @@ def doctors_dir(night_path=None):
     return f"{HOME}/.cache/doctors"
 
 
-def sweep_repos_file():
-    return os.environ.get("NIGHT_RUN_SWEEP_REPOS") or f"{HOME}/.claude/sweep-repos"
-
-
 def repo_dir(repo):
     if repo.startswith("/"):
-        return repo if os.path.isdir(repo) else None
-    sfile = sweep_repos_file()
-    if os.path.isfile(sfile):
-        try:
-            with open(sfile) as handle:
-                for line in handle:
-                    p = line.strip()
-                    if p and os.path.basename(p) == repo and os.path.isdir(p):
-                        return p
-        except OSError:
-            pass
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    cand = os.path.join(os.path.dirname(repo_root), repo)
-    if os.path.isdir(cand):
-        return cand
-    return None
+        return repo
+    return next((p for p in handoffs.sweep_repos() if os.path.basename(p) == repo), None)
 
 
 def check_linguist_generated(repo_path, file_paths):
@@ -85,31 +53,13 @@ def check_linguist_generated(repo_path, file_paths):
 
 
 def reviews_line(night):
-    low = epoch(night["started_at"])
-    high = epoch(night["finished_at"]) if night.get("finished_at") else dt.datetime.now(dt.timezone.utc).timestamp()
-    sessions = {night.get("session")} | set(night.get("previous_sessions") or [])
-    sessions.discard(None)
     per_branch_reviews = {job["review"] for job in night.get("jobs", []) if job.get("review")}
 
     per_branch_n, per_branch_w = 0, 0.0
     other_n, other_w = 0, 0.0
-    bdir = benches_dir()
 
-    for bench in sorted(glob.glob(f"{bdir}/*")):
+    for bench in night_spend.night_benches(*night_spend.window(night)):
         bname = os.path.basename(bench)
-        try:
-            started = dt.datetime.strptime(bname[:16], "%Y%m%dT%H%M%SZ").replace(tzinfo=dt.timezone.utc).timestamp()
-        except ValueError:
-            continue
-        if not low <= started <= high:
-            continue
-        try:
-            with open(f"{bench}/meta.json") as handle:
-                owner = json.load(handle).get("session")
-        except (OSError, ValueError):
-            owner = None
-        if owner is not None and owner not in sessions:
-            continue
         w = night_spend.weighted(night_spend.bench_usage(bench))
         if bname in per_branch_reviews:
             per_branch_n += 1
@@ -210,14 +160,9 @@ def problems_lines(night, night_path):
 
 def fixer_spend_line(night, night_path, worker_run):
     after_snapshot = night.get("doctor_problems_after")
-    low = epoch(night["started_at"])
-    high = epoch(night["finished_at"]) if night.get("finished_at") else dt.datetime.now(dt.timezone.utc).timestamp()
-    sessions = {night.get("session")} | set(night.get("previous_sessions") or [])
-    sessions.discard(None)
 
     ddir = doctors_dir(night_path)
     runs_dir = os.path.join(ddir, "runs")
-    wruns_dir = worker_runs_dir()
 
     fixer_jobs = [j for j in night.get("jobs", []) if j.get("kind") == "fixer"]
     if not fixer_jobs:
@@ -236,20 +181,7 @@ def fixer_spend_line(night, night_path, worker_run):
     fixer_spend = collections.defaultdict(collections.Counter)
     all_fixer_usage = collections.Counter()
 
-    for directory in sorted(glob.glob(f"{wruns_dir}/*-*")):
-        run = os.path.basename(directory)
-        parts = run.split("-")
-        if not (parts[1].isdigit() and low <= int(parts[1]) <= high):
-            continue
-        launcher = night_spend.read(f"{directory}/launcher")
-        if launcher not in sessions:
-            continue
-        try:
-            with open(f"{directory}/meta.json") as h:
-                meta = json.load(h)
-        except (OSError, ValueError):
-            meta = {}
-        vendor = meta.get("vendor") or parts[0]
+    for run, directory, meta, vendor in night_spend.night_runs(*night_spend.window(night)):
         usage = night_spend.run_usage(worker_run, run, vendor, seen)
         if usage is None:
             continue
@@ -309,7 +241,7 @@ def fixer_spend_line(night, night_path, worker_run):
 
 
 def rewrite_lines(night):
-    low = epoch(night["started_at"])
+    low = night_spend.epoch(night["started_at"])
     cutoff = low - 7 * 86400
 
     total_M = 0

@@ -53,6 +53,7 @@ VENDOR_WORD="^[[:space:]]*(${KEYWORD})*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|${
 # other flags.
 PRINT_FLAG="([[:space:]]+[^[:space:]]+)*[[:space:]]+(-p|--print|--prompt)(=[^[:space:]]*)?${EDGE}"
 SUBCOMMAND="([[:space:]]+[^[:space:]]+)*[[:space:]]+"
+VENDOR_BINS="claude|claudeb|claudegpt|codex|codexb|gemini|geminib|agy|opencode|grok|grokb"
 
 # Grok's own spellings, not reusable from PRINT_FLAG: folding it back in would let
 # `grokb ... --prompt-file` and `grokb agent` through.
@@ -98,6 +99,7 @@ LEGS_FREE_RE='[[:space:]]--(extract-served-model|help)([[:space:]]|$)'
 WAIT_ASK="wait through the ATTACH relay / review-waiter agent so the run has a magenta row"
 REVIEW_LAUNCH_RE="${VENDOR_WORD}review-bench[[:space:]]+(review|run)${EDGE}"
 REVIEW_IDLE_RE='[[:space:]](--help|-h|--price)([[:space:]]|$)'
+SCHEDULE_RE='^[[:space:]]*(at|batch|crontab)([[:space:]]|$)'
 RELAY_AGENTS="a relay Agent — claudeb-worker, codex-worker, gemini-worker, grok-worker or light-worker, the one worker-pick's NEXT row names, or light-research for a read-only question — which runs worker-run itself"
 # The owner tokens worker-run and review-bench check are the hooks' to stamp; a command setting one
 # by hand is a forged owner.
@@ -239,9 +241,9 @@ done < <(grep -Eo "$ASSIGN_RE" <<<"$scan")
 # Every check below needs one of these words somewhere in the expanded text, so a call naming none
 # leaves here. Each alternative is a check's own literal with its command-position prefix dropped,
 # which can only match more; a check added below needs its literal here too.
-grep -Eq -e '(claude|claudeb|claudegpt|codex|codexb|gemini|geminib|agy|opencode|grok|grokb)([[:space:]]|$)' \
+grep -Eq -e "(${VENDOR_BINS})${EDGE}" \
   -e 'worker-run|review-bench|light-research|WORKER_RUN_RELAY|REVIEW_BENCH_DOOR' \
-  -e '[$][{]?[A-Za-z_][A-Za-z0-9_]*[}]?[[:space:]]+(start|wait)' -e '^[[:space:]]*(at|batch|crontab)([[:space:]]|$)' \
+  -e "${UNREADABLE_RUN_RE#"$VENDOR_WORD"}" -e "$SCHEDULE_RE" \
   -e "${OWNED_LEGS_RE#"$VENDOR_WORD"}" -e "${OWNED_IMAGE_RE#"$VENDOR_WORD"}" -e "${MEDIA_ENGINE_RE#"$VENDOR_WORD"}" \
   <<<"$unsplit"$'\n'"$scan" 2>/dev/null
 [ $? -ne 1 ] || exit 0
@@ -501,19 +503,19 @@ case "$agent_type" in
 esac
 # A vendor CLI fed on stdin runs headless with no print flag, and a scheduler runs its command later,
 # where no gate reads it.
-piped=$(grep -Eo "(^|[^|])[|][[:space:]]*((${WRAPPER})[[:space:]]+)*([^[:space:]/|;&]*/)*(claude|claudeb|claudegpt|codex|codexb|gemini|geminib|agy|opencode|grok|grokb)([[:space:]]+[^[:space:]|;&]+)?([[:space:]]|\$)" <<<"$unsplit" 2>/dev/null |
+piped=$(grep -Eo "(^|[^|])[|][[:space:]]*((${WRAPPER})[[:space:]]+)*([^[:space:]/|;&]*/)*(${VENDOR_BINS})([[:space:]]+[^[:space:]|;&]+)?([[:space:]]|\$)" <<<"$unsplit" 2>/dev/null |
   grep -Ev "[|][[:space:]]*claudeb[[:space:]]+(revive|warm)[[:space:]]*\$" | head -n1 | sed -E 's/^[^|]*[|][[:space:]]*//' | tr -s '[:space:]' ' ' | sed -e 's/ $//')
 [ -z "$piped" ] || deny "Blocked: a pipe into \`${piped}\` runs it headless on its stdin — a bare vendor launch. ${launch_ask}."
-scheduled=$(grep -E '^[[:space:]]*(at|batch)([[:space:]]|$)|^[[:space:]]*crontab([[:space:]]|$)' <<<"$scan" 2>/dev/null |
+scheduled=$(grep -E "$SCHEDULE_RE" <<<"$scan" 2>/dev/null |
   grep -Ev '^[[:space:]]*crontab([[:space:]]+-u[[:space:]]+[^[:space:]]+)?[[:space:]]+-l[[:space:]]*$' | head -n1 |
   tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
 [ -z "$scheduled" ] || span_live || deny "Blocked: \`${scheduled}\` schedules a command to run later, outside every gate and every task row. Run the work now through its owner; a scheduled job is Egor's to set up — hand him the paste-ready command."
 # `help` is a subcommand only to some CLIs; to gemini and claude it is a positional prompt, so a flag
 # after it (`gemini help -p "fix x"`) is a headless launch. A help line is exempt only as a segment
 # that held no quote or backslash before stripping: `sh -c "claude -p 'ls -h'"` strips to a help line.
-HELP_RE="${VENDOR_WORD}(claude|claudeb|claudegpt|codex|codexb|gemini|geminib|agy|opencode|grok|grokb)(${SUBCOMMAND}(-h|--help)${HELP_TAIL}|[[:space:]]+help([[:space:]]+[^[:space:]-][^[:space:]]*)*${HELP_TAIL})"
+HELP_RE="${VENDOR_WORD}(${VENDOR_BINS})(${SUBCOMMAND}(-h|--help)${HELP_TAIL}|[[:space:]]+help([[:space:]]+[^[:space:]-][^[:space:]]*)*${HELP_TAIL})"
 help_lines=$(grep -E "$HELP_RE" <<<"$unsanctioned" |
-  grep -Fx -f <(tr ';|&()`' '\n' <<<"$prestrip" | grep -v "[\\\\'\"]"))
+  grep -Fx -f <(printf '%s\n' "$typed"))
 [ -z "$help_lines" ] || unsanctioned=$(grep -Fxv -f <(printf '%s\n' "$help_lines") <<<"$unsanctioned")
 launch_any=()
 for launch_re in "${LAUNCH_RES[@]}"; do launch_any+=(-e "$launch_re"); done

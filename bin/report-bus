@@ -8,7 +8,9 @@ while [ -L "$self" ]; do
   link=$(readlink "$self")
   case $link in /*) self=$link ;; *) self=${self%/*}/$link ;; esac
 done
-FRAME=${REPORT_FRAME:-$(cd -P "${self%/*}/.." 2>/dev/null && pwd)/share/report_frame.py}
+share=$(cd -P "${self%/*}/.." 2>/dev/null && pwd)/share
+FRAME=${REPORT_FRAME:-$share/report_frame.py}
+. "$share/store-lock.sh"
 locked=false
 tmp=''
 usage() { printf 'report-bus: invalid arguments (post | emit | lose | flush | list | doctor); emit exits 3 on a duplicate\n' >&2; exit 2; }
@@ -17,7 +19,7 @@ valid_name() { case "$1" in ''|.|..|*[!A-Za-z0-9._-]*) return 1 ;; esac; }
 # shellcheck disable=SC2329
 cleanup() {
   [ -z "$tmp" ] || rm -f "$tmp"
-  if [ "$locked" = true ] && [ "$(cat "$ROOT/.lock/pid" 2>/dev/null)" = "$$" ]; then rm -f "$ROOT/.lock/pid"; rmdir "$ROOT/.lock" 2>/dev/null || :; fi
+  [ "$locked" = false ] || store_lock_release "$ROOT/.lock"
 }
 # A post signalled before its queue file landed exited 0 with the report gone and no trace of it.
 signalled() {
@@ -36,36 +38,23 @@ live_guard() {
 }
 trap 'cleanup' EXIT
 trap 'signalled' HUP INT TERM
-problem() {
-  printf 'report-bus: %s\n' "$1" >&2
-  if ! { printf '%s\n' "${body:-}" >>"$ROOT/lost.log"; } 2>/dev/null; then
+keep_lost() { # reason
+  local row
+  row=$(jq -cn --arg k "${kind:-}" --arg i "${id:-}" --arg s "${session:-}" --arg r "$1" --arg b "${body:-}" \
+    '{epoch:now|floor, session:$s, kind:$k, id:$i, reason:$r, body:$b}' 2>/dev/null) || row=${body:-}
+  if ! { printf '%s\n' "$row" >>"$ROOT/lost.log"; } 2>/dev/null; then
     printf 'report-bus: lost.log is unwritable; body follows\n%s\n' "${body:-}" >&2
   fi
+}
+problem() {
+  printf 'report-bus: %s\n' "$1" >&2
+  keep_lost "$1"
   exit 0
 }
-lock_store() {
-  local limit=${1:-100} tries=0 owner age
-  mkdir -p "$ROOT" 2>/dev/null || return 1
-  while :; do
-    if mkdir "$ROOT/.lock" 2>/dev/null; then
-      if { printf '%s\n' "$$" >"$ROOT/.lock/pid"; } 2>/dev/null; then locked=true; return 0; fi
-    else
-      owner=$(cat "$ROOT/.lock/pid" 2>/dev/null) || owner=''
-      age=$(( $(date +%s) - $(mtime "$ROOT/.lock" || date +%s) ))
-      # The owner may have released and exited after the read, its successor's fresh lock in place:
-      # recover only while the dead pid is still the one recorded.
-      if [ "$age" -gt 60 ] || { [[ "$owner" =~ ^[0-9]+$ ]] && ! kill -0 "$owner" 2>/dev/null &&
-        [ "$(cat "$ROOT/.lock/pid" 2>/dev/null)" = "$owner" ]; }; then
-        rm -f "$ROOT/.lock/pid"
-        rmdir "$ROOT/.lock" 2>/dev/null || :
-        continue
-      fi
-    fi
-    tries=$((tries + 1))
-    [ -w "$ROOT" ] || return 1
-    [ "$tries" -lt "$limit" ] || return 1
-    sleep 0.05
-  done
+lock_store() { # tries
+  mkdir -p "$ROOT" 2>/dev/null && [ -w "$ROOT" ] || return 1
+  LLM_STORE_LOCK_RETRIES=${1:-100} LLM_STORE_LOCK_DELAY=0.05 store_lock_acquire "$ROOT/.lock" || return 1
+  locked=true
 }
 resolve_session() {
   local current='' next owner entry runroot seen='|' pid hop registry
@@ -257,11 +246,7 @@ case "$verb" in
     body=${body%$'\001'}
     resolve_session
     mkdir -p "$ROOT" 2>/dev/null
-    row=$(jq -cn --arg k "$kind" --arg i "$id" --arg s "$session" --arg r "$reason" --arg b "$body" \
-      '{epoch:now|floor, session:$s, kind:$k, id:$i, reason:$r, body:$b}') || row=$body
-    if ! { printf '%s\n' "$row" >>"$ROOT/lost.log"; } 2>/dev/null; then
-      printf 'report-bus: lost.log is unwritable; body follows\n%s\n' "$body" >&2
-    fi
+    keep_lost "$reason"
     jq -cn --arg what "$kind $id" --arg r "$reason" --arg log "$ROOT/lost.log" \
       '{word:"report lost", rows:[["lost",$what],["why",$r],["kept in",$log]]}' |
       "$self" post --kind notice --id "lost-$id" --session "$session" ;;

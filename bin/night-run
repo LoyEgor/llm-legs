@@ -668,7 +668,8 @@ cmd_carry() {
 }
 
 cmd_suites() {
-  local id=${1:-} repo name log rc rows='[]'
+  local id=${1:-} repo name log rc rows='[]' pid since
+  local journal=${RUN_SUITES_JOURNAL:-${XDG_CACHE_HOME:-$HOME/.cache}/run-suites/runs.jsonl}
   [ -n "$id" ] && [ $# -le 2 ] || usage
   known_night "$id"
   if [ "${2:-}" != --wait ]; then
@@ -684,11 +685,15 @@ cmd_suites() {
   while IFS= read -r repo; do
     [ -n "$repo" ] && [ -x "$repo/tests/run-all" ] || continue
     name=$(basename "$repo") log="$nights_dir/$id.suites.$name.log"
-    bash "$repo/tests/run-all" >"$log" 2>&1
+    since=$(date +%s)
+    RUN_SUITES_JOURNAL=$journal bash "$repo/tests/run-all" >"$log" 2>&1 &
+    pid=$!
+    wait "$pid"
     rc=$?
-    rows=$(jq -c --arg r "$repo" --arg l "$log" --argjson x "$rc" --rawfile out "$log" '. + [{repo: $r, exit: $x, log: $l,
-      passed: ($out | [scan("([0-9]+) PASS · [0-9]+ FAIL")] | last // ["0"] | .[0] | tonumber),
-      failed: [$out | splits("\n") | capture("^(?<s>[^ ]+)  +FAIL [0-9]+").s]}]' <<<"$rows")
+    rows=$(jq -c --arg r "$repo" --arg l "$log" --argjson x "$rc" --slurpfile run <(jq -cR --argjson p "$pid" --argjson t "$since" \
+      'fromjson? | select(.kind == "suites" and .pid == $p and .started_at >= $t)' "$journal" 2>/dev/null) \
+      '(($run | last // {}).suites // {}) as $s | . + [{repo: $r, exit: $x, log: $l,
+      passed: ([$s[] | select(.rc == 0)] | length), failed: [$s | to_entries[] | select(.value.rc != 0) | .key]}]' <<<"$rows")
   done <"$sweep_repos"
   lock
   night_set "$id" '.suites.finished_at = $t | .suites.repos = $r' --arg t "$(stamp)" --argjson r "$rows" || die "cannot write night $id"

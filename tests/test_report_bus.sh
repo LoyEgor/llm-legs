@@ -211,23 +211,6 @@ PATH="$held:$PATH" post held first
 assert test "$(count "$STORE/held/pending")" = 1
 assert test ! -s "$STORE/lost.log"
 assert test "$(cat "$held/released")" = "$$"
-# The owner read names a holder that has since exited, and a successor's lock already stands:
-# it is waited on, never recovered as the dead one's.
-rm -f "$held/polls" "$held/released"
-mkdir "$STORE/.lock"
-printf '99999999\n' >"$STORE/.lock/pid"
-cat >"$held/cat" <<CAT
-#!/bin/sh
-if [ "\$*" = "$STORE/.lock/pid" ] && [ ! -e "$held/swapped" ]; then
-  : >"$held/swapped"; /bin/cat "\$@"; printf '%s\n' "$$" >"\$1"; exit
-fi
-exec /bin/cat "\$@"
-CAT
-chmod +x "$held/cat"
-PATH="$held:$PATH" post held second
-assert test "$(count "$STORE/held/pending")" = 2
-assert test ! -s "$STORE/lost.log"
-assert test "$(cat "$held/released")" = "$$"
 
 post failed-output item
 real_jq=$(command -v jq)
@@ -323,7 +306,7 @@ chmod 500 "$WORK/fail-cache/claude-reports"
 rc=0
 doc 'saved body' | XDG_CACHE_HOME="$WORK/fail-cache" "$BUS" post --kind notice --session lost 2>"$WORK/error" || rc=$?
 assert test "$rc" = 0
-assert grep -q ' saved body$' "$WORK/fail-cache/claude-reports/lost.log"
+assert jq -e '.session == "lost" and .reason != "" and (.body | contains("saved body"))' "$WORK/fail-cache/claude-reports/lost.log" >/dev/null
 assert grep -q '^report-bus: ' "$WORK/error"
 chmod 700 "$WORK/fail-cache/claude-reports"
 

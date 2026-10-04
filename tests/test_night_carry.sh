@@ -12,7 +12,7 @@ assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; 
 assert_fails() { asserts=$((asserts + 1)); ! "$@" || fail "assert $asserts unexpectedly succeeded: $*"; }
 jqe() { jq -e "$@" >/dev/null; }
 
-export HOME="$WORK/home" DOCTORS_DIR="$WORK/doctors" NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-repos" CHAT_NAMES_CACHE="$WORK/names.json"
+export HOME="$WORK/home" RUN_SUITES_JOURNAL="$WORK/runs.jsonl" DOCTORS_DIR="$WORK/doctors" NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-repos" CHAT_NAMES_CACHE="$WORK/names.json"
 NIGHTS="$DOCTORS_DIR/nights"
 night() { bash "$ROOT/bin/night-run" "$@"; }
 mkdir -p "$NIGHTS" "$HOME/.claude/sessions" "$HOME/.claude/projects/p"
@@ -59,8 +59,13 @@ night job N1 set handoff-2026-09-28-old state=blocked-on-egor \
   reason="Cost: an hour. Loss: a slow suite. Recommendation: fix it." >/dev/null || fail "a traded handoff job was refused"
 night job N1 set suite-other-test_x state=blocked-on-egor reason="his word" >/dev/null || fail "a suite job needs no trade lines"
 
-printf '#!/usr/bin/env bash\nprintf "%%s\\n" "test_a.sh  PASS        1  ok" "test_b.sh  FAIL 1      2  boom" "" "2 suites · 1 PASS · 1 FAIL · 3s wall (3s serial)"\nexit 1\n' \
-  >"$WORK/repo/tests/run-all"
+cat >"$WORK/repo/tests/run-all" <<'RUNALL'
+#!/usr/bin/env bash
+printf '{"kind":"suites","pid":%s,"started_at":%s,"suites":{"test_a.sh":{"rc":0},"test_b.sh":{"rc":1}}}\n' "$$" "$(date +%s)" >>"$RUN_SUITES_JOURNAL"
+printf '{"kind":"suites","pid":%s,"started_at":1,"suites":{"test_c.sh":{"rc":0},"test_d.sh":{"rc":0}}}\n' "$$" >>"$RUN_SUITES_JOURNAL"
+printf '%s\n' "test_a.sh  PASS        1  ok" "test_x.sh  FAIL 1      2  boom" "" "2 suites · 9 PASS · 1 FAIL · 3s wall (3s serial)"
+exit 1
+RUNALL
 chmod +x "$WORK/repo/tests/run-all"
 night suites N1 --wait || fail "suites failed"
 assert jqe --arg r "$WORK/repo" --arg l "$NIGHTS/N1.suites.repo.log" \

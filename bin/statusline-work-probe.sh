@@ -154,7 +154,7 @@ found=$(printf '%s\n' "$snapshot" | awk -v start="$start_pid" -v runs="$runs" '
   }
   END {
     media = "^(media-run|image-fanout|codex-image|gemini-image|grok-image|grok-video|gemini-video|gemini-music|gemini-sfx|gemini-listen)$"
-    owned = "^(worker-run|review-bench|media-run|image-fanout|codex-image|gemini-image|grok-image|grok-video|gemini-video|gemini-music|gemini-sfx|gemini-listen)$"
+    owned = "^(worker-run|review-bench|" substr(media, 3)
     pid = start; depth = 0; root = ""
     while (pid != "" && pid + 0 > 1 && depth < 30) {
       if (base_of(pid) == "claude") { root = pid; break }

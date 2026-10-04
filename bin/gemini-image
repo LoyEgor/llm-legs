@@ -165,8 +165,11 @@ aspect_kind=generate
 # A resumed turn with no --aspect names none: the manifest default is 1:1, and sending it
 # repainted a 16:9 result square (live, 2026-09-11); the conversation keeps its own ratio.
 [ -z "$resume" ] || [ "$aspect_given" = true ] || aspect=''
-[ "$route" = flow ] || [ -z "$aspect" ] || jq -e --arg aspect "$aspect" --arg kind "$aspect_kind" \
-  '.aspects[$kind] | index($aspect) != null' "$(image_caps_file "$root" gemini)" >/dev/null || usage "--aspect $aspect is not one of the $aspect_kind aspects"
+aspect_listed() {
+  jq -e --arg aspect "$1" --arg kind "$aspect_kind" '.aspects[$kind] | index($aspect) != null' \
+    "$(image_caps_file "$root" gemini)" >/dev/null
+}
+[ "$route" = flow ] || [ -z "$aspect" ] || aspect_listed "$aspect" || usage "--aspect $aspect is not one of the $aspect_kind aspects"
 ref_max=$(image_caps_get "$root" gemini '.refs.max')
 [ "$route" = flow ] || [ "$ref_max" = null ] || [ "$ref_count" -le "$ref_max" ] || usage "$ref_count references exceed the $ref_max --route $route takes"
 if [ "$remove_green" = true ] && [ "$(image_caps_get "$root" gemini '.transparent')" != chroma ]; then
@@ -210,8 +213,7 @@ fi
 edit_input=$IMAGE_LEG_COMPOSITE_INPUT
 expressible=false
 if [ "$route" = flow ] && [ -z "$tool_op$model_given$upscale" ] && [ "$count" = 1 ] &&
-    [ "$ref_count" -le "$ref_max" ] && { [ -z "$aspect_before" ] || jq -e --arg aspect "$aspect_before" \
-      --arg kind "$aspect_kind" '.aspects[$kind] | index($aspect) != null' "$(image_caps_file "$root" gemini)" >/dev/null; }; then
+    [ "$ref_count" -le "$ref_max" ] && { [ -z "$aspect_before" ] || aspect_listed "$aspect_before"; }; then
   expressible=true
 fi
 fallback_next=$(image_leg_fallback_route "$root" gemini "$route_given" "$resume" "$expressible")

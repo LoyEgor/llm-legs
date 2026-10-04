@@ -32,13 +32,14 @@ and queues nothing.
 
 `post` reads FILE or stdin, renders it and atomically writes one queue file, using a temporary file and
 rename. Directories are created on demand. Delivery errors exit 0 with `report-bus: <reason>`
-on stderr and the body appended to `lost.log`. If the filesystem also refuses that append,
+on stderr and one JSON line `{epoch, session, kind, id, reason, body}` appended to `lost.log`. If
+the filesystem also refuses that append,
 stderr carries the body; an unwritable filesystem cannot retain a log. A `post` or `emit` ended by
 HUP, INT or TERM before its queue file landed keeps the body in `lost.log` the same way.
 
 `lose` is the producer's loss channel: a producer whose `post` failed (exit 2, a signal) hands it
 the same body with its kind, id and the reason. It appends one JSON line `{epoch, session, kind,
-id, reason, body}` to `lost.log` and posts a `report lost` notice (id `lost-<id>`) to the session,
+id, reason, body}` to `lost.log` (the same row and fallback as a delivery error) and posts a `report lost` notice (id `lost-<id>`) to the session,
 so the chat that was owed the report learns it was lost.
 
 Under `share/run-suites.sh` every suite runs with `REPORT_BUS_LIVE_ROOT` (the runner's own queue
@@ -86,12 +87,10 @@ delivery with `epoch`, `session`, `kind`, `id`, `bytes`, `event`, plus `source_s
 rendered `text` for replay and orphan dedup. `list` reprints the last 10 deliveries for the
 resolved chat by default. `--last 0` prints nothing. History survives delivered-file pruning.
 
-A store lock serializes posting and draining, including orphan adoption. It records its owner
-PID and is recovered when that process is dead or the lock is older than 60 seconds; a dead
-owner's lock is removed only while its PID is still the one recorded, so a successor's fresh lock
-is never taken for it. `post` and `emit` poll up to 2400 times (past the 60-second recovery), so
-contention never sends a report to `lost.log`; a flush gives up after 100 polls and leaves its
-queue pending. Flush visits this
+A store lock serializes posting and draining, including orphan adoption: `share/store-lock.sh`
+(`store_lock_acquire`, its dead-owner, ownerless-grace and ceiling breaks), polled every 0.05 s.
+`post` and `emit` poll up to 2400 times, so contention never sends a report to `lost.log`; a
+flush gives up after 100 polls and leaves its queue pending. Flush visits this
 session's pending files and the orphan queue in mtime order. Any session can drain orphans;
 the first successful drain moves them into its own delivered directory. One hook JSON contains
 all selected blocks. The rendered payload is capped at 16000 bytes; whole remaining blocks
