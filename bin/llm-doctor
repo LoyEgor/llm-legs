@@ -2014,6 +2014,26 @@ def remnant_problems(window_h, now):
     return problems
 
 
+def refresh_problems(window_h, now):
+    """The limits heartbeat's verdict as the collector stamped it into the store: judged there once,
+    so this doctor and the menu can never disagree about a stall."""
+    path = os.environ.get("LLM_LIMITS_CACHE") or os.path.join(base_home(), ".llm-limits.json")
+    try:
+        with open(path) as handle:
+            beat = json.load(handle).get("refresh_heartbeat") or {}
+    except (OSError, ValueError, AttributeError):
+        return []
+    last = beat.get("last_tick_at")
+    if beat.get("stalled") is not True or not isinstance(last, (int, float)):
+        return []
+    age = int(now - last)
+    fact = "limits refresh heartbeat stalled %dh%02dm — last tick %s · ~/.llm-limits-refresh.jsonl" % (
+        age // 3600, age % 3600 // 60, iso_time(last))
+    return [problem("refresh:heartbeat", "refresh-stalled", "new", fact, age, beat.get("limit_s"), "s", window_h, 0,
+                    None, (last, now), [{"at": iso_time(last), "ref": "refresh_heartbeat", "account": "",
+                                         "excerpt": fact[:EXCERPT_MAX]}], None, group="accounts")]
+
+
 def machinery_state(row, details, as_of):
     if row is None:
         return "new"
@@ -2429,6 +2449,7 @@ def collect(window_h, now, write_daily=False):
     problems.extend(pending_fix_problems(ledger, problems, window_h, now))
     problems.extend(fault_problems(ledger["faults"] + commit_faults, window_h, now))
     problems.extend(remnant_problems(window_h, now))
+    problems.extend(refresh_problems(window_h, now))
     if write_daily:
         write_settled(settled, source)
     inputs = inputs_of(found, window_cutoff)

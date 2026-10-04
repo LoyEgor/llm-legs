@@ -159,7 +159,7 @@ claude_stale_cause() {
       then ["cause", ("token refresh HTTP " + ($e.http_status | tostring))] | @tsv
     elif $has_warm and ($e.warm_cause // "") != "" then [$warm_kind, $e.warm_cause] | @tsv
     else ["cause", "stale data kept"] | @tsv end end' "$attempts_file" 2>/dev/null) || raw=$'cause\tstale data kept'
-  IFS=$'\t' read -r kind value <<<"$raw"
+  IFS=$'\t' read -r kind value < <(printf '%s\n' "$raw")
   # Warm and revive run the free CLI path, which robots do reach, so their failure causes are
   # live evidence; only causes that could have come from the curl POST get the robot banner.
   case "$kind" in revive-cause|warm-cause) kind=cause; cli_evidence=true ;; esac
@@ -413,11 +413,11 @@ render_table() {
             status:(if .auth_needed == true then "login needed" else (.status // "-") end)}
          end)
     ] | .[] | row
-  ' <<<"$result")
+  ' < <(printf '%s\n' "$result"))
 
   local sorted
   if [ -n "$sort_flags" ]; then
-    sorted=$(sort -s -t $'\t' $sort_flags <<<"$rows")
+    sorted=$(sort -s -t $'\t' $sort_flags < <(printf '%s\n' "$rows"))
   else
     sorted=$rows
   fi
@@ -436,7 +436,7 @@ render_table() {
     [ "${#age}" -gt "$w_age" ] && w_age=${#age}
     [ "${#rot}" -gt "$w_rot" ] && w_rot=${#rot}
     [ "${#credits}" -gt "$w_cr" ] && w_cr=${#credits}
-  done <<<"$sorted"
+  done < <(printf '%s\n' "$sorted")
 
   printf '%-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s\n' \
     "$w_src" SOURCE "$w_p5" "5H%" "$w_pw" "WK%" "$w_pf" "FB%" \
@@ -453,7 +453,7 @@ render_table() {
     dim_cell "$rf" "$w_rf" "$table_color" "$dimf"; printf '  '
     age_cell "$age" "$w_age" "$table_color" "$alarm"; printf '  '
     printf '%-*s  %-*s  %s\n' "$w_rot" "$rot" "$w_cr" "$credits" "$status"
-  done <<<"$sorted"
+  done < <(printf '%s\n' "$sorted")
 }
 
 wall_for() {
@@ -596,7 +596,7 @@ reconcile_vendor_shields() {
        elif $vendor == "codex" then (.account == "main")
        else false end),
       (($budget | type) == "number" and $budget < $floor)
-    ] | map(tostring) | join("\u001f")' <<<"$payload") || return 1
+    ] | map(tostring) | join("\u001f")' < <(printf '%s\n' "$payload")) || return 1
 
   while IFS=$'\x1f' read -r name reset main should; do
     [ -n "$name" ] || continue
@@ -613,7 +613,7 @@ reconcile_vendor_shields() {
     else
       worker_pool_shield_clear "$pool_vendor" "$name" || return 1
     fi
-  done <<<"$rows"
+  done < <(printf '%s\n' "$rows")
 
   for kind in shielded shield-override; do
     [ -d "$dir/$kind" ] || continue
@@ -648,7 +648,7 @@ apply_vendor_shield_state() {
         .rotation.usable.general = $auth_alive |
         .rotation.usable.fable = ($auth_alive and (.fable | type) == "object" and .plan_type != "pro")
       else . end)
-    end' <<<"$payload"
+    end' < <(printf '%s\n' "$payload")
 }
 
 # Account order in the cache, which the menu, --table and --plain all render as-is. The two
@@ -684,7 +684,7 @@ account_order() {
     while IFS= read -r candidate; do
       if [ "$candidate" = "$name" ]; then rank=$index; break; fi
       index=$((index + 1))
-    done <<<"$(account_priority_names "$vendor")"
+    done < <(account_priority_names "$vendor")
     if [ -n "$rank" ]; then
       printf '0\t%s\t%s\n' "$rank" "$name"
       continue
@@ -883,7 +883,7 @@ gemini_refresh_target=''
 case "$refresh_account" in
   gemini/*) gemini_refresh_target=${refresh_account#gemini/} ;;
 esac
-if [ -n "$gemini_refresh_target" ] && ! grep -qxF "$gemini_refresh_target" <<<"$gemini_refresh_accounts_list"; then
+if [ -n "$gemini_refresh_target" ] && ! grep -qxF "$gemini_refresh_target" < <(printf '%s\n' "$gemini_refresh_accounts_list"); then
   printf 'llm-limits.sh: unknown Gemini account: %s\n' "$gemini_refresh_target" >&2
   exit 2
 fi
@@ -897,7 +897,7 @@ if [ "$refresh" -eq 1 ] && ! vendor_paused gemini &&
       new_gemini_refresh_result
       refresh_gemini_quota "$gemini_account" "$gemini_refresh_result_file" &
       gemini_refresh_pids[${#gemini_refresh_pids[@]}]=$!
-    done <<<"$gemini_refresh_accounts_list"
+    done < <(printf '%s\n' "$gemini_refresh_accounts_list")
     for gemini_refresh_pid in ${gemini_refresh_pids[@]+"${gemini_refresh_pids[@]}"}; do
       wait "$gemini_refresh_pid" || true
     done
@@ -907,7 +907,7 @@ if [ "$refresh" -eq 1 ] && ! vendor_paused gemini &&
       [ -z "$gemini_refresh_target" ] || [ "$gemini_account" = "$gemini_refresh_target" ] || continue
       new_gemini_refresh_result
       record_gemini_refresh "$gemini_refresh_result_file" "$gemini_account" true false 'refresh disabled'
-    done <<<"$gemini_refresh_accounts_list"
+    done < <(printf '%s\n' "$gemini_refresh_accounts_list")
     printf 'llm-limits.sh: Gemini refresh is disabled\n' >&2
   fi
 fi
@@ -939,16 +939,16 @@ if [ "$start_windows" -eq 1 ] && [ -z "$refresh_account" ] && ! vendor_paused ge
           printf 'llm-limits.sh: agy not found; cannot start gemini/%s window\n' "$gemini_account" >&2
         fi
       fi
-    done <<<"$gemini_refresh_accounts_list"
+    done < <(printf '%s\n' "$gemini_refresh_accounts_list")
   fi
 fi
 if [ -n "$gemini_refresh_results_dir" ] &&
    find "$gemini_refresh_results_dir" -name '*.json' -type f -print -quit | grep -q .; then
   gemini_refresh_records=$(jq -sc '.' "$gemini_refresh_results_dir"/*.json)
-  if jq -e 'any(.[]; .attempted == true)' >/dev/null <<<"$gemini_refresh_records"; then
+  if jq -e 'any(.[]; .attempted == true)' >/dev/null < <(printf '%s\n' "$gemini_refresh_records"); then
     gemini_refresh_attempted=1
   fi
-  if jq -e 'any(.[]; .succeeded == true)' >/dev/null <<<"$gemini_refresh_records"; then
+  if jq -e 'any(.[]; .succeeded == true)' >/dev/null < <(printf '%s\n' "$gemini_refresh_records"); then
     gemini_refresh_succeeded=1
   fi
 fi
@@ -1051,20 +1051,20 @@ elif [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
     mtime=$(file_mtime "$claude_file" || true)
     [ -n "$claude_data" ] && [ -n "$mtime" ] || continue
     has_five=0
-    if jq -e '(.five_hour.used_percentage | type) == "number"' <<<"$claude_data" >/dev/null; then has_five=1; fi
+    if jq -e '(.five_hour.used_percentage | type) == "number"' < <(printf '%s\n' "$claude_data") >/dev/null; then has_five=1; fi
     stale=$((now_epoch - mtime)); [ "$stale" -ge 0 ] || stale=0
     five_reset=''
-    five_reset_epoch=$(int_or_empty "$(jq -r '.five_hour.resets_at // empty' <<<"$claude_data")")
+    five_reset_epoch=$(int_or_empty "$(jq -r '.five_hour.resets_at // empty' < <(printf '%s\n' "$claude_data"))")
     [ -z "$five_reset_epoch" ] || five_reset=$(epoch_iso "$five_reset_epoch")
     has_week=0
     week_reset=''
-    if jq -e '(.seven_day.used_percentage | type) == "number"' <<<"$claude_data" >/dev/null; then has_week=1; fi
-    week_reset_epoch=$(int_or_empty "$(jq -r '.seven_day.resets_at // empty' <<<"$claude_data")")
+    if jq -e '(.seven_day.used_percentage | type) == "number"' < <(printf '%s\n' "$claude_data") >/dev/null; then has_week=1; fi
+    week_reset_epoch=$(int_or_empty "$(jq -r '.seven_day.resets_at // empty' < <(printf '%s\n' "$claude_data"))")
     [ -z "$week_reset_epoch" ] || week_reset=$(epoch_iso "$week_reset_epoch")
     has_fable=0
     fable_reset=''
-    if jq -e '(.fable.used_percentage | type) == "number"' <<<"$claude_data" >/dev/null; then has_fable=1; fi
-    fable_reset_epoch=$(int_or_empty "$(jq -r '.fable.resets_at // empty' <<<"$claude_data")")
+    if jq -e '(.fable.used_percentage | type) == "number"' < <(printf '%s\n' "$claude_data") >/dev/null; then has_fable=1; fi
+    fable_reset_epoch=$(int_or_empty "$(jq -r '.fable.resets_at // empty' < <(printf '%s\n' "$claude_data"))")
     [ -z "$fable_reset_epoch" ] || fable_reset=$(epoch_iso "$fable_reset_epoch")
     account_json=$(jq -cn --argjson d "$claude_data" --arg account "$account" --argjson enabled "$enabled" \
       --argjson has_five "$has_five" --argjson has_week "$has_week" --argjson has_fable "$has_fable" \
@@ -1115,19 +1115,19 @@ elif [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
           reset_credits_stale:(([$now - $credits_asof, 0] | max) > $thrw)}
        else {} end) +
       (if ($d.reset_credits_expires_at | type) == "string" then
-         {reset_credits_expires_at:$d.reset_credits_expires_at} else {} end)' <<<"$claude_data")
+         {reset_credits_expires_at:$d.reset_credits_expires_at} else {} end)' < <(printf '%s\n' "$claude_data"))
     accounts_lines+="$account_json"$'\n'
   done
-  accounts=$(jq -sc '.' <<<"$accounts_lines")
-  if [ "$(jq 'length' <<<"$accounts")" -gt 0 ]; then
-    if ! jq -e --arg current "$current" 'any(.account == $current)' <<<"$accounts" >/dev/null; then
-      current=$(jq -r 'sort_by(.account)[0].account' <<<"$accounts")
+  accounts=$(jq -sc '.' < <(printf '%s\n' "$accounts_lines"))
+  if [ "$(jq 'length' < <(printf '%s\n' "$accounts"))" -gt 0 ]; then
+    if ! jq -e --arg current "$current" 'any(.account == $current)' < <(printf '%s\n' "$accounts") >/dev/null; then
+      current=$(jq -r 'sort_by(.account)[0].account' < <(printf '%s\n' "$accounts"))
     fi
-    claude_order=$(jq -r '.[].account' <<<"$accounts" | account_order_json claude)
+    claude_order=$(jq -r '.[].account' < <(printf '%s\n' "$accounts") | account_order_json claude)
     accounts=$(jq -c --arg current "$current" --argjson order "$claude_order" '
       map(.is_current = (.account == $current)) |
       sort_by(.account as $n | (($order | index($n)) // ($order | length)))
-    ' <<<"$accounts")
+    ' < <(printf '%s\n' "$accounts"))
     claude_bundle=$(jq -cn --argjson accounts "$accounts" --argjson wall "$claude_wall" '
       (first($accounts[] | select(.is_current)) // $accounts[0]) as $current |
       (if ($current.five_hour.used_pct | type) == "number" then $current
@@ -1140,8 +1140,8 @@ elif [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
       (if $current.fable then {fable:$current.fable} else {} end)) as $claude |
       {claude:$claude,auth_failures:([$accounts[] | select(.auth.status? == "expired") |
         (.account + " auth" + (if (.auth.cause? // "") == "" then "" else " (" + .auth.cause + ")" end))] | join("; "))}')
-    claude=$(jq -c .claude <<<"$claude_bundle")
-    auth_failures=$(jq -r .auth_failures <<<"$claude_bundle")
+    claude=$(jq -c .claude < <(printf '%s\n' "$claude_bundle"))
+    auth_failures=$(jq -r .auth_failures < <(printf '%s\n' "$claude_bundle"))
     if [ "$claude_refresh_attempted" -eq 1 ] && [ -n "$auth_failures" ]; then
       if [ -n "$claude_refresh_error" ]; then
         claude_refresh_error="$claude_refresh_error; $auth_failures"
@@ -1155,7 +1155,7 @@ elif [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
       claude_oauth_attempts="$claudeb_root/oauth-attempts.json"
       while IFS= read -r stale_account; do
         [ -n "$stale_account" ] || continue
-        stale_auth=$(jq -r --arg n "$stale_account" '(.[] | select(.account == $n) | .auth.status) // "ok"' <<<"$accounts" 2>/dev/null) || stale_auth=ok
+        stale_auth=$(jq -r --arg n "$stale_account" '(.[] | select(.account == $n) | .auth.status) // "ok"' < <(printf '%s\n' "$accounts") 2>/dev/null) || stale_auth=ok
         stale_cause=$(claude_stale_cause "$claude_oauth_attempts" "$stale_account" "$stale_auth")
         [ -n "$stale_cause" ] || stale_cause='stale data kept'
         stale_entry="$stale_account: not refreshed ($stale_cause)"
@@ -1168,7 +1168,7 @@ elif [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
         .[] | select(.enabled == true) | select((.auth.status // "") != "expired")
         | select(.auth_needed != true)
         | select((.five_hour.as_of | type) == "number" and .five_hour.as_of < $rs)
-        | .account' <<<"$accounts")
+        | .account' < <(printf '%s\n' "$accounts"))
     fi
   fi
 else
@@ -1193,8 +1193,8 @@ else
     if [ -n "$mtime" ]; then
       stale=$((now_epoch - mtime)); [ "$stale" -ge 0 ] || stale=0
       claude=$(jq -cn --argjson d "$claude_data" --argjson wall "$claude_wall" --arg source "$claude_source" \
-        --arg five_reset "$(reset_iso_or_empty "$(jq -r '.five_hour.resets_at // empty' <<<"$claude_data")")" \
-        --arg week_reset "$(reset_iso_or_empty "$(jq -r '.seven_day.resets_at // empty' <<<"$claude_data")")" \
+        --arg five_reset "$(reset_iso_or_empty "$(jq -r '.five_hour.resets_at // empty' < <(printf '%s\n' "$claude_data"))")" \
+        --arg week_reset "$(reset_iso_or_empty "$(jq -r '.seven_day.resets_at // empty' < <(printf '%s\n' "$claude_data"))")" \
         --arg as_of "$(epoch_iso "$mtime")" --argjson as_of_epoch "$mtime" --argjson stale "$stale" \
         --argjson thr5 "$LIMITS_STALE_FIVE_HOUR" --argjson thrw "$LIMITS_STALE_WEEKLY" '
         {account:"main",is_current:true,enabled:true,
@@ -1221,13 +1221,14 @@ collect_codex_event() {
       ' 2>/dev/null
     done < <(find "$codex_root" -type f -name 'rollout-*.jsonl' -exec stat -f '%m %N' {} + 2>/dev/null | sort -nr | head -n 5)
   )
+  # Never a here-string: bash pipes one under 64 KiB before jq starts, and a 16 KiB pipe deadlocks.
   jq -sc "$iso_def"'
     def timestamp_key:
       .timestamp | capture("^(?<base>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\\.(?<fraction>[0-9]+))?(?<tz>[Zz]|[+-][0-9]{2}:?[0-9]{2})$") as $t |
       [($t.base + $t.tz | iso2epoch), ("0." + ($t.fraction // "0") | tonumber)];
     map(select((try timestamp_key catch null) != null)) |
     if length == 0 then empty else max_by(timestamp_key) end
-  ' <<<"$events" 2>/dev/null || true
+  ' < <(printf '%s\n' "$events") 2>/dev/null || true
 }
 
 # Live rate limits via the codex app-server RPC (account/rateLimits/read): a usage query,
@@ -1331,7 +1332,7 @@ select_codex_event() {
   [ -n "$cache_mtime" ] || return 0
   rollout_epoch=''
   if [ -n "$codex_event" ]; then
-    rollout_epoch=$(int_or_empty "$(jq -nr --arg ts "$(jq -r '.timestamp' <<<"$codex_event")" "$iso_def"'$ts | iso2epoch // empty' 2>/dev/null || true)")
+    rollout_epoch=$(int_or_empty "$(jq -nr --arg ts "$(jq -r '.timestamp' < <(printf '%s\n' "$codex_event"))" "$iso_def"'$ts | iso2epoch // empty' 2>/dev/null || true)")
   fi
   cache_event=$(jq -c --arg ts "$(epoch_iso "$cache_mtime")" '
     if ((.accounts | type) == "array" and (.accounts | length) > 0) or
@@ -1396,12 +1397,12 @@ select_codex_event() {
       secondary:{used_percent:($selected.weekly.used_pct // null),
                  resets_at:($selected.weekly.resets_at // null)},
       plan_type:($selected.plan_type // $plan // null),
-      accounts:$merged,current_account:$selected.account}}}' <<<"$cache_event" 2>/dev/null || true)
+      accounts:$merged,current_account:$selected.account}}}' < <(printf '%s\n' "$cache_event") 2>/dev/null || true)
   [ -n "$merged" ] || return 0
   codex_event=$merged
   codex_origin=usage
   codex_source=codex-app-server
-  [ "$(jq -r '.payload.rate_limits.current_account // "main"' <<<"$merged")" != main ] || codex_source=session-rollout
+  [ "$(jq -r '.payload.rate_limits.current_account // "main"' < <(printf '%s\n' "$merged"))" != main ] || codex_source=session-rollout
 }
 
 codex_refresh_target=''
@@ -1436,7 +1437,7 @@ if codex_main_removed && [ -n "$codex_event" ]; then
                                       resets_at:($selected.five_hour.resets_at // null)} |
       .payload.rate_limits.secondary = {used_percent:($selected.weekly.used_pct // null),
                                         resets_at:($selected.weekly.resets_at // null)}
-    end' <<<"$codex_event" 2>/dev/null || true)
+    end' < <(printf '%s\n' "$codex_event") 2>/dev/null || true)
 fi
 
 if [ "$start_windows" -eq 1 ] && [ -z "$refresh_account" ] && ! vendor_paused codex; then
@@ -1446,7 +1447,7 @@ if [ "$start_windows" -eq 1 ] && [ -z "$refresh_account" ] && ! vendor_paused co
     codex_5h_reset=''
     [ -z "$codex_event" ] || codex_5h_reset=$(int_or_empty "$(jq -r "$iso_def"'
       .payload.rate_limits.primary.resets_at |
-      if type == "number" then . elif type == "string" then iso2epoch // empty else empty end' <<<"$codex_event")")
+      if type == "number" then . elif type == "string" then iso2epoch // empty else empty end' < <(printf '%s\n' "$codex_event"))")
     if [ -z "$codex_5h_reset" ]; then
       echo "llm-limits.sh: codex 5h window state unknown; not starting a window" >&2
     elif [ "$codex_5h_reset" -le "$now_epoch" ]; then
@@ -1483,19 +1484,19 @@ if [ "$start_windows" -eq 1 ] && [ -z "$refresh_account" ] && ! vendor_paused co
 fi
 
 if [ -n "$codex_event" ]; then
-  codex_ts=$(jq -r '.timestamp' <<<"$codex_event")
+  codex_ts=$(jq -r '.timestamp' < <(printf '%s\n' "$codex_event"))
   codex_epoch=$(int_or_empty "$(jq -nr --arg ts "$codex_ts" "$iso_def"'$ts | iso2epoch // empty' 2>/dev/null || true)")
   if [ -n "$codex_epoch" ]; then
     stale=$((now_epoch - codex_epoch)); [ "$stale" -ge 0 ] || stale=0
     primary_reset=$(int_or_empty "$(jq -r "$iso_def"'
       .payload.rate_limits.primary.resets_at |
-      if type == "number" then . elif type == "string" then iso2epoch // empty else empty end' <<<"$codex_event")")
+      if type == "number" then . elif type == "string" then iso2epoch // empty else empty end' < <(printf '%s\n' "$codex_event"))")
     secondary_reset=$(int_or_empty "$(jq -r "$iso_def"'
       .payload.rate_limits.secondary.resets_at |
-      if type == "number" then . elif type == "string" then iso2epoch // empty else empty end' <<<"$codex_event")")
+      if type == "number" then . elif type == "string" then iso2epoch // empty else empty end' < <(printf '%s\n' "$codex_event"))")
     five_reset=''; [ -z "$primary_reset" ] || five_reset=$(epoch_iso "$primary_reset")
     week_reset=''; [ -z "$secondary_reset" ] || week_reset=$(epoch_iso "$secondary_reset")
-    codex_order=$(jq -r '[.payload.rate_limits.accounts[]?.account // "main"] | .[]' <<<"$codex_event" \
+    codex_order=$(jq -r '[.payload.rate_limits.accounts[]?.account // "main"] | .[]' < <(printf '%s\n' "$codex_event") \
       | account_order_json codex)
     codex=$(jq -cn --argjson e "$codex_event" --argjson wall "$codex_wall" --argjson now "$now_epoch" \
       --argjson order "$codex_order" \
@@ -1613,7 +1614,7 @@ refresh_grok_quota() {
   detail=''
   if [ -n "$fresh" ]; then
     detail=$(jq -r '[.accounts[] | select((.error | type) == "string") | .account + ": " + .error]
-      | join("; ")' <<<"$fresh" 2>/dev/null || true)
+      | join("; ")' < <(printf '%s\n' "$fresh") 2>/dev/null || true)
   fi
   if [ -z "$fresh" ]; then
     # The helper's own last word says which failure this was; without it the cause is the exit
@@ -1647,11 +1648,11 @@ refresh_grok_quota() {
     else
       ([$rows[].account]) as $names |
       {accounts:($rows + [$old_rows[] | select(.account as $n | ($names | index($n)) == null)])}
-    end' <<<"$fresh" 2>/dev/null || true)
+    end' < <(printf '%s\n' "$fresh") 2>/dev/null || true)
   # A leg with no accounts at all read nothing because there was nothing to read: calling that a
   # failed refresh would leave an empty vendor permanently red on every surface.
   if [ -n "$merged" ] && [ -z "$detail" ] &&
-     jq -e '(.accounts | length) == 0' <<<"$merged" >/dev/null 2>&1; then
+     jq -e '(.accounts | length) == 0' < <(printf '%s\n' "$merged") >/dev/null 2>&1; then
     if ! printf '%s\n' "$merged" >"$grok_tmp" || ! mv -f "$grok_tmp" "$grok_cache"; then
       grok_refresh_error='cache replace failed'
       rm -f "$grok_tmp" "$grok_err"
@@ -1663,7 +1664,7 @@ refresh_grok_quota() {
   fi
   if [ -z "$merged" ] ||
      ! jq -e '[.accounts[] | select((.used_pct | type) == "number" or ((.auth // "ok") != "ok"))]
-              | length > 0' <<<"$merged" >/dev/null 2>&1; then
+              | length > 0' < <(printf '%s\n' "$merged") >/dev/null 2>&1; then
     [ -n "$detail" ] || detail='live query failed'
     grok_refresh_error=$detail
     rm -f "$grok_tmp" "$grok_err"
@@ -1690,7 +1691,7 @@ case "$refresh_account" in grok/*) grok_refresh_target=${refresh_account#grok/} 
 # A name off the roster resolves to a directory with no auth.json, which the helper answers as a
 # definite `needs_login` verdict — and that would write a phantom account into the store and the
 # menu, asking Egor to log into an account that does not exist.
-if [ -n "$grok_refresh_target" ] && ! grep -qxF "$grok_refresh_target" <<<"$(grok_account_names)"; then
+if [ -n "$grok_refresh_target" ] && ! grep -qxF "$grok_refresh_target" < <(grok_account_names); then
   printf 'llm-limits.sh: unknown Grok account: %s\n' "$grok_refresh_target" >&2
   exit 2
 fi
@@ -1716,7 +1717,7 @@ grok_cache_mtime=$(int_or_empty "$(file_mtime "$grok_cache" 2>/dev/null || true)
 [ -n "$grok_cache_mtime" ] || grok_cache_mtime=$now_epoch
 # The store is shared by every chat, so one chat's own pin must not name its current account.
 grok_pin=$(CLAUDE_CODE_SESSION_ID='' worker_model_pin_first grok 2>/dev/null || true)
-grok_order=$(jq -r '.accounts[]?.account // empty' <<<"$grok_payload" | account_order_json grok)
+grok_order=$(jq -r '.accounts[]?.account // empty' < <(printf '%s\n' "$grok_payload") | account_order_json grok)
 grok=$(jq -cn --argjson payload "$grok_payload" --argjson wall "$grok_wall" --argjson now "$now_epoch" \
   --argjson order "$grok_order" --argjson mtime "$grok_cache_mtime" --arg pin "$grok_pin" \
   --argjson thrw "$LIMITS_STALE_WEEKLY" \
@@ -1841,7 +1842,7 @@ while IFS= read -r gemini_account; do
   fi
   [ -n "$gemini_account_json" ] || continue
   gemini_account_lines="${gemini_account_lines}${gemini_account_json}"$'\n'
-done <<<"$gemini_accounts_list"
+done < <(printf '%s\n' "$gemini_accounts_list")
 
 gemini_order=$(printf '%s\n' "$gemini_accounts_list" | account_order_json gemini)
 if [ "$write_cache" -eq 1 ]; then
@@ -2016,7 +2017,7 @@ opencode=$(jq -Rsc --argjson now "$now_epoch" \
        else ([$now - $served, 0] | max) as $age |
          {as_of:($served | todateiso8601), stale_seconds:$age,
           age_alarm:limits_age_alarm($age; $alarm)} end)) |
-  {source:"opencode-go", accounts:., age_alarm:true}' <<<"$opencode_seen_tsv")
+  {source:"opencode-go", accounts:., age_alarm:true}' < <(printf '%s\n' "$opencode_seen_tsv"))
 [ -n "$opencode" ] || opencode='{"source":"opencode-go","accounts":[],"age_alarm":true}'
 
 for shield_vendor in claude codex gemini grok; do
@@ -2052,6 +2053,15 @@ experiments_json=$(experiments_active_lines "$(experiments_registry_path "$scrip
   | jq -Rsc 'split("\n") | map(select(length > 0))')
 [ -n "$experiments_json" ] || experiments_json='[]'
 
+# Every completed heartbeat tick rewrites its state file; a sleeping Mac runs no tick to miss.
+refresh_last_tick=$(int_or_empty "$(file_mtime "${LLM_LIMITS_REFRESH_STATE:-${LLM_REFRESH_STATE:-$HOME/.llm-limits-refresh.state}}" || true)")
+refresh_awake_since=${LLM_LIMITS_AWAKE_SINCE:-$(sysctl -n kern.waketime 2>/dev/null | sed -nE 's/^\{ sec = ([0-9]+),.*/\1/p')}
+refresh_heartbeat=$(jq -cn --arg tick "$refresh_last_tick" --arg awake "$refresh_awake_since" \
+  --argjson now "$now_epoch" --argjson limit "$LIMITS_REFRESH_STALLED" '
+  ($tick | tonumber? // null) as $t |
+  {last_tick_at:$t, limit_s:$limit,
+   stalled:($t != null and ($now - ([$t, ($awake | tonumber? // 0)] | max)) > $limit)}')
+
 if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$experiments_json" --argjson claude "$claude" \
   --argjson codex "$codex" --argjson gemini "$gemini" --argjson grok "$grok" \
   --argjson opencode "$opencode" --argjson now "$now_epoch" \
@@ -2064,6 +2074,7 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
   --arg claude_target "$claude_refresh_target" --arg codex_target "$codex_refresh_target" \
   --arg gemini_target "$gemini_refresh_target" --arg grok_target "$grok_refresh_target" \
   --argjson alarm "$LIMITS_AGE_ALARM" --argjson paused "$paused_vendors_json" \
+  --argjson heartbeat "$refresh_heartbeat" \
   --argjson codex_removed "$(if codex_main_removed; then printf true; else printf false; fi)" \
   "$iso_def$LIMITS_VIEW_JQ"'
   def normalize_reset:
@@ -2401,12 +2412,13 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
   # entry left here came from the previous snapshot, and every surface would read it as a live
   # measurement of a vendor nobody is polling. Absence is the whole interface — the same one a leg
   # this machine never installed leaves.
-  | delpaths([$paused[] | ["vendors", .]])'); then
+  | delpaths([$paused[] | ["vendors", .]])
+  | .refresh_heartbeat = $heartbeat'); then
   echo "llm-limits.sh: failed to build cache JSON" >&2
   exit 5
 fi
 
-if ! jq -e '.schema == 1 and (.vendors | type) == "object"' <<<"$result" >/dev/null 2>&1; then
+if ! jq -e '.schema == 1 and (.vendors | type) == "object"' < <(printf '%s\n' "$result") >/dev/null 2>&1; then
   echo "llm-limits.sh: refusing to replace cache with invalid JSON" >&2
   exit 5
 fi
@@ -2500,10 +2512,10 @@ else
     else line(.key; {age_alarm: (.value.age_alarm == true)}; "-"; "-";
       (if .value.auth_needed == true then "login needed" else (.value.status // "-") end)) +
       (if .value.last_wall then " | last wall " + .value.last_wall else "" end) end
-  ' <<<"$result"
+  ' < <(printf '%s\n' "$result")
 fi
 
-available=$(jq '[.vendors[] | select(.available == true)] | length' <<<"$result")
+available=$(jq '[.vendors[] | select(.available == true)] | length' < <(printf '%s\n' "$result"))
 if [ "$available" -eq 0 ]; then
   exit 3
 fi

@@ -298,7 +298,7 @@ worker_model_effort_allowed() {
   [ -n "${3-}" ] || return 1
   while IFS= read -r allowed; do
     [ "$allowed" != "$3" ] || return 0
-  done < <(tr '|' '\n' <<<"$efforts")
+  done < <(tr '|' '\n' < <(printf '%s\n' "$efforts"))
   return 1
 }
 
@@ -306,14 +306,14 @@ worker_model_allows() { # vendor model [class]
   local allowed
   allowed=$(worker_model_allowed_models "${1-}" "${3-}") || return 2
   [ -n "${2-}" ] || return 1
-  grep -qxF -- "$(worker_model_row_key "${1-}" "${2-}")" <<<"$allowed"
+  grep -qxF -- "$(worker_model_row_key "${1-}" "${2-}")" < <(printf '%s\n' "$allowed")
 }
 
 # The vendor's allowed ids as one phrase a refusal can quote, so no consumer respells the list.
 worker_model_allowed_list() { # vendor [class]
   local allowed
   allowed=$(worker_model_allowed_models "${1-}" "${2-}") || return 2
-  printf '%s' "$(tr '\n' '|' <<<"$allowed" | sed 's/|$//')"
+  printf '%s' "$(tr '\n' '|' < <(printf '%s\n' "$allowed") | sed 's/|$//')"
 }
 
 worker_model_allowed_summary() { # every vendor, as one phrase
@@ -453,7 +453,7 @@ worker_model_pin_line() { # file key
       case "$line" in
         "$2"=*) printf '%s\n' "${line#"$2"=}"; return 0 ;;
       esac
-    done <<<"$_WM_PIN_TEXT"
+    done < <(printf '%s\n' "$_WM_PIN_TEXT")
     return 0
   fi
   [ -f "$1" ] || return 0
@@ -521,7 +521,7 @@ worker_model_pool_accounts() {
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     worker_pool_is_disabled "$dir" "$name" || printf '%s\n' "$name"
-  done < <(awk '!seen[$0]++' <<<"$names")
+  done < <(awk '!seen[$0]++' < <(printf '%s\n' "$names"))
 }
 
 worker_model_pin_scope() {
@@ -556,7 +556,7 @@ worker_model_pin_first() {
   [ -n "$pins" ] || return 0
   if [ -z "${WORKER_MODEL_IN_PICK:-}" ] && [ "$(worker_model_pin_scope "$vendor")" = vendor ] &&
     first=$(WORKER_MODEL_IN_PICK=1 "${BASH_SOURCE[0]%/*}/../bin/worker-pick" --account "$vendor" \
-      2>/dev/null) && grep -qxF -- "$first" <<<"$pins"; then
+      2>/dev/null) && grep -qxF -- "$first" < <(printf '%s\n' "$pins"); then
     printf '%s\n' "$first"
     return 0
   fi
@@ -650,7 +650,7 @@ worker_model_clear_walled_pin() { # vendor name [now]
     walls=$(worker_walls_fresh "$vendor" "${3:-$(date +%s)}") || return 1
     while IFS= read -r acct; do
       [ -n "$acct" ] || continue
-      grep -qxF -- "$acct" <<<"$walls" || return 1
+      grep -qxF -- "$acct" < <(printf '%s\n' "$walls") || return 1
     done < <(worker_model_pins "$vendor")
     worker_model_pin_write "$vendor" "$key" set '' "$file" || return 1
     printf 'pin * (every %s account) hit its wall — cleared\n' "$vendor" >&2
@@ -798,7 +798,7 @@ worker_light_agents_sync() {
     orig=$(cat "$real") || return 2
     new=$(jq --argjson off "$off" '["Agent(light-research)", "Agent(light-worker)"] as $rules
       | .permissions.deny = (((.permissions.deny // []) - $rules) + (if $off then $rules else [] end))' \
-      <<<"$orig" 2>/dev/null) || return 2
+      < <(printf '%s\n' "$orig") 2>/dev/null) || return 2
     [ "$new" != "$orig" ] || return 0
     tmp=$(mktemp "$real.light.XXXXXX") || return 2
     if ! { cp -p "$real" "$tmp" && printf '%s\n' "$new" >"$tmp"; }; then

@@ -49,20 +49,19 @@ OPENCODE_TIGHTEN_WITHIN_S=3600
 refresh_lock_acquire() {
   local lock=$1 current captured
   local stale=${LLM_LIMITS_REFRESH_LOCK_STALE_SECONDS:-1800}
-  local ceiling=${LLM_LIMITS_REFRESH_LOCK_CEILING_SECONDS:-3600}
   [[ "$stale" =~ ^[1-9][0-9]*$ ]] || stale=1800
-  [[ "$ceiling" =~ ^[1-9][0-9]*$ ]] || ceiling=3600
   if mkdir "$lock" 2>/dev/null; then
     store_lock_claim "$lock" || return 1
     active_lock=$lock
     return 0
   fi
   current=$(date +%s) || return 1
-  store_lock_breakable "$lock" "$stale" "$ceiling" "$current" || return 1
+  store_lock_breakable "$lock" "$stale" "$tick_ceiling" "$current" || return 1
+  kill_hung_holder "$lock" "$current"
   # Claim by rename so a racing tick that already recreated the lock keeps it.
   captured="${lock}.break.$$"
   mv "$lock" "$captured" 2>/dev/null || return 1
-  if ! store_lock_breakable "$captured" "$stale" "$ceiling" "$current"; then
+  if ! store_lock_breakable "$captured" "$stale" "$tick_ceiling" "$current"; then
     # We captured a lock a racer had just recreated: hand its live newborn back.
     # mv into an existing directory would nest, so restore only onto a free path.
     [ -e "$lock" ] || mv "$captured" "$lock" 2>/dev/null
@@ -80,6 +79,56 @@ refresh_lock_release() {
   [ -n "${active_lock:-}" ] || return 0
   store_lock_release "$active_lock"
   active_lock=''
+}
+
+process_tree() {
+  ps -A -o pid=,ppid= 2>/dev/null | awk -v root="$1" '
+    { kids[$2] = kids[$2] " " $1 }
+    END {
+      queue = root
+      while (queue != "") {
+        n = split(queue, batch, " "); queue = ""
+        for (i = 1; i <= n; i++) { printf "%s ", batch[i]; queue = queue kids[batch[i]] }
+      }
+    }'
+}
+
+kill_tree() {
+  local pids
+  pids=$(process_tree "$1")
+  [ -z "$pids" ] || kill -TERM $pids 2>/dev/null
+}
+
+# A lock past the ceiling whose holder still runs is a hung tick, not a recycled pid, only when that
+# pid is still an llm-refresh: its whole tree goes, or the hung collector under it outlives the lock.
+kill_hung_holder() {
+  local lock=$1 current=$2 owner mtime
+  mtime=$(store_lock_mtime "$lock" 2>/dev/null) || return 0
+  [ "$((current - mtime))" -gt "$tick_ceiling" ] || return 0
+  read -r owner 2>/dev/null <"$lock/pid" || return 0
+  case "$owner" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$owner" != "$$" ] && kill -0 "$owner" 2>/dev/null || return 0
+  ps -o command= -p "$owner" 2>/dev/null | grep -q 'llm-refresh' || return 0
+  kill_tree "$owner"
+  journal_attempt tick 0 '[]' hung \
+    "tick pid $owner held the lock $((current - mtime))s, past the ${tick_ceiling}s ceiling; its process tree was killed" 0
+}
+
+# launchd never starts a second instance while one runs, so only a watchdog of the tick's own
+# can end a hung tick; it journals before it kills, since the tick it kills journals nothing.
+supervise_tick() {
+  local child watchdog rc=0
+  LLM_REFRESH_SUPERVISED=1 LLM_REFRESH_TICK_ID="$tick_id" LLM_REFRESH_NOW="$now" \
+    "$BASH" "$script_path" run &
+  child=$!
+  trap 'kill_tree "$child"; exit 129' HUP INT TERM
+  ( sleep "$tick_ceiling"
+    journal_attempt tick 0 '[]' hung "tick ran past the ${tick_ceiling}s ceiling; its process tree was killed" 0
+    kill_tree "$child" ) &
+  watchdog=$!
+  wait "$child" || rc=$?
+  kill_tree "$watchdog"
+  return "$rc"
 }
 
 script_path=$(resolve_script)
@@ -101,11 +150,15 @@ probe_timeout=${LLM_LIMITS_REFRESH_PROBE_TIMEOUT:-90}
 case "$probe_timeout" in ''|*[!0-9]*|0) probe_timeout=90 ;; esac
 login_recheck=${LLM_LIMITS_REFRESH_LOGIN_RECHECK_SECONDS:-1800}
 case "$login_recheck" in ''|*[!0-9]*) login_recheck=1800 ;; esac
+collector_timeout=${LLM_LIMITS_REFRESH_COLLECTOR_TIMEOUT:-600}
+[[ "$collector_timeout" =~ ^[1-9][0-9]*$ ]] || collector_timeout=600
+tick_ceiling=${LLM_LIMITS_REFRESH_LOCK_CEILING_SECONDS:-3600}
+[[ "$tick_ceiling" =~ ^[1-9][0-9]*$ ]] || tick_ceiling=3600
 store=${LLM_LIMITS_CACHE:-$HOME/.llm-limits.json}
 state_file=${LLM_LIMITS_REFRESH_STATE:-${LLM_REFRESH_STATE:-$HOME/.llm-limits-refresh.state}}
 journal_file=${LLM_LIMITS_REFRESH_JOURNAL:-${LLM_REFRESH_JOURNAL:-$HOME/.llm-limits-refresh.jsonl}}
 now=${LLM_LIMITS_REFRESH_NOW:-${LLM_REFRESH_NOW:-$(date +%s)}}
-tick_id="$now-$$"
+tick_id=${LLM_REFRESH_TICK_ID:-"$now-$$"}
 agent_plist="$HOME/Library/LaunchAgents/com.llm-refresh.plist"
 wrapper="$HOME/.local/libexec/llm-refresh-heartbeat"
 label=com.llm-refresh
@@ -192,7 +245,7 @@ stale_rows_json() {
     age=$((now - as_of))
     [ "$age" -ge 0 ] || age=0
     if [ "$as_of" -eq 0 ] || [ "$age" -ge $((interval * 60)) ]; then
-      rows=$(jq -c --arg account "$account" '. + [$account]' <<<"$rows")
+      rows=$(jq -c --arg account "$account" '. + [$account]' < <(printf '%s\n' "$rows"))
     fi
   done < <(account_rows "$vendor")
   printf '%s\n' "$rows"
@@ -216,9 +269,9 @@ next_revive_account() {
     [ -n "$account" ] || continue
     # claudeb reserves both names, so revive would refuse them on every tick forever.
     case "$account" in main|-) continue ;; esac
-    jq -e --arg account "$account" 'index($account) != null' <<<"$wanted" >/dev/null || continue
+    jq -e --arg account "$account" 'index($account) != null' < <(printf '%s\n' "$wanted") >/dev/null || continue
     case "$as_of" in ''|*[!0-9]*) as_of=0 ;; esac
-    attempted=$(jq -r --arg account "$account" '.[$account] // 0' <<<"$attempts")
+    attempted=$(jq -r --arg account "$account" '.[$account] // 0' < <(printf '%s\n' "$attempts"))
     case "$attempted" in ''|*[!0-9]*) attempted=0 ;; esac
     if [ "$best_attempt" -lt 0 ] || [ "$attempted" -lt "$best_attempt" ] ||
        { [ "$attempted" -eq "$best_attempt" ] && [ "$as_of" -lt "$best_as_of" ]; }; then
@@ -235,7 +288,7 @@ stamp_attempt() {
   jq -c --arg vendor "$1" --arg account "$2" --argjson now "$now" \
     --argjson known "$(account_names_json "$1")" \
     '.[$vendor].attempts = ((.[$vendor].attempts | with_entries(select(.key | IN($known[]))))
-                            + {($account): $now})' <<<"$3"
+                            + {($account): $now})' < <(printf '%s\n' "$3")
 }
 
 timeout_command() {
@@ -243,6 +296,16 @@ timeout_command() {
   elif command -v timeout >/dev/null 2>&1; then command timeout "$@"
   else perl -e 'alarm shift; exec @ARGV' "$@"
   fi
+}
+
+# Sets the tick's timed_out_note; 142 is the perl fallback's SIGALRM.
+run_collector() {
+  local rc=0
+  timeout_command "$collector_timeout" "$collector" "$@" || rc=$?
+  case "$rc" in
+    124|142) timed_out_note=${timed_out_note:-"collector ${*:-passive collect} timed out after ${collector_timeout}s"} ;;
+  esac
+  return "$rc"
 }
 
 blocked_accounts_json() {
@@ -263,20 +326,21 @@ gemini_login_needed_json() {
 # pushback_note, wall_note, target_rc) through bash's dynamic scope.
 collector_probe() {
   local vendor=$1 account=$2 refresh_log rc=0 errors signals stderr_hit
-  tried=$(jq -c --arg account "$account" '. + [$account]' <<<"$tried")
+  [ -z "$timed_out_note" ] || return 0
+  tried=$(jq -c --arg account "$account" '. + [$account]' < <(printf '%s\n' "$tried"))
   refresh_log=$(mktemp "${TMPDIR:-/tmp}/llm-refresh.XXXXXX") || return 5
   tick_tmp=$refresh_log
   # An expired grok token is refreshable work: the collector's targeted refresh rotates it
   # through the vendor CLI before polling (row ak), so the tick only asks for the re-poll.
-  "$collector" --refresh-account "$vendor/$account" >/dev/null 2>>"$refresh_log" || rc=$?
+  run_collector --refresh-account "$vendor/$account" >/dev/null 2>>"$refresh_log" || rc=$?
   errors=$(recorded_errors "$vendor" "$account" "$now")
   signals=$({ cat "$refresh_log"; printf '%s\n' "$errors"; })
-  stderr_hit=$(pushback_hit <<<"$signals")
+  stderr_hit=$(pushback_hit < <(printf '%s\n' "$signals"))
   if [ -n "$stderr_hit" ]; then
     pushback=1
     [ -n "$pushback_note" ] || pushback_note=$stderr_hit
   elif [ -z "$wall_note" ]; then
-    wall_note=$(wall_hit <<<"$signals")
+    wall_note=$(wall_hit < <(printf '%s\n' "$signals"))
   fi
   if [ "$rc" -ne 0 ]; then target_rc=$rc; fi
   rm -f "$refresh_log"
@@ -305,7 +369,7 @@ opencode_next_interval() {
   local interval=$1 walls=$2 nearest
   nearest=$(jq -r --argjson now "$now" '
     [.[] | if (.reset_at | type) == "number" then (.reset_at - $now | floor) else 0 end] |
-    min // empty' <<<"$walls")
+    min // empty' < <(printf '%s\n' "$walls"))
   if [ -z "$nearest" ]; then
     ladder_loosen "$interval"
   elif [ "$nearest" -le "$OPENCODE_TIGHTEN_WITHIN_S" ]; then
@@ -325,7 +389,7 @@ opencode_tick() {
         detail:"the collector states no OpenCode rows; the plan state is unknown"}'
     return 0
   fi
-  if [ "$(jq 'length' <<<"$walls")" -eq 0 ]; then
+  if [ "$(jq 'length' < <(printf '%s\n' "$walls"))" -eq 0 ]; then
     jq -cn --argjson interval "$(ladder_loosen "$interval")" \
       '{step:0,tried:[],outcome:"dormant",interval:$interval,
         detail:"no wall on record; a probe would spend the plan to be told what it already says"}'
@@ -333,7 +397,7 @@ opencode_tick() {
   fi
   while IFS= read -r profile; do
     [ -n "$profile" ] || continue
-    tried=$(jq -c --arg account "$profile" '. + [$account]' <<<"$tried")
+    tried=$(jq -c --arg account "$profile" '. + [$account]' < <(printf '%s\n' "$tried"))
     rc=0
     probe=$(opencode_probe "$profile") || rc=$?
     # Three answers, and only one of them retires a wall: a probe that SENT nothing (the wall was
@@ -348,13 +412,13 @@ opencode_tick() {
         *) dormant=$((dormant + 1)) ;;
       esac
     fi
-    notes=$(jq -c --arg note "$profile: ${probe%%$'\n'*}" '. + [$note]' <<<"$notes")
-  done < <(jq -r '.[].account' <<<"$walls")
-  detail=$(jq -r 'join("; ")' <<<"$notes")
+    notes=$(jq -c --arg note "$profile: ${probe%%$'\n'*}" '. + [$note]' < <(printf '%s\n' "$notes"))
+  done < <(jq -r '.[].account' < <(printf '%s\n' "$walls"))
+  detail=$(jq -r 'join("; ")' < <(printf '%s\n' "$notes"))
   # What the probe changed is a raw record; only a collect turns it into the rows every surface
   # reads, so a wall this tick retired would otherwise keep standing on screen until the next one.
   if [ "$((cleared + standing))" -gt 0 ]; then
-    "$collector" >/dev/null 2>&1 || true
+    run_collector >/dev/null 2>&1 || true
   fi
   after=$(opencode_walls_json) || after=$walls
   [ -n "$after" ] || after=$walls
@@ -478,18 +542,18 @@ state_persist() {
 # accounts array: revive can never take them, so for Claude they are unrefreshable rather
 # than work the tick keeps failing to do. Other vendors own a real `main` account.
 reserved_accounts() {
-  jq -c '[.[] | select(. == "main" or . == "-")]' <<<"$1"
+  jq -c '[.[] | select(. == "main" or . == "-")]' < <(printf '%s\n' "$1")
 }
 
 drop_reserved() {
-  jq -c '[.[] | select(. != "main" and . != "-")]' <<<"$1"
+  jq -c '[.[] | select(. != "main" and . != "-")]' < <(printf '%s\n' "$1")
 }
 
 run_tick() {
   local state due='[]' vendor interval last clean passive_rc=0
   local stale tried outcome detail step target_rc errors post_stale refreshed_count claude_note
   local pushback next_interval new_clean lock_dir state_tmp refresh_log rc account blocked
-  local opencode_result lock_lost=0 reserved='[]'
+  local opencode_result lock_lost=0 reserved='[]' timed_out_note=''
   local direct expired probed session_account claude_touched
   local pushback_note wall_note stderr_hit signals rechecked cleared
 
@@ -505,20 +569,28 @@ run_tick() {
 
   for vendor in claude codex gemini grok opencode; do
     ! vendor_paused "$vendor" || continue
-    interval=$(jq -r --arg vendor "$vendor" '.[$vendor].interval_min' <<<"$state")
-    last=$(jq -r --arg vendor "$vendor" '.[$vendor].last_attempt_epoch' <<<"$state")
+    interval=$(jq -r --arg vendor "$vendor" '.[$vendor].interval_min' < <(printf '%s\n' "$state"))
+    last=$(jq -r --arg vendor "$vendor" '.[$vendor].last_attempt_epoch' < <(printf '%s\n' "$state"))
     if cadence_due "$interval" "$last" "$now"; then
-      due=$(jq -c --arg vendor "$vendor" '. + [$vendor]' <<<"$due")
+      due=$(jq -c --arg vendor "$vendor" '. + [$vendor]' < <(printf '%s\n' "$due"))
     fi
   done
 
-  if [ "$(jq 'length' <<<"$due")" -gt 0 ]; then
-    "$collector" >/dev/null 2>&1 || passive_rc=$?
+  if [ "$(jq 'length' < <(printf '%s\n' "$due"))" -gt 0 ]; then
+    run_collector >/dev/null 2>&1 || passive_rc=$?
+  fi
+  # A timed-out tick persists no state: it is no completed tick, and every vendor stays due.
+  if [ -n "$timed_out_note" ]; then
+    while IFS= read -r vendor; do
+      journal_attempt "$vendor" 0 '[]' timed-out "step 0: $timed_out_note" \
+        "$(jq -r --arg vendor "$vendor" '.[$vendor].interval_min' < <(printf '%s\n' "$state"))" || return 5
+    done < <(jq -r '.[]' < <(printf '%s\n' "$due"))
+    return 0
   fi
 
   while IFS= read -r vendor; do
-    interval=$(jq -r --arg vendor "$vendor" '.[$vendor].interval_min' <<<"$state")
-    clean=$(jq -r --arg vendor "$vendor" '.[$vendor].clean_since_epoch' <<<"$state")
+    interval=$(jq -r --arg vendor "$vendor" '.[$vendor].interval_min' < <(printf '%s\n' "$state"))
+    clean=$(jq -r --arg vendor "$vendor" '.[$vendor].clean_since_epoch' < <(printf '%s\n' "$state"))
     if [ "$vendor" = opencode ]; then
       # No clean window here: this vendor's cadence is read off the stated reset, not off a quiet
       # stretch, so the field the other three walk is left where it stands.
@@ -529,13 +601,13 @@ run_tick() {
       refresh_lock_release
       opencode_result=$(opencode_tick "$interval") || return 5
       refresh_lock_acquire "$lock_dir" || lock_lost=1
-      next_interval=$(jq -r '.interval' <<<"$opencode_result")
+      next_interval=$(jq -r '.interval' < <(printf '%s\n' "$opencode_result"))
       state=$(jq -c --arg vendor "$vendor" --argjson interval "$next_interval" \
         --argjson now "$now" \
-        '.[$vendor].interval_min=$interval | .[$vendor].last_attempt_epoch=$now' <<<"$state")
-      journal_attempt "$vendor" "$(jq -r '.step' <<<"$opencode_result")" \
-        "$(jq -c '.tried' <<<"$opencode_result")" "$(jq -r '.outcome' <<<"$opencode_result")" \
-        "$(jq -r '.detail' <<<"$opencode_result")" "$next_interval" || return 5
+        '.[$vendor].interval_min=$interval | .[$vendor].last_attempt_epoch=$now' < <(printf '%s\n' "$state"))
+      journal_attempt "$vendor" "$(jq -r '.step' < <(printf '%s\n' "$opencode_result"))" \
+        "$(jq -c '.tried' < <(printf '%s\n' "$opencode_result"))" "$(jq -r '.outcome' < <(printf '%s\n' "$opencode_result"))" \
+        "$(jq -r '.detail' < <(printf '%s\n' "$opencode_result"))" "$next_interval" || return 5
       [ "$lock_lost" -eq 0 ] || return 0
       continue
     fi
@@ -565,10 +637,10 @@ run_tick() {
         [ -n "$account" ] || continue
         step=1
         collector_probe "$vendor" "$account" || return 5
-      done < <(jq -r '.[]' <<<"$rechecked")
+      done < <(jq -r '.[]' < <(printf '%s\n' "$rechecked"))
     fi
 
-    if [ "$(jq 'length' <<<"$stale")" -gt 0 ]; then
+    if [ "$(jq 'length' < <(printf '%s\n' "$stale"))" -gt 0 ]; then
       if [ "$vendor" = claude ]; then
         if [ ! -x "$claudeb_bin" ]; then
           claude_note="no claudeb to revive with: $claudeb_bin"
@@ -580,19 +652,19 @@ run_tick() {
           while IFS= read -r account; do
             [ -n "$account" ] || continue
             if "$claudeb_bin" token-fresh "$account" >/dev/null 2>&1; then
-              direct=$(jq -c --arg account "$account" '. + [$account]' <<<"$direct")
+              direct=$(jq -c --arg account "$account" '. + [$account]' < <(printf '%s\n' "$direct"))
             else
-              expired=$(jq -c --arg account "$account" '. + [$account]' <<<"$expired")
+              expired=$(jq -c --arg account "$account" '. + [$account]' < <(printf '%s\n' "$expired"))
             fi
-          done < <(jq -r '.[]' <<<"$stale")
+          done < <(jq -r '.[]' < <(printf '%s\n' "$stale"))
           # Seconds each, so the tick lock stays held: no other vendor waits long enough for the
           # handback to pay for itself. No attempt stamp either — that map exists to rotate the
           # single session slot among the accounts that need one.
           while IFS= read -r account; do
             [ -n "$account" ] || continue
             step=1
-            tried=$(jq -c --arg account "$account" '. + [$account]' <<<"$tried")
-            probed=$(jq -c --arg account "$account" '. + [$account]' <<<"$probed")
+            tried=$(jq -c --arg account "$account" '. + [$account]' < <(printf '%s\n' "$tried"))
+            probed=$(jq -c --arg account "$account" '. + [$account]' < <(printf '%s\n' "$probed"))
             refresh_log=$(mktemp "${TMPDIR:-/tmp}/llm-refresh.XXXXXX") || return 5
             tick_tmp=$refresh_log
             rc=0
@@ -611,17 +683,17 @@ run_tick() {
             [ "$rc" -eq 0 ] || target_rc=$rc
             rm -f "$refresh_log"
             tick_tmp=''
-          done < <(jq -r '.[]' <<<"$direct")
+          done < <(jq -r '.[]' < <(printf '%s\n' "$direct"))
           # Claude rotates an expired token only through a real interactive session
           # (shared-invariants row f), so a heartbeat tick opens exactly
           # one — the account that waited longest for its turn — and the rest wait for the
           # next tick.
           account=$(next_revive_account "$vendor" "$expired" \
-            "$(jq -c --arg vendor "$vendor" '.[$vendor].attempts' <<<"$state")")
+            "$(jq -c --arg vendor "$vendor" '.[$vendor].attempts' < <(printf '%s\n' "$state"))")
           if [ -n "$account" ]; then
             step=1
             session_account=$account
-            tried=$(jq -c --arg account "$account" '. + [$account]' <<<"$tried")
+            tried=$(jq -c --arg account "$account" '. + [$account]' < <(printf '%s\n' "$tried"))
             state=$(stamp_attempt "$vendor" "$account" "$state")
             refresh_log=$(mktemp "${TMPDIR:-/tmp}/llm-refresh.XXXXXX") || return 5
             tick_tmp=$refresh_log
@@ -651,13 +723,13 @@ run_tick() {
             [ "$rc" -eq 0 ] || target_rc=$rc
             rm -f "$refresh_log"
             tick_tmp=''
-          elif [ "$(jq 'length' <<<"$probed")" -eq 0 ]; then
+          elif [ "$(jq 'length' < <(printf '%s\n' "$probed"))" -eq 0 ]; then
             claude_note='no stale Claude account could be selected'
           fi
           if [ "$step" -eq 1 ]; then
             # revive writes the claudeb snapshot; only a collect folds it into the merged
             # store the post-state below is read from — and it replaces revive's own announce.
-            "$collector" >/dev/null 2>&1 || true
+            run_collector >/dev/null 2>&1 || true
             blocked=$(blocked_accounts_json "$vendor" "$interval")
           fi
           while IFS="$(printf '\t')" read -r account rc stderr_pushback stderr_hit; do
@@ -672,13 +744,13 @@ run_tick() {
                 [ -n "$pushback_note" ] || pushback_note=$stderr_hit
               fi
             fi
-          done <<<"$probe_verdicts"
+          done < <(printf '%s\n' "$probe_verdicts")
         fi
       else
         while IFS= read -r account; do
           step=1
           collector_probe "$vendor" "$account" || return 5
-        done < <(jq -r '.[]' <<<"$stale")
+        done < <(jq -r '.[]' < <(printf '%s\n' "$stale"))
       fi
 
       post_stale=$(stale_accounts_json "$vendor" "$interval")
@@ -698,12 +770,12 @@ run_tick() {
         # count below would otherwise read as a refresh.
         outcome=error
         detail="$claude_note"
-      elif [ "$(jq 'length' <<<"$post_stale")" -eq 0 ]; then
+      elif [ "$(jq 'length' < <(printf '%s\n' "$post_stale"))" -eq 0 ]; then
         outcome=refreshed
         detail='all stale accounts refreshed'
       elif [ "$refreshed_count" -gt 0 ]; then
         outcome=partial
-        detail="$refreshed_count account(s) refreshed; still stale: $(jq -r 'join(",")' <<<"$post_stale")"
+        detail="$refreshed_count account(s) refreshed; still stale: $(jq -r 'join(",")' < <(printf '%s\n' "$post_stale"))"
       else
         outcome=error
         if [ "$target_rc" -ne 0 ]; then
@@ -718,12 +790,12 @@ run_tick() {
         detail="$detail; usage wall, not endpoint pushback: $wall_note"
       if [ "$vendor" = claude ]; then
         claude_touched=''
-        [ "$(jq 'length' <<<"$probed")" -eq 0 ] || \
-          claude_touched="probed: $(jq -r 'join(",")' <<<"$probed")"
+        [ "$(jq 'length' < <(printf '%s\n' "$probed"))" -eq 0 ] || \
+          claude_touched="probed: $(jq -r 'join(",")' < <(printf '%s\n' "$probed"))"
         [ -z "$session_account" ] || \
           claude_touched="${claude_touched:+$claude_touched; }session: $session_account"
         [ -z "$claude_touched" ] || detail="$claude_touched; $detail"
-        if [ -z "$claude_note" ] && [ "$(jq 'length' <<<"$post_stale")" -gt 0 ]; then
+        if [ -z "$claude_note" ] && [ "$(jq 'length' < <(printf '%s\n' "$post_stale"))" -gt 0 ]; then
           detail="$detail; one session per tick, the rest wait for the next tick"
         fi
       fi
@@ -737,22 +809,26 @@ run_tick() {
       fi
     fi
 
-    if [ "$(jq 'length' <<<"$rechecked")" -gt 0 ]; then
+    if [ "$(jq 'length' < <(printf '%s\n' "$rechecked"))" -gt 0 ]; then
       blocked=$(blocked_accounts_json "$vendor" "$interval")
-      cleared=$(jq -c --argjson still "$(gemini_login_needed_json)" '. - $still' <<<"$rechecked")
+      cleared=$(jq -c --argjson still "$(gemini_login_needed_json)" '. - $still' < <(printf '%s\n' "$rechecked"))
       if [ "$pushback" -eq 1 ] && [ "$outcome" != pushback ]; then
         outcome=pushback
         detail="refresh path reported a 429 or rate-limit signal${pushback_note:+: $pushback_note}"
-      elif [ "$outcome" = fresh-passive ] && [ "$(jq 'length' <<<"$cleared")" -gt 0 ]; then
+      elif [ "$outcome" = fresh-passive ] && [ "$(jq 'length' < <(printf '%s\n' "$cleared"))" -gt 0 ]; then
         outcome=refreshed
         detail='all stale accounts refreshed'
       fi
-      detail="login re-checked: $(jq -r 'join(",")' <<<"$rechecked")$(jq -r \
-        'if length > 0 then " (cleared: " + join(",") + ")" else "" end' <<<"$cleared"); $detail"
+      detail="login re-checked: $(jq -r 'join(",")' < <(printf '%s\n' "$rechecked"))$(jq -r \
+        'if length > 0 then " (cleared: " + join(",") + ")" else "" end' < <(printf '%s\n' "$cleared")); $detail"
     fi
-    blocked=$(jq -c --argjson reserved "$reserved" '. + $reserved | unique' <<<"$blocked")
-    if [ "$(jq 'length' <<<"$blocked")" -gt 0 ]; then
-      detail="${detail:+$detail; }unrefreshable: $(jq -r 'join(",")' <<<"$blocked")"
+    blocked=$(jq -c --argjson reserved "$reserved" '. + $reserved | unique' < <(printf '%s\n' "$blocked"))
+    if [ "$(jq 'length' < <(printf '%s\n' "$blocked"))" -gt 0 ]; then
+      detail="${detail:+$detail; }unrefreshable: $(jq -r 'join(",")' < <(printf '%s\n' "$blocked"))"
+    fi
+    if [ -n "$timed_out_note" ]; then
+      journal_attempt "$vendor" "$step" "$tried" timed-out "step $step: $timed_out_note" "$interval" || return 5
+      return 0
     fi
 
     next_interval=$interval
@@ -770,11 +846,11 @@ run_tick() {
       --argjson now "$now" --argjson clean "$new_clean" \
       '.[$vendor].interval_min=$interval |
        .[$vendor].last_attempt_epoch=$now |
-       .[$vendor].clean_since_epoch=$clean' <<<"$state")
+       .[$vendor].clean_since_epoch=$clean' < <(printf '%s\n' "$state"))
     journal_attempt "$vendor" "$step" "$tried" "$outcome" "$detail" "$next_interval" || return 5
     # Without the lock the next vendor's refresh would race whoever owns it now.
     [ "$lock_lost" -eq 0 ] || return 0
-  done < <(jq -r '.[]' <<<"$due")
+  done < <(jq -r '.[]' < <(printf '%s\n' "$due"))
 
   [ "$lock_lost" -eq 0 ] || return 0
   state_persist "$state" || return 5
@@ -800,9 +876,9 @@ reset_cadence() {
       claude|codex|gemini|grok|opencode) ;;
       *) printf 'llm-refresh: unknown vendor: %s\n' "$vendor" >&2; return 2 ;;
     esac
-    requested=$(jq -c --arg vendor "$vendor" '. + [$vendor]' <<<"$requested")
+    requested=$(jq -c --arg vendor "$vendor" '. + [$vendor]' < <(printf '%s\n' "$requested"))
   done
-  [ "$(jq 'length' <<<"$requested")" -gt 0 ] || \
+  [ "$(jq 'length' < <(printf '%s\n' "$requested"))" -gt 0 ] || \
     requested=$(live_vendors | jq -Rsc 'split("\n") | map(select(length > 0))')
   mkdir -p "$(dirname "$state_file")"
   if ! refresh_lock_acquire "$lock_dir"; then
@@ -818,7 +894,7 @@ reset_cadence() {
   refresh_lock_release
   jq -r --argjson vendors "$requested" \
     'to_entries[] | select(.key | IN($vendors[])) |
-     "\(.key): interval_min \(.value.interval_min)"' <<<"$state"
+     "\(.key): interval_min \(.value.interval_min)"' < <(printf '%s\n' "$state")
 }
 
 install_agent() {
@@ -855,6 +931,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   case "${1:-run}" in
     run)
       [ "$#" -le 1 ] || usage
+      [ -n "${LLM_REFRESH_SUPERVISED:-}" ] || { supervise_tick; exit; }
       trap 'exit 129' HUP INT TERM
       trap '[ -z "$tick_tmp" ] || rm -f "$tick_tmp"; refresh_lock_release' EXIT
       run_tick

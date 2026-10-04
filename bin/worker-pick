@@ -608,7 +608,9 @@ summary=$(jq -r \
   # `$five_hour` is passed rather than read, because a vendor with no such window at all (grok)
   # must print `–` where a vendor whose window nobody measured prints `?`.
   def cells($selected; $pins; $five_hour; $display):
-    {key: .name, budget: budget_cell, wk: pct_cell(.wk), h5: $five_hour,
+    (.auth_ok | not) as $dead |
+    {key: .name, budget: (if $dead then "-" else budget_cell end), wk: (if $dead then "?" else pct_cell(.wk) end),
+     h5: (if $dead and $five_hour != "–" then "?" else $five_hour end),
      name: (.name + (if .own then "*" else "" end)), display: $display,
      reset: (if .rs == "-" then "" else "↺ " + .rs end),
      flags: flag_text($pins)};

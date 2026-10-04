@@ -19,8 +19,10 @@ STUB="$WORK/collector"
 cat >"$STUB" <<'EOF'
 #!/usr/bin/env bash
 set -u
+hang() { sleep 30 & printf '%s %s\n' "$$" "$!" >>"$STUB_HANG_PIDS"; wait; }
 if [ "$#" -eq 0 ]; then
   printf '<bare>\n' >>"$STUB_LOG"
+  [ -z "${STUB_PASSIVE_HANG:-}" ] || hang
   # Stands in for the real merge: what revive left in the claudeb snapshot reaches the store
   # only here, never before.
   if [ -s "${CB_SNAPSHOT:-/dev/null}" ]; then
@@ -35,6 +37,7 @@ fi
 [ "${1:-}" = --refresh-account ] || exit 2
 target=${2:-}
 printf '%s\n' "$*" >>"$STUB_LOG"
+[ "${STUB_HANG_TARGET:-}" != "$target" ] || hang
 vendor=${target%%/*}
 account=${target#*/}
 if [ "${STUB_PUSHBACK_TARGET:-}" = "$target" ]; then
@@ -257,8 +260,19 @@ run_refresh() {
     STUB_PUSHBACK_TARGET="${STUB_PUSHBACK_TARGET:-}" STUB_REFRESH_SUCCEED="${STUB_REFRESH_SUCCEED:-1}" \
     STUB_STDERR_TARGET="${STUB_STDERR_TARGET:-}" STUB_STDERR_TEXT="${STUB_STDERR_TEXT:-}" \
     STUB_PASSIVE_RC="${STUB_PASSIVE_RC:-0}" \
+    STUB_PASSIVE_HANG="${STUB_PASSIVE_HANG:-}" STUB_HANG_TARGET="${STUB_HANG_TARGET:-}" \
+    STUB_HANG_PIDS="$dir/hang.pids" \
+    LLM_LIMITS_REFRESH_COLLECTOR_TIMEOUT="${LLM_LIMITS_REFRESH_COLLECTOR_TIMEOUT:-600}" \
+    LLM_LIMITS_REFRESH_LOCK_CEILING_SECONDS="${LLM_LIMITS_REFRESH_LOCK_CEILING_SECONDS:-3600}" \
     PATH="$GROK_BIN:$PATH" \
     bash "$SCRIPT"
+}
+
+hang_tree_dead() {
+  local pid
+  [ -s "$1/hang.pids" ] || return 1
+  sleep 1
+  for pid in $(cat "$1/hang.pids"); do ! kill -0 "$pid" 2>/dev/null || return 1; done
 }
 
 NOW=2000000000
@@ -630,6 +644,78 @@ jq -eR 'fromjson | select(.vendor == "claude" and .outcome == "error" and
   "$case_dir/journal.jsonl" >/dev/null || fail 'the killed revive was not journaled as an error'
 [ "$(jq -r '.claude.interval_min' "$case_dir/state.json")" -eq 30 ] || \
   fail 'a killed revive was read as pushback'
+pass
+
+case_dir="$WORK/passive-hung"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$NOW" 60 60 60
+write_state "$case_dir/state.json" 30 30 30 0 "$NOW"
+state_before=$(shasum -a 256 "$case_dir/state.json" | awk '{print $1}')
+hung_started=$SECONDS
+STUB_PASSIVE_HANG=1 LLM_LIMITS_REFRESH_COLLECTOR_TIMEOUT=1 run_refresh "$case_dir" "$NOW" || \
+  fail 'passive-hang run failed'
+[ "$((SECONDS - hung_started))" -lt 15 ] || fail 'a hung passive collector stalled the tick'
+jq -esR '[split("\n")[] | select(length > 0) | fromjson] |
+  (map(.vendor) | sort) == ["claude","codex","gemini","grok","opencode"] and
+  all(.outcome == "timed-out" and .step == 0 and
+      (.detail | contains("step 0: collector passive collect timed out after 1s")))' \
+  "$case_dir/journal.jsonl" >/dev/null || fail 'a timed-out passive collect was not journaled per due vendor'
+[ "$(shasum -a 256 "$case_dir/state.json" | awk '{print $1}')" = "$state_before" ] || \
+  fail 'a timed-out tick persisted state as if it had completed'
+[ ! -e "$case_dir/state.json.lock" ] || fail 'a timed-out tick kept the lock'
+hang_tree_dead "$case_dir" || fail 'the timed-out passive collector left processes behind'
+pass
+
+case_dir="$WORK/probe-hung"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$NOW" 60 7200 60
+write_state "$case_dir/state.json" 30 30 30 "$NOW" "$NOW"
+jq '.vendors.codex.last_attempt_epoch=0' "$case_dir/state.json" >"$case_dir/state.tmp" && \
+  mv "$case_dir/state.tmp" "$case_dir/state.json"
+hung_started=$SECONDS
+STUB_HANG_TARGET=codex/beta LLM_LIMITS_REFRESH_COLLECTOR_TIMEOUT=1 run_refresh "$case_dir" "$NOW" || \
+  fail 'probe-hang run failed'
+[ "$((SECONDS - hung_started))" -lt 15 ] || fail 'a hung targeted collector stalled the tick'
+jq -eR 'fromjson | select(.vendor == "codex" and .outcome == "timed-out" and .step == 1 and
+  .accounts_tried == ["beta"] and
+  (.detail | contains("collector --refresh-account codex/beta timed out after 1s")))' \
+  "$case_dir/journal.jsonl" >/dev/null || fail 'a timed-out probe was not journaled with its step and seconds'
+hang_tree_dead "$case_dir" || fail 'the timed-out probe left processes behind'
+pass
+
+case_dir="$WORK/tick-ceiling"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$NOW" 60 60 60
+hung_started=$SECONDS
+rc=0
+STUB_PASSIVE_HANG=1 LLM_LIMITS_REFRESH_COLLECTOR_TIMEOUT=60 LLM_LIMITS_REFRESH_LOCK_CEILING_SECONDS=2 \
+  run_refresh "$case_dir" "$NOW" || rc=$?
+[ "$((SECONDS - hung_started))" -lt 15 ] || fail 'a tick past its ceiling was not ended'
+[ "$rc" -ne 0 ] || fail 'a killed tick exited 0'
+jq -eR 'fromjson | select(.vendor == "tick" and .outcome == "hung" and
+  (.detail | contains("past the 2s ceiling")))' \
+  "$case_dir/journal.jsonl" >/dev/null || fail 'a tick killed at its ceiling was not journaled as hung'
+[ ! -e "$case_dir/state.json.lock" ] || fail 'a tick killed at its ceiling kept the lock'
+hang_tree_dead "$case_dir" || fail 'a tick killed at its ceiling left processes behind'
+pass
+
+case_dir="$WORK/hung-holder"
+mkdir -p "$case_dir/home" "$case_dir/state.json.lock"
+write_store "$case_dir/store.json" "$NOW" 60 60 60
+holder="$case_dir/llm-refresh-holder"
+printf '#!/usr/bin/env bash\nsleep 60 &\nprintf "%%s %%s\\n" "$$" "$!" >"$1"\nwait\n' >"$holder"
+chmod +x "$holder"
+"$holder" "$case_dir/hang.pids" &
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$case_dir/hang.pids" ] && break; sleep 0.2; done
+read -r holder_pid _ <"$case_dir/hang.pids"
+printf '%s\n' "$holder_pid" >"$case_dir/state.json.lock/pid"
+touch -t 200001010000 "$case_dir/state.json.lock"
+run_refresh "$case_dir" "$NOW" || fail 'hung-holder run failed'
+hang_tree_dead "$case_dir" || fail 'a live holder past the ceiling was left running'
+jq -eR --arg pid "$holder_pid" 'fromjson | select(.vendor == "tick" and .outcome == "hung" and
+  (.detail | contains("tick pid " + $pid + " held the lock")))' \
+  "$case_dir/journal.jsonl" >/dev/null || fail 'the killed holder was not journaled as hung'
+[ -s "$case_dir/state.json" ] || fail 'the tick did not run after killing the hung holder'
 pass
 
 case_dir="$WORK/pushback"

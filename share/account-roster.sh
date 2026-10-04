@@ -79,9 +79,9 @@ account_roster() { # vendor
 account_roster_refuse() { # tool vendor account
   local roster
   roster=$(account_roster "$2") || return 2
-  [ -n "$3" ] && grep -Fqx -- "$3" <<<"$roster" && return 0
+  [ -n "$3" ] && grep -Fqx -- "$3" < <(printf '%s\n' "$roster") && return 0
   printf '%s: unknown account: %s (not on the %s roster the menubar lists: %s)\n' \
-    "$1" "$3" "$2" "$(paste -sd, - <<<"$roster")" >&2
+    "$1" "$3" "$2" "$(paste -sd, - < <(printf '%s\n' "$roster"))" >&2
   return 2
 }
 
@@ -115,17 +115,17 @@ account_web_login() { # tool vendor name
   cli=$(account_web_cli "$2")
   out=$("$cli" login --wait "$3") || rc=$?
   if [ "$rc" -ne 0 ]; then
-    printf '%s: %s\n' "$1" "$(jq -r '.reason' <<<"$out" 2>/dev/null || printf 'the login window did not open')" >&2
+    printf '%s: %s\n' "$1" "$(jq -r '.reason' < <(printf '%s\n' "$out") 2>/dev/null || printf 'the login window did not open')" >&2
     exit "$rc"
   fi
   out=$("$cli" status "$3") || rc=$?
   if [ "$rc" -ne 0 ]; then
     printf '%s: %s is not ready: %s\n' "$1" "$3" "$(jq -r '.reason // "signed in as \(.email), bound to \(.bound_to)"' \
-      <<<"$out" 2>/dev/null || printf 'status failed')" >&2
+      < <(printf '%s\n' "$out") 2>/dev/null || printf 'status failed')" >&2
     exit 4
   fi
   jq -r --arg tool "$1" --arg name "$3" '"\($tool): \($name) ready — \(.bound_to // .email), "
-    + (if .plan then "plan \(.plan)" elif .credits != null then "\(.credits) credits" else "no balance read" end)' <<<"$out"
+    + (if .plan then "plan \(.plan)" elif .credits != null then "\(.credits) credits" else "no balance read" end)' < <(printf '%s\n' "$out")
 }
 
 account_web_offer() { # tool vendor name

@@ -15,6 +15,8 @@ LIMITS_AGE_ALARM=86400
 # decision calls the rows behind it stale. Coarser than the per-bucket thresholds above on
 # purpose: a router reads whatever the last collector pass merged, not one live bucket.
 LIMITS_STALE_ROUTING=7200
+# Three missed 300 s heartbeat ticks.
+LIMITS_REFRESH_STALLED=900
 
 # Reset epochs below one year are placeholder zeros, never real times.
 LIMITS_VIEW_JQ='

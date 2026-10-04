@@ -222,7 +222,7 @@ assert contains "$pool_row" '0.0%/d ×7.0d 100% 0% walled-wk opus·high WALLED'
 assert contains "$pool_row" '13.6%/d ×7.0d 5% 100% walled-5h opus·high WALLED'
 # Dead auth is not a wall (contract rule 3 reads them as two states): the row names the login it
 # needs and never `WALLED`, which would send Egor after a limit nobody spent.
-assert contains "$pool_row" '14.3%/d ×7.0d 0% 0% dead opus·high login needed'
+assert contains "$pool_row" '- ? ? dead opus·high login needed'
 assert not_contains "$pool_row" 'dead opus·high WALLED'
 # A pool toggle that is off keeps the account visible: an account that silently vanished from
 # the ranking is indistinguishable from a collector bug.
@@ -1025,7 +1025,7 @@ grok_case '{available:true,accounts:[
   {account:"gone",enabled:true,weekly:{used_pct:10},auth:{status:"needs_login"}},
   {account:"fresh",enabled:true,weekly:{used_pct:40},auth:{status:"ok"}}]}'
 assert contains "$(next_block)" 'grok/fresh grok·high'
-assert contains "$(vsection grok)" '10% – gone grok·high login needed'
+assert contains "$(vsection grok)" '? – gone grok·high login needed'
 grok_case '{available:true,accounts:[
   {account:"gone",enabled:true,weekly:{used_pct:10},auth:{status:"needs_login"}}]}'
 assert test "$(vsection grok)" = 'login needed'

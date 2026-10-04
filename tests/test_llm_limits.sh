@@ -747,5 +747,39 @@ grep '^gemini:' <<<"$plain_color" | grep -q "| age "$'\033\[31m' \
   || fail "an unavailable vendor rendered its age unalarmed in plain"
 fallback_table=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "fallback table collection failed"
 grep -q '^claude/main' <<<"$fallback_table" || fail "unique fallback main account missing from table"
+
+# bash 5.x writes a here-string under 64 KiB into a pipe BEFORE its reader starts; a macOS pipe
+# that cannot grow past 16 KiB under load then blocks forever (2026-10-04: the heartbeat hung 11 h).
+heartbeat_path=("$SCRIPT" "$ROOT/bin/llm-refresh")
+while IFS= read -r sourced; do heartbeat_path+=("$ROOT/share/$sourced"); done < <(
+  sed -nE 's#^\. "\$(script_dir|repo_root)/share/([^"]+)"$#\2#p' "$SCRIPT" "$ROOT/bin/llm-refresh" | sort -u)
+[ "${#heartbeat_path[@]}" -ge 8 ] || fail "the heartbeat path guard found too few sourced files: ${heartbeat_path[*]}"
+if herestring_hits=$(grep -nE '<<<[[:space:]]*"?\$' "${heartbeat_path[@]}"); then
+  fail "a here-string feeds data on the heartbeat path; use < <(printf '%s\n' ...): $herestring_hits"
+fi
+BIG_HOME="$WORK/home-big-rollout"
+big_rollout="$BIG_HOME/.codex/sessions/2026/07/12/rollout-big.jsonl"
+mkdir -p "${big_rollout%/*}"
+for big_i in $(seq 1 180); do
+  printf '{"timestamp":"2026-07-12T10:%02d:%02dZ","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":%d,"window_minutes":300,"resets_at":%s},"secondary":{"used_percent":20,"window_minutes":10080,"resets_at":%s},"plan_type":"plus"}}}\n' \
+    "$((big_i / 60))" "$((big_i % 60))" "$((big_i % 50))" "$((now + 1000))" "$((now + 2000))"
+done >"$big_rollout"
+[ "$(wc -c <"$big_rollout")" -gt 32768 ] && [ "$(wc -c <"$big_rollout")" -lt 65536 ] \
+  || fail "the big rollout fixture left the 16-64 KiB pipe window"
+big_out=$(HOME="$BIG_HOME" LLM_LIMITS_CACHE="$WORK/big-cache.json" timeout 60 bash "$SCRIPT" --json) \
+  || fail "a 16-64 KiB rollout body did not collect within 60 s"
+jq -e '.vendors.codex.five_hour.used_pct == 30' <<<"$big_out" >/dev/null \
+  || fail "the newest event of a 16-64 KiB rollout body was not the one collected"
+jq -e '.refresh_heartbeat == {last_tick_at:null, limit_s:900, stalled:false}' <<<"$big_out" >/dev/null \
+  || fail "a machine with no heartbeat state read as a stalled heartbeat"
+touch -t "$(date -r "$((now - 39600))" +%Y%m%d%H%M.%S)" "$WORK/refresh.state"
+heartbeat_of() {
+  HOME="$BIG_HOME" LLM_LIMITS_CACHE="$WORK/big-cache.json" LLM_LIMITS_REFRESH_STATE="$WORK/refresh.state" \
+    LLM_LIMITS_AWAKE_SINCE="$1" bash "$SCRIPT" --json | jq -c '.refresh_heartbeat | .stalled, (.last_tick_at | type)'
+}
+[ "$(heartbeat_of 0 | tr '\n' ' ')" = 'true "number" ' ] \
+  || fail "a heartbeat state 11 h old did not read as a stalled refresh"
+[ "$(heartbeat_of "$((now - 60))" | tr '\n' ' ')" = 'false "number" ' ] \
+  || fail "a Mac awake one minute read its sleep as a stalled refresh"
 echo "PASS: account order (priority names, profile birth time, unknowns last) and vendor-scoped --refresh-account, schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, local Claude rotation usability, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, weekly bucket provenance, experiment announcements, Hammerspoon projection contract including vendor pin (*_profile=*) vs account pin, one dim tone in the renderer, plain output, table output and sorts, reset tiers, expired windows, age alarm, bare JSON default, atomic cache, per-account newest-wins merge, a removed Gemini base profile absent from every surface with the vendor hoisted from what remains, the same for a removed Codex main (menubar flag, passive collects, table and plain, the vendor stating its removal when nothing named is left, undone by deleting the marker), a paused vendor absent from the store and every render path with its collector never run, missing exit 3"
 exit 0

@@ -14,7 +14,7 @@ assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
 unset XDG_CACHE_HOME WORKER_CLAIMS_DIR WORKER_WALLS_DIR GEMINI_WEB_DIR CHATGPT_WEB_DIR CLAUDEGPT_HOME \
   CODEXB_PROFILES_DIR GEMINIB_PROFILES_DIR GROKB_PROFILES_DIR LLM_LIMITS_GEMINI_ACCOUNTS_DIR \
   LLM_LIMITS_CODEX_CACHE LLM_LIMITS_CODEX_REMOVED LLM_LIMITS_GROK_CACHE GROKB_MAIN_GROK_HOME OPENCODE_GO_PROFILES \
-  STATUSLINE_CACHE_DIR
+  STATUSLINE_CACHE_DIR LLM_LIMITS_CACHE
 export HOME="$WORK/home" CLAUDEB_DIR="$WORK/home/.claude-profiles/.claudeb"
 export WORKER_STATS_DIR="$HOME/stats" WORKER_RUN_DIR="$HOME/runs" LLM_DOCTOR_DIR="$HOME/doctor"
 export IMAGE_LEG_LOG="$HOME/image-legs/legs.jsonl" LLM_DOCTOR_LEDGER="$WORK/ledger.json"
@@ -450,6 +450,17 @@ assert jq -e '[.problems[] | select(.group == "accounts")] as $rows | .groups.ac
   and $rows[0].id == "remnant:codex:ghost" and $rows[0].value == 2
   and ($rows[0].fact | contains("purge: python3 share/account_stores.py purge codex ghost"))' "$WORK/remnants.json" >/dev/null
 rm -rf "$HOME/.codex-profiles" "$HOME/.cache/worker-claims"
+# The heartbeat stall is the collector's verdict, carried as one accounts problem; a ticking one is none.
+printf '{"schema":1,"vendors":{},"refresh_heartbeat":{"last_tick_at":%s,"limit_s":900,"stalled":true}}\n' \
+  "$((NOW - 39600))" >"$WORK/stalled-store.json"
+assert env LLM_LIMITS_CACHE="$WORK/stalled-store.json" "$DOCTOR" --dry-run --json >"$WORK/stalled.json"
+assert jq -e '[.problems[] | select(.rule == "refresh-stalled")] as $rows | ($rows | length) == 1
+  and $rows[0].id == "refresh:heartbeat" and $rows[0].group == "accounts" and $rows[0].state == "new"
+  and $rows[0].value == 39600 and $rows[0].limit == 900
+  and ($rows[0].fact | startswith("limits refresh heartbeat stalled 11h00m"))' "$WORK/stalled.json" >/dev/null
+jq '.refresh_heartbeat.stalled = false' "$WORK/stalled-store.json" >"$WORK/ticking-store.json"
+assert env LLM_LIMITS_CACHE="$WORK/ticking-store.json" "$DOCTOR" --dry-run --json >"$WORK/ticking.json"
+assert jq -e '[.problems[] | select(.rule == "refresh-stalled")] == []' "$WORK/ticking.json" >/dev/null
 # Days the bench store covers whole are frozen to disk; the older image day stays as it was.
 assert test "$(find "$LLM_DOCTOR_DIR/daily" -name '*.json' | wc -l | tr -d ' ')" -ge 3
 assert grep -q '"image|grok-image|failed|bad output|ours|X4": 5' "$LLM_DOCTOR_DIR/daily/$(python3 -c 'import time,sys; print(time.strftime("%Y-%m-%d", time.localtime(int(sys.argv[1]) - 10 * 86400)))' "$NOW").json"

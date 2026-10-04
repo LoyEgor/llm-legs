@@ -1024,6 +1024,20 @@ assert(type(deadRows[1].menu) == "table" and titleText(deadRows[1].menu[1]):find
   "vendor error submenu lost the raw cause")
 assert(errorModule.refreshState().prefix == "", "one vendor's refresh error warned outside its own row")
 
+local stalledAt = os.time() - 11 * 3600 - 120
+local stalledModule = loadModule({ schema = 1, refresh_heartbeat = { last_tick_at = stalledAt, stalled = true },
+  vendors = deadFixture.vendors })
+local stalledRow = titleText(stalledModule.menuItems()[1])
+assert(stalledRow:find("⚠ refresh stalled 11h — last tick ", 1, true)
+  and stalledRow:find(os.date("%H:%M", stalledAt), 1, true), "stalled heartbeat row: " .. stalledRow)
+assert(stalledModule.refreshState().prefix == "⚠ ", "a stalled heartbeat did not warn the menubar")
+local tickingModule = loadModule({ schema = 1, refresh_heartbeat = { last_tick_at = os.time() - 60, stalled = false },
+  vendors = deadFixture.vendors })
+for _, item in ipairs(tickingModule.menuItems()) do
+  assert(not titleText(item):find("refresh stalled", 1, true), "a ticking heartbeat rendered as stalled")
+end
+assert(tickingModule.refreshState().prefix == "", "a ticking heartbeat warned the menubar")
+
 local entryCause = "alona: not refreshed (needs-relogin)"
 local entryFixture = { schema = 1, vendors = {
   claude = {

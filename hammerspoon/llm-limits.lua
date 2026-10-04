@@ -774,7 +774,9 @@ function M.refreshState()
   local vendorErrors = {}
   -- One account's failed refresh retries next cycle and shows as its own ⚠ row, so only a store
   -- nobody can read warns the menubar. A parked vendor renders no error rows at all.
-  local warning = globalError ~= nil
+  local heartbeat = limits and type(limits.refresh_heartbeat) == "table" and limits.refresh_heartbeat
+  local stalledSince = heartbeat and heartbeat.stalled == true and tonumber(heartbeat.last_tick_at) or nil
+  local warning = globalError ~= nil or stalledSince ~= nil
   local pausedVendors = select(3, readWorkerModel())
   if limits and type(limits.vendors) == "table" then
     for _, name in ipairs({ "claude", "codex", "gemini", "grok", "opencode" }) do
@@ -793,6 +795,7 @@ function M.refreshState()
     holdText = holds[1] and holds[1].text,
     prefix = #holds > 0 and "⚠ " or busy and "⟳ " or (warning and "⚠ " or ""),
     globalError = globalError,
+    stalledSince = stalledSince,
     vendorErrors = vendorErrors,
   }
 end
@@ -2718,6 +2721,13 @@ local function buildMenuItems()
       cause = state.globalError.cause,
       at = state.globalError.at,
     }, nil, true))
+  end
+  if state.stalledSince then
+    table.insert(menu, {
+      title = infoTitle("⚠ refresh stalled " .. style.age(os.time() - state.stalledSince)
+        .. " — last tick " .. style.clock(state.stalledSince), true),
+      disabled = true,
+    })
   end
   local pendingOk, pending = pcall(function()
     return _G.ClaudeChatSwitch and _G.ClaudeChatSwitch.pending
