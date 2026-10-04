@@ -138,7 +138,7 @@ a tone only from 10 %), worse red and better green. The line names them without 
 | hook median, total | the hook journal (§5.1) | every run of every hook that sources `hook-time.sh`; for a hook outside it, `hook_success` attachments of runs that printed. Total is the time the hook ran, summed: hooks on one event run together, so it is cost, not wait |
 | statusline render | the statusline journal (§5.1) | median per render and total per 24 h, once the statusline writes its line |
 | hooks can hold a chat | settings.json | a synchronous hook with no timeout (the default is about 600 s), or one whose script renices itself (`renice` or `nice -n`) |
-| CPU busy, kernel | `host_statistics` ticks via ctypes | the delta since the previous run, valid when the gap is ≤ 15 min; the counters wrap at 2^32 |
+| CPU busy, kernel | `host_statistics` ticks via ctypes | the delta since the previous run, valid when the gap is ≤ 1 h (a run takes minutes under load); wrap at 2^32, reboot dropped |
 | new processes | spawn `/usr/bin/true`, wait 2 s, spawn again | PID delta mod 99 999 ÷ elapsed. There is no sysctl fork counter. |
 | unaccounted CPU | busy × ncpu − the visible cores in memlogd's `chats.json` title | CPU that per-process sampling misses: short-lived forks. The title parse is fragile coupling. |
 | memory | `vm.swapusage`, `kern.memorystatus_level`, and memlogd's guard alarm | red on the guard alarm or swap > 90 % |

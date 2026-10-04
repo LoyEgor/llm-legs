@@ -256,9 +256,9 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-03",
+      "last_reviewed": "2026-10-04",
       "reviewed_by": "Harness doctor night fixer harness-load-20261003T042543Z-5d17",
-      "note": "Fork and exec of requested parallel work. 2026-10-03 07:30-09:30 local: 8.4 of 10 cores unseen, kernel 60 %, ~745 000 page faults/s (~180 000 copy-on-write); 30 s ancestor census 1 350-1 840 new proc/s: test suites 44-62 %, statusline 19-25 %, hooks 8-19 %, worker-run 9 %. Ruled out: memory compression (~200 decompressions/s); a run-suites over-subscription (three RUN_SUITES_SLOTS held, as capped); night worker count (NIGHT_FIXER_SLOTS, badbf8f); worker-run's supervisor 10 ms poll (start-up only). The statusline is llm-legs bin/statusline.sh, not claude-setup: ~65-100 bash subshells a render, review-debt Python every 15 s per shown tree (0.73 CPU-s); staleness-free fork cuts save ~1 % of forks, larger ones are item 2 of docs/handoffs/2026-09-28-harness-performance-fix.md (Egor's word). Same ground re-measured by load fixers 2026-09-30 to 2026-10-03; the remaining decision is the judge's, in the handoff.",
+      "note": "Fork and exec of requested parallel work. 2026-10-03 07:30-09:30 local: 8.4 of 10 cores unseen, kernel 60 %, ~745 000 page faults/s (~180 000 copy-on-write); 30 s ancestor census 1 350-1 840 new proc/s: test suites 44-62 %, statusline 19-25 %, hooks 8-19 %, worker-run 9 %. Ruled out: memory compression (~200 decompressions/s); a run-suites over-subscription (three RUN_SUITES_SLOTS held, as capped); night worker count (NIGHT_FIXER_SLOTS, badbf8f); worker-run's supervisor 10 ms poll (start-up only). The statusline is llm-legs bin/statusline.sh, not claude-setup: ~65-100 bash subshells a render, review-debt Python every 15 s per shown tree (0.73 CPU-s); staleness-free fork cuts save ~1 % of forks, larger ones are item 2 of docs/handoffs/2026-09-28-harness-performance-fix.md (Egor's word). Same ground re-measured by load fixers 2026-09-30 to 2026-10-04; the remaining decision is the judge's, in the handoff. 2026-10-04: unseen (busy x ncpu - visible) was unmeasured from 05:00 to 12:48 local at load average 285 (logo-vectorizer-bench inkvec and ties.py, Egor's daytime work) because busy needed doctor runs under 15 min apart and a loaded collector takes 340 s; the gap is now 1 h (SAMPLE_GAP_S, test_harness_doctor).",
       "handoff": "docs/handoffs/2026-09-30-load-unseen-census.md"
     },
     {
@@ -271,9 +271,9 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-03",
-      "reviewed_by": "Harness doctor night fixer harness-load-20261003T042543Z-5d17",
-      "note": "Twin of load-unseen-suites-statusline: 100 % busy on 2026-10-03 07:30-09:30 local under night 20261003T042136Z-e9f1 (three run-suites slots, night workers, review-bench --debt), both slot caps holding. Requested parallel work per the owner's 'parallel load beats serial'; the judge decision is in the shared handoff.",
+      "last_reviewed": "2026-10-04",
+      "reviewed_by": "Harness doctor night fixer harness-load-20261004T013950Z-27b8",
+      "note": "Twin of load-unseen-suites-statusline: 100 % busy on 2026-10-03 07:30-09:30 local under night 20261003T042136Z-e9f1 (three run-suites slots, night workers, review-bench --debt), both slot caps holding. Requested parallel work per the owner's 'parallel load beats serial'; the judge decision is in the shared handoff. 2026-10-04 (harness-load-20261004T013950Z-27b8): busy 100 % at 04:30 local under the night; busy then read nothing from 05:00 to 12:48 at load average 285 since runs drifted over SAMPLE_GAP_S (900 s) apart, now 3600 s with reboot-reset ticks dropped.",
       "handoff": "docs/handoffs/2026-09-30-load-unseen-census.md"
     },
     {

@@ -1526,8 +1526,16 @@ phases = m.Phases()
 real_sleep, m.time.sleep = m.time.sleep, lambda secs: None
 saved = os.environ.pop("HARNESS_DOCTOR_FAKE_SAMPLE", None)
 m.take_sample({}, T, phases)
-m.time.sleep = real_sleep
 check(set(phases.secs) == {"sample", "sleep"}, "the sampler's sleep is timed apart from its work: %s" % phases.secs)
+real_ticks, ncpu = m.host_ticks, os.cpu_count() or 1
+m.host_ticks = lambda: [1000 + 90 * 1800 * ncpu, 0, 1000 + 10 * 1800 * ncpu, 0]
+slow = m.take_sample({"ticks": [T - 1800, [1000, 0, 1000, 0]]}, T)
+check(slow.get("busy") == 0.9, "busy is measured across a 30 min gap between slow doctor runs: %s" % slow.get("busy"))
+m.host_ticks = lambda: [10, 0, 90, 0]
+rebooted = m.take_sample({"ticks": [T - 1800, [5000, 0, 5000, 0]]}, T)
+check("busy" not in rebooted, "counters reset by a reboot give no busy: %s" % rebooted.get("busy"))
+m.host_ticks = real_ticks
+m.time.sleep = real_sleep
 
 def stamp(t):
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + ".%03dZ" % int(round((t % 1) * 1000))

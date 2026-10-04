@@ -111,7 +111,7 @@ BACKFILL_DAYS = 28
 EVENT_DAYS = 8
 DAY_SUMMARY_DAYS = 60
 PENDING_TTL_S = 7200
-SAMPLE_GAP_S = 900
+SAMPLE_GAP_S = 3600
 SLOW_STEP_S = 300
 INVENTORY_ROWS = 20
 LATEST_TESTS = 10
@@ -1322,7 +1322,7 @@ def take_sample(state, now, phase=lambda name: None, burst=None):
     if ticks and previous and 0 < now - previous[0] <= SAMPLE_GAP_S:
         delta = [(b - a) % (1 << 32) for a, b in zip(previous[1], ticks)]
         total = sum(delta)
-        if total > 0:
+        if 0 < total < (now - previous[0]) * ncpu * 1000:
             sample["busy"] = round((delta[0] + delta[1] + delta[3]) / total, 3)
             sample["kernel"] = round(delta[1] / total, 3)
     if ticks:
