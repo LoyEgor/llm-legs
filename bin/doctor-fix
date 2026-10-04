@@ -129,6 +129,7 @@ BROWSER_ENGINE = ("llm-legs/share/gemini_web.py", "llm-legs/share/gemini_music.p
 MENU_BUILDERS = {"automation": ("hammerspoon/automation_menu.lua", "llm-legs/hammerspoon/llm-limits.lua"),
                  "llm-limits": ("llm-legs/hammerspoon/llm-limits.lua",)}
 SPEED_FILES = {"background/statusline": ("llm-legs/bin/statusline.sh",)}
+SPEED_HOOKS = {"chat/hooks": "review-flow-gate.sh"}
 KNOBS = (
     ("settings model/effort/thinking", r"(^|/)settings(\.[\w-]+)?\.json$",
      r"\"(model|effortLevel|alwaysThinkingEnabled|MAX_THINKING_TOKENS|modelSettings)\"\s*:"),
@@ -280,6 +281,7 @@ def snapshot(doctor, doc_file, night=None):
             area = problem.get("group") if problem.get("speed") else sections.get(rule) or OWN_AREA
             kind, _, target = str((problem.get("opportunity") or {}).get("target") or "").partition("/")
             ident = target if kind == "hooks" else target.replace("/", ":", 1) if kind == "tests" else \
+                SPEED_HOOKS.get(pid[12:]) if rule == "opportunity" and pid[12:] in SPEED_HOOKS else \
                 pid.split(":", 1)[1] if ":" in pid else ""
             match = (row or {}).get("match")
             pattern = str((match if isinstance(match, dict) else {}).get("ident") or "")

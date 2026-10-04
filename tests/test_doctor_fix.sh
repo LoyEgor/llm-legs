@@ -795,14 +795,17 @@ printf -- '---\nname: w\nmodel: opus\n---\nbody\n' >"$L/agents/w.md"
 printf "CLAUDEB_CLAUDE_MODEL='fable'\n" >"$L/bin/claudeb"
 printf 'EFFORT: high\nDo the thing.\n' >"$L/share/light-recipes/r.md"
 git -C "$L" add share agents bin/claudeb && git -C "$L" -c user.name=t -c user.email=t@t commit -qm knobs
-jq '. + {model: "opus"}' "$WORK/settings.json" >"$WORK/settings.new" && mv "$WORK/settings.new" "$WORK/settings.json"
+rfg="$WORK/projects/claude-setup/hooks/review-flow-gate.sh"
+printf '#!/bin/bash\n' >"$rfg"
+jq --arg c "$rfg" '. + {model: "opus"} | .hooks.PreToolUse[0].hooks += [{type: "command", command: $c}]' "$WORK/settings.json" \
+  >"$WORK/settings.new" && mv "$WORK/settings.new" "$WORK/settings.json"
 git -C "$L" update-ref refs/night/n8/base HEAD
 env "${speed_env[@]}" bash "$FIX" launch harness --night n8 >"$WORK/out" 2>"$WORK/err" ||
   fail "the speed night did not launch: $(cat "$WORK/err")"
 assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 1 ]
 sid=$(cut -f1 "$WORK/out")
-assert jqe --argjson n "$night1" --arg t "$L/tests/test_llm_limits.sh" '.area == "speed" and [.problems[].id] == $n
-  and [.problems[].component.files] == [[], [], [$t]]' "$(record "$sid")"
+assert jqe --argjson n "$night1" --arg t "$L/tests/test_llm_limits.sh" --arg h "$rfg" '.area == "speed" and [.problems[].id] == $n
+  and [.problems[].component.files] == [[], [$h], [$t]]' "$(record "$sid")"
 
 # Its close refuses any added or removed line that sets a model, effort or thinking knob, committed, uncommitted,
 # untracked or in the live settings and worker-model files; a speed diff touching none of them closes.
@@ -819,7 +822,8 @@ sed -i '' 's/"opus"/"haiku"/' "$WORK/settings.json"
 mkdir -p "$HOME/.claude" && printf 'claudeb_model=sonnet\n' >"$HOME/.claude/worker-model"
 jq -n --argjson s $(($(now) + 5)) '{contract: 1, doctor: "harness", as_of_s: $s, judge: "base-harness", problems: []}' \
   >"$DATA/harness-doc.json"
-printf '%s\truled-out\tnone\tthe lever is elsewhere\n' opportunity:machine/contention opportunity:chat/hooks >"$WORK/sd"
+printf 'opportunity:machine/contention\truled-out\tnone\tthe lever is elsewhere\n' >"$WORK/sd"
+printf 'opportunity:chat/hooks\truled-out\tclaude-setup/hooks/review-flow-gate.sh\tthe snapshot stays\n' >>"$WORK/sd"
 printf 'opportunity:tests/llm-legs/test_llm_limits\truled-out\tllm-legs/tests/test_llm_limits.sh\tno sleeps\n' >>"$WORK/sd"
 assert_fails fix close "$sid" --decisions "$WORK/sd" "tuned" 2>"$WORK/err"
 knob() { grep -qF "model/effort knob, $1: $2" "$WORK/err"; }

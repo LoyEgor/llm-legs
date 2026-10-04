@@ -176,8 +176,6 @@ import importlib.machinery, importlib.util, os, sys, time
 loader = importlib.machinery.SourceFileLoader("harness_doctor", sys.argv[1])
 module = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_doctor", loader))
 loader.exec_module(module)
-# Background QoS starves this python exec for minutes on a loaded machine; the CPU split needs no QoS.
-module.BACKGROUND_QOS = []
 pid = os.fork()
 if pid == 0:
     end = time.process_time() + 0.6
@@ -1894,5 +1892,14 @@ asserts=$((asserts + speed))
 # holding the lock, and the menu froze exactly when load was what it had to show.
 assert_eq Standard "$(plutil -extract ProcessType raw "$ROOT/launchd/com.egor.harness-doctor.plist")" \
   "the doctor LaunchAgent runs in the Standard band, never Background"
+assert_eq '["/x/speed","--quiet"]' "$(SPEED_DOCTOR_DIR="$WORK/exec-cpu" SPEED_DOCTOR_CMD=/x/speed python3 - "$DOCTOR" <<'EOF'
+import importlib.machinery, importlib.util, json, os, sys
+loader = importlib.machinery.SourceFileLoader("harness_doctor", sys.argv[1])
+module = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_doctor", loader))
+loader.exec_module(module)
+os.execv = lambda path, argv: print(json.dumps(argv, separators=(",", ":")))
+module.exec_speed()
+EOF
+)" "Speed runs at its caller's priority: a night prep or menu waiting on Harness never waits on a taskpolicy -b band"
 
 printf 'PASS: %s asserts; harness-doctor reads waits, cuts, hooks, load, tests and causes off fixtures, incrementally and under its lock in a LaunchAgent that is never starved, and compares every picker window, days off its day summaries and hours off the raw rows\n' "$asserts"

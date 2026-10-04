@@ -5200,11 +5200,9 @@ def main():
     return 1 if document["status"] == "error" else 0
 
 
-BACKGROUND_QOS = ["/usr/sbin/taskpolicy", "-b"]
-
-
 def exec_speed():
-    """Speed reads what this run derived, so it follows each successful run, in the background QoS band.
+    """Speed reads what this run derived, so it follows each successful run at this run's own priority: never
+    taskpolicy -b, whose throttled I/O held an attended run's Speed 50 min at load 129 (2026-10-04).
     A fixture Harness directory with no SPEED_DOCTOR_DIR of its own never reaches the live Speed store."""
     if os.environ.get("HARNESS_DOCTOR_DIR") and not os.environ.get("SPEED_DOCTOR_DIR"):
         return
@@ -5214,8 +5212,7 @@ def exec_speed():
     os.environ["DOCTOR_TRIGGER"] = "harness"
     os.environ[collector_runs.CPU_BASE_ENV] = repr(collector_runs.cpu_total())
     try:
-        argv = BACKGROUND_QOS + [script, "--quiet"]
-        os.execv(argv[0], argv)
+        os.execv(script, [script, "--quiet"])
     except OSError:
         pass
 
