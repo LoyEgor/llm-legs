@@ -1293,7 +1293,7 @@
         "rule": "hook_p50",
         "ident": "stop-dispatch\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-01T05:38:24+03:00",
@@ -1310,8 +1310,8 @@
           "files": [
             "llm-legs/bin/worker-run-backstop.sh"
           ],
-          "in": null,
-          "regressed_at": null
+          "in": "llm-legs@143c48c7",
+          "regressed_at": "2026-10-04T11:28:57+03:00"
         }
       ],
       "same_cause": [],
@@ -1344,7 +1344,7 @@
         "rule": "hook_sync",
         "ident": "worker-launch-gate\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-04T07:56:00+03:00",
@@ -1352,7 +1352,7 @@
           "files": [
             "llm-legs/bin/worker-launch-gate.sh"
           ],
-          "in": null,
+          "in": "llm-legs@143c48c7",
           "regressed_at": null
         }
       ],
