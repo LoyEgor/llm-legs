@@ -4,45 +4,39 @@ Status: open
 
 For the ledger owner «LLM Doctor меню refactoring» (`share/doctor-ledger.json`), routing hook work
 to Debt hardening handoff (claude-setup recording hooks) and loss semantics to Review-bench
-improvements phase 4. Last updated by night fixer llm-debt-20261003T042526Z-2fc2; the ledger rows
-carry each row's full evidence. No claude-setup ADD-DIR worktree was ever authorized, so every
-hook-side item below is a handoff, not a local fix.
+improvements phase 4. The ledger rows carry each row's full evidence. Until llm-legs doctor-fix
+`LLM_ENTRIES["debt"]` (night fixer llm-debt-20261004T013729Z-1f3a) no debt run got a claude-setup or
+review-bench worktree, so every hook-side item stayed a handoff; the next night's debt run gets both
+and should fix the items below itself.
 
-## Hook timeouts in logo-vectorizer-bench (H5, H6, H7) — for the hook owner
+## Hook-side bugs (claude-setup `hooks/commit-journal.sh`, `review-flow-gate.sh`)
 
-The transcripts show these are the settings timeouts. They are not teardown:
-
-- H5: 2026-09-28 Pre snapshots (session c25416e4) logged `hook_cancelled PreToolUse` ~31.5 s after the
-  call, past `review-flow-gate.sh`'s 30 s timeout. That gate takes the Pre snapshot, so Post found none.
-- H6: six `worker-run wait … --max 540` calls of chat 2ddedf36's subagents (cwd `/Users/egorloy`)
-  ran 611-626 s: the wait plus a cancelled PostToolUse at the 60 s `commit-journal.sh` timeout. The
-  chat's `.repos` lists logo-vectorizer-bench, so its snapshot was consumed from a non-repository cwd.
-  claude-setup 48bfc77 does not cover them, because `rc_readonly_command` classes `worker-run wait`
-  as heavy.
-- H7: 2026-10-03 01:16, toolu_013xec5vq812MjH26xwGK67g, a cp+sed call. PreToolUse ended 22:16:16.757Z;
-  PostToolUse `commit-journal` was cancelled 62 s later.
-
-Ruled out: listing and stamping cost. With a sandboxed HOME and `GIT_OPTIONAL_LOCKS=0`,
-`rj_snapshot_content` takes 1.2 s on the real tree (33,642 dirty paths). On a 34k-path fixture it
-takes 1.1 s, even with `RJ_STAMP_CAP` raised past the count. Still unmeasured: the Post consume path
-(it writes the live anchors store) and machine load at those moments. Ask: reproduce the Post path in
-a fixture with a timer per step, then make the step that is over budget bounded. Do not raise the
-timeouts and do not exempt the tree.
+- H15 (and H5's 2026-09-25 `git -C … init` gap): a call from a non-repository cwd with no registered
+  repository creates one. Pre writes no snapshot, so `PRE_AT` stays empty and `created_by_call`
+  (commit-journal.sh:713) returns 1: always `pre-missing`. Ask: date such a call by its PreToolUse
+  moment (a per-call stamp), with a fixture `git -C <new dir> init` from `$HOME`.
+- H5: Pre snapshot timeouts in logo-vectorizer-bench, 2026-09-28 and again 2026-10-03 12:38 UTC
+  (`hook_cancelled PreToolUse` at 30.8 s, `review-flow-gate.sh`'s 30 s budget). That gate takes the
+  Pre snapshot, so Post found none.
+- H6, H7: `commit-journal` PostToolUse cancelled at its 60 s timeout in the 65k-dirty-path tree
+  (H6: six `worker-run wait … --max 540` calls from `/Users/egorloy` whose chat lists that tree).
+  Ruled out: listing and stamping (`rj_snapshot_content` 1.2 s on the real tree). Unmeasured: the
+  Post consume path (it writes the live anchors store) and machine load. Ask: time each Post step in
+  a fixture and bound the slow one. Do not raise the timeouts and do not exempt the tree.
+- H3: one 2026-09-25 sparse clone inside a `( cd … )` subshell (session with 17 registered repos, so
+  not H15's cause). Needs a fixture.
 
 ## Proposed for the owner's decision
 
 | Row | Proposal |
 | --- | --- |
-| H2 | The hash cap is working on research output (33,642 dirty paths). Either the project cleans that output, or the owner accepts the bound and dismisses the row. Never raise the cap. |
-| H4 | Dismiss the two hand-run probe ids, `toolu_probe_timing` and `toolu_perf_big`. They are not model calls. |
-| H14 | A family worktree that was landed (claude-setup 10ed01b) and then removed mid-run leaves a truthful `not a repository` gap. Dismiss these when the checkout's branch landed, or keep them. The run it left open is fixed in worker-run. |
+| H2 | The hash cap is working on research output (65,086 dirty paths on 2026-10-04). Either the project cleans that output, or the owner accepts the bound and dismisses the row. Never raise the cap. |
+| H4 | Dismiss the two hand-run probe ids, `toolu_probe_timing` and `toolu_perf_big`. They are not model calls; such probes belong under a fixture `HOME`. |
+| H14 | A family worktree removed mid-run (claude-setup speed-doctor, night-human-report) leaves a truthful `not a repository` gap. Dismiss these when the checkout's work landed, or keep them. |
 | H1 | No fixer-missing gap has been open in 14 days. Close the row once the round owners confirm their September rounds were settled, not merely aged out. |
-| H3 | One sparse clone on 2026-09-25. It needs a claude-setup fixture for a clone made inside a subshell. |
 
 ## Settled
 
-- H11: fixed in worker-run 91858c3 (the unshaped `-` file). Its 2026-10-03 "regressed" came from the
-  judge, not the fix: runs started before the landing were dated by their fold time. `debt_health`
-  dates a launch-time run gap by its run's start.
+- H11: fixed in worker-run 91858c3 (the unshaped `-` file).
 - H13 (losses from family folds) is in `2026-10-02-debt-run-fold-skip-families.md`.
 - Open runs left by worker runs that never completed are blind spot B7.

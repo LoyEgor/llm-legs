@@ -371,7 +371,7 @@ def ledger_path():
 
 def repos_dir():
     """Where a fix's `repo/path` files live: the ledger names repositories by their directory name."""
-    return os.environ.get("LLM_DOCTOR_REPOS") or os.path.dirname(ROOT_DIR)
+    return os.environ.get("LLM_DOCTOR_REPOS") or os.path.dirname(ROOT_DIR.split("/.claude/worktrees/")[0])
 
 
 def read_json(path):

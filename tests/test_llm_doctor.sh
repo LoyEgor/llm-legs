@@ -905,6 +905,13 @@ late_git(1000, "checkout", "-q", "main")
 late_git(1000, "merge", "-q", "--no-ff", "-m", "land two", "night/n/two")
 assert [doctor.fix_landed("late@" + ref, late_repos) for ref in (two_fix, open_fix, other_fix)] \
     == [now - 1000, None, now - 8000]
+# Run in a worktree (a night close), the doctor still reads the main checkouts: a landed fix keeps its date.
+saved_root = doctor.ROOT_DIR
+del os.environ["LLM_DOCTOR_REPOS"]
+for root in ("/p/llm-legs/.claude/worktrees/night-x", "/p/llm-legs"):
+    doctor.ROOT_DIR = root
+    assert doctor.repos_dir() == "/p", doctor.repos_dir()
+doctor.ROOT_DIR = saved_root
 os.environ["LLM_DOCTOR_REPOS"] = saved_repos
 
 # A cause every retry hid still adds up: three lost attempts are a watch problem with their seconds.

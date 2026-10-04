@@ -119,8 +119,10 @@ sys.path.insert(0, os.path.join(ROOT, "share"))
 from report_frame import fit
 DOCTORS = ("llm", "harness", "updater", "code")
 HOOK_AREAS = ("Hooks", "Hook waits")
-LLM_ENTRIES = {"reviewers": "review-bench/bin/review-bench", "workers": "llm-legs/bin/worker-run",
-               "light": "llm-legs/bin/light-research", "image": "llm-legs/share/image-leg.sh"}
+LLM_ENTRIES = {"reviewers": ("review-bench/bin/review-bench",), "workers": ("llm-legs/bin/worker-run",),
+               "light": ("llm-legs/bin/light-research",), "image": ("llm-legs/share/image-leg.sh",),
+               "debt": ("llm-legs/bin/llm-doctor", "claude-setup/hooks/commit-journal.sh",
+                        "review-bench/bin/review-anchors", "llm-legs/bin/worker-run")}
 with open(os.path.join(ROOT, "share", "doctor-areas.json")) as _areas:
     _vocabulary = json.load(_areas)
 OWN_AREA, WHOLE_AREA = _vocabulary["own"], _vocabulary.get("whole") or {}
@@ -269,7 +271,8 @@ def snapshot(doctor, doc_file, night=None):
             health = match.get("health") or next((part.get("name") for part in dicts(doc.get("health"))
                                                   if rule in [r.get("rule") for r in dicts(part.get("rules"))]), None)
             area = block or health or OWN_AREA
-            files.append(os.path.join(repos_dir(doctor), LLM_ENTRIES.get(area, "llm-legs/bin/llm-doctor")))
+            files += [os.path.join(repos_dir(doctor), name)
+                      for name in LLM_ENTRIES.get(area, ("llm-legs/bin/llm-doctor",))]
             what = "%s block · owner «%s»" % (area, owners.get(area) or ledger.get("owner"))
             word = str(match.get("word") or pid.partition("/")[2])
             if area == "image" and word.startswith("browser "):
