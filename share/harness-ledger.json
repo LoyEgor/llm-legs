@@ -45,7 +45,8 @@
             "claude-setup/hooks/word-gate.sh",
             "claude-setup/hooks/lib/words.sh"
           ],
-          "in": null
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [
