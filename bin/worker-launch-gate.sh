@@ -236,6 +236,16 @@ while IFS= read -r assign; do
     print out $0 }' <<<"$scan")
 done < <(grep -Eo "$ASSIGN_RE" <<<"$scan")
 
+# Every check below needs one of these words somewhere in the expanded text, so a call naming none
+# leaves here. Each alternative is a check's own literal with its command-position prefix dropped,
+# which can only match more; a check added below needs its literal here too.
+grep -Eq -e '(claude|claudeb|claudegpt|codex|codexb|gemini|geminib|agy|opencode|grok|grokb)([[:space:]]|$)' \
+  -e 'worker-run|review-bench|light-research|WORKER_RUN_RELAY|REVIEW_BENCH_DOOR' \
+  -e '[$][{]?[A-Za-z_][A-Za-z0-9_]*[}]?[[:space:]]+(start|wait)' -e '^[[:space:]]*(at|batch|crontab)([[:space:]]|$)' \
+  -e "${OWNED_LEGS_RE#"$VENDOR_WORD"}" -e "${OWNED_IMAGE_RE#"$VENDOR_WORD"}" -e "${MEDIA_ENGINE_RE#"$VENDOR_WORD"}" \
+  <<<"$unsplit"$'\n'"$scan" 2>/dev/null
+[ $? -ne 1 ] || exit 0
+
 # Inside a relay agent this whole door behaves as it always has; everywhere else — the main chat
 # above all — a worker-run that starts or awaits a run is denied, because the run would then belong
 # to a Bash turn nobody can see instead of to the agent whose row shows who is spending quota.

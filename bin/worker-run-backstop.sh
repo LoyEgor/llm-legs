@@ -73,11 +73,11 @@ for run in "$run_root"/*/; do
   launcher=""
   { read -r launcher <"$run/launcher"; } 2>/dev/null
   [ "$launcher" = "$session" ] || continue
-  pid=$(jq -r '.pid // 0' "$run/meta.json" 2>/dev/null)
-  [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && supervisor_running "$run" "$pid" || continue
   id=${run##*/}
   case "$id" in *[!A-Za-z0-9._-]*) continue ;; esac
   owned run "$id" && continue
+  pid=$(jq -r '.pid // 0' "$run/meta.json" 2>/dev/null)
+  [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && supervisor_running "$run" "$pid" || continue
   tag=$(head -n1 "$run/tag" 2>/dev/null)
   lines=$lines${lines:+$'\n'}"- worker run $id${tag:+ ($tag)} — spawn $(relay_of "$run") \`ATTACH $id:\`"
 done

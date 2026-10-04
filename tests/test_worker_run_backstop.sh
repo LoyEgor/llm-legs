@@ -120,5 +120,13 @@ printf '#!/bin/sh\necho >>"%s/greps"\nexec %s "$@"\n' "$WORK" "$(command -v grep
 chmod +x "$WORK/shim/grep"
 assert_eq "" "$(PATH="$WORK/shim:$PATH" stop)"
 asserts=$((asserts + 1)); [ "$(wc -l <"$WORK/greps")" -le 5 ] || fail "$(wc -l <"$WORK/greps" | tr -d ' ') greps for one run over 301 tag files"
+# An owned run is settled before its liveness probe: the orchestrator's dozen relayed runs paid a
+# jq and a ps each on every stop, 2.2-2.7 s of the dispatcher's critical path at load 220.
+printf '#!/bin/sh\necho >>"%s/ps-runs"\nexec %s "$@"\n' "$WORK" "$(command -v ps)" >"$WORK/shim/ps"
+chmod +x "$WORK/shim/ps"
+WORKER_RUN_DIR="$WORK/runs-owned"
+run r4 s1 codex
+assert_eq "" "$(PATH="$WORK/shim:$PATH" stop)"
+asserts=$((asserts + 1)); [ ! -e "$WORK/ps-runs" ] || fail "an owned run was probed with ps"
 
 printf 'PASS: %s asserts; a live worker or review run of this chat that no live relay tag or fresh ATTACH seed owns holds the stop naming the ATTACH spawn, while another chat'"'"'s, a finished, a dead or a still-starting run, a stale panel, a worker and a subagent pass, and three holds in a row release the fourth\n' "$asserts"
