@@ -20,7 +20,7 @@ each ledger row's `note` keeps the nightly numbers.
    tree gets a `hash-cap` gap too (WHY=gap). Proposals, each lowering a count: key `gap-stale` rows
    per (session, kind, checkout); write the hook's hash-cap gap once per (session, checkout);
    release an abandoned round's claims automatically. The tree's ignore list is that chat's work.
-   Since review-bench fd9aa06 such a row names its own path (`logo-vectorizer-bench`), not the
+   Since review-bench fd9aa06/5ee444e such a row names its own path (`logo-vectorizer-bench`), not the
    family check that listed it (`claude-setup`).
 2. **M5, `run-fold … not a repository`.** A worker run whose family worktree the chat removed
    mid-run is folded in that family's store since llm-legs a3ac7e8e, and still files the gap so the
