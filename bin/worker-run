@@ -245,7 +245,7 @@ gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}"
 # prepended — the brief's own first line is load-bearing (`RESUME <id>:`, `ATTACH <id>:`, which
 # both the relay agents and the spawn gate read off the top), and a rule a model must still obey at
 # edit 60 belongs where it read last.
-BRIEF_PREAMBLE='AUDIENCE: your reader is another model (the orchestrator), never Egor — write the report and every message in English; Russian only as code in backticks. TEST LOOP: while iterating run a one-off probe or ONE covering suite, never every suite after each edit; a mutation check is one run of the covering suite (revert → fails → restore); run every FULL suite exactly once at the end, in parallel (`tests/run-all` where the repo has it), and report PASS counts. Work in the files the brief names; if the brief covers more than ~8 findings or ~6 files, do them in the order given. REPORT: mark anything you could not confirm and say where you looked. A command that ended by signal 9 (exit 137) was killed by the machine'"'"'s memory guard: do not rerun it as is — run one project'"'"'s tests, never the whole monorepo'"'"'s, or split the work. REUSE FIRST: nothing the project may already have is written from scratch — before writing a function, helper, wrapper over a platform API, list, constant or pattern, grep the whole project for an existing one (its name, the API it wraps, the literal) and use it; editing an existing value or call needs no search; one search, then proceed.'
+BRIEF_PREAMBLE='AUDIENCE: your reader is another model (the orchestrator), never Egor — write the report and every message in English; Russian only as code in backticks. TEST LOOP: while iterating run a one-off probe or ONE covering suite, never every suite after each edit; a mutation check is one run of the covering suite (revert → fails → restore); at the end run, in one `tests/run-all <suite>...` call, only the suites covering the files you changed (`tests/affected <file>...` lists them where the repo has it) plus the one that goes red on the old code, and report PASS counts; never the full `tests/run-all`, which the night runs once in the background. Work in the files the brief names; if the brief covers more than ~8 findings or ~6 files, do them in the order given. REPORT: mark anything you could not confirm and say where you looked. A command that ended by signal 9 (exit 137) was killed by the machine'"'"'s memory guard: do not rerun it as is — run one project'"'"'s tests, never the whole monorepo'"'"'s, or split the work. REUSE FIRST: nothing the project may already have is written from scratch — before writing a function, helper, wrapper over a platform API, list, constant or pattern, grep the whole project for an existing one (its name, the API it wraps, the literal) and use it; editing an existing value or call needs no search; one search, then proceed.'
 
 # Grok is the one research leg with no read-only mode: supervise_grok digests every tree it may read
 # before and after, and ANY difference ends a finished run as READ_ONLY_VIOLATION with the answer
@@ -3898,6 +3898,13 @@ running_report() {
   return 0
 }
 
+wait_poll_lag() { # directory run-id wait-started: how long an exit the poll had not yet seen waited
+  local ended
+  ended=$(store_lock_mtime "$1/exit_code") && [ "$ended" -ge "$3" ] 2>/dev/null &&
+    wait_note poll "worker-run wait $2" "$ended"
+  return 0
+}
+
 wait_run() {
   [ "$#" -ge 1 ] || usage
   local run_id="$1" max=100 directory wait_started now waited remaining sleep_for pid
@@ -3914,7 +3921,9 @@ wait_run() {
   wait_started=$(date +%s)
   write_run_state "$directory" wait
   while :; do
-    if [ -f "$directory/exit_code" ]; then run_state_terminal "$directory"; terminal_report "$directory"; return 0; fi
+    if [ -f "$directory/exit_code" ]; then
+      wait_poll_lag "$directory" "$run_id" "$wait_started"; run_state_terminal "$directory"; terminal_report "$directory"; return 0
+    fi
     pid=$(jq -r '.pid' "$directory/meta.json")
     # pid 0 is the pre-launch placeholder, and a probe of it would answer for our own
     # process group and report a never-started run as alive.

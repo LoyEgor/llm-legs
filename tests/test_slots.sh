@@ -10,7 +10,7 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
 jqe() { jq -e "$@" >/dev/null; }
 assert_fails() { asserts=$((asserts + 1)); ! "$@" || fail "assert $asserts unexpectedly held: $*"; }
-export HARNESS_HOLDS_DIR="$WORK/holds" SLOTS_POLL_S=0.2 STATUSLINE_CACHE_DIR="$WORK/sl" RUN_SUITES_TIMES="$WORK/times.tsv"
+export HARNESS_HOLDS_DIR="$WORK/holds" HARNESS_WAITS_DIR="$WORK/waits" SLOTS_POLL_S=0.2 STATUSLINE_CACHE_DIR="$WORK/sl" RUN_SUITES_TIMES="$WORK/times.tsv"
 unset RUN_SUITES_SLOT NIGHT_FIXER_SLOT
 . "$ROOT/share/slots.sh"
 
@@ -24,6 +24,7 @@ holder() { # dir count -> pid of a process holding one slot until killed
 }
 until_gone() { local i; for i in $(seq 1 100); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.1; done; return 1; }
 holds_of() { cat "$HARNESS_HOLDS_DIR"/"$1"-*.json 2>/dev/null | jq -s length; }
+waits_of() { cat "$HARNESS_WAITS_DIR"/*.jsonl 2>/dev/null | jq -sc --arg c "$1" 'map(select(.class == $c))'; }
 
 sysctl() { echo 12; }
 assert [ "$(slots_from_cores 1000 2 4)" = 2 ]
@@ -64,6 +65,7 @@ kill "$h2"
 wait "$waiter" || fail "slot_wait failed"
 assert grep -q "^$WORK/s/[12]$" "$WORK/waited"
 assert [ "$(holds_of test-limiter)" = 0 ]
+assert jqe 'length == 1 and .[0].source == "a test job" and .[0].seconds > 0' <(waits_of test-limiter)
 kill "$h3"; until_gone "$h3"
 # A waiter whose caller was killed stops waiting: slot_wait runs in the caller's $(...) subshell,
 # which a TERM to the caller leaves polling, and it would take the next free slot for nobody.
@@ -120,6 +122,7 @@ assert jqe --arg slot "$RUN_SUITES_SLOTS_DIR/1" --argjson pid "$run" \
 assert [ "$(cut -f2 "$STATUSLINE_CACHE_DIR/suites-$run.done")" = 1 ]
 assert [ ! -e "$RUN_SUITES_SLOTS_DIR/1" ]
 assert [ "$(holds_of run-suites)" = 0 ]
+assert jqe --arg r "$WORK/repo" 'length == 1 and .[0].source == "suites of \($r)" and .[0].seconds >= 1' <(waits_of run-suites)
 # A nested run inside a suite inherits its parent's slot instead of queueing behind it.
 h5=$(holder "$RUN_SUITES_SLOTS_DIR" 1)
 RUN_SUITES_SLOT="$RUN_SUITES_SLOTS_DIR/1" bash "$ROOT/share/run-suites.sh" --repo "$WORK/repo" >"$WORK/nested.out" 2>&1 ||
@@ -157,6 +160,7 @@ assert [ $? = 4 ]
 assert jqe --argjson b "$before" '.started_at >= $b' "$WORK/run/meta.json"
 assert [ ! -e "$NIGHT_FIXER_SLOTS_DIR/1" ]
 assert [ "$(holds_of night-workers)" = 0 ]
+assert jqe 'length == 1 and (.[0].source | test("^worker run run on night/n1/llm-health-1$"))' <(waits_of night-workers)
 # A night run nested under a slot holder's worker inherits its slot instead of waiting on its ancestor.
 h8=$(holder "$NIGHT_FIXER_SLOTS_DIR" 1)
 NIGHT_FIXER_SLOT="$NIGHT_FIXER_SLOTS_DIR/1" bash "$ROOT/bin/worker-run" _supervise "$WORK/run" >/dev/null 2>&1 &
@@ -173,5 +177,7 @@ bash "$ROOT/bin/worker-run" _supervise "$WORK/run" >/dev/null 2>&1
 assert [ $? = 4 ]
 assert [ "$(holds_of night-workers)" = 0 ]
 kill "$h7"
+# A slot taken or refused at once is no wait: slot polling never journals a lock row.
+assert jqe 'length == 0' <(waits_of lock)
 
 printf 'PASS: test_slots.sh (%s asserts)\n' "$asserts"

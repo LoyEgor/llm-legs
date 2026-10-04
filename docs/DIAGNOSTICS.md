@@ -223,19 +223,18 @@ this project no longer turns them into account walls, holds, or locally generate
 
 ## How to test
 
-**Running suites:** `tests/run-all` runs every suite in parallel (`-j` cores/2), one log per suite,
-and prints one table — suite · PASS/FAIL · seconds · last line — exiting 1 with the last 30 lines of
-each failure. `tests/run-all --changed` is the iterating subset (a heuristic: suites whose text
-names a changed file's basename), `--all` adds the live-machine suites `e2e_surfaces.sh` and
-`test_instruction_rates_live.sh`, and `tests/run-all <suite>…` runs named ones. Every suite gets its
-own `TMPDIR` and never its own `HOME` — `test_consistency.sh` prices the INSTALLED hooks under the
-real `~/.claude`. The runner is `share/run-suites.sh`, shared with review-bench and claude-setup. The parallel
-wave of suites runs at nice 10, so parallel runs from several chats keep Claude Code responsive; the
-wall-clock-budget suites stay at the caller's nice and the runner says so in one line; runs never
-queue. In a linked worktree the runner exports `CLAUDE_SETUP_ROOT`, `REVIEW_BENCH_ROOT`, `REVIEW_ROOT`
-and `LLM_LEGS_ROOT` (when unset) as that sibling's worktree on the same branch, else as the checkout
-beside the MAIN checkout (`tests/test_run_suites_nice.sh`). A suite that writes into the runner's own
-report-bus queue fails (`REPORT_BUS_LIVE_ROOT`, docs/report-bus.md).
+**Running suites:** `tests/affected <file>…` lists the suites covering those files (a suite or helper
+naming one's basename, `test_consistency.sh` for a file `docs/shared-invariants.md` names); a worker
+runs those via `tests/run-all <suite>…`, never the full `tests/run-all`, which the night runs once at
+Close (`--all` adds `e2e_surfaces.sh` and `test_instruction_rates_live.sh`). One table — suite ·
+PASS/FAIL · seconds · last line — exits 1 with each failure's last 30 lines. Every suite gets its own
+`TMPDIR` and wait journal, never its own `HOME` (`test_consistency.sh` prices the INSTALLED hooks); the
+wave runs at nice 10, the wall-clock-budget suites at the caller's; runs never queue. The runner `share/run-suites.sh` is
+shared with review-bench and claude-setup; in a linked worktree it exports `CLAUDE_SETUP_ROOT`,
+`REVIEW_BENCH_ROOT`, `REVIEW_ROOT` and `LLM_LEGS_ROOT` (when unset) as the sibling worktree on the same
+branch, else the checkout beside the MAIN one (`tests/test_run_suites_nice.sh`).
+A suite that writes into the runner's own report-bus queue fails (`REPORT_BUS_LIVE_ROOT`,
+docs/report-bus.md).
 
 Suites (run from repo root):
 - `bash tests/test_report_bus.sh` — fixture HOME/XDG queue, dedup, event rendering, worker skips, launcher chains, cap, failed-render retention, history, doctor and pruning.

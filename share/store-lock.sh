@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+[ ! -r "${BASH_SOURCE[0]%/*}/limiter-hold.sh" ] || . "${BASH_SOURCE[0]%/*}/limiter-hold.sh"
 
 store_lock_mtime() {
   stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
@@ -38,7 +39,7 @@ store_lock_breakable() {
 }
 
 store_lock_acquire() {
-  local lock=$1 tries=0 now captured
+  local lock=$1 tries=0 now captured waited=''
   local max=${LLM_STORE_LOCK_RETRIES:-240}
   local delay=${LLM_STORE_LOCK_DELAY:-0.25}
   local stale=${LLM_STORE_LOCK_STALE_SECONDS:-30}
@@ -49,7 +50,7 @@ store_lock_acquire() {
   [[ "$ceiling" =~ ^[1-9][0-9]*$ ]] || ceiling=3600
   while :; do
     if mkdir "$lock" 2>/dev/null; then
-      store_lock_claim "$lock" && return 0
+      store_lock_claim "$lock" && { store_lock_waited "$lock" "$waited"; return 0; }
     elif [ "$((tries + 1))" -ge "$max" ] || [ "$(((tries + 1) % 20))" -eq 0 ]; then
       now=$(date +%s) || return 1
       if store_lock_breakable "$lock" "$stale" "$ceiling" "$now"; then
@@ -68,9 +69,14 @@ store_lock_acquire() {
       fi
     fi
     tries=$((tries + 1))
-    [ "$tries" -ge "$max" ] && return 1
+    [ "$tries" -ge "$max" ] && { store_lock_waited "$lock (gave up)" "$waited"; return 1; }
+    waited=${waited:-${EPOCHREALTIME:-$(date +%s)}}
     sleep "$delay" 2>/dev/null || return 1
   done
+}
+
+store_lock_waited() {
+  [ -z "$2" ] || ! declare -F wait_note >/dev/null || wait_note lock "$1" "$2"
 }
 
 # Only the owner may delete: a caller whose acquire failed, or whose lock was stale-broken,

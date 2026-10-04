@@ -256,6 +256,13 @@ printf 'echo v2\n' >"$R4/bin/tool.sh"
 changed_out=$(bash "$ROOT/share/run-suites.sh" --repo "$R4" -j 2 --changed 2>&1)
 assert grep -q 'test_tool_part.sh .*PASS' <<<"$changed_out"
 assert_fails grep -q 'test_other.sh' <<<"$changed_out"
+# tests/affected: the same suites for named files, test_consistency.sh for a file shared-invariants
+# names, never a live-machine suite, and nothing for a file no suite names.
+suite "$R4" e2e_surfaces.sh 'echo tool.sh; exit 0'
+assert test "$(bash "$ROOT/share/affected-suites.sh" --repo "$R4" bin/tool.sh)" = "$R4/tests/test_tool_part.sh"
+assert test "$(bash "$ROOT/share/affected-suites.sh" --repo "$R4" share/limiter-hold.sh)" = "$ROOT/tests/test_consistency.sh"
+assert test -z "$(bash "$ROOT/share/affected-suites.sh" --repo "$R4" nowhere-named.txt)"
+assert grep -qx "$ROOT/tests/test_slots.sh" <<<"$(bash "$ROOT/tests/affected" share/slots.sh)"
 
 # A suite that posts into the runner's own report queue fails though it exits 0; one on a cache of its
 # own passes, and the live queue receives nothing.

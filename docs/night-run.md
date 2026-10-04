@@ -10,15 +10,6 @@ reviewed, committed and pushed in the four sweep repositories (`~/.claude/sweep-
 The whole wall clock stays short: about 3 hours, never a 12-hour chain. Chats never disturb each
 other. The morning report is trusted without reading chats.
 
-This design folds in two frontier hunts (runs 20260929T225123Z-3e30191 and 20260929T225224Z-1baa277):
-- night chats that stop on a question and sit idle;
-- one sweep after the slowest fixer;
-- pours into the live main checkout;
-- account pile-up;
-- racing run records;
-- a hung job with nothing to stop it;
-- a report that hides what did not land.
-
 ## Shape
 1. **Button.**
    - Doctors menu → `Run everything now`, after a confirmation, →
@@ -43,6 +34,11 @@ This design folds in two frontier hunts (runs 20260929T225123Z-3e30191 and 20260
      committed, by `git rebase --onto main refs/night/<id>/base`.
    - `night-run job` records every expected job before dispatch, a `leftover` job among them for
      every leftover branch `night-run leftovers` lists, adopted into the night (see Leftovers).
+   - `night-run carry <id>` records what earlier days left: a `handoff` job per open handoff of the
+     sweep repositories (a handoff is addressed to the next night, never to a sleeping chat; one whose
+     To/For names a chat live right now stays that chat's) and a `suite` job per suite the previous
+     night's full run failed, each with its night worktree and brief. A handoff job settles it with a
+     test, or lands it as a trade (`Cost:`/`Loss:`/`Recommendation:`) and goes `blocked-on-egor`.
 3. **Dispatch.** Everything below starts in parallel at about t+10 min.
    - **Fixers.**
      - `doctor-fix launch <llm|harness|updater|code> --night <night-id>` makes one run per area that has
@@ -98,6 +94,8 @@ This design folds in two frontier hunts (runs 20260929T225123Z-3e30191 and 20260
      run (`doctor-fix abandon`) and records the job `left` with the watchdog's reason; its branch
      stays unmerged and is named in the report.
 7. **Close.**
+   - `night-run suites <id>` starts the night's one full `tests/run-all` per sweep repository,
+     detached: nothing waits for it (no worker ever runs it); `report` prints its result as weak spots.
    - Rerun the four doctors. This settles the ledger's `fixed-pending` rows. Commit and push that
      bookkeeping as well, so nothing is dirty after the last push.
    - `night-run finish` writes the morning result, then `span-off`. It also removes every landed,
@@ -129,12 +127,14 @@ This design folds in two frontier hunts (runs 20260929T225123Z-3e30191 and 20260
   `new`, `regressed`. `report` prints one line per doctor,
   `harness 35 → 38 · proved 4 · pending 18 · new 16 · regressed 5`; the menu's Last night shows only the jobs;
 - `jobs[]`, each with:
-  - `kind` (fixer, vendor, debt or leftover) and `ref` (run id, event id, review round or
+  - `kind` (fixer, vendor, debt, leftover, handoff or suite) and `ref` (run id, event id, review round or
     `leftover-<slug>`); a leftover job also carries `adopted[]` ({repo, branch, worktree, tip,
     night_worktree}), where its branch came from, and `handover` ({by, at, why}) when adopted with `--ready`;
   - `state`: `merged`, `left` (with a reason), `failed-launch`, `blocked-on-egor` (its reason the trade) or `nothing-to-do`;
   - `branch`, `review` (run id, optional: a night branch gets no review of its own), `commits[]`
     ({repo, hash}) and `pushed` (bool, as verified against the remote).
+
+- `suites` (the Close run): `started_at`, `finished_at`, `repos[]` {repo, exit, passed, failed[], log}.
 
 Jobs start `pending`; `finish` turns any still `pending` into `left`. `pushed` is set only after
 the commits are verified on the remote (`ls-remote`, the remote head fetched when it is missing

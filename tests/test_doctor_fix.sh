@@ -283,11 +283,12 @@ jq -n '{id: "llm-reviewers-20260101T000000Z-0000", doctor: "llm", area: "reviewe
   >"$RUNS/llm-reviewers-20260101T000000Z-0000.json"
 jq -n --argjson s "$(now)" '{contract: 1, doctor: "llm", as_of_s: $s, judge: "live-j", status: "problems", problem_count: 4,
   blocks: [{block: "reviewers", machinery: {classes: [{class: "anchors"}]}, problems: []}, {block: "workers", problems: []}],
-  health: [{name: "debt", rules: [{rule: "debt-gap", key: "x"}]}],
+  health: [{name: "debt", rules: [{rule: "debt-gap", key: "x"}, {rule: "debt-handoff", key: "proj/h"}]}],
   problems: [
     {id: "leg-escape:workers/escaped", rule: "leg-escape", state: "new", fact: "escaped", ledger: null},
     {id: "R9", rule: "leg-failure", state: "regressed", fact: "crashed again", ledger: "R9"},
     {id: "debt-gap:x", rule: "debt-gap", state: "new", fact: "a debt gap", ledger: null},
+    {id: "debt-handoff:proj/h", rule: "debt-handoff", state: "new", fact: "a stale handoff: night-run carry owns it", ledger: null},
     {id: "W", rule: "leg-failure", state: "watch", fact: "watched", ledger: null},
     {id: "machinery:anchors", rule: "machinery", state: "new", fact: "anchors", ledger: null}]}' >"$WORK/llm/latest.json"
 
@@ -366,7 +367,7 @@ assert grep -qF "docs/doctor-fix.md\`: sections 0-6, \"Night\" and \"LLM doctor\
 assert grep -qF "cd $WT && DOCTORS_DIR=$WORK/doctors bin/doctor-fix close $rid --decisions $RUNS/$rid.d/decisions.tsv <one-line note>" "$B"
 assert grep -qF 'Close reruns `bin/llm-doctor --json` in this worktree itself' "$B"
 assert grep -qF 'Look at the older blocks around what you touch, not only at what you add' "$B"
-assert grep -qF 'hand off only to an owner; Egor gets only a trade, a handoff whose `To:` names him carrying `Cost:`, `Loss:` and `Recommendation:` lines.' "$B"
+assert grep -qF 'hand off to the next night, whose `night-run carry` makes every open handoff a job; Egor gets only a trade, a handoff whose `To:` names him carrying `Cost:`, `Loss:` and `Recommendation:` lines.' "$B"
 assert grep -qF 'Markdown is net zero at night: close refuses a worktree whose *.md bytes (handoffs included) grew since `refs/night/n1/base`, so for every line you add cut stale ones' "$B"
 assert grep -qF 'Settle every stuck review round (`machinery:closure_pending`) of the sweep repositories yourself' "$B"
 assert grep -qF 'never touch a round of another project' "$B"

@@ -253,6 +253,8 @@ def snapshot(doctor, doc_file, night=None):
     chosen = strings((doc.get("speed") or {}).get("selection")) if doctor == "harness" else []
     for problem in problems:
         pid, rule, state = problem.get("id"), problem.get("rule"), problem.get("state")
+        if rule == "debt-handoff":
+            continue
         row = rows.get(problem.get("ledger")) or (rows.get(pid[7:]) if str(pid).startswith("ledger:") else None)
         files, what = [], rule
         if doctor == "llm":
@@ -613,7 +615,7 @@ write_brief() { # id worktree -> the brief file
       "$night" "$doctor" "$area" "$(jq -r "$JQ_COUNTS" "$file")" "$wt" "$branch"
     printf '1. Read `%s/docs/doctor-fix.md`: sections 0-6, "Night" and "%s doctor" only.\n' "$wt" "$title"
     printf '2. Your scope is the problems below and the known quiet rows after them, nothing else. Work only in the worktree and the `ADD-DIR:` worktrees of the other repositories your component lives in, all on the branch `%s`, started from their `refs/night/%s/base`; a change another repository needs is a handoff. Look at the older blocks around what you touch, not only at what you add: is a workaround there obsolete now, because the vendor does it natively or its reason is gone? Then remove it.\n' "$branch" "$night"
-    printf '3. Commit on that branch; never push, never touch a main checkout, never ask Egor: decide what research settles (git log -S, the journals, the docs, the owning chat) and hand off only to an owner; Egor gets only a trade, a handoff whose `To:` names him carrying `Cost:`, `Loss:` and `Recommendation:` lines. Markdown is net zero at night: close refuses a worktree whose *.md bytes (handoffs included) grew since `refs/night/%s/base`, so for every line you add cut stale ones (closed handoffs first, then history, restated code, duplicated rules; ~/.claude/docs/context-file-hygiene.md).\n' "$night"
+    printf '3. Commit on that branch; never push, never touch a main checkout, never ask Egor: decide what research settles (git log -S, the journals, the docs, the owning chat) and hand off to the next night, whose `night-run carry` makes every open handoff a job; Egor gets only a trade, a handoff whose `To:` names him carrying `Cost:`, `Loss:` and `Recommendation:` lines. Markdown is net zero at night: close refuses a worktree whose *.md bytes (handoffs included) grew since `refs/night/%s/base`, so for every line you add cut stale ones (closed handoffs first, then history, restated code, duplicated rules; ~/.claude/docs/context-file-hygiene.md).\n' "$night"
     printf '4. Close, from the worktree:\n\n'
     printf '       cd %q && DOCTORS_DIR=%q bin/doctor-fix close %s --decisions %q <one-line note>\n\n' \
       "$wt" "${runs_dir%/runs}" "$id" "$decisions"

@@ -13,6 +13,8 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 
 REAL_JQ=$(command -v jq) || fail "jq is required"
 HOME_FIXTURE="$WORK/home"
+export HARNESS_WAITS_DIR="$WORK/waits"
+lock_waits() { cat "$HARNESS_WAITS_DIR"/*.jsonl 2>/dev/null | jq -sc --arg s "$1" 'map(select(.class == "lock" and .source == $s))'; }
 PROFILES="$WORK/profiles"
 GEMINI_CACHES="$WORK/gemini-caches"
 CACHE="$WORK/limits.json"
@@ -103,6 +105,18 @@ OWNER_LOCK="$WORK/owner.lock"
 bash -c '. "$1/share/store-lock.sh"; store_lock_acquire "$2"' _ "$ROOT" "$OWNER_LOCK" \
   || fail "acquire on a free lock failed"
 [ -d "$OWNER_LOCK" ] || fail "acquire did not create the lock directory"
+jq -e 'length == 0' <(lock_waits "$OWNER_LOCK") >/dev/null || fail "a free lock journaled a wait"
+WAIT_LOCK="$WORK/wait.lock"
+mkdir "$WAIT_LOCK"
+printf '%s\n' "$$" >"$WAIT_LOCK/pid"
+LLM_STORE_LOCK_DELAY=0.02 bash -c '. "$1/share/store-lock.sh"; store_lock_acquire "$2" && store_lock_release "$2"' \
+  _ "$ROOT" "$WAIT_LOCK" &
+lock_waiter=$!
+sleep 0.5
+rm -rf "$WAIT_LOCK"
+wait "$lock_waiter" || fail "a lock waiter failed after the release"
+jq -e 'length == 1 and .[0].seconds >= 0.4' <(lock_waits "$WAIT_LOCK") >/dev/null ||
+  fail "a lock wait is no journal row: $(lock_waits "$WAIT_LOCK")"
 grep -qE '^[0-9]+$' "$OWNER_LOCK/pid" || fail "acquire did not record an owner pid"
 bash -c '. "$1/share/store-lock.sh"; store_lock_release "$2"' _ "$ROOT" "$OWNER_LOCK"
 [ -d "$OWNER_LOCK" ] || fail "release by a non-owner deleted a live lock"
@@ -177,6 +191,7 @@ touch -t "$old_stamp" "$LIVE_LOCK"
 env LLM_STORE_LOCK_STALE_SECONDS=1 LLM_STORE_LOCK_RETRIES=2 LLM_STORE_LOCK_DELAY=0.02 \
   bash -c '. "$1/share/store-lock.sh"; store_lock_acquire "$2"' _ "$ROOT" "$LIVE_LOCK" \
   && fail "a running holder lost its lock once the directory aged past the grace"
+jq -e 'length == 1' <(lock_waits "$LIVE_LOCK (gave up)") >/dev/null || fail "a lock wait given up is no journal row"
 grep -qx "$live_pid" "$LIVE_LOCK/pid" || fail "the running holder lost ownership of its lock"
 touch -t "$old_stamp" "$LIVE_LOCK"
 env LLM_STORE_LOCK_STALE_SECONDS=1 LLM_STORE_LOCK_CEILING_SECONDS=60 LLM_STORE_LOCK_RETRIES=1 \

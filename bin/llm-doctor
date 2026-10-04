@@ -22,6 +22,7 @@ ROOT_DIR = os.path.dirname(BIN_DIR)
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 
 import collector_runs
+import handoffs
 from fix_commit import fix_commit, fix_landed
 
 
@@ -2327,6 +2328,13 @@ def debt_health(cutoff, now, window_h):
     for (session, chat, kind, _), (at, lines, detail) in drops.items():
         add_item(items, "lost unreviewed: %s" % kind, at, lines, session=session, chat=chat, rule="debt-loss",
                  key=kind, ref="losses:%s/%s" % (event_stamp(at), kind), excerpt=detail)
+    for handoff in handoffs.open_handoffs(now=now, live=()):
+        if (handoff["age_s"] or 0) > handoffs.STALE_S:
+            seen += 1
+            add_item(items, "handoff open %d nights: %s" % (handoff["age_s"] // 86400, handoff["slug"]), handoff["at"],
+                     chat=", ".join(handoff["to"]) or os.path.basename(handoff["repo"]), rule="debt-handoff",
+                     key="%s/%s" % (os.path.basename(handoff["repo"]), handoff["slug"]),
+                     ref="handoff:%s/%s" % (os.path.basename(handoff["repo"]), handoff["rel"]), excerpt=handoff["path"])
     return health_row("debt", items, notes, seen)
 
 

@@ -510,6 +510,24 @@ assert debt["notes"] == ["gaps not read: review-anchors exited 1"], debt
 assert {item["label"] for item in debt["items"]} == {"lost unreviewed: run-fold-skip", "lost unreviewed: untouch",
                                                     "lost unreviewed: migrate"}, debt
 PY
+# An open handoff past 60 h (two nights) is a debt row; a younger one, or a settled one, is not.
+mkdir -p "$WORK/sweep/docs/handoffs"
+printf 'Status: open\n\nFor the chat «Owner A».\n' >"$WORK/sweep/docs/handoffs/2026-01-01-stale.md"
+printf 'Status: settled\n' >"$WORK/sweep/docs/handoffs/2026-01-01-done.md"
+printf 'Status: open\n' >"$WORK/sweep/docs/handoffs/$(date -r "$NOW" +%Y-%m-%d)-fresh.md"
+printf '%s\n' "$WORK/sweep" >"$WORK/sweep-repos"
+NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-repos" "$DOCTOR" --dry-run --json >"$WORK/doc4.json" || fail "a doctor over open handoffs failed"
+assert python3 - "$WORK/doc4.json" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+debt = [row for row in doc["health"] if row["name"] == "debt"][0]
+rows = [(item["label"], item["chat"], item["rule"], item["key"]) for item in debt["items"] if item["rule"] == "debt-handoff"]
+assert len(rows) == 1 and rows[0][0].startswith("handoff open ") and rows[0][0].endswith(" nights: 2026-01-01-stale") \
+    and rows[0][1:] == ("Owner A", "debt-handoff", "sweep/2026-01-01-stale"), rows
+problem = [p for p in doc["problems"] if p["rule"] == "debt-handoff"]
+assert [p["id"] for p in problem] == ["debt-handoff:sweep/2026-01-01-stale"] and problem[0]["state"] == "new" \
+    and problem[0]["evidence"][0]["ref"] == "handoff:sweep/docs/handoffs/2026-01-01-stale.md", problem
+PY
 
 # Bug or weather, one rule per record shape: the module's own readers on fixtures of each shape.
 UNIT="$WORK/unit"

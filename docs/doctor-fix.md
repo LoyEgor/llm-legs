@@ -42,7 +42,7 @@ recorded `component: unverified`, shown by `doctor-fix show` and `night-run repo
 | `ruled-out` | not a bug of ours | an `open` ledger row narrowed to this cause, the reason in its `note`, and a handoff proposing the dismissal to the owner |
 | `weather` | vendor-side or external | the same as `ruled-out` |
 | `blind-spot` | cannot be measured yet | a ledger `blind_spots` row with `would_catch_if` |
-| `handoff` | owned by another chat (a goal miss included), research cannot settle it, or it would loosen the judge; to Egor only as a trade (`Cost:`/`Loss:`/`Recommendation:` lines); never test speed or `menu_build` (`close` refuses it) | `docs/handoffs/<date>-<topic>.md` with a `Status: open` line, addressed to the ledger's `owner` or `owners`, and the row's `handoff` pointing at it |
+| `handoff` | research cannot settle it here, or it would loosen the judge; to Egor only as a trade (`Cost:`/`Loss:`/`Recommendation:` lines); never test speed or `menu_build` (`close` refuses it) | `docs/handoffs/<date>-<topic>.md` with a `Status: open` line and the row's `handoff` pointing at it. It is addressed to the next night, whose `night-run carry` makes it a job; a chat is its addressee only while live right now |
 
 Clear bugs are fixed, never handed off. A fixer never writes a `not-a-bug` or `weather` row: the
 narrowed `open` row keeps the cause on record without loosening the judge, and the owner decides the

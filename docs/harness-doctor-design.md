@@ -70,6 +70,7 @@ changes, so the block's `menu.txt` stays near 300 lines.
 | **Hooks** | a synchronous hook slow this hour or cut is a problem; one slow over 24 h, a failed fast-path probe, or any watch reason of §3.3 is a watch | hook · when · median ms 24 h · min 24 h · cuts 24 h (a script run by several events is one row, `when` naming the first `+N`; the statusline and each `menu build: <menu>` are rows of their own, a menu build red over its band); nav lines `on every tool call`, `full work on trivial Bash`, `by transcript size`, `by repositories in the chat`; lead line `fast paths` |
 | **Load** | CPU busy, kernel share, new processes, unaccounted CPU, memory guard, swap | last hour · 7 days (shown once the samples cover more than 1.5 h) |
 | **Tests** | a group's last run over twice its usual and within 6 h, 5+ suites at once in the last 6 h (`suites at once, 6 h: N` above the table), a test that failed under load in the last 6 h (`failed under load, 6 h: N`, §3.3), a suite over half of its repository's latest full run (`long pole, 24 h`, L), or a suite over 2 h of wall clock in 24 h (`daily cost, 24 h`, L) | test · repo · runs today · min today · usual min · last min; `long pole` drills into repo · long pole · min · min over next · share of run, `daily cost` into suite · repo · runs · min 24 h · min a run |
+| **Wait classes** | every wait of the wait journal (§12, row `ed`): a class red when today's longest wait passes its limit or today's total passes twice its usual day; every class shown dim even when normal | class · waits today · total today · p50 · p95 · max · usual day, 7 d; each drills into its days |
 | **Growth** | loose git objects over the limit, a big store that doubled in a week, or a hook spool file older than 30 min (the collector stopped folding); a watch for a per-call store over 1 000 entries that doubled in a day (its cleanup stopped) | store · entries · a week ago (once a week of samples exists) · size MB |
 
 ### 2.1 Row grammar
@@ -629,8 +630,9 @@ job of one chat for about 4 h under memory pressure and nothing reached Egor.
   `RUN_SUITES_SLOTS` suite runs machine-wide, cores / 3 clamped 2–4) and `night-workers` (`worker-run`
   on a `night/*/*` branch, at most `NIGHT_FIXER_SLOTS`, cores / 2 clamped 2–8). A queued suite run is
   no test yet (no `suites-<pid>` pointer); the `worker-run` watchdog counts a live hold in its run's
-  process tree as activity. `share/store-lock.sh` waits at most 60 s and
-  then fails visibly; `claudeb`'s refresh convergence backoff (≤ 240 s) runs under the menu's ⟳ busy
+  process tree as activity. **Every wait is measured** even when normal: `hold_clear`, a lock that
+  slept and `worker-run wait`'s poll lag each write one `wait_note` row (row `ed`) the Wait classes area reads.
+  `share/store-lock.sh` waits at most 60 s and then fails visibly; `claudeb`'s refresh convergence backoff (≤ 240 s) runs under the menu's ⟳ busy
   title; `share/run-suites.sh` queues suites behind its own `-j` inside one run the statusline
   shows as `suites n/m`; browser and deadline waits in `worker-run`/`codex-image` are bounded
   under 60 s or are kill ceilings. The gates (`worker-limit-gate`, `worker-launch-gate`,

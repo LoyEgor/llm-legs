@@ -16,7 +16,7 @@ repo_root=$(cd "$(dirname "$script_path")/.." && pwd)
 nights_dir="${DOCTORS_DIR:-$HOME/.cache/doctors}/nights"
 lock_dir="$nights_dir/.lock"
 sweep_repos="${NIGHT_RUN_SWEEP_REPOS:-$HOME/.claude/sweep-repos}"
-KINDS=' fixer vendor debt leftover '
+KINDS=' fixer vendor debt leftover handoff suite '
 STATES=' pending merged left failed-launch blocked-on-egor nothing-to-do '
 . "$repo_root/share/chat-open.sh"
 . "$repo_root/share/store-lock.sh"
@@ -30,7 +30,9 @@ usage() {
   cat >&2 <<'EOF'
 usage: night-run start [--cleanup | --resume <id> [--job <ref>]]
        night-run base <id>
-       night-run job <id> add <fixer|vendor|debt|leftover> <ref> [--branch B] [--ready "<why>"]
+       night-run job <id> add <fixer|vendor|debt|leftover|handoff|suite> <ref> [--branch B] [--ready "<why>"]
+       night-run carry <id>
+       night-run suites <id> [--wait]
        night-run job <id> set <ref> key=value...   (state, reason, branch, review, commits, pushed)
        night-run finish <id>
        night-run leftovers [--json]
@@ -53,6 +55,12 @@ leftover: ref is a leftover branch, adopted in every sweep repository where it i
   refused unless its owner hands it over with --ready "<why>", recorded as the job's handover {by, at, why}
 leftovers lists every non-main branch and worktree of the sweep repositories: live ones stay, landed
   ones go at finish, every other is a leftover to carry; finish records those under the night's leftovers
+carry: one handoff job per open docs/handoffs/*.md of the sweep repositories not addressed to a chat
+  live now, and one suite job per suite the newest earlier night's full run failed; each gets its night
+  worktree and a brief; prints <ref>\t<brief>\t<worktree>. A handoff job blocked-on-egor needs the
+  trade in reason= as Cost:, Loss: and Recommendation:
+suites: every sweep repository's tests/run-all, one after another, detached unless --wait, into the
+  night's suites {started_at, finished_at, repos: [{repo, exit, passed, failed[], log}]}
 pushed=true is refused unless every commit of the job is on its repository's origin main and not
   in the night's refs/night/<id>/base
 state=merged with a review is refused while `review-bench fix <review> --print` names open findings:
@@ -514,7 +522,9 @@ job_set() { # id ref key=value...
   case $(jq -r '.state' <<<"$job") in
     left) [ "$(jq -r '.reason // ""' <<<"$job")" != "" ] || die "state left needs reason=<why it stayed>" ;;
     blocked-on-egor) [ "$(jq -r '.reason // ""' <<<"$job")" != "" ] ||
-      die "state blocked-on-egor needs reason=<the trade Egor decides: each way's cost and loss, the recommendation>" ;;
+      die "state blocked-on-egor needs reason=<the trade Egor decides: each way's cost and loss, the recommendation>"
+      [ "$(jq -r '.kind' <<<"$job")" != handoff ] || jq -e '.reason | test("Cost:") and test("Loss:") and test("Recommendation:")' <<<"$job" >/dev/null ||
+        die "a handoff job blocked on Egor needs its trade in reason= as Cost:, Loss: and Recommendation:" ;;
   esac
   [ "$pushed" != true ] || [ "$(jq -c '.commits' <<<"$job")" = "$checked" ] ||
     die "the job's commits changed while origin was checked: set pushed=true again"
@@ -531,6 +541,77 @@ job_set() { # id ref key=value...
     --arg r "$ref" --argjson p "$patch" --argjson ev "$events" --arg t "$(stamp)" ||
     die "cannot write night $id"
   printf 'night %s: job %s %s\n' "$id" "$ref" "$(jq -r '[.state, (if .pushed then "pushed" else empty end)] | join(" ")' <<<"$job")"
+}
+
+carry_list() { # id -> kind<TAB>slug<TAB>repo<TAB>what<TAB>log, one per job carry adds
+  python3 -B "$repo_root/share/handoffs.py" | jq -r 'select(.live == []) | ["handoff", .slug, .repo, .rel, ""] | @tsv'
+  all_nights | jq -r --arg id "$1" '[.[] | select(.id != $id and .suites != null)] | first // empty | .suites.repos[]?
+    | .repo as $r | .log as $l | .failed[]? | ["suite", "\($r | split("/") | last)-\(sub("\\.[a-z]+$"; ""))", $r, ., $l] | @tsv'
+}
+
+carry_brief() { # id kind ref repo what log worktree branch -> the brief file
+  local id=$1 kind=$2 ref=$3 repo=$4 what=$5 log=$6 wt=$7 branch=$8 file="$nights_dir/$1.$3.brief.md" other
+  {
+    printf 'ROUND: none\n'
+    for other in $(grep -vxF -e "$repo" -e '' "$sweep_repos" 2>/dev/null); do
+      [ "$kind" = suite ] || grep -qF "$(basename "$other")" "$repo/$what" 2>/dev/null || continue
+      night_sibling_worktrees "$id" "$branch" "$ref" "$other" | sed 's/^/ADD-DIR: /'
+    done
+    printf 'Working directory: %s\n\n# Night %s job %s\n\n' "$wt" "$kind" "$ref"
+    if [ "$kind" = handoff ]; then
+      printf 'Night %s. Settle the handoff `%s/%s` in the worktree `%s` on branch `%s`; its copy there is `%s`.\n\n' "$id" "$repo" "$what" "$wt" "$branch" "$wt/$what"
+      printf '1. Check in the code whether its cause still stands, then settle it one of two ways: fix it with a test red on the old code, and set its `Status:` line to `Status: settled %s: <one line>`; or, when only Egor'"'"'s word can settle it, reduce it to a trade: `Status: trade for Egor` with `Cost:`, `Loss:` and `Recommendation:` lines, and report those three lines under BLOCKED-ON-EGOR. A handoff to another chat is no verdict: the night owns it.\n' "$id"
+    else
+      printf 'Night %s. The full run at the previous night'"'"'s Close failed `%s` in %s (log `%s`). Make it green in the worktree `%s` on branch `%s`: fix the code or the suite; a load-only failure is made load-robust; every assert keeps its coverage.\n' "$id" "$what" "$repo" "$log" "$wt" "$branch"
+    fi
+    printf '2. `%s/docs/doctor-fix.md` §1, §3, §4 and Night bind you: commit on the branch (one long line), never push, never touch a main checkout, never ask Egor; markdown is net zero against `refs/night/%s/base`.\n' "$repo_root" "$id"
+    printf '3. Report: the outcome, the test, the commits as repo@hash.\n'
+  } >"$file" || return 1
+  printf '%s\n' "$file"
+}
+
+cmd_carry() {
+  local id=${1:-} kind slug repo what log ref branch wt err brief
+  [ -n "$id" ] && [ $# -eq 1 ] || usage
+  known_night "$id"
+  while IFS=$'\t' read -r kind slug repo what log; do
+    ref="$kind-$slug" branch="night/$id/$kind-$slug" wt="$repo/.claude/worktrees/night-$id-$kind-$slug"
+    ! jq -e --arg r "$ref" 'any(.jobs[]; .ref == $r)' "$(night_file "$id")" >/dev/null || continue
+    "$script_path" job "$id" add "$kind" "$ref" --branch "$branch" >/dev/null || continue
+    if ! err=$(night_worktree_add "$repo" "$id" "$branch" "$wt" 2>&1 >/dev/null) ||
+        ! brief=$(carry_brief "$id" "$kind" "$ref" "$repo" "$what" "$log" "$wt" "$branch"); then
+      "$script_path" job "$id" set "$ref" state=failed-launch reason="not carried: ${err:-brief not written}" >/dev/null
+      continue
+    fi
+    printf '%s\t%s\t%s\n' "$ref" "$brief" "$wt"
+  done < <(carry_list "$id")
+}
+
+cmd_suites() {
+  local id=${1:-} repo name log rc rows='[]'
+  [ -n "$id" ] && [ $# -le 2 ] || usage
+  known_night "$id"
+  if [ "${2:-}" != --wait ]; then
+    [ -z "${2:-}" ] || usage
+    perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' "$script_path" suites "$id" --wait \
+      </dev/null >"$nights_dir/$id.suites.log" 2>&1 &
+    printf 'night %s: full suites run in the background, pid %s\n' "$id" "$!"
+    return 0
+  fi
+  lock
+  night_set "$id" '.suites = {started_at: $t, finished_at: null, repos: []}' --arg t "$(stamp)" || die "cannot write night $id"
+  unlock
+  while IFS= read -r repo; do
+    [ -n "$repo" ] && [ -x "$repo/tests/run-all" ] || continue
+    name=$(basename "$repo") log="$nights_dir/$id.suites.$name.log"
+    bash "$repo/tests/run-all" >"$log" 2>&1
+    rc=$?
+    rows=$(jq -c --arg r "$repo" --arg l "$log" --argjson x "$rc" --rawfile out "$log" '. + [{repo: $r, exit: $x, log: $l,
+      passed: ($out | [scan("([0-9]+) PASS · [0-9]+ FAIL")] | last // ["0"] | .[0] | tonumber),
+      failed: [$out | splits("\n") | capture("^(?<s>[^ ]+)  +FAIL [0-9]+").s]}]' <<<"$rows")
+  done <"$sweep_repos"
+  lock
+  night_set "$id" '.suites.finished_at = $t | .suites.repos = $r' --arg t "$(stamp)" --argjson r "$rows" || die "cannot write night $id"
 }
 
 cmd_finish() {
@@ -717,6 +798,9 @@ cmd_report() {
         + (if .state == "merged" then [if .pushed then "pushed" else "NOT PUSHED" end] else [] end)
         + (if .reason then [.reason] else [] end)) | join(" · ")),
       (.leftovers[]? | "leftover · \(.repo) · \(.branch) · \(.why)"),
+      (.suites // null | if . == null then empty elif .finished_at == null then "suites · running since \(.started_at | hm)"
+       else .repos[] | "suites · \(.repo | split("/") | last) · \(.passed) PASS · \(.failed | length) FAIL"
+         + (if .failed == [] then "" else ": \(.failed | join(", "))" end) end),
       ($u | to_entries[] | select(.value | length > 0) | "unverified component · \(.key) · \(.value | join(", "))"),
       ("total · " + ([count($t.merged; "merged"), count($t.left; "left"), count($t.failed; "failed-launch"),
         count($t.blocked; "blocked-on-egor"), count($t.nothing; "nothing-to-do"), count($t.pending; "pending")]
@@ -775,5 +859,7 @@ case "${1:-}" in
   report) shift; cmd_report "$@" ;;
   latest) shift; cmd_latest "$@" ;;
   leftovers) shift; [ $# -le 1 ] || usage; cmd_leftovers "$@" ;;
+  carry) shift; cmd_carry "$@" ;;
+  suites) shift; cmd_suites "$@" ;;
   *) usage ;;
 esac

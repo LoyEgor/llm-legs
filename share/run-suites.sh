@@ -64,6 +64,7 @@ repo=$(cd "$repo" && pwd -P) || fail "unreadable repo: $repo"
 [ -d "$repo/tests" ] || fail "no tests directory under $repo"
 
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/worktree-branch.sh"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/affected-suites.sh"
 journal_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/tests/lib/suite-journal.sh"
 
 # A linked worktree has no sibling checkout beside it. Another repo's worktree on this same
@@ -103,16 +104,6 @@ if [ -r "$times_file" ]; then
     [ "$key" = "$times_key" ] && [[ "$secs" =~ ^[0-9]+$ ]] && last_secs[$name]=$secs
   done <"$times_file"
 fi
-
-# Suites that read live machine state — the real limits store, the real instruction-file export —
-# and so answer about this Mac rather than about the code. They are honest checks and they are not
-# repeatable beside twenty other processes, so they stay out of the wave unless asked for.
-live_suite() {
-  case "$1" in
-    e2e_surfaces.sh|test_instruction_rates_live.sh) return 0 ;;
-    *) return 1 ;;
-  esac
-}
 
 # Suites that cannot share a machine with another one; they run after the parallel wave, one at a
 # time. Every entry asserts a WALL-CLOCK budget — a lock wait, a pty grace window, a collector
@@ -165,34 +156,10 @@ fi
 [ "${#suites[@]}" -gt 0 ] || fail "no suites found under $repo/tests"
 
 if [ "$changed" = true ]; then
-  declare -a names=()
-  while IFS= read -r entry; do
-    [ -n "$entry" ] || continue
-    names+=("$(basename "$entry")")
-  done < <({ git -C "$repo" diff --name-only HEAD 2>/dev/null
-             git -C "$repo" ls-files --others --exclude-standard 2>/dev/null; } | sort -u)
-  helpers=$(cd "$repo/tests" && for helper in *; do
-    [ -f "$helper" ] || continue
-    case "$helper" in test_*|e2e_*) ;; *) printf '%s\n' "$helper" ;; esac
-  done)
-  declare -a kept=()
-  for entry in "${suites[@]}"; do
-    # A split suite names its target only inside the harness it sources, so that text counts too.
-    declare -a texts=("$entry")
-    if [ -n "$helpers" ]; then
-      while IFS= read -r helper; do
-        texts+=("$repo/tests/$helper")
-      done < <(grep -oF -- "$helpers" "$entry" 2>/dev/null | sort -u)
-    fi
-    for name in ${names[@]+"${names[@]}"}; do
-      # A changed suite always runs; otherwise the suite has to name the changed file.
-      if [ "$name" = "$(basename "$entry")" ] || grep -qF -- "$name" "${texts[@]}" 2>/dev/null; then
-        kept+=("$entry")
-        break
-      fi
-    done
-  done
-  suites=(${kept[@]+"${kept[@]}"})
+  names_file=$(mktemp "${TMPDIR:-/tmp}/affected.XXXXXX") || fail 'could not create a names file'
+  affected_names "$repo" >"$names_file"
+  mapfile -t suites < <(printf '%s\n' "${suites[@]}" | affected_filter "$repo" "$names_file" | sort -u)
+  rm -f "$names_file"
   [ "${#suites[@]}" -gt 0 ] || { printf 'run-suites: nothing changed that any suite names\n'; exit 0; }
 fi
 
@@ -287,6 +254,8 @@ run_one() { # suite-path
     # SourceFileLoader import leaves in bin/ reads to a review's integrity check as a new file.
     unset CLAUDEB_WORKER WORKER_RUN_RECORD WORKER_RUN_ID CLAUDE_LAUNCHER_SESSION WORKER_PICK_CONFIG_FILE CLAUDE_CODE_SESSION_ID
     export PYTHONDONTWRITEBYTECODE=1
+    # A fixture's slot and lock waits would read as the machine's own in the Harness doctor's Wait classes.
+    export HARNESS_WAITS_DIR="$TMPDIR/waits"
     mkdir -p "$TMPDIR"
     cd "$repo" || exit 4
     # Absolute, not -n: a nested run must stay at 10, not sink further. $BASHPID, not $$:

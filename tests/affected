@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# The suites covering the given files (default: every changed or untracked file), one path a line:
+# `tests/run-all $(tests/affected <file>...)`.
+set -u
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P) || exit 4
+exec bash "$repo/share/affected-suites.sh" --repo "$repo" -- "$@"

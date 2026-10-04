@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 
 import collector_runs
 from fix_commit import fix_commit, fix_landed
-from limiter_hold import hold_dir
+from limiter_hold import hold_dir, wait_dir
 
 LIMITS = {
     "call_s": 5.0,
@@ -91,7 +91,12 @@ LIMITS = {
     "watch_tick_s": 120,
     "hold_note_s": 60,
     "hold_red_s": 300,
+    "wait_red_s": 600,
+    "wait_growth": 2.0,
+    "wait_growth_days": 3,
 }
+WAIT_RED_S = {"lock": 60, "poll": 30}
+WAIT_DAYS = 15
 
 SYNC_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop", "SubagentStop", "SessionStart",
                "PreCompact", "SessionEnd")
@@ -1055,6 +1060,8 @@ def prune(now):
                       ("menu", JOURNAL_FILE_DAYS), ("speed-days", SPEED_DAYS)):
         cutoff = local_day(now - keep * 86400)
         old += [p for p in glob.glob(os.path.join(state_dir(), sub, "*")) if os.path.basename(p)[:10] < cutoff]
+    old += [p for p in glob.glob(os.path.join(wait_dir(), "*.jsonl"))
+            if os.path.basename(p)[:10] < local_day(now - WAIT_DAYS * 86400)]
     old += [p for p in glob.glob(os.path.join(state_dir(), "hooks", "*.tsv"))
             + glob.glob(os.path.join(state_dir(), "hooks", "folded", "*.tsv"))
             if os.path.basename(p)[:-4].isdigit() and int(os.path.basename(p)[:-4]) < now // 86400 - JOURNAL_FILE_DAYS]
@@ -4349,7 +4356,8 @@ def load_changes(now):
 
 HOLDS_GROUP = "Limiter holds"
 SPEED_GROUP = "Speed"
-SPEED_SECTIONS = ("Waits", "Slow periods", "Hook waits", "Hooks", "Load", "Tests", "Collector")
+WAITS_GROUP = "Wait classes"
+SPEED_SECTIONS = ("Waits", WAITS_GROUP, "Slow periods", "Hook waits", "Hooks", "Load", "Tests", "Collector")
 SPLITS = (("Hooks", "Hook health", ("hooks:fastpath", "hooks:unjournaled"), "every hook keeps its fast path and journal"),
           ("Tests", "Test flakes", ("tests:load",), "no suite failed under load"),
           ("Load", "Memory guard", ("load:memory",), "no memory guard alarm"))
@@ -4932,6 +4940,53 @@ def hold_verdicts(now):
     return out, [os.path.join(hold_dir(), h["file"]) for holds in leaked.values() for h in holds]
 
 
+def wait_classes(now):
+    days = [local_day(now - back * 86400) for back in range(8)]
+    out = {}
+    for day in sorted(set(days)):
+        for item in read_jsonl(os.path.join(wait_dir(), day + ".jsonl")) or ():
+            cls, secs, at = item.get("class"), item.get("seconds"), item.get("started")
+            if (isinstance(cls, str) and cls and isinstance(secs, (int, float)) and isinstance(at, (int, float))
+                    and secs >= 0):
+                out.setdefault(cls, {}).setdefault(day, []).append((at, float(secs), str(item.get("source") or "")))
+    return out, days[0]
+
+
+def waits_classes_section(now):
+    classes, today = wait_classes(now)
+    rows = []
+    for cls, by_day in sorted(classes.items(), key=lambda kv: (-sum(s for _, s, _ in kv[1].get(today, ())), kv[0])):
+        waits = by_day.get(today, [])
+        secs = [s for _, s, _ in waits]
+        total = sum(secs)
+        prior = [sum(s for _, s, _ in v) for day, v in by_day.items() if day != today]
+        usual = median(prior) if len(prior) >= LIMITS["wait_growth_days"] else None
+        limit = WAIT_RED_S.get(cls, LIMITS["wait_red_s"])
+        longest = sorted(waits, key=lambda w: -w[1])[:3]
+        proof = [evidence(at, "waits/%s.jsonl %.3f" % (today, at), "%s waited %s" % (source, fmt_long(sec)))
+                 for at, sec, source in longest]
+        top = max(secs) if secs else 0
+        judge = [verdict("wait_class", cls, top, limit, "s", 24, len(secs), "red" if top > limit else None,
+                         fact="%s: a wait of %s today, limit %s: %s" % (
+                             cls, fmt_long(top), fmt_long(limit), longest[0][2] if longest else ""),
+                         values=secs, evidence=proof)]
+        grown = usual is not None and total >= limit and total > LIMITS["wait_growth"] * usual
+        judge.append(verdict("wait_growth", cls, total, None if usual is None else round(LIMITS["wait_growth"] * usual, 3),
+                             "s", 24, len(secs), "red" if grown else None,
+                             fact="%s: %s waited today, %s on a usual day of the week" % (
+                                 cls, fmt_long(total), fmt_long(usual or 0)), evidence=proof, bad=int(grown)))
+        red = [i for i, bad in ((5, top > limit), (2, grown)) if bad]
+        week = section("", [row([day, len(v), fmt_s(sum(s for _, s, _ in v)), fmt_s(max(s for _, s, _ in v))], dim=True)
+                            for day, v in sorted(by_day.items(), reverse=True)],
+                       ["day", "waits", "total", "max"], [False, True, True, True])
+        rows.append(row([cls, len(secs), fmt_s(total), fmt_s(percentile(secs, 0.5)), fmt_s(percentile(secs, 0.95)),
+                         fmt_s(top if secs else None), fmt_s(usual)], red=red, dim=not red, menu=week, key="waits:" + cls,
+                        say=next((j["fact"] for j in judge if j["level"]), None), judge=judge))
+    return section(WAITS_GROUP, rows, ["class", "waits today", "total today", "p50", "p95", "max", "usual day, 7 d"],
+                   [False, True, True, True, True, True, True], ok="every wait class within its limit",
+                   blind="" if rows else "no wait journaled in 8 days")
+
+
 def blind_rows(ledger, dynamic):
     return dynamic + [dict(b) for b in ledger.get("blind_spots") or () if isinstance(b, dict)]
 
@@ -5085,7 +5140,8 @@ def collect(write, now):
                 load_section(samples, now),
                 tests_section(tests, now, guard_kills(now - LIMITS["test_slow_fresh_s"] - 86400)),
                 stop_hooks_section(now),
-                guards_section(now)]
+                guards_section(now),
+                waits_classes_section(now)]
     growth_part = growth_section(growth, now, spool_backlog(now))
     if growth_part:
         sections.append(growth_part)
