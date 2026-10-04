@@ -2459,7 +2459,7 @@ assert grep -Fq 'def chat_suffix(session, launchers=None, store=None):' "$RB_STO
 # through `chat_display`, never a resolver call of its own. The count is exact so a new naming site
 # is read here before it ships.
 assert test -z "$(grep -E 'chat_label' "$RB_DEBT")"
-assert eq "$(grep -c 'chat_display' "$RB_DEBT")" 15
+assert eq "$(grep -c 'chat_display' "$RB_DEBT")" 14
 assert grep -Fq '"chat": _store.chat_display(' "$RB_DEBT"
 assert grep -Fq 'chat = _store.chat_display(session)' "$RB_DEBT"
 # The foreign-chat refusal names the chat: it exists to send a reader to another conversation.
