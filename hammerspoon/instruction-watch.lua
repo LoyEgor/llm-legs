@@ -36,7 +36,7 @@ local function runOpenCommand(sid, onDone)
     task = hs.task.new(ROOT .. "/bin/chats", function(code, stdout, stderr)
         task = nil
         onDone(code, stdout, stderr)
-    end, { "--open-command", sid, "--timeout", "1" })
+    end, { "--open-command", sid })
     if not task or not task:start() then
         task = nil
         onDone(1, "", "could not start chats")

@@ -1068,7 +1068,7 @@ local function copyChatCommand(row)
     end
     hs.pasteboard.setContents(command)
     hs.alert.show("copied: open chat in a terminal", 1.5)
-  end, { "--open-command", session, "--timeout", "1" })
+  end, { "--open-command", session })
   if not task or not task:start() then
     task = nil
     hs.alert.show("could not start chats", 3)

@@ -641,6 +641,7 @@ chats.STATE = os.path.join(sys.argv[2], "claudeb-state")
 WANT = sys.argv[3]
 KEYS = [c.KEY_LEFT] if sys.argv[4:] == ["left"] else []
 AFTER = [c.KEY_RIGHT, c.KEY_SF, "\n"] if sys.argv[4:] == ["after"] else []
+ENTER = sys.argv[4:] == ["enter"]
 
 frames = []
 
@@ -658,8 +659,12 @@ class Screen:
         self.delay = delay
 
     def get_wch(self):
+        global ENTER
         if KEYS:
             return KEYS.pop(0)
+        if ENTER and frames and frames[-1]["rows"] and not frames[-1]["used"]:
+            ENTER = False
+            return "\n"
         if done():
             return AFTER.pop(0) if AFTER else "\x04"
         if time.monotonic() - START > 10:
@@ -689,11 +694,12 @@ with patch.multiple(c, curs_set=lambda _: None, start_color=lambda: None,
                     mousemask=lambda _: None), \
         patch.object(chats, "draw", side_effect=record), \
         patch.object(chats.chat_resume, "gateway_accounts", return_value=["delta"]), \
-        patch.object(chats, "HERE", os.path.join(sys.argv[2], "bin")):
+        patch.object(chats, "HERE", os.environ.get("PROBE_BIN") or os.path.join(sys.argv[2], "bin")):
     result = chats.run(Screen(), None, None, None, None, 0, chats.WINDOWS)
 
 first, full = frames[0], frames[-1]
 print("quit:", result)
+print("opened:", result and chats.account_label(result[0]))
 print("timing: first paint %.3fs, full data %.3fs" % (first["at"], full["at"]))
 print("first-paint-fast:", first["at"] < 0.5)
 # Two one-second stubs in parallel land inside two seconds; run one after another they
@@ -742,6 +748,16 @@ OUT=$(PATH="$FAST/bin:$PATH" python3 "$FAST/probe.py" "$SCRIPT" "$FAST" alpha le
 assert grep -qx 'first-account: beta' <<<"$OUT"
 assert grep -qx 'full-account: alpha' <<<"$OUT"
 assert grep -qx 'full-rows: 3' <<<"$OUT"
+
+# ↵ on a listed row while worker-pick is still answering waits for it: the bar still holds the
+# logged-out last profile, and opening on it ran a chat on a dead login (2026-10-04).
+mkdir -p "$FAST/quick"
+sed '/time.sleep/d' "$FAST/bin/chat-find" >"$FAST/quick/chat-find"
+chmod +x "$FAST/quick/chat-find"
+OUT=$(PROBE_BIN="$FAST/quick" CLAUDEB_WORKER_PICK="$FAST/bin/worker-pick" \
+  python3 "$FAST/probe.py" "$SCRIPT" "$FAST" - enter) || fail "early-enter probe failed"
+assert grep -qx 'first-account: beta' <<<"$OUT"
+assert grep -qx 'opened: gamma' <<<"$OUT"
 
 # Every account logged out: the bar is empty rather than the unfiltered list, no account is the
 # default, and ←→, Shift+↓ and ↵ on the empty bar change nothing and open nothing.
@@ -930,9 +946,23 @@ cat > "$WORK/open-bin/worker-pick" <<'PICK'
 #!/bin/sh
 exec sleep 2
 PICK
-OPEN=$(open_command_test "$OPEN_SID" --timeout 0.05)
-assert [ "$?" -eq 0 ]
-assert [ "$(printf '%s\n' "$OPEN" | tail -1)" = 'account=last source=fallback' ]
+# The last profile launched may be the one that needs a login, and only worker-pick knows: a
+# ranking that did not land is a refusal, never that guess (2026-10-04, notcom).
+open_command_test "$OPEN_SID" --timeout 0.05 > "$WORK/open-out" 2> "$WORK/open-error"
+assert [ "$?" -eq 1 ]
+assert [ ! -s "$WORK/open-out" ]
+assert grep -qx 'chats: worker-pick did not answer within 0.05s, so no account is known to be logged in' \
+  "$WORK/open-error"
+cat > "$WORK/open-bin/worker-pick" <<'PICK'
+#!/bin/sh
+printf 'claudeb\tlast\t0\tlogin\nclaudeb\tpicked\t10\tok\nNEXT\tclaudeb\t-\n'
+PICK
+OPEN=$(open_command_test "$OPEN_SID")
+assert [ "$(printf '%s\n' "$OPEN" | tail -1)" = 'account=picked source=fallback' ]
+cat > "$WORK/open-bin/worker-pick" <<'PICK'
+#!/bin/sh
+exec sleep 2
+PICK
 mkdir -p "$WORK/open-tracks"
 printf 'v2 %s picked\n' "$(date +%s)" > "$WORK/open-tracks/cache-ttl-track-$OPEN_SID"
 OPEN=$(open_command_test "$OPEN_SID" --timeout 0.05)

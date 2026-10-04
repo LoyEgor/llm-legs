@@ -714,6 +714,12 @@ def run(screen, chats, names, used, profile, level, windows):
         elif key in ("\n", "\r", curses.KEY_ENTER):
             if not rows:
                 continue
+            # Until worker-pick answers, the bar still offers the logged-out accounts and the
+            # default is only the last profile launched.
+            if ranked.thread is not None:
+                boards, shown = ranked.take(wait=True), None
+                opening = rows[view["cursor"]].get("session")
+                continue
             if not names:
                 note = "no logged-in account to open it under"
                 continue
@@ -772,6 +778,9 @@ def open_command(session, timeout):
     else:
         command = chat_resume.switch_argv(session, account, model_id=row.get("model"),
                                           gateway=vendor == "gpt")
+    if source == "fallback" and not order:
+        die("worker-pick did not answer within %gs, so no account is known to be logged in"
+            % timeout)
     account = chat_resume.argv_account(command) or account
     if account == chat_resume.UNKNOWN_ACCOUNT:
         die("gateway account unknown for this chat")
@@ -787,7 +796,7 @@ def main():
         if len(args) not in (1, 3) or (len(args) == 3 and args[1] != "--timeout"):
             die("usage: chats --open-command SESSION [--timeout SECONDS]")
         try:
-            timeout = float(args[2]) if len(args) == 3 else 1
+            timeout = float(args[2]) if len(args) == 3 else 20
             if not math.isfinite(timeout) or timeout <= 0:
                 raise ValueError
         except ValueError:

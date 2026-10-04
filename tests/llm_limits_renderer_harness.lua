@@ -2824,7 +2824,7 @@ do
   assert(#tasks == 0, "rendering the diagnostics row started a task")
   row.menu[6].fn()
   assert(#tasks == 1 and tasks[1].path:match("/bin/chats$")
-    and table.concat(tasks[1].args, " ") == "--open-command 0a0b0c0d-1111-4222-8333-444444444444 --timeout 1",
+    and table.concat(tasks[1].args, " ") == "--open-command 0a0b0c0d-1111-4222-8333-444444444444",
     "a doctor row with a chat did not ask bin/chats for the open command")
   row.menu[2].fn()
   assert(pasteboardContents == "a.txt",
@@ -3546,11 +3546,11 @@ do
   chats.menu[1].fn()
   tasks[2].callback(0, "ttys009\n", "")
   assert(selected[2] == "/dev/ttys009" and tasks[3] and tasks[3].path == "/fixture/bin/chats"
-    and table.concat(tasks[3].args, " ") == "--open-command live-1 --timeout 1",
+    and table.concat(tasks[3].args, " ") == "--open-command live-1",
     "a chat whose tab is gone did not fall back to copying its reopen command")
   chats.menu[2].fn()
   assert(#selected == 2 and tasks[4] and tasks[4].path == "/fixture/bin/chats"
-    and table.concat(tasks[4].args, " ") == "--open-command old-1 --timeout 1",
+    and table.concat(tasks[4].args, " ") == "--open-command old-1",
     "a closed chat's click did not copy its reopen command")
   chatsFake.snapshot = nil
 end
