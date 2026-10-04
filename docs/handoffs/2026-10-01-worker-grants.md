@@ -1,6 +1,6 @@
 # Worker grants still omitted by cross-repository briefs
 
-Status: done 2026-10-04 (ledger W7 fixed-pending; one post-land step below)
+Status: done 2026-10-04 (ledger W7 fixed-pending)
 
 To: `share/doctor-ledger.json` `owners.workers`, with the claude-setup relay owner.
 
@@ -22,7 +22,7 @@ and can go. A worktree created after launch stays ungranted.
   any more (worker-run reads a `RESUME <id>:` first line and the `ADD-DIR:` lines itself), and `--workdir` is
   the directory the brief works in, its worktree or the checkout it names to write. `tests/test_consistency.sh`
   pins both; red on main's agents.
-- claude-setup `hooks/worker-edit-guard.sh`: a worker's edit that crosses a symlink into another checkout is
+- claude-setup `hooks/worker-edit-guard.sh`: a worker's shell write that crosses a symlink into another checkout is
   denied unless an `ADD-DIR:` grant covers it (see `2026-10-03-path-shape-tilde.md` item 2).
 - A worktree created after launch stays ungranted by design: the brief names it as `ADD-DIR:` up front, or
   the run edits only its own worktree.
