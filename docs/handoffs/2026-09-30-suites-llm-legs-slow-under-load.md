@@ -33,8 +33,7 @@ For the chat «Harness Doctor» (owner of `share/harness-ledger.json`). From nig
 
 ## What the design already says
 
-`share/run-suites.sh` has no cross-invocation lock on purpose. Handoff
-`2026-09-28-harness-performance-fix.md` §4 says not to add a cross-chat queue.
+Since llm-legs@badbf8f `share/run-suites.sh` caps the machine at `RUN_SUITES_SLOTS` full runs.
 
 ## Proposed to the owner
 
