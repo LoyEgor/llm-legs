@@ -192,6 +192,8 @@ FLOOR_ROWS = (("bash:trivial", "Bash · trivial", "a trivial Bash call"),
 FAST_PATH_PROBES = {"readonly-command.sh": 'rc_readonly_command ls && ! rc_readonly_command "rm x"'}
 SECRET_SETTING = re.compile(r"(?i)^env\.|token|secret|passw|credential|api.?key")
 SUITE_EXT = re.compile(r"\.(sh|bash|py|lua)$")
+HANG_FLOOR_S = 1800
+HANG_MARK = b"run-suites: TIMEOUT after "
 SUITE_HARNESS = re.compile(r"(?m)^\s*(?:\.|source)\s.*?\b([A-Za-z0-9_]+)_harness\.sh\b")
 QUIET_SOURCE = re.compile(r"(?m)(?:^|[\s;&|!(])(?:\.|source)\s+([^\s;&|].*?)\s+2>\s?/dev/null")
 OWNER_ENTRIES = ("cli", "claude-desktop")
@@ -3433,6 +3435,94 @@ def cost_line(tests, now):
     return out
 
 
+def suite_entries(runs, root, name):
+    return [r["suites"][name] for r in runs if r.get("repo_root") == root and isinstance(r.get("suites"), dict)
+            and isinstance(r["suites"].get(name), dict) and isinstance(r["suites"][name].get("secs"), (int, float))]
+
+
+def suite_bound(runs, root, name):
+    """share/run-suites.sh suite_bound over the journal rows read here: a change there must land here too."""
+    try:
+        with open(os.path.join(root or "", "tests", "slow-suites"), errors="replace") as handle:
+            slow = name in handle.read().split()
+    except OSError:
+        slow = False
+    floor = HANG_FLOOR_S * (2 if slow else 1)
+    passes = sorted(s["secs"] for s in [s for s in suite_entries(runs, root, name) if s.get("rc") == 0][-50:])
+    if len(passes) < 3:
+        return floor * 2
+    return max(floor, 5 * int(-(-passes[-(-len(passes) * 9 // 10) - 1] // 1)))
+
+
+def hang_log(name, start, end):
+    """run-suites keeps each suite's log under $TMPDIR/run-suites.*/ and never journals the path."""
+    found = []
+    for path in glob.glob(os.path.join(os.environ.get("TMPDIR") or "/tmp", "run-suites.*", name + ".log")):
+        try:
+            at = os.path.getmtime(path)
+            if not start - 5 <= at <= end + 5:
+                continue
+            with open(path, "rb") as handle:
+                handle.seek(max(0, os.path.getsize(path) - 4096))
+                if HANG_MARK in handle.read():
+                    found.append((at, path))
+        except OSError:
+            continue
+    return max(found)[1] if found else None
+
+
+def hang_line(runs, now):
+    window = LIMITS["test_cost_window_s"]
+    hangs, seen = {}, {}
+    for r in runs:
+        if r["ended_at"] < now - window or not isinstance(r.get("suites"), dict):
+            continue
+        for name, s in r["suites"].items():
+            rc, secs = s.get("rc") if isinstance(s, dict) else None, s.get("secs") if isinstance(s, dict) else None
+            if not isinstance(rc, int) or not isinstance(secs, (int, float)):
+                continue
+            ident = test_ident(r.get("repo"), SUITE_EXT.sub("", name), r.get("repo_root"))
+            seen[ident] = seen.get(ident, 0) + 1
+            if r.get("kind") == "suites" and rc == 124:
+                how = "timeout"
+            elif 128 < rc < 160 and secs >= suite_bound(runs, r.get("repo_root"), name):
+                how = "signal %d" % (rc - 128)
+            else:
+                continue
+            hangs.setdefault(ident, []).append((r["ended_at"], secs, how, name, r))
+    rows = []
+    for ident, items in hangs.items():
+        items.sort(key=lambda x: x[0])
+        end, secs, how, name, run = items[-1]
+        wasted = sum(x[1] for x in items)
+        who = run.get("worker_run") or ("session " + run["session"][:8] if run.get("session") else "–")
+        log = hang_log(name, run["started_at"], end) if how == "timeout" else None
+        repo = os.path.basename(str(run.get("repo_root") or "").rstrip("/")) or repo_name(run.get("repo"))
+        fact = "%s · %s hung %d time%s in %d h, %s wasted; last %s after %d s, hit by %s, log %s" % (
+            SUITE_EXT.sub("", name), repo, len(items), "" if len(items) == 1 else "s", window // 3600,
+            fmt_long(wasted), "ended by the per-suite bound" if how == "timeout" else "killed by " + how, secs, who,
+            log or "–")
+        rows.append((end, row([clip("%s · %s" % (SUITE_EXT.sub("", name), repo), 34), fmt_count(len(items)),
+                               num(wasted, 60.0), who, log or "–"], [1], dim=False, say=fact,
+                              judge=verdict("test_hang", ident, len(items), 0, "runs", window // 3600, seen[ident], "red",
+                                            fact=fact, values=[x[1] for x in items], bad=len(items),
+                                            evidence=[evidence(max(x[4]["started_at"], x[0] - x[1]),
+                                                               log if x is items[-1] and log else "runs.jsonl %s %s %s" % (
+                                                                   x[4].get("kind"), x[4].get("pid"), x[4]["ended_at"]),
+                                                               "%s %s after %d s" % (x[3], x[2], x[1]),
+                                                               x[4].get("worker_run") or x[4].get("session") or "")
+                                                      for x in reversed(items)]))))
+    rows.sort(key=lambda x: -x[0])
+    rows = [r for _, r in rows]
+    out = line("hung, %d h: %d" % (window // 3600, len(rows)), red=bool(rows), menu=section(
+        "", rows, ["suite · repo", "hangs", "min lost", "who", "last log"], [False, True, True, False, False])
+        if rows else None)
+    out.update(key="tests:hang", say=rows[0]["say"] if rows else None, judge=[
+        verdict("test_hang", ident, 0, 0, "runs", window // 3600, n, None, bad=0)
+        for ident, n in sorted(seen.items()) if ident not in hangs])
+    return out
+
+
 def tests_section(tests, now, kills=(), runs=()):
     today = local_day(now)
     todays = [t for t in tests if local_day(t["end"]) == today]
@@ -3530,12 +3620,12 @@ def tests_section(tests, now, kills=(), runs=()):
                                evidence=[evidence(t["end"] - t["secs"], "test-history %s %s %d" % (
                                    t.get("repo"), t.get("label"), t["end"]))])
                        for t, crowd, passed in fails]
-    pole, cost = pole_line(tests, now), cost_line(tests, now)
-    out = section("Tests", rows, columns, right, lead=[overlap, loaded, pole, cost], nav=nav,
+    pole, cost, hung = pole_line(tests, now), cost_line(tests, now), hang_line(runs, now)
+    out = section("Tests", rows, columns, right, lead=[hung, overlap, loaded, pole, cost], nav=nav,
                   ok=("%d runs today, %s of wall clock, none slower than usual" % (
                       len(todays), fmt_long(union_secs(intervals(todays)))) if todays else "no test finished today")
                   + ("; %d running now" % len(live) if live else ""))
-    out["extra_red"] = [x for x in (overlap, loaded, pole, cost) if x["red"]]
+    out["extra_red"] = [x for x in (hung, overlap, loaded, pole, cost) if x["red"]]
     if out["extra_red"] and out["state"] != "problem":
         out.update(state="problem", fact=out["extra_red"][0]["say"])
     return out

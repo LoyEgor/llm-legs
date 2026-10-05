@@ -501,6 +501,7 @@ jq -n --argjson s "$(now)" '{contract: 1, doctor: "harness", as_of_s: $s, judge:
     {id: "test_slow:proj:test_x", rule: "test_slow", state: "new", fact: "slow suite"},
     {id: "test_long_pole:proj:test_x", rule: "test_long_pole", state: "new", fact: "the long pole"},
     {id: "test_daily_cost:proj:test_x", rule: "test_daily_cost", state: "new", fact: "a costly suite"},
+    {id: "test_hang:proj:test_x", rule: "test_hang", state: "new", fact: "a hung suite"},
     {id: "menu_build:automation", rule: "menu_build", state: "new", fact: "11 menu opens waited 450 ms"},
     {id: "floor:tool", rule: "floor", state: "watch", fact: "floor", value: 100, exposure: 100},
     {id: "load:quiet", rule: "load", state: "watch", fact: "quiet", value: 1000, exposure: 1000}]
@@ -535,9 +536,12 @@ self=$(cat "$DATA"/h-* | awk -F'\t' '$1 ~ /^harness-doctor-/ {print $1}')
 assert jqe --arg c "$(cd -P "$ROOT" && pwd | sed -E 's#/\.claude/worktrees/[^/]+$##')/bin/harness-doctor" --arg t "$WORK/projects/proj/tests/test_x.sh" \
   '[.problems[] | {id, files: .component.files}] == [{id: "collector:run", files: [$c]}, {id: "test_slow:proj:test_x", files: [$t]},
   {id: "test_long_pole:proj:test_x", files: [$t]}, {id: "test_daily_cost:proj:test_x", files: [$t]},
+  {id: "test_hang:proj:test_x", files: [$t]},
   {id: "menu_build:automation", files: [$h, $m]}]' --arg h "$WORK/projects/hammerspoon/automation_menu.lua" \
   --arg m "$L/hammerspoon/llm-limits.lua" "$(record "$self")"
 assert grep -qF "Test speed is this run's to fix, never a handoff" "$RUNS/$self.brief.md"
+assert grep -qF "A hung suite (\`test_hang\`) is this run's to fix, never a handoff (\`close\` refuses one)" "$RUNS/$self.brief.md"
+assert grep -qF "The proof is the doctor's own: no \`test_hang\` row for that suite after the fix." "$RUNS/$self.brief.md"
 assert grep -qF "Menu delays (\`menu_build\`) are this run's to fix, never a handoff" "$RUNS/$self.brief.md"
 assert [ "$(grep -c 'never a handoff' "$RUNS/$hk.brief.md")" = 0 ]
 assert jqe --arg o "$O/.claude/worktrees/night-n3-$self" '.worktrees | index($o) != null' "$(record "$self")"
@@ -545,13 +549,14 @@ assert jqe '.worktrees | length == 1' "$(record "$hk")"
 jq -n --argjson s $(($(now) + 5)) '{contract: 1, doctor: "harness", as_of_s: $s, judge: "base-harness", problems: []}' \
   >"$DATA/harness-doc.json"
 printf '%s\thandoff\tproj/tests/test_x.sh\tdocs/handoffs/x.md\n' test_slow:proj:test_x test_long_pole:proj:test_x \
-  test_daily_cost:proj:test_x >"$WORK/hd"
+  test_daily_cost:proj:test_x test_hang:proj:test_x >"$WORK/hd"
 printf 'menu_build:automation\thandoff\thammerspoon/automation_menu.lua\tdocs/handoffs/x.md\n' >>"$WORK/hd"
 printf 'collector:run\thandoff\tllm-legs/bin/harness-doctor\tdocs/handoffs/x.md\n' >>"$WORK/hd"
 printf 'quiet-hook\thandoff\tproj/README\tdocs/handoffs/x.md\n' >>"$WORK/hd"
 assert_fails fix close "$self" --decisions "$WORK/hd" "handed off" 2>"$WORK/err"
-assert [ "$(grep -c "handoff refused: test speed and menu delays are this run's to fix" "$WORK/err")" = 4 ]
-assert grep -qF 'line 4 (menu_build:automation): handoff refused' "$WORK/err"
+assert [ "$(grep -c "handoff refused: test speed and menu delays are this run's to fix" "$WORK/err")" = 5 ]
+assert grep -qF 'line 4 (test_hang:proj:test_x): handoff refused' "$WORK/err"
+assert grep -qF 'line 5 (menu_build:automation): handoff refused' "$WORK/err"
 assert_fails grep -qF "(collector:run): handoff refused" "$WORK/err"
 assert_fails grep -qF "(quiet-hook): handoff refused" "$WORK/err"
 rm "$DATA/harness-doc.json"

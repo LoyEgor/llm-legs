@@ -33,6 +33,7 @@ JQ_OPEN='def open: .closed_at == null and .abandoned_at == null and .failed_at =
 JQ_AREA='def area: .area // (if .doctor == "updater" then "release" else "all" end);'
 JQ_COUNTS='"\(.problems | length) problems" + (if (.quiet // []) | length > 0 then " · \(.quiet | length) known, quiet" else "" end)'
 TEST_SPEED_RULES=' test_long_pole test_daily_cost test_slow suites_at_once '
+TEST_FIX_RULES="$TEST_SPEED_RULES test_hang "
 JQ_HAS_RULES='any(.problems[]; .rule as $r | $rules | split(" ") | index($r))'
 
 die() { printf 'doctor-fix: %s\n' "$*" >&2; exit 1; }
@@ -303,7 +304,7 @@ def snapshot(doctor, doc_file, night=None):
                       and (ident.split(":")[0] == key or ident == key or ident == "event:" + event))]
             if ident.startswith(("/", "~/")) and os.path.isfile(os.path.expanduser(ident)):
                 files.append(ident)
-            if (rule in ("test_slow", "test_load_fail", "test_long_pole", "test_daily_cost") or kind == "tests") \
+            if (rule in ("test_slow", "test_load_fail", "test_long_pole", "test_daily_cost", "test_hang") or kind == "tests") \
                     and ident.count(":") == 1:
                 repo, test = ident.split(":")
                 files += [f for f in (os.path.join(repos_dir(doctor), repo, "tests", test + ext) for ext in (".sh", ".py", ""))
@@ -649,6 +650,8 @@ write_brief() { # id worktree -> the brief file
       printf 'Code runs: every problem carries its judged plan and proof obligations; a deletion lands only through `bin/code-doctor check` (close runs it against `refs/night/%s/base`), never edit through a symlink into another repository, and a cross-repository merge lands in stages over nights (the shared module and the callers first, `merges: [{stage: "migrated", night}]` in the ledger row, the old copy on a later night). Record each landed cleanup with `bin/code-doctor record-fix <cause> --by <run> --files ... --lines-removed N [--mechanism M --canonical PATH --replaced PATH...]`.\n\n' "$night"
     ! jq -e --arg rules "$TEST_SPEED_RULES" "$JQ_HAS_RULES" "$file" >/dev/null ||
       printf 'Test speed is this run'"'"'s to fix, never a handoff (`close` refuses one): for `test_long_pole`, `test_daily_cost`, `test_slow` and `suites_at_once` make the suites faster yourself in any sweep repository (an `ADD-DIR:` worktree each): split a long pole into independent suite files that `tests/run-all` runs in parallel, cut redundant cases, make timing asserts load-robust, cache fixtures; every assert keeps its coverage.\n\n'
+    ! jq -e --arg rules ' test_hang ' "$JQ_HAS_RULES" "$file" >/dev/null ||
+      printf 'A hung suite (`test_hang`) is this run'"'"'s to fix, never a handoff (`close` refuses one): find what it blocked on and fix it so it cannot hang, e.g. stdin from /dev/null for a child that may read a tty, a timeout on a child that waits, a tty probe a fixture answers; every assert keeps its coverage. The proof is the doctor'"'"'s own: no `test_hang` row for that suite after the fix.\n\n'
     ! jq -e --arg rules ' menu_build ' "$JQ_HAS_RULES" "$file" >/dev/null ||
       printf 'Menu delays (`menu_build`) are this run'"'"'s to fix, never a handoff (`close` refuses one): make the build in the files the packet names faster, measured by the menu journal the doctor reads.\n\n'
     [ "$doctor/$area" != llm/reviewers ] ||
@@ -698,7 +701,7 @@ launch_night() { # doctor night
     fi
     repos=()
     while IFS= read -r repo; do repos+=("$repo"); done < <({ component_repos "$id" "$top"
-      ! jq -e --arg rules "$TEST_SPEED_RULES" "$JQ_HAS_RULES" "$(record_file "$id")" >/dev/null ||
+      ! jq -e --arg rules "$TEST_FIX_RULES" "$JQ_HAS_RULES" "$(record_file "$id")" >/dev/null ||
         grep -vxF -e "$top" -e '' "${NIGHT_RUN_SWEEP_REPOS:-$HOME/.claude/sweep-repos}" 2>/dev/null; } | sort -u)
     siblings=$(night_sibling_worktrees "$night" "$branch" "$id" ${repos[@]+"${repos[@]}"})
     [ -z "$siblings" ] || locked record_set "$id" '.worktrees += ($s | split("\n"))' --arg s "$siblings"
@@ -897,7 +900,7 @@ close_run() { # id --decisions <file> note...
       continue
     elif [ "$verdict" = handoff ] && rule=$(jq -r --arg p "$pid" \
       'first((.problems + (.quiet // []))[] | select(.id == $p) | .rule) // ""' "$file") && [ -n "$rule" ] &&
-      [[ "$TEST_SPEED_RULES menu_build " == *" $rule "* ]]; then
+      [[ "$TEST_FIX_RULES menu_build " == *" $rule "* ]]; then
       bad+=("line $line_no ($pid): handoff refused: test speed and menu delays are this run's to fix")
       continue
     fi

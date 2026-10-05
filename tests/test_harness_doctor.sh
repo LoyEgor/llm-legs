@@ -1000,6 +1000,51 @@ check(slow_level(slow_mix) == ["red"] and [j["level"] for r in m.tests_section(s
           own, dict(peer, repo_root="/r/other"), dict(peer, kind="direct"), dict(peer, started_at=T - 90)])["rows"]
           for j in r.get("judge", []) if j["rule"] == "test_slow"] == ["red"],
       "J its own journal row, another repo's run, a direct run or one after it ends leaves the slow run red")
+hang_root = os.path.join(work, "hang-repo")
+def hang_run(kind, end, suites, **kw):
+    return dict({"kind": kind, "pid": 4242, "started_at": end - 4000, "ended_at": end, "repo": hang_root,
+                 "repo_root": hang_root, "worker_run": None, "session": None, "suites": suites}, **kw)
+hang_logs = os.path.join(work, "hang-tmp")
+for logdir, at, tail in (("run-suites.AAAAAA", T - 700, "run-suites: TIMEOUT after 3600 s, its process tree killed\n"),
+                         ("run-suites.BBBBBB", T - 690, "ok 12\n"), ("run-suites.CCCCCC", T - 9000, "run-suites: TIMEOUT after 3600 s\n")):
+    os.makedirs(os.path.join(hang_logs, logdir))
+    hang_log = os.path.join(hang_logs, logdir, "test_tty.sh.log")
+    with open(hang_log, "w") as handle:
+        handle.write("waiting on the tty\n" + tail)
+    os.utime(hang_log, (at, at))
+hang_runs = [hang_run("suites", T - 600, {"test_tty.sh": {"rc": 124, "secs": 3601.2}, "test_ok.sh": {"rc": 0, "secs": 30},
+                                          "test_red.sh": {"rc": 1, "secs": 4000}, "test_long.sh": {"rc": 0, "secs": 9000}},
+                      worker_run="claudeb-1-2-ab"),
+             hang_run("direct", T - 300, {"test_sig.sh": {"rc": 143, "secs": 3700}}, session="5e55a0ff-0000", signal=15),
+             hang_run("direct", T - 200, {"test_cut.sh": {"rc": 143, "secs": 600}}, signal=15),
+             hang_run("direct", T - 100, {"test_own.sh": {"rc": 124, "secs": 3700}})]
+saved_tmp, os.environ["TMPDIR"] = os.environ.get("TMPDIR"), hang_logs
+hang_part = m.tests_section(slow_mix, T, (), hang_runs)
+os.environ["TMPDIR"] = saved_tmp
+hang_v = {v["ident"]: v for v in m.all_verdicts([hang_part]) if v["rule"] == "test_hang"}
+tty = hang_v.get("hang-repo:test_tty", {})
+check(tty.get("level") == "red" and tty.get("value") == 1 and tty.get("bad") == 1 and tty.get("exposure") == 1
+      and tty["evidence"][0]["ref"] == os.path.join(hang_logs, "run-suites.AAAAAA", "test_tty.sh.log")
+      and tty["evidence"][0]["account"] == "claudeb-1-2-ab"
+      and all(s in tty["fact"] for s in ("hung 1 time", "1 h 00 min wasted", "per-suite bound after 3601 s",
+                                         "claudeb-1-2-ab", "run-suites.AAAAAA/test_tty.sh.log")),
+      "a suite run-suites ended by its bound (rc 124) is a red test_hang from the first time, with count, wasted time, its log and the run that hit it: %s" % tty)
+check([p["id"] for p in m.problems_from([hang_part], {"rows": []}, {}, T) if p["rule"] == "test_hang"]
+      == ["test_hang:hang-repo:test_sig", "test_hang:hang-repo:test_tty"] and hang_part["state"] == "problem",
+      "a hang is a Tests problem named test_hang:<repo>:<suite>")
+check(hang_v.get("hang-repo:test_sig", {}).get("level") == "red" and "killed by signal 15" in hang_v["hang-repo:test_sig"]["fact"]
+      and "session 5e55a0ff" in hang_v["hang-repo:test_sig"]["fact"],
+      "a suite killed by a signal after running past its bound is a hang too, named by the session that ran it")
+check([hang_v.get("hang-repo:" + s, {}).get("level") for s in ("test_ok", "test_red", "test_long", "test_cut", "test_own")]
+      == [None] * 5,
+      "a plain FAIL, a slow pass, a signal under the bound and a direct run's own exit 124 are no hang")
+check(slow_level(slow_mix) == ["red"] and [j["level"] for r in hang_part["rows"] for j in r.get("judge", [])
+                                           if j["rule"] == "test_slow"] == ["red"],
+      "a slow passing suite stays with test_slow beside the hang rule")
+check(m.suite_bound([hang_run("suites", T, {"test_p.sh": {"rc": 0, "secs": s}}) for s in (400, 380, 900, 420)],
+                    hang_root, "test_p.sh") == 4500
+      and m.suite_bound([], hang_root, "test_p.sh") == 3600,
+      "the hang bound is run-suites': 5 x the p90 of passes over the 1800 s floor, twice the floor before 3 passes")
 check(slow_level(suites_mix(700, "named")) == ["red"]
       and [r["say"] for r in m.tests_section(suites_mix(700, "named"), T)["rows"]][0].endswith("for a named-suites run"),
       "a named-suites run is judged against named-suite runs and says so")

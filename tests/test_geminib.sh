@@ -573,6 +573,12 @@ on_tty() { python3 "$ROOT/tests/fixtures/answer-pty.py" "$@"; }
 timeout 60 python3 "$ROOT/tests/fixtures/answer-pty.py" y bash -c 'sleep 11; read -rp "late? [y/N] " a; echo "late=$a"' \
   >"$WORK/late-prompt" 2>&1 &
 late_prompt=$!
+for child in 'exec </dev/null >/dev/null 2>&1; exec sleep 120' 'while :; do echo x; sleep 0.5; done'; do
+  ANSWER_PTY_DEADLINE_S=2 timeout 30 python3 "$ROOT/tests/fixtures/answer-pty.py" y bash -c "$child" \
+    >/dev/null 2>"$WORK/pty-deadline"
+  assert test "$?" -ne 124
+  assert grep -q "bash still running after 2 s, killed" "$WORK/pty-deadline"
+done
 tty_output=$(on_tty '' bash "$SCRIPT" p ttyno)
 assert grep -q "Also sign ttyno into the web routes now? \[y/N\]" <<<"$tty_output"
 assert test "$(cat "$WEB_CALLS")" = "gemini_web accounts"

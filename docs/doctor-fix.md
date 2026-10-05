@@ -160,11 +160,13 @@ Never edit `in` by hand.
 
 ### Test speed and menu delays are yours
 
-`test_long_pole`, `test_daily_cost`, `test_slow`, `suites_at_once` and `menu_build` are fixed by the
+`test_long_pole`, `test_daily_cost`, `test_slow`, `suites_at_once`, `test_hang` and `menu_build` are fixed by the
 run that holds them, never handed off: `close` refuses a `handoff` line for them. Test speed: split a
 long pole into independent suite files `tests/run-all` runs in parallel, cut redundant cases, make
 timing asserts load-robust, cache fixtures, in any sweep repository (a night run holding one gets a
-worktree in each); every assert keeps its coverage. Menu delays: the packet names the menu's build
+worktree in each); every assert keeps its coverage. A hung suite (`test_hang`) is the same: fix why it
+blocks (stdin from /dev/null, a timeout on a waiting child, a tty probe) until the doctor reads no
+`test_hang` row for it. Menu delays: the packet names the menu's build
 files (`hammerspoon/automation_menu.lua`, `llm-legs/hammerspoon/llm-limits.lua`).
 
 ### Speed: same intelligence, less waiting
