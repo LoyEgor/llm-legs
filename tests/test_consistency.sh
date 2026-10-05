@@ -3318,6 +3318,14 @@ assert grep -qF '"wait_red_s": 600,' "$HARNESS_DOCTOR_BIN"
 assert grep -Fxq 'WAIT_DAYS = 15' "$HARNESS_DOCTOR_BIN"
 assert doc_has '`${HARNESS_WAITS_DIR:-${HARNESS_DOCTOR_DIR:-$HOME/.cache/harness-doctor}/waits}/<YYYY-MM-DD>.jsonl`'
 assert doc_has 'else `wait_red_s` 600 s'
+# Row eg: the land journal's one path, as the writer, the reader and the suite runner spell it.
+assert grep -qF 'local dir="${HARNESS_LAND_DIR:-${HARNESS_DOCTOR_DIR:-$HOME/.cache/harness-doctor}/land}"' "$ROOT/bin/land"
+assert grep -qF 'return os.environ.get("HARNESS_LAND_DIR") or os.path.join(state_dir(), "land")' "$HARNESS_DOCTOR_BIN"
+assert grep -qF 'HARNESS_LAND_DIR="$TMPDIR/land"' "$ROOT/share/run-suites.sh"
+assert grep -Fxq 'LAND_DAYS = 7' "$HARNESS_DOCTOR_BIN"
+assert grep -qF 'wait_note suites "land ${repo##*/}/$branch"' "$ROOT/bin/land"
+assert doc_has '`${HARNESS_LAND_DIR:-${HARNESS_DOCTOR_DIR:-$HOME/.cache/harness-doctor}/land}/<YYYY-MM-DD>.jsonl`'
+assert doc_has 'reads `LAND_DAYS = 7`'
 # Row ef: every copy an installer deploys is in harness-doctor's DEPLOYS, under the command and name the installer uses.
 for installer in $(cd "$ROOT" && grep -ls '^install_agent()' bin/*); do
   sub=$(grep -oE '^ *install(-agent)?\)' "$ROOT/$installer" | tr -d ' )' | head -1)

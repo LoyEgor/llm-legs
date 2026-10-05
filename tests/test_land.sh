@@ -16,6 +16,7 @@ has() { grep -qF -- "$2" "$1" || { printf '%s lacks [%s]:\n' "$1" "$2" >&2; cat 
 
 export HOME="$WORK/home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
   GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+export HARNESS_LAND_DIR="$WORK/land" HARNESS_WAITS_DIR="$WORK/waits"
 mkdir -p "$HOME" "$WORK/bin"
 printf '#!/bin/bash\n[ "$1" = sid-foreign ] && echo "Foreign Chat"\n' >"$WORK/bin/chat-name"
 chmod +x "$WORK/bin/chat-name"
@@ -38,7 +39,7 @@ setup() { # name [suites]
   if [ "${2:-}" = suites ]; then
     mkdir -p "$M/tests"
     printf '#!/bin/bash\necho "$*" >>"%s/affected.log"\n[ ! -e "%s/affected-red" ] || exit 1\necho tests/test_x.sh\n' "$T" "$T" >"$M/tests/affected"
-    printf '#!/bin/bash\necho "${WORKER_RUN_ID:-}$*" >>"%s/run-all.log"\n[ ! -e "%s/red" ]\n' "$T" "$T" >"$M/tests/run-all"
+    printf '#!/bin/bash\necho "${WORKER_RUN_ID:-}$*" >>"%s/run-all.log"\n[ ! -e "%s/slow" ] || sleep 1.2\n[ ! -e "%s/red" ]\n' "$T" "$T" "$T" >"$M/tests/run-all"
     chmod +x "$M/tests/affected" "$M/tests/run-all"
   fi
   git -C "$M" add -A && git -C "$M" commit -qm init && git -C "$M" push -q origin main 2>/dev/null
@@ -54,6 +55,12 @@ land_in() { # dir args... -> rc in $rc, stdout in $T/out, stderr in $T/err
   rc=0
   (cd "$1" && shift && "$LAND" "$@") >"$T/out" 2>"$T/err" || rc=$?
 }
+journal() { # jq filter the last land journal row must pass
+  local last
+  last=$(cat "$HARNESS_LAND_DIR"/*.jsonl 2>/dev/null | tail -1)
+  jq -e "$1" >/dev/null 2>&1 <<<"$last" || { printf 'last land row fails [%s]:\n%s\n' "$1" "$last" >&2; return 1; }
+}
+suite_waits() { cat "$HARNESS_WAITS_DIR"/*.jsonl 2>/dev/null | grep -c '"class":"suites","source":"land main/feat"'; }
 gone() { [ ! -e "$W" ] && ! git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null; }
 kept() { [ -d "$W" ] && git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null; }
 
@@ -68,6 +75,9 @@ assert eq "$(sha "$M" main)" "$tip"
 assert eq "$(sha "$R" main)" "$tip"
 assert eq "$(git -C "$M" status --porcelain)" ""
 assert gone
+assert journal '.outcome == "landed" and .reason == null and .repo == "main" and .branch == "feat" and .tries == 1
+  and .suites == 0 and .suite_secs == 0 and .behind == null and .kept == null and .conflict_files == null
+  and (.secs | type) == "number" and (.at | type) == "number"'
 
 # A process of another session working inside the worktree: landed, the worktree and branch stay, the
 # process named and never killed; land's own shell inside it does not count.
@@ -86,6 +96,7 @@ assert eq "$(cat "$T/err")" "land: warning: landed, but $W and branch feat stay,
 assert eq "$(sha "$R" main)" "$tip"
 assert eq "$alive" 1
 assert kept
+assert journal '.outcome == "landed" and .kept == "worktree (held)"'
 
 # Foreign WIP the landing does not touch stays byte for byte through the fast-forward.
 setup wip
@@ -117,6 +128,8 @@ assert eq "$(sha "$M" main)" "$main_before"
 assert cmp -s "$M/a.txt" "$T/a.wip"
 assert eq "$(cat "$T/err")" "land: warning: the main checkout $M stays at $(git -C "$M" rev-parse --short main): a.txt (holder: Foreign Chat) in the way; the next land catches it up, night-run leftovers lists it until then"
 assert gone
+assert journal '.outcome == "landed" and .behind.files == [{"file": "a.txt", "holder": "Foreign Chat"}]
+  and (.behind.why | test("stays at [0-9a-f]+: a.txt \\(holder: Foreign Chat\\) in the way"))'
 
 # An untracked file in the way: landed, the file kept, the checkout behind with the file named.
 setup untracked
@@ -177,6 +190,9 @@ assert eq "$(sha "$M" main)" "$(sha "$R" main)"
 assert cmp -s "$M/c.txt" "$T/c.wip"
 assert eq "$(cat "$T/err")" ""
 assert eq "$(git -C "$M" worktree list | wc -l | tr -d ' ')" 1
+land_in "$M"
+assert eq "$(cat "$T/out")" "main has no unpushed commits: nothing to land"
+assert journal '.outcome == "nothing" and .reason == null and .branch == "main" and .tries == 0'
 
 # Local commits on main that only add to origin/main land with the branch.
 setup onmain
@@ -198,6 +214,7 @@ assert eq "$rc" 0
 assert eq "$(sha "$R" main)" "$tip"
 assert eq "$(git -C "$M" log --format=%s -1 feat)" late
 assert has "$T/err" "branch feat got commits after the rebase and stays"
+assert journal '.outcome == "landed" and .kept == "branch"'
 
 # A headless land never prompts: ssh runs in batch mode.
 setup noprompt
@@ -212,6 +229,7 @@ assert eq "$rc" 1
 assert has "$T/err" "fetch from origin failed"
 assert_not test -e "$T/prompted"
 assert kept
+assert journal '.outcome == "refused" and .reason == "fetch" and .tries == 0'
 
 # A rebase conflict names the file and main's commit on it, exits nonzero, leaves the branch as it was.
 setup rebaseconflict
@@ -227,6 +245,7 @@ assert_not test -e "$(git -C "$W" rev-parse --git-path rebase-merge)"
 assert eq "$(git -C "$W" status --porcelain)" ""
 assert eq "$(sha "$M" main)" "$main_before"
 assert kept
+assert journal '.outcome == "refused" and .reason == "conflict" and .conflict_files == ["a.txt"] and .tries == 1'
 
 setup conflictbare
 branch_edit a.txt "$(lines a | sed 's/^a8$/FEAT8/')"
@@ -250,9 +269,13 @@ assert eq "$(git -C "$M" log --format=%s -2 main | tr '\n' '|')" "feat edits a.t
 setup overlap suites
 branch_edit a.txt "$(lines a | sed 's/^a8$/FEAT8/')"
 other_lands a.txt "$(lines a | sed 's/^a1$/OTHER1/')" "other edits a1"
+: >"$T/slow"
+waits_before=$(suite_waits)
 WORKER_RUN_ID=run-1 land_in "$W"
 assert eq "$rc" 0
 assert has "$T/out" "(pushed), suites: ran 1"
+assert eq "$(suite_waits)" "$((waits_before + 1))"
+assert journal '.outcome == "landed" and .suites == 1 and .suite_secs >= 1 and .secs >= .suite_secs'
 assert eq "$(cat "$T/run-all.log")" "tests/test_x.sh"
 assert eq "$(cat "$T/affected.log")" "a.txt"
 assert eq "$(git -C "$M" show main:a.txt | sed -n '1p;8p' | tr '\n' ' ')" "OTHER1 FEAT8 "
@@ -277,10 +300,13 @@ branch_edit a.txt "$(lines A)"
 hook="$(git -C "$M" rev-parse --path-format=absolute --git-common-dir)/hooks/pre-push"
 printf '#!/bin/bash\n[ -e "%s/moved" ] && exit 0\n: >"%s/moved"\nprintf x >"%s/c.txt" && git -C "%s" commit -qam "other moved" && git -C "%s" push -q origin main 2>/dev/null\n' \
   "$T" "$T" "$O" "$O" "$O" >"$hook" && chmod +x "$hook"
+waits_before=$(suite_waits)
 land_in "$W" --test
 assert eq "$rc" 0
 assert has "$T/out" "suites: ran 2"
 assert eq "$(wc -l <"$T/run-all.log" | tr -d ' ')" 2
+assert eq "$(suite_waits)" "$((waits_before + 2))"
+assert journal '.outcome == "landed" and .suites == 2 and .tries == 2'
 
 # A failing tests/affected leaves coverage unknown: --test stops before publishing, auto warns and lands.
 setup affectedred suites
@@ -291,6 +317,7 @@ tip=$(sha "$W" HEAD) remote_before=$(sha "$R" main)
 land_in "$W" --test
 assert eq "$rc" 1
 assert has "$T/err" "coverage unknown"
+assert journal '.outcome == "refused" and .reason == "coverage"'
 assert eq "$(sha "$R" main)" "$remote_before"
 assert eq "$(sha "$W" HEAD)" "$tip"
 land_in "$W"
@@ -305,9 +332,11 @@ setup red suites
 branch_edit a.txt "$(lines a | sed 's/^a8$/FEAT8/')"
 other_lands a.txt "$(lines a | sed 's/^a1$/OTHER1/')" "other edits a1"
 : >"$T/red"
-remote_before=$(sha "$R" main) tip=$(sha "$W" HEAD)
+remote_before=$(sha "$R" main) tip=$(sha "$W" HEAD) waits_before=$(suite_waits)
 land_in "$W"
 assert eq "$rc" 1
+assert journal '.outcome == "refused" and .reason == "suites" and .suites == 1'
+assert eq "$(suite_waits)" "$((waits_before + 1))"
 assert eq "$(sha "$R" main)" "$remote_before"
 assert_not git -C "$M" merge-base --is-ancestor "$remote_before" main
 assert eq "$(sha "$W" HEAD)" "$tip"
@@ -345,6 +374,7 @@ assert eq "$rc" 1
 assert eq "$(wc -l <"$T/pushes" | tr -d ' ')" 3
 assert eq "$(sha "$M" main)" "$main_before"
 assert kept
+assert journal '.outcome == "refused" and .reason == "moved" and .tries == 3'
 
 # A push origin refuses outright: nothing landed, the worktree and branch stay.
 setup refused
@@ -356,6 +386,7 @@ assert eq "$rc" 1
 assert has "$T/err" "refused"
 assert eq "$(sha "$M" main)" "$main_before"
 assert kept
+assert journal '.outcome == "refused" and .reason == "push"'
 
 # A dirty worktree is refused in one line before anything moves.
 setup dirty
@@ -368,6 +399,32 @@ assert eq "$(cat "$T/err")" "land: $W has 1 uncommitted files: commit them, then
 assert eq "$(sha "$M" main)" "$main_before"
 assert eq "$(sha "$R" main)" "$main_before"
 assert kept
+assert journal '.outcome == "refused" and .reason == "dirty" and .tries == 0 and .branch == "feat"'
+
+# A journal that cannot be written changes neither the exit status nor the output.
+setup unjournaled
+branch_edit a.txt "$(lines A)"
+tip=$(sha "$W" HEAD) rows_before=$(cat "$HARNESS_LAND_DIR"/*.jsonl | wc -l)
+: >"$T/not-a-dir"
+HARNESS_LAND_DIR="$T/not-a-dir" land_in "$W"
+assert eq "$rc" 0
+assert eq "$(cat "$T/out")" "landed feat → main $(git -C "$M" rev-parse --short "$tip") (pushed), suites: skipped"
+assert eq "$(cat "$T/err")" ""
+assert eq "$(cat "$HARNESS_LAND_DIR"/*.jsonl | wc -l)" "$rows_before"
+
+# A land with no share/limiter-hold.sh beside it runs its suites and journals no wait.
+setup nowaitnote suites
+branch_edit a.txt "$(lines A)"
+mkdir -p "$T/legs/bin" "$T/legs/share"
+cp "$LAND" "$T/legs/bin/land" && cp "$(dirname "$LAND")/../share/processes.sh" "$T/legs/share/"
+waits_before=$(suite_waits)
+rc=0
+(cd "$W" && "$T/legs/bin/land" --test) >"$T/out" 2>"$T/err" || rc=$?
+assert eq "$rc" 0
+assert has "$T/out" "suites: ran 1"
+assert eq "$(cat "$T/err")" ""
+assert eq "$(suite_waits)" "$waits_before"
+assert journal '.outcome == "landed" and .suites == 1'
 
 # No remote: a local landing; a branch named from the main checkout without a worktree of its own.
 setup local

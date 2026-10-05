@@ -785,7 +785,7 @@ PINNED = {"call_s": 5.0, "call_note_s": 3.0, "call_min_calls": 5, "cut_share": 0
           "menu_note_ms": 100, "menu_min_builds": 3, "per_call_entries": 1000, "collector_s": 30.0,
           "stop_repeat_s": 1800, "ask_deferred_s": 7200, "silent_s": 21600, "growth_min_b": 120, "watch_tick_s": 120,
           "hold_note_s": 60, "hold_red_s": 300, "wait_red_s": 600, "wait_growth": 2.0, "wait_growth_days": 3,
-          "worker_orphans": 3}
+          "worker_orphans": 3, "land_suite_s": 300, "land_refused_share": 0.30, "land_min_runs": 5, "land_behind_runs": 3}
 check(m.LIMITS == PINNED, "LIMITS match design §4; a fixer never loosens the judge, a change here goes through a handoff")
 check((m.PROOF_MIN_EXPOSURE, m.SEEN_GAP_S, m.DISMISSED) == (20, 86400, ("not-a-bug", "weather")),
       "the proof minimum, the first_seen gap and the dismissal statuses are pinned")
@@ -2106,5 +2106,87 @@ os.execv = lambda path, argv: print(json.dumps(argv, separators=(",", ":")))
 module.exec_speed()
 EOF
 )" "Speed runs at its caller's priority: a night prep or menu waiting on Harness never waits on a taskpolicy -b band"
+
+# The Landing area off land's journal: each floor a named row, a missing journal blind and never green.
+land=$(python3 - "$DOCTOR" "$T" "$WORK" <<'EOF'
+import importlib.machinery, importlib.util, json, os, sys, time
+loader = importlib.machinery.SourceFileLoader("harness_doctor", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_doctor", loader))
+loader.exec_module(m)
+T, work = int(sys.argv[2]), sys.argv[3]
+count = [0]
+
+def check(cond, what):
+    count[0] += 1
+    if not cond:
+        print("FAIL: %s" % what, file=sys.stderr)
+        sys.exit(1)
+
+def journal(name, rows, extra=""):
+    folder = os.path.join(work, name)
+    os.makedirs(folder, exist_ok=True)
+    for r in rows:
+        with open(os.path.join(folder, time.strftime("%Y-%m-%d", time.localtime(r["at"])) + ".jsonl"), "a") as handle:
+            handle.write(json.dumps(dict({"repo": "alpha", "branch": "feat", "outcome": "landed", "reason": None, "secs": 60,
+                                          "suite_secs": 0, "suites": 0, "tries": 1, "behind": None}, **r)) + "\n")
+    with open(os.path.join(folder, m.local_day(T) + ".jsonl"), "a") as handle:
+        handle.write(extra)
+    os.environ["HARNESS_LAND_DIR"] = folder
+    return m.land_section(T)
+
+def behind(*files):
+    return {"why": "the main checkout stays", "files": [{"file": f, "holder": h} for f, h in files]}
+
+part = journal("land-red", [
+    dict(at=T - 600, branch="feat/big", suite_secs=660, suites=52, secs=700),
+    dict(at=T - 1200, suite_secs=40, suites=3, tries=2),
+    dict(at=T - 1800, outcome="refused", reason="conflict", conflict_files=["a.txt"]),
+    dict(at=T - 2400, outcome="refused", reason="suites", suite_secs=100, suites=2),
+    dict(at=T - 3000, outcome="refused", reason="dirty", tries=0),
+    dict(at=T - 3600, behind=behind(("bin/land", "Chat A"), ("README.md", "Chat A"))),
+    dict(at=T - 4200, behind=behind(("bin/land", "Chat B"))),
+    dict(at=T - 4800, behind=behind(("bin/land", "Chat A"))),
+    dict(at=T - 5400, outcome="nothing", tries=0),
+    dict(at=T - 7 * 86400 - 3600, outcome="refused", reason="push"),
+], extra='not json\n{"at": "x", "outcome": "landed"}\n')
+rows = {r["key"]: r for r in part["rows"]}
+check(part["name"] == "Landing" and part["state"] == "problem", "red land rows make the Landing area a problem: %s" % part["state"])
+check(rows["land:runs"]["cells"] == ["runs · landed", "9 · 56 %"] and rows["land:retried"]["cells"][1] == "1",
+      "runs, landed share and retries count the window's rows alone: %s" % rows["land:runs"]["cells"])
+judge = rows["land:refused"]["judge"][0]
+check(rows["land:refused"]["red"] == [1] and (judge["rule"], judge["ident"], judge["level"], judge["value"]) ==
+      ("land_refused", "all", "red", 0.333) and judge["fact"].endswith(": dirty 1, suites 1, conflict 1"),
+      "a refusal share over 30 %% is the named row land_refused: %s" % judge)
+check([r["cells"][:2] for r in rows["land:refused"]["menu"]["rows"]] == [["dirty", "1"], ["suites", "1"], ["conflict", "1"]],
+      "refusals drill down by reason")
+judge = rows["land:suites"]["judge"][0]
+check(rows["land:suites"]["red"] == [1] and (judge["rule"], judge["ident"], judge["value"], judge["level"]) ==
+      ("land_suites", "alpha", 660, "red") and "52 suites" in judge["fact"] and "feat/big" in judge["fact"],
+      "a landing whose suites ran over 5 min is the named row land_suites: %s" % judge)
+check(rows["land:suites"]["menu"]["rows"][0]["cells"] == ["alpha · feat/big", "11m 00s", "52", "landed"]
+      and rows["land:suite-count"]["cells"][1] == "3 · 52" and rows["land:suite-minutes"]["cells"][1] == "1.9",
+      "suite time and count, worst first with repo and branch, and suite minutes a day: %s" % ([rows[k]["cells"] for k in ("land:suite-count", "land:suite-minutes")] + [rows["land:suites"]["menu"]["rows"][0]["cells"]]))
+judges = {j["ident"]: j for j in rows["land:behind"]["judge"]}
+check(rows["land:behind"]["red"] == [1] and rows["land:behind"]["cells"][1] == "3"
+      and (judges["alpha:bin/land"]["level"], judges["alpha:bin/land"]["value"]) == ("red", 3)
+      and "Chat A 2, Chat B 1" in judges["alpha:bin/land"]["fact"] and judges["alpha:README.md"]["level"] is None,
+      "a file holding the checkout behind on 3 landings is the named row land_behind, one landing is not: %s" % judges)
+check(rows["land:behind"]["menu"]["rows"][0]["cells"] == ["bin/land · alpha", "3", "Chat A, Chat B"],
+      "the top blocking files with their holders")
+
+part = journal("land-green", [dict(at=T - 600 * i, suite_secs=30) for i in range(1, 6)]
+               + [dict(at=T - 4000, outcome="refused", reason="conflict")])
+check(part["state"] == "ok" and not any(r["red"] for r in part["rows"]), "landings within every floor are green: %s" % part)
+part = journal("land-few", [dict(at=T - 600, outcome="refused", reason="push"), dict(at=T - 1200, outcome="refused", reason="other")])
+check(part["state"] == "ok", "a refusal share under 5 runs judges nothing")
+part = journal("land-quiet", [])
+check(part["state"] == "ok" and part["fact"] == "no land run in 7 d", "a journal with no run in the window is quiet, not blind")
+os.environ["HARNESS_LAND_DIR"] = os.path.join(work, "land-missing")
+part = m.land_section(T)
+check(part["state"] == "blind" and part["fact"] == "no land journal", "a missing land journal is blind: %s" % part)
+print(count[0])
+EOF
+) || fail "the Landing area misjudged its journal"
+asserts=$((asserts + land))
 
 printf 'PASS: %s asserts; harness-doctor reads waits, cuts, hooks, load, tests and causes off fixtures, incrementally and under its lock in a LaunchAgent that is never starved, and compares every picker window, days off its day summaries and hours off the raw rows\n' "$asserts"

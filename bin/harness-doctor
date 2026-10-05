@@ -96,9 +96,14 @@ LIMITS = {
     "wait_growth": 2.0,
     "wait_growth_days": 3,
     "worker_orphans": 3,
+    "land_suite_s": 300,
+    "land_refused_share": 0.30,
+    "land_min_runs": 5,
+    "land_behind_runs": 3,
 }
 WAIT_RED_S = {"lock": 60, "poll": 30}
 WAIT_DAYS = 15
+LAND_DAYS = 7
 
 SYNC_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop", "SubagentStop", "SessionStart",
                "PreCompact", "SessionEnd")
@@ -1066,7 +1071,7 @@ def prune(now):
                       ("menu", JOURNAL_FILE_DAYS), ("speed-days", SPEED_DAYS)):
         cutoff = local_day(now - keep * 86400)
         old += [p for p in glob.glob(os.path.join(state_dir(), sub, "*")) if os.path.basename(p)[:10] < cutoff]
-    old += [p for p in glob.glob(os.path.join(wait_dir(), "*.jsonl"))
+    old += [p for p in glob.glob(os.path.join(wait_dir(), "*.jsonl")) + glob.glob(os.path.join(land_dir(), "*.jsonl"))
             if os.path.basename(p)[:10] < local_day(now - WAIT_DAYS * 86400)]
     old += [p for p in glob.glob(os.path.join(state_dir(), "hooks", "*.tsv"))
             + glob.glob(os.path.join(state_dir(), "hooks", "folded", "*.tsv"))
@@ -5405,6 +5410,125 @@ def waits_classes_section(now):
     return out
 
 
+LAND_GROUP = "Landing"
+LAND_REASONS = ("dirty", "conflict", "suites", "push", "fetch", "coverage", "moved", "other")
+
+
+def land_dir():
+    return os.environ.get("HARNESS_LAND_DIR") or os.path.join(state_dir(), "land")
+
+
+def land_runs(now):
+    runs, days = [], []
+    for day in sorted({local_day(now - back * 86400) for back in range(LAND_DAYS + 1)}):
+        items = read_jsonl(os.path.join(land_dir(), day + ".jsonl"))
+        if items is None:
+            continue
+        days.append(day)
+        for item in items:
+            at = item.get("at")
+            if isinstance(at, (int, float)) and now - LAND_DAYS * 86400 <= at <= now and item.get("outcome") in (
+                    "landed", "refused", "nothing"):
+                for key in ("secs", "suite_secs", "suites", "tries"):
+                    value = item.get(key)
+                    item[key] = value if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+                if item["outcome"] == "refused" and item.get("reason") not in LAND_REASONS:
+                    item["reason"] = "other"
+                item["ref"] = "land/%s.jsonl %d" % (day, at)
+                runs.append(item)
+    return sorted(runs, key=lambda r: r["at"]), days
+
+
+def land_section(now):
+    runs, days = land_runs(now)
+    if not runs:
+        return section(LAND_GROUP, [], [""], [False], ok="no land run in %d d" % LAND_DAYS,
+                       blind="" if days else "no land journal")
+    window_h, span = LAND_DAYS * 24, min(LAND_DAYS, max(1.0, (now - day_start(days[0])) / 86400.0))
+    tag = lambda r: "%s · %s" % (r.get("repo") or "?", r.get("branch") or "?")
+    refused = [r for r in runs if r["outcome"] == "refused"]
+    reasons = collections.Counter(r["reason"] for r in refused)
+    share, limit = len(refused) / float(len(runs)), LIMITS["land_refused_share"]
+    over = len(runs) >= LIMITS["land_min_runs"] and share > limit
+    fact = "land refused %d of %d runs in %d d, %s, limit %s: %s" % (
+        len(refused), len(runs), LAND_DAYS, fmt_pct(share), fmt_pct(limit),
+        ", ".join("%s %d" % kv for kv in reasons.most_common()))
+    refused_judge = verdict("land_refused", "all", share, limit, "share", window_h, len(runs), "red" if over else None,
+                            fact=fact, bad=len(refused) if over else 0,
+                            evidence=[evidence(r["at"], r["ref"], "%s refused: %s" % (tag(r), r["reason"]))
+                                      for r in reversed(refused)])
+    by_reason = section("", [row([why, n, tag(next(r for r in reversed(refused) if r["reason"] == why))], dim=True)
+                             for why, n in reasons.most_common()], ["reason", "runs", "last"], [False, True, False])
+
+    tested = sorted((r for r in runs if r["suites"] or r["suite_secs"]), key=lambda r: (-r["suite_secs"], -r["suites"]))
+    suite_limit, suite_judges = LIMITS["land_suite_s"], []
+    for repo in sorted({r.get("repo") or "?" for r in tested}):
+        items = [r for r in tested if (r.get("repo") or "?") == repo]
+        top = items[0]
+        suite_judges.append(verdict(
+            "land_suites", repo, top["suite_secs"], suite_limit, "s", window_h, len(items),
+            "red" if top["suite_secs"] > suite_limit else None,
+            fact="%s: a landing ran %d suites for %s, limit %s: %s" % (
+                repo, top["suites"], fmt_long(top["suite_secs"]), fmt_long(suite_limit), top.get("branch") or "?"),
+            values=[r["suite_secs"] for r in items],
+            evidence=[evidence(r["at"], r["ref"], "%s: %d suites in %s, %s" % (
+                tag(r), r["suites"], fmt_long(r["suite_secs"]), r["outcome"])) for r in items[:3]]))
+    worst = section("", [row([tag(r), fmt_s(r["suite_secs"]), r["suites"], r["outcome"]],
+                             red=[1] if r["suite_secs"] > suite_limit else (), dim=r["suite_secs"] <= suite_limit)
+                         for r in tested[:INVENTORY_ROWS]],
+                    ["repo · branch", "suite time", "suites", "outcome"], [False, True, True, False])
+    secs, counts = [r["suite_secs"] for r in tested], [r["suites"] for r in tested]
+
+    held = {}
+    behind = [r for r in runs if isinstance(r.get("behind"), dict)]
+    for r in behind:
+        for f in r["behind"].get("files") or ():
+            if isinstance(f, dict) and f.get("file"):
+                held.setdefault((r.get("repo") or "?", str(f["file"])), []).append((r, str(f.get("holder") or "unknown")))
+    ranked = sorted(held.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    behind_judges = []
+    for (repo, path), hits in ranked:
+        bad = len(hits) >= LIMITS["land_behind_runs"]
+        holders = collections.Counter(h for _, h in hits)
+        behind_judges.append(verdict(
+            "land_behind", "%s:%s" % (repo, path), len(hits), LIMITS["land_behind_runs"], "runs", window_h,
+            sum(1 for r in runs if (r.get("repo") or "?") == repo), "red" if bad else None,
+            fact="%s in %s held the main checkout behind on %d landings in %d d, limit %d; holders: %s" % (
+                path, repo, len(hits), LAND_DAYS, LIMITS["land_behind_runs"],
+                ", ".join("%s %d" % kv for kv in holders.most_common())),
+            bad=len(hits) if bad else 0,
+            evidence=[evidence(r["at"], r["ref"], "%s: %s held by %s" % (tag(r), path, h)) for r, h in reversed(hits)]))
+    files = section("", [row(["%s · %s" % (path, repo), len(hits),
+                              ", ".join(h for h, _ in collections.Counter(h for _, h in hits).most_common(3))],
+                             red=[1] if len(hits) >= LIMITS["land_behind_runs"] else (),
+                             dim=len(hits) < LIMITS["land_behind_runs"]) for (repo, path), hits in ranked[:INVENTORY_ROWS]],
+                    ["file · repo", "landings", "holders"], [False, True, False])
+    retried = [r for r in runs if r["tries"] > 1]
+
+    red_suites = [j for j in suite_judges if j["level"]]
+    red_behind = [j for j in behind_judges if j["level"]]
+    rows = [
+        row(["runs · landed", "%d · %s" % (len(runs), fmt_pct(sum(1 for r in runs if r["outcome"] == "landed")
+                                                             / float(len(runs))))], dim=True, key="land:runs"),
+        row(["refused", "%d · %s" % (len(refused), fmt_pct(share))], red=[1] if over else (), dim=not over,
+            key="land:refused", say=fact if over else None, judge=refused_judge, menu=by_reason if refused else None),
+        row(["suite min a day", num(sum(secs) / span, 60.0)], dim=True, key="land:suite-minutes"),
+        row(["land min a day", num(sum(r["secs"] for r in runs) / span, 60.0)], dim=True, key="land:minutes"),
+        row(["suite time p50 · worst", "%s · %s" % (fmt_s(median(secs)), fmt_s(max(secs) if secs else None))],
+            red=[1] if red_suites else (), dim=not red_suites, key="land:suites",
+            say=red_suites[0]["fact"] if red_suites else None, judge=suite_judges, menu=worst if tested else None),
+        row(["suites p50 · worst", "%g · %g" % (median(counts), max(counts)) if counts else "–"], dim=True,
+            key="land:suite-count"),
+        row(["checkout left behind", len(behind)], red=[1] if red_behind else (), dim=not red_behind, key="land:behind",
+            say=red_behind[0]["fact"] if red_behind else None, judge=behind_judges, menu=files if ranked else None),
+        row(["retried", len(retried)], dim=True, key="land:retried", menu=section(
+            "", [row([tag(r), r["tries"], r["outcome"]], dim=True) for r in reversed(retried[-INVENTORY_ROWS:])],
+            ["repo · branch", "tries", "outcome"], [False, True, False]) if retried else None),
+    ]
+    return section(LAND_GROUP, rows, ["", "%d d" % LAND_DAYS], [False, True],
+                   ok="%d landings in %d d, suites within %s each" % (len(runs), LAND_DAYS, fmt_long(suite_limit)))
+
+
 def blind_rows(ledger, dynamic):
     return dynamic + [dict(b) for b in ledger.get("blind_spots") or () if isinstance(b, dict)]
 
@@ -5561,7 +5685,8 @@ def collect(write, now):
                 stop_hooks_section(now),
                 guards_section(now),
                 deploys_section(now),
-                waits_classes_section(now)]
+                waits_classes_section(now),
+                land_section(now)]
     growth_part = growth_section(growth, now, spool_backlog(now))
     if growth_part:
         sections.append(growth_part)
