@@ -59,7 +59,7 @@ visible_set='' visible_ready='' ranked_names=''
 # Enumerated once per run: the check, the between-sessions check and the rewrite all ask for it.
 load_visible() {
   ranked_names=$(instruction_ranked_names "$RANKED_CACHE")
-  visible_set=$(instruction_visible_paths "$HOME" "$RANKED_CACHE" "$repo_root")
+  visible_set=$(instruction_visible_cached "$HOME" "$RANKED_CACHE" "$repo_root" "$STATE_DIR")
   visible_ready=1
 }
 visible_paths() {
@@ -498,8 +498,8 @@ cmd_baseline() {
   # version a file has sat at for a month is exactly the one worth being able to restore; only a
   # version no baseline has vouched for since is abandoned. Every write refreshes the mtime of
   # the version still in use, so what this reaches is superseded copies alone.
-  find "$STATE_DIR" -mindepth 1 -maxdepth 1 -name 'session-*' ! -path "${ref:-/}" -mtime +7 \
-    -delete 2>/dev/null
+  find "$STATE_DIR" -mindepth 1 -maxdepth 1 \( -name 'session-*' ! -path "${ref:-/}" -mtime +7 \
+    -o -name 'visible-*' -mtime +1 \) -delete 2>/dev/null
   find "$SNAP_DIR" -mindepth 1 -maxdepth 1 -type f -mtime +90 -delete 2>/dev/null
   find "$RECEIPT_DIR" -mindepth 1 -maxdepth 1 -type f -mtime +30 -delete 2>/dev/null
   # A read-only call that exits non-zero gets no PostToolUse, so its note is never taken.

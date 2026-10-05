@@ -4,10 +4,17 @@
 [ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 exec >/dev/null 2>&1
 
+IFS= read -r -d '' input || :
+# A PreToolUse Bash call only ever records a `worktree add|move`, whose word its command then carries.
+pre_event='"hook_event_name"[[:space:]]*:[[:space:]]*"PreToolUse"'
+bash_tool='"tool_name"[[:space:]]*:[[:space:]]*"Bash"'
+bash_command='"command"[[:space:]]*:[[:space:]]*"(([^"\\]|\\.)*)"'
+if [[ $input =~ $pre_event && $input =~ $bash_tool && $input =~ $bash_command ]]; then
+  case ${BASH_REMATCH[1]} in *worktree*) ;; *) exit 0 ;; esac
+fi
 self=$(realpath "${BASH_SOURCE[0]}") || self=${BASH_SOURCE[0]}
-bin_dir=$(dirname "$self")
+case $self in */*) bin_dir=${self%/*} ;; *) bin_dir=. ;; esac
 place="$bin_dir/statusline-place"
-input=$(cat) || exit 0
 parsed=$(printf '%s' "$input" | jq -r -f "$bin_dir/../share/statusline-workdir.jq") || exit 0
 IFS=$'\x1f' read -r hook_event tool_name session_id base_dir agent_flag candidate bash_subshell \
   bash_read_only bash_worktree bash_worktree_base bash_cd_hit tool_use_id dispatch bash_writes \

@@ -221,12 +221,39 @@ class InstructionPerformance(unittest.TestCase):
         log = self.work / 'exec.log'
         path = self.shim('stat', 'echo stat >> "$PROBE_LOG"\nexec @REAL@ "$@"\n')
         self.shim('shasum', 'echo hash >> "$PROBE_LOG"\nexec @REAL@ "$@"\n')
+        self.shim('find', 'echo find >> "$PROBE_LOG"\nexec @REAL@ "$@"\n')
+        self.shim('git', 'case " $* " in *" ls-files "*) echo ls-files >> "$PROBE_LOG" ;; esac\nexec @REAL@ "$@"\n')
         trace = self.put(self.work / 'trace.sh', 'set -x\n')
         result = self.hook('check', PATH=path, PROBE_LOG=str(log), BASH_ENV=str(trace))
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual('', result.stdout)
-        self.assertEqual(['stat'], log.read_text().splitlines())
+        self.assertEqual(['stat', 'stat'], log.read_text().splitlines())
         self.assertFalse(' pin ' in result.stderr, 'quiet check performed per-file pin work')
+
+    def test_reused_enumeration_still_sees_every_arrival(self):
+        self.git('init', '-q')
+        self.put(self.repo / '.gitignore', 'output/\n*.log\n.claude/\n')
+        self.put(self.repo / 'output/CLAUDE.md')
+        self.put(self.repo / 'logs/run.log')
+        self.put(self.repo / 'pkg/CLAUDE.md')
+        self.put(self.repo / '.claude/rules/a.md')
+        self.put(self.home / '.claude/skills/old/SKILL.md')
+        (self.repo / 'empty/deeper').mkdir(parents=True)
+        self.assertEqual(0, self.hook('baseline').returncode)
+        self.assertEqual('', self.hook('check').stdout)
+        arrivals = [
+            lambda: self.put(self.repo / 'pkg/sub/CLAUDE.md'),
+            lambda: self.put(self.repo / 'logs/CLAUDE.md'),
+            lambda: self.put(self.repo / 'empty/deeper/x/CLAUDE.md'),
+            lambda: self.put(self.repo / '.claude/rules/b.md'),
+            lambda: self.put(self.home / '.claude/skills/new/SKILL.md'),
+            lambda: (self.put(self.repo / '.gitignore', '*.log\n.claude/\n'), self.repo / 'output/CLAUDE.md')[1],
+        ]
+        for arrive in arrivals:
+            added = arrive()
+            context = self.context(self.hook('check'))
+            self.assertTrue(any('ADDED ' + str(p) in context for p in (added, added.resolve())), context)
+            self.assertEqual('', self.hook('check').stdout)
 
     def test_spent_budget_leaves_the_rest_for_the_next_call(self):
         self.git('init', '-q')

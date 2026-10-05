@@ -104,6 +104,15 @@ _instruction_class_files() {
   for e in $INSTRUCTION_MD_EXTENSIONS; do name_args+=(-o -iname "*.$e"); done
   [ -d "$home/.claude" ] || return 0
   case "$ere" in *[][.*^\$+?\(\){}\|\\]*) ere=$(instruction_ere_escape "$home") ;; esac
+  if [ -n "${_INSTRUCTION_STAMPS:-}" ]; then
+    find -E -L "$home/.claude" \( -name .git -o -name node_modules -o -name worktrees \
+               -o -path "$home/.claude/projects" \
+               -o -regex "$ere/\.claude/$INSTRUCTION_HOME_UNLOADED_ERE" \) -prune \
+               -o -type f \( "${name_args[@]}" \) -print0 -o -type d -print0 2>/dev/null |
+      perl -0ne 'BEGIN { open S, ">>", $ENV{_INSTRUCTION_STAMPS} or exit 1 }
+        chomp; $d = -d; tr/\n\t/??/; if ($d) { print S "$_\n" } else { print "$_\n" }'
+    return
+  fi
   find -E -L "$home/.claude" \( -name .git -o -name node_modules -o -name worktrees \
              -o -path "$home/.claude/projects" \
              -o -regex "$ere/\.claude/$INSTRUCTION_HOME_UNLOADED_ERE" \) -prune \
@@ -119,10 +128,15 @@ instruction_repo_root() { # cwd
 # A `.claude/` segment counts below the repository root alone: a worktree lives under
 # `<repo>/.claude/worktrees/`, and matched on the absolute path every markdown file in it read as
 # instruction content, which instruction_carved_out says it is not.
-_instruction_find_files() { # dir [repo-root]
+_instruction_find_files() { # dir [repo-root] [dirs]
   local e
   local -a md_args=(-name review-debt-ignore)
   for e in $INSTRUCTION_MD_EXTENSIONS; do md_args+=(-o -iname "*.$e"); done
+  if [ "${3:-}" = dirs ]; then
+    find "$1" \( -name .git -o -name node_modules -o -name worktrees \) -prune -o -type d -print0 2>/dev/null |
+      _instruction_emit_paths
+    return
+  fi
   find "$1" \( -name .git -o -name node_modules -o -name worktrees \) -prune -o \
     -type f \( -iname CLAUDE.md -o -iname CLAUDE.local.md -o -iname SKILL.md -o \
     \( -path '*/.claude/*' ! -path '*/.claude/local/*' \( "${md_args[@]}" \) \) \) -print0 2>/dev/null |
@@ -135,19 +149,41 @@ _instruction_find_files() { # dir [repo-root]
 # or CLAUDE.local.md is kept on purpose. All-or-nothing: a git failing midway falls back to the
 # walk, never to a partial set.
 instruction_repo_files() { # repo-root [outer-root]
-  local root=${1:-} top=${2:-${1:-}} kind p listing
+  local root=${1:-} top=${2:-${1:-}} kind p listing stamps=${_INSTRUCTION_STAMPS:-} parts=3
   [ -n "$root" ] && [ -d "$root" ] || return 0
+  if [ -n "$stamps" ]; then
+    parts=4
+    { git -C "$root" rev-parse --path-format=absolute --git-path index --git-path info/exclude
+      git -C "$root" config --path core.excludesFile
+      printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/git/ignore" "$root"; } 2>/dev/null |
+      while IFS= read -r p; do
+        while [ ! -e "$p" ] && [ "${p%/*}" != "$p" ]; do p=${p%/*}; done
+        printf '%s\n' "${p:-/}"
+      done >>"$stamps"
+  fi
   if [ ! -L "$root" ] && [ -e "$root/.git" ] && listing=$(
       { git -C "$root" ls-files -c -s -z && printf '\035\0' &&
         git -C "$root" ls-files -o --exclude-standard -z && printf '\035\0' &&
-        git -C "$root" ls-files -o -i --exclude-standard --directory -z && printf '\035\0'; } 2>/dev/null |
+        git -C "$root" ls-files -o -i --exclude-standard --directory -z && printf '\035\0' &&
+        { [ -z "$stamps" ] || { git -C "$root" ls-files -o --exclude-standard --directory -z && printf '\035\0'; }; }
+      } 2>/dev/null |
       perl -0ne '
-        BEGIN { ($root, $top, $md) = splice @ARGV, 0, 3; $md = join "|", split / /, $md }
+        BEGIN { ($root, $top, $md, $parts) = splice @ARGV, 0, 4; $md = join "|", split / /, $md;
+                $stamps = $ENV{_INSTRUCTION_STAMPS}; if ($stamps ne "") { open S, ">>", $stamps or exit 1 } }
+        sub stamp { (my $p = "$root/$_[0]") =~ s/[\n\t]/?/g; print S "$p\n" }
         chomp;
         if ($_ eq "\035") { $part++; next }
         $link = $part == 0 && m{^160000 };
         if ($part == 0) { s/^[0-7]+ [0-9a-f]+ [0-3]\t// or next }
-        next if m{(?:^|/)(?:\.git|node_modules|worktrees)/} || $seen{$_}++;
+        next if m{(?:^|/)(?:\.git|node_modules|worktrees)/};
+        if ($stamps ne "") {
+          for ($d = $_; $d =~ s{/[^/]*$}{};) { stamp($d) unless $dir{$d}++ }
+          stamp($_) if m{(?:^|/)\.gitignore$};
+          # Part 3 keeps the untracked directories no file of part 1 names, an empty one included.
+          $nested{$_} = 1 if $part == 1 && m{/$};
+          if ($part == 3) { (my $u = "$root/$_") =~ s/[\n\t]/?/g; push @out, "u\t$u\n" if !$nested{$_} && $u =~ s{/$}{}; next }
+        }
+        next if $seen{$_}++;
         ($full = "$root/$_") =~ s/[\n\t]/?/g;
         $full =~ s{/$}{};
         if ($link || ($part == 1 && m{/$})) { push @out, "r\t$full\n" if -d $full; next }
@@ -157,17 +193,20 @@ instruction_repo_files() { # repo-root [outer-root]
         next unless $base =~ /^(?:claude|claude\.local|skill)\.md$/i
           || ($rel =~ m{/\.claude/} && $rel !~ m{/\.claude/local/} && ($base eq "review-debt-ignore" || $base =~ /\.(?:$md)$/i));
         push @out, "f\t$full\n" if lstat "$root/$_" and -f _;
-        END { exit 1 if $part != 3; print @out }
-      ' "$root" "$top" "$INSTRUCTION_MD_EXTENSIONS"); then
+        END { exit 1 if $part != $parts; print @out }
+      ' "$root" "$top" "$INSTRUCTION_MD_EXTENSIONS" "$parts"); then
     while IFS=$'\t' read -r kind p; do
       case "$kind" in
         f) printf '%s\n' "$p" ;;
         r) instruction_repo_files "$p" "$top" ;;
-        d) _instruction_find_files "$p" "$top" ;;
+        d) _instruction_find_files "$p" "$top"
+           [ -z "$stamps" ] || _instruction_find_files "$p" "" dirs >>"$stamps" ;;
+        u) _instruction_find_files "$p" "" dirs >>"$stamps" ;;
       esac
     done <<<"$listing"
     return 0
   fi
+  [ -z "$stamps" ] || printf '?\n' >>"$stamps"
   _instruction_find_files "$root" "$top"
 }
 
@@ -213,6 +252,64 @@ instruction_visible_paths() {
     done
   } | _INSTRUCTION_HOME=$home _INSTRUCTION_UNLOADED_ERE=$INSTRUCTION_HOME_UNLOADED_ERE \
       awk "$_instruction_unloaded_awk"' !unloaded($0) && !seen[$0]++'
+}
+
+# instruction_visible_paths, reused from $4 while every input it read stats as it did: the
+# enumeration, run with _INSTRUCTION_STAMPS, lists into that file every directory it walked (an
+# entry added, removed or renamed moves its directory's mtime), the index and every ignore file. An
+# input stamped after the marker taken before the walk may have moved mid-walk: nothing is kept. One
+# read and array slices: a pattern expansion over the file's 60 KB costs bash a second.
+_instruction_stamp_lines() { local IFS=$_instruction_nl; stamps="${lines[*]:1:$1}"; }
+instruction_visible_cached() { # home ranked-cache root state-dir
+  local home=${1:-$HOME} cache=${2:-} root=${3:-} dir=${4:-} file key want n p stamps='' set
+  local -a lines=() paths=()
+  key=${root:-none}
+  key=${key//[!A-Za-z0-9._-]/_}
+  [ "${#key}" -le 80 ] || key=${key: -80}
+  file=$dir/visible-$key
+  want="#2$_instruction_tab$home$_instruction_tab$root$_instruction_tab$cache"
+  # Its parent is this state directory, which every check writes: the cache's arrival is the header's.
+  [ -f "$cache" ] && want+=+ || want+=-
+  if [ -n "$dir" ] && [ -r "$file" ]; then
+    IFS=$_instruction_nl read -r -d '' -a lines <"$file"
+    n=${lines[0]##*"$_instruction_tab"}
+    case $n in ''|*[!0-9]*) n=0 ;; esac
+    if [ "$n" -gt 0 ] && [ "${lines[0]%"$_instruction_tab"*}" = "$want" ]; then
+      paths=("${lines[@]:1:n}")
+      paths=("${paths[@]#*"$_instruction_tab"}")
+      _instruction_stamp_lines "$n"
+      if [ "$(stat -L -f '%.9Fm%t%N' -- "${paths[@]}" 2>/dev/null)" = "$stamps" ]; then
+        [ "${#lines[@]}" -le $((n + 1)) ] || printf '%s\n' "${lines[@]:n+1}"
+        return 0
+      fi
+    fi
+  fi
+  if [ -z "$dir" ] || ! : >"$file.$$" 2>/dev/null || ! : >"$file.$$.s" 2>/dev/null; then
+    instruction_visible_paths "$home" "$cache" "$root"
+    return
+  fi
+  { [ -e "$home/.claude" ] && printf '%s\n' "$home/.claude" || printf '%s\n' "$home"
+    if [ -f "$cache" ]; then
+      printf '%s\n' "$cache"
+      instruction_ranked_names "$cache" | while IFS= read -r p; do
+        p=${p%/*}
+        while [ ! -e "$p" ] && [ "${p%/*}" != "$p" ]; do p=${p%/*}; done
+        printf '%s\n' "${p:-/}"
+      done
+    fi; } >>"$file.$$.s"
+  set=$(_INSTRUCTION_STAMPS=$file.$$.s instruction_visible_paths "$home" "$cache" "$root")
+  if stamps=$(awk '/\?/ { exit 1 } !seen[$0]++' "$file.$$.s") && [ -n "$stamps" ]; then
+    IFS=$_instruction_nl read -r -d '' -a paths <<<"$stamps"
+    if stamps=$(stat -L -f '%.9Fm%t%N' -- "$file.$$" "${paths[@]}" 2>/dev/null |
+        awk -F'\t' 'NR == 1 { t = $1; next } $1 >= t { exit 1 } 1') && [ -n "$stamps" ]; then
+      IFS=$_instruction_nl read -r -d '' -a lines <<<"$stamps"
+      { printf '%s%s%s\n%s\n' "$want" "$_instruction_tab" "${#lines[@]}" "$stamps"
+        [ -z "$set" ] || printf '%s\n' "$set"; } >"$file.$$" 2>/dev/null &&
+        mv -f "$file.$$" "$file" 2>/dev/null
+    fi
+  fi
+  rm -f "$file.$$" "$file.$$.s" 2>/dev/null
+  [ -z "$set" ] || printf '%s\n' "$set"
 }
 
 # The enumeration above is what `~/.claude` REACHES, and the gate's `always` class is wider than

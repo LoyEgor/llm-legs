@@ -3177,7 +3177,7 @@ assert_eq $((n0 + 1)) "$(grep -c . "$J")"
 
 echo "== bypasses: bytes landing mid-check are reported, never vouched for"
 mkdir -p "$WORK/shim"
-printf '#!/bin/bash\ncase " $* " in *" -L "*) [ -f "$IW_FLAG" ] || { : > "$IW_FLAG"; printf "landed during the rewrite\\n" >> "$IW_DOC"; } ;; esac\nexec /usr/bin/stat "$@"\n' \
+printf '#!/bin/bash\ncase " $* " in *"%%.9Fm%%t%%N"*) ;; *" -L "*) [ -f "$IW_FLAG" ] || { : > "$IW_FLAG"; printf "landed during the rewrite\\n" >> "$IW_DOC"; } ;; esac\nexec /usr/bin/stat "$@"\n' \
   > "$WORK/shim/stat"
 chmod +x "$WORK/shim/stat"
 span_base sid-race >/dev/null

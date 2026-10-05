@@ -1,6 +1,6 @@
 # Hand-off: logo-vectorizer-bench needs its outputs ignored
 
-Status: open
+Status: done 2026-10-05 — `status --porcelain -uall` lists 65 paths
 
 For the chat «Vector Magic macOS ARM migration», which owns `/Volumes/Work/Projects/logo-vectorizer-bench`.
 Written 2026-10-04 by «Review-bench improvements phase 4» while settling

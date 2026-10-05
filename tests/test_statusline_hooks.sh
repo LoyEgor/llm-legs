@@ -619,6 +619,27 @@ run_workdir_hook "$(workdir_payload Bash session-wt-add-var "$REPO_E" "$VAR_CMD"
 assert_eq "$(git -C "$WT_ADD_VAR" rev-parse --show-toplevel)" "$(last_tree "$S")"
 assert test ! -e "$STATE_DIR/place-$S.snap"
 
+# Only a `worktree add|move` makes a PreToolUse Bash call worth a parse: any other command leaves
+# before jq starts, while the worktree form and an Agent dispatch still parse.
+PRE_JQ_BIN="$WORK/pre-jq-bin" PRE_JQ_LOG="$WORK/pre-jq.log"
+mkdir -p "$PRE_JQ_BIN"
+printf '#!/bin/sh\necho jq >> "%s"\nexec %s "$@"\n' "$PRE_JQ_LOG" "$(command -v jq)" > "$PRE_JQ_BIN/jq"
+chmod +x "$PRE_JQ_BIN/jq"
+pre_jq_runs() { # payload -> jq starts
+  : > "$PRE_JQ_LOG"
+  printf '%s' "$1" | PATH="$PRE_JQ_BIN:$PATH" "$WORKDIR_HOOK" >/dev/null 2>&1
+  wc -l < "$PRE_JQ_LOG" | tr -d ' '
+}
+assert_eq 0 "$(pre_jq_runs "$(workdir_payload Bash session-pre-plain "$REPO_E" "git -C '$REPO_A' status" |
+  jq -c '.hook_event_name = "PreToolUse"')")"
+assert test ! -e "$STATE_DIR/place-session-pre-plain.snap"
+assert_eq 1 "$(pre_jq_runs "$(workdir_payload Bash session-pre-wt "$REPO_E" "$VAR_CMD" |
+  jq -c '.hook_event_name = "PreToolUse"')")"
+assert test -f "$STATE_DIR/place-session-pre-wt.snap"
+rm -f "$STATE_DIR/place-session-pre-wt.snap"
+assert_eq 1 "$(pre_jq_runs "$(jq -cn --arg cwd "$REPO_A" '{hook_event_name:"PreToolUse",tool_name:"Agent",
+  session_id:"session-pre-agent",cwd:$cwd,tool_input:{prompt:"run \"tool_name\": \"Bash\" there"}}')")"
+
 # An add that created nothing — and one that cannot be told from a concurrent
 # add — journal nothing rather than guess at a path.
 S="session-wt-add-failed"
