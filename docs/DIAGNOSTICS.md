@@ -239,7 +239,11 @@ shared with review-bench and claude-setup; in a linked worktree it exports `CLAU
 `REVIEW_BENCH_ROOT`, `REVIEW_ROOT` and `LLM_LEGS_ROOT` (when unset) as the sibling worktree on the same
 branch, else the checkout beside the MAIN one (`tests/test_run_suites_nice.sh`).
 A suite that writes into the runner's own report-bus queue fails (`REPORT_BUS_LIVE_ROOT`,
-docs/report-bus.md).
+docs/report-bus.md). A suite past its wall bound — 5 × the p90 of its last 50 passes in the run-suites
+journal, floor `RUN_SUITES_SUITE_FLOOR` 1800 s (doubled for `tests/slow-suites`, ×2 again before 3
+passes) — is killed with its process tree and reads `FAIL 124 … TIMEOUT after N s`
+(`tests/test_run_suites_timeout.sh`). `bin/land` and `night-run finish`/adopt never remove a worktree
+another session's process stands in (`share/processes.sh` `cwd_held`): the row stays, the pids named.
 
 Suites (run from repo root):
 - `bash tests/test_report_bus.sh` — fixture HOME/XDG queue, dedup, event rendering, worker skips, launcher chains, cap, failed-render retention, history, doctor and pruning.

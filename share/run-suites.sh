@@ -39,6 +39,10 @@ Machine-wide at most RUN_SUITES_SLOTS runs at once (default cores / 3 clamped 2 
 while the machine has room); a run waits for a free slot under RUN_SUITES_SLOTS_DIR, its wait a
 limiter hold. Inside a worker (WORKER_RUN_ID set) --changed skips the slow layer, tests/slow-suites,
 except a suite the worker edited; the landing and the night full run run them.
+
+A suite running past its bound is killed with its whole process tree and reads FAIL 124, TIMEOUT:
+5 x the p90 of its last 50 passes in the journal, never under RUN_SUITES_SUITE_FLOOR (default 1800 s,
+doubled for tests/slow-suites), twice that floor before it has 3 passes.
 USAGE
   exit 2
 }
@@ -98,6 +102,7 @@ fi
 
 [[ "$jobs" =~ ^[0-9]+$ ]] || usage
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/slots.sh"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/processes.sh"
 [ "$jobs" -ne 0 ] || jobs=$(slots_from_cores 2 2)
 
 # Each suite's last passing duration, keyed by the main checkout so a worktree shares it: the wave
@@ -109,6 +114,34 @@ run_journal=${RUN_SUITES_JOURNAL:-${times_file%/*}/runs.jsonl}
 . "$journal_lib" --lib || fail "unreadable $journal_lib"
 times_key=$repo
 [ "${common:-}" = "${common%/.git}/.git" ] && times_key=${common%/.git}
+suite_floor=${RUN_SUITES_SUITE_FLOOR:-1800}
+[[ $suite_floor =~ ^[1-9][0-9]*$ ]] || fail "RUN_SUITES_SUITE_FLOOR must be whole seconds: $suite_floor"
+slow_listed=$'\n'$(cat "$repo/tests/slow-suites" 2>/dev/null)$'\n'
+declare -A pass_p90=()
+if [ -r "$run_journal" ] && command -v jq >/dev/null; then
+  while IFS=$'\t' read -r name secs; do
+    [[ "$secs" =~ ^[0-9]+$ ]] && pass_p90[$name]=$secs
+  done < <(tail -n 5000 "$run_journal" | jq -nRr --arg root "$times_key" '
+    [inputs | fromjson? | objects | select(.repo_root == $root) | .suites | objects | to_entries[]
+      | select(.value.rc == 0 and (.value.secs | type) == "number") | [.key, .value.secs]]
+    | group_by(.[0])[] | (.[-50:] | map(.[1]) | sort) as $s | select($s | length >= 3)
+    | "\(.[0][0])\t\($s[($s | length) * 0.9 | ceil | . - 1] | ceil)"' 2>/dev/null)
+fi
+suite_bound() { # var name -> the suite's wall bound in seconds
+  local floor=$suite_floor p90=${pass_p90[$2]:-}
+  [[ "$slow_listed" != *$'\n'"$2"$'\n'* ]] || floor=$((floor * 2))
+  if [ -z "$p90" ]; then printf -v "$1" '%s' $((floor * 2))
+  elif [ $((p90 * 5)) -gt "$floor" ]; then printf -v "$1" '%s' $((p90 * 5))
+  else printf -v "$1" '%s' "$floor"; fi
+}
+suite_watch() { # pid bound marker -> ends the suite's tree once it outlives the bound
+  local deadline=$((SECONDS + $2))
+  while kill -0 "$1" 2>/dev/null; do
+    if [ "$SECONDS" -ge "$deadline" ]; then : >"$3"; process_tree_end "$1" 10; return; fi
+    sleep 2
+  done
+}
+
 declare -A last_secs=()
 if [ -r "$times_file" ]; then
   while IFS=$'\t' read -r key name secs; do
@@ -258,8 +291,9 @@ else scope=full; fi
 test_scope_mark "$scope" suites "$repo" "$run_suites_start"
 
 run_one() { # suite-path
-  local path="$1" name start finish rc began ended cpu
+  local path="$1" name start finish rc began ended cpu bound suite watch
   name=$(basename "$path")
+  suite_bound bound "$name"
   printf -v start '%(%s)T' -1
   suite_journal_ms began
   # Its own TMPDIR, never its own HOME: several suites here read the real ~/.claude on purpose
@@ -289,11 +323,20 @@ run_one() { # suite-path
       # own off PATH gets macOS 3.2, where `declare -A` fails while the table still prints PASS.
       *) exec "$BASH" "$path" ;;
     esac
-  ) >"$logdir/$name.log" 2>&1
+  ) >"$logdir/$name.log" 2>&1 &
+  suite=$!
+  suite_watch "$suite" "$bound" "$logdir/$name.timeout" &
+  watch=$!
+  wait "$suite"
   rc=$?
+  kill "$watch" 2>/dev/null
   if [ -s "$logdir/$name.bus-leak" ]; then
     cat "$logdir/$name.bus-leak" >>"$logdir/$name.log"
     [ "$rc" -ne 0 ] || rc=1
+  fi
+  if [ -e "$logdir/$name.timeout" ]; then
+    rc=124
+    printf 'run-suites: TIMEOUT after %s s, its process tree killed\n' "$bound" >>"$logdir/$name.log"
   fi
   printf -v finish '%(%s)T' -1
   suite_journal_ms ended

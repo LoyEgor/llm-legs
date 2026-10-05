@@ -17,6 +17,7 @@ EOF
 }
 
 die() { printf 'land: %s\n' "$*" >&2; exit 1; }
+. "$(cd -P "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)/share/processes.sh" || die "no share/processes.sh beside land"
 
 tests=auto target_arg=''
 while [ $# -gt 0 ]; do
@@ -220,7 +221,12 @@ git -C "$repo" merge-base --is-ancestor "$new" refs/heads/main 2>/dev/null ||
   die "main moved under every one of 3 tries; $branch is rebased but not landed"
 
 drop_tmp
-if [ -n "$wt" ]; then git -C "$repo" worktree remove "$wt" || die "landed, but $wt could not be removed"; fi
-git -C "$repo" branch -q -D "$branch" || die "landed, but branch $branch could not be deleted"
+if [ -n "$wt" ] && held=$(cwd_held "$wt"); then
+  printf 'land: landed, but %s and branch %s stay, %s; nothing killed, night-run finish prunes them once they end\n' \
+    "$wt" "$branch" "$held" >&2
+else
+  if [ -n "$wt" ]; then git -C "$repo" worktree remove "$wt" || die "landed, but $wt could not be removed"; fi
+  git -C "$repo" branch -q -D "$branch" || die "landed, but branch $branch could not be deleted"
+fi
 if [ "$suites_ran" -gt 0 ]; then suites="ran $suites_ran"; else suites=skipped; fi
 printf 'landed %s → main %s (%s), suites: %s\n' "$branch" "$(git -C "$repo" rev-parse --short "$new")" "$pushed" "$suites"

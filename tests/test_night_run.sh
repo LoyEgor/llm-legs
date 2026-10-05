@@ -561,8 +561,32 @@ assert jqe --arg w "$wt" 'length == 15 and (map(.branch) | index("main")) == nul
   and ((.[] | select(.branch == "merged-bare")) | .worktree == null and .landed and .state == "landed" and .why == null)
   and ((.[] | select(.branch == "fresh")) | .live and .state == "live")
   and ((.[] | select(.branch == "onhold")) | (.live | not) and .state == "held")' "$WORK/left.json"
+# A process that enters a landed worktree after finish listed the rows (its lsof hides it once) still keeps
+# it: the removal looks again, names the process and never kills it.
+git -C "$WORK/repo" worktree add -q -b "night/$idc/late" "$wt/late" "$pushed_hash"
+(cd "$wt/late" && exec sleep 600) &
+late=$!
+printf '%s\n' "$late" >>"$DATA/orchestrators"
+cat >"$FAKE_BIN/lsof" <<EOF
+#!/bin/bash
+if [ -s "$WORK/lsof-hide" ]; then
+  hide=\$(cat "$WORK/lsof-hide"); rm -f "$WORK/lsof-hide"
+  /usr/sbin/lsof "\$@" | grep -vF "\$hide"
+  exit 0
+fi
+exec /usr/sbin/lsof "\$@"
+EOF
+chmod +x "$FAKE_BIN/lsof"
+(cd -P "$wt/late" && pwd) >"$WORK/lsof-hide"
+sleep 0.3
 night finish "$idc" >"$WORK/out" || fail "finish with worktrees"
-kill "$busy" "$plain_busy" 2>/dev/null
+late_alive=0; kill -0 "$late" 2>/dev/null && late_alive=1
+kill "$busy" "$plain_busy" "$late" 2>/dev/null
+rm -f "$FAKE_BIN/lsof"
+assert [ ! -e "$WORK/lsof-hide" ]
+assert grep -qxF "live repo night/$idc/late: processes inside: $late sleep 600" "$WORK/out"
+assert [ "$late_alive" = 1 ] && [ -d "$wt/late" ]
+git -C "$WORK/repo" worktree remove "$wt/late" && git -C "$WORK/repo" branch -q -D "night/$idc/late" || fail "drop the late worktree"
 assert grep -qxF "pruned repo night/$id/landed" "$WORK/out"
 assert grep -qxF "pruned repo night/$idc/at-base" "$WORK/out"
 assert grep -qxF "pruned repo merged-old" "$WORK/out"
@@ -579,7 +603,7 @@ assert grep -qxE "live repo fresh: active [0-9]+m ago" "$WORK/out"
 assert grep -qxE "live repo edited: active [0-9]+m ago" "$WORK/out"
 assert grep -qxF "held repo onhold: Egor: сделай холд, я ещё тут" "$WORK/out"
 assert_fails grep -q '^kept ' "$WORK/out"
-assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 16 ]
+assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 17 ]
 assert [ ! -e "$wt/landed" ] && [ ! -e "$wt/at-base" ] && [ ! -e "$wt/merged-old" ]
 assert [ -e "$wt/dirty/wip" ] && [ -d "$wt/open" ] && [ -d "$wt/fresh" ] && [ -d "$wt/stale-open" ] && [ -e "$wt/stale-dirty/wip" ] && [ -d "$wt/onhold" ]
 for gone in "night/$id/landed" merged-old merged-bare picked-bare; do

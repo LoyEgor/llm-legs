@@ -69,6 +69,24 @@ assert eq "$(sha "$R" main)" "$tip"
 assert eq "$(git -C "$M" status --porcelain)" ""
 assert gone
 
+# A process of another session working inside the worktree: landed, the worktree and branch stay, the
+# process named and never killed; land's own shell inside it does not count.
+setup busy
+branch_edit a.txt "$(lines A)"
+tip=$(sha "$W" HEAD)
+(cd "$W/" && exec sleep 600) &
+busy=$!
+sleep 0.3
+land_in "$W"
+alive=0; kill -0 "$busy" 2>/dev/null && alive=1
+kill "$busy" 2>/dev/null
+assert eq "$rc" 0
+assert eq "$(cat "$T/out")" "landed feat → main $(git -C "$M" rev-parse --short "$tip") (pushed), suites: skipped"
+assert eq "$(cat "$T/err")" "land: landed, but $W and branch feat stay, processes inside: $busy sleep 600; nothing killed, night-run finish prunes them once they end"
+assert eq "$(sha "$R" main)" "$tip"
+assert eq "$alive" 1
+assert kept
+
 # Foreign WIP in the main checkout: untouched files byte for byte, a touched dirty file 3-way merged.
 setup wip
 branch_edit a.txt "$(lines a | sed 's/^a8$/FEAT8/')"
