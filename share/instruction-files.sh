@@ -38,6 +38,14 @@ _instruction_nl='
 '
 _instruction_tab='	'
 
+# Dependency trees: the directories package managers install other projects into (npm, Bower,
+# Composer/Go/Bundler `vendor`, pip's `site-packages` inside any virtualenv, CocoaPods). Every
+# install rewrites them and none is this project's instructions, so no door watches them.
+INSTRUCTION_DEPENDENCY_DIRS='node_modules bower_components vendor site-packages Pods'
+_instruction_pruned=(-name .git -o -name worktrees)
+for _instruction_dep in $INSTRUCTION_DEPENDENCY_DIRS; do _instruction_pruned+=(-o -name "$_instruction_dep"); done
+unset _instruction_dep
+
 # The class directories, one list for every consumer. A directory the gate refuses writes to and
 # the tripwire does not watch is the one hole neither half can report, and that is exactly how
 # ~/.claude/commands came to be priced by the bloat gate and ungated by the write gate. Names with
@@ -105,7 +113,7 @@ _instruction_class_files() {
   [ -d "$home/.claude" ] || return 0
   case "$ere" in *[][.*^\$+?\(\){}\|\\]*) ere=$(instruction_ere_escape "$home") ;; esac
   if [ -n "${_INSTRUCTION_STAMPS:-}" ]; then
-    find -E -L "$home/.claude" \( -name .git -o -name node_modules -o -name worktrees \
+    find -E -L "$home/.claude" \( "${_instruction_pruned[@]}" \
                -o -path "$home/.claude/projects" \
                -o -regex "$ere/\.claude/$INSTRUCTION_HOME_UNLOADED_ERE" \) -prune \
                -o -type f \( "${name_args[@]}" \) -print0 -o -type d -print0 2>/dev/null |
@@ -113,7 +121,7 @@ _instruction_class_files() {
         chomp; $d = -d; tr/\n\t/??/; if ($d) { print S "$_\n" } else { print "$_\n" }'
     return
   fi
-  find -E -L "$home/.claude" \( -name .git -o -name node_modules -o -name worktrees \
+  find -E -L "$home/.claude" \( "${_instruction_pruned[@]}" \
              -o -path "$home/.claude/projects" \
              -o -regex "$ere/\.claude/$INSTRUCTION_HOME_UNLOADED_ERE" \) -prune \
              -o -type f \( "${name_args[@]}" \) \
@@ -133,11 +141,11 @@ _instruction_find_files() { # dir [repo-root] [dirs]
   local -a md_args=(-name review-debt-ignore)
   for e in $INSTRUCTION_MD_EXTENSIONS; do md_args+=(-o -iname "*.$e"); done
   if [ "${3:-}" = dirs ]; then
-    find "$1" \( -name .git -o -name node_modules -o -name worktrees \) -prune -o -type d -print0 2>/dev/null |
+    find "$1" \( "${_instruction_pruned[@]}" \) -prune -o -type d -print0 2>/dev/null |
       _instruction_emit_paths
     return
   fi
-  find "$1" \( -name .git -o -name node_modules -o -name worktrees \) -prune -o \
+  find "$1" \( "${_instruction_pruned[@]}" \) -prune -o \
     -type f \( -iname CLAUDE.md -o -iname CLAUDE.local.md -o -iname SKILL.md -o \
     \( -path '*/.claude/*' ! -path '*/.claude/local/*' \( "${md_args[@]}" \) \) \) -print0 2>/dev/null |
     perl -0ne 'BEGIN { $n = length shift } print if m{/(?:claude|claude\.local|skill)\.md\0$}i || substr($_, $n) =~ m{/\.claude/}' \
@@ -168,14 +176,15 @@ instruction_repo_files() { # repo-root [outer-root]
         { [ -z "$stamps" ] || { git -C "$root" ls-files -o --exclude-standard --directory -z && printf '\035\0'; }; }
       } 2>/dev/null |
       perl -0ne '
-        BEGIN { ($root, $top, $md, $parts) = splice @ARGV, 0, 4; $md = join "|", split / /, $md;
+        BEGIN { ($root, $top, $md, $parts, $deps) = splice @ARGV, 0, 5; $md = join "|", split / /, $md;
+                $deps = join "|", map { quotemeta } split / /, $deps;
                 $stamps = $ENV{_INSTRUCTION_STAMPS}; if ($stamps ne "") { open S, ">>", $stamps or exit 1 } }
         sub stamp { (my $p = "$root/$_[0]") =~ s/[\n\t]/?/g; print S "$p\n" }
         chomp;
         if ($_ eq "\035") { $part++; next }
         $link = $part == 0 && m{^160000 };
         if ($part == 0) { s/^[0-7]+ [0-9a-f]+ [0-3]\t// or next }
-        next if m{(?:^|/)(?:\.git|node_modules|worktrees)/};
+        next if m{(?:^|/)(?:\.git|worktrees|$deps)/};
         if ($stamps ne "") {
           for ($d = $_; $d =~ s{/[^/]*$}{};) { stamp($d) unless $dir{$d}++ }
           stamp($_) if m{(?:^|/)\.gitignore$};
@@ -194,7 +203,7 @@ instruction_repo_files() { # repo-root [outer-root]
           || ($rel =~ m{/\.claude/} && $rel !~ m{/\.claude/local/} && ($base eq "review-debt-ignore" || $base =~ /\.(?:$md)$/i));
         push @out, "f\t$full\n" if lstat "$root/$_" and -f _;
         END { exit 1 if $part != $parts; print @out }
-      ' "$root" "$top" "$INSTRUCTION_MD_EXTENSIONS" "$parts"); then
+      ' "$root" "$top" "$INSTRUCTION_MD_EXTENSIONS" "$parts" "$INSTRUCTION_DEPENDENCY_DIRS"); then
     while IFS=$'\t' read -r kind p; do
       case "$kind" in
         f) printf '%s\n' "$p" ;;

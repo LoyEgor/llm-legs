@@ -581,7 +581,11 @@ up to three events as evidence (`stop:<ts>/<session>`, `words:<ts>/<session>`, `
   growth (Claude Code's org sync bumps it only when content lands; the manifest's mtime moves every
   round and proves nothing); growth that re-lands bytes the same key grew by in another checkout
   within 24 h (a merge, patch or copy between a worktree and its main checkout), each sibling growth
-  excusing one landing of its bytes; a `baseline-missing` whose sid no chat transcript owns. Known
+  excusing one landing of its bytes; ungated growth git delivered, i.e. the file's repository reflog
+  shows a checkout, merge, pull or rebase in the 24 h before the growth (60 s after it allowed) to a
+  commit whose blob the file still holds, shown as one dim `upstream instruction growth · <repo> · +N B`
+  row per repository (incident 2026-10-05: one release checkout in an Arbostar repository read as
+  55 problems); a `baseline-missing` whose sid no chat transcript owns. Known
   hole: a hand edit to a listed synced skill followed by a content sync of that bucket reads as the
   sync. Shapes the write gate does not read, so only the tripwire reports them as `growth-ungated`:
   a name built at run time (`'CLAU'+'DE.md'`, `os.path.join(d,'CLAUDE.md')`, `Path(d)/'CLAUDE.md'`),
@@ -595,6 +599,12 @@ up to three events as evidence (`stop:<ts>/<session>`, `words:<ts>/<session>`, `
   with no audit. Only a skill's own `SKILL.md` loads that way. Its `references/` and other files load
   when the skill runs and its `SKILL.md` points to them, and the rule still watches that `SKILL.md`.
   Their growth is left out of the value and the count, and the evidence names how many were left out.
+- **Deploys** compares every copy in `DEPLOYS` (shared-invariants row ef) with its source in the main
+  checkout (`HARNESS_DEPLOY_SOURCE`; deployed wrappers under `HARNESS_LIBEXEC_DIR`, default
+  `~/.local/libexec`): a byte copy must match, a generated wrapper must exec the source script, a
+  generated plist must run its wrapper. A group none of whose copies exists is not installed and not
+  judged; a missing or differing copy of an installed one is `deploy-drift` keyed by the copy, its fix
+  the installer command. Incident: memlogd ran a 28 Sep copy without `machine_tick` for a week.
 - Two differences from llm-doctor: a value between half the limit and the limit is a watch (deferral,
   silence, growth), and a growth value is the largest single change under one root, not the day's sum.
 

@@ -1206,6 +1206,67 @@ check(judged(health(G, gates=[dict(passed, file=tree, at=T - 4050)], events=[cha
 check(judged(health(G, gates=[dict(denied, file=synced[0])], events=[change(T - 600, synced[0], 2282)]))
       == {("growth-denied", "~/.claude/skills/synced/org_acct/pptx"): "red"},
       "J Guards: growth a gate denied in a synced tree stays red")
+up = os.path.join(home, "up")
+def up_git(*args, at=T - 90000):
+    import subprocess
+    subprocess.run(["git", "-C", up, "-c", "user.name=t", "-c", "user.email=t@t"] + list(args), check=True,
+                   capture_output=True, env=dict(os.environ, GIT_COMMITTER_DATE="@%d +0000" % at,
+                                                 GIT_AUTHOR_DATE="@%d +0000" % at))
+os.makedirs(up)
+up_git("init", "-q", "-b", "main")
+put(os.path.join(up, "CLAUDE.md"), "rules\n")
+up_git("add", ".")
+up_git("commit", "-qm", "a")
+up_git("checkout", "-qb", "release")
+put(os.path.join(up, "CLAUDE.md"), "rules\n" + "upstream rule\n" * 100)
+put(os.path.join(up, ".claude", "skills", "s", "SKILL.md"), "skill\n" * 100)
+up_git("add", ".")
+up_git("commit", "-qm", "b")
+up_git("checkout", "-q", "main")
+up_git("fetch", "-q", ".", "release:refs/remotes/origin/release", at=T - 800)
+up_git("checkout", "-q", "release", at=T - 700)
+delivered = [os.path.join(up, "CLAUDE.md"), os.path.join(up, ".claude", "skills", "s", "SKILL.md")]
+part = health(G, events=[dict(change(T - 600), files=delivered, bytes=[1300, 600])])
+check(judged(part) == {} and part["state"] == "ok"
+      and [(r["cells"], r["dim"]) for r in part["rows"]] == [(["upstream instruction growth · ~/up · +1 900 B", "2",
+                                                               m.clock(T - 600, T)], True)],
+      "Guards: instruction growth a checkout delivered from a fetched commit is one dim count row per repository, "
+      "no problem")
+put(os.path.join(up, "CLAUDE.md"), "rules\n" + "upstream rule\n" * 100 + "local rule\n" * 50)
+part = health(G, events=[dict(change(T - 600), files=delivered, bytes=[1800, 600])])
+check(judged(part) == {("growth-ungated", "~/up/CLAUDE.md"): "red"}
+      and part["rows"][-1]["cells"][0] == "upstream instruction growth · ~/up · +600 B",
+      "Guards: an uncommitted local edit beside a checkout is still ungated growth")
+up_git("checkout", "-qb", "work")
+up_git("commit", "-qam", "local")
+up_git("checkout", "-q", "release")
+up_git("merge", "-q", "--ff-only", "work", at=T - 650)
+check(judged(health(G, events=[dict(change(T - 600), files=delivered[:1], bytes=[1800])]))
+      == {("growth-ungated", "~/up/CLAUDE.md"): "red"},
+      "Guards: a merge of a local commit (a land) is no upstream delivery, its ungated growth stays red")
+source_root = os.path.dirname(os.path.dirname(sys.argv[1]))
+libexec, agents = os.path.join(work, "libexec"), os.path.join(home, "Library", "LaunchAgents")
+os.environ.update(HARNESS_LIBEXEC_DIR=libexec, HARNESS_DEPLOY_SOURCE=source_root)
+D = m.deploys_section
+check(D(T)["state"] == "ok" and D(T)["rows"] == [], "J Deploys: nothing installed is nothing judged")
+for _, copies in m.DEPLOYS[:2]:
+    for where, name, kind, src in copies:
+        target = os.path.join(libexec if where == "libexec" else agents, name)
+        put(target, open(os.path.join(source_root, src)).read() if kind == "copy" else
+            '#!/usr/bin/env bash\nexec %s "$@"\n' % os.path.join(source_root, src))
+check(judged(D(T)) == {} and D(T)["state"] == "ok", "Deploys: deployed copies equal to their repo sources are no problem")
+put(os.path.join(libexec, "memlogd"), open(os.path.join(source_root, "bin", "memlogd")).read().replace("machine_tick", "x"))
+put(os.path.join(libexec, "llm-refresh-heartbeat"), '#!/usr/bin/env bash\nexec /gone/bin/llm-refresh "$@"\n')
+part = D(T)
+check(judged(part) == {("deploy-drift", os.path.join(libexec, "memlogd")): "red",
+                       ("deploy-drift", os.path.join(libexec, "llm-refresh-heartbeat")): "red"}
+      and sorted(r["cells"][1] for r in part["rows"]) == ["bin/llm-refresh install-agent", "bin/memlogd install-agent"],
+      "Deploys: a drifted copy or a wrapper exec-ing another script is one problem naming the installer that fixes it")
+for _, copies in m.DEPLOYS[:2]:
+    for where, name, _, _ in copies:
+        os.remove(os.path.join(libexec if where == "libexec" else agents, name))
+os.environ.pop("HARNESS_LIBEXEC_DIR")
+os.environ.pop("HARNESS_DEPLOY_SOURCE")
 for beat, beat_at, ident in ((None, T, "never-started"), ("roots=2\n", T - 1000, "stale"),
                              ("roots=2\nerror=fsevents gone\n", T - 30, "error"), ("roots=0\n", T - 30, "no-root")):
     check(judged(health(G, beat=beat, beat_at=beat_at)) == {("watcher-down", ident): "red"},

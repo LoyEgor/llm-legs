@@ -200,6 +200,16 @@ class InstructionPerformance(unittest.TestCase):
             self.put(self.repo / name)
         self.assertEqual({'CLAUDE.local.md', 'pkg/CLAUDE.md', '.claude/deep/rule.markdown'}, self.listing())
 
+    def test_dependency_trees_are_not_watched(self):
+        deps = ['vendor/acme/lib/CLAUDE.md', 'vendor/acme/lib/.claude/skills/x/SKILL.md',
+                'node_modules/pkg/SKILL.md', '.venv/lib/python3.12/site-packages/tool/CLAUDE.md']
+        for name in ['CLAUDE.md', 'src/vendors/CLAUDE.md'] + deps:
+            self.put(self.repo / name)
+        self.assertEqual({'CLAUDE.md', 'src/vendors/CLAUDE.md'}, self.listing())
+        self.git('init', '-q')
+        self.git('add', '-f', '.')
+        self.assertEqual({'CLAUDE.md', 'src/vendors/CLAUDE.md'}, self.listing())
+
     def test_new_session_keeps_its_own_trust_policy(self):
         self.put(self.home / '.claude/docs/old.md')
         self.assertEqual(0, self.hook('baseline').returncode)

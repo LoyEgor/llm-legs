@@ -30,7 +30,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 
 import collector_runs
-from fix_commit import fix_commit, fix_landed, siblings_dir
+from fix_commit import fix_commit, fix_landed, main_checkout, siblings_dir
 from limiter_hold import hold_dir, wait_dir
 
 LIMITS = {
@@ -1957,10 +1957,14 @@ def wrapper_targets(path):
     return found
 
 
+def libexec_dir():
+    return env_dir("HARNESS_LIBEXEC_DIR", ".local", "libexec")
+
+
 def launchd_labels():
     """[(label, paths)] of the LaunchAgents: the program, plus a ~/.local/libexec wrapper's exec targets."""
     home = base_home()
-    libexec = os.path.join(home, ".local", "libexec")
+    libexec = libexec_dir()
     out = []
     for path in sorted(glob.glob(os.path.join(home, "Library", "LaunchAgents", "*.plist"))):
         try:
@@ -3635,6 +3639,10 @@ def health_hit(items, rule, ident, label, at, value=None, ref="", excerpt="", le
     item["events"].append((at, ref, str(excerpt or "")))
 
 
+def clock(at, now):
+    return time.strftime("%H:%M" if local_day(at) == local_day(now) else "%m-%d %H:%M", time.localtime(at))
+
+
 def health_section(name, prefix, items, exposure, now, ok, blind=""):
     rows = []
     for (rule, ident), item in sorted(items.items(), key=lambda kv: (-LEVELS[kv[1]["level"]], -kv[1]["last"])):
@@ -3643,8 +3651,7 @@ def health_section(name, prefix, items, exposure, now, ok, blind=""):
         say, head = ("%s, %d %s%s in 24 h" % (label, item["count"], item["noun"], "" if item["count"] == 1 else "s") if red
                      else "%s, under its %s limit" % (label, fmt_long(LIMITS[limit_key]) if unit == "s" else "%d %s" % (
                          LIMITS[limit_key], unit)) for label in (item["label"], item.get("head") or item["label"]))
-        rows.append(row([clip(item["label"], 60), fmt_count(item["count"]), time.strftime(
-            "%H:%M" if local_day(item["last"]) == local_day(now) else "%m-%d %H:%M", time.localtime(item["last"]))],
+        rows.append(row([clip(item["label"], 60), fmt_count(item["count"]), clock(item["last"], now)],
             [0] if red else [], key="%s:%s:%s" % (prefix, rule, ident), say=say, head=head,
             judge=verdict(rule, ident, item["value"] if limit_key else item["count"],
                           LIMITS[limit_key] if limit_key else 0, unit, 24, exposure, item["level"], fact=say,
@@ -3771,6 +3778,83 @@ def vendor_synced(path, at, manifests):
     return bool(listed) and isinstance(stamp, (int, float)) and stamp / 1000.0 >= at - SYNC_JOIN_S
 
 
+UPSTREAM_MOVE_RE = re.compile(r"(?:checkout|merge|pull|rebase)\b")
+
+
+def git_out(top, *args, stdin=None):
+    try:
+        out = subprocess.run(["git", "-C", top] + list(args), input=stdin, capture_output=True, text=True,
+                             timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout if out.returncode == 0 else None
+
+
+def fetched_shas(top):
+    """{sha: first epoch} a remote-tracking ref reached by anything but this clone's own push, read off the
+    reflog files: `git log -g` over them took 1.7 s in a repository of 3 000 remote reflog lines."""
+    common = (git_out(top, "rev-parse", "--path-format=absolute", "--git-common-dir") or "").strip()
+    found = {}
+    for folder, _, names in os.walk(os.path.join(common, "logs", "refs", "remotes")) if common else ():
+        for name in names:
+            try:
+                with open(os.path.join(folder, name), errors="replace") as handle:
+                    for text in handle:
+                        head, _, subject = text.partition("\t")
+                        parts = head.split()
+                        if len(parts) >= 5 and parts[-2].isdigit() and not subject.startswith("update by push"):
+                            found[parts[1]] = min(found.get(parts[1], int(parts[-2])), int(parts[-2]))
+            except OSError:
+                pass
+    return found
+
+
+def upstream_delivered(paths, at, repos):
+    """{path: its repository, as the path spells it} of the files git delivered from upstream: a checkout, merge,
+    pull or rebase of their repository in the day before the measurement moved HEAD to a commit a remote-tracking
+    ref had fetched, never pushed (a land merge of local work is local growth), whose blob the file still holds.
+    A checkout writes the files before its reflog line, hence the slack after the measurement."""
+    by_top = {}
+    for path in paths:
+        real = os.path.realpath(path)
+        parent = os.path.dirname(real)
+        if parent not in repos:
+            top = git_out(parent, "rev-parse", "--show-toplevel") if os.path.isdir(parent) else None
+            repos[parent] = top.strip() if top else None
+        if repos[parent] and os.path.isfile(real) and "\n" not in real:
+            by_top.setdefault(repos[parent], []).append((path, os.path.relpath(real, repos[parent])))
+    found = {}
+    for top, files in by_top.items():
+        if ("reflog", top) not in repos:
+            moves = []
+            for text in (git_out(top, "reflog", "show", "--date=unix", "--format=%gd%x09%H%x09%gs", "-n", "500",
+                                 "HEAD") or "").splitlines():
+                stamp, sha, subject = (text.split("\t", 2) + ["", ""])[:3]
+                when = re.search(r"@\{(\d+)\}$", stamp)
+                if when and UPSTREAM_MOVE_RE.match(subject):
+                    moves.append((int(when.group(1)), sha))
+            repos[("reflog", top)] = moves
+            repos[("fetched", top)] = fetched_shas(top)
+        fetched = repos[("fetched", top)]
+        shas = [sha for when, sha in repos[("reflog", top)] if at - LANDING_S <= when <= at + GATE_AFTER_S
+                and fetched.get(sha, when + 1) <= when]
+        if not shas:
+            continue
+        held = (git_out(top, "hash-object", "--stdin-paths", stdin="".join(rel + "\n" for _, rel in files))
+                or "").split()
+        blobs = (git_out(top, "cat-file", "--batch-check=%(objectname)",
+                         stdin="".join("%s:%s\n" % (sha, rel) for _, rel in files for sha in shas)) or "").split("\n")
+        if len(held) != len(files) or len(blobs) < len(files) * len(shas):
+            continue
+        for i, (path, _) in enumerate(files):
+            if held[i] in blobs[i * len(shas):(i + 1) * len(shas)]:
+                spelled = os.path.dirname(path)
+                while spelled != os.path.dirname(spelled) and os.path.realpath(spelled) != top:
+                    spelled = os.path.dirname(spelled)
+                found[path] = spelled if os.path.realpath(spelled) == top else top
+    return found
+
+
 def gate_verdict(decisions, path, at, delta):
     """A pass the bloat gate priced covers only the bytes it priced (summed over the window), so a small
     passed Edit cannot clear a larger write of the same file beside it; a pass with no delta covers any."""
@@ -3846,7 +3930,7 @@ def guards_section(now):
     events = read_jsonl(os.path.join(state, "events.jsonl"), cutoff - LANDING_S, "at") or ()
     # A merge, patch or copy between a worktree and its main checkout re-lands bytes already judged; each
     # sibling growth excuses one landing of its bytes, used up oldest first.
-    credits, landings, manifests = {}, set(), {}
+    credits, landings, manifests, repos, upstream = {}, set(), {}, {}, {}
     for entry in events:
         at = iso_epoch(entry.get("at"))
         if at is None or entry.get("reverted") or entry.get("kind", "change") not in ("change", "changed-between-sessions"):
@@ -3877,13 +3961,20 @@ def guards_section(now):
         ref = "events:%s/%s" % (entry.get("at"), file_key(files[0]) if files else "-")
         if kind in ("change", "changed-between-sessions") and not entry.get("reverted"):
             between = kind == "changed-between-sessions"
-            groups, aside = {}, {}
+            groups, aside, grew = {}, {}, []
             for path, delta in zip(files, entry.get("bytes") or []):
                 if (not isinstance(delta, (int, float)) or delta <= 0 or not classes.get(path, "?")
                         or FIXTURE_PATH_RE.search(file_key(path)) or (id(entry), str(path)) in landings):
                     continue
                 gate = gate_verdict(decisions, path, at, delta)
                 if gate == "passed" or not gate and vendor_synced(path, at, manifests):
+                    continue
+                grew.append((path, delta, gate))
+            delivered = upstream_delivered([p for p, _, gate in grew if not gate], at, repos)
+            for path, delta, gate in grew:
+                if path in delivered:
+                    got = upstream.setdefault(delivered[path], [0, 0, at])
+                    got[0], got[1], got[2] = got[0] + 1, got[1] + delta, max(got[2], at)
                     continue
                 root, on_demand = growth_root(path, skills)
                 if on_demand:
@@ -3955,8 +4046,87 @@ def guards_section(now):
                    level="red" if gap > LIMITS["silent_s"] else "watch",
                    head="the instruction watcher took no snapshot while chats started" if gap > LIMITS["silent_s"]
                    else "the instruction watcher took no snapshot for %s" % fmt_long(gap))
-    return health_section("Guards", "guards", items, seen, now,
-                          ok="%d gate and change journal lines in 24 h, every write priced or passed, watcher up" % seen)
+    out = health_section("Guards", "guards", items, seen, now,
+                         ok="%d gate and change journal lines in 24 h, every write priced or passed, watcher up" % seen)
+    out["rows"] += [row(["upstream instruction growth · %s · +%s B" % (file_key(top), fmt_count(total)), fmt_count(n),
+                         clock(last, now)], dim=True) for top, (n, total, last) in sorted(upstream.items())]
+    return out
+
+
+# (fix command, [(dir, name, kind, source)]): every copy this repository's installers deploy. kind `copy` is
+# byte-equal to the source file, `exec` a wrapper exec-ing the source script, `program` a generated plist whose
+# program is the libexec wrapper named by source. A fix command of None is a hand copy (cp source target).
+DEPLOYS = (
+    ("bin/memlogd install-agent", (("libexec", "memlogd", "copy", "bin/memlogd"),
+                                   ("libexec", "chat-load", "copy", "bin/chat-load"),
+                                   ("libexec", "chat_names.py", "copy", "share/chat_names.py"),
+                                   ("libexec", "report-bus", "copy", "bin/report-bus"),
+                                   ("libexec", "report_frame.py", "copy", "share/report_frame.py"),
+                                   ("agents", "com.egor.memlogd.plist", "copy", "launchd/com.egor.memlogd.plist"))),
+    ("bin/llm-refresh install-agent", (("libexec", "llm-refresh-heartbeat", "exec", "bin/llm-refresh"),
+                                       ("agents", "com.llm-refresh.plist", "copy", "launchd/com.llm-refresh.plist"))),
+    ("bin/vendor-cli-update install", (("libexec", "vendor-cli-update", "exec", "bin/vendor-cli-update"),
+                                       ("agents", "com.llm-legs.vendor-cli-update.plist", "program",
+                                        "vendor-cli-update"))),
+    ("bin/llm-selfcheck install", (("libexec", "llm-selfcheckd", "exec", "bin/llm-selfcheck"),
+                                   ("agents", "com.llm-legs.selfcheck.plist", "program", "llm-selfcheckd"))),
+    (None, (("libexec", "harness-doctor", "copy", "launchd/harness-doctor"),
+            ("agents", "com.egor.harness-doctor.plist", "copy", "launchd/com.egor.harness-doctor.plist"))),
+    (None, (("libexec", "tokenmap-scand", "copy", "launchd/tokenmap-scand"),
+            ("agents", "com.tokenmap-scand.plist", "copy", "launchd/com.tokenmap-scand.plist"))),
+)
+
+
+def deploy_drift(target, kind, source):
+    if not os.path.lexists(target):
+        return "missing"
+    if kind == "copy":
+        try:
+            with open(target, "rb") as deployed, open(source, "rb") as wanted:
+                return None if deployed.read() == wanted.read() else "differs from its source"
+        except OSError:
+            return "unreadable"
+    if kind == "exec":
+        return None if source in wrapper_targets(target) else "runs %s" % (
+            ", ".join(sorted(file_key(p) for p in wrapper_targets(target))) or "nothing")
+    try:
+        with open(target, "rb") as handle:
+            program = (plistlib.load(handle).get("ProgramArguments") or [""])[0]
+    except Exception:
+        return "unreadable"
+    return None if program == source else "runs %s" % file_key(program)
+
+
+def deploys_section(now):
+    """Each copy an installer of this repository deployed, against its source in the main checkout: launchd runs
+    the deployed copy, so an edit to the source does nothing until the installer runs again. A group none of whose
+    copies exists is not installed and is not judged."""
+    source = os.environ.get("HARNESS_DEPLOY_SOURCE") or main_checkout(ROOT_DIR)
+    dirs = {"libexec": libexec_dir(), "agents": os.path.join(base_home(), "Library", "LaunchAgents")}
+    rows, checked = [], 0
+    for fix, copies in DEPLOYS:
+        targets = [(os.path.join(dirs[where], name), kind, src) for where, name, kind, src in copies]
+        if not any(os.path.lexists(t) for t, _, _ in targets):
+            continue
+        for target, kind, src in targets:
+            checked += 1
+            wanted = os.path.join(dirs["libexec"], src) if kind == "program" else os.path.join(source, src)
+            why = deploy_drift(target, kind, wanted)
+            if not why:
+                continue
+            ident, command = file_key(target), fix or "cp %s %s" % (src, file_key(target))
+            say = "%s %s · fix: %s" % (ident, why, command)
+            try:
+                at = os.lstat(target).st_mtime
+            except OSError:
+                at = now
+            rows.append(row([clip("%s %s" % (ident, why), 80), command], [0], key="deploys:" + ident, say=say,
+                            head="a deployed copy differs from its repo source",
+                            judge=verdict("deploy-drift", ident, 1, 0, "copies", 0, checked, "red", fact=say,
+                                          evidence=[evidence(at, "deploy:" + ident, "%s: %s" % (src, why))], bad=1)))
+    return section("Deploys", rows, ["", "fix"], [False, False],
+                   ok="%d deployed cop%s match%s the repo source" % (checked, "y" if checked == 1 else "ies",
+                                                                    "es" if checked == 1 else ""))
 
 
 def guard_kills(since):
@@ -5260,6 +5430,7 @@ def collect(write, now):
                 tests_section(tests, now, guard_kills(now - LIMITS["test_slow_fresh_s"] - 86400), load_suite_runs(now)),
                 stop_hooks_section(now),
                 guards_section(now),
+                deploys_section(now),
                 waits_classes_section(now)]
     growth_part = growth_section(growth, now, spool_backlog(now))
     if growth_part:

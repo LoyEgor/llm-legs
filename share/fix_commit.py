@@ -10,15 +10,19 @@ FIX_KEYS = frozenset({"at", "by", "files", "in", "regressed_at"})
 
 
 @functools.lru_cache(maxsize=None)
-def siblings_dir(root):
-    """The directory the sibling repositories of checkout `root` sit in: beside its main checkout, so a linked
-    worktree resolves the same one."""
+def main_checkout(root):
+    """The main checkout of checkout `root`, which a linked worktree resolves too."""
     try:
         common = subprocess.run(["git", "-C", root, "rev-parse", "--path-format=absolute", "--git-common-dir"],
                                 capture_output=True, text=True, timeout=10).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         common = ""
-    return os.path.dirname(os.path.dirname(common) if common else root.split("/.claude/worktrees/")[0])
+    return os.path.dirname(common) if common else root.split("/.claude/worktrees/")[0]
+
+
+def siblings_dir(root):
+    """The directory the sibling repositories of checkout `root` sit in: beside its main checkout."""
+    return os.path.dirname(main_checkout(root))
 
 
 def fix_record_faults(ledger):
