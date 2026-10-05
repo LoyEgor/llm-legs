@@ -1086,7 +1086,7 @@
     "detail": "^no exit: supervisor gone$"
    },
    "title": "worker-run start holds the caller through a minutes-long launch floor on a large dirty tree, and a start interrupted there leaves a run with no supervisor",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-03T12:58:27+03:00",
@@ -1103,7 +1103,7 @@
      "files": [
       "llm-legs/bin/worker-run"
      ],
-     "in": null,
+     "in": "llm-legs@2f31dffa",
      "regressed_at": null
     }
    ],
