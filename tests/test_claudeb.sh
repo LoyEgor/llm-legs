@@ -441,6 +441,7 @@ assert test "$(jq -r '.delta.bypass_attempted_at' "$oauth_attempts_file")" = "$b
 assert oauth_attempt_update delta 429 0
 assert jq -e --argjson bypass "$bypass_attempted_at" '.delta.strikes == 3 and .delta.bypass_attempted_at == $bypass' "$oauth_attempts_file" >/dev/null
 unset CLAUDEB_OAUTH_BYPASS_BACKOFF
+now=$(date +%s)
 printf '{"alpha":{"attempted_at":%s,"outcome":"warming","retry_after_until":0}}\n' "$((now - 170))" >"$oauth_attempts_file"
 assert test "$(oauth_backoff_until alpha)" = 0
 assert test "$(oauth_heal_backoff_until alpha)" -gt "$now"

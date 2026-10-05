@@ -3137,9 +3137,11 @@ assert_eq pass "$(bloat_tool MultiEdit "$(jq -cn --arg f "$HOME/.claude/rules/r.
 echo "== bypasses: a hook that cannot run refuses instead of passing"
 mkdir -p "$WORK/nolib/bin" "$WORK/nojq"
 cp "$WRITE_GATE" "$BLOAT" "$WATCH" "$WORK/nolib/bin/"
+nojq_tools=()
 for f in /usr/bin/* /bin/*; do
-  [ "${f##*/}" = jq ] || ln -sf "$f" "$WORK/nojq/${f##*/}" 2>/dev/null
+  [ "${f##*/}" = jq ] || nojq_tools+=("$f")
 done
+ln -sf "${nojq_tools[@]}" "$WORK/nojq/" 2>/dev/null
 for h in instruction-write-gate.sh instruction-bloat-gate.sh instruction-watch.sh; do
   printf '{"tool_name":"Edit","tool_input":{}}' | /bin/bash "$WORK/nolib/bin/$h" check >/dev/null 2>&1
   assert_eq 2 "$?"
