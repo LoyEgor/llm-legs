@@ -319,14 +319,15 @@ fix_nonrepo_tests() {
   export PATH="$WORK/stamp-bin:$PATH"
   set_config 'claudeb_model=opus' 'claudeb_effort=high'
   clear_stub
-  export PICK_RC=0 PICK_ACCOUNT=fixacct CLAUDE_CODE_SESSION_ID=np-chat STUB_SLEEP=3
+  export PICK_RC=0 PICK_ACCOUNT=fixacct CLAUDE_CODE_SESSION_ID=np-chat
   export STUB_SESSION=np-worker STUB_TRANSCRIPT_SESSION=np-worker STUB_TRANSCRIPT_ACCOUNT=fixacct
   export STUB_EDIT_PATH="c/own.txt"
-  WORKER_TEST_WORKDIR=$parent start_ok claudeb --round "$round"
+  WORKER_TEST_WORKDIR=$parent start_gated claudeb --round "$round"
   assert test -f "$RUN_DIR/families/1/top"
   printf 'fixed\n' >>"$c/own.txt"
   printf 'fixed\n' >>"$c/shell.txt"
   printf 'other\n' >>"$c/theirs.txt"
+  gate_open
   assert await_done
   unset STUB_EDIT_PATH STUB_TRANSCRIPT_SESSION STUB_SESSION
   assert grep -qx "fix:$round:$RUN_ID" <<<"$(fix_kinds "$c" own.txt)"
@@ -361,11 +362,11 @@ TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Edit file_path "$ATTR_TOP/bin/keep" \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
 
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$ATTR_REPO"
+start_gated claudeb --workdir "$ATTR_REPO"
 printf 'stale-produced\n' >"$RUN_DIR/produced"
 printf 'WORKDIR: %s\nstale-dirty\n' "$ATTR_TOP" >"$RUN_DIR/dirty"
 mv "$ATTR_REPO/.git" "$ATTR_REPO/.git.hidden"
+gate_open
 assert await_done
 mv "$ATTR_REPO/.git.hidden" "$ATTR_REPO/.git"
 assert grep -q '^UNKNOWN: ' "$RUN_DIR/files"
@@ -385,11 +386,11 @@ printf 'D\n' >"$ATTR_REPO/bin/rewritten-open"
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Edit file_path "$ATTR_TOP/bin/rewritten-open" \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$ATTR_REPO"
+start_gated claudeb --workdir "$ATTR_REPO"
 printf 'C\n' >"$ATTR_REPO/bin/rewritten-open"
 git -C "$ATTR_REPO" add bin/rewritten-open
 git -C "$ATTR_REPO" -c user.email=t@t -c user.name=t commit -qm 'the run committed C' >/dev/null
+gate_open
 assert await_done
 assert grep -qxF -- "$(attr_blob D)$tab$(attr_blob C)${tab}bin/rewritten-open" "$RUN_DIR/produced"
 assert_fails grep -q $'\tbin/rewritten-open\tcommit$' "$RUN_DIR/produced"
@@ -411,10 +412,10 @@ CLONE_TOP=$(cd "$WORK/run-clone" && pwd -P)
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Edit file_path "$CLONE_TOP/bin/ours" \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$WORK/run-clone"
+start_gated claudeb --workdir "$WORK/run-clone"
 git -C "$WORK/run-clone" fetch -q origin && git -C "$WORK/run-clone" merge --ff-only -q FETCH_HEAD
 printf 'ours\n' >"$WORK/run-clone/bin/ours"
+gate_open
 assert await_done
 assert grep -q 'bin/ours' "$RUN_DIR/produced"
 assert_fails grep -q 'from-upstream' "$RUN_DIR/produced"
@@ -425,9 +426,9 @@ clear_stub
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Edit file_path "$ATTR_TOP/bin/keep" \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$ATTR_REPO"
+start_gated claudeb --workdir "$ATTR_REPO"
 printf 'dash\n' >"$ATTR_REPO/-odd-name"
+gate_open
 assert await_done
 assert grep -q '^UNKNOWN: ' "$RUN_DIR/files"
 assert_fails grep -q -- '-odd-name' "$RUN_DIR/files"
@@ -438,9 +439,9 @@ clear_stub
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Edit file_path "$ATTR_TOP/bin/keep" \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$ATTR_REPO"
+start_gated claudeb --workdir "$ATTR_REPO"
 printf 'kept-by-run\n' >"$ATTR_REPO/bin/keep"
+gate_open
 assert await_done
 assert_fails grep -q '^UNKNOWN: ' "$RUN_DIR/files"
 assert grep -qx 'bin/keep' "$RUN_DIR/files"
@@ -451,9 +452,9 @@ clear_stub
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Edit file_path "$ATTR_TOP/bin/keep" \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$ATTR_REPO"
+start_gated claudeb --workdir "$ATTR_REPO"
 printf 'rewritten\n' >"$ATTR_REPO/-odd-name"
+gate_open
 assert await_done
 assert grep -q '^UNKNOWN: ' "$RUN_DIR/files"
 assert test ! -e "$RUN_DIR/produced"
@@ -479,11 +480,11 @@ TOOL_TS=$(iso $(($(date +%s) + 60)))
   tool_call Edit file_path "$ATTR_TOP/link-file"
   tool_call Bash command 'ln -sf new-file link-file; ln -s missing dangling'
 } >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$ATTR_REPO"
+start_gated claudeb --workdir "$ATTR_REPO"
 ln -sf new-file "$ATTR_REPO/link-file"
 ln -s missing "$ATTR_REPO/dangling"
 ln -s target-dir "$ATTR_REPO/new-link-dir"
+gate_open
 assert await_done
 link_prev=$(printf '%s' old-file | git -C "$ATTR_REPO" hash-object --stdin)
 link_cur=$(printf '%s' new-file | git -C "$ATTR_REPO" hash-object --stdin)
@@ -505,11 +506,11 @@ clear_stub
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Edit file_path "$ATTR_TOP/bin/keep" \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$ATTR_REPO"
+start_gated claudeb --workdir "$ATTR_REPO"
 printf 'during-run\n' >"$ATTR_REPO/bin/keep"
 printf 'tabbed\n' >"$ATTR_REPO/bin/has${tab}tab"
 printf 'nl\n' >"$ATTR_REPO/bin/has"$'\n'"nl"
+gate_open
 assert await_done
 assert test "$(head -n1 "$RUN_DIR/files")" = "WORKDIR: $ATTR_TOP"
 assert grep -q '^UNKNOWN: ' "$RUN_DIR/files"
@@ -535,9 +536,9 @@ printf 'main-only\n' >"$ATTR_REPO/bin/main-dirt"
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Edit file_path "$WT_TOP/bin/in-wt" \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$WT_DIR"
+start_gated claudeb --workdir "$WT_DIR"
 printf 'run-edit\n' >"$WT_DIR/bin/in-wt"
+gate_open
 assert await_done
 assert test "$(cat "$RUN_DIR/head-before")" = "$WT_HEAD"
 assert grep -qx 'bin/in-wt' "$RUN_DIR/files"
@@ -557,10 +558,10 @@ TOOL_TS=$(iso $(($(date +%s) + 60)))
   tool_call Write file_path "$ATTR_TOP/bin/renamed-to"
   tool_call Bash command 'git mv bin/renamed-from bin/renamed-to'
 } >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$ATTR_REPO"
+start_gated claudeb --workdir "$ATTR_REPO"
 git -C "$ATTR_REPO" mv bin/renamed-from bin/renamed-to
 git -C "$ATTR_REPO" -c user.email=t@t -c user.name=t commit -qm 'rename inside the run' >/dev/null
+gate_open
 assert await_done
 rename_blob=$(attr_blob same-blob)
 assert grep -qx 'bin/renamed-from' "$RUN_DIR/files"
@@ -575,9 +576,9 @@ clear_stub
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Edit file_path "$ATTR_TOP/bin/keep" \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$ATTR_REPO"
+start_gated claudeb --workdir "$ATTR_REPO"
 printf 'killed-edit\n' >"$ATTR_REPO/bin/keep"
+gate_open
 assert await_done
 assert test -f "$RUN_DIR/dirty-before-shas"
 assert test -f "$RUN_DIR/head-before"

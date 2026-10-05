@@ -156,12 +156,11 @@ assert_fails grep -q '^PARTIAL: ' "$RUN_DIR/files"
 # cache — the main chat's, not the session id the worker process journals under — and every
 # transition rewrites the state the task row reads.
 clear_stub
-export STUB_SLEEP=2
 TR_TAGS="$HOME/.cache/claude-worker-tags/chat-main"
 mkdir -p "$TR_TAGS"
 printf 'seed · opus · high\nstart=%s\nedit=1\n' "$(date +%s)" >"$TR_TAGS/agent-x"
 printf 'other · opus · high\nstart=%s\n' "$(($(date +%s) - 600))" >"$TR_TAGS/agent-stale"
-CLAUDE_LAUNCHER_SESSION=chat-main start_ok claudeb
+CLAUDE_LAUNCHER_SESSION=chat-main start_gated claudeb
 assert test "$(cat "$RUN_DIR/launcher")" = chat-main
 assert jq -e --arg run "$RUN_ID" '.phase == "start" and .agent_task_id == "agent-x" and .session == "chat-main"' \
   "$RUN_DIR/state.json" >/dev/null
@@ -172,9 +171,9 @@ assert grep -qx 'edit=1' "$TR_TAGS/agent-x"
 assert grep -q '^start=' "$TR_TAGS/agent-stale"
 "$RUNNER" wait "$RUN_ID" --max 0 >/dev/null
 assert jq -e '.phase == "wait" and (has("round") | not) and .agent_task_id == "agent-x"' "$RUN_DIR/state.json" >/dev/null
+gate_open
 assert await_done
 assert jq -e '.phase == "done" and .exit_code == 0 and (has("round") | not)' "$RUN_DIR/state.json" >/dev/null
-unset STUB_SLEEP
 # Two launches of one chat claiming at once take two rows, never the newest one twice; the sed shim
 # widens the read-then-swap window so the race is not left to timing.
 RACE_TAGS="$HOME/.cache/claude-worker-tags/chat-race"
@@ -218,13 +217,13 @@ TOOL_TS=$(iso $(($(date +%s) + 60)))
   tool_call Bash command 'sed -i "" s/original/rewritten/ bin/shell-edited'
 } >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
 export CLAUDE_CODE_SESSION_ID=chat-abc
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$DIRT_REPO"
+start_gated claudeb --workdir "$DIRT_REPO"
 printf 'rewritten\n' >"$DIRT_REPO/bin/shell-edited"
 printf 'rewritten\n' >"$DIRT_REPO/tests/tracked-by-the-editor"
 printf 'brand new\n' >"$DIRT_REPO/bin/created-through-a-redirect"
 mkdir -p "$DIRT_REPO/notes"
 printf 'brand new\n' >"$DIRT_REPO/notes/inside-an-untracked-directory"
+gate_open
 assert await_done
 assert test "$(head -n1 "$RUN_DIR/files")" = "WORKDIR: $DIRT_TOP"
 assert grep -qx 'tests/tracked-by-the-editor' "$RUN_DIR/files"
@@ -243,9 +242,9 @@ clear_stub
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Bash command 'sed -i "" s/x/y/ bin/the-co-tenant-was-already-editing-this' \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$DIRT_REPO"
+start_gated claudeb --workdir "$DIRT_REPO"
 printf 'the run rewrote it\n' >>"$DIRT_REPO/bin/the-co-tenant-was-already-editing-this"
+gate_open
 assert await_done
 # The floor still SEES a rewrite of a file that was already dirty at launch — that is what the
 # launch-time shas are for — it just answers for it as nobody's rather than as this run's.
@@ -257,9 +256,9 @@ clear_stub
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Edit file_path "$DIRT_TOP/tests/tracked-by-the-editor" \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$DIRT_REPO"
+start_gated claudeb --workdir "$DIRT_REPO"
 printf 'and again\n' >"$DIRT_REPO/bin/somebody-elses-file"
+gate_open
 assert await_done
 assert test "$(grep -c '^PARTIAL: ' "$RUN_DIR/files")" -eq 0
 assert test ! -e "$RUN_DIR/dirty"
@@ -272,10 +271,10 @@ clear_stub
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Edit file_path "$DIRT_TOP/tests/edited-by-the-run" \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$DIRT_REPO"
+start_gated claudeb --workdir "$DIRT_REPO"
 printf 'the run wrote this\n' >"$DIRT_REPO/tests/edited-by-the-run"
 printf 'a co-tenant wrote this\n' >"$DIRT_REPO/bin/written-by-a-co-tenant"
+gate_open
 assert await_done
 report=$("$RUNNER" report "$RUN_ID")
 assert grep -qx 'RUN-FILES: 1' <<<"$report"
@@ -296,10 +295,10 @@ TOOL_TS=$(iso $(($(date +%s) + 60)))
   tool_call Edit file_path "$DIRT_TOP/tests/edited-by-the-run"
   tool_call Bash command 'bash tests/run.sh'
 } >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$DIRT_REPO"
+start_gated claudeb --workdir "$DIRT_REPO"
 printf 'the run wrote this again\n' >"$DIRT_REPO/tests/edited-by-the-run"
 printf 'a co-tenant wrote this again\n' >"$DIRT_REPO/bin/written-by-a-co-tenant"
+gate_open
 assert await_done
 report=$("$RUNNER" report "$RUN_ID")
 assert grep -qx 'RUN-FILES: 1' <<<"$report"
@@ -317,10 +316,10 @@ TOOL_TS=$(iso $(($(date +%s) + 60)))
   tool_call Edit file_path "$DIRT_TOP/tests/edited-by-the-run"
   tool_call Bash command 'sed -i "" s/a/b/ bin/written-by-a-co-tenant'
 } >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$DIRT_REPO"
+start_gated claudeb --workdir "$DIRT_REPO"
 printf 'once more\n' >"$DIRT_REPO/tests/edited-by-the-run"
 printf 'once more\n' >"$DIRT_REPO/bin/written-by-a-co-tenant"
+gate_open
 assert await_done
 assert grep -qx 'tests/edited-by-the-run' "$RUN_DIR/files"
 assert_fails grep -qx 'bin/written-by-a-co-tenant' "$RUN_DIR/files"
@@ -341,11 +340,11 @@ assert_fails grep -qx 'bin/written-by-a-co-tenant' "$RUN_DIR/dirty"
 
 # An unreadable listing cannot turn the snapshot into evidence of ownership.
 clear_stub
-export STUB_SLEEP=1
 printf 'not json at all\n' >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-start_ok claudeb --workdir "$DIRT_REPO"
+start_gated claudeb --workdir "$DIRT_REPO"
 printf 'unreadable\n' >"$DIRT_REPO/tests/edited-by-the-run"
 printf 'unreadable\n' >"$DIRT_REPO/bin/written-by-a-co-tenant"
+gate_open
 assert await_done
 assert_fails grep -qx 'bin/written-by-a-co-tenant' "$RUN_DIR/files"
 assert_fails grep -qx 'tests/edited-by-the-run' "$RUN_DIR/files"
@@ -361,10 +360,10 @@ TOOL_TS=$(iso $(($(date +%s) + 60)))
   tool_call Bash command 'sed -i "" s/rewritten/again/ bin/shell-edited'
   tool_call Edit file_path "$DIRT_TOP/tests/named-from-a-subdirectory"
 } >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$DIRT_REPO/tests"
+start_gated claudeb --workdir "$DIRT_REPO/tests"
 printf 'from a subdirectory\n' >"$DIRT_REPO/bin/edited-from-a-subdirectory"
 printf 'from a subdirectory\n' >"$DIRT_REPO/tests/named-from-a-subdirectory"
+gate_open
 assert await_done
 assert test "$(head -n1 "$RUN_DIR/files")" = "WORKDIR: $DIRT_TOP/tests"
 assert grep -qx 'named-from-a-subdirectory' "$RUN_DIR/files"
@@ -379,11 +378,11 @@ clear_stub
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Bash command 'sed -i "" s/again/once more/ bin/shell-edited' \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$DIRT_REPO"
+start_gated claudeb --workdir "$DIRT_REPO"
 assert test -e "$RUN_DIR/dirty-before"
 rm -f "$RUN_DIR/dirty-before-shas"
 printf 'nobody measured the floor\n' >"$DIRT_REPO/bin/without-a-floor"
+gate_open
 assert await_done
 assert test ! -e "$RUN_DIR/dirty"
 
@@ -455,7 +454,7 @@ EOF
   for variant in cotenant unnamed; do
     clear_stub
     set_config 'claudeb_model=opus' 'claudeb_effort=high'
-    export PICK_RC=0 PICK_ACCOUNT=recordacct CLAUDE_CODE_SESSION_ID=chat-abc STUB_SLEEP=1
+    export PICK_RC=0 PICK_ACCOUNT=recordacct CLAUDE_CODE_SESSION_ID=chat-abc
     mkdir -p "$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture"
     printf 'co-tenant dirty\n' >"$DIRT_REPO/bin/the-co-tenant-was-already-editing-this"
     TOOL_TS=$(iso $(($(date +%s) + 60)))
@@ -464,9 +463,10 @@ EOF
       [ "$variant" = cotenant ] ||
         tool_call Bash command 'sed -i "" s/a/b/ bin/shell-edited'
     } >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-    start_ok claudeb --workdir "$DIRT_REPO"
+    start_gated claudeb --workdir "$DIRT_REPO"
     git -C "$DIRT_REPO" show HEAD:bin/the-co-tenant-was-already-editing-this \
       >"$DIRT_REPO/bin/the-co-tenant-was-already-editing-this"
+    gate_open
     assert await_done
     assert bash -c '! grep -qx "$1" "$2"' \
       'rule change: restoring a co-tenant path does not establish ownership' \
@@ -492,7 +492,7 @@ snapshot_shell_tests
 guard_recorded_tests() {
   clear_stub
   set_config 'claudeb_model=opus' 'claudeb_effort=high'
-  export PICK_RC=0 PICK_ACCOUNT=recordacct CLAUDE_CODE_SESSION_ID=chat-abc STUB_SLEEP=1
+  export PICK_RC=0 PICK_ACCOUNT=recordacct CLAUDE_CODE_SESSION_ID=chat-abc
   mkdir -p "$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture"
   cat >"$STUB_DIR/relay_hook" <<'EOF'
 #!/usr/bin/env bash
@@ -532,7 +532,7 @@ guard_recorded_tests
 guard_top_recorded_tests() {
   clear_stub
   set_config 'claudeb_model=opus' 'claudeb_effort=high'
-  export PICK_RC=0 PICK_ACCOUNT=recordacct CLAUDE_CODE_SESSION_ID=chat-abc STUB_SLEEP=1
+  export PICK_RC=0 PICK_ACCOUNT=recordacct CLAUDE_CODE_SESSION_ID=chat-abc
   mkdir -p "$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture"
   cat >"$STUB_DIR/relay_hook" <<'EOF'
 #!/usr/bin/env bash

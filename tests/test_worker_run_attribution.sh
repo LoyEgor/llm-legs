@@ -68,7 +68,8 @@ ANCHORS
   doomed_base=$(git -C "$repo" rev-parse HEAD:bin/doomed)
   # Two Cyrillic names a UTF-8 awk collates as equal: a lookup by name must still tell them apart.
   printf 'ef\n' >"$repo/bin/ф"
-  export STUB_SLEEP=3
+  export STUB_GATE="$WORK/anchors-gate"
+  rm -f "$STUB_GATE"
   LC_ALL=en_US.UTF-8 "$RUNNER" start codex --brief "$WORK/anchors-brief" --workdir "$repo" \
     --round 20260901T100000Z-aaaaaaa >"$WORK/anchors.out" 2>"$WORK/anchors.err" ||
     fail "round start failed: $(<"$WORK/anchors.err")"
@@ -88,6 +89,8 @@ ANCHORS
   printf 'committed\n' >"$repo/bin/committed"
   git -C "$repo" add bin/committed >/dev/null
   git -C "$repo" -c user.email=t@t -c user.name=t commit -qm inside >/dev/null
+  : >"$STUB_GATE"
+  unset STUB_GATE
   assert await_done
   changed=$(anchors_changed)
   assert grep -qx 'bin/heredoc-only' <<<"$changed"
@@ -130,13 +133,16 @@ ANCHORS
   mkdir -p "$HOME/.cache/claude/review-journal"
   printf '%s\n%s\n' "$repo" "$other" >"$HOME/.cache/claude/review-journal/anchors-chat.repos"
   kept_base=$(git -C "$other" rev-parse HEAD:kept)
-  export STUB_SLEEP=3
+  export STUB_GATE="$WORK/anchors-gate"
+  rm -f "$STUB_GATE"
   "$RUNNER" start codex --brief "$WORK/anchors-brief" --workdir "$repo" \
     --round 20260901T100000Z-aaaaaaa >"$WORK/anchors.out" 2>"$WORK/anchors.err" ||
     fail "two-family start failed: $(<"$WORK/anchors.err")"
   RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/anchors.out")
   assert grep -qxF "run-start${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}--run${anchors_tab}${RUN_ID}${anchors_tab}--session${anchors_tab}anchors-chat" "$ANCHOR_LOG"
   printf 'fixed\n' >>"$other/kept"
+  : >"$STUB_GATE"
+  unset STUB_GATE
   assert await_done
   fold=$(grep "^run-fold${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}" "$ANCHOR_LOG" | tail -n 1)
   assert grep -qF -- "--run${anchors_tab}${RUN_ID}" <<<"$fold"
@@ -156,7 +162,8 @@ ANCHORS
     fail "worktree add in $other failed"
   repo_wt=$(cd "$WORK/anchors-repo-wt" && pwd -P)
   other_wt=$(cd "$WORK/anchors-other-wt" && pwd -P)
-  export STUB_SLEEP=3
+  export STUB_GATE="$WORK/anchors-gate"
+  rm -f "$STUB_GATE"
   "$RUNNER" start codex --brief "$WORK/anchors-brief" --workdir "$repo_wt" \
     >"$WORK/anchors.out" 2>"$WORK/anchors.err" || fail "worktree start failed: $(<"$WORK/anchors.err")"
   RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/anchors.out")
@@ -167,6 +174,8 @@ ANCHORS
   # A family worktree landed and removed mid-run still has its run closed in the family's store.
   : >"$gaps"
   git -C "$other" worktree remove --force "$other_wt" >/dev/null 2>&1
+  : >"$STUB_GATE"
+  unset STUB_GATE
   assert await_done
   assert grep -qF "run-fold${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}--run${anchors_tab}${RUN_ID}" "$ANCHOR_LOG"
   assert grep -qxF "run-fold${anchors_tab}${RUN_ID} $other_wt: not a repository" <<<"$(cut -f2- "$gaps")"
@@ -178,7 +187,7 @@ ANCHORS
   # the case above left dirty stand in both snapshots and are not this run's.
   clear_stub
   : >"$ANCHOR_LOG"
-  export STUB_SLEEP=1 STUB_CODE=3
+  export STUB_CODE=3
   "$RUNNER" start codex --brief "$WORK/brief" --workdir "$repo" \
     >"$WORK/anchors.out" 2>"$WORK/anchors.err" || fail "failing start failed: $(<"$WORK/anchors.err")"
   RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/anchors.out")
@@ -204,9 +213,9 @@ ANCHORS
     done
     printf '%s' "$keep")
   export PATH
-  export STUB_SLEEP=1
-  start_ok codex --workdir "$repo"
+  start_gated codex --workdir "$repo"
   printf 'gap\n' >"$repo/bin/gap-file"
+  gate_open
   assert await_done
   PATH=$saved_path
   export PATH
@@ -220,7 +229,7 @@ ANCHORS
   clear_stub
   : >"$ANCHOR_LOG"
   : >"$gaps"
-  export STUB_SLEEP=1 ANCHORS_FAIL=1
+  export ANCHORS_FAIL=1
   start_ok codex --workdir "$repo"
   assert await_done
   assert grep -q "^run-fold$anchors_tab" "$ANCHOR_LOG"
@@ -236,10 +245,10 @@ ANCHORS
   mkdir -p "$born"
   born=$(cd "$born" && pwd -P)
   printf '%s\n' "$repo" >"$HOME/.cache/claude/review-journal/anchors-chat.repos"
-  export STUB_SLEEP=3
-  WORKER_TEST_WORKDIR=$born start_ok codex
+  WORKER_TEST_WORKDIR=$born start_gated codex
   git -C "$born" init -q .
   git -C "$born" -c user.email=t@t -c user.name=t commit -q --allow-empty -m born
+  gate_open
   assert await_done
   rm -f "$HOME/.cache/claude/review-journal/anchors-chat.repos"
   assert_fails grep -qF "${anchors_tab}run-fold${anchors_tab}" "$gaps"
@@ -250,7 +259,6 @@ ANCHORS
   # The vendor process is told both: whose debt what it writes is, and where its own run record is.
   clear_stub
   : >"$ANCHOR_LOG"
-  export STUB_SLEEP=1
   start_ok claudeb --workdir "$repo"
   assert await_done
   assert test "$(cat "$STUB_DIR/debt_owner_env")" = anchors-chat
@@ -283,7 +291,7 @@ attribution_repair_tests() {
   done
   clear_stub
   set_config 'claudeb_model=opus' 'claudeb_effort=high'
-  export PICK_RC=0 PICK_ACCOUNT=recordacct CLAUDE_CODE_SESSION_ID=chat-abc STUB_SLEEP=1
+  export PICK_RC=0 PICK_ACCOUNT=recordacct CLAUDE_CODE_SESSION_ID=chat-abc
   mkdir -p "$repo/bin" "$outside" "$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture"
   git -C "$repo" init -q
   printf 'base\n' >"$repo/bin/restored"
@@ -327,9 +335,10 @@ attribution_repair_tests() {
       printf '#!/usr/bin/env bash\n%s\n' "$command" >"$STUB_DIR/relay_hook"
       chmod +x "$STUB_DIR/relay_hook"
     fi
-    start_ok claudeb --workdir "$repo"
+    start_gated claudeb --workdir "$repo"
     [ "$variant" = namedonly ] || git -C "$repo" show HEAD:bin/restored >"$repo/bin/restored"
     [ "$variant" = shellonly ] || printf '%s\n' "$variant" >"$repo/bin/named"
+    gate_open
     assert await_done
     rm -f "$STUB_DIR/relay_hook"
     if [ "$variant" = unreadable ] || [ "$variant" = missing ]; then
@@ -394,11 +403,12 @@ attribution_repair_tests() {
       fi
       tool_call Edit file_path "$repo/../outside-repair/second"
     } >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-    start_ok claudeb --workdir "$repo"
+    start_gated claudeb --workdir "$repo"
     [ "$variant" = outside_only ] || printf 'inside %s\n' "$variant" >"$repo/bin/named"
     printf 'after\n' >"$outside/edited"
     printf 'after\n' >"$outside/second"
     printf 'co-tenant\n' >"$repo/bin/outside-cotenant"
+    gate_open
     assert await_done
     if [ "$variant" = outside_only ]; then
       assert_fails grep -qx bin/named "$RUN_DIR/files"

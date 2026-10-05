@@ -372,15 +372,31 @@ start_ok() {
   RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/start.out")
 }
 
+start_gated() {
+  export STUB_GATE="$WORK/gate.$$"
+  rm -f "$STUB_GATE"
+  start_ok "$@"
+}
+
+gate_open() {
+  : >"$STUB_GATE"
+  unset STUB_GATE
+}
+
 await_done() {
-  local output index tick
-  for index in $(seq 1 100); do
-    # The file only paces the loop; `wait` alone decides, and still runs at least every second,
-    # because a supervisor that died without an exit code is terminal too.
+  local output index tick pid
+  for index in $(seq 1 500); do
+    # The file only paces the loop; `wait` alone decides. It runs once the exit code is there, at
+    # once when the supervisor is gone (dying without an exit code is terminal too), and every 5th
+    # round regardless: a running `wait` builds a full report, ~1.5 s under load, most of a case.
     for tick in {1..20}; do
       [ ! -e "$WORKER_RUN_DIR/$RUN_ID/exit_code" ] || break
       sleep 0.05
     done
+    if [ ! -e "$WORKER_RUN_DIR/$RUN_ID/exit_code" ] && [ $((index % 5)) -ne 0 ]; then
+      pid=$(jq -r '.pid // 0' "$WORKER_RUN_DIR/$RUN_ID/meta.json" 2>/dev/null) || pid=0
+      [ "${pid:-0}" -le 0 ] 2>/dev/null || ! kill -0 "$pid" 2>/dev/null || continue
+    fi
     output=$("$RUNNER" wait "$RUN_ID" --max 0)
     if grep -q '^STATUS: done\|^STATUS: failed' <<<"$output"; then
       printf '%s\n' "$output" >"$WORK/wait.out"
