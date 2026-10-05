@@ -170,6 +170,11 @@ assert "$CD" check "$C/record.json" --base refs/night/n1/base
 assert test $? = 1
 assert grep -q 'green suites not confirmed' "$WORK/check.out"
 assert "$CD" check "$C/record.json" --base refs/night/n1/base --landing --suites-passed
+# Landed without a rebase (main had not moved): the deleted units are gone from main, which is no change.
+pre_land=$(git -C "$A" rev-parse HEAD)
+git -C "$A" merge -q --ff-only night/n1/code-x
+assert "$CD" check "$C/record.json" --base refs/night/n1/base --landing --suites-passed
+git -C "$A" reset -q --hard "$pre_land"
 rm "$WT/lib/manual_helpers.sh"
 "$CD" check "$C/record.json" --base refs/night/n1/base >"$WORK/check.out"
 assert grep -q 'alpha/lib/manual_helpers.sh: deleted, but no judged problem of this run names it' "$WORK/check.out"

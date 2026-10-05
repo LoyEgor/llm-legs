@@ -2370,6 +2370,13 @@ def diff_entries(tree, base):
     return [(fields[i], fields[i + 1]) for i in range(0, len(fields) - 1, 2) if fields[i]]
 
 
+def landed_unrebased(tree, top, base):
+    head = (git(tree, "rev-parse", "HEAD") or "").strip()
+    at_base = (git(tree, "rev-parse", "--verify", "--quiet", base + "^{commit}") or "").strip()
+    return bool(head) and head != at_base and git(top, "merge-base", "--is-ancestor", head, "HEAD") is not None \
+        and git(tree, "merge-base", "--is-ancestor", base, "HEAD") is not None
+
+
 def rebase_onto(tree):
     branch = (git(tree, "symbolic-ref", "-q", "HEAD") or "").strip()
     for line in (git(tree, "reflog", "show", "--format=%gs", branch) or "").splitlines() if branch else ():
@@ -2639,6 +2646,8 @@ def check_run(record, base, landing, suites_passed):
         onto = rebase_onto(tree) if base and tree not in day else None
         if onto:
             landed_onto[repo] = onto
+        elif base and tree not in day and tops.get(repo) and landed_unrebased(tree, tops[repo], base):
+            landed_onto[repo] = base
         tree_base = day.get(tree) or onto or base
         entries = diff_entries(tree, tree_base) if tree_base else []
         if tree not in day:
