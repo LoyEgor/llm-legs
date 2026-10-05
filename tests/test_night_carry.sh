@@ -141,4 +141,71 @@ assert [ "$(grep -c '^owner-chat-' "$WORK/n4.out")" = 0 ]
 assert grep -qF 'night-run: owner chat «Alpha Doctor» deferred (load ' "$WORK/n4.err"
 assert [ "$(handoff_refs N4)" = '["handoff-2026-09-20-a1","handoff-2026-09-25-b1","handoff-2026-09-26-c1","handoff-2026-09-27-d1","handoff-2026-09-28-d2","handoff-2026-09-28-old","handoff-2026-10-01-a2"]' ]
 
+O="$WORK/own"
+git init -q "$O"
+mkdir -p "$O/docs/handoffs" "$O/share" "$O/bin" "$HOME/.claude/projects/p/sess-dh/subagents" "$HOME/.cache/claude-worker-runs/r1"
+printf '%s\n' "$O" >"$WORK/sweep-own"
+touch "$O/share/hooks.py" "$O/bin/stall-tool" "$O/bin/old-tool" "$O/share/hook.sh" "$O/share/core.sh" "$O/bin/common" "$O/bin/shared"
+git -C "$O" add -A && git -C "$O" -c user.name=t -c user.email=t@t commit -q -m init
+jq -n --arg cwd "$WORK/alpha-cwd" '[{name: "Debt Hardening", session: "sess-dh", cwd: $cwd}, {name: "Phase Four", session: "sess-p4", cwd: $cwd},
+  {name: "Beta Chat", session: "sess-b", cwd: "/b"}, {name: "Gamma Chat", session: "sess-c", cwd: $cwd}, {name: "Alpha Doctor", session: "sess-old", cwd: "/old"},
+  {name: "Orchestrator", session: "sess-or", cwd: $cwd}, {name: "Editor", session: "sess-ed", cwd: $cwd}, {name: "Reader", session: "sess-rd", cwd: $cwd},
+  {name: "Specialist", session: "sess-sp", cwd: $cwd}, {name: "Generalist", session: "sess-g", cwd: $cwd},
+  {name: "Other One", session: "sess-o1", cwd: $cwd}, {name: "Other Two", session: "sess-o2", cwd: $cwd}, {name: "Other Three", session: "sess-o3", cwd: $cwd}]' >"$WORK/chats.json"
+jq -n '{owners: {reviewers: "Phase Four", gamma: "Gamma Chat"}, rows: [
+  {id: "R1", block: "reviewers", handoff: "docs/handoffs/2026-10-01-hooks.md"},
+  {id: "G1", block: "gamma", handoff: "docs/handoffs/2026-10-02-to.md"},
+  {id: "G2", block: "gamma", handoff: "docs/handoffs/2026-10-03-ledger.md"}]}' >"$O/share/doctor-ledger.json"
+decide='\n\n## Yours to decide\n\nOne fork.\n'
+printf "# Hooks\n\nStatus: open\n\nThe debt hooks in \`share/hooks.py\` misfire.$decide" >"$O/docs/handoffs/2026-10-01-hooks.md"
+printf "# To\n\nStatus: open\n\nTo: «Phase Four».\n\nFix share/hooks.py.$decide" >"$O/docs/handoffs/2026-10-02-to.md"
+printf "# Ledger\n\nStatus: open\n\nbin/old-tool breaks.$decide" >"$O/docs/handoffs/2026-10-03-ledger.md"
+printf "# Tool\n\nStatus: open\n\n\`bin/stall-tool\` stalls; see docs/handoffs/2026-10-01-hooks.md.$decide" >"$O/docs/handoffs/2026-10-04-tool.md"
+printf "# Delegated\n\nStatus: open\n\nshare/hook.sh drops rows.$decide" >"$O/docs/handoffs/2026-10-05-delegated.md"
+printf "# Shared\n\nStatus: open\n\n\`share/core.sh\` with bin/common and bin/shared.$decide" >"$O/docs/handoffs/2026-10-06-shared.md"
+printf "# Plain\n\nStatus: open — To: gamma chat (the one that built it)\n\nFix share/core.sh.$decide" >"$O/docs/handoffs/2026-10-07-plain-to.md"
+line() { printf '%s\n' "$2" >>"$HOME/.claude/projects/p/$1.jsonl"; }
+edit() { line "$1" "$(printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t","name":"%s","input":{"replace_all":false,"file_path":"%s","old_string":"a"}}]}}' "$2" "$3")"; }
+edits() { for i in $(seq "$2"); do edit "$1" Edit "$O/$3"; done; }
+edit sess-dh Edit "$O/share/hooks.py"
+edit sess-dh Write "$O/.claude/worktrees/feat-x/share/hooks.py"
+edit sess-dh/subagents/agent-1 Edit "$O/share/hooks.py"
+edit sess-w Edit "$O/share/hooks.py"
+edit sess-p4 MultiEdit "$O/share/hooks.py"
+edit sess-p4 Edit "$O/docs/handoffs/2026-10-01-hooks.md"
+edits sess-b 3 bin/stall-tool
+edit sess-c Edit "$O/bin/stall-tool"
+edit sess-c Write "$O/bin/stall-tool"
+edits sess-old 3 bin/old-tool
+touch -t 202501010000 "$HOME/.claude/projects/p/sess-old.jsonl"
+line sess-or '{"type":"user","message":{"role":"user","content":"hook.sh loses rows, fix it"}}'
+line sess-or '{"type":"assistant","message":{"content":[{"type":"text","text":"Delegating share/hook.sh."}]}}'
+line sess-or '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t","name":"Agent","input":{"prompt":"In share/hook.sh, keep rows; hook.sh tests: hook.sh"}}]}}'
+edit sess-ed Edit "$O/share/hook.sh"
+for i in 1 2; do line sess-rd '{"type":"user","message":{"role":"user","content":[{"tool_use_id":"t","type":"tool_result","content":"hook.sh hook.sh hook.sh"}]}}'; done
+line sess-rd '{"type":"attachment","attachment":{"type":"file","content":"hook.sh hook.sh"}}'
+edits sess-sp 5 share/core.sh
+edits sess-g 1 share/core.sh
+for s in sess-g sess-o1 sess-o2 sess-o3; do edits $s 4 bin/common; edits $s 4 bin/shared; done
+printf 'sess-dh\n' >"$HOME/.cache/claude-worker-runs/r1/launcher"
+printf 'sess-w\n' >"$HOME/.cache/claude-worker-runs/r1/worker-session"
+batches() { NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-own" python3 -B "$ROOT/share/handoffs.py" --batches |
+  jq -c '[.owner, .by, .doubt, .runner_up, .scores, (.handoffs | map(split("/") | last))]'; }
+batches >"$WORK/own.batches"
+assert grep -qxF '["Debt Hardening",["edits"],true,"Phase Four",{"Debt Hardening":0.8,"Phase Four":0.2},["2026-10-01-hooks.md"]]' "$WORK/own.batches"
+assert grep -qxF '["Phase Four",["to"],false,null,{},["2026-10-02-to.md"]]' "$WORK/own.batches"
+assert grep -qxF '["Gamma Chat",["ledger","to"],false,null,{},["2026-10-03-ledger.md","2026-10-07-plain-to.md"]]' "$WORK/own.batches"
+assert grep -qxF '["Beta Chat",["edits"],true,"Gamma Chat",{"Beta Chat":0.6,"Gamma Chat":0.4},["2026-10-04-tool.md"]]' "$WORK/own.batches"
+assert grep -qxF '["Orchestrator",["edits"],true,"Editor",{"Orchestrator":0.83,"Editor":0.17},["2026-10-05-delegated.md"]]' "$WORK/own.batches"
+assert grep -qxF '["Specialist",["edits"],true,"Generalist",{"Specialist":0.83,"Generalist":0.67},["2026-10-06-shared.md"]]' "$WORK/own.batches"
+assert [ "$(wc -l <"$WORK/own.batches" | tr -d ' ')" = 6 ]
+edits sess-b 2 bin/stall-tool
+assert jqe 'select(.owner == "Beta Chat") | .doubt == true' <(NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-own" python3 -B "$ROOT/share/handoffs.py" --batches)
+export NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-own" NIGHT_RUN_OWNER_CHATS=9
+new_night N5
+night carry N5 >"$WORK/n5.out" 2>"$WORK/n5.err" || fail "evidence carry failed"
+assert grep -qxF "Owner check first: this batch was matched to you by edits and mentions of its files, not by a To: line («Debt Hardening» 0.8, «Phase Four» 0.2). If these handoffs are not yours, SendMessage the sweep chat running night N5 naming the better owner, touch nothing and stop." "$NIGHTS/N5.owner-chat-debt-hardening.prompt.md"
+assert_fails grep -qF 'Owner check' "$NIGHTS/N5.owner-chat-phase-four.prompt.md"
+assert [ "$(grep -c '^owner-chat-' "$WORK/n5.out")" = 6 ]
+
 printf 'PASS: test_night_carry.sh (%s asserts)\n' "$asserts"

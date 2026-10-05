@@ -34,9 +34,9 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
    - `night-run job` records every expected job before dispatch, a `leftover` job among them for
      every leftover branch `night-run leftovers` lists, adopted into the night (see Leftovers).
    - `night-run carry <id>` records what earlier days left. Handoffs go to the chat owning them, which
-     holds their context (Egor, 2026-10-04; owner: the ledger row naming the file, else the first
-     To/For chat): an owner with a decision section or ≥ 2 handoffs gets one `owner-chat` job, its chat
-     resumed with the batch or, live, sent it by the sweep; ≤ 3 pending, none while load > cores × 30.
+     holds their context (Egor, 2026-10-04; owner: a known To/For chat, else top edit+mention share,
+     else the ledger): an owner with a decision section or ≥ 2 handoffs gets one `owner-chat` job,
+     its chat resumed with the batch or, live, sent it; ≤ 3 pending, none while load > cores × 30.
      Other handoffs (trivial, chat gone, owner deferred) are `handoff` jobs unless their To/For chat is
      live; each suite the last full run failed is a `suite` job. A handoff settles with a test or as a
      trade (`Cost:`/`Loss:`/`Recommendation:`).

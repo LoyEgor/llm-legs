@@ -593,6 +593,7 @@ owner_busy() { # night-file -> why no further owner chat starts now; nothing whe
 owner_prompt() { # id ref branch sweep batch-json worktrees -> the prompt file
   local id=$1 ref=$2 branch=$3 file="$nights_dir/$1.$2.prompt.md"
   {
+    jq -r --arg s "$4" 'select(.doubt == true) | "Owner check first: this batch was matched to you by edits and mentions of its files, not by a To: line\(if (.scores | length) > 0 then " (" + (.scores | to_entries | sort_by(-.value) | .[0:3] | map("«\(.key)» \(.value)") | join(", ")) + ")" else "" end). If these handoffs are not yours, SendMessage the sweep chat \($s) naming the better owner, touch nothing and stop.\n"' <<<"$5"
     printf 'Night %s: the night hands you your open handoffs as one batch; you own them and hold their context.\n\n' "$id"
     jq -r '.handoffs[] | "- `\(.)`"' <<<"$5"
     printf '\n1. Settle each one: fix it with a test red on the old code and set its `Status:` line to `Status: settled %s: <one line>`; or, when only Egor'"'"'s word can settle it, reduce it to a trade: `Status: trade for Egor` with `Cost:`, `Loss:` and `Recommendation:` lines; or close it with the evidence that its cause no longer stands.\n' "$id"
