@@ -95,6 +95,7 @@ LIMITS = {
     "wait_red_s": 600,
     "wait_growth": 2.0,
     "wait_growth_days": 3,
+    "worker_orphans": 3,
 }
 WAIT_RED_S = {"lock": 60, "poll": 30}
 WAIT_DAYS = 15
@@ -5333,6 +5334,29 @@ def wait_classes(now):
     return out, days[0]
 
 
+def worker_orphans_line(now):
+    """Processes a worker run left behind outside its own tree, ended by worker-run at the run's end (row ec)."""
+    start = day_start(local_day(now))
+    ended = []
+    for run in read_jsonl(os.path.join(worker_stats_dir(), "runs.jsonl"), start, "ended_at") or ():
+        at = run.get("ended_at")
+        if isinstance(at, (int, float)) and at >= start and isinstance(run.get("orphans"), list):
+            ended += [(at, str(run.get("run") or ""), o) for o in run["orphans"] if isinstance(o, dict)]
+    count, limit = len(ended), LIMITS["worker_orphans"]
+    red = count > limit
+    out = line("worker-run orphans ended today: %d" % count, dim=not red, red=red, menu=section("", [
+        row([clock(at, now), clip(run, 34), fmt_long(o.get("age_s")), clip(str(o.get("command") or ""), 60)])
+        for at, run, o in sorted(ended, key=lambda e: -e[0])], ["ended", "run", "age", "command"],
+        [False, False, True, False]) if ended else None)
+    out.update(key="waits:orphans", say="%d processes worker runs left behind were ended today, fine up to %d" % (
+        count, limit), judge=[verdict("worker_orphans", "worker-run", count, limit, "processes", 24, count,
+                                      "red" if red else None, bad=count, evidence=[
+                                          evidence(at, "worker-stats/runs.jsonl %s" % run, "pid %s · %s" % (
+                                              o.get("pid"), o.get("command"))) for at, run, o in
+                                          sorted(ended, key=lambda e: -e[0])[:3]])])
+    return out
+
+
 def waits_classes_section(now):
     classes, today = wait_classes(now)
     reasons = {}
@@ -5371,9 +5395,14 @@ def waits_classes_section(now):
         rows.append(row([cls, len(secs), fmt_s(total), fmt_s(percentile(secs, 0.5)), fmt_s(percentile(secs, 0.95)),
                          fmt_s(top if secs else None), fmt_s(usual)], red=red, dim=not red, menu=week, key="waits:" + cls,
                         say=next((j["fact"] for j in judge if j["level"]), None), judge=judge))
-    return section(WAITS_GROUP, rows, ["class", "waits today", "total today", "p50", "p95", "max", "usual day, 7 d"],
-                   [False, True, True, True, True, True, True], ok="every wait class within its limit",
-                   blind="" if rows else "no wait journaled in 8 days")
+    orphans = worker_orphans_line(now)
+    out = section(WAITS_GROUP, rows, ["class", "waits today", "total today", "p50", "p95", "max", "usual day, 7 d"],
+                  [False, True, True, True, True, True, True], lead=[orphans], ok="every wait class within its limit",
+                  blind="" if rows else "no wait journaled in 8 days")
+    out["extra_red"] = [orphans] if orphans["red"] else []
+    if out["extra_red"] and out["state"] != "problem":
+        out.update(state="problem", fact=orphans["say"])
+    return out
 
 
 def blind_rows(ledger, dynamic):

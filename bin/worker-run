@@ -482,6 +482,21 @@ end_tree() { # pid
   kill -CONT "$1" 2>/dev/null || :
 }
 
+# A process launchd adopted before the run ended is in no tree end_tree or end_child walks; the id it
+# inherited is all that ties it to the run.
+end_run_orphans() { # directory
+  local holders pid etime command rows='' pids=()
+  holders=$(run_env_holders "${1##*/}")
+  [ -n "$holders" ] || return 0
+  while IFS=$'\t' read -r pid etime command; do
+    pids+=("$pid")
+    rows+="$pid"$'\t'"$(etime_seconds "$etime")"$'\t'"${command:0:80}"$'\n'
+  done <<<"$holders"
+  pids_end 10 "${pids[@]}"
+  meta_update "$1" '.orphans_ended = ((.orphans_ended // []) + $rows)' --argjson rows "$(printf '%s' "$rows" |
+    jq -Rnc '[inputs | split("\t") | {pid: (.[0] | tonumber), age_s: (.[1] | tonumber? // null), command: .[2]}]')" || :
+}
+
 run_with_deadline() {
   local child watchdog='' rc rc_reaped signalled='' began ended
   # Per ATTEMPT, so a reroute's fresh launch cannot inherit the previous one's verdict.
@@ -635,6 +650,8 @@ run_overdue() {
 
 . "$SCRIPT_DIRECTORY/../share/run-liveness.sh" ||
   fail 'share/run-liveness.sh is missing: worker-run cannot tell a live supervisor from a recycled pid'
+. "$SCRIPT_DIRECTORY/../share/processes.sh" ||
+  fail 'share/processes.sh is missing: worker-run cannot end the processes its runs leave behind'
 
 config_value() {
   sed -n "s/^$1=//p" "$CONFIG_FILE" 2>/dev/null | head -n1
@@ -2020,7 +2037,7 @@ journal_worker_run() { # directory status exit-code
       round: (.review_round // null), pid_started_at: (.pid_started_at // null), started_at,
       cli_starts: (.cli_starts // []), attempt_secs: (.attempt_secs // []), attempt_rcs: (.attempt_rcs // []),
       walled: (.walled_accounts // []), ended_at, exit_code: (($code | tonumber?) // null), status: $status,
-      reason: .terminal_reason}' "$directory/meta.json" 2>/dev/null) || return 0
+      reason: .terminal_reason, orphans: (.orphans_ended // [])}' "$directory/meta.json" 2>/dev/null) || return 0
   mkdir -p "${journal%/*}" 2>/dev/null || return 0
   LLM_STORE_LOCK_RETRIES=40 store_lock_acquire "$journal.lock" || return 0
   marker="$journal.pruned"
@@ -5590,6 +5607,6 @@ case "${1:-}" in
   claim) shift; claim_run "$@"; exit $? ;;
   browse) shift; browse_run "$@"; exit $? ;;
   _deliver) complete_run "$2" "$3"; exit 0 ;;
-  _supervise) shift; supervise "$@"; rc=$?; slot_release "$NIGHT_SLOT"; exit "$rc" ;;
+  _supervise) shift; supervise "$@"; rc=$?; end_run_orphans "$1"; slot_release "$NIGHT_SLOT"; exit "$rc" ;;
   *) usage ;;
 esac

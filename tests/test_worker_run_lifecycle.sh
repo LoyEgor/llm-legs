@@ -325,6 +325,65 @@ assert test ! -s "$CALL_LOG"
 unset PICK_ACCOUNT PICK_RC
 set_config
 
+# A process the run spawned that launchd adopted before the run ended ends with the run, a stopped one
+# too (live 2026-10-05: a `bash -x tests/test_slots.sh` stopped on a tty read held its landed worktree),
+# with its children; one carrying another run's id, a nested run's below it, none, or this id in its
+# arguments only lives on. `bash` here is never /bin/bash: macOS hides an Apple binary's environment.
+orphan_cleanup() {
+  local pid
+  for pid in $(cat "$STUB_DIR"/orphan-*.pid 2>/dev/null); do
+    pkill -P "$pid" 2>/dev/null
+    kill -TERM "$pid" 2>/dev/null
+    kill -CONT "$pid" 2>/dev/null
+  done
+  rm -f "$STUB_DIR"/orphan-*
+}
+gone() { # pid
+  local tick
+  for tick in $(seq 1 100); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.1; done
+  return 1
+}
+trap 'orphan_cleanup; rm -rf "$WORK"' EXIT
+clear_stub
+set_config 'claudeb_model=opus' 'claudeb_effort=high'
+export PICK_ACCOUNT=picked PICK_RC=0
+cat >"$STUB_DIR/relay_hook" <<'EOF'
+#!/usr/bin/env bash
+cd /
+child() { until pgrep -P "$@" >/dev/null; do sleep 0.01; done; pgrep -P "$@"; }
+( bash -c 'sleep 3001; :' </dev/null >/dev/null 2>&1 & printf '%s\n' "$!" >"$STUB_DIR/orphan-run.pid" )
+( bash -c 'sleep 3002; :' </dev/null >/dev/null 2>&1 &
+  child "$!" -x sleep >/dev/null; kill -STOP "$!"; printf '%s\n' "$!" >"$STUB_DIR/orphan-stopped.pid" )
+( bash -c 'WORKER_RUN_ID=claudeb-1-1-nested bash -c "sleep 3006; :" & sleep 3007; :' </dev/null >/dev/null 2>&1 &
+  child "$!" -f '^bash -c sleep 3006' >"$STUB_DIR/orphan-nested.pid"; printf '%s\n' "$!" >"$STUB_DIR/orphan-parent.pid" )
+( WORKER_RUN_ID=claudeb-1-1-other bash -c 'sleep 3003; :' </dev/null >/dev/null 2>&1 & printf '%s\n' "$!" >"$STUB_DIR/orphan-other.pid" )
+( env -u WORKER_RUN_ID bash -c 'sleep 3004; :' </dev/null >/dev/null 2>&1 & printf '%s\n' "$!" >"$STUB_DIR/orphan-none.pid" )
+( env -u WORKER_RUN_ID bash -c "sleep 3005; : WORKER_RUN_ID=$WORKER_RUN_ID" </dev/null >/dev/null 2>&1 &
+  printf '%s\n' "$!" >"$STUB_DIR/orphan-named.pid" )
+for name in run stopped parent; do child "$(cat "$STUB_DIR/orphan-$name.pid")" -x sleep >"$STUB_DIR/orphan-$name.kid"; done
+ps -o ppid=,stat= -p "$(cat "$STUB_DIR"/orphan-{run,stopped,parent,other,none,named}.pid | paste -sd, -)" >"$STUB_DIR/orphan-ps"
+EOF
+chmod +x "$STUB_DIR/relay_hook"
+start_ok claudeb
+assert await_done
+rm -f "$STUB_DIR/relay_hook"
+ended=()
+for name in run stopped parent; do ended+=("$(cat "$STUB_DIR/orphan-$name.pid")" "$(cat "$STUB_DIR/orphan-$name.kid")"); done
+assert test "$(awk '{ print $1 }' "$STUB_DIR/orphan-ps" | sort -u)" = 1
+assert test "$(awk '$2 ~ /^T/' "$STUB_DIR/orphan-ps" | wc -l | tr -d ' ')" = 1
+for pid in "${ended[@]}"; do assert gone "$pid"; done
+for name in nested other none named; do assert kill -0 "$(cat "$STUB_DIR/orphan-$name.pid")"; done
+assert jq -e --argjson ended "$(printf '%s\n' "${ended[@]}" | jq -s .)" --argjson run "${ended[0]}" --argjson kid "${ended[1]}" \
+  '.orphans_ended | (map(.pid) | sort) == ($ended | sort) and all(.age_s | type == "number")
+  and ([.[] | select(.pid == $run or .pid == $kid) | .command] | sort) == ["bash -c sleep 3001; :", "sleep 3001"]' \
+  "$RUN_DIR/meta.json" >/dev/null
+assert jq -se --arg run "$RUN_ID" 'map(select(.run == $run)) | length == 1 and (.[0].orphans | length) == 6' \
+  "$CLAUDEB_DIR/worker-stats/runs.jsonl" >/dev/null
+orphan_cleanup
+trap 'rm -rf "$WORK"' EXIT
+unset PICK_ACCOUNT PICK_RC
+set_config
+
 # A missing wall is loud: worker-run must refuse to launch rather than read every account as
 # excluded because its include went missing.
 NOSHARE_RUNNER="$WORK/noshare/bin/worker-run"

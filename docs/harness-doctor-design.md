@@ -70,7 +70,7 @@ changes, so the block's `menu.txt` stays near 300 lines.
 | **Hooks** | a synchronous hook slow this hour or cut is a problem; one slow over 24 h, a failed fast-path probe, or any watch reason of §3.3 is a watch | hook · when · median ms 24 h · min 24 h · cuts 24 h (a script run by several events is one row, `when` naming the first `+N`; the statusline and each `menu build: <menu>` are rows of their own, a menu build red over its band); nav lines `on every tool call`, `full work on trivial Bash`, `by transcript size`, `by repositories in the chat`; lead line `fast paths` |
 | **Load** | CPU busy, kernel share, new processes, unaccounted CPU, memory guard, swap | last hour · 7 days (shown once the samples cover more than 1.5 h) |
 | **Tests** | a group's last run over twice its usual and within 6 h, 5+ suites at once in the last 6 h (`suites at once, 6 h: N` above the table), a test that failed under load in the last 6 h (`failed under load, 6 h: N`, §3.3), a suite over half of its repository's latest full run (`long pole, 24 h`, L), or a suite over 2 h of wall clock in 24 h (`daily cost, 24 h`, L), or a suite that hung in 24 h (`hung, 24 h: N`, L) | test · repo · runs today · min today · usual min · last min; `long pole` drills into repo · long pole · min · min over next · share of run, `daily cost` into suite · repo · runs · min 24 h · min a run |
-| **Wait classes** | every wait of the wait journal (§12, row `ed`): a class red when today's longest wait passes its limit or today's total passes twice its usual day; every class shown dim even when normal | class · waits today · total today · p50 · p95 · max · usual day, 7 d; each drills into its days |
+| **Wait classes** | every wait of the wait journal (§12, row `ed`): a class red when today's longest wait passes its limit or today's total passes twice its usual day; every class shown dim even when normal; a lead line counts the processes worker runs ended today left behind outside their own tree (`worker-stats/runs.jsonl` `orphans`, row `ec`), red past `worker_orphans` | class · waits today · total today · p50 · p95 · max · usual day, 7 d; each drills into its days |
 | **Growth** | loose git objects over the limit, a big store that doubled in a week, or a hook spool file older than 30 min (the collector stopped folding); a watch for a per-call store over 1 000 entries that doubled in a day (its cleanup stopped) | store · entries · a week ago (once a week of samples exists) · size MB |
 
 ### 2.1 Row grammar
@@ -236,6 +236,7 @@ from this machine on 2026-09-28, from the 28-day backfill and a day of samples:
 | no stop line, or no tripwire baseline, while chats ran (`silent_s`) | > 6 h | > 3 h | same |
 | instruction-file growth no gate passed (`growth_min_b`) | > 120 B | ≥ 60 B | same |
 | instruction-watch heartbeat age (`watch_tick_s`) | > 2 ticks of 120 s | – | same |
+| worker-run orphans ended today (`worker_orphans`) | > 3 | – | the first one, 2026-10-05: a `bash -x tests/test_slots.sh` reparented to launchd before its run ended held the landed worktree 14 min later; a few a day are information |
 
 The limits are absolute. A self-adjusting baseline is what let LLM doctor's `mark_slow` absorb the
 09-22 step, so `wait s 7 d` is shown next to the current value but never lowers a limit. Every

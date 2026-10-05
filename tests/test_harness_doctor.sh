@@ -784,7 +784,8 @@ PINNED = {"call_s": 5.0, "call_note_s": 3.0, "call_min_calls": 5, "cut_share": 0
           "history_min_ms": 20, "load_fail_suites": 3, "load_pass_within_s": 3600, "menu_ms": 300,
           "menu_note_ms": 100, "menu_min_builds": 3, "per_call_entries": 1000, "collector_s": 30.0,
           "stop_repeat_s": 1800, "ask_deferred_s": 7200, "silent_s": 21600, "growth_min_b": 120, "watch_tick_s": 120,
-          "hold_note_s": 60, "hold_red_s": 300, "wait_red_s": 600, "wait_growth": 2.0, "wait_growth_days": 3}
+          "hold_note_s": 60, "hold_red_s": 300, "wait_red_s": 600, "wait_growth": 2.0, "wait_growth_days": 3,
+          "worker_orphans": 3}
 check(m.LIMITS == PINNED, "LIMITS match design §4; a fixer never loosens the judge, a change here goes through a handoff")
 check((m.PROOF_MIN_EXPOSURE, m.SEEN_GAP_S, m.DISMISSED) == (20, 86400, ("not-a-bug", "weather")),
       "the proof minimum, the first_seen gap and the dismissal statuses are pinned")

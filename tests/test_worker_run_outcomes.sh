@@ -307,7 +307,7 @@ mkdir -p "$WORK/share"
 cp "$ROOT/share/worker-pool.sh" "$ROOT/share/gemini-accounts.sh" "$ROOT/share/codex-accounts.sh" \
   "$ROOT/share/worker-model.sh" "$ROOT/share/limits-view.sh" "$ROOT/share/worker-walls.sh" \
   "$ROOT/share/web-search.sh" "$ROOT/share/run-liveness.sh" "$ROOT/share/store-lock.sh" \
-  "$ROOT/share/slots.sh" "$ROOT/share/limiter-hold.sh" "$ROOT/share/worktree-branch.sh" "$ROOT/share/worker-claims.sh" "$WORK/share/"
+  "$ROOT/share/slots.sh" "$ROOT/share/limiter-hold.sh" "$ROOT/share/worktree-branch.sh" "$ROOT/share/worker-claims.sh" "$ROOT/share/processes.sh" "$WORK/share/"
 [ -e "$WORK/bin/codexb" ] || ln -s "$ROOT/bin/codexb" "$WORK/bin/codexb"
 [ -e "$WORK/bin/cyrillic-share" ] || ln -s "$ROOT/bin/cyrillic-share" "$WORK/bin/cyrillic-share"
 printf '%s\n' "$SELF_RUNNER" >"$STUB_DIR/codex_append_target"

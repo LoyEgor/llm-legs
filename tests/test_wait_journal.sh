@@ -86,7 +86,20 @@ if sys.argv[3:] == ["prune"]:
     module.prune(now)
 print(json.dumps(module.waits_classes_section(now)))' "$ROOT/bin/harness-doctor" "$((T + 3600))" "$@"
 }
+export WORKER_STATS_DIR="$WORK/stats"
+mkdir -p "$WORKER_STATS_DIR"
+orphan() { printf '{"pid":%s,"age_s":%s,"command":"%s"}' "$1" "$2" "$3"; }
+{ printf '{"run":"r-old","ended_at":%s,"orphans":[%s]}\n' $((T - 86400)) "$(orphan 1 1 a),$(orphan 2 1 b),$(orphan 3 1 c),$(orphan 4 1 d)"
+  printf '{"run":"r-legacy","ended_at":%s}\n' $((T + 50))
+  printf '{"run":"r-a","ended_at":%s,"orphans":[%s]}\n' $((T + 100)) "$(orphan 11 840 'bash -x tests/test_slots.sh')"
+  printf '{"run":"r-b","ended_at":%s,"orphans":[%s]}\n' $((T + 200)) "$(orphan 12 30 'sleep 300'),$(orphan 13 31 'sleep 301')"
+} >"$WORKER_STATS_DIR/runs.jsonl"
 read_section >"$WORK/section.json" || fail "the reader failed"
+# Orphans worker runs left behind, ended at their run's end: today's only, information up to the limit.
+assert jqe '.lead[0] | .cells == ["worker-run orphans ended today: 3"] and .dim and .red == [] and .key == "waits:orphans"
+  and ([.judge[] | [.rule, .ident, .value, .limit, .level]] == [["worker_orphans", "worker-run", 3, 3, null]])
+  and ([.menu.rows[].cells] == [["08:03", "r-b", "30 s", "sleep 300"], ["08:03", "r-b", "31 s", "sleep 301"],
+                                ["08:01", "r-a", "14 min", "bash -x tests/test_slots.sh"]])' "$WORK/section.json"
 cls() { jq -c --arg c "$1" '.rows[] | select(.key == "waits:" + $c)' "$WORK/section.json"; }
 assert jqe '.name == "Wait classes" and .state == "problem" and ([.rows[].cells[0]] | sort) == ["lock", "night-workers", "poll", "run-suites"]' \
   "$WORK/section.json"
@@ -106,5 +119,9 @@ assert [ ! -e "$W/$(day $((T - 20 * 86400))).jsonl" ]
 assert [ -e "$W/$(day $((T - 4 * 86400))).jsonl" ]
 rm -rf "$W"
 assert jqe '.state == "blind" and .rows == []' <(read_section)
+printf '{"run":"r-c","ended_at":%s,"orphans":[%s]}\n' $((T + 300)) "$(orphan 14 5 'node dev-server')" >>"$WORKER_STATS_DIR/runs.jsonl"
+assert jqe '.state == "problem" and (.fact | startswith("4 processes worker runs left behind"))
+  and (.lead[0] | .red == [0] and .cells == ["worker-run orphans ended today: 4"]
+       and ([.judge[] | [.rule, .value, .level]] == [["worker_orphans", 4, "red"]])) and .extra_red[0].key == "waits:orphans"' <(read_section)
 
 printf 'PASS: test_wait_journal.sh (%s asserts)\n' "$asserts"
