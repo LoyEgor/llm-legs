@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 . "$(dirname "$0")/worker_run_harness.sh"
-PROJECTS=$(git_projects "$ROOT")
 
 # A model no implementation worker may run is refused before the account is resolved: an explicit
 # --model, the vendor's own `*_model=` key, and the default a missing key falls back to are three
@@ -82,127 +81,49 @@ clear_stub
 start_ok grok --model auto
 assert await_done
 
-# --- One stamping point: every relay's rows reach the LAUNCHING chat ------------------------------
+# --- One stamping point: every relay inherits the LAUNCHING chat --------------------------------
 # The launcher is known at `start` and nowhere else: a fresh relay's own session id is not printed
-# until its CLI exits, so a pairing read off the run record arrives AFTER every touch the worker
-# made while it ran (live run claudeb-1788388059-13078-3ffd, 2026-09-03). So the chat is stamped
-# into the launched process's ENVIRONMENT as CLAUDE_DEBT_OWNER, which every relay inherits whatever
-# the vendor and whatever it goes on to launch, and the touch writer charges the anchors store to it.
-#
-# One case per relay type, each end to end: worker-run launches the stubbed CLI under a fake
-# launching chat, a process inside that CLI edits a file in a git fixture and records it exactly as
-# the relay's own PostToolUse hook would, and the touch that reaches the store must carry the
-# LAUNCHER's id. Break the stamp for one relay and only that relay's case fails.
-STAMP_HOOK="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/commit-journal.sh"
-STAMP_LIB="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/lib/review-journal.sh"
-STAMP_ANCHORS="${REVIEW_BENCH_ROOT:-$PROJECTS/review-bench}/bin/review-anchors"
-if [ -r "$STAMP_HOOK" ] && [ -r "$STAMP_LIB" ] && [ -x "$STAMP_ANCHORS" ]; then
-  STAMP_REPO="$WORK/stamp-repo"
-  mkdir -p "$STAMP_REPO" "$WORK/stamp-bin"
-  ln -sf "$STAMP_ANCHORS" "$WORK/stamp-bin/review-anchors"
-  git -C "$STAMP_REPO" init -q -b main
-  git -C "$STAMP_REPO" config user.email t@example.test
-  git -C "$STAMP_REPO" config user.name t
-  printf 'base\n' >"$STAMP_REPO/base.txt"
-  git -C "$STAMP_REPO" add base.txt
-  git -C "$STAMP_REPO" commit -q -m base
-  STAMP_STORE=$(git -C "$STAMP_REPO" rev-parse --path-format=absolute --git-common-dir)/review-anchors.json
-  STAMP_KEY=$(cd "$(git -C "$STAMP_REPO" rev-parse --absolute-git-dir)" && pwd -P)
-  # The hook skips anything under TMPDIR and this suite's fixtures live there: it is pinned to a
-  # directory no fixture sits under, or the paths asserted on here are silenced by where the suite
-  # happens to run.
-  STAMP_HOME="$WORK/stamp-home"
-  mkdir -p "$STAMP_HOME" "$WORK/stamp-tmpdir"
-  # The relay's own hook pair, both halves: the PreToolUse content snapshot the touch writer
-  # measures a change against, then the PostToolUse payload naming the file the relay just wrote.
-  # `$1` is the worker's OWN session id — the only one a relay's hook ever knows.
-  cat >"$STUB_DIR/relay_hook" <<STAMPEOF
+# until its CLI exits (live run claudeb-1788388059-13078-3ffd, 2026-09-03). So the chat is stamped
+# into the launched process's ENVIRONMENT as CLAUDE_DEBT_OWNER, which claude-setup's
+# edit-conflict-notice reads to tell a worker's own dirt from a foreign chat's. One case per relay
+# type: a process inside the stubbed CLI must see the LAUNCHER's id, never the worker's own.
+cat >"$STUB_DIR/relay_hook" <<STAMPEOF
 #!/usr/bin/env bash
-worker=\$1
-tag=\$(cat "$STUB_DIR/relay_tag" 2>/dev/null) || tag=untagged
-path="$STAMP_REPO/relay-\$tag.txt"
-export HOME="$STAMP_HOME" TMPDIR="$WORK/stamp-tmpdir" WORKER_RUN_DIR="$WORKER_RUN_DIR"
-export GIT_CEILING_DIRECTORIES="$WORK" PATH="$WORK/stamp-bin:\$PATH"
-. "$STAMP_LIB" || exit 0
-rj_snapshot_content "\$worker" "call-\$tag" "$STAMP_REPO" "" "relay-\$tag.txt"
-printf 'written by %s\n' "\$worker" >"\$path"
-jq -cn --arg s "\$worker" --arg p "\$path" --arg c "$STAMP_REPO" --arg call "call-\$tag" \
-  '{hook_event_name:"PostToolUse",tool_name:"Write",cwd:\$c,session_id:\$s,tool_use_id:\$call,
-    tool_input:{file_path:\$p}}' |
-  bash "$STAMP_HOOK" >"$STUB_DIR/relay_hook_out" 2>"$STUB_DIR/relay_hook_err"
-printf '%s\n' "\$?" >"$STUB_DIR/relay_hook_rc"
+printf '%s\n' "\${CLAUDE_DEBT_OWNER-}" >"$STUB_DIR/relay_owner"
 STAMPEOF
-  chmod +x "$STUB_DIR/relay_hook"
-  # Who holds a touch on a path in the store, one id per line.
-  stamp_owners() { # tag
-    jq -r --arg k "$STAMP_KEY" --arg p "relay-$1.txt" '(.touches[$k][$p] // {}) | keys[]' \
-      "$STAMP_STORE" 2>/dev/null | sort -u
-  }
-  stamp_relay() { # tag vendor [start-args...]
-    local tag="$1" vendor="$2" keep_session="${STUB_SESSION-}"
-    shift 2
-    printf '%s\n' "$tag" >"$STUB_DIR/relay_tag"
-    rm -f "$STUB_DIR/relay_hook_rc" "$STUB_DIR/relay_hook_err"
-    # `clear_stub` unsets STUB_SESSION, and the re-attach case is exactly the one that sets it:
-    # cleared, the run records the stub default and the case proves nothing about a resumed id.
-    clear_stub
-    [ -z "$keep_session" ] || export STUB_SESSION="$keep_session"
-    export CLAUDE_CODE_SESSION_ID="stamp-chat-$tag"
-    start_ok "$vendor" "$@"
-    await_done || fail "the $vendor stamping run never finished"
-    unset CLAUDE_CODE_SESSION_ID
-    assert test "$(cat "$STUB_DIR/relay_hook_rc" 2>/dev/null)" = 0
-    assert grep -qx "stamp-chat-$tag" <<<"$(stamp_owners "$tag")"
-    # The launcher alone: a touch under the worker's own id is debt no chat on this machine reads.
-    assert test "$(stamp_owners "$tag" | grep -c .)" -eq 1
-  }
-  set_config 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=medium' \
-    'gemini_model=flash38' 'gemini_effort=high' 'grok_model=auto' 'grok_effort=high'
-  export PICK_RC=0 PICK_ACCOUNT=stampacct
-  stamp_relay claudeb claudeb
-  stamp_relay codex codex
-  stamp_relay gemini gemini --account main
-  stamp_relay grok grok
-  # A RE-ATTACHED run: a `--resume` launch repeats the id the worker session already had, and its
-  # touches still reach the launcher rather than that resumed id.
-  export STUB_SESSION=reattached-session
-  stamp_relay reattach claudeb --account stampacct --resume reattached-session
-  assert grep -qx 'reattached-session' "$RUN_DIR/worker-session"
-  assert_fails grep -qx 'reattached-session' <<<"$(stamp_owners reattach)"
-  unset STUB_SESSION
-  # An IMAGE SCRIPT and a POOL-RUN CELL are processes a relay starts, not relays of their own: they
-  # record through whoever ran them, so the one thing they must not do is drop the stamp. Stood in
-  # for here by a bare shell — which is what both are to the environment — launched with the
-  # environment worker-run exported.
-  printf '%s\n' image-cell >"$STUB_DIR/relay_tag"
-  rm -f "$STUB_DIR/relay_hook_rc"
-  ( export CLAUDE_DEBT_OWNER=stamp-chat-image-cell CLAUDE_CODE_SESSION_ID=some-worker
-    "$STUB_DIR/relay_hook" nested-image-worker )
-  assert test "$(cat "$STUB_DIR/relay_hook_rc")" = 0
-  assert grep -qx 'stamp-chat-image-cell' <<<"$(stamp_owners image-cell)"
-  assert_fails grep -qx 'nested-image-worker' <<<"$(stamp_owners image-cell)"
-  # A worker with no stamp at all charges its own session id: the touch is still a fact, and the
-  # hook stays quiet inside a worker.
-  printf '%s\n' unstamped >"$STUB_DIR/relay_tag"
-  rm -f "$STUB_DIR/relay_hook_rc"
-  ( unset CLAUDE_DEBT_OWNER
-    export CLAUDEB_WORKER=1
-    "$STUB_DIR/relay_hook" unstamped-worker )
-  assert test "$(cat "$STUB_DIR/relay_hook_rc")" = 0
-  assert test "$(stamp_owners unstamped)" = unstamped-worker
-  # And a chat's own shell is no relay worker: its touches are its own outright.
-  printf '%s\n' quiet >"$STUB_DIR/relay_tag"
-  rm -f "$STUB_DIR/relay_hook_rc"
-  ( unset CLAUDE_DEBT_OWNER CLAUDEB_WORKER GROK_WORKER
-    "$STUB_DIR/relay_hook" a-chat-of-its-own )
-  assert test "$(cat "$STUB_DIR/relay_hook_rc")" = 0
-  assert grep -qx 'a-chat-of-its-own' <<<"$(stamp_owners quiet)"
-  rm -f "$STUB_DIR/relay_hook" "$STUB_DIR/relay_tag"
-  unset PICK_RC PICK_ACCOUNT
+chmod +x "$STUB_DIR/relay_hook"
+stamp_relay() { # tag vendor [start-args...]
+  local tag="$1" vendor="$2" keep_session="${STUB_SESSION-}"
+  shift 2
+  rm -f "$STUB_DIR/relay_owner"
+  # `clear_stub` unsets STUB_SESSION, and the re-attach case is exactly the one that sets it.
   clear_stub
-else
-  fail "the touch writer of ../claude-setup or ../review-bench's review-anchors is unreadable (set CLAUDE_SETUP_ROOT / REVIEW_BENCH_ROOT)"
-fi
+  [ -z "$keep_session" ] || export STUB_SESSION="$keep_session"
+  export CLAUDE_CODE_SESSION_ID="stamp-chat-$tag"
+  start_ok "$vendor" "$@"
+  await_done || fail "the $vendor stamping run never finished"
+  unset CLAUDE_CODE_SESSION_ID
+  assert test "$(cat "$STUB_DIR/relay_owner" 2>/dev/null)" = "stamp-chat-$tag"
+}
+set_config 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=medium' \
+  'gemini_model=flash38' 'gemini_effort=high' 'grok_model=auto' 'grok_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=stampacct
+stamp_relay claudeb claudeb
+stamp_relay codex codex
+stamp_relay gemini gemini --account main
+stamp_relay grok grok
+export STUB_SESSION=reattached-session
+stamp_relay reattach claudeb --account stampacct --resume reattached-session
+assert grep -qx 'reattached-session' "$RUN_DIR/worker-session"
+unset STUB_SESSION
+rm -f "$STUB_DIR/relay_hook" "$STUB_DIR/relay_owner"
+unset PICK_RC PICK_ACCOUNT
+clear_stub
+
+STAMP_ANCHORS="${REVIEW_BENCH_ROOT:-$(git_projects "$ROOT")/review-bench}/bin/review-anchors"
+[ -x "$STAMP_ANCHORS" ] || fail "../review-bench's review-anchors is unreadable (set REVIEW_BENCH_ROOT)"
+mkdir -p "$WORK/stamp-bin"
+ln -sf "$STAMP_ANCHORS" "$WORK/stamp-bin/review-anchors"
 
 # A round fixer and a non-round run of the same chat, concurrent in a two-repository round, both on
 # the real review-anchors: the fixer's fix anchor lands on exactly what it wrote, in either
@@ -279,18 +200,16 @@ fix_owned_tests() {
   assert_fails grep -q '^fix:' <<<"$(fix_kinds "$b" theirs.txt)"
   assert_fails "$RUNNER" claim "$fixer" --paths "$b/theirs.txt/nope" 2>/dev/null
   assert_fails grep -q '^fix:' <<<"$(fix_kinds "$a" theirs.txt)"
-  # A run outside any round claiming in the sibling repository: the launcher's touch, and no fold.
+  # A run outside any round claiming in the sibling repository: no fold.
   export STUB_GATE="$WORK/manual-gate"
   WORKER_TEST_WORKDIR=$a start_ok codex
   printf 'manual\n' >"$b/manual.txt"
   : >"$STUB_GATE"
   unset STUB_GATE
   assert await_done
-  review-anchors untouch --repo "$b" --session fix-chat manual.txt
   folded=$(jq -r --arg r "$RUN_ID" '.runs[$r].folded' "$b/.git/review-anchors.json")
   sleep 1
   "$RUNNER" claim "$RUN_ID" --paths "$b/manual.txt" >/dev/null || fail "claim in the sibling repository failed"
-  assert jq -e --arg k "$b/.git" '.touches[$k]["manual.txt"]["fix-chat"] != null' "$b/.git/review-anchors.json" >/dev/null
   assert test "$(jq -r --arg r "$RUN_ID" '.runs[$r].folded' "$b/.git/review-anchors.json")" = "$folded"
   assert test ! -e "$HOME/.cache/claude/review-debt/gaps/fix-chat"
   export PATH="$saved_path"
