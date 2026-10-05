@@ -1,4 +1,5 @@
-worker_claims_dir() { printf '%s\n' "${WORKER_CLAIMS_DIR:-$HOME/.cache/worker-claims}"; }
+worker_claims_dir() { worker_claims_dir_r; printf '%s\n' "$WORKER_CLAIMS_R"; }
+worker_claims_dir_r() { WORKER_CLAIMS_R=${WORKER_CLAIMS_DIR:-$HOME/.cache/worker-claims}; }
 
 worker_claims_valid_name() {
   [ -n "$1" ] || return 1
@@ -8,10 +9,15 @@ worker_claims_valid_name() {
 }
 
 worker_claims_ttl() {
+  worker_claims_ttl_r || return 1
+  printf '%s\n' "$WORKER_CLAIMS_R"
+}
+
+worker_claims_ttl_r() {
   case "${WORKER_CLAIMS_TTL:-600}" in
     ''|*[!0-9]*) return 1 ;;
   esac
-  printf '%s\n' "${WORKER_CLAIMS_TTL:-600}"
+  WORKER_CLAIMS_R=${WORKER_CLAIMS_TTL:-600}
 }
 
 worker_claims_touch() { # root-function vendor account
@@ -35,18 +41,32 @@ worker_claims_release() {
 # Lists the unexpired claims and says nothing else: the status is an error verdict only, never
 # the freshness of whichever file `find` happened to hand over last.
 worker_claims_fresh() {
-  local vendor="$1" root ttl now file mtime
+  local status
+  worker_claims_fresh_r "$@"
+  status=$?
+  printf '%s' "$WORKER_CLAIMS_R"
+  return "$status"
+}
+
+# The same lines into WORKER_CLAIMS_R, forking only when the vendor has a claims directory.
+worker_claims_fresh_r() {
+  local vendor="$1" root ttl now file mtime out=''
+  WORKER_CLAIMS_R=''
   worker_claims_valid_name "$vendor" || return 1
-  root=$(worker_claims_dir) || return 1
-  ttl=$(worker_claims_ttl) || return 1
+  worker_claims_dir_r
+  root=$WORKER_CLAIMS_R
+  worker_claims_ttl_r || { WORKER_CLAIMS_R=''; return 1; }
+  ttl=$WORKER_CLAIMS_R
+  WORKER_CLAIMS_R=''
   [ -d "$root/$vendor" ] || return 0
   now=$(date +%s) || return 1
   while IFS= read -r file; do
     mtime=$(stat -f '%m' "$file" 2>/dev/null) || continue
     if [ $((now - mtime)) -le "$ttl" ]; then
-      printf '%s\n' "${file##*/}"
+      out+="${file##*/}"$'\n'
     fi
   done < <(find -- "$root/$vendor" -mindepth 1 -maxdepth 1 -type f -print 2>/dev/null)
+  WORKER_CLAIMS_R=$out
   return 0
 }
 

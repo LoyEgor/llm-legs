@@ -486,15 +486,15 @@ assert grep -Fq "\`gemini_model=<slug>\` (a slug \`geminib families\` prints), a
 assert eq "$gemini_default_model" "$("$ROOT/bin/geminib" families | awk -F'\t' '$1 ~ /-flash$/ { print $2; exit }')"
 assert grep -Fq 'Gemini runs at `high` only' "$WORKER_COMMAND"
 assert test "$(grep -Ec 'flash3[0-9] low/medium/high|gemini_effort=low\|medium\|high' "$WORKER_COMMAND")" -eq 0
-assert grep -Fq 'gm_model=$(conf gemini_model); gm_model=${gm_model:-$(worker_model_default_model gemini)}' "$WORKERPICK"
-assert grep -Fq 'gm_effort=$(conf gemini_effort); gm_effort=${gm_effort:-$(worker_model_default_effort gemini "$gm_model")}' "$WORKERPICK"
+assert grep -Fq 'conf_get gemini_model; gm_model=${conf_val:-$(worker_model_default_model gemini)}' "$WORKERPICK"
+assert grep -Fq 'conf_get gemini_effort; gm_effort=${conf_val:-$(worker_model_default_effort gemini "$gm_model")}' "$WORKERPICK"
 assert eq "$(bash -c '. "$1"; worker_model_default_effort gemini "$(worker_model_default_model gemini)"' _ "$ROOT/share/worker-model.sh")" high
 # A missing `<vendor>_effort` has ONE reading: the table default of the STORED model, which is what
 # `worker-run` resolves from `$model`. A picker falling back to the VENDOR's default model instead
 # reports `fable · high` for a row the table says is low, and the two disagree about the launch.
-assert grep -Fq 'cb_effort=${cb_effort:-$(worker_model_default_effort claudeb "$cb_model")}' "$WORKERPICK"
-assert grep -Fq 'cx_effort=${cx_effort:-$(worker_model_default_effort codex "$cx_model")}' "$WORKERPICK"
-assert grep -Fq 'gr_effort=${gr_effort:-$(worker_model_default_effort grok "$gr_model")}' "$WORKERPICK"
+assert grep -Fq 'conf_get claudeb_effort; cb_effort=${conf_val:-$(worker_model_default_effort claudeb "$cb_model")}' "$WORKERPICK"
+assert grep -Fq 'conf_get codex_effort; cx_effort=${conf_val:-$(worker_model_default_effort codex "$cx_model")}' "$WORKERPICK"
+assert grep -Fq 'conf_get grok_effort; gr_effort=${conf_val:-$(worker_model_default_effort grok "$gr_model")}' "$WORKERPICK"
 assert test "$(grep -c 'worker_model_default_effort [a-z]* "$(worker_model_default_model' "$WORKERPICK")" -eq 0
 assert eq "$(bash -c '. "$1"; worker_model_default_effort claudeb fable' _ "$ROOT/share/worker-model.sh")" low
 assert grep -Fq 'canonical knob-to-agy mapping lives in `worker-run`' "$POLICY"
@@ -2688,8 +2688,8 @@ assert eq "$(grep -o '_G\.ClaudeChatSwitch\.cancel([^)]*)' "$HAMMER" | sort -u)"
 # ABSENCE of a model override, so a surface that renders it as a version, or a launcher that
 # substitutes one, answers for a choice nobody made.
 GROK_TAG_HOOK="$ROOT/bin/worker-tag-hook.sh"
-assert grep -Fq 'gr_model=$(conf grok_model); gr_model=${gr_model:-auto}' "$WORKERPICK"
-assert grep -Fq 'gr_effort=$(conf grok_effort); gr_effort=${gr_effort:-$(worker_model_default_effort grok "$gr_model")}' "$WORKERPICK"
+assert grep -Fq 'conf_get grok_model; gr_model=${conf_val:-auto}' "$WORKERPICK"
+assert grep -Fq 'conf_get grok_effort; gr_effort=${conf_val:-$(worker_model_default_effort grok "$gr_model")}' "$WORKERPICK"
 assert grep -Fq 'model=${model:-$(worker_model_default_model "$vendor")}' "$WORKER_RUN"
 assert grep -Fq 'effort=${effort:-$(worker_model_default_effort "$vendor" "$model" "$model_class")}' "$WORKER_RUN"
 assert grep -Fq '[ "$model" = auto ] || command_meta+=(-m "$model")' "$WORKER_RUN"

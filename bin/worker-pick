@@ -121,13 +121,18 @@ if [ "$query_exclude_given" = true ]; then
 fi
 
 worker_pick_root() {
-  local source="${BASH_SOURCE[0]}" directory
+  local source="${BASH_SOURCE[0]}" target
   while [ -L "$source" ]; do
-    directory=$(cd -P "$(dirname "$source")" && pwd)
-    source=$(readlink "$source")
-    [[ "$source" = /* ]] || source="$directory/$source"
+    target=$(readlink "$source")
+    case "$target" in
+      /*) source=$target ;;
+      *) case "$source" in */*) source="${source%/*}/$target" ;; *) source=$target ;; esac ;;
+    esac
   done
-  cd -P "$(dirname "$source")/.." && pwd
+  case "$source" in
+    */*) cd -P "${source%/*}/.." && pwd ;;
+    *) cd -P .. && pwd ;;
+  esac
 }
 worker_pick_share="$(worker_pick_root)/share"
 . "$worker_pick_share/worker-model.sh"
@@ -147,31 +152,31 @@ fi
 
 LIMITS_FILE="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
 WORKER_FILE="${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}"
-now="${WORKER_PICK_NOW:-$(date +%s)}"
+if [ -n "${WORKER_PICK_NOW:-}" ]; then now=$WORKER_PICK_NOW
+elif [ "${BASH_VERSINFO[0]}" -ge 5 ]; then now=$EPOCHSECONDS
+else now=$(date +%s); fi
 REVIEWERS_TOKEN_HORIZON_S=1920
-
-# The codex worker model's short alias comes from the allow-list, never from ~/.codex/config.toml:
-# that file is Egor's interactive pick and would make the column promise a model no worker runs.
-codex_model_short_label() {
-  worker_model_allowed_models codex | head -n1 | sed 's/.*-//'
-}
+nl=$'\n'
 
 # One read: every later lookup is a line of this text. The pin writer runs only after these
 # lookups, so a snapshot here is the file they all would have read.
 WORKER_CONFIG_TEXT=''
 if [ -r "$WORKER_FILE" ]; then WORKER_CONFIG_TEXT=$(<"$WORKER_FILE"); fi
-conf() {
+conf_get() { # key -> conf_val; 1 when no line sets it
   local line='' key="$1"
+  conf_val=''
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
-      "$key"=*) printf '%s\n' "${line#"$key"=}"; return 0 ;;
+      "$key"=*) conf_val=${line#"$key"=}; return 0 ;;
     esac
   done <<<"$WORKER_CONFIG_TEXT"
+  return 1
 }
+conf() { conf_get "$1" || return 0; printf '%s\n' "$conf_val"; }
 # A paused vendor is parked for months and must not exist for this router: the collectors drop
 # `vendors.<key>` for it, and nothing here may put it back. So the pause sits ABOVE the pin — the
 # one place in the ladder where the pin does not win — and above the mode with it.
-vendor_paused() { [ "$(conf "$1_paused")" = on ]; }
+vendor_paused() { conf_get "$1_paused"; [ "$conf_val" = on ]; }
 cb_paused=false; cx_paused=false; gm_paused=false; gr_paused=false
 ! vendor_paused claudeb || cb_paused=true
 ! vendor_paused codex || cx_paused=true
@@ -189,7 +194,7 @@ if [ -n "$query_vendor" ] && vendor_paused "$query_vendor"; then
     "$query_vendor" "$query_vendor" >&2
   exit 3
 fi
-worker_mode=$(conf worker); worker_mode=${worker_mode:-auto}
+conf_get worker; worker_mode=${conf_val:-auto}
 # Silently: a pause is a decision Egor made after setting the toggle, and a warning on every run
 # would be noise.
 case "$worker_mode" in
@@ -200,33 +205,37 @@ case "$worker_mode" in
 esac
 # Before any $(worker_model_*): those run in subshells and would each rebuild the catalogs.
 worker_model_prime "$query_vendor"
-cb_model=$(conf claudeb_model); cb_model=${cb_model:-opus}
-cb_effort=$(conf claudeb_effort); cb_effort=${cb_effort:-$(worker_model_default_effort claudeb "$cb_model")}
-cx_model=$(worker_model_allowed_models codex | head -n1)
-cx_effort=$(conf codex_effort); cx_effort=${cx_effort:-$(worker_model_default_effort codex "$cx_model")}
-gm_model=$(conf gemini_model); gm_model=${gm_model:-$(worker_model_default_model gemini)}
-gm_effort=$(conf gemini_effort); gm_effort=${gm_effort:-$(worker_model_default_effort gemini "$gm_model")}
+conf_get claudeb_model; cb_model=${conf_val:-opus}
+conf_get claudeb_effort; cb_effort=${conf_val:-$(worker_model_default_effort claudeb "$cb_model")}
+worker_model_allowed_models_r codex; cx_model=${WORKER_MODEL_R%%"$nl"*}
+conf_get codex_effort; cx_effort=${conf_val:-$(worker_model_default_effort codex "$cx_model")}
+conf_get gemini_model; gm_model=${conf_val:-$(worker_model_default_model gemini)}
+conf_get gemini_effort; gm_effort=${conf_val:-$(worker_model_default_effort gemini "$gm_model")}
 # worker-run raises a stored Gemini effort the table does not offer, so the column shows what launches.
 worker_model_effort_allowed gemini "$gm_model" "$gm_effort" ||
   gm_effort=$(worker_model_default_effort gemini "$gm_model") || gm_effort=$(conf gemini_effort)
 # `auto` is a real value here, not a missing one: resolving it to a model id is worker-run's job,
 # and this line only reports the knob.
-gr_model=$(conf grok_model); gr_model=${gr_model:-auto}
-gr_effort=$(conf grok_effort); gr_effort=${gr_effort:-$(worker_model_default_effort grok "$gr_model")}
+conf_get grok_model; gr_model=${conf_val:-auto}
+conf_get grok_effort; gr_effort=${conf_val:-$(worker_model_default_effort grok "$gr_model")}
 
 # What the `model·eff` column says a dispatch would launch, abbreviated to the width every vendor
 # row pays for: grok's models all read as the vendor word here (`grokb models` is the list, row
 # `cu`), so `auto` never shows as the knob placeholder it is.
-codex_model=$(codex_model_short_label)
-eff_display() { case "$1" in medium) printf med ;; *) printf '%s' "$1" ;; esac; }
+# The codex worker model's short alias comes from the allow-list, never from ~/.codex/config.toml:
+# that file is Egor's interactive pick and would make the column promise a model no worker runs.
+codex_model=${cx_model##*-}
+eff_display() { # effort var
+  case "$1" in medium) printf -v "$2" med ;; *) printf -v "$2" '%s' "$1" ;; esac
+}
 case "$gr_model" in auto | grok-*) gr_model_display=grok ;; *) gr_model_display=$gr_model ;; esac
 # The column is padded to a fixed width, and the family name spelled out costs it four characters
 # every vendor row pays for; `f` and the version digits keep it as wide as the `pro` it replaced.
 case "$gm_model" in flash[0-9]*) gm_model_display="f${gm_model#flash}" ;; *) gm_model_display=$gm_model ;; esac
-cb_display="${cb_model}·$(eff_display "$cb_effort")"
-cx_display="${codex_model}·$(eff_display "$cx_effort")"
-gm_display="${gm_model_display}·$(eff_display "$gm_effort")"
-gr_display="${gr_model_display}·$(eff_display "$gr_effort")"
+eff_display "$cb_effort" cb_eff; cb_display="${cb_model}·$cb_eff"
+eff_display "$cx_effort" cx_eff; cx_display="${codex_model}·$cx_eff"
+eff_display "$gm_effort" gm_eff; gm_display="${gm_model_display}·$gm_eff"
+eff_display "$gr_effort" gr_eff; gr_display="${gr_model_display}·$gr_eff"
 
 # The ladder is pin > roles > pool: a role toggle walls the vendor for everything the pool would
 # choose, and a usable pin still answers over it the way it answers over pool exclusion. So a
@@ -238,7 +247,7 @@ chat_opens() { # vendor role
   worker_model_chat_opens_all ||
     { [ "$2" = reviewers ] && grep -q "^$1_profile=" "$(worker_model_chat_pin_file)" 2>/dev/null; }
 }
-role_off() { [ "$(conf "$1_$2")" = off ] && ! chat_opens "$1" "$2"; }
+role_off() { conf_get "$1_$2"; [ "$conf_val" = off ] && ! chat_opens "$1" "$2"; }
 query_role_wall=false
 # `chat`, `research`, `image`, `light` and `computer` have no `<vendor>_<role>` key. `image` also
 # ignores `<vendor>_workers=off` and the pin: a picture is not code work, so image = pool + login +
@@ -282,23 +291,18 @@ FIVE_HOUR_DEFER_PCT=80
 # The second: an account a caller claimed minutes ago is already carrying a run this data has not
 # seen yet, so it ranks behind every unclaimed candidate and no further. A query that cannot read
 # the claims answers as if there were none rather than refusing to route.
-json_names() { # names, one per line, possibly empty -> a JSON array
-  if [ -z "${1-}" ]; then printf '%s' '[]'; return 0; fi
-  printf '%s\n' "$1" | jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null || printf '%s' '[]'
-}
-
-claims_json() {
-  local list
-  list=$(worker_claims_fresh "$1" 2>/dev/null) || true
-  json_names "$list"
+# Name lists stay one name per line up to the selection, which reads each as a JSON array.
+claims_list() { # vendor var
+  worker_claims_fresh_r "$1" 2>/dev/null
+  printf -v "$2" '%s' "$WORKER_CLAIMS_R"
 }
 # An --account answer reads only its own vendor's section of the table below.
 asked() { [ -z "$query_vendor" ] || [ "$query_vendor" = "$1" ]; }
-cb_claims='[]'; cx_claims='[]'; gm_claims='[]'; gr_claims='[]'
-! asked claudeb || cb_claims=$(claims_json claudeb)
-! asked codex || cx_claims=$(claims_json codex)
-! asked gemini || gm_claims=$(claims_json gemini)
-! asked grok || gr_claims=$(claims_json grok)
+cb_claims=''; cx_claims=''; gm_claims=''; gr_claims=''
+! asked claudeb || claims_list claudeb cb_claims
+! asked codex || claims_list codex cx_claims
+! asked gemini || claims_list gemini gm_claims
+! asked grok || claims_list grok gr_claims
 
 media_order=false
 cx_starts='{}'; gm_starts='{}'; gr_starts='{}'
@@ -329,90 +333,91 @@ limits_reading() {
     [(map(.[0]) | min), (map(.[1]) | max)] | @tsv' "$LIMITS_FILE" 2>/dev/null |
     head -n1
 }
-walls_json() {
-  local vendor="$1" list account reading as_of pct
-  list=$(worker_walls_fresh "$vendor" "$now" 2>/dev/null | while IFS= read -r account; do
+walls_list() { # vendor var
+  local vendor="$1" account reading as_of pct kept=''
+  worker_walls_fresh_r "$vendor" "$now" 2>/dev/null
+  while IFS= read -r account; do
     [ -n "$account" ] || continue
     reading=$(limits_reading "$vendor" "$account")
     as_of=${reading%%	*}; pct=${reading##*	}
     [ -n "$reading" ] && worker_walls_lapse_if_read "$vendor" "$account" "$as_of" "$pct" && continue
-    printf '%s\n' "$account"
-  done) || true
-  json_names "$list"
+    kept+="$account$nl"
+  done <<<"$WORKER_WALLS_R"
+  printf -v "$2" '%s' "$kept"
 }
-cb_walls='[]'; cx_walls='[]'; gm_walls='[]'; gr_walls='[]'
-! asked claudeb || cb_walls=$(walls_json claudeb)
-! asked codex || cx_walls=$(walls_json codex)
-! asked gemini || gm_walls=$(walls_json gemini)
-! asked grok || gr_walls=$(walls_json grok)
+cb_walls=''; cx_walls=''; gm_walls=''; gr_walls=''
+! asked claudeb || walls_list claudeb cb_walls
+! asked codex || walls_list codex cx_walls
+! asked gemini || walls_list gemini gm_walls
+! asked grok || walls_list grok gr_walls
 
 # A codex catalog is per account (a lapsed plan lists the free models alone), so an account whose own
 # cache lacks the worker family is no candidate: its ACCOUNT: line would launch an id it does not
 # serve. No cache of its own (exit 3), or a miss in a list an older client wrote (exit 4: nothing here
 # refreshes it), is no evidence and keeps it. A codexb call per codex account, so an --account answer
 # for another vendor, which never reads it, skips it: every worker-limit-gate run paid ~1 s for it.
-cx_unlisted='[]'
+cx_unlisted=''
 if [ "$cx_paused" = false ] && [ -n "$cx_model" ] && { [ -z "$query_vendor" ] || [ "$query_vendor" = codex ]; }; then
-  cx_family=$(worker_model_codex_family "$cx_model")
+  worker_model_codex_family_r "$cx_model"; cx_family=$WORKER_MODEL_R
   cx_unlisted=$(jq -r '.vendors.codex.accounts[]? | .account // "main"' "$LIMITS_FILE" 2>/dev/null |
     while IFS= read -r account; do
       "$worker_pick_share/../bin/codexb" models --own --family "$cx_family" --account "$account" >/dev/null 2>&1
       [ "$?" -ne 1 ] || printf '%s\n' "$account"
-    done | jq -Rsc 'split("\n") | map(select(length > 0))') || cx_unlisted='[]'
+    done) || cx_unlisted=''
 fi
 
-# A met wall drops the pin once. Limits at 100% never do.
-clear_observed_pins() {
-  local vendor="$1" walls acct
-  walls=$(worker_walls_fresh "$vendor" "$now" 2>/dev/null) || return 0
+# A met wall drops the pin once. Limits at 100% never do. The walls are the ones read above: that
+# read already deleted the expired records and lapsed the caught-up ones.
+clear_observed_pins() { # vendor walls
+  local vendor="$1" walls="$2" acct
   [ -n "$walls" ] || return 0
+  worker_model_pins_r "$vendor" 2>/dev/null
   while IFS= read -r acct; do
     [ -n "$acct" ] || continue
-    printf '%s\n' "$walls" | grep -qxF -- "$acct" || continue
+    case "$nl$walls" in *"$nl$acct$nl"*) ;; *) continue ;; esac
     worker_model_clear_walled_pin "$vendor" "$acct" "$now" || true
-  done < <(worker_model_pins "$vendor" 2>/dev/null)
+  done <<<"$WORKER_MODEL_R"
 }
 # The pin is workers-only, so only a workers query may spend one on a wall: a chat, research,
 # light or reviewers reading decides nothing about workers and must leave the file as it found it.
 # A paused vendor spends nothing either — pause blanks the in-memory pins only, deliberately
 # keeping them on disk for when it resumes.
 if [ "$query_role" = workers ]; then
-  ! asked claudeb || [ "$cb_paused" = true ] || clear_observed_pins claudeb
-  ! asked codex || [ "$cx_paused" = true ] || clear_observed_pins codex
-  ! asked gemini || [ "$gm_paused" = true ] || clear_observed_pins gemini
-  ! asked grok || [ "$gr_paused" = true ] || clear_observed_pins grok
+  ! asked claudeb || [ "$cb_paused" = true ] || clear_observed_pins claudeb "$cb_walls"
+  ! asked codex || [ "$cx_paused" = true ] || clear_observed_pins codex "$cx_walls"
+  ! asked gemini || [ "$gm_paused" = true ] || clear_observed_pins gemini "$gm_walls"
+  ! asked grok || [ "$gr_paused" = true ] || clear_observed_pins grok "$gr_walls"
 fi
-worker_model_prime_pins "$(worker_model_file)"
+worker_model_file_r
+worker_model_prime_pins "$WORKER_MODEL_R"
 
-pins_json() {
-  local list
-  list=$(worker_model_pins "$1" 2>/dev/null) || true
-  json_names "$list"
+pins_json() { # vendor var
+  worker_model_pins_r "$1" 2>/dev/null
+  printf -v "$2" '%s' "$WORKER_MODEL_R"
 }
-cb_pins='[]'; cx_pins='[]'; gm_pins='[]'; gr_pins='[]'
-! asked claudeb || cb_pins=$(pins_json claudeb)
-! asked codex || cx_pins=$(pins_json codex)
-! asked gemini || gm_pins=$(pins_json gemini)
-! asked grok || gr_pins=$(pins_json grok)
-[ "$cb_paused" = false ] || cb_pins='[]'
-[ "$cx_paused" = false ] || cx_pins='[]'
-[ "$gm_paused" = false ] || gm_pins='[]'
-[ "$gr_paused" = false ] || gr_pins='[]'
+cb_pins=''; cx_pins=''; gm_pins=''; gr_pins=''
+! asked claudeb || pins_json claudeb cb_pins
+! asked codex || pins_json codex cx_pins
+! asked gemini || pins_json gemini gm_pins
+! asked grok || pins_json grok gr_pins
+[ "$cb_paused" = false ] || cb_pins=''
+[ "$cx_paused" = false ] || cx_pins=''
+[ "$gm_paused" = false ] || gm_pins=''
+[ "$gr_paused" = false ] || gr_pins=''
 case "$query_role" in
-  reviewers|chat|research|image|light|computer) cb_pins='[]'; cx_pins='[]'; gm_pins='[]'; gr_pins='[]' ;;
+  reviewers|chat|research|image|light|computer) cb_pins=''; cx_pins=''; gm_pins=''; gr_pins='' ;;
 esac
-pin_scope() {
-  if [ "$2" = '[]' ]; then printf none; else worker_model_pin_scope "$1" 2>/dev/null || printf none; fi
+pin_scope() { # vendor pins var
+  local scope=none
+  if [ -n "$2" ] && worker_model_pin_scope_r "$1" 2>/dev/null; then scope=$WORKER_MODEL_R; fi
+  printf -v "$3" '%s' "$scope"
 }
-cb_scope=$(pin_scope claudeb "$cb_pins")
-cx_scope=$(pin_scope codex "$cx_pins")
-gm_scope=$(pin_scope gemini "$gm_pins")
-gr_scope=$(pin_scope grok "$gr_pins")
-cb_pin=; cx_pin=; gm_pin=; gr_pin=
-[ "$cb_pins" = '[]' ] || cb_pin=$(jq -r '.[0] // empty' <<<"$cb_pins")
-[ "$cx_pins" = '[]' ] || cx_pin=$(jq -r '.[0] // empty' <<<"$cx_pins")
-[ "$gm_pins" = '[]' ] || gm_pin=$(jq -r '.[0] // empty' <<<"$gm_pins")
-[ "$gr_pins" = '[]' ] || gr_pin=$(jq -r '.[0] // empty' <<<"$gr_pins")
+pin_scope claudeb "$cb_pins" cb_scope
+pin_scope codex "$cx_pins" cx_scope
+pin_scope gemini "$gm_pins" gm_scope
+pin_scope grok "$gr_pins" gr_scope
+cb_pin=${cb_pins%%"$nl"*}; cx_pin=${cx_pins%%"$nl"*}
+gm_pin=${gm_pins%%"$nl"*}; gr_pin=${gr_pins%%"$nl"*}
 
 fail_safe() {
   # A query has no fail-safe: printing a guessed account would send a caller at an account this
@@ -452,22 +457,23 @@ fail_safe() {
 
 [ -r "$LIMITS_FILE" ] || fail_safe "no limits data"
 
-live_pools='{}'
-for pool_vendor in claudeb codex gemini grok; do
-  asked "$pool_vendor" || continue
-  pool_dir=$(worker_pool_dir "$pool_vendor")
-  [ -e "$pool_dir" ] || [ -L "$pool_dir" ] || continue
-  if [ -d "$pool_dir" ] && [ -r "$pool_dir" ] && [ -x "$pool_dir" ]; then
-    pool_out=$(worker_pool_disabled_json "$pool_dir")
-  else
-    pool_out=null
-  fi
-  pool_out=$(printf '%s' "$pool_out" | jq -ce 'if type == "array" and all(.[]; type == "string") then . else null end' 2>/dev/null) || pool_out=null
-  pool_key=$pool_vendor
-  [ "$pool_key" != claudeb ] || pool_key=claude
-  live_pools=$(jq -cn --argjson pools "$live_pools" --arg key "$pool_key" \
-    --argjson out "$pool_out" '$pools + {($key):$out}')
-done
+# `<store key>\x1f<disabled json>\x1e` per vendor with a pool directory; the selection validates
+# each list, an unreadable one standing as null.
+live_pools=$(
+  for pool_vendor in claudeb codex gemini grok; do
+    asked "$pool_vendor" || continue
+    pool_dir=$(worker_pool_dir "$pool_vendor")
+    [ -e "$pool_dir" ] || [ -L "$pool_dir" ] || continue
+    pool_key=$pool_vendor
+    [ "$pool_key" != claudeb ] || pool_key=claude
+    printf '%s\037' "$pool_key"
+    if [ -d "$pool_dir" ] && [ -r "$pool_dir" ] && [ -x "$pool_dir" ]; then
+      worker_pool_disabled_json "$pool_dir"
+    else
+      printf null
+    fi
+    printf '\036'
+  done)
 
 reviewer_token_expiry='[]'
 if [ "$query_role" = reviewers ] && [ "$cb_paused" = false ] &&
@@ -491,27 +497,27 @@ fi
 
 summary=$(jq -r \
   --argjson reviewer_token_expiry "$reviewer_token_expiry" \
-  --argjson live_pools "$live_pools" \
+  --arg live_pools "$live_pools" \
   --argjson now "$now" --arg own "$own" --arg own_vendor "$own_vendor" --arg pin "$cb_pin" \
   --arg menu "$query_menu" \
   --arg cb_disp "$cb_display" --arg cx_disp "$cx_display" \
   --arg gm_disp "$gm_display" --arg gr_disp "$gr_display" \
   --argjson defer5h "$FIVE_HOUR_DEFER_PCT" --argjson stale_thr "$LIMITS_STALE_ROUTING" \
   --arg cx_pin "$cx_pin" --arg gm_pin "$gm_pin" --arg gr_pin "$gr_pin" \
-  --argjson cb_pins "$cb_pins" --argjson cx_pins "$cx_pins" \
-  --argjson gm_pins "$gm_pins" --argjson gr_pins "$gr_pins" \
+  --arg cb_pins "$cb_pins" --arg cx_pins "$cx_pins" \
+  --arg gm_pins "$gm_pins" --arg gr_pins "$gr_pins" \
   --arg cb_scope "$cb_scope" --arg cx_scope "$cx_scope" \
   --arg gm_scope "$gm_scope" --arg gr_scope "$gr_scope" \
   --arg cb_off "$cb_role_off" --arg cx_off "$cx_role_off" --arg gm_off "$gm_role_off" \
   --arg gr_off "$gr_role_off" \
   --arg cb_par "$cb_paused" --arg cx_par "$cx_paused" --arg gm_par "$gm_paused" \
   --arg gr_par "$gr_paused" \
-  --argjson cb_claims "$cb_claims" --argjson cx_claims "$cx_claims" \
-  --argjson gm_claims "$gm_claims" --argjson gr_claims "$gr_claims" \
+  --arg cb_claims "$cb_claims" --arg cx_claims "$cx_claims" \
+  --arg gm_claims "$gm_claims" --arg gr_claims "$gr_claims" \
   --arg media_order "$media_order" --argjson cx_starts "$cx_starts" \
   --argjson gm_starts "$gm_starts" --argjson gr_starts "$gr_starts" \
-  --argjson cb_walls "$cb_walls" --argjson cx_walls "$cx_walls" \
-  --argjson gm_walls "$gm_walls" --argjson gr_walls "$gr_walls" --argjson cx_unlisted "$cx_unlisted" \
+  --arg cb_walls "$cb_walls" --arg cx_walls "$cx_walls" \
+  --arg gm_walls "$gm_walls" --arg gr_walls "$gr_walls" --arg cx_unlisted "$cx_unlisted" \
   --argjson qx "$query_exclude_json" --arg fable_view "$query_fable_view" "$LIMITS_VIEW_JQ"'
   # Local names for the store-reading defs of share/limits-view.sh, which the pin writes its wall
   # record from as well; never a second copy of them.
@@ -519,6 +525,9 @@ summary=$(jq -r \
   def eff($b): limits_store_eff($b; $now);
   def reset_str($b): limits_reset_text((($b.resets_at // null) | epoch); $now);
   def bool_or($value; $fallback): if ($value | type) == "boolean" then $value else $fallback end;
+  def names: split("\n") | map(select(length > 0));
+  def pool_list: (try fromjson catch null) |
+    if type == "array" and all(.[]; type == "string") then . else null end;
   # Which Claude bucket this whole run is about, chosen once by the caller (see the claude rows).
   def fable_view: $fable_view == "true";
   def auth_ok: .auth_needed != true and ((.auth.status? // "ok") | IN("expired", "failed") | not);
@@ -721,6 +730,15 @@ summary=$(jq -r \
            lapse:pin_lapse($p; (first($accounts[] | select(.name == $p)) // null); null)}]
     end;
 
+  ($cb_pins | names) as $cb_pins | ($cx_pins | names) as $cx_pins |
+  ($gm_pins | names) as $gm_pins | ($gr_pins | names) as $gr_pins |
+  ($cb_claims | names) as $cb_claims | ($cx_claims | names) as $cx_claims |
+  ($gm_claims | names) as $gm_claims | ($gr_claims | names) as $gr_claims |
+  ($cb_walls | names) as $cb_walls | ($cx_walls | names) as $cx_walls |
+  ($gm_walls | names) as $gm_walls | ($gr_walls | names) as $gr_walls |
+  ($cx_unlisted | names) as $cx_unlisted |
+  (reduce ($live_pools | split("\u001e")[] | select(length > 0) | split("\u001f")) as $pool
+     ({}; . + {($pool[0]): ($pool[1] // "" | pool_list)})) as $live_pools |
   # Only Claude header weeklies were synthetic; Codex rate-limit headers are measured.
   if .vendors.claude then .vendors.claude |=
     walk(if type == "object" and (.weekly.origin? == "headers") then del(.weekly) else . end)
@@ -1039,7 +1057,7 @@ fi
 
 if [ "$query_list" = true ]; then
   for list_blob in "$cl_list" "$cx_list" "$gm_list" "$gr_list"; do
-    [ -z "$list_blob" ] || printf '%s\n' "$list_blob" | tr '\036' '\n'
+    [ -z "$list_blob" ] || printf '%s\n' "${list_blob//$'\036'/$nl}"
   done
   [ "$cx_selected" = yes ] || cx_acct=""
   [ "$gm_selected" = yes ] || gm_acct=""
@@ -1050,7 +1068,7 @@ if [ "$query_list" = true ]; then
 fi
 
 if [ -n "$query_vendor" ]; then
-  query_pins='[]'
+  query_pins=''
   case "$query_vendor" in
     claudeb)
       query_pin="$cb_pin"; query_pinned="$cl_pinned"; query_pins="$cb_pins"
@@ -1087,7 +1105,8 @@ if [ -n "$query_vendor" ]; then
   # answers, not its first name: with the vendor closed, the pin that served is the one that opens it.
   answer_is_pinned() {
     [ -n "$query_answer" ] || return 1
-    jq -e --arg a "$query_answer" 'index($a) != null' >/dev/null 2>&1 <<<"$query_pins"
+    case "$nl$query_pins$nl" in *"$nl$query_answer$nl"*) return 0 ;; esac
+    return 1
   }
   if [ "$query_role_wall" = true ] &&
      { [ "$query_pinned" != yes ] || ! answer_is_pinned; }; then
@@ -1127,10 +1146,11 @@ NEXT_MAX_ROWS=5
 # The two separators jq packs a candidate row with: keys inside a row, rows inside a vendor's blob.
 NEXT_KEY_SEP=$'\x1d'
 NEXT_ROW_SEP=$'\x1e'
-vendor_label() {
-  case "$1" in cb) printf claude ;; cx) printf codex ;; gm) printf gemini ;; gr) printf grok ;; esac
+vendor_label() { # vendor var
+  case "$1" in cb) printf -v "$2" claude ;; cx) printf -v "$2" codex ;; gm) printf -v "$2" gemini ;;
+    gr) printf -v "$2" grok ;; *) printf -v "$2" '' ;; esac
 }
-vendor_reason() {
+vendor_reason() { # vendor var
   local known off state pool measured
   case "$1" in
     cb) known=$cb_known; off=$cb_role_off; state=$cl_state; pool=$cl_pool_empty
@@ -1142,20 +1162,22 @@ vendor_reason() {
     gr) known=$gr_known; off=$gr_role_off; state=$gr_state; pool=$gr_pool_empty
         measured=$gr_measured ;;
   esac
+  printf -v "$2" ''
   [ "$known" = true ] || return 0
-  if [ "$off" = true ]; then printf 'off for workers'
-  elif [ -n "$state" ]; then printf '%s' "$state"
-  elif [ "$pool" = yes ]; then printf 'every account is out of the worker pool'
+  if [ "$off" = true ]; then printf -v "$2" 'off for workers'
+  elif [ -n "$state" ]; then printf -v "$2" '%s' "$state"
+  elif [ "$pool" = yes ]; then printf -v "$2" 'every account is out of the worker pool'
   # Nothing measured is no evidence of a wall: `WALLED` would send Egor hunting for a limit that
   # does not exist, and worker-run reads this wording to report UNAVAILABLE over a usage limit.
-  elif [ "$measured" = no ]; then printf 'no quota data'
-  else printf WALLED
+  elif [ "$measured" = no ]; then printf -v "$2" 'no quota data'
+  else printf -v "$2" WALLED
   fi
 }
 print_next() {
   local force_lead=$1
   shift
-  local name blob acct text line rank=0 pick="" reason="" lead="" stream="" merged=""
+  local name blob acct text label row entry rank=0 pick="" reason="" lead="" stream="" prefixed="" merged=""
+  local k1 k2 k3 k4 k5 k6 k7 k8 k9 rest
   local -a ranked=()
   for name in "$@"; do
     case "$name" in
@@ -1164,31 +1186,36 @@ print_next() {
       gm) blob=$gm_nextrows; acct=$gm_acct ;;
       gr) blob=$gr_nextrows; acct=$gr_acct ;;
     esac
+    vendor_label "$name" label
     if [ -z "$blob" ]; then
-      text=$(vendor_reason "$name")
-      [ -z "$text" ] || reason="${reason:+$reason  |  }$(vendor_label "$name") $text"
+      vendor_reason "$name" text
+      [ -z "$text" ] || reason="${reason:+$reason  |  }$label $text"
       continue
     fi
     # Row 1 belongs to the vendor the MODE named, whose sequence put it first: `worker=grok` is an
     # order and not a budget, and `ACCOUNT:` under the table has to name what that vendor answered.
     # In `auto` the sequence is itself the pin-then-budget ranking, so this key changes nothing.
     if [ "$force_lead" = true ] && [ -z "$lead" ]; then
-      lead="$acct$NEXT_KEY_SEP$(vendor_label "$name")"
+      lead="$acct$NEXT_KEY_SEP$label"
     fi
     stream="${stream:+$stream$NEXT_ROW_SEP}$blob"
   done
   if [ -n "$stream" ]; then
-    merged=$(printf '%s\n' "$stream" | tr "$NEXT_ROW_SEP" '\n' |
-      awk -F"$NEXT_KEY_SEP" -v OFS="$NEXT_KEY_SEP" -v lead="$lead" \
-        '{ print (($6 OFS $7) == lead ? 0 : 1), $0 }' |
-      LC_ALL=C sort -t "$NEXT_KEY_SEP" -k1,1n -k2,2n -k3,3n -k4,4n -k5,5n -k6,6g -k7,7 -k8,8 |
-      cut -d "$NEXT_KEY_SEP" -f7,9)
-    while IFS= read -r line; do
-      [ -n "$line" ] || continue
+    while IFS= read -r row; do
+      [ -n "$row" ] || continue
+      IFS=$NEXT_KEY_SEP read -r k1 k2 k3 k4 k5 k6 k7 rest <<<"$row"
+      if [ "$k6$NEXT_KEY_SEP$k7" = "$lead" ]; then prefixed+="0$NEXT_KEY_SEP$row$nl"
+      else prefixed+="1$NEXT_KEY_SEP$row$nl"; fi
+    done <<<"${stream//$NEXT_ROW_SEP/$nl}"
+    merged=$(LC_ALL=C sort -t "$NEXT_KEY_SEP" -k1,1n -k2,2n -k3,3n -k4,4n -k5,5n -k6,6g -k7,7 -k8,8 \
+      <<<"${prefixed%"$nl"}")
+    while IFS=$NEXT_KEY_SEP read -r k1 k2 k3 k4 k5 k6 k7 k8 k9 rest; do
+      [ -n "$k7$k9" ] || continue
       [ "$rank" -lt "$NEXT_MAX_ROWS" ] || break
       rank=$((rank + 1))
-      ranked+=("$(printf '%-9s%s' " $rank" "${line#*"$NEXT_KEY_SEP"}")")
-      [ "$rank" -ne 1 ] || pick="${line%%"$NEXT_KEY_SEP"*}"
+      printf -v entry '%-9s%s' " $rank" "$k9"
+      ranked+=("$entry")
+      [ "$rank" -ne 1 ] || pick=$k7
     done <<<"$merged"
   fi
   if [ "${#ranked[@]}" -gt 0 ]; then
@@ -1235,22 +1262,25 @@ print_section() {
   done
   set +f
 }
-menu_head() { # vendor workers_off
+menu_head() { # vendor workers_off -> head
+  head=''
   [ "$query_menu" = true ] || return 0
   local reviewers=false
   ! role_off "$1" reviewers || reviewers=true
   case "$2:$reviewers" in
-    true:true) printf 'workers off · reviewers off' ;;
-    true:false) printf 'workers off' ;;
-    false:true) printf 'reviewers off' ;;
-    *) printf on ;;
+    true:true) head='workers off · reviewers off' ;;
+    true:false) head='workers off' ;;
+    false:true) head='reviewers off' ;;
+    *) head=on ;;
   esac
 }
 # A paused vendor keeps its `paused` row in the menu whether or not the collector still stores it: that
 # row carries the menu's Resume.
 menu_section() { # label vendor known rows workers_off paused
+  local head
   if [ "$3" = true ]; then
-    print_section "$1" "$4" "$(menu_head "$2" "$5")"
+    menu_head "$2" "$5"
+    print_section "$1" "$4" "$head"
   elif [ "$query_menu" = true ] && [ "$6" = true ]; then
     print_section "$1" "" paused
   fi
@@ -1262,18 +1292,19 @@ menu_section grok grok "$gr_known" "$gr_rows" "$gr_role_off" "$gr_paused"
 menu_section gemini gemini "$gm_known" "$gm_rows" "$gm_role_off" "$gm_paused"
 light_rows=''
 for light_role in research edit; do
-  if light_vendor=$(worker_light_vendor "$light_role" 2>/dev/null) &&
-     light_model=$(worker_light_model "$light_role" 2>/dev/null) &&
-     light_effort=$(worker_light_effort "$light_role" 2>/dev/null); then
+  if worker_light_vendor_r "$light_role" 2>/dev/null && light_vendor=$WORKER_MODEL_R &&
+     worker_light_model_r "$light_role" 2>/dev/null && light_model=$WORKER_MODEL_R &&
+     worker_light_effort_r "$light_role" 2>/dev/null && light_effort=$WORKER_MODEL_R; then
     ! vendor_paused "$light_vendor" || continue
     case "$light_vendor:$light_model" in
       gemini:flash3[0-9]) light_model="f${light_model#flash}" ;;
       grok:auto | grok:grok-*) light_model=grok ;;
       codex:*) light_model=${light_model##*-} ;;
     esac
-    light_row=$(printf '%-9s%-8s%s' "$light_role" "$light_vendor" "${light_model}·$(eff_display "$light_effort")")
+    eff_display "$light_effort" light_eff
+    printf -v light_row '%-9s%-8s%s' "$light_role" "$light_vendor" "${light_model}·$light_eff"
   else
-    light_row=$(printf '%-9s%s' "$light_role" "invalid light_$light_role row")
+    printf -v light_row '%-9s%s' "$light_role" "invalid light_$light_role row"
   fi
   light_rows="${light_rows:+$light_rows$'\x1e'}$light_row"
 done

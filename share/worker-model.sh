@@ -3,8 +3,13 @@
 . "${BASH_SOURCE[0]%/*}/codex-accounts.sh"
 
 worker_model_file() {
-  printf '%s' "${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}"
+  worker_model_file_r
+  printf '%s' "$WORKER_MODEL_R"
 }
+
+# Each `*_r` twin below stores what its printing namesake prints in WORKER_MODEL_R and returns its
+# status, so a caller making dozens of lookups (worker-pick) forks for none of them.
+worker_model_file_r() { WORKER_MODEL_R=${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}; }
 
 # Egor's per-model call: brief efforts need no extra word; word efforts and word-only
 # models require his explicit request in orchestrator policy. The union of both effort
@@ -22,12 +27,14 @@ worker_model_table() {
 }
 
 _worker_model_table_build() {
-  cat <<'TABLE'
+  local static
+  IFS= read -r -d '' static <<'TABLE' || :
 claudeb opus high high,xhigh low,medium,max no
 claudeb fable low low,medium,high xhigh,max yes
 codex astra low low,medium,high xhigh no
 codex sol medium medium,high low,xhigh yes
 TABLE
+  printf '%s' "$static"
   # Flash rows first in list order, `pro` last: the first gemini row is the vendor default, and a
   # Pro newer than every Flash would otherwise make the word-gated model everyone's default.
   if [ -z "${_WM_SKIP_GEMINI+x}" ]; then
@@ -177,20 +184,29 @@ worker_model_grok_launch_model() { # model role [chat-pin-file] [account]
 # no version at all is a family of its own. `codexb models` ranks by this split and the table keys
 # on the family, so both read this one rule.
 worker_model_codex_split() { # slug -> family<TAB>version (`-` when none)
+  worker_model_codex_split_r "$@"
+  printf '%s\t%s\n' "$WORKER_MODEL_R" "$_WM_CODEX_VERSION"
+}
+
+worker_model_codex_split_r() { # slug -> WORKER_MODEL_R family, _WM_CODEX_VERSION version
   local slug="${1-}"
   if [[ "$slug" =~ ^gpt-([0-9]+(\.[0-9]+)*)-(.+)$ ]]; then
-    printf '%s\t%s\n' "${BASH_REMATCH[3]}" "${BASH_REMATCH[1]}"
+    WORKER_MODEL_R=${BASH_REMATCH[3]}; _WM_CODEX_VERSION=${BASH_REMATCH[1]}
   elif [[ "$slug" =~ ^gpt-([0-9]+(\.[0-9]+)*)$ ]]; then
-    printf '%s\t%s\n' "$slug" "${BASH_REMATCH[1]}"
+    WORKER_MODEL_R=$slug; _WM_CODEX_VERSION=${BASH_REMATCH[1]}
   else
-    printf '%s\t-\n' "$slug"
+    WORKER_MODEL_R=$slug; _WM_CODEX_VERSION=-
   fi
 }
 
 worker_model_codex_family() { # word or slug -> the family word the table keys on
-  local split
-  split=$(worker_model_codex_split "${1-}")
-  printf '%s\n' "${split%%$'\t'*}"
+  worker_model_codex_family_r "$@"
+  printf '%s\n' "$WORKER_MODEL_R"
+}
+
+worker_model_codex_family_r() {
+  worker_model_codex_split_r "${1-}"
+  WORKER_MODEL_R=${WORKER_MODEL_R%%$'\t'*}
 }
 
 # The slug a codex launch runs: a family word follows the vendor's newest listed member and a full
@@ -226,7 +242,12 @@ worker_model_gemini_family() { # table slug, agy id or `flash` → its `geminib 
 
 # Models only a light row may name: cheap enough to be refused on the full worker leg.
 worker_model_light_table() {
-  cat <<'TABLE'
+  worker_model_light_table_r
+  printf '%s' "$WORKER_MODEL_R"
+}
+
+worker_model_light_table_r() {
+  IFS= read -r -d '' WORKER_MODEL_R <<'TABLE' || :
 claudeb sonnet medium low,medium,high - no
 TABLE
 }
@@ -247,62 +268,154 @@ worker_model_rows() { # [workers|light] [vendor]
   [ "${1-}" != light ] || worker_model_light_table
 }
 
+worker_model_rows_r() { # [workers|light] [vendor]
+  local table
+  if [ -z "${_WM_TABLE_PRIMED+x}" ]; then
+    WORKER_MODEL_R=$(worker_model_rows "${1-}" "${2-}"; printf x)
+    WORKER_MODEL_R=${WORKER_MODEL_R%x}
+    return 0
+  fi
+  table=$_WM_TABLE
+  if [ "${1-}" = light ]; then
+    worker_model_light_table_r
+    table+=$WORKER_MODEL_R
+  fi
+  WORKER_MODEL_R=$table
+}
+
 worker_model_allowed_models() { # vendor [class]
-  worker_model_rows "${2-}" "${1-}" | awk -v vendor="${1-}" '
-    $1 == vendor { print $2; found = 1 }
-    END { if (!found) exit 2 }
-  '
+  local status
+  worker_model_allowed_models_r "$@"
+  status=$?
+  printf '%s' "$WORKER_MODEL_R"
+  return "$status"
+}
+
+# A row's fields into _WM_F the way awk splits them. No here-string anywhere in this file: it is on the
+# heartbeat path (tests/test_llm_limits.sh).
+worker_model_split_fields() { # line
+  local IFS=$' \t\n' glob=+f
+  case $- in *f*) glob=-f ;; esac
+  set -f
+  _WM_F=($1)
+  set "$glob"
+}
+
+worker_model_allowed_models_r() { # vendor [class]
+  local vendor="${1-}" rows line out='' found=no
+  worker_model_rows_r "${2-}" "$vendor"
+  if [ -n "$WORKER_MODEL_R" ]; then
+    rows=${WORKER_MODEL_R%$'\n'}
+    while :; do
+      line=${rows%%$'\n'*}
+      worker_model_split_fields "$line"
+      if [ "${_WM_F[0]-}" = "$vendor" ]; then
+        out+="${_WM_F[1]-}"$'\n'
+        found=yes
+      fi
+      [ "$line" != "$rows" ] || break
+      rows=${rows#*$'\n'}
+    done
+  fi
+  WORKER_MODEL_R=$out
+  [ "$found" = yes ] || return 2
 }
 
 worker_model_default_model() {
-  local models
-  models=$(worker_model_allowed_models "${1-}" "${2-}") || return 2
-  printf '%s\n' "${models%%$'\n'*}"
+  worker_model_default_model_r "$@" || return 2
+  printf '%s\n' "$WORKER_MODEL_R"
+}
+
+worker_model_default_model_r() { # vendor [class]
+  worker_model_allowed_models_r "${1-}" "${2-}" || { WORKER_MODEL_R=''; return 2; }
+  WORKER_MODEL_R=${WORKER_MODEL_R%%$'\n'*}
 }
 
 worker_model_row_key() { # vendor model -> the name the table keys the model on
   if [ "${1-}" = codex ]; then worker_model_codex_family "${2-}"; else printf '%s\n' "${2-}"; fi
 }
 
+worker_model_row_key_r() {
+  if [ "${1-}" = codex ]; then worker_model_codex_family_r "${2-}"; else WORKER_MODEL_R=${2-}; fi
+}
+
+# The model's first table row into _WM_ROW_EFFORT/_WM_ROW_BRIEF/_WM_ROW_WORD; 2 when there is none.
+worker_model_find_row() { # vendor model [class]
+  local vendor="${1-}" key rows line
+  worker_model_row_key_r "$vendor" "${2-}"
+  key=$WORKER_MODEL_R
+  worker_model_rows_r "${3-}" "$vendor"
+  [ -n "$WORKER_MODEL_R" ] || return 2
+  rows=${WORKER_MODEL_R%$'\n'}
+  while :; do
+    line=${rows%%$'\n'*}
+    worker_model_split_fields "$line"
+    if [ "${_WM_F[0]-}" = "$vendor" ] && [ "${_WM_F[1]-}" = "$key" ]; then
+      _WM_ROW_EFFORT=${_WM_F[2]-} _WM_ROW_BRIEF=${_WM_F[3]-} _WM_ROW_WORD=${_WM_F[4]-}
+      return 0
+    fi
+    [ "$line" != "$rows" ] || break
+    rows=${rows#*$'\n'}
+  done
+  return 2
+}
+
 worker_model_default_effort() { # vendor model [class]
-  worker_model_rows "${3-}" "${1-}" | awk -v vendor="${1-}" -v model="$(worker_model_row_key "${1-}" "${2-}")" '
-    $1 == vendor && $2 == model { print $3; found = 1; exit }
-    END { if (!found) exit 2 }
-  '
+  worker_model_default_effort_r "$@" || return 2
+  printf '%s\n' "$WORKER_MODEL_R"
+}
+
+worker_model_default_effort_r() {
+  worker_model_find_row "$@" || { WORKER_MODEL_R=''; return 2; }
+  WORKER_MODEL_R=$_WM_ROW_EFFORT
 }
 
 worker_model_effort_list() { # vendor model [class]
-  worker_model_rows "${3-}" "${1-}" | awk -v vendor="${1-}" -v model="$(worker_model_row_key "${1-}" "${2-}")" '
-    $1 == vendor && $2 == model {
-      found = 1; sep = ""
-      for (col = 4; col <= 5; col++) {
-        n = split($col, efforts, ",")
-        for (i = 1; i <= n; i++) {
-          if (efforts[i] == "-" || seen[efforts[i]]++) continue
-          printf "%s%s", sep, efforts[i]; sep = "|"
-        }
-      }
-      exit
-    }
-    END { if (!found) exit 2 }
-  '
+  worker_model_effort_list_r "$@" || return 2
+  printf '%s' "$WORKER_MODEL_R"
+}
+
+# awk's split(): an empty column holds no effort, and every comma opens one, empty or not.
+worker_model_effort_list_r() {
+  local column rest effort seen=$'\n' out='' sep=''
+  worker_model_find_row "$@" || { WORKER_MODEL_R=''; return 2; }
+  for column in "$_WM_ROW_BRIEF" "$_WM_ROW_WORD"; do
+    [ -n "$column" ] || continue
+    rest=$column
+    while :; do
+      effort=${rest%%,*}
+      if [ "$effort" != - ]; then
+        case "$seen" in
+          *$'\n'"$effort"$'\n'*) ;;
+          *) seen+="$effort"$'\n'; out+="$sep$effort"; sep='|' ;;
+        esac
+      fi
+      [ "$rest" != "$effort" ] || break
+      rest=${rest#*,}
+    done
+  done
+  WORKER_MODEL_R=$out
 }
 
 worker_model_effort_allowed() {
-  local efforts allowed
-  efforts=$(worker_model_effort_list "${1-}" "${2-}" "${4-}") || return 2
+  worker_model_effort_list_r "${1-}" "${2-}" "${4-}" || return 2
   [ -n "${3-}" ] || return 1
-  while IFS= read -r allowed; do
-    [ "$allowed" != "$3" ] || return 0
-  done < <(tr '|' '\n' < <(printf '%s\n' "$efforts"))
+  case "$3" in *'|'* | *$'\n'*) return 1 ;; esac
+  case "|$WORKER_MODEL_R|" in *"|$3|"*) return 0 ;; esac
   return 1
 }
 
 worker_model_allows() { # vendor model [class]
-  local allowed
-  allowed=$(worker_model_allowed_models "${1-}" "${3-}") || return 2
+  local allowed key
+  worker_model_allowed_models_r "${1-}" "${3-}" || return 2
+  allowed=$WORKER_MODEL_R
   [ -n "${2-}" ] || return 1
-  grep -qxF -- "$(worker_model_row_key "${1-}" "${2-}")" < <(printf '%s\n' "$allowed")
+  while [ "${allowed%$'\n'}" != "$allowed" ]; do allowed=${allowed%$'\n'}; done
+  worker_model_row_key_r "${1-}" "${2-}"
+  key=$WORKER_MODEL_R
+  case "$key" in *$'\n'*) return 1 ;; esac
+  case $'\n'"$allowed"$'\n' in *$'\n'"$key"$'\n'*) return 0 ;; esac
+  return 1
 }
 
 # The vendor's allowed ids as one phrase a refusal can quote, so no consumer respells the list.
@@ -322,44 +435,76 @@ worker_model_allowed_summary() { # every vendor, as one phrase
 
 # Egor's menu switch (LLM Limits -> Light): off, no Light leg exists and every consumer routes as if
 # the class had never been built.
-worker_light_off() { [ "$(worker_model_pin_line "$(worker_model_file)" light_paused)" = on ]; }
+worker_light_off() {
+  worker_model_file_r
+  worker_model_pin_line_r "$WORKER_MODEL_R" light_paused
+  [ "$WORKER_MODEL_R" = on ]
+}
 
 worker_light_row() { # research|edit
   case "${1-}" in research | edit) ;; *) return 2 ;; esac
   worker_model_pin_line "$(worker_model_file)" "light_$1"
 }
 
+worker_light_row_r() {
+  case "${1-}" in research | edit) ;; *) WORKER_MODEL_R=''; return 2 ;; esac
+  worker_model_file_r
+  worker_model_pin_line_r "$WORKER_MODEL_R" "light_$1"
+}
+
 # An absent row is the gemini default, which is what the Light leg ran on before the rows existed.
 worker_light_vendor() { # research|edit
-  local row vendor
-  row=$(worker_light_row "${1-}") || return 2
-  vendor=${row%%:*}
+  worker_light_vendor_r "$@" || return
+  printf '%s\n' "$WORKER_MODEL_R"
+}
+
+worker_light_vendor_r() {
+  local vendor
+  worker_light_row_r "${1-}" || return 2
+  vendor=${WORKER_MODEL_R%%:*}
   case "${vendor:-gemini}" in
-    claudeb | codex | gemini | grok) printf '%s\n' "${vendor:-gemini}" ;;
-    *) printf 'worker-model: light_%s names no vendor of claudeb|codex|gemini|grok: %s\n' "$1" "$row" >&2
+    claudeb | codex | gemini | grok) WORKER_MODEL_R=${vendor:-gemini} ;;
+    *) printf 'worker-model: light_%s names no vendor of claudeb|codex|gemini|grok: %s\n' "$1" "$WORKER_MODEL_R" >&2
        return 2 ;;
   esac
 }
 
 worker_light_model() { # research|edit
+  worker_light_model_r "$@" || return
+  printf '%s\n' "$WORKER_MODEL_R"
+}
+
+worker_light_model_r() {
   local row vendor model=''
-  vendor=$(worker_light_vendor "${1-}") || return 2
-  row=$(worker_light_row "$1")
+  worker_light_vendor_r "${1-}" || return 2
+  vendor=$WORKER_MODEL_R
+  worker_light_row_r "$1"
+  row=$WORKER_MODEL_R
   case "$row" in *:*) model=${row#*:} ;; esac
-  [ -n "$model" ] || model=$(worker_model_default_model "$vendor") || return 2
+  if [ -z "$model" ]; then
+    worker_model_default_model_r "$vendor" || return 2
+    model=$WORKER_MODEL_R
+  fi
   if ! worker_model_allows "$vendor" "$model" light; then
     printf 'worker-model: light_%s model %s is not among %s models %s\n' "$1" "$model" "$vendor" \
       "$(worker_model_allowed_list "$vendor" light)" >&2
     return 2
   fi
-  printf '%s\n' "$model"
+  WORKER_MODEL_R=$model
 }
 
 worker_light_effort() { # research|edit
+  worker_light_effort_r "$@" || return
+  printf '%s\n' "$WORKER_MODEL_R"
+}
+
+worker_light_effort_r() {
   local vendor model
-  vendor=$(worker_light_vendor "${1-}") || return 2
-  model=$(worker_light_model "$1") || return 2
-  worker_model_default_effort "$vendor" "$model" light
+  worker_light_vendor_r "${1-}" || return 2
+  vendor=$WORKER_MODEL_R
+  worker_light_model_r "$1" || return 2
+  model=$WORKER_MODEL_R
+  worker_model_default_effort_r "$vendor" "$model" light
 }
 
 # The pin is the ONE override above the pool, and a session that sets or clears it silently
@@ -392,6 +537,20 @@ worker_model_chat_pin_file() {
   printf '%s/%s' "${CHAT_PINS_DIR:-$HOME/.cache/claude-chat-pins}" "$sid"
 }
 
+# Asked once per environment it reads, so the path stays spelled in the one function above.
+worker_model_chat_pin_file_r() {
+  local key="${CLAUDE_CODE_SESSION_ID:-}"$'\x1f'"${CHAT_PINS_DIR:-}"$'\x1f'"${HOME:-}"
+  WORKER_MODEL_R=''
+  worker_pool_valid_name "${CLAUDE_CODE_SESSION_ID:-}" || return 1
+  if [ -z "${_WM_CHAT_PIN_KEY+x}" ] || [ "$_WM_CHAT_PIN_KEY" != "$key" ]; then
+    _WM_CHAT_PIN_FILE=$(worker_model_chat_pin_file)
+    _WM_CHAT_PIN_STATUS=$?
+    _WM_CHAT_PIN_KEY=$key
+  fi
+  WORKER_MODEL_R=$_WM_CHAT_PIN_FILE
+  return "$_WM_CHAT_PIN_STATUS"
+}
+
 # A non-empty chat file replaces the global pin tier whole — a vendor it does not name is unpinned
 # for that chat, never filled in from the global file.
 worker_model_chat_opens_all() {
@@ -400,12 +559,13 @@ worker_model_chat_opens_all() {
 }
 
 worker_model_pin_file() {
-  local chat
-  if chat=$(worker_model_chat_pin_file) && [ -s "$chat" ]; then
-    printf '%s' "$chat"
-  else
-    worker_model_file
-  fi
+  worker_model_pin_file_r
+  printf '%s' "$WORKER_MODEL_R"
+}
+
+worker_model_pin_file_r() {
+  worker_model_chat_pin_file_r && [ -s "$WORKER_MODEL_R" ] && return 0
+  worker_model_file_r
 }
 
 worker_model_canonical_path() {
@@ -443,19 +603,31 @@ worker_model_prime_pins() { # file
 }
 
 worker_model_pin_line() { # file key
-  local line=''
   if [ -n "${_WM_PIN_FILE+x}" ] && [ "$1" = "$_WM_PIN_FILE" ]; then
-    while IFS= read -r line || [ -n "$line" ]; do
-      case "$line" in
-        "$2"=*) printf '%s\n' "${line#"$2"=}"; return 0 ;;
-      esac
-    done < <(printf '%s\n' "$_WM_PIN_TEXT")
+    ! worker_model_pin_text_line "$2" || printf '%s\n' "$WORKER_MODEL_R"
     return 0
   fi
   [ -f "$1" ] || return 0
   [ -r "$1" ] || return 1
   awk -v prefix="$2=" 'index($0, prefix) == 1 { print substr($0, length(prefix) + 1); exit }' \
     "$1" 2>/dev/null
+}
+
+worker_model_pin_text_line() { # key -> its value in the primed text; 1 when no line sets it
+  local text=$'\n'"$_WM_PIN_TEXT"
+  case "$text" in
+    *$'\n'"$1="*) text=${text#*$'\n'"$1="}; WORKER_MODEL_R=${text%%$'\n'*}; return 0 ;;
+  esac
+  WORKER_MODEL_R=''
+  return 1
+}
+
+worker_model_pin_line_r() { # file key
+  if [ -n "${_WM_PIN_FILE+x}" ] && [ "$1" = "$_WM_PIN_FILE" ]; then
+    worker_model_pin_text_line "$2" || :
+    return 0
+  fi
+  WORKER_MODEL_R=$(worker_model_pin_line "$1" "$2")
 }
 
 # Fast mode is a MODIFIER of the chat pin and lives on its second line, `<vendor>_fast=on`: it is
@@ -475,18 +647,36 @@ worker_model_pinned_account() {
   worker_model_pin_line "$file" "$key"
 }
 
+worker_model_pinned_account_r() { # key
+  case "$1" in
+    *_profile) worker_model_pin_file_r ;;
+    *) worker_model_file_r ;;
+  esac
+  worker_model_pin_line_r "$WORKER_MODEL_R" "$1"
+}
+
 worker_model_pin_key() {
+  worker_model_pin_key_r "$@" || return 2
+  printf '%s' "$WORKER_MODEL_R"
+}
+
+worker_model_pin_key_r() {
   case "${1-}" in
-    claudeb|claude) printf 'claudeb_profile' ;;
-    codex) printf 'codex_profile' ;;
-    gemini) printf 'gemini_profile' ;;
-    grok) printf 'grok_profile' ;;
-    *) return 2 ;;
+    claudeb|claude) WORKER_MODEL_R=claudeb_profile ;;
+    codex) WORKER_MODEL_R=codex_profile ;;
+    gemini) WORKER_MODEL_R=gemini_profile ;;
+    grok) WORKER_MODEL_R=grok_profile ;;
+    *) WORKER_MODEL_R=''; return 2 ;;
   esac
 }
 
 worker_model_pin_split() { # raw value -> one name per line
-  local name rest="${1-}"
+  worker_model_pin_split_r "$@"
+  [ -z "$WORKER_MODEL_R" ] || printf '%s\n' "$WORKER_MODEL_R"
+}
+
+worker_model_pin_split_r() {
+  local name rest="${1-}" out=''
   while [ -n "$rest" ]; do
     name=${rest%%,*}
     if [ "$name" = "$rest" ]; then rest=
@@ -495,8 +685,9 @@ worker_model_pin_split() { # raw value -> one name per line
     name=${name#"${name%%[![:space:]]*}"}
     name=${name%"${name##*[![:space:]]}"}
     [ -n "$name" ] || continue
-    printf '%s\n' "$name"
+    out+="$name"$'\n'
   done
+  WORKER_MODEL_R=${out%$'\n'}
 }
 
 # The accounts a `*` pin covers: every account the limits store carries for the vendor that the
@@ -521,28 +712,34 @@ worker_model_pool_accounts() {
 }
 
 worker_model_pin_scope() {
-  local key val names
-  key=$(worker_model_pin_key "${1-}") || return 2
-  val=$(worker_model_pinned_account "$key") || return 1
-  names=$(worker_model_pin_split "$val")
-  case "$names" in
-    '') printf 'none' ;;
-    '*') printf 'vendor' ;;
-    *) printf 'account' ;;
+  worker_model_pin_scope_r "$@" || return
+  printf '%s' "$WORKER_MODEL_R"
+}
+
+worker_model_pin_scope_r() {
+  worker_model_pin_key_r "${1-}" || return 2
+  worker_model_pinned_account_r "$WORKER_MODEL_R" || { WORKER_MODEL_R=''; return 1; }
+  worker_model_pin_split_r "$WORKER_MODEL_R"
+  case "$WORKER_MODEL_R" in
+    '') WORKER_MODEL_R=none ;;
+    '*') WORKER_MODEL_R=vendor ;;
+    *) WORKER_MODEL_R=account ;;
   esac
 }
 
 worker_model_pins() {
-  local key val names
-  key=$(worker_model_pin_key "${1-}") || return 2
-  val=$(worker_model_pinned_account "$key") || return 1
-  names=$(worker_model_pin_split "$val")
-  [ -n "$names" ] || return 0
-  if [ "$names" = '*' ]; then
-    worker_model_pool_accounts "$1"
-  else
-    printf '%s\n' "$names"
-  fi
+  local status
+  worker_model_pins_r "$@"
+  status=$?
+  [ -z "$WORKER_MODEL_R" ] || printf '%s\n' "$WORKER_MODEL_R"
+  return "$status"
+}
+
+worker_model_pins_r() { # vendor -> its pinned names, one per line
+  worker_model_pin_key_r "${1-}" || return 2
+  worker_model_pinned_account_r "$WORKER_MODEL_R" || { WORKER_MODEL_R=''; return 1; }
+  worker_model_pin_split_r "$WORKER_MODEL_R"
+  [ "$WORKER_MODEL_R" != '*' ] || WORKER_MODEL_R=$(worker_model_pool_accounts "$1")
 }
 
 # A `*` pin's first account is the one worker-pick ranks first, never the store's listing order.

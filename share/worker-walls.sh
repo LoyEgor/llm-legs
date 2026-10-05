@@ -3,7 +3,12 @@
 # unless llm-limits has read the account after the write and found it open (worker-pick lapses it).
 
 worker_walls_dir() {
-  printf '%s\n' "${WORKER_WALLS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/claude-worker-runs/walls}"
+  worker_walls_dir_r
+  printf '%s\n' "$WORKER_WALLS_R"
+}
+
+worker_walls_dir_r() {
+  WORKER_WALLS_R=${WORKER_WALLS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/claude-worker-runs/walls}
 }
 
 worker_walls_valid_name() {
@@ -108,9 +113,21 @@ worker_walls_lapse_if_read() {
 
 # Prints unexpired account names for vendor. Deletes expired files.
 worker_walls_fresh() {
-  local vendor="$1" now="${2:-$(date +%s)}" dir prefix file epoch account
+  local status
+  worker_walls_fresh_r "$@"
+  status=$?
+  printf '%s' "$WORKER_WALLS_R"
+  return "$status"
+}
+
+# The same lines into WORKER_WALLS_R; line 1 is read the way `sed -n 1p | tr -d '[:space:]'` read it.
+worker_walls_fresh_r() {
+  local vendor="$1" now="${2:-$(date +%s)}" dir prefix file epoch account out=''
+  WORKER_WALLS_R=''
   worker_walls_valid_name "$vendor" || return 1
-  dir=$(worker_walls_dir) || return 1
+  worker_walls_dir_r
+  dir=$WORKER_WALLS_R
+  WORKER_WALLS_R=''
   [ -d "$dir" ] || return 0
   prefix="$vendor-"
   for file in "$dir"/"$prefix"*; do
@@ -118,15 +135,18 @@ worker_walls_fresh() {
     account=${file##*/}
     account=${account#"$prefix"}
     [ -n "$account" ] || continue
-    epoch=$(sed -n '1p' "$file" 2>/dev/null | tr -d '[:space:]') || continue
+    epoch=''
+    { IFS= read -r epoch <"$file"; } 2>/dev/null
+    epoch=${epoch//[[:space:]]/}
     case "$epoch" in
       ''|*[!0-9]*) continue ;;
     esac
     if [ "$epoch" -gt "$now" ]; then
-      printf '%s\n' "$account"
+      out+="$account"$'\n'
     else
       rm -f -- "$file"
     fi
   done
+  WORKER_WALLS_R=$out
   return 0
 }
