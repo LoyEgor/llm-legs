@@ -73,6 +73,8 @@ slot_wait() { # dir count ceiling-seconds limiter what [tick command...] -> the 
     # Run as $(slot_wait …), this loop outlives a killed caller and would take a slot for nobody.
     kill -0 "$$" 2>/dev/null || { hold_clear "$hold"; return 1; }
   done
+  # The caller can also die inside the take, after the check above passed.
+  kill -0 "$$" 2>/dev/null || { slot_release "$SLOT_TAKEN"; hold_clear "$hold"; return 1; }
   hold_clear "$hold"
   printf '%s\n' "$SLOT_TAKEN"
 }

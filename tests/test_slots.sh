@@ -22,6 +22,7 @@ holder() { # dir count -> pid of a process holding one slot until killed
   for i in $(seq 1 50); do [ "$(cat "$1"/*/pid 2>/dev/null | grep -cx "$!")" = 1 ] && break; sleep 0.1; done
   printf '%s\n' "$!"
 }
+unheld() { local pid=''; read -r pid 2>/dev/null <"$1/pid"; ! kill -0 "$pid" 2>/dev/null; }
 until_gone() { local i; for i in $(seq 1 100); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.1; done; return 1; }
 holds_of() { cat "$HARNESS_HOLDS_DIR"/"$1"-*.json 2>/dev/null | jq -s length; }
 waits_of() { cat "$HARNESS_WAITS_DIR"/*.jsonl 2>/dev/null | jq -sc --arg c "$1" 'map(select(.class == $c))'; }
@@ -131,9 +132,28 @@ assert [ "$(holds_of orphan-limiter)" = 1 ]
 kill "$caller"; until_gone "$caller"
 kill "$h9"; until_gone "$h9"
 sleep 1
-assert [ "$(cat "$WORK/s/1/pid")" = "$h9" ]
+assert unheld "$WORK/s/1"
 assert [ "$(holds_of orphan-limiter)" = 0 ]
 rm -rf "$WORK/s/1"
+# The caller can die inside the take, past the waiter's check: the wrapper kills it right there.
+mkdir -p "$WORK/o"
+h11=$(holder "$WORK/o" 1)
+bash -c '. "$1/share/slots.sh"; eval "real_$(declare -f slot_take)"; marker=$3
+  slot_take() {
+    real_slot_take "$@" || return 1
+    printf "%s\n" "$BASHPID" >"$marker"; kill $$
+    while kill -0 $$ 2>/dev/null; do sleep 0.05; done
+  }
+  slot=$(slot_wait "$2" 1 3600 inside-limiter "a job killed in the take"); exec sleep 300' \
+  _ "$ROOT" "$WORK/o" "$WORK/inside-waiter" >/dev/null 2>&1 &
+pids+=("$!")
+for i in $(seq 1 50); do [ "$(holds_of inside-limiter)" = 1 ] && break; sleep 0.1; done
+assert [ "$(holds_of inside-limiter)" = 1 ]
+kill "$h11"; until_gone "$h11"
+for i in $(seq 1 100); do [ -s "$WORK/inside-waiter" ] && break; sleep 0.1; done
+assert until_gone "$(cat "$WORK/inside-waiter")"
+assert [ ! -e "$WORK/o/1" ]
+assert [ "$(holds_of inside-limiter)" = 0 ]
 
 bash -c 'bash -c "exec sleep 300" & wait' &
 tree=$!
