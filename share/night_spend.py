@@ -189,8 +189,9 @@ def spend(night, worker_run):
     models, hours, blind, seen = collections.Counter(), 0.0, 0, set()
     for run, _, meta, vendor in night_runs(low, high, sessions):
         models[f"{vendor}/{meta.get('served_model') or meta.get('model') or '?'}"] += 1
-        if meta.get("started_at") and meta.get("ended_at"):
-            hours += max(meta["ended_at"] - meta["started_at"], 0) / 3600
+        start = meta.get("pid_started_at") or meta.get("started_at")
+        if start and meta.get("ended_at"):
+            hours += max(meta["ended_at"] - start, 0) / 3600
         usage = run_usage(worker_run, run, vendor, seen)
         if usage is None:
             blind += 1

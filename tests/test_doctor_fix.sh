@@ -797,7 +797,7 @@ speed_env=(HARNESS_DOCTOR_DIR="$S/harness" HARNESS_LEDGER="$S/ledger.json")
 env "${speed_env[@]}" CODE_LEDGER="$S/none.json" STATUSLINE_CACHE_DIR="$S/sl" SPEED_DOCTOR_NOW=1790967000 \
   SPEED_DOCTOR_DIR="$S/speed" WORKER_STATS_DIR="$S/ws" CODE_DOCTOR_DIR="$S/code" "$ROOT/bin/speed-doctor" --quiet ||
   fail "speed-doctor did not merge its section"
-night1='["opportunity:machine/contention", "opportunity:chat/hooks", "opportunity:tests/llm-legs/test_llm_limits"]'
+night1='["opportunity:tests/llm-legs/test_llm_limits", "opportunity:chat/hooks", "opportunity:machine/contention"]'
 assert jqe --argjson n "$night1" '.speed.selection == $n' "$S/harness/latest.json"
 mkdir -p "$L/share/rbench" "$L/share/briefs" "$L/agents"
 printf '# the per-model call\nclaudeb opus high high,xhigh low,medium,max no\n' >"$L/share/worker-model.sh"
@@ -817,7 +817,7 @@ env "${speed_env[@]}" bash "$FIX" launch harness --night n8 >"$WORK/out" 2>"$WOR
 assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 1 ]
 sid=$(cut -f1 "$WORK/out")
 assert jqe --argjson n "$night1" --arg t "$L/tests/test_llm_limits.sh" --arg h "$rfg" '.area == "speed" and [.problems[].id] == $n
-  and [.problems[].component.files] == [[], [$h], [$t]]' "$(record "$sid")"
+  and [.problems[].component.files] == [[$t], [$h], []]' "$(record "$sid")"
 
 # Its close refuses any added or removed line that sets a model, effort or thinking knob, committed, uncommitted,
 # untracked or in the live settings and worker-model files; a speed diff touching none of them closes.

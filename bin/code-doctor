@@ -2343,6 +2343,8 @@ def document(started):
 
 def write_document(doc):
     write_json(os.path.join(state_dir(), "latest.json"), doc)
+    if not SCOPE or sorted(SCOPE) == sorted(default_repos()):
+        collector_runs.problem_day("code", doc, "CODE_DOCTOR_DIR")
 
 
 def view(doc):

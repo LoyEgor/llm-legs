@@ -1,0 +1,847 @@
+"""The harness time budget (docs/handoffs/2026-10-05-harness-time-budget.md): where the wall time of chats and
+workers goes, plain Claude Code against each class the harness adds, with each class's usual band, the holes named,
+test time as its own budget, an honest one-line-per-night ledger with its 7-night trend and the doctors' daily
+problem counts. Measurement only: it reads existing journals and gates nothing.
+
+  time_budget.py day [--hours H] [--json]       the last H hours (24), its bands, holes, tests and levers
+  time_budget.py night <worker-run> <night.json> the night's ledger line, its time split and the 7-night trend
+"""
+
+import argparse
+import collections
+import glob
+import json
+import os
+import statistics
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import collector_runs  # noqa: E402
+import handoffs  # noqa: E402
+import limiter_hold  # noqa: E402
+import night_churn  # noqa: E402
+import night_spend  # noqa: E402
+
+CLASSES = (("model", "model turns", "plain"), ("tools", "tool execution", "plain"),
+           ("compaction", "compaction", "plain"), ("hooks", "hooks", "harness"), ("stop", "stop hooks", "harness"),
+           ("suite_run", "suites running", "harness"), ("suite_wait", "suite slot wait", "harness"),
+           ("slot", "worker slot queue", "harness"), ("retries", "retries and relaunches", "harness"),
+           ("review", "review rounds", "harness"), ("locks", "locks and polls", "harness"),
+           ("other", "other / unmeasured", "other"))
+KIND = {key: kind for key, _, kind in CLASSES}
+LABEL = {key: label for key, label, _ in CLASSES}
+TURN_PART = {"gen": "model", "tool": "tools", "media": "tools", "compact": "compaction", "hook": "hooks",
+             "stop": "stop", "test": "suite_run", "resid": "other"}
+TURN_AWAY = ("dark", "ask")
+WAIT_CLASSES = ("lock", "poll")
+GATE_REFUSALS = ("denied", "relay-refused")
+BAND_DAYS = 7
+BAND_RATIO = 2.0
+BAND_MIN_S = 15 * 60
+ACTIVE_FLOOR = 0.30
+TEST_BUDGET_MIN_DAY = 60
+FLOORS = {"hooks": 0, "stop": 0, "suite_wait": 0, "slot": 0, "retries": 0, "locks": 0, "suite_run": TEST_BUDGET_MIN_DAY}
+ACTIVE_FLOOR_SHARE = 0.70
+FLOOR_ROW_MIN_DAY = 30
+ROI_DAYS = 3
+IMPROVEMENT_RULES = ("opportunity", "regression", "time_floor")
+SETTLE_S = 24 * 3600
+KEEP_DAYS = 35
+TOP_SUITES = 10
+
+
+def home(*parts):
+    return os.path.join(os.environ.get("HOME") or os.path.expanduser("~"), *parts)
+
+
+def env_path(name, *default):
+    return os.environ.get(name) or home(*default)
+
+
+def harness_dir():
+    return env_path("HARNESS_DOCTOR_DIR", ".cache", "harness-doctor")
+
+
+def doctors_dir():
+    return env_path("DOCTORS_DIR", ".cache", "doctors")
+
+
+def worker_runs_path():
+    stats = os.environ.get("WORKER_STATS_DIR") or os.path.join(
+        env_path("CLAUDEB_DIR", ".claude-profiles", ".claudeb"), "worker-stats")
+    return os.path.join(stats, "runs.jsonl")
+
+
+def suites_path():
+    return os.environ.get("RUN_SUITES_JOURNAL") or os.path.join(os.path.dirname(
+        os.environ.get("RUN_SUITES_TIMES") or os.path.join(os.environ.get("XDG_CACHE_HOME") or home(".cache"), "run-suites", "times.tsv")), "runs.jsonl")
+
+
+def gates_path():
+    return os.path.join(env_path("INSTRUCTION_WATCH_STATE", ".cache", "claude-instruction-watch"), "gates.jsonl")
+
+
+def run_dir():
+    return env_path("WORKER_RUN_DIR", ".cache", "claude-worker-runs")
+
+
+def now_s():
+    return float(os.environ.get("TIME_BUDGET_NOW") or time.time())
+
+
+def local_day(t):
+    return time.strftime("%Y-%m-%d", time.localtime(t))
+
+
+def day_bounds(day):
+    lo = time.mktime(time.strptime(day, "%Y-%m-%d"))
+    return lo, time.mktime(time.strptime(local_day(lo + 30 * 3600), "%Y-%m-%d"))
+
+
+def read_json(path, default):
+    try:
+        with open(path) as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return default
+
+
+def write_json(path, value):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".tmp", "w") as handle:
+            json.dump(value, handle, separators=(",", ":"))
+        os.replace(path + ".tmp", path)
+    except OSError:
+        pass
+
+
+def num(value):
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+# ---------------------------------------------------------------- intervals
+
+
+def union(spans):
+    out = []
+    for a, b in sorted((a, b) for a, b in spans if b > a):
+        if out and a <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return out
+
+
+def clip(spans, lo, hi):
+    return union((max(a, lo), min(b, hi)) for a, b in spans)
+
+
+def length(spans):
+    return sum(b - a for a, b in spans)
+
+
+def minus(spans, cut):
+    out, cut = [], union(cut)
+    for a, b in union(spans):
+        for c, d in cut:
+            if d <= a or c >= b:
+                continue
+            if c > a:
+                out.append([a, c])
+            a = max(a, d)
+            if a >= b:
+                break
+        if a < b:
+            out.append([a, b])
+    return out
+
+
+# ---------------------------------------------------------------- journals
+
+
+_DAYS = {}
+
+
+def event_day(day):
+    path = os.path.join(harness_dir(), "events", day + ".jsonl")
+    try:
+        key = (path, os.stat(path).st_size)
+    except OSError:
+        return {}
+    if key not in _DAYS:
+        out = collections.defaultdict(list)
+        with open(path, "rb") as handle:
+            for line in handle:
+                if line[2:3] in (b"t", b"c", b"h", b"s") and line[3:5] == b'",':
+                    try:
+                        out[line[2:3].decode()].append(json.loads(line))
+                    except ValueError:
+                        continue
+        _DAYS[key] = out
+    return _DAYS[key]
+
+
+def event_rows(lo, hi, kinds=("t", "c", "h")):
+    """Harness's derived event rows (`t` owner turns, `c` tool calls, `h` hook runs, `s` CLI starts) of the local
+    days the window touches; a turn or call is filed under its start day, so the day before is read too."""
+    out = collections.defaultdict(list)
+    day, last = local_day(lo - 86400), local_day(hi)
+    while day <= last:
+        for kind, rows in event_day(day).items():
+            if kind in kinds:
+                out[kind] += rows
+        day = local_day(day_bounds(day)[1] + 1)
+    return out
+
+
+def worker_runs(lo, hi):
+    return [r for r in night_spend.rows(worker_runs_path())
+            if (num(r.get("ended_at")) or 0) > lo and (num(r.get("pid_started_at")) or num(r.get("started_at")) or hi) < hi]
+
+
+def suite_rows(lo, hi):
+    return [r for r in night_spend.rows(suites_path())
+            if num(r.get("queued_at")) and num(r.get("ended_at")) and r["ended_at"] > lo and r["queued_at"] < hi]
+
+
+def wait_rows(lo, hi):
+    out = []
+    day = local_day(lo)
+    while day <= local_day(hi):
+        out += [r for r in night_spend.rows(os.path.join(limiter_hold.wait_dir(), day + ".jsonl"))
+                if num(r.get("started")) is not None and num(r.get("seconds")) is not None]
+        day = local_day(day_bounds(day)[1] + 1)
+    return [r for r in out if lo <= r["started"] < hi]
+
+
+def refusals(lo, hi):
+    return sum(1 for r in night_spend.rows(gates_path())
+               if r.get("decision") in GATE_REFUSALS and lo <= (num(r.get("at")) or 0) < hi)
+
+
+def run_session(run):
+    text = night_spend.read(os.path.join(run_dir(), str(run), "session"))
+    return text.splitlines()[0][:8] if text else None
+
+
+# ---------------------------------------------------------------- the split
+
+
+def run_split(run, lo, hi, suites, calls, hooks):
+    """One worker run's wall inside [lo, hi): launch -> first CLI start is the slot queue, earlier attempts are
+    retries, the last attempt is split into its own suites (slot wait apart), tool calls, hooks inside them, and
+    the rest, which is model time. `started_at` is restamped by the slot wait, so the run starts at its pid."""
+    start = num(run.get("pid_started_at")) or num(run.get("started_at"))
+    end = num(run.get("ended_at"))
+    out = collections.Counter()
+    if start is None or end is None or end <= start:
+        return out
+    clis = [num(c) for c in run.get("cli_starts") or () if num(c)] or [num(run.get("started_at")) or start]
+    first, last = max(start, min(clis[0], end)), max(start, min(clis[-1], end))
+    if run.get("round"):
+        out["review"] = length(clip([(start, end)], lo, hi))
+        return out
+    out["slot"] = length(clip([(start, first)], lo, hi))
+    out["retries"] = length(clip([(first, last)], lo, hi))
+    work = clip([(last, end)], lo, hi)
+    mine = [s for s in suites if s.get("worker_run") == run.get("run")]
+    ran = union((max(s["started_at"], s["queued_at"]), s["ended_at"]) for s in mine if num(s.get("started_at")))
+    queued = minus([(s["queued_at"], num(s.get("started_at")) or s["ended_at"]) for s in mine], ran)
+    out["suite_run"] = length([x for w in work for x in clip(ran, *w)])
+    out["suite_wait"] = length([x for w in work for x in clip(queued, *w)])
+    rest = minus(work, ran + queued)
+    session = run_session(run.get("run"))
+    if session is None:
+        out["other"] = length(rest)
+        return out
+    own = [c for c in calls if c[8] == session]
+    tools = [x for w in rest for x in clip([(c[1], c[1] + c[5]) for c in own], *w)]
+    tids = {c[7] for c in own}
+    hook_s = min(length(tools), sum(h[5] for h in hooks if h[7] in tids and h[7]) / 1000.0)
+    out["hooks"] = hook_s
+    out["tools"] = length(tools) - hook_s
+    out["model"] = length(rest) - length(tools)
+    return out
+
+
+def turn_split(row, lo, hi):
+    out = collections.Counter()
+    start, end = row[1], row[3]
+    if end <= start:
+        return out
+    share = max(0.0, min(end, hi) - max(start, lo)) / (end - start)
+    for key, secs in (row[9] or {}).items():
+        if key not in TURN_AWAY:
+            out[TURN_PART.get(key, "other")] += secs * share
+    return out
+
+
+def budget(lo, hi, events=None):
+    """Seconds per class over [lo, hi) for owner chats (Harness turn rows) and worker runs (worker-stats runs)."""
+    events = events if events is not None else event_rows(lo, hi)
+    suites = suite_rows(lo, hi + 86400)
+    calls = [c for c in events.get("c", ()) if c[6] == "w"]
+    chats, workers = collections.Counter(), collections.Counter()
+    for row in events.get("t", ()):
+        if row[3] > lo and row[1] < hi:
+            chats += turn_split(row, lo, hi)
+    runs = worker_runs(lo, hi)
+    for run in runs:
+        workers += run_split(run, lo, hi, suites, calls, events.get("h", ()))
+    waits = sum(min(r["seconds"], max(0.0, hi - r["started"])) for r in wait_rows(lo, hi) if r.get("class") in WAIT_CLASSES)
+    total = chats + workers
+    total["locks"] = min(waits, total["tools"])
+    total["tools"] -= total["locks"]
+    hooks_by = collections.Counter()
+    for h in events.get("h", ()):
+        if lo <= h[1] < hi:
+            hooks_by[h[3] + (":" + h[6] if h[6] else "")] += h[5] / 1000.0
+    return {"lo": lo, "hi": hi, "seconds": {k: round(total[k], 1) for k, _, _ in CLASSES},
+            "chat_s": round(sum(chats.values()), 1), "worker_s": round(sum(workers.values()), 1),
+            "worker": {k: round(v, 1) for k, v in workers.items()}, "runs": len(runs),
+            "hooks_by": {k: round(v, 1) for k, v in hooks_by.most_common(8)}, "refusals": refusals(lo, hi)}
+
+
+def shares(b):
+    total = sum(b["seconds"].values())
+    harness = sum(v for k, v in b["seconds"].items() if KIND[k] == "harness")
+    return total, harness, (harness / total if total else 0.0)
+
+
+# ---------------------------------------------------------------- tests
+
+
+def tests_budget(lo, hi):
+    """Suite hours by caller, slot wait against running, and the slowest suites by median seconds."""
+    rows = suite_rows(lo, hi)
+    by, wait, ran, per = collections.Counter(), 0.0, 0.0, collections.defaultdict(list)
+    for r in rows:
+        started = num(r.get("started_at")) or r["queued_at"]
+        caller = "workers" if r.get("worker_run") else "chats" if r.get("session") else "night and others"
+        w = max(0.0, min(started, hi) - max(r["queued_at"], lo))
+        x = max(0.0, min(r["ended_at"], hi) - max(started, lo))
+        by[caller] += w + x
+        wait, ran = wait + w, ran + x
+        for name, suite in (r.get("suites") or {}).items():
+            if isinstance(suite, dict) and num(suite.get("secs")) is not None:
+                per[name].append(suite["secs"])
+    slow = sorted(((statistics.median(v), len(v), sum(v), k) for k, v in per.items()), reverse=True)[:TOP_SUITES]
+    return {"runs": len(rows), "hours": round((wait + ran) / 3600.0, 2), "wait_h": round(wait / 3600.0, 2),
+            "run_h": round(ran / 3600.0, 2), "wait_share": round(wait / (wait + ran), 3) if wait + ran else 0.0,
+            "by_caller_h": {k: round(v / 3600.0, 2) for k, v in by.most_common()},
+            "slowest": [{"suite": k, "median_s": round(m), "runs": n, "total_min": round(t / 60.0)} for m, n, t, k in slow]}
+
+
+# ---------------------------------------------------------------- levers
+
+
+def levers(events, lo, hi):
+    """Where plain Claude Code itself could go faster, measured where the journals hold the data."""
+    cw = cr = 0
+    for row in events.get("t", ()):
+        if lo <= row[1] < hi:
+            for use in (row[10] or {}).values():
+                cw, cr = cw + use[3], cr + use[4]
+    by_session = collections.defaultdict(list)
+    for c in events.get("c", ()):
+        if lo <= c[1] < hi:
+            by_session[c[8]].append((c[1], c[1] + c[5]))
+    calls = overlapped = 0
+    for spans in by_session.values():
+        spans.sort()
+        reach = float("-inf")
+        for i, (a, b) in enumerate(spans):
+            calls += 1
+            if a < reach or (i + 1 < len(spans) and spans[i + 1][0] < b):
+                overlapped += 1
+            reach = max(reach, b)
+    starts = [s for s in event_rows(lo, hi, ("s",)).get("s", ()) if lo <= s[1] < hi]
+    out = [{"lever": "prompt-cache hits", "measured": bool(cw + cr),
+            "value": "%d %% of cached input read from cache" % round(100.0 * cr / (cw + cr)) if cw + cr else None},
+           {"lever": "parallel tool calls", "measured": bool(calls),
+            "value": "%d %% of %d tool calls ran beside another" % (round(100.0 * overlapped / calls), calls) if calls else None},
+           {"lever": "fewer process starts", "measured": bool(starts),
+            "value": "%d CLI starts, %.1f min launching" % (len(starts), sum(num(s[4]) or 0 for s in starts) / 60.0)
+            if starts else None},
+           {"lever": "smaller context per turn", "measured": False, "value": None},
+           {"lever": "fewer hook processes per tool call", "measured": False, "value": None}]
+    return out
+
+
+# ---------------------------------------------------------------- days, bands, holes
+
+
+def day_cache_path(day):
+    return os.path.join(harness_dir(), "budget-days", day + ".json")
+
+
+def day_budget(day, now, store):
+    """A day's budget, stored once the day ended a day ago: worker rows land when the run ends."""
+    lo, hi = day_bounds(day)
+    cached = read_json(day_cache_path(day), None)
+    if isinstance(cached, dict) and cached.get("settled"):
+        return cached
+    found = budget(lo, min(hi, now))
+    found["settled"] = now >= hi + SETTLE_S
+    if found["settled"] and store:
+        write_json(day_cache_path(day), found)
+    return found
+
+
+def prune_days(now):
+    cutoff = local_day(now - KEEP_DAYS * 86400)
+    for path in glob.glob(os.path.join(harness_dir(), "budget-days", "????-??-??.json")):
+        if os.path.basename(path)[:10] < cutoff:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
+def usual(now, store):
+    """Median seconds per class over the BAND_DAYS closed days before today that hold any time."""
+    days, day = [], local_day(now)
+    for back in range(1, BAND_DAYS + 1):
+        b = day_budget(local_day(day_bounds(day)[0] - back * 86400 + 3600), now, store)
+        if sum(b["seconds"].values()) > 0:
+            days.append(b)
+    med = {k: statistics.median([d["seconds"].get(k, 0) for d in days]) for k, _, _ in CLASSES} if days else {}
+    return med, len(days)
+
+
+def holes(b, med):
+    """Named rows: workers under ACTIVE_FLOOR model time, and any class past BAND_RATIO x its usual day."""
+    out = []
+    w = b["worker"]
+    wall = sum(w.values())
+    if wall >= BAND_MIN_S and w.get("model", 0) < ACTIVE_FLOOR * wall:
+        tests = w.get("suite_run", 0) + w.get("suite_wait", 0)
+        out.append("workers worked %d %% of their time; %d %% went to their own tests, %d %% to the slot queue"
+                   % (pct(w.get("model", 0), wall), pct(tests, wall), pct(w.get("slot", 0), wall)))
+    for key, label, kind in CLASSES:
+        value, normal = b["seconds"].get(key, 0), med.get(key)
+        if kind != "plain" and normal is not None and value >= BAND_MIN_S + normal and value > BAND_RATIO * normal:
+            out.append("%s: %s, usually %s" % (label, minutes(value), minutes(normal)))
+    return out
+
+
+def recoverable(key, seconds, days):
+    """Minutes per day a class spends over its floor: plain Claude Code has none of it, suites get their budget."""
+    if key not in FLOORS or days <= 0:
+        return 0.0
+    return max(0.0, seconds / 60.0 / days - FLOORS[key])
+
+
+def worker_floor(worker, days):
+    wall, model = sum(worker.values()), worker.get("model", 0)
+    return {"share": round(model / wall, 3) if wall else None, "floor_share": ACTIVE_FLOOR_SHARE,
+            "recoverable_min_day": round(max(0.0, ACTIVE_FLOOR_SHARE * wall - model) / 60.0 / days, 1) if days else 0.0}
+
+
+def floors_of(seconds, days):
+    return [{"class": k, "label": LABEL[k], "floor_min_day": FLOORS[k],
+             "actual_min_day": round(seconds.get(k, 0) / 60.0 / days, 1),
+             "recoverable_min_day": round(recoverable(k, seconds.get(k, 0), days), 1)} for k in FLOORS]
+
+
+def last_night():
+    """The newest finished night's worker wall against its model time, from its cached ledger row when there is one."""
+    nights = [read_json(p, {}) for p in glob.glob(os.path.join(doctors_dir(), "nights", "*.json"))]
+    nights = sorted((n for n in nights if n.get("finished_at") and n.get("started_at") and n.get("id")),
+                    key=lambda n: (n["started_at"], n["id"]))
+    if not nights:
+        return None
+    night = nights[-1]
+    row = read_json(ledger_cache(night["id"]), None)
+    if isinstance(row, dict) and row.get("finished") and "split_s" in row:
+        wall, model = row["wall_s"], row["split_s"].get("model", 0)
+    else:
+        split = night_split(night)[1]
+        wall, model = sum(split.values()), split.get("model", 0)
+    return {"id": night["id"], "wall_s": round(wall), "model_s": round(model),
+            "share": round(model / wall, 3) if wall else None}
+
+
+def pct(part, whole):
+    return round(100.0 * part / whole) if whole else 0
+
+
+def minutes(secs):
+    m = secs / 60.0
+    return "%.1f h" % (m / 60.0) if m >= 120 else "%d min" % round(m)
+
+
+# ---------------------------------------------------------------- the day document
+
+
+def problem_trend(now):
+    rows = collector_runs.problem_days(local_day(now - (BAND_DAYS - 1) * 86400))
+    out = collections.defaultdict(dict)
+    for r in rows:
+        out[r["doctor"]][r["day"]] = r["count"]
+    return {d: dict(sorted(v.items())) for d, v in sorted(out.items())}
+
+
+def document(now, hours=24.0, write=True):
+    lo = now - hours * 3600
+    events = event_rows(lo, now)
+    b = budget(lo, now, events)
+    med, covered = usual(now, write)
+    if write:
+        prune_days(now)
+    total, harness, share = shares(b)
+    rows = [{"class": k, "label": label, "kind": kind, "min": round(b["seconds"][k] / 60.0, 1),
+             "share": round(b["seconds"][k] / total, 3) if total else 0.0,
+             "usual_min": round(med[k] / 60.0, 1) if k in med else None} for k, label, kind in CLASSES]
+    doc = {"window_h": hours, "as_of_s": int(now), "total_min": round(total / 60.0, 1),
+           "chat_min": round(b["chat_s"] / 60.0, 1), "worker_min": round(b["worker_s"] / 60.0, 1),
+           "harness_min": round(harness / 60.0, 1), "harness_share": round(share, 3), "classes": rows,
+           "hooks_by_min": {k: round(v / 60.0, 1) for k, v in b["hooks_by"].items()}, "refusals": b["refusals"],
+           "worker_runs": b["runs"], "band_days": covered, "holes": holes(b, med),
+           "tests": tests_budget(lo, now), "levers": levers(events, lo, now), "problems_by_day": problem_trend(now)}
+    doc["floors"] = floors_of(b["seconds"], hours / 24.0)
+    doc["lost_min_day"] = round(sum(f["recoverable_min_day"] for f in doc["floors"]), 1)
+    doc["workers_active"] = worker_floor(b["worker"], hours / 24.0)
+    doc["last_night"] = last_night()
+    doc["lines"] = plain_lines(doc)
+    return doc
+
+
+def plain_lines(doc):
+    """The compact block in plain words the menu can show; its first line is the headline."""
+    if not doc["total_min"]:
+        return ["Harness time: nothing measured in the last %d h" % doc["window_h"]]
+    top = sorted((r for r in doc["classes"] if r["kind"] == "harness" and r["min"] >= 1), key=lambda r: -r["min"])[:4]
+    lines = ["Without the harness ≈ %d %% faster: %s of %s in %d h" % (
+        round(100 * doc["harness_share"]), minutes(doc["harness_min"] * 60), minutes(doc["total_min"] * 60),
+        doc["window_h"]),
+        "Chats %s · workers %s" % (minutes(doc["chat_min"] * 60), minutes(doc["worker_min"] * 60))]
+    gaps = sorted((f for f in doc["floors"] if f["recoverable_min_day"] >= 1), key=lambda f: -f["recoverable_min_day"])
+    lines.append("Over the floor: %s/day recoverable" % minutes(doc["lost_min_day"] * 60)
+                 + "".join(" · %s %s" % (f["label"], minutes(f["recoverable_min_day"] * 60)) for f in gaps[:3]))
+    active = doc["workers_active"]
+    if active["share"] is not None:
+        lines.append("Workers active %d %% of their wall (floor %d %%)" % (
+            round(100 * active["share"]), round(100 * active["floor_share"])))
+    if top:
+        lines.append("Harness: " + " · ".join("%s %s%s" % (r["label"], minutes(r["min"] * 60), "" if r["usual_min"] is None
+                                                             else " (usually %s)" % minutes(r["usual_min"] * 60))
+                                             for r in top))
+    plain = [r for r in doc["classes"] if r["kind"] == "plain" and r["min"] >= 1]
+    if plain:
+        lines.append("Claude Code itself: " + " · ".join("%s %s" % (r["label"], minutes(r["min"] * 60)) for r in plain))
+    t = doc["tests"]
+    if t["runs"]:
+        lines.append("Tests: %.1f h in %d suite runs, %d %% waiting for a slot" % (
+            t["hours"], t["runs"], round(100 * t["wait_share"])))
+    lines += ["Hole: " + h for h in doc["holes"]]
+    return lines
+
+
+def section(now, write=True):
+    """The Harness document's `budget` key and budget.txt, the block the menu can show."""
+    try:
+        doc = document(now, write=write)
+    except Exception as exc:  # noqa: BLE001 - measurement never fails the doctor that carries it
+        return {"error": "%s: %s" % (type(exc).__name__, str(exc)[:200])}
+    if write:
+        write_block(doc)
+    return doc
+
+
+def write_block(doc):
+    try:
+        os.makedirs(harness_dir(), exist_ok=True)
+        with open(os.path.join(harness_dir(), "budget.txt.tmp"), "w") as handle:
+            handle.write("\n".join(doc["lines"]) + "\n")
+        os.replace(os.path.join(harness_dir(), "budget.txt.tmp"), os.path.join(harness_dir(), "budget.txt"))
+    except OSError:
+        pass
+
+
+def print_day(doc):
+    print("\n".join(doc["lines"]))
+    print("classes · " + " · ".join("%s %s (%d %%)" % (r["label"], minutes(r["min"] * 60), round(100 * r["share"]))
+                                     for r in doc["classes"] if r["min"]))
+    if doc["hooks_by_min"]:
+        print("hooks by event · " + " · ".join("%s %s" % (k, minutes(v * 60)) for k, v in doc["hooks_by_min"].items()))
+    print("gates · %d refusals (their time is inside hooks and the turns after)" % doc["refusals"])
+    for s in doc["tests"]["slowest"]:
+        print("slow suite · %s · median %d s · %d runs · %d min" % (s["suite"], s["median_s"], s["runs"], s["total_min"]))
+    for lever in doc["levers"]:
+        print("lever · %s · %s" % (lever["lever"], lever["value"] if lever["measured"] else "idea, not measured"))
+    for doctor, days in doc["problems_by_day"].items():
+        print("problems · %s · %s" % (doctor, " ".join("%s:%s" % (d[5:], n) for d, n in days.items())))
+
+
+# ---------------------------------------------------------------- nights
+
+
+def night_split(night):
+    """Wall and its split over the worker runs the night's sessions launched (night_spend's selection)."""
+    low, high, sessions = night_spend.window(night)
+    runs = []
+    for run, _, meta, _ in night_spend.night_runs(low, high, sessions):
+        runs.append(dict(meta, run=run))
+    hi = max([num(r.get("ended_at")) or 0 for r in runs] + [high])
+    events = event_rows(low, hi, ("c", "h"))
+    suites = suite_rows(low, hi + 86400)
+    calls = [c for c in events.get("c", ()) if c[6] == "w"]
+    split = collections.Counter()
+    for run in runs:
+        split += run_split(run, low, hi, suites, calls, events.get("h", ()))
+    return len(runs), split
+
+
+def lines_of(night):
+    """Code and test lines of the night's job commits, and of other commits landed on the sweep repos' HEAD in the
+    night's window."""
+    low, high, _ = night_spend.window(night)
+    jobs = {(night_churn.repo_dir(c.get("repo") or ""), str(c.get("hash") or "")[:7])
+            for j in night.get("jobs") or () for c in j.get("commits") or ()}
+    out = {"jobs": [0, 0, 0, 0], "other": [0, 0, 0, 0], "unreadable": 0}
+    for repo in handoffs.sweep_repos():
+        found = subprocess.run(["git", "-C", repo, "log", "--no-merges", "--first-parent", "--format=@%h",
+                                "--numstat", "--since=@%d" % low, "--until=@%d" % high, "HEAD"],
+                               capture_output=True, text=True, errors="replace")
+        if found.returncode != 0:
+            continue
+        which = None
+        for line in found.stdout.splitlines():
+            if line.startswith("@"):
+                which = "jobs" if (repo, line[1:8]) in jobs else "other"
+                continue
+            parts = line.split("\t")
+            if which and len(parts) == 3 and parts[0] != "-":
+                test = "/tests/" in "/" + parts[2] or os.path.basename(parts[2]).startswith("test_")
+                out[which][2 * test] += int(parts[0])
+                out[which][2 * test + 1] += int(parts[1])
+    for j in night.get("jobs") or ():
+        for c in j.get("commits") or ():
+            if night_churn.repo_dir(c.get("repo") or "") is None:
+                out["unreadable"] += 1
+    return out
+
+
+def improvement_class(rule, pid):
+    """The time class a Speed or time row's fix should shrink; None measures the harness total."""
+    ident = pid.split(":", 1)[1] if ":" in pid else ""
+    if rule == "time_floor" or ident.startswith("time/"):
+        key = ident[5:] if ident.startswith("time/") else ident
+        return key if key in FLOORS else None
+    if ident.startswith(("chat/hooks", "hooks/")):
+        return "hooks"
+    if ident.startswith(("chat/tests", "tests/")) or rule.startswith("test_"):
+        return "suite_run"
+    return "suite_wait" if ident.startswith("chat/queue") else None
+
+
+def improvements(night, path, worker_run):
+    """Fixer jobs whose problem is a Speed or time row, with their weighted spend and changed lines."""
+    found = night_churn.fixer_spend(night, path, worker_run)
+    if not found:
+        return []
+    jobs, records, spend, _ = found
+    out = []
+    for job in jobs:
+        rows = [p for p in (records.get(job["ref"]) or {}).get("problems") or () if isinstance(p, dict)
+                and (p.get("rule") in IMPROVEMENT_RULES or str(p.get("rule") or "").startswith("test_"))]
+        if not rows:
+            continue
+        lines = [0, 0]
+        for commit in job.get("commits") or ():
+            repo = night_churn.repo_dir(commit.get("repo") or "")
+            shown = subprocess.run(["git", "-C", repo, "show", "--format=", "--numstat", str(commit.get("hash"))],
+                                   capture_output=True, text=True, errors="replace") if repo else None
+            for line in (shown.stdout.splitlines() if shown and shown.returncode == 0 else ()):
+                parts = line.split("\t")
+                if len(parts) == 3 and parts[0] != "-":
+                    lines = [lines[0] + int(parts[0]), lines[1] + int(parts[1])]
+        out.append({"ref": job["ref"], "ids": [p.get("id") for p in rows],
+                    "class": improvement_class(str(rows[0].get("rule") or ""), str(rows[0].get("id") or "")),
+                    "spend_m": round(night_spend.weighted(spend[job["ref"]]) / 1e6, 1), "lines": lines,
+                    "merged": job.get("state") == "merged"})
+    return out
+
+
+def class_min_day(day, key, now):
+    b = day_budget(day, now, True)
+    total = sum(b["seconds"].values())
+    if not b.get("settled") or not total:
+        return None
+    seconds = b["seconds"].get(key, 0) if key else sum(v for k, v in b["seconds"].items() if KIND.get(k) == "harness")
+    return seconds / 60.0
+
+
+def saved_min_day(item, landed, now):
+    """Minutes per day the class lost after a full day of the change against up to ROI_DAYS days before it:
+    None while pending, a number otherwise (<= 0 is spend without result)."""
+    day = local_day(landed)
+    before = [class_min_day(local_day(day_bounds(day)[0] - back * 86400 + 3600), item["class"], now)
+              for back in range(1, ROI_DAYS + 1)]
+    after, start = [], day_bounds(day)[1]
+    while len(after) < ROI_DAYS and start + 86400 + SETTLE_S <= now:
+        after.append(class_min_day(local_day(start + 3600), item["class"], now))
+        start += 86400
+    before, after = [v for v in before if v is not None], [v for v in after if v is not None]
+    if not after or not before:
+        return None
+    return round(statistics.mean(before) - statistics.mean(after), 1)
+
+
+def roi_lines(rows, now):
+    """Per improvement job of the night, per night, and cumulative over the trend: weighted spend against the
+    minutes per day saved once the change ran a full day. No gain reads 'spend without result', never a revert."""
+    out, total_spend, total_saved = [], 0.0, 0.0
+    for row in (r for r in rows if r):
+        spend = saved = 0.0
+        pending = 0
+        for item in row.get("improvements") or ():
+            gain = saved_min_day(item, row.get("ended") or row["started"] + row["hours"] * 3600, now) \
+                if item["merged"] else None
+            spend += item["spend_m"]
+            if gain is None:
+                pending += item["merged"]
+            else:
+                saved += gain
+            if row is rows[-1]:
+                out.append("roi · %s · %s · %.1fM · %+d/-%d lines · %s" % (
+                    item["ref"][:40], LABEL.get(item["class"], "harness total"), item["spend_m"], item["lines"][0],
+                    item["lines"][1], "not merged" if not item["merged"] else "pending a full day" if gain is None
+                    else "saves %.1f min/day" % gain if gain > 0 else "spend without result"))
+        if row is rows[-1] and row.get("improvements"):
+            out.append("roi · night: improvements %.1fM · gained %.1f min/day%s" % (
+                spend, saved, " · %d pending" % pending if pending else ""))
+        total_spend, total_saved = total_spend + spend, total_saved + saved
+    if any(r and r.get("improvements") for r in rows):
+        out.append("roi · last %d nights: improvements %.1fM · gained %.1f min/day%s" % (
+            len([r for r in rows if r]), total_spend, total_saved, " · spend without result so far" if not total_saved
+            else " · %.1f min/day per 1M" % (total_saved / total_spend) if total_spend else ""))
+    return out
+
+
+def ledger_row(worker_run, path, night):
+    low, high, _ = night_spend.window(night)
+    n_runs, split = night_split(night)
+    wall = sum(split.values())
+    touched = night_churn.problem_counts(night, path)
+    rewrite = night_churn.rewrite_counts(night)
+    states = night.get("doctor_states_after") or {}
+    debt = [j for j in night.get("jobs") or () if j.get("kind") == "debt"]
+    return {"id": night.get("id"), "started": low, "ended": high, "hours": round((high - low) / 3600.0, 1),
+            "finished": bool(night.get("finished_at")), "runs": n_runs, "wall_s": round(wall),
+            "split_s": {k: round(v) for k, v in split.items() if v},
+            "lines": lines_of(night),
+            "rewrite": list(rewrite[:2]) if rewrite else None,
+            "problems": [sum(v for v in (night.get("doctors_before") or {}).values() if isinstance(v, int)),
+                         sum(v for v in (night.get("doctors_after") or {}).values() if isinstance(v, int))
+                         if night.get("doctors_after") else None],
+            "proved": sum((s or {}).get("proved", 0) for s in states.values()),
+            "regressed": sum((s or {}).get("regressed", 0) for s in states.values()),
+            "touched_unproven": len(touched[0]) if touched else 0,
+            "spend_m": round(night_spend.spend(night, worker_run)["total"] / 1e6, 1),
+            "improvements": improvements(night, path, worker_run),
+            "deferred": "no debt round" if not debt else (
+                "debt round %s" % debt[0].get("state") if all(j.get("state") != "merged" for j in debt) else None)}
+
+
+def ledger_cache(id_):
+    return os.path.join(doctors_dir(), "night-ledger", id_ + ".json")
+
+
+def cached_row(worker_run, path):
+    night = read_json(path, {})
+    if not night.get("id") or not night.get("started_at"):
+        return None
+    row = read_json(ledger_cache(night["id"]), None)
+    if isinstance(row, dict) and row.get("finished"):
+        return row
+    row = ledger_row(worker_run, path, night)
+    if row["finished"]:
+        write_json(ledger_cache(night["id"]), row)
+    return row
+
+
+def model_share(row):
+    return "%d %%" % pct(row["split_s"].get("model", 0), row["wall_s"]) if row["wall_s"] else "?"
+
+
+def ledger_lines(row):
+    """The night's ledger, each line under the report's 100 columns."""
+    s = {k: v / 3600.0 for k, v in row["split_s"].items()}
+    tests = s.get("suite_run", 0) + s.get("suite_wait", 0)
+    jobs, other = row["lines"]["jobs"], row["lines"]["other"]
+    probs = row["problems"]
+    out = ["night %s · %.1f h" % (row["id"], row["hours"]),
+           "workers %.1f h wall · model %.1f h (%s) · queued %.1f h · own tests %.1f h" % (
+               row["wall_s"] / 3600.0, s.get("model", 0), model_share(row), s.get("slot", 0), tests)
+           if row["wall_s"] else "workers %d runs, not timed" % row["runs"],
+           "lines by jobs: code +%d/-%d · tests +%d/-%d · outside jobs +%d/-%d" % (
+               tuple(jobs) + (other[0] + other[2], other[1] + other[3]))]
+    if row["rewrite"]:
+        out.append("rewrote %d of %d week-old lines" % tuple(row["rewrite"]))
+    out.append("problems %s → %s · proved %d · regressed %d · touched again without proof %d" % (
+        probs[0], "?" if probs[1] is None else probs[1], row["proved"], row["regressed"], row["touched_unproven"]))
+    out.append("spend %.1fM" % row["spend_m"] + (" · deferred: %s" % row["deferred"] if row["deferred"] else ""))
+    return ["ledger · " + line for line in out]
+
+
+def trend_lines(rows):
+    rows = [r for r in rows if r]
+    if not rows:
+        return []
+    out = ["trend · last %d nights · oldest first" % len(rows)]
+    for r in rows:
+        probs = r["problems"]
+        out.append("trend · %s · %.1f h · workers %s model · problems %s → %s · spend %.1fM%s" % (
+            time.strftime("%d %b", time.localtime(r["started"])), r["hours"], model_share(r),
+            probs[0], "?" if probs[1] is None else probs[1], r["spend_m"], " · deferred" if r["deferred"] else ""))
+    moved = [r for r in rows if r["problems"][1] is not None]
+    if moved:
+        delta = sum(r["problems"][1] - r["problems"][0] for r in moved)
+        out.append("trend · problems %+d over %d nights · %s" % (
+            delta, len(moved), "moving forward" if delta < 0 else "treading water" if delta == 0 else "going back"))
+    return out
+
+
+def night_report(worker_run, path):
+    night = read_json(path, {})
+    rows = []
+    for other in sorted(glob.glob(os.path.join(os.path.dirname(path), "*.json"))):
+        candidate = read_json(other, {})
+        if candidate.get("started_at") and (candidate["started_at"], candidate.get("id", "")) <= (
+                night.get("started_at", ""), night.get("id", "")):
+            rows.append((candidate["started_at"], other))
+    trend = [cached_row(worker_run, p) for _, p in sorted(rows)[-BAND_DAYS:]]
+    if trend and trend[-1]:
+        print("\n".join(ledger_lines(trend[-1])))
+    for line in trend_lines(trend) + roi_lines(trend, now_s()):
+        print(line)
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(prog="time_budget.py")
+    sub = parser.add_subparsers(dest="command", required=True)
+    day = sub.add_parser("day")
+    day.add_argument("--hours", type=float, default=24.0)
+    day.add_argument("--json", action="store_true")
+    night = sub.add_parser("night")
+    night.add_argument("worker_run")
+    night.add_argument("path")
+    args = parser.parse_args(argv)
+    if args.command == "night":
+        night_report(args.worker_run, args.path)
+        return 0
+    doc = document(now_s(), args.hours, write=False)
+    if args.json:
+        print(json.dumps(doc, ensure_ascii=False, indent=1))
+    else:
+        print_day(doc)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

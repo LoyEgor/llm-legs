@@ -131,7 +131,12 @@ BROWSER_ENGINE = ("llm-legs/share/gemini_web.py", "llm-legs/share/gemini_music.p
                   "llm-legs/share/chatgpt_web.py")
 MENU_BUILDERS = {"automation": ("hammerspoon/automation_menu.lua", "llm-legs/hammerspoon/llm-limits.lua"),
                  "llm-limits": ("llm-legs/hammerspoon/llm-limits.lua",)}
-SPEED_FILES = {"background/statusline": ("llm-legs/bin/statusline.sh",)}
+SPEED_FILES = {"background/statusline": ("llm-legs/bin/statusline.sh",),
+               "time/slot": ("llm-legs/share/slots.sh", "llm-legs/bin/worker-run"),
+               "time/suite_wait": ("llm-legs/share/run-suites.sh", "llm-legs/share/slots.sh"),
+               "time/suite_run": ("llm-legs/share/run-suites.sh",), "time/retries": ("llm-legs/bin/worker-run",),
+               "time/locks": ("llm-legs/share/store-lock.sh",),
+               "time/workers-active": ("llm-legs/bin/worker-run", "llm-legs/share/run-suites.sh")}
 KNOBS = (
     ("settings model/effort/thinking", r"(^|/)settings(\.[\w-]+)?\.json$",
      r"\"(model|effortLevel|alwaysThinkingEnabled|MAX_THINKING_TOKENS|modelSettings)\"\s*:"),
@@ -311,6 +316,8 @@ def snapshot(doctor, doc_file, night=None):
                 files.append(doctor_script(doctor))
             if problem.get("speed") and rule == "opportunity":
                 files += [os.path.join(repos_dir(doctor), name) for name in SPEED_FILES.get(pid[12:], ())]
+            elif problem.get("speed") and rule == "time_floor" and "time/" + pid[11:] in SPEED_FILES:
+                files += [os.path.join(repos_dir(doctor), name) for name in SPEED_FILES["time/" + pid[11:]]]
             elif problem.get("speed"):
                 files.append(doctor_script("speed"))
         elif doctor == "code":

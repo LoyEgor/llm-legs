@@ -113,7 +113,7 @@ Sources: the 2026-10-02 research notes, now retired: [CT] chat turns, [HC] hooks
 
 **Regression** (red, counted): a unit metric over 1.3 × baseline on two consecutive band-matched days with its class's exposure minimum (hooks 200 calls per band-day, tests 3 complete runs, delegation and media as above, nights ≥ 5), **and** the component is worth ≥ 0.5 OM/d with a lever path. Moved Harness absolute limits are pinned ceilings shown as `watch`, red only at ≥ 0.5 OM/d; collector ceilings are per doctor; the statusline contract's warm p95 ≤ 150 ms (lowest band) joins as a ceiling.
 
-**Opportunity** (`watch`, never counted): a component ≥ 0.5 OM/d, seen on ≥ 3 days or ≥ 3 sessions (both scaled to the covered share of the 7 days, at least 1), with a `LEVERS` row. Id `opportunity:<area>/<component>`; field `opportunity {om_day, saving, confidence, effort_h, night_cost_h, score, levers[], seen_days, data_confidence}`, every field stored and the score recomputed from them; the backlog ranks by score × `data_confidence` (seen days of 7), `SCORE_MIN` judges the score alone.
+**Opportunity** (`watch`, never counted): a component ≥ 0.5 OM/d, seen on ≥ 3 days or ≥ 3 sessions (both scaled to the covered share of the 7 days, at least 1), with a `LEVERS` row. Id `opportunity:<area>/<component>`; field `opportunity {om_day, saving, confidence, effort_h, night_cost_h, score, levers[], seen_days, data_confidence}`, every field stored and the score recomputed from them; the backlog ranks by `recoverable_min_day`, then score × `data_confidence` (seen days of 7), `SCORE_MIN` judges the score alone.
 
 **Score** = saving × confidence ÷ (effort_h + night_cost_h), night_cost_h being the slot-queue and first-landing delay its run adds. Confidence 0.8 measured with a mechanical lever, 0.5 estimated, 0.3 unmeasured. Effort S 1 h, M 3 h; an L lever is split into budget-fitting stages; classes recalibrate to closed runs.
 
@@ -136,8 +136,26 @@ Sources: the 2026-10-02 research notes, now retired: [CT] chat turns, [HC] hooks
 
 Proven reads `fixed · −X <unit> · ≈Y OM/d`. Only `disproven` counts toward the freeze (two disproven fixes freeze a component); a freeze lifts on a structural change (the component's code digest or a new ident), never on volume. `pending-exposure` waits as long as it needs; a later regression stamps `regressed_at`.
 
+**Floor** (`share/time_budget.py`). Each class is judged against a floor, not its own history: zero for hooks, Stop hooks,
+gates, suite and slot waits, retries and locks (plain Claude Code has none of them); `TEST_BUDGET_MIN_DAY` (60) of suites
+running per day; workers model-active ≥ 70 % of their wall. The gap in min/day is the class's `recoverable_min_day`;
+their sum (workers aside, they overlap the waits) is `lost_min_day`, Speed's headline (`<lost> min/day over the floor`,
+then the owner-minute view). The 7-day band only names sudden regressions as holes. A class gap ≥ 0.5 min/day adds to the
+best-ranked opportunity already pricing it (`TIME_FAMILY`: hooks and Stop → chat/hooks, suites → chat/tests, suite wait →
+chat/queue), else it is `opportunity:time/<class>` (`TIME_LEVERS`); the score comes from the recoverable minutes, so the
+night takes the biggest gap even when nothing regressed, and an empty pick names the recoverable minutes in `why_none`.
+**Floor rows** (rule `time_floor`, counted, ledger states as regressions): `time_floor:<class>` more than `FLOOR_ROW_MIN_DAY` (30)
+over its floor in the last day, `time_floor:workers-active` when the last night's workers were model-active under 30 %; the
+proof of a fix is the measurement back under it (no row).
+
+**ROI** (`night-run report`, `roi ·` lines). A fixer job whose problem is a Speed or time row (`opportunity`,
+`regression`, `time_floor`, `test_*`) is an improvement: weighted spend, lines changed, and min/day saved = its class's mean
+over up to 3 settled days before the night minus the mean over up to 3 settled days after a full day of the change
+(pending until then). Per night: improvement spend against minutes gained; cumulative over the trend's nights. No
+gain reads `spend without result` — a measurement, never a revert or a gate.
+
 **Selection.**
-- Regressions (with a lever and ≥ 0.5 OM/d) first, then opportunities by score, while Σ (effort + night cost) ≤ B (6 worker-h) and K ≤ 4.
+- Regressions (with a lever and ≥ 0.5 OM/d) first, then opportunities by recoverable min/day, while Σ (effort + night cost) ≤ B (6 worker-h) and K ≤ 4.
 - At most one hooks/statusline/Hammerspoon lever per night (one commit, one proof).
 - One owner per cause file per night across doctors; the other doctor's row links as `same_cause`.
 - Skipped: active work (the Code doctor's rule), `pending-exposure`, frozen components, savings below their proof's noise.
@@ -145,7 +163,7 @@ Proven reads `fixed · −X <unit> · ≈Y OM/d`. Only `disproven` counts toward
 
 **Own keys**: `cost {collector_cpu_min_day, fixer_worker_min, review_min, slot_queue_min, landing_delay_min}`, `yield {proven_om_day, pending_om_day}`.
 
-**Judge**: sha256 over `bin/speed-doctor`, the ledger's dismissals, `LIMITS`, `LEVERS`, `SCORE_MIN`, B, K, R, the bands and the proof table.
+**Judge**: sha256 over `bin/speed-doctor`, the ledger's dismissals, `LIMITS`, `LEVERS`, `TIME_LEVERS`, the floors, `SCORE_MIN`, B, K, R, the bands and the proof table.
 
 ## 4. Menu
 

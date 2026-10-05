@@ -74,14 +74,13 @@ def reviews_line(night):
             f"other {other_n} rounds ({night_spend.mega(other_w)} weighted)")
 
 
-def problems_lines(night, night_path):
+def problem_counts(night, night_path):
+    """(touched again without proof as (doctor, id, nights, state), regressed count), or None without a fixer job
+    or an after snapshot."""
     fixer_jobs = [j for j in night.get("jobs", []) if j.get("kind") == "fixer"]
-    if not fixer_jobs:
-        return []
-
     after_snapshot = night.get("doctor_problems_after")
-    if after_snapshot is None:
-        return ["problems · no snapshot"]
+    if not fixer_jobs or after_snapshot is None:
+        return None
 
     ddir = doctors_dir(night_path)
     nights_dir = os.path.join(ddir, "nights")
@@ -146,6 +145,15 @@ def problems_lines(night, night_path):
                 if st == "regressed":
                     R += 1
 
+    return touched_without_proof, R
+
+
+def problems_lines(night, night_path):
+    if not [j for j in night.get("jobs", []) if j.get("kind") == "fixer"]:
+        return []
+    if night.get("doctor_problems_after") is None:
+        return ["problems · no snapshot"]
+    touched_without_proof, R = problem_counts(night, night_path)
     K = len(touched_without_proof)
     if K == 0 and R == 0:
         return []
@@ -158,9 +166,8 @@ def problems_lines(night, night_path):
     return lines
 
 
-def fixer_spend_line(night, night_path, worker_run):
-    after_snapshot = night.get("doctor_problems_after")
-
+def fixer_spend(night, night_path, worker_run):
+    """(fixer jobs, their run records, usage per job ref, all usage of the night's runs), or None with no fixer job."""
     ddir = doctors_dir(night_path)
     runs_dir = os.path.join(ddir, "runs")
 
@@ -210,6 +217,15 @@ def fixer_spend_line(night, night_path, worker_run):
                 break
         if matched_ref:
             fixer_spend[matched_ref] += usage
+    return fixer_jobs, fixer_runs_data, fixer_spend, all_fixer_usage
+
+
+def fixer_spend_line(night, night_path, worker_run):
+    after_snapshot = night.get("doctor_problems_after")
+    found = fixer_spend(night, night_path, worker_run)
+    if found is None:
+        return None
+    fixer_jobs, fixer_runs_data, fixer_spend_by_ref, all_fixer_usage = found
 
     total_Y = night_spend.weighted(all_fixer_usage)
     if total_Y == 0:
@@ -233,14 +249,16 @@ def fixer_spend_line(night, night_path, worker_run):
                 has_proof = True
                 break
         if not has_proof:
-            unproven_X += night_spend.weighted(fixer_spend[ref])
+            unproven_X += night_spend.weighted(fixer_spend_by_ref[ref])
 
     if unproven_X == 0:
         return None
     return f"fixer spend without proof · {night_spend.mega(unproven_X)} weighted of {night_spend.mega(total_Y)}"
 
 
-def rewrite_lines(night):
+def rewrite_counts(night):
+    """(lines deleted that were written in the 7 days before, lines deleted, of them by night commits, unreadable
+    commits), or None when the night merged no commit."""
     low = night_spend.epoch(night["started_at"])
     cutoff = low - 7 * 86400
 
@@ -256,7 +274,7 @@ def rewrite_lines(night):
             all_commits.append(c)
 
     if not all_commits:
-        return []
+        return None
 
     for c in all_commits:
         repo_name = c.get("repo")
@@ -325,6 +343,14 @@ def rewrite_lines(night):
                     elif k == "summary":
                         commits_meta[current_sha][k] = v
 
+    return total_N, total_M, total_P, unreadable
+
+
+def rewrite_lines(night):
+    counts = rewrite_counts(night)
+    if counts is None:
+        return []
+    total_N, total_M, total_P, unreadable = counts
     lines = []
     if total_M > 0:
         night_part = f" ({total_P} by earlier night commits)" if total_P > 0 else ""

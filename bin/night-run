@@ -45,7 +45,10 @@ start opens the orchestrator chat: --cleanup lands finished night branches and r
 Nights live in ${DOCTORS_DIR:-~/.cache/doctors}/nights/<id>.json.
 report opens with share/night_spend.py's header: duration, jobs, the orchestrator's worker runs and
   hours, its review rounds, token spend of fixers, reviews and orchestrator weighted in input-token
-  equivalents (input 1, cache write 1.25, cache read 0.1, output 5) against the previous finished night
+  equivalents (input 1, cache write 1.25, cache read 0.1, output 5) against the previous finished night;
+  then share/night_churn.py's churn, the jobs, and last share/time_budget.py's ledger (worker wall split
+  into model, slot queue and own tests; lines by jobs and outside them; problems; spend and what was
+  deferred) with the trend of the last 7 nights
 states: pending merged left failed-launch blocked-on-egor nothing-to-do (left and blocked-on-egor need reason=)
 commits=<repo>:<hash>[,<repo>:<hash>...]  replaces the job's list; <repo> is a sweep-repos
   basename or an absolute path; a changed list clears pushed unless pushed=true comes with it
@@ -892,7 +895,8 @@ cmd_report() {
       ("total · " + ([count($t.merged; "merged"), count($t.left; "left"), count($t.failed; "failed-launch"),
         count($t.blocked; "blocked-on-egor"), count($t.nothing; "nothing-to-do"), count($t.pending; "pending")]
         + [if $t.unpushed > 0 then "\($t.unpushed) not pushed" elif $t.merged > 0 then "pushed" else empty end]
-        | if length == 0 then "no jobs" else join(" · ") end))' "$file"
+        | if length == 0 then "no jobs" else join(" · ") end))' "$file" || return
+  python3 -B "$repo_root/share/time_budget.py" night "$repo_root/bin/worker-run" "$file" 2>/dev/null || true
 }
 
 cmd_latest() {

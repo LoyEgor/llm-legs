@@ -2582,6 +2582,7 @@ def write_cache(report):
         json.dump(report, handle, ensure_ascii=False, indent=1)
         handle.write("\n")
     os.replace(temporary, target)
+    collector_runs.problem_day("llm", report, "LLM_DOCTOR_DIR")
     return target
 
 

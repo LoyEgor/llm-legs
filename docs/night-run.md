@@ -216,6 +216,18 @@ proof and regressions across doctor runs against the night's problem snapshots (
 and `doctor_problems_after`); fixer spend on runs that left every decided problem unproven; and lines deleted
 tonight that were written in the 7 days prior (with earlier night commits noted). It gates nothing.
 
+Last, the ledger from `share/time_budget.py night`: one line for the night (duration; worker wall from each
+run's `pid_started_at`, never the slot-restamped `started_at`, split into model time, slot queue and the run's
+own suites from the run-suites journal; code and test lines of the job commits and of other commits on the
+sweep repositories' HEAD inside the window; week-old rewrites; problems before → after, proved, regressed,
+touched again without proof; spend, plus what was deferred: a debt round left or absent), then one trend line
+per night for the last 7, oldest first, and their problem direction. A finished night's row is cached in
+`${DOCTORS_DIR}/night-ledger/<id>.json`, so it outlives the 7-day run directories and 8-day event files;
+nights before the run stamps (2026-10-03) read `not timed` / `?`. The `roi ·` lines close it: each improvement
+job (a fixer whose problem is a Speed or time row) with weighted spend, lines and min/day saved once it ran a full
+settled day, the night's improvement spend against minutes gained, and the cumulative return over the trend
+(rules in `docs/speed-doctor-design.md` §3 ROI).
+
 The Doctors menu shows the last night on one row from `night-run latest --menu`, such as
 `Last night 30 Sep: 11 of 13 · 2 unfinished`; its submenu lists every job, done or unfinished, with
 the reason in a few words and the whole reason one level down. The state is the color, not words: a

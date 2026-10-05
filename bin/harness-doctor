@@ -5120,6 +5120,7 @@ def error_line(exc):
 
 def publish(folder, document):
     write_json(os.path.join(folder, "latest.json"), document)
+    collector_runs.problem_day("harness", document, "HARNESS_DOCTOR_DIR")
     tmp = os.path.join(folder, "menu.txt.tmp")
     with open(tmp, "w") as handle:
         handle.write(menu_text(document))

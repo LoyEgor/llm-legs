@@ -441,6 +441,7 @@ def write(doc):
         json.dump(doc, handle, ensure_ascii=False, indent=1)
         handle.write("\n")
     os.replace(temporary, target)
+    collector_runs.problem_day("updater", doc, "UPDATER_DOCTOR_DIR")
 
 
 def view(doc):

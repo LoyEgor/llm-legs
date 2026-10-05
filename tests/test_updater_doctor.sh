@@ -234,5 +234,7 @@ assert jqe -s 'length == 1 and (.[0] | (keys == ["cpu_s", "doctor", "start", "tr
   "$RUNS/collector-runs.jsonl"
 DOCTORS_DIR="$RUNS" "$DOCTOR" --json </dev/null >/dev/null || true
 assert jqe -s 'length == 2 and .[1].trigger == "background"' "$RUNS/collector-runs.jsonl"
+assert jqe -s --slurpfile doc "$DOC" 'length == 1 and .[0].doctor == "updater" and .[0].count == $doc[0].problem_count
+  and .[0].day == (now | strflocaltime("%Y-%m-%d"))' "$RUNS/problem-days.jsonl"
 
 echo "PASS:$asserts asserts; envelope, every rule (event-waiting, event-stuck, probe-broken, catalog-missing, cli-behind as a watch row from the first skip and red past a day, client-too-old, pass-stale, pass-failed, foreign-client) with its negatives, vendors for the menu, blind on a stale or missing pass, judge over code and ledger, ledger open/dismissed/regressed/fault, pinned ledger shape, under 1 s"

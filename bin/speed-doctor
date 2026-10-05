@@ -22,6 +22,7 @@ import time
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 import collector_runs  # noqa: E402
+import time_budget  # noqa: E402
 
 _loader = importlib.machinery.SourceFileLoader("harness_doctor", os.path.join(ROOT_DIR, "bin", "harness-doctor"))
 H = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_doctor", _loader))
@@ -118,7 +119,7 @@ def shown_levers(levers):
             if l["quality"] == "equivalent" or lever_evidence(l)]
 
 
-SPEED_RULES = ("regression", "opportunity")
+SPEED_RULES = ("regression", "opportunity", "time_floor")
 COVERS = {"chat": (("wait", "*"), ("wait_cut", "*"), ("local_slow", "*")),
           "background/statusline": (("statusline", "*"),),
           "machine/contention": (("load", "busy"), ("load", "kernel"), ("load", "forks"), ("load", "unseen"))}
@@ -128,7 +129,19 @@ TEST_LEVER = {"component": "chat/tests", "lever": "speed up the suite and keep e
               "confidence": "estimated", "saving": 0.3, "night_cost_h": 0.0, "proof": "tests", "quality": "equivalent"}
 HOOK_LEVER = {"component": "chat/hooks", "lever": "fast path for the hook", "effort": "S", "confidence": "estimated",
               "saving": 0.5, "night_cost_h": 0.0, "proof": "latency", "hooks": True, "quality": "equivalent"}
-validate_levers(LEVERS + [TEST_LEVER, HOOK_LEVER])
+TIME_LEVERS = {k: dict({"component": "time/" + k, "effort": "M", "confidence": "estimated", "saving": 1.0,
+                         "night_cost_h": 0.0, "proof": "orchestration", "quality": "equivalent"}, **v) for k, v in {
+    "hooks": {"lever": "fast path for the slowest hooks", "proof": "latency", "hooks": True},
+    "stop": {"lever": "Stop hooks off the turn's critical path", "proof": "latency", "hooks": True},
+    "suite_run": {"lever": "speed up the suites past the daily budget and keep every check", "proof": "tests"},
+    "suite_wait": {"lever": "covering suites start without a slot queue"},
+    "slot": {"lever": "workers start without a slot queue"},
+    "retries": {"lever": "fewer failed attempts before a worker's last start"},
+    "locks": {"lever": "shorter lock holds and polls"},
+    "workers-active": {"lever": "suites and queues off the worker's critical path"}}.items()}
+TIME_FAMILY = {"hooks": ("chat/hooks", "hooks/"), "stop": ("chat/hooks", "hooks/"), "suite_run": ("chat/tests", "tests/"),
+               "suite_wait": ("chat/queue",)}
+validate_levers(LEVERS + [TEST_LEVER, HOOK_LEVER] + list(TIME_LEVERS.values()))
 
 
 def state_dir():
@@ -656,7 +669,8 @@ def opportunity_fields(om_day, lever):
             "levers": [lever["lever"]], "needs_egor": bool(lever.get("needs_egor")),
             "proof": [PROOF[lever["proof"]], OUTPUT_PROOF],
             "hooks": bool(lever.get("hooks")), "quality": lever["quality"],
-            "quality_evidence": lever.get("quality_evidence"), **({"hook": lever["hook"]} if lever.get("hook") else {})}
+            "quality_evidence": lever.get("quality_evidence"), "recoverable_min_day": saving,
+            **({"hook": lever["hook"]} if lever.get("hook") else {})}
 
 
 def score_of(saving, confidence, effort_h, night_cost_h):
@@ -673,7 +687,8 @@ def seen_fields(fields, seen_days):
 
 def rank_key(o):
     fields = o["opportunity"]
-    return fields["needs_egor"], -fields["score"] * fields.get("data_confidence", 1.0), o["id"]
+    return (fields["needs_egor"], -fields.get("recoverable_min_day", 0.0),
+            -fields["score"] * fields.get("data_confidence", 1.0), o["id"])
 
 
 def select(opportunities, regressions=()):
@@ -724,6 +739,68 @@ def target_opportunity(target, om, lever, exposure, protected=None, seen_days=WI
             "value": fields["om_day"], "limit": LIMITS["worth_om_day"], "unit": "OM/d", "window_h": WINDOW_D * 24,
             "exposure": exposure, "count": None, "first_seen": None, "last_seen": None, "evidence": [],
             "ledger": None, "group": lever["component"].split("/")[0], "opportunity": fields}
+
+
+def time_gaps(budget):
+    """(key, label, actual min/day, recoverable min/day, floor) per class over its floor in share/time_budget.py."""
+    gaps = [(f["class"], f["label"], f["actual_min_day"], f["recoverable_min_day"], f["floor_min_day"])
+            for f in budget.get("floors") or ()]
+    active = budget.get("workers_active") or {}
+    if active.get("share") is not None:
+        gaps.append(("workers-active", "workers' wall outside the model", None, active["recoverable_min_day"],
+                     "%d %% active" % round(100 * active["floor_share"])))
+    return gaps
+
+
+def with_time(opportunities, budget):
+    """A class over its floor adds its gap to the best-ranked opportunity already pricing it (TIME_FAMILY), else it
+    becomes its own time opportunity. Recoverable minutes set the score, so the biggest gap is the one the night takes."""
+    out = sorted(opportunities, key=rank_key)
+    for key, label, actual, gap, floor in time_gaps(budget):
+        if gap < LIMITS["worth_om_day"]:
+            continue
+        owner = next((o for o in out if key in TIME_FAMILY and not o["opportunity"]["needs_egor"]
+                      and o["id"].split(":", 1)[1].startswith(TIME_FAMILY[key])), None)
+        if owner:
+            f = owner["opportunity"]
+            f["floor_gap_min_day"] = round(f.get("floor_gap_min_day", 0.0) + gap, 2)
+            f["recoverable_min_day"] = max(f["saving"], f["floor_gap_min_day"])
+            f["score"] = score_of(f["recoverable_min_day"], f["confidence"], f["effort_h"], f["night_cost_h"])
+            continue
+        fields = dict(opportunity_fields(gap, TIME_LEVERS[key]), floor=floor, actual_min_day=actual)
+        out.append({"id": "opportunity:time/%s" % key, "rule": "opportunity", "state": "watch",
+                    "fact": "%s · %s min/day over the floor · %s" % (label, fmt(gap), fields["levers"][0]),
+                    "value": gap, "limit": LIMITS["worth_om_day"], "unit": "min/day", "window_h": 24, "exposure": None,
+                    "count": None, "first_seen": None, "last_seen": None, "evidence": [], "ledger": None, "group": "time",
+                    "opportunity": fields})
+    return sorted(out, key=rank_key)
+
+
+def floor_state(row):
+    return "new" if not row else "open" if row.get("status") == "open" else "fixed-pending" \
+        if row.get("status") == "fixed-pending" else "regressed" if row.get("status") == "fixed" else "watch"
+
+
+def floor_rows(budget, ledger):
+    """Named rows proven fixed only by the measurement returning under them: a class more than FLOOR_ROW_MIN_DAY
+    over its floor in the last day, and workers under ACTIVE_FLOOR model time over the last night."""
+    found = [(key, gap, time_budget.FLOOR_ROW_MIN_DAY, "min/day", "%s %s min/day over its floor of %s" % (
+        label, fmt(gap), floor if isinstance(floor, str) else "%s min/day" % fmt(floor)))
+             for key, label, _, gap, floor in time_gaps(budget) if key != "workers-active"
+             and gap > time_budget.FLOOR_ROW_MIN_DAY]
+    night = budget.get("last_night") or {}
+    if night.get("share") is not None and night["share"] < time_budget.ACTIVE_FLOOR:
+        found.append(("workers-active", night["share"], time_budget.ACTIVE_FLOOR, "share",
+                      "workers were model-active %d %% of their wall on night %s (floor %d %%)" % (
+                          round(100 * night["share"]), night["id"], round(100 * time_budget.ACTIVE_FLOOR))))
+    out = []
+    for key, value, limit, unit, fact in found:
+        row = H.ledger_row(ledger, "time_floor", key)
+        out.append({"id": row["id"] if row else "time_floor:%s" % key, "rule": "time_floor", "state": floor_state(row),
+                    "fact": fact + " · proof: back under it", "value": value, "limit": limit, "unit": unit,
+                    "window_h": 24, "exposure": None, "count": None, "first_seen": None, "last_seen": None,
+                    "evidence": [], "ledger": row["id"] if row else None, "group": "time", "ident": key})
+    return out
 
 
 def moved_opportunities(component_om, days, now, covered=WINDOW_D):
@@ -792,7 +869,9 @@ def judge_digest(ledger):
     with open(os.path.realpath(__file__), "rb") as handle:
         digest.update(handle.read())
     dismissals = [r for r in speed_rows(ledger) if r.get("status") in H.DISMISSED]
-    digest.update(json.dumps([dismissals, LIMITS, HEAVY_TEST_S, KEEP_WORDS.pattern, LEVERS, SCORE_MIN, BUDGET_H, TOP_K, H.C1_R_S, BANDS, PROOF, OUTPUT_PROOF],
+    digest.update(json.dumps([dismissals, LIMITS, HEAVY_TEST_S, KEEP_WORDS.pattern, LEVERS, SCORE_MIN, BUDGET_H, TOP_K, H.C1_R_S, BANDS, PROOF, OUTPUT_PROOF,
+                              TIME_LEVERS, time_budget.FLOORS, time_budget.ACTIVE_FLOOR_SHARE, time_budget.ACTIVE_FLOOR,
+                              time_budget.FLOOR_ROW_MIN_DAY],
                              sort_keys=True).encode())
     return digest.hexdigest()
 
@@ -967,13 +1046,17 @@ def collect(write, now):
                               "exposure": seen, "count": None, "first_seen": None, "last_seen": None, "evidence": [],
                               "ledger": None, "group": area, "opportunity": best})
     opportunities += moved_opportunities(component_om, days, now, covered)
-    opportunities.sort(key=rank_key)
+    budget = time_budget.section(now, write)
+    opportunities = with_time(opportunities, budget)
+    problems += floor_rows(budget, ledger)
     selection = select(opportunities, [p for p in problems if p["state"] in H.LOUD_STATES])
     coverage = {"days": round(covered, 2), "window_days": WINDOW_D, "backfill_files_done": job["files"] - len(job["todo"]),
                 "backfill_files": job["files"]}
     gap = "%s of %d days covered" % (round(covered, 1), WINDOW_D) if covered < WINDOW_D else None
+    recoverable = sum(o["opportunity"]["recoverable_min_day"] for o in opportunities if not o["opportunity"]["needs_egor"])
     why_none = None if selection else "; ".join(filter(None, [
-        "no owner turns from Harness" if not rows else "no opportunity worth %s OM/d on enough days" % LIMITS["worth_om_day"]
+        "%s min/day recoverable, but no equivalent lever scores %s within the night budget" % (fmt(recoverable), SCORE_MIN)
+        if recoverable else "no owner turns from Harness" if not rows else "no opportunity worth %s OM/d on enough days" % LIMITS["worth_om_day"]
         if not opportunities else "no equivalent lever scores %s within the night budget" % SCORE_MIN, gap,
         "transcript backfill at %d of %d files" % (coverage["backfill_files_done"], job["files"]) if job["todo"] else None]))
     problems += opportunities
@@ -1028,7 +1111,9 @@ def collect(write, now):
         "cost": {"collector_cpu_min_day": own.get("cpu_min_day") or 0.0, "fixer_worker_min": 0, "review_min": 0,
                  "slot_queue_min": 0, "landing_delay_min": 0},
         "yield": speed_yield(ledger),
-        "head": head_of(headline, r_band, status, gap),
+        "head": head_of(headline, r_band, status, gap, budget.get("lost_min_day")),
+        "lost_min_day": budget.get("lost_min_day"),
+        "budget": budget,
     }
     document["menu"] = menu_lines(document)
     document["timing"] = {"cpu_s": round(H.cpu_s() - cpu_start, 2)}
@@ -1062,10 +1147,11 @@ def background_share(background, machine, covered):
     return statusline / total if total else None
 
 
-def head_of(headline, r_band, status, gap=None):
+def head_of(headline, r_band, status, gap=None, lost=None):
+    floor = "" if lost is None else "%s min/day over the floor · " % fmt(lost)
     if status == "blind":
-        return "blind · no owner turns from Harness"
-    return "%s OM/d" % fmt(headline) + (" · " + gap if gap else "") + (
+        return floor + "blind · no owner turns from Harness"
+    return floor + "%s OM/d" % fmt(headline) + (" · " + gap if gap else "") + (
         " · presence" if r_band is None else " · R 2/10: %s/%s" % (fmt(r_band[0]), fmt(r_band[1])))
 
 
@@ -1111,6 +1197,9 @@ def menu_lines(document):
     last = document["night"]["last"]
     emit(0, "Night: last %s · first landing %s" % (hours(last["wall_h"]), hours(last["first_landing_h"]))
          if last else "Night: no finished night")
+    budget = (document.get("budget") or {}).get("lines") or ()
+    for depth, line in enumerate(budget):
+        emit(min(depth, 1), line, "" if depth == 0 else "d")
     emit(0, "-", "s")
     opportunities = [p for p in document["problems"] if p["rule"] == "opportunity"]
     ranked = [p for p in opportunities if not p["opportunity"]["needs_egor"]]
@@ -1118,7 +1207,8 @@ def menu_lines(document):
     for rank, p in enumerate(ranked[:10], 1):
         o = p["opportunity"]
         emit(1, "%d · %s · saves %s min/day · %s · %s%s" % (
-            rank, p["id"].split(":", 1)[1], fmt(o["saving"]), next(k for k, v in EFFORT_H.items() if v == o["effort_h"]),
+            rank, p["id"].split(":", 1)[1], fmt(o["recoverable_min_day"]),
+            next(k for k, v in EFFORT_H.items() if v == o["effort_h"]),
             o["levers"][0], " · " + o["protected"] if o.get("protected") else ""), "d")
     proposals = [p for p in opportunities if p["opportunity"]["needs_egor"]]
     emit(0, "Needs Egor · %d proposal%s" % (len(proposals), "" if len(proposals) == 1 else "s")
@@ -1129,7 +1219,7 @@ def menu_lines(document):
         emit(1, "%s · saves %s min/day · %s · %s: %s" % (p["id"].split(":", 1)[1], fmt(o["saving"]), o["levers"][0],
                                                          evidence.get("compared", "–"), evidence.get("result", "–")), "d")
     for p in document["problems"]:
-        if p["rule"] == "regression":
+        if p["rule"] in ("regression", "time_floor"):
             emit(0, p["fact"], red=p["state"] in H.LOUD_STATES)
     emit(0, "not measured" if document["blind_spots"] else "not measured: nothing", "d")
     for spot in document["blind_spots"]:

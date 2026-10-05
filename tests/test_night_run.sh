@@ -281,7 +281,10 @@ assert grep -qxF "left · debt · debt-round · hung: idle 1800" "$WORK/report"
 assert grep -qxF "failed-launch · fixer · harness-r1 · night/$id/harness-r1 · opener" "$WORK/report"
 assert grep -qxF "total · 2 merged · 8 left · 1 failed-launch · 1 blocked-on-egor · pushed" "$WORK/report"
 assert grep -qE "^blocked-on-egor · debt · p1( · [^ ]+)* · step 10 needs his word$" "$WORK/report"
-assert [ "$(wc -l <"$WORK/report" | tr -d ' ')" = 27 ]
+assert [ "$(grep -vcE '^(ledger|trend|roi) · ' "$WORK/report")" = 27 ]
+assert [ "$(grep -m1 -E '^(ledger|trend) · ' "$WORK/report")" = "ledger · night $id · $(jq -r '((.finished_at | fromdate)
+  - (.started_at | fromdate)) / 3600 * 10 | round / 10 | tostring | if test("\\.") then . else . + ".0" end' "$R") h" ]
+assert grep -qxE "trend · problems [-+][0-9]+ over [0-9]+ nights · (moving forward|treading water|going back)" "$WORK/report"
 assert [ "$(sed -n 2p "$WORK/report")" = "jobs · merged 2 (fixer 1, vendor 1) · left 8 (debt 8) · other 2 (debt 1, fixer 1)" ]
 assert [ "$(sed -n 9p "$WORK/report" | cut -d' ' -f1-2)" = "night $id" ]
 assert [ "$(awk '{ print length }' "$WORK/report" | sort -n | tail -1)" -le 100 ]
