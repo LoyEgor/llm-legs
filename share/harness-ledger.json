@@ -2184,9 +2184,24 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "note": "2026-10-04 (Harness Doctor): door against snapshot measured on 240 replayed write calls (156 trigger-free), CPU medians at load 260-330: door 0.100 s, snapshot side 0.127 s (rj_call_repos 0.036 + rj_snapshot_repos 0.091), library 0.032 s; the door is ~44 %, so the lever wording stands and the lever stays a night job (a door fast path on trigger-free payloads, decisions identical). Judge change, uncommitted in llm-legs bin/speed-doctor, bin/doctor-fix, tests/test_speed_doctor.sh: a lever is charged only for the days after its own ledger fix landed (lever_since over fix_landed, the merge time on first-parent HEAD); with none it is charged the whole window. doctor-fix reads the hook from the opportunity. Handed off 2026-10-04: the hook is claude-setup's and doctor-fix named no file, so the run had no worktree there (fixed, llm-legs@1337956b SPEED_HOOKS). Ruled out as the lever's main gain: a trigger-free write call still needs rj_snapshot_content for commit-journal, so the fast path skips only the door; the floor left is the snapshot (hook-sync-review-flow-gate, blind spot snapshot-cost-per-repo). The door/snapshot split is unmeasured.",
+      "note": "2026-10-04 (Harness Doctor): door against snapshot measured on 240 replayed write calls (156 trigger-free), CPU medians at load 260-330: door 0.100 s, snapshot side 0.127 s (rj_call_repos 0.036 + rj_snapshot_repos 0.091), library 0.032 s; the door is ~44 %, so the lever wording stands and the lever stays a night job (a door fast path on trigger-free payloads, decisions identical). A lever is charged only for the days after its own ledger fix landed (bin/speed-doctor lever_since, llm-legs@ac75a868); doctor-fix takes the hook from the opportunity, so a speed run holding this row gets a claude-setup worktree. A trigger-free write call still needs rj_snapshot_content for commit-journal, so the fast path skips only the door; the floor left is the snapshot (hook-sync-review-flow-gate, blind spot snapshot-cost-per-repo). 2026-10-05 (harness-doctor-20261005T061224Z-4873): cause stands at claude-setup base c3c2e4e: hooks/review-flow-gate.sh exits early only for rc_readonly_command; every other call runs rj_segments and the three family tests. Left to the speed run, which owns opportunity rows; no claude-setup worktree here.",
       "handoff": null,
-      "last_reviewed": "2026-10-04",
+      "last_reviewed": "2026-10-05",
+      "reviewed_by": "Harness Doctor"
+    },
+    {
+      "id": "limiter-hold-logo-bench-throttle",
+      "title": "logo-bench-throttle holds bench jobs past 5 min under the macOS memory-pressure warning",
+      "match": {
+        "rule": "limiter_hold",
+        "ident": "logo-bench-throttle"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "note": "2026-10-05 (harness-doctor-20261005T061224Z-4873): ruled out as a harness bug. logo-vectorizer-bench bench/throttle.py slot_count clamps to WARN_JOBS (3) at kern.memorystatus_vm_pressure_level 2 and to 1 at level 4 or under 25 % free, the RAM-incident guard; the 06:12Z snapshot read 9 jobs, 9 min, level 2 at 43 % free, and at 11:00Z 4 holds of two Vector Magic chats still waited at level 2, 47-52 % free, swap 5.7 of 6 GB, load average ~330 under the night. Holds were live (pids alive, started before since), not leaks; the alert reached the menu as design §12 intends. Ruled out: a stale pressure read (level re-read each 2 s poll), the doctor counting one hold twice (one file per thread key). Found and handed off: throttle.py hold_clear journals no wait_note, so Wait classes miss this limiter (blind spot wait-journal-throttle-py).",
+      "handoff": "docs/handoffs/2026-10-05-logo-bench-throttle-hold.md",
+      "last_reviewed": "2026-10-05",
       "reviewed_by": "Harness Doctor"
     },
     {
@@ -2494,6 +2509,13 @@
       "reason": "harness-doctor gate_verdict joins gates.jsonl to a watched change by file, time and the priced byte sum, never by tool_use id, so a large passed Edit still hides a smaller heredoc write beside it",
       "since": "2026-10-03",
       "would_catch_if": "a gate record carried the tool_use id and the watcher event the write it saw"
+    },
+    {
+      "id": "wait-journal-throttle-py",
+      "what": "logo-bench-throttle waits: none reaches the wait journal",
+      "reason": "logo-vectorizer-bench bench/throttle.py copies hold_raise/hold_clear but not wait_note, and tests/test_consistency.sh checks only its hold path, so Wait classes shows no logo-bench-throttle class however long its jobs wait",
+      "since": "2026-10-05",
+      "would_catch_if": "tests/test_consistency.sh asserted every row dc writer also calls wait_note in hold_clear"
     }
   ]
 }
