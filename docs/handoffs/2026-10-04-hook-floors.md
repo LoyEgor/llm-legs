@@ -1,17 +1,17 @@
-# Hand-off: hook floors stay over their limits on the per-call bash fan-out
+# Hand-off: hook floors, cut the dearest hooks one at a time
 
-Status: decided 2026-10-05 (Egor) — To: Harness Doctor
+Status: open — To: next night (harness-hook-waits)
 
-To: Egor. Ledger rows `floor-bash-other-hooks`, `floor-edit-hooks`, `floor:event:SessionStart`,
-`floor:event:Stop`, `floor:tool` (each note has the 2026-10-04 numbers).
+Ledger rows `floor-bash-other-hooks`, `floor-edit-hooks`, `floor:event:SessionStart`, `floor:event:Stop`,
+`floor:tool`, `floor:read`. Decided 2026-10-05 (Egor): no dispatcher; night fixers cut the dearest hooks one
+at a time, the limits stay. Weigh a dispatcher again only from the harness time budget
+(2026-10-05-harness-time-budget.md), never from per-call ms.
 
-Cost: one dispatcher per hook side, as stop-dispatch did for Stop. It means rewriting the hook registrations in the unversioned `~/.claude/settings.json` plus a dispatcher in claude-setup, ~200 lines. Each hook also loses its own timeout and isolation: one slow or crashing hook then delays or breaks every hook on that side.
-Loss: with both setters cut, a non-trivial Bash call still starts 18 PreToolUse and 10 PostToolUse processes. At load ~280 that keeps bash:other at 0.5-1 s or more over its 500 ms limit (467-1010 ms on 10-03 at CPU busy 0.9-1.0). Edit and SessionStart stay over too.
-Recommendation: keep the per-hook registrations and the limits. Let night fixers cut the named setters (the cut rows in the ledger). Revisit the dispatcher only if the floors are still over on a quiet machine (load < 20).
-
-## Decided 2026-10-05 (Egor)
-No dispatcher now. Night fixers cut the dearest hooks one at a time (review-flow-gate before, commit-journal after a
-Bash call; edit-conflict-notice on Edit/Write). Scale on 2026-10-05 01:30, all chats: about 600 Bash calls/h at p50
-1.0 s, 90 Edit/Write at 1.9 s, the other events 0.2-1.5 s — about 14 min of hook wait per hour summed over chats,
-about 5 % of each chat's turn time. A tax, not the night's bottleneck (that was the suite-slot queue, cut 10-04).
-Decide on the dispatcher again from the harness time budget (2026-10-05-harness-time-budget.md), not from per-call ms.
+Open cuts (CPU on a plain call, scratch HOME, 2026-10-05):
+1. review-bench `bin/review-owner-gate.sh`, 44 ms on every Bash call: it runs 2 jq and sources review-journal
+   before it knows the call names no review-bench. Leave on builtins first, as commit-report does: the
+   command with line continuations, quotes and backslashes dropped must contain `review-bench`.
+2. claude-setup `hooks/report-flush.sh`, 46 ms on every tool call: report-bus starts (two bash, two jq) with
+   nothing pending. A builtin glob over the report store's `*/pending/*.txt` decides first.
+3. The setters themselves (review-flow-gate, commit-journal, edit-conflict-notice, instruction-watch,
+   stop-dispatch, context-nudge) are the hooks area's rows; this area takes them only when no hooks run does.

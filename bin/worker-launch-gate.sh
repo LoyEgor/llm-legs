@@ -119,10 +119,35 @@ span_live() {
 }
 
 command -v jq >/dev/null 2>&1 || exit 0
-input=$(cat) || exit 0
-tool=$(printf '%s' "$input" | jq -r 'select(.hook_event_name == "PreToolUse") | .tool_name // empty' 2>/dev/null) ||
-  exit 0
-cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null) || exit 0
+IFS= read -r -d '' input || :
+parsed=$(jq -r 'select(.hook_event_name == "PreToolUse") | [.tool_name // "", .tool_input.command // ""] | @sh' \
+  <<<"$input" 2>/dev/null) || exit 0
+fields=()
+eval "fields=($parsed)"
+tool=${fields[0]-} cmd=${fields[1]-}
+
+# Every check below needs one of these words in the text it reads: each is a check's own literal with
+# its command-position prefix dropped, which can only match more; a check added below needs its
+# literal here too.
+MAY_LAUNCH_RES=("(${VENDOR_BINS})${EDGE}" 'worker-run|review-bench|light-research|WORKER_RUN_RELAY|REVIEW_BENCH_DOOR'
+  "${UNREADABLE_RUN_RE#"$VENDOR_WORD"}" "${OWNED_LEGS_RE#"$VENDOR_WORD"}" "${OWNED_IMAGE_RE#"$VENDOR_WORD"}"
+  "${MEDIA_ENGINE_RE#"$VENDOR_WORD"}")
+# The same words read off the raw command with builtins, before any fork: quotes and backslashes go
+# as the full scan drops them, separators become spaces where the scan breaks lines, and a `$` beside
+# an `=` may expand into any word. Only a word the scan joins out of a quoted space reads differently,
+# and the shell runs no such word.
+may_launch() {
+  local text=${cmd//[\'\"\\]/} re
+  text=${text//[;|&()\`]/ }
+  case $text in *'$'*=* | *=*'$'*) return 0 ;; esac
+  re="(^|[[:space:]])${SCHEDULE_RE#^}"
+  [[ $text =~ $re ]] && return 0
+  for re in "${MAY_LAUNCH_RES[@]}"; do
+    [[ $text =~ $re ]] && return 0
+  done
+  return 1
+}
+case "$tool" in Bash | Monitor) may_launch || exit 0 ;; esac
 # A Bash call that provably writes nothing runs no program, so it launches nothing. The forged-owner
 # check reads the text with its quotes gone, so a call naming either token still takes the full path.
 if [ "$tool" = Bash ]; then
@@ -238,14 +263,9 @@ while IFS= read -r assign; do
     print out $0 }' <<<"$scan")
 done < <(grep -Eo "$ASSIGN_RE" <<<"$scan")
 
-# Every check below needs one of these words somewhere in the expanded text, so a call naming none
-# leaves here. Each alternative is a check's own literal with its command-position prefix dropped,
-# which can only match more; a check added below needs its literal here too.
-grep -Eq -e "(${VENDOR_BINS})${EDGE}" \
-  -e 'worker-run|review-bench|light-research|WORKER_RUN_RELAY|REVIEW_BENCH_DOOR' \
-  -e "${UNREADABLE_RUN_RE#"$VENDOR_WORD"}" -e "$SCHEDULE_RE" \
-  -e "${OWNED_LEGS_RE#"$VENDOR_WORD"}" -e "${OWNED_IMAGE_RE#"$VENDOR_WORD"}" -e "${MEDIA_ENGINE_RE#"$VENDOR_WORD"}" \
-  <<<"$unsplit"$'\n'"$scan" 2>/dev/null
+may_launch_args=(-e "$SCHEDULE_RE")
+for re in "${MAY_LAUNCH_RES[@]}"; do may_launch_args+=(-e "$re"); done
+grep -Eq "${may_launch_args[@]}" <<<"$unsplit"$'\n'"$scan" 2>/dev/null
 [ $? -ne 1 ] || exit 0
 
 # Inside a relay agent this whole door behaves as it always has; everywhere else — the main chat

@@ -8,7 +8,7 @@
         "rule": "floor",
         "ident": "bash:trivial"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-09-29T18:52:42+03:00",
@@ -47,14 +47,26 @@
           ],
           "in": "llm-legs@3a3b8128",
           "regressed_at": "2026-10-04T12:25:38+03:00"
+        },
+        {
+          "at": "2026-10-05T16:38:53+03:00",
+          "by": "Night fixer harness-hook-waits-20261005T061316Z-5d3a",
+          "files": [
+            "llm-legs/bin/worker-launch-gate.sh",
+            "claude-setup/hooks/commit-report.sh",
+            "claude-setup/hooks/pr-ready-mattermost.sh",
+            "claude-setup/hooks/comment-gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [
         "hook-every-call-context-nudge"
       ],
-      "last_reviewed": "2026-10-04",
-      "reviewed_by": "night fixer harness-hook-waits 20261004",
-      "note": "Earlier fixes: 48bfc77 gave the heavy hooks the readonly fast path; d36db7b cut commit-report, english-gate and worker-git-guard to one payload parse. 2026-10-04 (third fix): the regression was the hooks that still forked on every call before deciding they had nothing to do. worker-tag-hook (the before setter, 42 ms mean saving 10-03, 132 on 10-04), worker-edit-guard and worker-git-guard now exit on builtins when the payload has no agent_type key and no worker env (3-4 forks to 0); context-nudge, on every tool call, reads payload, sweep stamp (an epoch inside .sweep-stamp now), window and lib dir with builtins (8 forks to 0 on a quiet call); comment-gate exits before sourcing the 2.4k-line review-journal when the command never names git (7 forks to 1); word-gate and lib/words.sh drop their dirname/cd subshells. Fork-count asserts red on the old hooks: test_worker_tag_marks, test_worker_git_guard (llm-legs), test_worker_edit_guard, test_context_nudge, test_comment_gate, test_word_triggers (claude-setup). The after-side setter pr-ready-mattermost is 1 ms own: it ends last because a 1465 forks/s storm spawns it last (blind spot floor-setter-last-ending). Launch read 628 ms; 1364 ms at 07:26 under load average 192. What remains is the 18-hook fan-out per side: docs/handoffs/2026-10-04-hook-floors.md.",
+      "last_reviewed": "2026-10-05",
+      "reviewed_by": "night fixer harness-hook-waits 20261005",
+      "note": "Each fix (48bfc77, d36db7b, 3a3b8128, this one) cut the same shape in other hooks: a hook doing its full work on a call it has nothing to do with; the doctor's hook_full_work rule is the detector for the next one. 2026-10-05 (load 330-410), CPU on a plain call in a scratch HOME: commit-report (the after setter) sourced review-journal on every call, 80 ms; worker-launch-gate started 14 processes before its own prefilter, 76 ms; pr-ready-mattermost ran 3 jq and the library, 57 ms. commit-report and pr-ready-mattermost now leave before the library when the command with line continuations, quotes and backslashes dropped names no git / gh; worker-launch-gate after one jq, its prefilter words read with [[ =~ ]]; each 15-18 ms against 8-10 for a bare bash. comment-gate's raw *git* check missed `g'i't commit`, which rj_segments unquotes; it reads the flattened command now. Red on the old hooks: test_worker_launch_gate_visibility (llm-legs), test_commit_report, test_pr_mattermost, test_comment_gate (claude-setup). Before setter left: review-owner-gate (review-bench, 44 ms: 2 jq and review-journal on every Bash call), handed off in docs/handoffs/2026-10-04-hook-floors.md.",
       "handoff": "docs/handoffs/2026-10-04-hook-floors.md"
     },
     {
@@ -108,7 +120,7 @@
       ],
       "last_reviewed": "2026-10-04",
       "reviewed_by": "Harness Doctor",
-      "note": "2026-10-04 16:41 doctor run, load ~280, after the hooks run (harness-hooks-20261004T013933Z-5514) landed: 3479 ms. With both bash:other setters removed the 10-03 floor still read 467-1010 ms at CPU busy 0.9-1.0: the per-call fan-out of 18 PreToolUse and 10 PostToolUse processes. Dispatcher per side is Egor's trade (handoff). Calibration 655 ms on 2026-09-29. e746412 cut edit-conflict-notice's per-record forks; it regressed the same night. 2026-10-04: mean 1397 ms on 10-03 (2896 on 10-04 under load average ~200); removing edit-conflict-notice saves 316 ms, commit-journal 224, instruction-watch check 87 (10-03). All three are problems of harness-hooks-20261004T013933Z-5514 (hook_p50 / hook_every_call / hook_sync rows), as on 09-30, 10-01 and 10-03, so this run changed none of them; instruction-bloat-gate (24 ms saving) is the next one down. Reopened from a regressed fix: the setters moved, the fix did not miss. See the handoff.",
+      "note": "2026-10-05 14:06 doctor run, load 330-410: 6948 ms; edit-conflict-notice (hook-p50-edit-conflict-notice) and commit-journal (hook-p50-commit-journal) are rows of the hooks run harness-hooks-20261005T061324Z-2ae0, so harness-hook-waits-20261005T061316Z-5d3a left them and cut the every-call Bash hooks no run held (floor-trivial-bash-readonly-fastpath). With both bash:other setters removed the 10-03 floor still read 467-1010 ms at CPU busy 0.9-1.0: the per-call fan-out of 18 PreToolUse and 10 PostToolUse processes. Dispatcher per side is Egor's trade (handoff). Calibration 655 ms on 2026-09-29. e746412 cut edit-conflict-notice's per-record forks; it regressed the same night. 2026-10-04: mean 1397 ms on 10-03 (2896 on 10-04 under load average ~200); removing edit-conflict-notice saves 316 ms, commit-journal 224, instruction-watch check 87 (10-03). All three are problems of harness-hooks-20261004T013933Z-5514 (hook_p50 / hook_every_call / hook_sync rows), as on 09-30, 10-01 and 10-03, so this run changed none of them; instruction-bloat-gate (24 ms saving) is the next one down. Reopened from a regressed fix: the setters moved, the fix did not miss. See the handoff.",
       "handoff": "docs/handoffs/2026-10-04-hook-floors.md"
     },
     {
@@ -125,7 +137,7 @@
       ],
       "last_reviewed": "2026-10-04",
       "reviewed_by": "Harness Doctor",
-      "note": "2026-10-04 16:41 doctor run, load ~280, after the hooks run (harness-hooks-20261004T013933Z-5514) landed: 7302 ms. With both bash:other setters removed the 10-03 floor still read 467-1010 ms at CPU busy 0.9-1.0: the per-call fan-out of 18 PreToolUse and 10 PostToolUse processes. Dispatcher per side is Egor's trade (handoff). Setters: review-flow-gate before, commit-journal after (both claude-setup); their shared cost is the content snapshot pair (rj_snapshot_repos ~130 of 412 traced ms). 2026-10-04: mean 2657 ms over 8986 calls on 10-03 (3774 on 10-04 under load average ~200); removing commit-journal saves 1081 ms, review-flow-gate 386, commit-report 64, everything else under 15. Both setters (and worker-launch-gate, instruction-watch check next) are problems of harness-hooks-20261004T013933Z-5514, as on 09-30, 10-01 and 10-03, so this run changed none of them; it cut the forks of the hooks no run holds (comment-gate exits before review-journal on a call naming no git; worker-* exit on a main-session call). 2026-10-03: paired p50 467-1010 ms with both setters removed, CPU busy 0.9-1.0 in 20 of 22 hours: the 18-hook bash fan-out per side is structural. Ruled out: the 4ca8de1 session-repo fan-out (381 vs 459 ms at 5+ repos, most calls in 1-2), vendor replacement of attribution snapshots (none found), a fixer limit change. See the handoff.",
+      "note": "2026-10-05 14:06 doctor run, load 330-410: 2077 ms; review-flow-gate (hook-sync-review-flow-gate) and commit-journal (hook-p50-commit-journal) are rows of the hooks run harness-hooks-20261005T061324Z-2ae0, so harness-hook-waits-20261005T061316Z-5d3a left them and cut what a plain call paid elsewhere, about 125 ms CPU: worker-launch-gate 76 to 18 ms, commit-report 80 to 15, pr-ready-mattermost 57 to 15 (floor-trivial-bash-readonly-fastpath). Still full work on every Bash call: review-owner-gate (review-bench, handoff), report-flush (46 ms on every tool call, report-bus started with nothing pending; a builtin pending glob over ~/.cache/claude-reports/*/pending is 17 ms of builtins). Found, not this area's: claude-setup tests/test_review_journal.sh fails at load ~430 on base and branch alike in its anonymous concurrent snapshot block (:135-167). With both bash:other setters removed the 10-03 floor still read 467-1010 ms at CPU busy 0.9-1.0: the per-call fan-out of 18 PreToolUse and 10 PostToolUse processes. Dispatcher per side is Egor's trade (handoff). Setters: review-flow-gate before, commit-journal after (both claude-setup); their shared cost is the content snapshot pair (rj_snapshot_repos ~130 of 412 traced ms). 2026-10-04: mean 2657 ms over 8986 calls on 10-03 (3774 on 10-04 under load average ~200); removing commit-journal saves 1081 ms, review-flow-gate 386, commit-report 64, everything else under 15. Both setters (and worker-launch-gate, instruction-watch check next) are problems of harness-hooks-20261004T013933Z-5514, as on 09-30, 10-01 and 10-03, so this run changed none of them; it cut the forks of the hooks no run holds (comment-gate exits before review-journal on a call naming no git; worker-* exit on a main-session call). 2026-10-03: paired p50 467-1010 ms with both setters removed, CPU busy 0.9-1.0 in 20 of 22 hours: the 18-hook bash fan-out per side is structural. Ruled out: the 4ca8de1 session-repo fan-out (381 vs 459 ms at 5+ repos, most calls in 1-2), vendor replacement of attribution snapshots (none found), a fixer limit change. See the handoff.",
       "handoff": "docs/handoffs/2026-10-04-hook-floors.md"
     },
     {
@@ -1367,7 +1379,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-04",
       "reviewed_by": "Harness Doctor",
-      "note": "2026-10-04 16:41 doctor run, load ~280, after the hooks run (harness-hooks-20261004T013933Z-5514) landed: 3585 ms. With both bash:other setters removed the 10-03 floor still read 467-1010 ms at CPU busy 0.9-1.0: the per-call fan-out of 18 PreToolUse and 10 PostToolUse processes. Dispatcher per side is Egor's trade (handoff). 2026-10-04: 2436 ms at launch, 2359 at 07:26 (load average ~200); instruction-watch baseline is still the setter at 1419 ms p50 own (24 h), compact-auto hook-session-start 153 ms and session-trash sweep 324 ms are far below it; session-trash __purge-delayed (10.5 s wall) is detached and in no batch. The baseline is hook-p50-instruction-watch-baseline of harness-hooks-20261004T013933Z-5514 (regressed), as on 10-01, so this run left it. 2026-10-01 ruled out: a duplicate write_baseline (cmd_check exits after writing it), unbatched stat/shasum, an ungated ranked refresh.",
+      "note": "2026-10-05 14:06 doctor run, load 330-410: 3975 ms; instruction-watch baseline is hook-p50-instruction-watch-baseline of the hooks run harness-hooks-20261005T061324Z-2ae0, so harness-hook-waits-20261005T061316Z-5d3a left it. With both bash:other setters removed the 10-03 floor still read 467-1010 ms at CPU busy 0.9-1.0: the per-call fan-out of 18 PreToolUse and 10 PostToolUse processes. Dispatcher per side is Egor's trade (handoff). 2026-10-04: 2436 ms at launch, 2359 at 07:26 (load average ~200); instruction-watch baseline is still the setter at 1419 ms p50 own (24 h), compact-auto hook-session-start 153 ms and session-trash sweep 324 ms are far below it; session-trash __purge-delayed (10.5 s wall) is detached and in no batch. The baseline is hook-p50-instruction-watch-baseline of harness-hooks-20261004T013933Z-5514 (regressed), as on 10-01, so this run left it. 2026-10-01 ruled out: a duplicate write_baseline (cmd_check exits after writing it), unbatched stat/shasum, an ungated ranked refresh.",
       "handoff": "docs/handoffs/2026-10-04-hook-floors.md"
     },
     {
@@ -1382,7 +1394,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-04",
       "reviewed_by": "Harness Doctor",
-      "note": "2026-10-04 16:41 doctor run, load ~280, after the hooks run (harness-hooks-20261004T013933Z-5514) landed: 948 ms (watch). With both bash:other setters removed the 10-03 floor still read 467-1010 ms at CPU busy 0.9-1.0: the per-call fan-out of 18 PreToolUse and 10 PostToolUse processes. Dispatcher per side is Egor's trade (handoff). 2026-10-04: 1116 ms at launch, 2872 at 07:26 (load average ~200); stop-dispatch 741 ms p50 own over 453 stops, its notices 63-116 ms each and asks 20-25 ms. stop-dispatch is hook-p50-stop-dispatch of harness-hooks-20261004T013933Z-5514 (regressed), so this run left it; lib/words.sh, which the asks source, no longer forks dirname/cd to find itself. 2026-10-01 ruled out: blanket parallel asks (breaks notice-before-ask and first-block order), a vendor replacement for the busy/held journal contract.",
+      "note": "2026-10-05 14:06 doctor run, load 330-410: 2076 ms; stop-dispatch is hook-p50-stop-dispatch of the hooks run harness-hooks-20261005T061324Z-2ae0 (its parts also harness-stop-hooks-20261005T061339Z-2a70's), so harness-hook-waits-20261005T061316Z-5d3a left it. With both bash:other setters removed the 10-03 floor still read 467-1010 ms at CPU busy 0.9-1.0: the per-call fan-out of 18 PreToolUse and 10 PostToolUse processes. Dispatcher per side is Egor's trade (handoff). 2026-10-04: 1116 ms at launch, 2872 at 07:26 (load average ~200); stop-dispatch 741 ms p50 own over 453 stops, its notices 63-116 ms each and asks 20-25 ms. stop-dispatch is hook-p50-stop-dispatch of harness-hooks-20261004T013933Z-5514 (regressed), so this run left it; lib/words.sh, which the asks source, no longer forks dirname/cd to find itself. 2026-10-01 ruled out: blanket parallel asks (breaks notice-before-ask and first-block order), a vendor replacement for the busy/held journal contract.",
       "handoff": "docs/handoffs/2026-10-04-hook-floors.md"
     },
     {
@@ -1408,6 +1420,23 @@
       "last_reviewed": "2026-10-04",
       "reviewed_by": "Harness Doctor",
       "note": "2026-10-04 16:41 doctor run, load ~280, after the hooks run (harness-hooks-20261004T013933Z-5514) landed: not listed. With both bash:other setters removed the 10-03 floor still read 467-1010 ms at CPU busy 0.9-1.0: the per-call fan-out of 18 PreToolUse and 10 PostToolUse processes. Dispatcher per side is Egor's trade (handoff). d36db7b cut worker-spawn-hook to one payload parse; the floor then moved to worker-limit-gate. 2026-10-04: mean 444 ms over 673 calls on 10-03 (903 on 10-04 under load average ~200); removing worker-limit-gate (Agent calls only, 1196 ms own) saves 662 ms, worker-spawn-hook 263, context-nudge 51, report-flush 37. worker-limit-gate is hook_p50:worker-limit-gate.sh of harness-hooks-20261004T013933Z-5514, so this run left it. The after setter context-nudge now reads payload, sweep stamp, window and lib dir with builtins (8 forks to 0 on a quiet call, test_context_nudge, claude-setup); its transcript tail scan stays, since a blanket read-only skip would miss the assistant token growth. Reopened from a regressed fix: the setter moved, the fix did not miss.",
+      "handoff": "docs/handoffs/2026-10-04-hook-floors.md"
+    },
+    {
+      "id": "floor:read",
+      "title": "A Read waits over 300 ms on hooks",
+      "match": {
+        "rule": "floor",
+        "ident": "read"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [
+        "floor:tool"
+      ],
+      "last_reviewed": "2026-10-05",
+      "reviewed_by": "night fixer harness-hook-waits 20261005",
+      "note": "First seen 2026-10-05 at load 330-410: 1098 ms at launch, 1545 ms (watch) at 14:06. A Read runs only the PostToolUse `*` pair: context-nudge (14-16 ms CPU on a quiet call, the setter; hook_sync:context-nudge.sh of the hooks run harness-hooks-20261005T061324Z-2ae0) and report-flush (46 ms: report-flush plus report-bus, two bash and two jq, with nothing pending). 60 ms of CPU waiting 1.1-1.5 s is the load; the report-flush cut is the one floor-bash-other-hooks names.",
       "handoff": "docs/handoffs/2026-10-04-hook-floors.md"
     },
     {

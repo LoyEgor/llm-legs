@@ -251,15 +251,23 @@ done
 WORDS_LIB="$WORK/span-on.sh" expect deny '' 'claude -p hi'
 WORDS_LIB="$WORK/span-on.sh" expect deny '' 'echo hi | claude'
 
-# A write call naming no launcher word leaves after its two payload reads (hook-sync-worker-launch-gate):
-# about 60 process starts a Bash call before, every check run on text that could match none.
+# The builtin prefilter that lets a plain call out before any fork reads these spellings as the scan does.
+for spliced in "'cl''aude' -p hi" 'c\laude -p hi' 'a=cla; ${a}ude -p hi' 'cd /tmp;at now' '(batch)' 'ls|codex'; do
+  expect deny '' "$spliced"
+done
+
+# A write call naming no launcher word leaves after its one payload read, before any other process
+# (floor-bash-other-hooks): 15 process starts a call on 2026-10-05, about 60 before 2026-10-04.
 mkdir -p "$WORK/shim"
-printf '#!/bin/bash\necho x >>"%s"\nexec "%s" "$@"\n' "$WORK/jq.count" "$(command -v jq)" >"$WORK/shim/jq"
-chmod +x "$WORK/shim/jq"
+for bin in jq cat awk sed grep tr realpath head; do
+  printf '#!/bin/bash\necho %s >>"%s"\nexec "%s" "$@"\n' "$bin" "$WORK/starts" "$(command -v "$bin")" >"$WORK/shim/$bin"
+  chmod +x "$WORK/shim/$bin"
+done
 jq -cn '{hook_event_name:"PreToolUse",tool_name:"Bash",session_id:"s1",
   tool_input:{command:"cd /w/.claude/worktrees/x && python3 run.py > out.txt; make test"}}' >"$WORK/plain.json"
+: >"$WORK/starts"
 PATH="$WORK/shim:$PATH" bash "$GATE" <"$WORK/plain.json" >/dev/null 2>&1
 asserts=$((asserts + 1))
-[ "$(wc -l <"$WORK/jq.count" | tr -d ' ')" -le 2 ] || fail "a plain write call ran $(wc -l <"$WORK/jq.count") jq starts"
+[ "$(tr '\n' ' ' <"$WORK/starts")" = "jq " ] || fail "a plain write call started: $(tr '\n' ' ' <"$WORK/starts")"
 
 printf 'PASS: %s asserts; the launch gate denies inline print flags, every headless codex subcommand, wrapped and program-string vendor calls, comment and operand exemptions, the ask_*/probe legs, review-waiter worker-run launches, worker review panels, relay polls that are backgrounded (behind a redirection or a chain too) or outrun their timeout (--max=N read, review-waiter and light-research included), hand-set relay and review tokens, review launches from any agent or a Monitor (review-waiter keeps its recoveries), a launch chained after a sanctioned segment and the package-runner, flock and exec wrappers, a vendor fed through a pipe, at/batch/crontab scheduling and the codex MCP tools, with deny texts naming the relay Agents, while plain reads pass\n' "$asserts"
