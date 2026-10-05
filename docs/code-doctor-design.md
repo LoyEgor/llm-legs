@@ -26,6 +26,8 @@ night fix it, its cost falling to near zero once the repos are in order.
    missing or malformed verdict leaves that candidate waiting. A launch stops the night when the
    tokens spent plus the mean recorded session cost (the brief plus a base-context constant before
    any history) would cross the cap; a failed launch records worker-run's return code and output.
+   The brief asks the reuse question of every candidate: does an existing mechanism (helper,
+   renderer, shared invariant) already do this? If yes, the plan calls it and names it.
    Each verdict is:
    - `problem` with a concrete fix plan and its proof obligations, or
    - `not-now` with the reason and re-open triggers (caller, registration, purpose record or detector
@@ -80,7 +82,23 @@ night fix it, its cost falling to near zero once the repos are in order.
 - touchpoint fingerprints weighted by rarity (jq, git, osascript alone mean nothing), with a minimum
   informative overlap; near-clone shingles within one language; the judge confirms semantic
   duplicates across languages;
-- new vs. old: everything indexed since the repo's cursor is matched against the rest;
+- `concept`: one rare output literal in 2–6 code files, any language or length: a glyph joining two
+  computed parts (`{} ⧉ {}`) or a format/label template with a placeholder whose rarest word or glyph
+  has idf ≥ 3.5 over the code files, so common words and punctuation never qualify. All sites of one
+  literal are ONE cause (symbol units; top-level sites named in the detail); places that build the
+  same concept without the literal are the judge's to find;
+- new vs. old (`reuse`): a symbol whose digest is new since the repo's cursor (carried 7 days) is
+  matched against existing helpers on relaxed thresholds (a clone from 4 lines at 0.5, two shared rare
+  touchpoints, a shared rare literal over up to 12 files) and judged before anything else;
+- `prose-layout`: an instruction file (CLAUDE.md, skills*/agents/commands md, READMEs out) whose
+  section tells the model to write a user-facing layout by hand (row templates with `<placeholders>`,
+  three or more enumerated parts, a prose fence of headings or rows, "one line per") while
+  `report_frame.py`/`report-bus` exist: render via the shared frame, the model writes only the
+  meaning. A section that only mentions a report is none;
+- `concept`, `reuse` and `prose-layout` signals join another signal only on the identical unit, never
+  through a containing span, so a big function does not chain unrelated literals into one cause;
+- a pair of test cases (`test*` symbols, fixture blocks embedded in another language) weighs a quarter
+  of its lines; a pair of helpers the suites could source keeps its full value;
 - a symlink and its target are one file (resolved by realpath), never a duplicate pair;
 - a merge needs a net-benefit and dependency decision; intentional copies (the LLM doctor copies
   review-bench tables because review-bench is not importable there, guarded by test_consistency)

@@ -650,4 +650,63 @@ DOCTORS_DIR="$RUNS" "$CD" check "$WORK/no-record.json" </dev/null >/dev/null || 
 assert jqe -s 'length == 2 and all(.[]; (keys == ["cpu_s", "doctor", "start", "trigger", "wall_s"]) and .doctor == "code")
   and .[0].trigger == "night" and .[1].trigger == "background:rollup"' "$RUNS/collector-runs.jsonl"
 
-echo "PASS: $asserts asserts; calibration $(grep -c '^PASS' "$WORK/calibration")/5 cases, a healthy repository with 0 problems, the incremental index, the needs-Egor registration with its research, a dangling registration researched (deleting or renaming commit, live references, an uncommitted deletion no problem) and settled only by the sweep-scope night judge, the judge's batched sessions with their token, wall and launch-failure stops, the durable rollup and its coverage blind spot, the top-K snapshot with active work out, the safety gate (suites, a deletion no problem names, an edit through a cross-repo symlink, active work), the structural digest (rollup no, caller yes), revalidation against the night base, the ledger's fixed-pending, regressed and faulty rows, the canonical mechanisms, review claims through review-anchors, tokenmap-measured instruction weight, a hook rooted through its ~/.claude link, a runner-less test of live code, PyObjC selectors, a symlink never pairing with its target, per-path kinds for identical bytes, link-target edits, raw-byte and same-named-symbol digests, ledger-renamed causes, launch-less day runs, a --repo scope (its own state dir, the Node/TS calibration, generic entry points, no runtime journal claimed, report-only snapshot and check), heavy tests judged only in a --repo scope (a sweep repository's are the Harness Speed block's), collector runs journalled"
+# Reuse: one label spelled in bash, Python and a third place is ONE concept cause; a literal of common words or one
+# spread over many files, and a link to a site, are none; a layout section beside a renderer is a prose candidate, a
+# section that only mentions a report is not; fresh code matches an existing helper below the clone floor and is judged
+# first; a pair of test cases weighs less than a pair of helpers the suites could source.
+lay_out "$FIX/reuse" "$WORK/reuse"
+R2="$REPOS/alpha2"
+for i in $(seq 1 120); do
+  {
+    printf '#!/usr/bin/env bash\nf%s() {\n  local done now a=$1 b=$2 step=%s\n' "$i" "$i"
+    [ "$i" -gt 10 ] || printf '  printf "%%s\\n" "$a ◆ $b"\n'
+    [ "$i" -gt 2 ] || printf '  echo "$step done now"\n'
+    printf '  echo "$done $now"\n}\n'
+  } >"$R2/lib/f$i.sh"
+done
+mkdir -p "$R2/skills/report" "$R2/skills/mention" "$R2/tests"
+cat >"$R2/skills/report/SKILL.md" <<'MD'
+# Report
+
+## Final report
+
+At the end print the final report. Per repository one line `<name> · debt N lines · K dirty`, then
+one line per worktree, indented: `<branch> · +ahead/-behind · take|keep`. Close with
+`total · debt N lines`.
+
+## Notes
+
+The report is information only: print it and go on.
+MD
+printf '# Mention\n\n## Notes\n\nWhen the work is done, send the report to the owner chat and print a short answer.\n' \
+  >"$R2/skills/mention/SKILL.md"
+for t in one two; do
+  printf 'def test_parse_rows():\n    rows = [("a", 1), ("b", 2), ("c", 3)]\n    total = 0\n    for name, value in rows:\n        assert name\n        total += value\n    assert total == 6\n    assert len(rows) == 3\n    assert rows[0][0] == "a"\n' \
+    >"$R2/tests/test_$t.py"
+  printf '#!/usr/bin/env bash\nwait_for() {\n  local tries=0\n  while [ "$tries" -lt 50 ]; do\n    [ -e "$1" ] && return 0\n    tries=$((tries + 1))\n    sleep 0.1\n  done\n  echo "timed out waiting for $1" >&2\n  return 1\n}\n' \
+    >"$R2/tests/test_$t.sh"
+done
+ln -s "$R2/hooks/commit-report.sh" "$REPOS/beta2/share/linked-report.sh"
+init_repos
+"$CD" refresh --quiet || fail "refresh failed on the reuse fixture"
+CJ="$CODE_DOCTOR_DIR/candidates.jsonl"
+assert jqe -s '[.[] | select(.rules | index("concept")) | select([.units[].unit] | index("alpha2/hooks/commit-report.sh#project_name") != null
+  and index("beta2/share/rbench/report.py#report_repo_identity") != null and index("alpha2/bin/dirline.sh#fit_dir_part") != null)
+  | select(.group == "duplicate" and (.detail | contains("«⧉» (3 of")))] | length == 1' "$CJ"
+assert jqe -s '[.[] | select([.units[].unit] | index("alpha2/hooks/commit-report.sh#project_name") != null)] | length == 1' "$CJ"
+assert test "$(grep -c '◆\|done now' "$CJ")" = 0
+assert test "$(jq -r '.units[].unit' "$CJ" | grep -c 'linked-report')" = 0
+assert jqe -s '[.[] | select(.rules | index("prose-layout")) | select(.id == "cause:alpha2/skills/report/SKILL.md"
+  and (.detail | contains("§Final report") and (contains("§Notes") | not)) and .reuse == ["beta2/share/report_frame.py"])] | length == 1' "$CJ"
+assert jqe -s '[.[] | select(.rules | index("prose-layout")) | .units[].unit | select(contains("mention"))] == []' "$CJ"
+assert jqe -s '([.[] | select(.units[0].unit == "alpha2/tests/test_one.py#test_parse_rows") | .value] == [2])
+  and ([.[] | select(.units[0].unit == "alpha2/tests/test_one.sh#wait_for") | .value] == [10])' "$CJ"
+printf '\ncut_label() {\n  local text=$1 width=$2\n  [ "${#text}" -le "$width" ] && { printf '"'"'%%s\\n'"'"' "$text"; return; }\n  printf '"'"'%%s~\\n'"'"' "${text:0:$((width - 1))}"\n}\n' \
+  >>"$R2/bin/dirline.sh"
+"$CD" refresh --quiet
+assert jqe -s '[.[] | select(.id == "cause:alpha2/bin/dirline.sh#cut_label" and .new and .fresh and (.rules | index("reuse"))
+  and ([.units[].unit] == ["alpha2/bin/dirline.sh#cut_label", "alpha2/lib/labels.sh#trim_label"]))] | length == 1' "$CJ"
+"$CD" judge --night f1 --limit 1 --batch 1 >/dev/null
+assert test "$(head -1 "$CODE_DOCTOR_FAKE_LOG" | cut -f2)" = "cause:alpha2/bin/dirline.sh#cut_label"
+
+echo "PASS: $asserts asserts; calibration $(grep -c '^PASS' "$WORK/calibration")/5 cases, a healthy repository with 0 problems, the incremental index, the needs-Egor registration with its research, a dangling registration researched (deleting or renaming commit, live references, an uncommitted deletion no problem) and settled only by the sweep-scope night judge, the judge's batched sessions with their token, wall and launch-failure stops, the durable rollup and its coverage blind spot, the top-K snapshot with active work out, the safety gate (suites, a deletion no problem names, an edit through a cross-repo symlink, active work), the structural digest (rollup no, caller yes), revalidation against the night base, the ledger's fixed-pending, regressed and faulty rows, the canonical mechanisms, review claims through review-anchors, tokenmap-measured instruction weight, a hook rooted through its ~/.claude link, a runner-less test of live code, PyObjC selectors, a symlink never pairing with its target, per-path kinds for identical bytes, link-target edits, raw-byte and same-named-symbol digests, ledger-renamed causes, launch-less day runs, a --repo scope (its own state dir, the Node/TS calibration, generic entry points, no runtime journal claimed, report-only snapshot and check), heavy tests judged only in a --repo scope (a sweep repository's are the Harness Speed block's), collector runs journalled, one concept spelled in bash, Python and a third place as one cause (common literals and links out), a prose layout beside the renderer, fresh code matched against helpers and judged first, test-case boilerplate weighed down"

@@ -86,6 +86,8 @@ def problem_days(since):
 
 
 def record(doctor, started, command=None):
+    if os.environ.get(doctor.upper() + "_DOCTOR_DIR") and not os.environ.get("DOCTORS_DIR"):
+        return
     row = {"doctor": doctor, "start": round(started, 3), "wall_s": round(time.time() - started, 3),
            "cpu_s": round(max(0.0, cpu_total() - CPU_BASE), 3), "trigger": trigger_word(command)}
     try:

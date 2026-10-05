@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import zlib
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -27,8 +28,9 @@ SCOPE = []
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 import collector_runs  # noqa: E402
 
-DETECTOR_VERSION = 3
-PARSER_VERSION = 4
+DETECTOR_VERSION = 4
+GROUP_DETECTOR = {"dead": 3, "heavy": 3}
+PARSER_VERSION = 5
 LIMITS = {
     "silent_days": 14,
     "heavy_test_s": 120,
@@ -40,6 +42,17 @@ LIMITS = {
     "touch_min_idf": 12.0,
     "touch_jaccard": 0.4,
     "touch_shared": 3,
+    "concept_min_idf": 3.5,
+    "concept_max_sites": 6,
+    "reuse_min_lines": 4,
+    "reuse_jaccard": 0.5,
+    "reuse_shared": 3,
+    "reuse_touch_shared": 2,
+    "reuse_max_sites": 12,
+    "reuse_matches": 3,
+    "fresh_days": 7,
+    "fixture_weight": 0.25,
+    "layout_score": 2,
 }
 TOP_K = 3
 TOP_K_LOW_YIELD = 1
@@ -103,6 +116,18 @@ MAKE_FILES = re.compile(r"^(GNUmakefile|[Mm]akefile|.+\.mk|Procfile(\..+)?|Justf
 DOCKER_FILES = re.compile(r"^(Dockerfile(\..+)?|.+\.Dockerfile|Containerfile)$")
 INSTRUCTION_PART = re.compile(r"(^|/)CLAUDE(\.local)?\.md$|(^|/)(skills|agents|commands)/.*\.md$")
 FIXTURE_PART = re.compile(r"(^|/)tests/fixtures/")
+PROSE_PART = re.compile(r"(^|/)CLAUDE(\.local)?\.md$|(^|/)(skills|agents|commands)(-[\w-]+)?/(.*/)?(?!README\.md$)[^/]+\.md$")
+LITERAL_RE = re.compile(r'"((?:[^"\\\n]|\\.)*)"|\'((?:[^\'\\\n]|\\.)*)\'|`((?:[^`\\\n]|\\.)*)`')
+REGEX_MARK = re.compile(r"\(\?|\\[WdsSbw]|\[\^")
+RENDERERS = ("report_frame.py", "report-bus")
+SITE_RULES = ("concept", "reuse", "prose-layout")
+HEADING_RE = re.compile(r"^#{1,6}\s+(.*)")
+OUTPUT_WORDS = re.compile(r"\b(report|reply|answer|message|summary|print|output)s?\b", re.I)
+ROW_TEMPLATE_RE = re.compile(r"`[^`\n]*<[A-Za-z][^>`\n]*>[^`\n]*`")
+ROW_SEPARATOR_RE = re.compile(r" (?:·|│|\||—|->|→) |\w: ")
+ENUM_PART_RE = re.compile(r"\((?:[1-9]|[a-h])\)\s")
+LAYOUT_WORDS = re.compile(r"\bone line (?:per|each)\b|\b(?:then|with) (?:a |one )?(?:line|row|heading|section|column)s? (?:per|for|each|named)\b"
+                          r"|\bunder (?:the )?headings?\b|\bin this (?:layout|format|shape)\b", re.I)
 
 
 def base_home():
@@ -380,6 +405,62 @@ def touchpoints(text, lang):
     return found
 
 
+def glyphs_of(text):
+    return {c for c in text if ord(c) > 0x7f and unicodedata.category(c)[0] in "SP"}
+
+
+def literal_features(text, lang):
+    found = set()
+    for number, line in enumerate(text.splitlines(), 1):
+        if comment_line(line, lang):
+            continue
+        for match in LITERAL_RE.finditer(line):
+            literal = next(g for g in match.groups() if g is not None)
+            skeleton = re.sub(r"\s+", " ", TEMPLATE_RE.sub("{}", literal)).strip()
+            joined = "{}" * line[:match.start()].rstrip().endswith(("..", "+")) + skeleton + \
+                "{}" * line[match.end():].lstrip().startswith(("..", "+"))
+            for glyph in glyphs_of(literal):
+                found.add(("glyph:" + glyph, number, 2 if re.search(r"\{\}[^{}]{0,3}%s[^{}]{0,3}\{\}" % re.escape(glyph), joined) else 0))
+            if len(literal) > 120 or REGEX_MARK.search(literal):
+                continue
+            fixed = skeleton.replace("{}", " ")
+            if "{}" in skeleton and " " in skeleton and "/" not in fixed and (re.search(r"[A-Za-z]{3}", fixed) or glyphs_of(fixed)):
+                found.add(("tpl:" + skeleton, number, 1))
+    return sorted([f, n, t] for f, n, t in found)
+
+
+def layout_sections(text):
+    sections, heading, start, body, fence, fenced, prose_fence, fences = [], "", 1, [], [], False, False, []
+
+    def close():
+        joined = " ".join(line.strip() for _, line in body)
+        marks = {"row": sum(1 for m in ROW_TEMPLATE_RE.finditer(joined) if ROW_SEPARATOR_RE.search(m.group(0))),
+                 "enum": 2 if len(ENUM_PART_RE.findall(joined)) >= 3 else 0, "fence": 2 * len(fences),
+                 "words": len(LAYOUT_WORDS.findall(joined))}
+        if OUTPUT_WORDS.search(joined) and sum(marks.values()) >= LIMITS["layout_score"]:
+            hits = [n for n, line in body if ENUM_PART_RE.search(line) or LAYOUT_WORDS.search(line) or "`<" in line] + fences
+            sections.append([heading or "(top)", min(hits or [start]), sum(marks.values()), ",".join(k for k in marks if marks[k])])
+
+    for number, line in enumerate(text.splitlines(), 1):
+        if line.lstrip().startswith("```"):
+            if fenced and prose_fence and sum(1 for f in fence if re.match(r"\s*(#|\||[-*] |\*\*|<[A-Za-z][^>]*>|[A-Z][\w ]{0,20}:)", f)) >= 2:
+                fences.append(number - len(fence))
+            prose_fence = not fenced and line.strip()[3:].strip().lower() in ("", "text", "txt", "md", "markdown")
+            fenced, fence = not fenced, []
+            continue
+        if fenced:
+            fence.append(line)
+            continue
+        heading_match = HEADING_RE.match(line)
+        if heading_match:
+            close()
+            heading, start, body, fences = heading_match.group(1).strip(), number, [], []
+            continue
+        body.append((number, line))
+    close()
+    return sections
+
+
 def block_end(lines, start, lang, indent):
     if lang == "python":
         for index in range(start + 1, len(lines)):
@@ -423,7 +504,7 @@ def symbols_of(text, lang, offset=0):
         body = "\n".join(lines[index:end])
         words = normalize(body, lang)
         out.append({"name": name, "start": offset + index + 1, "end": offset + end, "lines": end - index,
-                    "lang": lang, "digest": sha(body)[:16], "sketch": sketch(words) if end - index >= LIMITS["clone_min_lines"] else [],
+                    "lang": lang, "digest": sha(body)[:16], "sketch": sketch(words) if end - index >= LIMITS["reuse_min_lines"] else [],
                     "touch": sorted(touchpoints(body, lang)),
                     "branches": len(re.findall(r"\b(if|elif|elseif|case|while|for)\b", body))})
     return out
@@ -483,6 +564,9 @@ def parse_file(rel, data):
                 record["symbols"] += symbols_of(body, inner, offset)
         record["touch"] = sorted(touchpoints(text, lang))
         record["imports"] = imports_of(text, lang)
+        record["lits"] = literal_features(text, lang)
+    elif lang == "doc" and PROSE_PART.search(rel):
+        record["layout"] = layout_sections(text)
     return record
 
 
@@ -522,7 +606,8 @@ def index_repo(top, cache):
     name = repo_name(top)
     path = os.path.join(state_dir(), "index", name + ".json")
     old = read_json(path, {}) or {}
-    old_files = (old.get("files") or {}) if old.get("parser") == PARSER_VERSION else {}
+    old_all = old.get("files") or {}
+    old_files = old_all if old.get("parser") == PARSER_VERSION else {}
     files, changed, reused, skipped = {}, [], 0, []
     for rel in list_files(top):
         full = os.path.join(top, rel)
@@ -552,7 +637,7 @@ def index_repo(top, cache):
             continue
         digest = sha(data)
         lang = file_lang(rel, data.decode("utf-8", "replace")[:200])
-        key = (digest, lang, file_kind(rel, lang))
+        key = (digest, lang, file_kind(rel, lang), bool(PROSE_PART.search(rel)))
         if prior and prior.get("digest") == digest:
             record = dict(prior)
         elif key in cache:
@@ -563,16 +648,32 @@ def index_repo(top, cache):
         record.update(size=info.st_size, mtime_ns=info.st_mtime_ns, link=link, target=target, exec=bool(info.st_mode & 0o111))
         cache[key] = record
         files[rel] = record
-        if not prior or prior.get("digest") != digest:
+        if (old_all.get(rel) or {}).get("digest") != digest:
             changed.append(rel)
     snapshot = sha("\n".join("%s %s" % (rel, files[rel]["digest"]) for rel in sorted(files)))
     previous = old.get("cursor") or {}
     cursor = {"snapshot": snapshot, "head": (git(top, "rev-parse", "HEAD") or "").strip() or None,
               "at": iso_time(now_s()), "previous": previous.get("snapshot"),
-              "changed": sorted(set(changed) | set(old_files) - set(files)) if previous else None}
+              "changed": sorted(set(changed) | set(old_all) - set(files)) if previous else None,
+              "fresh": fresh_symbols(files, old_all, changed, previous.get("fresh") or {}) if previous else {}}
     doc = {"repo": name, "top": top, "parser": PARSER_VERSION, "cursor": cursor, "files": files, "skipped": skipped}
     write_json(path, doc)
     return doc, len(changed), reused
+
+
+def fresh_symbols(files, old_files, changed, carried):
+    cutoff, now = now_s() - LIMITS["fresh_days"] * 86400, iso_time(now_s())
+    out = {}
+    for rel, record in files.items():
+        symbols = {s["name"]: s["digest"] for s in record.get("symbols") or ()}
+        kept = {name: seen for name, seen in (carried.get(rel) or {}).items()
+                if symbols.get(name) == seen[0] and (iso_epoch(seen[1]) or 0) > cutoff}
+        if rel in changed:
+            before = {s["digest"] for s in (old_files.get(rel) or {}).get("symbols") or ()}
+            kept.update({name: [digest, now] for name, digest in symbols.items() if digest not in before and name not in kept})
+        if kept:
+            out[rel] = kept
+    return out
 
 
 def run_index():
@@ -1201,14 +1302,18 @@ def shared_invariant_rows(indexes):
             with open(path, errors="replace") as handle:
                 for line in handle:
                     if line.startswith("| ") and line.count("|") >= 5:
-                        rows.append(tokens_of(line))
+                        tokens = tokens_of(line)
+                        rows.append((tokens, {t.rsplit("/", 1)[-1] for t in tokens}))
         except OSError:
             pass
     return rows
 
 
-def names_file(tokens, fid):
+def names_file(row, fid):
+    tokens, bases = row
     rel = fid.split("/", 1)[1]
+    if rel.rsplit("/", 1)[-1] not in bases:
+        return False
     for token in tokens:
         bare = token.lstrip("~./")
         if token == fid or bare == rel or "/" in bare and rel.endswith("/" + bare):
@@ -1217,7 +1322,7 @@ def names_file(tokens, fid):
 
 
 def intentional(a, b, rows, ledger):
-    if any(names_file(tokens, a) and names_file(tokens, b) for tokens in rows):
+    if any(names_file(row, a) and names_file(row, b) for row in rows):
         return True
     for row in ledger.get("intentional") or ():
         units = (row or {}).get("units") or ()
@@ -1232,7 +1337,7 @@ def clone_pairs(graph):
         if record.get("kind") not in ("code", "test") or graph.canonical(fid) != fid:
             continue
         for symbol in record.get("symbols") or ():
-            if symbol.get("sketch"):
+            if symbol.get("sketch") and symbol["lines"] >= LIMITS["clone_min_lines"]:
                 index = len(symbols)
                 symbols.append((fid, record, symbol))
                 for value in symbol["sketch"]:
@@ -1300,6 +1405,186 @@ def touch_pairs(graph):
             continue
         pairs.append((span_a, span_b, "touchpoints", round(weighted, 2)))
     return pairs
+
+
+def site_span(graph, fid, line):
+    record = graph.files[fid]
+    inside = [s for s in record.get("symbols") or () if s["start"] <= line <= s["end"]]
+    return unit_span(fid, record, min(inside, key=lambda s: s["lines"]) if inside else None)
+
+
+def is_fresh(fresh, span):
+    repo, rel = span["file"].split("/", 1)
+    names = (fresh.get(repo) or {}).get(rel) or {}
+    return bool(names) and ("#" not in span["unit"] or span["unit"].rsplit("#", 1)[1] in names)
+
+
+def literal_index(graph):
+    files = [fid for fid, r in graph.files.items() if r.get("kind") == "code" and graph.canonical(fid) == fid]
+    sites, atoms = {}, {}
+    for fid in files:
+        for feature, line, templated in graph.files[fid].get("lits") or ():
+            sites.setdefault(feature, {}).setdefault(fid, []).append((line, templated))
+        for token in {t.lower() for t in (graph.files[fid].get("refs") or {}).get("code") or ()}:
+            atoms[token] = atoms.get(token, 0) + 1
+    total = float(max(len(files), 1))
+
+    def info(feature):
+        if feature.startswith("glyph:"):
+            return math.log(total / len(sites[feature]))
+        fixed = feature[4:].replace("{}", " ")
+        weights = [math.log(total / (atoms.get(w.lower()) or 1)) for w in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", fixed)]
+        weights += [math.log(total / len(sites["glyph:" + g])) for g in glyphs_of(fixed) if "glyph:" + g in sites]
+        return max(weights or [0.0])
+    return sites, info, int(total)
+
+
+def concept_signals(graph, sites, info, total, fresh, rows, ledger):
+    signals = []
+    for feature, where in sorted(sites.items()):
+        files = sorted(where)
+        if not 2 <= len(files) <= LIMITS["concept_max_sites"] or sum(1 for f in files if any(t for _, t in where[f])) < 2:
+            continue
+        if info(feature) < LIMITS["concept_min_idf"]:
+            continue
+        if all(intentional(a, b, rows, ledger) for i, a in enumerate(files) for b in files[i + 1:]):
+            continue
+        spans, loose = {}, []
+        for fid in files:
+            for line, _ in where[fid]:
+                span = site_span(graph, fid, line)
+                if "#" in span["unit"]:
+                    spans.setdefault(span["unit"], span)
+                else:
+                    loose.append("%s:%d" % (fid, line))
+        if not spans:
+            continue
+        units = [spans[u] for u in sorted(spans)]
+        literal = feature.split(":", 1)[1]
+        signals.append({"group": "duplicate", "rule": "concept", "units": units, "fresh": any(is_fresh(fresh, u) for u in units),
+                        "detail": "the rare literal «%s» (%d of %d code files) is spelled in %s%s: one concept computed in %d places" % (
+                            literal, len(files), total, ", ".join(files[:6]),
+                            " (top level: %s)" % ", ".join(loose[:4]) if loose else "", len(files)),
+                        "value": len(files) - 1})
+    return signals
+
+
+def reuse_signals(graph, sites, info, fresh, rows, ledger):
+    new, helpers = [], []
+    for fid, record in graph.files.items():
+        if record.get("kind") not in ("code", "test") or graph.canonical(fid) != fid:
+            continue
+        repo, rel = fid.split("/", 1)
+        names = (fresh.get(repo) or {}).get(rel) or {}
+        for symbol in record.get("symbols") or ():
+            if symbol["name"] in names:
+                new.append((fid, record, symbol))
+            elif record["kind"] == "code" or "/lib/" in "/" + rel:
+                helpers.append((fid, record, symbol))
+    if not new:
+        return []
+    by_sketch, by_touch, by_feature = {}, {}, {}
+    for index, (fid, record, symbol) in enumerate(helpers):
+        for value in symbol.get("sketch") or ():
+            by_sketch.setdefault(value, []).append(index)
+        for touch in set(symbol.get("touch") or ()):
+            by_touch.setdefault(touch, []).append(index)
+    for feature, where in sites.items():
+        if len(where) <= LIMITS["reuse_max_sites"] and info(feature) >= LIMITS["concept_min_idf"]:
+            for fid, hits in where.items():
+                by_feature.setdefault(feature, []).extend((fid, line) for line, t in hits if t)
+    total = float(max(len(helpers), 1))
+    positions = {(h[0], h[2]["start"]): i for i, h in enumerate(helpers)}
+
+    def idf(touch):
+        return math.log(total / len(by_touch[touch])) if touch in by_touch else math.log(total)
+
+    signals = []
+    for fid, record, symbol in new:
+        span = unit_span(fid, record, symbol)
+        found = {}
+        if symbol["lines"] >= LIMITS["reuse_min_lines"]:
+            shared = {}
+            for value in symbol.get("sketch") or ():
+                members = by_sketch.get(value, ())
+                if len(members) <= COMMON_DF:
+                    for index in members:
+                        shared[index] = shared.get(index, 0) + 1
+            for index, count in shared.items():
+                other = helpers[index][2]
+                if count < LIMITS["reuse_shared"] or other["lang"] != symbol["lang"]:
+                    continue
+                union = sorted(set(symbol["sketch"]) | set(other["sketch"]))[:SKETCH_K]
+                both = set(symbol["sketch"]) & set(other["sketch"])
+                estimate = sum(1 for v in union if v in both) / float(len(union) or 1)
+                if estimate >= LIMITS["reuse_jaccard"]:
+                    found[index] = (estimate, "clone %.2f" % estimate)
+            common = {}
+            for touch in set(symbol.get("touch") or ()):
+                members = by_touch.get(touch, ())
+                if 1 <= len(members) <= TOUCH_COMMON_DF:
+                    for index in members:
+                        common.setdefault(index, []).append(touch)
+            for index, touches in common.items():
+                if len(touches) < LIMITS["reuse_touch_shared"]:
+                    continue
+                union = set(symbol.get("touch") or ()) | set(helpers[index][2].get("touch") or ())
+                weighted = sum(idf(t) for t in touches) / (sum(idf(t) for t in union) or 1)
+                if weighted >= LIMITS["touch_jaccard"] and weighted > (found.get(index) or (0,))[0]:
+                    found[index] = (weighted, "touchpoints %.2f" % weighted)
+        mine = {feature for feature, line, t in record.get("lits") or ()
+                if t and symbol["start"] <= line <= symbol["end"] and feature in by_feature}
+        for feature in sorted(mine):
+            for other_fid, line in by_feature[feature]:
+                if other_fid == fid and symbol["start"] <= line <= symbol["end"]:
+                    continue
+                other = site_span(graph, other_fid, line)
+                index = positions.get((other_fid, other["start"])) if "#" in other["unit"] else None
+                if index is not None and (found.get(index) or (0,))[0] < 1:
+                    found[index] = (1, "shares «%s»" % feature.split(":", 1)[1])
+        ranked = sorted(found.items(), key=lambda item: (-item[1][0], item[0]))
+        matches = []
+        for index, (score, why) in ranked:
+            other = unit_span(helpers[index][0], helpers[index][1], helpers[index][2])
+            if overlaps(span, other) or intentional(fid, other["file"], rows, ledger):
+                continue
+            matches.append((other, why))
+            if len(matches) >= LIMITS["reuse_matches"]:
+                break
+        if matches:
+            signals.append({"group": "duplicate", "rule": "reuse", "units": [span] + [m for m, _ in matches], "fresh": True,
+                            "detail": "new %s may re-do what %s already does" % (span["unit"], ", ".join(
+                                "%s (%s)" % (m["unit"], why) for m, why in matches)),
+                            "value": symbol["lines"]})
+    return signals
+
+
+def prose_signals(graph):
+    renderers = sorted(f for name in RENDERERS for f in graph.by_base.get(name, ())
+                       if graph.files[f].get("kind") == "code" and graph.canonical(f) == f)
+    if not renderers:
+        return []
+    signals = []
+    for fid, record in sorted(graph.files.items()):
+        layout = record.get("layout")
+        if not layout or graph.canonical(fid) != fid:
+            continue
+        sections = "; ".join("§%s L%d (%s)" % (heading, line, kinds) for heading, line, _, kinds in layout)
+        signals.append({"group": "duplicate", "rule": "prose-layout", "units": [unit_span(fid, record)], "reuse": renderers,
+                        "detail": "%s tells the model to write a user-facing layout by hand (%s) while %s render user-facing "
+                                  "blocks: render via the shared frame, the model writes only the meaning" % (
+                                      fid, sections, " and ".join(renderers)),
+                        "value": sum(score for _, _, score, _ in layout)})
+    return signals
+
+
+def fixture_unit(graph, span):
+    record = graph.files[span["file"]]
+    if record.get("kind") != "test":
+        return False
+    name = span["unit"].rsplit("#", 1)[1] if "#" in span["unit"] else ""
+    symbol = next((s for s in record.get("symbols") or () if s["name"] == name and s["start"] == span["start"]), None)
+    return not symbol or bool(re.match(r"test", name, re.I)) or symbol["lang"] != record.get("lang")
 
 
 def heavy_tests(graph):
@@ -1553,9 +1838,17 @@ def build_candidates():
     for a, b, rule, score in clone_pairs(graph) + touch_pairs(graph):
         if intentional(a["file"], b["file"], rows, ledger):
             continue
+        value = min(a["lines"], b["lines"])
+        fixture = fixture_unit(graph, a) and fixture_unit(graph, b)
         signals.append({"group": "duplicate", "rule": rule, "units": [a, b],
-                        "detail": "%s and %s share %s (%.2f)" % (a["unit"], b["unit"], rule, score),
-                        "value": min(a["lines"], b["lines"])})
+                        "detail": "%s and %s share %s (%.2f)%s" % (a["unit"], b["unit"], rule, score,
+                                                                   ", test fixture boilerplate" if fixture else ""),
+                        "value": max(1, int(value * LIMITS["fixture_weight"])) if fixture else value})
+    fresh = {repo: doc["cursor"].get("fresh") or {} for repo, doc in indexes.items()}
+    sites, info, total = literal_index(graph)
+    signals += concept_signals(graph, sites, info, total, fresh, rows, ledger)
+    signals += reuse_signals(graph, sites, info, fresh, rows, ledger)
+    signals += prose_signals(graph)
 
     candidates = cluster(signals, graph, edges, roots, ledger, indexes, hits)
     path = os.path.join(state_dir(), "candidates.jsonl")
@@ -1746,8 +2039,11 @@ def cluster(signals, graph, edges, roots, ledger, indexes, hits):
     for members in by_file.values():
         for x in range(len(members)):
             for y in range(x + 1, len(members)):
-                if overlaps(members[x][1], members[y][1]) and members[x][0] != members[y][0]:
-                    parent[find(members[x][0])] = find(members[y][0])
+                (i, a), (j, b) = members[x], members[y]
+                if i == j or not overlaps(a, b):
+                    continue
+                if a["unit"] == b["unit"] or not (signals[i]["rule"] in SITE_RULES or signals[j]["rule"] in SITE_RULES):
+                    parent[find(i)] = find(j)
     groups = {}
     for i in range(len(signals)):
         groups.setdefault(find(i), []).append(signals[i])
@@ -1789,7 +2085,9 @@ def cluster(signals, graph, edges, roots, ledger, indexes, hits):
             "research": next((s["research"] for s in members if s.get("research")), None),
             "trade": next((s["trade"] for s in members if s.get("trade")), None),
             "snapshot": {repo: snapshots.get(repo) for repo in repos},
-            "new": any(f.split("/", 1)[1] in changed.get(f.split("/", 1)[0], ()) for f in files),
+            "new": any(s.get("fresh") for s in members) or any(f.split("/", 1)[1] in changed.get(f.split("/", 1)[0], ()) for f in files),
+            "fresh": any(s.get("fresh") for s in members),
+            "reuse": sorted({r for s in members for r in s.get("reuse") or ()}),
             "slice": "/".join(files[0].split("/")[:2]) if files else anchors[0],
             "runtime_hits": {k: hits[k] for k in ("hook:" + os.path.basename(f) for f in files) if k in hits},
         }
@@ -1806,7 +2104,7 @@ def evidence_digest(candidate):
         "registrations": candidate["registrations"],
         "purpose": candidate["purpose"],
         "rules": candidate["rules"],
-        "detector": DETECTOR_VERSION,
+        "detector": GROUP_DETECTOR.get(candidate.get("group"), DETECTOR_VERSION),
     }
     return sha(json.dumps(structural, sort_keys=True))[:24]
 
@@ -1893,6 +2191,10 @@ def candidate_lines(candidate, indexes):
               "Entry points and registrations: %s" % (", ".join(candidate["registrations"][:10]) or "none"),
               "Purpose and retirement records: %s" % (", ".join(candidate["purpose"]) or "none"),
               "Runtime hits (rollup): %s" % (json.dumps(candidate.get("runtime_hits") or {}) or "none")]
+    if candidate.get("reuse"):
+        lines.append("Existing mechanism it should call: %s" % ", ".join(candidate["reuse"]))
+    if candidate.get("fresh"):
+        lines.append("Fresh: added or changed since the last index; judge whether it re-does an existing helper")
     for fid in candidate["files"][:3]:
         repo, rel = fid.split("/", 1)
         top = (indexes.get(repo) or {}).get("top")
@@ -1913,6 +2215,13 @@ def judge_brief(batch, indexes):
               "(deletion: no live entry point, no rollup hits over a covered window, the purpose or retirement record you quote, "
               "green suites; a merge: the shared module first, callers migrated, the old copy deleted on a later night).",
               "- `not-now`: anything else, with the reason and what would re-open it.",
+              "Reuse first, for every candidate: does an existing mechanism (a helper, a renderer such as share/report_frame.py "
+              "behind bin/report-bus, a shared invariant of docs/shared-invariants.md) already do what this code or prose does? "
+              "If yes, the plan is to call it and the plan names it (path and function); a new shared module only where none "
+              "exists. `concept`: one rare literal spelled in several places; also find the places that produce the same "
+              "concept without the literal (the same label built another way) and put them in the plan. `prose-layout`: an "
+              "instruction tells the model to write a user-facing layout by hand; the plan renders it via the shared frame and "
+              "leaves the model only the meaning. `reuse`: fresh code matched against existing helpers on relaxed thresholds.",
               "A test is kept for the requirement it protects, never for being quiet; a merge needs net benefit.",
               "Research before any verdict, and decide what it settles. A hook that never fired (`silent`): find why it "
               "exists (`git log -S<its name>` in its repository, the commit subjects, the docs) and how often the event it "
@@ -1997,7 +2306,7 @@ def run_judge(night, max_tokens, max_wall, vendor, limit=None, batch_size=JUDGE_
     candidates = [c for c in load_candidates() if not c.get("protected")]
     pending = [c for c in candidates if not verdict_valid(verdicts.get(c["id"]), c, now) and not auto_verdict(c)]
     slices = read_json(os.path.join(state_dir(), "slices.json"), {}) or {}
-    pending.sort(key=lambda c: (c["slice"] in slices, not c.get("new"), -c["value"], c["id"]))
+    pending.sort(key=lambda c: (not c.get("fresh"), c["slice"] in slices, not c.get("new"), -c["value"], c["id"]))
     history = judge_sessions()
     spent, judged, stop, error = 0, 0, "done", None
     folder = os.path.join(state_dir(), "judge", night or "day")

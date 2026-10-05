@@ -189,6 +189,10 @@ os.waitpid(pid, 0)
 EOF
 assert_eq true "$(jq -r '.cpu_s < 0.4' "$WORK/exec-cpu/collector-runs.jsonl")" \
   "a doctor exec'd by Harness journals its own CPU, not the Harness run's it inherited across execv"
+mkdir -p "$WORK/fixture-home"
+env -u DOCTORS_DIR HOME="$WORK/fixture-home" SPEED_DOCTOR_DIR="$WORK/exec-cpu" "$WORK/exec-cpu/speed"
+assert_eq absent "$([ -e "$WORK/fixture-home/.cache/doctors/collector-runs.jsonl" ] && echo present || echo absent)" \
+  "a doctor on a fixture state dir without its own DOCTORS_DIR never journals into the live collector runs"
 
 assert_eq '["Bash · alpha","15","8.0","1.9","4"]' \
   "$(doc "$(rowq Waits "Bash · alpha") | .cells")" \
