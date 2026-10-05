@@ -40,11 +40,11 @@ affected_filter() { # repo names-file <suite paths -> the suites naming one of t
     if [ -n "$helpers" ]; then
       while IFS= read -r helper; do texts+=("$repo/tests/$helper"); done < <(grep -oF -- "$helpers" "$entry" 2>/dev/null | sort -u)
     fi
-    grep -qF -f "$names" -- "${texts[@]}" 2>/dev/null && printf '%s\n' "$entry"
+    grep -qwF -f "$names" -- "${texts[@]}" 2>/dev/null && printf '%s\n' "$entry"
   done
   invariants="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/docs/shared-invariants.md"
   consistency="${invariants%/docs/*}/tests/test_consistency.sh"
-  [ -r "$invariants" ] && [ -r "$consistency" ] && grep -qF -f "$names" -- "$invariants" && printf '%s\n' "$consistency"
+  [ -r "$invariants" ] && [ -r "$consistency" ] && grep -qwF -f "$names" -- "$invariants" && printf '%s\n' "$consistency"
   return 0
 }
 
