@@ -569,7 +569,8 @@ git -C "$WORK/repo" worktree add -q -b "night/$idc/late" "$wt/late" "$pushed_has
 (cd "$wt/late" && exec sleep 600) &
 late=$!
 printf '%s\n' "$late" >>"$DATA/orchestrators"
-cat >"$FAKE_BIN/lsof" <<EOF
+lsof_hide_once() { # dir: the next lsof listing leaves out the processes inside dir
+  cat >"$FAKE_BIN/lsof" <<EOF
 #!/bin/bash
 if [ -s "$WORK/lsof-hide" ]; then
   hide=\$(cat "$WORK/lsof-hide"); rm -f "$WORK/lsof-hide"
@@ -578,8 +579,10 @@ if [ -s "$WORK/lsof-hide" ]; then
 fi
 exec /usr/sbin/lsof "\$@"
 EOF
-chmod +x "$FAKE_BIN/lsof"
-(cd -P "$wt/late" && pwd) >"$WORK/lsof-hide"
+  chmod +x "$FAKE_BIN/lsof"
+  (cd -P "$1" && pwd) >"$WORK/lsof-hide"
+}
+lsof_hide_once "$wt/late"
 sleep 0.3
 night finish "$idc" >"$WORK/out" || fail "finish with worktrees"
 late_alive=0; kill -0 "$late" 2>/dev/null && late_alive=1
@@ -754,6 +757,21 @@ old worktree add -q -b night/n0/code-code-20261001T020700Z-0b0b "$wt/code-old" "
 night job "$idc" add leftover night/n0/code-code-20261001T020700Z-0b0b >"$WORK/out" || fail "adopt a Code fixer leftover"
 assert grep -qF "; the old one stays: code-doctor check reads the Code fixer run from it" "$WORK/out"
 assert [ -d "$wt/code-old" ]
+# A process that enters an adopted leftover's old worktree after the rows were listed (its lsof hides it
+# once) keeps that worktree: the removal looks again, names the process and never kills it.
+old worktree add -q -b entered "$wt/entered" "$side_hash"
+(cd "$wt/entered" && exec sleep 600) &
+entered=$!
+printf '%s\n' "$entered" >>"$DATA/orchestrators"
+lsof_hide_once "$wt/entered"
+sleep 0.3
+night job "$idc" add leftover entered >"$WORK/out" || fail "adopt a leftover a process entered"
+entered_alive=0; kill -0 "$entered" 2>/dev/null && entered_alive=1
+kill "$entered" 2>/dev/null
+rm -f "$FAKE_BIN/lsof"
+assert grep -qxF "adopted repo entered into night/$idc/leftover-entered at $wt/night-$idc-leftover-entered; the old one stays: processes inside: $entered sleep 600" "$WORK/out"
+assert [ "$entered_alive" = 1 ] && [ -d "$wt/entered" ]
+assert git -C "$WORK/repo" rev-parse -q --verify refs/heads/entered >/dev/null
 printf '%s\n' "$WORK/repo" >"$WORK/sweep-repos"
 
 # A vendor job is named by its branch's vendor, whatever run ref its updater fixer got.
