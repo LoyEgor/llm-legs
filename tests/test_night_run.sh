@@ -3,6 +3,7 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+. "$ROOT/share/test-scope.sh"
 WORK="$(mktemp -d)"
 trap 'xargs kill 2>/dev/null <"$WORK/data/orchestrators"; rm -rf "$WORK"' EXIT
 WORK="$(cd -P "$WORK" && pwd)"
@@ -24,6 +25,7 @@ DATA="$WORK/data"
 OPENED="$WORK/opened"
 NIGHTS="$WORK/doctors/nights"
 export HOME DATA OPENED
+unset WORDS_DIR WORDS_ROOT
 export DOCTORS_DIR="$WORK/doctors" LLM_DOCTOR_DIR="$WORK/llm" HARNESS_DOCTOR_DIR="$WORK/harness" \
   UPDATER_DOCTOR_DIR="$WORK/updater" NIGHT_RUN_OPENER="$FAKE_BIN/opener" NIGHT_RUN_WORKER_PICK="$FAKE_BIN/worker-pick" \
   NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-repos"
@@ -487,10 +489,11 @@ assert jqe '.jobs == [] and .finished_at == null' "$(record "$idc")"
 assert_fails night start --cleanup 2>/dev/null
 stop_chat "$(jq -r .session "$(record "$idc")")"
 
-# finish prunes every landed (in main, or a night branch still at its base), clean, not live branch of
-# the sweep repositories, night or not, with its worktree. Live = the main checkout, a process inside, a
-# running night's branch, or a non-night branch whose reflog or dirty files moved within 6 h; every other
-# branch is a leftover to carry into main, never kept.
+# finish prunes every landed (in main, or a night branch still at its base), clean, not live, not held
+# branch of the sweep repositories, night or not, with its worktree. Live = the main checkout, a process
+# inside, a running night's branch, or a non-night branch whose reflog or dirty files moved within 6 h;
+# held = Egor's `сделай холд` in the owning chat, until the next night finishes; every other branch is a
+# leftover to carry into main, never kept.
 wt="$WORK/repo/.claude/worktrees"
 old() { GIT_COMMITTER_DATE='2026-01-01T00:00:00Z' git -C "$WORK/repo" "$@"; }
 printf '%s\n' "$WORK/repo" >"$WORK/sweep-repos"
@@ -518,6 +521,25 @@ busy=$!
 (cd "$wt/plain-busy/" && exec sleep 600) &
 plain_busy=$!
 printf '%s\n' "$busy" "$plain_busy" >>"$DATA/orchestrators"
+old worktree add -q -b onhold "$wt/onhold" "$side_hash"
+journal="$HOME/.cache/claude/review-journal"
+mkdir -p "$journal"
+export WORDS_LIB="${CLAUDE_SETUP_ROOT:-$(git_projects "$ROOT")/claude-setup}/hooks/lib/words.sh"
+grant="$HOME/.cache/claude/words/chat-h/grant.night-hold"
+mkdir -p "${grant%/*}"
+printf '%s\n' "$wt/onhold" >"$journal/chat-h.repos"
+assert_fails env -u CLAUDE_CODE_SESSION_ID bash "$ROOT/bin/night-run" hold 2>/dev/null
+(cd "$WORK" && CLAUDE_CODE_SESSION_ID=chat-h night hold) 2>"$WORK/err" && fail "a hold without Egor's word"
+assert grep -qF "no fresh night-hold word of Egor's in this chat" "$WORK/err"
+jq -n '{family: "night-hold", turn: 3, at: "2026-10-04T01:00:00Z", excerpt: "сделай холд, я ещё тут", lifetime: "ttl:30m"}' >"$grant"
+touch -t 202601010000 "$grant"
+assert_fails env CLAUDE_CODE_SESSION_ID=chat-h bash "$ROOT/bin/night-run" hold 2>/dev/null
+touch "$grant"
+(cd "$WORK" && CLAUDE_CODE_SESSION_ID=chat-h night hold) >"$WORK/out" || fail "hold"
+assert [ "$(cat "$WORK/out")" = "held repo onhold until the next night finishes: сделай холд, я ещё тут" ]
+assert jqe --arg r "$WORK/repo" --arg w "$wt/onhold" '.session == "chat-h" and .words == "сделай холд, я ещё тут"
+  and .branches == [{repo: $r, branch: "onhold", worktree: $w}]' "$NIGHTS/holds/chat-h.json"
+assert_fails env CLAUDE_CODE_SESSION_ID=nobody bash "$ROOT/bin/night-run" hold 2>/dev/null
 behind=$(git -C "$WORK/repo" rev-list --count "$pushed_hash..main")
 night leftovers >"$WORK/left" || fail "leftovers"
 night leftovers --json >"$WORK/left.json" || fail "leftovers --json"
@@ -529,14 +551,16 @@ assert grep -qxF "repo stale-dirty · $wt/stale-dirty · landed · +0/-$behind m
 assert grep -qxF "repo plain-busy · $wt/plain-busy · landed · +0/-$behind main · 0 dirty · live (a process inside)" "$WORK/left"
 assert grep -qxE "repo fresh · $wt/fresh · landed · \+0/-$behind main · 0 dirty · live \(active [0-9]+m ago\)" "$WORK/left"
 assert grep -qxE "repo edited · .* · 1 dirty · live \(active [0-9]+m ago\)" "$WORK/left"
+assert grep -qxF "repo onhold · $wt/onhold · unlanded · +1/-3 main · 0 dirty · held (Egor: сделай холд, я ещё тут)" "$WORK/left"
 assert_fails grep -q '^repo main ' "$WORK/left"
-assert [ "$(wc -l <"$WORK/left" | tr -d ' ')" = 14 ]
-assert jqe --arg w "$wt" 'length == 14 and (map(.branch) | index("main")) == null
+assert [ "$(wc -l <"$WORK/left" | tr -d ' ')" = 15 ]
+assert jqe --arg w "$wt" 'length == 15 and (map(.branch) | index("main")) == null
   and (.[] | select(.branch == "stale-open")) == {repo: ($w | sub("/.claude/worktrees$"; "")), branch: "stale-open",
     worktree: "\($w)/stale-open", landed: false, ahead: 1, behind: 3, dirty: 0, live: false, state: "leftover",
     why: "1 unlanded commits"}
   and ((.[] | select(.branch == "merged-bare")) | .worktree == null and .landed and .state == "landed" and .why == null)
-  and ((.[] | select(.branch == "fresh")) | .live and .state == "live")' "$WORK/left.json"
+  and ((.[] | select(.branch == "fresh")) | .live and .state == "live")
+  and ((.[] | select(.branch == "onhold")) | (.live | not) and .state == "held")' "$WORK/left.json"
 night finish "$idc" >"$WORK/out" || fail "finish with worktrees"
 kill "$busy" "$plain_busy" 2>/dev/null
 assert grep -qxF "pruned repo night/$id/landed" "$WORK/out"
@@ -553,18 +577,24 @@ assert grep -qxF "live repo night/$idc/busy: a process inside" "$WORK/out"
 assert grep -qxF "live repo plain-busy: a process inside" "$WORK/out"
 assert grep -qxE "live repo fresh: active [0-9]+m ago" "$WORK/out"
 assert grep -qxE "live repo edited: active [0-9]+m ago" "$WORK/out"
+assert grep -qxF "held repo onhold: Egor: сделай холд, я ещё тут" "$WORK/out"
 assert_fails grep -q '^kept ' "$WORK/out"
-assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 15 ]
+assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 16 ]
 assert [ ! -e "$wt/landed" ] && [ ! -e "$wt/at-base" ] && [ ! -e "$wt/merged-old" ]
-assert [ -e "$wt/dirty/wip" ] && [ -d "$wt/open" ] && [ -d "$wt/fresh" ] && [ -d "$wt/stale-open" ] && [ -e "$wt/stale-dirty/wip" ]
+assert [ -e "$wt/dirty/wip" ] && [ -d "$wt/open" ] && [ -d "$wt/fresh" ] && [ -d "$wt/stale-open" ] && [ -e "$wt/stale-dirty/wip" ] && [ -d "$wt/onhold" ]
 for gone in "night/$id/landed" merged-old merged-bare picked-bare; do
   assert_fails git -C "$WORK/repo" rev-parse -q --verify "refs/heads/$gone"
 done
-for stays in "night/$idc/open" stale-open stale-bare stale-dirty fresh edited plain-busy; do
+for stays in "night/$idc/open" stale-open stale-bare stale-dirty fresh edited plain-busy onhold; do
   assert git -C "$WORK/repo" rev-parse -q --verify "refs/heads/$stays" >/dev/null
 done
-assert jqe '([.leftovers[] | .branch] | sort) == (["night/'"$idc"'/dirty", "night/'"$idc"'/open", "stale-bare", "stale-dirty", "stale-open"] | sort)' "$(record "$idc")"
+assert jqe '([.leftovers[] | .branch] | sort) == (["night/'"$idc"'/dirty", "night/'"$idc"'/open", "stale-bare", "stale-dirty", "stale-open"] | sort)
+  and .held == [{repo: "repo", branch: "onhold", why: "Egor: сделай холд, я ещё тут"}]' "$(record "$idc")"
 assert grep -qxF "leftover · repo · stale-open · 1 unlanded commits" <(night report "$idc")
+assert grep -qxF "held · repo · onhold · Egor: сделай холд, я ещё тут" <(night report "$idc")
+# The hold lasted that one night: its finish released it.
+assert [ ! -e "$NIGHTS/holds/chat-h.json" ]
+assert grep -qxF "repo onhold · $wt/onhold · unlanded · +1/-3 main · 0 dirty · leftover (1 unlanded commits)" <(night leftovers)
 
 # A leftover job adopts the branch into the night's namespace, where workers may commit: its WIP
 # committed, night/<id>/leftover-<slug> at its tip in a night worktree, the old worktree and branch gone.
@@ -589,16 +619,21 @@ assert [ "$(git -C "$WORK/repo" rev-parse "night/$idc/leftover-stale-bare")" = "
 assert [ -d "$wt/night-$idc-leftover-stale-bare" ]
 assert_fails git -C "$WORK/repo" rev-parse -q --verify refs/heads/stale-bare
 assert jqe '.jobs[-1].adopted[0] | .branch == "stale-bare" and .worktree == null' "$(record "$idc")"
-# Refused, nothing touched: a live branch, a landed one, main, an unknown name, a job already there.
+# Refused, nothing touched: a live branch, a held one, a landed one, main, an unknown name, a job already there.
 old branch landed-x "$pushed_hash"
-for refused in "fresh:fresh is live in repo: active" "landed-x:landed-x is no leftover: landed" \
+(cd "$WORK" && CLAUDE_CODE_SESSION_ID=chat-h night hold) >/dev/null || fail "hold again"
+for refused in "fresh:fresh is live in repo: active" "onhold:onhold is held in repo: Egor: сделай холд" \
+  "landed-x:landed-x is no leftover: landed" \
   "main:no branch main in the sweep repositories" "nosuch:no branch nosuch in the sweep repositories"; do
   assert_fails night job "$idc" add leftover "${refused%%:*}" 2>"$WORK/err"
   assert grep -qF "${refused#*:}" "$WORK/err"
 done
 assert_fails night job "$idc" add leftover stale-open --branch x 2>/dev/null
 assert git -C "$WORK/repo" rev-parse -q --verify refs/heads/landed-x >/dev/null
-assert [ -d "$wt/fresh" ] && [ -d "$wt/stale-open" ]
+assert_fails night job "$idc" add leftover onhold --ready "owner says done" 2>"$WORK/err"
+assert grep -qxF "night-run: onhold is held in repo: Egor: сделай холд, я ещё тут" "$WORK/err"
+rm "$NIGHTS/holds/chat-h.json"
+assert [ -d "$wt/fresh" ] && [ -d "$wt/onhold" ] && [ -d "$wt/stale-open" ]
 # A branch live only by activity under 6 h is adopted once its owner hands it over with --ready, recorded
 # with who, when and why; any other live reason still refuses, and a quiet old branch needs no handover.
 assert_fails night job "$idc" add leftover edited 2>"$WORK/err"

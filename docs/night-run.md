@@ -99,10 +99,9 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
    - Rerun the four doctors. This settles the ledger's `fixed-pending` rows. Commit and push that
      bookkeeping as well, so nothing is dirty after the last push.
    - `night-run finish` writes the morning result, then `span-off`. It also removes every landed,
-     clean, not live branch of the sweep repositories with its worktree (see Leftovers); it prints
-     each live one `live <repo> <branch>: <why>` and each leftover `leftover <repo> <branch>: <why>`,
-     records the leftovers under the night's `leftovers`, and `night-run report` lists them as
-     unfinished work.
+     clean, not live, not held branch of the sweep repositories with its worktree (see Leftovers); it
+     prints each one kept as `live|held|leftover <repo> <branch>: <why>`, records the leftovers under
+     the night's `leftovers` and the held ones under `held`, and `night-run report` lists both.
 
 ## Isolation rules
 - At night a worker never writes the main checkout.
@@ -177,20 +176,22 @@ state, the one predicate `finish` prunes by:
   chat declared the branch finished, adopts it and records `handover` {by (`CLAUDE_CODE_SESSION_ID`,
   else `$USER`), at, why}, shown in `night-run report`; a name in several repositories needs `--repo
   <name>` (repeatable) to scope it. The refusal names the flag; nobody vouching, the 6 h rule stands.
-- `landed`: landed, clean, not live; `finish` removes its worktree and deletes the branch.
+- `held`, not live: Egor's `сделай холд` (word family `night-hold`) in the owning chat runs `night-run
+  hold`, which on that chat's fresh grant writes `nights/holds/<session>.json` for its non-main worktrees
+  (review journal or cwd); why `Egor: <words>`, refused even with `--ready`, dropped by the next `finish`.
+- `landed`: landed, clean, not live, not held; `finish` removes its worktree and deletes the branch.
 - `leftover`: everything else (unlanded commits or uncommitted files). It is unfinished work and goes
   into main as a night job. `night-run job <id> add leftover <branch>` adopts it into the night's own
   namespace, where the review-flow gate lets workers commit, in every sweep repository where that
-  branch is a leftover (one job; refused if it is live in any of them, or landed, or unknown). Per
+  branch is a leftover (one job; refused if it is live or held in any of them, landed, or unknown). Per
   repository: uncommitted files (`.gitignore` honoured, secret names and big blobs dropped as for the
   base) become one commit `Leftover WIP from <branch>, adopted by night <id>` on the branch;
-  `night/<id>/leftover-<slug>` (`/` → `-`) is made at its tip with its worktree at
-  `<repo>/.claude/worktrees/night-<id>-leftover-<slug>`, like every night worktree; then the old
-  worktree and branch are removed. It needs `night-run base <id>` first. The job's ref is
-  `leftover-<slug>`. From there it is a night branch like any other, through the per-branch flow;
-  its worker first runs `git rebase refs/night/<id>/base`, so the review range and the later
-  `--onto` hold only its own change. A landing that fails stays `left`, and a later Cleanup takes it
-  like any other night branch.
+  `night/<id>/leftover-<slug>` (`/` → `-`, the job's ref `leftover-<slug>`) is made at its tip with its
+  worktree at `<repo>/.claude/worktrees/night-<id>-leftover-<slug>`, like every night worktree; then the
+  old worktree and branch are removed. It needs `night-run base <id>` first. From there it is a night
+  branch like any other, through the per-branch flow; its worker first runs `git rebase
+  refs/night/<id>/base`, so the review range and the later `--onto` hold only its own change. A landing
+  that fails stays `left`, and a later Cleanup takes it like any other night branch.
 
 `night-run report [<id>]` prints it narrowly. First a mechanical header from `share/night_spend.py`,
 the numbers of the morning message: duration (local start–finish, hours); jobs merged / left / other
