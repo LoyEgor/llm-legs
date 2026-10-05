@@ -202,7 +202,8 @@ Two local tools answer it ([gemini page](image-vendors/gemini.md#local-composite
   `composite=skipped reason=...`. It refuses a global edit (over 60% changed:
   `composite=refused reason=global changed=N%`, the model's image delivered), keeps the model's image as
   `<dest stem>.rendered.<ext>` (`rendered=`) whenever it changed the delivered pixels, and runs on each
-  Flow `--count` take. `--no-composite` opts out; never with `--remove-bg`/`--transparent`;
+  Flow `--count` take. `--no-composite` opts out; never with `--transparent` or Flow's `--remove-bg`, on codex `--remove-bg`
+  only asked ([background removal](#background-removal));
   `--composite[=auto|x,y,w,h]` forces it and picks the mask; `codex-image --region`/`--point` feed it.
 - `<dest>.edit.json` `{root, depth, edits:[{prompt, region, points, route, vendor, account, composite}]}`
   beside every `gemini-image`, `codex-image` and `grok-image` output, accumulated through `--ref` /
@@ -220,11 +221,25 @@ face's mean abs RGB difference from the input was Remove BG 22.3, web `--transpa
 An unaligned diff is meaningless here: the web routes scale the frame ~0.92 and shift it. Hair edges
 are the generative routes' strength; exact pixels are `image-cutout`'s.
 
-- **Default — exact pixels: `bin/image-cutout`** (local macOS Vision subject lift, free, no network,
+- **Default for photos — ChatGPT's Remove BG** (`codex-image --route web --remove-bg`; `--transparent`
+  for a new asset): people, hair, fur, glass, foliage (Egor, 2026-10-06). `image-cutout` leaves the old
+  background between loose hair strands and fragments of it around a glass (seen by eye; `--edge soft`
+  only refines the outer edge); ChatGPT also cleans the edge's colour, so a dark background leaves no dark
+  fringe. Its tone shift is small (a little brighter) and a composite is regraded anyway: the cutout is
+  delivered as is.
+- **`--remove-bg --composite`** when the subject's own pixels must stay exact (a face whose likeness is
+  judged, a label): `share/image_matte.py` registers the cutout back onto the input (SIFT, RANSAC
+  similarity) and delivers, in the input's frame and size, the cutout's alpha, the input's pixels inside
+  the subject and, in a band along the edge (1.2% of the short side), the cutout's own pixels toned locally
+  to the input, so the hair edge stays ChatGPT's. On the 2026-10-02 portrait the face came out
+  pixel-exact with a clean hair edge. A cutout it cannot lay back (a decal ChatGPT redrew flat:
+  `reason=unregistered`; an edge band over 45 mean abs RGB off: `reason=redrawn`) is delivered as is.
+  Prints `composite=matte changed=<% of the subject from the cutout>` and `rendered=` (ChatGPT's cutout).
+- **Local — exact pixels: `bin/image-cutout`** (local macOS Vision subject lift, free, no network,
   0.3–0.9 s; the first run compiles `share/image-cutout.swift` into
   `~/.cache/image-cutout/<source hash>/`, ~8 s). Kept RGB is byte-identical to the input's decode and
-  the input's colour profile is kept; only alpha is added. Use it for photos, people, products and
-  anything private.
+  the input's colour profile is kept; only alpha is added. Use it for logos, decals, flat graphics and
+  hard-edged objects, anything private, batches, and whenever ChatGPT is walled.
 
   ```bash
   image-cutout --in /abs/photo.jpg --dest /abs/cut.png --dry-run      # lists instance=<n> center= box= area=
@@ -243,12 +258,28 @@ are the generative routes' strength; exact pixels are `image-cutout`'s.
   decal it cleared the window showing through (40 % of the kept area) with no pink pixel lost;
   on photos it eats the subject (64–84 % of the kept area), so logos/decals/flat graphics only, and
   check the `holes=` share it prints. Exit 1: no subject, or the points leave nothing.
-- **Generative** (`codex-image --route web --remove-bg`, `--transparent`) when looking the same
-  is enough and pixels need not match: the finest hair edges, a logo or illustration to be cleaned
-  up anyway, or a new asset. `image-cutout` keeps the old background visible between loose hair
-  strands (seen by eye; `--edge soft` only refines the outer edge).
 - **Flow's Cutout** (`gemini-image --remove-bg`, MODNet on-device in Flow's Image Editor; the input's
   own pixels under Flow's matte) exists for parity only. On 2026-10-03 it ate half the hair of a
   portrait, kept background fragments, and melted a flat teapot scene, where `image-cutout` was
   clean on both; Flow's BEN2 option fails in the page. Don't pick it.
-- Never hand-roll thresholding or chroma keys on a real image; `image-cutout` is the tool.
+- Never hand-roll thresholding, chroma keys or a mask of your own on a real image.
+
+## Likeness of a real person
+
+Takes of a real person are ranked by a face-recognition score, never by a model's eye: Fable, Opus, Sol,
+Grok and Gemini picked the closer of two takes at chance on the art director's 126 rated pairs, even on
+clearly different faces; Astra refuses. The scorer is the video harness's `likeness.py`, the AdaFace IR101
+cosine of a take's face to the person's own photos. ArcFace R50/R100, DINOv2, CLIP, DreamSim, age, 3D
+landmarks and their ensembles did no better (`/Volumes/Work/Projects/video/research/likeness/REPORT.md`).
+
+```bash
+uv run -q --script /Volumes/Work/Projects/video/harness/skill/scripts/likeness.py <take>... --ref <photo>... [--features]
+```
+
+- Score all compared takes against ONE pool: the person's photos minus every photo any of them used as a
+  reference. A reference inflates its own takes, and a pool per take flattered the agreement (25 against
+  21 of 34 near-tie pairs).
+- It shortlists, it does not pick: own photos score 0.63–0.74, strangers ≤ 0.05; a gap under 0.03 is a
+  tie, and near-ties go to the eye of someone who knows the face, on the finished frames side by side.
+- Photoreal faces of one base frame, closed mouths where possible; profiles are skipped. `--features`
+  prints eye tilt, face width, jaw, nose and lips as σ against the photos: what differs, not a ranking.

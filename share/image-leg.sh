@@ -130,7 +130,9 @@ image_leg_composite_arg() { # flag
 # a contradiction exits 2 before anything is spent. The input is copied now: dest may overwrite it.
 # Mask arguments a wrapper set in IMAGE_LEG_COMPOSITE_ARGS (--region, --point) stand unless
 # --composite names its own.
-image_leg_composite_plan() { # vendor resume repaint(true|false) [ref...]
+# repaint=matte: the render is a generative cutout of the one input (Remove BG), laid back onto it
+# only on --composite.
+image_leg_composite_plan() { # vendor resume repaint(true|false|matte) [ref...]
   local vendor=$1 resume=$2 repaint=$3 tool=${IMAGE_LEG_TOOL:-image} ask=${IMAGE_LEG_COMPOSITE_ASK:-} inputs input='' dir=''
   shift 3
   inputs=$#
@@ -140,7 +142,8 @@ image_leg_composite_plan() { # vendor resume repaint(true|false) [ref...]
     inputs=1
     input=$(image_leg_session_input "$vendor" "$resume") || input=''
   fi
-  IMAGE_LEG_COMPOSITE_INPUT=$input IMAGE_LEG_COMPOSITE_SKIP='' IMAGE_LEG_COMPOSITE_QUIET=''
+  IMAGE_LEG_COMPOSITE_INPUT=$input IMAGE_LEG_COMPOSITE_SKIP='' IMAGE_LEG_COMPOSITE_QUIET='' IMAGE_LEG_COMPOSITE_SCRIPT=image_composite.py
+  [ "$repaint" != matte ] || IMAGE_LEG_COMPOSITE_SCRIPT=image_matte.py
   if [ -n "$ask" ]; then
     if [ -n "${IMAGE_LEG_COMPOSITE_OFF:-}" ]; then
       printf '%s: pass --composite or --no-composite, not both\n' "$tool" >&2
@@ -154,6 +157,10 @@ image_leg_composite_plan() { # vendor resume repaint(true|false) [ref...]
       printf '%s: --composite never runs with --remove-bg or --transparent: both repaint the whole background\n' "$tool" >&2
       exit 2
     fi
+    if [ "$repaint" = matte ] && [ "$ask" != auto ]; then
+      printf '%s: --composite on --remove-bg lays the cutout back onto the whole input: no x,y,w,h\n' "$tool" >&2
+      exit 2
+    fi
     if [ -z "$input" ]; then
       printf '%s: --composite needs the image being edited: a --ref, or --resume of a session whose last image this machine delivered\n' "$tool" >&2
       exit 2
@@ -162,7 +169,7 @@ image_leg_composite_plan() { # vendor resume repaint(true|false) [ref...]
     [ "$ask" = auto ] || IMAGE_LEG_COMPOSITE_ARGS=(--mask "$ask")
   elif [ -n "${IMAGE_LEG_COMPOSITE_OFF:-}" ]; then
     IMAGE_LEG_COMPOSITE_SKIP=opted-out IMAGE_LEG_COMPOSITE_QUIET=true
-  elif [ "$repaint" = true ]; then
+  elif [ "$repaint" != false ]; then
     IMAGE_LEG_COMPOSITE_SKIP=transparent IMAGE_LEG_COMPOSITE_QUIET=true
   elif [ "$inputs" -eq 0 ]; then
     IMAGE_LEG_COMPOSITE_SKIP=new-generation
@@ -196,12 +203,12 @@ image_leg_composite_take() { # root dest [variant]
   [ -n "${IMAGE_LEG_COMPOSITE_BASE:-}" ] || return 0
   uv=$(command -v uv || printf /opt/homebrew/bin/uv)
   # uv leaves its script lock in TMPDIR; the run's own composite directory takes it away at exit.
-  if cp "$dest" "$rendered" && line=$(TMPDIR=${IMAGE_LEG_COMPOSITE_BASE%/*} "$uv" run -q --script "$root/share/image_composite.py" \
+  if cp "$dest" "$rendered" && line=$(TMPDIR=${IMAGE_LEG_COMPOSITE_BASE%/*} "$uv" run -q --script "$root/share/${IMAGE_LEG_COMPOSITE_SCRIPT:-image_composite.py}" \
       --base "$IMAGE_LEG_COMPOSITE_BASE" --edited "$rendered" --out "$dest" \
       ${IMAGE_LEG_COMPOSITE_ARGS[@]+"${IMAGE_LEG_COMPOSITE_ARGS[@]}"}); then
     printf '%s\n' "$line"
     case $line in
-      composite=auto\ * | composite=region\ * | composite=points\ *)
+      composite=auto\ * | composite=region\ * | composite=points\ * | composite=matte\ *)
         printf 'rendered=%s\n' "$rendered"
         return 0
         ;;

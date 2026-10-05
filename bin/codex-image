@@ -21,7 +21,7 @@ usage() {
     "$(image_caps_get "$root" codex '.routes | join(", ")' 2>/dev/null)" >&2
   printf '       codex-image --route web --resume <chat id> --aspect <W:H> --dest <absolute path>   (re-aspect the chat'"'"'s last image)\n' >&2
   printf '       codex-image --route web (--resume <chat id> | --ref <image>) --point <x,y=text>... --dest <absolute path>   (point edits)\n' >&2
-  printf '       codex-image --route web (--resume <chat id> | --ref <image>) --remove-bg --dest <absolute .png path>   (Remove BG)\n' >&2
+  printf '       codex-image --route web (--resume <chat id> | --ref <image>) --remove-bg [--composite] --dest <absolute .png path>   (Remove BG; --composite: the input'"'"'s own pixels inside the cutout)\n' >&2
   printf '       references: at most %s (--route web %s); transparency mode: %s\n' "$ref_max" \
     "$(image_caps_get "$root" codex '.web.refs_max // "none"' 2>/dev/null)" "$transparent_mode" >&2
   exit 2
@@ -478,7 +478,8 @@ IMAGE_LEG_COMPOSITE_ARGS=()
 [ -z "$region" ] || IMAGE_LEG_COMPOSITE_ARGS=(--mask "$region")
 [ "${#points[@]}" -eq 0 ] || for point in "${points[@]}"; do IMAGE_LEG_COMPOSITE_ARGS+=(--point "$point"); done
 repaint=false
-[ "$remove_bg" = false ] && [ "$remove_green" = false ] || repaint=true
+[ "$remove_green" = false ] || repaint=true
+[ "$remove_bg" = false ] || repaint=matte
 if [ -n "$IMAGE_LEG_EDIT" ]; then
   image_leg_composite_plan codex '' "$repaint" "$IMAGE_LEG_EDIT"
 else

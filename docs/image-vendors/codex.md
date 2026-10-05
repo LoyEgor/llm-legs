@@ -180,7 +180,9 @@ cli 16:9 → 1664×936, all `fit=ok`; `--transparent` gave real alpha on both ro
   (a pure-cut fidelity of ≈0 measured 31–79 mean abs RGB). It has no text field and drops a composer draft,
   so `--remove-bg` refuses `--prompt`; delivery fails (exit 1, nothing written) when the image has no
   transparency. Free and pixel-exact instead: macOS Vision's subject lift (`VNGenerateForegroundInstanceMaskRequest`),
-  which keeps every pixel but leaves background inside a logo's holes.
+  which keeps every pixel but leaves background inside a logo's holes. `--remove-bg --composite` lays the
+  cutout back onto the input with `share/image_matte.py`: the input's pixels inside, ChatGPT's toned edge
+  band and alpha, in the input's frame ([background removal](../image-vendors.md#background-removal)).
 
 ## Local composite and edit lineage
 
@@ -193,7 +195,8 @@ references while every `--ref` stays a reference only; else the single `--ref`, 
 image this machine delivered in that chat). A `--region` edit masks its rectangle and a `--point` edit the
 changed areas touching the points; any other edit masks the difference map. A new generation, several
 references, a resume with no recorded image or a changed aspect (the viewer's Resize) print
-`composite=skipped reason=...`; `--no-composite`, `--remove-bg` and `--transparent` never composite.
+`composite=skipped reason=...`; `--no-composite` and `--transparent` never composite, `--remove-bg` only
+with `--composite` (a matte, above).
 `--composite[=auto|x,y,w,h]` forces it and picks the mask (refused, exit 2, with no input image). The run
 prints `composite=<region|points|auto> changed=<percent>` plus `rendered=<dest stem>.rendered.<ext>` (the
 model's own image), or `composite=refused reason=global|no-local-change changed=<percent> kind=<mask>`

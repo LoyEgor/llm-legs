@@ -1317,6 +1317,7 @@ assert test ! -e "$WEB_CALLS"
 assert test "$(WEB_MODE=alpha image_rc --route web --dest "$OUT/n.png" --ref "$WORK/r1.png" --remove-bg)" = 0
 assert test "$(sed -n 1p "$WEB_CALLS")" = remove-bg
 assert_fails grep -qx -- --prompt "$WEB_CALLS"
+assert_fails grep -q '^composite=' "$IMAGE_OUT"
 assert test "$("$REAL_MAGICK" "$OUT/n.png" -alpha extract -format '%[fx:minima]' info:)" = 0
 rm -f "$OUT/n.png"
 assert test "$(image_rc --route web --dest "$OUT/n.png" --resume "$CHAT" --remove-bg)" = 1
@@ -1361,8 +1362,12 @@ for refused in "--ref $WORK/green.png --composite --no-composite" "--ref $WORK/g
   assert test "$(image_rc --route web --dest "$OUT/c8.png" --prompt x $refused)" = 2
   assert test ! -e "$WEB_CALLS"
 done
-assert test "$(image_rc --route web --dest "$OUT/c8.png" --ref "$WORK/green.png" --remove-bg --composite)" = 2
-assert grep -q 'never runs with --remove-bg or --transparent' "$IMAGE_ERR"
+assert test "$(image_rc --route web --dest "$OUT/c8.png" --ref "$WORK/green.png" --remove-bg --composite=0.5,0.5,0.4,0.4)" = 2
+assert grep -q -- '--composite on --remove-bg lays the cutout back onto the whole input' "$IMAGE_ERR"
+assert test ! -e "$WEB_CALLS"
+assert test "$(WEB_MODE=alpha image_rc --route web --dest "$OUT/c9.png" --ref "$WORK/green.png" --remove-bg --composite)" = 0
+assert grep -qx 'composite=skipped reason=unregistered' "$IMAGE_OUT"
+assert test ! -e "$OUT/c9.rendered.png"
 assert test "$(image_rc --route cli --dest "$OUT/c8.png" --prompt x --ref "$WORK/green.png" --composite --account acct)" = 1
 assert test -s "$CLI_CALLS"
 
