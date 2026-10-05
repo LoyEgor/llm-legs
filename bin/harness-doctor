@@ -7,6 +7,7 @@ import argparse
 import ast
 import bisect
 import calendar
+import collections
 import ctypes
 import datetime
 import fcntl
@@ -4657,6 +4658,18 @@ def speed_block(menu, document, parts):
 def menu_text(document):
     count = document["problem_count"] or (1 if document["status"] == "error" else 0)
     menu = MenuLines(count, document["as_of_s"], document["title"])
+    groups = collections.Counter(p.get("group") or "Other" for p in document["problems"]
+                                 if p.get("state") in LOUD_STATES)
+    speed = document.get("speed") or {}
+    header = {"status": document["status"], "problems": [
+        {k: p[k] for k in ("id", "ledger") if k in p} for p in document["problems"]],
+        "issues": [[count, group] for group, count in groups.most_common(3)],
+        "speed": {k: speed[k] for k in ("as_of_s", "status", "lost_min_day", "lost_min_day_by_day") if k in speed}}
+    header["speed"]["issues"] = [[f["recoverable_min_day"], f["label"]]
+                                 for f in sorted((speed.get("budget") or {}).get("floors") or (),
+                                                 key=lambda f: -f["recoverable_min_day"])
+                                 if f["recoverable_min_day"] > 0][:3]
+    menu.lines.append("H\t" + json.dumps(header, separators=(",", ":")))
     sections = document.get("sections") or ()
     if document["status"] != "error":
         speed_block(menu, document, [s for s in sections if s["name"] in SPEED_SECTIONS])

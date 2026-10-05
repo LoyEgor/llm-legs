@@ -269,7 +269,7 @@ check(module.covers({"chat.om_per_100_prompts|all|-": {"days": 6}}) == []
 
 menu, _ = speed("speed", "--menu")
 lines = menu.stdout.splitlines()
-check(lines[0] == "T\t0\t%d\tHarness doctor: ok" % HI and lines[1] == "0\t\t\tSpeed: ok · 12 min/day over the floor · 179 OM/d · 3.9 of 7 days covered · R 2/10: 88/238"
+check(lines[0] == "T\t0\t%d\tHarness doctor: ok" % HI and lines[2] == "0\t\t\tSpeed: ok · 12 min/day over the floor · 179 OM/d · 3.9 of 7 days covered · R 2/10: 88/238"
       and "1\t\t\tChat turns: 103 min/day · model 64 · tools 30 · tests 5.4" in lines
       and "1\t\t\tDelegation: +76 min/day · workers 54 · background Bash 17 · media 2.7" in lines
       and "2\td\t\t2 · chat/hooks · saves 3.3 min/day · S · provable-absence fast path for the hook setting the Pre-Bash floor"
@@ -417,8 +417,8 @@ check([p["state"] for p in bare["problems"]] == ["new", "new", "open"] and "spee
       and not [p for p in bare["problems"] if "judged_by" in p] and bare["problem_count"] == 3,
       "without a section every rule gets its own verdict back")
 lines = h.menu_text(merged).splitlines()
-check(lines[1].startswith("0\t\tr:") and "Speed: 1 problem · 12 min/day over the floor · 179 OM/d · 3.9 of 7 days covered" in lines[1]
-      and lines.index("1\t\t\tWaits: watch · a wait") > 1 and any(l.startswith("0\t") and "Guards: 1 problem" in l
+check(lines[2].startswith("0\t\tr:") and "Speed: 1 problem · 12 min/day over the floor · 179 OM/d · 3.9 of 7 days covered" in lines[2]
+      and lines.index("1\t\t\tWaits: watch · a wait") > 2 and any(l.startswith("0\t") and "Guards: 1 problem" in l
                                                                    for l in lines),
       "the Speed line heads the menu with its count, the Waits section under it, Guards after it: %s" % lines[1:3])
 
@@ -450,7 +450,7 @@ latest = json.load(open(os.path.join(harness_dir, "latest.json")))
 first = latest["speed"]
 menu_txt = open(os.path.join(harness_dir, "menu.txt")).read().splitlines()
 check(out.returncode == 0 and first["headline"] == doc["headline"] and counted_once(latest)
-      and menu_txt[1] == "0\t\tr:7:9\tSpeed: 1 problem · 12 min/day over the floor · 179 OM/d · 3.9 of 7 days covered · R 2/10: 88/238"
+      and menu_txt[2] == "0\t\tr:7:9\tSpeed: 1 problem · 12 min/day over the floor · 179 OM/d · 3.9 of 7 days covered · R 2/10: 88/238"
       and latest["problems"][0]["state"] == "new" and latest["problem_count"] == 3
       and not os.path.exists(os.path.join(own, "latest.json")) and not os.path.exists(os.path.join(own, "menu.txt")),
       "a persisting run lays its section into Harness's latest.json and the top of its menu.txt and writes neither "
@@ -463,6 +463,25 @@ with open(os.path.join(work, "doctors", "problem-days.jsonl")) as handle:
     days = [json.loads(l) for l in handle]
 check([(r["doctor"], r["count"]) for r in days] == [("harness", latest["problem_count"])],
       "the merged document writes Harness's daily problem-count row with the count the menu shows: %s" % days)
+
+header = json.loads(menu_txt[1].removeprefix("H\t"))
+state_path = os.path.join(own, "state.json")
+state = json.load(open(state_path))
+today, yesterday = h.local_day(HI), h.local_day(HI - 86400)
+state["lost_min_day_by_day"] = {today: 100, yesterday: 20, "2000-01-01": 900}
+with open(state_path, "w") as handle:
+    json.dump(state, handle)
+speed("speed-own", "--quiet")
+repeated = json.load(open(os.path.join(harness_dir, "latest.json")))["speed"]
+check(doc.get("lost_min_day_by_day") == first.get("lost_min_day_by_day") == {today: 12.0}
+      and header == {"status": latest["status"],
+                     "problems": [{k: p[k] for k in ("id", "ledger") if k in p} for p in latest["problems"]],
+                     "issues": [[1, "Waits"], [1, "Guards"], [1, "Memory guard"]],
+                     "speed": {"as_of_s": first["as_of_s"], "status": first["status"], "lost_min_day": 12.0,
+                               "lost_min_day_by_day": {today: 12.0}, "issues": [[8.7, "suites running"], [3.3, "stop hooks"]]}}
+      and repeated.get("lost_min_day_by_day") == json.load(open(state_path)).get("lost_min_day_by_day")
+      == {today: 100, yesterday: 20},
+      "floor history and compact header preserve daily maxima, prune old days, and invent no OM/d history: %s" % header)
 
 events_file = os.path.join(work, "harness", "events", "2026-10-02.jsonl")
 with open(events_file) as handle:

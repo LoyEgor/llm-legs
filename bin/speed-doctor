@@ -1115,6 +1115,11 @@ def collect(write, now):
         "lost_min_day": budget.get("lost_min_day"),
         "budget": budget,
     }
+    history = state.get("lost_min_day_by_day") or {}
+    history = {day: value for day, value in history.items() if day >= H.local_day(now - JOURNAL_DAYS * 86400)}
+    if document["lost_min_day"] is not None:
+        history[today] = max(history.get(today, 0), document["lost_min_day"])
+    state["lost_min_day_by_day"] = document["lost_min_day_by_day"] = history
     document["menu"] = menu_lines(document)
     document["timing"] = {"cpu_s": round(H.cpu_s() - cpu_start, 2)}
     if write:

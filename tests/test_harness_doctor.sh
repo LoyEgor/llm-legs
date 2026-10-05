@@ -308,11 +308,14 @@ assert_eq 'true' "$(doc '.sections[] | select(.name == "Load") | .fact | test(" 
   "a problem that started after the first run carries its start on the verdict"
 
 python3 - "$HARNESS_DOCTOR_DIR/menu.txt" <<'EOF' || fail "menu.txt spans do not point at the red cells"
-import sys
+import json, sys
 lines = open(sys.argv[1], "rb").read().split(b"\n")
 assert lines[0].startswith(b"T\t"), lines[0]
+assert lines[1].startswith(b"H\t"), lines[1]
+header = json.loads(lines[1][2:])
+assert set(header) == {"status", "problems", "issues", "speed"}, header
 red = 0
-for line in lines[1:]:
+for line in lines[2:]:
     if not line:
         continue
     depth, flags, spans, text = line.split(b"\t", 3)
@@ -328,7 +331,7 @@ python3 - "$HARNESS_DOCTOR_DIR/menu.txt" <<'EOF' || fail "an area's top line is 
 import re, sys
 lines = open(sys.argv[1]).read().split("\n")
 areas, problems, top = 0, {"0": 0, "1": 0}, None
-for line in lines[1:]:
+for line in lines[2:]:
     depth, flags, spans, text = line.split("\t", 3)
     if depth == "0" and flags.startswith("s"):
         break
@@ -345,16 +348,16 @@ for line in lines[1:]:
         start = len(match.group(1)) + 2
         assert "r:%d:%d" % (start, len(match.group(2))) in spans.split(","), (spans, text)
 assert areas >= 8, areas
-assert lines[1].split("\t")[3].startswith("Speed: "), lines[1]
+assert lines[2].split("\t")[3].startswith("Speed: "), lines[1]
 assert problems["0"] == int(lines[0].split("\t")[1]) > 0, (problems, lines[0])
-assert problems["1"] == int(lines[1].split("\t")[3].split(": ")[1].split()[0].replace("ok", "0")), (problems, lines[1])
+assert problems["1"] == int(lines[2].split("\t")[3].split(": ")[1].split()[0].replace("ok", "0")), (problems, lines[1])
 EOF
 asserts=$((asserts + 1))
 python3 - "$HARNESS_DOCTOR_DIR/menu.txt" <<'EOF' || fail "menu.txt does not tag every line of a window block, and only those"
 import re, sys
 labels = {"3": "3 h", "6": "6 h", "12": "12 h", "24": "24 h", "72": "3 d", "168": "7 d"}
 blocks, current, untagged = {}, None, 0
-for line in filter(None, open(sys.argv[1], encoding="utf-8").read().split("\n")[1:]):
+for line in filter(None, open(sys.argv[1], encoding="utf-8").read().split("\n")[2:]):
     depth, flags, _, text = line.split("\t", 3)
     tag = re.fullmatch(r"[a-z]*?(?:w(\d+))?", flags).group(1)
     if depth == "0":

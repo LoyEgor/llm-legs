@@ -17,6 +17,51 @@ amended text.
 - A fixer fixes clear bugs itself. Only ambiguous items go to the doctor's owner chat as a handoff.
   It watches for the doctor's own blind spots and for causes fixed more than once, and adds no bulk.
 
+### Menu layout
+
+Egor scans the first level and each doctor's first level; he reads no captions there. Glyphs,
+the palette (RED, DIM_RED, DIM, GREEN) and aligned columns carry state; every other row lives
+unchanged under `LLM details`. Fixture render:
+
+```
+Doctors: 8 problems
+LLM        2          ▁▁▂▃▄▆█ ↑    3 ▸
+Harness    3          ▁▁▂▃▄▆█ ↑    3 ▸
+Updater    0          ▁▁▂▃▄▆█ ↑    3 ▸
+Code       3          ▁▁▂▃▄▆█ ↑    3 ▸
+Speed     12 min/day  ▁▁▂▃▄▆█ ↑   25 ▸
+Last night 5 Oct · stopped early: no jobs
+──────────
+Cleanup now
+Run everything now
+
+LLM ▸     8  reviewers crashed
+          4  review anchors
+       Fix — open a fixer chat
+       fixer: never ran
+       ──────────
+       LLM details ▸   (the doctor's whole previous tree)
+```
+
+- Summary row, fixed cells: name (7, in the status color) · value (4, right) · unit (7: `min/day` for Speed, blank
+  for counts) · 7 bars · arrow · usual (4, right, DIM). Counts are bare; the only time unit is min/day
+  (Speed: Harness time budget `lost_min_day`; its problems stay counted by Harness alone).
+- Status color of the name (no dot: `●` is the LLM Limits pin mark): GREEN ok, RED problems or collector error, DIM_RED watch/blind/pending update, DIM no data or
+  stale (Speed also without an observation dated today). Missing value: DIM `–`.
+- Bars: six completed local dates and today, daily `max` of `problem-days.jsonl` (Speed: the daily
+  maxima in Harness's `menu.txt` header). Eight heights against the window maximum. An unmeasured date
+  is a DIM `–`, never an invented bar. Today is DIM; a completed date above `usual` is RED, others DIM.
+- `usual` is the median of measured completed dates, never today; arrow is yesterday against it:
+  RED ↑ above, GREEN ↓ below, DIM → equal, DIM `–` without both.
+- A doctor's first level: up to three issue rows (RED count, the problem's own short name;
+  Speed's floor gaps in min/day, plus nonempty `Needs Egor` rows), Fix, fixer, separator,
+  `LLM details`. The details hold every previous row in order, the non-ordinary status title
+  (stale, failed, pending) first; Speed's details are Harness's `Speed:` subtree.
+- Harness's `menu.txt` carries `H<TAB><JSON>` right after `T`: status, problem ids/ledger refs,
+  three group issues, Speed's status, timestamp, floor, daily series and three floor gaps. The menu
+  reads it and `problem-days.jsonl` cached by inode, mtime and size, never Harness's `latest.json`;
+  a header-less file shows open Harness ledger rows as `known, awaiting snapshot`.
+
 Who builds what:
 - **Each doctor's owner chat** builds its document and ledger in this shape, its section of
   `docs/doctor-fix.md`, and the tests that hold both.

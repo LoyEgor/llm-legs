@@ -72,12 +72,15 @@ jq -Rn --arg s "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{id: "n1", started_at: $s, fini
 DOCTORS_DIR="$VOCAB/doctors" bash "$ROOT/bin/night-run" latest --menu | tail -n +2 | awk -F'\t' '$5 != "doctor"' | cut -f1 >"$VOCAB/labels.txt"
 [ "$(wc -l <"$VOCAB/labels.txt" | tr -d ' ')" = 16 ] || fail "night-run labels: $(tr '\n' ' ' <"$VOCAB/labels.txt")"
 
-output=$(python3 - "$ROOT/tests/doctors_menu_harness.lua" "$VOCAB" <<'HSPY'
+output=$(python3 - "$ROOT/tests/doctors_menu_harness.lua" "$VOCAB" "${DOCTORS_MENU_SOURCE:-}" "${DOCTORS_MENU_TRENDS_ONLY:-}" "${DOCTORS_MENU_BASELINE:-}" <<'HSPY'
 import subprocess
 import sys
 
+source = "[[" + sys.argv[3] + "]]" if sys.argv[3] else "nil"
+only = "true" if sys.argv[4] else "false"
+baseline = "[[" + sys.argv[5] + "]]" if sys.argv[5] else "nil"
 try:
-    result = subprocess.run(["hs", "-c", f"return loadfile([[{sys.argv[1]}]])([[{sys.argv[2]}]])"],
+    result = subprocess.run(["hs", "-c", f"return loadfile([[{sys.argv[1]}]])([[{sys.argv[2]}]], {source}, {only}, {baseline})"],
                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
 except (FileNotFoundError, subprocess.TimeoutExpired):
     raise SystemExit(124)
@@ -86,6 +89,7 @@ sys.stderr.write(result.stderr)
 raise SystemExit(result.returncode)
 HSPY
 ) || fail "the Hammerspoon harness threw or timed out: $output"
+printf '%s\n' "$output" | awk '/^(BENCH|FIXTURE|SUBMENU) /'
 result=$(printf '%s\n' "$output" | grep -v '^-- Loading extension: ' | awk '/^(PASS|FAIL)/ { found = 1 } found')
 case "$result" in
   PASS:*) echo "OK: $result" ;;

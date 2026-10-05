@@ -121,13 +121,31 @@ local function fitRow(item)
   return ok and fitted or item
 end
 
-local function readJson(path)
+local function readJson(path, format)
   local attrs = hs.fs.attributes(path)
   if not attrs then jsonCache[path] = nil return nil end
   local key = string.format("%s:%s:%s", attrs.ino or "", attrs.modification or "", attrs.size or "")
   local hit = jsonCache[path]
   if hit and hit.key == key then return hit.value end
-  local ok, value = pcall(hs.json.read, path)
+  local ok, value = pcall(function()
+    if not format then return hs.json.read(path) end
+    local handle = io.open(path)
+    if not handle then return nil end
+    local rows = {}
+    for line in handle:lines() do
+      if format == "header" and not line:match("^[TH]\t") then break end
+      local payload = format == "header" and line:match("^H\t(.*)") or format == "days" and line
+      if payload then
+        local valid, row = pcall(hs.json.decode, payload)
+        if valid and type(row) == "table" then
+          if format == "header" then handle:close() return row end
+          rows[#rows + 1] = row
+        end
+      end
+    end
+    handle:close()
+    return format == "days" and rows or nil
+  end)
   value = ok and type(value) == "table" and value or nil
   jsonCache[path] = { key = key, value = value }
   return value
@@ -565,13 +583,20 @@ local function ledgerPath(doctor)
   return repoRoot and repoRoot .. "/share/" .. doctor.ledger
 end
 
+local function doctorDocument(doctor)
+  local folder = dirFor(doctor.key .. "DoctorDir", doctor.env .. "_DIR", "/.cache/" .. doctor.key .. "-doctor")
+  return readJson(folder .. (doctor.key == "harness" and "/menu.txt" or "/latest.json"),
+    doctor.key == "harness" and "header" or nil)
+end
+
 -- The same set bin/doctor-fix snapshots as quiet: open ledger rows no problem of the document names.
 local function quietRow(doctor)
-  local document = readJson(dirFor(doctor.key .. "DoctorDir", doctor.env .. "_DIR", "/.cache/" .. doctor.key .. "-doctor")
-    .. "/latest.json")
+  local document = doctorDocument(doctor)
   local path = ledgerPath(doctor)
   local ledger = path and readJson(path)
-  if not document or document.status == "error" or not ledger then return nil end
+  local unclassified = not document and doctor.key == "harness"
+  if not ledger or not document and not unclassified or document and document.status == "error" then return nil end
+  document = document or {}
   local seen = {}
   for _, problem in ipairs(type(document.problems) == "table" and document.problems or {}) do
     if type(problem) == "table" then
@@ -588,7 +613,7 @@ local function quietRow(doctor)
     end
   end
   if #rows == 0 then return nil end
-  return { title = infoTitle("known, quiet", false, true), menu = rows }
+  return { title = infoTitle(unclassified and "known, awaiting snapshot" or "known, quiet", false, true), menu = rows }
 end
 
 local BUILDERS = {
@@ -599,9 +624,119 @@ local BUILDERS = {
 }
 local NAMES = { llm = "LLM doctor", harness = "Harness doctor", updater = "Updater doctor", code = "Code doctor" }
 
+local BARS = { "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█" }
+local MISSING = "–"
+
+local TONES = { [style.RED] = "r", [style.DIM_RED] = "d", [style.DIM] = "m", [style.GREEN] = "g" }
+local styledCache, styledCount = {}, 0
+
+local function styled(segments)
+  local key = {}
+  for index, segment in ipairs(segments) do key[index] = (TONES[segment[2]] or "-") .. segment[1] end
+  key = table.concat(key, "\0")
+  if styledCache[key] then return styledCache[key] end
+  local title
+  for _, segment in ipairs(segments) do
+    local piece = hs.styledtext.new(segment[1], { font = style.MONO, color = segment[2] })
+    title = title and title .. piece or piece
+  end
+  if styledCount >= 256 then styledCache, styledCount = {}, 0 end
+  styledCache[key], styledCount = title, styledCount + 1
+  return title
+end
+
+local function rounded(value) return string.format("%d", math.floor(value + 0.5)) end
+local function padded(text, width) return string.rep(" ", width - cells(text)) .. text end
+
+local function summaryTitle(name, value, unit, status, history, now, stale)
+  local days, prior, high = {}, {}, 0
+  local date = os.date("*t", now)
+  for index = 1, 7 do
+    local day = os.date("%Y-%m-%d", os.time({ year = date.year, month = date.month, day = date.day - 7 + index,
+      hour = 12 }))
+    local amount = tonumber(history[day])
+    if amount and amount >= 0 then
+      days[index], high = amount, math.max(high, amount)
+      if index < 7 then prior[#prior + 1] = amount end
+    end
+  end
+  table.sort(prior)
+  local median = #prior > 0 and (prior[math.floor((#prior + 1) / 2)] + prior[math.ceil((#prior + 1) / 2)]) / 2 or nil
+  local tone = (stale or status == "nodata") and style.DIM
+    or (status == "error" or status == "problems") and style.RED
+    or (status == "blind" or status == "watch") and style.DIM_RED or style.GREEN
+  local segments = { { string.format("%-7s", name), tone }, { " " },
+    value and { padded(rounded(value), 4) } or { padded(MISSING, 4), style.DIM }, { string.format(" %-7s  ", unit or "") } }
+  for index = 1, 7 do
+    local amount = days[index]
+    segments[#segments + 1] = amount == nil and { MISSING, style.DIM }
+      or { BARS[high == 0 and 1 or math.max(1, math.ceil(amount / high * 8))],
+        index < 7 and median and amount > median and style.RED or style.DIM }
+  end
+  local yesterday = days[6]
+  segments[#segments + 1] = { " " }
+  segments[#segments + 1] = not (yesterday and median) and { MISSING, style.DIM }
+    or yesterday > median and { "↑", style.RED } or yesterday < median and { "↓", style.GREEN } or { "→", style.DIM }
+  segments[#segments + 1] = { " " .. padded(median and rounded(median) or MISSING, 4), style.DIM }
+  return styled(segments)
+end
+
+local function issueRow(amount, unit, what)
+  return fitRow({ title = styled({ { padded(rounded(amount), 4), style.RED },
+    { (unit and " " .. unit or "") .. "  " .. what } }), disabled = true })
+end
+
+local function issueRows(doctor, document)
+  local issues = {}
+  if not document then return issues end
+  local function add(count, what)
+    if count > 0 then issues[#issues + 1] = { count = count, what = what } end
+  end
+  if doctor.key == "harness" then
+    for _, issue in ipairs(document.issues or {}) do add(tonumber(issue[1]) or 0, tostring(issue[2])) end
+  elseif doctor.key == "llm" then
+    for _, block in ipairs(document.blocks or {}) do
+      for _, problem in ipairs(block.problems or {}) do
+        if problem.kind == "bug" then add(tonumber(problem.count) or 1, block.block .. " " .. (problem.label or problem.id)) end
+      end
+      for _, issue in ipairs((block.machinery or {}).classes or {}) do
+        if LOUD[issue.status] then add(tonumber(issue.count) or 0, "review " .. (tostring(issue.class):gsub("_", " "))) end
+      end
+    end
+    for _, health in ipairs(document.health or {}) do
+      if health.status == "problem" then add(tonumber(health.count) or 1, tostring(health.name)) end
+    end
+  elseif doctor.key == "code" then
+    for _, group in ipairs(CODE_GROUPS) do add(tonumber((document.groups or {})[group.key]) or 0, group.name) end
+  end
+  if #issues == 0 then
+    for _, problem in ipairs(document.problems or {}) do
+      if LOUD[problem.state] then add(1, tostring(problem.fact or problem.id)) end
+    end
+  end
+  table.sort(issues, function(a, b) return a.count > b.count or a.count == b.count and a.what < b.what end)
+  local rows = {}
+  for index = 1, math.min(3, #issues) do rows[index] = issueRow(issues[index].count, nil, issues[index].what) end
+  return rows
+end
+
+local function egorLayer(rows, menu, details)
+  rows[#rows + 1], rows[#rows + 2] = menu[#menu - 1], menu[#menu]
+  rows[#rows + 1] = { title = "-" }
+  rows[#rows + 1] = { title = infoTitle("LLM details"), menu = details }
+  return rows
+end
+
 local function compute()
   local now = os.time()
-  local entries = {}
+  local entries, histories, speed = {}, {}, nil
+  local rows = readJson(dirFor("doctorsDir", "DOCTORS_DIR", "/.cache/doctors") .. "/problem-days.jsonl", "days") or {}
+  for _, row in ipairs(rows) do
+    if type(row.doctor) == "string" and type(row.day) == "string" and tonumber(row.max) then
+      histories[row.doctor] = histories[row.doctor] or {}
+      histories[row.doctor][row.day] = math.max(histories[row.doctor][row.day] or 0, tonumber(row.max))
+    end
+  end
   for _, doctor in ipairs(DOCTORS) do
     local ok, entry = pcall(BUILDERS[doctor.key], now)
     if not ok or type(entry) ~= "table" then
@@ -611,14 +746,44 @@ local function compute()
     end
     local run = latestRun(doctor.key)
     local menu = {}
+    local oldTitle = plainText(entry.title)
+    local count = tonumber(entry.problems) or 0
+    if oldTitle ~= NAMES[doctor.key] .. ": " .. (count > 0 and plural(count, "problem") or "ok")
+      and entry.status ~= "nodata" then
+      menu[#menu + 1] = dim(oldTitle)
+    end
     for _, item in ipairs(entry.menu or {}) do menu[#menu + 1] = fitRow(item) end
     local ok, quiet = pcall(quietRow, doctor)
     if ok and quiet then menu[#menu + 1] = quiet end
     menu[#menu + 1] = fixItem(doctor.key, doctor.fix, run, now)
     menu[#menu + 1] = fixerRow(run, now)
-    entries[#entries + 1] = { title = entry.title, menu = menu, problems = tonumber(entry.problems) or 0,
-      status = entry.status }
+    local document = doctorDocument(doctor)
+    local stale = oldTitle:find("stale", 1, true) ~= nil
+    local status = entry.status
+    if status == "ok" and doctor.key == "updater" and document and updatesPending(document) > 0 then status = "watch" end
+    entries[#entries + 1] = { title = summaryTitle((NAMES[doctor.key]:gsub(" doctor$", "")),
+      entry.status ~= "nodata" and entry.status ~= "error" and count or nil, nil, status, histories[doctor.key] or {}, now, stale),
+      menu = egorLayer(issueRows(doctor, document), menu, menu), problems = count, status = entry.status }
+    if doctor.key == "harness" then
+      local metrics = document and type(document.speed) == "table" and document.speed or {}
+      local byDay = type(metrics.lost_min_day_by_day) == "table" and metrics.lost_min_day_by_day or {}
+      local speedMenu, speedRows = {}, {}
+      for _, item in ipairs(entry.menu or {}) do
+        if item.title ~= "-" and plainText(item.title):match("^Speed:") then speedMenu = item.menu or {} break end
+      end
+      for _, issue in ipairs(type(metrics.issues) == "table" and metrics.issues or {}) do
+        if tonumber(issue[1]) then speedRows[#speedRows + 1] = issueRow(tonumber(issue[1]), "min/day", tostring(issue[2])) end
+      end
+      for _, item in ipairs(speedMenu) do
+        local text = item.title ~= "-" and plainText(item.title) or ""
+        if text:match("^Needs Egor") and text ~= "Needs Egor: nothing" then speedRows[#speedRows + 1] = item end
+      end
+      local lost = tonumber(metrics.lost_min_day)
+      speed = { title = summaryTitle("Speed", lost, "min/day", lost and metrics.status or "nodata", byDay, now,
+        stale or not byDay[os.date("%Y-%m-%d", now)]), menu = egorLayer(speedRows, menu, speedMenu), problems = 0 }
+    end
   end
+  entries[#entries + 1] = speed
   if now - night.at >= NIGHT_REFRESH_S then M.refreshNight() end
   if night.text then entries[#entries + 1] = nightEntry() end
   entries[#entries + 1] = { title = "-", problems = 0 }
