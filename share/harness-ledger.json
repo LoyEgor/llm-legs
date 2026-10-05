@@ -8,7 +8,7 @@
         "rule": "floor",
         "ident": "bash:trivial"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-09-29T18:52:42+03:00",
@@ -57,8 +57,8 @@
             "claude-setup/hooks/pr-ready-mattermost.sh",
             "claude-setup/hooks/comment-gate.sh"
           ],
-          "in": null,
-          "regressed_at": null
+          "in": "llm-legs@89adf489",
+          "regressed_at": "2026-10-05T18:08:45+03:00"
         }
       ],
       "same_cause": [
@@ -793,7 +793,7 @@
         "rule": "hook_every_call",
         "ident": "instruction-watch\\.sh check"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-05T17:31:59+03:00",
@@ -802,7 +802,7 @@
             "llm-legs/share/instruction-files.sh",
             "llm-legs/bin/instruction-watch.sh"
           ],
-          "in": null,
+          "in": "llm-legs@92aa7858",
           "regressed_at": null
         }
       ],
@@ -1446,7 +1446,7 @@
         "rule": "hook_p50",
         "ident": "instruction-watch\\.sh baseline"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-01T05:38:24+03:00",
@@ -1465,8 +1465,8 @@
             "llm-legs/share/instruction-files.sh",
             "llm-legs/bin/instruction-watch.sh"
           ],
-          "in": null,
-          "regressed_at": null
+          "in": "llm-legs@92aa7858",
+          "regressed_at": "2026-10-05T19:00:02+03:00"
         }
       ],
       "same_cause": [
@@ -1519,7 +1519,7 @@
         "rule": "hook_sync",
         "ident": "instruction-watch\\.sh check"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-05T17:31:59+03:00",
@@ -1528,7 +1528,7 @@
             "llm-legs/share/instruction-files.sh",
             "llm-legs/bin/instruction-watch.sh"
           ],
-          "in": null,
+          "in": "llm-legs@92aa7858",
           "regressed_at": null
         }
       ],
@@ -2171,7 +2171,7 @@
         "rule": "hook_sync",
         "ident": "instruction-watch\\.sh baseline"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-05T17:31:59+03:00",
@@ -2180,7 +2180,7 @@
             "llm-legs/share/instruction-files.sh",
             "llm-legs/bin/instruction-watch.sh"
           ],
-          "in": null,
+          "in": "llm-legs@92aa7858",
           "regressed_at": null
         }
       ],
@@ -2338,7 +2338,7 @@
         "rule": "opportunity",
         "ident": "chat/hooks"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-05T19:30:06+03:00",
@@ -2347,7 +2347,7 @@
             "claude-setup/hooks/review-flow-gate.sh",
             "claude-setup/tests/test_review_flow_gate.sh"
           ],
-          "in": null,
+          "in": "claude-setup@a9f0773",
           "regressed_at": null,
           "equivalence": {
             "compared": "review-flow-gate base vs fast path: exit code, stdout (door nonce masked), stderr, and the rj_snapshot_repos/rj_snapshot_heads arguments with the repository set each call snapshots",
@@ -2555,7 +2555,7 @@
         "rule": "hook_every_call",
         "ident": "statusline-workdir-hook\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-05T17:31:59+03:00",
@@ -2563,7 +2563,7 @@
           "files": [
             "llm-legs/bin/statusline-workdir-hook.sh"
           ],
-          "in": null,
+          "in": "llm-legs@92aa7858",
           "regressed_at": null
         }
       ],
@@ -2580,7 +2580,7 @@
         "rule": "hook_sync",
         "ident": "statusline-workdir-hook\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-05T17:31:59+03:00",
@@ -2588,7 +2588,7 @@
           "files": [
             "llm-legs/bin/statusline-workdir-hook.sh"
           ],
-          "in": null,
+          "in": "llm-legs@92aa7858",
           "regressed_at": null
         }
       ],
@@ -2607,7 +2607,7 @@
         "rule": "hook_full_work",
         "ident": "statusline-workdir-hook\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-05T17:31:59+03:00",
@@ -2615,7 +2615,7 @@
           "files": [
             "llm-legs/bin/statusline-workdir-hook.sh"
           ],
-          "in": null,
+          "in": "llm-legs@92aa7858",
           "regressed_at": null
         }
       ],
@@ -2715,7 +2715,7 @@
         "rule": "wait_class",
         "ident": "run-suites"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-05T18:50:18+03:00",
@@ -2727,7 +2727,7 @@
             "llm-legs/tests/test_slots.sh",
             "llm-legs/tests/test_geminib.sh"
           ],
-          "in": null,
+          "in": "llm-legs@81f20e36",
           "regressed_at": null
         }
       ],
@@ -2744,7 +2744,7 @@
         "rule": "test_slow",
         "ident": "llm-legs:test_instruction_gate(_(bloat|tripwire|matrix|span|relay|coverage|bypasses))?"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-05T17:10:00+03:00",
@@ -2760,7 +2760,7 @@
             "llm-legs/tests/test_instruction_gate_coverage.sh",
             "llm-legs/tests/test_instruction_gate_bypasses.sh"
           ],
-          "in": null,
+          "in": "llm-legs@6389e500",
           "regressed_at": null
         }
       ],

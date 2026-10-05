@@ -407,7 +407,7 @@
     "detail": "^wrote [^/]+/[^/]+$"
    },
    "title": "a cross-repository brief named its second repository's task worktree only in prose, or resumed a granted session without repeating the grant, so worker-run granted it nothing and every write there read as escaped",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-09-30T03:33:34+03:00",
@@ -436,7 +436,7 @@
       "llm-legs/bin/worker-run",
       "llm-legs/share/worker-policy.md"
      ],
-     "in": null,
+     "in": "llm-legs@81a1a618",
      "regressed_at": null
     }
    ],
@@ -565,7 +565,7 @@
     "detail": "max_turns_reached"
    },
    "title": "a grok cell that spent its turn budget exited 1, and run_grok returned before writing the turn-budget word, so the cell read unclassified",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-05T15:24:49+03:00",
@@ -573,7 +573,7 @@
      "files": [
       "review-bench/share/rbench/launch.py"
      ],
-     "in": null,
+     "in": "review-bench@0e5e8af",
      "regressed_at": null
     }
    ],
@@ -882,7 +882,7 @@
     "key": "^debt-loss:run-fold-skip$"
    },
    "title": "family folds of long runs log other chats' work as run-fold-skip losses",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-04T17:38:01+03:00",
@@ -901,7 +901,7 @@
      "files": [
       "review-bench/bin/review-anchors"
      ],
-     "in": null,
+     "in": "review-bench@0e507ca",
      "regressed_at": null
     }
    ],
@@ -965,7 +965,7 @@
     "key": "^debt-gap:run-fold:review-anchors exited 1$"
    },
    "title": "review-anchors run-fold passes a run's whole changed list to git as arguments (E2BIG)",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-05T17:00:00+03:00",
@@ -974,7 +974,7 @@
       "review-bench/bin/review-anchors",
       "review-bench/tests/test_review_anchors_argv.sh"
      ],
-     "in": null,
+     "in": "review-bench@0e507ca",
      "regressed_at": null
     }
    ],
