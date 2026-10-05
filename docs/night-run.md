@@ -174,9 +174,9 @@ state, the one predicate `finish` prunes by:
   6 h old. A chat at work moves its branch (create, commit, rebase) or leaves files dirty, so a fresh
   worktree with no commit yet is live from its creation. Only that last, activity-only reason yields to
   an owner handover: `night-run job <id> add leftover <branch> --ready "<why>"`, given when the owning
-  chat declared the branch finished, adopts it as a leftover and records `handover` {by (the caller's
-  `CLAUDE_CODE_SESSION_ID`, else `$USER`), at, why} on the job, shown in `night-run report`; the refusal
-  names the flag. Nobody vouching, the 6 h rule stands.
+  chat declared the branch finished, adopts it and records `handover` {by (`CLAUDE_CODE_SESSION_ID`,
+  else `$USER`), at, why}, shown in `night-run report`; a name in several repositories needs `--repo
+  <name>` (repeatable) to scope it. The refusal names the flag; nobody vouching, the 6 h rule stands.
 - `landed`: landed, clean, not live; `finish` removes its worktree and deletes the branch.
 - `leftover`: everything else (unlanded commits or uncommitted files). It is unfinished work and goes
   into main as a night job. `night-run job <id> add leftover <branch>` adopts it into the night's own

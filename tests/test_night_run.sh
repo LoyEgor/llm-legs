@@ -659,6 +659,28 @@ for r in repo repo2; do
   assert [ ! -e "$WORK/$r/.claude/worktrees/night-$idc-leftover-half" ]
 done
 night job "$idc" add leftover half >/dev/null || fail "a retry adopts after the undo"
+# A handover covers only its own chat's branch: --ready on a name in two repositories is refused until
+# --repo names them, and the other repository's live branch of that name stays untouched.
+for r in repo repo2; do
+  git -C "$WORK/$r" worktree add -q -b shared "$WORK/$r/.claude/worktrees/shared" main
+  printf 'live\n' >"$WORK/$r/.claude/worktrees/shared/live"
+done
+state() { git -C "$WORK/$1" rev-parse shared; git -C "$WORK/$1/.claude/worktrees/shared" status --porcelain --untracked-files=all; }
+for r in repo repo2; do state "$r" >"$WORK/$r.shared"; done
+assert_fails night job "$idc" add leftover shared --ready "owner says done" 2>"$WORK/err"
+assert grep -qxF "night-run: shared is in repo repo2: --ready hands over one chat's branch, so name the repositories it covers and retry with --repo repo or --repo repo2" "$WORK/err"
+for r in repo repo2; do
+  assert cmp -s <(state "$r") "$WORK/$r.shared"
+  assert_fails git -C "$WORK/$r" rev-parse -q --verify "refs/heads/night/$idc/leftover-shared"
+done
+night job "$idc" add leftover shared --ready "owner says done" --repo repo2 >"$WORK/out" || fail "adopt in the named repository"
+assert grep -qx "adopted repo2 shared into night/$idc/leftover-shared at .*" "$WORK/out"
+assert [ "$(git -C "$WORK/repo2" show "night/$idc/leftover-shared:live")" = live ]
+assert cmp -s <(state repo) "$WORK/repo.shared"
+assert_fails git -C "$WORK/repo" rev-parse -q --verify "refs/heads/night/$idc/leftover-shared"
+assert jqe '.jobs[-1] | .ref == "leftover-shared" and ([.adopted[] | .repo | split("/") | last] == ["repo2"])' "$(record "$idc")"
+assert_fails night job "$idc" add leftover nosuch --repo nowhere 2>"$WORK/err"
+assert grep -qF "no repository nowhere" "$WORK/err"
 # An old worktree holding ignored files stays, removing it would delete them; so does a Code fixer
 # run's own worktree, which code-doctor check proves the run from.
 printf 'local.env\n' >>"$WORK/repo/.git/info/exclude"

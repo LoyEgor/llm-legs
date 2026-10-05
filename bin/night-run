@@ -30,7 +30,7 @@ usage() {
   cat >&2 <<'EOF'
 usage: night-run start [--cleanup | --resume <id> [--job <ref>]]
        night-run base <id>
-       night-run job <id> add <fixer|vendor|debt|leftover|handoff|suite|owner-chat> <ref> [--branch B] [--ready "<why>"]
+       night-run job <id> add <fixer|vendor|debt|leftover|handoff|suite|owner-chat> <ref> [--branch B] [--ready "<why>" [--repo R]...]
        night-run carry <id>
        night-run suites <id> [--wait]
        night-run job <id> set <ref> key=value...   (state, reason, branch, review, commits, pushed)
@@ -55,7 +55,9 @@ commits=<repo>:<hash>[,<repo>:<hash>...]  replaces the job's list; <repo> is a s
 leftover: ref is a leftover branch, adopted in every sweep repository where it is one: its WIP
   committed, night/<id>/leftover-<slug> made at its tip with its night worktree, the old worktree and
   branch removed; the job's ref becomes leftover-<slug>; a branch live only by activity under 6 h is
-  refused unless its owner hands it over with --ready "<why>", recorded as the job's handover {by, at, why}
+  refused unless its owner hands it over with --ready "<why>", recorded as the job's handover {by, at, why};
+  --repo R (a sweep-repos basename or absolute path, repeatable) limits the adoption to those
+  repositories, and --ready refuses a branch found in more than one of them without it
 leftovers lists every non-main branch and worktree of the sweep repositories: live ones stay, landed
   ones go at finish, every other is a leftover to carry; finish records those under the night's leftovers
 carry: first an owner-chat job per owner chat (share/handoffs.py --batches: the ledger row naming the
@@ -348,12 +350,18 @@ cmd_base() {
 # A leftover moves into the night's own namespace, where the review-flow gate lets workers commit:
 # night/<id>/leftover-<slug> at its tip, its WIP committed first, in every sweep repository where the
 # branch is a leftover; the old worktree and branch go once the night branch holds every commit.
-adopt_leftover() { # id branch ready-why -> sets branch and adopted (JSON)
-  local id=$1 old=$2 rows row repo br wt landed ahead behind dirty state why tip wip path keep ignored ready_branch=''
+adopt_leftover() { # id branch ready-why repos -> sets branch and adopted (JSON)
+  local id=$1 old=$2 repos=$4 rows row repo br wt landed ahead behind dirty state why tip wip path keep ignored ready_branch=''
   branch="night/$id/leftover-${old//\//-}" adopted='[]'
   [ -z "$3" ] || ready_branch=$old
   rows=$(branch_rows | awk -F '\t' -v b="$old" '$2 == b')
   [ -n "$rows" ] || die "no branch $old in the sweep repositories besides main"
+  if [ -n "$repos" ]; then
+    rows=$(awk -F '\t' 'NR == FNR { keep[$0]; next } $1 in keep' <(printf '%s\n' "$repos") - <<<"$rows")
+    [ -n "$rows" ] || die "no branch $old in $(sed 's|.*/||' <<<"$repos" | paste -sd ' ' -)"
+  elif [ -n "$3" ] && [ "$(wc -l <<<"$rows")" -gt 1 ]; then
+    die "$old is in $(cut -f1 <<<"$rows" | sed 's|.*/||' | paste -sd ' ' -): --ready hands over one chat's branch, so name the repositories it covers and retry with $(cut -f1 <<<"$rows" | sed 's|.*/|--repo |' | paste -sd '|' - | sed 's/|/ or /g')"
+  fi
   row=$(awk -F '\t' '$8 == "live"' <<<"$rows" | head -1)
   why=$(cut -f9 <<<"$row")
   [[ $why != active* ]] || why="$why; its owner hands it over with --ready \"<why>\""
@@ -411,7 +419,7 @@ adopt_undo() { # branch adopted -> drops the night branch and worktree of every 
 }
 
 cmd_job() {
-  local id=${1:-} verb=${2:-} kind ref branch='' adopted='' at=$(stamp) began=$SECONDS adopt='{}' ready='' handover=null
+  local id=${1:-} verb=${2:-} kind ref branch='' adopted='' at=$(stamp) began=$SECONDS adopt='{}' ready='' repos='' handover=null
   [ -n "$id" ] || usage
   known_night "$id"
   case $verb in
@@ -423,13 +431,16 @@ cmd_job() {
         case $1 in
           --branch) [ -n "${2:-}" ] || usage; branch=$2; shift 2 ;;
           --ready) [ -n "${2:-}" ] || usage; ready=$2; shift 2 ;;
+          --repo) [ -n "${2:-}" ] || usage
+            repos+=$(repo_dir "$2")$'\n' || die "no repository $2: not an absolute path nor a basename in $sweep_repos"
+            shift 2 ;;
           *) usage ;;
         esac
       done
-      [ -z "$ready" ] || [ "$kind" = leftover ] || usage
+      [ -z "$ready$repos" ] || [ "$kind" = leftover ] || usage
       if [ "$kind" = leftover ]; then
         [ -z "$branch" ] || usage
-        adopt_leftover "$id" "$ref" "$ready"
+        adopt_leftover "$id" "$ref" "$ready" "${repos%$'\n'}"
         ref=${branch##*/}
         adopt="{\"adopt_secs\": $((SECONDS - began))}"
         [ -z "$ready" ] || handover=$(jq -nc --arg by "${CLAUDE_CODE_SESSION_ID:-${USER:-?}}" --arg at "$at" --arg why "$ready" \
