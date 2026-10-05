@@ -105,16 +105,18 @@ reliability_tests() {
     : >"$STUB_DIR/codex_bad_model"
     start_ok codex --account model
     assert await_done
-    assert grep -qxF 'ARG=model=\"gpt-6-astra\"' "$CALL_LOG"
+    assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 1
+    assert_fails grep -q '^ARG=model=' "$CALL_LOG"
     clear_stub
     : >"$STUB_DIR/codex_bad_model"
     # config.toml is Egor's interactive pick: a terra there changes nothing about the retry,
-    # which takes the family's next slug past the refused one.
+    # which takes the worker default's slug.
     printf 'model = "gpt-5.6-terra"\n' >"$WORKER_RUN_CODEX_CONFIG"
-    start_ok codex --account model --model astra
+    start_ok codex --account model --model sol
     assert await_done
     assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 2
-    assert grep -qxF 'ARG=model=\"gpt-6-astra\"' "$CALL_LOG"
+    assert grep -qxF 'ARG=model=\"gpt-6.1-astra\"' "$CALL_LOG"
+    assert_fails grep -q 'terra' "$CALL_LOG"
     assert_fails grep -qx 'OUTCOME: CODEX_UNAVAILABLE' "$WORK/wait.out"
     printf 'model = "gpt-6-astra"\n' >"$WORKER_RUN_CODEX_CONFIG"
   fi
