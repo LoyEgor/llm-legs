@@ -129,7 +129,7 @@ ln -sf "$STAMP_ANCHORS" "$WORK/stamp-bin/review-anchors"
 # the real review-anchors: the fixer's fix anchor lands on exactly what it wrote, in either
 # repository, and the other run's edits to reviewed paths stay owed.
 fix_owned_tests() {
-  local a b round=20260902T100000Z-ccccccc fixer other saved_path="$PATH" repo path folded
+  local a b round=20260902T100000Z-ccccccc fixer other saved_path="$PATH" repo path
   fix_kinds() { jq -r --arg p "$2" '.anchors[$p][]?.kind' "$1/.git/review-anchors.json"; }
   fix_holds_current() {
     jq -e --arg p "$2" --arg b "$(git -C "$1" hash-object "$1/$2")" \
@@ -154,15 +154,13 @@ fix_owned_tests() {
   export PATH="$WORK/stamp-bin:$PATH"
   # Reviewed before, outside this round: the fixer's edit is the only new content in it.
   review-anchors anchor --repo "$a" --kind review:20260901T000000Z-0000000 extra.txt
-  mkdir -p "$HOME/.cache/claude/review-journal"
-  printf '%s\n%s\n' "$a" "$b" >"$HOME/.cache/claude/review-journal/fix-chat.repos"
   set_config 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=medium'
   clear_stub
   export PICK_RC=0 PICK_ACCOUNT=fixacct CLAUDE_CODE_SESSION_ID=fix-chat STUB_GATE="$WORK/fix-gate"
   export STUB_SESSION=fix-worker STUB_TRANSCRIPT_SESSION=fix-worker STUB_TRANSCRIPT_ACCOUNT=fixacct
   ln -s "$b" "$WORK/fix-b-link"
   export STUB_EDIT_PATH="own.txt"$'\n'"extra.txt"$'\n'"$b/own.txt"$'\n'"$WORK/fix-b-link/link.txt"
-  WORKER_TEST_WORKDIR=$a start_ok claudeb --round "$round"
+  WORKER_TEST_WORKDIR=$a start_ok claudeb --round "$round" --add-dir "$b"
   fixer=$RUN_ID
   unset STUB_EDIT_PATH STUB_TRANSCRIPT_SESSION STUB_SESSION
   WORKER_TEST_WORKDIR=$a start_ok codex
@@ -200,20 +198,7 @@ fix_owned_tests() {
   assert_fails grep -q '^fix:' <<<"$(fix_kinds "$b" theirs.txt)"
   assert_fails "$RUNNER" claim "$fixer" --paths "$b/theirs.txt/nope" 2>/dev/null
   assert_fails grep -q '^fix:' <<<"$(fix_kinds "$a" theirs.txt)"
-  # A run outside any round claiming in the sibling repository: no fold.
-  export STUB_GATE="$WORK/manual-gate"
-  WORKER_TEST_WORKDIR=$a start_ok codex
-  printf 'manual\n' >"$b/manual.txt"
-  : >"$STUB_GATE"
-  unset STUB_GATE
-  assert await_done
-  folded=$(jq -r --arg r "$RUN_ID" '.runs[$r].folded' "$b/.git/review-anchors.json")
-  sleep 1
-  "$RUNNER" claim "$RUN_ID" --paths "$b/manual.txt" >/dev/null || fail "claim in the sibling repository failed"
-  assert test "$(jq -r --arg r "$RUN_ID" '.runs[$r].folded' "$b/.git/review-anchors.json")" = "$folded"
-  assert test ! -e "$HOME/.cache/claude/review-debt/gaps/fix-chat"
   export PATH="$saved_path"
-  rm -f "$HOME/.cache/claude/review-journal/fix-chat.repos"
   unset PICK_RC PICK_ACCOUNT CLAUDE_CODE_SESSION_ID STUB_TRANSCRIPT_ACCOUNT
   clear_stub
 }
@@ -592,4 +577,4 @@ jq -nc --argjson t "$((now - 40 * 86400))" '{run: "old-again", ended_at: $t}' >>
 assert jq -se 'map(.run) | index("old-again") != null' "$RUNS_JOURNAL" >/dev/null
 assert test ! -e "$RUNS_JOURNAL.lock"
 
-echo "PASS: $asserts asserts; refused models, the launcher stamp on every relay, fix anchors, snapshot attribution"
+echo "PASS: $asserts asserts; refused models, fix anchors, snapshot attribution"

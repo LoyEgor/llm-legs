@@ -214,8 +214,6 @@ json.dump({"owner": "Doctor owner", "owners": {"reviewers": "Review owner", "wor
           [fix(5000, ["review-bench/share/rbench/panel.py"])]),
     entry("X8", "reviewers", {"word": "auth", "detail": "HTTP 401"}, "still uncommitted", "fixed-pending",
           [fix(5000, ["review-bench/share/rbench/report.py"])]),
-    entry("H1", "any", {"health": "debt", "key": "^debt-gap:fixer-missing"}, "fixer gaps", "open"),
-    entry("H2", "any", {"health": "debt", "key": "^debt-gap:run-fold:snapshots unreadable$"}, "fold gaps", "open"),
     entry("M1", "reviewers", {"machinery": "anchors"}, "anchor warnings", "open"),
     entry("M2", "reviewers", {"machinery": "integrity"}, "tree moved", "fixed", [fix(7200, runtime, commits["runtime"])]),
     entry("M3", "reviewers", {"machinery": "debt_scope"}, "debt scope", "fixed",
@@ -236,11 +234,13 @@ json.dump({"day": frozen_day, "covered": ["image"], "legs": {"image|grok-image":
            "counts": {"image|grok-image|failed|bad output|ours|X4": 5, "image|grok-image|walled|||": 2}},
           open(os.path.join(doctor, "daily", frozen_day + ".json"), "w"))
 
+# Recording gaps and losses are gone with per-chat debt: a store left on disk is read by nobody.
 cache = os.path.join(os.environ["HOME"], ".cache", "claude")
 os.makedirs(os.path.join(cache, "review-debt", "gaps"))
 with open(os.path.join(cache, "review-debt", "gaps", "s1"), "w") as handle:
-    handle.write("%d\ttouch-failed\t/repo: review-anchors exited 1\n%d\ttouch-failed\t/repo: review-anchors exited 1\n"
-                 "%d\tpre-missing\tsettled by a review\n" % (now - 1800, now - 900, now - 500))
+    handle.write("%d\ttouch-failed\t/repo: review-anchors exited 1\n" % (now - 900))
+with open(os.path.join(cache, "review-debt", "losses.jsonl"), "w") as handle:
+    handle.write(json.dumps({"at": now - 700, "kind": "run-fold-skip", "repo": "/r", "path": "x.py", "lines": 5}) + "\n")
 PY
 
 before=$(find "$LLM_DOCTOR_DIR" -type f | sort | tr '\n' ' ')
@@ -280,13 +280,7 @@ assert [block["block"] for block in doc["blocks"]] == ["reviewers", "workers", "
 assert doc["not_measurable"] == ["worker false-green reports", "weakened tests"]
 health = {row["name"]: row for row in doc["health"]}
 assert [row["name"] for row in doc["health"]] == ["debt"]
-debt = {(item["label"], item["chat"]): (item["count"], item["repeats"]) for item in health["debt"]["items"]}
-assert debt == {("not recorded: touch-failed in repo", "unnamed chat"): (1, 2),
-                ("not recorded: hash-cap in repo", "unnamed chat"): (1, 1091),
-                ("not recorded: fixer-missing", "unnamed chat"): (2, 2),
-                ("not recorded: run-fold: snapshots unreadable", "unnamed chat"): (1, 1),
-                ("not recorded: run-fold: review-anchors exited 1", "unnamed chat"): (1, 1)}, debt
-assert health["debt"]["count"] == 6 and health["debt"]["notes"] == [], health["debt"]
+assert health["debt"]["items"] == [] and health["debt"]["count"] == 0 and health["debt"]["notes"] == [], health["debt"]
 
 def problems(block):
     return {(item["label"], (item["ledger"] or {}).get("id", "")): item for item in blocks[block]["problems"]}
@@ -402,17 +396,14 @@ for item in doc["problems"]:
         tally[item["group"]] = tally.get(item["group"], 0) + 1
 assert {group: count for group, count in doc["groups"].items() if count} == tally, (doc["groups"], tally)
 assert sum(doc["groups"].values()) == doc["problem_count"], doc["groups"]
-assert {"reviewers", "workers", "machinery", "debt"} <= set(tally), tally
+assert {"reviewers", "workers", "machinery"} <= set(tally) and "debt" not in tally, tally
 states = {pid: (item["state"], item["rule"], item["ledger"]) for pid, item in found.items()}
 assert states["X1"] == ("regressed", "leg-failure", "X1"), states
 assert states["leg-failure:reviewers/pool empty"] == ("new", "leg-failure", None), states
 assert states["leg-failure:workers/crashed"] == ("new", "leg-failure", None), states
 assert states["X2"] == ("open", "leg-failure", "X2") and states["X4"] == ("open", "leg-failure", "X4"), states
 assert states["X8"] == ("fixed-pending", "fix-proof", "X8") and states.get("X7", ("",))[0] != "fixed-pending", states
-assert states["H1"] == ("open", "debt-gap", "H1") and "debt-gap:fixer-missing" not in states, states
-assert states["debt-gap:touch-failed/repo"] == ("new", "debt-gap", None), states
-assert states["H2"] == ("open", "debt-gap", "H2") and "debt-gap:run-fold:snapshots unreadable" not in states, states
-assert states["debt-gap:run-fold:review-anchors exited 1"] == ("new", "debt-gap", None), states
+assert not [pid for pid in states if pid.startswith(("debt-gap", "debt-loss"))], states
 assert states["M1"][0] == "open" and states["M2"][0] == "regressed" and "M3" not in states, states
 assert states["machinery:closure_pending"] == ("new", "machinery", None), states
 assert states["machinery:debt_scope"] == ("new", "machinery", None), states
@@ -507,34 +498,7 @@ assert grep -q 'X1' "$WORK/view.txt"
 assert test "$(grep -c '^Workers: ' "$WORK/view.txt")" -eq 0
 assert test "$(grep -Ec '[0-9]{8}T[0-9]{6}Z|codex-[0-9]{9}' "$WORK/view.txt")" -eq 0
 
-assert grep -qx 'gaps --days 7 --json' "$ANCHORS_ARGS"
-printf '{"at":%d,"kind":"run-fold-skip","repo":"/r","path":"x.py","session":"s1","lines":5,"detail":"run w-1: a co-tenant touched it during the run"}\n{"at":%d,"kind":"run-fold-skip","repo":"/r","path":"y.py","session":"s1","lines":7,"detail":"run w-1: a co-tenant touched it during the run"}\n{"at":%d,"kind":"run-fold-skip","repo":"/r","path":"x.py","session":"s1","lines":2,"detail":"run w-2: a co-tenant touched it during the run"}\n{"at":%d,"kind":"untouch","repo":"/r","path":"a.py","session":"s1","lines":12}\n{"at":%d,"kind":"migrate","repo":"/w/r1","path":"b.py","session":"","lines":3}\n{"at":%d,"kind":"migrate","repo":"/w/r2/","path":"c.py","session":"","lines":4}\n' \
-  "$((NOW - 700))" "$((NOW - 690))" "$((NOW - 680))" "$((NOW - 600))" "$((NOW - 500))" "$((NOW - 400))" \
-  >"$HOME/.cache/claude/review-debt/losses.jsonl"
-assert "$DOCTOR" --dry-run --json >"$WORK/doc2.json"
-assert python3 - "$WORK/doc2.json" <<'PY'
-import json, sys
-debt = [row for row in json.load(open(sys.argv[1]))["health"] if row["name"] == "debt"][0]
-items = {(item["label"], item["chat"]): (item["count"], item["lines"]) for item in debt["items"]}
-assert items == {("not recorded: touch-failed in repo", "unnamed chat"): (1, 0),
-                 ("not recorded: hash-cap in repo", "unnamed chat"): (1, 0),
-                 ("not recorded: fixer-missing", "unnamed chat"): (2, 0),
-                 ("not recorded: run-fold: snapshots unreadable", "unnamed chat"): (1, 0),
-                 ("not recorded: run-fold: review-anchors exited 1", "unnamed chat"): (1, 0),
-                 ("lost unreviewed: run-fold-skip", "unnamed chat"): (2, 14),
-                 ("lost unreviewed: untouch", "unnamed chat"): (1, 12), ("lost unreviewed: migrate", "r1"): (1, 3),
-                 ("lost unreviewed: migrate", "r2"): (1, 4)} and debt["notes"] == [], debt
-PY
-"$DOCTOR" --dry-run >"$WORK/view2.txt" || fail "the text view with health failed"
-assert grep -q 'not recorded: hash-cap in repo · seen 1091×' "$WORK/view2.txt"
-ANCHORS_EXIT=1 "$DOCTOR" --dry-run --json >"$WORK/doc3.json" || fail "a failing gaps reader broke the doctor"
-assert python3 - "$WORK/doc3.json" <<'PY'
-import json, sys
-debt = [row for row in json.load(open(sys.argv[1]))["health"] if row["name"] == "debt"][0]
-assert debt["notes"] == ["gaps not read: review-anchors exited 1"], debt
-assert {item["label"] for item in debt["items"]} == {"lost unreviewed: run-fold-skip", "lost unreviewed: untouch",
-                                                    "lost unreviewed: migrate"}, debt
-PY
+assert test ! -e "$ANCHORS_ARGS"
 # An open handoff past 60 h (two nights) is a debt row; a younger one, or a settled one, is not.
 mkdir -p "$WORK/sweep/docs/handoffs"
 printf 'Status: open\n\nFor the chat «Owner A».\n' >"$WORK/sweep/docs/handoffs/2026-01-01-stale.md"
@@ -870,8 +834,6 @@ assert doctor.judge_leg_state(ledger, unseen) == ("new", None)
 assert doctor.leg_id(unseen, None) == "leg-failure:reviewers/pool empty"
 committed = json.load(open(os.environ["LLM_DOCTOR_LEDGER"]))
 assert doctor.ledger_faults(committed) == [], doctor.ledger_faults(committed)
-# A judge edit is no fix of the row it unmasked: recorded as one, it would move H11's fix time past real recurrences.
-assert ledger["by_id"]["H11"]["fixes"][-1]["files"] == ["llm-legs/bin/worker-run"], ledger["by_id"]["H11"]["fixes"]
 
 # The judge is pinned: loosening a dismissal, a theirs word, an exemption or a limit is an edit here.
 assert sorted((row["id"], row["match"].get("until")) for row in committed["rows"]
@@ -911,7 +873,7 @@ assert doctor.limits() == {
     "SLOW_FACTOR": 2, "SLOW_MIN_LEGS": 5, "SLOW_BASE_N": 20, "SLOW_FLOOR_S": 30, "SLOW_SIZE_RATIO": 2, "SLOW_BASE_D": 7,
     "NO_EXIT_S": 21600, "REBOOT_SLACK_S": 300, "REBOOT_QUIET_S": 3600,
     "TREND_MIN": 3, "PROOF_MIN": 10, "RECOVERED_MIN": 3, "NEAR_SHARE": 0.5, "KILLED_EARLY_SLACK_S": 60,
-    "SWITCH_SLACK_S": 60, "DEBT_GAP_DAYS": 7}
+    "SWITCH_SLACK_S": 60}
 digest = doctor.judge_digest(ledger)
 ledger["by_id"]["V14"]["note"] = "a tracking edit"
 assert doctor.judge_digest(ledger) == digest
@@ -1124,34 +1086,11 @@ assert [(item["id"], item["rule"]) for item in doctor.leg_problems(proven, histo
 
 # A machinery or debt fix awaiting its commit stays listed once its anomalies are gone.
 awaiting = fixture_ledger([entry({"machinery": "integrity"}, "fixed-pending", fixes=[fix_at(100, None)], id="MP"),
-                           entry({"health": "debt", "key": "^debt-gap:abcdef"}, "fixed-pending", fixes=[fix_at(100, None)],
+                           entry({"health": "debt", "key": "^debt-handoff:abcdef"}, "fixed-pending", fixes=[fix_at(100, None)],
                                  id="HP", block="any")])
 assert [(item["id"], item["state"]) for item in doctor.pending_fix_problems(awaiting, [], 24, now)] \
     == [("MP", "fixed-pending"), ("HP", "fixed-pending")]
 assert doctor.pending_fix_problems(awaiting, [{"id": "MP"}, {"id": "HP"}], 24, now) == []
-
-# A run gap the launch-time code made (no before listing) regresses a debt fix only when its run started after
-# the fix, like a leg; one the fold made ran on the code current at the fold and is dated by it.
-fixed_fold = fixture_ledger([entry({"health": "debt", "key": "^debt-gap:run-fold:snapshots unreadable$"}, "fixed",
-                                   fixes=[fix_at(7200)], id="HF", block="any")])
-def fold_states(run, before=False, family=False):
-    snap = os.path.join(os.environ["WORKER_RUN_DIR"], run, *(["families", "1"] if family else []))
-    os.makedirs(snap, exist_ok=True)
-    if family:
-        open(os.path.join(snap, "top"), "w").write("/r\n")
-    if before:
-        open(os.path.join(snap, "dirty-before-shas"), "w").close()
-    with open(os.environ["ANCHORS_ROWS"], "w") as rows:
-        rows.write(json.dumps({"session": "s9", "kind": "run-fold", "detail": "%s /r: snapshots unreadable" % run,
-                               "count": 1, "first": now - 100, "last": now - 100}) + "\n")
-    row = doctor.debt_health(now - 86400, now, 24)
-    return [(item["id"], item["state"]) for item in doctor.health_problems(row, fixed_fold, 24) if item["rule"] == "debt-gap"]
-assert fold_states("claudeb-%d-1-ab" % (now - 9000)) == []
-assert fold_states("claudeb-%d-2-ab" % (now - 9000), family=True) == []
-assert fold_states("claudeb-%d-3-ab" % (now - 9000), before=True) == [("HF", "regressed")]
-assert fold_states("claudeb-%d-4-ab" % (now - 9000), before=True, family=True) == [("HF", "regressed")]
-assert fold_states("claudeb-%d-1-ab" % (now - 3000)) == [("HF", "regressed")]
-assert fold_states("w-1") == [("HF", "regressed")]
 
 # A collector that throws leaves an error document, never an older document's colour.
 os.environ["LLM_DOCTOR_DIR"] = os.path.join(unit, "doctor-error")
@@ -1166,4 +1105,4 @@ assert (failed["status"], failed["self"]["error"], failed["problem_count"]) == (
 
 PY
 
-echo "PASS: $asserts asserts; four blocks off fixture bench, worker-run, prelaunch and image-leg stores, bug vs weather, ledger new/open/regressed/fixed/dismissed, per-pass slow, superseded retries, chunk and judge legs, escape filtering, frozen daily history, rate trend against the rollup, files-note escapes, machinery classes held against the ledger, dry-run writes nothing, text view without run ids, debt health (open gaps from review-anchors counted once per cause (kind and repository, or kind and run, a run gap's why its own ledger key) with their repeats, old open gaps kept, a failing reader noted, logged losses once per drop with their lines, sessionless losses grouped by repository) and one bug-or-weather rule per record shape (login, status anchors, provider clock, turn budgets, owner switches, killed early, chunk readings, escapes, run records, prelaunch and image refusals, machinery age), the doctors' contract envelope (stable ids, states, evidence one per event ref, a missing required store blind, judge digest, a near miss under NO_EXIT_S), ledger faults for broad dismissals and fix records, a re-fixed row judged by its last fix and by leg start, causes retries hid, pending fixes settled from a fixture repo, the pinned judge (dismissal rows, theirs words, exemptions, prelaunch skips, limits) and the collector's error document"
+echo "PASS: $asserts asserts; four blocks off fixture bench, worker-run, prelaunch and image-leg stores, bug vs weather, ledger new/open/regressed/fixed/dismissed, per-pass slow, superseded retries, chunk and judge legs, escape filtering, frozen daily history, rate trend against the rollup, files-note escapes, machinery classes held against the ledger, dry-run writes nothing, text view without run ids, debt health (stale open handoffs only; gap and loss stores never read) and one bug-or-weather rule per record shape (login, status anchors, provider clock, turn budgets, owner switches, killed early, chunk readings, escapes, run records, prelaunch and image refusals, machinery age), the doctors' contract envelope (stable ids, states, evidence one per event ref, a missing required store blind, judge digest, a near miss under NO_EXIT_S), ledger faults for broad dismissals and fix records, a re-fixed row judged by its last fix and by leg start, causes retries hid, pending fixes settled from a fixture repo, the pinned judge (dismissal rows, theirs words, exemptions, prelaunch skips, limits) and the collector's error document"

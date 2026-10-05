@@ -257,33 +257,6 @@ review_run_owner() { # recorded_session pid
   printf '%s' "${owner//[^A-Za-z0-9_-]/}"
 }
 
-# The review gate's own answer to "what does this repository owe a review, and how much of it is
-# this chat's", in the one line it prints for a reader that has no commit to attempt: `off` (no
-# debt), `dim <text>` (another chat's debt alone), `bright <text>` (this chat's own alone) or
-# `split <own>/<foreign>`, whose two sides carry the two weights in one segment. Nothing here
-# decides any of it and nothing here second-guesses the text — the gate is the only place that
-# knows what a review owes, and a label computing its own version of that answer is one of two
-# renderings of one question, of which one is always wrong (Egor, 2026-08-09).
-#
-# Read-only and cheap by contract: the gate's verdict mode launches no panel and writes nothing, so
-# a render can ask it as often as the cache below allows.
-review_gate_verdict() { # toplevel session
-  local gate="${STATUSLINE_REVIEW_GATE:-$HOME/.claude/hooks/review-flow-gate.sh}"
-  local timeout_bin
-  [ -x "$gate" ] || return 1
-  # Off the render path (below), so the budget is the 120s lock sweep, not a prompt: the verdict
-  # sums every repository the session owes and review-bench spends 6–17s per repository (measured
-  # 2026-09-15), which a 10s kill turned into a false `off` on every render.
-  timeout_bin=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
-  # The gate exits 2 when it would block, which is an answer and not a failure.
-  if [ -n "$timeout_bin" ]; then
-    "$timeout_bin" 60 "$gate" verdict "$1" "$2" 2>/dev/null | head -1
-  else
-    "$gate" verdict "$1" "$2" 2>/dev/null | head -1
-  fi
-  return 0
-}
-
 # Where both review journals live: ONE directory per git FAMILY, the common git dir
 # (docs/shared-invariants.md row `bd`). Resolved once for every cache key that watches a journal —
 # keyed off a worktree's own git dir instead, a key goes blind to the edits a sibling checkout of
@@ -294,144 +267,8 @@ journal_dir() { # toplevel
   else git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null; fi
 }
 
-# Renders every ~5s, so the gate's answer is cached on what can invalidate it: the repository, its
-# `git status`, the commit journal the gate reads this chat's pending paths from, and the review
-# decision clock. The PostToolUse hook appends to the journal as the chat edits, and a repository
-# with neither file yet keys on fixed zeroes. Both are under the checkout FAMILY's common dir, so an edit made in
-# a sibling worktree moves this key too — as it moves the gate's own answer. Everything the key
-# cannot see — a second edit to an already-modified file or another chat's commit landing — is
-# bounded by the TTL.
-# The gate's one line — `STATUS=… LINES=… FILES=… FIX=… WHY=… [BOUND=…]`, the debt protocol of
-# `../review-bench/docs/review-anchors-contract.md` — turned into the style and text this segment
-# renders. An unknown is the known number followed by a dim `?<why>`, never a replacement of it, and a
-# line this build cannot parse is `?err`: a number invented over an answer nobody could read is the
-# silent zero the redesign exists to end.
-verdict_form() { # gate-line
-  local line="$1" field status='' lines='' files='' fix='' why='' bound=''
-  local -a fields
-  case "$line" in
-    ''|off) printf 'off'; return 0 ;;
-    STATUS=*) ;;
-    *) printf 'dim ?err'; return 0 ;;
-  esac
-  read -ra fields <<< "$line"
-  for field in "${fields[@]}"; do
-    case "$field" in
-      STATUS=*) status=${field#*=} ;;
-      LINES=*) lines=${field#*=} ;;
-      FILES=*) files=${field#*=} ;;
-      FIX=*) fix=${field#*=} ;;
-      WHY=*) why=${field#*=} ;;
-      BOUND=*) bound=${field#*=} ;;
-    esac
-  done
-  # `FILES` is read and never rendered: the protocol's own fields are what makes a line parsable,
-  # and one missing is an answer this build does not understand.
-  [[ "$lines" =~ ^[0-9]+$ ]] && [[ "$files" =~ ^[0-9]+$ ]] && [[ "$fix" =~ ^[0-9]+$ ]] &&
-    [[ "$why" =~ ^[a-z]+$ ]] || { printf 'dim ?err'; return 0; }
-  case "$status" in
-    closed) printf 'off' ;;
-    open)
-      # Lines first: owed lines are what a reader acts on, and open findings are already inside
-      # the tree they would be fixed in.
-      if [ "$lines" -gt 0 ]; then printf 'bright %s' "$lines"
-      elif [ "$fix" -gt 0 ]; then printf 'dim fix %s' "$fix"
-      else printf 'dim ?err'; fi ;;
-    unknown)
-      [ "$why" = none ] && why=err
-      if [ "$why" = ledger ] && [[ "$bound" =~ ^[0-9]+$ ]]; then printf 'bright ~%s ?%s' "$bound" "$why"
-      elif [ "$lines" -gt 0 ]; then printf 'bright %s ?%s' "$lines" "$why"
-      elif [ "$fix" -gt 0 ]; then printf 'dim fix %s ?%s' "$fix" "$why"
-      else printf 'dim ?%s' "$why"; fi ;;
-    *) printf 'dim ?err' ;;
-  esac
-}
-
-review_verdict_line() { # toplevel session status_key now
-  local top="$1" sid="$2" status_key="$3" now="$4"
-  local cache="$statusline_cache_dir/review-class-${sid:-unknown}"
-  local lock="$cache.lock"
-  local key cached_key cached cache_mtime journal_mtime clock_mtime commondir lock_mtime
-  local repos_file side_top side_dir side_mtime side_journal=0 side_clock=0
-  commondir=$(journal_dir "$top")
-  journal_mtime=""
-  [ -n "$commondir" ] && journal_mtime=$(file_mtime "$commondir/review-anchors.json" 2>/dev/null)
-  [[ "$journal_mtime" =~ ^[0-9]+$ ]] || journal_mtime=0
-  clock_mtime=""
-  [ -n "$commondir" ] && clock_mtime=$(file_mtime "$commondir/claude-review-clock" 2>/dev/null)
-  [[ "$clock_mtime" =~ ^[0-9]+$ ]] || clock_mtime=0
-  # The verdict is the session's debt summed over every repository its .repos list names, so a
-  # write journalled in any of them has to move this key too.
-  repos_file=""
-  [[ "$sid" =~ ^[A-Za-z0-9._-]+$ ]] && [ "$sid" != . ] && [ "$sid" != .. ] &&
-    repos_file="$HOME/.cache/claude/review-journal/$sid.repos"
-  if [ -n "$repos_file" ] && [ -f "$repos_file" ]; then
-    while IFS= read -r side_top; do
-      [ -n "$side_top" ] && [ "$side_top" != "$top" ] && [ -d "$side_top" ] || continue
-      side_dir=$(journal_dir "$side_top")
-      [ -n "$side_dir" ] || continue
-      side_mtime=$(file_mtime "$side_dir/review-anchors.json" 2>/dev/null)
-      [[ "$side_mtime" =~ ^[0-9]+$ ]] && [ "$side_mtime" -gt "$side_journal" ] &&
-        side_journal=$side_mtime
-      side_mtime=$(file_mtime "$side_dir/claude-review-clock" 2>/dev/null)
-      [[ "$side_mtime" =~ ^[0-9]+$ ]] && [ "$side_mtime" -gt "$side_clock" ] &&
-        side_clock=$side_mtime
-    done < "$repos_file"
-  fi
-  key="$top|$status_key|$side_journal|$side_clock|$journal_mtime|$clock_mtime"
-  cache_mtime=$(file_mtime "$cache" 2>/dev/null)
-  cached_key=""
-  cached=""
-  if [[ "$cache_mtime" =~ ^[0-9]+$ ]]; then
-    IFS= read -r cached_key < "$cache" 2>/dev/null
-    cached=$(<"$cache")
-    case "$cached" in *$'\n'*) cached=${cached#*$'\n'} ;; *) cached="" ;; esac
-  fi
-  if [ "$cached_key" = "$key" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
-    [ "$((now - cache_mtime))" -le 15 ]; then
-    printf '%s' "$cached"
-    return 0
-  fi
-  # Never on the render path: the gate answers in about a second, and a prompt that waits for it
-  # stalls every five seconds — the very cost the deleted tier probe was backgrounded to avoid.
-  # One refresh at a time, and a lock older than the sweep is a refresh that died holding it.
-  if mkdir -p "$statusline_cache_dir" 2>/dev/null; then
-    lock_mtime=$(file_mtime "$lock" 2>/dev/null)
-    if [ ! -d "$lock" ] ||
-      { [[ "$lock_mtime" =~ ^[0-9]+$ ]] && [ "$((now - lock_mtime))" -gt 120 ]; }; then
-      (
-        snapshot_lock_acquire "$lock" || exit 0
-        trap 'rmdir "$lock" 2>/dev/null' EXIT
-        answer=$(review_gate_verdict "$top" "$sid") || answer=""
-        # No gate reachable is no answer at all, and a label invented where the gate is silent is
-        # the fork this segment exists to end. Everything the gate does say is read by one
-        # parser, so nothing in the render path decides a class of its own.
-        answer=$(verdict_form "$answer")
-        tmp="$cache.tmp.${BASHPID:-$$}"
-        printf '%s\n%s' "$key" "$answer" > "$tmp" 2>/dev/null &&
-          mv -f "$tmp" "$cache" 2>/dev/null || rm -f "$tmp" 2>/dev/null
-      ) >/dev/null 2>&1 &
-    fi
-  fi
-  # Until that lands the last answer stands, and only for as long as an answer can still be about
-  # this tree: past the sweep it is a label outliving the state it was read from, which is the one
-  # thing worse than no label.
-  # Past it, `unknown` and never `off`: the two are different facts (fit_verdict_part). A cache
-  # that was never written is not a stale answer — the refresh above is still in flight — and
-  # neither is one about another tree: the file is per session and the shown tree moves.
-  [ "${cached_key%%|*}" = "$top" ] || cached=""
-  if [ -n "$cached" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
-    [ "$((now - cache_mtime))" -le 120 ]; then
-    printf '%s' "$cached"
-  elif [ -n "$cached" ]; then
-    printf '%s' unknown
-  else
-    printf '%s' off
-  fi
-}
-
-# Keyed per TOP and never per session: unlike the `rev` segment above, this one follows the shown
-# tree. Off the render path with the same 15s/120s cache as the verdict: pricing walks every diff.
+# Keyed per TOP: follows the shown tree. Off the render path with a 15s/120s cache: pricing
+# walks every diff.
 repo_debt_lines() { # toplevel now
   local top="$1" now="$2"
   # The install path of the contract, never `command -v`: a PATH lookup makes the segment depend on
@@ -541,7 +378,7 @@ review_session_line() { # session now
 #
 # Whose the commit is is the GATE's answer (`unpushed`) and never this render's: the Stop ask that
 # tells the chat to push reads the same subcommand, and a marker deriving ownership on its own would
-# stand over commits that ask disowns. Cached exactly as the verdict beside it — the gate forks git
+# stand over commits that ask disowns. Cached off the render path — the gate forks git
 # once per candidate commit, which is not a render-path cost — and keyed on everything cheap that
 # can change the answer: the two shas, and the family's journals ownership is read from.
 unpushed_marker() { # toplevel session now
@@ -1009,7 +846,7 @@ adopt_project_dirs() {
   active_top="$project_top"; active_common="$project_common"
   active_root="$project_root"; active_name="$project_name"; active_is_wt="$project_is_wt"
 }
-# The middle block — the dir cluster, the branch, the counters, the rev counter, the verdict,
+# The middle block — the dir cluster, the branch, the counters, the rev counter, the autonomy dot,
 # `unpushed` — is ATOMIC: all of it renders ONE working tree, the tree of the LAST line of this chat's
 # place journal (bin/statusline-place; docs/statusline-contract.md "Shown tree"). Nothing here
 # ranks, holds or checks liveness: the writers declare, this reads the last line that still resolves.
@@ -1035,18 +872,8 @@ else
   adopt_project_dirs
 fi
 
-tree_status_key() { # status rc
-  local key
-  if [ "$2" -eq 0 ]; then
-    key=$(printf '%s' "$1" | cksum 2>/dev/null)
-    printf '%s' "${key// /-}"
-  else
-    printf '%s' unreadable
-  fi
-}
-
 # A run in flight owns the counter slot: review-bench writes one progress file per run, and while it
-# lives the slot reports that panel instead of the gate's verdict. Liveness is derived here, never
+# lives the slot reports that panel. Liveness is derived here, never
 # declared by the writer — the file survives kill -9, a crash and a closed terminal, so the pid must
 # be alive AND the process holding it must have started no later than the file's last write, which a
 # pid reused after that run died cannot satisfy.
@@ -1316,15 +1143,11 @@ fparts=""
 behind=""
 ahead=""
 head_known=0
-git_status=""
 git_status_rc=1
 branch_oid=""; branch_upstream=""; branch_ab=""; branch=""; has_untracked=0
 if [ -n "$active_top" ]; then
   status_v2=$(git -C "$active_top" status --porcelain=v2 --branch --untracked-files=normal --ahead-behind 2>/dev/null)
   git_status_rc=$?
-  # git_status is rebuilt as the `status --porcelain` (v1) text, the verdict cache's key: v1
-  # quotes every path holding a space and sorts unmerged entries in among the rest, v2 lists them last.
-  status_unmerged=0
   while IFS= read -r status_line; do
     case "$status_line" in
       '# branch.oid '*) branch_oid=${status_line#\# branch.oid } ;;
@@ -1334,29 +1157,9 @@ if [ -n "$active_top" ]; then
         branch_ab=${status_line#\# branch.ab }
         status_rest=${branch_ab#+}
         ahead=${status_rest%% *}; behind=${status_rest#* -} ;;
-      [12]' '*)
-        status_xy=${status_line:2:2}
-        status_n=8; [ "${status_line:0:1}" = 2 ] && status_n=9
-        status_rest=$status_line
-        for ((status_i = 0; status_i < status_n; status_i++)); do status_rest=${status_rest#* }; done
-        status_path=${status_rest%%$'\t'*}
-        case "$status_path" in \"*) ;; *' '*) status_path="\"$status_path\"" ;; esac
-        if [ "$status_n" = 9 ]; then
-          status_orig=${status_rest#*$'\t'}
-          case "$status_orig" in \"*) ;; *' '*) status_orig="\"$status_orig\"" ;; esac
-          status_path="$status_orig -> $status_path"
-        fi
-        git_status+="${status_xy//./ } $status_path"$'\n' ;;
-      'u '*) status_unmerged=1 ;;
-      '? '*)
-        has_untracked=1; status_path=${status_line#? }
-        case "$status_path" in \"*) ;; *' '*) status_path="\"$status_path\"" ;; esac
-        git_status+="?? $status_path"$'\n' ;;
+      '? '*) has_untracked=1 ;;
     esac
   done <<< "$status_v2"
-  git_status=${git_status%$'\n'}
-  [ "$status_unmerged" = 1 ] && [ "$git_status_rc" -eq 0 ] &&
-    { git_status=$(git -C "$active_top" status --porcelain 2>/dev/null); git_status_rc=$?; }
 fi
 if [ -n "$active_top" ]; then
   [ "$branch" != '(detached)' ] && [ "$branch_oid" != '(initial)' ] || branch=HEAD
@@ -2234,23 +2037,8 @@ if [ -n "$session_id" ]; then
   fi
 fi
 
-# What the review gate says about this chat's uncommitted work, spoken by the gate itself. About
-# the SHOWN tree and no other: a number is only ever read as belonging to the folder beside it, so
-# the two answer for one place or the block is a lie about both.
-review_style=""
-review_text=""
 repo_debt=""
-if [ -n "$active_top" ]; then
-  review_verdict=$(review_verdict_line "$active_top" "$session_id" \
-    "$(tree_status_key "$git_status" "$git_status_rc")" "$now")
-  repo_debt=$(repo_debt_lines "$active_top" "$now")
-  review_style=${review_verdict%% *}
-  case "$review_verdict" in *' '*) review_text=${review_verdict#* } ;; esac
-  # Truncated and nothing else: the form is the parser's, and a segment that rewrites it is the
-  # second opinion this design removed.
-  [ "${#review_text}" -gt 20 ] && review_text="${review_text:0:19}…"
-fi
-
+[ -n "$active_top" ] && repo_debt=$(repo_debt_lines "$active_top" "$now")
 
 review_autonomous=no
 if [ -n "$session_id" ]; then
@@ -2258,7 +2046,7 @@ if [ -n "$session_id" ]; then
 fi
 
 # Never dimmed: a commit of this chat that its upstream does not contain is this chat's own to act
-# on, and the flow it belongs to ends at the push. Asked about the same tree the verdict is.
+# on, and the flow it belongs to ends at the push. Asked about the shown tree.
 unpushed_show=0
 if [ -n "$active_top" ]; then
   [ "$(unpushed_marker "$active_top" "$session_id" "$now")" = unpushed ] && unpushed_show=1
@@ -2276,13 +2064,11 @@ else
   STATUSLINE_FIT_MARGIN=3
 fi
 fit_repo_debt=1
-fit_repo_debt_glyph=1
 fit_diff_sign=1
 fit_branch_glyph=1
 fit_branch_short=0
 fit_dir_mode=full
 fit_model_short=0
-fit_rev_short=0
 fit_pin=1
 fit_unpushed_short=0
 fit_dir_active_only=0
@@ -2435,11 +2221,7 @@ fit_branch_part() {
     branch_part="${branch_part} ${DIM}${fparts}f${RESET}"
   fi
   if [ "$fit_repo_debt" = 1 ] && [ -n "$repo_debt" ] && [ "$repo_debt" -gt 0 ] 2>/dev/null; then
-    if [ "$fit_repo_debt_glyph" = 1 ]; then
-      branch_part="${branch_part} ${DIM}∑${repo_debt}${RESET}"
-    else
-      branch_part="${branch_part} ${DIM}${repo_debt}${RESET}"
-    fi
+    branch_part="${branch_part} ${DIM}${repo_debt}${RESET}"
   fi
   [ -n "$behind" ] && [ "$behind" -gt 0 ] 2>/dev/null &&
     branch_part="${branch_part} ${MAGENTA}↓${behind}${RESET}"
@@ -2462,40 +2244,9 @@ fit_review_part() {
   fi
 }
 
-# Autonomy is a chat fact, not a verdict prefix: `off` would otherwise swallow the mark,
-# and wrapping it in the loud colour would paint the gate's sentence.
 fit_verdict_part() {
-  local dot=""
   verdict_part=""
-  if [ "${review_style:-}" = loud ]; then
-    if [ "$review_autonomous" = yes ]; then
-      verdict_part=" ${sep} ● ${RED}${review_text}${RESET}"
-    else
-      verdict_part=" ${sep} ${RED}${review_text}${RESET}"
-    fi
-    return
-  fi
-  [ "$review_autonomous" = yes ] && dot="●"
-  [ -n "$dot" ] && [ "$fit_rev_short" != 1 ] && dot="${dot} "
-  # `unknown` style is this render's own: a cached answer that outlived the tree it was read from.
-  # The gate's own unknowns arrive as `?<why>`.
-  if [ "${review_style:-}" = unknown ]; then
-    verdict_part=" ${sep} ${dot}${DIM}?${RESET}"
-    return
-  fi
-  if [ "${review_style:-}" = dim ]; then
-    verdict_part=" ${sep} ${dot}${DIM}${review_text}${RESET}"
-    return
-  fi
-  if [ "${review_style:-}" = bright ]; then
-    case "$review_text" in
-      *' ?'*) verdict_part=" ${sep} ${dot}${review_text% \?*} ${DIM}?${review_text##* \?}${RESET}" ;;
-      *) verdict_part=" ${sep} ${dot}${review_text}" ;;
-    esac
-    return
-  fi
-  [ "$review_autonomous" = yes ] || return
-  verdict_part=" ${sep} ●"
+  [ "$review_autonomous" = yes ] && verdict_part=" ${sep} ●"
 }
 
 fit_unpushed_part() {
@@ -2584,11 +2335,11 @@ else
 fi
 fit_compose
 if [ -n "$fit_cols" ]; then
-  for fit_step in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  for fit_step in 1 2 3 4 5 6 7 8 9 10 11; do
     fit_width "$line1"
     [ "$fit_len" -le "$fit_cols" ] && break
     case "$fit_step" in
-      1) fit_diff_sign=0; fit_repo_debt_glyph=0 ;;
+      1) fit_diff_sign=0 ;;
       2) fit_branch_glyph=0 ;;
       3) fit_branch_short=1 ;;
       4)
@@ -2609,13 +2360,12 @@ if [ -n "$fit_cols" ]; then
         [ "$fit_dir_short_len" -ge 8 ] || fit_dir_short_len=8
         ;;
       5) fit_model_short=1 ;;
-      6) fit_rev_short=1 ;;
-      7) fit_acct_max=4; fit_dir_mode=initials ;;
-      8) fit_repo_debt=0 ;;
-      9) fit_pin=0; fit_unpushed_short=1 ;;
-      10) fit_dir_active_only=1 ;;
-      11) fit_dir_off=1 ;;
-      12) fit_acct_max=3 ;;
+      6) fit_acct_max=4; fit_dir_mode=initials ;;
+      7) fit_repo_debt=0 ;;
+      8) fit_pin=0; fit_unpushed_short=1 ;;
+      9) fit_dir_active_only=1 ;;
+      10) fit_dir_off=1 ;;
+      11) fit_acct_max=3 ;;
     esac
     fit_compose
   done

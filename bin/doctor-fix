@@ -122,8 +122,7 @@ DOCTORS = ("llm", "harness", "updater", "code")
 HOOK_AREAS = ("Hooks", "Hook waits")
 LLM_ENTRIES = {"reviewers": ("review-bench/bin/review-bench",), "workers": ("llm-legs/bin/worker-run",),
                "light": ("llm-legs/bin/light-research",), "image": ("llm-legs/share/image-leg.sh",),
-               "debt": ("llm-legs/bin/llm-doctor", "claude-setup/hooks/commit-journal.sh",
-                        "review-bench/bin/review-anchors", "llm-legs/bin/worker-run")}
+               "debt": ("llm-legs/bin/llm-doctor",)}
 with open(os.path.join(ROOT, "share", "doctor-areas.json")) as _areas:
     _vocabulary = json.load(_areas)
 OWN_AREA, WHOLE_AREA = _vocabulary["own"], _vocabulary.get("whole") or {}

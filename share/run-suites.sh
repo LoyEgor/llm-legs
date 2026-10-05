@@ -159,7 +159,7 @@ fi
 # scheduling helps (84s in the wave, 62s in the serial tail, 64s alone — all three red).
 serial_suite() {
   case "$1" in
-    test_commit_journal.sh|test_review_flow_gate.sh) return 0 ;;
+    test_review_flow_gate.sh) return 0 ;;
     test_claude_session_driver.sh) return 0 ;;
     *) return 1 ;;
   esac

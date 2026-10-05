@@ -123,7 +123,7 @@ alive() { kill -0 "$1" 2>/dev/null; }
 # ends the suite with it; each run dies of its signal and journals it.
 R4="$WORK/r4"
 new_repo "$R4"
-suite "$R4" test_commit_journal.sh "printf '%s\\n' \"\$\$\" >\"$WORK/tail-pid\"; touch \"$WORK/tail-ready\"; sleep 10"
+suite "$R4" test_review_flow_gate.sh "printf '%s\\n' \"\$\$\" >\"$WORK/tail-pid\"; touch \"$WORK/tail-ready\"; sleep 10"
 for case in "15 pid" "2 group"; do
   rm -f "$WORK/tail-ready" "$WORK/tail-pid"
   read -r rc ms < <(sigrun "$WORK/tail-ready" ${case} bash "$ROOT/share/run-suites.sh" --repo "$R4")

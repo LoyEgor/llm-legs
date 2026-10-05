@@ -58,8 +58,7 @@ same_repository() { # repo dir...
   return 1
 }
 
-# The anchors store's CLI, resolved off PATH: a machine without it has no store to write to, and
-# every caller here answers that with a gap line rather than a failure.
+# The anchors store's CLI, resolved off PATH: a machine without it has no store to write to.
 review_anchors() { # subcommand argument...
   local anchors args rc
   anchors=$(command -v review-anchors 2>/dev/null) && [ -x "$anchors" ] || return 127
@@ -73,26 +72,6 @@ review_anchors() { # subcommand argument...
     return "$rc"
   fi
   "$anchors" "$@"
-}
-
-# review-anchors with stdout discarded; on failure ANCHORS_WHY says why, for the gap line.
-anchors_why() { # subcommand argument...
-  local err rc
-  err=$(review_anchors "$@" 2>&1 >/dev/null) && return 0
-  rc=$?
-  if [ "$rc" = 127 ] && ! command -v review-anchors >/dev/null 2>&1; then
-    ANCHORS_WHY='review-anchors not on PATH'
-  else
-    ANCHORS_WHY="review-anchors exited $rc: ${err%%$'\n'*}"
-  fi
-  return "$rc"
-}
-
-debt_gap() { # session kind detail
-  local gaps="$HOME/.cache/claude/review-debt/gaps"
-  [ -n "$1" ] || return 0
-  mkdir -p "$gaps" 2>/dev/null || return 0
-  printf '%s\t%s\t%s\n' "$(date +%s)" "$2" "$3" >>"$gaps/$1" 2>/dev/null || :
 }
 
 # The same line worker-launch-gate holds a relay's flag to: the first `KEY: value` of the brief.
@@ -2209,7 +2188,7 @@ start_run() {
   local round_source='' spawn_round='' candidate='' rule=''
   local -a text_rounds=()
   local account pin config_model model_label agy_model='' gemini_family='' grok_turns='' root run_id='' directory=''
-  local explicit_model='' explicit_effort='' light='' light_model='' model_class=workers fix_rule='' anchors_top='' chat_fast=false fast_role='' model_id='' slug_account=''
+  local explicit_model='' explicit_effort='' light='' light_model='' model_class=workers fix_rule='' chat_fast=false fast_role='' model_id='' slug_account=''
   local light_offrow=false
   local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc launcher_session entry
   local web_search=false web_search_flag=false web_search_off_flag=false web_search_asked=''
@@ -2822,16 +2801,18 @@ start_run() {
   git -C "$workdir" rev-parse --verify --quiet HEAD >"$directory/head-before.tmp.$$" 2>/dev/null &&
     mv -f "$directory/head-before.tmp.$$" "$directory/head-before" 2>/dev/null ||
     rm -f "$directory/head-before.tmp.$$" 2>/dev/null
-  # The anchors store hears about the run while it is still open, so the launching chat's verdict
-  # says `?run` rather than a confident number about a tree a worker is writing in.
-  if [ -s "$directory/launcher" ] && anchors_top=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null); then
+  # A round fixer's fold reads the start, branch and HEAD this record keeps, so a commit landed
+  # during the run is never anchored as the fix.
+  if [ -n "$review_round" ] && [ -s "$directory/launcher" ] &&
+    git -C "$workdir" rev-parse --show-toplevel >/dev/null 2>&1; then
     git -C "$workdir" rev-parse --path-format=absolute --git-common-dir >"$directory/anchors-common" 2>/dev/null ||
       rm -f "$directory/anchors-common" 2>/dev/null
-    anchors_why run-start --repo "$workdir" --run "$run_id" --session "$(cat "$directory/launcher")" ||
-      debt_gap "$(cat "$directory/launcher")" run-start "$run_id $anchors_top: $ANCHORS_WHY"
+    review_anchors run-start --repo "$workdir" --run "$run_id" --session "$(cat "$directory/launcher")" \
+      >/dev/null 2>&1 || :
   fi
   [ ! -s "$directory/launcher" ] ||
-    snapshot_other_families "$directory" "$workdir" "$(cat "$directory/launcher")" ${add_dirs[@]+"${add_dirs[@]}"}
+    snapshot_other_families "$directory" "$workdir" "$(cat "$directory/launcher")" "$review_round" \
+      ${add_dirs[@]+"${add_dirs[@]}"}
 
   supervisor_body='ticks=0
 while [ ! -e "$2/.ready" ]; do
@@ -4280,14 +4261,10 @@ normalize_path() { # path
   printf '%s' "${out:-/}"
 }
 
-# Claimed paths of one family, top-relative: the launcher's touch always, the fix fold only in a round.
+# Claimed paths of one family, top-relative: folded as fixes only in a round.
 claim_family_anchors() { # directory snap repo top launcher path...
-  local directory="$1" snap="$2" repo="$3" top="$4" launcher="$5" round path
-  local -a touched=()
+  local directory="$1" snap="$2" repo="$3" top="$4" launcher="$5" round
   shift 5
-  for path in "$@"; do touched+=("./$path"); done
-  anchors_why touch --repo "$top" --session "$launcher" -- "${touched[@]}" ||
-    debt_gap "$launcher" claim-touch "${directory##*/} $top: $ANCHORS_WHY"
   round=$(jq -r '.review_round // empty' "$directory/meta.json" 2>/dev/null) || round=''
   [ -z "$round" ] || fold_family_anchors "$directory" "$snap" "$repo" "$top" "$launcher" "$round" "$@"
 }
@@ -4372,9 +4349,8 @@ claim_run() {
       if [ "$under" = false ] && [ -n "$top" ] && [ "$physical" != "${physical#"$top"/}" ]; then
         absolute=$physical
       else
-        # A repository the run snapshotted beside its workdir (an --add-dir, the launcher's
-        # `.repos`), or under a workdir that is no repository itself: a fix it made there is
-        # claimed and folded in that family.
+        # A repository the run snapshotted beside its workdir (an --add-dir), or under a workdir
+        # that is no repository itself: a fix it made there is claimed and folded in that family.
         family=''
         for sub in "$directory"/families/*; do
           [ -f "$sub/top" ] && [ -f "$sub/head-after" ] || continue
@@ -4683,13 +4659,12 @@ run_result_text() {
   esac
 }
 
-# The families besides the workdir's this run may write in — its --add-dir trees and the repositories
-# the launching chat's `.repos` lists — each get a before-listing under `families/<n>/` and a
-# run-start of their own. Folded from the workdir alone, a fix that also edits them never anchors
-# there, and the launcher is charged for the fix itself.
-snapshot_other_families() { # directory workdir launcher add-dir...
-  local directory="$1" workdir="$2" launcher="$3" seen candidate common top sub n=0 branch sibling
-  shift 3
+# The families besides the workdir's this run may write in — its --add-dir trees — each get a
+# before-listing under `families/<n>/`, and in a round a run-start of their own. Folded from the
+# workdir alone, a fix that also edits them never anchors there.
+snapshot_other_families() { # directory workdir launcher round add-dir...
+  local directory="$1" workdir="$2" launcher="$3" round="$4" seen candidate common top sub n=0 branch sibling
+  shift 4
   seen=$(git -C "$workdir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || seen=''
   branch=$(linked_worktree_branch "$workdir")
   while IFS= read -r candidate; do
@@ -4705,9 +4680,9 @@ snapshot_other_families() { # directory workdir launcher add-dir...
     mkdir -p "$sub" 2>/dev/null && printf '%s\n' "$top" >"$sub/top" 2>/dev/null || continue
     snapshot_workdir "$sub" "$top" before 2>/dev/null || continue
     printf '%s\n' "$common" >"$sub/anchors-common" 2>/dev/null || :
-    anchors_why run-start --repo "$top" --run "${directory##*/}" --session "$launcher" ||
-      debt_gap "$launcher" run-start "${directory##*/} $top: $ANCHORS_WHY"
-  done < <(printf '%s\n' "$@"; cat "$HOME/.cache/claude/review-journal/$launcher.repos" 2>/dev/null)
+    [ -z "$round" ] ||
+      review_anchors run-start --repo "$top" --run "${directory##*/}" --session "$launcher" >/dev/null 2>&1 || :
+  done < <(printf '%s\n' "$@")
 }
 
 # Only the directories are resolved, never the last component: a claimed symlink names itself, and a
@@ -4740,20 +4715,17 @@ external_top_paths() { # directory top
 fold_family_anchors() { # directory snap repo top launcher round [path...]
   local directory="$1" snap="$2" changed pairs entry base after owned='' i
   local -a fold paths bases afters only=("${@:7}")
-  fold=(run-fold --repo "$3" --run "${directory##*/}" --session "$5")
+  fold=(run-fold --repo "$3" --run "${directory##*/}" --session "$5" --round "$6" --owned)
   paths=()
-  if [ -n "$6" ]; then
-    fold+=(--round "$6" --owned)
-    if [ "${#only[@]}" -ne 0 ]; then
-      owned=$(printf '%s\n' "${only[@]}")
-    else
-      [ "$snap" != "$directory" ] || owned=$(listing_top_paths "$directory" "$4" "$3")
-      owned+=$'\n'$(external_top_paths "$directory" "$4")
-    fi
-    while IFS= read -r entry; do
-      [ -z "$entry" ] || fold+=("./$entry")
-    done <<<"$owned"
+  if [ "${#only[@]}" -ne 0 ]; then
+    owned=$(printf '%s\n' "${only[@]}")
+  else
+    [ "$snap" != "$directory" ] || owned=$(listing_top_paths "$directory" "$4" "$3")
+    owned+=$'\n'$(external_top_paths "$directory" "$4")
   fi
+  while IFS= read -r entry; do
+    [ -z "$entry" ] || fold+=("./$entry")
+  done <<<"$owned"
   if changed=$(snapshot_changed_paths "$snap" "$4" 2>/dev/null) &&
     { [ "${#only[@]}" -eq 0 ] || changed=$(grep -xF -f <(printf '%s\n' "${only[@]}") <<<"$changed"); true; } &&
     pairs=$(snapshot_pairs "$snap" "$4" <<<"$changed" 2>/dev/null); then
@@ -4778,38 +4750,32 @@ fold_family_anchors() { # directory snap repo top launcher round [path...]
         fold+=("--base=./$entry=$base" "--after=./$entry=$after")
       done
     fi
-    anchors_why "${fold[@]}" && return 0
-    debt_gap "$5" run-fold "${directory##*/} $4: $ANCHORS_WHY"
-  else
-    # The snapshots are what a changed set can be read from at all. Unreadable, the run is still
-    # folded — left open it would say `?run` about this chat forever — and the gap line beside it
-    # is what keeps that fold from reading as "nothing changed".
-    review_anchors "${fold[@]}" >/dev/null 2>&1 || :
-    debt_gap "$5" run-fold "${directory##*/} $4: snapshots unreadable"
   fi
+  review_anchors "${fold[@]}" >/dev/null 2>&1 || :
 }
 
-# What this run changed, told to the anchors store from the one path that runs whatever the run's
+# What a round fixer changed, told to the anchors store from the one path that runs whatever the run's
 # end was — a clean exit, a nonzero one, an operator's kill, the launch timeout. The changed set is
 # the run's OWN before/after listings and never the transcript's `files`/`produced`: a heredoc no
-# tool call names still moved content, and those lines are the launching chat's to answer for.
-# The run was opened in a checkout's store; a checkout gone since must still close it there.
-fold_gone_checkout() { # directory anchors-common-file launcher
+# tool call names still moved content.
+# A round run's record in a family whose checkout is gone is dropped in its main checkout: left
+# open, `review-anchors check` reads it as a dead run forever.
+fold_gone_checkout() { # directory anchors-common-file launcher round
   local common workdir=''
   IFS= read -r common <"$2" 2>/dev/null || common=''
   case "$common" in */.git) workdir=$(git -C "${common%/.git}" rev-parse --show-toplevel 2>/dev/null) ;; esac
   [ -z "$workdir" ] ||
-    review_anchors run-fold --repo "$workdir" --run "${1##*/}" --session "$3" >/dev/null 2>&1 || :
+    review_anchors run-fold --repo "$workdir" --run "${1##*/}" --session "$3" --round "$4" --owned >/dev/null 2>&1 || :
 }
 
 fold_run_anchors() { # directory
   local directory="$1" launcher workdir top round sub
   launcher=''
   [ -f "$directory/launcher" ] && IFS= read -r launcher <"$directory/launcher"
-  [ -n "$launcher" ] || return 0
+  round=$(jq -r '.review_round // empty' "$directory/meta.json" 2>/dev/null) || round=''
+  [ -n "$launcher" ] && [ -n "$round" ] || return 0
   workdir=$(jq -r '.workdir // empty' "$directory/meta.json" 2>/dev/null) || workdir=''
   [ "$workdir" != null ] || workdir=''
-  round=$(jq -r '.review_round // empty' "$directory/meta.json" 2>/dev/null) || round=''
   top=''
   [ -z "$workdir" ] || top=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) || top=''
   if [ -n "$top" ] && [ ! -e "$directory/head-before" ] && [ ! -e "$directory/dirty-before-shas" ] &&
@@ -4819,15 +4785,13 @@ fold_run_anchors() { # directory
   elif [ -n "$top" ]; then
     fold_family_anchors "$directory" "$directory" "$workdir" "$top" "$launcher" "$round"
   elif [ -f "$directory/anchors-common" ]; then
-    fold_gone_checkout "$directory" "$directory/anchors-common" "$launcher"
-    debt_gap "$launcher" run-fold "${directory##*/} $workdir: not a repository"
+    fold_gone_checkout "$directory" "$directory/anchors-common" "$launcher" "$round"
   fi
   for sub in "$directory"/families/*; do
     [ -f "$sub/top" ] || continue
     IFS= read -r top <"$sub/top" 2>/dev/null || continue
     if ! git -C "$top" rev-parse --show-toplevel >/dev/null 2>&1; then
-      fold_gone_checkout "$directory" "$sub/anchors-common" "$launcher"
-      debt_gap "$launcher" run-fold "${directory##*/} $top: not a repository"
+      fold_gone_checkout "$directory" "$sub/anchors-common" "$launcher" "$round"
       continue
     fi
     [ -f "$sub/dirty-after-shas" ] || snapshot_workdir "$sub" "$top" after 2>/dev/null || :

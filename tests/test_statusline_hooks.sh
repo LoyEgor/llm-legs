@@ -1745,22 +1745,22 @@ assert grep -Fq 'FB5 xhi fitacco │ fit-benc ' <<< "$fit_step5"
 fit_step5=$(fit_render fit-step5-hold 46)
 assert grep -Fq 'FB5 xhi fitacco │ fit-benc ' <<< "$fit_step5"
 
-# Steps 7, 9, 11 and 12: the account to 4 with the initials, the pin, the directory itself, the
+# Steps 6, 8, 10 and 11: the account to 4 with the initials, the pin, the directory itself, the
 # account to 3 — and never shorter than 3, however narrow.
-fit_step7=$(fit_render fit-step7 44)
-assert grep -Fq 'FB5 xhi fita │ fbp WUT-421 3/0 │ a' <<< "$fit_step7"
-fit_step9=$(fit_render fit-step9 36)
-assert test "${fit_step9#*"│ a"}" = "$fit_step9"
-assert grep -Fq 'fita │ fbp' <<< "$fit_step9"
-fit_step11=$(fit_render fit-step11 32)
-assert test "${fit_step11#*fbp}" = "$fit_step11"
-assert grep -Fq 'FB5 xhi fita │ WUT-421' <<< "$fit_step11"
-fit_step12=$(fit_render fit-step12 28)
-assert grep -Fq 'FB5 xhi fit │ WUT-421' <<< "$fit_step12"
+fit_step6=$(fit_render fit-step6 44)
+assert grep -Fq 'FB5 xhi fita │ fbp WUT-421 3/0 │ a' <<< "$fit_step6"
+fit_step8=$(fit_render fit-step8 36)
+assert test "${fit_step8#*"│ a"}" = "$fit_step8"
+assert grep -Fq 'fita │ fbp' <<< "$fit_step8"
+fit_step10=$(fit_render fit-step10 32)
+assert test "${fit_step10#*fbp}" = "$fit_step10"
+assert grep -Fq 'FB5 xhi fita │ WUT-421' <<< "$fit_step10"
+fit_step11=$(fit_render fit-step11 28)
+assert grep -Fq 'FB5 xhi fit │ WUT-421' <<< "$fit_step11"
 fit_floor=$(fit_render fit-floor 15)
 assert grep -Fq 'FB5 xhi fit │ WUT-421' <<< "$fit_floor"
 
-# Steps 10 and 11 on the `»` pair: both sides share the cut, then wear initials with the arrow's
+# Steps 9 and 10 on the `»` pair: both sides share the cut, then wear initials with the arrow's
 # spaces gone, then the active side alone, then no directory at all.
 place_set fit-arrow "$FIT_FOREIGN_TOP"
 fit_arrow=$(fit_render fit-arrow "")
@@ -1813,7 +1813,7 @@ assert grep -Fq "⧉ feature- " <<< "$fit_wt_plain"
 fit_wt_plain_ini=$(fit_render fit-wt-plain-ini 40 "$REPO_E")
 assert grep -Fq "⧉ fy" <<< "$fit_wt_plain_ini"
 
-# Initials longer than the 8-character cut would make step 7 GROW the line, and the directory
+# Initials longer than the 8-character cut would make step 6 GROW the line, and the directory
 # would be dropped at a width its truncated form fits.
 fit_many_full=$(fit_render fit-many "" "$FIT_MANY")
 assert grep -Fq 'a-b-c-d-e-f-g-h-i-j' <<< "$fit_many_full"
@@ -3301,41 +3301,6 @@ untracked_files=$(git -C "$UNTRACKED_REPO" ls-files --others --exclude-standard 
 assert_eq "$(printf '%s\t0\t\tU%s' "$untracked_want" "$untracked_files")" "$untracked_line"
 rm -f "$UNTRACKED_REPO/-c"
 
-# The render keeps `git status --porcelain` (v1) as the verdict cache key while it reads v2: the
-# rebuilt text must match v1 byte for byte (quoted spaces, renames, unmerged entries sorted in).
-V1_REPO="$FIXTURES/v1-key-repo"
-mkdir -p "$V1_REPO"
-v1git() { git -C "$V1_REPO" -c user.name=Fixture -c user.email=fixture@example.com "$@"; }
-v1git init -qb main
-printf 'a\n' > "$V1_REPO/plain"; printf 'b\n' > "$V1_REPO/with space"; printf 'c\n' > "$V1_REPO/quo\"te"
-printf 'f\n' > "$V1_REPO/torename"; printf 'g\n' > "$V1_REPO/conflict"; printf 'h\n' > "$V1_REPO/del"
-printf 'j\n' > "$V1_REPO/mod space"
-v1git add -A && v1git commit -qm init
-v1git checkout -qb side; printf 'side\n' > "$V1_REPO/conflict"; v1git commit -qam side
-v1git checkout -q main; printf 'main\n' > "$V1_REPO/conflict"; v1git commit -qam main
-v1git merge -q side >/dev/null 2>&1
-assert grep -q '^u ' <<< "$(git -C "$V1_REPO" status --porcelain=v2)"
-v1git mv torename 'renamed to'; v1git mv 'with space' $'new\ttab'
-printf 'x\n' >> "$V1_REPO/plain"; v1git add plain; printf 'y\n' >> "$V1_REPO/plain"
-printf 'k\n' >> "$V1_REPO/mod space"; printf 'z\n' >> "$V1_REPO/quo\"te"; rm "$V1_REPO/del"
-mkdir -p "$V1_REPO/dir sp" "$V1_REPO/newdir/sub"
-printf 'u\n' > "$V1_REPO/dir sp/x"; printf 'u\n' > "$V1_REPO/untr space"; printf 'u\n' > "$V1_REPO/newdir/sub/f"
-v1_extract=$(sed -n '/^  status_unmerged=0$/,/git_status_rc=\$?; }$/p' "$STATUSLINE")
-assert test -n "$v1_extract"
-v1_case() {
-  local git_status="" has_untracked=0 git_status_rc=0 active_top="$V1_REPO" branch="" branch_oid=""
-  local branch_upstream="" ahead="" behind="" status_v2
-  status_v2=$(git -C "$V1_REPO" status --porcelain=v2 --branch --untracked-files=normal --ahead-behind)
-  eval "$v1_extract"
-  assert_eq "$(git -C "$V1_REPO" status --porcelain)" "$git_status"
-  assert_eq 1 "$has_untracked"
-}
-v1_case
-# Without an unmerged entry the key is rebuilt from v2 alone.
-v1git rm -q --cached conflict >/dev/null; v1git add conflict
-assert test -z "$(git -C "$V1_REPO" status --porcelain=v2 | grep '^u ')"
-v1_case
-
 # Render timing for the Harness doctor: one `start_us<TAB>end_us<TAB>session<TAB>cpu_ms` line per render under
 # $HARNESS_DOCTOR_DIR (default ~/.cache/harness-doctor)/statusline/<local date>.tsv, never on stdout.
 TIMING_DIR="$WORK/harness-doctor"
@@ -4652,10 +4617,8 @@ git -C "$REVIEW_DIRTY" add tracked.txt
 git -C "$REVIEW_DIRTY" -c user.name=Fixture -c user.email=fixture@example.com commit -qm initial
 printf 'line\n%.0s' {1..21} > "$REVIEW_DIRTY/change.txt"
 TOP_REVIEW_DIRTY=$(cd "$REVIEW_DIRTY" && pwd -P)
-review_verdict_delimited=" ${DIM}│${RESET} 3"
-# Neither slot carries a word any more, so silence is the absence of every shape the two can take:
-# the run's counter in its colourings, and the verdict's number, `~`, `fix` or `?`. Asked of
-# line 1 alone, because line 2 opens segments with digits (`5h`).
+# Neither slot carries a word, so silence is the absence of every shape the run's counter and the
+# autonomy dot can take. Asked of line 1 alone, because line 2 opens segments with digits (`5h`).
 review_slot_silent() { # rendered
   case "${1%%$'\n'*}" in
     *" ${DIM}│${RESET} "[0-9~]*|*" ${DIM}│${RESET} T"[0-3]*|*" ${DIM}│${RESET} ● "*) return 1 ;;
@@ -4666,21 +4629,15 @@ review_slot_silent() { # rendered
   return 0
 }
 
-# The segment is the commit gate's mouthpiece and nothing else: it runs
-# `review-flow-gate.sh verdict <toplevel> <session>` and prints the line that comes back, coloured
-# by the style word and truncated to fit, never re-decided here. A stub gate answers the rendering
-# cases; the real hook answers the parity case at the end, so the two can be seen not to have
-# drifted apart — which is the whole point of the label speaking with the gate's voice.
+# The gate supplies one chat fact here, `autonomous <sid>`; any other verb it is asked gets
+# GATE_ANSWER, so a render that still asked for a per-chat verdict would show it.
 GATE_LOG="$WORK/gate.log"
 GATE_STUB="$FIXTURES/gate-stub.sh"
 cat > "$GATE_STUB" <<'STUB'
 #!/bin/bash
 printf '%s\n' "$*" >> "$GATE_LOG"
-# default, because the cases below are about the VERDICT alone and an unreadable total is no longer
-# silent — it is the third state `?`, which would stand in every one of them.
 case "$1" in
   autonomous) printf '%s\n' "${GATE_AUTONOMOUS-}"; exit "${GATE_VERB_RC:-0}" ;;
-  # The rendered tree is part of the question, so a caller that drops it gets no number at all.
 esac
 printf '%s\n' "$GATE_ANSWER"
 exit "${GATE_RC:-0}"
@@ -4693,12 +4650,8 @@ GATE_AUTONOMOUS=
 GATE_VERB_RC=0
 GATE_CMD="$GATE_STUB"
 
-# The verdict is cached for 15s on a key that cannot see a second edit to an already-modified file
-# or a stub told to answer differently; every case here drops it and asks again.
-#
 # Two renders per case, because the gate is never asked on the render path: the first starts the
-# refresh and shows whatever stood before it, the second reads what landed. A render that returned
-# the answer straight away would be one waiting a second for git on every prompt.
+# refresh, the second reads what landed.
 review_await_session() { # session
   local file="$STATE_DIR/review-autonomy-$1" i
   for i in $(seq 1 100); do
@@ -4707,181 +4660,36 @@ review_await_session() { # session
   done
   fail "the backgrounded session answer never landed: $1"
 }
-review_await_verdict() { # session
-  local file="$STATE_DIR/review-class-$1" i
-  for i in $(seq 1 100); do
-    [ -s "$file" ] && [ ! -d "$file.lock" ] && return 0
-    sleep 0.05
-  done
-  fail "the backgrounded verdict never landed: $1"
-}
 review_render() { # session repo
-  local payload
-  rm -f "$STATE_DIR/review-class-$1"
-  rmdir "$STATE_DIR/review-class-$1.lock" 2>/dev/null
-  payload=$(statusline_payload "$1" "" "$2")
-  run_statusline "$payload" >/dev/null || fail "review render failed: $1"
-  review_await_verdict "$1"
-  run_statusline "$payload" || fail "review render failed: $1"
+  run_statusline "$(statusline_payload "$1" "" "$2")" || fail "review render failed: $1"
 }
-# too — the second render is only allowed to be the one that shows the answer.
 review_session_render() { # session repo
   local payload
-  rm -f "$STATE_DIR/review-class-$1" "$STATE_DIR/review-autonomy-$1"
-  rmdir "$STATE_DIR/review-class-$1.lock" "$STATE_DIR/review-autonomy-$1.lock" 2>/dev/null
+  rm -f "$STATE_DIR/review-autonomy-$1"
+  rmdir "$STATE_DIR/review-autonomy-$1.lock" 2>/dev/null
   payload=$(statusline_payload "$1" "" "$2")
   run_statusline "$payload" >/dev/null || fail "review session render failed: $1"
-  review_await_verdict "$1"
   review_await_session "$1"
   run_statusline "$payload" || fail "review session render failed: $1"
 }
+review_seg=" ${DIM}│${RESET} "
 
-# The gate is asked about the working tree and this chat, and its answer is printed word for word.
+# Debt is per repository (a dim `N`, below): no per-chat number reaches the strip, whatever the gate
+# would answer, and the gate is never asked for one.
 : > "$GATE_LOG"
-GATE_ANSWER='STATUS=open LINES=3 FILES=1 FIX=0 WHY=none'
-GATE_RC=0
-review_none_out=$(review_render review-dirty "$REVIEW_DIRTY")
-assert grep -Fq " ${DIM}│${RESET} 3" <<< "$review_none_out"
-assert test "${review_none_out#*rev 3}" = "$review_none_out"
-assert grep -Fqx "verdict $TOP_REVIEW_DIRTY review-dirty" "$GATE_LOG"
-
-# Debt this chat authored reads bright — normal weight, no colour of its own — and dim is
-# everyone else's. Both carry the count verbatim; the segment neither invents a number nor strips
-# one, and the number is diff lines, which is the gate's business and not the render's.
-GATE_ANSWER='STATUS=open LINES=2 FILES=1 FIX=0 WHY=none'
-review_mine_out=$(review_render review-mine "$REVIEW_DIRTY")
-assert grep -Fq " ${DIM}│${RESET} 2" <<< "$review_mine_out"
-assert test "${review_mine_out#*"│${RESET} ${DIM}2"}" = "$review_mine_out"
-assert test "${review_mine_out#*"│${RESET} ${RED}2"}" = "$review_mine_out"
-
-# The watchdog has no voice here at all: a killed run settles nothing, so its paths stand in the
-# numbers like any others and the kill is seen through the report flow and `review-bench doctor`
-# (review-bench docs/review-contract.md). No word of the gate's own vocabulary is red, and a nonzero exit is
-# the gate answering rather than the gate failing.
-GATE_RC=2
-review_calm_n=0
-for review_calm in 'off' 'STATUS=open LINES=3 FILES=1 FIX=0 WHY=none' 'STATUS=open LINES=2 FILES=1 FIX=0 WHY=none'; do
-  review_calm_n=$((review_calm_n + 1))
-  GATE_ANSWER="$review_calm"
-  review_calm_out=$(review_render "review-calm-$review_calm_n" "$REVIEW_DIRTY")
-  assert test "${review_calm_out#*"${RESET} ${RED}"}" = "$review_calm_out"
-  assert test "${review_calm_out#*●}" = "$review_calm_out"
-  assert test "${review_calm_out#*timeout}" = "$review_calm_out"
+GATE_AUTONOMOUS=no
+for review_gone in 'STATUS=open LINES=3 FILES=1 FIX=0 WHY=none' 'STATUS=open LINES=0 FILES=0 FIX=3 WHY=none' \
+    'STATUS=unknown LINES=0 FILES=0 FIX=0 WHY=gap' 'held because'; do
+  GATE_ANSWER="$review_gone"
+  review_gone_out=$(review_session_render review-gone "$REVIEW_DIRTY")
+  assert review_slot_silent "$review_gone_out"
+  assert test "${review_gone_out#*"${review_seg}${DIM}?"}" = "$review_gone_out"
 done
-GATE_RC=0
-
-# `off` is the gate having nothing to say, and the segment says nothing.
+assert_eq 0 "$(grep -c '^verdict ' "$GATE_LOG" | tr -d ' ')"
 GATE_ANSWER=off
-review_off_out=$(review_render review-off "$REVIEW_DIRTY")
-assert review_slot_silent "$review_off_out"
 
-# A line this build cannot read is an unknown like any other, `?err`: the
-# one thing the segment may never do is stand a number over an answer nobody could parse, and a
-# sentence shown whole in red was that same guess wearing a colour.
-GATE_ANSWER='held because'
-review_unreadable_out=$(review_render review-unreadable "$REVIEW_DIRTY")
-assert grep -Fq " ${DIM}│${RESET} ${DIM}?err${RESET}" <<< "$review_unreadable_out"
-assert test "${review_unreadable_out#*held}" = "$review_unreadable_out"
-# A protocol line short of one of its fields is unreadable too: reading the fields that are there
-# and filling in the rest is exactly how a silent zero reaches the strip.
-GATE_ANSWER='STATUS=open LINES=4 FILES=1 WHY=none'
-review_partial_out=$(review_render review-partial "$REVIEW_DIRTY")
-assert grep -Fq " ${DIM}│${RESET} ${DIM}?err${RESET}" <<< "$review_partial_out"
-assert test "${review_partial_out#*"${RESET} 4"}" = "$review_partial_out"
-
-# A gate that answers nothing, and a gate that is not there at all: both silent. The segment may
-# never invent a verdict where the one thing that decides it could not be reached.
-GATE_ANSWER=''
-GATE_RC=1
-review_empty_out=$(review_render review-empty "$REVIEW_DIRTY")
-assert review_slot_silent "$review_empty_out"
-GATE_CMD="$FIXTURES/no-such-gate.sh"
-GATE_ANSWER='STATUS=open LINES=3 FILES=1 FIX=0 WHY=none'
-GATE_RC=0
-review_nogate_out=$(review_render review-nogate "$REVIEW_DIRTY")
-assert review_slot_silent "$review_nogate_out"
-GATE_CMD="$GATE_STUB"
-
-# Words the protocol does not name ride along without changing the answer: the fields decide, and
-# a gate that grows a seventh of them must not turn this build silent.
-GATE_ANSWER='STATUS=open LINES=3 FILES=1 FIX=0 WHY=none NOTE=whatever-comes-next'
-review_extra_out=$(review_render review-extra "$REVIEW_DIRTY")
-assert grep -Fq " ${DIM}│${RESET} 3" <<< "$review_extra_out"
-assert test "${review_extra_out#*NOTE}" = "$review_extra_out"
-
-# Truncation is the one thing done to the text, and it is display only. Nothing the protocol can
-# say is long, so the cut is reachable only through an answer a previous build left in the cache —
-# which is rendered as it stands, the style word included.
-review_long_cache="$STATE_DIR/review-class-review-long"
-printf '%s\n%s' "$TOP_REVIEW_DIRTY|0-0|0|0" 'loud 3 and a sentence nobody expected' \
-  > "$review_long_cache"
-review_long_out=$(run_statusline "$(statusline_payload review-long "" "$REVIEW_DIRTY")") ||
-  fail "cached verdict render failed"
-assert grep -Fq "${DIM}│${RESET} ${RED}3 and a sentence no…${RESET}" <<< "$review_long_out"
-assert test "${review_long_out#*nobody}" = "$review_long_out"
-
-# Asked once per key, not once per render: this runs on every prompt, and the gate's verdict mode
-# reads git and review-bench. A second render with nothing moved must come off the cache.
-GATE_ANSWER='STATUS=open LINES=3 FILES=1 FIX=0 WHY=none'
-rm -f "$STATE_DIR/review-class-review-cache" "$STATE_DIR/review-autonomy-review-cache"
-: > "$GATE_LOG"
-run_statusline "$(statusline_payload review-cache "" "$REVIEW_DIRTY")" >/dev/null ||
-  fail "review cache first render failed"
-review_await_verdict review-cache
-review_await_session review-cache
-run_statusline "$(statusline_payload review-cache "" "$REVIEW_DIRTY")" >/dev/null ||
-  fail "review cache second render failed"
-assert_eq 1 "$(grep -c '^verdict ' "$GATE_LOG" | tr -d ' ')"
-# And asked again the moment the commit journal moves: the gate reads this chat's pending paths out
-# of it, so an entry appended there changes the verdict with nothing in `git status` moving at all.
-review_gitdir=$(git -C "$REVIEW_DIRTY" rev-parse --absolute-git-dir)
-printf 'review-cache\t1750000000\tchange.txt\0' > "$review_gitdir/review-anchors.json"
-run_statusline "$(statusline_payload review-cache "" "$REVIEW_DIRTY")" >/dev/null ||
-  fail "review cache third render failed"
-review_await_verdict review-cache
-assert_eq 2 "$(grep -c '^verdict ' "$GATE_LOG" | tr -d ' ')"
-# A recorded review decision changes no Git state or commit journal, so its family clock must
-# invalidate the answer immediately rather than leave the old class behind until the TTL.
-review_clock="$review_gitdir/claude-review-clock"
-touch -t 202001010000 "$review_clock"
-run_statusline "$(statusline_payload review-cache "" "$REVIEW_DIRTY")" >/dev/null ||
-  fail "review decision-clock render failed"
-review_await_verdict review-cache
-assert_eq 3 "$(grep -c '^verdict ' "$GATE_LOG" | tr -d ' ')"
-# The pair beside it is about the CHAT, so nothing a tree does moves its key: three re-asked
-# verdicts later it is still the one answer the first render fetched, and its own 15s TTL is the
-# only thing that will ever ask again.
-assert_eq 1 "$(grep -c '^autonomous ' "$GATE_LOG" | tr -d ' ')"
-assert_eq 0 "$(grep -c '^debt-total ' "$GATE_LOG" | tr -d ' ')"
-# The verdict is the session's sum over every repository its .repos list names, so a journal or
-# clock moving in one the block does not show re-asks it as well; the list alone moves nothing.
-review_side="$FIXTURES/review-side"
-mkdir -p "$review_side"
-git -C "$review_side" init -q
-review_side_gitdir=$(git -C "$review_side" rev-parse --absolute-git-dir)
-review_repos="$HOME/.cache/claude/review-journal/review-cache.repos"
-mkdir -p "${review_repos%/*}"
-printf '%s\n' "$review_side" > "$review_repos"
-run_statusline "$(statusline_payload review-cache "" "$REVIEW_DIRTY")" >/dev/null ||
-  fail "review side-list render failed"
-review_await_verdict review-cache
-assert_eq 3 "$(grep -c '^verdict ' "$GATE_LOG" | tr -d ' ')"
-printf 'review-cache\t1750000000\tside.txt\0' > "$review_side_gitdir/review-anchors.json"
-run_statusline "$(statusline_payload review-cache "" "$REVIEW_DIRTY")" >/dev/null ||
-  fail "review side-journal render failed"
-review_await_verdict review-cache
-assert_eq 4 "$(grep -c '^verdict ' "$GATE_LOG" | tr -d ' ')"
-touch -t 202001010000 "$review_side_gitdir/claude-review-clock"
-run_statusline "$(statusline_payload review-cache "" "$REVIEW_DIRTY")" >/dev/null ||
-  fail "review side-clock render failed"
-review_await_verdict review-cache
-assert_eq 5 "$(grep -c '^verdict ' "$GATE_LOG" | tr -d ' ')"
-rm -f "$review_repos"
-rm -f "$review_gitdir/review-anchors.json" "$review_clock"
-
-# Nothing is spawned behind the label beyond that one read-only ask: a background review-bench per
-# render is what the tier number used to cost, and a cache file keyed on a chat and its path set is
-# that probe still running.
+# Nothing is spawned behind the label beyond the read-only autonomy ask: a background review-bench
+# per render is what the tier number used to cost.
 rm -f "$HOME/.cache/claude-statusline"/review-tier-*
 review_render review-dirty "$REVIEW_DIRTY" >/dev/null
 sleep 1
@@ -4889,214 +4697,42 @@ asserts=$((asserts + 1))
 test -z "$(ls "$HOME/.cache/claude-statusline"/review-tier-* 2>/dev/null)" ||
   fail "the review segment still spawned a probe: $(ls "$HOME/.cache/claude-statusline")"
 
-# The label sits after the repository cluster and before the pin.
-GATE_ANSWER='STATUS=open LINES=3 FILES=1 FIX=0 WHY=none'
-write_chat_pin review-order 'grok_profile=a'
-review_order_line=$(review_render review-order "$REVIEW_DIRTY")
-review_order_line="${review_order_line%%$'\n'*}"
-review_before="${review_order_line%%"$review_verdict_delimited"*}"
-review_after="${review_order_line#*"$review_verdict_delimited"}"
-assert grep -Fq "$(basename "$REVIEW_DIRTY")" <<< "$review_before"
-assert test "${review_before#*"$PIN_MARK"}" = "$review_before"
-assert grep -Fq "$PIN_MARK" <<< "$review_after"
-
-# A port belongs to the project and its diff, not to a review of it, so it takes the slot right
-# after the repository cluster and the review label follows it.
-printf '5173\n' > "$STATE_DIR/ports-r-order"
-rorder_out=$(review_render r-order "$REVIEW_DIRTY")
-assert grep -Fq ":5173" <<< "$rorder_out"
-assert grep -Fq "$review_verdict_delimited" <<< "$rorder_out"
-assert grep -Fq ":5173" <<< "${rorder_out%%"$review_verdict_delimited"*}"
-rm -f "$STATE_DIR/ports-r-order"
-
-# Two more answers from the same gate, about the CHAT and not the tree: `autonomous <sid>` says
-# repository it touched. Both are the gate's alone — nothing here counts anything — and a gate that
-# does not know the verbs leaves the segment exactly as it was.
-review_seg=" ${DIM}│${RESET} "
-GATE_RC=0
-GATE_VERB_RC=0
-
-# `no` is the shape everything above already renders: the bare number and no dot.
-GATE_ANSWER='STATUS=open LINES=7 FILES=1 FIX=0 WHY=none'
-GATE_AUTONOMOUS=no
-review_auto_off_out=$(review_session_render review-auto-off "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}7" <<< "$review_auto_off_out"
-assert test "${review_auto_off_out#*rev 7}" = "$review_auto_off_out"
-assert test "${review_auto_off_out#*●}" = "$review_auto_off_out"
-
-# `yes` puts a dot before the number — the chat that reviews itself is the one fact a reader
-# needs before believing the number beside it.
+# `autonomous <sid>` is the gate's alone, and a gate that does not know the verb leaves no mark.
 GATE_AUTONOMOUS=yes
 review_auto_on_out=$(review_session_render review-auto-on "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}● 7" <<< "$review_auto_on_out"
-assert test "${review_auto_on_out#*"${review_seg}rev"}" = "$review_auto_on_out"
-
-review_auto_fit_out=$(FIT_COLUMNS=24 review_session_render review-auto-fit "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}●7" <<< "$review_auto_fit_out"
-assert test "${review_auto_fit_out#*${DIM}/}" = "$review_auto_fit_out"
+assert grep -Fq "${review_seg}●" <<< "$review_auto_on_out"
+assert test "${review_auto_on_out#*auto}" = "$review_auto_on_out"
+review_auto_narrow_out=$(FIT_COLUMNS=24 review_session_render review-auto-narrow "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}●" <<< "$review_auto_narrow_out"
 GATE_AUTONOMOUS=no
-review_own_fit_out=$(FIT_COLUMNS=24 review_session_render review-own-fit "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}7" <<< "$review_own_fit_out"
-assert test "${review_own_fit_out#*r7}" = "$review_own_fit_out"
-assert test "${review_own_fit_out#*${DIM}|}" = "$review_own_fit_out"
+review_auto_off_out=$(review_session_render review-auto-off "$REVIEW_DIRTY")
+assert test "${review_auto_off_out#*●}" = "$review_auto_off_out"
 GATE_AUTONOMOUS=
 GATE_VERB_RC=1
 review_stub_out=$(review_session_render review-stub-verbs "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}7" <<< "$review_stub_out"
 assert test "${review_stub_out#*●}" = "$review_stub_out"
-assert test "${review_stub_out#*${DIM}|}" = "$review_stub_out"
 GATE_VERB_RC=0
-GATE_ANSWER='STATUS=open LINES=29 FILES=1 FIX=0 WHY=none'
-GATE_AUTONOMOUS=no
-review_bare_out=$(review_session_render review-bare-29 "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}29" <<< "$review_bare_out"
-assert test "${review_bare_out#*rev 29}" = "$review_bare_out"
+# Asked once per TTL, not once per render: a second render with nothing moved comes off the cache.
 GATE_AUTONOMOUS=yes
-review_bare_auto_out=$(review_session_render review-bare-auto-29 "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}● 29" <<< "$review_bare_auto_out"
-GATE_ANSWER='STATUS=unknown LINES=0 FILES=0 FIX=0 WHY=gap'
-GATE_AUTONOMOUS=no
-review_bare_unknown_out=$(review_session_render review-bare-unknown "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}${DIM}?gap${RESET}" <<< "$review_bare_unknown_out"
-assert test "${review_bare_unknown_out#*"rev ?"}" = "$review_bare_unknown_out"
+: > "$GATE_LOG"
+review_session_render review-cache "$REVIEW_DIRTY" >/dev/null
+review_render review-cache "$REVIEW_DIRTY" >/dev/null
+assert_eq 1 "$(grep -c '^autonomous ' "$GATE_LOG" | tr -d ' ')"
+
+# The mark sits after the repository cluster and its ports, and before the pin.
+review_mark_delimited="${review_seg}●"
+write_chat_pin review-order 'grok_profile=a'
+printf '5173\n' > "$STATE_DIR/ports-review-order"
+review_order_line=$(review_session_render review-order "$REVIEW_DIRTY")
+review_order_line="${review_order_line%%$'\n'*}"
+review_before="${review_order_line%%"$review_mark_delimited"*}"
+review_after="${review_order_line#*"$review_mark_delimited"}"
+assert grep -Fq "$(basename "$REVIEW_DIRTY")" <<< "$review_before"
+assert grep -Fq ":5173" <<< "$review_before"
+assert test "${review_before#*"$PIN_MARK"}" = "$review_before"
+assert grep -Fq "$PIN_MARK" <<< "$review_after"
+rm -f "$STATE_DIR/ports-review-order"
 GATE_AUTONOMOUS=
-GATE_ANSWER=off
-
-# --- the third state: a number, `off`, and `?` ------------------------------------------------
-# `closed` is the gate answering "nothing is owed"; an unknown is nobody having answered — its
-# library down, a member repository that failed, a `timeout` kill, an answer that outlived the 120s
-# sweep. Rendered as `off`, or as no segment at all, an outage reaches Egor as a clean bill, so
-# every unknown is shown as `?<why>`, the word Egor brings to that chat.
-GATE_ANSWER='STATUS=unknown LINES=0 FILES=0 FIX=0 WHY=gap'
-GATE_AUTONOMOUS=no
-review_unknown_out=$(review_session_render review-unknown-total "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}${DIM}?gap${RESET}" <<< "$review_unknown_out"
-assert test "${review_unknown_out#*rev ?}" = "$review_unknown_out"
-# And a chat that commits on its own keeps its marker in front of it, as it does before a number.
-GATE_AUTONOMOUS=yes
-review_unknown_auto_out=$(review_session_render review-unknown-auto "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}● ${DIM}?gap${RESET}" <<< "$review_unknown_auto_out"
-
-# The mark is independent of the verdict: `off` still shows it, and a loud sentence wears it
-# outside the red colouring.
-GATE_ANSWER=off
-GATE_AUTONOMOUS=yes
-review_auto_off_alone_out=$(review_session_render review-auto-off-alone "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}●" <<< "$review_auto_off_alone_out"
-assert test "${review_auto_off_alone_out#*auto}" = "$review_auto_off_alone_out"
-GATE_AUTONOMOUS=no
-review_auto_off_none_out=$(review_session_render review-auto-off-none "$REVIEW_DIRTY")
-assert test "${review_auto_off_none_out#*●}" = "$review_auto_off_none_out"
-assert test "${review_auto_off_none_out#*auto}" = "$review_auto_off_none_out"
-GATE_AUTONOMOUS=yes
-review_auto_off_narrow_out=$(FIT_COLUMNS=24 review_session_render review-auto-off-narrow "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}●" <<< "$review_auto_off_narrow_out"
-assert test "${review_auto_off_narrow_out#*auto}" = "$review_auto_off_narrow_out"
-GATE_ANSWER='held because'
-GATE_AUTONOMOUS=yes
-review_auto_loud_out=$(review_session_render review-auto-loud "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}● ${DIM}?err${RESET}" <<< "$review_auto_loud_out"
-assert test "${review_auto_loud_out#*auto}" = "$review_auto_loud_out"
-GATE_AUTONOMOUS=no
-review_auto_loud_none_out=$(review_session_render review-auto-loud-none "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}${DIM}?err${RESET}" <<< "$review_auto_loud_none_out"
-assert test "${review_auto_loud_none_out#*●}" = "$review_auto_loud_none_out"
-
-# A gate answering `0` says nothing is owed anywhere, which is the empty slot and never a `?`.
-# Proves the two states did not collapse into one the moment the third was added.
-GATE_AUTONOMOUS=no
-GATE_ANSWER=off
-review_zero_state_out=$(review_session_render review-zero-state "$REVIEW_DIRTY")
-assert review_slot_silent "$review_zero_state_out"
-assert test "${review_zero_state_out#*"${review_seg}${DIM}?"}" = "$review_zero_state_out"
-
-# A verdict cached before the 120s sweep is an answer about a tree two minutes ago, which for a
-# number Egor acts on is no answer at all. Backdated with the session pair left fresh, so the `?`
-# can only have come from the verdict's own staleness. Proves a stale answer is not a clean bill.
-GATE_ANSWER='STATUS=open LINES=7 FILES=1 FIX=0 WHY=none'
-review_stale_payload=$(statusline_payload review-stale "" "$REVIEW_DIRTY")
-rm -f "$STATE_DIR/review-class-review-stale" "$STATE_DIR/review-autonomy-review-stale"
-run_statusline "$review_stale_payload" >/dev/null || fail "stale verdict first render failed"
-review_await_verdict review-stale
-review_await_session review-stale
-touch -t 202001010000 "$STATE_DIR/review-class-review-stale"
-review_stale_out=$(run_statusline "$review_stale_payload") || fail "stale verdict render failed"
-assert grep -Fq "${review_seg}${DIM}?${RESET}" <<< "$review_stale_out"
-assert test "${review_stale_out#*"${review_seg}7"}" = "$review_stale_out"
-GATE_ANSWER=off
-
-# --- one form per answer the protocol can give -------------------------------------------------
-# The gate's line is a state with a reason, and each state has exactly one shape here. Every one of
-# them is a fixture through the same stub, so a state that stops rendering is a failing assert and
-# never a quietly empty slot.
-GATE_AUTONOMOUS=no
-
-# Owed lines are what Egor acts on and outrank everything else the line carries.
-GATE_ANSWER='STATUS=open LINES=29 FILES=2 FIX=3 WHY=none'
-form_lines_out=$(review_session_render review-form-lines "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}29" <<< "$form_lines_out"
-assert test "${form_lines_out#*fix}" = "$form_lines_out"
-GATE_AUTONOMOUS=yes
-form_lines_auto_out=$(review_session_render review-form-lines-auto "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}● 29" <<< "$form_lines_auto_out"
-GATE_AUTONOMOUS=no
-
-# Nothing owed in lines with findings still open is work to do rather than debt to settle: it is
-# already inside the tree it would be fixed in, so it is shown dim and with its own word.
-GATE_ANSWER='STATUS=open LINES=0 FILES=0 FIX=3 WHY=none'
-form_fix_out=$(review_session_render review-form-fix "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}${DIM}fix 3${RESET}" <<< "$form_fix_out"
-
-# Open with nothing to show for it is the silent zero this protocol exists to make visible.
-GATE_ANSWER='STATUS=open LINES=0 FILES=0 FIX=0 WHY=none'
-form_open_empty_out=$(review_session_render review-form-open-empty "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}${DIM}?err${RESET}" <<< "$form_open_empty_out"
-
-# Settled: the slot is empty, and the autonomy mark stands in it alone, being a chat fact.
-GATE_ANSWER='STATUS=closed LINES=0 FILES=0 FIX=0 WHY=none'
-form_closed_out=$(review_session_render review-form-closed "$REVIEW_DIRTY")
-assert review_slot_silent "$form_closed_out"
-GATE_AUTONOMOUS=yes
-form_closed_auto_out=$(review_session_render review-form-closed-auto "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}●" <<< "$form_closed_auto_out"
-GATE_AUTONOMOUS=no
-
-# The ledger is behind: the number is a BOUND on what may be owed, and `~` is the whole difference
-# between it and a count — a bound rendered bare would be a number Egor acts on; the `?` in front
-# says the store is broken.
-GATE_ANSWER='STATUS=unknown LINES=0 FILES=0 FIX=0 WHY=ledger BOUND=120'
-form_bound_out=$(review_session_render review-form-bound "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}~120 ${DIM}?ledger${RESET}" <<< "$form_bound_out"
-GATE_AUTONOMOUS=yes
-form_bound_auto_out=$(review_session_render review-form-bound-auto "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}● ~120 ${DIM}?ledger${RESET}" <<< "$form_bound_auto_out"
-GATE_AUTONOMOUS=no
-# A ledger unknown with no bound is `?ledger` alone.
-GATE_ANSWER='STATUS=unknown LINES=0 FILES=0 FIX=0 WHY=ledger'
-form_bound_missing_out=$(review_session_render review-form-bound-missing "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}${DIM}?ledger${RESET}" <<< "$form_bound_missing_out"
-
-# Every other unknown carries its reason word, which Egor brings to the chat.
-for form_why in gap run err nobase; do
-  GATE_ANSWER="STATUS=unknown LINES=0 FILES=0 FIX=0 WHY=$form_why"
-  form_why_out=$(review_session_render "review-form-why-$form_why" "$REVIEW_DIRTY")
-  assert grep -Fq "${review_seg}${DIM}?${form_why}${RESET}" <<< "$form_why_out"
-done
-# An unknown is a number with a flag, never a replacement of it.
-GATE_ANSWER='STATUS=unknown LINES=29 FILES=2 FIX=3 WHY=gap'
-form_lines_flag_out=$(review_session_render review-form-lines-flag "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}29 ${DIM}?gap${RESET}" <<< "$form_lines_flag_out"
-GATE_AUTONOMOUS=yes
-form_lines_flag_auto_out=$(review_session_render review-form-lines-flag-auto "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}● 29 ${DIM}?gap${RESET}" <<< "$form_lines_flag_auto_out"
-GATE_AUTONOMOUS=no
-GATE_ANSWER='STATUS=unknown LINES=0 FILES=0 FIX=3 WHY=gap'
-form_fix_flag_out=$(review_session_render review-form-fix-flag "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}${DIM}fix 3 ?gap${RESET}" <<< "$form_fix_flag_out"
-GATE_ANSWER='STATUS=unknown LINES=0 FILES=0 FIX=0 WHY=run'
-form_run_alone_out=$(review_session_render review-form-run-alone "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}${DIM}?run${RESET}" <<< "$form_run_alone_out"
-GATE_ANSWER=off
 
 # --- the FOLDER's debt beside the folder's diff ------------------------------------------------
 # A second number about the same tree and a different question: what the whole repository owes,
@@ -5120,13 +4756,12 @@ printf 'other\n' > "$REVIEW_OTHER/tracked.txt"
 git -C "$REVIEW_OTHER" add tracked.txt
 git -C "$REVIEW_OTHER" -c user.name=Fixture -c user.email=fixture@example.com commit -qm initial
 TOP_REVIEW_OTHER=$(cd "$REVIEW_OTHER" && pwd -P)
-# Both renders of a case go through the same background-then-read shape the verdict uses.
+# Two renders per case: the first starts the background walk, the second reads what landed.
 debt_render() { # session repo
   local payload cache i
   cache="$STATE_DIR/repo-debt-$(printf '%s' "$2" | cksum | tr ' ' -)"
   rm -f "$STATE_DIR/repo-debt-"* 2>/dev/null
   rmdir "$STATE_DIR/repo-debt-"*.lock 2>/dev/null
-  rm -f "$STATE_DIR/review-class-$1"
   payload=$(statusline_payload "$1" "" "$2")
   run_statusline "$payload" >/dev/null || fail "repo debt render failed: $1"
   for i in $(seq 1 100); do
@@ -5148,26 +4783,26 @@ DEBT_CMD="$DEBT_STUB"
 : > "$DEBT_LOG"
 DEBT_ANSWER='LINES=153 FILES=16'
 debt_mark_out=$(debt_render repo-debt-shown "$REVIEW_DIRTY")
-assert grep -Fq "${DIM}∑153${RESET}" <<< "$debt_mark_out"
+assert grep -Fq "${DIM}153${RESET}" <<< "$debt_mark_out"
+assert test "${debt_mark_out#*∑}" = "$debt_mark_out"
 assert grep -Fqx -e "--repo $TOP_REVIEW_DIRTY" "$DEBT_LOG"
 # It follows the FOLDER: a render of another tree asks about that tree and shows its number.
 DEBT_ANSWER='LINES=4 FILES=2'
 debt_other_out=$(debt_render repo-debt-shown "$REVIEW_OTHER")
-assert grep -Fq "${DIM}∑4${RESET}" <<< "$debt_other_out"
-assert test "${debt_other_out#*∑153}" = "$debt_other_out"
+assert grep -Fq "${DIM}4${RESET}" <<< "$debt_other_out"
+assert test "${debt_other_out#*${DIM}153}" = "$debt_other_out"
 assert grep -Fqx -e "--repo $TOP_REVIEW_OTHER" "$DEBT_LOG"
 # The folder debt outlives every name abbreviation: it is still there while the model, the account
-# and the directory are already being cut (steps 5-7), and only step 8 takes it off the line.
+# and the directory are already being cut (steps 5-6), and only step 7 takes it off the line.
 DEBT_ANSWER='LINES=153 FILES=16'
 debt_render repo-debt-narrow "$REVIEW_DIRTY" >/dev/null
 debt_narrow_out=$(FIT_COLUMNS=24 run_statusline "$(statusline_payload repo-debt-narrow "" "$REVIEW_DIRTY")")
 assert test "${debt_narrow_out#*153}" = "$debt_narrow_out"
 debt_fit() { FIT_COLUMNS="$1" run_statusline "$(statusline_payload repo-debt-narrow "" "$REVIEW_DIRTY")"; }
-# Step 1 takes the mark off with the diff signs: the debt is then the only dim number on the strip.
-debt_short_out=$(debt_fit 48)
+# Step 1 takes the diff signs off; the debt was a bare dim number all along.
+debt_short_out=$(debt_fit 47)
 assert grep -Fq "${GREEN}21${RESET}/${RED}0${RESET}" <<< "$debt_short_out"
 assert grep -Fq "${DIM}153${RESET}" <<< "$debt_short_out"
-assert test "${debt_short_out#*∑}" = "$debt_short_out"
 debt_model_out=$(debt_fit 39)
 assert grep -Fq 'FX hi' <<< "$debt_model_out"
 assert grep -Fq "${DIM}153${RESET}" <<< "$debt_model_out"
@@ -5183,18 +4818,19 @@ for debt_quiet in 'LINES=0 FILES=0' 'LINES=0 FILES=0 WHY=err' 'LINES=153 FILES=1
     'LINES=x FILES=1'; do
   DEBT_ANSWER="$debt_quiet"
   debt_quiet_out=$(debt_render repo-debt-quiet "$REVIEW_DIRTY")
-  assert test "${debt_quiet_out#*∑}" = "$debt_quiet_out"
+  assert test "${debt_quiet_out#*${DIM}153${RESET}}" = "$debt_quiet_out"
+  assert test "${debt_quiet_out#*${DIM}0${RESET}}" = "$debt_quiet_out"
 done
 # A binary that is gone, and one too slow to answer, are both silence in the line — never an error
 # in it and never a number left over from the tree before.
 DEBT_ANSWER='LINES=9 FILES=1'
 DEBT_CMD="$FIXTURES/no-such-review-debt"
 debt_gone_out=$(debt_render repo-debt-gone "$REVIEW_DIRTY")
-assert test "${debt_gone_out#*∑}" = "$debt_gone_out"
+assert test "${debt_gone_out#*${DIM}9${RESET}}" = "$debt_gone_out"
 DEBT_CMD="$DEBT_STUB"
 DEBT_SLEEP=0.4
 debt_slow_out=$(run_statusline "$(statusline_payload repo-debt-slow "" "$REVIEW_DIRTY")")
-assert test "${debt_slow_out#*∑}" = "$debt_slow_out"
+assert test "${debt_slow_out#*${DIM}9${RESET}}" = "$debt_slow_out"
 # The slow probe still lands after its render; under load it would land inside the next case.
 debt_settle
 DEBT_SLEEP=
@@ -5209,10 +4845,10 @@ rm -f "$STATE_DIR/repo-debt-"* 2>/dev/null
 rmdir "$STATE_DIR/repo-debt-"*.lock 2>/dev/null
 debt_nt_out=$(NO_TIMEOUT_BIN=1 run_statusline \
   "$(statusline_payload repo-debt-no-timeout "" "$REVIEW_DIRTY")")
-assert test "${debt_nt_out#*∑}" = "$debt_nt_out"
+assert test "${debt_nt_out#*${DIM}21${RESET}}" = "$debt_nt_out"
 debt_settle
 assert test ! -d "$debt_lock"
-assert grep -Fq "∑21" <<< "$(NO_TIMEOUT_BIN=1 run_statusline \
+assert grep -Fq "${DIM}21${RESET}" <<< "$(NO_TIMEOUT_BIN=1 run_statusline \
   "$(statusline_payload repo-debt-no-timeout "" "$REVIEW_DIRTY")")"
 # The lock a probe removes is the one it made. A walk still running when its lock is swept as dead
 # leaves the sweeper's own lock standing, or two full walks run over the same tree at once.
@@ -5238,63 +4874,18 @@ DEBT_ANSWER='LINES=0 FILES=0'
 DEBT_CMD=
 rm -f "$STATE_DIR/repo-debt-"* 2>/dev/null
 
-# --- the real gate, so the two answers cannot drift apart -----------------------------------
-# The stub above proves the rendering; this proves the wiring against the hook that actually
-# answers for a commit. An unreadable neighbour is a FAIL naming CLAUDE_SETUP_ROOT, never a skip:
-# a silent green here is the drift this block exists to catch.
+# --- the real gate --------------------------------------------------------------------------
+# The stub above proves the rendering; this proves the wiring against the hook that actually answers.
+# An unreadable neighbour is a FAIL naming CLAUDE_SETUP_ROOT, never a skip.
 REAL_GATE="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/review-flow-gate.sh"
 if [ -x "$REAL_GATE" ]; then
   GATE_CMD="$REAL_GATE"
-  GATE_BIN="$FIXTURES/gate-bin"
-  mkdir -p "$GATE_BIN"
-  # The gate prices nothing itself: it relays `review-debt <session>`'s one line, so this is the
-  # whole of what it has to say and the render's parser is the only thing under test here.
-  cat > "$GATE_BIN/review-debt" <<'RD'
-#!/bin/bash
-printf '%s\n' "${SESSION_REVIEW_ANSWER:-STATUS=closed LINES=0 FILES=0 FIX=0 WHY=none}"
-exit "${SESSION_REVIEW_RC:-0}"
-RD
-  chmod +x "$GATE_BIN/review-debt"
-  # The journal is written because the render's cache key watches it, not because the gate reads
-  # it: a second case under the same session would otherwise be served the first one's answer.
-  review_real_render() ( # session debt-line [rc]
-    export SESSION_REVIEW_ANSWER="$2" SESSION_REVIEW_RC="${3:-0}" PATH="$GATE_BIN:$PATH"
-    printf '%s\t1750000000\tchange.txt\0' "$1" > "$review_gitdir/review-anchors.json"
-    review_render "$1" "$REVIEW_DIRTY"
-  )
   real_objects_before=$(find "$REVIEW_DIRTY/.git/objects" -type f | wc -l | tr -d ' ')
-  review_real_closed_out=$(review_real_render review-real \
-    'STATUS=closed LINES=0 FILES=0 FIX=0 WHY=none')
-  assert review_slot_silent "$review_real_closed_out"
-  review_real_mine_out=$(review_real_render review-real-mine \
-    'STATUS=open LINES=1 FILES=1 FIX=0 WHY=none')
-  assert grep -Fq " ${DIM}│${RESET} 1" <<< "$review_real_mine_out"
-  # Each state survives the whole chain, relay included: the gate rewrites none of it and the
-  # render reads it in one place.
-  review_real_fix_out=$(review_real_render review-real-fix \
-    'STATUS=open LINES=0 FILES=0 FIX=3 WHY=none')
-  assert grep -Fq " ${DIM}│${RESET} ${DIM}fix 3${RESET}" <<< "$review_real_fix_out"
-  review_real_bound_out=$(review_real_render review-real-bound \
-    'STATUS=unknown LINES=0 FILES=0 FIX=0 WHY=ledger BOUND=90')
-  assert grep -Fq " ${DIM}│${RESET} ~90 ${DIM}?ledger${RESET}" <<< "$review_real_bound_out"
-  review_real_gap_out=$(review_real_render review-real-gap \
-    'STATUS=unknown LINES=0 FILES=0 FIX=0 WHY=gap')
-  assert grep -Fq " ${DIM}│${RESET} ${DIM}?gap${RESET}" <<< "$review_real_gap_out"
-  # A reader that fails is the gate's own unknown, and it reaches the strip as one: the outage the
-  # render may never show as a clean bill.
-  review_real_err_out=$(review_real_render review-real-err \
-    'STATUS=open LINES=9 FILES=1 FIX=0 WHY=none' 1)
-  assert grep -Fq " ${DIM}│${RESET} ${DIM}?err${RESET}" <<< "$review_real_err_out"
-  assert test "${review_real_err_out#*"${RESET} 9"}" = "$review_real_err_out"
-  # Nothing is in debt, so the gate has nothing to say about it.
-  rm -f "$review_gitdir/review-anchors.json"
-  review_real_off_out=$(PATH="$GATE_BIN:$PATH" review_render review-real-off "$REVIEW_DIRTY")
-  assert review_slot_silent "$review_real_off_out"
-  # Asking is read-only: no object is written into the repository, and the commit notice this chat
-  # never triggered leaves no marker behind.
+  review_real_out=$(review_session_render review-real "$REVIEW_DIRTY")
+  assert review_slot_silent "$review_real_out"
+  assert test "${review_real_out#*●}" = "$review_real_out"
   assert_eq "$real_objects_before" \
     "$(find "$REVIEW_DIRTY/.git/objects" -type f | wc -l | tr -d ' ')"
-  assert test ! -f "$review_gitdir/review-note-review-real"
 else
   fail "review label against the real review gate: $REAL_GATE is not executable (set CLAUDE_SETUP_ROOT)"
 fi
@@ -5305,7 +4896,7 @@ GATE_RC=0
 # --- a commit of this chat its upstream does not hold ----------------------------------------
 # The marker is the gate's `unpushed` answer and nothing else: the Stop ask that tells the chat to
 # push reads that same subcommand, so a marker deriving ownership on its own would stand over
-# commits that ask disowns. A stub answers it apart from the verdict, which shares this gate.
+# commits that ask disowns. A stub answers it apart from the gate's other verbs.
 UNPUSHED_STUB="$FIXTURES/unpushed-gate-stub.sh"
 cat > "$UNPUSHED_STUB" <<'STUB'
 #!/bin/bash
@@ -5386,11 +4977,11 @@ assert_eq "10 $UNPUSHED_STUB unpushed $AHEAD_TOP unpushed-ahead" \
   "$(grep -m1 -F "$UNPUSHED_STUB unpushed " "$UNPUSHED_TIMEOUT_LOG")"
 # Never dimmed: the commit is this chat's own to act on.
 assert test "${unpushed_ahead_out#*"${DIM}unpushed"}" = "$unpushed_ahead_out"
-# After the verdict and before the pin, where the rest of the repository cluster ends.
+# After the repository cluster and before the pin.
 unpushed_order_line="${unpushed_ahead_out%%$'\n'*}"
 assert grep -Fq "$PIN_MARK" <<< "${unpushed_order_line#*"$UNPUSHED_MARK"}"
 assert test "${unpushed_order_line%%"$UNPUSHED_MARK"*}" != "$unpushed_order_line"
-# Fit step 9: the marker shortens to a red `↑!` rather than leaving the line, whatever the width.
+# Fit step 8: the marker shortens to a red `↑!` rather than leaving the line, whatever the width.
 : > "$GATE_LOG"
 unpushed_fit_out=$(FIT_COLUMNS=20 PATH="$UNPUSHED_TIMEOUT_BIN:$PATH" \
   unpushed_render unpushed-fit "$AHEAD_REPO")
@@ -5464,8 +5055,8 @@ review_clean_hash=$(printf '%s' "$review_clean_root" | shasum -a 1 | awk '{print
 # the only thing left of that convention here: nothing in the render reads a receipt any more.
 review_progress_stem="$(basename "$REVIEW_CLEAN")__${review_clean_hash}"
 
-# A review this chat did not run leaves nothing behind that the strip speaks for: the slot is the
-# gate's verdict about THIS chat plus a run in flight, and a finished panel of any shape — whole,
+# A review this chat did not run leaves nothing behind that the strip speaks for: the slot is a run
+# in flight, and a finished panel of any shape — whole,
 # partly silent, over a tree that still matches — is silent in a repository the gate says `off` of.
 REVIEW_RECEIPT_DIR="$CLAUDEB_FIX/worker-stats/receipts"
 mkdir -p "$REVIEW_RECEIPT_DIR"
@@ -5515,8 +5106,7 @@ progress_live_out=$(progress_render live)
 assert grep -Fq " ${DIM}│${RESET} T2 3/8" <<< "$progress_live_out"
 assert test "${progress_live_out#*"T2 max"}" = "$progress_live_out"
 
-# Fit step 6 has nothing to take from the counter: it carries no word any more, and its tier and
-# numbers are the whole of what it says.
+# No fit step takes anything from the counter: its tier and numbers are the whole of what it says.
 progress_fit_out=$(FIT_COLUMNS=24 progress_render fit)
 assert grep -Fq 'T2 3/8' <<< "$progress_fit_out"
 assert test "${progress_fit_out#*rT2}" = "$progress_fit_out"
@@ -5712,36 +5302,29 @@ assert_eq 0 \
   "$(grep -Eco '(T[0-3] )?[0-9]+/[0-9]+' <<< "${progress_gone_out%%$'\n'*}" | tr -d ' ')"
 assert review_slot_silent "$progress_gone_out"
 
-# The debt never disappears behind a review: counter and verdict stand side by side over one tree.
+# A run in flight over the shown tree is the counter, beside no per-chat number of any kind.
 GATE_ANSWER='STATUS=open LINES=54 FILES=1 FIX=0 WHY=none'
-progress_alone_out=$(review_render review-progress-alone "$REVIEW_CLEAN")
-assert grep -Fq " ${DIM}│${RESET} 54" <<< "$progress_alone_out"
-assert test "${progress_alone_out#*"${RESET} T"}" = "$progress_alone_out"
-write_progress "$$" T0 3 9 2026-07-27T22:00:00+00:00
-progress_own_debt_out=$(review_render review-progress-own-debt "$REVIEW_CLEAN")
-assert grep -Fq " ${DIM}│${RESET} T0 3/9 ${DIM}│${RESET} 54" \
-  <<< "$progress_own_debt_out"
-assert test "${progress_own_debt_out#*"rev "}" = "$progress_own_debt_out"
-# The verdict stands alone where the only run of this tree is another chat's: this chat's debt is
-# still this chat's, and the run beside it was never its to read.
-progress_set_session review-progress-elsewhere
-progress_other_debt_out=$(review_render review-progress-other-debt "$REVIEW_CLEAN")
-assert grep -Fq " ${DIM}│${RESET} 54" <<< "$progress_other_debt_out"
-assert test "${progress_other_debt_out#*3/9}" = "$progress_other_debt_out"
-# The gate is asked about the shown tree and no other.
 : > "$GATE_LOG"
-GATE_ANSWER='STATUS=open LINES=54 FILES=1 FIX=0 WHY=none'
+progress_alone_out=$(review_render review-progress-alone "$REVIEW_CLEAN")
+assert review_slot_silent "$progress_alone_out"
+write_progress "$$" T0 3 9 2026-07-27T22:00:00+00:00
+progress_own_out=$(review_render review-progress-own "$REVIEW_CLEAN")
+assert grep -Fq " ${DIM}│${RESET} T0 3/9" <<< "$progress_own_out"
+assert test "${progress_own_out#*54}" = "$progress_own_out"
+assert test "${progress_own_out#*"rev "}" = "$progress_own_out"
+# Another chat's run over this tree is never this chat's to read.
+progress_set_session review-progress-elsewhere
+progress_other_out=$(review_render review-progress-other "$REVIEW_CLEAN")
+assert test "${progress_other_out#*3/9}" = "$progress_other_out"
 write_progress "$$" T0 3 9 2026-07-27T22:00:00+00:00 "$REVIEW_DIRTY"
 progress_set_session review-progress-foreign-named
 place_set review-progress-foreign-named "$TOP_REVIEW_DIRTY" "$TOP_REVIEW_DIRTY" review-start
 progress_foreign_named_out=$(review_render review-progress-foreign-named "$REVIEW_CLEAN")
-assert grep -Fq \
-  " ${DIM}│${RESET} T0 3/9 ${DIM}│${RESET} 54" \
-  <<< "$progress_foreign_named_out"
+assert grep -Fq " ${DIM}│${RESET} T0 3/9" <<< "$progress_foreign_named_out"
+assert test "${progress_foreign_named_out#*54}" = "$progress_foreign_named_out"
 assert grep -Fq "$progress_away_dirs" <<< "$progress_foreign_named_out"
-assert_eq "verdict $TOP_REVIEW_DIRTY review-progress-foreign-named" \
-  "$(grep -F verdict "$GATE_LOG" | tail -1)"
-assert_eq 0 "$(grep -Fc -- "verdict $review_clean_root " "$GATE_LOG" | tr -d ' ')"
+assert_eq 0 "$(grep -c '^verdict ' "$GATE_LOG" | tr -d ' ')"
+GATE_ANSWER=off
 
 write_progress "$$" T0 3 9 2026-07-27T22:00:00+00:00 "$PROGRESS_WT"
 progress_set_session review-progress-foreign-wt
@@ -5750,7 +5333,8 @@ progress_foreign_wt_out=$(review_render review-progress-foreign-wt "$REPO_A")
 assert grep -Fq \
   "${DIM}$(basename "$REPO_A")${RESET} ${MAGENTA}»${RESET} ${BLUE}$(basename "$REVIEW_CLEAN")${RESET} ${RED}⧉ $(basename "$PROGRESS_WT")${RESET}" \
   <<< "$progress_foreign_wt_out"
-assert grep -Fq " ${DIM}│${RESET} T0 3/9 " <<< "$progress_foreign_wt_out"
+assert grep -Fq " ${DIM}│${RESET} T0 3/9" <<< "$progress_foreign_wt_out"
+assert grep -Eq 'T0 3/9( |$)' <<< "$progress_foreign_wt_out"
 
 # A run whose recorded repository no longer resolves has no tree to render at all, and the block is
 # one tree's rendering: the run is dropped whole rather than moving the block to a path or leaving
@@ -5762,17 +5346,8 @@ progress_set_session review-progress-repo-vanished
 progress_vanished_out=$(cd "$REPO_A" && review_render review-progress-repo-vanished "$REPO_A")
 assert test "${progress_vanished_out#*3/9}" = "$progress_vanished_out"
 assert grep -Fq "${BLUE}$(basename "$REPO_A")${RESET}" <<< "$progress_vanished_out"
-assert grep -Fq " ${DIM}│${RESET} 54" <<< "$progress_vanished_out"
 
-write_progress "$$" T0 3 9 2026-07-27T22:00:00+00:00
-
-# An answer this build cannot read stands beside a counter it can, and neither borrows anything
-# from the other: two slots, two states.
-GATE_ANSWER='held for review'
-progress_unreadable_debt_out=$(review_render review-progress-unreadable-debt "$REVIEW_CLEAN")
-assert grep -Fq " ${DIM}│${RESET} T0 3/9 ${DIM}│${RESET} ${DIM}?err${RESET}" <<< "$progress_unreadable_debt_out"
 rm -f "$PROGRESS_DIR/$progress_prefix$$.json"
-GATE_ANSWER=off
 
 # --- review progress: declared state, heartbeat, and other chats' runs -------------------------
 # review-bench no longer unlinks the document when a run ends: it stays until the chat consumes the
@@ -6045,66 +5620,6 @@ assert review_slot_silent "$example_6_out"
 assert example_home "$example_6_out"
 assert_eq 1 "$(place_count review-progress-example-6)"
 progress_doc_clear
-
-# The verdict cache is one file per session and the shown tree moves: while the refresh runs, an
-# answer cached for another tree is never shown, and one for this tree still is.
-verdict_landed() { # cache
-  local i
-  for i in $(seq 1 100); do
-    [ "$(tail -n +2 "$1")" = off ] && [ ! -d "$1.lock" ] && return 0
-    sleep 0.05
-  done
-  fail "the verdict refresh never landed: $1"
-}
-verdict_moved_cache="$STATE_DIR/review-class-verdict-moved"
-place_set verdict-moved "$review_clean_root"
-printf '%s\n%s' "$TOP_REVIEW_DIRTY|0-0|0|0" 'bright 99' > "$verdict_moved_cache"
-verdict_moved_out=$(example_render verdict-moved "$REVIEW_CLEAN")
-assert test "${verdict_moved_out#*"${DIM}│${RESET} 99"}" = "$verdict_moved_out"
-verdict_landed "$verdict_moved_cache"
-printf '%s\n%s' "$review_clean_root|0-0|0|0" 'bright 99' > "$verdict_moved_cache"
-verdict_same_out=$(example_render verdict-moved "$REVIEW_CLEAN")
-assert grep -Fq " ${DIM}│${RESET} 99" <<< "$verdict_same_out"
-verdict_landed "$verdict_moved_cache"
-
-# The verdict's cache key reads the commit journal of the checkout FAMILY — one file under the
-# common dir, which is where the gate reads this chat's pending paths from. A key watching the
-# worktree's own git dir would serve a stale verdict for as long as the TTL allows after an edit
-# recorded from a sibling checkout.
-gate_calls_await() { # count
-  local i
-  for i in $(seq 1 100); do
-    [ "$(grep -c '^verdict ' "$GATE_LOG" | tr -d ' ')" -ge "$1" ] && return 0
-    sleep 0.05
-  done
-  fail "the gate was never asked $1 times: $(cat "$GATE_LOG")"
-}
-journal_wt_gitdir=$(git -C "$PROGRESS_WT" rev-parse --absolute-git-dir)
-journal_wt_common=$(git -C "$PROGRESS_WT" rev-parse --path-format=absolute --git-common-dir)
-# The two journals are given different mtimes, so the key names which of them it read.
-printf 'journal-wt\t1750000000\ttracked.txt\0' > "$journal_wt_gitdir/review-anchors.json"
-touch -t 202001010000 "$journal_wt_gitdir/review-anchors.json"
-printf 'journal-wt\t1750000000\ttracked.txt\0' > "$journal_wt_common/review-anchors.json"
-: > "$GATE_LOG"
-rm -f "$STATE_DIR/review-class-journal-wt"
-journal_wt_payload=$(statusline_payload journal-wt "" "$PROGRESS_WT")
-run_statusline "$journal_wt_payload" >/dev/null || fail "journal worktree first render failed"
-review_await_verdict journal-wt
-run_statusline "$journal_wt_payload" >/dev/null || fail "journal worktree second render failed"
-journal_wt_key=$(head -1 "$STATE_DIR/review-class-journal-wt")
-journal_wt_without_clock=${journal_wt_key%|*}
-assert_eq "$(stat -f %m "$journal_wt_common/review-anchors.json")" \
-  "${journal_wt_without_clock##*|}"
-assert_eq 0 "${journal_wt_key##*|}"
-assert_eq 1 "$(grep -c '^verdict ' "$GATE_LOG" | tr -d ' ')"
-# And the family's journal moving is what asks the gate again, with nothing in `git status` and
-# nothing in this worktree's own git dir having moved at all.
-touch -t 202001020000 "$journal_wt_common/review-anchors.json"
-run_statusline "$journal_wt_payload" >/dev/null || fail "journal worktree common-dir render failed"
-gate_calls_await 2
-assert_eq 2 "$(grep -c '^verdict ' "$GATE_LOG" | tr -d ' ')"
-rm -f "$journal_wt_gitdir/review-anchors.json" "$journal_wt_common/review-anchors.json"
-GATE_ANSWER=off
 
 # --- worker-launch-gate.sh: grok ------------------------------------------------------------------
 # A vendor launched as a bare headless CLI from a chat's Bash is a worker nobody can see. grok
@@ -7053,4 +6568,4 @@ progress_doc_clear
 # A payload whose tasks carry no status field is a running list (the harness omits the field on older builds).
 no_status=$(printf '{"session_id":"x","columns":80,"tasks":[{"id":"ns1","type":"local_agent","description":"acc · astra · high: No status","startTime":1789600000000}]}' | bash "$RENDER_BIN")
 assert grep -q 'acc · astra · high' <<<"$no_status"
-echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run over the shown tree, an ATOMIC middle block computed from ONE shown tree — the tree of the last line of this chat's place journal — a counter that is this chat's own run alone — its tier, its state as a mark and its cells — and one rendered form for every state the gate's debt line can name, the verdict asked about the shown tree, keyed on the checkout family's commit journal and review decision clock, this chat's own unread lines and nobody else's, with every unknown the known number followed by its dim \`?<why>\`, keyed on the commit journal and asked once per key with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini/grok worker tag propagation with the bare-launch gate that denies the spellings they replace, media-run work lines tagged account·kind·route from the job pointer with gen/edit states and fan-out cells, task rows painted for every agent with run/review/light state fitted to the columns, native agent spawns refused but fork, Monitor and chat-Bash waits refused, an explicit-vendor pin hidden only by that vendor's ABSENCE from a loaded pick line and never by a field that is merely unusable, and a run's start/wait reserved to the relay agent that owns it through every wrapper, keyword and sh -c string that spells one, while a read-only report and a heredoc body quoting the spelling are not gated"
+echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run over the shown tree, an ATOMIC middle block computed from ONE shown tree — the tree of the last line of this chat's place journal — a counter that is this chat's own run alone — its tier, its state as a mark and its cells — no per-chat review debt number whatever the gate would answer, the gate's autonomy dot asked once per TTL with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini/grok worker tag propagation with the bare-launch gate that denies the spellings they replace, media-run work lines tagged account·kind·route from the job pointer with gen/edit states and fan-out cells, task rows painted for every agent with run/review/light state fitted to the columns, native agent spawns refused but fork, Monitor and chat-Bash waits refused, an explicit-vendor pin hidden only by that vendor's ABSENCE from a loaded pick line and never by a field that is merely unusable, and a run's start/wait reserved to the relay agent that owns it through every wrapper, keyword and sh -c string that spells one, while a read-only report and a heredoc body quoting the spelling are not gated"

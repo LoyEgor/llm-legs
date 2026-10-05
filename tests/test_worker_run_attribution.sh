@@ -6,7 +6,7 @@
 # `review-anchors` belongs to another repository; here it is a PATH shim logging one tab-separated
 # line per call, so what worker-run promises the store is checked without the store existing.
 anchors_store_tests() {
-  local repo bench gaps rc bad changed fold bases saved_path
+  local repo bench rc bad changed fold bases saved_path
   local dirty_base doomed_base empty_blob=e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
   local anchors_tab=$'\t'
   ANCHOR_LOG="$WORK/anchors.log"
@@ -38,7 +38,6 @@ ANCHORS
   repo=$(cd "$repo" && pwd -P)
   bench="${CLAUDEB_DIR}/worker-stats/benches"
   mkdir -p "$bench/20260901T100000Z-aaaaaaa" "$bench/20260901T110000Z-bbbbbbb"
-  gaps="$HOME/.cache/claude/review-debt/gaps/anchors-chat"
 
   set_config 'codex_model=default' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high'
   export PICK_RC=0 PICK_ACCOUNT=recordacct CLAUDE_CODE_SESSION_ID=anchors-chat
@@ -76,8 +75,8 @@ ANCHORS
   RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/anchors.out")
   RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/anchors.out")
   assert test "$(jq -r '.review_round' "$RUN_DIR/meta.json")" = 20260901T100000Z-aaaaaaa
-  # Opened while it runs, so the launching chat's verdict says `?run` instead of a confident number
-  # about a tree a worker is writing in.
+  # A round run opens its record, so the fold can tell the run's own commits from a commit landed
+  # beside it.
   assert test "$(anchors_line run-start)" = \
     "run-start${anchors_tab}--repo${anchors_tab}${repo}${anchors_tab}--run${anchors_tab}${RUN_ID}${anchors_tab}--session${anchors_tab}anchors-chat"
   # Every kind of change the run's own listings can see, and nothing the transcript has to name: a
@@ -117,10 +116,9 @@ ANCHORS
   assert grep -qF -- "--round${anchors_tab}20260901T100000Z-aaaaaaa" <<<"$fold"
   assert grep -qF -- "--after=./bin/heredoc-only=$(git -C "$repo" hash-object bin/heredoc-only)" <<<"$fold"
   assert grep -qF -- "--after=./bin/doomed=$empty_blob" <<<"$fold"
-  assert test ! -e "$gaps"
 
-  # A run that also writes in another repository the launching chat works in is folded there too,
-  # or a fix it makes there is never anchored and the launcher owes the fix itself.
+  # A round run that also writes in an --add-dir repository is folded there too, or a fix it makes
+  # there is never anchored.
   clear_stub
   : >"$ANCHOR_LOG"
   other="$WORK/anchors-other"
@@ -130,12 +128,10 @@ ANCHORS
   git -C "$other" add -A >/dev/null
   git -C "$other" -c user.email=t@t -c user.name=t commit -qm base >/dev/null
   other=$(cd "$other" && pwd -P)
-  mkdir -p "$HOME/.cache/claude/review-journal"
-  printf '%s\n%s\n' "$repo" "$other" >"$HOME/.cache/claude/review-journal/anchors-chat.repos"
   kept_base=$(git -C "$other" rev-parse HEAD:kept)
   export STUB_GATE="$WORK/anchors-gate"
   rm -f "$STUB_GATE"
-  "$RUNNER" start codex --brief "$WORK/anchors-brief" --workdir "$repo" \
+  "$RUNNER" start codex --brief "$WORK/anchors-brief" --workdir "$repo" --add-dir "$other" \
     --round 20260901T100000Z-aaaaaaa >"$WORK/anchors.out" 2>"$WORK/anchors.err" ||
     fail "two-family start failed: $(<"$WORK/anchors.err")"
   RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/anchors.out")
@@ -164,47 +160,45 @@ ANCHORS
   other_wt=$(cd "$WORK/anchors-other-wt" && pwd -P)
   export STUB_GATE="$WORK/anchors-gate"
   rm -f "$STUB_GATE"
-  "$RUNNER" start codex --brief "$WORK/anchors-brief" --workdir "$repo_wt" \
-    >"$WORK/anchors.out" 2>"$WORK/anchors.err" || fail "worktree start failed: $(<"$WORK/anchors.err")"
+  "$RUNNER" start codex --brief "$WORK/anchors-brief" --workdir "$repo_wt" --add-dir "$other" \
+    --round 20260901T100000Z-aaaaaaa >"$WORK/anchors.out" 2>"$WORK/anchors.err" ||
+    fail "worktree start failed: $(<"$WORK/anchors.err")"
   RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/anchors.out")
   RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/anchors.out")
   assert grep -qxF "run-start${anchors_tab}--repo${anchors_tab}${other_wt}${anchors_tab}--run${anchors_tab}${RUN_ID}${anchors_tab}--session${anchors_tab}anchors-chat" "$ANCHOR_LOG"
   assert_fails grep -qF "run-start${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}" "$ANCHOR_LOG"
   assert grep -qxF "$other_wt" "$RUN_DIR/families/1/top"
-  # A family worktree landed and removed mid-run still has its run closed in the family's store.
-  : >"$gaps"
+  # A family worktree landed and removed mid-run drops its run record in the main checkout, and
+  # anchors nothing there.
   git -C "$other" worktree remove --force "$other_wt" >/dev/null 2>&1
   : >"$STUB_GATE"
   unset STUB_GATE
   assert await_done
-  assert grep -qF "run-fold${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}--run${anchors_tab}${RUN_ID}" "$ANCHOR_LOG"
-  assert grep -qxF "run-fold${anchors_tab}${RUN_ID} $other_wt: not a repository" <<<"$(cut -f2- "$gaps")"
+  assert test "$(grep "^run-fold${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}" "$ANCHOR_LOG")" = \
+    "run-fold${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}--run${anchors_tab}${RUN_ID}${anchors_tab}--session${anchors_tab}anchors-chat${anchors_tab}--round${anchors_tab}20260901T100000Z-aaaaaaa${anchors_tab}--owned"
+  assert grep -qF "run-fold${anchors_tab}--repo${anchors_tab}${repo_wt}${anchors_tab}--run${anchors_tab}${RUN_ID}" "$ANCHOR_LOG"
   git -C "$repo" worktree remove --force "$repo_wt" >/dev/null 2>&1
-  rm -f "$HOME/.cache/claude/review-journal/anchors-chat.repos"
 
-  # A run that failed is folded like any other — the store's question is what content moved, never
-  # how the vendor ended — and a run that moved nothing carries no `--changed` at all. The paths
-  # the case above left dirty stand in both snapshots and are not this run's.
+  # A run bound to no round tells the store nothing: debt is per repository, priced from git, and no
+  # per-chat run record opens or folds. Failed or not, and whatever it changed.
   clear_stub
   : >"$ANCHOR_LOG"
   export STUB_CODE=3
-  "$RUNNER" start codex --brief "$WORK/brief" --workdir "$repo" \
-    >"$WORK/anchors.out" 2>"$WORK/anchors.err" || fail "failing start failed: $(<"$WORK/anchors.err")"
-  RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/anchors.out")
+  start_gated codex --workdir "$repo" --add-dir "$other"
+  printf 'plain\n' >"$repo/bin/plain-run"
+  gate_open
   assert await_done
   assert grep -q '^STATUS: failed' "$WORK/wait.out"
-  fold=$(anchors_line run-fold)
-  assert grep -qF -- "--run${anchors_tab}${RUN_ID}" <<<"$fold"
-  assert_fails grep -qF -- '--changed' <<<"$fold"
-  assert_fails grep -qF -- '--round' <<<"$fold"
+  assert test ! -s "$ANCHOR_LOG"
+  assert test ! -e "$HOME/.cache/claude/review-debt/gaps"
+  rm -f "$repo/bin/plain-run"
+  unset STUB_CODE
 
-  # No binary is not silence: the fact goes to the gaps file, which needs no repository, no lock
-  # and no python, and the launching chat's verdict reads `?gap` until somebody looks.
+  # A round run on a machine with no store, or one whose store refuses, still completes, and no gap
+  # file stands in for the store.
   clear_stub
   : >"$ANCHOR_LOG"
   mv "$WORK/bin/review-anchors" "$WORK/bin/review-anchors.off"
-  # A machine with no store to write to, which is not the machine the suite runs on: a real
-  # `review-anchors` is installed beside it, and every directory holding one leaves the path.
   saved_path=$PATH
   PATH=$(IFS=:; keep=''
     for entry in $PATH; do
@@ -213,45 +207,32 @@ ANCHORS
     done
     printf '%s' "$keep")
   export PATH
-  start_gated codex --workdir "$repo"
-  printf 'gap\n' >"$repo/bin/gap-file"
+  start_gated codex --workdir "$repo" --round 20260901T100000Z-aaaaaaa
   gate_open
   assert await_done
   PATH=$saved_path
   export PATH
   assert test ! -s "$ANCHOR_LOG"
-  assert grep -qxF "run-start${anchors_tab}${RUN_ID} $repo: review-anchors not on PATH" <<<"$(cut -f2- "$gaps")"
-  assert grep -qxF "run-fold${anchors_tab}${RUN_ID} $repo: review-anchors not on PATH" <<<"$(cut -f2- "$gaps")"
-  assert test "$(awk -F'\t' 'END { print ($1 ~ /^[0-9]+$/) }' "$gaps")" = 1
   mv "$WORK/bin/review-anchors.off" "$WORK/bin/review-anchors"
-
-  # And a binary that refuses is the same case: the call is made, the failure is recorded.
   clear_stub
-  : >"$ANCHOR_LOG"
-  : >"$gaps"
   export ANCHORS_FAIL=1
-  start_ok codex --workdir "$repo"
+  start_ok codex --workdir "$repo" --round 20260901T100000Z-aaaaaaa
   assert await_done
   assert grep -q "^run-fold$anchors_tab" "$ANCHOR_LOG"
-  assert grep -qxF "run-start${anchors_tab}${RUN_ID} $repo: review-anchors exited 3: store locked" <<<"$(cut -f2- "$gaps")"
-  assert grep -qxF "run-fold${anchors_tab}${RUN_ID} $repo: review-anchors exited 3: store locked" <<<"$(cut -f2- "$gaps")"
   unset ANCHORS_FAIL
+  assert test ! -e "$HOME/.cache/claude/review-debt/gaps"
 
   # A workdir that became a repository during the run has nothing to fold; its families still do.
   clear_stub
   : >"$ANCHOR_LOG"
-  : >"$gaps"
   born="$WORK/anchors-born"
   mkdir -p "$born"
   born=$(cd "$born" && pwd -P)
-  printf '%s\n' "$repo" >"$HOME/.cache/claude/review-journal/anchors-chat.repos"
-  WORKER_TEST_WORKDIR=$born start_gated codex
+  WORKER_TEST_WORKDIR=$born start_gated codex --add-dir "$repo" --round 20260901T100000Z-aaaaaaa
   git -C "$born" init -q .
   git -C "$born" -c user.email=t@t -c user.name=t commit -q --allow-empty -m born
   gate_open
   assert await_done
-  rm -f "$HOME/.cache/claude/review-journal/anchors-chat.repos"
-  assert_fails grep -qF "${anchors_tab}run-fold${anchors_tab}" "$gaps"
   assert_fails grep -qF "run-fold${anchors_tab}--repo${anchors_tab}${born}${anchors_tab}" "$ANCHOR_LOG"
   assert test ! -e "$born/.git/review-anchors.json"
   assert grep -qF "run-fold${anchors_tab}--repo${anchors_tab}${repo}${anchors_tab}--run${anchors_tab}${RUN_ID}" "$ANCHOR_LOG"

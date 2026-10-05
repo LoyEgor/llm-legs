@@ -923,6 +923,20 @@ code_lines() { # night-file -> {"<ref>": [added, removed], or null when a commit
           else [(map(.[1] | tonumber) | add), (map(.[2] | tonumber) | add)] end)}) | add // {}'
 }
 
+repo_debt() { # -> one line per sweep repository: its review debt now
+  local debt="${NIGHT_RUN_REVIEW_DEBT:-$HOME/.local/bin/review-debt}" repo row
+  [ -x "$debt" ] && [ -r "$sweep_repos" ] || return 0
+  while IFS= read -r repo; do
+    case "$repo" in ''|'#'*) continue ;; esac
+    row=$("$debt" --repo "$repo" </dev/null 2>/dev/null) || row=
+    if [[ "$row" =~ ^LINES=([0-9]+)\ FILES=([0-9]+)$ ]]; then
+      printf 'debt now · %s · %s lines in %s files\n' "${repo##*/}" "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+    else
+      printf 'debt now · %s · unknown\n' "${repo##*/}"
+    fi
+  done <"$sweep_repos"
+}
+
 cmd_report() {
   local file unverified run
   [ $# -le 1 ] || usage
@@ -959,6 +973,7 @@ cmd_report() {
         count($t.blocked; "blocked-on-egor"), count($t.nothing; "nothing-to-do"), count($t.pending; "pending")]
         + [if $t.unpushed > 0 then "\($t.unpushed) not pushed" elif $t.merged > 0 then "pushed" else empty end]
         | if length == 0 then "no jobs" else join(" · ") end))' "$file" || return
+  repo_debt
   python3 -B "$repo_root/share/time_budget.py" night "$repo_root/bin/worker-run" "$file" 2>/dev/null || true
 }
 

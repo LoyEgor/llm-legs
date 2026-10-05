@@ -1530,30 +1530,14 @@ if test -r "$RJOURNAL"; then
   assert grep -Fq "owe ${review_floor} lines or more" "$CLAUDE_SETUP/skills-on-demand/night-sweep/SKILL.md"
 fi
 
-# --- Row ah: one repository, one attributed count -----------------------------
-assert doc_has 'The statusline speaks the gate'
-assert grep -Fq '"$gate" verdict "$1" "$2"' "$STATUSLINE"
-# One parser for the gate's one line, and one form out of it per state: a second place that reads
-# a field or invents a class is the fork this row exists to stop.
-assert grep -Fq "''|off) printf 'off'; return 0 ;;" "$STATUSLINE"
-assert grep -Fq "STATUS=*) ;;" "$STATUSLINE"
-assert grep -Fq "closed) printf 'off' ;;" "$STATUSLINE"
-assert grep -Fq "printf 'dim fix %s' \"\$fix\"" "$STATUSLINE"
-assert grep -Fq "printf 'bright ~%s ?%s' \"\$bound\" \"\$why\"" "$STATUSLINE"
-assert grep -Fq "printf 'dim ?%s' \"\$why\"" "$STATUSLINE"
-assert eq 1 "$(grep -c '^verdict_form() {' "$STATUSLINE" | tr -d ' ')"
-assert eq 1 "$(grep -c 'answer=$(verdict_form "$answer")' "$STATUSLINE" | tr -d ' ')"
-assert grep -Fq 'SESSION_LINE = "STATUS=closed LINES=0 FILES=0 FIX=0 WHY=none"' "$REVIEW_ROOT/bin/review-debt"
-assert doc_has 'the unit is the session, never «chat + folder»'
-assert grep -Fq 'review-debt "$v_session" >"$v_out"' "$FLOW_GATE"
-assert grep -Fq '0:STATUS=*) printf' "$FLOW_GATE"
-assert grep -Fq "printf '%s' unknown" "$STATUSLINE"
-assert grep -Fq '[ "${review_style:-}" = unknown ]; then' "$STATUSLINE"
-assert grep -Fq 'verdict_part=" ${sep} ${dot}${DIM}?${RESET}"' "$STATUSLINE"
-assert doc_has 'followed by a dim `?<why>`'
-# Nothing prices another chat's debt any more: the gate answers one number and the render shows it
-# alone. Spelled per file — the statusline's own `ph_foreign`/`dir_foreign` are a run in flight and
-# a foreign checkout, neither of which is debt.
+# --- Row ah: the statusline shows repository debt only -------------------------
+assert doc_has 'The statusline shows repository debt'
+assert grep -Fq 'answer=$(run_bounded 60 "$debt" --repo "$top" 2>/dev/null | head -1)' "$STATUSLINE"
+assert grep -Fq 'if [[ "$answer" =~ ^LINES=([0-9]+)[[:space:]]FILES=[0-9]+$ ]]; then' "$STATUSLINE"
+assert grep -Fq 'return f"LINES={sum(lines for _, lines, _ in rows)} FILES={len(rows)}"' "$RB_DEBT"
+assert test -z "$(grep -E 'verdict_form|"\$gate" verdict|review-journal/.*\.repos' "$STATUSLINE")"
+# Nothing prices another chat's debt. Spelled per file — the statusline's own `ph_foreign`/
+# `dir_foreign` are a run in flight and a foreign checkout, neither of which is debt.
 assert test -z "$(grep -E 'debt-total|review_total|foreign=|echo "split rev' "$FLOW_GATE")"
 assert test -z "$(grep -E 'debt-total|review_total|review_foreign|debt_foreign|/\$\{?foreign' "$STATUSLINE")"
 assert grep -Fq '"$gate" autonomous "$sid"' "$STATUSLINE"
@@ -1579,7 +1563,7 @@ assert grep -Fq 'done < <(brief_text_rounds "$brief")' "$ROOT/bin/worker-run"
 # The flag and the header name one round through one validator, and the id reaches the store that
 # closes the round: a launch that carries it no further leaves the fix unattributed.
 assert grep -Fq -e '--round) [ "$#" -ge 2 ] || usage; round_flag="$2"; shift 2 ;;' "$ROOT/bin/worker-run"
-assert grep -Fq 'fold+=(--round "$6" --owned)' "$ROOT/bin/worker-run"
+assert grep -Fq -e '--session "$5" --round "$6" --owned)' "$ROOT/bin/worker-run"
 assert grep -Fq 'p.add_argument("--owned"' "$RB_ANCHORS"
 assert grep -Fq 'fold_family_anchors "$directory" "$directory" "$workdir" "$top" "$launcher" "$round"' "$ROOT/bin/worker-run"
 assert grep -Fq 'f"fix:{a.round}:{a.run}"' "$RB_ANCHORS"
@@ -2245,9 +2229,8 @@ rm -rf "$OC_ROSTER"
 
 # --- Row am: worker files reach the launching chat ----------------------------
 # Two repositories on one wire, and it is a record on disk rather than a printed report: worker-run
-# stamps the launching chat beside the run and writes the run's files under a WORKDIR line, the
-# journal hook sweeps the runs stamped with its own session, and the gate reads the same records for
-# the runs whose files no vendor could name. Rename one side and the files a chat's worker authored
+# stamps the launching chat beside the run and writes the run's files under a WORKDIR line, and
+# review-bench reads the same records. Rename one side and the files a chat's worker authored
 # fall silently out of its review coverage — the failure looks like a chat that only ever edited one
 # file by hand.
 WORKER_RUN="$ROOT/bin/worker-run"
@@ -2347,20 +2330,6 @@ assert grep -Fq '[ -s "$directory/launcher" ] || return 0' "$WORKER_RUN"
 assert grep -Fq '>>"$directory/produced"' "$WORKER_RUN"
 assert doc_has '`<run-dir>/head-before`'
 assert doc_has '`<run-dir>/produced`'
-ANCHOR_HOOK="$CLAUDE_SETUP/hooks/commit-journal.sh"
-if [ -r "$ANCHOR_HOOK" ]; then
-  # The claude-setup end of the same wire: every path a tool call changed is touched in the anchors
-  # store under the chat that answers for it, with the content it stood on. Touched under the wrong
-  # session and a worker's files land on whichever chat happened to take the tool call.
-  assert grep -Fq 'review-anchors touch --repo "$top" --session "$owner"' "$ANCHOR_HOOK"
-  assert grep -Fq 'if ! command -v review-anchors >/dev/null 2>&1; then' "$ANCHOR_HOOK"
-  # What it could NOT anchor goes on the record too: a PostToolUse stderr on exit 0 reaches nobody
-  # who could review or waive the files it names, so the miss is a gap the statusline shows.
-  assert grep -Fq 'gap anchors-missing' "$ANCHOR_HOOK"
-  assert grep -Fq 'gap touch-failed' "$ANCHOR_HOOK"
-else
-  fail "worker files reach the launching chat: $ANCHOR_HOOK is unreadable (set CLAUDE_SETUP_ROOT)"
-fi
 REVIEW_GATE="$CLAUDE_SETUP/hooks/review-flow-gate.sh"
 if [ -r "$REVIEW_GATE" ]; then
   # The gate walks no run records of its own: it prices no debt, so the bench's reading of them is
@@ -2477,7 +2446,7 @@ assert doc_has '`chat_suffix`'
 assert grep -Fq 'def chat_display(session, launchers=None, store=None):' "$RB_STORE"
 assert grep -Fq 'def chat_suffix(session, launchers=None, store=None):' "$RB_STORE"
 # Pricing names no chat — a session's own line and the repository's alike are numbers, not people;
-# every chat the module does print, the repository listing's base and touchers included, goes
+# every chat the module does print, the repository listing's base included, goes
 # through `chat_display`, never a resolver call of its own. The count is exact so a new naming site
 # is read here before it ships.
 assert test -z "$(grep -E 'chat_label' "$RB_DEBT")"
@@ -2614,7 +2583,7 @@ assert eq "$(grep -Fc "$JOURNAL_RESOLVE" "$RB_STORE")" 1
 statusline_journal_dir=$(sed -n '/^journal_dir() {/,/^}/p' "$STATUSLINE")
 assert grep -Fq "$JOURNAL_RESOLVE" <<<"$statusline_journal_dir"
 assert eq "$(grep -Fc "$JOURNAL_RESOLVE" "$STATUSLINE")" 1
-for statusline_journal_reader in review_verdict_line unpushed_marker; do
+for statusline_journal_reader in repo_debt_lines unpushed_marker; do
   assert grep -Fq 'journal_dir "$top"' \
     <<<"$(sed -n "/^$statusline_journal_reader() {/,/^}/p" "$STATUSLINE")"
 done

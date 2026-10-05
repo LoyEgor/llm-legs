@@ -352,9 +352,8 @@ assert jqe --arg f "$WORK/projects/proj/README" --arg e "$WORK/projects/review-b
   and (.problems[0].component.rule_at | startswith("bin/llm-doctor:"))
   and .problems[1].component.what == "review-bench doctor class anchors · reviewers block · owner «RB chat»"' "$RR"
 assert jqe '[.problems[].id] == ["debt-gap:x"] and .quiet == []' "$(record "$hid")"
-# A debt gap or loss is written by the recording hook, review-anchors or worker-run: the run gets their worktrees.
-assert jqe --arg p "$WORK/projects" '.problems[0].component.files == ([
-  "claude-setup/hooks/commit-journal.sh", "llm-legs/bin/llm-doctor", "llm-legs/bin/worker-run", "review-bench/bin/review-anchors"]
+# Debt health is the doctor's own handoff reader: the run gets its worktree alone.
+assert jqe --arg p "$WORK/projects" '.problems[0].component.files == (["llm-legs/bin/llm-doctor"]
   | map($p + "/" + .))' "$(record "$hid")"
 # An open ledger row no current problem matched is known but quiet: its own section in its area's brief.
 assert jqe --arg e "$WORK/projects/llm-legs/bin/worker-run" '[.problems[].id] == ["leg-escape:workers/escaped"]

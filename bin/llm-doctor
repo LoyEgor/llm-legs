@@ -48,7 +48,6 @@ SLOW_MIN_LEGS = 5
 SLOW_BASE_N = 20
 SLOW_FLOOR_S = 30
 SLOW_SIZE_RATIO = 2
-DEBT_GAP_DAYS = 7
 REBOOT_SLACK_S = 300
 # No heartbeat dates a supervisor's death: a run silent this long before the boot died on its own.
 REBOOT_QUIET_S = 3600
@@ -76,7 +75,7 @@ HEALTH_RULES = ("debt",)
 FIX_IN_RE = re.compile(r"^([\w.-]+)@([0-9a-f]{7,40})$")
 LIMIT_NAMES = ("SLOW_FACTOR", "SLOW_MIN_LEGS", "SLOW_BASE_N", "SLOW_FLOOR_S", "SLOW_SIZE_RATIO", "SLOW_BASE_D",
                "NO_EXIT_S", "REBOOT_SLACK_S", "REBOOT_QUIET_S", "TREND_MIN", "PROOF_MIN", "RECOVERED_MIN",
-               "NEAR_SHARE", "KILLED_EARLY_SLACK_S", "SWITCH_SLACK_S", "DEBT_GAP_DAYS")
+               "NEAR_SHARE", "KILLED_EARLY_SLACK_S", "SWITCH_SLACK_S")
 
 # Copied from review-bench share/rbench/panel.py FAILURE_REASONS (and catalog.py's status anchors);
 # review-bench is not importable from here, so the two tables drift unless both are edited.
@@ -362,10 +361,6 @@ def runs_dir():
 
 def image_log():
     return os.environ.get("IMAGE_LEG_LOG") or os.path.join(base_home(), ".cache", "image-legs", "legs.jsonl")
-
-
-def debt_dir():
-    return os.environ.get("REVIEW_DEBT_DIR") or os.path.join(base_home(), ".cache", "claude", "review-debt")
 
 
 def ledger_path():
@@ -2286,93 +2281,9 @@ def health_problems(row, ledger, window_h):
     return problems
 
 
-def open_gaps(window_h):
-    """review-anchors' open gap groups, or a note saying why they could not be read."""
-    days = max(DEBT_GAP_DAYS, -(-int(window_h) // 24))
-    search = os.pathsep.join((os.environ.get("PATH", ""), os.path.join(base_home(), ".local", "bin")))
-    binary = shutil.which("review-anchors", path=search)
-    if not binary:
-        return [], "gaps not read: review-anchors not found"
-    try:
-        done = subprocess.run([binary, "gaps", "--days", str(days), "--json"], capture_output=True, text=True,
-                              timeout=30)
-    except (OSError, subprocess.SubprocessError) as exc:
-        return [], "gaps not read: review-anchors %s" % type(exc).__name__
-    if done.returncode:
-        return [], "gaps not read: review-anchors exited %d" % done.returncode
-    rows = []
-    for line in done.stdout.splitlines():
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(row, dict) and isinstance(row.get("last"), (int, float)):
-            rows.append(row)
-    skipped = sum(1 for line in done.stderr.splitlines() if "skipped" in line)
-    return rows, "review-anchors skipped %d unreadable gap stores" % skipped if skipped else ""
-
-
-def run_gap_start(detail):
-    """The run's start for a gap the launch-time code made (its snapshot lacks the before listing), else None.
-    The fold re-executes worker-run from disk, so a gap it made ran on the code current at the fold."""
-    head, _, rest = detail.partition(" ")
-    run = WORKER_ID_RE.match(head)
-    run_dir = os.path.join(runs_dir(), head)
-    if not run or not os.path.isdir(run_dir):
-        return None
-    path = rest.split(": ", 1)[0]
-    families = os.path.join(run_dir, "families")
-    subs = [os.path.join(families, name) for name in sorted(os.listdir(families))] if os.path.isdir(families) else []
-    snap = next((sub for sub in subs if (read_text(os.path.join(sub, "top")) or "").strip() == path), run_dir)
-    return None if os.path.exists(os.path.join(snap, "dirty-before-shas")) else int(run.group(1))
-
-
-def debt_health(cutoff, now, window_h):
-    """Debt that recording failed to capture and nobody has reviewed since (open gaps), or that a store
-    dropped unreviewed (losses)."""
-    items, notes = {}, []
-    gaps, note = open_gaps(window_h)
-    seen = len(gaps)
-    causes = {}
-    for row in gaps:
-        detail = str(row.get("detail") or "")
-        # The recorder puts the event's specifics after "<repo>: " (the first capped path, the tool call id):
-        # every gap of one kind in one repository is one cause.
-        repo = detail.split(": ", 1)[0] if detail.startswith("/") and ": " in detail else ""
-        kind = str(row.get("kind") or "gap")
-        label = "not recorded: %s" % kind
-        # worker-run's run gaps read "<run id> <path>: <why>": the why's head, before any stderr, is the cause.
-        why = detail.split(": ", 2)[1] if not repo and ": " in detail else ""
-        if repo:
-            label += " in %s" % os.path.basename(repo.rstrip("/"))
-        elif why:
-            label += ": %s" % why
-        cause = causes.setdefault((row.get("session"), label, repo or detail), [label, 0, 0, kind, repo, why, detail])
-        cause[1] = max(cause[1], row["last"])
-        cause[2] += as_int(row.get("count")) or 1
-    for (session, _, _), (label, last, repeats, kind, repo, why, detail) in causes.items():
-        key = "%s/%s" % (kind, os.path.basename(repo.rstrip("/"))) if repo else "%s:%s" % (kind, why) if why else kind
-        add_item(items, label, last, session=session, repeats=repeats, rule="debt-gap", key=key,
-                 ref="gaps:%s/%s/%s" % (session or "-", kind, event_stamp(last)), excerpt=detail,
-                 start=run_gap_start(detail))
-    if note:
-        notes.append(note)
-    drops = {}
-    for row in read_jsonl(os.path.join(debt_dir(), "losses.jsonl")):
-        at = row.get("at")
-        if isinstance(at, (int, float)) and cutoff <= at <= now + 3600:
-            seen += 1
-            session = str(row.get("session") or "")
-            chat = "" if session else os.path.basename(str(row.get("repo") or "").rstrip("/"))
-            # One row per dropped path; "run <id>: <why>" names the one drop they all came from.
-            drop = drops.setdefault((session, chat, row.get("kind") or "?",
-                                     str(row.get("detail") or "").split(": ", 1)[0]), [0, 0, ""])
-            drop[0] = max(drop[0], at)
-            drop[1] += as_int(row.get("lines")) or 0
-            drop[2] = drop[2] or str(row.get("detail") or "")
-    for (session, chat, kind, _), (at, lines, detail) in drops.items():
-        add_item(items, "lost unreviewed: %s" % kind, at, lines, session=session, chat=chat, rule="debt-loss",
-                 key=kind, ref="losses:%s/%s" % (event_stamp(at), kind), excerpt=detail)
+def debt_health(now):
+    """Handoffs left open past their stale age."""
+    items, notes, seen = {}, [], 0
     for handoff in handoffs.open_handoffs(now=now, live=()):
         if (handoff["age_s"] or 0) > handoffs.STALE_S:
             seen += 1
@@ -2496,8 +2407,7 @@ def inputs_of(found, window_cutoff):
             ("machinery snapshot", snapshot, True, snapshot_state),
             ("prelaunch log", os.path.join(runs_dir(), "prelaunch.jsonl"), False,
              input_state(os.path.join(runs_dir(), "prelaunch.jsonl"))),
-            ("image legs", image_log(), False, input_state(image_log())),
-            ("debt store", debt_dir(), False, input_state(debt_dir(), "dir"))]
+            ("image legs", image_log(), False, input_state(image_log()))]
     return [{"name": name, "path": path, "required": required, "state": state} for name, path, required, state in rows]
 
 
@@ -2527,7 +2437,7 @@ def collect(window_h, now, write_daily=False):
     name_chats([incident for block in blocks for problem in block["problems"] for incident in problem["incidents"]])
     found = machinery(ledger, now, window_cutoff)
     blocks[0]["machinery"] = found
-    health = [debt_health(window_cutoff, now, window_h)]
+    health = [debt_health(now)]
     problems = leg_problems(ledger, legs, window_cutoff, window_h, now) + machinery_problems(found, window_h)
     for row in health:
         problems.extend(health_problems(row, ledger, window_h))

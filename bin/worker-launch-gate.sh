@@ -29,7 +29,7 @@
 # of the agent type owning it. `worker-run start|wait` belongs to the relay agents. A run started or
 # awaited from the main chat's Bash is owned by a turn instead of an agent — no magenta tagged row,
 # and nothing to wake the chat when it ends. `report` prints a finished record and spends nothing,
-# and the commit-journal and edit-conflict hooks name it to the chat itself. The media scripts and
+# and the edit-conflict hook names it to the chat itself. The media scripts and
 # the generating subcommands of their web engines have one door for every session, `media-run`,
 # whose job pointer is what renders the account a generation spends.
 [ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh

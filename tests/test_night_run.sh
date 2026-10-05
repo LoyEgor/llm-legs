@@ -942,6 +942,58 @@ fixer spend without proof · 5.0M weighted of 15.0M
 rewrite · 1 of 2 lines deleted tonight were written in the 7 days before (1 by earlier night commits)
 night 20260131T000000Z-now · 00:00–02:00" ]
 
+# Fixture night on the per-repository count: review-bench's review-anchors/review-debt and
+# claude-setup's span-off, from their checkouts (REVIEW_BENCH_ROOT, CLAUDE_SETUP_ROOT).
+. "$ROOT/share/test-scope.sh"
+NF_RB="${REVIEW_BENCH_ROOT:-$(git_projects "$ROOT")/review-bench}"
+NF_GATE="${CLAUDE_SETUP_ROOT:-$(git_projects "$ROOT")/claude-setup}/hooks/review-flow-gate.sh"
+[ -x "$NF_RB/bin/review-debt" ] && [ -f "$NF_GATE" ] || fail "fixture night needs review-bench and claude-setup checkouts"
+NF="$WORK/fixture-night"
+NF_REPO="$NF/drepo"
+mkdir -p "$NF_REPO" "$HOME/.cache/claude/review-journal"
+printf '%s\n' "$NF_REPO" >"$NF/sweep-repos"
+nf() { PATH="$NF_RB/bin:/opt/homebrew/bin:$PATH" REVIEW_BENCH_BENCHES="$NF/benches" "$@"; }
+nf_git() { git -C "$NF_REPO" -c user.email=t@t -c user.name=t "$@"; }
+nf_debt() { nf review-debt --repo "$NF_REPO"; }
+nf_span_off() { (cd "$NF_REPO" && SWEEP_REPOS_FILE="$NF/sweep-repos" nf bash "$NF_GATE" span-off night-s1); }
+nf_git init -q .
+seq 1 100 >"$NF_REPO/a.txt"
+nf_git add -A && nf_git commit -qm base
+nf review-anchors floor --repo "$NF_REPO" >/dev/null || fail "review-anchors floor"
+assert [ "$(nf_debt)" = "LINES=0 FILES=0" ]
+seq 1 100 >"$NF_REPO/b.txt"
+seq 1 60 >"$NF_REPO/c.txt"
+nf_git add -A && nf_git commit -qm landed
+assert [ "$(nf_debt)" = "LINES=160 FILES=2" ]
+printf '%s words sweep\n' "$(date +%s)" >"$HOME/.cache/claude/review-journal/span-arm-night-s1"
+assert_fails nf_span_off >/dev/null 2>"$NF/refused"
+assert grep -qxF "$NF_REPO LINES=160 FILES=2" "$NF/refused"
+nf review-anchors anchor --repo "$NF_REPO" --kind review:20261005T010000Z-fit b.txt || fail "fit round anchor"
+assert [ "$(nf_debt)" = "LINES=60 FILES=1" ]
+nf review-anchors anchor --repo "$NF_REPO" --kind review:20261005T020000Z-bugs c.txt || fail "bugs round anchor"
+assert [ "$(nf_debt)" = "LINES=0 FILES=0" ]
+mkdir -p "$NF/benches/20261005T020000Z-bugs"
+jq -n --arg d "$NF_REPO" '{repos: [{repo: $d, common_dir: ($d + "/.git"), label: "drepo"}], reviewed: {"drepo/c.txt": "x"}}' \
+  >"$NF/benches/20261005T020000Z-bugs/meta.json"
+nf review-anchors run-start --repo "$NF_REPO" --run claudeb-1-fix --session night-s1 || fail "fixer run-start"
+seq 61 65 >>"$NF_REPO/c.txt"
+assert [ "$(nf_debt)" = "LINES=5 FILES=1" ]
+nf review-anchors run-fold --repo "$NF_REPO" --run claudeb-1-fix --session night-s1 \
+  --round 20261005T020000Z-bugs --changed c.txt --owned c.txt || fail "fixer run-fold --round"
+assert [ "$(nf_debt)" = "LINES=0 FILES=0" ]
+nf_git add -A && nf_git commit -qm fix
+assert [ "$(nf_debt)" = "LINES=0 FILES=0" ]
+seq 1 10 >"$NF_REPO/d.txt"
+nf_git add -A && nf_git commit -qm late
+assert [ "$(nf_debt)" = "LINES=10 FILES=1" ]
+assert nf_span_off >"$NF/closed" 2>&1
+assert grep -qxF "$NF_REPO LINES=10 FILES=1" "$NF/closed"
+printf '%s\n' "$NF/gone" >>"$NF/sweep-repos"
+NIGHT_RUN_SWEEP_REPOS="$NF/sweep-repos" NIGHT_RUN_REVIEW_DEBT="$NF_RB/bin/review-debt" nf night report >"$NF/report" ||
+  fail "fixture night report"
+assert [ "$(grep '^debt now · ' "$NF/report")" = "debt now · drepo · 10 lines in 1 files
+debt now · gone · unknown" ]
+
 # No night at all: the menu prints nothing.
 rm "$NIGHTS"/*.json
 assert [ -z "$(night latest --menu)" ]

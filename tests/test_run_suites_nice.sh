@@ -31,7 +31,7 @@ assert grep -q 'PASS: sid=none pyc=1' <<<"$out"
 parent_nice=$(ps -o nice= -p $$ | tr -d '[:space:]')
 mkdir -p "$WORK/prio/tests"
 printf '#!/usr/bin/env bash\necho "PASS: wave=$(ps -o nice= -p $$ | tr -d " ")"\n' >"$WORK/prio/tests/test_wave.sh"
-printf '#!/usr/bin/env bash\necho "PASS: budget=$(ps -o nice= -p $$ | tr -d " ")"\n' >"$WORK/prio/tests/test_commit_journal.sh"
+printf '#!/usr/bin/env bash\necho "PASS: budget=$(ps -o nice= -p $$ | tr -d " ")"\n' >"$WORK/prio/tests/test_review_flow_gate.sh"
 out=$(bash "$ROOT/share/run-suites.sh" --repo "$WORK/prio" 2>&1)
 assert grep -q 'PASS: wave=10' <<<"$out"
 assert grep -q "PASS: budget=$parent_nice" <<<"$out"

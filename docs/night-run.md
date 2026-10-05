@@ -209,7 +209,8 @@ shares its transcript); a bench's `claude-usage-*.jsonl` by id, plus `usage-<lab
 follow `WORKER_RUN_DIR`, `CLAUDEB_PROFILES_ROOT`, `WORKER_STATS_DIR`/`CLAUDEB_DIR` and the vendor
 profile overrides. Then one line per job, then the totals. A job with commits
 shows `code +A/-R`: lines its commits add and remove, test paths (`tests/`, `test_*`) left out;
-`code ?` when a commit cannot be read. Information only: no threshold.
+`code ?` when a commit cannot be read. Information only: no threshold. Then `debt now` per sweep
+repository: `review-debt --repo` at report time (`NIGHT_RUN_REVIEW_DEBT`), `unknown` when unreadable.
 
 Behind the spend lines, an observational churn block from `share/night_churn.py` measures whether the
 night did real work or churn: per-branch review rounds versus other rounds; problems touched again without
