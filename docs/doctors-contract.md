@@ -50,9 +50,9 @@ LLM ▸     8  reviewers crashed
   stale (Speed also without an observation dated today). Missing value: DIM `–`.
 - Bars: six completed local dates and today, daily `max` of `problem-days.jsonl` (Speed: the daily
   maxima in Harness's `menu.txt` header). Eight heights against the window maximum. An unmeasured date
-  is a DIM `–`, never an invented bar. Today is DIM; a completed date above `usual` is RED, others DIM.
+  is a blank cell, never an invented bar or a dash (as every other spark line). Today is DIM; a completed date above `usual` is RED, others DIM.
 - `usual` is the median of measured completed dates, never today; arrow is yesterday against it:
-  RED ↑ above, GREEN ↓ below, DIM → equal, DIM `–` without both.
+  RED ↑ above, GREEN ↓ below, DIM → equal, blank without both.
 - A doctor's first level: up to three issue rows (RED count, the problem's own short name;
   Speed's floor gaps in min/day, plus nonempty `Needs Egor` rows), Fix, fixer, separator,
   `LLM details`. The details hold every previous row in order, the non-ordinary status title

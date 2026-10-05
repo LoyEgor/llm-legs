@@ -29,7 +29,7 @@ local function row(name, value, unit, bars, arrow, usual)
   return string.format("%-7s", name) .. " " .. pad(value, 4) .. " " .. string.format("%-7s", unit or "") .. "  "
     .. bars .. " " .. arrow .. " " .. pad(usual, 4)
 end
-local function summary(name, value) return row(name, value and tostring(value) or "–", nil, "–––––––", "–", "–") end
+local function summary(name, value) return row(name, value and tostring(value) or "–", nil, "       ", " ", "–") end
 local function fix(menu) return menu[#menu - 1] end
 local function fixer(menu) return menu[#menu] end
 local function refreshRow(menu) return menu[#menu - 2] end
@@ -250,9 +250,9 @@ local function aligned(rows)
       if span(item.title, at, at) ~= " " then return false end
     end
     for at = BAR_AT, BAR_AT + 6 do
-      if not ("▁▂▃▄▅▆▇█–"):find(span(item.title, at, at), 1, true) then return false end
+      if not ("▁▂▃▄▅▆▇█ "):find(span(item.title, at, at), 1, true) then return false end
     end
-    if not ("↑↓→–"):find(span(item.title, ARROW_AT, ARROW_AT), 1, true) then return false end
+    if not ("↑↓→ "):find(span(item.title, ARROW_AT, ARROW_AT), 1, true) then return false end
   end
   return width == USUAL_AT
 end
@@ -390,22 +390,22 @@ trendHarness()
 local cold = trendDoctor.menuItems()
 for index, name in ipairs(names) do
   local title = cold[index].title
-  check(text(title) == row(name, values[index], index == 5 and "min/day" or nil, "–▁▂▃▄▆█", "↑",
-    index == 5 and "30" or "3") and sameColor(colorAt(title, BAR_AT), palette.DIM),
-    "cold start: an unmeasured day is a DIM –, measured days keep their bars: " .. text(title))
+  check(text(title) == row(name, values[index], index == 5 and "min/day" or nil, " ▁▂▃▄▆█", "↑",
+    index == 5 and "30" or "3"),
+    "cold start: an unmeasured day is a blank cell, measured days keep their bars: " .. text(title))
 end
 check(aligned({ table.unpack(cold, 1, 5) }), "cold start rows stay aligned")
 metadata.speed.lost_min_day_by_day[trendDay(0)] = nil
 trendHarness()
 local oldSpeed = trendDoctor.menuItems()[5]
 check(sameColor(colorAt(oldSpeed.title, 1), palette.DIM)
-  and text(oldSpeed.title) == row("Speed", "12", "min/day", "–▂▃▄▆█–", "↑", "30"),
+  and text(oldSpeed.title) == row("Speed", "12", "min/day", " ▂▃▄▆█ ", "↑", "30"),
   "Speed without a current-day observation is DIM even when Harness is fresh: " .. text(oldSpeed.title))
 metadata.speed.lost_min_day_by_day[trendDay(0)] = 80
 metadata.speed.lost_min_day = nil
 trendHarness()
 local unknownSpeed = trendDoctor.menuItems()[5]
-check(text(unknownSpeed.title) == row("Speed", "–", "min/day", "–▁▂▃▄▆█", "↑", "30")
+check(text(unknownSpeed.title) == row("Speed", "–", "min/day", " ▁▂▃▄▆█", "↑", "30")
   and sameColor(colorAt(unknownSpeed.title, 1), palette.DIM) and sameColor(colorAt(unknownSpeed.title, VALUE_AT), palette.DIM),
   "a missing Speed floor is a DIM – despite today's retained history: " .. text(unknownSpeed.title))
 metadata.speed.lost_min_day = 12
@@ -413,7 +413,7 @@ trendHarness()
 write("/doctors/problem-days.jsonl", "")
 trendItems = trendDoctor.menuItems()
 check(text(trendItems[1].title) == summary("LLM", 2) and aligned({ table.unpack(trendItems, 1, 5) }),
-  "empty history: every bar, the arrow and usual are DIM –")
+  "empty history: bars and arrow blank, usual a DIM –")
 local function egorLayer(menu)
   for _, item in ipairs(menu or {}) do
     if utf8.len(text(item.title)) > 64 then return false end

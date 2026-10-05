@@ -669,13 +669,13 @@ local function summaryTitle(name, value, unit, status, history, now, stale)
     value and { padded(rounded(value), 4) } or { padded(MISSING, 4), style.DIM }, { string.format(" %-7s  ", unit or "") } }
   for index = 1, 7 do
     local amount = days[index]
-    segments[#segments + 1] = amount == nil and { MISSING, style.DIM }
+    segments[#segments + 1] = amount == nil and { " " }
       or { BARS[high == 0 and 1 or math.max(1, math.ceil(amount / high * 8))],
         index < 7 and median and amount > median and style.RED or style.DIM }
   end
   local yesterday = days[6]
   segments[#segments + 1] = { " " }
-  segments[#segments + 1] = not (yesterday and median) and { MISSING, style.DIM }
+  segments[#segments + 1] = not (yesterday and median) and { " " }
     or yesterday > median and { "↑", style.RED } or yesterday < median and { "↓", style.GREEN } or { "→", style.DIM }
   segments[#segments + 1] = { " " .. padded(median and rounded(median) or MISSING, 4), style.DIM }
   return styled(segments)
