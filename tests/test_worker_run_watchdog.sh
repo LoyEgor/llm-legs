@@ -297,6 +297,43 @@ assert_fails kill -0 "$stub_pid"
 # mid-edit in the real thing — outlives the run that was reported over.
 for waiting in $(seq 1 60); do kill -0 "$stub_child" 2>/dev/null || break; sleep 0.1; done
 assert_fails kill -0 "$stub_child"
+
+# A watchdog tick that never returns is ended with the run, not left behind: killing the watchdog
+# alone orphaned its in-flight command substitutions, and one blocked forever (a here-string past a
+# full pipe) kept a chain of `_supervise` subshells alive 31 h after exit_code (live 2026-10-04,
+# claudeb-1791078365-20910-7f9b). The stub jq blocks once, on the watchdog's own transcript read.
+clear_stub
+set_config 'claudeb_profile=pinned'
+real_jq=$(command -v jq)
+mkdir -p "$WORK/hang-bin"
+cat >"$WORK/hang-bin/jq" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+  *'is_error? == true'*)
+    if mv "\$STUB_DIR/jq_hang" "\$STUB_DIR/jq_hung" 2>/dev/null; then
+      printf '%s\n' "\$\$" >"\$STUB_DIR/jq_hung"
+      exec sleep 600
+    fi
+    ;;
+esac
+exec "$real_jq" "\$@"
+EOF
+chmod +x "$WORK/hang-bin/jq"
+: >"$STUB_DIR/jq_hang"
+export PICK_RC=0 PICK_ACCOUNT=hung STUB_SLEEP=6 STUB_TRANSCRIPT_SESSION=hung-session \
+  STUB_TRANSCRIPT_ACCOUNT=hung WORKER_RUN_IDLE_S=20 WORKER_RUN_DEADLINE=600
+PATH="$WORK/hang-bin:$PATH" start_ok claudeb
+unset STUB_SLEEP STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT WORKER_RUN_IDLE_S WORKER_RUN_DEADLINE
+assert grep -q '^STATUS: done$' <<<"$("$RUNNER" wait "$RUN_ID" --max 60)"
+assert test -s "$STUB_DIR/jq_hung"
+for waiting in $(seq 1 100); do
+  leftover=$(ps -A -o pid=,command= | awk -v dir="$RUN_DIR" -v hung="$(cat "$STUB_DIR/jq_hung")" \
+    '$1 == hung || index($0, "_supervise " dir) { print $1 }')
+  [ -n "$leftover" ] || break
+  sleep 0.1
+done
+[ -z "$leftover" ] || kill $leftover 2>/dev/null
+assert test -z "$leftover"
 }
 
 dirt_repo_init

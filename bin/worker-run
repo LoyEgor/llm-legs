@@ -491,6 +491,18 @@ end_child() { # pid signal
   kill -"$2" "$1" 2>/dev/null || :
 }
 
+# The watchdog with everything it forked: killed alone, its in-flight command substitutions outlive
+# it, and one that never returns is a `_supervise` process for good. Stopped first, so it cannot fork
+# a child the listing misses.
+end_tree() { # pid
+  [ -n "$1" ] && kill -STOP "$1" 2>/dev/null || return 0
+  kill -TERM $(ps -A -o pid=,ppid= 2>/dev/null | awk -v root="$1" '
+    { kids[$2] = kids[$2] " " $1 }
+    END { queue[n = 1] = root
+          for (i = 1; i <= n; i++) { print queue[i]; m = split(kids[queue[i]], k, " "); for (j = 1; j <= m; j++) queue[++n] = k[j] } }') 2>/dev/null
+  kill -CONT "$1" 2>/dev/null || :
+}
+
 run_with_deadline() {
   local child watchdog='' rc rc_reaped signalled='' began ended
   # Per ATTEMPT, so a reroute's fresh launch cannot inherit the previous one's verdict.
@@ -608,7 +620,7 @@ run_with_deadline() {
     [ "$rc_reaped" -eq 127 ] || rc=$rc_reaped
   fi
   trap - TERM INT
-  kill "$watchdog" 2>/dev/null
+  end_tree "$watchdog"
   wait "$watchdog" 2>/dev/null
   printf -v ended '%(%s)T' -1
   [ -z "$RUN_DIRECTORY" ] || meta_update "$RUN_DIRECTORY" \
@@ -624,7 +636,7 @@ stop_run() { # signal
   local reason="signal $1"
   [ "$1" != TERM ] || reason=term
   [ -z "$RUN_DIRECTORY" ] || printf '%s\n' "$reason" >"$RUN_DIRECTORY/killed" 2>/dev/null || :
-  [ -z "$watchdog" ] || kill "$watchdog" 2>/dev/null || :
+  end_tree "$watchdog"
   end_child "$child" TERM
   ( sleep 5; end_child "$child" KILL ) >/dev/null 2>&1 &
 }
@@ -3506,7 +3518,10 @@ transcript_files() {
            | select((.type? == "tool_use") and ((.name? // "") | test("^(Write|Edit|MultiEdit|NotebookEdit)$")))
            | select((.id? // "") as $id | ($bad | index($id)) == null)
            | (.input.file_path? // .input.notebook_path? // empty)' "$transcript" 2>/dev/null) || return 1
-  listing_spelling "$workdir" <<<"$paths"
+  # Piped, never a here-string: bash writes a short one whole into a pipe only it reads, and a
+  # transcript's path list past the 16K buffer a macOS pipe was left at blocked that write forever
+  # (live 2026-10-04: four watchdog chains outlived their runs by 31 h).
+  printf '%s\n' "$paths" | listing_spelling "$workdir"
 }
 
 listing_spelling() { # workdir; paths on stdin
@@ -3694,9 +3709,9 @@ transcript_wrote_through_shell() { # transcript since
              end' "$transcript" 2>/dev/null) || return 2
   [ -n "$commands" ] || return 1
   while IFS= read -r command; do
-    command=$(jq -r . <<<"$command") || return 2
+    command=$(printf '%s\n' "$command" | jq -r .) || return 2
     writes_through_shell "$command" && return 0
-  done <<<"$commands"
+  done < <(printf '%s\n' "$commands")
   return 1
 }
 
