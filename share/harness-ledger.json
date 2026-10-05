@@ -2338,13 +2338,29 @@
         "rule": "opportunity",
         "ident": "chat/hooks"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-05T19:30:06+03:00",
+          "by": "night fixer harness-speed-20261005T061337Z-13f2",
+          "files": [
+            "claude-setup/hooks/review-flow-gate.sh",
+            "claude-setup/tests/test_review_flow_gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "review-flow-gate base vs fast path: exit code, stdout (door nonce masked), stderr, and the rj_snapshot_repos/rj_snapshot_heads arguments with the repository set each call snapshots",
+            "data": "800 non-read-only Bash calls sampled (seed 13) from 31.6k unique calls of the last 3 days' transcripts, cwd as recorded; 650 generated splice/escape spellings (quotes, backslashes, line continuations, CR, tab, non-ASCII, eval/'' /$X wrappers); 98 hand-written adversarial spellings per trigger corner; scratch HOME/DOCTORS_DIR/CLAUDEB_DIR, snapshot writers stubbed, no replay-tagged file reached a live store",
+            "result": "1548/1548 identical; fast path taken on 64% of write calls (11992 of 18792); trigger-free write CPU median 0.194 -> 0.088 s (60 calls x2, load 190)"
+          }
+        }
+      ],
       "same_cause": [],
-      "note": "2026-10-04 (Harness Doctor): door against snapshot measured on 240 replayed write calls (156 trigger-free), CPU medians at load 260-330: door 0.100 s, snapshot side 0.127 s (rj_call_repos 0.036 + rj_snapshot_repos 0.091), library 0.032 s; the door is ~44 %, so the lever wording stands and the lever stays a night job (a door fast path on trigger-free payloads, decisions identical). A lever is charged only for the days after its own ledger fix landed (bin/speed-doctor lever_since, llm-legs@ac75a868); doctor-fix takes the hook from the opportunity, so a speed run holding this row gets a claude-setup worktree. A trigger-free write call still needs rj_snapshot_content for commit-journal, so the fast path skips only the door; the floor left is the snapshot (hook-sync-review-flow-gate, blind spot snapshot-cost-per-repo). 2026-10-05 (harness-doctor-20261005T061224Z-4873): cause stands at claude-setup base c3c2e4e: hooks/review-flow-gate.sh exits early only for rc_readonly_command; every other call runs rj_segments and the three family tests. Left to the speed run, which owns opportunity rows; no claude-setup worktree here.",
+      "note": "2026-10-05 (night fixer harness-speed-20261005T061337Z-13f2): fixed with rf_door_idle in claude-setup hooks/review-flow-gate.sh: a write call with no raw `review`, no `git` with quotes/backslashes/newlines spliced in, and (when a `$`, backquote, `(`, backslash or empty quoted word could hide an unreadable binary) no whole gated word, skips the door's parse and keeps the snapshot with an empty landing. Bash 3.2's ${cmd//[...]/} took minutes over a 5 KB heredoc, so the splice is a precompiled regex. Remaining floor is the snapshot side (hook-sync-review-flow-gate, blind spot snapshot-cost-per-repo). Found, not fixed (old behaviour kept bit-for-bit): the review family is read off the raw text, so a launch spelled with spliced quotes (re\"\"view-bench re\"\"view) passes this door; review-bench's own door-nonce check still refuses it. Seen at load ~200 while proving it, not this row's: claude-setup test_commit_report failed once on the quiet `origin HEAD` push and passed on rerun (flake); llm-legs test_consistency assert 870 is red because review-bench c23eb96 dropped DEBT_ERR_LINE from share/rbench/debt.py. tests/test_harness_doctor.sh's ledger guard refused the `equivalence` key speed-doctor's OUTPUT_PROOF requires on a fix, so no Speed fix could be proven; it now takes that one extra key and only with compared, data and result.",
       "handoff": null,
       "last_reviewed": "2026-10-05",
-      "reviewed_by": "Harness Doctor"
+      "reviewed_by": "night fixer harness-speed-20261005T061337Z-13f2"
     },
     {
       "id": "limiter-hold-logo-bench-throttle",
