@@ -75,6 +75,7 @@ ANCHORS
   RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/anchors.out")
   RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/anchors.out")
   assert test "$(jq -r '.review_round' "$RUN_DIR/meta.json")" = 20260901T100000Z-aaaaaaa
+  await_launched
   # A round run opens its record, so the fold can tell the run's own commits from a commit landed
   # beside it.
   assert test "$(anchors_line run-start)" = \
@@ -135,6 +136,8 @@ ANCHORS
     --round 20260901T100000Z-aaaaaaa >"$WORK/anchors.out" 2>"$WORK/anchors.err" ||
     fail "two-family start failed: $(<"$WORK/anchors.err")"
   RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/anchors.out")
+  RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/anchors.out")
+  await_launched
   assert grep -qxF "run-start${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}--run${anchors_tab}${RUN_ID}${anchors_tab}--session${anchors_tab}anchors-chat" "$ANCHOR_LOG"
   printf 'fixed\n' >>"$other/kept"
   : >"$STUB_GATE"
@@ -165,6 +168,7 @@ ANCHORS
     fail "worktree start failed: $(<"$WORK/anchors.err")"
   RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/anchors.out")
   RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/anchors.out")
+  await_launched
   assert grep -qxF "run-start${anchors_tab}--repo${anchors_tab}${other_wt}${anchors_tab}--run${anchors_tab}${RUN_ID}${anchors_tab}--session${anchors_tab}anchors-chat" "$ANCHOR_LOG"
   assert_fails grep -qF "run-start${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}" "$ANCHOR_LOG"
   assert grep -qxF "$other_wt" "$RUN_DIR/families/1/top"

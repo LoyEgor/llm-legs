@@ -366,6 +366,32 @@ assert test "$rc" -eq 4
 assert grep -qF 'workdir is the home directory' "$WORK/start.err"
 assert_fails grep -q "^ARG=" "$CALL_LOG"
 
+# W6, 2026-10-04: starts interrupted while hashing a large dirty tree left runs with no supervisor.
+# A floor that never finishes must not hold start: the detached supervisor takes it.
+real_git=$(command -v git)
+cat >"$WORK/bin/git" <<GIT
+#!/usr/bin/env bash
+case " \$* " in *' status --porcelain --no-renames -uall '*) while [ -e "$WORK/floor-hold" ]; do sleep 0.05; done ;; esac
+exec "$real_git" "\$@"
+GIT
+chmod +x "$WORK/bin/git"
+git init -q "$WORK/floor-repo"
+printf 'before\n' >"$WORK/floor-repo/dirty"
+: >"$WORK/floor-hold"
+clear_stub
+rc=0
+perl -e 'alarm 20; exec @ARGV' "$RUNNER" start claudeb --brief "$WORK/brief" --workdir "$WORK/floor-repo" \
+  --account resumeacct >"$WORK/start.out" 2>"$WORK/start.err" || rc=$?
+assert test "$rc" -eq 0
+RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
+RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/start.out")
+assert test "$(jq -r '.pid' "$RUN_DIR/meta.json")" != 0
+assert test ! -e "$RUN_DIR/dirty-before"
+rm -f "$WORK/floor-hold"
+assert await_done
+assert grep -qx dirty "$RUN_DIR/dirty-before"
+rm -f "$WORK/bin/git"
+
 # These picks keep naming the one account that walls — a picker that ignores
 # --exclude — so the run has nowhere to reroute and the limit outcome reaches
 # the caller.

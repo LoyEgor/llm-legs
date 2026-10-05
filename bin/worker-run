@@ -1290,6 +1290,42 @@ reroute_walled() {
   [ "$vendor" != gemini ] || : >"$directory/log"
 }
 
+# In the detached supervisor, before the first attempt: hashing a large dirty tree takes minutes, and
+# held in start's foreground a caller interrupted there left a run with no supervisor (ledger W6).
+take_floor() { # directory workdir
+  local directory="$1" workdir="$2" review_round
+  review_round=$(jq -r '.review_round // empty' "$directory/meta.json" 2>/dev/null) || review_round=''
+  REPLY_ARRAY=()
+  read_json_array '.add_dirs[]' "$directory/meta.json"
+  # What was already uncommitted here before this run touched anything. It is the floor the dirt
+  # snapshot at the end is measured against: without it, every file Egor or a co-tenant chat had
+  # open would be evidence produced by whichever run happened to finish beside them.
+  workdir_dirty_paths "$workdir" >"$directory/dirty-before.tmp.$$" 2>/dev/null &&
+    mv -f "$directory/dirty-before.tmp.$$" "$directory/dirty-before" 2>/dev/null ||
+    rm -f "$directory/dirty-before.tmp.$$" 2>/dev/null
+  workdir_dirty_shas "$workdir" "$directory/unshaped-before" >"$directory/dirty-before-shas.tmp.$$" 2>/dev/null &&
+    mv -f "$directory/dirty-before-shas.tmp.$$" "$directory/dirty-before-shas" 2>/dev/null ||
+    rm -f "$directory/dirty-before-shas.tmp.$$" "$directory/unshaped-before" 2>/dev/null
+  # And the commit the tree stood on, which is what a path NOT already dirty is measured against.
+  # Never restamped by a reroute: an attempt's floor is the run's floor, and read off the end of the
+  # run instead every link the run itself committed would be measured against its own result.
+  git -C "$workdir" rev-parse --verify --quiet HEAD >"$directory/head-before.tmp.$$" 2>/dev/null &&
+    mv -f "$directory/head-before.tmp.$$" "$directory/head-before" 2>/dev/null ||
+    rm -f "$directory/head-before.tmp.$$" 2>/dev/null
+  # A round fixer's fold reads the start, branch and HEAD this record keeps, so a commit landed
+  # during the run is never anchored as the fix.
+  if [ -n "$review_round" ] && [ -s "$directory/launcher" ] &&
+    git -C "$workdir" rev-parse --show-toplevel >/dev/null 2>&1; then
+    git -C "$workdir" rev-parse --path-format=absolute --git-common-dir >"$directory/anchors-common" 2>/dev/null ||
+      rm -f "$directory/anchors-common" 2>/dev/null
+    review_anchors run-start --repo "$workdir" --run "${directory##*/}" --session "$(cat "$directory/launcher")" \
+      >/dev/null 2>&1 || :
+  fi
+  [ ! -s "$directory/launcher" ] ||
+    snapshot_other_families "$directory" "$workdir" "$(cat "$directory/launcher")" "$review_round" \
+      ${REPLY_ARRAY[@]+"${REPLY_ARRAY[@]}"}
+}
+
 supervise() {
   local directory="$1" vendor workdir rc
   [ -r "$directory/meta.json" ] || return 4
@@ -1304,6 +1340,7 @@ supervise() {
   # Even the run that never started answers for itself: absent, its record is indistinguishable from
   # the record of a run still going, and a reader takes that for a run that wrote nothing.
   cd "$workdir" || { persist_run_files "$directory"; return 4; }
+  take_floor "$directory" "$workdir"
   # At most NIGHT_FIXER_SLOTS workers on night branches at once (cores / 2 clamped 2 to 8, up to the cores
   # capped at 12 while slot_room finds room): a night worker is model-bound between suite runs, which run-suites caps on its own. started_at
   # stays the launch, so a night's hours include the queue; the deadline clock is slot_at, the slot's
@@ -2786,33 +2823,6 @@ start_run() {
   # hooks, `share/chat_names.py`), and overwritten here every reader inside the worker would look
   # for run records under one run.
   export WORKER_RUN_RECORD="$directory" WORKER_RUN_ID="$run_id"
-  # What was already uncommitted here before this run touched anything. It is the floor the dirt
-  # snapshot at the end is measured against: without it, every file Egor or a co-tenant chat had
-  # open would be evidence produced by whichever run happened to finish beside them.
-  workdir_dirty_paths "$workdir" >"$directory/dirty-before.tmp.$$" 2>/dev/null &&
-    mv -f "$directory/dirty-before.tmp.$$" "$directory/dirty-before" 2>/dev/null ||
-    rm -f "$directory/dirty-before.tmp.$$" 2>/dev/null
-  workdir_dirty_shas "$workdir" "$directory/unshaped-before" >"$directory/dirty-before-shas.tmp.$$" 2>/dev/null &&
-    mv -f "$directory/dirty-before-shas.tmp.$$" "$directory/dirty-before-shas" 2>/dev/null ||
-    rm -f "$directory/dirty-before-shas.tmp.$$" "$directory/unshaped-before" 2>/dev/null
-  # And the commit the tree stood on, which is what a path NOT already dirty is measured against.
-  # Never restamped by a reroute: an attempt's floor is the run's floor, and read off the end of the
-  # run instead every link the run itself committed would be measured against its own result.
-  git -C "$workdir" rev-parse --verify --quiet HEAD >"$directory/head-before.tmp.$$" 2>/dev/null &&
-    mv -f "$directory/head-before.tmp.$$" "$directory/head-before" 2>/dev/null ||
-    rm -f "$directory/head-before.tmp.$$" 2>/dev/null
-  # A round fixer's fold reads the start, branch and HEAD this record keeps, so a commit landed
-  # during the run is never anchored as the fix.
-  if [ -n "$review_round" ] && [ -s "$directory/launcher" ] &&
-    git -C "$workdir" rev-parse --show-toplevel >/dev/null 2>&1; then
-    git -C "$workdir" rev-parse --path-format=absolute --git-common-dir >"$directory/anchors-common" 2>/dev/null ||
-      rm -f "$directory/anchors-common" 2>/dev/null
-    review_anchors run-start --repo "$workdir" --run "$run_id" --session "$(cat "$directory/launcher")" \
-      >/dev/null 2>&1 || :
-  fi
-  [ ! -s "$directory/launcher" ] ||
-    snapshot_other_families "$directory" "$workdir" "$(cat "$directory/launcher")" "$review_round" \
-      ${add_dirs[@]+"${add_dirs[@]}"}
 
   supervisor_body='ticks=0
 while [ ! -e "$2/.ready" ]; do

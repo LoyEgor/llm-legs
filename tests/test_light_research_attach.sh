@@ -52,7 +52,7 @@ chmod +x "$BIN/geminib"
 printf 'QUOTA-Q: the leg answers with a quota wall.\n' >"$WORK/prompt"
 printf 'Research the repository slowly.\n' >"$WORK/prompt-slow"
 rm -f "$WORK/answer" "$WORK/gate"; rm -rf "$WORK/answer.units"
-LIGHT_RESEARCH_WAIT_MAX=3 run --prompt-file "$WORK/prompt-slow"; rc=$?
+LIGHT_RESEARCH_WAIT_MAX=10 run --prompt-file "$WORK/prompt-slow"; rc=$?
 assert test "$rc" -eq 3
 assert grep -q '^STATUS: running$' "$WORK/out"
 assert test ! -e "$WORK/answer"

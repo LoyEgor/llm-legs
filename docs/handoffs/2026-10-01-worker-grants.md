@@ -1,28 +1,21 @@
-# Worker grants still omitted by cross-repository briefs
+# A worktree a run creates after launch reads as an escape
 
-Status: done 2026-10-04 (ledger W7 fixed-pending)
+Status: open
 
-To: `share/doctor-ledger.json` `owners.workers`, with the claude-setup relay owner.
+To: `share/doctor-ledger.json` `owners.workers`.
 
-Purpose: `bin/worker-run` `brief_add_dirs` and `snapshot_other_families` grant and baseline the
-repositories a run may write; `share/worker-policy.md` states that contract.
+Purpose: `bin/worker-run` grants a run what it may write (`brief_add_dirs`, `brief_worktree_roots`,
+`resumed_add_dirs`); `bin/llm-doctor` reads a write outside the grants as `escaped` (ledger W3, W5, W7).
 
-Fixed in llm-legs `bin/worker-run` (ledger W3, W5; the contract is `share/worker-policy.md`).
-Night and fixer briefs name main checkouts in order to forbid writes there, so worker-run still
-never infers a main-checkout grant from prose.
+`claudeb-1791165484-91389-3bc4` (2026-10-05 04:58 +03:00, llm-legs `feat-suite-speed-gate-claudeb`),
+told "work in your worktree only", ran `git worktree add .claude/worktrees/tmp-suite-speed-baseline-claudeb`
+from the main checkout to time suites at HEAD, edited `tests/test_instruction_gate.sh` there and removed
+it. W3 read regressed; its own causes (a prose-named task worktree, a resumed grant) did not recur.
 
-Open (ledger W7) for the claude-setup relay owner (`agents/*-worker.md`): `--workdir <dir>` is the relay's guess
-from the brief; a brief that works in a main checkout should carry it as the workdir or as `ADD-DIR:`.
-The relays' "pass `--resume` for a RESUME brief" step is now redundant (worker-run reads the line)
-and can go. A worktree created after launch stays ungranted.
-
-## Settled 2026-10-04 («LLM Doctor меню refactoring», night sweep 20261004T003925Z-4646)
-
-- claude-setup `agents/{claudeb,codex,gemini,grok,light}-worker.md` (branch `fix/llm-doctor-handoffs-20261004`): no relay passes `--resume`
-  any more (worker-run reads a `RESUME <id>:` first line and the `ADD-DIR:` lines itself), and `--workdir` is
-  the directory the brief works in, its worktree or the checkout it names to write. `tests/test_consistency.sh`
-  pins both; red on main's agents.
-- claude-setup `hooks/worker-edit-guard.sh`: a worker's shell write that crosses a symlink into another checkout is
-  denied unless an `ADD-DIR:` grant covers it (see `2026-10-03-path-shape-tilde.md` item 2).
-- A worktree created after launch stays ungranted by design: the brief names it as `ADD-DIR:` up front, or
-  the run edits only its own worktree.
+The 2026-10-04 settlement kept a worktree created after launch ungranted by design, so every such leg
+reads W3 regressed and W3 cannot prove. Decide: keep that (true escape; narrow W3 or give the class its
+own row), or grant it. A grant tested at night 20261005T060033Z-052f, not landed: the floor lists
+`git worktree list` of the workdir and each `ADD-DIR:`; at the end a transcript-named path under
+`<listed checkout>/.claude/worktrees/<name>` whose worktree was not listed joins `meta.add_dirs`
+(~15 lines in `persist_run_files`, one case in `tests/test_worker_run_attribution.sh`). Its risk: a
+write into a worktree another chat created mid-run is hidden as well.

@@ -370,6 +370,16 @@ start_ok() {
   "$RUNNER" start "$vendor" --brief "$WORK/brief" --workdir "${WORKER_TEST_WORKDIR:-$WORK/workdir}" "$@" >"$WORK/start.out" 2>"$WORK/start.err" || fail "start $vendor failed: $(<"$WORK/start.err")"
   RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
   RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/start.out")
+  await_launched
+}
+
+# The floor is taken by the supervisor before its CLI starts: a fixture write before that is no run's.
+await_launched() {
+  local tick
+  for tick in $(seq 1 400); do
+    { [ -e "$RUN_DIR/exit_code" ] || jq -e '.cli_pid // empty' "$RUN_DIR/meta.json" >/dev/null 2>&1; } && return 0
+    sleep 0.05
+  done
 }
 
 start_gated() {
