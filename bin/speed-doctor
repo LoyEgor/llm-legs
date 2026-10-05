@@ -696,9 +696,10 @@ def select(opportunities, regressions=()):
     opportunities by score, within the worker-hour budget, K, and one hook lever per night."""
     chosen, spent, hooks = [], 0.0, 0
     for reg in regressions:
+        component = reg.get("component")
         levers = sorted((EFFORT_H[l["effort"]] + l["night_cost_h"], bool(l.get("hooks"))) for l in LEVERS
-                        if l["quality"] == "equivalent" and (l["component"] == reg["component"]
-                                                             or l["component"].startswith(reg["component"] + "/")))
+                        if component and l["quality"] == "equivalent" and (l["component"] == component
+                                                                           or l["component"].startswith(component + "/")))
         cost, hook = levers[0] if levers else (0.0, False)
         spent, hooks = spent + cost, hooks + hook
     taken = len(regressions)

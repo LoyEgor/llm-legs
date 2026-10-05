@@ -172,6 +172,9 @@ low = {"id": "low", "opportunity": {"needs_egor": False, "quality": "equivalent"
                                     "night_cost_h": 0.0, "hooks": False}}
 check(module.select([low]) == [] and module.select([dict(low, opportunity=dict(low["opportunity"], score=0.3))]) == ["low"],
       "the night pick skips scores under SCORE_MIN")
+check(module.select([dict(low, opportunity=dict(low["opportunity"], score=0.3))],
+                   [{"id": "time_floor:chat", "rule": "time_floor", "state": "regressed"}]) == ["low"],
+      "a loud time-floor row, which has no component, takes a pick slot without a lever and never breaks the pick")
 gaps = {"lost_min_day": 95.0, "lines": ["Without the harness ≈ 40 % faster"],
         "floors": [{"class": "slot", "label": "worker slot queue", "floor_min_day": 0, "actual_min_day": 50.0,
                     "recoverable_min_day": 50.0},
