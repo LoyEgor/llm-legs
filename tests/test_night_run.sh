@@ -555,7 +555,8 @@ assert grep -qxE "repo fresh · $wt/fresh · landed · \+0/-$behind main · 0 di
 assert grep -qxE "repo edited · .* · 1 dirty · live \(active [0-9]+m ago\)" "$WORK/left"
 assert grep -qxF "repo onhold · $wt/onhold · unlanded · +1/-3 main · 0 dirty · held (Egor: сделай холд, я ещё тут)" "$WORK/left"
 assert_fails grep -q '^repo main ' "$WORK/left"
-assert [ "$(wc -l <"$WORK/left" | tr -d ' ')" = 15 ]
+assert grep -qxF "checkout repo: diverged" "$WORK/left"
+assert [ "$(wc -l <"$WORK/left" | tr -d ' ')" = 16 ]
 assert jqe --arg w "$wt" 'length == 15 and (map(.branch) | index("main")) == null
   and (.[] | select(.branch == "stale-open")) == {repo: ($w | sub("/.claude/worktrees$"; "")), branch: "stale-open",
     worktree: "\($w)/stale-open", landed: false, ahead: 1, behind: 3, dirty: 0, live: false, state: "leftover",

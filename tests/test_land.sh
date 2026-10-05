@@ -37,8 +37,8 @@ setup() { # name [suites]
   lines a >"$M/a.txt"; lines b >"$M/b.txt"; lines c >"$M/c.txt"
   if [ "${2:-}" = suites ]; then
     mkdir -p "$M/tests"
-    printf '#!/bin/bash\necho "$*" >>"%s/affected.log"\necho tests/test_x.sh\n' "$T" >"$M/tests/affected"
-    printf '#!/bin/bash\necho "$*" >>"%s/run-all.log"\n[ ! -e "%s/red" ]\n' "$T" "$T" >"$M/tests/run-all"
+    printf '#!/bin/bash\necho "$*" >>"%s/affected.log"\n[ ! -e "%s/affected-red" ] || exit 1\necho tests/test_x.sh\n' "$T" "$T" >"$M/tests/affected"
+    printf '#!/bin/bash\necho "${WORKER_RUN_ID:-}$*" >>"%s/run-all.log"\n[ ! -e "%s/red" ]\n' "$T" "$T" >"$M/tests/run-all"
     chmod +x "$M/tests/affected" "$M/tests/run-all"
   fi
   git -C "$M" add -A && git -C "$M" commit -qm init && git -C "$M" push -q origin main 2>/dev/null
@@ -82,52 +82,135 @@ alive=0; kill -0 "$busy" 2>/dev/null && alive=1
 kill "$busy" 2>/dev/null
 assert eq "$rc" 0
 assert eq "$(cat "$T/out")" "landed feat → main $(git -C "$M" rev-parse --short "$tip") (pushed), suites: skipped"
-assert eq "$(cat "$T/err")" "land: landed, but $W and branch feat stay, processes inside: $busy sleep 600; nothing killed, night-run finish prunes them once they end"
+assert eq "$(cat "$T/err")" "land: warning: landed, but $W and branch feat stay, processes inside: $busy sleep 600; nothing killed, night-run finish prunes them once they end"
 assert eq "$(sha "$R" main)" "$tip"
 assert eq "$alive" 1
 assert kept
 
-# Foreign WIP in the main checkout: untouched files byte for byte, a touched dirty file 3-way merged.
+# Foreign WIP the landing does not touch stays byte for byte through the fast-forward.
 setup wip
-branch_edit a.txt "$(lines a | sed 's/^a8$/FEAT8/')"
-printf 'WIP1\n' | cat - <(sed 1d "$M/a.txt") >"$T/a.wip" && cp "$T/a.wip" "$M/a.txt"
+branch_edit a.txt "$(lines A)"
+tip=$(sha "$W" HEAD)
 printf 'wip b\n' >>"$M/b.txt"; cp "$M/b.txt" "$T/b.wip"
 printf 'untracked\n' >"$M/u.txt"
 land_in "$W"
 assert eq "$rc" 0
+assert eq "$(sha "$M" main)" "$tip"
 assert cmp -s "$M/b.txt" "$T/b.wip"
 assert eq "$(cat "$M/u.txt")" untracked
-assert eq "$(head -1 "$M/a.txt") $(tail -1 "$M/a.txt")" "WIP1 FEAT8"
-assert eq "$(git -C "$M" show HEAD:a.txt | head -1) $(git -C "$M" show HEAD:a.txt | tail -1)" "a1 FEAT8"
-assert eq "$(git -C "$M" diff --name-only | tr '\n' ' ')" "a.txt b.txt "
+assert eq "$(git -C "$M" status --porcelain | tr '\n' ' ')" " M b.txt ?? u.txt "
+assert eq "$(cat "$T/err")" ""
 assert gone
 
-# A WIP conflict changes nothing anywhere and names the file and its holder.
-setup wipconflict
+# WIP on a file the landing changes: pushed anyway, git refuses the checkout's fast-forward, the WIP
+# byte-identical, the checkout left behind, the warning naming the file and its holder.
+setup wipoverlap
 branch_edit a.txt "$(lines a | sed 's/^a8$/FEAT8/')"
 sed 's/^a8$/WIP8/' "$M/a.txt" >"$T/a.wip" && cp "$T/a.wip" "$M/a.txt"
 key=$(cd "$(git -C "$M" rev-parse --absolute-git-dir)" && pwd -P)
 printf '1\tsid-old\t%s\ta.txt\n9\tsid-foreign\t%s\ta.txt\n9\tsid-other\tx\ta.txt\n' "$key" "$key" >"$(git -C "$M" rev-parse --path-format=absolute --git-common-dir)/claude-writes"
 main_before=$(sha "$M" main) tip=$(sha "$W" HEAD)
 land_in "$W"
-assert eq "$rc" 1
-assert has "$T/err" "a.txt (holder: Foreign Chat)"
-assert cmp -s "$M/a.txt" "$T/a.wip"
+assert eq "$rc" 0
+assert eq "$(sha "$R" main)" "$tip"
 assert eq "$(sha "$M" main)" "$main_before"
-assert eq "$(sha "$R" main)" "$main_before"
-assert eq "$(sha "$W" HEAD)" "$tip"
-assert kept
+assert cmp -s "$M/a.txt" "$T/a.wip"
+assert eq "$(cat "$T/err")" "land: warning: the main checkout $M stays at $(git -C "$M" rev-parse --short main): a.txt (holder: Foreign Chat) in the way; the next land catches it up, night-run leftovers lists it until then"
+assert gone
 
-# An untracked file in the way of the update is refused before the push.
+# An untracked file in the way: landed, the file kept, the checkout behind with the file named.
 setup untracked
 branch_edit n.txt "from feat"
 printf 'foreign\n' >"$M/n.txt"
 main_before=$(sha "$M" main)
 land_in "$W"
-assert eq "$rc" 1
-assert has "$T/err" "n.txt (holder: unknown) is untracked in the way of feat"
+assert eq "$rc" 0
+assert has "$T/err" "n.txt (holder: unknown) in the way"
 assert eq "$(cat "$M/n.txt")" foreign
-assert eq "$(sha "$R" main)" "$main_before"
+assert eq "$(sha "$R" main)" "$(sha "$M" refs/remotes/origin/main)"
+assert eq "$(sha "$M" main)" "$main_before"
+assert gone
+
+# Renames: a staged rename in the WIP is in the way under its old name; a branch rename counts both
+# names, so upstream edits to the old name run the suites.
+setup renames suites
+git -C "$W" mv c.txt c2.txt && git -C "$W" commit -qm "feat renames c"
+branch_edit b.txt "$(lines B)"
+other_lands c.txt "$(lines c | sed 's/^c1$/OTHER1/')" "other edits c1"
+git -C "$M" mv b.txt b2.txt
+main_before=$(sha "$M" main)
+land_in "$W"
+assert eq "$rc" 0
+assert has "$T/out" "(pushed), suites: ran 1"
+assert has "$T/err" "b.txt (holder: unknown) in the way"
+assert eq "$(git -C "$R" show main:c2.txt | head -1)" OTHER1
+assert eq "$(sha "$M" main)" "$main_before"
+assert eq "$(git -C "$M" status --porcelain | tr '\n' ' ')" "R  b.txt -> b2.txt "
+
+# Another chat commits on local main while land runs: landed on origin, local main left to its owner,
+# named in a warning; a second land still lands; land in the main checkout then publishes the stray
+# commit over foreign WIP, and the checkout catches up keeping that WIP.
+setup concurrent
+branch_edit a.txt "$(lines A)"
+hook="$(git -C "$M" rev-parse --path-format=absolute --git-common-dir)/hooks/pre-push"
+printf '#!/bin/bash\n[ -e "%s/moved" ] && exit 0\n: >"%s/moved"\nprintf x >"%s/c.txt" && git -C "%s" commit -qam "stray on main"\n' "$T" "$T" "$M" "$M" >"$hook"
+chmod +x "$hook"
+land_in "$W"
+assert eq "$rc" 0
+assert eq "$(git -C "$R" log --format=%s -2 main | tr '\n' '|')" "feat edits a.txt|init|"
+assert eq "$(git -C "$M" log --format=%s -2 main | tr '\n' '|')" "stray on main|init|"
+assert has "$T/err" "land: warning: local main has commits not on origin/main, left to their owner: $(git -C "$M" rev-parse --short main) stray on main; land in the main checkout publishes them"
+assert gone
+git -C "$M" worktree add -q -b feat "$W" origin/main
+branch_edit b.txt "$(lines B)"
+land_in "$W"
+assert eq "$rc" 0
+assert eq "$(git -C "$R" log --format=%s -3 main | tr '\n' '|')" "feat edits b.txt|feat edits a.txt|init|"
+assert has "$T/err" "stray on main"
+assert gone
+printf 'wip c\n' >>"$M/c.txt"; cp "$M/c.txt" "$T/c.wip"
+land_in "$M"
+assert eq "$rc" 0
+assert has "$T/out" "landed main → main"
+assert eq "$(git -C "$R" log --format=%s -4 main | tr '\n' '|')" "stray on main|feat edits b.txt|feat edits a.txt|init|"
+assert eq "$(sha "$M" main)" "$(sha "$R" main)"
+assert cmp -s "$M/c.txt" "$T/c.wip"
+assert eq "$(cat "$T/err")" ""
+assert eq "$(git -C "$M" worktree list | wc -l | tr -d ' ')" 1
+
+# Local commits on main that only add to origin/main land with the branch.
+setup onmain
+commit "$M" c.txt "$(lines C)" "main local"
+branch_edit a.txt "$(lines A)"
+land_in "$W"
+assert eq "$rc" 0
+assert eq "$(git -C "$R" log --format=%s -3 main | tr '\n' '|')" "feat edits a.txt|main local|init|"
+assert eq "$(sha "$M" main)" "$(sha "$R" main)"
+
+# A commit added to the branch after its rebase survives the landing.
+setup late
+branch_edit a.txt "$(lines A)"
+tip=$(sha "$W" HEAD)
+hook="$(git -C "$M" rev-parse --path-format=absolute --git-common-dir)/hooks/pre-push"
+printf '#!/bin/bash\ngit -C "%s" commit -q --allow-empty -m late\n' "$W" >"$hook" && chmod +x "$hook"
+land_in "$W"
+assert eq "$rc" 0
+assert eq "$(sha "$R" main)" "$tip"
+assert eq "$(git -C "$M" log --format=%s -1 feat)" late
+assert has "$T/err" "branch feat got commits after the rebase and stays"
+
+# A headless land never prompts: ssh runs in batch mode.
+setup noprompt
+branch_edit a.txt "$(lines A)"
+mkdir -p "$T/bin"
+printf '#!/bin/bash\ncase "$*" in *BatchMode=yes*) ;; *) : >"%s/prompted" ;; esac\nexit 255\n' "$T" >"$T/bin/ssh"
+chmod +x "$T/bin/ssh"
+git -C "$M" remote set-url origin "ssh://nohost/x.git"
+rc=0
+(cd "$W" && env -u GIT_ASKPASS -u SSH_ASKPASS PATH="$T/bin:$PATH" "$LAND") >"$T/out" 2>"$T/err" || rc=$?
+assert eq "$rc" 1
+assert has "$T/err" "fetch from origin failed"
+assert_not test -e "$T/prompted"
 assert kept
 
 # A rebase conflict names the file and main's commit on it, exits nonzero, leaves the branch as it was.
@@ -145,6 +228,15 @@ assert eq "$(git -C "$W" status --porcelain)" ""
 assert eq "$(sha "$M" main)" "$main_before"
 assert kept
 
+setup conflictbare
+branch_edit a.txt "$(lines a | sed 's/^a8$/FEAT8/')"
+git -C "$M" worktree remove "$W"
+other_lands a.txt "$(lines a | sed 's/^a8$/OTHER8/')" "other edits a8"
+land_in "$M" feat
+assert eq "$rc" 1
+assert has "$T/err" "land: resolve it in a worktree on feat with git rebase $(sha "$O" HEAD), then land again"
+assert eq "$(git -C "$M" worktree list | wc -l | tr -d ' ')" 1
+
 # Suites: skipped when upstream touched other files, run when it touched the branch's.
 setup nooverlap suites
 branch_edit a.txt "$(lines a | sed 's/^a8$/FEAT8/')"
@@ -158,7 +250,7 @@ assert eq "$(git -C "$M" log --format=%s -2 main | tr '\n' '|')" "feat edits a.t
 setup overlap suites
 branch_edit a.txt "$(lines a | sed 's/^a8$/FEAT8/')"
 other_lands a.txt "$(lines a | sed 's/^a1$/OTHER1/')" "other edits a1"
-land_in "$W"
+WORKER_RUN_ID=run-1 land_in "$W"
 assert eq "$rc" 0
 assert has "$T/out" "(pushed), suites: ran 1"
 assert eq "$(cat "$T/run-all.log")" "tests/test_x.sh"
@@ -179,16 +271,54 @@ land_in "$W" --test
 assert eq "$rc" 0
 assert has "$T/out" "suites: ran 1"
 
+# --test runs again on a retry's new base.
+setup testretry suites
+branch_edit a.txt "$(lines A)"
+hook="$(git -C "$M" rev-parse --path-format=absolute --git-common-dir)/hooks/pre-push"
+printf '#!/bin/bash\n[ -e "%s/moved" ] && exit 0\n: >"%s/moved"\nprintf x >"%s/c.txt" && git -C "%s" commit -qam "other moved" && git -C "%s" push -q origin main 2>/dev/null\n' \
+  "$T" "$T" "$O" "$O" "$O" >"$hook" && chmod +x "$hook"
+land_in "$W" --test
+assert eq "$rc" 0
+assert has "$T/out" "suites: ran 2"
+assert eq "$(wc -l <"$T/run-all.log" | tr -d ' ')" 2
+
+# A failing tests/affected leaves coverage unknown: --test stops before publishing, auto warns and lands.
+setup affectedred suites
+branch_edit a.txt "$(lines a | sed 's/^a8$/FEAT8/')"
+other_lands a.txt "$(lines a | sed 's/^a1$/OTHER1/')" "other edits a1"
+: >"$T/affected-red"
+tip=$(sha "$W" HEAD) remote_before=$(sha "$R" main)
+land_in "$W" --test
+assert eq "$rc" 1
+assert has "$T/err" "coverage unknown"
+assert eq "$(sha "$R" main)" "$remote_before"
+assert eq "$(sha "$W" HEAD)" "$tip"
+land_in "$W"
+assert eq "$rc" 0
+assert has "$T/err" "land: warning: tests/affected failed on feat, coverage unknown"
+assert has "$T/out" "suites: skipped"
+assert_not test -e "$T/run-all.log"
+assert gone
+
+# A red suite puts the branch back at its pre-land tip; the rerun runs the suites again.
 setup red suites
 branch_edit a.txt "$(lines a | sed 's/^a8$/FEAT8/')"
 other_lands a.txt "$(lines a | sed 's/^a1$/OTHER1/')" "other edits a1"
 : >"$T/red"
-remote_before=$(sha "$R" main)
+remote_before=$(sha "$R" main) tip=$(sha "$W" HEAD)
 land_in "$W"
 assert eq "$rc" 1
 assert eq "$(sha "$R" main)" "$remote_before"
 assert_not git -C "$M" merge-base --is-ancestor "$remote_before" main
+assert eq "$(sha "$W" HEAD)" "$tip"
+assert has "$T/err" "feat is back at its pre-land tip $(git -C "$M" rev-parse --short "$tip")"
 assert kept
+rm "$T/red"
+land_in "$W"
+assert eq "$rc" 0
+assert has "$T/out" "suites: ran 1"
+assert eq "$(wc -l <"$T/run-all.log" | tr -d ' ')" 2
+assert gone
 
 # The remote moves between fetch and push: rebase again and push on the second try.
 setup retry
@@ -245,6 +375,7 @@ git -C "$M" remote remove origin
 branch_edit a.txt "$(lines a | sed 's/^a8$/FEAT8/')"
 git -C "$M" worktree remove "$W"
 commit "$M" c.txt "$(lines C)" "main moved locally"
+mkdir "$M/feat"
 land_in "$M" feat
 assert eq "$rc" 0
 assert has "$T/out" "(local), suites: skipped"

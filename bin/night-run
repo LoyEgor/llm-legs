@@ -762,7 +762,8 @@ branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locke
   head=$(git -C "${wt:-$repo}" rev-parse -q --verify "${ref:-HEAD}^{commit}") || return 0
   read -r behind ahead < <(git -C "$repo" rev-list --left-right --count "refs/heads/main...$head")
   [[ $branch == night/*/* ]] && night=${branch#night/} && night=${night%%/*}
-  if git -C "$repo" merge-base --is-ancestor "$head" refs/heads/main; then landed=true
+  if git -C "$repo" merge-base --is-ancestor "$head" refs/heads/main ||
+    git -C "$repo" merge-base --is-ancestor "$head" refs/remotes/origin/main 2>/dev/null; then landed=true
   elif [ -n "$night" ] && [ "$head" = "$(git -C "$repo" rev-parse -q --verify "refs/night/$night/base")" ]; then landed=true
   elif ! git -C "$repo" cherry refs/heads/main "$head" 2>/dev/null | grep -q '^+'; then landed=true; fi
   [ -z "$wt" ] || dirty=$(GIT_OPTIONAL_LOCKS=0 git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null | wc -l | tr -d ' ')
@@ -856,11 +857,25 @@ cmd_hold() {
   jq -r --arg w "$words" '.[] | "held \(.repo | split("/") | last) \(.branch) until the next night finishes: \($w)"' <<<"$branches"
 }
 
+checkout_rows() {
+  local repo om ahead behind files
+  [ -r "$sweep_repos" ] || return 0
+  while IFS= read -r repo; do
+    [ -n "$repo" ] && [ -d "$repo" ] && om=$(git -C "$repo" rev-parse -q --verify refs/remotes/origin/main) || continue
+    read -r ahead behind < <(git -C "$repo" rev-list --left-right --count "HEAD...$om")
+    [ "${behind:-0}" != 0 ] || continue
+    files=$(comm -12 <(git -C "$repo" diff --no-renames --name-only HEAD "$om" | sort) \
+      <(GIT_OPTIONAL_LOCKS=0 git -C "$repo" status --porcelain --untracked-files=all --no-renames | cut -c4- | sort) | paste -sd ' ' -)
+    printf 'checkout %s: %s%s\n' "$(basename "$repo")" "$([ "$ahead" = 0 ] && echo "behind $behind" || echo diverged)" "${files:+, WIP in the way: $files}"
+  done <"$sweep_repos"
+}
+
 cmd_leftovers() {
   case ${1:-} in
     '') branch_rows | awk -F '\t' '{ n = split($1, p, "/")
       printf "%s %s · %s · %s · +%s/-%s main · %s dirty · %s%s\n", p[n], ($2 == "-" ? "(detached)" : $2),
-        ($3 == "-" ? "no worktree" : $3), ($4 == "true" ? "landed" : "unlanded"), $5, $6, $7, $8, ($9 == "" ? "" : " (" $9 ")") }' ;;
+        ($3 == "-" ? "no worktree" : $3), ($4 == "true" ? "landed" : "unlanded"), $5, $6, $7, $8, ($9 == "" ? "" : " (" $9 ")") }'
+      checkout_rows ;;
     --json) branch_rows | jq -Rsc '[split("\n")[] | select(. != "") | split("\t")
       | {repo: .[0], branch: (if .[1] == "-" then null else .[1] end), worktree: (if .[2] == "-" then null else .[2] end),
          landed: (.[3] == "true"), ahead: (.[4] | tonumber), behind: (.[5] | tonumber), dirty: (.[6] | tonumber),

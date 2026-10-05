@@ -208,4 +208,23 @@ assert grep -qxF "Owner check first: this batch was matched to you by edits and 
 assert_fails grep -qF 'Owner check' "$NIGHTS/N5.owner-chat-phase-four.prompt.md"
 assert [ "$(grep -c '^owner-chat-' "$WORK/n5.out")" = 6 ]
 
+# A main checkout land left behind origin/main shows as a leftovers row with the WIP in the way; a branch
+# already in origin/main is landed though local main lags.
+gt() { git -c user.name=t -c user.email=t@t "$@"; }
+L="$WORK/lands"
+git init -q --bare -b main "$WORK/lands.git" && git init -q -b main "$L"
+printf 'f\n' >"$L/f.txt" && gt -C "$L" add f.txt && gt -C "$L" commit -qm init &&
+  gt -C "$L" remote add origin "$WORK/lands.git" && gt -C "$L" push -q origin main
+git clone -q "$WORK/lands.git" "$WORK/lands-other" 2>/dev/null
+printf 'g\n' >"$WORK/lands-other/f.txt" && gt -C "$WORK/lands-other" commit -qam other && gt -C "$WORK/lands-other" push -q origin main
+gt -C "$L" fetch -q origin && gt -C "$L" branch -q --no-track done origin/main
+printf 'wip\n' >>"$L/f.txt"
+printf '%s\n' "$L" >"$WORK/sweep-lands"
+NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-lands" night leftovers >"$WORK/lands.out" || fail "leftovers with a lagging checkout"
+assert grep -qxF "checkout lands: behind 1, WIP in the way: f.txt" "$WORK/lands.out"
+assert grep -qF "lands done · no worktree · landed · " "$WORK/lands.out"
+printf 'h\n' >"$L/h.txt" && gt -C "$L" add h.txt && gt -C "$L" commit -qm local
+NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-lands" night leftovers >"$WORK/lands.out" || fail "leftovers with a diverged checkout"
+assert grep -qxF "checkout lands: diverged, WIP in the way: f.txt" "$WORK/lands.out"
+
 printf 'PASS: test_night_carry.sh (%s asserts)\n' "$asserts"

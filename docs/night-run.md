@@ -166,8 +166,9 @@ process lives, so a start killed mid-open never blocks the next one. Only a runn
 Egor (2026-10-01): in the sweep repositories no branch or worktree but main outlives the work going on
 right now; a kept worktree once lost a review fix.
 `night-run leftovers [--json]` lists every non-main branch and worktree with its repository, worktree,
-landed (in main, or a night branch still at its night's base), ahead/behind main, dirty count and a
-state, the one predicate `finish` prunes by:
+landed (in main or origin/main, or a night branch still at its night's base), ahead/behind main, dirty
+count and a state, the one predicate `finish` prunes by; its text form also prints `checkout <repo>: behind
+N|diverged[, WIP in the way: <files>]` for a main checkout `land` left behind origin/main:
 - `live`, never touched: the main checkout, a locked worktree, a process with its cwd inside, a branch
   of a running night, or a non-night branch whose newest branch-reflog entry or dirty file is under
   6 h old. A chat at work moves its branch (create, commit, rebase) or leaves files dirty, so a fresh
