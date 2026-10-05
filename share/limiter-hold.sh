@@ -18,22 +18,28 @@ hold_clear() {
   [ -n "${1:-}" ] || return 0
   local row limiter what since
   row=$(jq -r '[.limiter, .held.what, .since] | @tsv' "$1" 2>/dev/null) &&
-    IFS=$'\t' read -r limiter what since <<<"$row" && wait_note "$limiter" "$what" "$since"
+    IFS=$'\t' read -r limiter what since <<<"$row" && wait_note "$limiter" "$what" "$since" "" "${2:-}" "${3:-}" "${4:-}"
   rm -f "$1" 2>/dev/null || :
 }
 
-# wait_note <class> <source> <started epoch[.frac]> [seconds]: one wait journal row (shared-invariants
-# row ed); seconds default to now - started.
+# wait_note <class> <source> <started epoch[.frac]> [seconds [allowed held reason]]: one wait journal row
+# (shared-invariants row ed); seconds default to now - started. hold_clear <file> [allowed held reason].
 wait_note() {
-  local dir="${HARNESS_WAITS_DIR:-${HARNESS_DOCTOR_DIR:-$HOME/.cache/harness-doctor}/waits}" start ms source day
+  local dir="${HARNESS_WAITS_DIR:-${HARNESS_DOCTOR_DIR:-$HOME/.cache/harness-doctor}/waits}" start ms source day extra='' allowed=${5:-null} held=${6:-null} reason=${7:-}
   start=$(wait_ms "${3:-}") || return 0
   ms=$(wait_ms "${4:-}") || ms=$(( $(wait_ms "${EPOCHREALTIME:-$(date +%s)}") - start ))
   [ "$ms" -ge 0 ] 2>/dev/null || return 0
   source=${2//\\/\\\\}; source=${source//\"/\\\"}; source=${source//[[:cntrl:]]/ }
+  if [ "$1" = night-workers ] || [ "$1" = run-suites ] || [ -n "$reason" ]; then
+    [[ "$allowed" =~ ^[0-9]+$ ]] || allowed=null
+    [[ "$held" =~ ^[0-9]+$ ]] || held=null
+    [ -z "$reason" ] && reason=null || reason="\"${reason//[^A-Za-z0-9_.-]/_}\""
+    extra=",\"allowed\":$allowed,\"held\":$held,\"reason\":$reason"
+  fi
   printf -v day '%(%Y-%m-%d)T' "$(( start / 1000 ))" 2>/dev/null || day=$(date -r "$(( start / 1000 ))" +%Y-%m-%d) || return 0
   mkdir -p "$dir" 2>/dev/null &&
-    printf '{"class":"%s","source":"%s","started":%d.%03d,"seconds":%d.%03d,"pid":%d}\n' "${1//[^A-Za-z0-9_.-]/_}" "$source" \
-      $(( start / 1000 )) $(( start % 1000 )) $(( ms / 1000 )) $(( ms % 1000 )) "$$" >>"$dir/$day.jsonl" 2>/dev/null
+    printf '{"class":"%s","source":"%s","started":%d.%03d,"seconds":%d.%03d,"pid":%d%s}\n' "${1//[^A-Za-z0-9_.-]/_}" "$source" \
+      $(( start / 1000 )) $(( start % 1000 )) $(( ms / 1000 )) $(( ms % 1000 )) "$$" "$extra" >>"$dir/$day.jsonl" 2>/dev/null
   return 0
 }
 

@@ -59,26 +59,38 @@ slot_take() { # dir count ceiling-seconds -> the slot taken; fails while all are
 }
 
 slot_wait() { # dir count ceiling-seconds limiter what [tick command...] -> the slot, once one is free;
-  # fails once $SLOT_GIVE_UP_FILE appears
-  local dir=$1 count=$2 ceiling=$3 limiter=$4 what=$5 hold=''
+  # fails once the command $SLOT_OWNER_ENDED succeeds
+  local dir=$1 count=$2 ceiling=$3 limiter=$4 what=$5 hold='' reason=''
   shift 5
   [[ "$count" =~ ^[1-9][0-9]*(-[1-9][0-9]*)?$ ]] || count=1
   mkdir -p "$dir" || return 1
   until slot_take "$dir" "$count" "$ceiling" >/dev/null; do
+    if [ -n "$SLOT_WHY" ]; then reason=room; else reason=limit; fi
     if [ -z "$hold" ]; then
       hold=$(hold_raise "$limiter" "$what" "${SLOT_WHY:-all ${count#*-} $limiter slots are busy}")
       printf '%s: waiting for one of %s slots under %s\n' "$limiter" "$count" "$dir" >&2
     fi
     [ $# -eq 0 ] || "$@"
-    if [ -n "$SLOT_WHY" ]; then sleep "${SLOTS_ROOM_POLL_S:-15}"; else sleep "${SLOTS_POLL_S:-2}"; fi
+    if [ "$reason" = room ]; then sleep "${SLOTS_ROOM_POLL_S:-15}"; else sleep "${SLOTS_POLL_S:-2}"; fi
     # Run as $(slot_wait …), this loop outlives a killed caller and would take a slot for nobody.
-    kill -0 "$$" 2>/dev/null || { hold_clear "$hold"; return 1; }
-    [ -z "${SLOT_GIVE_UP_FILE:-}" ] || [ ! -e "$SLOT_GIVE_UP_FILE" ] || { hold_clear "$hold"; return 1; }
+    kill -0 "$$" 2>/dev/null || { slot_wait_end "$dir" "$count" "$hold" "$reason"; return 1; }
+    [ -z "${SLOT_OWNER_ENDED:-}" ] || ! $SLOT_OWNER_ENDED || { slot_wait_end "$dir" "$count" "$hold" owner-ended; return 1; }
   done
   # The caller can also die inside the take, after the check above passed.
-  kill -0 "$$" 2>/dev/null || { slot_release "$SLOT_TAKEN"; hold_clear "$hold"; return 1; }
-  hold_clear "$hold"
+  kill -0 "$$" 2>/dev/null || { slot_release "$SLOT_TAKEN"; slot_wait_end "$dir" "$count" "$hold" "$reason"; return 1; }
+  slot_wait_end "$dir" "$count" "$hold" "$reason"
   printf '%s\n' "$SLOT_TAKEN"
+}
+
+slot_wait_end() { # dir count hold reason -> journals the hold's wait with the count allowed and held at its end
+  local allowed=${2#*-} held=0 file pid taken=${SLOT_TAKEN##*/}
+  [ -n "$3" ] || return 0
+  if [ "${2%-*}" != "$allowed" ] && ! { [[ "$taken" =~ ^[0-9]+$ ]] && [ "$taken" -gt "${2%-*}" ]; } &&
+    ! slot_room >/dev/null; then allowed=${2%-*}; fi
+  for file in "$1"/*/pid; do
+    { read -r pid <"$file"; } 2>/dev/null && [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null && held=$((held + 1))
+  done
+  hold_clear "$3" "$allowed" "$held" "$4"
 }
 
 slot_release() { store_lock_release "${1:-}"; }

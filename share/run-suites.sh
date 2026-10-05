@@ -103,6 +103,7 @@ fi
 [[ "$jobs" =~ ^[0-9]+$ ]] || usage
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/slots.sh"
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/processes.sh"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/run-liveness.sh"
 [ "$jobs" -ne 0 ] || jobs=$(slots_from_cores 2 2)
 
 # Each suite's last passing duration, keyed by the main checkout so a worktree shares it: the wave
@@ -134,9 +135,20 @@ suite_bound() { # var name -> the suite's wall bound in seconds
   elif [ $((p90 * 5)) -gt "$floor" ]; then printf -v "$1" '%s' $((p90 * 5))
   else printf -v "$1" '%s' "$floor"; fi
 }
-suite_watch() { # pid bound marker -> ends the suite's tree once it outlives the bound
+owner_record=${WORKER_RUN_RECORD:-} owner_pid=''
+[ -z "$owner_record" ] || owner_pid=$(jq -r '.pid // empty' "$owner_record/meta.json" 2>/dev/null)
+owner_ended() { # -> whether the worker run that asked for this run has ended: its exit code, or its supervisor gone
+  [ -n "$owner_record" ] || return 1
+  [ ! -e "$owner_record/exit_code" ] || return 0
+  [[ "$owner_pid" =~ ^[1-9][0-9]*$ ]] && ! supervisor_running "$owner_record" "$owner_pid"
+}
+# A worker's backgrounded run outlives the worker; once it has ended nobody reads the run, which then
+# queued for and held a slot anyway (2026-10-05). An owner already ended at launch is a stale export.
+! owner_ended || owner_record=''
+suite_watch() { # pid bound marker -> ends the suite's tree once it outlives the bound or its owner ended
   local deadline=$((SECONDS + $2))
   while kill -0 "$1" 2>/dev/null; do
+    if [ -e "$logdir/owner-ended" ]; then process_tree_end "$1" 10; return; fi
     if [ "$SECONDS" -ge "$deadline" ]; then : >"$3"; process_tree_end "$1" 10; return; fi
     sleep 2
   done
@@ -170,13 +182,9 @@ serial_suite() {
 # A nested run (a suite testing this runner) inherits its parent's slot.
 own_slot=''
 if [ -z "${RUN_SUITES_SLOT:-}" ]; then
-  # A worker's backgrounded run outlives the worker; once it has ended nobody reads the run, which then
-  # queued for and held a slot anyway (2026-10-05). An exit code there before the queue is a stale export.
-  worker_ended=''
-  [ -z "${WORKER_RUN_RECORD:-}" ] || [ -e "$WORKER_RUN_RECORD/exit_code" ] || worker_ended=$WORKER_RUN_RECORD/exit_code
-  own_slot=$(SLOT_GIVE_UP_FILE=$worker_ended slot_wait "${RUN_SUITES_SLOTS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/run-suites/slots}" \
+  own_slot=$(SLOT_OWNER_ENDED=${owner_record:+owner_ended} slot_wait "${RUN_SUITES_SLOTS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/run-suites/slots}" \
     "${RUN_SUITES_SLOTS:-$(run_suites_slots)}" $((6 * 3600)) run-suites "suites of $repo") || {
-    [ -z "$worker_ended" ] || [ ! -e "$worker_ended" ] || fail "worker ${run_worker:-run} ended while this run waited for a slot"
+    ! owner_ended || fail "worker ${run_worker:-run} ended while this run waited for a slot"
     fail 'could not take a suite slot'
   }
   trap 'slot_release "$own_slot"' EXIT
@@ -244,7 +252,7 @@ mkdir -p "${progress_file%/*}" 2>/dev/null &&
   printf '%s\t%s\t%s\t%s\n' "$logdir" "${#suites[@]}" "$repo" "$run_suites_start" >"$progress_file" 2>/dev/null
 find "${progress_file%/*}" -maxdepth 1 -name 'suites-*.done' -mmin +1 -delete 2>/dev/null
 journal_run() {
-  local entry name rc secs real cpu complete=true queued began ended
+  local entry name rc secs real cpu complete=true queued began ended reason=''
   local -a names=()
   suite_journal_suites=''
   for entry in ${suites[@]+"${suites[@]}"}; do
@@ -256,6 +264,7 @@ journal_run() {
     if [[ "$rc" =~ ^[0-9]+$ ]]; then suite_journal_suite "$name" "$rc" "${real:-$secs}" "$cpu"; else complete=false; fi
   done
   [ -z "$run_signal" ] || complete=false
+  [ ! -e "$logdir/owner-ended" ] || reason=owner-ended
   mapfile -t names < <(printf '%s\n' ${names[@]+"${names[@]}"} | LC_ALL=C sort)
   suite_journal_digest ${names[@]+"${names[@]}"}
   suite_journal_git "$repo"
@@ -263,13 +272,14 @@ journal_run() {
   suite_journal_ms began "$run_suites_began"; suite_journal_secs began "$began"
   suite_journal_ms ended; [ -n "$ended" ] || suite_journal_ms ended "$(date +%s)"; suite_journal_secs ended "$ended"
   suite_journal_row suites "$$" "$queued" "$began" "$ended" "$repo" "$times_key" "$suite_journal_head" "${scope:-}" \
-    "$run_worker" "$run_session" "$jobs" "$run_slot" "$run_signal" "$complete" "${slow_skipped:-}"
+    "$run_worker" "$run_session" "$jobs" "$run_slot" "$run_signal" "$complete" "${slow_skipped:-}" "$reason"
   suite_journal_append "$run_journal"
 }
-run_signal='' run_finished=''
+run_signal='' run_finished='' owner_watch=''
 finish_run() {
   [ -z "$run_finished" ] || return 0
   run_finished=1
+  [ -z "$owner_watch" ] || kill "$owner_watch" 2>/dev/null
   journal_run
   mv -f "$progress_file" "$progress_file.done" 2>/dev/null
   [ -z "$own_slot" ] || slot_release "$own_slot"
@@ -293,6 +303,7 @@ test_scope_mark "$scope" suites "$repo" "$run_suites_start"
 run_one() { # suite-path
   local path="$1" name start finish rc began ended cpu bound suite watch
   name=$(basename "$path")
+  if [ -e "$logdir/owner-ended" ]; then printf 'run-suites: cancelled, its worker run ended\n' >"$logdir/$name.log"; return; fi
   suite_bound bound "$name"
   printf -v start '%(%s)T' -1
   suite_journal_ms began
@@ -329,7 +340,11 @@ run_one() { # suite-path
   watch=$!
   wait "$suite"
   rc=$?
-  kill "$watch" 2>/dev/null
+  if [ -e "$logdir/owner-ended" ]; then wait "$watch"; else kill "$watch" 2>/dev/null; fi
+  if [ -e "$logdir/owner-ended" ] && [ "$rc" -ne 0 ]; then
+    printf 'run-suites: cancelled, its worker run ended\n' >>"$logdir/$name.log"
+    return
+  fi
   if [ -s "$logdir/$name.bus-leak" ]; then
     cat "$logdir/$name.bus-leak" >>"$logdir/$name.log"
     [ "$rc" -ne 0 ] || rc=1
@@ -363,6 +378,11 @@ printf 'run-suites: %s suites, -j %s, logs under %s\n' "${#suites[@]}" "$jobs" "
 if [ "${#tail_wave[@]}" -gt 0 ]; then
   printf 'run-suites: %s wall-clock suite(s) stay at nice %s; the wave is nice 10\n' \
     "${#tail_wave[@]}" "$(ps -o nice= -p $$ | tr -d '[:space:]')"
+fi
+if [ -n "$owner_record" ]; then
+  (while sleep 5 && kill -0 "$$" 2>/dev/null; do ! owner_ended || { : >"$logdir/owner-ended"; break; }; done) &
+  owner_watch=$!
+  disown "$owner_watch"
 fi
 wall_start=$(date +%s)
 running=0

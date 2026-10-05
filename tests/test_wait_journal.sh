@@ -35,6 +35,13 @@ h.wait_note("poll", "worker-run wait r1", 1767945600, 3); h.wait_note("poll", "x
 h.hold_clear(h.hold_raise("night-workers", "job", "busy"))' "$ROOT/share"
 assert jqe -s 'length == 1 and .[0].class == "poll" and .[0].seconds == 3 and .[0].started == 1767945600' "$W/2026-01-09.jsonl"
 assert jqe -s 'map(select(.class == "night-workers" and .source == "job")) | length == 1' "$W/$(date +%Y-%m-%d).jsonl"
+# A slot class's row trails the count allowed, the slots held and the last refusal; unknown ones are null.
+HARNESS_WAITS_DIR="$WORK/slot-waits" /bin/bash -c '. "$1/share/limiter-hold.sh"
+  hold_clear "$(hold_raise run-suites bash32 busy)" 4 3 limit; hold_clear "$(hold_raise night-workers bare busy)"' _ "$ROOT"
+HARNESS_WAITS_DIR="$WORK/slot-waits" python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import limiter_hold as h
+h.hold_clear(h.hold_raise("night-workers", "py", "busy"), allowed=3, held=2, reason="room")' "$ROOT/share"
+assert jqe -s 'map([.source, .allowed, .held, .reason]) == [["bash32", 4, 3, "limit"], ["bare", null, null, null], ["py", 3, 2, "room"]]
+  and (.[0] | keys_unsorted) == ["class", "source", "started", "seconds", "pid", "allowed", "held", "reason"]' "$WORK"/slot-waits/*.jsonl
 
 RUNS="$WORK/runs"
 mkdir -p "$RUNS/r1" "$RUNS/r2"
@@ -56,12 +63,16 @@ assert jqe -s 'map(select(.class == "poll")) | length == 1 and .[0].source == "w
 rm -rf "$W"
 mkdir -p "$W"
 day() { date -u -r "$1" +%Y-%m-%d; }
-note() { printf '{"class":"%s","source":"%s","started":%s,"seconds":%s,"pid":1}\n' "$1" "$2" "$3" "$4" >>"$W/$(day "$3").jsonl"; }
-for s in 30 60 90; do note run-suites "suites of r" $((T + s)) "$s"; done
+note() { # class source started seconds [reason]
+  printf '{"class":"%s","source":"%s","started":%s,"seconds":%s,"pid":1%s}\n' "$1" "$2" "$3" "$4" "${5:+,\"reason\":\"$5\"}" \
+    >>"$W/$(day "$3").jsonl"
+}
+note run-suites "suites of r" $((T + 30)) 30 room
+for s in 60 90; do note run-suites "suites of r" $((T + s)) "$s"; done
 note lock /store.lock $((T + 100)) 120.5
 note lock /store.lock $((T + 200)) 1
 for back in 1 2 3 4; do note night-workers job $((T - back * 86400)) 600; done
-for s in 500 500 500; do note night-workers "job $s" $((T + s)) "$s"; done
+for why in limit limit room; do note night-workers "job 500" $((T + 500)) 500 "$why"; done
 note poll "worker-run wait r" $((T - 2 * 86400)) 4
 printf 'not json\n{"class":"lock","seconds":"x","started":1}\n' >>"$W/$(day "$T").jsonl"
 note lock /ancient $((T - 20 * 86400)) 1
@@ -85,6 +96,11 @@ assert jqe '.red == [5] and ([.judge[] | select(.level == "red") | [.rule, .valu
 assert jqe '.red == [2] and ([.judge[] | select(.level == "red") | [.rule, .value, .limit]] == [["wait_growth", 1500, 1200]])
   and .cells[6] == "10m 00s"' <(cls night-workers)
 assert jqe '.dim and .cells[1] == "0" and .cells[5] == "–" and .menu.rows[0].cells[0] == "2026-01-08"' <(cls poll)
+# The two slot classes drill into today's waits by the reason they were refused.
+assert jqe '[.menu.rows[:3][].cells] == [["today: limit", "2", "16m 40s", "500 s"], ["today: room", "1", "500 s", "500 s"],
+  ["2026-01-10", "3", "25m 00s", "500 s"]]' <(cls night-workers)
+assert jqe '[.menu.rows[:2][].cells] == [["today: limit", "0", "–", "–"], ["today: room", "1", "30 s", "30 s"]]' <(cls run-suites)
+assert jqe '[.menu.rows[].cells[0] | select(startswith("today"))] == []' <(cls lock)
 read_section prune >/dev/null || fail "the reader failed after a prune"
 assert [ ! -e "$W/$(day $((T - 20 * 86400))).jsonl" ]
 assert [ -e "$W/$(day $((T - 4 * 86400))).jsonl" ]

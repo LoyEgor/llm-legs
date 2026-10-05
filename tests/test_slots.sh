@@ -11,7 +11,7 @@ assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
 jqe() { jq -e "$@" >/dev/null; }
 assert_fails() { asserts=$((asserts + 1)); ! "$@" || fail "assert $asserts unexpectedly held: $*"; }
 export HARNESS_HOLDS_DIR="$WORK/holds" HARNESS_WAITS_DIR="$WORK/waits" SLOTS_POLL_S=0.2 STATUSLINE_CACHE_DIR="$WORK/sl" RUN_SUITES_TIMES="$WORK/times.tsv"
-unset RUN_SUITES_SLOT NIGHT_FIXER_SLOT
+unset RUN_SUITES_SLOT NIGHT_FIXER_SLOT WORKER_RUN_RECORD WORKER_RUN_ID
 . "$ROOT/share/slots.sh"
 
 holder() { # dir count -> pid of a process holding one slot until killed
@@ -75,9 +75,30 @@ assert jqe '.why == "memory pressure level 2"' "$HARNESS_HOLDS_DIR"/room-limiter
 room 1 150 140 $((guard + 1))
 wait "$waiter" || fail "slot_wait never took the room it was given"
 assert [ "$(cat "$WORK/room-waited")" = "$WORK/r/2" ]
+# Its row: refused for room, re-judged on a later poll, admitted at the count room allows.
+assert jqe 'length == 1 and .[0].allowed == 2 and .[0].held == 2 and .[0].reason == "room"' <(waits_of room-limiter)
 assert_fails slot_take "$WORK/r" 1-2 3600
 assert [ -z "$SLOT_WHY" ]
 slot_release "$r1"; rm -rf "$WORK/r"
+# The last refusal names the wait: refused for room, then every slot held, then admitted.
+mkdir -p "$WORK/lr"
+room 2 150 140 $((guard + 1))
+l1=$(holder "$WORK/lr" 1)
+lr_tick() { printf '%s\n' "${SLOT_WHY:-limit}" >>"$WORK/lr-ticks"; }
+(HARNESS_WAITS_DIR="$WORK/lr-waits" SLOTS_ROOM_POLL_S=0.2 slot_wait "$WORK/lr" 1-2 3600 night-workers "last refusal" lr_tick \
+  >"$WORK/lr-waited") &
+waiter=$!
+for i in $(seq 1 100); do grep -q pressure "$WORK/lr-ticks" 2>/dev/null && break; sleep 0.1; done
+l2=$(holder "$WORK/lr" 2)
+room 1 150 140 $((guard + 1))
+for i in $(seq 1 100); do [ "$(tail -n 1 "$WORK/lr-ticks")" = limit ] && break; sleep 0.1; done
+assert [ "$(tail -n 1 "$WORK/lr-ticks")" = limit ]
+kill "$l2"; until_gone "$l2"
+wait "$waiter" || fail "slot_wait never took the slot freed under it"
+assert [ "$(cat "$WORK/lr-waited")" = "$WORK/lr/2" ]
+assert jqe -s 'length == 1 and .[0].class == "night-workers" and .[0].allowed == 2 and .[0].held == 2 and .[0].reason == "limit"' \
+  "$WORK/lr-waits"/*.jsonl
+slot_release "$WORK/lr/2"; kill "$l1"; until_gone "$l1"; rm -rf "$WORK/lr"
 # Under memory pressure the night pool still takes its whole floor of 5, and only the sixth waits.
 mkdir -p "$WORK/f"
 room 2 150 140 $((guard + 1))
@@ -119,6 +140,7 @@ wait "$waiter" || fail "slot_wait failed"
 assert grep -q "^$WORK/s/[12]$" "$WORK/waited"
 assert [ "$(holds_of test-limiter)" = 0 ]
 assert jqe 'length == 1 and .[0].source == "a test job" and .[0].seconds > 0' <(waits_of test-limiter)
+assert jqe '.[0].allowed == 2 and .[0].held == 2 and .[0].reason == "limit"' <(waits_of test-limiter)
 kill "$h3"; until_gone "$h3"
 # A waiter whose caller was killed stops waiting: slot_wait runs in the caller's $(...) subshell,
 # which a TERM to the caller leaves polling, and it would take the next free slot for nobody.
@@ -224,9 +246,65 @@ assert [ "$ended_rc" -eq 4 ]
 assert grep -q 'worker wrun ended while this run waited for a slot' "$WORK/ended.out"
 assert [ "$(holds_of run-suites)" = 0 ]
 assert [ "$(cat "$RUN_SUITES_SLOTS_DIR/1/pid")" = "$h7" ]
+assert jqe --arg r "$WORK/repo" 'map(select(.reason == "owner-ended")) | length == 1 and .[0].source == "suites of \($r)"
+  and .[0].allowed == 1 and .[0].held == 1' <(waits_of run-suites)
+# A supervisor gone without an exit code ends its queued run the same way.
+sleep 300 &
+owner_sup=$!
+pids+=("$owner_sup")
+mkdir -p "$WORK/dead-owner"
+jq -n --argjson p "$owner_sup" '{pid: $p}' >"$WORK/dead-owner/meta.json"
+WORKER_RUN_RECORD="$WORK/dead-owner" WORKER_RUN_ID=dead-owner bash "$ROOT/share/run-suites.sh" --repo "$WORK/repo" test_a.sh \
+  >"$WORK/dead.out" 2>&1 &
+dead_run=$!
+pids+=("$dead_run")
+for i in $(seq 1 50); do [ "$(holds_of run-suites)" = 1 ] && break; sleep 0.1; done
+assert [ "$(holds_of run-suites)" = 1 ]
+kill "$owner_sup"; until_gone "$owner_sup"
+until_gone "$dead_run" || fail "a run kept queueing after its worker's supervisor died"
+dead_rc=0; wait "$dead_run" || dead_rc=$?
+assert [ "$dead_rc" -eq 4 ]
+assert jqe 'map(select(.reason == "owner-ended")) | length == 2' <(waits_of run-suites)
 kill "$h7"; until_gone "$h7"
 WORKER_RUN_RECORD="$WORK/wrun" WORKER_RUN_ID=wrun bash "$ROOT/share/run-suites.sh" --repo "$WORK/repo" test_a.sh \
   >"$WORK/stale.out" 2>&1 || fail "a stale worker export refused the run: $(cat "$WORK/stale.out")"
+# Once its worker ends, a slotted run drops its queued suites and ends its running ones as a tree;
+# a run with no worker owner beside it runs on.
+export OWNER_FIXTURE="$WORK/of"
+mkdir -p "$OWNER_FIXTURE" "$WORK/owned/tests" "$WORK/ownerless/tests" "$WORK/owner"
+printf '#!/usr/bin/env bash\nsleep 300 &\necho "$!" >"$OWNER_FIXTURE/child"\nwait\n' >"$WORK/owned/tests/test_long.sh"
+printf '#!/usr/bin/env bash\n: >"$OWNER_FIXTURE/next-ran"\n' >"$WORK/owned/tests/test_next.sh"
+printf '#!/usr/bin/env bash\n: >"$OWNER_FIXTURE/free-started"\nuntil [ -e "$OWNER_FIXTURE/release" ]; do sleep 0.1; done\n' \
+  >"$WORK/ownerless/tests/test_free.sh"
+sleep 300 &
+owner_sup=$!
+pids+=("$owner_sup")
+jq -n --argjson p "$owner_sup" '{pid: $p}' >"$WORK/owner/meta.json"
+RUN_SUITES_SLOTS=2 WORKER_RUN_RECORD="$WORK/owner" WORKER_RUN_ID=owner bash "$ROOT/share/run-suites.sh" --repo "$WORK/owned" -j 1 \
+  >"$WORK/owned.out" 2>&1 &
+owned_run=$!
+RUN_SUITES_SLOTS=2 bash "$ROOT/share/run-suites.sh" --repo "$WORK/ownerless" >"$WORK/ownerless.out" 2>&1 &
+free_run=$!
+pids+=("$owned_run" "$free_run")
+for i in $(seq 1 300); do [ -s "$OWNER_FIXTURE/child" ] && [ -e "$OWNER_FIXTURE/free-started" ] && break; sleep 0.1; done
+assert [ -s "$OWNER_FIXTURE/child" ]
+assert [ -e "$OWNER_FIXTURE/free-started" ]
+owned_child=$(cat "$OWNER_FIXTURE/child")
+echo 0 >"$WORK/owner/exit_code"
+for i in $(seq 1 300); do kill -0 "$owned_run" 2>/dev/null || break; sleep 0.1; done
+owned_rc=0; wait "$owned_run" || owned_rc=$?
+assert [ "$owned_rc" -eq 1 ]
+assert until_gone "$owned_child"
+assert [ ! -e "$OWNER_FIXTURE/next-ran" ]
+assert grep -Eq '^test_long\.sh +FAIL .*cancelled, its worker run ended$' "$WORK/owned.out"
+assert grep -Eq '^test_next\.sh +FAIL .*cancelled, its worker run ended$' "$WORK/owned.out"
+assert jqe -s --argjson p "$owned_run" 'map(select(.pid == $p)) | length == 1
+  and .[0].reason == "owner-ended" and .[0].complete == false and .[0].suites == {}' "$WORK/runs.jsonl"
+assert kill -0 "$free_run"
+: >"$OWNER_FIXTURE/release"
+wait "$free_run" || fail "an ownerless run failed: $(cat "$WORK/ownerless.out")"
+assert jqe -s --argjson p "$free_run" 'map(select(.pid == $p)) | length == 1
+  and (.[0] | has("reason") | not) and .[0].complete and .[0].suites["test_free.sh"].rc == 0' "$WORK/runs.jsonl"
 
 # worker-run: a run on a night branch waits for one of NIGHT_FIXER_SLOTS, its deadline counted from
 # the slot; its slot goes when it ends. Any other branch never waits.

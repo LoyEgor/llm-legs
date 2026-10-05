@@ -1,6 +1,6 @@
 # Whether a worker run's supervisor still lives (shared-invariants row ar). Sourced by bin/worker-run,
-# bin/worker-relay-hold.sh and bin/worker-run-backstop.sh, so every reader of a run record answers
-# the same way.
+# bin/worker-relay-hold.sh, bin/worker-run-backstop.sh and share/run-suites.sh, so every reader of a
+# run record answers the same way.
 
 # How far a supervisor's own start may sit from the launch its record stamped before the pid is a
 # different process wearing a recycled number. The review hooks judge these same runs by the same

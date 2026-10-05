@@ -5228,6 +5228,9 @@ def hold_verdicts(now):
     return out, [os.path.join(hold_dir(), h["file"]) for holds in leaked.values() for h in holds]
 
 
+SLOT_WAIT_CLASSES = ("night-workers", "run-suites")
+
+
 def wait_classes(now):
     days = [local_day(now - back * 86400) for back in range(8)]
     out = {}
@@ -5242,6 +5245,11 @@ def wait_classes(now):
 
 def waits_classes_section(now):
     classes, today = wait_classes(now)
+    reasons = {}
+    for item in read_jsonl(os.path.join(wait_dir(), today + ".jsonl")) or ():
+        secs = item.get("seconds")
+        if item.get("class") in SLOT_WAIT_CLASSES and isinstance(secs, (int, float)) and secs >= 0:
+            reasons.setdefault((item["class"], item.get("reason")), []).append(float(secs))
     rows = []
     for cls, by_day in sorted(classes.items(), key=lambda kv: (-sum(s for _, s, _ in kv[1].get(today, ())), kv[0])):
         waits = by_day.get(today, [])
@@ -5267,6 +5275,9 @@ def waits_classes_section(now):
         week = section("", [row([day, len(v), fmt_s(sum(s for _, s, _ in v)), fmt_s(max(s for _, s, _ in v))], dim=True)
                             for day, v in sorted(by_day.items(), reverse=True)],
                        ["day", "waits", "total", "max"], [False, True, True, True])
+        if cls in SLOT_WAIT_CLASSES:
+            week["rows"][:0] = [row(["today: " + why, len(v), fmt_s(sum(v) if v else None), fmt_s(max(v) if v else None)], dim=True)
+                                for why, v in ((why, reasons.get((cls, why), [])) for why in ("limit", "room"))]
         rows.append(row([cls, len(secs), fmt_s(total), fmt_s(percentile(secs, 0.5)), fmt_s(percentile(secs, 0.95)),
                          fmt_s(top if secs else None), fmt_s(usual)], red=red, dim=not red, menu=week, key="waits:" + cls,
                         say=next((j["fact"] for j in judge if j["level"]), None), judge=judge))

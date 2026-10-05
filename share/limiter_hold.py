@@ -32,12 +32,13 @@ def hold_raise(limiter, what, why, until=None, key=None):
     return path
 
 
-def hold_clear(path):
+def hold_clear(path, allowed=None, held=None, reason=None):
     try:
         if path:
             with open(path) as handle:
                 record = json.load(handle)
-            wait_note(record["limiter"], (record.get("held") or {}).get("what") or "", record["since"])
+            wait_note(record["limiter"], (record.get("held") or {}).get("what") or "", record["since"],
+                      allowed=allowed, held=held, reason=reason)
     except Exception:
         pass
     try:
@@ -52,7 +53,7 @@ def wait_dir():
         os.environ.get("HARNESS_DOCTOR_DIR") or os.path.expanduser("~/.cache/harness-doctor"), "waits")
 
 
-def wait_note(cls, source, started, seconds=None):
+def wait_note(cls, source, started, seconds=None, allowed=None, held=None, reason=None):
     try:
         started = float(started)
         seconds = round(time.time() - started if seconds is None else float(seconds), 3)
@@ -60,6 +61,8 @@ def wait_note(cls, source, started, seconds=None):
             return
         row = {"class": re.sub(r"[^A-Za-z0-9_.-]", "_", cls), "source": str(source), "started": round(started, 3),
                "seconds": seconds, "pid": os.getpid()}
+        if cls in ("night-workers", "run-suites") or reason is not None:
+            row.update(allowed=allowed, held=held, reason=reason)
         os.makedirs(wait_dir(), exist_ok=True)
         with open(os.path.join(wait_dir(), time.strftime("%Y-%m-%d", time.localtime(started)) + ".jsonl"), "a") as handle:
             handle.write(json.dumps(row) + "\n")
