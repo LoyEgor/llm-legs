@@ -1248,10 +1248,9 @@ record_claudeb_auth_dead() { # directory
 }
 
 reroute_walled() {
-  # The run ends on a wall only once every account is walled; otherwise the brief
-  # continues on the next one and no caller re-dispatches by hand. A named account
-  # (--account or the pin fallback) is spent first, then the pool; only a resumed
-  # session stays, because that session lives inside one profile.
+  # At most ONE reroute per run (Egor, 2026-10-05): each rescue is a fresh session rereading the whole
+  # context, and a chain of them burnt a pool for hours unseen; the second wall hands the choice back
+  # to the launching chat. A resumed session never moves: it lives inside one profile.
   local directory="$1" vendor="$2" walled tag
   # The research leg reads the quota out of the answer stream and the agy log too, which
   # has_limit_signature deliberately never scans; its own verdict is the wall for that run.
@@ -1263,6 +1262,7 @@ reroute_walled() {
   if [ "$vendor" = claudeb ] && jq -e '.browser == true' "$directory/meta.json" >/dev/null; then return 1; fi
   [ -z "$(jq -r '.resume // empty' "$directory/meta.json")" ] || return 1
   if jq -e '.role == "research" and .explicit_account != ""' "$directory/meta.json" >/dev/null; then return 1; fi
+  if jq -e '(.walled_accounts // []) | length > 0' "$directory/meta.json" >/dev/null; then return 1; fi
   walled=$(jq -r '((.walled_accounts // []) + [.account]) | join(",")' "$directory/meta.json")
   pick_account_listing "$vendor" "$walled" "$(jq -r '.model' "$directory/meta.json")"
   [ "$PICKED_RC" -eq 0 ] && [ -n "$PICKED_ACCOUNT" ] || return 1
@@ -3065,13 +3065,14 @@ print_outcome() {
   if has_limit_signature "$directory" "$vendor"; then
     outcome_line "$(vendor_name "$vendor")_USAGE_LIMIT" "$directory"
     # Worker agents relay these lines verbatim, so the wall's SCOPE lives here, not in agent prose.
-    # A resumed session is the one run that never left its account; every other USAGE_LIMIT is the
-    # pool exhausted.
     if [ "$vendor" = claudeb ] && jq -e '.browser == true' "$directory/meta.json" >/dev/null; then
       printf 'WALL: browser device stays on %s\n' "$(jq -r '.account' "$directory/meta.json")"
     elif [ -n "$(jq -r '.resume // empty' "$directory/meta.json" 2>/dev/null)" ]; then
       printf 'WALL: resumed session stays on %s\n' \
         "$(jq -r '.account' "$directory/meta.json" 2>/dev/null)"
+    elif jq -e '(.walled_accounts // []) | length > 0' "$directory/meta.json" >/dev/null 2>&1; then
+      printf 'WALL: reroute cap reached (walled: %s) — the work done so far stays in the workdir\n' \
+        "$(jq -r '((.walled_accounts // []) + [.account]) | join(", ")' "$directory/meta.json" 2>/dev/null)"
     else
       printf 'WALL: pool exhausted (walled: %s)\n' \
         "$(jq -r '((.walled_accounts // []) + [.account]) | join(", ")' "$directory/meta.json" 2>/dev/null)"

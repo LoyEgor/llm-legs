@@ -349,4 +349,19 @@ assert test ! -d "$WORKER_RUN_DIR/codex-1-1-dead"
 assert test -d "$RUN_DIR"
 assert await_done
 
+# Codex walls with a bare clock time and a trailing dot; read as now+1h, worker-pick freed the
+# account hours before its real reset.
+. "$ROOT/share/worker-walls.sh"
+now=$(date +%s)
+reset_2341=$(date -j -f '%Y-%m-%d %H:%M:%S' "$(date +%F) 23:41:00" +%s)
+[ "$reset_2341" -gt "$now" ] || reset_2341=$(date -j -v+1d -f '%Y-%m-%d %H:%M:%S' "$(date +%F) 23:41:00" +%s)
+for text in 'try again at 11:41 PM.' '11:41PM' '23:41'; do
+  assert test "$(worker_walls_parse_reset "$text")" = "$reset_2341"
+done
+passed=$(( (now - 3600) / 60 * 60 ))
+rolled=$(worker_walls_parse_reset "$(date -r "$passed" +%H:%M)")
+assert test "$rolled" -gt "$now"
+assert test "$(( rolled - passed ))" -ge 82800
+assert test "$(( rolled - passed ))" -le 90000
+
 echo "PASS: $asserts asserts; read-only runs, outcome classification, codex trust and model retries, self-edit, pruning"

@@ -107,8 +107,10 @@ only pace math anywhere — one formula in one shared home, never a per-surface 
    The removal edits the file the pin was read from, a chat pin file included (below). Stale
    llm-limits data never skips or clears a pin. Dead auth still
    lapses it as a login to fix. `worker-run` continues a walled pin or `--account` on the next
-   account of the ranking (the next pinned name if any, else the pool); only `--resume` stays,
-   because the session lives there.
+   account of the ranking (the next pinned name if any, else the pool) at most ONCE per run: the
+   rescue attempt's own wall ends the run with `<VENDOR>_USAGE_LIMIT` and the launching chat
+   decides (another vendor, or resume after the reset); only `--resume` never moves, because the
+   session lives there.
    **Chat pin.** One chat may carry its own pin tier: `${CHAT_PINS_DIR:-~/.cache/claude-chat-pins}/<session_id>`
    holds the same `<vendor>_profile=<name>|*` lines, and when that file exists and is non-empty it
    REPLACES the global pin tier for that session — every `*_profile=` line of the global file is

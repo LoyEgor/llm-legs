@@ -60,7 +60,7 @@ assert grep -qx 'REROUTE: walled on gwall1 → continued on grescue1' "$WORK/wai
 assert grep -qx -- '--account grok --claim --exclude gwall1' "$PICK_LOG"
 assert test "$(grep -c '^GROK_CALL$' "$CALL_LOG")" -eq 2
 
-# ALL WALLED is the only way the usage-limit outcome still reaches the caller.
+# The second wall ends the run: one reroute per run.
 clear_stub
 printf '%s\n' gwall1 gwall2 >"$STUB_DIR/grok_wall_accounts"
 printf '%s\n' '0 gwall1' '0 gwall2' '3' >"$STUB_DIR/pick_queue"
@@ -68,7 +68,7 @@ start_ok grok
 assert await_done
 assert grep -q '^STATUS: failed$' "$WORK/wait.out"
 assert grep -qx 'OUTCOME: GROK_USAGE_LIMIT' "$WORK/wait.out"
-assert grep -qx 'WALL: pool exhausted (walled: gwall1, gwall2)' "$WORK/wait.out"
+assert grep -qx 'WALL: reroute cap reached (walled: gwall1, gwall2) — the work done so far stays in the workdir' "$WORK/wait.out"
 assert test "$(grep -c '^REROUTE: ' "$WORK/wait.out")" -eq 1
 
 # A picker that already knows every grok account is walled ends `start` on the limit exit, and a pin

@@ -39,7 +39,7 @@ worker_walls_parse_reset() {
     return 0
   fi
   rest=$(printf '%s\n' "$text" | sed -E 's/^(try again at|retry[_ -]?at|resets?([_ -]?at|[ _-]?in)?)[[:space:]:=]+//I')
-  rest=$(printf '%s\n' "$rest" | sed -E 's/([0-9])(st|nd|rd|th)/\1/g; s/^[[:space:]]+//; s/[[:space:]]+$//')
+  rest=$(printf '%s\n' "$rest" | sed -E 's/([0-9])(st|nd|rd|th)/\1/g; s/^[[:space:]]+//; s/[[:space:].]+$//')
   case "$rest" in
     '') printf '%s\n' "$((now + 3600))"; return 0 ;;
     *[!0-9]*) ;;
@@ -54,6 +54,12 @@ worker_walls_parse_reset() {
       second|seconds|sec|secs|s) printf '%s\n' "$((now + n))"; return 0 ;;
     esac
   fi
+  for fmt in '%I:%M %p' '%I:%M%p' '%H:%M'; do
+    epoch=$(date -j -f "$fmt %S" "$rest 00" '+%s' 2>/dev/null) || continue
+    [ "$epoch" -gt "$now" ] || epoch=$(date -j -v+1d -f "$fmt %S" "$rest 00" '+%s' 2>/dev/null) || continue
+    printf '%s\n' "$epoch"
+    return 0
+  done
   for fmt in '%b %e %I:%M %p' '%b %d %I:%M %p' '%b %e %I:%M%p' '%b %d %I:%M%p' \
              '%b %e %H:%M' '%b %d %H:%M' '%Y-%m-%dT%H:%M:%S' '%Y-%m-%d %H:%M:%S' \
              '%Y-%m-%dT%H:%M:%SZ'; do

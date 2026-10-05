@@ -68,33 +68,42 @@ report=$("$RUNNER" report "$RUN_ID")
 assert grep -qx 'ACCOUNT: rescue1 (codex)' <<<"$report"
 assert grep -qx 'REROUTE: walled on walled1 → continued on rescue1' <<<"$report"
 
-# The chain survives several walls, and every account already burnt stays
-# excluded from the next query.
+# One reroute per run: the second wall ends it with the usage-limit outcome while a third account
+# was still free, which is never launched.
 clear_stub
 set_config 'codex_effort=high'
 printf 'walled1\nwalled2\n' >"$STUB_DIR/wall_accounts"
 printf '%s\n' '0 walled1' '0 walled2' '0 rescue2' >"$STUB_DIR/pick_queue"
 start_ok codex
 assert await_done
-assert grep -q '^STATUS: done$' "$WORK/wait.out"
-assert meta_account_is rescue2
-assert jq -e '.walled_accounts == ["walled1","walled2"]' "$RUN_DIR/meta.json" >/dev/null
+assert grep -q '^STATUS: failed$' "$WORK/wait.out"
+assert grep -qx 'OUTCOME: CODEX_USAGE_LIMIT' "$WORK/wait.out"
+assert grep -qx 'WALL: reroute cap reached (walled: walled1, walled2) — the work done so far stays in the workdir' "$WORK/wait.out"
+assert meta_account_is walled2
+assert jq -e '.walled_accounts == ["walled1"]' "$RUN_DIR/meta.json" >/dev/null
 assert grep -qx -- '--account codex --claim --exclude walled1' "$PICK_LOG"
-assert grep -qx -- '--account codex --claim --exclude walled1,walled2' "$PICK_LOG"
-assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 3
-assert test "$(grep -c '^REROUTE: ' "$WORK/wait.out")" -eq 2
-assert grep -qx 'REROUTE: walled on walled2 → continued on rescue2' "$WORK/wait.out"
+assert_fails grep -q -- '--exclude walled1,walled2' "$PICK_LOG"
+assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 2
+assert_fails grep -q 'codex-profiles/rescue2$' "$CALL_LOG"
+assert grep -qx '0 rescue2' "$STUB_DIR/pick_queue"
+assert test "$(grep -c '^REROUTE: ' "$WORK/wait.out")" -eq 1
+assert grep -qx 'REROUTE: walled on walled1 → continued on walled2' "$WORK/wait.out"
+assert test -f "$WORKER_WALLS_DIR/codex-walled1"
+assert test -f "$WORKER_WALLS_DIR/codex-walled2"
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'WALL: reroute cap reached (walled: walled1, walled2) — the work done so far stays in the workdir' <<<"$report"
 
-# ALL WALLED is the only way the usage-limit outcome still reaches the caller.
+# The second wall ends the run before the picker is asked again.
 clear_stub
 set_config 'codex_effort=high'
 printf 'walled1\nwalled2\n' >"$STUB_DIR/wall_accounts"
 printf '%s\n' '0 walled1' '0 walled2' '3' >"$STUB_DIR/pick_queue"
 start_ok codex
 assert await_done
+assert grep -qx '3' "$STUB_DIR/pick_queue"
 assert grep -q '^STATUS: failed$' "$WORK/wait.out"
 assert grep -qx 'OUTCOME: CODEX_USAGE_LIMIT' "$WORK/wait.out"
-assert grep -qx 'WALL: pool exhausted (walled: walled1, walled2)' "$WORK/wait.out"
+assert grep -qx 'WALL: reroute cap reached (walled: walled1, walled2) — the work done so far stays in the workdir' "$WORK/wait.out"
 assert meta_account_is walled2
 assert jq -e '.walled_accounts == ["walled1"]' "$RUN_DIR/meta.json" >/dev/null
 assert grep -qx 'REROUTE: walled on walled1 → continued on walled2' "$WORK/wait.out"
@@ -214,7 +223,7 @@ assert test "$(grep -c '^REROUTE: ' "$WORK/wait.out")" -eq 0
 assert grep -qx '0 rescue5' "$STUB_DIR/pick_queue"
 assert test -f "$WORKER_WALLS_DIR/codex-resacct"
 
-# A named account that walls, then every remaining pick walls: pool exhausted.
+# A named account that walls, then its one rescue walls: the reroute cap.
 clear_stub
 set_config 'codex_effort=high'
 printf 'walled1\nwalled2\n' >"$STUB_DIR/wall_accounts"
@@ -223,7 +232,7 @@ start_ok codex --account walled1
 assert await_done
 assert grep -q '^STATUS: failed$' "$WORK/wait.out"
 assert grep -qx 'OUTCOME: CODEX_USAGE_LIMIT' "$WORK/wait.out"
-assert grep -qx 'WALL: pool exhausted (walled: walled1, walled2)' "$WORK/wait.out"
+assert grep -qx 'WALL: reroute cap reached (walled: walled1, walled2) — the work done so far stays in the workdir' "$WORK/wait.out"
 assert meta_account_is walled2
 assert jq -e '.walled_accounts == ["walled1"]' "$RUN_DIR/meta.json" >/dev/null
 assert grep -qx 'REROUTE: walled on walled1 → continued on walled2' "$WORK/wait.out"
