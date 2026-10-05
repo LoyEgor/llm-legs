@@ -657,6 +657,10 @@ assert jq -e '([.accounts[].account] | index("alpha") != null) and
 profile_quota=$(CODEX_HOME="$HOME/.codex-profiles/alpha" CODEX_QUOTA_TIMEOUT=2 \
   "$HELPER" --no-cache) || fail "CODEX_HOME quota helper failed"
 assert jq -e '.current == "alpha" and .rateLimits.primary.usedPercent == 10' <<<"$profile_quota" >/dev/null
+multi_quota=$(CODEX_QUOTA_TIMEOUT=2 "$HELPER" --no-cache --profile alpha --profile beta) \
+  || fail "multi-profile quota helper failed"
+assert jq -e '([.accounts[] | select(.account == "alpha")][0].five_hour.used_pct == 10) and
+  ([.accounts[] | select(.account == "beta")][0].auth_needed == true)' <<<"$multi_quota" >/dev/null
 
 printf 'no\n' >"$HOME/auth-main"
 printf 'no\n' >"$HOME/auth-alpha"

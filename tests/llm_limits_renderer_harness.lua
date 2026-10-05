@@ -1319,6 +1319,73 @@ assert(#errorItems(ocMenu) == 0, "OpenCode timeout rendered a ⚠ row")
 assert(titleText(accountItem(ocMenu, "oc-one")):find("35m ago ⧖", 1, true),
   "OpenCode timed-out account lacks ⧖: " .. titleText(accountItem(ocMenu, "oc-one")))
 
+-- Past the store's account threshold the ⧖ is no longer one late refresh: the row says stale in
+-- red, its numbers carry ~, and the title warns, whatever the vendor.
+for _, vendorKey in ipairs({ "claude", "codex", "gemini", "grok" }) do
+  local vendors = { claude = { available = false }, codex = { available = false },
+    gemini = { available = false }, grok = { available = false } }
+  local old, oldLate, fresh, dead = acct("old"), acct("oldlate"), acct("fresh"), acct("dead")
+  old.five_hour, fresh.five_hour = bucket(0, true), bucket(0)
+  old.as_of, oldLate.as_of = nowErr - 19 * 3600 - 300, nowErr - 19 * 3600
+  fresh.as_of, dead.as_of = nowErr - 600, nowErr - 30 * 3600
+  dead.auth_needed = true
+  if vendorKey == "grok" then dead.auth = { status = "needs_login" } end
+  vendors[vendorKey] = {
+    available = true, source = vendorKey == "claude" and "claudeb-store" or nil,
+    refresh_errors = {{ account = "oldlate", class = "timeout", cause = "collector timed out", at = nowErr - 60 }},
+    accounts = { old, oldLate, fresh, dead },
+  }
+  local mod = loadModule({ schema = 1, account_stale_after_s = 7200, vendors = vendors }, nil, nowErr)
+  local menu = mod.menuItems()
+  local oldRow = accountItem(menu, "old")
+  assert(titleText(oldRow):find("stale 19h", 1, true) and not titleText(oldRow):find("ago", 1, true),
+    vendorKey .. " 19h-old account row does not say stale: " .. titleText(oldRow))
+  local staleRed = false
+  for _, text in ipairs(redRuns(oldRow.title)) do
+    if text:find("stale 19h", 1, true) then staleRed = true end
+  end
+  assert(staleRed, vendorKey .. " stale age is not red")
+  local lateText = titleText(accountItem(menu, "oldlate"))
+  assert(lateText:find("stale 19h", 1, true) and not lateText:find("⧖", 1, true),
+    vendorKey .. " a 19h-old late account kept the quiet ⧖: " .. lateText)
+  local oldFive = menu[accountIndex(menu, "old") + 1]
+  local freshFive = menu[accountIndex(menu, "fresh") + 1]
+  assert(titleText(oldFive):find(" 0%~ ", 1, true) and isDimmed(oldFive.title.attributes),
+    vendorKey .. " stale account's 5h row reads as a healthy 0%: " .. titleText(oldFive))
+  assert(utf8.len(titleText(oldFive)) == utf8.len(titleText(freshFive)),
+    vendorKey .. " the ~ marker misaligned the row: " .. titleText(oldFive) .. " | " .. titleText(freshFive))
+  assert(not titleText(freshFive):find("~", 1, true) and not titleText(accountItem(menu, "fresh")):find("stale", 1, true),
+    vendorKey .. " a fresh account rendered stale")
+  local deadText = titleText(accountItem(menu, "dead"))
+  assert(deadText:find("login needed", 1, true) and not deadText:find("stale", 1, true),
+    vendorKey .. " a login-needed account turned into a stale row: " .. deadText)
+  local state = mod.refreshState()
+  assert(state.prefix == "⚠ " and state.staleCount == 2,
+    vendorKey .. " stale data did not warn the menubar: " .. tostring(state.staleCount))
+  assert(titleText(menu[1]) == "⚠ stale data: 2 accounts, up to 19h old — numbers not trusted",
+    vendorKey .. " stale banner: " .. titleText(menu[1]))
+  local title = mod.title()
+  assert(type(title) == "table" and title.text == "LLM Limits: stale 19h" and isRed(title.attributes),
+    vendorKey .. " stale data did not reach the Automation title: " .. titleText({ title = title }))
+
+  vendors[vendorKey].accounts = { fresh }
+  local freshMod = loadModule({ schema = 1, account_stale_after_s = 7200, vendors = vendors }, nil, nowErr)
+  assert(freshMod.refreshState().prefix == "" and freshMod.title() == "LLM Limits",
+    vendorKey .. " fresh data warned the title")
+end
+
+local soleStale = { schema = 1, account_stale_after_s = 7200, vendors = {
+  claude = { available = false }, gemini = { available = false }, grok = { available = false },
+  codex = { available = true, as_of = nowErr - 19 * 3600, five_hour = bucket(0, true), weekly = bucket(20, true) },
+}}
+local soleStaleMod = loadModule(soleStale, nil, nowErr)
+local soleStaleMenu = soleStaleMod.menuItems()
+assert(titleText(accountItem(soleStaleMenu, "Codex")):find("stale 19h", 1, true),
+  "sole-account stale row: " .. titleText(accountItem(soleStaleMenu, "Codex")))
+assert(titleText(soleStaleMenu[accountIndex(soleStaleMenu, "Codex") + 1]):find(" 0%~ ", 1, true),
+  "sole-account stale 5h row lost its ~")
+assert(soleStaleMod.refreshState().staleCount == 1, "a stale sole-account vendor did not warn the title")
+
 local blob = "rateLimits/read failed: {'code': -32603, 'message': 'failed to fetch c'}; content-type=text/plain; body={\n  \"error\": {\n    \"message\": \"Payment Required\"\n  }\n}"
 local legacyBlob = { schema = 1, vendors = {
   claude = { available = false },

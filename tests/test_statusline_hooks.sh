@@ -1344,6 +1344,21 @@ cg_expired=$(CLAUDEGPT_ACCOUNT=work4 run_statusline "$cg_payload")
 assert grep -Fq '0%' <<< "$cg_expired"
 assert test "${cg_expired#*36%}" = "$cg_expired"
 assert grep -Fq $'\033[2m' <<< "$cg_expired"
+cp "$WORK/limits.json" "$WORK/cg-limits-kept.json"
+jq --argjson now "$cg_now" '.vendors.codex.accounts[0].as_of = ($now - 19 * 3600 - 600 | todateiso8601)' \
+  "$WORK/cg-limits-kept.json" > "$WORK/limits.json"
+cg_stale=$(CLAUDEGPT_ACCOUNT=work4 run_statusline "$cg_payload")
+assert grep -Fq "${RED}stale 19h10m${RESET}" <<< "$(sed -n '2p' <<< "$cg_stale")"
+jq --argjson now "$cg_now" '.vendors.codex.accounts[0].as_of = ($now - 600 | todateiso8601)' \
+  "$WORK/cg-limits-kept.json" > "$WORK/limits.json"
+cg_recent=$(CLAUDEGPT_ACCOUNT=work4 run_statusline "$cg_payload")
+assert test "${cg_recent#*stale}" = "$cg_recent"
+jq --argjson now "$cg_now" '.vendors.claude.accounts = [{account:"stalefab", as_of:($now - 19 * 3600 | todateiso8601),
+    fable:{used_pct:5,effective_pct:5,stale:true,resets_at:($now + 86400 | todateiso8601)}}]' \
+  "$WORK/cg-limits-kept.json" > "$WORK/limits.json"
+fab_stale=$(run_statusline "$(statusline_payload stale-fable '{"model":{"id":"claude-fable-5","display_name":"Fable 5"}}')" stalefab)
+assert grep -Fq "${RED}stale 19h${RESET}" <<< "$(sed -n '2p' <<< "$fab_stale")"
+mv "$WORK/cg-limits-kept.json" "$WORK/limits.json"
 for cg_bucket in 'null' '{used_pct:null,resets_at:null,as_of:$now,origin:"usage",stale:false,effective_pct:null}' '{}'; do
   jq -cn --argjson now "$cg_now" "{vendors:{codex:{accounts:[{account:\"desktop-pro\",
     five_hour:$cg_bucket,weekly:{used_pct:22,as_of:\$now,resets_at:(\$now+2592000)}}]}}}" > "$WORK/limits.json"
@@ -1655,22 +1670,23 @@ assert grep -Fq 'fit-bench-pr ' <<< "$fit_line"
 assert test ! -s "$WORK/fit-margin08.err"
 
 # Line 2 is 73 cells wide; each width below, less the margin, is the first one that needs the next
-# step: cost, then the ctx tokens part, then the reset labels short, then gone, then separators.
+# step: cost, then the reset labels short, then gone, then separators, then the ctx percentage — the
+# tokens part outlives it, since its colour is how Egor reads the cache state (Egor, 2026-10-05).
 assert_eq 73 "$fit_full2_len"
 fit_l2_keep=$(fit_line2 "$(fit_render fit-l2-keep 76)")
 assert_eq "$fit_full2" "$fit_l2_keep"
 fit_l2_step1=$(fit_line2 "$(fit_render fit-l2-step1 75)")
 assert_eq "ctx 12% ? 1k │ 5h 44% $fit_h5_time │ wk 22% $fit_wk_label │ fb 55% $fit_fb_label" "$fit_l2_step1"
 fit_l2_step2=$(fit_line2 "$(fit_render fit-l2-step2 67)")
-assert_eq "ctx 12% │ 5h 44% $fit_h5_time │ wk 22% $fit_wk_label │ fb 55% $fit_fb_label" "$fit_l2_step2"
-fit_l2_step3=$(fit_line2 "$(fit_render fit-l2-step3 62)")
-assert_eq "ctx 12% │ 5h 44% ${fit_h5_time%%:*}h │ wk 22% ${fit_wk_label%% *} │ fb 55% ${fit_fb_label%% *}" "$fit_l2_step3"
-fit_l2_step4=$(fit_line2 "$(fit_render fit-l2-step4 48)")
-assert_eq "ctx 12% │ 5h 44% │ wk 22% │ fb 55%" "$fit_l2_step4"
-fit_l2_step5=$(fit_line2 "$(fit_render fit-l2-step5 36)")
-assert_eq "ctx 12% 5h 44% wk 22% fb 55%" "$fit_l2_step5"
+assert_eq "ctx 12% ? 1k │ 5h 44% ${fit_h5_time%%:*}h │ wk 22% ${fit_wk_label%% *} │ fb 55% ${fit_fb_label%% *}" "$fit_l2_step2"
+fit_l2_step3=$(fit_line2 "$(fit_render fit-l2-step3 53)")
+assert_eq "ctx 12% ? 1k │ 5h 44% │ wk 22% │ fb 55%" "$fit_l2_step3"
+fit_l2_step4=$(fit_line2 "$(fit_render fit-l2-step4 41)")
+assert_eq "ctx 12% ? 1k 5h 44% wk 22% fb 55%" "$fit_l2_step4"
+fit_l2_step5=$(fit_line2 "$(fit_render fit-l2-step5 35)")
+assert_eq "ctx ? 1k 5h 44% wk 22% fb 55%" "$fit_l2_step5"
 fit_l2_floor=$(fit_line2 "$(fit_render fit-l2-floor 12)")
-assert_eq "ctx 12% 5h 44% wk 22% fb 55%" "$fit_l2_floor"
+assert_eq "ctx ? 1k 5h 44% wk 22% fb 55%" "$fit_l2_floor"
 
 # The full form of line 1 is 81 cells wide, and each width below, less the margin, is the first one
 # that needs the next step.
@@ -2773,11 +2789,13 @@ bk5_out=$(run_statusline "$(statusline_payload ctx-bk5 "$(warm_extra "$TRANSCRIP
 bk5_death=$(TZ=Europe/Kyiv date -r $((NOW - 30 + 300)) +%H:%M)
 assert grep -Fq "${DIM}→${bk5_death}${RESET}${YELLOW}↓5m${RESET}" <<< "$bk5_out"
 assert test "${bk5_out#*100k}" = "$bk5_out"
-# The cache warning is an alarm: it outlives the death time it rides on, down to the line-2 floor.
-for bk5_cols in 45 30 12; do
+# The death time is the tokens part and the cache warning an alarm: both outlive the ctx percentage,
+# down to the line-2 floor.
+bk5_fit=$(FIT_COLUMNS=45 run_statusline "$(statusline_payload ctx-bk5 "$(warm_extra "$TRANSCRIPT" 20 100000)")")
+assert grep -Fq "ctx ${GREEN}20%${RESET} ${DIM}→${bk5_death}${RESET}${YELLOW}↓5m${RESET}" <<< "$bk5_fit"
+for bk5_cols in 30 12; do
   bk5_fit=$(FIT_COLUMNS=$bk5_cols run_statusline "$(statusline_payload ctx-bk5 "$(warm_extra "$TRANSCRIPT" 20 100000)")")
-  assert grep -Fq "ctx ${GREEN}20%${RESET} ${YELLOW}↓5m${RESET}" <<< "$bk5_fit"
-  assert test "${bk5_fit#*→}" = "$bk5_fit"
+  assert grep -Fq "ctx ${DIM}→${bk5_death}${RESET}${YELLOW}↓5m${RESET} 5h" <<< "$bk5_fit"
 done
 
 t_reset; t_assist $((NOW - 30)) fixmodel 100000 500 mixed; t_stamp ctx-mixed

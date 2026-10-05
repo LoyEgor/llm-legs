@@ -933,9 +933,10 @@ fi
 # other surface discards (shared-invariants n). Show `?` instead.
 [ "$wk_origin" = headers ] && { wk_pct=""; wk_reset=""; }
 
-h5_stale=""; wk_stale=""; fable_found=""; fable_pct=""; fable_reset=""; fable_dim=""
+h5_stale=""; wk_stale=""; fable_found=""; fable_pct=""; fable_reset=""; fable_dim=""; store_stale_txt=""
 if [ -z "${CLAUDEGPT_ACCOUNT:-}" ] && [ -n "$acct" ] && [ "$acct" != main ]; then
-  IFS=$'\x1f' read -r h5_stale wk_stale fable_found fable_pct fable_reset fable_dim < <(jq -r --arg account "$acct" '
+  IFS=$'\x1f' read -r h5_stale wk_stale fable_found fable_pct fable_reset fable_dim store_stale_txt < <(jq -r \
+    --arg account "$acct" --argjson now "$now" --argjson sthr "$LIMITS_STALE_ROUTING" "$LIMITS_VIEW_JQ"'
     (try ([.vendors.claude.accounts[]? | select(.account == $account)][0] as $a |
       if $a == null then ["", ""]
       else [($a.five_hour.stale == true | tostring), ($a.weekly.stale == true | tostring)] end
@@ -946,6 +947,9 @@ if [ -z "${CLAUDEGPT_ACCOUNT:-}" ] && [ -n "$acct" ] && [ "$acct" != main ]; the
            (.resets_at // ""), (if .stale == true or .expired == true then "1" else "" end)]
         | join("\u001f")) // "\u001f\u001f\u001f")
        catch "\u001f\u001f\u001f")
+    + "\u001f"
+    + (try (first(.vendors.claude.accounts[]? | select(.account == $account) | select(.fable != null)
+        | limits_store_stale_text(.; $now; $sthr)) // "") catch "")
   ' "$limits_file" 2>/dev/null)
   if [ -n "$rl_json" ] && [ -n "$rl_from_cache" ]; then
     [ "$h5_stale" = true ] && h5_dim=1
@@ -957,9 +961,10 @@ fi
 if [ -n "${CLAUDEGPT_ACCOUNT:-}" ]; then
   limits_mtime=$(file_mtime "$limits_file")
   [[ "$limits_mtime" =~ ^[0-9]+$ ]] || limits_mtime=0
-  IFS=$'\x1f' read -r h5_pct h5_reset h5_dim wk_pct wk_reset wk_dim h5_absent < <(jq -r \
+  IFS=$'\x1f' read -r h5_pct h5_reset h5_dim wk_pct wk_reset wk_dim h5_absent store_stale_txt < <(jq -r \
     --arg account "$CLAUDEGPT_ACCOUNT" --argjson now "$now" --argjson mtime "$limits_mtime" \
-    --argjson thr5 "$LIMITS_STALE_FIVE_HOUR" --argjson thrw "$LIMITS_STALE_WEEKLY" "$LIMITS_VIEW_JQ"'
+    --argjson thr5 "$LIMITS_STALE_FIVE_HOUR" --argjson thrw "$LIMITS_STALE_WEEKLY" \
+    --argjson sthr "$LIMITS_STALE_ROUTING" "$LIMITS_VIEW_JQ"'
     [.vendors.codex.accounts[]? | select(.account == $account)][0] as $a
     | def bucket($b; $thr):
         if ($b | type) != "object" then ["", "", ""] else
@@ -974,7 +979,8 @@ if [ -n "${CLAUDEGPT_ACCOUNT:-}" ]; then
                   or ($now - $mtime) > $thr then "1" else "" end) ]
         end;
     bucket($a.five_hour; $thr5) + bucket($a.weekly; $thrw)
-    + [($a != null and limits_window_absent($a.five_hour) | tostring)] | join("\u001f")
+    + [($a != null and limits_window_absent($a.five_hour) | tostring)]
+    + [limits_store_stale_text($a; $now; $sthr)] | join("\u001f")
   ' "$limits_file" 2>/dev/null)
   codex_quota_kick "$CLAUDEGPT_ACCOUNT" "$now"
 fi
@@ -2283,7 +2289,7 @@ fit_dir_active_only=0
 fit_dir_off=0
 fit_acct_max=0
 fit2_cost=1
-fit2_tokens=1
+fit2_pct=1
 fit2_labels=full
 fit2_sep=1
 
@@ -2549,12 +2555,9 @@ fit_label() {
 fit_compose2() {
   local gap=" ${sep} "
   [ "$fit2_sep" = 1 ] || gap=" "
-  line2="ctx ${ctx_pct_part}"
-  if [ "$fit2_tokens" = 1 ]; then
-    line2="${line2}${ctx_tokens_part}${ctx_warn_part}"
-  elif [ -n "$ctx_warn_part" ]; then
-    line2="${line2} ${ctx_warn_part}"
-  fi
+  line2="ctx"
+  if [ "$fit2_pct" = 1 ] || [ -z "$ctx_tokens_part" ]; then line2="ctx ${ctx_pct_part}"; fi
+  line2="${line2}${ctx_tokens_part}${ctx_warn_part}"
   if [ "$h5_absent" != true ]; then
     fit_label "$h5_time"
     line2="${line2}${gap}5h ${h5_pct_part}${fit_out}"
@@ -2565,6 +2568,7 @@ fit_compose2() {
     fit_label "$fable_reset_txt"
     line2="${line2}${gap}fb ${fable_pct_part}${fit_out}"
   fi
+  [ -n "$store_stale_txt" ] && line2="${line2}${gap}${RED}stale ${store_stale_txt}${RESET}"
   [ "$fit2_cost" = 1 ] && [ -n "$cost_part" ] && line2="${line2}${gap}${cost_part}"
 }
 
@@ -2628,10 +2632,10 @@ if [ -n "$fit_cols" ]; then
     [ "$fit_len" -le "$fit_cols" ] && break
     case "$fit_step" in
       1) fit2_cost=0 ;;
-      2) fit2_tokens=0 ;;
-      3) fit2_labels=short ;;
-      4) fit2_labels=off ;;
-      5) fit2_sep=0 ;;
+      2) fit2_labels=short ;;
+      3) fit2_labels=off ;;
+      4) fit2_sep=0 ;;
+      5) fit2_pct=0 ;;
     esac
     fit_compose2
   done

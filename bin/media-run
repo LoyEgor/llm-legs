@@ -140,5 +140,5 @@ label=gen
 for arg in "$@"; do
   case "$arg" in --ref | --ref=* | --resume | --resume=* | --edit | --edit=* | --extend | --extend=* | --for-video | --for-video=*) label=edit ;; esac
 done
-write_pointer "${account:-pool} · ${media_tag:-$kind·$vendors}" "$label" ''
+write_pointer "${account:-pool} · ${media_tag:-${kind}·$vendors}" "$label" ''
 exec "$bin_dir/$script" "$@"

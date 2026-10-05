@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import json
 import os
@@ -226,7 +227,7 @@ def arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     target = parser.add_mutually_exclusive_group()
     target.add_argument("--codex-home")
-    target.add_argument("--profile")
+    target.add_argument("--profile", action="append")
     target.add_argument("--all-accounts", action="store_true")
     parser.add_argument("home", nargs="?")
     parser.add_argument("--cache", default=os.environ.get("LLM_LIMITS_CODEX_CACHE", "~/.llm-limits-codex.json"))
@@ -251,20 +252,23 @@ def main() -> int:
     elif args.codex_home:
         targets = [(Path(args.codex_home).expanduser().name, str(Path(args.codex_home).expanduser()))]
     elif args.profile or args.home:
-        targets = [parse_target(args.profile or args.home, home)]
+        targets = [parse_target(value, home) for value in (args.profile or [args.home])]
     elif os.environ.get("CODEX_HOME"):
         configured_home = str(Path(os.environ["CODEX_HOME"]).expanduser())
         targets = [(Path(configured_home).name, configured_home)]
     else:
         targets = [("main", None)]
 
-    results: list[tuple[str, dict | None, int, str | None]] = []
-    for account, codex_home in targets:
+    def read(target: tuple[str, str | None]) -> tuple[str, dict | None, int, str | None]:
+        account, codex_home = target
         as_of = int(time.time())
         try:
-            results.append((account, fetch(codex_home, timeout), as_of, None))
+            return account, fetch(codex_home, timeout), as_of, None
         except Exception as exc:
-            results.append((account, None, as_of, str(exc)))
+            return account, None, as_of, str(exc)
+
+    with ThreadPoolExecutor(max_workers=len(targets)) as pool:
+        results = list(pool.map(read, targets))
 
     current = "main" if args.all_accounts else targets[0][0]
     payload = cache_payload(results, read_cache(cache), args.all_accounts, current)
@@ -275,6 +279,19 @@ def main() -> int:
     if args.all_accounts:
         print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
         return 0 if any(result for _, result, _, _ in results) else 1
+
+    if len(results) > 1:
+        failed = [f"{account}: {error}" for account, result, _, error in results
+                  if result is None and not authentication_required(error)]
+        if failed:
+            print(json.dumps({"error": "; ".join(failed), "source": "codex-app-server"}), file=sys.stderr)
+        if any(result for _, result, _, _ in results):
+            print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+            return 0
+        if has_auth_marker:
+            print(json.dumps({**payload, "auth_needed": True}, ensure_ascii=False, separators=(",", ":")))
+            return 2
+        return 1
 
     account, result, _, error = results[0]
     if result is None:

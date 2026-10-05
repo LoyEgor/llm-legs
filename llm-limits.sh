@@ -2,7 +2,7 @@
 set -u
 
 usage() {
-  echo "Usage: $0 [--json|--plain|--table] [--sort 5h|weekly|reset] [--no-write] [--refresh [--start-windows] | --refresh-account claude/NAME [--start-windows]|codex/NAME|gemini/NAME|grok/NAME|claude|codex|gemini|grok] [--gemini-remove] [--codex-remove]" >&2
+  echo "Usage: $0 [--json|--plain|--table] [--sort 5h|weekly|reset] [--no-write] [--refresh [--start-windows] | --refresh-account claude/NAME [--start-windows]|codex/NAME[,NAME...]|gemini/NAME[,NAME...]|grok/NAME[,NAME...]|claude|codex|gemini|grok] [--gemini-remove] [--codex-remove]" >&2
 }
 
 format=''
@@ -41,6 +41,11 @@ case "$refresh_account" in
   ''|claude|codex|gemini|grok|gemini/?*|claude/?*|codex/?*|grok/?*) ;;
   *) usage; exit 2 ;;
 esac
+case "$refresh_account" in claude/*,*|*/,*|*,|*,,*) usage; exit 2 ;; esac
+refresh_target_has() {
+  case ",$1," in *",$2,"*) return 0 ;; esac
+  return 1
+}
 # A bare vendor name refreshes every account of that vendor and touches no other vendor. It is
 # free by construction: --start-windows (the only paid path) stays a single-account request.
 refresh_vendor=''
@@ -281,12 +286,14 @@ iso_def='def iso2epoch:
     end
   end;'
 
-age_def='def compact_age($now):
+age_def='def age_seconds($now):
   (.as_of | iso2epoch) as $asof |
   (if $asof != null then ([$now - $asof, 0] | max)
    elif (.stale_seconds | type) == "number" then .stale_seconds
-   else null end) as $seconds |
-  limits_age_text($seconds);'
+   else null end);
+def compact_age($now): limits_age_text(age_seconds($now));
+def data_stale($now): limits_data_stale(age_seconds($now); $stale_thr);
+def stale_status($now): if data_stale($now) then "stale" else "-" end;'
 
 reset_format_def='def format_reset($now):
   . as $iso | ($iso | iso2epoch) as $epoch |
@@ -338,7 +345,8 @@ render_table() {
   fi
   # Sentinels (-1 / 9999999999) push rows with missing values last for every sort direction.
   local rows
-  rows=$(jq -r --argjson render_now "$now_epoch" "$iso_def$LIMITS_VIEW_JQ$age_def$reset_format_def"'
+  rows=$(jq -r --argjson render_now "$now_epoch" --argjson stale_thr "$LIMITS_STALE_ROUTING" \
+    "$iso_def$LIMITS_VIEW_JQ$age_def$reset_format_def"'
     def marked_pct($window):
       limits_pct_text($window.effective_pct; ($window.stale == true); ($window.expired == true));
     def rotation:
@@ -353,7 +361,7 @@ render_table() {
       if .auth_needed == true or
          ((.auth.status? | type) == "string" and .auth.status != "ok"
           and ($vendor != "grok" or .auth.status != "expired"))
-      then "login needed" else "-" end;
+      then "login needed" else stale_status($render_now) end;
     def row:
       (.five.expired == true) as $x5 | (.week.expired == true) as $xw | (.fable.expired == true) as $xf |
       (if ($x5 or .five.stale == true) then 1 else 0 end) as $d5 |
@@ -385,7 +393,7 @@ render_table() {
          ($v.claude.accounts[]
           | {src: ("claude/" + .account + (if .is_current then "*" else "" end)),
              five: .five_hour, week: .weekly, fable: .fable,
-             age: compact_age($render_now), alarm: (.age_alarm == true),
+             age: compact_age($render_now), alarm: (.age_alarm == true or data_stale($render_now)),
              rot: rotation, credits: credits, status: account_status("claude")})
        else {src: "claude", five: null, week: null, fable:null,
              age: ($v.claude | compact_age($render_now)), alarm: ($v.claude.age_alarm == true),
@@ -398,15 +406,16 @@ render_table() {
            (.accounts[] | select(.removed != true)
               | {src: ($k + "/" + .account + (if .is_current then "*" else "" end)),
                  five: .five_hour, week: .weekly, fable:null,
-                 age: compact_age($render_now), alarm: (.age_alarm == true), rot: rotation,
+                 age: compact_age($render_now), alarm: (.age_alarm == true or data_stale($render_now)),
+                 rot: rotation,
                  credits: credits,
                  status:account_status($k)})
          elif .available then
            {src: $k, five: .five_hour, week: .weekly, fable:null,
-            age: compact_age($render_now), alarm: (.age_alarm == true),
+            age: compact_age($render_now), alarm: (.age_alarm == true or data_stale($render_now)),
             rot: ((.accounts[0] // .) | rotation),
             credits: credits,
-            status:"-"}
+            status:stale_status($render_now)}
            else
            {src: $k, five: null, week: null, fable:null,
             age: compact_age($render_now), alarm: (.age_alarm == true), rot:"-", credits:"-",
@@ -472,6 +481,11 @@ claude_wall=$(wall_for claude)
 codex_wall=$(wall_for codex)
 gemini_wall=$(wall_for gemini)
 grok_wall=$(wall_for grok)
+
+# Every per-account read cold-starts a vendor CLI: at load ~250 (2026-10-05) a heartbeat agy read
+# needed ~50 s, and the old 45 s cap left 6 of 7 Gemini accounts stale for a day.
+usage_read_timeout=${LLM_LIMITS_USAGE_READ_TIMEOUT:-180}
+case "$usage_read_timeout" in ''|*[!0-9]*|0) usage_read_timeout=180 ;; esac
 
 gemini_base_home=$HOME
 gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}"
@@ -814,7 +828,7 @@ refresh_gemini_quota() {
     return 1
   }
   rc=0
-  env HOME="$gemini_home" AGY_BIN="$agy_bin" AGY_WORKDIR="${AGY_WORKDIR:-$script_dir}" \
+  env HOME="$gemini_home" AGY_BIN="$agy_bin" AGY_WORKDIR="${AGY_WORKDIR:-$script_dir}" AGY_QUOTA_TIMEOUT="$usage_read_timeout" \
     "$gemini_cmd" >"$gemini_tmp" 2>"$gemini_err" || rc=$?
   if [ "$rc" -eq 2 ] && jq -e '.auth_needed == true' "$gemini_tmp" >/dev/null 2>&1; then
     rc=0
@@ -822,10 +836,10 @@ refresh_gemini_quota() {
     # healthy token as logged out, so the confirming probe must never run beside another one.
     if [ -x /usr/bin/lockf ] && mkdir -p "$gemini_accounts_cache_dir" 2>/dev/null; then
       /usr/bin/lockf -k -t "$gemini_auth_lock_wait" "$gemini_accounts_cache_dir/.auth-probe.lock" \
-        env HOME="$gemini_home" AGY_BIN="$agy_bin" AGY_WORKDIR="${AGY_WORKDIR:-$script_dir}" \
+        env HOME="$gemini_home" AGY_BIN="$agy_bin" AGY_WORKDIR="${AGY_WORKDIR:-$script_dir}" AGY_QUOTA_TIMEOUT="$usage_read_timeout" \
         "$gemini_cmd" >"$gemini_tmp" 2>"$gemini_err" || rc=$?
     else
-      env HOME="$gemini_home" AGY_BIN="$agy_bin" AGY_WORKDIR="${AGY_WORKDIR:-$script_dir}" \
+      env HOME="$gemini_home" AGY_BIN="$agy_bin" AGY_WORKDIR="${AGY_WORKDIR:-$script_dir}" AGY_QUOTA_TIMEOUT="$usage_read_timeout" \
         "$gemini_cmd" >"$gemini_tmp" 2>"$gemini_err" || rc=$?
     fi
   fi
@@ -883,17 +897,20 @@ gemini_refresh_target=''
 case "$refresh_account" in
   gemini/*) gemini_refresh_target=${refresh_account#gemini/} ;;
 esac
-if [ -n "$gemini_refresh_target" ] && ! grep -qxF "$gemini_refresh_target" < <(printf '%s\n' "$gemini_refresh_accounts_list"); then
-  printf 'llm-limits.sh: unknown Gemini account: %s\n' "$gemini_refresh_target" >&2
-  exit 2
-fi
+while IFS= read -r gemini_account; do
+  [ -n "$gemini_account" ] || continue
+  if ! grep -qxF "$gemini_account" < <(printf '%s\n' "$gemini_refresh_accounts_list"); then
+    printf 'llm-limits.sh: unknown Gemini account: %s\n' "$gemini_account" >&2
+    exit 2
+  fi
+done < <(printf '%s\n' "${gemini_refresh_target//,/$'\n'}")
 if [ "$refresh" -eq 1 ] && ! vendor_paused gemini &&
    { [ -z "$refresh_account" ] || [ -n "$gemini_refresh_target" ] || [ "$refresh_vendor" = gemini ]; }; then
   if [ "${LLM_LIMITS_GEMINI_REFRESH:-1}" != 0 ]; then
     gemini_refresh_pids=()
     while IFS= read -r gemini_account; do
       [ -n "$gemini_account" ] || continue
-      [ -z "$gemini_refresh_target" ] || [ "$gemini_account" = "$gemini_refresh_target" ] || continue
+      [ -z "$gemini_refresh_target" ] || refresh_target_has "$gemini_refresh_target" "$gemini_account" || continue
       new_gemini_refresh_result
       refresh_gemini_quota "$gemini_account" "$gemini_refresh_result_file" &
       gemini_refresh_pids[${#gemini_refresh_pids[@]}]=$!
@@ -904,7 +921,7 @@ if [ "$refresh" -eq 1 ] && ! vendor_paused gemini &&
   elif [ -n "$gemini_refresh_target" ] || [ "$refresh_vendor" = gemini ]; then
     while IFS= read -r gemini_account; do
       [ -n "$gemini_account" ] || continue
-      [ -z "$gemini_refresh_target" ] || [ "$gemini_account" = "$gemini_refresh_target" ] || continue
+      [ -z "$gemini_refresh_target" ] || refresh_target_has "$gemini_refresh_target" "$gemini_account" || continue
       new_gemini_refresh_result
       record_gemini_refresh "$gemini_refresh_result_file" "$gemini_account" true false 'refresh disabled'
     done < <(printf '%s\n' "$gemini_refresh_accounts_list")
@@ -1238,7 +1255,7 @@ codex_refresh_error=''
 codex_refresh_attempted=0
 refresh_codex_quota() {
   local target=${1:-} codex_quota_cmd=${LLM_LIMITS_CODEX_QUOTA_CMD:-$script_dir/codex-quota.py}
-  local codex_tmp codex_err detail rc old_current cause
+  local codex_tmp codex_err detail rc old_current cause account
   local -a helper_args=(--all-accounts)
   if [ ! -x "$codex_quota_cmd" ]; then
     codex_refresh_error='helper not executable'
@@ -1253,11 +1270,14 @@ refresh_codex_quota() {
   codex_err=$(mktemp "${codex_cache}.err.XXXXXX") || { rm -f "$codex_tmp"; codex_refresh_error='cache temp failed'; return 1; }
   old_current=$(jq -r '.current // "main"' "$codex_cache" 2>/dev/null || printf 'main')
   if [ -n "$target" ]; then
-    helper_args=(--profile "$target" --no-cache)
+    helper_args=()
+    while IFS= read -r account; do helper_args+=(--profile "$account"); done < <(printf '%s\n' "${target//,/$'\n'}")
+    helper_args+=(--no-cache)
   fi
   rc=0
   if [ -n "$target" ]; then
-    "$codex_quota_cmd" "${helper_args[@]}" >"$codex_tmp" 2>"$codex_err" || rc=$?
+    CODEX_QUOTA_TIMEOUT="$usage_read_timeout" \
+      "$codex_quota_cmd" "${helper_args[@]}" >"$codex_tmp" 2>"$codex_err" || rc=$?
   else
     CODEX_QUOTA_TIMEOUT="${LLM_LIMITS_CODEX_QUOTA_TIMEOUT:-10}" \
       "$codex_quota_cmd" "${helper_args[@]}" >"$codex_tmp" 2>"$codex_err" || rc=$?
@@ -1276,8 +1296,8 @@ refresh_codex_quota() {
       fi
     fi
     if mv -f "$codex_tmp" "$codex_cache"; then
+      codex_refresh_error=$(jq -r '.error // empty' "$codex_err" 2>/dev/null || true)
       rm -f "$codex_err"
-      codex_refresh_error=''
     else
       codex_refresh_error='cache replace failed'
       rm -f "$codex_tmp" "$codex_tmp.current" "$codex_err"
@@ -1596,11 +1616,13 @@ refresh_grok_quota() {
     grok_refresh_error='cache directory failed'
     return 1
   fi
-  [ -z "$target" ] || helper_args+=(--account "$target")
+  local -a target_names=()
+  [ -z "$target" ] || while IFS= read -r account; do target_names+=("$account"); done < <(printf '%s\n' "${target//,/$'\n'}")
+  for account in ${target_names[@]+"${target_names[@]}"}; do helper_args+=(--account "$account"); done
   # A deliberate ask — one account, or the vendor row's Hard refresh — earns the touch; the passive
   # all-vendor collection stays a plain read.
   if [ -n "$target" ]; then
-    grok_touch_expired "$target"
+    grok_touch_expired "${target_names[@]}"
   elif [ "$refresh_vendor" = grok ]; then
     touch_names=()
     while IFS= read -r account; do [ -z "$account" ] || touch_names+=("$account"); done < <(grok_account_names)
@@ -1691,10 +1713,13 @@ case "$refresh_account" in grok/*) grok_refresh_target=${refresh_account#grok/} 
 # A name off the roster resolves to a directory with no auth.json, which the helper answers as a
 # definite `needs_login` verdict — and that would write a phantom account into the store and the
 # menu, asking Egor to log into an account that does not exist.
-if [ -n "$grok_refresh_target" ] && ! grep -qxF "$grok_refresh_target" < <(grok_account_names); then
-  printf 'llm-limits.sh: unknown Grok account: %s\n' "$grok_refresh_target" >&2
-  exit 2
-fi
+while IFS= read -r grok_account; do
+  [ -n "$grok_account" ] || continue
+  if ! grep -qxF "$grok_account" < <(grok_account_names); then
+    printf 'llm-limits.sh: unknown Grok account: %s\n' "$grok_account" >&2
+    exit 2
+  fi
+done < <(printf '%s\n' "${grok_refresh_target//,/$'\n'}")
 if [ "$refresh" -eq 1 ] && ! vendor_paused grok &&
    { [ -z "$refresh_account" ] || [ -n "$grok_refresh_target" ] || [ "$refresh_vendor" = grok ]; }; then
   if [ "${LLM_LIMITS_GROK_REFRESH:-1}" != 0 ]; then
@@ -2074,7 +2099,7 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
   --arg claude_target "$claude_refresh_target" --arg codex_target "$codex_refresh_target" \
   --arg gemini_target "$gemini_refresh_target" --arg grok_target "$grok_refresh_target" \
   --argjson alarm "$LIMITS_AGE_ALARM" --argjson paused "$paused_vendors_json" \
-  --argjson heartbeat "$refresh_heartbeat" \
+  --argjson heartbeat "$refresh_heartbeat" --argjson stale_after "$LIMITS_STALE_ROUTING" \
   --argjson codex_removed "$(if codex_main_removed; then printf true; else printf false; fi)" \
   "$iso_def$LIMITS_VIEW_JQ"'
   def normalize_reset:
@@ -2209,7 +2234,7 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
   def entry_account($roster; $target):
     account_prefix($roster) as $a |
     if $a != null then $a
-    elif $target != "" then $target
+    elif $target != "" and ($target | contains(",") | not) then $target
     else null end;
   def parse_entries($cause; $at; $roster; $target):
     if ($cause | type) != "string" or $cause == "" then []
@@ -2273,7 +2298,8 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
     ($vendor | account_error_entries) as $acct |
     (if $attempted != 1 then $prev
      elif $key == "gemini" or $target == "" then $incoming
-     else [$prev[] | select(.account != $target)] + $incoming
+     else ($target | split(",")) as $targets |
+       [$prev[] | select(.account as $a | $targets | index($a) | not)] + $incoming
      end | absorb_account_errs($acct)
          | unique_by([.account // "", .cause])
          | drop_unknown($roster)
@@ -2413,7 +2439,8 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
   # measurement of a vendor nobody is polling. Absence is the whole interface — the same one a leg
   # this machine never installed leaves.
   | delpaths([$paused[] | ["vendors", .]])
-  | .refresh_heartbeat = $heartbeat'); then
+  | .refresh_heartbeat = $heartbeat
+  | .account_stale_after_s = $stale_after'); then
   echo "llm-limits.sh: failed to build cache JSON" >&2
   exit 5
 fi
@@ -2457,7 +2484,8 @@ else
     plain_rst=$'\033[0m'
     plain_red=$'\033[31m'
   fi
-  jq -r --arg dim "$plain_dim" --arg rst "$plain_rst" --arg red "$plain_red" --argjson render_now "$now_epoch" "$iso_def$LIMITS_VIEW_JQ$age_def$reset_format_def"'
+  jq -r --arg dim "$plain_dim" --arg rst "$plain_rst" --arg red "$plain_red" --argjson render_now "$now_epoch" \
+    --argjson stale_thr "$LIMITS_STALE_ROUTING" "$iso_def$LIMITS_VIEW_JQ$age_def$reset_format_def"'
     def dimmed($window):
       if ($window.expired == true or $window.stale == true) then $dim + . + $rst else . end;
     def pct($window):
@@ -2481,9 +2509,9 @@ else
       if .auth_needed == true or
          ((.auth.status? | type) == "string" and .auth.status != "ok"
           and ($vendor != "grok" or .auth.status != "expired"))
-      then "login needed" else "-" end;
+      then "login needed" else stale_status($render_now) end;
     def aged($row): ($row | compact_age($render_now)) |
-      if $row.age_alarm == true then $red + . + $rst else . end;
+      if $row.age_alarm == true or ($row | data_stale($render_now)) then $red + . + $rst else . end;
     def line($src; $row; $rot; $credits; $status):
       $src + ": 5h " + pct($row.five_hour) + " @ " + reset($row.five_hour) +
       " | wk " + pct($row.weekly) + " @ " + reset($row.weekly) +
@@ -2508,7 +2536,7 @@ else
         credits; account_status($key))
     elif .value.available then
       line(.key; .value; ((.value.accounts[0] // .value) | rotation);
-        (.value | credits); "-")
+        (.value | credits); (.value | stale_status($render_now)))
     else line(.key; {age_alarm: (.value.age_alarm == true)}; "-"; "-";
       (if .value.auth_needed == true then "login needed" else (.value.status // "-") end)) +
       (if .value.last_wall then " | last wall " + .value.last_wall else "" end) end

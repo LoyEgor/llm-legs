@@ -67,6 +67,8 @@ def limits_reset_text($epoch; $now):
   else ($epoch | strflocaltime("%m-%d %H:%M")) end;
 def limits_age_alarm($seconds; $alarm):
   ($seconds == null) or ($seconds >= $alarm);
+def limits_data_stale($seconds; $thr):
+  ($seconds | type) == "number" and $seconds > $thr;
 def limits_age_text($seconds):
   if $seconds == null then "never"
   elif $seconds < 0 then "-"
@@ -112,4 +114,9 @@ def limits_store_wall_until($row; $now):
   [$row.five_hour?, $row.weekly? | select(type == "object") |
    select((limits_store_eff(.; $now) // -1) >= 100) |
    (.resets_at | limits_store_epoch) | select(type == "number" and . > $now)] | max;
+def limits_store_stale_text($row; $now; $thr):
+  (($row // {}).as_of | limits_store_epoch) as $asof |
+  if $row == null or $row.auth_needed == true or $asof == null
+     or (limits_data_stale($now - $asof; $thr) | not) then ""
+  else limits_age_text($now - $asof) end;
 '

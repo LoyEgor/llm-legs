@@ -38,6 +38,7 @@ fi
 target=${2:-}
 printf '%s\n' "$*" >>"$STUB_LOG"
 [ "${STUB_HANG_TARGET:-}" != "$target" ] || hang
+sleep "${STUB_CALL_SECONDS:-0}"
 vendor=${target%%/*}
 account=${target#*/}
 if [ "${STUB_PUSHBACK_TARGET:-}" = "$target" ]; then
@@ -54,7 +55,7 @@ if [ "${STUB_REFRESH_SUCCEED:-1}" = 1 ]; then
   tmp=$(mktemp "${LLM_LIMITS_CACHE}.tmp.XXXXXX") || exit 5
   jq --arg vendor "$vendor" --arg account "$account" --argjson now "$LLM_REFRESH_NOW" '
     .vendors[$vendor].accounts |= map(
-      if .account == $account then
+      if (.account | IN($account | split(",")[])) then
         .five_hour.as_of=$now | .weekly.as_of=$now |
         del(.refresh_error, .auth_needed, .auth_checked_at)
       else . end) |
@@ -261,7 +262,7 @@ run_refresh() {
     STUB_STDERR_TARGET="${STUB_STDERR_TARGET:-}" STUB_STDERR_TEXT="${STUB_STDERR_TEXT:-}" \
     STUB_PASSIVE_RC="${STUB_PASSIVE_RC:-0}" \
     STUB_PASSIVE_HANG="${STUB_PASSIVE_HANG:-}" STUB_HANG_TARGET="${STUB_HANG_TARGET:-}" \
-    STUB_HANG_PIDS="$dir/hang.pids" \
+    STUB_HANG_PIDS="$dir/hang.pids" STUB_CALL_SECONDS="${STUB_CALL_SECONDS:-0}" \
     LLM_LIMITS_REFRESH_COLLECTOR_TIMEOUT="${LLM_LIMITS_REFRESH_COLLECTOR_TIMEOUT:-600}" \
     LLM_LIMITS_REFRESH_LOCK_CEILING_SECONDS="${LLM_LIMITS_REFRESH_LOCK_CEILING_SECONDS:-3600}" \
     PATH="$GROK_BIN:$PATH" \
@@ -1291,6 +1292,41 @@ for journal in "$WORK"/*/journal.jsonl; do
     (.interval_min | type) == "number"] | length > 0 and all' "$journal" >/dev/null || \
     fail "invalid journal line in $journal"
 done
+pass
+
+seed_batched() {
+  mkdir -p "$1/home"
+  write_store "$1/store.json" "$NOW" 60 7200 7200 7200
+  jq --argjson now "$NOW" '
+    def row($name): {account:$name,five_hour:{used_pct:10,as_of:($now-7200)},weekly:{used_pct:20,as_of:($now-7200)}};
+    .vendors.codex.accounts = [range(5) | row("co\(.)")] |
+    .vendors.gemini.accounts = [range(5) | row("ge\(.)")] |
+    .vendors.grok.accounts = [range(5) | {account:"gr\(.)",weekly:{used_pct:20,as_of:($now-7200)}}]' \
+    "$1/store.json" >"$1/store.tmp" && mv "$1/store.tmp" "$1/store.json"
+  write_state "$1/state.json" 30 30 30 0 0 30
+}
+seed_batched "$WORK/batched-baseline"
+batched_started=$SECONDS
+run_refresh "$WORK/batched-baseline" "$NOW" || fail 'batched-vendors baseline run failed'
+baseline_seconds=$((SECONDS - batched_started))
+case_dir="$WORK/batched-vendors"
+seed_batched "$case_dir"
+batched_started=$SECONDS
+STUB_CALL_SECONDS=2 run_refresh "$case_dir" "$NOW" || fail 'batched-vendors run failed'
+batched_seconds=$((SECONDS - batched_started - baseline_seconds))
+for vendor in codex gemini grok; do
+  [ "$(grep -c -- "^--refresh-account $vendor/" "$case_dir/calls.log")" -eq 1 ] || \
+    fail "five stale $vendor accounts took $(grep -c -- "^--refresh-account $vendor/" "$case_dir/calls.log") collector calls, not one"
+  jq -eR --arg vendor "$vendor" 'fromjson | select(.vendor == $vendor and .step == 1 and
+    .outcome == "refreshed" and (.accounts_tried | length) == 5)' "$case_dir/journal.jsonl" >/dev/null || \
+    fail "the batched $vendor call did not refresh all five accounts"
+done
+[ "$batched_seconds" -lt 15 ] || \
+  fail "15 stale accounts at 2 s per collector call added ${batched_seconds}s to the tick: calls must be per vendor, not per account"
+pass
+
+[ "$(plutil -extract ProcessType raw "$(dirname "$0")/../launchd/com.llm-refresh.plist")" = Standard ] || \
+  fail "com.llm-refresh must run as ProcessType Standard: under Background QoS a loaded machine starves the collector for hours"
 pass
 
 printf 'PASS: %s llm-refresh tests\n' "$passed"

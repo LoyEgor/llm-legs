@@ -294,6 +294,52 @@ grep -qx -- 'args=--all-accounts timeout=10' "$CODEX_DISCOVERY_SENTINEL" \
 jq -e '.current == "main" and ([.accounts[] | select(.account == "work3")] | length) == 1' \
   "$CODEX_ACCOUNTS_CACHE" >/dev/null \
   || fail "Codex discovery refresh did not add the disk profile or preserve all-account current semantics"
+
+BOUND_HOME="$WORK/usage-bound-home"
+BOUND_LOG="$WORK/usage-bound.log"
+mkdir -p "$BOUND_HOME/.gemini-profiles/g1" "$BOUND_HOME/.codex-profiles/work3"
+cat >"$WORK/fake-bound-helper" <<EOF
+#!/usr/bin/env bash
+printf 'agy=%s codex=%s\n' "\${AGY_QUOTA_TIMEOUT-}" "\${CODEX_QUOTA_TIMEOUT-}" >>"$BOUND_LOG"
+exit 1
+EOF
+chmod +x "$WORK/fake-bound-helper"
+usage_bound_seen() {
+  : >"$BOUND_LOG"
+  env -u AGY_QUOTA_TIMEOUT -u CODEX_QUOTA_TIMEOUT HOME="$BOUND_HOME" GEMINIB_SECURITY_CMD=/usr/bin/true \
+    LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_GEMINI_CMD="$WORK/fake-bound-helper" \
+    LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$WORK/usage-bound-gemini" LLM_LIMITS_GEMINI_CACHE="$WORK/usage-bound-gemini.json" \
+    LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD="$WORK/fake-bound-helper" \
+    LLM_LIMITS_CODEX_CACHE="$WORK/usage-bound-codex.json" LLM_LIMITS_CACHE="$CACHE" "$@" >/dev/null 2>&1 || true
+  cat "$BOUND_LOG"
+}
+seen=$(usage_bound_seen bash "$SCRIPT" --refresh-account gemini/g1 --no-write)
+[ "$seen" = 'agy=180 codex=' ] \
+  || fail "Gemini per-account read must run under the 180 s usage-read bound, saw: $seen"
+seen=$(usage_bound_seen bash "$SCRIPT" --refresh-account codex/work3 --no-write)
+[ "$seen" = 'agy= codex=180' ] \
+  || fail "Codex per-account read must run under the same usage-read bound, saw: $seen"
+seen=$(usage_bound_seen env LLM_LIMITS_USAGE_READ_TIMEOUT=7 bash "$SCRIPT" --refresh-account gemini/g1 --no-write)
+[ "$seen" = 'agy=7 codex=' ] || fail "LLM_LIMITS_USAGE_READ_TIMEOUT did not set the Gemini read bound, saw: $seen"
+
+mkdir -p "$BOUND_HOME/.gemini-profiles/g2" "$BOUND_HOME/.gemini-profiles/g3" "$BOUND_HOME/.codex-profiles/work4"
+cat >"$WORK/fake-list-helper" <<EOF
+#!/usr/bin/env bash
+printf 'home=%s args=%s\n' "\$(basename "\$HOME")" "\$*" >>"$BOUND_LOG"
+exit 1
+EOF
+chmod +x "$WORK/fake-list-helper"
+seen=$(usage_bound_seen env LLM_LIMITS_GEMINI_CMD="$WORK/fake-list-helper" \
+  bash "$SCRIPT" --refresh-account gemini/g1,g3 --no-write | sort | paste -sd'|' -)
+[ "$seen" = 'home=g1 args=|home=g3 args=' ] || fail "a Gemini account list must read exactly the listed accounts, saw: $seen"
+seen=$(usage_bound_seen env LLM_LIMITS_CODEX_QUOTA_CMD="$WORK/fake-list-helper" \
+  bash "$SCRIPT" --refresh-account codex/work3,work4 --no-write)
+[ "$seen" = 'home=usage-bound-home args=--profile work3 --profile work4 --no-cache' ] \
+  || fail "a Codex account list must be one helper call naming every account, saw: $seen"
+list_rc=0
+HOME="$BOUND_HOME" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --refresh-account claude/a,b --no-write \
+  >/dev/null 2>&1 || list_rc=$?
+[ "$list_rc" -eq 2 ] || fail "a Claude account list must be refused (revive stays one account), got $list_rc"
 CODEX_PARTIAL_HOME="$WORK/codex-partial-home"
 CODEX_PARTIAL_CACHE="$WORK/codex-partial-cache.json"
 mkdir -p "$CODEX_PARTIAL_HOME/.codex-profiles/a" "$CODEX_PARTIAL_HOME/.codex-profiles/b"

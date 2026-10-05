@@ -604,7 +604,7 @@ carry_owner_chats() { # id -> <ref>\t<prompt>\topened <account> <session>|messag
   local id=$1 file batch owner session ref branch wts prompt why opened sweep repo
   local -a repos
   file=$(night_file "$id")
-  sweep=$("$repo_root/bin/chat-name" "$(jq -r '.session // "-"' "$file")" 2>/dev/null) && sweep="«$sweep»" ||
+  sweep=$("$repo_root/bin/chat-name" "$(jq -r '.session // "-"' "$file")" 2>/dev/null) && sweep="«${sweep}»" ||
     sweep="running night $id"
   while IFS= read -r batch; do
     owner=$(jq -r .owner <<<"$batch") session=$(jq -r .session <<<"$batch")

@@ -18,12 +18,14 @@ run_worker=${WORKER_RUN_ID:-} run_session=${CLAUDE_CODE_SESSION_ID:-${CLAUDE_LAU
 
 usage() {
   cat >&2 <<'USAGE'
-usage: run-suites.sh [--repo <dir>] [-j <n>] [--changed] [--all] [suite ...]
+usage: run-suites.sh [--repo <dir>] [--run-all] [-j <n>] [--changed] [--all] [suite ...]
 
 Runs a repository's test suites in parallel, one log per suite, and prints one table.
 Exit 1 if any suite failed, with the last 30 lines of each failure.
 
   --repo <dir>  repository root (default: the git root of the current directory)
+  --run-all     set by every tests/run-all: under WORKER_RUN_ID a run naming no suite and no
+                --changed is refused (exit 3); the full run is the night's
   -j <n>        parallel jobs (default: cores / 2, minimum 2)
   --changed     only suites whose text, or a tests/ helper file they name, mentions the basename
                 of a path in `git diff --name-only HEAD` or an untracked file. A HEURISTIC: a suite that
@@ -45,11 +47,13 @@ repo=''
 jobs=0
 changed=false
 include_live=false
+from_run_all=false
 declare -a explicit=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --repo) [ "$#" -ge 2 ] || usage; repo="$2"; shift 2 ;;
     -j) [ "$#" -ge 2 ] || usage; jobs="$2"; shift 2 ;;
+    --run-all) from_run_all=true; shift ;;
     --changed) changed=true; shift ;;
     --all) include_live=true; shift ;;
     -h|--help) usage ;;
@@ -58,6 +62,11 @@ while [ "$#" -gt 0 ]; do
     *) explicit+=("$1"); shift ;;
   esac
 done
+
+if $from_run_all && [ -n "$run_worker" ] && ! $changed && [ "${#explicit[@]}" -eq 0 ]; then
+  printf 'run-all: a worker never runs every suite, the night does: tests/run-all $(tests/affected <file>...) or tests/run-all --changed\n' >&2
+  exit 3
+fi
 
 [ -n "$repo" ] || repo=$(git rev-parse --show-toplevel 2>/dev/null) || fail 'no --repo and no git root here'
 repo=$(cd "$repo" && pwd -P) || fail "unreadable repo: $repo"

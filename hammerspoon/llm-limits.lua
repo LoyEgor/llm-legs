@@ -247,7 +247,7 @@ end
 local function rowTitle(account, label, bucket, dim, atLimit, barWarning, columns)
   bucket = type(bucket) == "table" and bucket or {}
   columns = columns or {}
-  dim = dim or bucket.expired == true or resetIsPast(bucket.resets_at)
+  dim = dim or columns.untrusted == true or bucket.expired == true or resetIsPast(bucket.resets_at)
   local pct = tonumber(bucket.effective_pct)
   local pctText = columns.pct or (pct and string.format("%d%%", math.floor(pct + 0.5)) or "-")
   local reset = columns.reset or formatResetTime(bucket.resets_at)
@@ -256,6 +256,9 @@ local function rowTitle(account, label, bucket, dim, atLimit, barWarning, column
   -- The detail trails the fixed columns: set between them it pushes the reset right on the one row
   -- that carries it, so a single Grok build figure would misalign the whole menu.
   local suffix = string.format("  %4s  %9s%s", pctText, reset, columns.detail or "")
+  if columns.untrusted and pctText ~= "-" and pctText ~= "" then
+    suffix = string.format("  %5s %9s%s", pctText .. "~", reset, columns.detail or "")
+  end
   if barWarning and not atLimit then
     return infoTitle(prefix, false, dim, false)
       .. infoTitle(bar, true, false, false)
@@ -296,6 +299,30 @@ local vendorRefreshErrors, refreshErrorItem, appendRefreshErrorRows
 local function lateAge(age, late)
   if not late then return age end
   return age and (age .. " ⧖") or "⧖"
+end
+
+-- The threshold travels in the store, but the age is taken here: a collector starved past its
+-- timeout writes nothing, so a verdict it stamped would freeze at "fresh".
+local function staleSeconds(asOf, staleAfter)
+  local timestamp = parseTime(asOf)
+  if not timestamp or type(staleAfter) ~= "number" then return nil end
+  local seconds = os.time() - timestamp
+  if seconds > staleAfter then return seconds end
+  return nil
+end
+
+local function accountAgeText(asOf, late, staleAfter, alarm)
+  local seconds = staleSeconds(asOf, staleAfter)
+  if seconds then return "stale " .. style.age(seconds), true, true end
+  return lateAge(formatAccountAge(asOf), late), alarm, false
+end
+
+local function blockAuthNeeded(vendorKey, block)
+  local authStatus = type(block.auth) == "table" and block.auth.status or nil
+  if vendorKey == "grok" then
+    return authStatus == "needs_login" or (block.auth_needed == true and authStatus ~= "expired")
+  end
+  return block.auth_needed == true
 end
 
 -- Parked is read from worker-model and never from the store: the collector writes no entry for a
@@ -776,8 +803,30 @@ function M.refreshState()
   -- nobody can read warns the menubar. A parked vendor renders no error rows at all.
   local heartbeat = limits and type(limits.refresh_heartbeat) == "table" and limits.refresh_heartbeat
   local stalledSince = heartbeat and heartbeat.stalled == true and tonumber(heartbeat.last_tick_at) or nil
-  local warning = globalError ~= nil or stalledSince ~= nil
   local pausedVendors = select(3, readWorkerModel())
+  local staleCount, staleOldest = 0, nil
+  local staleAfter = limits and tonumber(limits.account_stale_after_s)
+  if staleAfter and type(limits.vendors) == "table" then
+    for _, entry in ipairs(MENU_VENDORS) do
+      local vendor = limits.vendors[entry.key]
+      if not pausedVendors[entry.key] and type(vendor) == "table" and vendor.removed ~= true then
+        local rows = type(vendor.accounts) == "table" and #vendor.accounts > 0 and vendor.accounts
+          or (vendor.available == true and { vendor }) or {}
+        for _, block in ipairs(rows) do
+          if type(block) == "table" and block.removed ~= true
+              and not (block.account and removalPending(entry.key, block.account))
+              and not blockAuthNeeded(entry.key, block) then
+            local seconds = staleSeconds(block.as_of, staleAfter)
+            if seconds then
+              staleCount = staleCount + 1
+              staleOldest = math.max(staleOldest or 0, seconds)
+            end
+          end
+        end
+      end
+    end
+  end
+  local warning = globalError ~= nil or stalledSince ~= nil or staleCount > 0
   if limits and type(limits.vendors) == "table" then
     for _, name in ipairs({ "claude", "codex", "gemini", "grok", "opencode" }) do
       local vendor = limits.vendors[name]
@@ -796,6 +845,8 @@ function M.refreshState()
     prefix = #holds > 0 and "⚠ " or busy and "⟳ " or (warning and "⚠ " or ""),
     globalError = globalError,
     stalledSince = stalledSince,
+    staleCount = staleCount,
+    staleOldest = staleOldest,
     vendorErrors = vendorErrors,
   }
 end
@@ -2729,6 +2780,13 @@ local function buildMenuItems()
       disabled = true,
     })
   end
+  if state.staleCount > 0 then
+    table.insert(menu, {
+      title = infoTitle("⚠ stale data: " .. plural(state.staleCount, "account")
+        .. ", up to " .. style.age(state.staleOldest) .. " old — numbers not trusted", true),
+      disabled = true,
+    })
+  end
   local pendingOk, pending = pcall(function()
     return _G.ClaudeChatSwitch and _G.ClaudeChatSwitch.pending
       and _G.ClaudeChatSwitch.pending()
@@ -2767,6 +2825,7 @@ local function buildMenuItems()
   table.insert(menu, { title = "-" })
   if limits and type(limits.vendors) == "table" then
     local pins, roles, paused, vendorPins = readWorkerModel()
+    local staleAfter = tonumber(limits.account_stale_after_s)
     local roleItems = workerSwitchItems
     -- With a role off the list row already shows it; the submenu item stays plain and its click
     -- restores the off roles instead of dropping an account out of a pool nobody closed.
@@ -2912,11 +2971,13 @@ local function buildMenuItems()
           -- Gemini's pin has to be known before the row is built now that the mark lives inside
           -- the title instead of being appended behind the age.
           local geminiPinned = entry.key == "gemini" and pinSet["main"] == true
+          local fallbackAge, fallbackAlarm = accountAgeText(vendor.as_of, anyLate, staleAfter,
+            vendor.age_alarm == true)
           local fallbackRow = {
-            title = accountTitle(entry.label, lateAge(formatAccountAge(vendor.as_of), anyLate), false,
+            title = accountTitle(entry.label, fallbackAge, false,
               vendor.needs_user_entry == true,
               geminiPinned or vendorPins[entry.key] == true, nil, roleOff,
-              vendor.age_alarm == true),
+              fallbackAlarm),
             disabled = true,
           }
           local account = vendor.current_account or vendor.account
@@ -2963,14 +3024,10 @@ local function buildMenuItems()
           local acct = block.account or entry.label
           local enabled = poolStateFor(entry.key, acct, block.enabled ~= false)
           local authStatus = type(block.auth) == "table" and block.auth.status or nil
-          local authNeeded = block.auth_needed == true
-          if entry.key == "grok" then
-            authNeeded = authStatus == "needs_login"
-              or (block.auth_needed == true and authStatus ~= "expired")
-          end
-          local accountAge = lateAge(formatAccountAge(block.as_of), isAccountRows and late[acct])
-          local accountAgeAlarm = block.age_alarm == true
-            and not (entry.key == "grok" and authStatus == "expired")
+          local authNeeded = blockAuthNeeded(entry.key, block)
+          local accountAge, accountAgeAlarm, untrusted = accountAgeText(block.as_of,
+            isAccountRows and late[acct], not authNeeded and staleAfter or nil,
+            block.age_alarm == true and not (entry.key == "grok" and authStatus == "expired"))
           local generalAtLimit = bucketAtLimit(fiveHour) or bucketAtLimit(weekly)
           local pinExists = pinSet[acct] == true
           local pinFn
@@ -3107,12 +3164,14 @@ local function buildMenuItems()
             if type(fiveHour) == "table" and not windowAbsent(fiveHour) then
               local fiveRow = {
                 title = rowTitle("", "5h", fiveHour, isStale(fiveHour),
-                  bucketAtLimit(fiveHour)),
+                  bucketAtLimit(fiveHour), false, { untrusted = untrusted }),
                 disabled = true,
               }
               table.insert(menu, fiveRow)
             end
             local function tailRow(label, bucket, barWarning, columns)
+              columns = columns or {}
+              columns.untrusted = untrusted
               if type(bucket) == "table" then
                 return rowTitle("", label, bucket, isStale(bucket), bucketAtLimit(bucket),
                   barWarning, columns)
@@ -3262,6 +3321,9 @@ function M.title()
   if red > 0 then parts[#parts + 1] = plural(red, "hold") end
   if state.globalError then
     parts[#parts + 1] = state.globalError.class or "refresh failed"
+  end
+  if state.staleCount > 0 then
+    parts[#parts + 1] = "stale " .. style.age(state.staleOldest)
   end
   if #parts == 0 then return "LLM Limits" end
   return hs.styledtext.new("LLM Limits: " .. table.concat(parts, " · "),

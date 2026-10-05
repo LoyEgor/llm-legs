@@ -160,6 +160,33 @@ alarm_plain_piped=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$ALARM_STORE" \
   LLM_LIMITS_CACHE="$ALARM_CACHE" bash "$SCRIPT" --plain) || fail "age-alarm plain collection failed"
 printf '%s' "$alarm_plain_piped" | grep -q $'\033' && fail "the redirected plain output emitted color escapes"
 
+# Hours-old data short of the day alarm is still data nobody may trust: STATUS says so and AGE is red.
+STALE_STORE="$WORK/stale-store"
+mkdir -p "$STALE_STORE/limits"
+printf 'fresh\n' >"$STALE_STORE/.claudeb-state"
+printf '{"five_hour":{"used_percentage":0,"resets_at":%s,"as_of":%s,"origin":"usage"},"auth":{"status":"ok","checked_at":%s}}\n' \
+  "$((alarm_now + 5000))" "$((alarm_now - 120))" "$alarm_now" >"$STALE_STORE/limits/fresh.json"
+printf '{"five_hour":{"used_percentage":0,"resets_at":%s,"as_of":%s,"origin":"usage"},"auth":{"status":"ok","checked_at":%s}}\n' \
+  "$((alarm_now + 5000))" "$((alarm_now - 19 * 3600))" "$alarm_now" >"$STALE_STORE/limits/old.json"
+stale_routing=$(. "$ROOT/share/limits-view.sh" && printf '%s' "$LIMITS_STALE_ROUTING")
+stale_json=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$STALE_STORE" LLM_LIMITS_CACHE="$WORK/stale-cache.json" \
+  bash "$SCRIPT" --json) || fail "stale-data collection failed"
+jq -e --argjson thr "$stale_routing" '.account_stale_after_s == $thr' <<<"$stale_json" >/dev/null \
+  || fail "the store does not publish the account staleness threshold"
+stale_table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$STALE_STORE" LLM_LIMITS_CACHE="$WORK/stale-cache.json" \
+  bash "$SCRIPT" --table) || fail "stale-data table collection failed"
+awk '$1 == "claude/old" {print $NF}' <<<"$stale_table" | grep -qx stale \
+  || fail "a 19h-old account did not say stale in STATUS: $stale_table"
+awk '$1 == "claude/fresh*" {print $NF}' <<<"$stale_table" | grep -qx -- - \
+  || fail "a fresh account said stale: $stale_table"
+stale_color=$(CLICOLOR_FORCE=1 HOME="$HOME_FIXTURE" CLAUDEB_DIR="$STALE_STORE" \
+  LLM_LIMITS_CACHE="$WORK/stale-cache.json" bash "$SCRIPT" --table) || fail "stale-data color table failed"
+grep '^claude/old' <<<"$stale_color" | grep -q $'\033\[31m19h' || fail "a 19h-old age did not render red"
+stale_plain=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$STALE_STORE" LLM_LIMITS_CACHE="$WORK/stale-cache.json" \
+  bash "$SCRIPT" --plain) || fail "stale-data plain collection failed"
+grep '^claude/old:' <<<"$stale_plain" | grep -q '| status stale$' \
+  || fail "a 19h-old account did not say stale in plain: $stale_plain"
+
 USABLE_STORE="$WORK/usable-store"
 USABLE_HOME="$WORK/usable-home"
 mkdir -p "$USABLE_STORE/limits" "$USABLE_HOME/.codex/sessions"

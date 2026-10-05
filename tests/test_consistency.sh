@@ -133,6 +133,14 @@ assert grep -Fq -- '--argjson thr5 "$LIMITS_STALE_FIVE_HOUR" --argjson thrw "$LI
 assert grep -Fq -- '-gt "$LIMITS_STALE_FABLE"' "$STATUSLINE"
 assert eq "$(grep -cE -- '-gt (1800|21600)\b' "$STATUSLINE")" 0
 
+# account data staleness is the routing threshold on every surface: the collector publishes it for
+# the menu and judges its own table with it, the statusline sources it, none carries a literal
+assert grep -Fq -- '--argjson stale_after "$LIMITS_STALE_ROUTING"' "$LLMLIMITS"
+assert eq "$(grep -c -- '--argjson stale_thr "$LIMITS_STALE_ROUTING"' "$LLMLIMITS")" 2
+assert eq "$(grep -c -- '--argjson sthr "$LIMITS_STALE_ROUTING"' "$STATUSLINE")" 2
+assert grep -Fq 'tonumber(limits.account_stale_after_s)' "$ROOT/hammerspoon/llm-limits.lua"
+assert eq "$(grep -cE '\b7200\b' "$ROOT/hammerspoon/llm-limits.lua")" 0
+
 # --- Row cb: Codex quota kick cadence ----------------------------------------
 # Deliberately NOT row a's thresholds: this is how often a gateway chat probes, and the
 # backoff matching the heartbeat's base cadence is a coincidence, not a dependency.
@@ -2322,6 +2330,19 @@ _shape_lib="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/lib/review-journa
 writer_shape=$(sed -n '/^path_shape_ok()/,/^}/p' "$WORKER_RUN" | sed -n '/case /,/esac/p')
 reader_shape=$(sed -n '/^rj_path_shape_ok()/,/^}/p' "$_shape_lib" | sed -n '/case /,/esac/p')
 assert eq "$writer_shape" "$reader_shape"
+# The snapshot lister filters in python, never through path_shape_ok: both must split one tree alike.
+_shape_repo="$CONSISTENCY_CACHE/shape-repo"
+git init -q "$_shape_repo"
+for _name in ok '-dash' '~tilde' $'tab\there' $'c1\xc2\x85name' 'with space' '..dots' 'dots..'; do
+  : >"$_shape_repo/$_name"
+done
+_shape_split=$(bash -c 'eval "$(sed -n "/^path_shape_ok()/,/^}/p; /^workdir_dirty_paths()/,/^}/p" "$1")"
+  : >"$2.unshaped"; workdir_dirty_paths "$2" "$2.unshaped"; echo ---; tr "\0" "\n" <"$2.unshaped" | sort' \
+  _ "$WORKER_RUN" "$_shape_repo")
+_shape_want=$(bash -c 'eval "$(sed -n "/^path_shape_ok()/,/^}/p" "$1")"; cd "$2" || exit 1; shopt -s dotglob
+  for p in *; do [ "$p" = .git ] || ! path_shape_ok "$p" || printf "%s\n" "$p"; done | sort -u; echo ---
+  for p in *; do [ "$p" = .git ] || path_shape_ok "$p" || printf "%s\n" "$p"; done | sort' _ "$WORKER_RUN" "$_shape_repo")
+assert eq "$_shape_split" "$_shape_want"
 # Only for a run some chat answers for, and never rewritten once it stands: a claim APPENDS.
 assert grep -Fq '[ -s "$directory/launcher" ] || return 0' "$WORKER_RUN"
 assert grep -Fq '>>"$directory/produced"' "$WORKER_RUN"
@@ -3333,6 +3354,11 @@ unjournaled=$(for f in "$ROOT"/tests/test_*.sh "$ROOT"/tests/e2e_*.sh; do
   [ "$(sed -n 2p "$f")" = '. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"' ] || printf '%s ' "${f##*/}"
 done)
 assert eq "suites without the journal line 2: $unjournaled" "suites without the journal line 2: "
+# bash 5.3 in a UTF-8 locale reads a non-ASCII byte right after $name as part of the name: under set -u that dies.
+glued=$(cd "$ROOT" && git grep -lIP '\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F]' -- bin share tests | while IFS= read -r f; do
+  { [ "${f##*.}" = sh ] || head -1 "$f" | grep -q bash; } && printf '%s ' "$f"
+done)
+assert eq "bash expansions glued to a non-ASCII char, brace them: $glued" "bash expansions glued to a non-ASCII char, brace them: "
 
 printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the anchors store under the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot envelope the menubar reads, the one resolver every surface names a chat through, the review round a fixing worker'"'"'s brief carries in the one field both repositories read, the launchers a headless vendor run may reach the machine through, the one anchors store per git family every side resolves with the same command and one writer holds a lock over, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types the spawn hook alone admits and no second gate judges, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the four carriers that spell the gateway model-id prefix, the one Gemini family list `geminib families` prints, the one file that pins which Flash family the review cells run and no worker reads, the one Grok model list `grokb models` prints and the single rule that collapses its default to the vendor word, the one web-search table every vendor and every worker-run entry point resolves through, the Hammerspoon entry points this repository calls, pinned fail-closed at their install path, the hook and statusline journals the Harness doctor reads, the week-over-week Δ Token tracking and the Harness doctor share, the one limiter hold directory every writer raises a hold in and both the doctor and the menu read, the one red every Hammerspoon menu paints with styled text that always names its font, the one gemini-web media store the engines write and the menu only reads, the chatgpt-web image store beside it that shares its one Chrome clone, the one least-recently-started order every media route picks by, the one per-account store table every Remove purges through and the doctor checks against the roster, the four-doctor roster every lister spells in one order, the explicit --account every media entry point refuses empty before a spend, the speed doctor collector journals, the presence journal Speed reads, the one wait journal every wait class writes and the Harness doctor shows, and the README PATH link of every script a claude-setup agent runs by name) and match %s
 ' "$asserts" "$DOC"

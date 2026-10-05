@@ -1499,15 +1499,27 @@ workdir_dirty_paths() { # workdir [unshaped-list]
   local answer
   [ -n "${1:-}" ] && [ "$1" != null ] || return 1
   answer=$(git -C "$1" status --porcelain --no-renames -uall -z 2>/dev/null |
-    (while IFS= read -r -d '' entry; do
-      path=${entry:3}
-      [ -z "$path" ] && continue
-      if ! path_shape_ok "$path"; then
-        [ -z "${2:-}" ] || printf '%s\0' "$path" >>"$2" || exit 1
-        continue
-      fi
-      printf '%s\n' "$path"
-    done); status=("${PIPESTATUS[@]}");
+    python3 -c '
+import locale, re, sys
+
+try:
+    locale.setlocale(locale.LC_CTYPE, "")
+except locale.Error:
+    pass
+cntrl = rb"[\x00-\x1f\x7f]"
+if locale.nl_langinfo(locale.CODESET) == "UTF-8":
+    cntrl += rb"|\xc2[\x80-\x9f]"
+unshaped_re = re.compile(rb"\A(?:\.\.?\Z|[/~-]|\.\./)|/\.\./|/\.\.\Z|" + cntrl)
+shaped, unshaped = [], []
+for entry in sys.stdin.buffer.read().split(b"\0")[:-1]:
+    path = entry[3:]
+    if path:
+        (unshaped if unshaped_re.search(path) else shaped).append(path)
+if unshaped and sys.argv[1]:
+    with open(sys.argv[1], "ab") as fh:
+        fh.write(b"".join(path + b"\0" for path in unshaped))
+sys.stdout.buffer.write(b"".join(path + b"\n" for path in shaped))
+' "${2:-}"; status=("${PIPESTATUS[@]}");
     [ "${status[0]}" = 0 ] && [ "${status[1]}" = 0 ]) || return 1
   [ -z "$answer" ] || printf '%s\n' "$answer" | sort -u
 }
@@ -1520,8 +1532,7 @@ workdir_dirty_paths() { # workdir [unshaped-list]
 # 2026-08-22). A path git cannot hash (gone, a directory, a special file) records `-`, which
 # compares equal only to itself.
 workdir_dirty_shas() { # workdir [unshaped-digest-out]
-  local top paths path sha line fi=0
-  local -a all=() files=() file_shas=()
+  local top paths
   top=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || return 1
   [ -n "$top" ] || return 1
   if [ -n "${2:-}" ]; then
@@ -1532,43 +1543,68 @@ workdir_dirty_shas() { # workdir [unshaped-digest-out]
     paths=$(workdir_dirty_paths "$1") || return 1
   fi
   [ -n "$paths" ] || return 0
-  while IFS= read -r path; do
-    [ -n "$path" ] || continue
-    all+=("$path")
-    if [ -L "$top/$path" ]; then
-      :
-    elif [ -f "$top/$path" ]; then
-      files+=("$path")
-    fi
-  done <<<"$paths"
-  # A missing path makes --stdin-paths stop and print nothing after it; the per-path
-  # fallback is what records `-` for that path and still hashes the rest.
-  if [ "${#files[@]}" -gt 0 ]; then
-    if line=$(printf '%s\n' "${files[@]}" | git -C "$top" hash-object -w --stdin-paths 2>/dev/null); then
-      while IFS= read -r sha; do
-        [ -n "$sha" ] || continue
-        file_shas+=("$sha")
-      done <<<"$line"
-    fi
-    if [ "${#file_shas[@]}" -ne "${#files[@]}" ]; then
-      file_shas=()
-      for path in "${files[@]}"; do
-        sha=$(git -C "$top" hash-object -w -- "$path" 2>/dev/null) || sha=
-        file_shas+=("${sha:--}")
-      done
-    fi
-  fi
-  for path in "${all[@]}"; do
-    if [ -L "$top/$path" ]; then
-      sha=$(printf '%s' "$(readlink "$top/$path")" | git -C "$top" hash-object -w --stdin 2>/dev/null) || sha=
-      printf '%s\t%s\n' "${sha:--}" "$path"
-    elif [ -f "$top/$path" ]; then
-      printf '%s\t%s\n' "${file_shas[$fi]:--}" "$path"
-      fi=$((fi + 1))
-    else
-      printf '%s\t%s\n' '-' "$path"
-    fi
-  done
+  printf '%s\n' "$paths" | python3 -c '
+import os, stat, subprocess, sys, tempfile
+
+top = sys.argv[1]
+paths = [path for path in sys.stdin.buffer.read().split(b"\n") if path]
+shas = [b"-"] * len(paths)
+
+
+def hash_into(indices, names, flags):
+    git = ["git", "-C", top, "hash-object", "-w"] + flags
+
+    def one(i):
+        run = subprocess.run(git + ["--", names[i]], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        if run.returncode == 0 and run.stdout.strip():
+            shas[i] = run.stdout.strip()
+
+    # --stdin-paths unquotes a line opening with a double quote. A missing path stops the batch
+    # with the shas before it printed, so the rest re-batches after that one path alone.
+    pending = []
+    for i in indices:
+        if names[i].startswith(b"\""):
+            one(i)
+        else:
+            pending.append(i)
+    while pending:
+        run = subprocess.run(git + ["--stdin-paths"], input=b"".join(names[i] + b"\n" for i in pending),
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        got = run.stdout.split()
+        done = len(pending) if run.returncode == 0 and len(got) == len(pending) else min(len(got), len(pending) - 1)
+        for i, sha in zip(pending[:done], got):
+            shas[i] = sha
+        if done < len(pending):
+            one(pending[done])
+        pending = pending[done + 1:]
+
+
+root = os.fsencode(top) + b"/"
+files, links = [], []
+for i, path in enumerate(paths):
+    try:
+        mode = os.lstat(root + path).st_mode
+    except OSError:
+        continue
+    if stat.S_ISLNK(mode):
+        links.append(i)
+    elif stat.S_ISREG(mode):
+        files.append(i)
+hash_into(files, paths, [])
+if links:
+    with tempfile.TemporaryDirectory() as tmp:
+        texts = {}
+        for i in links:
+            try:
+                text = os.readlink(root + paths[i])
+            except OSError:
+                text = b""
+            texts[i] = os.path.join(os.fsencode(tmp), b"%d" % i)
+            with open(texts[i], "wb") as fh:
+                fh.write(text.rstrip(b"\n"))
+        hash_into(links, texts, ["--no-filters"])
+sys.stdout.buffer.write(b"".join(sha + b"\t" + path + b"\n" for sha, path in zip(shas, paths)))
+' "$top"
 }
 
 unshaped_digest() { # top list

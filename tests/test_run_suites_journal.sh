@@ -277,4 +277,26 @@ assert grep -q 'test_sandboxed.sh .*PASS' <<<"$leak_out"
 assert test ! -e "$XDG_CACHE_HOME/claude-reports/leaky"
 assert jqe '.suites["test_leaks.sh"].rc == 1 and .suites["test_sandboxed.sh"].rc == 0' <(tail -1 "$JOURNAL")
 
+# tests/run-all refuses a worker's full run before any suite or journal row; a named suite, --changed
+# and a run outside a worker go through.
+for wrapper in "$ROOT/tests/run-all" "${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/tests/run-all" \
+  "${REVIEW_BENCH_ROOT:-$ROOT/../review-bench}/tests/run-all"; do
+  [ -r "$wrapper" ] && assert grep -qF -- '--run-all "$@"' "$wrapper"
+done
+git -C "$R4" add -A
+git -C "$R4" -c user.name=t -c user.email=t@t -c core.hooksPath=/dev/null commit -q -m tool
+rows=$(wc -l <"$JOURNAL")
+WORKER_RUN_ID=wr-9 bash "$ROOT/share/run-suites.sh" --repo "$R4" --run-all -j 2 >"$WORK/gate.out" 2>"$WORK/gate.err"
+assert test "$?" -eq 3
+assert grep -qF 'tests/run-all $(tests/affected <file>...) or tests/run-all --changed' "$WORK/gate.err"
+assert test ! -s "$WORK/gate.out"
+assert test "$(wc -l <"$JOURNAL")" -eq "$rows"
+WORKER_RUN_ID=wr-9 bash "$ROOT/share/run-suites.sh" --repo "$R4" --run-all -j 2 test_other.sh >/dev/null 2>&1
+assert test "$?" -eq 0
+WORKER_RUN_ID=wr-9 bash "$ROOT/share/run-suites.sh" --repo "$R4" --run-all -j 2 --changed >/dev/null 2>&1
+assert test "$?" -eq 0
+bash "$ROOT/share/run-suites.sh" --repo "$R4" --run-all -j 2 >/dev/null 2>&1
+assert test "$?" -eq 0
+assert jqe '.scope == "full" and .worker_run == null' <(tail -1 "$JOURNAL")
+
 printf 'PASS: %s asserts; run-suites and direct suite runs journal one row each\n' "$asserts"

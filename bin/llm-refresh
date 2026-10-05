@@ -322,18 +322,24 @@ gemini_login_needed_json() {
     printf '[]\n'
 }
 
-# One targeted collector refresh for run_tick: it updates the tick's own locals (tried, pushback,
-# pushback_note, wall_note, target_rc) through bash's dynamic scope.
+# One collector call for all of a vendor's listed accounts (a JSON array): each call is a full
+# collector run, minutes under load, so one per account pushed the tick past its ceiling. It
+# updates the tick's own locals (tried, pushback, pushback_note, wall_note, target_rc) through
+# bash's dynamic scope.
 collector_probe() {
-  local vendor=$1 account=$2 refresh_log rc=0 errors signals stderr_hit
+  local vendor=$1 accounts=$2 account refresh_log rc=0 errors signals stderr_hit
   [ -z "$timed_out_note" ] || return 0
-  tried=$(jq -c --arg account "$account" '. + [$account]' < <(printf '%s\n' "$tried"))
+  [ "$(jq 'length' < <(printf '%s\n' "$accounts"))" -gt 0 ] || return 0
+  tried=$(jq -c --argjson accounts "$accounts" '. + $accounts' < <(printf '%s\n' "$tried"))
   refresh_log=$(mktemp "${TMPDIR:-/tmp}/llm-refresh.XXXXXX") || return 5
   tick_tmp=$refresh_log
   # An expired grok token is refreshable work: the collector's targeted refresh rotates it
   # through the vendor CLI before polling (row ak), so the tick only asks for the re-poll.
-  run_collector --refresh-account "$vendor/$account" >/dev/null 2>>"$refresh_log" || rc=$?
-  errors=$(recorded_errors "$vendor" "$account" "$now")
+  run_collector --refresh-account "$vendor/$(jq -r 'join(",")' < <(printf '%s\n' "$accounts"))" \
+    >/dev/null 2>>"$refresh_log" || rc=$?
+  errors=$(while IFS= read -r account; do
+    recorded_errors "$vendor" "$account" "$now"
+  done < <(jq -r '.[]' < <(printf '%s\n' "$accounts")))
   signals=$({ cat "$refresh_log"; printf '%s\n' "$errors"; })
   stderr_hit=$(pushback_hit < <(printf '%s\n' "$signals"))
   if [ -n "$stderr_hit" ]; then
@@ -633,11 +639,11 @@ run_tick() {
     rechecked='[]'
     if [ "$vendor" = gemini ]; then
       rechecked=$(gemini_login_needed_json "$login_recheck")
-      while IFS= read -r account; do
-        [ -n "$account" ] || continue
+      probe=$(jq -c --argjson stale "$stale" '. + ($stale - .)' < <(printf '%s\n' "$rechecked"))
+      if [ "$(jq 'length' < <(printf '%s\n' "$probe"))" -gt 0 ]; then
         step=1
-        collector_probe "$vendor" "$account" || return 5
-      done < <(jq -r '.[]' < <(printf '%s\n' "$rechecked"))
+        collector_probe "$vendor" "$probe" || return 5
+      fi
     fi
 
     if [ "$(jq 'length' < <(printf '%s\n' "$stale"))" -gt 0 ]; then
@@ -746,11 +752,9 @@ run_tick() {
             fi
           done < <(printf '%s\n' "$probe_verdicts")
         fi
-      else
-        while IFS= read -r account; do
-          step=1
-          collector_probe "$vendor" "$account" || return 5
-        done < <(jq -r '.[]' < <(printf '%s\n' "$stale"))
+      elif [ "$vendor" != gemini ]; then
+        step=1
+        collector_probe "$vendor" "$stale" || return 5
       fi
 
       post_stale=$(stale_accounts_json "$vendor" "$interval")
