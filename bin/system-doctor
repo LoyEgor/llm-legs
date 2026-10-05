@@ -1,0 +1,1145 @@
+#!/usr/bin/env python3
+"""System doctor: measures what slows this Mac — process births, the kernel's CPU share, memory compression and
+swap, disk writes and reads, free space, crashes, hangs and reboots — unprivileged, and writes
+~/.cache/system-doctor/latest.json in the shape of docs/doctors-contract.md (design docs/system-doctor-design.md).
+No network, no LLM. `agent` is the LaunchAgent's minute: one light tick, the nightly pass when due, the document
+every 10 minutes."""
+
+import argparse
+import datetime
+import glob
+import hashlib
+import json
+import os
+import plistlib
+import re
+import shlex
+import sys
+import time
+
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
+import collector_runs  # noqa: E402
+import machine_probe  # noqa: E402
+
+HOME = os.path.expanduser("~")
+
+LIMITS = {
+    "spawn_s": 1000,
+    "spawn_heavy_s": 2500,
+    "kernel": 0.40,
+    "kernel_heavy": 0.55,
+    "kernel_heavy_min": 30,
+    "compressor": 0.33,
+    "compressor_min": 10,
+    "swap": 0.50,
+    "ssd_gb_day": 200,
+    "ssd_heavy_gb_day": 400,
+    "swap_writes_gib_day": 20,
+    "free_gib": 25,
+    "free_heavy_gib": 10,
+    "hammerspoon_crashes": 1,
+    "job_crashes_day": 1,
+    "unclean_reboots": 1,
+}
+RULE_LABELS = {"spawn": "new processes", "kernel": "kernel CPU", "compressor": "memory compressed",
+               "swap": "swap full", "ssd-writes": "SSD writes", "swap-writes": "swap writes",
+               "hammerspoon-crash": "Hammerspoon crash", "job-crash": "job crashes", "unclean-reboot": "unclean reboot",
+               "free-space": "low disk space"}
+COUNTED = ("new", "open", "regressed")
+DISMISSED = ("not-a-bug", "weather")
+HOUR_S = 3600
+DAY_S = 86400
+GIB = 1 << 30
+MIN_TICKS = 3
+TICK_GAP_S = 600
+TICK_STALE_S = 600
+JUDGE_EVERY_S = 600
+NIGHTLY_HOUR = 4
+NIGHTLY_STALE_S = 36 * HOUR_S
+COVER_MIN_S = HOUR_S
+KEEP_TICK_DAYS = 14
+KEEP_HOUR_DAYS = 90
+REPORT_DAYS = 8
+REBOOT_DAYS = 7
+CACHE_BUDGET_S = 120
+TOP = 12
+EVIDENCE_MAX = 3
+EXCERPT_MAX = 300
+PID_WRAP = 99999
+INTERPRETERS = {"bash", "zsh", "sh", "dash", "Python", "python", "python3", "node", "perl", "ruby", "env", "osascript",
+                "uv", "bun", "deno"}
+OWN_APPS = {"Hammerspoon", "hs"}
+CAUSER_APPS = {"claude", "Hammerspoon", "memlogd"}
+APPLE_PREFIXES = ("/System/", "/usr/", "/bin/", "/sbin/", "/Library/Apple/")
+CRASH_TYPES = {"309": "crash", "109": "crash", "298": "jetsam", "288": "hang", "409": "hang", "210": "panic"}
+DIAG_EVENTS = {"disk writes": "diskwrites", "cpu usage": "cpu_resource", "wakeups": "wakeups"}
+SUFFIX_KINDS = {".shutdownStall": "shutdownStall", ".spin": "hang", ".hang": "hang", ".panic": "panic",
+                ".cpu_resource": "cpu_resource", ".diskwrites_resource": "diskwrites", ".wakeups_resource": "wakeups"}
+CACHE_DIRS = (".gemini-profiles",)
+CACHE_ROOTS = (".cache", "Library/Caches")
+LABEL = "com.llm-legs.system-doctor"
+WRAPPER = "system-doctor"
+
+ROW = re.compile(r"^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\w{3} \w{3}\s+\d+ [\d:]+ \d{4})\s+(.*)$")
+APP_EXE = re.compile(r"^(.*?\.app/Contents/MacOS/[^/]*?)(?= [-/~]| *$)")
+
+
+# ---------------------------------------------------------------- places
+
+
+def state_dir():
+    return os.environ.get("SYSTEM_DOCTOR_DIR") or os.path.join(HOME, ".cache", "system-doctor")
+
+
+def ledger_path():
+    return os.environ.get("SYSTEM_DOCTOR_LEDGER") or os.path.join(ROOT_DIR, "share", "system-ledger.json")
+
+
+def env_list(name, default):
+    value = os.environ.get(name)
+    return [part for part in value.split(":") if part] if value is not None else list(default)
+
+
+def diag_dirs():
+    return env_list("SYSTEM_DOCTOR_DIAG_DIRS", (os.path.join(HOME, "Library", "Logs", "DiagnosticReports"),
+                                                "/Library/Logs/DiagnosticReports"))
+
+
+def agent_dirs():
+    return env_list("SYSTEM_DOCTOR_AGENTS_DIRS", (os.path.join(HOME, "Library", "LaunchAgents"),
+                                                  "/Library/LaunchAgents", "/Library/LaunchDaemons"))
+
+
+def own_roots():
+    return tuple(env_list("SYSTEM_DOCTOR_OWN_ROOTS", ("/Volumes/Work/Projects/", os.path.join(HOME, ".claude"),
+                                                      os.path.join(HOME, ".local") + "/",
+                                                      os.path.join(HOME, ".hammerspoon"))))
+
+
+def cache_roots():
+    return env_list("SYSTEM_DOCTOR_CACHE_ROOTS", [os.path.join(HOME, p) for p in CACHE_ROOTS])
+
+
+def cache_dirs():
+    return env_list("SYSTEM_DOCTOR_CACHE_DIRS", [os.path.join(HOME, p) for p in CACHE_DIRS])
+
+
+def read_json(path, default=None):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return default
+
+
+def write_json(path, value, indent=None):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temporary = "%s.%d.tmp" % (path, os.getpid())
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(value, handle, ensure_ascii=False, indent=indent, separators=None if indent else (",", ":"))
+        handle.write("\n")
+    os.replace(temporary, path)
+
+
+def read_lines(path):
+    rows = []
+    try:
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict):
+                    rows.append(row)
+    except OSError:
+        pass
+    return rows
+
+
+def write_lines(path, rows):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temporary = "%s.%d.tmp" % (path, os.getpid())
+    with open(temporary, "w", encoding="utf-8") as handle:
+        handle.write("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in rows))
+    os.replace(temporary, path)
+
+
+def local_day(epoch):
+    return time.strftime("%Y-%m-%d", time.localtime(epoch))
+
+
+def iso_time(epoch):
+    if epoch is None:
+        return None
+    return datetime.datetime.fromtimestamp(epoch).astimezone().isoformat(timespec="seconds")
+
+
+def iso_epoch(text):
+    try:
+        return datetime.datetime.fromisoformat(str(text).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def clip(text, limit=EXCERPT_MAX):
+    text = text or ""
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+class Steps:
+    """Wall and CPU (own plus reaped children) per collector step."""
+
+    def __init__(self):
+        self.out = {}
+
+    def __call__(self, name, fn, *args):
+        wall, cpu = time.time(), collector_runs.cpu_total()
+        try:
+            return fn(*args)
+        finally:
+            self.out[name] = [round(time.time() - wall, 3), round(collector_runs.cpu_total() - cpu, 3)]
+
+
+# ---------------------------------------------------------------- probes
+
+
+def cpu_seconds(text):
+    days, _, clock = text.rpartition("-")
+    total = 0.0
+    for part in clock.split(":"):
+        try:
+            total = total * 60 + float(part.replace(",", "."))
+        except ValueError:
+            return 0.0
+    return (int(days) if days.isdigit() else 0) * DAY_S + total
+
+
+def exe_and_rest(args):
+    match = APP_EXE.match(args)
+    if match:
+        return match.group(1), args[match.end():].split()
+    words = args.split()
+    return (words[0] if words else ""), words[1:]
+
+
+def classify(args, uid, roots):
+    """(tag, owner) of one process from its argv held in memory only: an interpreter running a script under an own
+    root is tagged by the script's basename; everything else by its executable's name."""
+    exe, rest = exe_and_rest(args)
+    name = os.path.basename(exe).lstrip("-")[:40] or "?"
+    if name in INTERPRETERS or re.match(r"python3\.\d+$", name):
+        for word in rest[:3]:
+            if word.startswith(roots) or word.startswith("~/"):
+                return re.sub(r"\d{6,}.*?(?=\.\w+$|$)", "N", os.path.basename(word))[:40] or name, "own"
+    if name in OWN_APPS or exe.startswith(roots):
+        return name, "own"
+    if exe.startswith(APPLE_PREFIXES) and not exe.startswith("/usr/local/"):
+        return name, "apple"
+    return name, "third-party"
+
+
+def ps_snapshot(with_children):
+    """{key: [ppid, cpu_s, tag, owner, pid]} keyed `pid@lstart`, plus the probe's own pid."""
+    args = ["-A"] + (["-S"] if with_children else []) + ["-o", "pid=,ppid=,uid=,time=,lstart=,args="]
+    pid, out = machine_probe.spawn("ps", args)
+    roots = own_roots()
+    procs = {}
+    for line in out.splitlines():
+        match = ROW.match(line)
+        if not match:
+            continue
+        number, ppid, uid, cpu, start, argv = match.groups()
+        tag, owner = classify(argv, int(uid), roots)
+        procs["%s@%s" % (number, " ".join(start.split()))] = [int(ppid), cpu_seconds(cpu), tag, owner, int(number)]
+    return pid, procs
+
+
+def causer(key, procs, by_pid):
+    """The nearest own script or app above a newborn; else its parent's name."""
+    chain, pid = [], procs[key][0]
+    while pid > 1 and len(chain) < 12 and pid in by_pid:
+        entry = procs[by_pid[pid]]
+        chain.append(entry)
+        pid = entry[0]
+    for entry in chain:
+        if entry[3] == "own" or entry[2] in CAUSER_APPS:
+            return entry[2], entry[3]
+    for entry in chain:
+        if entry[2] not in INTERPRETERS:
+            return entry[2], entry[3]
+    return (chain[0][2], chain[0][3]) if chain else ("launchd", "apple")
+
+
+def births_rate(first_pid, last_pid, seconds, own_spawns=1):
+    if first_pid is None or last_pid is None or seconds <= 0:
+        return None
+    return max(0, (last_pid - first_pid) % PID_WRAP - own_spawns) / seconds
+
+
+def vm_counters():
+    out = machine_probe.run("vm_stat", [])
+    page = re.search(r"page size of (\d+) bytes", out)
+    values = {"page": int(page.group(1)) if page else 16384}
+    for name, key in (("Pages occupied by compressor", "comp_pages"), ("Pages stored in compressor", "stored_pages"),
+                      ("Pageins", "pageins"), ("Swapins", "swapins"), ("Swapouts", "swapouts")):
+        found = re.search(r"^%s:\s+(\d+)" % re.escape(name), out, re.M)
+        if found:
+            values[key] = int(found.group(1))
+    return values
+
+
+def memory_sysctls():
+    boot, memsize, swap = machine_probe.sysctl("kern.boottime", "hw.memsize", "vm.swapusage")
+    found = re.search(r"sec = (\d+)", boot)
+    used, total = re.search(r"used = ([\d.]+)M", swap), re.search(r"total = ([\d.]+)M", swap)
+    return {"boot": int(found.group(1)) if found else None,
+            "mem": int(memsize) if memsize.strip().isdigit() else None,
+            "swap_used_mb": float(used.group(1)) if used else None,
+            "swap_total_mb": float(total.group(1)) if total else None}
+
+
+def disk_counters():
+    """{label: [bytes read, bytes written]} per block storage device, label `internal:<bsd>` or `external:<bsd>`."""
+    out = machine_probe.run("ioreg", ["-r", "-c", "IOBlockStorageDevice", "-w0", "-d", "3", "-l"])
+    disks = {}
+    for block in re.split(r"(?m)^\+-o ", out)[1:]:
+        location = re.search(r'"Physical Interconnect Location"="(\w+)"', block)
+        read, wrote = re.search(r'"Bytes \(Read\)"=(\d+)', block), re.search(r'"Bytes \(Write\)"=(\d+)', block)
+        bsd = re.search(r'"BSD Name" = "(disk\d+)"', block)
+        if read and wrote:
+            label = "%s:%s" % ((location.group(1) if location else "unknown").lower(), bsd.group(1) if bsd else "?")
+            disks[label] = [int(read.group(1)), int(wrote.group(1))]
+    return disks
+
+
+def free_space():
+    """{volume: [free GiB, size GiB]} for the data volume and every local /Volumes mount."""
+    volumes = {}
+    for line in machine_probe.run("df", ["-k", "-l"]).splitlines()[1:]:
+        words = line.split()
+        if len(words) < 9 or not words[1].isdigit() or not words[3].isdigit():
+            continue
+        mount = " ".join(words[8:])
+        if mount == "/System/Volumes/Data":
+            name = "Data"
+        elif mount.startswith("/Volumes/"):
+            name = mount[len("/Volumes/"):]
+        else:
+            continue
+        volumes[name] = [round(int(words[3]) * 1024 / GIB, 1), round(int(words[1]) * 1024 / GIB, 1)]
+    return volumes
+
+
+# ---------------------------------------------------------------- light tick
+
+
+def top_rows(counter, width=TOP):
+    return [list(row) for row in sorted(counter, key=lambda r: (-r[1], r[0]))[:width]]
+
+
+def tick(now=None):
+    """One sample row in ticks/<day>.jsonl; state between ticks in tick-state.json."""
+    started_cpu = collector_runs.cpu_total()
+    now = time.time() if now is None else now
+    steps = Steps()
+    path = os.path.join(state_dir(), "tick-state.json")
+    previous = read_json(path, {}) or {}
+    window = float(os.environ.get("SYSTEM_DOCTOR_WINDOW_S") or 2.0)
+
+    ticks = steps("host", machine_probe.host_ticks)
+    first_at = time.monotonic()
+    first_pid, first = steps("ps", ps_snapshot, False)
+    time.sleep(max(0.0, first_at + window - time.monotonic()))
+    seconds = time.monotonic() - first_at
+    last_pid, last = steps("ps_children", ps_snapshot, True)
+    vm = steps("vm_stat", vm_counters)
+    mem = steps("sysctl", memory_sysctls)
+    disks = steps("ioreg", disk_counters)
+    volumes = steps("df", free_space)
+
+    gap = now - previous["t"] if isinstance(previous.get("t"), (int, float)) else None
+    joined = gap is not None and 0 < gap <= TICK_GAP_S and previous.get("boot") == mem["boot"]
+    row = {"t": round(now, 1), "dt": round(gap, 1) if joined else None, "boot": mem["boot"],
+           "births_s": None, "kernel": None, "busy": None, "procs": len(last)}
+
+    rate = births_rate(first_pid, last_pid, seconds)
+    row["births_s"] = round(rate) if rate is not None else None
+    born = [key for key in last if key not in first]
+    by_pid = {entry[4]: key for key, entry in last.items()}
+    births = {}
+    for key in born:
+        name = causer(key, last, by_pid)
+        births[name] = births.get(name, 0) + 1
+    row["births_seen"] = len(born)
+    row["births_top"] = top_rows([[tag, n, owner] for (tag, owner), n in births.items()])
+
+    old_ticks = previous.get("ticks")
+    if ticks and old_ticks and joined:
+        delta = [(b - a) % (1 << 32) for a, b in zip(old_ticks, ticks)]
+        total = sum(delta)
+        if total > 0:
+            row["kernel"] = round(delta[1] / total, 3)
+            row["busy"] = round((delta[0] + delta[1] + delta[3]) / total, 3)
+
+    page = vm.get("page", 16384)
+    if mem["mem"]:
+        row["mem_gib"] = round(mem["mem"] / GIB, 1)
+        if "comp_pages" in vm:
+            row["comp_share"] = round(vm["comp_pages"] * page / mem["mem"], 3)
+            row["comp_gib"] = round(vm["comp_pages"] * page / GIB, 2)
+        if "stored_pages" in vm:
+            row["stored_gib"] = round(vm["stored_pages"] * page / GIB, 2)
+    if mem["swap_used_mb"] is not None:
+        row["swap_used_mb"] = mem["swap_used_mb"]
+        row["swap_total_mb"] = mem["swap_total_mb"]
+        row["swap_share"] = round(mem["swap_used_mb"] / mem["swap_total_mb"], 3) if mem["swap_total_mb"] else 0.0
+    old_vm = previous.get("vm") or {}
+    if joined:
+        for key, out in (("pageins", "pagein_s"), ("swapins", "swapin_s")):
+            if key in vm and key in old_vm and vm[key] >= old_vm[key]:
+                row[out] = round((vm[key] - old_vm[key]) / gap, 1)
+        if "swapouts" in vm and "swapouts" in old_vm and vm["swapouts"] >= old_vm["swapouts"]:
+            row["swapout_b"] = (vm["swapouts"] - old_vm["swapouts"]) * page
+        old_disks = previous.get("disks") or {}
+        row["disk"] = {label: [r - old_disks[label][0], w - old_disks[label][1]] for label, (r, w) in disks.items()
+                       if label in old_disks and r >= old_disks[label][0] and w >= old_disks[label][1]}
+    row["free_gib"] = {name: free for name, (free, _size) in volumes.items()}
+
+    cpu = {}
+    old_procs = previous.get("procs") or {}
+    for key, entry in last.items():
+        own_now = first.get(key)
+        before = old_procs.get(key)
+        if not joined or own_now is None or before is None:
+            continue
+        spent, own = entry[1] - before[1], own_now[1] - before[0]
+        if spent < 0 or own < 0:
+            continue
+        reaped = max(0.0, spent - own)
+        if spent > 0:
+            slot = cpu.setdefault((entry[2], entry[3]), [0.0, 0.0])
+            slot[0] += spent
+            slot[1] += reaped
+    row["cpu_top"] = top_rows([[tag, round(s, 2), round(r, 2), owner] for (tag, owner), (s, r) in cpu.items()])
+
+    state = {"t": now, "boot": mem["boot"], "ticks": ticks, "vm": vm, "disks": disks,
+             "procs": {key: [first[key][1], entry[1]] for key, entry in last.items() if key in first}}
+    write_json(path, state)
+    row["self"] = {"wall_s": round(time.time() - now, 3), "cpu_s": round(collector_runs.cpu_total() - started_cpu, 3),
+                   "steps": steps.out}
+    folder = os.path.join(state_dir(), "ticks")
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, local_day(now) + ".jsonl"), "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row, separators=(",", ":")) + "\n")
+    return row
+
+
+# ---------------------------------------------------------------- rollups
+
+
+def tick_rows(since, until):
+    names, at = set(), since
+    while at < until + 6 * HOUR_S:
+        names.add(local_day(min(at, until)))
+        at += 6 * HOUR_S
+    rows = [row for name in sorted(names) for row in read_lines(os.path.join(state_dir(), "ticks", name + ".jsonl"))
+            if isinstance(row.get("t"), (int, float)) and since <= row["t"] <= until]
+    rows.sort(key=lambda r: r["t"])
+    return rows
+
+
+def merge_top(rows, key, value_at=1, width=TOP):
+    merged = {}
+    for row in rows:
+        for entry in row.get(key) or ():
+            slot = merged.setdefault((entry[0], entry[-1]), [0.0] * (len(entry) - 2))
+            for index in range(len(slot)):
+                slot[index] += entry[value_at + index]
+    return [[tag] + [round(v, 2) for v in values] + [owner]
+            for (tag, owner), values in sorted(merged.items(), key=lambda kv: (-kv[1][0], kv[0][0]))[:width]]
+
+
+def mean(values):
+    values = [v for v in values if v is not None]
+    return sum(values) / len(values) if values else None
+
+
+def summarize(rows):
+    covered = sum(r["dt"] for r in rows if r.get("dt"))
+    out = {"ticks": len(rows), "covered_s": round(covered),
+           "births_s": round(mean(r.get("births_s") for r in rows) or 0) if rows else None,
+           "kernel": round(mean(r.get("kernel") for r in rows), 3) if mean(r.get("kernel") for r in rows) is not None else None,
+           "comp_share_max": max((r.get("comp_share") or 0 for r in rows), default=None),
+           "swap_share_max": max((r.get("swap_share") or 0 for r in rows), default=None),
+           "ssd_w_b": sum(w for r in rows for label, (_r, w) in (r.get("disk") or {}).items() if label.startswith("internal")),
+           "ssd_r_b": sum(rd for r in rows for label, (rd, _w) in (r.get("disk") or {}).items() if label.startswith("internal")),
+           "ext_r_b": sum(rd for r in rows for label, (rd, _w) in (r.get("disk") or {}).items() if label.startswith("external")),
+           "swapout_b": sum(r.get("swapout_b") or 0 for r in rows),
+           "tick_cpu_s": round(sum((r.get("self") or {}).get("cpu_s") or 0 for r in rows), 2),
+           "births_top": merge_top(rows, "births_top"), "cpu_top": merge_top(rows, "cpu_top")}
+    free = {}
+    for row in rows:
+        for name, gib in (row.get("free_gib") or {}).items():
+            free[name] = min(gib, free.get(name, gib))
+    out["free_min_gib"] = free
+    if covered >= COVER_MIN_S:
+        out["ssd_gb_day"] = round(out["ssd_w_b"] / covered * DAY_S / 1e9, 1)
+        out["ssd_read_gb_day"] = round(out["ssd_r_b"] / covered * DAY_S / 1e9, 1)
+        out["swap_gib_day"] = round(out["swapout_b"] / covered * DAY_S / GIB, 2)
+    return out
+
+
+def rollup(now, rows, persist=True):
+    """Hourly rollups of today and yesterday (hours/<day>.jsonl, 90 days) and their daily rows (days.jsonl, kept
+    forever) off the minute rows `rows`, which cover both days; minute rows older than 14 days are deleted."""
+    base = state_dir()
+    days_path = os.path.join(base, "days.jsonl")
+    days = {r["day"]: r for r in read_lines(days_path) if isinstance(r.get("day"), str)}
+    for offset in (1, 0):
+        day = local_day(now - offset * DAY_S)
+        part = [row for row in rows if local_day(row["t"]) == day]
+        if not part:
+            continue
+        days[day] = dict(summarize(part), day=day)
+        if persist:
+            hours = {}
+            for row in part:
+                hours.setdefault(time.strftime("%Y-%m-%dT%H", time.localtime(row["t"])), []).append(row)
+            write_lines(os.path.join(base, "hours", day + ".jsonl"),
+                        [dict(summarize(chunk), hour=hour) for hour, chunk in sorted(hours.items())])
+    if not persist:
+        return [days[d] for d in sorted(days)]
+    write_lines(days_path, [days[d] for d in sorted(days)])
+    for sub, keep in (("ticks", KEEP_TICK_DAYS), ("hours", KEEP_HOUR_DAYS)):
+        cutoff = local_day(now - keep * DAY_S)
+        for path in glob.glob(os.path.join(base, sub, "????-??-??.jsonl")):
+            if os.path.basename(path)[:10] < cutoff:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+    return [days[d] for d in sorted(days)]
+
+
+# ---------------------------------------------------------------- nightly pass
+
+
+def report_date(text):
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f %z", "%Y-%m-%d %H:%M:%S %z"):
+        try:
+            return datetime.datetime.strptime(text.strip(), fmt).timestamp()
+        except (ValueError, AttributeError):
+            continue
+    return None
+
+
+def owner_of(name, bundle, path, jobs):
+    if name in OWN_APPS or name in INTERPRETERS or re.match(r"python3\.\d+$", name or "") or (path or "").startswith(
+            own_roots()):
+        return "own"
+    if (bundle or "").startswith("com.apple.") or (path or "").startswith(APPLE_PREFIXES) and not (
+            path or "").startswith("/usr/local/"):
+        return "apple"
+    if name in jobs:
+        return jobs[name]["owner"]
+    return "third-party"
+
+
+def report_header(path, name, jobs):
+    """{at, kind, name, owner} of one DiagnosticReports file off its first 4 KB, or None."""
+    try:
+        with open(path, errors="replace") as handle:
+            head = handle.read(4096)
+    except OSError:
+        return None
+    kind = proc = bundle = exe = None
+    at = None
+    first, _, rest = head.partition("\n")
+    suffix = os.path.splitext(name)[1]
+    if suffix == ".ips":
+        try:
+            header = json.loads(first)
+        except ValueError:
+            header = {}
+        bug = str(header.get("bug_type") or "")
+        kind = "jetsam" if name.startswith("JetsamEvent") else CRASH_TYPES.get(bug, "other")
+        if kind == "crash" and header.get("is_simulated"):
+            kind = "fault"
+        proc = header.get("app_name") or header.get("name")
+        bundle = header.get("bundleID")
+        at = report_date(header.get("timestamp") or "")
+    else:
+        field = lambda label: (re.search(r"^%s:\s+(.+)$" % label, head, re.M) or [None, None])[1]
+        event = (field("Event") or "").strip().lower()
+        kind = SUFFIX_KINDS.get(suffix) or DIAG_EVENTS.get(event) or ("other" if suffix == ".diag" else None)
+        if kind is None:
+            return None
+        proc = (field("Command") or "").strip() or None
+        bundle = (field("Identifier") or "").strip() or None
+        exe = (field("Path") or "").strip() or None
+        at = report_date(field("Date/Time") or "")
+    proc = (proc or re.split(r"[-_]\d{4}-\d\d-\d\d", name)[0].replace("ExcUserFault_", "")).strip()[:40]
+    if at is None:
+        try:
+            at = os.path.getmtime(path)
+        except OSError:
+            return None
+    owner = "apple" if kind == "jetsam" else owner_of(proc, bundle, exe, jobs)
+    return {"at": round(at), "kind": kind, "name": proc, "owner": owner, "ref": name,
+            "job": proc in jobs}
+
+
+def relaunched_jobs():
+    """{program name: {label, owner}} of the launchd jobs launchd starts again on its own (KeepAlive or StartInterval)."""
+    jobs = {}
+    roots = own_roots()
+    for folder in agent_dirs():
+        for path in glob.glob(os.path.join(folder, "*.plist")):
+            try:
+                with open(path, "rb") as handle:
+                    plist = plistlib.load(handle)
+            except Exception:
+                continue
+            if not isinstance(plist, dict) or not (plist.get("KeepAlive") or plist.get("StartInterval")):
+                continue
+            program = plist.get("Program") or (plist.get("ProgramArguments") or [""])[0]
+            label = str(plist.get("Label") or os.path.basename(path)[:-6])
+            if not isinstance(program, str) or not program:
+                continue
+            owner = ("apple" if label.startswith("com.apple.") else
+                     "own" if program.startswith(roots) else "third-party")
+            jobs[os.path.basename(program)] = {"label": label, "owner": owner}
+    return jobs
+
+
+def diagnostic_reports(now, jobs):
+    reports = []
+    cutoff = now - REPORT_DAYS * DAY_S
+    for folder in diag_dirs():
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            continue
+        for name in names:
+            path = os.path.join(folder, name)
+            try:
+                if not os.path.isfile(path) or os.path.getmtime(path) < cutoff:
+                    continue
+            except OSError:
+                continue
+            row = report_header(path, name, jobs)
+            if row and row["at"] >= cutoff:
+                reports.append(row)
+    reports.sort(key=lambda r: (r["at"], r["ref"]))
+    return reports
+
+
+MONTHS = {m: i for i, m in enumerate(("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov",
+                                      "Dec"), 1)}
+
+
+def boot_events(now):
+    """[(epoch, 'reboot'|'shutdown')] newest first off `last`, whose lines carry no year."""
+    events = []
+    year = time.localtime(now).tm_year
+    newest_month = None
+    for line in machine_probe.run("last", ["reboot", "shutdown"]).splitlines():
+        words = line.split()
+        if not words or words[0] not in ("reboot", "shutdown"):
+            continue
+        found = re.search(r"\b(\w{3})\s+(\w{3})\s+(\d{1,2})\s+(\d\d):(\d\d)\b", line)
+        if not found or found.group(2) not in MONTHS:
+            continue
+        month = MONTHS[found.group(2)]
+        if newest_month is not None and month > newest_month:
+            year -= 1
+        newest_month = month
+        try:
+            at = time.mktime((year, month, int(found.group(3)), int(found.group(4)), int(found.group(5)), 0, 0, 0, -1))
+        except (OverflowError, ValueError):
+            continue
+        events.append((at, words[0]))
+    return events
+
+
+def unclean_reboots(events):
+    """Boots whose previous record is another boot, not a shutdown: a freeze, a power loss or a panic."""
+    return [at for (at, kind), (_older, older_kind) in zip(events, events[1:])
+            if kind == "reboot" and older_kind == "reboot"]
+
+
+def cache_sizes(deadline):
+    sizes = []
+    for root in cache_roots():
+        left = deadline - time.time()
+        if left <= 1 or not os.path.isdir(root):
+            continue
+        for line in machine_probe.run("du", ["-k", "-d", "1", root], timeout=left).splitlines():
+            size, _, path = line.partition("\t")
+            if size.isdigit() and os.path.normpath(path) != os.path.normpath(root):
+                sizes.append([os.path.relpath(path, HOME) if path.startswith(HOME) else os.path.basename(path),
+                              round(int(size) * 1024 / GIB, 1)])
+    for folder in cache_dirs():
+        left = deadline - time.time()
+        if left <= 1 or not os.path.isdir(folder):
+            continue
+        out = machine_probe.run("du", ["-k", "-d", "0", folder], timeout=left).split("\t", 1)[0]
+        if out.isdigit():
+            sizes.append([os.path.relpath(folder, HOME) if folder.startswith(HOME) else os.path.basename(folder),
+                          round(int(out) * 1024 / GIB, 1)])
+    return sorted(sizes, key=lambda r: -r[1])[:8]
+
+
+def smart_status():
+    state = read_json(os.path.join(state_dir(), "tick-state.json"), {}) or {}
+    internal = sorted(label.split(":", 1)[1] for label in state.get("disks") or {} if label.startswith("internal:"))
+    if not internal:
+        return None
+    found = re.search(r"SMART Status:\s+(.+)", machine_probe.run("diskutil", ["info", internal[0]], timeout=10))
+    return found.group(1).strip() if found else None
+
+
+def nightly(now=None):
+    now = time.time() if now is None else now
+    steps = Steps()
+    jobs = steps("jobs", relaunched_jobs)
+    reports = steps("reports", diagnostic_reports, now, jobs)
+    events = steps("last", boot_events, now)
+    caches = steps("caches", cache_sizes, time.time() + CACHE_BUDGET_S)
+    smart = steps("smart", smart_status)
+    unclean = unclean_reboots(events)
+    result = {"as_of_s": round(now), "reports": reports, "unclean": [round(at) for at in unclean if at >= now - 31 * DAY_S],
+              "boots": sum(1 for _at, kind in events if kind == "reboot" and _at >= now - REBOOT_DAYS * DAY_S),
+              "relaunched": len(jobs), "caches": caches, "smart": smart, "steps": steps.out}
+    write_json(os.path.join(state_dir(), "nightly.json"), result)
+    return result
+
+
+# ---------------------------------------------------------------- the judge
+
+
+def judge_digest():
+    digest = hashlib.sha256()
+    with open(os.path.realpath(__file__), "rb") as handle:
+        digest.update(handle.read())
+    try:
+        with open(ledger_path(), "rb") as handle:
+            digest.update(handle.read())
+    except OSError:
+        digest.update(b"no ledger")
+    digest.update(json.dumps(LIMITS, sort_keys=True).encode())
+    return digest.hexdigest()
+
+
+def cause(entry, total):
+    if not entry:
+        return None
+    return {"name": entry[0], "share": round(entry[1] / total, 2) if total else None, "owner": entry[-1],
+            "fix_target": entry[-1] == "own"}
+
+
+def cause_words(found):
+    if not found:
+        return ""
+    share = " %d%%" % round(found["share"] * 100) if found.get("share") is not None else ""
+    tail = "" if found["fix_target"] else " (%s, report only)" % found["owner"]
+    return " · top cause %s%s%s" % (found["name"], share, tail)
+
+
+class Judge:
+    def __init__(self, now, night):
+        self.now = now
+        self.nightly = night
+        self.reports = (night or {}).get("reports") or []
+        self.problems = []
+        self.blind = []
+        self.ledger = read_json(ledger_path(), {}) or {}
+        self.rows = self.ledger.get("rows") if isinstance(self.ledger.get("rows"), list) else []
+
+    def add(self, rule, key, fact, value, limit, unit, window_h, exposure, count, first, last, evidence,
+            heavy=False, found=None):
+        self.problems.append({
+            "id": "%s:%s" % (rule, key), "rule": rule, "state": "new", "label": RULE_LABELS[rule],
+            "severity": "heavy" if heavy else "review", "fact": fact + cause_words(found),
+            "value": value, "limit": limit, "unit": unit, "window_h": window_h, "exposure": exposure, "count": count,
+            "first_seen": iso_time(first), "last_seen": iso_time(last), "evidence": evidence[:EVIDENCE_MAX],
+            "ledger": None, "cause": found, "_last": last})
+
+    def apply_ledger(self):
+        kept = []
+        for row in self.rows:
+            match = row.get("match") if isinstance(row, dict) else None
+            if not (isinstance(match, dict) and isinstance(match.get("rule"), str) and match["rule"]
+                    and isinstance(match.get("key"), str) and match["key"]):
+                rid = row.get("id") if isinstance(row, dict) else None
+                kept.append({"id": "ledger:%s" % rid, "rule": "ledger", "state": "new", "label": "ledger",
+                             "fact": "ledger row %s names no exact rule and key, so it judges nothing" % rid,
+                             "value": 1, "limit": 0, "unit": "rows", "window_h": None, "exposure": len(self.rows),
+                             "count": 1, "first_seen": None, "last_seen": None, "evidence": [], "ledger": rid})
+        for problem in self.problems:
+            last = problem.pop("_last")
+            row = next((r for r in self.rows if isinstance(r, dict) and isinstance(r.get("match"), dict)
+                        and "%s:%s" % (r["match"].get("rule"), r["match"].get("key")) == problem["id"]), None)
+            if row:
+                status = row.get("status")
+                if status in DISMISSED:
+                    continue
+                problem["ledger"] = problem["id"] = row.get("id")
+                if status == "fixed-pending":
+                    problem["state"] = "fixed-pending"
+                elif status == "fixed":
+                    fixed_at = max([iso_epoch(f.get("at")) or 0
+                                    for f in row.get("fixes") or [] if isinstance(f, dict)] or [0])
+                    problem["state"] = "regressed" if (last or 0) > fixed_at else "watch"
+                else:
+                    problem["state"] = "open"
+            kept.append(problem)
+        self.problems = kept
+
+
+def tick_evidence(row, text):
+    return {"at": iso_time(row["t"]), "ref": "tick:%d" % row["t"], "account": None, "excerpt": clip(text)}
+
+
+def judge_ticks(judge, rows, days):
+    now = judge.now
+    latest = rows[-1] if rows else None
+    if not latest or now - latest["t"] > TICK_STALE_S:
+        judge.blind.append("ticks")
+    hour = [r for r in rows if r["t"] >= now - HOUR_S]
+    births = [r for r in hour if r.get("births_s") is not None]
+    seen = merge_top(hour, "births_top")
+    seen_total = sum(r.get("births_seen") or 0 for r in hour)
+    if len(births) >= MIN_TICKS:
+        value = mean(r["births_s"] for r in births)
+        if value >= LIMITS["spawn_s"]:
+            over = [r for r in births if r["births_s"] >= LIMITS["spawn_s"]]
+            peak = max(births, key=lambda r: r["births_s"])
+            judge.add("spawn", "machine", "%s new processes a second over the last hour, limit %s" % (
+                format(round(value), ","), format(LIMITS["spawn_s"], ",")), round(value), LIMITS["spawn_s"], "/s", 1,
+                len(births), len(over), over[0]["t"], over[-1]["t"],
+                [tick_evidence(peak, "births %d/s" % peak["births_s"])], heavy=value >= LIMITS["spawn_heavy_s"],
+                found=cause(seen[0] if seen else None, seen_total))
+    kernel = [r for r in hour if r.get("kernel") is not None]
+    if len(kernel) >= MIN_TICKS:
+        value = mean(r["kernel"] for r in kernel)
+        half = [r for r in kernel if r["t"] >= now - LIMITS["kernel_heavy_min"] * 60]
+        heavy = len(half) >= MIN_TICKS and all(r["kernel"] >= LIMITS["kernel_heavy"] for r in half)
+        if value >= LIMITS["kernel"]:
+            over = [r for r in kernel if r["kernel"] >= LIMITS["kernel"]]
+            peak = max(kernel, key=lambda r: r["kernel"])
+            judge.add("kernel", "machine", "the kernel took %d%% of all CPU over the last hour, limit %d%%" % (
+                round(value * 100), round(LIMITS["kernel"] * 100)), round(value, 3), LIMITS["kernel"], "share", 1,
+                len(kernel), len(over), over[0]["t"], over[-1]["t"],
+                [tick_evidence(peak, "kernel %d%% · busy %s" % (round(peak["kernel"] * 100), peak.get("busy")))],
+                heavy=heavy, found=cause(seen[0] if seen else None, seen_total))
+    recent = [r for r in rows if r["t"] >= now - LIMITS["compressor_min"] * 60 and r.get("comp_share") is not None]
+    if len(recent) >= MIN_TICKS and all(r["comp_share"] >= LIMITS["compressor"] for r in recent):
+        low = min(recent, key=lambda r: r["comp_share"])
+        judge.add("compressor", "machine", "compressed memory held %d%% of RAM or more for %d min, limit %d%%" % (
+            round(low["comp_share"] * 100), LIMITS["compressor_min"], round(LIMITS["compressor"] * 100)),
+            low["comp_share"], LIMITS["compressor"], "share of RAM", LIMITS["compressor_min"] / 60, len(recent),
+            len(recent), recent[0]["t"], recent[-1]["t"],
+            [tick_evidence(low, "compressor %.1f GiB of %.0f GiB" % (low.get("comp_gib") or 0, low.get("mem_gib") or 0))])
+    if latest and latest.get("swap_share") is not None and now - latest["t"] <= TICK_STALE_S \
+            and latest["swap_share"] >= LIMITS["swap"]:
+        judge.add("swap", "machine", "swap %.1f of %.1f GB in use (%d%%), limit %d%%" % (
+            latest["swap_used_mb"] / 1024, latest["swap_total_mb"] / 1024, round(latest["swap_share"] * 100),
+            round(LIMITS["swap"] * 100)), latest["swap_share"], LIMITS["swap"], "share", None, 1, 1,
+            latest["t"], latest["t"], [tick_evidence(latest, "vm.swapusage used %.0fM total %.0fM" % (
+                latest["swap_used_mb"], latest["swap_total_mb"]))])
+    day = [r for r in rows if r["t"] >= now - DAY_S]
+    covered = sum(r["dt"] for r in day if r.get("dt") and r.get("swapout_b") is not None)
+    if covered >= COVER_MIN_S:
+        value = sum(r.get("swapout_b") or 0 for r in day) / covered * DAY_S / GIB
+        if value >= LIMITS["swap_writes_gib_day"]:
+            peak = max(day, key=lambda r: r.get("swapout_b") or 0)
+            judge.add("swap-writes", "machine", "swap wrote %.0f GiB a day over the last 24 h, limit %d" % (
+                value, LIMITS["swap_writes_gib_day"]), round(value, 1), LIMITS["swap_writes_gib_day"], "GiB/day", 24,
+                len(day), None, day[0]["t"], day[-1]["t"],
+                [tick_evidence(peak, "swapouts %.2f GiB in %ds" % ((peak.get("swapout_b") or 0) / GIB, peak.get("dt") or 0))])
+    week = [d for d in days if d.get("day", "") > local_day(now - 7 * DAY_S) and (d.get("covered_s") or 0) >= COVER_MIN_S]
+    covered = sum(d["covered_s"] for d in week)
+    if week:
+        value = sum(d.get("ssd_w_b") or 0 for d in week) / covered * DAY_S / 1e9
+        if value > LIMITS["ssd_gb_day"]:
+            causes = merge_top([{"x": [[r["name"], 1, r["owner"]] for r in judge.reports
+                                        if r["kind"] == "diskwrites"]}], "x")
+            judge.add("ssd-writes", "internal", "the internal SSD took %.0f GB of writes a day over %d day%s, limit %d" % (
+                value, len(week), "" if len(week) == 1 else "s", LIMITS["ssd_gb_day"]), round(value, 1),
+                LIMITS["ssd_gb_day"], "GB/day", 24 * 7, len(week), None, None, now,
+                [{"at": None, "ref": "day:%s" % d["day"], "account": None,
+                  "excerpt": "%s %.0f GB/day over %.1f h" % (d["day"], d.get("ssd_gb_day") or 0, d["covered_s"] / 3600)}
+                 for d in week[::-1]], heavy=value > LIMITS["ssd_heavy_gb_day"],
+                found=cause(causes[0], sum(c[1] for c in causes)) if causes else None)
+    if latest and now - latest["t"] <= TICK_STALE_S:
+        for name, gib in sorted((latest.get("free_gib") or {}).items()):
+            if gib < LIMITS["free_gib"]:
+                caches = (judge.nightly or {}).get("caches") or []
+                found = {"name": caches[0][0], "share": None, "owner": "own", "fix_target": False} if caches and \
+                    name == "Data" else None
+                judge.add("free-space", name, "%s has %.1f GiB free, limit %d" % (name, gib, LIMITS["free_gib"]),
+                          gib, LIMITS["free_gib"], "GiB", None, 1, 1, latest["t"], latest["t"],
+                          [tick_evidence(latest, "df %s free %.1f GiB" % (name, gib))],
+                          heavy=gib < LIMITS["free_heavy_gib"], found=found)
+
+
+def judge_nightly(judge, night):
+    now = judge.now
+    if not night or now - (night.get("as_of_s") or 0) > NIGHTLY_STALE_S:
+        judge.blind.append("nightly")
+    if not night:
+        return
+    since = night["as_of_s"] - DAY_S
+    day = [r for r in night.get("reports") or () if r["at"] >= since and r["kind"] == "crash"]
+    hs = [r for r in day if r["name"] == "Hammerspoon"]
+    if len(hs) >= LIMITS["hammerspoon_crashes"]:
+        judge.add("hammerspoon-crash", "Hammerspoon", "Hammerspoon crashed %d time%s in the day before the nightly pass" % (
+            len(hs), "" if len(hs) == 1 else "s"), len(hs), LIMITS["hammerspoon_crashes"], "crashes", 24, len(day),
+            len(hs), hs[0]["at"], hs[-1]["at"], [report_evidence(r) for r in hs[::-1]],
+            found={"name": "Hammerspoon", "share": None, "owner": "own", "fix_target": True})
+    jobs = {}
+    for report in day:
+        if report.get("job") and report["name"] != "Hammerspoon":
+            jobs.setdefault(report["name"], []).append(report)
+    for name, crashes in sorted(jobs.items()):
+        if len(crashes) >= LIMITS["job_crashes_day"]:
+            owner = crashes[0]["owner"]
+            judge.add("job-crash", name, "%s, a job launchd restarts, crashed %d time%s in a day" % (
+                name, len(crashes), "" if len(crashes) == 1 else "s"), len(crashes), LIMITS["job_crashes_day"],
+                "crashes/day", 24, len(day), len(crashes), crashes[0]["at"], crashes[-1]["at"],
+                [report_evidence(r) for r in crashes[::-1]],
+                found={"name": name, "share": None, "owner": owner, "fix_target": owner == "own"})
+    unclean = [at for at in night.get("unclean") or () if at >= now - REBOOT_DAYS * DAY_S]
+    if len(unclean) >= LIMITS["unclean_reboots"]:
+        stalls = [r for r in night.get("reports") or () if r["kind"] in ("shutdownStall", "panic")
+                  and any(abs(r["at"] - at) <= HOUR_S for at in unclean)]
+        judge.add("unclean-reboot", "machine", "%d unclean reboot%s in %d days (a boot with no shutdown before it)" % (
+            len(unclean), "" if len(unclean) == 1 else "s", REBOOT_DAYS), len(unclean), LIMITS["unclean_reboots"],
+            "reboots", REBOOT_DAYS * 24, night.get("boots") or len(unclean), len(unclean), min(unclean), max(unclean),
+            [{"at": iso_time(at), "ref": "boot:%d" % at, "account": None, "excerpt": "last: reboot with no shutdown before"}
+             for at in sorted(unclean, reverse=True)],
+            found={"name": stalls[-1]["name"], "share": None, "owner": stalls[-1]["owner"],
+                   "fix_target": stalls[-1]["owner"] == "own"} if stalls else None)
+
+
+def report_evidence(report):
+    return {"at": iso_time(report["at"]), "ref": report["ref"], "account": None,
+            "excerpt": "%s %s (%s)" % (report["kind"], report["name"], report["owner"])}
+
+
+def nightly_summary(night, jobs_named):
+    if not night:
+        return None
+    kinds, processes = {}, {}
+    for report in night.get("reports") or ():
+        kinds[report["kind"]] = kinds.get(report["kind"], 0) + 1
+        key = (report["kind"], report["name"], report["owner"])
+        processes[key] = processes.get(key, 0) + 1
+    top = sorted(processes.items(), key=lambda kv: (-kv[1], kv[0]))[:TOP]
+    return {"as_of": iso_time(night.get("as_of_s")), "as_of_s": night.get("as_of_s"), "reports": kinds,
+            "processes": [[kind, name, n, owner] for (kind, name, owner), n in top],
+            "unclean_reboots_7d": sum(1 for at in night.get("unclean") or () if at >= night["as_of_s"] - REBOOT_DAYS * DAY_S),
+            "boots_7d": night.get("boots"), "relaunched_jobs": night.get("relaunched"), "caches": night.get("caches"),
+            "smart": night.get("smart"), "steps": night.get("steps"), "jobs_crashed": jobs_named}
+
+
+def document(now, started, persist=True):
+    rows = tick_rows(now - 2 * DAY_S, now)
+    days = rollup(now, rows, persist)
+    night = read_json(os.path.join(state_dir(), "nightly.json"))
+    night = night if isinstance(night, dict) and isinstance(night.get("as_of_s"), (int, float)) else None
+    judge = Judge(now, night)
+    judge_ticks(judge, rows, days)
+    judge_nightly(judge, night)
+    judge.apply_ledger()
+    count = sum(1 for p in judge.problems if p["state"] in COUNTED)
+    hour = [r for r in rows if r["t"] >= now - HOUR_S]
+    latest = rows[-1] if rows else {}
+    today = next((d for d in days if d.get("day") == local_day(now)), {})
+    week = [d for d in days if d.get("day", "") > local_day(now - 7 * DAY_S) and (d.get("covered_s") or 0) >= COVER_MIN_S]
+    covered = sum(d["covered_s"] for d in week)
+    hour_covered = sum(r["dt"] for r in hour if r.get("dt")) or None
+    measures = {
+        "births_s": round(mean(r.get("births_s") for r in hour)) if mean(r.get("births_s") for r in hour) is not None else None,
+        "kernel": round(mean(r.get("kernel") for r in hour), 3) if mean(r.get("kernel") for r in hour) is not None else None,
+        "busy": round(mean(r.get("busy") for r in hour), 3) if mean(r.get("busy") for r in hour) is not None else None,
+        "comp_share": latest.get("comp_share"), "comp_gib": latest.get("comp_gib"), "stored_gib": latest.get("stored_gib"),
+        "mem_gib": latest.get("mem_gib"), "swap_share": latest.get("swap_share"), "swap_used_mb": latest.get("swap_used_mb"),
+        "pagein_s": round(mean(r.get("pagein_s") for r in hour) or 0, 1) if hour else None,
+        "ssd_gb_day_7d": round(sum(d.get("ssd_w_b") or 0 for d in week) / covered * DAY_S / 1e9, 1) if covered else None,
+        "ssd_read_gb_day_7d": round(sum(d.get("ssd_r_b") or 0 for d in week) / covered * DAY_S / 1e9, 1) if covered else None,
+        "swap_gib_day": today.get("swap_gib_day"), "free_gib": latest.get("free_gib") or {},
+        "days_measured": len(week)}
+    seen_total = sum(r.get("births_seen") or 0 for r in hour)
+    causes = {"births": [[tag, round(n / seen_total, 3) if seen_total else None, owner]
+                         for tag, n, owner in merge_top(hour, "births_top", width=8)],
+              "cpu": [[tag, round(s / hour_covered, 2), round(rp / hour_covered, 2), owner]
+                      for tag, s, rp, owner in merge_top(hour, "cpu_top", width=8)] if hour_covered else []}
+    tick_cost = {"ticks_1h": len(hour), "wall_s": round(mean((r.get("self") or {}).get("wall_s") for r in hour) or 0, 3),
+                 "cpu_s": round(mean((r.get("self") or {}).get("cpu_s") for r in hour) or 0, 3),
+                 "cpu_s_today": today.get("tick_cpu_s"), "steps": (latest.get("self") or {}).get("steps") or {}}
+    crashed = sorted({r["name"] for r in judge.reports if r.get("job") and r["kind"] == "crash"})
+    status = "blind" if judge.blind else ("problems" if count else "ok")
+    return {
+        "contract": 1, "doctor": "system", "as_of": iso_time(now), "as_of_s": int(now), "judge": judge_digest(),
+        "status": status, "problem_count": count, "problems": judge.problems,
+        "blind_spots": judge.ledger.get("blind_spots") or [], "blind": judge.blind, "measures": measures,
+        "causes": causes, "nightly": nightly_summary(night, crashed), "costs": {"tick": tick_cost},
+        "limits": LIMITS, "self": {"collector_s": round(time.time() - started, 3), "error": None},
+    }
+
+
+def write(doc):
+    write_json(os.path.join(state_dir(), "latest.json"), doc, indent=1)
+    collector_runs.problem_day("system", doc, "SYSTEM_DOCTOR_DIR")
+
+
+def error_document(started, error):
+    now = time.time()
+    return {"contract": 1, "doctor": "system", "as_of": iso_time(now), "as_of_s": int(now), "judge": None,
+            "status": "error", "problem_count": 0, "problems": [], "blind_spots": [], "blind": [],
+            "self": {"collector_s": round(time.time() - started, 3), "error": clip("%s: %s" % (type(error).__name__, error), 200)}}
+
+
+def view(doc):
+    if doc["status"] == "error":
+        return "System doctor: error · %s" % doc["self"]["error"]
+    lines = ["System doctor: %s · %d problems%s" % (doc["status"], doc["problem_count"],
+                                                     " · blind: " + ", ".join(doc["blind"]) if doc["blind"] else "")]
+    for problem in doc["problems"]:
+        lines.append("  %-10s %-7s %s" % (problem["state"], problem.get("severity", ""), problem["fact"]))
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- agent and install
+
+
+def nightly_due(now):
+    night = read_json(os.path.join(state_dir(), "nightly.json"), {}) or {}
+    last = night.get("as_of_s")
+    if not isinstance(last, (int, float)):
+        return True
+    return local_day(last) != local_day(now) and time.localtime(now).tm_hour >= NIGHTLY_HOUR or now - last > NIGHTLY_STALE_S
+
+
+def judge_due(now):
+    doc = read_json(os.path.join(state_dir(), "latest.json"), {}) or {}
+    return not isinstance(doc.get("as_of_s"), (int, float)) or now - doc["as_of_s"] >= JUDGE_EVERY_S - 30
+
+
+def agent():
+    started = time.time()
+    try:
+        tick(started)
+    except Exception as error:  # a failed tick leaves a gap the document reads as blind, never a stale document
+        print("system-doctor tick: %s: %s" % (type(error).__name__, error), file=sys.stderr)
+    did = []
+    if nightly_due(time.time()):
+        nightly()
+        did.append("nightly")
+    if did or judge_due(time.time()):
+        try:
+            write(document(time.time(), time.time()))
+        except Exception as error:
+            write(error_document(started, error))
+        did.append("judge")
+    return did
+
+
+def libexec_dir():
+    return os.environ.get("SYSTEM_DOCTOR_LIBEXEC_DIR") or os.path.join(HOME, ".local", "libexec")
+
+
+def plist_path():
+    return os.path.join(os.environ.get("SYSTEM_DOCTOR_AGENT_DIR") or os.path.join(HOME, "Library", "LaunchAgents"),
+                        LABEL + ".plist")
+
+
+def install_agent():
+    wrapper = os.path.join(libexec_dir(), WRAPPER)
+    script = os.path.realpath(__file__)
+    os.makedirs(libexec_dir(), exist_ok=True)
+    temporary = wrapper + ".tmp"
+    with open(temporary, "w") as handle:
+        handle.write("#!/usr/bin/env bash\nscript=%s\n[ -r \"$script\" ] || exit 0\nexec \"$script\" \"$@\"\n"
+                     % shlex.quote(script))
+    os.chmod(temporary, 0o755)
+    os.replace(temporary, wrapper)
+    logs = os.path.join(HOME, "Library", "Logs")
+    plist = {"Label": LABEL, "ProgramArguments": [wrapper, "agent"], "StartInterval": 60, "RunAtLoad": True,
+             "ProcessType": "Standard", "Nice": 10, "LowPriorityIO": True,
+             "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"},
+             "StandardOutPath": os.path.join(logs, "system-doctor.log"),
+             "StandardErrorPath": os.path.join(logs, "system-doctor.log")}
+    os.makedirs(os.path.dirname(plist_path()), exist_ok=True)
+    with open(plist_path(), "wb") as handle:
+        plistlib.dump(plist, handle)
+    domain = "gui/%d" % os.getuid()
+    machine_probe.run("launchctl", ["bootout", domain, plist_path()])
+    machine_probe.run("launchctl", ["bootstrap", domain, plist_path()])
+    print("Installed %s: a light tick every minute, the nightly pass after %02d:00, the document every %d min." % (
+        LABEL, NIGHTLY_HOUR, JUDGE_EVERY_S // 60))
+
+
+def uninstall_agent():
+    machine_probe.run("launchctl", ["bootout", "gui/%d" % os.getuid(), plist_path()])
+    for path in (plist_path(), os.path.join(libexec_dir(), WRAPPER)):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    print("Uninstalled %s." % LABEL)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="system-doctor", description=__doc__.split("\n")[0])
+    parser.add_argument("command", nargs="?", default="judge",
+                        choices=("judge", "tick", "nightly", "agent", "install-agent", "uninstall-agent"))
+    parser.add_argument("--json", action="store_true", help="judge: print the document and write nothing")
+    parser.add_argument("--quiet", action="store_true", help="print nothing")
+    args = parser.parse_args(argv)
+    started = time.time()
+    if args.command == "tick":
+        row = tick()
+        if not args.quiet:
+            print(json.dumps(row, ensure_ascii=False))
+        return 0
+    if args.command == "nightly":
+        result = nightly()
+        if not args.quiet:
+            print(json.dumps({k: v for k, v in result.items() if k != "reports"} | {"reports": len(result["reports"])}))
+        return 0
+    if args.command == "agent":
+        global RECORD
+        RECORD = bool(agent())
+        return 0
+    if args.command == "install-agent":
+        install_agent()
+        return 0
+    if args.command == "uninstall-agent":
+        uninstall_agent()
+        return 0
+    try:
+        doc = document(time.time(), started, persist=not args.json)
+    except Exception as error:
+        doc = error_document(started, error)
+    if args.json:
+        print(json.dumps(doc, ensure_ascii=False, indent=1))
+        return 0 if doc["status"] != "error" else 1
+    write(doc)
+    if not args.quiet:
+        print(view(doc))
+    return 0 if doc["status"] != "error" else 1
+
+
+RECORD = True
+
+if __name__ == "__main__":
+    started = time.time()
+    code = main()
+    if RECORD and sys.argv[1:2] != ["tick"]:
+        collector_runs.record("system", started, next((a for a in sys.argv[1:] if not a.startswith("-")), "judge"))
+    sys.exit(code)

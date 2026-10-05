@@ -134,18 +134,20 @@ all_nights() { # -> every night as one JSON array, newest first
   jq -s 'sort_by(.started_at, .id) | reverse' "${files[@]}"
 }
 
-doctor_read() { # jq-filter -> {"llm": value|null, "harness": value|null, "updater": value|null, "code": value|null} off each latest.json
-  local llm harness updater code
+doctor_read() { # jq-filter -> {"llm": value|null, "harness": value|null, "updater": value|null, "code": value|null, "system": value|null} off each latest.json
+  local llm harness updater code system
   llm="${LLM_DOCTOR_DIR:-$HOME/.cache/llm-doctor}/latest.json"
   harness="${HARNESS_DOCTOR_DIR:-$HOME/.cache/harness-doctor}/latest.json"
   updater="${UPDATER_DOCTOR_DIR:-$HOME/.cache/updater-doctor}/latest.json"
   code="${CODE_DOCTOR_DIR:-$HOME/.cache/code-doctor}/latest.json"
+  system="${SYSTEM_DOCTOR_DIR:-$HOME/.cache/system-doctor}/latest.json"
   jq -n \
     --argjson ln "$(jq -c "$1" "$llm" 2>/dev/null || echo null)" \
     --argjson hn "$(jq -c "$1" "$harness" 2>/dev/null || echo null)" \
     --argjson un "$(jq -c "$1" "$updater" 2>/dev/null || echo null)" \
     --argjson cn "$(jq -c "$1" "$code" 2>/dev/null || echo null)" \
-    '{llm: $ln, harness: $hn, updater: $un, code: $cn}'
+    --argjson sn "$(jq -c "$1" "$system" 2>/dev/null || echo null)" \
+    '{llm: $ln, harness: $hn, updater: $un, code: $cn, system: $sn}'
 }
 
 doctor_counts() { doctor_read '.problem_count // null'; }
@@ -909,7 +911,7 @@ JQ_TOTALS='def totals: [.jobs[] | .state] as $s
      unpushed: ([.jobs[] | select(.state == "merged" and .pushed != true)] | length),
      unfinished: ($status == "unfinished"), running: ($status == "running")};
 def hm: if . == null then "-" else fromdateiso8601 | strflocaltime("%H:%M") end;
-def doctor_lines: . as $n | ["llm", "harness", "updater", "code"][] as $d
+def doctor_lines: . as $n | ["llm", "harness", "updater", "code", "system"][] as $d
   | "\($d) \($n.doctors_before[$d] // "-") → \(if $n.doctors_after then ($n.doctors_after[$d] // "-") else "?" end)"
     + ($n.doctor_states_after[$d]? // null | if . then " · proved \(.proved) · pending \(.pending) · new \(.new) · regressed \(.regressed)"
        else "" end);
@@ -1009,9 +1011,9 @@ cmd_latest() {
       elif .kind == "leftover" then "leftover \(.adopted[0].branch // $r)"
       elif .kind == "owner-chat" then "\(.owner // $r) handoffs"
       elif .kind == "vendor" then "\(.branch // "" | split("/") | if length > 2 then last else $r | sub("-[0-9]{8}T[0-9]{6}Z.*$"; "") end) update"
-      else ($r | capture("^(?<d>llm|harness|updater|code)(-(?<a>.+?))?-[0-9]{8}T[0-9]{6}Z(-[0-9a-f]+)?$")
+      else ($r | capture("^(?<d>llm|harness|updater|code|system)(-(?<a>.+?))?-[0-9]{8}T[0-9]{6}Z(-[0-9a-f]+)?$")
         | ($areas[0].renamed["\(.d)-\(.a)"] // .a) as $a
-        | ({llm: "LLM", harness: "Harness", updater: "Updater", code: "Code"}[.d] + " fixer"
+        | ({llm: "LLM", harness: "Harness", updater: "Updater", code: "Code", system: "System"}[.d] + " fixer"
           + (if $a and $a != $areas[0].own and $a != ($areas[0].whole[.d] // null) then ": " + ($a | gsub("-"; " ")) else "" end))) // $r end;
     def word: {merged: (if .pushed then "" else "not pushed yet" end), left: "unfinished",
       "failed-launch": "failed to launch", "blocked-on-egor": "needs you", "nothing-to-do": "nothing to do",

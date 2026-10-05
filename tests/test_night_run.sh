@@ -67,10 +67,10 @@ assert jqe 'keys == (["id", "started_at", "finished_at", "session", "account", "
   "doctors_before", "doctors_after", "doctor_states_before", "doctor_states_after",
   "doctor_problems_before", "doctor_problems_after", "jobs"] | sort)' "$R"
 assert jqe '.doctor_states_before == {llm: {proved: 0, pending: 0, open: 0, new: 0, regressed: 0},
-  harness: {proved: 0, pending: 0, open: 1, new: 1, regressed: 1}, updater: null, code: null} and .doctor_states_after == null' "$R"
+  harness: {proved: 0, pending: 0, open: 1, new: 1, regressed: 1}, updater: null, code: null, system: null} and .doctor_states_after == null' "$R"
 assert jqe '.doctor_problems_before == {llm: {}, harness: {h1: "new", h2: "open", h3: "regressed", h4: "watch"},
-  updater: null, code: null} and .doctor_problems_after == null' "$R"
-assert jqe '.doctors_before == {llm: 5, harness: 3, updater: null, code: null} and .doctors_after == null and .jobs == []
+  updater: null, code: null, system: null} and .doctor_problems_after == null' "$R"
+assert jqe '.doctors_before == {llm: 5, harness: 3, updater: null, code: null, system: null} and .doctors_after == null and .jobs == []
   and .finished_at == null and .account == "acct-n"' "$R"
 session=$(jq -r .session "$R")
 assert [ "${#session}" = 36 ]
@@ -263,11 +263,11 @@ doc updater 2 '[{"id": "u1", "state": "watch", "rule": "fix-proof", "fact": "W1 
 
 night finish "$id" >/dev/null || fail "finish"
 assert_fails night finish "$id" 2>/dev/null
-assert jqe '.doctors_after == {llm: 1, harness: 0, updater: 2, code: null} and .finished_at != null
+assert jqe '.doctors_after == {llm: 1, harness: 0, updater: 2, code: null, system: null} and .finished_at != null
   and ([.jobs[] | select(.state == "pending")] | length) == 0
   and ([.jobs[] | select(.ref == "p2")][0] | .state == "left" and .reason == "no outcome recorded by the close")' "$R"
 assert jqe '.doctor_problems_after == {llm: {}, harness: {c1: "proved", c2: "pending", c3: "pending", c4: "new", c5: "new"},
-  updater: {u1: "pending"}, code: null}' "$R"
+  updater: {u1: "pending"}, code: null, system: null}' "$R"
 mkdir -p "$DOCTORS_DIR/runs"
 printf '{"decisions": [{"id": "load:busy", "component": "unverified"}, {"id": "R1"}, {"id": "reading-miss:x", "component": "unverified"}]}\n' \
   >"$DOCTORS_DIR/runs/llm-20260930T010203Z.json"
@@ -279,13 +279,14 @@ assert grep -qxF "llm 5 → 1 · proved 0 · pending 0 · new 0 · regressed 0" 
 assert grep -qxF "harness 3 → 0 · proved 1 · pending 2 · new 2 · regressed 0" "$WORK/report"
 assert grep -qxF "updater - → 2 · proved 0 · pending 1 · new 0 · regressed 0" "$WORK/report"
 assert grep -qxF "code - → -" "$WORK/report"
+assert grep -qxF "system - → -" "$WORK/report"
 assert [ -z "$(night latest --menu | grep -F 'harness 3 →')" ]
 assert grep -qxF "merged · fixer · llm-20260930T010203Z · review rb-1 · repo@${pushed_hash:0:7} · code +0/-0 · pushed" "$WORK/report"
 assert grep -qxF "left · debt · debt-round · hung: idle 1800" "$WORK/report"
 assert grep -qxF "failed-launch · fixer · harness-r1 · night/$id/harness-r1 · opener" "$WORK/report"
 assert grep -qxF "total · 2 merged · 8 left · 1 failed-launch · 1 blocked-on-egor · pushed" "$WORK/report"
 assert grep -qE "^blocked-on-egor · debt · p1( · [^ ]+)* · step 10 needs his word$" "$WORK/report"
-assert [ "$(body "$WORK/report" | grep -vcE '^(ledger|trend|roi) · ')" = 27 ]
+assert [ "$(body "$WORK/report" | grep -vcE '^(ledger|trend|roi) · ')" = 28 ]
 assert [ "$(grep -m1 -E '^(ledger|trend) · ' "$WORK/report")" = "ledger · night $id · $(jq -r '((.finished_at | fromdate)
   - (.started_at | fromdate)) / 3600 * 10 | round / 10 | tostring | if test("\\.") then . else . + ".0" end' "$R") h" ]
 assert grep -qxE "trend · problems [-+][0-9]+ over [0-9]+ nights · (moving forward|treading water|going back)" "$WORK/report"
@@ -1013,6 +1014,7 @@ problems llm          5 → –   4 → 3   2 → 0
 problems harness      3 → –   2 → 2   1 → 4
 problems updater          –   0 → 1       –
 problems code             –   1 → 0       –
+problems system           –       –       –
 lines by jobs        +14/-3       –   +0/-0
 week-old rewritten        7       –       –
 suites pass/fail          –       –    15/1" ]

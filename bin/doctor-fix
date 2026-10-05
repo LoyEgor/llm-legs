@@ -58,7 +58,7 @@ locked() { # command... -> runs it under the runs-dir lock
 }
 
 doctor_env() { # doctor -> the env var of its state dir
-  case $1 in llm) printf 'LLM_DOCTOR_DIR' ;; harness) printf 'HARNESS_DOCTOR_DIR' ;; updater) printf 'UPDATER_DOCTOR_DIR' ;; code) printf 'CODE_DOCTOR_DIR' ;; *) return 1 ;; esac
+  case $1 in llm) printf 'LLM_DOCTOR_DIR' ;; harness) printf 'HARNESS_DOCTOR_DIR' ;; updater) printf 'UPDATER_DOCTOR_DIR' ;; code) printf 'CODE_DOCTOR_DIR' ;; system) printf 'SYSTEM_DOCTOR_DIR' ;; *) return 1 ;; esac
 }
 
 doc_path() { # doctor -> its latest.json
@@ -119,7 +119,7 @@ ROOT, PROJECTS, RUNS, HOME, DOCS = (os.environ["DF_" + k] for k in ("ROOT", "PRO
 sys.path.insert(0, os.path.join(ROOT, "share"))
 from report_frame import fit
 from fix_commit import FIX_KEYS, fix_record_faults
-DOCTORS = ("llm", "harness", "updater", "code")
+DOCTORS = ("llm", "harness", "updater", "code", "system")
 HOOK_AREAS = ("Hooks", "Hook waits")
 LLM_ENTRIES = {"reviewers": ("review-bench/bin/review-bench",), "workers": ("llm-legs/bin/worker-run",),
                "light": ("llm-legs/bin/light-research",), "image": ("llm-legs/share/image-leg.sh",),
@@ -737,6 +737,7 @@ launch() { # llm|harness|updater|code [--night <id>]
     llm: | harness: | code:) launch_day "$doctor" ;;
     updater:) "${DOCTOR_FIX_VENDOR_CLI_UPDATE:-$repo_root/bin/vendor-cli-update}" now ;;
     llm:--night | harness:--night | updater:--night | code:--night) [ -n "${3:-}" ] && [ $# -eq 3 ] || usage; launch_night "$doctor" "$3" ;;
+    system:*) die "the System doctor only reports until its fixers are routed (docs/system-doctor-design.md, phase 2)" ;;
     *) usage ;;
   esac
 }

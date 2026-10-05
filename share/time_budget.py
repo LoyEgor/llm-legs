@@ -868,7 +868,7 @@ def table_column(worker_run, path, night):
     ] + [
         ("problems " + d, dash if before.get(d) is None and after.get(d) is None
          else "%s \u2192 %s" % (show(before.get(d)), show(after.get(d))))
-        for d in ("llm", "harness", "updater", "code")
+        for d in ("llm", "harness", "updater", "code", "system")
     ] + [
         ("lines by jobs", "+%d/-%d" % (jobs_lines[0] + jobs_lines[2], jobs_lines[1] + jobs_lines[3])
          if jobs_lines else dash),

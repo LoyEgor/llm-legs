@@ -8,7 +8,6 @@ import ast
 import bisect
 import calendar
 import collections
-import ctypes
 import datetime
 import fcntl
 import glob
@@ -32,6 +31,7 @@ sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 import collector_runs
 from fix_commit import fix_commit, fix_landed, main_checkout, siblings_dir
 from limiter_hold import hold_dir, wait_dir
+from machine_probe import host_ticks, spawn_pid, sysctl
 
 LIMITS = {
     "call_s": 5.0,
@@ -1257,41 +1257,6 @@ def watch_changes(state, now, versions, hooks):
 
 
 # ---------------------------------------------------------------- machine sample
-
-
-class _HostCpu:
-    def __init__(self):
-        self.lib = ctypes.CDLL("/usr/lib/libSystem.dylib")
-        self.lib.mach_host_self.restype = ctypes.c_uint
-
-    def ticks(self):
-        values = (ctypes.c_uint * 4)()
-        count = ctypes.c_uint(4)
-        if self.lib.host_statistics(self.lib.mach_host_self(), 3, ctypes.byref(values), ctypes.byref(count)):
-            return None
-        return list(values)
-
-
-def host_ticks():
-    try:
-        return _HostCpu().ticks()
-    except (OSError, AttributeError):
-        return None
-
-
-def spawn_pid():
-    process = subprocess.Popen(["/usr/bin/true"])
-    process.wait()
-    return process.pid
-
-
-def sysctl(*names):
-    try:
-        out = subprocess.run(["/usr/sbin/sysctl", "-n"] + list(names), capture_output=True, text=True,
-                             timeout=5).stdout.splitlines()
-    except (OSError, subprocess.SubprocessError):
-        return [""] * len(names)
-    return (out + [""] * len(names))[:len(names)]
 
 
 def visible_cores(now):
@@ -4166,6 +4131,8 @@ DEPLOYS = (
                                         "vendor-cli-update"))),
     ("bin/llm-selfcheck install", (("libexec", "llm-selfcheckd", "exec", "bin/llm-selfcheck"),
                                    ("agents", "com.llm-legs.selfcheck.plist", "program", "llm-selfcheckd"))),
+    ("bin/system-doctor install-agent", (("libexec", "system-doctor", "exec", "bin/system-doctor"),
+                                         ("agents", "com.llm-legs.system-doctor.plist", "program", "system-doctor"))),
     (None, (("libexec", "harness-doctor", "copy", "launchd/harness-doctor"),
             ("agents", "com.egor.harness-doctor.plist", "copy", "launchd/com.egor.harness-doctor.plist"))),
     (None, (("libexec", "tokenmap-scand", "copy", "launchd/tokenmap-scand"),

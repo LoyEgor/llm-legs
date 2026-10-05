@@ -1,8 +1,8 @@
 # Doctors contract
 
 What the LLM doctor (`bin/llm-doctor`), the Harness doctor (`bin/harness-doctor`), the Updater
-doctor (`bin/updater-doctor`) and the Code doctor (`bin/code-doctor`) share, so that one menu entry and one fixer
-procedure can serve all four. Version 1, written 2026-09-29 by the chat «Updater doctor» from two
+doctor (`bin/updater-doctor`), the Code doctor (`bin/code-doctor`) and the System doctor (`bin/system-doctor`) share, so
+that one menu entry and one fixer procedure can serve them all. Version 1, written 2026-09-29 by the chat «Updater doctor» from two
 T2 hunts over both doctors. A doctor's owner chat may amend it here; the other owners follow the
 amended text.
 
@@ -30,6 +30,7 @@ Harness    3          ▁▁▂▃▄▆█ ↑    3 ▸
 Updater    0          ▁▁▂▃▄▆█ ↑    3 ▸
 Code       3          ▁▁▂▃▄▆█ ↑    3 ▸
 Speed     12 min/day  ▁▁▂▃▄▆█ ↑   25 ▸
+System     2          ▁▁▂▃▄▆█ ↑    3 ▸
 Last night 5 Oct · stopped early: no jobs
 ──────────
 Cleanup now
@@ -71,7 +72,7 @@ Who builds what:
 ## 1. Document envelope
 
 Each doctor keeps writing its `latest.json` (`~/.cache/llm-doctor/`, `~/.cache/harness-doctor/`,
-`~/.cache/updater-doctor/`, `~/.cache/code-doctor/`)
+`~/.cache/updater-doctor/`, `~/.cache/code-doctor/`, `~/.cache/system-doctor/`)
 and adds these top-level keys. Its own keys stay as they are.
 
 | key | value |
@@ -361,3 +362,16 @@ Code doctor (added 2026-10-02, design `docs/code-doctor-design.md`):
   cross-repository merge deletes the old copy only on a later night than its `migrated` stage.
 - `bin/code-doctor record-fix` writes the fixed-pending row (with its identity and yield) and, with
   `--mechanism`, `share/canonical-mechanisms.json`, which review-bench's fit lens reads.
+
+System doctor (added 2026-10-06, design `docs/system-doctor-design.md`):
+- Machine rules `spawn`, `kernel`, `compressor`, `swap`, `swap-writes`, `ssd-writes`, `free-space`,
+  `hammerspoon-crash`, `job-crash`, `unclean-reboot`; ids `<rule>:<key>` (`machine`, a volume, a
+  job name). A ledger row matches `{rule, key}` exactly; a row without both is `ledger:<id>`.
+- Own problem keys: `label` (the menu's short name), `severity` (`review` | `heavy`) and `cause`
+  `{name, share, owner, fix_target}`; `fix_target` is true only for an own cause, Apple and
+  third-party causes are report-only.
+- `status` is `blind` while the newest tick is older than 10 min or the nightly pass older than 36 h
+  (own key `blind`). Own keys: `measures`, `causes` (births and CPU by cause), `nightly`,
+  `costs.tick`, `limits`.
+- Report-only in phase 1: the menu's Fix row is a dim `Fix — report only` and
+  `doctor-fix launch system` refuses.

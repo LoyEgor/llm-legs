@@ -9,6 +9,7 @@ local M = { cacheSeconds = 2 }
 local FIX_BUSY_S = 12 * 3600
 local NIGHT_REFRESH_S = 60
 local UPDATER_STALE_S = 2 * 86400
+local SYSTEM_STALE_S = 3600
 local ROW_CELLS = 64
 local LAG_EVERY_S, LAG_MIN_S = 1, 0.05
 local VERDICTS = { "fixed", "ruled-out", "weather", "blind-spot", "handoff" }
@@ -19,6 +20,7 @@ local DOCTORS = {
     ledger = "harness-ledger.json" },
   { key = "updater", fix = "Fix — update and integrate all vendors", env = "UPDATER_DOCTOR", ledger = "updater-ledger.json" },
   { key = "code", fix = "Fix — open a fixer chat", env = "CODE_DOCTOR", ledger = "code-ledger.json" },
+  { key = "system", env = "SYSTEM_DOCTOR", ledger = "system-ledger.json" },
 }
 local CODE_GROUPS = { { key = "dead", name = "Dead" }, { key = "heavy", name = "Heavy" },
   { key = "duplicate", name = "Duplicate" }, { key = "ledger", name = "Ledger" } }
@@ -300,6 +302,7 @@ local function nightItem(title, fn)
 end
 
 local function fixItem(doctor, label, run, now)
+  if not label then return dim("Fix — report only") end
   if running(fixTasks[doctor]) then return dim("Fix — opening…") end
   local state, at = runState(run)
   if state == "open" and at and now - at < FIX_BUSY_S then return dim("Fix — fixer running for " .. style.age(now - at)) end
@@ -575,6 +578,101 @@ local function codeEntry()
     problems = count, status = status }
 end
 
+local function systemPath()
+  return dirFor("systemDoctorDir", "SYSTEM_DOCTOR_DIR", "/.cache/system-doctor") .. "/latest.json"
+end
+
+local function systemTitle(document)
+  if not document then return "System doctor: no data yet" end
+  local count = tonumber(document.problem_count) or 0
+  local title = "System doctor: " .. (count > 0 and plural(count, "problem") or "ok")
+  if document.status == "blind" then title = title .. " · blind" end
+  if document.status == "error" then title = title .. " · collector failed" end
+  local asOf = tonumber(document.as_of_s)
+  if asOf and os.time() - asOf >= SYSTEM_STALE_S then title = title .. " · stale " .. style.age(os.time() - asOf) end
+  return title
+end
+
+function M.refreshSystem() refreshDoctor("system", {}, systemTitle, systemPath) end
+
+local function share(value) return value and string.format("%d %%", math.floor(value * 100 + 0.5)) or "–" end
+local function number(value, format) return value and string.format(format, value) or "–" end
+
+local function systemEntry(now)
+  local document = readJson(systemPath())
+  local items = {}
+  if not document then
+    items[1] = dim("no data yet")
+  else
+    local failure = type(document.self) == "table" and document.self.error
+    if document.status == "error" and type(failure) == "string" then
+      items[#items + 1] = { title = infoTitle(failure, true), disabled = true }
+    end
+    for _, problem in ipairs(type(document.problems) == "table" and document.problems or {}) do
+      if type(problem) == "table" then
+        local loud = LOUD[problem.state] == true
+        local rows = {}
+        for _, item in ipairs(type(problem.evidence) == "table" and problem.evidence or {}) do
+          if type(item) == "table" and type(item.excerpt) == "string" then rows[#rows + 1] = dim(item.excerpt) end
+        end
+        items[#items + 1] = fitRow({ title = infoTitle(tostring(problem.fact or problem.id or "?"), loud, not loud),
+          menu = #rows > 0 and rows or nil, disabled = #rows == 0 or nil })
+      end
+    end
+    local m = type(document.measures) == "table" and document.measures or {}
+    items[#items + 1] = dim(string.format("new processes %s/s · kernel %s of CPU · busy %s",
+      number(m.births_s, "%.0f"), share(m.kernel), share(m.busy)))
+    items[#items + 1] = dim(string.format("compressed %s of RAM · swap %s used · %s page-ins/s",
+      share(m.comp_share), share(m.swap_share), number(m.pagein_s, "%.0f")))
+    items[#items + 1] = dim(string.format("SSD writes %s GB/day · reads %s GB/day (%s days) · swap writes %s GiB/day",
+      number(m.ssd_gb_day_7d, "%.0f"), number(m.ssd_read_gb_day_7d, "%.0f"), number(m.days_measured, "%.0f"),
+      number(m.swap_gib_day, "%.1f")))
+    local volumes = {}
+    for name, gib in pairs(type(m.free_gib) == "table" and m.free_gib or {}) do
+      volumes[#volumes + 1] = string.format("%s %.0f GiB", name, tonumber(gib) or 0)
+    end
+    table.sort(volumes)
+    if #volumes > 0 then items[#items + 1] = dim("free " .. table.concat(volumes, " · ")) end
+    local causes = type(document.causes) == "table" and document.causes or {}
+    local born, cpu = {}, {}
+    for _, row in ipairs(type(causes.births) == "table" and causes.births or {}) do
+      born[#born + 1] = dim(string.format("%s %s · %s", tostring(row[1]), share(tonumber(row[2])), tostring(row[3])))
+    end
+    for _, row in ipairs(type(causes.cpu) == "table" and causes.cpu or {}) do
+      cpu[#cpu + 1] = dim(string.format("%s %.2f cores · reaped %.2f · %s", tostring(row[1]), tonumber(row[2]) or 0,
+        tonumber(row[3]) or 0, tostring(row[4])))
+    end
+    items[#items + 1] = { title = infoTitle("births by cause", false, true), menu = #born > 0 and born or nil,
+      disabled = #born == 0 or nil }
+    items[#items + 1] = { title = infoTitle("CPU by cause", false, true), menu = #cpu > 0 and cpu or nil,
+      disabled = #cpu == 0 or nil }
+    local night = type(document.nightly) == "table" and document.nightly or nil
+    if night then
+      local reports, parts = {}, {}
+      for kind, count in pairs(type(night.reports) == "table" and night.reports or {}) do
+        parts[#parts + 1] = kind .. " " .. tostring(count)
+      end
+      table.sort(parts)
+      for _, row in ipairs(type(night.processes) == "table" and night.processes or {}) do
+        reports[#reports + 1] = dim(string.format("%s %s ×%s · %s", tostring(row[1]), tostring(row[2]), tostring(row[3]),
+          tostring(row[4])))
+      end
+      for _, row in ipairs(type(night.caches) == "table" and night.caches or {}) do
+        reports[#reports + 1] = dim(string.format("cache %s %.1f GiB", tostring(row[1]), tonumber(row[2]) or 0))
+      end
+      local at = tonumber(night.as_of_s)
+      items[#items + 1] = fitRow({ title = infoTitle("nightly " .. (at and style.ago(now - at) or "?") .. " · "
+        .. (#parts > 0 and table.concat(parts, " · ") or "no reports"), false, true),
+        menu = #reports > 0 and reports or nil, disabled = #reports == 0 or nil })
+    end
+    items[#items + 1] = blindSpotsRow(document)
+  end
+  refreshRows(items, "system", M.refreshSystem)
+  local count, status, loud = documentStatus(document)
+  return { title = infoTitle(systemTitle(document), loud, not loud and status ~= "blind"), menu = items,
+    problems = count, status = status }
+end
+
 local function speedDir() return dirFor("speedDoctorDir", "SPEED_DOCTOR_DIR", "/.cache/speed-doctor") end
 
 local function ledgerPath(doctor)
@@ -621,8 +719,10 @@ local BUILDERS = {
   harness = function() return limits.harnessDoctorEntry() end,
   updater = updaterEntry,
   code = codeEntry,
+  system = systemEntry,
 }
-local NAMES = { llm = "LLM doctor", harness = "Harness doctor", updater = "Updater doctor", code = "Code doctor" }
+local NAMES = { llm = "LLM doctor", harness = "Harness doctor", updater = "Updater doctor", code = "Code doctor",
+  system = "System doctor" }
 
 local BARS = { "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█" }
 local MISSING = "–"
@@ -708,6 +808,10 @@ local function issueRows(doctor, document)
     end
   elseif doctor.key == "code" then
     for _, group in ipairs(CODE_GROUPS) do add(tonumber((document.groups or {})[group.key]) or 0, group.name) end
+  elseif doctor.key == "system" then
+    for _, problem in ipairs(document.problems or {}) do
+      if LOUD[problem.state] then add(1, tostring(problem.label or problem.rule or problem.id)) end
+    end
   end
   if #issues == 0 then
     for _, problem in ipairs(document.problems or {}) do
@@ -729,7 +833,7 @@ end
 
 local function compute()
   local now = os.time()
-  local entries, histories, speed = {}, {}, nil
+  local entries, histories, speed, machine = {}, {}, nil, nil
   local rows = readJson(dirFor("doctorsDir", "DOCTORS_DIR", "/.cache/doctors") .. "/problem-days.jsonl", "days") or {}
   for _, row in ipairs(rows) do
     if type(row.doctor) == "string" and type(row.day) == "string" and tonumber(row.max) then
@@ -761,9 +865,10 @@ local function compute()
     local stale = oldTitle:find("stale", 1, true) ~= nil
     local status = entry.status
     if status == "ok" and doctor.key == "updater" and document and updatesPending(document) > 0 then status = "watch" end
-    entries[#entries + 1] = { title = summaryTitle((NAMES[doctor.key]:gsub(" doctor$", "")),
+    local summary = { title = summaryTitle((NAMES[doctor.key]:gsub(" doctor$", "")),
       entry.status ~= "nodata" and entry.status ~= "error" and count or nil, nil, status, histories[doctor.key] or {}, now, stale),
       menu = egorLayer(issueRows(doctor, document), menu, menu), problems = count, status = entry.status }
+    if doctor.key == "system" then machine = summary else entries[#entries + 1] = summary end
     if doctor.key == "harness" then
       local metrics = document and type(document.speed) == "table" and document.speed or {}
       local byDay = type(metrics.lost_min_day_by_day) == "table" and metrics.lost_min_day_by_day or {}
@@ -784,6 +889,7 @@ local function compute()
     end
   end
   entries[#entries + 1] = speed
+  entries[#entries + 1] = machine
   if now - night.at >= NIGHT_REFRESH_S then M.refreshNight() end
   if night.text then entries[#entries + 1] = nightEntry() end
   entries[#entries + 1] = { title = "-", problems = 0 }

@@ -1,5 +1,5 @@
 {
   "own": "doctor",
-  "whole": {"code": "code"},
+  "whole": {"code": "code", "system": "system"},
   "renamed": {"llm-health": "debt", "harness-self": "doctor", "updater-machinery": "doctor"}
 }
