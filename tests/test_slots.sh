@@ -208,6 +208,25 @@ RUN_SUITES_SLOT="$RUN_SUITES_SLOTS_DIR/1" bash "$ROOT/share/run-suites.sh" --rep
   fail "a nested run failed: $(cat "$WORK/stamp.out")"
 assert grep -Eq 'PASS: stamp=[0-9]+$' "$WORK/stamp.out"
 kill "$h5"; until_gone "$h5"
+# A worker's run stops queueing once that worker has ended; an exit code already there is a stale export.
+h7=$(holder "$RUN_SUITES_SLOTS_DIR" 1)
+mkdir -p "$WORK/wrun"
+WORKER_RUN_RECORD="$WORK/wrun" WORKER_RUN_ID=wrun bash "$ROOT/share/run-suites.sh" --repo "$WORK/repo" test_a.sh \
+  >"$WORK/ended.out" 2>&1 &
+ended_run=$!
+pids+=("$ended_run")
+for i in $(seq 1 50); do [ "$(holds_of run-suites)" = 1 ] && break; sleep 0.1; done
+assert [ "$(holds_of run-suites)" = 1 ]
+echo 0 >"$WORK/wrun/exit_code"
+until_gone "$ended_run" || fail "a run kept queueing after its worker ended"
+ended_rc=0; wait "$ended_run" || ended_rc=$?
+assert [ "$ended_rc" -eq 4 ]
+assert grep -q 'worker wrun ended while this run waited for a slot' "$WORK/ended.out"
+assert [ "$(holds_of run-suites)" = 0 ]
+assert [ "$(cat "$RUN_SUITES_SLOTS_DIR/1/pid")" = "$h7" ]
+kill "$h7"; until_gone "$h7"
+WORKER_RUN_RECORD="$WORK/wrun" WORKER_RUN_ID=wrun bash "$ROOT/share/run-suites.sh" --repo "$WORK/repo" test_a.sh \
+  >"$WORK/stale.out" 2>&1 || fail "a stale worker export refused the run: $(cat "$WORK/stale.out")"
 
 # worker-run: a run on a night branch waits for one of NIGHT_FIXER_SLOTS, its deadline counted from
 # the slot; its slot goes when it ends. Any other branch never waits.

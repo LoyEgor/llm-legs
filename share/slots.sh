@@ -58,7 +58,8 @@ slot_take() { # dir count ceiling-seconds -> the slot taken; fails while all are
   return 1
 }
 
-slot_wait() { # dir count ceiling-seconds limiter what [tick command...] -> the slot, once one is free
+slot_wait() { # dir count ceiling-seconds limiter what [tick command...] -> the slot, once one is free;
+  # fails once $SLOT_GIVE_UP_FILE appears
   local dir=$1 count=$2 ceiling=$3 limiter=$4 what=$5 hold=''
   shift 5
   [[ "$count" =~ ^[1-9][0-9]*(-[1-9][0-9]*)?$ ]] || count=1
@@ -72,6 +73,7 @@ slot_wait() { # dir count ceiling-seconds limiter what [tick command...] -> the 
     if [ -n "$SLOT_WHY" ]; then sleep "${SLOTS_ROOM_POLL_S:-15}"; else sleep "${SLOTS_POLL_S:-2}"; fi
     # Run as $(slot_wait …), this loop outlives a killed caller and would take a slot for nobody.
     kill -0 "$$" 2>/dev/null || { hold_clear "$hold"; return 1; }
+    [ -z "${SLOT_GIVE_UP_FILE:-}" ] || [ ! -e "$SLOT_GIVE_UP_FILE" ] || { hold_clear "$hold"; return 1; }
   done
   # The caller can also die inside the take, after the check above passed.
   kill -0 "$$" 2>/dev/null || { slot_release "$SLOT_TAKEN"; hold_clear "$hold"; return 1; }

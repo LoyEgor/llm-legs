@@ -569,6 +569,10 @@ notty_output=$(bash "$SCRIPT" p notty </dev/null 2>&1) || fail "profile notty fa
 assert grep -qx "CALL home=$HOME/.gemini-profiles/notty argc=0" "$AGY_CALLS"
 if grep -q "web routes" <<<"$notty_output" || grep -q login "$WEB_CALLS"; then fail "no tty, yet it asked"; fi
 on_tty() { python3 "$ROOT/tests/fixtures/answer-pty.py" "$@"; }
+# A prompt after 11 s of silence, the way a loaded machine delays one: it is answered, not hung on.
+timeout 60 python3 "$ROOT/tests/fixtures/answer-pty.py" y bash -c 'sleep 11; read -rp "late? [y/N] " a; echo "late=$a"' \
+  >"$WORK/late-prompt" 2>&1 &
+late_prompt=$!
 tty_output=$(on_tty '' bash "$SCRIPT" p ttyno)
 assert grep -q "Also sign ttyno into the web routes now? \[y/N\]" <<<"$tty_output"
 assert test "$(cat "$WEB_CALLS")" = "gemini_web accounts"
@@ -584,6 +588,8 @@ if grep -q "web routes" <<<"$again_output" || test -s "$WEB_CALLS"; then fail "a
 signed_output=$(WEB_ACCOUNTS='{"ok": true, "accounts": [{"account": "ttysigned", "login": true}]}' \
   on_tty y bash "$SCRIPT" p ttysigned)
 if grep -q "web routes" <<<"$signed_output" || grep -q login "$WEB_CALLS"; then fail "a signed-in web profile was offered"; fi
+wait "$late_prompt" || fail "a prompt after a long silence hung answer-pty: $(cat "$WORK/late-prompt")"
+assert grep -q '^late=y' "$WORK/late-prompt"
 
 for reserved in profile p run add remove list status pick help login agy-launch web; do
   assert_fails bash "$SCRIPT" profile "$reserved" </dev/null >/dev/null 2>&1

@@ -2691,6 +2691,35 @@
       "reviewed_by": "night fixer harness-stop-hooks-20261005T061339Z-2a70",
       "note": "The only held line in the stop journal: 2026-10-04T07:02:23Z/2ddedf36. Runs claudeb-1791096939-3244-6832 and claudeb-1791097006-94194-5582 (com, opus) were launched by the relays a739c43940f0a8f91 and abd6d30e75c31e1a2 inside the Fable judging workers 227ac46a and 5b28a455; launcher = the root chat (bin/worker-run start_run, CLAUDE_LAUNCHER_SESSION) while the relay tags sit in the workers' caches, so owned() found none in the root's: the hold is as specified and reached its goal (the chat attached both, saw the com misroute, killed them, exit 143). Cause upstream: Fable headless workers delegate (2 of 3 Fable parents of nested runs this week). Unconfirmed: why ~25 other nested runs since 09-29 never held (most lived about a minute; one root stop at 2026-10-03T06:54:53Z/fa230c90 fell inside a live nested run with no held line; the backstop journals no silent reason).",
       "handoff": "docs/handoffs/2026-10-05-fable-worker-delegates.md"
+    },
+    {
+      "id": "wait-run-suites-slot-hogs",
+      "title": "run-suites slot waits of 39-86 min: slots held by slow or hung suites and by runs nobody reads",
+      "match": {
+        "rule": "wait_class",
+        "ident": "run-suites"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-05T18:50:18+03:00",
+          "by": "night fixer harness-wait-classes-20261005T061344Z-34e5",
+          "files": [
+            "llm-legs/tests/fixtures/answer-pty.py",
+            "llm-legs/share/slots.sh",
+            "llm-legs/share/run-suites.sh",
+            "llm-legs/tests/test_slots.sh",
+            "llm-legs/tests/test_geminib.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-05",
+      "reviewed_by": "night fixer harness-wait-classes-20261005T061344Z-34e5",
+      "note": "Slot waits (3 run-suites slots on 10 cores) of 39-86 min on 2026-10-05: the slots were held 1.5-2.5 h by runs whose wall was 10-25x their CPU under night load. Holders, from runs.jsonl: test_instruction_gate 3900-7000 s (cpu 290), test_worker_pick 2300-7700 s, worker affected-sets of 58-124 suites (bin/worker-run or bin/worker-pick changes name most suites). Those levers landed in main after the night base by other runs: 03001c01 (instruction_gate cpu 290 -> 37), 203f037d (worker-pick speed), c4adcbb8 (tests/slow-suites skipped inside workers; slot admission 3 -> up to 4 while there is room). Fixed here: (1) tests/fixtures/answer-pty.py stopped reading after 10 s of silence, so a [y/N] prompt delayed by load went unanswered and it blocked in waitpid forever: test_geminib held a leftover run (124 suites, started 11:28) for 7 h, past the 6 h slot ceiling; now it reads until the child exits, killing it after 600 s. (2) A run a worker backgrounded kept queueing after that worker ended, then held a slot for nobody (side-ready-scope: worker ended 18 and 35 min before its runs got a slot; 62 slot-min on 2026-10-05 held after the worker ended); run-suites now stops waiting once $WORKER_RUN_RECORD/exit_code appears (SLOT_GIVE_UP_FILE in slot_wait). Not done, for the next fixer if this regresses: a run already slotted keeps going after its worker ends (feat-worker-pick-speed held 38 min after its worker); one worker queues several runs at once, and a run it relaunched leaves the old one queued (llm-debt pid 48903); a slot is a whole run, so a run whose last suite is a slow one holds the whole slot for that one suite; the night's own leftover checks are not workers, so tests/slow-suites does not shrink their affected sets.",
+      "handoff": null
     }
   ],
   "blind_spots": [
@@ -2847,6 +2876,13 @@
       "reason": "session 084706a5 spent 14.6+18.7 s in SessionStart, 5.9+6.1 s in UserPromptSubmit and 16.1 s in Stop by its transcript, yet hooks/20730.tsv, hooks/folded/20730.tsv and the spool hold no row of it; cause not found (lib/hook-time.sh returns early without CLAUDE_PROJECT_DIR)",
       "since": "2026-10-05",
       "would_catch_if": "hook-time.sh wrote a row for every hook run whatever the session's project dir, or the doctor read the transcripts' hook durationMs"
+    },
+    {
+      "id": "wait-holder-unseen",
+      "what": "who holds the slots a long wait waited on: a hung suite, a run whose worker has ended, one worker holding several slots",
+      "reason": "the wait journal names only the waiter; slot holders appear in runs.jsonl only once they end, and a hung one never ends",
+      "since": "2026-10-05",
+      "would_catch_if": "a limiter wait row carried the holders when it cleared (pid, repo, worker run and whether it still lives, the suite running longest)"
     }
   ]
 }

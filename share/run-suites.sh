@@ -137,9 +137,15 @@ serial_suite() {
 # A nested run (a suite testing this runner) inherits its parent's slot.
 own_slot=''
 if [ -z "${RUN_SUITES_SLOT:-}" ]; then
-  own_slot=$(slot_wait "${RUN_SUITES_SLOTS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/run-suites/slots}" \
-    "${RUN_SUITES_SLOTS:-$(run_suites_slots)}" $((6 * 3600)) run-suites "suites of $repo") ||
+  # A worker's backgrounded run outlives the worker; once it has ended nobody reads the run, which then
+  # queued for and held a slot anyway (2026-10-05). An exit code there before the queue is a stale export.
+  worker_ended=''
+  [ -z "${WORKER_RUN_RECORD:-}" ] || [ -e "$WORKER_RUN_RECORD/exit_code" ] || worker_ended=$WORKER_RUN_RECORD/exit_code
+  own_slot=$(SLOT_GIVE_UP_FILE=$worker_ended slot_wait "${RUN_SUITES_SLOTS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/run-suites/slots}" \
+    "${RUN_SUITES_SLOTS:-$(run_suites_slots)}" $((6 * 3600)) run-suites "suites of $repo") || {
+    [ -z "$worker_ended" ] || [ ! -e "$worker_ended" ] || fail "worker ${run_worker:-run} ended while this run waited for a slot"
     fail 'could not take a suite slot'
+  }
   trap 'slot_release "$own_slot"' EXIT
   export RUN_SUITES_SLOT=$own_slot
   printf -v run_suites_start '%(%s)T' -1
