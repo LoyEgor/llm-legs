@@ -25,7 +25,7 @@ The reliable version does not read shell text at all and does not enumerate. It 
 - CLOSED 2026-09-23, a stamp is honoured only beside the `denied/<hash>` record its own session's deny wrote, anything else is `stamp-forged`, exit 2: pre-creatable retry stamp directory (bloat-gate:378 `instruction_stamp_ready`, write-gate:223): an LLM can `mkdir` the stamp before the first deny and pass on the first try. The fix is a stamp the gate alone can mint (an HMAC over hash+time with a key outside `$HOME`), which is the same "state outside the LLM's reach" the watcher needs.
 - CLOSED 2026-09-23, only receipted records are trimmed and unreceipted overflow past twice the cap becomes one counted `dropped` record: 200-record journal truncation before pump (Lua:113, watch.sh trim): raise the cap or trim only records that already carry a receipt.
 - CLOSED 2026-09-23, every `check` touches its session's baseline: seven-day baseline sweep of a live session (watch.sh:469): sweep by the session's last hook stamp, not the file's mtime.
-- CLOSED 2026-09-23, each asserted in `tests/test_instruction_gate.sh` (23 by the menu harness) and `git apply`/`stash pop` landings read by `instruction_git_landing`: items 4, 15, 20, 23, 28 above: an assertion each, spelled with the round's exact command; item 4 also `git apply`/`stash pop` as copy verbs.
+- CLOSED 2026-09-23, each asserted in `tests/test_instruction_gate*.sh` (23 by the menu harness) and `git apply`/`stash pop` landings read by `instruction_git_landing`: items 4, 15, 20, 23, 28 above: an assertion each, spelled with the round's exact command; item 4 also `git apply`/`stash pop` as copy verbs.
 
 ## Closed on 2026-09-23 by the file watcher (`hammerspoon/instruction-watch.lua`)
 
@@ -35,5 +35,3 @@ The reliable version does not read shell text at all and does not enumerate. It 
 - **Liveness on the menu.** `watcher: live since … · N roots · M files`, red when the heartbeat is older than two ticks or no root runs.
 - **Bounds that report themselves (point 4), the rendering half.** `kind: dropped` renders as `N changes dropped`, `kind: stamp-forged` red, and a `+N older in events.jsonl` trailer counts the unreceipted-or-recent records past the twelve rows.
 - **Item 23.** The harness now asserts the module's default state directory is `INSTRUCTION_WATCH_STATE`.
-
-Suites at hand-off: `tests/test_instruction_gate.sh` 778 assertions green, `tests/test_consistency.sh` green, `tests/run-all` 59 of 60 with the known foreign red in `tests/test_worker_run.sh`.

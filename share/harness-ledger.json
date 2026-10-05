@@ -2720,6 +2720,39 @@
       "reviewed_by": "night fixer harness-wait-classes-20261005T061344Z-34e5",
       "note": "Slot waits (3 run-suites slots on 10 cores) of 39-86 min on 2026-10-05: the slots were held 1.5-2.5 h by runs whose wall was 10-25x their CPU under night load. Holders, from runs.jsonl: test_instruction_gate 3900-7000 s (cpu 290), test_worker_pick 2300-7700 s, worker affected-sets of 58-124 suites (bin/worker-run or bin/worker-pick changes name most suites). Those levers landed in main after the night base by other runs: 03001c01 (instruction_gate cpu 290 -> 37), 203f037d (worker-pick speed), c4adcbb8 (tests/slow-suites skipped inside workers; slot admission 3 -> up to 4 while there is room). Fixed here: (1) tests/fixtures/answer-pty.py stopped reading after 10 s of silence, so a [y/N] prompt delayed by load went unanswered and it blocked in waitpid forever: test_geminib held a leftover run (124 suites, started 11:28) for 7 h, past the 6 h slot ceiling; now it reads until the child exits, killing it after 600 s. (2) A run a worker backgrounded kept queueing after that worker ended, then held a slot for nobody (side-ready-scope: worker ended 18 and 35 min before its runs got a slot; 62 slot-min on 2026-10-05 held after the worker ended); run-suites now stops waiting once $WORKER_RUN_RECORD/exit_code appears (SLOT_GIVE_UP_FILE in slot_wait). Not done, for the next fixer if this regresses: a run already slotted keeps going after its worker ends (feat-worker-pick-speed held 38 min after its worker); one worker queues several runs at once, and a run it relaunched leaves the old one queued (llm-debt pid 48903); a slot is a whole run, so a run whose last suite is a slow one holds the whole slot for that one suite; the night's own leftover checks are not workers, so tests/slow-suites does not shrink their affected sets.",
       "handoff": null
+    },
+    {
+      "id": "test_slow-instruction-gate",
+      "title": "test_instruction_gate · llm-legs took 18 min against a usual 7, one serial file of ~200 sections",
+      "match": {
+        "rule": "test_slow",
+        "ident": "llm-legs:test_instruction_gate(_(bloat|tripwire|matrix|span|relay|coverage|bypasses))?"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-05T17:10:00+03:00",
+          "by": "night fixer harness-tests-20261005T061341Z-0005",
+          "files": [
+            "llm-legs/tests/instruction_gate_harness.sh",
+            "llm-legs/tests/test_instruction_gate.sh",
+            "llm-legs/tests/test_instruction_gate_bloat.sh",
+            "llm-legs/tests/test_instruction_gate_tripwire.sh",
+            "llm-legs/tests/test_instruction_gate_matrix.sh",
+            "llm-legs/tests/test_instruction_gate_span.sh",
+            "llm-legs/tests/test_instruction_gate_relay.sh",
+            "llm-legs/tests/test_instruction_gate_coverage.sh",
+            "llm-legs/tests/test_instruction_gate_bypasses.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-05",
+      "reviewed_by": "night fixer harness-tests-20261005T061341Z-0005",
+      "note": "The 1046-1094 s runs of 2026-10-05 01:23-02:01Z ran under machine load 170-250 from outside run-suites; a profile at load ~200 showed no hot section, time spread evenly over ~200 serial sections of hook calls (each a bash+jq spawn), so the cause is one serial file, not a regressed case. Fixed by splitting it into eight parts over tests/instruction_gate_harness.sh that run-suites runs in parallel: the write gate keeps tests/test_instruction_gate.sh, then _bloat, _tripwire, _matrix, _span, _relay, _coverage, _bypasses; each part re-creates the fixture state the earlier sections left (profile_link, docs_link, alert stubs, chat-name stub). Asserts: 978 body asserts plus the 2 prelude asserts per part, same as the monolith; at load ~140-190 the slowest part took 222 s against the monolith's 1000+ s. Ruled out: the fixed sleeps and the nojq symlink loop (main 03001c01 already changed them; too small to explain 11 min). The ident follows every part, so a part that grows slow again lands on this row.",
+      "handoff": null
     }
   ],
   "blind_spots": [
