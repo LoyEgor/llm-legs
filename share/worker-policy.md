@@ -63,6 +63,8 @@ that hit the old deadline died mid-work with nothing handed back (`scratchpad/lo
   beat one run that never returns.
 - Each worker runs only the suites covering ITS change (`tests/affected <file>...`) plus the one red on
   the old code, never `tests/run-all`: workers queued 2–3 h for a full-run slot (night 2026-10-04).
+  Inside a worker `tests/affected` drops the slow layer (`tests/slow-suites`) unless the worker edited
+  that suite; the landing and the night's full run run it.
   The full run is the night's one background run at Close (`docs/night-run.md`).
 - Do NOT repeat the loop rule in the brief: `worker-run` appends it to every launched brief
   (`BRIEF_PREAMBLE`), so a brief that spells it again only makes itself longer.

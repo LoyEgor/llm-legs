@@ -35,8 +35,10 @@ Exit 1 if any suite failed, with the last 30 lines of each failure.
                 (llm-legs e2e_surfaces.sh, test_instruction_rates_live.sh)
   suite ...     explicit suite names or paths; skips discovery
 
-Machine-wide at most RUN_SUITES_SLOTS runs at once (default cores / 3, 2 to 4); a run waits for a free
-slot under RUN_SUITES_SLOTS_DIR, its wait a limiter hold.
+Machine-wide at most RUN_SUITES_SLOTS runs at once (default cores / 3 clamped 2 to 4 always, up to 4
+while the machine has room); a run waits for a free slot under RUN_SUITES_SLOTS_DIR, its wait a
+limiter hold. Inside a worker (WORKER_RUN_ID set) --changed skips the slow layer, tests/slow-suites,
+except a suite the worker edited; the landing and the night full run run them.
 USAGE
   exit 2
 }
@@ -131,12 +133,12 @@ serial_suite() {
 }
 
 # Machine-wide, at most RUN_SUITES_SLOTS runs at once: each already fans out -j cores/2 suites, so
-# cores/3 runs (2 to 4) fill the cores and a third keeps a short named run from queueing behind two
-# full ones. A nested run (a suite testing this runner) inherits its parent's slot.
+# cores/3 (2 to 4) always run and up to 4, the count measured freeze-safe, while slot_room finds room.
+# A nested run (a suite testing this runner) inherits its parent's slot.
 own_slot=''
 if [ -z "${RUN_SUITES_SLOT:-}" ]; then
   own_slot=$(slot_wait "${RUN_SUITES_SLOTS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/run-suites/slots}" \
-    "${RUN_SUITES_SLOTS:-$(slots_from_cores 3 2 4)}" $((6 * 3600)) run-suites "suites of $repo") ||
+    "${RUN_SUITES_SLOTS:-$(run_suites_slots)}" $((6 * 3600)) run-suites "suites of $repo") ||
     fail 'could not take a suite slot'
   trap 'slot_release "$own_slot"' EXIT
   export RUN_SUITES_SLOT=$own_slot
@@ -168,8 +170,10 @@ if [ "$changed" = true ]; then
   names_file=$(mktemp "${TMPDIR:-/tmp}/affected.XXXXXX") || fail 'could not create a names file'
   affected_names "$repo" >"$names_file"
   mapfile -t suites < <(printf '%s\n' "${suites[@]}" | affected_filter "$repo" "$names_file" | sort -u)
+  slow_layer_split "$repo" "$names_file" ${suites[@]+"${suites[@]}"}
+  suites=(${slow_kept[@]+"${slow_kept[@]}"})
   rm -f "$names_file"
-  [ "${#suites[@]}" -gt 0 ] || { printf 'run-suites: nothing changed that any suite names\n'; exit 0; }
+  [ "${#suites[@]}" -gt 0 ] || [ -n "$slow_skipped" ] || { printf 'run-suites: nothing changed that any suite names\n'; exit 0; }
 fi
 
 # Brew relinks `python3` to each new minor release, which arrives without pytest.
@@ -188,7 +192,7 @@ pytest_python() {
   return 1
 }
 python=''
-if printf '%s\n' "${suites[@]}" | grep -q '\.py$'; then
+if printf '%s\n' ${suites[@]+"${suites[@]}"} | grep -q '\.py$'; then
   python=$(pytest_python) ||
     fail "no python with pytest: tried $repo/.venv/bin/python, python3 and python3.X on PATH"
 fi
@@ -204,7 +208,7 @@ journal_run() {
   local entry name rc secs real cpu complete=true queued began ended
   local -a names=()
   suite_journal_suites=''
-  for entry in "${suites[@]}"; do
+  for entry in ${suites[@]+"${suites[@]}"}; do
     name=${entry##*/}
     names+=("$name")
     rc='' real='' cpu=''
@@ -213,14 +217,14 @@ journal_run() {
     if [[ "$rc" =~ ^[0-9]+$ ]]; then suite_journal_suite "$name" "$rc" "${real:-$secs}" "$cpu"; else complete=false; fi
   done
   [ -z "$run_signal" ] || complete=false
-  mapfile -t names < <(printf '%s\n' "${names[@]}" | LC_ALL=C sort)
-  suite_journal_digest "${names[@]}"
+  mapfile -t names < <(printf '%s\n' ${names[@]+"${names[@]}"} | LC_ALL=C sort)
+  suite_journal_digest ${names[@]+"${names[@]}"}
   suite_journal_git "$repo"
   suite_journal_ms queued "$run_suites_queued"; suite_journal_secs queued "$queued"
   suite_journal_ms began "$run_suites_began"; suite_journal_secs began "$began"
   suite_journal_ms ended; [ -n "$ended" ] || suite_journal_ms ended "$(date +%s)"; suite_journal_secs ended "$ended"
   suite_journal_row suites "$$" "$queued" "$began" "$ended" "$repo" "$times_key" "$suite_journal_head" "${scope:-}" \
-    "$run_worker" "$run_session" "$jobs" "$run_slot" "$run_signal" "$complete"
+    "$run_worker" "$run_session" "$jobs" "$run_slot" "$run_signal" "$complete" "${slow_skipped:-}"
   suite_journal_append "$run_journal"
 }
 run_signal='' run_finished=''
@@ -244,6 +248,7 @@ trap 'on_signal 15 TERM' TERM
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/test-scope.sh"
 if [ "${#explicit[@]}" -gt 0 ]; then scope=named; elif $changed; then scope=changed; elif $include_live; then scope=all
 else scope=full; fi
+[ "${#suites[@]}" -gt 0 ] || exit 0
 test_scope_mark "$scope" suites "$repo" "$run_suites_start"
 
 run_one() { # suite-path

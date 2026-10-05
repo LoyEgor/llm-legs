@@ -371,7 +371,7 @@ claudeb_discover_session() { # directory
     started=$WD_STARTED
     account=$WD_ACCOUNT
   else
-    started=$(jq -r '.started_at // 0' "$directory/meta.json" 2>/dev/null)
+    started=$(jq -r '([.started_at, .slot_at] | map(numbers) | max // 0)' "$directory/meta.json" 2>/dev/null)
     account=$(jq -r '.account // empty' "$directory/meta.json" 2>/dev/null)
   fi
   [[ "$started" =~ ^[0-9]+$ ]] || started=0
@@ -527,7 +527,7 @@ run_with_deadline() {
     if [ -n "$directory" ] && [ -r "$directory/meta.json" ]; then
       # Not a tab: IFS whitespace collapses an empty field and shifts the next one into its place.
       IFS=$'\x1f' read -r vendor workdir WD_STARTED WD_ACCOUNT WD_RESUME < <(
-        jq -r '[.vendor // "", .workdir // "", (.started_at // 0 | tostring), .account // "", .resume // ""] | join("\u001f")' \
+        jq -r '[.vendor // "", .workdir // "", (([.started_at, .slot_at] | map(numbers) | max // 0) | tostring), .account // "", .resume // ""] | join("\u001f")' \
           "$directory/meta.json" 2>/dev/null) || true
       WD_META_READY=1
     fi
@@ -636,7 +636,7 @@ run_overdue() {
   # compatibility retry each vendor may make. Unparseable started_at counts as
   # overdue — better a failed report than an eternal "running".
   local started now
-  started=$(jq -r '.started_at // 0' "$1/meta.json" 2>/dev/null)
+  started=$(jq -r '([.started_at, .slot_at] | map(numbers) | max // 0)' "$1/meta.json" 2>/dev/null)
   [[ "$started" =~ ^[0-9]+$ ]] && [ "$started" -gt 0 ] || return 0
   now=$(date +%s)
   [ $((now - started)) -gt $((2 * DEADLINE + 900)) ]
@@ -1313,18 +1313,20 @@ supervise() {
   # Even the run that never started answers for itself: absent, its record is indistinguishable from
   # the record of a run still going, and a reader takes that for a run that wrote nothing.
   cd "$workdir" || { persist_run_files "$directory"; return 4; }
-  # At most NIGHT_FIXER_SLOTS workers on night branches at once (cores / 2, 2 to 8): a night worker is
-  # model-bound between suite runs, which run-suites caps on its own; its deadline starts at its slot.
+  # At most NIGHT_FIXER_SLOTS workers on night branches at once (cores / 2 clamped 2 to 8, up to the cores
+  # capped at 12 while slot_room finds room): a night worker is model-bound between suite runs, which run-suites caps on its own. started_at
+  # stays the launch, so a night's hours include the queue; the deadline clock is slot_at, the slot's
+  # instant, kept fresh through the wait.
   local branch
   branch=$(linked_worktree_branch "$workdir")
   # A run nested under a slot holder's worker inherits NIGHT_FIXER_SLOT: waiting would deadlock on its ancestor.
   if [[ $branch == night/*/* ]] && [ -z "${NIGHT_FIXER_SLOT:-}" ]; then
     NIGHT_SLOT=$(slot_wait "${NIGHT_FIXER_SLOTS_DIR:-${DOCTORS_DIR:-$HOME/.cache/doctors}/fixer-slots}" \
-      "${NIGHT_FIXER_SLOTS:-$(slots_from_cores 2 2 8)}" $((2 * DEADLINE + 900)) night-workers \
-      "worker run ${directory##*/} on $branch" meta_update "$directory" '.started_at = (now | floor)' 2>/dev/null) ||
+      "${NIGHT_FIXER_SLOTS:-$(night_worker_slots)}" $((2 * DEADLINE + 900)) night-workers \
+      "worker run ${directory##*/} on $branch" meta_update "$directory" '.slot_at = (now | floor)' 2>/dev/null) ||
       { persist_run_files "$directory"; return 4; }
     export NIGHT_FIXER_SLOT=$NIGHT_SLOT
-    meta_update "$directory" '.started_at = (now | floor)' || :
+    meta_update "$directory" '.slot_at = (now | floor)' || :
   fi
   while :; do
     # The slot's ceiling runs from its mtime, and each walled reroute is an attempt with a deadline of its own.

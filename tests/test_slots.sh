@@ -32,7 +32,59 @@ assert [ "$(slots_from_cores 1 2 4)" = 4 ]
 assert [ "$(slots_from_cores 1 2)" = 12 ]
 sysctl() { echo 3; }
 assert [ "$(slots_from_cores 1 2 4)" = 3 ]
+# Each pool's floor is its count before room: suites cores / 3 (2 to 4), night workers cores / 2 (2 to 8).
+sysctl() { echo 10; }
+assert [ "$(run_suites_slots)" = 3-4 ]
+assert [ "$(night_worker_slots)" = 5-10 ]
+night_slots=$(night_worker_slots)
+sysctl() { echo 2; }
+assert [ "$(run_suites_slots)" = 2-4 ]
+assert [ "$(night_worker_slots)" = 2-2 ]
+sysctl() { echo 32; }
+assert [ "$(run_suites_slots)" = 4-4 ]
+assert [ "$(night_worker_slots)" = 8-12 ]
+assert grep -qF '${RUN_SUITES_SLOTS:-$(run_suites_slots)}' "$ROOT/share/run-suites.sh"
+assert grep -qF '${NIGHT_FIXER_SLOTS:-$(night_worker_slots)}' "$ROOT/bin/worker-run"
 unset -f sysctl
+
+# Room: pressure level, load1, load15 and free MB, read by stubs from one file a background waiter sees too.
+sysctl() { local r; read -ra r <"$WORK/room"; printf '%s\n10\n{ %s 0.00 %s }\n' "${r[0]}" "${r[1]}" "${r[2]}"; }
+vm_stat() { local r; read -ra r <"$WORK/room"; printf 'Mach Virtual Memory Statistics: (page size of 1048576 bytes)\nPages free: %s.\nPages inactive: 0.\nPages speculative: 0.\n' "${r[3]}"; }
+room() { printf '%s\n' "$*" >"$WORK/room"; }
+guard=$(( $(sed -n 's/^GUARD_AVAIL_MB = \([0-9]*\).*/\1/p' "$ROOT/bin/chat-load") + 1500 ))
+room 1 150 140 $((guard + 1)); assert slot_room
+assert [ -z "$(slot_room)" ]
+room 2 150 140 $((guard + 1)); assert_fails slot_room >/dev/null
+assert [ "$(slot_room)" = 'memory pressure level 2' ]
+room 1 150 140 $((guard - 1)); assert [ "$(slot_room)" = "available $((guard - 1)) MB < $guard MB" ]
+room 1 160.5 150 $((guard + 1)); assert [ "$(slot_room)" = 'load 160.5 over its 15-minute base 150 + 10 cores' ]
+room 1 160 150 $((guard + 1)); assert slot_room
+# A range takes its floor whatever the room, the rest only with room.
+mkdir -p "$WORK/r"
+room 2 150 140 $((guard + 1))
+r1=$(slot_take "$WORK/r" 1-2 3600) || fail "a floor slot waited for room"
+assert [ "$r1" = "$WORK/r/1" ]
+assert_fails slot_take "$WORK/r" 1-2 3600
+slot_take "$WORK/r" 1-2 3600 >/dev/null
+assert [ "$SLOT_WHY" = 'memory pressure level 2' ] && assert [ ! -e "$WORK/r/2" ]
+(SLOTS_ROOM_POLL_S=0.2 slot_wait "$WORK/r" 1-2 3600 room-limiter "a roomy job" >"$WORK/room-waited") &
+waiter=$!
+for i in $(seq 1 50); do [ "$(holds_of room-limiter)" = 1 ] && break; sleep 0.1; done
+assert jqe '.why == "memory pressure level 2"' "$HARNESS_HOLDS_DIR"/room-limiter-*.json
+room 1 150 140 $((guard + 1))
+wait "$waiter" || fail "slot_wait never took the room it was given"
+assert [ "$(cat "$WORK/room-waited")" = "$WORK/r/2" ]
+assert_fails slot_take "$WORK/r" 1-2 3600
+assert [ -z "$SLOT_WHY" ]
+slot_release "$r1"; rm -rf "$WORK/r"
+# Under memory pressure the night pool still takes its whole floor of 5, and only the sixth waits.
+mkdir -p "$WORK/f"
+room 2 150 140 $((guard + 1))
+for i in 1 2 3 4 5; do assert [ "$(slot_take "$WORK/f" "$night_slots" 3600)" = "$WORK/f/$i" ]; done
+slot_take "$WORK/f" "$night_slots" 3600 >/dev/null
+assert [ "$SLOT_WHY" = 'memory pressure level 2' ] && assert [ ! -e "$WORK/f/6" ]
+for i in 1 2 3 4 5; do slot_release "$WORK/f/$i"; done; rm -rf "$WORK/f"
+unset -f sysctl vm_stat
 
 mkdir -p "$WORK/s"
 h1=$(holder "$WORK/s" 2)
@@ -157,7 +209,7 @@ before=$(date +%s)
 kill "$h6"
 wait "$sup"
 assert [ $? = 4 ]
-assert jqe --argjson b "$before" '.started_at >= $b' "$WORK/run/meta.json"
+assert jqe --argjson b "$before" '.started_at == 1 and .slot_at >= $b' "$WORK/run/meta.json"
 assert [ ! -e "$NIGHT_FIXER_SLOTS_DIR/1" ]
 assert [ "$(holds_of night-workers)" = 0 ]
 assert jqe 'length == 1 and (.[0].source | test("^worker run run on night/n1/llm-health-1$"))' <(waits_of night-workers)

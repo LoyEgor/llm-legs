@@ -264,6 +264,56 @@ assert test "$(bash "$ROOT/share/affected-suites.sh" --repo "$R4" share/limiter-
 assert test -z "$(bash "$ROOT/share/affected-suites.sh" --repo "$R4" nowhere-named.txt)"
 assert grep -qx "$ROOT/tests/test_slots.sh" <<<"$(bash "$ROOT/tests/affected" share/slots.sh)"
 
+# The slow layer: a worker drops each slow suite it did not edit and says so; anyone else runs them all.
+R6="$WORK/r6"
+new_repo "$R6"
+mkdir -p "$R6/bin"
+printf 'echo v1\n' >"$R6/bin/tool.sh"
+printf 'echo v1\n' >"$R6/bin/rare.sh"
+for s in test_fast.sh test_slow_a.sh test_slow_b.sh; do suite "$R6" "$s" ': tool.sh; exit 0'; done
+suite "$R6" test_slow_c.sh ': rare.sh; exit 0'
+printf 'test_slow_a.sh\ntest_slow_b.sh\ntest_slow_c.sh\n' >"$R6/tests/slow-suites"
+git -C "$R6" add -A
+git -C "$R6" -c user.name=t -c user.email=t@t -c core.hooksPath=/dev/null commit -q -m suites
+printf 'echo v2\n' >"$R6/bin/tool.sh"
+printf '\n' >>"$R6/tests/test_slow_b.sh"
+skip_line='slow layer skipped: test_slow_a.sh (the landing and the night full run run them)'
+affected_out=$(WORKER_RUN_ID=wr-9 bash "$ROOT/share/affected-suites.sh" --repo "$R6" bin/tool.sh tests/test_slow_b.sh 2>"$WORK/affected.err")
+assert test "$affected_out" = "$R6/tests/test_fast.sh"$'\n'"$R6/tests/test_slow_b.sh"
+assert test "$(cat "$WORK/affected.err")" = "$skip_line"
+affected_out=$(bash "$ROOT/share/affected-suites.sh" --repo "$R6" bin/tool.sh tests/test_slow_b.sh 2>"$WORK/affected.err")
+assert test "$affected_out" = "$R6/tests/test_fast.sh"$'\n'"$R6/tests/test_slow_a.sh"$'\n'"$R6/tests/test_slow_b.sh"
+assert test ! -s "$WORK/affected.err"
+slow_out=$(WORKER_RUN_ID=wr-9 bash "$ROOT/share/run-suites.sh" --repo "$R6" -j 2 --changed 2>&1)
+assert grep -qxF "$skip_line" <<<"$slow_out"
+assert grep -q 'test_slow_b.sh .*PASS' <<<"$slow_out"
+assert_fails grep -q 'test_slow_a.sh .*PASS' <<<"$slow_out"
+assert jqe '.worker_run == "wr-9" and .skipped_slow == ["test_slow_a.sh"] and (keys_unsorted | index("skipped_slow")) == (keys_unsorted | index("suites")) - 1
+  and (.suites | keys) == ["test_fast.sh","test_slow_b.sh"]' <(tail -1 "$JOURNAL")
+slow_out=$(bash "$ROOT/share/run-suites.sh" --repo "$R6" -j 2 --changed 2>&1)
+assert_fails grep -q 'slow layer' <<<"$slow_out"
+assert jqe 'has("skipped_slow") | not' <(tail -1 "$JOURNAL")
+assert jqe '(.suites | keys) == ["test_fast.sh","test_slow_a.sh","test_slow_b.sh"]' <(tail -1 "$JOURNAL")
+# A worker whose change only slow suites name runs nothing, and its row still names what it skipped.
+git -C "$R6" checkout -q -- .
+printf 'echo v2\n' >"$R6/bin/rare.sh"
+slow_out=$(WORKER_RUN_ID=wr-9 bash "$ROOT/share/run-suites.sh" --repo "$R6" -j 2 --changed 2>&1) || fail "an all-slow change failed: $slow_out"
+assert test "$slow_out" = 'slow layer skipped: test_slow_c.sh (the landing and the night full run run them)'
+assert jqe '.skipped_slow == ["test_slow_c.sh"] and .suites == {} and .complete == true and .scope == "changed"' <(tail -1 "$JOURNAL")
+# --slow-refresh: the repo's suites whose 7-day median CPU of passing runs passes 45 s, never a gone one.
+now=$(date +%s)
+jq -nc --arg root "$R6" --argjson now "$now" '
+  def row($root; $at; $s): {kind: "suites", repo_root: $root, ended_at: $at, suites: $s};
+  row($root; $now; {"test_slow_a.sh": {rc: 0, cpu_s: 50}, "test_fast.sh": {rc: 0, cpu_s: 40}, "test_gone.sh": {rc: 0, cpu_s: 90}}),
+  row($root; $now; {"test_slow_a.sh": {rc: 0, cpu_s: 60}, "test_fast.sh": {rc: 0, cpu_s: 46}, "test_slow_b.sh": {rc: 1, cpu_s: 99}}),
+  row($root; $now; {"test_slow_a.sh": {rc: 0, cpu_s: 10}}),
+  row($root; $now - 8 * 86400; {"test_fast.sh": {rc: 0, cpu_s: 99}, "test_slow_c.sh": {rc: 0, cpu_s: 99}}),
+  row("/elsewhere"; $now; {"test_slow_c.sh": {rc: 0, cpu_s: 99}})' >"$WORK/slow.jsonl"
+printf 'not json\n' >>"$WORK/slow.jsonl"
+assert test "$(RUN_SUITES_JOURNAL="$WORK/slow.jsonl" bash "$ROOT/share/affected-suites.sh" --repo "$R6" --slow-refresh)" = test_slow_a.sh
+# The checked-in layer lists suites that exist.
+while IFS= read -r s; do assert test -r "$ROOT/tests/$s"; done <"$ROOT/tests/slow-suites"
+
 # A suite that posts into the runner's own report queue fails though it exits 0; one on a cache of its
 # own passes, and the live queue receives nothing.
 R5="$WORK/r5"

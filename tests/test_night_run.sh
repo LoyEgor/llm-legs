@@ -800,7 +800,8 @@ assistant m3 2026-01-02T00:04:00Z '{"output_tokens": 500000}' >"$SP/profiles/p1/
 opus='"vendor": "claudeb", "account": "p1", "served_model": "claude-opus-5-5"'
 spend_run claudeb-1767312100-1-aaaa S1 "{$opus, \"started_at\": 1767312100, \"ended_at\": 1767315700}"
 printf '%s\n' "$T1" >"$SP/runs/claudeb-1767312100-1-aaaa/session-file"
-spend_run claudeb-1767312200-2-bbbb S1 "{$opus, \"started_at\": 1767315700, \"ended_at\": 1767317500}"
+# A walled reroute restamps started_at; the hours run from the launch.
+spend_run claudeb-1767312200-2-bbbb S1 "{$opus, \"pid_started_at\": 1767312100, \"started_at\": 1767315700, \"ended_at\": 1767317500}"
 printf '%s\n' "$T1" >"$SP/runs/claudeb-1767312200-2-bbbb/session-file"
 spend_run codex-1767312300-3-cccc S1 '{"vendor": "codex", "account": "acct", "served_model": "gpt-6-astra",
   "started_at": 1767312300, "ended_at": 1767314100}'
@@ -832,7 +833,7 @@ TZ=UTC DOCTORS_DIR="$SP/doctors" WORKER_RUN_DIR="$SP/runs" CLAUDEB_PROFILES_ROOT
   fail "spend report"
 assert [ "$(head -8 "$WORK/spend-report")" = "duration · 02 Jan 00:00 – 02 Jan 02:00 · 2.0 h
 jobs · merged 3 (fixer 2, vendor 1) · left 1 (fixer 1) · other 1 (debt 1)
-agents · 4 worker runs (3 claudeb/claude-opus-5-5, 1 codex/gpt-6-astra) · 2.0 h wall-clock · 1 without a transcript
+agents · 4 worker runs (3 claudeb/claude-opus-5-5, 1 codex/gpt-6-astra) · 3.0 h wall-clock · 1 without a transcript
 review rounds · 2
 spend fixers · out 1.4M · cache write 2.0M · cache read 12.0M · 11.7M weighted
 spend reviews · out 1.0M · cache write 2.0M · cache read 25.0M · 13.0M weighted

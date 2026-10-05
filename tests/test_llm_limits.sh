@@ -705,7 +705,7 @@ jq -e '.auth_needed == true' <<<"$agy_out" >/dev/null || fail "login line on std
 
 # Regression: statusline-last.json goes stale while cache-rl keeps updating —
 # the fresher cache-rl must win even though last.json is present and valid.
-sleep 1
+touch -t "$(date -r "$(( $(date +%s) - 2 ))" +%Y%m%d%H%M.%S)" "$HOME_FIXTURE/.claude/statusline-last.json"
 touch "$HOME_FIXTURE/.claude/statusline-cache-rl"
 fresher=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "freshest-wins collection failed"
 jq -e '.vendors.claude.five_hour.used_pct == 19 and .vendors.claude.source == "statusline-cache" and (.vendors.claude | has("session_model") | not)' <<<"$fresher" >/dev/null || fail "stale statusline-last.json outranked a fresher cache-rl"

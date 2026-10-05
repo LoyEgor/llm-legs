@@ -140,8 +140,8 @@ run_workdir_hook() {
 
 PLACE="$ROOT/bin/statusline-place"
 place_set() { # session tree [main] [kind]
-  mkdir -p "$STATE_DIR"
-  printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "${4:-seed}" "$2" "${3:-$2}" >> "$STATE_DIR/place-$1"
+  [ -d "$STATE_DIR" ] || mkdir -p "$STATE_DIR"
+  printf '%(%s)T\t%s\t%s\t%s\n' -1 "${4:-seed}" "$2" "${3:-$2}" >> "$STATE_DIR/place-$1"
 }
 last_tree() { tail -n 1 "$STATE_DIR/place-$1" 2>/dev/null | cut -f3; }
 last_kind() { tail -n 1 "$STATE_DIR/place-$1" 2>/dev/null | cut -f2; }

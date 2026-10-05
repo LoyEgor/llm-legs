@@ -758,6 +758,10 @@ assert grep -q '^STATUS: running$' <<<"$("$RUNNER" report codex-9-9-bbbb)"
 jq -cn --argjson pid "$LIVE_SUPERVISOR" --argjson now "$(date +%s)" \
   '{vendor:"codex",account:"legacy",pid:$pid,started_at:$now}' >"$RECYCLED_DIR/meta.json"
 assert grep -q '^STATUS: running$' <<<"$("$RUNNER" report codex-9-9-bbbb)"
+# A night run that queued for its slot keeps its launch as started_at; its deadline runs from slot_at.
+jq -cn --argjson pid "$LIVE_SUPERVISOR" --argjson now "$(date +%s)" \
+  '{vendor:"codex",account:"legacy",pid:$pid,started_at:1000,slot_at:$now}' >"$RECYCLED_DIR/meta.json"
+assert grep -q '^STATUS: running$' <<<"$("$RUNNER" report codex-9-9-bbbb)"
 # A ps that cannot answer at all — a sandbox that hides other processes, a fork that failed —
 # prints exactly what "no such process" prints, and reading that as death reports a live run
 # failed. The signal probe, which this otherwise never uses, answers where ps cannot.

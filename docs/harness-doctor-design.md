@@ -645,8 +645,13 @@ job of one chat for about 4 h under memory pressure and nothing reached Egor.
   refresh is busy (⟳ otherwise), and its tooltip carries the hold's text and, when both hold, the
   refresh warning's under it; `refreshState().prefix` follows the same order.
 - **llm-legs limiters.** `share/slots.sh` `slot_wait` writes one: `run-suites` (at most
-  `RUN_SUITES_SLOTS` suite runs machine-wide, cores / 3 clamped 2–4) and `night-workers` (`worker-run`
-  on a `night/*/*` branch, at most `NIGHT_FIXER_SLOTS`, cores / 2 clamped 2–8). A queued suite run is
+  `RUN_SUITES_SLOTS` suite runs machine-wide: cores / 3 clamped 2–4 always, up to 4 while `slot_room`
+  finds room) and `night-workers` (`worker-run` on a `night/*/*` branch, `NIGHT_FIXER_SLOTS`: cores / 2
+  clamped 2–8 always, up to the cores capped at 12 while `slot_room` finds room; `run_suites_slots` and
+  `night_worker_slots` in `share/slots.sh`). Room only adds slots above the old defaults. Room = memory pressure normal, available
+  memory above `bin/chat-load` `GUARD_AVAIL_MB` + `SLOTS_ROOM_MB` (1500), and load1 within the cores of
+  load15 (the benchmark's base). A night worker's `started_at` stays its launch; its deadline clock is
+  `slot_at`. A queued suite run is
   no test yet (no `suites-<pid>` pointer); the `worker-run` watchdog counts a live hold in its run's
   process tree as activity. **Every wait is measured** even when normal: `hold_clear`, a lock that
   slept and `worker-run wait`'s poll lag each write one `wait_note` row (row `ed`) the Wait classes area reads.

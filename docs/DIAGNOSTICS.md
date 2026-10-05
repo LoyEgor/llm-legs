@@ -226,7 +226,10 @@ this project no longer turns them into account walls, holds, or locally generate
 ## How to test
 
 **Running suites:** `tests/affected <file>…` lists the suites covering those files (a suite or helper
-naming one's basename, `test_consistency.sh` for a file `docs/shared-invariants.md` names); a worker
+naming one's basename, `test_consistency.sh` for a file `docs/shared-invariants.md` names); inside a
+worker (`WORKER_RUN_ID` set) it and `--changed` drop the slow layer `tests/slow-suites` except a suite the
+worker edited, printing `slow layer skipped: …` (`share/affected-suites.sh --slow-refresh` recomputes the
+list: 7-day median CPU > 45 s); a worker
 runs those via `tests/run-all <suite>…`, never the full `tests/run-all`, which the night runs once at
 Close (`--all` adds `e2e_surfaces.sh` and `test_instruction_rates_live.sh`). One table — suite ·
 PASS/FAIL · seconds · last line — exits 1 with each failure's last 30 lines. Every suite gets its own
