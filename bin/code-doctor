@@ -2373,8 +2373,7 @@ def diff_entries(tree, base):
 def landed_unrebased(tree, top, base):
     head = (git(tree, "rev-parse", "HEAD") or "").strip()
     at_base = (git(tree, "rev-parse", "--verify", "--quiet", base + "^{commit}") or "").strip()
-    return bool(head) and head != at_base and git(top, "merge-base", "--is-ancestor", head, "HEAD") is not None \
-        and git(tree, "merge-base", "--is-ancestor", base, "HEAD") is not None
+    return bool(head) and head != at_base and git(top, "merge-base", "--is-ancestor", head, "HEAD") is not None
 
 
 def rebase_onto(tree):
