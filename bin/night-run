@@ -734,7 +734,8 @@ branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locke
   read -r behind ahead < <(git -C "$repo" rev-list --left-right --count "refs/heads/main...$head")
   [[ $branch == night/*/* ]] && night=${branch#night/} && night=${night%%/*}
   if git -C "$repo" merge-base --is-ancestor "$head" refs/heads/main; then landed=true
-  elif [ -n "$night" ] && [ "$head" = "$(git -C "$repo" rev-parse -q --verify "refs/night/$night/base")" ]; then landed=true; fi
+  elif [ -n "$night" ] && [ "$head" = "$(git -C "$repo" rev-parse -q --verify "refs/night/$night/base")" ]; then landed=true
+  elif ! git -C "$repo" cherry refs/heads/main "$head" 2>/dev/null | grep -q '^+'; then landed=true; fi
   [ -z "$wt" ] || dirty=$(GIT_OPTIONAL_LOCKS=0 git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null | wc -l | tr -d ' ')
   if [ "$4" = 1 ]; then why='main checkout'
   elif [ "$5" = 1 ]; then why='locked'

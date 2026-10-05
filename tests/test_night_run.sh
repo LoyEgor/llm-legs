@@ -143,7 +143,8 @@ git -C "$WORK/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m 
 git -C "$WORK/repo" remote add origin "$WORK/origin.git"
 git -C "$WORK/repo" push -q origin main
 pushed_hash=$(git -C "$WORK/repo" rev-parse HEAD)
-side_hash=$(git -C "$WORK/repo" -c user.name=t -c user.email=t@t commit-tree "HEAD^{tree}" -p HEAD -m side)
+side_tree=$(printf '100644 blob %s\tside\n' "$(printf 'side\n' | git -C "$WORK/repo" hash-object -w --stdin)" | git -C "$WORK/repo" mktree)
+side_hash=$(git -C "$WORK/repo" -c user.name=t -c user.email=t@t commit-tree "$side_tree" -p HEAD -m side)
 git -C "$WORK/repo" push -q origin "$side_hash:refs/heads/side"
 git -C "$WORK/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m two
 local_hash=$(git -C "$WORK/repo" rev-parse HEAD)
@@ -502,6 +503,7 @@ old branch merged-bare "$pushed_hash"
 git -C "$WORK/repo" worktree add -q -b fresh "$wt/fresh" "$pushed_hash"
 old worktree add -q -b stale-open "$wt/stale-open" "$side_hash"
 old branch stale-bare "$side_hash"
+old branch picked-bare "$(old -c user.name=t -c user.email=t@t commit-tree "main^{tree}" -p main^ -m 'main tip, landed as another commit')"
 old worktree add -q -b stale-dirty "$wt/stale-dirty" "$pushed_hash"
 printf 'wip\n' >"$wt/stale-dirty/wip"
 touch -t 202601010000 "$wt/stale-dirty/wip"
@@ -519,13 +521,14 @@ night leftovers --json >"$WORK/left.json" || fail "leftovers --json"
 assert grep -qxF "repo merged-bare · no worktree · landed · +0/-$behind main · 0 dirty · landed" "$WORK/left"
 assert grep -qxF "repo stale-open · $wt/stale-open · unlanded · +1/-3 main · 0 dirty · leftover (1 unlanded commits)" "$WORK/left"
 assert grep -qxF "repo stale-bare · no worktree · unlanded · +1/-3 main · 0 dirty · leftover (1 unlanded commits)" "$WORK/left"
+assert grep -qxF "repo picked-bare · no worktree · landed · +1/-1 main · 0 dirty · landed" "$WORK/left"
 assert grep -qxF "repo stale-dirty · $wt/stale-dirty · landed · +0/-$behind main · 1 dirty · leftover (1 uncommitted files)" "$WORK/left"
 assert grep -qxF "repo plain-busy · $wt/plain-busy · landed · +0/-$behind main · 0 dirty · live (a process inside)" "$WORK/left"
 assert grep -qxE "repo fresh · $wt/fresh · landed · \+0/-$behind main · 0 dirty · live \(active [0-9]+m ago\)" "$WORK/left"
 assert grep -qxE "repo edited · .* · 1 dirty · live \(active [0-9]+m ago\)" "$WORK/left"
 assert_fails grep -q '^repo main ' "$WORK/left"
-assert [ "$(wc -l <"$WORK/left" | tr -d ' ')" = 13 ]
-assert jqe --arg w "$wt" 'length == 13 and (map(.branch) | index("main")) == null
+assert [ "$(wc -l <"$WORK/left" | tr -d ' ')" = 14 ]
+assert jqe --arg w "$wt" 'length == 14 and (map(.branch) | index("main")) == null
   and (.[] | select(.branch == "stale-open")) == {repo: ($w | sub("/.claude/worktrees$"; "")), branch: "stale-open",
     worktree: "\($w)/stale-open", landed: false, ahead: 1, behind: 3, dirty: 0, live: false, state: "leftover",
     why: "1 unlanded commits"}
@@ -537,6 +540,7 @@ assert grep -qxF "pruned repo night/$id/landed" "$WORK/out"
 assert grep -qxF "pruned repo night/$idc/at-base" "$WORK/out"
 assert grep -qxF "pruned repo merged-old" "$WORK/out"
 assert grep -qxF "pruned repo merged-bare" "$WORK/out"
+assert grep -qxF "pruned repo picked-bare" "$WORK/out"
 assert grep -qxF "leftover repo night/$idc/dirty: 1 uncommitted files" "$WORK/out"
 assert grep -qxF "leftover repo night/$idc/open: 1 unlanded commits" "$WORK/out"
 assert grep -qxF "leftover repo stale-open: 1 unlanded commits" "$WORK/out"
@@ -547,10 +551,10 @@ assert grep -qxF "live repo plain-busy: a process inside" "$WORK/out"
 assert grep -qxE "live repo fresh: active [0-9]+m ago" "$WORK/out"
 assert grep -qxE "live repo edited: active [0-9]+m ago" "$WORK/out"
 assert_fails grep -q '^kept ' "$WORK/out"
-assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 14 ]
+assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 15 ]
 assert [ ! -e "$wt/landed" ] && [ ! -e "$wt/at-base" ] && [ ! -e "$wt/merged-old" ]
 assert [ -e "$wt/dirty/wip" ] && [ -d "$wt/open" ] && [ -d "$wt/fresh" ] && [ -d "$wt/stale-open" ] && [ -e "$wt/stale-dirty/wip" ]
-for gone in "night/$id/landed" merged-old merged-bare; do
+for gone in "night/$id/landed" merged-old merged-bare picked-bare; do
   assert_fails git -C "$WORK/repo" rev-parse -q --verify "refs/heads/$gone"
 done
 for stays in "night/$idc/open" stale-open stale-bare stale-dirty fresh edited plain-busy; do
