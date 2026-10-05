@@ -1,0 +1,226 @@
+#!/usr/bin/env bash
+set -u
+
+usage() {
+  cat >&2 <<'EOF'
+usage: land [--test | --no-test] [<worktree-or-branch>]
+
+Lands a finished branch (default: the current worktree's) on main: fetch, rebase onto the newer of
+main and origin/main, covering suites (tests/affected) only when the rebase brought in upstream
+commits touching the branch's files (--test always, --no-test never), push (a moved remote rebases
+again, at most 3 tries), fast-forward of the main checkout over foreign uncommitted edits (each
+touched dirty file 3-way merged), then removal of the branch's worktree and the branch.
+Commits nothing and resolves nothing: a dirty worktree, a rebase conflict, a WIP conflict or a red
+suite exits 1 with main and the main checkout untouched.
+EOF
+  exit 2
+}
+
+die() { printf 'land: %s\n' "$*" >&2; exit 1; }
+
+tests=auto target_arg=''
+while [ $# -gt 0 ]; do
+  case $1 in
+    --test) tests=on ;;
+    --no-test) tests=off ;;
+    -*) usage ;;
+    *) [ -z "$target_arg" ] || usage; target_arg=$1 ;;
+  esac
+  shift
+done
+
+wt='' branch=''
+if [ -z "$target_arg" ] || [ -d "$target_arg" ]; then
+  wt=$(git -C "${target_arg:-.}" rev-parse --show-toplevel 2>/dev/null) || die "${target_arg:-$PWD} is not inside a git worktree"
+  branch=$(git -C "$wt" symbolic-ref -q --short HEAD) || die "$wt is on a detached HEAD, not a branch"
+  here=$wt
+else
+  branch=$target_arg
+  here=$(git rev-parse --show-toplevel 2>/dev/null) || die "run inside the repository of $branch"
+fi
+git -C "$here" rev-parse -q --verify "refs/heads/$branch" >/dev/null || die "no branch $branch"
+[ "$branch" != main ] || die "main itself cannot be landed"
+git -C "$here" rev-parse -q --verify refs/heads/main >/dev/null || die "this repository has no main branch"
+
+repo='' main_wt='' cur=''
+while IFS= read -r line; do
+  case $line in
+    "worktree "*) cur=${line#worktree }; [ -n "$repo" ] || repo=$cur ;;
+    "branch refs/heads/main") main_wt=$cur ;;
+    "branch refs/heads/$branch") [ -n "$wt" ] || wt=$cur ;;
+  esac
+done < <(git -C "$here" worktree list --porcelain)
+[ "$wt" != "$repo" ] || die "the main checkout itself is on $branch; land takes a branch in its own worktree"
+
+if [ -n "$wt" ]; then
+  dirty=$(git -C "$wt" status --porcelain --untracked-files=all | wc -l | tr -d ' ')
+  [ "$dirty" = 0 ] || die "$wt has $dirty uncommitted files: commit them, then land again"
+fi
+
+remote=''
+git -C "$repo" remote | grep -qx origin && remote=origin
+
+tmp_wt='' dir=''
+drop_tmp() { [ -z "$tmp_wt" ] || git -C "$repo" worktree remove --force "$tmp_wt" 2>/dev/null; tmp_wt=''; }
+trap drop_tmp EXIT
+
+work_tree() { # sets dir: a worktree holding the branch, made for the run when it has none
+  if [ -z "$wt" ] && [ -z "$tmp_wt" ]; then
+    tmp_wt=$(mktemp -d "${TMPDIR:-/tmp}/land.XXXXXX") && rmdir "$tmp_wt" &&
+      git -C "$repo" worktree add -q "$tmp_wt" "$branch" || die "cannot check $branch out to rebase it"
+  fi
+  dir=${wt:-$tmp_wt}
+}
+
+upstream() { # -> the newer of main and origin/main
+  local local_main remote_main
+  local_main=$(git -C "$repo" rev-parse refs/heads/main)
+  remote_main=$(git -C "$repo" rev-parse -q --verify refs/remotes/origin/main) || { printf '%s\n' "$local_main"; return; }
+  if git -C "$repo" merge-base --is-ancestor "$remote_main" "$local_main"; then printf '%s\n' "$local_main"
+  elif git -C "$repo" merge-base --is-ancestor "$local_main" "$remote_main"; then printf '%s\n' "$remote_main"
+  else die "main and origin/main have diverged: settle main first"; fi
+}
+
+chat_of() { # commit -> the author chat its message names, «name» or "(<name> chat"
+  local body name=''
+  body=$(git -C "$repo" log -1 --format=%B "$1")
+  case $body in
+    *«*»*) name=${body#*«} name=${name%%»*} ;;
+    *) name=$(printf '%s\n' "$body" | head -1 | sed -nE 's/^[^(]*\(([^,()]+ chat)[,)].*/\1/p') ;;
+  esac
+  [ -z "$name" ] || printf ' (chat %s)' "$name"
+}
+
+wip_holder() { # main-checkout path -> the chat that last wrote the path there, per <git-common-dir>/claude-writes
+  local key common sid name
+  key=$(cd "$(git -C "$1" rev-parse --absolute-git-dir)" && pwd -P) || return 0
+  common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir) || return 0
+  sid=$(awk -F'\t' -v k="$key" -v p="$2" '$3 == k && $4 == p { o = $2 } END { print o }' "$common/claude-writes" 2>/dev/null)
+  [ -n "$sid" ] || { printf 'unknown'; return 0; }
+  name=$(chat-name "$sid" 2>/dev/null | head -1)
+  printf '%s' "${name:-$sid}"
+}
+
+rebase_onto() { # target -> rebases the branch, or exits naming the conflicting files and main's commits on them
+  local files f c out
+  [ "$(git -C "$repo" merge-base "refs/heads/$branch" "$1")" != "$1" ] || return 0
+  work_tree
+  out=$(git -C "$dir" rebase -q "$1" 2>&1) && return 0
+  files=$(git -C "$dir" diff --name-only --diff-filter=U)
+  git -C "$dir" rebase --abort 2>/dev/null
+  {
+    printf 'land: rebasing %s onto main %s conflicts; the branch is left as it was\n' "$branch" "$(git -C "$repo" rev-parse --short "$1")"
+    [ -n "$files" ] || printf '%s\n' "$out"
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      printf '  %s\n' "$f"
+      git -C "$repo" log --format='%H' "refs/heads/$branch..$1" -- "$f" | while IFS= read -r c; do
+        printf '    %s %s%s\n' "$(git -C "$repo" rev-parse --short "$c")" "$(git -C "$repo" log -1 --format=%s "$c")" "$(chat_of "$c")"
+      done
+    done <<<"$files"
+    printf 'land: resolve it in %s with git rebase %s, then land again\n' "$dir" "$1"
+  } >&2
+  exit 1
+}
+
+after_push=''
+overlap=()
+wip_plan() { # main-checkout old new -> sets overlap; exits naming the file when the update cannot keep its WIP
+  local m=$1 old=$2 new=$3 f dirty staged tmp why
+  overlap=()
+  dirty=$(git -C "$m" diff --name-only HEAD)
+  staged=$(git -C "$m" diff --cached --name-only)
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/land-wip.XXXXXX") || die "no temp directory"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    why=''
+    if grep -qxF -- "$f" <<<"$dirty"; then
+      if grep -qxF -- "$f" <<<"$staged" || ! [ -f "$m/$f" ] ||
+        ! git -C "$m" cat-file -e "$old:$f" 2>/dev/null || ! git -C "$m" cat-file -e "$new:$f" 2>/dev/null; then
+        why='cannot be merged into'
+      elif ! { git -C "$m" show "$old:$f" >"$tmp/base" && git -C "$m" show "$new:$f" >"$tmp/new" &&
+        cp "$m/$f" "$tmp/ours" && git merge-file -q "$tmp/ours" "$tmp/base" "$tmp/new"; }; then
+        why='conflicts with'
+      else
+        overlap+=("$f")
+      fi
+    elif [ -e "$m/$f" ] && ! git -C "$m" cat-file -e "$old:$f" 2>/dev/null; then
+      why='is untracked in the way of'
+    fi
+    [ -z "$why" ] || { rm -rf "$tmp"; die "main checkout $m: uncommitted $f (holder: $(wip_holder "$m" "$f")) $why $branch; the main checkout and main left as they were$after_push"; }
+  done < <(git -C "$m" diff --name-only "$old" "$new")
+  rm -rf "$tmp"
+}
+
+ff_main() { # old new -> moves main to new, the main checkout's dirty files 3-way merged
+  local old=$1 new=$2 m=$main_wt bk f
+  if [ -z "$m" ]; then git -C "$repo" update-ref refs/heads/main "$new" "$old" 2>/dev/null; return; fi
+  [ "$(git -C "$m" rev-parse HEAD)" = "$old" ] || return 1
+  wip_plan "$m" "$old" "$new"
+  bk=$(mktemp -d "${TMPDIR:-/tmp}/land-ff.XXXXXX") || die "no temp directory"
+  for f in ${overlap[@]+"${overlap[@]}"}; do
+    mkdir -p "$bk/$(dirname "$f")"
+    cp -p "$m/$f" "$bk/$f" && git -C "$m" show "$old:$f" >"$bk/$f.base" && git -C "$m" show "$new:$f" >"$bk/$f.new" &&
+      cp "$bk/$f" "$bk/$f.merged" && git merge-file -q "$bk/$f.merged" "$bk/$f.base" "$bk/$f.new" ||
+      die "main checkout $m: $f changed while landing; the main checkout and main left as they were$after_push, backup $bk"
+  done
+  for f in ${overlap[@]+"${overlap[@]}"}; do cat "$bk/$f.base" >"$m/$f"; done
+  if ! git -C "$m" merge --ff-only -q "$new" >/dev/null 2>&1; then
+    for f in ${overlap[@]+"${overlap[@]}"}; do cp -p "$bk/$f" "$m/$f"; done
+    rm -rf "$bk"
+    die "the main checkout $m refused the fast-forward to $new; its WIP restored, main left as it was$after_push"
+  fi
+  for f in ${overlap[@]+"${overlap[@]}"}; do cat "$bk/$f.merged" >"$m/$f"; done
+  rm -rf "$bk"
+}
+
+own_files='' suites_ran=0 suites_needed=false pushed=local new=''
+[ "$tests" != on ] || suites_needed=true
+for try in 1 2 3; do
+  [ -z "$remote" ] || git -C "$repo" fetch -q origin || die "fetch from origin failed; nothing changed"
+  old_main=$(git -C "$repo" rev-parse refs/heads/main)
+  target=$(upstream) || exit 1
+  base=$(git -C "$repo" merge-base "refs/heads/$branch" "$target")
+  [ "$try" != 1 ] || own_files=$(git -C "$repo" diff --name-only "$base" "refs/heads/$branch")
+  if [ "$tests" = auto ] && [ -n "$own_files" ] &&
+    git -C "$repo" diff --name-only "$base" "$target" | grep -qxF -f <(printf '%s\n' "$own_files"); then
+    suites_needed=true
+  fi
+  rebase_onto "$target"
+  new=$(git -C "$repo" rev-parse "refs/heads/$branch")
+  if $suites_needed; then
+    work_tree
+    if [ -x "$dir/tests/affected" ]; then
+      suites=()
+      while IFS= read -r s; do [ -n "$s" ] && suites+=("$s"); done < <(cd "$dir" && tests/affected $own_files)
+      if [ ${#suites[@]} -gt 0 ]; then
+        if [ -x "$dir/tests/run-all" ]; then
+          (cd "$dir" && tests/run-all "${suites[@]}") >&2 || die "suites failed on $branch rebased onto $target; main untouched"
+        else
+          for s in "${suites[@]}"; do (cd "$dir" && bash "$s") >&2 || die "$s failed on $branch rebased onto $target; main untouched"; done
+        fi
+      fi
+      suites_ran=$((suites_ran + ${#suites[@]}))
+    fi
+    suites_needed=false
+  fi
+  [ -z "$main_wt" ] || wip_plan "$main_wt" "$old_main" "$new"
+  if [ -n "$remote" ]; then
+    if ! git -C "$repo" push -q origin "$new:refs/heads/main" 2>/dev/null; then
+      git -C "$repo" fetch -q origin || die "push of main failed and origin cannot be fetched; nothing changed"
+      git -C "$repo" merge-base --is-ancestor refs/remotes/origin/main "$new" && die "push of main to origin was refused; nothing changed"
+      continue
+    fi
+    pushed=pushed after_push="; origin main already holds $new, the night fast-forwards the checkout"
+  fi
+  ff_main "$old_main" "$new" && break
+  [ "$pushed" = local ] || die "pushed $new, but main moved under the main checkout meanwhile; main left as it was"
+done
+git -C "$repo" merge-base --is-ancestor "$new" refs/heads/main 2>/dev/null ||
+  die "main moved under every one of 3 tries; $branch is rebased but not landed"
+
+drop_tmp
+if [ -n "$wt" ]; then git -C "$repo" worktree remove "$wt" || die "landed, but $wt could not be removed"; fi
+git -C "$repo" branch -q -D "$branch" || die "landed, but branch $branch could not be deleted"
+if [ "$suites_ran" -gt 0 ]; then suites="ran $suites_ran"; else suites=skipped; fi
+printf 'landed %s → main %s (%s), suites: %s\n' "$branch" "$(git -C "$repo" rev-parse --short "$new")" "$pushed" "$suites"

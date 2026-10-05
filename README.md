@@ -301,6 +301,7 @@ The claude-setup agent definitions call these bare, so each needs its PATH link
 - `bin/doctor-fix` → `~/.local/bin/doctor-fix` — doctor fixer briefs and their close gate.
 - `bin/vendor-fingerprint` → `~/.local/bin/vendor-fingerprint` — vendor CLI fingerprint requests.
 - `bin/night-run` → `~/.local/bin/night-run` — the night run's jobs, base and report.
+- `bin/land` → `~/.local/bin/land` — a chat lands its own finished branch.
 - `bin/pkill` → `~/.local/bin/pkill` — shadows `/usr/bin/pkill` for every model and vendor: refuses an option after the first pattern (macOS stops option parsing there, and a stray `-P` pattern matches every Claude Bash shell's `pwd -P`), else execs the real tool.
 - `bin/pgrep` → `~/.local/bin/pgrep` — the same guard for `/usr/bin/pgrep` (a link to `bin/pkill`).
 
