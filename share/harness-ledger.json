@@ -2642,6 +2642,55 @@
       "reviewed_by": "Night fixer harness-hooks-20261005T061324Z-2ae0",
       "note": "2026-10-05: 1.1 s a render; 306 ms CPU p50 (p90 378) and 1.19 s mean wall at load 286-330. `refreshInterval: 3` in ~/.claude/settings.json over about 8 chats made 127k renders in 14.4 h, 11.1 CPU-hours (about 0.77 core). Handed off: memoize the dearest segments first, and bring the interval to Egor as a trade only if that falls short.",
       "handoff": "docs/handoffs/2026-10-05-hook-cuts-left.md"
+    },
+    {
+      "id": "hook-error-ask-span-drill-budget",
+      "title": "ask-span-drill.sh never ran: the stop dispatcher's 10 s budget was spent before the word asks",
+      "match": {
+        "rule": "hook-error",
+        "ident": "ask-span-drill\\.sh"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [
+        "hook-error-ask-word-reading-budget"
+      ],
+      "last_reviewed": "2026-10-05",
+      "reviewed_by": "night fixer harness-stop-hooks-20261005T061339Z-2a70",
+      "note": "One stop, 2026-10-04T22:22:56Z/084706a5: a one-shot usage-ai-report sanitization gate (llm_gate.py, claudeb -p --model sonnet, cwd /, entrypoint sdk-cli) at CPU busy 1.0, swap 9418/10240 MB (samples.jsonl 22:21:18Z). Every other hook was silent and none hit its 5 s cap, yet backstop + parallel notices + parallel asks used the 10 s budget, so the two lib/words.sh asks that run last in series read 'budget exhausted'; the whole stop took 16.1 s and Claude Code cancelled it at its 15 s timeout. The asks are not at fault: words.py headless_transcript gives them nothing to do in an sdk session. Ruled out: a hung hook (no exit 124 in that line), a stray or non-executable hook. The 10 earlier budget-exhausted lines (08-26..10-04) each follow another hook's exit 124 in an interactive chat. Fix is usage-ai-report's (hooks off for the gate), see the handoff; a non-worker sdk session still runs every ask (the stop.d asks skip CLAUDEB_WORKER/GROK_WORKER only).",
+      "handoff": "docs/handoffs/2026-10-05-usage-gate-hooks.md"
+    },
+    {
+      "id": "hook-error-ask-word-reading-budget",
+      "title": "ask-word-reading.sh never ran: the stop dispatcher's 10 s budget was spent before the word asks",
+      "match": {
+        "rule": "hook-error",
+        "ident": "ask-word-reading\\.sh"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [
+        "hook-error-ask-span-drill-budget"
+      ],
+      "last_reviewed": "2026-10-05",
+      "reviewed_by": "night fixer harness-stop-hooks-20261005T061339Z-2a70",
+      "note": "Same stop and cause as hook-error-ask-span-drill-budget (2026-10-04T22:22:56Z/084706a5, usage-ai-report gate under full load); see its note.",
+      "handoff": "docs/handoffs/2026-10-05-usage-gate-hooks.md"
+    },
+    {
+      "id": "hook-held-backstop-nested-run",
+      "title": "The run backstop held a chat whose Fable worker had delegated its brief to nested Opus runs",
+      "match": {
+        "rule": "hook-held",
+        "ident": "worker-run-backstop\\.sh"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-05",
+      "reviewed_by": "night fixer harness-stop-hooks-20261005T061339Z-2a70",
+      "note": "The only held line in the stop journal: 2026-10-04T07:02:23Z/2ddedf36. Runs claudeb-1791096939-3244-6832 and claudeb-1791097006-94194-5582 (com, opus) were launched by the relays a739c43940f0a8f91 and abd6d30e75c31e1a2 inside the Fable judging workers 227ac46a and 5b28a455; launcher = the root chat (bin/worker-run start_run, CLAUDE_LAUNCHER_SESSION) while the relay tags sit in the workers' caches, so owned() found none in the root's: the hold is as specified and reached its goal (the chat attached both, saw the com misroute, killed them, exit 143). Cause upstream: Fable headless workers delegate (2 of 3 Fable parents of nested runs this week). Unconfirmed: why ~25 other nested runs since 09-29 never held (most lived about a minute; one root stop at 2026-10-03T06:54:53Z/fa230c90 fell inside a live nested run with no held line; the backstop journals no silent reason).",
+      "handoff": "docs/handoffs/2026-10-05-fable-worker-delegates.md"
     }
   ],
   "blind_spots": [
@@ -2784,13 +2833,20 @@
       "reason": "logo-vectorizer-bench bench/throttle.py copies hold_raise/hold_clear but not wait_note, and tests/test_consistency.sh checks only its hold path, so Wait classes shows no logo-bench-throttle class however long its jobs wait",
       "since": "2026-10-05",
       "would_catch_if": "tests/test_consistency.sh asserted every row dc writer also calls wait_note in hold_clear"
-      },
-      {
+    },
+    {
       "id": "worktree-growth-unseen-until-landing",
       "what": "ungated instruction-file growth written in a linked worktree, which shows only when it lands in a main checkout, at the landing's time and with the landing chat as its writer",
       "reason": "the watcher prunes worktrees (_instruction_class_files) and an ungated write leaves no gate record, so harness-doctor's sibling-landing credit has nothing to join; seen 2026-10-05, w7_patch.py at 13:45:47Z read as the 16:35:05Z fast-forward",
       "since": "2026-10-05",
       "would_catch_if": "the tripwire journaled growth in the config repositories' worktrees, keyed like the landing, so the write is judged when and by whom it happened"
+    },
+    {
+      "id": "hook-time-gate-sessions",
+      "what": "hook runs inside the usage-ai-report gate's claudeb -p sessions (cwd /)",
+      "reason": "session 084706a5 spent 14.6+18.7 s in SessionStart, 5.9+6.1 s in UserPromptSubmit and 16.1 s in Stop by its transcript, yet hooks/20730.tsv, hooks/folded/20730.tsv and the spool hold no row of it; cause not found (lib/hook-time.sh returns early without CLAUDE_PROJECT_DIR)",
+      "since": "2026-10-05",
+      "would_catch_if": "hook-time.sh wrote a row for every hook run whatever the session's project dir, or the doctor read the transcripts' hook durationMs"
     }
   ]
 }
