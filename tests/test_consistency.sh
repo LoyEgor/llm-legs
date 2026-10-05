@@ -1543,8 +1543,7 @@ assert grep -Fq "printf 'bright ~%s ?%s' \"\$bound\" \"\$why\"" "$STATUSLINE"
 assert grep -Fq "printf 'dim ?%s' \"\$why\"" "$STATUSLINE"
 assert eq 1 "$(grep -c '^verdict_form() {' "$STATUSLINE" | tr -d ' ')"
 assert eq 1 "$(grep -c 'answer=$(verdict_form "$answer")' "$STATUSLINE" | tr -d ' ')"
-assert grep -Fq 'DEBT_ERR_LINE = "STATUS=unknown LINES=0 FILES=0 FIX=0 WHY=err"' "$RB_DEBT"
-assert grep -Fq 'r"STATUS=(closed|open|unknown) LINES=\d+ FILES=\d+ FIX=\d+ "' "$RB_DEBT"
+assert grep -Fq 'SESSION_LINE = "STATUS=closed LINES=0 FILES=0 FIX=0 WHY=none"' "$REVIEW_ROOT/bin/review-debt"
 assert doc_has 'the unit is the session, never «chat + folder»'
 assert grep -Fq 'review-debt "$v_session" >"$v_out"' "$FLOW_GATE"
 assert grep -Fq '0:STATUS=*) printf' "$FLOW_GATE"
@@ -2482,9 +2481,9 @@ assert grep -Fq 'def chat_suffix(session, launchers=None, store=None):' "$RB_STO
 # through `chat_display`, never a resolver call of its own. The count is exact so a new naming site
 # is read here before it ships.
 assert test -z "$(grep -E 'chat_label' "$RB_DEBT")"
-assert eq "$(grep -c 'chat_display' "$RB_DEBT")" 14
+assert eq "$(grep -c 'chat_display' "$RB_DEBT")" 8
 assert grep -Fq '"chat": _store.chat_display(' "$RB_DEBT"
-assert grep -Fq 'chat = _store.chat_display(session)' "$RB_DEBT"
+assert grep -Fq 'name = _store.chat_display(session)' "$RB_DEBT"
 # The foreign-chat refusal names the chat: it exists to send a reader to another conversation.
 assert eq "$(grep -c '_store.chat_suffix(' "$RB_REPORT")" 1
 
