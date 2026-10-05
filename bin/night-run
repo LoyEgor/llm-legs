@@ -46,7 +46,9 @@ start opens the orchestrator chat: --cleanup lands finished night branches and r
   only; --resume reopens night <id> under a new orchestrator for its unfinished jobs (one with --job,
   else all plus a cleanup job), the old session kept in previous_sessions
 Nights live in ${DOCTORS_DIR:-~/.cache/doctors}/nights/<id>.json.
-report opens with share/night_spend.py's header: duration, jobs, the orchestrator's worker runs and
+report opens with share/time_budget.py's comparison table: this night and the two previous finished
+  nights with jobs, a column each, oldest left, facts only, – where a value has no source, a blank line
+  after it; then share/night_spend.py's header: duration, jobs, the orchestrator's worker runs and
   hours, its review rounds, token spend of fixers, reviews and orchestrator weighted in input-token
   equivalents (input 1, cache write 1.25, cache read 0.1, output 5) against the previous finished night;
   then share/night_churn.py's churn, the jobs, and last share/time_budget.py's ledger (worker wall split
@@ -945,6 +947,7 @@ cmd_report() {
     run="${nights_dir%/*}/runs/$ref.json"
     [ ! -f "$run" ] || jq -c --arg r "$ref" '{($r): [.decisions[]? | select(.component == "unverified") | .id]}' "$run"
   done | jq -sc 'add // {}')
+  python3 -B "$repo_root/share/time_budget.py" table "$repo_root/bin/worker-run" "$file" || die "no comparison table for $file"
   python3 -B "$repo_root/share/night_spend.py" "$repo_root/bin/worker-run" "$file" || die "no spend header for $file"
   python3 -B "$repo_root/share/night_churn.py" "$repo_root/bin/worker-run" "$file" 2>/dev/null || true
   jq -r --argjson u "$unverified" --argjson lines "$(code_lines "$file")" --arg status "$(night_status "$file")" \

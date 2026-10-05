@@ -5,6 +5,7 @@ problem counts. Measurement only: it reads existing journals and gates nothing.
 
   time_budget.py day [--hours H] [--json]       the last H hours (24), its bands, holes, tests and levers
   time_budget.py night <worker-run> <night.json> the night's ledger line, its time split and the 7-night trend
+  time_budget.py table <worker-run> <night.json> the night against the two previous finished nights with jobs
 """
 
 import argparse
@@ -731,6 +732,7 @@ def ledger_row(worker_run, path, night):
     rewrite = night_churn.rewrite_counts(night)
     states = night.get("doctor_states_after") or {}
     debt = [j for j in night.get("jobs") or () if j.get("kind") == "debt"]
+    spent = night_spend.spend(night, worker_run)
     return {"id": night.get("id"), "started": low, "ended": high, "hours": round((high - low) / 3600.0, 1),
             "finished": bool(night.get("finished_at")), "runs": n_runs, "wall_s": round(wall),
             "split_s": {k: round(v) for k, v in split.items() if v},
@@ -742,7 +744,7 @@ def ledger_row(worker_run, path, night):
             "proved": sum((s or {}).get("proved", 0) for s in states.values()),
             "regressed": sum((s or {}).get("regressed", 0) for s in states.values()),
             "touched_unproven": len(touched[0]) if touched else 0,
-            "spend_m": round(night_spend.spend(night, worker_run)["total"] / 1e6, 1),
+            "spend_m": round(spent["total"] / 1e6, 1), "spend_kinds": spend_kinds(spent),
             "improvements": improvements(night, path, worker_run),
             "deferred": "no debt round" if not debt else (
                 "debt round %s" % debt[0].get("state") if all(j.get("state") != "merged" for j in debt) else None)}
@@ -807,19 +809,91 @@ def trend_lines(rows):
     return out
 
 
-def night_report(worker_run, path):
+def nights_upto(path):
+    """(started_at, path, night) of each night up to the one at path, oldest first."""
     night = read_json(path, {})
-    rows = []
+    out = []
     for other in sorted(glob.glob(os.path.join(os.path.dirname(path), "*.json"))):
         candidate = read_json(other, {})
         if candidate.get("started_at") and (candidate["started_at"], candidate.get("id", "")) <= (
                 night.get("started_at", ""), night.get("id", "")):
-            rows.append((candidate["started_at"], other))
-    trend = [cached_row(worker_run, p) for _, p in sorted(rows)[-BAND_DAYS:]]
+            out.append((candidate["started_at"], other, candidate))
+    return sorted(out, key=lambda n: n[:2])
+
+
+def night_report(worker_run, path):
+    trend = [cached_row(worker_run, p) for _, p, _ in nights_upto(path)[-BAND_DAYS:]]
     if trend and trend[-1]:
         print("\n".join(ledger_lines(trend[-1])))
     for line in trend_lines(trend) + roi_lines(trend, now_s()):
         print(line)
+
+
+def spend_kinds(spent):
+    return {kind: round(night_spend.weighted(total) / 1e6, 1) for kind, total in spent["kinds"].items()}
+
+
+def table_column(worker_run, path, night):
+    """(label, value) of each comparison row; a value with no source is a dash."""
+    dash = "\u2013"
+    row = cached_row(worker_run, path) or {}
+    kinds = row.get("spend_kinds")
+    if row and kinds is None:
+        live = night_spend.spend(night, worker_run)
+        kinds = spend_kinds(live) if round(live["total"] / 1e6, 1) == row.get("spend_m") else {}
+    kinds = kinds or {}
+    states = collections.Counter(j.get("state") for j in night.get("jobs") or ())
+    split, wall, runs = row.get("split_s") or {}, row.get("wall_s") or 0, row.get("runs")
+    timed = row and (wall or not runs)
+    hours = lambda s: "%.1f h" % (s / 3600.0) if timed else dash
+    before, after = night.get("doctors_before") or {}, night.get("doctors_after") or {}
+    jobs_lines = (row.get("lines") or {}).get("jobs")
+    suites = night.get("suites") or {}
+    repos = suites.get("repos") or []
+    show = lambda v, f="%s": dash if v is None else f % v
+    return [
+        ("duration", show(row.get("hours"), "%.1f h")),
+        ("spend total", show(row.get("spend_m"), "%.1fM")),
+        ("spend fixers", show(kinds.get("fixers"), "%.1fM")),
+        ("spend reviews", show(kinds.get("reviews"), "%.1fM")),
+        ("spend orchestrator", show(kinds.get("orchestrator"), "%.1fM")),
+        ("merged jobs", str(states["merged"])),
+        ("left jobs", str(states["left"])),
+        ("blocked on Egor", str(states["blocked-on-egor"])),
+        ("worker runs", show(runs)),
+        ("worker wall", hours(wall)),
+        ("model active", "%d %%" % pct(split.get("model", 0), wall) if wall else dash),
+        ("queued for slots", hours(split.get("slot", 0))),
+        ("in own tests", hours(split.get("suite_run", 0) + split.get("suite_wait", 0))),
+    ] + [
+        ("problems " + d, dash if before.get(d) is None and after.get(d) is None
+         else "%s \u2192 %s" % (show(before.get(d)), show(after.get(d))))
+        for d in ("llm", "harness", "updater", "code")
+    ] + [
+        ("lines by jobs", "+%d/-%d" % (jobs_lines[0] + jobs_lines[2], jobs_lines[1] + jobs_lines[3])
+         if jobs_lines else dash),
+        ("week-old rewritten", show((row.get("rewrite") or [None])[0])),
+        ("suites pass/fail", "%d/%d" % (sum(r["passed"] for r in repos), sum(len(r.get("failed") or ()) for r in repos))
+         if suites.get("finished_at") and all(isinstance(r.get("passed"), int) for r in repos) else dash),
+    ]
+
+
+def table_lines(worker_run, path):
+    """This night against the two previous finished nights with jobs, oldest left, a column per night."""
+    *older, current = nights_upto(path)
+    nights = [n for n in older if n[2].get("finished_at") and n[2].get("jobs")][-2:] + [current]
+    day = lambda n, f: time.strftime(f, time.localtime(night_spend.epoch(n[0]))).lstrip("0")
+    heads = [day(n, "%d %b") for n in nights]
+    if len(set(heads)) < len(heads):
+        heads = [day(n, "%d %b %H:%M") for n in nights]
+    columns = [table_column(worker_run, p, night) for _, p, night in nights]
+    labels = [label for label, _ in columns[0]]
+    width = max(len(label) for label in labels)
+    widths = [max([len(head)] + [len(v) for _, v in column]) for head, column in zip(heads, columns)]
+    out = [" " * width + "".join("   " + head.rjust(w) for head, w in zip(heads, widths))]
+    for i, label in enumerate(labels):
+        out.append(label.ljust(width) + "".join("   " + column[i][1].rjust(w) for column, w in zip(columns, widths)))
+    return out
 
 
 def main(argv):
@@ -831,9 +905,15 @@ def main(argv):
     night = sub.add_parser("night")
     night.add_argument("worker_run")
     night.add_argument("path")
+    table = sub.add_parser("table")
+    table.add_argument("worker_run")
+    table.add_argument("path")
     args = parser.parse_args(argv)
     if args.command == "night":
         night_report(args.worker_run, args.path)
+        return 0
+    if args.command == "table":
+        print("\n".join(table_lines(args.worker_run, args.path)) + "\n")
         return 0
     doc = document(now_s(), args.hours, write=False)
     if args.json:

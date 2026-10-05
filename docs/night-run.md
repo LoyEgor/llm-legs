@@ -193,7 +193,17 @@ state, the one predicate `finish` prunes by:
   refs/night/<id>/base`, so the review range and the later `--onto` hold only its own change. A landing
   that fails stays `left`, and a later Cleanup takes it like any other night branch.
 
-`night-run report [<id>]` prints it narrowly. First a mechanical header from `share/night_spend.py`,
+`night-run report [<id>]` prints it narrowly. First the comparison table from `share/time_budget.py table`,
+the numbers block of the morning message, copied verbatim: one column per night, this one and the two
+previous finished nights that had jobs (a night with none is skipped), oldest left, local dates as heads
+(with the time when two share a date), right-aligned. Rows are facts the stores already hold: duration;
+weighted spend in total and by fixers / reviews / orchestrator; merged, left and blocked-on-egor jobs;
+worker runs, their wall, model-active share, hours queued for slots and in their own tests (the ledger's
+split); each doctor's problem count before → after; lines changed by the night's jobs (code and tests);
+week-old lines rewritten; the full suites run's PASS/FAIL, summed over repositories. A value with no
+source is `–`: a suites run still going or never run, a ledger row with no time split, a cached ledger
+row from before the spend split whose live re-count no longer matches its total. No ids, no chat names;
+a blank line closes it. Then a mechanical header from `share/night_spend.py`,
 the numbers of the morning message: duration (local start–finish, hours); jobs merged / left / other
 by kind; the worker runs whose `launcher` is one of the night's orchestrator sessions, started inside
 its window, by vendor/served model, with their summed wall-clock hours and any without a transcript;

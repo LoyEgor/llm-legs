@@ -51,6 +51,8 @@ EOF
 chmod +x "$FAKE_BIN"/*
 
 night() { bash "$ROOT/bin/night-run" "$@"; }
+# The report under its comparison table, which a blank line closes.
+body() { sed '1,/^$/d' "$@"; }
 record() { printf '%s/%s.json' "$NIGHTS" "$1"; }
 doc() { jq -n --argjson n "$2" --argjson p "${3:-[]}" '{contract: 1, problem_count: $n, problems: $p}' >"$WORK/$1/latest.json"; }
 doc llm 5
@@ -283,12 +285,12 @@ assert grep -qxF "left · debt · debt-round · hung: idle 1800" "$WORK/report"
 assert grep -qxF "failed-launch · fixer · harness-r1 · night/$id/harness-r1 · opener" "$WORK/report"
 assert grep -qxF "total · 2 merged · 8 left · 1 failed-launch · 1 blocked-on-egor · pushed" "$WORK/report"
 assert grep -qE "^blocked-on-egor · debt · p1( · [^ ]+)* · step 10 needs his word$" "$WORK/report"
-assert [ "$(grep -vcE '^(ledger|trend|roi) · ' "$WORK/report")" = 27 ]
+assert [ "$(body "$WORK/report" | grep -vcE '^(ledger|trend|roi) · ')" = 27 ]
 assert [ "$(grep -m1 -E '^(ledger|trend) · ' "$WORK/report")" = "ledger · night $id · $(jq -r '((.finished_at | fromdate)
   - (.started_at | fromdate)) / 3600 * 10 | round / 10 | tostring | if test("\\.") then . else . + ".0" end' "$R") h" ]
 assert grep -qxE "trend · problems [-+][0-9]+ over [0-9]+ nights · (moving forward|treading water|going back)" "$WORK/report"
-assert [ "$(sed -n 2p "$WORK/report")" = "jobs · merged 2 (fixer 1, vendor 1) · left 8 (debt 8) · other 2 (debt 1, fixer 1)" ]
-assert [ "$(sed -n 9p "$WORK/report" | cut -d' ' -f1-2)" = "night $id" ]
+assert [ "$(body "$WORK/report" | sed -n 2p)" = "jobs · merged 2 (fixer 1, vendor 1) · left 8 (debt 8) · other 2 (debt 1, fixer 1)" ]
+assert [ "$(body "$WORK/report" | sed -n 9p | cut -d' ' -f1-2)" = "night $id" ]
 assert [ "$(awk '{ print length }' "$WORK/report" | sort -n | tail -1)" -le 100 ]
 assert cmp -s "$WORK/report" <(night report)
 
@@ -332,7 +334,7 @@ night job "$id2" set v1 state=nothing-to-do >/dev/null
 night finish "$id2" >/dev/null
 day2=$(jq -r '.started_at | fromdateiso8601 | strflocaltime("%d %b") | ltrimstr("0")' "$(record "$id2")")
 assert [ "$(night latest --menu | head -1)" = "$(printf 'Last night %s: 2 of 2\t0\t0\t%s' "$day2" "$id2")" ]
-night report | sed -n 9p | grep -q "^night $id2 " || fail "report without an id reads the latest night"
+night report | body | sed -n 9p | grep -q "^night $id2 " || fail "report without an id reads the latest night"
 night job "$id2" set v1 state=merged "commits=repo:$local_hash" >/dev/null
 assert [ "$(night latest --menu | head -1)" = "$(printf 'Last night %s: 2 of 2 · 1 not pushed yet\t2\t0\t%s' "$day2" "$id2")" ]
 assert grep -qxF "$(printf 'v1 update · not pushed yet\t2\t\tv1\tvendor\t0')" <(night latest --menu)
@@ -370,7 +372,7 @@ pkill -f -- "--session-id $(jq -r .session "$(record "$id3")")"
 while pgrep -f -- "--session-id $(jq -r .session "$(record "$id3")")" >/dev/null; do sleep 0.1; done
 night start >"$WORK/out" || fail "start after the orchestrator chat ended"
 id4=$(sed -n 's/^night \([^ ]*\) started:.*/\1/p' "$WORK/out")
-assert [ "$(night report "$id3" | sed -n 9p)" = "night $id3 · $(jq -r '.started_at | fromdateiso8601 | strflocaltime("%H:%M")' "$(record "$id3")")–- · UNFINISHED" ]
+assert [ "$(night report "$id3" | body | sed -n 9p)" = "night $id3 · $(jq -r '.started_at | fromdateiso8601 | strflocaltime("%H:%M")' "$(record "$id3")")–- · UNFINISHED" ]
 rm "$(record "$id")" "$(record "$id2")" "$(record "$id4")"
 IFS=$'\t' read -r text red running _ < <(night latest --menu)
 assert [ "$text" = "Last night $(jq -r '.started_at | fromdateiso8601 | strflocaltime("%d %b") | ltrimstr("0")' "$(record "$id3")"), stopped early: no jobs" ]
@@ -855,7 +857,7 @@ TZ=UTC DOCTORS_DIR="$SP/doctors" WORKER_RUN_DIR="$SP/runs" CLAUDEB_PROFILES_ROOT
   WORKER_STATS_DIR="$SP/stats" CODEX_PROFILES_DIR="$SP/codex" CHAT_NAME_ROOTS="$SP/profiles/p2/projects:$SP/profiles/p1/projects" \
   CHAT_NAMES_CACHE="$SP/chat-names.json" night report 20260102T000000Z-bbbb >"$WORK/spend-report" ||
   fail "spend report"
-assert [ "$(head -8 "$WORK/spend-report")" = "duration · 02 Jan 00:00 – 02 Jan 02:00 · 2.0 h
+assert [ "$(body "$WORK/spend-report" | head -8)" = "duration · 02 Jan 00:00 – 02 Jan 02:00 · 2.0 h
 jobs · merged 3 (fixer 2, vendor 1) · left 1 (fixer 1) · other 1 (debt 1)
 agents · 4 worker runs (3 claudeb/claude-opus-5-5, 1 codex/gpt-6-astra) · 3.0 h wall-clock · 1 without a transcript
 review rounds · 2
@@ -863,10 +865,10 @@ spend fixers · out 1.4M · cache write 2.0M · cache read 12.0M · 11.7M weight
 spend reviews · out 1.0M · cache write 2.0M · cache read 25.0M · 13.0M weighted
 spend orchestrator · out 0.2M · cache write 0.4M · cache read 10.0M · 2.5M weighted
 spend total · 27.2M weighted · 3.40× night 20260101T000000Z-aaaa (8.0M)" ]
-assert [ "$(sed -n '9,11p' "$WORK/spend-report")" = "reviews · per-branch 0 rounds (0.0M weighted) · other 2 rounds (13.0M weighted)
+assert [ "$(body "$WORK/spend-report" | sed -n '9,11p')" = "reviews · per-branch 0 rounds (0.0M weighted) · other 2 rounds (13.0M weighted)
 problems · no snapshot
 fixer spend without proof · no snapshot" ]
-assert [ "$(sed -n 12p "$WORK/spend-report" | cut -d' ' -f1-2)" = "night 20260102T000000Z-bbbb" ]
+assert [ "$(body "$WORK/spend-report" | sed -n 12p | cut -d' ' -f1-2)" = "night 20260102T000000Z-bbbb" ]
 
 # Observational churn block: review rounds per-branch vs other, problems touched again without proof,
 # regressed from after snapshot, proved excluded, fixer spend without proof, and rewrites in past 7 days.
@@ -935,12 +937,71 @@ TZ=UTC DOCTORS_DIR="$CHURN/doctors" WORKER_RUN_DIR="$CHURN/runs" CLAUDEB_PROFILE
   CHAT_NAME_ROOTS="$CHURN/profiles/p1/projects" CHAT_NAMES_CACHE="$CHURN/chat-names.json" \
   night report 20260131T000000Z-now >"$WORK/churn-report" || fail "churn report"
 
-assert [ "$(sed -n '9,14p' "$WORK/churn-report")" = "reviews · per-branch 1 rounds (2.0M weighted) · other 1 rounds (3.0M weighted)
+assert [ "$(body "$WORK/churn-report" | sed -n '9,14p')" = "reviews · per-branch 1 rounds (2.0M weighted) · other 1 rounds (3.0M weighted)
 problems · 1 touched again without proof · 1 regressed
 problem · harness/P_OPEN · nights touched 2 · now open
 fixer spend without proof · 5.0M weighted of 15.0M
 rewrite · 1 of 2 lines deleted tonight were written in the 7 days before (1 by earlier night commits)
 night 20260131T000000Z-now · 00:00–02:00" ]
+
+# Comparison table: this night and the two previous finished nights with jobs, oldest left; an older one
+# and a night with no jobs stay out; a value with no source is a dash, never a number.
+TB="$WORK/table"
+mkdir -p "$TB/doctors/nights" "$TB/doctors/night-ledger" "$TB/runs" "$TB/stats/benches" "$TB/profiles"
+: >"$TB/sweep-repos"
+tb_night() { # id started finished jobs before after [suites]
+  jq -n --arg i "$1" --arg s "$2" --arg f "$3" --argjson j "$4" --argjson b "$5" --argjson a "$6" --argjson u "${7:-null}" \
+    '{id: $i, started_at: $s, finished_at: $f, session: "S-\($i)", account: null, command: null, note: null,
+      doctors_before: $b, doctors_after: $a, jobs: $j} + (if $u then {suites: $u} else {} end)' >"$TB/doctors/nights/$1.json"
+}
+tb_jobs() { jq -nc '[$ARGS.positional[] | {ref: ., kind: "fixer", state: ., commits: []}]' --args "$@"; }
+tb_night 20260201T000000Z-0001 2026-02-01T00:00:00Z 2026-02-01T05:00:00Z "$(tb_jobs merged)" '{}' null
+tb_night 20260202T000000Z-a0b1 2026-02-02T00:00:00Z 2026-02-02T09:48:00Z "$(tb_jobs merged merged left)" \
+  '{"llm": 5, "harness": 3}' null
+tb_night 20260203T000000Z-c2d3 2026-02-03T00:00:00Z 2026-02-03T02:00:00Z '[]' '{"llm": 9}' '{"llm": 9}'
+tb_night 20260204T000000Z-e4f5 2026-02-04T00:00:00Z 2026-02-04T06:00:00Z "$(tb_jobs merged blocked-on-egor)" \
+  '{"llm": 4, "harness": 2, "updater": 0, "code": 1}' '{"llm": 3, "harness": 2, "updater": 1, "code": 0}' \
+  '{"started_at": "2026-02-04T06:00:00Z", "finished_at": null, "repos": []}'
+tb_night 20260205T000000Z-abcd 2026-02-05T00:00:00Z 2026-02-05T03:30:00Z "$(tb_jobs merged)" \
+  '{"llm": 2, "harness": 1, "updater": null, "code": null}' '{"llm": 0, "harness": 4, "updater": null, "code": null}' \
+  '{"started_at": "2026-02-05T03:30:00Z", "finished_at": "2026-02-05T04:00:00Z", "repos": [{"repo": "/r1", "passed": 10,
+    "failed": ["test_a.sh"]}, {"repo": "/r2", "passed": 5, "failed": []}]}'
+jq -n '{id: "20260202T000000Z-a0b1", finished: true, hours: 9.8, runs: 3, wall_s: 36000,
+  split_s: {model: 3600, slot: 7200, suite_run: 1800, suite_wait: 1800}, lines: {jobs: [10, 2, 4, 1], other: [0, 0, 0, 0]},
+  rewrite: [7, 20], problems: [8, null], spend_m: 12.5, spend_kinds: {fixers: 8.0, reviews: 3.0, orchestrator: 1.5}}' \
+  >"$TB/doctors/night-ledger/20260202T000000Z-a0b1.json"
+jq -n '{id: "20260204T000000Z-e4f5", finished: true, hours: 6.0, runs: 2, wall_s: 0, split_s: {}, rewrite: null,
+  problems: [7, 6], spend_m: 5.0}' >"$TB/doctors/night-ledger/20260204T000000Z-e4f5.json"
+TZ=UTC DOCTORS_DIR="$TB/doctors" WORKER_RUN_DIR="$TB/runs" CLAUDEB_PROFILES_ROOT="$TB/profiles" \
+  WORKER_STATS_DIR="$TB/stats" NIGHT_RUN_SWEEP_REPOS="$TB/sweep-repos" CHAT_NAME_ROOTS="$TB/profiles" \
+  CHAT_NAMES_CACHE="$TB/chat-names.json" night report 20260205T000000Z-abcd >"$WORK/table-report" || fail "table report"
+sed '/^$/,$d' "$WORK/table-report" >"$WORK/table-block"
+assert [ "$(cat "$WORK/table-block")" = "                      2 Feb   4 Feb   5 Feb
+duration              9.8 h   6.0 h   3.5 h
+spend total           12.5M    5.0M    0.0M
+spend fixers           8.0M       –    0.0M
+spend reviews          3.0M       –    0.0M
+spend orchestrator     1.5M       –    0.0M
+merged jobs               2       1       1
+left jobs                 1       0       0
+blocked on Egor           0       1       0
+worker runs               3       2       0
+worker wall          10.0 h       –   0.0 h
+model active           10 %       –       –
+queued for slots      2.0 h       –   0.0 h
+in own tests          1.0 h       –   0.0 h
+problems llm          5 → –   4 → 3   2 → 0
+problems harness      3 → –   2 → 2   1 → 4
+problems updater          –   0 → 1       –
+problems code             –   1 → 0       –
+lines by jobs        +14/-3       –   +0/-0
+week-old rewritten        7       –       –
+suites pass/fail          –       –    15/1" ]
+assert [ "$(python3 -c 'import sys; print(len({len(l.rstrip("\n")) for l in sys.stdin}))' <"$WORK/table-block")" = 1 ]
+assert [ "$(head -1 "$WORK/table-block" | wc -w | tr -d ' ')" = 6 ]
+assert grep -qxE 'suites pass/fail +– +– +15/1' "$WORK/table-block"
+assert_fails grep -qE '[0-9a-f]{7,}' "$WORK/table-block"
+assert [ "$(body "$WORK/table-report" | head -1)" = "duration · 05 Feb 00:00 – 05 Feb 03:30 · 3.5 h" ]
 
 # Fixture night on the per-repository count: review-bench's review-anchors/review-debt and
 # claude-setup's span-off, from their checkouts (REVIEW_BENCH_ROOT, CLAUDE_SETUP_ROOT).
