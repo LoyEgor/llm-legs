@@ -41,7 +41,7 @@ FIXTURES="$WORK/fixtures"
 TMPDIR="$WORK/runtime-tmp"
 CLAUDEB_FIX="$WORK/claudeb"
 export HOME TMPDIR
-unset HARNESS_DOCTOR_DIR
+unset HARNESS_DOCTOR_DIR SPEED_DOCTOR_DIR CLAUDEB_DIR
 mkdir -p "$HOME/.claude" "$FIXTURES" "$TMPDIR" "$CLAUDEB_FIX/limits"
 CODEX_FIX="$HOME/.codex-profiles"
 mkdir -p "$CODEX_FIX/work4" "$CODEX_FIX/.codexb/fast-mode"
@@ -3524,32 +3524,32 @@ FAKE_PS="$FIXTURES/ports-ps"
 cat > "$FAKE_PS" <<'PSEOF'
 #!/usr/bin/env bash
 cat <<'SNAP'
-1000 1 claude
-1001 1000 node /path/to/vite
-1002 1000 node /Users/x/.nvm/codex mcp-server
-1003 1000 python3 -m http.server 8123
-1004 1000 node ./mcp/server.mjs
-1005 1000 agy --model gemini
-1006 1005 node /opt/agy/rpc.js
-1007 1000 codex exec
-1008 1007 node /srv/dev-server
-1009 1000 node serve.js --dir /srv/agy
-1010 1 node /proj/node_modules/.bin/next start --port 4254
-1011 1 node /elsewhere/server.js
-1012 1 node /projx/server.js
-1015 1 node /proj/rpc.js
-1016 1000 8080 --serve
-1017 1000 COMMANDER --serve
-1018 1000 COMMAND --serve
-1019 1000 node server.js --config codex.json
-1020 1000 node server.js /tmp/codex-out.json
-1021 1000 node --require /x/codex/hooks.js server.js
-1022 1000 node --loader ts-node/esm mcp-server.ts
-1023 1000 uv run mcp-server-fetch
-1024 1000 npm exec @modelcontextprotocol/server-x
-1013 1000 claude
-1014 1013 node /path/to/vite-worker
-9999 1 claude
+1000 1 00:01 claude
+1001 1000 00:01 node /path/to/vite
+1002 1000 00:01 node /Users/x/.nvm/codex mcp-server
+1003 1000 00:01 python3 -m http.server 8123
+1004 1000 00:01 node ./mcp/server.mjs
+1005 1000 00:01 agy --model gemini
+1006 1005 00:01 node /opt/agy/rpc.js
+1007 1000 00:01 codex exec
+1008 1007 00:01 node /srv/dev-server
+1009 1000 00:01 node serve.js --dir /srv/agy
+1010 1 00:01 node /proj/node_modules/.bin/next start --port 4254
+1011 1 00:01 node /elsewhere/server.js
+1012 1 00:01 node /projx/server.js
+1015 1 00:01 node /proj/rpc.js
+1016 1000 00:01 8080 --serve
+1017 1000 00:01 COMMANDER --serve
+1018 1000 00:01 COMMAND --serve
+1019 1000 00:01 node server.js --config codex.json
+1020 1000 00:01 node server.js /tmp/codex-out.json
+1021 1000 00:01 node --require /x/codex/hooks.js server.js
+1022 1000 00:01 node --loader ts-node/esm mcp-server.ts
+1023 1000 00:01 uv run mcp-server-fetch
+1024 1000 00:01 npm exec @modelcontextprotocol/server-x
+1013 1000 00:01 claude
+1014 1013 00:01 node /path/to/vite-worker
+9999 1 00:01 claude
 SNAP
 PSEOF
 chmod +x "$FAKE_PS"
@@ -3655,10 +3655,10 @@ FAKE_PS_4DIG="$FIXTURES/ports-ps-4dig"
 cat > "$FAKE_PS_4DIG" <<'PSEOF4'
 #!/usr/bin/env bash
 cat <<'SNAP'
-  999 1 init
- 1000 1 claude
- 2001 1000 node /path/to/vite
- 3002 1000 python3 -m http.server 8127
+  999 1 00:01 init
+ 1000 1 00:01 claude
+ 2001 1000 00:01 node /path/to/vite
+ 3002 1000 00:01 python3 -m http.server 8127
 SNAP
 PSEOF4
 chmod +x "$FAKE_PS_4DIG"
@@ -3683,17 +3683,17 @@ FAKE_PS_TOOLS="$FIXTURES/ports-ps-tools"
 cat > "$FAKE_PS_TOOLS" <<'PSEOFT'
 #!/usr/bin/env bash
 cat <<'SNAP'
-1000 1 claude
-2100 1000 codex exec
-2101 2100 node /srv/rpc-worker.js
-2102 1000 grok --prompt-file /tmp/review
-2103 2102 node /srv/grok-rpc.js
-2104 2102 node /srv/dev.js
-2105 1000 /Applications/Google Chrome.app/Contents/chrome_crashpad_handler
-2106 1000 npx -y @modelcontextprotocol/server-filesystem
-2107 1000 node --inspect ./mcp/server.js
-2108 1000 python3 -m mcp.server
-2109 1000 node server.js --config codex.json
+1000 1 00:01 claude
+2100 1000 00:01 codex exec
+2101 2100 00:01 node /srv/rpc-worker.js
+2102 1000 00:01 grok --prompt-file /tmp/review
+2103 2102 00:01 node /srv/grok-rpc.js
+2104 2102 00:01 node /srv/dev.js
+2105 1000 00:01 /Applications/Google Chrome.app/Contents/chrome_crashpad_handler
+2106 1000 00:01 npx -y @modelcontextprotocol/server-filesystem
+2107 1000 00:01 node --inspect ./mcp/server.js
+2108 1000 00:01 python3 -m mcp.server
+2109 1000 00:01 node server.js --config codex.json
 SNAP
 PSEOFT
 chmod +x "$FAKE_PS_TOOLS"
@@ -3729,12 +3729,12 @@ FAKE_PS_TREES="$FIXTURES/ports-ps-trees"
 cat > "$FAKE_PS_TREES" <<'PSEOFW'
 #!/usr/bin/env bash
 cat <<'SNAP'
-1000 1 claude
-1001 1000 node /path/to/vite
-1010 1 node /main/server.js
-1011 1 node /wt/server.js
-1012 1 node /sibling/server.js
-1013 1 node /gone/server.js
+1000 1 00:01 claude
+1001 1000 00:01 node /path/to/vite
+1010 1 00:01 node /main/server.js
+1011 1 00:01 node /wt/server.js
+1012 1 00:01 node /sibling/server.js
+1013 1 00:01 node /gone/server.js
 SNAP
 PSEOFW
 chmod +x "$FAKE_PS_TREES"
@@ -3790,6 +3790,69 @@ assert_eq "" "$(cat "$STATE_DIR/ports-pp-noroot")"
 printf '5173\n' > "$STATE_DIR/ports-pp-death"
 STATUSLINE_PS="$FAKE_PS" STATUSLINE_LSOF="$FAKE_LSOF_EMPTY" "$PORTS_PROBE" pp-death 1001
 assert_eq "" "$(cat "$STATE_DIR/ports-pp-death")"
+
+# One process table and one listener walk serve every chat's probes: a second chat inside the
+# snapshot's ten seconds runs neither ps nor lsof and records what its own walk would have.
+SNAP_CALLS="$WORK/snapshot-calls"
+SNAP_PS="$FIXTURES/snap-ps"; SNAP_LSOF="$FIXTURES/snap-lsof"
+printf '#!/usr/bin/env bash\nprintf "ps\\n" >> "%s"\nexec "%s" "$@"\n' "$SNAP_CALLS" "$FAKE_PS" > "$SNAP_PS"
+printf '#!/usr/bin/env bash\nprintf "lsof\\n" >> "%s"\nexec "%s" "$@"\n' "$SNAP_CALLS" "$FAKE_LSOF" > "$SNAP_LSOF"
+chmod +x "$SNAP_PS" "$SNAP_LSOF"
+snap_probe() { STATUSLINE_PS="$SNAP_PS" STATUSLINE_LSOF="$SNAP_LSOF" "$PORTS_PROBE" "$1" 1001 /proj; }
+snap_calls() { grep -c "^$1\$" "$SNAP_CALLS" 2>/dev/null || :; }
+: > "$SNAP_CALLS"
+snap_probe pp-snap-a
+assert_eq "1 2" "$(snap_calls ps) $(snap_calls lsof)"
+snap_probe pp-snap-b
+assert_eq "1 2" "$(snap_calls ps) $(snap_calls lsof)"
+assert_eq "$(cat "$STATE_DIR/ports-pp-orphan")" "$(cat "$STATE_DIR/ports-pp-snap-b")"
+# The work probe reads the same table inside its own three seconds.
+STATUSLINE_PS="$SNAP_PS" STATUSLINE_LSOF="$SNAP_LSOF" WORKER_RUN_DIR="$WORK/none" "$ROOT/bin/statusline-work-probe.sh" wp-snap 1001
+assert_eq "1 2" "$(snap_calls ps) $(snap_calls lsof)"
+# A snapshot past its age is walked again, and a process table older than the listener walk is
+# retaken: a listener it does not hold has no command to be judged by.
+snap_head() { # file epoch
+  local rest; { IFS=$'\t' read -r _ rest; } < "$STATE_DIR/$1"
+  { printf '%s\t%s\n' "$2" "$rest"; tail -n +2 "$STATE_DIR/$1"; } > "$STATE_DIR/$1.edit" && mv "$STATE_DIR/$1.edit" "$STATE_DIR/$1"
+}
+snap_head ps-snapshot "$(($(date +%s) - 30))"
+snap_head ports-snapshot "$(($(date +%s) - 30))"
+snap_probe pp-snap-c
+assert_eq "2 4" "$(snap_calls ps) $(snap_calls lsof)"
+snap_head ps-snapshot "$(($(date +%s) - 5))"
+rm -f "$STATE_DIR/ports-snapshot"
+snap_probe pp-snap-d
+assert_eq "3 6" "$(snap_calls ps) $(snap_calls lsof)"
+assert_eq "$(cat "$STATE_DIR/ports-pp-orphan")" "$(cat "$STATE_DIR/ports-pp-snap-d")"
+# A failed ps is never published as an empty machine for the other chats.
+STATUSLINE_PS=true STATUSLINE_LSOF="$SNAP_LSOF" "$PORTS_PROBE" pp-snap-empty 1001 /proj
+assert_eq "" "$(cat "$STATE_DIR/ports-pp-snap-empty")"
+assert test "$(head -1 "$STATE_DIR/ps-snapshot" | cut -f3)" = "$SNAP_PS"
+
+# Every probe run journals its own cost for the Speed doctor, builtins only.
+probe_rows="$HOME/.cache/speed-doctor/statusline-probes/$(date +%Y-%m-%d).tsv"
+assert grep -Eq $'^[0-9]{16}\t[0-9]+\t([0-9]+|-)\tports$' "$probe_rows"
+assert grep -Eq $'^[0-9]{16}\t[0-9]+\t([0-9]+|-)\twork$' "$probe_rows"
+
+# The hourly sweep: a temporary an hour old was left by a killed writer, here and in the account
+# store; per-session caches go after a week, the place journals never.
+age_path() { touch -t "$(date -r "$(($(date +%s) - $1))" +%Y%m%d%H%M.%S)" "$2"; }
+prune_limits="$HOME/.claude-profiles/.claudeb/limits"
+mkdir -p "$prune_limits" "$STATE_DIR/old-probe.lock"
+for prune_file in x.tmp.1 y.tmp.2 work-old work-new scan-old rl-cost-old unpushed-old review-autonomy-old \
+    repo-debt-old place-old; do : > "$STATE_DIR/$prune_file"; done
+: > "$prune_limits/a.json.tmp.3"; : > "$prune_limits/b.json.tmp.4"
+age_path 7200 "$STATE_DIR/x.tmp.1"; age_path 7200 "$prune_limits/a.json.tmp.3"
+for prune_file in work-old scan-old rl-cost-old unpushed-old review-autonomy-old repo-debt-old place-old; do
+  age_path 691200 "$STATE_DIR/$prune_file"
+done
+age_path 172800 "$STATE_DIR/old-probe.lock"
+rm -f "$STATE_DIR/.ports-prune"
+snap_probe pp-prune
+assert_eq "y.tmp.2 work-new place-old b.json.tmp.4" "$(for prune_file in x.tmp.1 y.tmp.2 work-old work-new scan-old \
+  rl-cost-old unpushed-old review-autonomy-old repo-debt-old place-old; do [ -e "$STATE_DIR/$prune_file" ] && printf '%s ' "$prune_file"; done
+  for prune_file in a.json.tmp.3 b.json.tmp.4; do [ -e "$prune_limits/$prune_file" ] && printf '%s' "$prune_file"; done)"
+assert test ! -d "$STATE_DIR/old-probe.lock"
 
 # --- statusline-work-probe.sh ---
 WORK_PROBE="$ROOT/bin/statusline-work-probe.sh"
@@ -4928,6 +4991,45 @@ done
 sleep 0.2
 assert test -d "$debt_lock"
 rmdir "$debt_lock" 2>/dev/null
+# The walk prices the whole family, so an answer whose key still holds is asked again only past
+# 300s, and stands that long. The shown tree's HEAD and diff counters are in the key: moving them
+# asks again once the answer is 15s old, and the old number stands its 120s meanwhile.
+DEBT_SLEEP=
+DEBT_ANSWER='LINES=33 FILES=3'
+debt_render repo-debt-key "$REVIEW_DIRTY" >/dev/null
+debt_settle
+debt_payload=$(statusline_payload repo-debt-key "" "$REVIEW_DIRTY")
+debt_age() { touch -t "$(date -r "$(($(date +%s) - $1))" +%Y%m%d%H%M.%S)" "$debt_cache"; }
+debt_asked() {
+  local i
+  for i in $(seq 1 40); do [ -s "$DEBT_LOG" ] && break; sleep 0.05; done
+  debt_settle
+  [ -s "$DEBT_LOG" ]
+}
+debt_unasked() { sleep 0.3; debt_settle; [ ! -s "$DEBT_LOG" ]; }
+: > "$DEBT_LOG"; debt_age 200
+debt_held_out=$(run_statusline "$debt_payload")
+assert grep -Fq "${DIM}33${RESET}" <<< "$debt_held_out"
+assert debt_unasked
+: > "$DEBT_LOG"; debt_age 301
+run_statusline "$debt_payload" >/dev/null
+assert debt_asked
+debt_settle
+printf 'line\n' >> "$REVIEW_DIRTY/change.txt"
+DEBT_ANSWER='LINES=34 FILES=3'
+: > "$DEBT_LOG"; debt_age 10
+assert grep -Fq "${DIM}33${RESET}" <<< "$(run_statusline "$debt_payload")"
+assert debt_unasked
+debt_age 20
+assert grep -Fq "${DIM}33${RESET}" <<< "$(run_statusline "$debt_payload")"
+assert debt_asked
+assert grep -Fq "${DIM}34${RESET}" <<< "$(run_statusline "$debt_payload")"
+printf 'line\n%.0s' {1..21} > "$REVIEW_DIRTY/change.txt"
+: > "$DEBT_LOG"; debt_age 200
+DEBT_SLEEP=0.8
+debt_moved_out=$(run_statusline "$debt_payload")
+assert test "${debt_moved_out#*${DIM}34${RESET}}" = "$debt_moved_out"
+debt_settle
 DEBT_SLEEP=
 DEBT_ANSWER='LINES=0 FILES=0'
 DEBT_CMD=

@@ -8,7 +8,7 @@ WORK=$(cd "$(mktemp -d)" && pwd -P)
 trap 'rm -rf "$WORK"' EXIT
 export HOME="$WORK/home" STATUSLINE_CACHE_DIR="$WORK/cache" WORKER_RUN_DIR="$WORK/runs" TZ=UTC
 # night-run hands run-all its own journal; the probe and run-suites here must read and write the fixture's.
-unset RUN_SUITES_JOURNAL XDG_CACHE_HOME
+unset RUN_SUITES_JOURNAL XDG_CACHE_HOME SPEED_DOCTOR_DIR
 mkdir -p "$HOME" "$STATUSLINE_CACHE_DIR" "$WORKER_RUN_DIR/codex-5-5-live" "$HOME/.cache/claude-worker-tags/th"
 asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
@@ -21,7 +21,8 @@ git -C "$WORK/repo" init -q
 printf '#!/usr/bin/env bash\ncat "%s/snap"\n' "$WORK" > "$WORK/ps"
 printf '#!/usr/bin/env bash\nprintf "p11\\nfcwd\\nn%s\\np12\\nfcwd\\nn%s\\n"\n' "$WORK/repo" "$WORK/repo" > "$WORK/lsof"
 chmod +x "$WORK/ps" "$WORK/lsof"
-probe() { STATUSLINE_PS="$WORK/ps" STATUSLINE_LSOF="$WORK/lsof" "$ROOT/bin/statusline-work-probe.sh" th 5; }
+# Each probe here reads a process table the case just wrote, never the shared snapshot of the last one.
+probe() { rm -f "$STATUSLINE_CACHE_DIR/ps-snapshot"; STATUSLINE_PS="$WORK/ps" STATUSLINE_LSOF="$WORK/lsof" "$ROOT/bin/statusline-work-probe.sh" th 5; }
 shell_line() { printf '%s 5 %s /bin/zsh -c source /h/shell-snapshots/snapshot-zsh-1.sh && eval x\n' "$1" "$2"; }
 
 { printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'

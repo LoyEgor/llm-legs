@@ -322,7 +322,7 @@ def tsv_days(folder, lo):
 
 def prune_journals(now):
     cutoff = H.local_day(now - JOURNAL_DAYS * 86400)
-    for sub in ("hs", "merge-kick", "presence", "backfill"):
+    for sub in ("hs", "merge-kick", "statusline-probes", "presence", "backfill"):
         for path in glob.glob(os.path.join(state_dir(), sub, "????-??-??.*")):
             if os.path.basename(path)[:10] < cutoff:
                 try:
@@ -521,6 +521,12 @@ def background_view(days, lo, now, collector_rows, covered_days):
     kicks = [f for f in tsv_days(os.path.join(state_dir(), "merge-kick"), lo)
              if len(f) >= 3 and f[0].isdigit() and int(f[0]) / 1e6 >= lo]
     kick_cpu = sum(float(f[2]) for f in kicks if f[2].replace(".", "", 1).isdigit())
+    probes = {}
+    for f in tsv_days(os.path.join(state_dir(), "statusline-probes"), lo):
+        if len(f) >= 4 and f[0].isdigit() and int(f[0]) / 1e6 >= lo:
+            probe = probes.setdefault(f[3], [0, 0.0])
+            probe[0] += 1
+            probe[1] += float(f[2]) if f[2].replace(".", "", 1).isdigit() else 0.0
     hs = [f for f in tsv_days(os.path.join(state_dir(), "hs"), lo) if len(f) >= 3 and f[0].isdigit() and f[1].isdigit()]
     lag = [(int(f[1]) - int(f[0])) / 1e6 for f in hs if f[2] == "hs-lag" and int(f[0]) / 1e6 >= lo]
     builds = [(int(f[1]) - int(f[0])) / 1e6 for f in hs if f[2] == "doctors:bg" and int(f[0]) / 1e6 >= lo]
@@ -539,6 +545,7 @@ def background_view(days, lo, now, collector_rows, covered_days):
                        "cpu_ms_per_session_hour": round(cpu_ms / statusline["session_hours"], 1)
                        if cpu_ms is not None and statusline["session_hours"] else None},
         "merge_kick": {"runs_day": per_day(len(kicks)), "cpu_min_day": per_day(kick_cpu / 60000.0)},
+        "probes": {k: {"runs_day": per_day(v[0]), "cpu_min_day": per_day(v[1] / 60000.0)} for k, v in sorted(probes.items())},
         "hs": {"lag_events_day": per_day(len(lag)), "lag_min_day": per_day(sum(lag) / 60.0),
                "bg_builds_day": per_day(len(builds)), "bg_build_p50_ms": round(H.median(builds) * 1000) if builds else None},
         "collectors": {k: {"runs_day": per_day(v["runs"]), "wall_p50_s": round(H.median(v["walls"]), 2),
@@ -1159,7 +1166,8 @@ def collect(write, now):
 
 
 def background_share(background, machine, covered):
-    statusline = (background["statusline"].get("cpu_min_day") or 0.0) + (background["merge_kick"].get("cpu_min_day") or 0.0)
+    statusline = (background["statusline"].get("cpu_min_day") or 0.0) + (background["merge_kick"].get("cpu_min_day") or 0.0) + sum(
+        p.get("cpu_min_day") or 0.0 for p in (background.get("probes") or {}).values())
     labels = sum((machine.get("label_cpu_s") or {}).values()) / 60.0 / covered
     total = statusline + labels
     return statusline / total if total else None
@@ -1207,8 +1215,12 @@ def menu_lines(document):
     for band, share in (m["band_share"] or {}).items():
         emit(1, "load %s/core: %d %% of the time · probe %s ms" % (band, round(100 * share), m["probe_ms"].get(band, "–")), "d")
     b = document["background"]
-    emit(0, "Background: statusline %s CPU-min/day · merge-kick %s runs/day · hs lag %s/day" % (
-        fmt(b["statusline"]["cpu_min_day"]), fmt(b["merge_kick"]["runs_day"]), fmt(b["hs"]["lag_events_day"])))
+    probes = b.get("probes") or {}
+    emit(0, "Background: statusline %s + probes %s CPU-min/day · merge-kick %s runs/day · hs lag %s/day" % (
+        fmt(b["statusline"]["cpu_min_day"]), fmt(sum(p["cpu_min_day"] or 0.0 for p in probes.values())),
+        fmt(b["merge_kick"]["runs_day"]), fmt(b["hs"]["lag_events_day"])))
+    for kind, p in sorted(probes.items(), key=lambda x: -(x[1]["cpu_min_day"] or 0.0)):
+        emit(1, "statusline %s: %s runs/day · %s CPU-min/day" % (kind, fmt(p["runs_day"]), fmt(p["cpu_min_day"])), "d")
     for doctor, c in b["collectors"].items():
         emit(1, "%s collector: %s runs/day · p50 %s s · %s CPU-min/day" % (doctor, fmt(c["runs_day"]), c["wall_p50_s"],
                                                                           fmt(c["cpu_min_day"])), "d")

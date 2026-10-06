@@ -1408,22 +1408,21 @@ assert doc_has 'Refresh error list'
 assert doc_has '`refresh_errors`'
 assert doc_has '`classify_cause`'
 
-sl_late_pair=$(grep -oE '\[[0-9]+ \* \$expected_ms, [0-9]+\]' "$STATUSLINE")
+sl_late_pair=$(grep -oE '\[[0-9]+ \* \$expected_ms, [0-9]+\]' "$ROOT/bin/subagent-statusline.sh")
 sl_late_multiplier=$(grep -oE '[0-9]+' <<<"$sl_late_pair" | head -n1)
 sl_late_floor_ms=$(grep -oE '[0-9]+' <<<"$sl_late_pair" | tail -n1)
-assert test "$(grep -oE '\[[0-9]+ \* \$expected_ms, [0-9]+\]' "$STATUSLINE" | wc -l | tr -d ' ')" -eq 1
+assert test "$(wc -l <<<"$sl_late_pair" | tr -d ' ')" -eq 1
 assert eq "$sl_late_multiplier" 3
 assert eq "$sl_late_floor_ms" 120000
-assert eq "$(grep -oE '\[[0-9]+ \* \$expected_ms, [0-9]+\]' "$ROOT/bin/subagent-statusline.sh")" "$sl_late_pair"
+assert eq "$(grep -c 'expected_ms' "$STATUSLINE")" 0
 assert grep -Fq 'shared-invariants row `u`' "$ROOT/docs/statusline-contract.md"
-# The bench stopped reporting a late review; the statusline judges one alone, and only the
+# The bench stopped reporting a late review; the task row judges one alone, and only the
 # `expected` map the bench still writes makes that judgement possible.
 assert eq "$(grep -c 'REVIEW_LATE' "$RB_REPORT")" 0
 assert grep -Fq '"expected": dict(expected or {}),' "$RB_STORE"
-# A chunked cell is judged per PASS: the bench stamps when the running pass began and both
-# readers measure from that stamp, or a fourteen-chunk round is red from its third median on.
+# A chunked cell is judged per PASS: the bench stamps when the running pass began and the
+# reader measures from that stamp, or a fourteen-chunk round is red from its third median on.
 assert grep -Fq 'progress.setdefault("chunk_started", {})[cell]' "$RB_STORE"
-assert grep -Fq 'chunk_started' "$STATUSLINE"
 assert grep -Fq 'chunk_started' "$ROOT/bin/subagent-statusline.sh"
 assert doc_has '`chunk_started[cell]`'
 assert doc_has 'Late review threshold'
@@ -2343,29 +2342,20 @@ else
 fi
 
 # --- Row an: launching-chat pid walk ------------------------------------------
-# The same walk in bash and in python, and a drift between them is silent: the writer records a
-# session the reader would never have resolved the same way, and a run renders in the statusline of
-# the wrong chat or of none.
-walk_hops_bash=$(grep -oE '\[ "\$hops" -lt [0-9]+ \]' "$STATUSLINE" | grep -oE '[0-9]+')
+# One walk, the bench's, at run start: the top statusline that walked again at render time for an
+# old document went with its review segment, so a second walk reappearing there would answer a
+# question no segment asks.
 walk_hops_py=$(grep -oE '^SESSION_WALK_HOPS = [0-9]+' "$RB_STORE" | grep -oE '[0-9]+')
-assert eq "$walk_hops_bash" 15
-assert eq "$walk_hops_py" "$walk_hops_bash"
+assert eq "$walk_hops_py" 15
 assert doc_has 'at most `15` hops and stopping at pid 1'
-assert grep -Fq 'ps -o ppid= -p' "$STATUSLINE"
 assert grep -Fq '["ps", "-o", "ppid=", "-p", str(pid)]' "$RB_STORE"
-assert grep -Fq '$HOME/.claude/sessions/$pid.json' "$STATUSLINE"
 assert grep -Fq 'Path.home() / ".claude" / "sessions"' "$RB_STORE"
 assert grep -Fq 'f"{pid}.json"' "$RB_STORE"
-for walk_site in "$STATUSLINE" "$RB_STORE"; do
-  assert grep -Fq 'sessionId' "$walk_site"
-done
+assert grep -Fq 'sessionId' "$RB_STORE"
 assert grep -Fq 'REVIEW_BENCH_SESSION_DIR' "$RB_STORE"
-# Precedence, not just the walk: the recorded session answers first on both sides, or the fallback
-# becomes the answer and a backgrounded run — whose parents are gone — is attributed to nobody.
 assert grep -Fq 'session=progress_session' "$RB_CLI"
-assert grep -Fq '[ -n "$session_id" ] && [ -z "$progress_run_session" ] &&' "$STATUSLINE"
-assert grep -Fq 'progress_owner=$(review_run_owner "" "$progress_pid")' "$STATUSLINE"
-assert doc_has 'the recorded `session` first, the walk as the fallback'
+assert eq "$(grep -cE 'ps -o ppid= -p|review_run_session|review_run_owner' "$STATUSLINE")" 0
+assert doc_has 'the recorded `session` is the only answer'
 
 
 # --- Row av: the snapshot envelope survives with no finding -------------------
@@ -2587,7 +2577,7 @@ statusline_journal_dir=$(sed -n '/^journal_dir() {/,/^}/p' "$STATUSLINE")
 assert grep -Fq "$JOURNAL_RESOLVE" <<<"$statusline_journal_dir"
 assert eq "$(grep -Fc "$JOURNAL_RESOLVE" "$STATUSLINE")" 1
 for statusline_journal_reader in repo_debt_lines unpushed_marker; do
-  assert grep -Fq 'journal_dir "$top"' \
+  assert grep -Fq 'journal_dir commondir "$top"' \
     <<<"$(sed -n "/^$statusline_journal_reader() {/,/^}/p" "$STATUSLINE")"
 done
 # The workdir hook is heard at BOTH events for Bash: PreToolUse writes the worktree-list snapshot
@@ -3404,5 +3394,5 @@ assert grep -Fq '"lost_min_day_by_day") if k in speed' "$ROOT/bin/harness-doctor
 assert grep -Fq 'metrics.lost_min_day_by_day or {}' "$ROOT/hammerspoon/doctors.lua"
 assert doc_has 'an unmeasured date is a blank cell, never an invented bar'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the anchors store under the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot envelope the menubar reads, the one resolver every surface names a chat through, the review round a fixing worker'"'"'s brief carries in the one field both repositories read, the launchers a headless vendor run may reach the machine through, the one anchors store per git family every side resolves with the same command and one writer holds a lock over, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types the spawn hook alone admits and no second gate judges, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the four carriers that spell the gateway model-id prefix, the one Gemini family list `geminib families` prints, the one file that pins which Flash family the review cells run and no worker reads, the one Grok model list `grokb models` prints and the single rule that collapses its default to the vendor word, the one web-search table every vendor and every worker-run entry point resolves through, the Hammerspoon entry points this repository calls, pinned fail-closed at their install path, the hook and statusline journals the Harness doctor reads, the week-over-week Δ Token tracking and the Harness doctor share, the one limiter hold directory every writer raises a hold in and both the doctor and the menu read, the one red every Hammerspoon menu paints with styled text that always names its font, the one gemini-web media store the engines write and the menu only reads, the chatgpt-web image store beside it that shares its one Chrome clone, the one least-recently-started order every media route picks by, the one per-account store table every Remove purges through and the doctor checks against the roster, the five-doctor roster every lister spells in one order, the explicit --account every media entry point refuses empty before a spend, the speed doctor collector journals, the presence journal Speed reads, the one wait journal every wait class writes and the Harness doctor shows, every copy an installer deploys, which the Harness doctor compares with its source, the ledger overlay a measuring run settles into instead of a tracked file, and the README PATH link of every script a claude-setup agent runs by name) and match %s
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the anchors store under the chat that launched it, the launching-chat pid walk only the progress writer runs, once, the doctor snapshot envelope the menubar reads, the one resolver every surface names a chat through, the review round a fixing worker'"'"'s brief carries in the one field both repositories read, the launchers a headless vendor run may reach the machine through, the one anchors store per git family every side resolves with the same command and one writer holds a lock over, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types the spawn hook alone admits and no second gate judges, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the four carriers that spell the gateway model-id prefix, the one Gemini family list `geminib families` prints, the one file that pins which Flash family the review cells run and no worker reads, the one Grok model list `grokb models` prints and the single rule that collapses its default to the vendor word, the one web-search table every vendor and every worker-run entry point resolves through, the Hammerspoon entry points this repository calls, pinned fail-closed at their install path, the hook and statusline journals the Harness doctor reads, the week-over-week Δ Token tracking and the Harness doctor share, the one limiter hold directory every writer raises a hold in and both the doctor and the menu read, the one red every Hammerspoon menu paints with styled text that always names its font, the one gemini-web media store the engines write and the menu only reads, the chatgpt-web image store beside it that shares its one Chrome clone, the one least-recently-started order every media route picks by, the one per-account store table every Remove purges through and the doctor checks against the roster, the five-doctor roster every lister spells in one order, the explicit --account every media entry point refuses empty before a spend, the speed doctor collector journals, the presence journal Speed reads, the one wait journal every wait class writes and the Harness doctor shows, every copy an installer deploys, which the Harness doctor compares with its source, the ledger overlay a measuring run settles into instead of a tracked file, and the README PATH link of every script a claude-setup agent runs by name) and match %s
 ' "$asserts" "$DOC"

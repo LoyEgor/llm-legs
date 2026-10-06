@@ -47,6 +47,7 @@ statusline_dir=${statusline_self%/*}
 . "$statusline_dir/../share/limits-view.sh"
 . "$statusline_dir/../share/codex-accounts.sh"
 . "$statusline_dir/../tests/lib/suite-journal.sh" --lib
+. "$statusline_dir/../share/statusline-probe.sh"
 
 statusline_parent_dir() {
   local path="$1"
@@ -176,10 +177,11 @@ journal_dir() { # var toplevel
   else printf -v "$1" '%s' "$(git -C "$2" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; fi
 }
 
-# Keyed per TOP: follows the shown tree. Off the render path with a 15s/120s cache: pricing
-# walks every diff.
-repo_debt_lines() { # toplevel now
-  local out="$1" top="$2" now="$3"
+# Keyed per TOP: follows the shown tree. Off the render path: pricing walks every diff of the family,
+# so an answer whose key still holds waits 300s and a moved key at least 15s. The key carries the
+# shown tree's HEAD and diff counters; a sibling checkout's edits reach it by the 300s only.
+repo_debt_lines() { # var toplevel now tree-state
+  local out="$1" top="$2" now="$3" state="$4"
   printf -v "$out" ''
   # The install path of the contract, never `command -v`: a PATH lookup makes the segment depend on
   # whatever shell started the harness, and makes every render of a test suite reach the real one.
@@ -193,23 +195,22 @@ repo_debt_lines() { # toplevel now
   journal_mtime=""
   [ -n "$commondir" ] && file_mtime_to journal_mtime "$commondir/review-anchors.json"
   [[ "$journal_mtime" =~ ^[0-9]+$ ]] || journal_mtime=0
-  key="$top|$journal_mtime"
+  key="$top|$journal_mtime|$state"
   file_mtime_to cache_mtime "$cache"
   cached_key=""
   cached=""
   if [[ "$cache_mtime" =~ ^[0-9]+$ ]]; then
     { IFS= read -r cached_key; IFS= read -r cached || :; } < "$cache" 2>/dev/null
   fi
-  if [ "$cached_key" = "$key" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
-    [ "$((now - cache_mtime))" -le 15 ]; then
-    printf -v "$out" '%s' "$cached"
-    return 0
-  fi
-  if ensure_dir "$statusline_cache_dir" 2>/dev/null; then
+  if [[ "$cache_mtime" =~ ^[0-9]+$ ]] && { [ "$((now - cache_mtime))" -le 15 ] ||
+    { [ "$cached_key" = "$key" ] && [ "$((now - cache_mtime))" -le 300 ]; }; }; then
+    :
+  elif ensure_dir "$statusline_cache_dir" 2>/dev/null; then
     file_mtime_to lock_mtime "$lock"
     if [ ! -d "$lock" ] ||
       { [[ "$lock_mtime" =~ ^[0-9]+$ ]] && [ "$((now - lock_mtime))" -gt 120 ]; }; then
       (
+        refresh_start_us=${EPOCHREALTIME//[!0-9]/}
         snapshot_lock_acquire "$lock" || exit 0
         # Only the lock this probe made: one reclaimed as dead while the walk ran belongs to the
         # probe that reclaimed it, and a blind rmdir here would let a third start beside it.
@@ -227,12 +228,13 @@ repo_debt_lines() { # toplevel now
         tmp="$cache.tmp.${BASHPID:-$$}"
         printf '%s\n%s' "$key" "$answer" > "$tmp" 2>/dev/null &&
           mv -f "$tmp" "$cache" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+        probe_journal debt "$refresh_start_us"
       ) >/dev/null 2>&1 &
     fi
   fi
   [ "${cached_key%%|*}" = "$top" ] || cached=""
   if [ -n "$cached" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
-    [ "$((now - cache_mtime))" -le 120 ]; then
+    { [ "$((now - cache_mtime))" -le 120 ] || { [ "$cached_key" = "$key" ] && [ "$((now - cache_mtime))" -le 360 ]; }; }; then
     printf -v "$out" '%s' "$cached"
   fi
 }
@@ -258,6 +260,7 @@ review_session_line() { # session now
     if [ ! -d "$lock" ] ||
       { [[ "$lock_mtime" =~ ^[0-9]+$ ]] && [ "$((now - lock_mtime))" -gt 120 ]; }; then
       (
+        refresh_start_us=${EPOCHREALTIME//[!0-9]/}
         snapshot_lock_acquire "$lock" || exit 0
         trap 'rmdir "$lock" 2>/dev/null' EXIT
         timeout_bin=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
@@ -270,6 +273,7 @@ review_session_line() { # session now
         tmp="$cache.tmp.${BASHPID:-$$}"
         printf '%s' "$auto" > "$tmp" 2>/dev/null &&
           mv -f "$tmp" "$cache" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+        probe_journal autonomy "$refresh_start_us"
       ) >/dev/null 2>&1 &
     fi
   fi
@@ -339,6 +343,7 @@ unpushed_marker() { # toplevel session now
     if [ ! -d "$lock" ] ||
       { [[ "$lock_mtime" =~ ^[0-9]+$ ]] && [ "$((now - lock_mtime))" -gt 120 ]; }; then
       (
+        refresh_start_us=${EPOCHREALTIME//[!0-9]/}
         snapshot_lock_acquire "$lock" || exit 0
         trap 'rmdir "$lock" 2>/dev/null' EXIT
         answer=off
@@ -352,6 +357,7 @@ unpushed_marker() { # toplevel session now
         tmp="$cache.tmp.${BASHPID:-$$}"
         printf '%s\n%s' "$key" "$answer" > "$tmp" 2>/dev/null &&
           mv -f "$tmp" "$cache" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+        probe_journal unpushed "$refresh_start_us"
       ) >/dev/null 2>&1 &
     fi
   fi
@@ -457,6 +463,7 @@ codex_quota_kick() { # account now
   # sees the deadline and skips rather than opening a second probe.
   printf '%s\n' "$((now_ts + ok_after))" > "$stamp" 2>/dev/null
   ( (
+    refresh_start_us=${EPOCHREALTIME//[!0-9]/}
     if ! PATH="/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin:/usr/sbin" \
       "$refresher" --refresh-account "codex/$account" >/dev/null 2>&1; then
       tmp="$stamp.tmp.${BASHPID:-$$}"
@@ -464,6 +471,7 @@ codex_quota_kick() { # account now
         mv -f "$tmp" "$stamp" 2>/dev/null || rm -f "$tmp" 2>/dev/null
     fi
     rmdir "$stamp.lock" 2>/dev/null
+    probe_journal codex-kick "$refresh_start_us"
   ) & ) >/dev/null 2>&1
 }
 
@@ -1796,7 +1804,7 @@ if [ -n "$session_id" ]; then
 fi
 
 repo_debt=""
-[ -n "$active_top" ] && repo_debt_lines repo_debt "$active_top" "$now"
+[ -n "$active_top" ] && repo_debt_lines repo_debt "$active_top" "$now" "$branch_oid|$udiff_add|$udiff_del|$fparts"
 
 review_autonomous=no
 if [ -n "$session_id" ]; then

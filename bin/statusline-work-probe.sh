@@ -17,6 +17,7 @@ session_id="${1:-}"
 start_pid="${2:-$PPID}"
 session_id=${session_id//[^A-Za-z0-9_-]/}
 [ -n "$session_id" ] || exit 0
+probe_start_us=${EPOCHREALTIME//[!0-9]/}
 
 cache_dir="${STATUSLINE_CACHE_DIR:-$HOME/.cache/claude-statusline}"
 cache_file="$cache_dir/work-$session_id"
@@ -27,10 +28,16 @@ PS_CMD="${STATUSLINE_PS:-ps}"
 LSOF_CMD="${STATUSLINE_LSOF:-lsof}"
 
 file_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
-probe_self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) || probe_self="${BASH_SOURCE[0]}"
+enable -f "${BASH%/bin/*}/lib/bash/rmdir" rmdir 2>/dev/null
+if ! { enable -f "${BASH%/bin/*}/lib/bash/realpath" realpath 2>/dev/null &&
+  realpath -a probe_self "${BASH_SOURCE[0]}" >/dev/null 2>&1; }; then
+  probe_self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) || probe_self="${BASH_SOURCE[0]}"
+fi
 . "${probe_self%/*}/../share/test-scope.sh"
+. "${probe_self%/*}/../tests/lib/suite-journal.sh" --lib
+. "${probe_self%/*}/../share/statusline-probe.sh"
 
-mkdir -p "$cache_dir" 2>/dev/null || exit 0
+[ -d "$cache_dir" ] || mkdir -p "$cache_dir" 2>/dev/null || exit 0
 if ! mkdir "$lock" 2>/dev/null; then
   now=$EPOCHSECONDS; m=$(file_mtime "$lock" 2>/dev/null)
   # Under the render's 15s cut, so a probe killed holding the lock blanks no line; one runs in well under 1s.
@@ -40,16 +47,16 @@ if ! mkdir "$lock" 2>/dev/null; then
     exit 0
   fi
 fi
-trap 'rmdir "$lock" 2>/dev/null' EXIT
+trap 'rmdir "$lock" 2>/dev/null; probe_journal work "$probe_start_us"' EXIT
 
 write_cache() {
   local tmp="$cache_file.tmp.$$"
   printf '%s\n' "$1" > "$tmp" 2>/dev/null && mv -f "$tmp" "$cache_file" 2>/dev/null || rm -f "$tmp" 2>/dev/null
 }
 
-snapshot=$("$PS_CMD" -axo pid=,ppid=,etime=,command= 2>/dev/null)
-if [ -z "$snapshot" ]; then write_cache ""; exit 0; fi
-now=$EPOCHSECONDS
+snapshot_take ps_snap ps-snapshot 3 "$PS_CMD" snapshot_ps || { write_cache ""; exit 0; }
+# Every start is the snapshot's moment minus an etime, so the clock is the snapshot's too.
+now=$snapshot_at
 
 # This session's live worker runs, from the rows its task-row cache names: their supervisors are
 # setsid'd away from the chat, so ancestry from the chat never reaches their tests.
@@ -66,7 +73,7 @@ for tag_file in "$tags_dir"/*; do
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] && runs="$runs $run:$pid"
 done
 
-found=$(printf '%s\n' "$snapshot" | awk -v start="$start_pid" -v runs="$runs" '
+found=$(awk -v start="$start_pid" -v runs="$runs" '
   function secs(e,   d, n, p) {
     d = 0
     if (index(e, "-")) { d = substr(e, 1, index(e, "-") - 1) + 0; e = substr(e, index(e, "-") + 1) }
@@ -148,6 +155,7 @@ found=$(printf '%s\n' "$snapshot" | awk -v start="$start_pid" -v runs="$runs" '
     for (i = 1; i <= n; i++) orphans(a[i], depth + 1)
   }
   function base_of(pid,   s) { split(cmd[pid], s, /[ \t]+/); return base(s[1]) }
+  FNR == 1 { next }
   {
     et[$1] = $3; ppid[$1] = $2
     line = $0; sub(/^[ \t]*[0-9]+[ \t]+[0-9]+[ \t]+[^ \t]+[ \t]+/, "", line); cmd[$1] = line
@@ -195,7 +203,7 @@ found=$(printf '%s\n' "$snapshot" | awk -v start="$start_pid" -v runs="$runs" '
     delete seen
     n = split(kids[1], a, " ")
     for (i = 1; i <= n; i++) orphans(a[i], 0)
-  }')
+  }' "$ps_snap")
 
 # An orphan test is this session's when the environment it inherited says so: a test backgrounded
 # with `&` or nohup is reparented to launchd the moment its shell returns.

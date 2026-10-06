@@ -20,13 +20,22 @@ project_top="${3:-}"
 session_id=${session_id//[^A-Za-z0-9_-]/}
 [ -n "$session_id" ] || exit 0
 
+probe_start_us=${EPOCHREALTIME//[!0-9]/}
 cache_dir="${STATUSLINE_CACHE_DIR:-$HOME/.cache/claude-statusline}"
 cache_file="$cache_dir/ports-$session_id"
 lock="$cache_file.lock"
 
+enable -f "${BASH%/bin/*}/lib/bash/rmdir" rmdir 2>/dev/null
+if ! { enable -f "${BASH%/bin/*}/lib/bash/realpath" realpath 2>/dev/null &&
+  realpath -a probe_self "${BASH_SOURCE[0]}" >/dev/null 2>&1; }; then
+  probe_self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) || probe_self="${BASH_SOURCE[0]}"
+fi
+. "${probe_self%/*}/../tests/lib/suite-journal.sh" --lib
+. "${probe_self%/*}/../share/statusline-probe.sh"
+
 file_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
 
-mkdir -p "$cache_dir" 2>/dev/null || exit 0
+[ -d "$cache_dir" ] || mkdir -p "$cache_dir" 2>/dev/null || exit 0
 # One probe per session at a time; reclaim a stale lock (a killed lsof).
 if ! mkdir "$lock" 2>/dev/null; then
   now=$EPOCHSECONDS; m=$(file_mtime "$lock" 2>/dev/null)
@@ -36,7 +45,7 @@ if ! mkdir "$lock" 2>/dev/null; then
     exit 0
   fi
 fi
-trap 'rmdir "$lock" 2>/dev/null' EXIT
+trap 'rmdir "$lock" 2>/dev/null; probe_journal ports "$probe_start_us"' EXIT
 
 PS_CMD="${STATUSLINE_PS:-ps}"
 LSOF_CMD="${STATUSLINE_LSOF:-lsof}"
@@ -47,11 +56,38 @@ write_cache() {
   printf '%s\n' "$content" > "$tmp" 2>/dev/null && mv -f "$tmp" "$cache_file" 2>/dev/null || rm -f "$tmp" 2>/dev/null
 }
 
-snapshot=$("$PS_CMD" -axo pid=,ppid=,command= 2>/dev/null)
-if [ -z "$snapshot" ]; then write_cache ""; exit 0; fi
+# Every listener this user owns, in one call: the pid list can no longer be narrowed to the
+# session's descendants beforehand, because the servers worth showing are exactly the ones that
+# left that set when their shell returned. Ownership is decided per session instead.
+# The working directory of each listening process follows the marker line, for the orphans among
+# them. Chunked at 40 pids because the failure mode of an over-long -p list is a short answer, not
+# an error — every orphan would silently lose its directory and vanish from the segment.
+snapshot_listeners() { # key
+  local listen cwds="" cwd_chunk="" cwd_n=0 pid
+  listen=$("$LSOF_CMD" -a -u "$UID" -iTCP -sTCP:LISTEN -nP 2>/dev/null)
+  if [[ "$listen" != *'(LISTEN)'* ]]; then
+    printf '%s\t0\t%s\n' "$EPOCHSECONDS" "$1"
+    return 0
+  fi
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    cwd_chunk="${cwd_chunk:+$cwd_chunk,}$pid"; cwd_n=$((cwd_n + 1))
+    if [ "$cwd_n" -ge 40 ]; then
+      cwds+=$("$LSOF_CMD" -a -d cwd -Fn -p "$cwd_chunk" 2>/dev/null)$'\n'
+      cwd_chunk=""; cwd_n=0
+    fi
+  done <<< "$(printf '%s\n' "$listen" | awk '
+    $0 == "" || $1 == "COMMAND" { next }
+    { for (j=2;j<=NF;j++) if ($j ~ /^[0-9]+$/) { print $j; break } }' | sort -u)"
+  [ -z "$cwd_chunk" ] || cwds+=$("$LSOF_CMD" -a -d cwd -Fn -p "$cwd_chunk" 2>/dev/null)$'\n'
+  printf '%s\t1\t%s\n%s\036lsof\n%s\n' "$EPOCHSECONDS" "$1" "$cwds" "$listen"
+}
 
-root=$(printf '%s\n' "$snapshot" | awk -v start="$start_pid" '
-  { ppid[$1]=$2; line=$0; sub(/^[ \t]*[0-9]+[ \t]+[0-9]+[ \t]+/,"",line); cmd[$1]=line }
+snapshot_take ps_snap ps-snapshot 10 "$PS_CMD" snapshot_ps || { write_cache ""; exit 0; }
+ps_at=$snapshot_at
+
+root=$(awk -v start="$start_pid" '
+  FNR > 1 { ppid[$1]=$2; line=$0; sub(/^[ \t]*[0-9]+[ \t]+[0-9]+[ \t]+[^ \t]+[ \t]+/,"",line); cmd[$1]=line }
   END {
     pid=start; depth=0
     while (pid != "" && pid+0 > 1 && depth < 30) {
@@ -59,38 +95,15 @@ root=$(printf '%s\n' "$snapshot" | awk -v start="$start_pid" '
       if (base == "claude") { print pid; exit }
       pid=ppid[pid]; depth++
     }
-  }')
+  }' "$ps_snap")
 if [ -z "$root" ]; then write_cache ""; exit 0; fi
 
-# Every listener this user owns, in one call: the pid list can no longer be narrowed to the
-# session's descendants beforehand, because the servers worth showing are exactly the ones that
-# left that set when their shell returned. Ownership is decided below instead.
-lsof_out=$("$LSOF_CMD" -a -u "$UID" -iTCP -sTCP:LISTEN -nP 2>/dev/null)
-
-# The working directory of each listening process, for the orphans among them. Asked for all of
-# them rather than only for the orphans the ownership walk finds: one more lsof is cheaper than
-# threading a second pass through this script. Chunked at 40 pids like the query this replaced,
-# because the failure mode of an over-long -p list is a short answer, not an error — every orphan
-# would silently lose its directory and vanish from the segment.
 ports=""
-if [[ "$lsof_out" = *'(LISTEN)'* ]]; then
-cwds=""
-cwd_chunk=""; cwd_n=0
-while IFS= read -r pid; do
-  [ -n "$pid" ] || continue
-  cwd_chunk="${cwd_chunk:+$cwd_chunk,}$pid"; cwd_n=$((cwd_n + 1))
-  if [ "$cwd_n" -ge 40 ]; then
-    cwds="$cwds
-$("$LSOF_CMD" -a -d cwd -Fn -p "$cwd_chunk" 2>/dev/null)"
-    cwd_chunk=""; cwd_n=0
-  fi
-done <<< "$(printf '%s\n' "$lsof_out" | awk '
-  $0 == "" || $1 == "COMMAND" { next }
-  { for (j=2;j<=NF;j++) if ($j ~ /^[0-9]+$/) { print $j; break } }' | sort -u)"
-if [ -n "$cwd_chunk" ]; then
-  cwds="$cwds
-$("$LSOF_CMD" -a -d cwd -Fn -p "$cwd_chunk" 2>/dev/null)"
-fi
+snapshot_take listen_snap ports-snapshot 10 "$LSOF_CMD" snapshot_listeners || snapshot_meta=0
+if [ "$snapshot_meta" = 1 ]; then
+# A listener newer than the process table has no command or parent to be judged by.
+[ "$ps_at" -ge "$snapshot_at" ] || snapshot_take ps_snap ps-snapshot "$((EPOCHSECONDS - snapshot_at))" "$PS_CMD" snapshot_ps ||
+  snapshot_take ps_snap ps-snapshot 10 "$PS_CMD" snapshot_ps || :
 
 # Every working tree of the project, main checkout first (`worktree list` orders it so). A port is
 # attributed to the tree its process working directory sits in, and only this list can tell a
@@ -107,9 +120,9 @@ if [ -n "$project_top" ]; then
   [ -n "$trees" ] || trees="$project_top"
 fi
 
-# Passed as files, not awk -v: -v rejects the newlines a multi-line lsof dump would carry. Each
-# input is prefixed with one throwaway line so that an empty dump still counts as a file — the
-# reader tells the four apart by their order, and a silent lsof would otherwise shift them.
+# Passed as files, not awk -v: -v rejects the newlines a multi-line lsof dump would carry. Every
+# input opens with a line the reader skips — a snapshot's header, the trees' throwaway — so that an
+# empty tree list still counts as a file and the three keep their order.
 ports=$(awk -v root="$root" '
   # Anchored at argv[0] and matched on its last path segment: a bare substring would read
   # "legacy" as agy, and letting the match float would classify a dev server by its own
@@ -170,19 +183,20 @@ ports=$(awk -v root="$root" '
     }
     return 0
   }
-  FNR == 1 { file++ }
+  FNR == 1 { file++; next }
   file == 1 {
-    line=$0; sub(/^[ \t]*[0-9]+[ \t]+[0-9]+[ \t]+/,"",line); cmd[$1]=tolower(line); ppid[$1]=$2; next
+    line=$0; sub(/^[ \t]*[0-9]+[ \t]+[0-9]+[ \t]+[^ \t]+[ \t]+/,"",line); cmd[$1]=tolower(line); ppid[$1]=$2; next
   }
+  # $0 and not $1: a tree path may carry spaces.
+  file == 2 { if ($0 != "") tree[++tn]=$0; next }
+  $0 == "\036lsof" { listeners=1; next }
   # lsof -F emits one field per line, tagged by its first character: p<pid> then n<path>. The path
   # keeps its case — it is compared with a repository path, not with a command name.
-  file == 2 {
+  !listeners {
     if (/^p/) cwd_pid=substr($0, 2)
     else if (/^n/ && cwd_pid != "") cwd[cwd_pid]=substr($0, 2)
     next
   }
-  # $0 and not $1: a tree path may carry spaces.
-  file == 3 { if (FNR > 1 && $0 != "") tree[++tn]=$0; next }
   {
     # The pid scan starts at field 2 because an all-numeric command name is not a pid.
     if ($0 == "") next
@@ -229,8 +243,7 @@ ports=$(awk -v root="$root" '
   END {
     for (i=1;i<=k;i++) printf "%s\t%s\n", order[i], (at[order[i]] == "" ? "-" : at[order[i]])
   }
-' <(printf 'x\n%s\n' "$snapshot") <(printf 'x\n%s\n' "$cwds") \
-   <(printf 'x\n%s\n' "$trees") <(printf 'x\n%s\n' "$lsof_out"))
+' "$ps_snap" <(printf 'x\n%s\n' "$trees") "$listen_snap")
 
 fi
 write_cache "$ports"
@@ -241,8 +254,13 @@ if [[ "${now:-}" =~ ^[0-9]+$ ]]; then
   m=$(file_mtime "$marker" 2>/dev/null || printf '0')
   [[ "$m" =~ ^[0-9]+$ ]] || m=0
   if [ "$((now - m))" -gt 3600 ]; then
-    find "$cache_dir" -type f \( -name 'ports-*' -o -name 'title-*' -o -name 'cache-ttl-track-*' -o -name 'topic-*' -o -name 'review-class-*' \) -mtime +7 -delete 2>/dev/null
-    find "$cache_dir" -type d \( -name 'topic-*.genlock' -o -name 'review-class-*.lock' \) -mtime +1 -exec rmdir {} + 2>/dev/null
+    find "$cache_dir" -maxdepth 1 -type f \( -name 'ports-*' -o -name 'title-*' -o -name 'cache-ttl-track-*' -o -name 'topic-*' \
+      -o -name 'review-class-*' -o -name 'scan-*' -o -name 'rl-cost-*' -o -name 'unpushed-*' -o -name 'review-autonomy-*' \
+      -o -name 'review-session-*' -o -name 'work-*' -o -name 'repo-debt-*' \) -mtime +7 -delete 2>/dev/null
+    # A writer renames its temporary within the second; one an hour old was left by a killed writer.
+    find "$cache_dir" "${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/limits" -maxdepth 1 -type f -name '*.tmp.*' -mmin +60 \
+      -delete 2>/dev/null
+    find "$cache_dir" -maxdepth 1 -type d \( -name '*.genlock' -o -name '*.lock' \) -mtime +1 -exec rmdir {} + 2>/dev/null
     touch "$marker" 2>/dev/null
   fi
 fi

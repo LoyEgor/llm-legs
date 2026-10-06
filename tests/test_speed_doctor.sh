@@ -452,7 +452,8 @@ harness_dir = os.path.join(work, "harness")
 with open(os.path.join(harness_dir, "latest.json"), "w") as handle:
     json.dump(harness, handle)
 own = os.path.join(work, "speed-own")
-journals = {"hs": "1\t2\tdoctors:bg\n", "merge-kick": "1\t5\t3\n", "presence": "%d\t5\t-\n" % (HI // 60)}
+journals = {"hs": "1\t2\tdoctors:bg\n", "merge-kick": "1\t5\t3\n", "statusline-probes": "1\t5\t3\tports\n",
+            "presence": "%d\t5\t-\n" % (HI // 60)}
 old, recent = h.local_day(HI - 36 * 86400), h.local_day(HI - 34 * 86400)
 for sub, body in journals.items():
     os.makedirs(os.path.join(own, sub))
@@ -466,7 +467,7 @@ with open(os.path.join(harness_dir, "lock"), "w") as held:
           "a Harness run holding its lock is never written under: the merge skips")
 check(all(not os.path.exists(os.path.join(own, sub, old + ".tsv"))
           and os.path.exists(os.path.join(own, sub, recent + ".tsv")) for sub in journals),
-      "a persisting run prunes its hs, merge-kick and presence days past 35 days and keeps the rest")
+      "a persisting run prunes its hs, merge-kick, statusline-probes and presence days past 35 days and keeps the rest")
 with open(os.path.join(work, "doctors", "collector-runs.jsonl")) as handle:
     runs = [json.loads(l) for l in handle]
 check([r["doctor"] for r in runs] == ["speed"] and set(runs[0]) == {"doctor", "start", "wall_s", "cpu_s", "trigger"},
@@ -614,6 +615,16 @@ with open(os.path.join(kick_dir, "merge-kick", "2026-10-01.tsv"), "w") as handle
 os.environ["SPEED_DOCTOR_DIR"] = kick_dir
 check(module.background_view({}, mid, mid + 86400, [], 1.0)["merge_kick"]["runs_day"] == 1.0,
       "merge-kick rows before the window's start on its first day are not counted")
+os.makedirs(os.path.join(kick_dir, "statusline-probes"))
+with open(os.path.join(kick_dir, "statusline-probes", "2026-10-01.tsv"), "w") as handle:
+    handle.write("".join("%d\t9\t%s\t%s\n" % (t * 1e6, cpu, kind) for t, cpu, kind in (
+        (mid - 600, 60000, "ports"), (mid + 600, 600, "ports"), (mid + 700, 30000, "work"), (mid + 800, 30000, "work"),
+        (mid + 900, "-", "work"))))
+probe_view = module.background_view({}, mid, mid + 86400, [], 1.0)
+check(probe_view["probes"] == {"ports": {"runs_day": 1.0, "cpu_min_day": 0.01}, "work": {"runs_day": 3.0, "cpu_min_day": 1.0}},
+      "each statusline probe kind counts its runs and CPU inside the window, a row without CPU as a run only")
+check(module.background_share(probe_view, {}, 1.0) == 1.0,
+      "the probes' CPU is the statusline's background share")
 
 nights = os.path.join(work, "doctors", "nights")
 os.makedirs(nights, exist_ok=True)
