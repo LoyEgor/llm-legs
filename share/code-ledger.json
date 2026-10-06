@@ -382,6 +382,57 @@
    "same_cause": [],
    "status": "fixed-pending",
    "title": "hammerspoon/send_actions.lua#SendActions.clipboardHasText is defined and never called"
+  },
+  {
+   "fixes": [
+    {
+     "at": "2026-10-07T02:56:23+03:00",
+     "by": "code-code-20261006T234318Z-5a7a",
+     "files": [
+      "hammerspoon/ipad_mode.lua"
+     ],
+     "in": null,
+     "regressed_at": null,
+     "yield": {
+      "lines_removed": 5,
+      "suite_s_saved": 0,
+      "tokens_cut": 0
+     }
+    }
+   ],
+   "group": "dead",
+   "handoff": null,
+   "id": "cause:hammerspoon/ipad_mode.lua#IpadMode._setLogDirForTest",
+   "last_reviewed": null,
+   "match": {
+    "cause": "cause:hammerspoon/ipad_mode.lua#IpadMode._setLogDirForTest",
+    "identity": {
+     "sketch": [
+      37033779,
+      477730556,
+      479888330,
+      778143683,
+      1220589064,
+      1495312533,
+      1537234235,
+      1939644033,
+      2082837773,
+      3166528316,
+      3342901489,
+      3409507790,
+      3748708460,
+      4010637539,
+      4094243191,
+      4203368958
+     ],
+     "touch": []
+    }
+   },
+   "note": "normalizeDir (ipad_mode.lua) lost its only caller with this deletion and is now dead; code-doctor check refused deleting it unjudged, so it waits for the next judge. _getLogDirForTest is its own cause.",
+   "reviewed_by": null,
+   "same_cause": [],
+   "status": "fixed-pending",
+   "title": "hammerspoon/ipad_mode.lua#IpadMode._setLogDirForTest is defined and never called"
   }
  ]
 }
