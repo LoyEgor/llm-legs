@@ -344,10 +344,10 @@
       "same_cause": [
         "load-busy-night-concurrency"
       ],
-      "last_reviewed": "2026-10-04",
-      "reviewed_by": "Harness Doctor",
-      "note": "Fixed 2026-10-04 by Harness Doctor: collector_verdict: a run over collector_s while a suite or night-fixer slot is held is a watch, not red; daytime runs keep the wall-clock limit; test 'a slow collector run is red, a watch while suite or night-fixer slots starve it'. collector-runs.jsonl 2026-10-03/04: 150 harness runs, 130 over 30 s, cpu_s 5.2-14.5 (median 7.9 red, 6.6 ok), wall 9-650 s, CPU 100 % busy at both medians. A --json run at load average 237 on 10 cores took 62 s wall on 7.3 s CPU: wall is about cpu_s x load/ncpu, starvation, and launchd's Nice 10 is not it (the run got more than its fair share). cProfile with process_time spreads the CPU: hook_view 45 % (hook_batches over 48 h, ~680 k runs, recomputed each run), sections ~35 %, local_day 383 k calls 0.4 s; no hot spot whose cut brings 7 s under the ~1.3 s a 30 s wall needs at that load. Settle_fixes git calls ruled out: no fixed-pending row lacks its in. The cure is the load rows' or a judge change (judge cpu_s, or wall only with no slot held): the owner's, in the shared load handoff.",
-      "handoff": "docs/handoffs/2026-09-30-load-unseen-census.md"
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "Night fixer harness-doctor-20261006T032859Z-52ce",
+      "note": "2026-10-06 (harness-doctor-20261006T032859Z-52ce): still regressed, the 2026-10-04 slot-held watch (llm-legs@ac75a868) missed 5 reds in 24 h with no slot held, wall 119-654 s on 13-27 CPU-s at busy 99.9 %: 03:24Z the night's own base phase (night-run press, code and system doctors), the other four load outside any slot. Own CPU median 11.6 s (7.9 on 10-04); change_impact's per-change journal scans cut 4.9 CPU-s (sorted, bisected, cached; identical impact and step on live data), hook_view 7.6 of 24 CPU-s profiled is the dearest left (hook_batches over 48 h each run, no single hot spot). Ruled out again: Nice 10, settle_fixes git calls. The cure is a judge change (judge cpu_s, recommended, or count a live night-run as held), the owner's, in the handoff.",
+      "handoff": "docs/handoffs/2026-10-06-collector-run-cpu.md"
     },
     {
       "id": "guards-tripwire-rejournal",
@@ -2656,7 +2656,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-05",
       "reviewed_by": "Night fixer harness-hooks-20261005T061324Z-2ae0",
-      "note": "2026-10-05: 1.1 s a render; 306 ms CPU p50 (p90 378) and 1.19 s mean wall at load 286-330. `refreshInterval: 3` in ~/.claude/settings.json over about 8 chats made 127k renders in 14.4 h, 11.1 CPU-hours (about 0.77 core). Handed off: memoize the dearest segments first, and bring the interval to Egor as a trade only if that falls short.",
+      "note": "2026-10-05: 1.1 s a render; 306 ms CPU p50 (p90 378) and 1.19 s mean wall at load 286-330. `refreshInterval: 3` in ~/.claude/settings.json over about 8 chats made 127k renders in 14.4 h, 11.1 CPU-hours (about 0.77 core). Handed off: memoize the dearest segments first, and bring the interval to Egor as a trade only if that falls short. 2026-10-06 (harness-doctor-20261006T032859Z-52ce): cause stands, refreshInterval still 3 in ~/.claude/settings.json; the memoize cuts are tonight's handoff job (hook-cuts-left), not duplicated here.",
       "handoff": "docs/handoffs/2026-10-05-hook-cuts-left.md"
     },
     {
@@ -2725,7 +2725,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-05",
       "reviewed_by": "night fixer harness-stop-hooks-20261005T061339Z-2a70",
-      "note": "The only held line in the stop journal: 2026-10-04T07:02:23Z/2ddedf36. Runs claudeb-1791096939-3244-6832 and claudeb-1791097006-94194-5582 (com, opus) were launched by the relays a739c43940f0a8f91 and abd6d30e75c31e1a2 inside the Fable judging workers 227ac46a and 5b28a455; launcher = the root chat (bin/worker-run start_run, CLAUDE_LAUNCHER_SESSION) while the relay tags sit in the workers' caches, so owned() found none in the root's: the hold is as specified and reached its goal (the chat attached both, saw the com misroute, killed them, exit 143). Cause upstream: Fable headless workers delegate (2 of 3 Fable parents of nested runs this week). Unconfirmed: why ~25 other nested runs since 09-29 never held (most lived about a minute; one root stop at 2026-10-03T06:54:53Z/fa230c90 fell inside a live nested run with no held line; the backstop journals no silent reason).",
+      "note": "The only held line in the stop journal: 2026-10-04T07:02:23Z/2ddedf36. Runs claudeb-1791096939-3244-6832 and claudeb-1791097006-94194-5582 (com, opus) were launched by the relays a739c43940f0a8f91 and abd6d30e75c31e1a2 inside the Fable judging workers 227ac46a and 5b28a455; launcher = the root chat (bin/worker-run start_run, CLAUDE_LAUNCHER_SESSION) while the relay tags sit in the workers' caches, so owned() found none in the root's: the hold is as specified and reached its goal (the chat attached both, saw the com misroute, killed them, exit 143). Cause upstream: Fable headless workers delegate (2 of 3 Fable parents of nested runs this week). Unconfirmed: why ~25 other nested runs since 09-29 never held (most lived about a minute; one root stop at 2026-10-03T06:54:53Z/fa230c90 fell inside a live nested run with no held line; the backstop journals no silent reason). 2026-10-06 (harness-doctor-20261006T032859Z-52ce): cause stands, bin/worker-run has no Fable-worker start refusal and the global rule still reaches headless workers; the handoff is in tonight's owner-chat batch for «Harness Doctor».",
       "handoff": "docs/handoffs/2026-10-05-fable-worker-delegates.md"
     },
     {

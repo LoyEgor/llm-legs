@@ -4629,18 +4629,36 @@ def impact_measures(key):
 
 
 def change_impact(calls, samples, now, floors=(), tests=()):
-    short = [(c[1], c[5]) for c in calls if c[3] == "Bash" and c[4] and c[6] != "h"]
     enough = lambda xs: xs if len(xs) >= LIMITS["impact_min_calls"] else []
+    series = {}
+
+    def timed(name, pairs):
+        if name not in series:
+            ordered = sorted(pairs, key=lambda p: p[0])
+            series[name] = ([p[0] for p in ordered], [p[1] for p in ordered])
+        return series[name]
+
+    def window(found, start, end):
+        times, values = found
+        return values[bisect.bisect_left(times, start):bisect.bisect_left(times, end)]
+
+    @functools.lru_cache(maxsize=None)
+    def measure_in(name, cls, start, end):
+        if name == "bash":
+            return median(enough(window(timed(name, ((c[1], c[5]) for c in calls
+                                                     if c[3] == "Bash" and c[4] and c[6] != "h")), start, end)))
+        if name == "floor":
+            return median(enough(window(timed((name, cls), ((f["t"], f["ms"]) for f in floors
+                                                            if not cls or f.get("cls") == cls)), start, end)))
+        if name == "suite":
+            return median(enough(window(timed(name, ((t["end"], t["secs"]) for t in tests
+                                                     if t.get("label") == "suites")), start, end)))
+        return mean(window(timed(name, ((s.get("t", 0), s[name]) for s in samples if s.get(name) is not None)),
+                           start, end))
 
     def measure(name, key, start, end):
-        if name == "bash":
-            return median(enough([w for t, w in short if start <= t < end]))
-        if name == "floor":
-            cls = key[len("floor:"):] if key and key.startswith("floor:") else None
-            return median(enough([f["ms"] for f in floors if start <= f["t"] < end and (not cls or f["cls"] == cls)]))
-        if name == "suite":
-            return median(enough([t["secs"] for t in tests if t.get("label") == "suites" and start <= t["end"] < end]))
-        return mean([s[name] for s in samples if start <= s.get("t", 0) < end and s.get(name) is not None])
+        cls = key[len("floor:"):] if name == "floor" and key and key.startswith("floor:") else None
+        return measure_in(name, cls, start, end)
 
     fmts = {"bash": num, "forks": lambda v: fmt_count(round(v)), "busy": fmt_pct, "floor": num,
             "suite": lambda v: num(v, 60.0)}
