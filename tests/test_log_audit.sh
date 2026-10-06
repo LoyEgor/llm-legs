@@ -113,8 +113,19 @@ assert test "$rc" -eq 1
 assert grep -q '^log-audit: stopped (launch-failed) after 0 of 1 chunks: worker-run start rc 3' "$WORK/out"
 assert jqe '.findings[0].id == "hook-awk-multibyte"' "$LOG_AUDIT_DIR/findings.json"
 assert jqe '.stop == "launch-failed" and .error != null' <(tail -1 "$LOG_AUDIT_DIR/runs.jsonl")
-second_since=$(python3 -c 'import json,sys; print([json.loads(l) for l in open(sys.argv[1])][-1]["since"])' "$LOG_AUDIT_DIR/runs.jsonl")
-assert test "$second_since" = "$(jq -r '.since' <(sed -n 2p "$LOG_AUDIT_DIR/runs.jsonl"))"
+run_field() { jq -r ".$2" <(sed -n "$1p" "$LOG_AUDIT_DIR/runs.jsonl"); }
+assert test "$(run_field 3 since)" = "$(run_field 2 until)"
+
+# Detached, the read outlives the caller and leaves its line in detached.log.
+: >"$CALLS"
+printf '{"type": "user", "timestamp": "%s", "message": {"content": "ещё раз"}}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
+  >>"$WORK/projects/-repo/chat.jsonl"
+out=$("$ROOT/bin/log-audit" run --night N4 --detach)
+assert grep -q '^log-audit: reading in the background (pid [0-9]*)' <<<"$out"
+for _ in $(seq 1 100); do grep -q 'findings for the Harness doctor' "$LOG_AUDIT_DIR/detached.log" 2>/dev/null && break; sleep 0.1; done
+assert grep -q '^log-audit: 1 transcripts in 1 chunks read, 1 findings for the Harness doctor$' "$LOG_AUDIT_DIR/detached.log"
+assert jqe '.night == "N4" and .stop == "done"' "$LOG_AUDIT_DIR/findings.json"
+assert test "$(run_field 4 since)" = "$(run_field 3 since)"
 
 # The Harness doctor turns each finding into a red problem with its quotes, and none once the read is stale.
 verdicts() { python3 - "$ROOT/bin/harness-doctor" "$1" <<'PY'
@@ -133,4 +144,4 @@ assert jqe '.found | length == 1 and .[0].rule == "log_audit" and .[0].ident == 
   and .[0].evidence[0].ref == "Fixture chat" and (.[0].evidence[0].excerpt | startswith("H×3"))' <(verdicts "$at")
 assert jqe '.found == [] and (.at | type) == "number"' <(verdicts "$((at + 49 * 3600))")
 
-echo "PASS: $asserts asserts; the transcript skeleton (asked, said, done, failed, gaps, long turns, repeated hook lines once with a count; tool output and injected context dropped), a full read on Claude Sonnet under the log-audit relay type that skips its own transcripts, the merge, an incremental next read, a refused launch that keeps the findings and the start, and the Harness doctor's red problem per finding until the read goes stale"
+echo "PASS: $asserts asserts; the transcript skeleton (asked, said, done, failed, gaps, long turns, repeated hook lines once with a count; tool output and injected context dropped), a full read on Claude Sonnet under the log-audit relay type that skips its own transcripts, the merge, an incremental next read, a refused launch that keeps the findings and the start, a detached read, and the Harness doctor's red problem per finding until the read goes stale"

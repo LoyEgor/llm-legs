@@ -191,7 +191,19 @@ def merged(raw, folder, deadline):
     return fallback[:TOP], error or "merge returned no findings; raw findings kept"
 
 
+def detach(args):
+    os.makedirs(state_dir(), exist_ok=True)
+    log = open(os.path.join(state_dir(), "detached.log"), "a", encoding="utf-8")
+    command = [os.path.realpath(__file__), "run", "--parallel", str(args.parallel), "--max-wall", str(args.max_wall)]
+    child = subprocess.Popen(command + (["--night", args.night] if args.night else []), stdin=subprocess.DEVNULL,
+                             stdout=log, stderr=log, start_new_session=True)
+    print("log-audit: reading in the background (pid %d); its line lands in %s" % (child.pid, log.name))
+    return 0
+
+
 def run(args):
+    if args.detach:
+        return detach(args)
     started = now = time.time()
     deadline = started + args.max_wall
     since = since_of(now)
@@ -285,6 +297,7 @@ def main():
     one.add_argument("--parallel", type=int, default=PARALLEL)
     one.add_argument("--max-wall", type=int, default=MAX_WALL_S)
     one.add_argument("--dry-run", action="store_true")
+    one.add_argument("--detach", action="store_true", help="read in a new session and return at once")
     one.set_defaults(func=run)
     sub.add_parser("show", help="print the latest findings").set_defaults(func=show)
     one = sub.add_parser("skeleton", help="print one transcript's skeleton")
