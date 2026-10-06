@@ -680,6 +680,10 @@ def worker(name, meta=None, files=None):
 granted = worker("granted", files={"workdir-escape": "/Volumes/Work/other/x\n"})
 assert doctor.classify_worker(granted, {"add_dirs": ["/Volumes/Work/other"]}, "", 0)[0] is None
 assert doctor.classify_worker(granted, {}, "", 0)[0] == "escaped"
+made = worker("made", files={"files-note": "UNKNOWN: transcript names a write outside the snapshotted repository; "
+                             "no content baseline was recorded: /Volumes/Work/r/.claude/worktrees/tmp/t.sh\n"})
+assert doctor.classify_worker(made, {"worktrees_made": ["/Volumes/Work/r/.claude/worktrees/tmp"]}, "", 0)[0] is None
+assert doctor.classify_worker(made, {}, "", 0)[0] == "escaped"
 turns = worker("turns", files={"outcome": "GROK_MAX_TURNS\n", "err": "x"})
 assert doctor.classify_worker(turns, {}, "", 1)[:2] == ("cap", "turns")
 phase = worker("phase", files={"state.json": '{"phase": "failed"}', "err": "sandbox_apply failed: internal error\n"})

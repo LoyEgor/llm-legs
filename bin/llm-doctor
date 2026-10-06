@@ -945,7 +945,8 @@ def classify_worker(run_dir, meta, killed, exit_code):
     outcome = first_line(os.path.join(run_dir, "outcome"))
     result = read_text(os.path.join(run_dir, "result")) or ""
     err = read_tail(os.path.join(run_dir, "err"), WORKER_TAIL_BYTES)
-    granted = [str(path).rstrip("/") + "/" for path in meta.get("add_dirs") or [] if path]
+    granted = [str(path).rstrip("/") + "/" for path in (meta.get("add_dirs") or []) + (meta.get("worktrees_made") or [])
+               if path]
     escapes = [path for path in worker_escape(run_dir)
                if not any((path.rstrip("/") + "/").startswith(root) for root in granted)]
     if escapes:

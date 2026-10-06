@@ -414,6 +414,31 @@ attribution_repair_tests() {
     assert test ! -e "$RUN_DIR/dirty"
     assert_fails grep -q bin/outside-cotenant "$RUN_DIR/produced"
   done
+  [ -n "${WORKER_RUN_TEST_ATTRIBUTION_CASE:-}" ] && [ "$WORKER_RUN_TEST_ATTRIBUTION_CASE" != made_worktree ] && return 0
+  local trees="$repo/.claude/worktrees" made_meta
+  git -C "$repo" worktree add -q "$trees/task" 2>/dev/null
+  git -C "$repo" worktree add -q "$trees/foreign" 2>/dev/null
+  TOOL_TS=$(iso $(($(date +%s) + 60)))
+  {
+    tool_call Bash command "cd $repo && git worktree add .claude/worktrees/scratch.x"
+    tool_call Edit file_path "$trees/scratch.x/bin/restored"
+    tool_call Edit file_path "$trees/foreign/bin/restored"
+    tool_call Edit file_path "$trees/late/bin/restored"
+    tool_call Bash command "git worktree add .claude/worktrees/late-2"
+    tool_call Bash command "git worktree add .claude/worktrees/foreign"
+  } >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+  WORKER_TEST_WORKDIR=$trees/task start_gated claudeb
+  git -C "$repo" worktree add -q "$trees/scratch.x" 2>/dev/null
+  git -C "$repo" worktree add -q "$trees/late" 2>/dev/null
+  printf 'scratch\n' >"$trees/scratch.x/bin/restored"
+  git -C "$repo" worktree remove --force "$trees/scratch.x"
+  gate_open
+  assert await_done
+  made_meta=$(jq -c '.worktrees_made' "$RUN_DIR/meta.json")
+  assert test "$made_meta" = "$(jq -cn --arg p "$trees/scratch.x" '[$p]')"
+  git -C "$repo" worktree remove --force "$trees/late"
+  git -C "$repo" worktree remove --force "$trees/foreign"
+  git -C "$repo" worktree remove --force "$trees/task"
 }
 
 anchors_store_tests

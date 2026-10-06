@@ -153,7 +153,7 @@ resumed_add_dirs() { # resume [jq filter]
   local entry
   [ -n "$1" ] || return 0
   while IFS= read -r entry; do
-    [ -n "$entry" ] && jq -r "${2:-.add_dirs[]?} // empty" "${entry%/worker-session}/meta.json" 2>/dev/null
+    [ -n "$entry" ] && jq -r "${2:-.add_dirs[]?, .worktrees_made[]?} // empty" "${entry%/worker-session}/meta.json" 2>/dev/null
   done < <(refuse_live_matches "$1" "${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}" worker-session)
 }
 
@@ -1335,6 +1335,8 @@ take_floor() { # directory workdir
   git -C "$workdir" rev-parse --verify --quiet HEAD >"$directory/head-before.tmp.$$" 2>/dev/null &&
     mv -f "$directory/head-before.tmp.$$" "$directory/head-before" 2>/dev/null ||
     rm -f "$directory/head-before.tmp.$$" 2>/dev/null
+  git -C "$workdir" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' \
+    >"$directory/worktrees-before" 2>/dev/null || :
   # A round fixer's fold reads the start, branch and HEAD this record keeps, so a commit landed
   # during the run is never anchored as the fix.
   if [ -n "$review_round" ] && [ -s "$directory/launcher" ] &&
@@ -1454,6 +1456,7 @@ persist_run_files() {
         ;;
     esac
   done <<<"$RUN_LISTING_LIST"
+  record_made_worktrees "$directory"
   record_workdir_escape "$directory"
   RUN_FILES_LIST=$snapshot
   RUN_FILES_REASON=$reason
@@ -1487,6 +1490,26 @@ persist_run_files() {
   [ -n "$RUN_FILES_REASON" ] || record_produced "$directory" "$workdir"
   transcript_crosscheck "$directory"
   return 0
+}
+
+# A worktree the run made after launch is its own to write (ledger W3), granted only when the floor's
+# listing lacks it and the run's own `worktree add` names it: one another chat made meanwhile has
+# no such command, so a write there still reads as escaped.
+record_made_worktrees() { # directory
+  local directory="$1" path root name made=''
+  [ -s "$directory/worktrees-before" ] || return 0
+  while IFS= read -r path; do
+    [[ "$path" =~ ^(/.+)/\.claude/worktrees/([A-Za-z0-9._-]+)/ ]] || continue
+    root=${BASH_REMATCH[1]} name=${BASH_REMATCH[2]}
+    grep -qxF -- "$root" "$directory/worktrees-before" &&
+      ! grep -qxF -- "$root/.claude/worktrees/$name" "$directory/worktrees-before" &&
+      printf '%s\n' "${RUN_SHELL_COMMANDS:-}" | grep -F 'worktree add' |
+        grep -qE "(^|[^A-Za-z0-9._-])\.claude/worktrees/${name//./\\.}([^A-Za-z0-9._-]|\$)" || continue
+    made+="$root/.claude/worktrees/$name"$'\n'
+  done <<<"${RUN_FILES_EXTERNAL:-}"
+  [ -n "$made" ] || return 0
+  meta_update "$directory" '.worktrees_made = ((.worktrees_made // []) + $made | unique)' \
+    --argjson made "$(printf '%s' "$made" | jq -Rn '[inputs | select(length > 0)]')" || :
 }
 
 # A run that worked somewhere other than the workdir it was given, kept beside the run so the two
@@ -3578,6 +3601,7 @@ compute_transcript_files() {
   RUN_FILES_REASON=''
   RUN_FILES_PARTIAL=''
   RUN_FILES_ESCAPE=''
+  RUN_SHELL_COMMANDS=''
   {
     IFS= read -r vendor || true
     IFS= read -r account || true
@@ -3612,6 +3636,7 @@ compute_transcript_files() {
         return 0
       }
       classify_tool_rows "$rows" "$workdir"
+      RUN_SHELL_COMMANDS=$(printf '%s\n' "$rows" | sed -n $'s/^C\t//p')
       ;;
     codex)
       rows=$(codex_tool_rows "$transcript" "$started") || {
@@ -3619,6 +3644,7 @@ compute_transcript_files() {
         return 0
       }
       classify_tool_rows "$rows" "$workdir"
+      RUN_SHELL_COMMANDS=$(printf '%s\n' "$rows" | sed -n $'s/^C\t//p')
       ;;
     grok)
       rows=$(grok_tool_rows "$transcript" "$started") || {
@@ -3626,6 +3652,7 @@ compute_transcript_files() {
         return 0
       }
       classify_tool_rows "$rows" "$workdir"
+      RUN_SHELL_COMMANDS=$(printf '%s\n' "$rows" | sed -n $'s/^C\t//p')
       ;;
     # Fail-closed for a vendor added without an extractor: an empty list is a claim about the run,
     # and it is the one claim certainly wrong about a run nobody can read.
@@ -3725,6 +3752,7 @@ transcript_wrote_through_shell() { # transcript since
              else (.input.command? // "") | tostring
                | if length == 0 then "__unclassified_shell_call__" else . end
              end' "$transcript" 2>/dev/null) || return 2
+  RUN_SHELL_COMMANDS=$commands
   [ -n "$commands" ] || return 1
   while IFS= read -r command; do
     command=$(printf '%s\n' "$command" | jq -r .) || return 2
