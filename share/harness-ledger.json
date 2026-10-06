@@ -1869,6 +1869,16 @@
           ],
           "in": "llm-legs@ac75a868",
           "regressed_at": "2026-10-04T22:48:49+03:00"
+        },
+        {
+          "at": "2026-10-06T07:46:28+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "llm-legs/bin/instruction-write-gate.sh",
+            "llm-legs/share/instruction-files.sh",
+            "llm-legs/tests/test_instruction_gate.sh"
+          ],
+          "in": "llm-legs@3b029b93"
         }
       ],
       "same_cause": [
@@ -1877,9 +1887,9 @@
         "guards-growth-claude-agents-grok-worker-md",
         "guards-growth-claude-agents-light-worker-md"
       ],
-      "note": "2026-10-05 (night fixer harness-guards-20261005T061312Z-11fb): the 2026-10-04T16:35:05Z regression (+158 B) is not the variable-path cause the fix closed. It is a scratchpad script file run by path, writing open(C + name) at a run-time path, in the claude-setup worktree fix-llm-doctor-handoffs-20261004 at 13:45:47Z, and it landed in main by the 091caf4 fast-forward. The gate reads neither shape; see the four same_cause rows and docs/handoffs/2026-10-05-harness-guards-script-file-writes.md. Fixed 2026-10-04 by Harness Doctor: The write gate now reads an interpreter writing through a bare identifier (open(p,'w'), Path(p).write_text, p.write_text, writeFile(p,) as a write to every quoted literal in the command that is wholly a guarded name (instruction_interp_var_write_re); test_instruction_gate 'an interpreter writing through a variable that holds a guarded name'. 2026-10-04 check: no event in the window; neither gate file changed since 5b9f350c, so a variable path is still out of scope, owner decision pending. Cause: an interpreter heredoc writing through a path held in a variable (`p='...'; open(p,'w')`), which bin/instruction-write-gate.sh leaves out of scope by design, so only the tripwire saw it. Owner decision in docs/handoffs/2026-10-02-harness-guards-gate-scope.md. Writer: chat \"Claude Sonnet 5.5 launch video\" (7c93bbe2), Bash python3 heredoc at 2026-10-01T15:27:58Z in the claude-setup main checkout (+129 B, retry-on-signal rule); committed since in claude-setup@01f7357 (night press-time tree).",
+      "note": "2026-10-05 (night fixer harness-guards-20261005T061312Z-11fb): the 2026-10-04T16:35:05Z regression (+158 B) is not the variable-path cause the fix closed. It is a scratchpad script file run by path, writing open(C + name) at a run-time path, in the claude-setup worktree fix-llm-doctor-handoffs-20261004 at 13:45:47Z, and it landed in main by the 091caf4 fast-forward. The gate reads neither shape; see the four same_cause rows and docs/handoffs/2026-10-05-harness-guards-script-file-writes.md. Fixed 2026-10-04 by Harness Doctor: The write gate now reads an interpreter writing through a bare identifier (open(p,'w'), Path(p).write_text, p.write_text, writeFile(p,) as a write to every quoted literal in the command that is wholly a guarded name (instruction_interp_var_write_re); test_instruction_gate 'an interpreter writing through a variable that holds a guarded name'. 2026-10-04 check: no event in the window; neither gate file changed since 5b9f350c, so a variable path is still out of scope, owner decision pending. Cause: an interpreter heredoc writing through a path held in a variable (`p='...'; open(p,'w')`), which bin/instruction-write-gate.sh leaves out of scope by design, so only the tripwire saw it. Owner decision in docs/handoffs/2026-10-02-harness-guards-gate-scope.md. Writer: chat \"Claude Sonnet 5.5 launch video\" (7c93bbe2), Bash python3 heredoc at 2026-10-01T15:27:58Z in the claude-setup main checkout (+129 B, retry-on-signal rule); committed since in claude-setup@01f7357 (night press-time tree). Fixed 2026-10-06 by Harness Doctor: the write gate now reads a script file run by path and a guarded directory joined to a variable (llm-legs@3b029b93).",
       "handoff": null,
-      "last_reviewed": "2026-10-04",
+      "last_reviewed": "2026-10-06",
       "reviewed_by": "Harness Doctor"
     },
     {
@@ -1889,18 +1899,29 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/agents/codex\\-worker\\.md$"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed",
+      "fixes": [
+        {
+          "at": "2026-10-06T07:46:28+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "llm-legs/bin/instruction-write-gate.sh",
+            "llm-legs/share/instruction-files.sh",
+            "llm-legs/tests/test_instruction_gate.sh"
+          ],
+          "in": "llm-legs@3b029b93"
+        }
+      ],
       "same_cause": [
         "guards-growth-claude-agents-claudeb-worker-md",
         "guards-growth-claude-agents-gemini-worker-md",
         "guards-growth-claude-agents-grok-worker-md",
         "guards-growth-claude-agents-light-worker-md"
       ],
-      "note": "2026-10-06 check (night fixer harness-guards-20261006T032921Z-5b99): the cause stands in code; the write gate still reads no script file run by path and no run-time name, so the row stays open on the handoff. The new sighting 2026-10-06T03:25:14Z (+213 B, all five agents files) is another cause: the night press rebasing claude-setup main to 1eeb9ab over bytes the bloat gate passed in worktree feat-worker-inbox (+120 B 23:02Z, +93 B 23:37Z, chat 0016a4ce). The landing credit missed them because the watcher journals few worktree writes and ~/.claude/agents is a symlink into the checkout; guards_section now credits worktree gate passes keyed by real path (row guards-growth-claude-setup-night-sweep-skill), and that event reads as a landing. Narrowed 2026-10-05 by night fixer harness-guards-20261005T061312Z-11fb. Event 2026-10-04T16:35:05Z (+158 B) is the fast-forward of claude-setup main to 091caf4 at 16:35:03Z. Writer: chat «LLM Doctor меню refactoring», Write of a scratchpad w7_patch.py, then Bash `python3 $S/w7_patch.py` at 13:45:47Z in the worktree fix-llm-doctor-handoffs-20261004, writing open(C + name, 'w') with C = '…/agents/'. Neither shape is read by the write gate (design §11): a script file named on the command line, and a name built at run time. No gate record exists; the watcher prunes worktrees, so the landing credit had no sibling growth. Ruled out: the agents symlink join (the same chat's Edit of skills/media/SKILL.md has a bloat passed record), vendor sync, and a doctor fault (the tripwire did its job). Gate widening is proposed to the owner in the handoff.",
+      "note": "Narrowed 2026-10-05 by night fixer harness-guards-20261005T061312Z-11fb. Event 2026-10-04T16:35:05Z (+158 B) is the fast-forward of claude-setup main to 091caf4 at 16:35:03Z. Writer: chat «LLM Doctor меню refactoring», Write of a scratchpad w7_patch.py, then Bash `python3 $S/w7_patch.py` at 13:45:47Z in the worktree fix-llm-doctor-handoffs-20261004, writing open(C + name, 'w') with C = '…/agents/'. Neither shape is read by the write gate (design §11): a script file named on the command line, and a name built at run time. No gate record exists; the watcher prunes worktrees, so the landing credit had no sibling growth. Ruled out: the agents symlink join (the same chat's Edit of skills/media/SKILL.md has a bloat passed record), vendor sync, and a doctor fault (the tripwire did its job). Gate widening is proposed to the owner in the handoff. Fixed 2026-10-06 by Harness Doctor: the write gate now reads a script file run by path and a guarded directory joined to a variable (llm-legs@3b029b93).",
       "handoff": "docs/handoffs/2026-10-05-harness-guards-script-file-writes.md",
       "last_reviewed": "2026-10-06",
-      "reviewed_by": "night fixer harness-guards-20261006T032921Z-5b99"
+      "reviewed_by": "Harness Doctor"
     },
     {
       "id": "guards-growth-claude-agents-gemini-worker-md",
@@ -1909,18 +1930,29 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/agents/gemini\\-worker\\.md$"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed",
+      "fixes": [
+        {
+          "at": "2026-10-06T07:46:28+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "llm-legs/bin/instruction-write-gate.sh",
+            "llm-legs/share/instruction-files.sh",
+            "llm-legs/tests/test_instruction_gate.sh"
+          ],
+          "in": "llm-legs@3b029b93"
+        }
+      ],
       "same_cause": [
         "guards-growth-claude-agents-claudeb-worker-md",
         "guards-growth-claude-agents-codex-worker-md",
         "guards-growth-claude-agents-grok-worker-md",
         "guards-growth-claude-agents-light-worker-md"
       ],
-      "note": "Narrowed 2026-10-05 by night fixer harness-guards-20261005T061312Z-11fb: the same w7_patch.py script-file write and 091caf4 landing as guards-growth-claude-agents-codex-worker-md (+147 B); cause and ruled-out ground are in that row. 2026-10-06 check (night fixer harness-guards-20261006T032921Z-5b99): cause stands; the 03:25:14Z +213 B sighting is the worktree landing that row's note explains, now credited.",
+      "note": "Narrowed 2026-10-05 by night fixer harness-guards-20261005T061312Z-11fb: the same w7_patch.py script-file write and 091caf4 landing as guards-growth-claude-agents-codex-worker-md (+147 B); cause and ruled-out ground are in that row. Fixed 2026-10-06 by Harness Doctor: the write gate now reads a script file run by path and a guarded directory joined to a variable (llm-legs@3b029b93).",
       "handoff": "docs/handoffs/2026-10-05-harness-guards-script-file-writes.md",
       "last_reviewed": "2026-10-06",
-      "reviewed_by": "night fixer harness-guards-20261006T032921Z-5b99"
+      "reviewed_by": "Harness Doctor"
     },
     {
       "id": "guards-growth-claude-agents-grok-worker-md",
@@ -1929,18 +1961,29 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/agents/grok\\-worker\\.md$"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed",
+      "fixes": [
+        {
+          "at": "2026-10-06T07:46:28+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "llm-legs/bin/instruction-write-gate.sh",
+            "llm-legs/share/instruction-files.sh",
+            "llm-legs/tests/test_instruction_gate.sh"
+          ],
+          "in": "llm-legs@3b029b93"
+        }
+      ],
       "same_cause": [
         "guards-growth-claude-agents-claudeb-worker-md",
         "guards-growth-claude-agents-codex-worker-md",
         "guards-growth-claude-agents-gemini-worker-md",
         "guards-growth-claude-agents-light-worker-md"
       ],
-      "note": "Narrowed 2026-10-05 by night fixer harness-guards-20261005T061312Z-11fb: the same w7_patch.py script-file write and 091caf4 landing as guards-growth-claude-agents-codex-worker-md (+152 B); cause and ruled-out ground are in that row. 2026-10-06 check (night fixer harness-guards-20261006T032921Z-5b99): cause stands; the 03:25:14Z +213 B sighting is the worktree landing that row's note explains, now credited.",
+      "note": "Narrowed 2026-10-05 by night fixer harness-guards-20261005T061312Z-11fb: the same w7_patch.py script-file write and 091caf4 landing as guards-growth-claude-agents-codex-worker-md (+152 B); cause and ruled-out ground are in that row. Fixed 2026-10-06 by Harness Doctor: the write gate now reads a script file run by path and a guarded directory joined to a variable (llm-legs@3b029b93).",
       "handoff": "docs/handoffs/2026-10-05-harness-guards-script-file-writes.md",
       "last_reviewed": "2026-10-06",
-      "reviewed_by": "night fixer harness-guards-20261006T032921Z-5b99"
+      "reviewed_by": "Harness Doctor"
     },
     {
       "id": "guards-growth-claude-agents-light-worker-md",
@@ -1949,18 +1992,29 @@
         "rule": "growth-ungated",
         "ident": "^\\~/\\.claude/agents/light\\-worker\\.md$"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed",
+      "fixes": [
+        {
+          "at": "2026-10-06T07:46:28+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "llm-legs/bin/instruction-write-gate.sh",
+            "llm-legs/share/instruction-files.sh",
+            "llm-legs/tests/test_instruction_gate.sh"
+          ],
+          "in": "llm-legs@3b029b93"
+        }
+      ],
       "same_cause": [
         "guards-growth-claude-agents-claudeb-worker-md",
         "guards-growth-claude-agents-codex-worker-md",
         "guards-growth-claude-agents-gemini-worker-md",
         "guards-growth-claude-agents-grok-worker-md"
       ],
-      "note": "Narrowed 2026-10-05 by night fixer harness-guards-20261005T061312Z-11fb: the same w7_patch.py script-file write and 091caf4 landing as guards-growth-claude-agents-codex-worker-md (+160 B); cause and ruled-out ground are in that row. 2026-10-06 check (night fixer harness-guards-20261006T032921Z-5b99): cause stands; the 03:25:14Z +213 B sighting is the worktree landing that row's note explains, now credited.",
+      "note": "Narrowed 2026-10-05 by night fixer harness-guards-20261005T061312Z-11fb: the same w7_patch.py script-file write and 091caf4 landing as guards-growth-claude-agents-codex-worker-md (+160 B); cause and ruled-out ground are in that row. Fixed 2026-10-06 by Harness Doctor: the write gate now reads a script file run by path and a guarded directory joined to a variable (llm-legs@3b029b93).",
       "handoff": "docs/handoffs/2026-10-05-harness-guards-script-file-writes.md",
       "last_reviewed": "2026-10-06",
-      "reviewed_by": "night fixer harness-guards-20261006T032921Z-5b99"
+      "reviewed_by": "Harness Doctor"
     },
     {
       "id": "guards-growth-claude-setup-night-sweep-skill",
