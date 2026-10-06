@@ -28,7 +28,7 @@ STALE_S = 60 * 3600
 HEAD_LINES = 20
 STATUS_RE = re.compile(r"^\**Status:?\**\s*(.*)", re.I)
 NAME_RE = re.compile(r"«([^»]+)»")
-ADDRESS_RE = re.compile(r"^\**(To|For)\b", re.I)
+ADDRESS_RE = re.compile(r"^\**(To|For|TO|FOR)\b(?!\s+[\w-]+,)")
 DECIDE_RE = re.compile(r"^#+\s.*(yours to decide|decision)", re.I | re.M)
 NAMED_RE = re.compile(r"handoffs/([A-Za-z0-9_.-]+?\.md)")
 PATH_RE = re.compile(r"(?<![\w/.~-])/?[\w.-]+(?:/[\w.-]+)+|(?<=`)[\w.-]+\.[A-Za-z]+(?=`)")
@@ -37,7 +37,7 @@ OWNER_DAYS = 60
 TYPE_RE = rb'"type":"(?:assistant|user|tool_result|attachment|progress)"'
 SPOKEN = {b'"type":"assistant"', b'"type":"user"'}
 TO_RE = re.compile(r"\bTo:\s*«?([^«»(]+)")
-EVIDENCE_CACHE_VERSION = 1
+EVIDENCE_CACHE_VERSION = 2
 SCAN_CHUNK = 400
 
 
@@ -72,12 +72,12 @@ def head(path):
 
 
 def addressees(lines):
-    names, inside = set(), False
+    names, inside = {}, False
     for line in lines:
         inside = bool(ADDRESS_RE.match(line)) or inside and bool(line.strip())
         if inside:
-            names.update(n.strip() for n in NAME_RE.findall(line))
-    return sorted(names)
+            names.update(dict.fromkeys(n.strip() for n in NAME_RE.findall(line)))
+    return list(names)
 
 
 def live_chats():
@@ -218,7 +218,10 @@ def scan(paths, names):
     import chat_names
     found = {path: {"edits": {}, "mentions": {}} for path in paths}
     words = "|".join(n.replace(".", r"\.") for n in sorted(names, key=lambda n: (-len(n), n)))
-    expr = "(?P<edit>%s)|(?P<type>%s)%s" % (EDIT_RE.decode(), TYPE_RE.decode(), "|(?P<name>%s)" % words if words else "")
+    # rg's engine has no lookbehind, so the left boundary is matched and lies outside the group; an
+    # escaped \n or \t in the JSON is a boundary too.
+    expr = "(?P<edit>%s)|(?P<type>%s)%s" % (EDIT_RE.decode(), TYPE_RE.decode(),
+                                          r"|(?:^|\\[nrt]|[^\w.\\-])(?P<name>%s)" % words if words else "")
     pattern = re.compile(expr.encode())
     argv, exe = chat_names.searcher()
 
@@ -239,9 +242,11 @@ def scan(paths, names):
             run = subprocess.run(["rg", "-o", "-n", "--null", "--with-filename", "--no-heading", "--no-messages",
                                   "-e", expr, "--"] + chunk, executable=exe, capture_output=True)
             if run.returncode not in (0, 1):
-                for path in chunk:
+                unread = [path for path in chunk if not os.access(path, os.R_OK)]
+                for path in unread or chunk:
                     found.pop(path, None)
-                continue
+                if not unread:
+                    continue
             line, hits = None, []
             for raw in run.stdout.splitlines() + [b"\0:"]:
                 path, _, rest = raw.partition(b"\0")

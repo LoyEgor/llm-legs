@@ -867,6 +867,45 @@ auto --fire-armed claude/notcom --wall weekly
 [ "$(claude_posts)" -eq 1 ] && [ ! -e "$ARM" ] || fail "a run-observed weekly wall did not redeem once and disarm"
 pass
 
+# A run's weekly wall that meets the collector holding the lock waits its turn: the collector reads
+# every wall as unknown and, with the store not showing this one yet, redeems nothing.
+arm
+fresh; store 60 0 1
+python3 -c 'import fcntl, sys, time
+lock = open(sys.argv[1], "w"); fcntl.flock(lock, fcntl.LOCK_EX); open(sys.argv[2], "w").close(); time.sleep(1.5)' \
+  "$AUTO/claudeb/reset-arm/.lock" "$AUTO/held" &
+holder=$!
+until [ -e "$AUTO/held" ]; do sleep 0.05; done
+auto --fire-armed claude/notcom --wall weekly
+wait "$holder"
+rm -f "$AUTO/held"
+[ "$(claude_posts)" -eq 1 ] && [ ! -e "$ARM" ] || fail "a run's weekly wall behind the collector's lock was dropped"
+pass
+
+# A --disarm while a redeem is in flight stays disarmed when that redeem fails transiently.
+arm
+fresh; store 100 0 1
+printf 'post503\n' >"$CLAUDE_STATE"
+env HOME="$CLAUDE_HOME" CLAUDEB_DIR="$AUTO/claudeb" PATH="$WORK/bin:$PATH" \
+  CLAUDE_RESETS_ENDPOINT="$CLAUDE_BASE" LLM_LIMITS_CACHE="$AUTO/limits.json" \
+  LLM_RESET_REDEEM_ALERT="$AUTO/alert.sh" LLM_RESET_REDEEM_COLLECTOR="$WORK/fake-collector.sh" \
+  python3 -B - "$REDEEM" <<'PY' >/dev/null 2>"$WORK/last.err" || fail "the in-flight disarm probe failed: $(cat "$WORK/last.err")"
+import importlib.machinery, importlib.util, sys, time
+loader = importlib.machinery.SourceFileLoader("redeem", sys.argv[1])
+module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(module)
+redeem = module.REDEEMERS["claude"]
+def disarmed_meanwhile(account, target):
+    code = redeem(account, target)
+    module.main(["--disarm", target])
+    return code
+module.REDEEMERS["claude"] = disarmed_meanwhile
+module.fire("claude", "notcom", int(time.time()), "weekly")
+PY
+[ "$(claude_posts)" -eq 1 ] && [ ! -e "$ARM" ] || fail "a transient redeem re-armed what --disarm dropped: $(cat "$ARM" 2>&1)"
+printf 'one\n' >"$CLAUDE_STATE"
+pass
+
 # How a run names its bucket.
 kind() { ( . "$ROOT/share/worker-walls.sh"; worker_walls_kind "$@" ); }
 printf "You've hit your weekly limit · resets Oct 9, 9am\n" >"$AUTO/weekly.out"

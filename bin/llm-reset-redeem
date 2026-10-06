@@ -373,6 +373,7 @@ REDEEMERS = {"claude": redeem_claude, "codex": redeem_codex, "grok": redeem_grok
 ARM_DIR = LOG_PATH.with_name("reset-arm")
 ATTEMPTS_MAX = 3
 ATTEMPT_GAP_S = 600
+LOCK_WAIT_S = 600
 WORD_WINDOW_S = 24 * 3600
 # A test pointing any of these at a fixture while the arms resolve to the real store would spend a
 # real reset on a fake wall.
@@ -594,8 +595,13 @@ def fire(vendor: str, account: str, now: int, wall: str) -> None:
         disarm(vendor, account, reason)
         alert(f"Auto-redeem disarmed · {reason}")
         return
-    with arm_path(vendor, account).open("a") as handle:
-        handle.write(f"{now} {code}\n")
+    # No O_CREAT: a --disarm that landed while the redeem was in flight stays disarmed.
+    try:
+        handle = os.open(arm_path(vendor, account), os.O_WRONLY | os.O_APPEND)
+    except OSError:
+        return
+    with os.fdopen(handle, "a") as stream:
+        stream.write(f"{now} {code}\n")
 
 
 def fire_armed(only: tuple[str, str] | None, wall: str) -> int:
@@ -610,13 +616,19 @@ def fire_armed(only: tuple[str, str] | None, wall: str) -> int:
         armed = [pair for pair in armed if pair == only]
     if not armed:
         return 0
-    # Two triggers (the collector and a run's wall) can see one wall together; the loser skips,
-    # and the winner's landed redeem has consumed the arm by the time anyone looks again.
+    # Two triggers (the collector and a run's wall) can see one wall together. The collector skips;
+    # a run's weekly wall waits its turn, because the collector reads every wall as unknown and,
+    # with a store that does not show it yet, redeems nothing.
+    deadline = time.time() + (LOCK_WAIT_S if only is not None and wall == "weekly" else 0)
     with (ARM_DIR / ".lock").open("w") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            return 0
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.time() >= deadline:
+                    return 0
+                time.sleep(0.2)
         now = int(time.time())
         for vendor, account in armed:
             fire(vendor, account, now, wall if only is not None else "unknown")

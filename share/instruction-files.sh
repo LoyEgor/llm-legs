@@ -848,7 +848,7 @@ instruction_interp_scripts() { # command cwd → INTERPRETER<TAB>PATH lines
     read -ra words <<< "${seg//$'\n'/ }"
     interp='' op='' skip=''
     for w in ${words[@]+"${words[@]}"}; do
-      w=${w#[\"\']}; w=${w%[\"\']}
+      w=${w//[\"\']/}
       if [ -z "$interp" ]; then
         if [[ $w =~ ^([A-Za-z_][A-Za-z_0-9]*)=(.*)$ ]]; then
           assigns+="${BASH_REMATCH[1]}=${BASH_REMATCH[2]}"$'\n'
@@ -868,8 +868,11 @@ instruction_interp_scripts() { # command cwd → INTERPRETER<TAB>PATH lines
       case "$w" in
         --) continue ;;
         -|-[ceEmp]|-[A-Za-z]*[ceEm]|--eval*|--print*|[\<\>]*) break ;;
-        -[WXrIC]|--require|--import|--loader|--experimental-loader|--conditions) skip=1; continue ;;
+        -[WXrIC]|--require|--import|--loader|--experimental-loader|--conditions)
+          [[ $w == -I && $interp == python* ]] || skip=1
+          continue ;;
         -*) continue ;;
+        run) [[ $interp == deno || $interp == bun ]] && continue ;;
       esac
       op=$w
       break

@@ -44,8 +44,9 @@ wait_note() {
 }
 
 wait_ms() { # epoch[.frac] -> milliseconds; fails on anything else
-  local int=${1%%.*} frac=000
-  [[ "$1" == *.* ]] && frac="${1#*.}000"
+  local value=${1/,/.}
+  local int=${value%%.*} frac=000
+  [[ "$value" == *.* ]] && frac="${value#*.}000"
   [[ "$int" =~ ^[0-9]+$ ]] && [[ "$frac" =~ ^[0-9]+$ ]] || return 1
   printf '%s\n' $(( 10#$int * 1000 + 10#${frac:0:3} ))
 }

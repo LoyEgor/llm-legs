@@ -766,6 +766,14 @@ cw.project_home = real_project_home
 PROJECT, CREATED = "/g/g-p-0a1b/project", "/g/g-p-9f8e/project"
 looked = []
 cw.find_project = lambda page: looked.append(page) or PROJECT
+made = []
+cw.create_project = lambda page: made.append(page) or (CREATED, "")
+for bound in ({"email": "beta@example.com"}, {}):
+    gw.write_meta("alpha", email=bound.get("email"), project=None, project_failed=0)
+    page = Page()
+    failure, _ = render(page, meta=gw.read_meta("alpha"))
+    assert isinstance(failure, gw.Failure) and not page.sent and not looked and not made, (bound, failure, looked)
+    assert not gw.read_meta("alpha").get("project"), gw.read_meta("alpha")
 gw.write_meta("alpha", email="alpha@example.com", project=None, project_failed=0)
 page = Page()
 result, _ = render(page, meta=gw.read_meta("alpha"))

@@ -28,6 +28,10 @@ assert jqe -s 'length == 2 and .[0] == {class: "lock", source: "a \"q\" \\b c", 
   and .[1].source == "bash-3.2" and .[1].seconds == 2' "$W/2026-01-10.jsonl"
 assert jqe -s 'map(select(.class == "run-suites")) | length == 1 and .[0].source == "suites of r" and .[0].seconds >= 0' \
   "$W/$(date +%Y-%m-%d).jsonl"
+# A comma-decimal locale prints EPOCHREALTIME as 1791294999,986400: the default seconds still land.
+env -u LC_ALL LC_NUMERIC=ru_RU.UTF-8 bash -c '[[ $EPOCHREALTIME == *,* ]] || exit 3; . "$1/share/limiter-hold.sh"
+  wait_note lock comma-locale "$((EPOCHSECONDS - 2))"' _ "$ROOT" || fail "no comma-decimal locale to test under"
+assert jqe -s 'map(select(.source == "comma-locale")) | length == 1 and .[0].seconds >= 2' "$W/$(date +%Y-%m-%d).jsonl"
 assert [ -z "$(ls "$HARNESS_HOLDS_DIR")" ]
 assert [ ! -e "$W/2100-01-01.jsonl" ]
 python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import limiter_hold as h

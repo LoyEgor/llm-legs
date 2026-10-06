@@ -36,7 +36,7 @@ def main() -> int:
         try:
             sub = Client(account, key).json("GET", "/v1/user/subscription", timeout=10)
         except Fail as error:
-            if error.rc == 4:
+            if error.status == "missing_permissions":
                 continue
             print(error, file=sys.stderr)
             return 1

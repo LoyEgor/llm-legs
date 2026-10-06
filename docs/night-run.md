@@ -22,7 +22,7 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
 2. **Prep** (serial, a few minutes; the orchestrator does it):
    - `vendor-cli-update now --night` runs first and blocks, so CLI installs finish before any worker holds a CLI busy;
      it opens no integration chat, which would claim the events `request --night` hands to workers.
-   - Refresh all four doctors so their documents are fresh. The Code doctor's refresh is
+   - Refresh all five doctors so their documents are fresh. The Code doctor's refresh is
      `bin/code-doctor refresh` (index, journal rollup, candidates), then
      `bin/code-doctor judge --night <night-id>`: worker-run judgments of the waiting candidates,
      stopped by its token and wall budget (`BUDGET`), so a Code fixer only ever sees judged problems.
@@ -36,7 +36,7 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
    - `night-run carry <id>` records what earlier days left. Handoffs go to the chat owning them, which
      holds their context (Egor, 2026-10-04; owner: a known To/For chat, else top edit+mention share,
      else the ledger): an owner with a decision section or ≥ 2 handoffs gets one `owner-chat` job,
-     its chat resumed with the batch or, live, sent it; ≤ 3 pending, none while load > cores × 30.
+     its chat resumed with the batch or, live, sent it; ≤ 3 pending, none while `slot_room` finds no room.
      Other handoffs (trivial, chat gone, owner deferred) are `handoff` jobs unless their To/For chat is
      live; each suite the last full run failed is a `suite` job. A handoff settles with a test or as a
      trade (`Cost:`/`Loss:`/`Recommendation:`).
@@ -98,7 +98,7 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
 7. **Close.**
    - `night-run suites <id>` starts the night's one full `tests/run-all` per sweep repository,
      detached: nothing waits for it (no worker ever runs it); `report` prints its result as weak spots.
-   - Rerun the four doctors. This settles the ledger's `fixed-pending` rows into each doctor's overlay,
+   - Rerun the five doctors. This settles the ledger's `fixed-pending` rows into each doctor's overlay,
      never the main checkout. Then, in a worktree of llm-legs on `night/<id>/ledger-sync` from main's
      HEAD, `bin/doctor-fix ledger-sync <worktree>` writes the settled fields into its tracked ledgers;
      commit, land and push that bookkeeping like any branch (nothing printed: nothing to commit).

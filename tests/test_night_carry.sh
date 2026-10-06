@@ -238,6 +238,28 @@ h.owner_picks = lambda handoffs, repos, chats: [(items[0], None, alone, {}),
 [batch] = h.owner_batches(items, repos=[repo], chats=[{"name": "Solo", "session": "sess-solo"}], live=set())
 assert batch["doubt"] and batch["runner_up"] == "Ledger Chat" and batch["scores"] == {"Solo": 2.0, "Ledger Chat": 0}, batch
 PY
+assert python3 -B - "$ROOT" "$WORK" <<'PY'
+import os, sys
+sys.path.insert(0, os.path.join(sys.argv[1], "share"))
+import chat_names
+import handoffs as h
+
+assert h.addressees(["To: «Zeta Chat», «Alpha Chat»\n"]) == ["Zeta Chat", "Alpha Chat"]
+assert h.addressed({"to": ["Zeta Chat", "Alpha Chat"], "path": "/nonexistent"}, {"Alpha Chat", "Zeta Chat"}) == "Zeta Chat"
+assert h.addressees(["For context, «Phase Four» built this.\n", "It reads «Other».\n"]) == []
+assert h.addressees(["for «Phase Four» to settle\n"]) == []
+assert h.addressees(["For «Phase Four» (owner of x), rows y.\n"]) == ["Phase Four"]
+assert h.addressees(["For the chat «Harness Doctor», next night.\n"]) == ["Harness Doctor"]
+assert h.addressees(["**To:** «Phase Four»\n"]) == ["Phase Four"]
+folder = os.path.join(sys.argv[2], "scan")
+os.makedirs(folder, exist_ok=True)
+said = os.path.join(folder, "said.jsonl")
+with open(said, "w") as handle:
+    handle.write('{"type":"user","message":{"content":"fix score.sh and hardcore.sh, then core.sh;\\ncore.sh in `share/core.sh`"}}\n')
+assert chat_names.searcher()[0][0] == "rg", chat_names.searcher()
+rows = h.scan([said, os.path.join(folder, "gone.jsonl")], {"core.sh"})
+assert rows == {said: {"edits": {}, "mentions": {"core.sh": 3}}}, rows
+PY
 export NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-own" NIGHT_RUN_OWNER_CHATS=9
 new_night N5
 night carry N5 >"$WORK/n5.out" 2>"$WORK/n5.err" || fail "evidence carry failed"

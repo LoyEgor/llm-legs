@@ -431,9 +431,20 @@ check(latest["doctor"] == "system", "latest.json is written under SYSTEM_DOCTOR_
 journal = [json.loads(line) for line in open(os.path.join(work, "doctors", "collector-runs.jsonl"))]
 check([r["doctor"] for r in journal] == ["system", "system"], "nightly and judge each journal one collector run: %s" % journal)
 days = [json.loads(line) for line in open(os.path.join(work, "doctors", "problem-days.jsonl"))]
-check(days and days[-1]["doctor"] == "system", "the judge writes its problem day: %s" % days)
+check(days and days[-1]["doctor"] == "system" and latest["status"] == days[-1]["status"] == "problems"
+      and days[-1]["count"] == latest["problem_count"] > 0, "the judge writes its problem day: %s" % days)
+
+
+def files_state():
+    paths = [os.path.join(work, "doctors", "problem-days.jsonl")]
+    for folder, _, names in os.walk(os.path.join(work, "state")):
+        paths += [os.path.join(folder, name) for name in names]
+    return {path: (os.stat(path).st_ino, os.stat(path).st_mtime_ns, os.stat(path).st_size) for path in paths}
+
+
+before = files_state()
 check(cli("--json").returncode == 0 and json.load(open(os.path.join(work, "state", "latest.json")))["as_of_s"]
-      == latest["as_of_s"], "--json writes nothing")
+      == latest["as_of_s"] and files_state() == before, "--json writes nothing")
 
 # ---- install-agent: a named wrapper and a low-priority plist, loaded through launchctl
 put("launchctl", "")

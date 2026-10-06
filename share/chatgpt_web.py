@@ -346,6 +346,7 @@ def project_home(page, session: Session, account: str, meta: dict) -> str:
         open_chat(page, session, account, None)
     except gw.Failure:
         return "/"
+    bind(account, session, meta)
     try:
         found = find_project(page)
         path, memory = (found, None) if found else create_project(page)

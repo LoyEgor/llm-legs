@@ -33,10 +33,11 @@ VOICE_ID_RE = re.compile(r"^[A-Za-z0-9]{20}$")
 
 
 class Fail(Exception):
-    def __init__(self, rc: int, message: str):
+    def __init__(self, rc: int, message: str, status: str = ""):
         super().__init__(message)
         self.rc = rc
         self.message = message
+        self.status = status
 
 
 class Usage(argparse.ArgumentParser):
@@ -151,7 +152,8 @@ class Client:
         if status in ("quota_exceeded", "insufficient_credits") or "quota" in status:
             return Fail(3, f"ELEVENLABS_USAGE_LIMIT account={self.account} ({message})")
         if status in ("missing_permissions", "invalid_api_key", "api_key_disabled", "paid_plan_required") or code in (401, 402):
-            return Fail(4, f"account {self.account}: {text} — the owner fixes this key in ElevenLabs → Developers → API keys")
+            return Fail(4, f"account {self.account}: {text} — the owner fixes this key in ElevenLabs → Developers → API keys",
+                        status)
         if code == 429:
             return Fail(1, f"account {self.account} busy after retries: {text}")
         return Fail(1, f"account {self.account}: {text}")

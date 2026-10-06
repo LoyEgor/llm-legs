@@ -56,7 +56,8 @@ worker_walls_parse_reset() {
   fi
   for fmt in '%I:%M %p' '%I:%M%p' '%H:%M'; do
     epoch=$(date -j -f "$fmt %S" "$rest 00" '+%s' 2>/dev/null) || continue
-    [ "$epoch" -gt "$now" ] || epoch=$(date -j -v+1d -f "$fmt %S" "$rest 00" '+%s' 2>/dev/null) || continue
+    # A time without seconds that passed minutes ago is this wall clearing, not tomorrow's reset.
+    [ "$epoch" -gt "$((now - 300))" ] || epoch=$(date -j -v+1d -f "$fmt %S" "$rest 00" '+%s' 2>/dev/null) || continue
     printf '%s\n' "$epoch"
     return 0
   done

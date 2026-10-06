@@ -102,8 +102,13 @@ limits.doctorSnapshotPath = dir .. "/snapshot.json"
 limits.llmDoctorCmd = "/fixture/bin/llm-doctor"
 limits.harnessDoctorCmd = "/fixture/bin/harness-doctor"
 
+-- doctors.lua dates its week from os.time() on every build: pinned to the harness's start, a run that
+-- crosses local midnight moves no bar. Its own env only: this Lua state is the live Hammerspoon.
+local startedAt = os.time()
+local pinnedOs = setmetatable({ time = function(date) return date and os.time(date) or startedAt end }, { __index = os })
+
 local function loadDoctors(override)
-  local env = setmetatable({ hs = fakeHs, require = function(name)
+  local env = setmetatable({ hs = fakeHs, os = pinnedOs, require = function(name)
     if name == "llm-limits" then return limits end
     return require(name)
   end }, { __index = _G })
@@ -129,7 +134,7 @@ local function loadDoctors(override)
   return doctors
 end
 
-local now = os.time()
+local now = startedAt
 local function llmDocument(status, count)
   return { contract = 1, doctor = "llm", as_of_s = now, status = status, problem_count = count, window_h = 24,
     bugs = 0, summary = "", not_measurable = {},
@@ -399,9 +404,9 @@ remove("/harness-ledger.json")
 write("/harness-doctor/latest.json", { status = "problems", problems = {} })
 trendHarness()
 local previous = text(trendItems[1].title)
-writeDays({ 0, 1, 2, 3, 4, 6, 800 })
+writeDays({ 0, 1, 2, 6, 7, 8, 800 })
 local changed = trendDoctor.menuItems()[1].title
-check(text(changed) == row("LLM", "2", nil, "▁▁▁▁▁▁█", "↑", "3") and text(changed) ~= previous,
+check(text(changed) == row("LLM", "2", nil, "▁▁▁▁▁▁█", "↑", "4") and text(changed) ~= previous,
   "today stays out of the median; a renamed journal invalidates the cache: " .. text(changed))
 writeDays({ 0, 1, 2, 3, 4, 0, 8 })
 local falling = trendDoctor.menuItems()[1].title

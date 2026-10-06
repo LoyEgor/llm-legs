@@ -52,4 +52,27 @@ kill -TERM $!
 wait $!
 assert jq -e 'select(.tool == "elevenlabs-sfx" and .rc == 143)' "$IMAGE_LEG_LOG" >/dev/null
 
+# The balance skips only a key without the read permission; a revoked or unpaid key exits 1 so the menubar keeps
+# its last reading.
+assert python3 - "$ROOT/share" "$WORK" <<'PY'
+import contextlib, io, sys
+sys.path.insert(0, sys.argv[1])
+import elevenlabs_balance as b
+import elevenlabs_media as m
+
+b.accounts, b.reserves, b.labels = lambda: {"one": "k1", "two": "k2"}, lambda: {}, lambda: {}
+sub = {"character_count": 5, "character_limit": 10}
+for refused, code, rc in (("missing_permissions", 401, 0), ("invalid_api_key", 401, 1), ("api_key_disabled", 401, 1),
+                          ("paid_plan_required", 402, 1), ("", 401, 1)):
+    def answer(self, method, path, **kwargs):
+        if self.account == "two":
+            raise self.classify(code, refused, "no")
+        return sub
+    m.Client.json = b.Client.json = answer
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+        assert b.main() == rc, refused
+    assert rc or '"account": "one"' in out.getvalue(), out.getvalue()
+PY
+
 echo "PASS test_elevenlabs_media ($asserts asserts)"

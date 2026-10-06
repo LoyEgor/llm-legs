@@ -134,6 +134,11 @@ for name, body in {"codex-worker.md": "x"}.items():
 EOF
 assert_eq deny "$(decision "S=$SCRATCH; python3 \$S/patch.py")"
 assert_eq deny "$(decision "S=$SCRATCH && python3 -u \${S}/patch.py")"
+assert_eq deny "$(decision "S=\"$SCRATCH\"; python3 \"\$S/patch.py\"")"
+assert_eq deny "$(decision "python3 -I $SCRATCH/patch.py")"
+printf 'const C = "%s/";\nfs.writeFileSync(path.join(C, "codex-worker.md"), "x");\n' "$AGENTS" > "$SCRATCH/patch.js"
+assert_eq deny "$(decision "deno run $SCRATCH/patch.js")"
+assert_eq deny "$(decision "bun run $SCRATCH/patch.js")"
 cat > "$WORK/land.py" <<EOF
 import sys
 if '--apply' in sys.argv:

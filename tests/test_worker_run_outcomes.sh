@@ -364,5 +364,8 @@ rolled=$(worker_walls_parse_reset "$(date -r "$passed" +%H:%M)")
 assert test "$rolled" -gt "$now"
 assert test "$(( rolled - passed ))" -ge 82800
 assert test "$(( rolled - passed ))" -le 90000
+this_minute=$(worker_walls_parse_reset "try again at $(date -r "$(( now / 60 * 60 ))" '+%I:%M %p')")
+assert test "$this_minute" -le "$now"
+assert test "$(worker_walls_kind codex "$this_minute")" = unknown
 
 echo "PASS: $asserts asserts; read-only runs, outcome classification, codex trust and model retries, self-edit, pruning"

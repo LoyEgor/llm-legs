@@ -19,7 +19,12 @@ cat >"$STUB_DIR/claudeb.stdin"
 call=0
 while [ "$call" -lt "${TOOL_CALLS:-0}" ]; do
   call=$((call + 1))
-  until [ -e "$STUB_DIR/tool-$call" ]; do sleep 0.05; done
+  tick=0
+  until [ -e "$STUB_DIR/tool-$call" ]; do
+    tick=$((tick + 1))
+    [ "$tick" -le 1200 ] || exit 1
+    sleep 0.05
+  done
   : >"$STUB_DIR/context-$call"
   jq -r '.hooks.PostToolUse[]? | select(.matcher == "*") | .hooks[].command' <<<"$settings" |
     while IFS= read -r command; do
@@ -32,19 +37,36 @@ printf '{"type":"result","result":"inbox result","session_id":"inbox-session"}\n
 EOF
 chmod +x "$WORK/bin/claudeb"
 
+await_file() { # test-flag path
+  local tick
+  for tick in $(seq 1 600); do
+    test "$1" "$2" && return 0
+    sleep 0.05
+  done
+  fail "no $2 after 30 s"
+}
+
 tool_call_done() { # n
   : >"$STUB_DIR/tool-$1"
-  until [ -e "$STUB_DIR/tool-$1.done" ]; do sleep 0.05; done
+  await_file -e "$STUB_DIR/tool-$1.done"
+}
+
+# The stub's gates and outputs outlive clear_stub: a gate left open by an earlier case lets the next
+# run finish at launch, before the case's `say`.
+clear_inbox_stub() {
+  clear_stub
+  rm -f "$STUB_DIR"/tool-* "$STUB_DIR"/context-* "$STUB_DIR/claudeb.settings"
 }
 
 # --- claudeb: delivered by the hook at the next tool call, exactly once ---------------------------
-clear_stub
+clear_inbox_stub
 export PICK_ACCOUNT=picked PICK_RC=0 TOOL_CALLS=4
 start_ok claudeb
-until [ -s "$STUB_DIR/claudeb.settings" ]; do sleep 0.05; done
-assert test "$(jq -r '.hooks.PostToolUse[0].hooks[0].command' "$STUB_DIR/claudeb.settings")" = "$(realpath "$HOOK")"
+await_file -s "$STUB_DIR/claudeb.settings"
+hook_command=$(printf '%q' "$(realpath "$HOOK")")
+assert test "$(jq -r '.hooks.PostToolUse[0].hooks[0].command' "$STUB_DIR/claudeb.settings")" = "$hook_command"
 assert test "$(jq -r '.hooks.PostToolUse[0].matcher' "$STUB_DIR/claudeb.settings")" = '*'
-assert jq -e --arg hook "$(realpath "$HOOK")" \
+assert jq -e --arg hook "$hook_command" \
   '.cmd | index("--settings") as $i | $i != null and (.[$i + 1] | fromjson | .hooks.PostToolUse[0].hooks[0].command == $hook)' \
   "$RUN_DIR/meta.json" >/dev/null
 tool_call_done 1
@@ -60,7 +82,7 @@ assert test ! -e "$RUN_DIR/inbox.new"
 assert grep -Eq "^$(wc -c <"$RUN_DIR/inbox" | tr -d ' ') [0-9T:+-]+ hook$" "$RUN_DIR/inbox.delivered"
 WORKER_RUN_SAY_WAIT_S=60 "$RUNNER" say "$RUN_ID" 'second word' >"$WORK/say2.out" &
 say_pid=$!
-until [ -e "$RUN_DIR/inbox.new" ]; do sleep 0.05; done
+await_file -e "$RUN_DIR/inbox.new"
 tool_call_done 3
 wait "$say_pid"
 assert grep -Eqx 'delivered at [0-9T:+-]+' "$WORK/say2.out"
@@ -82,10 +104,11 @@ assert grep -qF 'RESUME inbox-session:' "$WORK/say-late.err"
 assert_fails grep -q 'too late' "$RUN_DIR/inbox"
 
 # --- a worker without the run's record in its environment claims no delivery -----------------------
-clear_stub
+clear_inbox_stub
 export TOOL_CALLS=1 STUB_NO_RECORD=1
 start_ok claudeb
 said=$(WORKER_RUN_SAY_WAIT_S=0 "$RUNNER" say "$RUN_ID" 'no record')
+assert test "$said" = 'queued: the worker reads it at its next tool call'
 tool_call_done 1
 assert test ! -s "$STUB_DIR/context-1"
 assert test ! -e "$RUN_DIR/inbox.delivered"
@@ -94,9 +117,9 @@ unset STUB_NO_RECORD
 assert grep -q '— queued for RESUME: the run ended before its next tool call$' <<<"$("$RUNNER" report "$RUN_ID")"
 
 # --- a run whose launch carried no hook says so -----------------------------------------------------
-clear_stub
+clear_inbox_stub
 start_ok claudeb
-jq 'del(.inbox_settings)' "$RUN_DIR/meta.json" >"$WORK/meta.unwired" && cp "$WORK/meta.unwired" "$RUN_DIR/meta.json"
+jq 'del(.inbox_settings)' "$RUN_DIR/meta.json" >"$RUN_DIR/meta.unwired" && mv -f "$RUN_DIR/meta.unwired" "$RUN_DIR/meta.json"
 said=$(WORKER_RUN_SAY_WAIT_S=0 "$RUNNER" say "$RUN_ID" 'unwired')
 assert test "$said" = 'queued for RESUME: claudeb takes no message mid-run'
 tool_call_done 1

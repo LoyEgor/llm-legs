@@ -2,6 +2,8 @@
 
 Status: open — fix committed on usage-ai-report branch `night/20261006T032009Z-f253/handoff-2026-10-05-usage-gate-hooks` (c86e433: llm_gate.py runs both transports with `--settings '{"disableAllHooks":true}'`, test gate_transport_hooks_off, 107/107); usage-ai-report is outside the sweep, so its owner chat «Система вырезания упоминаний о вакансиях» rebases, lands it and runs the proof below, then marks this settled
 
+To: «Система вырезания упоминаний о вакансиях» (owner of usage-ai-report).
+
 Written 2026-10-05 by night fixer harness-stop-hooks-20261005T061339Z-2a70 (ledger rows
 `hook-error-ask-span-drill-budget`, `hook-error-ask-word-reading-budget`).
 

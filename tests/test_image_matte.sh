@@ -44,8 +44,10 @@ assert test ! -e "$WORK/none.png"
 assert test "$(matte --base "$WORK/missing.png" --edited "$WORK/cut.png" --out "$WORK/none.png"; echo $?)" = 1
 
 # Wired through share/image-leg.sh: only an explicit --composite lays a Remove BG cutout back.
+# The plan's composite copy is removed by image_leg_exit, which take() does not trap: TMPDIR keeps it in $WORK.
+mkdir -p "$WORK/tmp"
 take() { # dest; env ASK, OFF
-  (IMAGE_LEG_TOOL=codex-image account=acct
+  (IMAGE_LEG_TOOL=codex-image account=acct TMPDIR="$WORK/tmp"
     . "$ROOT/share/image-leg.sh"
     IMAGE_LEG_COMPOSITE_ASK=${ASK:-} IMAGE_LEG_COMPOSITE_OFF=${OFF:-} IMAGE_LEG_COMPOSITE_ARGS=()
     image_leg_composite_plan codex '' matte "$WORK/base.png"
