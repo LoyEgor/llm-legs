@@ -936,7 +936,7 @@ def close_promos(page, account: str = "-", keep: tuple = RIGHTS_NOTICES) -> int:
 
 def dismiss_dialogs(page, account: str = "-") -> None:
     close_promos(page, account)
-    for name in ("Get started", "Got it", "Dismiss", "No thanks"):
+    for name in ("Get started", re.compile(r"^Got it\b"), "Dismiss", "No thanks"):
         click_if_visible(page, "button", name)
 
 
@@ -1022,6 +1022,15 @@ def close_overlays(page) -> None:
         settle(page, 500, lambda shown=shown: backdrop.count() < shown)
 
 
+def close_settings(page, trigger, family) -> None:
+    """An open model menu's backdrop takes the trigger's click, so the menu closes first."""
+    close_overlays(page)
+    if family.count() and family.last.is_visible():
+        trigger.click(timeout=5000)
+        settle(page, 500, lambda: not family.last.is_visible())
+    close_overlays(page)
+
+
 def manual_composer(page) -> None:
     """Agent toggle off, nothing left in the prompt box from an earlier run."""
     agent = page.get_by_role("button", name="Agent", exact=True)
@@ -1078,10 +1087,7 @@ def settings(page, plan: dict, full: bool) -> tuple[int, str]:
     except Exception as exc:
         raise drift(f"composer settings ({failure_text(exc)[:300]})")
     finally:
-        if family.count() and family.last.is_visible():
-            trigger.click()
-            page.wait_for_timeout(500)
-        close_overlays(page)
+        close_settings(page, trigger, family)
     return cost, " ".join(trigger.inner_text().split())
 
 

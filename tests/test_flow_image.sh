@@ -956,6 +956,77 @@ try:
     raise AssertionError("a squashed frame twice")
 except gw.Failure as failure:
     assert "Image Editor frame stays" in failure.reason, failure.reason
+
+
+# 2026-10-05 loiyehor: the model menu lacked the label and stayed open; the finally's click on Settings trigger
+# waited 30 s behind the menu's backdrop and its bare TimeoutError replaced the drift.
+class SettingsPage:
+    popover = menu = False
+    onboarding = True
+
+    def get_by_role(self, role, name=None, exact=None):
+        page = self
+
+        class Target:
+            last = first = property(lambda self: self)
+
+            def count(self):
+                if name == "Select model family":
+                    return int(page.popover)
+                if hasattr(name, "search"):
+                    return int(page.onboarding and bool(name.search("Got it, dismiss onboarding message")))
+                return 1
+
+            def nth(self, index):
+                return self
+
+            def is_visible(self):
+                return self.count() > 0
+
+            def wait_for(self, timeout=None):
+                if not self.count():
+                    raise TimeoutError("family")
+
+            def inner_text(self, timeout=None):
+                return "Nano Banana Pro arrow_drop_down"
+
+            def click(self, timeout=None):
+                if name == "Settings trigger":
+                    if page.menu:
+                        raise TimeoutError(f"Locator.click: Timeout {timeout or 30000}ms exceeded.")
+                    page.popover = not page.popover
+                elif name == "Select model family":
+                    page.menu = True
+                elif role == "menuitem":
+                    raise TimeoutError("Locator.click: Timeout 5000ms exceeded.")
+                elif hasattr(name, "search"):
+                    page.onboarding = False
+
+        return Target()
+
+    def locator(self, selector):
+        page = self
+        if selector != ".cdk-overlay-backdrop":
+            return types.SimpleNamespace(count=lambda: 0)
+        return types.SimpleNamespace(count=lambda: int(page.menu), last=types.SimpleNamespace(
+            click=lambda position: setattr(page, "menu", False)))
+
+    def wait_for_timeout(self, ms):
+        pass
+
+
+page = SettingsPage()
+try:
+    fi.settings(page, {"label": "Nano Banana 2.1", "aspect": None, "count": 1, "price": 0}, editor=True)
+    raise AssertionError("a model the menu lacks was set")
+except gw.Failure as failure:
+    assert failure.reason.startswith("Flow UI drift: image settings (TimeoutError"), failure.reason
+assert not page.menu and not page.popover, vars(page)
+# Flow's model onboarding callout names its button "Got it, dismiss onboarding message".
+saved_promos, gw.close_promos = gw.close_promos, lambda page, account: 0
+gw.dismiss_dialogs(page)
+gw.close_promos = saved_promos
+assert not page.onboarding, "the onboarding callout stayed open"
 PY
 
 # The card finder on a fake DOM shaped like the live editor history (2026-10-02 failure shot): a Failed card
