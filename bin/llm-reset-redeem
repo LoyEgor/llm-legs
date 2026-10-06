@@ -29,6 +29,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "share"))
+import account_roster  # noqa: E402
+import chat_names  # noqa: E402
 import claude_resets  # noqa: E402
 import codex_appserver  # noqa: E402
 import grok_resets  # noqa: E402
@@ -404,13 +406,13 @@ def limits_cache() -> str:
 
 
 def roster() -> dict[str, list[str]]:
-    try:
-        vendors = json.loads(Path(limits_cache()).read_text()).get("vendors") or {}
-    except (OSError, ValueError, AttributeError):
-        return {}
-    return {vendor: [entry["account"] for entry in (vendors.get(vendor) or {}).get("accounts") or []
-                     if isinstance(entry, dict) and isinstance(entry.get("account"), str)]
-            for vendor in REDEEMERS if isinstance(vendors.get(vendor), dict)}
+    accounts = {}
+    for vendor in REDEEMERS:
+        try:
+            accounts[vendor] = account_roster.roster(vendor)
+        except account_roster.Unreadable:
+            accounts[vendor] = []
+    return accounts
 
 
 def arm_words(names: list, words: str, by: str,
@@ -455,12 +457,8 @@ def words_module():
 
 
 def transcripts():
-    override = os.environ.get("LLM_RESET_REDEEM_TRANSCRIPTS")
-    home = Path.home()
-    roots = [Path(override)] if override else [home / ".claude" / "projects",
-                                               *home.glob(".claude-profiles/*/projects")]
     cutoff = time.time() - WORD_WINDOW_S
-    for root in roots:
+    for root in chat_names.transcript_roots():
         for path in root.glob("*/*.jsonl"):
             try:
                 if path.stat().st_mtime >= cutoff:

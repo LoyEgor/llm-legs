@@ -728,7 +728,10 @@ pass
 AUTO="$WORK/auto"
 ARM="$AUTO/claudeb/reset-arm/claude-notcom"
 SESSION="$AUTO/projects/-Volumes-proj/chat.jsonl"
-mkdir -p "$(dirname "$SESSION")"
+mkdir -p "$(dirname "$SESSION")" "$AUTO/claudeb/limits" "$AUTO/codex-profiles/notcom" "$AUTO/grok-profiles/notcom"
+printf '{}\n' >"$AUTO/claudeb/limits/notcom.json"
+printf '{}\n' >"$AUTO/claudeb/limits/com.json"
+export CODEXB_PROFILES_DIR="$AUTO/codex-profiles" GROKB_PROFILES_DIR="$AUTO/grok-profiles" GROKB_MAIN_GROK_HOME="$AUTO/no-grok"
 SETUP="${CLAUDE_SETUP_ROOT:-$(. "$ROOT/share/test-scope.sh"; git_projects "$ROOT")/claude-setup}"
 cat >"$AUTO/alert.sh" <<EOF
 #!/usr/bin/env bash
@@ -738,7 +741,7 @@ chmod +x "$AUTO/alert.sh"
 auto() {
   env HOME="$CLAUDE_HOME" CLAUDEB_DIR="$AUTO/claudeb" PATH="$WORK/bin:$PATH" \
     CLAUDE_RESETS_ENDPOINT="$CLAUDE_BASE" LLM_LIMITS_CACHE="$AUTO/limits.json" \
-    LLM_RESET_REDEEM_ALERT="$AUTO/alert.sh" LLM_RESET_REDEEM_TRANSCRIPTS="$AUTO/projects" \
+    LLM_RESET_REDEEM_ALERT="$AUTO/alert.sh" CHAT_NAME_ROOTS="$AUTO/projects" \
     CLAUDE_SETUP_ROOT="$SETUP" LLM_RESET_REDEEM_COLLECTOR="$WORK/fake-collector.sh" \
     "$REDEEM" "$@" >/dev/null 2>"$WORK/last.err"
 }
