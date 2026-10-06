@@ -1,5 +1,13 @@
 {
- "blind_spots": [],
+ "blind_spots": [
+  {
+   "id": "registration-readded-on-upstream",
+   "reason": "git log --all also finds the deleting commit, so it cannot tell a restore from the deletion; per-ref tip checks over hundreds of night branches were not built",
+   "since": "2026-10-06",
+   "what": "a registration whose target HEAD deleted but origin/main (or another branch) re-added still researches as removed and a launchd one is auto-retired while the checkout is behind; only the never-tracked case is guarded (tracked_anywhere, run code-code-20261006T032940Z-70c9)",
+   "would_catch_if": "registration_research checks the target at the upstream tip (@{upstream}:<rel> or origin/HEAD:<rel>) before trusting the HEAD deletion"
+  }
+ ],
  "intentional": [],
  "keep": [],
  "owner": "the Code doctor chat",
@@ -312,6 +320,68 @@
    "same_cause": [],
    "status": "fixed-pending",
    "title": "hammerspoon/claude_continue.lua#ClaudeContinue.setDestinationEnabled is defined and never called; hammerspoon/claude_continue.lua#ClaudeContinue.startTimerNow …"
+  },
+  {
+   "fixes": [
+    {
+     "at": "2026-10-06T06:40:26+03:00",
+     "by": "code-code-20261006T032940Z-70c9",
+     "files": [
+      "hammerspoon/send_actions.lua",
+      "hammerspoon/tests/send_actions_harness.lua"
+     ],
+     "in": null,
+     "regressed_at": null,
+     "yield": {
+      "lines_removed": 5,
+      "suite_s_saved": 0,
+      "tokens_cut": 0
+     }
+    }
+   ],
+   "group": "dead",
+   "handoff": null,
+   "id": "cause:hammerspoon/send_actions.lua#SendActions.clipboardHasText",
+   "last_reviewed": null,
+   "match": {
+    "cause": "cause:hammerspoon/send_actions.lua#SendActions.clipboardHasText",
+    "identity": {
+     "sketch": [
+      47209284,
+      195293167,
+      210424167,
+      541316072,
+      761616552,
+      821408049,
+      884507821,
+      903606974,
+      1257950094,
+      1782543530,
+      2049710281,
+      2110297443,
+      2406742200,
+      2417349760,
+      2828655168,
+      2857904180,
+      2909694095,
+      3206302799,
+      3541743376,
+      3577826862,
+      3607089301,
+      3754618358,
+      3977613386,
+      4096901253
+     ],
+     "touch": [
+      "lit:file-url"
+     ]
+    }
+   },
+   "note": null,
+   "reviewed_by": null,
+   "same_cause": [],
+   "status": "fixed-pending",
+   "title": "hammerspoon/send_actions.lua#SendActions.clipboardHasText is defined and never called"
   }
  ]
 }
