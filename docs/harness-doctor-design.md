@@ -605,6 +605,14 @@ up to three events as evidence (`stop:<ts>/<session>`, `words:<ts>/<session>`, `
   generated plist must run its wrapper. A group none of whose copies exists is not installed and not
   judged; a missing or differing copy of an installed one is `deploy-drift` keyed by the copy, its fix
   the installer command. Incident: memlogd ran a 28 Sep copy without `machine_tick` for a week.
+- **Browser** reads `worker-run browse --no-launch --json` for Chrome and Dia in parallel (`HARNESS_BROWSE_CMD`,
+  20 s each, the probe's preamble file removed) plus `WORKER_RUN_DIR`'s `browse/devices.json` and the run
+  `result` files of 72 h. `browser-target` (no device, no usable account: a watch whose fix is Egor's sign-in;
+  a broken manifest: red), `browser-applescript-js` (Chrome red → `bin/chrome-applescript-js enable`; Dia a
+  watch → `bin/dia-js --relaunch`, its launch watcher failed), `browser-device-broken` (watch until the mark
+  lapses) and `browser-run-failures` (watch per kind, newest run named). Probes only: Dia is Egor's live
+  browser and nothing here quits, launches or opens a tab in it. Incidents 2026-10-06: a compacted leveldb
+  hid a device, an account flip-flop, a broken tab group, a Computer Use URL refusal.
 - Two differences from llm-doctor: a value between half the limit and the limit is a watch (deferral,
   silence, growth), and a growth value is the largest single change under one root, not the day's sum.
 

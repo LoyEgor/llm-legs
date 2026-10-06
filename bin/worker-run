@@ -18,7 +18,7 @@ usage() {
     '       worker-run say [<run-id>] <text>' \
     '       worker-run transcript <run-id>' \
     '       worker-run claim <run-id> --paths <path>... [--complete]' \
-    '       worker-run browse [--vendor codex|claudeb] [--target dia|chrome] [--dia-profile <dir|name>] [--account <account>] [--record <deviceId> <account>] [--json]' >&2
+    '       worker-run browse [--vendor codex|claudeb] [--target dia|chrome] [--dia-profile <dir|name>] [--account <account>] [--record <deviceId> <account>] [--no-launch] [--json]' >&2
   exit 2
 }
 
@@ -1302,7 +1302,7 @@ reroute_walled() {
      | if .browser then .browser_account = $next else . end
      | del(.served_model, .denied_tools)' \
     --arg next "$PICKED_ACCOUNT" --argjson now "$(date +%s)" || return 1
-  if IFS= read -r tag <"$directory/tag" 2>/dev/null; then
+  if IFS= read -r tag 2>/dev/null <"$directory/tag"; then
     printf '%s · %s\n' "$PICKED_ACCOUNT" "${tag#* · }" >"$directory/tag"
   fi
   : >"$directory/out"
@@ -2094,7 +2094,7 @@ write_run_state() { # directory phase [exit-code]
   agent=$(jq -r '.agent_task_id // empty' "$directory/state.json" 2>/dev/null) || agent=''
   [ -n "$agent" ] || agent=$(cat "$directory/agent-task" 2>/dev/null) || agent=''
   [ -n "$agent" ] || agent=${CLAUDE_AGENT_ID:-}
-  IFS= read -r tag <"$directory/tag" 2>/dev/null || :
+  IFS= read -r tag 2>/dev/null <"$directory/tag" || :
   rest=${tag#* · }
   session=$(cat "$directory/launcher" 2>/dev/null) || session=''
   tmp="$directory/state.json.tmp.$$"
@@ -2194,7 +2194,7 @@ claim_agent_tag_locked() { # directory tag-dir
   best=$(launch_agent_tag "$dir")
   [ -n "$best" ] || return 0
   printf '%s\n' "${best##*/}" >"$directory/agent-task" 2>/dev/null || :
-  IFS= read -r tag <"$directory/tag" 2>/dev/null || IFS= read -r tag <"$best" 2>/dev/null || tag=''
+  IFS= read -r tag 2>/dev/null <"$directory/tag" || IFS= read -r tag 2>/dev/null <"$best" || tag=''
   tmp="$best.tmp.$$"
   { printf '%s\n' "$tag"; tail -n +2 "$best" | grep -vE '^start=' | grep -vxF "run=${directory##*/}"; printf 'run=%s\n' "${directory##*/}"; } \
     >"$tmp" 2>/dev/null && mv -f "$tmp" "$best" 2>/dev/null || rm -f "$tmp" 2>/dev/null
@@ -2848,7 +2848,7 @@ start_run() {
     --argjson pid 0 --argjson started_at "$started" --argjson cmd "$cmd_json" \
     --argjson add_dirs "$add_dirs_json" --argjson images "$images_json" --argjson web_search "$web_search" \
     --argjson chrome "$chrome" --argjson browser "$browser" --argjson computer "$computer" --argjson chat_fast "$chat_fast" \
-    --arg browser_device "$browser_device" --arg browser_account "$browser_account" \
+    --arg browser_device "$browser_device" --arg browser_account "$browser_account" --arg browser_target "${browser_target:-dia}" \
     --arg light "$light" --arg inbox_settings "$inbox_settings" \
     '{vendor:$vendor,account:$account,model:$model,effort:$effort,role:$role,research_timeout:$research_timeout,sandbox_exec:$sandbox_exec,workdir:$workdir,pid:$pid,cmd:$cmd,started_at:$started_at,resume:$resume,cli:$cli,add_dirs:$add_dirs,images:$images,web_search:$web_search,chrome:$chrome,browser:$browser,explicit_model:$explicit_model,explicit_effort:$explicit_effort}
      + {explicit_account:$explicit_account}
@@ -2857,7 +2857,7 @@ start_run() {
      + if $light != "" then {light:$light} else {} end
      + if $inbox_settings != "" then {inbox_settings:$inbox_settings} else {} end
      + if $review_round != "" then {review_round:$review_round,round_source:$round_source} else {} end
-     + if $browser then {browser_device:$browser_device,browser_account:$browser_account} else {} end
+     + if $browser then {browser_device:$browser_device,browser_account:$browser_account,browser_target:$browser_target} else {} end
      + if $vendor == "gemini" then {agy_model:$agy_model} else {} end
      + if $model_id != "" then {model_id:$model_id} else {} end
      + if $vendor == "grok" and $grok_turns != "" then {max_turns:($grok_turns | tonumber)} else {} end' >"$directory/meta.json" || fail 'could not write metadata'
@@ -4042,6 +4042,20 @@ run_live() { # directory
     ! run_overdue "$1"
 }
 
+chrome_runs() { # live run ids that may be driving Google Chrome
+  local runs="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}" devices meta
+  devices=$(jq -c . "$runs/browse/devices.json" 2>/dev/null) || devices='{}'
+  # A run from before browser_target was recorded names only its device; one that is no Dia
+  # profile's, or a computer-use run, may be on Chrome.
+  find "$runs" -mindepth 2 -maxdepth 2 -name meta.json -mtime -2 -print0 2>/dev/null |
+    xargs -0 jq -r --argjson devices "$devices" 'select(.chrome == true or .computer == true or (.browser == true
+      and (.browser_target // "") != "dia" and ((($devices[.browser_device // ""] // {}).profile // "") | startswith("dia:") | not)))
+      | input_filename' 2>/dev/null |
+    while IFS= read -r meta; do
+      ! run_live "${meta%/meta.json}" || printf '%s\n' "$(basename "${meta%/meta.json}")"
+    done
+}
+
 say_run() {
   local directory vendor mode line end at waited=0 owner entry
   local -a live=()
@@ -5021,7 +5035,7 @@ complete_run() {
 
 browse_run() {
   local browse_vendor='' browse_dia_profile='' browse_account='' browse_record_device='' browse_record_account=''
-  local browse_json=false browse_target=dia
+  local browse_json=false browse_target='' browse_no_launch=false
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --vendor)
@@ -5036,10 +5050,12 @@ browse_run() {
       --target)
         [ "$#" -ge 2 ] || usage
         browse_target="$2"
-        # A literal, and the only place one is spelled: Dia stays the default with nothing — no
-        # environment variable, no config key — able to flip it for a whole machine.
         case "$browse_target" in dia|chrome) ;; *) usage ;; esac
         shift 2
+        ;;
+      --no-launch)
+        browse_no_launch=true
+        shift
         ;;
       --dia-profile)
         [ "$#" -ge 2 ] || usage
@@ -5064,6 +5080,12 @@ browse_run() {
       *) usage ;;
     esac
   done
+  # A literal, and the only place one is spelled: no environment variable or config key flips the
+  # default for a whole machine. Chrome is automation's own browser; Dia is the one Egor watches.
+  if [ -z "$browse_target" ]; then
+    browse_target=chrome
+    [ -z "$browse_dia_profile" ] || browse_target=dia
+  fi
 
   local real_home
   real_home=$(browse_real_home)
@@ -5216,7 +5238,7 @@ browse_run() {
     else
       [ "$dia_status" != absent ] || target_absent=true
     fi
-    if [ "$target_absent" = true ]; then
+    if [ "$target_absent" = true ] && [ "$browse_no_launch" = false ]; then
       # The TARGET and nothing else: Egor's other browser is his, and a preflight that opens it has
       # already broken the one rule `--target` exists to keep.
       if [ "$browse_target" = chrome ]; then
@@ -5226,7 +5248,7 @@ browse_run() {
           $open_cmd -g -a "Google Chrome" >/dev/null 2>&1 || true
         fi
       else
-        $open_cmd -g -a Dia >/dev/null 2>&1 || true
+        $open_cmd -g -a Dia --args --enable-applescript-javascript >/dev/null 2>&1 || true
       fi
       local deadline=$(( $(date +%s) + 15 ))
       while [ "$(date +%s)" -le "$deadline" ]; do
@@ -5257,6 +5279,18 @@ browse_run() {
   fi
   local target_status="$dia_status"
   [ "$browse_target" != chrome ] || target_status="$chrome_status"
+  local applescript_js=off
+  if [ "$browse_target" = chrome ]; then
+    [ "$(jq -r '.browser.allow_javascript_apple_events // false' \
+      "$chrome_user_data/${chrome_profile_dir:-Default}/Preferences" 2>/dev/null)" != true ] || applescript_js=on
+  elif [ "$dia_status" != absent ]; then
+    local ps_listing dia_pid
+    ps_listing=$("${BROWSE_PS:-ps}" -Ao pid=,ppid=,command= 2>/dev/null) || ps_listing=''
+    for dia_pid in $(browse_browser_pids "$ps_listing" 'Dia.app/Contents/MacOS/Dia'); do
+      awk -v pid="$dia_pid" '$1 == pid' <<<"$ps_listing" | grep -q -- '--enable-applescript-javascript' &&
+        applescript_js=on
+    done
+  fi
 
   local -a reasons_list=("${dia_cache_reasons[@]}")
   cua_repl_sync "$(browse_codex_config "$real_home")"
@@ -5648,6 +5682,7 @@ EOF
       --arg dia_dev_name "$dia_device_name" \
       --argjson dia_other "$dia_other_json" \
       --arg target "$browse_target" \
+      --arg applescript_js "$applescript_js" \
       --arg chrome_dev_id "$chrome_device_id" \
       --arg chrome_dev_name "$chrome_device_name" \
       --arg chrome_p_name "$chrome_profile_name" \
@@ -5668,6 +5703,7 @@ EOF
         dia_device: (if $dia_dev_id != "" then {id: $dia_dev_id, display_name: $dia_dev_name} else null end),
         dia_other: $dia_other,
         target: $target,
+        applescript_js: $applescript_js,
         chrome_device: (if $chrome_dev_id != "" then {id: $chrome_dev_id, display_name: $chrome_dev_name} else null end),
         chrome_profile: (if $chrome_p_dir != "" then {name: $chrome_p_name, dir: $chrome_p_dir} else null end),
         chrome: $chrome,
@@ -5683,6 +5719,7 @@ EOF
       }'
   else
     printf 'TARGET: %s\n' "$browse_target"
+    printf 'APPLESCRIPT-JS: %s\n' "$applescript_js"
     printf 'DIA: %s\n' "$dia_status"
     if [ -n "$dia_profile_dir" ]; then
       printf 'DIA-PROFILE: %s (%s)\n' "$dia_profile_name" "$dia_profile_dir"
@@ -5801,6 +5838,7 @@ case "${1:-}" in
   say) shift; say_run "$@"; exit $? ;;
   browse) shift; browse_run "$@"; exit $? ;;
   _deliver) complete_run "$2" "$3"; exit 0 ;;
+  _chrome-runs) chrome_runs; exit 0 ;;
   _supervise) shift; supervise "$@"; rc=$?; end_run_orphans "$1"; slot_release "$NIGHT_SLOT"; exit "$rc" ;;
   *) usage ;;
 esac

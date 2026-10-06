@@ -20,6 +20,13 @@ export STATUSLINE_CACHE_DIR="$WORK/statusline" MEMLOGD_DIR="$WORK/memlogd" INSTR
 export CLAUDEB_DIR="$WORK/claudeb" HARNESS_WATCH_ROOTS="$HOME/hooks" HARNESS_DOCTOR_DIR="$WORK/state"
 export HARNESS_LEDGER="$WORK/ledger.json" HARNESS_REPOS_DIR="$WORK"
 export DOCTORS_DIR="$WORK/doctors" HARNESS_DOCTOR_BOOTS= DOCTOR_TRIGGER=fixture
+export WORKER_RUN_DIR="$WORK/runs" HARNESS_BROWSE_CMD="$WORK/browse-stub"
+cat >"$HARNESS_BROWSE_CMD" <<EOF
+#!/bin/sh
+for a; do case \$a in chrome|dia) target=\$a ;; esac; done
+cat "$WORK/browse-\$target.json" 2>/dev/null || echo '{"chrome":"absent","dia":"absent"}'
+EOF
+chmod +x "$HARNESS_BROWSE_CMD"
 cp "$ROOT/share/harness-ledger.json" "$HARNESS_LEDGER"
 mkdir -p "$HOME/hooks" "$CLAUDE_PROJECTS_DIR" "$STATUSLINE_CACHE_DIR" "$MEMLOGD_DIR" "$CLAUDEB_DIR"
 for repo in alpha beta gamma; do git init -q "$WORK/$repo"; done
@@ -462,7 +469,7 @@ EOF
 asserts=$((asserts + 1))
 
 checks=$(python3 - "$DOCTOR" "$T" "$WORK" <<'EOF'
-import importlib.machinery, importlib.util, json, os, sys
+import importlib.machinery, importlib.util, json, os, shutil, sys
 loader = importlib.machinery.SourceFileLoader("harness_doctor", sys.argv[1])
 m = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_doctor", loader))
 loader.exec_module(m)
@@ -1354,6 +1361,46 @@ for _, copies in m.DEPLOYS[:2]:
         os.remove(os.path.join(libexec if where == "libexec" else agents, name))
 os.environ.pop("HARNESS_LIBEXEC_DIR")
 os.environ.pop("HARNESS_DEPLOY_SOURCE")
+B = m.browser_section
+check(B(T)["state"] == "ok" and judged(B(T)) == {}, "Browser: closed browsers and no runs are nothing judged")
+runs = os.environ["WORKER_RUN_DIR"]
+preamble = os.path.join(runs, "browse", "preamble-1.md")
+put(preamble, "x")
+put(os.path.join(work, "browse-chrome.json"), json.dumps({
+    "chrome": "running", "target": "chrome", "applescript_js": "off", "manifest": "ok", "preamble_file": preamble,
+    "chrome_profile": {"name": "Egor work", "dir": "Profile 1"}, "chrome_device": {"id": "06477f72-aaaa"},
+    "plan": {"vendor": "claudeb", "account": "com"}, "reasons": []}))
+put(os.path.join(work, "browse-dia.json"), json.dumps({
+    "dia": "running", "target": "dia", "applescript_js": "off", "manifest": "ok",
+    "dia_profile": {"name": "work dia", "dir": "Profile 8"}, "dia_device": {"id": "6ada21d4-bbbb"},
+    "dia_other": [{"name": "home dia", "dir": "Profile 7", "device": "8e70ec10-cccc", "account": None}],
+    "plan": {"vendor": "claudeb", "account": "com"}, "reasons": []}))
+stamp = lambda at: __import__("time").strftime("%Y-%m-%dT%H:%M:%SZ", __import__("time").gmtime(at))
+put(os.path.join(runs, "browse", "devices.json"), json.dumps({
+    "6ada21d4-bbbb": {"health": "broken", "health_seen": stamp(T - 3600), "account": "com", "profile": "dia:Profile 8"},
+    "old-dev": {"health": "broken", "health_seen": stamp(T - 90000)}}))
+for name, text, at in (("r-new", "done\nOUTCOME: BROWSER_TABS_BROKEN device=6ada21d4-bbbb\n", T - 600),
+                       ("r-mid", "OUTCOME: BROWSER_TABS_BROKEN device=6ada21d4-bbbb\n", T - 7200),
+                       ("r-quoted", "  - `OUTCOME: BROWSER_TABS_BROKEN` marks a device\n", T - 60),
+                       ("r-old", "OUTCOME: BROWSER_UNAVAILABLE reason=disallowed-url url=x\n", T - 73 * 3600)):
+    put(os.path.join(runs, name, "result"), text)
+    os.utime(os.path.join(runs, name, "result"), (at, at))
+part = B(T)
+fixes = {r["cells"][0]: r["cells"][-1] for r in part["rows"]}
+check(judged(part) == {("browser-applescript-js", "chrome"): "red", ("browser-applescript-js", "dia"): "watch",
+                       ("browser-target", "Profile 7"): "watch",
+                       ("browser-device-broken", "6ada21d4-bbbb"): "watch",
+                       ("browser-run-failures", "BROWSER_TABS_BROKEN"): "watch"} and part["state"] == "problem",
+      "Browser: Chrome without AppleScript JS is red; an unsigned profile, a broken device, failed runs are watches")
+check(fixes["Chrome"] == "bin/chrome-applescript-js enable" and fixes["Dia"].startswith("bin/dia-js --relaunch")
+      and fixes["Dia home dia (Profile 7)"].startswith("Egor: sign in the Claude extension"),
+      "Browser: each finding names its fix; Dia without the AppleScript flag means its launch watcher failed")
+tabs = [r for r in part["rows"] if r["cells"][0] == "BROWSER_TABS_BROKEN"][0]
+check(tabs["judge"][0]["value"] == 2 and "r-new" in tabs["cells"][1], "Browser: run failures count 72 h, newest named")
+check(not os.path.exists(preamble), "Browser: the probe's preamble file is removed")
+for name in ("browse-chrome.json", "browse-dia.json"):
+    os.remove(os.path.join(work, name))
+shutil.rmtree(runs)
 for beat, beat_at, ident in ((None, T, "never-started"), ("roots=2\n", T - 1000, "stale"),
                              ("roots=2\nerror=fsevents gone\n", T - 30, "error"), ("roots=0\n", T - 30, "no-root")):
     check(judged(health(G, beat=beat, beat_at=beat_at)) == {("watcher-down", ident): "red"},

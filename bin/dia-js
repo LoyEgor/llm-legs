@@ -1,0 +1,230 @@
+#!/usr/bin/env bash
+# dia-js (--active | --url-contains <text> | --tab-id <id>) [--file <js>] [--focus]   JS from --file or stdin
+# dia-js --list                      every open Dia tab: id, front (1/0), URL, title
+# dia-js --relaunch [--auto]         restart a Dia that runs without --enable-applescript-javascript
+# Runs JavaScript in a tab Egor already has open in Dia and prints its result. AppleScript JavaScript
+# exists only in a Dia started with the flag, so a Dia without it is quit and reopened with it first.
+{
+set -euo pipefail
+
+DIA_ID=company.thebrowser.dia
+DIA_BIN=/Applications/Dia.app/Contents/MacOS/Dia
+OSASCRIPT=${DIA_JS_OSASCRIPT:-osascript}
+OPEN=${BROWSE_OPEN:-open}
+PS=${BROWSE_PS:-ps}
+WAIT_S=${DIA_JS_WAIT_S:-30}
+STATE_DIR=${DIA_JS_STATE_DIR:-$HOME/.cache/dia-js}
+GUARD_S=${DIA_JS_GUARD_S:-120}
+POLL_S=${DIA_JS_POLL_S:-0.5}
+
+usage() {
+  sed -n '2,4s/^# //p' "$0" >&2
+  exit 2
+}
+
+die() { printf 'dia-js: %s\n' "$*" >&2; exit 1; }
+
+osa() {
+  "$OSASCRIPT" - "$@" <<'APPLESCRIPT'
+on run argv
+  set mode to item 1 of argv
+  set TAB_ to character id 9
+  tell application id "company.thebrowser.dia"
+    if mode is "count" then
+      set n to 0
+      repeat with w in windows
+        repeat with p in profiles of w
+          set n to n + (count of tabs of p)
+        end repeat
+      end repeat
+      return n as text
+    end if
+    if mode is "front" then
+      if (count of windows) is 0 then return ""
+      set u to URL of active tab of (item 1 of windows)
+      if u is missing value then return ""
+      return u
+    end if
+    if mode is "quit" then
+      quit
+      return ""
+    end if
+    if mode is "list" then
+      set out to ""
+      set frontId to ""
+      if (count of windows) > 0 then set frontId to id of active tab of (item 1 of windows)
+      repeat with w in windows
+        repeat with p in profiles of w
+          repeat with t in tabs of p
+            set tid to id of t
+            set u to URL of t
+            if u is missing value then set u to ""
+            set n to title of t
+            if n is missing value then set n to ""
+            set isFront to "0"
+            if tid is frontId then set isFront to "1"
+            set out to out & tid & TAB_ & isFront & TAB_ & u & TAB_ & n & linefeed
+          end repeat
+        end repeat
+      end repeat
+      return out
+    end if
+    set tid to item 2 of argv
+    set doFocus to item 3 of argv
+    set js to item 4 of argv
+    repeat with w in windows
+      repeat with p in profiles of w
+        repeat with t in tabs of p
+          if (id of t) is tid then
+            if doFocus is "1" then
+              focus t
+              repeat 120 times
+                if not (loading of t) then exit repeat
+                delay 0.25
+              end repeat
+            end if
+            set r to execute t javascript js
+            if r is missing value then return ""
+            return r as text
+          end if
+        end repeat
+      end repeat
+    end repeat
+    error "tab " & tid & " not found" number 1404
+  end tell
+end run
+APPLESCRIPT
+}
+
+dia_main() { # prints "flag" or "bare" per Dia main process
+  "$PS" -Ao pid=,command= 2>/dev/null | awk -v bin="$DIA_BIN" '
+    { sub(/^ *[0-9]+ +/, "") }
+    ($0 == bin || index($0, bin " ") == 1) && $0 !~ / --type=/ {
+      print (index($0, " --enable-applescript-javascript") ? "flag" : "bare") }'
+}
+
+tabs_list() { osa list | awk -F '\t' 'NF >= 3 && !seen[$1]++'; }
+
+wait_for() { # seconds command...
+  local deadline=$((SECONDS + $1))
+  shift
+  until "$@"; do
+    [ "$SECONDS" -lt "$deadline" ] || return 1
+    sleep "$POLL_S"
+  done
+}
+
+dia_gone() { [ -z "$(dia_main)" ]; }
+dia_flagged() { [ "$(dia_main)" = flag ]; }
+dia_answers() { osa count >/dev/null 2>&1; }
+
+restored_count=''
+dia_restored() { # the tab count holds still across two polls
+  local now
+  now=$(osa count 2>/dev/null) || return 1
+  [ "$now" -gt 0 ] 2>/dev/null && [ "$now" = "$restored_count" ] && return 0
+  restored_count=$now
+  return 1
+}
+
+relaunch() {
+  local front
+  wait_for "$WAIT_S" dia_answers || die 'Dia does not answer AppleScript'
+  front=$(osa front 2>/dev/null) || front=''
+  osa quit >/dev/null 2>&1 || true
+  wait_for "$WAIT_S" dia_gone || die "Dia did not quit within ${WAIT_S}s (a dialog may be holding it); nothing relaunched"
+  "$OPEN" -b "$DIA_ID" --args --enable-applescript-javascript
+  wait_for "$WAIT_S" dia_flagged || die "Dia did not come back with the flag within ${WAIT_S}s"
+  restored_count=''
+  wait_for "$WAIT_S" dia_restored || true
+  if [ -n "$front" ] && ! tabs_list | awk -F '\t' -v u="$front" '$3 == u { found = 1 } END { exit !found }'; then
+    "$OPEN" -b "$DIA_ID" "$front"
+    printf 'REOPENED: %s\n' "$front" >&2
+  fi
+  printf 'RELAUNCHED: yes\n' >&2
+  printf 'WARNING: Dia was quit and reopened with --enable-applescript-javascript; unsaved input on open pages may be lost\n' >&2
+}
+
+pick=''
+needle=''
+js_file=''
+focus=0
+mode=run
+auto=false
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --active) pick=active; shift ;;
+    --url-contains) pick=url; needle=${2:?--url-contains needs text}; shift 2 ;;
+    --tab-id) pick=id; needle=${2:?--tab-id needs an id}; shift 2 ;;
+    --file) js_file=${2:?--file needs a path}; shift 2 ;;
+    --focus) focus=1; shift ;;
+    --list) mode=list; shift ;;
+    --relaunch) mode=relaunch; shift ;;
+    --auto) auto=true; shift ;;
+    *) usage ;;
+  esac
+done
+
+state=$(dia_main | head -n1)
+case "$mode" in
+  list)
+    [ -n "$state" ] || die 'Dia is not running'
+    tabs_list
+    exit 0
+    ;;
+  relaunch)
+    if [ "$auto" = true ]; then
+      [ ! -e "$STATE_DIR/watch-off" ] || { printf 'SKIPPED: watcher off (%s)\n' "$STATE_DIR/watch-off"; exit 0; }
+      [ "$state" = bare ] || exit 0
+      mkdir -p "$STATE_DIR"
+      if [ -e "$STATE_DIR/last-relaunch" ]; then
+        age=$(($(date +%s) - $(stat -f %m "$STATE_DIR/last-relaunch")))
+        [ "$age" -ge "$GUARD_S" ] || { printf 'SKIPPED: relaunched %ss ago\n' "$age"; exit 0; }
+      fi
+      touch "$STATE_DIR/last-relaunch"
+    fi
+    [ -n "$state" ] || die 'Dia is not running'
+    [ "$state" = bare ] || { printf 'FLAGGED: yes, nothing to relaunch\n'; exit 0; }
+    relaunch
+    exit 0
+    ;;
+esac
+
+[ -n "$pick" ] || usage
+[ -n "$state" ] || die 'Dia is not running'
+if [ -n "$js_file" ]; then
+  js=$(cat "$js_file")
+else
+  [ ! -t 0 ] || die 'no JavaScript: give --file <path> or pipe it on stdin'
+  js=$(cat)
+fi
+[ -n "$js" ] || die 'the JavaScript is empty'
+
+choose() { # prints the one matching tab line or dies
+  local lines count
+  case "$pick" in
+    active) lines=$(tabs_list | awk -F '\t' '$2 == "1"') ;;
+    url) lines=$(tabs_list | awk -F '\t' -v s="$needle" 'index($3, s)') ;;
+    id) lines=$(tabs_list | awk -F '\t' -v s="$needle" '$1 == s') ;;
+    exact) lines=$(tabs_list | awk -F '\t' -v s="$needle" '$3 == s') ;;
+  esac
+  count=$(printf '%s' "$lines" | grep -c . || true)
+  [ "$count" -gt 0 ] || die "no open Dia tab matches ($pick${needle:+ $needle}); dia-js --list shows them"
+  if [ "$count" -gt 1 ]; then
+    printf 'dia-js: %s Dia tabs match (%s %s); pick one with --tab-id:\n' "$count" "$pick" "$needle" >&2
+    printf '%s\n' "$lines" | awk -F '\t' '{ printf "  %s  %s  %s\n", $1, $3, $4 }' >&2
+    exit 1
+  fi
+  printf '%s\n' "$lines"
+}
+
+target=$(choose)
+if [ "$state" = bare ]; then
+  pick=exact needle=$(cut -f3 <<<"$target")
+  [ -n "$needle" ] || die 'the tab has no URL to find again after a relaunch'
+  relaunch
+  target=$(choose)
+  focus=1
+fi
+osa exec "$(cut -f1 <<<"$target")" "$focus" "$js"
+exit; }

@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# chrome-applescript-js [status|enable] [--profile <dir>]
+# enable: quit Chrome, set browser.allow_javascript_apple_events in the profile's Preferences, relaunch
+# it on that profile. Refused while a worker run may be driving Chrome.
+{
+set -euo pipefail
+
+SCRIPT_DIRECTORY=$(cd "$(dirname "$0")" && pwd)
+USER_DATA=${BROWSE_CHROME_USER_DATA:-$HOME/Library/Application Support/Google/Chrome}
+OSASCRIPT=${CHROME_JS_OSASCRIPT:-osascript}
+OPEN=${BROWSE_OPEN:-open}
+PS=${BROWSE_PS:-ps}
+WAIT_S=${CHROME_JS_WAIT_S:-30}
+
+mode=${1:-status}
+[ "$#" -eq 0 ] || shift
+profile='Profile 1'
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --profile) profile=${2:?--profile needs a directory}; shift 2 ;;
+    *) printf 'usage: chrome-applescript-js [status|enable] [--profile <dir>]\n' >&2; exit 2 ;;
+  esac
+done
+prefs="$USER_DATA/$profile/Preferences"
+
+state() {
+  [ "$(jq -r '.browser.allow_javascript_apple_events // false' "$prefs" 2>/dev/null)" = true ] && echo on || echo off
+}
+
+chrome_pids() {
+  "$PS" -Ao pid=,command= 2>/dev/null |
+    awk '{ pid = $1; sub(/^ *[0-9]+ +/, "") } $0 == "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ||
+      index($0, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome ") == 1 && $0 !~ / --type=/ { print pid }'
+}
+
+case "$mode" in
+  status) printf 'APPLESCRIPT-JS: %s (%s)\n' "$(state)" "$profile"; exit 0 ;;
+  enable) ;;
+  *) printf 'usage: chrome-applescript-js [status|enable] [--profile <dir>]\n' >&2; exit 2 ;;
+esac
+
+[ -f "$prefs" ] || { printf 'OUTCOME: NO_PROFILE %s\n' "$prefs"; exit 1; }
+if [ "$(state)" = on ]; then
+  printf 'APPLESCRIPT-JS: on (%s)\nOUTCOME: ALREADY_ON\n' "$profile"
+  exit 0
+fi
+busy=$("$SCRIPT_DIRECTORY/worker-run" _chrome-runs)
+interactive=$("$PS" -Ao pid=,command= 2>/dev/null | grep -E -- ' --chrome( |$)' || true)
+if [ -n "$busy$interactive" ]; then
+  printf 'OUTCOME: CHROME_BUSY\n'
+  [ -z "$busy" ] || printf 'RUN: %s\n' $busy
+  [ -z "$interactive" ] || printf 'PROCESS: %s\n' "$interactive"
+  exit 1
+fi
+
+# Chrome writes its in-memory Preferences back on exit, so an edit made while any Chrome process
+# lives is lost.
+was_running=false
+if [ -n "$(chrome_pids)" ]; then
+  was_running=true
+  "$OSASCRIPT" -e 'tell application "Google Chrome" to quit' >/dev/null
+  deadline=$((SECONDS + WAIT_S))
+  while [ -n "$(chrome_pids)" ]; do
+    [ "$SECONDS" -lt "$deadline" ] || { printf 'OUTCOME: QUIT_TIMEOUT\n'; exit 1; }
+    sleep 1
+  done
+fi
+
+python3 - "$prefs" <<'PY'
+import json, os, sys
+path = sys.argv[1]
+with open(path) as handle:
+    prefs = json.load(handle)
+prefs.setdefault("browser", {})["allow_javascript_apple_events"] = True
+with open(path + ".tmp", "w") as handle:
+    json.dump(prefs, handle, separators=(",", ":"))
+os.replace(path + ".tmp", path)
+PY
+
+"$OPEN" -g -a 'Google Chrome' --args --profile-directory="$profile"
+deadline=$((SECONDS + WAIT_S))
+until [ -n "$(chrome_pids)" ]; do
+  [ "$SECONDS" -lt "$deadline" ] || { printf 'OUTCOME: LAUNCH_TIMEOUT\n'; exit 1; }
+  sleep 1
+done
+sleep "${CHROME_JS_SETTLE_S:-5}"
+if [ "$(state)" != on ]; then
+  printf 'APPLESCRIPT-JS: off (%s)\nOUTCOME: RESET_BY_CHROME\n' "$profile"
+  exit 1
+fi
+printf 'APPLESCRIPT-JS: on (%s)\nOUTCOME: ENABLED%s\n' "$profile" "$([ "$was_running" = true ] && echo ' relaunched' || echo ' launched')"
+exit; }
