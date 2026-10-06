@@ -407,15 +407,26 @@
     "detail": "^wrote [^/]+/night-[0-9]{8}T[0-9]{6}Z-"
    },
    "title": "a night job wrote a night worktree it made itself in a repository its brief granted none: carry_brief grants ADD-DIR only in sweep repositories, yet asks for a verdict on a carried handoff about another one",
-   "status": "open",
-   "fixes": [],
+   "status": "fixed-pending",
+   "fixes": [
+    {
+     "at": "2026-10-06T21:54:46+03:00",
+     "by": "LLM doctor",
+     "files": [
+      "llm-legs/bin/night-run",
+      "llm-legs/share/handoffs.py"
+     ],
+     "in": null,
+     "regressed_at": null
+    }
+   ],
    "same_cause": [
     "W3"
    ],
-   "last_reviewed": "2026-10-06",
+   "last_reviewed": "2026-10-07",
    "reviewed_by": "LLM doctor",
-   "note": "2026-10-06: claudeb-1791257537-24501-7fe3 (night 20261006T032009Z-f253 handoff job 2026-10-05-usage-gate-hooks) created refs/night/<id>/base and a night worktree in usage-ai-report through share/night-worktree.sh, committed there, and the night never lands it. A true escape, kept: night doctrine makes a change in an ungranted repository a handoff. Cause is night-run carry_brief, not worker-run (handoff).",
-   "handoff": "docs/handoffs/2026-10-06-night-carry-other-repos.md"
+   "note": "2026-10-06: claudeb-1791257537-24501-7fe3 (night 20261006T032009Z-f253 handoff job 2026-10-05-usage-gate-hooks) created refs/night/<id>/base and a night worktree in usage-ai-report through share/night-worktree.sh, committed there, and the night never lands it. A true escape, kept. Cause was night-run carry_brief, not worker-run. 2026-10-07: fixed by llm-legs@0fe0e9c1 (handoffs.py outside_repos: carry_brief forbids a worktree, branch or commit in a non-sweep repository the handoff names and has the job readdress it; owner_batches sends it to its owner chat); the original usage-gate-hooks handoff probes as outside /Volumes/Work/Projects/usage-ai-report; test_night_carry assert 8 red with outside_repos disabled. Ruled out: a worker-run grant (granting it would let the night write a repository it never lands). No mechanical refusal of such a worktree: the brief line plus this row's escape count is the guard.",
+   "handoff": null
   },
   {
    "id": "W3",
