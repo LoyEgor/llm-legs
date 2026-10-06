@@ -2,6 +2,7 @@
 # PostToolUse of a claudeb worker run, wired by worker-run's own `--settings`: hands the session the
 # `worker-run say` messages of its run (share/worker-inbox.sh), each exactly once, as
 # additionalContext. Runs after every tool call, so the path to the first exit is builtins only.
+{
 record=${WORKER_RUN_RECORD:-}
 [ -n "$record" ] && [ -e "$record/inbox.new" ] || exit 0
 [ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
@@ -32,3 +33,4 @@ jq -cn --arg context "$context" \
   '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $context}}' || exit 0
 inbox_record "$record" "$INBOX_END" hook
 exit 0
+exit; }
