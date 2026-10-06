@@ -803,7 +803,7 @@ branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locke
   [ -z "$wt" ] || dirty=$(GIT_OPTIONAL_LOCKS=0 git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null | wc -l | tr -d ' ')
   if [ "$4" = 1 ]; then why='main checkout'
   elif [ "$5" = 1 ]; then why='locked'
-  elif [ -n "$wt" ] && [ -n "$(cwd_holders "$wt" "$CWDS" "$TREE")" ]; then why='a process inside'
+  elif [ -n "$wt" ] && [ -n "$(cwd_holders "$wt" "$CWDS" "$TREE" "$ARGS")" ]; then why='a process inside'
   elif [ -n "$night" ]; then
     [ ! -s "$(night_file "$night")" ] || [ "$(night_status "$(night_file "$night")" 2>/dev/null)" != running ] || why="night $night running"
   fi
@@ -824,9 +824,9 @@ branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locke
 # at its night's base, since a nothing-to-do job never committed. `-`, not an empty field: a tab is IFS
 # whitespace, so read would shift every field after an empty one.
 branch_rows() { # [repo...], default the sweep repositories
-  local repo wt branch main locked seen HELD CWDS TREE
+  local repo wt branch main locked seen HELD CWDS TREE ARGS
   [ $# -gt 0 ] || [ -r "$sweep_repos" ] || return 0
-  CWDS=$(cwd_listing) TREE=$(process_listing)
+  CWDS=$(cwd_listing) TREE=$(process_listing) ARGS=$(args_listing)
   HELD=$(cat "$holds_dir"/*.json 2>/dev/null | jq -r '.words as $w | .branches[]? | [.repo, .branch, $w] | @tsv' 2>/dev/null)
   while IFS= read -r repo; do
     [ -n "$repo" ] && [ -d "$repo" ] || continue

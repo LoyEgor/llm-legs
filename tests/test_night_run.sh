@@ -563,7 +563,10 @@ old worktree add -q -b plain-busy "$wt/plain-busy" "$pushed_hash"
 busy=$!
 (cd "$wt/plain-busy/" && exec sleep 600) &
 plain_busy=$!
-printf '%s\n' "$busy" "$plain_busy" >>"$DATA/orchestrators"
+old worktree add -q -b addir-busy "$wt/addir-busy" "$pushed_hash"
+perl -e 'sleep 600' -- --add-dir "$wt/addir-busy/" &
+addir_busy=$!
+printf '%s\n' "$busy" "$plain_busy" "$addir_busy" >>"$DATA/orchestrators"
 old worktree add -q -b onhold "$wt/onhold" "$side_hash"
 journal="$HOME/.cache/claude/review-journal"
 mkdir -p "$journal"
@@ -592,13 +595,14 @@ assert grep -qxF "repo stale-bare · no worktree · unlanded · +1/-3 main · 0 
 assert grep -qxF "repo picked-bare · no worktree · landed · +1/-1 main · 0 dirty · landed" "$WORK/left"
 assert grep -qxF "repo stale-dirty · $wt/stale-dirty · landed · +0/-$behind main · 1 dirty · leftover (1 uncommitted files)" "$WORK/left"
 assert grep -qxF "repo plain-busy · $wt/plain-busy · landed · +0/-$behind main · 0 dirty · live (a process inside)" "$WORK/left"
+assert grep -qxF "repo addir-busy · $wt/addir-busy · landed · +0/-$behind main · 0 dirty · live (a process inside)" "$WORK/left"
 assert grep -qxF "repo fresh · $wt/fresh · landed · +0/-$behind main · 0 dirty · landed" "$WORK/left"
 assert grep -qxF "repo edited · $wt/edited · landed · +0/-$behind main · 1 dirty · leftover (1 uncommitted files)" "$WORK/left"
 assert grep -qxF "repo onhold · $wt/onhold · unlanded · +1/-3 main · 0 dirty · held (Egor: сделай холд, я ещё тут)" "$WORK/left"
 assert_fails grep -q '^repo main ' "$WORK/left"
 assert grep -qxF "checkout repo: diverged" "$WORK/left"
-assert [ "$(wc -l <"$WORK/left" | tr -d ' ')" = 16 ]
-assert jqe --arg w "$wt" 'length == 15 and (map(.branch) | index("main")) == null
+assert [ "$(wc -l <"$WORK/left" | tr -d ' ')" = 17 ]
+assert jqe --arg w "$wt" 'length == 16 and (map(.branch) | index("main")) == null
   and (.[] | select(.branch == "stale-open")) == {repo: ($w | sub("/.claude/worktrees$"; "")), branch: "stale-open",
     worktree: "\($w)/stale-open", landed: false, ahead: 1, behind: 3, dirty: 0, live: false, state: "leftover",
     why: "1 unlanded commits"}
@@ -660,16 +664,17 @@ assert grep -qxF "leftover repo stale-bare: 1 unlanded commits" "$WORK/out"
 assert grep -qxF "leftover repo stale-dirty: 1 uncommitted files" "$WORK/out"
 assert grep -qxF "live repo night/$idc/busy: a process inside" "$WORK/out"
 assert grep -qxF "live repo plain-busy: a process inside" "$WORK/out"
+assert grep -qxF "live repo addir-busy: a process inside" "$WORK/out"
 assert grep -qxF "leftover repo edited: 1 uncommitted files" "$WORK/out"
 assert grep -qxF "held repo onhold: Egor: сделай холд, я ещё тут" "$WORK/out"
 assert_fails grep -q '^kept ' "$WORK/out"
-assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 17 ]
+assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 18 ]
 assert [ ! -e "$wt/landed" ] && [ ! -e "$wt/at-base" ] && [ ! -e "$wt/merged-old" ] && [ ! -e "$wt/fresh" ]
 assert [ -e "$wt/dirty/wip" ] && [ -d "$wt/open" ] && [ -e "$wt/edited/wip" ] && [ -d "$wt/stale-open" ] && [ -e "$wt/stale-dirty/wip" ] && [ -d "$wt/onhold" ]
 for gone in "night/$id/landed" merged-old merged-bare picked-bare fresh; do
   assert_fails git -C "$WORK/repo" rev-parse -q --verify "refs/heads/$gone"
 done
-for stays in "night/$idc/open" stale-open stale-bare stale-dirty edited plain-busy onhold; do
+for stays in "night/$idc/open" stale-open stale-bare stale-dirty edited plain-busy addir-busy onhold; do
   assert git -C "$WORK/repo" rev-parse -q --verify "refs/heads/$stays" >/dev/null
 done
 assert jqe '([.leftovers[] | .branch] | sort) == (["edited", "night/'"$idc"'/dirty", "night/'"$idc"'/open", "stale-bare", "stale-dirty", "stale-open"] | sort)

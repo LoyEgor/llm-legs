@@ -68,25 +68,35 @@ run_env_holders() { # run-id -> "<pid>\t<etime>\t<command>" per other process of
 
 cwd_listing() { lsof -d cwd -Fpn 2>/dev/null; }
 process_listing() { ps -A -o pid=,ppid= 2>/dev/null; }
+args_listing() { ps -A -o pid=,args= 2>/dev/null; }
 
 # The caller's own session never holds: everything under the highest of its ancestors standing inside
 # the directory, so a chat landing the worktree it works in is not held by its own shell or servers.
-cwd_holders() { # dir [listing tree] -> "<pid> <command>" per process whose working directory is dir or below it; 2 when unlisted
-  local dir listing=${2-} tree=${3-} pids
+# A worker launched with --add-dir <worktree> from a cwd elsewhere edits that worktree too, so it holds it.
+cwd_holders() { # dir [listing tree [args]] -> "<pid> <command>" per process whose working directory or --add-dir is dir or below it; 2 when unlisted
+  local dir given=${1%/} listing=${2-} tree=${3-} args=${4-} pids
   dir=$(cd -P "$1" 2>/dev/null && pwd -P) || return 0
   [ $# -ge 3 ] || { listing=$(cwd_listing); tree=$(process_listing); }
+  [ $# -ge 4 ] || args=$(args_listing)
   [ -n "$listing" ] && [ -n "$tree" ] || return 2
-  pids=$(awk -v self="$$" -v dir="$dir" '
-    FNR == NR { parent[$1] = $2; kids[$2] = kids[$2] " " $1; next }
+  pids=$(awk -v self="$$" -v dir="$dir" -v given="$given" '
+    function within(path) { sub(/\/+$/, "", path); return path == dir || index(path, dir "/") == 1 || path == given || index(path, given "/") == 1 }
+    FNR == 1 { file++ }
+    file == 1 { parent[$1] = $2; kids[$2] = kids[$2] " " $1; next }
+    file == 3 {
+      for (i = 2; i <= NF; i++)
+        if (($i == "--add-dir" && i < NF && within($(i + 1))) || (index($i, "--add-dir=") == 1 && within(substr($i, 11)))) inside[$1] = 1
+      next
+    }
     /^p/ { pid = substr($0, 2); next }
-    /^n/ { path = substr($0, 2); if (path == dir || index(path, dir "/") == 1) inside[pid] = 1 }
+    /^n/ { path = substr($0, 2); if (within(path)) inside[pid] = 1 }
     END {
       top = self
       for (p = self; p > 1 && (p in parent); p = parent[p]) if (p in inside) top = p
       queue[n = 1] = top; skip[top] = 1
       for (i = 1; i <= n; i++) { m = split(kids[queue[i]], k, " "); for (j = 1; j <= m; j++) { skip[k[j]] = 1; queue[++n] = k[j] } }
       for (p in inside) if (!(p in skip)) print p
-    }' <(printf '%s\n' "$tree") <(printf '%s\n' "$listing"))
+    }' <(printf '%s\n' "$tree") <(printf '%s\n' "$listing") <(printf '%s\n' "${args:- }"))
   [ -n "$pids" ] || return 0
   ps -o pid=,command= -p "$(printf '%s\n' $pids | paste -sd, -)" 2>/dev/null | sed -E 's/^ +//' | cut -c1-80
 }
