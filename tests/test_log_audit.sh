@@ -61,6 +61,7 @@ case "$1" in
     n=${2#fake-}
     printf 'STATUS: done\nRESULT:\n'
     if grep -q '^# Log audit: merge' "$CALLS.brief.$n"; then
+      echo '{"id": "small-first", "title": "A one-minute thing the merge listed first", "where": [], "quotes": [], "minutes": 1}'
       echo '{"id": "hook-awk-multibyte", "title": "A Bash hook prints an awk multibyte error", "kind": "gate", "where": ["Fixture chat"], "quotes": ["H×3: PreToolUse:Bash stderr awk"], "why": "noise on every call", "minutes": 4, "fix": "hooks"}'
     else
       echo 'Reasoning first.'
@@ -85,7 +86,7 @@ assert test "$(grep -c 'SECRET-OUTPUT\|huge context' <<<"$skeleton")" -eq 0
 # A full read: every chunk and the merge run on Claude Sonnet under the log-audit relay type, and the
 # audit's own transcripts are never read back.
 out=$("$ROOT/bin/log-audit" run --night N1)
-assert grep -q '^log-audit: 1 transcripts in 1 chunks read, 1 findings for the Harness doctor$' <<<"$out"
+assert grep -q '^log-audit: 1 transcripts in 1 chunks read, 2 findings for the Harness doctor$' <<<"$out"
 assert test "$(wc -l <"$CALLS" | tr -d ' ')" -eq 2
 assert test "$(cut -f1 "$CALLS" | sort -u)" = log-audit
 assert test "$(cut -f2 "$CALLS" | grep -c '^claudeb --model sonnet --effort medium ')" -eq 2
@@ -99,8 +100,8 @@ for brief in "$CALLS.brief.1" "$CALLS.brief.2"; do
   assert test "$(grep -c '^```$' "$brief")" -eq 2
   assert test "$("$ROOT/bin/cyrillic-share" <"$brief" | cut -d' ' -f1)" -le "$("$ROOT/bin/cyrillic-share" --max)"
 done
-assert jqe '.night == "N1" and .stop == "done" and .read == 1 and (.findings | length) == 1
-  and .findings[0].id == "hook-awk-multibyte" and .findings[0].minutes == 4 and (.findings[0].at | type) == "number"' \
+assert jqe '.night == "N1" and .stop == "done" and .read == 1 and (.findings | length) == 2
+  and .findings[1].id == "small-first" and .findings[0].id == "hook-awk-multibyte" and .findings[0].minutes == 4 and (.findings[0].at | type) == "number"' \
   "$LOG_AUDIT_DIR/findings.json"
 first_until=$(jq -r '.until' "$LOG_AUDIT_DIR/findings.json")
 
@@ -130,7 +131,7 @@ printf '{"type": "user", "timestamp": "%s", "message": {"content": "ещё ра�
 out=$("$ROOT/bin/log-audit" run --night N4 --detach)
 assert grep -q '^log-audit: reading in the background (pid [0-9]*)' <<<"$out"
 for _ in $(seq 1 100); do grep -q 'findings for the Harness doctor' "$LOG_AUDIT_DIR/detached.log" 2>/dev/null && break; sleep 0.1; done
-assert grep -q '^log-audit: 1 transcripts in 1 chunks read, 1 findings for the Harness doctor$' "$LOG_AUDIT_DIR/detached.log"
+assert grep -q '^log-audit: 1 transcripts in 1 chunks read, 2 findings for the Harness doctor$' "$LOG_AUDIT_DIR/detached.log"
 assert jqe '.night == "N4" and .stop == "done"' "$LOG_AUDIT_DIR/findings.json"
 assert test "$(run_field 4 since)" = "$(run_field 3 since)"
 
@@ -146,7 +147,7 @@ print(json.dumps({"found": found, "at": at}))
 PY
 }
 at=$(jq -r '.at' "$LOG_AUDIT_DIR/findings.json")
-assert jqe '.found | length == 1 and .[0].rule == "log_audit" and .[0].ident == "hook-awk-multibyte" and .[0].level == "red"
+assert jqe '.found | length == 2 and .[0].rule == "log_audit" and .[0].ident == "hook-awk-multibyte" and .[0].level == "red"
   and .[0].group == "Log audit" and .[0].fact == "A Bash hook prints an awk multibyte error · ~4 min"
   and .[0].evidence[0].ref == "Fixture chat" and (.[0].evidence[0].excerpt | startswith("H×3"))' <(verdicts "$at")
 assert jqe '.found == [] and (.at | type) == "number"' <(verdicts "$((at + 49 * 3600))")

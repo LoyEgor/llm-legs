@@ -173,6 +173,10 @@ def slug(text):
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:60] or "finding"
 
 
+def by_minutes(items):
+    return sorted(items, key=lambda item: -(item["minutes"] if isinstance(item.get("minutes"), (int, float)) else 0))
+
+
 def fenced(text):
     # Russian quoted from transcripts is data: inside a closed fence worker-run's English rule skips it.
     return "```\n%s\n```" % text.replace("```", "'''")
@@ -188,12 +192,11 @@ def merged(raw, folder, deadline):
     text = result_of(run_id, deadline) if run_id else None
     found = objects(text or "", ("id", "title"))
     if found:
-        return found[:TOP], None
+        return by_minutes(found)[:TOP], None
     fallback = [{"id": slug(item["title"]), "title": item["title"], "kind": item.get("kind"), "where": item.get("where") or [],
                  "quotes": [item["quote"]] if item.get("quote") else [], "why": item.get("why"),
                  "minutes": item.get("minutes"), "fix": item.get("fix")} for item in raw]
-    fallback.sort(key=lambda item: -(item["minutes"] if isinstance(item.get("minutes"), (int, float)) else 0))
-    return fallback[:TOP], error or "merge returned no findings; raw findings kept"
+    return by_minutes(fallback)[:TOP], error or "merge returned no findings; raw findings kept"
 
 
 def detach(args):
