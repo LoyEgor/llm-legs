@@ -124,7 +124,7 @@ PY
 calibration=$?
 cat "$WORK/calibration"
 assert test "$calibration" = 0
-assert jqe '.problem_count == 4 and .groups == {dead: 3, heavy: 0, duplicate: 1}
+assert jqe '.problem_count == 4 and .groups == {dead: 3, heavy: 0, duplicate: 1, promise: 0}
   and ([.groups[]] | add) == .problem_count and .status == "problems"' "$LATEST"
 assert jqe '.cost.tokens == 91000 and .cost_per_cause["cause:alpha/bin/old-sync"].judge.tokens > 0' "$LATEST"
 
@@ -709,4 +709,101 @@ assert jqe -s '[.[] | select(.id == "cause:alpha2/bin/dirline.sh#cut_label" and 
 "$CD" judge --night f1 --limit 1 --batch 1 >/dev/null
 assert test "$(head -1 "$CODE_DOCTOR_FAKE_LOG" | cut -f2)" = "cause:alpha2/bin/dirline.sh#cut_label"
 
-echo "PASS: $asserts asserts; calibration $(grep -c '^PASS' "$WORK/calibration")/5 cases, a healthy repository with 0 problems, the incremental index, the needs-Egor registration with its research, a dangling registration researched (deleting or renaming commit, live references, an uncommitted deletion no problem) and settled only by the sweep-scope night judge, the judge's batched sessions with their token, wall and launch-failure stops, the durable rollup and its coverage blind spot, the top-K snapshot with active work out, the safety gate (suites, a deletion no problem names, an edit through a cross-repo symlink, active work), the structural digest (rollup no, caller yes), revalidation against the night base, the ledger's fixed-pending, regressed and faulty rows, the canonical mechanisms, review claims through review-anchors, tokenmap-measured instruction weight, a hook rooted through its ~/.claude link, a runner-less test of live code, PyObjC selectors, a symlink never pairing with its target, per-path kinds for identical bytes, link-target edits, raw-byte and same-named-symbol digests, ledger-renamed causes, launch-less day runs, a --repo scope (its own state dir, the Node/TS calibration, generic entry points, no runtime journal claimed, report-only snapshot and check), heavy tests judged only in a --repo scope (a sweep repository's are the Harness Speed block's), collector runs journalled, one concept spelled in bash, Python and a third place as one cause (common literals and links out), a prose layout beside the renderer, fresh code matched against helpers and judged first, test-case boilerplate weighed down"
+# Promise: the worker-message case. An agent says a SendMessage note reaches the worker mid-run while worker-run has no
+# input channel: a claim bound to the code its name resolves to. A chat's «передал» right after a queued result is one
+# overclaim cause on the mechanism, sighted through the Harness reader, its words never persisted. Broken verdicts are
+# problems with the proof obligation; kept and untested-outside-the-risk-classes are not; a changed claim goes first.
+lay_out "$FIX/promise/broken" "$WORK/promise"
+init_repos
+RELAY="$REPOS/relay"
+mkdir -p "$WORK/promise/projects/-relay"
+python3 - "$WORK/promise/projects/-relay/0b3c9e41-7d55-4f7e-9a51-5c1f00d2a7aa.jsonl" "$RELAY" <<'PY'
+import json, sys, time
+path, cwd = sys.argv[1], sys.argv[2]
+now = time.time() - 600
+
+def line(i, kind, content):
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(now + i))
+    return json.dumps({"type": kind, "timestamp": stamp, "cwd": cwd, "entrypoint": "cli",
+                       "message": {"role": kind, "content": content}}, ensure_ascii=False)
+
+def say(i, tid, text):
+    return line(i, "assistant", [{"type": "tool_use", "id": tid, "name": "Bash",
+                                  "input": {"command": "cd %s && worker-run say run-1 '%s'" % (cwd, text)}}])
+
+rows = [line(0, "user", "передай воркеру: используй кэш"), say(1, "toolu_1", "use the cache"),
+        line(2, "user", [{"type": "tool_result", "tool_use_id": "toolu_1",
+                          "content": "queued for delivery to the worker at its next tool round"}]),
+        line(3, "assistant", [{"type": "text", "text": "Готово, передал воркеру."}]),
+        line(4, "user", "и ещё: без сети"), say(5, "toolu_2", "no network"),
+        line(6, "user", [{"type": "tool_result", "tool_use_id": "toolu_2", "content": "delivered at 12:00:01"}]),
+        line(7, "assistant", [{"type": "text", "text": "Передал."}]),
+        line(8, "assistant", [{"type": "tool_use", "id": "toolu_3", "name": "Bash", "input": {"command": "grep -rn queued ."}}]),
+        line(9, "user", [{"type": "tool_result", "tool_use_id": "toolu_3", "content": "notes.md:1: queued"}]),
+        line(10, "assistant", [{"type": "text", "text": "Отправил."}]),
+        line(11, "assistant", [{"type": "tool_use", "id": "toolu_4", "name": "Bash", "input": {"command": "worker-run report run-1"}}]),
+        line(12, "user", [{"type": "tool_result", "tool_use_id": "toolu_4",
+                           "content": "STATUS: done\nEXIT: 0\nSESSION: s-1\nBRIEF: notes queued in the background arrive later"}]),
+        line(13, "assistant", [{"type": "text", "text": "Отправил."}])]
+open(path, "w").write("\n".join(rows) + "\n")
+PY
+CLAUDE_PROJECTS_DIR="$WORK/promise/projects" HARNESS_DOCTOR_BOOTS= python3 - "$ROOT/bin/harness-doctor" <<'PY'
+import importlib.machinery, importlib.util, sys, time
+loader = importlib.machinery.SourceFileLoader("harness_doctor", sys.argv[1])
+doctor = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_doctor", loader))
+loader.exec_module(doctor)
+events = []
+doctor.scan_transcripts({}, time.time(), events, {})
+doctor.append_events(events)
+PY
+assert test "$(cat "$HARNESS_DOCTOR_DIR"/events/*.jsonl | grep -c '^\["o"')" = 1
+"$CD" refresh --quiet || fail "refresh failed on the promise fixture"
+CJ="$CODE_DOCTOR_DIR/candidates.jsonl"
+assert jqe -s '[.[] | select(.group == "promise" and .rules == ["claim"] and .risk == "delivery"
+  and (.id | startswith("cause:relay/agents/claudeb-worker.md#promise:")) and .files == ["relay/agents/claudeb-worker.md", "relay/bin/worker-run"]
+  and (.detail | contains("SendMessage reaches the worker mid-run")))] | length == 1' "$CJ"
+assert jqe -s '[.[] | select(.group == "promise" and .rules == ["claim"])] | map(.risk) | sort == ["data", "delivery", "other"]' "$CJ"
+assert jqe -s '[.[] | select(.rules == ["overclaim"])] | length == 1 and all(.id == "cause:overclaim:worker-run say" and .group == "promise"
+  and ([.units[].unit] == ["relay/bin/worker-run"]) and (.detail | startswith("1 times")) and (.detail | contains("said queued"))
+  and .sightings == ["0b3c9e41-7d55-4f7e-9a51-5c1f00d2a7aa line 4"])' "$CJ"
+assert jqe -s 'map(select(.group == "promise")) | length == 4' "$CJ"
+assert test "$(grep -rl 'передал\|use the cache' "$CODE_DOCTOR_DIR" "$HARNESS_DOCTOR_DIR" | wc -l | tr -d ' ')" = 0
+jq -s 'map(select(.group == "promise") | {key: .id, value: (
+    if .rules == ["overclaim"] then {verdict: "problem", kind: "broken", fix: "code", fact: "queued read as done", plan: "print a receipt"}
+    elif .risk == "delivery" then {verdict: "problem", kind: "broken", fix: "code", fact: "no input channel", plan: "add an inbox"}
+    elif .risk == "data" then {verdict: "kept", kept_by: "relay/bin/worker-run:7", test: "none", fact: "kept"}
+    else {verdict: "problem", kind: "untested", fact: "no retry test", plan: "test it"} end)}) | from_entries' "$CJ" \
+  >"$CODE_DOCTOR_FAKE_VERDICTS"
+"$CD" judge --night p1 >/dev/null
+assert test "$(cut -f2 "$CODE_DOCTOR_FAKE_LOG" | head -2 | tr '\n' ' ')" = "cause:overclaim:worker-run say $(jq -r 'select(.risk == "delivery" and .rules == ["claim"]) | .id' "$CJ") "
+P="$CODE_DOCTOR_DIR/latest.json"
+assert jqe '.groups.promise == 2 and .problem_count == ([.groups[]] | add) and .candidates.waiting == 0
+  and ([.problems[] | select(.group == "promise") | select(.kind == "broken" and .fix == "code"
+       and (.proofs | any(contains("red without the fix"))))] | length == 2)' "$P"
+assert jqe '.coverage.judge.promise == {total: 4, waiting: 0} and .coverage.judge.nights_to_cover == 0' "$P"
+assert jqe '[to_entries[] | select(.value.verdict == "not-now" and (.value.reason | startswith("untested outside the risk classes")))] | length == 1' \
+  "$CODE_DOCTOR_DIR/verdicts.json"
+"$CD" judge --night p2 >/dev/null
+assert test "$(judged)" = 4
+printf '\nThe `worker-run start` launch notifies the chat when the run ends.\n' >>"$RELAY/agents/claudeb-worker.md"
+"$CD" refresh --quiet
+"$CD" judge --night p3 --limit 1 --batch 1 >/dev/null
+assert jqe --arg id "$(tail -1 "$CODE_DOCTOR_FAKE_LOG" | cut -f2)" -s '[.[] | select(.id == $id and .fresh and .risk == "delivery"
+  and (.detail | contains("notifies the chat")))] | length == 1' "$CJ"
+
+lay_out "$FIX/promise/kept" "$WORK/promise-kept"
+init_repos
+"$CD" refresh --quiet
+assert jqe -s 'map(select(.group == "promise")) | length == 1 and .[0].risk == "delivery"' "$CODE_DOCTOR_DIR/candidates.jsonl"
+jq -s 'map(select(.group == "promise") | {key: .id, value: {verdict: "kept", fact: "kept"}}) | from_entries' "$CODE_DOCTOR_DIR/candidates.jsonl" >"$CODE_DOCTOR_FAKE_VERDICTS"
+"$CD" judge >/dev/null
+assert jqe '.candidates.waiting_by_group.promise == 1' "$CODE_DOCTOR_DIR/latest.json"
+jq -s 'map(select(.group == "promise") | {key: .id, value: {verdict: "kept", kept_by: "inbox/bin/worker-run:8", test: "inbox/tests/test_inbox.sh:9", fact: "kept"}})
+  | from_entries' "$CODE_DOCTOR_DIR/candidates.jsonl" >"$CODE_DOCTOR_FAKE_VERDICTS"
+"$CD" judge >/dev/null
+assert jqe '.candidates.waiting_by_group.promise == 0 and .groups.promise == 0
+  and ([.problems[] | select(.group == "promise")] == [])' "$CODE_DOCTOR_DIR/latest.json"
+"$CD" judge >/dev/null
+assert test "$(grep -c '#promise:' "$CODE_DOCTOR_FAKE_LOG")" = 2
+
+echo "PASS: $asserts asserts; calibration $(grep -c '^PASS' "$WORK/calibration")/5 cases, a healthy repository with 0 problems, the incremental index, the needs-Egor registration with its research, a dangling registration researched (deleting or renaming commit, live references, an uncommitted deletion no problem) and settled only by the sweep-scope night judge, the judge's batched sessions with their token, wall and launch-failure stops, the durable rollup and its coverage blind spot, the top-K snapshot with active work out, the safety gate (suites, a deletion no problem names, an edit through a cross-repo symlink, active work), the structural digest (rollup no, caller yes), revalidation against the night base, the ledger's fixed-pending, regressed and faulty rows, the canonical mechanisms, review claims through review-anchors, tokenmap-measured instruction weight, a hook rooted through its ~/.claude link, a runner-less test of live code, PyObjC selectors, a symlink never pairing with its target, per-path kinds for identical bytes, link-target edits, raw-byte and same-named-symbol digests, ledger-renamed causes, launch-less day runs, a --repo scope (its own state dir, the Node/TS calibration, generic entry points, no runtime journal claimed, report-only snapshot and check), heavy tests judged only in a --repo scope (a sweep repository's are the Harness Speed block's), collector runs journalled, one concept spelled in bash, Python and a third place as one cause (common literals and links out), a prose layout beside the renderer, fresh code matched against helpers and judged first, test-case boilerplate weighed down, the worker-message promise (a claim bound to its code, a chat overclaim on the mechanism with no words kept, broken problems with their proof, kept and untested-outside-risk out, a changed claim first)"

@@ -338,7 +338,7 @@ do
   local function quiet(title) return { title = title, disabled = true } end
   local old = { limits.llmDoctorEntry(), limits.harnessDoctorEntry(),
     { menu = { { title = "-" }, action("Refresh") } },
-    { menu = { quiet("Dead: 2 problems"), quiet("Heavy: 0 problems"), quiet("Duplicate: 1 problem"),
+    { menu = { quiet("Dead: 2 problems"), quiet("Heavy: 0 problems"), quiet("Duplicate: 1 problem"), quiet("Promise: 0 problems"),
       quiet("candidates waiting: 0"), quiet("cost 0k tokens · 0 min · yield 0 lines, 0 causes closed"),
       { title = "-" }, action("Refresh") } } }
   for index, entry in ipairs(old) do
@@ -700,7 +700,7 @@ write("/llm-doctor/latest.json", llmDocument("ok", 0))
 
 -- Code doctor: group rows sum to the header, one unit; candidates and cost one level down, dim.
 local codeDoc = { contract = 1, doctor = "code", as_of_s = now, status = "problems", problem_count = 3,
-  groups = { dead = 2, heavy = 0, duplicate = 1 },
+  groups = { dead = 2, heavy = 0, duplicate = 1, promise = 0 },
   problems = {
     { id = "cause:llm-legs/bin/old-sync", group = "dead", state = "new", fact = "bin/old-sync and its lib: no entry point",
       plan = "delete both and the test that only covers them" },
@@ -719,7 +719,7 @@ for _, item in ipairs(details(codeItem.menu)) do
   local name, count = text(item.title):match("^(%a+): (%d+) problems?$")
   if name then groupSum, groupNames[#groupNames + 1] = groupSum + tonumber(count), name end
 end
-check(groupSum == 3 and table.concat(groupNames, " ") == "Dead Heavy Duplicate", "the Code groups sum to the header: "
+check(groupSum == 3 and table.concat(groupNames, " ") == "Dead Heavy Duplicate Promise", "the Code groups sum to the header: "
   .. groupSum .. " " .. table.concat(groupNames, " "))
 check(red(details(codeItem.menu)[1].title) and #details(codeItem.menu)[1].menu == 2 and dimmed(details(codeItem.menu)[2].title)
   and #details(codeItem.menu)[2].menu == 1 and dimmed(details(codeItem.menu)[2].menu[1].title),

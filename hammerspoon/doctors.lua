@@ -23,7 +23,7 @@ local DOCTORS = {
   { key = "system", fix = "Fix — open a fixer chat", env = "SYSTEM_DOCTOR", ledger = "system-ledger.json" },
 }
 local CODE_GROUPS = { { key = "dead", name = "Dead" }, { key = "heavy", name = "Heavy" },
-  { key = "duplicate", name = "Duplicate" }, { key = "ledger", name = "Ledger" } }
+  { key = "duplicate", name = "Duplicate" }, { key = "promise", name = "Promise" }, { key = "ledger", name = "Ledger" } }
 
 local fixTasks, jsonCache, built = {}, {}, nil
 local night, nightTask = { at = 0 }, nil

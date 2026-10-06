@@ -10,6 +10,7 @@ import calendar
 import collections
 import datetime
 import fcntl
+import functools
 import glob
 import hashlib
 import json
@@ -211,6 +212,19 @@ C1_SUITE = re.compile(r"(?:^|[;&|(\n])\s*(?:\w+=\S*\s+)*(?:(?:bash|sh|python3?|e
 MEDIA_TOOL = re.compile(r"(?:^|[\s/;&|(])(media-run|codex-image|gemini-image|grok-image|image-fanout|gemini-video|grok-video|"
                         r"video-chain|gemini-music|gemini-sfx|gemini-listen|chatgpt-web|gemini-web)(?=\s|$|[;&|)])")
 C1_BYTES = (b'"user"', b'"assistant"', b'"system"', b'"queue-operation"', b'"queued_command"')
+DONE_WORDS = ("delivered", "passed", "sent", "fixed", "landed", "передал", "отправил", "доставлен", "починил")
+DONE_BYTES = tuple(w.encode() for w in DONE_WORDS)
+DONE_RE = re.compile(r"\b(?:delivered|passed (?:[\w-]+ ){0,3}to the (?:worker|agent|relay|chat)|sent|fixed|landed)\b"
+                     r"|передал|отправил|доставлен|починил", re.I)
+NOT_DONE_RE = re.compile(r"(?:\bnot|\bnothing|\bnever|n't|\bне|\bничего)\W+(?:\w+\W+)?$", re.I)
+CONTRARY_RE = re.compile(r"\b(queued|pending|will be delivered|next (?:tool )?round)\b|\b(running in (?:the )?background)\b|\b(timed out|timeout)\b"
+                         r"|^(Exit code [1-9])", re.I | re.M)
+OWN_TOOLS = {"Bash", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "NotebookEdit", "TodoWrite", "WebFetch",
+             "WebSearch", "ToolSearch", "LSP", "Skill", "AskUserQuestion", "ExitPlanMode"}
+SHELL_ONLY = {"cd", "export", "source", ".", "set", "unset", "true", "pushd", "popd"}
+SHELL_WRAPPERS = {"env", "time", "command", "exec", "nice", "timeout", "nohup"}
+SHELL_KEYWORDS = {"for", "while", "until", "if", "case", "do", "then", "function"}
+SYSTEM_PREFIXES = ("/usr/", "/bin/", "/sbin/", "/opt/homebrew/", "/Library/", "/System/", "/Applications/")
 
 
 def base_home():
@@ -511,15 +525,23 @@ def read_transcript(path, rec, events, versions, boots=(), limit=-1):
     pos = rec["off"]
     rec["off"] += end
     pend = rec.setdefault("pend", {})
+    mechanisms = rec.setdefault("mech", {})
     last_t = 0.0
     subagent = os.sep + "subagents" + os.sep in path
     session = os.path.basename(os.path.dirname(os.path.dirname(path)) if subagent else path[:-6])[:8]
+    transcript = os.path.basename(path)[:-6]
+    if subagent:
+        transcript = os.path.basename(os.path.dirname(os.path.dirname(path))) + "/" + transcript
+    number = rec.get("ln", 0 if pos == 0 else None)
     for line in data[:end].split(b"\n"):
         at = pos
         pos += len(line) + 1
+        if line and number is not None:
+            number += 1
         owner = not subagent and rec.get("entry", OWNER_ENTRIES[0]) in OWNER_ENTRIES
         if not line or not (b'"tool_use' in line or b'"tool_result"' in line or b'"hook_' in line
-                            or b'"permissionMode"' in line or owner and any(b in line for b in C1_BYTES)):
+                            or b'"permissionMode"' in line or owner and any(b in line for b in C1_BYTES)
+                            or b'"assistant"' in line and any(b in line for b in DONE_BYTES)):
             continue
         try:
             entry = json.loads(line)
@@ -550,11 +572,15 @@ def read_transcript(path, rec, events, versions, boots=(), limit=-1):
             continue
         message = entry.get("message")
         content = message.get("content") if isinstance(message, dict) else None
+        if entry.get("type") == "user" and (isinstance(content, str) or isinstance(content, list) and any(
+                isinstance(b, dict) and b.get("type") == "text" for b in content)):
+            rec.pop("oc", None)
         if not isinstance(content, list):
             continue
         for block in content:
             if not isinstance(block, dict):
                 continue
+            overclaim(rec, mechanisms, entry, block, t, transcript, number, at, events)
             if block.get("type") == "tool_use" and block.get("id"):
                 name = str(block.get("name") or "")
                 command = (block.get("input") or {}).get("command") if name == "Bash" else None
@@ -573,10 +599,70 @@ def read_transcript(path, rec, events, versions, boots=(), limit=-1):
                                who, block["tool_use_id"][-10:], session, kb])
     for key in [k for k, v in pend.items() if v[0] < last_t - PENDING_TTL_S]:
         del pend[key]
+    for key in [k for k in mechanisms if k not in pend]:
+        del mechanisms[key]
+    if number is not None:
+        rec["ln"] = number
     if "c1" in rec:
         c1_prune(rec["c1"], last_t)
     if "act" in rec:
         rec["act"] = [seg for seg in rec["act"] if seg[1] >= last_t - ACTIVE_KEEP_S]
+
+
+def command_mechanism(command):
+    for segment in re.split(r"&&|\|\||[;|\n]", command or ""):
+        words = segment.split()
+        while words and (re.match(r"[A-Za-z_]\w*=", words[0]) or words[0] in SHELL_WRAPPERS
+                         or words[0].startswith("-") or re.fullmatch(r"[0-9.]+[smhd]?", words[0])):
+            words = words[1:]
+        if not words or words[0] in SHELL_ONLY:
+            continue
+        name = os.path.basename(words[0])
+        if not re.fullmatch(r"[a-z][\w.-]*", name) or name in SHELL_KEYWORDS or system_program(words[0]) \
+                or re.fullmatch(r"(python|bash|sh|zsh|node|ruby|perl)[\d.]*", name):
+            return None
+        sub = words[1] if len(words) > 1 and re.fullmatch(r"[a-z][a-z-]{1,20}", words[1]) else None
+        return name + (" " + sub if sub else "")
+    return None
+
+
+@functools.lru_cache(maxsize=512)
+def system_program(word):
+    path = word if "/" in word else shutil.which(word)
+    return bool(path) and os.path.realpath(path).startswith(SYSTEM_PREFIXES)
+
+
+def result_text(block):
+    content = block.get("content")
+    if isinstance(content, list):
+        content = "\n".join(str(b.get("text") or "") for b in content if isinstance(b, dict))
+    return str(content or "")[:4000]
+
+
+def overclaim(rec, mechanisms, entry, block, t, transcript, number, at, events):
+    """A finished effect claimed right after a result that says otherwise: the event names the mechanism whose
+    output allowed that reading and points at the transcript line, never at the words."""
+    kind = block.get("type")
+    if kind == "tool_use" and block.get("id"):
+        name = str(block.get("name") or "")
+        mechanism = command_mechanism((block.get("input") or {}).get("command")) if name == "Bash" else \
+            (None if name in OWN_TOOLS else name)
+        if mechanism:
+            mechanisms[block["id"]] = mechanism
+    elif kind == "tool_result":
+        mechanism = mechanisms.pop(block.get("tool_use_id"), None)
+        found = CONTRARY_RE.search("\n".join(result_text(block).splitlines()[:3])) if mechanism else None
+        if mechanism and (found or block.get("is_error")):
+            reason = "error" if not found else ("queued", "background", "timeout", "exit")[
+                next(i for i, g in enumerate(found.groups()) if g)]
+            rec["oc"] = [mechanism, reason]
+        else:
+            rec.pop("oc", None)
+    elif kind == "text" and entry.get("type") == "assistant" and rec.get("oc"):
+        text = str(block.get("text") or "")
+        if any(not NOT_DONE_RE.search(text[max(0, m.start() - 24):m.start()]) for m in DONE_RE.finditer(text)):
+            mechanism, reason = rec.pop("oc")
+            events.append(["o", round(t, 3), mechanism, transcript, ("line %d" % number) if number else "byte %d" % at, reason])
 
 
 def session_kind(rec):

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -u
+dir=${WORKER_RUN_DIR:-$HOME/.cache/runs}
+case ${1:-} in
+  start) id="run-$$"; mkdir -p "$dir/$id"; printf 'RUN: %s\n' "$id" ;;
+  wait) sleep "${3:-1}"; cat "$dir/$2/status" 2>/dev/null ;;
+  report) cat "$dir/$2/result" 2>/dev/null ;;
+  *) echo "usage: worker-run start|wait|report" >&2; exit 2 ;;
+esac

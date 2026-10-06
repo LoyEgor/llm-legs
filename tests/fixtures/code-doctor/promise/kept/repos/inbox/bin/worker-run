@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -u
+dir=${WORKER_RUN_DIR:-$HOME/.cache/runs}
+case ${1:-} in
+  start) id="run-$$"; mkdir -p "$dir/$id"; : >"$dir/$id/inbox"; printf 'RUN: %s\n' "$id" ;;
+  say)
+    printf '%s\n' "$3" >>"$dir/$2/inbox"
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      [ -s "$dir/$2/delivered" ] && { printf 'delivered at %s\n' "$(cat "$dir/$2/delivered")"; exit 0; }
+      sleep 0.1
+    done
+    echo 'queued: the worker reads it at its next tool call' ;;
+  *) echo "usage: worker-run start|say" >&2; exit 2 ;;
+esac

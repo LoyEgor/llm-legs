@@ -29,8 +29,8 @@ sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 import collector_runs  # noqa: E402
 
 DETECTOR_VERSION = 4
-GROUP_DETECTOR = {"dead": 3, "heavy": 3}
-PARSER_VERSION = 5
+GROUP_DETECTOR = {"dead": 3, "heavy": 3, "promise": 1}
+PARSER_VERSION = 6
 LIMITS = {
     "silent_days": 14,
     "heavy_test_s": 120,
@@ -53,6 +53,7 @@ LIMITS = {
     "fresh_days": 7,
     "fixture_weight": 0.25,
     "layout_score": 2,
+    "promise_binds": 4,
 }
 TOP_K = 3
 TOP_K_LOW_YIELD = 1
@@ -63,6 +64,25 @@ TOKEN_ESTIMATE_FACTOR = 3
 JUDGE_BATCH = 8
 JUDGE_BASE_TOKENS = 80000
 JUDGE_HISTORY = 10
+PROMISE_BRIEF = [
+    "`promise` candidates are statements of what a mechanism does (`claim`: a sentence of an instruction file, a doc an "
+    "instruction tells the model to read, a CLI's usage text or a hook's injected text) or chat replies that read a "
+    "mechanism's output as a finished effect when it said otherwise (`overclaim`). Trace the path yourself, from the named "
+    "entry point (the bound code, the tool, the subcommand) to the effect, through every hop, delay and fallback; never "
+    "decide from the prose alone. Verdicts:",
+    "- `kept`: the code keeps the claim. Cite `kept_by` (file:line where the effect happens) and `test` (file:line of the "
+    "assertion; `none` only outside the risk classes delivery, safety, data).",
+    "- `problem` with `kind: broken`: no path reaches the effect, or a different one does (an extra hop, a delay, a "
+    "fallback that drops it). `fix: code` or `fix: claim`, and the plan says which and why.",
+    "- `problem` with `kind: untested`, only for the risk classes: the code keeps the claim and no test asserts it; the "
+    "plan is a test that is red without the mechanism.",
+    "- `overclaim`: `broken` means the mechanism's output let a model read queued, pending or failed as done; the fix is a "
+    "receipt the mechanism prints (as `worker-run say` prints `delivered at <time>` or `queued: ...`). Read the sighted "
+    "transcript lines before deciding.",
+    "- `not-now` as for the other groups.",
+]
+PROMISE_PROOF = ("a test that is red without the fix and asserts the claimed effect end to end, or the claim rewritten to what "
+                 "the code does, with the reason the code stays")
 LAUNCH_ERROR_MAX = 300
 SKETCH_K = 32
 SHINGLE = 4
@@ -71,8 +91,8 @@ TOUCH_COMMON_DF = 30
 MAX_FILE_BYTES = 2 << 20
 COUNTED = ("new", "open", "regressed")
 DISMISSED = ("not-a-bug", "weather")
-GROUPS = ("dead", "heavy", "duplicate")
-GROUP_RANK = {"dead": 0, "duplicate": 1, "heavy": 2}
+GROUPS = ("dead", "heavy", "duplicate", "promise")
+GROUP_RANK = {"dead": 0, "duplicate": 1, "heavy": 2, "promise": 3}
 EVIDENCE_MAX = 3
 EXCERPT_MAX = 300
 KEEP_WORDS = re.compile(r"isolation|data loss|recovery|must be kept", re.I)
@@ -126,6 +146,21 @@ OUTPUT_WORDS = re.compile(r"\b(report|reply|answer|message|summary|print|output)
 ROW_TEMPLATE_RE = re.compile(r"`[^`\n]*<[A-Za-z][^>`\n]*>[^`\n]*`")
 ROW_SEPARATOR_RE = re.compile(r" (?:·|│|\||—|->|→) |\w: ")
 ENUM_PART_RE = re.compile(r"\((?:[1-9]|[a-h])\)\s")
+EFFECT_RE = re.compile(
+    r"\b(?:(deliver(?:s|ed|ing)?|pass(?:es|ed|ing)?|sen(?:ds?|t|ding)|reach(?:es|ed|ing)?|notif(?:y|ies|ied|ying))"
+    r"|(block(?:s|ed|ing)?|refus(?:e|es|ed|ing)|den(?:y|ies|ied|ying)|kill(?:s|ed|ing)?|guarantee(?:s|d|ing)?|(?:always|never) [a-z]+)"
+    r"|(record(?:s|ed|ing)?|journal(?:s|l?ed|l?ing)?|keep(?:s|ing)?|kept|restor(?:e|es|ed|ing)|clean(?:s|ed|ing)?)"
+    r"|(retr(?:y|ies|ied|ying)|rotat(?:e|es|ed|ing)|f[ae]ll(?:s|ing)? back|wait(?:s|ed|ing)?))\b", re.I)
+RISKS = ("delivery", "safety", "data", "other")
+TOOL_NAMES = ("SendMessage", "Agent", "Task", "TaskStop", "TaskOutput", "Monitor", "ScheduleWakeup", "PushNotification",
+              "CronCreate", "Workflow")
+NAME_RE = re.compile(r"`([^`\n]+)`|(?<![\w/.-])(%s)\b|(?<![\w`])((?:~/|\./)?[\w.-]+(?:/[\w.-]+)+|[a-z][a-z0-9]*(?:[-_][a-z0-9]+)+"
+                     r"|[\w-]+\.(?:jsonl|json|log|tsv|sh|py|lua|md))(?![\w`])" % "|".join(TOOL_NAMES))
+DATA_FILE = re.compile(r"\.(?:jsonl|json|log|tsv|txt|db)$")
+CLI_PART = re.compile(r"(^|/)bin/[^/]+$")
+HOOK_PART = re.compile(r"(^|/)hooks/[^/]+$|(^|/)bin/[^/]*(?:hook|gate)[^/]*$")
+CLAUSE_SPLIT = re.compile(r"[—;:(]|\s-\s|,\s+(?:and|but|so|or)\s")
+SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z`*«\"(])")
 LAYOUT_WORDS = re.compile(r"\bone line (?:per|each)\b|\b(?:then|with) (?:a |one )?(?:line|row|heading|section|column)s? (?:per|for|each|named)\b"
                           r"|\bunder (?:the )?headings?\b|\bin this (?:layout|format|shape)\b", re.I)
 
@@ -461,6 +496,115 @@ def layout_sections(text):
     return sections
 
 
+def prose_sentences(chunks):
+    out = []
+    for start, chunk in chunks:
+        offset = 0
+        for piece in SENTENCE_SPLIT.split(chunk):
+            at = chunk.find(piece, offset)
+            offset = at + len(piece)
+            out.append((start + chunk.count("\n", 0, max(at, 0)), re.sub(r"\s+", " ", piece).strip()))
+    return out
+
+
+def markdown_chunks(text):
+    chunks, para, start, fenced = [], [], 0, False
+    for number, line in enumerate(text.splitlines(), 1):
+        stripped = line.strip()
+        item = re.match(r"([-*+]|\d+[.)])\s+", stripped)
+        if stripped.startswith("```") or fenced or not stripped or HEADING_RE.match(stripped) or stripped.startswith("|") or item:
+            if para:
+                chunks.append((start, "\n".join(para)))
+            para = []
+        if stripped.startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced or not stripped or HEADING_RE.match(stripped) or re.fullmatch(r"[\s|:-]+", stripped):
+            continue
+        if stripped.startswith("|"):
+            chunks.append((number, stripped.strip("|")))
+            continue
+        if not para:
+            start = number
+        para.append(stripped[item.end():] if item else stripped)
+    if para:
+        chunks.append((start, "\n".join(para)))
+    return chunks
+
+
+def code_chunks(rel, text, lang, symbols):
+    lines = text.splitlines()
+    if HOOK_PART.search(rel):
+        return [(n, lit) for n, line in enumerate(lines, 1) if not comment_line(line, lang)
+                for lit in (next(g for g in m.groups() if g is not None) for m in LITERAL_RE.finditer(line))
+                if len(lit.split()) >= 5], None
+    if not CLI_PART.search(rel):
+        return [], None
+    chunks = []
+    if lang == "python":
+        doc = re.match(r"\s*(?:#[^\n]*\n\s*)*[rbu]?(\"\"\"|''')(.*?)\1", text, re.S)
+        if doc:
+            chunks.append((text[:doc.start(2)].count("\n") + 1, doc.group(2)))
+        for match in re.finditer(r"\b(?:help|description|epilog)\s*=\s*[rbuf]*(\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\\\n]|\\.)*')", text):
+            chunks.append((text[:match.start()].count("\n") + 1, match.group(1)[1:-1]))
+    for symbol in symbols:
+        if not re.search(r"usage|help", symbol["name"], re.I):
+            continue
+        heredoc = None
+        for number in range(symbol["start"], min(symbol["end"], len(lines)) + 1):
+            line = lines[number - 1]
+            if heredoc:
+                if line.strip() == heredoc:
+                    heredoc = None
+                else:
+                    chunks.append((number, line))
+                continue
+            opened = re.search(r"<<-?\s*['\"]?(\w+)", line)
+            heredoc = opened.group(1) if opened else None
+            chunks += [(number, next(g for g in m.groups() if g is not None)) for m in LITERAL_RE.finditer(line)]
+    return chunks, os.path.basename(rel)
+
+
+def claim_of(sentence, implicit=None):
+    masked = re.sub(r"`[^`\n]*`", lambda m: " " * len(m.group(0)), sentence)
+    names = []
+    for match in NAME_RE.finditer(sentence):
+        if match.group(1):
+            words = match.group(1).split()
+            if not words:
+                continue
+            name = " ".join(words[:2]) if len(words) > 1 and re.fullmatch(r"[a-z][a-z-]{1,20}", words[1]) else words[0]
+        else:
+            name = match.group(2) or match.group(3)
+        name = name.rstrip(".,:;")
+        if name:
+            names.append((match.start(), name))
+    for match in EFFECT_RE.finditer(masked):
+        if not CLAUSE_SPLIT.split(sentence[:match.start()])[-1].strip(" *_>\"«("):
+            continue
+        if implicit or any(at < match.start() for at, _ in names):
+            found = sorted({n for _, n in names} | ({implicit} if implicit else set()))
+            return RISKS[next(i for i, g in enumerate(match.groups()) if g)], found
+    return None
+
+
+def claims_of(rel, text, lang, symbols):
+    if lang == "doc":
+        chunks, implicit = markdown_chunks(text), None
+    else:
+        chunks, implicit = code_chunks(rel, text, lang, symbols)
+    out, seen = [], set()
+    for line, sentence in prose_sentences(chunks):
+        found = claim_of(sentence, implicit) if len(sentence.split()) >= 4 else None
+        if not found:
+            continue
+        digest = sha(re.sub(r"\s+", " ", re.sub(r"[*_`]", "", sentence)).strip().lower())[:12]
+        if digest not in seen:
+            seen.add(digest)
+            out.append([digest, line, clip(sentence, 400), found[0], found[1]])
+    return out
+
+
 def block_end(lines, start, lang, indent):
     if lang == "python":
         for index in range(start + 1, len(lines)):
@@ -565,8 +709,11 @@ def parse_file(rel, data):
         record["touch"] = sorted(touchpoints(text, lang))
         record["imports"] = imports_of(text, lang)
         record["lits"] = literal_features(text, lang)
+        record["claims"] = claims_of(rel, text, lang, record["symbols"])
     elif lang == "doc" and PROSE_PART.search(rel):
         record["layout"] = layout_sections(text)
+    if lang == "doc" and kind != "fixture" and rel.endswith(".md"):
+        record["claims"] = claims_of(rel, text, lang, ())
     return record
 
 
@@ -637,7 +784,8 @@ def index_repo(top, cache):
             continue
         digest = sha(data)
         lang = file_lang(rel, data.decode("utf-8", "replace")[:200])
-        key = (digest, lang, file_kind(rel, lang), bool(PROSE_PART.search(rel)))
+        key = (digest, lang, file_kind(rel, lang), bool(PROSE_PART.search(rel)),
+               os.path.basename(rel) if CLI_PART.search(rel) or HOOK_PART.search(rel) else None)
         if prior and prior.get("digest") == digest:
             record = dict(prior)
         elif key in cache:
@@ -666,10 +814,12 @@ def fresh_symbols(files, old_files, changed, carried):
     out = {}
     for rel, record in files.items():
         symbols = {s["name"]: s["digest"] for s in record.get("symbols") or ()}
+        symbols.update(("promise:" + c[0], c[0]) for c in record.get("claims") or ())
         kept = {name: seen for name, seen in (carried.get(rel) or {}).items()
                 if symbols.get(name) == seen[0] and (iso_epoch(seen[1]) or 0) > cutoff}
         if rel in changed:
-            before = {s["digest"] for s in (old_files.get(rel) or {}).get("symbols") or ()}
+            before = {s["digest"] for s in (old_files.get(rel) or {}).get("symbols") or ()} | {
+                c[0] for c in (old_files.get(rel) or {}).get("claims") or ()}
             kept.update({name: [digest, now] for name, digest in symbols.items() if digest not in before and name not in kept})
         if kept:
             out[rel] = kept
@@ -750,6 +900,30 @@ def run_rollup():
         path = os.path.join(folder, day + ".json")
         doc = read_json(path, {}) or {"day": day, "sources": {}}
         doc["sources"][source] = {"hits": hits, "ms": ms, "sessions": len(sessions) if source == "statusline" else None}
+        doc["complete"] = day < today
+        write_json(path, doc)
+        written += 1
+    for events in sorted(glob.glob(os.path.join(harness_dir(), "events", "*.jsonl"))):
+        day = os.path.basename(events)[:-6]
+        if not re.fullmatch(r"\d{4}-\d\d-\d\d", day):
+            continue
+        hits, refs, reasons = {}, {}, {}
+        try:
+            with open(events, encoding="utf-8", errors="replace") as handle:
+                rows = [json.loads(line) for line in handle if line.startswith('["o",')]
+        except (OSError, ValueError):
+            rows = []
+        for row in rows:
+            if len(row) >= 6:
+                key = "overclaim:%s" % row[2]
+                hits[key] = hits.get(key, 0) + 1
+                refs[key] = (refs.get(key, []) + ["%s %s" % (row[3], row[4])])[-EVIDENCE_MAX:]
+                reasons[key] = sorted(set(reasons.get(key, [])) | {row[5]})
+        path = os.path.join(folder, day + ".json")
+        doc = read_json(path, {}) or {"day": day, "sources": {}}
+        if not hits and "overclaims" not in doc["sources"]:
+            continue
+        doc["sources"]["overclaims"] = {"hits": hits, "ms": {}, "refs": refs, "reasons": reasons}
         doc["complete"] = day < today
         write_json(path, doc)
         written += 1
@@ -1638,11 +1812,8 @@ def instruction_costs(graph, sessions):
                     text = handle.read()
             except OSError:
                 continue
-            for line in text.splitlines():
-                if re.search(r"\bread\b", line, re.I):
-                    for token in re.findall(r"`([^`]+\.md)`", line):
-                        for target in graph.resolve(token, fid.split("/", 1)[0]):
-                            out.append((target, graph.files[target], 1.0))
+            for target in told_to_read(graph, fid, text):
+                out.append((target, graph.files[target], 1.0))
     found = {}
     measured = read_rates()
     for fid, record, weight in out:
@@ -1659,6 +1830,122 @@ def instruction_costs(graph, sessions):
         if per_day >= LIMITS["token_day"]:
             found[fid] = (round(tokens), round(per_day), source)
     return found
+
+
+def told_to_read(graph, fid, text):
+    out = []
+    for line in text.splitlines():
+        if re.search(r"\bread\b", line, re.I):
+            for token in re.findall(r"`([^`]+\.md)`", line):
+                out += graph.resolve(token, fid.split("/", 1)[0])
+    return out
+
+
+def claim_sources(graph):
+    sources, instructions = {}, []
+    for fid, record in sorted(graph.files.items()):
+        rel = fid.split("/", 1)[1]
+        if graph.canonical(fid) != fid or record.get("kind") == "fixture" or re.search(r"-disabled/", rel):
+            continue
+        if record.get("kind") == "code" and record.get("claims"):
+            sources[fid] = "hook text" if HOOK_PART.search(rel) else "usage text"
+        elif INSTRUCTION_PART.search(rel) or PROSE_PART.search(rel):
+            sources[fid] = "instruction"
+            instructions.append(fid)
+    for fid in instructions:
+        try:
+            with open(os.path.join(graph.top_of(fid), fid.split("/", 1)[1]), errors="replace") as handle:
+                text = handle.read(400000)
+        except OSError:
+            continue
+        for target in told_to_read(graph, fid, text):
+            if graph.files[target].get("lang") == "doc" and not re.search(r"-disabled/", target):
+                sources.setdefault(graph.canonical(target), "read by " + fid)
+    return sources
+
+
+def monthly_reads(graph):
+    measured = read_rates() or {}
+    by_real = {os.path.realpath(path): entry for path, entry in measured.items()}
+    out = {}
+    for fid in graph.files:
+        entry = by_real.get(graph.real.get(fid))
+        if entry:
+            month = entry.get("monthly") or {}
+            out[fid] = (month.get("loads") or 0) + (month.get("read_loads") or 0)
+    return out
+
+
+def claim_binding(graph, edges, fid, names, writers):
+    repo, bound, tools = fid.split("/", 1)[0], [], []
+    for name in names:
+        if name in TOOL_NAMES:
+            tools.append(name)
+            continue
+        word = (name.split() or [""])[0]
+        hits = [h for h in graph.resolve(word, repo) if graph.files[h].get("kind") == "code" and graph.canonical(h) == h]
+        if not hits and DATA_FILE.search(word):
+            hits = writers.get(os.path.basename(word), [])
+        if 0 < len(hits) <= LIMITS["promise_binds"]:
+            bound += [h for h in hits if h not in bound]
+    if tools and not bound:
+        bound = sorted(t for t in edges.get(fid, ()) if graph.files[t].get("kind") == "code" and graph.is_cli(t))
+    return bound[:LIMITS["promise_binds"]], tools
+
+
+def data_writers(graph):
+    writers = {}
+    for fid, record in graph.files.items():
+        if record.get("kind") == "code" and graph.canonical(fid) == fid:
+            for token in (record.get("refs") or {}).get("code") or ():
+                if DATA_FILE.search(token):
+                    writers.setdefault(os.path.basename(token), []).append(fid)
+    return writers
+
+
+def promise_signals(graph, edges, fresh):
+    reads, writers, signals = monthly_reads(graph), data_writers(graph), []
+    for fid, source in claim_sources(graph).items():
+        record = graph.files[fid]
+        for digest, line, sentence, risk, names in record.get("claims") or ():
+            bound, tools = claim_binding(graph, edges, fid, names, writers)
+            if not bound:
+                continue
+            claim = {"unit": "%s#promise:%s" % (fid, digest), "file": fid, "start": line, "end": line, "digest": digest, "lines": 1}
+            bucket = int(math.log(1 + reads.get(fid, 0), 2))
+            signals.append({"group": "promise", "rule": "claim", "cause": claim["unit"], "risk": risk, "claim": sentence,
+                            "units": [claim] + [unit_span(b, graph.files[b]) for b in bound], "fresh": is_fresh(fresh, claim),
+                            "detail": "%s:%d (%s, %s) claims: %s · bound to %s%s" % (
+                                fid, line, source, risk, sentence, ", ".join(bound), (" · tools %s" % ", ".join(tools)) if tools else ""),
+                            "value": bucket * len(RISKS) + len(RISKS) - 1 - RISKS.index(risk)})
+    return signals
+
+
+def overclaim_signals(graph, days):
+    seen = {}
+    for day in sorted(days):
+        source = ((days[day].get("sources") or {}).get("overclaims")) or {}
+        for key, count in (source.get("hits") or {}).items():
+            entry = seen.setdefault(key.split(":", 1)[1], {"count": 0, "refs": [], "reasons": set()})
+            entry["count"] += count
+            entry["refs"] = (entry["refs"] + (source.get("refs") or {}).get(key, []))[-EVIDENCE_MAX:]
+            entry["reasons"].update((source.get("reasons") or {}).get(key, []))
+    signals = []
+    for mechanism, entry in sorted(seen.items()):
+        word = mechanism.split()[0]
+        if word in TOOL_NAMES:
+            bound = sorted(f for f, r in graph.files.items() if r.get("kind") in ("code", "instruction")
+                           and graph.canonical(f) == f and word in ((r.get("refs") or {}).get("code") or ()))
+        else:
+            bound = [h for h in graph.resolve(word) if graph.files[h].get("kind") == "code" and graph.canonical(h) == h]
+        if not 0 < len(bound) <= LIMITS["promise_binds"]:
+            continue
+        signals.append({"group": "promise", "rule": "overclaim", "cause": "overclaim:" + mechanism, "risk": "delivery",
+                        "units": [unit_span(b, graph.files[b]) for b in bound], "sightings": entry["refs"],
+                        "detail": "%d times a model reported a finished effect right after `%s` said %s" % (
+                            entry["count"], mechanism, " or ".join(sorted(entry["reasons"])) or "otherwise"),
+                        "value": len(RISKS) * 8 + entry["count"]})
+    return signals
 
 
 def read_rates():
@@ -1849,6 +2136,8 @@ def build_candidates():
     signals += concept_signals(graph, sites, info, total, fresh, rows, ledger)
     signals += reuse_signals(graph, sites, info, fresh, rows, ledger)
     signals += prose_signals(graph)
+    signals += promise_signals(graph, edges, fresh)
+    signals += overclaim_signals(graph, days)
 
     candidates = cluster(signals, graph, edges, roots, ledger, indexes, hits)
     path = os.path.join(state_dir(), "candidates.jsonl")
@@ -2032,7 +2321,7 @@ def cluster(signals, graph, edges, roots, ledger, indexes, hits):
             i = parent[i]
         return i
 
-    spans = [(i, span) for i, signal in enumerate(signals) for span in signal["units"]]
+    spans = [(i, span) for i, signal in enumerate(signals) if signal["group"] != "promise" for span in signal["units"]]
     by_file = {}
     for i, span in spans:
         by_file.setdefault(span["file"], []).append((i, span))
@@ -2059,7 +2348,8 @@ def cluster(signals, graph, edges, roots, ledger, indexes, hits):
         for signal in members:
             for span in signal["units"]:
                 units.setdefault(span["unit"], span)
-        anchors = sorted(units) or sorted(s.get("anchor") for s in members if s.get("anchor"))
+        anchors = sorted(s["cause"] for s in members if s.get("cause")) or sorted(units) or sorted(
+            s.get("anchor") for s in members if s.get("anchor"))
         if not anchors:
             continue
         group = min((s["group"] for s in members), key=lambda g: GROUP_RANK[g])
@@ -2091,6 +2381,9 @@ def cluster(signals, graph, edges, roots, ledger, indexes, hits):
             "slice": "/".join(files[0].split("/")[:2]) if files else anchors[0],
             "runtime_hits": {k: hits[k] for k in ("hook:" + os.path.basename(f) for f in files) if k in hits},
         }
+        if group == "promise":
+            candidate.update(callers=[], registrations=[], purpose=[], risk=members[0]["risk"], claim=members[0].get("claim"),
+                             sightings=members[0].get("sightings") or [])
         candidate["evidence_digest"] = evidence_digest(candidate)
         out.append(candidate)
     out.sort(key=lambda c: (-c["value"], c["id"]))
@@ -2098,6 +2391,9 @@ def cluster(signals, graph, edges, roots, ledger, indexes, hits):
 
 
 def evidence_digest(candidate):
+    if candidate.get("group") == "promise":
+        return sha(json.dumps({"units": [[u["unit"], u["digest"]] for u in candidate["units"]], "rules": candidate["rules"],
+                               "detector": GROUP_DETECTOR["promise"]}, sort_keys=True))[:24]
     structural = {
         "units": [[u["unit"], u["digest"]] for u in candidate["units"]],
         "callers": candidate["callers"],
@@ -2172,7 +2468,7 @@ def verdict_valid(verdict, candidate, now):
         return False
     if verdict.get("verdict") == "not-now":
         return (iso_epoch(verdict.get("expires")) or 0) > now
-    return verdict.get("verdict") == "problem"
+    return verdict.get("verdict") in ("problem", "kept")
 
 
 def git_history(top, rel):
@@ -2193,8 +2489,14 @@ def candidate_lines(candidate, indexes):
               "Runtime hits (rollup): %s" % (json.dumps(candidate.get("runtime_hits") or {}) or "none")]
     if candidate.get("reuse"):
         lines.append("Existing mechanism it should call: %s" % ", ".join(candidate["reuse"]))
-    if candidate.get("fresh"):
+    if candidate.get("fresh") and candidate["group"] != "promise":
         lines.append("Fresh: added or changed since the last index; judge whether it re-does an existing helper")
+    if candidate["group"] == "promise":
+        lines.append("Risk class: %s" % candidate.get("risk"))
+        if candidate.get("claim"):
+            lines.append("Claim, verbatim: %s" % candidate["claim"])
+        if candidate.get("sightings"):
+            lines.append("Sightings (transcript under ~/.claude/projects, session and line): %s" % "; ".join(candidate["sightings"]))
     for fid in candidate["files"][:3]:
         repo, rel = fid.split("/", 1)
         top = (indexes.get(repo) or {}).get("top")
@@ -2223,6 +2525,7 @@ def judge_brief(batch, indexes):
               "instruction tells the model to write a user-facing layout by hand; the plan renders it via the shared frame and "
               "leaves the model only the meaning. `reuse`: fresh code matched against existing helpers on relaxed thresholds.",
               "A test is kept for the requirement it protects, never for being quiet; a merge needs net benefit.",
+              ] + (PROMISE_BRIEF if any(c["group"] == "promise" for c in batch) else []) + [
               "Research before any verdict, and decide what it settles. A hook that never fired (`silent`): find why it "
               "exists (`git log -S<its name>` in its repository, the commit subjects, the docs) and how often the event it "
               "guards happens (the hook, statusline and menu journals), and quote both in `reason`.",
@@ -2234,6 +2537,10 @@ def judge_brief(batch, indexes):
               '{"id": "<candidate id>", "verdict": "problem" | "not-now", "fact": "<one English line for the menu>", '
               '"plan": "<the fix>", "proofs": ["<obligation>", ...], "reason": "<why, quoting the record>", '
               '"triggers": ["<what re-opens it>"], "value": <net lines or minutes saved>}']
+    if any(c["group"] == "promise" for c in batch):
+        lines += ['A `promise` candidate adds `"kind": "broken" | "untested"` and `"fix": "code" | "claim"` to a problem, '
+                  'and its `kept` verdict is `{"id": ..., "verdict": "kept", "kept_by": "<file:line>", "test": "<file:line or none>", '
+                  '"fact": ..., "reason": ...}`.']
     return "\n".join(lines) + "\n"
 
 
@@ -2250,8 +2557,10 @@ def parse_results(text, ids):
         except ValueError:
             position = start + 1
             continue
-        if isinstance(value, dict) and value.get("verdict") in ("problem", "not-now") and value.get("id") in ids:
-            found[value["id"]] = value
+        if isinstance(value, dict) and value.get("verdict") in ("problem", "not-now", "kept") and value.get("id") in ids:
+            if value["verdict"] != "kept" or value.get("kept_by") and (value["id"].startswith("cause:overclaim:")
+                                                                     or "#promise:" in value["id"]):
+                found[value["id"]] = value
         position = start + max(consumed, 1)
     return found
 
@@ -2370,7 +2679,11 @@ def run_judge(night, max_tokens, max_wall, vendor, limit=None, batch_size=JUDGE_
                      "needs_egor": verdict.get("needs_egor") is True, "trade": verdict.get("trade"),
                      "group": candidate["group"], "snapshot": candidate["snapshot"], "night": night,
                      "first_at": (verdicts.get(candidate["id"]) or {}).get("first_at") or iso_time(now_s())}
-            if verdict["verdict"] == "not-now":
+            if candidate["group"] == "promise":
+                entry.update({k: verdict[k] for k in ("kind", "fix", "kept_by", "test") if verdict.get(k)})
+                if entry["verdict"] == "problem" and entry.get("kind") == "untested" and candidate.get("risk") == "other":
+                    entry.update(verdict="not-now", reason="untested outside the risk classes; %s" % (entry.get("reason") or ""))
+            if entry["verdict"] == "not-now":
                 entry["expires"] = iso_time(now_s() + NOT_NOW_DAYS * 86400)
             verdicts[candidate["id"]] = entry
             slices[candidate["slice"]] = {"at": iso_time(now_s()), "snapshot": candidate["snapshot"]}
@@ -2454,7 +2767,7 @@ def problem_of(candidate, verdict):
     needs_egor = bool(candidate.get("needs_egor") or trade)
     if needs_egor:
         fact = "needs Egor: " + (trade or fact)
-    return {"id": candidate["id"], "rule": candidate["rules"][0], "rules": candidate["rules"], "group": candidate["group"],
+    problem = {"id": candidate["id"], "rule": candidate["rules"][0], "rules": candidate["rules"], "group": candidate["group"],
             "state": "new", "fact": clip(fact, 200), "value": verdict.get("value") if isinstance(verdict.get("value"), (int, float)) else candidate["value"],
             "limit": 0, "unit": "lines", "window_h": None, "exposure": max(len(units), 1), "count": None,
             "first_seen": verdict.get("first_at") or verdict.get("at"), "last_seen": verdict.get("at"),
@@ -2462,6 +2775,10 @@ def problem_of(candidate, verdict):
             "needs_egor": needs_egor, "trade": trade, "steps": candidate.get("steps") or [],
             "units": units, "files": candidate["files"], "repos": candidate["repos"], "snapshot": candidate["snapshot"],
             "digest": candidate["evidence_digest"]}
+    if candidate["group"] == "promise":
+        problem.update(kind=verdict.get("kind") or "broken", fix=verdict.get("fix"), risk=candidate.get("risk"))
+        problem["proofs"] = problem["proofs"] + [PROMISE_PROOF]
+    return problem
 
 
 def auto_verdict(candidate):
@@ -2631,6 +2948,7 @@ def document(started):
     slices = read_json(os.path.join(state_dir(), "slices.json"), {}) or {}
     all_slices = sorted({c["slice"] for c in candidates})
     last_judge = (read_jsonl(os.path.join(state_dir(), "judge-runs.jsonl")) or [None])[-1]
+    per_night = max(1, int(BUDGET["tokens"] // session_estimate(judge_sessions(), ""))) * JUDGE_BATCH
     return {
         "contract": 1, "doctor": "code", "as_of": iso_time(now), "as_of_s": int(now), "judge": judge_digest(),
         "status": status, "problem_count": count, "groups": groups, "problems": problems,
@@ -2643,7 +2961,10 @@ def document(started):
                                for c in waiting[:5]]},
         "cost": summary["totals"], "cost_per_cause": summary["per_cause"], "yield": summary["yield"],
         "queue_k": queue_k(summary), "last_judge": last_judge,
-        "coverage": {"rollup": cover, "deep_pass": {"slices": len(all_slices), "covered": sum(1 for s in all_slices if s in slices)}},
+        "coverage": {"rollup": cover, "deep_pass": {"slices": len(all_slices), "covered": sum(1 for s in all_slices if s in slices)},
+                     "judge": {"per_night": per_night, "nights_to_cover": -(-len(waiting) // per_night),
+                               "promise": {"total": sum(1 for c in candidates if c["group"] == "promise"),
+                                           "waiting": sum(1 for c in waiting if c["group"] == "promise")}}},
         "index": {repo: {"files": len(doc.get("files") or {}), "snapshot": (doc.get("cursor") or {}).get("snapshot"),
                          "at": (doc.get("cursor") or {}).get("at")} for repo, doc in indexes.items()},
         "self": {"collector_s": round(time.time() - started, 3), "error": None},
@@ -2748,6 +3069,8 @@ def unit_digest_at(top, ref, span):
     if "#" not in span["unit"]:
         return sha(data)[:16]
     name = span["unit"].rsplit("#", 1)[1]
+    if name.startswith("promise:"):
+        return span["digest"] if any(c[0] == span["digest"] for c in parse_file(rel, data).get("claims") or ()) else None
     named = [s for s in parse_file(rel, data).get("symbols") or () if s["name"] == name]
     if not named:
         return None

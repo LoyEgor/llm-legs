@@ -104,6 +104,34 @@ night fix it, its cost falling to near zero once the repos are in order.
   review-bench tables because review-bench is not importable there, guarded by test_consistency)
   are recorded in `docs/shared-invariants.md` and never re-flagged.
 
+### promise — a statement of what a mechanism does that no code path keeps
+Why (Egor, 2026-10-06): for weeks chats said they had "passed a note to the worker" while no worker had an input
+channel; the agent files implied it, nothing checked it. The night finds such claims the way that chat did: take the
+stated capability and trace the code path.
+- `claim` (index stage, no LLM): a sentence of a file models read (CLAUDE.md, skills/agents/commands markdown, the docs an
+  instruction tells the model to read — `told_to_read`, the heavy group's own resolution — a bin CLI's usage/help text,
+  a hook's injected literals) that names a resolvable mechanism (a bin script or subcommand, a hook, a tool such as
+  SendMessage, a journal file through its writers) BEFORE an effect verb of the closed list (deliver, pass, send, reach,
+  notify; block, refuse, deny, kill, guarantee, always/never + verb; record, journal, keep, restore, clean; retry, rotate,
+  fall back, wait). A sentence opening on the verb is an instruction, never a claim. Each claim binds to at most 4 code
+  files its names resolve to (a tool alone: the CLIs its file references). Cause `cause:<file>#promise:<sha of the
+  normalized sentence>`; evidence digest = the claim plus the bound code digests, nothing else, so a claim is re-judged
+  only when one side changes;
+- `overclaim`: the Harness doctor's incremental transcript reader (`read_transcript`) emits `["o", t, mechanism,
+  transcript, "line N", reason]` when an assistant text states a finished effect (delivered, passed … to the worker,
+  sent, fixed, landed, «передал», «отправил», «доставлено», «починил», not negated) right after a tool result that said
+  queued/pending/next round, running in background, timeout or a non-zero exit in its first 3 lines (deeper words are
+  echoed prose: a `worker-run report` quoting its brief). A system program (`/usr`, `/bin`, Homebrew), an interpreter or a
+  builtin tool is never a mechanism. The cause is the MECHANISM (`cause:overclaim:<bin subcommand | tool>`), never the chat; `rollup` keeps counts, reasons and the last 3 pointers per day; no words persist;
+- order: claims new since the cursor first (the reuse group's `fresh` rule), then tokenmap monthly loads of the file
+  (log2 bucket), then risk class delivery > safety > data > other; an overclaim outranks every claim;
+- verdicts: `kept` (cites `kept_by` file:line and `test`; refused without `kept_by`), `problem` with `kind: broken`
+  (`fix: code | claim`) or `kind: untested` (risk classes only; an untested `other` claim is stored `not-now`), or
+  `not-now`. A broken overclaim's fix is a receipt the mechanism prints, as `worker-run say` does. Every promise problem
+  carries the proof obligation: a test red without the fix, or the rewritten claim with its reason;
+- budget: the doctor's one judge budget; cached verdicts make an unchanged tree free; `coverage.judge` shows the
+  per-night capacity and the nights to cover the waiting queue.
+
 ### deep pass
 One initial coverage pass over all four repos, slice by slice on successive nights; afterwards only
 slices whose digest changed are re-read. A clean, unchanged tree costs no LLM read.
@@ -149,6 +177,6 @@ the same cause re-appearing under another name is a `regressed` problem, not a n
 - never other projects; never foreign uncommitted work.
 
 ## Calibration before thresholds
-The corpus `tests/fixtures/code-doctor/` (five labelled cases and a healthy repository with no
-problems) is the acceptance test; its heavy test that must be kept is the protected case of
+The corpus `tests/fixtures/code-doctor/` (five labelled cases, a healthy repository with no
+problems, and `promise/`: the worker-message case and its kept sibling) is the acceptance test; its heavy test that must be kept is the protected case of
 `tests/test_speed_doctor.sh`.

@@ -340,7 +340,7 @@ Updater doctor (added 2026-09-30 by «Updater doctor»):
   catalog newest first (12 at most) and the last 5 events.
 
 Code doctor (added 2026-10-02, design `docs/code-doctor-design.md`):
-- Groups `dead`, `heavy`, `duplicate` (plus `ledger` for a faulty row) under the own key `groups`;
+- Groups `dead`, `heavy`, `duplicate`, `promise` (plus `ledger` for a faulty row) under the own key `groups`;
   they sum to `problem_count`, one unit: a problem is one cause, however many units it spans.
 - A problem exists only once the judge (worker-run, under the night's token and wall budget) ruled
   it `problem`; an unjudged candidate is the own key `candidates.waiting`, never counted. A

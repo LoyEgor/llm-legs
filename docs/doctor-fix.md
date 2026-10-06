@@ -272,7 +272,9 @@ weather, never a reason to drop a cell or a vendor or to raise a cap.
 
 Owner: `share/code-ledger.json` `owner`. Design: `docs/code-doctor-design.md`. Scope: the problems the
 snapshot hands you, top-K by judged value (`docs/doctors-contract.md` §4): dead units, heavy tests,
-hooks and always-loaded text, duplicate mechanisms, each with the judge's `plan` and `proofs`.
+hooks and always-loaded text, duplicate mechanisms, promises no code keeps (`kind: broken` with `fix: code | claim`, or
+`untested`), each with the judge's `plan` and `proofs`. A promise fix lands a test red without it, or rewrites the claim
+to what the code does and says why the code stays; an overclaim fix makes the mechanism print a receipt.
 A `code-doctor --repo` document of a repository outside sweep-repos is report-only (`launch code`
 refuses it, its snapshot is empty, `check` fails): its problems are for Egor to read.
 
