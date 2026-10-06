@@ -828,6 +828,21 @@ auto --fire-armed claude/notcom --wall weekly
 [ ! -s "$CLAUDE_CALL_LOG" ] || fail "a later wall after the redeem called the service again"
 pass
 
+# His own phrasing, read by a model from the intake's hint: a reset word and the account's name arm
+# it in any word order; a vendor his words did not name, or words without a reset word, do not.
+FREE='когда claude notcom упрётся в недельный лимит, пусть сам произойдёт ресет'
+say user "$FREE"
+say user 'claude notcom снова упёрся в лимит'
+for refused in "codex/notcom|$FREE" 'claude/notcom|claude notcom снова упёрся в лимит'; do
+  auto --arm "${refused%%|*}" --word "${refused#*|}"; rc=$?
+  [ "$rc" -eq 2 ] && [ -z "$(ls "$AUTO/claudeb/reset-arm" 2>/dev/null)" ] \
+    || fail "--arm ${refused%%|*} --word '${refused#*|}' armed (exit $rc)"
+done
+auto --arm claude/notcom --word "$FREE" || fail "his own phrasing did not arm: $(cat "$WORK/last.err")"
+[ -e "$ARM" ] || fail "his own phrasing left no arm"
+auto --disarm claude/notcom
+pass
+
 # Only the main weekly bucket: a five-hour or fable wall never fires, by the store or a run, and a
 # run that cannot name its bucket waits for the store.
 arm

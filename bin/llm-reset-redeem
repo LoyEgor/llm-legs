@@ -486,6 +486,17 @@ def spoken(words_lib, words: str, account: str) -> Path | None:
     return None
 
 
+def loose_names(words_lib, words: str, vendor: str, account: str) -> list:
+    """His own phrasing a model read as a reset ask: a reset word and the account's name, and no
+    vendor named but the one armed."""
+    tokens = words_lib.tokenize(words_lib.fold(words)[0])
+    said = {words_lib.keyword_at(tokens, k)[0] for k in range(len(tokens))}
+    vendors = {{"claudeb": "claude"}.get(named, named) for named in map(words_lib.vendor_named, tokens) if named}
+    if "reset" in said and account.casefold() in {token.text for token in tokens} and vendors <= {vendor}:
+        return [(vendor, account)]
+    return []
+
+
 def arm_cli(vendor: str, account: str, words: str) -> int:
     target = f"{vendor}/{account}"
     if vendor not in REDEEMERS:
@@ -500,10 +511,10 @@ def arm_cli(vendor: str, account: str, words: str) -> int:
               file=sys.stderr)
         return EXIT_USAGE
     entry = words_lib.classify(words).get("reset") or {}
-    armed = arm_words(entry.get("names") or [], words, f"cli ({source.name})", (vendor, account))
+    names = entry.get("names") or loose_names(words_lib, words, vendor, account)
+    armed = arm_words(names, words, f"cli ({source.name})", (vendor, account))
     if target not in armed:
-        print(f"{target}: not armed — his words carry no reset verb naming {account}",
-              file=sys.stderr)
+        print(f"{target}: not armed — his words name no reset of {target}", file=sys.stderr)
         return EXIT_USAGE
     print(f"{target}: armed — auto-redeem at the weekly wall")
     return 0
