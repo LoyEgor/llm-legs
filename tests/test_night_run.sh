@@ -290,7 +290,7 @@ assert grep -qE "^blocked-on-egor · debt · p1( · [^ ]+)* · step 10 needs his
 assert [ "$(body "$WORK/report" | grep -vcE '^(ledger|trend|roi) · ')" = 28 ]
 assert [ "$(grep -m1 -E '^(ledger|trend) · ' "$WORK/report")" = "ledger · night $id · $(jq -r '((.finished_at | fromdate)
   - (.started_at | fromdate)) / 3600 * 10 | round / 10 | tostring | if test("\\.") then . else . + ".0" end' "$R") h" ]
-assert grep -qxE "trend · problems [-+][0-9]+ over [0-9]+ nights · (moving forward|treading water|going back)" "$WORK/report"
+assert grep -qxE "trend · problems [0-9]+ → [0-9]+ over [0-9]+ nights · (moving forward|treading water|going back)" "$WORK/report"
 assert [ "$(body "$WORK/report" | sed -n 2p)" = "jobs · landed 2 (fixer 1, vendor 1) · left 8 (debt 8) · other 2 (debt 1, fixer 1)" ]
 assert [ "$(body "$WORK/report" | sed -n 9p | cut -d' ' -f1-2)" = "night $id" ]
 assert [ "$(awk '{ print length }' "$WORK/report" | sort -n | tail -1)" -le 100 ]
@@ -1050,31 +1050,32 @@ TZ=UTC DOCTORS_DIR="$TB/doctors" WORKER_RUN_DIR="$TB/runs" CLAUDEB_PROFILES_ROOT
   WORKER_STATS_DIR="$TB/stats" NIGHT_RUN_SWEEP_REPOS="$TB/sweep-repos" CHAT_NAME_ROOTS="$TB/profiles" \
   CHAT_NAMES_CACHE="$TB/chat-names.json" night report 20260205T000000Z-abcd >"$WORK/table-report" || fail "table report"
 sed '/^$/,$d' "$WORK/table-report" >"$WORK/table-block"
-assert [ "$(cat "$WORK/table-block")" = "                      2 Feb   4 Feb   5 Feb
-duration              9.8 h   6.0 h   3.5 h
-spend total           12.5M    5.0M    0.0M
-spend fixers           8.0M       –    0.0M
-spend reviews          3.0M       –    0.0M
-spend orchestrator     1.5M       –    0.0M
-landed jobs               2       1       1
-left jobs                 1       0       0
-blocked on Egor           0       1       0
-worker runs               3       2       0
-worker wall          10.0 h       –   0.0 h
-model active           10 %       –       –
-queued for slots      2.0 h       –   0.0 h
-in own tests          1.0 h       –   0.0 h
-problems llm          5 → –   4 → 3   2 → 0
-problems harness      3 → –   2 → 2   1 → 4
-problems updater          –   0 → 1       –
-problems code             –   1 → 0       –
-problems system           –       –       –
-lines by jobs        +14/-3       –   +0/-0
-week-old rewritten        7       –       –
-suites pass/fail          –       –    15/1" ]
+assert [ "$(cat "$WORK/table-block")" = "                2 Feb   4 Feb   5 Feb
+duration        9.8 h   6.0 h   3.5 h
+spend           12.5M    5.0M    0.0M
+  fixers         8.0M       –    0.0M
+  reviews        3.0M       –    0.0M
+  night chat     1.5M       –    0.0M
+landed              2       1       1
+left                1       0       0
+needs Egor          0       1       0
+worker runs         3       2       0
+worker wall    10.0 h       –   0.0 h
+model active     10 %       –       –
+slot queue      2.0 h       –   0.0 h
+own tests       1.0 h       –   0.0 h
+problems        8 → –   7 → 6   3 → 4
+  llm           5 → –   4 → 3   2 → 0
+  harness       3 → –   2 → 2   1 → 4
+  updater           –   0 → 1       –
+  code              –   1 → 0       –
+  system            –       –       –
+job lines      +14/-3       –   +0/-0
+rewrote 7d          7       –       –
+suites ✓/✗          –       –    15/1" ]
 assert [ "$(python3 -c 'import sys; print(len({len(l.rstrip("\n")) for l in sys.stdin}))' <"$WORK/table-block")" = 1 ]
 assert [ "$(head -1 "$WORK/table-block" | wc -w | tr -d ' ')" = 6 ]
-assert grep -qxE 'suites pass/fail +– +– +15/1' "$WORK/table-block"
+assert grep -qxE 'suites ✓/✗ +– +– +15/1' "$WORK/table-block"
 assert_fails grep -qE '[0-9a-f]{7,}' "$WORK/table-block"
 assert [ "$(body "$WORK/table-report" | head -1)" = "duration · 05 Feb 00:00 – 05 Feb 03:30 · 3.5 h" ]
 
@@ -1173,7 +1174,9 @@ assert jqe '.word == "survey" and .rows == [["repo", ["debt 40 lines/3 files · 
   ["total", ["debt 52 lines/4 files · 3 dirty · 2 chunks"]]]' "$DATA/bus-docs"
 python3 "$ROOT/share/report_frame.py" block <"$DATA/bus-docs" >/dev/null || fail "the survey block renders"
 rm "$DATA/bus-docs" "$DATA/bus-args"
-night report --post | cmp -s - <(night report) || fail "report --post prints the same report"
+night report --post >"$WORK/report-post" || fail "report --post"
+assert [ "$(head -1 "$WORK/report-post")" = 'table · posted to the chat as the night block; the final message does not retype it' ]
+night report | sed '1,/^$/d' | cmp -s - <(sed '1,/^$/d' "$WORK/report-post") || fail "report --post prints the rest of the report"
 assert [ "$(wc -l <"$DATA/bus-docs" | tr -d " ")" = 1 ]
 night report >"$WORK/report" || fail "report"
 table=$(sed '/^$/q' "$WORK/report")
@@ -1182,7 +1185,8 @@ assert jqe --arg w "night · $(head -1 <<<"$table" | sed -E 's/.* {3,}//')" \
   '.word == $w and .rows[0][0] == "" and [.rows[1:][][0]] == $labels
    and ([.rows[][1] | length] | unique | length) == 1' "$DATA/bus-docs"
 assert grep -qE '^post --kind notice --id night-report-[0-9]+-[0-9]+$' "$DATA/bus-args"
-python3 "$ROOT/share/report_frame.py" block <"$DATA/bus-docs" >/dev/null || fail "the report block renders"
+rendered=$(python3 "$ROOT/share/report_frame.py" block <"$DATA/bus-docs") || fail "the report block renders"
+assert [ "$(wc -l <<<"$rendered" | tr -d ' ')" = "$(($(jq '.rows | length' "$DATA/bus-docs") + 2))" ]
 unset NIGHT_RUN_REPORT_BUS
 
 # No night at all: the menu prints nothing.

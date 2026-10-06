@@ -221,8 +221,9 @@ check(out[:6] == ["ledger · night N1 · 3.1 h",
 check(out[6:10] == ["trend · last 2 nights · oldest first",
                   "trend · 09 Jan · 1.8 h · workers ? model · problems 6 → 5 · spend 0.0M · deferred",
                   "trend · 10 Jan · 3.1 h · workers 49 % model · problems 8 → 7 · spend 0.0M · deferred",
-                  "trend · problems -2 over 2 nights · moving forward"],
-      "the trend: one line per night oldest first, an untimed night reads ?, and the direction: %s" % out[6:10])
+                  "trend · problems 6 → 7 over 2 nights · going back"],
+      "the trend: one line per night oldest first, an untimed night reads ?, and the direction from the first "
+      "night's start to the last night's end, so problems that came between nights count too: %s" % out[6:10])
 check(out[10:] == ["roi · harness-x-20260110T000000Z · suite slot wait · 0.0M · +5/-1 lines · saves 1.0 min/day",
                    "roi · harness-y-20260110T000000Z · suites running · 0.0M · +0/-0 lines · not landed",
                    "roi · night: improvements 0.0M · gained 1.0 min/day",
@@ -239,6 +240,9 @@ check(T.saved_min_day(item, D0 + 11000, D0 + 86400 * 2.5) is None
           "roi · night: improvements 2.0M · gained 0.0 min/day",
           "roi · last 1 nights: improvements 2.0M · gained 0.0 min/day · spend without result so far"],
       "a change pends until it ran a full settled day; no measured gain reads spend without result")
+check(T.roi_lines([{"started": D0, "hours": 3.0, "improvements": [dict(item, ref="r", spend_m=2.0, lines=[1, 1])]}],
+                  D0 + 86400 * 2.5)[-1] == "roi · last 1 nights: improvements 2.0M · gained 0.0 min/day · nothing measured yet",
+      "while every change still pends the cumulative line says nothing was measured, never spend without result")
 cached = json.load(open(os.path.join(work, "doctors", "night-ledger", "N1.json")))
 check(cached["wall_s"] == 9000 and cached["split_s"]["slot"] == 600,
       "a finished night's ledger row is cached, so its numbers outlive the pruned run and event stores")

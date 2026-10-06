@@ -688,7 +688,7 @@ def saved_min_day(item, landed, now):
 def roi_lines(rows, now):
     """Per improvement job of the night, per night, and cumulative over the trend: weighted spend against the
     minutes per day saved once the change ran a full day. No gain reads 'spend without result', never a revert."""
-    out, total_spend, total_saved = [], 0.0, 0.0
+    out, total_spend, total_saved, measured = [], 0.0, 0.0, 0
     for row in (r for r in rows if r):
         spend = saved = 0.0
         pending = 0
@@ -700,6 +700,7 @@ def roi_lines(rows, now):
                 pending += item["merged"]
             else:
                 saved += gain
+                measured += 1
             if row is rows[-1]:
                 out.append("roi · %s · %s · %.1fM · %+d/-%d lines · %s" % (
                     item["ref"][:40], LABEL.get(item["class"], "harness total"), item["spend_m"], item["lines"][0],
@@ -711,7 +712,8 @@ def roi_lines(rows, now):
         total_spend, total_saved = total_spend + spend, total_saved + saved
     if any(r and r.get("improvements") for r in rows):
         out.append("roi · last %d nights: improvements %.1fM · gained %.1f min/day%s" % (
-            len([r for r in rows if r]), total_spend, total_saved, " · spend without result so far" if not total_saved
+            len([r for r in rows if r]), total_spend, total_saved, " · nothing measured yet" if not measured
+            else " · spend without result so far" if not total_saved
             else " · %.1f min/day per 1M" % (total_saved / total_spend) if total_spend else ""))
     return out
 
@@ -793,11 +795,12 @@ def trend_lines(rows):
         out.append("trend · %s · %.1f h · workers %s model · problems %s → %s · spend %.1fM%s" % (
             time.strftime("%d %b", time.localtime(r["started"])), r["hours"], model_share(r),
             probs[0], "?" if probs[1] is None else probs[1], r["spend_m"], " · deferred" if r["deferred"] else ""))
-    moved = [r for r in rows if r["problems"][1] is not None]
+    moved = [r for r in rows if r["problems"][0] is not None and r["problems"][1] is not None]
     if moved:
-        delta = sum(r["problems"][1] - r["problems"][0] for r in moved)
-        out.append("trend · problems %+d over %d nights · %s" % (
-            delta, len(moved), "moving forward" if delta < 0 else "treading water" if delta == 0 else "going back"))
+        first, last = moved[0]["problems"][0], moved[-1]["problems"][1]
+        out.append("trend · problems %d → %d over %d nights · %s" % (
+            first, last, len(moved), "moving forward" if last < first else "treading water" if last == first
+            else "going back"))
     return out
 
 
@@ -843,29 +846,34 @@ def table_column(worker_run, path, night):
     suites = night.get("suites") or {}
     repos = suites.get("repos") or []
     show = lambda v, f="%s": dash if v is None else f % v
+    doctors = ("llm", "harness", "updater", "code", "system")
+    total = lambda counts: sum(counts[d] for d in doctors if counts.get(d) is not None) \
+        if any(counts.get(d) is not None for d in doctors) else None
     return [
         ("duration", show(row.get("hours"), "%.1f h")),
-        ("spend total", show(row.get("spend_m"), "%.1fM")),
-        ("spend fixers", show(kinds.get("fixers"), "%.1fM")),
-        ("spend reviews", show(kinds.get("reviews"), "%.1fM")),
-        ("spend orchestrator", show(kinds.get("orchestrator"), "%.1fM")),
-        ("landed jobs", str(states["merged"])),
-        ("left jobs", str(states["left"])),
-        ("blocked on Egor", str(states["blocked-on-egor"])),
+        ("spend", show(row.get("spend_m"), "%.1fM")),
+        ("  fixers", show(kinds.get("fixers"), "%.1fM")),
+        ("  reviews", show(kinds.get("reviews"), "%.1fM")),
+        ("  night chat", show(kinds.get("orchestrator"), "%.1fM")),
+        ("landed", str(states["merged"])),
+        ("left", str(states["left"])),
+        ("needs Egor", str(states["blocked-on-egor"])),
         ("worker runs", show(runs)),
         ("worker wall", hours(wall)),
         ("model active", "%d %%" % pct(split.get("model", 0), wall) if wall else dash),
-        ("queued for slots", hours(split.get("slot", 0))),
-        ("in own tests", hours(split.get("suite_run", 0) + split.get("suite_wait", 0))),
+        ("slot queue", hours(split.get("slot", 0))),
+        ("own tests", hours(split.get("suite_run", 0) + split.get("suite_wait", 0))),
+        ("problems", dash if total(before) is None and total(after) is None
+         else "%s \u2192 %s" % (show(total(before)), show(total(after)))),
     ] + [
-        ("problems " + d, dash if before.get(d) is None and after.get(d) is None
+        ("  " + d, dash if before.get(d) is None and after.get(d) is None
          else "%s \u2192 %s" % (show(before.get(d)), show(after.get(d))))
-        for d in ("llm", "harness", "updater", "code", "system")
+        for d in doctors
     ] + [
-        ("lines by jobs", "+%d/-%d" % (jobs_lines[0] + jobs_lines[2], jobs_lines[1] + jobs_lines[3])
+        ("job lines", "+%d/-%d" % (jobs_lines[0] + jobs_lines[2], jobs_lines[1] + jobs_lines[3])
          if jobs_lines else dash),
-        ("week-old rewritten", show((row.get("rewrite") or [None])[0])),
-        ("suites pass/fail", "%d/%d" % (sum(r["passed"] for r in repos), sum(len(r.get("failed") or ()) for r in repos))
+        ("rewrote 7d", show((row.get("rewrite") or [None])[0])),
+        ("suites \u2713/\u2717", "%d/%d" % (sum(r["passed"] for r in repos), sum(len(r.get("failed") or ()) for r in repos))
          if suites.get("finished_at") and all(isinstance(r.get("passed"), int) for r in repos) else dash),
     ]
 

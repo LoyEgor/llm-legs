@@ -25,6 +25,7 @@ H="$WORK/repo/docs/handoffs"
 printf '# A\n\nStatus: open\n\nFor the chat «Gone Chat». Needs a change in other too.\n' >"$H/2026-09-28-old.md"
 printf '# B\n\nStatus: open (half done)\n\nTo: «Live Chat».\n\nMentions «Gone Chat» later.\n' >"$H/2026-10-03-live.md"
 printf '# C\n\nStatus: settled 20261003T0000Z-0001: fixed\n' >"$H/2026-09-29-settled.md"
+printf '# D\n\nStatus: trade for Egor\nCost: one click.\nLoss: a stray error.\nRecommendation: click.\n' >"$WORK/other/docs/handoffs/2026-10-02-ask.md"
 printf '{"pid": %s, "sessionId": "live-1"}\n' "$$" >"$HOME/.claude/sessions/1.json"
 printf '{"type": "custom-title", "customTitle": "Live Chat", "sessionId": "live-1"}\n' >"$HOME/.claude/projects/p/live-1.jsonl"
 for name in repo other; do git -C "$WORK/$name" add -A && git -C "$WORK/$name" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init; done
@@ -43,7 +44,10 @@ swt="$WORK/other/.claude/worktrees/night-N1-suite-other-test_x"
 assert [ "$(cut -f1,3 "$WORK/carry.out")" = "handoff-2026-09-28-old	$wt
 suite-other-test_x	$swt" ]
 assert jqe '[.jobs[] | [.kind, .ref, .state, .branch]] == [["handoff", "handoff-2026-09-28-old", "pending", "night/N1/handoff-2026-09-28-old"],
-  ["suite", "suite-other-test_x", "pending", "night/N1/suite-other-test_x"]]' "$NIGHTS/N1.json"
+  ["suite", "suite-other-test_x", "pending", "night/N1/suite-other-test_x"],
+  ["handoff", "handoff-2026-10-02-ask", "blocked-on-egor", null]]' "$NIGHTS/N1.json"
+assert jqe --arg p "$WORK/other/docs/handoffs/2026-10-02-ask.md" '.jobs[2] | .path == $p
+  and .reason == "Cost: one click. Loss: a stray error. Recommendation: click."' "$NIGHTS/N1.json"
 assert [ "$(git -C "$wt" symbolic-ref --short HEAD)" = night/N1/handoff-2026-09-28-old ]
 brief=$(cut -f2 "$WORK/carry.out" | head -1)
 assert grep -qxF "ADD-DIR: $WORK/other/.claude/worktrees/night-N1-handoff-2026-09-28-old" "$brief"
@@ -52,6 +56,9 @@ assert grep -qF 'Cost:`, `Loss:` and `Recommendation:`' "$brief"
 assert grep -qF 'failed `test_x.sh` in '"$WORK/other"' (log `/l/other.log`)' "$(cut -f2 "$WORK/carry.out" | tail -1)"
 night carry N1 >"$WORK/again.out" || fail "a second carry failed"
 assert [ ! -s "$WORK/again.out" ]
+assert jqe '[.jobs[] | select(.ref == "handoff-2026-10-02-ask")] | length == 1' "$NIGHTS/N1.json"
+printf '# D\n\nStatus: settled N1: clicked\n' >"$WORK/other/docs/handoffs/2026-10-02-ask.md"
+git -C "$WORK/other" -c user.name=t -c user.email=t@t commit -qam settled
 
 assert_fails night job N1 set handoff-2026-09-28-old state=blocked-on-egor reason="needs his word" 2>"$WORK/err"
 assert grep -qF 'needs its trade in reason= as Cost:, Loss: and Recommendation:' "$WORK/err"

@@ -61,8 +61,8 @@ report opens with share/time_budget.py's comparison table: this night and the tw
   equivalents (input 1, cache write 1.25, cache read 0.1, output 5) against the previous finished night;
   then share/night_churn.py's churn, the jobs, and last share/time_budget.py's ledger (worker wall split
   into model, slot queue and own tests; lines by jobs and outside them; problems; spend and what was
-  deferred) with the trend of the last 7 nights; --post also sends the comparison table to the chat as
-  one report-bus block
+  deferred) with the trend of the last 7 nights; --post sends the comparison table to the chat as one
+  report-bus block instead of printing it, so the final message has no table to retype
 survey: the sweep's opening report, default the sweep repositories: per repository `<name> · debt N
   lines/M files · K dirty · whole|N chunks` (review-bench review --debt … --tier T2 --price), per linked
   worktree `<branch> · +ahead/-behind main · K dirty · debt N · take|keep (<reason>)`, keep = live or
@@ -91,7 +91,8 @@ carry: first an owner-chat job per owner chat (share/handoffs.py --batches: the 
   docs/handoffs/*.md of the sweep repositories not addressed to a chat live now, and one suite job per
   suite the newest earlier night's full run failed; each gets its night worktree and a brief; prints
   <ref>\t<brief>\t<worktree>. A handoff job blocked-on-egor needs the trade in reason= as Cost:,
-  Loss: and Recommendation:
+  Loss: and Recommendation:; every handoff whose Status reads `trade for Egor` becomes such a job with
+  its own three lines, so each night asks him again until it is settled
 suites: every sweep repository's tests/run-all, one after another, detached unless --wait, into the
   night's suites {started_at, finished_at, repos: [{repo, exit, passed, failed[], log}]}
 pushed=true is refused unless every commit of the job is on its repository's origin main and not
@@ -694,7 +695,7 @@ carry_owner_chats() { # id -> <ref>\t<prompt>\topened <account> <session>|messag
 }
 
 cmd_carry() {
-  local id=${1:-} kind slug repo what log ref branch wt err brief
+  local id=${1:-} kind slug repo what log ref branch wt err brief reason
   [ -n "$id" ] && [ $# -eq 1 ] || usage
   known_night "$id"
   carry_owner_chats "$id"
@@ -721,6 +722,17 @@ cmd_carry() {
     fi
     printf '%s\t%s\t%s\n' "$ref" "$brief" "$wt"
   done < <(carry_list "$id")
+  while IFS=$'\t' read -r slug repo what reason; do
+    ref="handoff-$slug"
+    ! jq -e --arg p "$repo/$what" 'any(.jobs[]; .kind == "handoff" and .path == $p)' "$(night_file "$id")" >/dev/null || continue
+    ! jq -e --arg r "$ref" 'any(.jobs[]; .ref == $r)' "$(night_file "$id")" >/dev/null || ref="handoff-$(basename "$repo")-$slug"
+    "$script_path" job "$id" add handoff "$ref" >/dev/null || continue
+    lock
+    night_set "$id" '.jobs |= map(if .ref == $r then . + {path: $p} else . end)' --arg r "$ref" --arg p "$repo/$what" ||
+      die "cannot write night $id"
+    unlock
+    "$script_path" job "$id" set "$ref" state=blocked-on-egor reason="$reason" >/dev/null
+  done < <(python3 -B "$repo_root/share/handoffs.py" --trades | jq -r '[.slug, .repo, .rel, .reason] | @tsv')
 }
 
 cmd_suites() {
@@ -1110,8 +1122,12 @@ cmd_report() {
     [ ! -f "$run" ] || jq -c --arg r "$ref" '{($r): [.decisions[]? | select(.component == "unverified") | .id]}' "$run"
   done | jq -sc 'add // {}')
   table=$(python3 -B "$repo_root/share/time_budget.py" table "$repo_root/bin/worker-run" "$file") || die "no comparison table for $file"
-  printf '%s\n\n' "$table"
-  ! $post || table_block "$table" | post_block night-report
+  if $post; then
+    table_block "$table" | post_block night-report
+    printf 'table · posted to the chat as the night block; the final message does not retype it\n\n'
+  else
+    printf '%s\n\n' "$table"
+  fi
   python3 -B "$repo_root/share/night_spend.py" "$repo_root/bin/worker-run" "$file" || die "no spend header for $file"
   python3 -B "$repo_root/share/night_churn.py" "$repo_root/bin/worker-run" "$file" 2>/dev/null || true
   jq -r --argjson u "$unverified" --argjson lines "$(code_lines "$file")" --arg status "$(night_status "$file")" \
