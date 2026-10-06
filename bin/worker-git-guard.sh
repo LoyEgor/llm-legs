@@ -157,7 +157,7 @@ body_cut=heredoc_bodies_cut
 self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) && . "${self%/*}/../share/heredoc-mask.sh" 2>/dev/null ||
   body_cut=cat
 runs_written_file() {
-  awk '
+  LC_ALL=C awk '
     function base(w) { gsub(/["\047]/, "", w); sub(/.*\//, "", w); return w }
     {
       t = $0

@@ -201,8 +201,8 @@ PROGRAM_STRING_RE="${DASH_C_RE}|(^|[;|&(){}])[[:space:]]*(eval|ssh|tmux|screen|w
 self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) && . "${self%/*}/../share/heredoc-mask.sh" 2>/dev/null ||
   heredoc_mask() { cat; }
 prestrip=$(heredoc_mask "$HEREDOC_SHELL_RE" "$HEREDOC_POST_SHELL_RE" <<<"$cmd" |
-  awk '{ if (sub(/\\[[:space:]]*$/, " ")) { printf "%s", $0; next } print }' |
-  awk -v dashc="$PROGRAM_STRING_RE" 'BEGIN { out = ""; q = ""; body = 0 }
+  LC_ALL=C awk '{ if (sub(/\\[[:space:]]*$/, " ")) { printf "%s", $0; next } print }' |
+  LC_ALL=C awk -v dashc="$PROGRAM_STRING_RE" 'BEGIN { out = ""; q = ""; body = 0 }
        {
          for (i = 1; i <= length($0); i++) {
            c = substr($0, i, 1)
@@ -254,7 +254,7 @@ ASSIGN_RE='^[[:space:]]*((export|local|readonly|declare|typeset)[[:space:]]+(-[^
 while IFS= read -r assign; do
   [ -n "$assign" ] || continue
   assign=$(sed -E 's/^[[:space:]]*((export|local|readonly|declare|typeset)[[:space:]]+(-[^[:space:]]+[[:space:]]+)*)?//' <<<"$assign")
-  scan=$(awk -v n="${assign%%=*}" -v v="${assign#*=}" '{
+  scan=$(LC_ALL=C awk -v n="${assign%%=*}" -v v="${assign#*=}" '{
     gsub("\\$[{]" n "[}]", v)
     out = ""
     while (match($0, "\\$" n "([^A-Za-z0-9_]|$)")) {
@@ -453,7 +453,7 @@ carried() { # key value
     [ "$(head -n 400 "$target" | grep -m1 -oE "^$1:[[:space:]]*[A-Za-z0-9_.-]+" | sed -E "s/^$1:[[:space:]]*//")" = "$2" ]
     return
   fi
-  [ "$(awk -v target="$target" -v q="'" '
+  [ "$(LC_ALL=C awk -v target="$target" -v q="'" '
     BEGIN { doc = "(^|[^<])<<-?[ \t]*[\"" q "]?[A-Za-z_][A-Za-z0-9_]*[\"" q "]?"; to = "(^|[^>])>[ \t]*[\"" q "]?[^ \t\"" q ";&|<>()]+" }
     body { line = $0; if (strip) sub(/^\t+/, "", line); if (line == delim) { body = 0; if (hit) exit; next } if (hit) print; next }
     match($0, doc) {

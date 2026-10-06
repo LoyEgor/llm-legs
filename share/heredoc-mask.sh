@@ -9,7 +9,7 @@
 # says what that looks like, $1 matched against the text before the `<<`, $2 against the text after.
 
 heredoc_mask() { # shell-fed-before-re shell-fed-after-re < command → command, bodies blanked
-  awk -v shellfed="$1" -v postshell="$2" '
+  LC_ALL=C awk -v shellfed="$1" -v postshell="$2" '
        # Everything a heredoc body still EXECUTES when its delimiter is unquoted: the shell expands
        # such a body, so `$( … )` and a backtick span inside it are command lines, and masking them
        # with the text around them would blank a run the shell is about to make. Their contents are

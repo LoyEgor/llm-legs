@@ -36,6 +36,9 @@ expect() { # decision agent command [timeout] [background]
 expect deny '' 'claude --prompt=hi'
 expect deny '' 'claude -p=hi'
 
+# Non-ASCII text: macOS awk in a UTF-8 locale dies on a lone multibyte byte, which used to pass the call.
+LC_ALL=en_US.UTF-8 expect deny '' 'claude -p "Сообщение на русском — «ёлки» и тире"'
+
 # 42: every headless codex subcommand, codexb included.
 expect deny '' 'codex e hi'
 expect deny '' 'codex review'

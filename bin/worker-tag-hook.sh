@@ -36,7 +36,7 @@ command=$(field '.tool_input.command')
 description=$(field '.tool_input.description')
 # A heredoc body is blanked line for line, delimiter included: a brief written through `<<EOF`
 # quotes launch-shaped lines that launch nothing, while the command after the delimiter is real.
-launch=$(printf '%s\n' "$command" | awk '
+launch=$(printf '%s\n' "$command" | LC_ALL=C awk '
   delim != "" { probe = $0; if (dash) sub(/^\t+/, "", probe); if (probe == delim) delim = ""; print ""; next }
   {
     line = $0
