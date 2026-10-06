@@ -803,7 +803,7 @@ local function taskForKey(key)
   return registryEntryForKey(key)
 end
 
-local readHolds
+local readChats, stuckQueues
 
 function M.refreshState()
   purgeTasks()
@@ -857,7 +857,7 @@ function M.refreshState()
       if #entries > 0 then vendorErrors[name] = entries end
     end
   end
-  local holds = readHolds()
+  local holds = stuckQueues()
   return {
     busy = busy,
     warning = warning or #holds > 0,
@@ -1688,104 +1688,25 @@ local function harnessDoctorDir()
   return home .. "/.cache/harness-doctor"
 end
 
--- Limiter holds (docs/harness-doctor-design.md §12) are read live: the collector runs every 5 min.
-local HOLD_NOTE_S, HOLD_RED_S = 60, 300
-local holdsCache = {}
-local HOLD_START_SLACK_S = 2
-local holdPids = { asked = {}, started = {}, key = "", at = 0 }
-
-local function etimeSeconds(text)
-  local days, clock = text:match("^(%d+)%-(.+)$")
-  local total = 0
-  for part in (clock or text):gmatch("%d+") do total = total * 60 + tonumber(part) end
-  return (tonumber(days) or 0) * 86400 + total
+-- bin/chat-load judges a limiter queue stuck (no held job started for 30 min) and its snapshot is
+-- what lights the title's ⚠; a queue that moves stays inside the Chats/other submenu.
+readChats = function()
+  local ok, snapshot = pcall(hs.json.decode, readTextFile(home .. "/Library/Logs/memlogd/chats.json") or "")
+  return ok and type(snapshot) == "table" and snapshot or nil
 end
 
--- Liveness comes from an async ps: a pid no finished check has asked about counts as alive; a pid
--- whose process started after the hold's since was reused, so the holder is gone.
-local function checkHoldPids(pids, now)
-  local key = table.concat(pids, ",")
-  if holdPids.task or (holdPids.key == key and now - holdPids.at < 30) then return end
-  local task = hs.task.new("/bin/ps", function(_, stdOut)
-    local asked, started = {}, {}
-    for _, pid in ipairs(pids) do asked[pid] = true end
-    for pid, etime in tostring(stdOut or ""):gmatch("(%d+)%s+([%d:%-]+)") do
-      started[pid] = now - etimeSeconds(etime)
+stuckQueues = function()
+  local snapshot, out = readChats(), {}
+  if not snapshot or os.time() - (tonumber(snapshot.as_of) or 0) > 120 or type(snapshot.queues) ~= "table" then
+    return out
+  end
+  for _, queue in ipairs(snapshot.queues) do
+    if type(queue) == "table" and queue.stuck == true then
+      out[#out + 1] = { text = tostring(queue.text or queue.limiter), red = true }
     end
-    holdPids.asked, holdPids.started, holdPids.task, holdsCache.key = asked, started, nil, nil
-  end, { "-o", "pid=,etime=", "-p", key })
-  holdPids.key, holdPids.at = key, now
-  if task and task:start() then holdPids.task = task end
+  end
+  return out
 end
-
-readHolds = function()
-  local ok, holds = pcall(function()
-    local dir, now, found, pids, names, listed = os.getenv("HARNESS_HOLDS_DIR"), os.time(), {}, {}, {}, {}
-    if not dir or dir == "" then dir = harnessDoctorDir() .. "/holds" end
-    for name in hs.fs.dir(dir) do
-      if name:match("%.json$") then names[#names + 1] = name end
-    end
-    local key = now .. ":" .. table.concat(names, "/")
-    if holdsCache.key == key then return holdsCache.holds end
-    local due = false
-    for _, name in ipairs(names) do
-      local text = readTextFile(dir .. "/" .. name)
-      local decoded, hold = false, nil
-      if text and text ~= "" then decoded, hold = pcall(hs.json.decode, text) end
-      if decoded and type(hold) == "table" and type(hold.limiter) == "string" and math.type(hold.pid) == "integer"
-          and type(hold.since) == "number" then
-        found[#found + 1], due = hold, due or now - hold.since >= HOLD_NOTE_S
-        if not listed[hold.pid] then listed[hold.pid], pids[#pids + 1] = true, tostring(hold.pid) end
-      end
-    end
-    if not due then return {} end
-    checkHoldPids(pids, now)
-    local byLimiter, out = {}, {}
-    for _, hold in ipairs(found) do
-      local pid = tostring(hold.pid)
-      local started = holdPids.started[pid]
-      if not holdPids.asked[pid] or (started and started <= hold.since + HOLD_START_SLACK_S) then
-        local group = byLimiter[hold.limiter]
-        if not group then
-          group = { limiter = hold.limiter, count = 0, jobs = {} }
-          byLimiter[hold.limiter], out[#out + 1] = group, group
-        end
-        group.count, group.jobs[#group.jobs + 1] = group.count + 1, hold
-        if not group.since or hold.since < group.since then
-          group.since, group.hold = hold.since, hold
-        end
-      end
-    end
-    local shown = {}
-    for _, group in ipairs(out) do
-      local age = now - group.since
-      if age >= HOLD_NOTE_S then shown[#shown + 1] = group end
-      group.red = age > HOLD_RED_S
-      group.text = string.format("%s: holding %s, longest %s", group.limiter, plural(group.count, "job"),
-        style.age(age))
-      table.sort(group.jobs, function(a, b) return a.since < b.since end)
-      group.rows = {}
-      for _, job in ipairs(group.jobs) do
-        local held = type(job.held) == "table" and job.held or {}
-        local parts = {}
-        if type(held.what) == "string" and held.what ~= "" then parts[#parts + 1] = held.what end
-        local chat = type(held.cwd) == "string" and projectName(held.cwd) or ""
-        if chat ~= "" then parts[#parts + 1] = chat end
-        parts[#parts + 1] = "for " .. style.age(now - job.since)
-        group.rows[#group.rows + 1] = table.concat(parts, " · ")
-      end
-      group.rows[#group.rows + 1] = "why: " .. tostring(group.hold.why or "no reason given")
-      if type(group.hold["until"]) == "number" then
-        group.rows[#group.rows + 1] = "until " .. style.clock(group.hold["until"], now)
-      end
-    end
-    table.sort(shown, function(a, b) return a.since < b.since end)
-    holdsCache.key, holdsCache.holds = key, shown
-    return shown
-  end)
-  return ok and holds or {}
-end
-M.limiterHolds = function() return readHolds() end
 
 local function harnessLine(flags, spans, text)
   if flags:find("s", 1, true) then return { title = "-" } end
@@ -1897,9 +1818,8 @@ function M.harnessDoctorEntry()
 end
 
 local function appendChats(menu)
-  local contents = readTextFile(home .. "/Library/Logs/memlogd/chats.json")
-  local ok, snapshot = pcall(hs.json.decode, contents or "")
-  if not ok or type(snapshot) ~= "table" then
+  local snapshot = readChats()
+  if not snapshot then
     table.insert(menu, { title = infoTitle("Chats: no data yet", false, true), disabled = true })
     return
   end
@@ -2832,14 +2752,6 @@ local function buildMenuItems()
     end
     if announced then table.insert(menu, { title = "-" }) end
   end
-  for _, hold in ipairs(state.holds) do
-    local rows = {}
-    for _, row in ipairs(hold.rows or {}) do
-      rows[#rows + 1] = { title = infoTitle(row, false, true), disabled = true }
-    end
-    table.insert(menu, { title = infoTitle(hold.text, hold.red, false), menu = rows })
-  end
-  if #state.holds > 0 then table.insert(menu, { title = "-" }) end
   appendChats(menu)
   table.insert(menu, { title = "-" })
   local routing, routingTitle = routingSubmenu()
@@ -3341,7 +3253,7 @@ function M.title()
   for _, hold in ipairs(state.holds) do
     if hold.red then red = red + 1 end
   end
-  if red > 0 then parts[#parts + 1] = plural(red, "hold") end
+  if red > 0 then parts[#parts + 1] = plural(red, "stuck queue") end
   if state.globalError then
     parts[#parts + 1] = state.globalError.class or "refresh failed"
   end

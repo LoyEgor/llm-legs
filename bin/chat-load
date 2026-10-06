@@ -21,6 +21,8 @@ SATURATED = 0.9
 HISTORY_MINUTES = 15
 TITLE_WIDTH = 22
 PID_SLACK_S = 30
+HOLD_START_SLACK_S = 2
+QUEUE_STUCK_S = 1800
 SPARK = "▁▂▃▄▅▆▇█"
 ENV_KEYS = (b"CLAUDE_LAUNCHER_SESSION=", b"CLAUDE_CODE_SESSION_ID=")
 OTHER_KINDS = (("screen", {"WindowServer"}), ("kernel", {"kernel_task"}), ("signing", {"syspolicyd", "trustd"}))
@@ -29,6 +31,8 @@ HOME = os.path.expanduser("~")
 LOG_DIR = os.environ.get("MEMLOGD_DIR") or os.path.join(HOME, "Library/Logs/memlogd")
 STATE_PATH = os.path.join(LOG_DIR, "chat-load.state.json")
 OUT_PATH = os.path.join(LOG_DIR, "chats.json")
+HOLDS_DIR = os.environ.get("HARNESS_HOLDS_DIR") or os.path.join(
+    os.environ.get("HARNESS_DOCTOR_DIR") or os.path.join(HOME, ".cache/harness-doctor"), "holds")
 SESSION_DIRS = (os.environ.get("CHAT_LOAD_SESSIONS")
                 or f"{HOME}/.claude-profiles/*/sessions:{HOME}/.claude/sessions").split(":")
 RUNS_DIR = os.environ.get("WORKER_RUN_DIR") or os.path.join(HOME, ".cache/claude-worker-runs")
@@ -350,6 +354,50 @@ def short(title):
     return title[:TITLE_WIDTH - len(suffix) - 1].rstrip() + "…" + suffix
 
 
+def live_holds(now, table):
+    try:
+        names = sorted(name for name in os.listdir(HOLDS_DIR) if name.endswith(".json"))
+    except OSError:
+        return []
+    holds = []
+    for name in names:
+        hold = read_json(os.path.join(HOLDS_DIR, name), None)
+        if not (isinstance(hold, dict) and isinstance(hold.get("limiter"), str) and type(hold.get("pid")) is int
+                and type(hold.get("since")) in (int, float)):
+            continue
+        row = table.get(hold["pid"])
+        if row and row["age"] >= 0 and now - row["age"] <= hold["since"] + HOLD_START_SLACK_S:
+            holds.append(dict(hold, file=name))
+    return holds
+
+
+def waited(seconds):
+    seconds = max(0, int(seconds))
+    return f"{seconds // 60}m" if seconds < 3600 else f"{seconds // 3600}h{seconds % 3600 // 60:02d}"
+
+
+def queues(now, holds, tops, state, prev):
+    """Per limiter: its held jobs, and when one last left the queue; a queue no job left for
+    QUEUE_STUCK_S is stuck, however long a job waits in one that moves."""
+    seen, groups, out = prev.get("queues", {}), {}, []
+    for hold in holds:
+        groups.setdefault(hold["limiter"], []).append(hold)
+    state["queues"] = {}
+    for limiter, group in sorted(groups.items()):
+        files = sorted(hold["file"] for hold in group)
+        before = seen.get(limiter) or {}
+        moved = before.get("moved") if set(before.get("files", [])) <= set(files) and before.get("moved") else now
+        state["queues"][limiter] = {"files": files, "moved": moved}
+        by_chat = {}
+        for hold in group:
+            by_chat.setdefault(tops.get(hold["pid"]) or "", []).append(hold)
+        for sid, held in sorted(by_chat.items()):
+            out.append({"limiter": limiter, "session": sid or None, "count": len(held),
+                        "longest": now - min(hold["since"] for hold in held), "moved_at": moved,
+                        "stuck": now - moved >= QUEUE_STUCK_S})
+    return out
+
+
 def spark(buckets, minute, top_cores):
     cells = []
     for m in range(minute - HISTORY_MINUTES, minute):
@@ -361,7 +409,7 @@ def spark(buckets, minute, top_cores):
     return "".join(cells)
 
 
-def render(now, avail, swap, table, tops, sessions, state, prev):
+def render(now, avail, swap, table, tops, sessions, state, prev, holds):
     ncpu = os.cpu_count() or 1
     top_cores = sysctl_int("hw.perflevel0.physicalcpu") or ncpu
     total_mb = (sysctl_int("hw.memsize") or 0) // 1048576
@@ -402,7 +450,14 @@ def render(now, avail, swap, table, tops, sessions, state, prev):
         history[sid] = {m: v for m, v in history[sid].items() if int(m) >= minute - HISTORY_MINUTES}
         if not history[sid] and sid not in chat_kb:
             del history[sid]
-    chats = sorted(set(chat_kb) | set(chat_cpu))
+    queued = queues(now, holds, tops, state, prev)
+    held = {}
+    for queue in queued:
+        mine = held.setdefault(queue["session"] or "", {"count": 0, "longest": 0, "stuck": False})
+        mine["count"] += queue["count"]
+        mine["longest"] = max(mine["longest"], queue["longest"])
+        mine["stuck"] = mine["stuck"] or queue["stuck"]
+    chats = sorted(set(chat_kb) | set(chat_cpu) | (set(held) - {""}))
     titles = name_chats(chats, now, state.setdefault("titles", {}))
     state["titles"] = {sid: titles[sid] for sid in titles if sid in chats or now - titles[sid]["at"] < GUARD_SHOWN_S}
     rate = (lambda seconds: seconds / dt) if rated else (lambda seconds: None)
@@ -439,8 +494,9 @@ def render(now, avail, swap, table, tops, sessions, state, prev):
     for sid in chats:
         now_cores = rate(chat_cpu.get(sid, 0.0))
         live = sessions.get(sid)
+        wait = held.get(sid)
         if not live:
-            if (now_cores or 0.0) < 0.05 and chat_kb.get(sid, 0) < 51200:
+            if (now_cores or 0.0) < 0.05 and chat_kb.get(sid, 0) < 51200 and not wait:
                 continue
             word = "closed"
         elif now_cores is not None and now_cores >= BUSY_CORES:
@@ -451,19 +507,33 @@ def render(now, avail, swap, table, tops, sessions, state, prev):
             word = "idle"
         listed.append(((now_cores or 0.0), chat_kb.get(sid, 0), {
             "text": f"{word:<10}  {short(titles[sid]['t'] or 'unnamed chat'):<{TITLE_WIDTH}}  {cores(now_cores, 4)} cores  "
-                    f"{gb(chat_kb.get(sid, 0) / 1024, 4)} GB  {spark(history.get(sid, {}), minute, top_cores)}",
-            "session": sid, "dim": word in ("idle", "wait model"), **({"pid": live["pid"]} if live else {})}))
+                    f"{gb(chat_kb.get(sid, 0) / 1024, 4)} GB  {spark(history.get(sid, {}), minute, top_cores)}"
+                    + (f"  ⏳{wait['count']} {waited(wait['longest'])}" if wait else ""),
+            "session": sid, "dim": word in ("idle", "wait model") and not (wait and wait["stuck"]),
+            **({"alarm": True} if wait and wait["stuck"] else {}), **({"pid": live["pid"]} if live else {})}))
     rows += [row for _, _, row in sorted(listed, key=lambda item: (-item[0], -item[1]))]
+    for queue in queued:
+        if not queue["session"]:
+            rows.append({"text": f"{'queued':<10}  {short(queue['limiter']):<{TITLE_WIDTH}}  "
+                                 f"⏳{queue['count']} {waited(queue['longest'])}",
+                         "dim": not queue["stuck"], **({"alarm": True} if queue["stuck"] else {})})
+    for queue in queued:
+        who = short(titles.get(queue["session"], {}).get("t") or "") if queue["session"] else ""
+        queue["text"] = (f"{who or queue['limiter']}: {queue['count']} job{'s' if queue['count'] != 1 else ''} "
+                         f"queued, none started for {waited(now - queue['moved_at'])}")
     rows.append("-")
     rows.append({"text": "Other incl.: " + " · ".join(
         f"{kind} {cores(rate(other[kind]), 0)}" for kind, _ in OTHER_KINDS) + " cores", "dim": True})
-    return {"as_of": now, "title": title, "alarm": alarm, "rows": rows, "error": ""}
+    return {"as_of": now, "title": title, "alarm": alarm or any(queue["stuck"] for queue in queued),
+            "rows": rows, "queues": queued,
+            "queue_stuck_s": QUEUE_STUCK_S, "error": ""}
 
 
 def sample(now, avail, swap):
     os.makedirs(LOG_DIR, exist_ok=True)
     prev = read_json(STATE_PATH, {})
-    state = {"guard": prev.get("guard"), "titles": prev.get("titles", {}), "hist": prev.get("hist", {})}
+    state = {"guard": prev.get("guard"), "titles": prev.get("titles", {}), "hist": prev.get("hist", {}),
+             "queues": prev.get("queues", {})}
     table = process_table()
     envs = environments(table, now, prev.get("env", {}))
     state["env"] = envs
@@ -483,7 +553,7 @@ def sample(now, avail, swap):
     except Exception as error:
         failure = f"guard: {error!r}"
     try:
-        snapshot = render(now, avail, swap, table, tops, sessions, state, prev)
+        snapshot = render(now, avail, swap, table, tops, sessions, state, prev, live_holds(now, table))
     except Exception as error:
         snapshot = {"as_of": now, "title": "Chats: error", "alarm": False, "rows": []}
         failure = failure or f"render: {error!r}"

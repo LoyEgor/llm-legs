@@ -237,7 +237,7 @@ run_memlogd() {
     WORKER_RUN_DIR="$EMPTY_REGISTRY/runs" WORKER_STATS_DIR="$EMPTY_REGISTRY/stats" \
     CHAT_LOAD_SESSIONS="$EMPTY_REGISTRY/sessions" CHAT_NAME_ROOTS="$WORK/transcripts" \
     CHAT_NAMES_CACHE="$WORK/chat-names.json" CHAT_LOAD_REPORT_BUS="$FAKE_BIN/report-bus" GUARD_SCOPE='' \
-    "$@" bash "$SCRIPT" run
+    HARNESS_HOLDS_DIR="$EMPTY_REGISTRY/holds" "$@" bash "$SCRIPT" run
 }
 
 # The suite is allowed to run across midnight: a case writes under the day it started, and a
@@ -1061,6 +1061,34 @@ assert jq -e '[.rows[] | objects | .text | contains("chat-ano")] | any | not' "$
 assert jq -e '.rows[-1].text | test("^Other incl\\.: screen [0-9.]+ · kernel [0-9.]+ · signing [0-9.]+ cores$")' "$menu"
 assert test "$(jq -r .alarm "$menu")" = false
 assert test "$(jq -r .error "$menu")" = ''
+
+# A limiter hold rides on the row of the chat whose process waits, as ⏳<jobs> <longest>; one no chat
+# launched gets its own `queued` row; a queue no job left for QUEUE_STUCK_S turns its row and the title red.
+clear_registry
+spawn_leaf
+register_session chat-held "$LEAF_ROOT" busy
+HELD_CLI=$LEAF_ROOT
+spawn_tree
+LOOSE_ROOT=$TREE_ROOT
+HELD_DIR="$WORK/guard-held" HOLDS="$WORK/held-holds"
+mkdir -p "$HELD_DIR" "$HOLDS"
+held_at=$(date +%s)
+hold_json() { # limiter pid
+  jq -n --arg l "$1" --argjson pid "$2" --argjson since "$held_at" \
+    '{limiter: $l, pid: $pid, held: {what: "job"}, since: $since, why: "busy", until: null}' >"$HOLDS/$1-$2.json"
+}
+hold_json bench "$HELD_CLI"
+hold_json run-suites "$LOOSE_ROOT"
+jq -n --arg f "bench-$HELD_CLI.json" --argjson moved $((held_at - 2000)) '{queues: {bench: {files: [$f], moved: $moved}}}' \
+  >"$HELD_DIR/chat-load.state.json"
+probes 8192 1024
+assert guard_run "$HELD_DIR" MEMLOGD_MAX_TICKS=1 HARNESS_HOLDS_DIR="$HOLDS"
+menu=$(chats_json "$HELD_DIR")
+assert jq -e '.rows[] | objects | select(.session == "chat-held") | (.text | test("  ⏳1 [0-9]+m$")) and .alarm and (.dim | not)' "$menu"
+assert jq -e '[.rows[] | objects | select(.text | startswith("queued      run-suites")) | select((.text | test("  ⏳1 [0-9]+m$")) and .dim and (.alarm | not))] | length == 1' "$menu"
+assert test "$(jq -c '[.queues[] | [.limiter, .count, .stuck, (.session != null)]]' "$menu")" = '[["bench",1,true,true],["run-suites",1,false,false]]'
+assert test "$(jq -r .alarm "$menu")" = true
+assert jq -e '.queues[0].text | test("^Chat chat-held: 1 job queued, none started for 3[0-9]m$")' "$menu"
 
 # A notice that did not land says so on the kill row.
 clear_registry

@@ -87,7 +87,6 @@ LIMITS = {
     "growth_min_b": 120,
     "watch_tick_s": 120,
     "hold_note_s": 60,
-    "hold_red_s": 300,
     "wait_red_s": 600,
     "wait_growth": 2.0,
     "wait_growth_days": 3,
@@ -5325,20 +5324,32 @@ def read_holds():
     return live, leaked
 
 
+def stuck_queues(now):
+    """bin/chat-load's verdict, the one the Chats/other menu shows: a queue no held job left for its
+    queue_stuck_s; a stale snapshot judges nothing."""
+    chats = read_json(os.path.join(memlogd_dir(), "chats.json"), {})
+    if not isinstance(chats, dict) or now - (chats.get("as_of") or 0) > 600:
+        return set(), None
+    return ({q.get("limiter") for q in chats.get("queues") or [] if isinstance(q, dict) and q.get("stuck")},
+            chats.get("queue_stuck_s"))
+
+
 def hold_verdicts(now, held):
     live, leaked = read_holds()
+    stuck, stuck_s = stuck_queues(now)
     out = []
     for limiter, holds in sorted(live.items()):
         holds.sort(key=lambda h: h["since"])
         longest = now - holds[0]["since"]
-        over = longest > LIMITS["hold_red_s"]
+        over = limiter in stuck
         out.append(verdict(
-            "limiter_hold", limiter, longest, LIMITS["hold_red_s"], "s", 0, len(holds),
+            "limiter_hold", limiter, longest, stuck_s or 1800, "s", 0, len(holds),
             ("watch" if held else "red") if over else "watch" if longest >= LIMITS["hold_note_s"] else None,
             fact="%s holds %d job%s, longest %s: %s%s" % (
                 limiter, len(holds), "" if len(holds) == 1 else "s", fmt_long(longest),
                 holds[0].get("why") or "no reason given",
-                " while %d suite or night-fixer slots ran" % held if over and held else ""),
+                (" — the queue is stuck" + (" while %d suite or night-fixer slots ran" % held if held else ""))
+                if over else ""),
             evidence=[evidence(h["since"], "holds/" + h["file"], "%s · %s" % (held_of(h).get("what"), h.get("why")),
                                str(held_of(h).get("session") or held_of(h).get("cwd") or "")) for h in holds],
             bad=len(holds)))

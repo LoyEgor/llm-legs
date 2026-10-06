@@ -3649,97 +3649,41 @@ do
   end
 end
 
--- Limiter holds are read live off the holds directory: one line per limiter from 60 s, red past
--- 5 min, the ⚠ the automation title reads lit while one lasts, and liveness from an async ps, never
--- a synchronous exec: a pid a finished check did not list drops out.
+-- A limiter queue lives inside Chats/other (bin/chat-load): the menu draws no hold line of its own
+-- even over live hold files, and only a queue chat-load judged stuck, in a fresh snapshot, lights the
+-- title's ⚠ and the Automation title.
 do
-  local function holdLines(mod)
-    local lines = {}
+  local now = os.time()
+  holdFake.files = { ["bench-throttle-4242.json"] = { limiter = "bench-throttle", pid = 4242,
+    held = { what = "bench job", session = "s1", cwd = "/w" }, since = now - 4000, why = "memory pressure" } }
+  local mod = loadModule(roleFixture)
+  mod.harnessDoctorDir = "/fixture/harness-doctor"
+  local function holdLines()
+    local n = 0
     for _, entry in ipairs(mod.menuItems()) do
       local text = titleText(entry)
-      if type(text) == "string" and text:match(": holding ") then
-        lines[#lines + 1] = { text = text, red = #redRuns(entry.title) > 0, menu = entry.menu }
-      end
+      if type(text) == "string" and (text:match("holding") or text:match("bench%-throttle")) then n = n + 1 end
     end
-    return lines
+    return n
   end
-  local function texts(lines)
-    local out = {}
-    for _, line in ipairs(lines) do out[#out + 1] = line.text end
-    return table.concat(out, " | ")
-  end
-  local now = os.time()
-  local function hold(limiter, pid, age, what, since)
-    return { limiter = limiter, pid = pid, held = { what = what, session = "s1", cwd = "/w" }, since = since or now - age,
-      why = "memory pressure" }
-  end
-  local ps = {}
-  local function psFactory(path, callback, args)
-    local record = { path = path, callback = callback, args = args }
-    ps[#ps + 1] = record
-    return { start = function() return true end }
-  end
-  holdFake.files = nil
-  local mod = loadModule(roleFixture, psFactory)
-  mod.harnessDoctorDir = "/fixture/harness-doctor"
-  assert(#holdLines(mod) == 0 and #ps == 0 and not mod.refreshState().holdText,
-    "no holds directory still drew a hold or started ps")
-  holdFake.files = { ["quick-4242.json"] = hold("quick", 4242, 30, "a test") }
-  assert(#holdLines(mod) == 0 and #ps == 0, "a hold under 60 s was drawn or started ps")
-  holdFake.files = {
-    ["bench-throttle-4242-1.json"] = hold("bench-throttle", 4242, 400, "bench job"),
-    ["bench-throttle-4242-2.json"] = hold("bench-throttle", 4242, 200, "bench job"),
-    ["bench-throttle-4242-3.json"] = hold("bench-throttle", 4242, 20, "bench job"),
-    ["gone-5151.json"] = hold("gone", 5151, 900, "job"),
-    ["quick-4242.json"] = hold("quick", 4242, 30, "a test"),
-    ["reused-6161.json"] = hold("reused", 6161, 7200, "job"),
-    ["since-text-4343.json"] = hold("since-text", 4343, 900, "job", tostring(now - 900)),
-    ["suite-slots-4343.json"] = hold("suite-slots", 4343, 90, "suite"),
-  }
-  local first = holdLines(mod)
-  assert(#ps == 1 and ps[1].path == "/bin/ps"
-      and table.concat(ps[1].args, " ") == "-o pid=,etime= -p 4242,5151,6161,4343",
-    "the liveness check was not one async ps over the distinct pids and their start")
-  assert(#first == 4, "a hold no ps has answered for yet was not shown as live, or a text since hid holds: "
-    .. texts(first))
-  ps[1].callback(0, "4242 1-02:03:04\n 4343 01:00:00\n 6161 00:30\n", "")
-  local lines = holdLines(mod)
-  assert(#lines == 2 and lines[1].text == "bench-throttle: holding 3 jobs, longest 6m"
-      and lines[1].red and lines[2].text == "suite-slots: holding 1 job, longest 1m" and not lines[2].red,
-    "live holds were not one line per limiter counting its jobs, red past 5 min, the dead and the reused pid left out: "
-      .. texts(lines))
-  local held = {}
-  for _, item in ipairs(lines[1].menu or {}) do
-    held[#held + 1] = titleText(item)
-    assert(item.disabled == true and isDimmed(item.title.attributes), "a held-job row is not dim and disabled")
-  end
-  assert(table.concat(held, "|") == "bench job · w · for 6m|bench job · w · for 3m|bench job · w · for 1m"
-    .. "|why: memory pressure", table.concat(held, "|"))
+  chatsFake.snapshot = { as_of = now, title = "Chats/other", rows = {}, queues = {
+    { limiter = "bench-throttle", session = "s1", count = 2, longest = 1980, moved_at = now - 600, stuck = false,
+      text = "Vector Magic: 2 jobs queued, none started for 10m" } } }
+  assert(holdLines() == 0 and not mod.refreshState().holdText and mod.title() == "LLM Limits",
+    "a queue that moves drew a top-level line or lit the title")
+  chatsFake.snapshot.queues[1].stuck = true
+  chatsFake.snapshot.queues[1].text = "Vector Magic: 2 jobs queued, none started for 31m"
   local state = mod.refreshState()
-  assert(state.warning == true and state.prefix == "⚠ " and state.holdText == lines[1].text,
-    "an active hold over 60 s did not light the title's ⚠ through refreshState")
+  assert(holdLines() == 0 and state.warning == true and state.prefix == "⚠ "
+      and state.holdText == "Vector Magic: 2 jobs queued, none started for 31m",
+    "a stuck queue did not light the title's ⚠ through refreshState, or drew a top-level line")
   local title = mod.title()
-  assert(type(title) == "table" and title.text == "LLM Limits: 1 hold" and isRed(title.attributes),
-    "a red hold did not reach the Automation title: " .. titleText({ title = title }))
-  holdFake.files = { ["suite-slots-4343.json"] = hold("suite-slots", 4343, 90, "suite") }
-  holdFake.files["suite-slots-4343.json"]["until"] = now + 600.5
-  local bounded = (holdLines(mod)[1] or {}).menu or {}
-  assert(titleText(bounded[#bounded] or {}) == "until " .. require("menu-style").clock(now + 600, now)
-      and titleText(bounded[#bounded - 1] or {}) == "why: memory pressure",
-    "a bounded hold with a fractional until did not end its submenu with its until")
-  assert(mod.title() == "LLM Limits", "a hold under 5 min turned the Automation title red")
-  holdFake.files = { ["gone-5151.json"] = hold("gone", 5151, 900, "job") }
-  assert(#holdLines(mod) == 0 and not mod.refreshState().holdText, "a dead pid's hold file was drawn as live")
-  holdFake.getenv = function(name)
-    if name == "HARNESS_HOLDS_DIR" then return "/fixture/elsewhere/holds" end
-    return os.getenv(name)
-  end
-  local moved = loadModule(roleFixture, psFactory)
-  holdFake.getenv = nil
-  holdFake.files = { ["moved-4242.json"] = hold("moved", 4242, 90, "job") }
-  assert(#holdLines(moved) == 1 and holdFake.dir == "/fixture/elsewhere/holds",
-    "the menu ignored HARNESS_HOLDS_DIR: read " .. tostring(holdFake.dir))
-  holdFake.files = nil
+  assert(type(title) == "table" and title.text == "LLM Limits: 1 stuck queue" and isRed(title.attributes),
+    "a stuck queue did not reach the Automation title: " .. titleText({ title = title }))
+  chatsFake.snapshot.as_of = now - 600
+  assert(not mod.refreshState().holdText and mod.title() == "LLM Limits",
+    "a stale snapshot's stuck queue still lit the title")
+  chatsFake.snapshot, holdFake.files = nil, nil
 end
 
 -- Harness doctor: one top-level entry, its rows read off bin/harness-doctor's laid-out menu.txt

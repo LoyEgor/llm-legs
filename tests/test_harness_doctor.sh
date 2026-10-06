@@ -798,7 +798,7 @@ PINNED = {"call_s": 5.0, "call_note_s": 3.0, "call_min_calls": 5, "cut_share": 0
           "history_min_ms": 20, "load_fail_suites": 3, "load_pass_within_s": 3600, "menu_ms": 300,
           "menu_note_ms": 100, "menu_min_builds": 3, "per_call_entries": 1000, "collector_s": 30.0,
           "stop_repeat_s": 1800, "ask_deferred_s": 7200, "silent_s": 21600, "growth_min_b": 120, "watch_tick_s": 120,
-          "hold_note_s": 60, "hold_red_s": 300, "wait_red_s": 600, "wait_growth": 2.0, "wait_growth_days": 3,
+          "hold_note_s": 60, "wait_red_s": 600, "wait_growth": 2.0, "wait_growth_days": 3,
           "worker_orphans": 3}
 check(m.LIMITS == PINNED, "LIMITS match design §4; a fixer never loosens the judge, a change here goes through a handoff")
 check((m.PROOF_MIN_EXPOSURE, m.SEEN_GAP_S, m.DISMISSED) == (20, 86400, ("not-a-bug", "weather")),
@@ -1562,31 +1562,34 @@ hold_file bench-throttle 1 400 "bench job"; hold_file suite-slots 1 90 suite; ho
 hold_file bench-throttle 1 120 "bench job" 7001; hold_file bench-throttle 1 20 "bench job" 7002
 hold_file gone "$dead_pid" 900 job; hold_file reused "$reused_pid" 7200 job
 jq '.rows = []' "$ROOT/share/harness-ledger.json" > "$WORK/hold-ledger.json"
+mkdir -p "$WORK/held-memlogd"
+jq -n --argjson now "$held_now" '{as_of: $now, queue_stuck_s: 1800, queues: [
+  {limiter: "bench-throttle", stuck: true}, {limiter: "suite-slots", stuck: false}]}' > "$WORK/held-memlogd/chats.json"
 run_held() {
   HARNESS_LEDGER="$WORK/hold-ledger.json" RUN_SUITES_SLOTS_DIR="$WORK/no-slots" NIGHT_FIXER_SLOTS_DIR="$WORK/no-slots" \
     HARNESS_HOLDS_DIR="$holds" HARNESS_DOCTOR_DIR="$WORK/held" HARNESS_DOCTOR_NOW=$held_now HARNESS_DOCTOR_FAKE_SAMPLE="" \
-    "$DOCTOR" --quiet
+    MEMLOGD_DIR="$WORK/held-memlogd" "$DOCTOR" --quiet
 }
 run_held || fail "a run over live and leaked holds failed"
 kill "$reused_pid" 2>/dev/null
 assert_eq "$(jq -cn --arg b "gone-$dead_pid.json" --arg d "reused-$reused_pid.json" \
-  '[["limiter_hold:bench-throttle", "new", 3, "holds/bench-throttle-1.json", "bench-throttle holds 3 jobs, longest 7 min: memory pressure"],
+  '[["limiter_hold:bench-throttle", "new", 3, "holds/bench-throttle-1.json", "bench-throttle holds 3 jobs, longest 7 min: memory pressure — the queue is stuck"],
     ["limiter_hold:suite-slots", "watch", 1, "holds/suite-slots-1.json", "suite-slots holds 1 job, longest 2 min: memory pressure"],
     ["limiter_hold_leak:gone", "watch", 1, "holds/\($b)", "gone left 1 hold file whose process is gone or unreadable: \($b)"],
     ["limiter_hold_leak:reused", "watch", 1, "holds/\($d)", "reused left 1 hold file whose process is gone or unreadable: \($d)"]]')" \
   "$(jq -c '[.problems[] | select(.rule | startswith("limiter_hold")) | [.id, .state, .count, .evidence[0].ref, .fact]] | sort' \
     "$WORK/held/latest.json")" \
-  "a hold over 60 s is a watch, past 5 min red, one under 60 s nothing; a dead pid's file and one whose pid started after since a leak"
+  "a hold over 60 s is a watch, red only in a queue chat-load judged stuck, one under 60 s nothing; a dead pid's file and one whose pid started after since a leak"
 assert_eq 2 "$(grep -c $'^[1-9][0-9]*\t.*holds [0-9]* jobs*, longest [0-9]* min: memory pressure' "$WORK/held/menu.txt")" \
   "the doctor's menu names each hold over 60 s, what it holds, for how long and why"
 mkdir -p "$WORK/night-slots/1" && echo "$$" > "$WORK/night-slots/1/pid"
 HARNESS_LEDGER="$WORK/hold-ledger.json" RUN_SUITES_SLOTS_DIR="$WORK/no-slots" NIGHT_FIXER_SLOTS_DIR="$WORK/night-slots" \
-  HARNESS_HOLDS_DIR="$holds" \
+  HARNESS_HOLDS_DIR="$holds" MEMLOGD_DIR="$WORK/held-memlogd" \
   HARNESS_DOCTOR_DIR="$WORK/held-night" HARNESS_DOCTOR_NOW=$held_now HARNESS_DOCTOR_FAKE_SAMPLE="" "$DOCTOR" --quiet ||
   fail "a run over holds under a night slot failed"
-assert_eq '["watch","bench-throttle holds 3 jobs, longest 7 min: memory pressure while 1 suite or night-fixer slots ran"]' \
+assert_eq '["watch","bench-throttle holds 3 jobs, longest 7 min: memory pressure — the queue is stuck while 1 suite or night-fixer slots ran"]' \
   "$(jq -c '[.problems[] | select(.id == "limiter_hold:bench-throttle") | .state, .fact]' "$WORK/held-night/latest.json")" \
-  "a hold past 5 min while a suite or night-fixer slot runs is the night's own requested load: a watch, never red"
+  "a stuck queue while a suite or night-fixer slot runs is the night's own requested load: a watch, never red"
 assert_eq "bench-throttle-1-7001.json bench-throttle-1-7002.json bench-throttle-1.json quick-1.json suite-slots-1.json" \
   "$(ls "$holds" | tr '\n' ' ' | sed 's/ $//')" "a run that reported a leak did not sweep its files, or swept a live hold"
 run_held || fail "a second run over the swept holds failed"

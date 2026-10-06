@@ -136,6 +136,15 @@ A click copies the chat's resume command. A chat appears only by its title from
 id or a derived session name. Older than 120 s the title reads `· stale` in red: the guard is not
 running.
 
+Limiter holds (`docs/harness-doctor-design.md` §12) live here too, attributed like CPU and RAM: a
+live hold (its pid started no later than `since` + 2 s) adds `⏳<jobs> <longest wait>` to the row of
+the chat its waiting process belongs to, and one no chat launched gets its own `queued <limiter>` row.
+Per limiter the snapshot keeps `moved`, the last tick a hold file of that limiter disappeared (a job
+got its slot) or the queue first appeared; a queue none left for `QUEUE_STUCK_S` (1800 s) is stuck —
+however long a job waits in a queue that moves, it stays dim. A stuck queue paints its row and the
+`Chats/other` title red, and `queues[]` (`limiter, session, count, longest, moved_at, stuck, text`)
+plus `queue_stuck_s` carry the verdict to the menubar ⚠ and the Harness doctor.
+
 ## Nothing it runs lives on /Volumes/Work
 
 `install-agent` deploys `chat-load`, `chat_names.py`, `report-bus` and `report_frame.py` beside the

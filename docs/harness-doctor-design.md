@@ -635,25 +635,22 @@ job of one chat for about 4 h under memory pressure and nothing reached Egor.
   `throttle.py` carries a copy keyed by `threading.get_ident()`.
 - **Doctor.** Rule `limiter_hold`, id `limiter_hold:<limiter>`, one problem per limiter however
   many files: value the longest live hold, count the held jobs (live files), evidence one hold file
-  each, fact `<limiter> holds N jobs, longest <wait>: <why of the longest>`. A watch from 60 s, red past 300 s. The limits
-  are absolute, like every limit here: 60 s is twelve times the red tool-call wait and the holder's
-  own report cadence, so a hold that long is no scheduling blip; 300 s outlives one collector cycle,
-  and a chat waiting on a notification that never comes is lost well before the hours of the
-  incident. A line per judged limiter, inside the `Limiter holds` line, names what it holds, for how long and why.
-- **Menu, live.** The collector runs every 5 min, so the LLM Limits menu build reads the directory
-  itself (`readHolds`, under pcall, cached per second and listing): one line per limiter whose
-  longest hold passed 60 s, worded like the doctor's fact with every live job counted, red past
-  300 s, at the top of the menu; it honours `HARNESS_HOLDS_DIR` and skips an unreadable file or
-  a non-number `since` alone. Liveness comes from an async `hs.task` `ps -o pid=,etime= -p`
-  (the menu never execs synchronously) judged like the doctor's, started only while a file
-  exists and at most every 30 s per pid set; a pid no finished check has asked about counts as
-  alive.
+  each, fact `<limiter> holds N jobs, longest <wait>: <why of the longest>`. A watch from 60 s; red
+  only while `bin/chat-load` judges the queue stuck (`chats.json` `queues[].stuck`, a snapshot under
+  600 s old): no job of that limiter got its slot for `queue_stuck_s` (1800 s). A long wait in a
+  queue that moves is a benchmark doing its job, not a problem; the incident was a queue that never
+  moved. A line per judged limiter, inside the `Limiter holds` line, names what it holds, for how long and why.
+- **Menu.** The holds live inside `Chats/other` (`docs/memory-guard.md`): `⏳<jobs> <longest>` on the
+  row of the chat whose process waits, a `queued <limiter>` row for one no chat launched, red with
+  the `Chats/other` title only while the queue is stuck. The LLM Limits menu draws no hold line of
+  its own.
 - **Title alert.** The one existing path: `~/.hammerspoon/automation_menu.lua` `refreshTitle`
   (every 30 s) prefixes the menubar title with ⚠ from `llmLimits.refreshState().warning`.
-  `refreshState` sets `warning` while a hold over 60 s lasts and carries `holdText`, plus
-  `refreshWarning` for the refresh's own warning. `refreshTitle` shows ⚠ for a hold even while a
-  refresh is busy (⟳ otherwise), and its tooltip carries the hold's text and, when both hold, the
-  refresh warning's under it; `refreshState().prefix` follows the same order.
+  `refreshState` sets `warning` while a fresh `chats.json` (≤ 120 s) holds a stuck queue and
+  carries its text as `holdText`, plus `refreshWarning` for the refresh's own warning.
+  `refreshTitle` shows ⚠ for a stuck queue even while a refresh is busy (⟳ otherwise), and its
+  tooltip carries the queue's text and, when both hold, the refresh warning's under it;
+  `refreshState().prefix` follows the same order.
 - **llm-legs limiters.** `share/slots.sh` `slot_wait` writes one: `run-suites` (at most
   `RUN_SUITES_SLOTS` suite runs machine-wide: cores / 3 clamped 2–4 always, up to 4 while `slot_room`
   finds room) and `night-workers` (`worker-run` on a `night/*/*` branch, `NIGHT_FIXER_SLOTS`: cores / 2
