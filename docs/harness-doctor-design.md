@@ -579,13 +579,12 @@ up to three events as evidence (`stop:<ts>/<session>`, `words:<ts>/<session>`, `
   Not judged: ungated growth of a skill or plugin under `~/.claude/{skills,plugins}/synced/<bucket>`
   that the bucket's `manifest.json` lists, with a `lastUpdated` no older than 15 min before the
   growth (Claude Code's org sync bumps it only when content lands; the manifest's mtime moves every
-  round and proves nothing); growth that re-lands bytes the same key grew by in another checkout
+  round and proves nothing); growth that re-lands bytes the same real path grew by, or a gate priced, in another checkout
   within 24 h (a merge, patch or copy between a worktree and its main checkout), each sibling growth
   excusing one landing of its bytes; ungated growth git delivered, i.e. the file's repository reflog
   shows a checkout, merge, pull or rebase in the 24 h before the growth (60 s after it allowed) to a
   commit whose blob the file still holds, shown as one dim `upstream instruction growth · <repo> · +N B`
-  row per repository (incident 2026-10-05: one release checkout in an Arbostar repository read as
-  55 problems); a `baseline-missing` whose sid no chat transcript owns. Known
+  row per repository (incident 2026-10-05: one release checkout read as 55 problems); a `baseline-missing` whose sid no chat transcript owns. Known
   hole: a hand edit to a listed synced skill followed by a content sync of that bucket reads as the
   sync. Shapes the write gate does not read, so only the tripwire reports them as `growth-ungated`:
   a name built at run time (`'CLAU'+'DE.md'`, `os.path.join(d,'CLAUDE.md')`, `Path(d)/'CLAUDE.md'`),

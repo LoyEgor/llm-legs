@@ -77,6 +77,27 @@ path='/tmp/o.json'
 EOF")"
 assert_eq deny "$(decision "python3 -c \"f='/tmp/o.json';open(f,'w')\" && python3 -c \"f='$CLAUDE_MD';open(f,'a')\"")"
 
+echo "== write gate: a pipe inside the interpreter's payload, or after its heredoc opener, hides no write"
+assert_eq deny "$(decision "python3 - <<'EOF'
+p='$CLAUDE_MD'
+s='media-run <image|video|music>'
+open(p,'w').write(s)
+EOF")"
+assert_eq deny "$(decision "python3 - <<'EOF' 2>&1 | tail -3
+open('$CLAUDE_MD','w').write('x')
+EOF")"
+assert_eq deny "$(decision "python3 -c \"import re; s=re.sub('a|b','',''); open('$CLAUDE_MD','a').write(s)\"")"
+assert_eq pass "$(decision "python3 -c \"print(1)\" | grep \"open('$CLAUDE_MD','w')\"")"
+assert_eq pass "$(decision "python3 - <<'EOF' | tee $WORK/out.txt
+print('a|b', open('$CLAUDE_MD').read())
+EOF")"
+assert_eq pass "$(decision "python3 - <<'EOF' | tail -1
+print('see $CLAUDE_MD')
+EOF
+cat <<'EOF' > $WORK/notes.txt
+open('$CLAUDE_MD','w')
+EOF")"
+
 echo "== write gate: the spelling of the path does not matter"
 # The first live test walked through the gate on exactly this line: the expanded path was
 # the only form it knew, and nobody types that.

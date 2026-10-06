@@ -1883,10 +1883,10 @@
         "guards-growth-claude-agents-grok-worker-md",
         "guards-growth-claude-agents-light-worker-md"
       ],
-      "note": "Narrowed 2026-10-05 by night fixer harness-guards-20261005T061312Z-11fb. Event 2026-10-04T16:35:05Z (+158 B) is the fast-forward of claude-setup main to 091caf4 at 16:35:03Z. Writer: chat «LLM Doctor меню refactoring», Write of a scratchpad w7_patch.py, then Bash `python3 $S/w7_patch.py` at 13:45:47Z in the worktree fix-llm-doctor-handoffs-20261004, writing open(C + name, 'w') with C = '…/agents/'. Neither shape is read by the write gate (design §11): a script file named on the command line, and a name built at run time. No gate record exists; the watcher prunes worktrees, so the landing credit had no sibling growth. Ruled out: the agents symlink join (the same chat's Edit of skills/media/SKILL.md has a bloat passed record), vendor sync, and a doctor fault (the tripwire did its job). Gate widening is proposed to the owner in the handoff.",
+      "note": "2026-10-06 check (night fixer harness-guards-20261006T032921Z-5b99): the cause stands in code; the write gate still reads no script file run by path and no run-time name, so the row stays open on the handoff. The new sighting 2026-10-06T03:25:14Z (+213 B, all five agents files) is another cause: the night press rebasing claude-setup main to 1eeb9ab over bytes the bloat gate passed in worktree feat-worker-inbox (+120 B 23:02Z, +93 B 23:37Z, chat 0016a4ce). The landing credit missed them because the watcher journals few worktree writes and ~/.claude/agents is a symlink into the checkout; guards_section now credits worktree gate passes keyed by real path (row guards-growth-claude-setup-night-sweep-skill), and that event reads as a landing. Narrowed 2026-10-05 by night fixer harness-guards-20261005T061312Z-11fb. Event 2026-10-04T16:35:05Z (+158 B) is the fast-forward of claude-setup main to 091caf4 at 16:35:03Z. Writer: chat «LLM Doctor меню refactoring», Write of a scratchpad w7_patch.py, then Bash `python3 $S/w7_patch.py` at 13:45:47Z in the worktree fix-llm-doctor-handoffs-20261004, writing open(C + name, 'w') with C = '…/agents/'. Neither shape is read by the write gate (design §11): a script file named on the command line, and a name built at run time. No gate record exists; the watcher prunes worktrees, so the landing credit had no sibling growth. Ruled out: the agents symlink join (the same chat's Edit of skills/media/SKILL.md has a bloat passed record), vendor sync, and a doctor fault (the tripwire did its job). Gate widening is proposed to the owner in the handoff.",
       "handoff": "docs/handoffs/2026-10-05-harness-guards-script-file-writes.md",
-      "last_reviewed": "2026-10-05",
-      "reviewed_by": "night fixer harness-guards-20261005T061312Z-11fb"
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-guards-20261006T032921Z-5b99"
     },
     {
       "id": "guards-growth-claude-agents-gemini-worker-md",
@@ -1903,10 +1903,10 @@
         "guards-growth-claude-agents-grok-worker-md",
         "guards-growth-claude-agents-light-worker-md"
       ],
-      "note": "Narrowed 2026-10-05 by night fixer harness-guards-20261005T061312Z-11fb: the same w7_patch.py script-file write and 091caf4 landing as guards-growth-claude-agents-codex-worker-md (+147 B); cause and ruled-out ground are in that row.",
+      "note": "Narrowed 2026-10-05 by night fixer harness-guards-20261005T061312Z-11fb: the same w7_patch.py script-file write and 091caf4 landing as guards-growth-claude-agents-codex-worker-md (+147 B); cause and ruled-out ground are in that row. 2026-10-06 check (night fixer harness-guards-20261006T032921Z-5b99): cause stands; the 03:25:14Z +213 B sighting is the worktree landing that row's note explains, now credited.",
       "handoff": "docs/handoffs/2026-10-05-harness-guards-script-file-writes.md",
-      "last_reviewed": "2026-10-05",
-      "reviewed_by": "night fixer harness-guards-20261005T061312Z-11fb"
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-guards-20261006T032921Z-5b99"
     },
     {
       "id": "guards-growth-claude-agents-grok-worker-md",
@@ -1923,10 +1923,10 @@
         "guards-growth-claude-agents-gemini-worker-md",
         "guards-growth-claude-agents-light-worker-md"
       ],
-      "note": "Narrowed 2026-10-05 by night fixer harness-guards-20261005T061312Z-11fb: the same w7_patch.py script-file write and 091caf4 landing as guards-growth-claude-agents-codex-worker-md (+152 B); cause and ruled-out ground are in that row.",
+      "note": "Narrowed 2026-10-05 by night fixer harness-guards-20261005T061312Z-11fb: the same w7_patch.py script-file write and 091caf4 landing as guards-growth-claude-agents-codex-worker-md (+152 B); cause and ruled-out ground are in that row. 2026-10-06 check (night fixer harness-guards-20261006T032921Z-5b99): cause stands; the 03:25:14Z +213 B sighting is the worktree landing that row's note explains, now credited.",
       "handoff": "docs/handoffs/2026-10-05-harness-guards-script-file-writes.md",
-      "last_reviewed": "2026-10-05",
-      "reviewed_by": "night fixer harness-guards-20261005T061312Z-11fb"
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-guards-20261006T032921Z-5b99"
     },
     {
       "id": "guards-growth-claude-agents-light-worker-md",
@@ -1943,10 +1943,10 @@
         "guards-growth-claude-agents-gemini-worker-md",
         "guards-growth-claude-agents-grok-worker-md"
       ],
-      "note": "Narrowed 2026-10-05 by night fixer harness-guards-20261005T061312Z-11fb: the same w7_patch.py script-file write and 091caf4 landing as guards-growth-claude-agents-codex-worker-md (+160 B); cause and ruled-out ground are in that row.",
+      "note": "Narrowed 2026-10-05 by night fixer harness-guards-20261005T061312Z-11fb: the same w7_patch.py script-file write and 091caf4 landing as guards-growth-claude-agents-codex-worker-md (+160 B); cause and ruled-out ground are in that row. 2026-10-06 check (night fixer harness-guards-20261006T032921Z-5b99): cause stands; the 03:25:14Z +213 B sighting is the worktree landing that row's note explains, now credited.",
       "handoff": "docs/handoffs/2026-10-05-harness-guards-script-file-writes.md",
-      "last_reviewed": "2026-10-05",
-      "reviewed_by": "night fixer harness-guards-20261005T061312Z-11fb"
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-guards-20261006T032921Z-5b99"
     },
     {
       "id": "guards-growth-claude-setup-night-sweep-skill",
@@ -1969,15 +1969,24 @@
           ],
           "in": "llm-legs@ac75a868",
           "regressed_at": "2026-10-04T22:48:49+03:00"
+        },
+        {
+          "at": "2026-10-06T06:52:00+03:00",
+          "by": "night fixer harness-guards-20261006T032921Z-5b99",
+          "files": [
+            "llm-legs/bin/harness-doctor",
+            "llm-legs/tests/test_harness_doctor.sh"
+          ],
+          "in": null
         }
       ],
       "same_cause": [
         "guards-growth-claude-skills-media"
       ],
-      "note": "Fixed 2026-10-04 by Harness Doctor: Both shapes fixed: the variable-path write is gated (instruction_interp_var_write_re), and a merge, patch or copy that re-lands bytes the same file key grew by in another checkout within 24 h is no new growth (guards_section landed, handoff option (b)); test 'a merge or copy landing bytes a worktree already grew by'. 2026-10-04 check: window events 2026-10-03T18:45-18:46Z and 22:39:34Z (+44..+221 B, chat \"Updater doctor\" 233cceb1) all carry a gate pass; instruction_git_landing still reads no merge, cause stands. 2026-10-03 check: the only window event was the 2026-10-02T09:26:14Z git merge landing (+268 B), handoff section 2. Cause: an interpreter heredoc writing through a path held in a variable (`p='...'; open(p,'w')`), which bin/instruction-write-gate.sh leaves out of scope by design, so only the tripwire saw it. Owner decision in docs/handoffs/2026-10-02-harness-guards-gate-scope.md. Writer: chat \"Updater doctor\" (233cceb1), python3 heredoc at 2026-10-02T01:06:15Z in the claude-setup main checkout (+268 B), moved by patch into the code-doctor worktree at 01:06:32Z (-268 B), landed back by `git merge code-doctor` (fast-forward 8b7c744) at 09:26:13Z (+268 B): git merge is no landing instruction_git_landing reads.",
+      "note": "2026-10-06 (night fixer harness-guards-20261006T032921Z-5b99): shared cause of the regressions: the landing credit read only tripwire events, and the watcher journals few worktree writes. Event 2026-10-05T19:50:17Z +390 B is the fast-forward of claude-setup main to 5dc5308; its bytes were judged in worktree feat-night-report-doctors at 19:43:50-19:44:30Z (bloat passed +4, granted +386, chat 9b1c0bc5). guards_section now credits a gate's priced pass (passed, span-pass, granted) of a worktree path to a landing of the same file, keyed by real path; an event of that worktree write adds only bytes no pass priced. Tests 'bytes a gate priced in a worktree the watcher never journaled excuse their landing' and 'one credit, never two'. Left: event 2026-10-05T14:15:55Z +84 B (under the 120 B limit) is the scratchpad ff.sh landing of night leftover branch leftover-feat-night-default-land (49935a1); only +17 B was priced within 24 h (12:48:54Z, conflict resolution); +30 B was priced 34 h earlier in worktree feat-night-default-land (2026-10-04T04:40:08Z), the rest has no gate record. A leftover adopted after LANDING_S is outside the landing rule; widening it is the owner's call. Fixed 2026-10-04 by Harness Doctor: Both shapes fixed: the variable-path write is gated (instruction_interp_var_write_re), and a merge, patch or copy that re-lands bytes the same file key grew by in another checkout within 24 h is no new growth (guards_section landed, handoff option (b)); test 'a merge or copy landing bytes a worktree already grew by'. 2026-10-04 check: window events 2026-10-03T18:45-18:46Z and 22:39:34Z (+44..+221 B, chat \"Updater doctor\" 233cceb1) all carry a gate pass; instruction_git_landing still reads no merge, cause stands. 2026-10-03 check: the only window event was the 2026-10-02T09:26:14Z git merge landing (+268 B), handoff section 2. Cause: an interpreter heredoc writing through a path held in a variable (`p='...'; open(p,'w')`), which bin/instruction-write-gate.sh leaves out of scope by design, so only the tripwire saw it. Owner decision in docs/handoffs/2026-10-02-harness-guards-gate-scope.md. Writer: chat \"Updater doctor\" (233cceb1), python3 heredoc at 2026-10-02T01:06:15Z in the claude-setup main checkout (+268 B), moved by patch into the code-doctor worktree at 01:06:32Z (-268 B), landed back by `git merge code-doctor` (fast-forward 8b7c744) at 09:26:13Z (+268 B): git merge is no landing instruction_git_landing reads.",
       "handoff": null,
-      "last_reviewed": "2026-10-04",
-      "reviewed_by": "Harness Doctor"
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-guards-20261006T032921Z-5b99"
     },
     {
       "id": "hook-sync-stop-dispatch",
@@ -2315,6 +2324,32 @@
       "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
       "last_reviewed": "2026-10-04",
       "reviewed_by": "Harness Doctor"
+    },
+    {
+      "id": "guards-denied-claude-skills-media",
+      "title": "skills/media grew after a denial, 1 file in 24 h",
+      "match": {
+        "rule": "growth-denied",
+        "ident": "^\\~/\\.claude/skills/media$"
+      },
+      "status": "fixed",
+      "fixes": [
+        {
+          "at": "2026-10-06T06:52:00+03:00",
+          "by": "night fixer harness-guards-20261006T032921Z-5b99",
+          "files": [
+            "llm-legs/share/instruction-files.sh",
+            "llm-legs/bin/instruction-write-gate.sh",
+            "llm-legs/tests/test_instruction_gate.sh"
+          ],
+          "in": null
+        }
+      ],
+      "same_cause": [],
+      "note": "Fixed 2026-10-06 by night fixer harness-guards-20261006T032921Z-5b99. Event 2026-10-05T23:31:40Z +1267 B (SKILL.md, sid empty). Writer: chat 48ac67b2 (ElevenLabs media integration, profile com), Bash toolu_017UUW8RJBeUDPPCa8aRxhun at 23:31:35Z, a python3 heredoc in the claude-setup main checkout with p='skills/media/SKILL.md' and open(p,'w'). The write gate passed it: the interpreter rules match `python… [^|]* open(…)`, and the heredoc body carried `<image|video|music|sfx|listen>`, so the pipe in the data cut the stage. Its next heredoc with no pipe (23:31:56Z) was denied (write, span), and that later denial is why the doctor reads this growth as after a denial. Fix: instruction_shell_scan mask blanks pipes inside quoted runs and heredoc bodies and puts each body after its own << token, and the write gate builds its flat line from it; both commands replayed in a fixture now deny. Test test_instruction_gate 'a pipe inside the interpreter's payload, or after its heredoc opener, hides no write'. Ruled out: a variable-path miss (instruction_interp_var_write_re matches once the pipe is gone) and a vendor sync.",
+      "handoff": null,
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-guards-20261006T032921Z-5b99"
     },
     {
       "id": "guards-denied-claude-agents-image-gen-md",

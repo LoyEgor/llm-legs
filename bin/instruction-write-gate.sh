@@ -144,7 +144,12 @@ case "$command" in *"\$'"*) scan=$command ;; esac
 # grep is line-based, and a heredoc puts the interpreter on one line and the open() on the next.
 # Flattening keeps them in one pipeline stage; the cost is that two unrelated commands on two
 # lines can look like one, which is a denial too many rather than a write too few.
-flat=${command//$'\n'/ }
+flat=$command
+case "$command" in *'|'*)
+  flat=$(printf '%s' "$command" | instruction_shell_scan mask 2>/dev/null)
+  [ -n "$flat" ] || flat=$command ;;
+esac
+flat=${flat//$'\n'/ }
 # The interpreter shapes are the shared module's, asked here and by the tripwire alike
 # (`instruction_interp_write_re`): the parse below can only say an interpreter NAMED the file, and
 # a second spelling of what makes that a write is a one-liner one door denies and the other never

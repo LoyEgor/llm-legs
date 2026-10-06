@@ -1263,6 +1263,16 @@ check(judged(health(G, gates=[dict(passed, file=tree, at=T - 4050)], events=[cha
 check(judged(health(G, gates=[dict(passed, file=tree, at=T - 4050)], events=[change(T - 4000, tree, 600),
                                                                           change(T - 2000, landing, 600), change(T - 600, landing, 600)]))
       == {("growth-ungated", "~/p/AGENTS.md"): "red"}, "Guards: one worktree growth excuses one landing of its bytes, never a second")
+os.symlink(os.path.join(home, "p"), os.path.join(home, "lnk"))
+linked, priced = os.path.join(home, "lnk", "AGENTS.md"), dict(passed, gate="bloat", file=tree, at=T - 4050, delta=500)
+check(judged(health(G, gates=[dict(priced, decision="granted")], events=[change(T - 600, linked)])) == {}
+      and judged(health(G, gates=[dict(priced, decision="denied")], events=[change(T - 600, linked)]))
+      == {("growth-ungated", "~/lnk/AGENTS.md"): "red"},
+      "Guards: bytes a gate priced in a worktree the watcher never journaled excuse their landing, through a symlinked "
+      "spelling too; a denial there excuses nothing")
+check(judged(health(G, gates=[priced], events=[change(T - 4000, tree), change(T - 2000, landing), change(T - 600, linked)]))
+      == {("growth-ungated", "~/lnk/AGENTS.md"): "red"},
+      "Guards: a worktree write both priced by a gate and journaled by the watcher is one credit, never two")
 check(judged(health(G, gates=[dict(denied, file=synced[0])], events=[change(T - 600, synced[0], 2282)]))
       == {("growth-denied", "~/.claude/skills/synced/org_acct/pptx"): "red"},
       "J Guards: growth a gate denied in a synced tree stays red")

@@ -4029,7 +4029,7 @@ def guards_section(now):
     if not os.path.isdir(state):
         return health_section("Guards", "guards", items, 0, now, ok="",
                               blind="no instruction-watch state at %s" % state)
-    for entry in read_jsonl(os.path.join(state, "gates.jsonl"), cutoff - GATE_BEFORE_S, "at") or ():
+    for entry in read_jsonl(os.path.join(state, "gates.jsonl"), cutoff - LANDING_S, "at") or ():
         at = entry.get("at")
         if not isinstance(at, (int, float)):
             continue
@@ -4043,24 +4043,37 @@ def guards_section(now):
                        head="a guard on instruction files failed")
     events = read_jsonl(os.path.join(state, "events.jsonl"), cutoff - LANDING_S, "at") or ()
     # A merge, patch or copy between a worktree and its main checkout re-lands bytes already judged; each
-    # sibling growth excuses one landing of its bytes, used up oldest first.
+    # sibling growth excuses one landing of its bytes, used up oldest first. The watcher skips most
+    # worktree writes, so a gate's priced pass of one is that sibling growth; an event of the same file adds
+    # only the bytes no such pass priced. Keyed by real path: ~/.claude/agents is a symlink into a checkout.
     credits, landings, manifests, repos, upstream = {}, set(), {}, {}, {}
+    passes = sorted((d["at"], str(d["file"]), d["delta"]) for d in decisions
+                    if d.get("decision") in ("passed", "span-pass", "granted") and "/.claude/worktrees/" in str(d.get("file"))
+                    and isinstance(d.get("delta"), (int, float)) and not isinstance(d.get("delta"), bool) and d["delta"] > 0)
     for entry in events:
         at = iso_epoch(entry.get("at"))
         if at is None or entry.get("reverted") or entry.get("kind", "change") not in ("change", "changed-between-sessions"):
             continue
+        while passes and passes[0][0] <= at:
+            gated, real, delta = passes.pop(0)
+            real = os.path.realpath(real)
+            credits.setdefault(file_key(real), []).append([gated, real, delta, delta])
         for path, delta in zip(entry.get("files") or [], entry.get("bytes") or []):
             if not isinstance(delta, (int, float)) or delta <= 0:
                 continue
-            path, mine = str(path), credits.setdefault(file_key(path), [])
-            pool = [c for c in mine if c[2] > 0 and c[0] >= at - LANDING_S and c[1] != path]
+            path = str(path)
+            real = os.path.realpath(path)
+            mine = credits.setdefault(file_key(real), [])
+            pool = [c for c in mine if c[2] > 0 and c[0] >= at - LANDING_S and c[1] != real]
             if sum(c[2] for c in pool) >= delta:
                 landings.add((id(entry), path))
                 need = delta
                 for c in pool:
                     take = min(c[2], need)
                     c[2], need = c[2] - take, need - take
-            mine.append([at, path, delta])
+            delta -= sum(c[3] for c in mine if c[1] == real and c[0] >= at - GATE_BEFORE_S)
+            if delta > 0:
+                mine.append([at, real, delta, 0])
 
     classes = write_classes(str(p) for entry in events for p in entry.get("files") or [])
     skills = {os.path.dirname(str(p)): True for entry in events for p in entry.get("files") or []

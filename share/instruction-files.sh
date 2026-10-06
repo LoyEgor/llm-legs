@@ -540,8 +540,11 @@ instruction_always_loaded() { # path [home] -> prints always|span
 # collapses every run and finds its file by name instead, which this one cannot do because it must
 # report WHICH file a command writes. Callers must fall back to the raw command when an
 # INSTRUCTION_INTERPRETER_RE name stands in it: there the quoted text is a program, not data.
+# `mask` keeps every byte but blanks each `|` inside a quoted run or a heredoc body, and moves each
+# body to right after its own `<<` token: the interpreter rules stop at a pipe, so `<a|b>` in a
+# python heredoc, or `python3 - <<EOF | tail`, hid the open() from them.
 instruction_shell_scan() {
-  awk -v sq="'" -v dq='"' '
+  awk -v sq="'" -v dq='"' -v mask="${1:-}" '
     function feedsshell(line,   at, pre, post) {
       at = index(line, "<<")
       if (!at) return 0
@@ -562,16 +565,21 @@ instruction_shell_scan() {
       i = 1
       first = 1
       while (i <= nl) {
-        text = text (first ? "" : "\n") L[i]
-        first = 0
+        line = L[i]
         ndel = 0
+        off = 0
         rest = L[i]
-        gsub(/<<</, "\001", rest)
+        gsub(/<<</, "\001\001\001", rest)
         # `$((1<<n))` is a shift, not a redirection, and its operand is not a delimiter: read as
         # one it swallowed every command after this line.
-        while (sub(/\$\(\([^)]*\)\)/, "\002", rest)) continue
+        while (match(rest, /\$\(\([^)]*\)\)/)) {
+          fill = substr(rest, RSTART, RLENGTH)
+          gsub(/./, "\002", fill)
+          rest = substr(rest, 1, RSTART - 1) fill substr(rest, RSTART + RLENGTH)
+        }
         while (match(rest, hdre)) {
           tok = substr(rest, RSTART, RLENGTH)
+          off += RSTART + RLENGTH - 1
           rest = substr(rest, RSTART + RLENGTH)
           strip = (tok ~ /^<<-/)
           d = tok
@@ -583,15 +591,19 @@ instruction_shell_scan() {
           ndel++
           DEL[ndel] = d
           STRIP[ndel] = strip
+          AT[ndel] = off
         }
         # A heredoc fed to a shell is a program: its body stays in the text as commands.
         if (feedsshell(L[i])) ndel = 0
         i++
+        nfound = 0
         for (k = 1; k <= ndel; k++) {
           start = i
           found = 0
+          chunk = ""
           while (i <= nl) {
             b = L[i]
+            chunk = chunk "\n" b
             i++
             # `<<-` strips TABS and no spaces: a space-indented word is not the terminator, and
             # stopping on it leaves the rest of the body read as commands.
@@ -601,7 +613,14 @@ instruction_shell_scan() {
           # A terminator that never appears means there was no heredoc — a `<<` inside a quoted
           # sentence or an arithmetic shift — and the lines consumed for it are commands.
           if (!found) { i = start; break }
+          gsub(/\|/, " ", chunk)
+          BODY[++nbody] = chunk
+          nfound = k
         }
+        if (mask)
+          for (k = nfound; k >= 1; k--) line = substr(line, 1, AT[k]) "\003" substr(line, AT[k] + 1)
+        text = text (first ? "" : "\n") line
+        first = 0
       }
       out = ""
       n = length(text)
@@ -611,7 +630,7 @@ instruction_shell_scan() {
         # Outside quotes a backslash escapes ONE character and nothing more: collapsing it to a
         # placeholder erased the name of the binary it stood inside (`gi\t push`) and left that
         # word resolvable to neither a name nor command position.
-        if (c == "\\") { out = out substr(text, i + 1, 1); i += 2; continue }
+        if (c == "\\") { out = out (mask ? c : "") substr(text, i + 1, 1); i += 2; continue }
         # ANSI-C quoting, a dollar in front of a single-quoted body: the body is escape sequences
         # this parse does not resolve, so the word is an executable it cannot name and has to
         # stand in command position as one, whatever the body spells.
@@ -621,7 +640,11 @@ instruction_shell_scan() {
             if (substr(text, j, 1) == "\\") j += 2
             else j++
           }
-          out = out "Q"
+          if (mask) {
+            run = substr(text, i, j - i + 1)
+            gsub(/\|/, " ", run)
+            out = out run
+          } else out = out "Q"
           i = j + 1
           continue
         }
@@ -636,6 +659,13 @@ instruction_shell_scan() {
             j++
           }
           if (!closed) { out = out substr(text, i); break }
+          if (mask) {
+            run = substr(text, i, j - i + 1)
+            if (!live) gsub(/\|/, " ", run)
+            out = out run
+            i = j + 1
+            continue
+          }
           # A run whose body opens with `!` is a git alias: git hands the rest of it to a shell,
           # so it is a program like a `$(` run is — and the shell runs it as a command line of its
           # own, which is where this parse has to put it or the command word it carries
@@ -650,6 +680,8 @@ instruction_shell_scan() {
         out = out c
         i++
       }
+      k = 0
+      while (mask && (at = index(out, "\003")) > 0) out = substr(out, 1, at - 1) BODY[++k] substr(out, at + 1)
       printf "%s", out
     }'
 }
