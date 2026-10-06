@@ -76,7 +76,7 @@ REPORT_DOC="$ROOT/docs/report-bus.md"
 REPORT_NOTICE="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/stop.d/ask-run-unfinished.sh"
 REPORT_TAG="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/worker-tag-hook.sh"
 assert grep -Fq 'ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/claude-reports"' "$REPORT_BUS"
-for site in "$REPORT_DOC" "$ROOT/docs/DIAGNOSTICS.md" "$ROOT/share/run-suites.sh"; do
+for site in "$REPORT_DOC" "$ROOT/docs/DIAGNOSTICS.md" "$ROOT/share/run-suites.sh" "${REPORT_TAG%/*}/report-flush.sh"; do
   assert grep -Fq '${XDG_CACHE_HOME:-$HOME/.cache}/claude-reports' "$site"
 done
 assert doc_has '${XDG_CACHE_HOME:-$HOME/.cache}/claude-reports'
