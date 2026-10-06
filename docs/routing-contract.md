@@ -40,8 +40,9 @@ only pace math anywhere — one formula in one shared home, never a per-surface 
    its auth is alive, and its budget is a number. There is **no session reserve**: the
    session account (`CLAUDE_LIMITS_ACCOUNT`) is an ordinary candidate in every role,
    ranked by its budget like any other, and no answer is marked `SESSION RESERVE`. The
-   pool toggle is the only consent gate, and it applies to every consumer identically —
-   worker dispatch, review-bench, the chat picker, anything else that asks.
+   pool toggle is the only consent gate, and it applies to every consumer of delegated work
+   identically — worker dispatch, review-bench, anything else that asks — and never to `chat`
+   (below).
 2. **Selection.** The pin tiers win when usable — usable here being auth alive, a numeric
    budget and no run-observed wall, and nothing else: an account pin overrides the pool toggle (rule 4),
    so pool membership is no part of that test. It is the top override of worker routing, so every usable
@@ -259,8 +260,8 @@ app driven through Codex Computer Use) — and
 `<vendor>_workers` / `<vendor>_reviewers` in `~/.claude/worker-model` are per-role walls layered
 over the pool: the literal value `off` closes that vendor for that role, an absent key or any
 other value leaves it open. There is no `<vendor>_chat`, `<vendor>_research`, `<vendor>_light`,
-`<vendor>_image` or `<vendor>_computer` key and none is to be invented — the pool toggle is the whole gate for `chat`,
-`research` and `light`. The default role is `workers`, so every existing caller keeps its meaning; a
+`<vendor>_image` or `<vendor>_computer` key and none is to be invented — the pool toggle is the whole gate for
+`research` and `light`, and `chat` has none at all (below). The default role is `workers`, so every existing caller keeps its meaning; a
 rater asks with `worker-pick --account <vendor> --role reviewers`, the chat picker with
 `--role chat`, the research launcher with `--role research`, `worker-run start light` with
 `--role light`, the image scripts / fan-out with `--role image`, and `worker-run start codex
@@ -315,8 +316,11 @@ not code work, so such a query is pool membership + login + not walled, ordered 
 a fan-out that asks every vendor still reaches a vendor whose code workers are paused. Walls, the five-hour deferral,
 pool exclusion and missing login still apply, unchanged.
 
-`chat` is the same candidates under the same walls, minus the one thing that is about workers.
-An account Egor took out of the pool is not one to move a chat onto either. The pin it never sees
+`chat` is the account Egor talks to, independent of everything that steers delegated work
+(Egor 2026-10-06): the pin, the pool toggle and the `<vendor>_workers`/`<vendor>_reviewers`
+switches never reach it, so an account out of the pool is an ordinary chat candidate and
+`claudeb status` lists every account even with all of them out. Login, walls and spending rank
+it, and the bucket is the chat model's (`chat_model_bucket`). The pin it never sees
 (above); the session account ranks as an ordinary candidate here as it does everywhere else,
 there being no reserve to be an exception to. A chat query decides nothing about workers and
 therefore never clears a walled pin. It answers for every vendor under those same rules, `claudeb` being the only one with

@@ -1423,11 +1423,14 @@ for seconds_left in -1 1 1919 1920; do
   query --list --role reviewers
   assert test "$query_rc" -eq 0
   assert test "$(awk -F '\t' '$1 == "claudeb" && $2 == "session" {print $4}' <<<"$query_out")" = token-expiry
-  for role in workers chat research; do
+  for role in workers research; do
     query --account claudeb --role "$role"
     assert test "$query_rc" -eq 0
     assert test "$query_out" = session
   done
+  query --account claudeb --role chat
+  assert test "$query_rc" -eq 0
+  assert test "$query_out" = off
 done
 mkdir -p "$HOME_FIXTURE/.claude-profiles/.claudeb/tokens"
 printf fixture >"$HOME_FIXTURE/.claude-profiles/.claudeb/tokens/session"
@@ -1574,15 +1577,13 @@ assert test "$query_rc" -eq 0
 assert test "$query_out" = session
 write_config
 
-# `--role chat` asks the same pool under the same walls, minus the one thing that is only about
-# workers: the pin. The bucket is the difference — a chat runs Fable, so the Claude side is ranked
-# on the fable window the way `--fable` is, and `dry` (5% weekly, 100% fable) is no chat candidate
-# at all where it is the best ordinary one.
-write_config 'claudeb_profile=off'
+# `--role chat` ignores everything that steers delegated work: the pin, the pool toggle and the
+# workers/reviewers switches (Egor 2026-10-06). The bucket follows the chat's model — this suite's
+# default is Fable, so `dry` (5% weekly, 100% fable) is no chat candidate. `off`, out of the pool,
+# is one, and the pinned `tie-b` is ranked like any other.
+write_config 'claudeb_profile=tie-b'
 query_case claude_pool --account claudeb --role chat --exclude session
 assert test "$query_rc" -eq 0
-assert test "$query_out" = tie-a
-query --account claudeb
 assert test "$query_out" = off
 # The two buckets disagreeing is the whole point of the role: the weekly ranking takes `wk-free`
 # and the chat takes the account whose FABLE budget is the largest.
@@ -1594,6 +1595,8 @@ assert test "$query_out" = wk-free
 query --account claudeb --role chat
 assert test "$query_rc" -eq 0
 assert test "$query_out" = fb-free
+query --account claudeb
+assert test "$query_out" = tie-b
 query --account claudeb --role reviewers
 assert test "$query_out" = wk-free
 # A chat on any other Claude model spends the weekly bucket like ordinary work: named with
@@ -1650,18 +1653,16 @@ assert test "$query_out" = session
 write_config
 # A chat query decides nothing about workers, so the pin it ignores also survives its own wall.
 write_config 'claudeb_profile=walled-wk'
-query_case claude_pool --account claudeb --role chat
+query_case claude_pool --account claudeb --role chat --exclude off
 assert test "$query_rc" -eq 0
 assert test "$(sed -n 's/^claudeb_profile=//p' "$CONFIG")" = walled-wk
 # The session account is the one the chat is already spending, and it stands as an ordinary
-# candidate here as it does in every other role: its 0% weekly wins outright.
+# candidate here as it does in every other role: at 0% it ties `off` and loses on name.
 write_config
 query_case claude_pool --account claudeb --role chat
 assert test "$query_rc" -eq 0
-assert test "$query_out" = session
+assert test "$query_out" = off
 assert test ! -s "$WORK/query.err"
-# The pool toggle is the wall for chat too — `off` is out of the pool and never proposed — so
-# running out of the rest is exit 3, not a quieter answer.
 query --account claudeb --role chat --exclude session,dry,tie-b,tie-a
 assert test "$query_rc" -eq 3
 assert test -z "$query_out"
@@ -1670,9 +1671,14 @@ assert grep -q 'no selectable claudeb account' "$WORK/query.err"
 write_config 'claudeb_workers=off' 'claudeb_reviewers=off' 'claudeb_chat=off'
 query_case claude_pool --account claudeb --role chat
 assert test "$query_rc" -eq 0
-assert test "$query_out" = session
+assert test "$query_out" = off
 # The role is vendor-agnostic: codex answers it as the pool minus the pin.
 write_config 'codex_profile=with-credit'
+assert test "$query_rc" -eq 0
+assert test "$query_out" = off
+query --list --role chat
+assert test "$(awk -F '\t' '$1 == "claudeb" && $2 == "off" {print $4}' <<<"$query_out")" = ok
+query --account claudeb --role chat --exclude session,dry,tie-b,tie-a,off
 query_case codex_credit --account codex --role chat
 assert test "$query_rc" -eq 0
 assert test "$query_out" = plain

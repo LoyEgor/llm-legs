@@ -464,11 +464,14 @@ live_pools=$(
   for pool_vendor in claudeb codex gemini grok; do
     asked "$pool_vendor" || continue
     pool_dir=$(worker_pool_dir "$pool_vendor")
-    [ -e "$pool_dir" ] || [ -L "$pool_dir" ] || continue
+    [ "$query_role" = chat ] || [ -e "$pool_dir" ] || [ -L "$pool_dir" ] || continue
     pool_key=$pool_vendor
     [ "$pool_key" != claudeb ] || pool_key=claude
     printf '%s\037' "$pool_key"
-    if [ -d "$pool_dir" ] && [ -r "$pool_dir" ] && [ -x "$pool_dir" ]; then
+    # The pool is a switch for delegated work only: a chat Egor talks to ignores it (Egor 2026-10-06).
+    if [ "$query_role" = chat ]; then
+      printf '[]'
+    elif [ -d "$pool_dir" ] && [ -r "$pool_dir" ] && [ -x "$pool_dir" ]; then
       worker_pool_disabled_json "$pool_dir"
     else
       printf null

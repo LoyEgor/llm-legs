@@ -211,7 +211,7 @@ render_interactive_accounts() {
     marker=' '
     [ "$name" = "$accounts_picked" ] && marker='*'
     off_text=""
-    [ "$disabled" != true ] || off_text=" off"
+    [ "$disabled" != true ] || off_text=" workers off"
     hcell=$(printf '%-11s' "$hreset")
     [ "$h5_dim" != true ] || hcell=$'\033[2m'"$hcell"$'\033[0m'
     wcell=$(printf '%-11s' "$wreset")

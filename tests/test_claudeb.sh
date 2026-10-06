@@ -581,6 +581,16 @@ assert test "$(star_row <"$STAR_OUT")" = beta
 env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" CLAUDEB_WORKER_PICK="$CHAT_PICK_NONE" \
   bash "$SCRIPT" status --plain </dev/null >"$STAR_OUT" 2>/dev/null || fail "status --plain failed"
 assert test -z "$(star_row <"$STAR_OUT")"
+# The pool is a worker switch: with every account out of it the chat launcher still lists them all
+# and keeps the chat's star beside the worker mark (Egor 2026-10-06).
+printf 'alpha\nbeta\n' >"$disabled_file"
+env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" CLAUDEB_WORKER_PICK="$CHAT_PICK" \
+  bash "$SCRIPT" status --plain </dev/null >"$STAR_OUT" 2>"$WORK/star-status.err" ||
+  fail "status --plain refused with every account out of the pool"
+assert grep -Eq '^beta .* \* workers off$' "$STAR_OUT"
+assert grep -Eq '^alpha .*[0-9smhd-] workers off$' "$STAR_OUT"
+assert_fails grep -q 'disabled' "$WORK/star-status.err"
+printf 'alpha\n' >"$disabled_file"
 
 # An out-of-pool account launched interactively is the user, not a worker: it proceeds and
 # strips inherited routing credentials.

@@ -258,10 +258,6 @@ selection() {
     {all_walled: $all_walled,
      reset: (([$enabled[] | wall_reset | select(. != null)] | min) // 0),
      enabled_count: $enabled_count, data: $all}')
-  if [ "$(printf '%s' "$result" | jq -r .enabled_count)" -eq 0 ]; then
-    printf 'claudeb: all accounts are disabled; enable one with `claudeb enable <name>`\n' >&2
-    exit 1
-  fi
   all_walled=$(printf '%s' "$result" | jq -r .all_walled)
   reset=$(printf '%s' "$result" | jq -r .reset)
   if [ "$all_walled" = true ]; then
@@ -2453,7 +2449,7 @@ render_plain_accounts() {
     fi
     marker=""
     [ "$name" = "$accounts_picked" ] && marker="*"
-    [ "$disabled" != true ] || marker="off"
+    [ "$disabled" != true ] || marker="${marker:+$marker }workers off"
     # Cells are padded before the SGR wrap so escape bytes never skew columns.
     h5_cell=$(printf '%7s' "$h5")
     hcell=$(printf '%-11s' "$hreset")
