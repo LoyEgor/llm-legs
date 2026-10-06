@@ -45,7 +45,7 @@ if [ "$1" = tool ]; then
       build: "boq_test", takes: [{path: $p, id: null}]}'
   else
     cp "$FAKE_A" "$out/take1.jpg"
-    jq -cn --arg p "$out/take1.jpg" --arg op "$op" '{ok: true, account: "flowacct", op: $op, model: "NARWHAL",
+    jq -cn --arg p "$out/take1.jpg" --arg op "$op" '{ok: true, account: "flowacct", op: $op, model: "BELUGA",
       build: "boq_test", seconds: {render: 9.5, total: 20.1}, credits_before: 819, takes: [{path: $p, id: "wt1", media_id: "mt1"}]}'
   fi
   exit 0
@@ -68,11 +68,11 @@ case "${FAKE_ENGINE_MODE:-ok}" in
 esac
 cp "$FAKE_A" "$out/take1.jpg"
 cp "$FAKE_B" "$out/take2.jpg"
-jq -cn --arg o "$out" --argjson n "$count" '{ok: true, account: "flowacct", project: "p1", model: "NARWHAL",
+jq -cn --arg o "$out" --argjson n "$count" '{ok: true, account: "flowacct", project: "p1", model: "BELUGA",
   build: "boq_test", seconds: {render: 9.5, total: 20.1}, refused: [{media_id: "m9", error: "PUBLIC_ERROR_UNSAFE"}],
   takes: [range($n - (if env.FAKE_SHORT then 1 else 0 end)) as $i | {path: "\($o)/take\(if $i == 0 then 1 else 2 end).jpg", id: "wf\($i + 1)",
     media_id: "m\($i + 1)", size: [1200, 896]}]} + (if env.FAKE_FAILED then {failed: (env.FAKE_FAILED | tonumber)} else {} end)
-  + (if env.FAKE_PHASES then {phases: (env.FAKE_PHASES | fromjson)} else {} end)'
+  + (if env.FAKE_PHASES then {phases: (env.FAKE_PHASES | fromjson), load: {lock: 3.1, saved: 280.5}} else {} end)'
 EOF
 chmod +x "$FLOW_IMAGE_ENGINE"
 : >"$FAKE_CALLS"
@@ -127,13 +127,13 @@ assert grep -qx "variant=$WORK/out/pic-2.jpg size=1200x896 session=wf2" "$WORK/s
 assert grep -qx 'account=flowacct' "$WORK/stdout"
 assert grep -qx 'session=wf1' "$WORK/stdout"
 assert grep -qx 'aspect=4:3 achieved=1.339 fit=ok' "$WORK/stdout"
-assert grep -qx 'model=NARWHAL model_caps=fresh' "$WORK/stdout"
+assert grep -qx 'model=BELUGA model_caps=fresh' "$WORK/stdout"
 assert grep -qx 'route=flow model=nb2 upscale=2k' "$WORK/stdout"
 assert grep -qx 'refused=m9 PUBLIC_ERROR_UNSAFE' "$WORK/stdout"
 assert grep -qx 'seconds=20.1 render=9.5' "$WORK/stdout"
 assert test -z "$(ls "$TMPDIR")"
 assert test "$(tail -n 1 "$IMAGE_LEG_LOG" | jq -c '[.tool, .rc, .account, .served]')" = \
-  '["gemini-image",0,"flowacct","NARWHAL"]'
+  '["gemini-image",0,"flowacct","BELUGA"]'
 
 # Without --route the run is Flow's: the default model is pro and a png dest re-encodes; a model the caps do
 # not list reads stale.
@@ -144,8 +144,30 @@ assert grep -qx 'route=flow model=pro upscale=none' "$WORK/stdout"
 assert test "$(tail -n 1 "$IMAGE_LEG_LOG" | jq -r .route)" = flow
 assert grep -qx -- 'pro' "$FAKE_CALLS"
 assert test "$(sips -g format "$WORK/out/one.png" | awk '/format:/ {print $2}')" = png
-assert grep -Fqx 'model=NARWHAL model_caps=stale verified=^GEM_PIX_2$' "$WORK/stdout"
+assert grep -Fqx 'model=BELUGA model_caps=stale verified=^GEM_PIX_2$' "$WORK/stdout"
 assert test ! -e "$WORK/out/one-2.png"
+
+# Variants convert side by side: each shimmed magick of a variant waits for the other's start, so a serial
+# footer stalls into the shim's timeout and fails the run.
+mkdir -p "$WORK/shim" "$WORK/conv"
+cat >"$WORK/shim/magick" <<EOF
+#!/usr/bin/env bash
+out=\${@: -1}
+case "\$out" in
+  *-[23].png)
+    touch "$WORK/conv/\${out##*/}"
+    for _ in \$(seq 100); do [ "\$(ls "$WORK/conv" | wc -l)" -ge 2 ] && break; sleep 0.1; done
+    [ "\$(ls "$WORK/conv" | wc -l)" -ge 2 ] || exit 1 ;;
+esac
+exec "$(command -v magick)" "\$@"
+EOF
+chmod +x "$WORK/shim/magick"
+rc=0
+(PATH="$WORK/shim:$PATH" image --dest "$WORK/out/trio.png" --prompt 'a lamp' --count 3) || rc=$?
+assert test "$rc" -eq 0
+assert test "$(ls "$WORK/conv" | tr '\n' ' ')" = 'trio-2.png trio-3.png '
+assert grep -qx "variant=$WORK/out/trio-3.png size=1200x896 session=wf3" "$WORK/stdout"
+assert test "$(sips -g format "$WORK/out/trio-3.png" | awk '/format:/ {print $2}')" = png
 
 # An aspect Flow lacks goes as the nearest of its five, named in the aspect line; a W:H Flow lists goes as is.
 : >"$FAKE_CALLS"
@@ -229,14 +251,16 @@ assert test -s "$WORK/out/pic-2.jpg"
 assert image --dest "$dest" --prompt 'a vase'
 assert test "$(grep -c '^failed=' "$WORK/stdout")" -eq 0
 assert test "$(tail -n 1 "$IMAGE_LEG_LOG" | jq -c '[.requested, .delivered]')" = '[1,1]'
-# A short Flow batch is logged as requested vs delivered; the engine's phases reach stdout and the log.
+# A short Flow batch is logged as requested vs delivered; the engine's phases reach stdout and the log, the load
+# at each phase the log only.
 FAKE_FAILED=1 FAKE_SHORT=1 FAKE_PHASES='{"lock":0,"browser":2.5,"sent":5,"saved":31}' \
   assert image --dest "$dest" --prompt 'three vases' --count 3
 assert grep -qx 'failed=1 reason=flow_generation_failed (not charged)' "$WORK/stdout"
 assert grep -qx 'phases={"lock":0,"browser":2.5,"sent":5,"saved":31}' "$WORK/stdout"
 assert grep -Eqx 'job=gemini-image-[0-9]{8}T[0-9]{6}Z-[0-9]+' <<<"$(grep -B1 -x 'route=flow model=pro upscale=none' "$WORK/stdout" | head -n 1)"
 assert jq -e --arg job "$(sed -n 's/^job=//p' "$WORK/stdout")" \
-  '.job == $job and .requested == 3 and .delivered == 2 and .phases.saved == 31 and .route == "flow"' \
+  '.job == $job and .requested == 3 and .delivered == 2 and .phases.saved == 31 and .load == {lock: 3.1, saved: 280.5}
+   and .route == "flow"' \
   <<<"$(tail -n 1 "$IMAGE_LEG_LOG")" >/dev/null
 assert test -z "$(ls "$TMPDIR")"
 
@@ -311,7 +335,7 @@ assert test "$(pixel "$png" 800,600)" = "$(pixel "$M/scene.png" 800,600)"
 assert test "$(pixel "$png" 200,170)" != "$(pixel "$M/scene.png" 200,170)"
 assert grep -qx 'route=flow tool=inpaint model=nb2' "$WORK/stdout"
 assert grep -qx 'credits_before=819' "$WORK/stdout"
-assert grep -qx 'model=NARWHAL model_caps=fresh' "$WORK/stdout"
+assert grep -qx 'model=BELUGA model_caps=fresh' "$WORK/stdout"
 : >"$FAKE_CALLS"
 FAKE_A="$M/inpainted.png" assert image --dest "$png" --ref "$M/scene.png" --point '0.2,0.23=a navy box' \
   --point '0.7,0.7=a red dot'
@@ -391,7 +415,7 @@ def refused(**over):
 
 
 plan = fi.make_plan(args(model="nb2", aspect="9:16", count=4, upscale="2k"))
-assert (plan["label"], plan["price"], plan["count"], plan["timeout_s"]) == ("Nano Banana 2", 0, 4, 300), plan
+assert (plan["label"], plan["price"], plan["count"], plan["timeout_s"]) == ("Nano Banana 2.1", 0, 4, 300), plan
 ref = os.path.join(work, "media", "ref.png")
 assert fi.make_plan(args(ref=[ref] * 10))["refs"] == [ref] * 10
 for over in [dict(model="ultra"), dict(aspect="2:3"), dict(count=5), dict(ref=[ref] * 11), dict(upscale="4k"),
@@ -694,12 +718,12 @@ class Page:
         self.failed = self.clicks = self.ticks = 0
 
     def evaluate(self, script, op):
-        assert (script, op) == (fi.FAILED_CARDS, "count"), op
+        assert (script, op) == (gw.FAILED_CARDS, "count"), op
         self.scans = getattr(self, "scans", 0) + 1
         return self.failed
 
     def evaluate_handle(self, script, op):
-        assert (script, op) == (fi.FAILED_CARDS, "retry"), op
+        assert (script, op) == (gw.FAILED_CARDS, "retry"), op
         page = self
 
         class Button:
@@ -787,7 +811,7 @@ try:
     assert isinstance(result, gw.Failure) and result.code == 1, result
 finally:
     fi.time = real_time
-Path(work, "failed-cards.js").write_text(fi.FAILED_CARDS)
+Path(work, "failed-cards.js").write_text(gw.FAILED_CARDS)
 
 image = os.path.join(work, "media", "scene.png")
 

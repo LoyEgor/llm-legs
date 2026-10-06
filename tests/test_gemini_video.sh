@@ -49,7 +49,7 @@ done
 case "${ENGINE_MODE:-ok}" in
   ok)
     cp "$CLIP" "$dest"
-    printf '{"ok": true, "account": "acct-a", "model": "%s", "media_id": "m-1", "build": "boq_test_1", "cost": 20, "charged": %s, "seconds": {"harness": 12.5, "render": 55.0, "total": 87.6}}\n' \
+    printf '{"ok": true, "account": "acct-a", "model": "%s", "media_id": "m-1", "build": "boq_test_1", "cost": 20, "charged": %s, "seconds": {"harness": 12.5, "render": 55.0, "total": 87.6}, "phases": {"lock": 0.1, "sent": 9.4}, "load": {"lock": 6.5, "sent": 140.2}}\n' \
       "${ENGINE_MODEL:-veo_3_1_t2v_fast}" "${ENGINE_CHARGED:-20}" ;;
   variants)
     cp "$CLIP" "$dest"
@@ -60,6 +60,7 @@ case "${ENGINE_MODE:-ok}" in
   empty) printf '{"ok": true, "account": "acct-a"}\n' ;;
   limit) printf '{"ok": false, "code": 3, "reason": "acct-a has 5 Flow credits", "account": "acct-a"}\n'; exit 3 ;;
   login) printf '{"ok": false, "code": 4, "reason": "account acct-a has no browser login"}\n'; exit 4 ;;
+  busy) printf '{"ok": false, "code": 5, "reason": "acct-a is busy", "account": "acct-a"}\n'; exit 5 ;;
   drift) printf '{"ok": false, "code": 1, "reason": "Flow UI drift: no composer"}\n'; exit 1 ;;
   garbage) printf 'Traceback (most recent call last)\n'; exit 1 ;;
 esac
@@ -207,6 +208,7 @@ assert grep -qx 'caps=fresh surface=boq_test_1' "$VIDEO_OUT"
 assert grep -qx 'seconds=87.6 harness=12.5 render=55.0' "$VIDEO_OUT"
 assert jq -e 'select(.tool == "gemini-video" and .kind == "video" and .rc == 0 and .account == "acct-a")' \
   "$IMAGE_LEG_LOG" >/dev/null
+assert jq -e '.phases == {lock: 0.1, sent: 9.4} and .load == {lock: 6.5, sent: 140.2}' <<<"$(tail -n 1 "$IMAGE_LEG_LOG")" >/dev/null
 
 # Exit 3 sends callers round the pool as if quota were spent, so a login or drift must never map to it.
 assert test "$(ENGINE_MODE=limit video_rc --dest "$OUT/l.mp4" --prompt 'x')" = 3
@@ -214,6 +216,10 @@ assert grep -qx GEMINI_USAGE_LIMIT "$VIDEO_ERR"
 assert grep -q 'acct-a has 5 Flow credits' "$VIDEO_ERR"
 assert test "$(ENGINE_MODE=login video_rc --dest "$OUT/l.mp4" --prompt 'x')" = 4
 assert grep -q 'no browser login' "$VIDEO_ERR"
+: >"$ENGINE_CALLS"
+assert test "$(ENGINE_MODE=busy video_rc --dest "$OUT/b.mp4" --prompt 'x' --lock-wait 5)" = 5
+assert grep -qx 'ACCOUNT_BUSY account=acct-a' "$VIDEO_ERR"
+assert grep -q -- '--lock-wait 5' "$ENGINE_CALLS"
 assert test "$(ENGINE_MODE=drift video_rc --dest "$OUT/d.mp4" --prompt 'x')" = 1
 assert grep -q 'Flow UI drift' "$VIDEO_ERR"
 assert test "$(ENGINE_MODE=garbage video_rc --dest "$OUT/g.mp4" --prompt 'x')" = 1
@@ -472,6 +478,23 @@ g.note_credits("totals", None)
 assert g.read_meta("totals")["credits"] == 1040
 assert not hasattr(g, "read_allowance"), "one.google.com states no Flow allowance; opening it only unhides Chrome"
 assert g.month_after(1769817600) == 1772236800, g.month_after(1769817600)
+EOF
+
+# The composer's settings are read back a second time only after an upload that can move them.
+assert env GEMINI_WEB_DIR="$GW" python3 - "$ROOT/share" <<'EOF'
+import sys
+sys.path.insert(0, sys.argv[1])
+import gemini_web as g
+
+passes = []
+g.manual_composer = lambda page: None
+g.fill_frame = g.add_ingredients = lambda *a: None
+g.settings = lambda page, plan, full: passes.append(full) or (4, "Video 360p 4s x1")
+plan = {"first_frame": None, "last_frame": None, "refs": [], "edit": None, "resolution": "360p", "count": 1,
+        "duration": 4}
+assert g.compose(None, plan) == (4, "Video 360p 4s x1") and passes == [True], passes
+passes.clear()
+assert g.compose(None, {**plan, "refs": ["/r.png"]}) == (4, "Video 360p 4s x1") and passes == [True, False], passes
 EOF
 
 # Rotation by cached balance gate and least recent start, past a sign-in step, and inside the gemini worker pool; the clone stays while in use.
@@ -988,5 +1011,64 @@ assert jq -e '.video as $v | ([$v.models[].refs_max] | max) == $v.refs_max
   and ($v.extend.resolutions | all(. as $r | $v.resolutions | index($r)))
   and ($v.extend.sources | all($v.models[.] != null))
   and ($v.counts | index(1))' "$MANIFEST" >/dev/null
+
+# Flow's Failed card ends the wait at once: n fresh cards are the n clips still pending once the rest are done.
+assert env GEMINI_WEB_DIR="$WORK/gw-cards" python3 - "$ROOT/share" <<'EOF'
+import sys, time, types
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import gemini_web as g
+g.CARDS_SCAN_S = 0
+
+
+class Cards:
+    def __init__(self, watcher, script):
+        self.watcher, self.script, self.ticks, self.failed = watcher, script, 0, 0
+
+    def evaluate(self, script, op):
+        assert (script, op) == (g.FAILED_CARDS, "count"), op
+        return self.failed
+
+    def wait_for_timeout(self, ms):
+        self.ticks += 1
+        self.script.get(self.ticks, lambda page: None)(self)
+
+
+def watch(*ids):
+    return types.SimpleNamespace(media={m: {"status": 1} for m in ids}, errors=set(), blocked=lambda: None)
+
+
+def lands(m):
+    return lambda page: page.watcher.media[m].update(url="https://flow-content.google/x")
+
+
+def fails(n):
+    return lambda page: setattr(page, "failed", n)
+
+
+w = watch("c1")
+page = Cards(w, {2: fails(1)})
+started = time.time()
+g.await_clips(page, w, ["c1"], time.time() + 30, 30, "acct", Path("/tmp/v.mp4"))
+assert w.media["c1"]["error"] == g.GENERATION_FAILED and page.ticks == 2 and time.time() - started < 5, (w.media, page.ticks)
+w = watch("c1", "c2")
+page = Cards(w, {1: fails(1), 3: lands("c2")})
+g.await_clips(page, w, ["c1", "c2"], time.time() + 30, 30, "acct", Path("/tmp/v.mp4"))
+assert page.ticks == 3 and w.media["c1"]["error"] == g.GENERATION_FAILED and "error" not in w.media["c2"], w.media
+w = watch("c1")
+page = Cards(w, {1: lands("c1")})
+g.await_clips(page, w, ["c1"], time.time() + 30, 30, "acct", Path("/tmp/v.mp4"))
+assert "error" not in w.media["c1"] and page.ticks == 1, w.media
+w = watch("c1")
+try:
+    g.await_clips(Cards(w, {}), w, ["c1"], time.time() + 0.05, 9, "acct", Path("/tmp/v.mp4"))
+    raise AssertionError("an unfinished clip passed the deadline")
+except g.Failure as failure:
+    assert "not ready after 9s" in failure.reason and failure.extra["statuses"] == [1], failure.extra
+calls = []
+g.press_generate(types.SimpleNamespace(evaluate=lambda script, op: calls.append((script, op))),
+                 types.SimpleNamespace(click=lambda: calls.append("click")))
+assert calls == [(g.FAILED_CARDS, "mark"), "click"], calls
+EOF
 
 echo "PASS: $asserts asserts; manifest gates refused before any spend (frames vs ingredients, refs per model, resolution, edit source length), 1080p as a 720p render plus upscale, manifest-driven model choice, lone --ref as first frame, refs and --edit passed through, the measured footer with wire-pattern freshness, exit 3 kept to credit walls and exit 4 to unsigned profiles, the engine's media readers on real Flow traffic (the new clip from the generation reply, else by prompt and freshness), the generation request's wire key, the engine's plan and costs, pre-browser engine gates, flagged-account detection (a whole failed envelope, never an old tile) and walled-account rotation least recently started first (a new generation stamps it, an extend or dry run never), --extend found through the job ledger (Veo sources only, untouched files, never an extension, pinned to its account and its walls, 720p) with the extend reply read from real traffic, --count variants priced and listed, a charge that differs from the manifest reported, fetch through the clip's grid tile and editor menu (never a batchexecute/as29s request; no ledger project, no listing entry or no tile = exit 1), and the manifest's model/duration/resolution/extend coverage"

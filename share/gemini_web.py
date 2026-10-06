@@ -58,6 +58,26 @@ GENERATE_RPCS = {"YhhmEf", "nprQif", "MZZa6b", "jIps6", "fZytfe"}
 LISTING_RPC = "Zzl0ze"
 ORIGINAL_SIZE = re.compile(r"^\d+p Original size$")
 DONE = 3
+CARDS_SCAN_S = 3
+GENERATION_FAILED = "flow_generation_failed (not charged)"
+# Flow's "Failed / Sorry, this image (video) failed to generate / You have not been charged" card and its
+# Retry button. Cards on the page before the send belong to earlier jobs: "mark" remembers them, "count" and
+# "retry" see only the rest.
+FAILED_CARDS = """(op) => {
+    const old = globalThis.__llmFlowFailedOld ||= new WeakSet();
+    const retryOf = (card) => [...card.querySelectorAll('button')].filter(b =>
+        /(^|\\s)Retry$/.test((b.getAttribute('aria-label') || b.innerText || '').trim()));
+    const cards = [];
+    for (const node of document.querySelectorAll('body *')) {
+        if (![...node.childNodes].some(t => t.nodeType === 3 && /failed to generate/i.test(t.textContent))) continue;
+        let card = node;
+        while (card && retryOf(card).length !== 1) card = retryOf(card).length > 1 ? null : card.parentElement;
+        if (card && !cards.includes(card)) cards.push(card);
+    }
+    if (op === 'mark') { cards.forEach(c => old.add(c)); return cards.length; }
+    const fresh = cards.filter(c => !old.has(c));
+    return op === 'retry' ? fresh.map(c => retryOf(c)[0]) : fresh.length;
+}"""
 
 
 class Failure(Exception):
@@ -68,6 +88,7 @@ class Failure(Exception):
 
 STARTED = time.monotonic()
 PHASES: dict[str, float] = {}
+LOADS: dict[str, float] = {}
 TIMED = False
 LOCK_WAIT_S = 900.0
 lock_waited = 0.0
@@ -76,15 +97,17 @@ SETTLE_MS = 100
 
 def phase(name: str) -> None:
     PHASES[name] = round(time.monotonic() - STARTED, 2)
+    LOADS[name] = round(os.getloadavg()[0], 1)
 
 
 def timing(failed: bool = False) -> dict:
     """What a generate-like command's result, failure and ledger rows carry: its job, the seconds since the
-    engine started at each phase reached, the time spent waiting for account locks, and on failure whether
-    the prompt went out."""
+    engine started at each phase reached with the 1-minute load average then, the time spent waiting for
+    account locks, and on failure whether the prompt went out."""
     if not TIMED:
         return {}
-    out = {"job": os.environ.get("IMAGE_JOB_ID") or None, "phases": dict(PHASES), "lock_wait_s": round(lock_waited, 2)}
+    out = {"job": os.environ.get("IMAGE_JOB_ID") or None, "phases": dict(PHASES), "load": dict(LOADS),
+           "lock_wait_s": round(lock_waited, 2)}
     if failed:
         out["sent"] = "sent" in PHASES
     return out
@@ -1135,7 +1158,7 @@ def add_ingredients(page, paths: list[Path], kind: str) -> None:
 
 def compose(page, plan: dict) -> tuple[int, str]:
     manual_composer(page)
-    settings(page, plan, full=True)
+    cost, chip = settings(page, plan, full=True)
     if plan["first_frame"]:
         fill_frame(page, "Start", Path(plan["first_frame"]))
     if plan["last_frame"]:
@@ -1143,7 +1166,8 @@ def compose(page, plan: dict) -> tuple[int, str]:
     add_ingredients(page, [Path(ref) for ref in plan["refs"]], "Image")
     if plan["edit"]:
         add_ingredients(page, [Path(plan["edit"])], "Video")
-    cost, chip = settings(page, plan, full=False)
+    if plan["first_frame"] or plan["last_frame"] or plan["refs"] or plan["edit"]:
+        cost, chip = settings(page, plan, full=False)
     tokens = chip.split()
     want = [plan["resolution"], f"x{plan['count']}"] + ([f"{plan['duration']}s"] if plan["duration"] else [])
     if not tokens or tokens[0] != "Video" or any(w not in tokens for w in want):
@@ -1636,6 +1660,41 @@ def recover_hint(account: str, clips: list[str], dest: Path) -> str:
                      for i, m in enumerate(clips))
 
 
+def failed_cards(page) -> int:
+    return int(page.evaluate(FAILED_CARDS, "count") or 0)
+
+
+def press_generate(page, button) -> None:
+    """Every Failed card already on the page is an earlier job's; unmarked, it would end this one at once."""
+    page.evaluate(FAILED_CARDS, "mark")
+    button.click()
+
+
+def await_clips(page, watcher, clips: list[str], deadline: float, timeout_s: float, account: str, dest: Path) -> None:
+    """Back once every clip is done, refused or lost. Flow's Failed card names no clip: n fresh cards are the n clips
+    left once the rest are done, marked GENERATION_FAILED so they count as refused (a failed video sat out --timeout,
+    900 s, before, 2026-10-05)."""
+    scanned = failed = 0
+    while time.time() < deadline:
+        records = [watcher.media.setdefault(m, {}) for m in clips]
+        if watcher.blocked():
+            raise watcher.blocked()
+        flagged = [r["error"] for r in records if r.get("error") in BLOCK_ERRORS]
+        if flagged:
+            watcher.errors.add(flagged[0])
+            raise watcher.blocked()
+        pending = [r for r in records if not (r.get("error") or r.get("url") or r.get("status") == DONE)]
+        if time.time() - scanned >= CARDS_SCAN_S:
+            failed, scanned = failed_cards(page), time.time()
+        if failed >= len(pending):
+            for record in pending:
+                record["error"] = GENERATION_FAILED
+            return
+        page.wait_for_timeout(1000)
+    raise Failure(1, f"not ready after {timeout_s}s; recover later: {recover_hint(account, clips, dest)}",
+                  media_id=clips[0], statuses=[watcher.media.get(m, {}).get("status") for m in clips])
+
+
 
 def generate_on(account: str, plan: dict, args) -> dict:
     started = time.time()
@@ -1687,7 +1746,7 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
                         "quote": quote, "chip": chip, "credits": credits, "build": state["build"],
                         "seconds": {"total": round(time.time() - started, 1)}}
             known = set(watcher.media)
-            button.click()
+            press_generate(page, button)
             sent = time.time()
             phase("sent")
             deadline = sent + args.timeout
@@ -1706,20 +1765,7 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
             for index, media_id in enumerate(clips):
                 ledger({"account": account, "media_id": media_id, "project": project,
                         "dest": str(variant_path(dest, index)), "state": "queued", "model": plan["model"]})
-            while time.time() < deadline:
-                records = [watcher.media.get(m, {}) for m in clips]
-                if watcher.blocked():
-                    raise watcher.blocked()
-                flagged = [r["error"] for r in records if r.get("error") in BLOCK_ERRORS]
-                if flagged:
-                    watcher.errors.add(flagged[0])
-                    raise watcher.blocked()
-                if all(r.get("error") or r.get("url") or r.get("status") == DONE for r in records):
-                    break
-                page.wait_for_timeout(1000)
-            else:
-                raise Failure(1, f"not ready after {args.timeout}s; recover later: "
-                                 f"{recover_hint(account, clips, dest)}", media_id=clips[0])
+            await_clips(page, watcher, clips, deadline, args.timeout, account, dest)
             rendered = time.time()
             phase("media")
             saved, refused, later = [], [], []
@@ -1749,7 +1795,9 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
                 ledger({"account": account, "media_id": media_id, "dest": str(path), "state": "saved",
                         "model": plan["model"], "scene": record.get("scene"), "bytes": saved[-1]["bytes"]})
             if not saved:
-                raise Failure(1, f"Flow refused the clip: {refused[0]['error']}", media_id=refused[0]["media_id"])
+                error = refused[0]["error"]
+                raise Failure(1, error if error == GENERATION_FAILED else f"Flow refused the clip: {error}",
+                              media_id=refused[0]["media_id"])
             finished = time.time()
             if not later:
                 phase("saved")

@@ -41,16 +41,27 @@ KIND = "chatgpt-image"
 MIN_EDGE = 256
 QUIET_S = 30
 STALL_S = 90
+# Pack takes render side by side and land within ~11 s of each other; one still blank this long after a sibling
+# landed is a page that missed its image (13 of 92 pack takes stalled, 0 of 56 lone ones below load 200; the reload
+# showed it 3-5 s later), so it is reloaded now instead of at its own stall clock.
+SIBLING_S = 20
+# The latest a stalled take landed after its last sibling was 128 s (2026-10-03); a dead one held its pack 600 s.
+STRAGGLER_S = 180
 LOAD_S = 45
 POLL_MS = 500
+PROJECT = "Images"
+PROJECT_RETRY_S = 86400
+PROJECT_PATH = re.compile(r"/g/g-p-[0-9a-f]+[^/]*/project")
 LOGIN_BUTTON, LOGIN_TEXT = "button[data-testid=login-button]", "Log in"
 OUTSIDE_CHAT = ":not(nav *, [data-message-author-role] *)"
 
 SELECTORS = {
     "chat_mode": "Chat",
     "composer": "div[contenteditable='true'][aria-label='Ask ChatGPT'], div[contenteditable='true'][aria-label='Add instructions'], "
-                "#prompt-textarea, div[contenteditable='true'].ProseMirror",
+                "#prompt-textarea, div[contenteditable='true'].ProseMirror, "
+                "div[contenteditable='true'][aria-label^='New chat in']",
     "add_files": "Add files and more",
+    "project_create": "button[aria-label='Add new project']",
     "upload": "Add photos & files",
     "decline": "Not now",
     "attachment": "form [data-testid*=attachment], form img[alt]",
@@ -264,9 +275,11 @@ def decline_offers(page) -> None:
             return
 
 
-def open_chat(page, session: Session, account: str, chat: str | None, navigate: bool = True) -> None:
+def open_chat(page, session: Session, account: str, chat: str | None, navigate: bool = True,
+              home: str = "/") -> None:
     if navigate:
-        page.goto(f"{SITE}/c/{chat}" if chat else f"{SITE}/", wait_until="domcontentloaded", timeout=LOAD_S * 1000)
+        page.goto(f"{SITE}/c/{chat}" if chat else f"{SITE}{home}", wait_until="domcontentloaded",
+                  timeout=LOAD_S * 1000)
     out = gw.Failure(4, f"ChatGPT shows {account} signed out; run: codexb web {account}")
     names = {"composer": SELECTORS["composer"], "login_button": LOGIN_BUTTON, "login_text": LOGIN_TEXT,
              "chat_mode": SELECTORS["chat_mode"], "decline": SELECTORS["decline"]}
@@ -294,6 +307,68 @@ def open_chat(page, session: Session, account: str, chat: str | None, navigate: 
     if signed_out(page, session):
         raise out
     raise gw.Failure(1, f"chatgpt.com did not load within {LOAD_S}s ({page.url})")
+
+
+def find_project(page) -> str | None:
+    page.locator(SELECTORS["project_create"]).first.wait_for(state="attached", timeout=15000)
+    row = page.locator(f"[data-app-action-sidebar-project-label='{PROJECT}']")
+    found = row.first.get_attribute("data-app-action-sidebar-project-id", timeout=5000) if row.count() else None
+    return f"/g/{found}/project" if found else None
+
+
+def create_project(page) -> tuple[str, str]:
+    add = page.locator(SELECTORS["project_create"]).first
+    # The sidebar's section header lies over this button until the row is hovered.
+    add.hover(force=True, timeout=5000)
+    add.click(force=True, timeout=10000)
+    dialog = page.get_by_role("dialog")
+    dialog.locator("input[name='project-name']").fill(PROJECT, timeout=5000)
+    with contextlib.suppress(Exception):
+        dialog.get_by_role("button", name="Default memory", exact=True).click(timeout=5000)
+        page.get_by_text("Project-only memory", exact=True).first.click(timeout=5000)
+    memory = ""
+    with contextlib.suppress(Exception):
+        memory = dialog.locator("button").filter(has_text="memory").first.inner_text(timeout=3000).strip()
+    dialog.get_by_role("button", name="Create project", exact=True).click(timeout=5000)
+    page.wait_for_url(PROJECT_PATH, timeout=20000)
+    return urllib.parse.urlparse(page.url).path, memory
+
+
+def project_home(page, session: Session, account: str, meta: dict) -> str:
+    """The path a new chat opens at: the account's Images project, so generations stay off the owner's chat list.
+    Created once with project-only memory: its chats neither read his other chats nor feed them. Without one
+    (creation failed, retried daily) it is the home page."""
+    if meta.get("project"):
+        return meta["project"]
+    if time.time() - meta.get("project_failed", 0) < PROJECT_RETRY_S:
+        return "/"
+    try:
+        open_chat(page, session, account, None)
+        found = find_project(page)
+        path, memory = (found, None) if found else create_project(page)
+    except Exception as error:  # noqa: BLE001
+        gw.write_meta(account, project_failed=int(time.time()))
+        gw.ledger({"kind": KIND, "event": "project_failed", "account": account,
+                   "reason": gw.failure_text(error)[:200]})
+        return "/"
+    gw.write_meta(account, project=path)
+    gw.ledger({"kind": KIND, "event": "project", "account": account, "project": path, "created": not found,
+               "memory": memory})
+    return path
+
+
+def open_new(page, session: Session, account: str, home: str, navigate: bool = True) -> None:
+    """A new chat on `home`; a project the owner deleted is forgotten and the chat opens on the home page."""
+    try:
+        open_chat(page, session, account, None, navigate=navigate, home=home)
+        if home == "/" or home.split("/")[2] in page.url:
+            return
+    except gw.Failure as failure:
+        if home == "/" or failure.code != 1:
+            raise
+    gw.write_meta(account, project=None)
+    gw.ledger({"kind": KIND, "event": "project_gone", "account": account, "project": home})
+    open_chat(page, session, account, None)
 
 
 def clear_drafts(page) -> None:
@@ -325,27 +400,39 @@ def in_order(page, refs: list[str]) -> bool:
     return False
 
 
-def attach(page, refs: list[str], wait_s: float = 120) -> None:
+def upload(page, refs: list[str], index: int, batch: bool) -> tuple[int, list[str]]:
+    decline_offers(page)
+    before, files = page.locator(SELECTORS["attachment"]).count(), [refs[index]]
+    # The composer's image/* file inputs stay in the page but ignore a file set on them (live 2026-10-02):
+    # only the chooser its own menu opens takes the upload.
+    try:
+        page.get_by_role("button", name=SELECTORS["add_files"], exact=True).first.click(timeout=10000)
+        with page.expect_file_chooser(timeout=10000) as chooser:
+            page.get_by_text(SELECTORS["upload"], exact=True).first.click(timeout=5000)
+        if batch and chooser.value.is_multiple():
+            files = refs
+        chooser.value.set_files(files if len(files) > 1 else files[0], timeout=15000)
+    except Exception as error:  # noqa: BLE001
+        raise drift(f"no '{SELECTORS['upload']}' chooser in the composer for {Path(refs[index]).name}") from error
+    return before, files
+
+
+def begin_attach(page, refs: list[str]) -> tuple[int, list[str]] | None:
+    """Starts the first upload and returns at once, so the tabs of one pack upload side by side; attach() ends it."""
+    clear_drafts(page)
+    return upload(page, refs, 0, len(refs) > 1) if refs else None
+
+
+def attach(page, refs: list[str], wait_s: float = 120, begun: tuple[int, list[str]] | None = None) -> None:
     """All refs in one chooser change when it takes several and the thumbnails then read in the caller's order,
     otherwise one file per change, each awaited."""
     attached = page.locator(SELECTORS["attachment"])
-    clear_drafts(page)
+    if not begun:
+        clear_drafts(page)
     batch, index = len(refs) > 1, 0
     while index < len(refs):
-        decline_offers(page)
-        before, files = attached.count(), [refs[index]]
-        # The composer's image/* file inputs stay in the page but ignore a file set on them (live 2026-10-02):
-        # only the chooser its own menu opens takes the upload.
-        try:
-            page.get_by_role("button", name=SELECTORS["add_files"], exact=True).first.click(timeout=10000)
-            with page.expect_file_chooser(timeout=10000) as chooser:
-                page.get_by_text(SELECTORS["upload"], exact=True).first.click(timeout=5000)
-            if batch and chooser.value.is_multiple():
-                files = refs
-            chooser.value.set_files(files if len(files) > 1 else files[0], timeout=15000)
-        except Exception as error:  # noqa: BLE001
-            raise drift(f"no '{SELECTORS['upload']}' chooser in the composer for {Path(refs[index]).name}") \
-                from error
+        before, files = begun or upload(page, refs, index, batch)
+        begun = None
         last = index + len(files) - 1
         await_more(page, attached, before + len(files) - 1, wait_s,
                    f"the upload of reference {last + 1} ({Path(refs[last]).name}) never showed in the composer")
@@ -535,7 +622,11 @@ class Watch:
         self.known = {image["src"] for image in before["images"]}
         self.replies = len(before["replies"])
         self.started = self.quiet_since = self.reloaded = time.time()
-        self.chat, self.settled, self.reload_s, self.reloads = None, 0, reload_s, 0
+        self.chat, self.settled, self.reload_s, self.reloads, self.nudged = None, 0, reload_s, 0, False
+
+    def reload_by(self, at: float) -> None:
+        if self.reload_s and at - self.reload_s < self.reloaded:
+            self.reloaded, self.nudged = at - self.reload_s, True
 
     def step(self) -> str | None:
         page = self.page
@@ -544,7 +635,8 @@ class Watch:
             self.reloaded = self.quiet_since = time.time()
             self.reloads += 1
             gw.ledger({"kind": KIND, "event": "reloaded", "account": self.account, "chat": self.chat,
-                       "after_s": round(self.reloaded - self.started)})
+                       "after_s": round(self.reloaded - self.started), "cause": "sibling" if self.nudged else "stall"})
+            self.nudged = False
             with contextlib.suppress(Exception):
                 page.reload(wait_until="domcontentloaded", timeout=LOAD_S * 1000)
         state = probe(page)
@@ -633,7 +725,8 @@ def take_failure(error: Exception) -> gw.Failure:
     return error if isinstance(error, gw.Failure) else gw.Failure(1, gw.failure_text(error)[:300])
 
 
-def render_takes(context, account: str, args, meta: dict, started: float) -> dict:
+def render_takes(context, account: str, args, meta: dict, started: float, home: str = "/",
+                 first: Session | None = None) -> dict:
     """--count N: N new chats of one request in N tabs of this one browser, all loading at once, each composed and
     sent in tab order (each tab's Session listens before its first request), then every pending tab read in one
     poll loop. A take that fails while another delivers is reported in `failed`; with
@@ -641,26 +734,39 @@ def render_takes(context, account: str, args, meta: dict, started: float) -> dic
     dest, tabs, failures, delivered, session, opened, sessions = Path(args.dest), [], [], [], None, [], []
     for index in range(args.count):
         page = context.pages[0] if not index and context.pages else context.new_page()
-        sessions.append(Session(page))
+        sessions.append(first if not index and first else Session(page))
         opened.append(page)
         with contextlib.suppress(Exception):
-            page.goto(f"{SITE}/", wait_until="commit", timeout=LOAD_S * 1000)
+            page.goto(f"{SITE}{home}", wait_until="commit", timeout=LOAD_S * 1000)
+    begun, ready = [], len(opened)
     for index, page in enumerate(opened):
         try:
             page.bring_to_front()
             tab_session = sessions[index]
-            open_chat(page, tab_session, account, None, navigate=not page.url.startswith(SITE))
+            open_new(page, tab_session, account, home, navigate=not page.url.startswith(SITE))
             bind(account, tab_session, meta)
             gw.phase("page")
             gw.close_promos(page, account)
-            attach(page, args.ref)
+            begun.append(begin_attach(page, args.ref))
+        except Exception as error:  # noqa: BLE001
+            if not index:
+                raise
+            failure = take_failure(error)
+            failures += [(tab, failure, None) for tab in range(index + 1, args.count + 1)]
+            ready = index
+            break
+    for index, page in enumerate(opened[:ready]):
+        try:
+            page.bring_to_front()
+            tab_session = sessions[index]
+            attach(page, args.ref, begun=begun[index])
             before = probe(page)
             send(page, args.prompt)
         except Exception as error:  # noqa: BLE001
             if not index:
                 raise
             failure = take_failure(error)
-            failures += [(tab, failure, None) for tab in range(index + 1, args.count + 1)]
+            failures += [(tab, failure, None) for tab in range(index + 1, ready + 1)]
             break
         session = session or tab_session
         gw.phase("sent")
@@ -668,7 +774,7 @@ def render_takes(context, account: str, args, meta: dict, started: float) -> dic
                    "resume": False, "tab": index + 1})
         tabs.append((index + 1, page, Watch(page, account, before, STALL_S)))
     sent = time.time()
-    pending = list(tabs)
+    pending, straggle_until = list(tabs), None
     while pending:
         for tab, page, watch in list(pending):
             try:
@@ -676,6 +782,9 @@ def render_takes(context, account: str, args, meta: dict, started: float) -> dic
                 if not src:
                     if watch.late(args.timeout):
                         raise watch.late(args.timeout)
+                    if straggle_until and time.time() > straggle_until:
+                        raise gw.Failure(1, f"no image {STRAGGLER_S:.0f}s after the last sibling take landed; it may "
+                                            f"still land in chat {watch.chat or 'unknown'}", chat=watch.chat)
                     continue
                 gw.phase("media")
                 path = gw.variant_path(dest, len(delivered))
@@ -693,6 +802,9 @@ def render_takes(context, account: str, args, meta: dict, started: float) -> dic
             delivered.append({"path": str(path), "chat": watch.chat, "bytes": size, "format": fmt, "tab": tab})
             gw.ledger({"kind": KIND, "event": "saved", "account": account, "chat": watch.chat, "dest": str(path),
                        "bytes": size, "format": fmt, "refs": len(args.ref), "resume": False, "tab": tab})
+            straggle_until = time.time() + STRAGGLER_S
+            for _, _, other in pending:
+                other.reload_by(time.time() + SIBLING_S)
         if pending:
             pending[0][1].wait_for_timeout(POLL_MS)
     for page in opened[1:]:
@@ -720,11 +832,15 @@ def render_on(account: str, args, meta: dict) -> dict:
     started = time.time()
     dest = Path(args.dest)
     with gw.browser(account) as context:
-        if args.count > 1:
-            return render_takes(context, account, args, meta, started)
         page = context.pages[0] if context.pages else context.new_page()
         session = Session(page)
-        open_chat(page, session, account, args.resume)
+        home = "/" if args.resume else project_home(page, session, account, meta)
+        if args.count > 1:
+            return render_takes(context, account, args, meta, started, home, session)
+        if args.resume:
+            open_chat(page, session, account, args.resume)
+        else:
+            open_new(page, session, account, home)
         bind(account, session, meta)
         gw.phase("page")
         gw.close_promos(page, account)

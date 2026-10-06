@@ -472,9 +472,9 @@
         ]
       },
       "nb2": {
-        "label": "Nano Banana 2",
+        "label": "Nano Banana 2.1",
         "wire": [
-          "^NARWHAL$"
+          "^BELUGA$"
         ]
       },
       "lite": {
@@ -498,6 +498,7 @@
       3,
       4
     ],
+    "counts_batch": true,
     "refs_max": 10,
     "upscale": {
       "2k": "2K Upscaled"

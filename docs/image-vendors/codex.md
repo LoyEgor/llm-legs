@@ -229,15 +229,30 @@ when a codex home holds it, else the web's). Exit 5 without a fallback prints `A
   is the CLI route's own. Output is the same block with `session=` = the ChatGPT chat id, `job=`,
   `route=web`, `phases=` when the engine reported them, and no `caps=` line (no CLI to version).
 - **`--count N`** (2-4, `web.counts`): N new chats of one request in N tabs of the one browser holding the
-  account's lock, all loading at once, then each bound and sent in tab order, then every tab polled in one loop. The first take
+  account's lock, all loading at once, then each bound with its refs' upload started, then each sent in tab order once
+  its own upload is done (uploads one tab after another left the last send 10.7 s behind the first under load, median
+  of 26 ref packs), then every tab polled in one loop. Several variants asked in one chat come back as one image cut
+  into panels, or only the first image (live 2026-10-06), so variants are always tabs. The first take
   saved is `--dest`, the others print as `variant=<path> size=<WxH> session=<chat>` (`<stem>-2.<ext>`, …) the way
   Flow's do; a take that fails (a limit on its tab) while others deliver is a `failed=<n>` line and its reason on
   stderr, and a limit seen walls the account; none delivered fails as one take would. Never with `--resume`,
   `--region`, `--point`, `--remove-bg` or re-aspect, never on `--route cli` (image_gen renders one image), and
   no CLI fallback. `image-fanout` packs codex takes into one `--count` launch.
+- **Images project**: every new chat (one take, a `--count` tab, a `--ref` edit) opens on the account's own
+  ChatGPT project "Images", so generations stay off the owner's chats. The engine finds it in the sidebar or
+  creates it once with project-only memory (its chats neither read his other chats nor feed his memory) and
+  keeps its path as `project` in `accounts/<account>.json`; later runs open it directly (paired A/B 2026-10-06:
+  same open and render time as the home page). A `--resume` opens its own chat. A failed lookup leaves new chats
+  on the home page (`project_failed` ledger row, retried after a day); a project the owner deleted is forgotten
+  (`project_gone`). ChatGPT still lists project chats under Recents unless that browser's Recents menu has
+  Show > Projects unchecked; the checkbox is local to each browser, never the account's.
 - **Stalled replies**: a new chat's page that shows no image `STALL_S` (90 s) after the send is reloaded, again
   every 90 s until `--timeout`: the image often lands server-side while the page never shows it (4 of 5 stalls on
-  2026-10-04; the fifth was ChatGPT itself stuck on "Thinking"). Each reload is a `reloaded` row in `jobs.jsonl`.
+  2026-10-04; the fifth was ChatGPT itself stuck on "Thinking"). Stalls are mostly a `--count` thing (13 of 92 pack
+  takes, 0 of 56 lone ones below load 200; a lone take stalls under heavier load too), and a stalled take's image was mostly there already: it showed 3-5 s after the
+  reload. So once one take of a pack lands, every still-blank sibling is reloaded `SIBLING_S` (20 s) later, and a
+  take still blank `STRAGGLER_S` (180 s) after the last sibling landed fails as `failed=` instead of holding the
+  pack to `--timeout`. Each reload is a `reloaded` row in `jobs.jsonl` with `cause` `stall|sibling`.
   A resume or an editor tool is never reloaded: a reload can re-issue the old images' srcs, read then as new.
 - **New chat vs resume**: no `--resume` opens a new chat; `--resume <chat id>` opens `chatgpt.com/c/<id>` on
   the account the job ledger (`jobs.jsonl`) names for it, else `--account` is required.

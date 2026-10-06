@@ -5,7 +5,7 @@ image_leg_start() { # tool kind [served-model-variable]
   IMAGE_LEG_TOOL=$1 IMAGE_LEG_KIND=$2 IMAGE_LEG_MODEL_VAR=${3:-} IMAGE_LEG_STARTED=$(date +%s)
   IMAGE_LEG_ERR='' IMAGE_LEG_TEE='' IMAGE_LEG_QUEUED=0 IMAGE_LEG_SIZE='' IMAGE_LEG_ROUTE='' IMAGE_LEG_SKIP=''
   IMAGE_LEG_COMPOSITE_ASK='' IMAGE_LEG_COMPOSITE_OFF='' IMAGE_LEG_COMPOSITE_BASE='' IMAGE_LEG_COMPOSITE_LINES=''
-  IMAGE_LEG_FALLBACK_FROM='' IMAGE_LEG_FALLBACK_REASON='' IMAGE_LEG_PHASES='' IMAGE_LEG_REQUESTED='' IMAGE_LEG_DELIVERED=''
+  IMAGE_LEG_FALLBACK_FROM='' IMAGE_LEG_FALLBACK_REASON='' IMAGE_LEG_PHASES='' IMAGE_LEG_LOAD='' IMAGE_LEG_REQUESTED='' IMAGE_LEG_DELIVERED=''
   IMAGE_LEG_FIT='' IMAGE_LEG_LOCK_WAIT='' IMAGE_LEG_EDIT=''
   IMAGE_JOB_ID=${IMAGE_JOB_ID:-$1-$(date -u +%Y%m%dT%H%M%SZ)-$$}
   export IMAGE_JOB_ID
@@ -82,7 +82,7 @@ image_leg_exit() {
   case $log in */*) mkdir -p "${log%/*}" 2>/dev/null || return 0 ;; esac
   jq -cn --arg tool "$IMAGE_LEG_TOOL" --arg kind "$IMAGE_LEG_KIND" --argjson rc "$rc" \
     --argjson started "$IMAGE_LEG_STARTED" --argjson queued "${IMAGE_LEG_QUEUED:-0}" --arg size "${IMAGE_LEG_SIZE:-}" --arg account "${account:-}" --arg served "$model" --arg err "$err" \
-    --arg route "${IMAGE_LEG_ROUTE:-}" --arg job "${IMAGE_JOB_ID:-}" --arg phases "${IMAGE_LEG_PHASES:-}" \
+    --arg route "${IMAGE_LEG_ROUTE:-}" --arg job "${IMAGE_JOB_ID:-}" --arg phases "${IMAGE_LEG_PHASES:-}" --arg load "${IMAGE_LEG_LOAD:-}" \
     --arg from "${IMAGE_LEG_FALLBACK_FROM:-}" --arg why "${IMAGE_LEG_FALLBACK_REASON:-}" \
     --arg requested "${IMAGE_LEG_REQUESTED:-}" --arg delivered "${IMAGE_LEG_DELIVERED:-}" --arg fit "${IMAGE_LEG_FIT:-}" \
     --argjson composite "$composite" \
@@ -91,6 +91,7 @@ image_leg_exit() {
      + (if $route == "" then {} else {route: $route} end)
      + (if $from == "" then {} else {fallback_from: $from, fallback_reason: $why} end)
      + (if $phases == "" then {} else {phases: ($phases | fromjson? // null)} end)
+     + (if $load == "" then {} else {load: ($load | fromjson? // null)} end)
      + (if $requested == "" then {} else {requested: ($requested | tonumber), delivered: ($delivered | tonumber? // 0)} end)
      + (if $fit == "" then {} else ($fit | split(" ") | {aspect: {asked: .[0], achieved: (.[1] | tonumber), fit: .[2]}}) end)
      + (if $composite == null then {} else {composite: $composite} end)' 2>/dev/null >>"$log" || true
@@ -279,7 +280,7 @@ image_leg_fallback() { # rc engine-json next-route
   esac
   printf '%s: --route %s failed (%s); the same request goes to --route %s\n' \
     "${IMAGE_LEG_TOOL:-image}" "$IMAGE_LEG_ROUTE" "$reason" "$3" >&2
-  IMAGE_LEG_FALLBACK_FROM=$IMAGE_LEG_ROUTE IMAGE_LEG_FALLBACK_REASON=$reason IMAGE_LEG_ROUTE=$3 IMAGE_LEG_PHASES=''
+  IMAGE_LEG_FALLBACK_FROM=$IMAGE_LEG_ROUTE IMAGE_LEG_FALLBACK_REASON=$reason IMAGE_LEG_ROUTE=$3 IMAGE_LEG_PHASES='' IMAGE_LEG_LOAD=''
 }
 
 # Exit 3 names its cause from the engine's own result: a flagged account (a 24 h wall) is no usage limit.
@@ -299,6 +300,7 @@ image_leg_busy() { # account
 
 image_leg_engine_phases() { # engine-json
   IMAGE_LEG_PHASES=$(jq -c '.phases | select(type == "object")' <<<"$1" 2>/dev/null) || IMAGE_LEG_PHASES=''
+  IMAGE_LEG_LOAD=$(jq -c '.load | select(type == "object")' <<<"$1" 2>/dev/null) || IMAGE_LEG_LOAD=''
 }
 
 image_leg_route_lines() { # [rest of the route= line]

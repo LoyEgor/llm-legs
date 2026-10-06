@@ -185,6 +185,31 @@ flow_image_generate() {
   [ -z "$upscale" ] || engine_args+=(--upscale "$upscale")
   [ -z "$resume" ] || engine_args+=(--resume "$resume")
   flow_image_engine $((${#refs[@]} + 1)) "${engine_args[@]}"
+  flow_image_variants_start
+}
+
+# Each variant converts in its own process while the first take is delivered: on a loaded CPU a magick waits
+# its share of the cores, so four in a row took four times one (2026-10-05, load ~140: 30 s against 8 s).
+flow_image_variants_start() {
+  local index=1 path
+  flow_image_variant_pids=()
+  while IFS= read -r path; do
+    index=$((index + 1))
+    flow_image_deliver "$path" "${dest%.*}-$index.${dest##*.}" "$tmp_dir/variant-$index" &
+    flow_image_variant_pids+=("$!")
+  done < <(jq -r '.takes[1:][].path' <<<"$flow_result")
+}
+
+# PNG level 4 instead of magick's 7: the same pixels for a third of the CPU and ~8% more bytes.
+flow_image_deliver() { # path out scratch-dir
+  if [ "$remove_green" = true ]; then
+    mkdir -p "$3"
+    chroma_key_to_png "$1" "$3" "$2"
+  elif [ "$extension" != "$(actual_format "$1")" ]; then
+    magick "$1" -define png:compression-level=4 "$2"
+  else
+    cp "$1" "$2"
+  fi
 }
 
 flow_image_temp() {
@@ -240,7 +265,7 @@ flow_image_engine() {
 
 # After the shared dest/size/format/account/session lines.
 flow_image_footer() {
-  local index=1 take out vsize path
+  local index=1 take out vsize
   [ -z "$aspect" ] || image_leg_aspect_fit "$aspect" "$width" "$height" "${aspect_asked:+ asked=$aspect_asked}" || true
   if [ "$tool_op" = cutout ]; then
     printf 'tool=cutout bg_model=%s on_device=true\n' "$bg_model"
@@ -261,14 +286,7 @@ flow_image_footer() {
   while IFS= read -r take; do
     index=$((index + 1))
     out="${dest%.*}-$index.${dest##*.}"
-    path=$(jq -r '.path' <<<"$take")
-    if [ "$remove_green" = true ]; then
-      chroma_key_to_png "$path" "$tmp_dir" "$out"
-    elif [ "$extension" != "$(actual_format "$path")" ]; then
-      magick "$path" "$out"
-    else
-      cp "$path" "$out"
-    fi
+    wait "${flow_image_variant_pids[index - 2]}"
     vsize=$(sips -g pixelWidth -g pixelHeight "$out" | awk '/pixelWidth:/ {w = $2} /pixelHeight:/ {h = $2} END {print w "x" h}')
     printf 'variant=%s size=%s session=%s\n' "$out" "$vsize" "$(jq -r '.id // "none"' <<<"$take")"
     IMAGE_LEG_DELIVERED=$index

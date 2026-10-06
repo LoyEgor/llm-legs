@@ -322,7 +322,8 @@ assert grep -Fq '.mp4' <<<"$(plan_cmd gemini gamma)"
 assert grep -Fq 'grok-video' <<<"$(plan_cmd grok delta)"
 assert grep -Fq '.mp4' <<<"$(plan_cmd grok delta)"
 assert_fails "$(plan_cmd grok delta)" grok-image
-assert_fails "$(plan_cmd grok delta)" --lock-wait
+assert grep -Fq -- '--lock-wait 5' <<<"$(plan_cmd grok delta)"
+assert grep -Fq -- '--lock-wait 5' <<<"$(plan_cmd gemini gamma)"
 # With several references gemini keeps to its listed lengths; grok's reference range takes any second in it.
 rc=0
 fanout --dest-dir "$DEST" --prompt 'motion' --dry-run --video --duration 5 --ref "$WORK/refs/r1.png" --ref "$WORK/refs/r2.png" || rc=$?
@@ -576,6 +577,19 @@ assert test "$(jq '[.cells[] | select(.job and .dest and .request and .take)] | 
 assert test "$(jq -r '[.cells[] | .request] | unique | map(tostring) | join(",")' "$DEST/fanout.state.json")" = 1,2,3
 assert grep -Fq 'ARG=a dog' "$CALLS"
 assert test "$(grep -c '^ARG=--transparent$' "$CALLS")" -eq 2
+# The roster is listed once per vendor for the whole batch.
+set_roster gemini-web "[ \"\${1:-}\" = accounts ] || exit 2
+echo listed >>'$WORK/listed'
+printf '%s\n' '{\"ok\":true,\"accounts\":[{\"account\":\"gamma\",\"login\":true}]}'"
+jq -cn --arg d "$JOBS_DIR" '{prompt: "a", dest: ($d + "/a.png"), vendor: "gemini", takes: 1},
+  {prompt: "b", dest: ($d + "/b.png"), vendor: "gemini", takes: 1},
+  {prompt: "c", dest: ($d + "/c.png"), vendor: "gemini", takes: 1}' >"$WORK/three.jsonl"
+rc=0
+fanout --dest-dir "$DEST" --jobs "$WORK/three.jsonl" --dry-run || rc=$?
+assert test "$rc" -eq 0
+assert test "$(wc -l <"$WORK/listed" | tr -d ' ')" -eq 1
+set_roster gemini-web '[ "${1:-}" = accounts ] || exit 2
+printf "%s\n" "{\"ok\":true,\"accounts\":[{\"account\":\"gamma\",\"roster\":true,\"login\":true,\"walled_until\":null}]}"'
 printf '{"prompt": "x", "dest": "relative.png"}\n' >"$WORK/bad.jsonl"
 rc=0
 fanout --dest-dir "$DEST" --jobs "$WORK/bad.jsonl" || rc=$?
@@ -624,6 +638,13 @@ fanout --dest-dir "$DEST" --prompt 'badge' --vendors codex --takes 3 --spare 0 -
 assert test "$rc" -eq 0
 assert grep -Fq -- '--count 3' <<<"$(plan_cmd codex take1)"
 assert test -z "$(plan_cmd codex take2)$(plan_cmd codex take3)"
+# A ChatGPT spare never rides in the pack: each tab is its own generation the pack would wait for.
+rc=0
+fanout --dest-dir "$DEST" --prompt 'badge' --vendors codex --takes 3 --spare 1 --dry-run || rc=$?
+assert test "$rc" -eq 0
+assert grep -Fq -- '--count 3' <<<"$(plan_cmd codex take1)"
+assert test "$(awk -F'\t' '$1 == "codex take4" { print $3 }' "$FANOUT_OUT")" = spare
+assert_fails "$(plan_cmd codex take4)" --count
 rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --vendors gemini --takes 2 --spare 0 --pack 1 --dry-run || rc=$?
 assert test "$rc" -eq 0
@@ -783,6 +804,18 @@ env "${FANOUT_ENV[@]}" FANOUT_SLEEP=2 IMAGE_FANOUT_LAZY_SPARE_MS=800 bash "$SCRI
   --vendors gemini --takes 4 --spare 1 >"$FANOUT_OUT" 2>"$FANOUT_ERR" || rc=$?
 assert test "$rc" -eq 0
 assert awk -v p="$(start_at slowp 1)" -v s="$(start_at fastq 1)" 'BEGIN { exit !(s != "" && s - p >= 0.8) }'
+# On a packing route a lone take's spare waits too, unpacked.
+set_roster chatgpt-web '[ "${1:-}" = accounts ] || exit 2
+printf "%s\n" "{\"ok\":true,\"accounts\":[{\"account\":\"tabp\",\"login\":true},{\"account\":\"tabq\",\"login\":true}]}"'
+: >"$CALLS"
+rc=0
+env "${FANOUT_ENV[@]}" FANOUT_SLEEP=0.6 IMAGE_FANOUT_LAZY_SPARE_MS=2000 bash "$SCRIPT" --dest-dir "$DEST" --prompt 'badge' \
+  --vendors codex --takes 1 --spare 1 >"$FANOUT_OUT" 2>"$FANOUT_ERR" || rc=$?
+assert test "$rc" -eq 0
+assert test "$(grep -c '^START ' "$CALLS")" -eq 1
+assert_fails "$(cat "$CALLS")" 'ARG=--count'
+set_roster chatgpt-web '[ "${1:-}" = accounts ] || exit 2
+printf "%s\n" "{\"ok\":true,\"accounts\":[{\"account\":\"alpha\",\"login\":true,\"walled_until\":null},{\"account\":\"beta\",\"login\":false,\"walled_until\":null}]}"'
 
 # --- busy and limit reach the fan-out; the next route is its last resort --------------------------
 (

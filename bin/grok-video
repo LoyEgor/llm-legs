@@ -85,6 +85,7 @@ while [ "$#" -gt 0 ]; do
     --aspect) [ "$#" -ge 2 ] || usage "$1 needs a value"; aspect=$2; shift 2 ;;
     --account) [ "$#" -ge 2 ] || usage "$1 needs a value"; account_arg "$2"; account=$2; shift 2 ;;
     --resume) [ "$#" -ge 2 ] || usage "$1 needs a value"; resume=$2; shift 2 ;;
+    --lock-wait) [ "$#" -ge 2 ] && image_leg_lock_wait_arg "$2" || usage "--lock-wait needs whole seconds"; shift 2 ;;
     *) usage "unknown argument $1" ;;
   esac
 done
@@ -223,7 +224,8 @@ mkdir -p "$work_dir"
 stream_file="$tmp_dir/stream.jsonl"
 stderr_file="$tmp_dir/grok.stderr"
 
-grok_media_lock_acquire grok-video "$account" || exit 1
+GROK_MEDIA_LOCK_WAIT=${IMAGE_LEG_LOCK_WAIT:-${GROK_MEDIA_LOCK_WAIT:-900}} grok_media_lock_acquire grok-video "$account" ||
+  image_leg_busy "$account"
 image_leg_mark "$duration"
 
 instruction="Generate exactly one video and stop after the video tool completes.

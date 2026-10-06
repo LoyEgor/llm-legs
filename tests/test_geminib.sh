@@ -1063,7 +1063,7 @@ IMAGE_MODE=reply
 export IMAGE_MODE
 : >"$IMAGE_MAGICK_CALLS"
 assert image_run --dest "$WORK/image-output/converted.png" --prompt landscape --account main
-assert grep -q "$IMAGE_REPLY $WORK/image-output/converted.png" "$IMAGE_MAGICK_CALLS"
+assert grep -qx "$IMAGE_REPLY -define png:compression-level=4 $WORK/image-output/converted.png" "$IMAGE_MAGICK_CALLS"
 assert grep -qx converted "$WORK/image-output/converted.png"
 
 # main has no profile directory to delete, so `remove` hides it by marker alone: the real HOME

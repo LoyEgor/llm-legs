@@ -222,6 +222,7 @@ class Chooser:
     def is_multiple(self): return self.page.multiple
     def set_files(self, path, timeout=None):
         self.page.events.append(("file", path))
+        TIMELINE.append(("file", self.page.chat))
         if self.page.uploads_land:
             batch = path if isinstance(path, list) else [path]
             self.page.files += batch[::-1] if self.page.scrambles else batch
@@ -370,6 +371,10 @@ def render(page, meta=None, **kw):
 def ledger():
     return [json.loads(line) for line in (chat_root / "jobs.jsonl").read_text().splitlines()]
 
+
+# The Images project is its own block below; every other render here opens new chats on the home page.
+real_project_home = cw.project_home
+cw.project_home = lambda page, session, account, meta: meta.get("project") or "/"
 
 # A new chat: the home page, the prompt typed and sent, the image saved from the src the page shows.
 page = Page()
@@ -665,6 +670,17 @@ rows = ledger()[rows_before:]
 assert [(row["event"], row["tab"]) for row in rows] == [("sent", 1), ("sent", 2), ("sent", 3), ("saved", 1),
                                                         ("saved", 2), ("saved", 3)], rows
 assert not pages[0].closed and pages[1].closed and pages[2].closed
+# With refs every tab's upload starts before the first send, so a pack's uploads run side by side; each tab still
+# sends only its own refs, in order, after its thumbnails showed.
+TIMELINE.clear()
+pages = [tab_page(n) for n in (1, 2, 3)]
+for page in pages:
+    page.multiple = True
+result, _ = render_tabs(pages, count=3, ref=refs[:2], dest=str(chat_root / "refs.png"))
+steps = [step for step in TIMELINE if step[0] in ("file", "send")]
+assert steps == [("file", chat) for chat in CHATS[:3]] + [("send", chat) for chat in CHATS[:3]], steps
+assert result["ok"] and len(result["takes"]) == 3 and all(page.files == refs[:2] for page in pages), result
+assert all(page.events.index(("file", refs[:2])) < page.events.index(("type", "a round blue badge")) for page in pages)
 # One tab walled by the image limit while the others deliver: the rest are delivered, the walled one reported
 # with its wall; with no tab delivering, the run fails as one take would, the limit as exit 3.
 rows_before = len(ledger())
@@ -723,13 +739,83 @@ failure, _ = render(page, timeout=0.2, resume=NEW_CHAT)
 assert isinstance(failure, gw.Failure) and "no image after" in failure.reason, failure
 assert not any(event[0] == "reload" for event in page.events), "a resumed chat was reloaded: %r" % page.events
 cw.STALL_S, cw.QUIET_S = 90, 30
+# A pack take still blank SIBLING_S after a sibling landed is reloaded then, not at its own stall clock; one that
+# stays blank fails STRAGGLER_S after the last sibling instead of holding the pack to --timeout.
+cw.SIBLING_S = 0
+rows_before = len(ledger())
+result, _ = render_tabs([tab_page(1), stalled(2)], count=2, dest=str(chat_root / "nudged.png"), timeout=3)
+assert result["ok"] and result["failed"] == 0 and len(result["takes"]) == 2, result
+reloads = [row.get("cause") for row in ledger()[rows_before:] if row["event"] == "reloaded"]
+assert reloads == ["sibling"], ledger()[rows_before:]
+cw.STRAGGLER_S = 0.05
+started = time.time()
+result, _ = render_tabs([tab_page(1), stalled(2, after_reload=[{"streaming": True}])], count=2,
+                        dest=str(chat_root / "straggler.png"), timeout=3)
+assert result["ok"] and len(result["takes"]) == 1 and result["failed"] == 1, result
+assert "after the last sibling" in result["failures"][0]["reason"] and time.time() - started < 2, result
+cw.SIBLING_S, cw.STRAGGLER_S = 20, 180
 # --count 1 stays the one-tab path: no tab brought forward, no new page, no takes in the result.
 page = Page()
 result, _ = render(page)
 assert ("front",) not in page.events and "takes" not in result and "failed" not in result, (page.events, result)
 
-# Result, failure and ledger rows carry the job, the phases since engine start, the lock wait, and on a failure
-# whether the prompt was sent.
+# New chats open in the account's Images project, off the owner's chat list: found in the sidebar or created once,
+# its path kept in the account's meta; a resume opens its own chat; a pack's tabs all open there. A failed lookup
+# leaves the home page and is not retried within PROJECT_RETRY_S; a project the owner deleted is forgotten.
+cw.project_home = real_project_home
+PROJECT, CREATED = "/g/g-p-0a1b/project", "/g/g-p-9f8e/project"
+looked = []
+cw.find_project = lambda page: looked.append(page) or PROJECT
+gw.write_meta("alpha", email="alpha@example.com", project=None, project_failed=0)
+page = Page()
+result, _ = render(page, meta=gw.read_meta("alpha"))
+gotos = [e[1] for e in page.events if e[0] == "goto"]
+assert not isinstance(result, gw.Failure) and gotos == [cw.SITE + "/", cw.SITE + PROJECT], (result, gotos)
+assert gw.read_meta("alpha")["project"] == PROJECT and ledger()[-3]["event"] == "project", ledger()[-3:]
+assert ledger()[-3]["created"] is False
+page = Page()
+result, _ = render(page, meta=gw.read_meta("alpha"))
+assert [e[1] for e in page.events if e[0] == "goto"] == [cw.SITE + PROJECT] and len(looked) == 1, page.events
+page = Page()
+result, _ = render(page, meta=gw.read_meta("alpha"), resume=CHATS[0])
+assert [e[1] for e in page.events if e[0] == "goto"] == [f"{cw.SITE}/c/{CHATS[0]}"], page.events
+pages = [tab_page(n) for n in (1, 2, 3)]
+result, _ = render_tabs(pages, count=3, dest=str(chat_root / "project.png"))
+gotos = [[e[1] for e in page.events if e[0] == "goto"] for page in pages]
+assert result["ok"] and gotos == [[cw.SITE + "/", cw.SITE + PROJECT]] + [[cw.SITE + PROJECT]] * 2, gotos
+cw.find_project = lambda page: None
+cw.create_project = lambda page: (CREATED, "Project-only memory")
+gw.write_meta("alpha", project=None)
+result, _ = render(Page(), meta=gw.read_meta("alpha"))
+row = [row for row in ledger() if row["event"] == "project"][-1]
+assert gw.read_meta("alpha")["project"] == CREATED and row["created"] and row["memory"] == "Project-only memory", row
+
+
+def broken(page):
+    raise TimeoutError("no sidebar")
+
+
+cw.find_project = broken
+gw.write_meta("alpha", project=None)
+page = Page()
+result, _ = render(page, meta=gw.read_meta("alpha"))
+assert result["ok"] and [e[1] for e in page.events if e[0] == "goto"] == [cw.SITE + "/", cw.SITE + "/"], page.events
+assert gw.read_meta("alpha")["project_failed"] > time.time() - 60 and not gw.read_meta("alpha")["project"]
+assert [row for row in ledger() if row["event"] == "project_failed"][-1]["reason"].startswith("TimeoutError")
+cw.find_project = lambda page: looked.append(page) or PROJECT
+looked.clear()
+page = Page()
+result, _ = render(page, meta=gw.read_meta("alpha"))
+assert result["ok"] and not looked and [e[1] for e in page.events if e[0] == "goto"] == [cw.SITE + "/"], page.events
+gw.write_meta("alpha", project=PROJECT)
+page = Page(url_after_goto=cw.SITE + "/")
+result, _ = render(page, meta=gw.read_meta("alpha"))
+assert result["ok"] and [e[1] for e in page.events if e[0] == "goto"] == [cw.SITE + PROJECT, cw.SITE + "/"], page.events
+assert not gw.read_meta("alpha")["project"] and ledger()[-3]["event"] == "project_gone", ledger()[-3:]
+cw.project_home = lambda page, session, account, meta: meta.get("project") or "/"
+
+# Result, failure and ledger rows carry the job, the phases since engine start with the load at each, the lock
+# wait, and on a failure whether the prompt was sent.
 def emitted(payload):
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
@@ -742,13 +828,18 @@ def emitted(payload):
 
 gw.TIMED, os.environ["IMAGE_JOB_ID"] = True, "job-7"
 gw.PHASES.clear()
+real_loadavg = os.getloadavg
+os.getloadavg = lambda: (42.25, 1.0, 1.0)
 result, _ = render(Page())
+os.getloadavg = real_loadavg
 assert list(gw.PHASES) == ["page", "sent", "media", "saved"], gw.PHASES
 assert sorted(gw.PHASES.values()) == list(gw.PHASES.values()), gw.PHASES
 line = emitted(result)
 assert (line["job"], list(line["phases"]), line["lock_wait_s"]) == ("job-7", list(gw.PHASES), 0) and "sent" not in line
+assert line["load"] == dict.fromkeys(gw.PHASES, 42.2), line
 row = ledger()[-1]
 assert row["event"] == "saved" and row["job"] == "job-7" and row["phases"] == gw.PHASES and "sent" not in row, row
+assert row["load"] == line["load"], row
 gw.PHASES.clear()
 failure, _ = render(Page(after=[{"alerts": ["You've reached our image generation limit. Please try again later."]}]))
 row = ledger()[-1]

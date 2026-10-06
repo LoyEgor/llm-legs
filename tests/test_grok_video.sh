@@ -407,8 +407,9 @@ mkdir -p "$TMP_ROOT/grok-video.explicit.lock"
 video_rc=0
 GROK_MEDIA_LOCK_WAIT=0 video_run --dest "$OUTPUT_DIR/locked.$CONTAINER" --prompt 'push in' \
   --ref "$WORK/ref-a.jpg" --account explicit || video_rc=$?
-assert test "$video_rc" -eq 1
+assert test "$video_rc" -eq 5
 assert grep -q 'timed out waiting for account lock' "$VIDEO_ERR"
+assert grep -qx 'ACCOUNT_BUSY account=explicit' "$VIDEO_ERR"
 assert test ! -s "$FAKE_GROKB_CALLS"
 rmdir "$TMP_ROOT/grok-video.explicit.lock"
 assert video_run --dest "$OUTPUT_DIR/unlocked.$CONTAINER" --prompt 'push in' \

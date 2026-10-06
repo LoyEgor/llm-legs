@@ -31,29 +31,9 @@ import gemini_web as gw  # noqa: E402
 
 IMAGE_RPCS = {"ogiZ0b"}
 KIND = "flow-image"
-CARDS_SCAN_S = 3
-GENERATION_FAILED = "flow_generation_failed (not charged)"
 # No quota-shaped code has been seen live (2026-10-04: AUDIO_FILTERED, UNSAFE_GENERATION, UNUSUAL_ACTIVITY only);
 # one is a limit to move past, not a refusal of the prompt that would cost the whole job.
 QUOTA_ERROR = re.compile(r"PUBLIC_ERROR_\w*(?:QUOTA|LIMIT|EXHAUSTED)\w*")
-# Flow's "Failed / Sorry, this image failed to generate / You have not been charged" card and its Retry
-# button. Cards on the page before the send belong to earlier jobs: "mark" remembers them, "count" and
-# "retry" see only the rest.
-FAILED_CARDS = """(op) => {
-    const old = globalThis.__llmFlowFailedOld ||= new WeakSet();
-    const retryOf = (card) => [...card.querySelectorAll('button')].filter(b =>
-        /(^|\\s)Retry$/.test((b.getAttribute('aria-label') || b.innerText || '').trim()));
-    const cards = [];
-    for (const node of document.querySelectorAll('body *')) {
-        if (![...node.childNodes].some(t => t.nodeType === 3 && /failed to generate/i.test(t.textContent))) continue;
-        let card = node;
-        while (card && retryOf(card).length !== 1) card = retryOf(card).length > 1 ? null : card.parentElement;
-        if (card && !cards.includes(card)) cards.push(card);
-    }
-    if (op === 'mark') { cards.forEach(c => old.add(c)); return cards.length; }
-    const fresh = cards.filter(c => !old.has(c));
-    return op === 'retry' ? fresh.map(c => retryOf(c)[0]) : fresh.length;
-}"""
 
 
 def caps() -> dict:
@@ -224,12 +204,8 @@ def save_upscaled(page, account: str, project: str, image_id: str, dest: Path, i
                           prepare=prepare, timeout_s=180)
 
 
-def failed_cards(page) -> int:
-    return int(page.evaluate(FAILED_CARDS, "count") or 0)
-
-
 def retry_failed(page) -> int:
-    buttons = page.evaluate_handle(FAILED_CARDS, "retry")
+    buttons = page.evaluate_handle(gw.FAILED_CARDS, "retry")
     clicked = 0
     for handle in buttons.get_properties().values():
         element = handle.as_element()
@@ -248,13 +224,13 @@ def await_takes(page, watcher: Images, plan: dict, known: set, account: str, pro
             raise watcher.blocked()
         images = watcher.new_images(known)
         done = [i for i in images if i.get("url") or i.get("error")]
-        if scanned is None or time.time() - scanned >= CARDS_SCAN_S:
-            failed, scanned = failed_cards(page), time.time()
+        if scanned is None or time.time() - scanned >= gw.CARDS_SCAN_S:
+            failed, scanned = gw.failed_cards(page), time.time()
         if failed and not retried:
             gw.ledger({"kind": KIND, "event": "retried", "account": account, "project": project, "failed": failed,
                        "resume_of": plan["resume"]})
             if not retry_failed(page):
-                raise gw.Failure(1, f"{GENERATION_FAILED}: Flow showed its Failed card with no Retry on {account}")
+                raise gw.Failure(1, f"{gw.GENERATION_FAILED}: Flow showed its Failed card with no Retry on {account}")
             retried, floor, deadline, scanned = True, failed, time.time() + plan["timeout_s"], None
             page.wait_for_timeout(1500)
             continue
@@ -262,7 +238,7 @@ def await_takes(page, watcher: Images, plan: dict, known: set, account: str, pro
         lost = failed - floor if retried else 0
         if len(done) + lost >= plan["count"]:
             if not done:
-                raise gw.Failure(1, f"{GENERATION_FAILED}: Flow's Failed card came back after its own Retry on "
+                raise gw.Failure(1, f"{gw.GENERATION_FAILED}: Flow's Failed card came back after its own Retry on "
                                     f"{account}")
             return done[:plan["count"]], lost
         if watcher.errors and not images:
@@ -274,7 +250,7 @@ def await_takes(page, watcher: Images, plan: dict, known: set, account: str, pro
                                  f"delivering the {len(done)} that did (a late one lands in project {project})")
                 return done, missing
             if retried and failed:
-                raise gw.Failure(1, f"{GENERATION_FAILED}: Flow's Retry did not take on {account}")
+                raise gw.Failure(1, f"{gw.GENERATION_FAILED}: Flow's Retry did not take on {account}")
             raise gw.Failure(1, f"sent, but {len(done)} of {plan['count']} images came back within "
                                 f"{plan['timeout_s']}s on {account}; any late one lands in project {project}")
         page.wait_for_timeout(500)
@@ -311,11 +287,10 @@ def render_on(account: str, plan: dict, meta: dict, started: float) -> dict:
             return {"ok": True, "dry_run": True, "account": account, "project": project, "chip": chip,
                     "build": state["build"]}
         known = set(watcher.images)
-        page.evaluate(FAILED_CARDS, "mark")
         gw.ledger({"kind": KIND, "event": "queued", "account": account, "project": project, "model": plan["model"],
                    "resume_of": plan["resume"], "prompt": plan["prompt"][:500]})
         watcher.errors &= gw.BLOCK_ERRORS
-        button.click()
+        gw.press_generate(page, button)
         sent = time.time()
         gw.phase("sent")
         done, lost = await_takes(page, watcher, plan, known, account, project)

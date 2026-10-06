@@ -242,7 +242,7 @@ BROWSER_REASONS = (
     ("browser no output", re.compile(r"no track|without running the music tool|showed up in the project within"
                                      r"|not ready after|no longer lists clip|no finished video|refused the clip"
                                      r"|but no tile in|never listed its media|has no Flow project for clip"
-                                     r"|returned no take|answered without an image|no image after"
+                                     r"|returned no take|answered without an image|no image (?:\d+s )?after"
                                      r"|is not on \S+ any more|images? came back within", re.IGNORECASE)),
     ("browser hide", re.compile(r"could not hide", re.IGNORECASE)),
     ("browser drift", re.compile(r"UI drift|waiting for|Timeout \d+ ?ms|did not load within|does not stick"

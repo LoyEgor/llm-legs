@@ -40,7 +40,7 @@ counts=$(caps '.video.counts | map(tostring) | join("|")')
 
 usage() {
   image_leg_cause "$@"
-  printf 'usage: gemini-video --dest <absolute .%s path> --prompt <motion description> [--first-frame <absolute image path>] [--last-frame <absolute image path>] [--ref <absolute image path>]... [--edit <absolute video path>] [--extend <absolute path of a Flow Veo clip>] [--duration <%s>] [--resolution <%s>] [--aspect <%s>] [--model <%s>] [--count <%s>] [--account <geminib profile>]\n' \
+  printf 'usage: gemini-video --dest <absolute .%s path> --prompt <motion description> [--first-frame <absolute image path>] [--last-frame <absolute image path>] [--ref <absolute image path>]... [--edit <absolute video path>] [--extend <absolute path of a Flow Veo clip>] [--duration <%s>] [--resolution <%s>] [--aspect <%s>] [--model <%s>] [--count <%s>] [--account <geminib profile>] [--lock-wait <seconds>]\n' \
     "$container" "$durations" "$resolutions" "$video_aspects" "$(caps '.video.models | keys | join("|")')" "$counts" >&2
   printf '  Google Flow on the account'\''s subscription, through a hidden Chrome (gemini-web)\n' >&2
   printf '  frames (--first-frame/--last-frame; a lone --ref is the first frame) or ingredients (several --ref, --edit), never both\n' >&2
@@ -87,6 +87,7 @@ while [ "$#" -gt 0 ]; do
     --resolution) [ "$#" -ge 2 ] || usage "$1 needs a value"; resolution=$2; shift 2 ;;
     --aspect) [ "$#" -ge 2 ] || usage "$1 needs a value"; aspect=$2; shift 2 ;;
     --account) [ "$#" -ge 2 ] || usage "$1 needs a value"; account_arg "$2"; account=$2; shift 2 ;;
+    --lock-wait) [ "$#" -ge 2 ] && image_leg_lock_wait_arg "$2" || usage "--lock-wait needs whole seconds"; shift 2 ;;
     --model) [ "$#" -ge 2 ] || usage "$1 needs a value"; model=$2; shift 2 ;;
     *) usage "unknown argument $1" ;;
   esac
@@ -202,6 +203,7 @@ else
 fi
 [ "$count" = 1 ] || engine_args+=(--count "$count")
 [ -z "$account" ] || engine_args+=(--account "$account")
+[ -z "$IMAGE_LEG_LOCK_WAIT" ] || engine_args+=(--lock-wait "$IMAGE_LEG_LOCK_WAIT")
 [ -z "$first_frame" ] || engine_args+=(--first-frame "$first_frame")
 [ -z "$last_frame" ] || engine_args+=(--last-frame "$last_frame")
 [ -z "$edit" ] || engine_args+=(--edit "$edit")
@@ -214,6 +216,7 @@ engine_rc=0
 "$engine" "${engine_args[@]}" >"$result_file" || engine_rc=$?
 result=$(tail -n 1 "$result_file" 2>/dev/null) || result=''
 jq -e . >/dev/null 2>&1 <<<"$result" || result='{}'
+image_leg_engine_phases "$result"
 account=$(jq -r '.account // empty' <<<"$result")
 reason=$(jq -r '.reason // empty' <<<"$result")
 
@@ -230,6 +233,10 @@ case "$engine_rc" in
   4)
     printf 'gemini-video: %s\n' "${reason:-account is not signed in to Flow}" >&2
     exit 4
+    ;;
+  5)
+    [ -z "$reason" ] || printf 'gemini-video: %s\n' "$reason" >&2
+    image_leg_busy "${account:-unknown}"
     ;;
   *)
     printf 'gemini-video: %s\n' "${reason:-engine failed with exit $engine_rc}" >&2

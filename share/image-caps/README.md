@@ -34,7 +34,9 @@ vendor CLI docs). Re-verify when `caps=stale` or `model_caps=stale` shows up; th
 - `web` (codex): the `--route web` (ChatGPT) contract — `refs_max` and `counts` (`--count`: takes as new chats in
   tabs of one browser), while the top-level `refs` stay the CLI's.
 - `counts` in a route's block (`flow_image`, `web`): the `--count` values that route renders in one launch; the
-  fan-out packs that many takes of a request into one launch.
+  fan-out packs that many takes of a request into one launch. `counts_batch: true` (`flow_image`): a launch's
+  takes are one generation and land together, so the fan-out may pack a spare with the primaries; without it
+  (ChatGPT tabs, each its own generation) spares get their own unit, launched only after the lazy-spare delay.
 - `flow_image` (gemini): the `--route flow` contract — model labels and their observed `wire` keys, the
   five aspects, counts, `refs_max`, `upscale` menu items, `price` (a different composer quote stops the run).
   `flow_image.tools`: the Image Editor Tool behind `--region`/`--point`/`--remove-bg`/prompt-less `--aspect` —

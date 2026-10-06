@@ -258,7 +258,7 @@ bin/gemini-image --dest /abs/edit.png --prompt 'make it red' --resume <session> 
 
 | Capability | Result (live 2026-10-02) |
 | --- | --- |
-| Models | `pro` = Nano Banana Pro (wire `GEM_PIX_2`), `nb2` = Nano Banana 2 (`NARWHAL`), `lite` = Nano Banana 2 Lite (`HARBOR_SEAL`); `model=` reads the wire key from the page's own generation request |
+| Models | `pro` = Nano Banana Pro (wire `GEM_PIX_2`), `nb2` = Nano Banana 2.1 (`BELUGA`), `lite` = Nano Banana 2 Lite (`HARBOR_SEAL`); `model=` reads the wire key from the page's own generation request |
 | Price | 0 credits on every model and count (the composer quote is checked before the send; a non-zero quote stops the run, nothing spent) |
 | Aspects | 16:9, 4:3, 1:1, 3:4, 9:16; any other W:H goes as the nearest of them, named on the `aspect=` line (`aspect=3:4 achieved=… fit=… asked=2:3`); a value that is not W:H exits 2 |
 | Count | x1-x4 per send; take N lands as `<dest-stem>-N.<ext>` with a `variant=` line |
@@ -266,7 +266,7 @@ bin/gemini-image --dest /abs/edit.png --prompt 'make it red' --resume <session> 
 | Delivery | 1K = the reply's signed image URL, byte-identical to Download > 1K Original size (1024x1024 at 1:1, 1376x768 at 16:9, 1200x896 at 4:3); `--upscale 2k` = the editor's Download > 2K Upscaled (1792x2400 at 3:4); 4K Upscaled needs a higher plan |
 | Resume | `--resume <session> --account <p>`: the image's editor (`/project/<p>/edit/<id>`, "What do you want to change?") takes the new prompt; aspect and model only, no count or refs; never stamps the rotation |
 | Transparency | Flow delivers no alpha: `--transparent` (PNG destination) asks for a flat #00FF00 background and keys it locally with the CLI route's [chroma key](../../share/image-chroma.sh), every take included |
-| Failed card | Flow's own "Failed — Sorry, this image failed to generate. You have not been charged" card is read from the page; the engine presses its Retry once (a `retried` ledger row) and a second failure exits 1 at once with `flow_generation_failed (not charged)`; with `--count` >1 the takes that came back are delivered and a `failed=<n>` line counts the rest |
+| Failed card | Flow's own "Failed — Sorry, this image failed to generate. You have not been charged" card is read from the page; the engine presses its Retry once (a `retried` ledger row) and a second failure exits 1 at once with `flow_generation_failed (not charged)`; with `--count` >1 the takes that came back are delivered and a `failed=<n>` line counts the rest. Video reads the same card without a Retry (the card names no clip, and a retried clip's id is unverified): n fresh cards are the n clips still rendering once the rest are done, each a `refused=<media> flow_generation_failed (not charged)` line, all of them exit 1 with that reason (a failed clip sat out the 900 s `--timeout` before, 2026-10-05) |
 | Timing | render 6-21 s after the send; 18-62 s end to end (the 2K download adds ~40 s) |
 
 The new images are read from the page's own `ogiZ0b` reply (media id, workflow id, signed URL, `[W,H]`); the

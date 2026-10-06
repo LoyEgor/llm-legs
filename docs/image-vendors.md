@@ -61,7 +61,8 @@ route's code.
 Every run appends one row to `${IMAGE_LEG_LOG:-~/.cache/image-legs/legs.jsonl}` (`image_leg_exit`, read by
 `llm-doctor`): `ts tool kind rc seconds queued size account served err job` and, when known, `route`,
 `fallback_from` + `fallback_reason`, `phases` (engine seconds per phase: `lock browser page sent media
-saved`), `requested` + `delivered` (takes asked and delivered: a Flow `--count`, `failed=` partials, 0 on
+saved`; video rows too), `load` (the 1-minute load average as each phase was reached: a slow phase under
+load 300 is the machine's fair share, the same phase slow at load 5 is ours or the vendor's), `requested` + `delivered` (takes asked and delivered: a Flow `--count`, `failed=` partials, 0 on
 a failure), `aspect` `{asked, achieved, fit}` (`fit` `ok|miss`, from the `aspect=` line) and, on success,
 `composite` `{kind, changed, reason}` (`auto|region|points|refused|skipped|failed`, skip reasons
 included).
@@ -103,7 +104,8 @@ every new generation, picked or pinned, stamps its start, and a `--resume` stamp
 
 **Scheduling.** At most one live job per vendor account and at most `--max-parallel` (6) jobs; a
 waiting job holds no slot. Primary takes launch before spares; a spare launches only when no primary
-can. Image jobs run with `--lock-wait 5` and `IMAGE_LEG_SCHEDULER=1`, which turns off the wrappers'
+can. Image and video jobs run with `--lock-wait 5` (video: gemini-video forwards it to the Flow
+engine, grok-video waits that long for its account lock; both exit 5 busy) and `IMAGE_LEG_SCHEDULER=1`, which turns off the wrappers'
 own busy/limit fallback to the CLI route on the same account (direct wrapper calls keep it): a busy
 account (exit 5) cools down 30 s and its take goes to another idle account of that vendor (a pinned
 account retries itself; busy for 15 min → `failed`, `exit 5 (account busy)`). In a `--takes` pool a
@@ -128,8 +130,9 @@ plus `spares[image]` from the manifest — `max(min, ceil(N × ratio))` extra ta
 (counted from `dest=`/`variant=` lines, not exit codes) the rest are ended by process group and
 descendants (TERM, 5 s, KILL; the schedule runs on meanwhile, the account and slot held until the
 job is gone) and listed as `spare-cancelled`. A packed request's spare launches only after its pack
-ran 20 s without delivering (`IMAGE_FANOUT_LAZY_SPARE_MS`): the pack usually lands first, and a
-spare cancelled after sending still spends an image. Take k lands at `<vendor>-<account>.<ext>` for k = 1, else
+ran 90 s without delivering (`IMAGE_FANOUT_LAZY_SPARE_MS`): the pack usually lands first, and a
+spare cancelled after sending still spends an image (at 20 s it launched and sent on every run, clean
+or loaded). Take k lands at `<vendor>-<account>.<ext>` for k = 1, else
 `<vendor>-<account>-<k>.<ext>`. Takes of a pool on a vendor whose first route lists `counts` (gemini
 Flow, codex web) launch packed, up to its largest count per `--count` job; each delivered variant is a take.
 `--pack N` (1-4) caps a pack, `--pack 1` opts out. Measured 2026-10-03: a Flow `--count 4` renders

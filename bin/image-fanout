@@ -39,7 +39,7 @@ bin_dir=${IMAGE_FANOUT_BIN_DIR:-$script_dir}
 lister_dir=${IMAGE_FANOUT_LISTER_DIR:-$script_dir}
 gap_ms=${IMAGE_FANOUT_LAUNCH_GAP_MS:-3000}
 kill_wait_ms=${IMAGE_FANOUT_KILL_WAIT_MS:-5000}
-lazy_spare_ms=${IMAGE_FANOUT_LAZY_SPARE_MS:-20000}
+lazy_spare_ms=${IMAGE_FANOUT_LAZY_SPARE_MS:-90000}
 busy_retry_ms=${IMAGE_FANOUT_BUSY_RETRY_MS:-30000}
 busy_giveup_ms=${IMAGE_FANOUT_BUSY_GIVEUP_MS:-900000}
 mem_poll_ms=${IMAGE_FANOUT_MEM_POLL_MS:-1000}
@@ -318,6 +318,22 @@ kv_last() { # key files...
 }
 
 # Roster rows as `name<TAB>last used (ms, 0 unknown)<TAB>skip reason`; an empty reason is launchable.
+# A --jobs file plans every request against the same roster: one lister launch per vendor, not per request
+# (each is a uv/Python start, ~1 s at load 300).
+roster_v=() roster_out=()
+roster_of() { # vendor -> roster_rows; sets globals, so never call it inside $(...)
+  local i
+  for ((i = 0; i < ${#roster_v[@]}; i++)); do
+    if [ "${roster_v[i]}" = "$1" ]; then
+      roster_rows=${roster_out[i]}
+      return 0
+    fi
+  done
+  roster_rows=$(list_accounts "$1") || roster_rows=''
+  roster_v+=("$1")
+  roster_out+=("$roster_rows")
+}
+
 list_accounts() { # vendor
   local vendor=$1 route lister out last item
   local -a argv=()
@@ -457,7 +473,7 @@ state_dirty=1
 
 # Groups: one request x one vendor. Units: one launch (a take, or several packed into one --count).
 g_n=0
-g_req=() g_vendor=() g_target=() g_cancelable=() g_delivered=() g_cancelled=() g_bin=() g_reason=() g_base=()
+g_req=() g_vendor=() g_target=() g_cancelable=() g_lazy=() g_delivered=() g_cancelled=() g_bin=() g_reason=() g_base=()
 u_n=0
 u_group=() u_take=() u_tid=() u_count=() u_mode=() u_pin=() u_state=() u_acct=() u_account=() u_dest=()
 u_pid=() u_rc=() u_delivered=() u_notes=() u_not_before=() u_busy_since=() u_job=() u_spare=() u_row=()
@@ -553,12 +569,17 @@ pack_size() { # vendor -> takes per launch, within the first route's counts (all
   if [ -n "$pack" ] && [ "$pack" -le "$max" ]; then printf '%s' "$pack"; else printf '%s' "$max"; fi
 }
 
+# A spare rides in a primary pack only where the route renders a pack as one batch (Flow); in ChatGPT
+# tabs it is one more generation the pack waits for, so there it gets its own lazy unit.
 add_takes() { # group total mode pin first-spare-take
-  local g=$1 total=$2 mode=$3 pin=$4 first_spare=$5 pack_n t c
+  local g=$1 total=$2 mode=$3 pin=$4 first_spare=$5 pack_n batch t c
   pack_n=$(pack_size "${g_vendor[g]}")
-  for ((t = 1; t <= total; t += pack_n)); do
+  batch=$(route_get "${g_vendor[g]}" '.counts_batch' 'false')
+  [ "$pack_n" -le 1 ] || g_lazy[g]=1
+  for ((t = 1; t <= total; t += c)); do
     c=$pack_n
     [ $((t + c - 1)) -le "$total" ] || c=$((total - t + 1))
+    [ "$batch" = true ] || [ "$t" -ge "$first_spare" ] || [ $((t + c)) -le "$first_spare" ] || c=$((first_spare - t))
     if [ "$t" -ge "$first_spare" ]; then
       add_unit "$g" "$t" "$c" "$mode" "$pin" 1
     else
@@ -678,7 +699,7 @@ plan_group() { # request vendor
   g_n=$((g_n + 1))
   g=$g_n
   g_req[g]=$r g_vendor[g]=$vendor g_bin[g]=$bin g_reason[g]=$reason g_delivered[g]=0 g_cancelled[g]=0
-  g_cancelable[g]=0 g_target[g]=0 g_base[g]=''
+  g_cancelable[g]=0 g_lazy[g]=0 g_target[g]=0 g_base[g]=''
   if [ -n "${rq_dest[r]}" ]; then
     g_base[g]=${rq_dest[r]}
     if [ "$(resolve_vendors "${rq_vendors[r]}" | wc -w | tr -d ' ')" -gt 1 ]; then
@@ -693,7 +714,7 @@ plan_group() { # request vendor
   if [ -n "$used_size" ]; then extra+=(--size "$used_size"); fi
   if [ -n "$used_duration" ]; then extra+=(--duration "$used_duration"); fi
   if [ "$pass_transparent" = true ]; then extra+=(--transparent); fi
-  [ "$kind" != image ] || extra+=(--lock-wait "$lock_wait")
+  extra+=(--lock-wait "$lock_wait")
   write_argv "$jobs_dir/g$g.extra" ${extra[@]+"${extra[@]}"}
 
   mode=every
@@ -714,7 +735,7 @@ plan_group() { # request vendor
       add_takes "$g" "${rq_takes[r]}" pinned "${rq_account[r]}" $((rq_takes[r] + 1))
       ;;
     every)
-      rows=$(list_accounts "$vendor") || rows=''
+      roster_of "$vendor"; rows=$roster_rows
       if [ -z "$rows" ]; then
         add_static "$vendor" - skipped 'no accounts'
         return
@@ -731,7 +752,7 @@ plan_group() { # request vendor
       done <<<"$rows"
       ;;
     pool)
-      rows=$(list_accounts "$vendor") || rows=''
+      roster_of "$vendor"; rows=$roster_rows
       accounts=$(printf '%s\n' "$rows" | awk -F'\t' '$1 != "" && $3 == "" { print $1 "\t" $2 }')
       if [ -z "$accounts" ]; then
         add_static "$vendor" - skipped 'no accounts'
@@ -1073,14 +1094,16 @@ gap_open() {
   return 0
 }
 
-# A packed request's spare launches only once its pack ran lazy_spare_ms without delivering:
-# the pack usually lands first, and a spare cancelled after sending still spends an image.
+# A packing vendor's spare launches only once its primaries ran lazy_spare_ms without delivering:
+# the pack usually lands first, and a spare cancelled after sending still spends an image. Below a
+# loaded pack's delivery (ChatGPT 3-pack 48-73 s, Flow 4-pack 26-37 s) the spare launched and sent
+# every time, a second Flow account in the same burst.
 spare_waits() { # unit now
   local u=$1 now=$2 v g
   [ "${u_spare[u]}" = 1 ] || return 1
   g=${u_group[u]}
   for ((v = 1; v <= u_n; v++)); do
-    [ "${u_group[v]}" = "$g" ] && [ "${u_spare[v]}" = 0 ] && [ "${u_count[v]}" -gt 1 ] || continue
+    [ "${u_group[v]}" = "$g" ] && [ "${u_spare[v]}" = 0 ] && [ "${g_lazy[g]}" = 1 ] || continue
     case "${u_state[v]}" in
       pending) return 0 ;;
       running) [ $((now - u_started[v])) -ge "$lazy_spare_ms" ] || return 0 ;;
