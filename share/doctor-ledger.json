@@ -400,6 +400,24 @@
    "handoff": null
   },
   {
+   "id": "W8",
+   "block": "workers",
+   "match": {
+    "word": "escaped",
+    "detail": "^wrote [^/]+/night-[0-9]{8}T[0-9]{6}Z-"
+   },
+   "title": "a night job wrote a night worktree it made itself in a repository its brief granted none: carry_brief grants ADD-DIR only in sweep repositories, yet asks for a verdict on a carried handoff about another one",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [
+    "W3"
+   ],
+   "last_reviewed": "2026-10-06",
+   "reviewed_by": "LLM doctor",
+   "note": "2026-10-06: claudeb-1791257537-24501-7fe3 (night 20261006T032009Z-f253 handoff job 2026-10-05-usage-gate-hooks) created refs/night/<id>/base and a night worktree in usage-ai-report through share/night-worktree.sh, committed there, and the night never lands it. A true escape, kept: night doctrine makes a change in an ungranted repository a handoff. Cause is night-run carry_brief, not worker-run (handoff).",
+   "handoff": "docs/handoffs/2026-10-06-night-carry-other-repos.md"
+  },
+  {
    "id": "W3",
    "block": "workers",
    "match": {
@@ -407,7 +425,7 @@
     "detail": "^wrote [^/]+/[^/]+$"
    },
    "title": "a cross-repository brief named its second repository's task worktree only in prose, or resumed a granted session without repeating the grant, so worker-run granted it nothing and every write there read as escaped",
-   "status": "fixed",
+   "status": "fixed-pending",
    "fixes": [
     {
      "at": "2026-09-30T03:33:34+03:00",
@@ -446,17 +464,26 @@
       "llm-legs/bin/worker-run",
       "llm-legs/bin/llm-doctor"
      ],
-     "in": "llm-legs@2fea75c6",
+     "in": null,
+     "regressed_at": null
+    },
+    {
+     "at": "2026-10-06T07:30:21+03:00",
+     "by": "LLM doctor",
+     "files": [
+      "llm-legs/bin/worker-run"
+     ],
+     "in": null,
      "regressed_at": null
     }
    ],
    "same_cause": [
     "W5"
    ],
-   "last_reviewed": "2026-10-05",
+   "last_reviewed": "2026-10-06",
    "reviewed_by": "LLM doctor",
-   "note": "x8 claudeb legs 2026-09-29/30 (hammerspoon, claude-setup, logo-vectorizer-bench): every brief listed its second repository in prose (Working directories / Repos / Workdirs) and no relay or flag carried it, so add_dirs stayed empty; worker-run now grants a header ADD-DIR: line as --add-dir. The detail names the files-note outside-write class, the narrowest the leg carries: a write to a repository no brief names still lands here and reads as a regression. 2026-10-01: six packet regressions inspected: five omit grants for prose-authorized claude-setup/review-bench writes; one grants the review-bench sibling but explicitly pours into ungranted llm-legs main. Fresh doctor additionally counts a grantless review-bench resume. Fixture header parsing passes for fresh/resume, prose grants nothing. Current doctor/vendor brief emitters and night-sweep resume guidance already carry ADD-DIR; do not duplicate them. Scratch filtering does not explain the reported repository paths. Historical launcher revision remains unconfirmed (B3). Relay/scope owner handoff required; no authorized claude-setup worktree. 2026-10-02 (night 20261002T092633Z-e367): the 9 escaped legs since 2026-10-01 were all hand-written chat briefs, none with ADD-DIR: 02a2, 7822, 1007, 77aa named the other repository's task worktree by absolute path, 6b0b resumed 7822's session naming none. worker-run now grants every existing <repo>/.claude/worktrees/<name> the brief names (light-* excluded) and every grant of the resumed session's earlier runs (tests/test_worker_run_pool.sh, mutation-checked); main checkouts named in prose stay ungranted. Narrowed to the worktree-shaped detail; the main-checkout/non-repository remainder is W5. Still uncovered here: a worktree the run itself creates mid-run (766d named it only as <repo>/.claude/worktrees/<name>); such a leg reads as a regression of this fix. 2026-10-04 (night 20261004T003925Z-4646): the one regression, 2a60 (2026-10-03, claude-setup night-human-report), was the 'mid-run' gap only in shape: its worktree existed at launch, but the brief handed over to a scratchpad brief.md that listed the repositories under 'Repos:' and named it only as <repo>/.claude/worktrees/<name>. worker-run now reads every *.md the brief names as part of it and resolves that template in each repository the text names (tests/test_worker_run_pool.sh, red on the old code). Still ungranted: a worktree created after launch, and a bare relative .claude/worktrees/<name>. 2026-10-05 (night 20261005T060033Z-052f): the one regression, claudeb-1791165484-91389-3bc4 (llm-legs suite speed), wrote in a worktree it created itself after launch (tmp-suite-speed-baseline-claudeb, removed before it ended), the class the 2026-10-04 settlement keeps ungranted by design; W3's own causes did not recur. Grant-or-narrow is the owner's decision (handoff). 2026-10-06 (night 20261006T032009Z-f253): granted. take_floor lists the workdir's worktrees; a written <listed checkout>/.claude/worktrees/<name> absent from that list whose name the run's own `worktree add` command names joins meta.worktrees_made, which llm-doctor reads as a grant and a RESUME inherits (tests/test_worker_run_attribution.sh, tests/test_llm_doctor.sh, both red on the old code). A worktree another chat made mid-run has no such command and still reads as escaped.",
-   "handoff": "docs/handoffs/2026-10-01-worker-grants.md"
+   "note": "x8 claudeb legs 2026-09-29/30 (hammerspoon, claude-setup, logo-vectorizer-bench): every brief listed its second repository in prose (Working directories / Repos / Workdirs) and no relay or flag carried it, so add_dirs stayed empty; worker-run now grants a header ADD-DIR: line as --add-dir. The detail names the files-note outside-write class, the narrowest the leg carries: a write to a repository no brief names still lands here and reads as a regression. 2026-10-01: six packet regressions inspected: five omit grants for prose-authorized claude-setup/review-bench writes; one grants the review-bench sibling but explicitly pours into ungranted llm-legs main. Fresh doctor additionally counts a grantless review-bench resume. Fixture header parsing passes for fresh/resume, prose grants nothing. Current doctor/vendor brief emitters and night-sweep resume guidance already carry ADD-DIR; do not duplicate them. Scratch filtering does not explain the reported repository paths. Historical launcher revision remains unconfirmed (B3). Relay/scope owner handoff required; no authorized claude-setup worktree. 2026-10-02 (night 20261002T092633Z-e367): the 9 escaped legs since 2026-10-01 were all hand-written chat briefs, none with ADD-DIR: 02a2, 7822, 1007, 77aa named the other repository's task worktree by absolute path, 6b0b resumed 7822's session naming none. worker-run now grants every existing <repo>/.claude/worktrees/<name> the brief names (light-* excluded) and every grant of the resumed session's earlier runs (tests/test_worker_run_pool.sh, mutation-checked); main checkouts named in prose stay ungranted. Narrowed to the worktree-shaped detail; the main-checkout/non-repository remainder is W5. Still uncovered here: a worktree the run itself creates mid-run (766d named it only as <repo>/.claude/worktrees/<name>); such a leg reads as a regression of this fix. 2026-10-04 (night 20261004T003925Z-4646): the one regression, 2a60 (2026-10-03, claude-setup night-human-report), was the 'mid-run' gap only in shape: its worktree existed at launch, but the brief handed over to a scratchpad brief.md that listed the repositories under 'Repos:' and named it only as <repo>/.claude/worktrees/<name>. worker-run now reads every *.md the brief names as part of it and resolves that template in each repository the text names (tests/test_worker_run_pool.sh, red on the old code). Still ungranted: a worktree created after launch, and a bare relative .claude/worktrees/<name>. 2026-10-05 (night 20261005T060033Z-052f): the one regression, claudeb-1791165484-91389-3bc4 (llm-legs suite speed), wrote in a worktree it created itself after launch (tmp-suite-speed-baseline-claudeb, removed before it ended), the class the 2026-10-04 settlement keeps ungranted by design; W3's own causes did not recur. Grant-or-narrow is the owner's decision (handoff). 2026-10-06 (night 20261006T032009Z-f253): granted. take_floor lists the workdir's worktrees; a written <listed checkout>/.claude/worktrees/<name> absent from that list whose name the run's own `worktree add` command names joins meta.worktrees_made, which llm-doctor reads as a grant and a RESUME inherits (tests/test_worker_run_attribution.sh, tests/test_llm_doctor.sh, both red on the old code). A worktree another chat made mid-run has no such command and still reads as escaped. 2026-10-06 (night 20261006T032009Z-f253): 41622-528e and 14641-2e9b (resumed) made claude-setup worktrees with their own `git worktree add` from an llm-legs workdir; the night's worktrees_made grant read only the workdir repository's floor listing. worker-run now also grants such a worktree in a repository the floor never listed when its git admin directory was born after the run started, or it is gone by the end (test_worker_run_attribution made_worktree, red on the old code). 24501-7fe3 moved to W8.",
+   "handoff": null
   },
   {
    "id": "W5",
@@ -487,7 +514,7 @@
    "last_reviewed": "2026-10-03",
    "reviewed_by": "LLM doctor",
    "note": "2026-10-03 (night 20261003T042136Z-e9f1): 6 of 7 legs were Vector Magic launches in workdir $HOME (every $HOME run on record is that chat: 19 runs, all `UNKNOWN: the workdir after snapshot could not be established`) writing logo-vectorizer-bench named as `Repo <path>` in prose or a scratchpad lane brief; one (645b) carried `RESUME 29bd168e…:` but its relay dropped --resume and ran fresh away from the session's workdir. worker-run now refuses a writing run in $HOME, reads a RESUME first line itself and grants a resumed session's earlier repository workdirs (test_worker_run_pool.sh, each mutation-checked). No leg field tells a $HOME workdir from a repository one, so `until` = the fix: after it this class cannot launch, and every later `wrote <file>` leg is the uncovered class W7.",
-   "handoff": "docs/handoffs/2026-10-01-worker-grants.md"
+   "handoff": null
   },
   {
    "id": "R15",
@@ -1156,7 +1183,7 @@
    "last_reviewed": "2026-10-04",
    "reviewed_by": "LLM Doctor меню refactoring",
    "note": "2026-10-04: worker-edit-guard denies a worker's shell write that crosses a symlink under its tree into another checkout, unless an ADD-DIR grant covers the target; Edit/Write stay unhooked by Egor's decision (40 ms on every edit for one escape seen), so the W5 escape check is their only guard. 2026-10-04: relays drop the redundant --resume flag and take --workdir from the directory the brief works in; tests/test_consistency.sh pins both. Split from W5 on 2026-10-03, which matches only legs up to its fix. 2026-10-01: 7ea3 (review-bench main, brief 'Repos: ... review-bench at <path>'), 7c1f (hammerspoon main, brief 'Code: <path>'), 3f6b (video/alona/R7-A/clips.json, workdir video/harness): day briefs authorizing a main-checkout write in prose only, from a repository workdir. Not inferred in worker-run on purpose: night and fixer briefs name main checkouts to forbid writes there. 2026-10-02: 1632 (night fixer harness-hooks-5607) is a genuine escape caught right: an edit through claude-setup's absolute symlink hooks/worker-run-backstop.sh landed in llm-legs main (docs/handoffs/2026-10-03-path-shape-tilde.md). Detail is project_of of the first outside path: a main-checkout file yields its basename, a task worktree repo/worktree (W3). 2026-10-04 recheck: cause stands by design; the template/brief-file grant added for W3 resolves only existing .claude/worktrees/<name> trees, never a main checkout.",
-   "handoff": "docs/handoffs/2026-10-01-worker-grants.md"
+   "handoff": null
   },
   {
    "id": "I20",

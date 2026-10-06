@@ -1492,20 +1492,30 @@ persist_run_files() {
   return 0
 }
 
-# A worktree the run made after launch is its own to write (ledger W3), granted only when the floor's
-# listing lacks it and the run's own `worktree add` names it: one another chat made meanwhile has
-# no such command, so a write there still reads as escaped.
+# A worktree the run made after launch is its own to write (ledger W3), granted only when the run's
+# own `worktree add` names it and it did not exist at launch: absent from the floor's listing of the
+# workdir's repository, or, in a repository the floor never listed, its git admin directory born
+# after the run started. One another chat made meanwhile has no such command, so a write there still
+# reads as escaped.
 record_made_worktrees() { # directory
-  local directory="$1" path root name made=''
-  [ -s "$directory/worktrees-before" ] || return 0
+  local directory="$1" path root name tree admin born started made=''
+  started=$(jq -r '.pid_started_at // .started_at // 0' "$directory/meta.json" 2>/dev/null)
+  [[ "$started" =~ ^[0-9]+$ ]] || return 0
   while IFS= read -r path; do
     [[ "$path" =~ ^(/.+)/\.claude/worktrees/([A-Za-z0-9._-]+)/ ]] || continue
-    root=${BASH_REMATCH[1]} name=${BASH_REMATCH[2]}
-    grep -qxF -- "$root" "$directory/worktrees-before" &&
-      ! grep -qxF -- "$root/.claude/worktrees/$name" "$directory/worktrees-before" &&
-      printf '%s\n' "${RUN_SHELL_COMMANDS:-}" | grep -F 'worktree add' |
-        grep -qE "(^|[^A-Za-z0-9._-])\.claude/worktrees/${name//./\\.}([^A-Za-z0-9._-]|\$)" || continue
-    made+="$root/.claude/worktrees/$name"$'\n'
+    root=${BASH_REMATCH[1]} name=${BASH_REMATCH[2]} tree=${BASH_REMATCH[1]}/.claude/worktrees/${BASH_REMATCH[2]}
+    printf '%s\n' "${RUN_SHELL_COMMANDS:-}" | grep -F 'worktree add' |
+      grep -qE "(^|[^A-Za-z0-9._-])\.claude/worktrees/${name//./\\.}([^A-Za-z0-9._-]|\$)" || continue
+    if grep -qxF -- "$root" "$directory/worktrees-before" 2>/dev/null; then
+      ! grep -qxF -- "$tree" "$directory/worktrees-before" || continue
+    elif [ -e "$tree/.git" ]; then
+      admin=$(git -C "$tree" rev-parse --absolute-git-dir 2>/dev/null) &&
+        born=$(stat -f %B "$admin" 2>/dev/null || stat -c %W "$admin" 2>/dev/null) &&
+        [[ "$born" =~ ^[0-9]+$ ]] && [ "$born" -ge "$started" ] || continue
+    else
+      [ -e "$root/.git" ] || continue
+    fi
+    made+="$tree"$'\n'
   done <<<"${RUN_FILES_EXTERNAL:-}"
   [ -n "$made" ] || return 0
   meta_update "$directory" '.worktrees_made = ((.worktrees_made // []) + $made | unique)' \

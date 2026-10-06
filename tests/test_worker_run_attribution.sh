@@ -415,11 +415,24 @@ attribution_repair_tests() {
     assert_fails grep -q bin/outside-cotenant "$RUN_DIR/produced"
   done
   [ -n "${WORKER_RUN_TEST_ATTRIBUTION_CASE:-}" ] && [ "$WORKER_RUN_TEST_ATTRIBUTION_CASE" != made_worktree ] && return 0
-  local trees="$repo/.claude/worktrees" made_meta
+  local trees="$repo/.claude/worktrees" made_meta elsewhere="$WORK/made-elsewhere" before
+  mkdir -p "$elsewhere"
+  git -C "$elsewhere" init -q
+  git -C "$elsewhere" -c user.name=fixture -c user.email=fixture@example.test commit -q --allow-empty -m base
+  elsewhere=$(cd "$elsewhere" && pwd -P)
+  git -C "$elsewhere" worktree add -q "$elsewhere/.claude/worktrees/early" 2>/dev/null
+  before=$(date +%s)
+  while [ "$(date +%s)" -le "$before" ]; do sleep 0.1; done
   git -C "$repo" worktree add -q "$trees/task" 2>/dev/null
   git -C "$repo" worktree add -q "$trees/foreign" 2>/dev/null
   TOOL_TS=$(iso $(($(date +%s) + 60)))
   {
+    tool_call Bash command "cd $elsewhere && git worktree add .claude/worktrees/side && git worktree add .claude/worktrees/gone"
+    tool_call Bash command "cd $elsewhere && git worktree add .claude/worktrees/early"
+    tool_call Edit file_path "$elsewhere/.claude/worktrees/side/x"
+    tool_call Edit file_path "$elsewhere/.claude/worktrees/gone/x"
+    tool_call Edit file_path "$elsewhere/.claude/worktrees/early/x"
+    tool_call Edit file_path "$elsewhere/.claude/worktrees/nocmd/x"
     tool_call Bash command "cd $repo && git worktree add .claude/worktrees/scratch.x"
     tool_call Edit file_path "$trees/scratch.x/bin/restored"
     tool_call Edit file_path "$trees/foreign/bin/restored"
@@ -432,10 +445,13 @@ attribution_repair_tests() {
   git -C "$repo" worktree add -q "$trees/late" 2>/dev/null
   printf 'scratch\n' >"$trees/scratch.x/bin/restored"
   git -C "$repo" worktree remove --force "$trees/scratch.x"
+  for before in side gone nocmd; do git -C "$elsewhere" worktree add -q "$elsewhere/.claude/worktrees/$before" 2>/dev/null; done
+  git -C "$elsewhere" worktree remove --force "$elsewhere/.claude/worktrees/gone"
   gate_open
   assert await_done
   made_meta=$(jq -c '.worktrees_made' "$RUN_DIR/meta.json")
-  assert test "$made_meta" = "$(jq -cn --arg p "$trees/scratch.x" '[$p]')"
+  assert test "$made_meta" = "$(jq -cn --args '$ARGS.positional | sort' -- "$trees/scratch.x" \
+    "$elsewhere/.claude/worktrees/side" "$elsewhere/.claude/worktrees/gone")"
   git -C "$repo" worktree remove --force "$trees/late"
   git -C "$repo" worktree remove --force "$trees/foreign"
   git -C "$repo" worktree remove --force "$trees/task"
