@@ -1955,7 +1955,7 @@
         "rule": "growth-ungated",
         "ident": "^/Volumes/Work/Projects/claude\\-setup/skills\\-on\\-demand/night\\-sweep$"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-04T17:30:00+03:00",
@@ -1977,7 +1977,8 @@
             "llm-legs/bin/harness-doctor",
             "llm-legs/tests/test_harness_doctor.sh"
           ],
-          "in": null
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [
@@ -2332,7 +2333,7 @@
         "rule": "growth-denied",
         "ident": "^\\~/\\.claude/skills/media$"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-06T06:52:00+03:00",
@@ -2342,7 +2343,8 @@
             "llm-legs/bin/instruction-write-gate.sh",
             "llm-legs/tests/test_instruction_gate.sh"
           ],
-          "in": null
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [],
