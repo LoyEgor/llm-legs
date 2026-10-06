@@ -1,8 +1,9 @@
 """Open handoffs of the sweep repositories: `docs/handoffs/*.md` whose first `Status:` line reads open.
 Each becomes a night job (`bin/night-run carry`); the LLM doctor's debt row names one open past STALE_S.
 A handoff addressed (its To/For paragraph) to a chat («name») that is live right now is that chat's, never a night job.
-`owner_batches` groups them by owner chat for `night-run carry`: an owner with a decision section or two or more
-handoffs, its chat found by exact name among `chat-find --recent`. A handoff's owner, first that applies:
+`owner_batches` groups them by owner chat for `night-run carry`: an owner with a decision section, two or more
+handoffs or one naming a git repository outside the night's (`--outside <file>` prints those; the night cannot land
+there), its chat found by exact name among `chat-find --recent`. A handoff's owner, first that applies:
 1. its first To/For addressee («name», or a known chat name opening a `To:` text) that is a known chat;
 2. evidence on the repository files the handoff names (backticked or plain paths existing in a sweep repo,
    `docs/handoffs/` aside): per file basename, each chat's Edit/Write/MultiEdit uses plus the basename's mentions
@@ -198,6 +199,29 @@ def named_files(path, repos):
             rel = token[len(repo) + 1:] if token.startswith(repo + os.sep) else token.lstrip(os.sep)
             if not rel.startswith("docs/handoffs/") and os.path.isfile(os.path.join(repo, rel)):
                 found.add(os.path.join(repo, rel))
+    return found
+
+
+def outside_repos(path, repos):
+    import chat_names
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+    except OSError:
+        return []
+    night = {os.path.realpath(repo) for repo in repos}
+    found = []
+    for token in PATH_RE.findall(text):
+        if not token.startswith(os.sep):
+            continue
+        top = token.rstrip(".")
+        cut = top.find(chat_names.WORKTREES)
+        top = top[:cut] if cut > 0 else top
+        while top != os.sep and not os.path.exists(os.path.join(top, ".git")):
+            top = os.path.dirname(top)
+        top = os.path.realpath(top)
+        if top != os.sep and top not in night and top not in found:
+            found.append(top)
     return found
 
 
@@ -403,7 +427,8 @@ def owner_batches(handoffs, repos=None, chats=None, live=None):
     for handoff, ledger, pick, _ in owner_picks(handoffs, repos, chats):
         if pick:
             groups.setdefault(pick["owner"], []).append(dict(handoff, pick=pick, ledger=ledger))
-    groups = {o: hs for o, hs in groups.items() if len(hs) >= 2 or any(decides(h["path"]) for h in hs)}
+    groups = {o: hs for o, hs in groups.items()
+              if len(hs) >= 2 or any(decides(h["path"]) or outside_repos(h["path"], repos) for h in hs)}
     if not groups:
         return []
     names = live_chats() if live is None else {n.lower() for n in live}
@@ -438,6 +463,11 @@ if __name__ == "__main__":
     if sys.argv[1:2] == ["--owner"]:
         for path in sys.argv[2:]:
             print(json.dumps(owner_of(path), ensure_ascii=False))
+        sys.exit(0)
+    if sys.argv[1:2] == ["--outside"]:
+        for path in sys.argv[2:]:
+            for repo in outside_repos(path, sweep_repos()):
+                print(repo)
         sys.exit(0)
     if sys.argv[1:] == ["--trades"]:
         for item in trade_handoffs():

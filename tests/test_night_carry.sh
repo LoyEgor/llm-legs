@@ -21,8 +21,9 @@ for name in repo other; do
   mkdir -p "$WORK/$name/docs/handoffs" "$WORK/$name/tests"
   printf '%s\n' "$WORK/$name" >>"$WORK/sweep-repos"
 done
+git init -q "$WORK/foreign"
 H="$WORK/repo/docs/handoffs"
-printf '# A\n\nStatus: open\n\nFor the chat «Gone Chat». Needs a change in other too.\n' >"$H/2026-09-28-old.md"
+printf '# A\n\nStatus: open\n\nFor the chat «Gone Chat». Needs a change in other too, and in %s/foreign/hooks/gate.sh.\n' "$WORK" >"$H/2026-09-28-old.md"
 printf '# B\n\nStatus: open (half done)\n\nTo: «Live Chat».\n\nMentions «Gone Chat» later.\n' >"$H/2026-10-03-live.md"
 printf '# C\n\nStatus: settled 20261003T0000Z-0001: fixed\n' >"$H/2026-09-29-settled.md"
 printf '# D\n\nStatus: trade for Egor\nCost: one click.\nLoss: a stray error.\nRecommendation: click.\n' >"$WORK/other/docs/handoffs/2026-10-02-ask.md"
@@ -53,6 +54,8 @@ brief=$(cut -f2 "$WORK/carry.out" | head -1)
 assert grep -qxF "ADD-DIR: $WORK/other/.claude/worktrees/night-N1-handoff-2026-09-28-old" "$brief"
 assert grep -qF "Settle the handoff \`$WORK/repo/docs/handoffs/2026-09-28-old.md\`" "$brief"
 assert grep -qF 'Cost:`, `Loss:` and `Recommendation:`' "$brief"
+assert grep -qF "Not the night's, so never a worktree, branch or commit there: \`$WORK/foreign\`. When the fix lies there" "$brief"
+assert [ "$(grep -c "Not the night's" "$brief")" = 1 ]
 assert grep -qF 'failed `test_x.sh` in '"$WORK/other"' (log `/l/other.log`)' "$(cut -f2 "$WORK/carry.out" | tail -1)"
 night carry N1 >"$WORK/again.out" || fail "a second carry failed"
 assert [ ! -s "$WORK/again.out" ]
@@ -188,7 +191,7 @@ jq -n '{owners: {reviewers: "Phase Four", gamma: "Gamma Chat"}, rows: [
   {id: "G2", block: "gamma", handoff: "docs/handoffs/2026-10-03-ledger.md"}]}' >"$O/share/doctor-ledger.json"
 decide='\n\n## Yours to decide\n\nOne fork.\n'
 printf "# Hooks\n\nStatus: open\n\nThe debt hooks in \`share/hooks.py\` misfire.$decide" >"$O/docs/handoffs/2026-10-01-hooks.md"
-printf "# To\n\nStatus: open\n\nTo: «Phase Four».\n\nFix share/hooks.py.$decide" >"$O/docs/handoffs/2026-10-02-to.md"
+printf "# To\n\nStatus: open\n\nTo: «Phase Four».\n\nFix share/hooks.py and $WORK/foreign/x.sh.$decide" >"$O/docs/handoffs/2026-10-02-to.md"
 printf "# Ledger\n\nStatus: open\n\nbin/old-tool breaks.$decide" >"$O/docs/handoffs/2026-10-03-ledger.md"
 printf "# Tool\n\nStatus: open\n\n\`bin/stall-tool\` stalls; see docs/handoffs/2026-10-01-hooks.md.$decide" >"$O/docs/handoffs/2026-10-04-tool.md"
 printf "# Delegated\n\nStatus: open\n\nshare/hook.sh drops rows.$decide" >"$O/docs/handoffs/2026-10-05-delegated.md"
@@ -245,6 +248,25 @@ h.owner_picks = lambda handoffs, repos, chats: [(items[0], None, alone, {}),
 [batch] = h.owner_batches(items, repos=[repo], chats=[{"name": "Solo", "session": "sess-solo"}], live=set())
 assert batch["doubt"] and batch["runner_up"] == "Ledger Chat" and batch["scores"] == {"Solo": 2.0, "Ledger Chat": 0}, batch
 PY
+# A lone handoff naming a repository outside the night's, where the night lands nothing, still goes to its owner chat.
+assert python3 -B - "$ROOT" "$O" "$WORK/foreign" <<'PY'
+import os, sys
+sys.path.insert(0, os.path.join(sys.argv[1], "share"))
+import handoffs as h
+
+repo, foreign = sys.argv[2], sys.argv[3]
+lone = os.path.join(repo, "docs", "handoffs", "lone.md")
+with open(lone, "w") as handle:
+    handle.write(f"# Lone\n\nStatus: open\n\nTo: «Solo».\n\nFix {foreign}/.claude/worktrees/x/hooks/gate.sh and {repo}/bin/x.\n")
+assert h.outside_repos(lone, [repo]) == [foreign], h.outside_repos(lone, [repo])
+assert h.outside_repos(lone, [repo, foreign]) == []
+item = {"path": lone, "repo": repo, "at": None, "to": ["Solo"]}
+h.owner_picks = lambda handoffs, repos, chats: [(item, None, h.pick_owner("Solo", None, {}), {})]
+chats = [{"name": "Solo", "session": "sess-solo"}]
+assert [b["handoffs"] for b in h.owner_batches([item], repos=[repo], chats=chats, live=set())] == [[lone]]
+assert h.owner_batches([item], repos=[repo, foreign], chats=chats, live=set()) == []
+os.remove(lone)
+PY
 assert python3 -B - "$ROOT" "$WORK" <<'PY'
 import os, sys
 sys.path.insert(0, os.path.join(sys.argv[1], "share"))
@@ -272,6 +294,8 @@ new_night N5
 night carry N5 >"$WORK/n5.out" 2>"$WORK/n5.err" || fail "evidence carry failed"
 assert grep -qxF "Owner check first: this batch was matched to you by edits and mentions of its files, not by a To: line («Debt Hardening» 0.8, «Phase Four» 0.2). If these handoffs are not yours, SendMessage the sweep chat running night N5 naming the better owner, touch nothing and stop." "$NIGHTS/N5.owner-chat-debt-hardening.prompt.md"
 assert_fails grep -qF 'Owner check' "$NIGHTS/N5.owner-chat-phase-four.prompt.md"
+assert grep -qxF "   Not the night's, so it lands none of your work there: \`$WORK/foreign\`. Fix those on their own branch and landing, as your day work." "$NIGHTS/N5.owner-chat-phase-four.prompt.md"
+assert_fails grep -qF "Not the night's" "$NIGHTS/N5.owner-chat-debt-hardening.prompt.md"
 assert [ "$(grep -c '^owner-chat-' "$WORK/n5.out")" = 6 ]
 
 # A main checkout behind origin/main shows as a leftovers row with the WIP in the way; a branch

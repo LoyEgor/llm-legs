@@ -1,6 +1,6 @@
 # Hand-off: a carried handoff about a non-sweep repository has no grant
 
-Status: open
+Status: settled 2026-10-06: the brief bans other repos and readdresses; such a handoff goes to its owner chat
 
 For the «Updater doctor» chat (owner of `bin/night-run`). Written 2026-10-06 by night fixer
 llm-workers-20261006T032858Z-6d53 (ledger row W8).
