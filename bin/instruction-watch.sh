@@ -1023,7 +1023,7 @@ cmd_check() {
     reverts) [ "${#reverted[@]}" -gt 0 ] || exit 0 ;;
     *) exit 0 ;;
   esac
-  emit_context "$event" "Instruction-file tripwire: $joined.$stale$undone$undo These files are re-read across sessions$cost, and Egor's standing rule is that they are read-only without his explicit OK in the current turn — no Edit, and equally no shell write. If he approved this change in this turn, nothing to do; this line is the audit trail. If he did not: tell him in ONE line what changed, hand him the restore command if there is one, and carry on with your task. Do NOT run that command and do not undo the change any other way — the writer may be another chat, a worker of yours, a tool that rewrote the file wholesale, or Egor himself, and this hook cannot tell which, so a rollback you decide on your own destroys someone's live work. Restore only if he asks for it."
+  emit_context "$event" "Instruction-file tripwire: $joined.$stale$undone$undo $(instruction_standing_rule)${cost:+ These cost$cost.} If this change keeps to that rule, nothing to do; this line is the audit trail. If it does not: tell him in ONE line what changed, hand him the restore command if there is one, and carry on with your task. Do NOT run that command and do not undo the change any other way — the writer may be another chat, a worker of yours, a tool that rewrote the file wholesale, or Egor himself, and this hook cannot tell which, so a rollback you decide on your own destroys someone's live work. Restore only if he asks for it."
   exit 0
 }
 

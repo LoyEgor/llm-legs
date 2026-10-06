@@ -14,7 +14,8 @@ assert_not() { asserts=$((asserts + 1)); ! "$@" || fail "assert $asserts unexpec
 eq() { [ "$1" = "$2" ] || { printf 'expected [%s]\n     got [%s]\n' "$2" "$1" >&2; return 1; }; }
 has() { grep -qF -- "$2" "$1" || { printf '%s lacks [%s]:\n' "$1" "$2" >&2; cat "$1" >&2; return 1; }; }
 
-export HOME="$WORK/home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+unset WORKER_RUN_DIR
+export HOME="$WORK/home" XDG_CACHE_HOME="$WORK/cache" CLAUDE_LAUNCHER_SESSION=sid-land GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
   GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 export HARNESS_LAND_DIR="$WORK/land" HARNESS_WAITS_DIR="$WORK/waits"
 mkdir -p "$HOME" "$WORK/bin"
@@ -70,7 +71,7 @@ branch_edit a.txt "$(lines A)"
 tip=$(sha "$W" HEAD)
 land_in "$W"
 assert eq "$rc" 0
-assert eq "$(cat "$T/out")" "landed feat → main $(git -C "$M" rev-parse --short "$tip") (pushed), suites: skipped"
+assert eq "$(cat "$T/out")" "landed feat → main $(git -C "$M" rev-parse --short "$tip"), suites: skipped"
 assert eq "$(sha "$M" main)" "$tip"
 assert eq "$(sha "$R" main)" "$tip"
 assert eq "$(git -C "$M" status --porcelain)" ""
@@ -78,6 +79,11 @@ assert gone
 assert journal '.outcome == "landed" and .reason == null and .repo == "main" and .branch == "feat" and .tries == 1
   and .suites == 0 and .suite_secs == 0 and .behind == null and .kept == null and .conflict_files == null
   and (.secs | type) == "number" and (.at | type) == "number"'
+pushes() { cat "$XDG_CACHE_HOME"/claude-reports/sid-land/pending/*__push__* 2>/dev/null; }
+short_tip=$(git -C "$M" rev-parse --short "$tip")
+assert eq "$(pushes | jq -r '.id')" "main-----feat-${short_tip}-origin-main"
+assert pushes | jq -e --arg p "$short_tip → origin/main" '.body | contains($p) and contains("main ⧉ feat")' >/dev/null
+rm -f "$XDG_CACHE_HOME"/claude-reports/sid-land/pending/*
 
 # A process of another session working inside the worktree: landed, the worktree and branch stay, the
 # process named and never killed; land's own shell inside it does not count.
@@ -91,7 +97,7 @@ land_in "$W"
 alive=0; kill -0 "$busy" 2>/dev/null && alive=1
 kill "$busy" 2>/dev/null
 assert eq "$rc" 0
-assert eq "$(cat "$T/out")" "landed feat → main $(git -C "$M" rev-parse --short "$tip") (pushed), suites: skipped"
+assert eq "$(cat "$T/out")" "landed feat → main $(git -C "$M" rev-parse --short "$tip"), suites: skipped"
 assert eq "$(cat "$T/err")" "land: warning: landed, but $W and branch feat stay, processes inside: $busy sleep 600; nothing killed, night-run finish prunes them once they end"
 assert eq "$(sha "$R" main)" "$tip"
 assert eq "$alive" 1
@@ -154,7 +160,7 @@ git -C "$M" mv b.txt b2.txt
 main_before=$(sha "$M" main)
 land_in "$W"
 assert eq "$rc" 0
-assert has "$T/out" "(pushed), suites: ran 1"
+assert grep -qE '^landed feat → main [0-9a-f]+, suites: ran 1$' "$T/out"
 assert has "$T/err" "b.txt (holder: unknown) in the way"
 assert eq "$(git -C "$R" show main:c2.txt | head -1)" OTHER1
 assert eq "$(sha "$M" main)" "$main_before"
@@ -262,7 +268,7 @@ branch_edit a.txt "$(lines a | sed 's/^a8$/FEAT8/')"
 other_lands c.txt "$(lines C)" "other edits c"
 land_in "$W"
 assert eq "$rc" 0
-assert has "$T/out" "(pushed), suites: skipped"
+assert grep -qE '^landed feat → main [0-9a-f]+, suites: skipped$' "$T/out"
 assert_not test -e "$T/run-all.log"
 assert eq "$(git -C "$M" log --format=%s -2 main | tr '\n' '|')" "feat edits a.txt|other edits c|"
 
@@ -273,7 +279,7 @@ other_lands a.txt "$(lines a | sed 's/^a1$/OTHER1/')" "other edits a1"
 waits_before=$(suite_waits)
 WORKER_RUN_ID=run-1 land_in "$W"
 assert eq "$rc" 0
-assert has "$T/out" "(pushed), suites: ran 1"
+assert grep -qE '^landed feat → main [0-9a-f]+, suites: ran 1$' "$T/out"
 assert eq "$(suite_waits)" "$((waits_before + 1))"
 assert journal '.outcome == "landed" and .suites == 1 and .suite_secs >= 1 and .secs >= .suite_secs'
 assert eq "$(cat "$T/run-all.log")" "tests/test_x.sh"
@@ -357,7 +363,7 @@ printf '#!/bin/bash\n[ -e "%s/moved" ] && exit 0\n: >"%s/moved"\nprintf x >"%s/c
 chmod +x "$(git -C "$M" rev-parse --path-format=absolute --git-common-dir)/hooks/pre-push"
 land_in "$W"
 assert eq "$rc" 0
-assert has "$T/out" "(pushed)"
+assert grep -qE '^landed feat → main [0-9a-f]+, suites: ' "$T/out"
 assert eq "$(git -C "$R" log --format=%s -3 main | tr '\n' '|')" "feat edits a.txt|other moved|init|"
 assert eq "$(sha "$M" main)" "$(sha "$R" main)"
 assert gone
@@ -408,7 +414,7 @@ tip=$(sha "$W" HEAD) rows_before=$(cat "$HARNESS_LAND_DIR"/*.jsonl | wc -l)
 : >"$T/not-a-dir"
 HARNESS_LAND_DIR="$T/not-a-dir" land_in "$W"
 assert eq "$rc" 0
-assert eq "$(cat "$T/out")" "landed feat → main $(git -C "$M" rev-parse --short "$tip") (pushed), suites: skipped"
+assert eq "$(cat "$T/out")" "landed feat → main $(git -C "$M" rev-parse --short "$tip"), suites: skipped"
 assert eq "$(cat "$T/err")" ""
 assert eq "$(cat "$HARNESS_LAND_DIR"/*.jsonl | wc -l)" "$rows_before"
 
@@ -419,7 +425,7 @@ mkdir -p "$T/legs/bin" "$T/legs/share"
 cp "$LAND" "$T/legs/bin/land" && cp "$(dirname "$LAND")/../share/processes.sh" "$T/legs/share/"
 waits_before=$(suite_waits)
 rc=0
-(cd "$W" && "$T/legs/bin/land" --test) >"$T/out" 2>"$T/err" || rc=$?
+(cd "$W" && LAND_REPORT_BUS="$(dirname "$LAND")/report-bus" "$T/legs/bin/land" --test) >"$T/out" 2>"$T/err" || rc=$?
 assert eq "$rc" 0
 assert has "$T/out" "suites: ran 1"
 assert eq "$(cat "$T/err")" ""
@@ -433,9 +439,11 @@ branch_edit a.txt "$(lines a | sed 's/^a8$/FEAT8/')"
 git -C "$M" worktree remove "$W"
 commit "$M" c.txt "$(lines C)" "main moved locally"
 mkdir "$M/feat"
+rm -f "$XDG_CACHE_HOME"/claude-reports/sid-land/pending/*
 land_in "$M" feat
 assert eq "$rc" 0
 assert has "$T/out" "(local), suites: skipped"
+assert eq "$(pushes)" ""
 assert eq "$(git -C "$M" log --format=%s -3 main | tr '\n' '|')" "feat edits a.txt|main moved locally|init|"
 assert eq "$(git -C "$M" worktree list | wc -l | tr -d ' ')" 1
 assert gone

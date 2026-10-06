@@ -124,7 +124,8 @@ msg=$(in_span gate "echo grow-a >> $DOC" | jq -r '.hookSpecificOutput.permission
 assert_contains "ADDS to" "$msg"
 assert_contains "waits for him" "$msg"
 msg=$(out_span gate "echo grow-b >> $DOC" | jq -r '.hookSpecificOutput.permissionDecisionReason')
-assert_contains "read-only without his explicit OK" "$msg"
+assert_contains "$(fmt instruction_standing_rule)" "$msg"
+assert_contains "denied whatever its size" "$msg"
 case "$msg" in *"autonomy span"*) fail "the standing denial talks about a span that is not standing" ;; esac
 
 echo "== gate matrix: the review-debt ignore list is denied always, with its own reason"

@@ -196,8 +196,18 @@ N|diverged[, WIP in the way: <files>]` for a main checkout `land` left behind or
   refs/night/<id>/base`, so the review range and the later `--onto` hold only its own change. A landing
   that fails stays `left`, and a later Cleanup takes it like any other night branch.
 
-`night-run report [<id>]` prints it narrowly. First the comparison table from `share/time_budget.py table`,
-the numbers block of the morning message, copied verbatim: one column per night, this one and the two
+`night-run survey [--post] [<repo>...]` is the sweep's opening report (repositories default to the sweep
+list; a name resolves through it, a path need not be in it). Per repository `<name> · debt N lines/M
+files · K dirty · whole|N chunks`, then per linked worktree `  <branch> · +ahead/-behind main · K dirty ·
+debt N · take|keep (<reason>)`, closing `total · …`. Debt and the chunk column come from one `review-bench
+review --debt --repo <A> … --tier T2 --price` (launches nothing; a checkout it does not list owes 0, a
+failed price prints `?`); keep is `live` or `held` by the same predicate as `leftovers`, for a
+repository outside the sweep list too. `--post` sends the same lines as one report-bus `notice` block
+(word `survey`), so the sweep's messages carry facts printed by the machine.
+
+`night-run report [<id>] [--post]` prints it narrowly. First the comparison table from `share/time_budget.py table`,
+the numbers block of the morning message, which `--post` also sends to the chat as one report-bus
+`notice` block (word `night · <date>`, cells right-aligned in compact columns): one column per night, this one and the two
 previous finished nights that had jobs (a night with none is skipped), oldest left, local dates as heads
 (with the time when two share a date), right-aligned. Rows are facts the stores already hold: duration;
 weighted spend in total and by fixers / reviews / orchestrator; merged, left and blocked-on-egor jobs;
@@ -207,7 +217,7 @@ week-old lines rewritten; the full suites run's PASS/FAIL, summed over repositor
 source is `–`: a suites run still going or never run, a ledger row with no time split, a cached ledger
 row from before the spend split whose live re-count no longer matches its total. No ids, no chat names;
 a blank line closes it. Then a mechanical header from `share/night_spend.py`,
-the numbers of the morning message: duration (local start–finish, hours); jobs merged / left / other
+the numbers of the morning message: duration (local start–finish, hours); jobs landed (state `merged`) / left / other
 by kind; the worker runs whose `launcher` is one of the night's orchestrator sessions, started inside
 its window, by vendor/served model, with their summed wall-clock hours and any without a transcript;
 the review rounds started inside the window whose bench `meta.json` `session` is the night's (one
@@ -247,7 +257,7 @@ The Doctors menu shows the last night on one row from `night-run latest --menu`,
 `Last night 30 Sep: 11 of 13 · 2 unfinished`; its submenu lists every job, done or unfinished, with
 the reason in a few words and the whole reason one level down. The state is the color, not words: a
 job done and pushed is a dim name alone (one with nothing to do keeps those words), one still owing work (unfinished, in
-progress, not pushed yet) is plain with its word, red only where Egor is needed: a job blocked on him
+progress, not pushed) is plain with its word, red only where Egor is needed: a job blocked on him
 or a failed launch. Output: a title line `text\ttone\trunning\tid`, then one
 `text\ttone\treason\tref\tkind\tresumable` line per job (`tone` 0 dim, 2 plain, 1 red;
 `resumable` 1 for an unfinished job of a night that does not run).

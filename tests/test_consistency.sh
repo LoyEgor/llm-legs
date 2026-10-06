@@ -1236,6 +1236,9 @@ assert grep -Fq 'KILLED: idle watchdog' "$ROOT/$DOC"
 assert doc_has 'Worker run deadlines'
 # The launched brief is a second file; the record stays the input.
 assert eq "$(grep -c "^BRIEF_PREAMBLE='" "$WORKER_RUN")" 1
+# The return contract names the account line in the shape `worker-run report` prints it.
+assert grep -Fq '`ACCOUNT: <account> (<vendor>)` line second' "$WORKER_RUN"
+assert grep -Fq "printf 'ACCOUNT: %s (%s)\n' \"\$account\" \"\$vendor\"" "$WORKER_RUN"
 assert eq "$(grep -c '"\$directory/brief" >/dev/null 2>"\$directory/err"' "$WORKER_RUN")" 0
 assert grep -Fq 'brief.launch' "$ROOT/$DOC"
 assert doc_has 'Launched brief vs recorded brief'

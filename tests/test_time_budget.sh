@@ -224,7 +224,7 @@ check(out[6:10] == ["trend · last 2 nights · oldest first",
                   "trend · problems -2 over 2 nights · moving forward"],
       "the trend: one line per night oldest first, an untimed night reads ?, and the direction: %s" % out[6:10])
 check(out[10:] == ["roi · harness-x-20260110T000000Z · suite slot wait · 0.0M · +5/-1 lines · saves 1.0 min/day",
-                   "roi · harness-y-20260110T000000Z · suites running · 0.0M · +0/-0 lines · not merged",
+                   "roi · harness-y-20260110T000000Z · suites running · 0.0M · +0/-0 lines · not landed",
                    "roi · night: improvements 0.0M · gained 1.0 min/day",
                    "roi · last 2 nights: improvements 0.0M · gained 1.0 min/day"],
       "the ROI ledger: each Speed or time fixer job with its spend, lines and the min/day its class lost less over "

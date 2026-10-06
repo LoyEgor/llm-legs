@@ -46,6 +46,7 @@ assert grep -Fq 'import report_frame as _frame' "$REVIEW_BENCH/share/rbench/pane
 assert grep -Fq 'input=json.dumps(document, ensure_ascii=False)' "$REVIEW_BENCH/share/rbench/report.py"
 assert grep -Fq '/report_frame.py" block' "$CLAUDE_SETUP/hooks/lib/report-emit.sh"
 assert grep -Fq 'rb_emit --kind "${BLOCK_KIND[$i]}"' "$CLAUDE_SETUP/hooks/commit-report.sh"
+assert grep -Fq 'report-bus}" post --kind push' "$ROOT/bin/land"
 
 # The scan above must see a drawn frame, or its silence proves nothing.
 probe=$(mktemp -d)

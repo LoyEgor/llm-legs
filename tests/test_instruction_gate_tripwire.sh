@@ -27,6 +27,7 @@ echo "== tripwire: the command is Egor's to ask for, never one the reader runs b
 # doing. So the report has to say so in the same breath as it offers the command.
 assert_contains "Do NOT run that command" "$ctx"
 assert_contains "Restore only if he asks for it" "$ctx"
+assert_contains "$(fmt instruction_standing_rule)" "$ctx"
 case "$ctx" in
   *"stop, put the file back"*) fail "the report still orders an unprompted rollback" ;;
 esac
@@ -40,7 +41,7 @@ printf 'global rules\n' > "$REAL_MD"
 two_sid() {
   jq -cn --arg s "$1" '{session_id:$s,hook_event_name:"PostToolUse"}' | bash "$WATCH" "$2"
 }
-undo_from() { printf '%s' "$1" | sed -n 's/.*puts them back: \(.*\) These files are re-read.*/\1/p'; }
+undo_from() { printf '%s' "$1" | sed -n 's/.*puts them back: \(.*\) Egor.s standing rule.*/\1/p'; }
 two_sid pair-a baseline >/dev/null
 two_sid pair-b baseline >/dev/null
 printf 'smuggled by someone\n' > "$REAL_MD"
@@ -298,7 +299,7 @@ watch baseline sid-quote >/dev/null
 printf 'quoted doc smuggled\n' > "$QUOTED"
 ctx=$(watch check sid-quote | jq -r '.hookSpecificOutput.additionalContext // ""')
 assert_contains "puts them back" "$ctx"
-undo=$(printf '%s' "$ctx" | sed -n 's/.*puts them back: \(.*\) These files are re-read.*/\1/p')
+undo=$(printf '%s' "$ctx" | sed -n 's/.*puts them back: \(.*\) Egor.s standing rule.*/\1/p')
 eval "$undo"
 assert_eq "quoted doc" "$(cat "$QUOTED")"
 rm "$QUOTED"
@@ -314,7 +315,7 @@ ctx=$(watch check sid-set-a | jq -r '.hookSpecificOutput.additionalContext // ""
 assert_contains "settings.json" "$ctx"
 assert_contains "puts them back" "$ctx"
 ctx_b=$(watch check sid-set-b | jq -r '.hookSpecificOutput.additionalContext // ""')
-undo=$(printf '%s' "$ctx_b" | sed -n 's/.*puts them back: \(.*\) These files are re-read.*/\1/p')
+undo=$(printf '%s' "$ctx_b" | sed -n 's/.*puts them back: \(.*\) Egor.s standing rule.*/\1/p')
 assert [ -n "$undo" ]
 eval "$undo"
 assert_contains '"Stop"' "$(cat "$HOME/.claude/settings.json")"
@@ -340,7 +341,7 @@ printf 'bad bytes\n' > "$REAL_MD"
 watch check sid-newcomer >/dev/null
 ctx=$(watch check sid-keeper | jq -r '.hookSpecificOutput.additionalContext // ""')
 assert_contains "CHANGED" "$ctx"
-undo=$(printf '%s' "$ctx" | sed -n 's/.*puts them back: \(.*\) These files are re-read.*/\1/p')
+undo=$(printf '%s' "$ctx" | sed -n 's/.*puts them back: \(.*\) Egor.s standing rule.*/\1/p')
 assert [ -n "$undo" ]
 eval "$undo"
 assert_eq "good bytes" "$(cat "$REAL_MD")"

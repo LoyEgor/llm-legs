@@ -480,6 +480,10 @@ instruction_relay_refusal() { # path
   printf "Instruction files are the orchestrator's to edit (Egor's rule): do not write %s; put the exact proposed text and its byte delta under MD-PROPOSAL in your RETURN, with the cut you suggest to pay for it.\n" "$1"
 }
 
+instruction_standing_rule() {
+  printf "Egor's standing rule for files LLMs re-read across sessions: they do not grow without his explicit OK in the current turn, and that binds every tool equally; an Edit that nets <= 0 bytes needs no OK."
+}
+
 # The nearest ancestor of a path that exists, resolved through every symlink in it. A Write creates
 # the file and may be creating its directory too, so the walk goes up: a new subdirectory of docs/
 # is still under docs/. CDPATH makes cd print where it landed, which would ride along in the

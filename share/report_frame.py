@@ -7,12 +7,15 @@ lines. Width, label column, fitting and the number and time words live here and 
 claude-setup.
 
 CLI: `report_frame.py block < {"word": …, "rows": [[label, value | [items]], …]}` prints the block;
-`report_frame.py time <seconds>` prints the time word.
+`report_frame.py time <seconds>` prints the time word; `report_frame.py identity <dir>` prints
+`repo_identity` of the directory, exiting 1 with nothing printed outside a git work tree.
 """
 
 import json
 import math
+import subprocess
 import sys
+from pathlib import Path
 
 WIDTH = 56
 LABEL_WIDTH = 14
@@ -168,6 +171,32 @@ def block(word, rows, width=WIDTH):
     return "\n".join([header(word, width), *body_lines(rows, width), end(width)])
 
 
+def repo_identity(path):
+    """The repository a block is about: its directory name, and for a linked worktree
+    `<owner> ⧉ <worktree>`, since the worktree's own directory is the only thing that says which
+    piece of work it was. None outside a git work tree."""
+    if not path or not Path(path).is_dir():
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--show-toplevel", "--git-common-dir",
+             "--absolute-git-dir"],
+            capture_output=True, text=True,
+        )
+    except OSError:
+        return None
+    fields = proc.stdout.splitlines()
+    if proc.returncode != 0 or len(fields) != 3:
+        return None
+    top, common, git_dir = fields
+    common_path = (Path(path).resolve() / common).resolve()
+    project = Path(top).name
+    owner = common_path.parent.name
+    if common_path != Path(git_dir).resolve() and owner and owner != project:
+        return f"{owner} ⧉ {project}"
+    return project
+
+
 def main(argv):
     if len(argv) == 3 and argv[1] == "time":
         try:
@@ -182,8 +211,14 @@ def main(argv):
             raise ValueError("a block is a word and a list of rows")
         print(block(word, [(str(row[0] or ""), row[1]) for row in rows]))
         return 0
-    print("usage: report_frame.py block < document | report_frame.py time <seconds>",
-          file=sys.stderr)
+    if len(argv) == 3 and argv[1] == "identity":
+        identity = repo_identity(argv[2])
+        if not identity:
+            return 1
+        print(identity)
+        return 0
+    print("usage: report_frame.py block < document | report_frame.py time <seconds>"
+          " | report_frame.py identity <dir>", file=sys.stderr)
     return 2
 
 

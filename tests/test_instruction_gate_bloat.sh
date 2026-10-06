@@ -9,6 +9,7 @@ assert_contains "tokens/week and " "$msg"
 # The audit is the cheapest way out of the denial, so it stands first and is named as a step.
 assert_contains "Protocol, fastest path first" "$msg"
 assert_contains "(1) AUDIT" "$msg"
+assert_contains "$(fmt instruction_standing_rule)" "$msg"
 
 echo "== bloat gate: every name the global file answers to is the global file"
 # Each profile directory carries its own symlink to it, and those spellings were being priced

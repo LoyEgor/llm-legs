@@ -39,8 +39,9 @@ usage: night-run start [--cleanup | --resume <id> [--job <ref>]]
        night-run job <id> set <ref> key=value...   (state, reason, branch, review, commits, pushed)
        night-run finish <id>
        night-run leftovers [--json]
+       night-run survey [--post] [<repo>...]
        night-run hold
-       night-run report [<id>]
+       night-run report [<id>] [--post]
        night-run latest --menu
 
 start opens the orchestrator chat: --cleanup lands finished night branches and runs the debt round
@@ -54,7 +55,12 @@ report opens with share/time_budget.py's comparison table: this night and the tw
   equivalents (input 1, cache write 1.25, cache read 0.1, output 5) against the previous finished night;
   then share/night_churn.py's churn, the jobs, and last share/time_budget.py's ledger (worker wall split
   into model, slot queue and own tests; lines by jobs and outside them; problems; spend and what was
-  deferred) with the trend of the last 7 nights
+  deferred) with the trend of the last 7 nights; --post also sends the comparison table to the chat as
+  one report-bus block
+survey: the sweep's opening report, default the sweep repositories: per repository `<name> · debt N
+  lines/M files · K dirty · whole|N chunks` (review-bench review --debt … --tier T2 --price), per linked
+  worktree `<branch> · +ahead/-behind main · K dirty · debt N · take|keep (<reason>)`, keep = live or
+  held as in leftovers, then `total · …`; --post also sends it to the chat as one report-bus block
 states: pending merged left failed-launch blocked-on-egor nothing-to-do (left and blocked-on-egor need reason=)
 commits=<repo>:<hash>[,<repo>:<hash>...]  replaces the job's list; <repo> is a sweep-repos
   basename or an absolute path; a changed list clears pushed unless pushed=true comes with it
@@ -803,9 +809,9 @@ branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locke
 # worktree|- landed ahead behind dirty live|landed|leftover why. Landed = in main, or a night branch still
 # at its night's base, since a nothing-to-do job never committed. `-`, not an empty field: a tab is IFS
 # whitespace, so read would shift every field after an empty one.
-branch_rows() {
+branch_rows() { # [repo...], default the sweep repositories
   local repo wt branch main locked cwds now seen HELD
-  [ -r "$sweep_repos" ] || return 0
+  [ $# -gt 0 ] || [ -r "$sweep_repos" ] || return 0
   cwds=$(lsof -a -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
   now=$(date +%s)
   HELD=$(cat "$holds_dir"/*.json 2>/dev/null | jq -r '.words as $w | .branches[]? | [.repo, .branch, $w] | @tsv' 2>/dev/null)
@@ -820,7 +826,7 @@ branch_rows() {
     while IFS= read -r branch; do
       [[ "$seen" == *" $branch "* ]] || branch_row "$repo" '' "$branch" 0 0 "$cwds" "$now"
     done < <(git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads)
-  done <"$sweep_repos"
+  done < <(if [ $# -gt 0 ]; then printf '%s\n' "$@"; else cat "$sweep_repos"; fi)
 }
 
 worktree_lines() { # repo -> worktree<TAB>branch|-<TAB>main-checkout(0|1)<TAB>locked(0|1) per worktree
@@ -886,6 +892,112 @@ cmd_leftovers() {
          live: (.[7] == "live"), state: .[7], why: (if .[8] == "" then null else .[8] end)}]' ;;
     *) usage ;;
   esac
+}
+
+debt_price() { # repo... -> path<TAB>files<TAB>lines<TAB>cut per priced checkout, last the total; nothing when unpriced
+  local out rc=0 repo args=()
+  for repo in "$@"; do args+=(--repo "$repo"); done
+  out=$(mktemp) || return 1
+  review-bench review --debt "${args[@]}" --tier T2 --price >"$out" 2>&1 </dev/null || rc=$?
+  if [ "$rc" = 0 ]; then
+    awk -F ' · ' '
+      match($0, /^  [^ ]+\/ = /) { rest = substr($0, RLENGTH + 1); i = index(rest, ": ")
+        path[substr($0, 3, RLENGTH - 6)] = i ? substr(rest, 1, i - 1) : rest; next }
+      sub(/^reviewing /, "") { single = substr($0, 1, index($0, ": ") - 1); next }
+      NF >= 5 && $2 ~ / file\(s\)$/ { label = $1; sub(/^ +/, "", label)
+        cut = $5 ~ /^whole/ ? "whole" : ($5 + 0 == 1 ? "1 chunk" : ($5 + 0) " chunks")
+        row = sprintf("%d\t%d\t%s", $2, $3, cut)
+        if (label == "total") { if (single != "") print single "\t" row; print "total\t" row }
+        else if (label in path) print path[label] "\t" row }' "$out"
+  elif grep -q 'target is empty' "$out"; then
+    printf 'total\t0\t0\twhole\n'
+  else
+    printf 'night-run: review-bench cannot price the debt: %s\n' "$(tail -n 1 "$out")" >&2
+  fi
+  rm -f "$out"
+}
+
+frame_rows() { # word -> lines `<label> · <segment> · …` on stdin as one report_frame block document
+  local room
+  room=$(python3 -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import report_frame as f; print(f.WIDTH - f.LABEL_WIDTH)' \
+    "$repo_root/share") || return 1
+  jq -Rsc --arg word "$1" --argjson room "$room" '
+    def pack: reduce .[] as $s ([]; if length > 0 and ((.[-1] + " · " + $s) | length) <= $room
+      then .[-1] += " · " + $s else . + [$s] end);
+    {word: $word, rows: [split("\n")[] | select(. != "")
+      | (capture("^(?<i> *)(?<l>.*)$") | [.i + (.l | split(" · ")[0]), (.l | split(" · ")[1:] | pack)])]}'
+}
+
+table_block() { # time_budget.py table -> its block document, the cells right-aligned in compact columns
+  jq -Rsc '[split("\n")[] | select(. != "") | [splits(" {3,}")]] as $t
+    | [range(1; $t[0] | length) as $c | [$t[][$c] // "" | length] | max] as $w
+    | {word: "night · \($t[0][-1])", rows: [$t[] | [.[0], ([.[1:] | to_entries[]
+        | ($w[.key] - (.value | length)) as $pad | (if $pad > 0 then " " * $pad else "" end) + .value] | join("  "))]]}' <<<"$1"
+}
+
+post_block() { # id -> the block document on stdin posted to Egor's chat
+  "${NIGHT_RUN_REPORT_BUS:-$repo_root/bin/report-bus}" post --kind notice --id "$1-$(date +%s)-$$" ||
+    printf 'night-run: the %s block did not reach report-bus\n' "$1" >&2
+}
+
+price_of() { # price-rows path -> lines<TAB>files<TAB>cut, ? when the review could not price
+  [ -n "$1" ] || { printf '?\t?\t?\n'; return; }
+  awk -F '\t' -v p="$2" '$1 == p { print $3 "\t" $2 "\t" $4; found = 1; exit } END { if (!found) print "0\t0\twhole" }' <<<"$1"
+}
+
+survey_lines() { # price repo... -> the survey's lines
+  local price=$1 root total=0 dirty lines files cut branch wt landed ahead behind state why reason take
+  shift
+  for root in "$@"; do
+    dirty=$(GIT_OPTIONAL_LOCKS=0 git -C "$root" status --porcelain --untracked-files=all 2>/dev/null | wc -l | tr -d ' ')
+    total=$((total + dirty))
+    IFS=$'\t' read -r lines files cut < <(price_of "$price" "$root")
+    printf '%s · debt %s lines/%s files · %s dirty · %s\n' "${root##*/}" "$lines" "$files" "$dirty" "$cut"
+    while IFS=$'\t' read -r _ branch wt landed ahead behind dirty state why; do
+      [ "$wt" != - ] && wt=$(cd -P "$wt" 2>/dev/null && pwd) && [ "$wt" != "$root" ] || continue
+      total=$((total + dirty))
+      case $state in
+        held) reason="Egor's hold" ;;
+        live) case $why in
+            'a process inside') reason='process inside' ;;
+            active*) reason=${why% ago} ;;
+            night*running) reason='night running' ;;
+            *) reason=$why ;;
+          esac ;;
+        landed) reason=landed ;;
+        *) if [ "$landed" = true ]; then reason='uncommitted files'; else reason='unlanded commits'; fi ;;
+      esac
+      case $state in live | held) take=keep ;; *) take=take ;; esac
+      [ "$branch" != - ] || branch="${wt##*/} (detached)"
+      printf '  %s · +%s/-%s main · %s dirty · debt %s · %s (%s)\n' "$branch" "$ahead" "$behind" "$dirty" \
+        "$(price_of "$price" "$wt" | cut -f1)" "$take" "$reason"
+    done < <(branch_rows "$root")
+  done
+  IFS=$'\t' read -r lines files cut < <(price_of "$price" total)
+  printf 'total · debt %s lines/%s files · %s dirty · %s\n' "$lines" "$files" "$total" "$cut"
+}
+
+cmd_survey() {
+  local post=false repos=() dir top root price out
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --post) post=true ;;
+      -*) usage ;;
+      *) dir=$(repo_dir "$1") && git_top "$dir" || die "not a repository: $1"
+         repos+=("$root") ;;
+    esac
+    shift
+  done
+  if [ ${#repos[@]} -eq 0 ] && [ -r "$sweep_repos" ]; then
+    while IFS= read -r dir; do
+      [ -n "$dir" ] && [ -d "$dir" ] && git_top "$dir" && repos+=("$root")
+    done <"$sweep_repos"
+  fi
+  [ ${#repos[@]} -gt 0 ] || die "no repositories to survey"
+  price=$(debt_price "${repos[@]}")
+  out=$(survey_lines "$price" "${repos[@]}")
+  printf '%s\n' "$out"
+  ! $post || printf '%s\n' "$out" | frame_rows survey | post_block night-survey
 }
 
 prune_landed() {
@@ -959,14 +1071,23 @@ repo_debt() { # -> one line per sweep repository: its review debt now
 }
 
 cmd_report() {
-  local file unverified run
-  [ $# -le 1 ] || usage
-  file=$(pick_night "${1:-}")
+  local file unverified run post=false id='' table
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --post) post=true ;;
+      -*) usage ;;
+      *) [ -z "$id" ] || usage; id=$1 ;;
+    esac
+    shift
+  done
+  file=$(pick_night "$id")
   unverified=$(jq -r '.jobs[].ref' "$file" | while IFS= read -r ref; do
     run="${nights_dir%/*}/runs/$ref.json"
     [ ! -f "$run" ] || jq -c --arg r "$ref" '{($r): [.decisions[]? | select(.component == "unverified") | .id]}' "$run"
   done | jq -sc 'add // {}')
-  python3 -B "$repo_root/share/time_budget.py" table "$repo_root/bin/worker-run" "$file" || die "no comparison table for $file"
+  table=$(python3 -B "$repo_root/share/time_budget.py" table "$repo_root/bin/worker-run" "$file") || die "no comparison table for $file"
+  printf '%s\n\n' "$table"
+  ! $post || table_block "$table" | post_block night-report
   python3 -B "$repo_root/share/night_spend.py" "$repo_root/bin/worker-run" "$file" || die "no spend header for $file"
   python3 -B "$repo_root/share/night_churn.py" "$repo_root/bin/worker-run" "$file" 2>/dev/null || true
   jq -r --argjson u "$unverified" --argjson lines "$(code_lines "$file")" --arg status "$(night_status "$file")" \
@@ -975,7 +1096,7 @@ cmd_report() {
       + (if $t.running then " · running" elif $t.unfinished then " · UNFINISHED" else "" end),
       (if .note then "note · \(.note)" else empty end),
       doctor_lines,
-      (.jobs[] | ([.state, .kind, .ref]
+      (.jobs[] | ([(if .state == "merged" then "landed" else .state end), .kind, .ref]
         + (if .branch and .state != "merged" then [.branch] else [] end)
         + (if .review then ["review \(.review)"] else [] end)
         + (if .kind == "owner-chat" then ["«\(.owner)» \(.via) · \(.handoffs | length) handoffs"] else [] end)
@@ -983,7 +1104,7 @@ cmd_report() {
         + [.commits[] | "\(.repo | split("/") | last)@\(.hash[0:7])"]
         + (.ref as $r | if ($lines | has($r)) | not then []
             elif $lines[$r] == null then ["code ?"] else ["code +\($lines[$r][0])/-\($lines[$r][1])"] end)
-        + (if .state == "merged" then [if .pushed then "pushed" else "NOT PUSHED" end] else [] end)
+        + (if .state == "merged" and (.pushed | not) then ["not pushed"] else [] end)
         + (if .reason then [.reason] else [] end)) | join(" · ")),
       (.leftovers[]? | "leftover · \(.repo) · \(.branch) · \(.why)"),
       (.held[]? | "held · \(.repo) · \(.branch) · \(.why)"),
@@ -991,9 +1112,9 @@ cmd_report() {
        else .repos[] | "suites · \(.repo | split("/") | last) · \(.passed) PASS · \(.failed | length) FAIL"
          + (if .failed == [] then "" else ": \(.failed | join(", "))" end) end),
       ($u | to_entries[] | select(.value | length > 0) | "unverified component · \(.key) · \(.value | join(", "))"),
-      ("total · " + ([count($t.merged; "merged"), count($t.left; "left"), count($t.failed; "failed-launch"),
-        count($t.blocked; "blocked-on-egor"), count($t.nothing; "nothing-to-do"), count($t.pending; "pending")]
-        + [if $t.unpushed > 0 then "\($t.unpushed) not pushed" elif $t.merged > 0 then "pushed" else empty end]
+      ("total · " + ([count($t.merged; "landed"), count($t.left; "left"), count($t.failed; "failed-launch"),
+        count($t.blocked; "blocked-on-egor"), count($t.nothing; "nothing-to-do"), count($t.pending; "pending"),
+        count($t.unpushed; "not pushed")]
         | if length == 0 then "no jobs" else join(" · ") end))' "$file" || return
   repo_debt
   python3 -B "$repo_root/share/time_budget.py" night "$repo_root/bin/worker-run" "$file" 2>/dev/null || true
@@ -1017,7 +1138,7 @@ cmd_latest() {
         | ($areas[0].renamed["\(.d)-\(.a)"] // .a) as $a
         | ({llm: "LLM", harness: "Harness", updater: "Updater", code: "Code", system: "System"}[.d] + " fixer"
           + (if $a and $a != $areas[0].own and $a != ($areas[0].whole[.d] // null) then ": " + ($a | gsub("-"; " ")) else "" end))) // $r end;
-    def word: {merged: (if .pushed then "" else "not pushed yet" end), left: "unfinished",
+    def word: {merged: (if .pushed then "" else "not pushed" end), left: "unfinished",
       "failed-launch": "failed to launch", "blocked-on-egor": "needs you", "nothing-to-do": "nothing to do",
       pending: (if $status == "running" then "in progress" else "unfinished" end)}[.state] // .state;
     def tone: if .state == "failed-launch" or .state == "blocked-on-egor" then 1
@@ -1029,7 +1150,7 @@ cmd_latest() {
     | ($t.merged + $t.nothing) as $done
     | (if (.jobs | length) == 0 then [if .note then "did not start" else "no jobs" end]
        else ["\($done) of \(.jobs | length)"]
-         + [count($t.unpushed; "not pushed yet"),
+         + [count($t.unpushed; "not pushed"),
             count($t.left + (if $t.running then 0 else $t.pending end); "unfinished"),
             count(if $t.running then $t.pending else 0 end; "in progress"),
             count($t.failed; "failed to launch"), count($t.blocked; "need you")] end) as $parts
@@ -1051,6 +1172,7 @@ case "${1:-}" in
   report) shift; cmd_report "$@" ;;
   latest) shift; cmd_latest "$@" ;;
   leftovers) shift; [ $# -le 1 ] || usage; cmd_leftovers "$@" ;;
+  survey) shift; cmd_survey "$@" ;;
   carry) shift; cmd_carry "$@" ;;
   suites) shift; cmd_suites "$@" ;;
   hold) shift; cmd_hold "$@" ;;

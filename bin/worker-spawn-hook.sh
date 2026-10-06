@@ -287,18 +287,24 @@ fi
 # cannot fail — so the worker knows which of the two is true before it spends the run on it.
 cleanup_note=''
 if [ "$unlock_asked" = 1 ] && [ "$unlock_done" = 0 ]; then
-  cleanup_note="GIT-CLEANUP NOTE (hook-injected): this brief allows git cleanup, but the unlock marker under $pending_dir could not be written, so worker-git-guard.sh will still refuse revert/restore/reset/clean/stash. Do not fight it: do the rest of the task, and report in your OUTCOME that the cleanup was blocked by an unwritable ~/.cache/claude-worker-tags rather than by the brief."
+  cleanup_note="GIT-CLEANUP NOTE (hook-injected): this brief allows git cleanup, but the unlock marker under $pending_dir could not be written, so worker-git-guard.sh will still refuse revert/restore/reset/clean/stash. Do not fight it: do the rest of the task, and report in your RETURN that the cleanup was blocked by an unwritable ~/.cache/claude-worker-tags rather than by the brief."
 fi
 
 updated="$prefix: $title"
 
-# Workers produce code; instruction/context .md files are curated by the orchestrator.
-# Inject the guard unless the brief explicitly unlocks editing; briefs carrying their own
-# MD-GUARD (a re-injection on RESUME) are left alone too.
+# Workers produce code; instruction/context .md files are curated by the orchestrator. The text is
+# the gates' own relay refusal, which no brief line unlocks; a brief already carrying MD-GUARD (a
+# re-injection on RESUME) is left alone.
 md_guard=''
 if [ "$subagent" != fork ] && [ "$subagent" != review-waiter ] &&
-   ! printf '%s' "$prompt" | grep -qE '^(MD-EDIT:[[:space:]]*allowed|MD-GUARD)'; then
-  md_guard="MD-GUARD (hook-injected): CLAUDE.md / CLAUDE.local.md / MEMORY.md / files in memory/ dirs / anything under ~/.claude are READ-ONLY for this task. If your change makes one of them stale, return a DOCS IMPACT note proposing the edit instead of applying it. Only an explicit 'MD-EDIT: allowed' line in the brief unlocks them. The checkout is SHARED: uncommitted or untracked changes you did not make this run are other agents' live work — never git checkout/restore/reset/clean/stash over them, whatever git status suggests about authorship; report unexpected tree state in your OUTCOME and leave it in place."
+   ! printf '%s' "$prompt" | grep -qE '^MD-GUARD'; then
+  md_files='CLAUDE.md / CLAUDE.local.md / MEMORY.md / files in memory/ dirs / anything under ~/.claude, even when one of them goes stale from your change'
+  if [ -n "$SELF_DIR" ] && . "$SELF_DIR/../share/instruction-files.sh" 2>/dev/null; then
+    md_rule=$(instruction_relay_refusal "$md_files")
+  else
+    md_rule="Do not write $md_files; put the exact proposed text under MD-PROPOSAL in your RETURN."
+  fi
+  md_guard="MD-GUARD (hook-injected): $md_rule The checkout is SHARED: uncommitted or untracked changes you did not make this run are other agents' live work — never git checkout/restore/reset/clean/stash over them, whatever git status suggests about authorship; report unexpected tree state in your RETURN and leave it in place."
 fi
 
 # These types are pinned to their frontmatter model, which a tool-call model would override.

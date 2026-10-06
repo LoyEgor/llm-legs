@@ -241,7 +241,7 @@ def main():
         state = job.get("state") if job.get("state") in ("merged", "left") else "other"
         states[state][job.get("kind", "?")] += 1
     print("jobs · " + " · ".join(
-        f"{state} {sum(states[state].values())}"
+        f"{'landed' if state == 'merged' else state} {sum(states[state].values())}"
         + (" (" + ", ".join(f"{kind} {n}" for kind, n in sorted(states[state].items())) + ")" if states[state] else "")
         for state in ("merged", "left", "other")))
     print(f"agents · {sum(now['models'].values())} worker runs"

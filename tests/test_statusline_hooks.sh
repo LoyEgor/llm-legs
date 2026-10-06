@@ -6047,6 +6047,10 @@ tr_codex=$(tr_spawn tr-codex-sol codex-worker $'ACCOUNT: alt\nMODEL: sol\nx') ||
 assert jq -e '.hookSpecificOutput.updatedInput.description == "alt · sol · medium: Do the task"' <<<"$tr_codex" >/dev/null
 tr_codex=$(tr_spawn tr-claudeb-fable claudeb-worker $'ACCOUNT: alt\nMODEL: fable\nx') || fail "claudeb spawn exited nonzero"
 assert jq -e '.hookSpecificOutput.updatedInput.description == "alt · fable · low: Do the task"' <<<"$tr_codex" >/dev/null
+tr_guard=$(jq -r '.hookSpecificOutput.updatedInput.prompt' <<<"$tr_codex")
+assert grep -Fq "MD-GUARD (hook-injected): $( . "$ROOT/share/instruction-files.sh" && instruction_relay_refusal 'CLAUDE.md /' | sed 's| /;.*| /|')" <<<"$tr_guard"
+assert grep -Fq 'under MD-PROPOSAL in your RETURN' <<<"$tr_guard"
+assert_fails grep -Eq 'DOCS IMPACT|MD-EDIT' <<<"$tr_guard"
 # A Computer Use brief's row names the account the picker gives the `computer` role, which
 # codex_workers=off leaves open while the workers query is refused.
 printf '#!/usr/bin/env bash\ncase " $* " in *" --role computer "*) echo cuacct ;; *) exit 3 ;; esac\n' >"$WORK/tr-computer-pick"

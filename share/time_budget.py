@@ -711,7 +711,7 @@ def roi_lines(rows, now):
             if row is rows[-1]:
                 out.append("roi · %s · %s · %.1fM · %+d/-%d lines · %s" % (
                     item["ref"][:40], LABEL.get(item["class"], "harness total"), item["spend_m"], item["lines"][0],
-                    item["lines"][1], "not merged" if not item["merged"] else "pending a full day" if gain is None
+                    item["lines"][1], "not landed" if not item["merged"] else "pending a full day" if gain is None
                     else "saves %.1f min/day" % gain if gain > 0 else "spend without result"))
         if row is rows[-1] and row.get("improvements"):
             out.append("roi · night: improvements %.1fM · gained %.1f min/day%s" % (
@@ -857,7 +857,7 @@ def table_column(worker_run, path, night):
         ("spend fixers", show(kinds.get("fixers"), "%.1fM")),
         ("spend reviews", show(kinds.get("reviews"), "%.1fM")),
         ("spend orchestrator", show(kinds.get("orchestrator"), "%.1fM")),
-        ("merged jobs", str(states["merged"])),
+        ("landed jobs", str(states["merged"])),
         ("left jobs", str(states["left"])),
         ("blocked on Egor", str(states["blocked-on-egor"])),
         ("worker runs", show(runs)),

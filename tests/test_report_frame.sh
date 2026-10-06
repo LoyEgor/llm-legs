@@ -121,4 +121,13 @@ assert test "$err" = "report_frame: not a value: {'ms': 1}"
 rc=0; python3 "$FRAME" >/dev/null 2>&1 || rc=$?
 assert test "$rc" = 2
 
+work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+git init -q "$work/owner" && git -C "$work/owner" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$work/owner" worktree add -q -b wt "$work/wt"
+mkdir "$work/plain"
+assert test "$(python3 "$FRAME" identity "$work/owner")" = owner
+assert test "$(python3 "$FRAME" identity "$work/wt")" = "owner ⧉ wt"
+rc=0; out=$(python3 "$FRAME" identity "$work/plain") || rc=$?
+assert test "$rc:$out" = "1:"
+
 printf 'PASS: %s asserts; report frame width, label column, fitting, number and time words, CLI\n' "$asserts"

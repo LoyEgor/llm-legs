@@ -242,6 +242,7 @@ for try in 1 2 3; do
     [ "$(git -C "$repo" rev-parse refs/heads/main)" != "$target" ] || { behind_why=$why; die "$why; nothing landed"; }
     continue
   fi
+  pushed_from=$(git -C "$repo" rev-parse refs/remotes/origin/main)
   git -C "$repo" -c gc.auto=0 push -q origin "$cur:refs/heads/main" 2>/dev/null && break
   git -C "$repo" -c gc.auto=0 fetch -q origin || refuse fetch "push of main failed and origin cannot be fetched; nothing published"
   ! git -C "$repo" merge-base --is-ancestor refs/remotes/origin/main "$cur" || refuse push "push of main to origin was refused; nothing published"
@@ -249,6 +250,15 @@ done
 git -C "$repo" merge-base --is-ancestor "$cur" "$into" ||
   refuse moved "main moved under every one of 3 tries; $branch is rebased but not landed"
 [ -z "$remote" ] || catch_up "$(git -C "$repo" rev-parse "$into")" || left_behind
+
+if [ -n "$remote" ]; then
+  if [ "$(git -C "$repo" rev-list --count "$pushed_from..$cur")" -gt 1 ]; then range="$(short "$pushed_from")..$(short "$cur")"
+  else range=$(short "$cur"); fi
+  identity=$(python3 "$share/report_frame.py" identity "${wt:-$repo}" 2>/dev/null) || identity=${repo##*/}
+  jq -cn --arg repo "$identity" --arg push "$range → origin/main" '{word: "push", rows: [["repo", $repo], ["push", $push]]}' |
+    "${LAND_REPORT_BUS:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/report-bus}" post --kind push --id "$identity/$(short "$cur")@origin/main" ||
+    warn "the push block did not reach report-bus"
+fi
 
 drop_tmp
 if [ "$branch" = main ]; then :
@@ -263,5 +273,5 @@ elif ! git -C "$repo" update-ref -d "refs/heads/$branch" "$([ -n "$wt" ] && echo
   warn "landed, but branch $branch got commits after the rebase and stays; land it again"
 fi
 if [ "$suites_ran" -gt 0 ]; then suites="ran $suites_ran"; else suites=skipped; fi
-printf 'landed %s → main %s (%s), suites: %s\n' "$branch" "$(short "$cur")" "$([ -n "$remote" ] && echo pushed || echo local)" "$suites"
+printf 'landed %s → main %s%s, suites: %s\n' "$branch" "$(short "$cur")" "$([ -n "$remote" ] || echo ' (local)')" "$suites"
 exit; }

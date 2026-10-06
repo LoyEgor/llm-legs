@@ -44,6 +44,7 @@ printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$DATA/pick-args"\nprintf "a
 printf '#!/usr/bin/env bash\nexit 0\n' >"$FAKE_BIN/claudeb"
 cat >"$FAKE_BIN/review-bench" <<'EOF'
 #!/usr/bin/env bash
+[ "$1" != review ] || { printf '%s\n' "$*" >"$DATA/price-args"; cat "$DATA/price" >&2; exit 0; }
 [ "$1 $3" = "fix --print" ] || exit 2
 [ ! -e "$DATA/unreadable-$2" ] || { echo "no round $2" >&2; exit 1; }
 [ ! -e "$DATA/open-$2" ] || cat "$DATA/open-$2"
@@ -281,16 +282,16 @@ assert grep -qxF "updater - → 2 · proved 0 · pending 1 · new 0 · regressed
 assert grep -qxF "code - → -" "$WORK/report"
 assert grep -qxF "system - → -" "$WORK/report"
 assert [ -z "$(night latest --menu | grep -F 'harness 3 →')" ]
-assert grep -qxF "merged · fixer · llm-20260930T010203Z · review rb-1 · repo@${pushed_hash:0:7} · code +0/-0 · pushed" "$WORK/report"
+assert grep -qxF "landed · fixer · llm-20260930T010203Z · review rb-1 · repo@${pushed_hash:0:7} · code +0/-0" "$WORK/report"
 assert grep -qxF "left · debt · debt-round · hung: idle 1800" "$WORK/report"
 assert grep -qxF "failed-launch · fixer · harness-r1 · night/$id/harness-r1 · opener" "$WORK/report"
-assert grep -qxF "total · 2 merged · 8 left · 1 failed-launch · 1 blocked-on-egor · pushed" "$WORK/report"
+assert grep -qxF "total · 2 landed · 8 left · 1 failed-launch · 1 blocked-on-egor" "$WORK/report"
 assert grep -qE "^blocked-on-egor · debt · p1( · [^ ]+)* · step 10 needs his word$" "$WORK/report"
 assert [ "$(body "$WORK/report" | grep -vcE '^(ledger|trend|roi) · ')" = 28 ]
 assert [ "$(grep -m1 -E '^(ledger|trend) · ' "$WORK/report")" = "ledger · night $id · $(jq -r '((.finished_at | fromdate)
   - (.started_at | fromdate)) / 3600 * 10 | round / 10 | tostring | if test("\\.") then . else . + ".0" end' "$R") h" ]
 assert grep -qxE "trend · problems [-+][0-9]+ over [0-9]+ nights · (moving forward|treading water|going back)" "$WORK/report"
-assert [ "$(body "$WORK/report" | sed -n 2p)" = "jobs · merged 2 (fixer 1, vendor 1) · left 8 (debt 8) · other 2 (debt 1, fixer 1)" ]
+assert [ "$(body "$WORK/report" | sed -n 2p)" = "jobs · landed 2 (fixer 1, vendor 1) · left 8 (debt 8) · other 2 (debt 1, fixer 1)" ]
 assert [ "$(body "$WORK/report" | sed -n 9p | cut -d' ' -f1-2)" = "night $id" ]
 assert [ "$(awk '{ print length }' "$WORK/report" | sort -n | tail -1)" -le 100 ]
 assert cmp -s "$WORK/report" <(night report)
@@ -337,8 +338,10 @@ day2=$(jq -r '.started_at | fromdateiso8601 | strflocaltime("%d %b") | ltrimstr(
 assert [ "$(night latest --menu | head -1)" = "$(printf 'Last night %s: 2 of 2\t0\t0\t%s' "$day2" "$id2")" ]
 night report | body | sed -n 9p | grep -q "^night $id2 " || fail "report without an id reads the latest night"
 night job "$id2" set v1 state=merged "commits=repo:$local_hash" >/dev/null
-assert [ "$(night latest --menu | head -1)" = "$(printf 'Last night %s: 2 of 2 · 1 not pushed yet\t2\t0\t%s' "$day2" "$id2")" ]
-assert grep -qxF "$(printf 'v1 update · not pushed yet\t2\t\tv1\tvendor\t0')" <(night latest --menu)
+assert [ "$(night latest --menu | head -1)" = "$(printf 'Last night %s: 2 of 2 · 1 not pushed\t2\t0\t%s' "$day2" "$id2")" ]
+assert grep -qxF "$(printf 'v1 update · not pushed\t2\t\tv1\tvendor\t0')" <(night latest --menu)
+assert grep -qxF "landed · vendor · v1 · repo@${local_hash:0:7} · code +0/-0 · not pushed" <(night report)
+assert grep -qxF "total · 2 landed · 1 not pushed" <(night report)
 night job "$id2" set f1 state=nothing-to-do >/dev/null
 night job "$id2" set v1 state=nothing-to-do >/dev/null
 assert [ "$(night latest --menu | head -1)" = "$(printf 'Last night %s: 2 of 2\t0\t0\t%s' "$day2" "$id2")" ]
@@ -878,7 +881,7 @@ TZ=UTC DOCTORS_DIR="$SP/doctors" WORKER_RUN_DIR="$SP/runs" CLAUDEB_PROFILES_ROOT
   CHAT_NAMES_CACHE="$SP/chat-names.json" night report 20260102T000000Z-bbbb >"$WORK/spend-report" ||
   fail "spend report"
 assert [ "$(body "$WORK/spend-report" | head -8)" = "duration · 02 Jan 00:00 – 02 Jan 02:00 · 2.0 h
-jobs · merged 3 (fixer 2, vendor 1) · left 1 (fixer 1) · other 1 (debt 1)
+jobs · landed 3 (fixer 2, vendor 1) · left 1 (fixer 1) · other 1 (debt 1)
 agents · 4 worker runs (3 claudeb/claude-opus-5-5, 1 codex/gpt-6-astra) · 3.0 h wall-clock · 1 without a transcript
 review rounds · 2
 spend fixers · out 1.4M · cache write 2.0M · cache read 12.0M · 11.7M weighted
@@ -1002,7 +1005,7 @@ spend total           12.5M    5.0M    0.0M
 spend fixers           8.0M       –    0.0M
 spend reviews          3.0M       –    0.0M
 spend orchestrator     1.5M       –    0.0M
-merged jobs               2       1       1
+landed jobs               2       1       1
 left jobs                 1       0       0
 blocked on Egor           0       1       0
 worker runs               3       2       0
@@ -1075,6 +1078,61 @@ NIGHT_RUN_SWEEP_REPOS="$NF/sweep-repos" NIGHT_RUN_REVIEW_DEBT="$NF_RB/bin/review
   fail "fixture night report"
 assert [ "$(grep '^debt now · ' "$NF/report")" = "debt now · drepo · 10 lines in 1 files
 debt now · gone · unknown" ]
+
+# survey: the sweep's opening lines for any repository, in the sweep list or not: the debt and the chunk
+# column off review-bench's price, keep/take off the leftovers' live and held signals; --post sends it,
+# and report --post its comparison table, to the chat as one report-bus block each.
+SV="$WORK/survey-repos"
+sv() { GIT_COMMITTER_DATE='2026-01-01T00:00:00Z' git -c user.name=t -c user.email=t@t -C "$@"; }
+git init -q -b main "$SV/repo"
+printf 'a\n' >"$SV/repo/a" && sv "$SV/repo" add a && sv "$SV/repo" commit -qm a
+sv "$SV/repo" worktree add -q -b feat/old "$SV/old"
+printf 'b\n' >"$SV/old/b" && sv "$SV/old" add b && sv "$SV/old" commit -qm b
+printf 'w\n' | tee "$SV/old/w1" >"$SV/old/w2" && touch -t 202601010000 "$SV/old/w1" "$SV/old/w2"
+sv "$SV/repo" commit -q --allow-empty -m c && sv "$SV/repo" commit -q --allow-empty -m d
+git -C "$SV/repo" worktree add -q -b fresh "$SV/fresh"
+: >"$SV/repo/untracked"
+cat >"$DATA/price" <<EOF
+  repo/ = $SV/repo: 1111111..2222222 · 3 file(s) · 40 line(s) · scope: a
+  old/ = $SV/old: 3333333..4444444 · 1 file(s) · 12 line(s) · scope: b
+  2 chunks over these repositories
+  repo · 3 file(s) · 40 line(s) · 900 KB · 2 chunk(s)
+  old · 1 file(s) · 12 line(s) · 1 KB · whole
+total · 4 file(s) · 52 line(s) · 901 KB · 2 chunk(s) (past the 800 KB gate, passes run side by side)
+EOF
+cat >"$FAKE_BIN/report-bus" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$DATA/bus-args"
+jq -c . >>"$DATA/bus-docs"
+EOF
+chmod +x "$FAKE_BIN/report-bus"
+export NIGHT_RUN_REPORT_BUS="$FAKE_BIN/report-bus"
+night survey "$SV/repo" >"$WORK/survey.out" || fail "survey"
+assert [ "$(cat "$WORK/survey.out")" = "repo · debt 40 lines/3 files · 1 dirty · 2 chunks
+  fresh · +0/-0 main · 0 dirty · debt 0 · keep (active 0m)
+  feat/old · +1/-2 main · 2 dirty · debt 12 · take (unlanded commits)
+total · debt 52 lines/4 files · 3 dirty · 2 chunks" ]
+assert [ "$(cat "$DATA/price-args")" = "review --debt --repo $SV/repo --tier T2 --price" ]
+assert [ ! -e "$DATA/bus-docs" ]
+night survey --post "$SV/repo" | cmp -s - "$WORK/survey.out" || fail "survey --post prints the same lines"
+assert grep -qE '^post --kind notice --id night-survey-[0-9]+-[0-9]+$' "$DATA/bus-args"
+assert jqe '.word == "survey" and .rows == [["repo", ["debt 40 lines/3 files · 1 dirty · 2 chunks"]],
+  ["  fresh", ["+0/-0 main · 0 dirty · debt 0", "keep (active 0m)"]],
+  ["  feat/old", ["+1/-2 main · 2 dirty · debt 12", "take (unlanded commits)"]],
+  ["total", ["debt 52 lines/4 files · 3 dirty · 2 chunks"]]]' "$DATA/bus-docs"
+python3 "$ROOT/share/report_frame.py" block <"$DATA/bus-docs" >/dev/null || fail "the survey block renders"
+rm "$DATA/bus-docs" "$DATA/bus-args"
+night report --post | cmp -s - <(night report) || fail "report --post prints the same report"
+assert [ "$(wc -l <"$DATA/bus-docs" | tr -d " ")" = 1 ]
+night report >"$WORK/report" || fail "report"
+table=$(sed '/^$/q' "$WORK/report")
+assert jqe --arg w "night · $(head -1 <<<"$table" | sed -E 's/.* {3,}//')" \
+  --argjson labels "$(sed '1d;/^$/d' <<<"$table" | sed -E 's/ {3,}.*//' | jq -Rsc 'split("\n")[:-1]')" \
+  '.word == $w and .rows[0][0] == "" and [.rows[1:][][0]] == $labels
+   and ([.rows[][1] | length] | unique | length) == 1' "$DATA/bus-docs"
+assert grep -qE '^post --kind notice --id night-report-[0-9]+-[0-9]+$' "$DATA/bus-args"
+python3 "$ROOT/share/report_frame.py" block <"$DATA/bus-docs" >/dev/null || fail "the report block renders"
+unset NIGHT_RUN_REPORT_BUS
 
 # No night at all: the menu prints nothing.
 rm "$NIGHTS"/*.json
