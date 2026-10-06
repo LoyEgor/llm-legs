@@ -98,9 +98,9 @@ assert_eq "$(models --family reserve 2>/dev/null; printf %s $?)" 1
 models --bogus >/dev/null; assert_eq "$?" 2
 
 # --- The table keys on the family word; a slug is allowed through its family ---
-assert_eq "$(bash -c '. "$1/share/worker-model.sh"; worker_model_allowed_list codex' _ "$ROOT")" 'astra|sol'
-for model in astra sol gpt-6.1-astra gpt-6-astra gpt-5.6-sol; do assert allows "$model"; done
-for model in terra gpt-5.6-terra gpt-5.5 luna ''; do assert_eq "$(allows "$model"; printf %s $?)" 1; done
+assert_eq "$(bash -c '. "$1/share/worker-model.sh"; worker_model_allowed_list codex' _ "$ROOT")" 'astra|sol|luna|terra'
+for model in astra sol gpt-6.1-astra gpt-6-astra gpt-5.6-sol terra gpt-5.6-terra luna; do assert allows "$model"; done
+for model in gpt-5.5 ''; do assert_eq "$(allows "$model"; printf %s $?)" 1; done
 assert_eq "$(bash -c '. "$1/share/worker-model.sh"; worker_model_default_effort codex gpt-6.1-astra; worker_model_effort_list codex gpt-5.6-sol' _ "$ROOT")" \
   'low
 medium|high|low|xhigh'

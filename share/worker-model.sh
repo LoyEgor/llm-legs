@@ -14,6 +14,8 @@ worker_model_file_r() { WORKER_MODEL_R=${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/
 # Egor's per-model call: brief efforts need no extra word; word efforts and word-only
 # models require his explicit request in orchestrator policy. The union of both effort
 # columns is the mechanical rule; the first row of each vendor is its default model.
+# A `request` row launches only on an explicit MODEL: or light row, never as a stored `*_model=`
+# default (class `default`): a cheap default would silently downgrade every worker after it.
 # Gemini runs at `high` and nothing else, on every leg (Egor, 2026-09-16), so its rows offer no
 # other effort and `worker-run` raises a lower one instead of refusing the run.
 # A lookup from $(...) is a subshell: a cache set there dies with it, and the next lookup
@@ -31,12 +33,11 @@ _worker_model_table_build() {
   IFS= read -r -d '' static <<'TABLE' || :
 claudeb opus high high,xhigh low,medium,max no
 claudeb fable low low,medium,high xhigh,max yes
-claudeb sonnet medium low,medium,high - no
-claudeb haiku medium low,medium,high - no
+claudeb sonnet medium low,medium,high - no request
 codex astra low low,medium,high xhigh no
 codex sol medium medium,high low,xhigh yes
-codex luna medium low,medium,high - no
-codex terra medium low,medium,high - no
+codex luna medium low,medium,high - no request
+codex terra medium low,medium,high - no request
 TABLE
   printf '%s' "$static"
   # Flash rows first in list order, `pro` last: the first gemini row is the vendor default, and a
@@ -294,7 +295,7 @@ worker_model_allowed_models_r() { # vendor [class]
     while :; do
       line=${rows%%$'\n'*}
       worker_model_split_fields "$line"
-      if [ "${_WM_F[0]-}" = "$vendor" ]; then
+      if [ "${_WM_F[0]-}" = "$vendor" ] && { [ "${2-}" != default ] || [ "${_WM_F[6]-}" != request ]; }; then
         out+="${_WM_F[1]-}"$'\n'
         found=yes
       fi
@@ -410,10 +411,10 @@ worker_model_allowed_list() { # vendor [class]
   printf '%s' "$(tr '\n' '|' < <(printf '%s\n' "$allowed") | sed 's/|$//')"
 }
 
-worker_model_allowed_summary() { # every vendor, as one phrase
+worker_model_allowed_summary() { # [class] — every vendor, as one phrase
   local vendor out=''
   while IFS= read -r vendor; do
-    out="${out:+$out; }$vendor $(worker_model_allowed_list "$vendor")"
+    out="${out:+$out; }$vendor $(worker_model_allowed_list "$vendor" "${1-}")"
   done < <(worker_model_table | awk '!seen[$1]++ { print $1 }')
   printf '%s' "$out"
 }

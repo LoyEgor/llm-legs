@@ -56,7 +56,7 @@ disallowed_models() { # text
   while IFS= read -r pair; do
     vendor=${pair%%_model=*}
     value=${pair#*_model=}
-    worker_model_allows "$vendor" "$value" || printf '%s=%s\n' "$vendor" "$value"
+    worker_model_allows "$vendor" "$value" default || printf '%s=%s\n' "$vendor" "$value"
   done < <(grep -Eo '(claudeb|codex|gemini|grok)_model=[A-Za-z0-9._-]+' <<<"$1" | sort -u)
 }
 
@@ -118,7 +118,7 @@ disallowed_efforts() {
 
 deny_model() {
   load_model_list || :
-  deny "Blocked: $(tr '\n' ' ' <<<"$1" | sed 's/ $//') in ~/.claude/worker-model. The table models are $(worker_model_allowed_summary). No grant unlocks an unlisted model; worker-run refuses it with OUTCOME: MODEL_REFUSED before an account is spent."
+  deny "Blocked: $(tr '\n' ' ' <<<"$1" | sed 's/ $//') in ~/.claude/worker-model. The table models are $(worker_model_allowed_summary default). No grant unlocks an unlisted model; worker-run refuses it with OUTCOME: MODEL_REFUSED before an account is spent."
 }
 
 deny_effort() {

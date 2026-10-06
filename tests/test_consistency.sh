@@ -736,12 +736,11 @@ PIN_GATE="$ROOT/bin/worker-pin-gate.sh"
 assert test -r "$WORKER_MODEL_SH"
 assert eq "$(bash -c '. "$1"; worker_model_table' _ "$WORKER_MODEL_SH")" 'claudeb opus high high,xhigh low,medium,max no
 claudeb fable low low,medium,high xhigh,max yes
-claudeb sonnet medium low,medium,high - no
-claudeb haiku medium low,medium,high - no
+claudeb sonnet medium low,medium,high - no request
 codex astra low low,medium,high xhigh no
 codex sol medium medium,high low,xhigh yes
-codex luna medium low,medium,high - no
-codex terra medium low,medium,high - no
+codex luna medium low,medium,high - no request
+codex terra medium low,medium,high - no request
 gemini flash38 high high - no
 gemini flash37 high high - no
 gemini flash36 high high - no

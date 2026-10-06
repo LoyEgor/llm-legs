@@ -193,7 +193,7 @@ relay_door_tests() {
   relay_refused 'the log audit reads on Claude only' CLAUDECODE=1 WORKER_RUN_RELAY=log-audit:42 -- \
     start codex --brief "$WORK/brief" --workdir "$WORK/workdir"
   clear_stub
-  CLAUDECODE=1 WORKER_RUN_RELAY=log-audit:42 start_ok claudeb
+  CLAUDECODE=1 CLAUDE_CODE_SESSION_ID=audit-owner WORKER_RUN_RELAY=log-audit:42 start_ok claudeb
   await_done || fail "the log-audit run never finished"
   assert test "$(cat "$WORKER_RUN_DIR/$RUN_ID/script-owner")" = 'log-audit 42'
   clear_stub

@@ -374,7 +374,7 @@ source for allowed models, default efforts, brief efforts and efforts requiring 
 (`docs/shared-invariants.md` row `bq`; policy table in `share/worker-policy.md`). Default models
 are claudeb `opus`, codex `astra` (the family word; the launch resolves it to the newest slug `codexb models` lists, and a full slug passes through as a deliberate pin), gemini the newest Flash family `geminib families` prints (also every other slug it prints), grok `auto` (the CLI's own default, also every slug `grokb models` prints).
 Opus defaults to `high`; brief efforts are `high`, `xhigh`, and word efforts are `low`, `medium`, `max`.
-claudeb `fable`, codex `sol` and gemini `pro` require Egor's explicit ask in this chat, as do word efforts. Cheap models claudeb `sonnet`/`haiku` and codex `luna`/`terra` (default `medium`) launch on an explicit `MODEL:` for a simple task and are never a default (Egor, 2026-10-06).
+claudeb `fable`, codex `sol` and gemini `pro` require Egor's explicit ask in this chat, as do word efforts. Cheap models claudeb `sonnet` and codex `luna`/`terra` (default `medium`, rows marked `request`) launch on an explicit `MODEL:` for a simple task and are never a default, nor a stored `*_model=` pin (Egor, 2026-10-06); `haiku` is no row at all (Egor, 2026-10-07).
 Gemini is the exception to the effort refusal: every Gemini leg runs `high`, and a lower effort is raised rather than refused.
 
 The model check covers `MODEL:` forwarded as `--model`, vendor `*_model=` values consumed by
