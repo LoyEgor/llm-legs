@@ -14,6 +14,7 @@ usage() {
     'usage: worker-run start <claudeb|codex|gemini|grok|light> --brief <file> [--workdir <dir>] [--account <n>] [--model <m>] [--effort <e>] [--resume <id>] [--round <review-round-id>] [--add-dir <d>]... [--image <p>]... [--web-search | --no-web-search] [--browser] [--target dia|chrome] [--chrome] [--computer] [--role research --research-timeout <duration>]' \
     '       worker-run wait <run-id> [--max <sec>]' \
     '       worker-run report <run-id>' \
+    '       worker-run say [<run-id>] <text>' \
     '       worker-run transcript <run-id>' \
     '       worker-run claim <run-id> --paths <path>... [--complete]' \
     '       worker-run browse [--vendor codex|claudeb] [--target dia|chrome] [--dia-profile <dir>] [--record <deviceId> <account>] [--json]' >&2
@@ -215,6 +216,8 @@ NIGHT_SLOT=''
   fail 'share/worktree-branch.sh is missing: worker-run cannot find a sibling worktree on its branch'
 . "$SCRIPT_DIRECTORY/../share/worker-claims.sh" ||
   fail 'share/worker-claims.sh is missing: worker-run cannot release a claim on an account it passed over'
+. "$SCRIPT_DIRECTORY/../share/worker-inbox.sh" ||
+  fail 'share/worker-inbox.sh is missing: worker-run cannot pass a message to a run'
 gemini_base_home=$HOME
 gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}"
 
@@ -309,7 +312,7 @@ launch_attempt() { # directory
   [[ "$attempt" =~ ^[0-9]+$ ]] || attempt=0
   attempt=$((attempt + 1))
   token="$(basename "$directory")-a$attempt"
-  { for preamble in browser-preamble computer-preamble; do
+  { for preamble in inbox-carried browser-preamble computer-preamble; do
       [ -f "$directory/$preamble" ] || continue
       cat "$directory/$preamble" || return 1
       printf '\n'
@@ -979,6 +982,8 @@ supervise_claudeb() {
   # Into `access` and not into `command`: the effort-drop retry below rebuilds the command from it,
   # and a web-search state left behind there relaunches the run with a capability it was denied.
   while IFS= read -r value; do access+=("$value"); done < <(web_search_args claudeb "$(web_search_meta_state "$meta")")
+  value=$(jq -r '.inbox_settings // empty' "$meta")
+  [ -z "$value" ] || access+=(--settings "$value")
   command=("$cli" profile "$account" -p --model "$model" --effort "$effort" --output-format json "${access[@]}")
   [ -z "$resume" ] || command+=(--resume "$resume")
   [ "$chrome" = false ] || command+=(--chrome)
@@ -2243,7 +2248,7 @@ start_run() {
   local -a text_rounds=()
   local account pin config_model model_label agy_model='' gemini_family='' grok_turns='' root run_id='' directory=''
   local explicit_model='' explicit_effort='' light='' light_model='' model_class=workers fix_rule='' chat_fast=false fast_role='' model_id='' slug_account=''
-  local light_offrow=false
+  local light_offrow=false inbox_settings=''
   local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc launcher_session entry
   local web_search=false web_search_flag=false web_search_off_flag=false web_search_asked=''
   local web_search_state='' brief_cyrillic=''
@@ -2689,7 +2694,8 @@ start_run() {
   case "$vendor" in
     claudeb)
       cli="${WORKER_RUN_CLAUDEB:-$HOME/.local/bin/claudeb}"
-      command_meta=("$cli" profile "$account" -p --model "$model" --effort "$effort" --output-format json --dangerously-skip-permissions)
+      inbox_settings=$(inbox_hook_settings) || fail 'could not compose the inbox hook settings. Nothing was launched and no account was spent.'
+      command_meta=("$cli" profile "$account" -p --model "$model" --effort "$effort" --output-format json --dangerously-skip-permissions --settings "$inbox_settings")
       while IFS= read -r value; do command_meta+=("$value"); done < <(web_search_args claudeb "$web_search_state")
       [ -z "$resume" ] || command_meta+=(--resume "$resume")
       [ "$chrome" = false ] || command_meta+=(--chrome)
@@ -2770,6 +2776,7 @@ start_run() {
   fi
   [ "$computer" = false ] || printf '%s\n' "$COMPUTER_PREAMBLE" >"$directory/computer-preamble" ||
     fail 'could not write the computer preamble'
+  [ -z "$resume" ] || inbox_carry_resume "$directory" "$resume"
   # The recorded brief is the input, byte for byte — `worker-run report`, RESUME and ATTACH all
   # quote it back, and a preamble growing on every hop would be a brief nobody wrote. What the
   # vendor is handed is this second file, and only ever this one.
@@ -2800,12 +2807,13 @@ start_run() {
     --argjson add_dirs "$add_dirs_json" --argjson images "$images_json" --argjson web_search "$web_search" \
     --argjson chrome "$chrome" --argjson browser "$browser" --argjson computer "$computer" --argjson chat_fast "$chat_fast" \
     --arg browser_device "$browser_device" --arg browser_account "$browser_account" \
-    --arg light "$light" \
+    --arg light "$light" --arg inbox_settings "$inbox_settings" \
     '{vendor:$vendor,account:$account,model:$model,effort:$effort,role:$role,research_timeout:$research_timeout,sandbox_exec:$sandbox_exec,workdir:$workdir,pid:$pid,cmd:$cmd,started_at:$started_at,resume:$resume,cli:$cli,add_dirs:$add_dirs,images:$images,web_search:$web_search,chrome:$chrome,browser:$browser,explicit_model:$explicit_model,explicit_effort:$explicit_effort}
      + {explicit_account:$explicit_account}
      + if $chat_fast then {fast:true} else {} end
      + if $computer then {computer:true} else {} end
      + if $light != "" then {light:$light} else {} end
+     + if $inbox_settings != "" then {inbox_settings:$inbox_settings} else {} end
      + if $review_round != "" then {review_round:$review_round,round_source:$round_source} else {} end
      + if $browser then {browser_device:$browser_device,browser_account:$browser_account} else {} end
      + if $vendor == "gemini" then {agy_model:$agy_model} else {} end
@@ -3861,6 +3869,7 @@ terminal_report() {
   print_outcome "$directory" "$vendor" "$code"
   denied_tools_line "$directory"
   lang_line "$directory"
+  inbox_lines "$directory"
   unnamed_line "$directory"
   result_pointer "$directory"
   if [ "$code" != 0 ]; then
@@ -3980,6 +3989,76 @@ wait_poll_lag() { # directory run-id wait-started: how long an exit the poll had
   return 0
 }
 
+run_live() { # directory
+  [ ! -e "$1/exit_code" ] && supervisor_running "$1" "$(jq -r '.pid // 0' "$1/meta.json" 2>/dev/null)" &&
+    ! run_overdue "$1"
+}
+
+say_run() {
+  local directory vendor mode line end at waited=0 owner entry
+  local -a live=()
+  if [ "$#" -eq 1 ] && [ -n "$1" ]; then
+    owner=${CLAUDE_LAUNCHER_SESSION:-${CLAUDE_CODE_SESSION_ID:-}}
+    [ -z "$owner" ] || while IFS= read -r entry; do
+      directory=${entry%/launcher}
+      ! run_live "$directory" || live+=("$directory")
+    done < <(refuse_live_matches "$owner" "${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}" launcher)
+    [ "${#live[@]}" -gt 0 ] || fail 'no live worker run of this chat: nothing was sent.'
+    if [ "${#live[@]}" -gt 1 ]; then
+      for directory in "${live[@]}"; do
+        printf '%s  %s  %s\n' "${directory##*/}" "$(head -c 80 "$directory/tag" 2>/dev/null | head -n1)" \
+          "$(head -n1 "$directory/brief" 2>/dev/null | cut -c1-60)" >&2
+      done
+      fail "${#live[@]} live worker runs of this chat: name one, \`worker-run say <run-id> <text>\`. Nothing was sent."
+    fi
+    set -- "${live[0]##*/}" "$1"
+  fi
+  [ "$#" -eq 2 ] && [ -n "$2" ] || usage
+  directory=$(run_path "$1")
+  [ -r "$directory/meta.json" ] || fail "unknown run: $1"
+  run_live "$directory" ||
+    fail "run $1 has finished and nothing reads its inbox any more: put the message into the next brief, \`RESUME $(session_id "$directory"):\` for the same session. Nothing was sent."
+  vendor=$(jq -r '.vendor' "$directory/meta.json")
+  mode=$(inbox_mode "$directory")
+  line=$(jq -cn --arg at "$(inbox_now)" --arg by "${CLAUDE_LAUNCHER_SESSION:-${CLAUDE_CODE_SESSION_ID:-${USER:-?}}}" \
+    --arg text "$2" '{at: $at, by: $by, text: $text}') || fail 'could not encode the message. Nothing was sent.'
+  with_agent_tag_lock "$directory" inbox_append "$directory" "$line" || fail "could not write $directory/inbox. Nothing was sent."
+  end=$INBOX_APPENDED_END
+  if [ "$mode" = hook ]; then
+    while :; do
+      at=$(inbox_delivered_at "$directory" "$end")
+      [ -z "$at" ] || { printf 'delivered at %s\n' "$at"; return 0; }
+      [ "$waited" -lt $((${WORKER_RUN_SAY_WAIT_S:-2} * 10)) ] || break
+      sleep 0.1
+      waited=$((waited + 1))
+    done
+  fi
+  inbox_queued_text "$vendor" "$mode" true
+}
+
+inbox_lines() { # directory
+  [ -s "$1/inbox" ] || return 0
+  local vendor live=false
+  vendor=$(jq -r '.vendor' "$1/meta.json")
+  ! run_live "$1" || live=true
+  inbox_states "$1" "$(inbox_queued_text "$vendor" "$(inbox_mode "$1")" "$live")"
+}
+
+inbox_carry_from() { # prior-directory directory
+  inbox_pending "$1" || return 0
+  { inbox_context "$INBOX_TAKEN" && printf '\n'; } >>"$2/inbox-carried" &&
+    inbox_record "$1" "$INBOX_END" "resume:${2##*/}"
+}
+
+inbox_carry_resume() { # directory session
+  local entry prior
+  while IFS= read -r entry; do
+    prior=${entry%/worker-session}
+    [ "$prior" != "$1" ] && [ -s "$prior/inbox" ] || continue
+    with_agent_tag_lock "$prior" inbox_carry_from "$prior" "$1"
+  done < <(refuse_live_matches "$2" "${1%/*}" worker-session)
+}
+
 wait_run() {
   [ "$#" -ge 1 ] || usage
   local run_id="$1" max=100 directory wait_started now waited remaining sleep_for pid
@@ -4069,6 +4148,7 @@ report_run() {
   fi
   denied_tools_line "$directory"
   lang_line "$directory"
+  inbox_lines "$directory"
   if [ "$vendor" = claudeb ]; then
     cost=$(jq -r '.total_cost_usd // empty' "$directory/out" 2>/dev/null)
     # The $2/M base permanently defines one Sonnet-5-equivalent token; after the public rate
@@ -5605,6 +5685,7 @@ case "${1:-}" in
   report) shift; report_run "$@"; exit $? ;;
   transcript) shift; transcript_run "$@"; exit $? ;;
   claim) shift; claim_run "$@"; exit $? ;;
+  say) shift; say_run "$@"; exit $? ;;
   browse) shift; browse_run "$@"; exit $? ;;
   _deliver) complete_run "$2" "$3"; exit 0 ;;
   _supervise) shift; supervise "$@"; rc=$?; end_run_orphans "$1"; slot_release "$NIGHT_SLOT"; exit "$rc" ;;
