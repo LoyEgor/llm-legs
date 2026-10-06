@@ -30,6 +30,9 @@ usage() {
   printf '  flow only: [--format %s] [--duration <%s-%s s>] [--lyrics <text>] [--bpm <n>] [--seed <n>] [--ref-audio <absolute audio, <= %s MB>] [--stems] [--accounts 1-%s]\n' \
     "$(caps '.flow_music.formats | keys | join("|")')" "$(caps '.flow_music.duration_s[0]')" "$(caps '.flow_music.duration_s[1]')" \
     "$(caps '.flow_music.ref_audio_max_mb')" "$(caps '.flow_music.max_accounts')" >&2
+  printf '  edit (implies --route flow): --edit <library title | absolute audio> --mode %s [--from <s>] [--to <s>] [--strength 0-1] [--prompt <instruction>] [--lyrics <text>] [--seed <n>] [--stems]\n' \
+    "$(caps '.flow_music.edit | keys | join("|")')" >&2
+  printf '  a library title needs the --account it lives on; a file a flow run saved edits its library song on its account (Title:/Account: in <file>.txt); any other audio is uploaded, which Flow refuses in this region\n' >&2
   printf '  --route app (default): the Gemini app'\''s Create music tool (Lyria 3.5) on a subscription account, through the hidden Chrome of gemini-web\n' >&2
   printf '  --route flow: Google Flow Music (flowmusic.app; --model lyria-3-pro implies it), %s credits a song from its own pool; the dest extension is the download format (.mp3 .wav .m4a); --stems saves <dest>-<stem>.<ext> next to the track; --accounts N runs N accounts at once and keeps every take\n' \
     "$(caps '.flow_music.price_per_song')" >&2
@@ -64,6 +67,11 @@ ref_audio=''
 stems=false
 accounts=1
 flow_flags=()
+edit=''
+mode=''
+from_s=''
+to_s=''
+strength=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -h | --help) image_leg_help usage ;;
@@ -87,17 +95,70 @@ while [ "$#" -gt 0 ]; do
     --ref-audio) [ "$#" -ge 2 ] || usage "$1 needs a value"; ref_audio=$2; flow_flags+=(--ref-audio); shift 2 ;;
     --stems) stems=true; flow_flags+=(--stems); shift ;;
     --accounts) [ "$#" -ge 2 ] || usage "$1 needs a value"; accounts=$2; shift 2 ;;
+    --edit) [ "$#" -ge 2 ] || usage "$1 needs a value"; edit=$2; shift 2 ;;
+    --mode) [ "$#" -ge 2 ] || usage "$1 needs a value"; mode=$2; shift 2 ;;
+    --from) [ "$#" -ge 2 ] || usage "$1 needs a value"; from_s=$2; shift 2 ;;
+    --to) [ "$#" -ge 2 ] || usage "$1 needs a value"; to_s=$2; shift 2 ;;
+    --strength) [ "$#" -ge 2 ] || usage "$1 needs a value"; strength=$2; shift 2 ;;
     *) usage "unknown argument $1" ;;
   esac
 done
 
 [ -n "$dest" ] || usage "missing --dest"
-[ -n "$prompt" ] || usage "missing --prompt"
+[ -n "$edit" ] || [ -z "$mode$from_s$to_s$strength" ] || usage "--mode, --from, --to and --strength edit a song: add --edit"
+[ -n "$edit" ] || [ -n "$prompt" ] || usage "missing --prompt"
 [[ "$dest" = /* ]] || say "--dest must be an absolute path, not $dest"
 [ -d "$(dirname "$dest")" ] || say "--dest folder $(dirname "$dest") does not exist"
 ext=$(printf '%s' "${dest##*.}" | tr '[:upper:]' '[:lower:]')
 [ -z "$model" ] || jq -e --arg v "$model" '.flow_music.models | has($v)' "$(image_caps_file "$root" gemini)" >/dev/null ||
   say "--model is one of: $(caps '.flow_music.models | keys | join(", ")')"
+check_audio() { # flag path
+  [[ "$2" = /* ]] && [ -f "$2" ] || say "$1 needs an absolute path to a file"
+  case "$(printf '%s' "${2##*.}" | tr '[:upper:]' '[:lower:]')" in mp3 | wav | m4a | aac | flac | ogg) ;;
+    *) say "$1 takes an mp3, wav, m4a, aac, flac or ogg file" ;; esac
+  [ "$(wc -c <"$2")" -le $(($(caps '.flow_music.ref_audio_max_mb') * 1048576)) ] ||
+    say "$1 is over Flow Music's $(caps '.flow_music.ref_audio_max_mb') MB upload limit"
+}
+if [ -n "$edit" ]; then
+  [ "$route" != app ] || say "--edit runs on --route flow: the Gemini app's music tool edits no audio"
+  route=flow
+  [ -n "$mode" ] || say "--edit needs --mode $(caps '.flow_music.edit | keys | join("|")')"
+  jq -e --arg v "$mode" '.flow_music.edit | has($v)' "$(image_caps_file "$root" gemini)" >/dev/null ||
+    say "--mode is one of: $(caps '.flow_music.edit | keys | join(", ")')"
+  for item in "--duration:$duration" "--length:$length" "--bpm:$bpm" "--genre:$genre" "--ref-audio:$ref_audio" \
+    "--model:$model" "--instrumental/--vocals:$vocals"; do
+    [ -z "${item#*:}" ] || say "${item%%:*} makes a new song; an --edit keeps its source's model, length and style"
+  done
+  case "$mode" in
+    variation | trim)
+      [ -z "$prompt$lyrics$seed" ] || say "--mode $mode takes no --prompt, --lyrics or --seed" ;;
+    *) [ -n "$prompt$lyrics" ] || say "--mode $mode needs --prompt (the instruction) or --lyrics" ;;
+  esac
+  for number in "$from_s" "$to_s"; do [ -z "$number" ] || [[ "$number" =~ ^[0-9]+$ ]] || say "--from and --to are whole seconds"; done
+  case "$mode" in
+    cover | variation) [ -z "$from_s$to_s" ] || say "--mode $mode edits the whole song: no --from or --to" ;;
+    extend)
+      [ -n "$to_s" ] || say "--mode extend needs --to <s>, the new total length"
+      [ -z "$from_s" ] || { [ "$((to_s - from_s))" -ge "$(caps '.flow_music.edit.extend.window_s[0]')" ] &&
+        [ "$((to_s - from_s))" -le "$(caps '.flow_music.edit.extend.window_s[1]')" ]; } ||
+        say "--mode extend makes $(caps '.flow_music.edit.extend.window_s | join("-")') s of new music: --to minus --from" ;;
+    *) [ -n "$from_s" ] && [ -n "$to_s" ] && [ "$from_s" -lt "$to_s" ] || say "--mode $mode needs --from <s> before --to <s>" ;;
+  esac
+  [ -z "$strength" ] || [ "$mode" = cover ] || say "--strength belongs to --mode cover"
+  [ -z "$strength" ] || [[ "$strength" =~ ^(0(\.[0-9]{1,2})?|1(\.0{1,2})?)$ ]] || say "--strength is 0 to 1 in steps of 0.01"
+  [ "$mode" != trim ] || [ "$count" = 1 ] || say "--mode trim cuts one exact span: --count 1"
+  if [[ "$edit" = /* ]] && [ -f "$edit.txt" ] && grep -q '^Title: ' "$edit.txt" && grep -q '^Account: ' "$edit.txt"; then
+    owner=$(sed -n 's/^Account: //p' "$edit.txt" | head -n 1)
+    [ -z "$account" ] || [ "$account" = "$owner" ] || say "--edit $edit is a Flow Music song on $owner, not $account"
+    account=$owner
+    edit=$(sed -n 's/^Title: //p' "$edit.txt" | head -n 1)
+  elif [[ "$edit" = /* ]]; then
+    check_audio --edit "$edit"
+  else
+    [ -n "$account" ] || say "--edit $edit is a library title, which lives on one account: add --account"
+  fi
+  [[ "$edit" = /* ]] || [ "$accounts" -eq 1 ] || say "a library song lives on one account: no --accounts"
+fi
 if [ "$model" = lyria-3-pro ]; then
   [ "$route" != app ] || say "lyria-3-pro is not offered by the Gemini app's music tool; it runs on --route flow"
   route=flow
@@ -125,13 +186,7 @@ else
   [ -z "$duration" ] || [ -z "$length" ] || say "--duration and --length are one choice"
   for number in "$bpm" "$seed"; do [ -z "$number" ] || [[ "$number" =~ ^[0-9]+$ ]] || say "--bpm and --seed are whole numbers"; done
   [ -z "$lyrics" ] || [ "$vocals" != instrumental ] || say "--lyrics and --instrumental are one choice"
-  if [ -n "$ref_audio" ]; then
-    [[ "$ref_audio" = /* ]] && [ -f "$ref_audio" ] || say "--ref-audio needs an absolute path to a file"
-    case "$(printf '%s' "${ref_audio##*.}" | tr '[:upper:]' '[:lower:]')" in mp3 | wav | m4a | aac | flac | ogg) ;;
-      *) say "--ref-audio takes an mp3, wav, m4a, aac, flac or ogg file" ;; esac
-    [ "$(wc -c <"$ref_audio")" -le $(($(caps '.flow_music.ref_audio_max_mb') * 1048576)) ] ||
-      say "--ref-audio is over Flow Music's $(caps '.flow_music.ref_audio_max_mb') MB upload limit"
-  fi
+  [ -z "$ref_audio" ] || check_audio --ref-audio "$ref_audio"
 fi
 [ -z "$length" ] || jq -e --arg v "$length" '.music.lengths | has($v)' "$(image_caps_file "$root" gemini)" >/dev/null ||
   say "--length is short or standard"
@@ -141,7 +196,9 @@ jq -e --argjson n "${count//[^0-9]/0}" '.music.counts | index($n) != null' "$(im
   say "--count is 1, 2 or 3"
 [ -z "$account" ] || [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]] || usage "--account $account is not a profile name"
 [ -z "$account" ] || [ "$accounts" -eq 1 ] || say "--account names one account; --accounts picks several"
-engine_args=(generate --prompt "$prompt" --count "$count")
+engine_args=(generate)
+[ -z "$prompt" ] || engine_args+=(--prompt "$prompt")
+engine_args+=(--count "$count")
 for item in ${attach[@]+"${attach[@]}"}; do
   path=${item#*=}
   [[ "$path" = /* ]] && [ -f "$path" ] || say "${item%%=*} needs an absolute path to a file"
@@ -164,6 +221,10 @@ if [ "$route" = flow ]; then
   [ -z "$seed" ] || engine_args+=(--seed "$seed")
   [ -z "$ref_audio" ] || engine_args+=(--ref-audio "$ref_audio")
   [ "$stems" = false ] || engine_args+=(--stems)
+  [ -z "$edit" ] || engine_args+=(--edit "$edit" --mode "$mode")
+  [ -z "$from_s" ] || engine_args+=(--from "$from_s")
+  [ -z "$to_s" ] || engine_args+=(--to "$to_s")
+  [ -z "$strength" ] || engine_args+=(--strength "$strength")
 fi
 [ -z "$account" ] || engine_args+=(--account "$account")
 [ "$dry_run" = false ] || engine_args+=(--dry-run)

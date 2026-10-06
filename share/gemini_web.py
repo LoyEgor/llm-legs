@@ -49,9 +49,13 @@ CLONE_ID = "com.google.Chrome.gemini-web"
 MANIFEST = Path(__file__).resolve().parent / "image-caps" / "gemini.json"
 REPO = Path(__file__).resolve().parent.parent
 FLOW = "https://flow.google.com"
+FLOW_MUSIC = "https://www.flowmusic.app"
 LOGIN_URL = "https://accounts.google.com/ServiceLogin?continue=" + FLOW + "/"
+LOGIN_TABS = (FLOW_MUSIC + "/",)
+LOGIN_STEPS = " (Google in the first tab, then in the Flow Music tab Log in → Continue with Google → Agree → Grant access)"
 WALL_SECONDS = 6 * 3600
 BLOCK_WALL_SECONDS = 24 * 3600
+REFLAG_WALL_SECONDS = 30 * 24 * 3600
 BLOCK_ERRORS = {"PUBLIC_ERROR_UNUSUAL_ACTIVITY"}
 # One generation rpc per composer mode: text, frames, ingredients, video edit, extend.
 GENERATE_RPCS = {"YhhmEf", "nprQif", "MZZa6b", "jIps6", "fZytfe"}
@@ -1229,6 +1233,17 @@ def update_json(name: str, change) -> None:
         tmp.replace(ROOT / name)
 
 
+def wall_until(account: str, failure: Failure) -> float:
+    """A second flag within REFLAG_WALL_SECONDS walls that long: a 24 h wall re-probed daily earned a new
+    strike every day, the pattern that ended with Google disabling mish."""
+    now = time.time()
+    if not failure.extra.get("flagged"):
+        return now + failure.extra.get("wall_s", WALL_SECONDS)
+    last = read_meta(account).get("flagged_at", 0)
+    write_meta(account, flagged_at=int(now))
+    return now + (REFLAG_WALL_SECONDS if now - last < REFLAG_WALL_SECONDS else BLOCK_WALL_SECONDS)
+
+
 def set_wall(account: str, until: float | None) -> None:
     if until is None and account not in walls():
         return
@@ -1350,7 +1365,7 @@ def take_failover(accounts: list[str], plan: dict, generate_on, set_wall, pinned
                 report(account, error)
                 last = error
                 if error.code == 3 and (wall_pinned or not pinned or error.extra.get("flagged")):
-                    set_wall(account, time.time() + error.extra.get("wall_s", WALL_SECONDS))
+                    set_wall(account, wall_until(account, error))
                 if error.code in (3, 4, 5) and not pinned:
                     continue
                 if done:
@@ -1937,7 +1952,7 @@ def cmd_generate(args) -> None:
                 report(account, failure)
                 # A short balance is skipped by its cached credits; a wall would also refuse cheaper jobs.
                 if failure.code == 3 and "credits" not in failure.extra:
-                    set_wall(account, time.time() + failure.extra.get("wall_s", WALL_SECONDS))
+                    set_wall(account, wall_until(account, failure))
                 if failure.code not in (3, 4, 5) or pinned:
                     raise Failure(failure.code, failure.reason, account=account, **failure.extra)
                 skipped.append((account, failure))
@@ -1963,10 +1978,11 @@ def cmd_status(args) -> None:
         credits = read_credits(page)
         note_credits(args.account, credits)
         bound = state["email"] == meta.get("email")
-        emit({"ok": bound, "account": args.account, "email": mask_email(state["email"]),
+        music = music_ready(context, args.account) if bound else None
+        emit({"ok": bound and not music, "account": args.account, "email": mask_email(state["email"]),
               "bound_to": mask_email(meta.get("email")), "credits": credits, "build": state["build"],
-              "seconds": round(time.time() - started, 1)})
-        sys.exit(0 if bound else 1)
+              **({"reason": music} if music else {}), "seconds": round(time.time() - started, 1)})
+        sys.exit(1 if not bound else 4 if music else 0)
 
 
 def job_project(media_id: str) -> str | None:
@@ -1994,6 +2010,27 @@ def cmd_fetch(args) -> None:
               "bytes": size})
 
 
+def music_ready(context, account: str) -> str | None:
+    """None once Flow Music sees the account signed in with its Google One plan, else the owner's missing step."""
+    # Run as a script this module is __main__; without the alias flow_music would import a second copy whose
+    # Failure class the except below never matches.
+    sys.modules.setdefault("gemini_web", sys.modules[__name__])
+    import flow_music
+    page = context.new_page()
+    traffic = flow_music.Traffic(page)
+    try:
+        flow_music.open_page(page, traffic, account, "/settings")
+    except Failure as failure:
+        return failure.reason
+    flow_music.note_balance(account, traffic.balance, traffic.grants)
+    if page.get_by_role("button", name="Agree", exact=True).count():
+        return f"Flow Music waits for {account}'s owner to press Agree on its privacy notice once at {FLOW_MUSIC}"
+    if not flow_music.grant_cycle(traffic.grants):
+        return (f"Flow Music sees {account} without its Google One plan ({traffic.balance} credits); the owner "
+                f"presses Grant access once at {FLOW_MUSIC}")
+    return None
+
+
 def cmd_login(args) -> None:
     refuse_off_roster(args.account)
     profile = profile_dir(args.account)
@@ -2003,17 +2040,17 @@ def cmd_login(args) -> None:
     os.chmod(profile.parent, 0o700)
     chrome = subprocess.Popen(
         [chrome_binary(SOURCE_APP), f"--user-data-dir={profile}", *COMMON_FLAGS, "--new-window",
-         LOGIN_URL], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+         LOGIN_URL, *LOGIN_TABS], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     if getattr(args, "wait", False):
-        print(f"{TOOL}: sign {args.account} in in the Chrome window that opened, then quit it with Cmd+Q; "
-              "waiting for it to close…", file=sys.stderr, flush=True)
+        print(f"{TOOL}: sign {args.account} in in the Chrome window that opened{LOGIN_STEPS}, then quit it with "
+              "Cmd+Q; waiting for it to close…", file=sys.stderr, flush=True)
         # The launched process can hand the window to another one, so the profile lock decides too.
         while chrome.poll() is None or profile_in_use(profile):
             time.sleep(LOGIN_POLL_S)
         emit({"ok": True, "account": args.account, "login": has_login(args.account)})
         return
     emit({"ok": True, "account": args.account, "profile": str(profile),
-          "next": f"sign in in the window that opened, quit it (Cmd+Q), then: {TOOL} status {args.account}"})
+          "next": f"sign in in the window that opened{LOGIN_STEPS}, quit it (Cmd+Q), then: {TOOL} status {args.account}"})
 
 
 def cmd_accounts(args) -> None:

@@ -2,8 +2,8 @@
   "vendor": "gemini",
   "verified": "2026-10-04",
   "routes": ["flow", "cli"],
-  "scripts": {"image": "gemini-image", "video": "gemini-video", "music": "gemini-music", "sfx": "gemini-sfx", "listen": "gemini-listen"},
-  "default_for": ["music", "sfx"],
+  "scripts": {"image": "gemini-image", "video": "gemini-video", "music": "gemini-music", "sfx": "gemini-sfx", "listen": "gemini-listen", "speech": "gemini-speech"},
+  "default_for": ["music", "sfx", "speech"],
   "rosters": {"flow": ["gemini-web", "accounts"], "cli": ["geminib", "list"]},
   "spares": {"image": {"ratio": 0.25, "min": 1}},
   "cli": {
@@ -278,13 +278,18 @@
     },
     "flow_music": {
       "location": "https://www.flowmusic.app/session (Toggle compose panel; Advanced: BPM, Length, Seed, Model)",
-      "verified": "2026-10-01",
-      "method": "live in the gemini-web clone: /settings balance before and after one Lyria 3.5 and one Lyria 3 Pro song (5 credits each, about 3 min, about 30 s to render); Split stems left the balance unchanged (other, drums, vocals, bass); M4A, MP3 and WAV caught from the page's blob download link; Length takes m:ss from 1:00 to 3:00; /__api/models lists both models"
+      "verified": "2026-10-06",
+      "method": "live in the gemini-web clone: /settings balance before and after one Lyria 3.5 and one Lyria 3 Pro song (5 credits each, about 3 min, about 30 s to render); Split stems left the balance unchanged (other, drums, vocals, bass); M4A, MP3 and WAV caught from the page's blob download link; Length takes m:ss from 1:00 to 3:00; /__api/models lists both models. 2026-10-06 on com: one media-run take per edit mode on a 62.7 s song (cover, extend, replace, variation 5 credits each, trim free), the Usage table before and after; 5 uploads on com and jihangarangan all refused as vocals in a restricted region"
     },
     "sfx": {
       "location": "bin/gemini-sfx over bin/gemini-video (Flow Omni)",
       "verified": "2026-10-01",
       "method": "live: three text-to-video takes at 360p (4 credits each, one usable of three by ear) and one --for-video edit at 720p (20 credits, 94s: whooshes land on the cuts, foley does not follow the motion); trim, two-pass loudnorm and the silence check measured on each"
+    },
+    "speech": {
+      "location": "https://aistudio.google.com/generate-speech (Playground, Create new dialog; ai.google.dev/gemini-api/docs/speech-generation)",
+      "verified": "2026-10-06",
+      "method": "live in the gemini-web clone on locomthebest: the model menu's Audio filter (five TTS models), each family's composer (Style menu or Scene/Sample Context, Expression tags toolbar), the speaker panel's free voice library walked category by category with the Gender and Language filters, temperature spinbutton bounds; GenerateContent requests read from the page's own traffic; the Download blob caught in the sandboxed frame and byte-compared with the player; tag list matched against the docs' prompting guide"
     }
   },
   "field_sources": {
@@ -344,6 +349,9 @@
     "sfx": [
       "flow",
       "sfx"
+    ],
+    "speech": [
+      "speech"
     ]
   },
   "listen": {
@@ -458,7 +466,39 @@
     "ref_audio_max_mb": 40,
     "timeout_s": 600,
     "upload_wait_s": 300,
-    "max_accounts": 4
+    "max_accounts": 4,
+    "edit": {
+      "cover": {
+        "price": 5,
+        "takes": "a library song; --prompt (the instruction) and/or --lyrics; --strength 0-1 (0.5 by default, 1 = more different); --seed",
+        "gives": "a new song of about the source's length in the asked style"
+      },
+      "extend": {
+        "price": 5,
+        "takes": "a library song; --to <s> (the new total length); --from <s> (where the new part starts, the song's end by default); --prompt and/or --lyrics; --seed",
+        "gives": "the song kept up to --from, then new music until --to",
+        "window_s": [
+          30,
+          150
+        ]
+      },
+      "replace": {
+        "price": 5,
+        "takes": "a library song; --from <s> --to <s> inside it; --prompt and/or --lyrics; --seed",
+        "gives": "the same song with that span regenerated"
+      },
+      "variation": {
+        "price": 5,
+        "takes": "a library song; nothing else",
+        "gives": "a new song from the source's own prompt, lyrics and length with a new seed (no audio conditioning)"
+      },
+      "trim": {
+        "price": 0,
+        "takes": "a library song; --from <s> --to <s> inside it",
+        "gives": "the span as a new library song titled \"<source> (trim <from>-<to>)\", saved at once"
+      }
+    },
+    "uploads": "refused in this region: every upload so far read has_vocals=true (a Flow drum stem included) and is_in_restricted_remix_region refuses vocals, so --ref-audio and --edit <non-Flow audio> exit 1"
   },
   "flow_image": {
     "verified": "2026-10-02",
@@ -571,5 +611,162 @@
       "source_max_s": 10,
       "prompt_prefix": "Keep the picture exactly as it is: the same frames, motion, cuts and timing. Change only the soundtrack: add sound effects synced to what happens on screen, with no music and no voices. The sounds:"
     }
+  },
+  "speech": {
+    "surface": "https://aistudio.google.com/generate-speech",
+    "engine": "share/aistudio_speech.py",
+    "dests": ["wav", "mp3"],
+    "delivers": "WAV pcm_s16le 24 kHz mono, read from the page's own player (the Download's bytes); an .mp3 dest is encoded from it",
+    "default_model": "flash",
+    "models": {
+      "flash": {
+        "id": "gemini-3.8-flash-tts",
+        "label": "Gemini 3.8 Flash TTS",
+        "family": "design"
+      },
+      "flash-lite": {
+        "id": "gemini-3.8-flash-lite-tts",
+        "label": "Gemini 3.8 Flash Lite TTS",
+        "family": "design"
+      },
+      "3.1-flash": {
+        "id": "gemini-3.1-flash-tts-preview",
+        "label": "Gemini 3.1 Flash TTS Preview",
+        "family": "classic"
+      },
+      "2.5-pro": {
+        "id": "gemini-2.5-pro-preview-tts",
+        "label": "Gemini 2.5 Pro Preview TTS",
+        "family": "classic"
+      },
+      "2.5-flash": {
+        "id": "gemini-2.5-flash-preview-tts",
+        "label": "Gemini 2.5 Flash Preview TTS",
+        "family": "classic"
+      }
+    },
+    "families": {
+      "design": {
+        "default_voice": "Fola",
+        "voices": "all",
+        "tag_open": "<",
+        "tag_close": ">",
+        "tags": ["argh", "breath", "cackle", "cheer", "chuckle", "chuckles", "cough", "cry", "exhales", "gasp", "giggle", "groan", "growl", "grr", "grunt", "heavy breath", "hiss", "laugh", "laughter", "long pause", "moan", "pant", "pff", "phew", "scream", "short pause", "shout", "shriek", "sigh", "sighs", "sneeze", "snicker", "snort", "sob", "throat-clearing", "tsk", "whimper", "whispering", "whispers", "yawn"],
+        "style": "per-turn Style field (free text, the composer's 'Describe the voice style')",
+        "style_presets": {
+          "Whisper": "whisper quietly",
+          "Friendly": "Warm and neutral delivery with micro-pauses",
+          "Narration": "commanding, rich vocal modulation, dramatic pauses",
+          "Promote": "High energy, elongated vowels",
+          "Podcast": "Calm, measured delivery"
+        },
+        "filler_words": true,
+        "backchannel": "|reaction| inside a turn of a two-speaker dialogue",
+        "languages": 130
+      },
+      "classic": {
+        "default_voice": "Zephyr",
+        "voices": "classic",
+        "tag_open": "[", "tag_close": "]",
+        "tags": ["admiration", "adoration", "aggression", "agitation", "amusement", "anger", "annoyance", "awe", "confusion", "curiosity", "determination", "enthusiasm", "excitement", "frustration", "hope", "interest", "laughs", "negative", "nervousness", "neutral", "positive", "tension", "whispers"],
+        "style": "each speaker's Audio Profile (free text)",
+        "fields": ["scene", "context"],
+        "director": {
+          "delivery": ["Vocal Smile", "Newscaster", "Whisper", "Empathetic", "Promo/Hype", "Deadpan"],
+          "pace": ["Natural", "Rapid Fire", "The Drift", "Staccato"],
+          "accent": ["Neutral", "American (Gen)", "American (Valley)", "American (South)", "British (RP)", "British (Brixton)", "Transatlantic", "Australian"]
+        }
+      }
+    },
+    "voice_fields": ["gender", "pitch", "description", "use case"],
+    "voices": {
+      "Achernar": ["feminine", "higher", "Soft", "Call Center"],
+      "Achird": ["masculine", "lower middle", "Friendly", "Storyteller"],
+      "Algenib": ["masculine", "lower", "Gravelly", "Instructional"],
+      "Algieba": ["masculine", "lower", "Smooth", "Digital Assistant"],
+      "Alnilam": ["masculine", "lower middle", "Firm", "Podcast"],
+      "Aoede": ["feminine", "middle", "Breezy", "Digital Assistant"],
+      "Arlo": ["masculine", "deep", "Confident and clear", "Concierge"],
+      "Autonoe": ["feminine", "middle", "Bright", "Digital Assistant"],
+      "Bodi": ["masculine", "low", "Quiet and intimate", "Tutor"],
+      "Brio": ["masculine", "medium-low", "Quiet and intimate", "Podcast"],
+      "Callirrhoe": ["feminine", "middle", "Easy-going", "Digital Assistant"],
+      "Charon": ["masculine", "lower", "Informative", "Call Center"],
+      "Cleo": ["feminine", "medium-high", "Warm and engaging", "Concierge"],
+      "Cruz": ["masculine", "deep", "Poised and professional", "Professional"],
+      "Daro": ["masculine", "low", "Confident and clear", "Call Center"],
+      "Despina": ["feminine", "middle", "Smooth", "Instructional"],
+      "Elio": ["masculine", "medium", "Calm and comforting", "Professional"],
+      "Enceladus": ["masculine", "lower", "Breathy", "Digital Assistant"],
+      "Enya": ["feminine", "medium", "Direct and professional", "Tech Support"],
+      "Enzo": ["masculine", "low", "Crisp and eager", "Storyteller"],
+      "Erinome": ["feminine", "middle", "Clear", "Instructional"],
+      "Fenrir": ["masculine", "lower middle", "Excitable", "Concierge"],
+      "Finn": ["masculine", "low", "Warm and approachable", "Concierge"],
+      "Fola": ["feminine", "medium", "Clear and friendly", "Call Center"],
+      "Gacrux": ["feminine", "middle", "Mature", "Professional"],
+      "Gero": ["masculine", "low", "Clear and friendly", "Digital Assistant"],
+      "Hali": ["feminine", "medium-high", "Calm and comforting", "Call Center"],
+      "Iapetus": ["masculine", "lower middle", "Clear", "Digital Assistant"],
+      "Jett": ["masculine", "deep", "Warm and empathetic", "Tech Support"],
+      "Jori": ["feminine", "medium-low", "Warm and approachable", "Podcast"],
+      "Kira": ["feminine", "medium", "Cool and confident", "Instructional"],
+      "Knox": ["masculine", "low", "Warm and conversational", "Tech Support"],
+      "Koda": ["masculine", "medium-low", "Direct and helpful", "Commercial Voiceover"],
+      "Kore": ["feminine", "middle", "Firm", "Commercial Voiceover"],
+      "Laomedeia": ["feminine", "higher", "Upbeat", "Podcast"],
+      "Leda": ["feminine", "higher", "Youthful", "Concierge"],
+      "Lora": ["feminine", "medium", "Clear and friendly", "Concierge"],
+      "Ludo": ["masculine", "low", "Confident and clear", "Instructional"],
+      "Lumi": ["feminine", "low", "Warm and approachable", "Tutor"],
+      "Mako": ["masculine", "low", "Energetic and colorful", "Instructional"],
+      "Milo": ["masculine", "low", "Quiet and intimate", "Call Center"],
+      "Neno": ["masculine", "deep", "Deep and velvety", "Digital Assistant"],
+      "Nika": ["feminine", "medium", "Warm and approachable", "Commercial Voiceover"],
+      "Nyla": ["feminine", "medium-high", "Direct and professional", "Tech Support"],
+      "Olin": ["masculine", "low", "Light and precise", "Digital Assistant"],
+      "Orus": ["masculine", "lower middle", "Firm", "Concierge"],
+      "Puck": ["masculine", "middle", "Upbeat", "Call Center"],
+      "Pulcherrima": ["feminine", "middle", "Forward", "Professional"],
+      "Rami": ["masculine", "low", "Warm and approachable", "Podcast"],
+      "Rasalgethi": ["masculine", "middle", "Informative", "Instructional"],
+      "Riko": ["masculine", "deep", "Confident and clear", "Storyteller"],
+      "Rina": ["feminine", "medium", "Gentle and relaxed", "Instructional"],
+      "Sadachbia": ["masculine", "lower", "Lively", "Tech Support"],
+      "Sadaltager": ["masculine", "middle", "Knowledgeable", "Tutor"],
+      "Sami": ["feminine", "low", "Cool and confident", "Storyteller"],
+      "Schedar": ["masculine", "lower middle", "Even", "Professional"],
+      "Sola": ["feminine", "very high", "Gentle and relaxed", "Tutor"],
+      "Sulafat": ["feminine", "middle", "Warm", "Tutor"],
+      "Tari": ["feminine", "medium", "Confident and clear", "Digital Assistant"],
+      "Tavi": ["feminine", "medium-high", "Quiet and intimate", "Commercial Voiceover"],
+      "Tova": ["feminine", "medium-low", "Resonant and soothing", "Professional"],
+      "Umbriel": ["masculine", "lower middle", "Easy-going", "Digital Assistant"],
+      "Varo": ["masculine", "low", "Laid-back and chill", "Tutor"],
+      "Veda": ["feminine", "high", "Warm and approachable", "Podcast"],
+      "Vindemiatrix": ["feminine", "middle", "Gentle", "Tech Support"],
+      "Zali": ["feminine", "medium", "Warm and empathetic", "Storyteller"],
+      "Zeno": ["masculine", "medium-high", "Cool and confident", "Commercial Voiceover"],
+      "Zephyr": ["feminine", "higher", "Bright", "Tutor"],
+      "Zubenelgenubi": ["masculine", "lower middle", "Casual", "Storyteller"],
+      "Zuri": ["feminine", "medium", "Natural and clear", "Professional"]
+    },
+    "classic_voices": ["Achernar", "Achird", "Algenib", "Algieba", "Alnilam", "Aoede", "Autonoe", "Callirrhoe", "Charon", "Despina", "Enceladus", "Erinome", "Fenrir", "Gacrux", "Iapetus", "Kore", "Laomedeia", "Leda", "Orus", "Puck", "Pulcherrima", "Rasalgethi", "Sadachbia", "Sadaltager", "Schedar", "Sulafat", "Umbriel", "Vindemiatrix", "Zephyr", "Zubenelgenubi"],
+    "speakers_max": 2,
+    "temperature": {
+      "min": 0,
+      "max": 2,
+      "step": 0.05,
+      "default": 1
+    },
+    "limits": {
+      "input_tokens": 8192,
+      "output_tokens": 16384,
+      "free_voice_language": "en-US (the other languages' library voices need a paid key)",
+      "daily": "not measured; a quota or rate-limit answer walls the account until the next Pacific midnight (15 min for a per-minute limit)"
+    },
+    "language": "detected from the text; the page has no language control",
+    "timeout_s": 300,
+    "unsupported": ["language_code", "seed", "speed", "voice_design", "voice_replication", "extended_voice_library", "paid_api_key"]
   }
 }

@@ -9,6 +9,7 @@ usage() {
   printf 'usage: gemini-listen "<question>" <absolute media path>... [-o <absolute .md path>] [--model pro|flash] [--account <geminib profile>]\n' >&2
   printf '  Gemini watches and listens through agy on a subscription account: video with its sound, audio, images\n' >&2
   printf '  files over %s bytes (agy views at most 20 MB) are sent as a proxy: video 720p at the bitrate that fits, audio mp3\n' "$limit_bytes" >&2
+  printf '  audio goes as wav with 2-4 test beeps appended; a reply that miscounts them is asked once more, then exit 1\n' >&2
   printf '  the answer goes to -o (or stdout) as "<!-- model -->" then the text; exit 3 = usage limit, retry with the other --model\n' >&2
   exit 2
 }
@@ -107,6 +108,18 @@ video_proxy() { # source dest seconds
   say "the proxy of $1 is still over $limit_bytes bytes" 1
 }
 
+# Pro sometimes believes view_file gave it a transcript, though agy sent the sound (2026-10-07); a reply
+# must count these beeps, so one not built on the sound never passes.
+with_beeps() { # source dest beeps ffmpeg-output-args...
+  local source=$1 dest=$2 beeps=$3 rate channels
+  shift 3
+  IFS=, read -r rate channels < <("$ffprobe_cmd" -v error -select_streams a:0 -show_entries stream=sample_rate,channels \
+    -of csv=p=0 "$source" | head -n 1)
+  "$ffmpeg_cmd" -v error -y -i "$source" -filter_complex \
+    "aevalsrc='if(gte(t,1)*lt(mod(t-1,0.6),0.2)*lt(t-1,0.6*$beeps),0.5*sin(2*PI*1000*t),0)':s=$rate:d=$(awk -v n="$beeps" 'BEGIN { print 1.3 + 0.6 * n }'),aformat=channel_layouts=${channels}c[beeps];[0:a:0][beeps]concat=n=2:v=0:a=1" \
+    "$@" "$dest" || say "ffmpeg could not add the test beeps to $source" 1
+}
+
 kind_of() { # file ext
   case "$2" in
     png | jpg | jpeg | webp | heic | bmp | tif | tiff | gif) printf image; return ;;
@@ -124,6 +137,8 @@ shape_of() {
 labels=''
 proxied=0
 proxy_lines=''
+beep_counts=''
+heard_lines=''
 index=0
 for file in "${media[@]}"; do
   index=$((index + 1))
@@ -138,21 +153,33 @@ for file in "${media[@]}"; do
   fi
   case "$kind" in
     video) keep='mp4|mov|webm' proxy_ext=mp4 ;;
-    audio) keep='wav|mp3|flac|ogg|aac|aiff' proxy_ext=mp3 ;;
+    audio) proxy_ext=mp3 ;;
     image) keep='png|jpg|jpeg|webp' proxy_ext=jpg ;;
   esac
-  if [ "$bytes" -le "$limit_bytes" ] && [[ "$ext" =~ ^($keep)$ ]]; then
+  if [ "$kind" = audio ]; then
+    # agy refuses flac, aac, m4a and aiff as unsupported mime types, so the lossless copy is always wav.
+    beeps=$((RANDOM % 3 + 2))
+    codec=$(stream_of "$file" a)
+    [[ "$ext" = wav && "$codec" =~ ^pcm_ ]] || codec=pcm_s16le
+    send="$tmp_dir/media/file$index.wav"
+    with_beeps "$file" "$send" "$beeps" -c:a "$codec"
+    if [ "$(size_of "$send")" -gt "$limit_bytes" ]; then
+      rm "$send"
+      send="$tmp_dir/media/file$index.$proxy_ext"
+      with_beeps "$file" "$send" "$beeps" -c:a libmp3lame -b:a 192k
+      [ "$(size_of "$send")" -le "$limit_bytes" ] || say "$file is too long to send as one audio file; cut it into parts"
+      proxied=$((proxied + 1))
+      proxy_lines+="proxy=file$index.$proxy_ext $(size_of "$send") bytes from $bytes: $file"$'\n'
+    fi
+    beep_counts+=" $index:$beeps"
+    heard_lines+="audio=heard file$index: $file"$'\n'
+  elif [ "$bytes" -le "$limit_bytes" ] && [[ "$ext" =~ ^($keep)$ ]]; then
     send="$tmp_dir/media/file$index.$ext"
     cp "$file" "$send"
   else
     send="$tmp_dir/media/file$index.$proxy_ext"
     case "$kind" in
       video) video_proxy "$file" "$send" "$seconds" ;;
-      audio)
-        "$ffmpeg_cmd" -v error -y -i "$file" -map 0:a:0 -c:a libmp3lame -b:a 192k "$send" ||
-          say "ffmpeg could not make a proxy of $file" 1
-        [ "$(size_of "$send")" -le "$limit_bytes" ] || say "$file is too long to send as one audio file; cut it into parts"
-        ;;
       image) "$ffmpeg_cmd" -v error -y -i "$file" -frames:v 1 -q:v 2 "$send" || say "ffmpeg could not convert $file" 1 ;;
     esac
     proxied=$((proxied + 1))
@@ -160,7 +187,7 @@ for file in "${media[@]}"; do
   fi
   case "$kind" in
     video) desc="video, $seconds s, $(shape_of "$send"), $([ -n "$(stream_of "$send" a)" ] && printf 'with sound' || printf 'silent')" ;;
-    audio) desc="audio, $seconds s" ;;
+    audio) desc="audio, $seconds s, then the test beeps" ;;
     image) desc="image, $(shape_of "$send")" ;;
   esac
   labels+="File $index: $send ($desc; the caller's file ${file##*/})"$'\n'
@@ -199,9 +226,12 @@ prefix=$("$root/bin/geminib" families 2>/dev/null |
 [ -n "$prefix" ] || say "\`geminib families\` printed no $family_kind row" 1
 agy_model="$prefix-$effort"
 
+beeps_rule=''
+[ -z "$beep_counts" ] || beeps_rule="
+view_file gives you the real sound of an audio file, never a text transcript of it: its one text line is only a header, and a script quoted in the question is not the file's content. After each audio file a second of silence and then a few short test beeps were added; they are not part of the media, so leave them out of the answer and its timings. The first line of your reply must be BEEPS and then, for each audio file, its number, a colon and how many test beeps you heard at its end, like BEEPS${beep_counts//:[0-9]/:N}. If view_file gives you no sound for an audio file, reply with the single line NO_AUDIO <file number>.
+"
 instruction="Answer a question about the media files below. First open every file with your view_file tool: it shows you the picture of a video or an image and lets you hear the sound of a video or an audio file. Open each file whole, one view_file call per file, and never run a shell command or write a file. Answer only from what you saw and heard; say so when something cannot be told from the media.
-
-${labels}
+${beeps_rule}${labels}
 If view_file fails on a file, reply with the single line CANNOT_OPEN <file number> <the error>.
 If a quota or usage-limit error stops you, reply with the single word QUOTA.
 
@@ -209,51 +239,72 @@ Question:
 $question"
 
 image_leg_mark "${#media[@]}"
-rc=0
-(cd "$tmp_dir" && geminib profile "$account" --model "$agy_model" --print-timeout 540s \
-  --output-format stream-json --dangerously-skip-permissions --log-file "$tmp_dir/agy.log" \
-  --print "$instruction") >"$tmp_dir/stdout" 2>"$tmp_dir/stderr" || rc=$?
-events="$tmp_dir/events.json"
-jq -Rn '[inputs | fromjson? | select(type == "object")]' "$tmp_dir/stdout" >"$events"
-session=$(jq -r '([.[] | select(.event == "result") | .result.conversation_id // empty] | last) //
-  ([.[] | select(.event == "init") | .conversation_id // empty] | last) // "none"' "$events")
-observed_model=$(jq -r '[.[] | select(.event == "init") | .init.model // empty] | last // empty' "$events")
-answer=$(jq -r '[.[] | select(.event == "result") | .result.response // empty] | last // ""' "$events")
-jq -r '.[] | (.result.error // empty), (.step_update.tool_info.error // empty) | .. | strings' "$events" >"$tmp_dir/errors"
-last_line=$(printf '%s\n' "$answer" | awk 'NF { line = $0 } END { print line }' | tr -d '\r')
-
-# Stream events echo the prompt, so of stdout only the lines that are not events count.
-grep -v '^[[:space:]]*{' "$tmp_dir/stdout" >"$tmp_dir/stdout-text" || :
 limit_re='GEMINI_USAGE_LIMIT|RESOURCE_EXHAUSTED|Individual quota reached|credits balance is too low|usage limit|quota exceeded|rate limit'
 limited() {
   [ "$last_line" = QUOTA ] || grep -Eqi "$limit_re" "$tmp_dir/errors" ||
     { [ "$rc" -ne 0 ] && grep -Eqi "$limit_re" "$tmp_dir/stdout-text" "$tmp_dir/stderr"; }
 }
-if limited; then
-  printf 'GEMINI_USAGE_LIMIT\n' >&2
-  printf 'gemini-listen: %s is out of %s quota; retry with --model %s or later\n' "$account" "$model_key" \
-    "$([ "$model_key" = pro ] && printf flash || printf pro)" >&2
-  exit 3
-fi
-if [ "$rc" -ne 0 ] && grep -Eqi 'out of the worker pool|treating every account as out of the pool' "$tmp_dir/stderr" "$tmp_dir/stdout-text"; then
-  say "account $account refused by the worker pool" 4
-fi
-if [[ "$last_line" =~ ^CANNOT_OPEN ]]; then
-  say "agy could not open a file: ${last_line#CANNOT_OPEN }" 1
-fi
-[ -n "$answer" ] || { tail -n 20 "$tmp_dir/stderr" >&2; say "agy returned no answer (exit $rc)" 1; }
-while IFS=$'\t' read -r sent original; do
-  jq -e --arg path "$sent" 'any(.[]; .event == "step_update" and .step_update.state == "DONE" and
-      .step_update.tool_name == "view_file" and .step_update.tool_info.parameters.AbsolutePath == $path and
-      ((.step_update.tool_info.error // "") == ""))' \
-    "$events" >/dev/null || say "the model answered without opening $original; the answer is not grounded" 1
-  answer=${answer//"$sent"/"$original"}
-done <"$tmp_dir/sent"
+want_beeps=$(printf '%s\n' $beep_counts | sort | tr '\n' ' ')
+attempt=0
+while :; do
+  attempt=$((attempt + 1))
+  rc=0
+  (cd "$tmp_dir" && geminib profile "$account" --model "$agy_model" --print-timeout 540s \
+    --output-format stream-json --dangerously-skip-permissions --log-file "$tmp_dir/agy.log" \
+    --print "$instruction") >"$tmp_dir/stdout" 2>"$tmp_dir/stderr" || rc=$?
+  events="$tmp_dir/events.json"
+  jq -Rn '[inputs | fromjson? | select(type == "object")]' "$tmp_dir/stdout" >"$events"
+  session=$(jq -r '([.[] | select(.event == "result") | .result.conversation_id // empty] | last) //
+    ([.[] | select(.event == "init") | .conversation_id // empty] | last) // "none"' "$events")
+  observed_model=$(jq -r '[.[] | select(.event == "init") | .init.model // empty] | last // empty' "$events")
+  answer=$(jq -r '[.[] | select(.event == "result") | .result.response // empty] | last // ""' "$events")
+  jq -r '.[] | (.result.error // empty), (.step_update.tool_info.error // empty) | .. | strings' "$events" >"$tmp_dir/errors"
+  first_line=$(printf '%s\n' "$answer" | awk 'NF { print; exit }' | tr -d '\r*`')
+  last_line=$(printf '%s\n' "$answer" | awk 'NF { line = $0 } END { print line }' | tr -d '\r')
+
+  # Stream events echo the prompt, so of stdout only the lines that are not events count.
+  grep -v '^[[:space:]]*{' "$tmp_dir/stdout" >"$tmp_dir/stdout-text" || :
+  if limited; then
+    printf 'GEMINI_USAGE_LIMIT\n' >&2
+    printf 'gemini-listen: %s is out of %s quota; retry with --model %s or later\n' "$account" "$model_key" \
+      "$([ "$model_key" = pro ] && printf flash || printf pro)" >&2
+    exit 3
+  fi
+  if [ "$rc" -ne 0 ] && grep -Eqi 'out of the worker pool|treating every account as out of the pool' "$tmp_dir/stderr" "$tmp_dir/stdout-text"; then
+    say "account $account refused by the worker pool" 4
+  fi
+  if [[ "$last_line" =~ ^CANNOT_OPEN ]]; then
+    say "agy could not open a file: ${last_line#CANNOT_OPEN }" 1
+  fi
+  [ -n "$answer" ] || { tail -n 20 "$tmp_dir/stderr" >&2; say "agy returned no answer (exit $rc)" 1; }
+  deaf=''
+  while IFS=$'\t' read -r sent original; do
+    jq -e --arg path "$sent" 'any(.[]; .event == "step_update" and .step_update.state == "DONE" and
+        .step_update.tool_name == "view_file" and .step_update.tool_info.parameters.AbsolutePath == $path and
+        ((.step_update.tool_info.error // "") == ""))' \
+      "$events" >/dev/null || deaf=${deaf:-"the model answered without opening $original"}
+    answer=${answer//"$sent"/"$original"}
+  done <"$tmp_dir/sent"
+  if [ -z "$deaf" ] && [ -n "$beep_counts" ]; then
+    if [[ "$first_line$last_line" =~ NO_AUDIO ]]; then
+      deaf="the model says view_file gave it no sound"
+    elif ! [[ "$first_line" =~ ^[[:space:]]*BEEPS ]] ||
+      [ "$(printf '%s\n' "$first_line" | sed 's/: */:/g' | grep -Eo '[0-9]+:[0-9]+' | sort | tr '\n' ' ')" != "$want_beeps" ]; then
+      deaf="the model did not hear the test beeps (BEEPS$beep_counts wanted, its first line: ${first_line:0:80})"
+    else
+      answer=$(printf '%s\n' "$answer" | awk 'cut == 0 { if (NF) cut = 1; next } cut == 1 && !NF { next } { cut = 2; print }')
+    fi
+  fi
+  [ -n "$deaf" ] || break
+  [ "$attempt" -lt 2 ] || say "$deaf, in $attempt calls; the answer is not grounded" 1
+  printf 'gemini-listen: %s; asking again\n' "$deaf" >&2
+done
 
 model_label=${observed_model:-$agy_model}
 body=$(printf '<!-- %s -->\n%s\n' "$model_label" "$answer")
-footer=$(printf 'dest=%s\naccount=%s\nsession=%s\nmodel=%s\nfiles=%s proxied=%s\n%sseconds=%s' \
-  "${out:--}" "$account" "$session" "$model_label" "${#media[@]}" "$proxied" "$proxy_lines" "$(($(date +%s) - started))")
+footer=$(printf 'dest=%s\naccount=%s\nsession=%s\nmodel=%s\nfiles=%s proxied=%s\n%s%scalls=%s\nseconds=%s' \
+  "${out:--}" "$account" "$session" "$model_label" "${#media[@]}" "$proxied" "$proxy_lines" "$heard_lines" "$attempt" \
+  "$(($(date +%s) - started))")
 if [ -n "$out" ]; then
   printf '%s\n' "$body" >"$out"
   printf '%s\n' "$footer"

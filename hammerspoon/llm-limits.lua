@@ -270,6 +270,8 @@ end
 -- Labels: fv Flow video credits, fm Flow Music credits, gm the Gemini app's music. A standing wall
 -- is the pool's limit hit, drawn like any walled window; a pool without a known total is unmeasured.
 -- Without a renewal date the reset column carries the balance left, so the menu grows no column.
+-- fm exists only once Flow Music has seen the account signed in; a Flow wall walls it too, because
+-- flow_music.rotation skips an account behind either wall.
 local function geminiMediaRows(media)
   local rows = {}
   if not media then return rows end
@@ -289,7 +291,10 @@ local function geminiMediaRows(media)
     rows[#rows + 1] = { title = title, disabled = true }
   end
   row("fv", media.credits, media.creditsTotal, media.creditsRenewsAt, media.videoWall, media.bound)
-  row("fm", media.musicCredits, media.musicCreditsTotal, media.musicCreditsRenewsAt, media.flowMusicWall, media.bound)
+  if media.musicSignedIn then
+    local wall = math.max(media.flowMusicWall or 0, media.videoWall or 0)
+    row("fm", media.musicCredits, media.musicCreditsTotal, media.musicCreditsRenewsAt, wall > 0 and wall or nil, true)
+  end
   row("gm", nil, nil, nil, media.musicWall)
   return rows
 end
@@ -1018,6 +1023,7 @@ local function geminiMediaState(roster, now)
         bound = cookies and true or false,
         credits = tonumber(meta.credits),
         creditsTotal = tonumber(meta.credits_total), creditsRenewsAt = tonumber(meta.credits_renews_at),
+        musicSignedIn = meta.music_signed_in == true,
         musicCredits = tonumber(meta.music_credits),
         musicCreditsTotal = tonumber(meta.music_credits_total),
         musicCreditsRenewsAt = tonumber(meta.music_credits_renews_at),

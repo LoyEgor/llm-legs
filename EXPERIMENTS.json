@@ -5,8 +5,11 @@
     "started": "2026-10-06",
     "review_by": "2026-10-20",
     "state_marker": "~/.gemini-web/flow-rest.json",
-    "evidence": "~/.gemini-web/failures/*-rawilimo-*.txt and *-abel-*.txt (reason 'Flow flagged this account') and saved rows for both accounts in ~/.gemini-web/jobs.jsonl and ~/.cache/image-legs/legs.jsonl after the rest ends",
-    "surfaces": ["menubar Gemini account rows (video wall until 2026-10-20 12:00 on both)", "llm-limits --table banner once overdue"],
-    "how_to_remove": "The walls in ~/.gemini-web/walls.json and the marker expire by themselves on 2026-10-20 12:00 local. Delete ~/.gemini-web/flow-rest.json, then this entry. Verdict: no flag on either account within a week of normal use after the rest = recovered, nothing else to do; a flag again = ask the owner (longer rest, or account-side steps only he can take: phone, 2FA, normal use by hand)."
+    "evidence": "~/.gemini-web/failures/*-rawilimo-*.txt and *-abel-*.txt (reason 'Flow flagged this account') and saved rows for both accounts in ~/.gemini-web/jobs.jsonl and ~/.cache/image-legs/legs.jsonl after the rest ends; baseline 2026-10-06: both accounts have 2FA and a phone, and the owner generated Flow images by hand in his normal browser on both without a flag, so Google flags our automated sessions, not the accounts as such",
+    "surfaces": [
+      "menubar Gemini account rows (video wall until 2026-10-20 12:00 on both)",
+      "llm-limits --table banner once overdue"
+    ],
+    "how_to_remove": "The walls in ~/.gemini-web/walls.json and the marker expire by themselves on 2026-10-20 12:00 local. Run `gemini-web status rawilimo` and `gemini-web status abel` once (Flow Music was never checked on them; exit 4 names its missing one-time step, which the owner agreed to have done for him on 2026-10-06 for loiyehor and tronjhon). Delete ~/.gemini-web/flow-rest.json, then this entry. Verdict: no flag on either account within a week of normal use after the rest = recovered, nothing else to do; a flag again = gemini_web.wall_until walls that account 30 days by itself (flagged_at in ~/.gemini-web/accounts/<a>.json was seeded with the 2026-10-05 flags), then ask the owner whether it stays manual-only for Flow (longer rest, or account-side steps only he can take: phone, 2FA, normal use by hand)."
   }
 ]

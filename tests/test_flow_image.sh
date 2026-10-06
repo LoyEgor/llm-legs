@@ -685,15 +685,24 @@ def flagged(account, plan):
                      flagged=True)
 
 
+def flag_once():
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        try:
+            gw.take_failover(["old"], fi.make_plan(args()), fi.generate_on, gw.set_wall, True, wall_pinned=False,
+                             lock_wait=5)
+        except SystemExit:
+            pass
+    return gw.walls()["old"] - time.time()
+
+
 fi.generate_on = flagged
 ran.clear()
-with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-    try:
-        gw.take_failover(["old"], fi.make_plan(args()), fi.generate_on, gw.set_wall, True, wall_pinned=False,
-                         lock_wait=5)
-    except SystemExit:
-        pass
-assert ran == ["old"] and gw.walls()["old"] > time.time() + gw.BLOCK_WALL_SECONDS - 60, gw.walls()
+gw.write_meta("old", flagged_at=0)
+assert gw.BLOCK_WALL_SECONDS - 60 < flag_once() <= gw.BLOCK_WALL_SECONDS and ran == ["old"], (ran, gw.walls())
+# A repeat flag inside the window walls for the whole window instead of another daily strike.
+assert gw.REFLAG_WALL_SECONDS - 60 < flag_once() <= gw.REFLAG_WALL_SECONDS, gw.walls()
+gw.write_meta("old", flagged_at=int(time.time()) - gw.REFLAG_WALL_SECONDS - 1)
+assert flag_once() <= gw.BLOCK_WALL_SECONDS, gw.walls()
 gw.set_wall("old", None)
 watcher = gw.Watcher.__new__(gw.Watcher)
 watcher.errors = {"PUBLIC_ERROR_UNUSUAL_ACTIVITY"}

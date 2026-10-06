@@ -393,7 +393,8 @@ fetch or a `--dry-run`; an idle account still goes before one another run holds.
 of one job's price is never walled, so a cheaper job still runs there. Exit 3 otherwise walls an account in
 `~/.gemini-web/walls.json` (writes serialised by a lock file): 6 h when it is out of credits, 24 h when Flow flags it
 (`PUBLIC_ERROR_UNUSUAL_ACTIVITY` on a whole failed envelope or on the new clip — "We noticed some unusual
-activity", nothing charged). On 2026-09-30 rawilimo, abel, egbor and mish were flagged in agent and manual
+activity", nothing charged), 30 days when the account was already flagged within the last 30 days (`flagged_at` in
+its `accounts/<name>.json`: a daily re-probe added a strike a day). On 2026-09-30 rawilimo, abel, egbor and mish were flagged in agent and manual
 mode alike, including under raw CDP input with no Runtime domain, while egbogd, com, jihangarangan and
 locomthebest ran; exit 4 is a profile never signed in. A quote that differs from the manifest fails with
 both numbers and spends nothing. Re-verify after a `model_caps=stale` line, a quote mismatch or a
@@ -484,6 +485,12 @@ generation goes first (Flow's rule and stamp). An account Flow Music shows as si
 skipped until a balance read (`uv run --script share/flow_music.py status --account <name>`) finds it signed in.
 Signed in on 2026-10-01: com, egbogd, jihangarangan and locomthebest (Continue with Google → the account →
 Continue → tick "See your Google One membership…" → Continue → Privacy Notice Agree; PLUS shows after a reload).
+loiyehor and tronjhon were onboarded without it and signed in on 2026-10-06. Without the Google One grant an account
+reads 30 credits under a "Grant access" banner; the banner's button runs the account chooser → Continue → a consent
+page ("3 services") → Continue, after which the balance reads 10530. `geminib web` opens a Flow Music tab beside the
+Google sign-in, and its closing `gemini-web status` exits 4 naming the missing step (signed out, the privacy notice's
+Agree, or Grant access when no subscription refill is among the grants). The menubar draws the `fm` row only once
+`music_signed_in` is true, walled red by either wall.
 
 A song that finished after its run gave up is saved again without spending: `uv run --script
 share/flow_music.py fetch --account <a> --title <title> --out-dir <dir> --format wav [--stems]` (the title is
@@ -493,7 +500,32 @@ open and block the run. Split stems is awaited as library rows.
 `--ref-audio` goes through the chat (Add audio or image → Audio, then a message to Producer). The first upload
 opens Flow Music's "necessary rights" notice. The engine clicks I agree only for accounts that the owner lists
 under `agreed_flow_music` in `~/.gemini-web/notices.json` (his Gemini-app yes in `agreed` does not cover Flow
-Music); any other account exits 4. No account is listed yet, so the reference-track path is unverified live.
+Music); any other account exits 4. com, egbogd, jihangarangan and locomthebest are listed (2026-10-01, renewed by
+his 2026-10-06 yes to uploading own audio). Uploads are refused in this region (table below), so `--ref-audio`
+fails with exit 1 before it spends.
+
+#### Edits (`--edit … --mode …`)
+
+A song's ⋯ → Remix submenu offers Start session, Cover, Replace, Extend, Use prompt, Variation and Trim. Cover,
+Extend and Replace open one edit panel: a mode combobox, an Instruction box, Edit Lyrics, a Settings popover with
+the window, Advanced (Seed), Details (the title), and Generate. `--edit <title> --account <a>` edits a library song.
+`--edit <file>` whose `<file>.txt` holds `Title:` and `Account:` lines edits that Flow take on its own account; every
+flow take writes both lines since 2026-10-06. Any other file is uploaded, which the region refuses. The result is
+saved like a song: the dest's format, `--stems`, `--count` (not for trim), `variant=` lines and ledger rows with
+`mode`. `model=flow-music-<mode>`; `<dest>.txt` keeps the source, the window and the instruction.
+
+| Mode (2026-10-06, com, source a 62.7 s instrumental) | Fact | Evidence |
+| --- | --- | --- |
+| cover | 5 credits, 47 s wall. Instruction + Edit Lyrics + Strength (slider 0-1, step 0.01, 0.5 default; Home, then ArrowRight) + Seed. A 58.5 s song that keeps the given title (`audio__render_edit`, `source_clip_ids`) | live run with `--lyrics`, `--strength 0.6`, `--seed 7`; Usage −5 |
+| extend | 5 credits, 49 s. Settings: "Extend from" (default the song's end, which the engine sets from the duration button) and "Extend until". Flow keeps until−from in 30-150 s by moving the start, so the engine fails with exit 2 when the label ("Extend 1:02-1:35") differs from the ask | `--to 95` gave 95.06 s; the clamp probed with 6 windows |
+| replace | 5 credits, 53 s. Settings: start and end anywhere inside the song ("Replace 0:20-0:30"); the panel also has Add region, which the engine does not use | `--from 20 --to 30` gave 60.0 s |
+| variation | 5 credits, 32 s. Remix → Variation generates at once (same prompt, lyrics and length, a new random seed, title "<source> (Remix)", `audio__create_song`, no audio conditioning). The engine opens Use prompt instead (the same panel, prefilled, seed Auto), sets its own title and presses Generate | a Variation click charged 5 credits at once; the wrapper run gave 66.6 s |
+| trim | free, about 24 s. A Trim Song dialog (Start, End; typing the end while the start reads 0:00 pulls the start to 10 s before it, so the end goes first) saves "<source> (trim 0:40-0:55)" at once | 4 trims, balance unchanged; 15.02 s wav |
+| uploads | refused: every upload read `has_vocals: true` (a sine melody, synthetic drums, and Flow's own drum and pad stems), and the site's `is_in_restricted_remix_region` turns that into the toast "Uploading tracks with vocals is not available in your region". So `--ref-audio`, `--edit <non-Flow audio>` and Upload my vocal cannot work from here. The engine's upload branch sends the mode to Producer in words and is unverified | 4 uploads on com, 1 on jihangarangan, 2026-10-06 |
+| Start session, Remix a track, Upload my vocal, Make video | Producer chat starters, not edits. Make video asks for a song, subject and style images, a prompt, lyrics on/off, 9:16 or 16:9 and up to 2 min. Its intro says only "Credits are required … They can be expensive"; no price shows before the Producer's final review. Not wired | the home page and Music videos → New music video, nothing spent |
+
+Chain vendors: make the exact-length or spoken part with ElevenLabs, then edit Flow-made songs here. Non-Flow
+audio cannot enter Flow Music from this region.
 
 **Route bench 2026-10-01** — 5 instrumental prompts × 2 runs per route, interleaved two at a time over
 12:13–12:57 UTC, Lyria 3.5 on both, about 60 s songs (`--length short` on the app, `--duration 60` on flow), no
@@ -539,3 +571,46 @@ length. By ear, 1 of 3 text takes was usable (the others had a drone or hiss und
 `view_file`. Files over `.listen.view_max_bytes` (agy shows at most 20 MB) are sent as a proxy: video at
 720p, audio as mp3. A reply that never opened a file is refused, and so is one whose `view_file` step returned an error. It judges sound and sync well, but
 it echoes timings from the question, so measure exact times with ffmpeg.
+
+## Speech on AI Studio
+
+`bin/media-run speech --vendor gemini` → `bin/gemini-speech` → `share/aistudio_speech.py` drives Google AI Studio's
+Generate speech playground (aistudio.google.com/generate-speech) in the same hidden Chrome, profiles and account
+locks as Flow. It is free on the signed-in accounts: no API key, and the page's "Link a paid API key" is never
+touched. Plain `media-run speech` runs here (`default_for` in gemini.json since 2026-10-07: a blind bench of three jobs found it level with ElevenLabs v4 on calm Russian narration and English promo and ahead on an emotional Russian story); `--vendor elevenlabs` for its designed voices, more than two speakers or `--timestamps`. Manifest:
+`share/image-caps/gemini.json` `.speech` (models, voices with traits, tags, director menus, limits).
+
+| Fact (2026-10-06) | Evidence |
+| --- | --- |
+| Five TTS models in the model menu's Audio filter: `gemini-3.8-flash-tts` (default), `gemini-3.8-flash-lite-tts`, `gemini-3.1-flash-tts-preview`, `gemini-2.5-pro-preview-tts`, `gemini-2.5-flash-preview-tts`; `?model=<id>` in the URL selects one | the model panel; the run settings card shows the id |
+| Two composers. 3.8 models: per-block Style ("Describe the voice style" or the presets Whisper, Friendly, Narration, Promote, Podcast), `<tag>` expression tags, a "Filler words" switch with two speakers, `\|reaction\|` backchannels. Older models: Scene and Sample Context fields, and per speaker an Audio Profile plus Director's note menus (Style, Pace, Accent) — the page writes them into the prompt as `## Scene:` / `# Audio Profile` / `# Director's note` / `## Transcript:` | each family's composer and the prompt each sends |
+| Voices: 70 free on the 3.8 models (40 new + the 30 older ones), the 30 older ones on the other models; the search over 2,000+ others asks for a paid key. Picking a voice in the speaker panel sets that speaker everywhere | the speaker panel walked by category with the Gender and Language filters |
+| Tags: the composer's 40 `<tag>` chips are exactly the docs' list for 3.8; the older models take 23 `[tag]` words. The tag toolbar collapses on blur, so tags are typed into the text | the Expression toolbar, ai.google.dev speech-generation guide |
+| At most two speakers; blocks alternate Speaker 1/2, so the CLI merges consecutive lines of one voice | "Add speech block" |
+| Language: no control on the page; the model reads it from the text (130 languages on Flash, 101 on Lite) | the docs' model pages |
+| Temperature 0–2, step 0.05, default 1 (Model settings) | the spinbutton's bounds |
+| Output: WAV pcm_s16le 24 kHz mono. The reply streams `audio/l16` chunks; the player shows a 0.04–0.08 s WAV after the first chunk and the full one 1–2 s after the request ends. The engine waits for a 44-byte header plus every PCM byte of the reply | three takes saved early at 0.04–0.08 s; player size = 44 + Σ chunks, exact on 2 takes |
+| The Download button builds its WAV in a sandboxed frame created at click time and hands it to Chrome's download manager, which crashed the hidden Chrome twice; the player's `data:audio/wav` URL is byte-identical, so the engine reads that | `cmp` of a caught Download and the player |
+| The first Run after typing sometimes sends nothing; a Run with neither a `GenerateContent` nor the Stop ("Cancel generation") button in 12 s is clicked again. 2.5 Pro shows Stop well before its first reply, so Stop counts as sent | REPL probes; a 2.5 Pro take misread as a disabled Run (2026-10-07) |
+| A short take renders in about 3 s (wrapper run 10–20 s); 2.5 Pro renders 327 chars of Russian in 17.8 s and 407 in 25.5 s (wrapper 34 s), far inside `timeout_s` 300 | `render_s` in the ledger, `seconds=` footers |
+| First use shows a terms page or dialog (tick only "I acknowledge that I am at least 18…", never the e-mail opt-in, then Continue) or a "Welcome to AI Studio" plan dialog (Continue). The owner's yes (2026-10-06) covers both; the engine records `aistudio_terms_accepted_at` in the account meta and a `terms-accepted` ledger row. Needed on loiyehor and tronjhon; locomthebest showed the welcome dialog once | runs on all six pool accounts |
+
+Live takes (2026-10-06, one short sentence each, ffprobe): single voice Kore 2.64 s; dialogue Puck/Kore 3.32 s and
+Algenib (per-line style) / Achernar with filler words 4.24 s — two segments split by a 0.8–1.0 s gap, median F0
+139 Hz vs 203 Hz; `--style` whisper 2.88 s; `<sighs>`/`<whispers>` tags 5.36 s; 2.5 Flash with `[whispers]`, Scene,
+Audio Profile, Director Style Whisper and Accent British (RP) 2.85 s.
+
+CLI: `--text|--text-file|--line "<voice>: <text>"` (repeat; `"<voice> (<style>): <text>"` styles one line on 3.8),
+`--voice`, `--style` (3.8: each block's Style; older: each speaker's Audio Profile), `--model
+flash|flash-lite|3.1-flash|2.5-pro|2.5-flash` or an id, `--temperature`, `--filler-words` (3.8, two speakers), `--scene`,
+`--context`, `--delivery`, `--pace`, `--accent` (older models), `--list-voices [--model]` (from the manifest, no browser),
+`--dest .wav|.mp3`, `--account`, `--lock-wait`, `--dry-run` (sets every control, sends nothing). `--language` is
+refused: write the text in the language. A tag in the other family's brackets is refused; one outside the
+composer's list is sent with a stderr note.
+
+Rotation: signed-in Gemini profiles in the gemini worker pool, minus accounts resting in
+`~/.gemini-web/flow-rest.json` while its `until` is ahead, minus their own walls in
+`~/.gemini-web/aistudio-walls.json`, minus meta `aistudio_signed_in: false`; least recently started first. A quota
+or rate-limit answer is exit 3 and walls the account until the next Pacific midnight (15 min for a per-minute one);
+the free daily limit itself was not reached. Exits: 0 ok, 1 failed or UI drift, 2 usage, 3 limit or wall,
+4 signed out, 5 account busy.

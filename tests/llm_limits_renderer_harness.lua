@@ -4326,14 +4326,17 @@ end
       { account = "mish", auth_needed = true },
       { account = "quiet", five_hour = bucket(10), weekly = bucket(20) },
       { account = "fresh", five_hour = bucket(10), weekly = bucket(20) },
+      { account = "tune", five_hour = bucket(10), weekly = bucket(20) },
     } },
   } }
   geminiWebFake.files = {
     [root .. "/accounts/abel.json"] = { credits = 120, credits_at = now - 3 * 3600,
-      music_credits = 10510, music_credits_at = now - 3600,
+      music_signed_in = true, music_credits = 10510, music_credits_at = now - 3600,
       email = "abel.secret@example.com", project = "proj-secret" },
-    [root .. "/accounts/egbor-web.json"] = { credits = 50, credits_at = now - 600,
+    [root .. "/accounts/egbor-web.json"] = { credits = 50, credits_at = now - 600, music_signed_in = true,
       email = "Egbor@example.com", project = "proj-secret" },
+    [root .. "/accounts/tune.json"] = { music_signed_in = true, music_credits = 30, music_credits_at = now - 60,
+      email = "tune@example.com" },
     [root .. "/accounts/mish.json"] = { email = "mish@example.com" },
     [root .. "/accounts/fresh.json"] = { email = "fresh@example.com" },
     [root .. "/profiles/fresh/Default/Cookies"] = "",
@@ -4381,9 +4384,12 @@ end
   local menu = mediaMenu()
   local abel = mediaRows(menu, "abel")
   assert(#abel == 2 and titleText(abel[1]) == walled("fv", now + 7200) and isRed(abel[1])
-      and titleText(abel[2]) == unmeasured("fm", 10510) and #redRuns(abel[2].title) == 0
+      and titleText(abel[2]) == walled("fm", now + 7200) and isRed(abel[2])
       and abel[1].disabled == true and abel[2].disabled == true,
-    "a standing video wall is not fv's limit hit, or an unknown total drew a bar or hid the balance in the reset column: " .. texts(abel))
+    "a standing Flow wall is not fv's and fm's limit hit (Flow Music rotation skips it too): " .. texts(abel))
+  local tune = mediaRows(menu, "tune")
+  assert(#tune == 1 and titleText(tune[1]) == unmeasured("fm", 30) and #redRuns(tune[1].title) == 0,
+    "an unknown Flow Music total drew a bar or hid the balance in the reset column: " .. texts(tune))
   local egbor = mediaRows(menu, "egbor")
   assert(#egbor == 2 and titleText(egbor[1]) == unmeasured("fv", 50) and titleText(egbor[2]) == walled("fm", now + 3600)
       and isRed(egbor[2]),
@@ -4393,8 +4399,9 @@ end
   assert(#mish == 1 and titleText(mish[1]) == walled("gm", now + 26 * 3600) and isRed(mish[1]),
     "a logged-out account lost its music wall: " .. texts(mish))
   local fresh = mediaRows(menu, "fresh")
-  assert(#fresh == 2 and titleText(fresh[1]) == unmeasured("fv") and titleText(fresh[2]) == unmeasured("fm"),
-    "a bound, signed-in web profile with no balance read yet lacks its unmeasured fv and fm rows: " .. texts(fresh))
+  assert(#fresh == 1 and titleText(fresh[1]) == unmeasured("fv"),
+    "a profile signed in to Flow but never to Flow Music lacks its unmeasured fv row or drew an fm row: "
+      .. texts(fresh))
   assert(#mediaRows(menu, "quiet") == 0, "an account without a gemini-web reading grew a media row")
   for _, item in ipairs(menu) do
     local text = titleText(item)
@@ -4408,11 +4415,11 @@ end
     mediaFixture.vendors.gemini.accounts[#mediaFixture.vendors.gemini.accounts + 1] =
       { account = "refill", five_hour = bucket(10), weekly = bucket(20) }
     geminiWebFake.files[root .. "/accounts/bars.json"] = { credits = 828, credits_at = now - 3 * 3600,
-      credits_total = 1000,
+      credits_total = 1000, music_signed_in = true,
       music_credits = 10510, music_credits_at = now - 3600, music_credits_total = 10530,
       music_credits_renews_at = now + 30 * 86400 }
     geminiWebFake.files[root .. "/accounts/refill.json"] = { credits = 1000, credits_at = now - 600,
-      credits_total = 1050, credits_refilled_at = now - 86400,
+      credits_total = 1050, credits_refilled_at = now - 86400, music_signed_in = true,
       credits_renews_at = now + 3 * 86400 }
     geminiWebFake.files[root .. "/flow-music-walls.json"]["refill"] = now + 3600
     menu = mediaMenu()

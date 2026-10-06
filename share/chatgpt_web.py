@@ -33,6 +33,7 @@ gw.POOL_VENDOR = "codex"
 
 SITE = "https://chatgpt.com"
 gw.LOGIN_URL = SITE + "/auth/login"
+gw.LOGIN_TABS, gw.LOGIN_STEPS = (), ""
 ME_PATH = "/backend-api/me"
 PLAN_PATHS = ("/backend-api/accounts/check/v4-2023-04-27", "/backend-api/wham/accounts/check")
 CHAT_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")

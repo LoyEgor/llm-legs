@@ -1218,6 +1218,7 @@ mkdir -p "$LOGIN_APP/Contents/MacOS"
 cat >"$LOGIN_APP/Contents/MacOS/Google Chrome" <<'EOF'
 #!/usr/bin/env bash
 profile=${1#--user-data-dir=}
+printf '%s\n' "$@" >"$profile.argv"
 sleep 3 </dev/null >/dev/null 2>&1 &
 ln -sfn "host-$!" "$profile/SingletonLock"
 EOF
@@ -1229,7 +1230,13 @@ for engine in "gemini_web main" "chatgpt_web alpha"; do
   assert test "$?" -eq 0
   assert test "$((SECONDS - started))" -ge 3
   assert jq -e --arg account "$2" '.ok and .account == $account and (.login | type) == "boolean"' <<<"$login_out" >/dev/null
-  assert grep -q "sign $2 in in the Chrome window that opened, then quit it with Cmd+Q" "$WORK/login.err"
+  if [ "$1" = gemini_web ]; then
+    assert grep -q "sign main in in the Chrome window that opened (Google in the first tab, then in the Flow Music tab Log in → Continue with Google → Agree → Grant access), then quit it with Cmd+Q" "$WORK/login.err"
+    assert grep -qx 'https://www.flowmusic.app/' "$GEMINI_WEB_DIR/profiles/main.argv"
+  else
+    assert grep -q "sign alpha in in the Chrome window that opened, then quit it with Cmd+Q" "$WORK/login.err"
+    assert test "$(grep -c '^https://' "$CHATGPT_WEB_DIR/profiles/alpha.argv")" -eq 1
+  fi
 done
 
 # --- codex-image --route web ------------------------------------------------------------------------

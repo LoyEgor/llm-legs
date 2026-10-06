@@ -136,6 +136,56 @@ assert grep -qx 'BROWSER_FAILURE route=flow-music account=flowacct code=1 shot=-
 FAKE_ENGINE_MODE=dry assert music --route flow --dest "$out" --prompt 'a theme' --dry-run
 assert grep -qx 'controls={"model":"Lyria 3 Pro","length":"1:15"}' "$WORK/stdout"
 
+# Edits: every refusal happens before an engine starts and names the rule broken.
+: >"$FAKE_CALLS"
+printf 'Model: flow-music-cover\nTitle: made-ab12\nAccount: flowacct\n' >"$M/made.wav.txt"
+cp "$M/take.wav" "$M/made.wav"
+while IFS='|' read -r said flags; do
+  flags=${flags//REF_TXT/$M/ref.txt}
+  # shellcheck disable=SC2086
+  expect_rc 2 --dest "$out" ${flags//MADE/$M/made.wav}
+  assert grep -qF -- "$said" "$WORK/err"
+done <<'EOF'
+add --edit|--mode cover --prompt x
+--edit needs --mode|--edit song --account flowacct --prompt x
+--mode is one of: cover, extend, replace, trim, variation|--edit song --account flowacct --mode remix --prompt x
+lives on one account: add --account|--edit song --mode cover --prompt x
+needs --prompt (the instruction) or --lyrics|--edit song --account flowacct --mode replace --from 1 --to 9
+takes no --prompt, --lyrics or --seed|--edit song --account flowacct --mode variation --prompt x
+--count 1|--edit song --account flowacct --mode trim --from 1 --to 9 --count 2
+needs --from <s> before --to <s>|--edit song --account flowacct --mode trim --from 9 --to 9
+makes 30-150 s of new music|--edit song --account flowacct --mode extend --from 60 --to 80 --prompt x
+makes 30-150 s of new music|--edit song --account flowacct --mode extend --from 10 --to 170 --prompt x
+--mode extend needs --to|--edit song --account flowacct --mode extend --prompt x
+edits the whole song: no --from or --to|--edit song --account flowacct --mode cover --from 5 --prompt x
+--strength belongs to --mode cover|--edit song --account flowacct --mode replace --from 1 --to 9 --prompt x --strength 0.5
+--strength is 0 to 1|--edit song --account flowacct --mode cover --prompt x --strength 1.5
+--from and --to are whole seconds|--edit song --account flowacct --mode replace --from 1.5 --to 9 --prompt x
+--duration makes a new song|--edit song --account flowacct --mode cover --prompt x --duration 60
+--model makes a new song|--edit song --account flowacct --mode cover --prompt x --model lyria-3-pro
+--edit runs on --route flow|--route app --edit song --account flowacct --mode cover --prompt x
+a library song lives on one account: no --accounts|--edit song --account flowacct --mode cover --prompt x --accounts 2
+--edit takes an mp3, wav|--edit REF_TXT --mode cover --prompt x
+is a Flow Music song on flowacct, not other|--edit MADE --account other --mode cover --prompt x
+EOF
+assert test ! -s "$FAKE_CALLS"
+
+# A library title, a Flow take by its file (its .txt names title and account) and any other audio reach the engine.
+assert music --dest "$out" --edit 'old song' --account flowacct --mode replace --from 20 --to 30 --prompt 'a drum break' --seed 3
+calls=$(tr '\n' ' ' <"$FAKE_CALLS")
+assert grep -q -- "--edit old song --mode replace --from 20 --to 30 --account flowacct" <<<"$calls"
+assert grep -q -- '--prompt a drum break' <<<"$calls"
+: >"$FAKE_CALLS"
+assert music --dest "$out" --edit "$M/made.wav" --mode variation
+calls=$(tr '\n' ' ' <"$FAKE_CALLS")
+assert grep -q -- "--edit made-ab12 --mode variation --account flowacct" <<<"$calls"
+assert test -z "$(grep -x -- '--prompt' "$FAKE_CALLS")"
+: >"$FAKE_CALLS"
+assert music --dest "$out" --edit "$M/ref.mp3" --mode cover --strength 0.35 --lyrics 'la la'
+calls=$(tr '\n' ' ' <"$FAKE_CALLS")
+assert grep -q -- "--lyrics la la --edit $M/ref.mp3 --mode cover --strength 0.35" <<<"$calls"
+assert test -z "$(grep -x -- '--account' "$FAKE_CALLS")"
+
 # The engine on fakes.
 cat >"$WORK/child" <<'EOF'
 #!/usr/bin/env python3
@@ -352,13 +402,14 @@ finally:
     Loc.press_sequentially = Loc.type = original
 plan_args = fm.make_plan(type("A", (), dict(duration=75, length=None, genre="Jazz", prompt="a beat", lyrics=None,
                                             vocals="instrumental", bpm=None, seed=3, model="lyria-3-pro", format="wav",
-                                            stems=True, ref_audio=None, count=1, out_dir="/o", dry_run=False,
-                                            title="My Song!.v2"))())
+                                            stems=True, ref_audio=None, edit=None, mode=None, from_s=None, to_s=None,
+                                            strength=None, count=1, out_dir="/o", dry_run=False, title="My Song!.v2"))())
 assert (plan_args["length"], plan_args["sound"], plan_args["seed"], plan_args["model_label"], plan_args["title"],
         plan_args["price"]) == ("1:15", "Jazz. a beat", "3", "Lyria 3 Pro", "My-Song-v2", 5), plan_args
 zero = fm.make_plan(type("A", (), dict(duration=None, length=None, genre=None, prompt="a beat", lyrics=None,
                                       vocals=None, bpm=None, seed=0, model="lyria-3-pro", format="wav", stems=False,
-                                      ref_audio=None, count=1, out_dir="/o", dry_run=False, title=None))())
+                                      ref_audio=None, edit=None, mode=None, from_s=None, to_s=None, strength=None,
+                                      count=1, out_dir="/o", dry_run=False, title=None))())
 assert zero["seed"] == "0", zero
 
 # Download: the page's blob link is caught and read out of the page, never saved through Chrome.
@@ -451,8 +502,9 @@ def fake_generate(account, plan):
 
 fm.generate_on = fake_generate
 args = type("A", (), dict(prompt="p", out_dir=work, model="lyria-3.5", format="mp3", lyrics=None, vocals=None,
-                          genre=None, duration=None, length=None, bpm=None, seed=None, ref_audio=None, stems=False,
-                          title="t", count=1, accounts=1, account=None, fanned=False, dry_run=False))()
+                          genre=None, duration=None, length=None, bpm=None, seed=None, ref_audio=None, edit=None,
+                          mode=None, from_s=None, to_s=None, strength=None, stems=False, title="t", count=1,
+                          accounts=1, account=None, fanned=False, dry_run=False))()
 out = io.StringIO()
 with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
     fm.cmd_generate(args)
@@ -752,6 +804,376 @@ try:
     raise AssertionError("an account without the owner's yes agreed to the upload notice")
 except gw.Failure as failure:
     assert failure.code == 4 and "agreed_flow_music" in failure.reason and not stranger.clicked, failure.reason
+
+
+# 2026-10-06: an account never signed in to Flow Music lands on the studio page with Log in / Sign up buttons
+# and no "Continue with Google"; it must be the owner's step (4), not a 45 s load failure (1) that ends a run.
+class LandingPage(NoticePage):
+    url = fm.SITE + "/"
+
+    def goto(self, url, wait_until=None, timeout=None):
+        pass
+
+    def on(self, event, handler):
+        pass
+
+    def wait_for_timeout(self, ms):
+        raise AssertionError("the signed-out landing was not recognised on the first look")
+
+
+gw.write_meta("tronjhon", music_signed_in=None)
+try:
+    fm.open_page(LandingPage(("button", "Log in"), ("button", "Sign up")), fm.Traffic(LandingPage()), "tronjhon", "/settings")
+    raise AssertionError("the signed-out landing loaded as a signed-in page")
+except gw.Failure as failure:
+    assert failure.code == 4 and "signed out" in failure.reason, failure.reason
+assert gw.read_meta("tronjhon")["music_signed_in"] is False and "tronjhon" not in fm.rotation(5)
+
+
+# `gemini-web status` (the end of `geminib web`) names Flow Music's missing one-time step, or None when ready.
+class StudioPage(NoticePage):
+    url = fm.SITE + "/settings"
+
+    def __init__(self, credits, grants, *shown):
+        super().__init__(*shown)
+        self.reply = Reply("/__api/billing/credits", {"data": {"credits_remaining": credits},
+                                                      "add_token_transactions": grants})
+
+    def on(self, event, handler):
+        self.handler = handler
+
+    def goto(self, url, wait_until=None, timeout=None):
+        self.handler(self.reply)
+
+
+class Context:
+    def __init__(self, page):
+        self.page = page
+
+    def new_page(self):
+        return self.page
+
+
+refill = [{"type": "subscription-refill", "created_at": "2026-10-01T00:00:00Z", "credits": 10500},
+          {"type": "signup", "created_at": "2026-10-01T00:00:00Z", "credits": 30}]
+saved_promos, gw.close_promos = gw.close_promos, lambda page, account: None
+try:
+    assert gw.music_ready(Context(StudioPage(10525, refill)), "tronjhon") is None
+    assert gw.read_meta("tronjhon")["music_signed_in"] is True and gw.read_meta("tronjhon")["music_credits"] == 10525
+    unplanned = gw.music_ready(Context(StudioPage(30, refill[1:])), "tronjhon")
+    assert unplanned and "Grant access" in unplanned and "30 credits" in unplanned, unplanned
+    notice = gw.music_ready(Context(StudioPage(10525, refill, ("button", "Agree"))), "tronjhon")
+    assert notice and "Agree" in notice, notice
+    landing = LandingPage(("button", "Log in"), ("button", "Sign up"))
+    signed_out = gw.music_ready(Context(landing), "tronjhon")
+    assert signed_out and "signed out" in signed_out, signed_out
+finally:
+    gw.close_promos = saved_promos
+
+
+# Edits on a library song (2026-10-06 live: Remix → Cover / Extend / Replace / Use prompt / Trim).
+class El:
+    def __init__(self, page, key):
+        self.page, self.key = page, key
+
+    first = last = property(lambda self: self)
+
+    def nth(self, index):
+        return El(self.page, self.key + (index,))
+
+    def locator(self, selector):
+        return El(self.page, self.key + (selector,))
+
+    def get_by_role(self, role, name=None, exact=False):
+        return El(self.page, self.key + (role, name))
+
+    def count(self):
+        return self.page.count(self.key)
+
+    def wait_for(self, timeout=None):
+        if not self.count():
+            raise TimeoutError(str(self.key))
+
+    def click(self, timeout=None):
+        self.page.act("click", self.key)
+
+    focus = click
+
+    def press(self, key):
+        self.page.act(key, self.key)
+
+    def type(self, value):
+        self.page.act("type", self.key, value)
+
+    press_sequentially = type
+
+    def fill(self, value, timeout=None):
+        self.page.act("fill", self.key, value)
+
+    def input_value(self, timeout=None):
+        return self.page.value(self.key)
+
+    def inner_text(self, timeout=None):
+        return self.page.text(self.key)
+
+    def get_attribute(self, name, timeout=None):
+        return self.page.attribute(self.key, name)
+
+
+class Keys:
+    def __init__(self, page):
+        self.page = page
+
+    def press(self, key):
+        self.page.act(key, ("keyboard",))
+
+    def insert_text(self, text):
+        self.page.act("insert", ("keyboard",), text)
+
+
+class EditPage:
+    url = fm.SITE + "/session?t=true"
+
+    def __init__(self, duration="1:02", clamp=lambda start, end: (start, end)):
+        self.log, self.fields, self.duration, self.clamp, self.typed = [], {}, duration, clamp, None
+        self.keyboard, self.strength, self.instruction, self.rows = Keys(self), 0.5, "", []
+
+    def get_by_role(self, role, name=None, exact=False):
+        name = name.pattern if isinstance(name, re.Pattern) else name
+        return El(self, (role, name))
+
+    def get_by_text(self, text, exact=False):
+        return El(self, ("label",))
+
+    def locator(self, selector):
+        return El(self, (selector,))
+
+    def wait_for_timeout(self, ms):
+        pass
+
+    def field_of(self, key):
+        return key[-1] if isinstance(key[-1], int) else None
+
+    def count(self, key):
+        if key[:2] == ("button", "Expand Advanced section") or key == ("button", "Expand Details section"):
+            return 1
+        if key[0] == "button" and key[1] and key[1].startswith("^More options for "):
+            return len([row for row in self.rows if re.match(key[1][len("^More options for "):], row)])
+        return 1
+
+    def act(self, what, key, value=None):
+        self.log.append((what, key, value))
+        index = self.field_of(key)
+        if what == "click" and index is not None:
+            self.typed = index
+        elif what == "type" and index is not None:
+            self.fields[index] = value
+        elif what == "Enter" and index is not None:
+            start, end = self.fields.get(0, ""), self.fields.get(1, "")
+            if index == 1 and start in ("", "0:00"):
+                start = fm.clock(max(0, self.seconds(end) - 10))
+            self.fields[0], self.fields[1] = self.clamp(start, end)
+        elif what == "Home":
+            self.strength = 0.0
+        elif what == "ArrowRight":
+            self.strength = round(self.strength + 0.01, 2)
+        elif what == "insert":
+            self.lyrics = value
+        elif what == "click" and key[-2:] == ("button", "Done"):
+            self.instruction = "Edit the lyrics:\n" + self.lyrics
+        elif what == "fill" and key == ("textbox", "Instruction"):
+            self.instruction = value
+        elif what == "fill" and "textarea" in key:
+            self.title = value
+        elif what == "type" and "textarea" in key:
+            self.title += value
+        elif what == "click" and key[-2:] == ("button", "Trim"):
+            self.rows.append(self.trim_as)
+
+    @staticmethod
+    def seconds(value):
+        minutes, secs = value.split(":")
+        return int(minutes) * 60 + int(float(secs))
+
+    def value(self, key):
+        if key == ("textbox", "Instruction"):
+            return self.instruction
+        return self.fields.get(self.field_of(key), "")
+
+    def text(self, key):
+        if key == ("button", "Copy duration timestamp"):
+            return self.duration
+        return f"{self.mode_label} {self.fields.get(0)}-{self.fields.get(1)}"
+
+    def attribute(self, key, name):
+        if name == "aria-valuenow":
+            return str(self.strength)
+        rows = [row for row in self.rows if re.match(key[1][len("^More options for "):], row)]
+        return "More options for " + rows[key[-1]]
+
+
+def edit_plan(**fields):
+    return {"mode": "replace", "edit": "base", "from_s": None, "to_s": None, "strength": None, "lyrics": "",
+            "sound": "", "seed": "", **fields}
+
+
+page = EditPage()
+page.mode_label = "Replace"
+assert fm.edit_window(page, edit_plan(from_s=20, to_s=30)) == "0:20-0:30" and page.fields == {0: "0:20", 1: "0:30"}
+page = EditPage(duration="1:02.7")
+page.mode_label = "Extend"
+assert fm.edit_window(page, edit_plan(mode="extend", to_s=95)) == "1:02-1:35", page.fields
+pulled = EditPage(clamp=lambda start, end: (fm.clock(EditPage.seconds(end) - 30), end) if end else (start, end))
+pulled.mode_label = "Extend"
+try:
+    fm.edit_window(pulled, edit_plan(mode="extend", to_s=70))
+    raise AssertionError("a window Flow moved must fail")
+except gw.Failure as failure:
+    assert failure.code == 2 and failure.reason.startswith("Flow Music set the extend window to 0:40-1:10, not 1:02-1:10"), \
+        failure.reason
+    assert doctor.classify_browser(2, failure.reason)[1] == "bad command"
+
+trim_page = EditPage()
+assert fm.trim_window(trim_page, edit_plan(mode="trim", from_s=0, to_s=20)) == \
+    {"mode": "trim", "source": "base", "window": "0:00-0:20"}, trim_page.fields
+assert [entry[1][-1] for entry in trim_page.log if entry[0] == "type"] == [1, 0], "the trim end must be typed first"
+
+trim_page.rows, trim_page.trim_as = ["base (trim 0:05-0:25)", "base"], "base (trim 0:00-0:20)"
+saved_library = fm.to_library
+fm.to_library = lambda page, traffic, account, title: None
+try:
+    assert fm.trimmed_titles(trim_page, "base") == ["base (trim 0:05-0:25)"]
+    assert fm.press_trim(trim_page, None, "com", edit_plan(mode="trim"), ["base (trim 0:05-0:25)"]) == "base (trim 0:00-0:20)"
+    stuck = EditPage()
+    stuck.rows, stuck.trim_as = [], "other (trim 0:00-0:20)"
+    use_clock(WaitPage())
+    stuck.wait_for_timeout = lambda ms, page=stuck: setattr(fm, "time", type("C", (), {"time": staticmethod(
+        lambda: 10 ** 10)}))
+    try:
+        fm.press_trim(stuck, None, "com", edit_plan(mode="trim"), [])
+        raise AssertionError("a trim that lists no new row must fail")
+    except gw.Failure as failure:
+        assert failure.reason == "the trim made no track on com within 60s", failure.reason
+        assert doctor.classify_browser(1, failure.reason)[1] == "browser no output"
+finally:
+    fm.to_library, fm.time = saved_library, saved[0]
+
+
+class Row(EditPage):
+    def get_by_role(self, role, name=None, exact=False):
+        return Shown(self, (role, name))
+
+    def text(self, key):
+        return "base (trim 0:05-0:25)\nAudio effects\n0:20"
+
+
+class Shown(El):
+    def get_attribute(self, name, timeout=None):
+        return "/song/c9"
+
+
+saved_open = fm.open_page
+fm.open_page = lambda page, traffic, account, path, timeout_s=45.0: None
+try:
+    assert fm.library_row(Row(), None, "com", "base (trim 0:05-0:25)") == {"id": "c9", "seconds": 20}
+finally:
+    fm.open_page = saved_open
+
+cover = EditPage()
+controls = fm.edit_panel(cover, edit_plan(mode="cover", strength=0.35, lyrics="la la", sound="as a bossa nova",
+                                          seed="7"), "cover-ab12")
+assert cover.strength == 0.35 and controls["strength"] == 0.35, cover.strength
+assert cover.instruction == "Edit the lyrics:\nla la\nas a bossa nova" == controls["instruction"], cover.instruction
+assert cover.title == "cover-ab12" and controls["title"] == "cover-ab12", cover.title
+variation = EditPage()
+assert fm.edit_panel(variation, edit_plan(mode="variation"), "var-ab12") == \
+    {"mode": "variation", "source": "base", "title": "var-ab12"} and variation.instruction == ""
+
+assert fm.chat_opening(edit_plan(mode="extend", to_s=90, sound="a finale", title="t-1")) == \
+    'Extend my uploaded audio until 1:30. Title the result "t-1". a finale'
+assert fm.chat_opening(edit_plan(mode="trim", from_s=5, to_s=25, title="t-1")) == \
+    'Trim my uploaded audio to 0:05-0:25. Title the result "t-1".'
+assert fm.chat_opening({"sound": "a beat"}) == "Make a song with my uploaded audio as the reference track. Sound: a beat"
+
+
+class ChatPage(EditPage):
+    def get_by_role(self, role, name=None, exact=False):
+        return Chat(self, (role, name))
+
+    def get_by_placeholder(self, text):
+        return Chat(self, ("placeholder", text))
+
+    def on(self, event, handler):
+        pass
+
+
+class Chat(El):
+    def or_(self, other):
+        return self
+
+
+chat_page = ChatPage()
+fm.send(chat_page, fm.Traffic(chat_page), {**edit_plan(mode="replace", from_s=20, to_s=30, sound="a drum break",
+                                                       title="r-1"), "ref_audio": "/a/take.wav", "instrumental": False,
+                                           "length": ""})
+assert chat_page.lyrics == 'Replace 0:20-0:30 of my uploaded audio. Title the result "r-1". a drum break', chat_page.lyrics
+assert ("click", ("button", "Send message"), None) in chat_page.log, chat_page.log
+
+
+def edit_args(**fields):
+    return type("A", (), {**dict(prompt="", out_dir=work, model="lyria-3.5", format="wav", lyrics=None, vocals=None,
+                                 genre=None, duration=None, length=None, bpm=None, seed=None, ref_audio=None,
+                                 edit="base", mode="trim", from_s=5, to_s=25, strength=None, stems=False,
+                                 title="t", count=1, accounts=1, account="com", fanned=False, dry_run=False),
+                          **fields})()
+
+
+trim_plan = fm.make_plan(edit_args())
+assert (trim_plan["price"], trim_plan["edit"], trim_plan["ref_audio"]) == (0, "base", None), trim_plan
+upload_plan = fm.make_plan(edit_args(edit="/a/take.wav", mode="cover"))
+assert (upload_plan["price"], upload_plan["edit"], upload_plan["ref_audio"]) == (5, None, "/a/take.wav"), upload_plan
+for fields, said in ((dict(account=None), "is a library title, which lives on one account"),
+                     (dict(mode=None), "--edit and --mode go together")):
+    try:
+        fm.cmd_generate(edit_args(**fields))
+        raise AssertionError(said)
+    except gw.Failure as failure:
+        assert failure.code == 2 and said in failure.reason, failure.reason
+
+
+class TakePage(EditPage):
+    def on(self, event, handler):
+        pass
+
+    def close(self):
+        pass
+
+
+def fake_open(page, traffic, account, path, timeout_s=45.0):
+    traffic.balance = 10490
+
+
+saved_take = {name: getattr(fm, name) for name in ("open_page", "open_edit", "trim_window", "press_trim",
+                                                   "library_row", "save_song")}
+fm.open_page, fm.open_edit = fake_open, lambda page, traffic, account, plan: ["before"]
+fm.trim_window = lambda page, plan: {"mode": "trim", "source": "base", "window": "0:05-0:25"}
+fm.press_trim = lambda page, traffic, account, plan, before: before == ["before"] and "base (trim 0:05-0:25)"
+fm.library_row = lambda page, traffic, account, title: {"id": "c9", "seconds": 20.0}
+fm.save_song = lambda page, traffic, account, title, plan, take, split: (f"{work}/take1.wav", 9, {})
+try:
+    take = fm.one_take(type("Ctx", (), {"new_page": lambda self: TakePage()})(), "com",
+                       {**trim_plan, "format": "wav"}, 1)
+finally:
+    for name, value in saved_take.items():
+        setattr(fm, name, value)
+assert (take["title"], take["charged"], take["model"], take["duration"]) == \
+    ("base (trim 0:05-0:25)", 0, "flow-music-trim", 20.0), take
+assert "\nAccount: com\n" in take["notes"] and "\nSource: base\n" in take["notes"] and "window 0:05-0:25" in take["notes"], \
+    take["notes"]
+rows = [json.loads(line) for line in open(gw.ROOT / "jobs.jsonl")]
+assert [(r["event"], r["mode"]) for r in rows if r.get("kind") == "flow-music" and r.get("mode")][-2:] == \
+    [("queued", "trim"), ("saved", "trim")], rows[-2:]
+print("edit checks ok")
 PY
 
 printf 'PASS: test_flow_music (%s asserts)\n' "$asserts"

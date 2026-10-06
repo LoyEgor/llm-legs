@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# One group, parsed whole before it runs: bash reads a script as it goes, so an in-place edit
+# mid-run fed a running leg shifted bytes (2026-10-02). The closing `exit` and `}` stay last.
+{
+set -euo pipefail
+
+command -v jq >/dev/null 2>&1 || { printf 'gemini-speech: jq is required\n' >&2; exit 1; }
+
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+
+root=$(resolve_root)
+. "$root/share/image-leg.sh"
+. "$root/share/account-arg.sh"
+image_leg_start gemini-speech audio observed_model
+IMAGE_LEG_ROUTE=aistudio
+. "$root/share/image-caps.sh"
+caps() { image_caps_get "$root" gemini "$1"; }
+
+usage() {
+  image_leg_cause "$@"
+  printf 'usage: gemini-speech --dest <absolute .wav|.mp3 path> (--text <text> | --text-file <path> | --line "<voice>: <text>" ...) [--voice <name>] [--style <instructions>] [--model %s] [--temperature 0-2] [--account <profile>] [--dry-run]\n' \
+    "$(caps '.speech.models | keys | join("|")')" >&2
+  printf '       gemini-speech --list-voices [--model <key>]\n' >&2
+  printf '  free Gemini TTS in Google AI Studio (Generate speech), driven in the hidden Chrome of gemini-web; the WAV is 24 kHz mono\n' >&2
+  printf '  --line "<voice>: <text>" repeated is a dialogue of at most two voices; on the 3.8 models "<voice> (<style>): <text>" styles one line\n' >&2
+  printf '  3.8 models (flash, flash-lite): tags as <whispers> <laughs> ..., --style per block, [--filler-words] with two speakers\n' >&2
+  printf '  older models (3.1-flash, 2.5-pro, 2.5-flash): tags as [whispering] [laughing] ..., --style is each speaker'\''s Audio Profile, [--scene <text>] [--context <text>] [--delivery %s] [--pace %s] [--accent %s]\n' \
+    "$(caps '.speech.families.classic.director.delivery | join("|")')" "$(caps '.speech.families.classic.director.pace | join("|")')" \
+    "$(caps '.speech.families.classic.director.accent | join("|")')" >&2
+  printf '  the language comes from the text itself: there is no --language; see docs/image-vendors/gemini.md\n' >&2
+  exit 2
+}
+
+say() {
+  image_leg_cause "$1"
+  exit 2
+}
+
+dest=''
+text=''
+text_file=''
+lines=()
+voice=''
+style=''
+model=''
+temperature=''
+filler=false
+scene=''
+context=''
+delivery=''
+pace=''
+accent=''
+account=''
+dry_run=false
+list_voices=false
+lock_wait=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h | --help) image_leg_help usage ;;
+    --dest) [ "$#" -ge 2 ] || usage "$1 needs a value"; dest=$2; shift 2 ;;
+    --text) [ "$#" -ge 2 ] || usage "$1 needs a value"; text=$2; shift 2 ;;
+    --text-file) [ "$#" -ge 2 ] || usage "$1 needs a value"; text_file=$2; shift 2 ;;
+    --line) [ "$#" -ge 2 ] || usage "$1 needs a value"; lines+=("$2"); shift 2 ;;
+    --voice) [ "$#" -ge 2 ] || usage "$1 needs a value"; voice=$2; shift 2 ;;
+    --style) [ "$#" -ge 2 ] || usage "$1 needs a value"; style=$2; shift 2 ;;
+    --model) [ "$#" -ge 2 ] || usage "$1 needs a value"; model=$2; shift 2 ;;
+    --temperature) [ "$#" -ge 2 ] || usage "$1 needs a value"; temperature=$2; shift 2 ;;
+    --filler-words) filler=true; shift ;;
+    --scene) [ "$#" -ge 2 ] || usage "$1 needs a value"; scene=$2; shift 2 ;;
+    --context) [ "$#" -ge 2 ] || usage "$1 needs a value"; context=$2; shift 2 ;;
+    --delivery) [ "$#" -ge 2 ] || usage "$1 needs a value"; delivery=$2; shift 2 ;;
+    --pace) [ "$#" -ge 2 ] || usage "$1 needs a value"; pace=$2; shift 2 ;;
+    --accent) [ "$#" -ge 2 ] || usage "$1 needs a value"; accent=$2; shift 2 ;;
+    --language) say "--language: AI Studio's speech models detect the language from the text; write the text in that language" ;;
+    --account) [ "$#" -ge 2 ] || usage "$1 needs a value"; account_arg "$2"; account=$2; shift 2 ;;
+    --lock-wait) [ "$#" -ge 2 ] || usage "$1 needs a value"; image_leg_lock_wait_arg "$2" || say "--lock-wait is whole seconds"; lock_wait=$2; shift 2 ;;
+    --list-voices) list_voices=true; shift ;;
+    --dry-run) dry_run=true; shift ;;
+    *) usage "unknown argument $1" ;;
+  esac
+done
+
+manifest=$(image_caps_file "$root" gemini)
+if [ "$list_voices" = true ]; then
+  IMAGE_LEG_SKIP=1
+  family=$(jq -r --arg m "${model:-$(caps '.speech.default_model')}" \
+    '.speech.models | to_entries[] | select(.key == $m or .value.id == $m) | .value.family' "$manifest")
+  [ -n "$family" ] || say "--model is one of: $(caps '.speech.models | keys | join(", ")')"
+  jq -r --arg f "$family" '.speech as $s | ($s.families[$f]) as $fam
+    | (if $fam.voices == "all" then ($s.voices | keys) else $s.classic_voices end)[] as $v
+    | [$v, ($s.voices[$v] // [] | join("\t"))] | join("\t") + (if $v == $fam.default_voice then "\t(default)" else "" end)' "$manifest"
+  exit 0
+fi
+
+[ -n "$dest" ] || usage "missing --dest"
+[[ "$dest" = /* ]] || say "--dest must be an absolute path, not $dest"
+[ -d "$(dirname "$dest")" ] || say "--dest folder $(dirname "$dest") does not exist"
+ext=$(printf '%s' "${dest##*.}" | tr '[:upper:]' '[:lower:]')
+jq -e --arg ext "$ext" '.speech.dests | index($ext) != null' "$manifest" >/dev/null ||
+  say "--dest must end in .$(caps '.speech.dests | join(" .")')"
+[ -z "$text" ] || [ -z "$text_file" ] || say "--text and --text-file are one choice"
+if [ -n "$text_file" ]; then
+  [ -f "$text_file" ] || say "--text-file $text_file does not exist"
+  text=$(cat "$text_file")
+  [ -n "${text//[[:space:]]/}" ] || say "--text-file $text_file is empty"
+fi
+[ -n "$text" ] || [ "${#lines[@]}" -gt 0 ] || usage "missing --text, --text-file or --line"
+[ -z "$text" ] || [ "${#lines[@]}" -eq 0 ] || say "--text is one voice, --line a dialogue: pass one of them"
+[ -z "$temperature" ] || [[ "$temperature" =~ ^[0-9]+(\.[0-9]+)?$ ]] || say "--temperature is a number from 0 to 2"
+[ "$ext" = wav ] || command -v ffmpeg >/dev/null 2>&1 || { printf 'gemini-speech: ffmpeg is required for an .mp3 dest\n' >&2; exit 1; }
+
+engine_args=(generate)
+[ -z "$text" ] || engine_args+=(--text "$text")
+for line in ${lines[@]+"${lines[@]}"}; do engine_args+=(--line "$line"); done
+for pair in "--voice:$voice" "--style:$style" "--model:$model" "--temperature:$temperature" "--scene:$scene" \
+  "--context:$context" "--delivery:$delivery" "--pace:$pace" "--accent:$accent" "--account:$account" "--lock-wait:$lock_wait"; do
+  [ -z "${pair#*:}" ] || engine_args+=("${pair%%:*}" "${pair#*:}")
+done
+[ "$filler" = false ] || engine_args+=(--filler-words)
+[ "$dry_run" = false ] || engine_args+=(--dry-run)
+
+started=$(date +%s)
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/gemini-speech.XXXXXX")
+trap 'image_leg_exit; rm -rf "$tmp_dir"' EXIT
+engine_args+=(--out-dir "$tmp_dir")
+image_leg_mark "$(( ${#text} + $(printf '%s' "${lines[*]:-}" | wc -c) ))"
+rc=0
+if [ -n "${GEMINI_SPEECH_ENGINE:-}" ]; then
+  "$GEMINI_SPEECH_ENGINE" "${engine_args[@]}" >"$tmp_dir/engine.out" 2>"$tmp_dir/engine.err" || rc=$?
+else
+  uv_cmd=${GEMINI_WEB_UV:-$(command -v uv || printf /opt/homebrew/bin/uv)}
+  "$uv_cmd" run -q --script "$root/share/aistudio_speech.py" "${engine_args[@]}" >"$tmp_dir/engine.out" 2>"$tmp_dir/engine.err" || rc=$?
+fi
+grep -E '^(BROWSER_|gemini-speech: )' "$tmp_dir/engine.err" >&2 || true
+result=$(grep '^{' "$tmp_dir/engine.out" | tail -n 1 || true)
+if ! jq -e . >/dev/null 2>&1 <<<"$result"; then
+  tail -n 15 "$tmp_dir/engine.err" >&2
+  printf 'gemini-speech: the engine printed no result (exit %s)\n' "$rc" >&2
+  exit 1
+fi
+image_leg_engine_phases "$result"
+if [ "$(jq -r '.ok' <<<"$result")" != true ]; then
+  reason=$(jq -r '.reason // "unknown failure"' <<<"$result")
+  printf 'gemini-speech: %s\n' "$reason" >&2
+  case "$rc" in
+    3) image_leg_limit GEMINI "$result" ;;
+    5) image_leg_busy "$(jq -r '.account // empty' <<<"$result")" ;;
+    2 | 4) exit "$rc" ;;
+    *) exit 1 ;;
+  esac
+fi
+account=$(jq -r '.account' <<<"$result")
+if [ "$(jq -r '.dry_run // false' <<<"$result")" = true ]; then
+  printf 'dry_run=ok\naccount=%s\ncontrols=%s\n' "$account" "$(jq -c '.controls' <<<"$result")"
+  exit 0
+fi
+take=$(jq -c '.takes[0] // empty' <<<"$result")
+audio=$(jq -r '.audio // empty' <<<"$take")
+[ -n "$audio" ] && [ -s "$audio" ] || { printf 'gemini-speech: the engine returned no audio file\n' >&2; exit 1; }
+if [ "$ext" = wav ]; then
+  cp "$audio" "$dest"
+else
+  ffmpeg -v error -y -i "$audio" -c:a libmp3lame -b:a 128k "$dest" ||
+    { printf 'gemini-speech: could not encode the mp3\n' >&2; exit 1; }
+fi
+observed_model=$(jq -r '.model // empty' <<<"$take")
+seconds=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$dest" 2>/dev/null | head -n 1)
+printf 'dest=%s\nduration=%s\nformat=%s\naccount=%s\nmodel=%s\nvoices=%s\ncredits=free (AI Studio, no API key)\nseconds=%s\n' \
+  "$dest" "$(awk -v s="${seconds:-0}" 'BEGIN { printf "%.2f", s }')" "$ext" "$account" "${observed_model:-unknown}" \
+  "$(jq -r '.speakers | map(sub("^Speaker [0-9]+ - "; "")) | join(",")' <<<"$take")" "$(($(date +%s) - started))"
+exit
+}

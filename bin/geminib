@@ -1105,7 +1105,7 @@ show_help() {
     'geminib <name> exec [args...]' \
     'geminib agy-launch --agy <path> -- <agy args...>  Run an already-resolved agy binary with the capacity fallback, leaving the environment (its HOME) untouched; for a sandboxed consumer that seeds its own auth.' \
     'geminib add <name>                    Create a profile without launching; prints the login command.' \
-    'geminib web <name>                    Sign an account into the web routes (Flow video, Flow Music, Gemini app music/sfx/listen) with one Google sign-in in its hidden-Chrome profile; `geminib p` offers it after a first login.' \
+    'geminib web <name>                    Sign an account into the web routes (Flow video, Flow Music, Gemini app music/sfx/listen) in its hidden-Chrome profile: Google sign-in, then Log in, Agree and Grant access on Flow Music in the same window; the closing status names any step still missing. `geminib p` offers it after a first login.' \
     'geminib remove <name>                 Forget a profile and prune its cached quota; main leaves only a marker.' \
     'geminib enable <name>|--all           Return an account (or every account) to worker selection.' \
     'geminib disable <name>|--all          Exclude an account (or every account) from the worker pool; headless runs are then refused, your own sessions are not.' \

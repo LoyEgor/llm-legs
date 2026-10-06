@@ -29,7 +29,7 @@ import gemini_web as gw  # noqa: E402
 
 gw.ROUTE = "flow-music"
 
-SITE = "https://www.flowmusic.app"
+SITE = gw.FLOW_MUSIC
 WALLS = "flow-music-walls.json"
 NOTICES = "notices.json"
 NOTICE_KEY = "agreed_flow_music"
@@ -154,7 +154,9 @@ def open_page(page, traffic: Traffic, account: str, path: str, timeout_s: float 
             return
         host_path = page.url.split("://", 1)[-1]
         if (host_path.startswith("accounts.google.com") or "/login" in host_path
-                or page.get_by_text("Continue with Google").count()):
+                or page.get_by_text("Continue with Google").count()
+                or (page.get_by_role("button", name="Log in", exact=True).count()
+                    and page.get_by_role("button", name="Sign up", exact=True).count())):
             gw.write_meta(account, music_signed_in=False)
             raise gw.Failure(4, f"Flow Music shows {account} signed out; the owner signs in once at flowmusic.app "
                                 "(Continue with Google)")
@@ -300,10 +302,20 @@ def attach_audio(page, traffic: Traffic, account: str, path: Path, wait_s: float
     raise gw.Failure(1, f"the reference audio upload did not finish within {wait_s:.0f}s")
 
 
+def chat_opening(plan: dict) -> str:
+    if not plan.get("mode"):
+        return f"Make a song with my uploaded audio as the reference track. Sound: {plan['sound']}"
+    span = f"{clock(plan['from_s'] or 0)}-{clock(plan['to_s'] or 0)}"
+    asked = {"cover": "Make a cover of my uploaded audio", "variation": "Make a variation of my uploaded audio",
+             "extend": f"Extend my uploaded audio until {clock(plan['to_s'] or 0)}",
+             "replace": f"Replace {span} of my uploaded audio", "trim": f"Trim my uploaded audio to {span}"}
+    return f"{asked[plan['mode']]}. Title the result \"{plan['title']}\". {plan['sound']}".strip()
+
+
 def send(page, traffic: Traffic, plan: dict) -> None:
     traffic.arm(chat=bool(plan["ref_audio"]))
     if plan["ref_audio"]:
-        words = [f"Make a song with my uploaded audio as the reference track. Sound: {plan['sound']}"]
+        words = [chat_opening(plan)]
         if plan["lyrics"]:
             words.append(f"Lyrics:\n{plan['lyrics']}")
         elif plan["instrumental"]:
@@ -324,13 +336,17 @@ def send(page, traffic: Traffic, plan: dict) -> None:
 def library_row(page, traffic: Traffic, account: str, title: str) -> dict | None:
     open_page(page, traffic, account, "/library/my-songs")
     row = page.get_by_role("button", name=f"Open details for {title}", exact=True)
+    with contextlib.suppress(Exception):
+        row.first.wait_for(timeout=5000)
     if not row.count():
         return None
-    length = re.search(r"\b(\d+):(\d\d)\b", row.first.inner_text())
-    if not length:
+    # The last m:ss is the length: a trimmed song's title carries its own times.
+    lengths = re.findall(r"\b(\d+):(\d\d)\b", row.first.inner_text())
+    if not lengths:
         return None
+    minutes, seconds = lengths[-1]
     href = page.get_by_role("link", name=title, exact=True).first.get_attribute("href") or ""
-    return {"id": href.rsplit("/", 1)[-1], "seconds": int(length[1]) * 60 + int(length[2])}
+    return {"id": href.rsplit("/", 1)[-1], "seconds": int(minutes) * 60 + int(seconds)}
 
 
 def wait_song(page, traffic: Traffic, account: str, plan: dict, title: str, started: float) -> dict:
@@ -437,6 +453,165 @@ def split_stems(page, traffic: Traffic, account: str, title: str, names: list[st
     raise gw.Failure(1, f"the stem split returned no take on {account} within {timeout_s:.0f}s")
 
 
+EDIT_MENU = {"cover": "Cover", "extend": "Extend", "replace": "Replace", "variation": "Use prompt", "trim": "Trim"}
+
+
+def clock(seconds: int) -> str:
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+def set_clock(page, box, seconds: int, what: str) -> None:
+    try:
+        box.click(timeout=8000)
+        box.press("Meta+a")
+        box.type(clock(seconds))
+        box.press("Enter")
+        page.wait_for_timeout(300)
+    except Exception as error:  # noqa: BLE001
+        raise drift(f"no {what} field") from error
+
+
+def open_edit(page, traffic: Traffic, account: str, plan: dict) -> list[str]:
+    to_library(page, traffic, account, plan["edit"])
+    trimmed = trimmed_titles(page, plan["edit"])
+    song_menu(page, plan["edit"])
+    try:
+        submenu_pick(page, "Remix", EDIT_MENU[plan["mode"]])
+    except Exception as error:  # noqa: BLE001
+        raise drift(f"no Remix → {EDIT_MENU[plan['mode']]} menu item for {plan['edit']!r}") from error
+    page.wait_for_timeout(2000)
+    return trimmed
+
+
+def edit_window(page, plan: dict) -> str:
+    """Extend and Replace take their window in the Settings popover; Flow moves an Extend start to keep the
+    extension 30-150 s long, so the label it shows afterwards is the truth."""
+    mode, start_s = plan["mode"], plan["from_s"]
+    try:
+        if start_s is None:
+            length = page.get_by_role("button", name="Copy duration timestamp", exact=True).first.inner_text(timeout=8000)
+            minutes, seconds = re.fullmatch(r"(\d+):(\d\d)(?:\.\d+)?", length.strip()).groups()
+            start_s = int(minutes) * 60 + int(seconds)
+        page.get_by_role("button", name="Settings", exact=True).first.click(timeout=8000)
+        page.wait_for_timeout(500)
+        boxes = page.locator("[role=dialog]").last.get_by_role("textbox")
+        boxes.nth(1).wait_for(timeout=8000)
+    except Exception as error:  # noqa: BLE001
+        raise drift(f"no {mode} Settings popover") from error
+    set_clock(page, boxes.nth(0), start_s, f"{mode} start")
+    set_clock(page, boxes.nth(1), plan["to_s"], f"{mode} end")
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(400)
+    label = page.get_by_text(re.compile(r"^(Extend|Replace) \d+:\d\d-\d+:\d\d$")).first
+    shown = label.inner_text().split(" ", 1)[1] if label.count() else "nothing"
+    start = clock(start_s)
+    if shown != f"{start}-{clock(plan['to_s'])}":
+        raise gw.Failure(2, f"Flow Music set the {mode} window to {shown}, not {start}-{clock(plan['to_s'])} "
+                            f"(an extension is 30-150 s and starts at most at the song's end; a replaced part lies "
+                            f"inside the song)")
+    return shown
+
+
+def set_strength(page, value: float) -> None:
+    slider = page.get_by_role("slider").first
+    try:
+        slider.focus(timeout=8000)
+        page.keyboard.press("Home")
+        for _ in range(round(value * 100)):
+            page.keyboard.press("ArrowRight")
+        now = float(slider.get_attribute("aria-valuenow") or -1)
+    except Exception as error:  # noqa: BLE001
+        raise drift("no Strength slider in the Cover panel") from error
+    if abs(now - value) > 0.005:
+        raise drift(f"the Strength slider shows {now}, not {value}")
+
+
+def edit_lyrics(page, lyrics: str) -> None:
+    """Edit Lyrics turns the new text into a diff written into the Instruction box."""
+    dialog = page.get_by_role("dialog", name="Edit Lyrics")
+    try:
+        page.get_by_role("button", name="Edit Lyrics", exact=True).first.click(timeout=8000)
+        box = dialog.get_by_role("textbox").nth(1)
+        box.click(timeout=8000)
+        page.keyboard.press("Meta+a")
+        page.keyboard.insert_text(lyrics)
+        dialog.get_by_role("button", name="Done", exact=True).click(timeout=8000)
+        page.wait_for_timeout(1000)
+    except Exception as error:  # noqa: BLE001
+        raise drift("no Edit Lyrics dialog in the edit panel") from error
+
+
+def panel_title(page):
+    return page.get_by_role("button", name="Generate", exact=True).first.locator("xpath=ancestor::*[2]") \
+        .locator("textarea").last
+
+
+def edit_panel(page, plan: dict, title: str) -> dict:
+    controls = {"mode": plan["mode"], "source": plan["edit"], "title": title}
+    if plan["mode"] in ("extend", "replace"):
+        controls["window"] = edit_window(page, plan)
+    if plan["mode"] == "cover" and plan["strength"] is not None:
+        set_strength(page, plan["strength"])
+        controls["strength"] = plan["strength"]
+    if plan["mode"] != "variation":
+        if plan["lyrics"]:
+            edit_lyrics(page, plan["lyrics"])
+        instruction = page.get_by_role("textbox", name="Instruction", exact=True)
+        try:
+            words = "\n".join(filter(None, [instruction.input_value(timeout=8000), plan["sound"]]))
+            instruction.fill(words)
+        except Exception as error:  # noqa: BLE001
+            raise drift(f"no Instruction box in the {plan['mode']} panel") from error
+        controls["instruction"] = words
+        if plan["seed"]:
+            page.get_by_role("button", name="Expand Advanced section", exact=True).first.click(timeout=8000)
+            fill(page, field(page, "Seed"), plan["seed"], "Seed")
+            controls["seed"] = field(page, "Seed").input_value()
+    details = page.get_by_role("button", name="Expand Details section", exact=True)
+    if details.count():
+        details.first.click()
+    fill(page, panel_title(page), title, "title")
+    return controls
+
+
+def trim_window(page, plan: dict) -> dict:
+    dialog = page.get_by_role("dialog", name="Trim Song")
+    boxes = dialog.get_by_role("textbox")
+    try:
+        boxes.nth(1).wait_for(timeout=8000)
+    except Exception as error:  # noqa: BLE001
+        raise drift("no Trim Song dialog") from error
+    # The end goes first: an end typed while the start reads 0:00 pulls the start to 10 s before it.
+    set_clock(page, boxes.nth(1), plan["to_s"], "trim end")
+    set_clock(page, boxes.nth(0), plan["from_s"], "trim start")
+    shown = [boxes.nth(i).input_value() for i in (0, 1)]
+    if [re.sub(r"\.0$", "", value) for value in shown] != [clock(plan["from_s"]), clock(plan["to_s"])]:
+        raise gw.Failure(2, f"Flow Music set the trim to {shown[0]}-{shown[1]}, not "
+                            f"{clock(plan['from_s'])}-{clock(plan['to_s'])} (the trim lies inside the song)")
+    return {"mode": "trim", "source": plan["edit"], "window": "-".join(shown)}
+
+
+def trimmed_titles(page, source: str) -> list[str]:
+    # "Open details for" also names the row's draggable wrapper, which has no aria-label of its own.
+    rows = page.get_by_role("button", name=re.compile("^More options for " + re.escape(f"{source} (trim ")))
+    return [(rows.nth(i).get_attribute("aria-label") or "")[len("More options for "):] for i in range(rows.count())]
+
+
+def press_trim(page, traffic: Traffic, account: str, plan: dict, before: list[str], timeout_s: float = 60) -> str:
+    """Trim saves "<source> (trim <start>-<end>)" at once and for free; the new row is the title whose count grew.
+    `before` is read ahead of the dialog, whose modal hides the rows behind it."""
+    page.get_by_role("dialog", name="Trim Song").get_by_role("button", name="Trim", exact=True).click(timeout=8000)
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        page.wait_for_timeout(3000)
+        to_library(page, traffic, account, plan["edit"])
+        after = trimmed_titles(page, plan["edit"])
+        grown = [title for title in dict.fromkeys(after) if after.count(title) > before.count(title)]
+        if grown:
+            return grown[0]
+    raise gw.Failure(1, f"the trim made no track on {account} within {timeout_s:.0f}s")
+
+
 def save_song(page, traffic: Traffic, account: str, title: str, plan: dict, take: int, split: bool) -> tuple:
     out_dir = Path(plan["out_dir"])
     to_library(page, traffic, account, title)
@@ -458,24 +633,36 @@ def save_song(page, traffic: Traffic, account: str, title: str, plan: dict, take
 def one_take(context, account: str, plan: dict, take: int) -> dict:
     page = context.new_page()
     traffic = Traffic(page)
-    open_page(page, traffic, account, "/session")
+    open_page(page, traffic, account, "/library/my-songs" if plan["edit"] else "/session")
     before = traffic.balance
     note_balance(account, before, traffic.grants)
     if before < plan["price"]:
-        raise gw.Failure(3, f"{account} holds {before} Flow Music credits, under the {plan['price']} a song costs",
-                         account=account)
+        raise gw.Failure(3, f"{account} holds {before} Flow Music credits, under the {plan['price']} a "
+                            f"{plan['mode'] or 'song'} costs", account=account)
     title = f"{plan['title']}-{secrets.token_hex(2)}"
-    controls = compose(page, {**plan, "title": title})
+    if plan["edit"]:
+        trimmed = open_edit(page, traffic, account, plan)
+        controls = trim_window(page, plan) if plan["mode"] == "trim" else edit_panel(page, plan, title)
+    else:
+        controls = compose(page, {**plan, "title": title})
     if plan["ref_audio"]:
         attach_audio(page, traffic, account, Path(plan["ref_audio"]), plan["upload_wait_s"])
     if plan["dry_run"]:
         return {"ok": True, "dry_run": True, "account": account, "controls": controls, "credits": before}
     started = time.time()
     gw.ledger({"kind": "flow-music", "event": "queued", "account": account, "take": take, "model": plan["model"],
-               "prompt": plan["sound"][:500], "title": title})
-    send(page, traffic, plan)
+               "prompt": plan["sound"][:500], "title": title, "mode": plan["mode"], "source": plan["edit"]})
     session = page.url
-    song = wait_song(page, traffic, account, plan, title, started)
+    if plan["mode"] == "trim" and plan["edit"]:
+        title = press_trim(page, traffic, account, plan, trimmed)
+        song = library_row(page, traffic, account, title)
+        if not song:
+            raise gw.Failure(1, f"the trim made no track on {account}: the library lists {title!r} without a length")
+    else:
+        send(page, traffic, {**plan, "title": title})
+        session = page.url
+        song = wait_song(page, traffic, account, plan, title, started)
+        session = page.url if "/session/" in page.url else session
     render_s = round(time.time() - started, 1)
     open_page(page, traffic, account, "/library/my-songs")
     after = traffic.balance
@@ -485,16 +672,23 @@ def one_take(context, account: str, plan: dict, take: int) -> dict:
     stems_charged = after - traffic.balance if plan["stems"] else None
     note_balance(account, traffic.balance, traffic.grants)
     seconds = song["seconds"]
-    gw.ledger({"kind": "flow-music", "event": "saved", "account": account, "clip": song["id"], "model": plan["model"],
+    model = f"flow-music-{plan['mode']}" if plan["mode"] else plan["model"]
+    gw.ledger({"kind": "flow-music", "event": "saved", "account": account, "clip": song["id"], "model": model,
                "bytes": size, "seconds": round(seconds, 1), "charged": charged, "credits": traffic.balance,
-               "stems": sorted(stems), "stems_charged": stems_charged, "render_s": render_s})
-    notes = (f"Model: {plan['model']} ({controls['model']})\nSession: {session}\nSong: {SITE}/song/{song['id']}\n"
-             f"Title: {title}\nLength: {seconds:.1f} s (asked {controls['length']}), BPM {controls['bpm']}, "
-             f"seed {controls['seed']}\nCredits: {charged} charged, {traffic.balance} left\n\nSound:\n{plan['sound']}\n"
-             f"\nLyrics:\n{plan['lyrics'] or ('instrumental' if plan['instrumental'] else '-')}")
+               "stems": sorted(stems), "stems_charged": stems_charged, "render_s": render_s, "mode": plan["mode"]})
+    head = f"Session: {session}\nSong: {SITE}/song/{song['id']}\nTitle: {title}\nAccount: {account}\n"
+    tail = f"Credits: {charged} charged, {traffic.balance} left\n"
+    if plan["mode"]:
+        notes = (f"Model: {model}\n{head}Source: {plan['edit'] or plan['ref_audio']}\nLength: {seconds:.1f} s"
+                 + "".join(f", {key} {controls[key]}" for key in ("window", "strength", "seed") if key in controls)
+                 + f"\n{tail}\nInstruction:\n{controls.get('instruction') or plan['sound'] or '-'}")
+    else:
+        notes = (f"Model: {plan['model']} ({controls['model']})\n{head}Length: {seconds:.1f} s (asked "
+                 f"{controls['length']}), BPM {controls['bpm']}, seed {controls['seed']}\n{tail}\nSound:\n"
+                 f"{plan['sound']}\n\nLyrics:\n{plan['lyrics'] or ('instrumental' if plan['instrumental'] else '-')}")
     page.close()
     return {"audio": str(audio), "stems": stems, "account": account, "url": session, "song": f"{SITE}/song/{song['id']}",
-            "clip": song["id"], "model": plan["model"], "duration": seconds, "charged": charged,
+            "clip": song["id"], "model": model, "duration": seconds, "charged": charged,
             "stems_charged": stems_charged, "credits": traffic.balance, "title": title, "notes": notes,
             "render_s": render_s}
 
@@ -529,6 +723,10 @@ def child_argv(args, account: str, out_dir: Path) -> list[str]:
         value = getattr(args, flag)
         if value is not None:
             argv += ["--" + flag.replace("_", "-"), str(value)]
+    for flag, value in (("--edit", args.edit), ("--mode", args.mode), ("--from", args.from_s), ("--to", args.to_s),
+                        ("--strength", args.strength)):
+        if value is not None:
+            argv += [flag, str(value)]
     return argv + (["--stems"] if args.stems else []) + (["--dry-run"] if args.dry_run else [])
 
 
@@ -580,15 +778,22 @@ def make_plan(args) -> dict:
     elif args.length:
         length = c["lengths"][args.length]
     sound = f"{args.genre}. {args.prompt}" if args.genre else args.prompt
+    upload = args.edit if args.edit and args.edit.startswith("/") else None
     return {"sound": sound, "lyrics": args.lyrics or "", "instrumental": args.vocals == "instrumental",
             "bpm": str(args.bpm) if args.bpm else "", "length": length or "", "seed": "" if args.seed is None else str(args.seed),
             "model": args.model, "model_label": c["models"][args.model], "format": args.format, "stems": args.stems,
-            "ref_audio": args.ref_audio, "count": args.count, "out_dir": args.out_dir, "dry_run": args.dry_run,
-            "price": c["price_per_song"], "timeout_s": c["timeout_s"], "upload_wait_s": c["upload_wait_s"],
+            "ref_audio": upload or args.ref_audio, "edit": None if upload else args.edit, "mode": args.mode,
+            "from_s": args.from_s, "to_s": args.to_s, "strength": args.strength, "count": args.count,
+            "out_dir": args.out_dir, "dry_run": args.dry_run, "timeout_s": c["timeout_s"],
+            "price": c["edit"][args.mode]["price"] if args.mode else c["price_per_song"], "upload_wait_s": c["upload_wait_s"],
             "title": re.sub(r"[^A-Za-z0-9-]+", "-", args.title or "take").strip("-")[:40] or "take"}
 
 
 def cmd_generate(args) -> None:
+    if bool(args.edit) != bool(args.mode):
+        raise gw.Failure(2, "--edit and --mode go together")
+    if args.edit and not args.edit.startswith("/") and not args.account:
+        raise gw.Failure(2, f"--edit {args.edit!r} is a library title, which lives on one account: add --account")
     plan = make_plan(args)
     accounts = gw.take_accounts(args.account, lambda: rotation(plan["price"]),
                                 "no Flow Music account is free of walls and holds a song's credits")
@@ -625,7 +830,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="flow-music-engine")
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("generate")
-    p.add_argument("--prompt", required=True)
+    p.add_argument("--prompt", default="")
     p.add_argument("--out-dir", required=True)
     p.add_argument("--model", choices=sorted(c["models"]), default=c["default_model"])
     p.add_argument("--format", choices=sorted(c["formats"]), default="mp3")
@@ -638,6 +843,11 @@ def main() -> None:
     p.add_argument("--seed", type=int)
     p.add_argument("--ref-audio")
     p.add_argument("--stems", action="store_true")
+    p.add_argument("--edit")
+    p.add_argument("--mode", choices=sorted(c["edit"]))
+    p.add_argument("--from", dest="from_s", type=int)
+    p.add_argument("--to", dest="to_s", type=int)
+    p.add_argument("--strength", type=float)
     p.add_argument("--title")
     p.add_argument("--count", type=int, default=1)
     p.add_argument("--accounts", type=int, default=1)

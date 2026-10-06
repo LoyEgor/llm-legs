@@ -77,7 +77,7 @@
     "format": "mp3_44100_192"
   },
   "speech": {
-    "model": "eleven_v3",
+    "model": "eleven_v4",
     "dialogue_model": "eleven_v3",
     "voice": "George",
     "formats": {

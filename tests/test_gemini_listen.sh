@@ -79,9 +79,10 @@ assert grep -qx 'ARG=gemini-3.1-pro-high' "$FAKE_GEMINIB_CALLS"
 assert grep -qx 'ARG=stream-json' "$FAKE_GEMINIB_CALLS"
 assert grep -q "^PWD=$TMPDIR/gemini-listen\." "$FAKE_GEMINIB_CALLS"
 assert grep -q '^File 1: /.*/media/file1\.mp4 (video, 2\.0 s, 64x48, with sound; the caller'\''s file clip\.mp4)$' "$FAKE_GEMINIB_PROMPT"
-assert grep -q '^File 2: /.*/media/file2\.wav (audio, 2\.0 s; the caller'\''s file tone\.wav)$' "$FAKE_GEMINIB_PROMPT"
+assert grep -q '^File 2: /.*/media/file2\.wav (audio, 2\.0 s, then the test beeps; the caller'\''s file tone\.wav)$' "$FAKE_GEMINIB_PROMPT"
 assert grep -q '^File 3: /.*/media/file3\.png (image, 64x48; the caller'\''s file still\.png)$' "$FAKE_GEMINIB_PROMPT"
-assert grep -q '^File 4: /.*/media/file4\.mp3 (audio, 2\.0 s; the caller'\''s file cover\.mp3)$' "$FAKE_GEMINIB_PROMPT"
+assert grep -q '^File 4: /.*/media/file4\.wav (audio, 2\.0 s, then the test beeps; the caller'\''s file cover\.mp3)$' "$FAKE_GEMINIB_PROMPT"
+assert grep -q 'like BEEPS 2:N 4:N\.' "$FAKE_GEMINIB_PROMPT"
 assert grep -qx 'what happens?' "$FAKE_GEMINIB_PROMPT"
 assert test "$(head -n 1 "$answer")" = '<!-- gemini-3.1-pro-high -->'
 assert grep -qF "[file1](file://$M/clip.mp4)" "$answer"
@@ -91,6 +92,11 @@ assert grep -qx 'account=picked' "$WORK/stdout"
 assert grep -qx 'session=listen-session' "$WORK/stdout"
 assert grep -qx 'model=gemini-3.1-pro-high' "$WORK/stdout"
 assert grep -qx 'files=4 proxied=0' "$WORK/stdout"
+assert grep -qx "audio=heard file2: $M/tone.wav" "$WORK/stdout"
+assert grep -qx "audio=heard file4: $M/cover.mp3" "$WORK/stdout"
+assert test "$(grep -c '^audio=' "$WORK/stdout")" -eq 2
+assert grep -qx 'calls=1' "$WORK/stdout"
+assert test "$(sed -n 2p "$answer")" = "Heard a tone in [file1](file://$M/clip.mp4)."
 assert grep -qE '^seconds=[0-9]+$' "$WORK/stdout"
 assert test -z "$(find "$TMPDIR" -name 'gemini-listen.*' -print -quit)"
 assert test "$(jq -sc 'map(select(.rc == 0)) | .[0] | [.tool, .kind, .account, .size]' "$IMAGE_LEG_LOG")" = '["gemini-listen","listen","picked",4]'
@@ -108,7 +114,8 @@ assert grep -qx 'files=2 proxied=2' "$WORK/err"
 assert grep -qE "^proxy=file1\.mp4 [0-9]+ bytes from [0-9]+: $M/silent\.mkv$" "$WORK/err"
 assert grep -qE "^proxy=file2\.mp3 [0-9]+ bytes from [0-9]+: $M/long\.wav$" "$WORK/err"
 assert grep -q '^File 1: /.*/media/file1\.mp4 (video, 2\.0 s, 64x48, silent; ' "$FAKE_GEMINIB_PROMPT"
-assert grep -q '^File 2: /.*/media/file2\.mp3 (audio, 200\.0 s; ' "$FAKE_GEMINIB_PROMPT"
+assert grep -q '^File 2: /.*/media/file2\.mp3 (audio, 200\.0 s, then the test beeps; ' "$FAKE_GEMINIB_PROMPT"
+assert grep -qx "audio=heard file2: $M/long.wav" "$WORK/err"
 
 FAKE_GEMINIB_MODE=skip-view expect_rc 1 'q' "$M/clip.mp4" "$M/tone.wav" --account explicit
 assert grep -q "answered without opening $M/tone.wav" "$WORK/err"
@@ -126,6 +133,22 @@ FAKE_GEMINIB_MODE=cannot-open expect_rc 1 'q' "$M/tone.wav" --account explicit
 assert grep -q 'could not open a file: 1 file size' "$WORK/err"
 FAKE_GEMINIB_MODE=empty expect_rc 1 'q' "$M/tone.wav" --account explicit
 FAKE_GEMINIB_MODE=error expect_rc 1 'q' "$M/tone.wav" --account explicit
+: >"$FAKE_GEMINIB_CALLS"
+FAKE_GEMINIB_MODE=transcript expect_rc 1 'q' "$M/tone.wav" --account explicit
+assert grep -q 'did not hear the test beeps' "$WORK/err"
+assert grep -q 'in 2 calls; the answer is not grounded' "$WORK/err"
+assert test "$(grep -c '^PWD=' "$FAKE_GEMINIB_CALLS")" -eq 2
+: >"$FAKE_GEMINIB_CALLS"
+FAKE_GEMINIB_MODE=transcript-once expect_rc 0 'q' "$M/tone.wav" --account explicit
+assert grep -q 'did not hear the test beeps.*; asking again' "$WORK/err"
+assert grep -qx 'calls=2' "$WORK/err"
+assert grep -qx "audio=heard file1: $M/tone.wav" "$WORK/err"
+assert grep -qx 'Heard a tone in \[file1\](file://'"$M"'/tone.wav).' "$WORK/stdout"
+assert test "$(grep -c '^PWD=' "$FAKE_GEMINIB_CALLS")" -eq 2
+FAKE_GEMINIB_MODE=deaf-beeps expect_rc 1 'q' "$M/clip.mp4" "$M/tone.wav" --account explicit
+assert grep -q 'did not hear the test beeps (BEEPS 2:[2-4] wanted' "$WORK/err"
+FAKE_GEMINIB_MODE=no-audio expect_rc 1 'q' "$M/tone.wav" --account explicit
+assert grep -q 'says view_file gave it no sound, in 2 calls' "$WORK/err"
 : >"$FAKE_GEMINIB_CALLS"
 PICK_MODE=limit expect_rc 3 'q' "$M/tone.wav"
 assert test ! -s "$FAKE_GEMINIB_CALLS"

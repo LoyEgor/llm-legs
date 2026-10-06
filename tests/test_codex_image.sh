@@ -142,7 +142,7 @@ assert grep -q '^usage: codex-image ' "$IMAGE_ERR"
 assert grep -q "references: at most $REF_MAX" "$IMAGE_ERR"
 
 legs_before=$(wc -l <"$IMAGE_LEG_LOG")
-wrappers=(codex-image gemini-image gemini-listen gemini-music gemini-sfx gemini-video grok-image grok-video)
+wrappers=(codex-image gemini-image gemini-listen gemini-music gemini-sfx gemini-speech gemini-video grok-image grok-video)
 for wrapper in "${wrappers[@]}"; do
   help_rc=0
   help_out=$(HOME="$FAKE_HOME" bash "$ROOT/bin/$wrapper" --help 2>/dev/null) || help_rc=$?
@@ -160,6 +160,7 @@ for wrapper in "${wrappers[@]}"; do
     gemini-listen) dest_args=(-o /nonexistent-i23/out.txt question "$WORK/clip.mp3") folder_flag=-o ;;
     gemini-music) dest_args=(--dest /nonexistent-i23/out.mp3 --prompt tune) folder_flag=--dest ;;
     gemini-sfx) dest_args=(--dest /nonexistent-i23/out.wav --prompt thud) folder_flag=--dest ;;
+    gemini-speech) dest_args=(--dest /nonexistent-i23/out.wav --text hello) folder_flag=--dest ;;
     *-video) dest_args=(--dest /nonexistent-i23/out.mp4 --prompt clip --ref "$WORK/clip.png") folder_flag=--dest ;;
     *) dest_args=(--dest /nonexistent-i23/out.png --prompt badge) folder_flag=--dest ;;
   esac

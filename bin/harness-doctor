@@ -203,7 +203,7 @@ C1_NOTE_IDS = re.compile(r"<(tool-use-id|task-id)>([^<]+)</")
 C1_SUITE = re.compile(r"(?:^|[;&|(\n])\s*(?:\w+=\S*\s+)*(?:(?:bash|sh|python3?|env|nice|timeout\s+\S+)\s+)*"
                       r"(?:\S*/)?(?:run-all|run-suites\.sh|test_[\w.-]+\.(?:sh|bash|py|lua))(?=\s|$|[;&|)])")
 MEDIA_TOOL = re.compile(r"(?:^|[\s/;&|(])(media-run|codex-image|gemini-image|grok-image|image-fanout|gemini-video|grok-video|"
-                        r"video-chain|gemini-music|gemini-sfx|gemini-listen|chatgpt-web|gemini-web)(?=\s|$|[;&|)])")
+                        r"video-chain|gemini-music|gemini-sfx|gemini-listen|gemini-speech|chatgpt-web|gemini-web)(?=\s|$|[;&|)])")
 C1_BYTES = (b'"user"', b'"assistant"', b'"system"', b'"queue-operation"', b'"queued_command"')
 DONE_WORDS = ("delivered", "passed", "sent", "fixed", "landed", "передал", "отправил", "доставлен", "починил")
 DONE_BYTES = tuple({v.encode() for w in DONE_WORDS for v in (w, w.capitalize(), w.upper())})
