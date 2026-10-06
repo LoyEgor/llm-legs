@@ -271,12 +271,12 @@
     },
     {
       "id": "load-unseen-suites-statusline",
-      "title": "Unaccounted CPU is the fork and exec cost of parallel test suites and statusline renders",
+      "title": "Unaccounted CPU outside slots is benchmark and night pre-phase load, weather",
       "match": {
         "rule": "load",
         "ident": "unseen"
       },
-      "status": "fixed",
+      "status": "open",
       "fixes": [
         {
           "at": "2026-10-04T17:30:00+03:00",
@@ -290,19 +290,19 @@
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-04",
-      "reviewed_by": "Harness Doctor",
-      "note": "Fixed 2026-10-04 by Harness Doctor: load:unseen and load:busy are judged only over samples no run-suites or night-fixer slot spanned (take_sample records held_slots, load_section judges the quiet ones; the row still shows the whole hour), handoff option 1; test_harness_doctor 'Load: busy and unseen windows a suite or night-fixer slot spanned'. Fork and exec of requested parallel work. 2026-10-03 07:30-09:30 local: 8.4 of 10 cores unseen, kernel 60 %, ~745 000 page faults/s (~180 000 copy-on-write); 30 s ancestor census 1 350-1 840 new proc/s: test suites 44-62 %, statusline 19-25 %, hooks 8-19 %, worker-run 9 %. Ruled out: memory compression (~200 decompressions/s); a run-suites over-subscription (three RUN_SUITES_SLOTS held, as capped); night worker count (NIGHT_FIXER_SLOTS, badbf8f); worker-run's supervisor 10 ms poll (start-up only). The statusline is llm-legs bin/statusline.sh, not claude-setup: ~65-100 bash subshells a render, review-debt Python every 15 s per shown tree (0.73 CPU-s); staleness-free fork cuts save ~1 % of forks, larger ones are item 2 of docs/handoffs/2026-09-28-harness-performance-fix.md (Egor's word). Same ground re-measured by load fixers 2026-09-30 to 2026-10-04; the remaining decision is the judge's, in the handoff. 2026-10-04: unseen (busy x ncpu - visible) was unmeasured from 05:00 to 12:48 local at load average 285 (logo-vectorizer-bench inkvec and ties.py, Egor's daytime work) because busy needed doctor runs under 15 min apart and a loaded collector takes 340 s; the gap is now 1 h (SAMPLE_GAP_S, test_harness_doctor).",
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-load-20261006T032928Z-345d",
+      "note": "Weather 2026-10-06 (night fixer harness-load-20261006T032928Z-345d): the slot exclusion works as written; the reds since come from load no slot names: logo-vectorizer-bench tracers (10-06 03:53-04:55, no test run; Egor 2026-10-05 load-is-weather), the night orchestrator's unslotted pre-phase (10-06 06:24, one 65 s sample, bench still running), direct suite runs outside run-suites (10-04 evening, 15 of 17 red samples). Dismissal proposed in the handoff. Earlier: fixed 2026-10-04 by Harness Doctor: load:unseen and load:busy are judged only over samples no run-suites or night-fixer slot held at either end (take_sample records held_slots, load_section judges the quiet ones); test_harness_doctor 'Load: busy and unseen windows a suite or night-fixer slot spanned'. 2026-10-03 07:30-09:30 local: 8.4 of 10 cores unseen, kernel 60 %, ~745 000 page faults/s (~180 000 copy-on-write); 30 s ancestor census 1 350-1 840 new proc/s: test suites 44-62 %, statusline 19-25 %, hooks 8-19 %, worker-run 9 %. Ruled out: memory compression (~200 decompressions/s); a run-suites over-subscription (three RUN_SUITES_SLOTS held, as capped); night worker count (NIGHT_FIXER_SLOTS, badbf8f); worker-run's supervisor 10 ms poll (start-up only). The statusline is llm-legs bin/statusline.sh, not claude-setup: ~65-100 bash subshells a render, review-debt Python every 15 s per shown tree (0.73 CPU-s); staleness-free fork cuts save ~1 % of forks, larger ones are item 2 of docs/handoffs/2026-09-28-harness-performance-fix.md (Egor's word). Same ground re-measured by load fixers 2026-09-30 to 2026-10-04; the remaining decision is the judge's, in the handoff. 2026-10-04: unseen (busy x ncpu - visible) was unmeasured from 05:00 to 12:48 local at load average 285 (logo-vectorizer-bench inkvec and ties.py, Egor's daytime work) because busy needed doctor runs under 15 min apart and a loaded collector takes 340 s; the gap is now 1 h (SAMPLE_GAP_S, test_harness_doctor).",
       "handoff": "docs/handoffs/2026-09-30-load-unseen-census.md"
     },
     {
       "id": "load-busy-night-concurrency",
-      "title": "CPU 96 % busy under concurrent night test suites and worker runs",
+      "title": "CPU busy outside slots is benchmark and night pre-phase load, weather",
       "match": {
         "rule": "load",
         "ident": "busy"
       },
-      "status": "fixed",
+      "status": "open",
       "fixes": [
         {
           "at": "2026-10-04T17:30:00+03:00",
@@ -316,9 +316,9 @@
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-04",
-      "reviewed_by": "Harness Doctor",
-      "note": "Fixed 2026-10-04 by Harness Doctor: Same fix as load-unseen-suites-statusline: a sample a suite or night-fixer slot spanned is requested work and is not judged. Twin of load-unseen-suites-statusline: 100 % busy on 2026-10-03 07:30-09:30 local under night 20261003T042136Z-e9f1 (three run-suites slots, night workers, review-bench --debt), both slot caps holding. Requested parallel work per the owner's 'parallel load beats serial'; the judge decision is in the shared handoff. 2026-10-04 (harness-load-20261004T013950Z-27b8): busy 100 % at 04:30 local under the night; busy then read nothing from 05:00 to 12:48 at load average 285 since runs drifted over SAMPLE_GAP_S (900 s) apart, now 3600 s with reboot-reset ticks dropped.",
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-load-20261006T032928Z-345d",
+      "note": "Weather 2026-10-06, same causes and handoff as load-unseen-suites-statusline: busy 83-100 % outside slots under logo-vectorizer-bench (10-06 03:53-04:55) and the night's unslotted pre-phase (06:24). Ruled out: a slot held at neither sample end but in between (no test-history run overlaps the 10-06 red windows). Earlier: fixed 2026-10-04 by Harness Doctor: a sample a suite or night-fixer slot held at either end is not judged. Twin of load-unseen-suites-statusline: 100 % busy on 2026-10-03 07:30-09:30 local under night 20261003T042136Z-e9f1 (three run-suites slots, night workers, review-bench --debt), both slot caps holding. Requested parallel work per the owner's 'parallel load beats serial'; the judge decision is in the shared handoff. 2026-10-04 (harness-load-20261004T013950Z-27b8): busy 100 % at 04:30 local under the night; busy then read nothing from 05:00 to 12:48 at load average 285 since runs drifted over SAMPLE_GAP_S (900 s) apart, now 3600 s with reboot-reset ticks dropped.",
       "handoff": "docs/handoffs/2026-09-30-load-unseen-census.md"
     },
     {
@@ -2802,6 +2802,13 @@
     }
   ],
   "blind_spots": [
+    {
+      "id": "load-red-unattributed",
+      "what": "who loaded the machine in a red load:busy or load:unseen window",
+      "reason": "a sample records only CPU ticks, forks/s, held slots and visible chat cores; naming the 2026-10-06 bench and night pre-phase took memlogd frames, test-history and system-doctor hours by hand",
+      "since": "2026-10-06",
+      "would_catch_if": "the load rows' evidence named the window's top process families (system-doctor births_top/cpu_top) and the night phase running"
+    },
     {
       "id": "collector-run-starved",
       "what": "a doctor collector run that is starved or killed before it ends",

@@ -1,40 +1,33 @@
-# Hand-off: load:unseen and load:busy are the night's requested work, not a bug
+# Hand-off: load:busy and load:unseen judge the machine, not the harness
 
-Status: done 2026-10-04 — load-unseen-suites-statusline, load-busy-night-concurrency, collector-run-cpu-starved (option 1, and collector:run a watch while a slot is held)
+Status: open
 
-For «Harness Doctor» (`share/harness-ledger.json` `owner`). Rows `load-unseen-suites-statusline`
-and `load-busy-night-concurrency`, both `open`. Load fixers 2026-09-30, 10-01, 10-02 and 10-03
-(harness-load-20261003T042543Z-5d17) each found nothing to fix; no limit, match or status moved.
+For «Harness Doctor» (`share/harness-ledger.json` `owner`), rows `load-busy-night-concurrency` and
+`load-unseen-suites-statusline`, both back to `open` as weather (night fixer
+harness-load-20261006T032928Z-345d). The slot exclusion (option 1 of this handoff, ac75a868) works as
+written; every red since comes from load no slot names.
 
-## Facts (2026-10-03 07:30-09:30 local, night 20261003T042136Z-e9f1)
+## Facts (quiet samples, both ends `held` 0, since 2026-10-04 17:30)
 
-- Unseen 8.4 of 10 cores (limit 5), busy 100 % (limit 90 %), kernel 60 %, load average ~63.
-- Page faults ~745 000/s, ~180 000/s copy-on-write: kernel time is fork and exec. Memory
-  compression is not it (~200 decompressions/s).
-- Live 30 s ancestor census (`proc_listallpids` + `KERN_PROCARGS2`, 1 350-1 840 new processes/s):
-  test suites 44-62 %, statusline 19-25 %, hooks 8-19 %, worker-run 9 %, review-bench under 1 %.
-- Both caps hold: three `run-suites` slots taken (`RUN_SUITES_SLOTS`, share/run-suites.sh) and
-  night workers under `NIGHT_FIXER_SLOTS` (bin/worker-run, Egor 2026-10-01 in badbf8f). The
-  concurrency question is settled; what remains is requested parallel work.
-- The statusline is llm-legs `bin/statusline.sh` (`~/.claude/statusline.sh` links to it), not
-  claude-setup. Per render: ~65-100 bash subshells; repo debt starts a `review-debt` Python walk
-  every 15 s per shown tree (0.73 CPU-s, 0.40 of it kernel). Cuts that keep every segment as fresh
-  (`$(file_mtime)` and `$(pct_colored)` forks) save about 1 % of the machine's forks; anything
-  larger makes a segment staler, item 2 of `2026-09-28-harness-performance-fix.md`, Egor's word.
+- 10-04 17:45-22:24: 17 red samples, busy 100 %, unseen 5.6-8.8 cores. 15 of them overlap direct
+  suite runs of chats and workers (`bash tests/test_*.sh`, no run-suites slot), summed run time
+  13-183 % of each window; what else ran is unrecorded.
+- 10-06 03:53-04:55: 9 red, busy 83-95 %, no finished test run: logo-vectorizer-bench tracers
+  (`champ42/pipeline.py`, `retrace.py`, `slotrun.py`; memlogd frame 2026-10-06T040532).
+- 10-06 06:24: the run's own launch value (busy 99.9 %, unseen 5.5) is one 65 s sample inside the
+  night's pre-phase (orchestrator doctors and survey, 06:20-06:29, no slot) while the bench still
+  ran (system-doctor hours 2026-10-06T03: `pipeline.py`, `jpeg_pipeline.py` births).
+
+Egor 2026-10-05 (memory load-is-weather): other chats' and benchmarks' load is weather, never to be
+paused; the harness must adapt. Five load fixers (2026-09-30 to 10-06) re-measured the same rows.
 
 ## Proposed to the owner
 
-The judge re-launches a night load fixer every night for these two rows, and each one costs a
-worker run to re-measure the same workload. Decide one of:
+1. Dismiss both as `weather`: whole-machine busy belongs to the System doctor, which now attributes
+   births and CPU per owner class (`~/.cache/system-doctor/hours`); the harness's own forks keep
+   their statusline and hook rows. Recommended.
+2. Or judge only the harness's own share: system-doctor `births_top` rows of class `own`.
+3. Or widen "requested work" past slots: test-history runs overlapping the sample window and the
+   night's pre-phase. It still reds on every benchmark.
 
-1. Judge `load:unseen` and `load:busy` only over samples where no suite slot and no night worker
-   slot is held (`share/slots.sh` store locks under `~/.cache/run-suites/slots` and
-   `<doctors>/fixer-slots`), so a red row means load nobody asked for.
-2. Or accept both as night workload by your own dismissal.
-
-Either loosens the judge, so a fixer may not do it. Recommendation: 1, since it keeps the daytime
-signal that an idle chat waits on someone else's forks.
-
-The same saturation reds `collector:run` (row `collector-run-cpu-starved`, 2026-10-04): 130 of 150
-runs over 30 s on 5-14 s of CPU, wall about `cpu_s` × load / cores. Option 1 extends to it; or
-judge the collector's `cpu_s` from `collector-runs.jsonl` against its own limit.
+Each changes the judge, so no fixer may do it.
