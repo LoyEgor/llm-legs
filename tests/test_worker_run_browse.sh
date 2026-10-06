@@ -223,6 +223,8 @@ EOF
   assert grep -q 'list_connected_browsers' "$preamble_path"
   assert grep -qF 'Target Dia device ID: 6ada21d4-ae66-4990-9040-97e18bb7b529' "$preamble_path"
   assert grep -qF 'Off-target extension device IDs (Google Chrome — never drive one, never `switch_browser` to it): b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d' "$preamble_path"
+  assert grep -qF 'tell application id "company.thebrowser.dia" to get URL of every tab of every window' "$preamble_path"
+  assert grep -qF 'BROWSER-DEVICE-LOCAL: <its id>' "$preamble_path"
 
   rc=0
   out=$(BROWSE_DIA_USER_DATA="$BT_DIA" \
@@ -804,6 +806,7 @@ EOF
   preamble_path=$(sed -n 's/^PREAMBLE-FILE: //p' <<<"$out")
   assert grep -qF 'Target Google Chrome device ID: b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d' "$preamble_path"
   assert grep -qF 'Off-target extension device IDs (Dia — never drive one, never `switch_browser` to it): ' "$preamble_path"
+  assert grep -qF 'tell application id "com.google.Chrome" to get URL of every tab of every window' "$preamble_path"
   assert grep -qF '6ada21d4-ae66-4990-9040-97e18bb7b529' "$preamble_path"
   assert grep -qxF -- '- Never drive Dia.' "$preamble_path"
   BROWSE_CODEX_CONFIG="$BT_CODEX_CONF"

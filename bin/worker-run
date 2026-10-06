@@ -5205,9 +5205,10 @@ browse_run() {
   [ -z "$chrome_profile_name" ] || chrome_profile_label="$chrome_profile_name ($chrome_profile_dir)"
 
   local target_label='Dia' target_app='Dia.app/Contents/MacOS/Dia' target_ext_url='dia://extensions'
-  local off_label='Google Chrome'
+  local off_label='Google Chrome' target_bundle='company.thebrowser.dia'
   if [ "$browse_target" = chrome ]; then
     target_label='Google Chrome'
+    target_bundle='com.google.Chrome'
     target_app='Google Chrome.app/Contents/MacOS/Google Chrome'
     target_ext_url='chrome://extensions'
     off_label='Dia'
@@ -5641,11 +5642,12 @@ Drive Egor's visible browser ($target_label) using Claude in Chrome extension.
 ## Instructions
 - Call \`list_connected_browsers\` first.
 - If target device \`$plan_device\` is listed, select it and continue.
-- If target device is not listed, print exactly:
+- Else, if entries with \`"isLocal": true\` are listed (a native-messaging connection: its id is not the bridge device id), identify each before driving it: \`select_browser\` it, \`tabs_context_mcp\` (\`createIfEmpty: true\`), \`navigate\` that tab to \`https://example.com/?cc-probe=<random token>\`, then run \`osascript -e 'tell application id "$target_bundle" to get URL of every tab of every window'\`. The local entry whose probe URL appears there is $target_label: print \`BROWSER-DEVICE-LOCAL: <its id>\` and continue on it as the target device. Close every probe tab; never drive a local entry whose probe did not appear.
+- If neither, print exactly:
   \`OUTCOME: BROWSER_DEVICE_NOT_IN_ACCOUNT device=$plan_device account=$plan_account\`
   and stop immediately.
 - Never \`switch_browser\` to an unlisted device, and never run pairing or login flows headless.
-- After any extension reconnect or tool error, call \`list_connected_browsers\` again and re-select \`$plan_device\` before the next action: a reconnect silently falls back to the account's default browser.
+- After any extension reconnect or tool error, call \`list_connected_browsers\` again and re-select the target device before the next action: a reconnect silently falls back to the account's default browser.
 - If \`tabs_context_mcp\` (\`createIfEmpty: true\`) or the first \`navigate\` fails twice on \`$plan_device\`, re-selecting it in between, print exactly:
   \`OUTCOME: BROWSER_TABS_BROKEN device=$plan_device\`
   and stop: the device cannot open a tab, and the next preflight ranks it last.
@@ -5653,7 +5655,7 @@ Drive Egor's visible browser ($target_label) using Claude in Chrome extension.
 - Target $target_label device ID: $plan_device
 - Never drive $off_label.
 - All test/probing navigations must use https://example.com.
-- On success print \`BROWSER-DEVICE-ACCOUNT: $plan_device $plan_account\` and end with \`OUTCOME: BROWSER_OK\`.
+- On success print \`BROWSER-DEVICE-ACCOUNT: $plan_device $plan_account\` (only when \`$plan_device\` itself was driven, never for a local entry) and end with \`OUTCOME: BROWSER_OK\`.
 - Close the tabs you created only once the task is complete; when you stop for Egor's input (sign-in, approval, a blocker) or the result is not final, leave them open and name the tab that holds the work.
 EOF
     fi
