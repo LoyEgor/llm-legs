@@ -1,11 +1,11 @@
 {
   "vendor": "codex",
-  "verified": "2026-10-03",
+  "verified": "2026-10-06",
   "routes": ["web", "cli"],
   "scripts": {"image": "codex-image"},
   "rosters": {"web": ["chatgpt-web", "accounts"], "cli": ["codexb", "list"]},
   "spares": {"image": {"ratio": 0.25, "min": 1}},
-  "cli": {"name": "codex", "version": "0.160.0", "version_args": ["--version"]},
+  "cli": {"name": "codex", "version": "0.160.1", "version_args": ["--version"]},
   "model": {"image": "gpt-image-2", "video": null},
   "refs": {"max": 5, "verified_max": true},
   "web": {"refs_max": 20, "counts": [1, 2, 3, 4]},
