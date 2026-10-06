@@ -119,7 +119,7 @@ import glob, importlib.machinery, importlib.util, json, os, re, subprocess, sys
 ROOT, PROJECTS, RUNS, HOME, DOCS = (os.environ["DF_" + k] for k in ("ROOT", "PROJECTS", "RUNS", "HOME", "DOCS"))
 sys.path.insert(0, os.path.join(ROOT, "share"))
 from report_frame import fit
-from fix_commit import FIX_KEYS, fix_record_faults
+from fix_commit import FIX_KEYS, fix_record_faults, load_merged, main_checkout, sync_settled
 DOCTORS = ("llm", "harness", "updater", "code", "system")
 HOOK_AREAS = ("Hooks", "Hook waits")
 LLM_ENTRIES = {"reviewers": ("review-bench/bin/review-bench",), "workers": ("llm-legs/bin/worker-run",),
@@ -166,6 +166,25 @@ def load(path, default=None):
 def ledger_path(doctor):
     module = doctor_module(doctor)
     return module.ledger_path() if module else ""
+
+
+def merged_ledger(doctor):
+    module = doctor_module(doctor)
+    return load_merged(ledger_path(doctor), module.settled_path() if hasattr(module, "settled_path") else "") or {}
+
+
+def ledger_sync(checkout):
+    """Write what the doctors settled into the tracked ledgers of a linked worktree, for the commit that lands them."""
+    top = os.path.realpath(checkout)
+    if main_checkout(top) == top:
+        sys.exit("doctor-fix: ledger-sync writes only a linked worktree, never %s" % top)
+    for doctor in DOCTORS:
+        module = doctor_module(doctor)
+        target = os.path.join(top, getattr(module, "LEDGER_FILE", ""))
+        if hasattr(module, "settled_path") and os.path.isfile(target):
+            changed = sync_settled(target, module.settled_path())
+            if changed:
+                print("%s\t%d rows settled" % (target, changed))
 
 
 def doctor_script(doctor):
@@ -221,7 +240,7 @@ def strings(value):
 
 
 def snapshot(doctor, doc_file, night=None):
-    doc, ledger = load(doc_file, {}), load(ledger_path(doctor), {}) or {}
+    doc, ledger = load(doc_file, {}), merged_ledger(doctor)
     if doctor == "code" and doc.get("status") != "error":
         module = doctor_module("code")
         taken = [p.get("id") for path in glob.glob(os.path.join(RUNS, "*.json")) for run in [load(path, {})]
@@ -391,7 +410,7 @@ def packet(record_file, key):
     doctor = record.get("doctor")
     rows = {}
     if doctor in DOCTORS:
-        rows = {r.get("id"): r for r in (load(ledger_path(doctor), {}) or {}).get("rows") or () if isinstance(r, dict)}
+        rows = {r.get("id"): r for r in merged_ledger(doctor).get("rows") or () if isinstance(r, dict)}
     earlier = {}
     for other in sorted((load(p, {}) for p in glob.glob(os.path.join(RUNS, "*.json"))), key=lambda r: r.get("created_at") or ""):
         if other.get("id") == record.get("id"):
@@ -571,6 +590,8 @@ if __name__ == "__main__":
         knobs(sys.argv[2])
     elif command == "fix-faults":
         fix_faults(sys.argv[2], sys.argv[3])
+    elif command == "ledger-sync":
+        ledger_sync(sys.argv[2])
 '
 
 py() { DF_ROOT=$repo_root DF_PROJECTS=$projects_dir DF_RUNS=$runs_dir DF_HOME=$HOME DF_DOCS=${DOCTOR_FIX_DOCS:-$repo_root/docs} python3 -c "$PY" "$@"; }
@@ -1057,6 +1078,7 @@ usage: doctor-fix launch llm|harness|updater|code|system [--night <night-id>]
        doctor-fix record updater --session <s> --account <a> --command <file> --problems <event id>...   (internal)
        doctor-fix record updater --night <night-id> --branch <b> --worktree <w> [--worktree <w>...] --problems <event id>...   (internal)
        doctor-fix record-close <id> --decisions <json-file> <note...>   (internal, updater release runs)
+       doctor-fix ledger-sync <worktree>   (night close: the doctors' settled ledger fields into that worktree's tracked ledgers)
        doctor-fix touches <record-file> <id> <purpose>   (internal: 0 resolves and touches, 1 resolves nowhere, 2 misses the component, 3 the problem's component names no file: close records it component unverified)
 EOF
 }
@@ -1071,6 +1093,7 @@ case "${1:-}" in
   close) close_run "${@:2}" ;;
   abandon) abandon_run "${@:2}" ;;
   touches) [ $# -eq 4 ] && [ -f "$2" ] || usage; py touches "${@:2}" ;;
+  ledger-sync) [ $# -eq 2 ] && [ -d "$2" ] || usage; py ledger-sync "$2" ;;
   -h | --help | help) usage_text ;;
   *) usage ;;
 esac

@@ -98,8 +98,10 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
 7. **Close.**
    - `night-run suites <id>` starts the night's one full `tests/run-all` per sweep repository,
      detached: nothing waits for it (no worker ever runs it); `report` prints its result as weak spots.
-   - Rerun the four doctors. This settles the ledger's `fixed-pending` rows. Commit and push that
-     bookkeeping as well, so nothing is dirty after the last push.
+   - Rerun the four doctors. This settles the ledger's `fixed-pending` rows into each doctor's overlay,
+     never the main checkout. Then, in a worktree of llm-legs on `night/<id>/ledger-sync` from main's
+     HEAD, `bin/doctor-fix ledger-sync <worktree>` writes the settled fields into its tracked ledgers;
+     commit, land and push that bookkeeping like any branch (nothing printed: nothing to commit).
    - `night-run finish` writes the morning result, then `span-off`. It also removes every landed,
      clean, not live, not held branch of the sweep repositories with its worktree (see Leftovers); it
      prints each one kept as `live|held|leftover <repo> <branch>: <why>`, records the leftovers under

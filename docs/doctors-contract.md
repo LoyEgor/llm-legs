@@ -142,6 +142,10 @@ The fix lifecycle:
 - A fix poured into main uncommitted is `fixed-pending` with `in: null`.
 - Once the sweep commits those files, the doctor itself turns the row `fixed` and fills `in`. No chat
   edits `in` by hand.
+- A measuring run never writes a tracked file (shared-invariants row `ej`): what it settles (`in`,
+  `regressed_at`, `fixed-pending` → `fixed`) goes to its overlay `<state dir>/ledger-settled.json`,
+  keyed by row id and fix `at`. Every reader merges it through `share/fix_commit.py` `load_merged`, a
+  value the tracked file holds winning; the night's `doctor-fix ledger-sync` commits it.
 - A repeat fix appends to `fixes` and never overwrites it. More than one fix on a row, or on a
   `same_cause` group, is a complexity signal: the fixer looks for the shared cause instead of
   patching again.

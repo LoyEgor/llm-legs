@@ -547,7 +547,8 @@ the rework:
 - **Ledger.** `share/harness-ledger.json`. A fixed or fixed-pending row is shown as
   `fixed · E events since · M matched` for 7 days, and while unproven. When the collector writes, it
   turns a `fixed-pending` row `fixed` with `in: repo@hash` once every file of its last fix is
-  committed, and stamps `regressed_at` on a regression. Before judging, `ledger_faults` drops every
+  committed, and stamps `regressed_at` on a regression, both in its overlay `ledger-settled.json`,
+  never the tracked file (contract §2). Before judging, `ledger_faults` drops every
   faulty row and reports it as problem `ledger:<row id>`, rule `ledger_fault`, its fact naming the
   faults; the file keeps the row. A row is faulty without `{rule, ident}` or a known status, with a
   duplicate id, or with an `ident` that has fewer than 3 literal characters, fullmatches the empty

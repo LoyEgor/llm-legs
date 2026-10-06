@@ -903,15 +903,23 @@ put(os.path.join(repo, "f.sh"), "x\n")
 stale = {"rows": [dict(pending["rows"][0], status="fixed-pending", fixes=[dict(pending["rows"][0]["fixes"][0], **{"in": None})])]}
 put(race, m.json.dumps(stale))
 loaded, _ = m.load_ledger()
-m.settle_fixes(loaded)
+m.record_settled(m.settled_path(), m.settle_fixes(loaded))
 landed = m.json.loads(open(race).read())
 landed["rows"].append({"id": "landed-meanwhile", "status": "open", "fixes": []})
 put(race, m.json.dumps(landed))
-m.write_fix_fields(loaded)
-after = m.json.loads(open(race).read())
-check([r["id"] for r in after["rows"]] == ["p", "landed-meanwhile"] and after["rows"][0]["status"] == "fixed"
+tracked = open(race).read()
+after, _ = m.load_ledger()
+check(open(race).read() == tracked and m.json.loads(tracked)["rows"][0]["status"] == "fixed-pending"
+      and [r["id"] for r in after["rows"]] == ["p", "landed-meanwhile"] and after["rows"][0]["status"] == "fixed"
       and after["rows"][0]["fixes"][-1]["in"] == "fixrepo@" + head,
-      "settling a fix re-reads the ledger, so a row landed during the run survives the write")
+      "settling a fix writes only the overlay: the tracked ledger keeps its bytes, a row landed meanwhile survives, "
+      "and every read merges the settled row")
+committed = m.json.loads(tracked)
+committed["rows"][0]["fixes"][-1]["in"] = "fixrepo@0000000"
+put(race, m.json.dumps(committed))
+after, _ = m.load_ledger()
+check(after["rows"][0]["fixes"][-1]["in"] == "fixrepo@0000000" and after["rows"][0]["status"] == "fixed-pending",
+      "a value the tracked ledger holds wins over the overlay")
 os.environ["HARNESS_LEDGER"] = prior_ledger
 
 subprocess.run(["git", "-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty",

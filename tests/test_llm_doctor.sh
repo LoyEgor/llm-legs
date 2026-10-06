@@ -243,6 +243,7 @@ with open(os.path.join(cache, "review-debt", "losses.jsonl"), "w") as handle:
     handle.write(json.dumps({"at": now - 700, "kind": "run-fold-skip", "repo": "/r", "path": "x.py", "lines": 5}) + "\n")
 PY
 
+tracked_ledger=$(shasum <"$LLM_DOCTOR_LEDGER")
 before=$(find "$LLM_DOCTOR_DIR" -type f | sort | tr '\n' ' ')
 assert "$DOCTOR" --dry-run --json >"$WORK/doc.json"
 assert test "$(find "$LLM_DOCTOR_DIR" -type f | sort | tr '\n' ' ')" = "$before"
@@ -263,10 +264,16 @@ assert grep -q '^llm-doctor: daily rollup not written: ' "$WORK/daily-error"
 assert test "$(find "$LLM_DOCTOR_DIR/daily" -type f | sort | tr '\n' ' ')" = "$(printf '%s\n' $before | grep '/daily/' | tr '\n' ' ')"
 assert test -s "$LLM_DOCTOR_DIR/latest.json"
 rm "$LLM_DOCTOR_DIR/latest.json"
-# A written run records the sweep's commit of a pending fix; an uncommitted one stays pending.
-assert python3 - "$LLM_DOCTOR_LEDGER" "$WORK/commits.json" <<'PY'
+# A written run records the sweep's commit of a pending fix in its overlay, never the tracked ledger; an
+# uncommitted one stays pending.
+assert test "$(shasum <"$LLM_DOCTOR_LEDGER")" = "$tracked_ledger"
+assert test -s "$LLM_DOCTOR_DIR/ledger-settled.json"
+assert python3 - "$LLM_DOCTOR_LEDGER" "$WORK/commits.json" "$LLM_DOCTOR_DIR/ledger-settled.json" "$ROOT/share" <<'PY'
 import json, sys
-rows = {row["id"]: row for row in json.load(open(sys.argv[1]))["rows"]}
+sys.path.insert(0, sys.argv[4])
+from fix_commit import load_merged
+assert json.load(open(sys.argv[1]))["rows"] != load_merged(sys.argv[1], sys.argv[3])["rows"]
+rows = {row["id"]: row for row in load_merged(sys.argv[1], sys.argv[3])["rows"]}
 assert rows["X7"]["status"] == "fixed" and rows["X7"]["fixes"][-1]["in"] == json.load(open(sys.argv[2]))["panel"], rows["X7"]
 assert rows["X8"]["status"] == "fixed-pending" and rows["X8"]["fixes"][-1]["in"] is None, rows["X8"]
 assert rows["M3"]["fixes"][-1]["in"] == "review-bench@deadbee", rows["M3"]
@@ -910,6 +917,7 @@ for status, extra in (("fixed", {}), ("fixed", {"fixes": [fix_at(100, None)]}),
                       ("closed", {})):
     assert doctor.row_faults(entry(narrow, status, **extra), ["Z"]), (status, extra)
 path = os.path.join(unit, "ledger.json")
+os.environ["LLM_DOCTOR_DIR"] = os.path.join(unit, "doctor-unit")
 def fixture_ledger(rows):
     json.dump({"owner": "o", "owners": {block: "o" for block in doctor.BLOCKS}, "rows": rows, "blind_spots": []},
               open(path, "w"))
@@ -988,15 +996,18 @@ assert [(item["id"], item["state"], item["recovered"], item["lost_s"], len(item[
     == [("leg-failure:reviewers/crashed", "watch", 3, 180, 3)], found
 assert doctor.leg_problems(recovered, lost[1:], now - 86400, 24, now) == []
 
-# The sweep's commit settles a pending fix; a ledger changed since it was read is left alone.
+# The sweep's commit settles a pending fix into the overlay: the tracked ledger keeps its bytes, every read
+# merges it, and a value the file holds wins.
 pending = entry(narrow, "fixed-pending", fixes=[fix_at(100, None)])
 fixture_ledger([pending])
 source = open(path).read()
-doctor.write_settled({"Z": "review-bench@abc1234"}, source + " ")
+doctor.record_settled(doctor.settled_path(), [dict(pending, status="fixed",
+                                                   fixes=[dict(pending["fixes"][0], **{"in": "review-bench@abc1234"})])])
 assert open(path).read() == source
-doctor.write_settled({"Z": "review-bench@abc1234"}, source)
-settled = json.load(open(path))["rows"][0]
+settled = doctor.load_ledger()["by_id"]["Z"]
 assert settled["status"] == "fixed" and settled["fixes"][-1]["in"] == "review-bench@abc1234", settled
+fixture_ledger([entry(narrow, "fixed", fixes=[fix_at(100, "review-bench@1234abc")])])
+assert doctor.load_ledger()["by_id"]["Z"]["fixes"][-1]["in"] == "review-bench@1234abc"
 repos, saved_repos = os.path.join(unit, "cross-repos"), os.environ["LLM_DOCTOR_REPOS"]
 for name in ("one", "two"):
     top = os.path.join(repos, name)
@@ -1044,9 +1055,7 @@ assert [(item["id"], item["count"]) for item in several] == [("ledger:leg-failur
 fixture_ledger([pending])
 junk = dict(json.load(open(path)), rows=["junk", pending])
 json.dump(junk, open(path, "w"))
-source = open(path).read()
-doctor.write_settled({"Z": "review-bench@abc1234"}, source)
-assert json.load(open(path))["rows"][1]["status"] == "fixed"
+assert doctor.load_merged(path, doctor.settled_path())["rows"][1]["status"] == "fixed"
 
 # A commit git cannot vouch for is a fault only when git says so, and such a row judges nothing.
 os.environ["LLM_DOCTOR_REPOS"] = late_repos

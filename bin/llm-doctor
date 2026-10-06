@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 
 import collector_runs
 import handoffs
-from fix_commit import FIX_KEYS, fix_commit, fix_landed, siblings_dir
+from fix_commit import FIX_KEYS, SETTLED_FILE, fix_commit, fix_landed, load_merged, record_settled, siblings_dir
 
 
 def load_gemini_weather():
@@ -347,6 +347,10 @@ def doctor_dir():
     return os.environ.get("LLM_DOCTOR_DIR") or os.path.join(base_home(), ".cache", "llm-doctor")
 
 
+def settled_path():
+    return os.path.join(doctor_dir(), SETTLED_FILE)
+
+
 def claudeb_dir():
     return os.environ.get("CLAUDEB_DIR") or os.path.join(base_home(), ".claude-profiles", ".claudeb")
 
@@ -363,8 +367,11 @@ def image_log():
     return os.environ.get("IMAGE_LEG_LOG") or os.path.join(base_home(), ".cache", "image-legs", "legs.jsonl")
 
 
+LEDGER_FILE = "share/doctor-ledger.json"
+
+
 def ledger_path():
-    return os.environ.get("LLM_DOCTOR_LEDGER") or os.path.join(ROOT_DIR, "share", "doctor-ledger.json")
+    return os.environ.get("LLM_DOCTOR_LEDGER") or os.path.join(ROOT_DIR, LEDGER_FILE)
 
 
 def repos_dir():
@@ -1497,7 +1504,7 @@ def last_fix_at(row):
 
 
 def load_ledger():
-    document = read_json(ledger_path())
+    document = load_merged(ledger_path(), settled_path())
     faults = ledger_faults(document) if document is not None else [("ledger", "missing or not JSON")]
     document = document if isinstance(document, dict) else {}
     source = [row for row in document.get("rows") or [] if isinstance(row, dict)] \
@@ -2345,28 +2352,6 @@ def settle_fixes(ledger):
     return settled, faults
 
 
-def write_settled(settled, source):
-    """Record the commits settle_fixes found in the ledger file, unless someone changed it since it was read."""
-    path = ledger_path()
-    if not settled or read_text(path) != source:
-        return
-    document = json.loads(source)
-    for row in document["rows"]:
-        if isinstance(row, dict) and isinstance(row.get("id"), str) and row["id"] in settled:
-            row["fixes"][-1]["in"] = settled[row["id"]]
-            row["status"] = "fixed"
-    temporary = "%s.tmp.%d" % (path, os.getpid())
-    try:
-        with open(temporary, "w", encoding="utf-8") as handle:
-            json.dump(document, handle, ensure_ascii=False, indent=1)
-            handle.write("\n")
-        os.replace(temporary, path)
-    except OSError as error:
-        print("llm-doctor: ledger not settled: %s" % error, file=sys.stderr)
-        if os.path.exists(temporary):
-            os.remove(temporary)
-
-
 def judge_digest(ledger):
     """What decides a verdict: this code, its limits and the ledger's dismissal rows. Tracking a fix
     (open, fixed-pending, fixed, fixes, notes) leaves it unchanged."""
@@ -2416,7 +2401,6 @@ def collect(window_h, now, write_daily=False):
     began = time.monotonic()
     _NEAR.clear()
     ledger = load_ledger()
-    source = read_text(ledger_path()) or ""
     settled, commit_faults = settle_fixes(ledger)
     window_cutoff = now - window_h * 3600
     start = min(window_cutoff, now - TREND_DAYS * 86400)
@@ -2448,7 +2432,10 @@ def collect(window_h, now, write_daily=False):
     problems.extend(refresh_problems(window_h, now))
     problems.extend(stale_account_problems(window_h, now))
     if write_daily:
-        write_settled(settled, source)
+        try:
+            record_settled(settled_path(), [ledger["by_id"][row_id] for row_id in settled])
+        except OSError as error:
+            print("llm-doctor: ledger not settled: %s" % error, file=sys.stderr)
     inputs = inputs_of(found, window_cutoff)
     count = sum(1 for item in problems if item["state"] in COUNTED)
     groups = dict.fromkeys(BLOCKS + ("machinery",) + tuple(row["name"] for row in health) + ("ledger", "accounts"), 0)

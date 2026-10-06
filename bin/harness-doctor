@@ -30,7 +30,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 
 import collector_runs
-from fix_commit import fix_commit, fix_landed, main_checkout, siblings_dir
+from fix_commit import SETTLED_FILE, fix_commit, fix_landed, main_checkout, merge_settled, read_settled, record_settled, siblings_dir
 from limiter_hold import hold_dir, wait_dir
 from machine_probe import host_ticks, spawn_pid, sysctl
 
@@ -5016,12 +5016,19 @@ LEDGER_STATUSES = ("open", "fixed-pending", "fixed") + DISMISSED
 IDENT_TOKEN_RE = re.compile(r"\\[dDwWsSbBAZ]|\\(.)|\[(?:\\.|[^\]])*\]|\{\d*,?\d*\}|[.^$*+?()|]|(.)", re.S)
 
 
+LEDGER_FILE = "share/harness-ledger.json"
+
+
 def ledger_path():
-    return os.environ.get("HARNESS_LEDGER") or os.path.join(ROOT_DIR, "share", "harness-ledger.json")
+    return os.environ.get("HARNESS_LEDGER") or os.path.join(ROOT_DIR, LEDGER_FILE)
 
 
 def repos_dir():
     return os.environ.get("HARNESS_REPOS_DIR") or siblings_dir(ROOT_DIR)
+
+
+def settled_path():
+    return os.path.join(state_dir(), SETTLED_FILE)
 
 
 def load_ledger():
@@ -5031,7 +5038,7 @@ def load_ledger():
     except OSError:
         return {"owner": "Harness Doctor", "rows": [], "blind_spots": []}, b""
     try:
-        return json.loads(raw), raw
+        return merge_settled(json.loads(raw), read_settled(settled_path())), raw
     except ValueError:
         return None, raw
 
@@ -5163,7 +5170,7 @@ def unjournaled_dismissals(hooks, ledger):
 
 
 def settle_fixes(ledger):
-    changed = False
+    settled = []
     for entry in ledger.get("rows") or ():
         fixes = entry.get("fixes") or []
         if entry.get("status") != "fixed-pending" or not fixes or fixes[-1].get("in"):
@@ -5172,29 +5179,8 @@ def settle_fixes(ledger):
         if found:
             fixes[-1]["in"] = found
             entry["status"] = "fixed"
-            changed = True
-    return changed
-
-
-def write_fix_fields(judging):
-    fresh, raw = load_ledger()
-    if not raw or not isinstance(fresh, dict):
-        return
-    rows = {r.get("id"): r for r in fresh.get("rows") or () if isinstance(r, dict)}
-    for entry in judging.get("rows") or ():
-        target = rows.get(entry["id"])
-        mine = (entry.get("fixes") or [None])[-1]
-        theirs = ((target or {}).get("fixes") or [None])[-1]
-        if not isinstance(mine, dict) or not isinstance(theirs, dict) or mine.get("at") != theirs.get("at"):
-            continue
-        for key in ("in", "regressed_at"):
-            if mine.get(key) and not theirs.get(key):
-                theirs[key] = mine[key]
-        if entry.get("status") == "fixed" and target.get("status") == "fixed-pending" and theirs.get("in"):
-            target["status"] = "fixed"
-    with open(ledger_path() + ".tmp", "w") as handle:
-        handle.write(json.dumps(fresh, indent=2, ensure_ascii=False) + "\n")
-    os.replace(ledger_path() + ".tmp", ledger_path())
+            settled.append(entry)
+    return settled
 
 
 def problems_from(sections, ledger, state, now, extra=()):
@@ -5656,14 +5642,13 @@ def collect(write, now):
     for v in holds:
         v["group"] = HOLDS_GROUP
     problems = problems_from(sections, judging, state, now, [self_verdict] + fault_verdicts + holds)
-    changed = write and settle_fixes(judging)
+    settled = settle_fixes(judging) if write else []
     for problem in problems:
         entry = problem["state"] == "regressed" and ledger_row_by_id(judging, problem["ledger"])
         if write and entry and entry.get("fixes") and not entry["fixes"][-1].get("regressed_at"):
             entry["fixes"][-1]["regressed_at"] = iso_time(now)
-            changed = True
-    if changed:
-        write_fix_fields(judging)
+            settled.append(entry)
+    record_settled(settled_path(), settled)
     extras = [line("changes, 7 d", menu=change_table(recent[:CHANGE_ROWS], impact) if recent else None),
               line("not measured" if blind else "not measured: nothing",
                    menu=section("", [row([b["what"]], dim=True) for b in blind], ["blind spot"], [False])),

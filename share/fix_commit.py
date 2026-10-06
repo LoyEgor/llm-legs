@@ -1,12 +1,100 @@
 """The commit that settles a doctor ledger fix `{at, files: ["<repo>/<path>", ...], in}`, shared by
-llm-doctor and harness-doctor."""
+llm-doctor and harness-doctor, and the overlay those settled fields live in until a commit carries them:
+a measuring run never writes the tracked ledger (shared-invariants row ej)."""
 import datetime
 import functools
+import json
 import os
 import subprocess
 
 CLOCK_SLACK_S = 60
 FIX_KEYS = frozenset({"at", "by", "files", "in", "regressed_at"})
+SETTLED_FILE = "ledger-settled.json"
+SETTLED_KEYS = ("in", "regressed_at")
+
+
+def read_settled(path):
+    """`{row id: {fix at: {in?, regressed_at?, status?}}}` of a doctor's overlay; empty when absent or unreadable."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            rows = json.load(handle).get("rows")
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return rows if isinstance(rows, dict) else {}
+
+
+def merge_settled(ledger, settled):
+    """Fill what the tracked ledger lacks from the overlay, in place: a value the file holds always wins, and
+    a row turns `fixed` only from `fixed-pending` once its last fix carries the overlay's own commit."""
+    if not isinstance(ledger, dict) or not isinstance(ledger.get("rows"), list) or not settled:
+        return ledger
+    for row in ledger["rows"]:
+        found = settled.get(row.get("id")) if isinstance(row, dict) and isinstance(row.get("id"), str) else None
+        fixes = row.get("fixes") if isinstance(found, dict) else None
+        if not isinstance(fixes, list) or not fixes:
+            continue
+        for fix in fixes:
+            entry = found.get(fix.get("at")) if isinstance(fix, dict) and isinstance(fix.get("at"), str) else None
+            for key in SETTLED_KEYS if isinstance(entry, dict) else ():
+                if entry.get(key) and not fix.get(key):
+                    fix[key] = entry[key]
+        last = fixes[-1]
+        entry = found.get(last.get("at")) if isinstance(last, dict) and isinstance(last.get("at"), str) else None
+        if isinstance(entry, dict) and entry.get("status") == "fixed" and row.get("status") == "fixed-pending" \
+                and entry.get("in") and last.get("in") == entry["in"]:
+            row["status"] = "fixed"
+    return ledger
+
+
+def load_merged(ledger_file, settled_file):
+    """The tracked ledger with its doctor's overlay merged in, the one view every ledger reader takes; None when
+    the file is missing or no JSON."""
+    try:
+        with open(ledger_file, encoding="utf-8") as handle:
+            ledger = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    return merge_settled(ledger, read_settled(settled_file))
+
+
+def record_settled(path, rows):
+    """Keep in the overlay what a run settled on each row's last fix: its `in`, `regressed_at` and a `fixed` status."""
+    rows = [row for row in rows if (row.get("fixes") or [None])[-1] and isinstance(row["fixes"][-1].get("at"), str)]
+    if not rows:
+        return
+    settled = read_settled(path)
+    for row in rows:
+        fix = row["fixes"][-1]
+        entry = settled.setdefault(row["id"], {}).setdefault(fix["at"], {})
+        entry.update({key: fix[key] for key in SETTLED_KEYS if fix.get(key)})
+        if row.get("status") == "fixed":
+            entry["status"] = "fixed"
+    temporary = "%s.tmp.%d" % (path, os.getpid())
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump({"rows": settled}, handle, ensure_ascii=False, indent=1, sort_keys=True)
+            handle.write("\n")
+        os.replace(temporary, path)
+    except OSError:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+        raise
+
+
+def sync_settled(ledger_file, settled_file):
+    """Write the overlay's fields into a tracked ledger file in the ledger's own layout; the count of rows changed."""
+    with open(ledger_file, encoding="utf-8") as handle:
+        source = handle.read()
+    before = json.loads(source)
+    after = merge_settled(json.loads(source), read_settled(settled_file))
+    changed = sum(1 for old, new in zip(before.get("rows") or (), after.get("rows") or ()) if old != new)
+    if changed:
+        indent = 1 if source.startswith('{\n "') else 2
+        with open(ledger_file + ".tmp", "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(after, ensure_ascii=False, indent=indent) + "\n")
+        os.replace(ledger_file + ".tmp", ledger_file)
+    return changed
 
 
 @functools.lru_cache(maxsize=None)
