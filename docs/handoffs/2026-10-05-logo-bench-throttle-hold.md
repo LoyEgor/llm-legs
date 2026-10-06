@@ -1,6 +1,6 @@
 # Hand-off: logo-bench-throttle holds (`limiter_hold:logo-bench-throttle`)
 
-Status: settled 20261006T032009Z-f253: item 2 decided and fixed: a hold past 5 min under a suite or night-fixer slot is a watch (llm-legs@355c7c9f, test_harness_doctor); item 1 stays open for «Vector Magic macOS ARM migration».
+Status: settled 20261006T032009Z-f253: item 2 decided and fixed: a hold past 5 min under a suite or night-fixer slot is a watch (llm-legs@f72bf339, test_harness_doctor); item 1 stays open for «Vector Magic macOS ARM migration».
 
 Ledger row `limiter-hold-logo-bench-throttle`; night fixer run `harness-doctor-20261005T061224Z-4873`.
 

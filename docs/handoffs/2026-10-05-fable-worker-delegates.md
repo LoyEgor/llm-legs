@@ -1,6 +1,6 @@
 # Hand-off: Fable workers delegate the brief they were chosen for
 
-Status: settled 20261006T032009Z-f253: worker-run refuses a workers-role start nested in a Fable worker unless it stays claudeb fable (NESTED_MODEL_REFUSED, llm-legs@355c7c9f, test_worker_run_entry); row fixed.
+Status: settled 20261006T032009Z-f253: worker-run refuses a workers-role start nested in a Fable worker unless it stays claudeb fable (NESTED_MODEL_REFUSED, llm-legs@f72bf339, test_worker_run_entry); row fixed.
 
 For the chat «Harness Doctor». Written 2026-10-05 by night fixer
 harness-stop-hooks-20261005T061339Z-2a70 (ledger row `hook-held-backstop-nested-run`).

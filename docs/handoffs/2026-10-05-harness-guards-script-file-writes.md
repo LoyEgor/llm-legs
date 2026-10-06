@@ -1,6 +1,6 @@
 # Guards: a scratchpad script writes relay agents through a run-time path
 
-Status: settled 20261006T032009Z-f253: the owner widened the gate as proposed — a script file run by path and a guarded directory joined to a variable are judged (llm-legs@3b029b93, test_instruction_gate); the five agents rows fixed.
+Status: settled 20261006T032009Z-f253: the owner widened the gate as proposed — a script file run by path and a guarded directory joined to a variable are judged (llm-legs@3a3531d7, test_instruction_gate); the five agents rows fixed.
 
 For «Harness Doctor» (`share/harness-ledger.json` `owner`). Written 2026-10-05 by night fixer run
 harness-guards-20261005T061312Z-11fb. A gate-scope decision, so the fixer changed no gate. Follows
