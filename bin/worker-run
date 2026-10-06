@@ -12,13 +12,13 @@ set -u
 
 usage() {
   printf '%s\n' \
-    'usage: worker-run start <claudeb|codex|gemini|grok|light> --brief <file> [--workdir <dir>] [--account <n>] [--model <m>] [--effort <e>] [--resume <id>] [--round <review-round-id>] [--add-dir <d>]... [--image <p>]... [--web-search | --no-web-search] [--browser] [--target dia|chrome] [--chrome] [--computer] [--role research --research-timeout <duration>]' \
+    'usage: worker-run start <claudeb|codex|gemini|grok|light> --brief <file> [--workdir <dir>] [--account <n>] [--model <m>] [--effort <e>] [--resume <id>] [--round <review-round-id>] [--add-dir <d>]... [--image <p>]... [--web-search | --no-web-search] [--browser] [--target dia|chrome] [--computer] [--role research --research-timeout <duration>]' \
     '       worker-run wait <run-id> [--max <sec>]' \
     '       worker-run report <run-id>' \
     '       worker-run say [<run-id>] <text>' \
     '       worker-run transcript <run-id>' \
     '       worker-run claim <run-id> --paths <path>... [--complete]' \
-    '       worker-run browse [--vendor codex|claudeb] [--target dia|chrome] [--dia-profile <dir|name>] [--account <account>] [--record <deviceId> <account>] [--no-launch] [--json]' >&2
+    '       worker-run browse [--enroll <account|all> [--pin <dir>] | --canary | --window <account> | --seen <token> [--target dia] | --json]' >&2
   exit 2
 }
 
@@ -2283,9 +2283,8 @@ start_run() {
   local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc launcher_session entry
   local web_search=false web_search_flag=false web_search_off_flag=false web_search_asked=''
   local web_search_state='' brief_cyrillic=''
-  local chrome=false browser=false browser_json='' browser_preamble='' browser_device='' browser_account=''
-  local browser_target='' browser_dia_profile='' computer=false computer_home=''
-  local -a browse_args=()
+  local chrome=false browser=false browser_preamble='' browser_device='' browser_account='' browser_profile=''
+  local browser_target='' computer=false computer_home=''
   local -a add_dirs images command_meta command
   add_dirs=()
   images=()
@@ -2305,7 +2304,6 @@ start_run() {
       --image) [ "$#" -ge 2 ] || usage; images+=("$2"); shift 2 ;;
       --web-search) web_search_flag=true; shift ;;
       --no-web-search) web_search_off_flag=true; shift ;;
-      --chrome) chrome=true; shift ;;
       --round) [ "$#" -ge 2 ] || usage; round_flag="$2"; shift 2 ;;
       --role) [ "$#" -ge 2 ] || usage; role="$2"; shift 2 ;;
       --research-timeout) [ "$#" -ge 2 ] || usage; research_timeout="$2"; shift 2 ;;
@@ -2343,8 +2341,18 @@ start_run() {
     [ -n "$model" ] || [ "$vendor" = light ] || model=$(brief_line_value "$brief" MODEL)
     [ -n "$effort" ] || [ "$vendor" = light ] || effort=$(brief_line_value "$brief" EFFORT)
     [ "$computer" = true ] || [ "$(brief_line_value "$brief" COMPUTER)" != yes ] || computer=true
-    browser_dia_profile=$(head -n 400 "$brief" 2>/dev/null | grep -m1 -E '^DIA-PROFILE:' |
-      sed -E 's/^DIA-PROFILE:[[:space:]]*//; s/[[:space:]]+$//')
+    value=$(brief_line_value "$brief" BROWSER)
+    case "$value" in
+      '') ;;
+      chrome | yes | dia)
+        header_value=chrome
+        [ "$value" = chrome ] || header_value=dia
+        [ -z "$browser_target" ] || [ "$browser_target" = "$header_value" ] ||
+          fail "--target $browser_target contradicts the brief header 'BROWSER: $value': drop the flag, worker-run reads the header itself. Nothing was launched and no account was spent."
+        browser=true browser_target=$header_value
+        ;;
+      *) fail "the brief header 'BROWSER: $value' names no target: chrome, or yes/dia for Egor's Dia. Nothing was launched and no account was spent." ;;
+    esac
     # A relay that dropped --resume launched a RESUME brief as a fresh session (2026-10-02).
     value=$(sed -n '1s/^RESUME \([^[:space:]:]\{1,\}\):.*/\1/p' "$brief" 2>/dev/null)
     [ -z "$value" ] || [ -z "$resume" ] || [ "$resume" = "$value" ] ||
@@ -2384,7 +2392,7 @@ start_run() {
     [ "$light" != edit ] || export WORKER_RUN_ROLE=light
   fi
   if [ "$role" = research ]; then
-    [ -z "$resume" ] && [ "$browser" = false ] && [ "$chrome" = false ] || fail 'research does not support resume or browser flags'
+    [ -z "$resume" ] && [ "$browser" = false ] || fail 'research does not support resume or browser flags'
     [ -n "$research_timeout" ] || research_timeout=360m
     . "$SCRIPT_DIRECTORY/../share/light-research.sh"
     value=$(research_duration_seconds "$research_timeout") && [ "$value" -gt 0 ] || usage
@@ -2516,11 +2524,9 @@ start_run() {
       [ "${#images[@]}" -eq 0 ] || fail 'claudeb does not support --image'
       ;;
     codex)
-      [ "$chrome" = false ] || fail 'only claudeb supports --chrome'
       [ -z "$resume" ] || [ "${#add_dirs[@]}" -eq 0 ] || fail 'codex resume does not support --add-dir'
       ;;
     gemini)
-      [ "$chrome" = false ] || fail 'only claudeb supports --chrome'
       [ "${#images[@]}" -eq 0 ] || fail 'gemini does not support --image'
       # agy has no stdin mode — the brief travels on argv, and past the kernel's
       # per-argument ceiling execve fails with a bare E2BIG long after start.
@@ -2528,7 +2534,6 @@ start_run() {
       [ "$(($(wc -c <"$brief" | tr -d '[:space:]') + ${#fix_rule} + ${#BRIEF_PREAMBLE} + 128))" -le 131072 ] || fail 'gemini takes the brief on argv; briefs over 128KB cannot launch — shorten it or use another vendor'
       ;;
     grok)
-      [ "$chrome" = false ] || fail 'only claudeb supports --chrome'
       # `--cwd` is the whole of grok's directory grant (1.0.13 has no --add-dir), so research gets no
       # exemption here the way claudeb's read-only mode does: the extra trees would reach neither the
       # CLI nor the run, and the answer would be about repositories nobody read. No image either.
@@ -2617,31 +2622,7 @@ start_run() {
     [[ "${add_dirs[$value]}" = /* ]] || add_dirs[$value]="$PWD/${add_dirs[$value]}"
   done
 
-  if [ "$browser" = true ]; then
-    browse_args=(--vendor "$vendor" --target "${browser_target:-dia}" --json)
-    [ -z "$explicit_account" ] || browse_args+=(--account "$explicit_account")
-    [ -z "$browser_dia_profile" ] || browse_args+=(--dia-profile "$browser_dia_profile")
-    browser_json=$(browse_run "${browse_args[@]}") || :
-    if ! jq -e --arg vendor "$vendor" '.plan.vendor == $vendor' <<<"$browser_json" >/dev/null 2>&1; then
-      jq -r '.reasons[] | "REASON: " + .' <<<"$browser_json"
-      return 2
-    fi
-    browser_account=$(jq -r '.plan.account' <<<"$browser_json")
-    # A codex plan carries no device, and the fallback the run records has to be the TARGET's own
-    # browser: Dia's uuid written into a chrome run names a device that run never touches.
-    browser_device=$(jq -r --arg target "${browser_target:-dia}" \
-      '.plan.device // (if $target == "chrome" then .chrome_device.id else .dia_device.id end) // empty' <<<"$browser_json")
-    browser_preamble=$(jq -r '.preamble_file' <<<"$browser_json")
-    if [ "$vendor" = claudeb ] && [ -n "$explicit_account" ] && [ "$explicit_account" != "$browser_account" ]; then
-      jq -r '.reasons[] | "REASON: " + .' <<<"$browser_json"
-      printf 'REASON: claudeb/%s cannot see device %s; plan says %s\n' "$explicit_account" "$browser_device" "$browser_account"
-      return 2
-    fi
-    jq -r '.reasons[] | "REASON: " + .' <<<"$browser_json" >&2
-    explicit_account=${explicit_account:-$browser_account}
-    browser_account=$explicit_account
-  fi
-  if [ "$computer" = true ]; then
+  if [ "$computer" = true ] || [ "$browser:$vendor" = true:codex ]; then
     computer_home=$(browse_real_home)
     cua_repl_sync "$(browse_codex_config "$computer_home")"
     if [ "$CUA_REPL_STATUS" = broken ]; then
@@ -2732,6 +2713,12 @@ start_run() {
     [ -n "$model_id" ] || refuse_codex_model "$model"
   fi
   warn_cold_resume "$vendor" "$account" "$resume" || :
+  if [ "$browser" = true ]; then
+    browser_target=${browser_target:-chrome}
+    browser_preamble=$(mktemp "${TMPDIR:-/tmp}/worker-run-browser.XXXXXX") || fail 'could not create the browser preamble'
+    browse_prepare "$vendor" "$browser_target" "$account" "$browser_preamble" || { rm -f "$browser_preamble"; return 2; }
+    browser_account=$account browser_device=$BROWSE_DEVICE browser_profile=$BROWSE_PROFILE
+  fi
 
   case "$vendor" in
     claudeb)
@@ -2848,7 +2835,8 @@ start_run() {
     --argjson pid 0 --argjson started_at "$started" --argjson cmd "$cmd_json" \
     --argjson add_dirs "$add_dirs_json" --argjson images "$images_json" --argjson web_search "$web_search" \
     --argjson chrome "$chrome" --argjson browser "$browser" --argjson computer "$computer" --argjson chat_fast "$chat_fast" \
-    --arg browser_device "$browser_device" --arg browser_account "$browser_account" --arg browser_target "${browser_target:-dia}" \
+    --arg browser_device "$browser_device" --arg browser_account "$browser_account" --arg browser_target "$browser_target" \
+    --arg browser_profile "$browser_profile" \
     --arg light "$light" --arg inbox_settings "$inbox_settings" \
     '{vendor:$vendor,account:$account,model:$model,effort:$effort,role:$role,research_timeout:$research_timeout,sandbox_exec:$sandbox_exec,workdir:$workdir,pid:$pid,cmd:$cmd,started_at:$started_at,resume:$resume,cli:$cli,add_dirs:$add_dirs,images:$images,web_search:$web_search,chrome:$chrome,browser:$browser,explicit_model:$explicit_model,explicit_effort:$explicit_effort}
      + {explicit_account:$explicit_account}
@@ -2857,7 +2845,7 @@ start_run() {
      + if $light != "" then {light:$light} else {} end
      + if $inbox_settings != "" then {inbox_settings:$inbox_settings} else {} end
      + if $review_round != "" then {review_round:$review_round,round_source:$round_source} else {} end
-     + if $browser then {browser_device:$browser_device,browser_account:$browser_account,browser_target:$browser_target} else {} end
+     + if $browser then {browser_device:$browser_device,browser_account:$browser_account,browser_target:$browser_target,browser_profile:$browser_profile} else {} end
      + if $vendor == "gemini" then {agy_model:$agy_model} else {} end
      + if $model_id != "" then {model_id:$model_id} else {} end
      + if $vendor == "grok" and $grok_turns != "" then {max_turns:($grok_turns | tonumber)} else {} end' >"$directory/meta.json" || fail 'could not write metadata'
@@ -4038,25 +4026,14 @@ wait_poll_lag() { # directory run-id wait-started: how long an exit the poll had
   return 0
 }
 
-browse_app_running() { # process-name app-relative-executable
-  local pgrep_cmd="${BROWSE_PGREP:-pgrep}"
-  # Anchored at the executable: a bare -f substring also matches any shell whose command line names the path.
-  $pgrep_cmd -x "$1" >/dev/null 2>&1 || $pgrep_cmd -f "^[^ ]*/${2//./\\.}( |$)" >/dev/null 2>&1
-}
-
 run_live() { # directory
   [ ! -e "$1/exit_code" ] && supervisor_running "$1" "$(jq -r '.pid // 0' "$1/meta.json" 2>/dev/null)" &&
     ! run_overdue "$1"
 }
 
 chrome_runs() { # live run ids that may be driving Google Chrome
-  local runs="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}" devices meta
-  devices=$(jq -c . "$runs/browse/devices.json" 2>/dev/null) || devices='{}'
-  # A run from before browser_target was recorded names only its device; one that is no Dia
-  # profile's, or a computer-use run, may be on Chrome.
-  find "$runs" -mindepth 2 -maxdepth 2 -name meta.json -mtime -2 -print0 2>/dev/null |
-    xargs -0 jq -r --argjson devices "$devices" 'select(.chrome == true or .computer == true or (.browser == true
-      and (.browser_target // "") != "dia" and ((($devices[.browser_device // ""] // {}).profile // "") | startswith("dia:") | not)))
+  find "${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}" -mindepth 2 -maxdepth 2 -name meta.json -mtime -2 -print0 2>/dev/null |
+    xargs -0 jq -r 'select(.chrome == true or .computer == true or (.browser == true and .browser_target != "dia"))
       | input_filename' 2>/dev/null |
     while IFS= read -r meta; do
       ! run_live "${meta%/meta.json}" || printf '%s\n' "$(basename "${meta%/meta.json}")"
@@ -4654,9 +4631,6 @@ claim_run() {
   head -n 20 "$directory/files" 2>/dev/null
 }
 
-# What a vendor actually drives a browser through is a native-messaging host the BROWSER spawned,
-# so a host belonging to the other browser can never answer for this one: parentage is the test,
-# never the mere presence of a socket.
 browse_real_home() {
   local home
   home=$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | sed -n 's/^NFSHomeDirectory: //p')
@@ -4715,151 +4689,6 @@ sky_ensure() { # real-home -> running|started|absent
     done
   fi
   printf absent
-}
-
-browse_browser_pids() { # ps-listing app-path
-  awk -v app="$2" '
-    { pid = $1; sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+/, "")
-      if (index($0, app) && index($0, "--type=") == 0) print pid }' <<<"$1"
-}
-
-# The host is matched by the command it IS, never by a fragment a sibling can also carry: a browser
-# spawns dozens of children, and only the extension host's socket answers for this vendor.
-browse_host_pids() { # ps-listing command-regex parent-pid...
-  local listing="$1" pattern="$2"
-  shift 2
-  awk -v pattern="$pattern" -v parents=" $* " '
-    { pid = $1; ppid = $2; sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+/, "")
-      if ($0 ~ pattern && index(parents, " " ppid " ")) print pid }' <<<"$listing"
-}
-
-browse_transport_present() { # vendor app-path
-  local vendor="$1" app="$2" listing pids host sock_dir lsof_cmd="${BROWSE_LSOF:-lsof}"
-  listing=$("${BROWSE_PS:-ps}" -Ao pid=,ppid=,command= 2>/dev/null) || return 1
-  pids=$(browse_browser_pids "$listing" "$app")
-  [ -n "$pids" ] || return 1
-  if [ "$vendor" = claudeb ]; then
-    sock_dir="${BROWSE_CLAUDE_SOCKET_DIR:-/tmp/claude-mcp-browser-bridge-$(id -un)}"
-    for host in $(browse_host_pids "$listing" 'claude.*[[:space:]]--chrome-native-host([[:space:]]|$)' $pids); do
-      [ -e "$sock_dir/$host.sock" ] && return 0
-    done
-    return 1
-  fi
-  sock_dir="${BROWSE_CODEX_SOCKET_DIR:-/tmp/codex-browser-use}"
-  [ -d "$sock_dir" ] || return 1
-  for host in $(browse_host_pids "$listing" 'ChatGPT for Chrome([[:space:]]|$)' $pids); do
-    # The socket is named by a rotating uuid, so only the host's own open files tie one to this
-    # browser; where lsof cannot be asked, the parentage stands alone.
-    command -v "$lsof_cmd" >/dev/null 2>&1 || return 0
-    "$lsof_cmd" -p "$host" 2>/dev/null | grep -qF "$sock_dir/" && return 0
-  done
-  return 1
-}
-
-browse_device_cache() (
-  local operation="$1" device="$2" account="$3"
-  local browse_dir="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}/browse"
-  local dev_file="$browse_dir/devices.json" lock="$browse_dir/devices.lock.d" tmp_file deadline owner mtime now
-  mkdir -p "$browse_dir" || return 1
-  deadline=$((SECONDS + 10))
-  while :; do
-    if mkdir "$lock" 2>/dev/null; then
-      printf '%s\n' "$$" >"$lock/pid" || { rm -rf "$lock"; return 1; }
-      break
-    fi
-    owner=''
-    read -r owner 2>/dev/null <"$lock/pid" || owner=''
-    mtime=$(stat -f %m "$lock" 2>/dev/null || stat -c %Y "$lock" 2>/dev/null) || mtime=0
-    now=$(date +%s)
-    if [ -z "$owner" ] || ! kill -0 "$owner" 2>/dev/null ||
-       { [ "$mtime" -gt 0 ] && [ $((now - mtime)) -gt 60 ]; }; then
-      rm -rf "$lock" 2>/dev/null
-      continue
-    fi
-    [ "$SECONDS" -lt "$deadline" ] || return 1
-    sleep 0.05
-  done
-  trap 'rm -rf "$lock" 2>/dev/null; [ -z "${tmp_file:-}" ] || rm -f "$tmp_file"' EXIT
-  local existing='{}'
-  [ ! -f "$dev_file" ] || existing=$(cat "$dev_file") || return 1
-  tmp_file=$(mktemp "$dev_file.XXXXXX") || return 1
-  jq --arg op "$operation" --arg dev "$device" --arg acct "$account" \
-    --arg seen "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '
-      if $op == "record" then . + {($dev): ((.[$dev] // {} | {profile, profile_seen} | with_entries(select(.value != null)))
-        + {account: $acct, seen: $seen})}
-      elif $op == "profile" then
-        with_entries(if .key != $dev and .value.profile == $acct then .value |= del(.profile, .profile_seen) else . end)
-        | .[$dev] = ((.[$dev] // {}) + {profile: $acct, profile_seen: $seen})
-      elif $op == "broken" then .[$dev] = ((.[$dev] // {}) + {health: "broken", health_seen: $seen})
-      elif $op == "drop" and (.[$dev] == null or .[$dev].account == $acct or .[$dev].denied == true) then
-        . + {($dev): ((.[$dev] // {} | {profile, profile_seen, health, health_seen} | with_entries(select(.value != null)))
-          + {account: $acct, seen: $seen, denied: true,
-          denied_accounts: (((.[$dev].denied_accounts // [.[$dev] | select(.denied == true) | .account]) + [$acct]) | unique)})}
-      elif $op == "drop" then
-        .[$dev] += {denied_accounts: (((.[$dev].denied_accounts // []) + [$acct]) | unique), denied_seen: $seen}
-      else . end
-    ' <<<"$existing" >"$tmp_file" && mv -f "$tmp_file" "$dev_file"
-)
-
-browse_ext_read() {
-  local key value
-  BROWSE_EXT_DEVICE='' BROWSE_EXT_ACCOUNT='' BROWSE_EXT_DEVICE_KNOWN=false
-  while IFS=$'\t' read -r key value; do
-    case "$key" in
-      bridgeDeviceId) BROWSE_EXT_DEVICE=$value BROWSE_EXT_DEVICE_KNOWN=true ;;
-      accountUuid) BROWSE_EXT_ACCOUNT=$value ;;
-    esac
-  done < <(python3 "$SCRIPT_DIRECTORY/../share/ext_leveldb.py" "$1" bridgeDeviceId accountUuid 2>/dev/null)
-}
-
-browse_ext_account() {
-  local account_uuid json
-  account_uuid=$(LC_ALL=C grep -Eo "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" <<<"$1" | head -n 1)
-  [ -n "$account_uuid" ] || return 0
-  for json in "${CLAUDEB_PROFILES_ROOT:-$HOME/.claude-profiles}"/*/.claude.json; do
-    [ -f "$json" ] || continue
-    [ "$(jq -r '.oauthAccount.accountUuid // empty' "$json" 2>/dev/null)" = "$account_uuid" ] || continue
-    json=${json%/.claude.json}
-    printf '%s\n' "${json##*/}"
-    return 0
-  done
-}
-
-# The extension's own sign-in names the account outright; the cache only remembers probes, so a
-# denial recorded under one sign-in must not shadow the account the extension holds now.
-browse_device_account() {
-  local dev_file="$1" device="$2" ext_account="$3" existing='{}'
-  [ ! -f "$dev_file" ] || existing=$(cat "$dev_file" 2>/dev/null) || existing='{}'
-  jq -r --arg dev "$device" --arg ext "$ext_account" --argjson ttl "${BROWSE_BROKEN_TTL:-86400}" '
-    (.[$dev] // {}) as $e
-    | ($e.denied_accounts // (if $e.denied == true then [$e.account] else [] end)) as $d
-    | (if $ext != "" then $ext else ($e.account // "") end) as $a
-    | (if $e.health == "broken" and (($e.health_seen // "" | try fromdateiso8601 catch 0) > (now - $ttl))
-       then $e.health_seen else "" end) as $b
-    | "\($a)|\(($a != "") and ($d | index($a)) != null)|\($b)"
-  ' <<<"$existing" 2>/dev/null || printf '%s|false|\n' "$ext_account"
-}
-
-browse_profile_device() { # dev_file profile-key
-  [ -f "$1" ] || return 0
-  jq -r --arg p "$2" '[to_entries[] | select(.value.profile == $p)] | max_by(.value.profile_seen) | .key // empty' "$1" 2>/dev/null
-}
-
-browse_cache_output() {
-  local line device account
-  local uuid='[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
-  local acct='[A-Za-z0-9][A-Za-z0-9_.-]*'
-  while IFS= read -r line || [ -n "$line" ]; do
-    if [[ "$line" =~ ^BROWSER-DEVICE-ACCOUNT:[[:blank:]]+($uuid)[[:blank:]]+($acct)[[:space:]]*$ ]]; then
-      device=${BASH_REMATCH[1]} account=${BASH_REMATCH[2]}
-      browse_device_cache record "$device" "$account" || true
-    elif [[ "$line" =~ ^OUTCOME:[[:blank:]]+BROWSER_DEVICE_NOT_IN_ACCOUNT[[:blank:]]+device=($uuid)[[:blank:]]+account=($acct)[[:space:]]*$ ]]; then
-      device=${BASH_REMATCH[1]} account=${BASH_REMATCH[2]}
-      browse_device_cache drop "$device" "$account" || true
-    elif [[ "$line" =~ ^OUTCOME:[[:blank:]]+BROWSER_TABS_BROKEN[[:blank:]]+device=($uuid)[[:space:]]*$ ]]; then
-      browse_device_cache broken "${BASH_REMATCH[1]}" '' || true
-    fi
-  done
 }
 
 run_result_text() {
@@ -5013,26 +4842,16 @@ fold_run_anchors() { # directory
 
 complete_run() {
   local directory="$1" code="$2" vendor run_status
-  local -a result_status
   fold_run_anchors "$directory"
   vendor=$(jq -r .vendor "$directory/meta.json")
   if [ ! -f "$directory/result" ]; then
-    if jq -e '.browser == true or .chrome == true' "$directory/meta.json" >/dev/null 2>&1; then
-      run_result_text "$directory" "$vendor" | tee "$directory/result.tmp.$$" | browse_cache_output
-      result_status=("${PIPESTATUS[@]}")
-      if [ "${result_status[0]}" = 0 ]; then
-        mv -f "$directory/result.tmp.$$" "$directory/result"
-      else
-        rm -f "$directory/result.tmp.$$"
-      fi
+    if run_result_text "$directory" "$vendor" >"$directory/result.tmp.$$"; then
+      mv -f "$directory/result.tmp.$$" "$directory/result"
     else
-      if run_result_text "$directory" "$vendor" >"$directory/result.tmp.$$"; then
-        mv -f "$directory/result.tmp.$$" "$directory/result"
-      else
-        rm -f "$directory/result.tmp.$$"
-      fi
+      rm -f "$directory/result.tmp.$$"
     fi
   fi
+  browse_record "$directory" "$code" || :
   stamp_result_language "$directory"
   print_outcome "$directory" "$vendor" "$code"
   lang_line "$directory"
@@ -5041,762 +4860,360 @@ complete_run() {
   journal_worker_run "$directory" "$run_status" "$code"
 }
 
+# Chrome is automation's browser: each pool account owns a Chrome profile whose Claude extension is signed
+# in as that account (accounts.json, written only by enrollment and live proofs). Dia is Egor's live
+# browser: nothing here launches, quits or relaunches it.
+BROWSE_UUID='[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+
+browse_dir() { printf '%s/browse\n' "${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"; }
+
+browse_chrome_data() { printf '%s\n' "${BROWSE_CHROME_USER_DATA:-$(browse_real_home)/Library/Application Support/Google/Chrome}"; }
+
+browse_registry() {
+  local registry
+  registry=$(jq -c 'objects' "$(browse_dir)/accounts.json" 2>/dev/null) || registry=''
+  [ -n "$registry" ] || registry='{}'
+  printf '%s\n' "$registry"
+}
+
+browse_registry_set() { # account jq-update [jq-args...]
+  local file account=$1 update=$2 rc=0
+  shift 2
+  file="$(browse_dir)/accounts.json"
+  mkdir -p "${file%/*}" && LLM_STORE_LOCK_RETRIES=40 store_lock_acquire "$file.lock" || return 1
+  browse_registry | jq --arg account "$account" "$@" '.[$account] = (.[$account] // {} | '"$update"')' \
+    >"$file.tmp.$$" && mv -f "$file.tmp.$$" "$file" || rc=1
+  rm -f "$file.tmp.$$"
+  store_lock_release "$file.lock"
+  return "$rc"
+}
+
+browse_email() { # account
+  jq -r '.oauthAccount.emailAddress // empty' "${CLAUDEB_PROFILES_ROOT:-$HOME/.claude-profiles}/$1/.claude.json" 2>/dev/null
+}
+
+browse_pool() {
+  local json
+  for json in "${CLAUDEB_PROFILES_ROOT:-$HOME/.claude-profiles}"/*/.claude.json; do
+    json=${json%/.claude.json}
+    [ -z "$(browse_email "${json##*/}")" ] || printf '%s\n' "${json##*/}"
+  done
+}
+
+browse_profile() { # account -> its Chrome profile directory, or nothing
+  local dir email
+  dir=$(browse_registry | jq -r --arg a "$1" '.[$a] | select(.pin == true) | .chrome_profile // empty')
+  email=$(browse_email "$1")
+  [ -n "$dir" ] || [ -z "$email" ] || dir=$(jq -r --arg e "$email" '.profile.info_cache // {} | to_entries
+    | map(select((.value.user_name // "" | ascii_downcase) == ($e | ascii_downcase))) | .[0].key // empty' \
+    "$(browse_chrome_data)/Local State" 2>/dev/null)
+  printf '%s\n' "$dir"
+}
+
+browse_profile_label() { # directory
+  printf '"%s" (%s)\n' "$(jq -r --arg d "$1" '.profile.info_cache[$d].name // $d' "$(browse_chrome_data)/Local State" 2>/dev/null)" "$1"
+}
+
+browse_chrome_running() { "${BROWSE_PGREP:-pgrep}" -x 'Google Chrome' >/dev/null 2>&1; }
+
+# AppleScript addressed to a closed app launches it.
+browse_chrome_urls() {
+  browse_chrome_running || return 0
+  "${BROWSE_OSASCRIPT:-osascript}" 2>/dev/null <<'APPLESCRIPT'
+set out to ""
+tell application id "com.google.Chrome"
+  repeat with w in windows
+    repeat with t in tabs of w
+      set out to out & (URL of t) & linefeed
+    end repeat
+  end repeat
+end tell
+return out
+APPLESCRIPT
+}
+
+# Chrome opens a URL handed to it in a window the profile already has, so the marker tab is both the
+# proof the profile is open and the reason asking again never piles up windows. A running Chrome drops
+# `open --args` without -n, and replaces an about: URL with the new-tab page.
+browse_window() { # profile-directory
+  local marker="https://example.com/#worker-run=${1// /-}" i
+  for ((i = 0; i < ${BROWSE_WINDOW_WAIT:-40}; i++)); do
+    browse_chrome_urls | grep -qxF -- "$marker" && return 0
+    [ "$i" -ne 0 ] || "${BROWSE_OPEN:-open}" -n -g -b com.google.Chrome --args --profile-directory="$1" "$marker" >/dev/null 2>&1 ||
+      return 1
+    sleep 0.5
+  done
+  return 1
+}
+
+browse_seen() { # token target
+  local i
+  for ((i = 0; i < ${BROWSE_SEEN_WAIT:-20}; i++)); do
+    if [ "$2" = dia ]; then "${BROWSE_DIA_JS:-$SCRIPT_DIRECTORY/dia-js}" --list 2>/dev/null; else browse_chrome_urls; fi |
+      grep -qF -- "$1" && { printf 'SEEN: %s\n' "$2"; return 0; }
+    sleep 0.5
+  done
+  printf 'SEEN: none\n'
+  return 1
+}
+
+browse_preamble() { # vendor target account device-hint profiles token
+  local label='Google Chrome' run="$SCRIPT_DIRECTORY/worker-run browse" first='every' gone
+  [ -z "$4" ] || first="\`$4\` first when listed, then every other"
+  gone="run \`$run --window $3\`, repeat the proof for up to 60 s, and only then end \`OUTCOME: BROWSER_INTERRUPTED\`"
+  [ "$2" != dia ] || { label=Dia; gone='end `OUTCOME: BROWSER_INTERRUPTED` (Dia is never relaunched)'; }
+  if [ "$1" = codex ]; then
+    cat <<EOF
+# Browser preamble (Codex / $label)
+- First js call: \`await cua.getState()\`, then \`await agent.browsers.list()\`; entry ids rotate, never reuse one.
+- Target: the \`extension\` entry $(if [ "$2" = dia ]; then printf 'WITHOUT a `profileName` (Dia)'; else printf 'with `family` `chrome` whose `profileName` is one of %s, first listed wins' "$5"; fi). Never drive any other entry or browser; never log in.
+EOF
+  else
+    cat <<EOF
+# Browser preamble (Claude in Chrome / $label / $3)
+Prove the device before the task:
+1. \`list_connected_browsers\`. Candidates: $first \`isLocal: true\` entry; no other id, ever.
+2. Per candidate: \`select_browser\`, \`navigate\` (no tabId) to \`https://example.com/?wr=$6-<candidate number>\`, then run \`$run --seen $6-<candidate number>$([ "$2" != dia ] || printf ' --target dia')\`. Only \`SEEN: $2\` proves it. An error, a timeout or \`SEEN: none\`: close any tab it opened, take the next candidate; never retry one, never call \`tabs_context_mcp\` on one.
+3. Proven: print \`BROWSER-PROVEN: <deviceId> $3\` and work in that tab; your final answer repeats that line. None: end \`OUTCOME: BROWSER_NO_DEVICE account=$3 profile=$5\`.
+Then:
+- After a reconnect or a tool error \`select_browser\` the proven device again. Browser or tab gone: $gone.
+EOF
+  fi
+  cat <<EOF
+- Fill and submit forms through JavaScript (\`form.elements[...]\`), never a click, then read the effect back and check every value you set; an unconfirmed submit ends \`OUTCOME: BROWSER_CLICK_UNVERIFIED\`.
+- Never \`switch_browser\`, log in, or launch, quit or script a browser yourself; anything the task needs that this forbids ends \`OUTCOME: HARNESS_NEEDS_REPAIR reason=<what>\`.
+- Close your tabs once the task is done (leave the work tab open when you stop for Egor) and end \`OUTCOME: BROWSER_OK\`.
+EOF
+}
+
+browse_prepare() { # vendor target account preamble-file; REASON lines and 2 when no browser can serve
+  local vendor=$1 target=$2 account=$3 dir='' names=''
+  BROWSE_PROFILE='' BROWSE_DEVICE=''
+  if [ "$target" = dia ]; then
+    "${BROWSE_PGREP:-pgrep}" -x Dia >/dev/null 2>&1 ||
+      { printf "REASON: Dia is not running — it is Egor's browser and no run launches it: use BROWSER: chrome\n"; return 2; }
+  elif [ "$vendor" = codex ]; then
+    while IFS= read -r dir; do
+      browse_window "$dir" && names+="${names:+, }$(browse_profile_label "$dir")"
+    done < <(browse_registry | jq -r '.[] | select(.status == "ok") | .chrome_profile')
+    [ -n "$names" ] || { printf 'REASON: no enrolled Chrome profile is open: worker-run browse --enroll all\n'; return 2; }
+  else
+    dir=$(browse_profile "$account")
+    [ -n "$dir" ] || {
+      printf 'REASON: claudeb/%s has no Chrome profile signed in as %s: worker-run browse --enroll %s (--pin <dir>)\n' \
+        "$account" "$(browse_email "$account")" "$account"
+      return 2
+    }
+    browse_window "$dir" || { printf 'REASON: the Chrome window of %s (%s) did not open\n' "$account" "$dir"; return 2; }
+    BROWSE_PROFILE=$dir names=$(browse_profile_label "$dir")
+    BROWSE_DEVICE=$(browse_registry | jq -r --arg a "$account" '.[$a].device_id // empty')
+  fi
+  browse_preamble "$vendor" "$target" "$account" "$BROWSE_DEVICE" "$names" "$(date +%s)$RANDOM" >"$4"
+}
+
+browse_session() { # account prompt-file -> the session's answer
+  local out pid waited=0
+  out=$(mktemp "$(browse_dir)/session.XXXXXX") || return 1
+  ( cd "$(browse_dir)" && exec env -u WORKER_RUN_ID -u WORKER_RUN_RECORD "${WORKER_RUN_CLAUDEB:-$HOME/.local/bin/claudeb}" \
+      profile "$1" -p --model "${BROWSE_PROOF_MODEL:-sonnet}" --effort low --chrome --output-format json \
+      --dangerously-skip-permissions ) <"$2" >"$out" 2>&1 &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    [ "$waited" -lt "${BROWSE_SESSION_S:-300}" ] || { kill "$pid" 2>/dev/null; break; }
+    sleep 1
+    waited=$((waited + 1))
+  done
+  wait "$pid" 2>/dev/null
+  jq -r '.result // empty' "$out" 2>/dev/null || cat "$out"
+  mv -f "$out" "$(browse_dir)/last-session-$1.json"
+}
+
+# A proof refreshes the device and a run that found none makes the account a login; an enrollment that
+# ends any other way is a failed proof. Sets BROWSE_PROVEN and BROWSE_OUTCOME.
+browse_absorb() { # account answer [enrolling|log-only]
+  BROWSE_PROVEN=$(sed -nE "s/^BROWSER-PROVEN:[[:blank:]]+($BROWSE_UUID)[[:blank:]]+$1[[:space:]]*\$/\1/p" <<<"$2" | tail -n 1)
+  BROWSE_OUTCOME=$(sed -nE 's/^OUTCOME:[[:blank:]]+([A-Z_]+).*/\1/p' <<<"$2" | tail -n 1)
+  BROWSE_OUTCOME=${BROWSE_OUTCOME:-missing}
+  if [ "${3:-}" = log-only ]; then
+    :
+  elif [ -n "$BROWSE_PROVEN" ]; then
+    browse_registry_set "$1" '. + {device_id:$d, proven_at:(now | todate), status:"ok", last_error:""}' --arg d "$BROWSE_PROVEN"
+  elif [ "$BROWSE_OUTCOME" = BROWSER_NO_DEVICE ]; then
+    browse_registry_set "$1" '. + {status:"needs-login", last_error:"no listed browser proved to be its Chrome profile"}'
+  elif [ -n "${3:-}" ]; then
+    browse_registry_set "$1" '. + {status:"proof-failed", last_error:$e}' --arg e "$BROWSE_OUTCOME"
+  fi
+}
+
+browse_log() { # run vendor account profile target device outcome workaround
+  mkdir -p "$(browse_dir)" && jq -cn --arg run "$1" --arg vendor "$2" --arg account "$3" --arg profile "$4" --arg target "$5" \
+    --arg device "$6" --arg outcome "$7" --argjson workaround "$8" \
+    '{ts:(now | todate), run:$run, vendor:$vendor, account:$account, profile:$profile, target:$target, device:$device,
+      outcome:$outcome, workaround:$workaround}' >>"$(browse_dir)/log.jsonl"
+}
+
+# A way around the preamble: a device no list printed, a Chrome launch of its own, --chrome without
+# --browser, or a script aimed at the browser the run does not target.
+browse_workaround() { # transcript target
+  local other='osascript.*(Dia|company\.thebrowser\.dia)|dia-js' lines
+  [ "$2" != dia ] || other='osascript.*(Google Chrome|com\.google\.Chrome)'
+  [ -r "$1" ] || return 1
+  lines=$(jq -rn --arg uuid "$BROWSE_UUID" '[inputs] as $all
+    | [$all[] | .message.content[]? | objects] as $parts
+    | [$parts[] | select(.type == "tool_use" and (.name | endswith("list_connected_browsers"))) | .id] as $lists
+    | [$parts[] | select(.type == "tool_result" and (.tool_use_id as $id | $lists | index($id)))
+       | .content | tostring | scan($uuid)] as $listed
+    | ($parts[] | select(.type == "tool_use" and (.name | endswith("select_browser"))) | .input.deviceId
+       | select(. as $d | $listed | index($d) | not) | "UNLISTED-DEVICE " + .),
+      ($parts[] | select(.type == "tool_use" and .name == "Bash") | .input.command // empty),
+      ($all[] | .payload? | objects | select(.type == "function_call") | .arguments // empty)' "$1" 2>/dev/null) || return 1
+  grep -Eq -- "^UNLISTED-DEVICE |(^|[;&|[:space:]])open[[:space:]][^|;&]*(Google Chrome|com\.google\.Chrome)|Google Chrome\.app/Contents/MacOS|$other" <<<"$lines" ||
+    grep -E -- '(^|[[:space:]])--chrome([[:space:]]|$)' <<<"$lines" | grep -vq -- '--browser'
+}
+
+browse_record() { # directory exit-code
+  local meta="$1/meta.json" vendor account target transcript workaround=false
+  jq -e '.browser == true' "$meta" >/dev/null 2>&1 || return 0
+  vendor=$(jq -r '.vendor' "$meta") account=$(jq -r '.account' "$meta") target=$(jq -r '.browser_target // "chrome"' "$meta")
+  browse_absorb "$account" "$(cat "$1/result" 2>/dev/null)" "$([ "$vendor:$target" = claudeb:chrome ] || echo log-only)"
+  [ "$BROWSE_OUTCOME" != missing ] || [ "$2" = 0 ] || BROWSE_OUTCOME=BROWSER_INTERRUPTED
+  transcript=$(session_transcript "$vendor" "$account" "$(session_id "$1")" "$(jq -r '.workdir // empty' "$meta")" 2>/dev/null) ||
+    transcript=''
+  ! browse_workaround "$transcript" "$target" || workaround=true
+  browse_log "${1##*/}" "$vendor" "$account" "$(jq -r '.browser_profile // empty' "$meta")" "$target" "$BROWSE_PROVEN" \
+    "$BROWSE_OUTCOME" "$workaround"
+}
+
+browse_proof_session() { # account profile task -> the answer; the account's registry entry updated
+  local prompt answer
+  prompt=$(mktemp "$(browse_dir)/prompt.XXXXXX") || return 1
+  { browse_preamble claudeb chrome "$1" "$(browse_registry | jq -r --arg a "$1" '.[$a].device_id // empty')" \
+      "$(browse_profile_label "$2")" "$(date +%s)$RANDOM"
+    printf '\nTask: %s\n' "$3"; } >"$prompt"
+  answer=$(browse_session "$1" "$prompt")
+  rm -f "$prompt"
+  printf '%s\n' "$answer"
+}
+
+browse_enroll() { # account [pin-directory]
+  local account=$1 email dir status
+  email=$(browse_email "$account")
+  [ -n "$email" ] || { printf 'ENROLL: %s unknown — its profile holds no claude.ai login\n' "$account"; return 1; }
+  [ -z "${2:-}" ] || browse_registry_set "$account" '. + {chrome_profile:$d, pin:true}' --arg d "$2" || return 1
+  dir=$(browse_profile "$account")
+  browse_registry_set "$account" '. + {email:$e, chrome_profile:$d, pin:(.pin // false)}' --arg e "$email" --arg d "$dir" || return 1
+  if [ -z "$dir" ]; then
+    browse_registry_set "$account" '. + {status:"no-profile", last_error:"no Chrome profile is signed in as \($e)"}' --arg e "$email"
+    printf 'ENROLL: %s no-profile\nREASON: no Chrome profile is signed in as %s: sign one into Chrome, or worker-run browse --enroll %s --pin <dir>\n' \
+      "$account" "$email" "$account"
+    return 1
+  fi
+  if browse_window "$dir"; then
+    browse_absorb "$account" "$(browse_proof_session "$account" "$dir" 'the proof alone: close your tab and end `OUTCOME: BROWSER_OK`.')" enrolling
+  else
+    BROWSE_OUTCOME=BROWSER_INTERRUPTED BROWSE_PROVEN=''
+    browse_registry_set "$account" '. + {status:"proof-failed", last_error:"its Chrome window did not open"}'
+  fi
+  browse_log "enroll-$account-$(date +%s)" claudeb "$account" "$dir" chrome "$BROWSE_PROVEN" "$BROWSE_OUTCOME" false
+  status=$(browse_registry | jq -r --arg a "$account" '.[$a].status')
+  printf 'ENROLL: %s %s %s %s\n' "$account" "$status" "$dir" "${BROWSE_PROVEN:-no-device}"
+  [ "$status" != needs-login ] || printf 'REASON: the Claude extension in Chrome %s is not signed in as %s (%s): dispatch share/briefs/claude-ext-login.md with ACCOUNT %s, EMAIL %s, PROFILE %s\n' \
+    "$dir" "$account" "$email" "$account" "$email" "$dir"
+  [ "$status" = ok ]
+}
+
+# Each enrolled account fills and submits a form on a listener only this canary runs; the server's own
+# receipt is the verdict, never the worker's word.
+browse_canary() {
+  local work port server account dir rc=0 tag child
+  local -a children=()
+  [ -z "$(chrome_runs)" ] || { printf 'CANARY: skipped — a browser run is live\n'; return 0; }
+  mkdir -p "$(browse_dir)" && touch "$(browse_dir)/canary.stamp"
+  work=$(mktemp -d "$(browse_dir)/canary.XXXXXX") || return 1
+  python3 - "$work" <<'PY' &
+import http.server, json, os, sys, urllib.parse
+work = sys.argv[1]
+class Form(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+    def reply(self, body):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.end_headers()
+        self.wfile.write(body.encode())
+    def do_GET(self):
+        url = urllib.parse.urlparse(self.path)
+        query = dict(urllib.parse.parse_qsl(url.query))
+        if url.path == "/submit":
+            with open(os.path.join(work, "receipts"), "a") as handle:
+                handle.write(json.dumps(query) + "\n")
+            self.reply("<p id=done>received %s</p>" % query.get("v", ""))
+        else:
+            self.reply('<form action=/submit><input type=hidden name=case value="%s"><input name=v>'
+                       '<button>Send</button></form>' % query.get("case", ""))
+server = http.server.HTTPServer(("127.0.0.1", 0), Form)
+with open(os.path.join(work, "port.tmp"), "w") as handle:
+    handle.write(str(server.server_port))
+os.rename(os.path.join(work, "port.tmp"), os.path.join(work, "port"))
+server.serve_forever()
+PY
+  server=$!
+  for ((tag = 0; tag < 50; tag++)); do [ -s "$work/port" ] && break; sleep 0.1; done
+  port=$(cat "$work/port" 2>/dev/null)
+  while IFS=$'\t' read -r account dir; do
+    tag="canary-$account-$(date +%s)"
+    (
+      if browse_window "$dir"; then
+        browse_absorb "$account" "$(browse_proof_session "$account" "$dir" "open http://127.0.0.1:$port/form?case=$tag in your proven tab, set the field \`v\` to \`$tag\` and submit the form through JavaScript, then read the page back: it must say \`received $tag\`.")"
+      else
+        BROWSE_OUTCOME=BROWSER_INTERRUPTED BROWSE_PROVEN=''
+      fi
+      grep -qF "\"v\": \"$tag\"" "$work/receipts" 2>/dev/null || BROWSE_OUTCOME=CANARY_NO_RECEIPT
+      browse_log "$tag" claudeb "$account" "$dir" chrome "$BROWSE_PROVEN" "$BROWSE_OUTCOME" false
+      printf 'CANARY: %s %s\n' "$account" "$BROWSE_OUTCOME"
+      [ "$BROWSE_OUTCOME" != CANARY_NO_RECEIPT ]
+    ) &
+    children+=("$!")
+  done < <(browse_registry | jq -r 'to_entries[] | select((.value.chrome_profile // "") != "") | [.key, .value.chrome_profile] | @tsv')
+  for child in "${children[@]}"; do wait "$child" || rc=1; done
+  kill "$server" 2>/dev/null
+  rm -rf "$work"
+  return "$rc"
+}
+
 browse_run() {
-  local browse_vendor='' browse_dia_profile='' browse_account='' browse_record_device='' browse_record_account=''
-  local browse_json=false browse_target='' browse_no_launch=false
+  local mode=status arg='' pin='' target=chrome account rc=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --vendor)
-        [ "$#" -ge 2 ] || usage
-        browse_vendor="$2"
-        case "$browse_vendor" in
-          codex|claudeb) ;;
-          *) fail "unknown vendor for browse: $browse_vendor" ;;
-        esac
-        shift 2
-        ;;
-      --target)
-        [ "$#" -ge 2 ] || usage
-        browse_target="$2"
-        case "$browse_target" in dia|chrome) ;; *) usage ;; esac
-        shift 2
-        ;;
-      --no-launch)
-        browse_no_launch=true
-        shift
-        ;;
-      --dia-profile)
-        [ "$#" -ge 2 ] || usage
-        browse_dia_profile="$2"
-        shift 2
-        ;;
-      --account)
-        [ "$#" -ge 2 ] || usage
-        browse_account="$2"
-        shift 2
-        ;;
-      --record)
-        [ "$#" -ge 3 ] || usage
-        browse_record_device="$2"
-        browse_record_account="$3"
-        shift 3
-        ;;
-      --json)
-        browse_json=true
-        shift
-        ;;
+      --enroll | --window | --seen) [ "$#" -ge 2 ] || usage; mode=${1#--} arg=$2; shift 2 ;;
+      --pin) [ "$#" -ge 2 ] || usage; pin=$2; shift 2 ;;
+      --target) [ "$#" -ge 2 ] || usage; target=$2; shift 2 ;;
+      --canary | --json) mode=${1#--}; shift ;;
       *) usage ;;
     esac
   done
-  # A literal, and the only place one is spelled: no environment variable or config key flips the
-  # default for a whole machine. Chrome is automation's own browser; Dia is the one Egor watches.
-  if [ -z "$browse_target" ]; then
-    browse_target=chrome
-    [ -z "$browse_dia_profile" ] || browse_target=dia
-  fi
-
-  local real_home
-  real_home=$(browse_real_home)
-
-  local browse_dir="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}/browse"
-  local dev_file="$browse_dir/devices.json"
-  if [ -n "$browse_record_device" ] && [ -n "$browse_record_account" ]; then
-    browse_device_cache record "$browse_record_device" "$browse_record_account" ||
-      fail 'could not record browser device account'
-  fi
-
-  local pgrep_cmd="${BROWSE_PGREP:-pgrep}"
-  local open_cmd="${BROWSE_OPEN:-open}"
-
-  local dia_user_data="${BROWSE_DIA_USER_DATA:-}"
-  if [ -z "$dia_user_data" ]; then
-    if [ -d "$HOME/Library/Application Support/Dia/User Data" ]; then
-      dia_user_data="$HOME/Library/Application Support/Dia/User Data"
-    elif [ -d "$real_home/Library/Application Support/Dia/User Data" ]; then
-      dia_user_data="$real_home/Library/Application Support/Dia/User Data"
-    else
-      dia_user_data="$HOME/Library/Application Support/Dia/User Data"
-    fi
-  fi
-
-  local dia_profile_name='' dia_profile_dir='' dia_profile_reason=''
-  local dia_device_id='' dia_device_name='' dia_device_reason='' dia_ext_account=''
-  local -a dia_profiles=() dia_names=() dia_devices=() dia_device_names=() dia_accounts=() dia_ext_accounts=()
-  local -a dia_broken=() dia_cache_reasons=()
-  local local_state="$dia_user_data/Local State"
-  if [ ! -f "$local_state" ]; then
-    dia_profile_reason='dia profile unreadable — Local State missing'
-  elif ! jq -e . "$local_state" >/dev/null 2>&1; then
-    dia_profile_reason='dia profile unreadable — Local State invalid JSON'
-  else
-    while IFS= read -r dia_profile_dir; do
-      [ -n "$dia_profile_dir" ] || continue
-      dia_profile_name=$(jq -r --arg d "$dia_profile_dir" '.profile.info_cache[$d].name // $d' "$local_state")
-      dia_device_id='' dia_device_name='' dia_ext_account=''
-      local ext_settings="$dia_user_data/$dia_profile_dir/Local Extension Settings/fcoeoabgfenejglbffodgkkbkcdhcgfn"
-      if [ -d "$ext_settings" ]; then
-        browse_ext_read "$ext_settings"
-        if [ -n "$BROWSE_EXT_DEVICE" ]; then
-          dia_device_id=$(LC_ALL=C grep -Eo "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" <<<"$BROWSE_EXT_DEVICE" | head -n 1)
-          dia_device_name=$(LC_ALL=C sed -E -n "s/.*[dD]?isplayName[^\"]*\"([^\"]+)\".*/\1/p" <<<"$BROWSE_EXT_DEVICE")
-        fi
-        [ -z "$dia_device_id" ] || dia_ext_account=$(browse_ext_account "$BROWSE_EXT_ACCOUNT")
-        if [ -n "$dia_device_id" ]; then
-          [ "$(jq -r --arg d "$dia_device_id" '.[$d].profile // empty' "$dev_file" 2>/dev/null)" = "dia:$dia_profile_dir" ] ||
-            browse_device_cache profile "$dia_device_id" "dia:$dia_profile_dir" || true
-        elif [ "$BROWSE_EXT_DEVICE_KNOWN" = false ]; then
-          dia_device_id=$(browse_profile_device "$dev_file" "dia:$dia_profile_dir")
-          [ -z "$dia_device_id" ] ||
-            dia_cache_reasons+=("REASON: dia/$dia_profile_name device $dia_device_id read from the cache — the extension storage names none")
-        fi
-      fi
-      dia_ext_accounts+=("$dia_ext_account")
-      dia_profiles+=("$dia_profile_dir")
-      dia_names+=("$dia_profile_name")
-      dia_devices+=("$dia_device_id")
-      dia_device_names+=("$dia_device_name")
-    done < <(jq -r --arg forced "$browse_dia_profile" '
-      if $forced != "" then
-        [if (.profile.info_cache // {}) | has($forced) then $forced
-         else ((.profile.info_cache // {}) | to_entries | map(select(.value.name == $forced)) | .[0].key) // $forced end]
-      else [.profile.last_used, (.profile.last_active_profiles // [])[]] end
-      | map(select(type == "string" and length > 0))
-      | reduce .[] as $d ([]; if index($d) == null then . + [$d] else . end) | .[]
-    ' "$local_state")
-    [ "${#dia_profiles[@]}" -gt 0 ] || dia_profile_reason='dia profile unreadable — profile.last_used missing'
-  fi
-
-  local chrome_user_data="${BROWSE_CHROME_USER_DATA:-}"
-  if [ -z "$chrome_user_data" ]; then
-    if [ -d "$HOME/Library/Application Support/Google/Chrome" ]; then
-      chrome_user_data="$HOME/Library/Application Support/Google/Chrome"
-    elif [ -d "$real_home/Library/Application Support/Google/Chrome" ]; then
-      chrome_user_data="$real_home/Library/Application Support/Google/Chrome"
-    else
-      chrome_user_data="$HOME/Library/Application Support/Google/Chrome"
-    fi
-  fi
-
-  local chrome_profile_dir='' chrome_profile_name='' chrome_device_id='' chrome_device_name='' chrome_ext_account=''
-  local chrome_ext_dir chrome_scan_dir chrome_last
-  local uuid_re='[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
-  if [ -d "$chrome_user_data" ]; then
-    for chrome_ext_dir in "$chrome_user_data"/*/"Local Extension Settings/fcoeoabgfenejglbffodgkkbkcdhcgfn"; do
-      [ -d "$chrome_ext_dir" ] || continue
-      browse_ext_read "$chrome_ext_dir"
-      chrome_last=$BROWSE_EXT_DEVICE
-      [ -n "$chrome_last" ] || continue
-      chrome_device_id=$(LC_ALL=C grep -Eo "$uuid_re" <<<"$chrome_last" | head -n 1)
-      [ -n "$chrome_device_id" ] || continue
-      chrome_device_name=$(LC_ALL=C sed -E -n 's/.*[dD]?isplayName[^"]*"([^"]+)".*/\1/p' <<<"$chrome_last")
-      chrome_ext_account=$(browse_ext_account "$BROWSE_EXT_ACCOUNT")
-      chrome_scan_dir=${chrome_ext_dir%/Local Extension Settings/*}
-      chrome_profile_dir=${chrome_scan_dir##*/}
-      break
-    done
-    if [ -z "$chrome_profile_dir" ]; then
-      # No Claude device does not mean no target: the Codex path drives the ChatGPT extension, and
-      # its profile is the one a `--target chrome` run has to be launched into.
-      for chrome_ext_dir in "$chrome_user_data"/*/"Local Extension Settings/hehggadaopoacecdllhhajmbjkdcmajg"; do
-        [ -d "$chrome_ext_dir" ] || continue
-        chrome_scan_dir=${chrome_ext_dir%/Local Extension Settings/*}
-        chrome_profile_dir=${chrome_scan_dir##*/}
-        break
-      done
-    fi
-    if [ -n "$chrome_profile_dir" ] && [ -f "$chrome_user_data/Local State" ]; then
-      chrome_profile_name=$(jq -r --arg d "$chrome_profile_dir" '.profile.info_cache[$d].name // empty' \
-        "$chrome_user_data/Local State" 2>/dev/null) || chrome_profile_name=''
-    fi
-  fi
-  local chrome_profile_label="${chrome_profile_dir:-unknown}"
-  [ -z "$chrome_profile_name" ] || chrome_profile_label="$chrome_profile_name ($chrome_profile_dir)"
-
-  local target_label='Dia' target_app='Dia.app/Contents/MacOS/Dia' target_ext_url='dia://extensions'
-  local off_label='Google Chrome' target_bundle='company.thebrowser.dia'
-  if [ "$browse_target" = chrome ]; then
-    target_label='Google Chrome'
-    target_bundle='com.google.Chrome'
-    target_app='Google Chrome.app/Contents/MacOS/Google Chrome'
-    target_ext_url='chrome://extensions'
-    off_label='Dia'
-  fi
-
-  local dia_status='absent' chrome_status='absent' launched='' launch_timeout=''
-  local launch_wait="${BROWSE_LAUNCH_TIMEOUT:-25}"
-  if [ "${BROWSE_SKIP_PROCESSES:-0}" = 1 ]; then
-    dia_status='running'
-    if [ "$browse_target" = chrome ]; then
-      chrome_status="${BROWSE_CHROME_STATUS:-running}"
-    else
-      chrome_status="${BROWSE_CHROME_STATUS:-absent}"
-    fi
-  else
-    if browse_app_running Dia Dia.app/Contents/MacOS/Dia; then
-      dia_status='running'
-    fi
-    if [ -n "${BROWSE_CHROME_STATUS:-}" ]; then
-      chrome_status="$BROWSE_CHROME_STATUS"
-    elif browse_app_running "Google Chrome" "Google Chrome.app/Contents/MacOS/Google Chrome"; then
-      chrome_status='running'
-    fi
-    local target_absent=false
-    if [ "$browse_target" = chrome ]; then
-      [ "$chrome_status" != absent ] || target_absent=true
-    else
-      [ "$dia_status" != absent ] || target_absent=true
-    fi
-    if [ "$target_absent" = true ] && [ "$browse_no_launch" = false ]; then
-      # The TARGET and nothing else: Egor's other browser is his, and a preflight that opens it has
-      # already broken the one rule `--target` exists to keep.
-      if [ "$browse_target" = chrome ]; then
-        if [ -n "$chrome_profile_dir" ]; then
-          $open_cmd -g -a "Google Chrome" --args --profile-directory="$chrome_profile_dir" >/dev/null 2>&1 || true
-        else
-          $open_cmd -g -a "Google Chrome" >/dev/null 2>&1 || true
-        fi
-      else
-        $open_cmd -g -a Dia --args --enable-applescript-javascript >/dev/null 2>&1 || true
-      fi
-      local deadline=$(( $(date +%s) + 15 ))
-      while [ "$(date +%s)" -le "$deadline" ]; do
-        if browse_app_running "$target_label" "$target_app"; then
-          launched="$browse_target"
-          break
-        fi
-        sleep 0.25
-      done
-      if [ -n "$launched" ]; then
-        if [ "$browse_target" = chrome ]; then chrome_status='launched'; else dia_status='launched'; fi
-        # A browser that is up is not yet a browser a worker can drive: the extension's native host
-        # is spawned after the window, and until its socket exists every vendor call answers nothing.
-        local -a wait_vendors=(codex claudeb)
-        [ -z "$browse_vendor" ] || wait_vendors=("$browse_vendor")
-        local wait_deadline=$(( $(date +%s) + launch_wait )) wait_vendor
-        launch_timeout="$launch_wait"
-        while :; do
-          for wait_vendor in "${wait_vendors[@]}"; do
-            if browse_transport_present "$wait_vendor" "$target_app"; then launch_timeout=''; break; fi
-          done
-          [ -n "$launch_timeout" ] || break
-          [ "$(date +%s)" -lt "$wait_deadline" ] || break
-          sleep 0.5
-        done
-      fi
-    fi
-  fi
-  local target_status="$dia_status"
-  [ "$browse_target" != chrome ] || target_status="$chrome_status"
-  local applescript_js=off
-  if [ "$browse_target" = chrome ]; then
-    [ "$(jq -r '.browser.allow_javascript_apple_events // false' \
-      "$chrome_user_data/${chrome_profile_dir:-Default}/Preferences" 2>/dev/null)" != true ] || applescript_js=on
-  elif [ "$dia_status" != absent ]; then
-    local ps_listing dia_pid
-    ps_listing=$("${BROWSE_PS:-ps}" -Ao pid=,ppid=,command= 2>/dev/null) || ps_listing=''
-    for dia_pid in $(browse_browser_pids "$ps_listing" 'Dia.app/Contents/MacOS/Dia'); do
-      awk -v pid="$dia_pid" '$1 == pid' <<<"$ps_listing" | grep -q -- '--enable-applescript-javascript' &&
-        applescript_js=on
-    done
-  fi
-
-  local -a reasons_list=("${dia_cache_reasons[@]}")
-  cua_repl_sync "$(browse_codex_config "$real_home")"
-  local cua_repl_status=$CUA_REPL_STATUS
-  [ "$cua_repl_status" != broken ] ||
-    reasons_list+=("REASON: codex skipped — cua_repl registration failed: $CUA_REPL_ERROR")
-
-  local manifest_status='missing' manifest_path='' manifest_tmp
-  local chrome_manifest="${BROWSE_CHROME_MANIFEST:-}"
-  local native_host="${BROWSE_NATIVE_HOST:-}"
-  if [ -z "$chrome_manifest" ]; then
-    chrome_manifest="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.anthropic.claude_code_browser_extension.json"
-    if [ ! -f "$chrome_manifest" ] &&
-       [ -f "$real_home/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.anthropic.claude_code_browser_extension.json" ]; then
-      chrome_manifest="$real_home/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.anthropic.claude_code_browser_extension.json"
-    fi
-  fi
-  if [ -z "$native_host" ]; then
-    native_host="$HOME/.claude/chrome/chrome-native-host"
-    if [ ! -x "$native_host" ] && [ -x "$real_home/.claude/chrome/chrome-native-host" ]; then
-      native_host="$real_home/.claude/chrome/chrome-native-host"
-    fi
-  fi
-  if [ ! -f "$chrome_manifest" ]; then
-    reasons_list+=("REASON: claudeb skipped — native messaging manifest missing")
-  else
-    manifest_path=$(jq -r '.path // empty' "$chrome_manifest" 2>/dev/null)
-    if [ -f "$manifest_path" ] && [ -x "$manifest_path" ]; then
-      manifest_status=ok
-    elif [ -f "$native_host" ] && [ -x "$native_host" ]; then
-      manifest_status=broken
-      manifest_tmp=$(mktemp "$chrome_manifest.XXXXXX") || manifest_tmp=''
-      if [ -n "$manifest_tmp" ] && jq --arg host "$native_host" '.path = $host' "$chrome_manifest" >"$manifest_tmp" &&
-         mv -f "$manifest_tmp" "$chrome_manifest"; then
-        manifest_status=repaired
-        reasons_list+=("REASON: manifest path repaired: $manifest_path -> $native_host")
-      else
-        reasons_list+=("REASON: claudeb skipped — native messaging manifest repair failed")
-      fi
-      [ -z "$manifest_tmp" ] || rm -f "$manifest_tmp"
-    else
-      manifest_status=broken
-      reasons_list+=("REASON: claudeb skipped — native host missing at ${manifest_path:-$native_host}")
-    fi
-  fi
-
-  local sky_status=absent
-  ! sky_running || sky_status=running
-
-  local wp_cmd="${BROWSE_WORKER_PICK:-${WORKER_RUN_WORKER_PICK:-worker-pick}}"
-  local wp_raw=''
-  wp_raw=$("$wp_cmd" 2>&1) || true
-
-  local -a usable_claude=() usable_codex=()
-  local -A claude_exclusions=() vendor_state=()
-  local current_v='' line acct rest flag_reason reset_str stripped tok vname
-
-  while IFS= read -r line; do
-    case "$line" in
-      codex:*) current_v=codex ;;
-      claude:*) current_v=claude ;;
-      " "*) ;;
-      *) current_v="" ;;
-    esac
-    [ -n "$current_v" ] || continue
-    case "$(sed -e 's/^[[:space:]]*//' <<<"$line")" in \**) continue ;; esac
-
-    acct='' rest='' flag_reason='' reset_str=''
-    stripped="${line#$current_v:}"
-    stripped=$(sed -e "s/^[[:space:]]*//" <<<"$stripped")
-    case "$stripped" in
-      pin[[:space:]]*) continue ;;
-      unavailable|"off for workers"|"no accounts"|"no quota data"|"every account is out of the worker pool"*)
-        vendor_state[$current_v]=$stripped
-        continue
-        ;;
-    esac
-    if [ "${#line}" -ge 58 ] && grep -Eq "^.{9,36}(%|-)" <<<"$line"; then
-      acct=$(cut -c 38-58 <<<"$line" | tr -d "[:space:]*")
-      rest=$(cut -c 59- <<<"$line")
-    else
-      rest="$stripped"
-      for tok in $stripped; do
-        case "$tok" in
-          *%|*d|*h|↺*|WALLED|PINNED|5h!|off|blocked|login|needed|auth|expired|opus*|astra*|f38*|grok*|low|med*|high|xhigh|auto|-|–|\?|\*|pin)
-            ;;
-          *)
-            acct=${tok%\*}
-            break
-            ;;
-        esac
-      done
-    fi
-
-    [ -n "$acct" ] || continue
-
-    if [[ "$rest" =~ ↺[[:space:]]*([^[:space:]]+([[:space:]]+[^[:space:]]+)?) ]]; then
-      reset_str="${BASH_REMATCH[1]}"
-    fi
-
-    if [[ "$rest" =~ (^|[[:space:]])off([[:space:]]|$) ]]; then
-      flag_reason="out of pool"
-    elif [[ "$rest" =~ (^|[[:space:]])WALLED([[:space:]]|$) ]]; then
-      # The ↺ column is the weekly reset, not the wall's end; llm-limits owns reset times.
-      flag_reason="walled"
-    elif [[ "$rest" =~ (^|[[:space:]])login[[:space:]]+needed([[:space:]]|$) ]]; then
-      flag_reason="login needed"
-    elif [[ "$rest" =~ (^|[[:space:]])blocked([[:space:]]|$) ]]; then
-      flag_reason="blocked"
-    elif [[ "$rest" =~ (^|[[:space:]])auth[[:space:]]+expired([[:space:]]|$) ]]; then
-      flag_reason="auth expired"
-    fi
-
-    vname="$current_v"
-    [ "$vname" != claude ] || vname=claudeb
-
-    if [ -n "$flag_reason" ]; then
-      reasons_list+=("REASON: $vname/$acct skipped — $flag_reason")
-      [ "$current_v" != claude ] || claude_exclusions[$acct]="$flag_reason"
-    else
-      if [ "$current_v" = claude ]; then
-        usable_claude+=("$acct")
-      elif [ "$current_v" = codex ]; then
-        usable_codex+=("$acct")
-      fi
-    fi
-  done <<<"$wp_raw"
-
-  local is_cached=false cached_acct='' cached_denied=false cached_broken='' any_cached=false selected=0 i a active_reason
-  local rank best_rank=9 dia_other_json='[]'
-  local -a dia_other_lines=() dia_ranks=()
-  for i in "${!dia_profiles[@]}"; do
-    cached_acct='' cached_denied=false cached_broken='' rank=''
-    if [ -n "${dia_devices[$i]}" ]; then
-      IFS='|' read -r cached_acct cached_denied cached_broken < <(browse_device_account "$dev_file" "${dia_devices[$i]}" "${dia_ext_accounts[$i]}")
-      [ "$cached_denied" = true ] || cached_denied=false
-    fi
-    dia_accounts+=("$cached_acct")
-    dia_broken+=("$cached_broken")
-    if [ "$cached_denied" = false ] && [ -n "$cached_acct" ]; then
-      any_cached=true
-      for a in "${usable_claude[@]}"; do
-        [ "$a" = "$cached_acct" ] || continue
-        if [ -n "$browse_account" ] && [ "$cached_acct" = "$browse_account" ]; then rank=0
-        elif [ -z "$cached_broken" ]; then rank=1
-        else rank=2; fi
-        break
-      done
-      if [ -n "$rank" ] && [ "$rank" -lt "$best_rank" ]; then selected=$i; best_rank=$rank; is_cached=true; fi
-    fi
-    dia_ranks+=("$rank")
-  done
-  dia_profile_dir="${dia_profiles[$selected]:-}" dia_profile_name="${dia_names[$selected]:-}"
-  dia_device_id="${dia_devices[$selected]:-}" dia_device_name="${dia_device_names[$selected]:-}"
-  cached_acct="${dia_accounts[$selected]:-}"
-  if [ "$selected" -ne 0 ] && [ "$browse_target" = dia ]; then
-    active_reason=unknown
-    if [ -n "${dia_ranks[0]}" ] && [ -n "${dia_broken[0]}" ]; then
-      active_reason="device ${dia_devices[0]} could not open a tab (marked ${dia_broken[0]})"
-    elif [ -n "${dia_ranks[0]}" ]; then
-      active_reason="is not the run's account $browse_account"
-    elif [ -n "${dia_accounts[0]}" ]; then
-      active_reason="${claude_exclusions[${dia_accounts[0]}]:-out of pool}"
-    fi
-    reasons_list+=("REASON: dia/${dia_names[0]} skipped — account ${dia_accounts[0]:-unknown} $active_reason")
-  fi
-  if [ "$browse_target" = dia ] && [ "$best_rank" = 2 ]; then
-    reasons_list+=("REASON: dia/$dia_profile_name device $dia_device_id could not open a tab (marked ${dia_broken[$selected]}) and no healthy device has a usable account")
-  fi
-  for i in "${!dia_profiles[@]}"; do
-    [ "$i" -ne "$selected" ] || continue
-    dia_other_lines+=("DIA-OTHER: ${dia_names[$i]} (${dia_profiles[$i]}) ${dia_devices[$i]:-none} ${dia_accounts[$i]:+account=}${dia_accounts[$i]:-unknown}")
-    dia_other_json=$(jq --arg name "${dia_names[$i]}" --arg dir "${dia_profiles[$i]}" \
-      --arg device "${dia_devices[$i]}" --arg account "${dia_accounts[$i]}" \
-      '. + [{name:$name, dir:$dir, device:$device, account:(if $account == "" then null else $account end)}]' <<<"$dia_other_json")
-  done
-  local target_device_id="$dia_device_id" target_device_name="$dia_device_name"
-  local target_profile_dir="$dia_profile_dir"
-  local target_profile_label="${dia_profile_name:-${dia_profile_dir:-unknown}}"
-  local -a off_devices=()
-  if [ "$browse_target" = chrome ]; then
-    target_device_id="$chrome_device_id" target_device_name="$chrome_device_name"
-    target_profile_dir="$chrome_profile_dir" target_profile_label="${chrome_profile_name:-${chrome_profile_dir:-unknown}}"
-    for i in "${!dia_devices[@]}"; do
-      [ -z "${dia_devices[$i]}" ] || off_devices+=("${dia_devices[$i]}")
-    done
-    # Chrome carries one extension profile, so the whole cached/denied question is that one
-    # device's; the Dia profile walk above answered a question about another browser.
-    is_cached=false any_cached=false cached_acct=''
-    if [ -n "$target_device_id" ]; then
-      IFS='|' read -r cached_acct cached_denied cached_broken < <(browse_device_account "$dev_file" "$target_device_id" "$chrome_ext_account")
-      [ "$cached_denied" != true ] || cached_acct=''
-      [ -z "$cached_broken" ] ||
-        reasons_list+=("REASON: chrome device $target_device_id could not open a tab (marked $cached_broken)")
-    fi
-    if [ -n "$cached_acct" ]; then
-      any_cached=true
-      for a in "${usable_claude[@]}"; do
-        [ "$a" = "$cached_acct" ] || continue
-        is_cached=true
-        break
-      done
-    fi
-  else
-    [ -z "$chrome_device_id" ] || off_devices+=("$chrome_device_id")
-  fi
-  local off_str='none'
-  [ "${#off_devices[@]}" -eq 0 ] || off_str=$(IFS=,; printf '%s' "${off_devices[*]}")
-  if [ -z "$target_device_id" ]; then
-    dia_device_reason="no claude extension device in ${target_profile_dir:-unknown} — extension not installed or never logged in"
-  fi
-  [ -z "$dia_profile_reason" ] || reasons_list+=("REASON: $dia_profile_reason")
-  [ -z "$dia_device_reason" ] || reasons_list+=("REASON: $dia_device_reason")
-  if [ "$is_cached" = true ]; then
-    local -a reordered=("$cached_acct")
-    for a in "${usable_claude[@]}"; do
-      [ "$a" = "$cached_acct" ] || reordered+=("$a")
-    done
-    usable_claude=("${reordered[@]}")
-  elif [ "$any_cached" = true ]; then
-    reasons_list+=("REASON: claudeb skipped — no open $target_label device has a usable cached account")
-  fi
-  local denied_list='' denied_seen='' signin_needed=false d
-  local -a denied_accts=()
-  if [ -n "$target_device_id" ] && [ -f "$dev_file" ]; then
-    denied_list=$(jq -r --arg dev "$target_device_id" '(.[$dev] // {}) as $e
-      | ($e.denied_accounts // (if $e.denied == true then [$e.account // empty] else [] end)) | join(" ")' "$dev_file" 2>/dev/null)
-    denied_seen=$(jq -r --arg dev "$target_device_id" '.[$dev] // {} | if .denied == true then .seen // empty else .denied_seen // empty end' "$dev_file" 2>/dev/null)
-  fi
-  read -r -a denied_accts <<<"$denied_list"
-  if [ "${#denied_accts[@]}" -gt 0 ]; then
-    for d in "${denied_accts[@]}"; do
-      reasons_list+=("REASON: claudeb/$d skipped — device $target_device_id not visible (probe failed ${denied_seen:-unknown})")
-    done
-    if [ "${#usable_claude[@]}" -gt 0 ]; then
-      local -a denied_first=() denied_last=()
-      for a in "${usable_claude[@]}"; do
-        if [[ " $denied_list " == *" $a "* ]]; then denied_last+=("$a"); else denied_first+=("$a"); fi
-      done
-      usable_claude=("${denied_first[@]}" "${denied_last[@]}")
-    fi
-  fi
-  # A device no pool account can see is a login, and a login is Egor's to make: naming the browser,
-  # the profile and the accounts is the whole of what this preflight may do about it.
-  if [ -n "$target_device_id" ] && [ "${#usable_claude[@]}" -gt 0 ]; then
-    if [ "$any_cached" = true ] && [ "$is_cached" = false ]; then
-      signin_needed=true
-    elif [ "${#denied_accts[@]}" -gt 0 ]; then
-      signin_needed=true
-      for a in "${usable_claude[@]}"; do
-        [[ " $denied_list " == *" $a "* ]] || { signin_needed=false; break; }
-      done
-    fi
-  fi
-  if [ "$signin_needed" = true ]; then
-    reasons_list+=("REASON: sign in the Claude extension in $target_label ($target_profile_label) as $(IFS=,; printf '%s' "${usable_claude[*]}") — device $target_device_id is visible to no pool account")
-  fi
-  local codex_transport=true
-  if [ "$browse_vendor" != claudeb ] && [ "${BROWSE_SKIP_PROCESSES:-0}" != 1 ] &&
-     [ "$target_status" != absent ] && ! browse_transport_present codex "$target_app"; then
-    codex_transport=false
-    reasons_list+=("REASON: codex skipped — the ChatGPT extension is not connected in $target_label ($target_profile_label); enable it at $target_ext_url and sign in")
-  fi
-  if [ -n "$launch_timeout" ]; then
-    local waited_for='Claude or ChatGPT'
-    case "$browse_vendor" in
-      claudeb) waited_for=Claude ;;
-      codex) waited_for=ChatGPT ;;
-    esac
-    reasons_list+=("REASON: $target_label launched but the $waited_for extension did not connect within ${launch_timeout}s — open $target_label's extensions page and check the extension is enabled in $target_profile_label")
-  fi
-  [ "${#usable_claude[@]}" -gt 0 ] || reasons_list+=("REASON: claudeb skipped — ${vendor_state[claude]:-no usable accounts}")
-  [ "${#usable_codex[@]}" -gt 0 ] || reasons_list+=("REASON: codex skipped — ${vendor_state[codex]:-no usable accounts}")
-
-  local plan_vendor='none' plan_account='' plan_device='' plan_source=''
-  local codex_ok=false claudeb_ok=false
-  if [ "${#usable_codex[@]}" -gt 0 ] && [ "$cua_repl_status" != broken ] && [ "$codex_transport" = true ]; then
-    codex_ok=true
-  fi
-  if [ -n "$target_device_id" ] && [ "${#usable_claude[@]}" -gt 0 ] && [ "$signin_needed" = false ] &&
-     [[ "$manifest_status" = ok || "$manifest_status" = repaired ]] &&
-     { [ "$is_cached" = true ] || [ "$any_cached" = false ]; }; then
-    claudeb_ok=true
-  fi
-  if [ "$target_status" = absent ] || [ -n "$launch_timeout" ]; then
-    [ "$target_status" != absent ] || reasons_list+=("REASON: $browse_target not running")
-  else
-    if [ "$browse_vendor" != codex ] && [ "$claudeb_ok" = true ]; then
-      plan_vendor='claudeb'
-      plan_account="${usable_claude[0]}"
-      plan_device="$target_device_id"
-      if [ "$is_cached" = true ]; then plan_source='cached'; else plan_source='probe'; fi
-    elif [ "$browse_vendor" != claudeb ] && [ "$codex_ok" = true ]; then
-      plan_vendor='codex'
-      plan_account="${usable_codex[0]}"
-    fi
-  fi
-  [ "$plan_vendor" != codex ] || [ "$sky_status" != absent ] || sky_status=$(sky_ensure "$real_home")
-
-  local preamble_file=''
-  mkdir -p "$browse_dir"
-  find "$browse_dir" -maxdepth 1 -name 'preamble-*.md' -mmin +1440 -delete 2>/dev/null || true
-  if [ "$plan_vendor" != none ]; then
-    preamble_file=$(mktemp "$browse_dir/preamble-$(date +%s)-$$.XXXXXX") || fail 'could not create browser preamble'
-    mv "$preamble_file" "$preamble_file.md" && preamble_file="$preamble_file.md"
-    local target_pick off_pick target_hint
-    target_hint="Dia profile \"${dia_profile_name:-unknown}\" (${dia_profile_dir:-unknown}); window title \"${dia_device_name:-Dia browser}\""
-    if [ "$browse_target" = chrome ]; then
-      target_hint="Chrome profile \"${chrome_profile_name:-unknown}\" (${chrome_profile_dir:-unknown})"
-      if [ -n "$chrome_profile_name" ]; then
-        target_pick="the \`extension\`-type entry whose \`profileName\` is \"$chrome_profile_name\" (Chrome ${chrome_profile_dir:-profile}); its \`family\` is \`chrome\`"
-      else
-        target_pick="the \`extension\`-type entry that HAS a \`profileName\` (Chrome ${chrome_profile_dir:-profile}); its \`family\` is \`chrome\`"
-      fi
-      off_pick="every \`extension\` entry WITHOUT a \`profileName\` is Dia"
-    else
-      target_pick="the \`extension\`-type entry WITHOUT a \`profileName\` (Dia is not in the plugin's browser registry, so its profile never resolves), confirmed by tab titles matching \`await cua.getApp(\"Dia\")\`"
-      if [ -n "$chrome_profile_name" ]; then
-        off_pick="the entry whose \`profileName\` is \"$chrome_profile_name\" is Google Chrome"
-      else
-        off_pick="the \`extension\` entry that HAS a \`profileName\` is Google Chrome"
-      fi
-    fi
-    if [ "$plan_vendor" = codex ]; then
-      cat >"$preamble_file" <<EOF
-# Browser Automation Preamble (Codex / $target_label)
-
-Drive Egor's visible browser ($target_label) using CUA REPL (\`js\` tool).
-
-## Instructions
-- First js call must be exactly: \`await cua.getState()\`
-- Then \`await agent.browsers.list()\` and pick by the field named below; each entry carries \`{family?, id, name, type, profileName?, metadata?}\` and the ids rotate between runs, so never reuse one.
-- Target ($target_label): $target_pick.
-- Identification hints (not CUA ids): $target_hint. Anthropic bridge device UUIDs are irrelevant to \`cua\` — do not use them as CUA browser ids.
-- Off-target: $off_pick — never drive it, never switch to it.
-- Never drive $off_label. Never perform logins or credential entry.
-- All test/probing navigations must use https://example.com (Dia blocks httpbin.org / postman-echo.com for extension tabs).
-- Extension path first; use computer surface fallback (\`await cua.getApp("$target_label")\`, pressKey/typeText/getAXState) via SkyComputerUseService if needed.
-- Close the tabs you created only once the task is complete; when you stop for Egor's input (sign-in, approval, a blocker) or the result is not final, leave them open and name the tab that holds the work.
-- End the answer with: \`OUTCOME: BROWSER_OK_EXTENSION|BROWSER_OK_COMPUTER|BROWSER_UNAVAILABLE reason=<text>\`; a session Computer Use stopped for a disallowed URL ends with \`OUTCOME: BROWSER_UNAVAILABLE reason=disallowed-url url=<that tab's URL>\`.
-EOF
-    elif [ "$plan_vendor" = claudeb ]; then
-      local host_parents host_count=0 local_rule
-      if [ -n "${BROWSE_NATIVE_HOST_PARENTS+x}" ]; then
-        host_parents=$BROWSE_NATIVE_HOST_PARENTS
-      else
-        host_parents=$(ps -axo ppid=,args= 2>/dev/null | awk '/--chrome-native-host/ && !/awk/ {print $1}' |
-          while read -r parent; do ps -o args= -p "$parent" 2>/dev/null; done)
-      fi
-      [ -z "$host_parents" ] || host_count=$(grep -c . <<<"$host_parents")
-      if [ "$host_count" -eq 1 ] && grep -qF "$target_app" <<<"$host_parents"; then
-        local_rule="Else, if exactly one entry has \`\"isLocal\": true\`: it is $target_label — the only native-messaging host on this Mac runs under it. Select it, print \`BROWSER-DEVICE-LOCAL: <its id>\` and continue on it as the target device."
-      else
-        local_rule="Else, if entries with \`\"isLocal\": true\` are listed (native-messaging connections; $host_count host(s) run, none provably under $target_label alone), identify each before driving it: \`select_browser\` it, \`tabs_context_mcp\` (\`createIfEmpty: true\`), \`navigate\` that tab to \`https://example.com/?cc-probe=<random token>\` and wait until the tab reports that URL, then poll \`osascript -e 'tell application id \"$target_bundle\" to get URL of every tab of every window'\` for up to 10 s. The entry whose probe URL appears is $target_label: print \`BROWSER-DEVICE-LOCAL: <its id>\` and continue on it. Close every probe tab; never drive an entry whose probe did not appear."
-      fi
-      cat >"$preamble_file" <<EOF
-# Browser Automation Preamble (Claudeb / $target_label)
-
-Drive Egor's visible browser ($target_label) using Claude in Chrome extension.
-
-## Instructions
-- Call \`list_connected_browsers\` first.
-- If target device \`$plan_device\` is listed, select it and continue.
-- $local_rule
-- Never address any app other than \`$target_bundle\` with AppleScript: scripting a closed app launches it.
-- If no entry is \`isLocal\` and \`$plan_device\` is not listed, print exactly:
-  \`OUTCOME: BROWSER_DEVICE_NOT_IN_ACCOUNT device=$plan_device account=$plan_account\`
-  and stop immediately. If local entries exist but none is identified as $target_label, print exactly \`OUTCOME: BROWSER_LOCAL_UNIDENTIFIED device=$plan_device\` and stop: the account was never asked, so say nothing about it.
-- Never \`switch_browser\` to an unlisted device, and never run pairing or login flows headless.
-- After any extension reconnect or tool error, call \`list_connected_browsers\` again and re-select the target device before the next action: a reconnect silently falls back to the account's default browser.
-- If \`tabs_context_mcp\` (\`createIfEmpty: true\`) or the first \`navigate\` fails twice on \`$plan_device\`, re-selecting it in between, print exactly:
-  \`OUTCOME: BROWSER_TABS_BROKEN device=$plan_device\`
-  and stop: the device cannot open a tab, and the next preflight ranks it last.
-- Off-target extension device IDs ($off_label — never drive one, never \`switch_browser\` to it): $off_str
-- Target $target_label device ID: $plan_device
-- Never drive $off_label.
-- All test/probing navigations must use https://example.com.
-- On success print \`BROWSER-DEVICE-ACCOUNT: $plan_device $plan_account\` (only when \`$plan_device\` itself was driven, never for a local entry) and end with \`OUTCOME: BROWSER_OK\`.
-- Close the tabs you created only once the task is complete; when you stop for Egor's input (sign-in, approval, a blocker) or the result is not final, leave them open and name the tab that holds the work.
-EOF
-    fi
-  fi
-
-  if [ "$browse_json" = true ]; then
-    local claude_json codex_json reasons_json plan_json
-    claude_json=$(printf '%s\n' "${usable_claude[@]}" | jq -R . | jq -s 'map(select(length > 0))')
-    if [ "${#usable_codex[@]}" -gt 0 ]; then
-      codex_json=$(printf '"%s"' "${usable_codex[0]}")
-    else
-      codex_json=null
-    fi
-    reasons_json=$(printf '%s\n' "${reasons_list[@]}" | sed 's/^REASON: //' | jq -R . | jq -s 'map(select(length > 0))')
-    if [ "$plan_vendor" != none ]; then
-      plan_json=$(jq -n --arg v "$plan_vendor" --arg a "$plan_account" --arg d "$plan_device" --arg s "$plan_source" \
-        '{vendor:$v, account:$a} + (if $d != "" then {device:$d, source:$s} else {} end)')
-    else
-      plan_json=null
-    fi
-    jq -n \
-      --arg dia "$dia_status" \
-      --arg dia_p_name "$dia_profile_name" \
-      --arg dia_p_dir "$dia_profile_dir" \
-      --arg dia_dev_id "$dia_device_id" \
-      --arg dia_dev_name "$dia_device_name" \
-      --argjson dia_other "$dia_other_json" \
-      --arg target "$browse_target" \
-      --arg applescript_js "$applescript_js" \
-      --arg chrome_dev_id "$chrome_device_id" \
-      --arg chrome_dev_name "$chrome_device_name" \
-      --arg chrome_p_name "$chrome_profile_name" \
-      --arg chrome_p_dir "$chrome_profile_dir" \
-      --arg launched "$launched" \
-      --arg chrome "$chrome_status" \
-      --arg manifest "$manifest_status" \
-      --arg cua "$cua_repl_status" \
-      --arg sky "$sky_status" \
-      --argjson claude "$claude_json" \
-      --argjson codex "$codex_json" \
-      --argjson reasons "$reasons_json" \
-      --argjson plan "$plan_json" \
-      --arg preamble "$preamble_file" \
-      '{
-        dia: $dia,
-        dia_profile: (if $dia_p_dir != "" then {name: $dia_p_name, dir: $dia_p_dir} else null end),
-        dia_device: (if $dia_dev_id != "" then {id: $dia_dev_id, display_name: $dia_dev_name} else null end),
-        dia_other: $dia_other,
-        target: $target,
-        applescript_js: $applescript_js,
-        chrome_device: (if $chrome_dev_id != "" then {id: $chrome_dev_id, display_name: $chrome_dev_name} else null end),
-        chrome_profile: (if $chrome_p_dir != "" then {name: $chrome_p_name, dir: $chrome_p_dir} else null end),
-        chrome: $chrome,
-        launched: (if $launched != "" then $launched else null end),
-        manifest: $manifest,
-        cua_repl: $cua,
-        sky: $sky,
-        next_claude_accounts: $claude,
-        next_codex_account: $codex,
-        reasons: $reasons,
-        plan: $plan,
-        preamble_file: (if $preamble != "" then $preamble else null end)
-      }'
-  else
-    printf 'TARGET: %s\n' "$browse_target"
-    printf 'APPLESCRIPT-JS: %s\n' "$applescript_js"
-    printf 'DIA: %s\n' "$dia_status"
-    if [ -n "$dia_profile_dir" ]; then
-      printf 'DIA-PROFILE: %s (%s)\n' "$dia_profile_name" "$dia_profile_dir"
-    else
-      printf 'DIA-PROFILE: unknown\n'
-    fi
-    if [ -n "$dia_device_id" ]; then
-      printf 'DIA-DEVICE: %s "%s"\n' "$dia_device_id" "${dia_device_name:-Dia browser}"
-    else
-      printf 'DIA-DEVICE: none\n'
-    fi
-    for line in "${dia_other_lines[@]}"; do printf '%s\n' "$line"; done
-    if [ -n "$chrome_device_id" ]; then
-      printf 'CHROME-DEVICE: %s "%s"\n' "$chrome_device_id" "${chrome_device_name:-Chrome browser}"
-    else
-      printf 'CHROME-DEVICE: none\n'
-    fi
-    printf 'CHROME-PROFILE: %s\n' "$chrome_profile_label"
-    printf 'CHROME: %s\n' "$chrome_status"
-    [ -z "$launched" ] || printf 'LAUNCHED: %s\n' "$launched"
-    printf 'MANIFEST: %s\n' "$manifest_status"
-    printf 'CUA-REPL: %s\n' "$cua_repl_status"
-    printf 'SKY: %s\n' "$sky_status"
-    if [ "${#usable_claude[@]}" -gt 0 ]; then
-      local IFS=,
-      printf 'NEXT-CLAUDE-ACCOUNTS: %s\n' "${usable_claude[*]}"
-    else
-      printf 'NEXT-CLAUDE-ACCOUNTS: none\n'
-    fi
-    if [ "${#usable_codex[@]}" -gt 0 ]; then
-      printf 'NEXT-CODEX-ACCOUNT: %s\n' "${usable_codex[0]}"
-    else
-      printf 'NEXT-CODEX-ACCOUNT: none\n'
-    fi
-    for r in "${reasons_list[@]}"; do
-      printf '%s\n' "$r"
-    done
-    if [ "$plan_vendor" = codex ]; then
-      printf 'PLAN: codex account=%s\n' "$plan_account"
-    elif [ "$plan_vendor" = claudeb ]; then
-      printf 'PLAN: claudeb account=%s device=%s source=%s\n' "$plan_account" "$plan_device" "$plan_source"
-    else
-      printf 'PLAN: none\n'
-    fi
-    if [ -n "$preamble_file" ]; then
-      printf 'PREAMBLE-FILE: %s\n' "$preamble_file"
-    fi
-    if [ -n "$browse_record_device" ] && [ -n "$browse_record_account" ]; then
-      printf 'RECORDED: %s %s\n' "$browse_record_device" "$browse_record_account"
-    fi
-  fi
-
-  [ "$plan_vendor" != none ] || return 2
-  return 0
+  case "$mode" in
+    seen) browse_seen "$arg" "$target" ;;
+    window)
+      account=$(browse_profile "$arg")
+      [ -n "$account" ] && browse_window "$account" && printf 'WINDOW: %s %s\n' "$arg" "$account" ||
+        { printf 'WINDOW: %s failed\n' "$arg"; return 1; } ;;
+    enroll)
+      [ "$arg" != all ] || [ -z "$pin" ] || fail '--pin names one account'
+      if [ "$arg" = all ]; then set -- $(browse_pool); else set -- "$arg"; fi
+      mkdir -p "$(browse_dir)" || return 1
+      for account in "$@"; do browse_enroll "$account" "$pin" >"$(browse_dir)/enroll-$account.$$" & done
+      for account in "$@"; do wait -n || rc=1; done
+      for account in "$@"; do cat "$(browse_dir)/enroll-$account.$$"; rm -f "$(browse_dir)/enroll-$account.$$"; done
+      return "$rc" ;;
+    canary) browse_canary ;;
+    json) browse_registry | jq . ;;
+    *)
+      for account in $(browse_pool); do
+        browse_registry | jq -r --arg a "$account" '.[$a] // {status:"not-enrolled"}
+          | "ACCOUNT: \($a) \(.status) \(.chrome_profile // "-") \(.device_id // "-") \(.proven_at // "-")"'
+      done ;;
+  esac
 }
 
 # Inside Claude Code a run belongs to the relay agent whose Bash call worker-tag-hook.sh stamped with

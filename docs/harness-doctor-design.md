@@ -608,22 +608,16 @@ up to three events as evidence (`stop:<ts>/<session>`, `words:<ts>/<session>`, `
   generated plist must run its wrapper. A group none of whose copies exists is not installed and not
   judged; a missing or differing copy of an installed one is `deploy-drift` keyed by the copy, its fix
   the installer command. Incident: memlogd ran a 28 Sep copy without `machine_tick` for a week.
-- **Browser** reads `worker-run browse --no-launch --json` for Chrome and Dia in parallel (`HARNESS_BROWSE_CMD`,
-  20 s each, the probe's preamble file removed) plus `WORKER_RUN_DIR`'s `browse/devices.json` and the run
-  `result` files of 72 h. `browser-target` (no device, no usable account: a watch whose fix is Egor's sign-in;
-  a broken manifest: red), `browser-applescript-js` (Chrome red → `bin/chrome-applescript-js enable`; Dia a
-  watch → `bin/dia-js --relaunch`, its launch watcher failed), `browser-device-broken` (watch until the mark
-  lapses) and `browser-run-failures` (watch per kind, newest run named). Probes only: Dia is Egor's live
-  browser and nothing here quits, launches or opens a tab in it. Incidents 2026-10-06: a compacted leveldb
-  hid a device, an account flip-flop, a broken tab group, a Computer Use URL refusal.
-  One row per browser (`Dia  work → com · home → notcom · JS off`, short fixes in the last cell, the long text
-  in the finding's say, no header row); a closed browser shows `not running` and is not judged. A probe that
-  gives no JSON is a dim `no answer this run`; only a second miss in a row (count in `browse-misses.json`,
-  written by writing runs only) is a `browser-target` watch. Incident 2026-10-06 21:26: at busy 0.999 with
-  four suites running, `worker-run browse` overran the 20 s timeout once.
-  The browser rows are clickable: Chrome → `open -b com.google.Chrome`, Dia → `bin/dia-js --open`
-  (a closed Dia starts with the flag); only a running Dia without the flag adds `Restart Dia with
-  AppleScript JS — unsaved input may be lost` → `bin/dia-js --relaunch`. Egor's click, never the collector.
+- **Browser** reads only what the supervisor writes — `WORKER_RUN_DIR`'s `browse/accounts.json` (enrollment) and
+  `browse/log.jsonl` (one line per browser run, 7 days) — plus Dia's process arguments; never a file a browser
+  writes (Chrome and Dia rewrite theirs live: a compacted leveldb hid a device, 2026-10-06). One row per enrolled
+  account (`Profile 1 · ok · proven 2 h ago · 72 h: BROWSER_INTERRUPTED ×1`); `browser-account` watches a
+  `needs-login` (fix: the login brief), another non-ok status or 7 days without a success (fix: `--enroll`);
+  `browser-repair` is red for a 72 h workaround, `HARNESS_NEEDS_REPAIR` or `missing`; `browser-applescript-js`
+  watches a Dia without its JS flag. A writing run starts `worker-run browse --canary` (`HARNESS_BROWSE_CMD`)
+  detached when `browse/canary.stamp` is older than 23 h; the canary's receipts land in the same log.
+  A running Dia without the flag adds a clickable `Restart Dia with AppleScript JS — unsaved input may be lost`
+  row → `bin/dia-js --relaunch`: Egor's click, never the collector.
 - Two differences from llm-doctor: a value between half the limit and the limit is a watch (deferral,
   silence, growth), and a growth value is the largest single change under one root, not the day's sum.
 

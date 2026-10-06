@@ -4268,202 +4268,116 @@ def deploys_section(now):
                                                                     "es" if checked == 1 else ""))
 
 
-BROWSE_PROBE_S = 20
-BROWSER_ACTIONS = {"chrome": ["/usr/bin/open", "-b", "com.google.Chrome"], "dia": ["dia-js", "--open"]}
-BROWSER_RUN_FAILURES = [
-    ("BROWSER_TABS_BROKEN", re.compile(r"^OUTCOME: BROWSER_TABS_BROKEN\b", re.M), "TABS_BROKEN", "ranked last 24 h",
-     "worker-run ranks the device last for 24 h and a success clears it"),
-    ("BROWSER_DEVICE_NOT_IN_ACCOUNT", re.compile(r"^OUTCOME: BROWSER_DEVICE_NOT_IN_ACCOUNT\b", re.M),
-     "DEVICE_NOT_IN_ACCOUNT", "pin DIA-PROFILE:/ACCOUNT:",
-     "pin the brief's DIA-PROFILE: or ACCOUNT: to the pair worker-run browse --json plans"),
-    ("disallowed-url", re.compile(r"^OUTCOME: \S+ reason=disallowed-url\b", re.M), "disallowed-url",
-     "use BROWSER: chrome", "move the run off Egor's frontmost tab: a BROWSER: chrome brief, not Computer Use"),
-]
+BROWSER_REPAIR = ("HARNESS_NEEDS_REPAIR", "missing")
+BROWSER_CANARY_S = 23 * 3600
+BROWSER_QUIET_S = 7 * 86400
 
 
-def browse_probe(targets):
-    """`worker-run browse --no-launch --json` per target, in parallel: it reads extension storage and process
-    lists only, never opens a window or a tab."""
+def browser_ts(text):
+    try:
+        return calendar.timegm(time.strptime(text or "", "%Y-%m-%dT%H:%M:%SZ"))
+    except ValueError:
+        return None
+
+
+def browser_canary(runs, write):
+    """The nightly canary rides this collector's schedule, at most one start per BROWSER_CANARY_S."""
+    stamp = os.path.join(runs, "browse", "canary.stamp")
+    try:
+        if not write or time.time() - os.stat(stamp).st_mtime < BROWSER_CANARY_S:
+            return
+    except OSError:
+        pass
     command = (os.environ.get("HARNESS_BROWSE_CMD") or os.path.join(ROOT_DIR, "bin", "worker-run")).split()
-    procs = {}
-    for target in targets:
-        try:
-            procs[target] = subprocess.Popen(command + ["browse", "--vendor", "claudeb", "--target", target,
-                                                        "--no-launch", "--json"],
-                                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-        except OSError:
-            procs[target] = None
-    out = {}
-    for target, proc in procs.items():
-        try:
-            text = proc.communicate(timeout=BROWSE_PROBE_S)[0] if proc else ""
-            out[target] = json.loads(text)
-        except (subprocess.TimeoutExpired, ValueError):
-            if proc:
-                proc.kill()
-                proc.communicate()
-            out[target] = None
-        preamble = (out[target] or {}).get("preamble_file")
-        if preamble and os.path.basename(preamble).startswith("preamble-"):
-            try:
-                os.remove(preamble)
-            except OSError:
-                pass
-    return out
+    try:
+        os.makedirs(os.path.dirname(stamp), exist_ok=True)
+        open(stamp, "a").close()
+        os.utime(stamp)
+        subprocess.Popen(command + ["browse", "--canary"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        pass
+
+
+def browser_processes():
+    try:
+        return subprocess.run(["/bin/ps", "-Ao", "command="], capture_output=True, text=True, timeout=10).stdout.splitlines()
+    except (OSError, subprocess.SubprocessError):
+        return []
 
 
 def browser_section(now, write=False):
-    """One row per browser as worker-run browse sees it, devices marked broken and 72 h of browser run failures.
-    Probes only: Dia is Egor's live browser, nothing here quits, launches or opens it."""
+    """One row per enrolled account from accounts.json and the outcome log the supervisor writes, plus Dia's
+    AppleScript flag from process arguments. No file a browser writes is read: Chrome and Dia rewrite theirs live."""
     runs = env_dir("WORKER_RUN_DIR", ".cache", "claude-worker-runs")
-    probes = browse_probe(["chrome", "dia"])
-    misses_path = os.path.join(state_dir(), "browse-misses.json")
-    misses = read_json(misses_path, {})
-    misses = {t: (int(misses.get(t) or 0) + 1 if not probes.get(t) else 0) for t in ("chrome", "dia")}
-    if write:
-        os.makedirs(state_dir(), exist_ok=True)
-        write_json(misses_path, misses)
-    rows, names = [], {}
-
-    def emit(label, state, found, action=None):
-        judges = [verdict(rule, ident, 1, 0, "findings", 0, 1, level, fact="%s · fix: %s" % (say, fix),
-                          evidence=[evidence(now, ref, say)], bad=1) for level, rule, ident, say, _, fix, ref in found]
-        rows.append(row([label, state, " · ".join(f[5] for f in found if f[5])],
-                        [1] if any(f[0] == "red" for f in found) else [], dim=not found, action=action,
-                        key="browser:%s:%s" % (found[0][1], found[0][2]) if found else None,
-                        say=" · ".join("%s · fix: %s" % (f[3], f[5]) for f in found) or None,
-                        head=found[0][4] if found else None, judge=judges or None))
-
-    for target, label in (("chrome", "Chrome"), ("dia", "Dia")):
-        data = probes.get(target)
-        action = BROWSER_ACTIONS[target]
-        if not data:
-            if misses[target] < 2:
-                rows.append(row([label, "no answer this run", ""], dim=True))
-            else:
-                emit(label, "no answer %d runs in a row" % misses[target],
-                     [("watch", "browser-target", target, "%s: worker-run browse gave no JSON %d collector runs in a "
-                       "row (%d s timeout)" % (label, misses[target], BROWSE_PROBE_S),
-                       "a browser target could not be probed", "worker-run browse --target %s" % target,
-                       "browse:" + target)], action)
-            continue
-        running = (data.get(target) or "absent") != "absent"
-        plan = data.get("plan") or {}
-        reasons = data.get("reasons") or []
-        main = data.get("%s_profile" % target) or {}
-        device = (data.get("%s_device" % target) or {}).get("id")
-        account = plan.get("account") if plan.get("vendor") == "claudeb" and plan.get("device") in (None, device) else None
-        profiles = [(main, device, account, target)]
-        profiles += [({"name": o.get("name"), "dir": o.get("dir")}, o.get("device"), o.get("account"), o.get("dir") or "?")
-                     for o in data.get("dia_other") or [] if target == "dia"]
-        parts, found = [], []
-        for profile, dev, acct, ident in profiles:
-            name = re.sub(r"\s+%s$" % label, "", profile.get("name") or profile.get("dir") or "?", flags=re.I)
-            names[(target, profile.get("dir"))] = "%s %s" % (label, name)
-            where = "%s %s (%s)" % (label, profile.get("name") or "?", profile.get("dir") or "?")
-            if not running:
-                parts += ["%s → %s" % (name, acct)] if dev and acct else []
-            elif not dev:
-                parts.append("%s: no device" % name)
-                found.append(("watch", "browser-target", ident, "%s: the Claude extension names no device" % where,
-                              "a browser has no signed-in extension", "sign in Claude ext (%s)" % name,
-                              "browse:" + target))
-            elif not acct:
-                parts.append("%s → no account" % name)
-                why = next((r for r in reasons if r.startswith("sign in")), None) if ident == target else None
-                found.append(("watch", "browser-target", ident, "%s: %s" % (
-                    where, why or "; ".join(reasons) or "no pool account sees device %s" % dev),
-                    "a browser has no usable account", "sign in Claude ext (%s)" % name, "browse:" + target))
-            else:
-                parts.append("%s → %s" % (name, acct))
-        if running and data.get("manifest") not in (None, "ok"):
-            parts.append("manifest %s" % data["manifest"])
-            found.append(("red", "browser-target", target, "%s: the Claude native messaging manifest is %s; worker-run "
-                          "browse repairs a moved host path, a missing host needs Claude Code reinstalled" % (
-                              label, data["manifest"]), "the Claude extension cannot reach its native host",
-                          "worker-run browse --target %s" % target, "browse:" + target))
-        js = data.get("applescript_js")
-        if not running:
-            parts.append("not running")
-        elif js:
-            parts.append("JS %s" % js)
-            if js == "off" and target == "chrome":
-                found.append(("red", "browser-applescript-js", "chrome", "Chrome: Allow JavaScript from Apple Events "
-                              "is off, automation cannot run JavaScript over AppleScript",
-                              "automation's browser cannot run JavaScript", "chrome-applescript-js enable",
-                              "browse:chrome"))
-            elif js == "off":
-                found.append(("watch", "browser-applescript-js", "dia", "Dia runs without "
-                              "--enable-applescript-javascript, so the Dia launch watcher did not relaunch it; "
-                              "dia-js --relaunch quits and reopens Dia and unsaved page input may be lost",
-                              "Dia cannot run JavaScript in Egor's tabs", "dia-js --relaunch", "browse:dia"))
-        emit(label, " · ".join(parts), found, action)
-        if target == "dia" and running and js == "off":
-            rows.append(row(["Restart Dia with AppleScript JS — unsaved input may be lost", "", ""],
-                            action=["dia-js", "--relaunch"]))
-
+    browser_canary(runs, write)
+    accounts = read_json(os.path.join(runs, "browse", "accounts.json"), {})
+    log = []
     try:
-        with open(os.path.join(runs, "browse", "devices.json")) as handle:
-            devices = json.load(handle)
-    except (OSError, ValueError):
-        devices = {}
-    ttl = int(os.environ.get("BROWSE_BROKEN_TTL") or 86400)
-    for dev, entry in sorted(devices.items()) if isinstance(devices, dict) else ():
-        if not isinstance(entry, dict) or entry.get("health") != "broken":
-            continue
-        try:
-            seen = datetime.datetime.strptime(entry.get("health_seen", ""), "%Y-%m-%dT%H:%M:%SZ").replace(
-                tzinfo=datetime.timezone.utc).timestamp()
-        except ValueError:
-            continue
-        if now - seen > ttl:
-            continue
-        profile = entry.get("profile") or ""
-        label = names.get(("dia", profile.split(":", 1)[1])) if profile.startswith("dia:") else "Chrome" if not profile else None
-        label = label or "device %s" % dev[:8]
-        lapse = time.strftime("%H:%M", time.localtime(seen + ttl))
-        say = "%s (device %s, %s) could not open a tab %s ago; ranked last until %s · fix: nothing to run, a " \
-              "successful run on it clears the mark" % (label, dev, entry.get("account") or "?", fmt_long(now - seen),
-                                                        lapse)
-        rows.append(row([label, "tabs broken %s ago · clears %s" % (fmt_long(now - seen), lapse), ""],
-                        key="browser:browser-device-broken:" + dev, say=say, head="a browser device is marked broken",
-                        judge=verdict("browser-device-broken", dev, 1, 0, "findings", 0, 1, "watch", fact=say,
-                                      evidence=[evidence(seen, "devices:" + dev, say)], bad=1)))
-
-    found = {kind: [] for kind, *_ in BROWSER_RUN_FAILURES}
-    try:
-        entries = list(os.scandir(runs))
+        with open(os.path.join(runs, "browse", "log.jsonl"), errors="replace") as handle:
+            for text in handle:
+                try:
+                    entry = json.loads(text)
+                    at = browser_ts(entry.get("ts"))
+                except (ValueError, AttributeError):
+                    continue
+                if at and now - at <= BROWSER_QUIET_S:
+                    log.append((at, entry))
     except OSError:
-        entries = []
-    for entry in entries:
-        path = os.path.join(entry.path, "result")
-        try:
-            at = os.stat(path).st_mtime
-        except OSError:
+        pass
+    rows = []
+    for account, entry in sorted(accounts.items()) if isinstance(accounts, dict) else ():
+        if not isinstance(entry, dict):
             continue
-        if now - at > 72 * 3600:
-            continue
-        try:
-            with open(path, errors="replace") as handle:
-                text = handle.read(65536)
-        except OSError:
-            continue
-        for kind, pattern, *_ in BROWSER_RUN_FAILURES:
-            if pattern.search(text):
-                found[kind].append((at, entry.name))
-    for kind, _, short, fix, why in BROWSER_RUN_FAILURES:
-        hits = sorted(found[kind])
-        if not hits:
-            continue
-        say = "%d run%s ended %s in 72 h, newest %s · fix: %s" % (len(hits), "" if len(hits) == 1 else "s", kind,
-                                                                 hits[-1][1], why)
-        rows.append(row(["Runs", "%s ×%d in 72 h" % (short, len(hits)), fix], key="browser:runs:" + kind, say=say,
-                        head="browser runs failed in the last 72 h",
-                        judge=verdict("browser-run-failures", kind, len(hits), 0, "runs", 72, len(hits), "watch",
-                                      fact=say, evidence=[evidence(at, "run:" + name, kind) for at, name in
-                                                          reversed(hits)], bad=len(hits))))
+        status, profile = entry.get("status") or "?", entry.get("chrome_profile") or "no profile"
+        proven = browser_ts(entry.get("proven_at"))
+        mine = [(at, e) for at, e in log if e.get("account") == account and e.get("target", "chrome") == "chrome"]
+        wins = [at for at, e in mine if str(e.get("outcome")).startswith("BROWSER_OK")] + ([proven] if proven else [])
+        fails = collections.Counter(e.get("outcome") for at, e in mine
+                                    if now - at <= 72 * 3600 and not str(e.get("outcome")).startswith("BROWSER_OK"))
+        state = "%s · %s%s" % (profile, status, " · proven %s ago" % fmt_long(now - proven) if proven else "")
+        failed = " · ".join("%s ×%d" % (kind, n) for kind, n in sorted(fails.items()))
+        say = fix = None
+        if status == "needs-login":
+            say = "%s: the Claude extension in Chrome %s is not signed in as %s" % (account, profile, entry.get("email"))
+            fix = "dispatch share/briefs/claude-ext-login.md"
+        elif status not in ("ok", "no-profile"):
+            say, fix = "%s: %s — %s" % (account, status, entry.get("last_error") or "?"), "worker-run browse --enroll %s" % account
+        elif status == "ok" and (not wins or now - max(wins) > BROWSER_QUIET_S):
+            say, fix = "%s: no browser success in 7 days" % account, "worker-run browse --enroll %s" % account
+        rows.append(row([account, state + (" · 72 h: " + failed if failed else ""), fix or ""],
+                        dim=not say, key="browser:account:" + account if say else None, say=say and "%s · fix: %s" % (say, fix),
+                        head="a browser account cannot serve runs" if say else None,
+                        judge=[verdict("browser-account", account, 1, 0, "findings", 0, 1, "watch", fact=say,
+                                       evidence=[evidence(now, "browse:" + account, say)], bad=1)] if say else None))
+    repair = sorted((at, e) for at, e in log if now - at <= 72 * 3600 and (
+        e.get("workaround") or e.get("outcome") in BROWSER_REPAIR))
+    if repair:
+        kinds = collections.Counter("workaround" if e.get("workaround") else e.get("outcome") for _, e in repair)
+        say = "%d browser run%s in 72 h went around the harness or ended without its outcome (%s), newest %s · fix: " \
+              "read that run's transcript and repair the preamble or the preflight" % (
+                  len(repair), "" if len(repair) == 1 else "s", ", ".join("%s ×%d" % k for k in sorted(kinds.items())),
+                  repair[-1][1].get("run"))
+        rows.append(row(["Runs", "harness needs repair · %s" % " · ".join("%s ×%d" % k for k in sorted(kinds.items())),
+                         "worker-run transcript %s" % repair[-1][1].get("run")], [1], key="browser:repair", say=say,
+                        head="browser runs went around the harness",
+                        judge=[verdict("browser-repair", "runs", len(repair), 0, "runs", 72, len(repair), "red", fact=say,
+                                       evidence=[evidence(at, "run:%s" % e.get("run"), e.get("outcome") or "")
+                                                 for at, e in reversed(repair)], bad=len(repair))]))
+    dia = [line for line in browser_processes() if line.startswith("/Applications/Dia.app/Contents/MacOS/Dia")
+           and "--type=" not in line]
+    if dia and not any("--enable-applescript-javascript" in line for line in dia):
+        say = "Dia runs without --enable-applescript-javascript, so the Dia launch watcher did not relaunch it; " \
+              "dia-js --relaunch quits and reopens Dia and unsaved page input may be lost"
+        rows.append(row(["Dia", "JS off", "dia-js --relaunch"], key="browser:dia-js", say=say + " · fix: dia-js --relaunch",
+                        head="Dia cannot run JavaScript in Egor's tabs",
+                        judge=[verdict("browser-applescript-js", "dia", 1, 0, "findings", 0, 1, "watch", fact=say,
+                                       evidence=[evidence(now, "ps:dia", say)], bad=1)]))
+        rows.append(row(["Restart Dia with AppleScript JS — unsaved input may be lost", "", ""],
+                        action=["dia-js", "--relaunch"]))
     return section("Browser", rows, ["", "", ""], [False, False, False],
-                   ok="Chrome and Dia answer, no browser run failed in 72 h")
+                   ok="every enrolled account proved its Chrome profile, no browser run went around the harness in 72 h",
+                   blind="" if accounts else "no account is enrolled: worker-run browse --enroll all")
 
 
 def guard_kills(since):

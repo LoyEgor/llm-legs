@@ -23,8 +23,7 @@ export DOCTORS_DIR="$WORK/doctors" HARNESS_DOCTOR_BOOTS= DOCTOR_TRIGGER=fixture
 export WORKER_RUN_DIR="$WORK/runs" HARNESS_BROWSE_CMD="$WORK/browse-stub"
 cat >"$HARNESS_BROWSE_CMD" <<EOF
 #!/bin/sh
-for a; do case \$a in chrome|dia) target=\$a ;; esac; done
-cat "$WORK/browse-\$target.json" 2>/dev/null || echo '{"chrome":"absent","dia":"absent"}'
+echo "\$@" >"$WORK/browse-calls"
 EOF
 chmod +x "$HARNESS_BROWSE_CMD"
 cp "$ROOT/share/harness-ledger.json" "$HARNESS_LEDGER"
@@ -469,7 +468,7 @@ EOF
 asserts=$((asserts + 1))
 
 checks=$(python3 - "$DOCTOR" "$T" "$WORK" <<'EOF'
-import importlib.machinery, importlib.util, json, os, shutil, sys
+import importlib.machinery, importlib.util, json, os, shutil, sys, time
 loader = importlib.machinery.SourceFileLoader("harness_doctor", sys.argv[1])
 m = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_doctor", loader))
 loader.exec_module(m)
@@ -1386,82 +1385,68 @@ for _, copies in m.DEPLOYS[:2]:
 os.environ.pop("HARNESS_LIBEXEC_DIR")
 os.environ.pop("HARNESS_DEPLOY_SOURCE")
 B = m.browser_section
-check(B(T)["state"] == "ok" and judged(B(T)) == {}, "Browser: closed browsers and no runs are nothing judged")
+m.browser_processes = lambda: []
 runs = os.environ["WORKER_RUN_DIR"]
-preamble = os.path.join(runs, "browse", "preamble-1.md")
-put(preamble, "x")
-put(os.path.join(work, "browse-chrome.json"), json.dumps({
-    "chrome": "running", "target": "chrome", "applescript_js": "off", "manifest": "ok", "preamble_file": preamble,
-    "chrome_profile": {"name": "Egor work", "dir": "Profile 1"}, "chrome_device": {"id": "06477f72-aaaa"},
-    "plan": {"vendor": "claudeb", "account": "com", "device": "06477f72-aaaa"}, "reasons": []}))
-dia = {"dia": "running", "target": "dia", "applescript_js": "off", "manifest": "ok",
-       "dia_profile": {"name": "work dia", "dir": "Profile 8"}, "dia_device": {"id": "6ada21d4-bbbb"},
-       "dia_other": [{"name": "home dia", "dir": "Profile 7", "device": "8e70ec10-cccc", "account": None}],
-       "plan": {"vendor": "claudeb", "account": "com", "device": "6ada21d4-bbbb"}, "reasons": []}
-put(os.path.join(work, "browse-dia.json"), json.dumps(dia))
-stamp = lambda at: __import__("time").strftime("%Y-%m-%dT%H:%M:%SZ", __import__("time").gmtime(at))
-put(os.path.join(runs, "browse", "devices.json"), json.dumps({
-    "6ada21d4-bbbb": {"health": "broken", "health_seen": stamp(T - 3600), "account": "com", "profile": "dia:Profile 8"},
-    "old-dev": {"health": "broken", "health_seen": stamp(T - 90000)}}))
-for name, text, at in (("r-new", "done\nOUTCOME: BROWSER_TABS_BROKEN device=6ada21d4-bbbb\n", T - 600),
-                       ("r-mid", "OUTCOME: BROWSER_TABS_BROKEN device=6ada21d4-bbbb\n", T - 7200),
-                       ("r-quoted", "  - `OUTCOME: BROWSER_TABS_BROKEN` marks a device\n", T - 60),
-                       ("r-old", "OUTCOME: BROWSER_UNAVAILABLE reason=disallowed-url url=x\n", T - 73 * 3600)):
-    put(os.path.join(runs, name, "result"), text)
-    os.utime(os.path.join(runs, name, "result"), (at, at))
+shutil.rmtree(os.path.join(runs, "browse"), ignore_errors=True)
+check(B(T)["state"] == "blind" and judged(B(T)) == {}, "Browser: nothing enrolled is blind, nothing judged")
+stamp = lambda at: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(at))
+put(os.path.join(runs, "browse", "accounts.json"), json.dumps({
+    "com": {"email": "c@x", "chrome_profile": "Profile 1", "status": "ok", "proven_at": stamp(T - 3600)},
+    "notcom": {"email": "n@x", "chrome_profile": "Profile 10", "status": "needs-login", "last_error": "BROWSER_NO_DEVICE"},
+    "quiet": {"email": "q@x", "chrome_profile": "Profile 3", "status": "ok", "proven_at": stamp(T - 8 * 86400)},
+    "gone": {"email": "g@x", "status": "no-profile"}}))
+log = [{"ts": stamp(T - 600), "run": "r-ok", "account": "com", "target": "chrome", "outcome": "BROWSER_OK", "workaround": False},
+       {"ts": stamp(T - 500), "run": "r-int", "account": "com", "target": "chrome", "outcome": "BROWSER_INTERRUPTED",
+        "workaround": False},
+       {"ts": stamp(T - 400), "run": "r-miss", "account": "com", "target": "chrome", "outcome": "missing", "workaround": False},
+       {"ts": stamp(T - 300), "run": "r-wa", "account": "com", "target": "chrome", "outcome": "BROWSER_OK", "workaround": True},
+       {"ts": stamp(T - 80 * 3600), "run": "r-old", "account": "com", "target": "chrome", "outcome": "HARNESS_NEEDS_REPAIR"}]
+put(os.path.join(runs, "browse", "log.jsonl"), "".join(json.dumps(e) + "\n" for e in log) + "not json\n")
 part = B(T)
 cells = {r["cells"][0]: r["cells"][1:] for r in part["rows"]}
-check(judged(part) == {("browser-applescript-js", "chrome"): "red", ("browser-applescript-js", "dia"): "watch",
-                       ("browser-target", "Profile 7"): "watch",
-                       ("browser-device-broken", "6ada21d4-bbbb"): "watch",
-                       ("browser-run-failures", "BROWSER_TABS_BROKEN"): "watch"} and part["state"] == "problem",
-      "Browser: Chrome without AppleScript JS is red; an unsigned profile, a broken device, failed runs are watches")
-check(cells["Chrome"] == ["Egor work → com · JS off", "chrome-applescript-js enable"]
-      and cells["Dia"] == ["work → com · home → no account · JS off", "sign in Claude ext (home) · dia-js --relaunch"],
-      "Browser: one compact row per browser, profile → account, JS state, short fixes")
-dia_row = [r for r in part["rows"] if r["cells"][0] == "Dia"][0]
-check("unsaved page input may be lost" in dia_row["say"] and len(dia_row["judge"]) == 2 and dia_row["red"] == [],
-      "Browser: the long explanation rides in the finding's say, one row carries both Dia findings")
-check(cells["Dia work"][0].startswith("tabs broken 1 h 00 min ago · clears "), "Browser: a broken device names its profile")
-check(cells["Runs"] == ["TABS_BROKEN ×2 in 72 h", "ranked last 24 h"]
-      and "newest r-new" in [r for r in part["rows"] if r["cells"][0] == "Runs"][0]["say"],
-      "Browser: run failures are one terse row per kind, the newest run in the say")
-check(not os.path.exists(preamble), "Browser: the probe's preamble file is removed")
+check(judged(part) == {("browser-account", "notcom"): "watch", ("browser-account", "quiet"): "watch",
+                       ("browser-repair", "runs"): "red"} and part["state"] == "problem",
+      "Browser: needs-login and a 7-day quiet account are watches, a workaround or missing outcome is red")
+check(cells["com"][0] == "Profile 1 · ok · proven 1 h 00 min ago · 72 h: BROWSER_INTERRUPTED ×1 · missing ×1"
+      and cells["com"][1] == "", "Browser: an account row names profile, status, proven age and 72 h failures by kind")
+check(cells["notcom"][1] == "dispatch share/briefs/claude-ext-login.md", "Browser: needs-login points at the login brief")
+check(cells["quiet"][1] == "worker-run browse --enroll quiet", "Browser: a quiet account is re-enrolled")
+check(cells["gone"][0] == "no profile · no-profile" and ("browser-account", "gone") not in judged(part),
+      "Browser: an account without a Chrome profile is shown, not judged")
+check(cells["Runs"] == ["harness needs repair · missing ×1 · workaround ×1", "worker-run transcript r-wa"],
+      "Browser: the repair row counts kinds in 72 h and names the newest run")
+m.browser_processes = lambda: ["/Applications/Dia.app/Contents/MacOS/Dia",
+                               "/Applications/Dia.app/Contents/MacOS/Dia --type=renderer"]
+part = B(T)
+restart = "Restart Dia with AppleScript JS — unsaved input may be lost"
+acts = {r["cells"][0]: r.get("action") for r in part["rows"]}
+check(judged(part).get(("browser-applescript-js", "dia")) == "watch" and acts[restart] == ["dia-js", "--relaunch"]
+      and acts["Runs"] is None, "Browser: Dia without its JS flag is a watch and adds the restart row")
 menu = m.MenuLines(0, 0, "t")
 menu.layout(part, 0)
-check(all(l.split("\t")[3].strip() for l in menu.lines[1:]) and not any("state" in l for l in menu.lines),
-      "Browser: no header row when every column name is empty")
-acts = {r["cells"][0]: r.get("action") for r in part["rows"]}
-restart = "Restart Dia with AppleScript JS — unsaved input may be lost"
-check(acts["Chrome"] == ["/usr/bin/open", "-b", "com.google.Chrome"] and acts["Dia"] == ["dia-js", "--open"]
-      and acts[restart] == ["dia-js", "--relaunch"] and acts["Runs"] is None,
-      "Browser: browser rows open their browser, a flagless Dia adds the restart row, the rest carry no action")
-check([l for l in menu.lines if "\tChrome " in l][0].endswith("\t/usr/bin/open\x1f-b\x1fcom.google.Chrome")
-      and [l for l in menu.lines if "\tChrome " in l][0].split("\t")[1] == "a",
-      "Browser: an action row is flagged a and carries its argv after a tab, \\x1f between words")
-put(os.path.join(work, "browse-dia.json"), json.dumps(dict(dia, dia="absent", dia_other=[])))
+line = [l for l in menu.lines if restart in l][0]
+check(line.split("\t")[1] == "a" and line.endswith("\tdia-js\x1f--relaunch"),
+      "Browser: the restart row is flagged a and carries its argv after a tab, \\x1f between words")
+m.browser_processes = lambda: ["/Applications/Dia.app/Contents/MacOS/Dia --enable-applescript-javascript"]
 part = B(T)
-cells = {r["cells"][0]: r["cells"][1:] for r in part["rows"]}
-dia_row = [r for r in part["rows"] if r["cells"][0] == "Dia"][0]
-check(cells["Dia"] == ["work → com · not running", ""] and ("browser-applescript-js", "dia") not in judged(part)
-      and dia_row["action"] == ["dia-js", "--open"] and not dia_row["dim"] and restart not in cells,
-      "Browser: a closed Dia says so, shows no JS state, opens with the flag and offers no restart")
-os.remove(os.path.join(work, "browse-dia.json"))
-put(os.path.join(work, "browse-chrome.json"), "not json")
-part = B(T, write=True)
-miss = [r for r in part["rows"] if r["cells"][0] == "Chrome"][0]
-check(miss["cells"][1] == "no answer this run" and miss["dim"] and not miss.get("judge"),
-      "Browser: one probe miss is a dim row, not a finding")
-part = B(T, write=True)
-check(judged(part).get(("browser-target", "chrome")) == "watch"
-      and [r for r in part["rows"] if r["cells"][0] == "Chrome"][0]["cells"][1] == "no answer 2 runs in a row",
-      "Browser: a second miss in a row is a watch")
-check(judged(B(T)).get(("browser-target", "chrome")) == "watch", "Browser: a read-only run keeps the stored count")
-os.remove(os.path.join(work, "browse-chrome.json"))
+check(("browser-applescript-js", "dia") not in judged(part) and restart not in [r["cells"][0] for r in part["rows"]],
+      "Browser: Dia with its JS flag is fine and offers no restart")
+calls = os.path.join(work, "browse-calls")
+if os.path.exists(calls):
+    os.remove(calls)
+B(T)
+time.sleep(0.3)
+check(not os.path.exists(calls), "Browser: a read-only run never starts the canary")
 B(T, write=True)
-put(os.path.join(work, "browse-chrome.json"), "not json")
-check(("browser-target", "chrome") not in judged(B(T, write=True)), "Browser: an answer resets the miss count")
-os.remove(os.path.join(work, "browse-chrome.json"))
+for _ in range(50):
+    if os.path.exists(calls):
+        break
+    time.sleep(0.1)
+check(open(calls).read().split() == ["browse", "--canary"], "Browser: a writing run starts the canary when its stamp is stale")
+os.remove(calls)
+B(T, write=True)
+time.sleep(0.3)
+check(not os.path.exists(calls), "Browser: a fresh canary stamp holds the next start")
 shutil.rmtree(runs)
 for beat, beat_at, ident in ((None, T, "never-started"), ("roots=2\n", T - 1000, "stale"),
                              ("roots=2\nerror=fsevents gone\n", T - 30, "error"), ("roots=0\n", T - 30, "no-root")):

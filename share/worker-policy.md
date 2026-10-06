@@ -51,9 +51,8 @@ path or as that template beside a named repository, and
 every grant and repository workdir of the session a `RESUME <sid>:` first line continues (read
 without `--resume`); a main checkout or other directory named only in the prose is ungranted, and the
 run's writes there count as escaped. A writing run is refused in `$HOME`, where nothing is tracked.
-A browser brief (`BROWSER: yes`) may pin the Dia profile with a header `DIA-PROFILE: <dir or name>`
-(`Profile 7`, `home dia`); without it `worker-run start --browser` takes the profile whose device
-its `ACCOUNT:` sees, then the first healthy one from Dia's `last_used`.
+A browser brief carries `BROWSER: chrome` (the account's own Chrome profile, the default) or
+`BROWSER: yes` (Egor's Dia, never launched); `worker-run start` reads it itself — never repeat it as flags.
 The canonical knob-to-agy mapping lives in `worker-run`.
 
 ## Brief sizing and test loop

@@ -3,523 +3,218 @@
 . "$(dirname "$0")/worker_run_harness.sh"
 
 browse_tests() {
-  local BT_WORK="$WORK/browse_tests"
-  mkdir -p "$BT_WORK"
-  local BT_DIA="$BT_WORK/dia_user_data"
-  local BT_CHROME="$BT_WORK/chrome_user_data"
-  local BT_CODEX_CONF="$BT_WORK/codex_config.toml"
-  local BT_WP="$BT_WORK/bin/worker-pick"
-  local BT_RUNS="$BT_WORK/runs"
-  mkdir -p "$BT_DIA" "$BT_CHROME" "$BT_WORK/bin" "$BT_RUNS"
-
-  local BROWSE_CUA_SYNC="$BT_WORK/bin/cua-sync"
-  local BROWSE_CHROME_MANIFEST="$BT_WORK/native-hosts/manifest.json"
-  local BROWSE_NATIVE_HOST="$BT_WORK/native-hosts/shared-host"
-  local BT_SYNC_MODE=auto BT_SYNC_LOG="$BT_WORK/sync-calls"
-  local BROWSE_NATIVE_HOST_PARENTS=''
-  export BROWSE_CUA_SYNC BROWSE_CHROME_MANIFEST BROWSE_NATIVE_HOST BT_SYNC_MODE BT_SYNC_LOG BROWSE_NATIVE_HOST_PARENTS
-  mkdir -p "${BROWSE_CHROME_MANIFEST%/*}"
-  printf '#!/bin/sh\nexit 0\n' >"$BROWSE_NATIVE_HOST"
-  chmod +x "$BROWSE_NATIVE_HOST"
-  jq -n --arg path "$BROWSE_NATIVE_HOST" '{path:$path, name:"kept", allowed_origins:["extension://kept"]}' >"$BROWSE_CHROME_MANIFEST"
-  cat >"$BROWSE_CUA_SYNC" <<'EOF'
+  local BT_WORK="$WORK/browse_tests" out rc
+  local bt="$BT_WORK" dev_com=aaaaaaaa-1111-4111-8111-111111111111 dev_extra=bbbbbbbb-2222-4222-8222-222222222222
+  mkdir -p "$bt/stub" "$bt/chrome" "$bt/up"
+  local account email
+  for account in com:COM@x.test extra:extra@x.test lost:lost@x.test; do
+    mkdir -p "$CLAUDEB_PROFILES_ROOT/${account%%:*}"
+    jq -n --arg e "${account#*:}" '{oauthAccount:{emailAddress:$e}}' >"$CLAUDEB_PROFILES_ROOT/${account%%:*}/.claude.json"
+  done
+  printf '%s\n' '{"profile":{"info_cache":{"Profile 1":{"name":"Work","user_name":"com@x.test"},
+    "Profile 2":{"name":"Extra","user_name":"extra@x.test"},"Profile 3":{"name":"Spare","user_name":"other@x.test"}}}}' \
+    >"$bt/chrome/Local State"
+  : >"$bt/tabs"
+  : >"$bt/dia-tabs"
+  cat >"$bt/stub/pgrep" <<EOF
+#!/bin/sh
+for a; do last=\$a; done
+[ -e "$bt/up/\$last" ]
+EOF
+  printf '#!/bin/sh\ncat "%s/tabs"\n' "$bt" >"$bt/stub/osascript"
+  printf '#!/bin/sh\ncat "%s/dia-tabs"\n' "$bt" >"$bt/stub/dia-js"
+  cat >"$bt/stub/open" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >>"$bt/open.log"
+for a; do last=\$a; done
+printf '%s\n' "\$last" >>"$bt/tabs"
+: >"$bt/up/Google Chrome"
+EOF
+  cat >"$bt/stub/claudeb" <<EOF
 #!/usr/bin/env bash
-printf '%s\n' "${1:-repair}" >>"$BT_SYNC_LOG"
-case "$BT_SYNC_MODE:${1:-repair}" in
-  registered:*) exit 0 ;;
-  repaired:--check) exit 1 ;;
-  repaired:repair) exit 0 ;;
-  broken:* ) printf 'fake registration failure\nsecond diagnostic\n' >&2; exit 1 ;;
+account=\$2
+prompt=\$(cat)
+printf '%s\n' "\$*" >>"$bt/claudeb.log"
+printf '%s\n' "\$prompt" >"$bt/prompt-\$account"
+mode=\$(cat "$bt/mode-\$account" 2>/dev/null || echo ok)
+url=\$(grep -o 'http://127.0.0.1:[0-9]*/form?case=[^ ]*' <<<"\$prompt" | head -n 1)
+[ -z "\$url" ] || [ "\$mode" != ok ] || curl -s "\${url%/form*}/submit?case=\${url##*=}&v=\${url##*=}" >/dev/null
+case "\$mode" in
+  ok) device=\$(cat "$bt/device-\$account"); result="BROWSER-PROVEN: \$device \$account"$'\n'"OUTCOME: BROWSER_OK" ;;
+  nodevice) result="OUTCOME: BROWSER_NO_DEVICE account=\$account" ;;
+  *) result=done ;;
 esac
-if grep -q '^\[mcp_servers.cua_repl\]' "$BROWSE_CODEX_CONFIG"; then exit 0; fi
-printf 'fake registration failure\n' >&2
-exit 1
+jq -cn --arg r "\$result" '{result:\$r}'
 EOF
-  chmod +x "$BROWSE_CUA_SYNC"
+  chmod +x "$bt/stub/"*
+  printf '%s\n' "$dev_com" >"$bt/device-com"
+  printf '%s\n' "$dev_extra" >"$bt/device-extra"
+  printf 'cccccccc-3333-4333-8333-333333333333\n' >"$bt/device-lost"
+  local BROWSE_PGREP="$bt/stub/pgrep" BROWSE_OSASCRIPT="$bt/stub/osascript" BROWSE_OPEN="$bt/stub/open"
+  local BROWSE_DIA_JS="$bt/stub/dia-js" BROWSE_CHROME_USER_DATA="$bt/chrome" BROWSE_SEEN_WAIT=2 BROWSE_WINDOW_WAIT=6
+  export BROWSE_PGREP BROWSE_OSASCRIPT BROWSE_OPEN BROWSE_DIA_JS BROWSE_CHROME_USER_DATA BROWSE_SEEN_WAIT BROWSE_WINDOW_WAIT
+  local registry="$WORKER_RUN_DIR/browse/accounts.json" log="$WORKER_RUN_DIR/browse/log.jsonl"
+  browse() { WORKER_RUN_CLAUDEB="$bt/stub/claudeb" "$RUNNER" browse "$@"; }
 
-  cat >"$BT_DIA/Local State" <<'EOF'
-{
-  "profile": {
-    "info_cache": {
-      "Profile 8": {
-        "name": "work dia"
-      }
-    },
-    "last_used": "Profile 8"
-  }
-}
-EOF
+  # 1: a window per profile, matched by email case-insensitively, opened once however often it is asked for
+  assert grep -qx 'WINDOW: com Profile 1' <<<"$(browse --window com)"
+  assert grep -qx 'WINDOW: com Profile 1' <<<"$(browse --window com)"
+  assert test "$(cat "$bt/open.log")" = '-n -g -b com.google.Chrome --args --profile-directory=Profile 1 https://example.com/#worker-run=Profile-1'
+  rc=0; out=$(browse --window lost) || rc=$?
+  assert test "$rc" -eq 1
+  assert grep -qx 'WINDOW: lost failed' <<<"$out"
 
-  local BT_DIA_EXT="$BT_DIA/Profile 8/Local Extension Settings/fcoeoabgfenejglbffodgkkbkcdhcgfn"
-  mkdir -p "$BT_DIA_EXT"
-  printf 'bridgeDeviceId\x01\x0c\x0d\x3f\xd06ada21d4-ae66-4990-9040-97e18bb7b529"\x07\x12\x0ddisplayName\x01\x2b\x01\x05<<\"Dia browser\"\x02\x26\x04\x05\x09hControl' >"$BT_DIA_EXT/000001.log"
+  # 2: --seen reads the target browser's own tab list
+  printf 'https://example.com/?wr=tok-1\n' >>"$bt/tabs"
+  assert grep -qx 'SEEN: chrome' <<<"$(browse --seen tok-1)"
+  rc=0; out=$(browse --seen tok-1 --target dia) || rc=$?
+  assert test "$rc" -eq 1
+  assert grep -qx 'SEEN: none' <<<"$out"
+  printf 'https://example.com/?wr=tok-2\n' >"$bt/dia-tabs"
+  assert grep -qx 'SEEN: dia' <<<"$(browse --seen tok-2 --target dia)"
 
-  cat >"$BT_CHROME/Local State" <<'EOF'
-{
-  "profile": {
-    "info_cache": {
-      "Profile 1": {
-        "name": "Egor work"
-      }
-    },
-    "last_used": "Profile 1"
-  }
-}
-EOF
+  # 3: enrolment proves each account in its own profile; no device is a login, no profile says so
+  printf 'nodevice\n' >"$bt/mode-extra"
+  rc=0; out=$(browse --enroll all) || rc=$?
+  assert test "$rc" -eq 1
+  assert grep -qx "ENROLL: com ok Profile 1 $dev_com" <<<"$out"
+  assert grep -qx 'ENROLL: extra needs-login Profile 2 no-device' <<<"$out"
+  assert grep -q '^REASON: .*Profile 2.*dispatch share/briefs/claude-ext-login.md with ACCOUNT extra, EMAIL extra@x.test, PROFILE Profile 2$' <<<"$out"
+  assert grep -qx 'ENROLL: lost no-profile' <<<"$out"
+  assert grep -q -- '--pin <dir>' <<<"$out"
+  assert jq -e --arg d "$dev_com" '.com.status == "ok" and .com.device_id == $d and (.com.proven_at | test("Z$"))
+    and .com.email == "COM@x.test" and .com.chrome_profile == "Profile 1" and .extra.status == "needs-login"
+    and .lost.status == "no-profile"' "$registry" >/dev/null
+  assert grep -q 'profile com -p --model sonnet --effort low --chrome --output-format json' "$bt/claudeb.log"
+  assert test "$(head -n 1 "$bt/prompt-com")" = '# Browser preamble (Claude in Chrome / Google Chrome / com)'
+  assert grep -q -- "worker-run browse --seen [0-9]*-<candidate number>\`" "$bt/prompt-com"
+  assert test "$(grep -c '"outcome":"BROWSER_NO_DEVICE"' "$log")" -eq 1
+  assert test "$(grep -c '"outcome":"BROWSER_OK"' "$log")" -eq 1
+  assert test "$(grep -c -- '--profile-directory=Profile 2' "$bt/open.log")" -eq 1
+  # A re-proof names the registry device first.
+  browse --enroll com >/dev/null
+  assert grep -q "\`$dev_com\` first when listed" "$bt/prompt-com"
 
-  local BT_CHROME_EXT="$BT_CHROME/Profile 1/Local Extension Settings/fcoeoabgfenejglbffodgkkbkcdhcgfn"
-  mkdir -p "$BT_CHROME_EXT"
-  printf 'bridgeDeviceId\x01\x0c\x0d\x3f\xd0b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d"\x07\x12\x0ddisplayName\x01\x2b\x01\x05<<\"Chrome browser\"\x02\x26' >"$BT_CHROME_EXT/000001.log"
+  # 4: a pin wins over the email match, and names one account
+  assert grep -qx 'ENROLL: lost ok Profile 3 cccccccc-3333-4333-8333-333333333333' <<<"$(browse --enroll lost --pin 'Profile 3')"
+  assert jq -e '.lost.pin == true and .lost.status == "ok"' "$registry" >/dev/null
+  assert_fails browse --enroll all --pin 'Profile 3'
+  assert grep -q "^ACCOUNT: com ok Profile 1 $dev_com 20" <<<"$(browse)"
 
-  cat >"$BT_CODEX_CONF" <<'EOF'
-[mcp_servers.cua_repl]
-startup_timeout_sec = 120
-command = "/path/to/node"
-args = ["/path/to/launch.mjs"]
-EOF
-
-  cat >"$BT_WP" <<'EOF'
-#!/usr/bin/env bash
-cat <<'OUTPUT'
-codex:    7.4%/d ×7.0d   48%   48%   main                 astra·high
-          5.0%/d ×7.0d   90%   100%  wall                 astra·high   ↺ Thu 02:51  WALLED
-claude:  11.4%/d ×7.0d   20%   20%   com                  opus·high
-          8.6%/d ×7.0d   40%   30%   extra                opus·high    off
-         * = this session account
-OUTPUT
-EOF
-  chmod +x "$BT_WP"
-
-  # The transport a vendor drives the browser through is a process tree plus a socket, and both
-  # belong to Egor's real machine: every case here reads a fixture listing instead, so no assertion
-  # depends on which browser happens to be open while the suite runs.
-  local BT_PS="$BT_WORK/bin/ps-fixture" BT_LSOF="$BT_WORK/bin/lsof-fixture"
-  local BT_PS_LISTING="$BT_WORK/ps-listing"
-  local BT_SOCK_CLAUDE="$BT_WORK/sockets/claude" BT_SOCK_CODEX="$BT_WORK/sockets/codex"
-  mkdir -p "$BT_SOCK_CLAUDE" "$BT_SOCK_CODEX"
-  : >"$BT_SOCK_CLAUDE/101.sock"
-  : >"$BT_SOCK_CLAUDE/201.sock"
-  : >"$BT_SOCK_CODEX/1f0c9d3a.sock"
-  cat >"$BT_WORK/ps-connected" <<'EOF'
-  100     1 /Applications/Dia.app/Contents/MacOS/Dia
-  101   100 /Users/egorloy/.local/bin/claude --chrome-native-host
-  102   100 /Users/egorloy/.codex/plugins/cache/openai-bundled/chrome/latest/extension-host/macos/arm64/ChatGPT for Chrome chrome-extension://hehggadaopoacecdllhhajmbjkdcmajg/
-  200     1 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
-  201   200 /Users/egorloy/.local/bin/claude --chrome-native-host
-  202   200 /Users/egorloy/.codex/plugins/cache/openai-bundled/chrome/latest/extension-host/macos/arm64/ChatGPT for Chrome chrome-extension://hehggadaopoacecdllhhajmbjkdcmajg/
-  300   100 /Applications/Dia.app/Contents/MacOS/Dia --type=renderer
-EOF
-  # Chrome is up with no transport of its own, spelled through every near miss: the extension hosts
-  # under it belong to Dia (101 even holds a socket), the one child Chrome does have is an ordinary
-  # renderer whose flags are not a host command, and the host that IS Chrome's (205) has no socket.
-  # Each line fails a different one of the three tests — command, parentage, its own socket.
-  cat >"$BT_WORK/ps-chrome-bare" <<'EOF'
-  100     1 /Applications/Dia.app/Contents/MacOS/Dia
-  101   100 /Users/egorloy/.local/bin/claude --chrome-native-host
-  102   100 /Users/egorloy/.codex/plugins/cache/openai-bundled/chrome/latest/extension-host/macos/arm64/ChatGPT for Chrome chrome-extension://hehggadaopoacecdllhhajmbjkdcmajg/
-  200     1 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
-  201   200 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --type=utility --utility-sub-type=network.mojom.NetworkService
-  205   200 /Users/egorloy/.local/bin/claude --chrome-native-host
-EOF
-  cat >"$BT_WORK/ps-dia-bare" <<'EOF'
-  100     1 /Applications/Dia.app/Contents/MacOS/Dia
-  200     1 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
-  202   200 /Users/egorloy/.codex/plugins/cache/openai-bundled/chrome/latest/extension-host/macos/arm64/ChatGPT for Chrome chrome-extension://hehggadaopoacecdllhhajmbjkdcmajg/
-EOF
-  cp "$BT_WORK/ps-connected" "$BT_PS_LISTING"
-  cat >"$BT_PS" <<EOF
-#!/bin/sh
-cat "$BT_PS_LISTING"
-EOF
-  cat >"$BT_LSOF" <<EOF
-#!/bin/sh
-printf 'ChatGPT %s egorloy 3u unix 0x0 0t0 %s/1f0c9d3a.sock\n' "\$2" "$BT_SOCK_CODEX"
-EOF
-  chmod +x "$BT_PS" "$BT_LSOF"
-  local BROWSE_PS="$BT_PS" BROWSE_LSOF="$BT_LSOF"
-  local BROWSE_CLAUDE_SOCKET_DIR="$BT_SOCK_CLAUDE" BROWSE_CODEX_SOCKET_DIR="$BT_SOCK_CODEX"
-  export BROWSE_PS BROWSE_LSOF BROWSE_CLAUDE_SOCKET_DIR BROWSE_CODEX_SOCKET_DIR
-
-  local out rc=0 preamble_path
-  out=$(BROWSE_DIA_USER_DATA="$BT_DIA" \
-        BROWSE_CHROME_USER_DATA="$BT_CHROME" \
-        BROWSE_CODEX_CONFIG="$BT_CODEX_CONF" \
-        BROWSE_WORKER_PICK="$BT_WP" \
-        WORKER_RUN_DIR="$BT_RUNS" \
-        BROWSE_SKIP_PROCESSES=1 \
-        "$RUNNER" browse --target dia --vendor codex) || rc=$?
-  assert test "$rc" -eq 0
-  assert grep -qx 'DIA: running' <<<"$out"
-  assert grep -qx 'DIA-PROFILE: work dia (Profile 8)' <<<"$out"
-  assert grep -qx 'DIA-DEVICE: 6ada21d4-ae66-4990-9040-97e18bb7b529 "Dia browser"' <<<"$out"
-  assert grep -qx 'TARGET: dia' <<<"$out"
-  assert grep -qx 'CHROME-DEVICE: b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d "Chrome browser"' <<<"$out"
-  assert grep -qx 'CHROME-PROFILE: Egor work (Profile 1)' <<<"$out"
-  assert test "$(grep -c '^BANNED-DEVICES:' <<<"$out")" -eq 0
-  assert test "$(grep -c '^LAUNCHED:' <<<"$out")" -eq 0
-  assert grep -qx 'CHROME: absent' <<<"$out"
-  assert grep -qx 'CUA-REPL: registered' <<<"$out"
-  assert grep -qx 'SKY: running' <<<"$out"
-  assert grep -qx 'NEXT-CLAUDE-ACCOUNTS: com' <<<"$out"
-  assert grep -qx 'NEXT-CODEX-ACCOUNT: main' <<<"$out"
-  assert grep -qx 'REASON: claudeb/extra skipped — out of pool' <<<"$out"
-  assert grep -qx 'REASON: codex/wall skipped — walled' <<<"$out"
-  assert test "$(grep -c 'this session account' <<<"$out")" -eq 0
-  assert grep -qx 'PLAN: codex account=main' <<<"$out"
-  assert grep -q '^PREAMBLE-FILE: ' <<<"$out"
-  preamble_path=$(sed -n 's/^PREAMBLE-FILE: //p' <<<"$out")
-  assert test -f "$preamble_path"
-  assert grep -q 'await cua.getState()' "$preamble_path"
-  assert grep -q 'https://example.com' "$preamble_path"
-  assert grep -q 'work dia' "$preamble_path"
-  assert grep -q 'irrelevant to `cua`' "$preamble_path"
-  assert grep -q 'agent.browsers.list()' "$preamble_path"
-  assert grep -q 'WITHOUT a `profileName`' "$preamble_path"
-  assert grep -q 'Egor work.*is Google Chrome' "$preamble_path"
-  assert grep -q 'Never drive Google Chrome' "$preamble_path"
-  assert test "$(grep -c '6ada21d4-ae66-4990-9040-97e18bb7b529' "$preamble_path")" -eq 0
-  assert test "$(grep -c 'b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d' "$preamble_path")" -eq 0
-  # Claude in Chrome leads the browser plan; Codex is its fallback.
-  out=$(BROWSE_DIA_USER_DATA="$BT_DIA" BROWSE_CHROME_USER_DATA="$BT_CHROME" BROWSE_CODEX_CONFIG="$BT_CODEX_CONF" \
-        BROWSE_WORKER_PICK="$BT_WP" WORKER_RUN_DIR="$BT_RUNS" BROWSE_SKIP_PROCESSES=1 "$RUNNER" browse --target dia)
-  assert grep -qx 'PLAN: claudeb account=com device=6ada21d4-ae66-4990-9040-97e18bb7b529 source=probe' <<<"$out"
-  assert grep -qx 'APPLESCRIPT-JS: off' <<<"$out"
-  sed 's|^\(  100     1 /Applications/Dia.app/Contents/MacOS/Dia\)$|\1 --enable-applescript-javascript|' \
-    "$BT_WORK/ps-connected" >"$BT_PS_LISTING"
-  out=$(BROWSE_DIA_USER_DATA="$BT_DIA" BROWSE_CHROME_USER_DATA="$BT_CHROME" BROWSE_CODEX_CONFIG="$BT_CODEX_CONF" \
-        BROWSE_WORKER_PICK="$BT_WP" WORKER_RUN_DIR="$BT_RUNS" BROWSE_SKIP_PROCESSES=1 "$RUNNER" browse --target dia --json)
-  assert jq -e '.target == "dia" and .applescript_js == "on"' <<<"$out" >/dev/null
-  out=$(BROWSE_DIA_USER_DATA="$BT_DIA" BROWSE_CHROME_USER_DATA="$BT_CHROME" BROWSE_CODEX_CONFIG="$BT_CODEX_CONF" \
-        BROWSE_WORKER_PICK="$BT_WP" WORKER_RUN_DIR="$BT_RUNS" BROWSE_SKIP_PROCESSES=1 "$RUNNER" browse --no-launch)
-  assert grep -qx 'TARGET: chrome' <<<"$out"
-  assert grep -qx 'APPLESCRIPT-JS: off' <<<"$out"
-  printf '{"browser":{"allow_javascript_apple_events":true}}\n' >"$BT_CHROME/Profile 1/Preferences"
-  out=$(BROWSE_DIA_USER_DATA="$BT_DIA" BROWSE_CHROME_USER_DATA="$BT_CHROME" BROWSE_CODEX_CONFIG="$BT_CODEX_CONF" \
-        BROWSE_WORKER_PICK="$BT_WP" WORKER_RUN_DIR="$BT_RUNS" BROWSE_SKIP_PROCESSES=1 "$RUNNER" browse --no-launch)
-  assert grep -qx 'APPLESCRIPT-JS: on' <<<"$out"
-  out=$(BROWSE_DIA_USER_DATA="$BT_DIA" BROWSE_CHROME_USER_DATA="$BT_CHROME" BROWSE_CODEX_CONFIG="$BT_CODEX_CONF" \
-        BROWSE_WORKER_PICK="$BT_WP" WORKER_RUN_DIR="$BT_RUNS" BROWSE_SKIP_PROCESSES=1 "$RUNNER" browse --dia-profile 'Profile 8')
-  assert grep -qx 'TARGET: dia' <<<"$out"
-  rm "$BT_CHROME/Profile 1/Preferences"
-  cp "$BT_WORK/ps-connected" "$BT_PS_LISTING"
-
-  cat >"$BT_CODEX_CONF.nocua" <<'EOF'
-[model]
-name = "gpt-6-astra"
-EOF
-  rc=0
-  out=$(BROWSE_DIA_USER_DATA="$BT_DIA" \
-        BROWSE_CHROME_USER_DATA="$BT_CHROME" \
-        BROWSE_CODEX_CONFIG="$BT_CODEX_CONF.nocua" \
-        BROWSE_WORKER_PICK="$BT_WP" \
-        WORKER_RUN_DIR="$BT_RUNS" \
-        BROWSE_SKIP_PROCESSES=1 \
-        "$RUNNER" browse --target dia) || rc=$?
-  assert test "$rc" -eq 0
-  assert grep -qx 'CUA-REPL: broken' <<<"$out"
-  assert grep -qx 'REASON: codex skipped — cua_repl registration failed: fake registration failure' <<<"$out"
-  assert grep -qx 'PLAN: claudeb account=com device=6ada21d4-ae66-4990-9040-97e18bb7b529 source=probe' <<<"$out"
-  preamble_path=$(sed -n 's/^PREAMBLE-FILE: //p' <<<"$out")
-  assert test -f "$preamble_path"
-  assert grep -q 'list_connected_browsers' "$preamble_path"
-  assert grep -qF 'Target Dia device ID: 6ada21d4-ae66-4990-9040-97e18bb7b529' "$preamble_path"
-  assert grep -qF 'Off-target extension device IDs (Google Chrome — never drive one, never `switch_browser` to it): b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d' "$preamble_path"
-  assert grep -qF 'tell application id "company.thebrowser.dia" to get URL of every tab of every window' "$preamble_path"
-  assert grep -qF 'BROWSER-DEVICE-LOCAL: <its id>' "$preamble_path"
-  assert grep -qF 'OUTCOME: BROWSER_LOCAL_UNIDENTIFIED device=' "$preamble_path"
-
-  rc=0
-  out=$(BROWSE_DIA_USER_DATA="$BT_DIA" \
-        BROWSE_CHROME_USER_DATA="$BT_CHROME" \
-        BROWSE_CODEX_CONFIG="$BT_CODEX_CONF" \
-        BROWSE_WORKER_PICK="$BT_WP" \
-        WORKER_RUN_DIR="$BT_RUNS" \
-        BROWSE_SKIP_PROCESSES=1 \
-        "$RUNNER" browse --target dia --vendor claudeb) || rc=$?
-  assert test "$rc" -eq 0
-  assert grep -qx 'PLAN: claudeb account=com device=6ada21d4-ae66-4990-9040-97e18bb7b529 source=probe' <<<"$out"
-
-  cat >"$BT_WP.multi" <<'EOF'
-#!/usr/bin/env bash
-cat <<'OUTPUT'
-claude:  11.4%/d ×7.0d   20%   20%   com                  opus·high
-          8.6%/d ×7.0d   40%   30%   spare                opus·high
-OUTPUT
-EOF
-  chmod +x "$BT_WP.multi"
-
-  rc=0
-  out=$(BROWSE_DIA_USER_DATA="$BT_DIA" \
-        BROWSE_CHROME_USER_DATA="$BT_CHROME" \
-        BROWSE_CODEX_CONFIG="$BT_CODEX_CONF.nocua" \
-        BROWSE_WORKER_PICK="$BT_WP.multi" \
-        WORKER_RUN_DIR="$BT_RUNS" \
-        BROWSE_SKIP_PROCESSES=1 \
-        "$RUNNER" browse --target dia --record 6ada21d4-ae66-4990-9040-97e18bb7b529 spare) || rc=$?
-  assert test "$rc" -eq 0
-  assert grep -qx 'RECORDED: 6ada21d4-ae66-4990-9040-97e18bb7b529 spare' <<<"$out"
-  assert grep -qx 'NEXT-CLAUDE-ACCOUNTS: spare,com' <<<"$out"
-  assert grep -qx 'PLAN: claudeb account=spare device=6ada21d4-ae66-4990-9040-97e18bb7b529 source=cached' <<<"$out"
-
-  cat >"$BT_WP.empty" <<'EOF'
-#!/usr/bin/env bash
-cat <<'OUTPUT'
-codex:   unavailable
-claude:  no accounts
-OUTPUT
-EOF
-  chmod +x "$BT_WP.empty"
-
-  rc=0
-  out=$(BROWSE_DIA_USER_DATA="$BT_DIA" \
-        BROWSE_CHROME_USER_DATA="$BT_CHROME" \
-        BROWSE_CODEX_CONFIG="$BT_CODEX_CONF" \
-        BROWSE_WORKER_PICK="$BT_WP.empty" \
-        WORKER_RUN_DIR="$BT_RUNS" \
-        BROWSE_SKIP_PROCESSES=1 \
-        "$RUNNER" browse --target dia) || rc=$?
-  assert test "$rc" -eq 2
-  assert grep -qx 'PLAN: none' <<<"$out"
-
-  local json_out
-  rc=0
-  json_out=$(BROWSE_DIA_USER_DATA="$BT_DIA" \
-             BROWSE_CHROME_USER_DATA="$BT_CHROME" \
-             BROWSE_CODEX_CONFIG="$BT_CODEX_CONF" \
-             BROWSE_WORKER_PICK="$BT_WP" \
-             WORKER_RUN_DIR="$BT_RUNS" \
-             BROWSE_SKIP_PROCESSES=1 \
-             "$RUNNER" browse --target dia --json) || rc=$?
-  assert test "$rc" -eq 0
-  assert jq -e . <<<"$json_out" >/dev/null
-  assert test "$(jq -r .dia <<<"$json_out")" = 'running'
-  assert test "$(jq -r .dia_profile.dir <<<"$json_out")" = 'Profile 8'
-  assert test "$(jq -r .dia_profile.name <<<"$json_out")" = 'work dia'
-  assert test "$(jq -r .dia_device.id <<<"$json_out")" = '6ada21d4-ae66-4990-9040-97e18bb7b529'
-  assert test "$(jq -r .target <<<"$json_out")" = 'dia'
-  assert test "$(jq -r .chrome_device.id <<<"$json_out")" = 'b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d'
-  assert test "$(jq -r .chrome_profile.name <<<"$json_out")" = 'Egor work'
-  assert test "$(jq -r .chrome_profile.dir <<<"$json_out")" = 'Profile 1'
-  assert test "$(jq -r .launched <<<"$json_out")" = 'null'
-  assert test "$(jq -r 'has("banned_devices")' <<<"$json_out")" = 'false'
-  assert test "$(jq -r .cua_repl <<<"$json_out")" = 'registered'
-  # The device is cached to `spare`, which this pool lacks: claudeb cannot run, so Codex falls back.
-  assert test "$(jq -r .plan.vendor <<<"$json_out")" = 'codex'
-  assert test "$(jq -r .plan.account <<<"$json_out")" = 'main'
-
-  local BROWSE_DIA_USER_DATA="$BT_DIA" BROWSE_CHROME_USER_DATA="$BT_CHROME"
-  local BROWSE_CODEX_CONFIG="$BT_CODEX_CONF" BROWSE_WORKER_PICK="$BT_WP.multi" BROWSE_SKIP_PROCESSES=1
-  local WORKER_RUN_DIR="$BT_RUNS"
-  export BROWSE_DIA_USER_DATA BROWSE_CHROME_USER_DATA BROWSE_CODEX_CONFIG BROWSE_WORKER_PICK BROWSE_SKIP_PROCESSES WORKER_RUN_DIR
-  local dev=6ada21d4-ae66-4990-9040-97e18bb7b529 other_dev=8e70ec10-fa25-45a9-8e57-2ecae0629d12
-  local chrome_dev=b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d
-  local cache="$BT_RUNS/browse/devices.json" fixture="$BT_RUNS/codex-browser-fixture"
-  mkdir -p "$fixture"
-  printf '{"vendor":"codex","account":"spare","workdir":"%s","started_at":0,"pid":0,"browser":true}\n' "$WORK/workdir" >"$fixture/meta.json"
-  : >"$fixture/err"
-  printf 'BROWSER-DEVICE-ACCOUNT: %s spare\n' "$dev" >"$fixture/out"
-  assert "$RUNNER" _deliver "$fixture" 0 >/dev/null
-  assert jq -e --arg dev "$dev" '.[$dev].account == "spare" and (.[$dev].seen | test("Z$"))' "$cache" >/dev/null
-  jq --arg dev "$dev" '.[$dev].seen = "old"' "$cache" >"$cache.fixture"
-  mv "$cache.fixture" "$cache"
-  assert "$RUNNER" _deliver "$fixture" 0 >/dev/null
-  assert jq -e --arg dev "$dev" '.[$dev].seen == "old"' "$cache" >/dev/null
-  cp -R "$fixture" "$fixture-refresh"
-  fixture="$fixture-refresh"
-  rm "$fixture/result"
-  assert "$RUNNER" _deliver "$fixture" 0 >/dev/null
-  assert jq -e --arg dev "$dev" '.[$dev].seen != "old"' "$cache" >/dev/null
-  cp -R "$fixture" "$fixture-other-account"
-  fixture="$fixture-other-account"
-  rm "$fixture/result"
-  printf 'OUTCOME: BROWSER_DEVICE_NOT_IN_ACCOUNT device=%s account=com\n' "$dev" >"$fixture/out"
-  assert "$RUNNER" _deliver "$fixture" 0 >/dev/null
-  assert jq -e --arg dev "$dev" '.[$dev].account == "spare"' "$cache" >/dev/null
-  cp -R "$fixture" "$fixture-drop"
-  fixture="$fixture-drop"
-  rm "$fixture/result"
-  printf 'OUTCOME: BROWSER_DEVICE_NOT_IN_ACCOUNT device=%s account=spare\n' "$dev" >"$fixture/out"
-  assert "$RUNNER" _deliver "$fixture" 0 >/dev/null
-  assert jq -e --arg dev "$dev" '.[$dev].account == "spare" and .[$dev].denied == true' "$cache" >/dev/null
-  cp -R "$fixture" "$fixture-claudeb"
-  fixture="$fixture-claudeb"
-  rm "$fixture/result"
-  jq '.vendor = "claudeb"' "$fixture/meta.json" >"$fixture/meta.next"
-  mv "$fixture/meta.next" "$fixture/meta.json"
-  jq -n --arg result "BROWSER-DEVICE-ACCOUNT: $dev com" '{result:$result}' >"$fixture/out"
-  assert "$RUNNER" _deliver "$fixture" 0 >/dev/null
-  assert jq -e --arg dev "$dev" '.[$dev].account == "com"' "$cache" >/dev/null
-
-  BROWSE_WORKER_PICK="$BT_WP"
-  for BT_SYNC_MODE in registered repaired broken; do
-    : >"$BT_SYNC_LOG"
-    rc=0
-    out=$("$RUNNER" browse --target dia --vendor codex) || rc=$?
-    assert grep -qx "CUA-REPL: $BT_SYNC_MODE" <<<"$out"
-    if [ "$BT_SYNC_MODE" = broken ]; then
-      assert test "$rc" -eq 2
-      assert grep -qx 'PLAN: none' <<<"$out"
-      assert grep -qx 'REASON: codex skipped — cua_repl registration failed: fake registration failure' <<<"$out"
-      assert test "$(grep -c 'second diagnostic' <<<"$out")" -eq 0
-    else
-      assert test "$rc" -eq 0
-      assert grep -qx 'PLAN: codex account=main' <<<"$out"
-    fi
-    assert grep -qx -- '--check' "$BT_SYNC_LOG"
-    if [ "$BT_SYNC_MODE" = registered ]; then
-      assert test "$(wc -l <"$BT_SYNC_LOG" | tr -d ' ')" -eq 1
-    else
-      assert grep -qx repair "$BT_SYNC_LOG"
-    fi
-  done
-  BT_SYNC_MODE=registered
-
-  out=$("$RUNNER" browse --target dia --vendor claudeb)
-  assert grep -qx 'MANIFEST: ok' <<<"$out"
-  jq '.path = "/dead/profile/chrome-native-host"' "$BROWSE_CHROME_MANIFEST" >"$BT_WORK/dead-manifest"
-  cp "$BT_WORK/dead-manifest" "$BROWSE_CHROME_MANIFEST"
-  out=$("$RUNNER" browse --target dia --vendor claudeb)
-  assert grep -qx 'MANIFEST: repaired' <<<"$out"
-  assert grep -qxF "REASON: manifest path repaired: /dead/profile/chrome-native-host -> $BROWSE_NATIVE_HOST" <<<"$out"
-  assert jq -e --arg path "$BROWSE_NATIVE_HOST" '.path == $path and .name == "kept" and .allowed_origins == ["extension://kept"]' "$BROWSE_CHROME_MANIFEST" >/dev/null
-  out=$("$RUNNER" browse --target dia --vendor claudeb)
-  assert grep -qx 'MANIFEST: ok' <<<"$out"
-  rc=0
-  out=$(BROWSE_CHROME_MANIFEST="$BT_WORK/absent.json" "$RUNNER" browse --target dia --vendor claudeb) || rc=$?
-  assert test "$rc" -eq 2
-  assert grep -qx 'MANIFEST: missing' <<<"$out"
-  assert grep -qx 'REASON: claudeb skipped — native messaging manifest missing' <<<"$out"
-  assert grep -qx 'PLAN: none' <<<"$out"
-  rc=0
-  out=$(BROWSE_CHROME_MANIFEST="$BT_WORK/dead-manifest" BROWSE_NATIVE_HOST="$BT_WORK/absent-host" "$RUNNER" browse --target dia --vendor claudeb) || rc=$?
-  assert test "$rc" -eq 2
-  assert grep -qx 'MANIFEST: broken' <<<"$out"
-  assert grep -qx 'REASON: claudeb skipped — native host missing at /dead/profile/chrome-native-host' <<<"$out"
-  chmod -x "$BROWSE_NATIVE_HOST"
-  rc=0
-  out=$("$RUNNER" browse --target dia --vendor claudeb) || rc=$?
-  assert test "$rc" -eq 2
-  assert grep -qx 'MANIFEST: broken' <<<"$out"
-  chmod +x "$BROWSE_NATIVE_HOST"
-
-  jq '.profile.last_active_profiles = ["Profile 8", "Profile 7", "Profile 8"] | .profile.info_cache["Profile 7"].name = "home dia"' \
-    "$BT_DIA/Local State" >"$BT_WORK/two-profiles"
-  cp "$BT_WORK/two-profiles" "$BT_DIA/Local State"
-  mkdir -p "$BT_DIA/Profile 7/Local Extension Settings/fcoeoabgfenejglbffodgkkbkcdhcgfn"
-  printf 'bridgeDeviceId "%s" displayName "Home browser"\n' "$other_dev" >"$BT_DIA/Profile 7/Local Extension Settings/fcoeoabgfenejglbffodgkkbkcdhcgfn/000001.log"
-  out=$("$RUNNER" browse --target dia --record "$other_dev" notcom)
-  cat >"$BT_WP.profiles" <<'EOF'
-#!/bin/sh
-printf 'claude: com WALLED\n        notcom\n'
-EOF
-  chmod +x "$BT_WP.profiles"
-  BROWSE_WORKER_PICK="$BT_WP.profiles"
-  out=$("$RUNNER" browse --target dia --vendor claudeb)
-  assert grep -qx 'DIA-PROFILE: home dia (Profile 7)' <<<"$out"
-  assert grep -qx "PLAN: claudeb account=notcom device=$other_dev source=cached" <<<"$out"
-  assert grep -qx "DIA-OTHER: work dia (Profile 8) $dev account=com" <<<"$out"
-  assert grep -qx 'REASON: dia/work dia skipped — account com walled' <<<"$out"
-  assert test "$(grep -c '^DIA-OTHER:' <<<"$out")" -eq 1
-  json_out=$("$RUNNER" browse --target dia --vendor claudeb --json)
-  assert jq -e '.dia_profile.dir == "Profile 7" and .dia_other[0].account == "com" and .manifest == "ok"' <<<"$json_out" >/dev/null
-  assert jq -e '.reasons | index("dia/work dia skipped — account com walled") != null' <<<"$json_out" >/dev/null
-  rc=0
-  out=$("$RUNNER" browse --target dia --vendor claudeb --dia-profile 'Profile 8') || rc=$?
-  assert test "$rc" -eq 2
-  assert grep -qx 'DIA-PROFILE: work dia (Profile 8)' <<<"$out"
-  assert grep -qx 'PLAN: none' <<<"$out"
-  assert test "$(grep -c '^DIA-OTHER:' <<<"$out")" -eq 0
-  BROWSE_WORKER_PICK="$BT_WP.multi"
-  out=$("$RUNNER" browse --target dia --vendor claudeb)
-  assert grep -qx 'DIA-PROFILE: work dia (Profile 8)' <<<"$out"
-  assert grep -qx "DIA-OTHER: home dia (Profile 7) $other_dev account=notcom" <<<"$out"
-  printf '{}\n' >"$cache"
-  out=$("$RUNNER" browse --target dia --vendor claudeb)
-  assert grep -qx "PLAN: claudeb account=com device=$dev source=probe" <<<"$out"
-  assert grep -qx "DIA-OTHER: home dia (Profile 7) $other_dev unknown" <<<"$out"
-
-  local vendor original_brief
-  original_brief=$(cat "$WORK/brief")
-  for vendor in codex claudeb; do
-    clear_stub
-    rc=0
-    out=$(BROWSE_WORKER_PICK="$BT_WP.empty" "$RUNNER" start "$vendor" --browser --brief "$WORK/brief") || rc=$?
-    assert test "$rc" -eq 2
-    assert grep -qx 'REASON: claudeb skipped — no accounts' <<<"$out"
-    assert grep -qx 'REASON: codex skipped — unavailable' <<<"$out"
-    assert test ! -s "$CALL_LOG"
-    assert test "$(grep -c '^RUN:' <<<"$out")" -eq 0
-  done
-  printf '#!/usr/bin/env bash\nprintf "codex:   off for workers\\nclaude:  no accounts\\n"\n' >"$BT_WP.off"
-  chmod +x "$BT_WP.off"
-  out=$(BROWSE_WORKER_PICK="$BT_WP.off" "$RUNNER" browse --target dia) || :
-  assert grep -qx 'REASON: codex skipped — off for workers' <<<"$out"
+  # 5: BROWSER: chrome in the brief is a Chrome run on the account's own profile
+  printf 'BROWSER: chrome\nACCOUNT: com\nfill the form\n' >"$WORK/brief"
   clear_stub
-  out=$("$RUNNER" browse --target dia --record "$dev" com)
-  rc=0
-  out=$("$RUNNER" start claudeb --browser --account spare --brief "$WORK/brief") || rc=$?
-  assert test "$rc" -eq 2
-  assert grep -qx "REASON: claudeb/spare cannot see device $dev; plan says com" <<<"$out"
-  assert test ! -s "$CALL_LOG"
-
-  clear_stub
-  BROWSE_WORKER_PICK="$BT_WP"
-  start_ok claudeb --browser
+  start_ok claudeb
   assert await_done
-  assert meta_account_is com
-  assert test ! -s "$PICK_LOG"
+  assert test "$(head -n 1 "$RUN_DIR/browser-preamble")" = '# Browser preamble (Claude in Chrome / Google Chrome / com)'
+  assert grep -q "\`$dev_com\` first when listed" "$RUN_DIR/browser-preamble"
   assert grep -qx 'ARG=--chrome' "$CALL_LOG"
-  assert jq -e --arg dev "$dev" '.browser == true and .chrome == true and .browser_device == $dev and .browser_account == "com"' "$RUN_DIR/meta.json" >/dev/null
-  assert test "$(head -n1 "$RUN_DIR/brief.launch")" = '# Browser Automation Preamble (Claudeb / Dia)'
-  assert grep -q 'list_connected_browsers' "$STUB_DIR/claudeb.stdin"
-  assert grep -qx 'test brief' "$STUB_DIR/claudeb.stdin"
-  assert cmp -s "$WORK/brief" "$RUN_DIR/brief"
-  assert test "$(cat "$WORK/brief")" = "$original_brief"
-
-  clear_stub
-  start_ok claudeb --browser --account com
-  assert await_done
-  assert meta_account_is com
-
-  clear_stub
-  start_ok codex --browser --account alternate
-  assert await_done
-  assert meta_account_is alternate
-  assert jq -e '.browser == true and .chrome == false and .browser_account == "alternate"' "$RUN_DIR/meta.json" >/dev/null
-  assert grep -q 'await cua.getState()' "$STUB_DIR/codex.stdin"
-  assert grep -qx 'test brief' "$STUB_DIR/codex.stdin"
-  assert test "$(cat "$WORK/brief")" = "$original_brief"
-
-  # A codex plan names no device, and what the run then records is the TARGET's browser: the other
-  # browser's uuid in meta.json points every later reader at a device the run never touched.
-  clear_stub
-  start_ok codex --browser --target chrome --account alternate
-  assert await_done
-  assert jq -e --arg dev "$chrome_dev" '.browser_device == $dev' "$RUN_DIR/meta.json" >/dev/null
-  clear_stub
-  start_ok codex --browser --target dia --account alternate
-  assert await_done
-  assert jq -e --arg dev "$dev" '.browser_device == $dev' "$RUN_DIR/meta.json" >/dev/null
-
-  clear_stub
-  BT_SYNC_MODE=broken
+  assert jq -e '.browser == true and .browser_target == "chrome" and .browser_profile == "Profile 1"' "$RUN_DIR/meta.json" >/dev/null
+  assert jq -se --arg run "$RUN_ID" '.[-1] | .run == $run and .outcome == "missing" and .workaround == false
+    and .profile == "Profile 1" and .target == "chrome"' "$log" >/dev/null
   rc=0
-  out=$("$RUNNER" start codex --browser --brief "$WORK/brief") || rc=$?
-  assert test "$rc" -eq 2
-  assert grep -qx 'REASON: codex skipped — cua_repl registration failed: fake registration failure' <<<"$out"
-  assert test ! -s "$CALL_LOG"
-  BT_SYNC_MODE=registered
-
+  "$RUNNER" start claudeb --brief "$WORK/brief" --workdir "$WORK/workdir" --browser --target dia >"$WORK/start.out" 2>&1 || rc=$?
+  assert test "$rc" -ne 0
+  assert grep -q "contradicts the brief header 'BROWSER: chrome'" "$WORK/start.out"
+  printf 'BROWSER: maybe\nACCOUNT: com\nx\n' >"$WORK/brief"
+  assert_fails "$RUNNER" start claudeb --brief "$WORK/brief" --workdir "$WORK/workdir"
+  printf 'ACCOUNT: com\nfill the form\n' >"$WORK/brief"
   clear_stub
-  export STUB_CODE=1 STUB_ERROR='hit your usage limit'
   start_ok claudeb --browser
   assert await_done
-  assert meta_account_is com
-  assert test ! -s "$PICK_LOG"
-  assert test "$(grep -c '^CLAUDEB_CALL$' "$CALL_LOG")" -eq 1
-  assert grep -qx 'WALL: browser device stays on com' "$WORK/wait.out"
-  clear_stub
+  assert jq -e '.browser_target == "chrome"' "$RUN_DIR/meta.json" >/dev/null
 
+  # 6: the Dia path never launches Dia
+  printf 'BROWSER: yes\nACCOUNT: com\nlook\n' >"$WORK/brief"
+  : >"$bt/open.log"
+  rc=0
+  "$RUNNER" start claudeb --brief "$WORK/brief" --workdir "$WORK/workdir" >"$WORK/start.out" 2>&1 || rc=$?
+  assert test "$rc" -eq 2
+  assert grep -q '^REASON: Dia is not running' "$WORK/start.out"
+  : >"$bt/up/Dia"
+  clear_stub
+  start_ok claudeb
+  assert await_done
+  assert test "$(head -n 1 "$RUN_DIR/browser-preamble")" = '# Browser preamble (Claude in Chrome / Dia / com)'
+  assert grep -q -- '--target dia`' "$RUN_DIR/browser-preamble"
+  assert jq -e '.browser_target == "dia"' "$RUN_DIR/meta.json" >/dev/null
+  assert test ! -s "$bt/open.log"
+  rm -f "$bt/up/Dia"
+
+  # 7: the supervisor's own record: a proof refreshes the device, a dead run is interrupted, a way around is flagged
+  local fixture="$WORKER_RUN_DIR/browser-fixture" transcript="$CLAUDEB_PROFILES_ROOT/com/projects/fx/s1.jsonl" listed
+  deliver() { # result-text exit-code
+    rm -rf "$fixture"
+    mkdir -p "$fixture"
+    printf '{"vendor":"claudeb","account":"com","workdir":"%s","started_at":0,"pid":0,"browser":true,"browser_target":"chrome","browser_profile":"Profile 1"}\n' \
+      "$WORK/workdir" >"$fixture/meta.json"
+    : >"$fixture/err"
+    jq -cn --arg r "$1" '{result:$r, session_id:"s1"}' >"$fixture/out"
+    "$RUNNER" _deliver "$fixture" "$2" >/dev/null 2>&1 || :
+    jq -sc '.[-1]' "$log"
+  }
+  mkdir -p "${transcript%/*}"
+  listed=$(jq -cn --arg d "$dev_com" '[{deviceId:$d, isLocal:true}] | tostring')
+  {
+    jq -cn '{message:{content:[{type:"tool_use",id:"t1",name:"mcp__claude-in-chrome__list_connected_browsers",input:{}}]}}'
+    jq -cn --arg t "$listed" '{message:{content:[{type:"tool_result",tool_use_id:"t1",content:[{type:"text",text:$t}]}]}}'
+    jq -cn --arg d "$dev_com" '{message:{content:[{type:"tool_use",id:"t2",name:"mcp__claude-in-chrome__select_browser",input:{deviceId:$d}}]}}'
+  } >"$transcript"
+  out=$(deliver "$(printf 'BROWSER-PROVEN: dddddddd-4444-4444-8444-444444444444 com\nOUTCOME: BROWSER_OK')" 0)
+  assert jq -e '.outcome == "BROWSER_OK" and .device == "dddddddd-4444-4444-8444-444444444444" and .workaround == false' <<<"$out" >/dev/null
+  assert jq -e '.com.device_id == "dddddddd-4444-4444-8444-444444444444"' "$registry" >/dev/null
+  assert jq -e '.outcome == "BROWSER_INTERRUPTED"' <<<"$(deliver 'half way' 1)" >/dev/null
+  assert jq -e '.outcome == "missing"' <<<"$(deliver 'half way' 0)" >/dev/null
+  jq -cn '{message:{content:[{type:"tool_use",id:"t3",name:"mcp__claude-in-chrome__select_browser",input:{deviceId:"eeeeeeee-5555-4555-8555-555555555555"}}]}}' >>"$transcript"
+  assert jq -e '.workaround == true' <<<"$(deliver 'OUTCOME: BROWSER_OK' 0)" >/dev/null
+  head -n 3 "$transcript" >"$transcript.tmp" && mv "$transcript.tmp" "$transcript"
+  jq -cn '{message:{content:[{type:"tool_use",id:"t4",name:"Bash",input:{command:"osascript -e '\''tell application \"Dia\" to activate'\''"}}]}}' >>"$transcript"
+  assert jq -e '.workaround == true' <<<"$(deliver 'OUTCOME: BROWSER_OK' 0)" >/dev/null
+  head -n 3 "$transcript" >"$transcript.tmp" && mv "$transcript.tmp" "$transcript"
+  jq -cn '{message:{content:[{type:"tool_use",id:"t5",name:"Bash",input:{command:"worker-run start claudeb --chrome --brief b"}}]}}' >>"$transcript"
+  assert jq -e '.workaround == true' <<<"$(deliver 'OUTCOME: BROWSER_OK' 0)" >/dev/null
+  rm -f "$transcript"
+
+  # 8: a codex browser run needs its cua_repl registration and binds to the enrolled, open profiles
+  local BROWSE_CUA_SYNC="$bt/stub/cua-sync" BROWSE_SKIP_PROCESSES=1 BROWSE_CODEX_CONFIG="$bt/codex.toml" BT_SYNC_MODE=broken
+  export BROWSE_CUA_SYNC BROWSE_SKIP_PROCESSES BROWSE_CODEX_CONFIG BT_SYNC_MODE
+  printf '#!/bin/sh\n[ "$BT_SYNC_MODE" = ok ] || { echo "fake registration failure" >&2; exit 2; }\n' >"$BROWSE_CUA_SYNC"
+  chmod +x "$BROWSE_CUA_SYNC"
+  printf 'BROWSER: chrome\nACCOUNT: main\nlook\n' >"$WORK/brief"
+  rc=0
+  "$RUNNER" start codex --brief "$WORK/brief" --workdir "$WORK/workdir" >"$WORK/start.out" 2>&1 || rc=$?
+  assert test "$rc" -eq 2
+  assert grep -q 'cua_repl registration failed: fake registration failure' "$WORK/start.out"
+  BT_SYNC_MODE=ok
+  clear_stub
+  start_ok codex
+  assert await_done
+  assert test "$(head -n 1 "$RUN_DIR/browser-preamble")" = '# Browser preamble (Codex / Google Chrome)'
+  assert grep -q '"Work" (Profile 1), "Spare" (Profile 3)' "$RUN_DIR/browser-preamble"
+  unset BROWSE_CUA_SYNC BROWSE_SKIP_PROCESSES BT_SYNC_MODE
+
+  # 9: the canary's verdict is its own listener's receipt, and a live browser run holds it
+  rc=0; out=$(browse --canary) || rc=$?
+  assert test "$rc" -eq 1
+  assert grep -qx 'CANARY: com BROWSER_OK' <<<"$out"
+  assert grep -qx 'CANARY: extra CANARY_NO_RECEIPT' <<<"$out"
+  assert test -e "$WORKER_RUN_DIR/browse/canary.stamp"
+  assert jq -se 'map(select(.run | startswith("canary-com-"))) | length == 1' "$log" >/dev/null
+  assert grep -q 'http://127.0.0.1:[0-9]*/form?case=canary-com-' "$bt/prompt-com"
+  local holder
+  sleep 300 &
+  holder=$!
+  mkdir -p "$WORKER_RUN_DIR/live-browser"
+  printf '{"pid":%s,"started_at":%s,"browser":true}\n' "$holder" "$(date +%s)" >"$WORKER_RUN_DIR/live-browser/meta.json"
+  : >"$bt/claudeb.log"
+  assert grep -qx 'CANARY: skipped — a browser run is live' <<<"$(browse --canary)"
+  assert test ! -s "$bt/claudeb.log"
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  rm -rf "$WORKER_RUN_DIR/live-browser"
+  unset -f browse deliver
+
+  # cua_repl sync
   unset BROWSE_CODEX_CONFIG
   local SYNC_TEST_HOME="$BT_WORK/codex_sync_home"
   local SYNC_MANIFEST_DIR="$SYNC_TEST_HOME/plugins/cache/openai-bundled/unified-computer-use/26.901.51231"
@@ -670,503 +365,10 @@ EOF
   assert grep -q 'mcp add cua_repl' "$SYNC_LOG"
   assert grep -qxF 'args = ["/after-failed-add/launch.mjs"]' "$SYNC_TEST_HOME/config.toml"
 
-  # 6: missing Sky app → SKY: absent without polling; --vendor claudeb does not launch Sky
-  cat >"$BT_WORK/bin/pgrep-dia" <<'EOF'
-#!/bin/sh
-printf '%s\n' "$*" >>"${PGREP_LOG:-/dev/null}"
-for a in "$@"; do
-  case "$a" in *Dia*) exit 0 ;; esac
-done
-exit 1
-EOF
-  chmod +x "$BT_WORK/bin/pgrep-dia"
-  : >"$BT_WORK/open.log"
-  cat >"$BT_WORK/bin/open-log" <<EOF
-#!/bin/sh
-printf '%s\n' "\$*" >>"$BT_WORK/open.log"
-exit 1
-EOF
-  chmod +x "$BT_WORK/bin/open-log"
-  : >"$BT_WORK/pgrep.log"
-  rc=0
-  out=$(PGREP_LOG="$BT_WORK/pgrep.log" BROWSE_PGREP="$BT_WORK/bin/pgrep-dia" BROWSE_OPEN="$BT_WORK/bin/open-log" \
-        BROWSE_SKIP_PROCESSES=0 BROWSE_SKY_APP="$BT_WORK/no-sky-app" \
-        "$RUNNER" browse --target dia --vendor codex) || rc=$?
-  assert test "$(grep -c SkyComputerUseService "$BT_WORK/pgrep.log")" -lt 10
-  assert grep -qx 'SKY: absent' <<<"$out"
-  assert test "$(grep -c 'Computer Use' "$BT_WORK/open.log")" -eq 0
-  mkdir -p "$BT_WORK/Codex Computer Use.app"
-  : >"$BT_WORK/open.log"
-  out=$(BROWSE_PGREP="$BT_WORK/bin/pgrep-dia" BROWSE_OPEN="$BT_WORK/bin/open-log" BROWSE_SKIP_PROCESSES=0 \
-        BROWSE_SKY_APP="$BT_WORK/Codex Computer Use.app" \
-        "$RUNNER" browse --target dia --vendor claudeb) || true
-  assert grep -qx 'SKY: absent' <<<"$out"
-  assert test "$(grep -c 'Computer Use' "$BT_WORK/open.log")" -eq 0
-
-  # 12: Dia absent + failed launch → PLAN: none
-  cat >"$BT_WORK/bin/pgrep-none" <<'EOF'
-#!/bin/sh
-exit 1
-EOF
-  chmod +x "$BT_WORK/bin/pgrep-none"
-  SECONDS=0
-  rc=0
-  out=$(BROWSE_PGREP="$BT_WORK/bin/pgrep-none" BROWSE_OPEN="$BT_WORK/bin/open-log" BROWSE_SKIP_PROCESSES=0 \
-        BROWSE_SKY_APP="$BT_WORK/no-sky-app" \
-        "$RUNNER" browse --target dia) || rc=$?
-  assert test "$rc" -eq 2
-  # The 15 s launch deadline plus the 25 s extension wait: only a stacked or unbounded wait reaches it.
-  assert test "$SECONDS" -lt 40
-  assert grep -qx 'DIA: absent' <<<"$out"
-  assert grep -qx 'PLAN: none' <<<"$out"
-  assert grep -qx 'REASON: dia not running' <<<"$out"
-  assert test "$(grep -c '^PLAN: codex' <<<"$out")" -eq 0
-  assert test "$(grep -c '^PLAN: claudeb' <<<"$out")" -eq 0
-
-  # 7: prune preamble-*.md older than 24h
-  mkdir -p "$BT_RUNS/browse"
-  printf 'stale\n' >"$BT_RUNS/browse/preamble-old.md"
-  touch -t 202001010000 "$BT_RUNS/browse/preamble-old.md"
-  out=$("$RUNNER" browse --target dia)
-  assert test ! -e "$BT_RUNS/browse/preamble-old.md"
-  preamble_path=$(sed -n 's/^PREAMBLE-FILE: //p' <<<"$out")
-  assert test -f "$preamble_path"
-
-  # 9: start prune must not delete browse/
-  mkdir -p "$BT_RUNS/codex-ancient-run" "$BT_RUNS/browse"
-  printf '{}\n' >"$BT_RUNS/browse/devices.json"
-  touch -t 202001010000 "$BT_RUNS/codex-ancient-run" "$BT_RUNS/browse" "$BT_RUNS/browse/devices.json" "$BT_RUNS/.prune"
-  clear_stub
-  export PICK_ACCOUNT=fast PICK_RC=0
-  start_ok codex
-  assert test -d "$BT_RUNS/browse"
-  assert test -f "$BT_RUNS/browse/devices.json"
-  assert test ! -d "$BT_RUNS/codex-ancient-run"
-
-  # 10: dead pid lock is stolen
-  mkdir -p "$BT_RUNS/browse/devices.lock.d"
-  printf '99999999\n' >"$BT_RUNS/browse/devices.lock.d/pid"
-  printf '{}\n' >"$BT_RUNS/browse/devices.json"
-  out=$("$RUNNER" browse --target dia --record "$dev" com)
-  assert grep -qx "RECORDED: $dev com" <<<"$out"
-  assert jq -e --arg dev "$dev" '.[$dev].account == "com"' "$BT_RUNS/browse/devices.json" >/dev/null
-  assert test ! -e "$BT_RUNS/browse/devices.lock.d"
-
-  # 13: denied mapping orders that account last
-  jq -n --arg dev "$dev" --arg seen "2026-09-01T00:00:00Z" \
-    '{($dev): {account:"com", seen:$seen, denied:true}}' >"$cache"
-  BROWSE_WORKER_PICK="$BT_WP.multi"
-  BROWSE_CODEX_CONFIG="$BT_CODEX_CONF.nocua"
-  out=$("$RUNNER" browse --target dia --vendor claudeb)
-  assert grep -qx "REASON: claudeb/com skipped — device $dev not visible (probe failed 2026-09-01T00:00:00Z)" <<<"$out"
-  assert grep -qx 'NEXT-CLAUDE-ACCOUNTS: spare,com' <<<"$out"
-  assert grep -qx "PLAN: claudeb account=spare device=$dev source=probe" <<<"$out"
-  BROWSE_WORKER_PICK="$BT_WP"
-  BROWSE_CODEX_CONFIG="$BT_CODEX_CONF"
-
-  # 14: ordinary runs do not mutate devices.json
-  printf '{"com":{"account":"com","seen":"keep"}}\n' >"$cache"
-  ordinary="$BT_RUNS/codex-ordinary"
-  mkdir -p "$ordinary"
-  printf '{"vendor":"codex","account":"main","workdir":"%s","started_at":0,"pid":0,"browser":false,"chrome":false}\n' \
-    "$WORK/workdir" >"$ordinary/meta.json"
-  : >"$ordinary/err"
-  printf 'BROWSER-DEVICE-ACCOUNT: %s poisoned\n' "$dev" >"$ordinary/out"
-  assert "$RUNNER" _deliver "$ordinary" 0 >/dev/null
-  assert jq -e '.com.account == "com" and .com.seen == "keep"' "$cache" >/dev/null
-  assert jq -e --arg dev "$dev" 'has($dev) | not' "$cache" >/dev/null
-
-  # 15: pin-lapse note is not an account named pin; PINNED flag is not an account
-  cat >"$BT_WP.pinned" <<'EOF'
-#!/usr/bin/env bash
-cat <<'OUTPUT'
-claude:  pin com walled → extra
-          8.6%/d ×7.0d   40%   30%   extra                opus·high
-         11.4%/d ×7.0d   20%   20%   com                  opus·high PINNED
-OUTPUT
-EOF
-  chmod +x "$BT_WP.pinned"
-  BROWSE_WORKER_PICK="$BT_WP.pinned"
-  BROWSE_CODEX_CONFIG="$BT_CODEX_CONF.nocua"
-  printf '{}\n' >"$cache"
-  out=$("$RUNNER" browse --target dia --vendor claudeb)
-  assert test "$(grep -c 'claudeb/pin ' <<<"$out")" -eq 0
-  assert test "$(grep -c 'account=pin' <<<"$out")" -eq 0
-  assert grep -qx 'NEXT-CLAUDE-ACCOUNTS: extra,com' <<<"$out"
-  assert grep -qx "PLAN: claudeb account=extra device=$dev source=probe" <<<"$out"
-  BROWSE_WORKER_PICK="$BT_WP"
-  BROWSE_CODEX_CONFIG="$BT_CODEX_CONF"
-
-  # 16: --target chrome flips which device is drivable and which is off-target
-  printf '{}\n' >"$cache"
-  BROWSE_CODEX_CONFIG="$BT_CODEX_CONF.nocua"
-  out=$("$RUNNER" browse --target chrome --vendor claudeb)
-  assert grep -qx 'TARGET: chrome' <<<"$out"
-  assert grep -qx 'CHROME-DEVICE: b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d "Chrome browser"' <<<"$out"
-  assert grep -qx 'DIA-DEVICE: 6ada21d4-ae66-4990-9040-97e18bb7b529 "Dia browser"' <<<"$out"
-  assert grep -qx 'PLAN: claudeb account=com device=b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d source=probe' <<<"$out"
-  preamble_path=$(sed -n 's/^PREAMBLE-FILE: //p' <<<"$out")
-  assert grep -qF 'Target Google Chrome device ID: b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d' "$preamble_path"
-  assert grep -qF 'Off-target extension device IDs (Dia — never drive one, never `switch_browser` to it): ' "$preamble_path"
-  assert grep -qF 'tell application id "com.google.Chrome" to get URL of every tab of every window' "$preamble_path"
-  assert grep -qF '6ada21d4-ae66-4990-9040-97e18bb7b529' "$preamble_path"
-  printf '{}\n' >"$cache"
-  out=$(BROWSE_NATIVE_HOST_PARENTS='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --profile-directory=Profile 1' \
-        "$RUNNER" browse --target chrome --vendor claudeb)
-  preamble_path=$(sed -n 's/^PREAMBLE-FILE: //p' <<<"$out")
-  assert grep -qF 'if exactly one entry has `"isLocal": true`: it is Google Chrome' "$preamble_path"
-  assert test "$(grep -c 'cc-probe' "$preamble_path")" -eq 0
-  assert grep -qxF -- '- Never drive Dia.' "$preamble_path"
-  BROWSE_CODEX_CONFIG="$BT_CODEX_CONF"
-  out=$("$RUNNER" browse --target chrome --vendor codex)
-  assert grep -qx 'PLAN: codex account=main' <<<"$out"
-  preamble_path=$(sed -n 's/^PREAMBLE-FILE: //p' <<<"$out")
-  assert grep -q 'Codex / Google Chrome' "$preamble_path"
-  assert grep -q 'profileName. is "Egor work"' "$preamble_path"
-  assert grep -q 'WITHOUT a `profileName` is Dia' "$preamble_path"
-  assert grep -q 'Never drive Dia' "$preamble_path"
-  json_out=$("$RUNNER" browse --target chrome --vendor codex --json)
-  assert test "$(jq -r .target <<<"$json_out")" = 'chrome'
-
-  # 17: the default is a literal, and only dia|chrome are targets
-  out=$("$RUNNER" browse --target dia --vendor codex)
-  assert grep -qx 'TARGET: dia' <<<"$out"
-  preamble_path=$(sed -n 's/^PREAMBLE-FILE: //p' <<<"$out")
-  assert test "$(grep -c 'Codex / Dia' "$preamble_path")" -eq 1
-  for bad in opera '' --json; do
-    rc=0
-    "$RUNNER" browse --target "$bad" >/dev/null 2>&1 || rc=$?
-    assert test "$rc" -eq 2
-  done
-  rc=0
-  "$RUNNER" browse --target >/dev/null 2>&1 || rc=$?
-  assert test "$rc" -eq 2
-  clear_stub
-  rc=0
-  "$RUNNER" start codex --target chrome --brief "$WORK/brief" >/dev/null 2>&1 || rc=$?
-  assert test "$rc" -eq 2
-  assert test ! -s "$CALL_LOG"
-
-  # 18: a closed target browser launches itself, in the background and without a URL
-  : >"$BT_WORK/launch.log"
-  cat >"$BT_WORK/bin/open-launch" <<EOF
-#!/bin/sh
-printf '%s\n' "\$*" >>"$BT_WORK/launch.log"
-cp "$BT_WORK/ps-connected" "$BT_PS_LISTING"
-: >"$BT_WORK/launched.marker"
-EOF
-  chmod +x "$BT_WORK/bin/open-launch"
-  cat >"$BT_WORK/bin/pgrep-marker" <<EOF
-#!/bin/sh
-test -e "$BT_WORK/launched.marker"
-EOF
-  chmod +x "$BT_WORK/bin/pgrep-marker"
-  rm -f "$BT_WORK/launched.marker"
-  : >"$BT_PS_LISTING"
-  rc=0
-  out=$(BROWSE_PGREP="$BT_WORK/bin/pgrep-marker" BROWSE_OPEN="$BT_WORK/bin/open-launch" \
-        BROWSE_SKIP_PROCESSES=0 BROWSE_LAUNCH_TIMEOUT=5 BROWSE_SKY_APP="$BT_WORK/no-sky-app" \
-        "$RUNNER" browse --target dia --vendor claudeb) || rc=$?
-  assert test "$rc" -eq 0
-  assert grep -qx 'LAUNCHED: dia' <<<"$out"
-  assert grep -qx 'DIA: launched' <<<"$out"
-  assert grep -qx -- '-g -a Dia --args --enable-applescript-javascript' "$BT_WORK/launch.log"
-  assert test "$(grep -c Chrome "$BT_WORK/launch.log")" -eq 0
-  assert grep -q '^PLAN: claudeb ' <<<"$out"
-
-  rm -f "$BT_WORK/launched.marker"
-  : >"$BT_PS_LISTING"
-  : >"$BT_WORK/launch.log"
-  out=$(BROWSE_PGREP="$BT_WORK/bin/pgrep-marker" BROWSE_OPEN="$BT_WORK/bin/open-launch" \
-        BROWSE_SKIP_PROCESSES=0 BROWSE_LAUNCH_TIMEOUT=5 BROWSE_SKY_APP="$BT_WORK/no-sky-app" \
-        "$RUNNER" browse --target dia --vendor claudeb --no-launch) || true
-  assert test ! -s "$BT_WORK/launch.log"
-  assert test "$(grep -c '^LAUNCHED:' <<<"$out")" -eq 0
-
-  rm -f "$BT_WORK/launched.marker"
-  : >"$BT_PS_LISTING"
-  : >"$BT_WORK/launch.log"
-  rc=0
-  out=$(BROWSE_PGREP="$BT_WORK/bin/pgrep-marker" BROWSE_OPEN="$BT_WORK/bin/open-launch" \
-        BROWSE_SKIP_PROCESSES=0 BROWSE_LAUNCH_TIMEOUT=5 BROWSE_SKY_APP="$BT_WORK/no-sky-app" \
-        "$RUNNER" browse --target chrome --vendor claudeb) || rc=$?
-  assert test "$rc" -eq 0
-  assert grep -qx 'LAUNCHED: chrome' <<<"$out"
-  assert grep -qx 'CHROME: launched' <<<"$out"
-  assert grep -qF -- '--profile-directory=Profile 1' "$BT_WORK/launch.log"
-  assert test "$(grep -c ' Dia' "$BT_WORK/launch.log")" -eq 0
-  # Chrome's own claude host answers for it, so the wait ends instead of timing out.
-  assert test "$(grep -c 'did not connect' <<<"$out")" -eq 0
-
-  # 19: launched but the extension never connects — one instruction, and no plan
-  cat >"$BT_WORK/bin/open-launch-mute" <<EOF
-#!/bin/sh
-cp "$BT_WORK/ps-chrome-bare" "$BT_PS_LISTING"
-: >"$BT_WORK/launched.marker"
-EOF
-  chmod +x "$BT_WORK/bin/open-launch-mute"
-  rm -f "$BT_WORK/launched.marker"
-  : >"$BT_PS_LISTING"
-  SECONDS=0
-  rc=0
-  out=$(BROWSE_PGREP="$BT_WORK/bin/pgrep-marker" BROWSE_OPEN="$BT_WORK/bin/open-launch-mute" \
-        BROWSE_SKIP_PROCESSES=0 BROWSE_LAUNCH_TIMEOUT=1 BROWSE_SKY_APP="$BT_WORK/no-sky-app" \
-        "$RUNNER" browse --target chrome --vendor claudeb) || rc=$?
-  assert test "$rc" -eq 2
-  # The default extension wait BROWSE_LAUNCH_TIMEOUT=1 replaces.
-  assert test "$SECONDS" -lt 25
-  assert grep -qx 'LAUNCHED: chrome' <<<"$out"
-  assert grep -qx "REASON: Google Chrome launched but the Claude extension did not connect within 1s — open Google Chrome's extensions page and check the extension is enabled in Egor work" <<<"$out"
-  assert grep -qx 'PLAN: none' <<<"$out"
-
-  # 20: a ChatGPT host under the other browser is not this target's transport
-  cp "$BT_WORK/ps-chrome-bare" "$BT_PS_LISTING"
-  rc=0
-  out=$(BROWSE_PGREP="$BT_WORK/bin/pgrep-marker" BROWSE_SKIP_PROCESSES=0 BROWSE_CHROME_STATUS=running \
-        BROWSE_SKY_APP="$BT_WORK/no-sky-app" "$RUNNER" browse --target chrome --vendor codex) || rc=$?
-  assert test "$rc" -eq 2
-  assert grep -qx 'REASON: codex skipped — the ChatGPT extension is not connected in Google Chrome (Egor work); enable it at chrome://extensions and sign in' <<<"$out"
-  assert grep -qx 'PLAN: none' <<<"$out"
-  cp "$BT_WORK/ps-connected" "$BT_PS_LISTING"
-  rc=0
-  out=$(BROWSE_PGREP="$BT_WORK/bin/pgrep-marker" BROWSE_SKIP_PROCESSES=0 BROWSE_CHROME_STATUS=running \
-        BROWSE_SKY_APP="$BT_WORK/no-sky-app" "$RUNNER" browse --target chrome --vendor codex) || rc=$?
-  assert test "$rc" -eq 0
-  assert grep -qx 'PLAN: codex account=main' <<<"$out"
-  assert test "$(grep -c 'ChatGPT extension is not connected' <<<"$out")" -eq 0
-
-  # 20b: the same parentage the other way round — Chrome's ChatGPT host is not Dia's transport
-  cat >"$BT_WORK/bin/pgrep-yes" <<'EOF'
-#!/bin/sh
-exit 0
-EOF
-  chmod +x "$BT_WORK/bin/pgrep-yes"
-  cp "$BT_WORK/ps-dia-bare" "$BT_PS_LISTING"
-  rc=0
-  out=$(BROWSE_PGREP="$BT_WORK/bin/pgrep-yes" BROWSE_SKIP_PROCESSES=0 \
-        BROWSE_SKY_APP="$BT_WORK/no-sky-app" "$RUNNER" browse --target dia --vendor codex) || rc=$?
-  assert test "$rc" -eq 2
-  assert grep -qx 'REASON: codex skipped — the ChatGPT extension is not connected in Dia (work dia); enable it at dia://extensions and sign in' <<<"$out"
-  assert grep -qx 'PLAN: none' <<<"$out"
-  cp "$BT_WORK/ps-connected" "$BT_PS_LISTING"
-  rc=0
-  out=$(BROWSE_PGREP="$BT_WORK/bin/pgrep-yes" BROWSE_SKIP_PROCESSES=0 \
-        BROWSE_SKY_APP="$BT_WORK/no-sky-app" "$RUNNER" browse --target dia --vendor codex) || rc=$?
-  assert test "$rc" -eq 0
-  assert grep -qx 'PLAN: codex account=main' <<<"$out"
-  assert test "$(grep -c 'ChatGPT extension is not connected' <<<"$out")" -eq 0
-
-  # 21: a device no pool account can see is a sign-in instruction, never a plan
-  BROWSE_CODEX_CONFIG="$BT_CODEX_CONF.nocua"
-  cat >"$BT_WP.single" <<'EOF'
-#!/bin/sh
-printf 'claude: com\n'
-EOF
-  chmod +x "$BT_WP.single"
-  jq -n --arg dev b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d --arg seen '2026-09-01T00:00:00Z' \
-    '{($dev): {account:"com", seen:$seen, denied:true}}' >"$cache"
-  rc=0
-  out=$(BROWSE_WORKER_PICK="$BT_WP.single" "$RUNNER" browse --target chrome --vendor claudeb) || rc=$?
-  assert test "$rc" -eq 2
-  assert grep -qx 'REASON: sign in the Claude extension in Google Chrome (Egor work) as com — device b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d is visible to no pool account' <<<"$out"
-  assert grep -qx 'PLAN: none' <<<"$out"
-  rc=0
-  out=$(BROWSE_WORKER_PICK="$BT_WP.multi" "$RUNNER" browse --target chrome --vendor claudeb) || rc=$?
-  assert test "$rc" -eq 0
-  assert grep -qx 'PLAN: claudeb account=spare device=b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d source=probe' <<<"$out"
-  assert test "$(grep -c 'sign in the Claude extension' <<<"$out")" -eq 0
-  printf '{}\n' >"$cache"
-  BROWSE_CODEX_CONFIG="$BT_CODEX_CONF"
-
-  # 22: the extension's stored accountUuid names the account, over a denial left by another sign-in
-  BROWSE_CODEX_CONFIG="$BT_CODEX_CONF.nocua"
-  local spare_uuid=5f1c2b3a-9d8e-4c7b-a6f5-0e1d2c3b4a59
-  mkdir -p "$CLAUDEB_PROFILES_ROOT/spare"
-  jq -n --arg u "$spare_uuid" '{oauthAccount:{accountUuid:$u}}' >"$CLAUDEB_PROFILES_ROOT/spare/.claude.json"
-  cp "$BT_CHROME_EXT/000001.log" "$BT_WORK/chrome-ext.log.orig"
-  printf '\x07accountUuid\x01\x0c\x0d\x3f\xd0%s"\x02' "$spare_uuid" >>"$BT_CHROME_EXT/000001.log"
-  jq -n --arg dev "$chrome_dev" --arg seen '2026-09-01T00:00:00Z' \
-    '{($dev): {account:"com", seen:$seen, denied:true}}' >"$cache"
-  out=$(BROWSE_WORKER_PICK="$BT_WP.multi" "$RUNNER" browse --target chrome --vendor claudeb)
-  assert grep -qx "PLAN: claudeb account=spare device=$chrome_dev source=cached" <<<"$out"
-  assert test "$(grep -c 'sign in the Claude extension' <<<"$out")" -eq 0
-  cp "$BT_WORK/chrome-ext.log.orig" "$BT_CHROME_EXT/000001.log"
-  rm -rf "$CLAUDEB_PROFILES_ROOT/spare"
-
-  # 23: probe denials from different accounts accumulate instead of the first one sticking
-  cp -R "$fixture" "$fixture-deny-com"
-  fixture="$fixture-deny-com"
-  rm -f "$fixture/result"
-  jq -n --arg result "OUTCOME: BROWSER_DEVICE_NOT_IN_ACCOUNT device=$chrome_dev account=spare" '{result:$result}' >"$fixture/out"
-  assert "$RUNNER" _deliver "$fixture" 0 >/dev/null
-  assert jq -e --arg dev "$chrome_dev" '.[$dev].denied == true and .[$dev].denied_accounts == ["com","spare"]' "$cache" >/dev/null
-  rc=0
-  out=$(BROWSE_WORKER_PICK="$BT_WP.multi" "$RUNNER" browse --target chrome --vendor claudeb) || rc=$?
-  assert test "$rc" -eq 2
-  assert grep -qx "REASON: claudeb/com skipped — device $chrome_dev not visible (probe failed $(jq -r --arg dev "$chrome_dev" '.[$dev].seen' "$cache"))" <<<"$out"
-  assert grep -q "^REASON: sign in the Claude extension in Google Chrome (Egor work) as com,spare — device $chrome_dev is visible to no pool account" <<<"$out"
-  assert grep -qx 'PLAN: none' <<<"$out"
-  printf '{}\n' >"$cache"
-
-  # 23b: a probe failing for the account the extension now holds is remembered over another account's record
-  mkdir -p "$CLAUDEB_PROFILES_ROOT/spare"
-  jq -n --arg u "$spare_uuid" '{oauthAccount:{accountUuid:$u}}' >"$CLAUDEB_PROFILES_ROOT/spare/.claude.json"
-  printf '\x07accountUuid\x01\x0c\x0d\x3f\xd0%s"\x02' "$spare_uuid" >>"$BT_CHROME_EXT/000001.log"
-  jq -n --arg dev "$chrome_dev" '{($dev): {account:"com", seen:"2026-09-01T00:00:00Z"}}' >"$cache"
-  cp -R "$fixture" "$fixture-deny-held"
-  rm -f "$fixture-deny-held/result"
-  jq -n --arg result "OUTCOME: BROWSER_DEVICE_NOT_IN_ACCOUNT device=$chrome_dev account=spare" '{result:$result}' >"$fixture-deny-held/out"
-  assert "$RUNNER" _deliver "$fixture-deny-held" 0 >/dev/null
-  assert jq -e --arg dev "$chrome_dev" '.[$dev].account == "com" and .[$dev].denied != true and .[$dev].denied_accounts == ["spare"]' "$cache" >/dev/null
-  out=$(BROWSE_WORKER_PICK="$BT_WP.multi" "$RUNNER" browse --target chrome --vendor claudeb)
-  assert grep -qx "PLAN: claudeb account=com device=$chrome_dev source=probe" <<<"$out"
-  cp "$BT_WORK/chrome-ext.log.orig" "$BT_CHROME_EXT/000001.log"
-  rm -rf "$CLAUDEB_PROFILES_ROOT/spare"
-  printf '{}\n' >"$cache"
-  BROWSE_CODEX_CONFIG="$BT_CODEX_CONF"
-
-  # 25: extension storage as real leveldb, account-aware profile pick, DIA-PROFILE, tab-broken devices
-  local LDB_READER="$ROOT/share/ext_leveldb.py"
-  local BT_DIA2="$BT_WORK/dia_two" work_dev=$dev home_dev=$other_dev
-  local work_ext="$BT_DIA2/Profile 8/Local Extension Settings/fcoeoabgfenejglbffodgkkbkcdhcgfn"
-  local home_ext="$BT_DIA2/Profile 7/Local Extension Settings/fcoeoabgfenejglbffodgkkbkcdhcgfn"
-  mkdir -p "$work_ext" "$home_ext"
-  jq -n '{profile:{info_cache:{"Profile 8":{name:"work dia"}, "Profile 7":{name:"home dia"}},
-    last_used:"Profile 8", last_active_profiles:["Profile 8","Profile 7"]}}' >"$BT_DIA2/Local State"
-  python3 - "$work_ext/000005.ldb" "$home_ext/000003.log" "$work_dev" "$home_dev" <<'PY'
-import struct, sys
-table, log, work_dev, home_dev = sys.argv[1:]
-def varint(n):
-    out = bytearray()
-    while n >= 0x80:
-        out.append(n & 0x7F | 0x80)
-        n >>= 7
-    return bytes(out + bytes([n]))
-def snappy_literal(data):
-    out = bytearray(varint(len(data)))
-    for i in range(0, len(data), 60):
-        chunk = data[i:i + 60]
-        out += bytes([(len(chunk) - 1) << 2]) + chunk
-    return bytes(out)
-def block(entries):
-    out, previous = bytearray(), b""
-    for key, value in entries:
-        shared = 0
-        while shared < min(len(key), len(previous)) and key[shared] == previous[shared]:
-            shared += 1
-        out += varint(shared) + varint(len(key) - shared) + varint(len(value)) + key[shared:] + value
-        previous = key
-    return bytes(out + struct.pack("<II", 0, 1))
-internal = lambda key, seq: key + struct.pack("<Q", seq << 8 | 1)
-data = block([(internal(b"bridgeDefaultDisplayName", 7), b'"Mac mini"'),
-              (internal(b"bridgeDeviceId", 9), ('"%s"' % work_dev).encode())])
-packed = snappy_literal(data)
-index = block([(b"c" + b"\xff" * 8, varint(0) + varint(len(packed)))])
-meta = block([])
-body = packed + b"\1\0\0\0\0"
-index_at = len(body)
-body += index + b"\0\0\0\0\0"
-meta_at = len(body)
-body += meta + b"\0\0\0\0\0"
-footer = varint(meta_at) + varint(len(meta)) + varint(index_at) + varint(len(index))
-body += footer + b"\0" * (40 - len(footer)) + struct.pack("<Q", 0xDB4775248B80FB57)
-open(table, "wb").write(body)
-def batch(seq, key, value):
-    payload = struct.pack("<QI", seq, 1) + b"\1" + varint(len(key)) + key + varint(len(value)) + value
-    return b"\0\0\0\0" + struct.pack("<H", len(payload)) + b"\1" + payload
-open(log, "wb").write(batch(3, b"bridgeDeviceId", b'"00000000-0000-4000-8000-000000000000"')
-                      + batch(4, b"bridgeDeviceId", ('"%s"' % home_dev).encode()))
-PY
-  assert test "$(LC_ALL=C grep -a -c bridgeDeviceId "$work_ext/000005.ldb")" -eq 0
-  assert grep -qxF "bridgeDeviceId	\"$work_dev\"" < <(python3 "$LDB_READER" "$work_ext" bridgeDeviceId)
-  assert grep -qxF "bridgeDeviceId	\"$home_dev\"" < <(python3 "$LDB_READER" "$home_ext" bridgeDeviceId)
-  assert test "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import ext_leveldb as e; print(e.snappy_decompress(b"\x09\x08abc\x09\x03").decode())' "$ROOT/share")" = abcabcabc
-
-  cat >"$BT_WP.both" <<'EOF'
-#!/usr/bin/env bash
-cat <<'OUTPUT'
-claude:  11.4%/d ×7.0d   20%   20%   com                  opus·high
-          8.6%/d ×7.0d   40%   30%   notcom               opus·high
-OUTPUT
-EOF
-  chmod +x "$BT_WP.both"
-  local saved_dia="$BROWSE_DIA_USER_DATA" saved_wp="$BROWSE_WORKER_PICK"
-  BROWSE_DIA_USER_DATA="$BT_DIA2" BROWSE_WORKER_PICK="$BT_WP.both"
-  printf '{}\n' >"$cache"
-  "$RUNNER" browse --target dia --record "$work_dev" com >/dev/null
-  "$RUNNER" browse --target dia --record "$home_dev" notcom >/dev/null
-  out=$("$RUNNER" browse --target dia --vendor claudeb)
-  assert grep -qx "PLAN: claudeb account=com device=$work_dev source=cached" <<<"$out"
-  assert jq -e --arg w "$work_dev" --arg h "$home_dev" \
-    '.[$w].profile == "dia:Profile 8" and .[$h].profile == "dia:Profile 7" and .[$w].account == "com"' "$cache" >/dev/null
-  out=$("$RUNNER" browse --target dia --vendor claudeb --account notcom)
-  assert grep -qx 'DIA-PROFILE: home dia (Profile 7)' <<<"$out"
-  assert grep -qx "PLAN: claudeb account=notcom device=$home_dev source=cached" <<<"$out"
-  assert grep -qx "REASON: dia/work dia skipped — account com is not the run's account notcom" <<<"$out"
-  out=$("$RUNNER" browse --target dia --vendor claudeb --dia-profile 'home dia')
-  assert grep -qx "PLAN: claudeb account=notcom device=$home_dev source=cached" <<<"$out"
-
-  clear_stub
-  start_ok claudeb --browser --account notcom
-  assert await_done
-  assert jq -e --arg dev "$home_dev" '.browser_device == $dev and .browser_account == "notcom"' "$RUN_DIR/meta.json" >/dev/null
-  clear_stub
-  printf 'DIA-PROFILE: home dia\n%s\n' "$original_brief" >"$WORK/brief"
-  start_ok claudeb --browser
-  assert await_done
-  assert meta_account_is notcom
-  assert jq -e --arg dev "$home_dev" '.browser_device == $dev' "$RUN_DIR/meta.json" >/dev/null
-  printf '%s\n' "$original_brief" >"$WORK/brief"
-  clear_stub
-
-  mv "$work_ext/000005.ldb" "$BT_WORK/work-table.ldb"
-  : >"$work_ext/000006.log"
-  out=$("$RUNNER" browse --target dia --vendor claudeb --dia-profile 'Profile 8')
-  assert grep -qx "PLAN: claudeb account=com device=$work_dev source=cached" <<<"$out"
-  assert grep -qx "REASON: dia/work dia device $work_dev read from the cache — the extension storage names none" <<<"$out"
-  rm "$work_ext/000006.log"
-  mv "$BT_WORK/work-table.ldb" "$work_ext/000005.ldb"
-
-  local tabs_fixture="$BT_RUNS/claudeb-tabs-broken"
-  mkdir -p "$tabs_fixture"
-  printf '{"vendor":"claudeb","account":"com","workdir":"%s","started_at":0,"pid":0,"browser":true}\n' "$WORK/workdir" >"$tabs_fixture/meta.json"
-  : >"$tabs_fixture/err"
-  jq -n --arg result "OUTCOME: BROWSER_TABS_BROKEN device=$work_dev" '{result:$result}' >"$tabs_fixture/out"
-  assert "$RUNNER" _deliver "$tabs_fixture" 0 >/dev/null 2>"$BT_WORK/deliver.err"
-  assert test "$(grep -c 'No such file' "$BT_WORK/deliver.err")" -eq 0
-  assert jq -e --arg w "$work_dev" '.[$w].health == "broken" and .[$w].account == "com" and .[$w].profile == "dia:Profile 8"' "$cache" >/dev/null
-  local marked
-  marked=$(jq -r --arg w "$work_dev" '.[$w].health_seen' "$cache")
-  out=$("$RUNNER" browse --target dia --vendor claudeb)
-  assert grep -qx "PLAN: claudeb account=notcom device=$home_dev source=cached" <<<"$out"
-  assert grep -qx "REASON: dia/work dia skipped — account com device $work_dev could not open a tab (marked $marked)" <<<"$out"
-  out=$("$RUNNER" browse --target dia --vendor claudeb --account com)
-  assert grep -qx "PLAN: claudeb account=com device=$work_dev source=cached" <<<"$out"
-  jq --arg h "$home_dev" '.[$h] += {health:"broken", health_seen:"2026-10-06T00:00:00Z"}' "$cache" >"$cache.next"
-  mv "$cache.next" "$cache"
-  out=$(BROWSE_BROKEN_TTL=315360000 "$RUNNER" browse --target dia --vendor claudeb)
-  assert grep -qx "PLAN: claudeb account=com device=$work_dev source=cached" <<<"$out"
-  assert grep -q "^REASON: dia/work dia device $work_dev could not open a tab (marked $marked) and no healthy device" <<<"$out"
-  jq --arg w "$work_dev" '.[$w].health_seen = "2026-01-01T00:00:00Z"' "$cache" >"$cache.next"
-  mv "$cache.next" "$cache"
-  out=$("$RUNNER" browse --target dia --vendor claudeb)
-  assert grep -qx "PLAN: claudeb account=com device=$work_dev source=cached" <<<"$out"
-  assert test "$(grep -c 'could not open a tab' <<<"$out")" -eq 0
-  jq -n --arg result "BROWSER-DEVICE-ACCOUNT: $work_dev com" '{result:$result}' >"$tabs_fixture/out"
-  rm -f "$tabs_fixture/result"
-  assert "$RUNNER" _deliver "$tabs_fixture" 0 >/dev/null
-  assert jq -e --arg w "$work_dev" '.[$w].health == null and .[$w].profile == "dia:Profile 8"' "$cache" >/dev/null
-  BROWSE_DIA_USER_DATA="$saved_dia" BROWSE_WORKER_PICK="$saved_wp"
-  printf '{}\n' >"$cache"
-
-  # 24: a quote broken inside a top-level preamble string runs its words as commands at startup
-  assert test "$("$RUNNER" report no-such-run 2>&1 | grep -c 'command not found')" -eq 0
-
-  # 26: chrome-applescript-js edits Preferences only with Chrome quit and no worker run on Chrome
+  # 10: chrome-applescript-js edits Preferences only with Chrome quit and no worker run on Chrome
   local cj="$BT_WORK/cj" holder
   mkdir -p "$cj/data/Profile 1" "$cj/runs/browse" "$cj/runs/on-chrome" "$cj/runs/on-dia" "$cj/bin"
   printf '{"browser":{"other":1},"profile":{"name":"Egor work"}}\n' >"$cj/data/Profile 1/Preferences"
-  printf '{"dia-dev":{"profile":"dia:Profile 7"}}\n' >"$cj/runs/browse/devices.json"
   printf '  700     1 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome\n  701   700 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --type=renderer\n' >"$cj/ps.chrome"
   cp "$cj/ps.chrome" "$cj/ps.listing"
   printf '#!/bin/sh\nsed "s/^ *\\([0-9]*\\) *[0-9]* /\\1 /" "%s"\n' "$cj/ps.listing" >"$cj/bin/ps"
@@ -1199,22 +401,7 @@ EOF
   kill "$holder" 2>/dev/null || true
   wait "$holder" 2>/dev/null || true
 
-  # 27: a shell whose command line merely names Dia's executable is no running Dia
-  printf '%s\n' "/bin/zsh -c python3 - <<'X' a='Dia.app/Contents/MacOS/Dia' X" >"$BT_WORK/pgrep.list"
-  cat >"$BT_WORK/bin/pgrep-list" <<EOF
-#!/bin/sh
-[ "\$1" = -f ] && grep -qE -- "\$2" "$BT_WORK/pgrep.list"
-EOF
-  chmod +x "$BT_WORK/bin/pgrep-list"
-  out=$(BROWSE_PGREP="$BT_WORK/bin/pgrep-list" BROWSE_SKIP_PROCESSES=0 BROWSE_SKY_APP="$BT_WORK/no-sky-app" \
-        "$RUNNER" browse --target dia --vendor claudeb --no-launch) || true
-  assert grep -qx 'DIA: absent' <<<"$out"
-  printf '%s\n' '/Applications/Dia.app/Contents/MacOS/Dia --enable-applescript-javascript' >>"$BT_WORK/pgrep.list"
-  out=$(BROWSE_PGREP="$BT_WORK/bin/pgrep-list" BROWSE_SKIP_PROCESSES=0 BROWSE_SKY_APP="$BT_WORK/no-sky-app" \
-        "$RUNNER" browse --target dia --vendor claudeb --no-launch) || true
-  assert grep -qx 'DIA: running' <<<"$out"
-
 }
 browse_tests
 
-echo "PASS: $asserts asserts; browse mode: Dia and Chrome preflight, launches, computer use sync"
+echo "PASS: $asserts asserts; browse mode: enrolment, window, proof, Chrome and Dia runs, the supervisor's outcome log, canary, cua_repl sync"
