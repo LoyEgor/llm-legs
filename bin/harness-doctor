@@ -43,10 +43,6 @@ LIMITS = {
     "event_s": 5.0,
     "hook_p50_s": 1.0,
     "hook_min_samples": 5,
-    "busy": 0.90,
-    "busy_note": 0.70,
-    "unseen_cores": 5.0,
-    "unseen_note": 2.0,
     "suites_at_once": 5,
     "suites_note": 3,
     "test_slow_ratio": 2.0,
@@ -3271,52 +3267,29 @@ def mean(values):
     return sum(values) / len(values) if values else None
 
 
-def level(value, note_limit, red_limit):
-    if value is None:
-        return "dim"
-    return "red" if value > red_limit else "note" if value > note_limit else "dim"
-
-
 def load_section(samples, now):
     hour, week = now - 3600, now - 7 * 86400
     latest = samples[-1] if samples else {}
     ncpu = latest.get("ncpu") or os.cpu_count() or 1
     first = min((s.get("t", now) for s in samples), default=now)
 
-    # A sample's busy covers the time since the one before, so a slot held at either end makes it requested work.
-    quiet = [s for before, s in zip([{}] + samples, samples) if not s.get("held") and not before.get("held")]
-
-    def series(key, since, fn=None, pool=samples):
-        return mean([fn(s) if fn else s.get(key) for s in pool if s.get("t", 0) >= since
+    def series(key, since, fn=None):
+        return mean([fn(s) if fn else s.get(key) for s in samples if s.get("t", 0) >= since
                      and (fn or s.get(key) is not None)])
 
-    def measure(label, now_value, week_value, fmt, lv, key, say, limit=None, pool=samples, judged=None):
-        red = [1] if lv == "red" else []
-        name = key.split(":", 1)[1]
-        return row([label, fmt(now_value), fmt(week_value)], red, dim=lv == "dim", key=key,
-                   say=say if lv != "dim" else None,
-                   judge=verdict("load", name, now_value if pool is samples else judged, limit, "", 1,
-                                 sum(1 for s in pool if s.get("t", 0) >= hour),
-                                 "red" if red else "watch" if lv == "note" else None,
-                                 values=[sample_value(s, name) for s in pool if s.get("t", 0) >= week],
-                                 bad=sum(1 for s in pool if s.get("t", 0) >= hour and limit is not None
-                                         and (sample_value(s, name) or 0) > limit)))
+    # Whole-machine CPU is weather the System doctor attributes per owner (load-is-weather, 2026-10-05): shown, never judged.
+    def measure(label, now_value, week_value, fmt, name):
+        return row([label, fmt(now_value), fmt(week_value)], dim=True, key="load:" + name,
+                   judge=verdict("load", name, now_value, None, "", 1, sum(1 for s in samples if s.get("t", 0) >= hour),
+                                 None, values=[sample_value(s, name) for s in samples if s.get("t", 0) >= week]))
 
     pct = fmt_pct
-    busy, busy7 = series("busy", hour), series("busy", week)
-    calm_busy = series("busy", hour, pool=quiet)
+    busy = series("busy", hour)
     unseen = lambda s: sample_value(s, "unseen")
-    gap, gap7 = series(None, hour, unseen), series(None, week, unseen)
-    calm_gap = series(None, hour, unseen, quiet)
-    asked = "" if len(quiet) == len(samples) else " outside suite and night-fixer runs"
     rows = [
-        measure("CPU busy", busy, busy7, pct, level(calm_busy, LIMITS["busy_note"], LIMITS["busy"]), "load:busy",
-                "CPU %s busy%s, usual under %s" % (pct(calm_busy), asked, pct(LIMITS["busy_note"])), LIMITS["busy"],
-                quiet, calm_busy),
-        measure("unaccounted CPU", gap, gap7, lambda v: "–" if v is None else "%.1f cores" % v,
-                level(calm_gap, LIMITS["unseen_note"], LIMITS["unseen_cores"]), "load:unseen",
-                "%.1f of %d cores go to short-lived processes and the kernel%s" % (calm_gap or 0, ncpu, asked),
-                LIMITS["unseen_cores"], quiet, calm_gap),
+        measure("CPU busy", busy, series("busy", week), pct, "busy"),
+        measure("unaccounted CPU", series(None, hour, unseen), series(None, week, unseen),
+                lambda v: "–" if v is None else "%.1f cores" % v, "unseen"),
     ]
     guard = latest.get("guard")
     rows.append(row(["memory free", "%s %%" % latest["mem_free"] if latest.get("mem_free") is not None else "–", ""],

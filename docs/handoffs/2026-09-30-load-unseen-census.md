@@ -1,6 +1,6 @@
 # Hand-off: load:busy and load:unseen judge the machine, not the harness
 
-Status: open
+Status: settled 20261006T233611Z-7777: option 1 by load-is-weather — Load shows busy/unseen, never judges them; System owns machine CPU
 
 For «Harness Doctor» (`share/harness-ledger.json` `owner`), rows `load-busy-night-concurrency` and
 `load-unseen-suites-statusline`, both back to `open` as weather (night fixer

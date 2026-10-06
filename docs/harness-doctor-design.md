@@ -21,8 +21,8 @@ machine showed it. The collector's backfill later found an earlier, unnoticed ep
 
 | belongs to | examples |
 |---|---|
-| **Harness doctor** | tool-call wait per project, hook time and hook cuts, session-start and turn-end hooks, CPU busy outside requested work, memory guard, test time, stores that grow with history, the change that preceded a red row |
-| **System doctor** | machine rows, since 2026-10-06: new processes, the kernel share, swap, compression, SSD writes, crashes (`docs/system-doctor-design.md`); Harness keeps the kernel and fork samples for its week table, day summaries and change impact, and judges none of them |
+| **Harness doctor** | tool-call wait per project, hook time and hook cuts, session-start and turn-end hooks, memory guard, test time, stores that grow with history, the change that preceded a red row |
+| **System doctor** | machine rows, since 2026-10-06: new processes, the kernel share, swap, compression, SSD writes, crashes, whole-machine CPU (`docs/system-doctor-design.md`); Harness keeps the busy, unaccounted, kernel and fork samples for its Load rows, week table, day summaries and change impact, and judges none of them |
 | **LLM doctor** | API decode speed, time to first token, API time per cell or leg, failures, weather |
 
 The block never shows API numbers. A future stage hands the transcript pass's API timings to LLM
@@ -221,8 +221,6 @@ from this machine on 2026-09-28, from the 28-day backfill and a day of samples:
 | per-call store (G) | – | > 1 000 entries and × 2 in a day | the stores hold live or recent calls: 4-51 instruction-watch marks, 436 context-nudge files, 723 review-journal `.hashes`/`.ref`/`.heads` on 09-29 |
 | failed under load (H) | ≥ 3 suites at once, passed alone within 1 h | – | 09-29 17:38-18:04: three `run-all` at once failed `test_claudeb.sh` and `test_worker_run.sh`, both passed alone by 18:15 |
 | hook spool, oldest file | > 30 min | – | the collector folds every 5 min; 152-396 files, all under 5 min, is normal |
-| CPU busy, 1 h mean | > 90 % | > 70 % | a normal loaded day is 54-72 % |
-| not seen per process | > 5 cores | > 2 cores | – |
 | suite runs at once, peak over the last 6 h | ≥ 5 | ≥ 3 | a daily peak of 3-4 is normal, because `run-suites` runs ncpu/2 in parallel |
 | a test group's last run | > 2 × its usual and > 10 min, with ≥ 3 runs of its scope | – | usual = the median of the earlier runs of the same scope (full, all, changed, named or partial, §8) once the test marks its partial runs, else their p75: test_worker_run's full runs take 7-21 min and its partial ones 21-197 s, and a median over both (≈ 4 min) turned an ordinary 614 s full run red |
 | long pole (L), latest full run in 24 h | one suite > 50 % of the run's wall clock and ≥ 5 min | > 50 % under 5 min | the brief of 2026-09-30: `test_worker_run.sh` bounds llm-legs `run-all` (81 suites, `-j 5`); the calibration replay's full run, its suites' times from `run-suites/times.tsv` of 09-30 in the 678 s wall clock of that day's chat run, reads it at 649 s, 96 %, 310 s over `test_instruction_gate.sh`. Under 5 min a split saves at most 2.5 min a run, so it stays a watch |
@@ -247,9 +245,9 @@ and a test run over 2 × its usual but under 10 min is a watch. The collector's 
 too, since 2026-10-07 on its own CPU (wall stays context): over 20 CPU-s (`collector_cpu_s`), except the
 first backfill, is a problem.
 
-Requested work is not judged as load, since 2026-10-04: each sample records the run-suites and
-night-fixer slots a live process holds (`held`), and `load:busy` and `load:unseen` judge only the
-samples whose window no held slot touched (the rows still show the whole hour). A full `suites` run that another run-suites run of
+Machine load is weather (Egor, 2026-10-05): `load:busy` and `load:unseen` are shown, never judged
+(2026-10-07). Each sample records the run-suites and night-fixer slots a live process holds (`held`).
+A full `suites` run that another run-suites run of
 the same `repo_root` overlapped (`runs.jsonl`) stays a watch however slow, and `suites at once`
 counts the runs that journal holds as well as `test-history.jsonl`.
 

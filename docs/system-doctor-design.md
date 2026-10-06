@@ -120,9 +120,8 @@ the cause is our own):
     reads `open` with the numbers; pending reads `fixed-pending`. `system-doctor check <cause>` prints
     the same proof (exit 0 proven, 1 refused, 3 pending).
 - **Harness overlap.** The machine rows are this doctor's alone: Harness's Load no longer judges
-  forks, kernel or swap (their `LIMITS` are gone); it keeps CPU busy outside requested work,
-  unaccounted CPU and the memory guard. Its kernel and fork samples stay for its week table, day
-  summaries and change impact; Speed's `machine/contention` covers only `busy` and `unseen`.
+  forks, kernel, swap, CPU busy or unaccounted CPU (their `LIMITS` are gone); it judges the memory
+  guard. Its samples stay for its Load rows, week table, day summaries and change impact.
 
 ## Phase 3 — built (2026-10-06)
 
