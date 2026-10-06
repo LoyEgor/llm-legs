@@ -3019,7 +3019,7 @@ TAG_HOOK_BIN="$ROOT/bin/worker-tag-hook.sh"
 WORKER_RUN_BIN="$ROOT/bin/worker-run"
 stamped_types=$(awk '/^relay_prefix=/{on=1} on && /^  [a-z|-]+\)$/{gsub(/[ )]/, ""); print; exit}' "$TAG_HOOK_BIN" | tr '|' '\n' | sort | xargs)
 accepted_types=$(awk '/^  case "\$RELAY_TYPE" in$/{getline; sub(/\) ;;$/, ""); gsub(/ /, ""); print; exit}' "$WORKER_RUN_BIN" |
-  tr '|' '\n' | grep -vx 'end-report\|code-doctor-judge' | sort | xargs)
+  tr '|' '\n' | grep -vx 'end-report\|code-doctor-judge\|log-audit' | sort | xargs)
 assert eq "$stamped_types" "$(printf '%s\n' $(native_list RELAY_TYPES) light-research | sort | xargs)"
 assert eq "$accepted_types" "$stamped_types"
 assert grep -Fq 'relay_prefix="export WORKER_RUN_RELAY=$relay_token"' "$TAG_HOOK_BIN"
@@ -3029,6 +3029,7 @@ assert grep -Fq 'unset WORKER_RUN_RELAY' "$WORKER_RUN_BIN"
 assert grep -Fq '(WORKER_RUN_RELAY|REVIEW_BENCH_DOOR)=' "$ROOT/bin/worker-launch-gate.sh"
 assert grep -Fq 'WORKER_RUN_RELAY="end-report:%d"' "$FAMILY_SETUP_ROOT/skills-on-demand/end-report/compose.py"
 assert grep -Fq 'WORKER_RUN_RELAY="code-doctor-judge:%d"' "$ROOT/bin/code-doctor"
+assert grep -Fq 'WORKER_RUN_RELAY="log-audit:%d"' "$ROOT/bin/log-audit"
 assert doc_has '`WORKER_RUN_RELAY=<agent_type>:<agent_id>[:attach]`'
 # The review nonce: one directory, one TTL, one variable name on both sides of the door.
 REVIEW_DOOR_HOOK="$FAMILY_SETUP_ROOT/hooks/review-flow-gate.sh"

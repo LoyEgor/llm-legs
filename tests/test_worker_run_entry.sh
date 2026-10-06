@@ -190,6 +190,11 @@ relay_door_tests() {
     start codex --brief "$WORK/brief" --workdir "$WORK/workdir"
   relay_refused 'the research role belongs to the light-research Agent' CLAUDECODE=1 WORKER_RUN_RELAY=code-doctor-judge:42 -- \
     start claudeb --role research --brief "$WORK/brief" --workdir "$WORK/workdir"
+  relay_refused 'the log audit reads on Claude only' CLAUDECODE=1 WORKER_RUN_RELAY=log-audit:42 -- \
+    start codex --brief "$WORK/brief" --workdir "$WORK/workdir"
+  clear_stub
+  CLAUDECODE=1 WORKER_RUN_RELAY=log-audit:42 start_ok claudeb
+  await_done || fail "the log-audit run never finished"
   clear_stub
   CLAUDECODE=1 WORKER_RUN_RELAY=code-doctor-judge:42 start_ok claudeb
   await_done || fail "the code-doctor-judge run never finished"

@@ -298,6 +298,7 @@ The claude-setup agent definitions call these bare, so each needs its PATH link
 - `bin/harness-doctor` → `~/.local/bin/harness-doctor` — Harness doctor.
 - `bin/updater-doctor` → `~/.local/bin/updater-doctor` — Updater doctor.
 - `bin/code-doctor` → `~/.local/bin/code-doctor` — Code doctor.
+- `bin/log-audit` → `~/.local/bin/log-audit` — Sonnet reads the day's transcripts; findings go to the Harness doctor.
 - `bin/doctor-fix` → `~/.local/bin/doctor-fix` — doctor fixer briefs and their close gate.
 - `bin/vendor-fingerprint` → `~/.local/bin/vendor-fingerprint` — vendor CLI fingerprint requests.
 - `bin/night-run` → `~/.local/bin/night-run` — the night run's jobs, base and report.

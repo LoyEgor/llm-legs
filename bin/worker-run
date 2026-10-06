@@ -5813,13 +5813,13 @@ relay_door() { # subcommand
   RELAY_AGENT=${rest%%:*}
   case "$token" in *:attach) RELAY_ATTACH=true ;; esac
   case "$RELAY_TYPE" in
-    claudeb-worker | codex-worker | gemini-worker | grok-worker | light-worker | light-research | end-report | code-doctor-judge) ;;
+    claudeb-worker | codex-worker | gemini-worker | grok-worker | light-worker | light-research | end-report | code-doctor-judge | log-audit) ;;
     *) RELAY_TYPE='' ;;
   esac
   if [ -z "$RELAY_TYPE" ] || [ "$token" = "$RELAY_TYPE" ] || [[ ! "$RELAY_AGENT" =~ ^[A-Za-z0-9_-]+$ ]]; then
     fail "\`worker-run $1\` runs only inside the relay agent that owns the run — the owner is what draws its magenta task row and wakes the chat when it ends. Spawn the Agent instead: claudeb-worker, codex-worker, gemini-worker, grok-worker or light-worker (light-research for a read-only research brief), the vendor worker-pick's NEXT row names; it runs worker-run itself. A run already in flight is re-attached by the same agent type with a brief starting \`ATTACH <run-id>:\`. A script, eval, interpreter, Monitor or background shell reaching worker-run is this same launch. Nothing was launched and no account was spent."
   fi
-  case "$RELAY_TYPE" in end-report | code-doctor-judge) ;; *) [ -n "${CLAUDE_AGENT_ID:-}" ] || CLAUDE_AGENT_ID=$RELAY_AGENT ;; esac
+  case "$RELAY_TYPE" in end-report | code-doctor-judge | log-audit) ;; *) [ -n "${CLAUDE_AGENT_ID:-}" ] || CLAUDE_AGENT_ID=$RELAY_AGENT ;; esac
 }
 
 # The run a relay starts is the one its agent type names: a claudeb-worker relabelled as a codex run,
@@ -5831,9 +5831,12 @@ relay_start_door() { # vendor role
     fail "this $RELAY_TYPE was spawned with an \`ATTACH <run-id>:\` brief: it waits on that run (\`worker-run wait <run-id>\`) and starts nothing. A new run needs a new spawn with its own brief. Nothing was launched and no account was spent."
   case "$RELAY_TYPE:$1:$2" in
     claudeb-worker:claudeb:workers | codex-worker:codex:workers | gemini-worker:gemini:workers | \
-      grok-worker:grok:workers | light-worker:light:workers | light-research:*:research | end-report:*:workers | code-doctor-judge:*:workers) ;;
+      grok-worker:grok:workers | light-worker:light:workers | light-research:*:research | end-report:*:workers | code-doctor-judge:*:workers | \
+      log-audit:claudeb:workers) ;;
     light-research:*)
       fail "a light-research relay starts research runs only, through light-research itself. Nothing was launched and no account was spent." ;;
+    log-audit:*)
+      fail "the log audit reads on Claude only (Egor, 2026-10-07): \`worker-run start claudeb\`, not \`$1\`. Nothing was launched and no account was spent." ;;
     *:*:research)
       fail "the research role belongs to the light-research Agent: a $RELAY_TYPE runs \`worker-run start ${RELAY_TYPE%-worker}\` as a worker. Nothing was launched and no account was spent." ;;
     *)

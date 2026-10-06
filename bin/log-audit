@@ -1,0 +1,299 @@
+#!/usr/bin/env python3
+"""Sonnet reads the day's chat and worker transcripts for what no doctor rule catches.
+
+`run` skeletonizes every transcript written since the last full read (share/log_skeleton.py), packs
+the skeletons into chunks, has one Sonnet run per chunk on a Claude account read them in parallel,
+and one more merge their findings. The findings land in findings.json, which the Harness doctor
+turns into problems for the night's fixer."""
+import argparse
+import datetime
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
+import chat_names  # noqa: E402
+import log_skeleton  # noqa: E402
+
+MODEL, EFFORT = "sonnet", "medium"
+CHUNK_CHARS = 200000
+PARALLEL = 6
+MAX_WALL_S = 2400
+LOOKBACK_S, LOOKBACK_MAX_S = 86400, 36 * 3600
+TOP = 15
+OWN_MARK = "# Log audit"
+
+LEGEND = """You read skeletons of Claude Code transcripts from Egor's machine: his interactive chats and the headless
+workers they launch. The machine runs llm-legs (multi-account LLM orchestration: hooks, gates, worker relays,
+doctors, a nightly self-improvement run) and claude-setup (the hooks and skills). Read-only: change nothing, run
+nothing; the skeleton below is everything you need.
+
+Legend: `### <title> · cli|worker · <cwd>` opens a transcript. U = user (Egor in a cli chat, the launching chat's
+brief in a worker), A = assistant text, T = a tool call, E = a failed tool call, H = hook stderr or message
+(H×N: the same line N times), D = time (a gap between steps, a long turn, a compaction)."""
+
+CHUNK_TASK = """Find what wastes Egor's time or the machine's, or goes wrong unnoticed: things a fixed rule would not
+catch. Examples, not a checklist: the same failure repeated; a hook or gate that blocks legitimate work or prints
+errors; a worker that waits or polls instead of working; work redone; a model ignoring an instruction or Egor's
+correction; Egor repeating himself or showing frustration; a long wait; a tool or report that misstates what
+happened. Skip one-off noise and anything the transcript itself already fixed.
+
+End your answer with ONE JSON object per finding, each on its own line (none: print no JSON):
+{"title": "<one English line naming the cause>", "kind": "repeat|gate|wait|rework|instruction|frustration|misreport|other", "where": ["<transcript title>"], "quote": "<one skeleton line, verbatim>", "why": "<what it costs; a number when the skeleton gives one>", "minutes": <minutes lost here, estimated>, "fix": "<where the fix likely belongs: a file, hook or skill>"}"""
+
+MERGE_TASK = """Below are findings that several readers made, each over one chunk of the same day's transcripts. Merge
+the ones with the same cause into one, keeping every `where` and the best quotes; drop findings that are not
+actionable; rank by minutes lost, most first; keep at most %d.
+
+End your answer with ONE JSON object per merged finding, each on its own line:
+{"id": "<kebab-case slug of the cause, stable across days>", "title": "<one English line>", "kind": "<kind>", "where": ["<transcript title>"], "quotes": ["<verbatim skeleton line>"], "why": "<cost>", "minutes": <total minutes>, "fix": "<where the fix belongs>"}"""
+
+
+def state_dir():
+    return os.environ.get("LOG_AUDIT_DIR") or os.path.expanduser("~/.cache/doctors/log-audit")
+
+
+def worker_run():
+    return os.environ.get("LOG_AUDIT_WORKER_RUN") or os.path.join(ROOT_DIR, "bin", "worker-run")
+
+
+def relay_env():
+    return dict(os.environ, WORKER_RUN_RELAY="log-audit:%d" % os.getpid())
+
+
+def roots():
+    return sorted({os.path.realpath(path) for path in chat_names.transcript_roots() if os.path.isdir(path)})
+
+
+def read_jsonl(path):
+    rows = []
+    try:
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict):
+                    rows.append(row)
+    except OSError:
+        pass
+    return rows
+
+
+def write_json(path, value):
+    temporary = "%s.tmp.%d" % (path, os.getpid())
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(value, handle, ensure_ascii=False, indent=1)
+    os.replace(temporary, path)
+
+
+def since_of(now):
+    done = [row.get("until") for row in read_jsonl(os.path.join(state_dir(), "runs.jsonl"))
+            if row.get("stop") == "done" and isinstance(row.get("until"), (int, float))]
+    return max(max(done) if done else now - LOOKBACK_S, now - LOOKBACK_MAX_S)
+
+
+def transcripts(since):
+    out = []
+    for root in roots():
+        for folder, _, names in os.walk(root):
+            for name in names:
+                path = os.path.join(folder, name)
+                if name.endswith(".jsonl") and os.path.getmtime(path) >= since:
+                    header, lines = log_skeleton.skeleton(path, since)
+                    if lines and not any(OWN_MARK in line for line in lines[:3]):
+                        out.append((os.path.getmtime(path), header, lines))
+    return [(header, lines) for _, header, lines in sorted(out)]
+
+
+def chunks(found):
+    packed, current, size = [], [], 0
+    for header, lines in found:
+        parts, part, part_size = [], [], 0
+        for line in lines:
+            if part and part_size + len(line) + 1 > CHUNK_CHARS:
+                parts.append(part)
+                part, part_size = [], 0
+            part.append(line)
+            part_size += len(line) + 1
+        parts.append(part)
+        for number, body in enumerate(parts, 1):
+            text = "\n".join([header + (" (part %d of %d)" % (number, len(parts)) if len(parts) > 1 else "")] + body)
+            if current and size + len(text) + 2 > CHUNK_CHARS:
+                packed.append("\n\n".join(current))
+                current, size = [], 0
+            current.append(text)
+            size += len(text) + 2
+    if current:
+        packed.append("\n\n".join(current))
+    return packed
+
+
+def objects(text, required):
+    found, decoder, position = [], json.JSONDecoder(), 0
+    while True:
+        start = text.find("{", position)
+        if start < 0:
+            return found
+        try:
+            value, consumed = decoder.raw_decode(text[start:])
+        except ValueError:
+            position = start + 1
+            continue
+        if isinstance(value, dict) and all(value.get(key) for key in required):
+            found.append(value)
+        position = start + max(consumed, 1)
+
+
+def launch(brief_file):
+    done = subprocess.run([worker_run(), "start", "claudeb", "--model", MODEL, "--effort", EFFORT, "--brief", brief_file,
+                           "--workdir", ROOT_DIR], capture_output=True, text=True, env=relay_env())
+    run_id = next((line[5:].strip() for line in done.stdout.splitlines() if line.startswith("RUN: ")), None)
+    if done.returncode != 0 or not run_id:
+        said = " | ".join(part.strip() for part in (done.stderr, done.stdout) if part.strip())
+        return None, "worker-run start rc %d: %s" % (done.returncode, said[-300:] or "no output")
+    return run_id, None
+
+
+def result_of(run_id, deadline):
+    subprocess.run([worker_run(), "wait", run_id, "--max", str(int(max(1, deadline - time.time())))],
+                   capture_output=True, text=True, env=relay_env())
+    report = subprocess.run([worker_run(), "report", run_id], capture_output=True, text=True).stdout
+    if re.search(r"^STATUS: (running|queued)", report, re.M):
+        return None
+    return report.split("RESULT:\n", 1)[1] if "RESULT:\n" in report else ""
+
+
+def slug(text):
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:60] or "finding"
+
+
+def merged(raw, folder, deadline):
+    brief = "%s\n\n%s\n\n%s\n\n%s\n" % (OWN_MARK + ": merge", LEGEND, MERGE_TASK % TOP,
+                                        "\n".join(json.dumps(item, ensure_ascii=False) for item in raw))
+    path = os.path.join(folder, "merge.md")
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(brief)
+    run_id, error = launch(path)
+    text = result_of(run_id, deadline) if run_id else None
+    found = objects(text or "", ("id", "title"))
+    if found:
+        return found[:TOP], None
+    fallback = [{"id": slug(item["title"]), "title": item["title"], "kind": item.get("kind"), "where": item.get("where") or [],
+                 "quotes": [item["quote"]] if item.get("quote") else [], "why": item.get("why"),
+                 "minutes": item.get("minutes"), "fix": item.get("fix")} for item in raw]
+    fallback.sort(key=lambda item: -(item["minutes"] if isinstance(item.get("minutes"), (int, float)) else 0))
+    return fallback[:TOP], error or "merge returned no findings; raw findings kept"
+
+
+def run(args):
+    started = now = time.time()
+    deadline = started + args.max_wall
+    since = since_of(now)
+    found = transcripts(since)
+    packed = chunks(found)
+    label = args.night or datetime.datetime.fromtimestamp(now).strftime("day-%Y%m%dT%H%M%S")
+    folder = os.path.join(state_dir(), "runs", label)
+    os.makedirs(folder, exist_ok=True)
+    files = []
+    for number, text in enumerate(packed, 1):
+        path = os.path.join(folder, "chunk-%03d.md" % number)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("%s: chunk %d of %d\n\n%s\n\n%s\n\n%s\n" % (OWN_MARK, number, len(packed), LEGEND, CHUNK_TASK, text))
+        files.append(path)
+    if args.dry_run:
+        print("log-audit: %d transcripts since %s in %d chunks under %s (dry run, nothing launched)" % (
+            len(found), iso(since), len(packed), folder))
+        return 0
+    raw, read, error, stop, pending, queue = [], 0, None, "done", [], list(files)
+    while queue or pending:
+        while queue and len(pending) < args.parallel and stop == "done":
+            run_id, failure = launch(queue[0])
+            if not run_id:
+                error, stop = failure, "launch-failed"
+                break
+            pending.append(run_id)
+            queue.pop(0)
+        if not pending:
+            break
+        text = result_of(pending.pop(0), deadline)
+        if text is None:
+            stop = "wall"
+            continue
+        read += 1
+        raw += objects(text, ("title", "quote"))
+        if time.time() >= deadline:
+            stop = "wall"
+    if queue and stop == "done":
+        stop = "wall"
+    findings, merge_error = merged(raw, folder, deadline) if raw else ([], None)
+    at = int(time.time())
+    for item in findings:
+        item["at"] = at
+    if read:
+        write_json(os.path.join(state_dir(), "findings.json"),
+                   {"at": at, "night": args.night, "since": int(since), "until": int(now), "transcripts": len(found),
+                    "chunks": len(packed), "read": read, "stop": stop, "findings": findings})
+    record = {"at": at, "night": args.night, "since": int(since), "until": int(now), "transcripts": len(found),
+              "chunks": len(packed), "read": read, "findings": len(findings), "stop": stop,
+              "wall_s": round(time.time() - started, 1), "error": error or merge_error}
+    with open(os.path.join(state_dir(), "runs.jsonl"), "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    if stop == "done":
+        print("log-audit: %d transcripts in %d chunks read, %d findings for the Harness doctor" % (
+            len(found), len(packed), len(findings)))
+        return 0
+    print("log-audit: stopped (%s) after %d of %d chunks%s; the next run rereads from %s" % (
+        stop, read, len(packed), ": " + error if error else "", iso(since)))
+    return 1
+
+
+def iso(at):
+    return datetime.datetime.fromtimestamp(at).strftime("%Y-%m-%d %H:%M")
+
+
+def show(_args):
+    document = {}
+    try:
+        with open(os.path.join(state_dir(), "findings.json"), encoding="utf-8") as handle:
+            document = json.load(handle)
+    except (OSError, ValueError):
+        print("log-audit: no findings yet")
+        return 0
+    print("log-audit %s · %s transcripts · %s" % (iso(document.get("at") or 0), document.get("transcripts"), document.get("stop")))
+    for item in document.get("findings") or ():
+        print("%4s min  %s  %s" % (item.get("minutes") or "?", item.get("id"), item.get("title")))
+    return 0
+
+
+def skeleton(args):
+    header, lines = log_skeleton.skeleton(args.transcript)
+    print("\n".join([header] + lines))
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="log-audit", description=__doc__.splitlines()[0])
+    sub = parser.add_subparsers(dest="command", required=True)
+    one = sub.add_parser("run", help="read the transcripts written since the last full read")
+    one.add_argument("--night")
+    one.add_argument("--parallel", type=int, default=PARALLEL)
+    one.add_argument("--max-wall", type=int, default=MAX_WALL_S)
+    one.add_argument("--dry-run", action="store_true")
+    one.set_defaults(func=run)
+    sub.add_parser("show", help="print the latest findings").set_defaults(func=show)
+    one = sub.add_parser("skeleton", help="print one transcript's skeleton")
+    one.add_argument("transcript")
+    one.set_defaults(func=skeleton)
+    args = parser.parse_args()
+    os.makedirs(state_dir(), exist_ok=True)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

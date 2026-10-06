@@ -366,6 +366,10 @@ def snapshot(doctor, doc_file, night=None):
         entry = {"id": pid, "state": state, "fact": problem.get("fact"), "rule": rule, "ledger": problem.get("ledger"),
                  "area": slug(area), "component": {"what": what, "files": sorted({norm(f) for f in files}),
                                                    "rule_at": rule_at(doctor, rule)}}
+        if rule == "log_audit":
+            entry["component"]["what"] = ("a Sonnet reading of the transcripts (bin/log-audit): find the quoted lines in them and "
+                                          "confirm the cause before any fix; a reading that does not hold is ruled-out")
+            entry["quotes"] = ["%s: %s" % (e.get("ref"), e.get("excerpt")) for e in dicts(problem.get("evidence"))]
         if doctor == "code":
             entry.update({key: problem.get(key) for key in ("group", "units", "files", "repos", "digest", "needs_egor")})
         if doctor == "system" and isinstance(problem.get("cause"), dict):
@@ -443,6 +447,7 @@ def packet(record_file, key):
         if component:
             out.append("component: %s%s" % (component.get("what"), " · rule at " + component["rule_at"]
                                              if component.get("rule_at") else ""))
+        out += ["quote " + quote for quote in strings(problem.get("quotes"))]
         for path in (component.get("files") or [])[:3]:
             if path not in history:
                 folder = os.path.dirname(path)

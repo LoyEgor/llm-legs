@@ -4958,6 +4958,8 @@ def load_changes(now):
 
 
 HOLDS_GROUP = "Limiter holds"
+AUDIT_GROUP = "Log audit"
+AUDIT_STALE_S = 48 * 3600
 SPEED_GROUP = "Speed"
 WAITS_GROUP = "Wait classes"
 SPEED_SECTIONS = ("Waits", WAITS_GROUP, "Slow periods", "Hook waits", "Hooks", "Load", "Tests", "Collector")
@@ -5527,6 +5529,25 @@ def stuck_queues(now):
             chats.get("queue_stuck_s"))
 
 
+def audit_verdicts(now):
+    """bin/log-audit's findings, one problem each; none once its last read is older than AUDIT_STALE_S."""
+    document = read_json(os.path.join(env_dir("LOG_AUDIT_DIR", ".cache", "doctors", "log-audit"), "findings.json"), {})
+    at = document.get("at") if isinstance(document, dict) else None
+    if not isinstance(at, (int, float)) or now - at > AUDIT_STALE_S:
+        return [], at
+    out = []
+    for item in document.get("findings") or ():
+        if not isinstance(item, dict) or not item.get("id") or not item.get("title"):
+            continue
+        minutes = item["minutes"] if isinstance(item.get("minutes"), (int, float)) else None
+        where = ", ".join(str(name) for name in item.get("where") or ())[:120] or "log-audit"
+        quotes = [str(quote) for quote in item.get("quotes") or ()] or [str(item.get("why") or "")]
+        out.append(dict(verdict("log_audit", item["id"], minutes, 0, "min", 24, len(item.get("where") or ()), "red",
+                                fact="%s%s" % (item["title"], " · ~%d min" % minutes if minutes else ""),
+                                evidence=[evidence(at, where, quote) for quote in quotes]), group=AUDIT_GROUP))
+    return out, at
+
+
 def hold_verdicts(now, held):
     live, leaked = read_holds()
     stuck, stuck_s = stuck_queues(now)
@@ -5820,6 +5841,11 @@ def collect(write, now):
     if not any(k.startswith(MENU_KEY) for k in timed24):
         blind.append({"id": "menu-journal", "what": "menu build time", "reason": "no menu journal line in 24 h",
                       "since": None, "would_catch_if": "the Hammerspoon menu builds write their journal lines"})
+    audit, audit_at = audit_verdicts(now)
+    if not audit_at or now - audit_at > AUDIT_STALE_S:
+        blind.append({"id": "log-audit", "what": "odd behaviour in chat and worker transcripts",
+                      "reason": "bin/log-audit has not read them for %d h" % (AUDIT_STALE_S // 3600), "since": iso_time(audit_at) if audit_at else None,
+                      "would_catch_if": "`log-audit run` reads them (a night prep step)"})
     blind = blind_rows(judging, blind)
     elapsed = time.monotonic() - started
     held_now = (sample or {}).get("held") or held_slots()
@@ -5834,7 +5860,7 @@ def collect(write, now):
     holds, leaked_holds = hold_verdicts(now, held_now)
     for v in holds:
         v["group"] = HOLDS_GROUP
-    problems = problems_from(sections, judging, state, now, [self_verdict] + fault_verdicts + holds)
+    problems = problems_from(sections, judging, state, now, [self_verdict] + fault_verdicts + holds + audit)
     settled = settle_fixes(judging) if write else []
     for problem in problems:
         entry = problem["state"] == "regressed" and ledger_row_by_id(judging, problem["ledger"])
@@ -5847,6 +5873,9 @@ def collect(write, now):
                    menu=section("", [row([b["what"]], dim=True) for b in blind], ["blind spot"], [False])),
               line("collector: %.1f s a run, limit %d s" % (elapsed, LIMITS["collector_s"]),
                    dim=self_verdict["level"] is None, red=self_verdict["level"] == "red")]
+    if audit:
+        sections.append(section(AUDIT_GROUP, [row([v["fact"]], red=[0], say=" · ".join(e["excerpt"] for e in v["evidence"]))
+                                              for v in audit], [""], [False]))
     shown_holds = [v for v in holds if v["level"]]
     if shown_holds:
         sections.append(section(HOLDS_GROUP, [row([v["fact"]], red=[0] if v["level"] == "red" else (),
