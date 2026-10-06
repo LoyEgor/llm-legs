@@ -163,10 +163,7 @@ def settings(page, plan: dict, editor: bool) -> str:
     except Exception as exc:
         raise gw.drift(f"image settings ({exc.__class__.__name__}: {(str(exc).strip().splitlines() or [''])[0][:120]})")
     finally:
-        if family.count() and family.last.is_visible():
-            trigger.click()
-            gw.settle(page, 500, lambda: not family.last.is_visible())
-        gw.close_overlays(page)
+        gw.close_settings(page, trigger, family)
     if cost != plan["price"]:
         raise gw.Failure(1, f"Flow quotes {cost} credits for {plan['label']} x{plan['count']}, the manifest says "
                             f"{plan['price']}; nothing spent", quote=cost)
