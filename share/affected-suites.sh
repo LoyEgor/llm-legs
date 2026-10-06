@@ -32,7 +32,7 @@ affected_filter() { # repo names-file <suite paths -> the suites naming one of t
   local repo=$1 names=$2 entry helper helpers name invariants consistency
   helpers=$(cd "$repo/tests" 2>/dev/null && for helper in *; do
     [ -f "$helper" ] || continue
-    case "$helper" in test_*|e2e_*) ;; *) printf '%s\n' "$helper" ;; esac
+    case "$helper" in (test_*|e2e_*) ;; (*) printf '%s\n' "$helper" ;; esac
   done)
   while IFS= read -r entry; do
     [ -n "$entry" ] || continue

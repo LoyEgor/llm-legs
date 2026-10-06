@@ -133,7 +133,7 @@ for case in "15 pid" "2 group"; do
   assert test "$ms" -lt 2000
   assert jqe --arg repo "$R4" --argjson sig "${case% *}" '.repo == $repo and .signal == $sig and .complete == false' <(tail -1 "$JOURNAL")
 done
-sleep 0.5
+for _ in $(seq 50); do alive "$(cat "$WORK/tail-pid")" || break; sleep 0.1; done
 assert_fails alive "$(cat "$WORK/tail-pid")"
 
 # A direct run, under macOS bash 3.2 and a modern one: its row goes where the journal pointed when
@@ -268,6 +268,10 @@ assert test "$(bash "$ROOT/share/affected-suites.sh" --repo "$R4" bin/tool.sh)" 
 assert test "$(bash "$ROOT/share/affected-suites.sh" --repo "$R4" share/limiter-hold.sh)" = "$ROOT/tests/test_consistency.sh"
 assert test -z "$(bash "$ROOT/share/affected-suites.sh" --repo "$R4" nowhere-named.txt)"
 assert grep -qx "$ROOT/tests/test_slots.sh" <<<"$(bash "$ROOT/tests/affected" share/slots.sh)"
+assert test "$(/bin/bash "$ROOT/share/affected-suites.sh" --repo "$R4" bin/tool.sh)" = "$R4/tests/test_tool_part.sh"
+joined_out=$(bash "$ROOT/share/run-suites.sh" --repo "$R4" -j 2 "$(bash "$ROOT/share/affected-suites.sh" --repo "$R4" bin/tool.sh)"$'\n'test_other.sh 2>&1)
+assert grep -q 'test_tool_part.sh .*PASS' <<<"$joined_out"
+assert grep -q 'test_other.sh .*PASS' <<<"$joined_out"
 
 # The slow layer: a worker drops each slow suite it did not edit and says so; anyone else runs them all.
 R6="$WORK/r6"

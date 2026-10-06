@@ -69,6 +69,12 @@ while [ "$#" -gt 0 ]; do
     *) explicit+=("$1"); shift ;;
   esac
 done
+# zsh never word-splits `$suites`, so `tests/run-all $suites` hands over tests/affected's lines as one.
+if [ "${#explicit[@]}" -gt 0 ]; then
+  joined=$(printf '%s\n' "${explicit[@]}")
+  explicit=()
+  while IFS= read -r entry; do [ -z "$entry" ] || explicit+=("$entry"); done <<<"$joined"
+fi
 
 if $from_run_all && [ -n "$run_worker" ] && ! $changed && [ "${#explicit[@]}" -eq 0 ]; then
   printf 'run-all: a worker never runs every suite, the night does: tests/run-all $(tests/affected <file>...) or tests/run-all --changed\n' >&2
