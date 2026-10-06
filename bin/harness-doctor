@@ -5351,17 +5351,20 @@ def read_holds():
     return live, leaked
 
 
-def hold_verdicts(now):
+def hold_verdicts(now, held):
     live, leaked = read_holds()
     out = []
     for limiter, holds in sorted(live.items()):
         holds.sort(key=lambda h: h["since"])
         longest = now - holds[0]["since"]
+        over = longest > LIMITS["hold_red_s"]
         out.append(verdict(
             "limiter_hold", limiter, longest, LIMITS["hold_red_s"], "s", 0, len(holds),
-            "red" if longest > LIMITS["hold_red_s"] else "watch" if longest >= LIMITS["hold_note_s"] else None,
-            fact="%s holds %d job%s, longest %s: %s" % (limiter, len(holds), "" if len(holds) == 1 else "s",
-                                                       fmt_long(longest), holds[0].get("why") or "no reason given"),
+            ("watch" if held else "red") if over else "watch" if longest >= LIMITS["hold_note_s"] else None,
+            fact="%s holds %d job%s, longest %s: %s%s" % (
+                limiter, len(holds), "" if len(holds) == 1 else "s", fmt_long(longest),
+                holds[0].get("why") or "no reason given",
+                " while %d suite or night-fixer slots ran" % held if over and held else ""),
             evidence=[evidence(h["since"], "holds/" + h["file"], "%s · %s" % (held_of(h).get("what"), h.get("why")),
                                str(held_of(h).get("session") or held_of(h).get("cwd") or "")) for h in holds],
             bad=len(holds)))
@@ -5640,7 +5643,8 @@ def collect(write, now):
                       "since": None, "would_catch_if": "the Hammerspoon menu builds write their journal lines"})
     blind = blind_rows(judging, blind)
     elapsed = time.monotonic() - started
-    self_verdict = collector_verdict(elapsed, backfill, (sample or {}).get("held") or held_slots())
+    held_now = (sample or {}).get("held") or held_slots()
+    self_verdict = collector_verdict(elapsed, backfill, held_now)
     by_row = {}
     for where, fault in faults:
         by_row.setdefault(where, []).append(fault)
@@ -5648,7 +5652,7 @@ def collect(write, now):
                                    fact="ledger %s dropped: %s" % (where, "; ".join(why)),
                                    evidence=[evidence(now, "ledger:" + where, "; ".join(why))], bad=1),
                            pid="ledger:" + where, group="Ledger") for where, why in sorted(by_row.items())]
-    holds, leaked_holds = hold_verdicts(now)
+    holds, leaked_holds = hold_verdicts(now, held_now)
     for v in holds:
         v["group"] = HOLDS_GROUP
     problems = problems_from(sections, judging, state, now, [self_verdict] + fault_verdicts + holds)

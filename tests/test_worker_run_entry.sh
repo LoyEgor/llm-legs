@@ -209,7 +209,26 @@ relay_door_tests() {
   relay_refused "$owner" CLAUDECODE=1 -- wait "$RUN_ID" --max 0
 }
 
+nested_model_tests() {
+  local parent="$WORK/fable-parent"
+  mkdir -p "$parent"
+  printf '{"vendor":"claudeb","model":"fable"}\n' >"$parent/meta.json"
+  relay_refused 'nested in a Fable worker and would hand its brief to claudeb opus' WORKER_RUN_RECORD="$parent" -- \
+    start claudeb --model opus --account main --brief "$WORK/brief" --workdir "$WORK/workdir"
+  assert grep -qx 'OUTCOME: NESTED_MODEL_REFUSED' "$WORK/relay.out"
+  relay_refused 'nested in a Fable worker and would hand its brief to codex astra' WORKER_RUN_RECORD="$parent" -- \
+    start codex --model astra --account main --brief "$WORK/brief" --workdir "$WORK/workdir"
+  clear_stub
+  WORKER_RUN_RECORD="$parent" start_ok claudeb --model fable --account main
+  assert await_done
+  printf '{"vendor":"claudeb","model":"opus"}\n' >"$parent/meta.json"
+  clear_stub
+  WORKER_RUN_RECORD="$parent" start_ok claudeb --model opus --account main
+  assert await_done
+}
+
 model_effort_tests
 relay_door_tests
+nested_model_tests
 
 echo "PASS: $asserts asserts; the report bus, effort refusals before launch and the relay door"

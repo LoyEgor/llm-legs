@@ -2585,6 +2585,11 @@ start_run() {
     outcome_line EFFORT_REFUSED
     fail "$vendor model $model does not allow effort $effort; allowed efforts: $(worker_model_effort_list "$vendor" "$model" "$model_class"). Nothing was launched and no account was spent."
   fi
+  if [ "$role" = workers ] && [ "$vendor/$model" != claudeb/fable ] && [ -n "${WORKER_RUN_RECORD:-}" ] &&
+     [ "$(jq -r '.model // empty' "$WORKER_RUN_RECORD/meta.json" 2>/dev/null)" = fable ]; then
+    outcome_line NESTED_MODEL_REFUSED
+    fail "this run is nested in a Fable worker and would hand its brief to $vendor $model; Egor chose Fable for that brief, so do the work in this session. Nothing was launched and no account was spent."
+  fi
   if [ "$vendor" = codex ]; then
     slug_account=$explicit_account
     model_id=$(worker_model_codex_slug "$model" "$slug_account") || model_id=''

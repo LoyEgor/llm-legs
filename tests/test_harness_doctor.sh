@@ -1545,7 +1545,8 @@ hold_file bench-throttle 1 400 "bench job"; hold_file suite-slots 1 90 suite; ho
 hold_file bench-throttle 1 120 "bench job" 7001; hold_file bench-throttle 1 20 "bench job" 7002
 hold_file gone "$dead_pid" 900 job; hold_file reused "$reused_pid" 7200 job
 run_held() {
-  HARNESS_HOLDS_DIR="$holds" HARNESS_DOCTOR_DIR="$WORK/held" HARNESS_DOCTOR_NOW=$held_now HARNESS_DOCTOR_FAKE_SAMPLE="" \
+  RUN_SUITES_SLOTS_DIR="$WORK/no-slots" NIGHT_FIXER_SLOTS_DIR="$WORK/no-slots" \
+    HARNESS_HOLDS_DIR="$holds" HARNESS_DOCTOR_DIR="$WORK/held" HARNESS_DOCTOR_NOW=$held_now HARNESS_DOCTOR_FAKE_SAMPLE="" \
     "$DOCTOR" --quiet
 }
 run_held || fail "a run over live and leaked holds failed"
@@ -1560,6 +1561,13 @@ assert_eq "$(jq -cn --arg b "gone-$dead_pid.json" --arg d "reused-$reused_pid.js
   "a hold over 60 s is a watch, past 5 min red, one under 60 s nothing; a dead pid's file and one whose pid started after since a leak"
 assert_eq 2 "$(grep -c $'^[1-9][0-9]*\t.*holds [0-9]* jobs*, longest [0-9]* min: memory pressure' "$WORK/held/menu.txt")" \
   "the doctor's menu names each hold over 60 s, what it holds, for how long and why"
+mkdir -p "$WORK/night-slots/1" && echo "$$" > "$WORK/night-slots/1/pid"
+RUN_SUITES_SLOTS_DIR="$WORK/no-slots" NIGHT_FIXER_SLOTS_DIR="$WORK/night-slots" HARNESS_HOLDS_DIR="$holds" \
+  HARNESS_DOCTOR_DIR="$WORK/held-night" HARNESS_DOCTOR_NOW=$held_now HARNESS_DOCTOR_FAKE_SAMPLE="" "$DOCTOR" --quiet ||
+  fail "a run over holds under a night slot failed"
+assert_eq '["watch","bench-throttle holds 3 jobs, longest 7 min: memory pressure while 1 suite or night-fixer slots ran"]' \
+  "$(jq -c '[.problems[] | select(.id == "limiter_hold:bench-throttle") | .state, .fact]' "$WORK/held-night/latest.json")" \
+  "a hold past 5 min while a suite or night-fixer slot runs is the night's own requested load: a watch, never red"
 assert_eq "bench-throttle-1-7001.json bench-throttle-1-7002.json bench-throttle-1.json quick-1.json suite-slots-1.json" \
   "$(ls "$holds" | tr '\n' ' ' | sed 's/ $//')" "a run that reported a leak did not sweep its files, or swept a live hold"
 run_held || fail "a second run over the swept holds failed"
