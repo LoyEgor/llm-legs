@@ -195,6 +195,7 @@ relay_door_tests() {
   clear_stub
   CLAUDECODE=1 WORKER_RUN_RELAY=log-audit:42 start_ok claudeb
   await_done || fail "the log-audit run never finished"
+  assert test "$(cat "$WORKER_RUN_DIR/$RUN_ID/script-owner")" = 'log-audit 42'
   clear_stub
   CLAUDECODE=1 WORKER_RUN_RELAY=code-doctor-judge:42 start_ok claudeb
   await_done || fail "the code-doctor-judge run never finished"

@@ -2878,6 +2878,7 @@ start_run() {
     ''|.|..|*[!A-Za-z0-9._-]*) ;;
     *)
       printf '%s\n' "$launcher_session" >"$directory/launcher"
+      case "$RELAY_TYPE" in end-report | code-doctor-judge | log-audit) printf '%s %s\n' "$RELAY_TYPE" "$RELAY_AGENT" >"$directory/script-owner" ;; esac
       "$SCRIPT_DIRECTORY/statusline-place" add --session "$launcher_session" --kind worker-start \
         --path "$workdir" >/dev/null 2>&1 || :
       export CLAUDE_LAUNCHER_SESSION="$launcher_session"

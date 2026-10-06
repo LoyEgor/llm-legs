@@ -95,6 +95,16 @@ for run in "$run_root"/*/; do
   owned run "$id" && continue
   pid=$(jq -r '.pid // 0' "$run/meta.json" 2>/dev/null)
   [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && supervisor_running "$run" "$pid" || continue
+  # A script that launched the run under its relay token (log-audit, code-doctor judge) waits it out
+  # itself; owned while that script lives — older than the run, so a recycled pid does not count.
+  owner=''
+  { read -r _ owner <"$run/script-owner"; } 2>/dev/null
+  if [[ "$owner" =~ ^[0-9]+$ ]] && [ "$owner" -gt 1 ]; then
+    owner_age=$(etime_seconds "$(ps -p "$owner" -o etime= 2>/dev/null | tr -d '[:space:]')")
+    began=$(jq -r '.pid_started_at // 0' "$run/meta.json" 2>/dev/null)
+    [[ "$owner_age" =~ ^[0-9]+$ ]] && [[ "$began" =~ ^[0-9]+$ ]] &&
+      [ "$owner_age" -ge $((now - began - PID_START_SLACK)) ] && continue
+  fi
   tag=$(head -n1 "$run/tag" 2>/dev/null)
   lines=$lines${lines:+$'\n'}"- worker run $id${tag:+ ($tag)} — spawn $(relay_of "$run") \`ATTACH $id:\`"
 done

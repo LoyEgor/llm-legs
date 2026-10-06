@@ -89,6 +89,7 @@ assert test "$(wc -l <"$CALLS" | tr -d ' ')" -eq 2
 assert test "$(cut -f1 "$CALLS" | sort -u)" = log-audit
 assert test "$(cut -f2 "$CALLS" | grep -c '^claudeb --model sonnet --effort medium ')" -eq 2
 assert grep -q '^# Log audit: chunk 1 of 1$' "$CALLS.brief.1"
+assert test "$(head -1 "$CALLS.brief.1")$(head -1 "$CALLS.brief.2")" = 'ROUND: noneROUND: none'
 assert grep -q 'Fixture chat' "$CALLS.brief.1"
 assert test "$(grep -c 'Log audit: chunk' "$CALLS.brief.1")" -eq 1
 assert grep -q 'awk multibyte error from a hook' "$CALLS.brief.2"

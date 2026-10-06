@@ -174,7 +174,7 @@ def slug(text):
 
 
 def merged(raw, folder, deadline):
-    brief = "%s\n\n%s\n\n%s\n\n%s\n" % (OWN_MARK + ": merge", LEGEND, MERGE_TASK % TOP,
+    brief = "ROUND: none\n%s\n\n%s\n\n%s\n\n%s\n" % (OWN_MARK + ": merge", LEGEND, MERGE_TASK % TOP,
                                         "\n".join(json.dumps(item, ensure_ascii=False) for item in raw))
     path = os.path.join(folder, "merge.md")
     with open(path, "w", encoding="utf-8") as handle:
@@ -216,7 +216,7 @@ def run(args):
     for number, text in enumerate(packed, 1):
         path = os.path.join(folder, "chunk-%03d.md" % number)
         with open(path, "w", encoding="utf-8") as handle:
-            handle.write("%s: chunk %d of %d\n\n%s\n\n%s\n\n%s\n" % (OWN_MARK, number, len(packed), LEGEND, CHUNK_TASK, text))
+            handle.write("ROUND: none\n%s: chunk %d of %d\n\n%s\n\n%s\n\n%s\n" % (OWN_MARK, number, len(packed), LEGEND, CHUNK_TASK, text))
         files.append(path)
     if args.dry_run:
         print("log-audit: %d transcripts since %s in %d chunks under %s (dry run, nothing launched)" % (

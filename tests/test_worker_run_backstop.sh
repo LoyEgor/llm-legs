@@ -59,6 +59,27 @@ jq -c --argjson t "$(($(date +%s) - 86400))" '.pid_started_at = $t' "$WORKER_RUN
   mv "$WORK/m" "$WORKER_RUN_DIR/recycled/meta.json"
 assert_eq "" "$(stop)"
 
+# A run a live script launched under its relay token is the script's to wait out; a gone script, or
+# a pid younger than the run (recycled), leaves it unowned.
+scripted() { # id owner-pid run-age-s
+  run "$1" s1 claudeb
+  printf 'log-audit %s\n' "$2" >"$WORKER_RUN_DIR/$1/script-owner"
+  jq -c --argjson t "$(($(date +%s) - $3))" '.pid_started_at = $t' "$WORKER_RUN_DIR/$1/meta.json" >"$WORK/m" &&
+    mv "$WORK/m" "$WORKER_RUN_DIR/$1/meta.json"
+}
+scripted audited "$LIVE_PID" 0
+assert_eq "" "$(stop)"
+scripted orphaned 999999 0
+assert_has 'worker run orphaned' "$(stop | reason)"
+rm -rf "$WORKER_RUN_DIR/orphaned"; forget
+. "$ROOT/share/run-liveness.sh"
+read -r old_pid old_age < <(ps -Ao pid=,etime= | while read -r p e; do [ "$p" -gt 1 ] && printf '%s %s\n' "$p" "$(etime_seconds "$e")"; done | sort -k2 -n | tail -1)
+scripted recycled-owner "$LIVE_PID" "$old_age"
+jq -c --argjson p "$old_pid" '.pid = $p' "$WORKER_RUN_DIR/recycled-owner/meta.json" >"$WORK/m" &&
+  mv "$WORK/m" "$WORKER_RUN_DIR/recycled-owner/meta.json"
+assert_has 'worker run recycled-owner' "$(stop | reason)"
+rm -rf "$WORKER_RUN_DIR/recycled-owner" "$WORKER_RUN_DIR/audited"; forget
+
 # Inside a headless worker or a subagent the backstop is silent.
 run r2 s1 claudeb
 assert_eq "" "$(CLAUDEB_WORKER=1 stop)"
@@ -130,4 +151,4 @@ run r4 s1 codex
 assert_eq "" "$(PATH="$WORK/shim:$PATH" stop)"
 asserts=$((asserts + 1)); [ ! -e "$WORK/ps-runs" ] || fail "an owned run was probed with ps"
 
-printf 'PASS: %s asserts; a live worker or review run of this chat that no live relay tag or fresh ATTACH seed owns holds the stop naming the ATTACH spawn, while another chat'"'"'s, a finished, a dead or a still-starting run, a stale panel, a worker and a subagent pass, and three holds in a row release the fourth\n' "$asserts"
+printf 'PASS: %s asserts; a live worker or review run of this chat that no live relay tag or fresh ATTACH seed owns holds the stop naming the ATTACH spawn, while another chat'"'"'s, a finished, a dead or a still-starting run, a stale panel, a worker, a subagent and a run its live launching script waits on pass, and three holds in a row release the fourth\n' "$asserts"
