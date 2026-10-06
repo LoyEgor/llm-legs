@@ -5634,6 +5634,19 @@ Drive Egor's visible browser ($target_label) using CUA REPL (\`js\` tool).
 - End the answer with: \`OUTCOME: BROWSER_OK_EXTENSION|BROWSER_OK_COMPUTER|BROWSER_UNAVAILABLE reason=<text>\`; a session Computer Use stopped for a disallowed URL ends with \`OUTCOME: BROWSER_UNAVAILABLE reason=disallowed-url url=<that tab's URL>\`.
 EOF
     elif [ "$plan_vendor" = claudeb ]; then
+      local host_parents host_count=0 local_rule
+      if [ -n "${BROWSE_NATIVE_HOST_PARENTS+x}" ]; then
+        host_parents=$BROWSE_NATIVE_HOST_PARENTS
+      else
+        host_parents=$(ps -axo ppid=,args= 2>/dev/null | awk '/--chrome-native-host/ && !/awk/ {print $1}' |
+          while read -r parent; do ps -o args= -p "$parent" 2>/dev/null; done)
+      fi
+      [ -z "$host_parents" ] || host_count=$(grep -c . <<<"$host_parents")
+      if [ "$host_count" -eq 1 ] && grep -qF "$target_app" <<<"$host_parents"; then
+        local_rule="Else, if exactly one entry has \`\"isLocal\": true\`: it is $target_label — the only native-messaging host on this Mac runs under it. Select it, print \`BROWSER-DEVICE-LOCAL: <its id>\` and continue on it as the target device."
+      else
+        local_rule="Else, if entries with \`\"isLocal\": true\` are listed (native-messaging connections; $host_count host(s) run, none provably under $target_label alone), identify each before driving it: \`select_browser\` it, \`tabs_context_mcp\` (\`createIfEmpty: true\`), \`navigate\` that tab to \`https://example.com/?cc-probe=<random token>\` and wait until the tab reports that URL, then poll \`osascript -e 'tell application id \"$target_bundle\" to get URL of every tab of every window'\` for up to 10 s. The entry whose probe URL appears is $target_label: print \`BROWSER-DEVICE-LOCAL: <its id>\` and continue on it. Close every probe tab; never drive an entry whose probe did not appear."
+      fi
       cat >"$preamble_file" <<EOF
 # Browser Automation Preamble (Claudeb / $target_label)
 
@@ -5642,10 +5655,11 @@ Drive Egor's visible browser ($target_label) using Claude in Chrome extension.
 ## Instructions
 - Call \`list_connected_browsers\` first.
 - If target device \`$plan_device\` is listed, select it and continue.
-- Else, if entries with \`"isLocal": true\` are listed (a native-messaging connection: its id is not the bridge device id), identify each before driving it: \`select_browser\` it, \`tabs_context_mcp\` (\`createIfEmpty: true\`), \`navigate\` that tab to \`https://example.com/?cc-probe=<random token>\`, then run \`osascript -e 'tell application id "$target_bundle" to get URL of every tab of every window'\`. The local entry whose probe URL appears there is $target_label: print \`BROWSER-DEVICE-LOCAL: <its id>\` and continue on it as the target device. Close every probe tab; never drive a local entry whose probe did not appear.
-- If neither, print exactly:
+- $local_rule
+- Never address any app other than \`$target_bundle\` with AppleScript: scripting a closed app launches it.
+- If no entry is \`isLocal\` and \`$plan_device\` is not listed, print exactly:
   \`OUTCOME: BROWSER_DEVICE_NOT_IN_ACCOUNT device=$plan_device account=$plan_account\`
-  and stop immediately.
+  and stop immediately. If local entries exist but none is identified as $target_label, print exactly \`OUTCOME: BROWSER_LOCAL_UNIDENTIFIED device=$plan_device\` and stop: the account was never asked, so say nothing about it.
 - Never \`switch_browser\` to an unlisted device, and never run pairing or login flows headless.
 - After any extension reconnect or tool error, call \`list_connected_browsers\` again and re-select the target device before the next action: a reconnect silently falls back to the account's default browser.
 - If \`tabs_context_mcp\` (\`createIfEmpty: true\`) or the first \`navigate\` fails twice on \`$plan_device\`, re-selecting it in between, print exactly:
