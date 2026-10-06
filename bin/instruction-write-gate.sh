@@ -33,18 +33,18 @@ self=$0
 for _ in 1 2 3 4 5; do
   [ -L "$self" ] || break
   target=$(readlink "$self")
-  case "$target" in /*) self=$target ;; *) self=$(dirname "$self")/$target ;; esac
+  case "$target" in /*) self=$target ;; *) self=${self%/*}/$target ;; esac
 done
-. "$(dirname "$self")/../share/gate-journal.sh" 2>/dev/null || gate_journal() { :; }
-. "$(dirname "$self")/../share/instruction-files.sh" 2>/dev/null ||
+case "$self" in */*) self=${self%/*} ;; *) self=. ;; esac
+. "$self/../share/gate-journal.sh" 2>/dev/null || gate_journal() { :; }
+. "$self/../share/instruction-files.sh" 2>/dev/null ||
   { gate_journal write fault '' '' '' 'share/instruction-files.sh missing'
     echo "instruction write gate: cannot load share/instruction-files.sh, so no shell write can be checked" >&2; exit 2; }
 command -v jq >/dev/null 2>&1 ||
   { gate_journal write fault '' '' '' 'jq missing'
     echo "instruction write gate: jq is missing, so the hook payload cannot be read" >&2; exit 2; }
 
-input=$(cat) || input=''
-values=$(printf '%s' "$input" | jq -er '
+values=$(jq -er '
   [(.tool_name // ""), (.session_id // ""), (.cwd // ""), (.transcript_path // ""),
    (.tool_use_id // "" | tostring), (.agent_id // "" | tostring), (.tool_input.command // "")]
   | join("\u001f")' 2>/dev/null) ||

@@ -1802,7 +1802,7 @@ instruction_inflight_mark() { # session tool_use_id tool cwd [agent_id]
   local dir now id=${2:-} cwd=${4:--} agent=${5:--}
   INSTRUCTION_INFLIGHT_FILE=''
   dir="$(instruction_watch_state)/inflight"
-  mkdir -p "$dir" 2>/dev/null || return 1
+  [ -d "$dir" ] || mkdir -p "$dir" 2>/dev/null || return 1
   now=$(instruction_now)
   [ -n "$id" ] || id="${now%%.*}-$$"
   id=${id//[^A-Za-z0-9._-]/_}

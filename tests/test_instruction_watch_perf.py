@@ -233,12 +233,15 @@ class InstructionPerformance(unittest.TestCase):
         self.shim('shasum', 'echo hash >> "$PROBE_LOG"\nexec @REAL@ "$@"\n')
         self.shim('find', 'echo find >> "$PROBE_LOG"\nexec @REAL@ "$@"\n')
         self.shim('git', 'case " $* " in *" ls-files "*) echo ls-files >> "$PROBE_LOG" ;; esac\nexec @REAL@ "$@"\n')
+        for name in ('cat', 'dirname', 'mkdir'):
+            self.shim(name, f'echo {name} >> "$PROBE_LOG"\nexec @REAL@ "$@"\n')
         trace = self.put(self.work / 'trace.sh', 'set -x\n')
         result = self.hook('check', PATH=path, PROBE_LOG=str(log), BASH_ENV=str(trace))
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual('', result.stdout)
         self.assertEqual(['stat', 'stat'], log.read_text().splitlines())
         self.assertFalse(' pin ' in result.stderr, 'quiet check performed per-file pin work')
+        self.assertNotIn("read -r -d $'\\035'", result.stderr, 'quiet check read the stat join byte by byte')
 
     def test_reused_enumeration_still_sees_every_arrival(self):
         self.git('init', '-q')

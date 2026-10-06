@@ -42,10 +42,11 @@ self=$0
 for _ in 1 2 3 4 5; do
   [ -L "$self" ] || break
   target=$(readlink "$self")
-  case "$target" in /*) self=$target ;; *) self=$(dirname "$self")/$target ;; esac
+  case "$target" in /*) self=$target ;; *) self=${self%/*}/$target ;; esac
 done
-. "$(dirname "$self")/../share/gate-journal.sh" 2>/dev/null || gate_journal() { :; }
-. "$(dirname "$self")/../share/instruction-files.sh" 2>/dev/null ||
+case "$self" in */*) self=${self%/*} ;; *) self=. ;; esac
+. "$self/../share/gate-journal.sh" 2>/dev/null || gate_journal() { :; }
+. "$self/../share/instruction-files.sh" 2>/dev/null ||
   { gate_journal watch fault '' '' '' 'share/instruction-files.sh missing'
     echo "instruction watch: cannot load share/instruction-files.sh, so no instruction-file change can be seen" >&2; exit 2; }
 command -v jq >/dev/null 2>&1 ||
@@ -739,9 +740,10 @@ load_baseline() { # file
   targets=($(LC_ALL=C awk -F'\t' "$_watch_row_awk"'
     n >= 8 && F[1] !~ /^#/ { if (!seen[F[8]]++) print F[8]; if (!seen[F[7]]++) print F[7] }' "$1"))
   set +f
-  # Captured whole and read back from a here-string: `read -d` takes a pipe one byte at a time, and
-  # these rows run to hundreds of kilobytes.
+  # Captured whole and split on IFS: a here-string this size costs bash a forked writer and a
+  # byte-wise `read` (14 ms CPU, ~55 ms wall per quiet check), and a `%%` pattern over it is quadratic.
   local rows
+  local -a parts=()
   rows=$(
     { [ "${#targets[@]}" -eq 0 ] || stat -f '%N%t%Fm%t%z%t%i%t%Y' -- "${targets[@]}" 2>/dev/null; } |
     LC_ALL=C awk -F'\t' '
@@ -765,9 +767,14 @@ load_baseline() { # file
         printf "\035"; for (k = 1; k <= na; k++) print all[k]
         printf "\035"; for (k = 1; k <= nr; k++) print rest[k]
       }' - "$1")
+  set -f
+  IFS=$'\035'
+  parts=($rows)
+  IFS=$'\n'
+  set +f
+  pinned=${parts[0]:-}
+  b_all=${parts[1]:-}
   {
-    IFS= read -r -d $'\035' pinned
-    IFS= read -r -d $'\035' b_all
     while IFS= read -r line; do
       IFS=$'\t' read -r mtime size ino trust hash link vis real <<<"${line%%$'\036'*}"
       case "$mtime" in
@@ -782,7 +789,7 @@ load_baseline() { # file
       line=${line#*$'\036'}
       c_real+=("${line%%$'\036'*}"); c_vis+=("${line#*$'\036'}")
     done
-  } <<<"$rows"
+  } <<<"${parts[2]:-}"
 }
 
 # $4 says what the comparison is against. `check`: this session's own baseline, after one of its
@@ -793,7 +800,7 @@ load_baseline() { # file
 cmd_check() {
   local baseline=$1 event=$2 sid=$3 mode=${4:-check} ref=${5:-$1}
   local budget=${INSTRUCTION_WATCH_BUDGET:-20}
-  mkdir -p "$STATE_DIR" 2>/dev/null || { gate_journal watch fault "$sid" '' '' 'state dir not creatable'; exit 0; }
+  [ -d "$STATE_DIR" ] || mkdir -p "$STATE_DIR" 2>/dev/null || { gate_journal watch fault "$sid" '' '' 'state dir not creatable'; exit 0; }
   [ -n "$visible_ready" ] || load_visible
 
   local -a reports=() keys=() deltas=() restores=() reverted=() r_attr=() r_cands=() r_restore=() r_revert=()
@@ -1027,11 +1034,9 @@ cmd_check() {
   exit 0
 }
 
-payload=""
-[ -t 0 ] || payload=$(cat 2>/dev/null)
-# One jq for the whole payload: this runs after every call, and a second interpreter
-# start buys nothing.
-values=$(printf '%s' "$payload" | jq -er '
+# One jq straight off stdin for the whole payload: this runs after every call, and a second
+# process start buys nothing.
+values=$([ ! -t 0 ] && jq -er '
   if type != "object" then error("not an object") else . end
   | [(.hook_event_name // "PostToolUse"), (.session_id // ""), (.transcript_path // ""),
      (.tool_use_id // "" | tostring), (.cwd // ""), (.agent_id // "" | tostring)]
