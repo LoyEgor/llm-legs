@@ -42,6 +42,8 @@ vendor CLI docs). Re-verify when `caps=stale` or `model_caps=stale` shows up; th
   why it is refused), `default_bg_model`, `brush_px`, `cutout_max_side`, `unsupported`, `timeout_s`.
 - `scripts`: the vendor's media scripts in `bin/` by kind (`image`, `video`, `music`, `sfx`, `listen`); a kind
   the vendor lacks is absent. The vendor list itself is the set of manifests in this directory.
+- `default_for`: kinds this vendor runs when several manifests name one and `media-run` gets no `--vendor`
+  (gemini: `music`, `sfx`); two claiming one kind is a usage error.
 - `rosters`: per route, the argv (a `bin/` name and its arguments) that lists that route's accounts: the web
   engines print `{"accounts": [{"account", "login", "walled_until", …}]}`, the CLI pools print `name: state` lines.
 - `spares`: per media kind, the extra takes a fan-out launches up front for N requested ones,
@@ -55,5 +57,9 @@ vendor CLI docs). Re-verify when `caps=stale` or `model_caps=stale` shows up; th
   tool takes (grok `reference_to_video`).
 - `api_only`: what the vendor's REST API offers and the CLI tools do not carry — recorded so a
   release that wires one is noticed, never sent.
+- `accounts` (an API vendor, elevenlabs): the key file, `pool` (kind → accounts tried in order on a spent
+  quota, `default` for the rest), `scoped` (a key's permission
+  limit). Per-kind blocks (`sfx`, `music`, `speech`, …) hold the models, ranges and the `output_format` per
+  dest extension the script reads; `costs` holds the measured credits.
 - Soft vs hard for the fan-out: `video: null` is hard (skip the vendor); `refs.max`, `aspects`,
   `exact_size`, `transparent` are soft (truncate, map to the nearest, emulate).

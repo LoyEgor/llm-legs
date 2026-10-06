@@ -8,6 +8,7 @@ under [`docs/image-vendors/`](image-vendors/):
 | [Codex](image-vendors/codex.md) | `bin/codex-image` | Default: ChatGPT in the hidden Chrome (`--route web`), falling back to the codex CLI's built-in `image_gen`; no aspect argument — `--aspect`/`--size` are one builder's prose on both routes, checked by `aspect=`; `--region`, `--point`, `--remove-bg` web-only; no video |
 | [Gemini](image-vendors/gemini.md) | `bin/gemini-image`, `bin/gemini-video` | Default: Nano Banana Pro/2/2 Lite on Google Flow (0 credits, 1-4 takes, 10 refs, five aspects, 2K); `--route cli`: agy `generate_image` (3 refs, seven aspects); video on Google Flow (Veo 3.1 / Omni) through a hidden Chrome |
 | [Grok](image-vendors/grok.md) | `bin/grok-image`, `bin/grok-video` | Imagine image + video; chroma transparency |
+| [ElevenLabs](image-vendors/elevenlabs.md) | `bin/elevenlabs-<kind>` | Paid API, audio only: exact-length sfx and music, stems, speech and dialogue, voice change and design, noise isolation, transcription, forced alignment, dubbing; `media-run <kind> --vendor elevenlabs` (gemini stays the default for music and sfx) |
 
 Runtime limits are the JSON manifests in [`share/image-caps/`](../share/image-caps/README.md),
 not these pages. Re-verify a manifest when a run prints `caps=stale` or `model_caps=stale`.

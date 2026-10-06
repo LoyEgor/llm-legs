@@ -76,8 +76,11 @@ elif [ -n "$vendors_arg" ]; then
 elif [ "$(wc -l <<<"$known")" -eq 1 ]; then
   vendors=$known
 else
-  printf 'media-run: name --vendor (one of: %s) or --vendors\n' "$known_list" >&2
-  exit 2
+  vendors=$(while IFS= read -r one; do
+    jq -e --arg kind "$kind" '.default_for // [] | index($kind)' "$caps_dir/$one.json" >/dev/null 2>&1 && printf '%s\n' "$one"
+  done <<<"$known" || :)
+  [ -n "$vendors" ] && [ "$(wc -l <<<"$vendors")" -eq 1 ] ||
+    { printf 'media-run: name --vendor (one of: %s) or --vendors\n' "$known_list" >&2; exit 2; }
 fi
 
 takes=false dest_dir='' dry_run=false account='' route=''

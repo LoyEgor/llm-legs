@@ -83,7 +83,7 @@ UNREADABLE_RUN_RE="${VENDOR_WORD}[\$][{]?[A-Za-z_][A-Za-z0-9_]*[}]?[[:space:]]+(
 
 # Called past media-run, a media script or a web engine's generating subcommand spends an account
 # with no work line naming it, so every hand is refused, a relay's and a fork's included.
-OWNED_IMAGE_RE="${VENDOR_WORD}((codex|gemini|grok)-image|grok-video|gemini-(video|music|sfx|listen)|image-fanout)${EDGE}"
+OWNED_IMAGE_RE="${VENDOR_WORD}((codex|gemini|grok)-image|grok-video|gemini-(video|music|sfx|listen)|elevenlabs-(sfx|music|stems|speech|revoice|isolate|transcribe|align|dub|voice)|image-fanout)${EDGE}"
 MEDIA_ENGINE_RE="${VENDOR_WORD}(chatgpt-web[[:space:]]+(generate|resize|comment|remove-bg)|gemini-web[[:space:]]+generate)${EDGE}"
 
 # A review run's wait is owned the same way, by the `review-waiter` agent, and light-research by its
@@ -322,7 +322,7 @@ image_scan=$(i=0
 image_hit=$(scan=$image_scan; first_hit "$OWNED_IMAGE_RE")
 [ -n "$image_hit" ] || image_hit=$(first_hit "$MEDIA_ENGINE_RE")
 [ -z "$image_hit" ] ||
-  deny "Blocked: \`${image_hit}\` runs media past \`media-run\`, the one door that renders the account it spends: load the media skill, write the prompt yourself and run \`media-run <image|video|music|sfx|listen> --vendor <v> -- <the script's own args>\` (several vendors, \`--takes\` or \`--jobs\` fan out). Quoting one inside a heredoc body is not running it."
+  deny "Blocked: \`${image_hit}\` runs media past \`media-run\`, the one door that renders the account it spends: load the media skill, write the prompt yourself and run \`media-run <kind> --vendor <v> -- <the script's own args>\` (\`media-run --help\` lists the kinds) (several vendors, \`--takes\` or \`--jobs\` fan out). Quoting one inside a heredoc body is not running it."
 case "$agent_type" in
   review-waiter) ;;
   *)

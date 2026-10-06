@@ -3,6 +3,7 @@
   "verified": "2026-10-04",
   "routes": ["flow", "cli"],
   "scripts": {"image": "gemini-image", "video": "gemini-video", "music": "gemini-music", "sfx": "gemini-sfx", "listen": "gemini-listen"},
+  "default_for": ["music", "sfx"],
   "rosters": {"flow": ["gemini-web", "accounts"], "cli": ["geminib", "list"]},
   "spares": {"image": {"ratio": 0.25, "min": 1}},
   "cli": {

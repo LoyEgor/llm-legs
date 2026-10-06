@@ -1,0 +1,151 @@
+{
+  "vendor": "elevenlabs",
+  "verified": "2026-10-06",
+  "routes": [
+    "api"
+  ],
+  "scripts": {
+    "sfx": "elevenlabs-sfx",
+    "music": "elevenlabs-music",
+    "stems": "elevenlabs-stems",
+    "speech": "elevenlabs-speech",
+    "revoice": "elevenlabs-revoice",
+    "isolate": "elevenlabs-isolate",
+    "transcribe": "elevenlabs-transcribe",
+    "align": "elevenlabs-align",
+    "dub": "elevenlabs-dub",
+    "voice": "elevenlabs-voice"
+  },
+  "video": null,
+  "accounts": {
+    "file": "~/.config/elevenlabs/keys.txt",
+    "pool": {
+      "default": [
+        "trimmed",
+        "full"
+      ],
+      "transcribe": [
+        "trimmed",
+        "stt",
+        "full"
+      ]
+    },
+    "scoped": {
+      "stt": "speech-to-text permission only"
+    },
+    "floors": "a `reserve=N` note on a key line: the account is skipped unless more than N credits are left (trimmed: 100000, the key owner's hard floor)"
+  },
+  "formats": {
+    "mp3": "mp3_44100_128",
+    "wav": "pcm_44100"
+  },
+  "sfx": {
+    "model": "eleven_text_to_sound_v2",
+    "duration_s": [
+      0.5,
+      30
+    ],
+    "count_max": 4,
+    "formats": {
+      "mp3": "mp3_44100_192",
+      "wav": "pcm_44100"
+    },
+    "pcm_channels": 2
+  },
+  "music": {
+    "model": "music_v2_5",
+    "models": [
+      "music_v1",
+      "music_v2",
+      "music_v2_5"
+    ],
+    "length_s": [
+      3,
+      600
+    ],
+    "formats": {
+      "mp3": "mp3_44100_192",
+      "wav": "pcm_44100"
+    },
+    "pcm_channels": 2
+  },
+  "stems": {
+    "variations": {
+      "two": "two_stems_v1",
+      "six": "six_stems_v1"
+    },
+    "format": "mp3_44100_192"
+  },
+  "speech": {
+    "model": "eleven_v3",
+    "dialogue_model": "eleven_v3",
+    "voice": "George",
+    "formats": {
+      "mp3": "mp3_44100_128",
+      "wav": "mp3_44100_192",
+      "opus": "opus_48000_128"
+    },
+    "dialogue_formats": {
+      "wav": "wav_44100",
+      "mp3": "mp3_44100_128"
+    }
+  },
+  "revoice": {
+    "model": "eleven_multilingual_sts_v2",
+    "formats": {
+      "mp3": "mp3_44100_128",
+      "wav": "mp3_44100_192"
+    }
+  },
+  "isolate": {
+    "formats": {
+      "mp3": "mp3",
+      "wav": "wav"
+    },
+    "min_s": 4.6
+  },
+  "transcribe": {
+    "model": "scribe_v2"
+  },
+  "dub": {
+    "timeout_s": 1800,
+    "poll_s": 5
+  },
+  "voice": {
+    "model": "eleven_ttv_v3",
+    "models": [
+      "eleven_multilingual_ttv_v2",
+      "eleven_ttv_v3"
+    ],
+    "text_chars": [
+      100,
+      1000
+    ],
+    "format": "mp3_44100_128"
+  },
+  "api_only": {
+    "flows_image_video": "GPT Image 1/1.5/2/2.5, Veo 3.1 (+Fast), Seedance 2/2.5 via /v1/flows/{image,video} (Pro plan): owner keeps images and ordinary video on codex/gemini/grok (2026-10-06)",
+    "voice_cloning": "instant (IVC) and professional (PVC) clones of a recorded voice: /v1/voices/add, /v1/voices/pvc",
+    "pronunciation_dictionaries": "/v1/pronunciation-dictionaries; locators on speech and dialogue",
+    "studio": "long-form projects and podcasts: /v1/studio",
+    "agents": "conversational agents platform: /v1/convai",
+    "music_editing": "composition plans (/v1/music/plan), inpainting of a stored song, finetunes, streaming",
+    "realtime": "websocket TTS input streaming and realtime STT (scribe realtime is used by transcriptions-gpt)",
+    "voice_library": "shared community voices: /v1/shared-voices",
+    "lipsync": "a still face speaking a given audio (creatify-aurora via /v1/flows/video; Seedance 2 audio refs): Flows need the Pro plan, both accounts are Creator (402 paid_plan_required, 2026-10-06); the only video ability no other vendor has"
+  },
+  "costs": {
+    "_measured": "2026-10-06, trimmed (Creator); header = response cost header, balance = settled subscription delta",
+    "sfx": "~11 credits/s (1.5 s 17, 2 s loop 22; header)",
+    "speech": "~0.46 credit/char on eleven_v3 and multilingual_v2 (39 chars 18), eleven_v4 ~0.12 (43 chars 5); header",
+    "dialogue": "40 chars 22 (header)",
+    "music": "~13.8 credits/s (10 s 138, video-to-music 5 s 69; balance)",
+    "stems": "~13.8 credits/s for two stems, ~27.7 for six (6 s: 83 and 166; balance)",
+    "revoice": "~11 credits/s (2.77 s 30; header)",
+    "isolate": "~11 credits/s (6.92 s 76; header)",
+    "transcribe": "~0.25 credit/s (4 s 1; header)",
+    "align": "~0.3 credit/s (2.9 s 1; header)",
+    "dub": "2.77 s 125 (balance)",
+    "voice": "three previews of a 120-char text 111, of the auto text (~40 s each) ~350 (balance)"
+  }
+}

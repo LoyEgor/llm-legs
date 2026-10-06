@@ -14,7 +14,7 @@ CAPS="$WORK/caps" BIN="$WORK/bin" CACHE="$WORK/cache" LOG="$WORK/log"
 mkdir -p "$CAPS" "$BIN" "$CACHE" "$LOG"
 cp "$ROOT"/share/image-caps/*.json "$CAPS/"
 # A fourth vendor no line of media-run knows, with a kind no real vendor has.
-printf '%s\n' '{"vendor":"zeta","routes":["cli"],"scripts":{"image":"zeta-image","sfx":"zeta-sfx","smell":"zeta-smell"}}' >"$CAPS/zeta.json"
+printf '%s\n' '{"vendor":"zeta","routes":["cli"],"scripts":{"image":"zeta-image","sfx":"zeta-sfx","smell":"zeta-smell"},"default_for":["sfx"]}' >"$CAPS/zeta.json"
 
 fake() { # name: records its pid, IMAGE_JOB_ID and every argument NUL-terminated, then exits FAKE_RC
   cat >"$BIN/$1" <<'EOF'
@@ -76,8 +76,14 @@ ok
 run video --vendors all -- --dest-dir /tmp/fan --prompt x
 same_args image-fanout --vendors gemini,grok --video --dest-dir /tmp/fan --prompt x || fail "a video fan-out is not the video vendors with --video"
 ok
-run music --vendors all -- --dest /tmp/a.wav --prompt x
-[ "$rc" = 0 ] && same_args gemini-music --dest /tmp/a.wav --prompt x || fail "a one-vendor --vendors all did not exec that script"
+run listen --vendors all -- --dest /tmp/a.md --prompt x
+[ "$rc" = 0 ] && same_args gemini-listen --dest /tmp/a.md --prompt x || fail "a one-vendor --vendors all did not exec that script"
+ok
+run music -- --dest /tmp/a.wav --prompt x
+[ "$rc" = 0 ] && same_args gemini-music --dest /tmp/a.wav --prompt x || fail "a kind several vendors share did not run the one its manifests' default_for names"
+ok
+run sfx -- --dest /tmp/a.wav --prompt x
+[ "$rc" = 2 ] || fail "two default_for vendors for one kind were not refused (rc $rc)"
 ok
 run sfx --vendors all -- --dest /tmp/a.wav --prompt x
 [ "$rc" = 2 ] && [ ! -e "$LOG/image-fanout.args" ] || fail "a sound fan-out reached image-fanout (rc $rc)"

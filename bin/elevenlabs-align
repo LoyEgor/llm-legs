@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+{
+exec "${ELEVENLABS_PYTHON:-python3}" "$(cd -P "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)/share/elevenlabs_media.py" align "$@"
+exit; }
