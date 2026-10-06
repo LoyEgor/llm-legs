@@ -130,7 +130,7 @@
         "rule": "floor",
         "ident": "bash:other"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-06T07:01:00+03:00",
