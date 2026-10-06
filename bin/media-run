@@ -16,7 +16,9 @@ resolve_root() {
 }
 
 root=$(resolve_root)
-caps_dir=${MEDIA_RUN_CAPS_DIR:-$root/share/image-caps}
+. "$root/share/image-caps.sh"
+caps_root=${MEDIA_RUN_CAPS_ROOT:-$root}
+caps_dir=$(image_caps_dir "$caps_root")
 bin_dir=${MEDIA_RUN_BIN_DIR:-$root/bin}
 worker_pick=${MEDIA_RUN_WORKER_PICK:-$root/bin/worker-pick}
 
@@ -77,7 +79,7 @@ elif [ "$(wc -l <<<"$known")" -eq 1 ]; then
   vendors=$known
 else
   vendors=$(while IFS= read -r one; do
-    jq -e --arg kind "$kind" '.default_for // [] | index($kind)' "$caps_dir/$one.json" >/dev/null 2>&1 && printf '%s\n' "$one"
+    jq -e --arg kind "$kind" '.default_for // [] | index($kind)' "$(image_caps_file "$caps_root" "$one")" >/dev/null 2>&1 && printf '%s\n' "$one"
   done <<<"$known" || :)
   [ -n "$vendors" ] && [ "$(wc -l <<<"$vendors")" -eq 1 ] ||
     { printf 'media-run: name --vendor (one of: %s) or --vendors\n' "$known_list" >&2; exit 2; }
@@ -126,14 +128,14 @@ if [ "$fanout" = true ]; then
   exec "$bin_dir/image-fanout" "${fanout_args[@]}" "$@"
 fi
 
-script=$(jq -r --arg kind "$kind" '.scripts[$kind]' "$caps_dir/$vendors.json")
+script=$(jq -r --arg kind "$kind" '.scripts[$kind]' "$(image_caps_file "$caps_root" "$vendors")")
 [ -x "$bin_dir/$script" ] || { printf 'media-run: %s is not an executable in %s\n' "$script" "$bin_dir" >&2; exit 1; }
 export IMAGE_JOB_ID=${IMAGE_JOB_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}
 
 # Without a pin the account is the script's own pick at run time: a CLI image route asks worker-pick,
 # which answers the same a second later; every browser route and the other kinds rotate their own pool.
 if [ -z "$account" ]; then
-  [ -n "$route" ] || [ "$kind" != image ] || route=$(jq -r '.routes[0] // empty' "$caps_dir/$vendors.json")
+  [ -n "$route" ] || [ "$kind" != image ] || route=$(image_caps_get "$caps_root" "$vendors" '.routes[0] // empty')
   if [ "$kind" = image ] && [ "$route" = cli ] && [ -x "$worker_pick" ]; then
     account=$("$worker_pick" --account "$vendors" --role image 2>/dev/null) || account=''
   fi

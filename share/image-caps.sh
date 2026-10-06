@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Sourced by the image scripts. Manifests: share/image-caps/<vendor>.json (schema: share/image-caps/README.md).
 
-image_caps_file() { printf '%s/share/image-caps/%s.json' "$1" "$2"; }
+image_caps_dir() { printf '%s/share/image-caps' "$1"; }
+
+image_caps_file() { printf '%s/%s.json' "$(image_caps_dir "$1")" "$2"; }
 
 image_caps_get() { # root vendor jq-filter
   jq -r "$3" "$(image_caps_file "$1" "$2")"

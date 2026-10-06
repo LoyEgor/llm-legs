@@ -10,7 +10,7 @@ asserts=0
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { asserts=$((asserts + 1)); }
 
-CAPS="$WORK/caps" BIN="$WORK/bin" CACHE="$WORK/cache" LOG="$WORK/log"
+CAPS="$WORK/root/share/image-caps" BIN="$WORK/bin" CACHE="$WORK/cache" LOG="$WORK/log"
 mkdir -p "$CAPS" "$BIN" "$CACHE" "$LOG"
 cp "$ROOT"/share/image-caps/*.json "$CAPS/"
 # A fourth vendor no line of media-run knows, with a kind no real vendor has.
@@ -37,7 +37,7 @@ chmod +x "$WORK/worker-pick"
 
 run() { # args... -> rc in $rc, stderr in $WORK/err
   rm -f "$LOG"/*
-  MEDIA_RUN_CAPS_DIR="$CAPS" MEDIA_RUN_BIN_DIR="$BIN" MEDIA_RUN_WORKER_PICK="$WORK/worker-pick" \
+  MEDIA_RUN_CAPS_ROOT="$WORK/root" MEDIA_RUN_BIN_DIR="$BIN" MEDIA_RUN_WORKER_PICK="$WORK/worker-pick" \
     STATUSLINE_CACHE_DIR="$CACHE" FAKE_LOG="$LOG" "$MEDIA_RUN" "$@" 2>"$WORK/err"
   rc=$?
 }

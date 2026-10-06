@@ -730,7 +730,8 @@ INSTRUCTION_NAME_END="($|[[:space:]>|;&),}\"'\`\\\\])"
 # held in a variable has its own looser rule, `instruction_interp_var_write_re`.
 # The verb boundary carries a slash because `/usr/bin/python3` is the same call typed another way,
 # and a backtick and a brace because so are `` `…` `` and `{ …; }`.
-_INSTRUCTION_INTERP="(^|[[:space:]|;&({\`/])(python[0-9.]*|perl|ruby|node|bun|deno)[[:space:]]"
+_INSTRUCTION_INTERP_NAMES="python[0-9.]*|perl|ruby|node|bun|deno"
+_INSTRUCTION_INTERP="(^|[[:space:]|;&({\`/])($_INSTRUCTION_INTERP_NAMES)[[:space:]]"
 _INSTRUCTION_IW="$_INSTRUCTION_INTERP[^|]*"
 # The quote around a path or a mode arrives escaped as often as bare: the one-liner is itself a
 # double-quoted argument, so `open(\"x\",\"w\")` is the ordinary spelling.
@@ -853,8 +854,11 @@ instruction_interp_scripts() { # command cwd → INTERPRETER<TAB>PATH lines
           assigns+="${BASH_REMATCH[1]}=${BASH_REMATCH[2]}"$'\n'
           continue
         fi
+        if [[ ${w##*/} =~ ^($_INSTRUCTION_INTERP_NAMES)$ ]]; then
+          interp=${w##*/}
+          continue
+        fi
         case "${w##*/}" in
-          python|python[0-9]*|perl|ruby|node|bun|deno) interp=${w##*/} ;;
           export|env|nohup|time|exec|command|sudo|nice|timeout|caffeinate|-*|[0-9]*) ;;
           *) break ;;
         esac

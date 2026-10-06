@@ -364,10 +364,7 @@ def mark_claude_reset(account: str) -> None:
     """bin/statusline.sh reads this to stop idle chats re-walling the account with pre-reset readings."""
     marker = CLAUDEB_DIR / "limits" / f"{account}.reset-at"
     try:
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        tmp = marker.with_name(f".{marker.name}.{os.getpid()}")
-        tmp.write_text(f"{int(time.time())}\n")
-        os.replace(tmp, marker)
+        write_atomic(marker, f"{int(time.time())}\n")
     except OSError:
         pass
 

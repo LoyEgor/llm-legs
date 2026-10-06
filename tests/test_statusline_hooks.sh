@@ -154,10 +154,11 @@ assert_eq "" "$(grep -nE '(^|[[:space:]])>>?[[:space:]]*/' "$WORKDIR_HOOK" | gre
 
 # bash's `read` takes a pipe one byte per syscall: an 8 MB Write response cost ~8 s that way.
 head -c 8000000 /dev/zero | tr '\0' x > "$WORK/big-response"
-big_start=$EPOCHREALTIME
+suite_journal_ms big_start
 workdir_payload Write session-big "$REPO_A" "$REPO_A/big.txt" \
   | jq -c --rawfile big "$WORK/big-response" '.tool_response = {content: $big}' | "$WORKDIR_HOOK"
-big_ms=$(( (${EPOCHREALTIME/./} - ${big_start/./}) / 1000 ))
+suite_journal_ms big_end
+big_ms=$(( big_end - big_start ))
 [ "$big_ms" -lt 3000 ] || fail "workdir hook took ${big_ms} ms on an 8 MB payload"
 assert_eq "$TOP_A" "$(last_tree session-big)"
 
