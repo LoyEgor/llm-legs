@@ -12,12 +12,20 @@ command -v hs >/dev/null 2>&1 || { echo "   (skipped: Hammerspoon CLI is unavail
 output=$(python3 - "$ROOT/tests/presence_harness.lua" <<'HSPY'
 import subprocess
 import sys
+import time
 
-try:
-    result = subprocess.run(["hs", "-c", f"return loadfile([[{sys.argv[1]}]])()"],
-                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
-except (FileNotFoundError, subprocess.TimeoutExpired):
-    raise SystemExit(124)
+# Under concurrent `hs -c` clients (other suites' harnesses) the CLI exits 65 with an empty or a complete
+# answer, or crashes with NSDestinationInvalidException; a real harness error repeats on every attempt.
+for attempt in range(4):
+    if attempt:
+        time.sleep(attempt)
+    try:
+        result = subprocess.run(["hs", "-q", "-t", "120", "-c", f"return loadfile([[{sys.argv[1]}]])()"],
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=130)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        raise SystemExit(124)
+    if result.returncode == 0:
+        break
 sys.stdout.write(result.stdout)
 sys.stderr.write(result.stderr)
 raise SystemExit(result.returncode)
@@ -25,6 +33,6 @@ HSPY
 ) || fail "the Hammerspoon harness threw or timed out: $output"
 result=$(printf '%s\n' "$output" | grep -v '^-- Loading extension: ' | awk '/^(PASS|FAIL)/ { found = 1 } found')
 case "$result" in
-  PASS:*) echo "OK: $result" ;;
+  'PASS: '[0-9]*' presence checks'*) echo "OK: $result" ;;
   *) fail "${result:-$output}" ;;
 esac
