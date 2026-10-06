@@ -1,6 +1,6 @@
 # Hand-off: suite speed, measured 2026-10-05
 
-Status: open — To: Harness Doctor
+Status: settled 20261006T032009Z-f253: closed: both layers landed (c4adcbb8, 506ed8cc), slow-suites refreshed from the journal (llm-legs@355c7c9f); the per-call levers are ledger rows hook-p50/hook-sync-worker-limit-gate and test_daily_cost-llm-limits.
 
 Source: `~/.cache/run-suites/runs.jsonl`, passing llm-legs suites over 7 days, medians. 131 suites: 2772 s CPU, 12137 s summed wall.
 

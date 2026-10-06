@@ -2432,12 +2432,22 @@
         "rule": "limiter_hold",
         "ident": "logo-bench-throttle"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed",
+      "fixes": [
+        {
+          "at": "2026-10-06T06:54:29+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "llm-legs/bin/harness-doctor",
+            "llm-legs/tests/test_harness_doctor.sh"
+          ],
+          "in": "llm-legs@355c7c9f"
+        }
+      ],
       "same_cause": [],
-      "note": "2026-10-05 (harness-doctor-20261005T061224Z-4873): ruled out as a harness bug. logo-vectorizer-bench bench/throttle.py slot_count clamps to WARN_JOBS (3) at kern.memorystatus_vm_pressure_level 2 and to 1 at level 4 or under 25 % free, the RAM-incident guard; the 06:12Z snapshot read 9 jobs, 9 min, level 2 at 43 % free, and at 11:00Z 4 holds of two Vector Magic chats still waited at level 2, 47-52 % free, swap 5.7 of 6 GB, load average ~330 under the night. Holds were live (pids alive, started before since), not leaks; the alert reached the menu as design §12 intends. Ruled out: a stale pressure read (level re-read each 2 s poll), the doctor counting one hold twice (one file per thread key). Found and handed off: throttle.py hold_clear journals no wait_note, so Wait classes miss this limiter (blind spot wait-journal-throttle-py).",
+      "note": "2026-10-05 (harness-doctor-20261005T061224Z-4873): ruled out as a harness bug. logo-vectorizer-bench bench/throttle.py slot_count clamps to WARN_JOBS (3) at kern.memorystatus_vm_pressure_level 2 and to 1 at level 4 or under 25 % free, the RAM-incident guard; the 06:12Z snapshot read 9 jobs, 9 min, level 2 at 43 % free, and at 11:00Z 4 holds of two Vector Magic chats still waited at level 2, 47-52 % free, swap 5.7 of 6 GB, load average ~330 under the night. Holds were live (pids alive, started before since), not leaks; the alert reached the menu as design §12 intends. Ruled out: a stale pressure read (level re-read each 2 s poll), the doctor counting one hold twice (one file per thread key). Found and handed off: throttle.py hold_clear journals no wait_note, so Wait classes miss this limiter (blind spot wait-journal-throttle-py). Decided 2026-10-06 by Harness Doctor: a hold past 5 min while a suite or night-fixer slot runs is the night's own requested load, judged a watch like the load and collector rows; outside such load a hold past 5 min stays red. Item 1 (throttle.py hold_clear journals no wait) stays with the chat «Vector Magic macOS ARM migration».",
       "handoff": "docs/handoffs/2026-10-05-logo-bench-throttle-hold.md",
-      "last_reviewed": "2026-10-05",
+      "last_reviewed": "2026-10-06",
       "reviewed_by": "Harness Doctor"
     },
     {
@@ -2783,12 +2793,22 @@
         "rule": "hook-held",
         "ident": "worker-run-backstop\\.sh"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed",
+      "fixes": [
+        {
+          "at": "2026-10-06T06:54:29+03:00",
+          "by": "Harness Doctor",
+          "files": [
+            "llm-legs/bin/worker-run",
+            "llm-legs/tests/test_worker_run_entry.sh"
+          ],
+          "in": "llm-legs@355c7c9f"
+        }
+      ],
       "same_cause": [],
-      "last_reviewed": "2026-10-05",
-      "reviewed_by": "night fixer harness-stop-hooks-20261005T061339Z-2a70",
-      "note": "The only held line in the stop journal: 2026-10-04T07:02:23Z/2ddedf36. Runs claudeb-1791096939-3244-6832 and claudeb-1791097006-94194-5582 (com, opus) were launched by the relays a739c43940f0a8f91 and abd6d30e75c31e1a2 inside the Fable judging workers 227ac46a and 5b28a455; launcher = the root chat (bin/worker-run start_run, CLAUDE_LAUNCHER_SESSION) while the relay tags sit in the workers' caches, so owned() found none in the root's: the hold is as specified and reached its goal (the chat attached both, saw the com misroute, killed them, exit 143). Cause upstream: Fable headless workers delegate (2 of 3 Fable parents of nested runs this week). Unconfirmed: why ~25 other nested runs since 09-29 never held (most lived about a minute; one root stop at 2026-10-03T06:54:53Z/fa230c90 fell inside a live nested run with no held line; the backstop journals no silent reason). 2026-10-06 (harness-doctor-20261006T032859Z-52ce): cause stands, bin/worker-run has no Fable-worker start refusal and the global rule still reaches headless workers; the handoff is in tonight's owner-chat batch for «Harness Doctor».",
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "Harness Doctor",
+      "note": "The only held line in the stop journal: 2026-10-04T07:02:23Z/2ddedf36. Runs claudeb-1791096939-3244-6832 and claudeb-1791097006-94194-5582 (com, opus) were launched by the relays a739c43940f0a8f91 and abd6d30e75c31e1a2 inside the Fable judging workers 227ac46a and 5b28a455; launcher = the root chat (bin/worker-run start_run, CLAUDE_LAUNCHER_SESSION) while the relay tags sit in the workers' caches, so owned() found none in the root's: the hold is as specified and reached its goal (the chat attached both, saw the com misroute, killed them, exit 143). Cause upstream: Fable headless workers delegate (2 of 3 Fable parents of nested runs this week). Unconfirmed: why ~25 other nested runs since 09-29 never held (most lived about a minute; one root stop at 2026-10-03T06:54:53Z/fa230c90 fell inside a live nested run with no held line; the backstop journals no silent reason). Fixed 2026-10-06 by Harness Doctor (night 20261006T032009Z-f253): worker-run refuses a workers-role start nested in a Fable worker unless it stays claudeb fable (OUTCOME NESTED_MODEL_REFUSED), so a Fable worker can no longer swap its brief to Opus; a hold of this shape would now mean the guard was bypassed.",
       "handoff": "docs/handoffs/2026-10-05-fable-worker-delegates.md"
     },
     {
