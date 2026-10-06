@@ -32,12 +32,17 @@ fi
 claudeb_dir="${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}"
 account_cache_dir="$claudeb_dir/limits"
 account_cache="$account_cache_dir/$acct.json"
-worker_stats_dir="${WORKER_STATS_DIR:-$claudeb_dir/worker-stats}"
 limits_file="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
 
 # Never $0: `bash bin/statusline.sh` would double the directory, and the harness may invoke a
 # symlink — realpath resolves both to the script's real home.
-statusline_self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) || statusline_self="${BASH_SOURCE[0]}"
+# rmdir and realpath loadables, never mkdir's: its -p chmods every existing parent and fails on /var.
+statusline_loadables="${BASH%/bin/*}/lib/bash"
+enable -f "$statusline_loadables/rmdir" rmdir 2>/dev/null
+if ! { enable -f "$statusline_loadables/realpath" realpath 2>/dev/null &&
+  realpath -a statusline_self "${BASH_SOURCE[0]}" >/dev/null 2>&1; }; then
+  statusline_self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) || statusline_self="${BASH_SOURCE[0]}"
+fi
 statusline_dir=${statusline_self%/*}
 . "$statusline_dir/../share/limits-view.sh"
 . "$statusline_dir/../share/codex-accounts.sh"
@@ -61,6 +66,11 @@ if enable -f "${BASH%/bin/*}/lib/bash/stat" stat 2>/dev/null; then
   file_mtime() { file_stat_field mtime "$1"; }
   file_inode() { file_stat_field inode "$1"; }
   file_size() { file_stat_field size "$1"; }
+  file_stat_to() { # var field path
+    local -A st
+    stat -L -A st "$3" 2>/dev/null || { printf -v "$1" ''; return 1; }
+    printf -v "$1" '%s' "${st[$2]}"
+  }
 else
   file_mtime() {
     [ -e "$1" ] || [ -L "$1" ] || return 1
@@ -72,7 +82,16 @@ else
   file_size() {
     stat -f %z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null
   }
+  file_stat_to() { # var field path
+    local value rc
+    value=$("file_$2" "$3"); rc=$?
+    printf -v "$1" '%s' "$value"
+    return "$rc"
+  }
 fi
+file_mtime_to() { file_stat_to "$1" mtime "$2"; }
+file_size_to() { file_stat_to "$1" size "$2"; }
+ensure_dir() { [ -d "$1" ] || mkdir -p "$1"; }
 
 # Stock macOS ships neither `timeout` nor `gtimeout`, and a probe with no deadline outlives the 120s
 # after which its lock counts as dead — so a second probe starts while the first still walks. An
@@ -98,76 +117,11 @@ snapshot_lock_acquire() {
   local lock="$1" now mtime
   mkdir "$lock" 2>/dev/null && return 0
   now=$EPOCHSECONDS
-  mtime=$(file_mtime "$lock" 2>/dev/null) || return 1
+  file_mtime_to mtime "$lock" || return 1
   [[ "$mtime" =~ ^[0-9]+$ ]] || return 1
   [ "$((now - mtime))" -gt 120 ] || return 1
   rmdir "$lock" 2>/dev/null || return 1
   mkdir "$lock" 2>/dev/null
-}
-
-# Both identities a progress document needs, in ONE rev-parse: the working tree it runs over and
-# the repository that tree belongs to, resolved exactly as repo_dirs resolves REPO_TOP/REPO_COMMON
-# so all of them compare. The repository is what makes a run in a sibling worktree this
-# repository's news without making it this tree's, and asking for it separately per document put a
-# second fork per foreign run into a render that budgets one git call per directory.
-run_tree_dirs() { # path -> RUN_TOP, RUN_COMMON
-  local out common resolved
-  out=$(git -C "$1" rev-parse --show-toplevel --git-common-dir 2>/dev/null) || return 1
-  RUN_TOP=${out%%$'\n'*}
-  common=${out#*$'\n'}
-  [ -n "$RUN_TOP" ] && [ -n "$common" ] || return 1
-  # `--git-common-dir` comes back relative to the -C directory whenever it sits inside the tree.
-  case "$common" in
-    /*) ;;
-    *) common="$1/$common" ;;
-  esac
-  resolved=$({ cd "$common" && pwd -P && cd "$RUN_TOP" && pwd -P; } 2>/dev/null)
-  { IFS= read -r RUN_COMMON; IFS= read -r RUN_TOP; } <<< "$resolved"
-  [ -n "$RUN_COMMON" ] && [ -n "$RUN_TOP" ] || return 1
-}
-
-# The same answer, remembered by PATH. A finished document is no longer unlinked, so a day's worth
-# of them across every repository reaches the resolver, and one fork each is a render's whole
-# budget spent on runs that are already over. What a path resolves to only changes when the tree
-# itself moves, which the two -d probes catch, so a hit costs one in-memory scan and no process.
-# The file is a log — the LAST line for a path wins, hence the reverse scan — and is dropped whole
-# once it outgrows the number of checkouts anyone has, rather than rewritten on the hot path.
-run_tree_cache="$statusline_cache_dir/run-trees"
-run_tree_keys=()
-run_tree_vals=()
-run_tree_loaded=0
-run_tree_load() {
-  [ "$run_tree_loaded" = 1 ] && return 0
-  run_tree_loaded=1
-  [ -r "$run_tree_cache" ] || return 0
-  local path rest lines=0
-  while IFS=$'\t' read -r path rest; do
-    [ -n "$path" ] && [ -n "$rest" ] || continue
-    lines=$((lines + 1))
-    run_tree_keys+=("$path")
-    run_tree_vals+=("$rest")
-  done < "$run_tree_cache"
-  [ "$lines" -le 300 ] || rm -f "$run_tree_cache" 2>/dev/null
-  return 0
-}
-
-run_tree_dirs_cached() { # path -> RUN_TOP, RUN_COMMON
-  run_tree_load
-  local path="$1" i
-  for ((i = ${#run_tree_keys[@]} - 1; i >= 0; i--)); do
-    [ "${run_tree_keys[$i]}" = "$path" ] || continue
-    RUN_TOP=${run_tree_vals[$i]%%$'\t'*}
-    RUN_COMMON=${run_tree_vals[$i]#*$'\t'}
-    [ -n "$RUN_TOP" ] && [ -n "$RUN_COMMON" ] &&
-      [ -d "$RUN_TOP" ] && [ -d "$RUN_COMMON" ] && return 0
-    break
-  done
-  run_tree_dirs "$path" || return 1
-  run_tree_keys+=("$path")
-  run_tree_vals+=("$RUN_TOP"$'\t'"$RUN_COMMON")
-  mkdir -p "$statusline_cache_dir" 2>/dev/null &&
-    printf '%s\t%s\t%s\n' "$path" "$RUN_TOP" "$RUN_COMMON" >> "$run_tree_cache" 2>/dev/null
-  return 0
 }
 
 # One git call per directory for everything the render needs about its repository:
@@ -212,94 +166,47 @@ repo_dirs() {
   REPO_NAME="${REPO_ROOT##*/}"
 }
 
-# ps reports elapsed time as [[dd-]hh:]mm:ss; the render needs the instant the process started.
-process_start_epoch() {
-  local pid="$1" now="$2" elapsed days=0 hours=0 mins secs field
-  elapsed=$(ps -o etime= -p "$pid" 2>/dev/null | tr -d '[:space:]')
-  case "$elapsed" in *:*) ;; *) return 1 ;; esac
-  case "$elapsed" in *-*) days=${elapsed%%-*}; elapsed=${elapsed#*-} ;; esac
-  case "$elapsed" in *:*:*) hours=${elapsed%%:*}; elapsed=${elapsed#*:} ;; esac
-  mins=${elapsed%%:*}
-  secs=${elapsed##*:}
-  # Each field on its own: concatenating them lets an empty one hide behind its neighbours and
-  # reach the arithmetic below as the bare prefix `10#`, which is a syntax error, not a failure.
-  for field in "$days" "$hours" "$mins" "$secs"; do
-    [[ "$field" =~ ^[0-9]+$ ]] || return 1
-  done
-  printf '%s' "$((now - (10#$days * 86400 + 10#$hours * 3600 + 10#$mins * 60 + 10#$secs)))"
-}
-
-# The chat that launched a review run: its own registry entry, or the nearest ancestor's — a run
-# is a grandchild of the chat that asked for it, several execs down. A launcher that cannot be
-# named leaves the run bright, since hiding a review this chat may well have started is the worse
-# error.
-review_run_session() {
-  local pid="$1" hops=0 sid registry
-  while [ "$hops" -lt 15 ]; do
-    [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] || return 1
-    registry="$HOME/.claude/sessions/$pid.json"
-    if [ -f "$registry" ]; then
-      sid=$(jq -r 'select(type == "object" and (.sessionId | type) == "string") | .sessionId' \
-        "$registry" 2>/dev/null)
-      [ -n "$sid" ] && { printf '%s' "$sid"; return 0; }
-    fi
-    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
-    hops=$((hops + 1))
-  done
-  return 1
-}
-
-# The chat a run belongs to: what review-bench recorded when it started the run, and the walk above
-# only for a document written before it did. The record wins because the walk answers from a parent
-# chain a backgrounded run has already lost — its launcher exits and it reparents to pid 1.
-review_run_owner() { # recorded_session pid
-  local owner="$1"
-  [ -n "$owner" ] || owner=$(review_run_session "$2" 2>/dev/null) || owner=""
-  printf '%s' "${owner//[^A-Za-z0-9_-]/}"
-}
-
 # Where both review journals live: ONE directory per git FAMILY, the common git dir
 # (docs/shared-invariants.md row `bd`). Resolved once for every cache key that watches a journal —
 # keyed off a worktree's own git dir instead, a key goes blind to the edits a sibling checkout of
 # the same project folds into the file the answer was actually read from.
-journal_dir() { # toplevel
-  if [ "$1" = "$active_top" ]; then printf '%s\n' "$active_common"
-  elif [ "$1" = "$project_top" ]; then printf '%s\n' "$project_common"
-  else git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null; fi
+journal_dir() { # var toplevel
+  if [ "$2" = "$active_top" ]; then printf -v "$1" '%s' "$active_common"
+  elif [ "$2" = "$project_top" ]; then printf -v "$1" '%s' "$project_common"
+  else printf -v "$1" '%s' "$(git -C "$2" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; fi
 }
 
 # Keyed per TOP: follows the shown tree. Off the render path with a 15s/120s cache: pricing
 # walks every diff.
 repo_debt_lines() { # toplevel now
-  local top="$1" now="$2"
+  local out="$1" top="$2" now="$3"
+  printf -v "$out" ''
   # The install path of the contract, never `command -v`: a PATH lookup makes the segment depend on
   # whatever shell started the harness, and makes every render of a test suite reach the real one.
   local debt="${STATUSLINE_REVIEW_DEBT:-$HOME/.local/bin/review-debt}"
   local cache lock key cached_key cached cache_mtime commondir journal_mtime lock_mtime top_key
   [ -n "$top" ] && [ -x "$debt" ] || return 0
-  top_key=$(printf '%s' "$top" | cksum 2>/dev/null)
-  cache="$statusline_cache_dir/repo-debt-${top_key// /-}"
+  top_key=${top//%/%25}
+  cache="$statusline_cache_dir/repo-debt-${top_key//\//%2F}"
   lock="$cache.lock"
-  commondir=$(journal_dir "$top")
+  journal_dir commondir "$top"
   journal_mtime=""
-  [ -n "$commondir" ] && journal_mtime=$(file_mtime "$commondir/review-anchors.json" 2>/dev/null)
+  [ -n "$commondir" ] && file_mtime_to journal_mtime "$commondir/review-anchors.json"
   [[ "$journal_mtime" =~ ^[0-9]+$ ]] || journal_mtime=0
   key="$top|$journal_mtime"
-  cache_mtime=$(file_mtime "$cache" 2>/dev/null)
+  file_mtime_to cache_mtime "$cache"
   cached_key=""
   cached=""
   if [[ "$cache_mtime" =~ ^[0-9]+$ ]]; then
-    IFS= read -r cached_key < "$cache" 2>/dev/null
-    cached=$(<"$cache")
-    case "$cached" in *$'\n'*) cached=${cached#*$'\n'} ;; *) cached="" ;; esac
+    { IFS= read -r cached_key; IFS= read -r cached || :; } < "$cache" 2>/dev/null
   fi
   if [ "$cached_key" = "$key" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
     [ "$((now - cache_mtime))" -le 15 ]; then
-    printf '%s' "$cached"
+    printf -v "$out" '%s' "$cached"
     return 0
   fi
-  if mkdir -p "$statusline_cache_dir" 2>/dev/null; then
-    lock_mtime=$(file_mtime "$lock" 2>/dev/null)
+  if ensure_dir "$statusline_cache_dir" 2>/dev/null; then
+    file_mtime_to lock_mtime "$lock"
     if [ ! -d "$lock" ] ||
       { [[ "$lock_mtime" =~ ^[0-9]+$ ]] && [ "$((now - lock_mtime))" -gt 120 ]; }; then
       (
@@ -326,27 +233,28 @@ repo_debt_lines() { # toplevel now
   [ "${cached_key%%|*}" = "$top" ] || cached=""
   if [ -n "$cached" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
     [ "$((now - cache_mtime))" -le 120 ]; then
-    printf '%s' "$cached"
+    printf -v "$out" '%s' "$cached"
   fi
 }
 
 review_session_line() { # session now
-  local sid="$1" now="$2"
+  local out="$1" sid="$2" now="$3"
+  printf -v "$out" ''
   local gate="${STATUSLINE_REVIEW_GATE:-$HOME/.claude/hooks/review-flow-gate.sh}"
   local cache="$statusline_cache_dir/review-autonomy-$sid"
   local lock="$cache.lock"
   local cached cache_mtime lock_mtime timeout_bin
-  [ -n "$sid" ] && [ -x "$gate" ] || { printf '%s' 'no'; return 0; }
-  cache_mtime=$(file_mtime "$cache" 2>/dev/null)
+  [ -n "$sid" ] && [ -x "$gate" ] || { printf -v "$out" '%s' 'no'; return 0; }
+  file_mtime_to cache_mtime "$cache"
   cached=""
   [[ "$cache_mtime" =~ ^[0-9]+$ ]] && IFS= read -r cached < "$cache" 2>/dev/null
   if [ -n "$cached" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
     [ "$((now - cache_mtime))" -le 15 ]; then
-    printf '%s' "$cached"
+    printf -v "$out" '%s' "$cached"
     return 0
   fi
-  if mkdir -p "$statusline_cache_dir" 2>/dev/null; then
-    lock_mtime=$(file_mtime "$lock" 2>/dev/null)
+  if ensure_dir "$statusline_cache_dir" 2>/dev/null; then
+    file_mtime_to lock_mtime "$lock"
     if [ ! -d "$lock" ] ||
       { [[ "$lock_mtime" =~ ^[0-9]+$ ]] && [ "$((now - lock_mtime))" -gt 120 ]; }; then
       (
@@ -367,11 +275,11 @@ review_session_line() { # session now
   fi
   if [ -n "$cached" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
     [ "$((now - cache_mtime))" -le 120 ]; then
-    printf '%s' "$cached"
+    printf -v "$out" '%s' "$cached"
   elif [ -n "$cached" ]; then
-    printf '%s' 'no'
+    printf -v "$out" '%s' 'no'
   else
-    printf '%s' 'no'
+    printf -v "$out" '%s' 'no'
   fi
 }
 
@@ -383,52 +291,51 @@ review_session_line() { # session now
 # once per candidate commit, which is not a render-path cost — and keyed on everything cheap that
 # can change the answer: the two shas, and the family's journals ownership is read from.
 unpushed_marker() { # toplevel session now
-  local top="$1" sid="$2" now="$3"
+  local out="$1" top="$2" sid="$3" now="$4"
+  printf -v "$out" ''
   local gate="${STATUSLINE_REVIEW_GATE:-$HOME/.claude/hooks/review-flow-gate.sh}"
   local cache="$statusline_cache_dir/unpushed-${sid:-unknown}"
   local lock="$cache.lock"
   local key cached_key cached cache_mtime lock_mtime commondir head upstream commit_mtime debt_mtime
   local timeout_bin
-  [ -n "$sid" ] && [ -n "$top" ] && [ -x "$gate" ] || { printf '%s' off; return 0; }
+  [ -n "$sid" ] && [ -n "$top" ] && [ -x "$gate" ] || { printf -v "$out" '%s' off; return 0; }
   # A branch with no upstream owes nothing here — nothing on this machine knows where it would go —
   # and one whose upstream is HEAD is a branch with nothing ahead at all. Both answer without the
   # gate, which is what keeps the marker off the render path for the repositories it never marks.
   # The render's own status already says which: no `branch.upstream`, or `branch.ab +0 -0`. An
   # upstream whose ref is missing prints no `branch.ab`, and rev-parse echoes `@{upstream}` for it.
   if [ "$git_status_rc" -eq 0 ] && [[ "$branch_oid" =~ ^[0-9a-f]+$ ]]; then
-    [ -n "$branch_upstream" ] && [ "$branch_ab" != "+0 -0" ] || { printf '%s' off; return 0; }
+    [ -n "$branch_upstream" ] && [ "$branch_ab" != "+0 -0" ] || { printf -v "$out" '%s' off; return 0; }
     head=$branch_oid
   else
     head=$(git -C "$top" rev-parse HEAD 2>/dev/null)
   fi
   upstream=$(git -C "$top" rev-parse '@{upstream}' 2>/dev/null)
   [ -n "$head" ] && [ -n "$upstream" ] && [ "$head" != "$upstream" ] ||
-    { printf '%s' off; return 0; }
-  commondir=$(journal_dir "$top")
+    { printf -v "$out" '%s' off; return 0; }
+  journal_dir commondir "$top"
   commit_mtime=""
   debt_mtime=""
   if [ -n "$commondir" ]; then
-    commit_mtime=$(file_mtime "$commondir/review-anchors.json" 2>/dev/null)
+    file_mtime_to commit_mtime "$commondir/review-anchors.json"
     debt_mtime=$commit_mtime
   fi
   [[ "$commit_mtime" =~ ^[0-9]+$ ]] || commit_mtime=0
   [[ "$debt_mtime" =~ ^[0-9]+$ ]] || debt_mtime=0
   key="$top|$head|$upstream|$commit_mtime|$debt_mtime"
-  cache_mtime=$(file_mtime "$cache" 2>/dev/null)
+  file_mtime_to cache_mtime "$cache"
   cached_key=""
   cached=""
   if [[ "$cache_mtime" =~ ^[0-9]+$ ]]; then
-    IFS= read -r cached_key < "$cache" 2>/dev/null
-    cached=$(<"$cache")
-    case "$cached" in *$'\n'*) cached=${cached#*$'\n'} ;; *) cached="" ;; esac
+    { IFS= read -r cached_key; IFS= read -r cached || :; } < "$cache" 2>/dev/null
   fi
   if [ "$cached_key" = "$key" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
     [ "$((now - cache_mtime))" -le 15 ]; then
-    printf '%s' "${cached:-off}"
+    printf -v "$out" '%s' "${cached:-off}"
     return 0
   fi
-  if mkdir -p "$statusline_cache_dir" 2>/dev/null; then
-    lock_mtime=$(file_mtime "$lock" 2>/dev/null)
+  if ensure_dir "$statusline_cache_dir" 2>/dev/null; then
+    file_mtime_to lock_mtime "$lock"
     if [ ! -d "$lock" ] ||
       { [[ "$lock_mtime" =~ ^[0-9]+$ ]] && [ "$((now - lock_mtime))" -gt 120 ]; }; then
       (
@@ -452,9 +359,9 @@ unpushed_marker() { # toplevel session now
   # chat that moved tree keeps its cache file, and the key is what says the answer is about it.
   if [ "$cached" = unpushed ] && [ "$cached_key" = "$key" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
     [ "$((now - cache_mtime))" -le 120 ]; then
-    printf '%s' unpushed
+    printf -v "$out" '%s' unpushed
   else
-    printf '%s' off
+    printf -v "$out" '%s' off
   fi
 }
 
@@ -476,14 +383,14 @@ store_merge_kick() {
   kick_dir="$statusline_cache_dir"
   stamp="$kick_dir/store-merge-kick"
   now_ts=$EPOCHSECONDS
-  age=$(file_mtime "$stamp" 2>/dev/null)
+  file_mtime_to age "$stamp"
   [[ "$age" =~ ^[0-9]+$ ]] && [ "$((now_ts - age))" -lt 60 ] && return 0
-  mkdir -p "$kick_dir" 2>/dev/null || return 0
+  ensure_dir "$kick_dir" 2>/dev/null || return 0
   # Grab the single-flight lock in the foreground and stamp synchronously, so the
   # next render sees the debounce immediately (a background stamp would race two
   # near-simultaneous renders into a double kick).
   snapshot_lock_acquire "$stamp.lock" || return 0
-  age=$(file_mtime "$stamp" 2>/dev/null)
+  file_mtime_to age "$stamp"
   if [[ "$age" =~ ^[0-9]+$ ]] && [ "$((now_ts - age))" -lt 60 ]; then
     rmdir "$stamp.lock" 2>/dev/null
     return 0
@@ -500,7 +407,7 @@ store_merge_kick() {
     self_cpu_ms
     journal="${SPEED_DOCTOR_DIR:-$HOME/.cache/speed-doctor}/merge-kick"
     printf -v day '%(%Y-%m-%d)T' -1
-    mkdir -p "$journal" 2>/dev/null &&
+    ensure_dir "$journal" 2>/dev/null &&
       printf '%s\t%s\t%s\n' "$start_us" "$(( (end_us - start_us) / 1000 ))" "$cpu_ms" \
         >> "$journal/$day.tsv" 2>/dev/null
   ) & ) >/dev/null 2>&1
@@ -538,7 +445,7 @@ codex_quota_kick() { # account now
   deadline=""
   [ -r "$stamp" ] && read -r deadline < "$stamp" 2>/dev/null
   [[ "$deadline" =~ ^[0-9]+$ ]] && [ "$now_ts" -lt "$deadline" ] && return 0
-  mkdir -p "$statusline_cache_dir" 2>/dev/null || return 0
+  ensure_dir "$statusline_cache_dir" 2>/dev/null || return 0
   snapshot_lock_acquire "$stamp.lock" || return 0
   deadline=""
   [ -r "$stamp" ] && read -r deadline < "$stamp" 2>/dev/null
@@ -564,16 +471,37 @@ CYAN=$'\033[36m'; BLUE=$'\033[34m'; DIM=$'\033[2m'
 GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RED=$'\033[31m'; MAGENTA=$'\033[35m'; RESET=$'\033[0m'
 
 # Third arg overrides the green→yellow threshold (default 50); red stays ≥80.
-pct_colored() {
-  local v="$1" dim_flag="${2:-}" warn="${3:-50}"
-  if [ -z "$v" ]; then printf '%s?%s' "$DIM" "$RESET"; return; fi
-  if [ -n "$dim_flag" ]; then printf '%s%s%%%s' "$DIM" "$v" "$RESET"; return; fi
+# `YYYY-MM-DDTHH:MM:SS` + `Z` or `±HH:MM` to epoch seconds, by the civil-date formula.
+iso_epoch_to() { # var timestamp
+  printf -v "$1" ''
+  [[ "$2" =~ ^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(Z|([+-])([0-9]{2}):([0-9]{2}))$ ]] ||
+    return 1
+  local y=$((10#${BASH_REMATCH[1]})) m=$((10#${BASH_REMATCH[2]})) d=$((10#${BASH_REMATCH[3]}))
+  local h=$((10#${BASH_REMATCH[4]})) mi=$((10#${BASH_REMATCH[5]})) sec=$((10#${BASH_REMATCH[6]})) off=0
+  local era yoe doy doe
+  if [ "${BASH_REMATCH[7]}" != Z ]; then
+    off=$((10#${BASH_REMATCH[9]} * 3600 + 10#${BASH_REMATCH[10]} * 60))
+    [ "${BASH_REMATCH[8]}" = - ] && off=$((-off))
+  fi
+  [ "$m" -ge 1 ] && [ "$m" -le 12 ] && [ "$d" -ge 1 ] && [ "$d" -le 31 ] &&
+    [ "$h" -le 23 ] && [ "$mi" -le 59 ] && [ "$sec" -le 60 ] || return 1
+  [ "$m" -le 2 ] && y=$((y - 1))
+  era=$((y / 400)); yoe=$((y - era * 400))
+  doy=$(( (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1 ))
+  doe=$((yoe * 365 + yoe / 4 - yoe / 100 + doy))
+  printf -v "$1" '%s' $(( (era * 146097 + doe - 719468) * 86400 + h * 3600 + mi * 60 + sec - off ))
+}
+
+pct_colored() { # var pct dim warn
+  local out="$1" v="$2" dim_flag="${3:-}" warn="${4:-50}"
+  if [ -z "$v" ]; then printf -v "$out" '%s?%s' "$DIM" "$RESET"; return; fi
+  if [ -n "$dim_flag" ]; then printf -v "$out" '%s%s%%%s' "$DIM" "$v" "$RESET"; return; fi
   local color
   if [ "$v" -lt "$warn" ]; then color="$GREEN"
   elif [ "$v" -lt 80 ]; then color="$YELLOW"
   else color="$RED"
   fi
-  printf '%s%s%%%s' "$color" "$v" "$RESET"
+  printf -v "$out" '%s%s%%%s' "$color" "$v" "$RESET"
 }
 
 # \x1f (unit separator) instead of tab: bash `read` collapses consecutive tab
@@ -624,7 +552,7 @@ if [ -n "$session_id" ] && [ -n "$ctx_size" ] && [ "$ctx_size" -gt 0 ] 2>/dev/nu
   window_file="$nudge_dir/$session_id.window"
   window_seen=""
   [ -r "$window_file" ] && read -r window_seen < "$window_file" 2>/dev/null
-  if [ "$window_seen" != "$ctx_size" ] && mkdir -p "$nudge_dir" 2>/dev/null; then
+  if [ "$window_seen" != "$ctx_size" ] && ensure_dir "$nudge_dir" 2>/dev/null; then
     # No sweep here: hooks/context-nudge.sh (claude-setup) sweeps this directory daily.
     window_tmp="$window_file.tmp.$$"
     printf '%s\n' "$ctx_size" > "$window_tmp" 2>/dev/null &&
@@ -635,15 +563,19 @@ fi
 rl_merge() {
   # An empty/invalid existing file must degrade to {}: feeding it to --argjson
   # makes jq fail every render and the corrupt file would never self-heal.
-  old_rl=$(jq -c 'select(type == "object")' "$1" 2>/dev/null) || old_rl=''
-  [ -n "$old_rl" ] || old_rl='{}'
+  local old_raw=/dev/null
+  [ -r "$1" ] && old_raw=$1
+  old_rl=""; merged_rl=""
   # An idle session re-renders its last known rate_limits forever; accepting
   # such rewrites would keep re-freshening stale data over live probe merges.
   # Only a strictly newer window (or higher pct in the same window) is taken —
   # unless this session has spent since its last accepted merge, which makes the
   # payload a live reading of a window that simply has not moved.
-  merged_rl=$(jq -cn --argjson old "$old_rl" --argjson fresh "$rl_json" --argjson now "$EPOCHSECONDS" \
+  { IFS= read -r old_rl; IFS= read -r merged_rl; } < <(jq -rcn --rawfile old_raw "$old_raw" \
+    --argjson fresh "$rl_json" --argjson now "$EPOCHSECONDS" \
     --arg cost "$rl_cost_now" --arg prevcost "$rl_cost_prev" --argjson reset "$rl_reset_active" '
+    ($old_raw | try fromjson catch null | if type == "object" then . else {} end) as $old
+    | ($old | tojson), (
     # A cached header-origin week is synthetic (shared-invariants n) and must not survive
     # the merge: newer() only replaces on a HIGHER pct within the same window, so a
     # leftover 100 would outlive every real reading until the weekly reset.
@@ -683,7 +615,8 @@ rl_merge() {
     then ($out + {auth: {status: "ok", checked_at: $now}}
           | del(.auth_needed, .auth_cause, .auth_checked_at))
     else $out end
-  ' 2>/dev/null) || merged_rl=""
+    )' 2>/dev/null)
+  [ -n "$old_rl" ] || old_rl='{}'
 }
 
 rl_from_cache=""
@@ -710,8 +643,8 @@ if [ -n "$session_id" ]; then
   # A session last heard before the reset replays pre-reset readings, and spend it made then
   # would pass for liveness: its spend is re-based to now, so only a call after the reset speaks.
   if [ "$rl_reset_active" = true ] && [ -n "$cost_raw" ]; then
-    rl_cost_mtime=$(file_mtime "$rl_cost_file" 2>/dev/null) || rl_cost_mtime=0
-    if [ "${rl_cost_mtime:-0}" -lt "$rl_reset_at" ] && mkdir -p "$statusline_cache_dir" 2>/dev/null; then
+    file_mtime_to rl_cost_mtime "$rl_cost_file" || rl_cost_mtime=0
+    if [ "${rl_cost_mtime:-0}" -lt "$rl_reset_at" ] && ensure_dir "$statusline_cache_dir" 2>/dev/null; then
       tmp_cost="$rl_cost_file.tmp.$$"
       printf '%s\n' "$cost_raw" > "$tmp_cost" 2>/dev/null &&
         mv "$tmp_cost" "$rl_cost_file" 2>/dev/null || rm -f "$tmp_cost" 2>/dev/null
@@ -725,10 +658,10 @@ elif [ -n "$rl_json" ]; then
   rl_target="$cache_rl"
   if [ "$acct" != main ]; then
     # main is not a claudeb account: never create limits/main.json.
-    mkdir -p "$account_cache_dir"
+    ensure_dir "$account_cache_dir"
     rl_target="$account_cache"
   fi
-  rl_mtime=$(file_mtime "$rl_target")
+  file_mtime_to rl_mtime "$rl_target"
   snapshot_lock="$rl_target.lock"
   # The cache read must sit under the same lock as the write: a concurrent
   # claudeb merge landing between them would be clobbered by this render.
@@ -740,7 +673,7 @@ elif [ -n "$rl_json" ]; then
       tmp_rl="$rl_target.tmp.$$"
       printf '%s' "$merged_rl" > "$tmp_rl" && mv "$tmp_rl" "$rl_target" || rm -f "$tmp_rl"
       if [ -n "$rl_cost_file" ] && [ -n "$cost_raw" ] && [ "$cost_raw" != "$rl_cost_prev" ] &&
-         mkdir -p "$statusline_cache_dir" 2>/dev/null; then
+         ensure_dir "$statusline_cache_dir" 2>/dev/null; then
         tmp_cost="$rl_cost_file.tmp.$$"
         printf '%s\n' "$cost_raw" > "$tmp_cost" 2>/dev/null &&
           mv "$tmp_cost" "$rl_cost_file" 2>/dev/null || rm -f "$tmp_cost" 2>/dev/null
@@ -758,7 +691,7 @@ else
   rl_json=""
   if [ -r "$rl_cache_file" ]; then IFS= read -r -d '' rl_json < "$rl_cache_file" || :; fi
   rl_from_cache=1
-  rl_mtime=$(file_mtime "$rl_cache_file")
+  file_mtime_to rl_mtime "$rl_cache_file"
 fi
 
 now=$EPOCHSECONDS
@@ -821,7 +754,7 @@ fi
 
 
 if [ -n "${CLAUDEGPT_ACCOUNT:-}" ]; then
-  limits_mtime=$(file_mtime "$limits_file")
+  file_mtime_to limits_mtime "$limits_file"
   [[ "$limits_mtime" =~ ^[0-9]+$ ]] || limits_mtime=0
   IFS=$'\x1f' read -r h5_pct h5_reset h5_dim wk_pct wk_reset wk_dim h5_absent store_stale_txt < <(jq -r \
     --arg account "$CLAUDEGPT_ACCOUNT" --argjson now "$now" --argjson mtime "$limits_mtime" \
@@ -871,7 +804,7 @@ adopt_project_dirs() {
   active_top="$project_top"; active_common="$project_common"
   active_root="$project_root"; active_name="$project_name"; active_is_wt="$project_is_wt"
 }
-# The middle block — the dir cluster, the branch, the counters, the rev counter, the autonomy dot,
+# The middle block — the dir cluster, the branch, the counters, the autonomy dot,
 # `unpushed` — is ATOMIC: all of it renders ONE working tree, the tree of the LAST line of this chat's
 # place journal (bin/statusline-place; docs/statusline-contract.md "Shown tree"). Nothing here
 # ranks, holds or checks liveness: the writers declare, this reads the last line that still resolves.
@@ -895,234 +828,6 @@ if [ -n "$shown_tree" ] && [ "$shown_tree" != "$project_top" ] && repo_dirs "$sh
   adopt_repo_dirs
 else
   adopt_project_dirs
-fi
-
-# A run in flight owns the counter slot: review-bench writes one progress file per run, and while it
-# lives the slot reports that panel. Liveness is derived here, never
-# declared by the writer — the file survives kill -9, a crash and a closed terminal, so the pid must
-# be alive AND the process holding it must have started no later than the file's last write, which a
-# pid reused after that run died cannot satisfy.
-#
-# Only a run over the SHOWN tree can hold the slot, whoever started it; a run elsewhere moves
-# nothing — review-bench journals its own start, and that line is what moves the block.
-ph_started=""; ph_done=""; ph_total=""; ph_tier=""; ph_max=""; ph_late=""
-ph_class=""; ph_file=""; ph_rank=3
-# How many unconsumed runs of this chat's this repository holds, the rendered one included: the
-# block shows ONE run, and a second review of this chat's own would otherwise be invisible until
-# its result arrived.
-own_runs=0
-progress_dir="$worker_stats_dir/progress"
-if [ -n "$active_top" ] && [ -d "$progress_dir" ]; then
-  # Every file is read and matched on the repository recorded inside it, never on its name:
-  # review-bench keys the name on the path it was handed, so a run started from a subdirectory
-  # writes a name this render cannot predict. The second pattern covers a repository whose own
-  # directory name begins with a dot; toggling dotglob instead would leave the option set for
-  # the rest of the render if anything ever returns early from this loop.
-  for progress_file in "$progress_dir"/*.json "$progress_dir"/.*.json; do
-    [ -f "$progress_file" ] || continue
-    progress_mtime=$(file_mtime "$progress_file" 2>/dev/null)
-    [[ "$progress_mtime" =~ ^[0-9]+$ ]] || continue
-    progress_values=$(jq -er --argjson now "$now" '
-      select(type == "object"
-        and (.repo | type) == "string"
-        and (.pid | type) == "number"
-        and (.pid | floor) == .pid
-        and .pid > 0
-        and (.cells | type) == "array"
-        and (.done | type) == "array"
-        and (.cells | length) > 0
-        and (.done | length) <= (.cells | length)
-        and (.started | type) == "string"
-        and ((.tier | type) == "string" or .tier == null)
-        and ((.max | type) == "boolean" or .max == null))
-      | . as $run
-      | (if (($run.started_epoch | type) == "number"
-                 and ($run.started_epoch | floor) == $run.started_epoch
-                 and $run.started_epoch > 0)
-         then $run.started_epoch else null end) as $started_epoch
-      | (if (($run.expected | type) == "object") then $run.expected else {} end) as $expected
-      | (if (($run.chunks | type) == "object") then $run.chunks else {} end) as $chunks
-      | (if (($run.chunk_started | type) == "object")
-         then $run.chunk_started else {} end) as $chunk_started
-      | ([
-          $run.cells[] as $cell
-          | select(($cell | type) == "string")
-          | select(($run.done | index($cell)) == null)
-          | ($chunks[$cell] as $pass
-             | if ($pass | type) == "array" and ($pass | length) == 2
-                  and ($pass[1] | type) == "number" and $pass[1] > 1
-               then $chunk_started[$cell] else null end
-             | if type == "number" and . > 0 and (. | floor) == . then . else null end
-            ) as $pass_started
-          | ($pass_started // $started_epoch) as $late_from
-          | $expected[$cell]
-          | select(type == "number" and . >= 0) as $expected_ms
-          | select($late_from != null
-              and (($now - $late_from) * 1000
-                   > ([3 * $expected_ms, 120000] | max)))
-        ] | length > 0) as $late
-      | (if $run.state == "failed" then "dead"
-         elif (["running", "done", "dead", "cancelled"] | index($run.state)) != null
-         then $run.state else "" end) as $state
-      | (if (($run.heartbeat_epoch | type) == "number"
-                 and ($run.heartbeat_epoch | floor) == $run.heartbeat_epoch
-                 and $run.heartbeat_epoch > 0)
-         then ($run.heartbeat_epoch | tostring) else "" end) as $heartbeat
-      | [.repo, (.pid | tostring), (.tier // ""), (if .max then "max" else "" end),
-         (.done | length | tostring), (.cells | length | tostring), .started,
-         (if $late then "late" else "" end),
-         (if (.session | type) == "string" then .session else "" end),
-         $state, $heartbeat,
-         (if (.run_id | type) == "string" then .run_id else "" end)]
-      | join("")
-    ' "$progress_file" 2>/dev/null) || continue
-    IFS=$'\x1f' read -r progress_repo progress_pid progress_run_tier progress_run_max \
-      progress_run_done progress_run_total progress_started progress_run_late \
-      progress_run_session progress_run_state progress_run_heartbeat progress_run_id <<< "$progress_values"
-    # What the run is: what review-bench declared it to be, crossed with what this render can still
-    # verify about it. The writer alone knows a finished run from an abandoned one — the document is
-    # no longer unlinked at the end, and outliving its process is now the normal case, not the
-    # kill -9 leftover it used to mean — but liveness of a run still claiming to run is derived
-    # here, never declared: the pid must be alive AND its process must have started no later than
-    # the last write, which a pid reused after that run died cannot satisfy, and the heartbeat says
-    # when the run last spoke. A document with no state is one an older review-bench wrote: it has
-    # neither, so it keeps exactly the rule it shipped with — a live pid under the 2h wall, which is
-    # not a staleness window but the only thing there that can stop a wedged process from holding
-    # the segment for a day.
-    progress_run_class=""
-    case "$progress_run_state" in
-      # `review-bench cancel` is Egor's decision that the run is over and answers for nothing: it
-      # seals no round and leaves no counter behind to be acted on.
-      cancelled) continue ;;
-      # A report already taken is consumed even while its document lingers for the task row.
-      done|dead)
-        [[ "$progress_run_id" =~ ^[A-Za-z0-9_-]+$ ]] &&
-          [ -e "$worker_stats_dir/benches/$progress_run_id/reported.json" ] && continue
-        ;;
-    esac
-    case "$progress_run_state" in
-      "")
-        [ "$((now - progress_mtime))" -le 7200 ] || continue
-        kill -0 "$progress_pid" 2>/dev/null || continue
-        progress_start=$(process_start_epoch "$progress_pid" "$now") || continue
-        # The slack absorbs ps's whole-second resolution, not a real gap: pids are handed out
-        # sequentially and wrap near 100k, so a reuse this close to the last write cannot happen.
-        [ "$progress_start" -le "$((progress_mtime + 5))" ] || continue
-        progress_run_class=live ;;
-      running)
-        progress_run_class=dead
-        if kill -0 "$progress_pid" 2>/dev/null &&
-          progress_start=$(process_start_epoch "$progress_pid" "$now") &&
-          [ "$progress_start" -le "$((progress_mtime + 5))" ]; then
-          # A run whose slowest cell is still out writes no cell for as long as that cell takes, so
-          # the heartbeat is the only thing that separates "slow" from "wedged"; a document written
-          # before the writer kept one falls back to its own last write.
-          progress_run_beat=$progress_run_heartbeat
-          [ -n "$progress_run_beat" ] || progress_run_beat=$progress_mtime
-          if [ "$((now - progress_run_beat))" -le 120 ]; then
-            progress_run_class=live
-          else
-            progress_run_class=wedged
-          fi
-        fi ;;
-      dead) progress_run_class=dead ;;
-      done) progress_run_class=done ;;
-    esac
-    # Lateness is a statement about a run still working; a finished, wedged or dead one carries
-    # its own mark and nothing else may repaint it.
-    [ "$progress_run_class" = live ] || progress_run_late=""
-    # The tree the run is over, and a subdirectory it was started from still resolves to it. A
-    # recorded repository that no longer resolves leaves the run with no tree at all — and the
-    # block being one tree's rendering, there is nothing left to show such a run with.
-    run_tree_dirs_cached "$progress_repo" 2>/dev/null || continue
-    progress_run_top=$RUN_TOP
-    progress_run_common=$RUN_COMMON
-    case "$progress_run_tier" in
-      T[0-3]) ;;
-      *) progress_run_tier="" ;;
-    esac
-    # Another chat's review is that chat's news and is not shown here at all (Egor, 2026-09-16):
-    # the dim `+N` that used to count them is gone with them. The RECORDED launcher is what
-    # decides — a run whose launcher cannot be named is never taken for somebody else's, the same
-    # doctrine that leaves such a run bright.
-    if [ -n "$session_id" ] && [ -n "$progress_run_session" ] &&
-      [ "${progress_run_session//[^A-Za-z0-9_-]/}" != "$session_id" ]; then
-      continue
-    fi
-    # No recorded launcher: the parent walk is the only thing that can still name another chat,
-    # asked before the run counts or ranks so this chat's own run keeps the slot.
-    if [ -n "$session_id" ] && [ -z "$progress_run_session" ] &&
-      { [ "$progress_run_top" = "$active_top" ] ||
-        { [ -n "$active_common" ] && [ "$progress_run_common" = "$active_common" ]; }; }; then
-      progress_owner=$(review_run_owner "" "$progress_pid")
-      [ -n "$progress_owner" ] && [ "$progress_owner" != "$session_id" ] && continue
-    fi
-    # This chat's other unconsumed runs of the same repository, the count that rides beside the
-    # one rendered: a sibling worktree's run is this repository's news without being this tree's.
-    if [ "$progress_run_top" = "$active_top" ] ||
-      { [ -n "$active_common" ] && [ "$progress_run_common" = "$active_common" ]; }; then
-      own_runs=$((own_runs + 1))
-    fi
-    # WORKING outranks OVER, and a run still speaking outranks one that stopped speaking: with
-    # finished documents surviving for a day, `started` alone handed the one slot to a `✓ 12/12`
-    # from this morning while a review of the same tree was mid-flight. Newest wins inside a class,
-    # never across one.
-    case "$progress_run_class" in
-      live) progress_run_rank=0 ;;
-      wedged) progress_run_rank=1 ;;
-      *) progress_run_rank=2 ;;
-    esac
-    if [ "$progress_run_top" = "$active_top" ]; then
-      if [ -z "$ph_started" ] ||
-        [ "$progress_run_rank" -lt "$ph_rank" ] ||
-        { [ "$progress_run_rank" = "$ph_rank" ] && [[ "$progress_started" > "$ph_started" ]]; }; then
-        ph_rank=$progress_run_rank
-        ph_started=$progress_started
-        ph_done=$progress_run_done
-        ph_total=$progress_run_total
-        ph_tier=$progress_run_tier
-        ph_max=$progress_run_max
-        ph_late=$progress_run_late
-        ph_class=$progress_run_class
-        ph_file=$progress_file
-      fi
-    fi
-  done
-fi
-
-progress_done=""
-progress_total=""
-progress_tier=""
-progress_max=""
-progress_late=""
-progress_label=""
-progress_color=""
-progress_class=""
-run_extra=0
-if [ -n "$ph_started" ]; then
-  progress_done=$ph_done; progress_total=$ph_total; progress_tier=$ph_tier
-  progress_max=$ph_max; progress_late=$ph_late; progress_class=$ph_class
-fi
-if [ -n "$progress_total" ]; then
-  # The max panel is a variant of a tier, never a run of its own: --max is refused without
-  # --tier, so an untiered run carrying it is a corrupt file and its mark is dropped with the
-  # tier rather than rendered as a panel size nothing names.
-  if [ -n "$progress_tier" ]; then
-    progress_label="$progress_tier"
-    [ -n "$progress_max" ] && progress_label="${progress_label} ${progress_max}"
-  fi
-  # The state is a mark and never a word (Egor, 2026-09-16): `✓` is a report waiting to be taken,
-  # `✗` a run that has to be finished or cancelled before it stops asking.
-  case "$progress_class" in
-    done) progress_label="${progress_label:+${progress_label} }✓" ;;
-    dead) progress_label="${progress_label:+${progress_label} }✗" ;;
-  esac
-  progress_label="${progress_label:+${progress_label} }${progress_done}/${progress_total}"
-  [ "$own_runs" -gt 1 ] && run_extra=$((own_runs - 1))
-  case "$progress_class" in
-    done|dead|wedged) progress_color="$DIM" ;;
-    *) [ -n "$progress_late" ] && progress_color="$RED" ;;
-  esac
 fi
 
 dir_foreign=0
@@ -1216,13 +921,29 @@ if [ -n "$active_top" ]; then
     # Uncommitted volume in the ACTIVE repo, whoever wrote it: staged+unstaged
     # vs HEAD plus untracked files. Lines: numstat + untracked text lines
     # (grep -cI yields 0 and BSD grep prints nothing for binaries; numstat "-"
-    # skipped by the awk guards). Files: --summary create/delete + untracked
+    # skipped by the numeric guards). Files: --summary create/delete + untracked
     # markers; the rest of the numstat entries are "modified" (renames incl.).
     # Marker rows carry an empty 3rd field + tag — a real numstat path is
     # never empty, so tracked files can't collide with them. Not the harness's
     # .cost.total_lines_* — that was a session-lifetime tool-edit counter
     # across all repos, useless for "how much is hanging uncommitted now".
-    read -r udiff_add udiff_del f_new f_del f_mod < <({
+    udiff_add=0; udiff_del=0; f_new=0; f_del=0; f_mod=0; diff_entries=0; diff_creates=0; diff_deletes=0
+    while IFS= read -r diff_line; do
+      case "$diff_line" in
+        ' create mode '*) diff_creates=$((diff_creates + 1)) ;;
+        ' delete mode '*) diff_deletes=$((diff_deletes + 1)) ;;
+        [0-9-]*$'\t'*)
+          IFS=$'\037' read -r -a diff_fields <<< "${diff_line//$'\t'/$'\037'}"
+          [[ "${diff_fields[0]}" =~ ^[0-9-]+$ ]] || continue
+          [[ "${diff_fields[0]}" =~ ^[0-9]+$ ]] && udiff_add=$((udiff_add + 10#${diff_fields[0]}))
+          [[ "${diff_fields[1]}" =~ ^[0-9]+$ ]] && udiff_del=$((udiff_del + 10#${diff_fields[1]}))
+          if [ "${#diff_fields[@]}" = 4 ] && [ -z "${diff_fields[2]}" ] && [[ "${diff_fields[3]}" =~ ^U([0-9]+)$ ]]; then
+            f_new=$((f_new + 10#${BASH_REMATCH[1]}))
+          elif ! { [ "${#diff_fields[@]}" = 4 ] && [ -z "${diff_fields[2]}" ] && [ "${diff_fields[3]}" = L ]; }; then
+            diff_entries=$((diff_entries + 1))
+          fi ;;
+      esac
+    done < <({
         if [ -n "$branch_oid" ] && [ "$branch_oid" != "(initial)" ]; then
           git -C "$git_dir" diff --numstat --summary HEAD -- 2>/dev/null
         else
@@ -1245,20 +966,11 @@ if [ -n "$active_top" ]; then
           elif [ "${#untracked_names[@]}" -gt 0 ]; then
             printf '0\t0\t\tU%s\n' "${#untracked_names[@]}"
             printf '%s\0' "${untracked_names[@]}" | ( cd "$active_top" 2>/dev/null && xargs -0 grep -cI '' 2>/dev/null ) |
-              awk -F: '{print $NF "\t0\t\tL"}'
+              while IFS= read -r untracked_count; do printf '%s\t0\t\tL\n' "${untracked_count##*:}"; done
           fi
         fi
-      } | awk -F'\t' '
-        /^[0-9-]+\t/ {
-          if ($1 != "-") a += $1; if ($2 != "-") d += $2
-          if (NF == 4 && $3 == "" && $4 ~ /^U[0-9]+$/) fu += substr($4, 2)
-          else if (NF == 4 && $3 == "" && $4 == "L") { }
-          else nt++
-          next
-        }
-        /^ create mode / {fc++}
-        /^ delete mode / {fd++}
-        END {printf "%d %d %d %d %d\n", a, d, fc + fu, fd, nt - fc - fd}')
+      })
+    f_new=$((f_new + diff_creates)); f_del=$diff_deletes; f_mod=$((diff_entries - diff_creates - diff_deletes))
     fparts=""
     [ "$f_new" -gt 0 ] 2>/dev/null && fparts="+${f_new}"
     [ "$f_mod" -gt 0 ] 2>/dev/null && fparts="${fparts}~${f_mod}"
@@ -1296,7 +1008,7 @@ fi
 sep="${DIM}│${RESET}"
 
 h5_pct_part=""
-[ "$h5_absent" != true ] && h5_pct_part=$(pct_colored "$h5_pct" "$h5_dim")
+[ "$h5_absent" != true ] && pct_colored h5_pct_part "$h5_pct" "$h5_dim"
 fable_pct_part=""
 fable_reset_txt=""
 fable_account="$acct"
@@ -1304,15 +1016,14 @@ if [ -z "${CLAUDEGPT_ACCOUNT:-}" ] && [ -n "$fable_account" ] && [ "$fable_accou
   if [ "$fable_found" = 1 ]; then
     # Stale flags inside a frozen llm-limits.json never flip; the file's own
     # age is the backstop.
-    limits_mtime=$(file_mtime "$limits_file")
+    file_mtime_to limits_mtime "$limits_file"
     [[ "$limits_mtime" =~ ^[0-9]+$ ]] && [ $((now - limits_mtime)) -gt "$LIMITS_STALE_FABLE" ] && fable_dim=1
     if [ -n "$fable_reset" ]; then
-      case "$fable_reset" in
-        *Z) fable_ts="${fable_reset%Z}+0000" ;;
-        *)  fable_ts="${fable_reset%:*}${fable_reset##*:}" ;;
-      esac
-      fable_date=$(TZ=Europe/Kyiv date -j -f "%Y-%m-%dT%H:%M:%S%z" "$fable_ts" "+%s|%u|%H:%M" 2>/dev/null)
-      IFS='|' read -r fable_reset_epoch fable_dow fable_time <<< "$fable_date"
+      fable_reset_epoch=""; fable_dow=""; fable_time=""
+      if iso_epoch_to fable_reset_epoch "$fable_reset"; then
+        TZ=Europe/Kyiv printf -v fable_dow '%(%u)T' "$fable_reset_epoch"
+        TZ=Europe/Kyiv printf -v fable_time '%(%H:%M)T' "$fable_reset_epoch"
+      fi
       if [[ "$fable_reset_epoch" =~ ^[0-9]+$ ]]; then
         fable_rem=$(( fable_reset_epoch - now ))
         # A reset over a day past is dropped exactly as the menubar drops it — the shared
@@ -1336,7 +1047,7 @@ if [ -z "${CLAUDEGPT_ACCOUNT:-}" ] && [ -n "$fable_account" ] && [ "$fable_accou
         fi
       fi
     fi
-    fable_pct_part=$(pct_colored "$fable_pct" "$fable_dim")
+    pct_colored fable_pct_part "$fable_pct" "$fable_dim"
   fi
 fi
 
@@ -1422,7 +1133,7 @@ boundary_seed=""
 if [ -n "$session_id" ] && [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
   bnd_dir="${CONTEXT_NUDGE_STATE_DIR:-$HOME/.cache/claude-context-nudge}"
   bnd_file="$bnd_dir/$session_id.bnd"
-  bnd_size=$(file_size "$transcript_path")
+  file_size_to bnd_size "$transcript_path"
   [[ "$bnd_size" =~ ^[0-9]+$ ]] || bnd_size=0
   bnd_scanned=0; bnd_seen=""
   if [ -r "$bnd_file" ]; then
@@ -1450,7 +1161,7 @@ if [ -n "$session_id" ] && [ -n "$transcript_path" ] && [ -r "$transcript_path" 
             | .timestamp // empty' 2>/dev/null
       } | LC_ALL=C sort | tail -n 1
     ) || bnd_seen=""
-    if mkdir -p "$bnd_dir" 2>/dev/null; then
+    if ensure_dir "$bnd_dir" 2>/dev/null; then
       bnd_tmp="$bnd_file.tmp.$$"
       printf '%s %s\n' "$bnd_size" "${bnd_seen:--}" > "$bnd_tmp" 2>/dev/null &&
         mv "$bnd_tmp" "$bnd_file" 2>/dev/null || rm -f "$bnd_tmp" 2>/dev/null
@@ -1459,132 +1170,154 @@ if [ -n "$session_id" ] && [ -n "$transcript_path" ] && [ -r "$transcript_path" 
   boundary_seed="$bnd_seen"
 fi
 
+scan_vars=(scan_found assist_ts assist_model assist_uuid fork_sid ttl_bucket post_compact ev_valid ev_ts
+  ev_gap ev_cr ev_cc ctx_stale boundary_ts fork_anchor_uuid fork_own_ts latest_ts latest_model latest_ttl
+  latest_uuid latest_fork fresh_ctx oldest_ts scan_complete scan_bytes transcript_size)
 if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
-  transcript_size=$(file_size "$transcript_path")
+  file_size_to transcript_size "$transcript_path"
   [[ "$transcript_size" =~ ^[0-9]+$ ]] || transcript_size=0
-  while :; do
-    cache_scan=$(
-      tail -c "$scan_bytes" "$transcript_path" 2>/dev/null |
-        {
-          [ "$scan_bytes" -ge "$transcript_size" ] || IFS= read -r _ || :
-          cat
-        } |
-        jq -Rrn --arg model "$model_id" --arg seedb "$boundary_seed" '
-          def ep: try (sub("\\.[0-9]+Z$"; "Z") | fromdate) catch null;
-          def num: if type == "number" then . else 0 end;
-          def buckets:
-            [((.cache_creation? // {}) | to_entries[]?
-              | select((.value | num) > 0)
-              | .key | capture("ephemeral_(?<n>[0-9]+)(?<u>[mh])_")?
-              | ((.n | tonumber) * (if .u == "m" then 60 else 3600 end)))] as $v
-            | {ttl: ($v | if length == 0 then 0 else min end)};
-          # The plain context-size core is claude-setup hooks/lib/context-size.jq; a fix there has to be re-checked against this superset.
-          reduce (inputs | fromjson? | select(type == "object" and .isSidechain != true)) as $x (
-            {la:0, pm:"", pg:-1, pa:0, lb:($seedb | ep // 0), ats:0, am:"-", au:"-", afk:"", bk:0,
-             pbk:0, ots:0,
-             cgap:0, ccr:0, ccc:0, cets:0, cpm:"", cem:"", cpa:0, chas:0, own:0,
-             sawf:0, fas:"", fau:"", fot:0, lts:0, lm:"-", lbk:0, lu:"-", lfk:"",
-             fc:0, fcts:0};
-            (($x.forkedFrom?.sessionId? // "") | tostring) as $fs
-            | (($x.forkedFrom?.messageUuid? // "") | tostring) as $fu
-            | ((($x.timestamp? // "") | if type == "string" then ep else null end)) as $ts
-            | (if $fs != "" then
-                 .sawf = 1 | .fas = $fs | (if $fu != "" then .fau = $fu else . end)
-               elif .sawf == 1 and .fot == 0 and $ts != null then .fot = $ts
-               else . end)
-            | (if $ts == null or (.ots > 0 and .ots <= $ts) then . else .ots = $ts end)
-            | if $ts == null then .
-              elif $x.type == "system" and $x.subtype == "compact_boundary" then
-                # Only a new-maximum boundary invalidates the size: re-emitted
-                # older boundaries trail the newest one in file order. A size
-                # already taken from a response newer than this boundary survives
-                # it - re-emission can put that response earlier in the file.
-                (if $ts > .lb then
-                   .lb = $ts
-                   | (if .fcts > $ts then . else .fc = 0 | .fcts = 0 end)
+  # The scan reads nothing but the transcript and the inputs in this key, so an unchanged
+  # transcript replays its last answer instead of re-reading up to 8 MiB.
+  file_mtime_to scan_mtime "$transcript_path"
+  file_stat_to scan_inode inode "$transcript_path"
+  scan_key="v1|$transcript_path|$scan_inode|$transcript_size|$scan_mtime|$model_id|$boundary_seed|$saved_scan_bytes"
+  scan_memo="$statusline_cache_dir/scan-$session_id"
+  scan_memo_key=""; scan_memo_vals=""
+  [ -n "$session_id" ] && [ -r "$scan_memo" ] &&
+    { IFS= read -r scan_memo_key; IFS= read -r scan_memo_vals; } < "$scan_memo" 2>/dev/null
+  if [ -n "$session_id" ] && [ "$scan_memo_key" = "$scan_key" ]; then
+    IFS=$'\x1f' read -r "${scan_vars[@]}" <<< "$scan_memo_vals"
+  else
+    while :; do
+      cache_scan=$(
+        tail -c "$scan_bytes" "$transcript_path" 2>/dev/null |
+          {
+            [ "$scan_bytes" -ge "$transcript_size" ] || IFS= read -r _ || :
+            cat
+          } |
+          jq -Rrn --arg model "$model_id" --arg seedb "$boundary_seed" '
+            def ep: try (sub("\\.[0-9]+Z$"; "Z") | fromdate) catch null;
+            def num: if type == "number" then . else 0 end;
+            def buckets:
+              [((.cache_creation? // {}) | to_entries[]?
+                | select((.value | num) > 0)
+                | .key | capture("ephemeral_(?<n>[0-9]+)(?<u>[mh])_")?
+                | ((.n | tonumber) * (if .u == "m" then 60 else 3600 end)))] as $v
+              | {ttl: ($v | if length == 0 then 0 else min end)};
+            # The plain context-size core is claude-setup hooks/lib/context-size.jq; a fix there has to be re-checked against this superset.
+            reduce (inputs | fromjson? | select(type == "object" and .isSidechain != true)) as $x (
+              {la:0, pm:"", pg:-1, pa:0, lb:($seedb | ep // 0), ats:0, am:"-", au:"-", afk:"", bk:0,
+               pbk:0, ots:0,
+               cgap:0, ccr:0, ccc:0, cets:0, cpm:"", cem:"", cpa:0, chas:0, own:0,
+               sawf:0, fas:"", fau:"", fot:0, lts:0, lm:"-", lbk:0, lu:"-", lfk:"",
+               fc:0, fcts:0};
+              (($x.forkedFrom?.sessionId? // "") | tostring) as $fs
+              | (($x.forkedFrom?.messageUuid? // "") | tostring) as $fu
+              | ((($x.timestamp? // "") | if type == "string" then ep else null end)) as $ts
+              | (if $fs != "" then
+                   .sawf = 1 | .fas = $fs | (if $fu != "" then .fau = $fu else . end)
+                 elif .sawf == 1 and .fot == 0 and $ts != null then .fot = $ts
                  else . end)
-              elif $x.type == "user" and ($x.isCompactSummary? != true) then
-                (if .la > 0 and .pg < 0 then .pg = ($ts - .la) | .pa = .la else . end)
-                | (if $ts > .la then .la = $ts else . end)
-              elif $x.type == "assistant" and (($x.message?.model? // "") != "<synthetic>") then
-                ($x.message?.usage? // null) as $u
-                | (($u.cache_read_input_tokens? // 0) | num) as $cr
-                | (($u.cache_creation_input_tokens? // 0) | num) as $cc
-                | ($u | buckets) as $bs
-                | (($x.message?.model? // "") | tostring) as $xm
-                | (($x.uuid? // "") | tostring) as $xu
-                | if ($u | type) != "object" then .
-                  else
-                    (if ($cr + $cc) <= 0 or $xm == "" then . else
-                    (if .pg >= 0 then
-                       .cgap = .pg | .ccr = $cr | .ccc = $cc | .cets = $ts
-                       | .cpm = .pm | .cem = $xm | .cpa = .pa | .chas = 1 | .pg = -1
-                     else . end)
-                    | (if $ts >= .lts then
-                         .lts = $ts | .lm = $xm | .lbk = $bs.ttl
-                         | .lu = (if $xu == "" then "-" else $xu end) | .lfk = $fs
+              | (if $ts == null or (.ots > 0 and .ots <= $ts) then . else .ots = $ts end)
+              | if $ts == null then .
+                elif $x.type == "system" and $x.subtype == "compact_boundary" then
+                  # Only a new-maximum boundary invalidates the size: re-emitted
+                  # older boundaries trail the newest one in file order. A size
+                  # already taken from a response newer than this boundary survives
+                  # it - re-emission can put that response earlier in the file.
+                  (if $ts > .lb then
+                     .lb = $ts
+                     | (if .fcts > $ts then . else .fc = 0 | .fcts = 0 end)
+                   else . end)
+                elif $x.type == "user" and ($x.isCompactSummary? != true) then
+                  (if .la > 0 and .pg < 0 then .pg = ($ts - .la) | .pa = .la else . end)
+                  | (if $ts > .la then .la = $ts else . end)
+                elif $x.type == "assistant" and (($x.message?.model? // "") != "<synthetic>") then
+                  ($x.message?.usage? // null) as $u
+                  | (($u.cache_read_input_tokens? // 0) | num) as $cr
+                  | (($u.cache_creation_input_tokens? // 0) | num) as $cc
+                  | ($u | buckets) as $bs
+                  | (($x.message?.model? // "") | tostring) as $xm
+                  | (($x.uuid? // "") | tostring) as $xu
+                  | if ($u | type) != "object" then .
+                    else
+                      (if ($cr + $cc) <= 0 or $xm == "" then . else
+                      (if .pg >= 0 then
+                         .cgap = .pg | .ccr = $cr | .ccc = $cc | .cets = $ts
+                         | .cpm = .pm | .cem = $xm | .cpa = .pa | .chas = 1 | .pg = -1
                        else . end)
-                    | (if $model != "" and $xm == $model then
-                         # A cache read refreshes the entry it hit, so a pure-read response
-                         # proves warmth even though it creates no bucket - it inherits the
-                         # TTL of the nearest older own response that did declare one.
-                         (if $ts >= .ats then
-                            .ats = $ts | .am = $xm | .au = (if $xu == "" then "-" else $xu end)
-                            | .afk = $fs
-                            | .bk = (if $bs.ttl > 0 then $bs.ttl
-                                     elif $cr > 0 then .pbk else 0 end)
-                          else . end)
-                         | (if $bs.ttl > 0 then .pbk = $bs.ttl else . end)
-                       else . end)
-                    | (if $fs == "" and $ts > .own then .own = $ts else . end)
-                    | .pm = $xm
-                    | (if $ts > .la then .la = $ts else . end)
-                    end)
-                    # Entries re-emitted after a boundary keep their pre-compact usage
-                    # totals, so only a response stamped after it sizes live context -
-                    # strictly after, because ep drops sub-second precision and an
-                    # auto-compact boundary shares its second with the last pre-compact
-                    # response, whose total >= would resurrect. Not gated on cache
-                    # tokens: an input-only response is a real post-boundary size.
-                    | (if .lb == 0 or $ts > .lb then
-                         ((($u.input_tokens? // 0) | num) + $cc + $cr) as $tc
-                         | (if $tc > 0 then .fc = $tc | .fcts = $ts else . end)
-                       else . end)
-                  end
-              else . end)
-          | [ (if .ats > 0 then 1 else 0 end), .ats, .am, .au,
-              (.afk | if . == "" then "-" else . end), .bk,
-              (if .lb > 0 and .lb >= .ats then 1 else 0 end),
-              (if .chas == 1 and .cgap > 0 and .cpm != "" and .cpm == .cem
-                  and (.lb == 0 or .lb <= .cpa or .lb >= .cets) then 1 else 0 end),
-              .cets, .cgap, .ccr, .ccc,
-              (if .own == 0 or (.lb > 0 and .own <= .lb) then 1 else 0 end),
-              .lb, (.fau | if . == "" then "-" else . end), .fot,
-              .lts, .lm, .lbk, .lu, (.lfk | if . == "" then "-" else . end), .fc, .ots ]
-          | map(tostring) | join("")' 2>/dev/null
-    )
-    if [ -n "$cache_scan" ]; then
-      IFS=$'\x1f' read -r scan_found assist_ts assist_model assist_uuid fork_sid ttl_bucket \
-        post_compact ev_valid ev_ts ev_gap ev_cr ev_cc ctx_stale boundary_ts fork_anchor_uuid \
-        fork_own_ts latest_ts latest_model latest_ttl latest_uuid latest_fork fresh_ctx \
-        oldest_ts <<< "$cache_scan" || :
+                      | (if $ts >= .lts then
+                           .lts = $ts | .lm = $xm | .lbk = $bs.ttl
+                           | .lu = (if $xu == "" then "-" else $xu end) | .lfk = $fs
+                         else . end)
+                      | (if $model != "" and $xm == $model then
+                           # A cache read refreshes the entry it hit, so a pure-read response
+                           # proves warmth even though it creates no bucket - it inherits the
+                           # TTL of the nearest older own response that did declare one.
+                           (if $ts >= .ats then
+                              .ats = $ts | .am = $xm | .au = (if $xu == "" then "-" else $xu end)
+                              | .afk = $fs
+                              | .bk = (if $bs.ttl > 0 then $bs.ttl
+                                       elif $cr > 0 then .pbk else 0 end)
+                            else . end)
+                           | (if $bs.ttl > 0 then .pbk = $bs.ttl else . end)
+                         else . end)
+                      | (if $fs == "" and $ts > .own then .own = $ts else . end)
+                      | .pm = $xm
+                      | (if $ts > .la then .la = $ts else . end)
+                      end)
+                      # Entries re-emitted after a boundary keep their pre-compact usage
+                      # totals, so only a response stamped after it sizes live context -
+                      # strictly after, because ep drops sub-second precision and an
+                      # auto-compact boundary shares its second with the last pre-compact
+                      # response, whose total >= would resurrect. Not gated on cache
+                      # tokens: an input-only response is a real post-boundary size.
+                      | (if .lb == 0 or $ts > .lb then
+                           ((($u.input_tokens? // 0) | num) + $cc + $cr) as $tc
+                           | (if $tc > 0 then .fc = $tc | .fcts = $ts else . end)
+                         else . end)
+                    end
+                else . end)
+            | [ (if .ats > 0 then 1 else 0 end), .ats, .am, .au,
+                (.afk | if . == "" then "-" else . end), .bk,
+                (if .lb > 0 and .lb >= .ats then 1 else 0 end),
+                (if .chas == 1 and .cgap > 0 and .cpm != "" and .cpm == .cem
+                    and (.lb == 0 or .lb <= .cpa or .lb >= .cets) then 1 else 0 end),
+                .cets, .cgap, .ccr, .ccc,
+                (if .own == 0 or (.lb > 0 and .own <= .lb) then 1 else 0 end),
+                .lb, (.fau | if . == "" then "-" else . end), .fot,
+                .lts, .lm, .lbk, .lu, (.lfk | if . == "" then "-" else . end), .fc, .ots ]
+            | map(tostring) | join("")' 2>/dev/null
+      )
+      if [ -n "$cache_scan" ]; then
+        IFS=$'\x1f' read -r scan_found assist_ts assist_model assist_uuid fork_sid ttl_bucket \
+          post_compact ev_valid ev_ts ev_gap ev_cr ev_cc ctx_stale boundary_ts fork_anchor_uuid \
+          fork_own_ts latest_ts latest_model latest_ttl latest_uuid latest_fork fresh_ctx \
+          oldest_ts <<< "$cache_scan" || :
+      fi
+      [ "$scan_found" = 1 ] && break
+      if [ "$scan_bytes" -ge "$transcript_size" ]; then scan_complete=1; break; fi
+      # A boundary ends the scan only once the window has read back past it: everything
+      # deeper is then pre-compact and cannot change warmth or the live size. The boundary
+      # may be known from the sidecar alone, i.e. from a file position outside this window,
+      # and stopping there would hide a live response sitting deeper than the window.
+      [ "$boundary_ts" -gt 0 ] 2>/dev/null && [ "$oldest_ts" -gt 0 ] 2>/dev/null \
+        && [ "$oldest_ts" -le "$boundary_ts" ] 2>/dev/null && { scan_complete=1; break; }
+      [ "$scan_bytes" -ge "$scan_max" ] && break
+      if [ "$scan_bytes" -eq 262144 ] && [ "$saved_scan_bytes" -gt "$scan_bytes" ]; then
+        scan_bytes="$saved_scan_bytes"
+      else
+        scan_bytes=$((scan_bytes * 4))
+      fi
+      [ "$scan_bytes" -gt "$scan_max" ] && scan_bytes="$scan_max"
+    done
+    if [ -n "$session_id" ] && ensure_dir "$statusline_cache_dir" 2>/dev/null; then
+      scan_memo_line=""
+      for scan_var in "${scan_vars[@]}"; do scan_memo_line+="${!scan_var}"$'\x1f'; done
+      printf '%s\n%s\n' "$scan_key" "${scan_memo_line%$'\x1f'}" > "$scan_memo.tmp.$$" 2>/dev/null &&
+        mv -f "$scan_memo.tmp.$$" "$scan_memo" 2>/dev/null || rm -f "$scan_memo.tmp.$$" 2>/dev/null
     fi
-    [ "$scan_found" = 1 ] && break
-    if [ "$scan_bytes" -ge "$transcript_size" ]; then scan_complete=1; break; fi
-    # A boundary ends the scan only once the window has read back past it: everything
-    # deeper is then pre-compact and cannot change warmth or the live size. The boundary
-    # may be known from the sidecar alone, i.e. from a file position outside this window,
-    # and stopping there would hide a live response sitting deeper than the window.
-    [ "$boundary_ts" -gt 0 ] 2>/dev/null && [ "$oldest_ts" -gt 0 ] 2>/dev/null \
-      && [ "$oldest_ts" -le "$boundary_ts" ] 2>/dev/null && { scan_complete=1; break; }
-    [ "$scan_bytes" -ge "$scan_max" ] && break
-    if [ "$scan_bytes" -eq 262144 ] && [ "$saved_scan_bytes" -gt "$scan_bytes" ]; then
-      scan_bytes="$saved_scan_bytes"
-    else
-      scan_bytes=$((scan_bytes * 4))
-    fi
-    [ "$scan_bytes" -gt "$scan_max" ] && scan_bytes="$scan_max"
-  done
+  fi
 fi
 
 for scan_num in assist_ts ttl_bucket post_compact ev_valid ev_ts ev_gap ev_cr ev_cc \
@@ -1673,7 +1406,7 @@ if [ -n "$track" ] && [ "$latest_ts" -gt 0 ] && [ "$latest_fork" = "-" ]; then
        || [ "$model_rec_ttl" -ne "$latest_ttl" ] || [ "$model_rec_uuid" != "$latest_uuid" ] \
        || [ "$model_rec_scan" -ne "$scan_bytes" ]; then
       statusline_parent_dir "$model_track"
-      mkdir -p "$statusline_parent" 2>/dev/null
+      ensure_dir "$statusline_parent" 2>/dev/null
       printf 'v1 %s %s %s %s %s\n' "$latest_ts" "$latest_acct" "$latest_ttl" "$latest_uuid" "$scan_bytes" \
         > "$model_track.tmp.$$" 2>/dev/null && mv "$model_track.tmp.$$" "$model_track" 2>/dev/null \
         || rm -f "$model_track.tmp.$$" 2>/dev/null
@@ -1694,7 +1427,7 @@ if [ "$scan_found" = 1 ] && [ "$fork_sid" = "-" ] && [ -n "$model_track" ] \
         || [ "$model_rec_ttl" -ne "$ttl_bucket" ] || [ "$model_rec_uuid" != "$assist_uuid" ] \
         || [ "$model_rec_scan" -ne "$scan_bytes" ]; }; then
   statusline_parent_dir "$model_track"
-  mkdir -p "$statusline_parent" 2>/dev/null
+  ensure_dir "$statusline_parent" 2>/dev/null
   printf 'v1 %s %s %s %s %s\n' "$assist_ts" "$track_acct" "$ttl_bucket" "$assist_uuid" "$scan_bytes" \
     > "$model_track.tmp.$$" 2>/dev/null && mv "$model_track.tmp.$$" "$model_track" 2>/dev/null \
     || rm -f "$model_track.tmp.$$" 2>/dev/null
@@ -1714,8 +1447,8 @@ if [ "$scan_found" = 1 ] && [ "$fork_sid" != "-" ] && [ "$fork_sid" != "$session
       < "$fork_cache" 2>/dev/null || :
     if [ "$fc1" = v4 ] && [ "$fc2" = "$fork_sid" ] && [ "$fc3" = "$fork_anchor_uuid" ] \
        && [ "$fc4" = "$fork_own_ts" ] && [ -r "$fc5" ]; then
-      parent_size=$(file_size "$fc5")
-      parent_mtime=$(file_mtime "$fc5")
+      file_size_to parent_size "$fc5"
+      file_mtime_to parent_mtime "$fc5"
       if [ "$parent_size" = "$fc6" ] && [ "$parent_mtime" = "$fc7" ]; then
         parent_file="$fc5"; fork_state="$fc8"; parent_boundary="$fc9"
         parent_assist_ts="$fc10"; parent_assist_uuid="$fc11"; parent_assist_ttl="$fc12"
@@ -1727,8 +1460,8 @@ if [ "$scan_found" = 1 ] && [ "$fork_sid" != "-" ] && [ "$fork_sid" != "$session
   if [ "$fork_cache_valid" = 0 ] && [ "$fork_anchor_uuid" != "-" ]; then
     parent_file=$(resolve_parent_transcript 2>/dev/null) || parent_file=""
     if [ -r "$parent_file" ]; then
-      parent_size=$(file_size "$parent_file")
-      parent_mtime=$(file_mtime "$parent_file")
+      file_size_to parent_size "$parent_file"
+      file_mtime_to parent_mtime "$parent_file"
       [[ "$parent_size" =~ ^[0-9]+$ ]] || parent_size=0
       [[ "$parent_mtime" =~ ^[0-9]+$ ]] || parent_mtime=0
       parent_bytes="$parent_size"
@@ -1793,7 +1526,7 @@ if [ "$scan_found" = 1 ] && [ "$fork_sid" != "-" ] && [ "$fork_sid" != "$session
       fi
       if [ -n "$fork_cache" ]; then
         statusline_parent_dir "$fork_cache"
-        mkdir -p "$statusline_parent" 2>/dev/null
+        ensure_dir "$statusline_parent" 2>/dev/null
         printf 'v4\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' \
           "$fork_sid" "$fork_anchor_uuid" "$fork_own_ts" "$parent_file" "$parent_size" \
           "$parent_mtime" "$fork_state" "$parent_boundary" "$parent_assist_ts" \
@@ -1853,7 +1586,7 @@ if [ "$ev_valid" = 1 ] && [ "$ev_ts" -gt "$learned_upto" ] 2>/dev/null \
 fi
 if [ -z "${CLAUDEGPT_ACCOUNT:-}" ] && { [ -n "$learn_event" ] || [ -n "$bounds_need_decay" ]; }; then
   statusline_parent_dir "$learned_file"
-  mkdir -p "$statusline_parent" 2>/dev/null
+  ensure_dir "$statusline_parent" 2>/dev/null
   lock_tries=0
   while ! snapshot_lock_acquire "$shared_bounds_lock"; do
     lock_tries=$((lock_tries + 1))
@@ -1896,7 +1629,7 @@ if [ -n "$track" ] && [ "$track_ready" = 1 ] \
         || [ "$rec_scan" != "${t8:-}" ] || [ "$seen_upto" != "${t9:-}" ] \
         || [ "$seen_acct" != "${t10:-}" ]; }; then
   statusline_parent_dir "$track"
-  mkdir -p "$statusline_parent" 2>/dev/null
+  ensure_dir "$statusline_parent" 2>/dev/null
   printf 'v2 %s %s %s %s %s %s %s %s %s\n' "$rec_ts" "${rec_acct:-?}" "$learned_upto" \
     "$rec_ttl" "$rec_model" "$rec_uuid" "$rec_scan" "$seen_upto" "$seen_acct" \
     > "$track.tmp.$$" 2>/dev/null && mv "$track.tmp.$$" "$track" 2>/dev/null \
@@ -1956,15 +1689,15 @@ fi
 # Unified short forms for every model and effort this line prints: first letter plus the first
 # consonant after it, uppercased, with the version digits glued on (Fable 5 → FB5, astra → AS). A
 # name with no consonant to take has no short form and is printed whole.
-abbrev_effort() {
-  case "$1" in
-    low) printf low ;; medium) printf med ;; high) printf hi ;;
-    xhigh) printf xhi ;; max) printf max ;;
-    *) printf '%s' "$1" ;;
+abbrev_effort() { # var effort
+  case "$2" in
+    low) printf -v "$1" low ;; medium) printf -v "$1" med ;; high) printf -v "$1" hi ;;
+    xhigh) printf -v "$1" xhi ;; max) printf -v "$1" max ;;
+    *) printf -v "$1" '%s' "$2" ;;
   esac
 }
-abbrev_model() {
-  local name="$1" letters version="" first second="" i c
+abbrev_model() { # var display-name
+  local out="$1" name="$2" letters version="" first second="" i c
   letters=${name%%[^A-Za-z]*}
   # Only the version that follows the name: a display name can carry digits further along
   # (`Opus 5 (1M context)`), and collecting all of them would print a version nobody released.
@@ -1980,10 +1713,10 @@ abbrev_model() {
     i=$((i + 1))
   done
   if [ -z "$first" ] || [ -z "$second" ]; then
-    printf '%s' "$name"
+    printf -v "$out" '%s' "$name"
     return
   fi
-  printf '%s%s%s' "${first^^}" "${second^^}" "$version"
+  printf -v "$out" '%s%s%s' "${first^^}" "${second^^}" "$version"
 }
 
 # Chat file only (global pin is the menu's); claudeb_profile=* renders `claude`.
@@ -2029,7 +1762,7 @@ ports_part=""
 if [ -n "$session_id" ]; then
   probe_bin="$statusline_dir/statusline-ports-probe.sh"
   ports_cache="$statusline_cache_dir/ports-$session_id"
-  ports_mtime=$(file_mtime "$ports_cache" 2>/dev/null)
+  file_mtime_to ports_mtime "$ports_cache"
   if { ! [[ "$ports_mtime" =~ ^[0-9]+$ ]] || [ "$((now - ports_mtime))" -gt 15 ]; } && [ -x "$probe_bin" ]; then
     ( "$probe_bin" "$session_id" "$PPID" "${project_top:-$active_top}" >/dev/null 2>&1 & ) 2>/dev/null
   fi
@@ -2063,18 +1796,19 @@ if [ -n "$session_id" ]; then
 fi
 
 repo_debt=""
-[ -n "$active_top" ] && repo_debt=$(repo_debt_lines "$active_top" "$now")
+[ -n "$active_top" ] && repo_debt_lines repo_debt "$active_top" "$now"
 
 review_autonomous=no
 if [ -n "$session_id" ]; then
-  review_autonomous=$(review_session_line "$session_id" "$now")
+  review_session_line review_autonomous "$session_id" "$now"
 fi
 
 # Never dimmed: a commit of this chat that its upstream does not contain is this chat's own to act
 # on, and the flow it belongs to ends at the push. Asked about the shown tree.
 unpushed_show=0
 if [ -n "$active_top" ]; then
-  [ "$(unpushed_marker "$active_top" "$session_id" "$now")" = unpushed ] && unpushed_show=1
+  unpushed_marker unpushed_answer "$active_top" "$session_id" "$now"
+  [ "$unpushed_answer" = unpushed ] && unpushed_show=1
 fi
 
 # Both lines are built to the terminal's width, not printed once: the harness exports COLUMNS and
@@ -2254,21 +1988,6 @@ fit_branch_part() {
     branch_part="${branch_part} ${MAGENTA}↑${ahead}${RESET}"
 }
 
-fit_review_part() {
-  local extra=""
-  review_part=""
-  # This chat's other reviews of this repository ride with the rendered one and never take a slot
-  # of their own; alone they would be a number about no tree and no progress, so a count with no
-  # counter to ride on is not rendered at all.
-  [ "$run_extra" -gt 0 ] && extra=" ${DIM}+${run_extra}${RESET}"
-  [ -n "$progress_total" ] || return
-  if [ -n "$progress_color" ]; then
-    review_part=" ${sep} ${progress_color}${progress_label}${RESET}${extra}"
-  else
-    review_part=" ${sep} ${progress_label}${extra}"
-  fi
-}
-
 fit_verdict_part() {
   verdict_part=""
   [ "$review_autonomous" = yes ] && verdict_part=" ${sep} ●"
@@ -2299,7 +2018,6 @@ fit_compose() {
   fit_cb_part
   fit_dir_part
   fit_branch_part
-  fit_review_part
   fit_verdict_part
   fit_unpushed_part
   fit_pin_part
@@ -2307,7 +2025,7 @@ fit_compose() {
   work=${work# }
   line1="${head_part}${cb_part}"
   [ -n "$work" ] && line1="${line1} ${sep} ${work}"
-  line1="${line1}${review_part}${verdict_part}${unpushed_part}${pin_part}"
+  line1="${line1}${verdict_part}${unpushed_part}${pin_part}"
 }
 
 fit_label() {
@@ -2348,9 +2066,9 @@ fit_compose2() {
   [ "$fit2_cost" = 1 ] && [ -n "$cost_part" ] && line2="${line2}${gap}${cost_part}"
 }
 
-model_abbrev=$(abbrev_model "$model")
+abbrev_model model_abbrev "$model"
 effort_abbrev=""
-[ -n "$effort" ] && effort_abbrev=$(abbrev_effort "$effort")
+[ -n "$effort" ] && abbrev_effort effort_abbrev "$effort"
 
 fit_cols=${COLUMNS:-}
 if [[ "$fit_cols" =~ ^[0-9]+$ ]] && [ "$fit_cols" -gt 0 ]; then
@@ -2396,10 +2114,13 @@ if [ -n "$fit_cols" ]; then
   done
 fi
 
-ctx_pct_part=$(pct_colored "$ctx_pct" "$ctx_dim" 40)
-wk_pct_part=$(pct_colored "$wk_pct" "$wk_dim")
+pct_colored ctx_pct_part "$ctx_pct" "$ctx_dim" 40
+pct_colored wk_pct_part "$wk_pct" "$wk_dim"
 cost_part=""
-[ -n "$cost_raw" ] && cost_part="${DIM}\$$(LC_ALL=C printf '%.2f' "$cost_raw")${RESET}"
+if [ -n "$cost_raw" ]; then
+  LC_ALL=C printf -v cost_fmt '%.2f' "$cost_raw" 2>/dev/null
+  cost_part="${DIM}\$${cost_fmt}${RESET}"
+fi
 fit_compose2
 if [ -n "$fit_cols" ]; then
   for fit_step in 1 2 3 4 5; do
@@ -2422,7 +2143,7 @@ work_rows=()
 if [ -n "$session_id" ]; then
   work_bin="$statusline_dir/statusline-work-probe.sh"
   work_cache="$statusline_cache_dir/work-$session_id"
-  work_mtime=$(file_mtime "$work_cache" 2>/dev/null)
+  file_mtime_to work_mtime "$work_cache"
   if { ! [[ "$work_mtime" =~ ^[0-9]+$ ]] || [ "$((now - work_mtime))" -gt 4 ]; } && [ -x "$work_bin" ]; then
     ( "$work_bin" "$session_id" "$PPID" >/dev/null 2>&1 & ) 2>/dev/null
   fi
@@ -2480,7 +2201,7 @@ self_cpu_ms
 statusline_cpu_ms=$cpu_ms
 printf '%s\t%s\t%s\t%s\n' "$statusline_start_us" "$statusline_end_us" "$session_id" "$statusline_cpu_ms" \
   2>/dev/null >> "$statusline_timing_dir/$statusline_day.tsv" ||
-  { mkdir -p "$statusline_timing_dir" 2>/dev/null &&
+  { ensure_dir "$statusline_timing_dir" 2>/dev/null &&
     printf '%s\t%s\t%s\t%s\n' "$statusline_start_us" "$statusline_end_us" "$session_id" "$statusline_cpu_ms" \
       2>/dev/null >> "$statusline_timing_dir/$statusline_day.tsv"; }
 exit "$statusline_rc"

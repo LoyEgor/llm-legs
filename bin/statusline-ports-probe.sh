@@ -20,7 +20,7 @@ project_top="${3:-}"
 session_id=${session_id//[^A-Za-z0-9_-]/}
 [ -n "$session_id" ] || exit 0
 
-cache_dir="$HOME/.cache/claude-statusline"
+cache_dir="${STATUSLINE_CACHE_DIR:-$HOME/.cache/claude-statusline}"
 cache_file="$cache_dir/ports-$session_id"
 lock="$cache_file.lock"
 
