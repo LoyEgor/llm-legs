@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """ElevenLabs media legs behind media-run: one subcommand per kind, run by bin/elevenlabs-<kind>.
 
-Keys: the manifest's accounts.file (`<key> <account> [notes]` per line). Limits and defaults:
+Keys: the manifest's accounts.file (`<key> <account> [notes]` per line, line order = spend order). Limits and defaults:
 share/image-caps/elevenlabs.json. Prose: docs/image-vendors/elevenlabs.md.
 """
 from __future__ import annotations
@@ -34,6 +34,8 @@ API = os.environ.get("ELEVENLABS_API_BASE", "https://api.elevenlabs.io")
 ROOT = Path(__file__).resolve().parent.parent
 CAPS_PATH = Path(os.environ.get("ELEVENLABS_CAPS", ROOT / "share/image-caps/elevenlabs.json"))
 VOICE_ID_RE = re.compile(r"^[A-Za-z0-9]{20}$")
+# A voice lives on the account that made it: a miss on one account is not a miss on the next.
+NEXT_ACCOUNT = {"voice_not_found", "voice_missing"}
 
 
 class Fail(Exception):
@@ -83,10 +85,9 @@ def pool_for(kind: str, pinned: str | None) -> list[str]:
         if pinned not in known:
             raise Fail(2, f"--account {pinned} is not in {KEYS} (have: {' '.join(known)})")
         return [pinned]
-    pool = [name for name in caps()["accounts"]["pool"].get(kind) or caps()["accounts"]["pool"]["default"] if name in known]
-    if not pool:
-        raise Fail(4, f"no {kind} account in {KEYS}")
-    return pool
+    if not known:
+        raise Fail(4, f"no account in {KEYS}")
+    return list(known)
 
 
 # ---------------------------------------------------------------- HTTP
@@ -155,7 +156,9 @@ class Client:
         text = f"HTTP {code} {status}: {message}".strip()
         if status in ("quota_exceeded", "insufficient_credits") or "quota" in status:
             return Fail(3, f"ELEVENLABS_USAGE_LIMIT account={self.account} ({message})")
-        if status in ("missing_permissions", "invalid_api_key", "api_key_disabled", "paid_plan_required") or code in (401, 402):
+        if status == "paid_plan_required" or code == 402:
+            return Fail(4, f"account {self.account}: {text} — its plan does not allow this", status)
+        if status in ("missing_permissions", "invalid_api_key", "api_key_disabled") or code == 401:
             return Fail(4, f"account {self.account}: {text} — the owner fixes this key in ElevenLabs → Developers → API keys",
                         status)
         if code == 429:
@@ -284,7 +287,7 @@ class Run:
             try:
                 return work(self.client)
             except Fail as error:
-                if error.rc != 3:
+                if error.rc not in (3, 4) and error.status not in NEXT_ACCOUNT:
                     raise
                 last = error
                 print(f"elevenlabs-{self.kind}: {error.message}; next account", file=sys.stderr)
@@ -348,7 +351,7 @@ def models_check(account: str) -> str:
     try:
         if time.time() - seen.get("at", 0) > MODELS_CHECK_S:
             keys, seen = accounts(), {}
-            for name in [n for n in dict.fromkeys((account, *caps()["accounts"]["pool"]["default"])) if n in keys][:2]:
+            for name in [n for n in dict.fromkeys((account, *keys)) if n in keys][:2]:
                 with contextlib.suppress(Fail, ValueError):
                     served = Client(name, keys[name]).json("GET", "/v1/models", timeout=20, once=True)
                     seen = {"at": int(time.time()), "account": name,
@@ -411,7 +414,8 @@ def voice_id(client: Client, wanted: str, cache: dict) -> str:
         if voice["name"].lower().startswith(low):
             return voice["voice_id"]
     names = ", ".join(v["name"].split(" - ")[0] for v in cache["list"])
-    raise Fail(2, f"no voice named {wanted} on account {client.account} (have: {names}); a voice id works too")
+    raise Fail(2, f"no voice named {wanted} on account {client.account} (have: {names}); a voice id works too",
+               "voice_missing")
 
 
 # ---------------------------------------------------------------- kinds

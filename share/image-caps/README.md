@@ -69,9 +69,8 @@ reads `GET /v1/models` at most once a day (cache `models-check.json` beside the 
   tool takes (grok `reference_to_video`).
 - `api_only`: what the vendor's REST API offers and the CLI tools do not carry — recorded so a
   release that wires one is noticed, never sent.
-- `accounts` (an API vendor, elevenlabs): the key file, `pool` (kind → accounts tried in order on a spent
-  quota, `default` for the rest), `scoped` (a key's permission
-  limit). Per-kind blocks (`sfx`, `music`, `speech`, …) hold the models, ranges and the `output_format` per
+- `accounts` (an API vendor, elevenlabs): the key file (its line order is the spend order for every kind), the
+  reserve floors, `mirrors` (app-owned copies `share/elevenlabs_keys_sync.py` keeps equal to it). Per-kind blocks (`sfx`, `music`, `speech`, …) hold the models, ranges and the `output_format` per
   dest extension the script reads; `costs` holds the measured credits.
 - Soft vs hard for the fan-out: `video: null` is hard (skip the vendor); `refs.max`, `aspects`,
   `exact_size`, `transparent` are soft (truncate, map to the nearest, emulate).

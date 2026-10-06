@@ -14,18 +14,24 @@ speaking a given audio (creatify-aurora) — needs the Pro plan: both accounts a
 
 ## Keys and accounts
 
-`~/.config/elevenlabs/keys.txt` (0600), one `<key> <account> [reserve=N] [notes]` line each; never print a key.
+`~/.config/elevenlabs/keys.txt` (0600), one `<key> <account> [label=<menubar name>] [reserve=N] [notes]` line each;
+never print a key. Every key has every permission, so one order serves every kind: the line order. A spent quota, a
+plan or key refusal (exit 4 class) or a voice the account lacks moves to the next line; any other failure stops.
 A `reserve=N` account is skipped unless its balance is readable and above N — the same rule as the dictation pool
 in transcriptions-gpt (`KeyPool`).
 
-| Account | What | Used |
-| --- | --- | --- |
-| `trimmed` | someone else's paid Creator account lent to the owner, every permission; `reserve=100000`: usable only while more than 100k credits are left (the key owner's hard floor) | default for every kind; below the floor every call exits 3 before spending |
-| `full` | the owner's own paid Creator account, every permission; the same account dictation's STT key spends | after `trimmed` for every kind |
-| `stt` | the owner's account, speech-to-text permission only | `transcribe` after `trimmed`, before `full` |
+The file is the master. `share/elevenlabs_keys_sync.py` (run on every `llm-limits.sh` poll) copies it over each
+`accounts.mirrors` path — transcriptions-gpt `settings/elevenlabs_keys.txt` — so dictation spends the same keys in
+the same order while reading only its own file. A key added by hand to a mirror alone stays there, at the end.
 
-A spent quota exits 3 (`ELEVENLABS_USAGE_LIMIT account=…`) after the pool is tried; a key without the
-needed permission or an invalid key exits 4 (an owner's step in ElevenLabs → Developers → API keys).
+| Account | What | Order (2026-10-06) |
+| --- | --- | --- |
+| `trimmed` (label `alena`) | someone else's paid Creator account lent to the owner; `reserve=100000`: usable only while more than 100k credits are left (the key owner's hard floor) | 1 |
+| `free1`, `free2` | the owner's free accounts, 10k credits a month each; a free account's output is non-commercial and needs attribution | 2, 3 |
+| `full` (label `com`) | the owner's own paid Creator account | 4 |
+
+A spent quota exits 3 (`ELEVENLABS_USAGE_LIMIT account=…`) after every line is tried; a key without the
+needed permission, a plan refusal or an invalid key on the last line exits 4 (an owner's step in ElevenLabs → Developers → API keys).
 
 ## Kinds
 

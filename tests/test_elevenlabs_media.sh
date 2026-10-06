@@ -148,4 +148,73 @@ rows = [(r["state"], r["what"]) for r in caps_checks.read() if (r["vendor"], r["
 assert rows == [("fresh", ""), ("fresh", ""), ("stale", speech_stale)], rows
 PY
 
+# Every kind spends the key file's lines in order; a spent quota, a plan or key refusal or a voice the account lacks
+# moves to the next line, any other failure stops.
+assert python3 - "$ROOT/share" "$WORK" <<'PY'
+import contextlib, io, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import elevenlabs_media as m
+
+m.KEYS = Path(sys.argv[2]) / "order.txt"
+m.KEYS.write_text("# note\nk1 alena reserve=5\nk2 free1\nk3 com\n")
+assert m.pool_for("transcribe", None) == m.pool_for("music", None) == ["alena", "free1", "com"]
+m.Client.balance = lambda self: (0, 100)
+for first, second, fails, reached in ((m.Fail(4, "plan", "paid_plan_required"), None, False, ["alena", "free1"]),
+                                      (m.Fail(2, "no voice", "voice_missing"), m.Fail(3, "quota"), False,
+                                       ["alena", "free1", "com"]),
+                                      (m.Fail(1, "network"), None, True, ["alena"])):
+    seen = []
+    def work(client):
+        seen.append(client.account)
+        error = {1: first, 2: second}.get(len(seen))
+        if error:
+            raise error
+        return client.account
+    run = m.Run("speech", None)
+    with contextlib.redirect_stderr(io.StringIO()):
+        try:
+            got = run.attempt(work)
+            assert not fails and got == reached[-1], got
+        except m.Fail:
+            assert fails
+    assert seen == reached, seen
+PY
+
+# The key sync copies the master over each mirror: a key the master dropped leaves, a key added only in the mirror
+# stays at the end, an unchanged mirror is not rewritten.
+assert python3 - "$ROOT/share" "$WORK" <<'PY'
+import contextlib, io, os, sys
+from pathlib import Path
+work = Path(sys.argv[2])
+os.environ["ELEVENLABS_KEYS"], os.environ["ELEVENLABS_MIRRORS"] = str(work / "master.txt"), str(work / "mirror.txt")
+sys.path.insert(0, sys.argv[1])
+import elevenlabs_keys_sync as s
+
+master, mirror = work / "master.txt", work / "mirror.txt"
+master.write_text("# master notes\nsk_aaaa1111 alena reserve=100\nsk_bbbb2222 com\n")
+mirror.write_text("sk_oldold99\nsk_mine3333 reserve=7\n")
+err = io.StringIO()
+with contextlib.redirect_stderr(err):
+    assert s.main() == 0
+lines = mirror.read_text().splitlines()
+assert lines[0].startswith("# elevenlabs-keys-sync") and lines[1:] == [
+    "sk_aaaa1111 alena reserve=100", "sk_bbbb2222 com", "sk_oldold99", "sk_mine3333 reserve=7"], lines
+assert "sk_oldold…ld99" in err.getvalue() and oct(mirror.stat().st_mode)[-3:] == "600"
+master.write_text("sk_bbbb2222 com\nsk_oldold99 old\n")
+with contextlib.redirect_stderr(io.StringIO()):
+    s.main()
+assert mirror.read_text().splitlines()[1:] == ["sk_bbbb2222 com", "sk_oldold99 old", "sk_mine3333 reserve=7"]
+os.utime(mirror, (1, 1))
+with contextlib.redirect_stderr(io.StringIO()):
+    s.main()
+assert mirror.stat().st_mtime == 1
+master.write_text("sk_bbbb2222 com\n")
+with contextlib.redirect_stderr(io.StringIO()):
+    s.main()
+assert mirror.read_text().splitlines()[1:] == ["sk_bbbb2222 com", "sk_mine3333 reserve=7"]
+del os.environ["ELEVENLABS_MIRRORS"]
+assert s.mirrors() == []
+PY
+
 echo "PASS test_elevenlabs_media ($asserts asserts)"

@@ -32,21 +32,11 @@
   ],
   "accounts": {
     "file": "~/.config/elevenlabs/keys.txt",
-    "pool": {
-      "default": [
-        "trimmed",
-        "full"
-      ],
-      "transcribe": [
-        "trimmed",
-        "stt",
-        "full"
-      ]
-    },
-    "scoped": {
-      "stt": "speech-to-text permission only"
-    },
-    "floors": "a `reserve=N` note on a key line: the account is skipped unless more than N credits are left; the floor is the key owner's"
+    "order": "the key file's line order, the same for every kind: a spent quota, a plan or key refusal or a voice the account lacks moves to the next line",
+    "floors": "a `reserve=N` note on a key line: the account is skipped unless more than N credits are left; the floor is the key owner's",
+    "mirrors": [
+      "/Volumes/Work/Projects/transcriptions-gpt/settings/elevenlabs_keys.txt"
+    ]
   },
   "formats": {
     "mp3": "mp3_44100_128",

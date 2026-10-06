@@ -1980,6 +1980,8 @@ if [ "$refresh" -eq 1 ] && [ -z "$refresh_account" ]; then
   fi
 fi
 
+[ "$write_cache" = 0 ] || python3 "$script_dir/share/elevenlabs_keys_sync.py" 2>/dev/null || true
+
 # A failed read keeps the previous reading: its as_of ages on the menubar instead of the rows vanishing.
 elevenlabs_timeout=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
 elevenlabs=$(${elevenlabs_timeout:+"$elevenlabs_timeout" 30} python3 "$script_dir/share/elevenlabs_balance.py" 2>/dev/null) ||
