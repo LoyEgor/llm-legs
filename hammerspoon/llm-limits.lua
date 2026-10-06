@@ -389,6 +389,27 @@ local function appendOpenCode(menu, limits, paused)
   end
 end
 
+-- The reserve is the key owner's floor: only limit - reserve is ours, so the bar fills over that share.
+local function appendElevenLabs(menu, limits)
+  local block = limits and type(limits.elevenlabs) == "table" and limits.elevenlabs
+  local accounts = block and type(block.accounts) == "table" and block.accounts or {}
+  if #accounts == 0 then return end
+  table.insert(menu, { title = infoTitle("ElevenLabs") })
+  local age = formatAccountAge(block.as_of)
+  for _, account in ipairs(accounts) do
+    local used, limit = tonumber(account.used), tonumber(account.limit)
+    local share = limit and limit - (tonumber(account.reserve) or 0)
+    local pct = used and share and (share > 0 and math.min(100, used / share * 100) or 100)
+    local atLimit = pct ~= nil and pct >= 100
+    table.insert(menu, { title = accountTitle(account.name or account.account, age, atLimit) })
+    table.insert(menu, {
+      title = rowTitle("", "mo", { effective_pct = pct, resets_at = account.resets_at }, false, atLimit),
+      disabled = true,
+    })
+  end
+  table.insert(menu, { title = "-" })
+end
+
 local function windowAbsent(bucket)
   return bucket == nil or (type(bucket) == "table"
     and bucket.used_pct == nil and bucket.used_percentage == nil and bucket.resets_at == nil
@@ -3237,6 +3258,7 @@ local function buildMenuItems()
       end
     end
 
+    appendElevenLabs(menu, limits)
     appendOpenCode(menu, limits, paused)
     table.insert(menu, { title = "-" })
     refreshItems(menu)

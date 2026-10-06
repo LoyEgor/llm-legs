@@ -4481,4 +4481,34 @@ end
   end
 end)()
 
+-- ElevenLabs: one monthly row per key, in the weekly rows' columns; a reserve is the key owner's floor,
+-- so the bar fills over limit - reserve and an account under its floor reads 100% red.
+;(function()
+  local now = os.time()
+  local fixture = { schema = 1, vendors = {
+    claude = { available = false }, codex = { available = false },
+    gemini = { available = true, accounts = {} },
+  }, elevenlabs = { as_of = now - 1020, accounts = {
+    { account = "trimmed", name = "alena", used = 85393, limit = 131000, reserve = 100000, resets_at = now + 26 * 86400 },
+    { account = "full", name = "com", used = 12447, limit = 131000, reserve = 0, resets_at = now + 29 * 86400 },
+  } } }
+  local day = require("menu-style").day
+  local function row(bar, pct, ts) return string.format("        mo  %s  %4s  %9s", bar, pct, day(ts)) end
+  local menu = loadModule(fixture, nil, now).menuItems()
+  local alena, com = accountIndex(menu, "alena"), accountIndex(menu, "com")
+  assert(titleText(menu[alena - 1]) == "ElevenLabs" and com == alena + 2 and titleText(menu[com + 2]) == "-",
+    "the ElevenLabs section is not a header, two accounts with one row each and a separator")
+  assert(titleText(menu[alena]) == "alena  17m ago" and redRuns(menu[alena].title)[1] == "alena"
+      and titleText(menu[alena + 1]) == row("▓▓▓▓▓", "100%", now + 26 * 86400)
+      and redRuns(menu[alena + 1].title)[1] == titleText(menu[alena + 1]),
+    "an account under its reserve floor is not 100% red: " .. titleText(menu[alena + 1]))
+  assert(titleText(menu[com + 1]) == row("░░░░░", "10%", now + 29 * 86400) and #redRuns(menu[com + 1].title) == 0
+      and #redRuns(menu[com].title) == 0 and menu[com + 1].disabled == true,
+    "a plain account's monthly row is wrong: " .. titleText(menu[com + 1]))
+  fixture.elevenlabs = nil
+  for _, item in ipairs(loadModule(fixture, nil, now).menuItems()) do
+    assert(titleText(item) ~= "ElevenLabs", "a store without ElevenLabs readings still drew the section")
+  end
+end)()
+
 return "PASS: Hammerspoon projection contract"

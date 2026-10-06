@@ -1984,6 +1984,11 @@ if [ "$refresh" -eq 1 ] && [ -z "$refresh_account" ]; then
   fi
 fi
 
+# A failed read keeps the previous reading: its as_of ages on the menubar instead of the rows vanishing.
+elevenlabs_timeout=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
+elevenlabs=$(${elevenlabs_timeout:+"$elevenlabs_timeout" 30} python3 "$script_dir/share/elevenlabs_balance.py" 2>/dev/null) ||
+  elevenlabs=$(jq -c '.elevenlabs // null' < <(printf '%s\n' "$previous_cache"))
+
 # OpenCode Go publishes no usage endpoint, so there is no percentage to collect and never will be:
 # an account has exactly two knowable states, a refusal the gateway stated and the last completion
 # it served, both written by bin/opencode-go at the request itself. Whether a recorded wall still
@@ -2089,7 +2094,7 @@ refresh_heartbeat=$(jq -cn --arg tick "$refresh_last_tick" --arg awake "$refresh
 
 if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$experiments_json" --argjson claude "$claude" \
   --argjson codex "$codex" --argjson gemini "$gemini" --argjson grok "$grok" \
-  --argjson opencode "$opencode" --argjson now "$now_epoch" \
+  --argjson opencode "$opencode" --argjson elevenlabs "$elevenlabs" --argjson now "$now_epoch" \
   --argjson previous "$previous_cache" --argjson refresh "$refresh" --arg refresh_account "$refresh_account" \
   --argjson claude_attempted "$claude_refresh_attempted" --argjson codex_attempted "$codex_refresh_attempted" \
   --argjson gemini_attempted "$gemini_refresh_attempted" --argjson grok_attempted "$grok_refresh_attempted" \
@@ -2434,6 +2439,7 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
   # staleness, expiry, usability, the "no vendor data" verdict that decides the exit code — has
   # anything to say about it, and a pass that touched it would be inventing a reading.
   | .vendors.opencode = $opencode
+  | .elevenlabs = $elevenlabs
   # Last of all, and after the merge above: a parked vendor collected nothing this run, so any
   # entry left here came from the previous snapshot, and every surface would read it as a live
   # measurement of a vendor nobody is polling. Absence is the whole interface — the same one a leg
