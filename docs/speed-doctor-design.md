@@ -151,8 +151,10 @@ proof of a fix is the measurement back under it (no row).
 **ROI** (`night-run report`, `roi ·` lines). A fixer job whose problem is a Speed or time row (`opportunity`,
 `regression`, `time_floor`, `test_*`) is an improvement: weighted spend, lines changed, and min/day saved = its class's mean
 over up to 3 settled days before the night minus the mean over up to 3 settled days after a full day of the change
-(pending until then). Per night: improvement spend against minutes gained; cumulative over the trend's nights. No
-gain reads `spend without result` — a measurement, never a revert or a gate.
+(pending until then). A day with zero recorded time predates the measurement: it is unmeasured, never a zero day,
+and stays out of the band, the floors and both sides; a job with no measured day on a side reads `unmeasured before
+or after it` and its spend stays out of the return. Per night: improvement spend against minutes gained; cumulative
+over the trend's nights. No gain reads `spend without result` — a measurement, never a revert or a gate.
 
 **Selection.**
 - Regressions (with a lever and ≥ 0.5 OM/d) first, then opportunities by recoverable min/day, while Σ (effort + night cost) ≤ B (6 worker-h) and K ≤ 4.

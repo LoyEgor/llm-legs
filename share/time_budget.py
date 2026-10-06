@@ -51,6 +51,7 @@ IMPROVEMENT_RULES = ("opportunity", "regression", "time_floor")
 SETTLE_S = 24 * 3600
 KEEP_DAYS = 35
 TOP_SUITES = 10
+UNMEASURED = "unmeasured"
 
 
 def home(*parts):
@@ -384,6 +385,11 @@ def day_budget(day, now, store):
     return found
 
 
+def measured(b):
+    """Days before measurement started are stored as zeros: no recorded time is no measurement, never a zero day."""
+    return sum(b["seconds"].values()) > 0
+
+
 def prune_days(now):
     cutoff = local_day(now - KEEP_DAYS * 86400)
     for path in glob.glob(os.path.join(harness_dir(), "budget-days", "????-??-??.json")):
@@ -399,7 +405,7 @@ def usual(now, store):
     days, day = [], local_day(now)
     for back in range(1, BAND_DAYS + 1):
         b = day_budget(local_day(day_bounds(day)[0] - back * 86400 + 3600), now, store)
-        if sum(b["seconds"].values()) > 0:
+        if measured(b):
             days.append(b)
     med = {k: statistics.median([d["seconds"].get(k, 0) for d in days]) for k, _, _ in CLASSES} if days else {}
     return med, len(days)
@@ -495,8 +501,8 @@ def document(now, hours=24.0, write=True):
            "hooks_by_min": {k: round(v / 60.0, 1) for k, v in b["hooks_by"].items()}, "refusals": b["refusals"],
            "worker_runs": b["runs"], "band_days": covered, "holes": holes(b, med),
            "tests": tests_budget(lo, now), "levers": levers(events, lo, now), "problems_by_day": problem_trend(now)}
-    doc["floors"] = floors_of(b["seconds"], hours / 24.0)
-    doc["lost_min_day"] = round(sum(f["recoverable_min_day"] for f in doc["floors"]), 1)
+    doc["floors"] = floors_of(b["seconds"], hours / 24.0) if measured(b) else []
+    doc["lost_min_day"] = round(sum(f["recoverable_min_day"] for f in doc["floors"]), 1) if measured(b) else None
     doc["workers_active"] = worker_floor(b["worker"], hours / 24.0)
     doc["last_night"] = last_night()
     doc["lines"] = plain_lines(doc)
@@ -662,8 +668,7 @@ def improvements(night, path, worker_run):
 
 def class_min_day(day, key, now):
     b = day_budget(day, now, True)
-    total = sum(b["seconds"].values())
-    if not b.get("settled") or not total:
+    if not b.get("settled") or not measured(b):
         return None
     seconds = b["seconds"].get(key, 0) if key else sum(v for k, v in b["seconds"].items() if KIND.get(k) == "harness")
     return seconds / 60.0
@@ -671,7 +676,8 @@ def class_min_day(day, key, now):
 
 def saved_min_day(item, landed, now):
     """Minutes per day the class lost after a full day of the change against up to ROI_DAYS days before it:
-    None while pending, a number otherwise (<= 0 is spend without result)."""
+    None while pending, UNMEASURED once settled days exist but no measured one on a side, a number otherwise
+    (<= 0 is spend without result)."""
     day = local_day(landed)
     before = [class_min_day(local_day(day_bounds(day)[0] - back * 86400 + 3600), item["class"], now)
               for back in range(1, ROI_DAYS + 1)]
@@ -679,9 +685,11 @@ def saved_min_day(item, landed, now):
     while len(after) < ROI_DAYS and start + 86400 + SETTLE_S <= now:
         after.append(class_min_day(local_day(start + 3600), item["class"], now))
         start += 86400
+    if not after:
+        return None
     before, after = [v for v in before if v is not None], [v for v in after if v is not None]
     if not after or not before:
-        return None
+        return UNMEASURED
     return round(statistics.mean(before) - statistics.mean(after), 1)
 
 
@@ -691,28 +699,34 @@ def roi_lines(rows, now):
     out, total_spend, total_saved, measured = [], 0.0, 0.0, 0
     for row in (r for r in rows if r):
         spend = saved = 0.0
-        pending = 0
+        pending = unmeasured = 0
         for item in row.get("improvements") or ():
             gain = saved_min_day(item, row.get("ended") or row["started"] + row["hours"] * 3600, now) \
                 if item["merged"] else None
-            spend += item["spend_m"]
+            if gain == UNMEASURED:
+                unmeasured += 1
+            else:
+                spend += item["spend_m"]
             if gain is None:
                 pending += item["merged"]
-            else:
+            elif gain != UNMEASURED:
                 saved += gain
                 measured += 1
             if row is rows[-1]:
                 out.append("roi · %s · %s · %.1fM · %+d/-%d lines · %s" % (
                     item["ref"][:40], LABEL.get(item["class"], "harness total"), item["spend_m"], item["lines"][0],
                     item["lines"][1], "not landed" if not item["merged"] else "pending a full day" if gain is None
+                    else "unmeasured before or after it" if gain == UNMEASURED
                     else "saves %.1f min/day" % gain if gain > 0 else "spend without result"))
         if row is rows[-1] and row.get("improvements"):
-            out.append("roi · night: improvements %.1fM · gained %.1f min/day%s" % (
-                spend, saved, " · %d pending" % pending if pending else ""))
+            out.append("roi · night: improvements %.1fM · gained %.1f min/day%s%s" % (
+                spend, saved, " · %d pending" % pending if pending else "",
+                " · %d unmeasured" % unmeasured if unmeasured else ""))
         total_spend, total_saved = total_spend + spend, total_saved + saved
     if any(r and r.get("improvements") for r in rows):
         out.append("roi · last %d nights: improvements %.1fM · gained %.1f min/day%s" % (
-            len([r for r in rows if r]), total_spend, total_saved, " · nothing measured yet" if not measured
+            len([r for r in rows if r]), total_spend, total_saved, "" if not total_spend and not total_saved
+            else " · nothing measured yet" if not measured
             else " · spend without result so far" if not total_saved
             else " · %.1f min/day per 1M" % (total_saved / total_spend) if total_spend else ""))
     return out

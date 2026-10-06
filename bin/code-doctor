@@ -2532,7 +2532,7 @@ def candidate_lines(candidate, indexes):
 
 
 def judge_brief(batch, indexes):
-    lines = ["# Code doctor judge: %d candidates" % len(batch), "",
+    lines = ["ROUND: none", "# Code doctor judge: %d candidates" % len(batch), "",
              "You judge %d candidates of the Code doctor (llm-legs docs/code-doctor-design.md), each on its own. "
              "Read-only: change nothing." % len(batch)]
     for candidate in batch:

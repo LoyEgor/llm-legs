@@ -183,14 +183,13 @@ right now; a kept worktree once lost a review fix.
 landed (in main or origin/main, or a night branch still at its night's base), ahead/behind main, dirty
 count and a state, the one predicate `finish` prunes by; its text form also prints `checkout <repo>: behind
 N|diverged[, WIP in the way: <files>]` for a main checkout behind origin/main:
-- `live`, never touched: the main checkout, a locked worktree, a process with its cwd inside, a branch
-  of a running night, or a non-night branch whose newest branch-reflog entry or dirty file is under
-  6 h old. A chat at work moves its branch (create, commit, rebase) or leaves files dirty, so a fresh
-  worktree with no commit yet is live from its creation. Only that last, activity-only reason yields to
-  an owner handover: `night-run job <id> add leftover <branch> --ready "<why>"`, given when the owning
-  chat declared the branch finished, adopts it and records `handover` {by (`CLAUDE_CODE_SESSION_ID`,
-  else `$USER`), at, why}, shown in `night-run report`; a name in several repositories needs `--repo
-  <name>` (repeatable) to scope it. The refusal names the flag; nobody vouching, the 6 h rule stands.
+- `live`, never touched: the main checkout, a locked worktree, a process with its cwd inside, or a
+  branch of a running night. Recent activity keeps nothing (Egor, 2026-10-07: finished work commits on
+  its branch in the evening and the night lands it): a branch someone is still on stays out only by
+  `сделай холд`. `night-run job <id> add leftover <branch> --ready "<why>"`, given when the owning chat
+  declared the branch finished, records `handover` {by (`CLAUDE_CODE_SESSION_ID`, else `$USER`), at,
+  why} on the job, shown in `night-run report`; a name in several repositories needs `--repo <name>`
+  (repeatable) to scope it.
 - `held`, not live: Egor's `сделай холд` (word family `night-hold`) in the owning chat runs `night-run
   hold`, which on that chat's fresh grant writes `nights/holds/<session>.json` for its non-main worktrees
   (review journal or cwd); why `Egor: <words>`, refused even with `--ready`, dropped by the next `finish`.

@@ -72,12 +72,13 @@ commits=<repo>:<hash>[,<repo>:<hash>...]  replaces the job's list; <repo> is a s
   basename or an absolute path; a changed list clears pushed unless pushed=true comes with it
 leftover: ref is a leftover branch, adopted in every sweep repository where it is one: its WIP
   committed, night/<id>/leftover-<slug> made at its tip with its night worktree, the old worktree and
-  branch removed; the job's ref becomes leftover-<slug>; a branch live only by activity under 6 h is
-  refused unless its owner hands it over with --ready "<why>", recorded as the job's handover {by, at, why};
+  branch removed; the job's ref becomes leftover-<slug>; --ready "<why>" records its owner's handover
+  {by, at, why} on the job;
   --repo R (a sweep-repos basename or absolute path, repeatable) limits the adoption to those
   repositories, and --ready refuses a branch found in more than one of them without it;
   a held branch is refused, --ready or not
-leftovers lists every non-main branch and worktree of the sweep repositories: live and held ones stay,
+leftovers lists every non-main branch and worktree of the sweep repositories: live (main checkout, locked,
+  a process inside, a running night's branch) and held ones stay, recent activity keeps none,
   landed ones go at finish, every other is a leftover to carry; finish records those under the night's
   leftovers and held
 hold, run by the chat Egor said `сделай холд` in (word family night-hold), holds that chat's worktrees
@@ -376,9 +377,8 @@ cmd_base() {
 # night/<id>/leftover-<slug> at its tip, its WIP committed first, in every sweep repository where the
 # branch is a leftover; the old worktree and branch go once the night branch holds every commit.
 adopt_leftover() { # id branch ready-why repos -> sets branch and adopted (JSON)
-  local id=$1 old=$2 repos=$4 rows row repo br wt landed ahead behind dirty state why tip wip path keep ignored ready_branch=''
+  local id=$1 old=$2 repos=$4 rows row repo br wt landed ahead behind dirty state why tip wip path keep ignored
   branch="night/$id/leftover-${old//\//-}" adopted='[]'
-  [ -z "$3" ] || ready_branch=$old
   rows=$(branch_rows | awk -F '\t' -v b="$old" '$2 == b')
   [ -n "$rows" ] || die "no branch $old in the sweep repositories besides main"
   if [ -n "$repos" ]; then
@@ -388,9 +388,7 @@ adopt_leftover() { # id branch ready-why repos -> sets branch and adopted (JSON)
     die "$old is in $(cut -f1 <<<"$rows" | sed 's|.*/||' | paste -sd ' ' -): --ready hands over one chat's branch, so name the repositories it covers and retry with $(cut -f1 <<<"$rows" | sed 's|.*/|--repo |' | paste -sd '|' - | sed 's/|/ or /g')"
   fi
   row=$(awk -F '\t' '$8 == "live" || $8 == "held"' <<<"$rows" | head -1)
-  why=$(cut -f9 <<<"$row")
-  [[ $why != active* ]] || why="$why; its owner hands it over with --ready \"<why>\""
-  [ -z "$row" ] || die "$old is $(cut -f8 <<<"$row") in $(basename "${row%%$'\t'*}"): $why"
+  [ -z "$row" ] || die "$old is $(cut -f8 <<<"$row") in $(basename "${row%%$'\t'*}"): $(cut -f9 <<<"$row")"
   rows=$(awk -F '\t' '$8 == "leftover"' <<<"$rows")
   [ -n "$rows" ] || die "$old is no leftover: landed, finish prunes it"
   jq -e --arg r "${branch##*/}" 'any(.jobs[]; .ref == $r)' "$(night_file "$id")" >/dev/null &&
@@ -790,13 +788,8 @@ cmd_finish() {
   done
 }
 
-# A chat at work moves its branch (create, commit and rebase each write the reflog) or leaves files dirty:
-# their newest time marks a non-night branch live, without walking the tree or reading `git status`'s
-# own index refresh.
-LIVE_S=$((6 * 3600))
-
-branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locked(0|1) now -> TSV row; reads HELD, CWDS, TREE
-  local repo=$1 wt=$2 branch=$3 ref head behind ahead landed=false dirty=0 night='' why='' state=live newest t hold cherry
+branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locked(0|1) -> TSV row; reads HELD, CWDS, TREE
+  local repo=$1 wt=$2 branch=$3 ref head behind ahead landed=false dirty=0 night='' why='' state=live hold cherry
   ref=${branch:+refs/heads/$branch}
   head=$(git -C "${wt:-$repo}" rev-parse -q --verify "${ref:-HEAD}^{commit}") || return 0
   read -r behind ahead < <(git -C "$repo" rev-list --left-right --count "refs/heads/main...$head")
@@ -813,16 +806,6 @@ branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locke
   elif [ -n "$wt" ] && [ -n "$(cwd_holders "$wt" "$CWDS" "$TREE")" ]; then why='a process inside'
   elif [ -n "$night" ]; then
     [ ! -s "$(night_file "$night")" ] || [ "$(night_status "$(night_file "$night")" 2>/dev/null)" != running ] || why="night $night running"
-  elif [ -z "${ready_branch:-}" ] || [ "$branch" != "$ready_branch" ]; then
-    newest=$(git -C "${wt:-$repo}" log -g -1 --date=unix --format=%gd "${ref:-HEAD}" 2>/dev/null)
-    newest=${newest##*@\{} newest=${newest%\}}
-    [[ $newest =~ ^[0-9]+$ ]] || newest=0
-    if [ "$dirty" != 0 ]; then
-      t=$(cd "$wt" && { git ls-files -z -m -o --exclude-standard; git diff -z --cached --name-only; } |
-        xargs -0 stat -f %m 2>/dev/null | sort -n | tail -1)
-      [ "${t:-0}" -le "$newest" ] || newest=$t
-    fi
-    [ $(($6 - newest)) -ge "$LIVE_S" ] || why="active $((($6 - newest) / 60))m ago"
   fi
   hold=$(awk -F '\t' -v r="$repo" -v b="$branch" '$1 == r && $2 == b { print $3; exit }' <<<"$HELD")
   if [ -z "$why" ] && [ -n "$branch" ] && [ -n "$hold" ]; then
@@ -841,10 +824,9 @@ branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locke
 # at its night's base, since a nothing-to-do job never committed. `-`, not an empty field: a tab is IFS
 # whitespace, so read would shift every field after an empty one.
 branch_rows() { # [repo...], default the sweep repositories
-  local repo wt branch main locked now seen HELD CWDS TREE
+  local repo wt branch main locked seen HELD CWDS TREE
   [ $# -gt 0 ] || [ -r "$sweep_repos" ] || return 0
   CWDS=$(cwd_listing) TREE=$(process_listing)
-  now=$(date +%s)
   HELD=$(cat "$holds_dir"/*.json 2>/dev/null | jq -r '.words as $w | .branches[]? | [.repo, .branch, $w] | @tsv' 2>/dev/null)
   while IFS= read -r repo; do
     [ -n "$repo" ] && [ -d "$repo" ] || continue
@@ -852,10 +834,10 @@ branch_rows() { # [repo...], default the sweep repositories
     seen=' main '
     while IFS=$'\t' read -r wt branch main locked; do
       [ "$branch" != - ] || branch=''
-      [ "$branch" = main ] || [ ! -d "$wt" ] || { seen="$seen$branch "; branch_row "$repo" "$wt" "$branch" "$main" "$locked" "$now"; }
+      [ "$branch" = main ] || [ ! -d "$wt" ] || { seen="$seen$branch "; branch_row "$repo" "$wt" "$branch" "$main" "$locked"; }
     done < <(worktree_lines "$repo")
     while IFS= read -r branch; do
-      [[ "$seen" == *" $branch "* ]] || branch_row "$repo" '' "$branch" 0 0 "$now"
+      [[ "$seen" == *" $branch "* ]] || branch_row "$repo" '' "$branch" 0 0
     done < <(git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads)
   done < <(if [ $# -gt 0 ]; then printf '%s\n' "$@"; else cat "$sweep_repos"; fi)
 }
@@ -991,7 +973,6 @@ survey_lines() { # price repo... -> the survey's lines
         held) reason="Egor's hold" ;;
         live) case $why in
             'a process inside') reason='process inside' ;;
-            active*) reason=${why% ago} ;;
             night*running) reason='night running' ;;
             *) reason=$why ;;
           esac ;;

@@ -243,6 +243,22 @@ check(T.saved_min_day(item, D0 + 11000, D0 + 86400 * 2.5) is None
 check(T.roi_lines([{"started": D0, "hours": 3.0, "improvements": [dict(item, ref="r", spend_m=2.0, lines=[1, 1])]}],
                   D0 + 86400 * 2.5)[-1] == "roi · last 1 nights: improvements 2.0M · gained 0.0 min/day · nothing measured yet",
       "while every change still pends the cumulative line says nothing was measured, never spend without result")
+L = D0 + 20 * 86400 + 43200
+for back in (1, 2, 3):
+    T.write_json(T.day_cache_path(T.local_day(L - back * 86400)), {"settled": True, "seconds": {"slot": 0, "model": 0}, "worker": {}})
+    T.write_json(T.day_cache_path(T.local_day(L + back * 86400)),
+                 {"settled": True, "seconds": {"slot": 60, "model": 5000}, "worker": {}})
+check(T.saved_min_day(dict(item, **{"class": "slot"}), L, L + 86400 * 9) == T.UNMEASURED
+      and T.roi_lines([{"started": L, "hours": 3.0, "improvements": [dict(item, ref="r", spend_m=2.0, lines=[1, 1],
+                                                                         **{"class": "slot"})]}], L + 86400 * 9)
+      == ["roi · r · worker slot queue · 2.0M · +1/-1 lines · unmeasured before or after it",
+          "roi · night: improvements 0.0M · gained 0.0 min/day · 1 unmeasured",
+          "roi · last 1 nights: improvements 0.0M · gained 0.0 min/day"],
+      "days stored as zeros before measurement started are unmeasured: the ROI settles as unmeasured, never pending, "
+      "and its spend stays out of the return")
+empty = T.document(L + 86400 * 9, write=False)
+check(empty["total_min"] == 0 and empty["floors"] == [] and empty["lost_min_day"] is None,
+      "a window with no recorded time is unmeasured, so it owes no floor: %s %s" % (empty["floors"], empty["lost_min_day"]))
 cached = json.load(open(os.path.join(work, "doctors", "night-ledger", "N1.json")))
 check(cached["wall_s"] == 9000 and cached["split_s"]["slot"] == 600,
       "a finished night's ledger row is cached, so its numbers outlive the pruned run and event stores")

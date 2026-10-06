@@ -378,7 +378,7 @@ same_days = sum(cold["om_by_day"][d] for d in half["om_by_day"]) / max(half["win
 check(half["coverage"] == {"days": 2.91, "window_days": 7, "backfill_files_done": 21, "backfill_files": 40}
       and set(cold["selection"]) < set(half["selection"]) and half["why_none"] is None
       and abs(half["headline"] - same_days) <= 0.1 * same_days and min(half["om_by_day"]) == "2026-09-30"
-      and "backfill" in [b["id"] for b in half["blind_spots"]] and half["head"].startswith("0.0 min/day over the floor · 213 OM/d · 2.9 of 7 days"),
+      and "backfill" in [b["id"] for b in half["blind_spots"]] and half["head"].startswith("213 OM/d · 2.9 of 7 days"),
       "a half-done backfill counts only the days it read in full: %s OM/d vs %s over the same days, %s"
       % (half["headline"], round(same_days, 1), half["coverage"]))
 

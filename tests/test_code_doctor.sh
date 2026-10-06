@@ -88,6 +88,7 @@ assert test "$(judged)" = 1
 assert jqe 'select(.night == "n0" and .stop == "tokens" and .tokens == 90000)' "$CODE_DOCTOR_DIR/judge-runs.jsonl"
 "$CD" judge --night n1 >"$WORK/judge.out"
 assert grep -q 'stop done' "$WORK/judge.out"
+assert test "$(awk 'FNR == 1' "$CODE_DOCTOR_DIR"/judge/n1/batch-*.md | sort -u)" = "ROUND: none"
 assert test "$(judged)" = 3
 assert test "$(tail -2 "$CODE_DOCTOR_FAKE_LOG" | cut -f1 | sort -u | wc -l | tr -d ' ')" = 1
 assert jqe -s '[.[] | select(.night == "n1" and .stage == "judge") | .tokens] | (add == 1000 and length == 2 and min >= 500)' \
