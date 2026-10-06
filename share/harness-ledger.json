@@ -787,12 +787,22 @@
         "rule": "hook_every_call",
         "ident": "commit-journal\\.sh"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-05T21:05:02+03:00",
+          "by": "claude-setup@6e4b1ac (Repo-level review debt, stage 2)",
+          "files": [
+            "claude-setup/hooks/commit-journal.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "last_reviewed": "2026-10-04",
-      "reviewed_by": "Harness Doctor",
-      "note": "Owner decision 2026-10-04 (Harness Doctor): cut, limit stays. What stays: snapshot of each written tree; cut: an untracked-cache or fsmonitor status, or skip trees over a size. A night fixer's change. 2026-10-04: cause stands, code path unchanged on it; 291 ms CPU p50 against 1.2 s wall; logo-vectorizer-bench now has 66 685 dirty paths, 3.4 s per git status. Narrowed: the multi-repository part is cut by hook-grows-repos-commit-journal; what stays is its floor on a one-repository call (bash, the 2.4k-line review-journal.sh source at ~20-40 ms, jq, one git status). 2026-10-03: the 811-853 ms p50 was the night orchestrator (191 of 355 heavy runs, p50 1050 ms wall / 972 ms CPU): a worker records under its launcher, so the launcher's .repos named 11 worker worktrees, each snapshotted before and after every launcher call; claude-setup@9171da1 lets a read-only Bash call out before the library, and claude-setup@7837e81 snapshots over .repos minus .repos.workers (trees first listed by a worker and not written in by the launcher since; a tree already listed before stays snapshotted). Other chats: p50 363 ms, dominated by the repositories they register (logo-vectorizer-bench: 33 704 untracked paths, 0.5-1.5 s a snapshot). Under 50 ms needs a design change or a different limit: the owner's. 2026-10-05 (quiet row, cause checked): the logo-vectorizer-bench cause is gone, with 65 dirty paths and about 10 ms CPU per git status. The named cut (an untracked cache, fsmonitor, or skipping big trees) has nothing left to cut. Left: the per-repository snapshot forks and the review-anchors store tail, both handed off. 2026-10-06 (night f253): commit-journal.sh is gone (claude-setup@6e4b1ac); the store tail is review-bench@bbcb6b0.",
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-hooks-20261006T032924Z-3077",
+      "note": "2026-10-06: cause gone, hooks/commit-journal.sh was deleted with its per-call content hashing in claude-setup@6e4b1ac and is wired nowhere in settings.json; recorded as that commit's fix. Handoff 2026-10-05-hook-cuts-left.md §1 (review-anchors touches) has no caller left in it. Owner decision 2026-10-04 (Harness Doctor): cut, limit stays. What stays: snapshot of each written tree; cut: an untracked-cache or fsmonitor status, or skip trees over a size. A night fixer's change. 2026-10-04: cause stands, code path unchanged on it; 291 ms CPU p50 against 1.2 s wall; logo-vectorizer-bench now has 66 685 dirty paths, 3.4 s per git status. Narrowed: the multi-repository part is cut by hook-grows-repos-commit-journal; what stays is its floor on a one-repository call (bash, the 2.4k-line review-journal.sh source at ~20-40 ms, jq, one git status). 2026-10-03: the 811-853 ms p50 was the night orchestrator (191 of 355 heavy runs, p50 1050 ms wall / 972 ms CPU): a worker records under its launcher, so the launcher's .repos named 11 worker worktrees, each snapshotted before and after every launcher call; claude-setup@9171da1 lets a read-only Bash call out before the library, and claude-setup@7837e81 snapshots over .repos minus .repos.workers (trees first listed by a worker and not written in by the launcher since; a tree already listed before stays snapshotted). Other chats: p50 363 ms, dominated by the repositories they register (logo-vectorizer-bench: 33 704 untracked paths, 0.5-1.5 s a snapshot). Under 50 ms needs a design change or a different limit: the owner's. 2026-10-05 (quiet row, cause checked): the logo-vectorizer-bench cause is gone, with 65 dirty paths and about 10 ms CPU per git status. The named cut (an untracked cache, fsmonitor, or skipping big trees) has nothing left to cut. Left: the per-repository snapshot forks and the review-anchors store tail, both handed off. Owner decision 2026-10-04 (Harness Doctor): cut, limit stays. What stays: snapshot of each written tree; cut: an untracked-cache or fsmonitor status, or skip trees over a size. A night fixer's change. 2026-10-04: cause stands, code path unchanged on it; 291 ms CPU p50 against 1.2 s wall; logo-vectorizer-bench now has 66 685 dirty paths, 3.4 s per git status. Narrowed: the multi-repository part is cut by hook-grows-repos-commit-journal; what stays is its floor on a one-repository call (bash, the 2.4k-line review-journal.sh source at ~20-40 ms, jq, one git status). 2026-10-03: the 811-853 ms p50 was the night orchestrator (191 of 355 heavy runs, p50 1050 ms wall / 972 ms CPU): a worker records under its launcher, so the launcher's .repos named 11 worker worktrees, each snapshotted before and after every launcher call; claude-setup@9171da1 lets a read-only Bash call out before the library, and claude-setup@7837e81 snapshots over .repos minus .repos.workers (trees first listed by a worker and not written in by the launcher since; a tree already listed before stays snapshotted). Other chats: p50 363 ms, dominated by the repositories they register (logo-vectorizer-bench: 33 704 untracked paths, 0.5-1.5 s a snapshot). Under 50 ms needs a design change or a different limit: the owner's. 2026-10-05 (quiet row, cause checked): the logo-vectorizer-bench cause is gone, with 65 dirty paths and about 10 ms CPU per git status. The named cut (an untracked cache, fsmonitor, or skipping big trees) has nothing left to cut. Left: the per-repository snapshot forks and the review-anchors store tail, both handed off. 2026-10-06 (night f253): commit-journal.sh is gone (claude-setup@6e4b1ac); the store tail is review-bench@bbcb6b0.",
       "handoff": "docs/handoffs/2026-10-05-hook-cuts-left.md"
     },
     {
@@ -802,14 +812,24 @@
         "rule": "hook_sync",
         "ident": "commit-journal\\.sh"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-05T21:05:02+03:00",
+          "by": "claude-setup@6e4b1ac (Repo-level review debt, stage 2)",
+          "files": [
+            "claude-setup/hooks/commit-journal.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [
         "hook-every-call-commit-journal"
       ],
-      "last_reviewed": "2026-10-04",
-      "reviewed_by": "Harness Doctor",
-      "note": "Owner decision 2026-10-04 (Harness Doctor): cut, limit stays. What stays: snapshot of each written tree; cut: an untracked-cache or fsmonitor status, or skip trees over a size. A night fixer's change. 2026-10-04: cause stands, code path unchanged on it; logo-vectorizer-bench now 66 685 dirty paths, 3.4 s per git status. 853 ms p50 at first sight (2026-10-03), the same runs as hook-every-call-commit-journal: the orchestrator's launcher-registry sweep (cut in claude-setup@9171da1) plus the snapshot floor of the repositories a chat registers. What stays after the cut is that floor (p50 363 ms outside the orchestrator at load 60-90), driven by large untracked trees such as logo-vectorizer-bench. Under 150 ms needs a cheaper snapshot (an untracked-cache or fsmonitor git status, or skipping trees over a size) or a different limit: the owner's. 2026-10-05 (quiet row, cause checked): git status is no longer the cost; see hook-every-call-commit-journal. The fork floor of rj_snapshot_content and the review-anchors store are handed off. 2026-10-06 (night f253): both gone, rj_snapshot_content and commit-journal.sh with claude-setup@6e4b1ac, the store tail with review-bench@bbcb6b0.",
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-hooks-20261006T032924Z-3077",
+      "note": "2026-10-06: cause gone, hooks/commit-journal.sh was deleted with its per-call content hashing in claude-setup@6e4b1ac and is wired nowhere in settings.json; recorded as that commit's fix. Handoff 2026-10-05-hook-cuts-left.md §1 (review-anchors touches) has no caller left in it. Owner decision 2026-10-04 (Harness Doctor): cut, limit stays. What stays: snapshot of each written tree; cut: an untracked-cache or fsmonitor status, or skip trees over a size. A night fixer's change. 2026-10-04: cause stands, code path unchanged on it; logo-vectorizer-bench now 66 685 dirty paths, 3.4 s per git status. 853 ms p50 at first sight (2026-10-03), the same runs as hook-every-call-commit-journal: the orchestrator's launcher-registry sweep (cut in claude-setup@9171da1) plus the snapshot floor of the repositories a chat registers. What stays after the cut is that floor (p50 363 ms outside the orchestrator at load 60-90), driven by large untracked trees such as logo-vectorizer-bench. Under 150 ms needs a cheaper snapshot (an untracked-cache or fsmonitor git status, or skipping trees over a size) or a different limit: the owner's. 2026-10-05 (quiet row, cause checked): git status is no longer the cost; see hook-every-call-commit-journal. The fork floor of rj_snapshot_content and the review-anchors store are handed off. Owner decision 2026-10-04 (Harness Doctor): cut, limit stays. What stays: snapshot of each written tree; cut: an untracked-cache or fsmonitor status, or skip trees over a size. A night fixer's change. 2026-10-04: cause stands, code path unchanged on it; logo-vectorizer-bench now 66 685 dirty paths, 3.4 s per git status. 853 ms p50 at first sight (2026-10-03), the same runs as hook-every-call-commit-journal: the orchestrator's launcher-registry sweep (cut in claude-setup@9171da1) plus the snapshot floor of the repositories a chat registers. What stays after the cut is that floor (p50 363 ms outside the orchestrator at load 60-90), driven by large untracked trees such as logo-vectorizer-bench. Under 150 ms needs a cheaper snapshot (an untracked-cache or fsmonitor git status, or skipping trees over a size) or a different limit: the owner's. 2026-10-05 (quiet row, cause checked): git status is no longer the cost; see hook-every-call-commit-journal. The fork floor of rj_snapshot_content and the review-anchors store are handed off. 2026-10-06 (night f253): both gone, rj_snapshot_content and commit-journal.sh with claude-setup@6e4b1ac, the store tail with review-bench@bbcb6b0.",
       "handoff": "docs/handoffs/2026-10-05-hook-cuts-left.md"
     },
     {
@@ -1533,9 +1553,9 @@
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-04",
-      "reviewed_by": "Night fixer harness-hooks-20261004T013933Z-5514",
-      "note": "2026-10-04: the regression's own cause was the run backstop, the one synchronous part ahead of the notices and timed only inside the dispatcher: for a chat with live relayed runs (the night orchestrator, 12) it ran jq and a ps liveness probe per run before asking whether a relay owned it, 2.2-2.7 s a stop at load 220. It now settles ownership first (llm-legs bin/worker-run-backstop.sh): 0.9-1.1 s. The stop.d parts stay under 240 ms p50. Test: test_worker_run_backstop.sh, no ps for an owned run. notice-chat-names (lib/chat_names.py last_assistant_text) json-parsed every line of the transcript to find the last assistant row: 1.3 s of a 2.9 s stop on a 39 MB transcript, the longest of the parallel notices, so the dispatcher's critical path. It now reads from the end with a growing window: 938 ms to 240 ms on that transcript (Python start dominates the rest). Ruled out: the backstop (57-94 ms here; one live exit 124 at load 250 with 16 background tasks), the asks (under 200 ms), words_journal (full reads only on a turn a notice fired). Tests: test_stop_dispatch.sh, the tail-parse count (3002 parses on the old code) and an assistant row past the first window. 2026-10-05: back over the limit, and both earlier fixes still hold; this time it is load. 671 ms CPU in total against 3.5 s wall at load 318 on 10 cores. ask-run-unfinished is the biggest part at 159 ms CPU (1.0 s wall); the rest are ≤ 70 ms. Narrowed to load; the dismissal is proposed to the owner. 2026-10-06: not flagged by the 06:26 doctor run; the judge stays.",
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-hooks-20261006T032924Z-3077",
+      "note": "2026-10-06: open again at 1.55 s p50 wall in the last hour at load 100-150; not profiled tonight. The load-judged proposal of 2026-10-05-hook-cuts-left.md §3 stands. 2026-10-04: the regression's own cause was the run backstop, the one synchronous part ahead of the notices and timed only inside the dispatcher: for a chat with live relayed runs (the night orchestrator, 12) it ran jq and a ps liveness probe per run before asking whether a relay owned it, 2.2-2.7 s a stop at load 220. It now settles ownership first (llm-legs bin/worker-run-backstop.sh): 0.9-1.1 s. The stop.d parts stay under 240 ms p50. Test: test_worker_run_backstop.sh, no ps for an owned run. notice-chat-names (lib/chat_names.py last_assistant_text) json-parsed every line of the transcript to find the last assistant row: 1.3 s of a 2.9 s stop on a 39 MB transcript, the longest of the parallel notices, so the dispatcher's critical path. It now reads from the end with a growing window: 938 ms to 240 ms on that transcript (Python start dominates the rest). Ruled out: the backstop (57-94 ms here; one live exit 124 at load 250 with 16 background tasks), the asks (under 200 ms), words_journal (full reads only on a turn a notice fired). Tests: test_stop_dispatch.sh, the tail-parse count (3002 parses on the old code) and an assistant row past the first window. 2026-10-05: back over the limit, and both earlier fixes still hold; this time it is load. 671 ms CPU in total against 3.5 s wall at load 318 on 10 cores. ask-run-unfinished is the biggest part at 159 ms CPU (1.0 s wall); the rest are ≤ 70 ms. Narrowed to load; the dismissal is proposed to the owner. 2026-10-04: the regression's own cause was the run backstop, the one synchronous part ahead of the notices and timed only inside the dispatcher: for a chat with live relayed runs (the night orchestrator, 12) it ran jq and a ps liveness probe per run before asking whether a relay owned it, 2.2-2.7 s a stop at load 220. It now settles ownership first (llm-legs bin/worker-run-backstop.sh): 0.9-1.1 s. The stop.d parts stay under 240 ms p50. Test: test_worker_run_backstop.sh, no ps for an owned run. notice-chat-names (lib/chat_names.py last_assistant_text) json-parsed every line of the transcript to find the last assistant row: 1.3 s of a 2.9 s stop on a 39 MB transcript, the longest of the parallel notices, so the dispatcher's critical path. It now reads from the end with a growing window: 938 ms to 240 ms on that transcript (Python start dominates the rest). Ruled out: the backstop (57-94 ms here; one live exit 124 at load 250 with 16 background tasks), the asks (under 200 ms), words_journal (full reads only on a turn a notice fired). Tests: test_stop_dispatch.sh, the tail-parse count (3002 parses on the old code) and an assistant row past the first window. 2026-10-05: back over the limit, and both earlier fixes still hold; this time it is load. 671 ms CPU in total against 3.5 s wall at load 318 on 10 cores. ask-run-unfinished is the biggest part at 159 ms CPU (1.0 s wall); the rest are ≤ 70 ms. Narrowed to load; the dismissal is proposed to the owner. 2026-10-06: not flagged by the 06:26 doctor run; the judge stays.",
       "handoff": "docs/handoffs/2026-10-05-hook-cuts-left.md"
     },
     {
@@ -1647,12 +1667,23 @@
         "rule": "hook_sync",
         "ident": "review-flow-gate\\.sh"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-05T21:05:02+03:00",
+          "by": "claude-setup@6e4b1ac (Repo-level review debt, stage 2)",
+          "files": [
+            "claude-setup/hooks/review-flow-gate.sh",
+            "claude-setup/hooks/lib/review-journal.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "last_reviewed": "2026-10-04",
-      "reviewed_by": "Harness Doctor",
-      "note": "Owner decision 2026-10-04 (Harness Doctor): cut, limit stays. What stays: snapshot of each written tree; cut: an untracked-cache or fsmonitor status, or skip trees over a size. A night fixer's change. 2026-10-04: cause stands, code path unchanged on it; 292 ms CPU p50 against 0.92 s wall at load 220. Narrowed: the per-repository snapshot is parallel (claude-setup@4ca8de1); 2026-10-03 the 573-760 ms p50 was the orchestrator snapshotting its workers' worktrees from its own .repos; claude-setup@9171da1 and @7837e81 drop the workers' trees from that set (.repos.workers) and let a read-only call out before the library (write call with 5 registered trees 460-516 to 283-287 ms, read-only 67-70 to 43-44 ms, load 90). What stays is the snapshot floor of the trees a chat writes in (the same one hook-sync-commit-journal names). Design or limit: the owner's. 2026-10-05 at load 286-330: git status costs about 10 ms CPU per registered tree, so the owner's named cut (an untracked cache, fsmonitor, or skipping big trees) has nothing left to cut. The floor is rj_snapshot_content's forks per repository: cksum, 2 rev-parse, status|tr|awk, wc, mv, ln, mv, plus one find per call. The cleanup chat runs at 764 ms CPU over 4 repositories; read-only calls exit at about 30 ms. Narrowed to that fork floor; the cut is handed off to the next night. 2026-10-06 (night f253): that floor is gone with rj_snapshot_content (claude-setup@6e4b1ac); a landing call's snapshot is one rev-parse per repository.",
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-hooks-20261006T032924Z-3077",
+      "note": "2026-10-06: the owner's cut is done by claude-setup@6e4b1ac: the per-call content snapshot of every written tree (rj_snapshot_content, handoff 2026-10-05-hook-cuts-left.md §2) is gone, only the HEAD snapshot of landing calls and the write-target journal stay; no review-flow-gate row in the doctor at 07:45Z and the Speed block reads it at 1.4 min/day. Recorded as that commit's fix. Owner decision 2026-10-04 (Harness Doctor): cut, limit stays. What stays: snapshot of each written tree; cut: an untracked-cache or fsmonitor status, or skip trees over a size. A night fixer's change. 2026-10-04: cause stands, code path unchanged on it; 292 ms CPU p50 against 0.92 s wall at load 220. Narrowed: the per-repository snapshot is parallel (claude-setup@4ca8de1); 2026-10-03 the 573-760 ms p50 was the orchestrator snapshotting its workers' worktrees from its own .repos; claude-setup@9171da1 and @7837e81 drop the workers' trees from that set (.repos.workers) and let a read-only call out before the library (write call with 5 registered trees 460-516 to 283-287 ms, read-only 67-70 to 43-44 ms, load 90). What stays is the snapshot floor of the trees a chat writes in (the same one hook-sync-commit-journal names). Design or limit: the owner's. 2026-10-05 at load 286-330: git status costs about 10 ms CPU per registered tree, so the owner's named cut (an untracked cache, fsmonitor, or skipping big trees) has nothing left to cut. The floor is rj_snapshot_content's forks per repository: cksum, 2 rev-parse, status|tr|awk, wc, mv, ln, mv, plus one find per call. The cleanup chat runs at 764 ms CPU over 4 repositories; read-only calls exit at about 30 ms. Narrowed to that fork floor; the cut is handed off to the next night. Owner decision 2026-10-04 (Harness Doctor): cut, limit stays. What stays: snapshot of each written tree; cut: an untracked-cache or fsmonitor status, or skip trees over a size. A night fixer's change. 2026-10-04: cause stands, code path unchanged on it; 292 ms CPU p50 against 0.92 s wall at load 220. Narrowed: the per-repository snapshot is parallel (claude-setup@4ca8de1); 2026-10-03 the 573-760 ms p50 was the orchestrator snapshotting its workers' worktrees from its own .repos; claude-setup@9171da1 and @7837e81 drop the workers' trees from that set (.repos.workers) and let a read-only call out before the library (write call with 5 registered trees 460-516 to 283-287 ms, read-only 67-70 to 43-44 ms, load 90). What stays is the snapshot floor of the trees a chat writes in (the same one hook-sync-commit-journal names). Design or limit: the owner's. 2026-10-05 at load 286-330: git status costs about 10 ms CPU per registered tree, so the owner's named cut (an untracked cache, fsmonitor, or skipping big trees) has nothing left to cut. The floor is rj_snapshot_content's forks per repository: cksum, 2 rev-parse, status|tr|awk, wc, mv, ln, mv, plus one find per call. The cleanup chat runs at 764 ms CPU over 4 repositories; read-only calls exit at about 30 ms. Narrowed to that fork floor; the cut is handed off to the next night. 2026-10-06 (night f253): that floor is gone with rj_snapshot_content (claude-setup@6e4b1ac); a landing call's snapshot is one rev-parse per repository.",
       "handoff": "docs/handoffs/2026-10-05-hook-cuts-left.md"
     },
     {
@@ -2254,9 +2285,9 @@
       "same_cause": [
         "floor-edit-hooks"
       ],
-      "last_reviewed": "2026-10-04",
-      "reviewed_by": "Harness Doctor",
-      "note": "Owner decision 2026-10-04 (Harness Doctor): cut, limit stays. What stays: six git calls per Edit (rev-parse :143, snapshot of the named path, status :157 and :778); cut: one status for dirtiness and owner. A night fixer's change. 2026-10-04: cause stands, code path unchanged on it; 356 ms CPU p50; a false workdir catch on nested task worktrees was fixed in claude-setup (hook_p50 row). 2026-10-03: cause stands, hooks/edit-conflict-notice.sh unchanged since claude-setup@e746412, 188 ms p50 over 11 runs in the last hour. Narrowed to its process floor: 195 ms p50 in 24 h at night load 50-60; a probe on a dirty file took 426 ms spread over six git calls, shasum, two jq, one find over the review journal and the library source, none over 65 ms. The per-record forks were cut 2026-09-30 (floor-edit-hooks). Under 150 ms needs fewer git calls per Edit (one status for owner and dirtiness): a design change for the owner.",
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-hooks-20261006T032924Z-3077",
+      "note": "2026-10-06: cause stands, 423 ms wall p50 at load 100-150 (watch); since claude-setup@6e4b1ac it reads owners from the writes journal, the owner's cut (one status for dirtiness and owner) not made tonight: this run took the seven every-call rows first. Owner decision 2026-10-04 (Harness Doctor): cut, limit stays. What stays: six git calls per Edit (rev-parse :143, snapshot of the named path, status :157 and :778); cut: one status for dirtiness and owner. A night fixer's change. 2026-10-04: cause stands, code path unchanged on it; 356 ms CPU p50; a false workdir catch on nested task worktrees was fixed in claude-setup (hook_p50 row). 2026-10-03: cause stands, hooks/edit-conflict-notice.sh unchanged since claude-setup@e746412, 188 ms p50 over 11 runs in the last hour. Narrowed to its process floor: 195 ms p50 in 24 h at night load 50-60; a probe on a dirty file took 426 ms spread over six git calls, shasum, two jq, one find over the review journal and the library source, none over 65 ms. The per-record forks were cut 2026-09-30 (floor-edit-hooks). Under 150 ms needs fewer git calls per Edit (one status for owner and dirtiness): a design change for the owner.",
       "handoff": null
     },
     {
@@ -2543,13 +2574,23 @@
         "rule": "hook_p50",
         "ident": "commit-journal\\.sh"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-05T21:05:02+03:00",
+          "by": "claude-setup@6e4b1ac (Repo-level review debt, stage 2)",
+          "files": [
+            "claude-setup/hooks/commit-journal.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "handoff": "docs/handoffs/2026-10-05-hook-cuts-left.md",
-      "note": "Owner decision 2026-10-04 (Harness Doctor): cut, limit stays; the cut is the one of this hook's hook_sync / hook_every_call row. Wall over 1 s at CPU 0.3-0.45 s is load; a hook_p50 judged per load band or on CPU is proposed to the doctor's owner. 2026-10-04 at load 220-230 on 10 cores (logo-vectorizer-bench batch plus the night): 1.2 s wall p50 at 291 ms CPU (2 010 runs, 4 h). Narrowed to load on top of the snapshot floor hook-sync-commit-journal names. 2026-10-05 at load 286-330: the heavy tail is one chat, «Vector Magic macOS ARM migration», at 1 383 ms CPU a run. Each review-anchors touch rewrites logo-vectorizer-bench's 27 MB anchors file (0.66 s CPU for the JSON alone), mostly ignored bench outputs. That prune is review-bench's: handed off. 2026-10-06 (night f253): commit-journal.sh is gone (claude-setup@6e4b1ac); the prune is review-bench@bbcb6b0 (17 MB to 334 KB on the next write).",
+      "note": "2026-10-06: cause gone, hooks/commit-journal.sh was deleted with its per-call content hashing in claude-setup@6e4b1ac and is wired nowhere in settings.json; recorded as that commit's fix. Handoff 2026-10-05-hook-cuts-left.md §1 (review-anchors touches) has no caller left in it. Owner decision 2026-10-04 (Harness Doctor): cut, limit stays; the cut is the one of this hook's hook_sync / hook_every_call row. Wall over 1 s at CPU 0.3-0.45 s is load; a hook_p50 judged per load band or on CPU is proposed to the doctor's owner. 2026-10-04 at load 220-230 on 10 cores (logo-vectorizer-bench batch plus the night): 1.2 s wall p50 at 291 ms CPU (2 010 runs, 4 h). Narrowed to load on top of the snapshot floor hook-sync-commit-journal names. 2026-10-05 at load 286-330: the heavy tail is one chat, «Vector Magic macOS ARM migration», at 1 383 ms CPU a run. Each review-anchors touch rewrites logo-vectorizer-bench's 27 MB anchors file (0.66 s CPU for the JSON alone), mostly ignored bench outputs. That prune is review-bench's: handed off. Owner decision 2026-10-04 (Harness Doctor): cut, limit stays; the cut is the one of this hook's hook_sync / hook_every_call row. Wall over 1 s at CPU 0.3-0.45 s is load; a hook_p50 judged per load band or on CPU is proposed to the doctor's owner. 2026-10-04 at load 220-230 on 10 cores (logo-vectorizer-bench batch plus the night): 1.2 s wall p50 at 291 ms CPU (2 010 runs, 4 h). Narrowed to load on top of the snapshot floor hook-sync-commit-journal names. 2026-10-05 at load 286-330: the heavy tail is one chat, «Vector Magic macOS ARM migration», at 1 383 ms CPU a run. Each review-anchors touch rewrites logo-vectorizer-bench's 27 MB anchors file (0.66 s CPU for the JSON alone), mostly ignored bench outputs. That prune is review-bench's: handed off. 2026-10-06 (night f253): commit-journal.sh is gone (claude-setup@6e4b1ac); the prune is review-bench@bbcb6b0 (17 MB to 334 KB on the next write).",
       "same_cause": [],
-      "last_reviewed": "2026-10-04",
-      "reviewed_by": "Harness Doctor"
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-hooks-20261006T032924Z-3077"
     },
     {
       "id": "hook-p50-review-flow-gate",
@@ -2558,13 +2599,24 @@
         "rule": "hook_p50",
         "ident": "review-flow-gate\\.sh"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-05T21:05:02+03:00",
+          "by": "claude-setup@6e4b1ac (Repo-level review debt, stage 2)",
+          "files": [
+            "claude-setup/hooks/review-flow-gate.sh",
+            "claude-setup/hooks/lib/review-journal.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "handoff": null,
-      "note": "Owner decision 2026-10-04 (Harness Doctor): cut, limit stays; the cut is the one of this hook's hook_sync / hook_every_call row. Wall over 1 s at CPU 0.3-0.45 s is load; a hook_p50 judged per load band or on CPU is proposed to the doctor's owner. 2026-10-04 at load 220-230 on 10 cores (logo-vectorizer-bench batch plus the night): 0.92-1.16 s wall p50 at 292 ms CPU (1 888 runs, 4 h). Narrowed to load on top of the snapshot floor hook-sync-review-flow-gate names. The statusline's `verdict` sub-run (review-debt, 3 157 s CPU in 4 h) is keyed apart and is not this row. 2026-10-05 (quiet row, cause checked): the code path is unchanged, and the floor below it is now the fork floor named in hook-sync-review-flow-gate.",
+      "note": "2026-10-06: the owner's cut is done by claude-setup@6e4b1ac: the per-call content snapshot of every written tree (rj_snapshot_content, handoff 2026-10-05-hook-cuts-left.md §2) is gone, only the HEAD snapshot of landing calls and the write-target journal stay; no review-flow-gate row in the doctor at 07:45Z and the Speed block reads it at 1.4 min/day. Recorded as that commit's fix. Owner decision 2026-10-04 (Harness Doctor): cut, limit stays; the cut is the one of this hook's hook_sync / hook_every_call row. Wall over 1 s at CPU 0.3-0.45 s is load; a hook_p50 judged per load band or on CPU is proposed to the doctor's owner. 2026-10-04 at load 220-230 on 10 cores (logo-vectorizer-bench batch plus the night): 0.92-1.16 s wall p50 at 292 ms CPU (1 888 runs, 4 h). Narrowed to load on top of the snapshot floor hook-sync-review-flow-gate names. The statusline's `verdict` sub-run (review-debt, 3 157 s CPU in 4 h) is keyed apart and is not this row. 2026-10-05 (quiet row, cause checked): the code path is unchanged, and the floor below it is now the fork floor named in hook-sync-review-flow-gate.",
       "same_cause": [],
-      "last_reviewed": "2026-10-04",
-      "reviewed_by": "Harness Doctor"
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-hooks-20261006T032924Z-3077"
     },
     {
       "id": "hook-p50-edit-conflict-notice",
@@ -2576,10 +2628,10 @@
       "status": "open",
       "fixes": [],
       "handoff": null,
-      "note": "Owner decision 2026-10-04 (Harness Doctor): cut, limit stays; the cut is the one of this hook's hook_sync / hook_every_call row. Wall over 1 s at CPU 0.3-0.45 s is load; a hook_p50 judged per load band or on CPU is proposed to the doctor's owner. 2026-10-04 at load 220-230 on 10 cores (logo-vectorizer-bench batch plus the night): 1.18 s wall p50 at 356 ms CPU (236 runs, 4 h). Narrowed to load on its six-git-call floor (hook-sync-edit-conflict-notice). Found on the way and fixed (claude-setup@d85da98): a file in <workdir>/.claude/worktrees/ was claimed by a live run's workdir scope, so every night fixer edit drew a FOREIGN WIP notice and a liveness probe. 2026-10-05 (quiet row, cause checked): edit-conflict-notice.sh is unchanged since that fix (it landed as claude-setup@81ca637, two lines, no git call), and its six git calls stay the floor.",
+      "note": "2026-10-06: see hook-sync-edit-conflict-notice; not cut tonight. Owner decision 2026-10-04 (Harness Doctor): cut, limit stays; the cut is the one of this hook's hook_sync / hook_every_call row. Wall over 1 s at CPU 0.3-0.45 s is load; a hook_p50 judged per load band or on CPU is proposed to the doctor's owner. 2026-10-04 at load 220-230 on 10 cores (logo-vectorizer-bench batch plus the night): 1.18 s wall p50 at 356 ms CPU (236 runs, 4 h). Narrowed to load on its six-git-call floor (hook-sync-edit-conflict-notice). Found on the way and fixed (claude-setup@d85da98): a file in <workdir>/.claude/worktrees/ was claimed by a live run's workdir scope, so every night fixer edit drew a FOREIGN WIP notice and a liveness probe. 2026-10-05 (quiet row, cause checked): edit-conflict-notice.sh is unchanged since that fix (it landed as claude-setup@81ca637, two lines, no git call), and its six git calls stay the floor.",
       "same_cause": [],
-      "last_reviewed": "2026-10-04",
-      "reviewed_by": "Harness Doctor"
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-hooks-20261006T032924Z-3077"
     },
     {
       "id": "hook-p50-worker-limit-gate",
@@ -2772,9 +2824,9 @@
       "same_cause": [
         "hook-every-call-context-nudge"
       ],
-      "last_reviewed": "2026-10-05",
-      "reviewed_by": "Night fixer harness-hooks-20261005T061324Z-2ae0",
-      "note": "2026-10-05: 203 ms a run in the last hour, at 53 ms CPU against 220 ms wall at load 286-330 on 10 cores. The 64 KiB tail read of hook-every-call-context-nudge still holds; what is left is a process floor stretched by load. Narrowed to load; the dismissal is proposed to the owner. 2026-10-06: not flagged by the 06:26 doctor run; the judge stays.",
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-hooks-20261006T032924Z-3077",
+      "note": "2026-10-06: 54 ms wall / 47 ms CPU p50 over 9 704 runs in 12 h (bash 5 rows), under 150 ms; the new hook_full_work:context-nudge.sh row (78 ms on a trivial call) is the next cut. 2026-10-05: 203 ms a run in the last hour, at 53 ms CPU against 220 ms wall at load 286-330 on 10 cores. The 64 KiB tail read of hook-every-call-context-nudge still holds; what is left is a process floor stretched by load. Narrowed to load; the dismissal is proposed to the owner. 2026-10-05: 203 ms a run in the last hour, at 53 ms CPU against 220 ms wall at load 286-330 on 10 cores. The 64 KiB tail read of hook-every-call-context-nudge still holds; what is left is a process floor stretched by load. Narrowed to load; the dismissal is proposed to the owner. 2026-10-06: not flagged by the 06:26 doctor run; the judge stays.",
       "handoff": "docs/handoffs/2026-10-05-hook-cuts-left.md"
     },
     {
@@ -3102,6 +3154,186 @@
       "reviewed_by": "night fixer harness-speed-20261006T032930Z-7b67",
       "note": "2026-10-06: night 052f, 28 runs, 72.5 h wall: slot queue 39.9 h, suites 12.2 h, tools 10.8 h, suite wait 6.1 h, model 3.2 h (4 %). The slot queue was the fixed 5 slots before c4adcbb8; all worker runs since 2026-10-05 19:00 read 21 % model. The suite share is the wait-classes cause (e2c3ec43). Tools include sleep-polls on backgrounded run-all. The row reads the last finished night, so it re-judges once f253 finishes.",
       "handoff": "docs/handoffs/2026-10-06-speed-floors.md"
+    },
+    {
+      "id": "hook-grows-repos-worker-spawn-hook",
+      "title": "worker-spawn-hook slower in chats with 5+ repositories",
+      "match": {
+        "rule": "hook_grows_repos",
+        "ident": "worker-spawn-hook\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-06T08:00:00+03:00",
+          "by": "night fixer harness-hooks-20261006T032924Z-3077",
+          "files": [
+            "llm-legs/bin/worker-spawn-hook.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-hooks-20261006T032924Z-3077",
+      "note": "A confound on the repository axis: bin/worker-spawn-hook.sh reads no repository. Its cost was ~40 forks per Agent spawn (printf|grep|sed per brief header, tr, sed, mkdir, rm, a perl shasum) at 145 ms CPU p50, paid most by the orchestrator chats that span the most repositories and spawn under the heaviest load. Fixed: brief headers, worker-model keys, the title, ATTACH, ROUND, GIT-CLEANUP and MD-GUARD are read with builtins, the spawn hash uses sha256sum (shasum fallback), mkdir/rm only when needed; a claudeb spawn with ACCOUNT/MODEL/EFFORT starts no grep/sed/tr/head/cut/shasum/mkdir (tests/test_worker_spawn_attach.sh, red on the old code). route_account (worker-pick) for a brief without ACCOUNT stays, the routing answer itself.",
+      "handoff": null
+    },
+    {
+      "id": "hook-every-call-english-gate",
+      "title": "english-gate over 50 ms on every tool call",
+      "match": {
+        "rule": "hook_every_call",
+        "ident": "english-gate\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-06T08:00:00+03:00",
+          "by": "night fixer harness-hooks-20261006T032924Z-3077",
+          "files": [
+            "claude-setup/hooks/english-gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-hooks-20261006T032924Z-3077",
+      "note": "Every call paid cat, a cd/dirname subshell and two jq before anything was known; a non-launch Bash call also ran the read-only awk and a sed screen. Fixed: the payload is read with the read builtin (PreToolUse payloads are small), the hook's dir from BASH_SOURCE, one jq gives tool and command/file_path, and the launcher screen runs with builtins before the read-only check. 47 -> 17 ms on a trivial Bash call, 47 -> 26 ms on a non-Markdown Edit (in place, load ~100); a Bash call naming no launcher and no git starts one jq (tests/test_english_gates.sh, red on the old code). Kept: a git call still reads on (aliases).",
+      "handoff": null
+    },
+    {
+      "id": "hook-grows-repos-pr-ready-mattermost",
+      "title": "pr-ready-mattermost slower in chats with 5+ repositories",
+      "match": {
+        "rule": "hook_grows_repos",
+        "ident": "pr-ready-mattermost\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-06T08:00:00+03:00",
+          "by": "night fixer harness-hooks-20261006T032924Z-3077",
+          "files": [
+            "claude-setup/hooks/pr-ready-mattermost.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-hooks-20261006T032924Z-3077",
+      "note": "A false prefilter: `*gh*` matched every `night` (night-run, night/ branches), so the orchestrator chats (5+ repositories) paid two more jq, the 2k-line journal library and its awk walk on most Bash calls; workers exit at the CLAUDEB_WORKER check (the 1.0 ms side). Fixed: the prefilter needs `gh pr create|ready` past quotes and continuations; 67 -> 13 ms on `night-run report` (tests/test_pr_mattermost.sh, red on the old code). The hook_grows_size row that appeared after launch is the same cause.",
+      "handoff": null
+    },
+    {
+      "id": "hook-every-call-report-flush",
+      "title": "report-flush over 50 ms on every tool call",
+      "match": {
+        "rule": "hook_every_call",
+        "ident": "report-flush\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-06T08:00:00+03:00",
+          "by": "night fixer harness-hooks-20261006T032924Z-3077",
+          "files": [
+            "claude-setup/hooks/report-flush.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "hook-full-work-report-flush"
+      ],
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-hooks-20261006T032924Z-3077",
+      "note": "report-bus started (bash, store-lock, two jq) on every call with nothing queued. Fixed: the hook checks report-bus's own has_pending/over_cap (queue root of shared-invariants row cg) with builtin globs for every session the payload names and starts report-bus only with work or with no session named; 87 -> 7-11 ms on a quiet call (tests/test_report_flush.sh, red on the old code). The payload stays one cat: the read builtin reads a pipe a byte at a time and PostToolUse carries the whole tool response. Closes item 2 of docs/handoffs/2026-10-04-hook-floors.md.",
+      "handoff": null
+    },
+    {
+      "id": "hook-full-work-report-flush",
+      "title": "report-flush does its full work on a trivial Bash call",
+      "match": {
+        "rule": "hook_full_work",
+        "ident": "report-flush\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-06T08:00:00+03:00",
+          "by": "night fixer harness-hooks-20261006T032924Z-3077",
+          "files": [
+            "claude-setup/hooks/report-flush.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "hook-every-call-report-flush"
+      ],
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-hooks-20261006T032924Z-3077",
+      "note": "Same cause and fix as hook-every-call-report-flush.",
+      "handoff": null
+    },
+    {
+      "id": "hook-full-work-eod-sorted-gate",
+      "title": "eod-sorted-gate does its full work on a trivial Bash call",
+      "match": {
+        "rule": "hook_full_work",
+        "ident": "eod-sorted-gate\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-06T08:00:00+03:00",
+          "by": "night fixer harness-hooks-20261006T032924Z-3077",
+          "files": [
+            "claude-setup/hooks/eod-sorted-gate.sh",
+            "claude-setup/hooks/lib/eod-commits.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-hooks-20261006T032924Z-3077",
+      "note": "It read the end-report state with three jq and cat before asking whether the call commits. Fixed: with last-run.json present it reads the raw payload as rj_command_segments does (JSON whitespace escapes as whitespace, quotes and backslashes dropped) and exits unless `commit` or `gh pr create|ready` is in it; 46 -> 9 ms on a trivial call (tests/test_eod_commits.sh: four non-commit calls start no jq, red on the old code). eod_candidates reuses a payload its caller already read.",
+      "handoff": null
+    },
+    {
+      "id": "hook-full-work-worker-git-guard",
+      "title": "worker-git-guard does its full work on a worker's trivial Bash call",
+      "match": {
+        "rule": "hook_full_work",
+        "ident": "worker-git-guard\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-06T08:00:00+03:00",
+          "by": "night fixer harness-hooks-20261006T032924Z-3077",
+          "files": [
+            "llm-legs/bin/worker-git-guard.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-hooks-20261006T032924Z-3077",
+      "note": "In a worker every Bash call paid jq, realpath, the heredoc mask, grep, awk and tr. Only a `git` segment running checkout/restore/reset/clean/stash is ever denied, so the hook now exits unless the raw payload from the command key on holds `git` and one of them; 66 -> 9 ms on a worker's trivial call (tests/test_worker_git_guard.sh, red on the old code). A main-session call still exits before it.",
+      "handoff": null
     }
   ],
   "blind_spots": [

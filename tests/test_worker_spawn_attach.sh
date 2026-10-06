@@ -32,6 +32,24 @@ BASH_ENV="$WORK/count-jq.sh" JQ_CALLS="$WORK/jq-calls" bash "$HOOK" <<'JSON'
 JSON
 assert_eq 1 "$(wc -l <"$WORK/jq-calls" | tr -d ' ')"
 
+# A brief naming its account, model and effort is read with builtins: a spawn costs its two jq and
+# the hash of its first line, never a grep, sed or tr per header.
+for f in grep sed tr head cut shasum mkdir; do printf '%s() { printf "%s " >>"$FORKS"; command %s "$@"; }\n' "$f" "$f" "$f"; done >"$WORK/count-forks.sh"
+brief=$'ACCOUNT: acct3\nMODEL: opus\nEFFORT: high\nROUND: r-1/x\nGIT-CLEANUP: allowed\n\nNo MD-GUARD line yet, so the hook adds one.'
+mkdir -p "$HOME/.cache/claude-worker-tags/s1"
+: >"$WORK/forks"
+out=$(jq -cn --arg p "$brief" '{hook_event_name:"PreToolUse",tool_name:"Agent",session_id:"s1",tool_use_id:"u-forks",
+  tool_input:{subagent_type:"claudeb-worker",description:"acct1 · opus · low: Do the task",prompt:$p}}' |
+  BASH_ENV="$WORK/count-forks.sh" FORKS="$WORK/forks" bash "$HOOK")
+assert_eq '' "$(cat "$WORK/forks")"
+assert_eq 'acct3 · opus · high: Do the task' "$(jq -r '.hookSpecificOutput.updatedInput.description' <<<"$out")"
+seed="$HOME/.cache/claude-worker-tags/s1/pending-claudeb-worker-u-forks"
+assert_eq "spawn=$(printf 'ACCOUNT: acct3\n' | shasum -a 256 | cut -c1-16)" "$(grep '^spawn=' "$seed")"
+assert_eq 'round=r-1x' "$(grep '^round=' "$seed")"
+asserts=$((asserts + 1))
+[ -e "$HOME/.cache/claude-worker-tags/s1/git-unlock-claudeb-worker" ] || fail "GIT-CLEANUP: allowed left no unlock"
+assert_eq 1 "$(jq -r '.hookSpecificOutput.updatedInput.prompt' <<<"$out" | grep -c '^MD-GUARD (hook-injected)')"
+
 # An ATTACH relay's row is the attached run's own account and model, and its seed names the run.
 mkrun codex-1-a codex 'acct7 · astra · xhigh'
 seed=$(spawn codex-worker 'ATTACH codex-1-a:' u1)

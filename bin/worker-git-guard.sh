@@ -6,6 +6,14 @@ set -u
 IFS= read -r -d '' input || :
 [ "${CLAUDEB_WORKER:-}" = 1 ] || [ "${GROK_WORKER:-}" = 1 ] ||
   case $input in *'"agent_type"'*) ;; *) exit 0 ;; esac
+# Only a `git` segment running one of these subcommands is ever denied below, and both words stand in
+# the raw payload from the command on (cwd and transcript paths come before it): a worker's ordinary
+# call starts no process.
+case $input in
+  *'"command"'*)
+    tail=${input#*'"command"'}
+    [[ $tail == *git* && $tail =~ checkout|restore|reset|clean|stash ]] || exit 0 ;;
+esac
 
 command -v jq >/dev/null 2>&1 || exit 0
 parsed=$(jq -r '[.hook_event_name // "", .agent_type // "", .session_id // "", .tool_input.command // "",

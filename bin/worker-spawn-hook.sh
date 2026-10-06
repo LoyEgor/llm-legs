@@ -33,7 +33,12 @@ subagent=${fields[3]-}
 description=${fields[4]-}
 prompt=${fields[5]-}
 
-worker_conf() { sed -n "s/^$1=//p" "$HOME/.claude/worker-model" 2>/dev/null | head -n1; }
+worker_conf() {
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
+    case $line in "$1="*) printf '%s' "${line#"$1="}"; return ;; esac
+  done <"$HOME/.claude/worker-model" 2>/dev/null
+}
 
 self_dir() {
   local path=${BASH_SOURCE[0]} dir
@@ -92,7 +97,7 @@ model_short() { # model id
   local model=${1#claude-}
   printf '%s' "${model%%-*}"
 }
-brief_line() { printf '%s' "$prompt" | grep -m1 -oE "^$1:[[:space:]]*[A-Za-z0-9_.-]+" | sed -E "s/^$1:[[:space:]]*//"; }
+brief_line() { [[ $'\n'$prompt =~ $'\n'$1:[[:blank:]]*([A-Za-z0-9_.-]+) ]] && printf '%s' "${BASH_REMATCH[1]}"; }
 flag_account() {
   local token pattern
   pattern="--account[= ]+(\"[a-z0-9][a-z0-9-]*\"|'[a-z0-9][a-z0-9-]*'|[a-z0-9][a-z0-9-]*)"
@@ -220,7 +225,7 @@ fi
 attach_run=''
 case "$subagent" in
   claudeb-worker | codex-worker | gemini-worker | grok-worker | light-worker | light-research)
-    attach_run=$(printf '%s' "$prompt" | sed -n '1s/^ATTACH \([a-z0-9][a-z0-9-]*\):.*/\1/p') ;;
+    [[ ${prompt%%$'\n'*} =~ ^ATTACH\ ([a-z0-9][a-z0-9-]*): ]] && attach_run=${BASH_REMATCH[1]} ;;
 esac
 attach_dir="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}/$attach_run"
 [ -d "$attach_dir" ] || attach_run=''
@@ -241,37 +246,40 @@ case "$subagent" in
   claudeb-worker | codex-worker | gemini-worker | grok-worker | light-worker)
     while IFS= read -r line || [ -n "$line" ]; do
       case "$line" in
-        ROUND:*) prompt_round=$(printf '%s' "${line#ROUND:}" | tr -cd 'A-Za-z0-9-'); break ;;
+        ROUND:*) prompt_round=${line#ROUND:} prompt_round=${prompt_round//[^A-Za-z0-9-]/}; break ;;
         RESUME\ *:* | ATTACH\ *:*) continue ;;
       esac
       [[ "$line" =~ ^[A-Z][A-Z-]*: ]] || break
     done <<<"$prompt" ;;
 esac
 
-title=$(printf '%s' "$description" | sed -E 's/^[A-Za-z0-9_.?-]+( [a-z]+)?( · [A-Za-z0-9_.?-]+){1,3}(: | — )//')
+title=$description
+[[ $title =~ ^[A-Za-z0-9_.?-]+(\ [a-z]+)?(\ ·\ [A-Za-z0-9_.?-]+){1,3}(:\ |\ —\ ) ]] && title=${title#"${BASH_REMATCH[0]}"}
 [ -n "$title" ] || title=task
 
-session_id=$(printf '%s' "$hook_session" | tr -cd 'A-Za-z0-9_-')
+session_id=${hook_session//[^A-Za-z0-9_-]/}
 [ -n "$session_id" ] || session_id=_
 pending_dir="$HOME/.cache/claude-worker-tags/$session_id"
 unlock_asked=0
 unlock_done=0
-printf '%s' "$prompt" | grep -qE '^GIT-CLEANUP:[[:space:]]*allowed' && unlock_asked=1
+[[ $'\n'$prompt =~ $'\n'GIT-CLEANUP:[[:blank:]]*allowed ]] && unlock_asked=1
 # One seed per spawn: two agents of one type spawned in the same turn each claim their own, oldest
 # first, instead of the second overwriting the first one's tag.
-spawn_key=$(printf '%s' "${fields[8]-}" | tr -cd 'A-Za-z0-9_-')
+spawn_key=${fields[8]-}
+spawn_key=${spawn_key//[^A-Za-z0-9_-]/}
 [ -n "$spawn_key" ] || spawn_key="$(date +%s)-$$-$RANDOM"
-if mkdir -p "$pending_dir" 2>/dev/null; then
+if [ -d "$pending_dir" ] || mkdir -p "$pending_dir" 2>/dev/null; then
   umask 077
   tmp_pending="$pending_dir/.pending-$subagent.tmp.$$"
   first_line=${prompt%%$'\n'*}
-  { printf '%s\n' "$prefix"; printf 'spawn=%s\n' "$(printf '%s\n' "$first_line" | shasum -a 256 2>/dev/null | cut -c1-16)"
+  spawn_hash=$(printf '%s\n' "$first_line" | if command -v sha256sum >/dev/null; then sha256sum; else shasum -a 256; fi 2>/dev/null)
+  { printf '%s\n' "$prefix"; printf 'spawn=%s\n' "${spawn_hash:0:16}"
     [ -z "${review_run:-}" ] || printf 'review=%s\n' "$review_run"
     [ -z "$attach_run" ] || printf 'run=%s\n' "$attach_run"
     [ -z "$prompt_round" ] || printf 'round=%s\n' "$prompt_round"
     [ -z "${seed_extra:-}" ] || printf '%s\n' "$seed_extra"; } > "$tmp_pending" 2>/dev/null &&
     mv -f "$tmp_pending" "$pending_dir/pending-$subagent-$spawn_key" 2>/dev/null
-  rm -f "$tmp_pending" 2>/dev/null
+  [ ! -e "$tmp_pending" ] || rm -f "$tmp_pending" 2>/dev/null
   if [ "$unlock_asked" = 1 ]; then
     git_unlock="$pending_dir/git-unlock-$subagent"
     tmp_unlock="$git_unlock.tmp.$$"
@@ -297,7 +305,7 @@ updated="$prefix: $title"
 # re-injection on RESUME) is left alone.
 md_guard=''
 if [ "$subagent" != fork ] && [ "$subagent" != review-waiter ] &&
-   ! printf '%s' "$prompt" | grep -qE '^MD-GUARD'; then
+   [[ $'\n'$prompt != *$'\n'MD-GUARD* ]]; then
   md_files='CLAUDE.md / CLAUDE.local.md / MEMORY.md / files in memory/ dirs / anything under ~/.claude, even when one of them goes stale from your change'
   if [ -n "$SELF_DIR" ] && . "$SELF_DIR/../share/instruction-files.sh" 2>/dev/null; then
     md_rule=$(instruction_relay_refusal "$md_files")

@@ -99,7 +99,15 @@ printf '%s\n' 'jq() { printf "call\n" >> "$JQ_CALLS"; command jq "$@"; }' \
   'cat() { printf "call\n" >> "$JQ_CALLS"; command cat "$@"; }' > "$HOME/count-jq.sh"
 : > "$HOME/jq-calls"
 payload '' 'ls' | BASH_ENV="$HOME/count-jq.sh" JQ_CALLS="$HOME/jq-calls" bash "$GUARD" >/dev/null
-if [ "$(wc -l < "$HOME/jq-calls" | tr -d ' ')" = 1 ]; then pass; else fail 'an empty agent_type ran more than its one jq parse'; fi
+if [ ! -s "$HOME/jq-calls" ]; then pass; else fail 'an empty agent_type running no git forked before exiting'; fi
+printf '%s\n' 'realpath() { printf "call\n" >> "$JQ_CALLS"; command realpath "$@"; }' \
+  'awk() { printf "call\n" >> "$JQ_CALLS"; command awk "$@"; }' 'tr() { printf "call\n" >> "$JQ_CALLS"; command tr "$@"; }' \
+  'grep() { printf "call\n" >> "$JQ_CALLS"; command grep "$@"; }' >> "$HOME/count-jq.sh"
+for command in 'make test' 'git status && git diff --stat' $'cat <<EOF\nreset the flag\nEOF'; do
+  : > "$HOME/jq-calls"
+  payload claudeb-worker "$command" | BASH_ENV="$HOME/count-jq.sh" JQ_CALLS="$HOME/jq-calls" bash "$GUARD" >/dev/null
+  if [ ! -s "$HOME/jq-calls" ]; then pass; else fail "a worker's $command, no revert subcommand, forked"; fi
+done
 : > "$HOME/jq-calls"
 payload '' 'ls' | jq -c 'del(.agent_type)' |
   BASH_ENV="$HOME/count-jq.sh" JQ_CALLS="$HOME/jq-calls" bash "$GUARD" >/dev/null
