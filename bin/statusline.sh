@@ -13,6 +13,7 @@ if [ "${BASH_VERSINFO[0]}" -lt 5 ]; then
   echo "statusline: bash 5 required (found $BASH_VERSION)"
   exit 0
 fi
+{
 statusline_start_us=${EPOCHREALTIME//[!0-9]/}
 export GIT_OPTIONAL_LOCKS=0
 
@@ -2459,3 +2460,4 @@ printf '%s\t%s\t%s\t%s\n' "$statusline_start_us" "$statusline_end_us" "$session_
     printf '%s\t%s\t%s\t%s\n' "$statusline_start_us" "$statusline_end_us" "$session_id" "$statusline_cpu_ms" \
       2>/dev/null >> "$statusline_timing_dir/$statusline_day.tsv"; }
 exit "$statusline_rc"
+exit; }

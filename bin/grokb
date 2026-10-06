@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+{
 set -euo pipefail
 
 profiles_dir="${GROKB_PROFILES_DIR:-$HOME/.grok-profiles}"
@@ -708,3 +709,4 @@ case "${1:-}" in
     run_account false "$name" "$@"
     ;;
 esac
+exit; }

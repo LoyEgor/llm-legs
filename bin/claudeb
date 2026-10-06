@@ -2,6 +2,7 @@
 # claudeb — multi-account launcher for Claude Code.
 # See ~/.claude-profiles/README.md before changing anything: snapshot schema and
 # account==profile naming are shared with the limits and statusline surfaces.
+{
 set -euo pipefail
 claudeb_entry_at=${EPOCHREALTIME:--}
 
@@ -2725,3 +2726,4 @@ case "${1:-}" in
     ;;
 esac
 fi
+case $0 in "${BASH_SOURCE[0]}") exit; esac; }

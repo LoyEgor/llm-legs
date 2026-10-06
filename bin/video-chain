@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+{
 set -euo pipefail
 
 ffmpeg_cmd=${VIDEO_CHAIN_FFMPEG:-ffmpeg}
@@ -127,3 +128,4 @@ case "$command" in
   join) join_clips "$@" ;;
   *) usage ;;
 esac
+exit; }

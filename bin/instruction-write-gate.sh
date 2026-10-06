@@ -21,6 +21,7 @@
 #
 # Same contract as the Edit/Write gate: the exact retry passes ONCE, so a deny costs Egor one
 # round trip and never becomes a wall.
+{
 [ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u
 
@@ -419,3 +420,4 @@ jq -cn --arg hook "${0##*/}" --arg r "$reason $(instruction_denial_tag "$hash")"
   '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:("[" + $hook + "] " + $r)}}' 2>/dev/null ||
   { printf '%s\n' "$reason $(instruction_denial_tag "$hash")" >&2; exit 2; }
 exit 0
+exit; }

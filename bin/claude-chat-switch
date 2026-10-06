@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+{
 set -u
 
 PROFILES_DIR="$HOME/.claude-profiles"
@@ -511,3 +512,4 @@ fi
 
 printf 'claude-chat-switch: armed mode=%s. %s%scommand: %s\n' \
   "$mode" "${fresh_reason:+$fresh_reason; FRESH chat. }" "${notes:+$notes; }" "$resume_cmd"
+exit; }

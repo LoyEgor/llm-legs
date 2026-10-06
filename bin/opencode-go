@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+{
 set -euo pipefail
 # Go-plan only by design: the base URL is fixed and run() rejects models outside
 # the plan's /models list, so pay-as-you-go Zen models can never be billed.
@@ -801,3 +802,4 @@ case ${1:-} in
   raw) shift; raw_request "$@" ;;
   *) usage ;;
 esac
+exit; }

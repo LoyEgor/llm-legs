@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+{
 set -u
 
 resolve_script() {
@@ -374,3 +375,4 @@ case "${1:-run}" in
   status) show_status ;;
   *) usage ;;
 esac
+exit; }

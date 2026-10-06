@@ -7,6 +7,7 @@ if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
   echo "worker-run: bash 4+ required (found $BASH_VERSION)" >&2
   exit 1
 fi
+{
 set -u
 
 usage() {
@@ -5691,3 +5692,4 @@ case "${1:-}" in
   _supervise) shift; supervise "$@"; rc=$?; end_run_orphans "$1"; slot_release "$NIGHT_SLOT"; exit "$rc" ;;
   *) usage ;;
 esac
+exit; }

@@ -5,6 +5,7 @@
 # then prefixes the tag onto every Bash description so the UI activity line
 # always names who is spending quota. Tag files are session-scoped so the
 # subagent rows can surface the tag. Fail-open everywhere.
+{
 [ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u
 
@@ -397,3 +398,4 @@ prune
 # NOT: it is a native in-session agent, so an `allow` here would grant a call nobody granted it —
 # the tag is a rewrite and never a permission.
 emit "$updated_description" "${waiter_command:-$command}"
+exit; }

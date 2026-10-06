@@ -11,6 +11,7 @@ if ! eval "$have_wait_n"; then
   echo "run-suites: bash 4.3+ required for wait -n (found $BASH_VERSION)" >&2
   exit 1
 fi
+{
 set -u
 printf -v run_suites_start '%(%s)T' -1
 run_suites_queued=${EPOCHREALTIME:-$run_suites_start} run_suites_began=${EPOCHREALTIME:-$run_suites_start}
@@ -440,3 +441,4 @@ fi
   exit 1
 }
 exit 0
+exit; }

@@ -3,6 +3,7 @@
 # threshold is denied ONCE with the recurring token cost quoted; the same edit
 # passes on retry once the transcript shows the file re-read after that denial
 # (the deny is the "audit it, then tell Egor" step, not a wall).
+{
 [ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u
 
@@ -454,3 +455,4 @@ fi
 headline="+${delta} bytes (~${tokens_shown} tokens) costs ~${weekly} tokens/week and ~${monthly}/month against the weekly usage limit, because this file re-enters the cached prefix ~${weekly_shown} a week and ~${monthly_shown} a month — every token added is paid for that many times over (${measured})."
 
 deny cost "Instruction-bloat gate: ${headline} Protocol, fastest path first: (1) AUDIT — re-read the WHOLE file now and look for up to 3 lines that are stale, duplicated in another live surface, or restate what code/hooks already enforce (criteria: ~/.claude/docs/context-file-hygiene.md). A combined edit that adds your text AND cuts enough for net <= 0 passes immediately, no approval needed — name the cuts in your reply so Egor can veto them. (2) 'Nothing defensibly cuttable' is a fully valid audit outcome — NEVER cut a live rule to make room. In that case present Egor the NET BALANCE and wait for his explicit OK in this turn. Report it as exactly three lines in his language, quoting the figures from this message verbatim rather than deriving your own, and adding nothing else: line 1 COST — the file, the byte delta, the token delta, the weekly cost, the monthly cost; line 2 CUT — what you cut, or that nothing was safely cuttable; line 3 PAYS BACK — what the addition saves per month (avoided corrections, repeated output, worker calls), or that it does not pay for itself. A rule that saves less than it costs does not get written. (3) Content rules trump cost math: history/changelog, anything derivable from code, linter rules as prose, and defensive verification scaffolding are cut, not costed; prefer a hook/mechanical control over prose, and compress what remains. The gate verifies the audit mechanically: after this denial, Read the target file, then retry — the same edit passes once. A retry without that Read is denied again. $(instruction_denial_tag "$hash")"
+exit; }

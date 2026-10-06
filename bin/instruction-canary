@@ -2,6 +2,7 @@
 # Nightly drift check for the instruction gates. Both failures it looks for are SILENT: a rate
 # lookup that answers nothing leaves every gate quoting July constants, and a budget constant that
 # drifted moves every threshold in the ladder without changing a single message.
+{
 set -u
 
 # launchd starts jobs with a minimal PATH that omits Homebrew tools such as jq.
@@ -103,3 +104,4 @@ if [ -n "$failures" ]; then
   exit 1
 fi
 printf 'instruction canary ok — %s\n' "$observed"
+exit; }

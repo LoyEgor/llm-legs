@@ -10,6 +10,7 @@ if [ "${BASH_VERSINFO[0]}" -lt 5 ]; then
   echo "statusline-work-probe: bash 5 required (found $BASH_VERSION)" >&2
   exit 1
 fi
+{
 set -u
 
 session_id="${1:-}"
@@ -415,3 +416,4 @@ if [[ "$old_mtime" =~ ^[0-9]+$ ]] && [ "$((now - old_mtime))" -le 15 ]; then
 fi
 
 write_cache "$new_cache"
+exit; }

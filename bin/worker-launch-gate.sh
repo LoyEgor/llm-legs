@@ -32,6 +32,7 @@
 # and the edit-conflict hook names it to the chat itself. The media scripts and
 # the generating subcommands of their web engines have one door for every session, `media-run`,
 # whose job pointer is what renders the account a generation spends.
+{
 [ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u
 
@@ -547,3 +548,4 @@ for launch_re in ${LAUNCH_RES[@]+"${LAUNCH_RES[@]}"}; do
   deny "Blocked: \`${hit}\` is a bare headless vendor launch — it leaves no worker-run record, no statusline tag, no journal ownership, no pool refusal, no limit signature and no stall watch. ${launch_ask}; the other tools own their launches (review-bench, llm-limits, claudeb revive, claude-session-driver, opencode-go; the media scripts are reached through media-run). An interactive launch — no -p/--print/--prompt, no exec, no run — is not gated. Quotes and backslashes do not hide a launch: the gate strips them, then reads the first word of every chained command, and a sanctioned tool exempts only its own segment."
 done
 exit 0
+exit; }

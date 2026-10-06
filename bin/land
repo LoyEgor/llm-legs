@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Parsed whole before it runs: bash reads a running script as it goes, and chats edit bin/ in place.
+{
 set -u
 
 usage() {
@@ -262,3 +264,4 @@ elif ! git -C "$repo" update-ref -d "refs/heads/$branch" "$([ -n "$wt" ] && echo
 fi
 if [ "$suites_ran" -gt 0 ]; then suites="ran $suites_ran"; else suites=skipped; fi
 printf 'landed %s → main %s (%s), suites: %s\n' "$branch" "$(short "$cur")" "$([ -n "$remote" ] && echo pushed || echo local)" "$suites"
+exit; }

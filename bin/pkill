@@ -1,4 +1,5 @@
 #!/bin/bash
+{
 set -u
 
 tool=${0##*/}
@@ -53,3 +54,4 @@ while [ "$i" -lt "$n" ]; do
 done
 
 exec "$real" "$@"
+exit; }

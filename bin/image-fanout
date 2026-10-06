@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+{
 set -euo pipefail
 
 resolve_self() {
@@ -1287,3 +1288,4 @@ if [ "$attempted_n" -gt 0 ] && [ "$limit_n" -eq "$attempted_n" ]; then
   exit 3
 fi
 exit 1
+exit; }

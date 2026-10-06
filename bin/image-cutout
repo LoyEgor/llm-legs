@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+{
 set -euo pipefail
 
 resolve_root() {
@@ -62,3 +63,4 @@ if [ ! -x "$binary" ]; then
   mv -f "$binary.$$" "$binary"
 fi
 exec "$binary" "$@"
+exit; }

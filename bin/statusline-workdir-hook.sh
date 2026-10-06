@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Writes this chat's place journal (bin/statusline-place): one declared line per event that says
 # where the chat's changes go. The statusline shows the last line's tree; nothing here decides it.
+{
 [ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 exec >/dev/null 2>&1
 
@@ -200,3 +201,4 @@ find "$cache_dir" -type f -name 'place-*' -mtime +7 -delete
 # A denied command fires PreToolUse and never the PostToolUse that consumes its snapshot.
 find "$cache_dir" -type f -name 'place-*.snap*' -mmin +60 -delete
 touch "$marker"
+exit; }

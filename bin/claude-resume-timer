@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+{
 set -u
 
 usage() {
@@ -388,3 +389,4 @@ EOF
 fi
 
 arm_one "$target_tty"
+exit; }

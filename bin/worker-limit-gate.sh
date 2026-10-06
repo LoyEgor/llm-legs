@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+{
 [ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u
 
@@ -429,3 +430,4 @@ case "$spec_worker:$state" in
 esac
 
 exit 0
+exit; }

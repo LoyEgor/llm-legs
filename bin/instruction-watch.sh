@@ -26,6 +26,7 @@
 #
 # Hot path cost is one enumeration, one stat process and one awk join per call: only the rows
 # whose fingerprint moved reach the shell, and a hash runs only for those.
+{
 [ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u
 
@@ -1054,3 +1055,4 @@ case "${1:-check}" in
   check)    cmd_check "$baseline" "$event" "$sid" ;;
   *)        gate_journal watch fault "$sid" '' '' "unknown mode ${1:-}"; exit 0 ;;
 esac
+exit; }

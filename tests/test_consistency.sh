@@ -3366,6 +3366,16 @@ glued=$(cd "$ROOT" && git grep -lIP '\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F]' -- bi
   { [ "${f##*.}" = sh ] || head -1 "$f" | grep -q bash; } && printf '%s ' "$f"
 done)
 assert eq "bash expansions glued to a non-ASCII char, brace them: $glued" "bash expansions glued to a non-ASCII char, brace them: "
+unparsed=$(cd "$ROOT" && find bin share -type f -perm -u+x | LC_ALL=C sort | while IFS= read -r f; do
+  head -1 "$f" | grep -q '^#!.*bash' || continue
+  preamble=$(awk '/exec "\$modern_bash" "\$0"/ { seen = 1 } seen && /^fi$/ { print NR; exit }' "$f")
+  first=$(awk -v after="${preamble:-1}" 'NR > after && !/^[[:space:]]*(#|$)/ { print; exit }' "$f")
+  closer='exit; }'
+  grep -qE '"\$\{BASH_SOURCE\[0\]\}" ==? "\$0"' "$f" && closer='case $0 in "${BASH_SOURCE[0]}") exit; esac; }'
+  { [ "$first" = '{' ] && { [ "$(tail -n 1 "$f")" = "$closer" ] ||
+    { [ "$closer" = 'exit; }' ] && [ "$(tail -n 2 "$f")" = "$(printf 'exit\n}')" ]; }; }; } || printf '%s ' "$f"
+done)
+assert eq "executed bash scripts not one brace group (row eh): $unparsed" "executed bash scripts not one brace group (row eh): "
 
 assert grep -Fq 'state["lost_min_day_by_day"] = document["lost_min_day_by_day"] = history' "$ROOT/bin/speed-doctor"
 assert grep -Fq '"lost_min_day_by_day") if k in speed' "$ROOT/bin/harness-doctor"

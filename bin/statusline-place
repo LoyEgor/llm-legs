@@ -5,6 +5,7 @@
 #   statusline-place add --session <sid> --kind <kind> --path <dir-or-file>
 #   statusline-place why --session <sid>
 # `add` exits 0 when it wrote a line and 3 when it wrote none (an excluded or non-repository path).
+{
 set -u
 
 cache_dir="${STATUSLINE_CACHE_DIR:-$HOME/.cache/claude-statusline}"
@@ -116,3 +117,4 @@ case "$cmd" in
   why) why ;;
   *) usage ;;
 esac
+exit; }

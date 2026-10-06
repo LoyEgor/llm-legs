@@ -4,6 +4,7 @@
 # going left two fixers invisible for an hour (2026-09-24), so a relay whose run is still alive is
 # sent back to wait. A relay let go is marked `stopped=` in its tag file: bin/worker-run-backstop.sh
 # reads that mark as "no relay owns this run any more". Fail-open everywhere.
+{
 [ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u
 
@@ -77,3 +78,4 @@ esac
 jq -cn --arg hook "${0##*/}" --arg run "$live" --arg call "$wait_call" '{decision: "block",
   reason: ("[" + $hook + "] " + "Run \($run) is still running, and your task row is the only place Egor sees this worker. Do not return: run `\($call)` (Bash timeout 600000) again, repeated until the run is over, then report.")}'
 exit 0
+exit; }

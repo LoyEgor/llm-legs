@@ -5,6 +5,7 @@
 # from the brief's MODEL:/EFFORT: lines with worker-model defaults — instead
 # of trusting the orchestrating model to compose it. Fail-open: on any doubt
 # leave the call untouched.
+{
 [ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u
 
@@ -321,3 +322,4 @@ printf '%s' "$input" | jq -c --arg description "$updated" --arg guard "$md_guard
   }}
 ' 2>/dev/null
 exit 0
+exit; }

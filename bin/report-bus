@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+{
 set -u
 umask 077
 ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/claude-reports"
@@ -338,3 +339,4 @@ case "$verb" in
   *) usage ;;
 esac
 exit 0
+exit; }

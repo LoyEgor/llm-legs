@@ -7,6 +7,7 @@ if [ "${BASH_VERSINFO[0]}" -lt 5 ]; then
   echo "statusline-ports-probe: bash 5 required (found $BASH_VERSION)" >&2
   exit 1
 fi
+{
 set -u
 
 session_id="${1:-}"
@@ -246,3 +247,4 @@ if [[ "${now:-}" =~ ^[0-9]+$ ]]; then
   fi
 fi
 exit 0
+exit; }

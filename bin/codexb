@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+{
 set -euo pipefail
 
 profiles_dir="${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}"
@@ -875,3 +876,4 @@ case "${1:-}" in
     run_account false "$name" exec "$@"
     ;;
 esac
+exit; }

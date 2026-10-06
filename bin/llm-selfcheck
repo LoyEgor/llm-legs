@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+{
 set -u
 
 resolve_script() {
@@ -318,3 +319,4 @@ case "${1:-run}" in
   *) usage ;;
 esac
 fi
+case $0 in "${BASH_SOURCE[0]}") exit; esac; }

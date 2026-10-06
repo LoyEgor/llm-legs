@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+{
 set -euo pipefail
 
 base_home=$HOME
@@ -1191,3 +1192,4 @@ case "${1:-}" in
     run_account false "$name" "$@"
     ;;
 esac
+exit; }

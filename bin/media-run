@@ -2,6 +2,7 @@
 # The one door to the media scripts: the vendor list and each vendor's script per kind come from the
 # manifests (share/image-caps/*.json), the script's own arguments pass through untouched, and the job
 # leaves a pointer the statusline's work probe draws as a `media` line (docs/statusline-contract.md).
+{
 set -euo pipefail
 
 resolve_root() {
@@ -142,3 +143,4 @@ for arg in "$@"; do
 done
 write_pointer "${account:-pool} · ${media_tag:-${kind}·$vendors}" "$label" ''
 exec "$bin_dir/$script" "$@"
+exit; }

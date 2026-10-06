@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Is Fast really served on a codex account right now? Alternates Fast ON / OFF runs of one prompt and
 # compares wall time; the response's own service_tier field is not evidence (DIAGNOSTICS, Fast Mode row).
+{
 set -uo pipefail
 
 root=$(cd -P "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
@@ -74,3 +75,4 @@ else
   printf 'FAST_NOT_FASTER: offered in the catalog but ON was not faster than OFF\n'
   exit 4
 fi
+exit; }

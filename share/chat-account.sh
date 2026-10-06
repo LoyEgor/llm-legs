@@ -16,6 +16,7 @@
 # Sets CHAT_ACCOUNT_VENDOR (`claude`/`codex`, the `.vendors.<key>` of ~/.llm-limits.json),
 # CHAT_ACCOUNT_NAME (empty when nothing named it) and CHAT_ACCOUNT_SOURCE
 # (`gateway`/`env`/`config-dir`/`unknown`).
+{
 chat_account_resolve() {
   CHAT_ACCOUNT_VENDOR=claude
   CHAT_ACCOUNT_NAME=""
@@ -60,3 +61,4 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   chat_account_resolve
   printf '%s %s\n' "$CHAT_ACCOUNT_VENDOR" "${CHAT_ACCOUNT_NAME:-${1:-main}}"
 fi
+case $0 in "${BASH_SOURCE[0]}") exit; esac; }

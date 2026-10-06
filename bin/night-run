@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+{
 set -u
 
 resolve_script() {
@@ -1055,3 +1056,4 @@ case "${1:-}" in
   hold) shift; cmd_hold "$@" ;;
   *) usage ;;
 esac
+exit; }

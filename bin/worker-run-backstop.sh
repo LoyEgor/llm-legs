@@ -9,6 +9,7 @@
 # `stopped=` mark (worker-relay-hold.sh writes it when it lets a relay go), or is a spawn seed
 # younger than the tag hook's seed age. A run whose state.json is not written yet is still inside
 # `worker-run start`, before the claim that names its relay. Fail-open everywhere.
+{
 set -u
 self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) || exit 0
 
@@ -112,3 +113,4 @@ $lines
 Spawn each relay now (its brief is just that ATTACH line); it waits the run out on a visible row." \
   '{decision:"block",reason:("[" + $hook + "] " + $r)}'
 exit 0
+exit; }

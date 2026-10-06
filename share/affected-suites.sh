@@ -7,6 +7,7 @@
 
 # Suites that read live machine state (the real limits store, the real instruction-file export) and so
 # answer about this Mac rather than the code: out of every run unless asked for by name or --all.
+{
 live_suite() {
   case "$1" in
     e2e_surfaces.sh|test_instruction_rates_live.sh) return 0 ;;
@@ -110,3 +111,4 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   [ "${1:-}" != -- ] || shift
   affected_suites "$repo" "$@"
 fi
+case $0 in "${BASH_SOURCE[0]}") exit; esac; }

@@ -5,6 +5,7 @@
 # Every running local_agent task is painted: `<tag>[ — <title>] · <state> · <elapsed>[ · ↓ tok]`, the tag from
 # the worker-spawn-hook/worker-tag-hook cache, else the tag embedded in the hook-rewritten
 # description, else `agent · <model> · <account>` from the harness fields.
+{
 set -u
 export LC_ALL=en_US.UTF-8
 
@@ -377,3 +378,4 @@ $parsed
 EOF
 
 exit 0
+exit; }

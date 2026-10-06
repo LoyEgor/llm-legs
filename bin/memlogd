@@ -7,6 +7,7 @@
 # Besides logging, this daemon ACTS: every tick runs chat-load, deployed beside this copy, which
 # keeps the per-chat load snapshot for the menubar and, when the machine is nearly out of RAM,
 # SIGKILLs the fattest job a chat launched (`docs/memory-guard.md` is the decision record).
+{
 set -u
 
 resolve_script() {
@@ -442,3 +443,4 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     *) usage ;;
   esac
 fi
+case $0 in "${BASH_SOURCE[0]}") exit; esac; }
