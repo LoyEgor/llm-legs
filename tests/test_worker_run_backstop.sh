@@ -110,16 +110,17 @@ printf '%s 9\n' "$(($(date +%s) - 900))" >"$HOME/.cache/claude/stop-backstop/s1"
 assert_eq block "$(stop | jq -r .decision)"
 rm -rf "$WORKER_RUN_DIR/r3"; forget
 
-# An orchestrator's tag cache holds hundreds of files; a grep per file per run outran the stop's
-# 5 s hook cap under load (exit 124), so the lookup stays a few processes whatever the cache size.
+# An orchestrator's tag cache holds hundreds of files; a read of it per run outran the stop's 5 s
+# hook cap under load (exit 124), so a dozen live runs still cost a few processes whatever its size.
 for i in $(seq 300); do printf 'acct · astra · high\nrun=old%s\nstopped=1\n' "$i" >"$TAGS/agent$i"; done
-printf 'acct · astra · high\nrun=r4\n' >"$TAGS/agent301"
-run r4 s1 codex
+for i in $(seq 4 15); do printf 'acct · astra · high\nrun=r%s\n' "$i" >"$TAGS/agent30$i"; run "r$i" s1 codex; done
+printf 'run=x\n' >"$TAGS/agent3000"; chmod 000 "$TAGS/agent3000"
 mkdir -p "$WORK/shim"
 printf '#!/bin/sh\necho >>"%s/greps"\nexec %s "$@"\n' "$WORK" "$(command -v grep)" >"$WORK/shim/grep"
 chmod +x "$WORK/shim/grep"
 assert_eq "" "$(PATH="$WORK/shim:$PATH" stop)"
-asserts=$((asserts + 1)); [ "$(wc -l <"$WORK/greps")" -le 5 ] || fail "$(wc -l <"$WORK/greps" | tr -d ' ') greps for one run over 301 tag files"
+asserts=$((asserts + 1)); [ "$(cat "$WORK/greps" 2>/dev/null | wc -l)" -le 5 ] ||
+  fail "$(wc -l <"$WORK/greps" | tr -d ' ') greps for 12 runs over 312 tag files"
 # An owned run is settled before its liveness probe: the orchestrator's dozen relayed runs paid a
 # jq and a ps each on every stop, 2.2-2.7 s of the dispatcher's critical path at load 220.
 printf '#!/bin/sh\necho >>"%s/ps-runs"\nexec %s "$@"\n' "$WORK" "$(command -v ps)" >"$WORK/shim/ps"

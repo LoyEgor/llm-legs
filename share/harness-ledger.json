@@ -481,10 +481,10 @@
       "same_cause": [
         "word-miss-deferred-reading-lost"
       ],
-      "last_reviewed": "2026-10-02",
-      "reviewed_by": "night fixer harness-stop-hooks-20261002T093037Z-0eb0",
-      "note": "stop-dispatch.sh holds asks for background work at most STOP_DISPATCH_HELD_CAP (3600 s), then runs them at that stop with busy empty and the journal line's held naming what it would have called busy, and the hold restarts; ask-span-drill stays silent under STOP_HELD; ask-run-unfinished also sees waiter tasks under the 2.1.285 label subagent. The doctor's ask-busy rule does not see asks run under held, by design. The 2026-09-30 06:55-08:16 regression was transitional (tasks started before e5909cd landed). The 2026-10-01 regression (10896605, 10:17-13:08Z, 10269 s) was the 959efae stale-hold rule misfiring: no stop from 10:32 to 12:11Z because a task notification at 11:40Z opened a 31-min turn, the old tasks ended inside it and a new one started, so 'no stop for the cap and none of its tasks live' restarted the hold of a live chat. The held file is now 'since chat-pid' ($PPID, the Claude Code process: hook-time rows show one stable ppid per chat process) and only a different process (a closed chat resumed) restarts it; old-format files restart once. Ruled out: notice timing, ask-span-drill, worker-run holds (busy was bg-task throughout). Risk to watch: a harness that wrapped hooks in a per-call shell would restart every hold and bring the unbounded hold back; this rule would show it.",
-      "handoff": null
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-stop-hooks-20261006T032932Z-5fd0",
+      "note": "stop-dispatch.sh holds asks for background work at most STOP_DISPATCH_HELD_CAP (3600 s), then runs them at that stop with busy empty and the journal line's held naming what it would have called busy, and the hold restarts; ask-span-drill stays silent under STOP_HELD; ask-run-unfinished also sees waiter tasks under the 2.1.285 label subagent. The doctor's ask-busy rule does not see asks run under held, by design. The 2026-09-30 06:55-08:16 regression was transitional (tasks started before e5909cd landed). The 2026-10-01 regression (10896605, 10:17-13:08Z, 10269 s) was the 959efae stale-hold rule misfiring: no stop from 10:32 to 12:11Z because a task notification at 11:40Z opened a 31-min turn, the old tasks ended inside it and a new one started, so 'no stop for the cap and none of its tasks live' restarted the hold of a live chat. The held file is now 'since chat-pid' ($PPID, the Claude Code process: hook-time rows show one stable ppid per chat process) and only a different process (a closed chat resumed) restarts it; old-format files restart once. Ruled out: notice timing, ask-span-drill, worker-run holds (busy was bg-task throughout). Risk to watch: a harness that wrapped hooks in a per-call shell would restart every hold and bring the unbounded hold back; this rule would show it. The 2026-10-06 regression (2ddedf36, 28600 s) is the doctor's streak crossing a closed chat: held asks ran 17:52:24Z, the old process's last stop was 17:53:39Z, `claude --resume` (pid 24067) started 01:32:12Z and the cap ran the asks 03:30:55Z, so the asks waited 1 min + 1 h 56 min of live process. The dispatcher kept its spec; the rule change (break the streak on a new chat pid) is the owner's, see the handoff.",
+      "handoff": "docs/handoffs/2026-10-06-stop-hooks-judge.md"
     },
     {
       "id": "hook-error-notice-word-journal-timeout",
@@ -534,7 +534,7 @@
       "last_reviewed": "2026-10-04",
       "reviewed_by": "Harness Doctor",
       "note": "Closed 2026-10-04 by Harness Doctor: one 'not executable' line (2026-10-01T19:25:41Z, 2ddedf36) at the minute another chat wrote the file before its chmod; the dispatcher journalled it as specified. The race ended when claude-setup@c546e8f landed the hook as mode 100755 (git ls-files -s), the live file is 0755, and the stop-gate journal holds no later error for it (13419 lines read 2026-10-04). Status fixed, not not-a-bug: a dismissal on this exact ident would mute every later hook-error of the hook, while fixed shows one as regressed.",
-      "handoff": "docs/handoffs/2026-10-02-stop-hook-born-without-x.md"
+      "handoff": null
     },
     {
       "id": "hook-error-worker-run-backstop-timeout",
@@ -543,7 +543,7 @@
         "rule": "hook-error",
         "ident": "worker-run-backstop\\.sh"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-03T09:35:00+03:00",
@@ -553,12 +553,26 @@
           ],
           "in": "llm-legs@24571d6",
           "regressed_at": "2026-10-03T13:13:58+03:00"
+        },
+        {
+          "at": "2026-10-06T07:25:00+03:00",
+          "by": "night fixer harness-stop-hooks-20261006T032932Z-5fd0",
+          "files": [
+            "llm-legs/bin/worker-run-backstop.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "owned() of the old per-lookup grep against the one-pass read, every run= and review= key in the cache",
+            "data": "a copy of 2ddedf36's live tag cache (399 files, ~400 keys) and the live run root, 2026-10-06",
+            "result": "identical owned set (md5 2f7b4751); whole hook output identical (empty) both ways"
+          }
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-03",
-      "reviewed_by": "night fixer harness-stop-hooks-20261003T042544Z-18a9",
-      "note": "34 exit-124 lines since 2026-09-30, all in orchestrator chats while busy (7ca51401, 52be4c78, 2ddedf36 with 54-261 files in ~/.cache/claude-worker-tags/<session>). owned() forked one grep per tag file per live run (227 greps for one run over 301 files): a copy of 2ddedf36's 261-file cache with 10 live runs took 11.5 s at load 35. One grep -l per lookup now: 0.6 s, identical output; test_worker_run_backstop counts greps. Not cut: the tag cache is never pruned (261 files for one chat), and stop-dispatch.sh still runs the backstop serially before the notices.",
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-stop-hooks-20261006T032932Z-5fd0",
+      "note": "Exit 124 only in orchestrator chats while busy (7ca51401, 52be4c78, 2ddedf36), at CPU busy 0.93-1.0 with swap near full. 24571d6 cut owned() from a grep per tag file to one grep -l per lookup; 2ddedf36 still read its 399-file cache once per live run (12). Now one grep + awk reads the cache once per stop (grep, not awk, reads the files: BWK awk aborts on a file deleted after the glob): 0.87-0.95 s to 0.46-0.65 s on a copy of 2ddedf36's cache at load 140-150, identical owned set over all 400 keys; test_worker_run_backstop counts greps for 12 runs. Not cut: the tag cache and crashed run dirs are never pruned (1188 run dirs); each crashed run of the chat with no exit_code (7 of 2ddedf36's 12) still pays jq + two ps per stop, and kill -0 cannot skip them (invariant ar: EPERM reads a foreign live pid as dead).",
       "handoff": null
     },
     {
@@ -585,7 +599,7 @@
       "last_reviewed": "2026-10-04",
       "reviewed_by": "Harness Doctor",
       "note": "Fixed 2026-10-04 by Harness Doctor: ask-span-drill.sh stays silent while `words.py wake` finds a wake-up the chat scheduled itself: a ScheduleWakeup not yet due (not stopped), or a CronCreate job neither CronDeleted nor past its life (7 days recurring, the pinned time for recurring:false). The transcript is read on from a per-session cursor (words dir wake.json), so the night watch's CronCreate hours back costs one read: 61 MB of 233cceb1 read once in 0.6 s, the next call reads only the delta. No PostToolUse writer: its matcher would live in ~/.claude/settings.json, outside the repo. Known gap: a session-only cron dies when Claude exits, and a resumed chat keeps the drill silent until the job's life ends or a CronDelete. test_ask_span_drill (live cron, deleted, expired, pending wakeup, stopped, due), red on the old code. Evidence: 2026-10-02 233cceb1 CronCreate '17,47 * * * *' 09:26:41, drill asked 09:27-10:31, span switched off 10:32.",
-      "handoff": "docs/handoffs/2026-10-03-span-drill-scheduled-wakeup.md"
+      "handoff": null
     },
     {
       "id": "word-miss-deferred-reading-lost",
@@ -640,7 +654,7 @@
       "last_reviewed": "2026-10-04",
       "reviewed_by": "Harness Doctor",
       "note": "Fixed 2026-10-04 by Harness Doctor in claude-setup words_journal.py main(): the stop that journals a chat's first row writes reading-checked at that row's turn when none exists, so ask() at the first idle stop reads every turn since (a chat whose stops were all busy keeps turn 2 owed at turn 4). The handoff's ask()-side line (low = 0 with no checkpoint) was not taken: it reverses the pinned rule that a stop with no checkpoint never asks for the chat's history (test_words_log 'a stop with no checkpoint asked for an earlier turn'). test_words_log 'a chat with no checkpoint lost a notice of a turn that ended busy', red on the old code. Evidence: words:1791035730/ec2ea43a turn 2 read only span on, stops 13:55-14:41Z skipped-busy, first idle stop 14:45:46Z asked nothing.",
-      "handoff": "docs/handoffs/2026-10-04-ask-word-reading-first-idle-stop.md"
+      "handoff": null
     },
     {
       "id": "hook-grows-repos-commit-journal",
@@ -2730,9 +2744,9 @@
       "same_cause": [
         "hook-error-ask-word-reading-budget"
       ],
-      "last_reviewed": "2026-10-05",
-      "reviewed_by": "night fixer harness-stop-hooks-20261005T061339Z-2a70",
-      "note": "One stop, 2026-10-04T22:22:56Z/084706a5: a one-shot usage-ai-report sanitization gate (llm_gate.py, claudeb -p --model sonnet, cwd /, entrypoint sdk-cli) at CPU busy 1.0, swap 9418/10240 MB (samples.jsonl 22:21:18Z). Every other hook was silent and none hit its 5 s cap, yet backstop + parallel notices + parallel asks used the 10 s budget, so the two lib/words.sh asks that run last in series read 'budget exhausted'; the whole stop took 16.1 s and Claude Code cancelled it at its 15 s timeout. The asks are not at fault: words.py headless_transcript gives them nothing to do in an sdk session. Ruled out: a hung hook (no exit 124 in that line), a stray or non-executable hook. The 10 earlier budget-exhausted lines (08-26..10-04) each follow another hook's exit 124 in an interactive chat. Fix is usage-ai-report's (hooks off for the gate), see the handoff; a non-worker sdk session still runs every ask (the stop.d asks skip CLAUDEB_WORKER/GROK_WORKER only).",
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-stop-hooks-20261006T032932Z-5fd0",
+      "note": "One stop, 2026-10-04T22:22:56Z/084706a5: a one-shot usage-ai-report sanitization gate (llm_gate.py, claudeb -p --model sonnet, cwd /, entrypoint sdk-cli) at CPU busy 1.0, swap 9418/10240 MB (samples.jsonl 22:21:18Z). Every other hook was silent and none hit its 5 s cap, yet backstop + parallel notices + parallel asks used the 10 s budget, so the two lib/words.sh asks that run last in series read 'budget exhausted'; the whole stop took 16.1 s and Claude Code cancelled it at its 15 s timeout. The asks are not at fault: words.py headless_transcript gives them nothing to do in an sdk session. Ruled out: a hung hook (no exit 124 in that line), a stray or non-executable hook. The 10 earlier budget-exhausted lines (08-26..10-04) each follow another hook's exit 124 in an interactive chat. Fix is usage-ai-report's (hooks off for the gate), see the handoff; a non-worker sdk session still runs every ask (the stop.d asks skip CLAUDEB_WORKER/GROK_WORKER only). 2026-10-06: cause stands (usage-ai-report llm_gate.py still calls claudeb with hooks on; 32 cwd-/ stops on 2026-10-05, last 22:37Z); no budget-exhausted line since 2026-10-05T06:00Z; the same gate's stop timed out notice-chat-names (hook-error-notice-chat-names-timeout).",
       "handoff": "docs/handoffs/2026-10-05-usage-gate-hooks.md"
     },
     {
@@ -2757,9 +2771,9 @@
       "same_cause": [
         "hook-error-ask-span-drill-budget"
       ],
-      "last_reviewed": "2026-10-05",
-      "reviewed_by": "night fixer harness-stop-hooks-20261005T061339Z-2a70",
-      "note": "Same stop and cause as hook-error-ask-span-drill-budget (2026-10-04T22:22:56Z/084706a5, usage-ai-report gate under full load); see its note.",
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-stop-hooks-20261006T032932Z-5fd0",
+      "note": "Same stop and cause as hook-error-ask-span-drill-budget (2026-10-04T22:22:56Z/084706a5, usage-ai-report gate under full load); see its note. 2026-10-06: cause stands (usage-ai-report llm_gate.py still calls claudeb with hooks on; 32 cwd-/ stops on 2026-10-05, last 22:37Z); no budget-exhausted line since 2026-10-05T06:00Z; the same gate's stop timed out notice-chat-names (hook-error-notice-chat-names-timeout).",
       "handoff": "docs/handoffs/2026-10-05-usage-gate-hooks.md"
     },
     {
@@ -2848,6 +2862,48 @@
       "reviewed_by": "night fixer harness-tests-20261005T061341Z-0005",
       "note": "The 1046-1094 s runs of 2026-10-05 01:23-02:01Z ran under machine load 170-250 from outside run-suites; a profile at load ~200 showed no hot section, time spread evenly over ~200 serial sections of hook calls (each a bash+jq spawn), so the cause is one serial file, not a regressed case. Fixed by splitting it into eight parts over tests/instruction_gate_harness.sh that run-suites runs in parallel: the write gate keeps tests/test_instruction_gate.sh, then _bloat, _tripwire, _matrix, _span, _relay, _coverage, _bypasses; each part re-creates the fixture state the earlier sections left (profile_link, docs_link, alert stubs, chat-name stub). Asserts: 978 body asserts plus the 2 prelude asserts per part, same as the monolith; at load ~140-190 the slowest part took 222 s against the monolith's 1000+ s. Ruled out: the fixed sleeps and the nojq symlink loop (main 03001c01 already changed them; too small to explain 11 min). The ident follows every part, so a part that grows slow again lands on this row.",
       "handoff": null
+    },
+    {
+      "id": "hook-error-notice-chat-names-timeout",
+      "title": "notice-chat-names.sh outran its 5 s cap in headless sessions under full load",
+      "match": {
+        "rule": "hook-error",
+        "ident": "notice-chat-names\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-06T07:25:00+03:00",
+          "by": "night fixer harness-stop-hooks-20261006T032932Z-5fd0",
+          "files": [
+            "claude-setup/hooks/stop.d/notice-chat-names.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "hook-error-ask-span-drill-budget"
+      ],
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-stop-hooks-20261006T032932Z-5fd0",
+      "note": "Two exit-124 stops, both headless, both at CPU busy 1.0 with swap near full: 1f9d738e 2026-10-05T22:12:56Z is a claudeb worker (run claudeb-1791234785-7228-2802), 4b013ca5 22:17:32Z is the usage-ai-report gate (cwd /). A worker's notice reaches nobody, and its report's commit shas each sent chat_names.py into a corpus walk, so the hook now exits under CLAUDEB_WORKER/GROK_WORKER like notice-word-attested and notice-word-journal (test_stop_dispatch). The gate's stop is the open usage-gate handoff: hooks off there.",
+      "handoff": "docs/handoffs/2026-10-05-usage-gate-hooks.md"
+    },
+    {
+      "id": "reading-miss-unprompted",
+      "title": "A chat wrote a ⚡ reading line with no word notice",
+      "match": {
+        "rule": "reading-miss",
+        "ident": "unprompted"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-stop-hooks-20261006T032932Z-5fd0",
+      "note": "7c93bbe2 turn 154 (2026-10-05T20:09Z): Egor said 'let us launch' with no family word, and the model wrote '⚡ понял: запуск пунктов 1–4 на стенде'. Model behaviour, not a hook fault: no family covers a bare go-ahead, the gate-open experiment was not on (the ask fired), and ask-word-reading asked at the first stop with its asks unheld (20:29:21Z, held cap), after which the model told Egor the line was its own. Whether an owned-up reading should stay red is the owner's, see the handoff.",
+      "handoff": "docs/handoffs/2026-10-06-stop-hooks-judge.md"
     }
   ],
   "blind_spots": [

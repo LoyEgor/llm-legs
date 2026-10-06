@@ -52,17 +52,33 @@ case "$session" in ''|.|..|*[!A-Za-z0-9._-]*) exit 0 ;; esac
 tags="$HOME/.cache/claude-worker-tags/$session"
 seed_age=${WORKER_TAG_SEED_MAX_AGE_S:-600}
 now=$(date +%s)
+# One read of the whole cache per stop: a read per lookup, over an orchestrator's 400 tag files for
+# each of its dozen live runs, still outran the 5 s hook cap at swap-full load. grep reads the files:
+# awk dies on one deleted after the glob (a pending seed going) and every live run then reads unowned.
+tag_keys=$(grep -HE '^(run|review|stopped)=' "$tags"/* 2>/dev/null | awk -v skip=$((${#tags} + 1)) '
+  {
+    rest = substr($0, skip + 1); colon = index(rest, ":")
+    name = substr(rest, 1, colon - 1); line = substr(rest, colon + 1); file = substr($0, 1, skip + colon - 1)
+  }
+  name ~ /\.holds$|\.tmp\.|^git-unlock-/ { next }
+  line ~ /^stopped=/ { stopped[file] = 1; next }
+  { keys[file] = keys[file] line "\n"; base[file] = name }
+  END {
+    for (f in keys) {
+      n = split(keys[f], k, "\n")
+      for (i = 1; i < n; i++)
+        if (base[f] ~ /^pending-/) print "pending\t" k[i] "\t" f
+        else if (!(f in stopped)) print "live\t" k[i]
+    }
+  }')
 owned() { # key id
-  local file mtime
-  while IFS= read -r file; do
-    case "${file##*/}" in *.holds | *.tmp.* | git-unlock-*) continue ;; esac
-    case "${file##*/}" in
-      pending-*)
-        mtime=$(stat -f %m "$file" 2>/dev/null || stat -c %Y "$file" 2>/dev/null) || continue
-        [ $((now - mtime)) -le "$seed_age" ] && return 0 ;;
-      *) grep -q '^stopped=' "$file" 2>/dev/null || return 0 ;;
-    esac
-  done < <(grep -lxF -- "$1=$2" "$tags"/* 2>/dev/null)
+  local kind key file mtime
+  case $'\n'"$tag_keys"$'\n' in *$'\n'"live	$1=$2"$'\n'*) return 0 ;; esac
+  while IFS=$'\t' read -r kind key file; do
+    [ "$kind" = pending ] && [ "$key" = "$1=$2" ] || continue
+    mtime=$(stat -f %m "$file" 2>/dev/null || stat -c %Y "$file" 2>/dev/null) || continue
+    [ $((now - mtime)) -le "$seed_age" ] && return 0
+  done <<<"$tag_keys"
   return 1
 }
 
@@ -70,7 +86,7 @@ lines=''
 run_root=${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}
 for run in "$run_root"/*/; do
   run=${run%/}
-  [ -f "$run/state.json" ] && [ ! -e "$run/exit_code" ] || continue
+  [ ! -e "$run/exit_code" ] && [ -f "$run/state.json" ] || continue
   launcher=""
   { read -r launcher <"$run/launcher"; } 2>/dev/null
   [ "$launcher" = "$session" ] || continue
