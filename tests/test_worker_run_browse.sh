@@ -1199,6 +1199,21 @@ EOF
   kill "$holder" 2>/dev/null || true
   wait "$holder" 2>/dev/null || true
 
+  # 27: a shell whose command line merely names Dia's executable is no running Dia
+  printf '%s\n' "/bin/zsh -c python3 - <<'X' a='Dia.app/Contents/MacOS/Dia' X" >"$BT_WORK/pgrep.list"
+  cat >"$BT_WORK/bin/pgrep-list" <<EOF
+#!/bin/sh
+[ "\$1" = -f ] && grep -qE -- "\$2" "$BT_WORK/pgrep.list"
+EOF
+  chmod +x "$BT_WORK/bin/pgrep-list"
+  out=$(BROWSE_PGREP="$BT_WORK/bin/pgrep-list" BROWSE_SKIP_PROCESSES=0 BROWSE_SKY_APP="$BT_WORK/no-sky-app" \
+        "$RUNNER" browse --target dia --vendor claudeb --no-launch) || true
+  assert grep -qx 'DIA: absent' <<<"$out"
+  printf '%s\n' '/Applications/Dia.app/Contents/MacOS/Dia --enable-applescript-javascript' >>"$BT_WORK/pgrep.list"
+  out=$(BROWSE_PGREP="$BT_WORK/bin/pgrep-list" BROWSE_SKIP_PROCESSES=0 BROWSE_SKY_APP="$BT_WORK/no-sky-app" \
+        "$RUNNER" browse --target dia --vendor claudeb --no-launch) || true
+  assert grep -qx 'DIA: running' <<<"$out"
+
 }
 browse_tests
 

@@ -4037,6 +4037,12 @@ wait_poll_lag() { # directory run-id wait-started: how long an exit the poll had
   return 0
 }
 
+browse_app_running() { # process-name app-relative-executable
+  local pgrep_cmd="${BROWSE_PGREP:-pgrep}"
+  # Anchored at the executable: a bare -f substring also matches any shell whose command line names the path.
+  $pgrep_cmd -x "$1" >/dev/null 2>&1 || $pgrep_cmd -f "^[^ ]*/${2//./\\.}( |$)" >/dev/null 2>&1
+}
+
 run_live() { # directory
   [ ! -e "$1/exit_code" ] && supervisor_running "$1" "$(jq -r '.pid // 0' "$1/meta.json" 2>/dev/null)" &&
     ! run_overdue "$1"
@@ -5224,13 +5230,12 @@ browse_run() {
       chrome_status="${BROWSE_CHROME_STATUS:-absent}"
     fi
   else
-    if $pgrep_cmd -x Dia >/dev/null 2>&1 || $pgrep_cmd -f Dia.app/Contents/MacOS/Dia >/dev/null 2>&1; then
+    if browse_app_running Dia Dia.app/Contents/MacOS/Dia; then
       dia_status='running'
     fi
     if [ -n "${BROWSE_CHROME_STATUS:-}" ]; then
       chrome_status="$BROWSE_CHROME_STATUS"
-    elif $pgrep_cmd -x "Google Chrome" >/dev/null 2>&1 ||
-         $pgrep_cmd -f "Google Chrome.app/Contents/MacOS/Google Chrome" >/dev/null 2>&1; then
+    elif browse_app_running "Google Chrome" "Google Chrome.app/Contents/MacOS/Google Chrome"; then
       chrome_status='running'
     fi
     local target_absent=false
@@ -5253,7 +5258,7 @@ browse_run() {
       fi
       local deadline=$(( $(date +%s) + 15 ))
       while [ "$(date +%s)" -le "$deadline" ]; do
-        if $pgrep_cmd -x "$target_label" >/dev/null 2>&1 || $pgrep_cmd -f "$target_app" >/dev/null 2>&1; then
+        if browse_app_running "$target_label" "$target_app"; then
           launched="$browse_target"
           break
         fi

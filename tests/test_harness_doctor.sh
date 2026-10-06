@@ -1369,12 +1369,12 @@ put(preamble, "x")
 put(os.path.join(work, "browse-chrome.json"), json.dumps({
     "chrome": "running", "target": "chrome", "applescript_js": "off", "manifest": "ok", "preamble_file": preamble,
     "chrome_profile": {"name": "Egor work", "dir": "Profile 1"}, "chrome_device": {"id": "06477f72-aaaa"},
-    "plan": {"vendor": "claudeb", "account": "com"}, "reasons": []}))
-put(os.path.join(work, "browse-dia.json"), json.dumps({
-    "dia": "running", "target": "dia", "applescript_js": "off", "manifest": "ok",
-    "dia_profile": {"name": "work dia", "dir": "Profile 8"}, "dia_device": {"id": "6ada21d4-bbbb"},
-    "dia_other": [{"name": "home dia", "dir": "Profile 7", "device": "8e70ec10-cccc", "account": None}],
-    "plan": {"vendor": "claudeb", "account": "com"}, "reasons": []}))
+    "plan": {"vendor": "claudeb", "account": "com", "device": "06477f72-aaaa"}, "reasons": []}))
+dia = {"dia": "running", "target": "dia", "applescript_js": "off", "manifest": "ok",
+       "dia_profile": {"name": "work dia", "dir": "Profile 8"}, "dia_device": {"id": "6ada21d4-bbbb"},
+       "dia_other": [{"name": "home dia", "dir": "Profile 7", "device": "8e70ec10-cccc", "account": None}],
+       "plan": {"vendor": "claudeb", "account": "com", "device": "6ada21d4-bbbb"}, "reasons": []}
+put(os.path.join(work, "browse-dia.json"), json.dumps(dia))
 stamp = lambda at: __import__("time").strftime("%Y-%m-%dT%H:%M:%SZ", __import__("time").gmtime(at))
 put(os.path.join(runs, "browse", "devices.json"), json.dumps({
     "6ada21d4-bbbb": {"health": "broken", "health_seen": stamp(T - 3600), "account": "com", "profile": "dia:Profile 8"},
@@ -1386,20 +1386,48 @@ for name, text, at in (("r-new", "done\nOUTCOME: BROWSER_TABS_BROKEN device=6ada
     put(os.path.join(runs, name, "result"), text)
     os.utime(os.path.join(runs, name, "result"), (at, at))
 part = B(T)
-fixes = {r["cells"][0]: r["cells"][-1] for r in part["rows"]}
+cells = {r["cells"][0]: r["cells"][1:] for r in part["rows"]}
 check(judged(part) == {("browser-applescript-js", "chrome"): "red", ("browser-applescript-js", "dia"): "watch",
                        ("browser-target", "Profile 7"): "watch",
                        ("browser-device-broken", "6ada21d4-bbbb"): "watch",
                        ("browser-run-failures", "BROWSER_TABS_BROKEN"): "watch"} and part["state"] == "problem",
       "Browser: Chrome without AppleScript JS is red; an unsigned profile, a broken device, failed runs are watches")
-check(fixes["Chrome"] == "bin/chrome-applescript-js enable" and fixes["Dia"].startswith("bin/dia-js --relaunch")
-      and fixes["Dia home dia (Profile 7)"].startswith("Egor: sign in the Claude extension"),
-      "Browser: each finding names its fix; Dia without the AppleScript flag means its launch watcher failed")
-tabs = [r for r in part["rows"] if r["cells"][0] == "BROWSER_TABS_BROKEN"][0]
-check(tabs["judge"][0]["value"] == 2 and "r-new" in tabs["cells"][1], "Browser: run failures count 72 h, newest named")
+check(cells["Chrome"] == ["Egor work → com · JS off", "chrome-applescript-js enable"]
+      and cells["Dia"] == ["work → com · home → no account · JS off", "sign in Claude ext (home) · dia-js --relaunch"],
+      "Browser: one compact row per browser, profile → account, JS state, short fixes")
+dia_row = [r for r in part["rows"] if r["cells"][0] == "Dia"][0]
+check("unsaved page input may be lost" in dia_row["say"] and len(dia_row["judge"]) == 2 and dia_row["red"] == [],
+      "Browser: the long explanation rides in the finding's say, one row carries both Dia findings")
+check(cells["Dia work"][0].startswith("tabs broken 1 h 00 min ago · clears "), "Browser: a broken device names its profile")
+check(cells["Runs"] == ["TABS_BROKEN ×2 in 72 h", "ranked last 24 h"]
+      and "newest r-new" in [r for r in part["rows"] if r["cells"][0] == "Runs"][0]["say"],
+      "Browser: run failures are one terse row per kind, the newest run in the say")
 check(not os.path.exists(preamble), "Browser: the probe's preamble file is removed")
-for name in ("browse-chrome.json", "browse-dia.json"):
-    os.remove(os.path.join(work, name))
+menu = m.MenuLines(0, 0, "t")
+menu.layout(part, 0)
+check(all(l.split("\t")[3].strip() for l in menu.lines[1:]) and not any("state" in l for l in menu.lines),
+      "Browser: no header row when every column name is empty")
+put(os.path.join(work, "browse-dia.json"), json.dumps(dict(dia, dia="absent", dia_other=[])))
+part = B(T)
+cells = {r["cells"][0]: r["cells"][1:] for r in part["rows"]}
+check(cells["Dia"] == ["work → com · not running", ""] and ("browser-applescript-js", "dia") not in judged(part),
+      "Browser: a closed Dia says so and shows no JS state")
+os.remove(os.path.join(work, "browse-dia.json"))
+put(os.path.join(work, "browse-chrome.json"), "not json")
+part = B(T, write=True)
+miss = [r for r in part["rows"] if r["cells"][0] == "Chrome"][0]
+check(miss["cells"][1] == "no answer this run" and miss["dim"] and not miss.get("judge"),
+      "Browser: one probe miss is a dim row, not a finding")
+part = B(T, write=True)
+check(judged(part).get(("browser-target", "chrome")) == "watch"
+      and [r for r in part["rows"] if r["cells"][0] == "Chrome"][0]["cells"][1] == "no answer 2 runs in a row",
+      "Browser: a second miss in a row is a watch")
+check(judged(B(T)).get(("browser-target", "chrome")) == "watch", "Browser: a read-only run keeps the stored count")
+os.remove(os.path.join(work, "browse-chrome.json"))
+B(T, write=True)
+put(os.path.join(work, "browse-chrome.json"), "not json")
+check(("browser-target", "chrome") not in judged(B(T, write=True)), "Browser: an answer resets the miss count")
+os.remove(os.path.join(work, "browse-chrome.json"))
 shutil.rmtree(runs)
 for beat, beat_at, ident in ((None, T, "never-started"), ("roots=2\n", T - 1000, "stale"),
                              ("roots=2\nerror=fsevents gone\n", T - 30, "error"), ("roots=0\n", T - 30, "no-root")):

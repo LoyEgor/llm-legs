@@ -613,6 +613,11 @@ up to three events as evidence (`stop:<ts>/<session>`, `words:<ts>/<session>`, `
   lapses) and `browser-run-failures` (watch per kind, newest run named). Probes only: Dia is Egor's live
   browser and nothing here quits, launches or opens a tab in it. Incidents 2026-10-06: a compacted leveldb
   hid a device, an account flip-flop, a broken tab group, a Computer Use URL refusal.
+  One row per browser (`Dia  work → com · home → notcom · JS off`, short fixes in the last cell, the long text
+  in the finding's say, no header row); a closed browser shows `not running` and is not judged. A probe that
+  gives no JSON is a dim `no answer this run`; only a second miss in a row (count in `browse-misses.json`,
+  written by writing runs only) is a `browser-target` watch. Incident 2026-10-06 21:26: at busy 0.999 with
+  four suites running, `worker-run browse` overran the 20 s timeout once.
 - Two differences from llm-doctor: a value between half the limit and the limit is a watch (deferral,
   silence, growth), and a growth value is the largest single change under one root, not the day's sum.
 
