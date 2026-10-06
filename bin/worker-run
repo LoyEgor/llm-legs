@@ -18,7 +18,7 @@ usage() {
     '       worker-run say [<run-id>] <text>' \
     '       worker-run transcript <run-id>' \
     '       worker-run claim <run-id> --paths <path>... [--complete]' \
-    '       worker-run browse [--vendor codex|claudeb] [--target dia|chrome] [--dia-profile <dir>] [--record <deviceId> <account>] [--json]' >&2
+    '       worker-run browse [--vendor codex|claudeb] [--target dia|chrome] [--dia-profile <dir|name>] [--account <account>] [--record <deviceId> <account>] [--json]' >&2
   exit 2
 }
 
@@ -241,6 +241,7 @@ Drive Egor'"'"'s Mac apps through Codex Computer Use: the CUA REPL `js` tool, wh
 - Attach to an app with `await cua.getApp("<App name>")` and read it (getAXState / getScreenshot) before acting.
 - Do only what the brief allows. Never log in, enter credentials, approve payments or answer admin password prompts; the surface refuses Terminal. Report such a step instead of working around it.
 - Close the windows and tabs you opened once the task is complete, unless the brief says to keep them; a stop for Egor'"'"'s input leaves them open.
+- Computer Use refuses some URLs (vendor policy, checked on the frontmost browser tab, even one Egor opened): when it stops the session for a disallowed URL, end with `OUTCOME: COMPUTER_UNAVAILABLE reason=disallowed-url url=<that tab'"'"'s URL>`.
 - Return the evidence the brief asks for and end with: `OUTCOME: COMPUTER_OK` or `OUTCOME: COMPUTER_UNAVAILABLE reason=<text>`'
 # The harness's own prompt steers a bypass-mode model toward sed and heredocs, which worker-edit-guard
 # only records; said up front, a text edit stays an Edit call the transcript names.
@@ -2283,7 +2284,8 @@ start_run() {
   local web_search=false web_search_flag=false web_search_off_flag=false web_search_asked=''
   local web_search_state='' brief_cyrillic=''
   local chrome=false browser=false browser_json='' browser_preamble='' browser_device='' browser_account=''
-  local browser_target='' computer=false computer_home=''
+  local browser_target='' browser_dia_profile='' computer=false computer_home=''
+  local -a browse_args=()
   local -a add_dirs images command_meta command
   add_dirs=()
   images=()
@@ -2341,6 +2343,8 @@ start_run() {
     [ -n "$model" ] || [ "$vendor" = light ] || model=$(brief_line_value "$brief" MODEL)
     [ -n "$effort" ] || [ "$vendor" = light ] || effort=$(brief_line_value "$brief" EFFORT)
     [ "$computer" = true ] || [ "$(brief_line_value "$brief" COMPUTER)" != yes ] || computer=true
+    browser_dia_profile=$(head -n 400 "$brief" 2>/dev/null | grep -m1 -E '^DIA-PROFILE:' |
+      sed -E 's/^DIA-PROFILE:[[:space:]]*//; s/[[:space:]]+$//')
     # A relay that dropped --resume launched a RESUME brief as a fresh session (2026-10-02).
     value=$(sed -n '1s/^RESUME \([^[:space:]:]\{1,\}\):.*/\1/p' "$brief" 2>/dev/null)
     [ -z "$value" ] || [ -z "$resume" ] || [ "$resume" = "$value" ] ||
@@ -2614,7 +2618,10 @@ start_run() {
   done
 
   if [ "$browser" = true ]; then
-    browser_json=$(browse_run --vendor "$vendor" --target "${browser_target:-dia}" --json) || :
+    browse_args=(--vendor "$vendor" --target "${browser_target:-dia}" --json)
+    [ -z "$explicit_account" ] || browse_args+=(--account "$explicit_account")
+    [ -z "$browser_dia_profile" ] || browse_args+=(--dia-profile "$browser_dia_profile")
+    browser_json=$(browse_run "${browse_args[@]}") || :
     if ! jq -e --arg vendor "$vendor" '.plan.vendor == $vendor' <<<"$browser_json" >/dev/null 2>&1; then
       jq -r '.reasons[] | "REASON: " + .' <<<"$browser_json"
       return 2
@@ -4756,21 +4763,36 @@ browse_device_cache() (
   tmp_file=$(mktemp "$dev_file.XXXXXX") || return 1
   jq --arg op "$operation" --arg dev "$device" --arg acct "$account" \
     --arg seen "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '
-      if $op == "record" then . + {($dev): {account: $acct, seen: $seen}}
+      if $op == "record" then . + {($dev): ((.[$dev] // {} | {profile, profile_seen} | with_entries(select(.value != null)))
+        + {account: $acct, seen: $seen})}
+      elif $op == "profile" then
+        with_entries(if .key != $dev and .value.profile == $acct then .value |= del(.profile, .profile_seen) else . end)
+        | .[$dev] = ((.[$dev] // {}) + {profile: $acct, profile_seen: $seen})
+      elif $op == "broken" then .[$dev] = ((.[$dev] // {}) + {health: "broken", health_seen: $seen})
       elif $op == "drop" and (.[$dev] == null or .[$dev].account == $acct or .[$dev].denied == true) then
-        . + {($dev): {account: $acct, seen: $seen, denied: true,
-          denied_accounts: (((.[$dev].denied_accounts // [.[$dev] | select(.denied == true) | .account]) + [$acct]) | unique)}}
+        . + {($dev): ((.[$dev] // {} | {profile, profile_seen, health, health_seen} | with_entries(select(.value != null)))
+          + {account: $acct, seen: $seen, denied: true,
+          denied_accounts: (((.[$dev].denied_accounts // [.[$dev] | select(.denied == true) | .account]) + [$acct]) | unique)})}
       elif $op == "drop" then
         .[$dev] += {denied_accounts: (((.[$dev].denied_accounts // []) + [$acct]) | unique), denied_seen: $seen}
       else . end
     ' <<<"$existing" >"$tmp_file" && mv -f "$tmp_file" "$dev_file"
 )
 
+browse_ext_read() {
+  local key value
+  BROWSE_EXT_DEVICE='' BROWSE_EXT_ACCOUNT='' BROWSE_EXT_DEVICE_KNOWN=false
+  while IFS=$'\t' read -r key value; do
+    case "$key" in
+      bridgeDeviceId) BROWSE_EXT_DEVICE=$value BROWSE_EXT_DEVICE_KNOWN=true ;;
+      accountUuid) BROWSE_EXT_ACCOUNT=$value ;;
+    esac
+  done < <(python3 "$SCRIPT_DIRECTORY/../share/ext_leveldb.py" "$1" bridgeDeviceId accountUuid 2>/dev/null)
+}
+
 browse_ext_account() {
-  local ext_dir="$1" account_uuid json
-  account_uuid=$(LC_ALL=C grep -a -h -o -E "accountUuid.{0,150}" "$ext_dir"/*.ldb "$ext_dir"/*.log 2>/dev/null |
-    LC_ALL=C tr -d "\0" | tail -n 1 |
-    LC_ALL=C grep -Eo "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" | head -n 1)
+  local account_uuid json
+  account_uuid=$(LC_ALL=C grep -Eo "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" <<<"$1" | head -n 1)
   [ -n "$account_uuid" ] || return 0
   for json in "${CLAUDEB_PROFILES_ROOT:-$HOME/.claude-profiles}"/*/.claude.json; do
     [ -f "$json" ] || continue
@@ -4786,12 +4808,19 @@ browse_ext_account() {
 browse_device_account() {
   local dev_file="$1" device="$2" ext_account="$3" existing='{}'
   [ ! -f "$dev_file" ] || existing=$(cat "$dev_file" 2>/dev/null) || existing='{}'
-  jq -r --arg dev "$device" --arg ext "$ext_account" '
+  jq -r --arg dev "$device" --arg ext "$ext_account" --argjson ttl "${BROWSE_BROKEN_TTL:-86400}" '
     (.[$dev] // {}) as $e
     | ($e.denied_accounts // (if $e.denied == true then [$e.account] else [] end)) as $d
     | (if $ext != "" then $ext else ($e.account // "") end) as $a
-    | "\($a)|\(($a != "") and ($d | index($a)) != null)"
-  ' <<<"$existing" 2>/dev/null || printf '%s|false\n' "$ext_account"
+    | (if $e.health == "broken" and (($e.health_seen // "" | try fromdateiso8601 catch 0) > (now - $ttl))
+       then $e.health_seen else "" end) as $b
+    | "\($a)|\(($a != "") and ($d | index($a)) != null)|\($b)"
+  ' <<<"$existing" 2>/dev/null || printf '%s|false|\n' "$ext_account"
+}
+
+browse_profile_device() { # dev_file profile-key
+  [ -f "$1" ] || return 0
+  jq -r --arg p "$2" '[to_entries[] | select(.value.profile == $p)] | max_by(.value.profile_seen) | .key // empty' "$1" 2>/dev/null
 }
 
 browse_cache_output() {
@@ -4805,6 +4834,8 @@ browse_cache_output() {
     elif [[ "$line" =~ ^OUTCOME:[[:blank:]]+BROWSER_DEVICE_NOT_IN_ACCOUNT[[:blank:]]+device=($uuid)[[:blank:]]+account=($acct)[[:space:]]*$ ]]; then
       device=${BASH_REMATCH[1]} account=${BASH_REMATCH[2]}
       browse_device_cache drop "$device" "$account" || true
+    elif [[ "$line" =~ ^OUTCOME:[[:blank:]]+BROWSER_TABS_BROKEN[[:blank:]]+device=($uuid)[[:space:]]*$ ]]; then
+      browse_device_cache broken "${BASH_REMATCH[1]}" '' || true
     fi
   done
 }
@@ -4989,7 +5020,7 @@ complete_run() {
 }
 
 browse_run() {
-  local browse_vendor='' browse_dia_profile='' browse_record_device='' browse_record_account=''
+  local browse_vendor='' browse_dia_profile='' browse_account='' browse_record_device='' browse_record_account=''
   local browse_json=false browse_target=dia
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -5013,6 +5044,11 @@ browse_run() {
       --dia-profile)
         [ "$#" -ge 2 ] || usage
         browse_dia_profile="$2"
+        shift 2
+        ;;
+      --account)
+        [ "$#" -ge 2 ] || usage
+        browse_account="$2"
         shift 2
         ;;
       --record)
@@ -5056,6 +5092,7 @@ browse_run() {
   local dia_profile_name='' dia_profile_dir='' dia_profile_reason=''
   local dia_device_id='' dia_device_name='' dia_device_reason='' dia_ext_account=''
   local -a dia_profiles=() dia_names=() dia_devices=() dia_device_names=() dia_accounts=() dia_ext_accounts=()
+  local -a dia_broken=() dia_cache_reasons=()
   local local_state="$dia_user_data/Local State"
   if [ ! -f "$local_state" ]; then
     dia_profile_reason='dia profile unreadable — Local State missing'
@@ -5068,13 +5105,20 @@ browse_run() {
       dia_device_id='' dia_device_name='' dia_ext_account=''
       local ext_settings="$dia_user_data/$dia_profile_dir/Local Extension Settings/fcoeoabgfenejglbffodgkkbkcdhcgfn"
       if [ -d "$ext_settings" ]; then
-        local last_match
-        last_match=$(LC_ALL=C grep -a -h -o -E "bridgeDeviceId.{0,150}" "$ext_settings"/*.ldb "$ext_settings"/*.log 2>/dev/null | LC_ALL=C tr -d "\0" | tail -n 1)
-        if [ -n "$last_match" ]; then
-          dia_device_id=$(LC_ALL=C grep -Eo "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" <<<"$last_match" | head -n 1)
-          dia_device_name=$(LC_ALL=C sed -E -n "s/.*[dD]?isplayName[^\"]*\"([^\"]+)\".*/\1/p" <<<"$last_match")
+        browse_ext_read "$ext_settings"
+        if [ -n "$BROWSE_EXT_DEVICE" ]; then
+          dia_device_id=$(LC_ALL=C grep -Eo "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" <<<"$BROWSE_EXT_DEVICE" | head -n 1)
+          dia_device_name=$(LC_ALL=C sed -E -n "s/.*[dD]?isplayName[^\"]*\"([^\"]+)\".*/\1/p" <<<"$BROWSE_EXT_DEVICE")
         fi
-        [ -z "$dia_device_id" ] || dia_ext_account=$(browse_ext_account "$ext_settings")
+        [ -z "$dia_device_id" ] || dia_ext_account=$(browse_ext_account "$BROWSE_EXT_ACCOUNT")
+        if [ -n "$dia_device_id" ]; then
+          [ "$(jq -r --arg d "$dia_device_id" '.[$d].profile // empty' "$dev_file" 2>/dev/null)" = "dia:$dia_profile_dir" ] ||
+            browse_device_cache profile "$dia_device_id" "dia:$dia_profile_dir" || true
+        elif [ "$BROWSE_EXT_DEVICE_KNOWN" = false ]; then
+          dia_device_id=$(browse_profile_device "$dev_file" "dia:$dia_profile_dir")
+          [ -z "$dia_device_id" ] ||
+            dia_cache_reasons+=("REASON: dia/$dia_profile_name device $dia_device_id read from the cache — the extension storage names none")
+        fi
       fi
       dia_ext_accounts+=("$dia_ext_account")
       dia_profiles+=("$dia_profile_dir")
@@ -5082,7 +5126,9 @@ browse_run() {
       dia_devices+=("$dia_device_id")
       dia_device_names+=("$dia_device_name")
     done < <(jq -r --arg forced "$browse_dia_profile" '
-      if $forced != "" then [$forced]
+      if $forced != "" then
+        [if (.profile.info_cache // {}) | has($forced) then $forced
+         else ((.profile.info_cache // {}) | to_entries | map(select(.value.name == $forced)) | .[0].key) // $forced end]
       else [.profile.last_used, (.profile.last_active_profiles // [])[]] end
       | map(select(type == "string" and length > 0))
       | reduce .[] as $d ([]; if index($d) == null then . + [$d] else . end) | .[]
@@ -5107,12 +5153,13 @@ browse_run() {
   if [ -d "$chrome_user_data" ]; then
     for chrome_ext_dir in "$chrome_user_data"/*/"Local Extension Settings/fcoeoabgfenejglbffodgkkbkcdhcgfn"; do
       [ -d "$chrome_ext_dir" ] || continue
-      chrome_last=$(LC_ALL=C grep -a -h -o -E "bridgeDeviceId.{0,150}" "$chrome_ext_dir"/*.ldb "$chrome_ext_dir"/*.log 2>/dev/null | LC_ALL=C tr -d "\0" | tail -n 1)
+      browse_ext_read "$chrome_ext_dir"
+      chrome_last=$BROWSE_EXT_DEVICE
       [ -n "$chrome_last" ] || continue
       chrome_device_id=$(LC_ALL=C grep -Eo "$uuid_re" <<<"$chrome_last" | head -n 1)
       [ -n "$chrome_device_id" ] || continue
       chrome_device_name=$(LC_ALL=C sed -E -n 's/.*[dD]?isplayName[^"]*"([^"]+)".*/\1/p' <<<"$chrome_last")
-      chrome_ext_account=$(browse_ext_account "$chrome_ext_dir")
+      chrome_ext_account=$(browse_ext_account "$BROWSE_EXT_ACCOUNT")
       chrome_scan_dir=${chrome_ext_dir%/Local Extension Settings/*}
       chrome_profile_dir=${chrome_scan_dir##*/}
       break
@@ -5211,7 +5258,7 @@ browse_run() {
   local target_status="$dia_status"
   [ "$browse_target" != chrome ] || target_status="$chrome_status"
 
-  local -a reasons_list=()
+  local -a reasons_list=("${dia_cache_reasons[@]}")
   cua_repl_sync "$(browse_codex_config "$real_home")"
   local cua_repl_status=$CUA_REPL_STATUS
   [ "$cua_repl_status" != broken ] ||
@@ -5338,36 +5385,46 @@ browse_run() {
     fi
   done <<<"$wp_raw"
 
-  local is_cached=false cached_acct='' cached_denied=false any_cached=false selected=0 i a active_reason
-  local dia_other_json='[]'
-  local -a dia_other_lines=()
+  local is_cached=false cached_acct='' cached_denied=false cached_broken='' any_cached=false selected=0 i a active_reason
+  local rank best_rank=9 dia_other_json='[]'
+  local -a dia_other_lines=() dia_ranks=()
   for i in "${!dia_profiles[@]}"; do
-    cached_acct='' cached_denied=false
+    cached_acct='' cached_denied=false cached_broken='' rank=''
     if [ -n "${dia_devices[$i]}" ]; then
-      IFS='|' read -r cached_acct cached_denied < <(browse_device_account "$dev_file" "${dia_devices[$i]}" "${dia_ext_accounts[$i]}")
+      IFS='|' read -r cached_acct cached_denied cached_broken < <(browse_device_account "$dev_file" "${dia_devices[$i]}" "${dia_ext_accounts[$i]}")
       [ "$cached_denied" = true ] || cached_denied=false
     fi
     dia_accounts+=("$cached_acct")
-    if [ "$cached_denied" = true ]; then
-      :
-    else
-      [ -z "$cached_acct" ] || any_cached=true
-      if [ "$is_cached" = false ] && [ -n "$cached_acct" ]; then
-        for a in "${usable_claude[@]}"; do
-          if [ "$a" = "$cached_acct" ]; then selected=$i; is_cached=true; break; fi
-        done
-      fi
+    dia_broken+=("$cached_broken")
+    if [ "$cached_denied" = false ] && [ -n "$cached_acct" ]; then
+      any_cached=true
+      for a in "${usable_claude[@]}"; do
+        [ "$a" = "$cached_acct" ] || continue
+        if [ -n "$browse_account" ] && [ "$cached_acct" = "$browse_account" ]; then rank=0
+        elif [ -z "$cached_broken" ]; then rank=1
+        else rank=2; fi
+        break
+      done
+      if [ -n "$rank" ] && [ "$rank" -lt "$best_rank" ]; then selected=$i; best_rank=$rank; is_cached=true; fi
     fi
+    dia_ranks+=("$rank")
   done
   dia_profile_dir="${dia_profiles[$selected]:-}" dia_profile_name="${dia_names[$selected]:-}"
   dia_device_id="${dia_devices[$selected]:-}" dia_device_name="${dia_device_names[$selected]:-}"
   cached_acct="${dia_accounts[$selected]:-}"
   if [ "$selected" -ne 0 ] && [ "$browse_target" = dia ]; then
     active_reason=unknown
-    if [ -n "${dia_accounts[0]}" ]; then
+    if [ -n "${dia_ranks[0]}" ] && [ -n "${dia_broken[0]}" ]; then
+      active_reason="device ${dia_devices[0]} could not open a tab (marked ${dia_broken[0]})"
+    elif [ -n "${dia_ranks[0]}" ]; then
+      active_reason="is not the run's account $browse_account"
+    elif [ -n "${dia_accounts[0]}" ]; then
       active_reason="${claude_exclusions[${dia_accounts[0]}]:-out of pool}"
     fi
     reasons_list+=("REASON: dia/${dia_names[0]} skipped — account ${dia_accounts[0]:-unknown} $active_reason")
+  fi
+  if [ "$browse_target" = dia ] && [ "$best_rank" = 2 ]; then
+    reasons_list+=("REASON: dia/$dia_profile_name device $dia_device_id could not open a tab (marked ${dia_broken[$selected]}) and no healthy device has a usable account")
   fi
   for i in "${!dia_profiles[@]}"; do
     [ "$i" -ne "$selected" ] || continue
@@ -5390,8 +5447,10 @@ browse_run() {
     # device's; the Dia profile walk above answered a question about another browser.
     is_cached=false any_cached=false cached_acct=''
     if [ -n "$target_device_id" ]; then
-      IFS='|' read -r cached_acct cached_denied < <(browse_device_account "$dev_file" "$target_device_id" "$chrome_ext_account")
+      IFS='|' read -r cached_acct cached_denied cached_broken < <(browse_device_account "$dev_file" "$target_device_id" "$chrome_ext_account")
       [ "$cached_denied" != true ] || cached_acct=''
+      [ -z "$cached_broken" ] ||
+        reasons_list+=("REASON: chrome device $target_device_id could not open a tab (marked $cached_broken)")
     fi
     if [ -n "$cached_acct" ]; then
       any_cached=true
@@ -5537,7 +5596,7 @@ Drive Egor's visible browser ($target_label) using CUA REPL (\`js\` tool).
 - All test/probing navigations must use https://example.com (Dia blocks httpbin.org / postman-echo.com for extension tabs).
 - Extension path first; use computer surface fallback (\`await cua.getApp("$target_label")\`, pressKey/typeText/getAXState) via SkyComputerUseService if needed.
 - Close the tabs you created only once the task is complete; when you stop for Egor's input (sign-in, approval, a blocker) or the result is not final, leave them open and name the tab that holds the work.
-- End the answer with: \`OUTCOME: BROWSER_OK_EXTENSION|BROWSER_OK_COMPUTER|BROWSER_UNAVAILABLE reason=<text>\`
+- End the answer with: \`OUTCOME: BROWSER_OK_EXTENSION|BROWSER_OK_COMPUTER|BROWSER_UNAVAILABLE reason=<text>\`; a session Computer Use stopped for a disallowed URL ends with \`OUTCOME: BROWSER_UNAVAILABLE reason=disallowed-url url=<that tab's URL>\`.
 EOF
     elif [ "$plan_vendor" = claudeb ]; then
       cat >"$preamble_file" <<EOF
@@ -5553,6 +5612,9 @@ Drive Egor's visible browser ($target_label) using Claude in Chrome extension.
   and stop immediately.
 - Never \`switch_browser\` to an unlisted device, and never run pairing or login flows headless.
 - After any extension reconnect or tool error, call \`list_connected_browsers\` again and re-select \`$plan_device\` before the next action: a reconnect silently falls back to the account's default browser.
+- If \`tabs_context_mcp\` (\`createIfEmpty: true\`) or the first \`navigate\` fails twice on \`$plan_device\`, re-selecting it in between, print exactly:
+  \`OUTCOME: BROWSER_TABS_BROKEN device=$plan_device\`
+  and stop: the device cannot open a tab, and the next preflight ranks it last.
 - Off-target extension device IDs ($off_label — never drive one, never \`switch_browser\` to it): $off_str
 - Target $target_label device ID: $plan_device
 - Never drive $off_label.

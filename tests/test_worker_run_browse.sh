@@ -986,6 +986,139 @@ EOF
   printf '{}\n' >"$cache"
   BROWSE_CODEX_CONFIG="$BT_CODEX_CONF"
 
+  # 25: extension storage as real leveldb, account-aware profile pick, DIA-PROFILE, tab-broken devices
+  local LDB_READER="$ROOT/share/ext_leveldb.py"
+  local BT_DIA2="$BT_WORK/dia_two" work_dev=$dev home_dev=$other_dev
+  local work_ext="$BT_DIA2/Profile 8/Local Extension Settings/fcoeoabgfenejglbffodgkkbkcdhcgfn"
+  local home_ext="$BT_DIA2/Profile 7/Local Extension Settings/fcoeoabgfenejglbffodgkkbkcdhcgfn"
+  mkdir -p "$work_ext" "$home_ext"
+  jq -n '{profile:{info_cache:{"Profile 8":{name:"work dia"}, "Profile 7":{name:"home dia"}},
+    last_used:"Profile 8", last_active_profiles:["Profile 8","Profile 7"]}}' >"$BT_DIA2/Local State"
+  python3 - "$work_ext/000005.ldb" "$home_ext/000003.log" "$work_dev" "$home_dev" <<'PY'
+import struct, sys
+table, log, work_dev, home_dev = sys.argv[1:]
+def varint(n):
+    out = bytearray()
+    while n >= 0x80:
+        out.append(n & 0x7F | 0x80)
+        n >>= 7
+    return bytes(out + bytes([n]))
+def snappy_literal(data):
+    out = bytearray(varint(len(data)))
+    for i in range(0, len(data), 60):
+        chunk = data[i:i + 60]
+        out += bytes([(len(chunk) - 1) << 2]) + chunk
+    return bytes(out)
+def block(entries):
+    out, previous = bytearray(), b""
+    for key, value in entries:
+        shared = 0
+        while shared < min(len(key), len(previous)) and key[shared] == previous[shared]:
+            shared += 1
+        out += varint(shared) + varint(len(key) - shared) + varint(len(value)) + key[shared:] + value
+        previous = key
+    return bytes(out + struct.pack("<II", 0, 1))
+internal = lambda key, seq: key + struct.pack("<Q", seq << 8 | 1)
+data = block([(internal(b"bridgeDefaultDisplayName", 7), b'"Mac mini"'),
+              (internal(b"bridgeDeviceId", 9), ('"%s"' % work_dev).encode())])
+packed = snappy_literal(data)
+index = block([(b"c" + b"\xff" * 8, varint(0) + varint(len(packed)))])
+meta = block([])
+body = packed + b"\1\0\0\0\0"
+index_at = len(body)
+body += index + b"\0\0\0\0\0"
+meta_at = len(body)
+body += meta + b"\0\0\0\0\0"
+footer = varint(meta_at) + varint(len(meta)) + varint(index_at) + varint(len(index))
+body += footer + b"\0" * (40 - len(footer)) + struct.pack("<Q", 0xDB4775248B80FB57)
+open(table, "wb").write(body)
+def batch(seq, key, value):
+    payload = struct.pack("<QI", seq, 1) + b"\1" + varint(len(key)) + key + varint(len(value)) + value
+    return b"\0\0\0\0" + struct.pack("<H", len(payload)) + b"\1" + payload
+open(log, "wb").write(batch(3, b"bridgeDeviceId", b'"00000000-0000-4000-8000-000000000000"')
+                      + batch(4, b"bridgeDeviceId", ('"%s"' % home_dev).encode()))
+PY
+  assert test "$(LC_ALL=C grep -a -c bridgeDeviceId "$work_ext/000005.ldb")" -eq 0
+  assert grep -qxF "bridgeDeviceId	\"$work_dev\"" < <(python3 "$LDB_READER" "$work_ext" bridgeDeviceId)
+  assert grep -qxF "bridgeDeviceId	\"$home_dev\"" < <(python3 "$LDB_READER" "$home_ext" bridgeDeviceId)
+  assert test "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import ext_leveldb as e; print(e.snappy_decompress(b"\x09\x08abc\x09\x03").decode())' "$ROOT/share")" = abcabcabc
+
+  cat >"$BT_WP.both" <<'EOF'
+#!/usr/bin/env bash
+cat <<'OUTPUT'
+claude:  11.4%/d ×7.0d   20%   20%   com                  opus·high
+          8.6%/d ×7.0d   40%   30%   notcom               opus·high
+OUTPUT
+EOF
+  chmod +x "$BT_WP.both"
+  local saved_dia="$BROWSE_DIA_USER_DATA" saved_wp="$BROWSE_WORKER_PICK"
+  BROWSE_DIA_USER_DATA="$BT_DIA2" BROWSE_WORKER_PICK="$BT_WP.both"
+  printf '{}\n' >"$cache"
+  "$RUNNER" browse --record "$work_dev" com >/dev/null
+  "$RUNNER" browse --record "$home_dev" notcom >/dev/null
+  out=$("$RUNNER" browse --vendor claudeb)
+  assert grep -qx "PLAN: claudeb account=com device=$work_dev source=cached" <<<"$out"
+  assert jq -e --arg w "$work_dev" --arg h "$home_dev" \
+    '.[$w].profile == "dia:Profile 8" and .[$h].profile == "dia:Profile 7" and .[$w].account == "com"' "$cache" >/dev/null
+  out=$("$RUNNER" browse --vendor claudeb --account notcom)
+  assert grep -qx 'DIA-PROFILE: home dia (Profile 7)' <<<"$out"
+  assert grep -qx "PLAN: claudeb account=notcom device=$home_dev source=cached" <<<"$out"
+  assert grep -qx "REASON: dia/work dia skipped — account com is not the run's account notcom" <<<"$out"
+  out=$("$RUNNER" browse --vendor claudeb --dia-profile 'home dia')
+  assert grep -qx "PLAN: claudeb account=notcom device=$home_dev source=cached" <<<"$out"
+
+  clear_stub
+  start_ok claudeb --browser --account notcom
+  assert await_done
+  assert jq -e --arg dev "$home_dev" '.browser_device == $dev and .browser_account == "notcom"' "$RUN_DIR/meta.json" >/dev/null
+  clear_stub
+  printf 'DIA-PROFILE: home dia\n%s\n' "$original_brief" >"$WORK/brief"
+  start_ok claudeb --browser
+  assert await_done
+  assert meta_account_is notcom
+  assert jq -e --arg dev "$home_dev" '.browser_device == $dev' "$RUN_DIR/meta.json" >/dev/null
+  printf '%s\n' "$original_brief" >"$WORK/brief"
+  clear_stub
+
+  mv "$work_ext/000005.ldb" "$BT_WORK/work-table.ldb"
+  : >"$work_ext/000006.log"
+  out=$("$RUNNER" browse --vendor claudeb --dia-profile 'Profile 8')
+  assert grep -qx "PLAN: claudeb account=com device=$work_dev source=cached" <<<"$out"
+  assert grep -qx "REASON: dia/work dia device $work_dev read from the cache — the extension storage names none" <<<"$out"
+  rm "$work_ext/000006.log"
+  mv "$BT_WORK/work-table.ldb" "$work_ext/000005.ldb"
+
+  local tabs_fixture="$BT_RUNS/claudeb-tabs-broken"
+  mkdir -p "$tabs_fixture"
+  printf '{"vendor":"claudeb","account":"com","workdir":"%s","started_at":0,"pid":0,"browser":true}\n' "$WORK/workdir" >"$tabs_fixture/meta.json"
+  : >"$tabs_fixture/err"
+  jq -n --arg result "OUTCOME: BROWSER_TABS_BROKEN device=$work_dev" '{result:$result}' >"$tabs_fixture/out"
+  assert "$RUNNER" _deliver "$tabs_fixture" 0 >/dev/null
+  assert jq -e --arg w "$work_dev" '.[$w].health == "broken" and .[$w].account == "com" and .[$w].profile == "dia:Profile 8"' "$cache" >/dev/null
+  local marked
+  marked=$(jq -r --arg w "$work_dev" '.[$w].health_seen' "$cache")
+  out=$("$RUNNER" browse --vendor claudeb)
+  assert grep -qx "PLAN: claudeb account=notcom device=$home_dev source=cached" <<<"$out"
+  assert grep -qx "REASON: dia/work dia skipped — account com device $work_dev could not open a tab (marked $marked)" <<<"$out"
+  out=$("$RUNNER" browse --vendor claudeb --account com)
+  assert grep -qx "PLAN: claudeb account=com device=$work_dev source=cached" <<<"$out"
+  jq --arg h "$home_dev" '.[$h] += {health:"broken", health_seen:"2026-10-06T00:00:00Z"}' "$cache" >"$cache.next"
+  mv "$cache.next" "$cache"
+  out=$(BROWSE_BROKEN_TTL=315360000 "$RUNNER" browse --vendor claudeb)
+  assert grep -qx "PLAN: claudeb account=com device=$work_dev source=cached" <<<"$out"
+  assert grep -q "^REASON: dia/work dia device $work_dev could not open a tab (marked $marked) and no healthy device" <<<"$out"
+  jq --arg w "$work_dev" '.[$w].health_seen = "2026-01-01T00:00:00Z"' "$cache" >"$cache.next"
+  mv "$cache.next" "$cache"
+  out=$("$RUNNER" browse --vendor claudeb)
+  assert grep -qx "PLAN: claudeb account=com device=$work_dev source=cached" <<<"$out"
+  assert test "$(grep -c 'could not open a tab' <<<"$out")" -eq 0
+  jq -n --arg result "BROWSER-DEVICE-ACCOUNT: $work_dev com" '{result:$result}' >"$tabs_fixture/out"
+  rm -f "$tabs_fixture/result"
+  assert "$RUNNER" _deliver "$tabs_fixture" 0 >/dev/null
+  assert jq -e --arg w "$work_dev" '.[$w].health == null and .[$w].profile == "dia:Profile 8"' "$cache" >/dev/null
+  BROWSE_DIA_USER_DATA="$saved_dia" BROWSE_WORKER_PICK="$saved_wp"
+  printf '{}\n' >"$cache"
+
   # 24: a quote broken inside a top-level preamble string runs its words as commands at startup
   assert test "$("$RUNNER" report no-such-run 2>&1 | grep -c 'command not found')" -eq 0
 
