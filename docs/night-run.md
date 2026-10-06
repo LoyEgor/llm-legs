@@ -158,6 +158,16 @@ process lives, so a start killed mid-open never blocks the next one. Only a runn
   `--job` names, go back to `pending` with their reasons kept. Without `--job` a `debt-<n>` job is
   added when no debt job is pending. The review-flow gate needs no change: it reads the night's
   `finished_at` and live `session`, so resumed workers commit on their `night/<id>/…` branches again.
+- `night-run wall` is the `StopFailure` hook (matcher `rate_limit`, wired in the shared
+  `~/.claude/settings.json`): when the stopped chat is a running night's orchestrator it starts a
+  detached `night-run failover <id> <session>`, logging to `nights/<id>.failover.log`. The failover
+  records a `wall` event, polls `worker-pick --account claudeb --role chat --model opus` every
+  `NIGHT_RUN_WALL_POLL` s (300) until it names an account with room, then ends the walled chat
+  (TERM, KILL after 60 s), records `wall-moved` with the seconds `waited`, and runs `start --resume`.
+  It gives up with `wall-gave-up` after `NIGHT_RUN_WALL_LIMIT` s (43200) without room or once the
+  night has `NIGHT_RUN_WALL_MAX` (6) walls, and steps aside when the night got another orchestrator
+  or finished meanwhile. Account choice stays worker-pick's (no silent rotation): the move is a
+  visible resume, the same one a person runs by hand.
 - `night-run start --cleanup` opens a new night with the prompt `сделай чистку — night run <id>
   cleanup`: the orchestrator lands the finished night branches and every leftover, and runs the debt
   round, no fixers, no updates.

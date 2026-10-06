@@ -486,6 +486,44 @@ assert_fails night start --resume "$id6" 2>/dev/null
 assert jqe '.finished_at != null and (.note | startswith("orchestrator chat did not open")) and (.previous_sessions | length) == 4' "$R6"
 rm "$DATA/opener-fails"
 
+# Wall: an orchestrator stopped by a usage wall (StopFailure error rate_limit) has its chat ended and
+# the night resumed on an account worker-pick gives room on (2026-10-06: the orchestrator on notcom
+# hit its five-hour wall at 10:39 and the night stood still until someone typed).
+night start --resume "$id6" >/dev/null || fail "resume for the wall cases"
+walled=$(jq -r .session "$R6")
+wall() { printf '{"session_id": "%s", "error": "%s"}' "$1" "$2" | NIGHT_RUN_WALL_SYNC=1 NIGHT_RUN_WALL_POLL=1 night wall; }
+wall "$walled" overloaded >"$WORK/out" || fail "a stop that is no wall failed"
+wall not-an-orchestrator rate_limit >>"$WORK/out" || fail "a wall outside every night failed"
+assert [ ! -s "$WORK/out" ]
+assert [ "$(jq -r .session "$R6")" = "$walled" ]
+assert pgrep -f -- "--session-id $walled" >/dev/null
+: >"$DATA/pick-args"
+wall "$walled" rate_limit >"$WORK/out" || fail "the wall failover failed"
+assert [ "$(cat "$WORK/out")" = "night $id6 resumed: orchestrator on acct-n" ]
+assert_fails pgrep -f -- "--session-id $walled"
+assert grep -qxF -- '--account claudeb --role chat --model opus' "$DATA/pick-args"
+assert jqe --arg w "$walled" '.session != $w and .previous_sessions[-1] == $w and .finished_at == null
+  and ([.events[] | select(.phase | startswith("wall")) | .phase] == ["wall", "wall-moved"])
+  and ([.events[] | select(.phase == "wall")][0] | .session == $w and .account == "acct-n")
+  and ([.events[] | select(.phase == "wall-moved")][0] | .room == "acct-n" and (.waited | type) == "number")' "$R6"
+# No account with room: the failover waits, measured, gives up at its limit and leaves the chat alone.
+walled=$(jq -r .session "$R6")
+cp "$FAKE_BIN/worker-pick" "$WORK/worker-pick.keep"
+printf '#!/usr/bin/env bash\nexit 3\n' >"$FAKE_BIN/worker-pick"
+assert_fails env NIGHT_RUN_WALL_LIMIT=1 bash -c 'printf "{\"session_id\": \"%s\", \"error\": \"rate_limit\"}" "$1" |
+  NIGHT_RUN_WALL_SYNC=1 NIGHT_RUN_WALL_POLL=1 bash "$2/bin/night-run" wall' _ "$walled" "$ROOT" 2>"$WORK/err"
+assert grep -qF "no Claude account had room" "$WORK/err"
+assert pgrep -f -- "--session-id $walled" >/dev/null
+assert jqe --arg w "$walled" '.session == $w and .events[-1].phase == "wall-gave-up" and .events[-1].waited >= 1' "$R6"
+# A night that walled too often is not moved again.
+cp "$WORK/worker-pick.keep" "$FAKE_BIN/worker-pick"
+assert_fails env NIGHT_RUN_WALL_MAX=2 bash -c 'printf "{\"session_id\": \"%s\", \"error\": \"rate_limit\"}" "$1" |
+  NIGHT_RUN_WALL_SYNC=1 bash "$2/bin/night-run" wall' _ "$walled" "$ROOT" 2>"$WORK/err"
+assert grep -qF "orchestrator walls already" "$WORK/err"
+assert jqe --arg w "$walled" '.session == $w and .events[-1].phase == "wall-gave-up"' "$R6"
+stop_chat "$walled"
+night finish "$id6" >/dev/null
+
 # Cleanup alone: a new night whose orchestrator prompt carries the sweep word and the cleanup scope.
 night start --cleanup >"$WORK/out" || fail "cleanup start"
 idc=$(sed -n 's/^night \([^ ]*\) started:.*/\1/p' "$WORK/out")

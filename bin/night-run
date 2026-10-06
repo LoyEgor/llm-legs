@@ -44,7 +44,12 @@ usage: night-run start [--cleanup | --resume <id> [--job <ref>]]
        night-run hold
        night-run report [<id>] [--post]
        night-run latest --menu
+       night-run wall                 (StopFailure hook: JSON on stdin)
+       night-run failover <id> <session>
 
+wall: a running night's orchestrator stopped by a usage wall (error rate_limit) is handed to a detached
+  failover, which waits until worker-pick names a Claude account with room, ends the walled chat and
+  resumes the night (start --resume) under a new orchestrator; events wall, wall-moved, wall-gave-up
 start opens the orchestrator chat: --cleanup lands finished night branches and runs the debt round
   only; --resume reopens night <id> under a new orchestrator for its unfinished jobs (one with --job,
   else all plus a cleanup job), the old session kept in previous_sessions
@@ -1183,8 +1188,66 @@ cmd_latest() {
     "$(night_file "$id")"
 }
 
+orchestrator_moved() { # id session -> true once the night has another orchestrator or is finished
+  jq -e --arg s "$2" '.finished_at != null or .session != $s' "$(night_file "$1")" >/dev/null
+}
+
+cmd_wall() {
+  local input sid id
+  input=$(cat)
+  [ "$(jq -r '.error // empty' <<<"$input" 2>/dev/null)" = rate_limit ] || return 0
+  sid=$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null)
+  [ -n "$sid" ] || return 0
+  id=$(all_nights | jq -r --arg s "$sid" 'first(.[] | select(.finished_at == null and .session == $s) | .id) // empty')
+  [ -n "$id" ] || return 0
+  [ -z "${NIGHT_RUN_WALL_SYNC:-}" ] || { cmd_failover "$id" "$sid"; return; }
+  # The failover ends the chat whose hook started it, so it must leave that process tree first.
+  python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
+    bash "$repo_root/bin/night-run" failover "$id" "$sid" </dev/null >>"$nights_dir/$id.failover.log" 2>&1 &
+}
+
+cmd_failover() { # id walled-session
+  local id=$1 sid=$2 account walls start
+  local poll=${NIGHT_RUN_WALL_POLL:-300} limit=${NIGHT_RUN_WALL_LIMIT:-43200} max=${NIGHT_RUN_WALL_MAX:-6}
+  known_night "$id"
+  ! orchestrator_moved "$id" "$sid" || return 0
+  start=$(date +%s)
+  walls=$(jq '[.events[]? | select(.phase == "wall")] | length' "$(night_file "$id")")
+  lock
+  night_events "$id" "$(jq -cn --arg s "$sid" --arg a "$(jq -r '.account // ""' "$(night_file "$id")")" \
+    '[{phase: "wall", session: $s, account: $a, pred: "last"}]')" || die "cannot write night $id"
+  unlock
+  if [ "$walls" -ge "$max" ]; then
+    lock
+    night_events "$id" "$(jq -cn --argjson n "$walls" '[{phase: "wall-gave-up", reason: "\($n) walls already this night", pred: "last"}]')"
+    unlock
+    die "night $id: $walls orchestrator walls already, not moving it again"
+  fi
+  until account=$("${NIGHT_RUN_WORKER_PICK:-$repo_root/bin/worker-pick}" --account claudeb --role chat --model opus 2>/dev/null) &&
+    [ -n "$account" ]; do
+    if [ $(($(date +%s) - start)) -ge "$limit" ]; then
+      lock
+      night_events "$id" "$(jq -cn --argjson w $(($(date +%s) - start)) '[{phase: "wall-gave-up", reason: "no Claude account had room", waited: $w, pred: "last"}]')"
+      unlock
+      die "night $id: no Claude account had room for $(($(date +%s) - start)) s"
+    fi
+    sleep "$poll"
+    ! orchestrator_moved "$id" "$sid" || return 0
+  done
+  pkill -TERM -f -- "--(session-id|resume) $sid"
+  for _ in $(seq 120); do pgrep -f -- "--(session-id|resume) $sid" >/dev/null || break; sleep 0.5; done
+  pkill -KILL -f -- "--(session-id|resume) $sid"
+  lock
+  night_events "$id" "$(jq -cn --argjson w $(($(date +%s) - start)) --arg a "$account" \
+    '[{phase: "wall-moved", waited: $w, room: $a, pred: "last"}]')" || die "cannot write night $id"
+  unlock
+  cmd_start --resume "$id"
+}
+
 case "${1:-}" in
   start) shift; cmd_start "$@" ;;
+  wall) shift; [ $# -eq 0 ] || usage; cmd_wall ;;
+  failover) shift; [ $# -eq 2 ] || usage; cmd_failover "$@" ;;
   base) shift; [ $# -eq 1 ] || usage; cmd_base "$1" ;;
   job) shift; cmd_job "$@" ;;
   finish) shift; cmd_finish "$@" ;;
