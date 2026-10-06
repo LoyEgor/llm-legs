@@ -71,6 +71,14 @@ assert jq -e --arg hook "$hook_command" \
   "$RUN_DIR/meta.json" >/dev/null
 tool_call_done 1
 assert test ! -s "$STUB_DIR/context-1"
+for flag_args in '--help' '-h' "$RUN_ID --help"; do
+  help_rc=0
+  # shellcheck disable=SC2086
+  "$RUNNER" say $flag_args >/dev/null 2>"$WORK/say-help.err" || help_rc=$?
+  assert test "$help_rc" -eq 2
+  assert grep -qF 'worker-run say [<run-id>] <text>' "$WORK/say-help.err"
+done
+assert test ! -e "$RUN_DIR/inbox"
 said=$(WORKER_RUN_SAY_WAIT_S=0 "$RUNNER" say "$RUN_ID" 'stop editing bin/x, the chat fixed it')
 assert test "$said" = 'queued: the worker reads it at its next tool call'
 assert grep -qxF "MESSAGE: $(jq -r '.at + " " + .by' "$RUN_DIR/inbox")"': stop editing bin/x, the chat fixed it — queued: the worker reads it at its next tool call' \

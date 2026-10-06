@@ -4066,6 +4066,7 @@ chrome_runs() { # live run ids that may be driving Google Chrome
 say_run() {
   local directory vendor mode line end at waited=0 owner entry
   local -a live=()
+  case "${@: -1}" in -*[[:space:]]*) ;; -*) usage ;; esac
   if [ "$#" -eq 1 ] && [ -n "$1" ]; then
     owner=${CLAUDE_LAUNCHER_SESSION:-${CLAUDE_CODE_SESSION_ID:-}}
     [ -z "$owner" ] || while IFS= read -r entry; do
