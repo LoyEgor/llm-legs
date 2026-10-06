@@ -2059,6 +2059,51 @@ assert jq -e --argjson floor "$NOW" '.five_hour.as_of >= $floor and .auth_needed
   .auth_cause == "needs-relogin" and (has("auth") | not)' \
   "$CLAUDEB_FIX/limits/liveauthacct.json" >/dev/null
 
+# A usage reset lowers the week without moving its resets_at, so an idle chat replaying its
+# pre-reset 100 looks "higher in the same window" and re-walls the account until the week ends
+# (claude/locomthebest, 2026-10-06 13:18). While llm-reset-redeem's marker stands only a reading
+# that followed spend AFTER the reset is taken, whatever its percentage.
+reset_week=$((NOW + 300000))
+seed_reset_cache() {
+  jq -cn --argjson now "$NOW" --argjson wk "$reset_week" --argjson pct "$1" '
+    {five_hour:{used_percentage:0,resets_at:0,as_of:($now-30),origin:"usage"},
+     seven_day:{used_percentage:$pct,resets_at:$wk,as_of:($now-30),origin:"usage"},
+     auth:{status:"ok",checked_at:$now}}' > "$CLAUDEB_FIX/limits/resetacct.json"
+}
+reset_rl() { printf '{"seven_day":{"used_percentage":%s,"resets_at":%s}}' "$1" "$reset_week"; }
+printf '%s\n' "$((NOW - 60))" > "$CLAUDEB_FIX/limits/resetacct.reset-at"
+mkdir -p "$STATE_DIR"
+# Spend made before the reset and never merged must not pass for liveness after it.
+printf '3.0\n' > "$STATE_DIR/rl-cost-status-prereset"
+touch -t "$(date -r "$((NOW - 3600))" +%Y%m%d%H%M.%S)" "$STATE_DIR/rl-cost-status-prereset"
+seed_reset_cache 0
+run_statusline "$(statusline_payload status-prereset "{\"cost\":{\"total_cost_usd\":3.5},\"rate_limits\":$(reset_rl 100)}")" resetacct \
+  >/dev/null || fail "statusline pre-reset replay merge failed"
+assert jq -e '.seven_day.used_percentage == 0 and .seven_day.origin == "usage"' \
+  "$CLAUDEB_FIX/limits/resetacct.json" >/dev/null
+assert_eq "3.5" "$(cat "$STATE_DIR/rl-cost-status-prereset")"
+# The same chat's first call after the reset is believed.
+run_statusline "$(statusline_payload status-prereset "{\"cost\":{\"total_cost_usd\":3.75},\"rate_limits\":$(reset_rl 4)}")" resetacct \
+  >/dev/null || fail "statusline post-reset merge failed"
+assert jq -e '.seven_day.used_percentage == 4 and .seven_day.origin == "session"' \
+  "$CLAUDEB_FIX/limits/resetacct.json" >/dev/null
+# A stale 100 already in the cache gives way to a live post-reset reading below it.
+seed_reset_cache 100
+printf '1.0\n' > "$STATE_DIR/rl-cost-status-postreset"
+run_statusline "$(statusline_payload status-postreset "{\"cost\":{\"total_cost_usd\":1.2},\"rate_limits\":$(reset_rl 3)}")" resetacct \
+  >/dev/null || fail "statusline live post-reset merge failed"
+assert jq -e '.seven_day.used_percentage == 3' "$CLAUDEB_FIX/limits/resetacct.json" >/dev/null
+# An idle replay of that chat writes nothing while the marker stands.
+run_statusline "$(statusline_payload status-postreset "{\"cost\":{\"total_cost_usd\":1.2},\"rate_limits\":$(reset_rl 100)}")" resetacct \
+  >/dev/null || fail "statusline idle post-reset merge failed"
+assert jq -e '.seven_day.used_percentage == 3' "$CLAUDEB_FIX/limits/resetacct.json" >/dev/null
+# A marker older than any week lapses: the monotone same-window rule is back.
+printf '%s\n' "$((NOW - 700000))" > "$CLAUDEB_FIX/limits/resetacct.reset-at"
+seed_reset_cache 0
+run_statusline "$(statusline_payload status-postreset "{\"cost\":{\"total_cost_usd\":1.2},\"rate_limits\":$(reset_rl 40)}")" resetacct \
+  >/dev/null || fail "statusline lapsed-marker merge failed"
+assert jq -e '.seven_day.used_percentage == 40' "$CLAUDEB_FIX/limits/resetacct.json" >/dev/null
+
 cost_payload=$(statusline_payload status-cost '{"cost":{"total_cost_usd":18.2007}}')
 cost_out=$(printf '%s' "$cost_payload" | env -u LANG LC_ALL=ru_RU.UTF-8 \
   CLAUDE_LIMITS_ACCOUNT=main CLAUDEB_DIR="$CLAUDEB_FIX" LLM_LIMITS_FILE="$WORK/limits.json" \

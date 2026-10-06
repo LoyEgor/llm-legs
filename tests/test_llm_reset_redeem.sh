@@ -628,6 +628,9 @@ grep '"method": "POST"' "$CLAUDE_CALL_LOG" | grep -q "\"authorization\": \"Beare
 grep -qx -- '--refresh-account claude/notcom' "$REFRESH_LOG" \
   || fail "the claude redeem did not trigger the targeted refresh: $(cat "$REFRESH_LOG")"
 claude_no_secret "$out" "redeeming a claude reset"
+reset_at=$(cat "$WORK/claudeb/limits/notcom.reset-at" 2>/dev/null)
+[ -n "$reset_at" ] && [ "$(( $(date +%s) - reset_at ))" -lt 60 ] \
+  || fail "a claude redeem left no reset marker for the statusline merge: '$reset_at'"
 pass
 
 # The request id is derived, never drawn: a re-click after a lost reply presents the same one.

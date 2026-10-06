@@ -643,7 +643,7 @@ rl_merge() {
   # unless this session has spent since its last accepted merge, which makes the
   # payload a live reading of a window that simply has not moved.
   merged_rl=$(jq -cn --argjson old "$old_rl" --argjson fresh "$rl_json" --argjson now "$EPOCHSECONDS" \
-    --arg cost "$rl_cost_now" --arg prevcost "$rl_cost_prev" '
+    --arg cost "$rl_cost_now" --arg prevcost "$rl_cost_prev" --argjson reset "$rl_reset_active" '
     # A cached header-origin week is synthetic (shared-invariants n) and must not survive
     # the merge: newer() only replaces on a HIGHER pct within the same window, so a
     # leftover 100 would outlive every real reading until the weekly reset.
@@ -667,7 +667,11 @@ rl_merge() {
       ($f != null) and ($o != null)
       and (($f.resets_at? // 0) == ($o.resets_at? // 0))
       and (((($f.used_percentage? // 0)) | round) == ((($o.used_percentage? // 0)) | round));
-    def accept($k): newer($k) or ($live and unmoved($k));
+    # A usage reset lowers a window without moving its resets_at, so "higher in the same window is
+    # newer" stops holding: until the marker lapses only a reading that followed new spend counts.
+    def not_older($k): ($fresh[$k] // null) as $f | ($old[$k] // null) as $o |
+      ($f != null) and ($o == null or (($f.resets_at? // 0) >= ($o.resets_at? // 0)));
+    def accept($k): if $reset then ($live and not_older($k)) else newer($k) or ($live and unmoved($k)) end;
     ($old
     + (if accept("five_hour") then {five_hour: ($fresh.five_hour | stamp)} else {} end)
     + (if accept("seven_day") then {seven_day: ($fresh.seven_day | stamp)} else {} end)) as $out |
@@ -675,7 +679,7 @@ rl_merge() {
     # the background: while it stands every automated refresh skips the account as unrefreshable.
     # An idle session replays its last readings forever, so only a five-hour window that opened
     # after the logged-out verdict can speak — an older replay predates the credentials going.
-    if newer("five_hour") and (($fresh.five_hour.resets_at? // 0) > ($old.auth_checked_at? // 0))
+    if accept("five_hour") and newer("five_hour") and (($fresh.five_hour.resets_at? // 0) > ($old.auth_checked_at? // 0))
     then ($out + {auth: {status: "ok", checked_at: $now}}
           | del(.auth_needed, .auth_cause, .auth_checked_at))
     else $out end
@@ -690,10 +694,30 @@ rl_mtime=""
 rl_cost_file=""
 rl_cost_prev=""
 rl_cost_now=""
+rl_reset_at=""
+rl_reset_active=false
+if [ "$acct" != main ] && [ -r "$account_cache_dir/$acct.reset-at" ]; then
+  read -r rl_reset_at < "$account_cache_dir/$acct.reset-at" 2>/dev/null
+  case "$rl_reset_at" in
+    ''|*[!0-9]*) ;;
+    *) [ $((EPOCHSECONDS - rl_reset_at)) -lt 691200 ] && rl_reset_active=true ;;
+  esac
+fi
 if [ -n "$session_id" ]; then
   rl_cost_file="$statusline_cache_dir/rl-cost-$session_id"
   [ -r "$rl_cost_file" ] && read -r rl_cost_prev < "$rl_cost_file" 2>/dev/null
   rl_cost_now="$cost_raw"
+  # A session last heard before the reset replays pre-reset readings, and spend it made then
+  # would pass for liveness: its spend is re-based to now, so only a call after the reset speaks.
+  if [ "$rl_reset_active" = true ] && [ -n "$cost_raw" ]; then
+    rl_cost_mtime=$(file_mtime "$rl_cost_file" 2>/dev/null) || rl_cost_mtime=0
+    if [ "${rl_cost_mtime:-0}" -lt "$rl_reset_at" ] && mkdir -p "$statusline_cache_dir" 2>/dev/null; then
+      tmp_cost="$rl_cost_file.tmp.$$"
+      printf '%s\n' "$cost_raw" > "$tmp_cost" 2>/dev/null &&
+        mv "$tmp_cost" "$rl_cost_file" 2>/dev/null || rm -f "$tmp_cost" 2>/dev/null
+      rl_cost_prev="$cost_raw"
+    fi
+  fi
 fi
 if [ -n "${CLAUDEGPT_ACCOUNT:-}" ]; then
   rl_json=""

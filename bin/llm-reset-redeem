@@ -32,8 +32,8 @@ EXIT_EXPIRED = 3
 EXIT_NO_BACKEND = 4
 EXIT_TRANSIENT = 5
 
-LOG_PATH = Path(os.environ.get("CLAUDEB_DIR")
-                or Path.home() / ".claude-profiles" / ".claudeb") / "reset-redeem.log"
+CLAUDEB_DIR = Path(os.environ.get("CLAUDEB_DIR") or Path.home() / ".claude-profiles" / ".claudeb")
+LOG_PATH = CLAUDEB_DIR / "reset-redeem.log"
 
 
 def log(event: str, detail: str) -> None:
@@ -339,9 +339,22 @@ def redeem_claude(account: str, target: str) -> int:
         line += f" — unrecognized outcome, see {LOG_PATH}"
     elif isinstance(result.get("resets_left"), int):
         line += f" — {result['resets_left']} left"
+    mark_claude_reset(account)
     if not refresh(target):
         line += " (quota re-read failed; press Refresh)"
     return report(line, EXIT_REDEEMED)
+
+
+def mark_claude_reset(account: str) -> None:
+    """bin/statusline.sh reads this to stop idle chats re-walling the account with pre-reset readings."""
+    marker = CLAUDEB_DIR / "limits" / f"{account}.reset-at"
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        tmp = marker.with_name(f".{marker.name}.{os.getpid()}")
+        tmp.write_text(f"{int(time.time())}\n")
+        os.replace(tmp, marker)
+    except OSError:
+        pass
 
 
 def main(argv: list[str]) -> int:
