@@ -780,6 +780,11 @@ launch() { # llm|harness|updater|code|system [--night <id>]
     llm: | harness: | code: | system:) launch_day "$doctor" ;;
     updater:) "${DOCTOR_FIX_VENDOR_CLI_UPDATE:-$repo_root/bin/vendor-cli-update}" now ;;
     llm:--night | harness:--night | updater:--night | code:--night | system:--night) [ -n "${3:-}" ] && [ $# -eq 3 ] || usage; launch_night "$doctor" "$3" ;;
+    all:--night)
+      [ -n "${3:-}" ] && [ $# -eq 3 ] || usage
+      for doctor in llm harness updater code system; do
+        ( launch "$doctor" --night "$3" ) || printf 'doctor-fix: launch %s --night %s failed\n' "$doctor" "$3" >&2
+      done ;;
     *) usage ;;
   esac
 }
@@ -1076,6 +1081,7 @@ list_runs() { # [doctor] [--open] [--json]
 usage_text() {
   cat <<'EOF'
 usage: doctor-fix launch llm|harness|updater|code|system [--night <night-id>]
+       doctor-fix launch all --night <night-id>   (every doctor in roster order; one that fails prints a line, the rest still launch)
        doctor-fix show <id>
        doctor-fix runs [llm|harness|updater|code|system] [--open] [--json]
        doctor-fix close <id> --decisions <file> <note...>   (a night run reruns its doctor in its worktree)

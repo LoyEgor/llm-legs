@@ -13,9 +13,7 @@ there), its chat found by exact name among `chat-find --recent`. A handoff's own
    top has under twice the runner-up's score or the ledger owner differs;
 3. the ledger owner: the doctor ledger row naming the file (`owners.<block>`, else `owner`);
 4. none: the handoff stays a night job.
-`python3 share/handoffs.py [--batches]` prints handoffs, or those batches, as JSON lines; `--trades` prints the ones
-whose `Status:` reads `trade for Egor`, each with its Cost/Loss/Recommendation lines as `reason`, so every night
-asks him again until the handoff is settled."""
+`python3 share/handoffs.py [--batches]` prints handoffs, or those batches, as JSON lines."""
 import datetime
 import glob
 import json
@@ -119,20 +117,6 @@ def open_handoffs(repos=None, now=None, live=None):
             handoff["live"] = [n for n in handoff["to"] if n.lower() in names]
     for handoff in out:
         handoff.setdefault("live", [])
-    return out
-
-
-def trade_handoffs(repos=None):
-    out = []
-    for repo in sweep_repos() if repos is None else repos:
-        for path in sorted(glob.glob(os.path.join(repo, "docs", "handoffs", "*.md"))):
-            lines = head(path)
-            status = next((m.group(1) for m in map(STATUS_RE.match, lines) if m), "")
-            if not status.lower().startswith("trade for egor"):
-                continue
-            reason = " ".join(line.strip() for line in lines if line.startswith(("Cost:", "Loss:", "Recommendation:")))
-            out.append({"repo": repo, "path": path, "rel": os.path.relpath(path, repo),
-                        "slug": os.path.basename(path)[:-3], "reason": reason})
     return out
 
 
@@ -468,10 +452,6 @@ if __name__ == "__main__":
         for path in sys.argv[2:]:
             for repo in outside_repos(path, sweep_repos()):
                 print(repo)
-        sys.exit(0)
-    if sys.argv[1:] == ["--trades"]:
-        for item in trade_handoffs():
-            print(json.dumps(item, ensure_ascii=False))
         sys.exit(0)
     found = open_handoffs()
     for item in owner_batches(found) if sys.argv[1:] == ["--batches"] else found:

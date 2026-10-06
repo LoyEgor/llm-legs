@@ -91,8 +91,7 @@ carry: first an owner-chat job per owner chat (share/handoffs.py --batches: the 
   docs/handoffs/*.md of the sweep repositories not addressed to a chat live now, and one suite job per
   suite the newest earlier night's full run failed; each gets its night worktree and a brief; prints
   <ref>\t<brief>\t<worktree>. A handoff job blocked-on-egor needs the trade in reason= as Cost:,
-  Loss: and Recommendation:; every handoff whose Status reads `trade for Egor` becomes such a job with
-  its own three lines, so each night asks him again until it is settled
+  Loss: and Recommendation:
 suites: every sweep repository's tests/run-all, one after another, detached unless --wait, into the
   night's suites {started_at, finished_at, repos: [{repo, exit, passed, failed[], log}]}
 pushed=true is refused unless every commit of the job is on its repository's origin main and not
@@ -702,7 +701,7 @@ carry_owner_chats() { # id -> <ref>\t<prompt>\topened <account> <session>|messag
 }
 
 cmd_carry() {
-  local id=${1:-} kind slug repo what log ref branch wt err brief reason
+  local id=${1:-} kind slug repo what log ref branch wt err brief
   [ -n "$id" ] && [ $# -eq 1 ] || usage
   known_night "$id"
   carry_owner_chats "$id"
@@ -729,17 +728,6 @@ cmd_carry() {
     fi
     printf '%s\t%s\t%s\n' "$ref" "$brief" "$wt"
   done < <(carry_list "$id")
-  while IFS=$'\t' read -r slug repo what reason; do
-    ref="handoff-$slug"
-    ! jq -e --arg p "$repo/$what" 'any(.jobs[]; .kind == "handoff" and .path == $p)' "$(night_file "$id")" >/dev/null || continue
-    ! jq -e --arg r "$ref" 'any(.jobs[]; .ref == $r)' "$(night_file "$id")" >/dev/null || ref="handoff-$(basename "$repo")-$slug"
-    "$script_path" job "$id" add handoff "$ref" >/dev/null || continue
-    lock
-    night_set "$id" '.jobs |= map(if .ref == $r then . + {path: $p} else . end)' --arg r "$ref" --arg p "$repo/$what" ||
-      die "cannot write night $id"
-    unlock
-    "$script_path" job "$id" set "$ref" state=blocked-on-egor reason="$reason" >/dev/null
-  done < <(python3 -B "$repo_root/share/handoffs.py" --trades | jq -r '[.slug, .repo, .rel, .reason] | @tsv')
 }
 
 cmd_suites() {

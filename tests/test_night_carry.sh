@@ -45,10 +45,7 @@ swt="$WORK/other/.claude/worktrees/night-N1-suite-other-test_x"
 assert [ "$(cut -f1,3 "$WORK/carry.out")" = "handoff-2026-09-28-old	$wt
 suite-other-test_x	$swt" ]
 assert jqe '[.jobs[] | [.kind, .ref, .state, .branch]] == [["handoff", "handoff-2026-09-28-old", "pending", "night/N1/handoff-2026-09-28-old"],
-  ["suite", "suite-other-test_x", "pending", "night/N1/suite-other-test_x"],
-  ["handoff", "handoff-2026-10-02-ask", "blocked-on-egor", null]]' "$NIGHTS/N1.json"
-assert jqe --arg p "$WORK/other/docs/handoffs/2026-10-02-ask.md" '.jobs[2] | .path == $p
-  and .reason == "Cost: one click. Loss: a stray error. Recommendation: click."' "$NIGHTS/N1.json"
+  ["suite", "suite-other-test_x", "pending", "night/N1/suite-other-test_x"]]' "$NIGHTS/N1.json"
 assert [ "$(git -C "$wt" symbolic-ref --short HEAD)" = night/N1/handoff-2026-09-28-old ]
 brief=$(cut -f2 "$WORK/carry.out" | head -1)
 assert grep -qxF "ADD-DIR: $WORK/other/.claude/worktrees/night-N1-handoff-2026-09-28-old" "$brief"
@@ -59,9 +56,6 @@ assert [ "$(grep -c "Not the night's" "$brief")" = 1 ]
 assert grep -qF 'failed `test_x.sh` in '"$WORK/other"' (log `/l/other.log`)' "$(cut -f2 "$WORK/carry.out" | tail -1)"
 night carry N1 >"$WORK/again.out" || fail "a second carry failed"
 assert [ ! -s "$WORK/again.out" ]
-assert jqe '[.jobs[] | select(.ref == "handoff-2026-10-02-ask")] | length == 1' "$NIGHTS/N1.json"
-printf '# D\n\nStatus: settled N1: clicked\n' >"$WORK/other/docs/handoffs/2026-10-02-ask.md"
-git -C "$WORK/other" -c user.name=t -c user.email=t@t commit -qam settled
 
 assert_fails night job N1 set handoff-2026-09-28-old state=blocked-on-egor reason="needs his word" 2>"$WORK/err"
 assert grep -qF 'needs its trade in reason= as Cost:, Loss: and Recommendation:' "$WORK/err"

@@ -591,6 +591,14 @@ assert jqe --arg f "$WORK/projects/llm-legs/bin/vendor-cli-update" '[.problems[]
 assert_fails fix close "$uid" --decisions "$WORK/nd" "x" 2>"$WORK/err"
 assert grep -qF "$RUNS/$uid.d/latest.json is no contract-1 updater doctor document" "$WORK/err"
 assert_fails fix launch llm --night 'bad night' 2>/dev/null
+# `launch all` walks the whole roster: one doctor's failure is one stderr line and never stops the next.
+fix launch all --night 'bad night' >/dev/null 2>"$WORK/err" || fail "launch all stopped on a failing doctor"
+assert [ "$(grep '^doctor-fix: launch ' "$WORK/err")" = "doctor-fix: launch llm --night bad night failed
+doctor-fix: launch harness --night bad night failed
+doctor-fix: launch updater --night bad night failed
+doctor-fix: launch code --night bad night failed
+doctor-fix: launch system --night bad night failed" ]
+assert_fails fix launch all 2>/dev/null
 
 # A release run recorded before runs had an area is a release run, not an all-areas one.
 fix abandon "$uid" >/dev/null || fail "abandon of the updater night run failed"

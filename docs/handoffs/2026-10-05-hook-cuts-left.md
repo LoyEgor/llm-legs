@@ -1,6 +1,6 @@
 # Hand-off: hook cuts left by night fixer harness-hooks-20261005T061324Z-2ae0
 
-Status: trade for Egor
+Status: settled 2026-10-06: the interval stays 3 s; the night's render cuts took a render from ~230 to ~120 ms CPU, ~0.33 core over 7-9 chats, and Speed prices what is left at 2.3 min/day
 Cost: `statusLine.refreshInterval` 3 → 10 s, one value in `~/.claude/settings.json` and the three
 profile copies; the clock and limits cells lag up to 10 s.
 Loss: at 3 s the renders keep about 0.76 of a core: 216k renders and 1089 CPU-min on 2026-10-05,
