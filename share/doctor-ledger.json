@@ -438,6 +438,16 @@
      ],
      "in": "llm-legs@81a1a618",
      "regressed_at": null
+    },
+    {
+     "at": "2026-10-06T06:40:31+03:00",
+     "by": "LLM doctor",
+     "files": [
+      "llm-legs/bin/worker-run",
+      "llm-legs/bin/llm-doctor"
+     ],
+     "in": "llm-legs@2fea75c6",
+     "regressed_at": null
     }
    ],
    "same_cause": [
