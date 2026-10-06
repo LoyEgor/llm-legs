@@ -27,8 +27,8 @@ the same order while reading only its own file. A key added by hand to a mirror 
 | Account | What | Order (2026-10-06) |
 | --- | --- | --- |
 | `trimmed` (label `alena`) | someone else's paid Creator account lent to the owner; `reserve=100000`: usable only while more than 100k credits are left (the key owner's hard floor) | 1 |
-| `free1`, `free2` | the owner's free accounts, 10k credits a month each; a free account's output is non-commercial and needs attribution | 2, 3 |
-| `full` (label `com`) | the owner's own paid Creator account | 4 |
+| `notcom`, `abel`, `rawilimo`, `locomthebest`, `egbor`, `tronjhon`, `jihan`, `egbogd`, `loiyehor` | the owner's free accounts, 10k credits a month each; a free account's output is non-commercial and needs attribution | 2-10, in this order |
+| `full` (label `com`) | the owner's own paid Creator account | 11 |
 
 A spent quota exits 3 (`ELEVENLABS_USAGE_LIMIT account=…`) after every line is tried; a key without the
 needed permission, a plan refusal or an invalid key on the last line exits 4 (an owner's step in ElevenLabs → Developers → API keys).
