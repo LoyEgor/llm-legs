@@ -33,6 +33,7 @@ rows = [
 ] + [{"type": "attachment", "timestamp": late, "attachment": {"type": "hook_success", "hookName": "PreToolUse:Bash",
                                                                 "stderr": "awk: towc: multibyte conversion failure"}}] * 3 + [
     {"type": "system", "subtype": "turn_duration", "durationMs": 900000, "timestamp": now},
+    {"type": "user", "timestamp": now, "message": {"content": "```зачем```" + " длинное русское сообщение" * 50}},
 ]
 with open(path, "w") as handle:
     handle.write("\n".join(json.dumps(row) for row in rows) + "\n")
@@ -93,6 +94,11 @@ assert test "$(head -1 "$CALLS.brief.1")$(head -1 "$CALLS.brief.2")" = 'ROUND: n
 assert grep -q 'Fixture chat' "$CALLS.brief.1"
 assert test "$(grep -c 'Log audit: chunk' "$CALLS.brief.1")" -eq 1
 assert grep -q 'awk multibyte error from a hook' "$CALLS.brief.2"
+# Russian quoted from transcripts sits in one closed fence, so worker-run's English rule passes both briefs.
+for brief in "$CALLS.brief.1" "$CALLS.brief.2"; do
+  assert test "$(grep -c '^```$' "$brief")" -eq 2
+  assert test "$("$ROOT/bin/cyrillic-share" <"$brief" | cut -d' ' -f1)" -le "$("$ROOT/bin/cyrillic-share" --max)"
+done
 assert jqe '.night == "N1" and .stop == "done" and .read == 1 and (.findings | length) == 1
   and .findings[0].id == "hook-awk-multibyte" and .findings[0].minutes == 4 and (.findings[0].at | type) == "number"' \
   "$LOG_AUDIT_DIR/findings.json"
