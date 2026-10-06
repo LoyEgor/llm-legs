@@ -536,7 +536,7 @@ assert jq -se --arg r "$RUN_ID" '[.[] | select(.run == $r)] | length == 1' "$RUN
 assert jq -se --arg r "$RUN_ID" --argjson m "$(cat "$RUN_DIR/meta.json")" 'map(select(.run == $r))[0] as $row
   | ($row | keys) == (["run", "vendor", "account", "role", "model", "effort", "light", "workdir", "launcher", "resume",
       "round", "pid_started_at", "started_at", "cli_starts", "attempt_secs", "attempt_rcs", "walled", "ended_at",
-      "exit_code", "status", "reason"] | sort)
+      "exit_code", "status", "reason", "orphans"] | sort)
   and $row.vendor == "claudeb" and $row.status == "done" and $row.reason == "done" and $row.exit_code == 0
   and $row.cli_starts == $m.cli_starts and $row.attempt_secs == $m.attempt_secs and $row.ended_at == $m.ended_at
   and $row.started_at == $m.started_at and $row.pid_started_at == $m.pid_started_at and $row.resume == false' \
