@@ -65,6 +65,19 @@ instruction_inflight_mark "$sid" "$tool_use_id" Bash "$cwd" "$agent_id"
 # anchored within a line: `cp src \` + newline + the path walked through untouched.
 command=${command//\\$'\n'/ }
 
+# A program FILE run by path is judged like an inline program, each file as its own invocation: the
+# command text of `S=…; python3 $S/patch.py` names nothing the script writes.
+script_texts=()
+haystack=$command
+if [[ $command =~ $_INSTRUCTION_INTERP ]]; then
+  while IFS=$'\t' read -r script_interp script_path; do
+    [ -n "$script_path" ] || continue
+    script_body=$(head -c 262144 "$script_path" 2>/dev/null | LC_ALL=C tr '\000|\n' '   ') || continue
+    script_texts+=("$script_interp $script_body")
+    haystack+=" $script_body"
+  done < <(instruction_interp_scripts "$command" "${cwd:-$PWD}")
+fi
+
 # Fast path before any glob or realpath: this runs ahead of every Bash call, and a command that
 # names none of the guarded things cannot be a write to one.
 # `.md` rather than the guarded basenames: a command typed from inside ~/.claude/docs names its
@@ -76,7 +89,7 @@ command=${command//\\$'\n'/ }
 # (`CLAUDE.m\d`), and the volume folds letter case, so none of those is a reason to leave early.
 # `git apply` and `git stash pop` name no destination at all.
 case "$command" in *"\$'"*) ;; *)
-  case "${command//[\\\"\']/}" in
+  case "${haystack//[\\\"\']/}" in
     *.[Mm][Dd]*|*.claude/*|*[Rr][Ee][Vv][Ii][Ee][Ww]-[Dd][Ee][Bb][Tt]*|*git*apply*|*git*stash*) ;;
     *) exit 0 ;;
   esac ;;
@@ -108,13 +121,13 @@ done <<< "$segments"
 
 alternation=''
 while IFS= read -r path; do
-  case "$command" in *"$path"*) ;; *) continue ;; esac
+  case "$haystack" in *"$path"*) ;; *) continue ;; esac
   alternation="${alternation:+$alternation|}$(instruction_ere_escape "$path")"
-done < <(for here in "${cwds[@]}"; do instruction_all_paths "$HOME" "$here" '' "$command"; done)
+done < <(for here in "${cwds[@]}"; do instruction_all_paths "$HOME" "$here" '' "$haystack"; done)
 
 dir_alternation=''
 while IFS= read -r path; do
-  case "$command" in *"$path"/*) ;; *) continue ;; esac
+  case "$haystack" in *"$path"/*) ;; *) continue ;; esac
   dir_alternation="${dir_alternation:+$dir_alternation|}$(instruction_ere_escape "$path")"
 done < <(for here in "${cwds[@]}"; do instruction_all_dirs "$HOME" "$here"; done)
 # Matched by name as well as by path: there is no list of every repository, and a project's
@@ -127,6 +140,8 @@ by_claude="([^[:space:];|&'\"]*/)?\.claude/[^[:space:];|&'\"]*$(instruction_md_e
 by_dir=''
 [ -n "$dir_alternation" ] && by_dir="(${dir_alternation})/[^[:space:];|&'\"]*$(instruction_md_ere)|"
 TARGET="(${alternation:+$alternation|}${by_dir}${by_claude}|${by_name})"
+DIR_TARGET="([^[:space:];|&'\"]*/)?\.claude(/[^[:space:];|&'\"]*)?"
+[ -n "$dir_alternation" ] && DIR_TARGET="(${dir_alternation})(/[^[:space:];|&'\"]*)?|$DIR_TARGET"
 
 # Destinations are read off the command with its heredoc bodies dropped and its quoted runs
 # resolved (instruction_shell_scan in the shared module). A guarded name a command merely CARRIES
@@ -261,42 +276,74 @@ done < <(instruction_write_targets "$scan" "$TARGET")
 # off it and a name taken from its front belong to two different writes — that is how in-span
 # `python3 -c "open(<doc>,'w')"; python3 -c "open(CLAUDE.md,'a')"` passed, the append judged as
 # the truncation before it.
-if [ -z "$denied" ] && printf '%s' "$flat" | grep -Eiq "${interp_write}"; then
-  interp_cons=$(instruction_interp_write_construct_re "$TARGET")
-  interp_cons_trunc=$(instruction_interp_trunc_construct_re "$TARGET")
-  while IFS= read -r construct; do
-    [ -n "$construct" ] || continue
-    interp_name=$(name_in "$construct") || continue
-    interp_mode=append
-    printf '%s' "$construct" | grep -Eiq "$interp_cons_trunc" && interp_mode=trunc
-    if judge_row "$interp_name" "$interp_mode"; then
-      denied=1
-      break
-    fi
-  done < <(printf '%s' "$flat" | grep -Eio "$interp_cons")
-fi
-if [ -z "$denied" ] && printf '%s' "$flat" | grep -Eiq "$(instruction_interp_var_write_re)"; then
-  var_trunc=$(instruction_interp_var_construct_re trunc)
-  var_starts=$(printf '%s' "$flat" | grep -Eob "$_INSTRUCTION_INTERP" | cut -d: -f1)
-  while IFS=: read -r var_at construct; do
-    var=$(instruction_interp_var_name "$construct") || continue
-    var_from=0 var_bound=
-    for var_start in $var_starts; do [ "$var_start" -le "$var_at" ] && var_from=$var_start; done
-    while IFS=: read -r var_bind _; do
-      [ "$var_bind" -ge "$var_from" ] && [ "$var_bind" -lt "$var_at" ] && var_bound=$var_bind
-    done < <(printf '%s' "$flat" | grep -Eiob "$(instruction_interp_var_bind_re "$var")")
-    [ -n "$var_bound" ] || continue
-    var_mode=append
-    printf '%s' "$construct" | grep -Eiq "$var_trunc" && var_mode=trunc
-    while IFS=: read -r var_bind assigned; do
-      [ "$var_bind" = "$var_bound" ] || continue
-      var_name=$(name_in "$assigned") || continue
-      if judge_row "$var_name" "$var_mode"; then
-        denied=1
-        break 2
-      fi
-    done < <(printf '%s' "$flat" | grep -Eiob "$(instruction_interp_var_assign_re "$var" "$TARGET")")
-  done < <(printf '%s' "$flat" | grep -Eiob "$(instruction_interp_var_construct_re)")
+interp_cons=$(instruction_interp_write_construct_re "$TARGET")
+interp_cons_trunc=$(instruction_interp_trunc_construct_re "$TARGET")
+var_cons=$(instruction_interp_var_construct_re)
+var_trunc=$(instruction_interp_var_construct_re trunc)
+dir_cons=$(instruction_interp_dir_construct_re)
+dir_trunc=$(instruction_interp_dir_construct_re trunc)
+literal_re="^${_INSTRUCTION_Q}([^\"'\\\\]*)${_INSTRUCTION_Q}\$"
+# Only an assignment inside the write's own invocation binds it.
+bound_at() { # text variable offset
+  local from=0 start bind bound=''
+  [ -n "$interp_starts" ] || interp_starts=$(printf '%s' "$1" | grep -Eob "$_INSTRUCTION_INTERP" | cut -d: -f1)
+  for start in $interp_starts; do [ "$start" -le "$3" ] && from=$start; done
+  while IFS=: read -r bind _; do
+    [ "$bind" -ge "$from" ] && [ "$bind" -lt "$3" ] && bound=$bind
+  done < <(printf '%s' "$1" | grep -Eiob "$(instruction_interp_var_bind_re "$2")")
+  [ -n "$bound" ] && printf '%s' "$bound"
+}
+judge_interp() { # program text
+  local text=$1 construct name mode var at bound bind assigned sep joined row dir
+  if printf '%s' "$text" | grep -Eiq "${interp_write}"; then
+    while IFS= read -r construct; do
+      [ -n "$construct" ] || continue
+      name=$(name_in "$construct") || continue
+      mode=append
+      printf '%s' "$construct" | grep -Eiq "$interp_cons_trunc" && mode=trunc
+      judge_row "$name" "$mode" && return 0
+    done < <(printf '%s' "$text" | grep -Eio "$interp_cons")
+  fi
+  interp_starts=''
+  if printf '%s' "$text" | grep -Eiq "$_INSTRUCTION_IW$var_cons"; then
+    while IFS=: read -r at construct; do
+      var=$(instruction_interp_var_name "$construct") || continue
+      bound=$(bound_at "$text" "$var" "$at") || continue
+      mode=append
+      printf '%s' "$construct" | grep -Eiq "$var_trunc" && mode=trunc
+      while IFS=: read -r bind assigned; do
+        [ "$bind" = "$bound" ] || continue
+        name=$(name_in "$assigned") || continue
+        judge_row "$name" "$mode" && return 0
+      done < <(printf '%s' "$text" | grep -Eiob "$(instruction_interp_var_assign_re "$var" "$TARGET")")
+    done < <(printf '%s' "$text" | grep -Eiob "$var_cons")
+  fi
+  if printf '%s' "$text" | grep -Eiq "$_INSTRUCTION_IW$dir_cons"; then
+    while IFS=: read -r at construct; do
+      row=$(instruction_interp_dir_join "$construct") || continue
+      IFS=$'\t' read -r var sep joined <<< "$row"
+      bound=$(bound_at "$text" "$var" "$at") || continue
+      mode=append
+      printf '%s' "$construct" | grep -Eiq "$dir_trunc" && mode=trunc
+      while IFS=: read -r bind assigned; do
+        [ "$bind" = "$bound" ] || continue
+        dir=${assigned#*=}; dir="${dir#*[\"\']}"; dir="${dir%%[\"\'\\]*}"
+        joined=${joined%"${joined##*[![:space:]]}"}
+        if [[ $joined =~ $literal_re ]]; then
+          [ "$sep" = / ] && dir=${dir%/}/
+          judge_row "$dir${BASH_REMATCH[1]}" "$mode" && return 0
+        else
+          judge_row "${dir%/}/*.md" "$mode" && { hit=$dir; return 0; }
+        fi
+      done < <(printf '%s' "$text" | grep -Eiob "$(instruction_interp_var_assign_re "$var" "$DIR_TARGET")")
+    done < <(printf '%s' "$text" | grep -Eiob "$dir_cons")
+  fi
+  return 1
+}
+if [ -z "$denied" ]; then
+  for interp_text in "$flat" "${script_texts[@]}"; do
+    judge_interp "$interp_text" && { denied=1; break; }
+  done
 fi
 if [ -z "$denied" ]; then
   while IFS= read -r landing; do

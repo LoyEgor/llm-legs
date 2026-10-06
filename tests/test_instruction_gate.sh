@@ -98,6 +98,63 @@ cat <<'EOF' > $WORK/notes.txt
 open('$CLAUDE_MD','w')
 EOF")"
 
+echo "== write gate: a guarded directory held in a variable and joined to a name"
+AGENTS="$HOME/.claude/agents"
+assert_eq deny "$(decision "python3 -c \"import os; C='$AGENTS'; open(os.path.join(C, n), 'w')\"")"
+assert_eq deny "$(decision "python3 - <<'EOF'
+from pathlib import Path
+D = '$HOME/.claude/docs/'
+(Path(D) / name).write_text('x')
+EOF")"
+assert_eq deny "$(decision "python3 - <<'EOF'
+D = '$HOME/.claude/docs/'
+open(Path(D) / name, 'a')
+EOF")"
+assert_eq deny "$(decision "python3 - <<'EOF'
+C = '$AGENTS/'
+open(C + name, 'w').write('x')
+EOF")"
+assert_eq deny "$(decision "node -e \"const C='$AGENTS'; fs.writeFileSync(path.join(C, n), 'x')\"")"
+out=$(gate "python3 -c \"C='$AGENTS/'; open(C + name, 'w')\"" | jq -r '.hookSpecificOutput.permissionDecisionReason')
+assert_contains "writes to $AGENTS/ (re-read" "$out"
+out=$(gate "python3 -c \"C='$AGENTS'; open(os.path.join(C, 'codex-worker.md'), 'a')\"" | jq -r '.hookSpecificOutput.permissionDecisionReason')
+assert_contains "writes to $AGENTS/codex-worker.md" "$out"
+assert_eq pass "$(decision "python3 -c \"C='$AGENTS/'; print(open(C + name).read())\"")"
+assert_eq pass "$(decision "python3 -c \"C='$AGENTS/'; open(C + 'notes.txt', 'w')\"")"
+assert_eq pass "$(decision "python3 -c \"C='$AGENTS/'; C='/tmp/'; open(C + name, 'w')\"")"
+assert_eq pass "$(decision "python3 -c \"C='$AGENTS/'\" && python3 -c \"open(C + name, 'w')\"")"
+
+echo "== write gate: a program file run by path is read like an inline program"
+SCRATCH="$WORK/scratchpad"
+mkdir -p "$SCRATCH"
+cat > "$SCRATCH/patch.py" <<EOF
+C = "$AGENTS/"
+for name, body in {"codex-worker.md": "x"}.items():
+    open(C + name, "w").write(body)
+EOF
+assert_eq deny "$(decision "S=$SCRATCH; python3 \$S/patch.py")"
+assert_eq deny "$(decision "S=$SCRATCH && python3 -u \${S}/patch.py")"
+cat > "$WORK/land.py" <<EOF
+import sys
+if '--apply' in sys.argv:
+    open('$HOME/.claude/skills/demo/SKILL.md', 'a').write('x')
+EOF
+assert_eq deny "$(GATE_CWD="$WORK" decision 'python3 land.py --apply')"
+cat > "$SCRATCH/read.py" <<EOF
+import os
+C = "$AGENTS/"
+O = "/tmp/out/"
+for name in os.listdir(C):
+    open(O + name, "w").write(open(C + name).read())
+EOF
+assert_eq pass "$(decision "S=$SCRATCH; python3 \$S/read.py")"
+assert_eq pass "$(decision "python3 $SCRATCH/missing.py $AGENTS/codex-worker.md")"
+assert_eq pass "$(S=$SCRATCH decision "python3 \$S/patch.py")"
+printf 'C = "%s/"\nprint(C)\n' "$AGENTS" > "$SCRATCH/bind.py"
+printf 'open(C + name, "w")\n' > "$SCRATCH/use.py"
+assert_eq pass "$(decision "python3 $SCRATCH/bind.py && python3 $SCRATCH/use.py")"
+assert_eq pass "$(decision "python3 -c 'print(1)' $SCRATCH/patch.py")"
+
 echo "== write gate: the spelling of the path does not matter"
 # The first live test walked through the gate on exactly this line: the expanded path was
 # the only form it knew, and nobody types that.

@@ -807,6 +807,86 @@ instruction_interp_var_bind_re() { # variable → ERE matching any assignment to
   printf '%s' "(^|[^A-Za-z_0-9.\$])${1//\$/\\\$}[[:space:]]*=([^=]|\$)"
 }
 
+instruction_interp_dir_construct_re() { # [trunc] → ERE matching ONE write through a joined variable
+  local s="[[:space:]]*" id=$_INSTRUCTION_ID mode=$_INSTRUCTION_MODE node="(write|append)File(Sync)?"
+  [ "${1:-}" != trunc ] || mode=$_INSTRUCTION_TRUNC_MODE node="writeFile(Sync)?"
+  local j="(([A-Za-z_]+\.)*join\($s\\\$?$id$s,[^()]*\)|Path\($s$id$s\)$s/$s[^(),]*|\\\$?$id$s(\+|/)$s[^(),]*|\\\$$id$s\.$s[^(),]*)"
+  printf '%s' "(open\($s(file$s=$s)?$j$s,([^()]*,)?$s(mode$s=$s)?$mode|open\([^(),]*,$s$mode$s,$s$j|$node\($s$j$s,|File\.write\($s$j$s,|Path\($s$id$s,[^()]*\)$s\.(write_text|write_bytes|open\($s$mode)|\($s$j\)$s\.(write_text|write_bytes|open\($s$mode))"
+}
+
+instruction_interp_dir_join() { # one construct of the rule above → VARIABLE<TAB>SEPARATOR<TAB>JOINED
+  local s="[[:space:]]*" id="([\$]?$_INSTRUCTION_ID)" rest
+  local pathargs="^Path\($s$id$s,$s([^()]*)\)" perl="^open\([^(),]*,$s$_INSTRUCTION_MODE$s,$s(.*)$"
+  local kw="^${s}file$s=$s(.*)$" join="^([A-Za-z_]+\.)*join\($s$id$s,$s([^()]*)\)"
+  local path="^Path\($s$id$s\)$s/$s([^(),]*)" div="^$id$s/$s([^(),]*)" cat="^$id$s[+.]$s([^(),]*)"
+  if [[ $1 =~ $pathargs ]]; then
+    printf '%s\t/\t%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"; return 0
+  fi
+  if [[ $1 =~ $perl ]]; then
+    rest=${BASH_REMATCH[${#BASH_REMATCH[@]}-1]}
+  else
+    rest=${1#*\(}
+    [[ $rest =~ $kw ]] && rest=${BASH_REMATCH[1]}
+    rest=${rest#"${rest%%[![:space:]]*}"}
+  fi
+  if [[ $rest =~ $join ]] || [[ $rest =~ $path ]] || [[ $rest =~ $div ]]; then
+    printf '%s\t/\t%s' "${BASH_REMATCH[${#BASH_REMATCH[@]}-2]}" "${BASH_REMATCH[${#BASH_REMATCH[@]}-1]}"
+  elif [[ $rest =~ $cat ]]; then
+    printf '%s\t+\t%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+  else
+    return 1
+  fi
+}
+
+# A `$VAR` prefix expands only from a `VAR=value` earlier in the command: the hook's environment is
+# not the shell's.
+instruction_interp_scripts() { # command cwd → INTERPRETER<TAB>PATH lines
+  local cwd=${2:-$PWD} seg w interp op var val assigns=$'\n' skip
+  local -a words
+  while IFS= read -r -d '' seg; do
+    read -ra words <<< "${seg//$'\n'/ }"
+    interp='' op='' skip=''
+    for w in "${words[@]}"; do
+      w=${w#[\"\']}; w=${w%[\"\']}
+      if [ -z "$interp" ]; then
+        if [[ $w =~ ^([A-Za-z_][A-Za-z_0-9]*)=(.*)$ ]]; then
+          assigns+="${BASH_REMATCH[1]}=${BASH_REMATCH[2]}"$'\n'
+          continue
+        fi
+        case "${w##*/}" in
+          python|python[0-9]*|perl|ruby|node|bun|deno) interp=${w##*/} ;;
+          export|env|nohup|time|exec|command|sudo|nice|timeout|caffeinate|-*|[0-9]*) ;;
+          *) break ;;
+        esac
+        continue
+      fi
+      [ -z "$skip" ] || { skip=''; continue; }
+      case "$w" in
+        --) continue ;;
+        -|-[ceEmp]|-[A-Za-z]*[ceEm]|--eval*|--print*|[\<\>]*) break ;;
+        -[WXrIC]|--require|--import|--loader|--experimental-loader|--conditions) skip=1; continue ;;
+        -*) continue ;;
+      esac
+      op=$w
+      break
+    done
+    [ -n "$op" ] || continue
+    case "$op" in
+      '~/'*) op="$HOME/${op#\~/}" ;;
+      '$HOME/'*|'${HOME}/'*) op="$HOME/${op#*/}" ;;
+      '$'*)
+        [[ $op =~ ^\$\{?([A-Za-z_][A-Za-z_0-9]*)\}?(/.*)$ ]] || continue
+        var=${BASH_REMATCH[1]} val=${assigns%$'\n'"$var="*}
+        [ "$val" != "$assigns" ] || continue
+        val=${assigns#"$val"$'\n'"$var="}; val=${val%%$'\n'*}
+        op=$val${BASH_REMATCH[2]}
+        ;;
+    esac
+    case "$op" in *'$'*|*'`'*) continue ;; /*) ;; *) op="$cwd/$op" ;; esac
+    [ -f "$op" ] && [ -r "$op" ] && printf '%s\t%s\n' "$interp" "$op"
+  done < <(instruction_split_commands "$1")
+}
+
 # WHERE A COMMAND LEAVES ITS BYTES: the one parse both doors on these files ask. Two parses of one
 # line was the defect they were built with — the gate read the destination strictly while the
 # tripwire re-derived it from a looser expression of its own, so a `.bak` sibling of a guarded

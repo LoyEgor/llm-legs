@@ -586,10 +586,10 @@ up to three events as evidence (`stop:<ts>/<session>`, `words:<ts>/<session>`, `
   commit whose blob the file still holds, shown as one dim `upstream instruction growth · <repo> · +N B`
   row per repository (incident 2026-10-05: one release checkout read as 55 problems); a `baseline-missing` whose sid no chat transcript owns. Known
   hole: a hand edit to a listed synced skill followed by a content sync of that bucket reads as the
-  sync. Shapes the write gate does not read, so only the tripwire reports them as `growth-ungated`:
-  a name built at run time (`'CLAU'+'DE.md'`, `os.path.join(d,'CLAUDE.md')`, `Path(d)/'CLAUDE.md'`),
-  a prefixed literal (`r'…'`, `f'…'`), an annotated assignment (`p: str = '…'`) and perl's
-  parenthesis-free `open my $f, ">>", $p`.
+  sync. The write gate reads a program file run by path (`python3 $S/x.py`, 256 KB) as one inline
+  program, and a guarded directory literal joined through a variable (`C + n`, `Path(C) / n`) as a write
+  into it. Unread, so only the tripwire reports them as `growth-ungated`: a name built at run time from
+  no guarded literal (`'CLAU'+'DE.md'`), a prefixed literal (`r'…'`, `f'…'`), an annotated assignment (`p: str = '…'`) and perl's parenthesis-free `open my $f, ">>", $p`.
 - **Growth roots.** One change is one problem per root: the skill directory (the nearest one holding a
   `SKILL.md`), else the `docs` tree it sits in, else the file. Its value is the bytes the change added
   under that root, its count the files, and the files are listed in the evidence. Incident
