@@ -2735,7 +2735,7 @@
         "rule": "wait_class",
         "ident": "run-suites"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-05T18:50:18+03:00",
@@ -2749,12 +2749,22 @@
           ],
           "in": "llm-legs@81f20e36",
           "regressed_at": "2026-10-06T00:41:28+03:00"
+        },
+        {
+          "at": "2026-10-06T06:51:11+03:00",
+          "by": "night fixer harness-wait-classes-20261006T032936Z-6667",
+          "files": [
+            "llm-legs/share/run-suites.sh",
+            "llm-legs/tests/test_run_suites_nice.sh"
+          ],
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-05",
-      "reviewed_by": "night fixer harness-wait-classes-20261005T061344Z-34e5",
-      "note": "Slot waits (3 run-suites slots on 10 cores) of 39-86 min on 2026-10-05: the slots were held 1.5-2.5 h by runs whose wall was 10-25x their CPU under night load. Holders, from runs.jsonl: test_instruction_gate 3900-7000 s (cpu 290), test_worker_pick 2300-7700 s, worker affected-sets of 58-124 suites (bin/worker-run or bin/worker-pick changes name most suites). Those levers landed in main after the night base by other runs: 03001c01 (instruction_gate cpu 290 -> 37), 203f037d (worker-pick speed), c4adcbb8 (tests/slow-suites skipped inside workers; slot admission 3 -> up to 4 while there is room). Fixed here: (1) tests/fixtures/answer-pty.py stopped reading after 10 s of silence, so a [y/N] prompt delayed by load went unanswered and it blocked in waitpid forever: test_geminib held a leftover run (124 suites, started 11:28) for 7 h, past the 6 h slot ceiling; now it reads until the child exits, killing it after 600 s. (2) A run a worker backgrounded kept queueing after that worker ended, then held a slot for nobody (side-ready-scope: worker ended 18 and 35 min before its runs got a slot; 62 slot-min on 2026-10-05 held after the worker ended); run-suites now stops waiting once $WORKER_RUN_RECORD/exit_code appears (SLOT_GIVE_UP_FILE in slot_wait). Not done, for the next fixer if this regresses: a run already slotted keeps going after its worker ends (feat-worker-pick-speed held 38 min after its worker); one worker queues several runs at once, and a run it relaunched leaves the old one queued (llm-debt pid 48903); a slot is a whole run, so a run whose last suite is a slow one holds the whole slot for that one suite; the night's own leftover checks are not workers, so tests/slow-suites does not shrink their affected sets.",
+      "last_reviewed": "2026-10-06",
+      "reviewed_by": "night fixer harness-wait-classes-20261006T032936Z-6667",
+      "note": "2026-10-06 regression (waits of 20 and 25 min, 00:13 local): the three slot holders (fix-affected-whole-word 5 suites, a chat's 14 in the main checkout, worker feat-harness-test-hang's 15) ran 22-34 min with every wave suite at wall 20-60x its CPU (test_consistency 1489 s / cpu 22, usual 65 s), while direct runs of the same suite at nice 0 in the same window passed in 2 min (test_llm_limits_refresh 114-120 s vs 1339 s in the wave). Load was 200-290 on 10 cores from 00:14 to 01:20, from the owner's logo-vectorizer-bench (bench/throttle.py runs unthrottled at nice 0 once the keyboard is idle 600 s) plus a video project's codex-image/chatgpt-web sweep (62 Chrome processes): weather. Cause of ours: run-suites reniced every wave suite to 10 since 53a472e0 (to keep chats responsive), so with nobody at the keyboard it lost to every nice-0 load. Fixed: the wave drops to 10 only while the keyboard was used within 600 s (user_present, HID idle via ioreg, unknown = present), the benchmark's own rule; tests/test_run_suites_nice.sh (idle -> no renice). Ruled out: slot_room's load rule (load1 vs load15 + cores) behaved as written; no hung suite or orphan (load fell to 4 once the runs ended). Not done, measured: a slot is a whole run, so tails idle capacity (88 suite-min idle during the 25-min wait, 81 of them the 5-suite run waiting on one suite); a run already slotted keeps going after its worker ends; one worker queues several runs; night leftover checks are not workers, so tests/slow-suites does not shrink them. Side: test_llm_limits_refresh fails '--sort 5h order mismatch' only when it runs 20+ min (3 of 3 such runs), a wall-clock fixture dependency. 2026-10-05 fix (81f20e36): answer-pty.py read until the child exits (test_geminib held a slot 7 h); a worker-backgrounded run stops queueing once its worker ends.",
       "handoff": null
     },
     {

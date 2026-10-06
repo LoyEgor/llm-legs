@@ -178,6 +178,17 @@ serial_suite() {
   esac
 }
 
+# Nice 10 yields to every nice-0 load, not just to chats: with nobody at the keyboard the owner's
+# benchmark runs unthrottled at nice 0 and starved the wave 10-60x (2026-10-06), holding slots
+# 20-40 min. So the wave drops only while someone is there, the benchmark's own rule
+# (logo-vectorizer-bench bench/throttle.py). Unknown counts as present.
+user_present() {
+  local idle
+  idle=$(ioreg -c IOHIDSystem -d 4 -r -k HIDIdleTime 2>/dev/null | awk '/"HIDIdleTime"/ {print int($NF / 1000000000); exit}')
+  [[ "$idle" =~ ^[0-9]+$ ]] || return 0
+  [ "$idle" -lt 600 ]
+}
+
 # Machine-wide, at most RUN_SUITES_SLOTS runs at once: each already fans out -j cores/2 suites, so
 # cores/3 (2 to 4) always run and up to 4, the count measured freeze-safe, while slot_room finds room.
 # A nested run (a suite testing this runner) inherits its parent's slot.
@@ -327,7 +338,7 @@ run_one() { # suite-path
     # Absolute, not -n: a nested run must stay at 10, not sink further. $BASHPID, not $$:
     # $$ in this subshell is the parent, and nice only rises, so a parent dropped to 10
     # would pin the wall-clock tail behind every other invocation's wave. No lock.
-    serial_suite "$name" || renice 10 -p "$BASHPID" >/dev/null 2>&1 || :
+    serial_suite "$name" || ! user_present || renice 10 -p "$BASHPID" >/dev/null 2>&1 || :
     ! serial_suite "$name" || trap - INT QUIT
     case "$path" in
       *.py) exec "$python" -m pytest -q "$path" ;;
@@ -377,7 +388,7 @@ fi
 
 printf 'run-suites: %s suites, -j %s, logs under %s\n' "${#suites[@]}" "$jobs" "$logdir"
 if [ "${#tail_wave[@]}" -gt 0 ]; then
-  printf 'run-suites: %s wall-clock suite(s) stay at nice %s; the wave is nice 10\n' \
+  printf 'run-suites: %s wall-clock suite(s) stay at nice %s; the wave is nice 10 while someone is at the keyboard\n' \
     "${#tail_wave[@]}" "$(ps -o nice= -p $$ | tr -d '[:space:]')"
 fi
 if [ -n "$owner_record" ]; then

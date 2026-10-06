@@ -10,16 +10,29 @@ unset RUN_SUITES_SLOT
 asserts=0
 assert() { asserts=$((asserts + 1)); "$@" || { printf 'FAIL: assert %s: %s\n' "$asserts" "$*"; exit 1; }; }
 
-mkdir -p "$WORK/repo/tests"
+mkdir -p "$WORK/bin" "$WORK/repo/tests"
+printf '#!/usr/bin/env bash\nprintf "    | |     \\"HIDIdleTime\\" = %%s\\n" "${FAKE_IDLE_NS:-5000000000}"\n' >"$WORK/bin/ioreg"
+printf '#!/usr/bin/env bash\necho "$*" >>"%s/renices"\nexec /usr/bin/renice "$@"\n' "$WORK" >"$WORK/bin/renice"
+chmod +x "$WORK/bin/ioreg" "$WORK/bin/renice"
+export PATH="$WORK/bin:$PATH"
 for name in a b; do
   printf '#!/usr/bin/env bash\necho "PASS: nice=$(ps -o nice= -p $$ | tr -d " ")"\n' >"$WORK/repo/tests/test_$name.sh"
 done
 
-# Every suite runs below interactive priority, in parallel as before.
+# Every suite runs below interactive priority while someone is at the keyboard, in parallel as before.
 out=$(bash "$ROOT/share/run-suites.sh" --repo "$WORK/repo" 2>&1)
 assert test "$(grep -c 'PASS: nice=10' <<<"$out")" = 2
 assert grep -q '2 PASS' <<<"$out"
 assert test "$(grep -c wall-clock <<<"$out")" = 0
+
+# Nobody there: nice 10 would lose to the owner's nice-0 benchmark, so the wave keeps the caller's nice.
+parent_nice=$(ps -o nice= -p $$ | tr -d '[:space:]')
+rm -f "$WORK/renices"
+out=$(FAKE_IDLE_NS=900000000000 bash "$ROOT/share/run-suites.sh" --repo "$WORK/repo" 2>&1)
+assert test "$(grep -c "PASS: nice=$parent_nice\$" <<<"$out")" = 2
+assert test ! -e "$WORK/renices"
+out=$(FAKE_IDLE_NS=garbage bash "$ROOT/share/run-suites.sh" --repo "$WORK/repo" 2>&1)
+assert test "$(grep -c 'PASS: nice=10' <<<"$out")" = 2
 
 # A suite never sees the launching chat's session id (its worker pin) and writes no bytecode.
 mkdir -p "$WORK/env/tests"
@@ -28,7 +41,6 @@ out=$(CLAUDE_CODE_SESSION_ID=chat-1 bash "$ROOT/share/run-suites.sh" --repo "$WO
 assert grep -q 'PASS: sid=none pyc=1' <<<"$out"
 
 # Wall-clock budget suites stay at the caller's nice; the parallel wave is what drops to 10.
-parent_nice=$(ps -o nice= -p $$ | tr -d '[:space:]')
 mkdir -p "$WORK/prio/tests"
 printf '#!/usr/bin/env bash\necho "PASS: wave=$(ps -o nice= -p $$ | tr -d " ")"\n' >"$WORK/prio/tests/test_wave.sh"
 printf '#!/usr/bin/env bash\necho "PASS: budget=$(ps -o nice= -p $$ | tr -d " ")"\n' >"$WORK/prio/tests/test_review_flow_gate.sh"
