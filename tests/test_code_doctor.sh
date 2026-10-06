@@ -444,6 +444,8 @@ assert cd.unit_digest_at(top, "HEAD", span) == span["digest"], "whole-file diges
 second = [s for s in doc["files"]["bin/two.py"]["symbols"] if s["name"] == "run"][1]
 span = cd.unit_span("repo/bin/two.py", doc["files"]["bin/two.py"], second)
 assert cd.unit_digest_at(top, None, span) == second["digest"], "the second same-named symbol read as the first"
+lua = 'local function a(f)\n    if type(f) == "function" then f() end -- then do\n    print("a--b", \'end\')\nend\n\nlocal function b()\nend\n'
+assert [(s["name"], s["end"]) for s in cd.symbols_of(lua, "lua")] == [("a", 4), ("b", 7)], "a keyword in a Lua string or comment moved a span end"
 assert cd.diff_entries(top, cd.EMPTY_TREE), "a diff from the empty tree listed nothing"
 real_git = cd.git
 class Graph:

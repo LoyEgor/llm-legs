@@ -619,6 +619,7 @@ def block_end(lines, start, lang, indent):
         if comment_line(line, lang):
             continue
         if lang == "lua":
+            line = re.sub(r"--.*", "", LITERAL_RE.sub(" ", line))
             depth += len(re.findall(r"\b(function|do|then)\b", line)) - len(re.findall(r"\belseif\b", line))
             depth -= len(re.findall(r"\bend\b", line))
             opened = True
