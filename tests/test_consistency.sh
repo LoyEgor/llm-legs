@@ -2840,6 +2840,20 @@ assert doc_has 'Redeem usage reset · <when>'
 assert grep -Fq 'local RESET_REDEEM_VENDORS = { grok = true, codex = true, claude = true }' "$HAMMER"
 assert grep -Fq 'M.resetRedeemCmd or "llm-reset-redeem"' "$HAMMER"
 assert grep -Fq 'hs.dialog.blockAlert' "$HAMMER"
+# Beyond the menu, only the two armed-only triggers reach it, each gated on an arm file existing.
+assert eq "$(grep -rlI 'llm-reset-redeem' "$ROOT/bin" "$ROOT/hammerspoon" "$LLMLIMITS" |
+  grep -v '/bin/llm-reset-redeem$' | sort | tr '\n' ' ')" \
+  "$ROOT/bin/worker-run $ROOT/hammerspoon/llm-limits.lua $LLMLIMITS "
+for armed_trigger in "$ROOT/bin/worker-run" "$LLMLIMITS"; do
+  assert eq "$(grep -c 'llm-reset-redeem' "$armed_trigger")" 1
+  assert grep -Fq 'reset-arm/' "$armed_trigger"
+  assert grep -Fq -- '--fire-armed' "$armed_trigger"
+done
+assert doc_has '`--fire-armed` from the collector'
+# Only his word arms: no code here arms, and the CLI arm demands his words.
+assert eq "$(grep -rlIE -- '--arm( |")|arm_words' "$ROOT/bin" "$ROOT/share" "$ROOT/hammerspoon" "$LLMLIMITS" |
+  grep -v '/bin/llm-reset-redeem$')" ''
+assert doc_has 'armed by his own word'
 assert test -r "$ROOT/tests/test_llm_reset_redeem.sh"
 assert grep -Fq 'test_llm_reset_redeem.sh' "$ROOT/bin/llm-selfcheck"
 
@@ -3198,7 +3212,7 @@ assert doc_has '`account_roster <vendor>` in `share/account-roster.sh` is the on
 # against the roster (gemini_web cmd_accounts, the menu's gemini-web media rows) — never accounts.
 store_walk_re='(profiles_dir|PROFILES_DIR|PROFILES_ROOT|_profiles|-profiles)[}"]*/\*|(profiles|accounts)[^#]*\.(iterdir|glob|listdir|scandir)\(|(listdir|scandir|glob\.glob)\([^)]*(profiles|accounts|PROFILES)|hs\.fs\.dir\([^)]*(profiles|accounts)'
 assert eq "$(cd "$ROOT" && grep -rlIE "$store_walk_re" bin share hammerspoon llm-limits.sh | sort | tr '\n' ' ')" \
-  "bin/chat-load bin/chats bin/claude-chat-switch bin/claude-resume-timer bin/codexb bin/gemini-weather bin/llm-selfcheck bin/report-bus bin/updater-doctor bin/vendor-cli-update bin/vendor-fingerprint bin/worker-run hammerspoon/config/env_guard.lua hammerspoon/llm-limits.lua share/account-roster.sh share/chat_names.py share/gemini_web.py share/gemini-accounts.sh "
+  "bin/chat-load bin/chats bin/claude-chat-switch bin/claude-resume-timer bin/codexb bin/gemini-weather bin/llm-reset-redeem bin/llm-selfcheck bin/report-bus bin/updater-doctor bin/vendor-cli-update bin/vendor-fingerprint bin/worker-run hammerspoon/config/env_guard.lua hammerspoon/llm-limits.lua share/account-roster.sh share/chat_names.py share/gemini_web.py share/gemini-accounts.sh "
 for roster_site in bin/codexb bin/grokb; do
   assert grep -Eq '^account_names\(\) \{ [A-Z_]+="\$profiles_dir" account_roster (codex|grok); \}$' "$ROOT/$roster_site"
 done

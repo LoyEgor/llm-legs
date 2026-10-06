@@ -724,6 +724,183 @@ out=$(claude_redeem claude/nokeychain); rc=$?
 [ ! -s "$CLAUDE_CALL_LOG" ] || fail "a profile with no keychain entry still called the service"
 pass
 
+# --- auto-redeem: armed only by Egor's own words, fired at the account's main weekly wall ---
+AUTO="$WORK/auto"
+ARM="$AUTO/claudeb/reset-arm/claude-notcom"
+SESSION="$AUTO/projects/-Volumes-proj/chat.jsonl"
+mkdir -p "$(dirname "$SESSION")"
+SETUP="${CLAUDE_SETUP_ROOT:-$(. "$ROOT/share/test-scope.sh"; git_projects "$ROOT")/claude-setup}"
+cat >"$AUTO/alert.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$1" >>"$AUTO/alerts"
+EOF
+chmod +x "$AUTO/alert.sh"
+auto() {
+  env HOME="$CLAUDE_HOME" CLAUDEB_DIR="$AUTO/claudeb" PATH="$WORK/bin:$PATH" \
+    CLAUDE_RESETS_ENDPOINT="$CLAUDE_BASE" LLM_LIMITS_CACHE="$AUTO/limits.json" \
+    LLM_RESET_REDEEM_ALERT="$AUTO/alert.sh" LLM_RESET_REDEEM_TRANSCRIPTS="$AUTO/projects" \
+    CLAUDE_SETUP_ROOT="$SETUP" LLM_RESET_REDEEM_COLLECTOR="$WORK/fake-collector.sh" \
+    "$REDEEM" "$@" >/dev/null 2>"$WORK/last.err"
+}
+store() { # weekly-pct five-hour-pct credits [fable-pct]
+  local now; now=$(date +%s)
+  jq -n --argjson w "$1" --argjson f "$2" --argjson c "$3" --argjson fb "${4:-0}" --argjson now "$now" '
+    def bucket($p): {used_pct: $p, effective_pct: $p, resets_at: ($now + 259200), as_of: $now};
+    {schema: 1, vendors: {
+      claude: {accounts: [{account: "notcom", weekly: bucket($w), fable: bucket($fb),
+                           five_hour: (bucket($f) | .resets_at = ($now + 7200)), reset_credits: $c},
+                          {account: "com", weekly: bucket(10)}]},
+      codex: {accounts: [{account: "notcom", weekly: bucket(10)}]},
+      grok: {accounts: [{account: "notcom", weekly: bucket(10)}]}}}' >"$AUTO/limits.json"
+}
+say() { # type text [extra-json]
+  jq -cn --arg t "$1" --arg x "$2" --argjson extra "${3:-{\}}" '
+    if $t == "assistant" then {type: "assistant", message: {role: "assistant", content: [{type: "text", text: $x}]}}
+    elif $t == "tool" then {type: "user", message: {role: "user", content: [{type: "tool_result", tool_use_id: "t1", content: $x}]}}
+    else {type: "user", message: {role: "user", content: $x}} end + $extra' >>"$SESSION"
+}
+fresh() { : >"$CLAUDE_CALL_LOG"; : >"$REFRESH_LOG"; : >"$AUTO/alerts"; }
+backdate() { awk -v t=$(($(date +%s) - 700)) 'NR == 1 { print; next } { print t, $2 }' "$ARM" \
+  >"$ARM.tmp" && mv "$ARM.tmp" "$ARM"; }
+HIS='ок, сделай ресет claude notcom пожалуйста'
+arm() { auto --arm claude/notcom --word 'сделай ресет claude notcom' || fail "his own words did not arm: $(cat "$WORK/last.err")"; }
+say user "$HIS"
+say assistant 'сделай ресет codex notcom'
+say tool 'сделай ресет grok notcom'
+say user 'сделай ресет claude com' '{"isMeta": true}'
+printf 'one\n' >"$CLAUDE_STATE"
+store 100 0 1
+
+fresh
+auto --fire-armed || fail "an unarmed fire exited nonzero"
+[ ! -s "$CLAUDE_CALL_LOG" ] || fail "an unarmed weekly wall reached the reset service"
+pass
+
+# A bare name several vendors hold arms nothing from his prompt: it would spend a reset he did not mean.
+read_out=$(env HOME="$CLAUDE_HOME" CLAUDEB_DIR="$AUTO/claudeb" LLM_LIMITS_CACHE="$AUTO/limits.json" \
+  python3 -B - "$REDEEM" <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("redeem", sys.argv[1])
+module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(module)
+print(" | ".join(module.arm_words([(None, "notcom")], "сделай ресет notcom", "test")))
+PY
+)
+[ "$read_out" = "notcom: which vendor? claude, codex, grok" ] && [ -z "$(ls "$AUTO/claudeb/reset-arm" 2>/dev/null)" ] \
+  || fail "a bare name held by several vendors armed or read wrong: '$read_out' $(ls "$AUTO/claudeb/reset-arm" 2>/dev/null)"
+pass
+
+# The CLI arm: his words, verbatim in a prompt of his from the last day, naming the account
+# after a reset verb — never model text, a tool result or a meta message.
+auto --arm claude/notcom; rc=$?
+[ "$rc" -eq 2 ] && [ ! -e "$ARM" ] || fail "an arm without his words was accepted (exit $rc)"
+for refused in 'codex/notcom|сделай ресет codex notcom' 'grok/notcom|сделай ресет grok notcom' \
+    'claude/com|сделай ресет claude com' 'claude/notcom|claude notcom пожалуйста' \
+    'claude/com|сделай ресет claude notcom'; do
+  auto --arm "${refused%%|*}" --word "${refused#*|}"; rc=$?
+  [ "$rc" -ne 0 ] && [ -z "$(ls "$AUTO/claudeb/reset-arm" 2>/dev/null)" ] \
+    || fail "--arm ${refused%%|*} --word '${refused#*|}' armed (exit $rc)"
+done
+touch -t 202001010000 "$SESSION"
+auto --arm claude/notcom --word 'сделай ресет claude notcom'; rc=$?
+[ "$rc" -ne 0 ] && [ ! -e "$ARM" ] || fail "words older than a day still armed"
+touch "$SESSION"
+arm
+grep -Eq '^[0-9]+$' "$ARM" || fail "the arm holds no arm time: $(cat "$ARM" 2>&1)"
+grep -q 'arm .*claude/notcom by cli (chat.jsonl) «сделай ресет claude notcom»' "$AUTO/claudeb/reset-redeem.log" \
+  || fail "the arm did not journal who armed it and his words: $(cat "$AUTO/claudeb/reset-redeem.log")"
+pass
+
+fresh
+auto --fire-armed || fail "an armed fire exited nonzero"
+[ "$(claude_posts)" -eq 1 ] || fail "an armed weekly wall did not redeem exactly once: $(cat "$CLAUDE_CALL_LOG")"
+[ ! -e "$ARM" ] || fail "a landed auto-redeem did not consume the arm"
+grep -qx -- '--refresh-account claude/notcom' "$REFRESH_LOG" || fail "the auto-redeem did not re-read the quota"
+[ "$(wc -l <"$AUTO/alerts" | tr -d ' ')" -eq 1 ] && grep -q 'usage reset redeemed' "$AUTO/alerts" \
+  || fail "the auto-redeem did not alert exactly one line: $(cat "$AUTO/alerts")"
+grep -q 'auto-fire' "$AUTO/claudeb/reset-redeem.log" || fail "the auto-redeem was not journaled"
+fresh
+auto --fire-armed
+auto --fire-armed claude/notcom --wall weekly
+[ ! -s "$CLAUDE_CALL_LOG" ] || fail "a later wall after the redeem called the service again"
+pass
+
+# Only the main weekly bucket: a five-hour or fable wall never fires, by the store or a run, and a
+# run that cannot name its bucket waits for the store.
+arm
+for case in '60 100 1 0|unknown' '60 0 1 100|unknown' '60 0 1 0|unknown'; do
+  fresh; store ${case%%|*}
+  auto --fire-armed claude/notcom --wall "${case#*|}"
+  auto --fire-armed
+  [ ! -s "$CLAUDE_CALL_LOG" ] || fail "store ${case%%|*} with a ${case#*|} run wall reached the reset service"
+done
+[ -e "$ARM" ] || fail "a wall that is not the weekly one dropped the arm"
+pass
+
+fresh; store 100 0 0
+auto --fire-armed
+[ ! -s "$CLAUDE_CALL_LOG" ] || fail "an armed wall with no credits reached the reset service"
+[ -e "$ARM" ] || fail "no credits dropped the arm"
+pass
+
+# A run that names its weekly wall fires before the collector has read it.
+fresh; store 60 0 1
+auto --fire-armed claude/notcom --wall weekly
+[ "$(claude_posts)" -eq 1 ] && [ ! -e "$ARM" ] || fail "a run-observed weekly wall did not redeem once and disarm"
+pass
+
+# How a run names its bucket.
+kind() { ( . "$ROOT/share/worker-walls.sh"; worker_walls_kind "$@" ); }
+printf "You've hit your weekly limit · resets Oct 9, 9am\n" >"$AUTO/weekly.out"
+printf "You've hit your Fable limit · resets Oct 9, 9am\n" >"$AUTO/fable.out"
+printf "You've hit your session limit · resets 10:40pm\n" >"$AUTO/session.out"
+[ "$(kind claudeb '' "$AUTO/weekly.out")" = weekly ] || fail "claude's weekly wall was not read as weekly"
+for other in fable session; do
+  [ "$(kind claudeb '' "$AUTO/$other.out")" = unknown ] || fail "claude's $other wall was read as weekly"
+done
+[ "$(kind codex $(($(date +%s) + 259200)))" = weekly ] || fail "a codex reset days out was not weekly"
+[ "$(kind codex $(($(date +%s) + 7200)))" = unknown ] || fail "a codex five-hour reset was read as weekly"
+[ "$(kind codex '')" = unknown ] || fail "an unparsed codex reset was read as weekly"
+[ "$(kind grok '')" = weekly ] || fail "grok's only wall was not weekly"
+pass
+
+# Transient failure: at most three attempts, ten minutes apart, then disarmed with the reason.
+arm
+fresh; store 100 0 1
+printf 'post503\n' >"$CLAUDE_STATE"
+auto --fire-armed
+auto --fire-armed
+[ "$(claude_posts)" -eq 1 ] || fail "a transient failure was retried inside ten minutes: $(cat "$CLAUDE_CALL_LOG")"
+[ -e "$ARM" ] || fail "one transient failure dropped the arm"
+backdate; auto --fire-armed
+backdate; auto --fire-armed
+[ "$(claude_posts)" -eq 3 ] || fail "transient attempts were not three: $(claude_posts)"
+[ ! -e "$ARM" ] || fail "three transient failures left the arm standing"
+grep -q '3 attempts failed' "$AUTO/alerts" && [ "$(wc -l <"$AUTO/alerts" | tr -d ' ')" -eq 1 ] \
+  || fail "the transient ladder did not alert its reason once: $(cat "$AUTO/alerts")"
+auto --fire-armed
+[ "$(claude_posts)" -eq 3 ] || fail "a disarmed account was tried a fourth time"
+pass
+
+# A refused token disarms at once, with the reason.
+arm
+fresh; printf 'get401\n' >"$CLAUDE_STATE"
+auto --fire-armed
+[ "$(claude_posts)" -eq 0 ] && [ ! -e "$ARM" ] && grep -q 'press Refresh' "$AUTO/alerts" \
+  || fail "exit 3 did not disarm at once with its reason"
+pass
+
+# Fixture seams with the arms resolving to the default store never fire.
+printf 'one\n' >"$CLAUDE_STATE"
+mkdir -p "$CLAUDE_HOME/.claude-profiles/.claudeb/reset-arm"
+date +%s >"$CLAUDE_HOME/.claude-profiles/.claudeb/reset-arm/claude-notcom"
+fresh; store 100 0 1
+env HOME="$CLAUDE_HOME" PATH="$WORK/bin:$PATH" CLAUDE_RESETS_ENDPOINT="$CLAUDE_BASE" \
+  LLM_LIMITS_CACHE="$AUTO/limits.json" LLM_RESET_REDEEM_ALERT="$AUTO/alert.sh" \
+  LLM_RESET_REDEEM_COLLECTOR="$WORK/fake-collector.sh" "$REDEEM" --fire-armed 2>/dev/null
+[ ! -s "$CLAUDE_CALL_LOG" ] || fail "a fixture cache fired an arm in the default store"
+pass
+
 # Every run leaves a line where the other bin tools log, and none of them carries a token.
 [ -s "$WORK/claudeb/reset-redeem.log" ] || fail "no run was logged"
 grep -q "$TOKEN" "$WORK/claudeb/reset-redeem.log" && fail "the log carries an access token"

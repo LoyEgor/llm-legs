@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
 """Redeem one `<vendor>/<account>` usage-reset consumable, then re-read that account's quota.
 
-Egor's own menu click is the only caller: a reset is one per period and spending it is his
-decision, so nothing here may run on a schedule, a retry ladder or a heartbeat.
+A reset is one per period and spending it is Egor's decision. Nothing automated calls the redeem
+unless Egor armed that account by his own word: «сделай ресет <account>» (claude-setup's word
+intake) or `--arm --word` quoting a prompt of his. The arm is machine-wide and one-shot: the first
+machine signal of that account's WEEKLY wall spends one reset and drops it.
+
+    llm-reset-redeem <vendor>/<account>
+    llm-reset-redeem --arm <vendor>/<account> --word "<his exact words>"
+    llm-reset-redeem --disarm <vendor>/<account>
+    llm-reset-redeem --fire-armed [<vendor>/<account> [--wall weekly|unknown]]
 
 Exit codes: 0 redeemed, 2 nothing to redeem, 3 the token was refused, 4 the vendor exposes no
 redeem RPC, 5 the call failed without saying anything (weather or a transient error).
@@ -10,6 +17,7 @@ redeem RPC, 5 the call failed without saying anything (weather or a transient er
 
 from __future__ import annotations
 
+import fcntl
 import importlib.util
 import json
 import os
@@ -45,7 +53,12 @@ def log(event: str, detail: str) -> None:
         pass
 
 
+LAST_LINE = ""
+
+
 def report(line: str, code: int) -> int:
+    global LAST_LINE
+    LAST_LINE = line
     log("exit" if code else "redeemed", f"{line} (exit {code})")
     print(line, file=sys.stderr if code else sys.stdout)
     return code
@@ -357,22 +370,282 @@ def mark_claude_reset(account: str) -> None:
         pass
 
 
+REDEEMERS = {"claude": redeem_claude, "codex": redeem_codex, "grok": redeem_grok}
+ARM_DIR = LOG_PATH.with_name("reset-arm")
+ATTEMPTS_MAX = 3
+ATTEMPT_GAP_S = 600
+WORD_WINDOW_S = 24 * 3600
+# A test pointing any of these at a fixture while the arms resolve to the real store would spend a
+# real reset on a fake wall.
+FIXTURE_SEAMS = ("LLM_LIMITS_CACHE", "WORKER_WALLS_DIR", "CLAUDE_RESETS_ENDPOINT",
+                 "GROK_RESETS_ENDPOINT")
+
+
+def split_target(target: str) -> tuple[str, str] | None:
+    vendor, _, account = target.partition("/")
+    if not vendor or not account or "/" in account or ".." in account or account[0] == ".":
+        return None
+    return vendor, account
+
+
+def arm_path(vendor: str, account: str) -> Path:
+    return ARM_DIR / f"{vendor}-{account}"
+
+
+def write_atomic(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}")
+    temporary.write_text(text)
+    os.replace(temporary, path)
+
+
+def limits_cache() -> str:
+    return os.environ.get("LLM_LIMITS_CACHE") or str(Path.home() / ".llm-limits.json")
+
+
+def roster() -> dict[str, list[str]]:
+    try:
+        vendors = json.loads(Path(limits_cache()).read_text()).get("vendors") or {}
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return {vendor: [entry["account"] for entry in (vendors.get(vendor) or {}).get("accounts") or []
+                     if isinstance(entry, dict) and isinstance(entry.get("account"), str)]
+            for vendor in REDEEMERS if isinstance(vendors.get(vendor), dict)}
+
+
+def arm_words(names: list, words: str, by: str,
+              only: tuple[str, str] | None = None) -> list[str]:
+    """Arm every account his words name: the one arm path, for the word intake and the CLI alike.
+
+    `names` are `(vendor or None, name)` pairs in the order he said them. A bare name held by
+    several vendors arms nothing from his prompt, since one would spend a reset he did not mean
+    (`<name>: which vendor? …`); the CLI's `only` names the vendor. Names are read up to the first
+    one no vendor has, and when that is the first, nothing is armed. One reading per target, or
+    `<name>: no such account`.
+    """
+    accounts = roster()
+    targets, unresolved, ambiguous = [], None, []
+    for vendor, name in names:
+        found = [(candidate, account) for candidate in ([vendor] if vendor else REDEEMERS)
+                 for account in accounts.get(candidate, ()) if account.casefold() == name.casefold()]
+        if not found:
+            unresolved = None if targets or ambiguous else name
+            break
+        if only is not None:
+            found = [pair for pair in found if pair == only]
+        elif len(found) > 1:
+            ambiguous.append(f"{name}: which vendor? " + ", ".join(candidate for candidate, _ in found))
+            continue
+        targets += [pair for pair in found if pair not in targets]
+    now = int(time.time())
+    quoted = " ".join(words.split())[:200]
+    for vendor, account in targets:
+        write_atomic(arm_path(vendor, account), f"{now}\n")
+        log("arm", f"{vendor}/{account} by {by} «{quoted}»")
+    return [f"{vendor}/{account}" for vendor, account in targets] + ambiguous \
+        + ([f"{unresolved}: no such account"] if unresolved else [])
+
+
+def words_module():
+    setup = os.environ.get("CLAUDE_SETUP_ROOT") or str(ROOT.parent / "claude-setup")
+    spec = importlib.util.spec_from_file_location("words", Path(setup) / "hooks" / "lib" / "words.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def transcripts():
+    override = os.environ.get("LLM_RESET_REDEEM_TRANSCRIPTS")
+    home = Path.home()
+    roots = [Path(override)] if override else [home / ".claude" / "projects",
+                                               *home.glob(".claude-profiles/*/projects")]
+    cutoff = time.time() - WORD_WINDOW_S
+    for root in roots:
+        for path in root.glob("*/*.jsonl"):
+            try:
+                if path.stat().st_mtime >= cutoff:
+                    yield path
+            except OSError:
+                continue
+
+
+def spoken(words_lib, words: str, account: str) -> Path | None:
+    """The transcript holding `words` verbatim in a prompt of his — never model text, a tool
+    result, a meta or cross-session message, or a headless run's brief."""
+    wanted = words_lib.normalize(words)
+    needle = account.encode()
+    for path in transcripts():
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        if needle not in data:
+            continue
+        turns = words_lib.human_turns(data.decode("utf-8", "ignore").splitlines(),
+                                      words_lib.headless_transcript(str(path)))
+        if any(wanted in words_lib.normalize(text) for _, text, _ in turns):
+            return path
+    return None
+
+
+def arm_cli(vendor: str, account: str, words: str) -> int:
+    target = f"{vendor}/{account}"
+    if vendor not in REDEEMERS:
+        print(f"{target}: NO_REDEEM_BACKEND — {vendor} has no usage-reset consumable",
+              file=sys.stderr)
+        return EXIT_NO_BACKEND
+    words_lib = words_module()
+    source = spoken(words_lib, words, account)
+    if source is None:
+        log("arm-refused", f"{target} «{' '.join(words.split())[:200]}» in no prompt of his")
+        print(f"{target}: not armed — these words are in no prompt of Egor's from the last 24 h",
+              file=sys.stderr)
+        return EXIT_USAGE
+    entry = words_lib.classify(words).get("reset") or {}
+    armed = arm_words(entry.get("names") or [], words, f"cli ({source.name})", (vendor, account))
+    if target not in armed:
+        print(f"{target}: not armed — his words carry no reset verb naming {account}",
+              file=sys.stderr)
+        return EXIT_USAGE
+    print(f"{target}: armed — auto-redeem at the weekly wall")
+    return 0
+
+
+def disarm(vendor: str, account: str, reason: str | None = None) -> None:
+    arm_path(vendor, account).unlink(missing_ok=True)
+    log("disarm", f"{vendor}/{account}" + (f" — {reason}" if reason else ""))
+
+
+def alert(line: str) -> None:
+    command = os.environ.get("LLM_RESET_REDEEM_ALERT")
+    calls = [[command, line]] if command else [
+        ["hs", "-q", "-c", f"hs.alert.show({json.dumps(line, ensure_ascii=False)}, 6)"],
+        ["osascript", "-e", "on run argv", "-e",
+         'display notification (item 1 of argv) with title "Usage reset"', "-e", "end run", line]]
+    for call in calls:
+        try:
+            subprocess.run(call, capture_output=True, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+
+# The weekly half of worker-pick's own wall verdict (share/limits-view.sh), so a row it routes
+# around is the row this fires on.
+STORE_ROW_JQ = """
+  (.vendors[$vendor] // {}) | (.accounts // [.])[]? | select((.account // "main") == $account) |
+  {weekly_wall: (limits_store_wall_until({weekly: .weekly}; $now) != null),
+   credits: .reset_credits}
+"""
+
+
+def store_row(vendor: str, account: str, now: int) -> dict:
+    try:
+        defs = subprocess.run(["bash", "-c", '. "$1" && printf %s "$LIMITS_VIEW_JQ"', "_",
+                               str(ROOT / "share" / "limits-view.sh")],
+                              capture_output=True, text=True, timeout=20).stdout
+        done = subprocess.run(["jq", "-c", "--arg", "vendor", vendor, "--arg", "account", account,
+                               "--argjson", "now", str(now), defs + STORE_ROW_JQ, limits_cache()],
+                              capture_output=True, text=True, timeout=20)
+        row = json.loads(done.stdout.splitlines()[0])
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return {}
+    return row if isinstance(row, dict) else {}
+
+
+def number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def fire(vendor: str, account: str, now: int, wall: str) -> None:
+    """`wall` is the run's own reading of the bucket it hit; anything short of `weekly` defers to
+    the collector's cache, and a cache that cannot tell waits for the collector's next write."""
+    target = f"{vendor}/{account}"
+    try:
+        lines = arm_path(vendor, account).read_text().splitlines()
+    except OSError:
+        return
+    attempts = [line.split() for line in lines[1:] if len(line.split()) == 2]
+    row = store_row(vendor, account, now)
+    if not (wall == "weekly" or row.get("weekly_wall") is True):
+        return
+    if not number(row.get("credits")) or row["credits"] < 1:
+        return
+    if attempts and attempts[-1][0].isdigit() and now - int(attempts[-1][0]) < ATTEMPT_GAP_S:
+        return
+    log("auto-fire", f"{target} at the weekly wall ({'run' if wall == 'weekly' else 'store'})")
+    redeemer = REDEEMERS.get(vendor)
+    code = redeemer(account, target) if redeemer else report(
+        f"{target}: NO_REDEEM_BACKEND — {vendor} has no usage-reset consumable", EXIT_NO_BACKEND)
+    line = LAST_LINE
+    if code == EXIT_REDEEMED:
+        disarm(vendor, account)
+        alert(f"Auto-redeemed at the weekly wall · {line}")
+        return
+    failures = 1 + sum(1 for attempt in attempts if attempt[1] == str(EXIT_TRANSIENT))
+    if code in (EXIT_EXPIRED, EXIT_NO_BACKEND) or (code == EXIT_TRANSIENT
+                                                   and failures >= ATTEMPTS_MAX):
+        reason = line if code != EXIT_TRANSIENT else f"{failures} attempts failed · {line}"
+        disarm(vendor, account, reason)
+        alert(f"Auto-redeem disarmed · {reason}")
+        return
+    with arm_path(vendor, account).open("a") as handle:
+        handle.write(f"{now} {code}\n")
+
+
+def fire_armed(only: tuple[str, str] | None, wall: str) -> int:
+    if not os.environ.get("CLAUDEB_DIR") and any(os.environ.get(name) for name in FIXTURE_SEAMS):
+        return 0
+    try:
+        names = sorted(os.listdir(ARM_DIR))
+    except OSError:
+        return 0
+    armed = [tuple(name.split("-", 1)) for name in names if "-" in name and not name.startswith(".")]
+    if only is not None:
+        armed = [pair for pair in armed if pair == only]
+    if not armed:
+        return 0
+    # Two triggers (the collector and a run's wall) can see one wall together; the loser skips,
+    # and the winner's landed redeem has consumed the arm by the time anyone looks again.
+    with (ARM_DIR / ".lock").open("w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return 0
+        now = int(time.time())
+        for vendor, account in armed:
+            fire(vendor, account, now, wall if only is not None else "unknown")
+    return 0
+
+
+USAGE = ("usage: llm-reset-redeem <vendor>/<account> | --arm <vendor>/<account> --word '<his words>'"
+         " | --disarm <vendor>/<account> | --fire-armed [<vendor>/<account> [--wall weekly|unknown]]")
+
+
 def main(argv: list[str]) -> int:
+    if argv and argv[0].startswith("--"):
+        target = split_target(argv[1]) if len(argv) > 1 else None
+        if argv[0] == "--disarm" and len(argv) == 2 and target:
+            disarm(*target)
+            print(f"{argv[1]}: disarmed")
+            return 0
+        if argv[0] == "--arm" and len(argv) == 4 and argv[2] == "--word" and target:
+            return arm_cli(*target, argv[3])
+        if argv[0] == "--fire-armed" and (len(argv) == 1 or target) and (
+                len(argv) <= 2 or (len(argv) == 4 and argv[2] == "--wall")):
+            return fire_armed(target, argv[3] if len(argv) == 4 else "unknown")
+        print(USAGE, file=sys.stderr)
+        return EXIT_USAGE
     if len(argv) != 1 or "/" not in argv[0]:
-        print("usage: llm-reset-redeem <vendor>/<account>", file=sys.stderr)
+        print(USAGE, file=sys.stderr)
         return EXIT_USAGE
     target = argv[0]
     vendor, _, account = target.partition("/")
     if not vendor or not account:
-        print("usage: llm-reset-redeem <vendor>/<account>", file=sys.stderr)
+        print(USAGE, file=sys.stderr)
         return EXIT_USAGE
     log("launch", target)
-    if vendor == "grok":
-        return redeem_grok(account, target)
-    if vendor == "codex":
-        return redeem_codex(account, target)
-    if vendor == "claude":
-        return redeem_claude(account, target)
+    if vendor in REDEEMERS:
+        return REDEEMERS[vendor](account, target)
     return report(f"{target}: NO_REDEEM_BACKEND — {vendor} has no usage-reset consumable",
                   EXIT_NO_BACKEND)
 

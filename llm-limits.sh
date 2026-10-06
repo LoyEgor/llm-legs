@@ -2465,6 +2465,11 @@ if [ "$write_cache" -eq 1 ]; then
   cache_tmp=''
   store_lock_release "$cache_lock"
   cache_lock=''
+  # Its own session: launchd kills the heartbeat's process group when the collector exits.
+  if compgen -G "${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/reset-arm/*-*" >/dev/null; then
+    perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' "$script_dir/bin/llm-reset-redeem" --fire-armed \
+      </dev/null >/dev/null 2>&1 &
+  fi
 fi
 
 experiments_banner() {

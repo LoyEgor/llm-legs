@@ -76,6 +76,20 @@ worker_walls_parse_reset() {
   printf '%s\n' "$((now + 3600))"
 }
 
+# `weekly` only for the account's main weekly bucket, else `unknown`: grok has no other bucket, a
+# parsed codex reset past any five-hour window is its weekly one, and claude names it — an Opus or
+# Fable wall is a model bucket that a usage reset is not known to clear.
+worker_walls_kind() { # vendor parsed-reset-epoch-or-empty run-output-file...
+  local vendor="$1" epoch="$2"
+  shift 2
+  case "$vendor" in
+    grok) echo weekly ;;
+    codex) if [ -n "$epoch" ] && [ "$epoch" -gt $(($(date +%s) + 18000)) ]; then echo weekly; else echo unknown; fi ;;
+    claudeb) if tail -c 65536 "$@" 2>/dev/null | grep -Eiq 'hit your weekly limit'; then echo weekly; else echo unknown; fi ;;
+    *) echo unknown ;;
+  esac
+}
+
 worker_walls_record() {
   local vendor="$1" account="$2" epoch="$3" written="${4:-$(date +%s)}" path dir tmp
   path=$(worker_walls_path "$vendor" "$account") || return 1

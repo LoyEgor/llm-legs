@@ -1246,6 +1246,12 @@ record_run_wall() {
   fi
   worker_walls_record "$vendor" "$account" "$epoch" || true
   worker_model_clear_walled_pin "$vendor" "$account" || true
+  local target="${vendor/#claudeb/claude}/$account" wall
+  if [ -f "${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/reset-arm/${target/\//-}" ]; then
+    wall=$(worker_walls_kind "$vendor" "${reset:+$epoch}" "$directory/out" "$directory/err")
+    perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' "$SCRIPT_DIRECTORY/llm-reset-redeem" \
+      --fire-armed "$target" --wall "$wall" </dev/null >/dev/null 2>&1 &
+  fi
 }
 
 CLAUDEB_AUTH_RE='OAuth session expired'
