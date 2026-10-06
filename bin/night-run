@@ -1202,7 +1202,7 @@ cmd_wall() {
   [ -n "$id" ] || return 0
   [ -z "${NIGHT_RUN_WALL_SYNC:-}" ] || { cmd_failover "$id" "$sid"; return; }
   # The failover ends the chat whose hook started it, so it must leave that process tree first.
-  python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
+  perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' \
     bash "$repo_root/bin/night-run" failover "$id" "$sid" </dev/null >>"$nights_dir/$id.failover.log" 2>&1 &
 }
 
@@ -1234,9 +1234,7 @@ cmd_failover() { # id walled-session
     sleep "$poll"
     ! orchestrator_moved "$id" "$sid" || return 0
   done
-  pkill -TERM -f -- "--(session-id|resume) $sid"
-  for _ in $(seq 120); do pgrep -f -- "--(session-id|resume) $sid" >/dev/null || break; sleep 0.5; done
-  pkill -KILL -f -- "--(session-id|resume) $sid"
+  pids_end 60 $(pgrep -f -- "--(session-id|resume) $sid")
   lock
   night_events "$id" "$(jq -cn --argjson w $(($(date +%s) - start)) --arg a "$account" \
     '[{phase: "wall-moved", waited: $w, room: $a, pred: "last"}]')" || die "cannot write night $id"
