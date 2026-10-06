@@ -803,7 +803,7 @@ PINNED = {"call_s": 5.0, "call_note_s": 3.0, "call_min_calls": 5, "cut_share": 0
           "floor_write_ms": 500, "floor_event_ms": 1000, "hook_note_ms": 150, "every_call_ms": 50,
           "full_work_ratio": 0.8, "full_work_min_ms": 10, "split_min_runs": 10, "history_ratio": 1.5,
           "history_min_ms": 20, "load_fail_suites": 3, "load_pass_within_s": 3600, "menu_ms": 300,
-          "menu_note_ms": 100, "menu_min_builds": 3, "per_call_entries": 1000, "collector_s": 30.0,
+          "menu_note_ms": 100, "menu_min_builds": 3, "per_call_entries": 1000, "collector_cpu_s": 20.0,
           "stop_repeat_s": 1800, "ask_deferred_s": 7200, "silent_s": 21600, "growth_min_b": 120, "watch_tick_s": 120,
           "hold_note_s": 60, "wait_red_s": 600, "wait_growth": 2.0, "wait_growth_days": 3,
           "worker_orphans": 3}
@@ -870,9 +870,10 @@ check([p["state"] for p in m.problems_from([{"rows": [back]}], {"rows": [fixed_r
       == ["fixed-pending"], "only an event that started after the fix regresses it")
 selfp = m.problems_from([], ledger0, {}, T, [m.verdict("collector", "run", 45.0, 30.0, "s", 0, 1, "red")])
 check([(p["id"], p["state"]) for p in selfp] == [("collector:run", "new")], "a slow collector run is a problem")
-check([m.collector_verdict(45.0, False, held)["level"] for held in (0, 2)] == ["red", "watch"]
-      and m.collector_verdict(45.0, True, 0)["level"] is None and m.collector_verdict(10.0, False, 0)["level"] is None,
-      "a slow collector run is red, a watch while suite or night-fixer slots starve it")
+check(m.collector_verdict(cpu=25.0, wall=30.0, backfill=False)["level"] == "red"
+      and m.collector_verdict(cpu=25.0, wall=30.0, backfill=True)["level"] is None
+      and m.collector_verdict(cpu=10.0, wall=600.0, backfill=False)["level"] is None,
+      "the collector is judged on its own CPU-s: a saturated machine's wall is context, never its fault")
 
 subprocess = m.subprocess
 repo = os.path.join(work, "fixrepo")

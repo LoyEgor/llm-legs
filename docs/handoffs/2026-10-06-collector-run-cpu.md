@@ -1,6 +1,6 @@
 # Hand-off: collector:run judges the machine's saturation, not the collector
 
-Status: open
+Status: settled 20261006T233611Z-7777: option 1, judged on own CPU-s (`collector_cpu_s` 20, 7 d p99 18.0)
 
 To: «Harness Doctor» (`share/harness-ledger.json` `owner`). Row `collector-run-cpu-starved`,
 regressed 2026-10-04 after the 2026-10-04 fix (a run over `collector_s` while a run-suites or
@@ -14,9 +14,7 @@ night-fixer slot is held is a watch). Written by night fixer harness-doctor-2026
   judge, then the system doctor's harvest): requested work that holds no slot. The other four are
   load outside any slot (Egor's work, benchmarks), weather by `load-is-weather`.
 - Wall is about `cpu_s` x load / cores, as on 2026-10-04. Its own CPU was median 11.6 s (2026-10-04:
-  7.9). This run cut 4.9 CPU-s of it (`change_impact` scanned every journal once per change and
-  window; now sorted once, bisected and cached, output proven identical on live data), leaving
-  `hook_view` (7.6 s of 24 s profiled) as the dearest part.
+  7.9); a 4.9 CPU-s cut in `change_impact` landed, `hook_view` (7.6 of 24 s) is the dearest part.
 
 ## Decide
 

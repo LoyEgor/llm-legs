@@ -80,7 +80,7 @@ LIMITS = {
     "menu_note_ms": 100,
     "menu_min_builds": 3,
     "per_call_entries": 1000,
-    "collector_s": 30.0,
+    "collector_cpu_s": 20.0,
     "stop_repeat_s": 1800,
     "ask_deferred_s": 7200,
     "silent_s": 21600,
@@ -1372,12 +1372,11 @@ def held_slots():
     return count
 
 
-def collector_verdict(elapsed, backfill, held):
-    over = elapsed > LIMITS["collector_s"]
-    out = verdict("collector", "run", elapsed, LIMITS["collector_s"], "s", 0, 1,
-                  "watch" if over and held else "red" if over and not backfill else None,
-                  fact="the collector took %.1f s, limit %d s%s" % (
-                      elapsed, LIMITS["collector_s"], " while %d suite or night-fixer slots ran" % held if held else ""),
+def collector_verdict(cpu, wall, backfill):
+    over = cpu > LIMITS["collector_cpu_s"]
+    out = verdict("collector", "run", cpu, LIMITS["collector_cpu_s"], "s", 0, 1, "red" if over and not backfill else None,
+                  fact="the collector spent %.1f CPU-s in %.1f s, limit %d CPU-s" % (
+                      cpu, wall, LIMITS["collector_cpu_s"]),
                   bad=int(over))
     out["group"] = "Collector"
     return out
@@ -5849,7 +5848,8 @@ def collect(write, now):
     blind = blind_rows(judging, blind)
     elapsed = time.monotonic() - started
     held_now = (sample or {}).get("held") or held_slots()
-    self_verdict = collector_verdict(elapsed, backfill, held_now)
+    spent = cpu_s() - cpu_start
+    self_verdict = collector_verdict(spent, elapsed, backfill)
     by_row = {}
     for where, fault in faults:
         by_row.setdefault(where, []).append(fault)
@@ -5871,7 +5871,7 @@ def collect(write, now):
     extras = [line("changes, 7 d", menu=change_table(recent[:CHANGE_ROWS], impact) if recent else None),
               line("not measured" if blind else "not measured: nothing",
                    menu=section("", [row([b["what"]], dim=True) for b in blind], ["blind spot"], [False])),
-              line("collector: %.1f s a run, limit %d s" % (elapsed, LIMITS["collector_s"]),
+              line("collector: %.1f CPU-s in %.1f s a run, limit %d CPU-s" % (spent, elapsed, LIMITS["collector_cpu_s"]),
                    dim=self_verdict["level"] is None, red=self_verdict["level"] == "red")]
     if audit:
         sections.append(section(AUDIT_GROUP, [row([v["fact"]], red=[0], say=" · ".join(e["excerpt"] for e in v["evidence"]))

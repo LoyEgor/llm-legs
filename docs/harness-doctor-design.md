@@ -244,12 +244,12 @@ raising a value fails it, and a loosening goes to the owner chat as a handoff.
 
 Below the red band, since 2026-09-29: one or two cuts of a hook or a call in the hour are a watch,
 and a test run over 2 × its usual but under 10 min is a watch. The collector's own run is judged
-too: over 30 s (`collector_s`), except the first backfill, is a problem.
+too, since 2026-10-07 on its own CPU (wall stays context): over 20 CPU-s (`collector_cpu_s`), except the
+first backfill, is a problem.
 
 Requested work is not judged as load, since 2026-10-04: each sample records the run-suites and
 night-fixer slots a live process holds (`held`), and `load:busy` and `load:unseen` judge only the
-samples whose window no held slot touched (the rows still show the whole hour). A collector run
-over `collector_s` while a slot is held is a watch. A full `suites` run that another run-suites run of
+samples whose window no held slot touched (the rows still show the whole hour). A full `suites` run that another run-suites run of
 the same `repo_root` overlapped (`runs.jsonl`) stays a watch however slow, and `suites at once`
 counts the runs that journal holds as well as `test-history.jsonl`.
 

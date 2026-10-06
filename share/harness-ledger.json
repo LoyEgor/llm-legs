@@ -340,7 +340,7 @@
         "rule": "collector",
         "ident": "run"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-04T17:30:00+03:00",
@@ -351,14 +351,24 @@
           ],
           "in": "llm-legs@ac75a868",
           "regressed_at": "2026-10-04T23:45:59+03:00"
+        },
+        {
+          "at": "2026-10-07T02:52:00+03:00",
+          "by": "night fixer handoff-2026-10-06-collector-run-cpu",
+          "files": [
+            "llm-legs/bin/harness-doctor",
+            "llm-legs/tests/test_harness_doctor.sh"
+          ],
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [
         "load-busy-night-concurrency"
       ],
-      "last_reviewed": "2026-10-06",
-      "reviewed_by": "Night fixer harness-doctor-20261006T032859Z-52ce",
-      "note": "2026-10-06 (harness-doctor-20261006T032859Z-52ce): still regressed, the 2026-10-04 slot-held watch (llm-legs@ac75a868) missed 5 reds in 24 h with no slot held, wall 119-654 s on 13-27 CPU-s at busy 99.9 %: 03:24Z the night's own base phase (night-run press, code and system doctors), the other four load outside any slot. Own CPU median 11.6 s (7.9 on 10-04); change_impact's per-change journal scans cut 4.9 CPU-s (sorted, bisected, cached; identical impact and step on live data), hook_view 7.6 of 24 CPU-s profiled is the dearest left (hook_batches over 48 h each run, no single hot spot). Ruled out again: Nice 10, settle_fixes git calls. The cure is a judge change (judge cpu_s, recommended, or count a live night-run as held), the owner's, in the handoff.",
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer handoff-2026-10-06-collector-run-cpu",
+      "note": "2026-10-07 (night 20261006T233611Z-7777, handoff option 1): the rule judges the collector's own CPU-s against collector_cpu_s 20 (harness CPU 24 h p50 9.7 p99 16.3, 7 d p99 18.0 over 575 runs) and shows wall as context; the slot-held watch is gone since CPU does not inflate under load. 2026-10-06 (harness-doctor-20261006T032859Z-52ce): still regressed, the 2026-10-04 slot-held watch (llm-legs@ac75a868) missed 5 reds in 24 h with no slot held, wall 119-654 s on 13-27 CPU-s at busy 99.9 %: 03:24Z the night's own base phase (night-run press, code and system doctors), the other four load outside any slot. Own CPU median 11.6 s (7.9 on 10-04); change_impact's per-change journal scans cut 4.9 CPU-s (sorted, bisected, cached; identical impact and step on live data), hook_view 7.6 of 24 CPU-s profiled is the dearest left (hook_batches over 48 h each run, no single hot spot). Ruled out again: Nice 10, settle_fixes git calls. The cure is a judge change (judge cpu_s, recommended, or count a live night-run as held), the owner's, in the handoff.",
       "handoff": "docs/handoffs/2026-10-06-collector-run-cpu.md"
     },
     {
