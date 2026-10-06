@@ -295,8 +295,8 @@ check(issue(trendItems[5].menu, 1, "  12 min/day  hooks"), "Speed floor issue ro
 check(issue(trendItems[6].menu, 1, "   1  new processes") and issue(trendItems[6].menu, 2, "   1  swap full")
   and not find(trendItems[6].menu, "   1  low disk space"), "System issue rows: one per loud problem by its short name")
 local systemFix = find(trendItems[6].menu, "Fix —")
-check(systemFix and text(systemFix.title) == "Fix — report only" and systemFix.disabled and not systemFix.fn,
-  "System reports only: its Fix row is dim and launches nothing")
+check(systemFix and text(systemFix.title) == "Fix — open a fixer chat" and not systemFix.disabled and systemFix.fn,
+  "System routes its own causes to a fixer: its Fix row opens a fixer chat")
 local systemDetails = details(trendItems[6].menu)
 check(text(systemDetails[1].title):find("^swap 3%.2 of 4%.0 GB") and red(systemDetails[1].title)
   and systemDetails[1].menu and text(systemDetails[1].menu[1].title) == "vm.swapusage used 3240M total 4096M"

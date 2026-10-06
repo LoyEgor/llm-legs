@@ -16,6 +16,12 @@ export SYSTEM_DOCTOR_DIAG_DIRS="$WORK/diag" SYSTEM_DOCTOR_AGENTS_DIRS="$WORK/age
 export SYSTEM_DOCTOR_CACHE_ROOTS="$WORK/caches/.cache" SYSTEM_DOCTOR_CACHE_DIRS= SYSTEM_DOCTOR_HOST_TICKS="$FIX/host"
 export SYSTEM_DOCTOR_LIBEXEC_DIR="$HOME/.local/libexec" SYSTEM_DOCTOR_AGENT_DIR="$HOME/Library/LaunchAgents"
 printf '{"owner": "System doctor", "rows": [], "blind_spots": []}\n' >"$SYSTEM_DOCTOR_LEDGER"
+mkdir -p "$WORK/repos/llm-legs/bin" "$WORK/repos/hammerspoon"
+for name in statusline.sh memlogd vendor-fingerprint worker-run; do printf '#!/bin/bash\n' >"$WORK/repos/llm-legs/bin/$name"; done
+printf -- '--\n' >"$WORK/repos/hammerspoon/init.lua"
+git -C "$WORK/repos/llm-legs" init -q && git -C "$WORK/repos/hammerspoon" init -q
+printf '%s\n' "$WORK/repos/llm-legs" "$WORK/repos/hammerspoon" >"$WORK/sweep-repos"
+export NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-repos" SYSTEM_DOCTOR_REPOS_DIR="$WORK/repos"
 for name in ps vm_stat sysctl ioreg df last diskutil launchctl; do
   printf '#!/bin/bash\nprintf "%%s\\n" "$*" >>"$SYSTEM_DOCTOR_FIX/%s.calls"\ncase " $* " in *" -S "*) cat "$SYSTEM_DOCTOR_FIX/%s-children" ;; *) cat "$SYSTEM_DOCTOR_FIX/%s" 2>/dev/null ;; esac\n' \
     "$name" "$name" "$name" >"$WORK/bin/$name"
@@ -28,6 +34,7 @@ chmod +x "$WORK/bin/du"
 export SYSTEM_DOCTOR_DU="$WORK/bin/du"
 
 python3 - "$ROOT" "$WORK" <<'PY'
+import glob
 import importlib.machinery
 import importlib.util
 import json
@@ -253,13 +260,16 @@ def minutes(n, **values):
 fired, _ = judged(minutes(3, births_s=1000, births_seen=10, births_top=[["statusline.sh", 7, "own"], ["xpcproxy", 3, "apple"]]))
 spawn = fired.get("spawn:machine")
 check(spawn and spawn["severity"] == "review" and spawn["cause"] == {"name": "statusline.sh", "share": 0.7, "owner": "own",
-                                                                     "fix_target": True}
+                                                                     "fix_target": True, "files": ["llm-legs/bin/statusline.sh"]}
       and "top cause statusline.sh 70%" in spawn["fact"], "spawn 1000/s fires with its top cause: %s" % spawn)
 check("spawn:machine" not in judged(minutes(3, births_s=999))[0], "spawn 999/s stays quiet")
 check("spawn:machine" not in judged(minutes(2, births_s=5000))[0], "spawn needs three ticks")
 check(judged(minutes(3, births_s=2500))[0]["spawn:machine"]["severity"] == "heavy", "spawn 2500/s is heavy")
 apple = judged(minutes(3, births_s=1200, births_seen=4, births_top=[["xpcproxy", 4, "apple"]]))[0]["spawn:machine"]
 check(apple["cause"]["fix_target"] is False and "(apple, report only)" in apple["fact"], "an Apple cause is report-only: %s" % apple)
+elsewhere = judged(minutes(3, births_s=1200, births_seen=4, births_top=[["bench.py", 4, "own"]]))[0]["spawn:machine"]
+check(elsewhere["cause"]["fix_target"] is False and elsewhere["cause"]["files"] == [] and "(own, report only)" in elsewhere["fact"],
+      "an own script outside the sweep repositories is report-only: %s" % elsewhere["cause"])
 
 check(judged(minutes(3, kernel=0.40))[0]["kernel:machine"]["severity"] == "review", "kernel 0.40 fires")
 check("kernel:machine" not in judged(minutes(3, kernel=0.39))[0], "kernel 0.39 stays quiet")
@@ -392,8 +402,148 @@ check([c.split()[0] for c in calls] == ["bootout", "bootstrap"], "launchctl boot
 cli("uninstall-agent")
 check(not os.path.exists(wrapper) and not os.listdir(os.environ["SYSTEM_DOCTOR_AGENT_DIR"]), "uninstall-agent removes both")
 
-run = subprocess.run(["bash", os.path.join(root, "bin", "doctor-fix"), "launch", "system"], capture_output=True, text=True)
-check(run.returncode != 0 and "only reports" in run.stderr, "doctor-fix launch system refuses: %s" % run.stderr)
+# ---- proofs: a fix of one cause, its births/s and CPU after it reached main against the 7 days before
+check(m.PROOF == {"sightings": 30, "min_s": 7200, "max_s": 7 * 86400, "baseline_s": 7 * 86400, "drop": 0.25,
+                  "reports_s": 7 * 86400}, "the proof parameters are the design's: %s" % m.PROOF)
+for name in os.listdir(os.path.join(work, "state", "ticks")):
+    os.remove(os.path.join(work, "state", "ticks", name))
+
+
+def series(start, count, step, born, spent, name="statusline.sh"):
+    return [{"t": start + i * step, "dt": step, "births_s": 1000, "births_seen": 10,
+             "births_top": [[name, born, "own"], ["xpcproxy", 10 - born, "apple"]] if born else [["xpcproxy", 10, "apple"]],
+             "cpu_top": [[name, spent, 0.0, "own"]] if spent else []} for i in range(count)]
+
+
+def write_ticks(rows):
+    folder = os.path.join(work, "state", "ticks")
+    for name in os.listdir(folder):
+        os.remove(os.path.join(folder, name))
+    for row in rows:
+        with open(os.path.join(folder, m.local_day(row["t"]) + ".jsonl"), "a") as handle:
+            handle.write(json.dumps(row) + "\n")
+
+
+since = now - 3 * 3600
+write_ticks(series(since - 6 * 3600, 360, 60, 5, 6.0) + series(since, 180, 60, 2, 2.0))
+found = m.proof("statusline.sh", "spawn", since, now)
+check(found["verdict"] == "proven" and found["before"]["births_s"] == 500 and found["after"]["births_s"] == 200
+      and found["before"]["cores"] == 0.1 and found["need_s"] == 7200,
+      "a per-minute cause proves a drop over 2 h after against the baseline: %s" % found)
+check(m.proof("statusline.sh", "spawn", since, since + 3600)["verdict"] == "pending",
+      "one hour after a per-minute cause is not yet a fair window")
+write_ticks(series(since - 6 * 3600, 360, 60, 5, 6.0) + series(since, 180, 60, 5, 5.0))
+found = m.proof("statusline.sh", "spawn", since, now)
+check(found["verdict"] == "refused" and "births 500.0 -> 500.0 /s" in found["why"],
+      "no drop over a fair window is not proven, the numbers say why: %s" % found)
+write_ticks(series(since - 6 * 3600, 360, 60, 6, 0.0) + series(since, 180, 60, 2, 0.0))
+check(m.proof("statusline.sh", "spawn", since, now)["verdict"] == "proven", "births alone dropping by 25 %% or more proves it")
+write_ticks(series(since - 6 * 3600, 360, 60, 6, 1.0) + series(since, 180, 60, 2, 3.0))
+check(m.proof("statusline.sh", "spawn", since, now)["verdict"] == "refused", "fewer births bought with more CPU is no proof")
+sparse = [r if i % 30 == 0 else dict(r, births_top=[["xpcproxy", 10, "apple"]], cpu_top=[])
+          for i, r in enumerate(series(since - 6 * 86400, 6 * 1440, 60, 5, 6.0))]
+write_ticks(sparse + series(since, 180, 60, 0, 0.0))
+found = m.proof("statusline.sh", "spawn", since, now)
+check(found["verdict"] == "pending" and found["need_s"] == 30 * 1800,
+      "a cause seen every 30 min needs 30 sightings' worth, 15 h, after its fix: %s" % found)
+write_ticks(series(since - 6 * 3600, 20, 60, 5, 6.0) + series(since, 180, 60, 0, 0.0))
+check(m.proof("statusline.sh", "spawn", since, now)["verdict"] == "refused", "a cause seen 20 times has no baseline")
+check(m.proof("statusline.sh", "spawn", None, now)["verdict"] == "pending", "a fix not in main is pending")
+crash = {"as_of_s": now, "reports": [{"at": now - 86400, "kind": "crash", "name": "memlogd", "owner": "own"}]}
+check(m.proof("memlogd", "job-crash", now - 3 * 86400, now, crash)["verdict"] == "refused"
+      and m.proof("memlogd", "job-crash", now - 8 * 86400 - 10, now, dict(crash, reports=[]))["verdict"] == "proven"
+      and m.proof("memlogd", "job-crash", now - 3 * 86400, now, dict(crash, reports=[]))["verdict"] == "pending",
+      "a crash cause: any crash after the fix refuses it, 7 quiet days prove it")
+
+write_ticks(series(since - 6 * 3600, 360, 60, 5, 6.0) + series(since, 180, 60, 2, 2.0))
+run = cli("check", "statusline.sh", "--rule", "spawn", "--since", str(since))
+check(run.returncode == 0 and run.stdout.startswith("statusline.sh spawn: proven · births 500.0 -> 200.0 /s"),
+      "check <cause> prints the proof and exits 0: %s %s" % (run.stdout, run.stderr))
+check(cli("check", "statusline.sh", "--rule", "spawn", "--since", str(since + 7200)).returncode == 3,
+      "check exits 3 while the window is short")
+write_ticks(series(since - 6 * 3600, 360, 60, 5, 6.0) + series(since, 180, 60, 5, 6.0))
+run = cli("check", "statusline.sh", "--rule", "spawn", "--since", str(since))
+check(run.returncode == 1 and "refused" in run.stdout, "check refuses no drop with exit 1: %s" % run.stdout)
+check(cli("check", "nothing.sh").returncode == 1, "check of a cause no ledger row names refuses")
+
+write_ticks(series(since - 6 * 3600, 360, 60, 5, 6.0) + series(since, 180, 60, 2, 2.0)
+            + series(now - 3600, 60, 60, 10, 1.0, "worker-run"))
+fixes = [{"at": m.iso_time(since), "by": "run", "files": ["llm-legs/bin/statusline.sh"], "in": None, "regressed_at": None}]
+rows = [{"id": "SYS-7", "status": "fixed-pending", "match": {"rule": "spawn", "key": "machine", "cause": "statusline.sh"},
+         "fixes": fixes}]
+json.dump({"owner": "System doctor", "rows": rows, "blind_spots": []}, open(os.environ["SYSTEM_DOCTOR_LEDGER"], "w"))
+m.fix_since = lambda row: since
+doc = {p["id"]: p for p in m.document(now, now, persist=False)["problems"]}
+check(doc["SYS-7"]["state"] == "watch" and doc["SYS-7"]["proof"]["verdict"] == "proven"
+      and doc["spawn:machine"]["cause"]["name"] == "worker-run" and doc["spawn:machine"]["state"] == "new",
+      "a proven fix reads watch, and the other cause of the same rule stays its own problem: %s" % [(doc[k]["state"], doc[k].get("cause"), doc[k].get("proof")) for k in ("SYS-7", "spawn:machine")])
+write_ticks(series(since - 6 * 3600, 360, 60, 5, 6.0) + series(since, 180, 60, 5, 6.0))
+doc = m.document(now, now, persist=False)
+check([(p["id"], p["state"]) for p in doc["problems"] if p["id"] == "SYS-7"] == [("SYS-7", "open")]
+      and doc["problem_count"] >= 1 and "not proven · births" in next(p["fact"] for p in doc["problems"] if p["id"] == "SYS-7"),
+      "a fix with no drop over a fair window stays open with its numbers")
+m.fix_since = lambda row: None
+doc = {p["id"]: p for p in m.document(now, now, persist=False)["problems"]}
+check(doc["SYS-7"]["state"] == "fixed-pending", "a fix not yet in main reads fixed-pending")
+
+norm = open(os.path.join(root, "bin", "night-run")).read().split("JQ_PROBLEM_NORM='", 1)[1].split("'\n", 1)[0]
+states = subprocess.run(["jq", "-c", norm + " [.[] | norm_problem]"], capture_output=True, text=True, input=json.dumps([
+    {"state": "watch", "proof": {"verdict": "proven"}}, {"state": "open", "proof": {"verdict": "refused"}},
+    {"state": "fixed-pending", "proof": {"verdict": "pending"}}, {"state": "watch", "fact": "x"}])).stdout.strip()
+check(states == '["proved","open","pending","watch"]', "the night report counts a proven System fix as proved: %s" % states)
+
+# ---- close gate: a fixed own cause needs its ledger row and a baseline a later proof can measure
+record = os.path.join(work, "record.json")
+json.dump({"id": "r", "doctor": "system", "worktrees": [], "problems": [
+    {"id": "spawn:machine", "rule": "spawn", "cause": "statusline.sh"},
+    {"id": "job-crash:memlogd", "rule": "job-crash", "cause": "memlogd"},
+    {"id": "spawn:other", "rule": "spawn", "cause": "worker-run"}]}, open(record, "w"))
+decisions = os.path.join(work, "decisions.tsv")
+open(decisions, "w").write("spawn:machine\tfixed\tllm-legs/bin/statusline.sh\tt\njob-crash:memlogd\tfixed\tx\ty\n"
+                           "spawn:other\truled-out\tx\ty\n")
+faults = m.check_record(record, decisions, now)
+check(len(faults) == 1 and faults[0].startswith("job-crash:memlogd: fixed, but no fixed-pending ledger row"),
+      "close needs a fixed-pending row naming the cause: %s" % faults)
+wt = os.path.join(work, "wt")
+os.makedirs(os.path.join(wt, "share"))
+json.dump({"rows": rows + [{"id": "SYS-8", "status": "fixed-pending", "fixes": fixes,
+                            "match": {"rule": "job-crash", "key": "memlogd", "cause": "memlogd"}}]},
+          open(os.path.join(wt, "share", "system-ledger.json"), "w"))
+json.dump(dict(json.load(open(record)), worktrees=[wt]), open(record, "w"))
+check(m.check_record(record, decisions, now) == [], "a night run's own worktree ledger satisfies the gate")
+write_ticks(series(now - 3600, 10, 60, 5, 6.0))
+faults = m.check_record(record, decisions, now)
+check(len(faults) == 1 and "no measurable baseline" in faults[0], "a births cause without a baseline cannot close fixed: %s" % faults)
+
+# ---- doctor-fix routes own causes to a System fixer and never a report-only one
+fake = os.path.join(work, "fakebin")
+os.makedirs(fake)
+for name, body in (("claudeb", "exit 0"), ("worker-pick", "printf 'acct\\n'"), ("opener", "exit 0")):
+    open(os.path.join(fake, name), "w").write("#!/bin/bash\n%s\n" % body)
+    os.chmod(os.path.join(fake, name), 0o755)
+write_ticks(minutes(10, births_s=1500, births_seen=10, births_top=[["statusline.sh", 7, "own"], ["xpcproxy", 3, "apple"]],
+                    kernel=0.6))
+json.dump({"owner": "System doctor", "rows": [], "blind_spots": []}, open(os.environ["SYSTEM_DOCTOR_LEDGER"], "w"))
+os.remove(os.path.join(work, "state", "nightly.json"))
+check(cli().returncode == 0, "the judge writes a fresh document")
+env = dict(os.environ, PATH=fake + ":/usr/bin:/bin", DOCTOR_FIX_OPENER=os.path.join(fake, "opener"),
+           DOCTOR_FIX_WORKER_PICK=os.path.join(fake, "worker-pick"))
+run = subprocess.run(["bash", os.path.join(root, "bin", "doctor-fix"), "launch", "system"], capture_output=True, text=True, env=env)
+check(run.returncode == 0 and run.stdout.startswith("system fixer opened"), "doctor-fix launch system opens a fixer: %s %s"
+      % (run.stdout, run.stderr))
+fixer = json.load(open(glob.glob(os.path.join(work, "doctors", "runs", "system-all-*.json"))[0]))
+routed = {p["id"]: p for p in fixer["problems"]}
+check(sorted(routed) == ["kernel:machine", "spawn:machine"] and routed["spawn:machine"]["cause"] == "statusline.sh"
+      and routed["spawn:machine"]["area"] == "system"
+      and routed["spawn:machine"]["component"]["files"] == [os.path.join(work, "repos", "llm-legs", "bin", "statusline.sh")]
+      and "levers: cache git and jq per render" in routed["spawn:machine"]["component"]["what"],
+      "an own cause routes with its sweep-repository file and its levers: %s" % routed)
+write_ticks(minutes(10, births_s=1500, births_seen=10, births_top=[["xpcproxy", 10, "apple"]]))
+check(cli().returncode == 0, "the judge rewrites the document")
+run = subprocess.run(["bash", os.path.join(root, "bin", "doctor-fix"), "abandon", fixer["id"]], capture_output=True, text=True, env=env)
+run = subprocess.run(["bash", os.path.join(root, "bin", "doctor-fix"), "launch", "system"], capture_output=True, text=True, env=env)
+check(run.returncode != 0 and "nothing to fix" in run.stderr and len(glob.glob(os.path.join(work, "doctors", "runs", "system-*.json"))) == 1,
+      "an Apple cause is never in a fixer snapshot: %s" % run.stderr)
 
 print("OK: PASS: %d system doctor checks" % asserts)
 PY

@@ -21,7 +21,8 @@ machine showed it. The collector's backfill later found an earlier, unnoticed ep
 
 | belongs to | examples |
 |---|---|
-| **Harness doctor** | tool-call wait per project, hook time and hook cuts, session-start and turn-end hooks, CPU and fork pressure, memory guard, test time, stores that grow with history, the change that preceded a red row |
+| **Harness doctor** | tool-call wait per project, hook time and hook cuts, session-start and turn-end hooks, CPU busy outside requested work, memory guard, test time, stores that grow with history, the change that preceded a red row |
+| **System doctor** | machine rows, since 2026-10-06: new processes, the kernel share, swap, compression, SSD writes, crashes (`docs/system-doctor-design.md`); Harness keeps the kernel and fork samples for its week table, day summaries and change impact, and judges none of them |
 | **LLM doctor** | API decode speed, time to first token, API time per cell or leg, failures, weather |
 
 The block never shows API numbers. A future stage hands the transcript pass's API timings to LLM
@@ -68,7 +69,7 @@ changes, so the block's `menu.txt` stays near 300 lines.
 | **Slow periods** | `watch` when `local_slow` has a window in the last 24 h | from · to · lasted min |
 | **Hook waits** | the floor a call waits on hooks (§3.2): a problem when a class's 1 h median, ≥ 5 calls, is over its red limit; a watch over the note | class (Bash · trivial, Bash · other, Edit/Write, Read, other tools, message, turn end, subagent end, chat start, compact, chat end) · calls 1 h · wait ms 1 h · wait ms 24 h · set by 1 h; each row drills into its Pre and Post side with p95 and the hook that set it; a nav line gives the share of tool batches joined to their call |
 | **Hooks** | a synchronous hook slow this hour or cut is a problem; one slow over 24 h, a failed fast-path probe, or any watch reason of §3.3 is a watch | hook · when · median ms 24 h · min 24 h · cuts 24 h (a script run by several events is one row, `when` naming the first `+N`; the statusline and each `menu build: <menu>` are rows of their own, a menu build red over its band); nav lines `on every tool call`, `full work on trivial Bash`, `by transcript size`, `by repositories in the chat`; lead line `fast paths` |
-| **Load** | CPU busy, kernel share, new processes, unaccounted CPU, memory guard, swap | last hour · 7 days (shown once the samples cover more than 1.5 h) |
+| **Load** | CPU busy, unaccounted CPU, memory guard | last hour · 7 days (shown once the samples cover more than 1.5 h) |
 | **Tests** | a group's last run over twice its usual and within 6 h, 5+ suites at once in the last 6 h (`suites at once, 6 h: N` above the table), a test that failed under load in the last 6 h (`failed under load, 6 h: N`, §3.3), a suite over half of its repository's latest full run (`long pole, 24 h`, L), or a suite over 2 h of wall clock in 24 h (`daily cost, 24 h`, L), or a suite that hung in 24 h (`hung, 24 h: N`, L) | test · repo · runs today · min today · usual min · last min; `long pole` drills into repo · long pole · min · min over next · share of run, `daily cost` into suite · repo · runs · min 24 h · min a run |
 | **Wait classes** | every wait of the wait journal (§12, row `ed`): a class red when today's longest wait passes its limit or today's total passes twice its usual day; every class shown dim even when normal; a lead line counts the processes worker runs ended today left behind outside their own tree (`worker-stats/runs.jsonl` `orphans`, row `ec`), red past `worker_orphans` | class · waits today · total today · p50 · p95 · max · usual day, 7 d; each drills into its days |
 | **Growth** | loose git objects over the limit, a big store that doubled in a week, or a hook spool file older than 30 min (the collector stopped folding); a watch for a per-call store over 1 000 entries that doubled in a day (its cleanup stopped) | store · entries · a week ago (once a week of samples exists) · size MB |
@@ -142,7 +143,7 @@ a tone only from 10 %), worse red and better green. The line names them without 
 | CPU busy, kernel | `host_statistics` ticks via ctypes | the delta since the previous run, valid when the gap is ≤ 1 h (a run takes minutes under load); wrap at 2^32, reboot dropped |
 | new processes | spawn `/usr/bin/true`, wait 2 s, spawn again | PID delta mod 99 999 ÷ elapsed. There is no sysctl fork counter. |
 | unaccounted CPU | busy × ncpu − the visible cores in memlogd's `chats.json` title | CPU that per-process sampling misses: short-lived forks. The title parse is fragile coupling. |
-| memory | `vm.swapusage`, `kern.memorystatus_level`, and memlogd's guard alarm | red on the guard alarm or swap > 90 % |
+| memory | `kern.memorystatus_level` and memlogd's guard alarm | red on the guard alarm |
 | tests | `~/.cache/claude-statusline/test-history.jsonl`, written by `bin/statusline-work-probe.sh` for every test it saw end; `ok` (true/false) when the writer knows the outcome; `suite_secs` on a `suites` run, chat or worker, from its `.status` files | wall clock is the union of overlapping runs, so parallel suites are not double-counted |
 | running now | `~/.cache/claude-statusline/work-*` newer than 30 s | the `main tests` lines |
 | growth | daily sample | entries and bytes of the instruction-watch reverts, read-only notes, inflight and closed marks and temp leftovers (`*.tsv.<n>`), the review journal and its `.hashes`/`.ref` files, context-nudge state, statusline cache, review benches, this doctor's state and the transcripts, plus `git count-objects` per repository seen in the last 7 days; the hook spool's file count and oldest age live, every run |
@@ -221,10 +222,7 @@ from this machine on 2026-09-28, from the 28-day backfill and a day of samples:
 | failed under load (H) | ≥ 3 suites at once, passed alone within 1 h | – | 09-29 17:38-18:04: three `run-all` at once failed `test_claudeb.sh` and `test_worker_run.sh`, both passed alone by 18:15 |
 | hook spool, oldest file | > 30 min | – | the collector folds every 5 min; 152-396 files, all under 5 min, is normal |
 | CPU busy, 1 h mean | > 90 % | > 70 % | a normal loaded day is 54-72 % |
-| kernel share | > 50 % | > 30 % | about 30 % is standing |
-| new processes | > 2 500/s | > 1 000/s | 1 200-1 330/s is standing, with one sample at 890 |
 | not seen per process | > 5 cores | > 2 cores | – |
-| swap | > 90 % | > 50 % | – |
 | suite runs at once, peak over the last 6 h | ≥ 5 | ≥ 3 | a daily peak of 3-4 is normal, because `run-suites` runs ncpu/2 in parallel |
 | a test group's last run | > 2 × its usual and > 10 min, with ≥ 3 runs of its scope | – | usual = the median of the earlier runs of the same scope (full, all, changed, named or partial, §8) once the test marks its partial runs, else their p75: test_worker_run's full runs take 7-21 min and its partial ones 21-197 s, and a median over both (≈ 4 min) turned an ordinary 614 s full run red |
 | long pole (L), latest full run in 24 h | one suite > 50 % of the run's wall clock and ≥ 5 min | > 50 % under 5 min | the brief of 2026-09-30: `test_worker_run.sh` bounds llm-legs `run-all` (81 suites, `-j 5`); the calibration replay's full run, its suites' times from `run-suites/times.tsv` of 09-30 in the 678 s wall clock of that day's chat run, reads it at 649 s, 96 %, 310 s over `test_instruction_gate.sh`. Under 5 min a split saves at most 2.5 min a run, so it stays a watch |
@@ -512,7 +510,7 @@ the rework:
 | Did a hook's shortcut silently stop working? | Hooks, `fast paths` | answered for quiet library loads and the known read-only classifier |
 | Did a test fail only because the machine was busy? | Tests, `failed under load` | answered once the history carries `ok` |
 | Is the Hammerspoon menu slow? | Hooks, `menu build: <menu>` | answered for the whole Automation menu and its LLM Limits part |
-| Is the Mac overloaded, and by what? | Load; the Chats block for chats; Hooks' totals | load answered; hook totals attribute part of the short-lived processes, the rest are not attributed |
+| Is the Mac overloaded, and by what? | the System doctor; Load for busy CPU; the Chats block for chats; Hooks' totals | births and CPU attributed to our scripts by the System doctor |
 | Are tests the reason? What is running now? | Tests | answered |
 | Which suite bounds a full run, and which suites cost the most machine time a day? | Tests, `long pole, 24 h` and `daily cost, 24 h` | answered for runs journaled with `suite_secs` (from 2026-09-30); older `suites` rows stay unattributed |
 | Did a change make it slower? | the cause line of a problem; `changes, 7 d` | candidates ranked: the change naming the red row's hook or script first, then the biggest step in the measure of the rule that went red (hook wait ms for floors and hooks, CPU busy for Load, suite min for Tests, short Bash s otherwise), then the nearest; watched: `~/.claude/hooks`, llm-legs `bin`, `share`, `hammerspoon`, `~/.hammerspoon`, every settings.json key |

@@ -153,11 +153,12 @@ doctor_read() { # jq-filter -> {"llm": value|null, "harness": value|null, "updat
 doctor_counts() { doctor_read '.problem_count // null'; }
 
 JQ_PROBLEM_NORM='def norm_problem: (.fact // "") as $f
-  | if (.state == "fixed-pending" or .state == "watch") and ($f | test("^fixed · [0-9]+ events since · 0 matched")) then "proved"
+  | if (.state == "fixed-pending" or .state == "watch") and (($f | test("^fixed · [0-9]+ events since · 0 matched"))
+      or (.proof | if type == "object" then .verdict else null end) == "proven") then "proved"
     elif .state == "fixed-pending" or .rule == "fix-proof" then "pending" else .state end;'
 
-# proved: a fix the doctor proved (harness `fixed · E events since · 0 matched`; the LLM doctor drops a
-# proved row instead); pending: a fix awaiting its commit or its proof.
+# proved: a fix the doctor proved (harness `fixed · E events since · 0 matched`, the System doctor's
+# `proof.verdict` proven; the LLM doctor drops a proved row instead); pending: a fix awaiting its commit or its proof.
 doctor_states() {
   doctor_read "$JQ_PROBLEM_NORM"' [.problems[]? | norm_problem] as $s
     | reduce ("proved", "pending", "open", "new", "regressed") as $k ({}; .[$k] = ($s | map(select(. == $k)) | length))'

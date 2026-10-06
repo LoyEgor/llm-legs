@@ -3261,7 +3261,12 @@ assert grep -Fq 'dirFor("codeDoctorDir", "CODE_DOCTOR_DIR", "/.cache/code-doctor
 assert grep -Fq 'return os.environ.get("SYSTEM_DOCTOR_DIR") or os.path.join(HOME, ".cache", "system-doctor")' "$ROOT/bin/system-doctor"
 assert grep -Fq 'system="${SYSTEM_DOCTOR_DIR:-$HOME/.cache/system-doctor}/latest.json"' "$ROOT/bin/night-run"
 assert grep -Fq 'dirFor("systemDoctorDir", "SYSTEM_DOCTOR_DIR", "/.cache/system-doctor")' "$ROOT/hammerspoon/doctors.lua"
-assert grep -Fq 'system:*) die ' "$ROOT/bin/doctor-fix"
+assert grep -Fq 'llm: | harness: | code: | system:) launch_day "$doctor" ;;' "$ROOT/bin/doctor-fix"
+assert grep -Fq 'code:--night | system:--night) [ -n "${3:-}" ]' "$ROOT/bin/doctor-fix"
+assert grep -Fq '{ key = "system", fix = "Fix — open a fixer chat",' "$ROOT/hammerspoon/doctors.lua"
+# One doctor per machine row: births, the kernel share and swap are the System doctor's; Harness's Load judges none.
+assert eq "$(grep -cE '^    "(kernel|forks|swap_share)(_note)?":' "$ROOT/bin/harness-doctor")" 0
+assert eq "$(grep -cE '"load:(kernel|forks|swap)"' "$ROOT/bin/harness-doctor")" 0
 assert jq -e '.whole == {"code": "code", "system": "system"}' "$ROOT/share/doctor-areas.json" >/dev/null
 assert doc_has '| dj | Doctor roster |'
 

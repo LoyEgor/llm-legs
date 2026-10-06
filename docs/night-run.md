@@ -42,7 +42,7 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
      trade (`Cost:`/`Loss:`/`Recommendation:`).
 3. **Dispatch.** Everything below starts in parallel at about t+10 min.
    - **Fixers.**
-     - `doctor-fix launch <llm|harness|updater|code> --night <night-id>` makes one run per area that has
+     - `doctor-fix launch <llm|harness|updater|code|system> --night <night-id>` makes one run per area that has
        problems. The areas are the doctor's own menu words, so the night's `<Doctor> fixer: <area>` row
        names a row of that doctor's menu:
        - the LLM doctor's block, or its health row (`debt`);
@@ -50,7 +50,9 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
        - else `doctor`, the doctor's own problems (the Updater's machinery: `pass-stale`, `cli-behind`, …),
          shown as a bare `<Doctor> fixer`;
        - the Code doctor's one area `code` (`whole` in the same file), also a bare `Code fixer`, its
-         run holding the top-K problems only (`docs/doctors-contract.md` §4).
+         run holding the top-K problems only (`docs/doctors-contract.md` §4);
+       - the System doctor's one area `system`, a bare `System fixer`, holding only the problems whose top
+         cause is an own script of the sweep repositories (`docs/system-doctor-design.md`, Phase 2).
          `share/doctor-areas.json` holds those words and the renamed old
          areas (`llm-health` → `debt`, `harness-self` and `updater-machinery` → `doctor`), so old runs
          keep their label; `tests/test_doctors_menu.sh` checks every label against the rendered menu.

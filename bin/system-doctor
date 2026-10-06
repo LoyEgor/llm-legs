@@ -7,6 +7,7 @@ every 10 minutes."""
 
 import argparse
 import datetime
+import functools
 import glob
 import hashlib
 import json
@@ -14,6 +15,7 @@ import os
 import plistlib
 import re
 import shlex
+import subprocess
 import sys
 import time
 
@@ -21,6 +23,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 import collector_runs  # noqa: E402
 import machine_probe  # noqa: E402
+from fix_commit import fix_commit, fix_landed, siblings_dir  # noqa: E402
 
 HOME = os.path.expanduser("~")
 
@@ -42,6 +45,24 @@ LIMITS = {
     "job_crashes_day": 1,
     "unclean_reboots": 1,
 }
+PROOF = {"sightings": 30, "min_s": 2 * 3600, "max_s": 7 * 86400, "baseline_s": 7 * 86400, "drop": 0.25,
+         "reports_s": 7 * 86400}
+RATE_RULES = ("spawn", "kernel")
+REPORT_KINDS = {"hammerspoon-crash": ("crash",), "job-crash": ("crash",), "unclean-reboot": ("shutdownStall", "panic"),
+                "ssd-writes": ("diskwrites",)}
+PROOF_SHOW_S = 7 * 86400
+APP_SOURCES = {"Hammerspoon": "hammerspoon/init.lua", "hs": "hammerspoon/init.lua"}
+SPAWN_LEVER = "no-fork bash idioms (builtins over subshells and pipes, one jq per path, cached reads) and waits of at least 1 s"
+LEVERS = (
+    (("statusline.sh",), "cache git and jq per render keyed on mtime, take review-flow-gate off the render path, "
+                         "add a births-per-render metric"),
+    (("worker-run", "worker-pick", "llm-limits.sh"), SPAWN_LEVER),
+    (("Hammerspoon", "hs"), "no `hs -c` calls from scripts or tests, AX polling event-driven or at most 1 Hz, "
+                            "free the leaked drawings"),
+    (("gemini-web", "gemini_web.py"), "close the hidden browser on idle"),
+    (("harness-doctor",), "cut the doctor's own cost (657 -> 1,565 cpu-s/day)"),
+    (("vendor-cli-update", "vendor-fingerprint"), "drop RunAtLoad, or add a boot delay (shutdown stall)"),
+)
 RULE_LABELS = {"spawn": "new processes", "kernel": "kernel CPU", "compressor": "memory compressed",
                "swap": "swap full", "ssd-writes": "SSD writes", "swap-writes": "swap writes",
                "hammerspoon-crash": "Hammerspoon crash", "job-crash": "job crashes", "unclean-reboot": "unclean reboot",
@@ -119,6 +140,48 @@ def own_roots():
 
 def cache_roots():
     return env_list("SYSTEM_DOCTOR_CACHE_ROOTS", [os.path.join(HOME, p) for p in CACHE_ROOTS])
+
+
+def repos_dir():
+    return os.environ.get("SYSTEM_DOCTOR_REPOS_DIR") or siblings_dir(ROOT_DIR)
+
+
+def sweep_dirs():
+    from handoffs import sweep_repos
+    return sweep_repos()
+
+
+@functools.lru_cache(maxsize=None)
+def repo_files(top):
+    try:
+        out = subprocess.run(["git", "-C", top, "ls-files", "--cached", "--others", "--exclude-standard"],
+                             capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return ()
+    return tuple(out.stdout.splitlines()) if out.returncode == 0 else ()
+
+
+def own_sources(name):
+    """`repo/path` of the sweep-repository files a cause's basename names; an own app maps to its config entry."""
+    found = []
+    for top in sweep_dirs():
+        repo = os.path.basename(top.rstrip("/"))
+        if name in APP_SOURCES:
+            if APP_SOURCES[name].split("/", 1)[0] == repo and APP_SOURCES[name].split("/", 1)[1] in repo_files(top):
+                found.append(APP_SOURCES[name])
+            continue
+        found += ["%s/%s" % (repo, path) for path in repo_files(top) if os.path.basename(path) == name]
+    return sorted(set(found))[:8]
+
+
+def source_path(rel):
+    repo, _, path = rel.partition("/")
+    return next((os.path.join(top, path) for top in sweep_dirs() if os.path.basename(top.rstrip("/")) == repo), None)
+
+
+def levers(name, rule):
+    found = [text for names, text in LEVERS if name in names]
+    return found or ([SPAWN_LEVER] if rule in RATE_RULES else [])
 
 
 def cache_dirs():
@@ -729,7 +792,7 @@ def judge_digest():
             digest.update(handle.read())
     except OSError:
         digest.update(b"no ledger")
-    digest.update(json.dumps(LIMITS, sort_keys=True).encode())
+    digest.update(json.dumps([LIMITS, PROOF], sort_keys=True).encode())
     return digest.hexdigest()
 
 
@@ -748,6 +811,70 @@ def cause_words(found):
     return " · top cause %s%s%s" % (found["name"], share, tail)
 
 
+def tag_rates(rows, name):
+    """Births/s and CPU cores attributed to one cause over minute rows, and the ticks it was seen in."""
+    covered = births = cpu = 0.0
+    seen = 0
+    for row in rows:
+        if not row.get("dt"):
+            continue
+        born = sum(e[1] for e in row.get("births_top") or () if e[0] == name)
+        spent = sum(e[1] for e in row.get("cpu_top") or () if e[0] == name)
+        covered += row["dt"]
+        if row.get("births_s") is not None and row.get("births_seen"):
+            births += row["births_s"] * born / row["births_seen"] * row["dt"]
+        cpu += spent
+        seen += bool(born or spent)
+    return {"covered_s": round(covered), "seen": seen, "births_s": round(births / covered, 1) if covered else None,
+            "cores": round(cpu / covered, 3) if covered else None}
+
+
+def fix_since(row):
+    """When the row's last fix reached main, or None while it has not landed."""
+    fixes = [f for f in (row or {}).get("fixes") or () if isinstance(f, dict)]
+    if not fixes:
+        return None
+    ref = fixes[-1].get("in") or fix_commit(fixes[-1], repos_dir())
+    return fix_landed(ref, repos_dir()) if ref else None
+
+
+def proof(name, rule, since, now, night=None):
+    """{verdict: proven|refused|pending, why, ...} of a fix of cause `name` that landed at `since`."""
+    if since is None:
+        return {"verdict": "pending", "why": "the fix has not landed in main"}
+    if rule in REPORT_KINDS:
+        night = night if night is not None else read_json(os.path.join(state_dir(), "nightly.json"), {}) or {}
+        after = [r for r in night.get("reports") or () if r.get("at", 0) >= since
+                 and r.get("kind") in REPORT_KINDS[rule] and r.get("name") == name]
+        covered = max(0, round((night.get("as_of_s") or 0) - since))
+        out = {"after": {"reports": len(after), "covered_s": covered}, "need_s": PROOF["reports_s"]}
+        if after:
+            return dict(out, verdict="refused", why="%d %s report%s of %s since the fix" % (
+                len(after), "/".join(REPORT_KINDS[rule]), "" if len(after) == 1 else "s", name))
+        if covered < PROOF["reports_s"]:
+            return dict(out, verdict="pending", why="no report of %s in %.1f of %d days" % (
+                name, covered / DAY_S, PROOF["reports_s"] // DAY_S))
+        return dict(out, verdict="proven", why="no report of %s in %d days" % (name, PROOF["reports_s"] // DAY_S))
+    rows = tick_rows(since - PROOF["baseline_s"], now)
+    before = tag_rates([r for r in rows if r["t"] < since], name)
+    after = tag_rates([r for r in rows if r["t"] >= since], name)
+    out = {"before": before, "after": after}
+    if before["seen"] < PROOF["sightings"] or not (before["births_s"] or before["cores"]):
+        return dict(out, verdict="refused", why="no measurable baseline: %s seen in %d ticks of the %d days before, "
+                    "needs %d" % (name, before["seen"], PROOF["baseline_s"] // DAY_S, PROOF["sightings"]))
+    need = min(PROOF["max_s"], max(PROOF["min_s"], PROOF["sightings"] * before["covered_s"] / before["seen"]))
+    out["need_s"] = round(need)
+    words = "births %s -> %s /s · CPU %s -> %s cores · %.1f of %.1f h after" % (
+        before["births_s"], after["births_s"], before["cores"], after["cores"], after["covered_s"] / 3600.0,
+        need / 3600.0)
+    if after["covered_s"] < need:
+        return dict(out, verdict="pending", why=words)
+    pairs = [(before[k], after[k] or 0) for k in ("births_s", "cores") if before[k]]
+    fell = any(b2 <= b1 * (1 - PROOF["drop"]) for b1, b2 in pairs)
+    rose = any(b2 > b1 * (1 + PROOF["drop"]) for b1, b2 in pairs)
+    return dict(out, verdict="proven" if fell and not rose else "refused", why=words)
+
+
 class Judge:
     def __init__(self, now, night):
         self.now = now
@@ -760,6 +887,9 @@ class Judge:
 
     def add(self, rule, key, fact, value, limit, unit, window_h, exposure, count, first, last, evidence,
             heavy=False, found=None):
+        if found and found.get("fix_target"):
+            files = own_sources(found["name"])
+            found = dict(found, fix_target=bool(files), files=files)
         self.problems.append({
             "id": "%s:%s" % (rule, key), "rule": rule, "state": "new", "label": RULE_LABELS[rule],
             "severity": "heavy" if heavy else "review", "fact": fact + cause_words(found),
@@ -772,22 +902,29 @@ class Judge:
         for row in self.rows:
             match = row.get("match") if isinstance(row, dict) else None
             if not (isinstance(match, dict) and isinstance(match.get("rule"), str) and match["rule"]
-                    and isinstance(match.get("key"), str) and match["key"]):
+                    and isinstance(match.get("key"), str) and match["key"]
+                    and (match.get("cause") is None or isinstance(match["cause"], str) and match["cause"])):
                 rid = row.get("id") if isinstance(row, dict) else None
                 kept.append({"id": "ledger:%s" % rid, "rule": "ledger", "state": "new", "label": "ledger",
                              "fact": "ledger row %s names no exact rule and key, so it judges nothing" % rid,
                              "value": 1, "limit": 0, "unit": "rows", "window_h": None, "exposure": len(self.rows),
                              "count": 1, "first_seen": None, "last_seen": None, "evidence": [], "ledger": rid})
+        shown = set()
         for problem in self.problems:
             last = problem.pop("_last")
+            name = (problem.get("cause") or {}).get("name")
             row = next((r for r in self.rows if isinstance(r, dict) and isinstance(r.get("match"), dict)
-                        and "%s:%s" % (r["match"].get("rule"), r["match"].get("key")) == problem["id"]), None)
+                        and "%s:%s" % (r["match"].get("rule"), r["match"].get("key")) == problem["id"]
+                        and r["match"].get("cause") in (None, name)), None)
             if row:
                 status = row.get("status")
                 if status in DISMISSED:
                     continue
                 problem["ledger"] = problem["id"] = row.get("id")
-                if status == "fixed-pending":
+                shown.add(row.get("id"))
+                if status == "fixed-pending" and row["match"].get("cause"):
+                    self.prove(problem, row)
+                elif status == "fixed-pending":
                     problem["state"] = "fixed-pending"
                 elif status == "fixed":
                     fixed_at = max([iso_epoch(f.get("at")) or 0
@@ -796,7 +933,30 @@ class Judge:
                 else:
                     problem["state"] = "open"
             kept.append(problem)
+        for row in [r for r in self.rows if isinstance(r, dict)]:
+            match = row.get("match")
+            if row.get("id") in shown or row.get("status") != "fixed-pending" or not isinstance(match, dict) \
+                    or not isinstance(match.get("cause"), str) or match.get("rule") not in RULE_LABELS:
+                continue
+            problem = {"id": row.get("id"), "rule": match["rule"], "state": "fixed-pending",
+                       "label": RULE_LABELS[match["rule"]], "severity": "review",
+                       "fact": "%s fixed for %s" % (RULE_LABELS[match["rule"]], match["cause"]), "value": None,
+                       "limit": None, "unit": None, "window_h": None, "exposure": None, "count": None,
+                       "first_seen": None, "last_seen": None, "evidence": [], "ledger": row.get("id"),
+                       "cause": {"name": match["cause"], "share": None, "owner": "own", "fix_target": True}}
+            if self.prove(problem, row) == "proven" and self.now - (problem["proof"].get("since") or 0) > PROOF_SHOW_S:
+                continue
+            kept.append(problem)
         self.problems = kept
+
+    def prove(self, problem, row):
+        since = fix_since(row)
+        found = dict(proof(row["match"]["cause"], row["match"]["rule"], since, self.now, self.nightly or {}), since=since)
+        problem["proof"] = found
+        problem["state"] = {"proven": "watch", "refused": "open"}.get(found["verdict"], "fixed-pending")
+        problem["fact"] += " · %s · %s" % ({"proven": "fixed", "refused": "not proven"}.get(
+            found["verdict"], "unproven"), found["why"])
+        return found["verdict"]
 
 
 def tick_evidence(row, text):
@@ -1014,6 +1174,60 @@ def view(doc):
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------- proofs
+
+
+def cause_row(rows, name, rule=None):
+    found = [r for r in rows if isinstance(r, dict) and isinstance(r.get("match"), dict)
+             and r["match"].get("cause") == name and (rule is None or r["match"].get("rule") == rule)]
+    return found[-1] if found else None
+
+
+def check(name, rule=None, since=None, now=None):
+    """The proof of a fix of one cause: (exit code 0 proven | 1 refused | 3 pending, line)."""
+    now = time.time() if now is None else now
+    row = cause_row((read_json(ledger_path(), {}) or {}).get("rows") or [], name, rule)
+    rule = rule or ((row or {}).get("match") or {}).get("rule")
+    if rule not in RULE_LABELS:
+        return 1, "%s: no ledger row names this cause, and no --rule was given" % name
+    since = since if since is not None else fix_since(row)
+    found = proof(name, rule, since, now)
+    return {"proven": 0, "refused": 1}.get(found["verdict"], 3), "%s %s: %s · %s" % (
+        name, rule, found["verdict"], found["why"])
+
+
+def check_record(record_file, decisions_file, now=None):
+    """Close gate of a System fixer run: each `fixed` problem has a fixed-pending ledger row naming its cause with a
+    fix record, and a births/CPU cause has a baseline a later proof can measure. Returns the faults."""
+    now = time.time() if now is None else now
+    record = read_json(record_file, {}) or {}
+    worktree = ([w for w in record.get("worktrees") or () if isinstance(w, str)] or [None])[0]
+    ledger = os.path.join(worktree, "share", "system-ledger.json") if worktree else ""
+    rows = (read_json(ledger if os.path.isfile(ledger) else ledger_path(), {}) or {}).get("rows") or []
+    problems = {p.get("id"): p for p in record.get("problems") or () if isinstance(p, dict)}
+    faults = []
+    try:
+        with open(decisions_file, encoding="utf-8") as handle:
+            lines = [line.rstrip("\n").split("\t") for line in handle]
+    except OSError as error:
+        return ["cannot read %s: %s" % (decisions_file, error)]
+    for parts in lines:
+        problem = problems.get(parts[0]) if len(parts) >= 2 and parts[1] == "fixed" else None
+        if not problem or problem.get("rule") in ("ledger", "collector") or not problem.get("cause"):
+            continue
+        name, rule = problem["cause"], problem.get("rule")
+        row = cause_row(rows, name, rule)
+        if not row or row.get("status") != "fixed-pending" or not [f for f in row.get("fixes") or () if isinstance(f, dict)]:
+            faults.append("%s: fixed, but no fixed-pending ledger row matches {rule: %s, cause: %s} with a fixes[] entry: "
+                          "the doctor proves a fix of that cause only through such a row" % (parts[0], rule, name))
+            continue
+        if rule in RATE_RULES:
+            found = proof(name, rule, now, now)
+            if found["verdict"] == "refused":
+                faults.append("%s: %s, so no births/s or CPU drop can prove this fix" % (parts[0], found["why"]))
+    return faults
+
+
 # ---------------------------------------------------------------- agent and install
 
 
@@ -1095,13 +1309,38 @@ def uninstall_agent():
 
 
 def main(argv=None):
+    global RECORD
     parser = argparse.ArgumentParser(prog="system-doctor", description=__doc__.split("\n")[0])
     parser.add_argument("command", nargs="?", default="judge",
-                        choices=("judge", "tick", "nightly", "agent", "install-agent", "uninstall-agent"))
+                        choices=("judge", "tick", "nightly", "agent", "install-agent", "uninstall-agent", "check"))
+    parser.add_argument("cause", nargs="?", help="check: the cause (a script's basename) whose fix to prove")
     parser.add_argument("--json", action="store_true", help="judge: print the document and write nothing")
     parser.add_argument("--quiet", action="store_true", help="print nothing")
+    parser.add_argument("--rule", help="check: the rule the fix answers (default: the cause's ledger row)")
+    parser.add_argument("--since", help="check: when the fix landed, epoch or ISO (default: its ledger fix's commit)")
+    parser.add_argument("--record", help="check: a doctor-fix run record to gate at close, with --decisions")
+    parser.add_argument("--decisions", help="check --record: the close's decisions file")
     args = parser.parse_args(argv)
     started = time.time()
+    if args.command == "check":
+        RECORD = False
+        if args.record:
+            if not args.decisions:
+                parser.error("check --record needs --decisions")
+            faults = check_record(args.record, args.decisions)
+            for fault in faults:
+                print(fault)
+            return 1 if faults else 0
+        if not args.cause:
+            parser.error("check needs a cause or --record")
+        since = None
+        if args.since:
+            since = float(args.since) if re.match(r"^\d+(\.\d+)?$", args.since) else iso_epoch(args.since)
+            if since is None:
+                parser.error("--since is neither an epoch nor an ISO time: %s" % args.since)
+        code, text = check(args.cause, args.rule, since)
+        print(text)
+        return code
     if args.command == "tick":
         row = tick()
         if not args.quiet:
@@ -1113,7 +1352,6 @@ def main(argv=None):
             print(json.dumps({k: v for k, v in result.items() if k != "reports"} | {"reports": len(result["reports"])}))
         return 0
     if args.command == "agent":
-        global RECORD
         RECORD = bool(agent())
         return 0
     if args.command == "install-agent":

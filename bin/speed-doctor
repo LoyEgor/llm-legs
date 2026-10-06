@@ -122,7 +122,7 @@ def shown_levers(levers):
 SPEED_RULES = ("regression", "opportunity", "time_floor")
 COVERS = {"chat": (("wait", "*"), ("wait_cut", "*"), ("local_slow", "*")),
           "background/statusline": (("statusline", "*"),),
-          "machine/contention": (("load", "busy"), ("load", "kernel"), ("load", "forks"), ("load", "unseen"))}
+          "machine/contention": (("load", "busy"), ("load", "unseen"))}
 HEAVY_TEST_S, HOT_CPU_MS_DAY, HOT_MIN_DAYS = float(C.LIMITS["heavy_test_s"]), 60000.0, 3
 KEEP_WORDS = C.KEEP_WORDS
 TEST_LEVER = {"component": "chat/tests", "lever": "speed up the suite and keep every check", "effort": "M",

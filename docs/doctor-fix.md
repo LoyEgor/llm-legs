@@ -301,3 +301,19 @@ refuses it, its snapshot is empty, `check` fails): its problems are for Egor to 
 - Delete both copies' old paths of a cross-repository merge in one night: the shared module and the
   callers land first (ledger row `merges: [{stage: "migrated", night}]`), the old copy on a later night.
 - Loosen `LIMITS`, the ledger's protections or a verdict: that is a handoff to the owner.
+
+## System doctor
+
+Owner: `share/system-ledger.json` `owner`. Design: `docs/system-doctor-design.md`. Scope: problems whose
+top cause is an own script of the sweep repositories; Apple and third-party causes never reach you.
+
+- Read each problem's `fact` and `cause` in `~/.cache/system-doctor/latest.json`, its `causes`
+  (births and CPU by script) and the packet's levers. Find what makes that script spawn or burn CPU.
+- Output-equivalent changes only; never touch a model, effort or thinking knob (close refuses one).
+- Record a fix as a ledger row `{id, title, status: "fixed-pending", match: {rule, key, cause},
+  fixes: [{at, by, files, in: null, regressed_at: null}]}`. Close runs `bin/system-doctor check
+  --record`: a `fixed` births/CPU cause needs that row and 30 sightings in the 7 days before.
+- Proof is the doctor's (design, Proof): `bin/system-doctor check <cause>`. Not proven stays open
+  with its numbers for the next run.
+- The judge (`LIMITS`, `PROOF`, the ledger's dismissals, `tests/test_system_doctor.sh` pins) is not
+  yours to loosen: a handoff to the owner.

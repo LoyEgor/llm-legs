@@ -324,6 +324,18 @@ def snapshot(doctor, doc_file, night=None):
             area = WHOLE_AREA.get("code", "code")
             files += doctor_module("code").unit_paths(problem)
             what = "%s · %s" % (problem.get("group") or rule, problem.get("plan") or "plan in the judgment")
+        elif doctor == "system":
+            found = problem.get("cause") if isinstance(problem.get("cause"), dict) else {}
+            if rule in ("ledger", "collector"):
+                files.append(doctor_script(doctor))
+            elif not found.get("fix_target") and state != "quiet":
+                continue
+            area = WHOLE_AREA.get("system", "system")
+            module = doctor_module("system")
+            if found.get("name"):
+                files += [p for p in (module.source_path(f) for f in strings(found.get("files"))) if p]
+                what = "cause %s · levers: %s" % (found["name"], "; ".join(module.levers(found["name"], rule))
+                                                  or "none listed: measure what this script costs and cut it")
         else:
             if rule == "event-waiting":
                 continue
@@ -336,6 +348,8 @@ def snapshot(doctor, doc_file, night=None):
                                                    "rule_at": rule_at(doctor, rule)}}
         if doctor == "code":
             entry.update({key: problem.get(key) for key in ("group", "units", "files", "repos", "digest", "needs_egor")})
+        if doctor == "system" and isinstance(problem.get("cause"), dict):
+            entry["cause"] = problem["cause"].get("name")
         if state not in ("watch", "fixed-pending"):
             kept.append(entry)
         elif rule == "opportunity" and problem.get("speed") \
@@ -592,7 +606,7 @@ claim_run() { # doctor area night problems-file -> id; refuses (exit 3) while an
   printf '%s\n' "$id"
 }
 
-launch_day() { # llm|harness|code
+launch_day() { # llm|harness|code|system
   local doctor=$1 id prompt opened account session n count
   count=$(check_doc "$doctor") || exit 1
   py snapshot "$doctor" "$(doc_path "$doctor")" >"$runs_dir/.$$.problems" || die "cannot snapshot the $doctor doctor"
@@ -630,7 +644,7 @@ write_brief() { # id worktree -> the brief file
   IFS=$'\t' read -r doctor area night branch < <(jq -r '[.doctor, .area, .night, .branch] | @tsv' "$file")
   mkdir -p "$runs_dir/$id.d" || return 1
   decisions="$runs_dir/$id.d/decisions.tsv"
-  case $doctor in llm) title=LLM ;; harness) title=Harness ;; code) title=Code ;; *) title=Updater ;; esac
+  case $doctor in llm) title=LLM ;; harness) title=Harness ;; code) title=Code ;; system) title=System ;; *) title=Updater ;; esac
   {
     printf 'ROUND: none\n'
     jq -r '.worktrees[1:][] | "ADD-DIR: \(.)"' "$file"
@@ -648,6 +662,8 @@ write_brief() { # id worktree -> the brief file
     printf '6. Report: per problem the verdict and one line of why, the commits (repo@hash) and every handoff.\n\n'
     [ "$doctor" != code ] ||
       printf 'Code runs: every problem carries its judged plan and proof obligations; a deletion lands only through `bin/code-doctor check` (close runs it against `refs/night/%s/base`), never edit through a symlink into another repository, and a cross-repository merge lands in stages over nights (the shared module and the callers first, `merges: [{stage: "migrated", night}]` in the ledger row, the old copy on a later night). Record each landed cleanup with `bin/code-doctor record-fix <cause> --by <run> --files ... --lines-removed N [--mechanism M --canonical PATH --replaced PATH...]`.\n\n' "$night"
+    [ "$doctor" != system ] ||
+      printf 'System runs: each problem names one own cause, a script of the sweep repositories by its basename, and the levers that apply to it. Make output-equivalent changes only: the same output, files and exit codes for the same inputs, fewer processes and less CPU; speed never trades model, effort or thinking (close refuses a changed knob). Record a fix as a `share/system-ledger.json` row whose `match` is `{rule, key, cause}`, status `fixed-pending`, with a `fixes[]` entry; close runs `bin/system-doctor check --record`, and the doctor proves the fix later with `bin/system-doctor check <cause>`: that cause'"'"'s births/s and CPU after the fix reached main against the 7 days before.\n\n'
     ! jq -e --arg rules "$TEST_SPEED_RULES" "$JQ_HAS_RULES" "$file" >/dev/null ||
       printf 'Test speed is this run'"'"'s to fix, never a handoff (`close` refuses one): for `test_long_pole`, `test_daily_cost`, `test_slow` and `suites_at_once` make the suites faster yourself in any sweep repository (an `ADD-DIR:` worktree each): split a long pole into independent suite files that `tests/run-all` runs in parallel, cut redundant cases, make timing asserts load-robust, cache fixtures; every assert keeps its coverage.\n\n'
     ! jq -e --arg rules ' test_hang ' "$JQ_HAS_RULES" "$file" >/dev/null ||
@@ -689,7 +705,7 @@ launch_night() { # doctor night
       *) failed=1; continue ;;
     esac
     pending_id=$id
-    [ "$doctor" != harness ] || locked record_set "$id" '.knobs_at_launch = $k' --argjson k "$(py knob-lines)"
+    [ "$doctor" != harness ] && [ "$doctor" != system ] || locked record_set "$id" '.knobs_at_launch = $k' --argjson k "$(py knob-lines)"
     branch="night/$night/$id"
     wt="$top/.claude/worktrees/night-$night-$id"
     locked record_set "$id" '.branch = $b | .worktrees = [$w]' --arg b "$branch" --arg w "$wt"
@@ -726,7 +742,7 @@ launch_night() { # doctor night
   return "$failed"
 }
 
-launch() { # llm|harness|updater|code [--night <id>]
+launch() { # llm|harness|updater|code|system [--night <id>]
   local doctor=${1:-} reason
   mkdir -p "$runs_dir" || die "cannot make $runs_dir"
   if [ "$doctor" = code ]; then
@@ -734,10 +750,9 @@ launch() { # llm|harness|updater|code [--night <id>]
     [ -z "$reason" ] || die "$reason"
   fi
   case "$doctor:${2:-}" in
-    llm: | harness: | code:) launch_day "$doctor" ;;
+    llm: | harness: | code: | system:) launch_day "$doctor" ;;
     updater:) "${DOCTOR_FIX_VENDOR_CLI_UPDATE:-$repo_root/bin/vendor-cli-update}" now ;;
-    llm:--night | harness:--night | updater:--night | code:--night) [ -n "${3:-}" ] && [ $# -eq 3 ] || usage; launch_night "$doctor" "$3" ;;
-    system:*) die "the System doctor only reports until its fixers are routed (docs/system-doctor-design.md, phase 2)" ;;
+    llm:--night | harness:--night | updater:--night | code:--night | system:--night) [ -n "${3:-}" ] && [ $# -eq 3 ] || usage; launch_night "$doctor" "$3" ;;
     *) usage ;;
   esac
 }
@@ -874,7 +889,7 @@ close_run() { # id --decisions <file> note...
   [ -r "$decisions" ] || die "cannot read $decisions"
   doctor=$(jq -r .doctor "$file")
   case $doctor in
-    llm | harness | code) ;;
+    llm | harness | code | system) ;;
     updater) [ "$(jq -r "$JQ_AREA area" "$file")" != release ] ||
       die "run $id is an updater release run: it closes with its last event, through vendor-fingerprint close" ;;
     *) die "run $id names no doctor" ;;
@@ -952,7 +967,12 @@ close_run() { # id --decisions <file> note...
       bad+=("markdown grew by ${growth%%$'\n'*} bytes since $base in $wt ($(sed 1d <<<"$growth" | paste -sd, - | sed 's/,/, /g')): markdown is net zero at night — cut stale lines (closed handoffs first, then history, restated code, duplicated rules; ~/.claude/docs/context-file-hygiene.md) until it does not grow")
     done < <(jq -r '.worktrees[]?' "$file")
   fi
-  if [ "$doctor" = harness ] && jq -e '.night != null' "$file" >/dev/null; then
+  if [ "$doctor" = system ]; then
+    while IFS= read -r line; do
+      [ -z "$line" ] || bad+=("system-doctor check: $line")
+    done < <("${DOCTOR_FIX_SYSTEM_DOCTOR:-$repo_root/bin/system-doctor}" check --record "$file" --decisions "$decisions" 2>&1)
+  fi
+  if { [ "$doctor" = harness ] || [ "$doctor" = system ]; } && jq -e '.night != null' "$file" >/dev/null; then
     while IFS= read -r line; do
       [ -z "$line" ] || bad+=("$line")
     done < <(py knobs "$file")
@@ -1014,7 +1034,7 @@ list_runs() { # [doctor] [--open] [--json]
     case $1 in
       --open) open=true ;;
       --json) json=true ;;
-      llm | harness | updater | code) doctor=$1 ;;
+      llm | harness | updater | code | system) doctor=$1 ;;
       *) usage ;;
     esac
     shift
@@ -1028,9 +1048,9 @@ list_runs() { # [doctor] [--open] [--json]
 
 usage_text() {
   cat <<'EOF'
-usage: doctor-fix launch llm|harness|updater|code [--night <night-id>]
+usage: doctor-fix launch llm|harness|updater|code|system [--night <night-id>]
        doctor-fix show <id>
-       doctor-fix runs [llm|harness|updater|code] [--open] [--json]
+       doctor-fix runs [llm|harness|updater|code|system] [--open] [--json]
        doctor-fix close <id> --decisions <file> <note...>   (a night run reruns its doctor in its worktree)
        doctor-fix abandon <id> [--reason TEXT]
        doctor-fix record updater --session <s> --account <a> --command <file> --problems <event id>...   (internal)

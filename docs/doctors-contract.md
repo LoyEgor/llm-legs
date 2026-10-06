@@ -196,8 +196,8 @@ read-modify-write holds the runs directory's lock (`share/store-lock.sh`). Field
 Areas: the LLM doctor's block (from the ledger row, the id or the document's blocks), else its health
 row (the ledger row's `match.health`, or the `health[]` row whose `rules` hold the problem's rule); the
 Harness doctor's section of the rule; else `doctor` (`share/doctor-areas.json` `own`), which is every
-Updater rule but `event-waiting`; the Code doctor's one area `code` (`whole`), labelled a bare
-`Code fixer`. Old runs' `health`, `self` and `machinery` read as `debt`, `doctor`
+Updater rule but `event-waiting`; the Code doctor's one area `code` and the System doctor's one area
+`system` (`whole`), labelled a bare `Code fixer` and `System fixer`. Old runs' `health`, `self` and `machinery` read as `debt`, `doctor`
 and `doctor` (`renamed`). The snapshot keeps the problems not `watch` or
 `fixed-pending`, plus, for the Harness doctor, the top 8 `watch` rows of Hooks and Hook waits by
 value × exposure.
@@ -218,11 +218,11 @@ The menu reads `doctor-fix runs [doctor] [--open] [--json]` (newest first) to sh
 · closed / still open". `doctor-fix show <id>` prints the run and, per problem, the packet: its
 ledger row, earlier decisions on the id, the component and its git history, and the handoffs,
 invariant rows and memory files naming it. Launch:
-- `launch llm|harness|code`: the day chat. Refused when the document's `contract` is not 1 or it is
+- `launch llm|harness|code|system`: the day chat. Refused when the document's `contract` is not 1 or it is
   older than 2 h, when it reads `ok` with no problem and no quiet open row, or while a run of that doctor opened less than
   12 h ago is open; an older open run is marked `abandoned_at`. The chat opens through
   `share/chat-open.sh` on `docs/doctor-fix.md`.
-- `launch llm|harness|updater|code --night <night-id>`: no chat. Per area with problems or quiet rows and no open run
+- `launch llm|harness|updater|code|system --night <night-id>`: no chat. Per area with problems or quiet rows and no open run
   of (doctor, area), a record, a worktree `<repo>/.claude/worktrees/night-<night>-<id>` on its branch,
   and `<runs>/<id>.brief.md`; one line `<id>\t<brief>\t<worktree>` each. Nothing to do prints
   nothing, but a harness night whose Speed section selects nothing first prints `harness: Speed selects nothing:
@@ -368,10 +368,11 @@ System doctor (added 2026-10-06, design `docs/system-doctor-design.md`):
   `hammerspoon-crash`, `job-crash`, `unclean-reboot`; ids `<rule>:<key>` (`machine`, a volume, a
   job name). A ledger row matches `{rule, key}` exactly; a row without both is `ledger:<id>`.
 - Own problem keys: `label` (the menu's short name), `severity` (`review` | `heavy`) and `cause`
-  `{name, share, owner, fix_target}`; `fix_target` is true only for an own cause, Apple and
-  third-party causes are report-only.
+  `{name, share, owner, fix_target, files}`; `fix_target` is true only for an own cause whose name is a
+  file of a sweep repository (`files`, `repo/path`); every other cause is report-only. A proven,
+  refused or pending fix carries `proof` `{verdict, why, since, ...}`.
 - `status` is `blind` while the newest tick is older than 10 min or the nightly pass older than 36 h
   (own key `blind`). Own keys: `measures`, `causes` (births and CPU by cause), `nightly`,
   `costs.tick`, `limits`.
-- Report-only in phase 1: the menu's Fix row is a dim `Fix — report only` and
-  `doctor-fix launch system` refuses.
+- `doctor-fix launch system` snapshots only fix-target causes (plus ledger and collector faults);
+  close runs `bin/system-doctor check --record` (design, Phase 2).

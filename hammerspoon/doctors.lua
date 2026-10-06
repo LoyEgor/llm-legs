@@ -20,7 +20,7 @@ local DOCTORS = {
     ledger = "harness-ledger.json" },
   { key = "updater", fix = "Fix — update and integrate all vendors", env = "UPDATER_DOCTOR", ledger = "updater-ledger.json" },
   { key = "code", fix = "Fix — open a fixer chat", env = "CODE_DOCTOR", ledger = "code-ledger.json" },
-  { key = "system", env = "SYSTEM_DOCTOR", ledger = "system-ledger.json" },
+  { key = "system", fix = "Fix — open a fixer chat", env = "SYSTEM_DOCTOR", ledger = "system-ledger.json" },
 }
 local CODE_GROUPS = { { key = "dead", name = "Dead" }, { key = "heavy", name = "Heavy" },
   { key = "duplicate", name = "Duplicate" }, { key = "ledger", name = "Ledger" } }
@@ -302,7 +302,6 @@ local function nightItem(title, fn)
 end
 
 local function fixItem(doctor, label, run, now)
-  if not label then return dim("Fix — report only") end
   if running(fixTasks[doctor]) then return dim("Fix — opening…") end
   local state, at = runState(run)
   if state == "open" and at and now - at < FIX_BUSY_S then return dim("Fix — fixer running for " .. style.age(now - at)) end

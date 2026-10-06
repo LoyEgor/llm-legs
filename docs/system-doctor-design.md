@@ -77,8 +77,7 @@ source path is env-overridable (`SYSTEM_DOCTOR_<PROBE>`, `SYSTEM_DOCTOR_*_DIRS`,
 - **Retention:** minute rows 14 days, hourly rollups (`hours/<day>.jsonl`) 90 days, daily rows
   (`days.jsonl`) forever.
 - **Document** `~/.cache/system-doctor/latest.json`, in the shape of `docs/doctors-contract.md`.
-  The ledger is `share/system-ledger.json`. The menu row is System, after Speed. Fix shows
-  "report only".
+  The ledger is `share/system-ledger.json`. The menu row is System, after Speed.
 
 Problem rules (`LIMITS`; each names its top attributed cause where known; `fix_target` only when
 the cause is our own):
@@ -96,13 +95,37 @@ the cause is our own):
 | `job-crash` | ≥ 1 crash/day of a job launchd relaunches | — |
 | `unclean-reboot` | ≥ 1 in 7 days (cause: a shutdown stall or panic within 1 h) | — |
 
-## Phase 2 — left
+## Phase 2 — built (2026-10-06)
 
-- **Fixer routing.** `doctor-fix launch system` refuses until then. Phase 2 adds the launch path,
-  the night prose (`docs/night-run.md`) and a `docs/doctor-fix.md` section. One cause, one fixer
-  owner.
-- **Harness overlap.** Harness's Load section already judges forks (red 2,500), kernel (red 0.5)
-  and swap share (red 0.9). Phase 2 decides which doctor owns those rows.
+- **Own causes only.** A cause is a fix target when its owner is `own` and its basename names a file
+  of a sweep repository (`own_sources`: `git ls-files` of `~/.claude/sweep-repos`; Hammerspoon maps to
+  `hammerspoon/init.lua`); `cause.files` lists them as `repo/path`. Everything else reads
+  `(<owner>, report only)` and never enters a fixer snapshot or a handoff.
+- **Fixer routing.** `doctor-fix launch system [--night <id>]`, one area `system` (`whole`), so one run
+  owns every cause of a night. The component is the cause's files; `what` names its levers (`LEVERS`,
+  the list below). The night brief adds the rules: output-equivalent changes only, and speed never
+  trades model, effort or thinking (close refuses a knob change, as for Harness).
+- **Proof** (`PROOF`, in the judge digest). A fix is a ledger row matching `{rule, key, cause}`, status
+  `fixed-pending`, with a `fixes[]` entry. Close runs `system-doctor check --record`: the row exists and
+  a births/CPU cause has a baseline. The document then proves it once the fix's commit is in main
+  (`fix_commit`, `fix_landed`):
+  - `spawn`, `kernel`: the cause's attributed births/s and CPU cores after landing against the 7 days
+    before. The window scales with the cause's cadence: 30 sightings at the baseline's rate (covered
+    seconds ÷ ticks it was seen in), at least 2 h and at most 7 days, so a per-render script proves in
+    2 h and a nightly one waits the week. Fewer than 30 sightings before is no baseline: refused.
+    Proven when births or CPU fell ≥ 25 % and neither rose > 25 %.
+  - crash, reboot and disk-writes rules: no report of the cause's kind since landing for 7 days;
+    any report refuses it.
+  - Proven reads `watch` (`proof.verdict`, counted `proved` by the night report) for 7 days; refused
+    reads `open` with the numbers; pending reads `fixed-pending`. `system-doctor check <cause>` prints
+    the same proof (exit 0 proven, 1 refused, 3 pending).
+- **Harness overlap.** The machine rows are this doctor's alone: Harness's Load no longer judges
+  forks, kernel or swap (their `LIMITS` are gone); it keeps CPU busy outside requested work,
+  unaccounted CPU and the memory guard. Its kernel and fork samples stay for its week table, day
+  summaries and change impact; Speed's `machine/contention` covers only `busy` and `unseen`.
+
+## Phase 3 — left
+
 - **Collectors not built:**
   - the newborn census on a storm (≥ 2,000/s for 2 min or sys ≥ 0.5, one 60 s census at most every
     30 min);

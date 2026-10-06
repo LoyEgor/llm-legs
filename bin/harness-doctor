@@ -44,13 +44,8 @@ LIMITS = {
     "hook_min_samples": 5,
     "busy": 0.90,
     "busy_note": 0.70,
-    "kernel": 0.50,
-    "kernel_note": 0.30,
-    "forks": 2500,
-    "forks_note": 1000,
     "unseen_cores": 5.0,
     "unseen_note": 2.0,
-    "swap_share": 0.90,
     "suites_at_once": 5,
     "suites_note": 3,
     "test_slow_ratio": 2.0,
@@ -1338,11 +1333,7 @@ def take_sample(state, now, phase=lambda name: None, burst=None):
             sample["kernel"] = round(delta[1] / total, 3)
     if ticks:
         state["ticks"] = [now, ticks]
-    swap, level = sysctl("vm.swapusage", "kern.memorystatus_level")
-    used = re.search(r"used = ([\d.]+)M", swap)
-    total = re.search(r"total = ([\d.]+)M", swap)
-    if used and total:
-        sample["swap_mb"], sample["swap_total_mb"] = float(used.group(1)), float(total.group(1))
+    level, = sysctl("kern.memorystatus_level")
     if level.strip().isdigit():
         sample["mem_free"] = int(level)
     sample["visible"], sample["guard"] = visible_cores(now)
@@ -3236,8 +3227,6 @@ def load_section(samples, now):
     pct = fmt_pct
     busy, busy7 = series("busy", hour), series("busy", week)
     calm_busy = series("busy", hour, pool=quiet)
-    kernel, kernel7 = series("kernel", hour), series("kernel", week)
-    forks, forks7 = series("forks", hour), series("forks", week)
     unseen = lambda s: sample_value(s, "unseen")
     gap, gap7 = series(None, hour, unseen), series(None, week, unseen)
     calm_gap = series(None, hour, unseen, quiet)
@@ -3246,34 +3235,17 @@ def load_section(samples, now):
         measure("CPU busy", busy, busy7, pct, level(calm_busy, LIMITS["busy_note"], LIMITS["busy"]), "load:busy",
                 "CPU %s busy%s, usual under %s" % (pct(calm_busy), asked, pct(LIMITS["busy_note"])), LIMITS["busy"],
                 quiet, calm_busy),
-        measure("  of it the kernel", kernel, kernel7, pct, level(kernel, LIMITS["kernel_note"], LIMITS["kernel"]),
-                "load:kernel", "the kernel takes %s of CPU, usual under %s" % (pct(kernel),
-                                                                                pct(LIMITS["kernel_note"])),
-                LIMITS["kernel"]),
-        measure("new processes", forks, forks7, lambda v: "–" if v is None else fmt_count(v) + " /s",
-                level(forks, LIMITS["forks_note"], LIMITS["forks"]), "load:forks",
-                "%s new processes a second, usual under %s" % (fmt_count(forks or 0), fmt_count(LIMITS["forks_note"])),
-                LIMITS["forks"]),
         measure("unaccounted CPU", gap, gap7, lambda v: "–" if v is None else "%.1f cores" % v,
                 level(calm_gap, LIMITS["unseen_note"], LIMITS["unseen_cores"]), "load:unseen",
                 "%.1f of %d cores go to short-lived processes and the kernel%s" % (calm_gap or 0, ncpu, asked),
                 LIMITS["unseen_cores"], quiet, calm_gap),
     ]
-    swap, swap_total, guard = latest.get("swap_mb"), latest.get("swap_total_mb"), latest.get("guard")
-    swap_share = swap / swap_total if swap is not None and swap_total else None
+    guard = latest.get("guard")
     rows.append(row(["memory free", "%s %%" % latest["mem_free"] if latest.get("mem_free") is not None else "–", ""],
                     [1] if guard else [], dim=not guard, key="load:memory",
                     say="the memory guard raised an alarm" if guard else None,
                     judge=verdict("load", "memory_guard", 1 if guard else 0, 0, "alarms", 0, 1 if latest else 0,
                                   "red" if guard else None)))
-    swap_level = level(swap_share, 0.5, LIMITS["swap_share"])
-    rows.append(row(["swap used", "%.1f GB" % (swap / 1024.0) if swap is not None else "–", ""],
-                    [1] if swap_level == "red" else [], dim=swap_level == "dim", key="load:swap",
-                    say="swap %.1f GB, nearly full" % (swap / 1024.0) if swap is not None and swap_level != "dim"
-                    else None, judge=verdict("load", "swap_share", swap_share, LIMITS["swap_share"], "", 0,
-                                             1 if latest else 0, "red" if swap_level == "red" else
-                                             "watch" if swap_level == "note" else None,
-                                             bad=int(swap_share is not None and swap_share > LIMITS["swap_share"]))))
     tests_now = latest.get("tests")
     rows.append(row(["tests running", fmt_count(tests_now) if tests_now is not None else "–", ""], dim=not tests_now))
     columns = ["", "last hour", "7 days" if first <= week + 3600 else
@@ -3281,7 +3253,7 @@ def load_section(samples, now):
     if first > hour - 1800:
         columns = drop_column(rows, columns, 2)
     return section("Load", rows, columns, [False, True, True],
-                   ok="CPU %s busy, swap %.1f GB" % (pct(busy), (swap or 0) / 1024.0),
+                   ok="CPU %s busy" % pct(busy),
                    blind="" if busy is not None else "no load sample in the last hour")
 
 

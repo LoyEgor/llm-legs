@@ -709,13 +709,22 @@ def sample(t, **kw):
             "swap_mb": 100, "swap_total_mb": 1000}
     base.update(kw)
     return base
-for key, bad in (("busy", 0.95), ("kernel", 0.6), ("forks", 3000), ("visible", 1.0), ("guard", True),
-                 ("swap_mb", 950)):
+for key, bad in (("busy", 0.95), ("visible", 1.0), ("guard", True)):
     extra = {key: bad, "busy": 0.95} if key == "visible" else {key: bad}
     red = [sample(T - 600, **extra), sample(T - 300, **extra)]
     check(state_of(m.load_section(red, T)) == "problem", "Load: %s over its limit is red" % key)
     check(state_of(m.load_section(red + [sample(T + 3000), sample(T + 3300)], T + 3600)) == "ok",
           "J Load: %s clears when the next hour is calm" % key)
+owned = m.load_section([sample(T - 600, kernel=0.9, forks=9000, swap_mb=990), sample(T - 300, kernel=0.9, forks=9000,
+                                                                                    swap_mb=990)], T)
+check(state_of(owned) == "ok" and not [r for r in owned["rows"] if r.get("key") in ("load:kernel", "load:forks", "load:swap")]
+      and not [j for r in owned["rows"] for j in r.get("judge", []) if j["ident"] in ("kernel", "forks", "swap_share")],
+      "Load raises no row the System doctor owns: the kernel share, new processes and swap are judged there alone")
+kept = m.summarize_day(m.local_day(T), [], [sample(m.day_start(m.local_day(T)) + 60, kernel=0.6, forks=3000)], None, [])
+check(kept["load"]["kernel"] == 0.6 and kept["load"]["forks"] == 3000
+      and [n for n, _, _ in m.WEEK_METRICS if n in ("kernel %", "new proc/s")] == ["kernel %", "new proc/s"]
+      and m.impact_measures("load:busy") == ("busy", "forks"),
+      "Load keeps the kernel and fork samples its day summaries, week table and change impact read")
 def load_levels(samples):
     return {j["ident"]: j["level"] for r in m.load_section(samples, T)["rows"] for j in r.get("judge", [])
             if j["ident"] in ("busy", "unseen")}
@@ -777,9 +786,8 @@ check(later["state"] == "ok" and not later["lead"] and "floor:bash:trivial" not 
       "J: a cleared area drops its cause line and its first-red record")
 
 PINNED = {"call_s": 5.0, "call_note_s": 3.0, "call_min_calls": 5, "cut_share": 0.01, "cut_min": 3, "event_s": 5.0,
-          "hook_p50_s": 1.0, "hook_min_samples": 5, "busy": 0.90, "busy_note": 0.70, "kernel": 0.50,
-          "kernel_note": 0.30, "forks": 2500, "forks_note": 1000, "unseen_cores": 5.0, "unseen_note": 2.0,
-          "swap_share": 0.90, "suites_at_once": 5, "suites_note": 3, "test_slow_ratio": 2.0, "test_slow_min_s": 600,
+          "hook_p50_s": 1.0, "hook_min_samples": 5, "busy": 0.90, "busy_note": 0.70,
+          "unseen_cores": 5.0, "unseen_note": 2.0, "suites_at_once": 5, "suites_note": 3, "test_slow_ratio": 2.0, "test_slow_min_s": 600,
           "test_slow_fresh_s": 6 * 3600, "test_cost_window_s": 24 * 3600, "long_pole_share": 0.5,
           "long_pole_min_s": 300, "test_day_s": 2 * 3600, "test_day_note_s": 3600, "loose_note": 6700, "loose_red": 13400, "store_entries": 50000,
           "store_bytes": 1 << 30, "store_growth": 2.0, "impact_min_calls": 3, "floor_ms": 300, "floor_note_ms": 150,
