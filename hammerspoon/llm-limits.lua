@@ -1739,6 +1739,35 @@ local function harnessLine(flags, spans, text)
   return { title = title or infoTitle(text, false, dim) }
 end
 
+-- A row's action is an argv, never a shell string: /usr/bin/open as is, or a bare name that exists in
+-- this repository's bin/. Anything else leaves the row disabled.
+local function harnessAction(packed)
+  local argv = {}
+  for word in (packed .. "\31"):gmatch("([^\31]*)\31") do argv[#argv + 1] = word end
+  local head = argv[1] or ""
+  local path
+  if head == "/usr/bin/open" then
+    path = head
+  elseif repoRoot and head:match("^[%w][%w%.%-_]*$") then
+    path = repoRoot .. "/bin/" .. head
+    local attrs = hs.fs.attributes(path)
+    if not attrs or attrs.mode ~= "file" then path = nil end
+  end
+  if not path then return nil end
+  return path, { table.unpack(argv, 2) }
+end
+
+function M.runHarnessAction(path, args)
+  local task = hs.task.new(path, function(exitCode, _, stdErr)
+    logAction("harness-action-exit", path .. " exit=" .. tostring(exitCode)
+      .. (exitCode ~= 0 and stdErr and stdErr ~= "" and (" " .. stdErr:gsub("%s+$", "")) or ""))
+  end, args)
+  if not task then return end
+  task:setEnvironment(M.diagnosticsEnvironment())
+  logAction("harness-action-start", path .. " " .. table.concat(args, " "))
+  task:start()
+end
+
 -- menu.txt is laid out by bin/harness-doctor; decoding its JSON here cost ~40 ms per menu open.
 -- The collector replaces the file by rename, so a new inode is a new document; callers must not
 -- mutate the cached items (harnessDoctorEntry copies before adding Refresh).
@@ -1764,8 +1793,22 @@ local function readHarnessMenu()
     if tag and tag ~= window then
       for deeper = depth + 1, #stack do stack[deeper] = nil end
     elseif parent then
+      local actionPath, actionArgs
+      if flags:find("a", 1, true) then
+        local shown, packed = text:match("^(.-)\t([^\t]*)$")
+        if shown then
+          text = shown
+          actionPath, actionArgs = harnessAction(packed)
+        end
+      end
       local item = harnessLine(flags, spans, text)
-      if item.title ~= "-" then item.disabled = true end
+      if item.title ~= "-" then
+        if actionPath then
+          item.fn = function() M.runHarnessAction(actionPath, actionArgs) end
+        else
+          item.disabled = true
+        end
+      end
       parent[#parent + 1] = item
       local children = {}
       stack[depth + 1] = children

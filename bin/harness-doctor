@@ -2489,8 +2489,10 @@ def running_now(now):
 # ---------------------------------------------------------------- document
 
 
-def row(cells, red=(), dim=False, menu=None, key=None, say=None, green=(), judge=None, head=None):
-    out = {"cells": [str(c) for c in cells], "red": sorted(set(red)), "dim": bool(dim)}
+def row(cells, red=(), dim=False, menu=None, key=None, say=None, green=(), judge=None, head=None, action=None):
+    out = {"cells": [str(c) for c in cells], "red": sorted(set(red)), "dim": bool(dim) and not action}
+    if action:
+        out["action"] = [str(a) for a in action]
     if head:
         out["head"] = head
     if green:
@@ -4218,6 +4220,7 @@ def deploys_section(now):
 
 
 BROWSE_PROBE_S = 20
+BROWSER_ACTIONS = {"chrome": ["/usr/bin/open", "-b", "com.google.Chrome"], "dia": ["dia-js", "--open"]}
 BROWSER_RUN_FAILURES = [
     ("BROWSER_TABS_BROKEN", re.compile(r"^OUTCOME: BROWSER_TABS_BROKEN\b", re.M), "TABS_BROKEN", "ranked last 24 h",
      "worker-run ranks the device last for 24 h and a success clears it"),
@@ -4273,17 +4276,18 @@ def browser_section(now, write=False):
         write_json(misses_path, misses)
     rows, names = [], {}
 
-    def emit(label, state, found, dim_when_clean=True):
+    def emit(label, state, found, action=None):
         judges = [verdict(rule, ident, 1, 0, "findings", 0, 1, level, fact="%s · fix: %s" % (say, fix),
                           evidence=[evidence(now, ref, say)], bad=1) for level, rule, ident, say, _, fix, ref in found]
         rows.append(row([label, state, " · ".join(f[5] for f in found if f[5])],
-                        [1] if any(f[0] == "red" for f in found) else [], dim=dim_when_clean and not found,
+                        [1] if any(f[0] == "red" for f in found) else [], dim=not found, action=action,
                         key="browser:%s:%s" % (found[0][1], found[0][2]) if found else None,
                         say=" · ".join("%s · fix: %s" % (f[3], f[5]) for f in found) or None,
                         head=found[0][4] if found else None, judge=judges or None))
 
     for target, label in (("chrome", "Chrome"), ("dia", "Dia")):
         data = probes.get(target)
+        action = BROWSER_ACTIONS[target]
         if not data:
             if misses[target] < 2:
                 rows.append(row([label, "no answer this run", ""], dim=True))
@@ -4292,7 +4296,7 @@ def browser_section(now, write=False):
                      [("watch", "browser-target", target, "%s: worker-run browse gave no JSON %d collector runs in a "
                        "row (%d s timeout)" % (label, misses[target], BROWSE_PROBE_S),
                        "a browser target could not be probed", "worker-run browse --target %s" % target,
-                       "browse:" + target)])
+                       "browse:" + target)], action)
             continue
         running = (data.get(target) or "absent") != "absent"
         plan = data.get("plan") or {}
@@ -4344,7 +4348,10 @@ def browser_section(now, write=False):
                               "--enable-applescript-javascript, so the Dia launch watcher did not relaunch it; "
                               "dia-js --relaunch quits and reopens Dia and unsaved page input may be lost",
                               "Dia cannot run JavaScript in Egor's tabs", "dia-js --relaunch", "browse:dia"))
-        emit(label, " · ".join(parts), found)
+        emit(label, " · ".join(parts), found, action)
+        if target == "dia" and running and js == "off":
+            rows.append(row(["Restart Dia with AppleScript JS — unsaved input may be lost", "", ""],
+                            action=["dia-js", "--relaunch"]))
 
     try:
         with open(os.path.join(runs, "browse", "devices.json")) as handle:
@@ -5020,9 +5027,12 @@ class MenuLines:
     def text(self):
         return "\n".join(self.lines) + "\n"
 
-    def emit(self, depth, flags, spans, text):
-        self.lines.append("%d\t%s\t%s\t%s" % (depth, flags + self.tag, ",".join("%s:%d:%d" % s for s in spans),
-                                              text.replace("\t", " ").replace("\n", " ") or " "))
+    def emit(self, depth, flags, spans, text, action=None):
+        text = text.replace("\t", " ").replace("\n", " ") or " "
+        if action:
+            flags += "a"
+            text += "\t" + "\x1f".join(a.replace("\t", " ").replace("\n", " ") for a in action)
+        self.lines.append("%d\t%s\t%s\t%s" % (depth, flags + self.tag, ",".join("%s:%d:%d" % s for s in spans), text))
 
     def free(self, item, depth):
         text = item["cells"][0]
@@ -5035,7 +5045,7 @@ class MenuLines:
                     lead = len(piece[:len(piece) - len(piece.lstrip(" ·,"))].encode())
                     spans.append((style, at + lead, size - lead))
                 at += size
-        self.emit(depth, "d" if item.get("dim") else "", spans, text)
+        self.emit(depth, "d" if item.get("dim") else "", spans, text, item.get("action"))
         if item.get("menu"):
             self.layout(item["menu"], depth + 1)
 
@@ -5064,7 +5074,7 @@ class MenuLines:
             if source is None:
                 self.emit(depth, "d", [], text)
             else:
-                self.emit(depth, "d" if source.get("dim") else "", spans, text)
+                self.emit(depth, "d" if source.get("dim") else "", spans, text, source.get("action"))
                 if source.get("menu"):
                     self.layout(source["menu"], depth + 1)
 

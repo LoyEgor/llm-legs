@@ -2,6 +2,7 @@
 # dia-js (--active | --url-contains <text> | --tab-id <id>) [--file <js>] [--focus]   JS from --file or stdin
 # dia-js --list                      every open Dia tab: id, front (1/0), URL, title
 # dia-js --relaunch [--auto]         restart a Dia that runs without --enable-applescript-javascript
+# dia-js --open                      bring Dia forward, launching a closed one with the flag
 # Runs JavaScript in a tab Egor already has open in Dia and prints its result. AppleScript JavaScript
 # exists only in a Dia started with the flag, so a Dia without it is quit and reopened with it first.
 {
@@ -18,7 +19,7 @@ GUARD_S=${DIA_JS_GUARD_S:-120}
 POLL_S=${DIA_JS_POLL_S:-0.5}
 
 usage() {
-  sed -n '2,4s/^# //p' "$0" >&2
+  sed -n '2,5s/^# //p' "$0" >&2
   exit 2
 }
 
@@ -160,6 +161,7 @@ while [ "$#" -gt 0 ]; do
     --focus) focus=1; shift ;;
     --list) mode=list; shift ;;
     --relaunch) mode=relaunch; shift ;;
+    --open) mode=open; shift ;;
     --auto) auto=true; shift ;;
     *) usage ;;
   esac
@@ -167,6 +169,7 @@ done
 
 state=$(dia_main | head -n1)
 case "$mode" in
+  open) exec "$OPEN" -b "$DIA_ID" --args --enable-applescript-javascript ;;
   list)
     [ -n "$state" ] || die 'Dia is not running'
     tabs_list

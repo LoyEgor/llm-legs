@@ -118,6 +118,12 @@ touch -t 202601010000 "$WORK/state/last-relaunch"
 "$DJ" --relaunch --auto >/dev/null 2>&1
 assert grep -q -- '--enable-applescript-javascript' "$WORK/open.log"
 
+# 5b: --open brings Dia forward and a closed one starts with the flag
+reset ps.bare tabs.before tabs.after
+"$DJ" --open
+assert grep -qx -- '-b company.thebrowser.dia --args --enable-applescript-javascript' "$WORK/open.log"
+assert test ! -e "$WORK/osa.log"
+
 # 6: a Dia that never quits is left alone
 reset ps.bare tabs.before tabs.after
 printf '#!/bin/sh\ncat >/dev/null\nshift\ncase "$1" in count) echo 3 ;; front) echo https://b.example/ ;; esac\n' >"$WORK/bin/osascript-stuck"

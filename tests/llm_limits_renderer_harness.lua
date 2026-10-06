@@ -3828,6 +3828,45 @@ do
   harnessMenuText = nil
 end
 
+-- A harness row's action runs only an allowlisted argv: /usr/bin/open, or a bare name in the repo's bin/.
+do
+  harnessMenuText = "T\t0\t" .. os.time() .. "\tHarness doctor: ok\n"
+    .. "0\ta\t\tChrome  Egor work → com · JS on\t/usr/bin/open\31-b\31com.google.Chrome\n"
+    .. "0\tda\t\tDia     work → com · not running\tdia-js\31--open\n"
+    .. "0\ta\t\tShell   x\t/bin/sh\31-c\31touch /tmp/x\n"
+    .. "0\ta\t\tUp      x\t../bin/dia-js\n"
+    .. "0\ta\t\tGone    x\tno-such-tool\n"
+    .. "0\td\t\tRuns    quiet\n"
+  local tasks = {}
+  local acting = loadModule(roleFixture, captureTasks(tasks), nil, nil, nil, nil, function(path)
+    if path:match("/bin/dia%-js$") then return { mode = "file" } end
+  end)
+  local rows = acting.harnessDoctorEntry().menu
+  assert(titleText(rows[1]) == "Chrome  Egor work → com · JS on" and rows[1].fn and not rows[1].disabled,
+    "a row with an allowlisted action is not an enabled item without its argv in the title")
+  assert(titleText(rows[2]) == "Dia     work → com · not running" and rows[2].fn and not rows[2].disabled,
+    "a dim row with an action stayed disabled")
+  for index = 3, 6 do
+    assert(rows[index].disabled and not rows[index].fn, "a non-allowlisted action made a clickable row: " .. titleText(rows[index]))
+  end
+  local function started()
+    local found = {}
+    for _, task in ipairs(tasks) do
+      if task.path == "/usr/bin/open" or task.path:match("/bin/") then found[#found + 1] = task end
+    end
+    return found
+  end
+  assert(#started() == 0, "rendering the menu ran a row action")
+  rows[1].fn()
+  rows[2].fn()
+  local ran = started()
+  assert(#ran == 2 and ran[1].path == "/usr/bin/open" and table.concat(ran[1].args, " ") == "-b com.google.Chrome",
+    "the Chrome row did not run /usr/bin/open -b com.google.Chrome")
+  assert(ran[2].path:match("^/.+/bin/dia%-js$") and table.concat(ran[2].args, " ") == "--open",
+    "a bare tool name did not resolve inside the repository's bin/")
+  harnessMenuText = nil
+end
+
 -- Saying nothing about a click already in flight is what makes a menu look dead and earns the
 -- second click that changes the state back.
 do

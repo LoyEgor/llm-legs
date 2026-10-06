@@ -382,6 +382,10 @@ depth<TAB>flags<TAB>spans<TAB>text
 - `flags`: letters, then an optional `w<hours>` token (`dw24`). `d` is dim, `s` is a separator.
   `w<hours>` marks every line of one window's comparison (§2.2), nested lines included; the
   renderer shows an untagged line always and a tagged one only when it matches the selected window.
+  `a` marks a clickable row: the text is followed by `<TAB>` and the argv joined by `\x1f`. The
+  renderer runs it with `hs.task` (never a shell, never a terminal) only when `argv[0]` is
+  `/usr/bin/open` or a bare name that is a file in llm-legs `bin/`; any other action leaves the
+  row disabled. A row with an action is enabled and not dim; every other row stays disabled.
 - `spans`: comma-separated `style:byte:bytes` entries. `r` is red, `g` is Token tracking's green
   (a better Δ), and `n` stays undimmed on a dim line (the area name of an `ok` area). Offsets are UTF-8 bytes, because the text contains `·`,
   `–` and `…`.
@@ -616,6 +620,9 @@ up to three events as evidence (`stop:<ts>/<session>`, `words:<ts>/<session>`, `
   gives no JSON is a dim `no answer this run`; only a second miss in a row (count in `browse-misses.json`,
   written by writing runs only) is a `browser-target` watch. Incident 2026-10-06 21:26: at busy 0.999 with
   four suites running, `worker-run browse` overran the 20 s timeout once.
+  The browser rows are clickable: Chrome → `open -b com.google.Chrome`, Dia → `bin/dia-js --open`
+  (a closed Dia starts with the flag); only a running Dia without the flag adds `Restart Dia with
+  AppleScript JS — unsaved input may be lost` → `bin/dia-js --relaunch`. Egor's click, never the collector.
 - Two differences from llm-doctor: a value between half the limit and the limit is a watch (deferral,
   silence, growth), and a growth value is the largest single change under one root, not the day's sum.
 

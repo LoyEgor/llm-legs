@@ -1425,11 +1425,21 @@ menu = m.MenuLines(0, 0, "t")
 menu.layout(part, 0)
 check(all(l.split("\t")[3].strip() for l in menu.lines[1:]) and not any("state" in l for l in menu.lines),
       "Browser: no header row when every column name is empty")
+acts = {r["cells"][0]: r.get("action") for r in part["rows"]}
+restart = "Restart Dia with AppleScript JS — unsaved input may be lost"
+check(acts["Chrome"] == ["/usr/bin/open", "-b", "com.google.Chrome"] and acts["Dia"] == ["dia-js", "--open"]
+      and acts[restart] == ["dia-js", "--relaunch"] and acts["Runs"] is None,
+      "Browser: browser rows open their browser, a flagless Dia adds the restart row, the rest carry no action")
+check([l for l in menu.lines if "\tChrome " in l][0].endswith("\t/usr/bin/open\x1f-b\x1fcom.google.Chrome")
+      and [l for l in menu.lines if "\tChrome " in l][0].split("\t")[1] == "a",
+      "Browser: an action row is flagged a and carries its argv after a tab, \\x1f between words")
 put(os.path.join(work, "browse-dia.json"), json.dumps(dict(dia, dia="absent", dia_other=[])))
 part = B(T)
 cells = {r["cells"][0]: r["cells"][1:] for r in part["rows"]}
-check(cells["Dia"] == ["work → com · not running", ""] and ("browser-applescript-js", "dia") not in judged(part),
-      "Browser: a closed Dia says so and shows no JS state")
+dia_row = [r for r in part["rows"] if r["cells"][0] == "Dia"][0]
+check(cells["Dia"] == ["work → com · not running", ""] and ("browser-applescript-js", "dia") not in judged(part)
+      and dia_row["action"] == ["dia-js", "--open"] and not dia_row["dim"] and restart not in cells,
+      "Browser: a closed Dia says so, shows no JS state, opens with the flag and offers no restart")
 os.remove(os.path.join(work, "browse-dia.json"))
 put(os.path.join(work, "browse-chrome.json"), "not json")
 part = B(T, write=True)
