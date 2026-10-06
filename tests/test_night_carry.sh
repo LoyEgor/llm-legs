@@ -208,7 +208,7 @@ assert grep -qxF "Owner check first: this batch was matched to you by edits and 
 assert_fails grep -qF 'Owner check' "$NIGHTS/N5.owner-chat-phase-four.prompt.md"
 assert [ "$(grep -c '^owner-chat-' "$WORK/n5.out")" = 6 ]
 
-# A main checkout land left behind origin/main shows as a leftovers row with the WIP in the way; a branch
+# A main checkout behind origin/main shows as a leftovers row with the WIP in the way; a branch
 # already in origin/main is landed though local main lags.
 gt() { git -c user.name=t -c user.email=t@t "$@"; }
 L="$WORK/lands"

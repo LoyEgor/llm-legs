@@ -320,8 +320,8 @@ run_one() { # suite-path
     # SourceFileLoader import leaves in bin/ reads to a review's integrity check as a new file.
     unset CLAUDEB_WORKER WORKER_RUN_RECORD WORKER_RUN_ID CLAUDE_LAUNCHER_SESSION WORKER_PICK_CONFIG_FILE CLAUDE_CODE_SESSION_ID
     export PYTHONDONTWRITEBYTECODE=1
-    # A fixture's slot and lock waits and land runs would read as the machine's own in the Harness doctor.
-    export HARNESS_WAITS_DIR="$TMPDIR/waits" HARNESS_LAND_DIR="$TMPDIR/land"
+    # A fixture's slot and lock waits would read as the machine's own in the Harness doctor.
+    export HARNESS_WAITS_DIR="$TMPDIR/waits"
     mkdir -p "$TMPDIR"
     cd "$repo" || exit 4
     # Absolute, not -n: a nested run must stay at 10, not sink further. $BASHPID, not $$:

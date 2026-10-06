@@ -235,7 +235,6 @@ from this machine on 2026-09-28, from the 28-day backfill and a day of samples:
 | instruction-file growth no gate passed (`growth_min_b`) | > 120 B | ≥ 60 B | same |
 | instruction-watch heartbeat age (`watch_tick_s`) | > 2 ticks of 120 s | – | same |
 | worker-run orphans ended today (`worker_orphans`) | > 3 | – | the first one, 2026-10-05: a `bash -x tests/test_slots.sh` reparented to launchd before its run ended held the landed worktree 14 min later; a few a day are information |
-| a landing's suites · refused share of ≥ 5 runs · one file holding the checkout behind, 7 d (`land_*`, §13) | > 300 s · > 30 % · ≥ 3 landings | – | 2026-10-06: one landing ran 52 suites for 11 min and nobody saw it |
 
 The limits are absolute. A self-adjusting baseline is what let LLM doctor's `mark_slow` absorb the
 09-22 step, so `wait s 7 d` is shown next to the current value but never lowers a limit. Every
@@ -671,14 +670,3 @@ job of one chat for about 4 h under memory pressure and nothing reached Egor.
   shows as `suites n/m`; browser and deadline waits in `worker-run`/`codex-image` are bounded
   under 60 s or are kill ceilings. The gates (`worker-limit-gate`, `worker-launch-gate`,
   `workflow-burn-gate`, `worker-relay-hold`) deny or send a relay back, which the caller sees.
-
-## 13. Landing
-
-`land` runs once per task, outside any hook, so nothing timed it: on 2026-10-06 one landing ran 52
-suites for 11 min and no surface showed it. Each run with a target appends one row to the land
-journal (invariant row `eg`) from its EXIT trap, and each suite run one `suites` wait (row `ed`).
-The `Landing` area reads `LAND_DAYS` 7: runs and the landed share, refusals by reason, suite and
-total land minutes a day, suite time and count (p50, worst, a worst-first drill with repo and
-branch), checkout left behind with the top files and holders, retries (`tries > 1`, contention,
-shown, never judged). Floors (§4): `land_suites:<repo>`, `land_refused:all`,
-`land_behind:<repo>:<file>`. No journal file is blind, never green.

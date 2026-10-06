@@ -244,7 +244,7 @@ A suite that writes into the runner's own report-bus queue fails (`REPORT_BUS_LI
 docs/report-bus.md). A suite past its wall bound — 5 × the p90 of its last 50 passes in the run-suites
 journal, floor `RUN_SUITES_SUITE_FLOOR` 1800 s (doubled for `tests/slow-suites`, ×2 again before 3
 passes) — is killed with its process tree and reads `FAIL 124 … TIMEOUT after N s`
-(`tests/test_run_suites_timeout.sh`). `bin/land` and `night-run finish`/adopt never remove a worktree
+(`tests/test_run_suites_timeout.sh`). `night-run finish`/adopt never removes a worktree
 another session's process stands in (`share/processes.sh` `cwd_held`): the row stays, the pids named.
 
 Suites (run from repo root):
