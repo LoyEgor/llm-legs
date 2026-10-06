@@ -555,6 +555,7 @@ agent() { # label program args... -> a LaunchAgent plist in the fixture HOME
 agent com.test.oldjob /bin/bash "$G/bin/old-job"
 agent com.test.feed /bin/cat "$G/data/feed.txt"
 agent com.test.runner /bin/bash "$G/bin/runner-a"
+agent com.test.behind /bin/bash "$G/bin/new-job"
 printf '#!/usr/bin/env bash\necho a\n' >"$G/bin/spare-a" && printf '#!/usr/bin/env bash\necho b\n' >"$G/bin/spare-b"
 git -C "$G" add -A && commit "$G" "the test no longer calls old-tool"
 jq -n '{"cause:good/bin/spare-a": {verdict: "problem", fact: "spare-a is dead", plan: "rm bin/spare-a", proofs: [],
@@ -584,7 +585,12 @@ assert jqe '[.problems[] | select(.id == "cause:good/bin/spare-b")] | length == 
 assert test -L "$LB/old-tool"
 assert test "$(readlink "$LB/tool-a")" = "$G/bin/tool-a"
 assert test -f "$HOME/Library/LaunchAgents/com.test.oldjob.plist" -a ! -e "$WORK/reg/launchctl.log"
+assert jqe --arg id "cause:registration:$G/bin/new-job" 'select(.id == $id) | .research.never_tracked' "$CODE_DOCTOR_DIR/candidates.jsonl"
+# The program landed on origin/main after the candidate was built and the checkout is behind: never retired.
+git -C "$G" checkout -q -b ahead && printf 'x\n' >"$G/bin/new-job" && git -C "$G" add bin/new-job && commit "$G" "new-job lands"
+git -C "$G" update-ref refs/remotes/origin/main HEAD && git -C "$G" checkout -q main && git -C "$G" branch -qD ahead
 "$CD" judge --night r3 >"$WORK/judge.out"
+assert test -f "$HOME/Library/LaunchAgents/com.test.behind.plist" -a ! -e "$G/bin/new-job"
 assert grep -qxF "registration: unlinked $LB/old-tool -> $G/bin/old-tool" "$WORK/judge.out"
 assert test ! -e "$LB/old-tool" -a ! -L "$LB/old-tool"
 assert test "$(readlink "$LB/tool-a")" = "$G/bin/tool-b"

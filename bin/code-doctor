@@ -2164,6 +2164,11 @@ def registration_file(item, graph):
     return os.path.join(graph.tops.get(repo, "/nonexistent"), rest) if rest else os.path.join(base_home(), ".claude", label)
 
 
+def tracked_anywhere(top, rel):
+    out = git(top, "log", "--all", "-1", "--format=%h", "--", rel)
+    return out is None or bool(out.strip())
+
+
 def registration_research(item, graph):
     target = item["target"]
     top = max((t for t in graph.tops.values() if target.startswith(t + "/")), key=len, default=None)
@@ -2190,6 +2195,8 @@ def registration_research(item, graph):
         if ever is None:
             return None
         if not ever.strip():
+            if tracked_anywhere(top, rel):
+                return None
             found["never_tracked"] = True
     source = os.path.realpath(registration_file(item, graph))
     for repo, repo_top in sorted(graph.tops.items()):
@@ -2820,6 +2827,10 @@ def settle_registrations(night):
             except ValueError:
                 continue
             if not isinstance(item, dict):
+                continue
+            rel = research.get("rel") or ""
+            if research.get("never_tracked") and (not item["target"].endswith("/" + rel) or
+                                                  tracked_anywhere(item["target"][:-len(rel) - 1], rel)):
                 continue
             if item["kind"] == "launchd":
                 what = retire_launch_agent(night, candidate["id"], item)
