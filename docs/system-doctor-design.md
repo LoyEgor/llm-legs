@@ -124,19 +124,65 @@ the cause is our own):
   unaccounted CPU and the memory guard. Its kernel and fork samples stay for its week table, day
   summaries and change impact; Speed's `machine/contention` covers only `busy` and `unseen`.
 
-## Phase 3 — left
+## Phase 3 — built (2026-10-06)
 
-- **Collectors not built:**
-  - the newborn census on a storm (≥ 2,000/s for 2 min or sys ≥ 0.5, one 60 s census at most every
-    30 min);
-  - the hourly `launchctl dumpstate` run counters and orphan census;
-  - the 6-hourly unified-log harvest (launchd exits, DAS verdicts, hangs);
-  - own-process footprints and disk counters (`ledger blind_spots`).
-- **Cohort score** per item i, amortized over ≥ 7 days:
-  `B_i = max(C/864, W/86400, D/1 GiB, R/100 GiB, M/512 MiB × pressure, S/86400, L/1440)`.
-  B ≥ 1 is review, ≥ 5 heavy. A separate felt score decides scheduling levers only. Unknown value
-  → watch, never remove.
+The collectors run outside the minute tick. `agent` starts each one detached when due (`launched.json`), as
+`system-doctor <collector> --quiet`, under its own lock, at Nice ≥ 10 with throttled disk I/O; each run is one
+collector-runs row (`trigger background:<name>`) and keeps its own `self` wall/CPU. Names, labels and counters only.
+
+- **Storm census** (`census`, `census/<day>.jsonl`). A storm is ≥ 2,000 births/s on every tick of the last 2 min, or
+  the latest kernel share ≥ 0.5 (`tick-state.json` `recent`); at most one census per 30 min. It polls the process
+  table through libproc every 20 ms for 60 s and charges each newborn it catches to the nearest own script or app
+  above it, as the tick does. The judge merges the last hour's censuses into the `spawn`/`kernel` attribution, so a
+  storm's short-lived parents name the cause.
+- **Hourly `launchctl dumpstate`** (`dumpstate`, `launchd/<day>.jsonl`), parsed in memory (it carries env and argv).
+  Per-service run deltas against `dumpstate-state.json` (a counter that fell is a reload: its runs since count; the
+  first snapshot counts none), last exit as `exit N`/`signal N`, summed per label with unique parts (UUIDs, hex,
+  long numbers) stripped; owner `own` (program under an own root), `apple`, `third-party`. Plus the orphan census:
+  own-uid processes with ppid 1 that are no job and no own app, worker supervisors (open `worker-run` pids) apart.
+- **6-hourly unified-log harvest** (`harvest`, `harvest/<day>.jsonl`). One `log show --style compact` per source from
+  its cursor, at most 11 h back (`lost_s` counts what retention already dropped), each killed past its budget
+  (launchd 300 s/100k lines, DAS 150 s/1.2M — it logs ~88k lines/h — hangs 60 s/20k); a cut source resumes after its last line. Kept: launchd
+  exits per label (runs, wall, longest, abnormal exits, exit kinds), DAS starts/completions/decisions per activity,
+  spindump spins and slow-HID per app.
+- **Own footprints and disk counters** per tick (`proc_pid_rusage` v2 of our own live processes, ~2 ms):
+  `mem_top` footprints, `io_top` bytes written/read and idle wakeups since the last tick.
+- **Cohort score** (`cohort_sums` per day row, `cohort_score`): per item over the newest day rows covering ≥ 7 days
+  (≤ 14 back), `B = max(C/864, W/86400, D/1 GiB, R/100 GiB, M/512 MiB × pressure, S/86400, L/1440)` per covered day;
+  pressure = compressor ≥ 25 % of RAM or ≥ 2,000 swap-outs/s. Under 7 covered days nothing is scored. Apple and
+  third-party items list W, D, R, M as unknown (`foreign-cohort-terms`).
+- **Self-cost and blindness.** `costs` carries runs, wall and CPU per collector over 24 h; `collectors` names any blind
+  one: `footprints` (own processes but no counters read), `dumpstate` (no snapshot for 3 h), `harvest` (none for
+  12 h, or a source failed), `census` (its last run polled nothing).
+
+New rules (fixer routing and proof as phase 2; an own cause with a sweep-repo file is a fix target, others report-only):
+
+| rule | fires at | heavy |
+|---|---|---|
+| `job-loop` | a job launchd relaunches (KeepAlive or an interval) ≥ 60 runs/h and over twice its schedule, or ≥ 3 abnormal exits (non-zero exit, crash signal) a day from dumpstate or the log | ≥ 360/h or ≥ 24/day |
+| `cohort` | B ≥ 1; non-own items read `watch`, never remove (at most 6 rows) | B ≥ 5 |
+
+A `job-loop` fix is proven after 7 quiet days of snapshots; a looping snapshot since landing refuses it. A `cohort`
+fix is proven on its births/CPU, so an item dominated by M, D, R or L is not measured by its proof yet.
+
+Measured once on 2026-10-06 at ~350 births/s (real machine, temp state dirs):
+
+| collector | wall | CPU | found |
+|---|---|---|---|
+| tick `rusage` step | 1 ms | ~0 | 34 of 35 own processes read; top footprints two bench workers ~770 MB each |
+| census | 60 s | 1.5 s | 2,467 polls, 5,697 newborns (12 % gone before read); statusline.sh 38 % |
+| dumpstate | 0.3 s | 0.2 s | 2,148 services; 1 own orphan |
+| harvest, 11 h back | 88 s | 76 s | launchd 80 s/72 cpu-s of it (`log show` predicate scan); DAS 562k lines 12 s/10 cpu-s; Siri.agent 4 × `exit 1` (Apple, report-only), Hammerspoon 5 spins |
+
+A 6-hourly run reads 6 h, about half the first run's cost.
+
+## Left
+
+- **Felt score** for scheduling levers (stalls, slow HID) — the hang and DAS counters feed no rule yet.
+- **Cohort proof** on its own dominant term (M, D, R, L) instead of births/CPU.
 - **Retention of `collector-runs.jsonl`:** 30 days.
+- Short-lived and other users' disk I/O and footprints stay blind without a consented privileged sample
+  (ledger `ssd-writers`, `foreign-cohort-terms`).
 
 ## Levers (own code, output-equivalent; every one needs a before/after on this collector)
 

@@ -15,6 +15,7 @@ export SYSTEM_DOCTOR_LEDGER="$WORK/ledger.json" SYSTEM_DOCTOR_OWN_ROOTS="$WORK/o
 export SYSTEM_DOCTOR_DIAG_DIRS="$WORK/diag" SYSTEM_DOCTOR_AGENTS_DIRS="$WORK/agents"
 export SYSTEM_DOCTOR_CACHE_ROOTS="$WORK/caches/.cache" SYSTEM_DOCTOR_CACHE_DIRS= SYSTEM_DOCTOR_HOST_TICKS="$FIX/host"
 export SYSTEM_DOCTOR_LIBEXEC_DIR="$HOME/.local/libexec" SYSTEM_DOCTOR_AGENT_DIR="$HOME/Library/LaunchAgents"
+export SYSTEM_DOCTOR_RUSAGE="$FIX/rusage.json" SYSTEM_DOCTOR_PROCS="$FIX/procs.json" WORKER_RUN_DIR="$WORK/runs"
 printf '{"owner": "System doctor", "rows": [], "blind_spots": []}\n' >"$SYSTEM_DOCTOR_LEDGER"
 mkdir -p "$WORK/repos/llm-legs/bin" "$WORK/repos/hammerspoon"
 for name in statusline.sh memlogd vendor-fingerprint worker-run; do printf '#!/bin/bash\n' >"$WORK/repos/llm-legs/bin/$name"; done
@@ -40,6 +41,7 @@ import importlib.util
 import json
 import os
 import plistlib
+import shutil
 import subprocess
 import sys
 import time
@@ -162,7 +164,7 @@ check(row["comp_share"] == 0.25 and row["comp_gib"] == 6.0 and row["mem_gib"] ==
 check(row["swap_share"] == 0.75 and row["swapout_b"] == 1000 * 16384, "swap use and swap writes: %s" % row)
 check(row["disk"] == {"internal:disk0": [500, 4000], "external:disk4": [1000, 0]}, "disk deltas per device: %s" % row["disk"])
 check(row["free_gib"] == {"Data": 100.0, "Work Disk": 20.0}, "free space of Data and /Volumes mounts: %s" % row["free_gib"])
-check(set(row["self"]["steps"]) == {"host", "ps", "ps_children", "vm_stat", "sysctl", "ioreg", "df"}
+check(set(row["self"]["steps"]) == {"host", "ps", "ps_children", "vm_stat", "sysctl", "ioreg", "df", "rusage"}
       and all(len(v) == 2 for v in row["self"]["steps"].values()), "each step's wall and CPU: %s" % row["self"])
 state = json.load(open(os.path.join(work, "state", "tick-state.json")))
 text = json.dumps(state) + open(os.path.join(work, "state", "ticks", m.local_day(time.time()) + ".jsonl")).read()
@@ -515,6 +517,335 @@ write_ticks(series(now - 3600, 10, 60, 5, 6.0))
 faults = m.check_record(record, decisions, now)
 check(len(faults) == 1 and "no measurable baseline" in faults[0], "a births cause without a baseline cannot close fixed: %s" % faults)
 
+# ---- phase 3: the storm census, its trigger and its rate limit
+uid = os.getuid()
+check(m.COLLECT["storm_s"] == 2000 and m.COLLECT["storm_min"] == 2 and m.COLLECT["storm_kernel"] == 0.5
+      and m.COLLECT["census_s"] == 60 and m.COLLECT["census_every_s"] == 1800, "the census trigger is the design's: %s" % m.COLLECT)
+storm = [{"t": now - 62, "births_s": 2000, "kernel": 0.3}, {"t": now - 2, "births_s": 2400, "kernel": 0.3}]
+check(m.census_due(storm, now) == {"births_s": 2000, "kernel": 0.3}, "2,000 births/s on every tick of 2 min calls a census")
+check(m.census_due([dict(storm[0], births_s=1999), storm[1]], now) is None, "1,999/s on one tick of the 2 min does not")
+check(m.census_due(storm[1:], now) is None and m.census_due([dict(storm[0], t=now - 125), storm[1]], now) is None,
+      "one storm tick is not 2 min of storm")
+check(m.census_due([{"t": now - 2, "births_s": 100, "kernel": 0.5}], now) == {"births_s": 100, "kernel": 0.5}
+      and m.census_due([{"t": now - 2, "births_s": 100, "kernel": 0.49}], now) is None, "kernel share 0.5 calls one, 0.49 not")
+check(m.census_due(storm, now, now - 1799) is None and m.census_due(storm, now, now - 1800) is not None,
+      "at most one census every 30 min")
+state_path = os.path.join(work, "state", "tick-state.json")
+saved_state = open(state_path).read()
+json.dump({"recent": storm}, open(state_path, "w"))
+started = []
+due = m.launch_due(now, started.append)
+check(due == ["census", "dumpstate", "harvest"] and started == due, "a storm starts a census beside the hourly and 6-hourly "
+      "collectors: %s" % due)
+check(m.launch_due(now + 60, started.append) == [] and len(started) == 3, "nothing starts again a minute later")
+json.dump({"recent": [dict(r, t=r["t"] + 1700) for r in storm]}, open(state_path, "w"))
+check(m.launch_due(now + 1700, started.append) == [], "a storm 28 min after the census starts none")
+json.dump({"recent": [dict(r, t=r["t"] + 3600) for r in storm]}, open(state_path, "w"))
+check(m.launch_due(now + 3600, started.append) == ["census", "dumpstate"], "an hour on: the census and the hourly snapshot")
+open(state_path, "w").write(saved_state)
+
+frames = [[1, 100, 300, 400], [1, 100, 300, 400, 201, 202, 203, 204, 205]]
+json.dump({"frames": frames, "procs": {
+    "1": [0, 0, 0, "/sbin/launchd"], "100": [1, uid, 1000, "/bin/bash %s/bin/statusline.sh --token" % own],
+    "300": [1, uid, 1000, "/Applications/Hammerspoon.app/Contents/MacOS/Hammerspoon"], "400": [1, 0, 0, "/usr/libexec/xpcproxy"],
+    "201": [100, uid, 2000, "/opt/homebrew/bin/jq .secret"], "202": [201, uid, 2000, "/usr/bin/git status"],
+    "203": [300, uid, 2000, "/bin/sh -c true"], "204": [400, 0, 0, "/usr/libexec/helper"]}}, open(os.path.join(fix, "procs.json"), "w"))
+row = m.census(now, seconds=0.05, poll=0.01)
+check(row["births_top"] == [["statusline.sh", 2, "own"], ["Hammerspoon", 1, "own"], ["xpcproxy", 1, "apple"]]
+      and row["births_seen"] == 4 and row["unreadable"] == 1 and row["polls"] >= 1,
+      "the census charges each newborn it catches to the nearest own script or app above it: %s" % row)
+text = open(os.path.join(work, "state", "census", m.local_day(now) + ".jsonl")).read()
+check(own not in text and "--token" not in text and ".secret" not in text and "git status" not in text,
+      "the census persists basenames and counts only")
+spawn_rows = minutes(3, births_s=1200, births_seen=2, births_top=[["xpcproxy", 2, "apple"]])
+judge = m.Judge(now, None)
+judge.censuses = [{"t": now - 600, "births_seen": 40, "births_top": [["statusline.sh", 30, "own"], ["xpcproxy", 10, "apple"]]}]
+m.judge_ticks(judge, spawn_rows, [])
+found = {p["id"]: p for p in judge.problems}["spawn:machine"]["cause"]
+check(found["name"] == "statusline.sh" and found["fix_target"] and found["share"] == round(30 / 46, 2),
+      "the census's attribution names the spawn cause the ticks alone miss: %s" % found)
+judge = m.Judge(now, None)
+judge.censuses = [dict(judge.censuses[0] if judge.censuses else {}, t=now - 3700, births_seen=40,
+                       births_top=[["statusline.sh", 30, "own"]])]
+m.judge_ticks(judge, spawn_rows, [])
+check({p["id"]: p for p in judge.problems}["spawn:machine"]["cause"]["name"] == "xpcproxy", "a census over an hour old is out")
+
+# ---- phase 3: launchctl dumpstate, parsed into run deltas, orphans and job-loop causes
+def service(header, **fields):
+    lines = ["%s = {" % header, "\tactive count = 0", "\tenvironment = {", "\t\tTOKEN => %s/secret-path" % own, "\t}",
+             "\targuments = {", "\t\t%s/bin/memlogd" % own, "\t\t--password=hunter2", "\t}"]
+    lines += ["\t%s = %s" % (key.replace("_", " "), value) for key, value in fields.items()]
+    return "\n".join(lines + ["\tresource coalition = {", "\t\truns = 999", "\t}", "}", ""])
+
+
+def dump(memlogd, vsync, mdworker, doctor):
+    return "".join([
+        service("system", **{"runs": "notacounter"}),
+        service("gui/%d/com.llm-legs.memlogd" % uid, program="%s/bin/memlogd" % own, properties="keepalive | runatload",
+                runs=memlogd, last_exit_code="1", pid="777"),
+        service("gui/%d/com.vendor.sync" % uid, program="/Applications/Vendor.app/Contents/MacOS/vsync", runs=vsync,
+                last_exit_code="0", last_terminating_signal="Segmentation fault: 11", run_interval="300 seconds"),
+        service("user/89/com.apple.mdworker.shared.0C000000-0400-0000-0000-000000000000", program="/usr/libexec/mdworker_shared",
+                runs=mdworker, last_exit_code="(never exited)"),
+        service("user/%d/com.apple.mdworker.shared.0D000000-0400-0000-0000-000000000000" % uid,
+                program="/usr/libexec/mdworker_shared", runs=mdworker, last_exit_code="0"),
+        service("gui/%d/com.llm-legs.system-doctor" % uid, program="%s/bin/system-doctor" % own, runs=doctor,
+                last_exit_code="0", run_interval="60 seconds"),
+        service("pid/4242/com.apple.xpc.thing")])
+
+
+services = m.parse_dumpstate(dump(10, 5, 50, 100))
+check(sorted(services) == ["gui/%d/com.llm-legs.memlogd" % uid, "gui/%d/com.llm-legs.system-doctor" % uid,
+                           "gui/%d/com.vendor.sync" % uid,
+                           "user/%d/com.apple.mdworker.shared.0D000000-0400-0000-0000-000000000000" % uid,
+                           "user/89/com.apple.mdworker.shared.0C000000-0400-0000-0000-000000000000"],
+      "services with a run counter only: %s" % sorted(services))
+memlogd = services["gui/%d/com.llm-legs.memlogd" % uid]
+check(memlogd == {"label": "com.llm-legs.memlogd", "name": "memlogd", "owner": "own", "runs": 10, "exit": "exit 1",
+                  "pid": 777, "every": None, "relaunched": True}, "an own KeepAlive job: %s" % memlogd)
+vsync = services["gui/%d/com.vendor.sync" % uid]
+check(vsync["exit"] == "signal 11" and vsync["owner"] == "third-party" and vsync["every"] == 300 and vsync["name"] == "com.vendor.sync",
+      "a third-party job's crash signal and schedule: %s" % vsync)
+check({s["label"] for s in services.values() if s["owner"] == "apple"} == {"com.apple.mdworker.shared"},
+      "unique parts and domains leave the label")
+launchctl_fixture = os.path.join(fix, "launchctl")
+ps_saved = open(os.path.join(fix, "ps")).read()
+put("ps", ps_rows([(1, 0, 0, "0:01.00", start, "/sbin/launchd"),
+                   (777, 1, uid, "0:00.50", start, "/bin/bash %s/bin/memlogd" % own),
+                   (900, 1, uid, "0:00.10", start, "/opt/homebrew/bin/python3 %s/bin/worker-run" % own),
+                   (901, 1, uid, "0:00.10", born, "/opt/homebrew/bin/python3 %s/bin/worker-run" % own),
+                   (902, 1, uid, "0:00.10", born, "/bin/bash %s/bin/stray.sh" % own),
+                   (903, 300, uid, "0:00.10", born, "/bin/bash %s/bin/child.sh" % own),
+                   (300, 1, uid, "0:00.10", start, "/Applications/Hammerspoon.app/Contents/MacOS/Hammerspoon")]))
+os.makedirs(os.path.join(work, "runs", "open-run"))
+json.dump({"pid": 900}, open(os.path.join(work, "runs", "open-run", "meta.json"), "w"))
+hour = 3600
+for step, (mem_runs, vsync_runs, md_runs, doctor_runs) in enumerate(((10, 5, 50, 100), (130, 6, 300, 160), (250, 7, 600, 220),
+                                                                    (370, 8, 900, 280))):
+    put("launchctl", dump(mem_runs, vsync_runs, md_runs, doctor_runs))
+    row = m.dumpstate(now - (3 - step) * hour)
+check(row["services"] == 5 and row["dt"] == hour and row["reloaded"] == 0, "the fourth hourly snapshot: %s" % row)
+jobs = {j["label"]: j for j in row["jobs"]}
+check(jobs["com.llm-legs.memlogd"] == {"label": "com.llm-legs.memlogd", "name": "memlogd", "owner": "own", "runs": 120,
+                                       "bad": 1, "exit": "exit 1", "every": None, "relaunched": True}
+      and jobs["com.apple.mdworker.shared"]["runs"] == 600 and jobs["com.vendor.sync"]["bad"] == 1
+      and jobs["com.llm-legs.system-doctor"]["runs"] == 60, "run deltas per label, summed over domains: %s" % jobs)
+check(row["orphans"] == {"count": 3, "supervisors": 1, "top": [["worker-run", 2, row["orphans"]["top"][0][2], 1, "own"],
+                                                               ["stray.sh", 1, row["orphans"]["top"][1][2], 0, "own"]]},
+      "orphans: own processes launchd adopted that are no job, worker supervisors counted apart: %s" % row["orphans"])
+text = "".join(open(f).read() for f in glob.glob(os.path.join(work, "state", "launchd", "*.jsonl"))) + open(
+    os.path.join(work, "state", "dumpstate-state.json")).read()
+check("hunter2" not in text and "secret-path" not in text and own not in text, "dumpstate keeps labels and counters only")
+put("launchctl", dump(5, 9, 950, 300))
+reloaded = m.dumpstate(now + 1)
+check(reloaded["reloaded"] == 1 and {j["label"]: j["runs"] for j in reloaded["jobs"]}["com.llm-legs.memlogd"] == 5,
+      "a counter that fell was re-registered: its runs since count: %s" % reloaded)
+launch_rows = m.tick_rows(now - 2 * 86400, now + 0.5, "launchd")
+judge = m.Judge(now, None)
+m.judge_launchd(judge, launch_rows, [])
+loops = {p["id"]: p for p in judge.problems}
+check(sorted(loops) == ["job-loop:com.llm-legs.memlogd", "job-loop:com.vendor.sync"],
+      "a KeepAlive job relaunching 120 times an hour and a job crashing 3 times a day loop; an on-demand Apple worker and a "
+      "60 s job on schedule do not: %s" % sorted(loops))
+mem = loops["job-loop:com.llm-legs.memlogd"]
+check(mem["value"] == 120 and mem["unit"] == "runs/h" and mem["severity"] == "review" and mem["cause"]["name"] == "memlogd"
+      and mem["cause"]["fix_target"] and mem["cause"]["files"] == ["llm-legs/bin/memlogd"] and mem["cause"]["label"] == "com.llm-legs.memlogd",
+      "an own looping job is a fix target by its program's file: %s" % mem)
+sync = loops["job-loop:com.vendor.sync"]
+check(sync["value"] == 3 and sync["unit"] == "abnormal exits/day" and not sync["cause"]["fix_target"]
+      and "(third-party, report only)" in sync["fact"] and "signal 11" in sync["fact"], "a third-party crashing job is report-only: %s" % sync)
+check(m.loop_rate({"runs": 360, "relaunched": True}, {"dt": 3600}) == 360 and m.loop_rate({"runs": 59, "relaunched": True}, {"dt": 3600}) == 59
+      and m.loop_rate({"runs": 120, "relaunched": True, "every": 60}, {"dt": 3600}) == 0
+      and m.loop_rate({"runs": 121, "relaunched": True, "every": 60}, {"dt": 3600}) == 121
+      and m.loop_rate({"runs": 500, "relaunched": False}, {"dt": 3600}) == 0 and m.loop_rate({"runs": 500, "relaunched": True}, {"dt": 600}) == 0,
+      "loop rate: twice the schedule, launchd's own relaunches, at least 30 min between snapshots")
+judge = m.Judge(now, None)
+m.judge_launchd(judge, [{"t": now - 600, "dt": 3600, "jobs": [{"label": "x", "name": "x", "owner": "own", "runs": 360,
+                                                                 "bad": 0, "every": None, "relaunched": True}]}], [])
+check(judge.problems[0]["severity"] == "heavy", "360 runs an hour is heavy")
+
+
+def loop_ids(runs, bad=0):
+    judge = m.Judge(now, None)
+    m.judge_launchd(judge, [{"t": now - 600 - hour * i, "dt": 3600, "jobs": [
+        {"label": "x", "name": "x", "owner": "own", "runs": runs, "bad": bad, "every": None, "relaunched": True}]}
+        for i in range(3)], [])
+    return [(p["id"], p["severity"]) for p in judge.problems]
+
+
+check(loop_ids(60) == [("job-loop:x", "review")] and loop_ids(59) == [] and loop_ids(359) == [("job-loop:x", "review")],
+      "60 relaunches an hour is a loop, 59 not, 359 still review")
+check(loop_ids(1, 1) == [("job-loop:x", "review")] and loop_ids(1, 0) == [], "3 abnormal exits in a day are a dying job, none is nothing")
+put("ps", ps_saved)
+
+# ---- phase 3: the unified-log harvest, bounded by time and lines, counters only
+log_lines = [
+    "Timestamp               Ty Process[PID:TID]",
+    "%s.100 Df launchd[1:2f2b54bb] [gui/%d/com.llm-legs.memlogd [777]:] exited due to exit(1), ran for 1200ms",
+    "%s.200 Df launchd[1:2f2b54bb] [user/89/com.apple.mdworker.shared.05000000-0400-0000-0000-000000000000 [12]:] "
+    "exited due to SIGKILL | sent by mds[134], ran for 72285ms",
+    "%s.300 Df launchd[1:2f2b54bb] [gui/%d/com.vendor.sync [55]:] exited due to SIGSEGV, ran for 50ms",
+    "%s.400 Df launchd[1:2f2b54bb] [pid/80032/com.apple.SetStoreUpdateService [80158]:] exited with exit reason "
+    "(namespace: 15 code: 0x0) - OS_REASON_RUNNINGBOARD | <RBSTerminateContext| explanation:/private/secret>, ran for 9ms",
+    "%s.500 Df dasd[157:2f25ffae] [com.apple.duetactivityscheduler:scoring] 501:com.apple.spotlight.pipeline:D98EA4, Decision: CP Score: 0.78}",
+    "%s.600 Df dasd[157:2f25ffae] [com.apple.duetactivityscheduler:scoring] 501:com.apple.spotlight.pipeline:628B97:[",
+    "\t{name: CPU Usage Policy, policyWeight: 5.0, response: {MNP, 0.00, [{[Max allowed CPU Usage level]: Required:90, Observed:99},]}}",
+    " ], Decision: MNP}",
+    "%s.700 Df dasd[157:2f25ffae] [com.apple.duetactivityscheduler:lifecycle] STARTED <_DASActivity: \"501:com.apple.spotlight.pipeline:D98EA4\", ...>",
+    "%s.800 Df dasd[157:2f2575b3] [com.apple.duetactivityscheduler:BGSTHelper] Completed 501:com.apple.spotlight.pipeline (0x7825bf7480)",
+    "%s.810 Df dasd[157:2f25ffae] [com.apple.duetactivityscheduler:scoring] 501:PDCardFileManager.RevocationCheck:1A2B3C, Decision: MNP}",
+    "%s.820 Df dasd[157:2f25ffae] [com.apple.duetactivityscheduler:scoring] 501:com.google.keystone.update:4D5E6F, Decision: CP Score: 0.5}",
+    "%s.900 Df spindump[86702:2eeea41a] [com.apple.spindump:logging] Hammerspoon [91820]: spin: not sampling due to conditions 0x400000000",
+    "%s.950 Df spindump[86702:2eeea41a] [com.apple.spindump:logging] Dia Browser [38286]: slow hid response (0.9s): not sampling due to conditions 0x48"]
+
+
+def stamp_log(stamp_at):
+    filled = []
+    for line in log_lines:
+        values = [time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stamp_at))] if "%s" in line else []
+        if "%d" in line:
+            values.append(uid)
+        filled.append(line % tuple(values) if values else line)
+    put("log.txt", "\n".join(filled) + "\n")
+    return filled
+
+
+filled = stamp_log(now - 600)
+open(os.path.join(work, "bin", "log"), "w").write(
+    '#!/bin/bash\nprintf "%s\\n" "$*" >>"$SYSTEM_DOCTOR_FIX/log.calls"\n[ -n "${LOG_SLEEP:-}" ] && { head -2 "$SYSTEM_DOCTOR_FIX/log.txt"; sleep "$LOG_SLEEP"; }\n'
+    'cat "$SYSTEM_DOCTOR_FIX/log.txt"\n')
+os.chmod(os.path.join(work, "bin", "log"), 0o755)
+os.environ["SYSTEM_DOCTOR_LOG"] = os.path.join(work, "bin", "log")
+check(m.HARVEST[0][2:] == (300, 100000) and m.HARVEST[1][2:] == (150, 1200000) and m.HARVEST[2][2:] == (60, 20000)
+      and m.COLLECT["harvest_every_s"] == 6 * 3600 and m.COLLECT["harvest_back_s"] == 11 * 3600,
+      "the harvest's cadence, look-back and per-source time and line budgets: %s %s" % (m.HARVEST, m.COLLECT))
+row = m.harvest(now)
+exits = {r[0]: r for r in row["launchd"]}
+check(exits["com.llm-legs.memlogd"] == ["com.llm-legs.memlogd", 1, 1.2, 1.2, 1, {"exit 1": 1}, "own"]
+      and exits["com.vendor.sync"][4] == 1 and exits["com.vendor.sync"][5] == {"signal 11": 1}
+      and exits["com.apple.mdworker.shared"][4] == 0 and exits["com.apple.mdworker.shared"][5] == {"signal 9": 1}
+      and exits["com.apple.SetStoreUpdateService"][5] == {"OS_REASON_RUNNINGBOARD": 1},
+      "launchd exits per label: runs, wall, longest, abnormal (non-zero exit or a crash signal) and kinds: %s" % exits)
+check(row["das"] == [["com.apple.spotlight.pipeline", 1, 1, {"CP": 1, "MNP": 1}, "apple"], ["PDCardFileManager.RevocationCheck", 0, 0, {"MNP": 1}, "apple"],
+                     ["com.google.keystone.update", 0, 0, {"CP": 1}, "third-party"]],
+      "DAS verdicts, starts, completions; a bare activity name is an Apple daemon's: %s" % row["das"])
+check(sorted(row["hangs"]) == [["Dia Browser", 0, 1, 0.9, "third-party"], ["Hammerspoon", 1, 0, 0.0, "own"]], "hangs per app: %s" % row["hangs"])
+check(all(row["sources"][s]["cut"] is None and row["sources"][s]["to"] == round(now) and row["sources"][s]["lines"] == len(filled)
+          and row["sources"][s]["from"] == round(now - 11 * 3600) for s in ("launchd", "das", "hangs")),
+      "a first harvest reads 11 h back to now: %s" % row["sources"])
+calls = open(os.path.join(fix, "log.calls")).read().splitlines()
+check(len(calls) == 3 and all(c.startswith("show --style compact --start ") and " --predicate " in c for c in calls)
+      and 'process == "launchd" AND eventMessage CONTAINS "ran for"' in calls[0], "log show per source with its predicate: %s" % calls)
+text = "".join(open(f).read() for f in glob.glob(os.path.join(work, "state", "harvest", "*.jsonl")))
+check("secret" not in text and "sent by" not in text and "not sampling" not in text and "Max allowed" not in text,
+      "the harvest keeps counters, never message bodies")
+filled = stamp_log(now + 6 * 3600 - 600)
+row = m.harvest(now + 6 * 3600, max_lines=3)
+check(row["sources"]["launchd"]["cut"] == "lines" and row["sources"]["launchd"]["lines"] == 3
+      and row["sources"]["launchd"]["from"] == round(now) and row["sources"]["launchd"]["to"] == round(m.log_time(filled[2][:23]))
+      and len(row["launchd"]) == 2, "a harvest cut at its line budget keeps the lines it read and resumes after them: %s" % row["sources"]["launchd"])
+os.environ["LOG_SLEEP"] = "5"
+began = time.time()
+row = m.harvest(now + 30 * 3600, budget_s=0.5)
+del os.environ["LOG_SLEEP"]
+check(all(row["sources"][s]["cut"] == "time" and row["sources"][s]["lines"] == 2 for s in ("launchd", "das", "hangs"))
+      and time.time() - began < 3, "a harvest past its time budget is killed: %s in %.1f s" % (row["sources"], time.time() - began))
+check(abs(row["sources"]["hangs"]["lost_s"] - (13 * 3600 + 600)) <= 1
+      and row["sources"]["hangs"]["from"] == round(now + 19 * 3600),
+      "a cursor older than the log's retention starts 11 h back and counts the lost seconds: %s" % row["sources"]["hangs"])
+judge = m.Judge(now + 30 * 3600, None)
+m.judge_launchd(judge, [], [{"t": now + 30 * 3600 - 60, "launchd": [["com.x.dies", 5, 1.0, 0.5, 3, {"exit 2": 3}, "own"]]}])
+check([p["id"] for p in judge.problems] == ["job-loop:com.x.dies"] and judge.problems[0]["value"] == 3,
+      "the log's abnormal exits alone name a dying job: %s" % judge.problems)
+
+# ---- phase 3: own footprints and disk counters per tick
+put("ps", ps_rows(base))
+put("ps-children", ps_rows(base + newborns))
+json.dump({"100": [300 << 20, 1000, 5000, 7], "300": [100 << 20, 10, 20, 1]}, open(os.path.join(fix, "rusage.json"), "w"))
+for name in os.listdir(os.path.join(work, "state", "ticks")):
+    os.remove(os.path.join(work, "state", "ticks", name))
+os.remove(state_path)
+first = json.loads(cli("tick").stdout)
+json.dump({"100": [310 << 20, 3000, 9000, 17], "300": [100 << 20, 10, 20, 1]}, open(os.path.join(fix, "rusage.json"), "w"))
+row = json.loads(cli("tick").stdout)
+check(row["own_procs"] == 2 and row["usage_read"] == 2 and row["mem_top"] == [["statusline.sh", 310 << 20, "own"],
+                                                                             ["Hammerspoon", 100 << 20, "own"]],
+      "footprints of own processes by tag: %s" % row)
+check(row["io_top"] == [["statusline.sh", 4000, 2000, 10, "own"]], "disk bytes written, read and idle wakeups since the last tick: %s" % row["io_top"])
+check(first["io_top"] == [], "the first tick has no deltas")
+saved_rusage = open(os.path.join(fix, "rusage.json")).read()
+json.dump({}, open(os.path.join(fix, "rusage.json"), "w"))
+row = json.loads(cli("tick").stdout)
+doc = m.document(time.time(), time.time(), persist=False)
+check(row["usage_read"] == 0 and "footprints" in doc["blind"], "unreadable own footprints are a blind collector: %s" % doc["blind"])
+open(os.path.join(fix, "rusage.json"), "w").write(saved_rusage)
+
+# ---- phase 3: the cohort score at its edges, amortized over >= 7 days
+check(m.COHORT["cpu_s"] == 864 and m.COHORT["wakes"] == 86400 and m.COHORT["writes_b"] == m.GIB and m.COHORT["reads_b"] == 100 * m.GIB
+      and m.COHORT["footprint_b"] == 512 * 2 ** 20 and m.COHORT["births"] == 86400 and m.COHORT["launches"] == 1440
+      and m.COHORT["review"] == 1 and m.COHORT["heavy"] == 5 and m.COHORT["days"] == 7, "the cohort divisors are the design's: %s" % m.COHORT)
+
+
+def week(entries, days=7, covered=86400):
+    return [{"day": m.local_day(now - i * 86400), "covered_s": covered, "cohort": entries} for i in range(days)]
+
+
+def score(entries, launches=(), days=7, covered=86400):
+    found = m.cohort_score(week(entries, days, covered), list(launches), now)
+    return {(i["name"], i["owner"]): i for i in found["items"]} if found["items"] is not None else found
+
+
+for index, (term, total) in enumerate((("C", 864), ("S", 86400), ("D", m.GIB), ("R", 100 * m.GIB), ("W", 86400))):
+    values = [0.0] * 6
+    values[["C", "S", "D", "R", "W"].index(term)] = total
+    at = score([["edge", "own"] + values])[("edge", "own")]
+    under = [0.0] * 6
+    under[["C", "S", "D", "R", "W"].index(term)] = total * 0.999
+    check(abs(at["B"] - 1) < 1e-9 and at["terms"][term] == 1 and score([["edge", "own"] + under])[("edge", "own")]["B"] < 1,
+          "%s at its divisor a day scores B 1, just under it less: %s" % (term, at))
+held = score([["fat", "own", 0, 0, 0, 0, 0, 512 * 2 ** 20 * 86400]])[("fat", "own")]
+half = score([["fat", "own", 0, 0, 0, 0, 0, 512 * 2 ** 20 * 43200]])[("fat", "own")]
+check(abs(held["B"] - 1) < 1e-9 and abs(half["B"] - 0.5) < 1e-9,
+      "512 MiB held under pressure all day scores 1, under pressure half the day 0.5: %s %s" % (held, half))
+launches = [{"t": now - 3600, "jobs": [{"name": "com.apple.thing", "owner": "apple", "runs": 1440 * 7}]}]
+apple = score([], launches)[("com.apple.thing", "apple")]
+check(abs(apple["B"] - 1) < 1e-9 and apple["unknown"] == ["W", "D", "R", "M"] and set(apple["terms"]) == {"C", "S", "L"},
+      "1,440 launches a day scores 1; an Apple item's W, D, R and M are unknown: %s" % apple)
+check(score([["edge", "own", 864 * 5, 0, 0, 0, 0, 0]])[("edge", "own")]["B"] == 5, "5x the CPU divisor is B 5")
+short = score([["edge", "own", 864 * 100, 0, 0, 0, 0, 0]], days=6)
+check(short == {"covered_days": 6.0, "items": None}, "under 7 covered days nothing is scored: %s" % short)
+spread = m.cohort_score(week([["edge", "own", 864, 0, 0, 0, 0, 0]], days=14, covered=43200), [], now)
+check(spread["covered_days"] == 7.0 and abs(spread["items"][0]["B"] - 2) < 1e-9,
+      "half-covered days are amortized over their covered time, 14 days back at most: %s" % spread)
+
+
+def cohort_problems(entries, launches=()):
+    judge = m.Judge(now, None)
+    m.judge_cohort(judge, m.cohort_score(week(entries), list(launches), now))
+    return {p["id"]: p for p in judge.problems}
+
+
+found = cohort_problems([["statusline.sh", "own", 864 * 5, 0, 0, 0, 0, 0], ["helper.sh", "own", 864 * 0.999, 0, 0, 0, 0, 0],
+                         ["worker-run", "own", 864, 0, 0, 0, 0, 0], ["bench.py", "own", 864 * 2, 0, 0, 0, 0, 0]],
+                        [{"t": now - 3600, "jobs": [{"name": "com.apple.mdworker.shared", "owner": "apple", "runs": 1440 * 70}]}])
+check(sorted(found) == ["cohort:bench.py", "cohort:com.apple.mdworker.shared", "cohort:statusline.sh", "cohort:worker-run"],
+      "B >= 1 is a cohort problem, 0.999 is not: %s" % sorted(found))
+check(found["cohort:statusline.sh"]["severity"] == "heavy" and found["cohort:worker-run"]["severity"] == "review"
+      and found["cohort:statusline.sh"]["state"] == "new" and found["cohort:statusline.sh"]["cause"]["fix_target"]
+      and found["cohort:statusline.sh"]["cause"]["files"] == ["llm-legs/bin/statusline.sh"]
+      and "tune it" in found["cohort:statusline.sh"]["fact"], "an own item in a sweep repository is tuned: %s" % found["cohort:statusline.sh"])
+apple = found["cohort:com.apple.mdworker.shared"]
+check(apple["state"] == "watch" and not apple["cause"]["fix_target"] and "(apple, report only)" in apple["fact"]
+      and "never remove" in apple["fact"] and apple["severity"] == "heavy", "an Apple item reads watch, report-only: %s" % apple)
+check(found["cohort:bench.py"]["state"] == "watch" and not found["cohort:bench.py"]["cause"]["fix_target"],
+      "an own item outside the sweep repositories is watched, not fixed")
+many = cohort_problems([], [{"t": now - 3600, "jobs": [{"name": "com.apple.%d" % i, "owner": "apple", "runs": 1440 * 7 * (i + 1)}
+                                                       for i in range(10)]}])
+check(len(many) == 6, "at most 6 watched items: %d" % len(many))
+
+for sub in ("launchd", "harvest", "census"):
+    shutil.rmtree(os.path.join(work, "state", sub), ignore_errors=True)
+
 # ---- doctor-fix routes own causes to a System fixer and never a report-only one
 fake = os.path.join(work, "fakebin")
 os.makedirs(fake)
@@ -544,6 +875,23 @@ run = subprocess.run(["bash", os.path.join(root, "bin", "doctor-fix"), "abandon"
 run = subprocess.run(["bash", os.path.join(root, "bin", "doctor-fix"), "launch", "system"], capture_output=True, text=True, env=env)
 check(run.returncode != 0 and "nothing to fix" in run.stderr and len(glob.glob(os.path.join(work, "doctors", "runs", "system-*.json"))) == 1,
       "an Apple cause is never in a fixer snapshot: %s" % run.stderr)
+os.makedirs(os.path.join(work, "state", "launchd"), exist_ok=True)
+at = time.time()
+with open(os.path.join(work, "state", "launchd", m.local_day(at) + ".jsonl"), "w") as handle:
+    for hours_ago in (2, 1, 0):
+        handle.write(json.dumps({"t": at - hours_ago * 3600 - 60, "dt": 3600, "services": 5, "jobs": [
+            {"label": "com.llm-legs.memlogd", "name": "memlogd", "owner": "own", "runs": 120, "bad": 1, "exit": "exit 1",
+             "every": None, "relaunched": True},
+            {"label": "com.vendor.sync", "name": "com.vendor.sync", "owner": "third-party", "runs": 1, "bad": 1,
+             "exit": "signal 11", "every": 300, "relaunched": True}]}) + "\n")
+check(cli().returncode == 0, "the judge reads the launchd rows")
+run = subprocess.run(["bash", os.path.join(root, "bin", "doctor-fix"), "launch", "system"], capture_output=True, text=True, env=env)
+fixers = sorted(glob.glob(os.path.join(work, "doctors", "runs", "system-*.json")), key=os.path.getmtime)
+routed = {p["id"]: p for p in json.load(open(fixers[-1]))["problems"]} if len(fixers) == 2 else {}
+check(run.returncode == 0 and sorted(routed) == ["job-loop:com.llm-legs.memlogd"]
+      and routed["job-loop:com.llm-legs.memlogd"]["component"]["files"] == [os.path.join(work, "repos", "llm-legs", "bin", "memlogd")]
+      and "back off before exiting non-zero" in routed["job-loop:com.llm-legs.memlogd"]["component"]["what"],
+      "an own looping job routes to the fixer by its program's file, a third-party crashing one never: %s %s" % (routed, run.stderr))
 
 print("OK: PASS: %d system doctor checks" % asserts)
 PY

@@ -4,31 +4,24 @@
   "blind_spots": [
     {
       "id": "ssd-writers",
-      "what": "which process writes the internal SSD",
-      "reason": "Per-process disk counters of other users' and short-lived processes need root; the 2026-10-04 privileged sample put ~76% on our own short-lived processes, so the ssd-writes row names a cause only from DiagnosticReports disk-writes reports",
+      "what": "which short-lived or other users' process writes the internal SSD",
+      "reason": "Each tick reads the disk counters of our own live processes (proc_pid_rusage), but a process that dies between ticks takes its counters along, and other users' counters need root; the 2026-10-04 privileged sample put ~76% of writes on our own short-lived processes",
       "since": "2026-10-06",
-      "would_catch_if": "proc_pid_rusage disk counters of our own processes per tick, or a consented privileged sample"
-    },
-    {
-      "id": "memory-owners",
-      "what": "who holds the compressed and swapped memory",
-      "reason": "Phase 1 samples machine counters only; a per-process footprint including compressed pages needs task_info of each process",
-      "since": "2026-10-06",
-      "would_catch_if": "own-process footprints (phys_footprint) per tick, attributed like births"
+      "would_catch_if": "a consented privileged sample (fs_usage or per-process rusage of every uid)"
     },
     {
       "id": "short-lived-births",
-      "what": "the parents of processes that live less than the 2 s window",
-      "reason": "Births are attributed from the newborns still alive at the window's end; the PID counter counts every birth, so the attributed shares lean toward longer-lived children",
+      "what": "the parents of processes that live less than the 2 s window outside storms",
+      "reason": "Births are attributed from the newborns still alive at the window's end; a storm (2,000 births/s for 2 min or kernel share 0.5) adds a 60 s census polling every 20 ms, at most every 30 min, so calm hours still lean toward longer-lived children",
       "since": "2026-10-06",
-      "would_catch_if": "an exec event stream (endpoint security, root) or the design's 60 s newborn census on a storm"
+      "would_catch_if": "an exec event stream (endpoint security, root)"
     },
     {
-      "id": "launchd-runs",
-      "what": "launchd job run counts, exits and hangs from the unified log",
-      "reason": "The design's hourly launchctl dumpstate counters and the 6-hourly unified-log harvest are phase 2",
+      "id": "foreign-cohort-terms",
+      "what": "idle wakeups, disk bytes and footprints of Apple and third-party items",
+      "reason": "proc_pid_rusage of other users' processes needs root, so their cohort score counts CPU, births and launches only and lists W, D, R and M as unknown",
       "since": "2026-10-06",
-      "would_catch_if": "the hourly and 6-hourly passes of docs/system-doctor-design.md"
+      "would_catch_if": "a consented privileged sample"
     }
   ]
 }

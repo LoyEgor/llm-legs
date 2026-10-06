@@ -6,7 +6,9 @@ No network, no LLM. `agent` is the LaunchAgent's minute: one light tick, the nig
 every 10 minutes."""
 
 import argparse
+import contextlib
 import datetime
+import fcntl
 import functools
 import glob
 import hashlib
@@ -15,6 +17,7 @@ import os
 import plistlib
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -48,6 +51,13 @@ LIMITS = {
 PROOF = {"sightings": 30, "min_s": 2 * 3600, "max_s": 7 * 86400, "baseline_s": 7 * 86400, "drop": 0.25,
          "reports_s": 7 * 86400}
 RATE_RULES = ("spawn", "kernel")
+COLLECT = {"storm_s": 2000, "storm_min": 2, "storm_kernel": 0.50, "census_s": 60, "census_poll_s": 0.02,
+           "census_every_s": 30 * 60, "dumpstate_every_s": 3600, "harvest_every_s": 6 * 3600, "harvest_back_s": 11 * 3600,
+           "loop_runs_h": 60, "loop_heavy_runs_h": 360, "loop_dt_s": 1800, "job_exits_day": 3, "job_exits_heavy_day": 24}
+HARVEST = (("launchd", 'process == "launchd" AND eventMessage CONTAINS "ran for"', 300, 100000),
+           ("das", 'subsystem == "com.apple.duetactivityscheduler" AND category IN {"scoring", "lifecycle", "BGSTHelper"}',
+            150, 1200000),
+           ("hangs", 'process == "spindump" AND subsystem == "com.apple.spindump"', 60, 20000))
 REPORT_KINDS = {"hammerspoon-crash": ("crash",), "job-crash": ("crash",), "unclean-reboot": ("shutdownStall", "panic"),
                 "ssd-writes": ("diskwrites",)}
 PROOF_SHOW_S = 7 * 86400
@@ -63,7 +73,7 @@ LEVERS = (
     (("harness-doctor",), "cut the doctor's own cost (657 -> 1,565 cpu-s/day)"),
     (("vendor-cli-update", "vendor-fingerprint"), "drop RunAtLoad, or add a boot delay (shutdown stall)"),
 )
-RULE_LABELS = {"spawn": "new processes", "kernel": "kernel CPU", "compressor": "memory compressed",
+RULE_LABELS = {"spawn": "new processes", "job-loop": "job relaunch loop", "cohort": "standing cost", "kernel": "kernel CPU", "compressor": "memory compressed",
                "swap": "swap full", "ssd-writes": "SSD writes", "swap-writes": "swap writes",
                "hammerspoon-crash": "Hammerspoon crash", "job-crash": "job crashes", "unclean-reboot": "unclean reboot",
                "free-space": "low disk space"}
@@ -72,6 +82,13 @@ DISMISSED = ("not-a-bug", "weather")
 HOUR_S = 3600
 DAY_S = 86400
 GIB = 1 << 30
+COHORT = {"cpu_s": 864, "wakes": 86400, "writes_b": GIB, "reads_b": 100 * GIB, "footprint_b": 512 << 20, "births": 86400,
+          "launches": 1440, "review": 1, "heavy": 5, "days": 7, "lookback_days": 14, "pressure_comp": 0.25,
+          "pressure_swapouts_s": 2000, "watch_rows": 6, "items_day": 100}
+TERMS = (("C", "cpu_s", "%.0f cpu-s"), ("W", "wakes", "%.0f idle wakes"), ("D", "writes_b", "%.1f GB written"),
+         ("R", "reads_b", "%.1f GB read"), ("M", "footprint_b", "%.0f MiB held under pressure"), ("S", "births", "%.0f births"),
+         ("L", "launches", "%.0f launches"))
+CRASH_SIGNALS = {4, 5, 6, 8, 10, 11, 12}
 MIN_TICKS = 3
 TICK_GAP_S = 600
 TICK_STALE_S = 600
@@ -99,6 +116,7 @@ SUFFIX_KINDS = {".shutdownStall": "shutdownStall", ".spin": "hang", ".hang": "ha
                 ".cpu_resource": "cpu_resource", ".diskwrites_resource": "diskwrites", ".wakeups_resource": "wakeups"}
 CACHE_DIRS = (".gemini-profiles",)
 CACHE_ROOTS = (".cache", "Library/Caches")
+UNIQUE = re.compile(r"[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}|\b(?=[0-9A-Fa-f]*\d)[0-9A-Fa-f]{6,}\b|\d{4,}")
 LABEL = "com.llm-legs.system-doctor"
 WRAPPER = "system-doctor"
 
@@ -179,9 +197,14 @@ def source_path(rel):
     return next((os.path.join(top, path) for top in sweep_dirs() if os.path.basename(top.rstrip("/")) == repo), None)
 
 
+RULE_LEVERS = {"job-loop": "find why it exits (its own log, not launchd's), back off before exiting non-zero, keep its "
+                           "KeepAlive and interval no tighter than its work needs",
+               "cohort": "cut its dominant term (the fact names it) without changing what it outputs"}
+
+
 def levers(name, rule):
     found = [text for names, text in LEVERS if name in names]
-    return found or ([SPAWN_LEVER] if rule in RATE_RULES else [])
+    return found or ([SPAWN_LEVER] if rule in RATE_RULES else [RULE_LEVERS[rule]] if rule in RULE_LEVERS else [])
 
 
 def cache_dirs():
@@ -304,7 +327,7 @@ def classify(args, uid, roots):
 
 
 def ps_snapshot(with_children):
-    """{key: [ppid, cpu_s, tag, owner, pid]} keyed `pid@lstart`, plus the probe's own pid."""
+    """{key: [ppid, cpu_s, tag, owner, pid, uid]} keyed `pid@lstart`, plus the probe's own pid."""
     args = ["-A"] + (["-S"] if with_children else []) + ["-o", "pid=,ppid=,uid=,time=,lstart=,args="]
     pid, out = machine_probe.spawn("ps", args)
     roots = own_roots()
@@ -315,7 +338,8 @@ def ps_snapshot(with_children):
             continue
         number, ppid, uid, cpu, start, argv = match.groups()
         tag, owner = classify(argv, int(uid), roots)
-        procs["%s@%s" % (number, " ".join(start.split()))] = [int(ppid), cpu_seconds(cpu), tag, owner, int(number)]
+        procs["%s@%s" % (number, " ".join(start.split()))] = [int(ppid), cpu_seconds(cpu), tag, owner, int(number),
+                                                              int(uid)]
     return pid, procs
 
 
@@ -333,6 +357,17 @@ def causer(key, procs, by_pid):
         if entry[2] not in INTERPRETERS:
             return entry[2], entry[3]
     return (chain[0][2], chain[0][3]) if chain else ("launchd", "apple")
+
+
+def own_usage(procs):
+    """{key: (footprint, read B, written B, idle wakeups)} of the own processes proc_pid_rusage can read."""
+    out = {}
+    for key, entry in procs.items():
+        if entry[3] == "own":
+            found = machine_probe.proc_rusage(entry[4])
+            if found:
+                out[key] = found
+    return out
 
 
 def births_rate(first_pid, last_pid, seconds, own_spawns=1):
@@ -421,6 +456,7 @@ def tick(now=None):
     mem = steps("sysctl", memory_sysctls)
     disks = steps("ioreg", disk_counters)
     volumes = steps("df", free_space)
+    usage = steps("rusage", own_usage, last)
 
     gap = now - previous["t"] if isinstance(previous.get("t"), (int, float)) else None
     joined = gap is not None and 0 < gap <= TICK_GAP_S and previous.get("boot") == mem["boot"]
@@ -487,8 +523,27 @@ def tick(now=None):
             slot[1] += reaped
     row["cpu_top"] = top_rows([[tag, round(s, 2), round(r, 2), owner] for (tag, owner), (s, r) in cpu.items()])
 
+    row["own_procs"] = sum(1 for entry in last.values() if entry[3] == "own")
+    row["usage_read"] = len(usage)
+    held, moved = {}, {}
+    old_usage = previous.get("usage") or {}
+    for key, (footprint, read, written, wakes) in usage.items():
+        tag = (last[key][2], last[key][3])
+        held[tag] = held.get(tag, 0) + footprint
+        before = old_usage.get(key)
+        if joined and before and read >= before[0] and written >= before[1] and wakes >= before[2]:
+            slot = moved.setdefault(tag, [0, 0, 0])
+            slot[0] += written - before[1]
+            slot[1] += read - before[0]
+            slot[2] += wakes - before[2]
+    row["mem_top"] = top_rows([[tag, footprint, owner] for (tag, owner), footprint in held.items()])
+    row["io_top"] = top_rows([[tag, w, r, k, owner] for (tag, owner), (w, r, k) in moved.items() if w or r or k])
+
     state = {"t": now, "boot": mem["boot"], "ticks": ticks, "vm": vm, "disks": disks,
-             "procs": {key: [first[key][1], entry[1]] for key, entry in last.items() if key in first}}
+             "procs": {key: [first[key][1], entry[1]] for key, entry in last.items() if key in first},
+             "usage": {key: [read, written, wakes] for key, (_f, read, written, wakes) in usage.items()},
+             "recent": (previous.get("recent") or [])[-2:] + [{"t": round(now, 1), "births_s": row["births_s"],
+                                                              "kernel": row["kernel"]}]}
     write_json(path, state)
     row["self"] = {"wall_s": round(time.time() - now, 3), "cpu_s": round(collector_runs.cpu_total() - started_cpu, 3),
                    "steps": steps.out}
@@ -502,12 +557,12 @@ def tick(now=None):
 # ---------------------------------------------------------------- rollups
 
 
-def tick_rows(since, until):
+def tick_rows(since, until, sub="ticks"):
     names, at = set(), since
     while at < until + 6 * HOUR_S:
         names.add(local_day(min(at, until)))
         at += 6 * HOUR_S
-    rows = [row for name in sorted(names) for row in read_lines(os.path.join(state_dir(), "ticks", name + ".jsonl"))
+    rows = [row for name in sorted(names) for row in read_lines(os.path.join(state_dir(), sub, name + ".jsonl"))
             if isinstance(row.get("t"), (int, float)) and since <= row["t"] <= until]
     rows.sort(key=lambda r: r["t"])
     return rows
@@ -565,7 +620,7 @@ def rollup(now, rows, persist=True):
         part = [row for row in rows if local_day(row["t"]) == day]
         if not part:
             continue
-        days[day] = dict(summarize(part), day=day)
+        days[day] = dict(summarize(part), day=day, cohort=cohort_sums(part))
         if persist:
             hours = {}
             for row in part:
@@ -654,10 +709,16 @@ def report_header(path, name, jobs):
             "job": proc in jobs}
 
 
-def relaunched_jobs():
-    """{program name: {label, owner}} of the launchd jobs launchd starts again on its own (KeepAlive or StartInterval)."""
-    jobs = {}
-    roots = own_roots()
+def job_owner(label, program):
+    if label.split("application.", 1)[-1].startswith("com.apple.") or (program or "").startswith(APPLE_PREFIXES) and not (
+            program or "").startswith("/usr/local/"):
+        return "apple"
+    return "own" if (program or "").startswith(own_roots()) else "third-party"
+
+
+def job_plists():
+    """[(label, program, plist)] of the launchd job plists in agent_dirs()."""
+    found = []
     for folder in agent_dirs():
         for path in glob.glob(os.path.join(folder, "*.plist")):
             try:
@@ -665,16 +726,18 @@ def relaunched_jobs():
                     plist = plistlib.load(handle)
             except Exception:
                 continue
-            if not isinstance(plist, dict) or not (plist.get("KeepAlive") or plist.get("StartInterval")):
+            if not isinstance(plist, dict):
                 continue
             program = plist.get("Program") or (plist.get("ProgramArguments") or [""])[0]
-            label = str(plist.get("Label") or os.path.basename(path)[:-6])
-            if not isinstance(program, str) or not program:
-                continue
-            owner = ("apple" if label.startswith("com.apple.") else
-                     "own" if program.startswith(roots) else "third-party")
-            jobs[os.path.basename(program)] = {"label": label, "owner": owner}
-    return jobs
+            if isinstance(program, str) and program:
+                found.append((str(plist.get("Label") or os.path.basename(path)[:-6]), program, plist))
+    return found
+
+
+def relaunched_jobs():
+    """{program name: {label, owner}} of the launchd jobs launchd starts again on its own (KeepAlive or StartInterval)."""
+    return {os.path.basename(program): {"label": label, "owner": job_owner(label, program)}
+            for label, program, plist in job_plists() if plist.get("KeepAlive") or plist.get("StartInterval")}
 
 
 def diagnostic_reports(now, jobs):
@@ -780,6 +843,506 @@ def nightly(now=None):
     return result
 
 
+# ---------------------------------------------------------------- collectors: storm census, launchd, unified log
+
+
+@contextlib.contextmanager
+def single(name):
+    """True while this process holds the collector's lock, False when another run of it holds it."""
+    os.makedirs(state_dir(), exist_ok=True)
+    with open(os.path.join(state_dir(), name + ".lock"), "w") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            yield False
+            return
+        yield True
+
+
+def detach(command):
+    try:
+        subprocess.Popen([sys.executable, os.path.realpath(__file__), command, "--quiet"], start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, close_fds=True)
+    except OSError as error:
+        print("system-doctor %s: %s: %s" % (command, type(error).__name__, error), file=sys.stderr)
+
+
+def census_due(recent, now, last=None):
+    """The storm that calls for a newborn census, or None: births >= storm_s on every tick of the last storm_min
+    minutes (at least storm_min ticks), or the latest tick's kernel share >= storm_kernel; one census per
+    census_every_s at most."""
+    if last is not None and now - last < COLLECT["census_every_s"]:
+        return None
+    window = [r for r in recent if r.get("t", 0) >= now - COLLECT["storm_min"] * 60 + 10]
+    births = [r.get("births_s") for r in window]
+    if len(window) >= COLLECT["storm_min"] and all(b is not None and b >= COLLECT["storm_s"] for b in births):
+        return {"births_s": min(births), "kernel": window[-1].get("kernel")}
+    latest = window[-1] if window else {}
+    if latest.get("kernel") is not None and latest["kernel"] >= COLLECT["storm_kernel"]:
+        return {"births_s": latest.get("births_s"), "kernel": latest["kernel"]}
+    return None
+
+
+def launch_due(now, start=detach):
+    """Starts each collector that is due as its own background process; launched.json holds when each last began."""
+    path = os.path.join(state_dir(), "launched.json")
+    launched = read_json(path, {}) or {}
+    recent = (read_json(os.path.join(state_dir(), "tick-state.json"), {}) or {}).get("recent") or []
+    due = ["census"] if census_due(recent, now, launched.get("census")) else []
+    for name, every in (("dumpstate", COLLECT["dumpstate_every_s"]), ("harvest", COLLECT["harvest_every_s"])):
+        if now - (launched.get(name) or 0) >= every - 30:
+            due.append(name)
+    if due:
+        write_json(path, dict(launched, **{name: now for name in due}))
+        for name in due:
+            start(name)
+    return due
+
+
+def append_row(sub, row, keep_days=KEEP_HOUR_DAYS):
+    folder = os.path.join(state_dir(), sub)
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, local_day(row["t"]) + ".jsonl"), "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row, separators=(",", ":")) + "\n")
+    cutoff = local_day(row["t"] - keep_days * DAY_S)
+    for path in glob.glob(os.path.join(folder, "????-??-??.jsonl")):
+        if os.path.basename(path)[:10] < cutoff:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+def census(now=None, seconds=None, poll=None):
+    """One newborn census: polls the process table for `seconds` and charges every newborn it catches to the nearest
+    own script or app above it, as the tick does; one row in census/<day>.jsonl."""
+    began = time.time()
+    now = began if now is None else now
+    started_cpu = collector_runs.cpu_total()
+    machine_probe.low_priority()
+    seconds = COLLECT["census_s"] if seconds is None else seconds
+    poll = COLLECT["census_poll_s"] if poll is None else poll
+    roots = own_roots()
+    procs, by_pid = {}, {}
+
+    def look(pid):
+        found = machine_probe.proc_info(pid)
+        if not found:
+            return None
+        ppid, uid, start, args = found
+        key = "%d@%d" % (pid, start)
+        if key not in procs:
+            tag, owner = classify(args, uid, roots)
+            procs[key] = [int(ppid), 0.0, tag, owner, pid]
+        by_pid[pid] = key
+        return key
+
+    seen = machine_probe.all_pids()
+    births, caught, unreadable, polls = {}, 0, 0, 0
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        time.sleep(poll)
+        current = machine_probe.all_pids()
+        polls += 1
+        for pid in current - seen:
+            key = look(pid)
+            if key is None:
+                unreadable += 1
+                continue
+            parent, depth = procs[key][0], 0
+            while parent > 1 and depth < 12 and (parent in by_pid or look(parent)):
+                parent, depth = procs[by_pid[parent]][0], depth + 1
+            name = causer(key, procs, by_pid)
+            births[name] = births.get(name, 0) + 1
+            caught += 1
+        seen = current
+        if len(procs) > 200000:
+            procs.clear()
+            by_pid.clear()
+    recent = (read_json(os.path.join(state_dir(), "tick-state.json"), {}) or {}).get("recent") or []
+    row = {"t": round(now, 1), "seconds": seconds, "polls": polls, "births_seen": caught, "unreadable": unreadable,
+           "births_top": top_rows([[tag, n, owner] for (tag, owner), n in births.items()]),
+           "trigger": recent[-1] if recent else None,
+           "self": {"wall_s": round(time.time() - began, 3), "cpu_s": round(collector_runs.cpu_total() - started_cpu, 3)}}
+    append_row("census", row, KEEP_TICK_DAYS)
+    return row
+
+
+def job_label(text):
+    """A launchd service name without its domain, pid or unique parts: `gui/501/com.x.<uuid> [12]` -> `com.x.N`."""
+    label = re.sub(r"^(?:(?:gui|user|login|pid|session)/\d+/|system/)", "", text.strip()).split(" [")[0].rstrip(":")
+    return re.sub(r"(?:\.(?:N|\d+))+$", "", UNIQUE.sub("N", label))[:80]
+
+
+def exit_text(code=None, signal_text=None):
+    """`exit N`, `signal N` or None (never exited) off dumpstate's last exit code and terminating signal."""
+    found = re.search(r":\s*(\d+)\s*$", signal_text or "")
+    if found:
+        return "signal %s" % found.group(1)
+    if code and re.match(r"^-?\d+$", code.strip()):
+        return "exit %s" % code.strip()
+    return None
+
+
+def abnormal(text):
+    kind, _, number = (text or "").partition(" ")
+    return kind == "exit" and number not in ("0", "") or kind == "signal" and number.isdigit() and int(
+        number) in CRASH_SIGNALS
+
+
+DUMP_KEYS = ("runs", "last exit code", "last terminating signal", "program", "pid", "run interval", "properties")
+
+
+def parse_dumpstate(text):
+    """{service: {label, name, owner, runs, exit, pid, every, relaunched}} of every service with a run counter. The text carries
+    argv and environment: nothing but the label, the program's basename and counters leaves this function."""
+    services, block = {}, None
+    for line in text.split("\n"):
+        if not line.startswith("\t"):
+            if line.endswith(" = {") and not line.startswith(" "):
+                block = services.setdefault(line[:-4], {})
+            continue
+        if block is None or line.startswith("\t\t"):
+            continue
+        key, _, value = line[1:].partition(" = ")
+        if key in DUMP_KEYS and key not in block:
+            block[key] = value.strip()
+    out = {}
+    for service, block in services.items():
+        if not block.get("runs", "").isdigit():
+            continue
+        label, program = job_label(service), block.get("program") or ""
+        owner = job_owner(label, program)
+        every = re.match(r"(\d+) seconds", block.get("run interval") or "")
+        out[service] = {"label": label, "name": os.path.basename(program)[:40] if owner == "own" and program else label,
+                        "owner": owner, "runs": int(block["runs"]),
+                        "exit": exit_text(block.get("last exit code"), block.get("last terminating signal")),
+                        "pid": int(block["pid"]) if block.get("pid", "").isdigit() else None,
+                        "every": int(every.group(1)) if every else None,
+                        "relaunched": bool(every) or "keepalive" in (block.get("properties") or "").split(" | ")}
+    return out
+
+
+def worker_pids():
+    """Supervisor pids of worker runs still open: a detached supervisor under launchd is on purpose."""
+    folder = os.environ.get("WORKER_RUN_DIR") or os.path.join(HOME, ".cache", "claude-worker-runs")
+    pids = set()
+    try:
+        entries = list(os.scandir(folder))
+    except OSError:
+        return pids
+    for entry in entries:
+        try:
+            if not entry.is_dir() or time.time() - entry.stat().st_mtime > 3 * DAY_S or os.path.exists(
+                    os.path.join(entry.path, "exit_code")):
+                continue
+        except OSError:
+            continue
+        pid = (read_json(os.path.join(entry.path, "meta.json"), {}) or {}).get("pid")
+        if isinstance(pid, int):
+            pids.add(pid)
+    return pids
+
+
+def start_epoch(key):
+    try:
+        return time.mktime(time.strptime(key.split("@", 1)[1], "%a %b %d %H:%M:%S %Y"))
+    except (IndexError, ValueError):
+        return None
+
+
+def orphan_census(job_pids, now):
+    """Own processes launchd adopted that are no launchd job: [tag, count, oldest age s, open worker supervisors]."""
+    _pid, procs = ps_snapshot(False)
+    supervisors = worker_pids()
+    found = {}
+    for key, entry in procs.items():
+        if entry[0] != 1 or entry[3] != "own" or entry[2] in OWN_APPS or entry[4] in job_pids or entry[5] != os.getuid():
+            continue
+        slot = found.setdefault(entry[2], [0, 0, 0])
+        born = start_epoch(key)
+        slot[0] += 1
+        slot[1] = max(slot[1], round(now - born) if born else 0)
+        slot[2] += entry[4] in supervisors
+    rows = [[tag, n, age, sup, "own"] for tag, (n, age, sup) in found.items()]
+    return {"count": sum(r[1] for r in rows), "supervisors": sum(r[3] for r in rows), "top": top_rows(rows)}
+
+
+def dumpstate(now=None):
+    """Hourly: launchd's per-service run counters and last exits (`launchctl dumpstate`, parsed in memory) as deltas
+    against the previous snapshot, and the orphan census; one row in launchd/<day>.jsonl."""
+    began = time.time()
+    now = began if now is None else now
+    started_cpu = collector_runs.cpu_total()
+    machine_probe.low_priority()
+    steps = Steps()
+    services = steps("parse", lambda: parse_dumpstate(machine_probe.run("launchctl", ["dumpstate"], timeout=30)))
+    path = os.path.join(state_dir(), "dumpstate-state.json")
+    previous = read_json(path, {}) or {}
+    old = previous.get("services") or {}
+    jobs, reloaded = {}, 0
+    for service, entry in services.items():
+        before = old.get(service)
+        if not previous:
+            runs = 0
+        elif before is None:
+            runs = entry["runs"]
+        elif entry["runs"] < before[0]:
+            runs, reloaded = entry["runs"], reloaded + 1
+        else:
+            runs = entry["runs"] - before[0]
+        bad = runs > 0 and abnormal(entry["exit"])
+        if not runs and not bad:
+            continue
+        slot = jobs.setdefault(entry["label"], {"label": entry["label"], "name": entry["name"], "owner": entry["owner"],
+                                                "runs": 0, "bad": 0, "exit": None, "every": entry["every"],
+                                                "relaunched": entry["relaunched"]})
+        slot["runs"] += runs
+        slot["bad"] = max(slot["bad"], int(bad))
+        slot["exit"] = entry["exit"] if bad or slot["exit"] is None else slot["exit"]
+    orphans = steps("orphans", orphan_census, {e["pid"] for e in services.values() if e["pid"]}, now)
+    moved = sorted(jobs.values(), key=lambda j: (-j["bad"], -j["runs"], j["label"]))
+    row = {"t": round(now, 1), "dt": round(now - previous["t"], 1) if isinstance(previous.get("t"), (int, float)) else None,
+           "services": len(services), "reloaded": reloaded, "jobs": moved[:80], "orphans": orphans,
+           "self": {"wall_s": round(time.time() - began, 3), "cpu_s": round(collector_runs.cpu_total() - started_cpu, 3),
+                    "steps": steps.out}}
+    write_json(path, {"t": now, "services": {k: [e["runs"], e["exit"]] for k, e in services.items()}})
+    append_row("launchd", row)
+    return row
+
+
+STAMP = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d")
+
+
+def log_time(stamp):
+    try:
+        return time.mktime(time.strptime(stamp[:19], "%Y-%m-%d %H:%M:%S")) + float("0" + stamp[19:23])
+    except ValueError:
+        return None
+
+
+class Exits:
+    """launchd's `exited ... ran for Nms` lines: per label runs, wall, longest run, abnormal exits and exit kinds."""
+    LINE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+) +\S+ +launchd\[1\S*\] \[(\S+?)(?: \[\d+\])?:?\] (.*)ran for (\d+)ms")
+
+    def __init__(self, own_labels):
+        self.own, self.items, self.last = own_labels, {}, None
+
+    def feed(self, line):
+        found = self.LINE.match(line)
+        if not found:
+            return
+        stamp, service, message, ms = found.groups()
+        self.last = stamp
+        code = re.search(r"exit\((-?\d+)\)", message)
+        name = re.search(r"\b(SIG[A-Z]+)\b", message)
+        reason = re.search(r"\b((?:OS|JETSAM)_REASON_[A-Z_]+)", message)
+        kind = "exit %s" % code.group(1) if code else "signal %d" % signal.Signals[name.group(1)].value if name and \
+            name.group(1) in signal.Signals.__members__ else reason.group(1) if reason else "other"
+        label = job_label(service)
+        slot = self.items.setdefault(label, [0, 0.0, 0.0, 0, {}])
+        slot[0] += 1
+        slot[1] += int(ms) / 1000.0
+        slot[2] = max(slot[2], int(ms) / 1000.0)
+        slot[3] += abnormal(kind)
+        slot[4][kind] = slot[4].get(kind, 0) + 1
+
+    def result(self):
+        rows = [[label, n, round(wall, 1), round(longest, 1), bad,
+                 dict(sorted(kinds.items(), key=lambda kv: -kv[1])[:3]),
+                 "apple" if label.startswith("com.apple.") else "own" if label in self.own else "third-party"]
+                for label, (n, wall, longest, bad, kinds) in self.items.items()]
+        rows.sort(key=lambda r: (-r[4], -r[1], r[0]))
+        return rows[:60]
+
+
+class Verdicts:
+    """dasd's scoring verdicts, starts and completions per background activity."""
+    HEAD = re.compile(r":scoring\] \d+:([^\s:,']+):[0-9A-Fa-f]+(?::\[|, Decision: (\w+))")
+    TAIL = re.compile(r"^\s*\], Decision: (\w+)\}")
+    START = re.compile(r"lifecycle\] STARTED <_DASActivity: \"\d+:([^:\"]+)")
+    DONE = re.compile(r"BGSTHelper\] Completed \d+:(\S+)")
+    STAMP = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+) ")
+
+    def __init__(self, _own=None):
+        self.items, self.current, self.last = {}, None, None
+
+    def slot(self, name):
+        return self.items.setdefault(UNIQUE.sub("N", name)[:80], [0, 0, {}])
+
+    def feed(self, line):
+        stamp = self.STAMP.match(line)
+        if stamp:
+            self.last = stamp.group(1)
+        head = self.HEAD.search(line)
+        if head:
+            self.current = None
+            if head.group(2):
+                decisions = self.slot(head.group(1))[2]
+                decisions[head.group(2)] = decisions.get(head.group(2), 0) + 1
+            else:
+                self.current = head.group(1)
+            return
+        tail = self.TAIL.match(line)
+        if tail and self.current:
+            decisions = self.slot(self.current)[2]
+            decisions[tail.group(1)] = decisions.get(tail.group(1), 0) + 1
+            self.current = None
+            return
+        for pattern, index in ((self.START, 0), (self.DONE, 1)):
+            found = pattern.search(line)
+            if found:
+                self.slot(found.group(1))[index] += 1
+
+    def result(self):
+        rows = [[name, starts, done, decisions, "third-party" if re.match(r"[a-z]+\.", name) and not name.startswith("com.apple.") else "apple"]
+                for name, (starts, done, decisions) in self.items.items()]
+        rows.sort(key=lambda r: (-sum(r[3].values()), -r[1], r[0]))
+        return rows[:40]
+
+
+class Hangs:
+    """spindump's `<App> [pid]: spin` and `slow hid response (Ns)` lines per app."""
+    LINE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+) .*\] (.+?) \[\d+\]: (spin|slow hid response \(([\d.]+)s\))")
+
+    def __init__(self, _own=None):
+        self.items, self.last = {}, None
+
+    def feed(self, line):
+        found = self.LINE.match(line)
+        if not found:
+            return
+        self.last = found.group(1)
+        slot = self.items.setdefault(found.group(2)[:40], [0, 0, 0.0])
+        if found.group(3) == "spin":
+            slot[0] += 1
+        else:
+            slot[1] += 1
+            slot[2] += float(found.group(4))
+
+    def result(self):
+        rows = [[app, spins, slow, round(slow_s, 1), "own" if app in OWN_APPS else "apple" if any(
+            os.path.isdir(os.path.join(folder, app + ".app")) for folder in (
+                "/System/Applications", "/System/Applications/Utilities", "/System/Library/CoreServices")) else "third-party"]
+                for app, (spins, slow, slow_s) in self.items.items()]
+        rows.sort(key=lambda r: (-(r[1] + r[2]), r[0]))
+        return rows[:30]
+
+
+PARSERS = {"launchd": Exits, "das": Verdicts, "hangs": Hangs}
+
+
+def harvest(now=None, budget_s=None, max_lines=None):
+    """Every 6 h: launchd exits, DAS verdicts and hangs off the unified log since each source's cursor (at most
+    harvest_back_s back, the log keeps ~11 h), each `log show` cut at its time and line budget; counters only, one
+    row in harvest/<day>.jsonl."""
+    began = time.time()
+    now = began if now is None else now
+    started_cpu = collector_runs.cpu_total()
+    machine_probe.low_priority()
+    path = os.path.join(state_dir(), "harvest-state.json")
+    cursors = (read_json(path, {}) or {}).get("cursors") or {}
+    own_labels = {label for label, program, _plist in job_plists() if job_owner(label, program) == "own"}
+    row = {"t": round(now, 1), "sources": {}}
+    for name, predicate, budget, lines in HARVEST:
+        cursor = cursors.get(name)
+        start = max(cursor or 0, now - COLLECT["harvest_back_s"])
+        parser, last = PARSERS[name](own_labels), [None]
+
+        def feed(line):
+            if STAMP.match(line):
+                last[0] = line[:23]
+            parser.feed(line)
+
+        wall, cpu = time.time(), collector_runs.cpu_total()
+        count, cut = machine_probe.stream("log", ["show", "--style", "compact", "--start", time.strftime(
+            "%Y-%m-%d %H:%M:%S", time.localtime(start)), "--end", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+            "--predicate", predicate], budget if budget_s is None else budget_s, lines if max_lines is None else max_lines,
+            feed)
+        reached = now if cut is None else log_time(last[0]) if last[0] else None
+        cursors[name] = max(start, reached or start)
+        row["sources"][name] = {"from": round(start), "to": round(cursors[name]), "lines": count, "cut": cut,
+                                "lost_s": round(start - cursor) if cursor and start > cursor else 0,
+                                "wall_s": round(time.time() - wall, 3), "cpu_s": round(collector_runs.cpu_total() - cpu, 3)}
+        row[name] = parser.result()
+    write_json(path, {"t": now, "cursors": cursors})
+    row["self"] = {"wall_s": round(time.time() - began, 3), "cpu_s": round(collector_runs.cpu_total() - started_cpu, 3)}
+    append_row("harvest", row)
+    return row
+
+
+# ---------------------------------------------------------------- cohort score
+
+
+def pressured(row):
+    swapouts = (row.get("swapout_b") or 0) / 16384 / row["dt"] if row.get("dt") else 0
+    return (row.get("comp_share") or 0) >= COHORT["pressure_comp"] or swapouts >= COHORT["pressure_swapouts_s"]
+
+
+def cohort_sums(rows):
+    """[[tag, owner, cpu-s, births, written B, read B, idle wakes, footprint B·s under pressure]] over minute rows."""
+    items = {}
+    for row in rows:
+        dt = row.get("dt")
+        if not dt:
+            continue
+        for entry in row.get("cpu_top") or ():
+            items.setdefault((entry[0], entry[-1]), [0.0] * 6)[0] += entry[1]
+        if row.get("births_s") is not None and row.get("births_seen"):
+            for entry in row.get("births_top") or ():
+                items.setdefault((entry[0], entry[-1]), [0.0] * 6)[1] += row["births_s"] * entry[1] / row["births_seen"] * dt
+        for entry in row.get("io_top") or ():
+            slot = items.setdefault((entry[0], entry[-1]), [0.0] * 6)
+            slot[2] += entry[1]
+            slot[3] += entry[2]
+            slot[4] += entry[3]
+        if pressured(row):
+            for entry in row.get("mem_top") or ():
+                items.setdefault((entry[0], entry[-1]), [0.0] * 6)[5] += entry[1] * dt
+    out = [[tag, owner] + [round(v, 1) for v in values] for (tag, owner), values in items.items()]
+    out.sort(key=lambda r: (-max(r[2] / COHORT["cpu_s"], r[3] / COHORT["births"], r[4] / COHORT["writes_b"],
+                                 r[5] / COHORT["reads_b"], r[6] / COHORT["wakes"]), r[0]))
+    return out[:COHORT["items_day"]]
+
+
+def cohort_score(days, launches, now):
+    """{covered_days, items} of B_i = max(C/864, W/86400, D/1 GiB, R/100 GiB, M/512 MiB x pressure, S/86400, L/1440)
+    per item over the newest day rows covering >= 7 days (14 back at most); items None while fewer are covered.
+    Only own processes' rusage is readable: W, D, R and M of other items are unknown and never certify a low B."""
+    chosen, covered = [], 0
+    for day in sorted(days, key=lambda d: d.get("day", ""), reverse=True):
+        if day.get("day", "") < local_day(now - COHORT["lookback_days"] * DAY_S) or covered >= COHORT["days"] * DAY_S:
+            break
+        chosen.append(day)
+        covered += day.get("covered_s") or 0
+    span = covered / DAY_S
+    if covered < COHORT["days"] * DAY_S:
+        return {"covered_days": round(span, 2), "items": None}
+    since = time.mktime(time.strptime(chosen[-1]["day"], "%Y-%m-%d"))
+    sums = {}
+    for day in chosen:
+        for entry in day.get("cohort") or ():
+            slot = sums.setdefault((entry[0], entry[1]), [0.0] * 7)
+            for index, value in enumerate(entry[2:8]):
+                slot[index] += value
+    for row in launches:
+        if row.get("t", 0) >= since:
+            for job in row.get("jobs") or ():
+                sums.setdefault((job["name"], job["owner"]), [0.0] * 7)[6] += job["runs"]
+    items = []
+    for (name, owner), (cpu, births, written, read, wakes, held, runs) in sums.items():
+        per_day = {"C": cpu / span, "S": births / span, "L": runs / span}
+        if owner == "own":
+            per_day.update(W=wakes / span, D=written / span, R=read / span, M=held / covered)
+        terms = {key: per_day[key] / COHORT[unit] for key, unit, _words in TERMS if key in per_day}
+        score = max(terms.values())
+        items.append({"name": name, "owner": owner, "B": score, "terms": {k: round(v, 3) for k, v in terms.items()},
+                      "per_day": {k: round(v, 1) for k, v in per_day.items()},
+                      "unknown": [key for key, _unit, _words in TERMS if key not in per_day]})
+    items.sort(key=lambda i: (-i["B"], i["name"]))
+    return {"covered_days": round(span, 2), "items": items}
+
+
 # ---------------------------------------------------------------- the judge
 
 
@@ -792,7 +1355,7 @@ def judge_digest():
             digest.update(handle.read())
     except OSError:
         digest.update(b"no ledger")
-    digest.update(json.dumps([LIMITS, PROOF], sort_keys=True).encode())
+    digest.update(json.dumps([LIMITS, PROOF, COLLECT, COHORT], sort_keys=True).encode())
     return digest.hexdigest()
 
 
@@ -842,6 +1405,17 @@ def proof(name, rule, since, now, night=None):
     """{verdict: proven|refused|pending, why, ...} of a fix of cause `name` that landed at `since`."""
     if since is None:
         return {"verdict": "pending", "why": "the fix has not landed in main"}
+    if rule == "job-loop":
+        rows = tick_rows(since, now, "launchd")
+        after = [r["t"] for r in rows if any(loops(j, r) for j in r.get("jobs") or () if name in (j["name"], j["label"]))]
+        covered = max(0, round((rows[-1]["t"] if rows else since) - since))
+        out = {"after": {"loops": len(after), "covered_s": covered}, "need_s": PROOF["reports_s"]}
+        if after:
+            return dict(out, verdict="refused", why="%s looped or died in %d hourly snapshots since the fix" % (name, len(after)))
+        if covered < PROOF["reports_s"]:
+            return dict(out, verdict="pending", why="%s quiet for %.1f of %d days" % (name, covered / DAY_S,
+                                                                                       PROOF["reports_s"] // DAY_S))
+        return dict(out, verdict="proven", why="%s quiet for %d days" % (name, PROOF["reports_s"] // DAY_S))
     if rule in REPORT_KINDS:
         night = night if night is not None else read_json(os.path.join(state_dir(), "nightly.json"), {}) or {}
         after = [r for r in night.get("reports") or () if r.get("at", 0) >= since
@@ -882,6 +1456,7 @@ class Judge:
         self.reports = (night or {}).get("reports") or []
         self.problems = []
         self.blind = []
+        self.censuses = []
         self.ledger = read_json(ledger_path(), {}) or {}
         self.rows = self.ledger.get("rows") if isinstance(self.ledger.get("rows"), list) else []
 
@@ -970,8 +1545,9 @@ def judge_ticks(judge, rows, days):
         judge.blind.append("ticks")
     hour = [r for r in rows if r["t"] >= now - HOUR_S]
     births = [r for r in hour if r.get("births_s") is not None]
-    seen = merge_top(hour, "births_top")
-    seen_total = sum(r.get("births_seen") or 0 for r in hour)
+    attributed = hour + [c for c in judge.censuses if c.get("t", 0) >= now - HOUR_S]
+    seen = merge_top(attributed, "births_top")
+    seen_total = sum(r.get("births_seen") or 0 for r in attributed)
     if len(births) >= MIN_TICKS:
         value = mean(r["births_s"] for r in births)
         if value >= LIMITS["spawn_s"]:
@@ -1085,6 +1661,114 @@ def judge_nightly(judge, night):
                    "fix_target": stalls[-1]["owner"] == "own"} if stalls else None)
 
 
+def loop_rate(job, row):
+    """Runs an hour of a job launchd relaunches on its own (KeepAlive or a run interval), 0 for on-demand services."""
+    if not job.get("relaunched") or not row.get("dt") or row["dt"] < COLLECT["loop_dt_s"]:
+        return 0.0
+    rate = job["runs"] * HOUR_S / row["dt"]
+    return rate if rate > 2 * HOUR_S / (job.get("every") or HOUR_S * 1e9) else 0.0
+
+
+def loops(job, row):
+    """True when one hourly snapshot shows the job relaunching in a loop or dying abnormally."""
+    return job.get("bad", 0) > 0 or loop_rate(job, row) >= COLLECT["loop_runs_h"]
+
+
+def judge_launchd(judge, rows, harvests):
+    """job-loop: a job launchd relaunches (KeepAlive or a run interval) starting >= 60 times an hour and over twice its
+    schedule, or any job dying abnormally >= 3 times a day (hourly snapshots whose runs moved after an abnormal exit, or the unified log's exits if more)."""
+    now = judge.now
+    jobs = {}
+    for row in [r for r in rows if r["t"] >= now - DAY_S]:
+        for job in row.get("jobs") or ():
+            slot = jobs.setdefault(job["label"], {"rate": 0.0, "bad": 0, "logged": 0, "rows": []})
+            slot["job"] = job
+            slot["rate"] = max(slot["rate"], loop_rate(job, row))
+            slot["bad"] += job.get("bad", 0)
+            if loops(job, row):
+                slot["rows"].append((row, job))
+    for row in [r for r in harvests if r["t"] >= now - DAY_S]:
+        for label, runs, _wall, _longest, bad, kinds, owner in row.get("launchd") or ():
+            slot = jobs.setdefault(label, {"rate": 0.0, "bad": 0, "logged": 0, "rows": [],
+                                           "job": {"label": label, "name": label, "owner": owner, "every": None,
+                                                   "exit": next(iter(kinds), None)}})
+            slot["logged"] += bad
+            if bad:
+                slot["rows"].append((row, {"label": label, "runs": runs, "exit": next(
+                    (k for k in kinds if abnormal(k)), None)}))
+    for label, slot in sorted(jobs.items()):
+        job, bad = slot["job"], max(slot["bad"], slot["logged"])
+        every = job.get("every")
+        loop = slot["rate"] >= COLLECT["loop_runs_h"]
+        if not loop and bad < COLLECT["job_exits_day"]:
+            continue
+        if loop:
+            fact = "%s relaunched %d times an hour%s, limit %d" % (label, round(slot["rate"]), " (scheduled every %d s)" % every
+                                                                  if every else "", COLLECT["loop_runs_h"])
+            value, limit, unit = round(slot["rate"]), COLLECT["loop_runs_h"], "runs/h"
+        else:
+            fact = "%s exited abnormally %d times in a day (last %s), limit %d" % (label, bad, job.get("exit"),
+                                                                              COLLECT["job_exits_day"])
+            value, limit, unit = bad, COLLECT["job_exits_day"], "abnormal exits/day"
+        seen = sorted(slot["rows"], key=lambda pair: -pair[0]["t"])
+        judge.add("job-loop", label, fact, value, limit, unit, 24, len(rows), len(seen),
+                  seen[-1][0]["t"] if seen else None, seen[0][0]["t"] if seen else now,
+                  [{"at": iso_time(r["t"]), "ref": "%s:%d" % ("launchd" if "jobs" in r else "harvest", r["t"]), "account": None,
+                    "excerpt": "%s · %s runs · last exit %s" % (label, j.get("runs"), j.get("exit"))} for r, j in seen],
+                  heavy=slot["rate"] >= COLLECT["loop_heavy_runs_h"] or bad >= COLLECT["job_exits_heavy_day"],
+                  found={"name": job["name"], "share": None, "owner": job["owner"], "fix_target": job["owner"] == "own",
+                         "label": label})
+
+
+def judge_cohort(judge, score):
+    """cohort: an item whose amortized B >= 1 (heavy >= 5). An own item in a sweep repository is tuned by a fixer;
+    any other's value is unknown, so it reads watch and is never proposed for removal."""
+    if not score or score.get("items") is None:
+        return
+    watched = 0
+    for item in score["items"]:
+        if item["B"] < COHORT["review"]:
+            break
+        if item["owner"] != "own" and watched >= COHORT["watch_rows"]:
+            continue
+        top = max(item["terms"], key=lambda key: item["terms"][key])
+        words = dict((key, text) for key, _unit, text in TERMS)
+        shown = {"D": 1e9, "R": 1e9, "M": 1 << 20}
+        judge.add("cohort", item["name"], "%s costs B %.1f a day over %.1f days, mostly %s a day" % (
+            item["name"], item["B"], score["covered_days"], words[top] % (item["per_day"][top] / shown.get(top, 1))),
+            round(item["B"], 2), COHORT["review"], "B", round(score["covered_days"] * 24), len(item["terms"]), None, None,
+            judge.now, [{"at": None, "ref": "cohort:%s" % key, "account": None, "excerpt": "%s %s/day · term %.2f" % (
+                key, item["per_day"][key], item["terms"][key])} for key in sorted(item["terms"], key=lambda k: -item["terms"][k])],
+            heavy=item["B"] >= COHORT["heavy"],
+            found={"name": item["name"], "share": None, "owner": item["owner"], "fix_target": item["owner"] == "own"})
+        problem = judge.problems[-1]
+        problem["cohort"] = {k: item[k] for k in ("terms", "per_day", "unknown")}
+        if problem["cause"]["fix_target"]:
+            problem["fact"] += " · tune it, output-equivalent"
+        else:
+            problem["state"] = "watch"
+            problem["fact"] += " · value unknown: watch, never remove"
+            watched += item["owner"] != "own"
+
+
+def judge_collectors(judge, rows, launches, harvests, censuses):
+    """Names each collector that cannot see: own footprints unreadable, no launchd snapshot for 3 h or no unified-log
+    harvest for 12 h while the doctor ran, a harvest source that failed, a census that read nothing."""
+    now = judge.now
+    since = rows[0]["t"] if rows else now
+    latest = rows[-1] if rows else {}
+    if latest and now - latest["t"] <= TICK_STALE_S and latest.get("own_procs") and not latest.get("usage_read"):
+        judge.blind.append("footprints")
+    if since <= now - 3 * HOUR_S and not [r for r in launches if r["t"] >= now - 3 * HOUR_S and r.get("services")]:
+        judge.blind.append("dumpstate")
+    recent = [r for r in harvests if r["t"] >= now - 12 * HOUR_S]
+    if since <= now - 12 * HOUR_S and not recent or recent and any(
+            (source or {}).get("cut") == "failed" for source in recent[-1].get("sources", {}).values()):
+        judge.blind.append("harvest")
+    if censuses and censuses[-1]["t"] >= now - DAY_S and not censuses[-1].get("polls"):
+        judge.blind.append("census")
+
+
 def report_evidence(report):
     return {"at": iso_time(report["at"]), "ref": report["ref"], "account": None,
             "excerpt": "%s %s (%s)" % (report["kind"], report["name"], report["owner"])}
@@ -1112,8 +1796,16 @@ def document(now, started, persist=True):
     night = read_json(os.path.join(state_dir(), "nightly.json"))
     night = night if isinstance(night, dict) and isinstance(night.get("as_of_s"), (int, float)) else None
     judge = Judge(now, night)
+    launches = tick_rows(now - COHORT["lookback_days"] * DAY_S, now, "launchd")
+    harvests = tick_rows(now - 2 * DAY_S, now, "harvest")
+    censuses = tick_rows(now - DAY_S, now, "census")
+    judge.censuses = censuses
     judge_ticks(judge, rows, days)
     judge_nightly(judge, night)
+    judge_launchd(judge, launches, harvests)
+    score = cohort_score(days, launches, now)
+    judge_cohort(judge, score)
+    judge_collectors(judge, rows, launches, harvests, censuses)
     judge.apply_ledger()
     count = sum(1 for p in judge.problems if p["state"] in COUNTED)
     hour = [r for r in rows if r["t"] >= now - HOUR_S]
@@ -1142,12 +1834,33 @@ def document(now, started, persist=True):
                  "cpu_s": round(mean((r.get("self") or {}).get("cpu_s") for r in hour) or 0, 3),
                  "cpu_s_today": today.get("tick_cpu_s"), "steps": (latest.get("self") or {}).get("steps") or {}}
     crashed = sorted({r["name"] for r in judge.reports if r.get("job") and r["kind"] == "crash"})
+    costs = {"tick": tick_cost}
+    for name, found in (("census", censuses), ("dumpstate", launches), ("harvest", harvests)):
+        day = [r for r in found if r["t"] >= now - DAY_S]
+        costs[name] = {"runs_24h": len(day), "wall_s": round(sum((r.get("self") or {}).get("wall_s") or 0 for r in day), 2),
+                       "cpu_s": round(sum((r.get("self") or {}).get("cpu_s") or 0 for r in day), 2)}
+    last_launch = launches[-1] if launches else None
+    last_harvest = harvests[-1] if harvests else None
+    collectors = {
+        "census": dict({k: v for k, v in censuses[-1].items() if k != "self"}, as_of=iso_time(censuses[-1]["t"]))
+        if censuses else None,
+        "dumpstate": {"as_of": iso_time(last_launch["t"]), "services": last_launch.get("services"),
+                      "reloaded": last_launch.get("reloaded"), "jobs": (last_launch.get("jobs") or [])[:TOP],
+                      "orphans": last_launch.get("orphans")} if last_launch else None,
+        "harvest": {"as_of": iso_time(last_harvest["t"]), "sources": last_harvest.get("sources"),
+                    "launchd": (last_harvest.get("launchd") or [])[:TOP], "das": (last_harvest.get("das") or [])[:TOP],
+                    "hangs": (last_harvest.get("hangs") or [])[:TOP]} if last_harvest else None,
+        "footprints": {"own_procs": latest.get("own_procs"), "read": latest.get("usage_read"),
+                       "mem_top": latest.get("mem_top") or [], "io_top": merge_top(hour, "io_top")}}
+    cohort = {"covered_days": score["covered_days"], "items": [dict(i, B=round(i["B"], 3)) for i in (score["items"] or [])[:TOP]]
+              if score["items"] is not None else None}
     status = "blind" if judge.blind else ("problems" if count else "ok")
     return {
         "contract": 1, "doctor": "system", "as_of": iso_time(now), "as_of_s": int(now), "judge": judge_digest(),
         "status": status, "problem_count": count, "problems": judge.problems,
         "blind_spots": judge.ledger.get("blind_spots") or [], "blind": judge.blind, "measures": measures,
-        "causes": causes, "nightly": nightly_summary(night, crashed), "costs": {"tick": tick_cost},
+        "causes": causes, "nightly": nightly_summary(night, crashed), "costs": costs, "collectors": collectors,
+        "cohort": cohort,
         "limits": LIMITS, "self": {"collector_s": round(time.time() - started, 3), "error": None},
     }
 
@@ -1250,6 +1963,10 @@ def agent():
         tick(started)
     except Exception as error:  # a failed tick leaves a gap the document reads as blind, never a stale document
         print("system-doctor tick: %s: %s" % (type(error).__name__, error), file=sys.stderr)
+    try:
+        launch_due(time.time())
+    except Exception as error:
+        print("system-doctor collectors: %s: %s" % (type(error).__name__, error), file=sys.stderr)
     did = []
     if nightly_due(time.time()):
         nightly()
@@ -1312,7 +2029,8 @@ def main(argv=None):
     global RECORD
     parser = argparse.ArgumentParser(prog="system-doctor", description=__doc__.split("\n")[0])
     parser.add_argument("command", nargs="?", default="judge",
-                        choices=("judge", "tick", "nightly", "agent", "install-agent", "uninstall-agent", "check"))
+                        choices=("judge", "tick", "nightly", "agent", "install-agent", "uninstall-agent", "check",
+                                 "census", "dumpstate", "harvest"))
     parser.add_argument("cause", nargs="?", help="check: the cause (a script's basename) whose fix to prove")
     parser.add_argument("--json", action="store_true", help="judge: print the document and write nothing")
     parser.add_argument("--quiet", action="store_true", help="print nothing")
@@ -1351,6 +2069,15 @@ def main(argv=None):
         if not args.quiet:
             print(json.dumps({k: v for k, v in result.items() if k != "reports"} | {"reports": len(result["reports"])}))
         return 0
+    if args.command in COLLECTORS:
+        with single(args.command) as mine:
+            if not mine:
+                RECORD = False
+                return 0
+            row = COLLECTORS[args.command]()
+        if not args.quiet:
+            print(json.dumps({k: v for k, v in row.items() if not isinstance(v, list) or len(v) <= TOP}, ensure_ascii=False))
+        return 0
     if args.command == "agent":
         RECORD = bool(agent())
         return 0
@@ -1374,6 +2101,7 @@ def main(argv=None):
 
 
 RECORD = True
+COLLECTORS = {"census": census, "dumpstate": dumpstate, "harvest": harvest}
 
 if __name__ == "__main__":
     started = time.time()
