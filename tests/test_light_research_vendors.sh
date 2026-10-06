@@ -43,7 +43,7 @@ printf 'light_research=grok:opus\n' >"$TOGGLE"
 run; rc=$?; assert test "$rc" -eq 4; assert grep -q '^OUTCOME: MODEL_REFUSED$' "$WORK/out"
 
 # Light edit: `worker-run start light` takes vendor, model and effort from the light_edit row, and a
-# light-only model stays refused on the full worker leg.
+# cheap model is a plain worker on an explicit --model (Egor, 2026-10-06), Light or not.
 printf 'light_edit=claudeb:sonnet\n' >"$TOGGLE"
 printf 'Edit the repository file.\n' >"$WORK/edit-brief"
 : >"$WORK/vendor.log"
@@ -63,8 +63,10 @@ run_id=$(sed -n 's/^RUN: //p' "$WORK/out" | head -1)
 assert jq -e --arg t "$(cd "$REPO/.claude/worktrees/light-task" && pwd -P)" '.add_dirs == [$t]' "$RUNS/$run_id/meta.json"
 wr wait "$run_id" --max 60
 git -C "$REPO" worktree remove --force "$REPO/.claude/worktrees/light-task"
-wr start claudeb --model sonnet --brief "$WORK/prompt" --workdir "$REPO"; rc=$?; assert test "$rc" -ne 0
-assert grep -q '^OUTCOME: MODEL_REFUSED$' "$WORK/out"
+wr start claudeb --model sonnet --brief "$WORK/prompt" --workdir "$REPO"; rc=$?; assert test "$rc" -eq 0
+run_id=$(sed -n 's/^RUN: //p' "$WORK/out" | head -1)
+assert jq -e '.model == "sonnet" and .effort == "medium" and .light == null' "$RUNS/$run_id/meta.json"
+wr wait "$run_id" --max 60
 printf 'light_edit=grok:opus\n' >"$TOGGLE"
 wr start light --brief "$WORK/edit-brief" --workdir "$REPO"; rc=$?; assert test "$rc" -eq 4
 assert grep -q '^OUTCOME: MODEL_REFUSED$' "$WORK/out"

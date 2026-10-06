@@ -702,7 +702,7 @@ outcome_line() (
 # would be wasted, and the name reaches here by three roads that all end at the same list: the
 # brief's `MODEL:` line (relays forward it as `--model`), `--model` itself, and the vendor's own
 # `*_model=` key in the toggle file — including the default a missing key falls back to.
-refuse_cheap_model() { # vendor offered-model [resume-id] [class]
+refuse_unlisted_model() { # vendor offered-model [resume-id] [class]
   local vendor="$1" offered="$2" resume="${3:-}" class="${4:-}" effective
   case "$vendor" in
     claudeb) effective=${offered:-$(config_value claudeb_model)}; effective=${effective:-$(worker_model_default_model "$vendor")} ;;
@@ -2553,7 +2553,7 @@ start_run() {
       *) printf 'REASON: %s does not support --browser\n' "$vendor"; return 2 ;;
     esac
   fi
-  refuse_cheap_model "$vendor" "$model" "$resume" "$model_class"
+  refuse_unlisted_model "$vendor" "$model" "$resume" "$model_class"
   explicit_effort=$effort
   if [ "$vendor" = codex ]; then
     config_model=$(codex_config_model)

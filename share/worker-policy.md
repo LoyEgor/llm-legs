@@ -24,8 +24,9 @@ Source: `share/worker-model.sh` (`worker_model_table`); first model per vendor i
 | --- | --- | --- | --- | --- |
 | claudeb / opus | high | high, xhigh | low, medium, max | no |
 | claudeb / fable | low | low, medium, high | xhigh, max | yes |
-| codex / astra (newest slug of the family `codexb models` lists) | low | low, medium, high | xhigh | no |
-| codex / sol (likewise) | medium | medium, high | low, xhigh | yes |
+| codex / astra | low | low, medium, high | xhigh | no |
+| codex / sol | medium | medium, high | low, xhigh | yes |
+| claudeb / sonnet, haiku; codex / luna, terra | medium | low, medium, high | — | no |
 | gemini / each Flash slug `geminib families` prints | high | high | — | no |
 | gemini / pro | high | high | — | yes |
 | grok / auto (the CLI's own default) | high | high, xhigh (those its default slug lists) | — | no |
@@ -38,11 +39,11 @@ codex `sol`) require Egor's ask in this chat; the brief never quotes it. A codex
 family word (codex `astra`, `sol`), which launches the newest slug `codexb models` lists; a full
 slug is a deliberate pin and launches as written.
 His cues «не парься / задача простая / не жги» lower effort within Brief efforts;
-«подумай как следует / сложное» raise it there. Anything in the word columns, models included, needs his
-explicit word; otherwise no `MODEL:` line. Neither Codex model allows `max`.
-`worker-run` mechanically enforces the union of both effort columns (`OUTCOME: EFFORT_REFUSED`)
-and the model list (`OUTCOME: MODEL_REFUSED`) before spending an account; `/worker` refuses to
-store values outside them. Word requirements are orchestrator policy.
+«подумай как следует / сложное» raise it there. A cheap model (sonnet, haiku, luna, terra) is a
+`MODEL:` line for a simple task only; otherwise no `MODEL:` line. No Codex model allows `max`.
+`worker-run` enforces both effort columns (`OUTCOME: EFFORT_REFUSED`) and the model list
+(`OUTCOME: MODEL_REFUSED`) before spending an account; `/worker` refuses to store values outside
+them.
 A brief that writes a second repository names it in its header, one `ADD-DIR: <absolute dir>` line
 each: `worker-run` grants it as `--add-dir` and baselines it. It also grants, unasked, every
 existing task worktree (`<repo>/.claude/worktrees/<name>`) the brief or a `*.md` it names gives by

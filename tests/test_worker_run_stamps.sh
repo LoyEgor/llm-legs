@@ -2,9 +2,9 @@
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 . "$(dirname "$0")/worker_run_harness.sh"
 
-# A model no implementation worker may run is refused before the account is resolved: an explicit
-# --model, the vendor's own `*_model=` key, and the default a missing key falls back to are three
-# roads to the same list, and none of them may spend a run on a cheap model.
+# A model outside the table is refused before the account is resolved: an explicit --model, the
+# vendor's own `*_model=` key, and the default a missing key falls back to are three roads to the
+# same list, and none of them may spend a run on it.
 model_refused() { # vendor expected-offender [flags...]
   local vendor="$1" offender="$2" runs_before runs_after rc=0
   shift 2
@@ -26,8 +26,7 @@ set_config 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=medium' \
   'gemini_model=flash38' 'gemini_effort=high' 'grok_model=auto' 'grok_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=picked
 printf 'picked\n' >"$STUB_DIR/gemini_profiles"
-for spec in 'claudeb:sonnet' 'claudeb:haiku' 'codex:gpt-5.6-terra' \
-            'codex:gpt-5.6-luna' 'codex:gpt-5.6' 'gemini:flash' \
+for spec in 'claudeb:mythos' 'codex:gpt-5.6-nova' 'codex:gpt-5.6' 'gemini:flash' \
             'gemini:flash35' 'gemini:flash39' 'grok:grok-3'; do
   vendor=${spec%%:*}
   bad=${spec#*:}
@@ -35,7 +34,7 @@ for spec in 'claudeb:sonnet' 'claudeb:haiku' 'codex:gpt-5.6-terra' \
 done
 
 # The same refusal when the toggle file carries it and no brief names a model at all.
-for spec in 'claudeb:claudeb_model=sonnet' 'gemini:gemini_model=flash35' 'grok:grok_model=grok-3'; do
+for spec in 'claudeb:claudeb_model=mythos' 'gemini:gemini_model=flash35' 'grok:grok_model=grok-3'; do
   vendor=${spec%%:*}
   key=${spec#*:}
   set_config "$key" 'claudeb_effort=high' 'codex_effort=medium' 'gemini_effort=high' 'grok_effort=high'
@@ -54,7 +53,7 @@ for flags in '' '--model default'; do
 done
 # A resume is not that run: `exec resume` keeps the session's own model and nothing sends the
 # config's, so the file cannot refuse a resumed session — only a model the caller names can.
-assert model_refused codex gpt-5.6-terra --account resumeacct --resume codex-resume --model gpt-5.6-terra
+assert model_refused codex gpt-5.6-nova --account resumeacct --resume codex-resume --model gpt-5.6-nova
 clear_stub
 start_ok codex --account resumeacct --resume codex-resume
 assert await_done
@@ -70,6 +69,11 @@ assert await_done
 clear_stub
 start_ok codex --model astra
 assert await_done
+for spec in 'claudeb:sonnet' 'claudeb:haiku'; do
+  clear_stub
+  start_ok "${spec%%:*}" --model "${spec#*:}"
+  assert await_done
+done
 clear_stub
 start_ok gemini --account main --model flash38
 assert meta_agy_is 'gemini-3.8-flash-high'

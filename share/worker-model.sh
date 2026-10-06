@@ -31,8 +31,12 @@ _worker_model_table_build() {
   IFS= read -r -d '' static <<'TABLE' || :
 claudeb opus high high,xhigh low,medium,max no
 claudeb fable low low,medium,high xhigh,max yes
+claudeb sonnet medium low,medium,high - no
+claudeb haiku medium low,medium,high - no
 codex astra low low,medium,high xhigh no
 codex sol medium medium,high low,xhigh yes
+codex luna medium low,medium,high - no
+codex terra medium low,medium,high - no
 TABLE
   printf '%s' "$static"
   # Flash rows first in list order, `pro` last: the first gemini row is the vendor default, and a
@@ -240,18 +244,6 @@ worker_model_gemini_family() { # table slug, agy id or `flash` → its `geminib 
     END { if (!found && legacy != "") print legacy }'
 }
 
-# Models only a light row may name: cheap enough to be refused on the full worker leg.
-worker_model_light_table() {
-  worker_model_light_table_r
-  printf '%s' "$WORKER_MODEL_R"
-}
-
-worker_model_light_table_r() {
-  IFS= read -r -d '' WORKER_MODEL_R <<'TABLE' || :
-claudeb sonnet medium low,medium,high - no
-TABLE
-}
-
 # A one-vendor lookup on an unprimed table builds that vendor's rows alone: the gemini and grok
 # catalogs are CLI calls, and a codex launch paid for both on every row it read.
 worker_model_rows() { # [workers|light] [vendor]
@@ -265,22 +257,15 @@ worker_model_rows() { # [workers|light] [vendor]
   else
     worker_model_table
   fi
-  [ "${1-}" != light ] || worker_model_light_table
 }
 
 worker_model_rows_r() { # [workers|light] [vendor]
-  local table
   if [ -z "${_WM_TABLE_PRIMED+x}" ]; then
     WORKER_MODEL_R=$(worker_model_rows "${1-}" "${2-}"; printf x)
     WORKER_MODEL_R=${WORKER_MODEL_R%x}
     return 0
   fi
-  table=$_WM_TABLE
-  if [ "${1-}" = light ]; then
-    worker_model_light_table_r
-    table+=$WORKER_MODEL_R
-  fi
-  WORKER_MODEL_R=$table
+  WORKER_MODEL_R=$_WM_TABLE
 }
 
 worker_model_allowed_models() { # vendor [class]

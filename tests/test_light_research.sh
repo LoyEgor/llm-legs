@@ -4,8 +4,7 @@
 . "$ROOT/share/test-scope.sh"
 PROJECTS=$(git_projects "$ROOT")
 
-# The toggle rows: absent means the gemini default, a vendor alone means its default model, and a
-# light-only model is valid on a light row without reaching the worker table.
+# The toggle rows: absent means the gemini default, and a vendor alone means its default model.
 toggle(){ WORKER_PICK_CONFIG_FILE="$TOGGLE" bash -c '. "$1/share/worker-model.sh"; shift; "$@"' _ "$ROOT" "$@"; }
 assert test "$(toggle worker_light_vendor research)" = gemini
 assert test "$(toggle worker_light_model edit)" = "$(toggle worker_model_default_model gemini)"
@@ -13,7 +12,6 @@ assert test "$(toggle worker_light_effort research)" = high
 printf 'worker=auto\nlight_research=claudeb:sonnet\nlight_edit=codex\n' >"$TOGGLE"
 assert test "$(toggle worker_light_vendor research) $(toggle worker_light_model research) $(toggle worker_light_effort research)" = 'claudeb sonnet medium'
 assert test "$(toggle worker_light_vendor edit) $(toggle worker_light_model edit)" = 'codex astra'
-assert test "$(toggle eval 'worker_model_allows claudeb sonnet; echo $?')" = 1
 printf 'light_research=mistral\nlight_edit=grok:opus\n' >"$TOGGLE"
 assert test "$(toggle eval 'worker_light_vendor research 2>/dev/null; echo $?')" = 2
 assert test "$(toggle eval 'worker_light_model edit 2>/dev/null; echo $?')" = 2

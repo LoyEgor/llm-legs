@@ -715,7 +715,7 @@ assert codex_rows_ok < <("$CODEXB_BIN" models)
 assert eq "$(CODEXB_MODELS_CACHE=/nonexistent "$CODEXB_BIN" models --json 2>/dev/null | jq -r '.[0].source')" builtin
 assert eq "$("$CODEXB_BIN" models --json | jq -r '[.[] | [.slug, .family, (.version // "-"), .label, (if .default then "y" else "n" end), (.efforts | join(","))] | @tsv] | join("\n")')" \
   "$("$CODEXB_BIN" models)"
-assert eq "$(awk '$1 == "codex" { print $2 }' <(bash -c '. "$1"; worker_model_table' _ "$WORKER_MODEL_SH") | tr '\n' ' ')" 'astra sol '
+assert eq "$(awk '$1 == "codex" { print $2 }' <(bash -c '. "$1"; worker_model_table' _ "$WORKER_MODEL_SH") | tr '\n' ' ')" 'astra sol luna terra '
 for family in astra sol; do
   assert eq "$(bash -c '. "$1"; worker_model_codex_slug "$2"' _ "$WORKER_MODEL_SH" "$family")" \
     "$("$CODEXB_BIN" models --family "$family")"
@@ -736,8 +736,12 @@ PIN_GATE="$ROOT/bin/worker-pin-gate.sh"
 assert test -r "$WORKER_MODEL_SH"
 assert eq "$(bash -c '. "$1"; worker_model_table' _ "$WORKER_MODEL_SH")" 'claudeb opus high high,xhigh low,medium,max no
 claudeb fable low low,medium,high xhigh,max yes
+claudeb sonnet medium low,medium,high - no
+claudeb haiku medium low,medium,high - no
 codex astra low low,medium,high xhigh no
 codex sol medium medium,high low,xhigh yes
+codex luna medium low,medium,high - no
+codex terra medium low,medium,high - no
 gemini flash38 high high - no
 gemini flash37 high high - no
 gemini flash36 high high - no
@@ -857,7 +861,7 @@ assert grep -Fq 'worker_model_allowed_summary' "$PIN_GATE"
 # so a site naming one is naming an allowed model, not smuggling a cheap one past the list.
 assert test "$(grep -Ec '(sonnet|haiku|fable|flash3[0-59]|gpt-5\.6-(terra|luna))' "$PIN_GATE")" -eq 0
 # Refused BEFORE the account is resolved: a pick already made is quota already claimed.
-assert test "$(grep -n 'refuse_cheap_model "$vendor" "$model"' "$WORKER_RUN" | cut -d: -f1)" \
+assert test "$(grep -n 'refuse_unlisted_model "$vendor" "$model"' "$WORKER_RUN" | cut -d: -f1)" \
   -lt "$(grep -n 'warn_cold_resume "$vendor" "$account" "$resume"' "$WORKER_RUN" | cut -d: -f1)"
 # Prose sites, each naming the same four allowed models and the refusal by name.
 for site in "$ROOT/share/worker-policy.md" "$ROOT/docs/routing-contract.md" \
