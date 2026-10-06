@@ -189,7 +189,6 @@ FLOOR_ROWS = (("bash:trivial", "Bash · trivial", "a trivial Bash call"),
 FAST_PATH_PROBES = {"readonly-command.sh": 'rc_readonly_command ls && ! rc_readonly_command "rm x"'}
 SECRET_SETTING = re.compile(r"(?i)^env\.|token|secret|passw|credential|api.?key")
 SUITE_EXT = re.compile(r"\.(sh|bash|py|lua)$")
-HANG_FLOOR_S = 1800
 HANG_MARK = b"run-suites: TIMEOUT after "
 SUITE_HARNESS = re.compile(r"(?m)^\s*(?:\.|source)\s.*?\b([A-Za-z0-9_]+)_harness\.sh\b")
 QUIET_SOURCE = re.compile(r"(?m)(?:^|[\s;&|!(])(?:\.|source)\s+([^\s;&|].*?)\s+2>\s?/dev/null")
@@ -208,10 +207,10 @@ MEDIA_TOOL = re.compile(r"(?:^|[\s/;&|(])(media-run|codex-image|gemini-image|gro
                         r"video-chain|gemini-music|gemini-sfx|gemini-listen|chatgpt-web|gemini-web)(?=\s|$|[;&|)])")
 C1_BYTES = (b'"user"', b'"assistant"', b'"system"', b'"queue-operation"', b'"queued_command"')
 DONE_WORDS = ("delivered", "passed", "sent", "fixed", "landed", "передал", "отправил", "доставлен", "починил")
-DONE_BYTES = tuple(w.encode() for w in DONE_WORDS)
+DONE_BYTES = tuple({v.encode() for w in DONE_WORDS for v in (w, w.capitalize(), w.upper())})
 DONE_RE = re.compile(r"\b(?:delivered|passed (?:[\w-]+ ){0,3}to the (?:worker|agent|relay|chat)|sent|fixed|landed)\b"
                      r"|передал|отправил|доставлен|починил", re.I)
-NOT_DONE_RE = re.compile(r"(?:\bnot|\bnothing|\bnever|n't|\bне|\bничего)\W+(?:\w+\W+)?$", re.I)
+NOT_DONE_RE = re.compile(r"(?:\bnot|\bnothing|\bnever|n't|\bwill|\bbe|\bне|\bничего|\bбудет|\bбудут)\W+(?:\w+\W+)?$", re.I)
 CONTRARY_RE = re.compile(r"\b(queued|pending|will be delivered|next (?:tool )?round)\b|\b(running in (?:the )?background)\b|\b(timed out|timeout)\b"
                          r"|^(Exit code [1-9])", re.I | re.M)
 OWN_TOOLS = {"Bash", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "NotebookEdit", "TodoWrite", "WebFetch",
@@ -3459,23 +3458,12 @@ def cost_line(tests, now):
     return out
 
 
-def suite_entries(runs, root, name):
-    return [r["suites"][name] for r in runs if r.get("repo_root") == root and isinstance(r.get("suites"), dict)
-            and isinstance(r["suites"].get(name), dict) and isinstance(r["suites"][name].get("secs"), (int, float))]
-
-
 def suite_bound(runs, root, name):
-    """share/run-suites.sh suite_bound over the journal rows read here: a change there must land here too."""
-    try:
-        with open(os.path.join(root or "", "tests", "slow-suites"), errors="replace") as handle:
-            slow = name in handle.read().split()
-    except OSError:
-        slow = False
-    floor = HANG_FLOOR_S * (2 if slow else 1)
-    passes = sorted(s["secs"] for s in [s for s in suite_entries(runs, root, name) if s.get("rc") == 0][-50:])
-    if len(passes) < 3:
-        return floor * 2
-    return max(floor, 5 * int(-(-passes[-(-len(passes) * 9 // 10) - 1] // 1)))
+    """The wall bound run-suites last journaled for the suite, None before it ran there."""
+    found = [(r["ended_at"], r["suites"][name]["bound"]) for r in runs
+             if r.get("repo_root") == root and isinstance(r.get("suites"), dict) and isinstance(r["suites"].get(name), dict)
+             and isinstance(r["suites"][name].get("bound"), (int, float))]
+    return max(found)[1] if found else None
 
 
 def hang_log(name, start, end):
@@ -3509,7 +3497,7 @@ def hang_line(runs, now):
             seen[ident] = seen.get(ident, 0) + 1
             if r.get("kind") == "suites" and rc == 124:
                 how = "timeout"
-            elif 128 < rc < 160 and secs >= suite_bound(runs, r.get("repo_root"), name):
+            elif 128 < rc < 160 and secs >= (suite_bound(runs, r.get("repo_root"), name) or float("inf")):
                 how = "signal %d" % (rc - 128)
             else:
                 continue
@@ -3889,7 +3877,7 @@ def vendor_synced(path, at, manifests):
     listed = [i for i in (manifest.get("skills") or []) + (manifest.get("plugins") or [])
               if isinstance(i, dict) and i.get("name") == name]
     stamp = manifest.get("lastUpdated")
-    return bool(listed) and isinstance(stamp, (int, float)) and stamp / 1000.0 >= at - SYNC_JOIN_S
+    return bool(listed) and isinstance(stamp, (int, float)) and abs(stamp / 1000.0 - at) <= SYNC_JOIN_S
 
 
 UPSTREAM_MOVE_RE = re.compile(r"(?:checkout|merge|pull|rebase)\b")

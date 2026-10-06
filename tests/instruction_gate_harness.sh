@@ -216,7 +216,10 @@ span_check() { # sid tool key value transcript
   arm_span "$1" "$5"
   tool_payload PostToolUse "$@" | bash "$WATCH" check | jq -r '.hookSpecificOutput.additionalContext // ""'
 }
-span_base() { jq -cn --arg s "$1" '{session_id:$s,hook_event_name:"PostToolUse"}' | bash "$WATCH" baseline; }
+watch_sid() { # sid arg; WATCH_BASH picks the interpreter
+  jq -cn --arg s "$1" '{session_id:$s,hook_event_name:"PostToolUse"}' | "${WATCH_BASH:-bash}" "$WATCH" "$2"
+}
+span_base() { watch_sid "$1" baseline; }
 grow_cmd="perl -pi -e 's/\$/ a line no human asked for/' $DOC"
 share_call() { # snippet arg... → the shared module, sourced, answering
   bash -c '. "$1" || exit 1; shift; eval "$1"' _ "$ROOT/share/instruction-files.sh" "$@"

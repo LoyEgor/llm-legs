@@ -34,4 +34,22 @@ assert python3 -c 'import json, sys; assert ["diarize", "true"] in json.load(ope
 el lipsync --dest "$WORK/l.mp4"
 assert test $? -eq 2
 
+# Every kind is one script under its own name, logged through share/image-leg.sh like the other media legs.
+assert test -L "$ROOT/bin/elevenlabs-isolate"
+: >"$IMAGE_LEG_LOG"
+"$ROOT/bin/elevenlabs-isolate" --in "$WORK/short.wav" --dest "$WORK/iso.wav" >"$WORK/out" 2>"$WORK/err"
+assert test $? -eq 2
+assert jq -e 'select(.tool == "elevenlabs-isolate" and .kind == "audio" and .rc == 2 and .route == "api"
+  and (.job | startswith("elevenlabs-isolate-")) and (.err | test("4.6 s")))' "$IMAGE_LEG_LOG" >/dev/null
+"$ROOT/bin/elevenlabs-speech" --dest "$WORK/a.wav" --text hi --voice abcdefghij0123456789 --dry-run >"$WORK/out" 2>"$WORK/err"
+"$ROOT/bin/elevenlabs-speech" --help >"$WORK/out" 2>"$WORK/err"
+assert test "$(wc -l <"$IMAGE_LEG_LOG")" -eq 1
+printf '#!/bin/sh\nsleep 2\n' >"$WORK/slow-python"
+chmod +x "$WORK/slow-python"
+ELEVENLABS_PYTHON="$WORK/slow-python" "$ROOT/bin/elevenlabs-sfx" >/dev/null 2>&1 &
+sleep 0.5
+kill -TERM $!
+wait $!
+assert jq -e 'select(.tool == "elevenlabs-sfx" and .rc == 143)' "$IMAGE_LEG_LOG" >/dev/null
+
 echo "PASS test_elevenlabs_media ($asserts asserts)"

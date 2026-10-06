@@ -137,7 +137,7 @@ grok_phantom_rc=0
 env "${grok_env[@]}" bash "$SCRIPT" --refresh-account grok/supergrokk --json \
   >"$WORK/grok-phantom.out" 2>"$WORK/grok-phantom.err" || grok_phantom_rc=$?
 [ "$grok_phantom_rc" -eq 2 ] || fail "an unknown grok account must exit 2, got $grok_phantom_rc"
-grep -q 'unknown Grok account: supergrokk' "$WORK/grok-phantom.err" \
+grep -q 'unknown account: supergrokk (not on the grok roster' "$WORK/grok-phantom.err" \
   || fail "an unknown grok account did not say so: $(cat "$WORK/grok-phantom.err")"
 jq -e 'all(.accounts[]; .account != "supergrokk")' "$GROK_ROSTER_CACHE" >/dev/null \
   || fail "an unknown grok account was written into the cache"

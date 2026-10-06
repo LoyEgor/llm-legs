@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 process_tree() { # pid -> the pid and every descendant, one line each, parents first
-  ps -A -o pid=,ppid= 2>/dev/null | awk -v root="$1" '
+  process_listing | awk -v root="$1" '
     { kids[$2] = kids[$2] " " $1 }
     END { queue[n = 1] = root
           for (i = 1; i <= n; i++) { print queue[i]; m = split(kids[queue[i]], k, " "); for (j = 1; j <= m; j++) queue[++n] = k[j] } }'
@@ -51,7 +51,7 @@ run_env_holders() { # run-id -> "<pid>\t<etime>\t<command>" per other process of
       for (p in has) if (!(p in skip)) { queue[++n] = p; seen[p] = 1 }
       for (i = 1; i <= n; i++) { print queue[i]; m = split(kids[queue[i]], k, " ")
         for (j = 1; j <= m; j++) if (!(k[j] in seen) && !(k[j] in skip) && !(k[j] in other)) { seen[k[j]] = 1; queue[++n] = k[j] } }
-    }' <<<"$listing")
+    }' < <(printf '%s\n' "$listing"))
   [ -n "$pids" ] || return 0
   awk -v token=" WORKER_RUN_ID=$1" '
     FNR == NR { pid = $1; sub(/^ *[0-9]+ /, ""); plain[pid] = $0; next }
@@ -66,13 +66,15 @@ run_env_holders() { # run-id -> "<pid>\t<etime>\t<command>" per other process of
     }' <(ps -ww -o pid=,command= -p "$(printf '%s\n' $pids | paste -sd, -)" 2>/dev/null) <(printf '%s\n' "$listing")
 }
 
+cwd_listing() { lsof -d cwd -Fpn 2>/dev/null; }
+process_listing() { ps -A -o pid=,ppid= 2>/dev/null; }
+
 # The caller's own session never holds: everything under the highest of its ancestors standing inside
 # the directory, so a chat landing the worktree it works in is not held by its own shell or servers.
-cwd_holders() { # dir -> "<pid> <command>" per process whose working directory is dir or below it; 2 when unlisted
-  local dir listing tree pids
+cwd_holders() { # dir [listing tree] -> "<pid> <command>" per process whose working directory is dir or below it; 2 when unlisted
+  local dir listing=${2-} tree=${3-} pids
   dir=$(cd -P "$1" 2>/dev/null && pwd -P) || return 0
-  listing=$(lsof -d cwd -Fpn 2>/dev/null)
-  tree=$(ps -A -o pid=,ppid= 2>/dev/null)
+  [ $# -ge 3 ] || { listing=$(cwd_listing); tree=$(process_listing); }
   [ -n "$listing" ] && [ -n "$tree" ] || return 2
   pids=$(awk -v self="$$" -v dir="$dir" '
     FNR == NR { parent[$1] = $2; kids[$2] = kids[$2] " " $1; next }

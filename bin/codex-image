@@ -105,19 +105,12 @@ place_image() { # generated out
   fi
 }
 
-# The other takes of a --count run, after the shared lines, the way share/flow-image.sh prints Flow's.
+place_variant() { # take out index
+  place_image "$(jq -r '.path' <<<"$1")" "$2"
+}
+
 deliver_variants() {
-  local index=1 take out path vsize
-  while IFS= read -r take; do
-    index=$((index + 1))
-    out="${dest%.*}-$index.${dest##*.}"
-    path=$(jq -r '.path' <<<"$take")
-    place_image "$path" "$out"
-    vsize=$(sips -g pixelWidth -g pixelHeight "$out" | awk '/pixelWidth:/ {w = $2} /pixelHeight:/ {h = $2} END {print w "x" h}')
-    printf 'variant=%s size=%s session=%s\n' "$out" "$vsize" "$(jq -r '.chat // "none"' <<<"$take")"
-    IMAGE_LEG_DELIVERED=$index
-    image_leg_composite_take "$root" "$out" variant </dev/null
-  done < <(jq -c '(.takes // [])[1:][]' <<<"$web_result")
+  image_leg_variants "$root" "$dest" "$web_result" chat place_variant
   jq -r '(.failures // [])[] | "codex-image: take \(.tab) failed: \(.reason)"' <<<"$web_result" >&2
   jq -r '.failed // 0 | select(. > 0) | "failed=\(.) reason=chatgpt_take_failed"' <<<"$web_result"
 }

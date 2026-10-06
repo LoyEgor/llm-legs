@@ -1,1 +1,12 @@
-[]
+[
+  {
+    "id": "flow-rest",
+    "what": "rawilimo and abel rest from Google Flow and Gemini web media for 14 days (Flow kept answering them PUBLIC_ERROR_UNUSUAL_ACTIVITY and the daily re-probe after each 24 h wall added a strike every time; mish was disabled by Google after the same pattern); hypothesis: with no attempts for two weeks Google's risk score recovers and both return to full normal use",
+    "started": "2026-10-06",
+    "review_by": "2026-10-20",
+    "state_marker": "~/.gemini-web/flow-rest.json",
+    "evidence": "~/.gemini-web/failures/*-rawilimo-*.txt and *-abel-*.txt (reason 'Flow flagged this account') and saved rows for both accounts in ~/.gemini-web/jobs.jsonl and ~/.cache/image-legs/legs.jsonl after the rest ends",
+    "surfaces": ["menubar Gemini account rows (video wall until 2026-10-20 12:00 on both)", "llm-limits --table banner once overdue"],
+    "how_to_remove": "The walls in ~/.gemini-web/walls.json and the marker expire by themselves on 2026-10-20 12:00 local. Delete ~/.gemini-web/flow-rest.json, then this entry. Verdict: no flag on either account within a week of normal use after the rest = recovered, nothing else to do; a flag again = ask the owner (longer rest, or account-side steps only he can take: phone, 2FA, normal use by hand)."
+  }
+]

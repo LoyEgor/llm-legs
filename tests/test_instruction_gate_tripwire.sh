@@ -7,12 +7,9 @@ docs_link
 echo "== tripwire: the bytes from before the change are kept, and they restore the file"
 # The original content, so the sections after this one still measure their own deltas.
 printf 'global rules\n' > "$REAL_MD"
-snap_sid() {
-  jq -cn --arg s snap '{session_id:$s,hook_event_name:"PostToolUse"}' | bash "$WATCH" "$1"
-}
-snap_sid baseline >/dev/null
+watch_sid snap baseline >/dev/null
 printf 'smuggled in without asking\n' > "$REAL_MD"
-ctx=$(snap_sid check | jq -r '.hookSpecificOutput.additionalContext // ""')
+ctx=$(watch_sid snap check | jq -r '.hookSpecificOutput.additionalContext // ""')
 assert_contains "CHANGED" "$ctx"
 assert_contains "puts them back" "$ctx"
 # The report carries a real command; running it has to give the original bytes back.
@@ -38,15 +35,12 @@ echo "== tripwire: a second session cannot hand out the smuggled bytes as the go
 # version ITS OWN baseline recorded, so what either one hands back is the good version — an undo
 # that restores the change it is undoing is the failure this guards.
 printf 'global rules\n' > "$REAL_MD"
-two_sid() {
-  jq -cn --arg s "$1" '{session_id:$s,hook_event_name:"PostToolUse"}' | bash "$WATCH" "$2"
-}
 undo_from() { printf '%s' "$1" | sed -n 's/.*puts them back: \(.*\) Egor.s standing rule.*/\1/p'; }
-two_sid pair-a baseline >/dev/null
-two_sid pair-b baseline >/dev/null
+watch_sid pair-a baseline >/dev/null
+watch_sid pair-b baseline >/dev/null
 printf 'smuggled by someone\n' > "$REAL_MD"
-ctx_a=$(two_sid pair-a check | jq -r '.hookSpecificOutput.additionalContext // ""')
-ctx_b=$(two_sid pair-b check | jq -r '.hookSpecificOutput.additionalContext // ""')
+ctx_a=$(watch_sid pair-a check | jq -r '.hookSpecificOutput.additionalContext // ""')
+ctx_b=$(watch_sid pair-b check | jq -r '.hookSpecificOutput.additionalContext // ""')
 assert_contains "CHANGED" "$ctx_a"
 assert_contains "puts them back" "$ctx_a"
 # The session that reported second saw the same original bytes, so it can undo the change too.
@@ -65,20 +59,14 @@ assert_eq "global rules" "$(cat "$REAL_MD")"
 echo "== tripwire: a doc filed one level down is watched too"
 mkdir -p "$HOME/.claude/docs/topic"
 printf 'nested doc\n' > "$HOME/.claude/docs/topic/deep.md"
-watch_nested() {
-  jq -cn --arg s nested '{session_id:$s,hook_event_name:"PostToolUse"}' | bash "$WATCH" "$1"
-}
-watch_nested baseline >/dev/null
-assert_eq "" "$(watch_nested check)"
+watch_sid nested baseline >/dev/null
+assert_eq "" "$(watch_sid nested check)"
 printf 'nested doc changed\n' > "$HOME/.claude/docs/topic/deep.md"
 assert_contains "deep.md" \
-  "$(watch_nested check | jq -r '.hookSpecificOutput.additionalContext // ""')"
+  "$(watch_sid nested check | jq -r '.hookSpecificOutput.additionalContext // ""')"
 
 echo "== tripwire: a quiet session says nothing"
-watch() {
-  local arg=$1 sid=${2:-sid-a}
-  jq -cn --arg s "$sid" '{session_id:$s,hook_event_name:"PostToolUse"}' | bash "$WATCH" "$arg"
-}
+watch() { watch_sid "${2:-sid-a}" "$1"; }
 watch baseline >/dev/null
 assert_eq "" "$(watch check)"
 
@@ -299,7 +287,7 @@ watch baseline sid-quote >/dev/null
 printf 'quoted doc smuggled\n' > "$QUOTED"
 ctx=$(watch check sid-quote | jq -r '.hookSpecificOutput.additionalContext // ""')
 assert_contains "puts them back" "$ctx"
-undo=$(printf '%s' "$ctx" | sed -n 's/.*puts them back: \(.*\) Egor.s standing rule.*/\1/p')
+undo=$(undo_from "$ctx")
 eval "$undo"
 assert_eq "quoted doc" "$(cat "$QUOTED")"
 rm "$QUOTED"
@@ -315,7 +303,7 @@ ctx=$(watch check sid-set-a | jq -r '.hookSpecificOutput.additionalContext // ""
 assert_contains "settings.json" "$ctx"
 assert_contains "puts them back" "$ctx"
 ctx_b=$(watch check sid-set-b | jq -r '.hookSpecificOutput.additionalContext // ""')
-undo=$(printf '%s' "$ctx_b" | sed -n 's/.*puts them back: \(.*\) Egor.s standing rule.*/\1/p')
+undo=$(undo_from "$ctx_b")
 assert [ -n "$undo" ]
 eval "$undo"
 assert_contains '"Stop"' "$(cat "$HOME/.claude/settings.json")"
@@ -341,7 +329,7 @@ printf 'bad bytes\n' > "$REAL_MD"
 watch check sid-newcomer >/dev/null
 ctx=$(watch check sid-keeper | jq -r '.hookSpecificOutput.additionalContext // ""')
 assert_contains "CHANGED" "$ctx"
-undo=$(printf '%s' "$ctx" | sed -n 's/.*puts them back: \(.*\) Egor.s standing rule.*/\1/p')
+undo=$(undo_from "$ctx")
 assert [ -n "$undo" ]
 eval "$undo"
 assert_eq "good bytes" "$(cat "$REAL_MD")"

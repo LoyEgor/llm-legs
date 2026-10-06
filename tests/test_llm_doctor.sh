@@ -460,8 +460,10 @@ jq '.refresh_heartbeat.stalled = false' "$WORK/stalled-store.json" >"$WORK/ticki
 assert env LLM_LIMITS_CACHE="$WORK/ticking-store.json" "$DOCTOR" --dry-run --json >"$WORK/ticking.json"
 assert jq -e '[.problems[] | select(.rule == "refresh-stalled")] == []' "$WORK/ticking.json" >/dev/null
 # An account older than the store's account_stale_after_s is an accounts problem naming its last error; a
-# fresh one, one waiting for a login, a removed one and a removed vendor's are not, as in the menu's count.
-python3 - "$NOW" "$WORK/stale-store.json" <<'PY'
+# fresh one, one waiting for a login, a removed one, a removed vendor's and an OpenCode one (its as_of is
+# the last served call) are not, as in the menu's count;
+# the store is marked by the collector's own limits_stale_watch pass.
+python3 - "$NOW" "$WORK/stale-raw.json" <<'PY'
 import json, sys, time
 now = int(sys.argv[1])
 def iso(age):
@@ -472,8 +474,11 @@ json.dump({"schema": 1, "account_stale_after_s": 7200, "vendors": {
                             {"account": "gone", "as_of": iso(30000), "removed": True}],
                "refresh_errors": [{"account": "abel", "cause": "abel: agy /usage timed out after 45s", "at": now}]},
     "codex": {"removed": True, "accounts": [{"account": "old", "as_of": iso(30000)}]},
-    "grok": {"available": True, "as_of": iso(9000), "accounts": []}}}, open(sys.argv[2], "w"))
+    "grok": {"available": True, "as_of": iso(9000), "accounts": []},
+    "opencode": {"source": "opencode-go", "accounts": [{"account": "oc", "as_of": iso(30000)}]}}}, open(sys.argv[2], "w"))
 PY
+(. "$ROOT/share/limits-view.sh" && jq "$LIMITS_VIEW_JQ"'.vendors |= with_entries(.key as $k | .value |= limits_stale_watch($k))' \
+  "$WORK/stale-raw.json" >"$WORK/stale-store.json")
 assert env LLM_LIMITS_CACHE="$WORK/stale-store.json" "$DOCTOR" --dry-run --json >"$WORK/stale.json"
 assert jq -e '[.problems[] | select(.rule == "account-stale")] as $rows
   | ([$rows[].id] | sort) == ["refresh:gemini:abel", "refresh:grok:grok"]
@@ -484,6 +489,8 @@ assert jq -e '[.problems[] | select(.rule == "account-stale")] as $rows
 jq 'del(.account_stale_after_s)' "$WORK/stale-store.json" >"$WORK/unstamped-store.json"
 assert env LLM_LIMITS_CACHE="$WORK/unstamped-store.json" "$DOCTOR" --dry-run --json >"$WORK/unstamped.json"
 assert jq -e '[.problems[] | select(.rule == "account-stale")] == []' "$WORK/unstamped.json" >/dev/null
+assert env LLM_LIMITS_CACHE="$WORK/stale-raw.json" "$DOCTOR" --dry-run --json >"$WORK/unmarked.json"
+assert jq -e '[.problems[] | select(.rule == "account-stale")] == []' "$WORK/unmarked.json" >/dev/null
 # Days the bench store covers whole are frozen to disk; the older image day stays as it was.
 assert test "$(find "$LLM_DOCTOR_DIR/daily" -name '*.json' | wc -l | tr -d ' ')" -ge 3
 assert grep -q '"image|grok-image|failed|bad output|ours|X4": 5' "$LLM_DOCTOR_DIR/daily/$(python3 -c 'import time,sys; print(time.strftime("%Y-%m-%d", time.localtime(int(sys.argv[1]) - 10 * 86400)))' "$NOW").json"

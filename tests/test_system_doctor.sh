@@ -29,6 +29,9 @@ for name in ps vm_stat sysctl ioreg df last diskutil launchctl; do
   chmod +x "$WORK/bin/$name"
   export "SYSTEM_DOCTOR_$(printf %s "$name" | tr '[:lower:]' '[:upper:]')=$WORK/bin/$name"
 done
+cat >>"$WORK/bin/ps" <<'SH'
+case " $* " in *" -S "*) printf '%5d %5d %3d %10s %s %s\n' "$$" "$PPID" 501 0:00.00 "Mon Oct  5 09:30:00 2026" "/bin/ps $*" ;; esac
+SH
 printf '#!/bin/bash\n' >"$WORK/bin/du"
 printf 'printf "%%s\\t%%s\\n" 23068672 "$4/uv" 1048576 "$4/small" 24117248 "$4"\n' >>"$WORK/bin/du"
 chmod +x "$WORK/bin/du"
@@ -176,6 +179,18 @@ put("sysctl", "{ sec = 1790099999, usec = 0 } Mon Sep 21 10:00:00 2026\n25769803
 row = json.loads(cli("tick").stdout)
 check(row["dt"] is None and row["kernel"] is None and row["cpu_top"] == [] and "disk" not in row,
       "a new boot starts a fresh series: %s" % row)
+saved = {name: open(os.path.join(fix, name)).read() for name in ("ps", "ps-children")}
+lives = []
+for parent, child in (("0:01.00", "0:02.00"), ("0:01.00", "0:07.00"), ("0:09.00", None)):
+    rows = [(100, 1, 501, parent, start, "/bin/bash %s/bin/statusline.sh" % own)]
+    put("ps", ps_rows([(100, 1, 501, "0:01.00", start, "/bin/bash %s/bin/statusline.sh" % own)]
+                      + ([(600, 100, 501, child, born, "/opt/homebrew/bin/claude -p")] if child else [])))
+    put("ps-children", ps_rows(rows + ([(600, 100, 501, child, born, "/opt/homebrew/bin/claude -p")] if child else [])))
+    lives.append(json.loads(cli("tick").stdout)["cpu_top"])
+check(lives[1:] == [[["claude", 5.0, 0.0, "third-party"]], [["statusline.sh", 3.0, 3.0, "own"]]],
+      "a child reaped after living through ticks charges its parent only the CPU its own ticks never did: %s" % lives)
+for name, text in saved.items():
+    put(name, text)
 
 # ---- the nightly pass: report headers, relaunched jobs, `last`, caches, SMART
 now = time.time()
@@ -241,6 +256,37 @@ check(night["caches"] == [["uv", 22.0], ["small", 1.0]], "cache sizes in GiB, th
 check(night["smart"] == "Verified" and "info disk0" in open(os.path.join(fix, "diskutil.calls")).read(),
       "SMART of the internal disk via diskutil: %s" % night["smart"])
 check(set(night["steps"]) == {"jobs", "reports", "last", "caches", "smart"}, "nightly step costs: %s" % night["steps"])
+last_saved = open(os.path.join(fix, "last")).read()
+put("last", "reboot    ~                         Wed Dec 30 10:00\nreboot    ~                         Sun Dec 20 10:00\n")
+january = time.mktime((2027, 1, 3, 12, 0, 0, 0, 0, -1))
+check([time.localtime(at)[:3] for at, _kind in m.boot_events(january)] == [(2026, 12, 30), (2026, 12, 20)],
+      "a boot of last month in early January is last year's: %s" % m.boot_events(january))
+put("last", last_saved)
+report("Odd-2026-10-05.ips", "[1]")
+check(m.report_header(os.path.join(work, "diag", "Odd-2026-10-05.ips"), "Odd-2026-10-05.ips", {})["kind"] == "other",
+      "an .ips whose first line is JSON but no object reads as an unknown report")
+os.remove(os.path.join(work, "diag", "Odd-2026-10-05.ips"))
+patched = {name: getattr(m, name) for name in ("tick", "launch_due", "nightly_due", "nightly")}
+m.tick = m.launch_due = lambda *a: None
+m.nightly_due = lambda now: True
+
+
+def broken_nightly(*a):
+    raise RuntimeError("nightly broke")
+
+
+m.nightly = broken_nightly
+try:
+    did = m.agent()
+except RuntimeError:
+    did = None
+for name, value in patched.items():
+    setattr(m, name, value)
+broke = m.read_json(os.path.join(work, "state", "latest.json"), {})
+if broke:
+    os.remove(os.path.join(work, "state", "latest.json"))
+check(did == ["nightly"] and broke.get("status") == "error" and "nightly broke" in broke["self"]["error"],
+      "a failed nightly pass writes the error document, never leaves the last one standing: %s" % did)
 
 # ---- the judge: each rule at its limit fires, just under it does not
 def tick_row(t, **values):
@@ -390,6 +436,7 @@ check(cli("--json").returncode == 0 and json.load(open(os.path.join(work, "state
       == latest["as_of_s"], "--json writes nothing")
 
 # ---- install-agent: a named wrapper and a low-priority plist, loaded through launchctl
+put("launchctl", "")
 run = cli("install-agent")
 check(run.returncode == 0, "install-agent runs: %s" % run.stderr)
 wrapper = os.path.join(os.environ["SYSTEM_DOCTOR_LIBEXEC_DIR"], "system-doctor")
@@ -401,6 +448,20 @@ check(plist["ProgramArguments"] == [wrapper, "agent"] and plist["StartInterval"]
       and plist["LowPriorityIO"] is True and plist["ProcessType"] == "Standard", "the plist: %s" % plist)
 calls = open(os.path.join(fix, "launchctl.calls")).read().splitlines()
 check([c.split()[0] for c in calls] == ["bootout", "bootstrap"], "launchctl bootout then bootstrap: %s" % calls)
+busy = os.path.join(work, "bin", "launchctl-busy")
+with open(busy, "w") as handle:
+    handle.write('#!/bin/bash\nprintf "%%s\\n" "$1" >>"%s/busy.calls"\n[ "$1" = bootstrap ] || exit 0\n'
+                 'n=$(grep -c bootstrap "%s/busy.calls")\n[ "$n" -gt "${BUSY_TRIES:-1}" ] || { echo "Input/output error" >&2; exit 5; }\n'
+                 % (fix, fix))
+os.chmod(busy, 0o755)
+run = cli("install-agent", env={"SYSTEM_DOCTOR_LAUNCHCTL": busy})
+check(run.returncode == 0 and "Installed" in run.stdout
+      and open(os.path.join(fix, "busy.calls")).read().split() == ["bootout", "bootstrap", "bootstrap"],
+      "a bootstrap racing the bootout's teardown is retried: %s %s" % (run.stdout, run.stderr))
+os.remove(os.path.join(fix, "busy.calls"))
+run = cli("install-agent", env={"SYSTEM_DOCTOR_LAUNCHCTL": busy, "BUSY_TRIES": "9"})
+check(run.returncode == 1 and "Installed" not in run.stdout and "Input/output error" in run.stderr,
+      "an agent bootstrap never loaded fails install-agent: %s %s" % (run.stdout, run.stderr))
 cli("uninstall-agent")
 check(not os.path.exists(wrapper) and not os.listdir(os.environ["SYSTEM_DOCTOR_AGENT_DIR"]), "uninstall-agent removes both")
 
@@ -456,6 +517,25 @@ check(m.proof("memlogd", "job-crash", now - 3 * 86400, now, crash)["verdict"] ==
       and m.proof("memlogd", "job-crash", now - 8 * 86400 - 10, now, dict(crash, reports=[]))["verdict"] == "proven"
       and m.proof("memlogd", "job-crash", now - 3 * 86400, now, dict(crash, reports=[]))["verdict"] == "pending",
       "a crash cause: any crash after the fix refuses it, 7 quiet days prove it")
+landed = now - 9 * 86400
+memo = {}
+check(m.proof("memlogd", "job-crash", landed, now, dict(crash, reports=[dict(crash["reports"][0], at=landed + 3600,
+                                                                               ref="memlogd-1.ips")]), memo)["verdict"] == "refused"
+      and m.proof("memlogd", "job-crash", landed, now + 86400, dict(crash, as_of_s=now + 86400, reports=[]), memo)["verdict"]
+      == "refused", "a crash after the fix still refuses it once its report ages out of the nightly pass: %s" % memo)
+row = {"id": "SYS-9", "match": {"rule": "spawn", "key": "machine", "cause": "statusline.sh"}}
+fix_since = m.fix_since
+m.fix_since = lambda row: since
+write_ticks(series(since - 6 * 3600, 360, 60, 5, 6.0) + series(since, 180, 60, 2, 2.0))
+first_judge = m.Judge(now, {})
+check(first_judge.prove({"fact": ""}, row) == "proven", "the fix proves against its baseline")
+m.write_json(m.proofs_path(), first_judge.memo)
+write_ticks(series(since, 180, 60, 2, 2.0))
+check(m.proof("statusline.sh", "spawn", since, now)["verdict"] == "refused"
+      and m.Judge(now, {}).prove({"fact": ""}, row) == "proven",
+      "a proven fix stays proven once the minute rows of its baseline are deleted")
+os.remove(m.proofs_path())
+m.fix_since = fix_since
 
 write_ticks(series(since - 6 * 3600, 360, 60, 5, 6.0) + series(since, 180, 60, 2, 2.0))
 run = cli("check", "statusline.sh", "--rule", "spawn", "--since", str(since))
@@ -892,6 +972,10 @@ check(run.returncode == 0 and sorted(routed) == ["job-loop:com.llm-legs.memlogd"
       and routed["job-loop:com.llm-legs.memlogd"]["component"]["files"] == [os.path.join(work, "repos", "llm-legs", "bin", "memlogd")]
       and "back off before exiting non-zero" in routed["job-loop:com.llm-legs.memlogd"]["component"]["what"],
       "an own looping job routes to the fixer by its program's file, a third-party crashing one never: %s %s" % (routed, run.stderr))
+
+contract = open(os.path.join(root, "docs", "doctors-contract.md")).read().split("\nSystem doctor ", 1)[-1].split("\n\n", 1)[0]
+check(all("`%s`" % rule in contract for rule in m.RULE_LABELS),
+      "the contract's System doctor section names every rule: missing %s" % [r for r in m.RULE_LABELS if "`%s`" % r not in contract])
 
 print("OK: PASS: %d system doctor checks" % asserts)
 PY

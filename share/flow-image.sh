@@ -264,8 +264,11 @@ flow_image_engine() {
 }
 
 # After the shared dest/size/format/account/session lines.
+flow_image_variant_wait() { # take out index
+  wait "${flow_image_variant_pids[$3 - 2]}"
+}
+
 flow_image_footer() {
-  local index=1 take out vsize
   [ -z "$aspect" ] || image_leg_aspect_fit "$aspect" "$width" "$height" "${aspect_asked:+ asked=$aspect_asked}" || true
   if [ "$tool_op" = cutout ]; then
     printf 'tool=cutout bg_model=%s on_device=true\n' "$bg_model"
@@ -283,15 +286,7 @@ flow_image_footer() {
   else
     image_leg_route_lines " model=$model upscale=${upscale:-none}"
   fi
-  while IFS= read -r take; do
-    index=$((index + 1))
-    out="${dest%.*}-$index.${dest##*.}"
-    wait "${flow_image_variant_pids[index - 2]}"
-    vsize=$(sips -g pixelWidth -g pixelHeight "$out" | awk '/pixelWidth:/ {w = $2} /pixelHeight:/ {h = $2} END {print w "x" h}')
-    printf 'variant=%s size=%s session=%s\n' "$out" "$vsize" "$(jq -r '.id // "none"' <<<"$take")"
-    IMAGE_LEG_DELIVERED=$index
-    image_leg_composite_take "$root" "$out" variant </dev/null
-  done < <(jq -c '.takes[1:][]' <<<"$flow_result")
+  image_leg_variants "$root" "$dest" "$flow_result" id flow_image_variant_wait
   jq -r '(.refused // [])[] | "refused=\(.media_id) \(.error)"' <<<"$flow_result"
   jq -r '.failed // 0 | select(. > 0) | "failed=\(.) reason=flow_generation_failed (not charged)"' <<<"$flow_result"
   jq -r '(.unsaved // [])[] | "unsaved=1 reason=\(.)"' <<<"$flow_result"

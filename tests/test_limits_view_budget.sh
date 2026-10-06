@@ -93,4 +93,17 @@ assert t '[range(-50; 151) | limits_daily_budget(.; 5)] | all(. >= 0 and . <= 20
 assert t 'limits_daily_budget(50; 5) == limits_daily_budget(50; 5)'
 assert t "limits_days_remaining(\$now + $DAY; \$now) == limits_days_remaining(\$now + $DAY; \$now)"
 
-echo "PASS: $asserts asserts; limits_days_remaining floors at 0 and answers null for placeholder, non-numeric and ancient resets while staying monotonic in the reset epoch, and limits_daily_budget clamps pct into [0,100], divides by a 0.25-day floor, treats null/non-numeric days as a neutral 7-day window, orders a reset tomorrow above one a week out at equal pct, and answers null for an unmeasured pct"
+# --- limits_stale_watch ------------------------------------------------------
+assert t '{accounts: [{account: "a"}, {account: "b", auth_needed: true}, {account: "c", removed: true}]}
+  | limits_stale_watch("gemini") | [.accounts[].stale_watch] == [true, null, null]'
+assert t '{accounts: [{auth_needed: true, auth: {status: "expired"}}, {auth: {status: "needs_login"}}, {auth_needed: true}]}
+  | limits_stale_watch("grok") | [.accounts[].stale_watch] == [true, null, null]'
+assert t '{removed: true, accounts: [{account: "a"}]} | limits_stale_watch("codex") | .accounts[0] | has("stale_watch") | not'
+assert t '{available: true, accounts: [], stale_watch: false} | limits_stale_watch("grok") | .stale_watch == true'
+assert t '{available: false, stale_watch: true} | limits_stale_watch("codex") | has("stale_watch") | not'
+assert t '{available: true, accounts: [{account: "oc", stale_watch: true}]} | limits_stale_watch("opencode")
+  | (has("stale_watch") | not) and (.accounts[0] | has("stale_watch") | not)'
+assert t '{stale_watch: true, accounts: [{stale_watch: true, auth_needed: true}]} | limits_stale_watch("claude")
+  | (has("stale_watch") | not) and (.accounts[0] | has("stale_watch") | not)'
+
+echo "PASS: $asserts asserts; limits_days_remaining floors at 0 and answers null for placeholder, non-numeric and ancient resets while staying monotonic in the reset epoch, and limits_daily_budget clamps pct into [0,100], divides by a 0.25-day floor, treats null/non-numeric days as a neutral 7-day window, orders a reset tomorrow above one a week out at equal pct, and answers null for an unmeasured pct, and limits_stale_watch marks only live, logged-in account blocks"

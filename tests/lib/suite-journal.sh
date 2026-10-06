@@ -85,22 +85,22 @@ suite_journal_digest() { # suite-name... in sorted order -> suite_journal_set
   printf -v suite_journal_set '%08x' "$h"
 }
 
-suite_journal_suite() { # name rc secs cpu-secs -> appended to suite_journal_suites
+suite_journal_suite() { # name rc secs cpu-secs [wall-bound] -> appended to suite_journal_suites
   local name
   suite_journal_str name "$1"
-  suite_journal_suites="${suite_journal_suites:+$suite_journal_suites,}$name:{\"rc\":$2,\"secs\":$3,\"cpu_s\":${4:-null},\"forks\":null}"
+  suite_journal_suites="${suite_journal_suites:+$suite_journal_suites,}$name:{\"rc\":$2,\"secs\":$3,\"cpu_s\":${4:-null},\"forks\":null${5:+,\"bound\":$5}}"
 }
 
 # kind pid queued started ended repo repo-root head scope worker-run session j slot signal complete [skipped-slow names [reason]]
 suite_journal_row() {
-  local repo root head scope run session slot skipped='' name
+  local repo root head scope run session slot reason skipped='' name
   suite_journal_str repo "$6"; suite_journal_str root "$7"; suite_journal_str head "$8"
   suite_journal_str scope "$9"; suite_journal_str run "${10}"; suite_journal_str session "${11}"
-  suite_journal_str slot "${13}"
+  suite_journal_str slot "${13}"; suite_journal_str reason "${17:-}"
   for name in ${16:-}; do suite_journal_str name "$name"; skipped="${skipped:+$skipped,}$name"; done
   printf -v suite_journal_line '{"kind":"%s","pid":%s,"queued_at":%s,"started_at":%s,"ended_at":%s,"repo":%s,"repo_root":%s,"head":%s,"scope":%s,"suite_set":"%s","worker_run":%s,"session":%s,"j":%s,"slot":%s,"signal":%s,"complete":%s%s%s,"suites":{%s}}' \
     "$1" "$2" "$3" "$4" "$5" "$repo" "$root" "$head" "$scope" "$suite_journal_set" "$run" "$session" \
-    "${12}" "$slot" "${14:-null}" "${15}" "${16:+,\"skipped_slow\":[$skipped]}" "${17:+,\"reason\":\"${17}\"}" "${suite_journal_suites:-}"
+    "${12}" "$slot" "${14:-null}" "${15}" "${16:+,\"skipped_slow\":[$skipped]}" "${17:+,\"reason\":$reason}" "${suite_journal_suites:-}"
 }
 
 suite_journal_append() { # journal -> appends suite_journal_line

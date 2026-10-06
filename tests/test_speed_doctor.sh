@@ -164,6 +164,29 @@ lever_om = [p["opportunity"]["om_day"] for p in lever_doc["problems"] if p["id"]
 check(lever_om and lever_om != base_om
       and abs(lever_om[0] - lever_secs / 60.0 / ((HI - max(lever_lo, h.day_end(landed))) / 86400.0)) < 0.01,
       "a lever is charged per day only after its own fix landed through the merge that brought it in: %s" % lever_om)
+loaded = {h.local_day(HI - back * 86400): {"machine": {"band_s": {"<1": 50000, "busy": 30000},
+                                                       "probe_ms": {"<1": [10, 100, 10, 10, 0, 0, []],
+                                                                    "busy": [10, 400, 40, 40, 0, 0, []]}}}
+          for back in range(4)}
+contention_since = h.local_day(HI - 2 * 86400)
+stubs = (module.speed_days, module.lever_since, module.partition)
+captured = []
+module.speed_days = lambda lo, now: copy.deepcopy(loaded)
+module.lever_since = lambda ledger, component: contention_since if component == "machine/contention" else None
+module.partition = lambda *a: captured.append((a, partition(*a))) or captured[-1][1]
+os.environ.update({k: v for k, v in base.items() if k != "PATH"}, SPEED_DOCTOR_DIR=os.path.join(work, "speed-contention"))
+contention_doc = module.collect(False, HI)
+module.speed_days, module.lever_since, module.partition = stubs
+os.environ.clear()
+os.environ.update(saved_env)
+(_, _, c_lo, _), (c_credit, _) = captured[0]
+c_span = (HI - max(c_lo, h.day_end(contention_since))) / 86400.0
+c_local = sum(s for (d, a, l), s in c_credit.items() if a == "chat" and l in module.LOCAL_LEAVES and d > contention_since)
+c_expected = module.machine_view({d: v for d, v in loaded.items() if d > contention_since}, c_local / 60.0 / c_span)["p_om_day"]
+c_om = [p["opportunity"]["om_day"] for p in contention_doc["problems"] if p["id"] == "opportunity:machine/contention"]
+check(c_expected and c_om and abs(c_om[0] - c_expected) < 0.01,
+      "a landed machine/contention fix reprices it from the machine days after the fix, never drops it: %s vs %s"
+      % (c_om, c_expected))
 spike, pattern = ({"id": i, "opportunity": {"needs_egor": False, "score": 0.5, "data_confidence": c}}
                   for i, c in (("a-spike", round(1 / 7.0, 2)), ("b-pattern", round(4 / 7.0, 2))))
 check([o["id"] for o in sorted([spike, pattern], key=module.rank_key)] == ["b-pattern", "a-spike"],

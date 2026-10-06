@@ -241,8 +241,8 @@ assert grep -qx 'REROUTE: walled on walled1 → continued on walled2' "$WORK/wai
 # stamped with the supervisor's pid, which is what tells the Stop gate somebody is writing the
 # report — and, once the pid is gone, that nobody is.
 clear_stub
-export PICK_ACCOUNT=deleg PICK_RC=0 STUB_GATE="$WORK/deleg-gate"
-rm -f "$STUB_GATE"
+export PICK_ACCOUNT=deleg PICK_RC=0
+gate_shut
 DELEG_BENCHES="$HOME/.claude-profiles/.claudeb/worker-stats/benches"
 mkdir -p "$DELEG_BENCHES/20260801T120000Z-abc123f" "$DELEG_BENCHES/20260801T130000Z-def4560"
 cat >"$WORK/deleg-brief" <<'DELEGBRIEF'
@@ -268,8 +268,7 @@ assert test "$(awk 'NR == 1 {print $2}' "$DELEG_BENCHES/20260801T120000Z-abc123f
 assert test ! -e "$DELEG_BENCHES/20260801T990000Z-fffffff"
 assert test ! -e "$DELEG_BENCHES/20260801T130000Z-def4560/delegated"
 assert test "$(jq 'has("review_round")' "$RUN_DIR/meta.json")" = false
-: >"$STUB_GATE"
-unset STUB_GATE
+gate_open
 await_done || fail "the delegated run never finished"
 
 # A fixing worker's brief names the review round it fixes — line 1, or line 2 under a RESUME/ATTACH

@@ -33,7 +33,7 @@
     "scoped": {
       "stt": "speech-to-text permission only"
     },
-    "floors": "a `reserve=N` note on a key line: the account is skipped unless more than N credits are left (trimmed: 100000, the key owner's hard floor)"
+    "floors": "a `reserve=N` note on a key line: the account is skipped unless more than N credits are left; the floor is the key owner's"
   },
   "formats": {
     "mp3": "mp3_44100_128",

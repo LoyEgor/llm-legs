@@ -1330,6 +1330,7 @@ for _, vendorKey in ipairs({ "claude", "codex", "gemini", "grok" }) do
   fresh.as_of, dead.as_of = nowErr - 600, nowErr - 30 * 3600
   dead.auth_needed = true
   if vendorKey == "grok" then dead.auth = { status = "needs_login" } end
+  old.stale_watch, oldLate.stale_watch, fresh.stale_watch = true, true, true
   vendors[vendorKey] = {
     available = true, source = vendorKey == "claude" and "claudeb-store" or nil,
     refresh_errors = {{ account = "oldlate", class = "timeout", cause = "collector timed out", at = nowErr - 60 }},
@@ -1376,7 +1377,8 @@ end
 
 local soleStale = { schema = 1, account_stale_after_s = 7200, vendors = {
   claude = { available = false }, gemini = { available = false }, grok = { available = false },
-  codex = { available = true, as_of = nowErr - 19 * 3600, five_hour = bucket(0, true), weekly = bucket(20, true) },
+  codex = { available = true, stale_watch = true, as_of = nowErr - 19 * 3600, five_hour = bucket(0, true),
+    weekly = bucket(20, true) },
 }}
 local soleStaleMod = loadModule(soleStale, nil, nowErr)
 local soleStaleMenu = soleStaleMod.menuItems()
@@ -1385,6 +1387,9 @@ assert(titleText(accountItem(soleStaleMenu, "Codex")):find("stale 19h", 1, true)
 assert(titleText(soleStaleMenu[accountIndex(soleStaleMenu, "Codex") + 1]):find(" 0%~ ", 1, true),
   "sole-account stale 5h row lost its ~")
 assert(soleStaleMod.refreshState().staleCount == 1, "a stale sole-account vendor did not warn the title")
+soleStale.vendors.codex.stale_watch = nil
+assert(loadModule(soleStale, nil, nowErr).refreshState().staleCount == 0,
+  "the stale warning counted a block the collector did not mark stale_watch")
 
 local blob = "rateLimits/read failed: {'code': -32603, 'message': 'failed to fetch c'}; content-type=text/plain; body={\n  \"error\": {\n    \"message\": \"Payment Required\"\n  }\n}"
 local legacyBlob = { schema = 1, vendors = {

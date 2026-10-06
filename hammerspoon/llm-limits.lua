@@ -830,13 +830,14 @@ function M.refreshState()
   if staleAfter and type(limits.vendors) == "table" then
     for _, entry in ipairs(MENU_VENDORS) do
       local vendor = limits.vendors[entry.key]
-      if not pausedVendors[entry.key] and type(vendor) == "table" and vendor.removed ~= true then
-        local rows = type(vendor.accounts) == "table" and #vendor.accounts > 0 and vendor.accounts
-          or (vendor.available == true and { vendor }) or {}
+      if not pausedVendors[entry.key] and type(vendor) == "table" then
+        local rows = { vendor }
+        for _, block in ipairs(type(vendor.accounts) == "table" and vendor.accounts or {}) do
+          rows[#rows + 1] = block
+        end
         for _, block in ipairs(rows) do
-          if type(block) == "table" and block.removed ~= true
-              and not (block.account and removalPending(entry.key, block.account))
-              and not blockAuthNeeded(entry.key, block) then
+          if type(block) == "table" and block.stale_watch == true
+              and not (block.account and removalPending(entry.key, block.account)) then
             local seconds = staleSeconds(block.as_of, staleAfter)
             if seconds then
               staleCount = staleCount + 1

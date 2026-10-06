@@ -264,16 +264,16 @@ mkdir -p "${progress_file%/*}" 2>/dev/null &&
   printf '%s\t%s\t%s\t%s\n' "$logdir" "${#suites[@]}" "$repo" "$run_suites_start" >"$progress_file" 2>/dev/null
 find "${progress_file%/*}" -maxdepth 1 -name 'suites-*.done' -mmin +1 -delete 2>/dev/null
 journal_run() {
-  local entry name rc secs real cpu complete=true queued began ended reason=''
+  local entry name rc secs real cpu bound complete=true queued began ended reason=''
   local -a names=()
   suite_journal_suites=''
   for entry in ${suites[@]+"${suites[@]}"}; do
     name=${entry##*/}
     names+=("$name")
-    rc='' real='' cpu=''
-    [ -r "$logdir/$name.status" ] && IFS=$'\t' read -r rc secs real cpu <"$logdir/$name.status"
+    rc='' real='' cpu='' bound=''
+    [ -r "$logdir/$name.status" ] && IFS=$'\t' read -r rc secs real bound cpu <"$logdir/$name.status"
     [ "$real" != - ] || real=''
-    if [[ "$rc" =~ ^[0-9]+$ ]]; then suite_journal_suite "$name" "$rc" "${real:-$secs}" "$cpu"; else complete=false; fi
+    if [[ "$rc" =~ ^[0-9]+$ ]]; then suite_journal_suite "$name" "$rc" "${real:-$secs}" "$cpu" "$bound"; else complete=false; fi
   done
   [ -z "$run_signal" ] || complete=false
   [ ! -e "$logdir/owner-ended" ] || reason=owner-ended
@@ -371,7 +371,7 @@ run_one() { # suite-path
   suite_journal_cpu cpu "$logdir/$name.time" children
   [ -z "$began" ] || suite_journal_secs began "$(( ended - began ))"
   # `-`, never empty: IFS=$'\t' is whitespace to read, so an empty field collapses and cpu lands in it.
-  printf '%s\t%s\t%s\t%s\n' "$rc" "$((finish - start))" "${began:--}" "$cpu" >"$logdir/$name.status"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$rc" "$((finish - start))" "${began:--}" "$bound" "$cpu" >"$logdir/$name.status"
 }
 
 declare -a wave=() tail_wave=()

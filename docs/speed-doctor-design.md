@@ -141,8 +141,8 @@ gates, suite and slot waits, retries and locks (plain Claude Code has none of th
 running per day; workers model-active ≥ 70 % of their wall. The gap in min/day is the class's `recoverable_min_day`;
 their sum (workers aside, they overlap the waits) is `lost_min_day`, Speed's headline (`<lost> min/day over the floor`,
 then the owner-minute view). The 7-day band only names sudden regressions as holes. A class gap ≥ 0.5 min/day adds to the
-best-ranked opportunity already pricing it (`TIME_FAMILY`: hooks and Stop → chat/hooks, suites → chat/tests, suite wait →
-chat/queue), else it is `opportunity:time/<class>` (`TIME_LEVERS`); the score comes from the recoverable minutes, so the
+best-ranked opportunity whose fix `time_budget.improvement_class` scores against that class (hooks and Stop → chat/hooks,
+suites → chat/tests, suite wait → chat/queue), else it is `opportunity:time/<class>` (`TIME_LEVERS`); the score comes from the recoverable minutes, so the
 night takes the biggest gap even when nothing regressed, and an empty pick names the recoverable minutes in `why_none`.
 **Floor rows** (rule `time_floor`, counted, ledger states as regressions): `time_floor:<class>` more than `FLOOR_ROW_MIN_DAY` (30)
 over its floor in the last day, `time_floor:workers-active` when the last night's workers were model-active under 30 %; the

@@ -329,13 +329,10 @@ set_config
 # too (live 2026-10-05: a `bash -x tests/test_slots.sh` stopped on a tty read held its landed worktree),
 # with its children; one carrying another run's id, a nested run's below it, none, or this id in its
 # arguments only lives on. `bash` here is never /bin/bash: macOS hides an Apple binary's environment.
+. "$ROOT/share/processes.sh"
 orphan_cleanup() {
   local pid
-  for pid in $(cat "$STUB_DIR"/orphan-*.pid 2>/dev/null); do
-    pkill -P "$pid" 2>/dev/null
-    kill -TERM "$pid" 2>/dev/null
-    kill -CONT "$pid" 2>/dev/null
-  done
+  for pid in $(cat "$STUB_DIR"/orphan-*.pid 2>/dev/null); do process_tree_end "$pid" 0; done
   rm -f "$STUB_DIR"/orphan-*
 }
 gone() { # pid

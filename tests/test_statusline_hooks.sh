@@ -152,6 +152,15 @@ place_count() { if [ -f "$STATE_DIR/place-$1" ]; then wc -l < "$STATE_DIR/place-
 # the sandbox entirely and no behavioural case below can see it.
 assert_eq "" "$(grep -nE '(^|[[:space:]])>>?[[:space:]]*/' "$WORKDIR_HOOK" | grep -v '/dev/null')"
 
+# bash's `read` takes a pipe one byte per syscall: an 8 MB Write response cost ~8 s that way.
+head -c 8000000 /dev/zero | tr '\0' x > "$WORK/big-response"
+big_start=$EPOCHREALTIME
+workdir_payload Write session-big "$REPO_A" "$REPO_A/big.txt" \
+  | jq -c --rawfile big "$WORK/big-response" '.tool_response = {content: $big}' | "$WORKDIR_HOOK"
+big_ms=$(( (${EPOCHREALTIME/./} - ${big_start/./}) / 1000 ))
+[ "$big_ms" -lt 3000 ] || fail "workdir hook took ${big_ms} ms on an 8 MB payload"
+assert_eq "$TOP_A" "$(last_tree session-big)"
+
 payload=$(workdir_payload Bash session-cd "$REPO_A" "cd '$REPO_A' && make")
 run_workdir_hook "$payload"
 assert test -f "$STATE_DIR/place-session-cd"
@@ -3873,6 +3882,8 @@ wrap 1430 1000 01:00 "'media-run image --vendor grok -- --prompt x'"
 printf '1431 1430 00:59 /bin/bash /x/bin/grok-image --prompt x\n'
 wrap 1440 1000 01:00 "'media-run video --vendor grok -- --prompt x'"
 printf '1441 1440 00:59 /bin/bash /x/bin/grok-video --prompt x\n'
+printf '1450 1000 01:00 /bin/bash /x/bin/elevenlabs-speech --dest /tmp/a.mp3\n'
+printf '1451 1450 00:59 python3 /x/share/elevenlabs_media.py speech --dest /tmp/a.mp3\n'
 PSEOF
 chmod +x "$FAKE_PS_WORK"
 FAKE_LSOF_WORK="$FIXTURES/work-lsof"
@@ -3898,6 +3909,7 @@ printf '%s\tpool · img·web\tgen\t\tj1\n' "$((wp_now - 179))" > "$STATE_DIR/med
 printf '%s\tfanout · img\tall\t%s\t\n' "$((wp_now - 119))" "$WP_FAN/fanout.state.json" > "$STATE_DIR/media-1411"
 printf '%s\tcom · mus·app\tedit\t\tj3\n' "$((wp_now - 59))" > "$STATE_DIR/media-1420"
 printf '%s\tpool · img·grok\tgen\t\tj4\n' 1000 > "$STATE_DIR/media-1431"
+printf '%s\tpool · speech·elevenlabs\tgen\t\tj5\n' "$((wp_now - 29))" > "$STATE_DIR/media-1450"
 STATUSLINE_PS="$FAKE_PS_WORK" STATUSLINE_LSOF="$FAKE_LSOF_WORK" WORKER_RUN_DIR="$WP_RUNS" "$WORK_PROBE" wp-sess 1250
 # Tests first, oldest first, then plain shell work; the start column is checked apart from the rest.
 # Not shown: a call younger than 10s (1210), a relay's own worker-run wait, which its task row
@@ -3925,6 +3937,7 @@ assert_eq "$(printf '%s\n' \
   $'main\tmedia\tpool · img·web\tgen\t\t\t' \
   $'main\tmedia\tfanout · img\tall\t2\t1\t3' \
   $'main\tmedia\tcom · mus·app\tedit\t\t\t' \
+  $'main\tmedia\tpool · speech·elevenlabs\tgen\t\t\t' \
   $'run\tcodex-7-7-live\tpnpm test')" "$(cut -f1,2,4-8 "$STATE_DIR/work-wp-sess")"
 assert_eq "$((wp_now - 179))" "$(awk -F'\t' '$4 == "pool · img·web" { print $3 }' "$STATE_DIR/work-wp-sess")"
 wp_start=$(awk -F'\t' '$4 == "wp repo" && $5 == "suites" { print $3 }' "$STATE_DIR/work-wp-sess")

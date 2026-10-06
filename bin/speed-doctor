@@ -82,6 +82,7 @@ LEVERS = [
 CHAT_LEAVES = (("hook", "hooks"), ("stop", "hooks"), ("queue", "queue"), ("test", "tests"), ("media", "media"),
                ("tool", "tools"), ("compact", "compaction"), ("gen", "model"), ("resid", "residual"))
 HOLE_LAYERS = ("dark", "ask")
+MACHINE_PRICED = ("machine/contention", "background/statusline")
 LOCAL_LEAVES = ("hooks", "tests", "media", "tools", "residual", "start")
 METRICS = {"chat.om_per_100_prompts": ("chat", 30), "delegation.pre_cli_s": ("delegation/workers", 10),
            "background.statusline_cpu_ms_per_sh": ("background/statusline", 200),
@@ -139,8 +140,6 @@ TIME_LEVERS = {k: dict({"component": "time/" + k, "effort": "M", "confidence": "
     "retries": {"lever": "fewer failed attempts before a worker's last start"},
     "locks": {"lever": "shorter lock holds and polls"},
     "workers-active": {"lever": "suites and queues off the worker's critical path"}}.items()}
-TIME_FAMILY = {"hooks": ("chat/hooks", "hooks/"), "stop": ("chat/hooks", "hooks/"), "suite_run": ("chat/tests", "tests/"),
-               "suite_wait": ("chat/queue",)}
 validate_levers(LEVERS + [TEST_LEVER, HOOK_LEVER] + list(TIME_LEVERS.values()))
 
 
@@ -754,14 +753,16 @@ def time_gaps(budget):
 
 
 def with_time(opportunities, budget):
-    """A class over its floor adds its gap to the best-ranked opportunity already pricing it (TIME_FAMILY), else it
-    becomes its own time opportunity. Recoverable minutes set the score, so the biggest gap is the one the night takes."""
+    """A class over its floor adds its gap to the best-ranked opportunity already pricing it (the class
+    time_budget.improvement_class scores its fix against), else it becomes its own time opportunity. Recoverable minutes set the score, so the biggest gap is the one the night takes."""
     out = sorted(opportunities, key=rank_key)
     for key, label, actual, gap, floor in time_gaps(budget):
         if gap < LIMITS["worth_om_day"]:
             continue
-        owner = next((o for o in out if key in TIME_FAMILY and not o["opportunity"]["needs_egor"]
-                      and o["id"].split(":", 1)[1].startswith(TIME_FAMILY[key])), None)
+        # chat/hooks prices the Stop leaf too (CHAT_LEAVES), though its fix is scored against hooks alone.
+        family = "hooks" if key == "stop" else key
+        owner = next((o for o in out if not o["opportunity"]["needs_egor"]
+                      and time_budget.improvement_class(o["rule"], o["id"]) == family), None)
         if owner:
             f = owner["opportunity"]
             f["floor_gap_min_day"] = round(f.get("floor_gap_min_day", 0.0) + gap, 2)
@@ -777,7 +778,7 @@ def with_time(opportunities, budget):
     return sorted(out, key=rank_key)
 
 
-def floor_state(row):
+def row_state(row):
     return "new" if not row else "open" if row.get("status") == "open" else "fixed-pending" \
         if row.get("status") == "fixed-pending" else "regressed" if row.get("status") == "fixed" else "watch"
 
@@ -797,7 +798,7 @@ def floor_rows(budget, ledger):
     out = []
     for key, value, limit, unit, fact in found:
         row = H.ledger_row(ledger, "time_floor", key)
-        out.append({"id": row["id"] if row else "time_floor:%s" % key, "rule": "time_floor", "state": floor_state(row),
+        out.append({"id": row["id"] if row else "time_floor:%s" % key, "rule": "time_floor", "state": row_state(row),
                     "fact": fact + " · proof: back under it", "value": value, "limit": limit, "unit": unit,
                     "window_h": 24, "exposure": None, "count": None, "first_seen": None, "last_seen": None,
                     "evidence": [], "ledger": row["id"] if row else None, "group": "time", "ident": key})
@@ -976,14 +977,17 @@ def collect(write, now):
     night = night_view()
     delegation = delegation_view(runs, lo)
 
+    def machine_om(component, machine, background, span):
+        if component == "machine/contention":
+            return machine["p_om_day"] or 0.0
+        share = background_share(background, machine, span)
+        return (machine["p_om_day"] or 0.0) * share if share is not None else 0.0
+
     def component_om(component):
         if component is None:
             return 0.0
-        if component == "machine/contention":
-            return machine["p_om_day"] or 0.0
-        if component == "background/statusline":
-            share = background_share(background, machine, covered)
-            return (machine["p_om_day"] or 0.0) * share if share is not None else 0.0
+        if component in MACHINE_PRICED:
+            return machine_om(component, machine, background, covered)
         area, _, leaf = component.partition("/")
         return sum(tree.get(area, {}).values()) if not leaf else tree.get(area, {}).get(leaf, 0.0)
 
@@ -1012,9 +1016,7 @@ def collect(write, now):
     for reg in regressions:
         row = H.ledger_row(ledger, "regression", reg["key"])
         metric, ident, band = reg["key"].split("|")
-        state_word = "new" if not row else "open" if row.get("status") == "open" else \
-            "fixed-pending" if row.get("status") == "fixed-pending" else "regressed" if row.get("status") == "fixed" else "watch"
-        problems.append({"id": row["id"] if row else "regression:%s" % reg["key"], "rule": "regression", "state": state_word,
+        problems.append({"id": row["id"] if row else "regression:%s" % reg["key"], "rule": "regression", "state": row_state(row),
                          "fact": "%s %s over %s on %s (%s OM/d)" % (metric, reg["value"], reg["limit"], ", ".join(reg["days"]),
                                                                   reg["om_day"]),
                          "value": reg["value"], "limit": reg["limit"], "unit": metric.split(".")[-1], "window_h": 48,
@@ -1033,9 +1035,19 @@ def collect(write, now):
         users = len(sessions.get((area, leaf), ()))
         since = lever_since(ledger, component)
         if since:
-            secs = sum(s for (day, a, l), s in credit.items() if (a, l) == (area, leaf) and day > since)
-            om = secs / 60.0 / max((now - max(lo, H.day_end(since))) / 86400.0, 1e-9)
-            seen, users = len([d for d in leaf_days.get((area, leaf), ()) if d > since]), 0
+            start = max(lo, H.day_end(since))
+            span = max((now - start) / 86400.0, 1e-9)
+            if component in MACHINE_PRICED:
+                after = {d: v for d, v in days.items() if d > since}
+                local_after = sum(s for (d, a, l), s in credit.items() if a == "chat" and l in LOCAL_LEAVES and d > since)
+                om = machine_om(component, machine_view(after, local_after / 60.0 / span),
+                                background_view(after, start, now, collector_rows, span), span)
+                seen = len(after)
+            else:
+                secs = sum(s for (day, a, l), s in credit.items() if (a, l) == (area, leaf) and day > since)
+                om = secs / 60.0 / span
+                seen = len([d for d in leaf_days.get((area, leaf), ()) if d > since])
+            users = 0
         if om < LIMITS["worth_om_day"] or (seen < seen_need("seen_days", covered)
                                            and users < seen_need("seen_sessions", covered)):
             continue

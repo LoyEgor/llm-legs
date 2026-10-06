@@ -2070,38 +2070,28 @@ def refresh_problems(window_h, now):
 
 def stale_account_problems(window_h, now):
     """One problem per account whose limits are older than the `account_stale_after_s` the collector
-    stamps into the store: the same accounts, by the same rule, as the menu's stale warning counts."""
-    path = os.environ.get("LLM_LIMITS_CACHE") or os.path.join(base_home(), ".llm-limits.json")
-    try:
-        with open(path) as handle:
-            store = json.load(handle)
-        limit, vendors = store.get("account_stale_after_s"), store.get("vendors")
-    except (OSError, ValueError, AttributeError):
+    stamps into the store, over the blocks it stamped `stale_watch`: the menu's stale warning counts them too."""
+    store = read_json(os.environ.get("LLM_LIMITS_CACHE") or os.path.join(base_home(), ".llm-limits.json"))
+    if not isinstance(store, dict):
         return []
+    limit, vendors = store.get("account_stale_after_s"), store.get("vendors")
     if isinstance(limit, bool) or not isinstance(limit, (int, float)) or not isinstance(vendors, dict):
         return []
     problems = []
     for vendor_key in sorted(vendors):
         vendor = vendors[vendor_key]
-        if not isinstance(vendor, dict) or vendor.get("removed") is True:
+        if not isinstance(vendor, dict):
             continue
         accounts = vendor.get("accounts")
-        blocks = accounts if isinstance(accounts, list) and accounts else [vendor] if vendor.get("available") is True else []
         causes = {}
         for entry in vendor.get("refresh_errors") or []:
             if isinstance(entry, dict) and entry.get("account") and entry.get("cause"):
                 causes[entry["account"]] = entry["cause"]
-        for block in blocks:
-            if not isinstance(block, dict) or block.get("removed") is True:
+        for block in [vendor] + (accounts if isinstance(accounts, list) else []):
+            if not isinstance(block, dict) or block.get("stale_watch") is not True:
                 continue
-            auth = block.get("auth") if isinstance(block.get("auth"), dict) else {}
-            if vendor_key == "grok":
-                login = auth.get("status") == "needs_login" or (block.get("auth_needed") is True and
-                                                                auth.get("status") != "expired")
-            else:
-                login = block.get("auth_needed") is True
             as_of = zoned_epoch(block.get("as_of"))
-            if login or as_of is None or now - as_of <= limit:
+            if as_of is None or now - as_of <= limit:
                 continue
             name = block.get("account") or vendor_key
             age = int(now - as_of)

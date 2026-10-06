@@ -221,6 +221,20 @@ image_leg_composite_take() { # root dest [variant]
   rm -f "$rendered"
 }
 
+# The other takes of a several-take run, after the shared lines; `prepare take-json out index` puts each on disk.
+image_leg_variants() { # root dest engine-json session-key prepare
+  local index=1 take out vsize
+  while IFS= read -r take; do
+    index=$((index + 1))
+    out="${2%.*}-$index.${2##*.}"
+    "$5" "$take" "$out" "$index"
+    vsize=$(sips -g pixelWidth -g pixelHeight "$out" | awk '/pixelWidth:/ {w = $2} /pixelHeight:/ {h = $2} END {print w "x" h}')
+    printf 'variant=%s size=%s session=%s\n' "$out" "$vsize" "$(jq -r --arg key "$4" '.[$key] // "none"' <<<"$take")"
+    IMAGE_LEG_DELIVERED=$index
+    image_leg_composite_take "$1" "$out" variant </dev/null
+  done < <(jq -c '(.takes // [])[1:][]' <<<"$3")
+}
+
 image_leg_composite_record() {
   jq -cn --arg composite "${IMAGE_LEG_COMPOSITE_LINES:-}" \
     --arg quiet "${IMAGE_LEG_COMPOSITE_QUIET:+${IMAGE_LEG_COMPOSITE_SKIP:-}}" '

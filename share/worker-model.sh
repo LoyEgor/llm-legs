@@ -442,8 +442,8 @@ worker_light_off() {
 }
 
 worker_light_row() { # research|edit
-  case "${1-}" in research | edit) ;; *) return 2 ;; esac
-  worker_model_pin_line "$(worker_model_file)" "light_$1"
+  worker_light_row_r "$@" || return
+  [ -z "$WORKER_MODEL_R" ] || printf '%s\n' "$WORKER_MODEL_R"
 }
 
 worker_light_row_r() {
@@ -638,13 +638,9 @@ worker_model_chat_fast() { # vendor
   [ "$(worker_model_pin_line "$file" "${1}_fast")" = on ]
 }
 
-worker_model_pinned_account() {
-  local key="$1" file
-  case "$key" in
-    *_profile) file=$(worker_model_pin_file) ;;
-    *) file=$(worker_model_file) ;;
-  esac
-  worker_model_pin_line "$file" "$key"
+worker_model_pinned_account() { # key
+  worker_model_pinned_account_r "$1" || return
+  [ -z "$WORKER_MODEL_R" ] || printf '%s\n' "$WORKER_MODEL_R"
 }
 
 worker_model_pinned_account_r() { # key

@@ -65,10 +65,6 @@ def harness_dir():
     return env_path("HARNESS_DOCTOR_DIR", ".cache", "harness-doctor")
 
 
-def doctors_dir():
-    return env_path("DOCTORS_DIR", ".cache", "doctors")
-
-
 def worker_runs_path():
     stats = os.environ.get("WORKER_STATS_DIR") or os.path.join(
         env_path("CLAUDEB_DIR", ".claude-profiles", ".claudeb"), "worker-stats")
@@ -82,10 +78,6 @@ def suites_path():
 
 def gates_path():
     return os.path.join(env_path("INSTRUCTION_WATCH_STATE", ".cache", "claude-instruction-watch"), "gates.jsonl")
-
-
-def run_dir():
-    return env_path("WORKER_RUN_DIR", ".cache", "claude-worker-runs")
 
 
 def now_s():
@@ -224,7 +216,7 @@ def refusals(lo, hi):
 
 
 def run_session(run):
-    text = night_spend.read(os.path.join(run_dir(), str(run), "session"))
+    text = night_spend.read(os.path.join(night_spend.RUNS, str(run), "session"))
     return text.splitlines()[0][:8] if text else None
 
 
@@ -450,7 +442,7 @@ def floors_of(seconds, days):
 
 def last_night():
     """The newest finished night's worker wall against its model time, from its cached ledger row when there is one."""
-    nights = [read_json(p, {}) for p in glob.glob(os.path.join(doctors_dir(), "nights", "*.json"))]
+    nights = [read_json(p, {}) for p in glob.glob(os.path.join(night_churn.doctors_dir(), "nights", "*.json"))]
     nights = sorted((n for n in nights if n.get("finished_at") and n.get("started_at") and n.get("id")),
                     key=lambda n: (n["started_at"], n["id"]))
     if not nights:
@@ -750,20 +742,20 @@ def ledger_row(worker_run, path, night):
                 "debt round %s" % debt[0].get("state") if all(j.get("state") != "merged" for j in debt) else None)}
 
 
-def ledger_cache(id_):
-    return os.path.join(doctors_dir(), "night-ledger", id_ + ".json")
+def ledger_cache(id_, night_path=None):
+    return os.path.join(night_churn.doctors_dir(night_path), "night-ledger", id_ + ".json")
 
 
 def cached_row(worker_run, path):
     night = read_json(path, {})
     if not night.get("id") or not night.get("started_at"):
         return None
-    row = read_json(ledger_cache(night["id"]), None)
+    row = read_json(ledger_cache(night["id"], path), None)
     if isinstance(row, dict) and row.get("finished"):
         return row
     row = ledger_row(worker_run, path, night)
     if row["finished"]:
-        write_json(ledger_cache(night["id"]), row)
+        write_json(ledger_cache(night["id"], path), row)
     return row
 
 

@@ -2483,8 +2483,8 @@ assert grep -Eq '^OWNED_IMAGE_RE=.*\(codex\|gemini\|grok\)-image' "$LAUNCH_GATE"
 assert grep -Eq '^OWNED_IMAGE_RE=.*gemini-\(video\|music\|sfx\|listen\)' "$LAUNCH_GATE"
 # The work probe draws the same media scripts the gate owns, plus media-run, their one door; the gate
 # also owns the engine subcommands those scripts drive.
-assert grep -Fq 'media = "^(media-run|image-fanout|codex-image|gemini-image|grok-image|grok-video|gemini-video|gemini-music|gemini-sfx|gemini-listen)$"' "$ROOT/bin/statusline-work-probe.sh"
-assert grep -Fq 'grok-video|gemini-video|gemini-music|gemini-sfx|gemini-listen)$"' "$ROOT/bin/statusline-work-probe.sh"
+assert grep -Fq 'media = "^(media-run|image-fanout|codex-image|gemini-image|grok-image|grok-video|gemini-video|gemini-music|gemini-sfx|gemini-listen|elevenlabs-(sfx|music|stems|speech|revoice|isolate|transcribe|align|dub|voice))$"' "$ROOT/bin/statusline-work-probe.sh"
+assert grep -Fq 'grok-video|gemini-video|gemini-music|gemini-sfx|gemini-listen|elevenlabs-(sfx|music|stems|speech|revoice|isolate|transcribe|align|dub|voice))$"' "$ROOT/bin/statusline-work-probe.sh"
 assert grep -Fq 'MEDIA_ENGINE_RE="${VENDOR_WORD}(chatgpt-web[[:space:]]+(generate|resize|comment|remove-bg)|gemini-web[[:space:]]+generate)${EDGE}"' "$LAUNCH_GATE"
 assert grep -Fq '`media-run`' "$ROOT/$DOC"
 assert grep -Eq '^OWNED_RUN_RE=.*worker-run.*\(start\|wait\)' "$LAUNCH_GATE"

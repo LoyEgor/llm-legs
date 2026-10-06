@@ -409,13 +409,7 @@ if [ "$generation_rc" -ne 0 ]; then
 fi
 fi
 
-if [ "$remove_green" = true ]; then
-  chroma_key_to_png "$generated" "$tmp_dir" "$dest"
-elif [ "$extension" != "$(actual_format "$generated")" ]; then
-  magick "$generated" -define png:compression-level=4 "$dest"
-else
-  cp "$generated" "$dest"
-fi
+flow_image_deliver "$generated" "$dest" "$tmp_dir"
 IMAGE_LEG_COMPOSITE_LINES=$(image_leg_composite_take "$root" "$dest")
 
 sips_output=$(sips -g pixelWidth -g pixelHeight -g format "$dest")

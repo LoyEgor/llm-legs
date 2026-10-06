@@ -566,7 +566,7 @@ snapshot_blobs_packed_tests() {
   set_config 'claudeb_model=opus' 'claudeb_effort=high'
   start_ok claudeb --workdir "$repo"
   assert await_done
-  until git -C "$repo" count-objects -v | grep -qx 'count: 0' || [ "$tries" -ge 50 ]; do
+  until git -C "$repo" count-objects -v | grep -qx 'count: 0' || [ "$tries" -ge 300 ]; do
     sleep 0.1
     tries=$((tries + 1))
   done

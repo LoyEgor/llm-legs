@@ -698,6 +698,19 @@ assert [ "$(sed -n 4p <<<"$prefix_words")" = profile ]
 assert [ "$(sed -n 5p <<<"$prefix_words")" = acct-b ]
 assert grep -q '^acct-b ' "$WORK/prefix.out"
 
+# A resume reopens the chat on its own launcher: a claudegpt-stamped chat stays on its gateway account.
+printf '#!/usr/bin/env bash\nexit 0\n' >"$FAKE_BIN/claudegpt"
+chmod +x "$FAKE_BIN/claudegpt"
+mkdir -p "$HOME/.local/share/claudegpt/sessions"
+printf 'v1 gw-acct sol\n' >"$HOME/.local/share/claudegpt/sessions/sess-gw"
+CHAT_OPEN_OPENER="$FAKE_BIN/opener" CHAT_OPEN_WORKER_PICK="$FAKE_BIN/worker-pick" \
+  chat_open "$WORK/resume-gw.command" "$WORK/wd" 'go on' sess-gw >"$WORK/resume-gw.out"
+assert grep -qxF "exec $FAKE_BIN/claudegpt p gw-acct --model sol --resume sess-gw --permission-mode bypassPermissions go\\ on" "$WORK/resume-gw.command"
+assert grep -qxF 'gw-acct sess-gw' "$WORK/resume-gw.out"
+CHAT_OPEN_OPENER="$FAKE_BIN/opener" CHAT_OPEN_WORKER_PICK="$FAKE_BIN/worker-pick" \
+  chat_open "$WORK/resume-cb.command" "$WORK/wd" 'go on' sess-cb >"$WORK/resume-cb.out"
+assert grep -qxF "exec $FAKE_BIN/claudeb profile acct-b --resume sess-cb --permission-mode bypassPermissions go\\ on" "$WORK/resume-cb.command"
+
 # A doctor that reads ok still opens its day fixer while a quiet open ledger row waits; with none, nothing to fix.
 mkdir -p "$WORK/llm-q"
 jq -n --argjson s "$(now)" '{contract: 1, doctor: "llm", as_of_s: $s, judge: "q", status: "ok", problem_count: 0, problems: []}' \

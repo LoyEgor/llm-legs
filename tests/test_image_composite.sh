@@ -219,6 +219,8 @@ for wrapper in codex-image gemini-image grok-image; do
   assert_none "$ROOT/bin/$wrapper"
   assert test "$(grep -c 'image_composite.py' "$ROOT/bin/$wrapper")" -eq 0
 done
-assert grep -q 'image_leg_composite_take "$root" "$out" variant' "$ROOT/share/flow-image.sh"
+assert grep -q 'image_leg_composite_take "$1" "$out" variant' "$ROOT/share/image-leg.sh"
+assert grep -q '^  image_leg_variants "$root" "$dest" "$flow_result" id ' "$ROOT/share/flow-image.sh"
+assert grep -q '^  image_leg_variants "$root" "$dest" "$web_result" chat ' "$ROOT/bin/codex-image"
 
 printf 'PASS: %s asserts; local paste with its edge, re-render grain and specks, drift-only no mask, global refusal, rectangle fractions, points, aspect change, lineage depth/root/session, and the shared default decision identical on codex/gemini/grok (resume/single-ref composited with the render kept, several inputs/new generation/unknown input/aspect skipped, transparent and --no-composite silent, global refused, explicit --composite forced or refused before spending)\n' "$asserts"

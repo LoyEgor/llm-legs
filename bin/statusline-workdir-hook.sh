@@ -5,7 +5,8 @@
 [ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 exec >/dev/null 2>&1
 
-IFS= read -r -d '' input || :
+# `read -d ''` takes a pipe one byte per syscall: ~1 s per MB of an Edit/Write response.
+input=$(</dev/stdin)
 # A PreToolUse Bash call only ever records a `worktree add|move`, whose word its command then carries.
 pre_event='"hook_event_name"[[:space:]]*:[[:space:]]*"PreToolUse"'
 bash_tool='"tool_name"[[:space:]]*:[[:space:]]*"Bash"'

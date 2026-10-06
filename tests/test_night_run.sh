@@ -568,6 +568,19 @@ assert jqe --arg w "$wt" 'length == 15 and (map(.branch) | index("main")) == nul
   and ((.[] | select(.branch == "merged-bare")) | .worktree == null and .landed and .state == "landed" and .why == null)
   and ((.[] | select(.branch == "fresh")) | .live and .state == "live")
   and ((.[] | select(.branch == "onhold")) | (.live | not) and .state == "held")' "$WORK/left.json"
+# The caller's own process inside a worktree never holds it, the same rule as cwd_held's.
+git -C "$WORK/repo" worktree add -q -b "night/$id/self" "$wt/self" "$pushed_hash"
+(cd "$wt/self" && night leftovers) >"$WORK/left-self" || fail "leftovers from inside"
+assert grep -qxF "repo night/$id/self · $wt/self · landed · +0/-$behind main · 0 dirty · landed" "$WORK/left-self"
+git -C "$WORK/repo" worktree remove "$wt/self" && git -C "$WORK/repo" branch -q -D "night/$id/self" || fail "drop the self worktree"
+# An evil merge: its only parent outside main is patch-equivalent to main's tip, so `git cherry` sees nothing
+# unlanded, yet the merge's own resolution adds evil.txt.
+evil_tree=$(GIT_INDEX_FILE="$WORK/evil.index" bash -c 'git -C "$1" read-tree main &&
+  git -C "$1" update-index --add --cacheinfo "100644,$(git -C "$1" hash-object -w --stdin <<<evil),evil.txt" && git -C "$1" write-tree' _ "$WORK/repo")
+old branch evil-bare "$(old -c user.name=t -c user.email=t@t commit-tree "$evil_tree" -p main^ -p picked-bare -m 'evil merge')"
+night leftovers >"$WORK/left-evil" || fail "leftovers with an evil merge"
+assert grep -qxF "repo evil-bare · no worktree · unlanded · +2/-1 main · 0 dirty · leftover (2 unlanded commits)" "$WORK/left-evil"
+git -C "$WORK/repo" branch -q -D evil-bare || fail "drop the evil merge"
 # A process that enters a landed worktree after finish listed the rows (its lsof hides it once) still keeps
 # it: the removal looks again, names the process and never kills it.
 git -C "$WORK/repo" worktree add -q -b "night/$idc/late" "$wt/late" "$pushed_hash"

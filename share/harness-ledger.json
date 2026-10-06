@@ -130,7 +130,7 @@
         "rule": "floor",
         "ident": "bash:other"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-06T07:01:00+03:00",
@@ -140,8 +140,8 @@
             "llm-legs/bin/instruction-write-gate.sh",
             "llm-legs/share/instruction-files.sh"
           ],
-          "in": null,
-          "regressed_at": null
+          "in": "llm-legs@080c608c",
+          "regressed_at": "2026-10-06T07:43:39+03:00"
         }
       ],
       "same_cause": [
@@ -543,7 +543,7 @@
         "rule": "hook-error",
         "ident": "worker-run-backstop\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-03T09:35:00+03:00",
@@ -560,7 +560,7 @@
           "files": [
             "llm-legs/bin/worker-run-backstop.sh"
           ],
-          "in": null,
+          "in": "llm-legs@f04d86de",
           "regressed_at": null,
           "equivalence": {
             "compared": "owned() of the old per-lookup grep against the one-pass read, every run= and review= key in the cache",
@@ -787,7 +787,7 @@
         "rule": "hook_every_call",
         "ident": "commit-journal\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-05T21:05:02+03:00",
@@ -795,7 +795,7 @@
           "files": [
             "claude-setup/hooks/commit-journal.sh"
           ],
-          "in": null,
+          "in": "claude-setup@6e4b1ac",
           "regressed_at": null
         }
       ],
@@ -812,7 +812,7 @@
         "rule": "hook_sync",
         "ident": "commit-journal\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-05T21:05:02+03:00",
@@ -820,7 +820,7 @@
           "files": [
             "claude-setup/hooks/commit-journal.sh"
           ],
-          "in": null,
+          "in": "claude-setup@6e4b1ac",
           "regressed_at": null
         }
       ],
@@ -1667,7 +1667,7 @@
         "rule": "hook_sync",
         "ident": "review-flow-gate\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-05T21:05:02+03:00",
@@ -1676,7 +1676,7 @@
             "claude-setup/hooks/review-flow-gate.sh",
             "claude-setup/hooks/lib/review-journal.sh"
           ],
-          "in": null,
+          "in": "claude-setup@1eeb9ab",
           "regressed_at": null
         }
       ],
@@ -2059,7 +2059,7 @@
         "rule": "growth-ungated",
         "ident": "^/Volumes/Work/Projects/claude\\-setup/skills\\-on\\-demand/night\\-sweep$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-04T17:30:00+03:00",
@@ -2081,7 +2081,7 @@
             "llm-legs/bin/harness-doctor",
             "llm-legs/tests/test_harness_doctor.sh"
           ],
-          "in": null,
+          "in": "llm-legs@535f7f8d",
           "regressed_at": null
         }
       ],
@@ -2358,7 +2358,7 @@
         "rule": "test_daily_cost",
         "ident": "claude-setup:test_review_flow_gate"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-06T08:40:00+03:00",
@@ -2369,7 +2369,7 @@
             "claude-setup/hooks/lib/words.sh",
             "claude-setup/tests/test_review_flow_gate.sh"
           ],
-          "in": null,
+          "in": "claude-setup@411f22a",
           "regressed_at": null
         }
       ],
@@ -2465,7 +2465,7 @@
         "rule": "growth-denied",
         "ident": "^\\~/\\.claude/skills/media$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-06T06:52:00+03:00",
@@ -2475,7 +2475,7 @@
             "llm-legs/bin/instruction-write-gate.sh",
             "llm-legs/tests/test_instruction_gate.sh"
           ],
-          "in": null,
+          "in": "llm-legs@3a3531d7",
           "regressed_at": null
         }
       ],
@@ -2602,7 +2602,7 @@
         "rule": "hook_p50",
         "ident": "commit-journal\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-05T21:05:02+03:00",
@@ -2610,7 +2610,7 @@
           "files": [
             "claude-setup/hooks/commit-journal.sh"
           ],
-          "in": null,
+          "in": "claude-setup@6e4b1ac",
           "regressed_at": null
         }
       ],
@@ -2627,7 +2627,7 @@
         "rule": "hook_p50",
         "ident": "review-flow-gate\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-05T21:05:02+03:00",
@@ -2636,7 +2636,7 @@
             "claude-setup/hooks/review-flow-gate.sh",
             "claude-setup/hooks/lib/review-journal.sh"
           ],
-          "in": null,
+          "in": "claude-setup@1eeb9ab",
           "regressed_at": null
         }
       ],
@@ -2959,7 +2959,7 @@
         "rule": "wait_class",
         "ident": "run-suites"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-05T18:50:18+03:00",
@@ -2981,7 +2981,7 @@
             "llm-legs/share/run-suites.sh",
             "llm-legs/tests/test_run_suites_nice.sh"
           ],
-          "in": null,
+          "in": "llm-legs@e2c3ec43",
           "regressed_at": null
         }
       ],
@@ -3031,7 +3031,7 @@
         "rule": "hook-error",
         "ident": "notice-chat-names\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-06T07:25:00+03:00",
@@ -3039,7 +3039,7 @@
           "files": [
             "claude-setup/hooks/stop.d/notice-chat-names.sh"
           ],
-          "in": null,
+          "in": "claude-setup@71697c4",
           "regressed_at": null
         }
       ],
@@ -3190,7 +3190,7 @@
         "rule": "hook_grows_repos",
         "ident": "worker-spawn-hook\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-06T08:00:00+03:00",
@@ -3198,7 +3198,7 @@
           "files": [
             "llm-legs/bin/worker-spawn-hook.sh"
           ],
-          "in": null,
+          "in": "llm-legs@68ce3156",
           "regressed_at": null
         }
       ],
@@ -3215,7 +3215,7 @@
         "rule": "hook_every_call",
         "ident": "english-gate\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-06T08:00:00+03:00",
@@ -3223,7 +3223,7 @@
           "files": [
             "claude-setup/hooks/english-gate.sh"
           ],
-          "in": null,
+          "in": "claude-setup@16f3d32",
           "regressed_at": null
         }
       ],
@@ -3240,7 +3240,7 @@
         "rule": "hook_grows_repos",
         "ident": "pr-ready-mattermost\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-06T08:00:00+03:00",
@@ -3248,7 +3248,7 @@
           "files": [
             "claude-setup/hooks/pr-ready-mattermost.sh"
           ],
-          "in": null,
+          "in": "claude-setup@16f3d32",
           "regressed_at": null
         }
       ],
@@ -3265,7 +3265,7 @@
         "rule": "hook_every_call",
         "ident": "report-flush\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-06T08:00:00+03:00",
@@ -3273,7 +3273,7 @@
           "files": [
             "claude-setup/hooks/report-flush.sh"
           ],
-          "in": null,
+          "in": "claude-setup@16f3d32",
           "regressed_at": null
         }
       ],
@@ -3292,7 +3292,7 @@
         "rule": "hook_full_work",
         "ident": "report-flush\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-06T08:00:00+03:00",
@@ -3300,7 +3300,7 @@
           "files": [
             "claude-setup/hooks/report-flush.sh"
           ],
-          "in": null,
+          "in": "claude-setup@16f3d32",
           "regressed_at": null
         }
       ],
@@ -3319,7 +3319,7 @@
         "rule": "hook_full_work",
         "ident": "eod-sorted-gate\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-06T08:00:00+03:00",
@@ -3328,7 +3328,7 @@
             "claude-setup/hooks/eod-sorted-gate.sh",
             "claude-setup/hooks/lib/eod-commits.sh"
           ],
-          "in": null,
+          "in": "claude-setup@16f3d32",
           "regressed_at": null
         }
       ],
@@ -3345,7 +3345,7 @@
         "rule": "hook_full_work",
         "ident": "worker-git-guard\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-06T08:00:00+03:00",
@@ -3353,7 +3353,7 @@
           "files": [
             "llm-legs/bin/worker-git-guard.sh"
           ],
-          "in": null,
+          "in": "llm-legs@68ce3156",
           "regressed_at": null
         }
       ],

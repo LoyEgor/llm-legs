@@ -82,24 +82,6 @@ refresh_lock_release() {
   active_lock=''
 }
 
-process_tree() {
-  ps -A -o pid=,ppid= 2>/dev/null | awk -v root="$1" '
-    { kids[$2] = kids[$2] " " $1 }
-    END {
-      queue = root
-      while (queue != "") {
-        n = split(queue, batch, " "); queue = ""
-        for (i = 1; i <= n; i++) { printf "%s ", batch[i]; queue = queue kids[batch[i]] }
-      }
-    }'
-}
-
-kill_tree() {
-  local pids
-  pids=$(process_tree "$1")
-  [ -z "$pids" ] || kill -TERM $pids 2>/dev/null
-}
-
 # A lock past the ceiling whose holder still runs is a hung tick, not a recycled pid, only when that
 # pid is still an llm-refresh: its whole tree goes, or the hung collector under it outlives the lock.
 kill_hung_holder() {
@@ -110,7 +92,7 @@ kill_hung_holder() {
   case "$owner" in ''|*[!0-9]*) return 0 ;; esac
   [ "$owner" != "$$" ] && kill -0 "$owner" 2>/dev/null || return 0
   ps -o command= -p "$owner" 2>/dev/null | grep -q 'llm-refresh' || return 0
-  kill_tree "$owner"
+  process_tree_end "$owner" 5
   journal_attempt tick 0 '[]' hung \
     "tick pid $owner held the lock $((current - mtime))s, past the ${tick_ceiling}s ceiling; its process tree was killed" 0
 }
@@ -118,23 +100,24 @@ kill_hung_holder() {
 # launchd never starts a second instance while one runs, so only a watchdog of the tick's own
 # can end a hung tick; it journals before it kills, since the tick it kills journals nothing.
 supervise_tick() {
-  local child watchdog rc=0
+  local child watchdog='' rc=0
   LLM_REFRESH_SUPERVISED=1 LLM_REFRESH_TICK_ID="$tick_id" LLM_REFRESH_NOW="$now" \
     "$BASH" "$script_path" run &
   child=$!
-  trap 'kill_tree "$child"; exit 129' HUP INT TERM
+  trap 'process_tree_end "$watchdog" 0; process_tree_end "$child" 5; exit 129' HUP INT TERM
   ( sleep "$tick_ceiling"
     journal_attempt tick 0 '[]' hung "tick ran past the ${tick_ceiling}s ceiling; its process tree was killed" 0
-    kill_tree "$child" ) &
+    process_tree_end "$child" 5 ) &
   watchdog=$!
   wait "$child" || rc=$?
-  kill_tree "$watchdog"
+  process_tree_end "$watchdog" 0
   return "$rc"
 }
 
 script_path=$(resolve_script)
 repo_root=$(cd "$(dirname "$script_path")/.." && pwd)
 . "$repo_root/share/store-lock.sh"
+. "$repo_root/share/processes.sh"
 collector=${LLM_LIMITS_REFRESH_COLLECTOR:-${LLM_REFRESH_COLLECTOR:-$repo_root/llm-limits.sh}}
 opencode_go=${LLM_LIMITS_REFRESH_OPENCODE_GO:-$repo_root/bin/opencode-go}
 if [ -n "${LLM_LIMITS_REFRESH_CLAUDEB:-}" ]; then
@@ -429,13 +412,14 @@ opencode_tick() {
   fi
   after=$(opencode_walls_json) || after=$walls
   [ -n "$after" ] || after=$walls
-  jq -cn --argjson tried "$tried" --arg detail "$detail" \
+  jq -cn --argjson tried "$tried" --arg detail "$detail" --arg timed_out "$timed_out_note" \
     --argjson interval "$(opencode_next_interval "$interval" "$after")" \
     --arg outcome "$(if [ "$standing" -gt 0 ]; then printf walled
                      elif [ "$cleared" -gt 0 ]; then printf reopened
                      elif [ "$dormant" -gt 0 ]; then printf dormant
                      else printf error; fi)" \
-    '{step:1,tried:$tried,outcome:$outcome,interval:$interval,detail:$detail}'
+    '{step:1,tried:$tried,outcome:$outcome,interval:$interval,detail:$detail}
+     + if $timed_out == "" then {} else {timed_out:$timed_out} end'
 }
 
 store_readable() {
@@ -608,6 +592,13 @@ run_tick() {
       refresh_lock_release
       opencode_result=$(opencode_tick "$interval") || return 5
       refresh_lock_acquire "$lock_dir" || lock_lost=1
+      # Run in a subshell, opencode_tick hands its collect's timeout back only through its result.
+      timed_out_note=$(jq -r '.timed_out // empty' < <(printf '%s\n' "$opencode_result"))
+      if [ -n "$timed_out_note" ]; then
+        journal_attempt "$vendor" 1 "$(jq -c '.tried' < <(printf '%s\n' "$opencode_result"))" timed-out \
+          "step 1: $timed_out_note" "$interval" || return 5
+        return 0
+      fi
       next_interval=$(jq -r '.interval' < <(printf '%s\n' "$opencode_result"))
       state=$(jq -c --arg vendor "$vendor" --argjson interval "$next_interval" \
         --argjson now "$now" \

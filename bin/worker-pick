@@ -1152,7 +1152,7 @@ NEXT_KEY_SEP=$'\x1d'
 NEXT_ROW_SEP=$'\x1e'
 vendor_label() { # vendor var
   case "$1" in cb) printf -v "$2" claude ;; cx) printf -v "$2" codex ;; gm) printf -v "$2" gemini ;;
-    gr) printf -v "$2" grok ;; *) printf -v "$2" '' ;; esac
+    gr) printf -v "$2" grok ;; *) printf -v "$2" '%s' '' ;; esac
 }
 vendor_reason() { # vendor var
   local known off state pool measured
@@ -1166,7 +1166,8 @@ vendor_reason() { # vendor var
     gr) known=$gr_known; off=$gr_role_off; state=$gr_state; pool=$gr_pool_empty
         measured=$gr_measured ;;
   esac
-  printf -v "$2" ''
+  # '%s': the menubar's /bin/bash 3.2 leaves the variable as it was on an empty format.
+  printf -v "$2" '%s' ''
   [ "$known" = true ] || return 0
   if [ "$off" = true ]; then printf -v "$2" 'off for workers'
   elif [ -n "$state" ]; then printf -v "$2" '%s' "$state"

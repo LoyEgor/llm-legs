@@ -454,7 +454,7 @@ g.write_meta("totals", credits=828)
 g.note_credits("totals", 700)
 assert "credits_refilled_at" not in g.read_meta("totals") and "credits_renews_at" not in g.read_meta("totals"), \
     "a spend counted as a refill"
-assert g.read_meta("totals")["credits_total"] == g.FLOW_MONTHLY_CREDITS == 1050, "no cycle total before a refill"
+assert g.read_meta("totals")["credits_total"] == g.video_caps()["credits"]["monthly"] == 1050, "no cycle total before a refill"
 g.write_meta("rich", credits=None)
 g.note_credits("rich", 24000)
 assert g.read_meta("rich")["credits_total"] == 24000, "a balance above the plan's credits made a used share below zero"

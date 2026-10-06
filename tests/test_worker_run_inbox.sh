@@ -140,6 +140,16 @@ late_rc=0
 "$RUNNER" say "$first_run" 'after the end' >/dev/null 2>&1 || late_rc=$?
 assert test "$late_rc" -eq 4
 printf 'RESUME codex-session: continue\n' >"$WORK/resume-brief"
+# A resume whose start fails after the carry delivers nothing: the message waits for the next one.
+mkdir -p "$WORK/failmv"
+printf '#!/bin/bash\ncase "${!#}" in */brief.launch) exit 1 ;; esac\nexec /bin/mv "$@"\n' >"$WORK/failmv/mv"
+chmod +x "$WORK/failmv/mv"
+failed_rc=0
+PATH="$WORK/failmv:$PATH" "$RUNNER" start codex --brief "$WORK/resume-brief" --workdir "$WORK/workdir" \
+  --account fast >/dev/null 2>"$WORK/start.err" || failed_rc=$?
+assert test "$failed_rc" -eq 4
+assert grep -qF 'could not compose the launched brief' "$WORK/start.err"
+assert grep -q '— queued for RESUME: codex takes no message mid-run$' <<<"$("$RUNNER" report "$first_run")"
 "$RUNNER" start codex --brief "$WORK/resume-brief" --workdir "$WORK/workdir" --account fast \
   >"$WORK/start.out" 2>"$WORK/start.err" || fail "resume start failed: $(<"$WORK/start.err")"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")

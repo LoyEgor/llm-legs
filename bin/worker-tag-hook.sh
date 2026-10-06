@@ -58,7 +58,7 @@ tag_file="$cache_dir/$agent_id"
 WORKER_PICK="${WORKER_TAG_WORKER_PICK:-$HOME/.local/bin/worker-pick}"
 runs_root="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"
 
-worker_conf() { sed -n "s/^$1=//p" "$HOME/.claude/worker-model" 2>/dev/null | head -n1; }
+worker_conf() { worker_model_pinned_account "$1" 2>/dev/null; }
 
 self_dir() {
   local path=${BASH_SOURCE[0]} dir

@@ -135,6 +135,10 @@ def ledger_path():
     return os.environ.get("SYSTEM_DOCTOR_LEDGER") or os.path.join(ROOT_DIR, "share", "system-ledger.json")
 
 
+def proofs_path():
+    return os.path.join(state_dir(), "proofs.json")
+
+
 def env_list(name, default):
     value = os.environ.get(name)
     return [part for part in value.split(":") if part] if value is not None else list(default)
@@ -465,7 +469,7 @@ def tick(now=None):
 
     rate = births_rate(first_pid, last_pid, seconds)
     row["births_s"] = round(rate) if rate is not None else None
-    born = [key for key in last if key not in first]
+    born = [key for key, entry in last.items() if key not in first and entry[4] != last_pid]
     by_pid = {entry[4]: key for key, entry in last.items()}
     births = {}
     for key in born:
@@ -508,6 +512,10 @@ def tick(now=None):
 
     cpu = {}
     old_procs = previous.get("procs") or {}
+    charged = {}
+    for key, kept in old_procs.items():
+        if key not in last and len(kept) >= 4:
+            charged[kept[3]] = charged.get(kept[3], 0.0) + max(0.0, kept[1] - kept[2])
     for key, entry in last.items():
         own_now = first.get(key)
         before = old_procs.get(key)
@@ -517,6 +525,9 @@ def tick(now=None):
         if spent < 0 or own < 0:
             continue
         reaped = max(0.0, spent - own)
+        # a reaped child's whole lifetime lands in its parent's -S time, though its ticks already charged part of it
+        twice = min(reaped, charged.pop(entry[4], 0.0))
+        spent, reaped = spent - twice, reaped - twice
         if spent > 0:
             slot = cpu.setdefault((entry[2], entry[3]), [0.0, 0.0])
             slot[0] += spent
@@ -540,7 +551,8 @@ def tick(now=None):
     row["io_top"] = top_rows([[tag, w, r, k, owner] for (tag, owner), (w, r, k) in moved.items() if w or r or k])
 
     state = {"t": now, "boot": mem["boot"], "ticks": ticks, "vm": vm, "disks": disks,
-             "procs": {key: [first[key][1], entry[1]] for key, entry in last.items() if key in first},
+             "procs": {key: [first[key][1], entry[1], old_procs[key][2] if joined and len(old_procs.get(key) or ()) >= 4
+                             else entry[1], entry[0]] for key, entry in last.items() if key in first},
              "usage": {key: [read, written, wakes] for key, (_f, read, written, wakes) in usage.items()},
              "recent": (previous.get("recent") or [])[-2:] + [{"t": round(now, 1), "births_s": row["births_s"],
                                                               "kernel": row["kernel"]}]}
@@ -681,6 +693,8 @@ def report_header(path, name, jobs):
             header = json.loads(first)
         except ValueError:
             header = {}
+        if not isinstance(header, dict):
+            header = {}
         bug = str(header.get("bug_type") or "")
         kind = "jetsam" if name.startswith("JetsamEvent") else CRASH_TYPES.get(bug, "other")
         if kind == "crash" and header.get("is_simulated"):
@@ -779,7 +793,7 @@ def boot_events(now):
         if not found or found.group(2) not in MONTHS:
             continue
         month = MONTHS[found.group(2)]
-        if newest_month is not None and month > newest_month:
+        if month > (newest_month or time.localtime(now).tm_mon):
             year -= 1
         newest_month = month
         try:
@@ -1401,10 +1415,12 @@ def fix_since(row):
     return fix_landed(ref, repos_dir()) if ref else None
 
 
-def proof(name, rule, since, now, night=None):
-    """{verdict: proven|refused|pending, why, ...} of a fix of cause `name` that landed at `since`."""
+def proof(name, rule, since, now, night=None, memo=None):
+    """{verdict: proven|refused|pending, why, ...} of a fix of cause `name` that landed at `since`. `memo` keeps the
+    evidence that ages out of the stores (the reports after the fix, the baseline before it) across calls."""
     if since is None:
         return {"verdict": "pending", "why": "the fix has not landed in main"}
+    key = "%s|%s|%d" % (rule, name, round(since))
     if rule == "job-loop":
         rows = tick_rows(since, now, "launchd")
         after = [r["t"] for r in rows if any(loops(j, r) for j in r.get("jobs") or () if name in (j["name"], j["label"]))]
@@ -1418,8 +1434,12 @@ def proof(name, rule, since, now, night=None):
         return dict(out, verdict="proven", why="%s quiet for %d days" % (name, PROOF["reports_s"] // DAY_S))
     if rule in REPORT_KINDS:
         night = night if night is not None else read_json(os.path.join(state_dir(), "nightly.json"), {}) or {}
-        after = [r for r in night.get("reports") or () if r.get("at", 0) >= since
-                 and r.get("kind") in REPORT_KINDS[rule] and r.get("name") == name]
+        after = sorted({str(r.get("ref") or r.get("at")) for r in night.get("reports") or () if r.get("at", 0) >= since
+                        and r.get("kind") in REPORT_KINDS[rule] and r.get("name") == name})
+        if memo is not None:
+            after = sorted(set(after) | set(memo.get(key) or ()))
+            if after:
+                memo[key] = after
         covered = max(0, round((night.get("as_of_s") or 0) - since))
         out = {"after": {"reports": len(after), "covered_s": covered}, "need_s": PROOF["reports_s"]}
         if after:
@@ -1431,6 +1451,12 @@ def proof(name, rule, since, now, night=None):
         return dict(out, verdict="proven", why="no report of %s in %d days" % (name, PROOF["reports_s"] // DAY_S))
     rows = tick_rows(since - PROOF["baseline_s"], now)
     before = tag_rates([r for r in rows if r["t"] < since], name)
+    if memo is not None:
+        kept = memo.get(key)
+        if isinstance(kept, dict) and (kept.get("covered_s") or 0) >= before["covered_s"]:
+            before = kept
+        elif since <= now:
+            memo[key] = before
     after = tag_rates([r for r in rows if r["t"] >= since], name)
     out = {"before": before, "after": after}
     if before["seen"] < PROOF["sightings"] or not (before["births_s"] or before["cores"]):
@@ -1459,6 +1485,9 @@ class Judge:
         self.censuses = []
         self.ledger = read_json(ledger_path(), {}) or {}
         self.rows = self.ledger.get("rows") if isinstance(self.ledger.get("rows"), list) else []
+        memo = read_json(proofs_path(), {})
+        self.memo = memo if isinstance(memo, dict) else {}
+        self.memo_read = json.dumps(self.memo, sort_keys=True)
 
     def add(self, rule, key, fact, value, limit, unit, window_h, exposure, count, first, last, evidence,
             heavy=False, found=None):
@@ -1526,7 +1555,8 @@ class Judge:
 
     def prove(self, problem, row):
         since = fix_since(row)
-        found = dict(proof(row["match"]["cause"], row["match"]["rule"], since, self.now, self.nightly or {}), since=since)
+        found = dict(proof(row["match"]["cause"], row["match"]["rule"], since, self.now, self.nightly or {}, self.memo),
+                     since=since)
         problem["proof"] = found
         problem["state"] = {"proven": "watch", "refused": "open"}.get(found["verdict"], "fixed-pending")
         problem["fact"] += " · %s · %s" % ({"proven": "fixed", "refused": "not proven"}.get(
@@ -1807,6 +1837,8 @@ def document(now, started, persist=True):
     judge_cohort(judge, score)
     judge_collectors(judge, rows, launches, harvests, censuses)
     judge.apply_ledger()
+    if persist and json.dumps(judge.memo, sort_keys=True) != judge.memo_read:
+        write_json(proofs_path(), judge.memo)
     count = sum(1 for p in judge.problems if p["state"] in COUNTED)
     hour = [r for r in rows if r["t"] >= now - HOUR_S]
     latest = rows[-1] if rows else {}
@@ -1969,8 +2001,12 @@ def agent():
         print("system-doctor collectors: %s: %s" % (type(error).__name__, error), file=sys.stderr)
     did = []
     if nightly_due(time.time()):
-        nightly()
         did.append("nightly")
+        try:
+            nightly()
+        except Exception as error:
+            write(error_document(started, error))
+            return did
     if did or judge_due(time.time()):
         try:
             write(document(time.time(), time.time()))
@@ -2010,9 +2046,18 @@ def install_agent():
         plistlib.dump(plist, handle)
     domain = "gui/%d" % os.getuid()
     machine_probe.run("launchctl", ["bootout", domain, plist_path()])
-    machine_probe.run("launchctl", ["bootstrap", domain, plist_path()])
+    for wait in (0, 0.5, 1, 2):
+        time.sleep(wait)
+        loaded = subprocess.run([machine_probe.command("launchctl"), "bootstrap", domain, plist_path()],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        if loaded.returncode == 0:
+            break
+    else:
+        print("system-doctor: launchctl bootstrap %s failed: %s" % (plist_path(), loaded.stderr.strip()), file=sys.stderr)
+        return 1
     print("Installed %s: a light tick every minute, the nightly pass after %02d:00, the document every %d min." % (
         LABEL, NIGHTLY_HOUR, JUDGE_EVERY_S // 60))
+    return 0
 
 
 def uninstall_agent():
@@ -2082,8 +2127,7 @@ def main(argv=None):
         RECORD = bool(agent())
         return 0
     if args.command == "install-agent":
-        install_agent()
-        return 0
+        return install_agent()
     if args.command == "uninstall-agent":
         uninstall_agent()
         return 0

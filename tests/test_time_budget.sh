@@ -36,7 +36,7 @@ commit $((D0 + 900)) "Day work" >/dev/null
 echo "$REPO" >"$WORK/sweep-repos"
 
 asserts=$(python3 - "$ROOT" "$WORK" "$D0" "$JOB" <<'EOF'
-import json, os, subprocess, sys
+import json, os, shutil, subprocess, sys
 
 root, work, D0, job = sys.argv[1], sys.argv[2], float(sys.argv[3]), sys.argv[4]
 sys.path.insert(0, os.path.join(root, "share"))
@@ -246,6 +246,16 @@ with open(T.ledger_cache("N1"), "w") as handle:
     json.dump(dict(cached, wall_s=12000, split_s=dict(cached["split_s"], model=1200)), handle)
 check(T.last_night() == {"id": "N1", "wall_s": 12000, "model_s": 1200, "share": 0.1},
       "the last night's worker activity is the newest finished night's cached ledger row: %s" % T.last_night())
+moved = os.path.join(work, "moved-doctors")
+shutil.copytree(os.path.join(work, "doctors"), moved)
+shutil.rmtree(os.path.join(moved, "night-ledger"))
+env = dict(os.environ)
+env.pop("DOCTORS_DIR")
+subprocess.run([sys.executable, os.path.join(root, "share", "time_budget.py"), "night", "/usr/bin/false",
+                os.path.join(moved, "nights", "N1.json")], capture_output=True, env=env)
+check(os.path.exists(os.path.join(moved, "night-ledger", "N1.json"))
+      and not os.path.exists(os.path.join(work, "home", ".cache", "doctors")),
+      "with no DOCTORS_DIR a night's ledger row is cached in the doctors directory its runs are read from")
 print(count[0])
 EOF
 ) || exit 1

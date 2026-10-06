@@ -456,6 +456,14 @@ for failing in ("log", "show"):
     cd.git = lambda folder, *args, **kw: None if args[0] == failing else real_git(folder, *args, **kw)
     assert cd.registration_research(gone, Graph) is None, "a failed git %s settled the registration" % failing
 cd.git = real_git
+class Writers:
+    files = {"r/bin/a": {"kind": "code", "refs": {"code": ["state/runs.jsonl", "runs.jsonl", "x/runs.jsonl", "y/runs.jsonl",
+                                                          "z/runs.jsonl"]}}}
+    canonical = staticmethod(lambda fid: fid)
+    resolve = staticmethod(lambda word, repo: [])
+writers = cd.data_writers(Writers)
+assert cd.claim_binding(Writers, {}, "r/README.md", ["runs.jsonl"], writers)[0] == ["r/bin/a"], \
+    "one file naming a data file under several tokens counted as several writers: %s" % writers
 print("ok")
 PY
 assert grep -qx ok "$WORK/units.out"
@@ -714,8 +722,16 @@ printf '\ncut_label() {\n  local text=$1 width=$2\n  [ "${#text}" -le "$width" ]
 "$CD" refresh --quiet
 assert jqe -s '[.[] | select(.id == "cause:alpha2/bin/dirline.sh#cut_label" and .new and .fresh and (.rules | index("reuse"))
   and ([.units[].unit] == ["alpha2/bin/dirline.sh#cut_label", "alpha2/lib/labels.sh#trim_label"]))] | length == 1' "$CJ"
+jq -n '{"cause:alpha2/bin/dirline.sh#cut_label": {verdict: "problem", fact: "re-does trim_label", plan: "call trim_label"}}' \
+  >"$CODE_DOCTOR_FAKE_VERDICTS"
 "$CD" judge --night f1 --limit 1 --batch 1 >/dev/null
 assert test "$(head -1 "$CODE_DOCTOR_FAKE_LOG" | cut -f2)" = "cause:alpha2/bin/dirline.sh#cut_label"
+for later in 8 16; do
+  CODE_DOCTOR_NOW=$(($(date +%s) + later * 86400)) "$CD" refresh --quiet
+done
+assert jqe -s '[.[] | select(.id == "cause:alpha2/bin/dirline.sh#cut_label" and (.fresh | not) and (.rules | index("reuse")))]
+  | length == 1' "$CJ"
+assert jqe '[.problems[] | select(.id == "cause:alpha2/bin/dirline.sh#cut_label")] | length == 1' "$CODE_DOCTOR_DIR/latest.json"
 
 # Promise: the worker-message case. An agent says a SendMessage note reaches the worker mid-run while worker-run has no
 # input channel: a claim bound to the code its name resolves to. A chat's «передал» right after a queued result is one
@@ -776,6 +792,12 @@ assert jqe -s '[.[] | select(.rules == ["overclaim"])] | length == 1 and all(.id
   and .sightings == ["0b3c9e41-7d55-4f7e-9a51-5c1f00d2a7aa line 4"])' "$CJ"
 assert jqe -s 'map(select(.group == "promise")) | length == 4' "$CJ"
 assert test "$(grep -rl 'передал\|use the cache' "$CODE_DOCTOR_DIR" "$HARNESS_DOCTOR_DIR" | wc -l | tr -d ' ')" = 0
+EV=$(ls "$HARNESS_DOCTOR_DIR"/events/*.jsonl | head -1)
+cp "$EV" "$WORK/events.bak"
+printf '["o", "half-writ\n' >>"$EV"
+"$CD" rollup >/dev/null
+assert jqe '.sources.overclaims.hits == {"overclaim:worker-run say": 1}' "$CODE_DOCTOR_DIR/rollup/$(basename "$EV" .jsonl).json"
+mv "$WORK/events.bak" "$EV"
 jq -s 'map(select(.group == "promise") | {key: .id, value: (
     if .rules == ["overclaim"] then {verdict: "problem", kind: "broken", fix: "code", fact: "queued read as done", plan: "print a receipt"}
     elif .risk == "delivery" then {verdict: "problem", kind: "broken", fix: "code", fact: "no input channel", plan: "add an inbox"}

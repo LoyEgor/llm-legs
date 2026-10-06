@@ -1,4 +1,20 @@
 #!/usr/bin/env bash
+# Every bin/elevenlabs-<kind> is a symlink to this file: the kind is the name it was called by.
 {
-exec "${ELEVENLABS_PYTHON:-python3}" "$(cd -P "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)/share/elevenlabs_media.py" sfx "$@"
+set -u
+
+kind=${0##*/}
+kind=${kind#elevenlabs-}
+root=$(cd -P "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
+. "$root/share/image-leg.sh"
+image_leg_start "elevenlabs-$kind" audio model
+IMAGE_LEG_ROUTE=api
+account='' model='' leg=''
+state=$(mktemp "${TMPDIR:-/tmp}/elevenlabs-leg.XXXXXX") || state=/dev/null
+trap 'image_leg_exit; [ "$state" = /dev/null ] || rm -f "$state"' EXIT
+rc=0
+ELEVENLABS_LEG_STATE=$state "${ELEVENLABS_PYTHON:-python3}" "$root/share/elevenlabs_media.py" "$kind" "$@" || rc=$?
+{ IFS= read -r leg; IFS= read -r account; IFS= read -r model; } <"$state" || true
+[ "$leg" != skip ] || IMAGE_LEG_SKIP=1
+(exit "$rc")
 exit; }

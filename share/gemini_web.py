@@ -973,7 +973,6 @@ def open_project(page, account: str) -> str:
 
 
 REFILL_JUMP = 200
-FLOW_MONTHLY_CREDITS = 1050
 
 
 def month_after(epoch: float) -> int:
@@ -988,7 +987,7 @@ def note_credits(account: str, credits: int | None) -> None:
         return
     meta, now = read_meta(account), int(time.time())
     fields = {"credits": credits, "credits_at": now,
-              "credits_total": meta.get("credits_total") or max(FLOW_MONTHLY_CREDITS, credits)}
+              "credits_total": meta.get("credits_total") or max(video_caps()["credits"]["monthly"], credits)}
     previous = meta.get("credits")
     if isinstance(previous, int) and credits - previous >= REFILL_JUMP:
         fields.update(credits_refilled_at=now, credits_renews_at=month_after(now), credits_total=credits)

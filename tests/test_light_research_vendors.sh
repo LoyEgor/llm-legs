@@ -52,6 +52,17 @@ run_id=$(sed -n 's/^RUN: //p' "$WORK/out" | head -1)
 assert jq -e '.vendor == "claudeb" and .role == "workers" and .light == "edit" and .model == "sonnet" and .effort == "medium"' "$RUNS/$run_id/meta.json"
 wr wait "$run_id" --max 60; assert grep -q '^STATUS: done$' "$WORK/out"
 assert grep -q -- '--dangerously-skip-permissions' "$HOME/.claude-profiles/researcher/vendor.log"
+# Unfenced, a Light edit writes its workdir like any worker: never $HOME, and a task worktree its
+# brief names is granted.
+wr start light --brief "$WORK/edit-brief" --workdir "$HOME"; rc=$?; assert test "$rc" -eq 4
+assert grep -qF 'workdir is the home directory' "$WORK/err"
+git -C "$REPO" worktree add -q "$REPO/.claude/worktrees/light-task" 2>/dev/null
+printf 'Edit %s/.claude/worktrees/light-task/file.\n' "$REPO" >"$WORK/tree-brief"
+wr start light --brief "$WORK/tree-brief" --workdir "$REPO"; rc=$?; assert test "$rc" -eq 0
+run_id=$(sed -n 's/^RUN: //p' "$WORK/out" | head -1)
+assert jq -e --arg t "$(cd "$REPO/.claude/worktrees/light-task" && pwd -P)" '.add_dirs == [$t]' "$RUNS/$run_id/meta.json"
+wr wait "$run_id" --max 60
+git -C "$REPO" worktree remove --force "$REPO/.claude/worktrees/light-task"
 wr start claudeb --model sonnet --brief "$WORK/prompt" --workdir "$REPO"; rc=$?; assert test "$rc" -ne 0
 assert grep -q '^OUTCOME: MODEL_REFUSED$' "$WORK/out"
 printf 'light_edit=grok:opus\n' >"$TOGGLE"

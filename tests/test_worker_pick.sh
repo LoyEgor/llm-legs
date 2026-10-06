@@ -1570,6 +1570,16 @@ run_case all_walled
 assert test "$(next_fail)" = 'NEXT: ALL WALLED, ask Egor'
 assert contains "$(vsection codex)" WALLED
 assert test "$(vsection claude)" = 'off for workers'
+# The menubar's PATH resolves `env bash` to /bin/bash 3.2, where an empty `printf -v` format
+# leaves the variable as it was: a vendor with no reason must not inherit the one before it.
+if [ -x /bin/bash ]; then
+  jq -c '.claude_pool | .vendors |= {claude: .claude}' "$FIXTURES" >"$STORE"
+  sync_fixture_pool
+  output=$(env "${run_env[@]}" "LLM_LIMITS_FILE=$STORE" /bin/bash "$SCRIPT" 2>"$WORK/note.err") ||
+    fail "worker-pick under /bin/bash failed"
+  assert contains "$(next_fail)" 'claude off for workers'
+  assert not_contains "$(next_fail)" 'codex'
+fi
 # Only the literal `off` closes a role; anything else leaves the vendor open.
 write_config 'claudeb_workers=on'
 query_case claude_pool --account claudeb
@@ -1585,6 +1595,8 @@ write_config 'claudeb_profile=tie-b'
 query_case claude_pool --account claudeb --role chat --exclude session
 assert test "$query_rc" -eq 0
 assert test "$query_out" = off
+query --account claudeb
+assert test "$query_out" = tie-b
 # The two buckets disagreeing is the whole point of the role: the weekly ranking takes `wk-free`
 # and the chat takes the account whose FABLE budget is the largest.
 run_filter claude_pool '.vendors.claude.accounts = [
@@ -1595,8 +1607,6 @@ assert test "$query_out" = wk-free
 query --account claudeb --role chat
 assert test "$query_rc" -eq 0
 assert test "$query_out" = fb-free
-query --account claudeb
-assert test "$query_out" = tie-b
 query --account claudeb --role reviewers
 assert test "$query_out" = wk-free
 # A chat on any other Claude model spends the weekly bucket like ordinary work: named with
@@ -1643,7 +1653,7 @@ assert test -z "$query_out"
 # On that bucket a pin clears the candidate bar as well: `dry` answers ordinary work and lapses
 # under Fable, where the pool answers instead.
 write_config 'claudeb_profile=dry'
-query_case claude_pool --account claudeb --role chat
+query_case claude_pool --account claudeb --role chat --exclude off
 assert test "$query_rc" -eq 0
 assert test "$query_out" = session
 query --account claudeb
@@ -1653,7 +1663,7 @@ assert test "$query_out" = session
 write_config
 # A chat query decides nothing about workers, so the pin it ignores also survives its own wall.
 write_config 'claudeb_profile=walled-wk'
-query_case claude_pool --account claudeb --role chat --exclude off
+query_case claude_pool --account claudeb --role chat
 assert test "$query_rc" -eq 0
 assert test "$(sed -n 's/^claudeb_profile=//p' "$CONFIG")" = walled-wk
 # The session account is the one the chat is already spending, and it stands as an ordinary
@@ -1664,6 +1674,11 @@ assert test "$query_rc" -eq 0
 assert test "$query_out" = off
 assert test ! -s "$WORK/query.err"
 query --account claudeb --role chat --exclude session,dry,tie-b,tie-a
+assert test "$query_rc" -eq 0
+assert test "$query_out" = off
+query --list --role chat
+assert test "$(awk -F '\t' '$1 == "claudeb" && $2 == "off" {print $4}' <<<"$query_out")" = ok
+query --account claudeb --role chat --exclude session,dry,tie-b,tie-a,off
 assert test "$query_rc" -eq 3
 assert test -z "$query_out"
 assert grep -q 'no selectable claudeb account' "$WORK/query.err"
@@ -1674,11 +1689,6 @@ assert test "$query_rc" -eq 0
 assert test "$query_out" = off
 # The role is vendor-agnostic: codex answers it as the pool minus the pin.
 write_config 'codex_profile=with-credit'
-assert test "$query_rc" -eq 0
-assert test "$query_out" = off
-query --list --role chat
-assert test "$(awk -F '\t' '$1 == "claudeb" && $2 == "off" {print $4}' <<<"$query_out")" = ok
-query --account claudeb --role chat --exclude session,dry,tie-b,tie-a,off
 query_case codex_credit --account codex --role chat
 assert test "$query_rc" -eq 0
 assert test "$query_out" = plain

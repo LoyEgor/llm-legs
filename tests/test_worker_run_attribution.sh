@@ -67,8 +67,7 @@ ANCHORS
   doomed_base=$(git -C "$repo" rev-parse HEAD:bin/doomed)
   # Two Cyrillic names a UTF-8 awk collates as equal: a lookup by name must still tell them apart.
   printf 'ef\n' >"$repo/bin/ф"
-  export STUB_GATE="$WORK/anchors-gate"
-  rm -f "$STUB_GATE"
+  gate_shut
   LC_ALL=en_US.UTF-8 "$RUNNER" start codex --brief "$WORK/anchors-brief" --workdir "$repo" \
     --round 20260901T100000Z-aaaaaaa >"$WORK/anchors.out" 2>"$WORK/anchors.err" ||
     fail "round start failed: $(<"$WORK/anchors.err")"
@@ -89,8 +88,7 @@ ANCHORS
   printf 'committed\n' >"$repo/bin/committed"
   git -C "$repo" add bin/committed >/dev/null
   git -C "$repo" -c user.email=t@t -c user.name=t commit -qm inside >/dev/null
-  : >"$STUB_GATE"
-  unset STUB_GATE
+  gate_open
   assert await_done
   changed=$(anchors_changed)
   assert grep -qx 'bin/heredoc-only' <<<"$changed"
@@ -130,8 +128,7 @@ ANCHORS
   git -C "$other" -c user.email=t@t -c user.name=t commit -qm base >/dev/null
   other=$(cd "$other" && pwd -P)
   kept_base=$(git -C "$other" rev-parse HEAD:kept)
-  export STUB_GATE="$WORK/anchors-gate"
-  rm -f "$STUB_GATE"
+  gate_shut
   "$RUNNER" start codex --brief "$WORK/anchors-brief" --workdir "$repo" --add-dir "$other" \
     --round 20260901T100000Z-aaaaaaa >"$WORK/anchors.out" 2>"$WORK/anchors.err" ||
     fail "two-family start failed: $(<"$WORK/anchors.err")"
@@ -140,8 +137,7 @@ ANCHORS
   await_launched
   assert grep -qxF "run-start${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}--run${anchors_tab}${RUN_ID}${anchors_tab}--session${anchors_tab}anchors-chat" "$ANCHOR_LOG"
   printf 'fixed\n' >>"$other/kept"
-  : >"$STUB_GATE"
-  unset STUB_GATE
+  gate_open
   assert await_done
   fold=$(grep "^run-fold${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}" "$ANCHOR_LOG" | tail -n 1)
   assert grep -qF -- "--run${anchors_tab}${RUN_ID}" <<<"$fold"
@@ -161,8 +157,7 @@ ANCHORS
     fail "worktree add in $other failed"
   repo_wt=$(cd "$WORK/anchors-repo-wt" && pwd -P)
   other_wt=$(cd "$WORK/anchors-other-wt" && pwd -P)
-  export STUB_GATE="$WORK/anchors-gate"
-  rm -f "$STUB_GATE"
+  gate_shut
   "$RUNNER" start codex --brief "$WORK/anchors-brief" --workdir "$repo_wt" --add-dir "$other" \
     --round 20260901T100000Z-aaaaaaa >"$WORK/anchors.out" 2>"$WORK/anchors.err" ||
     fail "worktree start failed: $(<"$WORK/anchors.err")"
@@ -175,8 +170,7 @@ ANCHORS
   # A family worktree landed and removed mid-run drops its run record in the main checkout, and
   # anchors nothing there.
   git -C "$other" worktree remove --force "$other_wt" >/dev/null 2>&1
-  : >"$STUB_GATE"
-  unset STUB_GATE
+  gate_open
   assert await_done
   assert test "$(grep "^run-fold${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}" "$ANCHOR_LOG")" = \
     "run-fold${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}--run${anchors_tab}${RUN_ID}${anchors_tab}--session${anchors_tab}anchors-chat${anchors_tab}--round${anchors_tab}20260901T100000Z-aaaaaaa${anchors_tab}--owned"
@@ -452,6 +446,24 @@ attribution_repair_tests() {
   made_meta=$(jq -c '.worktrees_made' "$RUN_DIR/meta.json")
   assert test "$made_meta" = "$(jq -cn --args '$ARGS.positional | sort' -- "$trees/scratch.x" \
     "$elsewhere/.claude/worktrees/side" "$elsewhere/.claude/worktrees/gone")"
+  # GNU stat: `-f` is the filesystem, so the birth time comes from `-c %W` alone.
+  mkdir -p "$WORK/gnu-stat"
+  printf '#!/bin/bash\ncase "$1 $2" in\n  "-f %%B") printf "  File: \\"%%s\\"\\n" "$3"; exit 1 ;;\n  "-c %%W") exec /usr/bin/stat -f %%B "$3" ;;\nesac\nexec /usr/bin/stat "$@"\n' \
+    >"$WORK/gnu-stat/stat"
+  chmod +x "$WORK/gnu-stat/stat"
+  clear_stub
+  before=$(date +%s)
+  while [ "$(date +%s)" -le "$before" ]; do sleep 0.1; done
+  TOOL_TS=$(iso $(($(date +%s) + 60)))
+  {
+    tool_call Bash command "cd $elsewhere && git worktree add .claude/worktrees/gnu"
+    tool_call Edit file_path "$elsewhere/.claude/worktrees/gnu/x"
+  } >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+  PATH="$WORK/gnu-stat:$PATH" WORKER_TEST_WORKDIR=$trees/task start_gated claudeb
+  git -C "$elsewhere" worktree add -q "$elsewhere/.claude/worktrees/gnu" 2>/dev/null
+  gate_open
+  assert await_done
+  assert jq -e --arg t "$elsewhere/.claude/worktrees/gnu" '.worktrees_made == [$t]' "$RUN_DIR/meta.json"
   git -C "$repo" worktree remove --force "$trees/late"
   git -C "$repo" worktree remove --force "$trees/foreign"
   git -C "$repo" worktree remove --force "$trees/task"

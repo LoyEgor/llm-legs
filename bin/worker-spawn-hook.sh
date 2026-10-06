@@ -33,11 +33,13 @@ subagent=${fields[3]-}
 description=${fields[4]-}
 prompt=${fields[5]-}
 
-worker_conf() {
-  local line
-  while IFS= read -r line || [ -n "$line" ]; do
-    case $line in "$1="*) printf '%s' "${line#"$1="}"; return ;; esac
-  done <"$HOME/.claude/worker-model" 2>/dev/null
+# The prime is local: worker-pick may rewrite the file between lookups, and a pin read later in
+# this shell must not see the text primed here.
+worker_conf() { # key
+  local _WM_PIN_FILE _WM_PIN_TEXT
+  worker_model_file_r
+  worker_model_prime_pins "$WORKER_MODEL_R"
+  worker_model_pinned_account "$1"
 }
 
 self_dir() {

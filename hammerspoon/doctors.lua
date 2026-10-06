@@ -736,7 +736,9 @@ local function styled(segments)
   if styledCache[key] then return styledCache[key] end
   local title
   for _, segment in ipairs(segments) do
-    local piece = hs.styledtext.new(segment[1], { font = style.MONO, color = segment[2] })
+    local text, tone = segment[1], segment[2]
+    local piece = tone == style.GREEN and hs.styledtext.new(text, { font = style.MONO, color = tone })
+      or infoTitle(text, tone == style.RED, tone == style.DIM or tone == style.DIM_RED, tone == style.DIM_RED)
     title = title and title .. piece or piece
   end
   if styledCount >= 256 then styledCache, styledCount = {}, 0 end

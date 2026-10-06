@@ -1714,11 +1714,7 @@ case "$refresh_account" in grok/*) grok_refresh_target=${refresh_account#grok/} 
 # definite `needs_login` verdict — and that would write a phantom account into the store and the
 # menu, asking Egor to log into an account that does not exist.
 while IFS= read -r grok_account; do
-  [ -n "$grok_account" ] || continue
-  if ! grep -qxF "$grok_account" < <(grok_account_names); then
-    printf 'llm-limits.sh: unknown Grok account: %s\n' "$grok_account" >&2
-    exit 2
-  fi
+  [ -z "$grok_account" ] || account_roster_refuse llm-limits.sh grok "$grok_account" || exit 2
 done < <(printf '%s\n' "${grok_refresh_target//,/$'\n'}")
 if [ "$refresh" -eq 1 ] && ! vendor_paused grok &&
    { [ -z "$refresh_account" ] || [ -n "$grok_refresh_target" ] || [ "$refresh_vendor" = grok ]; }; then
@@ -2427,7 +2423,7 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
   | .vendors |= with_entries(.value |= mark_user_entry_accounts)
   | .vendors |= with_entries(if .value.available == true then .value += {stale: (.value | vendor_stale)} else . end)
   | walk(mark)
-  | .vendors |= with_entries(.key as $key | .value.usable_now = (.value | vendor_usable($key)))
+  | .vendors |= with_entries(.key as $key | .value.usable_now = (.value | vendor_usable($key)) | .value |= limits_stale_watch($key))
   | if ([.vendors[] | select(.available == true)] | length) == 0
     then .refresh_error = {cause:"no vendor data available",at:$now}
     elif $refresh == 1 and $refresh_account == ""

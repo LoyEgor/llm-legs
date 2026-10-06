@@ -3,6 +3,8 @@
 # The run-suites journal: one row per run-suites run, one per direct `bash tests/x.sh` run.
 set -u
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+. "$ROOT/share/test-scope.sh"
+PROJECTS=$(git_projects "$ROOT")
 WORK=$(cd "$(mktemp -d)" && pwd -P)
 trap 'touch "$WORK/release"; sleep 0.3; [ -n "${KEEP:-}" ] || rm -rf "$WORK"' EXIT
 asserts=0
@@ -198,6 +200,9 @@ LC_ALL=en_US.UTF-8 bash -c '. "$1" --lib
   suite_journal_append "$3"' _ "$ROOT/tests/lib/suite-journal.sh" "$WORK/dd.log" "$WORK/mb.jsonl"
 assert grep -qx dd "$WORK/dd.log"
 assert test "$(wc -c <"$WORK/mb.jsonl" | tr -d ' ')" = 1201
+bash -c '. "$1" --lib; suite_journal_row suites 1 0 0 0 r r h s "" "" 1 "" "" true "" "$2"; printf "%s\n" "$suite_journal_line"' \
+  _ "$ROOT/tests/lib/suite-journal.sh" $'a "b"\\\tc' >"$WORK/reason.jsonl"
+assert jqe '.reason == "a \"b\"\\\tc"' "$WORK/reason.jsonl"
 # One that traps nothing, or resets its own trap, is journaled as stopped by the signal, never with its last status: its EXIT
 # action still runs and it still dies of the signal. A SIGKILL leaves no row.
 suite "$REPO" test_sig.sh "trap : HUP INT TERM
@@ -329,8 +334,8 @@ assert jqe '.suites["test_leaks.sh"].rc == 1 and .suites["test_sandboxed.sh"].rc
 
 # tests/run-all refuses a worker's full run before any suite or journal row; a named suite, --changed
 # and a run outside a worker go through.
-for wrapper in "$ROOT/tests/run-all" "${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/tests/run-all" \
-  "${REVIEW_BENCH_ROOT:-$ROOT/../review-bench}/tests/run-all"; do
+for wrapper in "$ROOT/tests/run-all" "${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/tests/run-all" \
+  "${REVIEW_BENCH_ROOT:-$PROJECTS/review-bench}/tests/run-all"; do
   [ -r "$wrapper" ] && assert grep -qF -- '--run-all "$@"' "$wrapper"
 done
 git -C "$R4" add -A

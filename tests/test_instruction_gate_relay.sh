@@ -137,7 +137,7 @@ assert_eq "tier doc" "$(cat "$DOC")"
 # there `local -A` is not an error but a silent downgrade to an indexed array, where every
 # path key evaluates as arithmetic to index 0 and the comparison reads the wrong row.
 echo "== both hooks run under stock /bin/bash 3.2"
-b32() { jq -cn --arg s "$1" '{session_id:$s,hook_event_name:"PostToolUse"}' | /bin/bash "$WATCH" "$2"; }
+b32() { WATCH_BASH=/bin/bash watch_sid "$@"; }
 b32 sid-32 baseline >/dev/null
 assert_eq "" "$(b32 sid-32 check)"
 printf 'moved under 3.2\n' > "$REAL_MD"
@@ -145,6 +145,11 @@ assert_contains "CHANGED" "$(b32 sid-32 check | jq -r '.hookSpecificOutput.addit
 assert_eq "" "$(bash_payload "$ANY_CALL" | /bin/bash "$WRITE_GATE")"
 assert_contains 'permissionDecision":"deny' \
   "$(bash_payload "echo x > $CLAUDE_MD" | /bin/bash "$WRITE_GATE")"
+assert_contains 'permissionDecision":"deny' \
+  "$(bash_payload "python3 -c \"open('$CLAUDE_MD','w').write('x')\"" | /bin/bash "$WRITE_GATE")"
+printf "open('%s','w').write('x')\n" "$CLAUDE_MD" > "$WORK/write32.py"
+assert_contains 'permissionDecision":"deny' \
+  "$(bash_payload "cd /tmp && python3 $WORK/write32.py" | /bin/bash "$WRITE_GATE")"
 assert_contains 'permissionDecision":"deny' \
   "$(jq -cn --arg p "$CLAUDE_MD" --arg n "$big" \
        '{tool_name:"Edit",cwd:"/tmp",tool_input:{file_path:$p,old_string:"x",new_string:$n}}' \

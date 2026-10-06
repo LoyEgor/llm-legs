@@ -382,9 +382,13 @@ await_launched() {
   done
 }
 
-start_gated() {
+gate_shut() {
   export STUB_GATE="$WORK/gate.$$"
   rm -f "$STUB_GATE"
+}
+
+start_gated() {
+  gate_shut
   start_ok "$@"
 }
 

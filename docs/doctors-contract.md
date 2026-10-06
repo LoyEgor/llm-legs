@@ -369,8 +369,9 @@ Code doctor (added 2026-10-02, design `docs/code-doctor-design.md`):
 
 System doctor (added 2026-10-06, design `docs/system-doctor-design.md`):
 - Machine rules `spawn`, `kernel`, `compressor`, `swap`, `swap-writes`, `ssd-writes`, `free-space`,
-  `hammerspoon-crash`, `job-crash`, `unclean-reboot`; ids `<rule>:<key>` (`machine`, a volume, a
-  job name). A ledger row matches `{rule, key}` exactly; a row without both is `ledger:<id>`.
+  `hammerspoon-crash`, `job-crash`, `unclean-reboot`, the job rule `job-loop` and the standing-cost
+  rule `cohort`; ids `<rule>:<key>` (`machine`, a volume, a job name, a cohort item's name). A ledger
+  row matches `{rule, key}` exactly; a row without both is `ledger:<id>`.
 - Own problem keys: `label` (the menu's short name), `severity` (`review` | `heavy`) and `cause`
   `{name, share, owner, fix_target, files}`; `fix_target` is true only for an own cause whose name is a
   file of a sweep repository (`files`, `repo/path`); every other cause is report-only. A proven,

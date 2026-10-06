@@ -341,7 +341,7 @@ judge_interp() { # program text
   return 1
 }
 if [ -z "$denied" ]; then
-  for interp_text in "$flat" "${script_texts[@]}"; do
+  for interp_text in "$flat" ${script_texts[@]+"${script_texts[@]}"}; do
     judge_interp "$interp_text" && { denied=1; break; }
   done
 fi

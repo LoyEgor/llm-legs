@@ -114,6 +114,23 @@ def limits_store_wall_until($row; $now):
   [$row.five_hour?, $row.weekly? | select(type == "object") |
    select((limits_store_eff(.; $now) // -1) >= 100) |
    (.resets_at | limits_store_epoch) | select(type == "number" and . > $now)] | max;
+# Marks the account blocks of a vendor that the account-staleness warning counts; each reader
+# still takes the age itself, since a collector starved past its timeout writes no fresh verdict.
+# OpenCode is never marked: its as_of is the last served completion, which no refresh moves.
+def limits_stale_watch($key):
+  def mark($live):
+    if type != "object" then .
+    else (if (.auth | type) == "object" then .auth.status else null end) as $auth |
+      if $live and .removed != true and
+         (if $key == "grok" then $auth == "needs_login" or (.auth_needed == true and $auth != "expired")
+          else .auth_needed == true end | not)
+      then .stale_watch = true else del(.stale_watch) end
+    end;
+  if type != "object" then .
+  elif $key == "opencode" then del(.stale_watch) | if (.accounts | type) == "array" then .accounts |= map(mark(false)) else . end
+  elif (.accounts | type) == "array" and (.accounts | length) > 0
+  then (.removed != true) as $live | del(.stale_watch) | .accounts |= map(mark($live))
+  else mark(.removed != true and .available == true) end;
 def limits_store_stale_text($row; $now; $thr):
   (($row // {}).as_of | limits_store_epoch) as $asof |
   if $row == null or $row.auth_needed == true or $asof == null

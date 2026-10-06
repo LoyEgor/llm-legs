@@ -169,9 +169,13 @@ def base_home():
     return os.environ.get("HOME") or os.path.expanduser("~")
 
 
+def scoped():
+    return bool(SCOPE) and sorted(SCOPE) != sorted(default_repos())
+
+
 def state_dir():
     base = os.environ.get("CODE_DOCTOR_DIR") or os.path.join(base_home(), ".cache", "code-doctor")
-    if SCOPE and sorted(SCOPE) != sorted(default_repos()):
+    if scoped():
         return os.path.join(base, "scopes", scope_slug(SCOPE))
     return base
 
@@ -908,12 +912,17 @@ def run_rollup():
         day = os.path.basename(events)[:-6]
         if not re.fullmatch(r"\d{4}-\d\d-\d\d", day):
             continue
-        hits, refs, reasons = {}, {}, {}
+        hits, refs, reasons, rows = {}, {}, {}, []
         try:
             with open(events, encoding="utf-8", errors="replace") as handle:
-                rows = [json.loads(line) for line in handle if line.startswith('["o",')]
-        except (OSError, ValueError):
-            rows = []
+                for line in handle:
+                    if line.startswith('["o",'):
+                        try:
+                            rows.append(json.loads(line))
+                        except ValueError:
+                            continue
+        except OSError:
+            continue
         for row in rows:
             if len(row) >= 6:
                 key = "overclaim:%s" % row[2]
@@ -1506,6 +1515,17 @@ def intentional(a, b, rows, ledger):
     return False
 
 
+def sketch_similarity(a, b):
+    union = sorted(set(a) | set(b))[:SKETCH_K]
+    both = set(a) & set(b)
+    return sum(1 for v in union if v in both) / float(len(union) or 1)
+
+
+def touch_overlap(common, a, b, idf):
+    score = sum(idf(t) for t in common)
+    return score, score / (sum(idf(t) for t in set(a) | set(b)) or 1)
+
+
 def clone_pairs(graph):
     symbols, postings = [], {}
     for fid, record in graph.files.items():
@@ -1535,9 +1555,7 @@ def clone_pairs(graph):
         span_a, span_b = unit_span(a[0], a[1], a[2]), unit_span(b[0], b[1], b[2])
         if overlaps(span_a, span_b):
             continue
-        union = sorted(set(a[2]["sketch"]) | set(b[2]["sketch"]))[:SKETCH_K]
-        both = set(a[2]["sketch"]) & set(b[2]["sketch"])
-        estimate = sum(1 for v in union if v in both) / float(len(union) or 1)
+        estimate = sketch_similarity(a[2]["sketch"], b[2]["sketch"])
         if estimate >= LIMITS["clone_jaccard"]:
             pairs.append((span_a, span_b, "clone", round(estimate, 2)))
     return pairs
@@ -1570,9 +1588,7 @@ def touch_pairs(graph):
         if len(common) < LIMITS["touch_shared"]:
             continue
         a, b = symbols[i], symbols[j]
-        score = sum(idf[t] for t in common)
-        union = set(a[2]["touch"]) | set(b[2]["touch"])
-        weighted = score / sum(idf.get(t, 0) for t in union) if union else 0
+        score, weighted = touch_overlap(common, a[2]["touch"], b[2]["touch"], lambda t: idf.get(t, 0))
         if score < LIMITS["touch_min_idf"] or weighted < LIMITS["touch_jaccard"]:
             continue
         span_a, span_b = unit_span(a[0], a[1], a[2]), unit_span(b[0], b[1], b[2])
@@ -1644,7 +1660,7 @@ def concept_signals(graph, sites, info, total, fresh, rows, ledger):
     return signals
 
 
-def reuse_signals(graph, sites, info, fresh, rows, ledger):
+def reuse_signals(graph, sites, info, fresh, rows, ledger, held=()):
     new, helpers = [], []
     for fid, record in graph.files.items():
         if record.get("kind") not in ("code", "test") or graph.canonical(fid) != fid:
@@ -1652,7 +1668,7 @@ def reuse_signals(graph, sites, info, fresh, rows, ledger):
         repo, rel = fid.split("/", 1)
         names = (fresh.get(repo) or {}).get(rel) or {}
         for symbol in record.get("symbols") or ():
-            if symbol["name"] in names:
+            if symbol["name"] in names or unit_id(fid, symbol) in held:
                 new.append((fid, record, symbol))
             elif record["kind"] == "code" or "/lib/" in "/" + rel:
                 helpers.append((fid, record, symbol))
@@ -1689,9 +1705,7 @@ def reuse_signals(graph, sites, info, fresh, rows, ledger):
                 other = helpers[index][2]
                 if count < LIMITS["reuse_shared"] or other["lang"] != symbol["lang"]:
                     continue
-                union = sorted(set(symbol["sketch"]) | set(other["sketch"]))[:SKETCH_K]
-                both = set(symbol["sketch"]) & set(other["sketch"])
-                estimate = sum(1 for v in union if v in both) / float(len(union) or 1)
+                estimate = sketch_similarity(symbol["sketch"], other["sketch"])
                 if estimate >= LIMITS["reuse_jaccard"]:
                     found[index] = (estimate, "clone %.2f" % estimate)
             common = {}
@@ -1703,8 +1717,7 @@ def reuse_signals(graph, sites, info, fresh, rows, ledger):
             for index, touches in common.items():
                 if len(touches) < LIMITS["reuse_touch_shared"]:
                     continue
-                union = set(symbol.get("touch") or ()) | set(helpers[index][2].get("touch") or ())
-                weighted = sum(idf(t) for t in touches) / (sum(idf(t) for t in union) or 1)
+                _, weighted = touch_overlap(touches, symbol.get("touch") or (), helpers[index][2].get("touch") or (), idf)
                 if weighted >= LIMITS["touch_jaccard"] and weighted > (found.get(index) or (0,))[0]:
                     found[index] = (weighted, "touchpoints %.2f" % weighted)
         mine = {feature for feature, line, t in record.get("lits") or ()
@@ -1727,7 +1740,8 @@ def reuse_signals(graph, sites, info, fresh, rows, ledger):
             if len(matches) >= LIMITS["reuse_matches"]:
                 break
         if matches:
-            signals.append({"group": "duplicate", "rule": "reuse", "units": [span] + [m for m, _ in matches], "fresh": True,
+            signals.append({"group": "duplicate", "rule": "reuse", "units": [span] + [m for m, _ in matches], "subject": span["unit"],
+                            "fresh": is_fresh(fresh, span),
                             "detail": "new %s may re-do what %s already does" % (span["unit"], ", ".join(
                                 "%s (%s)" % (m["unit"], why) for m, why in matches)),
                             "value": symbol["lines"]})
@@ -1899,8 +1913,8 @@ def data_writers(graph):
     for fid, record in graph.files.items():
         if record.get("kind") == "code" and graph.canonical(fid) == fid:
             for token in (record.get("refs") or {}).get("code") or ():
-                if DATA_FILE.search(token):
-                    writers.setdefault(os.path.basename(token), []).append(fid)
+                if DATA_FILE.search(token) and fid not in writers.setdefault(os.path.basename(token), []):
+                    writers[os.path.basename(token)].append(fid)
     return writers
 
 
@@ -2135,7 +2149,10 @@ def build_candidates():
     fresh = {repo: doc["cursor"].get("fresh") or {} for repo, doc in indexes.items()}
     sites, info, total = literal_index(graph)
     signals += concept_signals(graph, sites, info, total, fresh, rows, ledger)
-    signals += reuse_signals(graph, sites, info, fresh, rows, ledger)
+    verdicts = load_verdicts()
+    held = {unit for c in load_candidates() if (verdicts.get(c["id"]) or {}).get("verdict") == "problem"
+            for unit in c.get("subjects") or ()}
+    signals += reuse_signals(graph, sites, info, fresh, rows, ledger, held)
     signals += prose_signals(graph)
     signals += promise_signals(graph, edges, fresh)
     signals += overclaim_signals(graph, days)
@@ -2386,6 +2403,7 @@ def cluster(signals, graph, edges, roots, ledger, indexes, hits):
             "new": any(s.get("fresh") for s in members) or any(f.split("/", 1)[1] in changed.get(f.split("/", 1)[0], ()) for f in files),
             "fresh": any(s.get("fresh") for s in members),
             "reuse": sorted({r for s in members for r in s.get("reuse") or ()}),
+            "subjects": sorted({s["subject"] for s in members if s.get("subject")}),
             "slice": "/".join(files[0].split("/")[:2]) if files else anchors[0],
             "runtime_hits": {k: hits[k] for k in ("hook:" + os.path.basename(f) for f in files) if k in hits},
         }
@@ -2985,7 +3003,7 @@ def document(started):
 
 def write_document(doc):
     write_json(os.path.join(state_dir(), "latest.json"), doc)
-    if not SCOPE or sorted(SCOPE) == sorted(default_repos()):
+    if not scoped():
         collector_runs.problem_day("code", doc, "CODE_DOCTOR_DIR")
 
 

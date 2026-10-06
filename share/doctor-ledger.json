@@ -425,7 +425,7 @@
     "detail": "^wrote [^/]+/[^/]+$"
    },
    "title": "a cross-repository brief named its second repository's task worktree only in prose, or resumed a granted session without repeating the grant, so worker-run granted it nothing and every write there read as escaped",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-09-30T03:33:34+03:00",
@@ -473,7 +473,7 @@
      "files": [
       "llm-legs/bin/worker-run"
      ],
-     "in": null,
+     "in": "llm-legs@98d72967",
      "regressed_at": null
     }
    ],
@@ -1710,7 +1710,7 @@
     "detail": "image settings \\(TimeoutError: Locator\\.click: Timeout 5000ms|waiting for get_by_role\\(\"button\", name=\"Settings trigger\""
    },
    "title": "Flow image settings: model menu left open, onboarding callout over the composer",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-06T07:38:00+03:00",
@@ -1719,7 +1719,7 @@
       "llm-legs/share/gemini_web.py",
       "llm-legs/share/flow_image.py"
      ],
-     "in": null,
+     "in": "llm-legs@36edab64",
      "regressed_at": null
     }
    ],

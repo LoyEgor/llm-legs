@@ -1036,11 +1036,14 @@ for logdir, at, tail in (("run-suites.AAAAAA", T - 700, "run-suites: TIMEOUT aft
         handle.write("waiting on the tty\n" + tail)
     os.utime(hang_log, (at, at))
 hang_runs = [hang_run("suites", T - 600, {"test_tty.sh": {"rc": 124, "secs": 3601.2}, "test_ok.sh": {"rc": 0, "secs": 30},
-                                          "test_red.sh": {"rc": 1, "secs": 4000}, "test_long.sh": {"rc": 0, "secs": 9000}},
+                                          "test_red.sh": {"rc": 1, "secs": 4000}, "test_long.sh": {"rc": 0, "secs": 9000},
+                                          "test_sig.sh": {"rc": 0, "secs": 30, "bound": 3600},
+                                          "test_cut.sh": {"rc": 0, "secs": 30, "bound": 3600}},
                       worker_run="claudeb-1-2-ab"),
              hang_run("direct", T - 300, {"test_sig.sh": {"rc": 143, "secs": 3700}}, session="5e55a0ff-0000", signal=15),
              hang_run("direct", T - 200, {"test_cut.sh": {"rc": 143, "secs": 600}}, signal=15),
-             hang_run("direct", T - 100, {"test_own.sh": {"rc": 124, "secs": 3700}})]
+             hang_run("direct", T - 100, {"test_own.sh": {"rc": 124, "secs": 3700}}),
+             hang_run("direct", T - 50, {"test_new.sh": {"rc": 137, "secs": 9000}}, signal=9)]
 saved_tmp, os.environ["TMPDIR"] = os.environ.get("TMPDIR"), hang_logs
 hang_part = m.tests_section(slow_mix, T, (), hang_runs)
 os.environ["TMPDIR"] = saved_tmp
@@ -1058,16 +1061,19 @@ check([p["id"] for p in m.problems_from([hang_part], {"rows": []}, {}, T) if p["
 check(hang_v.get("hang-repo:test_sig", {}).get("level") == "red" and "killed by signal 15" in hang_v["hang-repo:test_sig"]["fact"]
       and "session 5e55a0ff" in hang_v["hang-repo:test_sig"]["fact"],
       "a suite killed by a signal after running past its bound is a hang too, named by the session that ran it")
-check([hang_v.get("hang-repo:" + s, {}).get("level") for s in ("test_ok", "test_red", "test_long", "test_cut", "test_own")]
-      == [None] * 5,
-      "a plain FAIL, a slow pass, a signal under the bound and a direct run's own exit 124 are no hang")
+check([hang_v.get("hang-repo:" + s, {}).get("level") for s in ("test_ok", "test_red", "test_long", "test_cut", "test_own",
+                                                                 "test_new")] == [None] * 6,
+      "a plain FAIL, a slow pass, a signal under the bound, a direct run's own exit 124 and a signal on a suite "
+      "run-suites never bounded are no hang")
 check(slow_level(slow_mix) == ["red"] and [j["level"] for r in hang_part["rows"] for j in r.get("judge", [])
                                            if j["rule"] == "test_slow"] == ["red"],
       "a slow passing suite stays with test_slow beside the hang rule")
-check(m.suite_bound([hang_run("suites", T, {"test_p.sh": {"rc": 0, "secs": s}}) for s in (400, 380, 900, 420)],
-                    hang_root, "test_p.sh") == 4500
-      and m.suite_bound([], hang_root, "test_p.sh") == 3600,
-      "the hang bound is run-suites': 5 x the p90 of passes over the 1800 s floor, twice the floor before 3 passes")
+check(m.suite_bound([hang_run("suites", T - 10 * i, {"test_p.sh": {"rc": 0, "secs": 400, "bound": b}})
+                     for i, b in enumerate((4500, 3600, 9000))], hang_root, "test_p.sh") == 4500
+      and m.suite_bound([hang_run("suites", T, {"test_p.sh": {"rc": 0, "secs": 400}})], hang_root, "test_p.sh") is None
+      and m.suite_bound([hang_run("suites", T, {"test_p.sh": {"rc": 0, "secs": 400, "bound": 4500}})], "/r/other",
+                        "test_p.sh") is None,
+      "the hang bound is the one run-suites last journaled for the suite in its repo, none before it bounded one")
 check(slow_level(suites_mix(700, "named")) == ["red"]
       and [r["say"] for r in m.tests_section(suites_mix(700, "named"), T)["rows"]][0].endswith("for a named-suites run"),
       "a named-suites run is judged against named-suite runs and says so")
@@ -1263,6 +1269,9 @@ check(judged(health(G, events=[change(T - 600, os.path.join(home, ".claude", "sk
       == {("growth-ungated", "~/.claude/skills/synced/org_acct/handmade"): "red",
           ("growth-ungated", "~/.claude/skills/synced/org_old/pptx"): "red"},
       "Guards: synced-tree growth the bucket manifest does not show the sync landing is judged")
+check(judged(health(G, events=[change(T - 20000, synced[0], 5000)]))
+      == {("growth-ungated", "~/.claude/skills/synced/org_acct/pptx"): "red"},
+      "Guards: growth hours before the sync's own landing is not the sync's")
 tree, landing = os.path.join(home, "p", ".claude", "worktrees", "b1", "AGENTS.md"), os.path.join(home, "p", "AGENTS.md")
 check(judged(health(G, gates=[dict(passed, file=tree, at=T - 80050)], events=[change(T - 80000, tree), change(T - 600, landing)]))
       == {}, "Guards: a merge or copy landing bytes a worktree already grew by, up to a day before, is not new growth")
@@ -1636,10 +1645,11 @@ assert_eq 1 "$(jq '.floors["event:UserPromptSubmit"][0]' "$catchup/days/$(date -
   "a run after a gap longer than the raw reach still records the floors since its last run"
 
 ledger_guard() {
-python3 - "$1" "$PROJECTS" "$ROOT/share" <<'LEDGER'
-import json, os, re, subprocess, sys
+python3 - "$1" "$PROJECTS" "$ROOT/share" "$ROOT/bin/speed-doctor" <<'LEDGER'
+import importlib.machinery, json, os, re, subprocess, sys
 sys.path.insert(0, sys.argv[3])
 from fix_commit import FIX_KEYS
+equivalent = importlib.machinery.SourceFileLoader("speed_doctor", sys.argv[4]).load_module().equivalent
 ledger = json.load(open(sys.argv[1]))
 assert ledger["owner"] == "Harness Doctor" and isinstance(ledger["rows"], list), "owner and rows"
 fields = {"id", "title", "match", "status", "fixes", "same_cause", "last_reviewed", "reviewed_by", "note", "handoff"}
@@ -1651,8 +1661,7 @@ for r in ledger["rows"]:
         assert r["fixes"], "a fixed row names its fix: %s" % r["id"]
     for i, fix in enumerate(r["fixes"]):
         assert set(fix) - {"equivalence"} == FIX_KEYS and fix["files"], r["id"]
-        proof = fix.get("equivalence", {"compared": 1, "data": 1, "result": 1})
-        assert isinstance(proof, dict) and all(str(proof.get(k) or "").strip() for k in ("compared", "data", "result")), r["id"]
+        assert "equivalence" not in fix or equivalent(fix), r["id"]
         assert all(re.fullmatch(r"[\w.-]+/.+", f) for f in fix["files"]), r["id"]
         assert i < len(r["fixes"]) - 1 or (fix["in"] is None) == (r["status"] == "fixed-pending"), r["id"]
         if fix["in"]:
@@ -1828,6 +1837,18 @@ def chat(name, lines, boots=(), cut=None):
 def by(rows, kind, at):
     return next(r for r in rows if r[0] == kind and abs(r[1] - at) < 0.01)
 
+def claims(texts, said="queued: will be delivered next round"):
+    path = os.path.join(projects, "p", "claims.jsonl")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    lines = [dict(say(B, tools=[("tu1", "SendMessage", {})]), entrypoint="sdk-cli"),
+             rec(B + 1, type="user", message={"content": [{"type": "tool_result", "tool_use_id": "tu1", "content": said}]})]
+    lines += [rec(B + 2 + i, type="assistant", message={"content": [{"type": "text", "text": x}]}) for i, x in enumerate(texts)]
+    with open(path, "w") as handle:
+        handle.write("".join(json.dumps(l, ensure_ascii=False) + "\n" for l in lines))
+    events = []
+    m.read_transcript(path, {"off": 0}, events, {})
+    return [e[2] + ":" + e[5] for e in events if e[0] == "o"]
+
 B = T - 40000
 stale = chat("stale", [human(B), say(B + 10), done(B + 20), human(B + 18), say(B + 25), done(B + 130, ms=999999),
                        human(B + 200), say(B + 210), done(B + 220)])
@@ -1836,6 +1857,12 @@ check(second[3] == B + 130 and second[5] == [1, 1, 1],
       "C1 stale start: a turn starts at max(its prompt, the previous end); durationMs is never read: %s" % second)
 check(by(stale, "t", B + 200)[5] == [0, 0, 0], "C1: a turn nobody answers expires with no R flag")
 
+check([claims([x]) for x in ("Fixed.", "`Передал` воркеру", "Sent to the worker", "it was sent")]
+      == [["SendMessage:queued"]] * 4,
+      "a worker's overclaim is recorded whatever case its done-word starts with")
+check([claims([x]) for x in ("It is queued and will be delivered on the next round.", "not sent yet",
+                             "it will be sent next round", "будет доставлен в следующем раунде")] == [[]] * 4,
+      "restating a queued result as future delivery is no overclaim")
 Q = B + 1000
 queued = chat("queue", [human(Q), say(Q + 5), queue(Q + 30, "enqueue"), say(Q + 40), done(Q + 60),
                         queue(Q + 60.1, "dequeue"), human(Q + 60.2, source="queued"), say(Q + 70), done(Q + 80),

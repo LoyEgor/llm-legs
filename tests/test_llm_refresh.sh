@@ -23,6 +23,7 @@ hang() { sleep 30 & printf '%s %s\n' "$$" "$!" >>"$STUB_HANG_PIDS"; wait; }
 if [ "$#" -eq 0 ]; then
   printf '<bare>\n' >>"$STUB_LOG"
   [ -z "${STUB_PASSIVE_HANG:-}" ] || hang
+  [ ! -e "${STUB_HANG_MARK:-/nonexistent}" ] || hang
   # Stands in for the real merge: what revive left in the claudeb snapshot reaches the store
   # only here, never before.
   if [ -s "${CB_SNAPSHOT:-/dev/null}" ]; then
@@ -187,6 +188,7 @@ printf '%s|%s\n' "${1:-}" "${OPENCODE_GO_PROFILE:-}" >>"$OC_LOG"
 # The probe is a real completion against a gateway that can be wedged; holding the tick lock
 # across it parks every other vendor's refresh behind this one.
 [ ! -d "${LLM_REFRESH_STATE}.lock" ] || printf 'lock-held\n' >>"$OC_LOG"
+[ -z "${STUB_HANG_MARK:-}" ] || : >"$STUB_HANG_MARK"
 profile=${OPENCODE_GO_PROFILE:--}
 restate() { # <walled> <resets_at or null>
   tmp=$(mktemp "${LLM_LIMITS_CACHE}.tmp.XXXXXX") || exit 5
@@ -262,7 +264,7 @@ run_refresh() {
     STUB_STDERR_TARGET="${STUB_STDERR_TARGET:-}" STUB_STDERR_TEXT="${STUB_STDERR_TEXT:-}" \
     STUB_PASSIVE_RC="${STUB_PASSIVE_RC:-0}" \
     STUB_PASSIVE_HANG="${STUB_PASSIVE_HANG:-}" STUB_HANG_TARGET="${STUB_HANG_TARGET:-}" \
-    STUB_HANG_PIDS="$dir/hang.pids" STUB_CALL_SECONDS="${STUB_CALL_SECONDS:-0}" \
+    STUB_HANG_PIDS="$dir/hang.pids" STUB_HANG_MARK="${STUB_HANG_MARK:-}" STUB_CALL_SECONDS="${STUB_CALL_SECONDS:-0}" \
     LLM_LIMITS_REFRESH_COLLECTOR_TIMEOUT="${LLM_LIMITS_REFRESH_COLLECTOR_TIMEOUT:-600}" \
     LLM_LIMITS_REFRESH_LOCK_CEILING_SECONDS="${LLM_LIMITS_REFRESH_LOCK_CEILING_SECONDS:-3600}" \
     PATH="$GROK_BIN:$PATH" \
@@ -700,11 +702,26 @@ jq -eR 'fromjson | select(.vendor == "tick" and .outcome == "hung" and
 hang_tree_dead "$case_dir" || fail 'a tick killed at its ceiling left processes behind'
 pass
 
+case_dir="$WORK/supervisor-term"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$NOW" 60 60 60
+STUB_PASSIVE_HANG=1 LLM_LIMITS_REFRESH_COLLECTOR_TIMEOUT=60 LLM_LIMITS_REFRESH_LOCK_CEILING_SECONDS=4 \
+  run_refresh "$case_dir" "$NOW" &
+runner=$!
+for _ in $(seq 1 30); do [ -s "$case_dir/hang.pids" ] && break; sleep 0.1; done
+kill -TERM "$runner"
+wait "$runner" 2>/dev/null
+sleep 5
+hang_tree_dead "$case_dir" || fail 'a terminated supervisor left its tick running'
+! jq -eR 'fromjson | select(.vendor == "tick" and .outcome == "hung")' "$case_dir/journal.jsonl" >/dev/null 2>&1 ||
+  fail 'the watchdog of a terminated supervisor outlived it and journaled a hung tick'
+pass
+
 case_dir="$WORK/hung-holder"
 mkdir -p "$case_dir/home" "$case_dir/state.json.lock"
 write_store "$case_dir/store.json" "$NOW" 60 60 60
 holder="$case_dir/llm-refresh-holder"
-printf '#!/usr/bin/env bash\nsleep 60 &\nprintf "%%s %%s\\n" "$$" "$!" >"$1"\nwait\n' >"$holder"
+printf '#!/usr/bin/env bash\ntrap "" TERM\nsleep 60 &\nprintf "%%s %%s\\n" "$$" "$!" >"$1"\nwait\n' >"$holder"
 chmod +x "$holder"
 "$holder" "$case_dir/hang.pids" &
 for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$case_dir/hang.pids" ] && break; sleep 0.2; done
@@ -1176,6 +1193,23 @@ jq -eR 'fromjson | select(.vendor == "opencode" and .outcome == "error" and
   fail 'a probe that answered nothing was journaled as a verdict, or without its reason'
 [ "$(standing_opencode_walls "$case_dir" | jq 'length')" -eq 1 ] || \
   fail 'a probe that answered nothing retired the wall anyway'
+pass
+
+# The collect after a probe runs inside opencode_tick's subshell; its timeout still ends the tick.
+case_dir="$WORK/opencode-collect-timeout"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$OC_NOW" 60 60 60
+write_state "$case_dir/state.json" 30 30 30 "$OC_NOW" "$OC_NOW"
+seed_opencode_wall "$case_dir/store.json" - \
+  "$(date -u -r "$((OC_NOW + 3 * 86400))" '+%Y-%m-%dT%H:%M:%SZ')"
+cp "$case_dir/state.json" "$case_dir/state.before"
+STUB_HANG_MARK="$case_dir/hang-mark" LLM_LIMITS_REFRESH_COLLECTOR_TIMEOUT=1 run_refresh "$case_dir" "$OC_NOW" ||
+  fail 'OpenCode collect-timeout run failed'
+jq -eR 'fromjson | select(.vendor == "opencode" and .step == 1 and .outcome == "timed-out" and
+  .accounts_tried == ["-"] and (.detail | contains("passive collect timed out after 1s")))' \
+  "$case_dir/journal.jsonl" >/dev/null || fail 'a timed-out OpenCode collect was not journaled as timed-out'
+cmp -s "$case_dir/state.json" "$case_dir/state.before" || fail 'a timed-out OpenCode collect persisted state'
+hang_tree_dead "$case_dir" || fail 'the timed-out OpenCode collect left processes behind'
 pass
 
 # The stated reset is day-granular, so it is a hint, not a deadline: the cadence tightens as it

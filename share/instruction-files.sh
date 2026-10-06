@@ -846,7 +846,7 @@ instruction_interp_scripts() { # command cwd → INTERPRETER<TAB>PATH lines
   while IFS= read -r -d '' seg; do
     read -ra words <<< "${seg//$'\n'/ }"
     interp='' op='' skip=''
-    for w in "${words[@]}"; do
+    for w in ${words[@]+"${words[@]}"}; do
       w=${w#[\"\']}; w=${w%[\"\']}
       if [ -z "$interp" ]; then
         if [[ $w =~ ^([A-Za-z_][A-Za-z_0-9]*)=(.*)$ ]]; then

@@ -48,6 +48,8 @@ assert test -s "$WORK/grandchild"
 assert_fails kill -0 "$(cat "$WORK/grandchild")" 2>/dev/null
 assert jq -enR --arg r "$REPO" '[inputs | fromjson? | select(.repo_root == $r and .pid != null)]
   | length == 1 and .[0].suites["test_hang.sh"].rc == 124 and .[0].suites["test_known.sh"].rc == 0' "$RUN_SUITES_JOURNAL" >/dev/null
+assert jq -enR --arg r "$REPO" '[inputs | fromjson? | select(.repo_root == $r and .pid != null)][0].suites | map_values(.bound)
+  == {"test_hang.sh": 2, "test_known.sh": 5, "test_slow.sh": 4, "test_quick.sh": 2}' "$RUN_SUITES_JOURNAL" >/dev/null
 
 # The floor must be whole seconds.
 rc=0

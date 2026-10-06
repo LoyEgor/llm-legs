@@ -474,19 +474,7 @@ end_child() { # pid signal
   kill -"$2" "$1" 2>/dev/null || :
 }
 
-# The watchdog with everything it forked: killed alone, its in-flight command substitutions outlive
-# it, and one that never returns is a `_supervise` process for good. Stopped first, so it cannot fork
-# a child the listing misses.
-end_tree() { # pid
-  [ -n "$1" ] && kill -STOP "$1" 2>/dev/null || return 0
-  kill -TERM $(ps -A -o pid=,ppid= 2>/dev/null | awk -v root="$1" '
-    { kids[$2] = kids[$2] " " $1 }
-    END { queue[n = 1] = root
-          for (i = 1; i <= n; i++) { print queue[i]; m = split(kids[queue[i]], k, " "); for (j = 1; j <= m; j++) queue[++n] = k[j] } }') 2>/dev/null
-  kill -CONT "$1" 2>/dev/null || :
-}
-
-# A process launchd adopted before the run ended is in no tree end_tree or end_child walks; the id it
+# A process launchd adopted before the run ended is in no tree process_tree_end or end_child walks; the id it
 # inherited is all that ties it to the run.
 end_run_orphans() { # directory
   local holders pid etime command rows='' pids=()
@@ -618,7 +606,9 @@ run_with_deadline() {
     [ "$rc_reaped" -eq 127 ] || rc=$rc_reaped
   fi
   trap - TERM INT
-  end_tree "$watchdog"
+  # The whole tree: killed alone, the watchdog's in-flight command substitutions outlive it. Grace 0:
+  # its zombie stays unreaped until the wait below and answers kill -0 for any grace.
+  process_tree_end "$watchdog" 0
   wait "$watchdog" 2>/dev/null
   printf -v ended '%(%s)T' -1
   [ -z "$RUN_DIRECTORY" ] || meta_update "$RUN_DIRECTORY" \
@@ -634,7 +624,7 @@ stop_run() { # signal
   local reason="signal $1"
   [ "$1" != TERM ] || reason=term
   [ -z "$RUN_DIRECTORY" ] || printf '%s\n' "$reason" >"$RUN_DIRECTORY/killed" 2>/dev/null || :
-  end_tree "$watchdog"
+  process_tree_end "$watchdog" 0
   end_child "$child" TERM
   ( sleep 5; end_child "$child" KILL ) >/dev/null 2>&1 &
 }
@@ -1510,7 +1500,7 @@ record_made_worktrees() { # directory
       ! grep -qxF -- "$tree" "$directory/worktrees-before" || continue
     elif [ -e "$tree/.git" ]; then
       admin=$(git -C "$tree" rev-parse --absolute-git-dir 2>/dev/null) &&
-        born=$(stat -f %B "$admin" 2>/dev/null || stat -c %W "$admin" 2>/dev/null) &&
+        born=$(stat -c %W "$admin" 2>/dev/null || stat -f %B "$admin" 2>/dev/null) &&
         [[ "$born" =~ ^[0-9]+$ ]] && [ "$born" -ge "$started" ] || continue
     else
       [ -e "$root/.git" ] || continue
@@ -2457,7 +2447,7 @@ start_run() {
     fail "brief has Russian ($brief_cyrillic% Cyrillic): the reader is a model — write it in English; $("$CYRILLIC_SHARE" --allowed 2>/dev/null)"
   [ -d "$workdir" ] || fail "workdir is not a directory: $workdir"
   workdir=$(cd "$workdir" && pwd -P) || fail "could not resolve workdir: $workdir"
-  [ "$role" != workers ] || [ -n "$light" ] || [ "$workdir" != "$(cd "$HOME" && pwd -P)" ] ||
+  [ "$role" != workers ] || [ "$workdir" != "$(cd "$HOME" && pwd -P)" ] ||
     fail "workdir is the home directory, where no run's files can be tracked: launch with --workdir <the repository the brief works in>, plus one 'ADD-DIR: <dir>' header line per other repository it writes; a run that writes no repository launches in a scratch directory. Nothing was launched and no account was spent."
   # Every repository of the round is the fixer's to write, and a write outside workdir and
   # --add-dir has no content baseline: the run's changes there read as escaped. A codex resume and
@@ -2469,7 +2459,7 @@ start_run() {
         add_dirs+=("$value")
     done < <(jq -r '.repos[]? | objects | .repo // empty' "$(review_bench_dir "$review_round")/meta.json" 2>/dev/null)
   fi
-  if [ -z "$light" ] && [ "$vendor" != grok ] && { [ "$vendor" != codex ] || [ -z "$resume" ]; }; then
+  if [ "$light" != research ] && [ "$vendor" != grok ] && { [ "$vendor" != codex ] || [ -z "$resume" ]; }; then
     while IFS= read -r value; do
       [ -d "$value" ] && value=$(cd "$value" && pwd -P) && [ "$value" != "$workdir" ] || continue
       for entry in ${add_dirs[@]+"${add_dirs[@]}"}; do (cd "$entry" 2>/dev/null && pwd -P); done |
@@ -2933,6 +2923,7 @@ exit "$rc"'
   jq --argjson pid "$pid" --argjson began "$pid_began" '.pid = $pid | .pid_started_at = $began' \
     "$directory/meta.json" >"$directory/meta.json.tmp.$$" \
     && mv -f "$directory/meta.json.tmp.$$" "$directory/meta.json" || fail 'could not record supervisor pid'
+  inbox_carry_commit "$directory"
   # A brief carrying a bench run's own `record` command is that run's triage, delegated: stamp the
   # bench with the supervisor's pid so the Stop gate nagging for an untriaged report stays quiet
   # while this worker lives — and asks again the moment it dies, which is the case the nag is for.
@@ -4091,7 +4082,17 @@ inbox_lines() { # directory
 inbox_carry_from() { # prior-directory directory
   inbox_pending "$1" || return 0
   { inbox_context "$INBOX_TAKEN" && printf '\n'; } >>"$2/inbox-carried" &&
-    inbox_record "$1" "$INBOX_END" "resume:${2##*/}"
+    INBOX_CARRIES+=("$INBOX_END"$'\t'"$1")
+}
+
+# Only once the resumed run has a supervisor: a start failing earlier would leave the messages
+# reported as delivered to a run that never launched, and the next RESUME with nothing to carry.
+inbox_carry_commit() { # directory
+  local entry
+  for entry in ${INBOX_CARRIES[@]+"${INBOX_CARRIES[@]}"}; do
+    with_agent_tag_lock "${entry#*$'\t'}" inbox_record "${entry#*$'\t'}" "${entry%%$'\t'*}" "resume:${1##*/}"
+  done
+  INBOX_CARRIES=()
 }
 
 inbox_carry_resume() { # directory session

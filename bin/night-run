@@ -25,6 +25,7 @@ STATES=' pending merged left failed-launch blocked-on-egor nothing-to-do '
 . "$repo_root/share/test-scope.sh"
 . "$repo_root/share/night-worktree.sh"
 . "$repo_root/share/processes.sh"
+. "$repo_root/share/slots.sh"
 
 die() { printf 'night-run: %s\n' "$*" >&2; exit 1; }
 stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -79,8 +80,8 @@ hold, run by the chat Egor said `сделай холд` in (word family night-ho
 carry: first an owner-chat job per owner chat (share/handoffs.py --batches: the ledger row naming the
   handoff, else its first addressee) with a decision section or two or more open handoffs: its night
   worktree, and its chat resumed with the batch (live: the sweep SendMessages it); at most
-  NIGHT_RUN_OWNER_CHATS (3) pending at once and none while the load average is over cores x
-  NIGHT_RUN_OWNER_LOAD_K (30), a deferred owner's handoffs staying night jobs; prints
+  NIGHT_RUN_OWNER_CHATS (3) pending at once and none while share/slots.sh slot_room finds no room,
+  a deferred owner's handoffs staying night jobs; prints
   <ref>\t<prompt>\topened <account> <session>|message <owner>. Then one handoff job per other open
   docs/handoffs/*.md of the sweep repositories not addressed to a chat live now, and one suite job per
   suite the newest earlier night's full run failed; each gets its night worktree and a brief; prints
@@ -613,12 +614,10 @@ carry_brief() { # id kind ref repo what log worktree branch -> the brief file
 }
 
 owner_busy() { # night-file -> why no further owner chat starts now; nothing when one may
-  local max=${NIGHT_RUN_OWNER_CHATS:-3} k=${NIGHT_RUN_OWNER_LOAD_K:-30} load cores
+  local max=${NIGHT_RUN_OWNER_CHATS:-3}
   [ "$(jq '[.jobs[] | select(.kind == "owner-chat" and .state == "pending")] | length' "$1")" -lt "$max" ] ||
     { printf '%s owner chats at work\n' "$max"; return 0; }
-  load=$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}') cores=$(sysctl -n hw.ncpu 2>/dev/null)
-  awk -v l="${load:-0}" -v c="${cores:-1}" -v k="$k" 'BEGIN { exit !(l > c * k) }' &&
-    printf 'load %s over %s cores x %s\n' "$load" "$cores" "$k"
+  slot_room || true
 }
 
 owner_prompt() { # id ref branch sweep batch-json worktrees -> the prompt file
@@ -645,6 +644,8 @@ carry_owner_chats() { # id -> <ref>\t<prompt>\topened <account> <session>|messag
     owner=$(jq -r .owner <<<"$batch") session=$(jq -r .session <<<"$batch")
     ref="owner-chat-$(jq -r .slug <<<"$batch")" branch="night/$id/owner-chat-$(jq -r .slug <<<"$batch")"
     ! jq -e --arg r "$ref" 'any(.jobs[]; .ref == $r)' "$file" >/dev/null || continue
+    batch=$(jq -c --slurpfile n "$file" '.handoffs -= [$n[0].jobs[] | select(.kind == "handoff" and .state != "failed-launch") | .path // empty]' <<<"$batch")
+    [ "$(jq '.handoffs | length' <<<"$batch")" -gt 0 ] || continue
     why=$(owner_busy "$file")
     if [ -n "$why" ]; then
       printf 'night-run: owner chat «%s» deferred (%s): its handoffs are night jobs\n' "$owner" "$why" >&2
@@ -662,8 +663,11 @@ carry_owner_chats() { # id -> <ref>\t<prompt>\topened <account> <session>|messag
         grep -qF "$(basename "$repo")" $(jq -r '.handoffs[]' <<<"$batch") 2>/dev/null && repos+=("$repo")
     done < <(grep -vxF '' "$sweep_repos" 2>/dev/null)
     wts=$(night_sibling_worktrees "$id" "$branch" "$ref" ${repos[@]+"${repos[@]}"} 2>/dev/null)
-    if [ -z "$wts" ] || ! prompt=$(owner_prompt "$id" "$ref" "$branch" "$sweep" "$batch" "$wts"); then
-      "$script_path" job "$id" set "$ref" state=failed-launch reason="not carried: ${wts:+prompt not written}${wts:-no night worktree}" >/dev/null
+    if [ -z "$wts" ]; then why='no night worktree'
+    elif ! prompt=$(owner_prompt "$id" "$ref" "$branch" "$sweep" "$batch" "$wts"); then why='prompt not written'
+    fi
+    if [ -n "$why" ]; then
+      "$script_path" job "$id" set "$ref" state=failed-launch reason="not carried: $why" >/dev/null
       continue
     fi
     if [ "$(jq -r .live <<<"$batch")" = true ]; then
@@ -690,9 +694,21 @@ cmd_carry() {
   known_night "$id"
   carry_owner_chats "$id"
   while IFS=$'\t' read -r kind slug repo what log; do
-    ref="$kind-$slug" branch="night/$id/$kind-$slug" wt="$repo/.claude/worktrees/night-$id-$kind-$slug"
+    ref="$kind-$slug"
+    if [ "$kind" = handoff ]; then
+      ! jq -e --arg p "$repo/$what" --arg r "$ref" 'any(.jobs[]; .kind == "handoff" and (.path == $p or (.path == null and .ref == $r)))' \
+        "$(night_file "$id")" >/dev/null || continue
+      ! jq -e --arg r "$ref" 'any(.jobs[]; .ref == $r)' "$(night_file "$id")" >/dev/null || ref="$kind-$(basename "$repo")-$slug"
+    fi
+    branch="night/$id/$ref" wt="$repo/.claude/worktrees/night-$id-$ref"
     ! jq -e --arg r "$ref" 'any(.jobs[]; .ref == $r)' "$(night_file "$id")" >/dev/null || continue
     "$script_path" job "$id" add "$kind" "$ref" --branch "$branch" >/dev/null || continue
+    if [ "$kind" = handoff ]; then
+      lock
+      night_set "$id" '.jobs |= map(if .ref == $r then . + {path: $p} else . end)' --arg r "$ref" --arg p "$repo/$what" ||
+        die "cannot write night $id"
+      unlock
+    fi
     if ! err=$(night_worktree_add "$repo" "$id" "$branch" "$wt" 2>&1 >/dev/null) ||
         ! brief=$(carry_brief "$id" "$kind" "$ref" "$repo" "$what" "$log" "$wt" "$branch"); then
       "$script_path" job "$id" set "$ref" state=failed-launch reason="not carried: ${err:-brief not written}" >/dev/null
@@ -728,7 +744,8 @@ cmd_suites() {
     rows=$(jq -c --arg r "$repo" --arg l "$log" --argjson x "$rc" --slurpfile run <(jq -cR --argjson p "$pid" --argjson t "$since" \
       'fromjson? | select(.kind == "suites" and .pid == $p and .started_at >= $t)' "$journal" 2>/dev/null) \
       '(($run | last // {}).suites // {}) as $s | . + [{repo: $r, exit: $x, log: $l,
-      passed: ([$s[] | select(.rc == 0)] | length), failed: [$s | to_entries[] | select(.value.rc != 0) | .key]}]' <<<"$rows")
+      passed: ([$s[] | select(.rc == 0)] | length), failed: ([$s | to_entries[] | select(.value.rc != 0) | .key]
+        | if length == 0 and $x != 0 then ["run-all"] else . end)}]' <<<"$rows")
   done <"$sweep_repos"
   lock
   night_set "$id" '.suites.finished_at = $t | .suites.repos = $r' --arg t "$(stamp)" --argjson r "$rows" || die "cannot write night $id"
@@ -766,8 +783,8 @@ cmd_finish() {
 # own index refresh.
 LIVE_S=$((6 * 3600))
 
-branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locked(0|1) cwds now -> TSV row; reads HELD
-  local repo=$1 wt=$2 branch=$3 ref head behind ahead landed=false dirty=0 night='' why='' state=live newest t hold
+branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locked(0|1) now -> TSV row; reads HELD, CWDS, TREE
+  local repo=$1 wt=$2 branch=$3 ref head behind ahead landed=false dirty=0 night='' why='' state=live newest t hold cherry
   ref=${branch:+refs/heads/$branch}
   head=$(git -C "${wt:-$repo}" rev-parse -q --verify "${ref:-HEAD}^{commit}") || return 0
   read -r behind ahead < <(git -C "$repo" rev-list --left-right --count "refs/heads/main...$head")
@@ -775,11 +792,13 @@ branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locke
   if git -C "$repo" merge-base --is-ancestor "$head" refs/heads/main ||
     git -C "$repo" merge-base --is-ancestor "$head" refs/remotes/origin/main 2>/dev/null; then landed=true
   elif [ -n "$night" ] && [ "$head" = "$(git -C "$repo" rev-parse -q --verify "refs/night/$night/base")" ]; then landed=true
-  elif ! git -C "$repo" cherry refs/heads/main "$head" 2>/dev/null | grep -q '^+'; then landed=true; fi
+  # cherry skips merges, so a merge's own resolution never counts as landed by patch equivalence.
+  elif cherry=$(git -C "$repo" cherry refs/heads/main "$head" 2>/dev/null) && ! grep -q '^+' <<<"$cherry" &&
+    [ -z "$(git -C "$repo" rev-list --merges -1 "refs/heads/main..$head")" ]; then landed=true; fi
   [ -z "$wt" ] || dirty=$(GIT_OPTIONAL_LOCKS=0 git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null | wc -l | tr -d ' ')
   if [ "$4" = 1 ]; then why='main checkout'
   elif [ "$5" = 1 ]; then why='locked'
-  elif [ -n "$wt" ] && grep -qxE "$(printf '%s' "$wt" | sed 's/[][\.*^$+?(){}|]/\\&/g')(/.*)?" <<<"$6"; then why='a process inside'
+  elif [ -n "$wt" ] && [ -n "$(cwd_holders "$wt" "$CWDS" "$TREE")" ]; then why='a process inside'
   elif [ -n "$night" ]; then
     [ ! -s "$(night_file "$night")" ] || [ "$(night_status "$(night_file "$night")" 2>/dev/null)" != running ] || why="night $night running"
   elif [ -z "${ready_branch:-}" ] || [ "$branch" != "$ready_branch" ]; then
@@ -791,7 +810,7 @@ branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locke
         xargs -0 stat -f %m 2>/dev/null | sort -n | tail -1)
       [ "${t:-0}" -le "$newest" ] || newest=$t
     fi
-    [ $(($7 - newest)) -ge "$LIVE_S" ] || why="active $((($7 - newest) / 60))m ago"
+    [ $(($6 - newest)) -ge "$LIVE_S" ] || why="active $((($6 - newest) / 60))m ago"
   fi
   hold=$(awk -F '\t' -v r="$repo" -v b="$branch" '$1 == r && $2 == b { print $3; exit }' <<<"$HELD")
   if [ -z "$why" ] && [ -n "$branch" ] && [ -n "$hold" ]; then
@@ -810,9 +829,9 @@ branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locke
 # at its night's base, since a nothing-to-do job never committed. `-`, not an empty field: a tab is IFS
 # whitespace, so read would shift every field after an empty one.
 branch_rows() { # [repo...], default the sweep repositories
-  local repo wt branch main locked cwds now seen HELD
+  local repo wt branch main locked now seen HELD CWDS TREE
   [ $# -gt 0 ] || [ -r "$sweep_repos" ] || return 0
-  cwds=$(lsof -a -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
+  CWDS=$(cwd_listing) TREE=$(process_listing)
   now=$(date +%s)
   HELD=$(cat "$holds_dir"/*.json 2>/dev/null | jq -r '.words as $w | .branches[]? | [.repo, .branch, $w] | @tsv' 2>/dev/null)
   while IFS= read -r repo; do
@@ -821,10 +840,10 @@ branch_rows() { # [repo...], default the sweep repositories
     seen=' main '
     while IFS=$'\t' read -r wt branch main locked; do
       [ "$branch" != - ] || branch=''
-      [ "$branch" = main ] || [ ! -d "$wt" ] || { seen="$seen$branch "; branch_row "$repo" "$wt" "$branch" "$main" "$locked" "$cwds" "$now"; }
+      [ "$branch" = main ] || [ ! -d "$wt" ] || { seen="$seen$branch "; branch_row "$repo" "$wt" "$branch" "$main" "$locked" "$now"; }
     done < <(worktree_lines "$repo")
     while IFS= read -r branch; do
-      [[ "$seen" == *" $branch "* ]] || branch_row "$repo" '' "$branch" 0 0 "$cwds" "$now"
+      [[ "$seen" == *" $branch "* ]] || branch_row "$repo" '' "$branch" 0 0 "$now"
     done < <(git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads)
   done < <(if [ $# -gt 0 ]; then printf '%s\n' "$@"; else cat "$sweep_repos"; fi)
 }

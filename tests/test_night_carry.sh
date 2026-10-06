@@ -75,9 +75,22 @@ rm "$NIGHTS/N1.suites.repo.log"
 night suites N1 | grep -q '^night N1: full suites run in the background, pid [0-9]*$' || fail "suites did not detach"
 for i in $(seq 1 100); do [ -s "$NIGHTS/N1.suites.repo.log" ] && jqe '.suites.finished_at != null' "$NIGHTS/N1.json" && break; sleep 0.1; done
 assert jqe '.suites.repos[0].failed == ["test_b.sh"]' "$NIGHTS/N1.json"
+# A run-all that dies before journaling still reads as failed, so the next night carries it.
+jq -n '{id: "N1x", started_at: "2026-10-03T12:00:00Z", finished_at: null, jobs: []}' >"$NIGHTS/N1x.json"
+mv "$WORK/repo/tests/run-all" "$WORK/run-all.kept"
+printf '#!/usr/bin/env bash\nexit 3\n' >"$WORK/repo/tests/run-all"
+chmod +x "$WORK/repo/tests/run-all"
+night suites N1x --wait || fail "suites of a crashed run-all failed"
+mv "$WORK/run-all.kept" "$WORK/repo/tests/run-all"
+assert jqe '.suites.repos[0] | .exit == 3 and .passed == 0 and .failed == ["run-all"]' "$NIGHTS/N1x.json"
+assert grep -qxF 'suites · repo · 0 PASS · 1 FAIL: run-all' <(night report N1x 2>/dev/null)
 
 mkdir -p "$WORK/bin" "$WORK/repo/share" "$WORK/alpha-cwd"
-export PATH="$WORK/bin:$PATH" NIGHT_RUN_OPENER="$WORK/bin/opener" NIGHT_RUN_WORKER_PICK="$WORK/bin/pick" NIGHT_RUN_OWNER_LOAD_K=1000
+export PATH="$WORK/bin:$PATH" NIGHT_RUN_OPENER="$WORK/bin/opener" NIGHT_RUN_WORKER_PICK="$WORK/bin/pick"
+# slot_room's machine reading, from one file: pressure level, load1, load15, free MB.
+printf '#!/usr/bin/env bash\n[ "$*" = "-n kern.memorystatus_vm_pressure_level hw.ncpu vm.loadavg" ] || exec /usr/sbin/sysctl "$@"\nread -ra r <"%s/room"\nprintf "%%s\\n10\\n{ %%s 0.00 %%s }\\n" "${r[0]}" "${r[1]}" "${r[2]}"\n' "$WORK" >"$WORK/bin/sysctl"
+printf '#!/usr/bin/env bash\nread -ra r <"%s/room"\nprintf "Mach Virtual Memory Statistics: (page size of 1048576 bytes)\\nPages free: %%s.\\n" "${r[3]}"\n' "$WORK" >"$WORK/bin/vm_stat"
+printf '1 1.00 1.00 100000\n' >"$WORK/room"
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$1" >>"%s/opened"\n' "$WORK" >"$WORK/bin/opener"
 printf '#!/usr/bin/env bash\necho acct-x\n' >"$WORK/bin/pick"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$WORK/bin/claudeb"
@@ -136,10 +149,20 @@ assert grep -qxF 'night-run: owner chat «Beta Chat» deferred (1 owner chats at
 assert [ "$(handoff_refs N3)" = '["handoff-2026-09-25-b1","handoff-2026-09-26-c1","handoff-2026-09-27-d1","handoff-2026-09-28-d2","handoff-2026-09-28-old"]' ]
 
 new_night N4
-NIGHT_RUN_OWNER_LOAD_K=0 night carry N4 >"$WORK/n4.out" 2>"$WORK/n4.err" || fail "loaded carry failed"
+printf '2 1.00 1.00 100000\n' >"$WORK/room"
+night carry N4 >"$WORK/n4.out" 2>"$WORK/n4.err" || fail "loaded carry failed"
+printf '1 1.00 1.00 100000\n' >"$WORK/room"
 assert [ "$(grep -c '^owner-chat-' "$WORK/n4.out")" = 0 ]
-assert grep -qF 'night-run: owner chat «Alpha Doctor» deferred (load ' "$WORK/n4.err"
+assert grep -qxF 'night-run: owner chat «Alpha Doctor» deferred (memory pressure level 2): its handoffs are night jobs' "$WORK/n4.err"
 assert [ "$(handoff_refs N4)" = '["handoff-2026-09-20-a1","handoff-2026-09-25-b1","handoff-2026-09-26-c1","handoff-2026-09-27-d1","handoff-2026-09-28-d2","handoff-2026-09-28-old","handoff-2026-10-01-a2"]' ]
+night carry N4 >"$WORK/n4b.out" 2>/dev/null || fail "a carry once the load fell failed"
+assert [ ! -s "$WORK/n4b.out" ]
+assert jqe '[.jobs[] | select(.kind == "owner-chat")] == []' "$NIGHTS/N4.json"
+
+new_night N4p
+mkdir "$NIGHTS/N4p.owner-chat-alpha-doctor.prompt.md"
+night carry N4p >/dev/null 2>&1 || fail "carry with an unwritable prompt failed"
+assert jqe '.jobs[] | select(.ref == "owner-chat-alpha-doctor") | .state == "failed-launch" and .reason == "not carried: prompt not written"' "$NIGHTS/N4p.json"
 
 O="$WORK/own"
 git init -q "$O"
@@ -226,5 +249,22 @@ assert grep -qF "lands done · no worktree · landed · " "$WORK/lands.out"
 printf 'h\n' >"$L/h.txt" && gt -C "$L" add h.txt && gt -C "$L" commit -qm local
 NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-lands" night leftovers >"$WORK/lands.out" || fail "leftovers with a diverged checkout"
 assert grep -qxF "checkout lands: diverged, WIP in the way: f.txt" "$WORK/lands.out"
+
+# One handoff file name open in two repositories is two jobs, each carried once.
+for name in dupa dupb; do
+  git init -q "$WORK/$name" && mkdir -p "$WORK/$name/docs/handoffs"
+  printf '# Same\n\nStatus: open\n\nNo owner.\n' >"$WORK/$name/docs/handoffs/2026-10-09-same.md"
+  gt -C "$WORK/$name" add -A && gt -C "$WORK/$name" commit -qm init
+  printf '%s\n' "$WORK/$name" >>"$WORK/sweep-dup"
+done
+export NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-dup"
+new_night N6
+night carry N6 >/dev/null 2>&1 || fail "carry of same-named handoffs failed"
+assert jqe --arg a "$WORK/dupa/docs/handoffs/2026-10-09-same.md" --arg b "$WORK/dupb/docs/handoffs/2026-10-09-same.md" \
+  '[.jobs[] | select(.kind == "handoff") | [.ref, .path, .state]]
+   == [["handoff-2026-10-09-same", $a, "pending"], ["handoff-dupb-2026-10-09-same", $b, "pending"]]' "$NIGHTS/N6.json"
+assert [ -d "$WORK/dupb/.claude/worktrees/night-N6-handoff-dupb-2026-10-09-same" ]
+night carry N6 >"$WORK/n6b.out" 2>/dev/null || fail "a second carry of same-named handoffs failed"
+assert [ "$(handoff_refs N6)" = '["handoff-2026-10-09-same","handoff-dupb-2026-10-09-same"]' ]
 
 printf 'PASS: test_night_carry.sh (%s asserts)\n' "$asserts"

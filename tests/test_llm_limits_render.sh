@@ -173,6 +173,8 @@ stale_json=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$STALE_STORE" LLM_LIMITS_CACHE="$
   bash "$SCRIPT" --json) || fail "stale-data collection failed"
 jq -e --argjson thr "$stale_routing" '.account_stale_after_s == $thr' <<<"$stale_json" >/dev/null \
   || fail "the store does not publish the account staleness threshold"
+jq -e '[.vendors.claude.accounts[] | select(.stale_watch == true) | .account] | sort == ["fresh", "old"]' \
+  <<<"$stale_json" >/dev/null || fail "the collector did not mark the accounts the stale warning counts"
 stale_table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$STALE_STORE" LLM_LIMITS_CACHE="$WORK/stale-cache.json" \
   bash "$SCRIPT" --table) || fail "stale-data table collection failed"
 awk '$1 == "claude/old" {print $NF}' <<<"$stale_table" | grep -qx stale \

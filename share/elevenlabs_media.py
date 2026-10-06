@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """ElevenLabs media legs behind media-run: one subcommand per kind, run by bin/elevenlabs-<kind>.
 
-Keys: ~/.config/elevenlabs/keys.txt (`<key> <account> [notes]` per line). Limits and defaults:
+Keys: the manifest's accounts.file (`<key> <account> [notes]` per line). Limits and defaults:
 share/image-caps/elevenlabs.json. Prose: docs/image-vendors/elevenlabs.md.
 """
 from __future__ import annotations
@@ -27,10 +27,8 @@ from email.policy import default as email_policy
 from pathlib import Path
 
 API = os.environ.get("ELEVENLABS_API_BASE", "https://api.elevenlabs.io")
-KEYS = Path(os.environ.get("ELEVENLABS_KEYS", "~/.config/elevenlabs/keys.txt")).expanduser()
 ROOT = Path(__file__).resolve().parent.parent
 CAPS_PATH = Path(os.environ.get("ELEVENLABS_CAPS", ROOT / "share/image-caps/elevenlabs.json"))
-LEG_LOG = Path(os.environ.get("IMAGE_LEG_LOG", "~/.cache/image-legs/legs.jsonl")).expanduser()
 VOICE_ID_RE = re.compile(r"^[A-Za-z0-9]{20}$")
 
 
@@ -48,6 +46,9 @@ class Usage(argparse.ArgumentParser):
 
 def caps() -> dict:
     return json.loads(CAPS_PATH.read_text())
+
+
+KEYS = Path(os.environ.get("ELEVENLABS_KEYS") or caps()["accounts"]["file"]).expanduser()
 
 
 def accounts() -> dict[str, str]:
@@ -321,14 +322,13 @@ class Run:
         print("\n".join(self.lines + tail))
 
 
-def leg_log(kind: str, rc: int, started: float, account: str, model: str, err: str) -> None:
+def leg_state(skip: bool, run: Run | None) -> None:
+    path = os.environ.get("ELEVENLABS_LEG_STATE")
+    if not path:
+        return
+    account = run.client.account if run and run.client else ""
     try:
-        LEG_LOG.parent.mkdir(parents=True, exist_ok=True)
-        record = {"ts": int(time.time()), "tool": f"elevenlabs-{kind}", "kind": "audio", "rc": rc,
-                  "seconds": int(time.time() - started), "queued": 0, "size": None, "account": account,
-                  "served": model, "err": err[-2000:], "job": os.environ.get("IMAGE_JOB_ID", ""), "route": "api"}
-        with LEG_LOG.open("a") as log:
-            log.write(json.dumps(record) + "\n")
+        Path(path).write_text(f"{'skip' if skip else 'log'}\n{account}\n{run.model if run else ''}\n")
     except OSError:
         pass
 
@@ -926,8 +926,7 @@ def main(argv: list[str]) -> int:
         print(f"usage: elevenlabs_media.py <{'|'.join(KINDS)}> [args]", file=sys.stderr)
         return 2
     kind = argv[0]
-    started = time.time()
-    run = None
+    run, skip = None, False
     try:
         args = parser(kind).parse_args(argv[1:])
         run = Run(kind, args.account)
@@ -935,16 +934,18 @@ def main(argv: list[str]) -> int:
         KINDS[kind](args, run)
         if not run.dry and run.client is not None:
             run.finish()
-        rc, err = 0, ""
+        rc = 0
     except Fail as error:
         print(f"elevenlabs-{kind}: {error.message}", file=sys.stderr)
-        rc, err = error.rc, error.message
+        rc = error.rc
     except KeyboardInterrupt:
-        rc, err = 130, "interrupted"
-    if run is not None and not run.dry:
-        leg_log(kind, rc, started, run.client.account if run.client else "", run.model, err)
+        rc = 130
+    except SystemExit:
+        skip = True
+        raise
+    finally:
+        leg_state(skip or (run is not None and run.dry), run)
     return rc
-
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
