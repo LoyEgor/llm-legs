@@ -2666,8 +2666,18 @@
         "rule": "hook-error",
         "ident": "ask-span-drill\\.sh"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-06T06:36:00+03:00",
+          "by": "night fixer handoff-2026-10-05-usage-gate-hooks",
+          "files": [
+            "usage-ai-report/llm_gate.py"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [
         "hook-error-ask-word-reading-budget"
       ],
@@ -2683,8 +2693,18 @@
         "rule": "hook-error",
         "ident": "ask-word-reading\\.sh"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-06T06:36:00+03:00",
+          "by": "night fixer handoff-2026-10-05-usage-gate-hooks",
+          "files": [
+            "usage-ai-report/llm_gate.py"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [
         "hook-error-ask-span-drill-budget"
       ],
