@@ -103,6 +103,9 @@ def stream(name, args, budget_s, max_lines, on_line):
                 break
             count += 1
             on_line(line.rstrip("\n"))
+    except BaseException:
+        kill()
+        raise
     finally:
         timer.cancel()
         process.stdout.close()

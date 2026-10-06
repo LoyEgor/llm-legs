@@ -112,6 +112,7 @@ class Images(gw.Watcher):
 
 
 def refusal(codes) -> gw.Failure:
+    codes = list(codes)
     code = 3 if any(QUOTA_ERROR.fullmatch(error) for error in codes) else 1
     return gw.Failure(code, f"Flow refused the image: {', '.join(sorted(set(codes)))}")
 

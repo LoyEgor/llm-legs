@@ -339,8 +339,9 @@ def pick_owner(to, ledger, scores):
     ranked = sorted(scores, key=lambda n: (-scores[n], n))
     if ranked:
         top = ranked[0]
-        rival = ranked[1] if len(ranked) > 1 else ledger if ledger and ledger != top else None
-        return {"owner": top, "by": "edits", "doubt": True, "runner_up": rival, "scores": scores}
+        close = len(ranked) > 1 and scores[top] < 2 * scores[ranked[1]]
+        rival = ranked[1] if close else ledger if ledger and ledger != top else None
+        return {"owner": top, "by": "edits", "doubt": rival is not None, "runner_up": rival, "scores": scores}
     if ledger:
         return {"owner": ledger, "by": "ledger", "doubt": False, "runner_up": None, "scores": {}}
     return None

@@ -1700,9 +1700,14 @@ stuckQueues = function()
   if not snapshot or os.time() - (tonumber(snapshot.as_of) or 0) > 120 or type(snapshot.queues) ~= "table" then
     return out
   end
+  local seen = {}
   for _, queue in ipairs(snapshot.queues) do
     if type(queue) == "table" and queue.stuck == true then
-      out[#out + 1] = { text = tostring(queue.text or queue.limiter), red = true }
+      local limiter = tostring(queue.limiter or queue.text)
+      if not seen[limiter] then
+        seen[limiter] = true
+        out[#out + 1] = { text = tostring(queue.text or queue.limiter), red = true }
+      end
     end
   end
   return out

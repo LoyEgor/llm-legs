@@ -247,7 +247,7 @@ printf '42\n%s\n' "$TRANSCRIPT" > "$NOTE_SWEEP/0123456789abcdef.read"
 printf 'somebody real data\n' > "$NOTE_SWEEP/abcdef0123456789.read"
 printf '42\nnot-an-absolute-path\n' > "$NOTE_SWEEP/deadbeefdeadbeef.read"
 printf '42\n%s\nand a third line\n' "$TRANSCRIPT" > "$NOTE_SWEEP/feedfacefeedface.read"
-touch -A -250000 "$NOTE_SWEEP"/*.read
+touch -t "$(date -v-25H +%Y%m%d%H%M.%S 2>/dev/null || date -d '-25 hours' +%Y%m%d%H%M.%S)" "$NOTE_SWEEP"/*.read
 # A note of the right shape that has not aged out belongs to a denial still waiting for its retry.
 printf '42\n%s\n' "$TRANSCRIPT" > "$NOTE_SWEEP/8899aabbccddeeff.read"
 assert_contains 'permissionDecision":"deny' \

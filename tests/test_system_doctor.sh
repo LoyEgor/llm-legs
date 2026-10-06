@@ -977,5 +977,24 @@ contract = open(os.path.join(root, "docs", "doctors-contract.md")).read().split(
 check(all("`%s`" % rule in contract for rule in m.RULE_LABELS),
       "the contract's System doctor section names every rule: missing %s" % [r for r in m.RULE_LABELS if "`%s`" % r not in contract])
 
+endless = os.path.join(work, "bin", "endless-log")
+with open(endless, "w") as handle:
+    handle.write("#!/bin/bash\necho first\nexec sleep 20\n")
+os.chmod(endless, 0o755)
+os.environ["SYSTEM_DOCTOR_LOG"] = endless
+
+
+def boom(line):
+    raise ValueError(line)
+
+
+began, raised = time.monotonic(), None
+try:
+    m.machine_probe.stream("log", ["stream"], 60, 100, boom)
+except ValueError as error:
+    raised = str(error)
+check(raised == "first" and time.monotonic() - began < 10,
+      "an on_line that raises kills the probe instead of waiting it out: %r after %.1fs" % (raised, time.monotonic() - began))
+
 print("OK: PASS: %d system doctor checks" % asserts)
 PY

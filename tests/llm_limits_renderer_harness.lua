@@ -3680,6 +3680,12 @@ do
   local title = mod.title()
   assert(type(title) == "table" and title.text == "LLM Limits: 1 stuck queue" and isRed(title.attributes),
     "a stuck queue did not reach the Automation title: " .. titleText({ title = title }))
+  table.insert(chatsFake.snapshot.queues, { limiter = "bench-throttle", session = "s2", count = 1, longest = 1900,
+    moved_at = now - 1900, stuck = true, text = "Vector Magic: 1 job queued, none started for 31m" })
+  title = mod.title()
+  assert(type(title) == "table" and title.text == "LLM Limits: 1 stuck queue",
+    "one stuck limiter holding two chats' jobs counted as two queues: " .. titleText({ title = title }))
+  table.remove(chatsFake.snapshot.queues)
   chatsFake.snapshot.as_of = now - 600
   assert(not mod.refreshState().holdText and mod.title() == "LLM Limits",
     "a stale snapshot's stuck queue still lit the title")

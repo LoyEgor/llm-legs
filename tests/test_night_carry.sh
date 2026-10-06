@@ -219,11 +219,25 @@ assert grep -qxF '["Debt Hardening",["edits"],true,"Phase Four",{"Debt Hardening
 assert grep -qxF '["Phase Four",["to"],false,null,{},["2026-10-02-to.md"]]' "$WORK/own.batches"
 assert grep -qxF '["Gamma Chat",["ledger","to"],false,null,{},["2026-10-03-ledger.md","2026-10-07-plain-to.md"]]' "$WORK/own.batches"
 assert grep -qxF '["Beta Chat",["edits"],true,"Gamma Chat",{"Beta Chat":0.6,"Gamma Chat":0.4},["2026-10-04-tool.md"]]' "$WORK/own.batches"
-assert grep -qxF '["Orchestrator",["edits"],true,"Editor",{"Orchestrator":0.83,"Editor":0.17},["2026-10-05-delegated.md"]]' "$WORK/own.batches"
+assert grep -qxF '["Orchestrator",["edits"],false,null,{},["2026-10-05-delegated.md"]]' "$WORK/own.batches"
 assert grep -qxF '["Specialist",["edits"],true,"Generalist",{"Specialist":0.83,"Generalist":0.67},["2026-10-06-shared.md"]]' "$WORK/own.batches"
 assert [ "$(wc -l <"$WORK/own.batches" | tr -d ' ')" = 6 ]
 edits sess-b 2 bin/stall-tool
-assert jqe 'select(.owner == "Beta Chat") | .doubt == true' <(NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-own" python3 -B "$ROOT/share/handoffs.py" --batches)
+assert jqe 'select(.owner == "Beta Chat") | .doubt == false and .runner_up == null' <(NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-own" python3 -B "$ROOT/share/handoffs.py" --batches)
+assert python3 -B - "$ROOT" "$O" <<'PY'
+import os, sys
+sys.path.insert(0, os.path.join(sys.argv[1], "share"))
+import handoffs as h
+
+repo = sys.argv[2]
+alone = h.pick_owner(None, None, {"Solo": 1.0})
+assert not alone["doubt"] and alone["runner_up"] is None, alone
+items = [{"path": f"{repo}/docs/handoffs/{n}.md", "repo": repo, "at": None, "to": []} for n in ("one", "two")]
+h.owner_picks = lambda handoffs, repos, chats: [(items[0], None, alone, {}),
+                                                (items[1], "Ledger Chat", h.pick_owner(None, "Ledger Chat", {"Solo": 1.0}), {})]
+[batch] = h.owner_batches(items, repos=[repo], chats=[{"name": "Solo", "session": "sess-solo"}], live=set())
+assert batch["doubt"] and batch["runner_up"] == "Ledger Chat" and batch["scores"] == {"Solo": 2.0, "Ledger Chat": 0}, batch
+PY
 export NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-own" NIGHT_RUN_OWNER_CHATS=9
 new_night N5
 night carry N5 >"$WORK/n5.out" 2>"$WORK/n5.err" || fail "evidence carry failed"

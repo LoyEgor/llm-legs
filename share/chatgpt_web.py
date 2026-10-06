@@ -344,6 +344,9 @@ def project_home(page, session: Session, account: str, meta: dict) -> str:
         return "/"
     try:
         open_chat(page, session, account, None)
+    except gw.Failure:
+        return "/"
+    try:
         found = find_project(page)
         path, memory = (found, None) if found else create_project(page)
     except Exception as error:  # noqa: BLE001

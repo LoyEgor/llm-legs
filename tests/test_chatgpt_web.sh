@@ -803,6 +803,24 @@ assert result["ok"] and [e[1] for e in page.events if e[0] == "goto"] == [cw.SIT
 assert gw.read_meta("alpha")["project_failed"] > time.time() - 60 and not gw.read_meta("alpha")["project"]
 assert [row for row in ledger() if row["event"] == "project_failed"][-1]["reason"].startswith("TimeoutError")
 cw.find_project = lambda page: looked.append(page) or PROJECT
+real_open_chat, opens = cw.open_chat, []
+
+
+def first_open_signed_out(page, session, account, chat, **kwargs):
+    opens.append(chat)
+    if len(opens) == 1:
+        raise gw.Failure(4, f"ChatGPT shows {account} signed out")
+    return real_open_chat(page, session, account, chat, **kwargs)
+
+
+cw.open_chat = first_open_signed_out
+looked.clear()
+gw.write_meta("alpha", project=None, project_failed=0)
+result, _ = render(Page(), meta=gw.read_meta("alpha"))
+cw.open_chat = real_open_chat
+assert gw.read_meta("alpha")["project_failed"] == 0 and not looked, \
+    "a signed-out page before the project lookup stopped the lookup for PROJECT_RETRY_S"
+gw.write_meta("alpha", project_failed=int(time.time()))
 looked.clear()
 page = Page()
 result, _ = render(page, meta=gw.read_meta("alpha"))
