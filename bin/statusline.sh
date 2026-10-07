@@ -482,27 +482,6 @@ CYAN=$'\033[36m'; BLUE=$'\033[34m'; DIM=$'\033[2m'
 GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RED=$'\033[31m'; MAGENTA=$'\033[35m'; RESET=$'\033[0m'
 
 # Third arg overrides the green→yellow threshold (default 50); red stays ≥80.
-# `YYYY-MM-DDTHH:MM:SS` + `Z` or `±HH:MM` to epoch seconds, by the civil-date formula.
-iso_epoch_to() { # var timestamp
-  printf -v "$1" ''
-  [[ "$2" =~ ^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(Z|([+-])([0-9]{2}):([0-9]{2}))$ ]] ||
-    return 1
-  local y=$((10#${BASH_REMATCH[1]})) m=$((10#${BASH_REMATCH[2]})) d=$((10#${BASH_REMATCH[3]}))
-  local h=$((10#${BASH_REMATCH[4]})) mi=$((10#${BASH_REMATCH[5]})) sec=$((10#${BASH_REMATCH[6]})) off=0
-  local era yoe doy doe
-  if [ "${BASH_REMATCH[7]}" != Z ]; then
-    off=$((10#${BASH_REMATCH[9]} * 3600 + 10#${BASH_REMATCH[10]} * 60))
-    [ "${BASH_REMATCH[8]}" = - ] && off=$((-off))
-  fi
-  [ "$m" -ge 1 ] && [ "$m" -le 12 ] && [ "$d" -ge 1 ] && [ "$d" -le 31 ] &&
-    [ "$h" -le 23 ] && [ "$mi" -le 59 ] && [ "$sec" -le 60 ] || return 1
-  [ "$m" -le 2 ] && y=$((y - 1))
-  era=$((y / 400)); yoe=$((y - era * 400))
-  doy=$(( (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1 ))
-  doe=$((yoe * 365 + yoe / 4 - yoe / 100 + doy))
-  printf -v "$1" '%s' $(( (era * 146097 + doe - 719468) * 86400 + h * 3600 + mi * 60 + sec - off ))
-}
-
 pct_colored() { # var pct dim warn
   local out="$1" v="$2" dim_flag="${3:-}" warn="${4:-50}"
   if [ -z "$v" ]; then printf -v "$out" '%s?%s' "$DIM" "$RESET"; return; fi
@@ -750,7 +729,8 @@ if [ -z "${CLAUDEGPT_ACCOUNT:-}" ] && [ -n "$acct" ] && [ "$acct" != main ]; the
     + "\u001f"
     + (try (first(.vendors.claude.accounts[]? | select(.account == $account) | .fable // empty
         | ["1", (if .effective_pct == null then "" else (.effective_pct | round | tostring) end),
-           (.resets_at // ""), (if .stale == true or .expired == true then "1" else "" end)]
+           (.resets_at | limits_store_epoch | if . == null then "" else (floor | tostring) end),
+           (if .stale == true or .expired == true then "1" else "" end)]
         | join("\u001f")) // "\u001f\u001f\u001f")
        catch "\u001f\u001f\u001f")
     + "\u001f"
@@ -1029,33 +1009,29 @@ if [ -z "${CLAUDEGPT_ACCOUNT:-}" ] && [ -n "$fable_account" ] && [ "$fable_accou
     # age is the backstop.
     file_mtime_to limits_mtime "$limits_file"
     [[ "$limits_mtime" =~ ^[0-9]+$ ]] && [ $((now - limits_mtime)) -gt "$LIMITS_STALE_FABLE" ] && fable_dim=1
-    if [ -n "$fable_reset" ]; then
-      fable_reset_epoch=""; fable_dow=""; fable_time=""
-      if iso_epoch_to fable_reset_epoch "$fable_reset"; then
-        TZ=Europe/Kyiv printf -v fable_dow '%(%u)T' "$fable_reset_epoch"
-        TZ=Europe/Kyiv printf -v fable_time '%(%H:%M)T' "$fable_reset_epoch"
-      fi
-      if [[ "$fable_reset_epoch" =~ ^[0-9]+$ ]]; then
-        fable_rem=$(( fable_reset_epoch - now ))
-        # A reset over a day past is dropped exactly as the menubar drops it — the shared
-        # `limits_reset_ancient` answers, never a local threshold (shared-invariants row y).
-        fable_ancient=""
-        [ "$fable_rem" -le 0 ] && fable_ancient=$(jq -n --argjson now "$now" \
-          --argjson reset "$fable_reset_epoch" \
-          "$LIMITS_VIEW_JQ"'limits_reset_ancient($now; $reset)' 2>/dev/null)
-        if [ "$fable_ancient" = true ]; then
-          :
-        elif [ "$fable_rem" -gt 86400 ] || [ "$fable_rem" -le 0 ]; then
-          case "$fable_dow" in
-            1) fable_dname=Mon ;; 2) fable_dname=Tue ;; 3) fable_dname=Wed ;; 4) fable_dname=Thu ;;
-            5) fable_dname=Fri ;; 6) fable_dname=Sat ;; 7) fable_dname=Sun ;;
-          esac
-          [ -n "$fable_dname" ] && fable_reset_txt="${fable_dname} ${fable_time}"
-        elif [ "$fable_rem" -gt 3600 ]; then
-          fable_reset_txt="$(( (fable_rem + 1800) / 3600 ))h"
-        elif [ "$fable_rem" -gt 0 ]; then
-          fable_reset_txt="$(( (fable_rem + 30) / 60 ))m"
-        fi
+    if [[ "$fable_reset" =~ ^[0-9]+$ ]]; then
+      fable_dow=""; fable_time=""
+      TZ=Europe/Kyiv printf -v fable_dow '%(%u)T' "$fable_reset"
+      TZ=Europe/Kyiv printf -v fable_time '%(%H:%M)T' "$fable_reset"
+      fable_rem=$(( fable_reset - now ))
+      # A reset over a day past is dropped exactly as the menubar drops it — the shared
+      # `limits_reset_ancient` answers, never a local threshold (shared-invariants row y).
+      fable_ancient=""
+      [ "$fable_rem" -le 0 ] && fable_ancient=$(jq -n --argjson now "$now" \
+        --argjson reset "$fable_reset" \
+        "$LIMITS_VIEW_JQ"'limits_reset_ancient($now; $reset)' 2>/dev/null)
+      if [ "$fable_ancient" = true ]; then
+        :
+      elif [ "$fable_rem" -gt 86400 ] || [ "$fable_rem" -le 0 ]; then
+        case "$fable_dow" in
+          1) fable_dname=Mon ;; 2) fable_dname=Tue ;; 3) fable_dname=Wed ;; 4) fable_dname=Thu ;;
+          5) fable_dname=Fri ;; 6) fable_dname=Sat ;; 7) fable_dname=Sun ;;
+        esac
+        [ -n "$fable_dname" ] && fable_reset_txt="${fable_dname} ${fable_time}"
+      elif [ "$fable_rem" -gt 3600 ]; then
+        fable_reset_txt="$(( (fable_rem + 1800) / 3600 ))h"
+      elif [ "$fable_rem" -gt 0 ]; then
+        fable_reset_txt="$(( (fable_rem + 30) / 60 ))m"
       fi
     fi
     pct_colored fable_pct_part "$fable_pct" "$fable_dim"

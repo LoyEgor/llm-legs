@@ -5020,7 +5020,7 @@ DEBT_ANSWER='LINES=33 FILES=3'
 debt_render repo-debt-key "$REVIEW_DIRTY" >/dev/null
 debt_settle
 debt_payload=$(statusline_payload repo-debt-key "" "$REVIEW_DIRTY")
-debt_age() { touch -t "$(date -r "$(($(date +%s) - $1))" +%Y%m%d%H%M.%S)" "$debt_cache"; }
+debt_age() { age_path "$1" "$debt_cache"; }
 debt_asked() {
   local i
   for i in $(seq 1 40); do [ -s "$DEBT_LOG" ] && break; sleep 0.05; done

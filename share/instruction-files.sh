@@ -152,6 +152,12 @@ _instruction_find_files() { # dir [repo-root] [dirs]
       "${2:-$1}" | _instruction_emit_paths
 }
 
+# Which listed file is an instruction file, for every perl reader: $base is its name, $rel its path
+# below the outer root, $md the extensions joined by `|`. _instruction_find_files' find expression
+# is the same rule for the walk.
+_instruction_candidate_pl='$base =~ /^(?:claude|claude\.local|skill)\.md$/i
+  || ($rel =~ m{/\.claude/} && $rel !~ m{/\.claude/local/} && ($base eq "review-debt-ignore" || $base =~ /\.(?:$md)$/i))'
+
 # git instead of a walk: a walk descends every ignored tree (570k files, 20 s a call). The set is
 # the walk's minus files under an ignored directory, save under `.claude` — a gitignored `.claude/`
 # or CLAUDE.local.md is kept on purpose. All-or-nothing: a git failing midway falls back to the
@@ -199,8 +205,7 @@ instruction_repo_files() { # repo-root [outer-root]
         if ($part == 2 && m{/$}) { push @out, "d\t$full\n" if m{(?:^|/)\.claude/}; next }
         ($base = $_) =~ s{.*/}{};
         $rel = substr("$root/$_", length $top);
-        next unless $base =~ /^(?:claude|claude\.local|skill)\.md$/i
-          || ($rel =~ m{/\.claude/} && $rel !~ m{/\.claude/local/} && ($base eq "review-debt-ignore" || $base =~ /\.(?:$md)$/i));
+        next unless '"$_instruction_candidate_pl"';
         push @out, "f\t$full\n" if lstat "$root/$_" and -f _;
         END { exit 1 if $part != $parts; print @out }
       ' "$root" "$top" "$INSTRUCTION_MD_EXTENSIONS" "$parts" "$INSTRUCTION_DEPENDENCY_DIRS"); then
@@ -271,7 +276,7 @@ instruction_visible_paths() {
 _instruction_stamp_lines() { local IFS=$_instruction_nl; stamps="${lines[*]:1:$1}"; }
 # Claude Code's Edit and Write rename a new file over the old one, moving the directory's mtime: that
 # cost every edit the whole enumeration (~240 ms). A moved repository directory keeps the set when its
-# subdirectories are all stamped and its candidates (repo_files' name rule) are exactly the set's. The
+# subdirectories are all stamped and its candidates (_instruction_candidate_pl) are exactly the set's. The
 # stamps kept predate the listing, so a directory moving during it is compared again next call.
 # Reads n, lines[] and paths[] of instruction_visible_cached.
 _instruction_moved_dirs_kept() { # home root cache-file header current-stamps
@@ -294,22 +299,20 @@ _instruction_moved_dirs_kept() { # home root cache-file header current-stamps
               printf '\035\0' && find "${moved[@]}" -mindepth 1 -maxdepth 1 -type f -print0 && printf '\035\0'; } 2>/dev/null |
             _instruction_emit_paths) || return 1
   { printf '%s\n' "${moved[@]}" $'\035' "${paths[@]}" $'\035' "${lines[@]:n+1}" $'\035' "$listing"; } |
-    LC_ALL=C awk -v root="$root" -v md="$INSTRUCTION_MD_EXTENSIONS" '
-      BEGIN { gsub(/ /, "|", md); ext = "\\.(" md ")$" }
-      $0 == "\035" { part++; next }
-      part == 0 { moved[$0] = 1; next }
-      part == 1 { stamped[$0] = 1; next }
-      part == 2 { d = $0; sub(/\/[^\/]*$/, "", d); if (d in moved) want[$0] = 1; next }
-      part == 3 { if (!($0 in stamped)) { bad = 1; exit } next }
-      part == 4 {
-        rel = substr($0, length(root) + 1); base = $0; sub(/.*\//, "", base); lb = tolower(base)
-        if (lb == "claude.md" || lb == "claude.local.md" || lb == "skill.md" ||
-            (rel ~ /\/\.claude\// && rel !~ /\/\.claude\/local\// && (base == "review-debt-ignore" || lb ~ ext))) {
-          if (!($0 in want)) { bad = 1; exit }
-          seen[$0] = 1
-        }
-      }
-      END { if (bad || part != 5) exit 1; for (p in want) if (!(p in seen)) exit 1 }' || return 1
+    perl -ne '
+      BEGIN { ($top, $md) = splice @ARGV, 0, 2; $md = join "|", split / /, $md }
+      chomp;
+      if ($_ eq "\035") { $part++; next }
+      if ($part == 0) { $moved{$_} = 1; next }
+      if ($part == 1) { $stamped{$_} = 1; next }
+      if ($part == 2) { ($d = $_) =~ s{/[^/]*$}{}; $want{$_} = 1 if $moved{$d}; next }
+      if ($part == 3) { exit 1 unless $stamped{$_}; next }
+      ($base = $_) =~ s{.*/}{};
+      $rel = substr($_, length $top);
+      next unless '"$_instruction_candidate_pl"';
+      exit 1 unless $want{$_};
+      $seen{$_} = 1;
+      END { $? ||= ($part != 5 || grep { !$seen{$_} } keys %want) ? 1 : 0 }' "$root" "$INSTRUCTION_MD_EXTENSIONS" || return 1
   { printf '%s%s%s\n%s\n' "$want" "$_instruction_tab" "$n" "$5"
     [ "${#lines[@]}" -le $((n + 1)) ] || printf '%s\n' "${lines[@]:n+1}"; } >"$file.$$" 2>/dev/null &&
     mv -f "$file.$$" "$file" 2>/dev/null || rm -f "$file.$$" 2>/dev/null

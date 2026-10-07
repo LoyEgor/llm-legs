@@ -932,9 +932,10 @@ end
 
 local function startDiagnosticsTask(field, path, args, onExit)
   if taskRunning(M[field]) then return end
-  local task = hs.task.new(path, function(exitCode)
+  local task = hs.task.new(path, function(exitCode, _, stdErr)
     M[field] = nil
-    logAction("diagnostics-exit", path .. " exit=" .. tostring(exitCode))
+    logAction("diagnostics-exit", path .. " exit=" .. tostring(exitCode)
+      .. (exitCode ~= 0 and stdErr and stdErr ~= "" and (" " .. stdErr:gsub("%s+$", "")) or ""))
     if onExit then onExit() end
   end, args)
   if not task then return end
@@ -1757,17 +1758,6 @@ local function harnessAction(packed)
   return path, { table.unpack(argv, 2) }
 end
 
-function M.runHarnessAction(path, args)
-  local task = hs.task.new(path, function(exitCode, _, stdErr)
-    logAction("harness-action-exit", path .. " exit=" .. tostring(exitCode)
-      .. (exitCode ~= 0 and stdErr and stdErr ~= "" and (" " .. stdErr:gsub("%s+$", "")) or ""))
-  end, args)
-  if not task then return end
-  task:setEnvironment(M.diagnosticsEnvironment())
-  logAction("harness-action-start", path .. " " .. table.concat(args, " "))
-  task:start()
-end
-
 -- menu.txt is laid out by bin/harness-doctor; decoding its JSON here cost ~40 ms per menu open.
 -- The collector replaces the file by rename, so a new inode is a new document; callers must not
 -- mutate the cached items (harnessDoctorEntry copies before adding Refresh).
@@ -1804,7 +1794,7 @@ local function readHarnessMenu()
       local item = harnessLine(flags, spans, text)
       if item.title ~= "-" then
         if actionPath then
-          item.fn = function() M.runHarnessAction(actionPath, actionArgs) end
+          item.fn = function() startDiagnosticsTask("harnessActionTask", actionPath, actionArgs) end
         else
           item.disabled = true
         end

@@ -866,8 +866,7 @@ def table_column(worker_run, path, night):
     repos = suites.get("repos") or []
     show = lambda v, f="%s": dash if v is None else f % v
     doctors = ("llm", "harness", "updater", "code", "system")
-    total = lambda counts: sum(counts[d] for d in doctors if counts.get(d) is not None) \
-        if any(counts.get(d) is not None for d in doctors) else None
+    problems = row.get("problems") or [None, None]
     return [
         ("duration", show(row.get("hours"), "%.1f h")),
         ("spend", show(row.get("spend_m"), "%.1fM")),
@@ -882,8 +881,8 @@ def table_column(worker_run, path, night):
         ("model active", "%d %%" % pct(split.get("model", 0), wall) if wall else dash),
         ("slot queue", hours(split.get("slot", 0))),
         ("own tests", hours(split.get("suite_run", 0) + split.get("suite_wait", 0))),
-        ("problems", dash if total(before) is None and total(after) is None
-         else "%s \u2192 %s" % (show(total(before)), show(total(after)))),
+        ("problems", dash if problems == [None, None]
+         else "%s \u2192 %s" % (show(problems[0]), show(problems[1]))),
     ] + [
         ("  " + d, dash if before.get(d) is None and after.get(d) is None
          else "%s \u2192 %s" % (show(before.get(d)), show(after.get(d))))

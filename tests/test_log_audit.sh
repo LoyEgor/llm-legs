@@ -73,7 +73,10 @@ chmod +x "$WORK/worker-run"
 
 # The skeleton keeps what was asked, said, done and failed; tool output and injected context are gone.
 skeleton=$("$ROOT/bin/log-audit" skeleton "$WORK/projects/-repo/chat.jsonl")
-assert grep -q '^### Fixture chat · cli · /repo$' <<<"$skeleton"
+assert grep -q '^### Fixture chat · cli · repo$' <<<"$skeleton"
+printf '%s\n' '{"type":"ai-title","aiTitle":"Named by the harness"}' \
+  '{"type":"user","entrypoint":"cli","cwd":"/r/llm-legs/.claude/worktrees/b","message":{"content":"hi"}}' >"$WORK/ai.jsonl"
+assert grep -q '^### Named by the harness · cli · llm-legs$' <<<"$("$ROOT/bin/log-audit" skeleton "$WORK/ai.jsonl")"
 assert grep -q 'U: почему тест опять упал?$' <<<"$skeleton"
 assert grep -q 'T: Bash bash tests/run-all$' <<<"$skeleton"
 assert grep -q 'E: FAIL: assert 3$' <<<"$skeleton"

@@ -32,7 +32,7 @@ workers they launch. The machine runs llm-legs (multi-account LLM orchestration:
 doctors, a nightly self-improvement run) and claude-setup (the hooks and skills). Read-only: change nothing, run
 nothing; the skeleton below is everything you need.
 
-Legend: `### <title> · cli|worker · <cwd>` opens a transcript. U = user (Egor in a cli chat, the launching chat's
+Legend: `### <title> · cli|worker · <project>` opens a transcript. U = user (Egor in a cli chat, the launching chat's
 brief in a worker), A = assistant text, T = a tool call, E = a failed tool call, H = hook stderr or message
 (H×N: the same line N times), D = time (a gap between steps, a long turn, a compaction)."""
 
@@ -99,13 +99,13 @@ def since_of(now):
 
 
 def transcripts(since):
-    out = []
+    out, launchers, store = [], chat_names.worker_run_launchers(), chat_names.store_names()
     for root in roots():
         for folder, _, names in os.walk(root):
             for name in names:
                 path = os.path.join(folder, name)
                 if name.endswith(".jsonl") and os.path.getmtime(path) >= since:
-                    header, lines = log_skeleton.skeleton(path, since)
+                    header, lines = log_skeleton.skeleton(path, since, launchers, store)
                     if lines and not any(OWN_MARK in line for line in lines[:3]):
                         out.append((os.path.getmtime(path), header, lines))
     return [(header, lines) for _, header, lines in sorted(out)]

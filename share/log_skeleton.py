@@ -5,6 +5,8 @@ import json
 import os
 import re
 
+import chat_names
+
 REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
 USER_MAX, SAID_MAX, TOOL_MAX, ERROR_MAX, HOOK_MAX = 1500, 500, 160, 300, 200
 GAP_S = 300
@@ -89,9 +91,10 @@ def entry_lines(row, repeats):
     return []
 
 
-def skeleton(path, since=None):
+def skeleton(path, since=None, launchers=None, store=None):
     """(header, lines) for one transcript; entries before `since` (epoch seconds) are skipped."""
     lines, repeats, last, first, meta = [], {}, None, None, {}
+    titles = {"custom-title": None, "ai-title": None}
     with open(path, encoding="utf-8", errors="replace") as handle:
         for raw in handle:
             try:
@@ -100,11 +103,12 @@ def skeleton(path, since=None):
                 continue
             if not isinstance(row, dict):
                 continue
-            for key in ("cwd", "entrypoint", "gitBranch"):
+            for key in ("cwd", "entrypoint", "gitBranch", "sessionId"):
                 if row.get(key) and key not in meta:
                     meta[key] = row[key]
-            if row.get("type") == "custom-title" and row.get("customTitle"):
-                meta["title"] = row["customTitle"]
+            title = row.get("customTitle") if row.get("type") == "custom-title" else row.get("aiTitle")
+            if row.get("type") in titles and isinstance(title, str) and title.strip():
+                titles[row["type"]] = title
             at = clock(row.get("timestamp"))
             if since is not None and (at is None or at < since):
                 continue
@@ -120,7 +124,9 @@ def skeleton(path, since=None):
                 produced = ["%s %s" % (stamp, line) for line in produced]
             lines.extend(produced)
     tail = ["H×%d: %s" % (count, line[3:]) for line, count in repeats.items() if count > 1]
-    header = "### %s · %s · %s" % (meta.get("title") or os.path.basename(path)[:8],
-                                  "worker" if meta.get("entrypoint") == "sdk-cli" else meta.get("entrypoint") or "?",
-                                  meta.get("cwd") or "?")
+    headless = meta.get("entrypoint") == chat_names.HEADLESS_VIA
+    session = meta.get("sessionId") or os.path.splitext(os.path.basename(path))[0]
+    name = chat_names.chat_label(session, titles["custom-title"] or titles["ai-title"], headless, launchers, store)
+    header = "### %s · %s · %s" % (name, "worker" if headless else meta.get("entrypoint") or "?",
+                                  chat_names.project_label(meta.get("cwd")))
     return header, lines + tail

@@ -242,8 +242,7 @@ for i in $(seq 1 100); do [ -e "$WORK/long-started" ] && break; sleep 0.1; done
 bash "$ROOT/share/run-suites.sh" --repo "$WORK/repo" >"$WORK/after-tail.out" 2>&1 &
 next_run=$!
 pids+=("$next_run")
-for i in $(seq 1 100); do kill -0 "$next_run" 2>/dev/null || break; sleep 0.1; done
-assert_fails kill -0 "$next_run"
+assert until_gone "$next_run"
 assert kill -0 "$tail_run"
 : >"$WORK/tail-go"
 wait "$tail_run" || fail "the tail run failed: $(cat "$WORK/tail.out")"
