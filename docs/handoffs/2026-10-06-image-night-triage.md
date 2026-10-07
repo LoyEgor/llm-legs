@@ -1,24 +1,26 @@
-# Image triage, 2026-10-05..06
+# Image triage, 2026-10-05..07
 
 Status: open
 
-To: the image block owner, «LLM Doctor меню refactoring» (share/doctor-ledger.json owners.image). Each row's
-`note` holds its evidence; no judge change was written.
+To: owners.image, «LLM Doctor меню refactoring». Each row's `note` holds its evidence; no judge change written.
 
 ## Proposed dismissals (owner's call)
 
-- not-a-bug: I41 (callers' argument errors refused before spend, bounded by `until`).
-- weather: I43 (a Flow Omni clip held in Flow's queue for 900 s).
+- not-a-bug: I41, I48, I51 (callers' argument errors and landing probes refused before spend; `until` bounds each).
+- weather: I43 (Flow's queue held one Omni clip 900 s).
 
 ## Judge questions
 
-- I45: `--no-composite` (opted-out) and a requested re-aspect (aspect-changed) did what the caller asked;
-  `soft_outcome` flags every skip but new-generation.
-- I44: `several-inputs` cannot tell a reference generation from an edit whose caller named no `--edit` base.
-  Ask the image routes chat whether image-fanout's tsv should carry each take's composite line.
-- I46: a short ChatGPT batch has its cause in the take errors, not in the soft detail.
+- rc 2 (refused before spend) reads `bad command` · ours, so I1, I23, I35, I41 and I48 each needed a dismissal row:
+  read it `off` like a prelaunch MODEL_REFUSED?
+- I45: opted-out and aspect-changed composite skips did what the caller asked.
+- I44: several-inputs cannot tell a reference generation from an edit with no `--edit` base.
+- I46: a short ChatGPT batch has its cause in the take errors, not the soft detail.
+
+## Google video generation integration chat
+
+- I54: the test-beep check fails replies by +1/+2 beeps; the tail holds n beeps. Check the seam before landing.
 
 ## Still open
 
-I3, I4, I5, I16, I18, I19 (no music, sfx or listen leg since 2026-10-01), I22 (the Harness doctor's gate),
-I28, I47 (gemini-image under a caller's xtrace, not reproduced).
+I3, I4, I5, I16, I18, I19, I22 (the Harness doctor's gate), I28, I47.
