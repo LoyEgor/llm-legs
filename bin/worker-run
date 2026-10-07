@@ -5057,6 +5057,7 @@ Prove the device before the task:
 3. Proven: print \`BROWSER-PROVEN: <deviceId> $3\` and work in that tab; your final answer repeats that line. None: end \`OUTCOME: BROWSER_NO_DEVICE account=$3 profile=$5\`.
 Then:
 - After a reconnect or a tool error \`select_browser\` the proven device again. Browser or tab gone: $gone.
+- Never put \`tabs_close_mcp\` in a \`browser_batch\` with any other action: the batch fails with "not in the same group as the current tab" and the tab group is lost.
 EOF
   fi
   cat <<EOF

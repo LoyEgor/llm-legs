@@ -184,6 +184,7 @@ EOF
   assert test "$(wc -l <"$bt/kick.log")" -eq 2
   assert test "$(head -n 1 "$RUN_DIR/browser-preamble")" = '# Browser preamble (Claude in Chrome / Google Chrome / com)'
   assert grep -q "\`$dev_com\` first when listed" "$RUN_DIR/browser-preamble"
+  assert grep -qF -- '- Never put `tabs_close_mcp` in a `browser_batch` with any other action' "$RUN_DIR/browser-preamble"
   assert grep -qx 'ARG=--chrome' "$CALL_LOG"
   assert jq -e '.browser == true and .browser_target == "chrome" and .browser_profile == "Profile 1"' "$RUN_DIR/meta.json" >/dev/null
   assert jq -se --arg run "$RUN_ID" '.[-1] | .run == $run and .outcome == "missing" and .workaround == false
