@@ -4306,6 +4306,15 @@ def browser_processes():
         return []
 
 
+def browser_chrome_runs():
+    command = (os.environ.get("HARNESS_BROWSE_CMD") or os.path.join(ROOT_DIR, "bin", "worker-run")).split()
+    try:
+        return subprocess.run(command + ["_chrome-runs", "--browser"], capture_output=True, text=True,
+                              timeout=20).stdout.split()
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+
 def browser_section(now, write=False):
     """One row per enrolled account from accounts.json and the outcome log the supervisor writes, plus Dia's
     AppleScript flag from process arguments. No file a browser writes is read: Chrome and Dia rewrite theirs live."""
@@ -4379,6 +4388,11 @@ def browser_section(now, write=False):
                                        evidence=[evidence(now, "ps:dia", say)], bad=1)]))
         rows.append(row(["Restart Dia with AppleScript JS — unsaved input may be lost", "", ""],
                         action=["dia-js", "--relaunch"]))
+    live = len(browser_chrome_runs())
+    if live:
+        hidden = os.path.exists(os.path.join(runs, "browse", "hidden"))
+        rows.append(row(["Chrome: %d worker run%s · %s" % (live, "" if live == 1 else "s", "Показать" if hidden else "Спрятать"),
+                         "", ""], action=["worker-run", "browse", "--show" if hidden else "--hide"]))
     return section("Browser", rows, ["", "", ""], [False, False, False],
                    ok="every enrolled account proved its Chrome profile, no browser run went around the harness in 72 h",
                    blind="" if accounts else "no account is enrolled: worker-run browse --enroll all")

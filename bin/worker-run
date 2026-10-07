@@ -18,7 +18,7 @@ usage() {
     '       worker-run say [<run-id>] <text>' \
     '       worker-run transcript <run-id>' \
     '       worker-run claim <run-id> --paths <path>... [--complete]' \
-    '       worker-run browse [--enroll <account|all> [--pin <dir>] | --canary | --window <account> | --seen <token> [--target dia] | --json]' >&2
+    '       worker-run browse [--enroll <account|all> [--pin <dir>] | --canary | --window <account> | --seen <token> [--target dia] | --json | --hide | --show]' >&2
   exit 2
 }
 
@@ -2957,6 +2957,7 @@ exit "$rc"'
   record_worker_session "$directory"
   write_run_state "$directory" start
   : >"$directory/.ready"
+  chrome_run_edge "$directory" start
   # WEB: on the launch line, because the state the run really got is otherwise only in meta.json and
   # an orchestrator cannot tell a web-grounded answer from one written out of memory.
   printf 'RUN: %s\nTAG: %s · %s · %s\nWEB: %s\nDIR: %s\n' "$run_id" "$account" "${model_label:-$model}" "$effort" "$web_search_state" "$directory"
@@ -4038,13 +4039,27 @@ run_live() { # directory
     ! run_overdue "$1"
 }
 
-chrome_runs() { # live run ids that may be driving Google Chrome
+CHROME_BROWSER_RUN='.browser == true and (.browser_target // "chrome") != "dia" and .computer != true'
+
+chrome_runs() { # [jq-filter] live run ids that may be driving Google Chrome
   find "${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}" -mindepth 2 -maxdepth 2 -name meta.json -mtime -2 -print0 2>/dev/null |
-    xargs -0 jq -r 'select(.chrome == true or .computer == true or (.browser == true and .browser_target != "dia"))
-      | input_filename' 2>/dev/null |
+    xargs -0 jq -r "select(${1:-.chrome == true or .computer == true or (.browser == true and .browser_target != \"dia\")})
+      | input_filename" 2>/dev/null |
     while IFS= read -r meta; do
       ! run_live "${meta%/meta.json}" || printf '%s\n' "$(basename "${meta%/meta.json}")"
     done
+}
+
+# The menu's Chrome row is the harness doctor's, which launchd runs only every 5 min.
+harness_kick() {
+  if [ -n "${WORKER_RUN_DOCTOR_KICK:-}" ]; then "$WORKER_RUN_DOCTOR_KICK" >/dev/null 2>&1 || :
+  elif [ -z "${WORKER_RUN_DIR:-}" ]; then launchctl kickstart "gui/$(id -u)/com.egor.harness-doctor" >/dev/null 2>&1 || :; fi
+}
+
+chrome_run_edge() { # directory start|end
+  jq -e "$CHROME_BROWSER_RUN" "$1/meta.json" >/dev/null 2>&1 || return 0
+  [ "$2" = start ] || chrome_runs "$CHROME_BROWSER_RUN" | grep -qvxF -- "${1##*/}" || rm -f "$(browse_dir)/hidden"
+  harness_kick
 }
 
 say_run() {
@@ -4876,6 +4891,9 @@ BROWSE_UUID='[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-f
 # A restarted Chrome or a newly opened profile window lists no extension entry for up to ~10 min (live
 # 2026-10-07); no device that soon is no sign-in problem.
 BROWSE_RECONNECT_S=600 BROWSE_OPENED_AT=''
+# Hidden or occluded, a page's timers otherwise slow to one tick a minute by minute 3 (live 2026-10-07).
+CHROME_FLAGS=(--disable-renderer-backgrounding --disable-backgrounding-occluded-windows
+  --disable-background-timer-throttling --disable-features=IntensiveWakeUpThrottling)
 
 browse_dir() { printf '%s/browse\n' "${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"; }
 
@@ -4960,13 +4978,34 @@ APPLESCRIPT
 # opened here connects ~25 s after it shows (live 2026-10-07): a proof listing sooner misses its device.
 browse_marker() { printf 'https://example.com/#worker-run=%s\n' "${1// /-}"; }
 
+browse_chrome_visible() { # true|false; System Events, since AppleScript to Chrome itself unhides and activates it
+  "${BROWSE_OSASCRIPT:-osascript}" -e "tell application \"System Events\" to set visible of process \"Google Chrome\" to $1" >/dev/null 2>&1
+}
+
+browse_front() {
+  "${BROWSE_LSAPPINFO:-lsappinfo}" info -only bundleid "$("${BROWSE_LSAPPINFO:-lsappinfo}" front 2>/dev/null)" 2>/dev/null |
+    sed -n 's/.*bundleID="\(.*\)".*/\1/p'
+}
+
+# `open -g` still unhides Chrome and makes it frontmost when it opens a profile window (live 2026-10-07).
+browse_refocus() { # bundle id frontmost before
+  local now
+  now=$(browse_front)
+  [ ! -e "$(browse_dir)/hidden" ] || browse_chrome_visible false
+  [ -z "$1" ] || [ "$1" = com.google.Chrome ] || [ "$now" != com.google.Chrome ] || "${BROWSE_OSASCRIPT:-osascript}" \
+    -e "tell application \"System Events\" to set frontmost of first application process whose bundle identifier is \"$1\" to true" >/dev/null 2>&1 || :
+}
+
 browse_window() { # profile-directory
-  local marker i
+  local marker i front
   marker=$(browse_marker "$1")
+  front=$(browse_front)
   for ((i = 0; i < ${BROWSE_WINDOW_WAIT:-40}; i++)); do
-    browse_chrome_urls | grep -qxF -- "$marker" && { [ "$i" -eq 0 ] || sleep "${BROWSE_SETTLE_S:-30}"; return 0; }
+    [ "$i" -eq 0 ] || browse_refocus "$front"
+    browse_chrome_urls | grep -qxF -- "$marker" &&
+      { [ "$i" -eq 0 ] || { sleep "${BROWSE_SETTLE_S:-30}"; browse_refocus "$front"; }; return 0; }
     [ "$i" -ne 0 ] || BROWSE_OPENED_AT=$(date +%s)
-    [ "$i" -ne 0 ] || "${BROWSE_OPEN:-open}" -n -g -b com.google.Chrome --args --profile-directory="$1" "$marker" >/dev/null 2>&1 || :
+    [ "$i" -ne 0 ] || "${BROWSE_OPEN:-open}" -n -g -b com.google.Chrome --args --profile-directory="$1" "${CHROME_FLAGS[@]}" "$marker" >/dev/null 2>&1 || :
     sleep 0.5
   done
   return 1
@@ -5233,7 +5272,7 @@ browse_run() {
       --pin) [ "$#" -ge 2 ] || usage; pin=$2; shift 2 ;;
       --account) [ "$#" -ge 2 ] || usage; account=$2; shift 2 ;;
       --target) [ "$#" -ge 2 ] || usage; target=$2; shift 2 ;;
-      --canary | --json) mode=${1#--}; shift ;;
+      --canary | --json | --hide | --show) mode=${1#--}; shift ;;
       *) usage ;;
     esac
   done
@@ -5253,6 +5292,19 @@ browse_run() {
       return "$rc" ;;
     canary) browse_canary ;;
     json) browse_registry | jq . ;;
+    hide)
+      [ -z "$(chrome_runs '.computer == true')" ] || fail 'a Computer Use run is live and needs Chrome on screen'
+      mkdir -p "$(browse_dir)" && : >"$(browse_dir)/hidden" || return 1
+      ! browse_chrome_running || browse_chrome_visible false
+      "${BROWSE_PS:-ps}" -Ao command= | awk '/\/MacOS\/Google Chrome( |$)/ { print; exit }' | grep -q -- "${CHROME_FLAGS[2]}" ||
+        printf 'WARNING: this Chrome runs without the anti-throttling flags: hidden page timers slow to ~1/min\n'
+      harness_kick
+      printf 'CHROME: hidden\n' ;;
+    show)
+      ! browse_chrome_running || browse_chrome_visible true
+      rm -f "$(browse_dir)/hidden"
+      harness_kick
+      printf 'CHROME: shown\n' ;;
     *)
       for account in $(browse_pool); do
         browse_registry | jq -r --arg a "$account" '.[$a] // {status:"not-enrolled"}
@@ -5325,8 +5377,8 @@ case "${1:-}" in
   claim) shift; claim_run "$@"; exit $? ;;
   say) shift; say_run "$@"; exit $? ;;
   browse) shift; browse_run "$@"; exit $? ;;
-  _deliver) complete_run "$2" "$3"; exit 0 ;;
-  _chrome-runs) chrome_runs; exit 0 ;;
+  _deliver) complete_run "$2" "$3"; chrome_run_edge "$2" end; exit 0 ;;
+  _chrome-runs) if [ "${2:-}" = --browser ]; then chrome_runs "$CHROME_BROWSER_RUN"; else chrome_runs; fi; exit 0 ;;
   _supervise) shift; supervise "$@"; rc=$?; end_run_orphans "$1"; slot_release "$NIGHT_SLOT"; exit "$rc" ;;
   *) usage ;;
 esac

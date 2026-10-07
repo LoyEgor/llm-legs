@@ -21,7 +21,15 @@ browse_tests() {
 for a; do last=\$a; done
 [ -e "$bt/up/\$last" ]
 EOF
-  printf '#!/bin/sh\ncat "%s/tabs"\n' "$bt" >"$bt/stub/osascript"
+  cat >"$bt/stub/osascript" <<EOF
+#!/bin/sh
+[ "\$#" -eq 0 ] || printf '%s\n' "\$*" >>"$bt/osa.log"
+case "\$*" in *frontmost*com.apple.Terminal*) echo com.apple.Terminal >"$bt/front" ;; esac
+cat "$bt/tabs"
+EOF
+  printf '#!/bin/sh\n[ "$1" = front ] && echo ASN:0x0-0x1: || printf "    bundleID=\\"%%s\\"\\n" "$(cat "%s/front")"\n' "$bt" >"$bt/stub/lsappinfo"
+  echo com.apple.Terminal >"$bt/front"
+  printf '#!/bin/sh\necho kick >>"%s/kick.log"\n' "$bt" >"$bt/stub/kick"
   printf '#!/bin/sh\ncat "%s/dia-tabs"\n' "$bt" >"$bt/stub/dia-js"
   cat >"$bt/stub/open" <<EOF
 #!/bin/sh
@@ -29,6 +37,7 @@ printf '%s\n' "\$*" >>"$bt/open.log"
 for a; do last=\$a; done
 printf '\n%s\n' "\$last" >>"$bt/tabs"
 : >"$bt/up/Google Chrome"
+echo com.google.Chrome >"$bt/front"
 EOF
   cat >"$bt/stub/claudeb" <<EOF
 #!/usr/bin/env bash
@@ -56,17 +65,45 @@ EOF
   printf 'cccccccc-3333-4333-8333-333333333333\n' >"$bt/device-lost"
   local BROWSE_PGREP="$bt/stub/pgrep" BROWSE_OSASCRIPT="$bt/stub/osascript" BROWSE_OPEN="$bt/stub/open" BROWSE_PS="$bt/stub/ps"
   local BROWSE_DIA_JS="$bt/stub/dia-js" BROWSE_CHROME_USER_DATA="$bt/chrome" BROWSE_SEEN_WAIT=2 BROWSE_WINDOW_WAIT=6 BROWSE_SETTLE_S=0
+  local BROWSE_LSAPPINFO="$bt/stub/lsappinfo" WORKER_RUN_DOCTOR_KICK="$bt/stub/kick"
   export BROWSE_PGREP BROWSE_OSASCRIPT BROWSE_OPEN BROWSE_PS BROWSE_DIA_JS BROWSE_CHROME_USER_DATA BROWSE_SEEN_WAIT BROWSE_WINDOW_WAIT BROWSE_SETTLE_S
+  export BROWSE_LSAPPINFO WORKER_RUN_DOCTOR_KICK
+  local front='-e tell application "System Events" to set frontmost of first application process whose bundle identifier is "com.apple.Terminal" to true'
   local registry="$WORKER_RUN_DIR/browse/accounts.json" log="$WORKER_RUN_DIR/browse/log.jsonl"
   browse() { WORKER_RUN_CLAUDEB="$bt/stub/claudeb" "$RUNNER" browse "$@"; }
 
   # 1: a window per profile, matched by email case-insensitively, opened once however often it is asked for
   assert grep -qx 'WINDOW: com Profile 1' <<<"$(browse --window com)"
   assert grep -qx 'WINDOW: com Profile 1' <<<"$(browse --window com)"
-  assert test "$(cat "$bt/open.log")" = '-n -g -b com.google.Chrome --args --profile-directory=Profile 1 https://example.com/#worker-run=Profile-1'
+  assert test "$(cat "$bt/open.log")" = '-n -g -b com.google.Chrome --args --profile-directory=Profile 1 --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --disable-background-timer-throttling --disable-features=IntensiveWakeUpThrottling https://example.com/#worker-run=Profile-1'
+  # the app frontmost before gets focus back from Chrome, once: Chrome stays visible unless hidden mode is on
+  assert test "$(grep -cxF -- "$front" "$bt/osa.log")" -eq 1
+  assert test "$(grep -c 'visible' "$bt/osa.log")" -eq 0
   rc=0; out=$(browse --window lost) || rc=$?
   assert test "$rc" -eq 1
   assert grep -qx 'WINDOW: lost failed' <<<"$out"
+
+  # 1b: --hide hides Chrome and is remembered, re-hiding every window opened later; --show undoes both
+  : >"$bt/osa.log"
+  out=$(browse --hide)
+  assert test -e "$WORKER_RUN_DIR/browse/hidden"
+  assert grep -qx 'CHROME: hidden' <<<"$out"
+  assert grep -q '^WARNING: this Chrome runs without the anti-throttling flags' <<<"$out"
+  assert grep -qxF -- '-e tell application "System Events" to set visible of process "Google Chrome" to false' "$bt/osa.log"
+  assert test "$(wc -l <"$bt/kick.log")" -eq 1
+  : >"$bt/osa.log"
+  cp "$bt/tabs" "$bt/tabs.1"; cp "$bt/open.log" "$bt/open.1"
+  browse --window extra >/dev/null
+  mv -f "$bt/tabs.1" "$bt/tabs"; mv -f "$bt/open.1" "$bt/open.log"
+  assert test "$(grep -c 'to false' "$bt/osa.log")" -eq 2
+  assert test "$(grep -cxF -- "$front" "$bt/osa.log")" -eq 1
+  assert test "$(grep -n 'to false' "$bt/osa.log" | head -n 1 | cut -d: -f1)" -lt "$(grep -nF -- "$front" "$bt/osa.log" | head -n 1 | cut -d: -f1)"
+  : >"$bt/osa.log"
+  assert grep -qx 'CHROME: shown' <<<"$(browse --show)"
+  assert test ! -e "$WORKER_RUN_DIR/browse/hidden"
+  assert grep -qxF -- '-e tell application "System Events" to set visible of process "Google Chrome" to true' "$bt/osa.log"
+  assert test "$(wc -l <"$bt/kick.log")" -eq 2
+  : >"$bt/kick.log"
 
   # 2: --seen reads the target browser's own tab list
   printf 'https://example.com/?wr=tok-1\n' >>"$bt/tabs"
@@ -133,8 +170,11 @@ EOF
   # 5: BROWSER: chrome in the brief is a Chrome run on the account's own profile
   printf 'BROWSER: chrome\nACCOUNT: com\nfill the form\n' >"$WORK/brief"
   clear_stub
+  : >"$bt/kick.log"
   start_ok claudeb
   assert await_done
+  # the menu's Chrome row is refreshed at a Chrome run's start and end
+  assert test "$(wc -l <"$bt/kick.log")" -eq 2
   assert test "$(head -n 1 "$RUN_DIR/browser-preamble")" = '# Browser preamble (Claude in Chrome / Google Chrome / com)'
   assert grep -q "\`$dev_com\` first when listed" "$RUN_DIR/browser-preamble"
   assert grep -qx 'ARG=--chrome' "$CALL_LOG"
@@ -258,8 +298,20 @@ EOF
   : >"$bt/claudeb.log"
   assert grep -qx 'CANARY: skipped — a browser run is live' <<<"$(browse --canary)"
   assert test ! -s "$bt/claudeb.log"
+  # hidden mode outlives a Chrome run while another is live, never the last one
+  assert test "$("$RUNNER" _chrome-runs --browser)" = live-browser
+  : >"$WORKER_RUN_DIR/browse/hidden"
+  deliver 'OUTCOME: BROWSER_OK' 0 >/dev/null
+  assert test -e "$WORKER_RUN_DIR/browse/hidden"
+  mkdir -p "$WORKER_RUN_DIR/live-computer"
+  printf '{"pid":%s,"started_at":%s,"computer":true}\n' "$holder" "$(date +%s)" >"$WORKER_RUN_DIR/live-computer/meta.json"
+  assert test "$("$RUNNER" _chrome-runs --browser)" = live-browser
+  assert_fails "$RUNNER" browse --hide
+  rm -rf "$WORKER_RUN_DIR/live-computer"
   kill "$holder" 2>/dev/null || true
   wait "$holder" 2>/dev/null || true
+  deliver 'OUTCOME: BROWSER_OK' 0 >/dev/null
+  assert test ! -e "$WORKER_RUN_DIR/browse/hidden"
   rm -rf "$WORKER_RUN_DIR/live-browser"
   unset -f browse deliver
 
