@@ -360,4 +360,20 @@ assert [ -d "$WORK/dupb/.claude/worktrees/night-N6-handoff-dupb-2026-10-09-same"
 night carry N6 >"$WORK/n6b.out" 2>/dev/null || fail "a second carry of same-named handoffs failed"
 assert [ "$(handoff_refs N6)" = '["handoff-2026-10-09-same","handoff-dupb-2026-10-09-same"]' ]
 
+# A trade job start carried in (Egor answered, not yet carried out) gets its worktree in the handoff's repository
+# and a brief with the trade and his answer, once.
+jq --arg p "$WORK/dupb/docs/handoffs/2026-10-09-same.md" '.jobs += [{kind: "trade", ref: "trade-t1", state: "pending", reason: null,
+  branch: "night/N6/trade-t1", review: null, commits: [], pushed: false, answer: {words: "merge it", done: ["keep"]},
+  from: {night: "N5", ref: "t1", kind: "handoff", trade: "Cost: c. Loss: l. Recommendation: merge.", path: $p}}]' \
+  "$NIGHTS/N6.json" >"$WORK/n6.json" && mv "$WORK/n6.json" "$NIGHTS/N6.json"
+night carry N6 >"$WORK/n6c.out" 2>/dev/null || fail "carry of a trade job failed"
+twt="$WORK/dupb/.claude/worktrees/night-N6-trade-t1"
+assert [ "$(grep '^trade-' "$WORK/n6c.out")" = "trade-t1	$NIGHTS/N6.trade-t1.brief.md	$twt" ]
+assert [ "$(git -C "$twt" symbolic-ref --short HEAD)" = night/N6/trade-t1 ]
+assert grep -qxF 'The trade: Cost: c. Loss: l. Recommendation: merge.' "$NIGHTS/N6.trade-t1.brief.md"
+assert grep -qxF 'His answer: merge it' "$NIGHTS/N6.trade-t1.brief.md"
+assert grep -qF "Its handoff: \`$WORK/dupb/docs/handoffs/2026-10-09-same.md\`" "$NIGHTS/N6.trade-t1.brief.md"
+night carry N6 >"$WORK/n6d.out" 2>/dev/null || fail "a second carry of a trade job failed"
+assert_fails grep -q '^trade-' "$WORK/n6d.out"
+
 printf 'PASS: test_night_carry.sh (%s asserts)\n' "$asserts"

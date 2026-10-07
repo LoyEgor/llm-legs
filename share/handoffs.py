@@ -110,14 +110,17 @@ def live_chats():
     return names
 
 
+def status_of(lines):
+    return next((m.group(1) for m in map(STATUS_RE.match, lines) if m), "")
+
+
 def open_handoffs(repos=None, now=None, live=None):
     now = time.time() if now is None else now
     out = []
     for repo in sweep_repos() if repos is None else repos:
         for path in sorted(glob.glob(os.path.join(repo, "docs", "handoffs", "*.md"))):
             lines = head(path)
-            status = next((m.group(1) for m in map(STATUS_RE.match, lines) if m), "")
-            if not status.lower().startswith("open"):
+            if not status_of(lines).lower().startswith("open"):
                 continue
             to = addressees(lines)
             at = written_at(path)
@@ -460,6 +463,10 @@ if __name__ == "__main__":
     if sys.argv[1:2] == ["--owner"]:
         for path in sys.argv[2:]:
             print(json.dumps(owner_of(path), ensure_ascii=False))
+        sys.exit(0)
+    if sys.argv[1:2] == ["--status"]:
+        for path in sys.argv[2:]:
+            print(status_of(head(path)).strip())
         sys.exit(0)
     if sys.argv[1:2] == ["--outside"]:
         for path in sys.argv[2:]:

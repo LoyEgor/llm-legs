@@ -1258,4 +1258,105 @@ rm "$NIGHTS"/*.json
 assert [ -z "$(night latest --menu)" ]
 assert_fails night report 2>/dev/null
 
+# Trades: before a night starts every answered trade (a blocked-on-egor job) of the other nights is re-checked.
+# Carried out, it settles with its evidence; not carried out, it becomes a trade job of the new night; never
+# answered, it stays. Answers are recorded ones only: answer= with its done= checks, or a handoff doc settled,
+# found by the job's path or, on a job from before paths, by its ref's slug.
+TR="$WORK/trades"
+git init -q -b main "$TR"
+git -C "$TR" -c user.name=t -c user.email=t@t commit -q --allow-empty -m root
+done_hash=$(git -C "$TR" rev-parse HEAD)
+undone_hash=$(git -C "$TR" -c user.name=t -c user.email=t@t commit-tree "$(git -C "$TR" rev-parse 'HEAD^{tree}')" -p HEAD -m side)
+mkdir -p "$TR/docs/handoffs"
+printf '# S\n\nStatus: settled 2026-10-07: Egor agreed to keep it\n' >"$TR/docs/handoffs/s.md"
+printf '# O\n\nStatus: trade for Egor\nCost: c.\nLoss: l.\nRecommendation: r.\n' >"$TR/docs/handoffs/o.md"
+printf '%s\n' "$TR" >"$WORK/sweep-repos"
+trade() { jq -nc --arg k "$1" --arg r "$2" --arg p "${3:-}" '{kind: $k, ref: $r, state: "blocked-on-egor",
+  reason: "Cost: c. Loss: l. Recommendation: r.", branch: null, review: null, commits: [], pushed: false}
+  + (if $p == "" then {} else {path: $p} end)'; }
+jq -n --argjson j "[$(trade fixer t-done), $(trade fixer t-todo), $(trade fixer t-bare), $(trade handoff t-doc "$TR/docs/handoffs/s.md"),
+  $(trade handoff t-open "$TR/docs/handoffs/o.md"), $(trade fixer t-none), $(trade handoff handoff-s)]" \
+  '{id: "tn", started_at: "2026-01-02T00:00:00Z", finished_at: "2026-01-02T03:00:00Z", session: null, jobs: $j}' >"$(record tn)"
+night job tn set t-done "answer=merge it" "done=commit:trades:$done_hash,file:$TR/docs/handoffs/o.md,gone:$TR/nothing" >/dev/null ||
+  fail "answer with checks"
+night job tn set t-todo "answer=raise it" "done=commit:trades:$undone_hash" >/dev/null || fail "answer not carried out"
+night job tn set t-bare "answer=look at it" >/dev/null || fail "answer without checks"
+assert_fails night job tn set t-none done=keep 2>"$WORK/err"
+assert grep -qF 'done= comes with answer=' "$WORK/err"
+assert_fails night job tn set t-none answer=x done=maybe 2>/dev/null
+night job tn add debt d1 >/dev/null
+assert_fails night job tn set d1 answer=x 2>"$WORK/err"
+assert grep -qF 'not blocked-on-egor' "$WORK/err"
+assert jqe '(.jobs[0].answer | .words == "merge it" and (.done | length) == 3 and .at != null and .by != null)
+  and .jobs[2].answer.done == [] and (.jobs[5] | has("answer") | not)' "$(record tn)"
+night start >"$WORK/out" || fail "start with trades"
+tid=$(sed -n 's/^night \([^ ]*\) started:.*/\1/p' "$WORK/out")
+assert grep -qxF "trade tn t-done settled: commit trades@$done_hash on main; file $TR/docs/handoffs/o.md exists; file $TR/nothing is gone" "$WORK/out"
+assert grep -qxF "trade tn t-doc settled: $TR/docs/handoffs/s.md: Status: settled 2026-10-07: Egor agreed to keep it" "$WORK/out"
+assert grep -qxF "trade tn t-todo -> trade-t-todo" "$WORK/out"
+assert grep -qxF "trade tn t-bare -> trade-t-bare" "$WORK/out"
+assert grep -qxF "trade tn handoff-s settled: $TR/docs/handoffs/s.md: Status: settled 2026-10-07: Egor agreed to keep it" "$WORK/out"
+assert [ "$(grep -c '^trade ' "$WORK/out")" = 5 ]
+assert jqe --arg n "$tid" '[.jobs[] | [.ref, .state, (.settled.night // null), (.carried.ref // null)]] == [
+    ["t-done", "settled", $n, null], ["t-todo", "blocked-on-egor", null, "trade-t-todo"],
+    ["t-bare", "blocked-on-egor", null, "trade-t-bare"], ["t-doc", "settled", $n, null],
+    ["t-open", "blocked-on-egor", null, null], ["t-none", "blocked-on-egor", null, null], ["handoff-s", "settled", $n, null],
+    ["d1", "pending", null, null]]
+  and .jobs[0].settled.evidence[0] == "commit trades@'"$done_hash"' on main"
+  and [.events[] | select(.phase | startswith("trade-")) | [.phase, .job, .night]] == [["trade-settled", "t-done", $n],
+    ["trade-carried", "t-todo", $n], ["trade-carried", "t-bare", $n], ["trade-settled", "t-doc", $n], ["trade-settled", "handoff-s", $n]]' "$(record tn)"
+assert jqe --arg n "$tid" '[.jobs[] | [.kind, .ref, .state, .branch, .answer.words, .from.night, .from.ref, .from.trade]] == [
+    ["trade", "trade-t-todo", "pending", "night/\($n)/trade-t-todo", "raise it", "tn", "t-todo", "Cost: c. Loss: l. Recommendation: r."],
+    ["trade", "trade-t-bare", "pending", "night/\($n)/trade-t-bare", "look at it", "tn", "t-bare", "Cost: c. Loss: l. Recommendation: r."]]
+  and [.events[] | select(.phase == "add") | .job] == ["trade-t-todo", "trade-t-bare"]' "$(record "$tid")"
+night report tn >"$WORK/report" || fail "report of the trade night"
+assert grep -qF "settled · fixer · t-done · Cost: c. Loss: l. Recommendation: r. · settled by night $tid: commit trades@" "$WORK/report"
+assert grep -qxF "blocked-on-egor · fixer · t-todo · Cost: c. Loss: l. Recommendation: r. · answered, carried to night $tid as trade-t-todo" "$WORK/report"
+assert grep -qxF "total · 4 blocked-on-egor · 3 settled · 1 pending" "$WORK/report"
+# Carried or never answered, no trade moves at the next start.
+stop_chat "$(jq -r .session "$(record "$tid")")"
+night start >"$WORK/out" || fail "start after the trades moved"
+assert [ "$(grep -c '^trade ' "$WORK/out")" = 0 ]
+assert jqe '[.jobs[] | select(.carried != null) | .ref] == ["t-todo", "t-bare"]' "$(record tn)"
+stop_chat "$(jq -r .session "$(record "$(sed -n 's/^night \([^ ]*\) started:.*/\1/p' "$WORK/out")")")"
+
+# Each merged job records the commits its own branch made, as landed on main, whatever the orchestrator lists:
+# two jobs landed through one integration commit (2026-10-07: night 7777 gave eight fixers its fea660fb) each
+# report their own hashes and lines, the integration commit only as integration, day work on main as neither.
+OC="$WORK/own"
+oc() { git -C "$1" -c user.name=t -c user.email=t@t "${@:2}"; }
+git init -q -b main "$OC"
+oc "$OC" commit -q --allow-empty -m root
+printf '%s\n' "$OC" >"$WORK/sweep-repos"
+jq -n '{id: "on", started_at: "2026-01-03T00:00:00Z", finished_at: null, session: null, jobs: []}' >"$(record on)"
+git -C "$OC" update-ref refs/night/on/base HEAD
+for j in ja jb; do
+  night job on add fixer "$j" --branch "night/on/$j" >/dev/null
+  git -C "$OC" worktree add -q -b "night/on/$j" "$WORK/own-$j" refs/night/on/base
+done
+printf 'a\nb\n' >"$WORK/own-ja/a.txt" && oc "$WORK/own-ja" add a.txt && oc "$WORK/own-ja" commit -qm 'ja work'
+printf '1\n2\n3\n' >"$WORK/own-jb/b.txt" && oc "$WORK/own-jb" add b.txt && oc "$WORK/own-jb" commit -qm 'jb work'
+printf 'x\n' >"$WORK/own-jb/c.txt" && oc "$WORK/own-jb" add c.txt && oc "$WORK/own-jb" commit -qm 'jb more'
+printf 'd\n' >"$OC/day.txt" && oc "$OC" add day.txt && oc "$OC" commit -qm 'day work'
+oc "$WORK/own-ja" rebase -q main && git -C "$OC" merge -q --ff-only night/on/ja || fail "ja did not land"
+oc "$OC" cherry-pick refs/night/on/base..night/on/jb >/dev/null || fail "jb did not land"
+printf 'a\nB\n' >"$OC/a.txt" && printf '1\n2\n3\n4\n' >"$OC/b.txt" && oc "$OC" commit -qam 'integration'
+integ=$(git -C "$OC" rev-parse HEAD)
+ja=$(git -C "$OC" rev-parse night/on/ja) jb1=$(git -C "$OC" rev-parse HEAD~2) jb2=$(git -C "$OC" rev-parse HEAD~1)
+assert [ "$(git -C "$OC" log -1 --format=%s "$jb1") $(git -C "$OC" log -1 --format=%s "$jb2")" = "jb work jb more" ]
+night job on set ja state=merged "commits=own:${integ:0:8}" >/dev/null || fail "ja merged"
+night job on set jb state=merged "commits=own:$integ" >/dev/null || fail "jb merged"
+assert jqe --arg ja "$ja" --arg b1 "$jb1" --arg b2 "$jb2" --arg i "$integ" '[.jobs[] | [.ref, .commits, .integration]] == [
+  ["ja", [{repo: "own", hash: $ja}], [{repo: "own", hash: $i}]],
+  ["jb", [{repo: "own", hash: $b1}, {repo: "own", hash: $b2}], [{repo: "own", hash: $i}]]]' "$(record on)"
+night report on >"$WORK/report" || fail "report of the integration night"
+assert grep -qxF "landed · fixer · ja · own@${ja:0:7} · integration own@${integ:0:7} · code +2/-0 · not pushed" "$WORK/report"
+assert grep -qxF "landed · fixer · jb · own@${jb1:0:7} · own@${jb2:0:7} · integration own@${integ:0:7} · code +4/-0 · not pushed" "$WORK/report"
+# Setting it again keeps the integration list; a job whose branch is gone keeps what it is given.
+night job on set ja state=merged >/dev/null || fail "ja merged again"
+assert jqe --arg i "$integ" '.jobs[0].integration == [{repo: "own", hash: $i}]' "$(record on)"
+night job on add fixer jc --branch night/on/jc >/dev/null
+night job on set jc state=merged "commits=own:$integ" >/dev/null || fail "jc merged"
+assert jqe --arg i "${integ}" '.jobs[2].commits == [{repo: "own", hash: $i}] and (.jobs[2] | has("integration") | not)' "$(record on)"
+
 echo "PASS: test_night_run.sh ($asserts asserts)"

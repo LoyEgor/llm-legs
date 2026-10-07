@@ -16,6 +16,13 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
      orchestrator chat via `chat_open`. That chat takes an account with a claim, runs under
      `caffeinate -i -w <its pid>`, and starts with the prompt
      `сделай чистку — night run <night-id>`.
+   - Before the chat opens, `start` re-checks every answered trade, a `blocked-on-egor` job of another
+     night. Recorded answers only, never read from prose: `night-run job <id> set <ref> answer="<his words>"
+     done=<check>,…` (`commit:<repo>:<hash>` on main, `file:<path>`, `gone:<path>`, `keep`), or a handoff
+     job's doc (its `path`, else the one its ref's slug names) whose `Status:` reads settled. Every check holding (or the doc settled), the job goes
+     `settled` with `settled` {at, night, evidence}; otherwise it becomes a pending `trade` job
+     `trade-<ref>` of this night carrying the answer and `from` {night, ref, kind, trade, path}, the old job
+     marked `carried`, and `carry` gives it a night worktree and a brief. An unanswered trade stays.
    - The sweep word arms the sweep span. The span carries the review grant, and commit and push, as
      a hand-typed «сделай чистку» does (claude-setup `hooks/lib/word-families.json` family `sweep`).
      The night-sweep skill reads the `night run <id>` marker and follows its **Night mode** section.
@@ -138,13 +145,18 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
   `new`, `regressed`. `report` prints one line per doctor,
   `harness 35 → 38 · proved 4 · pending 18 · new 16 · regressed 5`; the menu's Last night shows only the jobs;
 - `jobs[]`, each with:
-  - `kind` (fixer, vendor, debt, leftover, handoff, suite, owner-chat) and `ref` (run id, event id,
+  - `kind` (fixer, vendor, debt, leftover, handoff, suite, owner-chat, trade) and `ref` (run id, event id,
     review round or `leftover-<slug>`); an owner-chat job carries `owner`, `session`, `via` (open,
     message), `handoffs[]`; a leftover job `adopted[]` ({repo, branch, worktree, tip,
     night_worktree}), where its branch came from, and `handover` ({by, at, why}) when adopted with `--ready`;
-  - `state`: `merged`, `left` (with a reason), `failed-launch`, `blocked-on-egor` (its reason the trade) or `nothing-to-do`;
+  - `state`: `merged`, `left` (with a reason), `failed-launch`, `blocked-on-egor` (its reason the trade, `answer`
+    {words, at, by, done[]} once Egor answered), `settled` (a trade whose answer start found carried out) or `nothing-to-do`;
   - `branch`, `review` (run id, optional: a night branch gets no review of its own), `commits[]`
-    ({repo, hash}) and `pushed` (bool, as verified against the remote).
+    ({repo, hash}), `integration[]` and `pushed` (bool, as verified against the remote, integration included).
+    A merged job whose branch exists records as `commits` only what its branch made: its reflog's `commit`
+    and `commit (amend)` entries plus what it was created with past the night's base, each found on main by
+    author, author time and subject (a rebase or cherry-pick keeps them), else on the branch; any other
+    commit `commits=` lists goes to `integration`, never counted as the job's lines.
 
 - `suites` (the Close run): `started_at`, `finished_at`, `repos[]` {repo, exit, passed, failed[], log}.
 
