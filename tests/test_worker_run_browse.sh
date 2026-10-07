@@ -24,7 +24,7 @@ EOF
   cat >"$bt/stub/osascript" <<EOF
 #!/bin/sh
 [ "\$#" -eq 0 ] || printf '%s\n' "\$*" >>"$bt/osa.log"
-case "\$*" in *frontmost*com.apple.Terminal*) echo com.apple.Terminal >"$bt/front" ;; esac
+case "\$*" in *frontmost*com.apple.Terminal*) echo com.apple.Terminal >"$bt/front" ;; *"get visible"*) cat "$bt/visible"; exit 0 ;; esac
 cat "$bt/tabs"
 EOF
   printf '#!/bin/sh\n[ "$1" = front ] && echo ASN:0x0-0x1: || printf "    bundleID=\\"%%s\\"\\n" "$(cat "%s/front")"\n' "$bt" >"$bt/stub/lsappinfo"
@@ -104,6 +104,13 @@ EOF
   assert grep -qxF -- '-e tell application "System Events" to set visible of process "Google Chrome" to true' "$bt/osa.log"
   assert test "$(wc -l <"$bt/kick.log")" -eq 2
   : >"$bt/kick.log"
+  # 1c: --toggle (the menu checkbox) shows a hidden Chrome and hides a visible one
+  echo false >"$bt/visible"
+  assert grep -qx 'CHROME: shown' <<<"$(browse --toggle)"
+  echo true >"$bt/visible"
+  assert grep -qx 'CHROME: hidden' <<<"$(browse --toggle)"
+  assert test -e "$WORKER_RUN_DIR/browse/hidden"
+  rm -f "$WORKER_RUN_DIR/browse/hidden"; : >"$bt/kick.log"
 
   # 2: --seen reads the target browser's own tab list
   printf 'https://example.com/?wr=tok-1\n' >>"$bt/tabs"

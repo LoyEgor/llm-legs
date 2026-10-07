@@ -1441,17 +1441,18 @@ m.browser_processes = lambda: ["/Applications/Dia.app/Contents/MacOS/Dia --enabl
 part = B(T)
 check(("browser-applescript-js", "dia") not in judged(part) and restart not in [r["cells"][0] for r in part["rows"]],
       "Browser: Dia with its JS flag is fine and offers no restart")
-check(not any(r["cells"][0].startswith("Chrome:") for r in part["rows"]), "Browser: no live Chrome run, no hide row")
+check(not any(r["cells"][0].startswith("Show Chrome") for r in part["rows"]), "Browser: no live Chrome run, no hide row")
 m.browser_chrome_runs = lambda: ["r1", "r2"]
 acts = {r["cells"][0]: r.get("action") for r in B(T)["rows"]}
-check(acts.get("Chrome: 2 worker runs · Спрятать") == ["worker-run", "browse", "--hide"],
-      "Browser: live Chrome runs add the hide row")
-put(os.path.join(runs, "browse", "hidden"), "")
+check(acts.get("Show Chrome — 2 worker runs") == ["worker-run", "browse", "--toggle"],
+      "Browser: live Chrome runs add the Show Chrome toggle")
 m.browser_chrome_runs = lambda: ["r1"]
-acts = {r["cells"][0]: r.get("action") for r in B(T)["rows"]}
-check(acts.get("Chrome: 1 worker run · Показать") == ["worker-run", "browse", "--show"],
-      "Browser: hidden mode turns the row into show")
-os.remove(os.path.join(runs, "browse", "hidden"))
+part = B(T)
+menu = m.MenuLines(0, 0, "t")
+menu.layout(part, 0)
+line = [l for l in menu.lines if "Show Chrome — 1 worker run" in l][0]
+check(line.split("\t")[1] == "va" and line.endswith("\tworker-run\x1fbrowse\x1f--toggle"),
+      "Browser: the Show Chrome row is flagged v (checked live by the menu) and a")
 m.browser_chrome_runs = lambda: []
 calls = os.path.join(work, "browse-calls")
 if os.path.exists(calls):

@@ -18,7 +18,7 @@ usage() {
     '       worker-run say [<run-id>] <text>' \
     '       worker-run transcript <run-id>' \
     '       worker-run claim <run-id> --paths <path>... [--complete]' \
-    '       worker-run browse [--enroll <account|all> [--pin <dir>] | --canary | --window <account> | --seen <token> [--target dia] | --json | --hide | --show]' >&2
+    '       worker-run browse [--enroll <account|all> [--pin <dir>] | --canary | --window <account> | --seen <token> [--target dia] | --json | --hide | --show | --toggle]' >&2
   exit 2
 }
 
@@ -5281,10 +5281,14 @@ browse_run() {
       --pin) [ "$#" -ge 2 ] || usage; pin=$2; shift 2 ;;
       --account) [ "$#" -ge 2 ] || usage; account=$2; shift 2 ;;
       --target) [ "$#" -ge 2 ] || usage; target=$2; shift 2 ;;
-      --canary | --json | --hide | --show) mode=${1#--}; shift ;;
+      --canary | --json | --hide | --show | --toggle) mode=${1#--}; shift ;;
       *) usage ;;
     esac
   done
+  if [ "$mode" = toggle ]; then
+    [ "$("${BROWSE_OSASCRIPT:-osascript}" -e 'tell application "System Events" to get visible of process "Google Chrome"' 2>/dev/null)" = false ] &&
+      mode=show || mode=hide
+  fi
   case "$mode" in
     seen) browse_seen "$arg" "$target" "$account" ;;
     window)

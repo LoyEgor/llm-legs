@@ -2530,8 +2530,11 @@ def running_now(now):
 # ---------------------------------------------------------------- document
 
 
-def row(cells, red=(), dim=False, menu=None, key=None, say=None, green=(), judge=None, head=None, action=None):
+def row(cells, red=(), dim=False, menu=None, key=None, say=None, green=(), judge=None, head=None, action=None,
+        chrome_check=False):
     out = {"cells": [str(c) for c in cells], "red": sorted(set(red)), "dim": bool(dim) and not action}
+    if chrome_check:
+        out["chrome_check"] = True
     if action:
         out["action"] = [str(a) for a in action]
     if head:
@@ -4390,9 +4393,8 @@ def browser_section(now, write=False):
                         action=["dia-js", "--relaunch"]))
     live = len(browser_chrome_runs())
     if live:
-        hidden = os.path.exists(os.path.join(runs, "browse", "hidden"))
-        rows.append(row(["Chrome: %d worker run%s · %s" % (live, "" if live == 1 else "s", "Показать" if hidden else "Спрятать"),
-                         "", ""], action=["worker-run", "browse", "--show" if hidden else "--hide"]))
+        rows.append(row(["Show Chrome — %d worker run%s" % (live, "" if live == 1 else "s"), "", ""],
+                        action=["worker-run", "browse", "--toggle"], chrome_check=True))
     return section("Browser", rows, ["", "", ""], [False, False, False],
                    ok="every enrolled account proved its Chrome profile, no browser run went around the harness in 72 h",
                    blind="" if accounts else "no account is enrolled: worker-run browse --enroll all")
@@ -5026,7 +5028,8 @@ class MenuLines:
                     lead = len(piece[:len(piece) - len(piece.lstrip(" ·,"))].encode())
                     spans.append((style, at + lead, size - lead))
                 at += size
-        self.emit(depth, "d" if item.get("dim") else "", spans, text, item.get("action"))
+        self.emit(depth, ("d" if item.get("dim") else "") + ("v" if item.get("chrome_check") else ""), spans, text,
+                  item.get("action"))
         if item.get("menu"):
             self.layout(item["menu"], depth + 1)
 
@@ -5055,7 +5058,8 @@ class MenuLines:
             if source is None:
                 self.emit(depth, "d", [], text)
             else:
-                self.emit(depth, "d" if source.get("dim") else "", spans, text, source.get("action"))
+                self.emit(depth, ("d" if source.get("dim") else "") + ("v" if source.get("chrome_check") else ""),
+                          spans, text, source.get("action"))
                 if source.get("menu"):
                     self.layout(source["menu"], depth + 1)
 

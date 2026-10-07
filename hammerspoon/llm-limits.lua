@@ -1774,7 +1774,7 @@ local function readHarnessMenu()
   if not contents then return nil end
   local red, asOf, title = contents:match("^T\t(%d+)\t(%d+)\t([^\n]*)")
   if not title then return nil end
-  local root, stack = {}, {}
+  local root, stack, chromeChecks = {}, {}, {}
   stack[0] = root
   for depth, flags, spans, text in contents:gmatch("\n(%d+)\t(%w*)\t([^\t\n]*)\t([^\n]*)") do
     depth = tonumber(depth)
@@ -1792,6 +1792,7 @@ local function readHarnessMenu()
         end
       end
       local item = harnessLine(flags, spans, text)
+      if flags:find("v", 1, true) then chromeChecks[#chromeChecks + 1] = item end
       if item.title ~= "-" then
         if actionPath then
           item.fn = function() startDiagnosticsTask("harnessActionTask", actionPath, actionArgs) end
@@ -1815,7 +1816,8 @@ local function readHarnessMenu()
     end
     return items
   end
-  local document = { red = tonumber(red), as_of = tonumber(asOf), title = title, items = settle(root) }
+  local document = { red = tonumber(red), as_of = tonumber(asOf), title = title, items = settle(root),
+    chromeChecks = chromeChecks }
   if key then harnessCache.key, harnessCache.document = key, document end
   return document
 end
@@ -1835,6 +1837,11 @@ end
 -- worker wait, or slows the machine. bin/harness-doctor writes the rows; nothing here names one.
 function M.harnessDoctorEntry()
   local document = readHarnessMenu()
+  -- Checked live on every open: the cached menu.txt lags a hide or show by up to the collector's run.
+  local chrome = document and #document.chromeChecks > 0 and hs.application.get("com.google.Chrome")
+  for _, item in ipairs(document and document.chromeChecks or {}) do
+    item.checked = chrome and not chrome:isHidden() or false
+  end
   local items = {}
   for index, item in ipairs(document and document.items or {
     { title = infoTitle("no data yet", false, true), disabled = true } }) do
