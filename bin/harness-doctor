@@ -4391,9 +4391,8 @@ def browser_section(now, write=False):
                                        evidence=[evidence(now, "ps:dia", say)], bad=1)]))
         rows.append(row(["Restart Dia with AppleScript JS — unsaved input may be lost", "", ""],
                         action=["dia-js", "--relaunch"]))
-    live = len(browser_chrome_runs())
-    if live:
-        rows.append(row(["Show Chrome — %d worker run%s" % (live, "" if live == 1 else "s"), "", ""],
+    if browser_chrome_runs():
+        rows.append(row(["Show Chrome", "", ""],
                         action=["worker-run", "browse", "--toggle"], chrome_check=True))
     return section("Browser", rows, ["", "", ""], [False, False, False],
                    ok="every enrolled account proved its Chrome profile, no browser run went around the harness in 72 h",

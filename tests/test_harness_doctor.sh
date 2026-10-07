@@ -1444,13 +1444,13 @@ check(("browser-applescript-js", "dia") not in judged(part) and restart not in [
 check(not any(r["cells"][0].startswith("Show Chrome") for r in part["rows"]), "Browser: no live Chrome run, no hide row")
 m.browser_chrome_runs = lambda: ["r1", "r2"]
 acts = {r["cells"][0]: r.get("action") for r in B(T)["rows"]}
-check(acts.get("Show Chrome — 2 worker runs") == ["worker-run", "browse", "--toggle"],
+check(acts.get("Show Chrome") == ["worker-run", "browse", "--toggle"],
       "Browser: live Chrome runs add the Show Chrome toggle")
 m.browser_chrome_runs = lambda: ["r1"]
 part = B(T)
 menu = m.MenuLines(0, 0, "t")
 menu.layout(part, 0)
-line = [l for l in menu.lines if "Show Chrome — 1 worker run" in l][0]
+line = [l for l in menu.lines if "Show Chrome" in l][0]
 check(line.split("\t")[1] == "va" and line.endswith("\tworker-run\x1fbrowse\x1f--toggle"),
       "Browser: the Show Chrome row is flagged v (checked live by the menu) and a")
 m.browser_chrome_runs = lambda: []
