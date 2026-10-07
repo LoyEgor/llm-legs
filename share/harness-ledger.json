@@ -398,7 +398,7 @@
         "rule": "growth-ungated",
         "ident": "between-sessions"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-09-30T03:59:26+03:00",
@@ -409,12 +409,22 @@
           ],
           "in": "llm-legs@73a54ec",
           "regressed_at": "2026-09-30T12:46:39+03:00"
+        },
+        {
+          "at": "2026-10-07T03:09:16+03:00",
+          "by": "night fixer harness-guards-20261006T234258Z-7309",
+          "files": [
+            "llm-legs/bin/instruction-watch.sh",
+            "llm-legs/hammerspoon/instruction-watch.lua"
+          ],
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-01",
-      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8",
-      "note": "Event 5751c770d8700227 (2026-09-29T20:50:18Z, compaction SessionStart of a session whose own baseline dated from before 2026-09-28T19:43Z) listed 20 files: 15 synced-skill files and hammerspoon/CLAUDE.md whose alert marks earlier checks had claimed (20:14-20:33Z, 09:39Z), and review-tiers.md whose 2026-09-28T19:43Z record had outlived its one-day mark. alert_once now journals only the files this check claimed, and a mark lives past the baselines' week-old sweep. Follow-up 2026-10-01: The regression now includes 6bbd8cc122eaaeea (2026-09-30T09:42:45Z, 15 google-workspace files) and e4a27d26b246bec2 (2026-10-01T01:12:13Z, six math-proof files plus a 33-byte README). Math-proof was already reported by watcher 6abd5e9b7ca01b57 at 19:10:19Z. Current alert_once filters claimed files; Lua watchEmit does too; both derive hash@mtime via the same watch_mark_key and accept w-suffixed markers. Thus the original whole-batch re-journaling implementation is already removed. Historical records carry no hash@mtime, so an actual vendor rewrite versus expired/missing claim versus old resident watcher cannot be distinguished. Do not claim a dedup fix or suppress between-sessions. Owner must obtain write-key/runtime-version evidence and reproduce watcher-first then resumed-baseline behavior. Existing tripwire-duplicate-records blind spot remains applicable.",
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-guards-20261006T234258Z-7309",
+      "note": "Regression 2026-10-06 settled: claude-setup main rebased at 03:25:13Z (checkout origin/main, then the media and press-time commits picked back), rewriting skills/media/SKILL.md and skills-on-demand/night-sweep/SKILL.md with the bytes they already held under a new mtime. The claim key is path+hash@mtime, so resumed sessions whose baselines predated the earlier writes journaled the whole net since then as between-sessions growth: 03:30:27Z media +1327 B = 181+159 (gate-passed 10-05 21:11Z) +987 (journaled 23:31Z-02:25Z); 10:57:13Z night-sweep +6419 B against a baseline older than its journaled 10-04..10-06 writes. Fix: watch_claim (bin/instruction-watch.sh, eval'd by the Hammerspoon watcher) keeps per path the content hash the journal last carried and journals no write of the same bytes; a deletion or other bytes in between clears it. Tests: test_instruction_gate_tripwire (same bytes under a new mtime, then A->B again) and test_instruction_gate_bypasses (watcher claim script), both red on the old code. Earlier: alert_once journals only files this check claimed (73a54ec).",
       "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md"
     },
     {
@@ -3401,6 +3411,62 @@
       "last_reviewed": "2026-10-06",
       "reviewed_by": "night fixer harness-hooks-20261006T032924Z-3077",
       "note": "In a worker every Bash call paid jq, realpath, the heredoc mask, grep, awk and tr. Only a `git` segment running checkout/restore/reset/clean/stash is ever denied, so the hook now exits unless the raw payload from the command key on holds `git` and one of them; 66 -> 9 ms on a worker's trivial call (tests/test_worker_git_guard.sh, red on the old code). A main-session call still exits before it.",
+      "handoff": null
+    },
+    {
+      "id": "guards-ungated-claude-md-pathlib-assign",
+      "title": "The write gate missed a python write through x=pathlib.Path(name), so a worktree CLAUDE.md grew unjudged and landed in ~/.claude/CLAUDE.md",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^\\~/\\.claude/CLAUDE\\.md$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-07T03:09:16+03:00",
+          "by": "night fixer harness-guards-20261006T234258Z-7309",
+          "files": [
+            "llm-legs/bin/instruction-write-gate.sh",
+            "llm-legs/share/instruction-files.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "guards-ungated-docs-worktree-shell-write"
+      ],
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-guards-20261006T234258Z-7309",
+      "note": "Event 2026-10-06T18:11:13Z, CLAUDE.md +248 B: chat 24cb1f32 (profile com) ran cd claude-setup && git worktree add docs/browser-chrome-automation && cd <it> && python3 heredoc c=pathlib.Path('global/CLAUDE.md'); c.write_text(...) (commit eab2019), then git merge --ff-only into the main checkout at 18:11:11Z. instruction_interp_var_assign_re took only a bare Path( before the quoted name, so the module-qualified assignment bound nothing and no gate journaled the write. Fixed: (Identifier.)*Path(. test_instruction_gate red on the old code.",
+      "handoff": null
+    },
+    {
+      "id": "guards-ungated-docs-worktree-shell-write",
+      "title": "Shell writes to a claude-setup worktree copy of ~/.claude/docs were carved out of the write gate, so their landing read as ungated growth",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^\\~/\\.claude/docs$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-07T03:09:16+03:00",
+          "by": "night fixer harness-guards-20261006T234258Z-7309",
+          "files": [
+            "llm-legs/bin/instruction-write-gate.sh",
+            "llm-legs/share/instruction-files.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "guards-ungated-claude-md-pathlib-assign"
+      ],
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-guards-20261006T234258Z-7309",
+      "note": "Event 2026-10-06T18:11:13Z, browser-ui-work.md +453 B = eab2019 +280 (the pathlib miss) + 418d15a +38 + d8861ff +135, all python heredocs of chat 24cb1f32 in the worktree docs-browser-chrome-automation, the last two after C=<worktree>; cd $C with relative global/docs/browser-ui-work.md. instruction_carved_out carved every non-CLAUDE markdown file of a worktree out, the cd loop dropped a cd through a variable, and only spellings relative to the cwd itself were matched. Fixed: a worktree copy whose main-checkout counterpart resolves into a guarded directory stays guarded, cd $VAR resolves a literal assignment of the same command, and a worktree cwd also spells names relative to its main checkout. Not covered still: a cd into a directory the same command creates (here the gate judged the main-checkout spelling, which denies too). The landing itself (a chat git merge into main) is judged by no gate; growth born in a gated write is credited by harness-doctor's landing pool. test_instruction_gate red on the old code.",
       "handoff": null
     }
   ],

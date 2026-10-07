@@ -102,10 +102,25 @@ cwds=("${cwd:-$PWD}")
 here=${cwd:-$PWD}
 segments=${command//&&/$'\n'}; segments=${segments//||/$'\n'}; segments=${segments//;/$'\n'}
 cd_re='^[[:space:]({]*cd[[:space:]]+([^[:space:]&|)]+)[[:space:]]*[)}]*[[:space:]]*$'
+set_re='^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z_0-9]*)=([^[:space:]&|;<>()`]+)[[:space:]]*$'
+var_re='^\$\{?([A-Za-z_][A-Za-z_0-9]*)\}?(/.*)?$'
+assigned=$'\n'
 while IFS= read -r segment; do
+  if [[ $segment =~ $set_re ]]; then
+    value=${BASH_REMATCH[3]}; value=${value#[\"\']}; value=${value%[\"\']}
+    assigned=$'\n'"${BASH_REMATCH[2]}=$value$assigned"
+    continue
+  fi
   [[ $segment =~ $cd_re ]] || continue
   lead=${BASH_REMATCH[1]}
   lead=${lead#[\"\']}; lead=${lead%[\"\']}
+  if [[ $lead =~ $var_re ]] && [ "${BASH_REMATCH[1]}" != HOME ]; then
+    case "$assigned" in
+      *$'\n'"${BASH_REMATCH[1]}="*)
+        value=${assigned#*$'\n'"${BASH_REMATCH[1]}="}
+        lead=${value%%$'\n'*}${BASH_REMATCH[2]} ;;
+    esac
+  fi
   case "$lead" in
     '~') lead=$HOME ;;
     '~/'*) lead="$HOME/${lead#\~/}" ;;
@@ -118,18 +133,29 @@ while IFS= read -r segment; do
   here=$lead
   cwds=("$lead" "${cwds[@]}")
 done <<< "$segments"
+# A worktree's relative name is the main checkout's relative name: `global/docs/x.md` typed inside a
+# claude-setup worktree is the copy a landing delivers to ~/.claude/docs.
+spell_cwds=()
+for here in "${cwds[@]}"; do
+  spell_cwds+=("$here")
+  case "$here" in */.claude/worktrees/*)
+    rest=${here##*/.claude/worktrees/}
+    case "$rest" in */*) rest=/${rest#*/} ;; *) rest='' ;; esac
+    spell_cwds+=("${here%/.claude/worktrees/*}$rest") ;;
+  esac
+done
 
 alternation=''
 while IFS= read -r path; do
   case "$haystack" in *"$path"*) ;; *) continue ;; esac
   alternation="${alternation:+$alternation|}$(instruction_ere_escape "$path")"
-done < <(for here in "${cwds[@]}"; do instruction_all_paths "$HOME" "$here" '' "$haystack"; done)
+done < <(for here in "${spell_cwds[@]}"; do instruction_all_paths "$HOME" "$here" '' "$haystack"; done)
 
 dir_alternation=''
 while IFS= read -r path; do
   case "$haystack" in *"$path"/*) ;; *) continue ;; esac
   dir_alternation="${dir_alternation:+$dir_alternation|}$(instruction_ere_escape "$path")"
-done < <(for here in "${cwds[@]}"; do instruction_all_dirs "$HOME" "$here"; done)
+done < <(for here in "${spell_cwds[@]}"; do instruction_all_dirs "$HOME" "$here"; done)
 # Matched by name as well as by path: there is no list of every repository, and a project's
 # own CLAUDE.md or MEMORY.md costs the same per read as the global one.
 by_name="([^[:space:];|&'\"]*/)?${INSTRUCTION_GUARDED_BASENAMES}"

@@ -361,4 +361,16 @@ assert_eq "early rc=124" "$(printf '%s' "$guard_out" | tr '\n' ' ')"
 assert grep -q '"PATH=" .. WATCH_PATH .. ":$PATH; export PATH; LC_ALL=C; export LC_ALL; exec /usr/bin/perl -e",' \
   "$ROOT/hammerspoon/instruction-watch.lua"
 
+# The watcher claims through the tripwire's own watch_claim: the same bytes under a new mtime are
+# not journaled again, other bytes are.
+watch_script=$(awk '/^local WATCH_SCRIPT = \[==\[/ { on = 1; next } /^\]==\]/ { exit } on { print }' \
+  "$ROOT/hammerspoon/instruction-watch.lua")
+claim_state="$WORK/claim-state"
+claim() { bash -c "$watch_script" _ "$ROOT" "$HOME" "$claim_state" claim "$HOME/.claude/docs/x.md" "$1" 0; }
+h1=$(printf a | shasum -a 256 | cut -c1-64); h2=$(printf b | shasum -a 256 | cut -c1-64)
+assert_contains w "$(claim "$h1@1.5")"
+assert_eq - "$(claim "$h1@2.5")"
+assert_contains w "$(claim "$h2@3.5")"
+assert_contains w "$(claim "$h1@4.5")"
+
 echo "OK ($asserts assertions)"

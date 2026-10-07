@@ -454,11 +454,11 @@ root=$1 home=$2 state=$3 mode=$4
 shift 4
 . "$root/share/instruction-files.sh" 2>/dev/null || exit 2
 command -v jq >/dev/null 2>&1 || exit 2
-for f in hash_of shq snap_key keep_revert watch_mark_key clear_gone_marks release_marks; do
+for f in hash_of shq snap_key keep_revert watch_mark_key clear_gone_marks release_marks watch_claim; do
   eval "$(sed -n '/^'"$f"'() {/,/^}/p' "$root/bin/instruction-watch.sh")"
   declare -F "$f" >/dev/null || exit 3
 done
-SNAP_DIR=$state/snapshot REVERT_DIR=$state/reverts SNAP_MAX_BYTES=1048576 ALERT_DIR=$state/alerts
+SNAP_DIR=$state/snapshot REVERT_DIR=$state/reverts SNAP_MAX_BYTES=1048576 ALERT_DIR=$state/alerts STATE_DIR=$state
 case $mode in
   list) instruction_visible_paths "$home" "$state/ranked.txt" '' ;;
   unloaded)
@@ -483,8 +483,7 @@ case $mode in
   claim)
     while [ $# -ge 3 ]; do
       [ "$3" = 1 ] && clear_gone_marks "$1"
-      key=$(watch_mark_key "$1" "$2")
-      if instruction_mark_once "$ALERT_DIR" "$key" "$state"; then printf '%s\n' "$key"; else printf -- '-\n'; fi
+      watch_claim "$1" "$2" || printf -- '-\n'
       shift 3
     done ;;
   release) release_marks "$@" ;;

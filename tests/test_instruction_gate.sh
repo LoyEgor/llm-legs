@@ -465,4 +465,23 @@ echo "== write gate: a mention beside an unrelated write is still not a target"
 assert_eq deny "$(decision "cat $WORK/unrelated.py | tee -a $CLAUDE_MD")"
 assert_eq pass "$(decision "printf x | tee $WORK/log.txt")"
 
+echo "== write gate: a worktree copy of a guarded tree's file, a cd through a variable, a module-qualified Path"
+R=$(cd "$REPO" && pwd -P)
+WT=$R/.claude/worktrees/wt
+mkdir -p "$R/global/docs" "$WT/global/docs" "$WT/notes"
+printf 'doc\n' > "$R/global/docs/guide.md"
+printf 'doc\n' > "$WT/global/docs/guide.md"
+ln -s "$R/global/docs" "$HOME/.claude/repodocs"
+assert_eq deny "$(decision "cd $R && python3 -c \"import pathlib; c=pathlib.Path('global/CLAUDE.md'); c.write_text('x')\"")"
+assert_eq deny "$(GATE_CWD="$WT" decision "python3 -c \"open('global/docs/guide.md','a').write('x')\"")"
+assert_eq deny "$(decision "C=$WT
+cd \$C && python3 - <<'EOF'
+p='global/docs/guide.md'
+open(p,'w').write('x')
+EOF")"
+assert_eq deny "$(decision "export C=$WT; cd \"\${C}\" && echo x >> global/docs/guide.md")"
+assert_eq pass "$(GATE_CWD="$WT" decision 'echo x >> notes/plain.md')"
+assert_eq pass "$(decision "python3 -c \"open('$WT/notes/plain.md','a').write('x')\"")"
+assert_eq pass "$(decision "D=$WORK; cd \$D && echo x >> guide.md")"
+
 echo "OK ($asserts assertions)"

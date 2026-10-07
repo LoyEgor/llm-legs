@@ -442,10 +442,28 @@ clear_gone_marks() { # path
 }
 
 release_marks() { # key...
-  local key
+  local key last
   for key; do
     rmdir "$ALERT_DIR/$key" 2>/dev/null || true
+    for last in "$ALERT_DIR"/*.last; do
+      [ "$(cut -d' ' -f2 "$last" 2>/dev/null)" = "$key" ] && rm -f "$last"
+    done
   done
+}
+
+# The write key carries the mtime, so a rewrite of the same bytes (a rebase putting them back) is a
+# new key, and a session whose baseline predates the first write would journal its growth again.
+# `.last` holds the content the journal last carried for the path; any other kind of report clears
+# it, so a deletion and the same bytes coming back are two records.
+watch_claim() { # path content-key → the key on stdout when this caller journals the write
+  local key hash=${2%@*} last
+  last="$ALERT_DIR/$(watch_mark_key "$1" last).last"
+  [[ $2 == *@* && $hash =~ ^[0-9a-f]{64}$ ]] || hash=''
+  [ -n "$hash" ] && [ "$(cut -d' ' -f1 "$last" 2>/dev/null)" = "$hash" ] && return 1
+  key=$(watch_mark_key "$1" "$2")
+  instruction_mark_once "$ALERT_DIR" "$key" "$STATE_DIR" || return 1
+  if [ -n "$hash" ]; then printf '%s %s\n' "$hash" "$key" > "$last"; else rm -f "$last"; fi 2>/dev/null
+  printf '%s\n' "$key"
 }
 
 # 1 when the journal could not take the record: the caller then keeps its baseline where it was, so
@@ -458,8 +476,7 @@ alert_once() { # path content-key summary
   # already journaled stays out of this record — its writer and restore included — or the doctor
   # counts that one write twice.
   for i in "${!keys[@]}"; do
-    key=$(watch_mark_key "${keys[$i]%%"$_watch_nl"*}" "${keys[$i]#*"$_watch_nl"}")
-    if instruction_mark_once "$ALERT_DIR" "$key" "$STATE_DIR"; then
+    if key=$(watch_claim "${keys[$i]%%"$_watch_nl"*}" "${keys[$i]#*"$_watch_nl"}"); then
       claimed="$claimed$key "
       [ -n "$id" ] || id=$key
       won_keys+=("${keys[$i]}"); won_deltas+=("${deltas[$i]}")
@@ -504,6 +521,7 @@ cmd_baseline() {
     -o -name 'visible-*' -mtime +1 \) -delete 2>/dev/null
   find "$SNAP_DIR" -mindepth 1 -maxdepth 1 -type f -mtime +90 -delete 2>/dev/null
   find "$RECEIPT_DIR" -mindepth 1 -maxdepth 1 -type f -mtime +30 -delete 2>/dev/null
+  find "$ALERT_DIR" -mindepth 1 -maxdepth 1 -type f -name '*.last' -mtime +30 -delete 2>/dev/null
   # A read-only call that exits non-zero gets no PostToolUse, so its note is never taken.
   find "$STATE_DIR/readonly" -mindepth 1 -maxdepth 1 -type f -mmin +1440 -delete 2>/dev/null
   instruction_ranked_refresh "$HOME" "$RANKED_CACHE" || true

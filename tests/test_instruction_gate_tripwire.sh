@@ -124,6 +124,24 @@ printf 'changed across a compaction\n' >> "$HOME/.claude/docs/review-tiers.md"
 assert_contains "CHANGED-BETWEEN-SESSIONS" "$(watch baseline sid-after | jq -r '.hookSpecificOutput.additionalContext // ""')"
 assert_eq "" "$(watch baseline sid-after)"
 
+echo "== tripwire: the same bytes rewritten (a rebase) are journaled once, a return to them after other bytes again"
+TIERS="$HOME/.claude/docs/review-tiers.md"
+watch baseline sid-stale >/dev/null
+cp "$TIERS" "$WORK/tiers-a"
+printf 'grown once\n' >> "$TIERS"
+cp "$TIERS" "$WORK/tiers-b"
+watch baseline sid-first >/dev/null
+lines=$(wc -l < "$J" | tr -d " ")
+cat "$WORK/tiers-b" > "$TIERS"; touch -m -t 203001010000 "$TIERS"
+assert_contains "CHANGED-BETWEEN-SESSIONS $TIERS" "$(watch baseline sid-stale | jq -r '.hookSpecificOutput.additionalContext // ""')"
+assert_eq "$lines" "$(wc -l < "$J" | tr -d ' ')"
+cat "$WORK/tiers-a" > "$TIERS"
+watch baseline sid-back >/dev/null
+cat "$WORK/tiers-b" > "$TIERS"; touch -m -t 203101010000 "$TIERS"
+watch baseline sid-again >/dev/null
+assert_eq "+$(( $(wc -c < "$WORK/tiers-b") - $(wc -c < "$WORK/tiers-a") ))" "+$(tail -n 1 "$J" | jq -r '.bytes[0]')"
+assert_eq "$(( lines + 2 ))" "$(wc -l < "$J" | tr -d ' ')"
+
 echo "== tripwire: the harness switching model is not an edit to settings.json"
 printf '{"model":"sonnet","permissions":{"defaultMode":"bypassPermissions"},"hooks":{}}\n' \
   > "$HOME/.claude/settings.json"

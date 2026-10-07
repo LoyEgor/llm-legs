@@ -801,7 +801,7 @@ instruction_interp_var_name() { # one construct of instruction_interp_var_constr
 }
 
 instruction_interp_var_assign_re() { # variable names-alternation → ERE matching it assigned one of the names
-  printf '%s' "(^|[^A-Za-z_0-9.\$])${1//\$/\\\$}[[:space:]]*=[[:space:]]*(Path\([[:space:]]*)?$_INSTRUCTION_Q($2)$_INSTRUCTION_Q"
+  printf '%s' "(^|[^A-Za-z_0-9.\$])${1//\$/\\\$}[[:space:]]*=[[:space:]]*(($_INSTRUCTION_ID\.)*Path\([[:space:]]*)?$_INSTRUCTION_Q($2)$_INSTRUCTION_Q"
 }
 
 instruction_interp_var_bind_re() { # variable → ERE matching any assignment to it, at the same offset as the one above
@@ -1541,10 +1541,12 @@ instruction_guarded_dirs() {
 # A memory file under ~/.claude/projects is the model's to write (see the MEMORY.md note above), a
 # task file under a `.claude/local/` is loaded by nothing, and an ordinary markdown file inside a
 # worktree is repository work, not instruction content: a worktree's own CLAUDE files and `.claude/`
-# tree stay guarded like the repository's. The path may be unresolved (a file not yet written), so a
-# `..` or `.` segment would walk a carve-out prefix back into a guarded directory.
+# tree stay guarded like the repository's, and so does a copy whose main-checkout counterpart sits in
+# a guarded directory (claude-setup's global/docs is ~/.claude/docs): its landing delivers bytes no
+# gate saw. The path may be unresolved (a file not yet written), so a `..` or `.` segment would walk
+# a carve-out prefix back into a guarded directory.
 instruction_carved_out() { # abs-path [home]
-  local p=$1 home=${2:-$HOME} rest
+  local p=$1 home=${2:-$HOME} rest dir g
   case "/$p/" in */../*|*/./*) return 1 ;; esac
   printf '%s' "${p##*/}" | grep -Eqx "$INSTRUCTION_GUARDED_BASENAMES" && return 1
   case "$p" in "$home"/.claude/projects/*|*/.claude/local/*) return 0 ;; esac
@@ -1553,6 +1555,11 @@ instruction_carved_out() { # abs-path [home]
       rest=${p##*/.claude/worktrees/}
       rest=/${rest#*/}
       case "$rest" in */.claude/*) return 1 ;; esac
+      dir=$(instruction_resolved_dir "${p%/.claude/worktrees/*}$rest") || return 0
+      while IFS= read -r g; do
+        g=$(CDPATH= cd -- "$g" 2>/dev/null && pwd -P) || continue
+        case "$dir/" in "$g"/*) return 1 ;; esac
+      done < <(instruction_guarded_dirs "$home")
       return 0
       ;;
   esac
