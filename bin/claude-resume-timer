@@ -314,23 +314,29 @@ if [ "$fire_now" -eq 0 ]; then
       end
     end;'
 
+  # A week at its wall outlasts the five hours: woken at the 5h reset, the chat met the same wall and
+  # sat idle till Egor came back (log_audit:limit-reset-no-auto-resume).
+  window=five_hour
   resets_epoch=""
   if [ -f "$cache" ]; then
-    resets_epoch=$(jq -r --arg acct "$account" --arg vendor "$vendor" "$iso_def"'
-      (.vendors[$vendor].accounts[]? | select(.account == $acct) | .five_hour.resets_at) as $resets
-      | if $resets == null then "" else (($resets | iso2epoch) // "") end
+    read -r window resets_epoch < <(jq -r --arg acct "$account" --arg vendor "$vendor" "$iso_def"'
+      first(.vendors[$vendor].accounts[]? | select(.account == $acct)) as $a
+      | (if (($a.weekly.effective_pct // $a.weekly.used_pct // 0) >= 100) then "weekly" else "five_hour" end) as $w
+      | $a[$w].resets_at as $resets
+      | "\($w) \(if $resets == null then "" else (($resets | iso2epoch) // "") end)"
     ' "$cache" 2>/dev/null)
+    [ -n "$window" ] || window=five_hour
   fi
 
   now=$(date +%s)
   fallback_reason=""
 
   if [ -z "$resets_epoch" ]; then
-    fallback_reason="no five_hour.resets_at for account '$vendor/$account'"
+    fallback_reason="no $window.resets_at for account '$vendor/$account'"
   elif ! is_int "$resets_epoch"; then
     fallback_reason="unparseable resets_at for account '$vendor/$account'"
   elif [ "$resets_epoch" -le "$now" ]; then
-    fallback_reason="5h window for account '$vendor/$account' already reset"
+    fallback_reason="$([ "$window" = weekly ] && echo weekly || echo 5h) window for account '$vendor/$account' already reset"
   fi
 
   if [ -n "$fallback_reason" ]; then

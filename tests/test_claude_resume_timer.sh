@@ -135,6 +135,21 @@ out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=alona "$SCRIPT" terminal 0) || fail "e
 minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
 [ "$minutes" = "150" ] || fail "CLAUDE_LIMITS_ACCOUNT=alona should use alona's resets_at (expected 150, got $minutes): $out"
 
+# A chat walled on its week waits for the week, not for the five hours that reset first.
+cat >"$FIXTURE_HOME/.llm-limits.json" <<EOF
+{"vendors":{"claude":{"accounts":[{"account":"alona",
+  "five_hour":{"effective_pct":40,"resets_at":"$(date -u -r "$((now + 1200 + 30))" +%Y-%m-%dT%H:%M:%SZ)"},
+  "weekly":{"effective_pct":100,"resets_at":"$(date -u -r "$((now + 9000 + 30))" +%Y-%m-%dT%H:%M:%SZ)"}}]}}}
+EOF
+out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=alona "$SCRIPT" terminal 0) || fail "weekly-wall run failed"
+minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
+[ "$minutes" = "150" ] || fail "a walled week should arm for its resets_at (expected 150, got $minutes): $out"
+sed -i '' 's/"effective_pct":100/"effective_pct":99/' "$FIXTURE_HOME/.llm-limits.json"
+out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=alona "$SCRIPT" terminal 0) || fail "weekly-open run failed"
+minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
+[ "$minutes" = "20" ] || fail "an open week should arm for the five-hour reset (expected 20, got $minutes): $out"
+write_limits_other
+
 out=$(run_timer env -u CLAUDE_CONFIG_DIR -u CLAUDEGPT_ACCOUNT CLAUDE_LIMITS_ACCOUNT=- \
   "$SCRIPT" terminal 0) || fail "'-' sentinel run failed"
 minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
