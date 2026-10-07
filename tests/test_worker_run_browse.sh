@@ -284,7 +284,7 @@ EOF
   start_ok codex
   assert await_done
   assert test "$(head -n 1 "$RUN_DIR/browser-preamble")" = '# Browser preamble (Codex / Google Chrome)'
-  assert grep -Eq '"Work" \(Profile 1\), "Spare" \(Profile 3\)|"Spare" \(Profile 3\), "Work" \(Profile 1\)' "$RUN_DIR/browser-preamble"
+  assert grep -q '"Work" (Profile 1), "Spare" (Profile 3)' "$RUN_DIR/browser-preamble"
   unset BROWSE_CUA_SYNC BROWSE_SKIP_PROCESSES BT_SYNC_MODE
 
   # 9: the canary's verdict is its own listener's receipt, and a live browser run holds it
