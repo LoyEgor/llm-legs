@@ -15,6 +15,7 @@ import time
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
+import caps_checks  # noqa: E402
 import collector_runs  # noqa: E402
 
 HOME = os.path.expanduser("~")
@@ -339,6 +340,23 @@ def collect(now):
                     clip("%s: %d other install%s at another version: %s" % (vendor, len(foreign), "" if len(foreign) == 1 else "s", listed), 200),
                     len(foreign), 0, "installs", None, exposure, len(foreign), at, at,
                     [{"at": iso_time(at), "ref": "fingerprint:%s" % vendor, "account": None, "excerpt": clip(listed)}])
+
+    streaks = {}
+    for row in caps_checks.read():
+        key = "%s/%s" % (row["vendor"], row["section"])
+        if row["state"] == "fresh":
+            streaks.pop(key, None)
+        else:
+            streaks.setdefault(key, []).append(row)
+    for key, streak in sorted(streaks.items()):
+        vendor, section = key.split("/", 1)
+        latest = streak[-1]
+        col.add("caps-stale", key, "new", clip(
+            "%s manifest .%s stale%s · re-verify share/image-caps/%s.json .%s against the live page/API, bump verified"
+            % (vendor, section, ": " + latest["what"] if latest["what"] else "", vendor, section)),
+            len(streak), 0, "checks", None, exposure, len(streak), streak[0]["at"], latest["at"],
+            [{"at": iso_time(row["at"]), "ref": "%s:%s" % (caps_checks.FILE, key), "account": None,
+              "excerpt": clip(row["what"] or "stale")} for row in streak[::-1]])
 
     newest = max([iso_epoch(v.get("checked_at")) or 0 for v in state.values() if isinstance(v, dict)] or [0]) or None
     stale_h = (now - newest) / 3600 if newest else None

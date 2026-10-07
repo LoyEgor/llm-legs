@@ -338,8 +338,8 @@ Updater doctor (added 2026-09-30 by «Updater doctor»):
 - `judge` is sha256 over `bin/updater-doctor`, `share/updater-ledger.json` and its limits
   (`LIMITS`, `PASS_OK`).
 - `exposure` is the number of vendors checked. `count` is 1 for an event rule, the busy or
-  install-failed log lines for `cli-behind`, the codex homes for `client-too-old`, and null for
-  `pass-stale`.
+  install-failed log lines for `cli-behind`, the codex homes for `client-too-old`, the stale checks since
+  the last fresh one for `caps-stale`, and null for `pass-stale`.
 - Its own key `vendors[]` carries, per vendor, what the menu shows: installed, latest, result, the
   catalog newest first (12 at most) and the last 5 events.
 

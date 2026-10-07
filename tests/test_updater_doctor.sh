@@ -220,6 +220,74 @@ ledger '{"owner":"t","rows":[{"id":"U5","title":"t","match":{"rule":"cli-behind"
 assert [ "$(state_of U5)" = watch ]
 state 3600
 
+# A stale media manifest section is a problem until a later fresh check of it; sections are independent; no file is no problem.
+CAPS="$STATE/caps-checks.jsonl"
+REC="$ROOT/share/caps_checks.py"
+run
+assert jqe '[.problems[] | select(.rule == "caps-stale")] == [] and .blind == []' "$DOC"
+t=$(date +%s)
+caps_line() { jq -nc --argjson at "$1" --arg v "$2" --arg s "$3" --arg st "$4" --arg w "${5:-}" '{at: $at, vendor: $v, section: $s, state: $st, what: $w}'; }
+{
+  caps_line $((t - 3 * D)) gemini speech stale 'models: +old'
+  caps_line $((t - 2 * D)) gemini speech fresh
+  caps_line $((t - D)) gemini speech stale 'voices: +Kore'
+  printf '{"at": broken\n'
+  caps_line $((t - 2 * H)) gemini speech stale 'voices: +Kore; tags: +whisper'
+  jq -nc --arg at x '{at: $at, vendor: "gemini", section: "speech", state: "fresh", what: ""}'
+  caps_line $((t - 3 * H)) elevenlabs served_models stale 'new=eleven_v4 newer=eleven_v4>eleven_v3'
+  caps_line $((t - 2 * H)) elevenlabs served_models fresh
+  caps_line $((t - H)) gemini flow_music stale 'models: +Lyria 4'
+} >"$CAPS"
+run
+assert jqe --arg d "$(date -r $((t - D)) +%Y-%m-%d)" '.state == "new" and .count == 2 and .value == 2 and .limit == 0 and (.first_seen | startswith($d))
+  and .fact == "gemini manifest .speech stale: voices: +Kore; tags: +whisper · re-verify share/image-caps/gemini.json .speech against the live page/API, bump verified"
+  and [.evidence[].excerpt] == ["voices: +Kore; tags: +whisper", "voices: +Kore"]' <<<"$(problem caps-stale:gemini/speech)"
+assert jqe '.state == "new" and .count == 1' <<<"$(problem caps-stale:gemini/flow_music)"
+assert_fails has caps-stale:elevenlabs/served_models
+assert jqe '.problem_count == ([.problems[] | select(.state == "new" or .state == "open" or .state == "regressed")] | length)
+  and ([.problems[] | select(.rule == "caps-stale") | .id] == ["caps-stale:gemini/flow_music", "caps-stale:gemini/speech"])' "$DOC"
+python3 "$REC" record gemini speech fresh || fail "the recorder failed on a fresh check"
+run
+assert_fails has caps-stale:gemini/speech
+assert has caps-stale:gemini/flow_music
+assert jqe 'keys == (["at", "vendor", "section", "state", "what"] | sort) and .state == "fresh" and .what == "" and (now - .at) < 60' <<<"$(tail -n 1 "$CAPS")"
+python3 "$REC" record codex cli stale cli=1.2 'verified=1.1' || fail "the recorder failed on a stale check"
+assert jqe '.vendor == "codex" and .section == "cli" and .state == "stale" and .what == "cli=1.2 verified=1.1"' <<<"$(tail -n 1 "$CAPS")"
+python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import caps_checks; caps_checks.record("grok", "model", True, "model=grok-imagine-2")' \
+  "$ROOT/share" || fail "record() raised"
+assert jqe '.vendor == "grok" and .section == "model" and .state == "stale" and .what == "model=grok-imagine-2"' <<<"$(tail -n 1 "$CAPS")"
+# Nothing the recorder is handed fails a media run or writes a line it cannot judge.
+lines=$(wc -l <"$CAPS")
+for args in "" "record" "record gemini" "record gemini speech maybe" "record ../x speech stale" "record gemini a/b stale"; do
+  python3 "$REC" $args >"$WORK/rec-out" 2>&1 || fail "the recorder exited non-zero on: $args"
+  assert [ ! -s "$WORK/rec-out" ]
+done
+assert [ "$(wc -l <"$CAPS")" = "$lines" ]
+mkdir -p "$WORK/ro" && chmod 555 "$WORK/ro"
+VENDOR_CLI_UPDATE_STATE_DIR="$WORK/ro/sub" python3 "$REC" record gemini speech stale x >"$WORK/rec-out" 2>&1 || fail "an unwritable dir failed the recorder"
+assert [ ! -s "$WORK/rec-out" ] && assert [ ! -e "$WORK/ro/sub" ]
+chmod 755 "$WORK/ro"
+: >"$WORK/plain"
+VENDOR_CLI_UPDATE_STATE_DIR="$WORK/plain" python3 "$REC" record gemini speech stale x || fail "a file as the state dir failed the recorder"
+# The file stays bounded: past its size it keeps each key's last lines and the first stale line since the last fresh one.
+python3 - "$CAPS" <<'EOF'
+import json, sys
+with open(sys.argv[1], "w") as handle:
+    handle.write(json.dumps({"at": 1000, "vendor": "gemini", "section": "speech", "state": "fresh", "what": ""}) + "\n")
+    for n in range(3000):
+        handle.write(json.dumps({"at": 1001 + n, "vendor": "gemini", "section": "speech", "state": "stale", "what": "x" * 100}) + "\n")
+    handle.write(json.dumps({"at": 5000, "vendor": "codex", "section": "cli", "state": "fresh", "what": ""}) + "\n")
+EOF
+python3 "$REC" record gemini speech stale last || fail "the recorder failed on a full file"
+assert [ "$(wc -c <"$CAPS")" -lt 262144 ]
+assert jqe -s '[.[] | select(.vendor == "gemini")] | length == 21 and .[0].at == 1001 and .[-1].what == "last"' "$CAPS"
+assert jqe -s '[.[] | select(.vendor == "codex")] | length == 1' "$CAPS"
+run
+assert jqe --arg d "$(date -r 1001 +%Y-%m-%dT%H:%M:%S)" '.first_seen | startswith($d)' <<<"$(problem caps-stale:gemini/speech)"
+rm -f "$CAPS"
+run
+assert jqe '[.problems[] | select(.rule == "caps-stale")] == [] and .blind == []' "$DOC"
+
 # --json prints the document and writes nothing.
 rm -f "$DOC"
 "$DOCTOR" --json | jqe '.doctor == "updater"'
@@ -237,4 +305,4 @@ assert jqe -s 'length == 2 and .[1].trigger == "background"' "$RUNS/collector-ru
 assert jqe -s --slurpfile doc "$DOC" 'length == 1 and .[0].doctor == "updater" and .[0].count == $doc[0].problem_count
   and .[0].day == (now | strflocaltime("%Y-%m-%d"))' "$RUNS/problem-days.jsonl"
 
-echo "PASS:$asserts asserts; envelope, every rule (event-waiting, event-stuck, probe-broken, catalog-missing, cli-behind as a watch row from the first skip and red past a day, client-too-old, pass-stale, pass-failed, foreign-client) with its negatives, vendors for the menu, blind on a stale or missing pass, judge over code and ledger, ledger open/dismissed/regressed/fault, pinned ledger shape, under 1 s"
+echo "PASS:$asserts asserts; envelope, every rule (event-waiting, event-stuck, probe-broken, catalog-missing, cli-behind as a watch row from the first skip and red past a day, client-too-old, pass-stale, pass-failed, foreign-client, caps-stale cleared by a later fresh check per section) with its negatives, the caps-checks recorder that never fails and stays bounded, vendors for the menu, blind on a stale or missing pass, judge over code and ledger, ledger open/dismissed/regressed/fault, pinned ledger shape, under 1 s"

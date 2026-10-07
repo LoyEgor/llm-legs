@@ -360,7 +360,18 @@ def snapshot(doctor, doc_file, night=None):
             if rule == "event-waiting":
                 continue
             area = OWN_AREA
-            files.append(os.path.join(repos_dir(doctor), UPDATER_MACHINERY.get(rule, "llm-legs/bin/updater-doctor")))
+            if rule == "caps-stale":
+                match = (row or {}).get("match")
+                key = (match if isinstance(match, dict) else {}).get("key") or str(pid).partition(":")[2]
+                vendor, _, section = str(key).partition("/")
+                manifest = "llm-legs/share/image-caps/%s.json" % vendor
+                files.append(os.path.join(repos_dir(doctor), manifest))
+                what = ("media manifest %s .%s: re-verify it against the live vendor through the own check of its route, one "
+                        "smallest take via bin/media-run (the media skill; `.scripts` names the routes) whose footer reads "
+                        "caps=/model_caps=; edit .%s until it reads fresh, bump `verified`; never research vendor options "
+                        "by hand" % (manifest, section, section))
+            else:
+                files.append(os.path.join(repos_dir(doctor), UPDATER_MACHINERY.get(rule, "llm-legs/bin/updater-doctor")))
         for fix in dicts((row or {}).get("fixes")):
             files += [os.path.join(repos_dir(doctor), name) for name in strings(fix.get("files"))]
         entry = {"id": pid, "state": state, "fact": problem.get("fact"), "rule": rule, "ledger": problem.get("ledger"),

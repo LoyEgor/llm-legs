@@ -610,6 +610,18 @@ assert grep -qE '^updater-doctor-' "$WORK/out"
 assert jqe '.abandoned_at == null' "$RUNS/updater-20260101T000000Z.json"
 fix record-close updater-20260101T000000Z --decisions "$WORK/ujson" "grok-1: integrated" || fail "a legacy release run does not close"
 
+# A stale media manifest reaches the night fixer with the manifest as its component and the route's own check as the fix.
+fix abandon "$(cut -f1 "$WORK/out")" >/dev/null || fail "abandon of the second updater night run failed"
+jq --argjson s "$(now)" '.problems = [{id: "caps-stale:gemini/speech", rule: "caps-stale", state: "new", fact: "gemini manifest .speech stale"}]
+  | .as_of_s = $s' "$WORK/updater/latest.json" >"$WORK/u" && mv "$WORK/u" "$WORK/updater/latest.json"
+fix launch updater --night n4 >"$WORK/out" 2>"$WORK/err" || fail "a caps-stale updater night failed: $(cat "$WORK/err")"
+cid=$(cut -f1 "$WORK/out")
+assert jqe --arg f "$WORK/projects/llm-legs/share/image-caps/gemini.json" '[.problems[].id] == ["caps-stale:gemini/speech"]
+  and .problems[0].component.files == [$f] and .area == "doctor"
+  and (.problems[0].component.what | test("share/image-caps/gemini\\.json \\.speech:") and test("bin/media-run") and test("bump `verified`"))' \
+  "$(record "$cid")"
+assert grep -qF 'component: media manifest llm-legs/share/image-caps/gemini.json .speech: re-verify' "$RUNS/$cid.brief.md"
+
 # A commit citation that is a merge touches what the merge brought in.
 P="$WORK/projects/proj"
 git -C "$P" checkout -qb side

@@ -3392,6 +3392,11 @@ assert eq 3 "$(grep -c 'merged_ledger(doctor)' "$ROOT/bin/doctor-fix")"
 assert grep -qF 'SETTLED_FILE = "ledger-settled.json"' "$ROOT/share/fix_commit.py"
 assert grep -qF '`<state dir>/ledger-settled.json`' "$ROOT/docs/doctors-contract.md"
 assert doc_has '| ej | A measuring run never writes a tracked file |'
+# Row ek: one writer and one reader of the media manifest check journal, both through share/caps_checks.py.
+assert eq "$(cd "$ROOT" && grep -rlIF 'caps-checks.jsonl' bin share | sort | paste -sd' ' -)" "share/caps_checks.py"
+assert grep -qF 'for row in caps_checks.read():' "$ROOT/bin/updater-doctor"
+assert grep -qF 'FILE = "caps-checks.jsonl"' "$ROOT/share/caps_checks.py"
+assert doc_has '| ek | Media manifest check journal |'
 
 assert grep -Fq 'state["lost_min_day_by_day"] = document["lost_min_day_by_day"] = history' "$ROOT/bin/speed-doctor"
 assert grep -Fq '"lost_min_day_by_day") if k in speed' "$ROOT/bin/harness-doctor"

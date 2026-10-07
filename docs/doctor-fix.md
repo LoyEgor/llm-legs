@@ -121,7 +121,9 @@ It replaces the pour:
 
 Owner: the chat «Updater doctor» (`share/updater-ledger.json` `owner`). Scope at night: the doctor's
 own machinery (`pass-stale`, `pass-failed`, `cli-behind`, `client-too-old`, `probe-broken`,
-`event-stuck`, …); `event-waiting` is `vendor-fingerprint`'s. Read `latest.json` `vendors[]` and
+`event-stuck`, …) and `caps-stale`: re-verify that manifest section through its route's own check (one smallest
+`bin/media-run` take, the media skill), edit it until the footer reads fresh, bump `verified`; never research
+vendor options by hand. `event-waiting` is `vendor-fingerprint`'s. Read `latest.json` `vendors[]` and
 `blind[]`, then the ledger; recompute with `bin/updater-doctor --json`. The judge (`bin/updater-doctor`,
 its ledger, `LIMITS`, `PASS_OK`) is not yours to loosen; a loosening is a handoff to the owner.
 
