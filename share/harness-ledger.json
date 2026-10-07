@@ -4565,6 +4565,37 @@
       "reviewed_by": "night fixer harness-doctor-20261007T214015Z-24b7",
       "note": "Not reproduced: 4 copies each of test_run_suites_journal and test_slots in parallel at load 51 all passed; night 7777 already replaced test_run_suites_journal's fixed sleep with a poll (33eb4e77); test_statusline_hooks is tonight's suite job. No doctor rule sees a flake (blind spot suite-flake-unseen).",
       "handoff": null
+    },
+    {
+      "id": "speed-tests-lever-sleeps-clocks",
+      "title": "Speed's tests lever: mock sleeps and clocks in the heaviest suites",
+      "match": {
+        "rule": "opportunity",
+        "ident": "chat/tests"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-08T01:30:00+03:00",
+          "by": "night fixer harness-speed-chat-tests-20261007T214021Z-7d31",
+          "files": [
+            "llm-legs/bin/codex-image",
+            "llm-legs/tests/test_codexb.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "test_codexb and every suite tests/affected names for bin/codex-image, base vs fix: PASS lines and assert counts (test_codexb 423 at base, 427 with the four new asserts)",
+            "data": "the committed fixtures of those suites; the deadline case (CODEX_IMAGE_DEADLINE=1 over a 30 s hang) and the stale-lock case (a 2100 s old lock dir)",
+            "result": "same outcomes, messages and exit codes; the deadline still fires (exceeded 1s deadline, lock released), the stale lock is still reclaimed; only the waits shrink: hang case 6.6 s -> 1.7-2.3 s, stale-lock case 3.9 s -> 1.6-1.8 s per test_codexb run at load ~40-50"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-08",
+      "reviewed_by": "night fixer harness-speed-chat-tests-20261007T214021Z-7d31",
+      "note": "Before (runs.jsonl, 7 days to 2026-10-08T00:40Z): test_codexb 104 runs, min wall 58 s, p10 wall-minus-CPU 61.6 s. Fixed in codex-image: the CLI deadline watchdog slept in fixed 5 s hops (a 1 s deadline fired at ~5 s) and, killed at the run's end, stranded its in-flight sleep, which holds a caller's stdout pipe open up to 5 s (reproduced with $(...); whether Claude Code's Bash tool waits on that pipe through media-run was not checked); a reclaimed stale account lock still slept 2 s before retrying. Saves ~6.5 s a test_codexb run, ~1.5 suite-min/day. Ruled out for this lever, measured 2026-10-08 with timestamped xtrace and a PATH sleep shim: test_night_run (wall is 113 `night-run job` calls of jq/process work, ~1.5 s each under load, and 1.3 s of fixed sleeps), test_consistency (no sleeps; CPU), test_worker_pick (no sleeps; 146 s wall on 108 CPU-s, the rest is load), test_codex_image (no blocking sleeps; ~2 s per image_run of process work), test_doctor_fix (3 x sleep 1 order run ids by the second). The largest remaining idle floor is the worker_run family (test_worker_run_watchdog: ~100% idle, min wall 125 s): its stub durations against 1-16 s watchdog windows are race margins docs/doctor-fix.md forbids shortening; the lever there is an injected watchdog clock in bin/worker-run (integer `date +%s`, hop >= 1 s), owner's call. Most of the rest of the suites' wall-minus-CPU is contention, the machine/contention lever's ground. test_llm_limits*, test_statusline_hooks and test_instruction_gate were held by other runs of this night.",
+      "handoff": null
     }
   ],
   "blind_spots": [

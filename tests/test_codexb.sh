@@ -1109,11 +1109,26 @@ assert grep -qx "dest=$WORK/image-output/stdout.jpg" "$IMAGE_OUT"
 assert grep -qx 'size=1024x768' "$IMAGE_OUT"
 assert grep -qx 'format=jpeg' "$IMAGE_OUT"
 
+IMAGE_NAPS="$WORK/image-naps"
+cat >"$IMAGE_BIN/sleep" <<EOF
+#!/bin/bash
+printf '%s %s\n' "\$\$" "\$*" >>"$IMAGE_NAPS"
+exec /bin/sleep "\$@"
+EOF
+chmod +x "$IMAGE_BIN/sleep"
+naps_alive() {
+  local pid rest
+  while read -r pid rest; do kill -0 "$pid" 2>/dev/null && return 0; done <"$IMAGE_NAPS"
+  return 1
+}
+: >"$IMAGE_NAPS"
 stale_lock="$IMAGE_TMPDIR/codex-image.main.lock"
 mkdir "$stale_lock"
 touch -A -2100 "$stale_lock"
 assert image_run --dest "$WORK/image-output/stale-lock.jpg" --prompt landscape --account main
 assert test ! -e "$stale_lock"
+assert_fails grep -q ' 2$' "$IMAGE_NAPS"
+assert_fails naps_alive
 
 IMAGE_MODE=limit
 export IMAGE_MODE
@@ -1162,10 +1177,15 @@ mv "$WORK/magick-away" "$IMAGE_BIN/magick"
 IMAGE_MODE=hang
 export IMAGE_MODE
 image_rc=0
+: >"$IMAGE_NAPS"
 CODEX_IMAGE_DEADLINE=1 image_run --dest "$WORK/image-output/hang.jpg" --prompt landscape --account main || image_rc=$?
 assert test "$image_rc" -eq 1
 assert grep -q 'exceeded 1s deadline' "$IMAGE_ERR"
 assert test ! -e "$IMAGE_TMPDIR/codex-image.main.lock"
+# Past the 1 s deadline only the 10 s TERM-to-KILL grace and the hanging fixture's own 30 s.
+assert test -z "$(awk '$2 > 1 && $2 != 10 && $2 != 30' "$IMAGE_NAPS")"
+assert_fails naps_alive
+rm "$IMAGE_BIN/sleep"
 
 IMAGE_MODE=reply
 export IMAGE_MODE

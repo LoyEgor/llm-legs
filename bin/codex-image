@@ -676,7 +676,7 @@ while ! mkdir "$lock_dir" 2>/dev/null; do
   lock_mtime=$(stat -f %m "$lock_dir" 2>/dev/null || printf '0')
   now=$(date +%s)
   if [ "$lock_mtime" -gt 0 ] && [ $((now - lock_mtime)) -gt 1200 ]; then
-    rmdir "$lock_dir" 2>/dev/null || true
+    ! rmdir "$lock_dir" 2>/dev/null || continue
   fi
   if [ "$lock_waited" -ge 600 ]; then
     printf 'codex-image: timed out waiting for account lock: %s\n' "$account" >&2
@@ -707,16 +707,25 @@ run_codex() {
   argv+=(-)
   "$codex_cmd" "${argv[@]}" <"$instruction_file" >"$cli_stdout" 2>"$cli_stderr" &
   local child=$!
-  ( end=$(($(date +%s) + codex_deadline))
-    while [ "$(date +%s)" -lt "$end" ]; do sleep 5; done
+  # A killed subshell strands its in-flight sleep, which holds a caller's output pipe open until it
+  # ends: so each nap is a waited job the TERM trap kills, and the run waits for the watchdog. The trap
+  # reads `jobs -p`, not a saved $!: the run's TERM races the fork of the grace nap its own TERM ended.
+  ( trap 'kill $(jobs -p) 2>/dev/null || :; wait; exit 0' TERM
+    end=$(($(date +%s) + codex_deadline))
+    while now=$(date +%s); [ "$now" -lt "$end" ]; do
+      sleep $((end - now < 5 ? end - now : 5)) &
+      wait $!
+    done
     : >"$tmp_dir/deadline"
     kill -TERM "$child" 2>/dev/null || exit 0
-    sleep 10
+    sleep 10 &
+    wait $!
     kill -KILL "$child" 2>/dev/null || true
-  ) &
+  ) >/dev/null 2>&1 &
   local watchdog=$! rc=0
   wait "$child" || rc=$?
   kill "$watchdog" 2>/dev/null || true
+  wait "$watchdog" 2>/dev/null || true
   return "$rc"
 }
 codex_rc=0
