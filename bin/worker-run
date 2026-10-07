@@ -4867,6 +4867,9 @@ complete_run() {
 # in as that account (accounts.json, written only by enrollment and live proofs). Dia is Egor's live
 # browser: nothing here launches, quits or relaunches it.
 BROWSE_UUID='[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+# A restarted Chrome or a newly opened profile window lists no extension entry for up to ~10 min (live
+# 2026-10-07); no device that soon is no sign-in problem.
+BROWSE_RECONNECT_S=600 BROWSE_OPENED_AT=''
 
 browse_dir() { printf '%s/browse\n' "${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"; }
 
@@ -4919,6 +4922,15 @@ browse_profile_label() { # directory
 
 browse_chrome_running() { "${BROWSE_PGREP:-pgrep}" -x 'Google Chrome' >/dev/null 2>&1; }
 
+browse_chrome_age() { # seconds since Chrome started or this process opened a profile window, whichever is later
+  local age now
+  now=$(date +%s)
+  age=$(etime_seconds "$("${BROWSE_PS:-ps}" -Ao etime=,comm= | awk '/\/MacOS\/Google Chrome$/ { print $1; exit }')")
+  age=${age:-0}
+  [ -z "$BROWSE_OPENED_AT" ] || [ "$((now - BROWSE_OPENED_AT))" -ge "$age" ] || age=$((now - BROWSE_OPENED_AT))
+  printf '%s\n' "$age"
+}
+
 # AppleScript addressed to a closed app launches it.
 browse_chrome_urls() {
   browse_chrome_running || return 0
@@ -4947,6 +4959,7 @@ browse_window() { # profile-directory
   marker=$(browse_marker "$1")
   for ((i = 0; i < ${BROWSE_WINDOW_WAIT:-40}; i++)); do
     browse_chrome_urls | grep -qxF -- "$marker" && { [ "$i" -eq 0 ] || sleep "${BROWSE_SETTLE_S:-30}"; return 0; }
+    [ "$i" -ne 0 ] || BROWSE_OPENED_AT=$(date +%s)
     [ "$i" -ne 0 ] || "${BROWSE_OPEN:-open}" -n -g -b com.google.Chrome --args --profile-directory="$1" "$marker" >/dev/null 2>&1 || :
     sleep 0.5
   done
@@ -5052,6 +5065,9 @@ browse_absorb() { # account profile answer [enrolling|log-only]
   elif [ -n "$BROWSE_PROVEN" ]; then
     browse_registry_set "$1" '. + {email:$e, chrome_profile:$p, pin:(.pin // false), device_id:$d, proven_at:(now | todate),
       status:"ok", last_error:""}' --arg d "$BROWSE_PROVEN" --arg e "$(browse_email "$1")" --arg p "$2"
+  elif [ "$BROWSE_OUTCOME" = BROWSER_NO_DEVICE ] && [ "$(browse_chrome_age)" -lt "$BROWSE_RECONNECT_S" ]; then
+    browse_registry_set "$1" '. + {status:"proof-failed", last_error:"its extension has not reconnected yet: Chrome or its window up \($s) s"}' \
+      --argjson s "$(browse_chrome_age)"
   elif [ "$BROWSE_OUTCOME" = BROWSER_NO_DEVICE ]; then
     browse_registry_set "$1" '. + {status:"needs-login", last_error:"no listed browser proved to be its Chrome profile"}'
   elif [ -n "${4:-}" ]; then

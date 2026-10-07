@@ -47,13 +47,16 @@ case "\$mode" in
 esac
 jq -cn --arg r "\$result" '{result:\$r}'
 EOF
+  printf '#!/bin/sh\nprintf "%%s /Applications/Google Chrome.app/Contents/MacOS/Google Chrome\\n" "$(cat "%s/chrome-etime")"\n' \
+    "$bt" >"$bt/stub/ps"
+  printf '1-00:00:00\n' >"$bt/chrome-etime"
   chmod +x "$bt/stub/"*
   printf '%s\n' "$dev_com" >"$bt/device-com"
   printf '%s\n' "$dev_extra" >"$bt/device-extra"
   printf 'cccccccc-3333-4333-8333-333333333333\n' >"$bt/device-lost"
-  local BROWSE_PGREP="$bt/stub/pgrep" BROWSE_OSASCRIPT="$bt/stub/osascript" BROWSE_OPEN="$bt/stub/open"
+  local BROWSE_PGREP="$bt/stub/pgrep" BROWSE_OSASCRIPT="$bt/stub/osascript" BROWSE_OPEN="$bt/stub/open" BROWSE_PS="$bt/stub/ps"
   local BROWSE_DIA_JS="$bt/stub/dia-js" BROWSE_CHROME_USER_DATA="$bt/chrome" BROWSE_SEEN_WAIT=2 BROWSE_WINDOW_WAIT=6 BROWSE_SETTLE_S=0
-  export BROWSE_PGREP BROWSE_OSASCRIPT BROWSE_OPEN BROWSE_DIA_JS BROWSE_CHROME_USER_DATA BROWSE_SEEN_WAIT BROWSE_WINDOW_WAIT BROWSE_SETTLE_S
+  export BROWSE_PGREP BROWSE_OSASCRIPT BROWSE_OPEN BROWSE_PS BROWSE_DIA_JS BROWSE_CHROME_USER_DATA BROWSE_SEEN_WAIT BROWSE_WINDOW_WAIT BROWSE_SETTLE_S
   local registry="$WORKER_RUN_DIR/browse/accounts.json" log="$WORKER_RUN_DIR/browse/log.jsonl"
   browse() { WORKER_RUN_CLAUDEB="$bt/stub/claudeb" "$RUNNER" browse "$@"; }
 
@@ -81,7 +84,16 @@ EOF
   assert grep -qx 'SEEN: dia' <<<"$(browse --seen tok-2 --target dia)"
 
   # 3: enrolment proves each account in its own profile; no device is a login, no profile says so
+  # (but a window this enrolment opened, or a young Chrome, has not reconnected its extension yet)
   printf 'nodevice\n' >"$bt/mode-extra"
+  rc=0; out=$(browse --enroll extra) || rc=$?
+  assert grep -qx 'ENROLL: extra proof-failed Profile 2 no-device' <<<"$out"
+  assert jq -e '.extra.last_error | test("^its extension has not reconnected yet: Chrome or its window up [0-9] s$")' "$registry" >/dev/null
+  printf '05:00\n' >"$bt/chrome-etime"
+  assert grep -qx 'ENROLL: extra proof-failed Profile 2 no-device' <<<"$(browse --enroll extra)"
+  assert jq -e '.extra.last_error | endswith("up 300 s")' "$registry" >/dev/null
+  printf '10:00\n' >"$bt/chrome-etime"
+  : >"$log"
   rc=0; out=$(browse --enroll all) || rc=$?
   assert test "$rc" -eq 1
   assert grep -qx "ENROLL: com ok Profile 1 $dev_com" <<<"$out"
