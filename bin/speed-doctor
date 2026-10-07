@@ -893,7 +893,7 @@ def judge_digest(ledger):
     dismissals = [r for r in speed_rows(ledger) if r.get("status") in H.DISMISSED]
     digest.update(json.dumps([dismissals, LIMITS, HEAVY_TEST_S, KEEP_WORDS.pattern, LEVERS, HOOK_LEVERS, H.C1_R_S, BANDS, PROOF, OUTPUT_PROOF,
                               TIME_LEVERS, spend.SHARE_RISE, spend.PARTS, suite_audit.CPU_RISE, suite_audit.JUMP_S,
-                              suite_audit.NEW_HEAVY, time_budget.FLOORS, time_budget.ACTIVE_FLOOR_SHARE, time_budget.ACTIVE_FLOOR,
+                              suite_audit.NEW_HEAVY, suite_audit.RECENT_RUNS, time_budget.FLOORS, time_budget.ACTIVE_FLOOR_SHARE, time_budget.ACTIVE_FLOOR,
                               time_budget.FLOOR_ROW_MIN_DAY],
                              sort_keys=True).encode())
     return digest.hexdigest()

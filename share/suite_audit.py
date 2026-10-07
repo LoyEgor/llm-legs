@@ -27,6 +27,9 @@ SHOWN = 10
 # Median of 5 runs against the 20 before it on the same suite: p5 0.75 across runs.jsonl (2026-10-03..07), so a
 # smaller ratio is no noise.
 PROOF_RUNS, PROOF_RATIO = 5, 0.75
+# CPU a run is the median of the last 20, not of the window: a 7-day median still read 248 s for test_instruction_gate
+# three days after its split had brought it to 42, which an audit would have stored and its proof credited.
+RECENT_RUNS = 20
 
 
 def repos():
@@ -146,7 +149,7 @@ def price(rows, found):
         out.append({"key": "%s/%s" % (repo, os.path.splitext(name)[0]), "repo": repo,
                     "label": os.path.splitext(name)[0], "top": top, "path": path, "runs": len(cpus),
                     "cpu_min_day": round(sum(cpus) / WINDOW_D / 60.0, 2),
-                    "p50": round(statistics.median(h["cpu"] for h in passing(history)), 1),
+                    "p50": round(statistics.median(h["cpu"] for h in passing(history)[-RECENT_RUNS:]), 1),
                     "history": history})
     return sorted(out, key=lambda c: (-c["cpu_min_day"], c["key"]))
 

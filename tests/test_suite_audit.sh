@@ -178,6 +178,14 @@ save(journal + later)
 proof = collect(NOW + 600)["proofs"]["alpha/test_mid"]
 check(proof["proven"] and suite_audit.proof_text(proof) == "CPU-s a run 20 → 8.0 (×0.40, 5 runs) · proven",
       "an audit is proven once 5 runs after it read 0.75x or less of its CPU a run: %s" % proof)
+save(journal + [row(NOW - 3 * 86400 + i, {"test_mid": cpu(250)}, cheap) for i in range(30)]
+     + [row(NOW - 3600 + i, {"test_mid": cpu(40)}, split) for i in range(suite_audit.RECENT_RUNS)])
+mid = {c["key"]: c for c in collect()["components"]}["alpha/test_mid"]
+recorded = suite_audit.record(root, os.environ["RUN_SUITES_JOURNAL"], "alpha/test_mid", "kept", "split", "night-x", [],
+                              NOW)
+check(mid["p50"] == 40 and recorded["cpu_run"] == 40 and mid["cpu_min_day"] == round(8500 / 7 / 60.0, 2),
+      "CPU a run reads the last %d passing runs, so a suite cut or split days ago is audited at its new cost while "
+      "CPU-min/day still counts the whole window: %s %s" % (suite_audit.RECENT_RUNS, mid, recorded))
 
 loader = importlib.machinery.SourceFileLoader("harness_doctor", os.path.join(root, "bin", "harness-doctor"))
 h = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_doctor", loader))
