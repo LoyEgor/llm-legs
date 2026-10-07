@@ -210,7 +210,7 @@ relay_door_tests() {
   done
   assert grep -q '^STATUS: done' <<<"$output"
   assert test "$(cat "$STUB_DIR/relay_env")" = __unset__
-  assert test "$(cat "$STUB_DIR/background_env")" = 1
+  assert test "$(cat "$STUB_DIR/background_env")" = "1 1500000"
   assert grep -q '^CLAUDEB_CALL$' "$CALL_LOG"
   relay_refused "$owner" CLAUDECODE=1 -- wait "$RUN_ID" --max 0
 }
