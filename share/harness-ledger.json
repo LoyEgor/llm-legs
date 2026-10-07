@@ -3949,13 +3949,27 @@
         "rule": "log_audit",
         "ident": "launch-gate-refusals-first-attempt"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-08T01:30:00+03:00",
+          "by": "night 20261007T213650Z-7b98 handoff-2026-10-07-log-audit-leftovers",
+          "files": [
+            "claude-setup/agents/claudeb-worker.md",
+            "claude-setup/agents/codex-worker.md",
+            "claude-setup/agents/gemini-worker.md",
+            "claude-setup/agents/grok-worker.md",
+            "tests/test_consistency.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "last_reviewed": "2026-10-07",
-      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
-      "note": "2026-10-08: still stands (bin/worker-launch-gate.sh:502 unchanged; recurred 2026-10-07 02:46 and 05:04, row log_audit:worker-launch-gate-account-flag); carried tonight by job handoff-2026-10-07-log-audit-leftovers. Confirmed in the skeletons: 9 of 15 refusals were 'the brief says ACCOUNT: locomthebest, so the launch passes --account': the header line sat in the relay's prompt, not in the brief file it copied, while the agent text says never to rebuild header lines as flags. The gate is right; the fix is the claude-setup agent text, see the handoff. workdir-is-home and NESTED_MODEL_REFUSED were single orchestrator mistakes.",
-      "handoff": "docs/handoffs/2026-10-07-log-audit-leftovers.md"
+      "last_reviewed": "2026-10-08",
+      "reviewed_by": "night 20261007T213650Z-7b98 handoff-2026-10-07-log-audit-leftovers",
+      "note": "Confirmed in the skeletons: 9 of 15 refusals were 'the brief says ACCOUNT: locomthebest, so the launch passes --account': the header line sat in the relay's prompt, not in the brief file it copied, while the agent text says never to rebuild header lines as flags. The gate is right; the fix is the claude-setup agent text, see the handoff. workdir-is-home and NESTED_MODEL_REFUSED were single orchestrator mistakes. 2026-10-08: Fixed: the relay agents pass --account/--model exactly as their prompt's ACCOUNT:/MODEL: lines say and never one it lacks (the gate judges the prompt, worker-run the saved file); test_consistency pins the sentence. It recurred 2026-10-07 02:46 and 05:04 before the fix (row log_audit:worker-launch-gate-account-flag).",
+      "handoff": null
     },
     {
       "id": "log_audit:sleep-poll-loops-waiting",
@@ -3967,10 +3981,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-07",
-      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
-      "note": "2026-10-08: still stands (WAIT_CEILING=540 in bin/worker-launch-gate.sh); carried tonight by job handoff-2026-10-07-log-audit-leftovers. Relay rounds are bounded by the chat's 10-minute Bash cap (WAIT_CEILING 540); raising BASH_MAX_TIMEOUT_MS in the chats' settings and deriving the gate's ceiling from it cuts the rounds (cross-repo, handoff). The 110-minute throttle waits are logo-vectorizer-bench's own throttle under load (weather); its 'all busy, 4 of 8 slots open' message belongs to that repository.",
-      "handoff": "docs/handoffs/2026-10-07-log-audit-leftovers.md"
+      "last_reviewed": "2026-10-08",
+      "reviewed_by": "night 20261007T213650Z-7b98 handoff-2026-10-07-log-audit-leftovers",
+      "note": "Relay rounds are bounded by the chat's 10-minute Bash cap (WAIT_CEILING 540); raising BASH_MAX_TIMEOUT_MS in the chats' settings and deriving the gate's ceiling from it cuts the rounds (cross-repo, handoff). The 110-minute throttle waits are logo-vectorizer-bench's own throttle under load (weather); its 'all busy, 4 of 8 slots open' message belongs to that repository. Night 20261007T213650Z-7b98: kept. worker-run wait returns the moment a run ends, so a longer round saves only Sonnet relay turns, never time, and would slow a SendMessage note to the next round; raising the chats' Bash cap is live settings no branch carries. logo-vectorizer-bench's 'all busy, 4 of 8 slots open' is correct: 4 slots allowed under pressure of 8, all 4 held.",
+      "handoff": null
     },
     {
       "id": "log_audit:wip-owner-misattribution",
@@ -3979,13 +3993,24 @@
         "rule": "log_audit",
         "ident": "wip-owner-misattribution"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-08T01:30:00+03:00",
+          "by": "night 20261007T213650Z-7b98 handoff-2026-10-07-log-audit-leftovers",
+          "files": [
+            "claude-setup/hooks/lib/review-journal.sh",
+            "claude-setup/tests/test_review_journal.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "last_reviewed": "2026-10-07",
-      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
-      "note": "2026-10-08: claude-setup 7df3337 made ownership follow the written content (rj_write_owner, one rule for the writers), which may settle it; carried tonight by job handoff-2026-10-07-log-audit-leftovers. The chat's own correction says the edit hook named «Updater doctor» because it had been quiet for 44 minutes, while that chat's writes came from a worker in its own worktree; bin/land's attribution was right, and the second wrong claim was an ad-hoc journal query. The component is claude-setup hooks/edit-conflict-notice.sh, handed off.",
-      "handoff": "docs/handoffs/2026-10-07-log-audit-leftovers.md"
+      "last_reviewed": "2026-10-08",
+      "reviewed_by": "night 20261007T213650Z-7b98 handoff-2026-10-07-log-audit-leftovers",
+      "note": "The chat's own correction says the edit hook named «Updater doctor» because it had been quiet for 44 minutes, while that chat's writes came from a worker in its own worktree; bin/land's attribution was right, and the second wrong claim was an ad-hoc journal query. The component is claude-setup hooks/edit-conflict-notice.sh, handed off. 2026-10-08: Cause: review-flow-gate journaled a Bash write's relative target against the payload cwd, which cd-guard keeps at the session's checkout, so `cd <worktree> && sed -i … bin/x` recorded bin/x in main under that chat. Fixed: rj_command_write_paths resolves against the command's last cd (rj_command_moves) and drops a relative target after an unresolvable cd. claude-setup 7df3337 (rj_write_owner: ownership follows the written content) landed beside it; this fix settles which path a Bash write records.",
+      "handoff": null
     },
     {
       "id": "log_audit:worker-on-exhausted-account",
@@ -3994,13 +4019,24 @@
         "rule": "log_audit",
         "ident": "worker-on-exhausted-account"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-08T01:30:00+03:00",
+          "by": "night 20261007T213650Z-7b98 handoff-2026-10-07-log-audit-leftovers",
+          "files": [
+            "bin/worker-run",
+            "tests/test_worker_run_pool.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "last_reviewed": "2026-10-07",
-      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
-      "note": "2026-10-08: carried tonight by job handoff-2026-10-07-log-audit-leftovers, no change in its files since. Working as specified (shared-invariants rows j/k: selection below 100 %, one reroute, a resumed session stays on its account). The loss comes from several lanes copying one ACCOUNT: line; the proposal (worker-pick counting live runs per account) is in the handoff.",
-      "handoff": "docs/handoffs/2026-10-07-log-audit-leftovers.md"
+      "last_reviewed": "2026-10-08",
+      "reviewed_by": "night 20261007T213650Z-7b98 handoff-2026-10-07-log-audit-leftovers",
+      "note": "Working as specified (shared-invariants rows j/k: selection below 100 %, one reroute, a resumed session stays on its account). The loss comes from several lanes copying one ACCOUNT: line; the proposal (worker-pick counting live runs per account) is in the handoff. 2026-10-08: Fixed: worker-run records a worker claim for a brief-named account once the pool admits it, so the next worker-pick ranks it behind unclaimed accounts (row bm); a picked account was already claimed.",
+      "handoff": null
     },
     {
       "id": "log_audit:night-debt-passes-not-capped",
@@ -4012,10 +4048,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-07",
-      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
-      "note": "2026-10-08: carried tonight by job handoff-2026-10-07-log-audit-leftovers, no change in its files since. docs/night-run.md step 5 states one round of each kind per debt job; the extra rounds were the orchestrator's. Also seen: resume_night adds debt-<n> whenever none is pending. A mechanical cap is proposed in the handoff.",
-      "handoff": "docs/handoffs/2026-10-07-log-audit-leftovers.md"
+      "last_reviewed": "2026-10-08",
+      "reviewed_by": "night 20261007T213650Z-7b98 handoff-2026-10-07-log-audit-leftovers",
+      "note": "docs/night-run.md step 5 states one round of each kind per debt job; the extra rounds were the orchestrator's. Also seen: resume_night adds debt-<n> whenever none is pending. A mechanical cap is proposed in the handoff. Night 20261007T213650Z-7b98: kept, no cap. The extra rounds followed the fit-round anchor bug (review-bench e53e183, reverted: only a bugs read retires debt), a one-off; resume_night's debt-<n> is documented in docs/night-run.md (a resumed night lands more work, which gets its own pass).",
+      "handoff": null
     },
     {
       "id": "log_audit:shared-ledger-landing-conflicts",
@@ -4024,13 +4060,23 @@
         "rule": "log_audit",
         "ident": "shared-ledger-landing-conflicts"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-08T01:30:00+03:00",
+          "by": "night 20261007T213650Z-7b98 handoff-2026-10-07-log-audit-leftovers",
+          "files": [
+            "tests/test_harness_doctor.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "last_reviewed": "2026-10-07",
-      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
-      "note": "2026-10-08: recurred (row log_audit:harness-branches-conflict-on-shared-files); carried tonight by job handoff-2026-10-07-log-audit-leftovers. Every fixer appends ledger rows and repins PINNED in tests/test_harness_doctor.sh, so parallel branches conflict on the same lines (this run adds rows too). A row-wise merge driver is proposed in the handoff.",
-      "handoff": "docs/handoffs/2026-10-07-log-audit-leftovers.md"
+      "last_reviewed": "2026-10-08",
+      "reviewed_by": "night 20261007T213650Z-7b98 handoff-2026-10-07-log-audit-leftovers",
+      "note": "Every fixer appends ledger rows and repins PINNED in tests/test_harness_doctor.sh, so parallel branches conflict on the same lines (this run adds rows too). A row-wise merge driver is proposed in the handoff. 2026-10-08: Fixed half: the calibration replay pin derives every fixed row from this ledger, so a fixer's new row no longer repins one shared line (47 edits in 9 days). Row appends at the end of rows still meet in a rebase; a row-wise merge driver was not built: it needs per-clone git config the repository cannot carry, and a take-both resolution is mechanical. It recurred as row log_audit:harness-branches-conflict-on-shared-files.",
+      "handoff": null
     },
     {
       "id": "log_audit:limit-reset-no-auto-resume",
@@ -4039,13 +4085,24 @@
         "rule": "log_audit",
         "ident": "limit-reset-no-auto-resume"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-08T01:30:00+03:00",
+          "by": "night 20261007T213650Z-7b98 handoff-2026-10-07-log-audit-leftovers",
+          "files": [
+            "bin/claude-resume-timer",
+            "tests/test_claude_resume_timer.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "last_reviewed": "2026-10-07",
-      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
-      "note": "2026-10-08: carried tonight by job handoff-2026-10-07-log-audit-leftovers, no change in its files since. Not reproduced here; the resume timer and llm-reset-redeem are to be checked against the account's resets_at, see the handoff.",
-      "handoff": "docs/handoffs/2026-10-07-log-audit-leftovers.md"
+      "last_reviewed": "2026-10-08",
+      "reviewed_by": "night 20261007T213650Z-7b98 handoff-2026-10-07-log-audit-leftovers",
+      "note": "Not reproduced here; the resume timer and llm-reset-redeem are to be checked against the account's resets_at, see the handoff. 2026-10-08: Cause: claude-resume-timer armed for five_hour.resets_at even when the account sat at its weekly wall, so the wake-up came hours before the chat could work. Fixed: a weekly window at 100 arms for its own resets_at. llm-reset-redeem's re-wall after a reset was the owner's 8815bb32.",
+      "handoff": null
     },
     {
       "id": "log_audit:browser-worker-launch-failures",
@@ -4054,13 +4111,25 @@
         "rule": "log_audit",
         "ident": "browser-worker-launch-failures"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-06T19:26:00+03:00",
+          "by": "chat «Оптимизация работы с браузерами DIA и Chrome.»",
+          "files": [
+            "bin/worker-run",
+            "share/ext_leveldb.py",
+            "tests/test_worker_run_browse.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "last_reviewed": "2026-10-07",
-      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
-      "note": "2026-10-08: 86e84d19 added the extension reconnect window (row log_audit:chrome-extension-reconnect-window); carried tonight. Owned by the chat «Оптимизация работы с браузерами DIA и Chrome.»: its fixes landed 2026-10-06 evening (a4e0b030, f877336c, 36cf6f25, f1a98bde) and its fix/browser-* branches are tonight's leftovers; no probe launch has confirmed them yet.",
-      "handoff": "docs/handoffs/2026-10-07-log-audit-leftovers.md"
+      "last_reviewed": "2026-10-08",
+      "reviewed_by": "night 20261007T213650Z-7b98 handoff-2026-10-07-log-audit-leftovers",
+      "note": "Owned by the chat «Оптимизация работы с браузерами DIA и Chrome.»: its fixes landed 2026-10-06 evening (a4e0b030, f877336c, 36cf6f25, f1a98bde) and its fix/browser-* branches are tonight's leftovers; no probe launch has confirmed them yet. 2026-10-08: landed on main; all 17 browser runs started since (claudeb and codex, 10-07 00:55-20:24) exited 0, which is the probe the handoff asked for. 86e84d19 has since added the extension reconnect window (row log_audit:chrome-extension-reconnect-window).",
+      "handoff": null
     },
     {
       "id": "log_audit:overbuilt-before-asking",
@@ -4072,10 +4141,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-07",
-      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
-      "note": "2026-10-08: carried tonight by job handoff-2026-10-07-log-audit-leftovers, no change in its files since. Ruled out as a harness bug: model judgment with no hook, gate or launcher behind it; dismissal proposed in the handoff.",
-      "handoff": "docs/handoffs/2026-10-07-log-audit-leftovers.md"
+      "last_reviewed": "2026-10-08",
+      "reviewed_by": "night 20261007T213650Z-7b98 handoff-2026-10-07-log-audit-leftovers",
+      "note": "Ruled out as a harness bug: model judgment with no hook, gate or launcher behind it; dismissal proposed in the handoff. Night 20261007T213650Z-7b98: kept open, no component to fix; the dismissal stays the owner's.",
+      "handoff": null
     },
     {
       "id": "log_audit:reports-jargon-and-unverified-claims",
@@ -4087,10 +4156,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-07",
-      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
-      "note": "2026-10-08: carried tonight by job handoff-2026-10-07-log-audit-leftovers, no change in its files since. Ruled out as a harness bug: model conduct with no component; dismissal proposed in the handoff.",
-      "handoff": "docs/handoffs/2026-10-07-log-audit-leftovers.md"
+      "last_reviewed": "2026-10-08",
+      "reviewed_by": "night 20261007T213650Z-7b98 handoff-2026-10-07-log-audit-leftovers",
+      "note": "Ruled out as a harness bug: model conduct with no component; dismissal proposed in the handoff. Night 20261007T213650Z-7b98: kept open, no component to fix; the dismissal stays the owner's.",
+      "handoff": null
     },
     {
       "id": "log_audit:memory-guard-lane-pause",
@@ -4102,10 +4171,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-07",
-      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
-      "note": "2026-10-08: carried tonight by job handoff-2026-10-07-log-audit-leftovers, no change in its files since. Ruled out as a harness bug: the memory guard killed the lane as designed (exit 137) and the pause was the lane's own resume at load 164 (weather); dismissal proposed in the handoff.",
-      "handoff": "docs/handoffs/2026-10-07-log-audit-leftovers.md"
+      "last_reviewed": "2026-10-08",
+      "reviewed_by": "night 20261007T213650Z-7b98 handoff-2026-10-07-log-audit-leftovers",
+      "note": "Ruled out as a harness bug: the memory guard killed the lane as designed (exit 137) and the pause was the lane's own resume at load 164 (weather); dismissal proposed in the handoff. Night 20261007T213650Z-7b98: kept open, no component to fix; the dismissal stays the owner's.",
+      "handoff": null
     },
     {
       "id": "unjournaled-night-run-wall",
@@ -4474,15 +4543,29 @@
         "rule": "log_audit",
         "ident": "worker-launch-gate-account-flag"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-08T01:30:00+03:00",
+          "by": "night 20261007T213650Z-7b98 handoff-2026-10-07-log-audit-leftovers",
+          "files": [
+            "claude-setup/agents/claudeb-worker.md",
+            "claude-setup/agents/codex-worker.md",
+            "claude-setup/agents/gemini-worker.md",
+            "claude-setup/agents/grok-worker.md",
+            "tests/test_consistency.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [
         "log_audit:launch-gate-refusals-first-attempt"
       ],
       "last_reviewed": "2026-10-08",
-      "reviewed_by": "night fixer harness-doctor-20261007T214015Z-24b7",
-      "note": "Same cause as log_audit:launch-gate-refusals-first-attempt (the relay copies ACCOUNT: from its prompt, not from the brief file); claude-setup agent text, carried tonight by job handoff-2026-10-07-log-audit-leftovers.",
-      "handoff": "docs/handoffs/2026-10-07-log-audit-leftovers.md"
+      "reviewed_by": "night 20261007T213650Z-7b98 handoff-2026-10-07-log-audit-leftovers",
+      "note": "Same cause as log_audit:launch-gate-refusals-first-attempt (the relay copies ACCOUNT: from its prompt, not from the brief file); claude-setup agent text, carried tonight by job handoff-2026-10-07-log-audit-leftovers. Settled with it: the relay agents pass --account exactly as their prompt's ACCOUNT: line says (test_consistency).",
+      "handoff": null
     },
     {
       "id": "log_audit:relay-stop-leaves-worker-running",
@@ -4521,15 +4604,25 @@
         "rule": "log_audit",
         "ident": "harness-branches-conflict-on-shared-files"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-08T01:30:00+03:00",
+          "by": "night 20261007T213650Z-7b98 handoff-2026-10-07-log-audit-leftovers",
+          "files": [
+            "tests/test_harness_doctor.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [
         "log_audit:shared-ledger-landing-conflicts"
       ],
       "last_reviewed": "2026-10-08",
-      "reviewed_by": "night fixer harness-doctor-20261007T214015Z-24b7",
-      "note": "Same cause as log_audit:shared-ledger-landing-conflicts, carried tonight by job handoff-2026-10-07-log-audit-leftovers (item 6).",
-      "handoff": "docs/handoffs/2026-10-07-log-audit-leftovers.md"
+      "reviewed_by": "night 20261007T213650Z-7b98 handoff-2026-10-07-log-audit-leftovers",
+      "note": "Same cause as log_audit:shared-ledger-landing-conflicts, carried tonight by job handoff-2026-10-07-log-audit-leftovers (item 6). Settled with it: the calibration replay pin derives from the ledger rows (test_harness_doctor); this rebase met only that pin's old literal and the rows both branches touched.",
+      "handoff": null
     },
     {
       "id": "log_audit:night-worker-queue-wait",
