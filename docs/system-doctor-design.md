@@ -60,7 +60,16 @@ source path is env-overridable (`SYSTEM_DOCTOR_<PROBE>`, `SYSTEM_DOCTOR_*_DIRS`,
   `tick-state.json`.
   - **Births/s:** the PID delta between two `ps` probes ~2 s apart, modulo 99,999.
   - **Births attribution:** newborns alive at the window's end, each charged to the nearest own
-    script (by basename) or own app above it.
+    script or own app above it.
+  - **Tags.** An interpreter (`bash`, `python3`, `node`, …) is tagged by the script its argv runs: the
+    first non-option argument (relative ones against the process's working directory), a `-m` module's
+    file (else its name), and inline code (`-c`, `-e`, `-`) takes its parent's script through inline
+    parents only. A script inside a repository beside ours is `repo/path` (through links; a worktree
+    folds into its repository), any other its basename; no script readable keeps the interpreter's
+    name. Each tick keeps the live interpreters it saw running a script in `tick-state.json` (`named`)
+    and their deaths in `pids/<day>.jsonl` (pid, start, last seen, name), so a DiagnosticReports file of
+    `Python` or `bash`, which carries only a PID, names the script that pid ran then. A launchd job
+    whose program is an interpreter is named by its arguments' script the same way.
   - **Reaped-child CPU:** Δ`ps -S` minus Δ`ps` per `pid@lstart`, by the same tags.
   - **Kernel and busy shares** from host CPU ticks.
   - **Memory:** compressor size and share of RAM, swap use, page-in and swap-in rates, and swap-out
@@ -97,9 +106,10 @@ the cause is our own):
 
 ## Phase 2 — built (2026-10-06)
 
-- **Own causes only.** A cause is a fix target when its owner is `own` and its basename names a file
-  of a sweep repository (`own_sources`: `git ls-files` of `~/.claude/sweep-repos`; Hammerspoon maps to
-  `hammerspoon/init.lua`); `cause.files` lists them as `repo/path`. Everything else reads
+- **Own causes only.** A cause is a fix target when its owner is `own` and it names a file of a sweep
+  repository: its `repo/path` exactly, or a bare name by basename (`own_sources`: `git ls-files` of
+  `~/.claude/sweep-repos`; Hammerspoon maps to `hammerspoon/init.lua`); `cause.files` lists them as
+  `repo/path`. Everything else, a helper repository's `repo/path` included, reads
   `(<owner>, report only)` and never enters a fixer snapshot or a handoff.
 - **Fixer routing.** `doctor-fix launch system [--night <id>]`, one area `system` (`whole`), so one run
   owns every cause of a night. The component is the cause's files; `what` names its levers (`LEVERS`,

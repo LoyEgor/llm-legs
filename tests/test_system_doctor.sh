@@ -988,6 +988,83 @@ contract = open(os.path.join(root, "docs", "doctors-contract.md")).read().split(
 check(all("`%s`" % rule in contract for rule in m.RULE_LABELS),
       "the contract's System doctor section names every rule: missing %s" % [r for r in m.RULE_LABELS if "`%s`" % r not in contract])
 
+# ---- an interpreter is named by the script it runs, so our own load has a fix target
+repos = os.path.join(work, "repos")
+for rel in ("llm-legs/bin/x.py", "llm-legs/pkg/tool.py", "llm-legs/bin/x.sh", "helper/bin/gate.py"):
+    os.makedirs(os.path.dirname(os.path.join(repos, rel)), exist_ok=True)
+    open(os.path.join(repos, rel), "w").write("#\n")
+os.makedirs(os.path.join(repos, "llm-legs", ".claude", "worktrees", "fix-a", "bin"), exist_ok=True)
+os.symlink(os.path.join(repos, "llm-legs", "bin", "x.py"), os.path.join(own, "linked.py"))
+m.repo_files.cache_clear()
+script = os.path.join(repos, "llm-legs", "bin", "x.py")
+check(m.classify("/opt/homebrew/bin/python3 %s --flag" % script, 501, roots) == ("llm-legs/bin/x.py", "own"),
+      "python3 running a sweep-repo script is named repo/path: %s" % (m.classify("/opt/homebrew/bin/python3 %s" % script, 501, roots),))
+check(m.classify("/usr/bin/python3 -u -X dev -B %s" % script, 501, roots) == ("llm-legs/bin/x.py", "own"),
+      "interpreter options before the script are skipped, -X with its value")
+check(m.classify("/bin/bash %s/llm-legs/.claude/worktrees/fix-a/bin/x.py" % repos, 501, roots) == ("llm-legs/bin/x.py", "own"),
+      "a worktree's script folds into its repository")
+check(m.classify("/opt/homebrew/bin/python3 %s/linked.py" % own, 501, roots) == ("llm-legs/bin/x.py", "own"),
+      "a link into a repository is named by its target")
+check(m.classify("/opt/homebrew/bin/python3 %s/helper/bin/gate.py" % repos, 501, roots) == ("helper/bin/gate.py", "own"),
+      "a helper repository's script is named by its path too")
+check(m.classify("/opt/homebrew/bin/python3 -m pkg.tool --x", 501, roots, lambda: os.path.join(repos, "llm-legs"))
+      == ("llm-legs/pkg/tool.py", "own"), "python3 -m resolves the module's file in its working directory")
+check(m.classify("%s/venv/bin/python3 -m bench.worker" % own, 501, roots) == ("bench.worker", "own"),
+      "an unresolved -m module is named by the module")
+check(m.classify("/bin/bash bin/x.sh", 501, roots, lambda: os.path.join(repos, "llm-legs")) == ("llm-legs/bin/x.sh", "own"),
+      "a relative script resolves against the process's working directory")
+check(m.classify("/opt/homebrew/bin/python3 bin/x.py", 501, roots, lambda: None) == ("python3", "third-party")
+      and m.classify("/opt/homebrew/bin/python3", 501, roots) == ("python3", "third-party")
+      and m.classify("/opt/homebrew/bin/python3 -", 501, roots) == ("python3", "third-party"),
+      "no readable script keeps the interpreter's name")
+check(m.program_name("%s/venv/bin/python3" % own, ["%s/venv/bin/python3" % own, "-u", script]) == "llm-legs/bin/x.py"
+      and m.program_name("%s/bin/memlogd" % own, ["%s/bin/memlogd" % own, "--x"]) == "memlogd",
+      "a launchd job running an interpreter is named by its script")
+job = m.parse_dumpstate("gui/501/com.x.py = {\n\tprogram = %s/venv/bin/python3\n\targuments = {\n\t\t%s/venv/bin/python3\n\t\t%s\n\t}\n"
+                        "\truns = 3\n}\n" % (own, own, script))
+check(job["gui/501/com.x.py"]["name"] == "llm-legs/bin/x.py", "dumpstate names an interpreter job by its arguments: %s" % job)
+put("ps", ps_rows([(1, 0, 0, "0:01.00", start, "/sbin/launchd"),
+                   (700, 1, uid, "0:01.00", start, "/opt/homebrew/bin/python3 %s" % script),
+                   (701, 700, uid, "0:00.10", start, "/bin/bash -c jq .x"),
+                   (702, 701, uid, "0:00.10", start, "/bin/sh -c true"),
+                   (703, 700, uid, "0:00.10", start, "/opt/homebrew/bin/claude -p"),
+                   (704, 703, uid, "0:00.10", start, "/bin/zsh -c ls")]))
+tags = {entry[4]: (entry[2], entry[3]) for entry in m.ps_snapshot(False)[1].values()}
+check(tags[701] == tags[702] == ("llm-legs/bin/x.py", "own") and tags[704] == ("zsh", "apple"),
+      "inline code takes its parent's script through inline parents only: %s" % tags)
+put("ps-children", open(os.path.join(fix, "ps")).read())
+state2 = os.path.join(work, "state2")
+check(cli("tick", "--quiet", env={"SYSTEM_DOCTOR_DIR": state2}).returncode == 0, "a tick sees the script")
+put("ps", ps_rows([(1, 0, 0, "0:01.00", start, "/sbin/launchd")]))
+put("ps-children", open(os.path.join(fix, "ps")).read())
+check(cli("tick", "--quiet", env={"SYSTEM_DOCTOR_DIR": state2}).returncode == 0, "a tick sees it gone")
+gone = [r for f in glob.glob(os.path.join(state2, "pids", "*.jsonl")) for r in m.read_lines(f)]
+check(len(gone) == 1 and [g[0] for g in gone[0]["gone"]] == [700, 701, 702]
+      and gone[0]["gone"][0][3:] == ["llm-legs/bin/x.py", "own"] and own not in json.dumps(gone),
+      "a dead interpreter's pid and script name are kept, no argv: %s" % gone)
+os.environ["SYSTEM_DOCTOR_DIR"] = state2
+scripts = m.pid_scripts(time.time() + 60)
+os.environ["SYSTEM_DOCTOR_DIR"] = os.path.join(work, "state")
+began = m.start_epoch("700@%s" % " ".join(start.split()))
+diag2 = os.path.join(work, "diag2")
+os.makedirs(diag2)
+named = []
+for pid, at in ((700, began + 600), (700, now + 3 * 86400), (999, began + 600)):
+    path = os.path.join(diag2, "Python_%d_%d.diag" % (pid, at))
+    open(path, "w").write("Date/Time:        %s\nEnd time:         %s\nCommand:          Python\nPath:             "
+                          "/opt/homebrew/*/Python.app/Contents/MacOS/Python\nPID:              %d\nEvent:            disk writes\n"
+                          % (stamp(at, "%Y-%m-%d %H:%M:%S.000 %z"), stamp(at + 60, "%Y-%m-%d %H:%M:%S.000 %z"), pid))
+    named.append(m.report_header(path, os.path.basename(path), {}, scripts))
+check([(r["name"], r["owner"]) for r in named] == [("llm-legs/bin/x.py", "own"), ("Python", "own"), ("Python", "own")],
+      "a Python disk-writes report names the script its pid ran then; a reused or unseen pid keeps Python: %s" % named)
+for reports_seen, target in ((named[:1] * 3 + named[2:], True), (named[2:] * 3 + named[:1], False)):
+    ssd = judged(days=day_rows(250), night={"as_of_s": now, "reports": reports_seen})[0]["ssd-writes:internal"]["cause"]
+    check(ssd["fix_target"] is target and ssd["files"] == (["llm-legs/bin/x.py"] if target else []),
+          "an SSD cause named by its script is a fix target, the interpreter-only one stays report-only: %s" % ssd)
+check(m.own_sources("helper/bin/gate.py") == [] and m.source_path("llm-legs/bin/x.py") == script
+      and m.levers("llm-legs/bin/statusline.sh", "cohort") == [m.LEVERS[0][1]],
+      "a helper repository's script stays report-only; a repo/path cause finds its file and levers by basename")
+
 endless = os.path.join(work, "bin", "endless-log")
 with open(endless, "w") as handle:
     handle.write("#!/bin/bash\necho first\nexec sleep 20\n")

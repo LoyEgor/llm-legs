@@ -202,7 +202,7 @@ def all_pids():
 
 
 def proc_info(pid):
-    """(ppid, uid, start, args) of one live process, args as `argv0 arg1 arg2 arg3` held in memory only (as
+    """(ppid, uid, start, args) of one live process, args as `argv0 … arg8` held in memory only (as
     `ps` shows own-uid processes; the executable path alone for others), or None once it is gone."""
     fixture = _fixture("SYSTEM_DOCTOR_PROCS")
     if fixture is not None:
@@ -220,8 +220,22 @@ def proc_info(pid):
     path = ctypes.create_string_buffer(4096)
     exe = path.value.decode(errors="replace") if lib.proc_pidpath(pid, path, 4096) > 0 else \
         info.comm.decode(errors="replace")
-    words = (_argv(pid)[:4] if info.uid == os.getuid() else []) or [exe]
+    words = (_argv(pid)[:9] if info.uid == os.getuid() else []) or [exe]
     return info.ppid, info.uid, info.start_s + info.start_us / 1e6, " ".join(words)
+
+
+def proc_cwd(pid):
+    """The working directory of one own process (PROC_PIDVNODEPATHINFO), or None."""
+    fixture = _fixture("SYSTEM_DOCTOR_PROCS")
+    if fixture is not None:
+        return (fixture.get("cwd") or {}).get(str(pid))
+    lib = _lib()
+    if lib is None:
+        return None
+    info = ctypes.create_string_buffer(2352)
+    if lib.proc_pidinfo(pid, 9, 0, info, 2352) != 2352:
+        return None
+    return info.raw[152:1176].split(b"\0", 1)[0].decode(errors="replace") or None
 
 
 def _argv(pid):
