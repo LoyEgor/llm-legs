@@ -263,7 +263,7 @@ cmd_start() {
   unlock
   if ! opened=$(CHAT_OPEN_OPENER="${NIGHT_RUN_OPENER:-open -a Terminal}" \
     CHAT_OPEN_WORKER_PICK="${NIGHT_RUN_WORKER_PICK:-$repo_root/bin/worker-pick}" \
-    CHAT_OPEN_PREFIX="caffeinate -i" \
+    CHAT_OPEN_PREFIX="caffeinate -i env CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=200" \
     chat_open "$nights_dir/$id.command" "$(main_checkout)" "сделай чистку — night run $id$marker" 2>&1); then
     lock
     night_set "$id" '.note = $n | .finished_at = $t | del(.opener)' --arg n "orchestrator chat did not open: $opened" --arg t "$(stamp)"

@@ -834,7 +834,7 @@ speed_env=(HARNESS_DOCTOR_DIR="$S/harness" HARNESS_LEDGER="$S/ledger.json")
 env "${speed_env[@]}" CODE_LEDGER="$S/none.json" STATUSLINE_CACHE_DIR="$S/sl" SPEED_DOCTOR_NOW=1790967000 \
   SPEED_DOCTOR_DIR="$S/speed" WORKER_STATS_DIR="$S/ws" CODE_DOCTOR_DIR="$S/code" "$ROOT/bin/speed-doctor" --quiet ||
   fail "speed-doctor did not merge its section"
-night1='["opportunity:tests/llm-legs/test_llm_limits", "opportunity:chat/hooks", "opportunity:machine/contention"]'
+night1='["opportunity:tests/llm-legs/test_llm_limits", "opportunity:chat/hooks", "opportunity:machine/contention", "opportunity:chat/tests"]'
 assert jqe --argjson n "$night1" '.speed.selection == $n' "$S/harness/latest.json"
 mkdir -p "$L/share/rbench" "$L/share/briefs" "$L/agents"
 printf '# the per-model call\nclaudeb opus high high,xhigh low,medium,max no\n' >"$L/share/worker-model.sh"
@@ -854,7 +854,7 @@ env "${speed_env[@]}" bash "$FIX" launch harness --night n8 >"$WORK/out" 2>"$WOR
 assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 1 ]
 sid=$(cut -f1 "$WORK/out")
 assert jqe --argjson n "$night1" --arg t "$L/tests/test_llm_limits.sh" --arg h "$rfg" '.area == "speed" and [.problems[].id] == $n
-  and [.problems[].component.files] == [[$t], [$h], []]' "$(record "$sid")"
+  and [.problems[].component.files] == [[$t], [$h], [], []]' "$(record "$sid")"
 
 # Its close refuses any added or removed line that sets a model, effort or thinking knob, committed, uncommitted,
 # untracked or in the live settings and worker-model files; a speed diff touching none of them closes.
@@ -874,6 +874,7 @@ jq -n --argjson s $(($(now) + 5)) '{contract: 1, doctor: "harness", as_of_s: $s,
 printf 'opportunity:machine/contention\truled-out\tnone\tthe lever is elsewhere\n' >"$WORK/sd"
 printf 'opportunity:chat/hooks\truled-out\tclaude-setup/hooks/review-flow-gate.sh\tthe snapshot stays\n' >>"$WORK/sd"
 printf 'opportunity:tests/llm-legs/test_llm_limits\truled-out\tllm-legs/tests/test_llm_limits.sh\tno sleeps\n' >>"$WORK/sd"
+printf 'opportunity:chat/tests\truled-out\tnone\tthe suites are elsewhere\n' >>"$WORK/sd"
 assert_fails fix close "$sid" --decisions "$WORK/sd" "tuned" 2>"$WORK/err"
 knob() { grep -qF "model/effort knob, $1: $2" "$WORK/err"; }
 assert knob "share/worker-model.sh table" "llm-legs/share/worker-model.sh:2: +claudeb opus medium"
@@ -896,19 +897,19 @@ assert live "settings model/effort/thinking" "$WORK/settings.json:$(grep -n '"mo
 assert live "worker-model" "$HOME/.claude/worker-model:1: +claudeb_model=sonnet"
 sed -i '' 's/"haiku"/"opus"/' "$WORK/settings.json" && rm "$HOME/.claude/worker-model"
 rm "$DATA/harness-doc.json"
-jq --argjson s "$(now)" '.as_of_s = $s | .speed.selection += ["opportunity:chat/tests"]
+jq --argjson s "$(now)" '.as_of_s = $s
   | (.problems[] | select(.id == "opportunity:chat/tests") | .opportunity.quality) = "risk"' "$S/harness/latest.json" >"$S/risk.json" &&
   mv "$S/risk.json" "$S/harness/latest.json"
 git -C "$L" update-ref refs/night/n9/base HEAD
 env "${speed_env[@]}" bash "$FIX" launch harness --night n9 >"$WORK/out" 2>"$WORK/err" || fail "speed night n9: $(cat "$WORK/err")"
-assert jqe --argjson n "$night1" '[.problems[].id] == $n' "$(record "$(cut -f1 "$WORK/out")")"
+assert jqe --argjson n "$night1" '[.problems[].id] == $n - ["opportunity:chat/tests"]' "$(record "$(cut -f1 "$WORK/out")")"
 assert [ ! -s "$WORK/err" ]
 # A Speed section that selects nothing says why on stderr instead of skipping silently.
-jq --argjson s "$(now)" '.as_of_s = $s | .speed.selection = [] | .speed.why_none = "295 min/day recoverable, but no lever fits the 0 of 6 worker-h left; 1.2 of 7 days covered"' \
+jq --argjson s "$(now)" '.as_of_s = $s | .speed.selection = [] | .speed.why_none = "295 min/day recoverable, but 2 need Egor; 1.2 of 7 days covered"' \
   "$S/harness/latest.json" >"$S/picked-none.json" && mv "$S/picked-none.json" "$S/harness/latest.json"
 git -C "$L" update-ref refs/night/n10/base HEAD
 env "${speed_env[@]}" bash "$FIX" launch harness --night n10 >"$WORK/out" 2>"$WORK/err" || fail "speed night n10: $(cat "$WORK/err")"
 assert [ ! -s "$WORK/out" ]
-assert [ "$(cat "$WORK/err")" = "harness: Speed selects nothing: 295 min/day recoverable, but no lever fits the 0 of 6 worker-h left; 1.2 of 7 days covered" ]
+assert [ "$(cat "$WORK/err")" = "harness: Speed selects nothing: 295 min/day recoverable, but 2 need Egor; 1.2 of 7 days covered" ]
 
 echo "PASS: $asserts asserts; code runs (one area, top-K, needs-Egor out, close through code-doctor check); launch refusals (no or foreign or stale document, nothing to fix, open run under 12 h), an old run abandoned, the snapshot without watch/fixed-pending, the chat through the shared opener, the record fields, a failed opener, close refusals (doctor not rerun, undecided id, missing path, missing commit, a directory, no evidence, bad verdict, judge changed without its line), a clean close, show, runs, updater records and launch, parallel ids, night launch (areas, worktrees, branches, briefs, the packet, one open run per area), night vendor records, a night without a base ref, llm components with their block's entry file, fixed only once the doctor reads it fixed-pending or gone, night close (markdown net zero per worktree: committed, untracked and cut bytes, a worktree without its base; a day run unmeasured; the doctor rerun once in the worktree, a handed-in document refused, purpose touching its component, judge), abandon, a failed worktree, harness sections and top watch rows under parallel launch, updater machinery, a legacy release run, a merge citation, a malformed ledger row, a failed collector, an unwritten launched_at, a launcher killed under the lock, quiet open ledger rows (their own brief section, the day launch), a speed night (design Night 1 over the calibration fixture, an empty Speed pick named on stderr, a refusal per worktree model/effort knob site, a live settings change only a note, a knob-free diff closes)"

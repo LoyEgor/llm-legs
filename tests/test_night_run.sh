@@ -83,7 +83,7 @@ assert grep -qF -- "--session-id $session " "$NIGHTS/$id.command"
 exec_line=$(grep '^exec ' "$NIGHTS/$id.command")
 eval "set -- ${exec_line#exec }"
 assert [ "${!#}" = "сделай чистку — night run $id" ]
-assert [ "$1 $2" = "caffeinate -i" ]
+assert [ "$1 $2 $3 $4" = "caffeinate -i env CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=200" ]
 assert grep -qxF -- '--account claudeb --role chat --model opus --claim' "$DATA/pick-args"
 
 # A night whose orchestrator chat runs refuses a second start, however long it runs; no deadline flag.

@@ -119,6 +119,9 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
 - Accounts: `chat_open` and every worker take a `worker-pick` claim, so parallel launches spread.
 - Run records: every read-modify-write takes a lock, and run ids are unique under parallel launch.
 - The whole night runs under `caffeinate -i`.
+- The orchestrator chat starts with `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=200`: Claude Code's default 20 would
+  refuse the night's ~30 relay agents, and the worker slots' load/memory admission, not that ceiling, decides how
+  many run.
 
 ## Morning record
 `~/.cache/doctors/nights/<night-id>.json`:

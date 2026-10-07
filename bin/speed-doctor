@@ -41,7 +41,7 @@ PRESENCE_IDLE_S = 120
 LIMITS = {"regression_ratio": 1.3, "regression_days": 2, "worth_om_day": 0.5, "blind_om_day": 1.0,
           "residual_share": 0.05, "baseline_days": 28, "baseline_min_days": 7, "seen_days": 3, "seen_sessions": 3,
           "collector_s": 2.0}
-BUDGET_H, TOP_K, HOOK_LEVERS = 6.0, 4, 1
+HOOK_LEVERS = 1
 EFFORT_H = {"S": 1.0, "M": 3.0}
 CONFIDENCE = {"measured": 0.8, "estimated": 0.5, "unmeasured": 0.3}
 BANDS = {"load": ("<1", "1-2", "2-4", ">4"), "size": ("<1", "1-10", ">10")}
@@ -698,47 +698,41 @@ def rank_key(o):
 
 def select(opportunities, regressions=(), why=None):
     """Night pick (§3 Selection): the loud regressions with a lever first, each at its component's cheapest one, then
-    equivalent positive-score opportunities by score, within the worker-hour budget, K, and one hook lever per night.
-    A loud row without a lever (time_floor) takes no K or hours; bin/doctor-fix dispatches it on its own. An
-    opportunity on a lever a regression took rides with it free. `why` receives the skip reasons."""
-    chosen, spent, hooks, taken, levers_taken, riders = [], 0.0, 0, 0, set(), 0
+    every equivalent positive-score opportunity by score, one hook lever per night; how many run at once is the worker
+    slots' admission. A loud row without a lever (time_floor) takes no hook turn; bin/doctor-fix dispatches it on its
+    own. An opportunity on a lever a regression took rides with it. `why` receives the skip reasons."""
+    chosen, hooks, taken, levers_taken = [], 0, 0, set()
     for reg in regressions:
         component = reg.get("component")
         levers = sorted((EFFORT_H[l["effort"]] + l["night_cost_h"], bool(l.get("hooks")), l["component"]) for l in LEVERS
                         if component and l["quality"] == "equivalent" and (l["component"] == component
                                                                            or l["component"].startswith(component + "/")))
         if levers:
-            cost, hook, lever = levers[0]
-            spent, hooks, taken = spent + cost, hooks + hook, taken + 1
+            _, hook, lever = levers[0]
+            hooks, taken = hooks + hook, taken + 1
             levers_taken.add(lever)
     skipped = {}
     for o in opportunities:
         fields = o["opportunity"]
-        cost = fields["effort_h"] + fields["night_cost_h"]
         reason = "egor" if fields["needs_egor"] else "risk" if fields["quality"] != "equivalent" \
             else "score" if fields["score"] <= 0 else None
         if not reason and o["id"].partition(":")[2] in levers_taken:
             chosen.append(o["id"])
-            riders += 1
             continue
-        reason = reason or ("k" if taken + len(chosen) - riders >= TOP_K else "budget" if spent + cost > BUDGET_H
-                            else "hook" if fields["hooks"] and hooks >= HOOK_LEVERS else None)
+        reason = reason or ("hook" if fields["hooks"] and hooks >= HOOK_LEVERS else None)
         if reason:
             skipped[reason] = skipped.get(reason, 0) + 1
             continue
         chosen.append(o["id"])
-        spent += cost
         hooks += fields["hooks"]
     if why is not None:
-        why.update(skipped=skipped, regressions=taken, spent=spent)
+        why.update(skipped=skipped, regressions=taken)
     return chosen
 
 
 def why_skipped(why):
     skipped = why.get("skipped") or {}
     return ", ".join(text for key, text in (
-        ("k", "%d loud regressions with a lever fill the night's %d picks" % (why.get("regressions", 0), TOP_K)),
-        ("budget", "no lever fits the %g of %g worker-h left" % (round(max(BUDGET_H - why.get("spent", 0.0), 0.0), 1), BUDGET_H)),
         ("hook", "the night's hook lever is taken"),
         ("egor", "%d need Egor" % skipped.get("egor", 0)),
         ("risk", "%d are not output-equivalent" % skipped.get("risk", 0)),
@@ -895,7 +889,7 @@ def judge_digest(ledger):
     with open(os.path.realpath(__file__), "rb") as handle:
         digest.update(handle.read())
     dismissals = [r for r in speed_rows(ledger) if r.get("status") in H.DISMISSED]
-    digest.update(json.dumps([dismissals, LIMITS, HEAVY_TEST_S, KEEP_WORDS.pattern, LEVERS, BUDGET_H, TOP_K, H.C1_R_S, BANDS, PROOF, OUTPUT_PROOF,
+    digest.update(json.dumps([dismissals, LIMITS, HEAVY_TEST_S, KEEP_WORDS.pattern, LEVERS, HOOK_LEVERS, H.C1_R_S, BANDS, PROOF, OUTPUT_PROOF,
                               TIME_LEVERS, time_budget.FLOORS, time_budget.ACTIVE_FLOOR_SHARE, time_budget.ACTIVE_FLOOR,
                               time_budget.FLOOR_ROW_MIN_DAY],
                              sort_keys=True).encode())

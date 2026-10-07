@@ -202,15 +202,18 @@ floor_loud = [{"id": "time_floor:%s" % k, "rule": "time_floor", "state": "open"}
 scored = [{"id": "opportunity:%s" % i, "opportunity": dict(low["opportunity"], score=s, effort_h=e, hooks=i.startswith("hook"))}
           for i, s, e in (("time/workers-active", 236.0, 3.0), ("chat/tests", 72.0, 1.0), ("hook", 36.0, 1.0),
                           ("hook2", 20.0, 1.0), ("cheap", 0.16, 1.0), ("over", 0.1, 1.0))]
-full, spent = {}, {}
+hooked = {}
 check(module.select(scored, floor_loud) == ["opportunity:time/workers-active", "opportunity:chat/tests", "opportunity:hook",
-                                            "opportunity:cheap"]
-      and module.select(scored, [{"component": "machine/contention"}] * 4, full) == []
-      and module.why_skipped(full) == "4 loud regressions with a lever fill the night's 4 picks"
-      and module.select(scored[:1], [{"component": "chat/tests"}] * 2, spent) == []
-      and module.why_skipped(spent) == "no lever fits the 0 of 6 worker-h left",
-      "loud time-floor rows, which have no component and no lever, take no pick slot or hours; a full K or a spent "
-      "budget is named as such")
+                                            "opportunity:cheap", "opportunity:over"]
+      and module.select(scored, [{"component": "machine/contention"}] * 4) == [o["id"] for o in scored if o["id"] != "opportunity:hook2"]
+      and module.select(scored[2:4], [{"component": "chat/hooks"}], hooked) == []
+      and module.why_skipped(hooked) == "the night's hook lever is taken",
+      "loud time-floor rows, which have no component and no lever, take no hook turn; no count or worker-hour cap: "
+      "loud regressions with a lever leave every other opportunity in; a taken hook turn is named as such")
+six = [{"id": "opportunity:six%d" % i, "opportunity": dict(low["opportunity"], score=6.0 - i, effort_h=3.0)} for i in range(6)]
+check(module.select(six) == [o["id"] for o in six],
+      "six qualifying 3-hour levers are all selected, in score order: the worker slots' admission decides how many run "
+      "at once, not a count or an hour budget")
 check(module.select(scored[1:2] + [dict(scored[0], id="opportunity:chat/hooks")], [{"component": "chat"}])
       == ["opportunity:chat/tests", "opportunity:chat/hooks"],
       "an opportunity on the lever a loud regression already took rides with it, charged once")
@@ -229,11 +232,11 @@ timed = module.with_time(copy.deepcopy(backlog), gaps)
 check([(o["id"], o["opportunity"]["recoverable_min_day"]) for o in timed]
       == [("opportunity:time/workers-active", 200.0), ("opportunity:time/slot", 50.0), ("opportunity:chat/tests", 48.7),
           ("opportunity:chat/hooks", 8.3)]
-      and module.select(timed) == ["opportunity:time/workers-active", "opportunity:time/slot"]
+      and module.select(timed) == [o["id"] for o in timed]
       and all(o["opportunity"]["score"] == module.score_of(o["opportunity"]["recoverable_min_day"], o["opportunity"]["confidence"],
                                                            o["opportunity"]["effort_h"], 0.0) for o in timed),
       "a class over its floor ranks by recoverable min/day: its own time opportunity, or its gap added to the "
-      "opportunity already pricing it; under the worth line it is no opportunity; the night takes the biggest: %s"
+      "opportunity already pricing it; under the worth line it is no opportunity; the night takes them all, biggest first: %s"
       % [(o["id"], o["opportunity"]["recoverable_min_day"]) for o in timed])
 rows = module.floor_rows(gaps, {"rows": [{"id": "L1", "match": {"rule": "time_floor", "ident": "slot"}, "status": "fixed"}]})
 check([(r["id"], r["state"], r["value"], r["limit"]) for r in rows]
@@ -243,14 +246,16 @@ check([(r["id"], r["state"], r["value"], r["limit"]) for r in rows]
       and module.floor_rows(dict(gaps, floors=gaps["floors"][2:], last_night=dict(gaps["last_night"], share=0.3)), {}) == [],
       "a class more than 30 min/day over its floor and a night under 30 %% model activity are named rows through the "
       "ledger's states; back under them there is no row: %s" % [(r["id"], r["state"]) for r in rows])
-saved_env, saved = dict(os.environ), (module.BUDGET_H, module.time_budget.section)
+saved_env, saved = dict(os.environ), (module.with_time, module.time_budget.section)
 os.environ.update({k: v for k, v in base.items() if k != "PATH"}, SPEED_DOCTOR_DIR=os.path.join(work, "speed-floor"))
-module.BUDGET_H, module.time_budget.section = 0.5, (lambda now, write: copy.deepcopy(gaps))
+module.with_time = lambda opportunities, budget: [dict(o, opportunity=dict(o["opportunity"], quality="risk"))
+                                                  for o in saved[0](opportunities, budget)]
+module.time_budget.section = lambda now, write: copy.deepcopy(gaps)
 floored = module.collect(False, HI)
-module.BUDGET_H, module.time_budget.section = saved
+module.with_time, module.time_budget.section = saved
 os.environ.clear()
 os.environ.update(saved_env)
-check(floored["selection"] == [] and floored["why_none"].startswith("295 min/day recoverable, but no lever fits the 0.5 of 0.5 worker-h left")
+check(floored["selection"] == [] and floored["why_none"].startswith("295 min/day recoverable, but 4 are not output-equivalent")
       and floored["head"].startswith("95 min/day over the floor · ") and floored["problem_count"] == 3
       and [l[3] for l in floored["menu"] if l[2]] == [r["fact"] for r in floored["problems"] if r["rule"] == "time_floor"]
       and [0, "", False, "Without the harness ≈ 40 % faster"] in floored["menu"],
@@ -393,7 +398,7 @@ while len(job["todo"]) * 2 > job["files"]:
 half, _ = speed("speed-half", HARNESS_DOCTOR_DIR=blank_dir, SPEED_DOCTOR_BACKFILL_S="0", **transcripts)
 same_days = sum(cold["om_by_day"][d] for d in half["om_by_day"]) / max(half["window"]["days"], 0.01)
 check(half["coverage"] == {"days": 2.91, "window_days": 7, "backfill_files_done": 21, "backfill_files": 40}
-      and half["selection"] == cold["selection"] and half["why_none"] is None
+      and half["selection"][:len(cold["selection"])] == cold["selection"] and half["why_none"] is None
       and abs(half["headline"] - same_days) <= 0.1 * same_days and min(half["om_by_day"]) == "2026-09-30"
       and "backfill" in [b["id"] for b in half["blind_spots"]] and half["head"].startswith("213 OM/d · 2.9 of 7 days"),
       "a half-done backfill counts only the days it read in full: %s OM/d vs %s over the same days, %s"
@@ -557,10 +562,10 @@ check(module.score_of(2.0, 0.5, 1.0, 3.0) == 0.25, "a lever's night cost divides
 pick = [{"id": i, "opportunity": {"effort_h": e, "night_cost_h": 0.0, "needs_egor": False, "quality": "equivalent",
                                   "score": 1.0, "hooks": i == "c"}} for i, e in (("a", 1), ("b", 3), ("c", 1), ("d", 1))]
 check(module.select(pick) == ["a", "b", "c", "d"]
-      and module.select(pick, [{"component": "chat/tests"}]) == ["a", "c", "d"]
-      and module.select(pick, [{"component": "machine/contention"}] * 3) == ["a"]
+      and module.select(pick, [{"component": "chat/tests"}]) == ["a", "b", "c", "d"]
+      and module.select(pick, [{"component": "machine/contention"}] * 3) == ["a", "b", "c", "d"]
       and module.select(pick, [{"component": "chat"}]) == ["a", "b", "d"],
-      "loud regressions go first: each takes its cheapest lever's hours, a K slot and that lever's hook turn")
+      "loud regressions go first: each takes its cheapest lever and that lever's hook turn, never a count or hours")
 
 repos = base["HARNESS_REPOS_DIR"]
 shutil.copytree(os.path.join(root, "tests", "fixtures", "code-doctor", "corpus", "repos", "alpha"),

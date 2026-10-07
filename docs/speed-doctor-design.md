@@ -157,15 +157,15 @@ or after it` and its spend stays out of the return. Per night: improvement spend
 over the trend's nights. No gain reads `spend without result` — a measurement, never a revert or a gate.
 
 **Selection.**
-- Regressions (with a lever and ≥ 0.5 OM/d) first, then opportunities by recoverable min/day, while Σ (effort + night cost) ≤ B (6 worker-h) and K ≤ 4. A loud row without a lever (`time_floor`) takes no K or hours (`bin/doctor-fix` dispatches it on its own); an opportunity on a lever a regression took rides with it, charged once.
-- At most one hooks/statusline/Hammerspoon lever per night (one commit, one proof).
+- Regressions (with a lever and ≥ 0.5 OM/d) first, then every qualifying opportunity by recoverable min/day. No count or worker-hour cap: the night's speed is the goal, and how many fixers run at once is the worker slots' load/memory admission (`share/slots.sh` `slot_room`), a queue included. A loud row without a lever (`time_floor`) takes no hook turn (`bin/doctor-fix` dispatches it on its own); an opportunity on a lever a regression took rides with it.
+- At most one hooks/statusline/Hammerspoon lever per night (`HOOK_LEVERS`; one commit, one proof): they share the chat's hook floor, so two landing the same night cannot be told apart by its paired replay or its band-matched days.
 - One owner per cause file per night across doctors; the other doctor's row links as `same_cause`.
 - Skipped: active work (the Code doctor's rule), `pending-exposure`, frozen components, savings below their proof's noise.
-- No score floor: any equivalent, positive-score, non-needs-Egor lever qualifies. An empty pick's `why_none` names its true cause: K full, the budget spent, the hook turn taken, levers needing Egor, not equivalent or scoring 0, or no opportunity.
+- No score floor: any equivalent, positive-score, non-needs-Egor lever qualifies. An empty pick's `why_none` names its true cause: the hook turn taken, levers needing Egor, not equivalent or scoring 0, or no opportunity.
 
 **Own keys**: `cost {collector_cpu_min_day, fixer_worker_min, review_min, slot_queue_min, landing_delay_min}`, `yield {proven_om_day, pending_om_day}`.
 
-**Judge**: sha256 over `bin/speed-doctor`, the ledger's dismissals, `LIMITS`, `LEVERS`, `TIME_LEVERS`, the floors, B, K, R, the bands and the proof table.
+**Judge**: sha256 over `bin/speed-doctor`, the ledger's dismissals, `LIMITS`, `LEVERS`, `TIME_LEVERS`, the floors, `HOOK_LEVERS`, R, the bands and the proof table.
 
 ## 4. Menu
 
@@ -246,7 +246,7 @@ Saving is gross (direct + P part). Score = saving × confidence ÷ effort_h.
 **Needs-Egor, ranked**: the owner-chat poll deny (≈ 1–2, overshoot only); compaction window and context (compaction 4.3 + context ≈ 5, optimum unknown until C1 measures injection volume); settings steps (Q3); non-repo daemons.
 
 **Totals.** Within the fixer's reach ≈ 15 OM/d of 169 (≈ 9 %); ≈ 40 with the owner trades.
-- **Night 1** (B = 6 h, one hook lever): #1, #2, #5 stage 1 (≈ 5 h).
+- **Night 1** (one hook lever): #1, #2, #5 stage 1 (≈ 5 h).
 - **Night 2**: #3 as the hook lever; #4 and #8 once C3 holds a week.
 
 ## 7. Build stages
