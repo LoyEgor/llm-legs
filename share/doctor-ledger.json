@@ -800,7 +800,7 @@
    "last_reviewed": "2026-10-07",
    "reviewed_by": "Night image fixer",
    "note": "Event image:1790815478/gemini-music/egbogd returned HTTP 404 and 2860 bytes, not a missing executable or local path. Base c340869 already retries the cover-art MP4 six times with 10-second waits, retains successful audio and reports video_error; bin/gemini-music rejects a requested MP4 when absent. Cannot prove delayed publication versus an invalid/expired URL from the retained journal; no response artifact is retained. Existing retry is not proven obsolete. Owner should verify audio-only success and an existing cover download without spending on another generation. The detail matches both the recorded line and the current one: share/gemini_music.py save() raises `video download failed (HTTP …)` and bin/gemini-music relays it as `take N came without its mp4: …`; Flow's `clip download failed` is gemini-video, another cause. 2026-10-07 (Night image fixer): no Gemini-app music leg since 2026-10-01T12:56Z (jobs.jsonl kind music); the 31 gemini-music legs of 2026-10-06 are all Flow Music, another route; save() (share/gemini_music.py:286) unchanged.",
-   "handoff": "docs/handoffs/2026-10-06-image-night-triage.md"
+   "handoff": null
   },
   {
    "id": "I4",
@@ -817,7 +817,7 @@
    "last_reviewed": "2026-10-07",
    "reviewed_by": "Night image fixer",
    "note": "Four incidents: Add to prompt at 1790795541, 1080p Download media click at 1790808722, Short chip at 1790813256, filechooser at 1790813446. Base already replaced mandatory Add to prompt with optional click plus attachment verification; music attach handles rights notices and chooser events. No saved screenshot/TXT exists for these older incidents (failure directory contains only the three Length captures). Current Short selection and upscale readiness cannot be verified from traceback alone. Longer vendor generation caps would not fix these UI waits. Do not restore old mandatory attachment clicks or blanket-increase timeouts. The 1080p alternative catches the pre-structured record (plain stderr, classified timeout); today's route reports the same step as a BROWSER_FAILURE line the doctor reads as `browser download`, which no row names, so a fresh one reads new with its screenshot. 2026-10-02 (Night image fixer): no timeout of these steps in the last 24 h; the 1080p download step now reads I7 (fixed, a8c1ee1), and 22 later gemini-video legs passed it. 2026-10-07 (Night image fixer): no gemini-video leg since 2026-10-05T21:47Z; the 2026-10-06 Flow Music legs met none of these waits (their upload refusals are I15's region toast); route code unchanged.",
-   "handoff": "docs/handoffs/2026-10-06-image-night-triage.md"
+   "handoff": null
   },
   {
    "id": "I5",
@@ -836,7 +836,7 @@
    "last_reviewed": "2026-10-07",
    "reviewed_by": "Night image fixer",
    "note": "Launch six incidents; fresh scan seven adds silent SFX at 1790820477. Earlier Length failures lack BROWSER_FAILURE markers; current base emits structured failures. no track after 600s at 1790814959 stayed on /app?hl=en: submission/notice is plausible, vendor rendering delay unproved; current message distinguishes an unsent prompt. Flow upload b-stopwatch.png at 1790808648 has no capture. Silent take.mp4 messages at 1790820305/352/477 come from bin/gemini-sfx loudnorm measurement: malformed/missing measurement and actual input_i <= -70 share the same message, so vendor silence is not established. No original clip or measurement is linked by image-leg. Owner should retain/recover media and ffmpeg diagnostics before blaming vendor or changing threshold. 2026-10-01 (Google video generation integration): the Length alternative predates BROWSER_ lines and is I2's cause; the silent-take alternative moved to I6, since bin/gemini-sfx wording now classifies it as bad output. no track after 600s and the stopwatch upload stay open. 2026-10-02 (Night image fixer): neither recurred in the plain-stderr form; today's route reports both as BROWSER_ lines (Flow Music's 600 s wait is I12, a Flow asset upload that never finished is I16). 2026-10-07 (Night image fixer): no gemini-sfx leg since 2026-10-01T11:40Z, no gemini-video since 2026-10-05T21:47Z; no 2026-10-06 Flow Music leg waited 600 s; cause unchanged.",
-   "handoff": "docs/handoffs/2026-10-06-image-night-triage.md"
+   "handoff": null
   },
   {
    "id": "I6",
@@ -1082,7 +1082,7 @@
    "last_reviewed": "2026-10-07",
    "reviewed_by": "Night image fixer",
    "note": "egbogd 16:48Z 2026-10-01 (codex-com.png, 960 s leg, most of it the account lock). Capture 20261001T164839Z-egbogd-81655.txt: the picker open, newest asset end-1790866224…png from 14:50Z, no Uploading row and no toast for the staged start-/end- name, so set_files left no trace. One incident, cause unknown; upload() is unchanged since e961a07 and served every other frame upload that day. Handed to the owner. 2026-10-07 (Night image fixer): no gemini-video leg since 2026-10-05T21:47Z; upload() (share/gemini_web.py:1123) unchanged on the base.",
-   "handoff": "docs/handoffs/2026-10-06-image-night-triage.md"
+   "handoff": null
   },
   {
    "id": "I17",
@@ -1116,7 +1116,7 @@
    "last_reviewed": "2026-10-07",
    "reviewed_by": "Night image fixer",
    "note": "locomthebest 11:33Z 2026-10-01, 832 s: the engine died by SIGTERM while the wrapper survived (rc 1), the same second a gemini-sfx run on the same profile failed with 'open in another Chrome'. Nothing records who sent the signal; bin/gemini-music reports any engine exit without a result line this way. Cause unknown: handed to the owner, blind spot image-engine-signal-sender. 2026-10-03: the two rc 143 codex-image legs at 01:45Z are cap exits, not this. 2026-10-07 (Night image fixer): 31 gemini-music legs on 2026-10-06 (Flow route), none rc 143 or 'printed no result'; bin/gemini-music:255 unchanged.",
-   "handoff": "docs/handoffs/2026-10-06-image-night-triage.md"
+   "handoff": null
   },
   {
    "id": "I19",
@@ -1290,7 +1290,7 @@
    "last_reviewed": "2026-10-07",
    "reviewed_by": "Night image fixer",
    "note": "One leg 20:22Z 2026-10-02 (0 s): line 72 read 'aspect_given=[ -z ...' because another worker's mutation restore kept hitting the first `true` in the file; the owner chat restored it at 20:22:33Z and its later mutation runs use a private copy. Not a code bug and not the I20 race (the file was already broken at launch). A gate against mutating the shared checkout is the Harness doctor's, not this block's. 2026-10-04 (Night image fixer): bin/gemini-image on the base parses clean (aspect_given=false) and 67 gemini-image legs since ran without this detail; a guard against shared-checkout mutations stays the Harness doctor's. 2026-10-05: the only change to bin/gemini-image since (9264c2c6, aspect_listed) parses clean; the image journal is silent since 2026-10-03T23:52Z (no leg of any image tool). 2026-10-07 (Night image fixer): no gemini-image leg since 2026-10-05T22:18Z; bin/gemini-image unchanged on the base.",
-   "handoff": "docs/handoffs/2026-10-06-image-night-triage.md"
+   "handoff": null
   },
   {
    "id": "I23",
@@ -1423,7 +1423,7 @@
    "last_reviewed": "2026-10-07",
    "reviewed_by": "Night image fixer",
    "note": "loiyehor 02:17Z 2026-10-03, its first gemini-video leg ever, 17 s in (capture 20261003T021750Z-loiyehor-26403: chip 'Video · 720p · 8s', popover already closed by the finally). A free gemini-web generate --dry-run on the same account and project at 04:50Z set the composer up (quote 20, chip ok), and the next three video legs on other accounts passed. Not reproduced; which click timed out is not in the reason. 2026-10-04 (Night image fixer): no recurrence; 4 later gemini-video legs delivered (jihangarangan, locomthebest, egbogd, rawilimo). The base raises this drift through failure_text, which appends Playwright's `waiting for <locator>` line, so a recurrence names the click that timed out (the 02:17Z reason predates it). 2026-10-05: no gemini-video leg since 2026-10-03T23:17Z; the image journal is silent since 2026-10-03T23:52Z (no leg of any image tool); failure_text (share/gemini_web.py:167) unchanged on the base. 2026-10-07 (Night image fixer): no gemini-video leg since 2026-10-05T21:47Z; failure_text (share/gemini_web.py:194) unchanged.",
-   "handoff": "docs/handoffs/2026-10-06-image-night-triage.md"
+   "handoff": null
   },
   {
    "id": "I29",
@@ -1713,13 +1713,13 @@
     "until": "2026-10-06T06:30:00+03:00"
    },
    "title": "Callers' argument errors refused before spend (2026-10-05)",
-   "status": "open",
+   "status": "not-a-bug",
    "fixes": [],
    "same_cause": [],
    "last_reviewed": "2026-10-07",
-   "reviewed_by": "Night image fixer",
-   "note": "4 legs 22:48-23:27Z 2026-10-05, every one refused before any request: two codex-image calls (burkhartor, com) passed '--ref a --ref b' as ONE argv element from a scratchpad of an llm-legs chat (the same session ran bench/load120), elevenlabs-music a --dest outside .mp3/.wav, elevenlabs-isolate a 2.77 s clip (the local 4.6 s check working). The wrappers name the reason above the usage. Proposed not-a-bug like I23/I35; `until` bounds the row to this window. 2026-10-07 (Night image fixer): the same one-word argv recurred 2026-10-06 from the same chat (I48: zsh keeps ${5:+--language $5} one word).",
-   "handoff": "docs/handoffs/2026-10-06-image-night-triage.md"
+   "reviewed_by": "Night 20261006T233611Z-7777",
+   "note": "4 legs 22:48-23:27Z 2026-10-05, every one refused before any request: two codex-image calls (burkhartor, com) passed '--ref a --ref b' as ONE argv element from a scratchpad of an llm-legs chat (the same session ran bench/load120), elevenlabs-music a --dest outside .mp3/.wav, elevenlabs-isolate a 2.77 s clip (the local 4.6 s check working). The wrappers name the reason above the usage. Proposed not-a-bug like I23/I35; `until` bounds the row to this window. 2026-10-07 (Night image fixer): the same one-word argv recurred 2026-10-06 from the same chat (I48: zsh keeps ${5:+--language $5} one word). 2026-10-07 (Night 20261006T233611Z-7777): dismissed as not-a-bug per the 2026-10-06 image triage; every refusal fired before spend with its reason named, `until` bounds the row.",
+   "handoff": null
   },
   {
    "id": "I42",
@@ -1755,16 +1755,17 @@
    "match": {
     "word": "browser no output",
     "model": "^gemini-video$",
-    "detail": "not ready after \\d+s; recover later"
+    "detail": "not ready after \\d+s; recover later",
+    "until": "2026-10-06T00:50:00+03:00"
    },
    "title": "A Flow Omni clip stayed queued 900 s on one account",
-   "status": "open",
+   "status": "weather",
    "fixes": [],
    "same_cause": [],
    "last_reviewed": "2026-10-07",
-   "reviewed_by": "Night image fixer",
-   "note": "locomthebest 21:31-21:46Z 2026-10-05, a bench/load120 scratchpad run of an llm-legs chat: media f4db9471 (project bbb38026) read 'queued' until the 900 s cap; com served the next clip in 50 s and 5 other gemini-video legs that day delivered. The wait is Flow's server queue (the browser only polls), the media id stays fetchable with the printed gemini-web fetch line; nobody fetched it. Proposed weather. 2026-10-07 (Night image fixer): no gemini-video leg since 2026-10-05T21:47Z.",
-   "handoff": "docs/handoffs/2026-10-06-image-night-triage.md"
+   "reviewed_by": "Night 20261006T233611Z-7777",
+   "note": "locomthebest 21:31-21:46Z 2026-10-05, a bench/load120 scratchpad run of an llm-legs chat: media f4db9471 (project bbb38026) read 'queued' until the 900 s cap; com served the next clip in 50 s and 5 other gemini-video legs that day delivered. The wait is Flow's server queue (the browser only polls), the media id stays fetchable with the printed gemini-web fetch line; nobody fetched it. Proposed weather. 2026-10-07 (Night image fixer): no gemini-video leg since 2026-10-05T21:47Z. 2026-10-07 (Night 20261006T233611Z-7777): dismissed as weather per the 2026-10-06 image triage (Flow server queue, the only leg 21:46:53Z); `until` bounds the row to it, a later queue stall reads new.",
+   "handoff": null
   },
   {
    "id": "I44",
@@ -1772,16 +1773,17 @@
    "match": {
     "word": "soft outcome",
     "model": "^(codex|gemini)-image$",
-    "detail": "^composite skipped: several-inputs"
+    "detail": "^composite skipped: several-inputs",
+    "until": "2026-10-06T01:50:00+03:00"
    },
    "title": "Edits sent as several --ref with no --edit base are not composited",
-   "status": "open",
+   "status": "not-a-bug",
    "fixes": [],
    "same_cause": [],
    "last_reviewed": "2026-10-07",
-   "reviewed_by": "Night image fixer",
-   "note": "30 legs 21:58-22:49Z 2026-10-05, two image-fanout runs of the video project (Alona R7-A r9-likeness sweep, plan.json): prompts 'Edit the first image (the scene) ... change ONLY her face and hair' with the scene and 1-2 face refs as plain refs. The wrappers composite only onto a named base (--edit, or the one ref); several refs without it are a reference generation by design (media skill: '--edit <base> names the image being edited'), so the scene drifted outside the face. image-fanout already passes --edit (jobs key `edit`). Not a wrapper bug: the caller's; fanout.tsv shows no composite column, so the caller never saw the skip. 2026-10-07 (Night image fixer): no gemini-image leg since 2026-10-05T22:18Z; the 10 codex-image legs of 2026-10-06 were new generations.",
-   "handoff": "docs/handoffs/2026-10-06-image-night-triage.md"
+   "reviewed_by": "Night 20261006T233611Z-7777",
+   "note": "30 legs 21:58-22:49Z 2026-10-05, two image-fanout runs of the video project (Alona R7-A r9-likeness sweep, plan.json): prompts 'Edit the first image (the scene) ... change ONLY her face and hair' with the scene and 1-2 face refs as plain refs. The wrappers composite only onto a named base (--edit, or the one ref); several refs without it are a reference generation by design (media skill: '--edit <base> names the image being edited'), so the scene drifted outside the face. image-fanout already passes --edit (jobs key `edit`). Not a wrapper bug: the caller's; fanout.tsv shows no composite column, so the caller never saw the skip. 2026-10-07 (Night image fixer): no gemini-image leg since 2026-10-05T22:18Z; the 10 codex-image legs of 2026-10-06 were new generations. 2026-10-07 (Night 20261006T233611Z-7777): dismissed as not-a-bug (the caller sent its base as a plain ref; image-fanout passes --edit); image-fanout fanout.tsv now carries a 15th `composite` column (the take's composite= line), so a fanout caller sees the skip (tests/test_image_fanout.sh); `until` bounds the row to this window.",
+   "handoff": null
   },
   {
    "id": "I45",
@@ -1792,13 +1794,23 @@
     "detail": "^composite skipped: (opted-out|aspect-changed)"
    },
    "title": "A composite the caller itself turned off or made impossible reads as a soft outcome",
-   "status": "open",
-   "fixes": [],
+   "status": "fixed-pending",
+   "fixes": [
+    {
+     "at": "2026-10-07T03:31:19+03:00",
+     "by": "Night 20261006T233611Z-7777",
+     "files": [
+      "llm-legs/bin/llm-doctor"
+     ],
+     "in": null,
+     "regressed_at": null
+    }
+   ],
    "same_cause": [],
    "last_reviewed": "2026-10-07",
-   "reviewed_by": "Night image fixer",
-   "note": "2 legs 2026-10-05: gemini-image tronjhon 22:18Z with --no-composite (opted-out, recorded by image_leg_composite_record as a quiet skip), codex-image egbogd 18:28Z an edit re-aspected to the asked 16:9 (fit ok) from an input of another ratio (aspect-changed). Both did what was asked; soft_outcome flags every skip but new-generation. A judge question for the owner. 2026-10-07 (Night image fixer): no such skip in the 10 codex-image legs of 2026-10-06; soft_outcome (bin/llm-doctor:1209) unchanged.",
-   "handoff": "docs/handoffs/2026-10-06-image-night-triage.md"
+   "reviewed_by": "Night 20261006T233611Z-7777",
+   "note": "2 legs 2026-10-05: gemini-image tronjhon 22:18Z with --no-composite (opted-out, recorded by image_leg_composite_record as a quiet skip), codex-image egbogd 18:28Z an edit re-aspected to the asked 16:9 (fit ok) from an input of another ratio (aspect-changed). Both did what was asked; soft_outcome flags every skip but new-generation. A judge question for the owner. 2026-10-07 (Night image fixer): no such skip in the 10 codex-image legs of 2026-10-06; soft_outcome (bin/llm-doctor:1209) unchanged. 2026-10-07 (Night 20261006T233611Z-7777): soft_outcome no longer flags a skip the caller asked for: opted-out, transparent, and aspect-changed when the asked aspect fit ok (all 11 aspect-changed legs of the journal had fit ok); aspect-changed with no asked aspect still reads soft (tests/test_llm_doctor.sh).",
+   "handoff": null
   },
   {
    "id": "I46",
@@ -1806,16 +1818,17 @@
    "match": {
     "word": "soft outcome",
     "model": "^codex-image$",
-    "detail": "^delivered \\d+ of \\d+ · web$"
+    "detail": "^delivered \\d+ of \\d+ · web · ChatGPT answered without an image: ChatGPT said: Something went wrong while generating your image",
+    "until": "2026-10-06T01:50:00+03:00"
    },
-   "title": "ChatGPT web batches that lost a take",
-   "status": "open",
+   "title": "A ChatGPT web batch lost a take to ChatGPT's own generation error",
+   "status": "weather",
    "fixes": [],
    "same_cause": [],
    "last_reviewed": "2026-10-07",
-   "reviewed_by": "Night image fixer",
-   "note": "3 legs 2026-10-05, three causes the detail cannot tell apart: com 22:49Z take 2 'Something went wrong while generating your image' (ChatGPT's own error, weather), com 21:29Z take 2 'no image after 600s; it may still land in chat' (I38's symptom inside a batch; the reload watch did not bring it), rawilimo 18:30Z take 2 'no Add photos & files chooser' in a parallel tab of an 18-leg fanout (once in the whole journal; upload() unchanged). The take errors live in the leg's err, not in the soft detail. 2026-10-07 (Night image fixer): the 10 codex-image legs of 2026-10-06 delivered every take asked.",
-   "handoff": "docs/handoffs/2026-10-06-image-night-triage.md"
+   "reviewed_by": "Night 20261006T233611Z-7777",
+   "note": "3 legs 2026-10-05, three causes the detail cannot tell apart: com 22:49Z take 2 'Something went wrong while generating your image' (ChatGPT's own error, weather), com 21:29Z take 2 'no image after 600s; it may still land in chat' (I38's symptom inside a batch; the reload watch did not bring it), rawilimo 18:30Z take 2 'no Add photos & files chooser' in a parallel tab of an 18-leg fanout (once in the whole journal; upload() unchanged). The take errors live in the leg's err, not in the soft detail. 2026-10-07 (Night image fixer): the 10 codex-image legs of 2026-10-06 delivered every take asked. 2026-10-07 (Night 20261006T233611Z-7777): soft_outcome now appends a short batch's first `take N failed:` cause to the detail (tests/test_llm_doctor.sh), so the row split by cause: this one ChatGPT's own error (com 22:49Z, weather, bounded by `until`), the 600 s wait I55, the missing chooser I56.",
+   "handoff": null
   },
   {
    "id": "I47",
@@ -1832,7 +1845,7 @@
    "last_reviewed": "2026-10-07",
    "reviewed_by": "Night image fixer",
    "note": "egbogd 20:18Z and 20:20Z 2026-10-05, 2 s and 4 s, both stderr full of a timestamped xtrace (PS4 with EPOCHREALTIME and BASH_SOURCE), a caller profiling the leg: the roster read (share/account_roster.py, bash -c) died on 'BASH_SOURCE: unbound variable', the second on Chrome's launch. Not reproduced with SHELLOPTS nounset:xtrace and that PS4 on bash 5.3 or /bin/bash 3.2; 171 later gemini-image legs read the roster fine. No transcript found holding these job ids. 2026-10-07 (Night image fixer): no gemini-image leg since 2026-10-05T22:18Z.",
-   "handoff": "docs/handoffs/2026-10-06-image-night-triage.md"
+   "handoff": null
   },
   {
    "id": "I48",
@@ -1998,6 +2011,40 @@
    "reviewed_by": "Night image fixer",
    "note": "From 23:38Z 2026-10-06 (egbogd, abel, com, still running at close), the Google video generation integration chat's listen bench while it built the check in the main checkout (one wanted 'BEEPS 1:1', impossible on the base's RANDOM % 3 + 2, so the code moved under the runs). The appended tail holds exactly n beeps (silencedetect on the aevalsrc for n=2,3,4); of 67 miscounts in the journal from 23:23Z on, 42 answer n+1 and 17 n+2, while 90 of 127 listen legs passed. Calibration is the owner's before landing: a click at the media/silence seam or the beep edges read as one more beep.",
    "handoff": "docs/handoffs/2026-10-06-image-night-triage.md"
+  },
+  {
+   "id": "I55",
+   "block": "image",
+   "match": {
+    "word": "soft outcome",
+    "model": "^codex-image$",
+    "detail": "^delivered \\d+ of \\d+ · web · no image after \\d+s; it may still land in chat"
+   },
+   "title": "A ChatGPT web batch take waited 600 s for an image the page never showed",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-10-07",
+   "reviewed_by": "Night 20261006T233611Z-7777",
+   "note": "Split from I46 (2026-10-07): com 21:29Z 2026-10-05 take 2 of 3 and com 23:28Z 2026-10-03 (before I38's reload watch landed). I38's symptom inside a batch; the reload watch did not bring the 2026-10-05 take. Cause open.",
+   "handoff": null
+  },
+  {
+   "id": "I56",
+   "block": "image",
+   "match": {
+    "word": "soft outcome",
+    "model": "^codex-image$",
+    "detail": "^delivered \\d+ of \\d+ · web · ChatGPT UI drift: no .Add photos & files. chooser"
+   },
+   "title": "A parallel ChatGPT tab found no Add photos & files chooser",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-10-07",
+   "reviewed_by": "Night 20261006T233611Z-7777",
+   "note": "Split from I46 (2026-10-07): rawilimo 18:30Z 2026-10-05 take 2 of 2 in a parallel tab of an 18-leg fanout; once in the whole journal, upload() unchanged. Cause open.",
+   "handoff": null
   }
  ],
  "blind_spots": [

@@ -157,7 +157,7 @@ with reason `login needed`. Wrapper exit 4 (pool disabled) is `skipped`, not `fa
 Outputs land at `<dest-dir>/<vendor>-<account>.png` (`.mp4` for video; pick mode uses
 `<vendor>-pick.<ext>`). The table is `<dest-dir>/fanout.tsv` (live runs only), one row per
 delivered file (a packed job's variants each get one) with the vendor's `job`, `route`,
-`fallback_from` and `phases` appended; `<dest-dir>/fanout.state.json` holds the live cells
+`fallback_from`, `phases` and `composite` appended; `<dest-dir>/fanout.state.json` holds the live cells
 (`vendor, account, status, exit, job, dest, take, request`). Exit 0
 if any row is `ok`, 3 if every attempted row hit a usage limit, 2 on usage errors,
 1 otherwise. A `caps=stale` / `model_caps=stale` token on a row is repeated as

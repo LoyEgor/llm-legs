@@ -133,6 +133,7 @@ if [ "$rc" -ne 0 ]; then printf 'failed\n' >&2; exit "$rc"; fi
 mkdir -p "$(dirname "$dest")"
 : >"$dest"
 printf 'job=%s\nroute=cli\nfallback_from=web\nfallback_reason=test\nphases={"lock":0.1,"saved":1.2}\n' "${IMAGE_JOB_ID:-none}"
+printf 'composite=skipped reason=several-inputs\n'
 printf 'dest=%s\nsize=64x64\nformat=png\naccount=%s\nsession=sess-1\nmodel=test-model model_caps=fresh\ncaps=fresh\n' \
   "$dest" "$account"
 for ((i = 2; i <= count; i++)); do
@@ -349,18 +350,19 @@ fanout --dest-dir "$DEST" --prompt 'badge' --vendors grok --accounts all || rc=$
 assert test "$rc" -eq 0
 tsv="$DEST/fanout.tsv"
 assert test -f "$tsv"
-assert test "$(head -n1 "$tsv")" = $'vendor\taccount\tstatus\treason\tdest\tsize\tsession\tmodel\tmodel_caps\tcaps\tjob\troute\tfallback_from\tphases'
+assert test "$(head -n1 "$tsv")" = $'vendor\taccount\tstatus\treason\tdest\tsize\tsession\tmodel\tmodel_caps\tcaps\tjob\troute\tfallback_from\tphases\tcomposite'
 delta_row=$(awk -F'\t' '$1=="grok" && $2=="delta" {print; exit}' "$tsv")
 assert test "$(printf '%s' "$delta_row" | awk -F'\t' '{print $3}')" = ok
 assert test "$(printf '%s' "$delta_row" | awk -F'\t' '{print $7}')" = sess-1
 assert test "$(printf '%s' "$delta_row" | awk -F'\t' '{print $8}')" = test-model
 assert test "$(printf '%s' "$delta_row" | awk -F'\t' '{print $9}')" = fresh
 assert test "$(printf '%s' "$delta_row" | awk -F'\t' '{print $10}')" = fresh
-# The vendor's own job=, route=, fallback_from= and phases= lines ride in the row.
+# The vendor's own job=, route=, fallback_from=, phases= and composite= lines ride in the row.
 assert grep -Eq '^fanout-[0-9TZ]+-[0-9]+-1-[12]$' <<<"$(printf '%s' "$delta_row" | awk -F'\t' '{print $11}')"
 assert test "$(printf '%s' "$delta_row" | awk -F'\t' '{print $12}')" = cli
 assert test "$(printf '%s' "$delta_row" | awk -F'\t' '{print $13}')" = web
 assert test "$(printf '%s' "$delta_row" | awk -F'\t' '{print $14}')" = '{"lock":0.1,"saved":1.2}'
+assert test "$(printf '%s' "$delta_row" | awk -F'\t' '{print $15}')" = 'skipped reason=several-inputs'
 assert grep -Eq '^START delta [0-9.]+ fanout-[0-9TZ]+-[0-9]+-1-[12]$' "$CALLS"
 assert grep -Fq 'ok=' "$FANOUT_OUT"
 assert grep -Eq '^ok=[1-9] skipped=[0-9]+ usage_limit=[0-9]+ failed=[0-9]+$' "$FANOUT_OUT"

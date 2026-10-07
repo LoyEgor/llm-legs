@@ -227,6 +227,7 @@ IMAGE_REASONS = (
     ("ungrounded", re.compile(r"answered without opening", re.IGNORECASE)),
 )
 IMAGE_ORIGIN = {"bad output": "ours", "ungrounded": "theirs", "soft outcome": "ours"}
+TAKE_FAILED_RE = re.compile(r"take \d+ failed: (.*)")
 # The hidden-Chrome routes (gemini-web: Flow, the Gemini app, Flow Music; chatgpt-web) print one BROWSER_FAILURE or BROWSER_WARNING
 # line per failed attempt; the words name the browser step, ordered most specific first.
 BROWSER_LINE_RE = re.compile(r"^BROWSER_(FAILURE|WARNING) route=(\S+) account=(\S+) code=(\d+) shot=(\S+) reason=(.*)$",
@@ -1212,15 +1213,20 @@ def soft_outcome(row):
     composite = row.get("composite") if isinstance(row.get("composite"), dict) else {}
     aspect = row.get("aspect") if isinstance(row.get("aspect"), dict) else {}
     requested, delivered = as_int(row.get("requested")), as_int(row.get("delivered"))
-    if composite.get("kind") in ("skipped", "refused") and composite.get("reason") != "new-generation":
-        said = "composite %s: %s" % (composite["kind"], composite.get("reason") or "no reason")
+    skip, take = composite.get("reason"), None
+    as_asked = skip in ("new-generation", "opted-out", "transparent") or (
+        skip == "aspect-changed" and aspect.get("fit") == "ok")
+    if composite.get("kind") in ("skipped", "refused") and not as_asked:
+        said = "composite %s: %s" % (composite["kind"], skip or "no reason")
     elif aspect.get("fit") == "miss":
         said = "aspect missed: asked %s, got %s" % (aspect.get("asked"), aspect.get("achieved"))
     elif requested and delivered is not None and delivered < requested:
         said = "delivered %d of %d" % (delivered, requested)
+        take = TAKE_FAILED_RE.search(str(row.get("err") or ""))
     else:
         return ""
-    return "%s · %s" % (said, row["route"]) if row.get("route") else said
+    said = "%s · %s" % (said, row["route"]) if row.get("route") else said
+    return "%s · %s" % (said, take.group(1)[:200]) if take else said
 
 
 def image_legs(cutoff, now):

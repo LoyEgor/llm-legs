@@ -790,8 +790,8 @@ with open(os.path.join(unit, "legs.jsonl"), "w") as handle:
 image = {row["at"]: (row["class"], row["reason"]) for row in doctor.image_legs(now - 86400, now)[0]}
 assert image == {now - 500: ("off", "off"), now - 600: ("failed", "pool empty"),
                  now - 700: ("walled", "not entitled")}, image
-# A run that exited 0 but did not do what was asked is a soft outcome; a new generation, a fitted ratio and every
-# take delivered are clean, and records from before the keys existed read as they did.
+# A run that exited 0 but did not do what was asked is a soft outcome; a new generation, a fitted ratio, every take
+# delivered and a composite the caller turned off or re-aspected away are clean, a short batch names its first lost take, and records from before the keys existed read as they did.
 with open(os.path.join(unit, "legs.jsonl"), "w") as handle:
     for offset, extra in ((100, {"composite": {"kind": "skipped", "changed": None, "reason": "several-inputs"}}),
                           (110, {"composite": {"kind": "refused", "changed": None, "reason": "new-generation"},
@@ -800,7 +800,14 @@ with open(os.path.join(unit, "legs.jsonl"), "w") as handle:
                           (130, {"composite": {"kind": "skipped", "changed": None, "reason": "new-generation"},
                                  "aspect": {"asked": "16:9", "achieved": 1.792, "fit": "ok"},
                                  "requested": 3, "delivered": 3, "route": "web"}),
-                          (140, {})):
+                          (140, {}),
+                          (150, {"composite": {"kind": "skipped", "changed": None, "reason": "opted-out"}}),
+                          (160, {"composite": {"kind": "skipped", "changed": None, "reason": "transparent"}}),
+                          (170, {"composite": {"kind": "skipped", "changed": None, "reason": "aspect-changed"},
+                                 "aspect": {"asked": "16:9", "achieved": 1.778, "fit": "ok"}}),
+                          (180, {"composite": {"kind": "skipped", "changed": None, "reason": "aspect-changed"}}),
+                          (190, {"requested": 3, "delivered": 2, "route": "web",
+                                 "err": "codex-image: take 2 failed: ChatGPT answered without an image\n"})):
         handle.write(json.dumps(dict({"ts": now - offset, "tool": "codex-image", "kind": "image", "rc": 0,
                                       "account": "main", "err": ""}, **extra)) + "\n")
 soft = {now - row["at"]: (row["class"], row["reason"], row["detail"], doctor.verdict_of(row))
@@ -808,7 +815,11 @@ soft = {now - row["at"]: (row["class"], row["reason"], row["detail"], doctor.ver
 assert soft == {100: ("failed", "soft outcome", "composite skipped: several-inputs", "bug"),
                 110: ("failed", "soft outcome", "aspect missed: asked 16:9, got 1.0", "bug"),
                 120: ("failed", "soft outcome", "delivered 1 of 3 · web", "bug"),
-                130: (None, "", "", "clean"), 140: (None, "", "", "clean")}, soft
+                130: (None, "", "", "clean"), 140: (None, "", "", "clean"),
+                150: (None, "", "", "clean"), 160: (None, "", "", "clean"), 170: (None, "", "", "clean"),
+                180: ("failed", "soft outcome", "composite skipped: aspect-changed", "bug"),
+                190: ("failed", "soft outcome", "delivered 2 of 3 · web · ChatGPT answered without an image",
+                      "bug")}, soft
 # An answer the listening model gave without opening the clip is the vendor's; a short Flow batch is no output.
 ungrounded = doctor.leg("image", "listen", "gemini-listen", now, *doctor.classify_image(
     1, "gemini-listen: the model answered without opening clip.m4a; the answer is not grounded"))
@@ -859,7 +870,9 @@ assert sorted((row["id"], row["match"].get("until")) for row in committed["rows"
               if row["status"] in doctor.DISMISSALS) == [
     ("I1", "2026-10-01T05:13:28+03:00"), ("I10", None), ("I11", None), ("I13", None), ("I15", None), ("I17", None),
     ("I23", "2026-10-03T07:25:31+03:00"), ("I26", None), ("I30", None), ("I32", None), ("I34", None),
-    ("I35", "2026-10-04T01:39:27+03:00"), ("I36", "2026-10-03T16:33:01+03:00"), ("I9", None),
+    ("I35", "2026-10-04T01:39:27+03:00"), ("I36", "2026-10-03T16:33:01+03:00"),
+    ("I41", "2026-10-06T06:30:00+03:00"), ("I43", "2026-10-06T00:50:00+03:00"), ("I44", "2026-10-06T01:50:00+03:00"),
+    ("I46", "2026-10-06T01:50:00+03:00"), ("I9", None),
     ("N4", "2026-09-16T23:59:59+03:00"), ("N5", None), ("N6", "2026-09-14T23:59:59+03:00"),
     ("N7", "2026-09-13T23:59:59+03:00")]
 # Every image rc=2 reads `bad command` and every wrapper prints `usage:` on any bad argv: a row that catches that
