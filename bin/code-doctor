@@ -2633,6 +2633,102 @@ def judge_relay_env():
     return dict(os.environ, WORKER_RUN_RELAY="code-doctor-judge:%d" % os.getpid())
 
 
+def worker_judge(brief_file, workdir, vendor, remaining):
+    """(run id, report, error): one judge brief through worker-run, waited on at most `remaining` seconds."""
+    launch = subprocess.run([worker_run_cmd(), "start", vendor, "--brief", brief_file, "--workdir", workdir,
+                             "--effort", "low"], capture_output=True, text=True, env=judge_relay_env())
+    run_id = next((l[5:].strip() for l in launch.stdout.splitlines() if l.startswith("RUN: ")), None)
+    if launch.returncode != 0 or not run_id:
+        output = " | ".join(part.strip() for part in (launch.stderr, launch.stdout) if part.strip())
+        return None, "", "worker-run start rc %d: %s" % (launch.returncode, output[-LAUNCH_ERROR_MAX:] or "no output")
+    subprocess.run([worker_run_cmd(), "wait", run_id, "--max", str(int(max(1, remaining)))], capture_output=True, text=True,
+                   env=judge_relay_env())
+    return run_id, subprocess.run([worker_run_cmd(), "report", run_id], capture_output=True, text=True).stdout, None
+
+
+def review_debt_cmd():
+    return os.environ.get("CODE_DOCTOR_REVIEW_DEBT") or os.path.join(base_home(), ".local", "bin", "review-debt")
+
+
+def critical_brief(top, rows):
+    lines = ["ROUND: none", "# Code doctor critical judge: %d debt paths of %s" % (len(rows), top), "",
+             "Judge each path below on its own: is it CRITICAL — code that many other parts of this repository or of "
+             "the running setup depend on, so a bug in it breaks much else (a shared library, a gate every call "
+             "passes, a store or contract other programs read)? A leaf script, a test, a doc, a fixture or a one-off "
+             "tool is not. Read the file and how it is used; the fan-in is how many other tracked files load it by "
+             "name, a hint only. Read-only: change nothing."]
+    for row in rows:
+        lines += ["", "## Candidate %s" % row["path"], "", "fan-in hint: %s" % row["fan_in"]]
+    lines += ["", "End your answer with ONE JSON object per path, each on its own line, its `id` copied exactly from "
+              "the path's heading:", '{"id": "<path>", "critical": true | false, "reason": "<one English line>"}']
+    return "\n".join(lines) + "\n"
+
+
+def unjudged_debt(top):
+    proc = subprocess.run([review_debt_cmd(), "--repo", top, "--list", "--split"], capture_output=True, text=True)
+    rows = []
+    for line in proc.stdout.splitlines():
+        cells = line.split("\t")
+        if len(cells) == 6 and cells[3] == "unjudged":
+            rows.append({"path": cells[0], "blob": cells[4], "fan_in": cells[5]})
+    return rows
+
+
+def run_critical(night, max_tokens, max_wall, vendor, batch_size=JUDGE_BATCH):
+    started = time.time()
+    spent, judged, waiting, stop, error = 0, 0, 0, "done", None
+    history = []
+    folder = os.path.join(state_dir(), "critical", night or "day")
+    os.makedirs(folder, exist_ok=True)
+    for top in repo_paths():
+        pending = unjudged_debt(top)
+        waiting += len(pending)
+        while pending and stop == "done":
+            batch, pending = pending[: max(1, batch_size)], pending[max(1, batch_size):]
+            brief = critical_brief(top, batch)
+            remaining = max_wall - (time.time() - started)
+            if spent + session_estimate(history, brief) > max_tokens:
+                stop = "tokens"
+            elif remaining <= 0:
+                stop = "wall"
+            if stop != "done":
+                break
+            brief_file = os.path.join(folder, "%s-%d.md" % (os.path.basename(top), judged + 1))
+            with open(brief_file, "w", encoding="utf-8") as handle:
+                handle.write(brief)
+            call_start = time.time()
+            run_id, report, error = worker_judge(brief_file, top, vendor, remaining)
+            if error:
+                stop = "launch-failed"
+                break
+            result = report.split("RESULT:\n", 1)[1] if "RESULT:\n" in report else ""
+            tokens = report_tokens(report, brief, result)
+            spent += tokens
+            history.append(tokens)
+            found = {}
+            decoder = json.JSONDecoder()
+            for start in (m.start() for m in re.finditer(r"\{", result)):
+                try:
+                    value, _ = decoder.raw_decode(result[start:])
+                except ValueError:
+                    continue
+                if isinstance(value, dict) and isinstance(value.get("critical"), bool):
+                    found[value.get("id")] = value
+            verdicts = [{"path": row["path"], "blob": row["blob"], "critical": found[row["path"]]["critical"],
+                         "reason": found[row["path"]].get("reason") or ""} for row in batch if row["path"] in found]
+            subprocess.run([review_debt_cmd(), "--repo", top, "--record-critical"], capture_output=True, text=True,
+                           input="".join(json.dumps(verdict) + "\n" for verdict in verdicts))
+            judged += len(verdicts)
+            account(night, "critical:%s" % os.path.basename(top), "critical", tokens=tokens,
+                    wall_s=time.time() - call_start, note=run_id, run=run_id)
+            if re.search(r"^STATUS: running", report, re.M):
+                stop = "wall"
+    record = {"night": night, "at": iso_time(now_s()), "stop": stop, "judged": judged, "pending": waiting - judged,
+              "tokens": spent, "wall_s": round(time.time() - started, 1), "error": error}
+    append_jsonl(os.path.join(state_dir(), "critical-runs.jsonl"), record)
+    return record
+
+
 def run_judge(night, max_tokens, max_wall, vendor, limit=None, batch_size=JUDGE_BATCH):
     started = time.time()
     now = now_s()
@@ -2666,18 +2762,11 @@ def run_judge(night, max_tokens, max_wall, vendor, limit=None, batch_size=JUDGE_
             handle.write(brief)
         repo_top = (indexes.get(batch[0]["repos"][0]) or {}).get("top") if batch[0]["repos"] else ROOT_DIR
         call_start = time.time()
-        launch = subprocess.run([worker_run_cmd(), "start", vendor, "--brief", brief_file, "--workdir", repo_top or ROOT_DIR,
-                                 "--effort", "low"], capture_output=True, text=True, env=judge_relay_env())
-        run_id = next((l[5:].strip() for l in launch.stdout.splitlines() if l.startswith("RUN: ")), None)
-        if launch.returncode != 0 or not run_id:
-            output = " | ".join(part.strip() for part in (launch.stderr, launch.stdout) if part.strip())
-            error = "worker-run start rc %d: %s" % (launch.returncode, output[-LAUNCH_ERROR_MAX:] or "no output")
+        run_id, report, error = worker_judge(brief_file, repo_top or ROOT_DIR, vendor, remaining)
+        if error:
             account(night, ids[0], "judge", tokens=0, wall_s=time.time() - call_start, note="launch failed: " + error, batch=ids)
             stop = "launch-failed"
             break
-        subprocess.run([worker_run_cmd(), "wait", run_id, "--max", str(int(max(1, remaining)))], capture_output=True, text=True,
-                       env=judge_relay_env())
-        report = subprocess.run([worker_run_cmd(), "report", run_id], capture_output=True, text=True).stdout
         result = report.split("RESULT:\n", 1)[1] if "RESULT:\n" in report else ""
         tokens = report_tokens(report, brief, result)
         spent += tokens
@@ -3427,6 +3516,13 @@ def main(argv=None):
     judge.add_argument("--vendor", default=os.environ.get("CODE_DOCTOR_JUDGE_VENDOR") or "claudeb")
     judge.add_argument("--limit", type=int)
     judge.add_argument("--batch", type=int, default=JUDGE_BATCH, help="candidates per worker session")
+    critical = sub.add_parser("critical", parents=[scoped],
+                              help="judge which unjudged review-debt paths are critical, through worker-run under a budget")
+    critical.add_argument("--night")
+    critical.add_argument("--max-tokens", type=int, default=BUDGET["tokens"])
+    critical.add_argument("--max-wall", type=float, default=BUDGET["wall_s"])
+    critical.add_argument("--vendor", default=os.environ.get("CODE_DOCTOR_JUDGE_VENDOR") or "claudeb")
+    critical.add_argument("--batch", type=int, default=JUDGE_BATCH, help="paths per worker session")
     check = sub.add_parser("check", parents=[scoped], help="the fixer's safety gate over a doctor-fix run record")
     check.add_argument("record")
     check.add_argument("--base")
@@ -3487,6 +3583,10 @@ def main(argv=None):
         write_document(doc_or_error(started))
         print("judge: %(judged)d judged · %(pending)d waiting · %(tokens)d tokens · %(wall_s)ss · stop %(stop)s" % record)
         return 0
+    if args.command == "critical":
+        record = run_critical(args.night, args.max_tokens, args.max_wall, args.vendor, args.batch)
+        print("critical: %(judged)d judged · %(pending)d waiting · %(tokens)d tokens · %(wall_s)ss · stop %(stop)s" % record)
+        return 0 if record["stop"] != "launch-failed" else 1
     if args.command == "check":
         record = read_json(args.record, {}) or {}
         errors = check_run(record, args.base, args.landing, args.suites_passed)
@@ -3520,7 +3620,7 @@ def main(argv=None):
     return 0 if doc["status"] != "error" else 1
 
 
-COLLECTOR_COMMANDS = (None, "index", "rollup", "candidates", "refresh", "judge")
+COLLECTOR_COMMANDS = (None, "index", "rollup", "candidates", "refresh", "judge", "critical")
 
 if __name__ == "__main__":
     started = time.time()

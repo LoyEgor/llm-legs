@@ -218,9 +218,10 @@ N|diverged[, WIP in the way: <files>]` for a main checkout behind origin/main:
 
 `night-run survey [--post] [<repo>...]` is the sweep's opening report (repositories default to the sweep
 list; a name resolves through it, a path need not be in it). Per repository `<name> · debt N lines/M
-files · K dirty · whole|N chunks`, then per linked worktree `  <branch> · +ahead/-behind main · K dirty ·
+files · due D lines/E files · K dirty · whole|N chunks`, then per linked worktree `  <branch> · +ahead/-behind main · K dirty ·
 debt N · take|keep (<reason>)`, closing `total · …`. Debt and the chunk column come from one `review-bench
-review --debt --repo <A> … --tier T2 --price` (launches nothing; a checkout it does not list owes 0, a
+review --debt --repo <A> … --tier T2 --price`, the due part (stable or critical, what the bugs round
+reads) from the same with `--due` (launches nothing; a checkout it does not list owes 0, a
 failed price prints `?`); keep is `live` or `held` by the same predicate as `leftovers`, for a
 repository outside the sweep list too. `--post` sends the same lines as one report-bus `notice` block
 (word `survey`), so the sweep's messages carry facts printed by the machine.
@@ -253,7 +254,8 @@ follow `WORKER_RUN_DIR`, `CLAUDEB_PROFILES_ROOT`, `WORKER_STATS_DIR`/`CLAUDEB_DI
 profile overrides. Then one line per job, then the totals. A job with commits
 shows `code +A/-R`: lines its commits add and remove, test paths (`tests/`, `test_*`) left out;
 `code ?` when a commit cannot be read. Information only: no threshold. Then `debt now` per sweep
-repository: `review-debt --repo` at report time (`NIGHT_RUN_REVIEW_DEBT`), `unknown` when unreadable.
+repository: `review-debt --repo --split` at report time (`NIGHT_RUN_REVIEW_DEBT`), the whole and the due
+part, `unknown` when unreadable.
 
 Behind the spend lines, an observational churn block from `share/night_churn.py` measures whether the
 night did real work or churn: per-branch review rounds versus other rounds; problems touched again without

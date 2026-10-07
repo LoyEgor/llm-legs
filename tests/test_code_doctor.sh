@@ -837,4 +837,29 @@ assert jqe '.candidates.waiting_by_group.promise == 0 and .groups.promise == 0
 "$CD" judge >/dev/null
 assert test "$(grep -c '#promise:' "$CODE_DOCTOR_FAKE_LOG")" = 2
 
+# critical: unjudged review-debt paths go to the fixture judge with their fan-in hint, and its verdicts
+# go back to review-debt keyed by blob; judged and stable paths are never sent.
+CR="$WORK/critical"
+mkdir -p "$CR/repo"
+cat >"$CR/review-debt" <<'STUB'
+#!/usr/bin/env bash
+case " $* " in
+  *' --record-critical '*) cat >>"$CR_RECORDED" ;;
+  *) printf 'lib.sh\t200\tnew\tunjudged\tb1\t7\nleaf.sh\t9\tnew\tunjudged\tb2\t0\nold.sh\t5\tnew\tstable\tb3\t0\n'
+     printf 'done.sh\t4\tnew\tfresh\tb4\t1\nLINES=218 FILES=4 DUE_LINES=5 DUE_FILES=1\n' ;;
+esac
+STUB
+chmod +x "$CR/review-debt"
+printf '{"lib.sh": {"critical": true, "reason": "every hook sources it"}, "leaf.sh": {"critical": false}}\n' \
+  >"$CR/verdicts.json"
+: >"$CR/judged.tsv"
+CODE_DOCTOR_REVIEW_DEBT="$CR/review-debt" CR_RECORDED="$CR/recorded" CODE_DOCTOR_FAKE_LOG="$CR/judged.tsv" \
+  CODE_DOCTOR_FAKE_VERDICTS="$CR/verdicts.json" "$CD" critical --repo "$CR/repo" --night n1 >"$CR/out" ||
+  fail "code-doctor critical failed: $(cat "$CR/out")"
+assert grep -q '^critical: 2 judged · 0 waiting · 1000 tokens · ' "$CR/out"
+assert test "$(cut -f2 "$CR/judged.tsv" | tr '\n' ' ')" = "lib.sh leaf.sh "
+assert grep -qx 'fan-in hint: 7' "$CODE_DOCTOR_DIR"/scopes/*/critical/n1/repo-1.md
+assert jqe -s '. == [{path: "lib.sh", blob: "b1", critical: true, reason: "every hook sources it"},
+  {path: "leaf.sh", blob: "b2", critical: false, reason: ""}]' "$CR/recorded"
+
 echo "PASS: $asserts asserts; calibration $(grep -c '^PASS' "$WORK/calibration")/5 cases, a healthy repository with 0 problems, the incremental index, the needs-Egor registration with its research, a dangling registration researched (deleting or renaming commit, live references, an uncommitted deletion no problem) and settled only by the sweep-scope night judge, the judge's batched sessions with their token, wall and launch-failure stops, the durable rollup and its coverage blind spot, the top-K snapshot with active work out, the safety gate (suites, a deletion no problem names, an edit through a cross-repo symlink, active work), the structural digest (rollup no, caller yes), revalidation against the night base, the ledger's fixed-pending, regressed and faulty rows, the canonical mechanisms, review claims through review-anchors, tokenmap-measured instruction weight, a hook rooted through its ~/.claude link, a runner-less test of live code, PyObjC selectors, a symlink never pairing with its target, per-path kinds for identical bytes, link-target edits, raw-byte and same-named-symbol digests, ledger-renamed causes, launch-less day runs, a --repo scope (its own state dir, the Node/TS calibration, generic entry points, no runtime journal claimed, report-only snapshot and check), heavy tests judged only in a --repo scope (a sweep repository's are the Harness Speed block's), collector runs journalled, one concept spelled in bash, Python and a third place as one cause (common literals and links out), a prose layout beside the renderer, fresh code matched against helpers and judged first, test-case boilerplate weighed down, the worker-message promise (a claim bound to its code, a chat overclaim on the mechanism with no words kept, broken problems with their proof, kept and untested-outside-risk out, a changed claim first)"

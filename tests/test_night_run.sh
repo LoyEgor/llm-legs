@@ -44,7 +44,8 @@ printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$DATA/pick-args"\nprintf "a
 printf '#!/usr/bin/env bash\nexit 0\n' >"$FAKE_BIN/claudeb"
 cat >"$FAKE_BIN/review-bench" <<'EOF'
 #!/usr/bin/env bash
-[ "$1" != review ] || { printf '%s\n' "$*" >"$DATA/price-args"; cat "$DATA/price" >&2; exit 0; }
+[ "$1" != review ] || { printf '%s\n' "$*" >>"$DATA/price-args"
+  case " $* " in *' --due '*) cat "$DATA/price-due" >&2 ;; *) cat "$DATA/price" >&2 ;; esac; exit 0; }
 [ "$1 $3" = "fix --print" ] || exit 2
 [ ! -e "$DATA/unreadable-$2" ] || { echo "no round $2" >&2; exit 1; }
 [ ! -e "$DATA/open-$2" ] || cat "$DATA/open-$2"
@@ -1078,7 +1079,9 @@ mkdir -p "$NF_REPO" "$HOME/.cache/claude/review-journal"
 printf '%s\n' "$NF_REPO" >"$NF/sweep-repos"
 nf() { PATH="$NF_RB/bin:/opt/homebrew/bin:$PATH" REVIEW_BENCH_BENCHES="$NF/benches" "$@"; }
 nf_git() { git -C "$NF_REPO" -c user.email=t@t -c user.name=t "$@"; }
-nf_debt() { nf review-debt --repo "$NF_REPO"; }
+nf_debt() { nf review-debt --repo "$NF_REPO" "$@"; }
+nf_aged() { GIT_AUTHOR_DATE="@$(( $(date +%s) - $1 * 86400 )) +0000" GIT_COMMITTER_DATE="@$(( $(date +%s) - $1 * 86400 )) +0000" nf_git "${@:2}"; }
+nf_arm() { printf '%s words sweep\n' "$(( $(date +%s) + $1 ))" >"$HOME/.cache/claude/review-journal/span-arm-night-s1"; }
 nf_span_off() { (cd "$NF_REPO" && SWEEP_REPOS_FILE="$NF/sweep-repos" nf bash "$NF_GATE" span-off night-s1); }
 nf_git init -q .
 seq 1 100 >"$NF_REPO/a.txt"
@@ -1087,11 +1090,12 @@ nf review-anchors floor --repo "$NF_REPO" >/dev/null || fail "review-anchors flo
 assert [ "$(nf_debt)" = "LINES=0 FILES=0" ]
 seq 1 100 >"$NF_REPO/b.txt"
 seq 1 60 >"$NF_REPO/c.txt"
-nf_git add -A && nf_git commit -qm landed
+nf_git add -A && nf_aged 15 commit -qm landed
 assert [ "$(nf_debt)" = "LINES=160 FILES=2" ]
-printf '%s words sweep\n' "$(date +%s)" >"$HOME/.cache/claude/review-journal/span-arm-night-s1"
+assert [ "$(nf_debt --split)" = "LINES=160 FILES=2 DUE_LINES=160 DUE_FILES=2" ]
+nf_arm 0
 assert_fails nf_span_off >/dev/null 2>"$NF/refused"
-assert grep -qxF "$NF_REPO LINES=160 FILES=2" "$NF/refused"
+assert grep -qxF "$NF_REPO LINES=160 FILES=2 DUE_LINES=160 DUE_FILES=2" "$NF/refused"
 nf review-anchors anchor --repo "$NF_REPO" --kind review:20261005T010000Z-fit b.txt || fail "fit round anchor"
 assert [ "$(nf_debt)" = "LINES=60 FILES=1" ]
 nf review-anchors anchor --repo "$NF_REPO" --kind review:20261005T020000Z-bugs c.txt || fail "bugs round anchor"
@@ -1111,12 +1115,31 @@ seq 1 10 >"$NF_REPO/d.txt"
 nf_git add -A && nf_git commit -qm late
 assert [ "$(nf_debt)" = "LINES=10 FILES=1" ]
 assert nf_span_off >"$NF/closed" 2>&1
-assert grep -qxF "$NF_REPO LINES=10 FILES=1" "$NF/closed"
+assert grep -qxF "$NF_REPO LINES=10 FILES=1 DUE_LINES=0 DUE_FILES=0" "$NF/closed"
 printf '%s\n' "$NF/gone" >>"$NF/sweep-repos"
 NIGHT_RUN_SWEEP_REPOS="$NF/sweep-repos" NIGHT_RUN_REVIEW_DEBT="$NF_RB/bin/review-debt" nf night report >"$NF/report" ||
   fail "fixture night report"
-assert [ "$(grep '^debt now · ' "$NF/report")" = "debt now · drepo · 10 lines in 1 files
+assert [ "$(grep '^debt now · ' "$NF/report")" = "debt now · drepo · 10 lines in 1 files · due 0 lines in 0 files
 debt now · gone · unknown" ]
+sed -i '' '$d' "$NF/sweep-repos"
+# Fresh debt gates nothing however large, nor does an unjudged file five others source; judged critical
+# (the fixture judge's verdict recorded for its content), it does.
+seq 1 300 >"$NF_REPO/fresh.txt"
+nf_git add -A && nf_git commit -qm fresh
+nf_arm 2
+assert nf_span_off >"$NF/closed" 2>&1
+assert grep -qxF "$NF_REPO LINES=310 FILES=2 DUE_LINES=0 DUE_FILES=0" "$NF/closed"
+seq 1 200 >"$NF_REPO/lib.sh"
+for n in 1 2 3 4 5; do printf '. "$(dirname "$0")/lib.sh"\n' >"$NF_REPO/use$n.sh"; done
+nf_git add -A && nf_git commit -qm critical
+nf_arm 4
+assert nf_span_off >"$NF/closed" 2>&1
+assert grep -qxF "$NF_REPO LINES=515 FILES=8 DUE_LINES=0 DUE_FILES=0" "$NF/closed"
+jq -cn --arg b "$(nf_git rev-parse HEAD:lib.sh)" '{path: "lib.sh", blob: $b, critical: true, reason: "fixture judge"}' |
+  nf review-debt --repo "$NF_REPO" --record-critical >/dev/null
+nf_arm 6
+assert_fails nf_span_off >/dev/null 2>"$NF/refused"
+assert grep -qxF "$NF_REPO LINES=515 FILES=8 DUE_LINES=200 DUE_FILES=1" "$NF/refused"
 
 # survey: the sweep's opening lines for any repository, in the sweep list or not: the debt and the chunk
 # column off review-bench's price, keep/take off the leftovers' live and held signals; --post sends it,
@@ -1151,21 +1174,27 @@ jq -c . >>"$DATA/bus-docs"
 EOF
 chmod +x "$FAKE_BIN/report-bus"
 export NIGHT_RUN_REPORT_BUS="$FAKE_BIN/report-bus"
+cat >"$DATA/price-due" <<EOF
+  repo/ = $SV/repo: 1111111..2222222 · 1 file(s) · 30 line(s) · scope: a
+  repo · 1 file(s) · 30 line(s) · 1 KB · whole
+total · 1 file(s) · 30 line(s) · 1 KB · whole
+EOF
 night survey "$SV/repo" >"$WORK/survey.out" || fail "survey"
-assert [ "$(cat "$WORK/survey.out")" = "repo · debt 40 lines/3 files · 1 dirty · 2 chunks
+assert [ "$(cat "$WORK/survey.out")" = "repo · debt 40 lines/3 files · due 30 lines/1 files · 1 dirty · 2 chunks
   fresh · +0/-0 main · 0 dirty · debt 0 · take (landed)
   frozen · +0/-0 main · 0 dirty · debt 0 · keep (locked)
   feat/old · +1/-2 main · 2 dirty · debt 12 · take (unlanded commits)
-total · debt 52 lines/4 files · 3 dirty · 2 chunks" ]
-assert [ "$(cat "$DATA/price-args")" = "review --debt --repo $SV/repo --tier T2 --price" ]
+total · debt 52 lines/4 files · due 30 lines/1 files · 3 dirty · 2 chunks" ]
+assert [ "$(cat "$DATA/price-args")" = "review --debt --repo $SV/repo --tier T2 --price
+review --debt --due --repo $SV/repo --tier T2 --price" ]
 assert [ ! -e "$DATA/bus-docs" ]
 night survey --post "$SV/repo" | cmp -s - "$WORK/survey.out" || fail "survey --post prints the same lines"
 assert grep -qE '^post --kind notice --id night-survey-[0-9]+-[0-9]+$' "$DATA/bus-args"
-assert jqe '.word == "survey" and .rows == [["repo", ["debt 40 lines/3 files · 1 dirty · 2 chunks"]],
+assert jqe '.word == "survey" and .rows == [["repo", ["debt 40 lines/3 files", "due 30 lines/1 files · 1 dirty · 2 chunks"]],
   ["  fresh", ["+0/-0 main · 0 dirty · debt 0", "take (landed)"]],
   ["  frozen", ["+0/-0 main · 0 dirty · debt 0", "keep (locked)"]],
   ["  feat/old", ["+1/-2 main · 2 dirty · debt 12", "take (unlanded commits)"]],
-  ["total", ["debt 52 lines/4 files · 3 dirty · 2 chunks"]]]' "$DATA/bus-docs"
+  ["total", ["debt 52 lines/4 files", "due 30 lines/1 files · 3 dirty · 2 chunks"]]]' "$DATA/bus-docs"
 python3 "$ROOT/share/report_frame.py" block <"$DATA/bus-docs" >/dev/null || fail "the survey block renders"
 rm "$DATA/bus-docs" "$DATA/bus-args"
 night report --post >"$WORK/report-post" || fail "report --post"

@@ -67,7 +67,8 @@ report opens with share/time_budget.py's comparison table: this night and the tw
   deferred) with the trend of the last 7 nights; --post sends the comparison table to the chat as one
   report-bus block instead of printing it, so the final message has no table to retype
 survey: the sweep's opening report, default the sweep repositories: per repository `<name> · debt N
-  lines/M files · K dirty · whole|N chunks` (review-bench review --debt … --tier T2 --price), per linked
+  lines/M files · due D lines/E files · K dirty · whole|N chunks` (review-bench review --debt [--due] …
+  --tier T2 --price; due = stable or critical, what the bugs round reads), per linked
   worktree `<branch> · +ahead/-behind main · K dirty · debt N · take|keep (<reason>)`, keep = live or
   held as in leftovers, then `total · …`; --post also sends it to the chat as one report-bus block
 states: pending merged left failed-launch blocked-on-egor nothing-to-do (left and blocked-on-egor need reason=)
@@ -932,8 +933,9 @@ cmd_leftovers() {
   esac
 }
 
-debt_price() { # repo... -> path<TAB>files<TAB>lines<TAB>cut per priced checkout, last the total; nothing when unpriced
+debt_price() { # [--due] repo... -> path<TAB>files<TAB>lines<TAB>cut per priced checkout, last the total; nothing when unpriced
   local out rc=0 repo args=()
+  [ "${1:-}" != --due ] || { args+=(--due); shift; }
   for repo in "$@"; do args+=(--repo "$repo"); done
   out=$(mktemp) || return 1
   review-bench review --debt "${args[@]}" --tier T2 --price >"$out" 2>&1 </dev/null || rc=$?
@@ -947,7 +949,7 @@ debt_price() { # repo... -> path<TAB>files<TAB>lines<TAB>cut per priced checkout
         row = sprintf("%d\t%d\t%s", $2, $3, cut)
         if (label == "total") { if (single != "") print single "\t" row; print "total\t" row }
         else if (label in path) print path[label] "\t" row }' "$out"
-  elif grep -q 'target is empty' "$out"; then
+  elif grep -qE 'target is empty|is in (stable or critical )?review debt|has no unread content' "$out"; then
     printf 'total\t0\t0\twhole\n'
   else
     printf 'night-run: review-bench cannot price the debt: %s\n' "$(tail -n 1 "$out")" >&2
@@ -983,14 +985,16 @@ price_of() { # price-rows path -> lines<TAB>files<TAB>cut, ? when the review cou
   awk -F '\t' -v p="$2" '$1 == p { print $3 "\t" $2 "\t" $4; found = 1; exit } END { if (!found) print "0\t0\twhole" }' <<<"$1"
 }
 
-survey_lines() { # price repo... -> the survey's lines
-  local price=$1 root total=0 dirty lines files cut branch wt landed ahead behind state why reason take
-  shift
+survey_lines() { # price due-price repo... -> the survey's lines
+  local price=$1 due=$2 root total=0 dirty lines files cut due_lines due_files branch wt landed ahead behind state why reason take
+  shift 2
   for root in "$@"; do
     dirty=$(GIT_OPTIONAL_LOCKS=0 git -C "$root" status --porcelain --untracked-files=all 2>/dev/null | wc -l | tr -d ' ')
     total=$((total + dirty))
     IFS=$'\t' read -r lines files cut < <(price_of "$price" "$root")
-    printf '%s · debt %s lines/%s files · %s dirty · %s\n' "${root##*/}" "$lines" "$files" "$dirty" "$cut"
+    IFS=$'\t' read -r due_lines due_files _ < <(price_of "$due" "$root")
+    printf '%s · debt %s lines/%s files · due %s lines/%s files · %s dirty · %s\n' "${root##*/}" "$lines" "$files" \
+      "$due_lines" "$due_files" "$dirty" "$cut"
     while IFS=$'\t' read -r _ branch wt landed ahead behind dirty state why; do
       [ "$wt" != - ] && wt=$(cd -P "$wt" 2>/dev/null && pwd) && [ "$wt" != "$root" ] || continue
       total=$((total + dirty))
@@ -1010,7 +1014,9 @@ survey_lines() { # price repo... -> the survey's lines
     done < <(branch_rows "$root")
   done
   IFS=$'\t' read -r lines files cut < <(price_of "$price" total)
-  printf 'total · debt %s lines/%s files · %s dirty · %s\n' "$lines" "$files" "$total" "$cut"
+  IFS=$'\t' read -r due_lines due_files _ < <(price_of "$due" total)
+  printf 'total · debt %s lines/%s files · due %s lines/%s files · %s dirty · %s\n' "$lines" "$files" \
+    "$due_lines" "$due_files" "$total" "$cut"
 }
 
 cmd_survey() {
@@ -1031,7 +1037,7 @@ cmd_survey() {
   fi
   [ ${#repos[@]} -gt 0 ] || die "no repositories to survey"
   price=$(debt_price "${repos[@]}")
-  out=$(survey_lines "$price" "${repos[@]}")
+  out=$(survey_lines "$price" "$(debt_price --due "${repos[@]}")" "${repos[@]}")
   printf '%s\n' "$out"
   ! $post || printf '%s\n' "$out" | frame_rows survey | post_block night-survey
 }
@@ -1097,9 +1103,10 @@ repo_debt() { # -> one line per sweep repository: its review debt now
   [ -x "$debt" ] && [ -r "$sweep_repos" ] || return 0
   while IFS= read -r repo; do
     case "$repo" in ''|'#'*) continue ;; esac
-    row=$("$debt" --repo "$repo" </dev/null 2>/dev/null) || row=
-    if [[ "$row" =~ ^LINES=([0-9]+)\ FILES=([0-9]+)$ ]]; then
-      printf 'debt now · %s · %s lines in %s files\n' "${repo##*/}" "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+    row=$("$debt" --repo "$repo" --split </dev/null 2>/dev/null) || row=
+    if [[ "$row" =~ ^LINES=([0-9]+)\ FILES=([0-9]+)\ DUE_LINES=([0-9]+)\ DUE_FILES=([0-9]+)$ ]]; then
+      printf 'debt now · %s · %s lines in %s files · due %s lines in %s files\n' "${repo##*/}" "${BASH_REMATCH[1]}" \
+        "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}"
     else
       printf 'debt now · %s · unknown\n' "${repo##*/}"
     fi
