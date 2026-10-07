@@ -238,12 +238,17 @@ check([(o["id"], o["opportunity"]["recoverable_min_day"]) for o in timed]
       "a class over its floor ranks by recoverable min/day: its own time opportunity, or its gap added to the "
       "opportunity already pricing it; under the worth line it is no opportunity; the night takes them all, biggest first: %s"
       % [(o["id"], o["opportunity"]["recoverable_min_day"]) for o in timed])
-rows = module.floor_rows(gaps, {"rows": [{"id": "L1", "match": {"rule": "time_floor", "ident": "slot"}, "status": "fixed"}]})
+rows = module.floor_rows(gaps, {"rows": [{"id": "L1", "match": {"rule": "time_floor", "ident": "slot"}, "status": "fixed"}]}, HI)
+held = [module.floor_rows(gaps, {"rows": [{"id": "L1", "match": {"rule": "time_floor", "ident": "slot"}, "status": "fixed",
+                                           "fixes": [{"at": h.iso_time(HI - back * 3600), "files": [], "in": None}]}]},
+                          HI)[0]["state"] for back in (20, 25)]
+check(held == ["fixed-pending", "regressed"],
+      "a fixed row over its floor regresses only once its 24 h window starts after the fix held: %s" % held)
 check([(r["id"], r["state"], r["value"], r["limit"]) for r in rows]
       == [("L1", "regressed", 50.0, 30), ("time_floor:suite_run", "new", 40.0, 30), ("time_floor:workers-active", "new", 0.1, 0.3)]
       and rows[2]["fact"] == "workers were model-active 10 % of their wall on night N9 (floor 30 %) · proof: back under it"
       and rows[1]["fact"] == "suites running 40 min/day over its floor of 60 min/day · proof: back under it"
-      and module.floor_rows(dict(gaps, floors=gaps["floors"][2:], last_night=dict(gaps["last_night"], share=0.3)), {}) == [],
+      and module.floor_rows(dict(gaps, floors=gaps["floors"][2:], last_night=dict(gaps["last_night"], share=0.3)), {}, HI) == [],
       "a class more than 30 min/day over its floor and a night under 30 %% model activity are named rows through the "
       "ledger's states; back under them there is no row: %s" % [(r["id"], r["state"]) for r in rows])
 saved_env, saved = dict(os.environ), (module.with_time, module.time_budget.section)

@@ -3192,10 +3192,10 @@
       "same_cause": [
         "time_floor:workers-active"
       ],
-      "last_reviewed": "2026-10-07",
-      "reviewed_by": "night fixer harness-speed-20261006T234307Z-6769",
-      "note": "2026-10-07: 453 min/day in 24 h, all of it the f253 burst at 06:33 (about 20 workers launched at once against 10 slots: 204 min limit at 10 allowed, 171 room at 10, 85 limit at 5); no night-workers wait since. A queue summed over a burst is not the night's makespan: the floor or the measure is the owner's (handoff item 1). 2026-10-06: 2518 min/day in the 24 h to 07:20, 4899 min/day before 2026-10-05 19:00 and 331 after. Night 052f ran exactly 5 night workers from 14:08 to 18:48 with 10-12 queued (fixed cores/2 slots, 2392 min of night-workers waits on 10-05); c4adcbb8 (room admission up to the cores, 18:37) drained it. Left: night f253 holds 10 of 10 slots with 7-9 queued; its waits split 151 min limit at 10 allowed, 85 min at 5 and 66 min room. The slot accounting is right (pid start to first CLI start, share/time_budget.py run_split). Ruled out: a leaked or orphan slot (holders were live workers), a measurement double count. Lever left to the owner (a concurrency policy): a ceiling past the cores while slot_room finds room, or a queue behind the machine guard as the floor; shorter worker wall (suites) shortens it too.",
-      "handoff": "docs/handoffs/2026-10-06-speed-floors.md"
+      "last_reviewed": "2026-10-08",
+      "reviewed_by": "night fixer harness-speed-time-floor-suite-wait-20261007T214025Z-5070",
+      "note": "2026-10-08: 376 min summed in 24 h = 60 min of union (night 7777's start burst 02-03 h and night 7b98's at 00 h): 215 limit at 10 allowed, 158 room; the ceiling stays at the cores (Egor 2026-10-07), so the measure is the owner's (handoff item 1). 2026-10-07: 453 min/day in 24 h, all of it the f253 burst at 06:33 (about 20 workers launched at once against 10 slots: 204 min limit at 10 allowed, 171 room at 10, 85 limit at 5); no night-workers wait since. A queue summed over a burst is not the night's makespan: the floor or the measure is the owner's (handoff item 1). 2026-10-06: 2518 min/day in the 24 h to 07:20, 4899 min/day before 2026-10-05 19:00 and 331 after. Night 052f ran exactly 5 night workers from 14:08 to 18:48 with 10-12 queued (fixed cores/2 slots, 2392 min of night-workers waits on 10-05); c4adcbb8 (room admission up to the cores, 18:37) drained it. Left: night f253 holds 10 of 10 slots with 7-9 queued; its waits split 151 min limit at 10 allowed, 85 min at 5 and 66 min room. The slot accounting is right (pid start to first CLI start, share/time_budget.py run_split). Ruled out: a leaked or orphan slot (holders were live workers), a measurement double count. Lever left to the owner (a concurrency policy): a ceiling past the cores while slot_room finds room, or a queue behind the machine guard as the floor; shorter worker wall (suites) shortens it too.",
+      "handoff": "docs/handoffs/2026-10-08-speed-floor-measures.md"
     },
     {
       "id": "time_floor:suite_run",
@@ -3210,10 +3210,10 @@
         "wait-run-suites-slot-hogs",
         "time_floor:suite_wait"
       ],
-      "last_reviewed": "2026-10-07",
-      "reviewed_by": "night fixer harness-speed-20261006T234307Z-6769",
-      "note": "2026-10-07: 622 min/day in 24 h. Worker suite runs held 804 min of wall: 305 in runs of 20+ suites (tests/affected over bin/worker-run or run-suites names 20-60), 114 in three -j 1 runs of one day chat's workers (10-06 02:32-03:00, none since). Dearest by runs x time: test_consistency 111 min (81 runs), test_llm_limits_grok 108 (35, median 186 s), test_night_run 70, test_doctor_fix 66; suite speed is the tests area's (harness-tests holds test_daily_cost-worker-run on night 7777). Seen, not fixed: test_run_suites_journal assert 35 (the /bin/bash untrap case) failed once in an 18-suite wave at load ~75 and passed alone. 2026-10-06: 2266 min/day in 24 h, 2115 since 2026-10-05 19:00 (the slow layer of c4adcbb8 already skips test_statusline_hooks, test_worker_pick and test_instruction_gate inside workers). Wall ran 5-20x CPU (test_statusline_hooks 3066 s at 247 s CPU): wave suites at nice 10 under the owner's benchmark, the cause the wait-classes fixer of the same night fixed in e2c3ec43 (one owner per cause file). Seen, not fixed: 12 worker runs of 8-43 suites at -j 1 (320 min in 2 days, the worker's own flag); workers background run-all past the 600 s Bash cap and poll with a fixed sleep 540-590 that overshoots the suite end (counted as tools). Ruled out: double counting of parallel suites (run_split takes the union per run); unattributed worker suites (rows without worker_run were a chat running suites in a worker's worktree).",
-      "handoff": "docs/handoffs/2026-10-06-speed-floors.md"
+      "last_reviewed": "2026-10-08",
+      "reviewed_by": "night fixer harness-speed-time-floor-suite-wait-20261007T214025Z-5070",
+      "note": "2026-10-08: 450 min/day; worker suites held 618 min in 24 h: 326 in 516 single-suite iteration runs (test_statusline_hooks 87 min, test_llm_limits_grok 78, test_consistency 77, test_night_run 76), 73 in runs of 20+ suites. Per-suite speed is the suite audit's (handoff item 3). 2026-10-07: 622 min/day in 24 h. Worker suite runs held 804 min of wall: 305 in runs of 20+ suites (tests/affected over bin/worker-run or run-suites names 20-60), 114 in three -j 1 runs of one day chat's workers (10-06 02:32-03:00, none since). Dearest by runs x time: test_consistency 111 min (81 runs), test_llm_limits_grok 108 (35, median 186 s), test_night_run 70, test_doctor_fix 66; suite speed is the tests area's (harness-tests holds test_daily_cost-worker-run on night 7777). Seen, not fixed: test_run_suites_journal assert 35 (the /bin/bash untrap case) failed once in an 18-suite wave at load ~75 and passed alone. 2026-10-06: 2266 min/day in 24 h, 2115 since 2026-10-05 19:00 (the slow layer of c4adcbb8 already skips test_statusline_hooks, test_worker_pick and test_instruction_gate inside workers). Wall ran 5-20x CPU (test_statusline_hooks 3066 s at 247 s CPU): wave suites at nice 10 under the owner's benchmark, the cause the wait-classes fixer of the same night fixed in e2c3ec43 (one owner per cause file). Seen, not fixed: 12 worker runs of 8-43 suites at -j 1 (320 min in 2 days, the worker's own flag); workers background run-all past the 600 s Bash cap and poll with a fixed sleep 540-590 that overshoots the suite end (counted as tools). Ruled out: double counting of parallel suites (run_split takes the union per run); unattributed worker suites (rows without worker_run were a chat running suites in a worker's worktree).",
+      "handoff": "docs/handoffs/2026-10-08-speed-floor-measures.md"
     },
     {
       "id": "time_floor:suite_wait",
@@ -3222,7 +3222,7 @@
         "rule": "time_floor",
         "ident": "suite_wait"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-07T02:58:00+03:00",
@@ -3233,15 +3233,26 @@
           ],
           "in": "llm-legs@33eb4e77",
           "regressed_at": null
+        },
+        {
+          "at": "2026-10-08T00:55:00+03:00",
+          "by": "night fixer harness-speed-time-floor-suite-wait-20261007T214025Z-5070",
+          "files": [
+            "llm-legs/bin/harness-doctor",
+            "llm-legs/bin/speed-doctor",
+            "llm-legs/tests/test_speed_doctor.sh"
+          ],
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [
         "wait-run-suites-slot-hogs",
         "time_floor:suite_run"
       ],
-      "last_reviewed": "2026-10-07",
-      "reviewed_by": "night fixer harness-speed-20261006T234307Z-6769",
-      "note": "2026-10-07: 44 min/day in 24 h; over 48 h 1504 min of run-suites waits, up to 1110 of them (an LPT replay of the suite journal) behind a holder already down to its last suite. Fixed: run-suites frees its slot once only its last wave suite runs (a single-suite run and a run with a serial tail keep it); test_slots tail case, red on the old code. Left: room waits (87 min in 24 h at 3-4 allowed) are load admission, not the tail. 2026-10-06: 464 min/day in 24 h, 243 since 2026-10-05 19:00. Same cause as wait-run-suites-slot-hogs, owned tonight by the wait-classes fixer (e2c3ec43: no nice 10 while the keyboard is idle); the tail-capacity lever it left open (a slot is a whole run, one queued run waits on another run's last suite) is the remaining one. Not changed here to keep one owner per cause file.",
+      "last_reviewed": "2026-10-08",
+      "reviewed_by": "night fixer harness-speed-time-floor-suite-wait-20261007T214025Z-5070",
+      "note": "2026-10-08: read regressed at 47 min/day, but every wait of the 24 h window (43 worker min, 2026-10-07 03:01-04:00, night 7777's worktrees on the old base) predates 33eb4e77 reaching main (04:39-04:47); none over 20 s since. Cause: ledger_state read a fixed Speed row as regressed whenever its value was over the limit, with no look at when the fix held, so a fresh fix read regressed for a whole window and drew a fixer. Fixed: regressed only once the row's window starts after the fix held, as problems_from judges a row without evidence (test_speed_doctor fixed-window case, red on the old code). Seen, not chased: two malformed lines in run-suites runs.jsonl (2026-10-07 22:16, test_run_suites_reuse from the day branch feat-suite-pass-reuse); readers skip them. 2026-10-07: 44 min/day in 24 h; over 48 h 1504 min of run-suites waits, up to 1110 of them (an LPT replay of the suite journal) behind a holder already down to its last suite. Fixed: run-suites frees its slot once only its last wave suite runs (a single-suite run and a run with a serial tail keep it); test_slots tail case, red on the old code. Left: room waits (87 min in 24 h at 3-4 allowed) are load admission, not the tail. 2026-10-06: 464 min/day in 24 h, 243 since 2026-10-05 19:00. Same cause as wait-run-suites-slot-hogs, owned tonight by the wait-classes fixer (e2c3ec43: no nice 10 while the keyboard is idle); the tail-capacity lever it left open (a slot is a whole run, one queued run waits on another run's last suite) is the remaining one. Not changed here to keep one owner per cause file.",
       "handoff": "docs/handoffs/2026-10-06-speed-floors.md"
     },
     {
@@ -3327,10 +3338,10 @@
       "same_cause": [
         "time_floor:slot"
       ],
-      "last_reviewed": "2026-10-07",
-      "reviewed_by": "night fixer harness-speed-20261006T234307Z-6769",
-      "note": "2026-10-07: f253 read 16 %, its wall the same slot burst (time_floor:slot) and covering suites; workers read 21 % over the last 24 h. 2026-10-06: night 052f, 28 runs, 72.5 h wall: slot queue 39.9 h, suites 12.2 h, tools 10.8 h, suite wait 6.1 h, model 3.2 h (4 %). The slot queue was the fixed 5 slots before c4adcbb8; all worker runs since 2026-10-05 19:00 read 21 % model. The suite share is the wait-classes cause (e2c3ec43). Tools include sleep-polls on backgrounded run-all. The row reads the last finished night, so it re-judges once f253 finishes.",
-      "handoff": "docs/handoffs/2026-10-06-speed-floors.md"
+      "last_reviewed": "2026-10-08",
+      "reviewed_by": "night fixer harness-speed-time-floor-suite-wait-20261007T214025Z-5070",
+      "note": "2026-10-08: night 7777 202 of 1035 min model (19.5 %): slot 349, suites 261, tools 170, suite wait 40; without the summed slot queue 29 % (handoff item 2). 2026-10-07: f253 read 16 %, its wall the same slot burst (time_floor:slot) and covering suites; workers read 21 % over the last 24 h. 2026-10-06: night 052f, 28 runs, 72.5 h wall: slot queue 39.9 h, suites 12.2 h, tools 10.8 h, suite wait 6.1 h, model 3.2 h (4 %). The slot queue was the fixed 5 slots before c4adcbb8; all worker runs since 2026-10-05 19:00 read 21 % model. The suite share is the wait-classes cause (e2c3ec43). Tools include sleep-polls on backgrounded run-all. The row reads the last finished night, so it re-judges once f253 finishes.",
+      "handoff": "docs/handoffs/2026-10-08-speed-floor-measures.md"
     },
     {
       "id": "hook-grows-repos-worker-spawn-hook",

@@ -5051,7 +5051,7 @@ def apply_speed(document, speed, ledger=None):
             if component and p["state"] != "fixed-pending":
                 problems[i] = dict(p, state="watch", was_state=p["state"], judged_by="speed:" + component)
         audits = spend.load_ledger(ROOT_DIR)
-        problems += [dict(speed_restate(p, ledger), speed=True, group={spend.RULE: spend.GROUP, suite_audit.RULE:
+        problems += [dict(speed_restate(p, ledger, document.get("as_of_s")), speed=True, group={spend.RULE: spend.GROUP, suite_audit.RULE:
                                                                        suite_audit.GROUP}.get(p.get("rule"), SPEED_GROUP))
                      for p in suite_audit.restate(spend.restate(speed.get("problems") or (), audits), audits)]
         blind += [dict(b, id="speed:%s" % b.get("id")) for b in speed.get("blind_spots") or ()]
@@ -5346,13 +5346,18 @@ def ledger_row_by_id(ledger, ident):
     return next((r for r in ledger.get("rows") or () if r.get("id") == ident), None)
 
 
-def ledger_state(row):
-    """A Speed row's state off its ledger row alone: Speed proves a fix by its measurement, never by events."""
-    return "new" if not row else "open" if row.get("status") == "open" else "fixed-pending" \
-        if row.get("status") == "fixed-pending" else "regressed" if row.get("status") == "fixed" else "watch"
+def ledger_state(row, window_h=None, now=None):
+    """A Speed row's state off its ledger row and its window: Speed proves a fix by its measurement, never by events,
+    so a fixed row regresses only once its whole window ran after the fix held, as problems_from judges a row with
+    no evidence."""
+    status = (row or {}).get("status")
+    if status == "fixed":
+        held = last_fix_at(row) if window_h and now is not None else None
+        return "fixed-pending" if held and now - window_h * 3600 < held else "regressed"
+    return "new" if not row else status if status in ("open", "fixed-pending") else "watch"
 
 
-def speed_restate(problem, ledger):
+def speed_restate(problem, ledger, now=None):
     """Speed's store was judged against the ledger Speed read; a night close reruns this doctor on its own branch."""
     rule = problem.get("rule")
     if ledger is None or rule not in ("time_floor", "regression"):
@@ -5360,7 +5365,7 @@ def speed_restate(problem, ledger):
     # A regression's ident is only the middle of the key its row matches; an unmatched id is rule:key.
     key = problem["id"][len(rule) + 1:] if problem["id"].startswith(rule + ":") else None
     row = ledger_row_by_id(ledger, problem.get("ledger") or "") or (ledger_row(ledger, rule, key) if key else None)
-    return dict(problem, state=ledger_state(row), id=row["id"] if row else problem["id"],
+    return dict(problem, state=ledger_state(row, problem.get("window_h"), now), id=row["id"] if row else problem["id"],
                 ledger=row["id"] if row else None)
 
 
