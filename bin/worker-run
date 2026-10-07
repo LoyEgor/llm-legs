@@ -958,7 +958,7 @@ read_json_array() {
 }
 
 supervise_claudeb() {
-  local directory="$1" meta="$1/meta.json" account model effort resume cli rc chrome value index
+  local directory="$1" meta="$1/meta.json" account model effort resume cli rc chrome value
   local -a command retry access
   account=$(jq -r '.account' "$meta")
   model=$(jq -r '.model' "$meta")
@@ -973,17 +973,11 @@ supervise_claudeb() {
   for value in "${REPLY_ARRAY[@]}"; do access+=(--add-dir "$value"); done
   # Into `access` and not into `command`: the effort-drop retry below rebuilds the command from it,
   # and a web-search state left behind there relaunches the run with a capability it was denied.
-  while IFS= read -r value; do access+=("$value"); done < <(web_search_args claudeb "$(web_search_meta_state "$meta")")
+  # A wake-up scheduled in a -p session ends the turn and nothing ever fires it: the run exits 0
+  # "waiting on" suites it never reads, its work uncommitted.
+  while IFS= read -r value; do access+=("$value"); done < <(web_search_claudeb_args "$(web_search_meta_state "$meta")" ScheduleWakeup,CronCreate)
   value=$(jq -r '.inbox_settings // empty' "$meta")
   [ -z "$value" ] || access+=(--settings "$value")
-  # A wake-up scheduled in a -p session ends the turn and nothing ever fires it: the run exits 0
-  # "waiting on" suites it never reads, its work uncommitted. One --disallowedTools list: web search's
-  # may already hold one.
-  value=ScheduleWakeup,CronCreate
-  for index in "${!access[@]}"; do
-    [ "${access[index]}" != --disallowedTools ] || { access[index + 1]+=",$value"; value=''; }
-  done
-  [ -z "$value" ] || access+=(--disallowedTools "$value")
   command=("$cli" profile "$account" -p --model "$model" --effort "$effort" --output-format json "${access[@]}")
   [ -z "$resume" ] || command+=(--resume "$resume")
   [ "$chrome" = false ] || command+=(--chrome)

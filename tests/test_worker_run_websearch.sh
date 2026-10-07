@@ -67,7 +67,8 @@ SANDBOX
     else
       haystack=$'\x1f'$(sed -n 's/^ARG=//p' "$CALL_LOG" | paste -sd $'\x1f' -)$'\x1f'
     fi
-    case "$haystack" in *$'\x1f'"$needle"$'\x1f'*) return 0 ;; esac
+    # A tool list may go on past the cell: claudeb denies its wake-up tools in the same list.
+    case "$haystack" in *$'\x1f'"$needle"$'\x1f'* | *$'\x1f'"$needle"'\,'*) return 0 ;; esac
     return 1
   }
 

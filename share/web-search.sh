@@ -46,6 +46,15 @@ web_search_args() { # vendor on|off — the argv words, one per line
   printf '%s\n' $cell
 }
 
+web_search_claudeb_args() { # on|off tool,... — claudeb's argv words, these tools denied in the one list
+  local words
+  words=$(web_search_args claudeb "$1") || return 1
+  case "$words" in
+    --disallowedTools$'\n'*) printf '%s,%s\n' "$words" "$2" ;;
+    *) [ -z "$words" ] || printf '%s\n' "$words"; printf -- '--disallowedTools\n%s\n' "$2" ;;
+  esac
+}
+
 web_search_meta_state() { # meta.json — the state a supervisor must relaunch in
   local recorded vendor
   recorded=$(jq -r 'if has("web_search") then (.web_search | tostring) else "absent" end' "$1")

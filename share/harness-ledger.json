@@ -4306,7 +4306,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-08",
       "reviewed_by": "night fixer harness-doctor-20261007T214015Z-24b7",
-      "note": "Confirmed in chunk-002: the claude-setup worker sent its suites to nohup at 02:22 and called ScheduleWakeup; a -p session ends with its turn and nothing fires the wake-up, so the run exited 0 uncommitted. Fixed: supervise_claudeb denies ScheduleWakeup and CronCreate (merged into web search's --disallowedTools list). The detaching itself was the 10-minute cap, gone since 6c1173cd.",
+      "note": "Confirmed in chunk-002: the claude-setup worker sent its suites to nohup at 02:22 and called ScheduleWakeup; a -p session ends with its turn and nothing fires the wake-up, so the run exited 0 uncommitted. Fixed: supervise_claudeb denies ScheduleWakeup and CronCreate in web search's one denied-tools list (web_search_claudeb_args). The detaching itself was the 10-minute cap, gone since 6c1173cd.",
       "handoff": null
     },
     {
