@@ -75,8 +75,7 @@ changes, so the block's `menu.txt` stays near 300 lines.
 
 ### 2.1 Row grammar
 
-- An area line is `Area: state · fact` (the menu convention in
-  `docs/handoffs/2026-09-30-menu-consistency.md`). The state is `N problems` (red), the area's
+- An area line is `Area: state · fact`. The state is `N problems` (red), the area's
   problems counted as the title counts them, or one of these words: `watch` (normal colour; also
   an area whose red rows the ledger dismissed or holds as fixed-pending), `blind`, and `ok` (dim,
   the area name undimmed). A problem no area judged has a line of its own in the same grammar:

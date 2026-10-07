@@ -795,8 +795,9 @@ launch_night() { # doctor night
       continue
     fi
     repos=()
+    # A log-audit reading names no component file: its cause may lie in any sweep repository.
     while IFS= read -r repo; do repos+=("$repo"); done < <({ component_repos "$id" "$top"
-      ! jq -e --arg rules "$TEST_FIX_RULES" "$JQ_HAS_RULES" "$(record_file "$id")" >/dev/null ||
+      ! jq -e --arg rules "$TEST_FIX_RULES log_audit " "$JQ_HAS_RULES" "$(record_file "$id")" >/dev/null ||
         grep -vxF -e "$top" -e '' "${NIGHT_RUN_SWEEP_REPOS:-$HOME/.claude/sweep-repos}" 2>/dev/null; } | sort -u)
     siblings=$(night_sibling_worktrees "$night" "$branch" "$id" ${repos[@]+"${repos[@]}"})
     [ -z "$siblings" ] || locked record_set "$id" '.worktrees += ($s | split("\n"))' --arg s "$siblings"

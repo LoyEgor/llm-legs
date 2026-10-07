@@ -971,4 +971,18 @@ for step in '1. What each check guards' '2. Where the CPU goes' 'Never shorten a
   assert grep -qF "$step" "$brief"
 done
 
+# A log-audit reading names no file, so its run gets every sweep repository (a gate's cause sat in claude-setup).
+for r in "$RUNS"/harness-*.json; do
+  jq -e '.closed_at == null and .abandoned_at == null and .failed_at == null' "$r" >/dev/null || continue
+  fix abandon "$(basename "$r" .json)" --reason "the log-audit case" >/dev/null || fail "abandon before the log-audit case failed"
+done
+mkdir -p "$WORK/audit-h"
+jq -n --argjson s "$(now)" '{contract: 1, doctor: "harness", as_of_s: $s, judge: "j", status: "problems", problem_count: 1,
+  problems: [{id: "log_audit:gate-skips", rule: "log_audit", state: "new", fact: "a gate skipped"}]}' >"$WORK/audit-h/latest.json"
+git -C "$L" update-ref refs/night/n15/base HEAD && git -C "$O" update-ref refs/night/n15/base HEAD
+HARNESS_DOCTOR_DIR="$WORK/audit-h" bash "$FIX" launch harness --night n15 >"$WORK/out" 2>"$WORK/err" || fail "log-audit night: $(cat "$WORK/err")"
+audit=$(cut -f1 "$WORK/out")
+assert jqe --arg o "$O/.claude/worktrees/night-n15-$audit" '[.problems[].rule] == ["log_audit"] and (.worktrees | index($o) != null)' \
+  "$(record "$audit")"
+
 echo "PASS:$asserts asserts; code runs (one area, top-K, needs-Egor out, close through code-doctor check); launch refusals (no or foreign or stale document, nothing to fix, open run under 12 h), an old run abandoned, the snapshot without watch/fixed-pending, the chat through the shared opener, the record fields, a failed opener, close refusals (doctor not rerun, undecided id, missing path, missing commit, a directory, no evidence, bad verdict, judge changed without its line), a clean close, show, runs, updater records and launch, parallel ids, night launch (areas, worktrees, branches, briefs, the packet, one open run per area), night vendor records, a night without a base ref, llm components with their block's entry file, fixed only once the doctor reads it fixed-pending or gone, night close (markdown net zero per worktree: committed, untracked and cut bytes, a worktree without its base; a day run unmeasured; the doctor rerun once in the worktree, a handed-in document refused, purpose touching its component, judge), abandon, a failed worktree, harness sections and top watch rows under parallel launch, updater machinery, a legacy release run, a merge citation, a malformed ledger row, a failed collector, an unwritten launched_at, a launcher killed under the lock, quiet open ledger rows (their own brief section, the day launch), a speed night (design Night 1 over the calibration fixture as one run per lever, levers sharing a hook script in one run, an open lever run holding only its area, an empty Speed pick named on stderr, a refusal per worktree model/effort knob site, a live settings change only a note, a knob-free diff closes), a spend night (one audit, its five-step brief), a suite night (the first queued suite no red test rule holds, STRONG: yes, its steps)"

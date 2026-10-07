@@ -749,8 +749,9 @@ carry_brief() { # id kind ref repo what log worktree branch -> the brief file
   local id=$1 kind=$2 ref=$3 repo=$4 what=$5 log=$6 wt=$7 branch=$8 file="$nights_dir/$1.$3.brief.md" other outside
   {
     printf 'ROUND: none\n'
+    # Every sweep repository: a handoff names a file (`stop-dispatch.sh`) far more often than its repository.
     for other in $(grep -vxF -e "$repo" -e '' "$sweep_repos" 2>/dev/null; [ "$kind" = suite ] || grep -vxF '' "$helper_repos" 2>/dev/null); do
-      [ "$kind" = suite ] || grep -qF "$(basename "$other")" "$repo/$what" 2>/dev/null || continue
+      grep -qxF "$other" "$sweep_repos" 2>/dev/null || grep -qF "$(basename "$other")" "$repo/$what" 2>/dev/null || continue
       night_sibling_worktrees "$id" "$branch" "$ref" "$other" | sed 's/^/ADD-DIR: /'
     done
     printf 'Working directory: %s\n\n# Night %s job %s\n\n' "$wt" "$kind" "$ref"

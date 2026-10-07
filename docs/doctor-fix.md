@@ -102,7 +102,7 @@ one line of why and where it was fixed and tested; handoffs and blind spots adde
 The brief (`<runs>/<id>.brief.md`) names your area, worktree and branch `night/<night-id>/<run-id>`.
 It replaces the pour:
 - Work only in that worktree and the `ADD-DIR:` worktrees at the top of the brief: one per other
-  repository the components name (every sweep repository for a run holding test speed), on the same branch, started from that repository's
+  repository the components name (every sweep repository for a run holding test speed or a log-audit reading), on the same branch, started from that repository's
   `refs/night/<night>/base` (main as pressed, uncommitted work included). A change in any other
   repository is a handoff. Never write a main checkout: hooks and other chats read it.
 - Commit on your branch (one long line). Never push, review or merge: the orchestrator reviews the

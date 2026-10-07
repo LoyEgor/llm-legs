@@ -31,7 +31,7 @@ printf 'wip\n' >"$WORK/helper/wip.txt"
 printf '%s\n' "$WORK/helper" >"$WORK/helper-repos"
 export NIGHT_RUN_HELPER_REPOS="$WORK/helper-repos"
 H="$WORK/repo/docs/handoffs"
-printf '# A\n\nStatus: open\n\nFor the chat «Gone Chat». Needs a change in other too, and in %s/foreign/hooks/gate.sh and %s/helper/gate.py.\n' "$WORK" "$WORK" >"$H/2026-09-28-old.md"
+printf '# A\n\nStatus: open\n\nFor the chat «Gone Chat». Needs a change in stop-dispatch.sh too, and in %s/foreign/hooks/gate.sh and %s/helper/gate.py.\n' "$WORK" "$WORK" >"$H/2026-09-28-old.md"
 printf '# B\n\nStatus: open (half done)\n\nTo: «Live Chat».\n\nMentions «Gone Chat» later.\n' >"$H/2026-10-03-live.md"
 printf '# C\n\nStatus: settled 20261003T0000Z-0001: fixed\n' >"$H/2026-09-29-settled.md"
 printf '# D\n\nStatus: trade for Egor\nCost: one click.\nLoss: a stray error.\nRecommendation: click.\n' >"$WORK/other/docs/handoffs/2026-10-02-ask.md"
@@ -56,6 +56,7 @@ assert jqe '[.jobs[] | [.kind, .ref, .state, .branch]] == [["handoff", "handoff-
   ["suite", "suite-other-test_x", "pending", "night/N1/suite-other-test_x"]]' "$NIGHTS/N1.json"
 assert [ "$(git -C "$wt" symbolic-ref --short HEAD)" = night/N1/handoff-2026-09-28-old ]
 brief=$(cut -f2 "$WORK/carry.out" | head -1)
+# Every sweep repository gets its worktree, named in the handoff or not.
 assert grep -qxF "ADD-DIR: $WORK/other/.claude/worktrees/night-N1-handoff-2026-09-28-old" "$brief"
 assert grep -qF "Settle the handoff \`$WORK/repo/docs/handoffs/2026-09-28-old.md\`" "$brief"
 assert grep -qF 'Cost:`, `Loss:` and `Recommendation:`' "$brief"

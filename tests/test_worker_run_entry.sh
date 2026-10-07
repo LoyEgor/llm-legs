@@ -224,6 +224,7 @@ relay_door_tests() {
   assert test "$(cat "$STUB_DIR/relay_env")" = __unset__
   assert test "$(cat "$STUB_DIR/background_env")" = "1 1500000"
   assert grep -q '^CLAUDEB_CALL$' "$CALL_LOG"
+  assert test "$(grep -A1 -xF 'ARG=--disallowedTools' "$CALL_LOG" | tail -n +2)" = 'ARG=WebSearch\,WebFetch\,ScheduleWakeup\,CronCreate'
   relay_refused "$owner" CLAUDECODE=1 -- wait "$RUN_ID" --max 0
 }
 
