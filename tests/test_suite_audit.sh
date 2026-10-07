@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # share/suite_audit.py, the Suite audits block of the Harness doctor, and time_budget's per-unit proof, off a fixture
-# repository and run-suites journal: pricing over every runner with reused passes out, the due rules (never, a source
+# repository and run-suites journal: pricing over every runner, the due rules (never, a source
 # blob, 1.5x CPU a run, a rise between commits naming its commit, a new heavy suite, a split that is not new), the
 # night's queue, a kept audit closing it with its proof, the restate a night close reads, the Harness menu block and
 # a night improvement proven per unit (suite CPU a run, hook ms a call) once N samples follow it. Fixture directories
@@ -90,8 +90,7 @@ journal += [row(NOW - 2 * 86400 + i * 600, {"test_heavy": cpu(100)}, new) for i 
 journal += [row(NOW - 86400 + i * 600, {"test_new": cpu(60)}, new) for i in range(3)]
 journal += [row(NOW - 3600 + i * 60, {"test_part": cpu(60)}, split) for i in range(4)]
 journal += [row(NOW - 5 * 86400 + i * 600, {"test_mid": cpu(20)}, cheap, worker=(i == 0)) for i in range(10)]
-journal += [row(NOW - 4 * 86400, {"test_mid": cpu(999)}, cheap, reused=True),
-            row(NOW - 4 * 86400, {"test_mid": cpu(999, reused=True), "test_light": cpu(2, rc=1)}, cheap),
+journal += [row(NOW - 4 * 86400, {"test_light": cpu(2, rc=1)}, cheap),
             row(NOW - 8 * 86400, {"test_mid": cpu(999)}, cheap)]
 journal += [row(NOW - 4 * 86400 + i, {n: cpu(2) for n in ("test_light", "test_a", "test_b", "test_c", "test_d")}, cheap)
             for i in range(5)]
@@ -123,8 +122,8 @@ found = {c["key"]: c for c in out["components"]}
 check(found["alpha/test_mid"]["cpu_min_day"] == round(200 / 7 / 60.0, 2) and found["alpha/test_mid"]["runs"] == 10
       and found["alpha/test_mid"]["p50"] == 20 and found["alpha/test_light"]["runs"] == 6
       and found["alpha/test_light"]["p50"] == 2 and "workers 1 %" in out["head"],
-      "a suite's price counts every runner's runs (the worker's too) over 7 days, a reused row or reused suite and an "
-      "older run out, and its CPU a run reads passing runs: %s %s" % (found["alpha/test_mid"], out["head"]))
+      "a suite's price counts every runner's runs (the worker's too) over 7 days, an older run out,"
+      " and its CPU a run reads passing runs: %s %s" % (found["alpha/test_mid"], out["head"]))
 due = {p["suite"]["component"]: p for p in out["problems"]}
 heavy = due["alpha/test_heavy"]["suite"]
 check(heavy["at_once"] and heavy["due"] == "CPU a run ×2.5 (40 → 100 s) since %s «heavy waits a minute»" % dear[:7]
@@ -137,10 +136,10 @@ check(due["alpha/test_new"]["suite"]["at_once"]
       and due["alpha/test_part"]["suite"]["due"] == due["alpha/test_mid"]["suite"]["due"] == "never audited",
       "a new suite over 3x the median suite a run is due at once naming its commit; a suite split off another is not "
       "new: %s" % {k: p["suite"]["due"] for k, p in due.items()})
-check(out["selection"][:4] == ["suite_audit:alpha:test_heavy", "suite_audit:alpha:test_new", "suite_audit:alpha:test_part",
-                               "suite_audit:alpha:test_mid"] and out["status"] == "watch"
+check(out["selection"][:4] == ["suite_audit:alpha:test_heavy", "suite_audit:alpha:test_part", "suite_audit:alpha:test_mid",
+                               "suite_audit:alpha:test_new"] and out["status"] == "watch"
       and out["issues"][0] == [2.0, "alpha/test_heavy"],
-      "the night's queue: due-at-once suites first, then by CPU-min/day: %s" % out["selection"])
+      "the night's queue is by CPU-min/day alone, a due-at-once suite included: %s" % out["selection"])
 check(sorted(due["alpha/test_mid"]["suite"]["sources"]) == sorted(
     os.path.join(repo, "tests", n) for n in ("test_mid.sh", "helper.sh", os.path.join("lib", "common.sh"))),
       "a suite's sources are its file and the tests/ helpers it names: %s" % due["alpha/test_mid"]["suite"]["sources"])
@@ -231,4 +230,4 @@ print(count[0])
 EOF
 ) || { printf 'FAIL: the Suite audits block misjudged its fixture\n' >&2; exit 1; }
 
-printf 'PASS: %s asserts; Suite audits price every suite over every runner with reused passes out, judge audits due by never/source blob/1.5x CPU a run, a rise between commits or a new heavy suite at once naming its commit (a split is not new), queue the night, close a kept audit with its proof, settle it for a night close, lay their block in Harness; a night improvement is proven per unit (suite CPU a run, hook ms a call) once N samples follow it\n' "$asserts"
+printf 'PASS: %s asserts; Suite audits price every suite over every runner, judge audits due by never/source blob/1.5x CPU a run, a rise between commits or a new heavy suite at once naming its commit (a split is not new), queue the night, close a kept audit with its proof, settle it for a night close, lay their block in Harness; a night improvement is proven per unit (suite CPU a run, hook ms a call) once N samples follow it\n' "$asserts"

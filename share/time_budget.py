@@ -756,7 +756,7 @@ def unit_proof(item, started, ended, now):
     proven = now_ <= ratio * was
     return {"proven": proven, "before": round(was, 2), "after": round(now_, 2), "samples": int(total),
             "text": "%s → %s %s · %s" % (suite_audit.fmt(was), suite_audit.fmt(now_), label,
-                                         "proven" if proven else "not lower")}
+                                         "proven" if proven else "not proven")}
 
 
 def spend_proofs():

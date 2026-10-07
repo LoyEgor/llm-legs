@@ -1,5 +1,5 @@
 """Suite audits, the Harness doctor's standing night job beside Spend: every suite of the sweep and night helper
-repositories priced at CPU-min/day over 7 days of run-suites' journal (every runner, reused passes out). An audit is
+repositories priced at CPU-min/day over 7 days of run-suites' journal (every runner). An audit is
 due when never done, when the suite or a tests/ helper it names has another blob than at audit, or when its CPU per
 run reached 1.5x the audit's; a rise of 1.5x and 30 s between commits, or a new suite over 3x the median suite per
 run, is due at once and names its commit. Audit rows live in Spend's ledger (share/spend-ledger.json) as
@@ -34,15 +34,15 @@ def repos():
 
 
 def runs(path, lo):
-    """One sample per suite run ended after lo: a reused pass, row or suite, ran nothing and costs nothing."""
+    """One sample per suite run ended after lo."""
     out = []
     for r in night_spend.rows(path):
         end = r.get("ended_at")
-        if r.get("reused") is True or not isinstance(end, (int, float)) or end < lo or not isinstance(r.get("suites"), dict):
+        if not isinstance(end, (int, float)) or end < lo or not isinstance(r.get("suites"), dict):
             continue
         root = str(r.get("repo_root") or r.get("repo") or "").rstrip("/")
         for name, s in r["suites"].items():
-            if isinstance(s, dict) and s.get("reused") is not True and isinstance(s.get("cpu_s"), (int, float)):
+            if isinstance(s, dict) and isinstance(s.get("cpu_s"), (int, float)):
                 out.append({"repo": os.path.basename(root), "name": name, "end": float(end), "cpu": float(s["cpu_s"]),
                             "head": str(r.get("head") or ""), "worker": bool(r.get("worker_run")), "ok": s.get("rc") == 0})
     return sorted(out, key=lambda x: x["end"])
@@ -215,7 +215,7 @@ def proof_text(shown):
         return "%d of %d runs since" % (shown["runs"], shown["need"])
     return "CPU-s a run %s → %s (×%.2f, %d runs) · %s" % (
         fmt(shown["before"]), fmt(shown["after"]), shown["after"] / shown["before"], shown["runs"],
-        "proven" if shown["proven"] else "not lower")
+        "proven" if shown["proven"] else "not proven")
 
 
 def fmt(value):
@@ -257,7 +257,7 @@ def collect(now, journal, root):
         reasons[c["key"]] = due(c, row, held, median, new)
         if row and not reasons[c["key"]]:
             out["proofs"][c["key"]] = dict(proof(c, row), verdict=row.get("verdict"), audited_at=row.get("audited_at"))
-    queue = sorted((c for c in found if reasons[c["key"]]), key=lambda c: (not reasons[c["key"]][1], -c["cpu_min_day"]))
+    queue = sorted((c for c in found if reasons[c["key"]]), key=lambda c: (-c["cpu_min_day"], c["key"]))
     out["problems"] = [problem(c, *reasons[c["key"]], at) for c in queue]
     out["selection"] = [p["id"] for p in out["problems"]]
     out["issues"] = [[c["cpu_min_day"], c["key"]] for c in queue[:3]]
@@ -284,7 +284,7 @@ def lines(found, ledger, reasons, proofs):
     if rest:
         out.append([0, "d", False, "%d more suites · %.1f CPU-min/day · %d due" % (
             len(rest), sum(c["cpu_min_day"] for c in rest), sum(1 for c in rest if reasons[c["key"]]))])
-    out.append([0, "d", False, "run-suites journal · %d days · reused passes out" % WINDOW_D])
+    out.append([0, "d", False, "run-suites journal · %d days" % WINDOW_D])
     return out
 
 

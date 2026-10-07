@@ -315,10 +315,9 @@ Harness doctor (added 2026-09-29 by its owner chat):
   against the audit, which the night's `roi` lines read.
   Its `suites` (`share/suite_audit.py`) adds `suite_audit:<repo>:<suite>` problems, group `Suite audits`, `watch`: every
   suite of the sweep and night helper repositories priced at CPU-min/day over 7 days of run-suites' journal (every
-  runner, `reused` passes out), due when never audited, the suite or a tests/ helper it names has another blob, or CPU
+  runner), due when never audited, the suite or a tests/ helper it names has another blob, or CPU
   a run (passing runs' p50) ≥ 1.5× the audit's; a rise ≥ 1.5× and ≥ 30 s between commits or a new suite (not a split)
-  over 3× the median suite a run is due at once and names its commit. `suites.selection` is the queue, at-once first,
-  then by CPU-min/day; a night takes the first its red test rules do not hold, area `speed-suite-audit-<repo>-<suite>`,
+  over 3× the median suite a run is due at once and names its commit. `suites.selection` is the queue by CPU-min/day; a night takes the first its red test rules do not hold, area `speed-suite-audit-<repo>-<suite>`,
   brief header `STRONG: yes` (worker-run refuses Light and Gemini Flash). Audits are `suite:<repo>/<suite>` rows of
   `share/spend-ledger.json` (`bin/speed-doctor --suite-audit`), proven once 5 runs after it read ≤ 0.75× its CPU a run.
   A night's `roi` line proves a suite, hook or wait improvement per unit (CPU-s a run, ms a call per hook script,

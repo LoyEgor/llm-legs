@@ -229,7 +229,7 @@ def proof_text(shown):
         return "not measured since"
     return "share ×%s · price ×%s of audit · %s" % ("–" if shown["share"] is None else shown["share"],
                                                      "–" if shown["price"] is None else shown["price"],
-                                                     "proven" if shown["proven"] else "not lower")
+                                                     "proven" if shown["proven"] else "not proven")
 
 
 def day_value(day, cmd):
