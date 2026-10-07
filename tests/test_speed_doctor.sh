@@ -623,6 +623,22 @@ check(moved["opportunity:hooks/busy.sh"]["opportunity"]["om_day"] == round(10.0 
       "their dispatcher: %s" % moved["opportunity:hooks/busy.sh"]["opportunity"]["om_day"])
 check(module.moved_opportunities(lambda component: 0.01, speed_days, HI) == [],
       "a heavy suite or hot hook worth under 0.5 OM/d is no opportunity")
+modes = {h.local_day(HI - ago * 86400): {"hook_cpu_us": {"tuned.sh verdict": [10, (900000 if ago > 6 else 1000) * 1000]}}
+         for ago in (9, 8, 7, 5, 4, 3)}
+check([p for p in module.moved_opportunities(lambda component: 10.0, modes, HI) if p["id"].startswith("opportunity:hooks/")]
+      == [], "a mode of a hook (`tuned.sh verdict`, its script registered bare) counts only days after its script's last commit")
+with open(os.path.join(hooks_repo, "gone.sh"), "w") as handle:
+    handle.write("#!/bin/bash\n")
+for ago, args in ((8, ("add", "gone.sh")), (4, ("rm", "-q", "gone.sh"))):
+    git(*args)
+    stamp = "%d +0000" % (HI - ago * 86400)
+    git("commit", "-q", "-m", "gone", GIT_AUTHOR_DATE=stamp, GIT_COMMITTER_DATE=stamp)
+os.makedirs(os.path.join(base["HOME"], ".claude"), exist_ok=True)
+os.symlink(hooks_repo, os.path.join(base["HOME"], ".claude", "hooks"))
+real_home, os.environ["HOME"] = os.environ["HOME"], base["HOME"]
+check(module.hook_changed_day("gone.sh x") == h.local_day(HI - 4 * 86400),
+      "a hook no settings entry registers any more is charged only after its deletion: %s" % module.hook_changed_day("gone.sh x"))
+os.environ["HOME"] = real_home
 git("checkout", "-q", "-b", "side")
 with open(os.path.join(hooks_repo, "fresh.sh"), "a") as handle:
     handle.write("echo side\n")

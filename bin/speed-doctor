@@ -861,10 +861,12 @@ def moved_opportunities(component_om, days, now, covered=WINDOW_D):
 
 
 def hook_changed_day(key):
-    """An optimised hook is never charged for its old cost: only days after its script's last commit count."""
-    script = next((H.hook_script(h["command"]) for h in H.settings_hooks() if H.hook_key(h["command"]) == key), "")
-    if not script:
-        return None
+    """An optimised hook is never charged for its old cost: only days after its script's last commit count. A mode
+    key (`<script> <arg>`, the statusline's former `review-flow-gate.sh verdict`) is its script's; a script no settings
+    entry registers, run out of band or deleted, is found in ~/.claude/hooks, where a deletion is its last commit."""
+    word = key.split(" ", 1)[0]
+    script = next((s for s in (H.hook_script(h["command"]) for h in H.settings_hooks()) if os.path.basename(s) == word),
+                  os.path.join(H.base_home(), ".claude", "hooks", word))
     real = os.path.realpath(script)
     try:
         out = subprocess.run(["git", "-C", os.path.dirname(real), "log", "-1", "--first-parent", "--format=%ct", "HEAD",
