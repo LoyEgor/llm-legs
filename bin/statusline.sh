@@ -403,8 +403,10 @@ store_merge_kick() {
   fi
   : > "$stamp" 2>/dev/null
   # Orphaned double-fork with own fds so the collector never holds the render's
-  # stdout open or adds latency (same detach idiom as the ports probe).
+  # stdout open or adds latency (same detach idiom as the ports probe). Unsetting the
+  # session keeps its store-lock waits out of the chat's time budget: no chat waits on them.
   ( (
+    unset WORKER_RUN_ID CLAUDE_CODE_SESSION_ID
     local start_us=${EPOCHREALTIME//[!0-9]/} end_us journal day
     PATH="/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin:/usr/sbin" \
       "$collector" >/dev/null 2>&1
@@ -463,6 +465,7 @@ codex_quota_kick() { # account now
   # sees the deadline and skips rather than opening a second probe.
   printf '%s\n' "$((now_ts + ok_after))" > "$stamp" 2>/dev/null
   ( (
+    unset WORKER_RUN_ID CLAUDE_CODE_SESSION_ID
     refresh_start_us=${EPOCHREALTIME//[!0-9]/}
     if ! PATH="/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin:/usr/sbin" \
       "$refresher" --refresh-account "codex/$account" >/dev/null 2>&1; then

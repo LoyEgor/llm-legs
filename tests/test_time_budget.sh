@@ -91,7 +91,8 @@ lines(os.path.join(work, "harness", "events", "2026-01-10.jsonl"), [
     ["h", D0 + 7001, "p", "PreToolUse", "gate", 100000, "Bash", "tid0000001"],
     ["s", D0 + 100, "work", "worker", 3.0, 0.5, "1"]])
 lines(os.path.join(work, "harness", "waits", "2026-01-10.jsonl"),
-      [{"class": "lock", "source": "x", "started": D0 + 7100, "seconds": 40, "pid": 1},
+      [{"class": "lock", "source": "x", "started": D0 + 7100, "seconds": 40, "pid": 1, "caller": "sessA"},
+       {"class": "lock", "source": "heartbeat", "started": D0 + 7200, "seconds": 30, "pid": 2},
        {"class": "night-workers", "source": "j", "started": D0 + 1000, "seconds": 600, "pid": 1}])
 lines(os.path.join(work, "watch", "gates.jsonl"), [{"at": D0 + 100, "decision": "denied"},
                                                    {"at": D0 + 100, "decision": "passed"}])
@@ -103,6 +104,11 @@ check(dict((k, round(v)) for k, v in split.items() if v) == {
       and round(sum(split.values())) == 9000,
       "a worker run's wall starts at its pid, not the restamped started_at: slot queue, retries, its own suites "
       "(the call inside them absorbed), tools net of their hooks, the rest model: %s" % dict(split))
+walled = T.run_split(dict(run, walled=["com"]), 0, 1e12, T.suite_rows(0, 1e12), T.event_rows(D0, D0 + 86400)["c"],
+                     T.event_rows(D0, D0 + 86400)["h"])
+check(not walled["retries"] and round(walled["model"]) == 4800 and round(walled["slot"]) == 600
+      and round(sum(walled.values())) == 9000,
+      "a walled run's earlier attempts are weather, never retries: they are split as its work: %s" % dict(walled))
 clipped = T.run_split(run, D0 + 5000, D0 + 7300, T.suite_rows(0, 1e12), [], [])
 orphan = T.run_split(dict(run, run="claudeb-1-9-none"), 0, 1e12, [], [], [])
 check(round(clipped["suite_run"]) == 1000 and round(clipped["model"]) == 1300 and round(sum(clipped.values())) == 2300
@@ -120,7 +126,8 @@ by = {r["class"]: r for r in doc["classes"]}
 check(by["model"]["min"] == 80.0 and by["tools"]["min"] == round(760 / 60.0, 1) and by["locks"]["min"] == round(40 / 60.0, 1)
       and by["review"]["min"] == 10.0 and by["suite_run"]["min"] == round(2080 / 60.0, 1)
       and by["other"]["min"] == round(50 / 60.0, 1) and doc["refusals"] == 1 and doc["worker_runs"] == 2,
-      "the classes add owner turns (dark time out) to worker runs, lock and poll waits come out of tool time, a review "
+      "the classes add owner turns (dark time out) to worker runs, lock and poll waits a chat or worker paid come out "
+      "of tool time (a background job's never), a review "
       "round is its own class, gate refusals are counted: %s" % {k: v["min"] for k, v in by.items()})
 check(doc["total_min"] == round(10550 / 60.0, 1) and doc["harness_share"] == round(4940 / 10550.0, 3)
       and doc["lines"][0] == "Without the harness ≈ 47 % faster: 82 min of 2.9 h in 24 h"

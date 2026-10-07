@@ -3054,6 +3054,18 @@ STORE_MERGE_CMD="$SLOW_COLLECTOR" run_statusline "$kick_payload" kickacct >/dev/
 # Slept 10 s: a render under machine load can take seconds, never the collector's ten.
 assert test "$(( $(date +%s) - kick_start ))" -lt 8
 
+# E: the collector runs as a background job, never as the chat or worker run whose render kicked it
+# (share/time_budget.py charges a store-lock wait to whoever its wait row names).
+kick_reset
+ENV_COLLECTOR="$FIXTURES/env-collector"
+printf '#!/usr/bin/env bash\nprintf "%%s|%%s" "${CLAUDE_CODE_SESSION_ID:-}" "${WORKER_RUN_ID:-}" >> "%s"\n' "$KICK_MARK" \
+  > "$ENV_COLLECTOR"
+chmod +x "$ENV_COLLECTOR"
+CLAUDE_CODE_SESSION_ID=sess-1 WORKER_RUN_ID=run-1 STORE_MERGE_CMD="$ENV_COLLECTOR" run_statusline "$kick_payload" kickacct \
+  >/dev/null || fail "statusline kick with env collector exited nonzero"
+assert wait_for_mark
+assert_eq "|" "$(cat "$KICK_MARK")"
+
 # --- Codex quota kick (bin/statusline.sh) ---
 CQ_ARGS="$WORK/codex-kick-args"
 CQ_REFRESHER="$FIXTURES/codex-refresher"
@@ -3094,6 +3106,15 @@ assert_eq "--refresh-account codex/work4" "$(cat "$CQ_ARGS")"
 cq_deadline=$(cat "$(cq_stamp work4)")
 assert test "$cq_deadline" -ge "$((cq_start + 600))"
 assert test "$cq_deadline" -le "$(( $(date +%s) + 600 ))"
+
+cq_reset
+CQ_ENV="$FIXTURES/codex-refresher-env"
+printf '#!/usr/bin/env bash\nprintf "%%s|%%s\\n" "${CLAUDE_CODE_SESSION_ID:-}" "${WORKER_RUN_ID:-}" >> "%s"\n' "$CQ_ARGS" > "$CQ_ENV"
+chmod +x "$CQ_ENV"
+CLAUDE_CODE_SESSION_ID=sess-1 WORKER_RUN_ID=run-1 CLAUDEGPT_ACCOUNT=work4 CODEX_REFRESH_CMD="$CQ_ENV" \
+  run_statusline "$cq_payload" >/dev/null || fail "claudegpt quota-kick env render failed"
+assert cq_wait_args
+assert_eq "|" "$(cat "$CQ_ARGS")"
 
 # B: a deadline in the future debounces every session on that account, stamp untouched.
 printf '%s\n' "$(( $(date +%s) + 600 ))" > "$(cq_stamp work4)"

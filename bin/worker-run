@@ -4161,7 +4161,9 @@ wait_run() {
     if [ "$waited" -ge "$max" ]; then running_report "$directory"; return 0; fi
     remaining=$((max - waited))
     sleep_for=$WAIT_POLL; [ "$remaining" -ge "$sleep_for" ] || sleep_for=$remaining
-    sleep "$sleep_for"
+    while [ "$sleep_for" -gt 0 ] && [ ! -f "$directory/exit_code" ]; do
+      sleep 1; sleep_for=$((sleep_for - 1))
+    done
   done
 }
 

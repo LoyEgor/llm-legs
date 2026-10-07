@@ -3241,12 +3241,22 @@
         "rule": "time_floor",
         "ident": "retries"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-07T03:40:00+03:00",
+          "by": "night fixer handoff-2026-10-06-speed-floors",
+          "files": [
+            "llm-legs/share/time_budget.py"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
       "last_reviewed": "2026-10-07",
-      "reviewed_by": "night fixer harness-speed-20261006T234307Z-6769",
-      "note": "2026-10-07: 99 min/day in 24 h: 88 min are two claudeb runs on logo-vectorizer-bench walled on com and rescued once each (the one-reroute cap held), 11 min a codex computer-use run (attempt_rcs 1,1,1,0), the rest instant relaunches. Weather; account headroom for a long brief is log_audit:worker-on-exhausted-account (harness-doctor run, night 7777). 2026-10-06: 283 min/day in 24 h, 87 since 2026-10-05 19:00. 132 min were codex-1791209020 (feat-doctors-menu-for-humans): 8 attempts over 4 Codex accounts, each ERROR usage limit, the chain 167787af capped at one reroute that evening. 121 min were claudeb-1791203298, a 2 h attempt walled on notcom and rescued once on locomthebest; codex-1791230335 (after the cap) stopped at two attempts. What is left is vendor usage walls mid-run: weather under the 429 doctrine. Lever proposed to the owner: the class drops attempts that ended walled, or a weather dismissal. Not chased: picking an account with enough headroom for a long brief (worker-pick, LLM doctor).",
+      "reviewed_by": "night fixer handoff-2026-10-06-speed-floors",
+      "note": "2026-10-07: 99 min/day in 24 h: 88 min are two claudeb runs on logo-vectorizer-bench walled on com and rescued once each (the one-reroute cap held), 11 min a codex computer-use run (attempt_rcs 1,1,1,0), the rest instant relaunches. Weather; account headroom for a long brief is log_audit:worker-on-exhausted-account (harness-doctor run, night 7777). 2026-10-06: 283 min/day in 24 h, 87 since 2026-10-05 19:00. 132 min were codex-1791209020 (feat-doctors-menu-for-humans): 8 attempts over 4 Codex accounts, each ERROR usage limit, the chain 167787af capped at one reroute that evening. 121 min were claudeb-1791203298, a 2 h attempt walled on notcom and rescued once on locomthebest; codex-1791230335 (after the cap) stopped at two attempts. What is left is vendor usage walls mid-run: weather under the 429 doctrine. Lever proposed to the owner: the class drops attempts that ended walled, or a weather dismissal. Not chased: picking an account with enough headroom for a long brief (worker-pick, LLM doctor). 2026-10-07: fixed by doctrine: run_split splits a walled run's earlier attempts as its work, never retries (test_time_budget walled case); unwalled relaunches stay retries.",
       "handoff": "docs/handoffs/2026-10-06-speed-floors.md"
     },
     {
@@ -3273,12 +3283,26 @@
         "rule": "time_floor",
         "ident": "locks"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-07T03:40:00+03:00",
+          "by": "night fixer handoff-2026-10-06-speed-floors",
+          "files": [
+            "llm-legs/share/time_budget.py",
+            "llm-legs/share/limiter-hold.sh",
+            "llm-legs/share/limiter_hold.py",
+            "llm-legs/bin/statusline.sh",
+            "llm-legs/bin/worker-run"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
       "last_reviewed": "2026-10-07",
-      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
-      "note": "2026-10-06: 39 min/day in 24 h, 20 since 2026-10-05 19:00. 87 waits (29.7 min, up to 56 s) were on ~/.llm-limits.json.lock, the store lock llm-limits.sh holds over its merge (share/store-lock.sh store_lock_acquire, 240 x 0.25 s). Its writers are the refresh heartbeat, the statusline refresher and the menu; none runs inside a chat or worker tool call. share/time_budget.py budget() still moves every wait row out of tools, so these charge nobody's real wall (blind spot wait-caller-kind). Real: ~9 min/day of worker-run wait poll lag (WAIT_POLL 5 s; a builtin exit_code test each second between full checks would cut ~7). Ruled out: a stale or leaked lock (holders lived, waits ended under 60 s), the lock holder doing network work under the lock (the merge is local jq). 2026-10-07: quiet in the doctor's window; the cause stands in code (share/store-lock.sh 240 x 0.25 s unchanged, worker-run WAIT_POLL still 5 s), fix stays with the speed-floors handoff.",
+      "reviewed_by": "night fixer handoff-2026-10-06-speed-floors",
+      "note": "2026-10-06: 39 min/day in 24 h, 20 since 2026-10-05 19:00. 87 waits (29.7 min, up to 56 s) were on ~/.llm-limits.json.lock, the store lock llm-limits.sh holds over its merge (share/store-lock.sh store_lock_acquire, 240 x 0.25 s). Its writers are the refresh heartbeat, the statusline refresher and the menu; none runs inside a chat or worker tool call. share/time_budget.py budget() still moves every wait row out of tools, so these charge nobody's real wall (blind spot wait-caller-kind). Real: ~9 min/day of worker-run wait poll lag (WAIT_POLL 5 s; a builtin exit_code test each second between full checks would cut ~7). Ruled out: a stale or leaked lock (holders lived, waits ended under 60 s), the lock holder doing network work under the lock (the merge is local jq). 2026-10-07: quiet in the doctor's window; the cause stands in code (share/store-lock.sh 240 x 0.25 s unchanged, worker-run WAIT_POLL still 5 s), fix stays with the speed-floors handoff. 2026-10-07: wait rows name a caller (WORKER_RUN_ID, else CLAUDE_CODE_SESSION_ID; the statusline kicks drop both) and budget() moves only those out of tools; worker-run wait checks the exit file each second between WAIT_POLL checks (test_wait_journal, test_time_budget, test_statusline_hooks).",
       "handoff": "docs/handoffs/2026-10-06-speed-floors.md"
     },
     {
@@ -4244,13 +4268,6 @@
       "reason": "the wait journal names only the waiter; slot holders appear in runs.jsonl only once they end, and a hung one never ends",
       "since": "2026-10-05",
       "would_catch_if": "a limiter wait row carried the holders when it cleared (pid, repo, worker run and whether it still lives, the suite running longest)"
-    },
-    {
-      "id": "wait-caller-kind",
-      "what": "whether a lock or poll wait was paid inside a chat or worker tool call or by a background job (launchd heartbeat, statusline refresher, menu)",
-      "reason": "wait_note rows name the class, source and pid only; share/time_budget.py budget() therefore moves every lock wait out of tools, charging ~30 min/day of background ~/.llm-limits.json.lock waits to chats and workers",
-      "since": "2026-10-06",
-      "would_catch_if": "wait_note wrote the caller's kind (worker run id, chat session, or none) and budget() counted only chat and worker waits"
     },
     {
       "id": "worker-orphans-unclassified",

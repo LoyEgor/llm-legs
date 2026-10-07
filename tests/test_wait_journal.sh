@@ -11,7 +11,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 jqe() { jq -e "$@" >/dev/null; }
 export TZ=UTC HOME="$WORK/home" HARNESS_DOCTOR_DIR="$WORK/state" HARNESS_HOLDS_DIR="$WORK/holds"
-unset HARNESS_WAITS_DIR
+unset HARNESS_WAITS_DIR WORKER_RUN_ID CLAUDE_CODE_SESSION_ID
 W="$WORK/state/waits"
 T=1768032000
 
@@ -46,6 +46,13 @@ HARNESS_WAITS_DIR="$WORK/slot-waits" python3 -c 'import sys; sys.path.insert(0, 
 h.hold_clear(h.hold_raise("night-workers", "py", "busy"), allowed=3, held=2, reason="room")' "$ROOT/share"
 assert jqe -s 'map([.source, .allowed, .held, .reason]) == [["bash32", 4, 3, "limit"], ["bare", null, null, null], ["py", 3, 2, "room"]]
   and (.[0] | keys_unsorted) == ["class", "source", "started", "seconds", "pid", "allowed", "held", "reason"]' "$WORK"/slot-waits/*.jsonl
+# The row names the chat or worker run that paid the wait; a background job (launchd, menu) names none.
+HARNESS_WAITS_DIR="$WORK/caller-waits" WORKER_RUN_ID=claudeb-1-2-ab CLAUDE_CODE_SESSION_ID=s1 /bin/bash -c '
+  . "$1/share/limiter-hold.sh"; wait_note lock run 1768032000 1' _ "$ROOT"
+HARNESS_WAITS_DIR="$WORK/caller-waits" CLAUDE_CODE_SESSION_ID='s/2' python3 -c 'import sys; sys.path.insert(0, sys.argv[1])
+import limiter_hold as h; h.wait_note("lock", "chat", 1768032001, 1)' "$ROOT/share"
+HARNESS_WAITS_DIR="$WORK/caller-waits" /bin/bash -c '. "$1/share/limiter-hold.sh"; wait_note lock bg 1768032002 1' _ "$ROOT"
+assert jqe -s 'map([.source, .caller]) == [["run", "claudeb-1-2-ab"], ["chat", "s_2"], ["bg", null]]' "$WORK"/caller-waits/*.jsonl
 
 RUNS="$WORK/runs"
 mkdir -p "$RUNS/r1" "$RUNS/r2"
@@ -60,9 +67,17 @@ for r in r2 r1; do
   env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u CLAUDEB_WORKER WORKER_RUN_DIR="$RUNS" WORKER_RUN_WAIT_POLL_S=1 \
     bash "$ROOT/bin/worker-run" wait "$r" --max 30 >"$WORK/wait-$r.out" 2>&1
 done
-kill "$sup"
 assert jqe -s 'map(select(.class == "poll")) | length == 1 and .[0].source == "worker-run wait r1" and .[0].seconds >= 0' \
   "$W/$(date +%Y-%m-%d).jsonl"
+# Between full checks every WAIT_POLL seconds, the exit file is looked at each second.
+mkdir -p "$RUNS/r3"
+jq -n --argjson p "$sup" --argjson t "$(date +%s)" '{vendor: "none", pid: $p, started_at: $t}' >"$RUNS/r3/meta.json"
+(until jq -e '.phase == "wait"' "$RUNS/r3/state.json" >/dev/null 2>&1; do sleep 0.1; done
+  sleep 1.2; printf '0\n' >"$RUNS/r3/exit_code") &
+env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u CLAUDEB_WORKER WORKER_RUN_DIR="$RUNS" WORKER_RUN_WAIT_POLL_S=8 \
+  bash "$ROOT/bin/worker-run" wait r3 --max 30 >"$WORK/wait-r3.out" 2>&1
+kill "$sup"
+assert jqe -s 'map(select(.source == "worker-run wait r3")) | length == 1 and .[0].seconds < 3' "$W/$(date +%Y-%m-%d).jsonl"
 
 rm -rf "$W"
 mkdir -p "$W"

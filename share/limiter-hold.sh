@@ -26,6 +26,7 @@ hold_clear() {
 # (shared-invariants row ed); seconds default to now - started. hold_clear <file> [allowed held reason].
 wait_note() {
   local dir="${HARNESS_WAITS_DIR:-${HARNESS_DOCTOR_DIR:-$HOME/.cache/harness-doctor}/waits}" start ms source day extra='' allowed=${5:-null} held=${6:-null} reason=${7:-}
+  local caller=${WORKER_RUN_ID:-${CLAUDE_CODE_SESSION_ID:-}}
   start=$(wait_ms "${3:-}") || return 0
   ms=$(wait_ms "${4:-}") || ms=$(( $(wait_ms "${EPOCHREALTIME:-$(date +%s)}") - start ))
   [ "$ms" -ge 0 ] 2>/dev/null || return 0
@@ -36,6 +37,7 @@ wait_note() {
     [ -z "$reason" ] && reason=null || reason="\"${reason//[^A-Za-z0-9_.-]/_}\""
     extra=",\"allowed\":$allowed,\"held\":$held,\"reason\":$reason"
   fi
+  [ -z "$caller" ] || extra="$extra,\"caller\":\"${caller//[^A-Za-z0-9_.-]/_}\""
   printf -v day '%(%Y-%m-%d)T' "$(( start / 1000 ))" 2>/dev/null || day=$(date -r "$(( start / 1000 ))" +%Y-%m-%d) || return 0
   mkdir -p "$dir" 2>/dev/null &&
     printf '{"class":"%s","source":"%s","started":%d.%03d,"seconds":%d.%03d,"pid":%d%s}\n' "${1//[^A-Za-z0-9_.-]/_}" "$source" \

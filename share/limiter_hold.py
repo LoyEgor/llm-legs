@@ -63,6 +63,9 @@ def wait_note(cls, source, started, seconds=None, allowed=None, held=None, reaso
                "seconds": seconds, "pid": os.getpid()}
         if cls in ("night-workers", "run-suites") or reason is not None:
             row.update(allowed=allowed, held=held, reason=reason)
+        caller = os.environ.get("WORKER_RUN_ID") or os.environ.get("CLAUDE_CODE_SESSION_ID")
+        if caller:
+            row["caller"] = re.sub(r"[^A-Za-z0-9_.-]", "_", caller)
         os.makedirs(wait_dir(), exist_ok=True)
         with open(os.path.join(wait_dir(), time.strftime("%Y-%m-%d", time.localtime(started)) + ".jsonl"), "a") as handle:
             handle.write(json.dumps(row) + "\n")

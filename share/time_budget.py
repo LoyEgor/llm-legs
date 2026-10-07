@@ -226,8 +226,9 @@ def run_session(run):
 
 def run_split(run, lo, hi, suites, calls, hooks):
     """One worker run's wall inside [lo, hi): launch -> first CLI start is the slot queue, earlier attempts are
-    retries, the last attempt is split into its own suites (slot wait apart), tool calls, hooks inside them, and
-    the rest, which is model time. `started_at` is restamped by the slot wait, so the run starts at its pid."""
+    retries unless the run was walled (a usage wall is weather: its attempts are work), the last attempt (all of a
+    walled run's) is split into its own suites (slot wait apart), tool calls, hooks inside them, and the rest, which
+    is model time. `started_at` is restamped by the slot wait, so the run starts at its pid."""
     start = num(run.get("pid_started_at")) or num(run.get("started_at"))
     end = num(run.get("ended_at"))
     out = collections.Counter()
@@ -238,6 +239,8 @@ def run_split(run, lo, hi, suites, calls, hooks):
     if run.get("round"):
         out["review"] = length(clip([(start, end)], lo, hi))
         return out
+    if run.get("walled"):
+        last = first
     out["slot"] = length(clip([(start, first)], lo, hi))
     out["retries"] = length(clip([(first, last)], lo, hi))
     work = clip([(last, end)], lo, hi)
@@ -274,7 +277,8 @@ def turn_split(row, lo, hi):
 
 
 def budget(lo, hi, events=None):
-    """Seconds per class over [lo, hi) for owner chats (Harness turn rows) and worker runs (worker-stats runs)."""
+    """Seconds per class over [lo, hi) for owner chats (Harness turn rows) and worker runs (worker-stats runs). A
+    lock or poll wait comes out of tool time only when a chat or worker paid it (its row names a `caller`)."""
     events = events if events is not None else event_rows(lo, hi)
     suites = suite_rows(lo, hi + 86400)
     calls = [c for c in events.get("c", ()) if c[6] == "w"]
@@ -285,7 +289,8 @@ def budget(lo, hi, events=None):
     runs = worker_runs(lo, hi)
     for run in runs:
         workers += run_split(run, lo, hi, suites, calls, events.get("h", ()))
-    waits = sum(min(r["seconds"], max(0.0, hi - r["started"])) for r in wait_rows(lo, hi) if r.get("class") in WAIT_CLASSES)
+    waits = sum(min(r["seconds"], max(0.0, hi - r["started"])) for r in wait_rows(lo, hi)
+                if r.get("class") in WAIT_CLASSES and r.get("caller"))
     total = chats + workers
     total["locks"] = min(waits, total["tools"])
     total["tools"] -= total["locks"]
