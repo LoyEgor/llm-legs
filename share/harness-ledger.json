@@ -4749,6 +4749,13 @@
       "reason": "test rules judge cost and hangs; a flake costs a rerun and a judgment call that no rule counts",
       "since": "2026-10-08",
       "would_catch_if": "a rule read run-suites' runs.jsonl for one suite failing then passing on one head within an hour"
+    },
+    {
+      "id": "audit-fix-inside-window",
+      "what": "a log_audit fix that landed inside the audited window, before the read",
+      "reason": "audit_verdicts stamps every quote with the read's time, so a fix landed between the quoted events and the read reads regressed (runall-foreground-timeout-cap 04:39, chrome-extension-reconnect-window 04:20, log-audit-full-read-repeated 00:25; read 05:42)",
+      "since": "2026-10-08",
+      "would_catch_if": "bin/log-audit recorded each finding's latest quoted event time and audit_verdicts stamped the evidence with it"
     }
   ]
 }
