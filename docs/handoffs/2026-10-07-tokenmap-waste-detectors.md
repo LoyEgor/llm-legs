@@ -29,6 +29,8 @@ Each detector is a `tracking.json` section with a share of Claude spend, the Δ,
 7. **Startup that is never used.** For each skill, MCP server, connector and deferred tool in the listing: its startup cost × contexts, against its invocations over the last 30 days.
 8. **Frontier model on a small task.** Model and size per task. This one is shown only, never a cut: model choice is Egor's.
 
+9. **Export which causes are avoidable.** Harness `share/spend.py` (llm-legs 90cae246) copies tokenmap's unavoidable cache re-write causes (`expired (1h+ idle)` and the others from FINDINGS §26). Put an `avoidable` flag on each cause row in `tracking.json`, so the doctor reads it rather than keeping a copy.
+
 ## Done when
 - Each detector is in `tracking.json` with its own tests.
 - The Token tracking submenu shows it.
