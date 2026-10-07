@@ -101,7 +101,7 @@
     "detail": "malformed Markdown|read coverage \\d+ bytes below|no parseable finding and did not declare"
    },
    "title": "bad output: empty-findings chunks, agy Markdown shapes and the read-coverage floor (R1, R3, R4)",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-09-23T21:40:26+03:00",
@@ -149,7 +149,7 @@
      "files": [
       "review-bench/share/rbench/launch.py"
      ],
-     "in": null,
+     "in": "review-bench@6888107",
      "regressed_at": null
     }
    ],
@@ -416,7 +416,7 @@
     "detail": "^wrote [^/]+/night-[0-9]{8}T[0-9]{6}Z-"
    },
    "title": "a night job wrote a night worktree it made itself in a repository its brief granted none: carry_brief grants ADD-DIR only in sweep repositories, yet asks for a verdict on a carried handoff about another one",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-06T21:54:46+03:00",
@@ -425,7 +425,7 @@
       "llm-legs/bin/night-run",
       "llm-legs/share/handoffs.py"
      ],
-     "in": null,
+     "in": "llm-legs@0baa6235",
      "regressed_at": null
     }
    ],
@@ -1794,7 +1794,7 @@
     "detail": "^composite skipped: (opted-out|aspect-changed)"
    },
    "title": "A composite the caller itself turned off or made impossible reads as a soft outcome",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-07T03:31:19+03:00",
@@ -1802,7 +1802,7 @@
      "files": [
       "llm-legs/bin/llm-doctor"
      ],
-     "in": null,
+     "in": "llm-legs@0e85e37a",
      "regressed_at": null
     }
    ],
