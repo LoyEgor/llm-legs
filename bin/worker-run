@@ -2638,7 +2638,10 @@ start_run() {
   if [ -n "$explicit_account" ]; then
     account="$explicit_account"
   else
-    pick_account_listing "$vendor" '' "$model"
+    PICKED_RC=1
+    [ "$browser:$vendor:${browser_target:-chrome}" != true:claudeb:chrome ] || pick_account_listing "$vendor" \
+      "$(browse_pool | jq -Rrn --argjson r "$(browse_registry)" '[inputs | select($r[.].status != "ok")] | join(",")')" "$model"
+    [ "$PICKED_RC" -eq 0 ] && [ -n "$PICKED_ACCOUNT" ] || pick_account_listing "$vendor" '' "$model"
     if [ "$PICKED_RC" -eq 0 ] && [ -n "$PICKED_ACCOUNT" ]; then
       account="$PICKED_ACCOUNT"
     elif [ "$PICKED_RC" -eq 3 ]; then
@@ -4926,6 +4929,7 @@ tell application id "com.google.Chrome"
     repeat with t in tabs of w
       set out to out & (URL of t) & linefeed
     end repeat
+    set out to out & linefeed
   end repeat
 end tell
 return out
@@ -4934,23 +4938,30 @@ APPLESCRIPT
 
 # Chrome opens a URL handed to it in a window the profile already has, so the marker tab is both the
 # proof the profile is open and the reason asking again never piles up windows. A running Chrome drops
-# `open --args` without -n, and replaces an about: URL with the new-tab page.
+# `open --args` without -n, and replaces an about: URL with the new-tab page. The extension of a window
+# opened here connects ~25 s after it shows (live 2026-10-07): a proof listing sooner misses its device.
+browse_marker() { printf 'https://example.com/#worker-run=%s\n' "${1// /-}"; }
+
 browse_window() { # profile-directory
-  local marker="https://example.com/#worker-run=${1// /-}" i
+  local marker i
+  marker=$(browse_marker "$1")
   for ((i = 0; i < ${BROWSE_WINDOW_WAIT:-40}; i++)); do
-    browse_chrome_urls | grep -qxF -- "$marker" && return 0
-    [ "$i" -ne 0 ] || "${BROWSE_OPEN:-open}" -n -g -b com.google.Chrome --args --profile-directory="$1" "$marker" >/dev/null 2>&1 ||
-      return 1
+    browse_chrome_urls | grep -qxF -- "$marker" && { [ "$i" -eq 0 ] || sleep "${BROWSE_SETTLE_S:-30}"; return 0; }
+    [ "$i" -ne 0 ] || "${BROWSE_OPEN:-open}" -n -g -b com.google.Chrome --args --profile-directory="$1" "$marker" >/dev/null 2>&1 || :
     sleep 0.5
   done
   return 1
 }
 
-browse_seen() { # token target
-  local i
+# A Chrome window holds tabs of one profile only, so the token beside the profile's marker tab proves the
+# device is that profile's extension; Chrome alone would accept another profile signed in as the account.
+browse_seen() { # token target [account]
+  local i marker=''
+  [ -z "${3:-}" ] || marker=$(browse_marker "$(browse_profile "$3")")
   for ((i = 0; i < ${BROWSE_SEEN_WAIT:-20}; i++)); do
     if [ "$2" = dia ]; then "${BROWSE_DIA_JS:-$SCRIPT_DIRECTORY/dia-js}" --list 2>/dev/null; else browse_chrome_urls; fi |
-      grep -qF -- "$1" && { printf 'SEEN: %s\n' "$2"; return 0; }
+      awk -v RS= -v t="$1" -v m="$marker" 'index($0, t) && (m == "" || index("\n" $0 "\n", "\n" m "\n")) { f = 1 } END { exit !f }' &&
+      { printf 'SEEN: %s\n' "$2"; return 0; }
     sleep 0.5
   done
   printf 'SEEN: none\n'
@@ -4973,7 +4984,7 @@ EOF
 # Browser preamble (Claude in Chrome / $label / $3)
 Prove the device before the task:
 1. \`list_connected_browsers\`. Candidates: $first \`isLocal: true\` entry; no other id, ever.
-2. Per candidate: \`select_browser\`, \`navigate\` (no tabId) to \`https://example.com/?wr=$6-<candidate number>\`, then run \`$run --seen $6-<candidate number>$([ "$2" != dia ] || printf ' --target dia')\`. Only \`SEEN: $2\` proves it. An error, a timeout or \`SEEN: none\`: close any tab it opened, take the next candidate; never retry one, never call \`tabs_context_mcp\` on one.
+2. Per candidate: \`select_browser\`, \`navigate\` (no tabId) to \`https://example.com/?wr=$6-<candidate number>\`, then run \`$run --seen $6-<candidate number> $(if [ "$2" = dia ]; then printf -- '--target dia'; else printf -- '--account %s' "$3"; fi)\`. Only \`SEEN: $2\` proves it. An error, a timeout or \`SEEN: none\`: close any tab it opened, take the next candidate; never retry one, never call \`tabs_context_mcp\` on one.
 3. Proven: print \`BROWSER-PROVEN: <deviceId> $3\` and work in that tab; your final answer repeats that line. None: end \`OUTCOME: BROWSER_NO_DEVICE account=$3 profile=$5\`.
 Then:
 - After a reconnect or a tool error \`select_browser\` the proven device again. Browser or tab gone: $gone.
@@ -4995,7 +5006,7 @@ browse_prepare() { # vendor target account preamble-file; REASON lines and 2 whe
   elif [ "$vendor" = codex ]; then
     while IFS= read -r dir; do
       browse_window "$dir" && names+="${names:+, }$(browse_profile_label "$dir")"
-    done < <(browse_registry | jq -r '.[] | select(.status == "ok") | .chrome_profile')
+    done < <(browse_registry | jq -r '.[] | select(.status == "ok") | .chrome_profile // empty')
     [ -n "$names" ] || { printf 'REASON: no enrolled Chrome profile is open: worker-run browse --enroll all\n'; return 2; }
   else
     dir=$(browse_profile "$account")
@@ -5016,7 +5027,7 @@ browse_session() { # account prompt-file -> the session's answer
   out=$(mktemp "$(browse_dir)/session.XXXXXX") || return 1
   ( cd "$(browse_dir)" && exec env -u WORKER_RUN_ID -u WORKER_RUN_RECORD "${WORKER_RUN_CLAUDEB:-$HOME/.local/bin/claudeb}" \
       profile "$1" -p --model "${BROWSE_PROOF_MODEL:-sonnet}" --effort low --chrome --output-format json \
-      --dangerously-skip-permissions ) <"$2" >"$out" 2>&1 &
+      --dangerously-skip-permissions ) <"$2" >"$out" 2>"$(browse_dir)/last-session-$1.err" &
   pid=$!
   while kill -0 "$pid" 2>/dev/null; do
     [ "$waited" -lt "${BROWSE_SESSION_S:-300}" ] || { kill "$pid" 2>/dev/null; break; }
@@ -5029,18 +5040,21 @@ browse_session() { # account prompt-file -> the session's answer
 }
 
 # A proof refreshes the device and a run that found none makes the account a login; an enrollment that
-# ends any other way is a failed proof. Sets BROWSE_PROVEN and BROWSE_OUTCOME.
-browse_absorb() { # account answer [enrolling|log-only]
-  BROWSE_PROVEN=$(sed -nE "s/^BROWSER-PROVEN:[[:blank:]]+($BROWSE_UUID)[[:blank:]]+$1[[:space:]]*\$/\1/p" <<<"$2" | tail -n 1)
-  BROWSE_OUTCOME=$(sed -nE 's/^OUTCOME:[[:blank:]]+([A-Z_]+).*/\1/p' <<<"$2" | tail -n 1)
+# ends any other way is a failed proof, BROWSER_OK without a proven device included. Sets BROWSE_PROVEN
+# and BROWSE_OUTCOME.
+browse_absorb() { # account profile answer [enrolling|log-only]
+  BROWSE_PROVEN=$(sed -nE "s/^\`?BROWSER-PROVEN:[[:blank:]]+($BROWSE_UUID)[[:blank:]]+$1\`?[[:space:]]*\$/\1/p" <<<"$3" | tail -n 1)
+  BROWSE_OUTCOME=$(sed -nE 's/^`?OUTCOME:[[:blank:]]+([A-Z_]+).*/\1/p' <<<"$3" | tail -n 1)
   BROWSE_OUTCOME=${BROWSE_OUTCOME:-missing}
-  if [ "${3:-}" = log-only ]; then
+  [ "${4:-}" = log-only ] || [ -n "$BROWSE_PROVEN" ] || [ "$BROWSE_OUTCOME" != BROWSER_OK ] || BROWSE_OUTCOME=BROWSER_UNPROVEN
+  if [ "${4:-}" = log-only ]; then
     :
   elif [ -n "$BROWSE_PROVEN" ]; then
-    browse_registry_set "$1" '. + {device_id:$d, proven_at:(now | todate), status:"ok", last_error:""}' --arg d "$BROWSE_PROVEN"
+    browse_registry_set "$1" '. + {email:$e, chrome_profile:$p, pin:(.pin // false), device_id:$d, proven_at:(now | todate),
+      status:"ok", last_error:""}' --arg d "$BROWSE_PROVEN" --arg e "$(browse_email "$1")" --arg p "$2"
   elif [ "$BROWSE_OUTCOME" = BROWSER_NO_DEVICE ]; then
     browse_registry_set "$1" '. + {status:"needs-login", last_error:"no listed browser proved to be its Chrome profile"}'
-  elif [ -n "${3:-}" ]; then
+  elif [ -n "${4:-}" ]; then
     browse_registry_set "$1" '. + {status:"proof-failed", last_error:$e}' --arg e "$BROWSE_OUTCOME"
   fi
 }
@@ -5052,13 +5066,16 @@ browse_log() { # run vendor account profile target device outcome workaround
       outcome:$outcome, workaround:$workaround}' >>"$(browse_dir)/log.jsonl"
 }
 
-# A way around the preamble: a device no list printed, a Chrome launch of its own, --chrome without
-# --browser, or a script aimed at the browser the run does not target.
-browse_workaround() { # transcript target
-  local other='osascript.*(Dia|company\.thebrowser\.dia)|dia-js' lines
-  [ "$2" != dia ] || other='osascript.*(Google Chrome|com\.google\.Chrome)'
+# A way around the preamble since the run started (a resumed session holds earlier runs): a device no
+# list printed, a Chrome launch of its own, --chrome without --browser, or a script aimed at the browser
+# the run does not target. Only a command's own executable counts; `pgrep -f '...Google Chrome'` drives nothing.
+browse_workaround() { # transcript target since
+  local at='(^|[;&|(`])[[:space:]]*' other lines
+  other="${at}osascript.*(Dia|company\.thebrowser\.dia)|${at}[^[:space:]]*dia-js"
+  [ "$2" != dia ] || other="${at}osascript.*(Google Chrome|com\.google\.Chrome)"
   [ -r "$1" ] || return 1
-  lines=$(jq -rn --arg uuid "$BROWSE_UUID" '[inputs] as $all
+  lines=$(jq -rn --arg uuid "$BROWSE_UUID" --argjson since "${3:-0}" '[inputs
+      | select(((.timestamp? // "") | tostring | sub("\\.[0-9]+"; "") | fromdateiso8601? // 0) >= $since)] as $all
     | [$all[] | .message.content[]? | objects] as $parts
     | [$parts[] | select(.type == "tool_use" and (.name | endswith("list_connected_browsers"))) | .id] as $lists
     | [$parts[] | select(.type == "tool_result" and (.tool_use_id as $id | $lists | index($id)))
@@ -5066,22 +5083,23 @@ browse_workaround() { # transcript target
     | ($parts[] | select(.type == "tool_use" and (.name | endswith("select_browser"))) | .input.deviceId
        | select(. as $d | $listed | index($d) | not) | "UNLISTED-DEVICE " + .),
       ($parts[] | select(.type == "tool_use" and .name == "Bash") | .input.command // empty),
-      ($all[] | .payload? | objects | select(.type == "function_call") | .arguments // empty)' "$1" 2>/dev/null) || return 1
-  grep -Eq -- "^UNLISTED-DEVICE |(^|[;&|[:space:]])open[[:space:]][^|;&]*(Google Chrome|com\.google\.Chrome)|Google Chrome\.app/Contents/MacOS|$other" <<<"$lines" ||
+      ($all[] | .payload? | objects | select(.type == "function_call") | .arguments | fromjson? | .cmd // .command // empty
+       | if type == "array" then .[-1] else . end | strings)' "$1" 2>/dev/null) || return 1
+  grep -Eq -- "^UNLISTED-DEVICE |${at}open[[:space:]][^|;&]*(Google Chrome|com\.google\.Chrome)|${at}['\"]?[^[:space:]'\"]*Google(\\\\ | )Chrome\.app/Contents/MacOS|$other" <<<"$lines" ||
     grep -E -- '(^|[[:space:]])--chrome([[:space:]]|$)' <<<"$lines" | grep -vq -- '--browser'
 }
 
 browse_record() { # directory exit-code
-  local meta="$1/meta.json" vendor account target transcript workaround=false
+  local meta="$1/meta.json" vendor account target profile transcript workaround=false
   jq -e '.browser == true' "$meta" >/dev/null 2>&1 || return 0
   vendor=$(jq -r '.vendor' "$meta") account=$(jq -r '.account' "$meta") target=$(jq -r '.browser_target // "chrome"' "$meta")
-  browse_absorb "$account" "$(cat "$1/result" 2>/dev/null)" "$([ "$vendor:$target" = claudeb:chrome ] || echo log-only)"
+  profile=$(jq -r '.browser_profile // empty' "$meta")
+  browse_absorb "$account" "$profile" "$(cat "$1/result" 2>/dev/null)" "$([ "$vendor:$target" = claudeb:chrome ] || echo log-only)"
   [ "$BROWSE_OUTCOME" != missing ] || [ "$2" = 0 ] || BROWSE_OUTCOME=BROWSER_INTERRUPTED
   transcript=$(session_transcript "$vendor" "$account" "$(session_id "$1")" "$(jq -r '.workdir // empty' "$meta")" 2>/dev/null) ||
     transcript=''
-  ! browse_workaround "$transcript" "$target" || workaround=true
-  browse_log "${1##*/}" "$vendor" "$account" "$(jq -r '.browser_profile // empty' "$meta")" "$target" "$BROWSE_PROVEN" \
-    "$BROWSE_OUTCOME" "$workaround"
+  ! browse_workaround "$transcript" "$target" "$(jq -r '.started_at // 0 | floor' "$meta")" || workaround=true
+  browse_log "${1##*/}" "$vendor" "$account" "$profile" "$target" "$BROWSE_PROVEN" "$BROWSE_OUTCOME" "$workaround"
 }
 
 browse_proof_session() { # account profile task -> the answer; the account's registry entry updated
@@ -5092,6 +5110,7 @@ browse_proof_session() { # account profile task -> the answer; the account's reg
     printf '\nTask: %s\n' "$3"; } >"$prompt"
   answer=$(browse_session "$1" "$prompt")
   rm -f "$prompt"
+  grep -Eq '^`?OUTCOME:' <<<"$answer" || answer+=$'\nOUTCOME: BROWSER_INTERRUPTED'
   printf '%s\n' "$answer"
 }
 
@@ -5109,7 +5128,7 @@ browse_enroll() { # account [pin-directory]
     return 1
   fi
   if browse_window "$dir"; then
-    browse_absorb "$account" "$(browse_proof_session "$account" "$dir" 'the proof alone: close your tab and end `OUTCOME: BROWSER_OK`.')" enrolling
+    browse_absorb "$account" "$dir" "$(browse_proof_session "$account" "$dir" 'the proof alone: close your tab and end `OUTCOME: BROWSER_OK`.')" enrolling
   else
     BROWSE_OUTCOME=BROWSER_INTERRUPTED BROWSE_PROVEN=''
     browse_registry_set "$account" '. + {status:"proof-failed", last_error:"its Chrome window did not open"}'
@@ -5125,7 +5144,7 @@ browse_enroll() { # account [pin-directory]
 # Each enrolled account fills and submits a form on a listener only this canary runs; the server's own
 # receipt is the verdict, never the worker's word.
 browse_canary() {
-  local work port server account dir rc=0 tag child
+  local work port account dir rc=0 tag child answer
   local -a children=()
   [ -z "$(chrome_runs)" ] || { printf 'CANARY: skipped — a browser run is live\n'; return 0; }
   mkdir -p "$(browse_dir)" && touch "$(browse_dir)/canary.stamp"
@@ -5157,43 +5176,47 @@ with open(os.path.join(work, "port.tmp"), "w") as handle:
 os.rename(os.path.join(work, "port.tmp"), os.path.join(work, "port"))
 server.serve_forever()
 PY
-  server=$!
+  trap "kill $! 2>/dev/null; rm -rf $(printf %q "$work")" EXIT
+  trap 'exit 1' INT TERM HUP
   for ((tag = 0; tag < 50; tag++)); do [ -s "$work/port" ] && break; sleep 0.1; done
-  port=$(cat "$work/port" 2>/dev/null)
+  port=$(cat "$work/port" 2>/dev/null) || { printf 'CANARY: failed — its form server did not start\n'; return 1; }
   while IFS=$'\t' read -r account dir; do
     tag="canary-$account-$(date +%s)"
     (
+      BROWSE_OUTCOME=BROWSER_INTERRUPTED BROWSE_PROVEN=''
       if browse_window "$dir"; then
-        browse_absorb "$account" "$(browse_proof_session "$account" "$dir" "open http://127.0.0.1:$port/form?case=$tag in your proven tab, set the field \`v\` to \`$tag\` and submit the form through JavaScript, then read the page back: it must say \`received $tag\`.")"
-      else
-        BROWSE_OUTCOME=BROWSER_INTERRUPTED BROWSE_PROVEN=''
+        answer=$(browse_proof_session "$account" "$dir" "open http://127.0.0.1:$port/form?case=$tag in your proven tab, set the field \`v\` to \`$tag\` and submit the form through JavaScript, then read the page back: it must say \`received $tag\`.")
+        if grep -qF "\"v\": \"$tag\"" "$work/receipts" 2>/dev/null; then
+          browse_absorb "$account" "$dir" "$answer"
+        else
+          browse_absorb "$account" "$dir" "$answer" log-only
+          BROWSE_OUTCOME=CANARY_NO_RECEIPT
+        fi
       fi
-      grep -qF "\"v\": \"$tag\"" "$work/receipts" 2>/dev/null || BROWSE_OUTCOME=CANARY_NO_RECEIPT
       browse_log "$tag" claudeb "$account" "$dir" chrome "$BROWSE_PROVEN" "$BROWSE_OUTCOME" false
       printf 'CANARY: %s %s\n' "$account" "$BROWSE_OUTCOME"
-      [ "$BROWSE_OUTCOME" != CANARY_NO_RECEIPT ]
+      [ "$BROWSE_OUTCOME" = BROWSER_OK ]
     ) &
     children+=("$!")
   done < <(browse_registry | jq -r 'to_entries[] | select((.value.chrome_profile // "") != "") | [.key, .value.chrome_profile] | @tsv')
   for child in "${children[@]}"; do wait "$child" || rc=1; done
-  kill "$server" 2>/dev/null
-  rm -rf "$work"
   return "$rc"
 }
 
 browse_run() {
-  local mode=status arg='' pin='' target=chrome account rc=0
+  local mode=status arg='' pin='' target=chrome account='' rc=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --enroll | --window | --seen) [ "$#" -ge 2 ] || usage; mode=${1#--} arg=$2; shift 2 ;;
       --pin) [ "$#" -ge 2 ] || usage; pin=$2; shift 2 ;;
+      --account) [ "$#" -ge 2 ] || usage; account=$2; shift 2 ;;
       --target) [ "$#" -ge 2 ] || usage; target=$2; shift 2 ;;
       --canary | --json) mode=${1#--}; shift ;;
       *) usage ;;
     esac
   done
   case "$mode" in
-    seen) browse_seen "$arg" "$target" ;;
+    seen) browse_seen "$arg" "$target" "$account" ;;
     window)
       account=$(browse_profile "$arg")
       [ -n "$account" ] && browse_window "$account" && printf 'WINDOW: %s %s\n' "$arg" "$account" ||

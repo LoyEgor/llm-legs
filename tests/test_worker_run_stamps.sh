@@ -499,9 +499,9 @@ assert grep -q 'no after-snapshot' "$WORK/claim-killed.out"
 
 clear_stub
 rc=0
-"$RUNNER" start codex --brief "$WORK/brief" --chrome >"$WORK/start.out" 2>"$WORK/start.err" || rc=$?
-assert test "$rc" -eq 4
-assert grep -q 'only claudeb supports --chrome' "$WORK/start.err"
+"$RUNNER" start gemini --brief "$WORK/brief" --browser >"$WORK/start.out" 2>"$WORK/start.err" || rc=$?
+assert test "$rc" -eq 2
+assert grep -q 'gemini does not support --browser' "$WORK/start.out"
 assert test ! -s "$CALL_LOG"
 
 clear_stub
@@ -510,8 +510,9 @@ assert await_done
 assert test "$(grep -c '^ARG=--chrome$' "$CALL_LOG")" -eq 0
 assert jq -e '.chrome == false' "$RUN_DIR/meta.json" >/dev/null
 
+export BROWSE_PGREP=true
 clear_stub
-start_ok claudeb --chrome
+start_ok claudeb --browser --target dia
 assert await_done
 assert grep -qx 'ARG=--chrome' "$CALL_LOG"
 assert jq -e '.chrome == true' "$RUN_DIR/meta.json" >/dev/null
@@ -519,7 +520,7 @@ assert jq -e '.cmd | index("--chrome") != null' "$RUN_DIR/meta.json" >/dev/null
 
 clear_stub
 : >"$STUB_DIR/claudeb_drop_effort"
-start_ok claudeb --chrome
+start_ok claudeb --browser --target dia
 assert await_done
 assert test "$(grep -c '^CLAUDEB_CALL$' "$CALL_LOG")" -eq 2
 assert test "$(grep -c '^ARG=--chrome$' "$CALL_LOG")" -eq 2
@@ -533,6 +534,7 @@ assert jq -e '(.cli_starts | length) == 2 and (.attempt_secs | length) == 2 and 
   "$RUN_DIR/meta.json" >/dev/null
 # Every child of the run knows which run it belongs to.
 assert test "$(cat "$STUB_DIR/run_id_env")" = "$RUN_ID"
+unset BROWSE_PGREP
 
 # runs.jsonl: one row per finished run, the record's timings with it; never a second row for one run.
 RUNS_JOURNAL="$CLAUDEB_DIR/worker-stats/runs.jsonl"

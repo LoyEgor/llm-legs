@@ -27,7 +27,7 @@ EOF
 #!/bin/sh
 printf '%s\n' "\$*" >>"$bt/open.log"
 for a; do last=\$a; done
-printf '%s\n' "\$last" >>"$bt/tabs"
+printf '\n%s\n' "\$last" >>"$bt/tabs"
 : >"$bt/up/Google Chrome"
 EOF
   cat >"$bt/stub/claudeb" <<EOF
@@ -40,7 +40,8 @@ mode=\$(cat "$bt/mode-\$account" 2>/dev/null || echo ok)
 url=\$(grep -o 'http://127.0.0.1:[0-9]*/form?case=[^ ]*' <<<"\$prompt" | head -n 1)
 [ -z "\$url" ] || [ "\$mode" != ok ] || curl -s "\${url%/form*}/submit?case=\${url##*=}&v=\${url##*=}" >/dev/null
 case "\$mode" in
-  ok) device=\$(cat "$bt/device-\$account"); result="BROWSER-PROVEN: \$device \$account"$'\n'"OUTCOME: BROWSER_OK" ;;
+  ok | nosubmit) device=\$(cat "$bt/device-\$account"); result="BROWSER-PROVEN: \$device \$account"$'\n'"OUTCOME: BROWSER_OK" ;;
+  unproven) result="OUTCOME: BROWSER_OK" ;;
   nodevice) result="OUTCOME: BROWSER_NO_DEVICE account=\$account" ;;
   *) result=done ;;
 esac
@@ -51,8 +52,8 @@ EOF
   printf '%s\n' "$dev_extra" >"$bt/device-extra"
   printf 'cccccccc-3333-4333-8333-333333333333\n' >"$bt/device-lost"
   local BROWSE_PGREP="$bt/stub/pgrep" BROWSE_OSASCRIPT="$bt/stub/osascript" BROWSE_OPEN="$bt/stub/open"
-  local BROWSE_DIA_JS="$bt/stub/dia-js" BROWSE_CHROME_USER_DATA="$bt/chrome" BROWSE_SEEN_WAIT=2 BROWSE_WINDOW_WAIT=6
-  export BROWSE_PGREP BROWSE_OSASCRIPT BROWSE_OPEN BROWSE_DIA_JS BROWSE_CHROME_USER_DATA BROWSE_SEEN_WAIT BROWSE_WINDOW_WAIT
+  local BROWSE_DIA_JS="$bt/stub/dia-js" BROWSE_CHROME_USER_DATA="$bt/chrome" BROWSE_SEEN_WAIT=2 BROWSE_WINDOW_WAIT=6 BROWSE_SETTLE_S=0
+  export BROWSE_PGREP BROWSE_OSASCRIPT BROWSE_OPEN BROWSE_DIA_JS BROWSE_CHROME_USER_DATA BROWSE_SEEN_WAIT BROWSE_WINDOW_WAIT BROWSE_SETTLE_S
   local registry="$WORKER_RUN_DIR/browse/accounts.json" log="$WORKER_RUN_DIR/browse/log.jsonl"
   browse() { WORKER_RUN_CLAUDEB="$bt/stub/claudeb" "$RUNNER" browse "$@"; }
 
@@ -67,6 +68,12 @@ EOF
   # 2: --seen reads the target browser's own tab list
   printf 'https://example.com/?wr=tok-1\n' >>"$bt/tabs"
   assert grep -qx 'SEEN: chrome' <<<"$(browse --seen tok-1)"
+  # beside its profile's marker tab only: another profile signed in as the account proves nothing
+  assert grep -qx 'SEEN: chrome' <<<"$(browse --seen tok-1 --account com)"
+  printf '\nhttps://example.com/#worker-run=Profile-9\nhttps://example.com/?wr=tok-3\n' >>"$bt/tabs"
+  rc=0; out=$(browse --seen tok-3 --account com) || rc=$?
+  assert test "$rc" -eq 1
+  assert grep -qx 'SEEN: none' <<<"$out"
   rc=0; out=$(browse --seen tok-1 --target dia) || rc=$?
   assert test "$rc" -eq 1
   assert grep -qx 'SEEN: none' <<<"$out"
@@ -87,7 +94,7 @@ EOF
     and .lost.status == "no-profile"' "$registry" >/dev/null
   assert grep -q 'profile com -p --model sonnet --effort low --chrome --output-format json' "$bt/claudeb.log"
   assert test "$(head -n 1 "$bt/prompt-com")" = '# Browser preamble (Claude in Chrome / Google Chrome / com)'
-  assert grep -q -- "worker-run browse --seen [0-9]*-<candidate number>\`" "$bt/prompt-com"
+  assert grep -q -- "worker-run browse --seen [0-9]*-<candidate number> --account com\`" "$bt/prompt-com"
   assert test "$(grep -c '"outcome":"BROWSER_NO_DEVICE"' "$log")" -eq 1
   assert test "$(grep -c '"outcome":"BROWSER_OK"' "$log")" -eq 1
   assert test "$(grep -c -- '--profile-directory=Profile 2' "$bt/open.log")" -eq 1
@@ -100,6 +107,16 @@ EOF
   assert jq -e '.lost.pin == true and .lost.status == "ok"' "$registry" >/dev/null
   assert_fails browse --enroll all --pin 'Profile 3'
   assert grep -q "^ACCOUNT: com ok Profile 1 $dev_com 20" <<<"$(browse)"
+  # a BROWSER_OK with no proven device is no proof; a session that ends without an outcome is interrupted
+  printf 'unproven\n' >"$bt/mode-lost"
+  assert_fails browse --enroll lost
+  assert jq -e '.lost.status == "proof-failed" and .lost.last_error == "BROWSER_UNPROVEN"' "$registry" >/dev/null
+  assert jq -se '.[-1] | .outcome == "BROWSER_UNPROVEN" and .device == ""' "$log" >/dev/null
+  printf 'mute\n' >"$bt/mode-lost"
+  assert_fails browse --enroll lost
+  assert jq -se '.[-1].outcome == "BROWSER_INTERRUPTED"' "$log" >/dev/null
+  rm -f "$bt/mode-lost"
+  browse --enroll lost >/dev/null
 
   # 5: BROWSER: chrome in the brief is a Chrome run on the account's own profile
   printf 'BROWSER: chrome\nACCOUNT: com\nfill the form\n' >"$WORK/brief"
@@ -123,6 +140,13 @@ EOF
   start_ok claudeb --browser
   assert await_done
   assert jq -e '.browser_target == "chrome"' "$RUN_DIR/meta.json" >/dev/null
+  # with no account named, the picker is steered off accounts not enrolled ok
+  printf 'BROWSER: chrome\nfill the form\n' >"$WORK/brief"
+  clear_stub
+  PICK_ACCOUNT=com start_ok claudeb
+  assert await_done
+  assert grep -q -- '--exclude .*extra' "$PICK_LOG"
+  assert test "$(jq -r '.account' "$RUN_DIR/meta.json")" = com
 
   # 6: the Dia path never launches Dia
   printf 'BROWSER: yes\nACCOUNT: com\nlook\n' >"$WORK/brief"
@@ -143,11 +167,11 @@ EOF
 
   # 7: the supervisor's own record: a proof refreshes the device, a dead run is interrupted, a way around is flagged
   local fixture="$WORKER_RUN_DIR/browser-fixture" transcript="$CLAUDEB_PROFILES_ROOT/com/projects/fx/s1.jsonl" listed
-  deliver() { # result-text exit-code
+  deliver() { # result-text exit-code [started-at]
     rm -rf "$fixture"
     mkdir -p "$fixture"
-    printf '{"vendor":"claudeb","account":"com","workdir":"%s","started_at":0,"pid":0,"browser":true,"browser_target":"chrome","browser_profile":"Profile 1"}\n' \
-      "$WORK/workdir" >"$fixture/meta.json"
+    printf '{"vendor":"claudeb","account":"com","workdir":"%s","started_at":%s,"pid":0,"browser":true,"browser_target":"chrome","browser_profile":"Profile 1"}\n' \
+      "$WORK/workdir" "${3:-0}" >"$fixture/meta.json"
     : >"$fixture/err"
     jq -cn --arg r "$1" '{result:$r, session_id:"s1"}' >"$fixture/out"
     "$RUNNER" _deliver "$fixture" "$2" >/dev/null 2>&1 || :
@@ -173,6 +197,14 @@ EOF
   head -n 3 "$transcript" >"$transcript.tmp" && mv "$transcript.tmp" "$transcript"
   jq -cn '{message:{content:[{type:"tool_use",id:"t5",name:"Bash",input:{command:"worker-run start claudeb --chrome --brief b"}}]}}' >>"$transcript"
   assert jq -e '.workaround == true' <<<"$(deliver 'OUTCOME: BROWSER_OK' 0)" >/dev/null
+  head -n 3 "$transcript" >"$transcript.tmp" && mv "$transcript.tmp" "$transcript"
+  jq -cn '{message:{content:[{type:"tool_use",id:"t6",name:"Bash",input:{command:"pgrep -f '\''Google Chrome.app/Contents/MacOS/Google Chrome'\''"}}]}}' >>"$transcript"
+  assert jq -e '.workaround == false' <<<"$(deliver 'OUTCOME: BROWSER_OK' 0)" >/dev/null
+  jq -cn '{message:{content:[{type:"tool_use",id:"t7",name:"Bash",input:{command:"cd /tmp && \"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome\" --profile-directory=x"}}]}}' >>"$transcript"
+  assert jq -e '.workaround == true' <<<"$(deliver 'OUTCOME: BROWSER_OK' 0)" >/dev/null
+  # a resumed session's earlier runs are not this run's
+  jq -c '. + {timestamp:"2026-01-01T00:00:00.123Z"}' "$transcript" >"$transcript.tmp" && mv "$transcript.tmp" "$transcript"
+  assert jq -e '.workaround == false' <<<"$(deliver 'OUTCOME: BROWSER_OK' 0 "$(date +%s)")" >/dev/null
   rm -f "$transcript"
 
   # 8: a codex browser run needs its cua_repl registration and binds to the enrolled, open profiles
@@ -194,10 +226,15 @@ EOF
   unset BROWSE_CUA_SYNC BROWSE_SKIP_PROCESSES BT_SYNC_MODE
 
   # 9: the canary's verdict is its own listener's receipt, and a live browser run holds it
+  printf 'nosubmit\n' >"$bt/mode-lost"
+  jq '.lost.proven_at = "2020-01-01T00:00:00Z"' "$registry" >"$registry.tmp" && mv "$registry.tmp" "$registry"
   rc=0; out=$(browse --canary) || rc=$?
   assert test "$rc" -eq 1
   assert grep -qx 'CANARY: com BROWSER_OK' <<<"$out"
   assert grep -qx 'CANARY: extra CANARY_NO_RECEIPT' <<<"$out"
+  assert grep -qx 'CANARY: lost CANARY_NO_RECEIPT' <<<"$out"
+  assert jq -e '.lost.proven_at == "2020-01-01T00:00:00Z"' "$registry" >/dev/null
+  assert test -z "$(find "$WORKER_RUN_DIR/browse" -name 'canary.*' -type d)"
   assert test -e "$WORKER_RUN_DIR/browse/canary.stamp"
   assert jq -se 'map(select(.run | startswith("canary-com-"))) | length == 1' "$log" >/dev/null
   assert grep -q 'http://127.0.0.1:[0-9]*/form?case=canary-com-' "$bt/prompt-com"

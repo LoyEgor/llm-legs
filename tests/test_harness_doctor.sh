@@ -24,6 +24,7 @@ export WORKER_RUN_DIR="$WORK/runs" HARNESS_BROWSE_CMD="$WORK/browse-stub"
 cat >"$HARNESS_BROWSE_CMD" <<EOF
 #!/bin/sh
 echo "\$@" >"$WORK/browse-calls"
+touch "$WORK/runs/browse/canary.stamp"
 EOF
 chmod +x "$HARNESS_BROWSE_CMD"
 cp "$ROOT/share/harness-ledger.json" "$HARNESS_LEDGER"
@@ -1415,6 +1416,15 @@ check(cells["gone"][0] == "no profile · no-profile" and ("browser-account", "go
       "Browser: an account without a Chrome profile is shown, not judged")
 check(cells["Runs"] == ["harness needs repair · missing ×1 · workaround ×1", "worker-run transcript r-wa"],
       "Browser: the repair row counts kinds in 72 h and names the newest run")
+put(os.path.join(runs, "browse", "accounts.json"), json.dumps({
+    "com": {"email": "c@x", "chrome_profile": "Profile 1", "status": "ok", "proven_at": T - 3600}}))
+put(os.path.join(runs, "browse", "log.jsonl"), "".join(json.dumps(dict(e, ts=stamp(T - 60))) + "\n" for e in (
+    {"run": "enroll-com-1", "account": "com", "outcome": "missing"},
+    {"run": "enroll-com-2", "account": "com", "outcome": "HARNESS_NEEDS_REPAIR"})))
+cells = {r["cells"][0]: r["cells"][1:] for r in B(T)["rows"]}
+check(cells["com"][0].startswith("Profile 1 · ok · proven 1 h 00 min ago")
+      and cells["Runs"][1] == "browse/last-session-com.json",
+      "Browser: repairs in one second and an epoch proven_at do not crash; a proof session points at its own file")
 m.browser_processes = lambda: ["/Applications/Dia.app/Contents/MacOS/Dia",
                                "/Applications/Dia.app/Contents/MacOS/Dia --type=renderer"]
 part = B(T)
@@ -1444,6 +1454,10 @@ for _ in range(50):
     time.sleep(0.1)
 check(open(calls).read().split() == ["browse", "--canary"], "Browser: a writing run starts the canary when its stamp is stale")
 os.remove(calls)
+for _ in range(50):
+    if os.path.exists(os.path.join(runs, "browse", "canary.stamp")):
+        break
+    time.sleep(0.1)
 B(T, write=True)
 time.sleep(0.3)
 check(not os.path.exists(calls), "Browser: a fresh canary stamp holds the next start")

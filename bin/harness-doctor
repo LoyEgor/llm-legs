@@ -4274,14 +4274,17 @@ BROWSER_QUIET_S = 7 * 86400
 
 
 def browser_ts(text):
+    if isinstance(text, (int, float)) and not isinstance(text, bool):
+        return int(text)
     try:
         return calendar.timegm(time.strptime(text or "", "%Y-%m-%dT%H:%M:%SZ"))
-    except ValueError:
+    except (ValueError, TypeError):
         return None
 
 
 def browser_canary(runs, write):
-    """The nightly canary rides this collector's schedule, at most one start per BROWSER_CANARY_S."""
+    """The nightly canary rides this collector's schedule, at most one start per BROWSER_CANARY_S; the canary
+    stamps itself once it really starts, so a skipped or failed start retries on the next collect."""
     stamp = os.path.join(runs, "browse", "canary.stamp")
     try:
         if not write or time.time() - os.stat(stamp).st_mtime < BROWSER_CANARY_S:
@@ -4290,9 +4293,6 @@ def browser_canary(runs, write):
         pass
     command = (os.environ.get("HARNESS_BROWSE_CMD") or os.path.join(ROOT_DIR, "bin", "worker-run")).split()
     try:
-        os.makedirs(os.path.dirname(stamp), exist_ok=True)
-        open(stamp, "a").close()
-        os.utime(stamp)
         subprocess.Popen(command + ["browse", "--canary"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, start_new_session=True)
     except OSError:
@@ -4350,16 +4350,20 @@ def browser_section(now, write=False):
                         head="a browser account cannot serve runs" if say else None,
                         judge=[verdict("browser-account", account, 1, 0, "findings", 0, 1, "watch", fact=say,
                                        evidence=[evidence(now, "browse:" + account, say)], bad=1)] if say else None))
-    repair = sorted((at, e) for at, e in log if now - at <= 72 * 3600 and (
-        e.get("workaround") or e.get("outcome") in BROWSER_REPAIR))
+    repair = sorted(((at, e) for at, e in log if now - at <= 72 * 3600 and (
+        e.get("workaround") or e.get("outcome") in BROWSER_REPAIR)), key=lambda pair: pair[0])
     if repair:
+        newest = repair[-1][1]
+        where = "worker-run transcript %s" % newest.get("run")
+        if str(newest.get("run")).startswith(("enroll-", "canary-")):
+            where = "browse/last-session-%s.json" % newest.get("account")
         kinds = collections.Counter("workaround" if e.get("workaround") else e.get("outcome") for _, e in repair)
         say = "%d browser run%s in 72 h went around the harness or ended without its outcome (%s), newest %s · fix: " \
               "read that run's transcript and repair the preamble or the preflight" % (
                   len(repair), "" if len(repair) == 1 else "s", ", ".join("%s ×%d" % k for k in sorted(kinds.items())),
-                  repair[-1][1].get("run"))
+                  newest.get("run"))
         rows.append(row(["Runs", "harness needs repair · %s" % " · ".join("%s ×%d" % k for k in sorted(kinds.items())),
-                         "worker-run transcript %s" % repair[-1][1].get("run")], [1], key="browser:repair", say=say,
+                         where], [1], key="browser:repair", say=say,
                         head="browser runs went around the harness",
                         judge=[verdict("browser-repair", "runs", len(repair), 0, "runs", 72, len(repair), "red", fact=say,
                                        evidence=[evidence(at, "run:%s" % e.get("run"), e.get("outcome") or "")
