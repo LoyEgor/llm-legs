@@ -3,9 +3,8 @@
 Status: settled 20261006T233611Z-7777: option 1 by load-is-weather — Load shows busy/unseen, never judges them; System owns machine CPU
 
 For «Harness Doctor» (`share/harness-ledger.json` `owner`), rows `load-busy-night-concurrency` and
-`load-unseen-suites-statusline`, both back to `open` as weather (night fixer
-harness-load-20261006T032928Z-345d). The slot exclusion (option 1 of this handoff, ac75a868) works as
-written; every red since comes from load no slot names.
+`load-unseen-suites-statusline`, `open` as weather. The slot exclusion (ac75a868) works as written;
+every red since comes from load no slot names.
 
 ## Facts (quiet samples, both ends `held` 0, since 2026-10-04 17:30)
 
@@ -14,12 +13,12 @@ written; every red since comes from load no slot names.
   13-183 % of each window; what else ran is unrecorded.
 - 10-06 03:53-04:55: 9 red, busy 83-95 %, no finished test run: logo-vectorizer-bench tracers
   (`champ42/pipeline.py`, `retrace.py`, `slotrun.py`; memlogd frame 2026-10-06T040532).
-- 10-06 06:24: the run's own launch value (busy 99.9 %, unseen 5.5) is one 65 s sample inside the
-  night's pre-phase (orchestrator doctors and survey, 06:20-06:29, no slot) while the bench still
-  ran (system-doctor hours 2026-10-06T03: `pipeline.py`, `jpeg_pipeline.py` births).
+- 10-06 06:24: one 65 s sample in the night's unslotted pre-phase while the bench still ran.
+- 10-06 06:30-23:59: 45 of 132 red; system-doctor `cpu_top` per hour: Python bench (09-10, 19-23 h),
+  `yes` at 2-3 cores 13-15 h (origin unknown, nothing of ours), Apple media/spotlight, JumpConnect.
 
 Egor 2026-10-05 (memory load-is-weather): other chats' and benchmarks' load is weather, never to be
-paused; the harness must adapt. Five load fixers (2026-09-30 to 10-06) re-measured the same rows.
+paused. Six load fixers (09-30 to 10-07) re-measured the same rows.
 
 ## Proposed to the owner
 
