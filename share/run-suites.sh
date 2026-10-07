@@ -13,6 +13,9 @@ if ! eval "$have_wait_n"; then
 fi
 {
 set -u
+# Inherited from a git hook or `git bisect run`, these aim every fixture's `git init` at the real
+# repository (it was left core.bare=true on 2026-10-08).
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY
 printf -v run_suites_start '%(%s)T' -1
 run_suites_queued=${EPOCHREALTIME:-$run_suites_start} run_suites_began=${EPOCHREALTIME:-$run_suites_start}
 run_worker=${WORKER_RUN_ID:-} run_session=${CLAUDE_CODE_SESSION_ID:-${CLAUDE_LAUNCHER_SESSION:-}}

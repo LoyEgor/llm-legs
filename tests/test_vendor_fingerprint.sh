@@ -570,7 +570,7 @@ assert jqe --arg g "$grok_id" '.note | contains("\($g): done \($g)")' "$RUNS/$ru
 NREPO="$WORK/night-repo"
 mkdir -p "$NREPO/bin" "$NREPO/share" "$NREPO/docs"
 cp "$SCRIPT" "$ROOT/bin/doctor-fix" "$NREPO/bin/"
-cp "$ROOT"/share/{chat-open.sh,night-worktree.sh,store-lock.sh,test-scope.sh,report_frame.py,doctor-areas.json,fix_commit.py} "$NREPO/share/"
+cp "$ROOT"/share/{chat-open.sh,night-worktree.sh,store-lock.sh,test-scope.sh,report_frame.py,doctor-areas.json,fix_commit.py,spend.py} "$NREPO/share/"
 cp "$ROOT/docs/vendor-release.md" "$NREPO/docs/"
 git -C "$NREPO" init -q
 git -C "$NREPO" add -A
