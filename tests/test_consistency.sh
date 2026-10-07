@@ -911,6 +911,11 @@ for agent in "$CLAUDEB_AGENT" "$CODEX_AGENT" "$GEMINI_AGENT"; do
   assert grep -Eq "worker-run reads the brief's \`ACCOUNT:\`, \`MODEL:\`(,| and) \`EFFORT:\`[^.]* header lines itself" "$agent"
   assert grep -Fq 'worker-run start' "$agent"
 done
+# The gate judges the relay's PROMPT, while worker-run reads the FILE it saved: an orchestrator that
+# hands `Brief file: <path>` plus an `ACCOUNT:` line got the first launch refused 9 times of 15.
+for agent in "$CLAUDEB_AGENT" "$CODEX_AGENT" "$GEMINI_AGENT" "$GROK_AGENT"; do
+  assert grep -Fq "pass \`--account\`/\`--model\` exactly as your prompt's \`ACCOUNT:\`/\`MODEL:\` lines say, never one it lacks" "$agent"
+done
 # worker-run reads a RESUME first line and refuses a --resume flag that disagrees with it; a relay told to
 # pass the flag launched a RESUME brief as a fresh session (2026-10-02).
 assert grep -Fq "drop the flag, worker-run reads the line itself" "$WORKER_RUN"
@@ -2744,8 +2749,9 @@ assert grep -Fq 'worker_claims_fresh' "$WORKERPICK"
 # Launchers with a ready-to-run profile claim through the picker's flag. Image launchers pick
 # without --claim, validate the profile, then call the same recorder so a ghost account does not burn the TTL.
 assert grep -Fq -- '--claim' "$ROOT/bin/worker-run"
-# worker-run records no claim itself; the module is sourced only to release one it routed past.
-assert eq "$(grep -c 'worker_claims_record' "$ROOT/bin/worker-run")" 0
+# worker-run records a claim itself only for an account the brief named, which no pick claimed.
+assert eq "$(grep -c 'worker_claims_record' "$ROOT/bin/worker-run")" 1
+assert grep -Fq '[ -z "$explicit_account" ] || worker_claims_record "$vendor" "$account"' "$ROOT/bin/worker-run"
 assert grep -Fq 'worker_claims_release codex "$PICKED_ACCOUNT"' "$ROOT/bin/worker-run"
 # Research picks for itself nowhere any more: the compatibility entrypoint submits a tracked
 # worker-run, and that run claims through the same picker flag every other relay uses.

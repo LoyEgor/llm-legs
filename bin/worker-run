@@ -2869,6 +2869,9 @@ start_run() {
      + if $vendor == "gemini" then {agy_model:$agy_model} else {} end
      + if $model_id != "" then {model_id:$model_id} else {} end
      + if $vendor == "grok" and $grok_turns != "" then {max_turns:($grok_turns | tonumber)} else {} end' >"$directory/meta.json" || fail 'could not write metadata'
+  # A picked account was claimed by worker-pick --claim; a named one spends the same window, so
+  # unclaimed the next pick hands parallel lanes this account too (log_audit:worker-on-exhausted-account).
+  [ -z "$explicit_account" ] || worker_claims_record "$vendor" "$account" 2>/dev/null || :
   # Who this run answers to, written where a hook can find it without parsing anything: a worker a
   # chat spawned IS that chat (Egor, 2026-08-17), and the run is the only place that fact exists —
   # the report says who a worker is, never who asked for it, so ownership read off a report is

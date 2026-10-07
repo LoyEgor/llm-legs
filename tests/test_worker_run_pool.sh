@@ -19,9 +19,11 @@ for vendor in claudeb codex gemini; do
   assert grep -qx "OUTCOME: $(tr '[:lower:]' '[:upper:]' <<<"$vendor")_UNAVAILABLE" "$WORK/pool-wall.out"
   assert grep -q 'explicit is out of the worker pool' "$WORK/pool-wall.err"
   assert test ! -s "$CALL_LOG"
+  assert test ! -e "$HOME/.cache/worker-claims/$vendor/explicit"
   set_config "${vendor}_profile=explicit" 'codex_effort=medium'
   start_ok "$vendor" --account explicit
   assert meta_account_is explicit
+  assert test -e "$HOME/.cache/worker-claims/$vendor/explicit"
   assert await_done
   rm -f "$pool_dir/disabled"
 done
