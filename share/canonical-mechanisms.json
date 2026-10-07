@@ -1,4 +1,19 @@
 {
-  "about": "Canonical modules recorded by landed Code doctor cleanups (bin/code-doctor record-fix --mechanism); review-bench's fit lens reads it.",
-  "mechanisms": []
+ "about": "Canonical modules recorded by landed Code doctor cleanups (bin/code-doctor record-fix --mechanism); review-bench's fit lens reads it.",
+ "mechanisms": [
+  {
+   "at": "2026-10-08T01:11:08+03:00",
+   "canonical": "share/spend.py",
+   "cause": "cause:llm-legs/bin/chat-load#read_json",
+   "mechanism": "shared JSON reader",
+   "replaced": [
+    "bin/doctor-fix",
+    "bin/harness-doctor",
+    "bin/llm-doctor",
+    "bin/system-doctor",
+    "bin/updater-doctor",
+    "share/time_budget.py"
+   ]
+  }
+ ]
 }

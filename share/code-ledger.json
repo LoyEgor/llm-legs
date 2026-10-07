@@ -433,6 +433,100 @@
    "same_cause": [],
    "status": "fixed-pending",
    "title": "hammerspoon/ipad_mode.lua#IpadMode._setLogDirForTest is defined and never called"
+  },
+  {
+   "fixes": [
+    {
+     "at": "2026-10-08T01:11:08+03:00",
+     "by": "code-code-20261007T214031Z-032f",
+     "files": [
+      "bin/doctor-fix",
+      "bin/harness-doctor",
+      "bin/llm-doctor",
+      "bin/system-doctor",
+      "bin/updater-doctor",
+      "share/time_budget.py",
+      "share/spend.py"
+     ],
+     "in": null,
+     "regressed_at": null,
+     "yield": {
+      "lines_removed": 42,
+      "suite_s_saved": 0,
+      "tokens_cut": 0
+     }
+    }
+   ],
+   "group": "duplicate",
+   "handoff": null,
+   "id": "cause:llm-legs/bin/chat-load#read_json",
+   "last_reviewed": null,
+   "match": {
+    "cause": "cause:llm-legs/bin/chat-load#read_json",
+    "identity": {
+     "sketch": [
+      160991167,
+      190067160,
+      197179692,
+      285954652,
+      313702953,
+      321480995,
+      493957277,
+      531553491,
+      561689174,
+      674557433,
+      727920455,
+      773317877,
+      782932025,
+      808350912,
+      832362047,
+      853438597,
+      946794672,
+      1102521130,
+      1135509794,
+      1170689886,
+      1303404839,
+      1360021209,
+      1387299308,
+      1491018497,
+      1588072043,
+      1602510577,
+      1644916371,
+      1650109534,
+      1805347079,
+      1812588788,
+      1855605295,
+      2213993622,
+      2314413066,
+      2579182945,
+      2678383938,
+      2751989066,
+      3181937727,
+      3208995676,
+      3218433571,
+      3263632899,
+      3449775335,
+      3480515819,
+      3546825746,
+      3563254213,
+      3605130191,
+      3630023294,
+      3704343654,
+      3794981646,
+      3823359118,
+      4131792784,
+      4284366333
+     ],
+     "touch": [
+      "call:json.load"
+     ]
+    }
+   },
+   "note": "Six copies now import share/spend.py#read_json (default=None, utf-8). Two copies remain on purpose: bin/chat-load#read_json, because memlogd deploys chat-load to ~/.local/libexec beside only chat_names.py, report-bus and report_frame.py (bin/memlogd install list), and the daemon cannot read /Volumes/Work (chat-load SHARED comment), so importing spend there would need spend.py and fix_commit.py deployed too, more than these 7 lines; bin/code-doctor#read_json is the judge's own file and was not in this cause's units. If the residual chat-load/spend pair re-surfaces, an intentional row for it is the owner's call.",
+   "reviewed_by": null,
+   "same_cause": [],
+   "status": "fixed-pending",
+   "title": "llm-legs/bin/llm-doctor#read_json and llm-legs/bin/system-doctor#read_json share clone (0.78); llm-legs/bin/system-doctor#read_json and llm-legs/bin/updater-do…"
   }
  ]
 }
