@@ -185,6 +185,12 @@ A `speed-spend-<component>` run audits one component of the Spend block; its bri
 audit; it is proven once the share or the part price in `harness_index.parts` falls. Model, effort and thinking are
 never the lever.
 
+### Suite audits: same checks, less CPU
+
+A `speed-suite-audit-<repo>-<suite>` run audits the suite the queue ranks first (one a night, beside the red test
+rules); its brief carries the steps, `STRONG: yes` keeps Light and Gemini Flash off it, and
+`bin/speed-doctor --suite-audit` records the row in `share/spend-ledger.json`. `kept` is a normal verdict.
+
 ### The judge is not yours to loosen
 
 The judge is `LIMITS` and the rules in `bin/harness-doctor`, the dismissal rows of

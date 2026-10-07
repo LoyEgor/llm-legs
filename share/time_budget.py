@@ -13,6 +13,7 @@ import collections
 import glob
 import json
 import os
+import re
 import statistics
 import subprocess
 import sys
@@ -25,6 +26,7 @@ import limiter_hold  # noqa: E402
 import night_churn  # noqa: E402
 import night_spend  # noqa: E402
 import spend as spend_block  # noqa: E402
+import suite_audit  # noqa: E402
 
 CLASSES = (("model", "model turns", "plain"), ("tools", "tool execution", "plain"),
            ("compaction", "compaction", "plain"), ("hooks", "hooks", "harness"), ("stop", "stop hooks", "harness"),
@@ -48,7 +50,14 @@ FLOORS = {"hooks": 0, "stop": 0, "suite_wait": 0, "slot": 0, "retries": 0, "lock
 ACTIVE_FLOOR_SHARE = 0.70
 FLOOR_ROW_MIN_DAY = 30
 ROI_DAYS = 3
-IMPROVEMENT_RULES = ("opportunity", "regression", "time_floor", spend_block.RULE)
+IMPROVEMENT_RULES = ("opportunity", "regression", "time_floor", spend_block.RULE, suite_audit.RULE)
+# (unit, samples a side needs, the after/before ratio proving it): p5 of median(N)/median(the samples before) on
+# unchanged code over the journals of 2026-09-29..10-07, so a lower ratio is no noise.
+UNITS = {"suite_run": ("CPU-s/run", suite_audit.PROOF_RUNS, suite_audit.PROOF_RATIO),
+         "hooks": ("ms/call", 50, 0.55), "stop": ("ms/call", 50, 0.55),
+         "suite_wait": ("s/wait", 20, 0.4), "slot": ("s/wait", 20, 0.4), "locks": ("s/wait", 20, 0.4)}
+WAIT_OF = {"suite_wait": ("run-suites",), "slot": ("night-workers",), "locks": WAIT_CLASSES}
+UNIT_BEFORE_DAYS = 7
 SETTLE_S = 24 * 3600
 KEEP_DAYS = 35
 TOP_SUITES = 10
@@ -641,7 +650,7 @@ def improvement_class(rule, pid):
         return key if key in FLOORS else None
     if ident.startswith(("chat/hooks", "hooks/")):
         return "hooks"
-    if ident.startswith(("chat/tests", "tests/")) or rule.startswith("test_"):
+    if ident.startswith(("chat/tests", "tests/")) or rule.startswith("test_") or rule == suite_audit.RULE:
         return "suite_run"
     return "suite_wait" if ident.startswith("chat/queue") else None
 
@@ -701,6 +710,55 @@ def saved_min_day(item, landed, now):
     return round(statistics.mean(before) - statistics.mean(after), 1)
 
 
+def unit_samples(item, lo, hi):
+    """{key: [values]} of the class's natural unit in [lo, hi): per suite (only the suites its ids name, when any),
+    per hook script, per wait class."""
+    if item["class"] == "suite_run":
+        named = set()
+        for ident in item.get("ids") or ():
+            found = re.fullmatch(r"(?:test_\w+|%s):([\w.-]+):([\w.-]+)|opportunity:tests/([\w.-]+)/([\w.-]+)"
+                                 % suite_audit.RULE, str(ident))
+            if found:
+                named.add("%s/%s" % (found.group(1) or found.group(3), found.group(2) or found.group(4)))
+        return suite_audit.samples(suites_path(), lo, hi, named)
+    out = collections.defaultdict(list)
+    if item["class"] in ("hooks", "stop"):
+        for h in event_rows(lo, hi, ("h",)).get("h", ()):
+            if len(h) > 5 and lo <= h[1] < hi and num(h[5]) is not None and (h[3] == "Stop") == (item["class"] == "stop"):
+                out[h[4]].append(h[5])
+    for w in wait_rows(lo, hi) if item["class"] in WAIT_OF else ():
+        if w.get("class") in WAIT_OF[item["class"]]:
+            out[w["class"]].append(w["seconds"])
+    return out
+
+
+def unit_proof(item, started, ended, now):
+    """A landed improvement whose class has a natural unit, proven from the journals once N samples follow the night:
+    the medians per key (suite, hook script, wait class) before the night and after it, weighted by the samples
+    after it, so a changed mix of suites or hooks reads as no gain. No sample before the night keeps the day
+    totals."""
+    unit = UNITS.get(item["class"])
+    if not unit:
+        return None
+    label, need, ratio = unit
+    before = unit_samples(item, started - UNIT_BEFORE_DAYS * 86400, started)
+    if not any(before.values()):
+        return None
+    after = unit_samples(item, ended, now)
+    keys = [k for k, v in after.items() if len(v) >= need and before.get(k)]
+    if not keys:
+        return {"proven": None, "text": "%s: %d of %d since" % (
+            label, max((len(v) for v in after.values()), default=0), need)}
+    weight = {k: len(after[k]) for k in keys}
+    total = float(sum(weight.values()))
+    was = sum(weight[k] * statistics.median(before[k]) for k in keys) / total
+    now_ = sum(weight[k] * statistics.median(after[k]) for k in keys) / total
+    proven = now_ <= ratio * was
+    return {"proven": proven, "before": round(was, 2), "after": round(now_, 2), "samples": int(total),
+            "text": "%s → %s %s · %s" % (suite_audit.fmt(was), suite_audit.fmt(now_), label,
+                                         "proven" if proven else "not lower")}
+
+
 def spend_proofs():
     doc = read_json(os.path.join(harness_dir(), "latest.json"), None)
     found = (((doc or {}).get("speed") or {}).get("spend") or {}).get("proofs") if isinstance(doc, dict) else None
@@ -713,12 +771,13 @@ def timed(row):
 
 def roi_lines(rows, now):
     """Per improvement job of the night, per night, and cumulative over the trend: weighted spend against the
-    minutes per day saved once the change ran a full day. No gain reads 'spend without result', never a revert. A
-    Spend audit reads its proof from Harness's latest.json instead and stays out of the minute totals."""
-    out, total_spend, total_saved, measured, proofs = [], 0.0, 0.0, 0, None
+    minutes per day saved once the change ran a full day, or, for a class with a natural unit, its per-unit proof. No
+    gain reads 'spend without result', never a revert. A Spend audit reads its proof from Harness's latest.json
+    instead and stays out of the minute totals."""
+    out, total_spend, total_saved, total_proven, measured, proofs = [], 0.0, 0.0, 0, 0, None
     for row in (r for r in rows if r):
         spend = saved = 0.0
-        pending = unmeasured = 0
+        pending = unmeasured = proven = 0
         for item in row.get("improvements") or ():
             if item["class"].startswith("spend:"):
                 if row is rows[-1]:
@@ -729,8 +788,18 @@ def roi_lines(rows, now):
                         spend_block.proof_text(proofs.get(item["class"][6:]))
                         if item["merged"] else "not landed"))
                 continue
-            gain = saved_min_day(item, row.get("ended") or row["started"] + row["hours"] * 3600, now) \
-                if item["merged"] else None
+            ended = row.get("ended") or row["started"] + row["hours"] * 3600
+            shown = unit_proof(item, row["started"], ended, now) if item["merged"] else None
+            if shown:
+                if shown["proven"] is None:
+                    pending += 1
+                else:
+                    spend, measured, proven = spend + item["spend_m"], measured + 1, proven + shown["proven"]
+                if row is rows[-1]:
+                    out.append("roi · %s · %.1fM · %+d/-%d · %s" % (
+                        item["ref"][:40], item["spend_m"], item["lines"][0], item["lines"][1], shown["text"]))
+                continue
+            gain = saved_min_day(item, ended, now) if item["merged"] else None
             if gain == UNMEASURED:
                 unmeasured += 1
             else:
@@ -747,14 +816,15 @@ def roi_lines(rows, now):
                     else "unmeasured before or after it" if gain == UNMEASURED
                     else "saves %.1f min/day" % gain if gain > 0 else "spend without result"))
         if row is rows[-1] and timed(row):
-            out.append("roi · night: improvements %.1fM · gained %.1f min/day%s%s" % (
-                spend, saved, " · %d pending" % pending if pending else "",
-                " · %d unmeasured" % unmeasured if unmeasured else ""))
-        total_spend, total_saved = total_spend + spend, total_saved + saved
+            out.append("roi · night: improvements %.1fM · gained %.1f min/day%s%s%s" % (
+                spend, saved, " · %d proven per unit" % proven if proven else "",
+                " · %d pending" % pending if pending else "", " · %d unmeasured" % unmeasured if unmeasured else ""))
+        total_spend, total_saved, total_proven = total_spend + spend, total_saved + saved, total_proven + proven
     if any(r and timed(r) for r in rows):
         out.append("roi · last %d nights: improvements %.1fM · gained %.1f min/day%s" % (
             len([r for r in rows if r]), total_spend, total_saved, "" if not total_spend and not total_saved
             else " · nothing measured yet" if not measured
+            else " · %d proven per unit" % total_proven if total_proven and not total_saved
             else " · spend without result so far" if not total_saved
             else " · %.1f min/day per 1M" % (total_saved / total_spend) if total_spend else ""))
     return out

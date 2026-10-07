@@ -313,6 +313,16 @@ Harness doctor (added 2026-09-29 by its owner chat):
   other re-writes and system + tools are Claude Code's, shown and never targeted. `spend.selection` names the one a
   night audits, area `speed-spend-<component>`; `spend.proofs` holds each audited component's share and part price
   against the audit, which the night's `roi` lines read.
+  Its `suites` (`share/suite_audit.py`) adds `suite_audit:<repo>:<suite>` problems, group `Suite audits`, `watch`: every
+  suite of the sweep and night helper repositories priced at CPU-min/day over 7 days of run-suites' journal (every
+  runner, `reused` passes out), due when never audited, the suite or a tests/ helper it names has another blob, or CPU
+  a run (passing runs' p50) ≥ 1.5× the audit's; a rise ≥ 1.5× and ≥ 30 s between commits or a new suite (not a split)
+  over 3× the median suite a run is due at once and names its commit. `suites.selection` is the queue, at-once first,
+  then by CPU-min/day; a night takes the first its red test rules do not hold, area `speed-suite-audit-<repo>-<suite>`,
+  brief header `STRONG: yes` (worker-run refuses Light and Gemini Flash). Audits are `suite:<repo>/<suite>` rows of
+  `share/spend-ledger.json` (`bin/speed-doctor --suite-audit`), proven once 5 runs after it read ≤ 0.75× its CPU a run.
+  A night's `roi` line proves a suite, hook or wait improvement per unit (CPU-s a run, ms a call per hook script,
+  s a wait) once N samples follow the night (`time_budget.UNITS`); other classes keep the day totals.
 
 LLM doctor (added 2026-09-29 by its owner chat):
 - `as_of` is ISO as §1 says; the epoch stays under the doctor's own key `as_of_s`, which the menu

@@ -2366,6 +2366,8 @@ start_run() {
         ;;
       *) fail "the brief header 'BROWSER: $value' names no target: chrome, or yes/dia for Egor's Dia. Nothing was launched and no account was spent." ;;
     esac
+    ! { [ "$(brief_line_value "$brief" STRONG)" = yes ] && { [ "$vendor" = light ] || { [ "$vendor" = gemini ] && [[ $model != *pro* ]]; }; }; } ||
+      fail "the brief header 'STRONG: yes' takes no Light or Gemini Flash worker: start it on the next vendor worker-pick ranks. Nothing was launched and no account was spent."
     # A relay that dropped --resume launched a RESUME brief as a fresh session (2026-10-02).
     value=$(sed -n '1s/^RESUME \([^[:space:]:]\{1,\}\):.*/\1/p' "$brief" 2>/dev/null)
     [ -z "$value" ] || [ -z "$resume" ] || [ "$resume" = "$value" ] ||

@@ -80,6 +80,18 @@ model_effort_tests() {
     assert grep -qF -e "$flag contradicts the brief header" "$WORK/effort.out"
     assert test ! -s "$CALL_LOG"
   done
+  { printf 'STRONG: yes\n\n'; cat "$WORK/brief.noheader"; } >"$WORK/brief"
+  for vendor in gemini light; do
+    clear_stub
+    rc=0
+    "$RUNNER" start "$vendor" --brief "$WORK/brief" --workdir "$WORK/workdir" >"$WORK/effort.out" 2>&1 || rc=$?
+    assert test "$rc" -eq 4
+    assert grep -qF "the brief header 'STRONG: yes' takes no Light or Gemini Flash worker" "$WORK/effort.out"
+    assert test ! -s "$CALL_LOG"
+  done
+  clear_stub
+  start_ok codex --account main
+  assert await_done
   mv "$WORK/brief.noheader" "$WORK/brief"
   # `gemini:flash38:ultra` and not `xhigh`: every effort the table knows is RAISED to high on a
   # Gemini leg, so only a word that is no effort at all can be refused there.

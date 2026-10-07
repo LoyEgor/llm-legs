@@ -34,6 +34,7 @@ from fix_commit import NOT_LANDED, SETTLED_FILE, fix_commit, fix_held_from, fix_
 from limiter_hold import hold_dir, wait_dir
 from machine_probe import host_ticks, spawn_pid, sysctl
 import spend
+import suite_audit
 
 LIMITS = {
     "call_s": 5.0,
@@ -4992,9 +4993,10 @@ def apply_speed(document, speed, ledger=None):
             component = covers.get((p.get("rule"), p.get("ident"))) or covers.get((p.get("rule"), "*"))
             if component and p["state"] != "fixed-pending":
                 problems[i] = dict(p, state="watch", was_state=p["state"], judged_by="speed:" + component)
-        problems += [dict(speed_restate(p, ledger), speed=True,
-                          group=spend.GROUP if p.get("rule") == spend.RULE else SPEED_GROUP)
-                     for p in spend.restate(speed.get("problems") or (), spend.load_ledger(ROOT_DIR))]
+        audits = spend.load_ledger(ROOT_DIR)
+        problems += [dict(speed_restate(p, ledger), speed=True, group={spend.RULE: spend.GROUP, suite_audit.RULE:
+                                                                       suite_audit.GROUP}.get(p.get("rule"), SPEED_GROUP))
+                     for p in suite_audit.restate(spend.restate(speed.get("problems") or (), audits), audits)]
         blind += [dict(b, id="speed:%s" % b.get("id")) for b in speed.get("blind_spots") or ()]
         document["speed"] = speed
     document["problems"], document["blind_spots"] = problems, blind
@@ -5122,13 +5124,13 @@ def speed_block(menu, document, parts):
         menu.emit(1, "s", [], "-")
     counted = menu.areas(parts, [p for p in document["problems"] if in_speed(p) and p.get("group") != SPEED_GROUP], 1)
     menu.groups(counted, 1)
-    found = speed.get("spend") or {}
-    if found:
-        head = [(spend.GROUP, ""), (": ", ""), (found["status"].replace("nodata", "blind"), ""),
-                (" · " + found.get("head", ""), "")]
-        menu.free({"cells": ["".join(p for p, _ in head)], "parts": head}, 0)
-        for depth, flags, red, text in found.get("menu") or ():
-            menu.emit(1 + depth, flags, [], text)
+    for group, found in ((spend.GROUP, speed.get("spend")), (suite_audit.GROUP, speed.get("suites"))):
+        if found:
+            head = [(group, ""), (": ", ""), (found["status"].replace("nodata", "blind"), ""),
+                    (" · " + found.get("head", ""), "")]
+            menu.free({"cells": ["".join(p for p, _ in head)], "parts": head}, 0)
+            for depth, flags, red, text in found.get("menu") or ():
+                menu.emit(1 + depth, flags, [], text)
 
 
 def menu_text(document):

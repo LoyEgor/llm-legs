@@ -174,11 +174,15 @@ def blobs(paths):
     return dict(zip(real, hashes)) if len(hashes) == len(real) else {}
 
 
+def moved(row, held):
+    recorded = row.get("sources") if isinstance(row.get("sources"), dict) else {}
+    return set(recorded) != set(held) or any(recorded[p] != held[p] for p in held)
+
+
 def due(component, row, held):
     if not row:
         return "never audited"
-    recorded = row.get("sources") if isinstance(row.get("sources"), dict) else {}
-    if set(recorded) != set(held) or any(recorded[p] != held[p] for p in held):
+    if moved(row, held):
         return "source changed"
     share = row.get("share")
     if isinstance(share, (int, float)) and component["basis"] > 0 and component["basis"] >= SHARE_RISE * share:
@@ -359,23 +363,31 @@ def record(root, home, repos, scripts, key, verdict, note, by, worktrees):
     c = next((c for c in components(payload, files, file_texts()) if c["key"] == key), None)
     if not c:
         raise SystemExit("no Spend component %s in tracking.json" % key)
+    return save_row(root, {
+        "id": key, "title": c["label"], "audited_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "by": by, "share": c["basis"],
+        "prices": {z: price for z, (_, price) in part_prices(harness_index(payload), key).items()},
+        "sources": source_blobs(root, repos, c["sources"], worktrees), "verdict": verdict, "note": note})
+
+
+def source_blobs(root, repos, sources, worktrees):
+    """Each source's blob as the night worktree holding its repository has it, keyed by its path under repos."""
     mains = {main_checkout(w): os.path.realpath(w) for w in [root] + list(worktrees)}
     paths = {}
-    for source in c["sources"]:
+    for source in sources:
         real = os.path.realpath(source)
         top = next((m for m in mains if real.startswith(os.path.join(m, ""))), None)
         paths[repo_path(source, repos)] = os.path.join(mains[top], os.path.relpath(real, top)) if top else real
     held = blobs(list(paths.values()))
+    return {p: held.get(real) for p, real in sorted(paths.items())}
+
+
+def save_row(root, row):
     path = ledger_path(root)
     ledger = read_json(path, {}) or {}
     ledger.setdefault("owner", "Harness Doctor")
-    ledger["rows"] = [r for r in ledger.get("rows") or () if isinstance(r, dict) and r.get("id") != key] + [{
-        "id": key, "title": c["label"], "audited_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
-        "by": by, "share": c["basis"],
-        "prices": {z: price for z, (_, price) in part_prices(harness_index(payload), key).items()},
-        "sources": {p: held.get(real) for p, real in sorted(paths.items())},
-        "verdict": verdict, "note": note}]
+    ledger["rows"] = [r for r in ledger.get("rows") or () if isinstance(r, dict) and r.get("id") != row["id"]] + [row]
     with open(path + ".tmp", "w") as handle:
         handle.write(json.dumps(ledger, indent=1, ensure_ascii=False) + "\n")
     os.replace(path + ".tmp", path)
-    return ledger["rows"][-1]
+    return row

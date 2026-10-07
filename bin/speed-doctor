@@ -23,6 +23,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 import collector_runs  # noqa: E402
 import spend  # noqa: E402
+import suite_audit  # noqa: E402
 import time_budget  # noqa: E402
 
 _loader = importlib.machinery.SourceFileLoader("harness_doctor", os.path.join(ROOT_DIR, "bin", "harness-doctor"))
@@ -891,7 +892,8 @@ def judge_digest(ledger):
         digest.update(handle.read())
     dismissals = [r for r in speed_rows(ledger) if r.get("status") in H.DISMISSED]
     digest.update(json.dumps([dismissals, LIMITS, HEAVY_TEST_S, KEEP_WORDS.pattern, LEVERS, HOOK_LEVERS, H.C1_R_S, BANDS, PROOF, OUTPUT_PROOF,
-                              TIME_LEVERS, spend.SHARE_RISE, spend.PARTS, time_budget.FLOORS, time_budget.ACTIVE_FLOOR_SHARE, time_budget.ACTIVE_FLOOR,
+                              TIME_LEVERS, spend.SHARE_RISE, spend.PARTS, suite_audit.CPU_RISE, suite_audit.JUMP_S,
+                              suite_audit.NEW_HEAVY, time_budget.FLOORS, time_budget.ACTIVE_FLOOR_SHARE, time_budget.ACTIVE_FLOOR,
                               time_budget.FLOOR_ROW_MIN_DAY],
                              sort_keys=True).encode())
     return digest.hexdigest()
@@ -1158,6 +1160,11 @@ def collect(write, now):
     except Exception as exc:
         document["spend"] = {"status": "error", "head": H.error_line(exc), "problems": [], "selection": [], "menu": []}
     problems += document["spend"].pop("problems")
+    try:
+        document["suites"] = suite_audit.collect(now, H.suites_journal(), ROOT_DIR)
+    except Exception as exc:
+        document["suites"] = {"status": "error", "head": H.error_line(exc), "problems": [], "selection": [], "menu": []}
+    problems += document["suites"].pop("problems")
     document["menu"] = menu_lines(document)
     document["timing"] = {"cpu_s": round(H.cpu_s() - cpu_start, 2)}
     if write:
@@ -1329,6 +1336,8 @@ def main():
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--spend-audit", metavar="COMPONENT", help="record the audit of a Spend component in this "
                         "checkout's share/spend-ledger.json")
+    parser.add_argument("--suite-audit", metavar="REPO/SUITE", help="record the audit of a suite (repo/test_name) in "
+                        "this checkout's share/spend-ledger.json")
     parser.add_argument("--verdict", choices=spend.VERDICTS)
     parser.add_argument("--note", default="")
     parser.add_argument("--by", default="", help="the fixer run id")
@@ -1338,6 +1347,11 @@ def main():
     if args.spend_audit:
         row = spend.record(ROOT_DIR, H.base_home(), H.repos_dir(), [H.hook_script(h["command"]) for h in H.settings_hooks()],
                            args.spend_audit, args.verdict, args.note, args.by, args.worktree)
+        print(json.dumps(row, ensure_ascii=False))
+        return 0
+    if args.suite_audit:
+        row = suite_audit.record(ROOT_DIR, H.suites_journal(), args.suite_audit, args.verdict, args.note, args.by,
+                                 args.worktree, now)
         print(json.dumps(row, ensure_ascii=False))
         return 0
     if args.json or args.menu:
