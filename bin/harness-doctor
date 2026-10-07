@@ -1930,6 +1930,28 @@ def load_suite_runs(now):
             and isinstance(r.get("ended_at"), (int, float))]
 
 
+def journal_tests(now):
+    """run-suites' journal as test-history rows: one `suites` row per run-all, one row per suite of a direct run."""
+    rows = []
+    for r in read_jsonl(suites_journal(), now - 28 * 86400, "ended_at") or ():
+        if not (isinstance(r.get("started_at"), (int, float)) and isinstance(r.get("ended_at"), (int, float))
+                and isinstance(r.get("suites"), dict)):
+            continue
+        root = r.get("repo_root") or r.get("repo")
+        base = {"who": "worker" if r.get("worker_run") else "chat", "repo": os.path.basename((root or "").rstrip("/")),
+                "repo_root": root, "pid": r.get("pid"), "kind": r.get("kind"), "_roots": {r.get("repo_root"), r.get("repo")}}
+        timed = {name: s["secs"] for name, s in r["suites"].items()
+                 if isinstance(s, dict) and isinstance(s.get("secs"), (int, float))}
+        if r.get("kind") == "suites":
+            scope = r.get("scope") or "full"
+            rows.append(dict(base, label="suites", end=r["ended_at"], secs=r["ended_at"] - r["started_at"],
+                             suite_secs=timed, scope=scope, partial=scope != "full", scoped=True))
+        else:
+            rows.extend(dict(base, label=SUITE_EXT.sub("", name), end=r["started_at"] + secs, secs=secs)
+                        for name, secs in timed.items())
+    return rows
+
+
 def fold_suites(state, journal, now):
     """C5 suite runs a chat waited on for a slot: per session `[queued_at, started_at]`, the queue layer of its
     turns."""
@@ -2433,6 +2455,25 @@ def load_tests(now):
                     rows.append(row)
     except OSError:
         pass
+    journal = journal_tests(now)
+    # The probe skips every run run-suites journaled, so a history row a journal row starts with is
+    # one the probe wrote while the run was still going; flapping wrote one per minute of the run,
+    # each an earlier snapshot of the next one's suite times.
+    joins = [(t["label"], t["end"] - t["secs"], t["_roots"]) for t in journal]
+    kept = []
+    for row in sorted(rows, key=lambda t: -t["end"]):
+        began, label, root = row["end"] - row["secs"], row.get("label"), row.get("repo_root")
+        if any(label == jl and abs(began - js) <= RUN_JOIN_S and root in roots for jl, js, roots in joins):
+            continue
+        if any(label == k.get("label") and root == k.get("repo_root") and row.get("who") == k.get("who")
+               and abs(began - (k["end"] - k["secs"])) <= 3 and row["end"] < k["end"]
+               and (row.get("suite_secs") or {}).items() <= (k.get("suite_secs") or {}).items() for k in kept):
+            continue
+        kept.append(row)
+    kept = {id(row) for row in kept}
+    rows = [row for row in rows if id(row) in kept] + journal
+    for t in journal:
+        del t["_roots"]
     starts = {}
     for mark in read_jsonl(os.path.join(statusline_cache(), "test-scope.jsonl")) or ():
         if isinstance(mark.get("start"), (int, float)) and mark.get("label"):
@@ -2440,7 +2481,7 @@ def load_tests(now):
                 (mark["start"], mark.get("scope") or "partial"))
     for row in rows:
         marks = starts.get((row.get("label"), row.get("repo_root")))
-        if marks:
+        if marks and "scope" not in row:
             began = row["end"] - row["secs"]
             joined = sorted((abs(began - start), scope) for start, scope in marks if abs(began - start) <= SCOPE_JOIN_S)
             row["scope"] = joined[0][1] if joined else "full"
@@ -3325,6 +3366,8 @@ def test_where(t):
 
 
 def history_ref(t, label=None):
+    if t.get("kind"):
+        return "runs.jsonl %s %s %s" % (t["kind"], t.get("pid"), label or t.get("label"))
     return "test-history %s %s %d" % (t.get("repo"), label or t.get("label"), t["end"])
 
 
@@ -3558,8 +3601,7 @@ def tests_section(tests, now, kills=(), runs=()):
                           sum(1 for t in items if t["end"] - t["secs"] > now - fresh),
                           "red" if red else "watch" if slow else None,
                           values=[t["secs"] for t in items], bad=int(bool(slow)),
-                          evidence=[evidence(items[-1]["end"] - last, "test-history %s %s %d" % (
-                              items[-1].get("repo"), label, items[-1]["end"]), "took %d s, usual %d s" % (
+                          evidence=[evidence(items[-1]["end"] - last, history_ref(items[-1], label), "took %d s, usual %d s" % (
                               last, usual), items[-1].get("who") or "")]))))
     ranked.sort(key=lambda x: -x[0])
     rows = [r for _, r in ranked[:6]] + [r for _, r in ranked[6:] if r["red"]]
@@ -3602,8 +3644,7 @@ def tests_section(tests, now, kills=(), runs=()):
     loaded["judge"] = [verdict("test_load_fail", test_ident(t.get("repo"), t.get("label"), t.get("repo_root")), crowd,
                                LIMITS["load_fail_suites"], "suites", fresh // 3600, 1, "red", bad=1,
                                fact="%s failed while %d suites ran, passed alone" % (t.get("label"), crowd),
-                               evidence=[evidence(t["end"] - t["secs"], "test-history %s %s %d" % (
-                                   t.get("repo"), t.get("label"), t["end"]))])
+                               evidence=[evidence(t["end"] - t["secs"], history_ref(t))])
                        for t, crowd, passed in fails]
     pole, cost, hung = pole_line(tests, now), cost_line(tests, now), hang_line(runs, now)
     out = section("Tests", rows, columns, right, lead=[hung, overlap, loaded, pole, cost], nav=nav,

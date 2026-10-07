@@ -458,11 +458,9 @@ clear_stub
 printf 'delete me\n' >"$DIRT_REPO/bin/deletion-is-work"
 git -C "$DIRT_REPO" add bin/deletion-is-work
 git -C "$DIRT_REPO" -c user.email=t@t -c user.name=t commit -qm 'track deletion liveness'
-# Every probe below has to land while the run is still going, and there are a dozen of them: 4s
-# failed under a parallel suite wave (2026-09-04) and 12s at load average 130 (2026-10-01), purely
-# on machine load; `await_done` at the end budgets 100+ s.
-export STUB_SLEEP=40
-start_ok claudeb --workdir "$DIRT_REPO"
+# Every probe below has to land while the run is still going: a fixed sleep failed at 4s and 12s
+# under load and cost its whole length at 40s, so the run is held on the gate until they are done.
+start_gated claudeb --workdir "$DIRT_REPO"
 idle=$("$RUNNER" wait "$RUN_ID" --max 0)
 assert grep -qx 'STATUS: running' <<<"$idle"
 assert grep -qx 'OUT-BYTES: 0' <<<"$idle"
@@ -503,10 +501,10 @@ long=$("$RUNNER" wait "$RUN_ID" --max 0)
 assert grep -q '^LONG-RUN: 26 min — the orchestrator' <<<"$long"
 assert grep -Eq '^ELAPSED: [0-9]+$' <<<"$long"
 assert grep -qx 'STATUS: running' <<<"$long"
+gate_open
 assert await_done
 # A terminal report answers with the run's files instead; a liveness row there is a run still going.
 assert test "$(grep -c '^LAST-EDIT: \|^CPU-SECONDS: ' "$WORK/wait.out")" -eq 0
-unset STUB_SLEEP
 unset CLAUDE_CODE_SESSION_ID
 
 

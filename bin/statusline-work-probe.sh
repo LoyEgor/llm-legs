@@ -375,7 +375,11 @@ if [[ "$old_mtime" =~ ^[0-9]+$ ]] && [ "$((now - old_mtime))" -le 15 ]; then
           fi
         fi
       fi
-      if [ "$d" = suites ] || [ "$kind/$c" = run/suites ]; then journaled_run suites "$spid" "$start" && continue
+      if [ "$d" = suites ] || [ "$kind/$c" = run/suites ]; then
+        # A run one probe lost sight of while its run-suites still lists and holds its progress file
+        # has not ended: journaled then, a 27-minute run wrote 22 rows (2026-10-06).
+        [ -z "$spid" ] || [ ! -f "$cache_dir/suites-$spid" ] || ! grep -Eq "^ *$spid " "$ps_snap" || continue
+        journaled_run suites "$spid" "$start" && continue
       elif [ "$kind" = run ]; then journaled_run direct "$c" "$start" && continue
       else journaled_run direct "$d" "$start" && continue
       fi

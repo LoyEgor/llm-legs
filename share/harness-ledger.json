@@ -200,7 +200,7 @@
         "rule": "test_daily_cost",
         "ident": "llm-legs:test_worker_run(_(entry|reliability|browse|attribution|watchdog|websearch|lifecycle|pool|outcomes|files|claims|vendor_files|rounds|grok|grok_outcomes|stamps))?"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-01T14:10:00+03:00",
@@ -227,15 +227,26 @@
           ],
           "in": "llm-legs@8f113a1",
           "regressed_at": "2026-10-03T14:30:10+03:00"
+        },
+        {
+          "at": "2026-10-07T03:26:09+03:00",
+          "by": "night fixer harness-tests-20261006T234311Z-79c1",
+          "files": [
+            "llm-legs/bin/harness-doctor",
+            "llm-legs/bin/statusline-work-probe.sh",
+            "llm-legs/tests/test_worker_run_claims.sh"
+          ],
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [
         "test_long_pole-worker-run"
       ],
-      "last_reviewed": "2026-10-01",
-      "reviewed_by": "night fixer harness-tests-20261001T020701Z-4cc4",
-      "note": "test_worker_run.sh is 7727 lines with ~300 test cases exercising the worker-run CLI lifecycle. Quiet runs take 600-654 s wall clock, and under concurrent load (multiple full test suites running at -j 5) runs take 962-1186 s. Over 24 h, 26 runs accumulated 12535 s (>3.5 h), exceeding the 7200 s limit. Splitting the suite across multiple test files or raising limits requires architectural coordination with the owner chats (Harness Doctor and llm-workers). 2026-10-01: split into sixteen tests/test_worker_run_<part>.sh suites over tests/worker_run_harness.sh, which run-suites runs in parallel; the ident follows every part, so a part that grows back into a long pole or a daily cost still lands on this row.",
-      "handoff": "docs/handoffs/2026-10-01-test-worker-run-cost.md"
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-tests-20261006T234311Z-79c1",
+      "note": "2026-10-07: the 17 h 22 min red was the statusline probe journaling one live 27-minute run-suites run 22 times, each row carrying the suite times so far; the probe now skips a suites run whose pid ps still lists while its progress file stands, and load_tests collapses such snapshots. The Tests rules had read only test-history since e5bd8fd1 (the probe skips runs with a run-suites journal row), so they missed nearly every real run; load_tests now reads ~/.cache/run-suites/runs.jsonl too. The true 24 h family cost is ~66 000 s: ~30 family runs a day (worker named runs 42 %, chat named runs of all 18 parts 29 %, full runs 10 %), each part's wall 4-6x its quiet minimum under load (quiet sum 884 s, CPU ~615 s). Cut: test_worker_run_claims held a 40 s stub sleep it then waited out (~37 s a run), now the gate. Ruled out: no fixed latency in worker-run's supervisor (run_with_deadline returns on the child's exit; a cycle is ~3400 traced lines of small forks); the watchdog suite's waits are its idle and deadline windows themselves. Under 2 h a day needs under 240 s summed per family run, which speed alone cannot reach; the family-sum rule goes to the owner (handoff).",
+      "handoff": "docs/handoffs/2026-10-07-test-cost-judge.md"
     },
     {
       "id": "test_long_pole-worker-run",
@@ -279,7 +290,7 @@
       "last_reviewed": "2026-10-01",
       "reviewed_by": "night fixer harness-tests-20261001T020701Z-4cc4",
       "note": "test_worker_run.sh took 1162 s of 1186 s full run (98 %), exceeding the 50 % long_pole_share limit. Because worker-run tests cover the entire CLI lifecycle and subprocess supervisors, it dwarfs other suites. Suite decomposition or long pole calibration handed off to Harness Doctor and llm-workers. 2026-10-01: split into sixteen tests/test_worker_run_<part>.sh suites over tests/worker_run_harness.sh, which run-suites runs in parallel; the ident follows every part, so a part that grows back into a long pole or a daily cost still lands on this row.",
-      "handoff": "docs/handoffs/2026-10-01-test-worker-run-cost.md"
+      "handoff": "docs/handoffs/2026-10-07-test-cost-judge.md"
     },
     {
       "id": "load-unseen-suites-statusline",

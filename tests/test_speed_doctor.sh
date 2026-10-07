@@ -36,7 +36,8 @@ base = {"HOME": os.path.join(work, "home"), "HARNESS_DOCTOR_DIR": os.path.join(w
         "DOCTORS_DIR": os.path.join(work, "doctors"), "WORKER_STATS_DIR": os.path.join(work, "worker-stats"),
         "CODE_DOCTOR_DIR": os.path.join(work, "code"), "HARNESS_LEDGER": ledger,
         "CODE_LEDGER": os.path.join(work, "code-ledger.json"), "STATUSLINE_CACHE_DIR": os.path.join(work, "sl"),
-        "HARNESS_REPOS_DIR": os.path.join(work, "repos"), "SPEED_DOCTOR_NOW": str(HI), "PATH": os.environ["PATH"]}
+        "HARNESS_REPOS_DIR": os.path.join(work, "repos"), "RUN_SUITES_JOURNAL": os.path.join(work, "run-suites.jsonl"),
+        "SPEED_DOCTOR_NOW": str(HI), "PATH": os.environ["PATH"]}
 
 
 def speed(folder, *args, **env):

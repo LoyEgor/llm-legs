@@ -275,7 +275,7 @@ over all of it and at 18:26 over the runs from 18:00:
   holds the real llm-legs `test_worker_run` and `test_instruction_gate` runs of the 24 h before the
   replay time and one full run whose `suite_secs` are composed as the long-pole row says, since the
   history kept no suite times before. The replay pins `test_long_pole` on `test_worker_run` (0.957)
-  and `test_daily_cost` on both suites (8 714 s and 10 377 s).
+  and `test_daily_cost` on both suites (8 577 s and 10 377 s; a 137 s probe duplicate collapsed).
 
 ## 5. Collector
 

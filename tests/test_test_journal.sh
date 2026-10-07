@@ -136,6 +136,17 @@ probe
 probe
 assert_eq '{"test_w.sh":7}' \
   "$(jq -c 'select(.label == "suites" and .who == "worker") | .suite_secs' "$STATUSLINE_CACHE_DIR/test-history.jsonl")"
+# A run one probe loses from the session's tree while ps still lists it is journaled once, at its end.
+{ printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28; suite_run 80 r-lost 1 "$fresh" 0; } > "$WORK/snap"
+probe
+{ printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28; printf '80 1 02:00 bash tests/run-all -j 5\n'; } > "$WORK/snap"
+probe
+assert_eq 0 "$(jq -s 'map(select(.repo == "r-lost")) | length' "$STATUSLINE_CACHE_DIR/test-history.jsonl")"
+{ printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28; suite_run 80 r-lost 1 "$fresh" 0; } > "$WORK/snap"
+probe
+{ printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28; } > "$WORK/snap"
+probe
+assert_eq 1 "$(jq -s 'map(select(.repo == "r-lost")) | length' "$STATUSLINE_CACHE_DIR/test-history.jsonl")"
 # The worker's workdir is find-truth; the row names the repository its run-all tested.
 assert_eq "repo $WORK/repo" \
   "$(jq -r 'select(.label == "suites" and .who == "worker") | "\(.repo) \(.repo_root)"' "$STATUSLINE_CACHE_DIR/test-history.jsonl")"
