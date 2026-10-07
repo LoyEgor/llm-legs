@@ -275,7 +275,8 @@ def snapshot(doctor, doc_file, night=None):
                       "ledger": r["id"], "state": "quiet", "fact": r.get("title")}
                      for r in rows.values() if r.get("status") == "open" and r.get("id") and r["id"] not in seen]
     kept, watched, opportunities, speed = [], [], {}, set()
-    chosen = strings((doc.get("speed") or {}).get("selection")) if doctor == "harness" else []
+    speed_doc = (doc.get("speed") or {}) if doctor == "harness" else {}
+    chosen = strings(speed_doc.get("selection")) + strings((speed_doc.get("spend") or {}).get("selection"))
     for problem in problems:
         pid, rule, state = problem.get("id"), problem.get("rule"), problem.get("state")
         if rule == "debt-handoff":
@@ -336,7 +337,10 @@ def snapshot(doctor, doc_file, night=None):
                     ident, MENU_BUILDERS["automation"])) if os.path.isfile(f)]
             if rule == "collector":
                 files.append(doctor_script(doctor))
-            if problem.get("speed") and rule == "opportunity":
+            if problem.get("speed") and rule == "spend_audit":
+                files += strings((problem.get("spend") or {}).get("sources"))
+                what = "Spend component %s · %s" % ((problem.get("spend") or {}).get("component"), problem.get("fact"))
+            elif problem.get("speed") and rule == "opportunity":
                 files += [os.path.join(repos_dir(doctor), name) for name in SPEED_FILES.get(pid[12:], ())]
             elif problem.get("speed") and rule == "time_floor" and "time/" + pid[11:] in SPEED_FILES:
                 files += [os.path.join(repos_dir(doctor), name) for name in SPEED_FILES["time/" + pid[11:]]]
@@ -390,7 +394,8 @@ def snapshot(doctor, doc_file, night=None):
         if state not in ("watch", "fixed-pending"):
             kept.append(entry)
         elif rule == "opportunity" and problem.get("speed") \
-                and (problem.get("opportunity") or {}).get("quality") == "equivalent":
+                and (problem.get("opportunity") or {}).get("quality") == "equivalent" \
+                or rule == "spend_audit" and problem.get("speed"):
             opportunities[pid] = entry
         elif state == "watch" and doctor == "harness" and area in HOOK_AREAS:
             watched.append(((problem.get("value") or 0) * (problem.get("exposure") or 0), entry))
@@ -732,6 +737,8 @@ write_brief() { # id worktree -> the brief file
       printf 'A hung suite (`test_hang`) is this run'"'"'s to fix, never a handoff (`close` refuses one): find what it blocked on and fix it so it cannot hang, e.g. stdin from /dev/null for a child that may read a tty, a timeout on a child that waits, a tty probe a fixture answers; every assert keeps its coverage. The proof is the doctor'"'"'s own: no `test_hang` row for that suite after the fix.\n\n'
     ! jq -e --arg rules ' menu_build ' "$JQ_HAS_RULES" "$file" >/dev/null ||
       printf 'Menu delays (`menu_build`) are this run'"'"'s to fix, never a handoff (`close` refuses one): make the build in the files the packet names faster, measured by the menu journal the doctor reads.\n\n'
+    ! jq -e --arg rules ' spend_audit ' "$JQ_HAS_RULES" "$file" >/dev/null ||
+      printf 'Spend audit: the component above costs the share of Claude spend its fact names (tokenmap, `~/.local/share/tokenmap/tracking.json`). Model, effort and thinking are never the lever. Five steps:\n1. Why it exists: `git log -S` on its source, the commit message, or the owner chat via `chat-name`.\n2. Price per day: its tokenmap share, plus the minutes Speed charges it, if any.\n3. Effect: how often it changed the outcome (a block followed by a different call, a note the model acted on, a re-answer that did new work). Sieve mechanically first: an exact duplicate is mechanical; a paraphrase or a language switch is only a candidate, and a Sonnet judge (never Haiku) reads a sample of the candidates.\n4. A cheaper equivalent: fire less, say less, once per session, or fix at the source. Prove it by replaying last week'"'"'s recorded inputs through the old and the new version: identical decisions -> commit it (verdict cut; claude-setup and the helper repositories through your `ADD-DIR:` worktrees); otherwise verdict kept with a one-line reason, or trade (a handoff with Cost:/Loss:/Recommendation: lines) only for a serious downside.\n5. Spend tokenmap cannot see: one line appended under the last item of `docs/handoffs/2026-10-07-tokenmap-waste-detectors.md`.\nRecord the audit, then commit `share/spend-ledger.json`: `bin/speed-doctor --spend-audit <component> --verdict cut|kept|trade --by %s --note <one line> [--worktree <ADD-DIR worktree>]...`; the decision line is `fixed` for cut, `ruled-out` for kept, `handoff` for trade. Proof is the doctor'"'"'s: the component'"'"'s share against its share at audit.\n\n' "$id"
     [ "$doctor/$area" != llm/reviewers ] ||
       printf 'Settle every stuck review round (`machinery:closure_pending`) of the sweep repositories yourself, not only its machinery; never touch a round of another project: the LLM doctor section "Stuck review rounds".\n\n'
     printf '## Packet\n\n'

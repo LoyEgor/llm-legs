@@ -766,8 +766,8 @@ local function summaryTitle(name, value, unit, status, history, now, stale)
   local tone = (stale or status == "nodata") and style.DIM
     or (status == "error" or status == "problems") and style.RED
     or (status == "blind" or status == "watch") and style.DIM_RED or style.GREEN
-  local segments = { { string.format("%-7s", name), tone }, { " " },
-    value and { padded(rounded(value), 4) } or { padded(MISSING, 4), style.DIM }, { string.format(" %-7s  ", unit or "") } }
+  local segments = { { string.format("%-9s", name), tone }, { " " },
+    value and { padded(rounded(value), 4) } or { padded(MISSING, 4), style.DIM }, { string.format(" %-10s  ", unit or "") } }
   for index = 1, 7 do
     local amount = days[index]
     segments[#segments + 1] = amount == nil and { " " }
@@ -777,8 +777,8 @@ local function summaryTitle(name, value, unit, status, history, now, stale)
   return styled(segments)
 end
 
-local function issueRow(amount, unit, what)
-  return fitRow({ title = styled({ { padded(rounded(amount), 4), style.RED },
+local function issueRow(amount, unit, what, format)
+  return fitRow({ title = styled({ { padded(format and string.format(format, amount) or rounded(amount), 4), style.RED },
     { (unit and " " .. unit or "") .. "  " .. what } }), disabled = true })
 end
 
@@ -829,7 +829,7 @@ end
 
 local function compute()
   local now = os.time()
-  local entries, histories, speed, machine = {}, {}, nil, nil
+  local entries, histories, speed, spend, machine = {}, {}, nil, nil, nil
   local rows = readJson(dirFor("doctorsDir", "DOCTORS_DIR", "/.cache/doctors") .. "/problem-days.jsonl", "days") or {}
   for _, row in ipairs(rows) do
     if type(row.doctor) == "string" and type(row.day) == "string" and tonumber(row.max) then
@@ -870,7 +870,7 @@ local function compute()
       local byDay = type(metrics.lost_min_day_by_day) == "table" and metrics.lost_min_day_by_day or {}
       local speedMenu, speedRows = {}, {}
       for _, item in ipairs(entry.menu or {}) do
-        if item.title ~= "-" and plainText(item.title):match("^Speed:") then speedMenu = item.menu or {} break end
+        if item.title ~= "-" and plainText(item.title):match("^Lost time:") then speedMenu = item.menu or {} break end
       end
       for _, issue in ipairs(type(metrics.issues) == "table" and metrics.issues or {}) do
         if tonumber(issue[1]) then speedRows[#speedRows + 1] = issueRow(tonumber(issue[1]), "min/day", tostring(issue[2])) end
@@ -880,11 +880,24 @@ local function compute()
         if text:match("^Needs Egor") and text ~= "Needs Egor: nothing" then speedRows[#speedRows + 1] = item end
       end
       local lost = tonumber(metrics.lost_min_day)
-      speed = { title = summaryTitle("Speed", lost, "min/day", lost and metrics.status or "nodata", byDay, now,
+      speed = { title = summaryTitle("Lost time", lost, "min/day", lost and metrics.status or "nodata", byDay, now,
         stale or not byDay[os.date("%Y-%m-%d", now)]), menu = egorLayer(speedRows, menu, speedMenu), problems = 0 }
+      local cost = document and type(document.spend) == "table" and document.spend or {}
+      local spendMenu, spendRows = {}, {}
+      for _, item in ipairs(entry.menu or {}) do
+        if item.title ~= "-" and plainText(item.title):match("^Spend:") then spendMenu = item.menu or {} break end
+      end
+      for _, issue in ipairs(type(cost.issues) == "table" and cost.issues or {}) do
+        if tonumber(issue[1]) then spendRows[#spendRows + 1] = issueRow(tonumber(issue[1]), "%", tostring(issue[2]), "%.1f") end
+      end
+      local share = cost.status ~= "nodata" and tonumber(cost.share) or nil
+      spend = { title = summaryTitle("Spend", share, "% of spend", share and cost.status or "nodata",
+        type(cost.share_by_day) == "table" and cost.share_by_day or {}, now, stale),
+        menu = egorLayer(spendRows, menu, spendMenu), problems = 0 }
     end
   end
   entries[#entries + 1] = speed
+  entries[#entries + 1] = spend
   entries[#entries + 1] = machine
   if now - night.at >= NIGHT_REFRESH_S then M.refreshNight() end
   if night.text then entries[#entries + 1] = nightEntry() end

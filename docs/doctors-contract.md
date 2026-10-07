@@ -25,12 +25,13 @@ unchanged under `LLM details`. Fixture render:
 
 ```
 Doctors: 8 problems
-LLM        2          ▁▁▂▃▄▆█    3 ▸
-Harness    3          ▁▁▂▃▄▆█    3 ▸
-Updater    0          ▁▁▂▃▄▆█    3 ▸
-Code       3          ▁▁▂▃▄▆█    3 ▸
-Speed     12 min/day  ▁▁▂▃▄▆█   25 ▸
-System     2          ▁▁▂▃▄▆█    3 ▸
+LLM          2             ▁▁▂▃▄▆█    3 ▸
+Harness      3             ▁▁▂▃▄▆█    3 ▸
+Updater      0             ▁▁▂▃▄▆█    3 ▸
+Code         3             ▁▁▂▃▄▆█    3 ▸
+Lost time   12 min/day     ▁▁▂▃▄▆█   25 ▸
+Spend        9 % of spend  ▁▁▂▃▄▆█    3 ▸
+System       2             ▁▁▂▃▄▆█    3 ▸
 Last night 5 Oct · stopped early: no jobs
 ──────────
 Cleanup now
@@ -44,20 +45,21 @@ LLM ▸     8  reviewers crashed
        LLM details ▸   (the doctor's whole previous tree)
 ```
 
-- Summary row, fixed cells: name (7, in the status color) · value (4, right) · unit (7: `min/day` for Speed, blank
-  for counts) · 7 bars · usual (4, right, DIM), no trend arrow. Counts are bare; the only time unit is min/day
-  (Speed: Harness time budget `lost_min_day`; its problems stay counted by Harness alone).
+- Summary row, fixed cells: name (9, in the status color) · value (4, right) · unit (10: `min/day` for Lost time,
+  `% of spend` for Spend, blank for counts) · 7 bars · usual (4, right, DIM), no trend arrow. Counts are bare
+  (Lost time, internally Speed: Harness time budget `lost_min_day`; Spend: the summed share of Claude spend of the
+  harness components tokenmap prices, `share/spend.py`; the problems of both stay counted by Harness alone).
 - Status color of the name (no dot: `●` is the LLM Limits pin mark): GREEN ok, RED problems or collector error, DIM_RED watch/blind/pending update, DIM no data or
-  stale (Speed also without an observation dated today). Missing value: DIM `–`.
+  stale (Speed also without an observation dated today; Spend while `tracking.json` is past its `stale_after_hours`). Missing value: DIM `–`.
 - Bars: six completed local dates and today, daily `max` of `problem-days.jsonl` (Speed: the daily
-  maxima in Harness's `menu.txt` header). Eight heights against the window maximum. An unmeasured date
+  maxima in Harness's `menu.txt` header; Spend: its stored value of each completed day, tokenmap's window over it). Eight heights against the window maximum. An unmeasured date
   is a blank cell, never an invented bar or a dash; a zero is `▁` (as every other spark line, Chats → Other's
   load graph the model). Every bar is DIM, never RED.
 - `usual` is the median of measured completed dates, never today.
 - A doctor's first level: up to three issue rows (RED count, the problem's own short name;
   Speed's floor gaps in min/day, plus nonempty `Needs Egor` rows), Fix, fixer, separator,
   `LLM details`. The details hold every previous row in order, the non-ordinary status title
-  (stale, failed, pending) first; Speed's details are Harness's `Speed:` subtree.
+  (stale, failed, pending) first; Lost time's and Spend's details are Harness's `Lost time:` and `Spend:` subtrees.
 - Harness's `menu.txt` carries `H<TAB><JSON>` right after `T`: status, problem ids/ledger refs,
   three group issues, Speed's status, timestamp, floor, daily series and three floor gaps. The menu
   reads it and `problem-days.jsonl` cached by inode, mtime and size, never Harness's `latest.json`;
@@ -303,6 +305,9 @@ Harness doctor (added 2026-09-29 by its owner chat):
   `regression:<metric>|<ident>|<band>` counts, `opportunity:<component>` is `watch`. A rule whose component
   Speed judges against a baseline is `watch` with `judged_by`, its own state kept as `was_state`, so no rule
   counts twice in `problem_count`; each problem carries its verdict's `ident`, which Speed's `covers` match.
+  Its `spend` (`share/spend.py`) adds `spend:<component>` problems, rule `spend_audit`, group `Spend`, `watch`: an
+  avoidable component whose audit is due (never audited, a source blob moved, share ≥ 1.5× its share at audit);
+  `spend.selection` names the one a night audits, area `speed-spend-<component>`.
 
 LLM doctor (added 2026-09-29 by its owner chat):
 - `as_of` is ISO as §1 says; the epoch stays under the doctor's own key `as_of_s`, which the menu

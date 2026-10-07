@@ -178,6 +178,12 @@ the rows sharing a component file; each carries its lever, saving and proof in `
 `docs/speed-doctor-design.md` §5 bounds what may change. Never touch a model, effort or thinking knob: a night `close` refuses any such added or
 removed line and names it (`docs/doctors-contract.md` §4).
 
+### Spend: same result, fewer tokens
+
+A `speed-spend-<component>` run audits one component of the Spend block; its brief carries the five steps and
+`bin/speed-doctor --spend-audit` records the row in `share/spend-ledger.json`. Model, effort and thinking are never
+the lever.
+
 ### The judge is not yours to loosen
 
 The judge is `LIMITS` and the rules in `bin/harness-doctor`, the dismissal rows of

@@ -26,7 +26,7 @@ local function details(menu)
 end
 local function row(name, value, unit, bars, usual)
   local function pad(cell, width) return string.rep(" ", width - utf8.len(cell)) .. cell end
-  return string.format("%-7s", name) .. " " .. pad(value, 4) .. " " .. string.format("%-7s", unit or "") .. "  "
+  return string.format("%-9s", name) .. " " .. pad(value, 4) .. " " .. string.format("%-10s", unit or "") .. "  "
     .. bars .. " " .. pad(usual, 4)
 end
 local function summary(name, value) return row(name, value and tostring(value) or "–", nil, "       ", "–") end
@@ -189,7 +189,7 @@ local function colorAt(title, at)
   local first = utf8.offset(plain, at)
   return first and color(title:sub(first, (utf8.offset(plain, at + 1) or #plain + 1) - 1))
 end
-local VALUE_AT, UNIT_AT, BAR_AT, USUAL_AT = 12, 14, 23, 34
+local VALUE_AT, UNIT_AT, BAR_AT, USUAL_AT = 14, 16, 28, 39
 local trendNow = os.date("*t", now)
 local function trendDay(offset)
   return os.date("%Y-%m-%d", os.time({ year = trendNow.year, month = trendNow.month,
@@ -209,6 +209,13 @@ local function writeDays(values, scale)
   return speedDays
 end
 local series = { 0, 1, 2, 3, 4, 6, 8 }
+local function spendDays(values)
+  local days = {}
+  for index = 1, 7 do
+    if values[index] then days[trendDay(index - 7)] = values[index] end
+  end
+  return days
+end
 local trendLlm = llmDocument("problems", 2)
 trendLlm.blocks[1].problems = { { id = "crashed", label = "crashed", count = 8, kind = "bug" } }
 trendLlm.blocks[1].bugs = 8
@@ -232,22 +239,28 @@ write("/system-doctor/latest.json", { contract = 1, doctor = "system", as_of_s =
     caches = { { ".cache/uv", 22.1 } } } })
 local metadata = { status = "problems", problems = {}, issues = { { 3, "Hooks" } },
   speed = { status = "ok", as_of_s = now, lost_min_day = 12, lost_min_day_by_day = writeDays(series),
-    issues = { { 12, "hooks" } } } }
+    issues = { { 12, "hooks" } } },
+  spend = { status = "watch", as_of_s = now, share = 9.2, share_by_day = spendDays(series),
+    issues = { { 1.888, "compaction summaries" } } } }
 local function trendHarness()
   write("/harness-doctor/menu.txt", "T\t3\t" .. now .. "\tHarness doctor: 3 problems\nH\t" .. hs.json.encode(metadata)
-    .. "\n0\t\t\tSpeed: ok · 179 OM/d\n1\td\t\t12 min/day over the floor\n"
-    .. "1\td\t\tNeeds Egor: nothing\n0\t\t\tHooks: 3 problems\n1\td\t\tall hook details\n")
+    .. "\n0\t\t\tLost time: ok · 179 OM/d\n1\td\t\t12 min/day over the floor\n"
+    .. "1\td\t\tNeeds Egor: nothing\n0\t\t\tSpend: watch · 9.2 % of spend · 1 audit due\n"
+    .. "1\t\t\t1.9 % · compaction summaries · Δ -6% · audit due: never audited\n"
+    .. "0\t\t\tHooks: 3 problems\n1\td\t\tall hook details\n")
 end
 trendHarness()
 write("/harness-doctor/latest.json", { status = "problems", problems = {} })
 local trendDoctor = loadDoctors()
 local trendItems = trendDoctor.menuItems()
 local trendNight = tasks[#tasks]
-local names, values = { "LLM", "Harness", "Updater", "Code", "Speed", "System" }, { "2", "3", "0", "3", "12", "2" }
+local names, values = { "LLM", "Harness", "Updater", "Code", "Lost time", "Spend", "System" },
+  { "2", "3", "0", "3", "12", "9", "2" }
+local UNITS = { [5] = "min/day", [6] = "% of spend" }
 local bars = "▁▁▂▃▄▆█"
 for index, name in ipairs(names) do
   local title = trendItems[index] and trendItems[index].title
-  local want = row(name, values[index], index == 5 and "min/day" or nil, bars, index == 5 and "25" or "3")
+  local want = row(name, values[index], UNITS[index], bars, index == 5 and "25" or "3")
   check(title and text(title) == want, "trend summary " .. name .. ": " .. (title and text(title) or "missing"))
   for day = 1, 7 do
     check(title and sameColor(colorAt(title, BAR_AT + day - 1), palette.DIM), "every bar DIM, above usual too " .. name .. " day " .. day)
@@ -261,7 +274,7 @@ local function aligned(rows)
     width = width or utf8.len(plain)
     if utf8.len(plain) ~= width or not span(item.title, 1, 1):match("%a") or text(item.title):find("●", 1, true) or not span(item.title, VALUE_AT, VALUE_AT):match("%S")
       or not span(item.title, USUAL_AT, USUAL_AT):match("%S") then return false end
-    for _, at in ipairs({ 8, 13, 21, 22, 30 }) do
+    for _, at in ipairs({ 10, 15, 26, 27, 35 }) do
       if span(item.title, at, at) ~= " " then return false end
     end
     for at = BAR_AT, BAR_AT + 6 do
@@ -270,15 +283,17 @@ local function aligned(rows)
   end
   return width == USUAL_AT
 end
-check(aligned({ table.unpack(trendItems, 1, 6) }), "summary columns line up at the same cells in every doctor row")
-for index = 1, 6 do
+check(aligned({ table.unpack(trendItems, 1, 7) }), "summary columns line up at the same cells in every doctor row")
+for index = 1, 7 do
   local title = trendItems[index].title
-  check(span(title, UNIT_AT, UNIT_AT + 6) == (index == 5 and "min/day" or "       ")
-    and not span(title, VALUE_AT - 3, USUAL_AT):gsub("min/day", ""):match("[%a%%]"),
-    "min/day is the only unit on the summary rows, counts bare: " .. text(title))
+  check(span(title, UNIT_AT, UNIT_AT + 9) == string.format("%-10s", UNITS[index] or "")
+    and not span(title, VALUE_AT - 3, USUAL_AT):gsub("min/day", ""):gsub("%% of spend", ""):match("[%a%%]"),
+    "min/day and % of spend are the only units on the summary rows, counts bare: " .. text(title))
 end
-check(#trendItems == 9 and trendItems[7].title == "-" and text(trendItems[8].title) == "Cleanup now"
-  and text(trendItems[9].title) == "Run everything now", "top level: six summaries, System last, then the actions")
+check(#trendItems == 10 and trendItems[8].title == "-" and text(trendItems[9].title) == "Cleanup now"
+  and text(trendItems[10].title) == "Run everything now", "top level: seven summaries, System last, then the actions")
+check(span(trendItems[5].title, 1, 9) == "Lost time" and span(trendItems[6].title, 1, 5) == "Spend"
+  and sameColor(colorAt(trendItems[6].title, 1), palette.DIM_RED), "the time row reads Lost time; Spend beside it, DIM_RED while an audit is due")
 check(span(trendItems[3].title, 1, 7) == "Updater" and sameColor(colorAt(trendItems[3].title, 1), palette.GREEN)
   and sameColor(colorAt(trendItems[3].title, 7), palette.GREEN), "ok name GREEN")
 check(span(trendItems[1].title, 1, 3) == "LLM" and sameColor(colorAt(trendItems[1].title, 1), palette.RED), "problem name RED")
@@ -291,12 +306,13 @@ check(issue(trendItems[1].menu, 2, "   4  review anchors"), "LLM review machiner
 check(issue(trendItems[2].menu, 1, "   3  Hooks"), "Harness issue row")
 check(issue(trendItems[4].menu, 1, "   2  Dead") and issue(trendItems[4].menu, 2, "   1  Duplicate"), "Code issue rows")
 check(issue(trendItems[5].menu, 1, "  12 min/day  hooks"), "Speed floor issue row in min/day")
-check(issue(trendItems[6].menu, 1, "   1  new processes") and issue(trendItems[6].menu, 2, "   1  swap full")
-  and not find(trendItems[6].menu, "   1  low disk space"), "System issue rows: one per loud problem by its short name")
-local systemFix = find(trendItems[6].menu, "Fix —")
+check(issue(trendItems[6].menu, 1, " 1.9 %  compaction summaries"), "Spend issue row: the due component by its share")
+check(issue(trendItems[7].menu, 1, "   1  new processes") and issue(trendItems[7].menu, 2, "   1  swap full")
+  and not find(trendItems[7].menu, "   1  low disk space"), "System issue rows: one per loud problem by its short name")
+local systemFix = find(trendItems[7].menu, "Fix —")
 check(systemFix and text(systemFix.title) == "Fix — open a fixer chat" and not systemFix.disabled and systemFix.fn,
   "System routes its own causes to a fixer: its Fix row opens a fixer chat")
-local systemDetails = details(trendItems[6].menu)
+local systemDetails = details(trendItems[7].menu)
 check(text(systemDetails[1].title):find("^swap 3%.2 of 4%.0 GB") and red(systemDetails[1].title)
   and systemDetails[1].menu and text(systemDetails[1].menu[1].title) == "vm.swapusage used 3240M total 4096M"
   and dimmed(systemDetails[3].title) and find(systemDetails, "new processes 2600/s · kernel 41 % of CPU")
@@ -312,7 +328,7 @@ local function captionless(menu)
   end
   return true
 end
-for index = 1, 6 do
+for index = 1, 7 do
   local menu = trendItems[index].menu or {}
   local ok, caption = captionless(menu)
   check(ok and #menu > 0 and text(menu[#menu].title) == "LLM details",
@@ -351,9 +367,11 @@ do
     check(topFix and topFixer and #details(trendItems[index].menu) > 0 and topFix.fn == fix(details(trendItems[index].menu)).fn
       and text(topFixer.title) == text(fixer(details(trendItems[index].menu)).title), "outer fixer controls " .. names[index])
   end
-  local oldSpeed = find(old[2].menu, "Speed:").menu
+  local oldSpeed = find(old[2].menu, "Lost time:").menu
   check(rowCount(details(trendItems[5].menu)) == rowCount(oldSpeed), "LLM details row count Speed")
   check(sameRows(details(trendItems[5].menu), oldSpeed), "LLM details unchanged tree Speed")
+  local oldSpend = find(old[2].menu, "Spend:").menu
+  check(#oldSpend == 1 and sameRows(details(trendItems[6].menu), oldSpend), "Spend's details are Harness's Spend: subtree")
   if baseline then
     local original = loadDoctors(baseline).menuItems()
     for index = 1, 4 do
@@ -411,33 +429,41 @@ local flatRed = false
 for at = BAR_AT, BAR_AT + 6 do flatRed = flatRed or sameColor(colorAt(flat, at), palette.RED) end
 check(text(flat) == row("LLM", "2", nil, "███████", "5") and not flatRed, "a flat week has no RED bar: " .. text(flat))
 metadata.speed.lost_min_day_by_day = writeDays({ false, 1, 2, 3, 4, 6, 8 })
+metadata.spend.share_by_day = spendDays({ false, 1, 2, 3, 4, 6, 8 })
 trendHarness()
 local cold = trendDoctor.menuItems()
 for index, name in ipairs(names) do
   local title = cold[index].title
-  check(text(title) == row(name, values[index], index == 5 and "min/day" or nil, " ▁▂▃▄▆█",
+  check(text(title) == row(name, values[index], UNITS[index], " ▁▂▃▄▆█",
     index == 5 and "30" or "3"),
     "cold start: an unmeasured day is a blank cell, measured days keep their bars: " .. text(title))
 end
-check(aligned({ table.unpack(cold, 1, 6) }), "cold start rows stay aligned")
+check(aligned({ table.unpack(cold, 1, 7) }), "cold start rows stay aligned")
 metadata.speed.lost_min_day_by_day[trendDay(0)] = nil
 trendHarness()
 local oldSpeed = trendDoctor.menuItems()[5]
 check(sameColor(colorAt(oldSpeed.title, 1), palette.DIM)
-  and text(oldSpeed.title) == row("Speed", "12", "min/day", " ▂▃▄▆█ ", "30"),
+  and text(oldSpeed.title) == row("Lost time", "12", "min/day", " ▂▃▄▆█ ", "30"),
   "Speed without a current-day observation is DIM even when Harness is fresh: " .. text(oldSpeed.title))
 metadata.speed.lost_min_day_by_day[trendDay(0)] = 80
 metadata.speed.lost_min_day = nil
 trendHarness()
 local unknownSpeed = trendDoctor.menuItems()[5]
-check(text(unknownSpeed.title) == row("Speed", "–", "min/day", " ▁▂▃▄▆█", "30")
+check(text(unknownSpeed.title) == row("Lost time", "–", "min/day", " ▁▂▃▄▆█", "30")
   and sameColor(colorAt(unknownSpeed.title, 1), palette.DIM) and sameColor(colorAt(unknownSpeed.title, VALUE_AT), palette.DIM),
   "a missing Speed floor is a DIM – despite today's retained history: " .. text(unknownSpeed.title))
 metadata.speed.lost_min_day = 12
+metadata.spend.status, metadata.spend.share = "nodata", nil
+trendHarness()
+local staleSpend = trendDoctor.menuItems()[6]
+check(text(staleSpend.title) == row("Spend", "–", "% of spend", " ▁▂▃▄▆█", "3")
+  and sameColor(colorAt(staleSpend.title, 1), palette.DIM) and sameColor(colorAt(staleSpend.title, VALUE_AT), palette.DIM),
+  "a stale tracking.json is a DIM – on Spend, never its old share: " .. text(staleSpend.title))
+metadata.spend.status, metadata.spend.share = "watch", 9.2
 trendHarness()
 write("/doctors/problem-days.jsonl", "")
 trendItems = trendDoctor.menuItems()
-check(text(trendItems[1].title) == summary("LLM", 2) and aligned({ table.unpack(trendItems, 1, 6) }),
+check(text(trendItems[1].title) == summary("LLM", 2) and aligned({ table.unpack(trendItems, 1, 7) }),
   "empty history: bars blank, usual a DIM –")
 local function egorLayer(menu)
   for _, item in ipairs(menu or {}) do
@@ -480,11 +506,11 @@ write("/system-doctor/latest.json", { contract = 1, doctor = "system", as_of_s =
 local doctors = loadDoctors()
 check(doctors.title() == "Doctors", "all ok: " .. text(doctors.title()))
 local items = doctors.menuItems()
-check(#items == 9 and text(items[1].title) == summary("LLM", 0) and text(items[2].title) == summary("Harness", 0)
+check(#items == 10 and text(items[1].title) == summary("LLM", 0) and text(items[2].title) == summary("Harness", 0)
   and text(items[3].title) == summary("Updater", 0) and text(items[4].title) == summary("Code", nil)
   and sameColor(colorAt(items[4].title, 1), palette.DIM) and sameColor(colorAt(items[4].title, VALUE_AT), palette.DIM)
-  and text(items[6].title) == summary("System", 0) and sameColor(colorAt(items[6].title, 1), palette.GREEN),
-  "the five doctors in order, System after Speed")
+  and text(items[7].title) == summary("System", 0) and sameColor(colorAt(items[7].title, 1), palette.GREEN),
+  "the five doctors in order, System after Lost time and Spend")
 check(text(items[3].title) == summary("Updater", 0) and sameColor(colorAt(items[3].title, 1), palette.GREEN), "a clean Updater doctor: " .. text(items[3].title))
 local pendingRow = { id = "cli-behind:codex", rule = "cli-behind", state = "watch",
   fact = "codex 0.159.0 → 0.159.2 waiting: busy since 00:14" }
@@ -801,7 +827,7 @@ tasks = {}
 doctors = loadDoctors()
 items = doctors.menuItems()
 local nightTask = tasks[1]
-check(#items == 9 and nightTask and nightTask.path == "/fixture/bin/night-run"
+check(#items == 10 and nightTask and nightTask.path == "/fixture/bin/night-run"
   and table.concat(nightTask.args, " ") == "latest --menu", "the Night row reads bin/night-run latest --menu")
 doctors.menuItems()
 check(#tasks == 1, "a second build started a second night-run")
@@ -812,8 +838,8 @@ nightTask:finish(0, "Last night 30 Sep: 1 of 3 · 1 unfinished · 1 need you\t1\
   .. "codex update · unfinished · deadline\t2\t" .. reason .. "\n"
   .. "cleanup p1 · needs you · step 10 needs his word\t1\tstep 10 needs his word\n")
 items = doctors.menuItems()
-local nightRow = items[7]
-check(#items == 10 and text(nightRow.title) == "Last night 30 Sep: 1 of 3 · 1 unfinished · 1 need you"
+local nightRow = items[8]
+check(#items == 11 and text(nightRow.title) == "Last night 30 Sep: 1 of 3 · 1 unfinished · 1 need you"
   and red(nightRow.title) and not nightRow.disabled and allMenlo({ nightRow }),
   "a red night: " .. (nightRow and text(nightRow.title) or "missing"))
 local jobs = nightRow.menu or {}
@@ -828,7 +854,7 @@ check(table.concat(reasonRows, " ") == reason and widest(jobs[2].menu) <= 64, "a
 check(text(doctors.title()) == quietTitle, "the Night row changed the Doctors title")
 doctors.refreshNight()
 tasks[#tasks]:finish(0, "Last night 30 Sep: 4 of 4\t0\t0\n")
-nightRow = doctors.menuItems()[7]
+nightRow = doctors.menuItems()[8]
 check(nightRow and text(nightRow.title) == "Last night 30 Sep: 4 of 4" and dimmed(nightRow.title)
   and nightRow.disabled, "a clean night with no job rows is dim")
 
@@ -866,7 +892,7 @@ doctors.runEverything()
 check(#dialogs == dialogCount and #tasks == 2, "a running night asked or started again")
 doctors.refreshNight()
 tasks[#tasks]:finish(4, "", "night-run: cannot read\n")
-check(#doctors.menuItems() == 9, "an empty night-run hides the row")
+check(#doctors.menuItems() == 10, "an empty night-run hides the row")
 
 -- Cleanup now: bin/night-run start --cleanup behind the same Cancel-first confirmation; off while a night runs.
 doctors.refreshNight()
@@ -894,7 +920,7 @@ tasks[#tasks]:finish(0, "Last night 30 Sep: 1 of 3 · 2 unfinished\t2\t0\tn-1\n"
   .. "codex update · unfinished · deadline\t2\t" .. reason .. "\tcodex-e1\tvendor\t1\n"
   .. "cleanup · unfinished · deadline\t2\t\tdebt\tdebt\t1\n")
 tasks, dialogs, answer = {}, {}, "Continue"
-jobs = doctors.menuItems()[7].menu
+jobs = doctors.menuItems()[8].menu
 check(#jobs == 5 and jobs[1].disabled and jobs[4].title == "-", "three jobs, then a separator: " .. #jobs)
 local codexMenu = jobs[2].menu or {}
 local continueJob = codexMenu[#codexMenu]
@@ -909,13 +935,13 @@ tasks[1]:finish(0, "night n-1 resumed: orchestrator on acct\n")
 doctors.menuItems()
 tasks[#tasks]:finish(0, "Last night 30 Sep: 2 unfinished\t0\t0\tn-1\ncodex update · unfinished\t0\t\tcodex-e1\tvendor\t1\n")
 tasks = {}
-jobs = doctors.menuItems()[7].menu
+jobs = doctors.menuItems()[8].menu
 jobs[#jobs].fn()
 check(#tasks == 1 and table.concat(tasks[1].args, " ") == "start --resume n-1", "Continue unfinished resumes the whole night")
 tasks[1]:finish(0, "night n-1 resumed\n")
 doctors.menuItems()
 tasks[#tasks]:finish(0, "Night run since 12:00: 1 in progress\t0\t1\tn-1\ncodex update · in progress\t0\t\tcodex-e1\tvendor\t0\n")
-jobs = doctors.menuItems()[7].menu
+jobs = doctors.menuItems()[8].menu
 check(#jobs == 1 and jobs[1].disabled, "a running night offers no Continue")
 
 -- Known, quiet: an open ledger row no problem names is one dim row per doctor, the ids one level down.
@@ -971,7 +997,7 @@ if vocab then
     local shown = menu ~= nil and want == ""
     for _, item in ipairs(menu or {}) do
       shown = shown or item.title ~= "-" and text(item.title):lower():sub(1, #want) == want
-      for _, sub in ipairs(text(item.title):match("^Speed: ") and item.menu or {}) do
+      for _, sub in ipairs(text(item.title):match("^Lost time: ") and item.menu or {}) do
         shown = shown or sub.title ~= "-" and text(sub.title):lower():sub(1, #want) == want
       end
     end

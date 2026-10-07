@@ -347,7 +347,7 @@ for line in lines[2:]:
     depth, flags, spans, text = line.split("\t", 3)
     if depth == "0" and flags.startswith("s"):
         break
-    if depth not in ("0", "1") or depth == "1" and top != "Speed":
+    if depth not in ("0", "1") or depth == "1" and top != "Lost time":
         continue
     areas += 1
     match = re.fullmatch(r"([A-Z][a-z]+(?: [a-z]+)*): (ok|watch|blind|[1-9]\d* problems?)(?: · (.+))?", text)
@@ -360,7 +360,7 @@ for line in lines[2:]:
         start = len(match.group(1)) + 2
         assert "r:%d:%d" % (start, len(match.group(2))) in spans.split(","), (spans, text)
 assert areas >= 8, areas
-assert lines[2].split("\t")[3].startswith("Speed: "), lines[1]
+assert lines[2].split("\t")[3].startswith("Lost time: "), lines[1]
 assert problems["0"] == int(lines[0].split("\t")[1]) > 0, (problems, lines[0])
 assert problems["1"] == int(lines[2].split("\t")[3].split(": ")[1].split()[0].replace("ok", "0")), (problems, lines[1])
 EOF

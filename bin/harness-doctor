@@ -33,6 +33,7 @@ import collector_runs
 from fix_commit import NOT_LANDED, SETTLED_FILE, fix_commit, fix_held_from, fix_landed, main_checkout, merge_settled, read_settled, record_settled, siblings_dir
 from limiter_hold import hold_dir, wait_dir
 from machine_probe import host_ticks, spawn_pid, sysctl
+import spend
 
 LIMITS = {
     "call_s": 5.0,
@@ -4922,6 +4923,7 @@ HOLDS_GROUP = "Limiter holds"
 AUDIT_GROUP = "Log audit"
 AUDIT_STALE_S = 48 * 3600
 SPEED_GROUP = "Speed"
+SPEED_LABEL = "Lost time"
 WAITS_GROUP = "Wait classes"
 SPEED_SECTIONS = ("Waits", WAITS_GROUP, "Slow periods", "Hook waits", "Hooks", "Load", "Tests", "Collector")
 SPLITS = (("Hooks", "Hook health", ("hooks:fastpath", "hooks:unjournaled"), "every hook keeps its fast path and journal"),
@@ -4990,7 +4992,9 @@ def apply_speed(document, speed, ledger=None):
             component = covers.get((p.get("rule"), p.get("ident"))) or covers.get((p.get("rule"), "*"))
             if component and p["state"] != "fixed-pending":
                 problems[i] = dict(p, state="watch", was_state=p["state"], judged_by="speed:" + component)
-        problems += [dict(speed_restate(p, ledger), speed=True, group=SPEED_GROUP) for p in speed.get("problems") or ()]
+        problems += [dict(speed_restate(p, ledger), speed=True,
+                          group=spend.GROUP if p.get("rule") == spend.RULE else SPEED_GROUP)
+                     for p in spend.restate(speed.get("problems") or (), spend.load_ledger(ROOT_DIR))]
         blind += [dict(b, id="speed:%s" % b.get("id")) for b in speed.get("blind_spots") or ()]
         document["speed"] = speed
     document["problems"], document["blind_spots"] = problems, blind
@@ -5109,7 +5113,7 @@ def speed_block(menu, document, parts):
     speed = document.get("speed") or {}
     loud = [p for p in document["problems"] if p["state"] in LOUD_STATES and in_speed(p)]
     state = "%d problem%s" % (len(loud), "" if len(loud) == 1 else "s") if loud else "ok"
-    head = [(SPEED_GROUP, ""), (": ", ""), (state, "r" if loud else ""),
+    head = [(SPEED_LABEL, ""), (": ", ""), (state, "r" if loud else ""),
             (" · " + (speed.get("head") or "not measured yet"), "")]
     menu.free({"cells": ["".join(p for p, _ in head)], "parts": head}, 0)
     for depth, flags, red, text in speed.get("menu") or ():
@@ -5118,6 +5122,13 @@ def speed_block(menu, document, parts):
         menu.emit(1, "s", [], "-")
     counted = menu.areas(parts, [p for p in document["problems"] if in_speed(p) and p.get("group") != SPEED_GROUP], 1)
     menu.groups(counted, 1)
+    found = speed.get("spend") or {}
+    if found:
+        head = [(spend.GROUP, ""), (": ", ""), (found["status"].replace("nodata", "blind"), ""),
+                (" · " + found.get("head", ""), "")]
+        menu.free({"cells": ["".join(p for p, _ in head)], "parts": head}, 0)
+        for depth, flags, red, text in found.get("menu") or ():
+            menu.emit(1 + depth, flags, [], text)
 
 
 def menu_text(document):
@@ -5130,6 +5141,9 @@ def menu_text(document):
         {k: p[k] for k in ("id", "ledger") if k in p} for p in document["problems"]],
         "issues": [[count, group] for group, count in groups.most_common(3)],
         "speed": {k: speed[k] for k in ("as_of_s", "status", "lost_min_day", "lost_min_day_by_day") if k in speed}}
+    if speed.get("spend"):
+        header["spend"] = {k: speed["spend"][k] for k in ("as_of_s", "status", "share", "share_by_day", "issues")
+                           if k in speed["spend"]}
     header["speed"]["issues"] = [[f["recoverable_min_day"], f["label"]]
                                  for f in sorted((speed.get("budget") or {}).get("floors") or (),
                                                  key=lambda f: -f["recoverable_min_day"])
