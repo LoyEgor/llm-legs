@@ -270,6 +270,8 @@ EOF
   assert test "$rc" -eq 2
   assert grep -q 'cua_repl registration failed: fake registration failure' "$WORK/start.out"
   BT_SYNC_MODE=ok
+  # --enroll all enrols in parallel, so the registry's key order is whichever enrolment finished first.
+  jq '{lost: .lost} + .' "$registry" >"$registry.tmp" && mv "$registry.tmp" "$registry"
   clear_stub
   start_ok codex
   assert await_done

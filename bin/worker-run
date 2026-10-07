@@ -5064,7 +5064,7 @@ browse_prepare() { # vendor target account preamble-file; REASON lines and 2 whe
   elif [ "$vendor" = codex ]; then
     while IFS= read -r dir; do
       browse_window "$dir" && names+="${names:+, }$(browse_profile_label "$dir")"
-    done < <(browse_registry | jq -r '.[] | select(.status == "ok") | .chrome_profile // empty')
+    done < <(browse_registry | jq -r '[.[] | select(.status == "ok") | .chrome_profile // empty] | unique[]')
     [ -n "$names" ] || { printf 'REASON: no enrolled Chrome profile is open: worker-run browse --enroll all\n'; return 2; }
   else
     dir=$(browse_profile "$account")

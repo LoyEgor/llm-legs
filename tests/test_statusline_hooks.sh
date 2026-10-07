@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 set -u
-unset WORKER_PICK_CONFIG_FILE WORKER_RUN_CONFIG_FILE
+unset WORKER_PICK_CONFIG_FILE WORKER_RUN_CONFIG_FILE CLAUDEB_WORKER
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$ROOT/share/test-scope.sh"
@@ -3817,33 +3817,53 @@ assert_eq "" "$(cat "$STATE_DIR/ports-pp-death")"
 SNAP_CALLS="$WORK/snapshot-calls"
 SNAP_PS="$FIXTURES/snap-ps"; SNAP_LSOF="$FIXTURES/snap-lsof"
 printf '#!/usr/bin/env bash\nprintf "ps\\n" >> "%s"\nexec "%s" "$@"\n' "$SNAP_CALLS" "$FAKE_PS" > "$SNAP_PS"
-printf '#!/usr/bin/env bash\nprintf "lsof\\n" >> "%s"\nexec "%s" "$@"\n' "$SNAP_CALLS" "$FAKE_LSOF" > "$SNAP_LSOF"
+cat > "$SNAP_LSOF" <<SNAPLSOF
+#!/usr/bin/env bash
+printf 'lsof\n' >> "$SNAP_CALLS"
+case " \$* " in *" -iTCP "*) head -1 "$STATE_DIR/ps-snapshot" | cut -f1 > "$SNAP_CALLS.table" ;; esac
+exec "$FAKE_LSOF" "\$@"
+SNAPLSOF
 chmod +x "$SNAP_PS" "$SNAP_LSOF"
 snap_probe() { STATUSLINE_PS="$SNAP_PS" STATUSLINE_LSOF="$SNAP_LSOF" "$PORTS_PROBE" "$1" 1001 /proj; }
 snap_calls() { grep -c "^$1\$" "$SNAP_CALLS" 2>/dev/null || :; }
-: > "$SNAP_CALLS"
-snap_probe pp-snap-a
-assert_eq "1 2" "$(snap_calls ps) $(snap_calls lsof)"
-snap_probe pp-snap-b
-assert_eq "1 2" "$(snap_calls ps) $(snap_calls lsof)"
-assert_eq "$(cat "$STATE_DIR/ports-pp-orphan")" "$(cat "$STATE_DIR/ports-pp-snap-b")"
-# The work probe reads the same table inside its own three seconds.
-STATUSLINE_PS="$SNAP_PS" STATUSLINE_LSOF="$SNAP_LSOF" WORKER_RUN_DIR="$WORK/none" "$ROOT/bin/statusline-work-probe.sh" wp-snap 1001
-assert_eq "1 2" "$(snap_calls ps) $(snap_calls lsof)"
-# A snapshot past its age is walked again, and a process table older than the listener walk is
-# retaken: a listener it does not hold has no command to be judged by.
+snap_at() { local at; { IFS=$'\t' read -r at _; } < "$STATE_DIR/$1"; printf '%s' "$at"; }
 snap_head() { # file epoch
   local rest; { IFS=$'\t' read -r _ rest; } < "$STATE_DIR/$1"
   { printf '%s\t%s\n' "$2" "$rest"; tail -n +2 "$STATE_DIR/$1"; } > "$STATE_DIR/$1.edit" && mv "$STATE_DIR/$1.edit" "$STATE_DIR/$1"
 }
+# A walk whose second ticked past the table's own retakes the table, so a fresh probe runs ps twice
+# then; the fake lsof notes the table's second for the count to follow the clock instead of racing it.
+snap_retake() { [ "$(<"$SNAP_CALLS.table")" -lt "$(snap_at ports-snapshot)" ] && echo 1 || echo 0; }
+# Both snapshots moved to this second, their order kept, so a stall under load never ages them out.
+snap_fresh() {
+  local ps_at walk_at
+  ps_at=$(snap_at ps-snapshot) walk_at=$(snap_at ports-snapshot)
+  snap_head ps-snapshot "$(($(date +%s) - (walk_at > ps_at ? walk_at - ps_at : 0)))"
+  snap_head ports-snapshot "$(($(date +%s) - (ps_at > walk_at ? ps_at - walk_at : 0)))"
+}
+: > "$SNAP_CALLS"
+snap_probe pp-snap-a
+snap_ps=$((1 + $(snap_retake)))
+assert_eq "$snap_ps 2" "$(snap_calls ps) $(snap_calls lsof)"
+snap_fresh
+snap_probe pp-snap-b
+assert_eq "$snap_ps 2" "$(snap_calls ps) $(snap_calls lsof)"
+assert_eq "$(cat "$STATE_DIR/ports-pp-orphan")" "$(cat "$STATE_DIR/ports-pp-snap-b")"
+# The work probe reads the same table inside its own three seconds.
+snap_fresh
+STATUSLINE_PS="$SNAP_PS" STATUSLINE_LSOF="$SNAP_LSOF" WORKER_RUN_DIR="$WORK/none" "$ROOT/bin/statusline-work-probe.sh" wp-snap 1001
+assert_eq "$snap_ps 2" "$(snap_calls ps) $(snap_calls lsof)"
+# A snapshot past its age is walked again, and a process table older than the listener walk is
+# retaken: a listener it does not hold has no command to be judged by.
 snap_head ps-snapshot "$(($(date +%s) - 30))"
 snap_head ports-snapshot "$(($(date +%s) - 30))"
 snap_probe pp-snap-c
-assert_eq "2 4" "$(snap_calls ps) $(snap_calls lsof)"
+snap_ps=$((snap_ps + 1 + $(snap_retake)))
+assert_eq "$snap_ps 4" "$(snap_calls ps) $(snap_calls lsof)"
 snap_head ps-snapshot "$(($(date +%s) - 5))"
 rm -f "$STATE_DIR/ports-snapshot"
 snap_probe pp-snap-d
-assert_eq "3 6" "$(snap_calls ps) $(snap_calls lsof)"
+assert_eq "$((snap_ps + 1)) 6" "$(snap_calls ps) $(snap_calls lsof)"
 assert_eq "$(cat "$STATE_DIR/ports-pp-orphan")" "$(cat "$STATE_DIR/ports-pp-snap-d")"
 # A failed ps is never published as an empty machine for the other chats.
 STATUSLINE_PS=true STATUSLINE_LSOF="$SNAP_LSOF" "$PORTS_PROBE" pp-snap-empty 1001 /proj
