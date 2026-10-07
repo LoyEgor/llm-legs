@@ -538,9 +538,10 @@ assert_fails night start --cleanup 2>/dev/null
 stop_chat "$(jq -r .session "$(record "$idc")")"
 
 # finish prunes every landed (in main, or a night branch still at its base), clean, not live, not held
-# branch of the sweep repositories, night or not, with its worktree. Live = the main checkout, a process
-# inside or a running night's branch, never recent activity; held = Egor's `сделай холд` in the owning chat,
-# until the next night finishes; every other branch is a leftover to carry into main, never kept.
+# branch of the sweep repositories, night or not, with its worktree. Live = the main checkout, a locked
+# worktree or a running night's branch, never recent activity or a process inside; held = Egor's `сделай холд`
+# in the owning chat, until the next night finishes; every other branch is a leftover to carry into main, never
+# kept. A process inside keeps only a landed worktree's directory from removal.
 wt="$WORK/repo/.claude/worktrees"
 old() { GIT_COMMITTER_DATE='2026-01-01T00:00:00Z' git -C "$WORK/repo" "$@"; }
 printf '%s\n' "$WORK/repo" >"$WORK/sweep-repos"
@@ -562,16 +563,18 @@ printf 'wip\n' >"$wt/stale-dirty/wip"
 touch -t 202601010000 "$wt/stale-dirty/wip"
 old worktree add -q -b edited "$wt/edited" "$pushed_hash"
 printf 'wip\n' >"$wt/edited/wip"
-old worktree add -q -b plain-busy "$wt/plain-busy" "$pushed_hash"
+old worktree add -q -b plain-busy "$wt/plain-busy" "$side_hash"
 (cd "$wt/busy" && exec sleep 600) &
 busy=$!
 (cd "$wt/plain-busy/" && exec sleep 600) &
 plain_busy=$!
-old worktree add -q -b addir-busy "$wt/addir-busy" "$pushed_hash"
+old worktree add -q -b addir-busy "$wt/addir-busy" "$side_hash"
 perl -e 'sleep 600' -- --add-dir "$wt/addir-busy/" &
 addir_busy=$!
 printf '%s\n' "$busy" "$plain_busy" "$addir_busy" >>"$DATA/orchestrators"
 old worktree add -q -b onhold "$wt/onhold" "$side_hash"
+old worktree add -q -b frozen "$wt/frozen" "$side_hash"
+git -C "$WORK/repo" worktree lock "$wt/frozen"
 journal="$HOME/.cache/claude/review-journal"
 mkdir -p "$journal"
 export WORDS_LIB="${CLAUDE_SETUP_ROOT:-$(git_projects "$ROOT")/claude-setup}/hooks/lib/words.sh"
@@ -598,26 +601,23 @@ assert grep -qxF "repo stale-open · $wt/stale-open · unlanded · +1/-3 main ·
 assert grep -qxF "repo stale-bare · no worktree · unlanded · +1/-3 main · 0 dirty · leftover (1 unlanded commits)" "$WORK/left"
 assert grep -qxF "repo picked-bare · no worktree · landed · +1/-1 main · 0 dirty · landed" "$WORK/left"
 assert grep -qxF "repo stale-dirty · $wt/stale-dirty · landed · +0/-$behind main · 1 dirty · leftover (1 uncommitted files)" "$WORK/left"
-assert grep -qxF "repo plain-busy · $wt/plain-busy · landed · +0/-$behind main · 0 dirty · live (a process inside)" "$WORK/left"
-assert grep -qxF "repo addir-busy · $wt/addir-busy · landed · +0/-$behind main · 0 dirty · live (a process inside)" "$WORK/left"
+assert grep -qxF "repo night/$idc/busy · $wt/busy · landed · +0/-$behind main · 0 dirty · landed" "$WORK/left"
+assert grep -qxF "repo plain-busy · $wt/plain-busy · unlanded · +1/-3 main · 0 dirty · leftover (1 unlanded commits)" "$WORK/left"
+assert grep -qxF "repo addir-busy · $wt/addir-busy · unlanded · +1/-3 main · 0 dirty · leftover (1 unlanded commits)" "$WORK/left"
+assert grep -qxF "repo frozen · $wt/frozen · unlanded · +1/-3 main · 0 dirty · live (locked)" "$WORK/left"
 assert grep -qxF "repo fresh · $wt/fresh · landed · +0/-$behind main · 0 dirty · landed" "$WORK/left"
 assert grep -qxF "repo edited · $wt/edited · landed · +0/-$behind main · 1 dirty · leftover (1 uncommitted files)" "$WORK/left"
 assert grep -qxF "repo onhold · $wt/onhold · unlanded · +1/-3 main · 0 dirty · held (Egor: сделай холд, я ещё тут)" "$WORK/left"
 assert_fails grep -q '^repo main ' "$WORK/left"
 assert grep -qxF "checkout repo: diverged" "$WORK/left"
-assert [ "$(wc -l <"$WORK/left" | tr -d ' ')" = 17 ]
-assert jqe --arg w "$wt" 'length == 16 and (map(.branch) | index("main")) == null
+assert [ "$(wc -l <"$WORK/left" | tr -d ' ')" = 18 ]
+assert jqe --arg w "$wt" 'length == 17 and (map(.branch) | index("main")) == null
   and (.[] | select(.branch == "stale-open")) == {repo: ($w | sub("/.claude/worktrees$"; "")), branch: "stale-open",
     worktree: "\($w)/stale-open", landed: false, ahead: 1, behind: 3, dirty: 0, live: false, state: "leftover",
     why: "1 unlanded commits"}
   and ((.[] | select(.branch == "merged-bare")) | .worktree == null and .landed and .state == "landed" and .why == null)
   and ((.[] | select(.branch == "fresh")) | (.live | not) and .state == "landed")
   and ((.[] | select(.branch == "onhold")) | (.live | not) and .state == "held")' "$WORK/left.json"
-# The caller's own process inside a worktree never holds it, the same rule as cwd_held's.
-git -C "$WORK/repo" worktree add -q -b "night/$id/self" "$wt/self" "$pushed_hash"
-(cd "$wt/self" && night leftovers) >"$WORK/left-self" || fail "leftovers from inside"
-assert grep -qxF "repo night/$id/self · $wt/self · landed · +0/-$behind main · 0 dirty · landed" "$WORK/left-self"
-git -C "$WORK/repo" worktree remove "$wt/self" && git -C "$WORK/repo" branch -q -D "night/$id/self" || fail "drop the self worktree"
 # An evil merge: its only parent outside main is patch-equivalent to main's tip, so `git cherry` sees nothing
 # unlanded, yet the merge's own resolution adds evil.txt.
 evil_tree=$(GIT_INDEX_FILE="$WORK/evil.index" bash -c 'git -C "$1" read-tree main &&
@@ -626,35 +626,11 @@ old branch evil-bare "$(old -c user.name=t -c user.email=t@t commit-tree "$evil_
 night leftovers >"$WORK/left-evil" || fail "leftovers with an evil merge"
 assert grep -qxF "repo evil-bare · no worktree · unlanded · +2/-1 main · 0 dirty · leftover (2 unlanded commits)" "$WORK/left-evil"
 git -C "$WORK/repo" branch -q -D evil-bare || fail "drop the evil merge"
-# A process that enters a landed worktree after finish listed the rows (its lsof hides it once) still keeps
-# it: the removal looks again, names the process and never kills it.
-git -C "$WORK/repo" worktree add -q -b "night/$idc/late" "$wt/late" "$pushed_hash"
-(cd "$wt/late" && exec sleep 600) &
-late=$!
-printf '%s\n' "$late" >>"$DATA/orchestrators"
-lsof_hide_once() { # dir: the next lsof listing leaves out the processes inside dir
-  cat >"$FAKE_BIN/lsof" <<EOF
-#!/bin/bash
-if [ -s "$WORK/lsof-hide" ]; then
-  hide=\$(cat "$WORK/lsof-hide"); rm -f "$WORK/lsof-hide"
-  /usr/sbin/lsof "\$@" | grep -vF "\$hide"
-  exit 0
-fi
-exec /usr/sbin/lsof "\$@"
-EOF
-  chmod +x "$FAKE_BIN/lsof"
-  (cd -P "$1" && pwd) >"$WORK/lsof-hide"
-}
-lsof_hide_once "$wt/late"
 sleep 0.3
 night finish "$idc" >"$WORK/out" || fail "finish with worktrees"
-late_alive=0; kill -0 "$late" 2>/dev/null && late_alive=1
-kill "$busy" "$plain_busy" "$late" 2>/dev/null
-rm -f "$FAKE_BIN/lsof"
-assert [ ! -e "$WORK/lsof-hide" ]
-assert grep -qxF "live repo night/$idc/late: processes inside: $late sleep 600" "$WORK/out"
-assert [ "$late_alive" = 1 ] && [ -d "$wt/late" ]
-git -C "$WORK/repo" worktree remove "$wt/late" && git -C "$WORK/repo" branch -q -D "night/$idc/late" || fail "drop the late worktree"
+busy_alive=0; kill -0 "$busy" 2>/dev/null && busy_alive=1
+kill "$busy" "$plain_busy" "$addir_busy" 2>/dev/null
+assert [ "$busy_alive" = 1 ]
 assert grep -qxF "pruned repo night/$id/landed" "$WORK/out"
 assert grep -qxF "pruned repo night/$idc/at-base" "$WORK/out"
 assert grep -qxF "pruned repo merged-old" "$WORK/out"
@@ -666,22 +642,23 @@ assert grep -qxF "leftover repo night/$idc/open: 1 unlanded commits" "$WORK/out"
 assert grep -qxF "leftover repo stale-open: 1 unlanded commits" "$WORK/out"
 assert grep -qxF "leftover repo stale-bare: 1 unlanded commits" "$WORK/out"
 assert grep -qxF "leftover repo stale-dirty: 1 uncommitted files" "$WORK/out"
-assert grep -qxF "live repo night/$idc/busy: a process inside" "$WORK/out"
-assert grep -qxF "live repo plain-busy: a process inside" "$WORK/out"
-assert grep -qxF "live repo addir-busy: a process inside" "$WORK/out"
+assert grep -qxF "live repo night/$idc/busy: processes inside: $busy sleep 600" "$WORK/out"
+assert grep -qxF "leftover repo plain-busy: 1 unlanded commits" "$WORK/out"
+assert grep -qxF "leftover repo addir-busy: 1 unlanded commits" "$WORK/out"
+assert grep -qxF "live repo frozen: locked" "$WORK/out"
 assert grep -qxF "leftover repo edited: 1 uncommitted files" "$WORK/out"
 assert grep -qxF "held repo onhold: Egor: сделай холд, я ещё тут" "$WORK/out"
 assert_fails grep -q '^kept ' "$WORK/out"
 assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 18 ]
 assert [ ! -e "$wt/landed" ] && [ ! -e "$wt/at-base" ] && [ ! -e "$wt/merged-old" ] && [ ! -e "$wt/fresh" ]
-assert [ -e "$wt/dirty/wip" ] && [ -d "$wt/open" ] && [ -e "$wt/edited/wip" ] && [ -d "$wt/stale-open" ] && [ -e "$wt/stale-dirty/wip" ] && [ -d "$wt/onhold" ]
+assert [ -e "$wt/dirty/wip" ] && [ -d "$wt/open" ] && [ -e "$wt/edited/wip" ] && [ -d "$wt/stale-open" ] && [ -e "$wt/stale-dirty/wip" ] && [ -d "$wt/onhold" ] && [ -d "$wt/busy" ] && [ -d "$wt/frozen" ]
 for gone in "night/$id/landed" merged-old merged-bare picked-bare fresh; do
   assert_fails git -C "$WORK/repo" rev-parse -q --verify "refs/heads/$gone"
 done
-for stays in "night/$idc/open" stale-open stale-bare stale-dirty edited plain-busy addir-busy onhold; do
+for stays in "night/$idc/open" "night/$idc/busy" stale-open stale-bare stale-dirty edited plain-busy addir-busy onhold frozen; do
   assert git -C "$WORK/repo" rev-parse -q --verify "refs/heads/$stays" >/dev/null
 done
-assert jqe '([.leftovers[] | .branch] | sort) == (["edited", "night/'"$idc"'/dirty", "night/'"$idc"'/open", "stale-bare", "stale-dirty", "stale-open"] | sort)
+assert jqe '([.leftovers[] | .branch] | sort) == (["addir-busy", "edited", "night/'"$idc"'/dirty", "night/'"$idc"'/open", "plain-busy", "stale-bare", "stale-dirty", "stale-open"] | sort)
   and .held == [{repo: "repo", branch: "onhold", why: "Egor: сделай холд, я ещё тут"}]' "$(record "$idc")"
 assert grep -qxF "leftover · repo · stale-open · 1 unlanded commits" <(night report "$idc")
 assert grep -qxF "held · repo · onhold · Egor: сделай холд, я ещё тут" <(night report "$idc")
@@ -735,13 +712,25 @@ assert grep -qxF "repo recent · $wt/recent · unlanded · +1/-$behind main · 0
 night job "$idc" add leftover recent >"$WORK/out" || fail "a branch committed a minute ago is adopted"
 assert grep -qxF "adopted repo recent into night/$idc/leftover-recent at $wt/night-$idc-leftover-recent" "$WORK/out"
 assert jqe '.jobs[-1] | .ref == "leftover-recent" and (has("handover") | not)' "$(record "$idc")"
+# A process inside never keeps a branch out of the night: adopted, only its old directory stays. The
+# caller's own process never holds even that.
+old worktree add -q -b inhabited "$wt/inhabited" "$side_hash"
+(cd "$wt/inhabited" && exec sleep 600) >/dev/null 2>&1 &
+inhabited=$!
+printf '%s\n' "$inhabited" >>"$DATA/orchestrators"
+old worktree add -q -b self "$wt/self" "$side_hash"
+sleep 0.5
+night job "$idc" add leftover inhabited >"$WORK/out" || fail "a process inside never refuses an adoption"
+kill "$inhabited" 2>/dev/null
+assert grep -qxF "adopted repo inhabited into night/$idc/leftover-inhabited at $wt/night-$idc-leftover-inhabited; the old one stays: processes inside: $inhabited sleep 600" "$WORK/out"
+(cd "$wt/self" && night job "$idc" add leftover self) >"$WORK/out" || fail "adopt from inside"
+assert grep -qxF "adopted repo self into night/$idc/leftover-self at $wt/night-$idc-leftover-self" "$WORK/out"
+assert [ ! -e "$wt/self" ]
 # --ready records the owner's handover with who, when and why; a live reason still refuses it.
 old worktree add -q -b held "$wt/held" "$side_hash"
-(cd "$wt/held" && exec sleep 600) >/dev/null 2>&1 &
-printf '%s\n' "$!" >>"$DATA/orchestrators"
-sleep 0.5
+git -C "$WORK/repo" worktree lock "$wt/held"
 assert_fails night job "$idc" add leftover held --ready "owner says done" 2>"$WORK/err"
-assert grep -qxF "night-run: held is live in repo: a process inside" "$WORK/err"
+assert grep -qxF "night-run: held is live in repo: locked" "$WORK/err"
 assert_fails night job "$idc" add debt handed --ready "owner says done" 2>/dev/null
 assert [ -d "$wt/edited" ]
 CLAUDE_CODE_SESSION_ID=owner-1 night job "$idc" add leftover edited --ready "owner declared it finished" >"$WORK/out" ||
@@ -764,12 +753,10 @@ for r in repo repo2; do
 done
 GIT_COMMITTER_DATE='2026-01-01T00:00:00Z' git -C "$WORK/repo" branch split "$side_hash"
 git -C "$WORK/repo2" worktree add -q -b split "$WORK/repo2/.claude/worktrees/split"
-(cd "$WORK/repo2/.claude/worktrees/split" && exec sleep 600) >/dev/null 2>&1 &
-printf '%s\n' "$!" >>"$DATA/orchestrators"
-sleep 0.5
+git -C "$WORK/repo2" worktree lock "$WORK/repo2/.claude/worktrees/split"
 printf '%s\n' "$WORK/repo" "$WORK/repo2" >"$WORK/sweep-repos"
 assert_fails night job "$idc" add leftover split 2>"$WORK/err"
-assert grep -qxF "night-run: split is live in repo2: a process inside" "$WORK/err"
+assert grep -qxF "night-run: split is live in repo2: locked" "$WORK/err"
 assert git -C "$WORK/repo" rev-parse -q --verify refs/heads/split >/dev/null
 night job "$idc" add leftover both >"$WORK/out" || fail "adopt in every repository"
 assert [ "$(grep -c '^adopted repo2\{0,1\} both into night/'"$idc"'/leftover-both at ' "$WORK/out")" = 2 ]
@@ -828,21 +815,6 @@ old worktree add -q -b night/n0/code-code-20261001T020700Z-0b0b "$wt/code-old" "
 night job "$idc" add leftover night/n0/code-code-20261001T020700Z-0b0b >"$WORK/out" || fail "adopt a Code fixer leftover"
 assert grep -qF "; the old one stays: code-doctor check reads the Code fixer run from it" "$WORK/out"
 assert [ -d "$wt/code-old" ]
-# A process that enters an adopted leftover's old worktree after the rows were listed (its lsof hides it
-# once) keeps that worktree: the removal looks again, names the process and never kills it.
-old worktree add -q -b entered "$wt/entered" "$side_hash"
-(cd "$wt/entered" && exec sleep 600) &
-entered=$!
-printf '%s\n' "$entered" >>"$DATA/orchestrators"
-lsof_hide_once "$wt/entered"
-sleep 0.3
-night job "$idc" add leftover entered >"$WORK/out" || fail "adopt a leftover a process entered"
-entered_alive=0; kill -0 "$entered" 2>/dev/null && entered_alive=1
-kill "$entered" 2>/dev/null
-rm -f "$FAKE_BIN/lsof"
-assert grep -qxF "adopted repo entered into night/$idc/leftover-entered at $wt/night-$idc-leftover-entered; the old one stays: processes inside: $entered sleep 600" "$WORK/out"
-assert [ "$entered_alive" = 1 ] && [ -d "$wt/entered" ]
-assert git -C "$WORK/repo" rev-parse -q --verify refs/heads/entered >/dev/null
 printf '%s\n' "$WORK/repo" >"$WORK/sweep-repos"
 
 # A vendor job is named by its branch's vendor, whatever run ref its updater fixer got.
@@ -1160,6 +1132,8 @@ sv "$SV/repo" commit -q --allow-empty -m c && sv "$SV/repo" commit -q --allow-em
 git -C "$SV/repo" worktree add -q -b fresh "$SV/fresh"
 (cd "$SV/fresh" && exec sleep 600) >/dev/null 2>&1 &
 printf '%s\n' "$!" >>"$DATA/orchestrators"
+git -C "$SV/repo" worktree add -q -b frozen "$SV/frozen"
+git -C "$SV/repo" worktree lock "$SV/frozen"
 sleep 0.5
 : >"$SV/repo/untracked"
 cat >"$DATA/price" <<EOF
@@ -1179,7 +1153,8 @@ chmod +x "$FAKE_BIN/report-bus"
 export NIGHT_RUN_REPORT_BUS="$FAKE_BIN/report-bus"
 night survey "$SV/repo" >"$WORK/survey.out" || fail "survey"
 assert [ "$(cat "$WORK/survey.out")" = "repo · debt 40 lines/3 files · 1 dirty · 2 chunks
-  fresh · +0/-0 main · 0 dirty · debt 0 · keep (process inside)
+  fresh · +0/-0 main · 0 dirty · debt 0 · take (landed)
+  frozen · +0/-0 main · 0 dirty · debt 0 · keep (locked)
   feat/old · +1/-2 main · 2 dirty · debt 12 · take (unlanded commits)
 total · debt 52 lines/4 files · 3 dirty · 2 chunks" ]
 assert [ "$(cat "$DATA/price-args")" = "review --debt --repo $SV/repo --tier T2 --price" ]
@@ -1187,7 +1162,8 @@ assert [ ! -e "$DATA/bus-docs" ]
 night survey --post "$SV/repo" | cmp -s - "$WORK/survey.out" || fail "survey --post prints the same lines"
 assert grep -qE '^post --kind notice --id night-survey-[0-9]+-[0-9]+$' "$DATA/bus-args"
 assert jqe '.word == "survey" and .rows == [["repo", ["debt 40 lines/3 files · 1 dirty · 2 chunks"]],
-  ["  fresh", ["+0/-0 main · 0 dirty · debt 0", "keep (process inside)"]],
+  ["  fresh", ["+0/-0 main · 0 dirty · debt 0", "take (landed)"]],
+  ["  frozen", ["+0/-0 main · 0 dirty · debt 0", "keep (locked)"]],
   ["  feat/old", ["+1/-2 main · 2 dirty · debt 12", "take (unlanded commits)"]],
   ["total", ["debt 52 lines/4 files · 3 dirty · 2 chunks"]]]' "$DATA/bus-docs"
 python3 "$ROOT/share/report_frame.py" block <"$DATA/bus-docs" >/dev/null || fail "the survey block renders"

@@ -79,7 +79,7 @@ leftover: ref is a leftover branch, adopted in every sweep repository where it i
   repositories, and --ready refuses a branch found in more than one of them without it;
   a held branch is refused, --ready or not
 leftovers lists every non-main branch and worktree of the sweep repositories: live (main checkout, locked,
-  a process inside, a running night's branch) and held ones stay, recent activity keeps none,
+  a running night's branch) and held ones stay, recent activity or a process inside keeps none,
   landed ones go at finish, every other is a leftover to carry; finish records those under the night's
   leftovers and held
 hold, run by the chat Egor said `сделай холд` in (word family night-hold), holds that chat's worktrees
@@ -789,7 +789,7 @@ cmd_finish() {
   done
 }
 
-branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locked(0|1) -> TSV row; reads HELD, CWDS, TREE
+branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locked(0|1) -> TSV row; reads HELD
   local repo=$1 wt=$2 branch=$3 ref head behind ahead landed=false dirty=0 night='' why='' state=live hold cherry
   ref=${branch:+refs/heads/$branch}
   head=$(git -C "${wt:-$repo}" rev-parse -q --verify "${ref:-HEAD}^{commit}") || return 0
@@ -804,7 +804,6 @@ branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locke
   [ -z "$wt" ] || dirty=$(GIT_OPTIONAL_LOCKS=0 git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null | wc -l | tr -d ' ')
   if [ "$4" = 1 ]; then why='main checkout'
   elif [ "$5" = 1 ]; then why='locked'
-  elif [ -n "$wt" ] && [ -n "$(cwd_holders "$wt" "$CWDS" "$TREE" "$ARGS")" ]; then why='a process inside'
   elif [ -n "$night" ]; then
     [ ! -s "$(night_file "$night")" ] || [ "$(night_status "$(night_file "$night")" 2>/dev/null)" != running ] || why="night $night running"
   fi
@@ -825,9 +824,8 @@ branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locke
 # at its night's base, since a nothing-to-do job never committed. `-`, not an empty field: a tab is IFS
 # whitespace, so read would shift every field after an empty one.
 branch_rows() { # [repo...], default the sweep repositories
-  local repo wt branch main locked seen HELD CWDS TREE ARGS
+  local repo wt branch main locked seen HELD
   [ $# -gt 0 ] || [ -r "$sweep_repos" ] || return 0
-  CWDS=$(cwd_listing) TREE=$(process_listing) ARGS=$(args_listing)
   HELD=$(cat "$holds_dir"/*.json 2>/dev/null | jq -r '.words as $w | .branches[]? | [.repo, .branch, $w] | @tsv' 2>/dev/null)
   while IFS= read -r repo; do
     [ -n "$repo" ] && [ -d "$repo" ] || continue
@@ -973,7 +971,6 @@ survey_lines() { # price repo... -> the survey's lines
       case $state in
         held) reason="Egor's hold" ;;
         live) case $why in
-            'a process inside') reason='process inside' ;;
             night*running) reason='night running' ;;
             *) reason=$why ;;
           esac ;;

@@ -73,11 +73,10 @@ args_listing() { ps -A -o pid=,args= 2>/dev/null; }
 # The caller's own session never holds: everything under the highest of its ancestors standing inside
 # the directory, so a chat landing the worktree it works in is not held by its own shell or servers.
 # A worker launched with --add-dir <worktree> from a cwd elsewhere edits that worktree too, so it holds it.
-cwd_holders() { # dir [listing tree [args]] -> "<pid> <command>" per process whose working directory or --add-dir is dir or below it; 2 when unlisted
-  local dir given=${1%/} listing=${2-} tree=${3-} args=${4-} pids
+cwd_holders() { # dir -> "<pid> <command>" per process whose working directory or --add-dir is dir or below it; 2 when unlisted
+  local dir given=${1%/} listing tree args pids
   dir=$(cd -P "$1" 2>/dev/null && pwd -P) || return 0
-  [ $# -ge 3 ] || { listing=$(cwd_listing); tree=$(process_listing); }
-  [ $# -ge 4 ] || args=$(args_listing)
+  listing=$(cwd_listing) tree=$(process_listing) args=$(args_listing)
   [ -n "$listing" ] && [ -n "$tree" ] || return 2
   pids=$(awk -v self="$$" -v dir="$dir" -v given="$given" '
     function within(path) { sub(/\/+$/, "", path); return path == dir || index(path, dir "/") == 1 || path == given || index(path, given "/") == 1 }

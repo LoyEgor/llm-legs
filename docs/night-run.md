@@ -183,10 +183,12 @@ right now; a kept worktree once lost a review fix.
 landed (in main or origin/main, or a night branch still at its night's base), ahead/behind main, dirty
 count and a state, the one predicate `finish` prunes by; its text form also prints `checkout <repo>: behind
 N|diverged[, WIP in the way: <files>]` for a main checkout behind origin/main:
-- `live`, never touched: the main checkout, a locked worktree, a process with its cwd inside, or a
-  branch of a running night. Recent activity keeps nothing (Egor, 2026-10-07: finished work commits on
-  its branch in the evening and the night lands it): a branch someone is still on stays out only by
-  `сделай холд`. `night-run job <id> add leftover <branch> --ready "<why>"`, given when the owning chat
+- `live`, never touched: the main checkout, a locked worktree (the owning chat's `git worktree lock`),
+  or a branch of a running night. Neither recent activity nor a process inside keeps anything (Egor,
+  2026-10-07: finished work commits on its branch in the evening and the night lands it; only an
+  explicit block protects a branch): a branch someone is still on stays out only by `сделай холд` or
+  its lock. A process inside still keeps the worktree directory from removal (`cwd_held`), never the
+  branch from being landed or adopted. `night-run job <id> add leftover <branch> --ready "<why>"`, given when the owning chat
   declared the branch finished, records `handover` {by (`CLAUDE_CODE_SESSION_ID`, else `$USER`), at,
   why} on the job, shown in `night-run report`; a name in several repositories needs `--repo <name>`
   (repeatable) to scope it.
