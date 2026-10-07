@@ -378,6 +378,24 @@ assert jq -se --arg run "$RUN_ID" 'map(select(.run == $run)) | length == 1 and (
   "$CLAUDEB_DIR/worker-stats/runs.jsonl" >/dev/null
 orphan_cleanup
 trap 'rm -rf "$WORK"' EXIT
+
+# The run's own loose-object pack outlives it unended (live 2026-10-07: 14 runs ended their own pack).
+pack_repo="$WORK/pack-repo"
+git init -q "$pack_repo" && git -C "$pack_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
+cat >"$WORK/bin/git" <<EOF
+#!/usr/bin/env bash
+case " \$* " in *" maintenance "*) printf '%s\n' "\${WORKER_RUN_ID-}" >"$STUB_DIR/pack.id"; sleep 2; : >"$STUB_DIR/pack.done" ;; esac
+exec $(command -v git) "\$@"
+EOF
+chmod +x "$WORK/bin/git"
+clear_stub
+WORKER_TEST_WORKDIR=$pack_repo start_ok claudeb
+assert await_done
+for tick in $(seq 1 100); do [ ! -e "$STUB_DIR/pack.done" ] || break; sleep 0.1; done
+rm -f "$WORK/bin/git"
+assert test -e "$STUB_DIR/pack.done"
+assert test -z "$(cat "$STUB_DIR/pack.id")"
+assert jq -e '(.orphans_ended // []) == []' "$RUN_DIR/meta.json" >/dev/null
 unset PICK_ACCOUNT PICK_RC
 set_config
 
