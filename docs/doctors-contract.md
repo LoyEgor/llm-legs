@@ -210,7 +210,7 @@ value × exposure.
 the snapshot only as its `speed.selection` names them, in that order and `quality: equivalent` only,
 after the loud regressions, in area `speed`: `bin/speed-doctor` `select` charges each regression its
 component's cheapest lever, then takes opportunities by score while Σ (effort + night cost) ≤ 6 h,
-K ≤ 4, score ≥ `SCORE_MIN` and one hook lever per night. The Code doctor's snapshot takes at most K problems per run, by judged
+K ≤ 4 (a loud row without a lever takes none), any positive score and one hook lever per night. The Code doctor's snapshot takes at most K problems per run, by judged
 `value`: `TOP_K` 3, or `TOP_K_LOW_YIELD` 1 while its yield per 1000 tokens spent is under
 `LOW_YIELD_PER_KTOK` (`bin/code-doctor` `queue_k`). Before ranking it drops the problems in active
 work (an uncommitted path of a main checkout or another worktree, a path a live branch changed, an open

@@ -113,7 +113,7 @@ Sources: the 2026-10-02 research notes, now retired: [CT] chat turns, [HC] hooks
 
 **Regression** (red, counted): a unit metric over 1.3 × baseline on two consecutive band-matched days with its class's exposure minimum (hooks 200 calls per band-day, tests 3 complete runs, delegation and media as above, nights ≥ 5), **and** the component is worth ≥ 0.5 OM/d with a lever path. Moved Harness absolute limits are pinned ceilings shown as `watch`, red only at ≥ 0.5 OM/d; collector ceilings are per doctor; the statusline contract's warm p95 ≤ 150 ms (lowest band) joins as a ceiling.
 
-**Opportunity** (`watch`, never counted): a component ≥ 0.5 OM/d, seen on ≥ 3 days or ≥ 3 sessions (both scaled to the covered share of the 7 days, at least 1), with a `LEVERS` row. Id `opportunity:<area>/<component>`; field `opportunity {om_day, saving, confidence, effort_h, night_cost_h, score, levers[], seen_days, data_confidence}`, every field stored and the score recomputed from them; the backlog ranks by `recoverable_min_day`, then score × `data_confidence` (seen days of 7), `SCORE_MIN` judges the score alone.
+**Opportunity** (`watch`, never counted): a component ≥ 0.5 OM/d, seen on ≥ 3 days or ≥ 3 sessions (both scaled to the covered share of the 7 days, at least 1), with a `LEVERS` row. Id `opportunity:<area>/<component>`; field `opportunity {om_day, saving, confidence, effort_h, night_cost_h, score, levers[], seen_days, data_confidence}`, every field stored and the score recomputed from them; the backlog ranks by `recoverable_min_day`, then score × `data_confidence` (seen days of 7).
 
 **Score** = saving × confidence ÷ (effort_h + night_cost_h), night_cost_h being the slot-queue and first-landing delay its run adds. Confidence 0.8 measured with a mechanical lever, 0.5 estimated, 0.3 unmeasured. Effort S 1 h, M 3 h; an L lever is split into budget-fitting stages; classes recalibrate to closed runs.
 
@@ -157,15 +157,15 @@ or after it` and its spend stays out of the return. Per night: improvement spend
 over the trend's nights. No gain reads `spend without result` — a measurement, never a revert or a gate.
 
 **Selection.**
-- Regressions (with a lever and ≥ 0.5 OM/d) first, then opportunities by recoverable min/day, while Σ (effort + night cost) ≤ B (6 worker-h) and K ≤ 4.
+- Regressions (with a lever and ≥ 0.5 OM/d) first, then opportunities by recoverable min/day, while Σ (effort + night cost) ≤ B (6 worker-h) and K ≤ 4. A loud row without a lever (`time_floor`) takes no K or hours (`bin/doctor-fix` dispatches it on its own); an opportunity on a lever a regression took rides with it, charged once.
 - At most one hooks/statusline/Hammerspoon lever per night (one commit, one proof).
 - One owner per cause file per night across doctors; the other doctor's row links as `same_cause`.
 - Skipped: active work (the Code doctor's rule), `pending-exposure`, frozen components, savings below their proof's noise.
-- With no score ≥ `SCORE_MIN` (0.2), Speed spends nothing.
+- No score floor: any equivalent, positive-score, non-needs-Egor lever qualifies. An empty pick's `why_none` names its true cause: K full, the budget spent, the hook turn taken, levers needing Egor, not equivalent or scoring 0, or no opportunity.
 
 **Own keys**: `cost {collector_cpu_min_day, fixer_worker_min, review_min, slot_queue_min, landing_delay_min}`, `yield {proven_om_day, pending_om_day}`.
 
-**Judge**: sha256 over `bin/speed-doctor`, the ledger's dismissals, `LIMITS`, `LEVERS`, `TIME_LEVERS`, the floors, `SCORE_MIN`, B, K, R, the bands and the proof table.
+**Judge**: sha256 over `bin/speed-doctor`, the ledger's dismissals, `LIMITS`, `LEVERS`, `TIME_LEVERS`, the floors, B, K, R, the bands and the proof table.
 
 ## 4. Menu
 
@@ -212,7 +212,7 @@ The headline is the strict OM/d. Area lines are "of which" and sum to it (Harnes
 - caps in `share/run-suites.sh` / `share/slots.sh` or a machine-wide suite budget (nested runs would need token lending); night slots; `WORKER_RUN_DEADLINE`, `WORKER_RUN_IDLE_S`, `WORKER_RUN_SILENT_S`, `WALL_SETTLE`; straggler cutoffs, dropped raters, review-bench tier efforts; a night deadline; the pre-landing suite gate; the one-debt-round rule;
 - orphan sweeps keyed on PPID 1 or a name; unregistering LaunchAgents (homebrew mysql, redis, php, nginx, transcriptions-gpt become needs-Egor rows with measured CPU); `git gc --prune` (unreachable `-w` blobs are load-bearing; only a niced `git maintenance run --task=loose-objects`);
 - paid media runs; breaking resume or explicit-account affinity;
-- a baseline, limit or `SCORE_MIN` raised; robot curl refresh; silent account rotation; the `.claudeb` store; the live Hammerspoon singleton.
+- a baseline or limit raised, or a score floor on the night pick; robot curl refresh; silent account rotation; the `.claudeb` store; the live Hammerspoon singleton.
 
 **Proof obligations of a `fixed` line:**
 1. The before value (unit and OM/d) with journal refs, snapshotted before its sources are pruned.

@@ -41,7 +41,7 @@ PRESENCE_IDLE_S = 120
 LIMITS = {"regression_ratio": 1.3, "regression_days": 2, "worth_om_day": 0.5, "blind_om_day": 1.0,
           "residual_share": 0.05, "baseline_days": 28, "baseline_min_days": 7, "seen_days": 3, "seen_sessions": 3,
           "collector_s": 2.0}
-SCORE_MIN, BUDGET_H, TOP_K, HOOK_LEVERS = 0.2, 6.0, 4, 1
+BUDGET_H, TOP_K, HOOK_LEVERS = 6.0, 4, 1
 EFFORT_H = {"S": 1.0, "M": 3.0}
 CONFIDENCE = {"measured": 0.8, "estimated": 0.5, "unmeasured": 0.3}
 BANDS = {"load": ("<1", "1-2", "2-4", ">4"), "size": ("<1", "1-10", ">10")}
@@ -696,30 +696,53 @@ def rank_key(o):
             -fields["score"] * fields.get("data_confidence", 1.0), o["id"])
 
 
-def select(opportunities, regressions=()):
-    """Night pick (§3 Selection): the loud regressions first, each at its component's cheapest lever, then
-    opportunities by score, within the worker-hour budget, K, and one hook lever per night."""
-    chosen, spent, hooks = [], 0.0, 0
+def select(opportunities, regressions=(), why=None):
+    """Night pick (§3 Selection): the loud regressions with a lever first, each at its component's cheapest one, then
+    equivalent positive-score opportunities by score, within the worker-hour budget, K, and one hook lever per night.
+    A loud row without a lever (time_floor) takes no K or hours; bin/doctor-fix dispatches it on its own. An
+    opportunity on a lever a regression took rides with it free. `why` receives the skip reasons."""
+    chosen, spent, hooks, taken, levers_taken, riders = [], 0.0, 0, 0, set(), 0
     for reg in regressions:
         component = reg.get("component")
-        levers = sorted((EFFORT_H[l["effort"]] + l["night_cost_h"], bool(l.get("hooks"))) for l in LEVERS
+        levers = sorted((EFFORT_H[l["effort"]] + l["night_cost_h"], bool(l.get("hooks")), l["component"]) for l in LEVERS
                         if component and l["quality"] == "equivalent" and (l["component"] == component
                                                                            or l["component"].startswith(component + "/")))
-        cost, hook = levers[0] if levers else (0.0, False)
-        spent, hooks = spent + cost, hooks + hook
-    taken = len(regressions)
+        if levers:
+            cost, hook, lever = levers[0]
+            spent, hooks, taken = spent + cost, hooks + hook, taken + 1
+            levers_taken.add(lever)
+    skipped = {}
     for o in opportunities:
         fields = o["opportunity"]
         cost = fields["effort_h"] + fields["night_cost_h"]
-        if fields["needs_egor"] or fields["quality"] != "equivalent" or fields["score"] < SCORE_MIN \
-                or taken + len(chosen) >= TOP_K or spent + cost > BUDGET_H:
+        reason = "egor" if fields["needs_egor"] else "risk" if fields["quality"] != "equivalent" \
+            else "score" if fields["score"] <= 0 else None
+        if not reason and o["id"].partition(":")[2] in levers_taken:
+            chosen.append(o["id"])
+            riders += 1
             continue
-        if fields["hooks"] and hooks >= HOOK_LEVERS:
+        reason = reason or ("k" if taken + len(chosen) - riders >= TOP_K else "budget" if spent + cost > BUDGET_H
+                            else "hook" if fields["hooks"] and hooks >= HOOK_LEVERS else None)
+        if reason:
+            skipped[reason] = skipped.get(reason, 0) + 1
             continue
         chosen.append(o["id"])
         spent += cost
         hooks += fields["hooks"]
+    if why is not None:
+        why.update(skipped=skipped, regressions=taken, spent=spent)
     return chosen
+
+
+def why_skipped(why):
+    skipped = why.get("skipped") or {}
+    return ", ".join(text for key, text in (
+        ("k", "%d loud regressions with a lever fill the night's %d picks" % (why.get("regressions", 0), TOP_K)),
+        ("budget", "no lever fits the %g of %g worker-h left" % (round(max(BUDGET_H - why.get("spent", 0.0), 0.0), 1), BUDGET_H)),
+        ("hook", "the night's hook lever is taken"),
+        ("egor", "%d need Egor" % skipped.get("egor", 0)),
+        ("risk", "%d are not output-equivalent" % skipped.get("risk", 0)),
+        ("score", "%d score 0" % skipped.get("score", 0))) if key in skipped)
 
 
 def test_requirement(repo, rel):
@@ -872,7 +895,7 @@ def judge_digest(ledger):
     with open(os.path.realpath(__file__), "rb") as handle:
         digest.update(handle.read())
     dismissals = [r for r in speed_rows(ledger) if r.get("status") in H.DISMISSED]
-    digest.update(json.dumps([dismissals, LIMITS, HEAVY_TEST_S, KEEP_WORDS.pattern, LEVERS, SCORE_MIN, BUDGET_H, TOP_K, H.C1_R_S, BANDS, PROOF, OUTPUT_PROOF,
+    digest.update(json.dumps([dismissals, LIMITS, HEAVY_TEST_S, KEEP_WORDS.pattern, LEVERS, BUDGET_H, TOP_K, H.C1_R_S, BANDS, PROOF, OUTPUT_PROOF,
                               TIME_LEVERS, time_budget.FLOORS, time_budget.ACTIVE_FLOOR_SHARE, time_budget.ACTIVE_FLOOR,
                               time_budget.FLOOR_ROW_MIN_DAY],
                              sort_keys=True).encode())
@@ -1063,15 +1086,15 @@ def collect(write, now):
     budget = time_budget.section(now, write)
     opportunities = with_time(opportunities, budget)
     problems += floor_rows(budget, ledger)
-    selection = select(opportunities, [p for p in problems if p["state"] in H.LOUD_STATES])
+    why = {}
+    selection = select(opportunities, [p for p in problems if p["state"] in H.LOUD_STATES], why)
     coverage = {"days": round(covered, 2), "window_days": WINDOW_D, "backfill_files_done": job["files"] - len(job["todo"]),
                 "backfill_files": job["files"]}
     gap = "%s of %d days covered" % (round(covered, 1), WINDOW_D) if covered < WINDOW_D else None
     recoverable = sum(o["opportunity"]["recoverable_min_day"] for o in opportunities if not o["opportunity"]["needs_egor"])
     why_none = None if selection else "; ".join(filter(None, [
-        "%s min/day recoverable, but no equivalent lever scores %s within the night budget" % (fmt(recoverable), SCORE_MIN)
-        if recoverable else "no owner turns from Harness" if not rows else "no opportunity worth %s OM/d on enough days" % LIMITS["worth_om_day"]
-        if not opportunities else "no equivalent lever scores %s within the night budget" % SCORE_MIN, gap,
+        "%s min/day recoverable, but %s" % (fmt(recoverable), why_skipped(why)) if opportunities
+        else "no owner turns from Harness" if not rows else "no opportunity worth %s OM/d on enough days" % LIMITS["worth_om_day"], gap,
         "transcript backfill at %d of %d files" % (coverage["backfill_files_done"], job["files"]) if job["todo"] else None]))
     problems += opportunities
     problem_count = sum(1 for p in problems if p["state"] in H.LOUD_STATES)

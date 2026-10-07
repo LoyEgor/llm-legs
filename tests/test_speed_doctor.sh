@@ -194,11 +194,26 @@ check([o["id"] for o in sorted([spike, pattern], key=module.rank_key)] == ["b-pa
       "a pattern seen on several days ranks above a one-day spike of the same score")
 low = {"id": "low", "opportunity": {"needs_egor": False, "quality": "equivalent", "score": 0.1, "effort_h": 1.0,
                                     "night_cost_h": 0.0, "hooks": False}}
-check(module.select([low]) == [] and module.select([dict(low, opportunity=dict(low["opportunity"], score=0.3))]) == ["low"],
-      "the night pick skips scores under SCORE_MIN")
-check(module.select([dict(low, opportunity=dict(low["opportunity"], score=0.3))],
-                   [{"id": "time_floor:chat", "rule": "time_floor", "state": "regressed"}]) == ["low"],
-      "a loud time-floor row, which has no component, takes a pick slot without a lever and never breaks the pick")
+zero = {}
+check(module.select([low]) == ["low"] and module.select([dict(low, opportunity=dict(low["opportunity"], score=0.0))], (), zero) == []
+      and module.why_skipped(zero) == "1 score 0", "the night pick has no score floor: any positive score enters it")
+floor_loud = [{"id": "time_floor:%s" % k, "rule": "time_floor", "state": "open"}
+              for k in ("hooks", "suite_wait", "slot", "suite_run", "workers-active")]
+scored = [{"id": "opportunity:%s" % i, "opportunity": dict(low["opportunity"], score=s, effort_h=e, hooks=i.startswith("hook"))}
+          for i, s, e in (("time/workers-active", 236.0, 3.0), ("chat/tests", 72.0, 1.0), ("hook", 36.0, 1.0),
+                          ("hook2", 20.0, 1.0), ("cheap", 0.16, 1.0), ("over", 0.1, 1.0))]
+full, spent = {}, {}
+check(module.select(scored, floor_loud) == ["opportunity:time/workers-active", "opportunity:chat/tests", "opportunity:hook",
+                                            "opportunity:cheap"]
+      and module.select(scored, [{"component": "machine/contention"}] * 4, full) == []
+      and module.why_skipped(full) == "4 loud regressions with a lever fill the night's 4 picks"
+      and module.select(scored[:1], [{"component": "chat/tests"}] * 2, spent) == []
+      and module.why_skipped(spent) == "no lever fits the 0 of 6 worker-h left",
+      "loud time-floor rows, which have no component and no lever, take no pick slot or hours; a full K or a spent "
+      "budget is named as such")
+check(module.select(scored[1:2] + [dict(scored[0], id="opportunity:chat/hooks")], [{"component": "chat"}])
+      == ["opportunity:chat/tests", "opportunity:chat/hooks"],
+      "an opportunity on the lever a loud regression already took rides with it, charged once")
 gaps = {"lost_min_day": 95.0, "lines": ["Without the harness ≈ 40 % faster"],
         "floors": [{"class": "slot", "label": "worker slot queue", "floor_min_day": 0, "actual_min_day": 50.0,
                     "recoverable_min_day": 50.0},
@@ -228,14 +243,14 @@ check([(r["id"], r["state"], r["value"], r["limit"]) for r in rows]
       and module.floor_rows(dict(gaps, floors=gaps["floors"][2:], last_night=dict(gaps["last_night"], share=0.3)), {}) == [],
       "a class more than 30 min/day over its floor and a night under 30 %% model activity are named rows through the "
       "ledger's states; back under them there is no row: %s" % [(r["id"], r["state"]) for r in rows])
-saved_env, saved = dict(os.environ), (module.select, module.time_budget.section)
+saved_env, saved = dict(os.environ), (module.BUDGET_H, module.time_budget.section)
 os.environ.update({k: v for k, v in base.items() if k != "PATH"}, SPEED_DOCTOR_DIR=os.path.join(work, "speed-floor"))
-module.select, module.time_budget.section = (lambda *a: []), (lambda now, write: copy.deepcopy(gaps))
+module.BUDGET_H, module.time_budget.section = 0.5, (lambda now, write: copy.deepcopy(gaps))
 floored = module.collect(False, HI)
-module.select, module.time_budget.section = saved
+module.BUDGET_H, module.time_budget.section = saved
 os.environ.clear()
 os.environ.update(saved_env)
-check(floored["why_none"].startswith("295 min/day recoverable, but no equivalent lever scores 0.2 within the night budget")
+check(floored["selection"] == [] and floored["why_none"].startswith("295 min/day recoverable, but no lever fits the 0.5 of 0.5 worker-h left")
       and floored["head"].startswith("95 min/day over the floor · ") and floored["problem_count"] == 3
       and [l[3] for l in floored["menu"] if l[2]] == [r["fact"] for r in floored["problems"] if r["rule"] == "time_floor"]
       and [0, "", False, "Without the harness ≈ 40 % faster"] in floored["menu"],
@@ -280,7 +295,7 @@ check(shown[0]["needs_egor"] is True and fields["quality_evidence"]["result"] ==
       and module.select([{"id": "opportunity:risk", "opportunity": dict(fields, needs_egor=False)}]) == [],
       "a risk lever with evidence is a needs-Egor proposal and never enters the night pick, whatever its score")
 check(module.select([{"id": "opportunity:eq", "opportunity": module.opportunity_fields(100.0, module.LEVERS[0])}])
-      == ["opportunity:eq"], "an equivalent lever over SCORE_MIN enters the night pick")
+      == ["opportunity:eq"], "an equivalent lever enters the night pick")
 row = lambda om, status, fix: {"id": "s-%s" % om, "status": status, "om_day": om, "match": {"rule": "opportunity"},
                                "fixes": [fix]}
 check(module.speed_yield({"rows": [row(2, "fixed", {"equivalence": {"compared": "replay", "data": "d", "result": "same"}}),
@@ -341,7 +356,8 @@ blank_dir = os.path.join(work, "harness-blank")
 os.makedirs(blank_dir)
 cold, _ = speed("speed-cold", HARNESS_DOCTOR_DIR=blank_dir, **transcripts)
 check(cold["headline"] * cold["window"]["days"] >= doc["headline"] * doc["window"]["days"] > 0
-      and cold["selection"] == ["opportunity:chat/hooks"]
+      and cold["selection"] == ["opportunity:chat/tests", "opportunity:chat/hooks"]
+      and all(p["opportunity"]["score"] < 0.2 for p in cold["problems"] if p["id"] == "opportunity:chat/tests")
       and "backfill" not in [b["id"] for b in cold["blind_spots"]],
       "a fresh state with no Harness turn rows backfills every calibration minute from the transcripts: %s %s"
       % (cold["headline"], cold["selection"]))
@@ -377,7 +393,7 @@ while len(job["todo"]) * 2 > job["files"]:
 half, _ = speed("speed-half", HARNESS_DOCTOR_DIR=blank_dir, SPEED_DOCTOR_BACKFILL_S="0", **transcripts)
 same_days = sum(cold["om_by_day"][d] for d in half["om_by_day"]) / max(half["window"]["days"], 0.01)
 check(half["coverage"] == {"days": 2.91, "window_days": 7, "backfill_files_done": 21, "backfill_files": 40}
-      and set(cold["selection"]) < set(half["selection"]) and half["why_none"] is None
+      and half["selection"] == cold["selection"] and half["why_none"] is None
       and abs(half["headline"] - same_days) <= 0.1 * same_days and min(half["om_by_day"]) == "2026-09-30"
       and "backfill" in [b["id"] for b in half["blind_spots"]] and half["head"].startswith("213 OM/d · 2.9 of 7 days"),
       "a half-done backfill counts only the days it read in full: %s OM/d vs %s over the same days, %s"
