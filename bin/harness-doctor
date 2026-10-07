@@ -3445,23 +3445,30 @@ def cost_line(tests, now):
             parts = [(t.get("label") or "?", t["secs"])]
         if t.get("repo_root") not in families:
             families[t.get("repo_root")] = split_suites(t.get("repo_root"))
+        walls = {}
         for label, secs in parts:
             label = families[t.get("repo_root")].get(label, label)
+            wall, machine = walls.get(label, (0, 0))
+            walls[label] = (max(wall, secs), machine + secs)
+        for label, (wall, machine) in walls.items():
             costs.setdefault(test_ident(t.get("repo"), label, t.get("repo_root")), (label, test_where(t), []))[2].append(
-                (secs, t))
+                (wall, t, machine))
     ranked = []
     for ident, (label, repo, runs) in costs.items():
-        total = sum(secs for secs, _ in runs)
-        level = "red" if total > LIMITS["test_day_s"] else "watch" if total > LIMITS["test_day_note_s"] else None
+        total = sum(secs for secs, _, _ in runs)
+        machine = sum(spent for _, _, spent in runs)
+        level = ("red" if total > LIMITS["test_day_s"] else "watch"
+                 if total > LIMITS["test_day_note_s"] or machine > LIMITS["test_day_s"] else None)
         biggest = max(runs, key=lambda x: x[0])
-        first = min(t["end"] - t["secs"] for _, t in runs)
-        fact = "%s · %s cost %s of wall clock in %d h over %d runs" % (label, repo, fmt_long(total), window // 3600,
-                                                                     len(runs))
+        first = min(t["end"] - t["secs"] for _, t, _ in runs)
+        fact = "%s · %s cost %s of wall clock in %d h over %d runs%s" % (
+            label, repo, fmt_long(total), window // 3600, len(runs),
+            ", %s of machine time over its parts" % fmt_long(machine) if machine > total else "")
         ranked.append((total, level, row(
             [clip("%s · %s" % (label, repo), 34), fmt_count(len(runs)), num(total, 60.0),
-             num(median([secs for secs, _ in runs]), 60.0)], [2] if level == "red" else [], dim=not level, say=fact,
+             num(median([secs for secs, _, _ in runs]), 60.0)], [2] if level == "red" else [], dim=not level, say=fact,
             judge=verdict("test_daily_cost", ident, total, LIMITS["test_day_s"], "s", window // 3600, len(runs), level,
-                          fact=fact, values=[secs for secs, _ in runs], bad=int(bool(level)),
+                          fact=fact, values=[secs for secs, _, _ in runs], bad=int(bool(level)),
                           evidence=[evidence(first, history_ref(biggest[1], label), "%d runs, %d s in %d h" % (
                               len(runs), total, window // 3600), biggest[1].get("who") or "")]))))
     ranked.sort(key=lambda x: -x[0])
