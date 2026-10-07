@@ -571,7 +571,8 @@ up to three events as evidence (`stop:<ts>/<session>`, `words:<ts>/<session>`, `
 
 - **Stop hooks** reads the stop journal (`STOP_GATE_JOURNAL`, `~/.cache/claude/stop-gate/journal.jsonl`)
   and the words journal (`WORDS_DIR`). `hook-error`, `hook-held`, `ask-busy` and `ask-repeat` are
-  keyed by hook; `ask-deferred` by a slug of the deferral reason (`busy <task>`, `stop hook active`);
+  keyed by hook; `ask-deferred` by a slug of the deferral reason (`busy <task>`, `stop hook active`),
+  its streak ending where a stop line's `pid` repeats after a change (a resumed chat, not a per-call shell);
   `word-miss` by the word hook; `reading-miss` is `unprompted`; `stop-silent` is `stop-dispatch`.
   No stop journal reads `blind`; no words journal is a blind spot.
 - **Guards** reads the instruction-watch state (`INSTRUCTION_WATCH_STATE`): `gate-fault` keyed by

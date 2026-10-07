@@ -1177,6 +1177,12 @@ check(said == "end-of-turn checks held back over 2 h while a background task ran
       "Stop hooks: the area's line says what was held back and why in plain words: " + said)
 check(judged(health(S, stop=deferred[:1] + [stop(T - 6000, ("ask-x", "ran", ""))] + deferred[1:2])) == {},
       "J Stop hooks: an ask that ran ends the deferral")
+check(judged(health(S, stop=[dict(stop(T - t, ("ask-x", "skipped-busy", ""), busy="bg-task:7"), pid=p)
+                             for t, p in ((9000, 11), (8000, 11), (2000, 22), (1000, 22))])) == {},
+      "J Stop hooks: a chat closed and resumed (a new pid on two stops in a row) starts a new deferral")
+check(judged(health(S, stop=[dict(s, pid=p) for s, p in zip(deferred, (11, 22, 33))]))
+      == {("ask-deferred", busy_id): "red"},
+      "Stop hooks: a pid new on every stop (a per-call shell) keeps one deferral")
 word = {"ts": T - 600, "session": "s1", "hook": "review", "match": False, "model": ["review"]}
 check(judged(health(S, stop=[], words=[word])) == {("word-miss", "review"): "red"},
       "Stop hooks: a word notice with no reading line is red, keyed by the word hook")

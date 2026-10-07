@@ -3743,7 +3743,7 @@ def stop_hooks_section(now):
     items, asked, streaks, last_stop, seen = {}, {}, {}, None, 0
     journal = read_jsonl(stop_journal(), cutoff)
 
-    def streak_end(session, reason, first, last, ref):
+    def streak_end(session, reason, first, last, ref, *_):
         why = {"busy bg-task": "a background task ran", "busy worker-run": "a worker ran",
                "stop hook active": "the chat was answering a check"}.get(reason, "the chat was busy")
         if last - first >= LIMITS["ask_deferred_s"]:
@@ -3771,8 +3771,16 @@ def stop_hooks_section(now):
             for key in [k for k in streaks if k[0] == session and k[1] != reason]:
                 streak_end(session, *streaks.pop(key))
             if reason:
-                streak = streaks.setdefault((session, reason), [reason, at, at, ref])
+                pid = entry.get("pid")
+                streak = streaks.setdefault((session, reason), [reason, at, at, ref, pid, at, None])
                 if at >= streak[2]:
+                    # A pid seen on two stops in a row is a chat process, so the stops before it were a
+                    # closed chat's; a pid new on every stop (a per-call shell) never splits the streak.
+                    if pid != streak[4]:
+                        streak[4:] = pid, at, streak[2:4]
+                    elif streak[6]:
+                        streak_end(session, streak[0], streak[1], *streak[6])
+                        streak[1], streak[6] = streak[5], None
                     streak[2], streak[3] = at, ref
         for hook in hooks:
             name, outcome, reason = str(hook.get("name") or "?"), hook.get("outcome"), str(hook.get("reason") or "")

@@ -476,7 +476,7 @@
         "rule": "ask-deferred",
         "ident": "busy-bg-task"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-09-30T04:05:00+03:00",
@@ -506,6 +506,16 @@
           ],
           "in": "claude-setup@a43059a",
           "regressed_at": "2026-10-06T04:37:45+03:00"
+        },
+        {
+          "at": "2026-10-07T03:29:17+03:00",
+          "by": "night handoff job handoff-2026-10-06-stop-hooks-judge (20261006T233611Z-7777)",
+          "files": [
+            "llm-legs/bin/harness-doctor",
+            "claude-setup/hooks/stop-dispatch.sh"
+          ],
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [
@@ -513,7 +523,7 @@
       ],
       "last_reviewed": "2026-10-06",
       "reviewed_by": "night fixer harness-stop-hooks-20261006T032932Z-5fd0",
-      "note": "stop-dispatch.sh holds asks for background work at most STOP_DISPATCH_HELD_CAP (3600 s), then runs them at that stop with busy empty and the journal line's held naming what it would have called busy, and the hold restarts; ask-span-drill stays silent under STOP_HELD; ask-run-unfinished also sees waiter tasks under the 2.1.285 label subagent. The doctor's ask-busy rule does not see asks run under held, by design. The 2026-09-30 06:55-08:16 regression was transitional (tasks started before e5909cd landed). The 2026-10-01 regression (10896605, 10:17-13:08Z, 10269 s) was the 959efae stale-hold rule misfiring: no stop from 10:32 to 12:11Z because a task notification at 11:40Z opened a 31-min turn, the old tasks ended inside it and a new one started, so 'no stop for the cap and none of its tasks live' restarted the hold of a live chat. The held file is now 'since chat-pid' ($PPID, the Claude Code process: hook-time rows show one stable ppid per chat process) and only a different process (a closed chat resumed) restarts it; old-format files restart once. Ruled out: notice timing, ask-span-drill, worker-run holds (busy was bg-task throughout). Risk to watch: a harness that wrapped hooks in a per-call shell would restart every hold and bring the unbounded hold back; this rule would show it. The 2026-10-06 regression (2ddedf36, 28600 s) is the doctor's streak crossing a closed chat: held asks ran 17:52:24Z, the old process's last stop was 17:53:39Z, `claude --resume` (pid 24067) started 01:32:12Z and the cap ran the asks 03:30:55Z, so the asks waited 1 min + 1 h 56 min of live process. The dispatcher kept its spec; the rule change (break the streak on a new chat pid) is the owner's, see the handoff.",
+      "note": "stop-dispatch.sh holds asks for background work at most STOP_DISPATCH_HELD_CAP (3600 s), then runs them at that stop with busy empty and the journal line's held naming what it would have called busy, and the hold restarts; ask-span-drill stays silent under STOP_HELD; ask-run-unfinished also sees waiter tasks under the 2.1.285 label subagent. The doctor's ask-busy rule does not see asks run under held, by design. The 2026-09-30 06:55-08:16 regression was transitional (tasks started before e5909cd landed). The 2026-10-01 regression (10896605, 10:17-13:08Z, 10269 s) was the 959efae stale-hold rule misfiring: no stop from 10:32 to 12:11Z because a task notification at 11:40Z opened a 31-min turn, the old tasks ended inside it and a new one started, so 'no stop for the cap and none of its tasks live' restarted the hold of a live chat. The held file is now 'since chat-pid' ($PPID, the Claude Code process: hook-time rows show one stable ppid per chat process) and only a different process (a closed chat resumed) restarts it; old-format files restart once. Ruled out: notice timing, ask-span-drill, worker-run holds (busy was bg-task throughout). Risk to watch: a harness that wrapped hooks in a per-call shell would restart every hold and bring the unbounded hold back; this rule would show it. The 2026-10-06 regression (2ddedf36, 28600 s) is the doctor's streak crossing a closed chat: held asks ran 17:52:24Z, the old process's last stop was 17:53:39Z, `claude --resume` (pid 24067) started 01:32:12Z and the cap ran the asks 03:30:55Z, so the asks waited 1 min + 1 h 56 min of live process. The dispatcher kept its spec; the doctor now ends a streak where a stop line's pid repeats after a change (a chat process; a pid new on every stop, a per-call shell, still streaks), which needs stop-dispatch.sh to journal pid (its chat_pid) on each line: that half is in claude-setup, so the fix stays pending until both files are committed.",
       "handoff": "docs/handoffs/2026-10-06-stop-hooks-judge.md"
     },
     {
@@ -3093,7 +3103,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-06",
       "reviewed_by": "night fixer harness-stop-hooks-20261006T032932Z-5fd0",
-      "note": "7c93bbe2 turn 154 (2026-10-05T20:09Z): Egor said 'let us launch' with no family word, and the model wrote '⚡ понял: запуск пунктов 1–4 на стенде'. Model behaviour, not a hook fault: no family covers a bare go-ahead, the gate-open experiment was not on (the ask fired), and ask-word-reading asked at the first stop with its asks unheld (20:29:21Z, held cap), after which the model told Egor the line was its own. Whether an owned-up reading should stay red is the owner's, see the handoff.",
+      "note": "7c93bbe2 turn 154 (2026-10-05T20:09Z): Egor said 'let us launch' with no family word, and the model wrote '⚡ понял: запуск пунктов 1–4 на стенде'. Model behaviour, not a hook fault: no family covers a bare go-ahead, the gate-open experiment was not on (the ask fired), and ask-word-reading asked at the first stop with its asks unheld (20:29:21Z, held cap), after which the model told Egor the line was its own. Decided 2026-10-07 (night 20261006T233611Z-7777): an owned-up reading stays red. The model acted before the ask, owning up afterwards is ask-word-reading doing its job, and the doctor cannot tell an honest go-ahead from an invented one; the clear path for a reading Egor did mean stays his own `ok` mark (words-log, honored by the doctor), never a doctor rule.",
       "handoff": "docs/handoffs/2026-10-06-stop-hooks-judge.md"
     },
     {
