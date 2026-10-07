@@ -1792,7 +1792,7 @@ local function readHarnessMenu()
         end
       end
       local item = harnessLine(flags, spans, text)
-      if flags:find("v", 1, true) then chromeChecks[#chromeChecks + 1] = item end
+      if flags:find("v", 1, true) then item.plainTitle, chromeChecks[#chromeChecks + 1] = text, item end
       if item.title ~= "-" then
         if actionPath then
           item.fn = function() startDiagnosticsTask("harnessActionTask", actionPath, actionArgs) end
@@ -1864,6 +1864,14 @@ function M.harnessDoctorEntry()
     or document.title:find("blind", 1, true) and "blind" or "ok"
   return { title = infoTitle(title, red > 0, red == 0), menu = style.mono(items, infoTitle),
     problems = failed and 0 or red, status = status }
+end
+
+function M.chromeToggleItem()
+  local document = readHarnessMenu()
+  local item = document and document.chromeChecks[1]
+  if not item then return nil end
+  local chrome = hs.application.get("com.google.Chrome")
+  return { title = item.plainTitle, checked = chrome and not chrome:isHidden() or false, fn = item.fn }
 end
 
 local function appendChats(menu)
