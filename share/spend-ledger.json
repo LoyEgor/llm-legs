@@ -1,4 +1,20 @@
 {
  "owner": "Harness Doctor",
- "rows": []
+ "rows": [
+  {
+   "id": "suite:llm-legs/test_instruction_gate",
+   "title": "llm-legs/test_instruction_gate",
+   "audited_at": "2026-10-08T01:02:26+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-instruction-gate-20261007T214024Z-5137",
+   "cpu_run": 43.0,
+   "cpu_min_day": 69.36,
+   "sources": {
+    "llm-legs/tests/instruction_gate_harness.sh": "8c221c5b4f21b43b2247d00dafb1cf9a9c7345d0",
+    "llm-legs/tests/lib/suite-journal.sh": "29457015e61a2ba7ea81c1456d386be4c872fe88",
+    "llm-legs/tests/test_instruction_gate.sh": "1d9ca897ba732a4175c6ec8888c9e3a37bc8cb2c"
+   },
+   "verdict": "kept",
+   "note": "kept: 216 asserts each pin one write-gate parse incident; ~0.25 CPU-s a call is the gate's own non-fast path (hook_full_work:instruction-write-gate.sh, not a test cost), harness overhead ~4 ms a call, setup 0.24 s; no cross-suite duplicates, 3 identical in-file pass asserts (~0.75 s) not worth a cut; 248 s/run was the pre-split 7-day median (42 s now)"
+  }
+ ]
 }
