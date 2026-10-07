@@ -3120,6 +3120,8 @@ do
   local image = submenuTitles(blockRow(menu, "Image"))
   assert(image[2] == "no legs failed in the window" and image[#image] == "Copy brief for the owner",
     table.concat(image, "|"))
+  assert(blockRow(module.menuItems(), "Reviewers").menu == reviewers.menu,
+    "an unchanged document rebuilt the Reviewers submenu")
   for index = #tasks, 1, -1 do
     if tasks[index].path:match("/bin/llm%-doctor$") then table.remove(tasks, index) end
   end

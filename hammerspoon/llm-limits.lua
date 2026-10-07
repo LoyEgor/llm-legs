@@ -1479,6 +1479,18 @@ local function blockMenu(entry, windowLabel, hours)
   return items
 end
 
+-- readLlmDoctor returns the same decoded tables until the file changes, so a block's submenu is built
+-- once per document; the returned rows are shared by every later build and must not be mutated.
+local blockMenus = setmetatable({}, { __mode = "k" })
+local function cachedBlockMenu(entry, windowLabel, hours)
+  local key = windowLabel .. "\0" .. tostring(hours)
+  local hit = blockMenus[entry]
+  if hit and hit.key == key then return hit.items end
+  local items = blockMenu(entry, windowLabel, hours)
+  blockMenus[entry] = { key = key, items = items }
+  return items
+end
+
 local function machineryStatuses(document)
   for _, entry in ipairs(document and document.blocks or {}) do
     if type(entry) == "table" and entry.block == "reviewers" and type(entry.machinery) == "table" then
@@ -1577,7 +1589,7 @@ local function appendDoctorBlocks(items, snapshot)
       total = total + count
       local text = count > 0 and plural(count, "problem") or (tonumber(entry.legs) or 0) == 0 and "no legs" or "ok"
       items[#items + 1] = { title = infoTitle(DOCTOR_BLOCK_NAMES[entry.block] .. ": " .. text, count > 0, count == 0),
-        menu = blockMenu(entry, windowLabel, hours) }
+        menu = cachedBlockMenu(entry, windowLabel, hours) }
       if entry.block == "reviewers" then items[#items + 1] = machinery end
     end
   end
