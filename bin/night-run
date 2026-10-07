@@ -926,7 +926,7 @@ cmd_suites() {
     [ -n "$repo" ] && [ -x "$repo/tests/run-all" ] || continue
     name=$(basename "$repo") log="$nights_dir/$id.suites.$name.log"
     since=$(date +%s)
-    bash "$repo/tests/run-all" >"$log" 2>&1 &
+    env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_LAUNCHER_SESSION bash "$repo/tests/run-all" >"$log" 2>&1 &
     pid=$!
     wait "$pid"
     rc=$?

@@ -6,7 +6,7 @@ WORK=$(cd "$(mktemp -d)" && pwd -P)
 trap 'rm -rf "$WORK"' EXIT
 export STATUSLINE_CACHE_DIR="$WORK/sl"
 export RUN_SUITES_TIMES="$WORK/times.tsv" RUN_SUITES_SLOTS_DIR="$WORK/slots" HARNESS_HOLDS_DIR="$WORK/holds"
-unset RUN_SUITES_SLOT
+unset RUN_SUITES_SLOT WORKER_RUN_ID CLAUDE_CODE_SESSION_ID CLAUDE_LAUNCHER_SESSION
 asserts=0
 assert() { asserts=$((asserts + 1)); "$@" || { printf 'FAIL: assert %s: %s\n' "$asserts" "$*"; exit 1; }; }
 
@@ -19,7 +19,7 @@ for name in a b; do
   printf '#!/usr/bin/env bash\necho "PASS: nice=$(ps -o nice= -p $$ | tr -d " ")"\n' >"$WORK/repo/tests/test_$name.sh"
 done
 
-# Every suite runs below interactive priority while someone is at the keyboard, in parallel as before.
+# A run no chat waits on runs below interactive priority while someone is at the keyboard, in parallel as before.
 out=$(bash "$ROOT/share/run-suites.sh" --repo "$WORK/repo" 2>&1)
 assert test "$(grep -c 'PASS: nice=10' <<<"$out")" = 2
 assert grep -q '2 PASS' <<<"$out"
@@ -32,6 +32,14 @@ out=$(FAKE_IDLE_NS=900000000000 bash "$ROOT/share/run-suites.sh" --repo "$WORK/r
 assert test "$(grep -c "PASS: nice=$parent_nice\$" <<<"$out")" = 2
 assert test ! -e "$WORK/renices"
 out=$(FAKE_IDLE_NS=garbage bash "$ROOT/share/run-suites.sh" --repo "$WORK/repo" 2>&1)
+assert test "$(grep -c 'PASS: nice=10' <<<"$out")" = 2
+
+# A chat's own run is what its owner waits on: it keeps the caller's nice; a worker's run still yields.
+rm -f "$WORK/renices"
+out=$(CLAUDE_CODE_SESSION_ID=chat-1 bash "$ROOT/share/run-suites.sh" --repo "$WORK/repo" 2>&1)
+assert test "$(grep -c "PASS: nice=$parent_nice\$" <<<"$out")" = 2
+assert test ! -e "$WORK/renices"
+out=$(CLAUDE_LAUNCHER_SESSION=chat-1 WORKER_RUN_ID=w-1 bash "$ROOT/share/run-suites.sh" --repo "$WORK/repo" 2>&1)
 assert test "$(grep -c 'PASS: nice=10' <<<"$out")" = 2
 
 # A suite never sees the launching chat's session id (its worker pin) and writes no bytecode.
@@ -143,4 +151,4 @@ assert test "$(grep -c 'no python with pytest' <<<"$out")" = 1
 out=$(PATH="$WORK/fakepy:$WORK/tools" "$BASH" "$ROOT/share/run-suites.sh" --repo "$WORK/repo" 2>&1)
 assert grep -q '2 PASS' <<<"$out"
 
-printf 'PASS: %s asserts; run-suites runs the wave at nice 10 and wall-clock suites at the caller'\''s nice, in parallel, longest first, a worktree on branch B uses a sibling worktree on B else the main checkout, a python suite runs under a python that imports pytest, and a run leaves its progress pointer only while it lasts\n' "$asserts"
+printf 'PASS: %s asserts; run-suites runs a worker'\''s or session-less wave at nice 10 and a chat'\''s own run and wall-clock suites at the caller'\''s nice, in parallel, longest first, a worktree on branch B uses a sibling worktree on B else the main checkout, a python suite runs under a python that imports pytest, and a run leaves its progress pointer only while it lasts\n' "$asserts"

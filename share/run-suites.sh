@@ -195,6 +195,10 @@ user_present() {
   [ "$idle" -lt 600 ]
 }
 
+# A chat's own run is what its owner waits on, so only a worker's run or one with no chat session
+# (launchd, the night's detached full run) yields.
+unattended() { [ -n "$run_worker" ] || [ -z "$run_session" ]; }
+
 # Machine-wide, at most RUN_SUITES_SLOTS runs at once: each already fans out -j cores/2 suites, so
 # cores/3 (2 to 4) always run and up to 4, the count measured freeze-safe, while slot_room finds room.
 # A nested run (a suite testing this runner) inherits its parent's slot.
@@ -346,7 +350,7 @@ run_one() { # suite-path
     # Absolute, not -n: a nested run must stay at 10, not sink further. $BASHPID, not $$:
     # $$ in this subshell is the parent, and nice only rises, so a parent dropped to 10
     # would pin the wall-clock tail behind every other invocation's wave. No lock.
-    serial_suite "$name" || ! user_present || renice 10 -p "$BASHPID" >/dev/null 2>&1 || :
+    serial_suite "$name" || ! unattended || ! user_present || renice 10 -p "$BASHPID" >/dev/null 2>&1 || :
     ! serial_suite "$name" || trap - INT QUIT
     case "$path" in
       *.py) exec "$python" -m pytest -q "$path" ;;
@@ -395,7 +399,7 @@ if [ "${#wave[@]}" -gt 1 ]; then
 fi
 
 printf 'run-suites: %s suites, -j %s, logs under %s\n' "${#suites[@]}" "$jobs" "$logdir"
-if [ "${#tail_wave[@]}" -gt 0 ]; then
+if [ "${#tail_wave[@]}" -gt 0 ] && unattended; then
   printf 'run-suites: %s wall-clock suite(s) stay at nice %s; the wave is nice 10 while someone is at the keyboard\n' \
     "${#tail_wave[@]}" "$(ps -o nice= -p $$ | tr -d '[:space:]')"
 fi

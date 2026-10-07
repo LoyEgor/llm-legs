@@ -92,13 +92,17 @@ night job N1 set suite-other-test_x state=blocked-on-egor reason="his word" >/de
 
 cat >"$WORK/repo/tests/run-all" <<'RUNALL'
 #!/usr/bin/env bash
+printf '%s|%s\n' "${CLAUDE_CODE_SESSION_ID-}" "${CLAUDE_LAUNCHER_SESSION-}" >"${SESSION_SEEN:-/dev/null}"
 printf '{"kind":"suites","pid":%s,"started_at":%s,"suites":{"test_a.sh":{"rc":0},"test_b.sh":{"rc":1}}}\n' "$$" "$(date +%s)" >>"$RUN_SUITES_JOURNAL"
 printf '{"kind":"suites","pid":%s,"started_at":1,"suites":{"test_c.sh":{"rc":0},"test_d.sh":{"rc":0}}}\n' "$$" >>"$RUN_SUITES_JOURNAL"
 printf '%s\n' "test_a.sh  PASS        1  ok" "test_x.sh  FAIL 1      2  boom" "" "2 suites · 9 PASS · 1 FAIL · 3s wall (3s serial)"
 exit 1
 RUNALL
 chmod +x "$WORK/repo/tests/run-all"
-night suites N1 --wait || fail "suites failed"
+CLAUDE_CODE_SESSION_ID=chat-1 CLAUDE_LAUNCHER_SESSION=chat-1 SESSION_SEEN="$WORK/session-seen" night suites N1 --wait \
+  || fail "suites failed"
+# Nobody waits on the night's full run, so run-suites must not read it as the launching chat's own.
+assert test "$(cat "$WORK/session-seen")" = "|"
 assert jqe --arg r "$WORK/repo" --arg l "$NIGHTS/N1.suites.repo.log" \
   '.suites.finished_at != null and .suites.repos == [{repo: $r, exit: 1, log: $l, passed: 1, failed: ["test_b.sh"]}]' "$NIGHTS/N1.json"
 assert grep -qxF 'suites · repo · 1 PASS · 1 FAIL: test_b.sh' <(night report N1 2>/dev/null)

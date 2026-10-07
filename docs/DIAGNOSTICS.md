@@ -241,7 +241,8 @@ runs those via `tests/run-all <suite>…`, never the full `tests/run-all`, which
 Close (`--all` adds `e2e_surfaces.sh` and `test_instruction_rates_live.sh`). One table — suite ·
 PASS/FAIL · seconds · last line — exits 1 with each failure's last 30 lines. Every suite gets its own
 `TMPDIR` and wait journal, never its own `HOME` (`test_consistency.sh` prices the INSTALLED hooks); the
-wave runs at nice 10 within 600 s of keyboard use, wall-clock suites at the caller's. The runner `share/run-suites.sh` is
+wave of a worker's or session-less run (launchd, the night's full run) is nice 10 within 600 s of
+keyboard use; a chat's own run and wall-clock suites stay at the caller's. The runner `share/run-suites.sh` is
 shared with review-bench and claude-setup; in a linked worktree it exports `CLAUDE_SETUP_ROOT`,
 `REVIEW_BENCH_ROOT`, `REVIEW_ROOT` and `LLM_LEGS_ROOT` (when unset) as the sibling worktree on the same
 branch, else the checkout beside the MAIN one (`tests/test_run_suites_nice.sh`).
