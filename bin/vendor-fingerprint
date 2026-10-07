@@ -110,20 +110,47 @@ put_text() { # facet command...
     jq -Rs . | put "$facet"
 }
 
+# Packed string tables glue an id onto the next string (gemini-3.1-pro-highparse mime type): a lowercase
+# run is cut off after another id, a digit run, or an effort word or word other ids hold as a whole
+# component, unless the component it grows is one other ids hold.
+unglue() { # sorted ids -> the same ids cut off their glued neighbours
+  LC_ALL=C awk '
+    {
+      t[NR] = $0; s[$0] = 1; delete own
+      for (j = split($0, c, "-"); j > 0; j--) if (!(c[j] in own)) { own[c[j]] = 1; w[c[j]]++ }
+    }
+    END {
+      w["low"]++; w["medium"]++; w["high"]++; w["thinking"]++
+      for (n = 1; n <= NR; n++) {
+        id = t[n]; cut = length(id); start = 1
+        for (i = 1; i < length(id) && cut == length(id); i++) {
+          if (substr(id, i, 1) == "-") { start = i + 1; continue }
+          if (substr(id, i + 1, 1) !~ /[a-z]/) continue
+          word = substr(id, start, i - start + 1)
+          whole = substr(id, start); sub(/-.*/, "", whole)
+          if ((substr(id, 1, i) in s) || (word ~ /^[a-z][a-z][a-z]+$/ && w[word] && w[whole] < 2) ||
+            (word ~ /^[0-9]+$/ && substr(whole, length(word) + 1) ~ /^[a-z][a-z][a-z]/)) cut = i
+        }
+        print substr(id, 1, cut)
+      }
+    }' | LC_ALL=C sort -u
+}
+
+# A rule change must never read as a release, so the stored side is compared through the same rule.
+reunglue() { # fingerprint file
+  local ids tmp
+  jq -e '.facets.ids | type == "array"' "$1" >/dev/null 2>&1 || return 0
+  ids=$(jq -r '.facets.ids[]' "$1" | unglue | jq -R . | jq -s -c .) || return 0
+  tmp=$(mktemp "$1.XXXXXX") || return 0
+  jq --argjson ids "$ids" '.facets.ids = $ids' "$1" >"$tmp" && mv -f "$tmp" "$1" || rm -f "$tmp"
+}
+
 put_ids() { # vendor
   local native
   native=$(native_of "$1") && [ -f "$native" ] || { fail ids local; return 0; }
   LC_ALL=C strings -a -n 6 "$native" 2>/dev/null |
     perl -pe "s/(?<=[a-z0-9])(?=(?:$id_prefixes)-)/\\n/g" | LC_ALL=C grep -oE "$id_re" | LC_ALL=C sort -u |
-    awk '{ t[NR] = $0; s[$0] = 1 }
-      END {
-        for (n = 1; n <= NR; n++) {
-          glued = 0
-          for (i = length(t[n]) - 1; i > 0 && !glued; i--)
-            if ((substr(t[n], 1, i) in s) && substr(t[n], i + 1, 1) ~ /[a-z]/) glued = 1
-          if (!glued) print t[n]
-        }
-      }' >"$work/ids"
+    unglue >"$work/ids"
   # An empty dump means the binary moved or changed format, not that the vendor dropped its models.
   [ -s "$work/ids" ] || { fail ids local; return 0; }
   jq -R . "$work/ids" | jq -s . | put ids
@@ -313,6 +340,9 @@ check_vendor() { # vendor
     rm -f "$current" "$current.raw"
     return 0
   fi
+  id=$(pending_event "$vendor")
+  reunglue "$previous"
+  [ -z "$id" ] || reunglue "$events_dir/$id.base"
   # A facet the probe could not read keeps its last value: a network blip is not a release. A local
   # probe that broke is itself news, so it is also named in probe_failures.
   jq -s --arg t "$(stamp)" '(.[0] // {facets: {}}) as $p | .[1] as $s
@@ -336,7 +366,6 @@ check_vendor() { # vendor
   fi
   # An event waits for Egor's request; a change meanwhile joins it and is re-judged against the
   # fingerprint from before the event, so a flap that has reverted by then closes it unseen.
-  id=$(pending_event "$vendor")
   if [ -n "$id" ]; then
     IFS=$'\t' read -r changed substantive < <(changes "$vendor" "$events_dir/$id.base" "$current")
     write_diff "$events_dir/$id.base" "$current" "$changed" >"$events_dir/$id.diff"
