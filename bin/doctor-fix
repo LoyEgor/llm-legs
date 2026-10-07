@@ -120,6 +120,7 @@ ROOT, PROJECTS, RUNS, HOME, DOCS = (os.environ["DF_" + k] for k in ("ROOT", "PRO
 sys.path.insert(0, os.path.join(ROOT, "share"))
 from report_frame import fit
 from fix_commit import FIX_KEYS, fix_record_faults, load_merged, main_checkout, sync_settled
+from spend import read_json
 DOCTORS = ("llm", "harness", "updater", "code", "system")
 HOOK_AREAS = ("Hooks", "Hook waits")
 LLM_ENTRIES = {"reviewers": ("review-bench/bin/review-bench",), "workers": ("llm-legs/bin/worker-run",),
@@ -153,14 +154,6 @@ KNOBS = (
 UPDATER_MACHINERY = {rule: "llm-legs/bin/vendor-cli-update" for rule in ("pass-stale", "pass-failed", "cli-behind", "client-too-old")}
 UPDATER_MACHINERY.update({rule: "llm-legs/bin/vendor-fingerprint" for rule in ("probe-broken", "catalog-missing", "event-stuck", "foreign-client")})
 WIDTH = 200
-
-
-def load(path, default=None):
-    try:
-        with open(path) as handle:
-            return json.load(handle)
-    except (OSError, ValueError):
-        return default
 
 
 def ledger_path(doctor):
@@ -240,10 +233,10 @@ def strings(value):
 
 
 def snapshot(doctor, doc_file, night=None):
-    doc, ledger = load(doc_file, {}), merged_ledger(doctor)
+    doc, ledger = read_json(doc_file, {}), merged_ledger(doctor)
     if doctor == "code" and doc.get("status") != "error":
         module = doctor_module("code")
-        taken = [p.get("id") for path in glob.glob(os.path.join(RUNS, "*.json")) for run in [load(path, {})]
+        taken = [p.get("id") for path in glob.glob(os.path.join(RUNS, "*.json")) for run in [read_json(path, {})]
                  if night and isinstance(run, dict) and run.get("doctor") == "code" and run.get("night") == night
                  and run.get("launched_at") for p in run.get("problems") or () if isinstance(p, dict)]
         ranked = [p for p in module.night_snapshot(doc.get("problems") or [], night) if p.get("id") not in taken]
@@ -457,13 +450,13 @@ def named(terms, text):
 
 
 def packet(record_file, key):
-    record = load(record_file, {})
+    record = read_json(record_file, {})
     doctor = record.get("doctor")
     rows = {}
     if doctor in DOCTORS:
         rows = {r.get("id"): r for r in merged_ledger(doctor).get("rows") or () if isinstance(r, dict)}
     earlier = {}
-    for other in sorted((load(p, {}) for p in glob.glob(os.path.join(RUNS, "*.json"))), key=lambda r: r.get("created_at") or ""):
+    for other in sorted((read_json(p, {}) for p in glob.glob(os.path.join(RUNS, "*.json"))), key=lambda r: r.get("created_at") or ""):
         if other.get("id") == record.get("id"):
             continue
         for decision in other.get("decisions") or ():
@@ -520,7 +513,7 @@ def packet(record_file, key):
 
 
 def touches(record_file, pid, purpose):
-    record = load(record_file, {})
+    record = read_json(record_file, {})
     doctor = record.get("doctor")
     problem = next((p for p in record.get("problems") or () if p.get("id") == pid), None)
     if pid == "judge":
@@ -571,7 +564,7 @@ def knobs(record_file):
     """Lines of the run that set a model, effort or thinking knob: its worktrees against the night base (untracked
     files count as added); the live settings and worker-model files against their lines at launch only as notes, since
     a /model or effort change by Egor lands there too and no record says who wrote it."""
-    record = load(record_file, {})
+    record = read_json(record_file, {})
     base = "refs/night/%s/base" % record.get("night")
     hits = []
     for tree in strings(record.get("worktrees")):
@@ -621,9 +614,9 @@ def fix_faults(record_file, doctor):
     if not path:
         return
     rel = os.path.relpath(os.path.realpath(path), os.path.realpath(ROOT))
-    trees = [] if rel.startswith("..") else strings(load(record_file, {}).get("worktrees"))
+    trees = [] if rel.startswith("..") else strings(read_json(record_file, {}).get("worktrees"))
     for ledger in [p for p in (os.path.join(tree, rel) for tree in trees) if os.path.isfile(p)] or [path]:
-        for row, index, missing in fix_record_faults(load(ledger, {})):
+        for row, index, missing in fix_record_faults(read_json(ledger, {})):
             print("ledger %s: row %s fixes[%d] lacks %s: every fix record is {%s}"
                   % (ledger, row, index, ", ".join(missing), ", ".join(sorted(FIX_KEYS))))
 

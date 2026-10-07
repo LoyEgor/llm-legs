@@ -34,6 +34,7 @@ from fix_commit import NOT_LANDED, SETTLED_FILE, fix_commit, fix_held_from, fix_
 from limiter_hold import hold_dir, wait_dir
 from machine_probe import host_ticks, spawn_pid, sysctl
 import spend
+from spend import read_json
 import suite_audit
 
 LIMITS = {
@@ -328,14 +329,6 @@ def short_path(path):
         if path.startswith(prefix):
             return repl + path[len(prefix):]
     return path
-
-
-def read_json(path, default):
-    try:
-        with open(path) as handle:
-            return json.load(handle)
-    except (OSError, ValueError):
-        return default
 
 
 def write_json(path, value):

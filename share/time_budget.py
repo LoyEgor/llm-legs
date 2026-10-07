@@ -26,6 +26,7 @@ import limiter_hold  # noqa: E402
 import night_churn  # noqa: E402
 import night_spend  # noqa: E402
 import spend as spend_block  # noqa: E402
+from spend import read_json  # noqa: E402
 import suite_audit  # noqa: E402
 
 CLASSES = (("model", "model turns", "plain"), ("tools", "tool execution", "plain"),
@@ -102,14 +103,6 @@ def local_day(t):
 def day_bounds(day):
     lo = time.mktime(time.strptime(day, "%Y-%m-%d"))
     return lo, time.mktime(time.strptime(local_day(lo + 30 * 3600), "%Y-%m-%d"))
-
-
-def read_json(path, default):
-    try:
-        with open(path) as handle:
-            return json.load(handle)
-    except (OSError, ValueError):
-        return default
 
 
 def write_json(path, value):

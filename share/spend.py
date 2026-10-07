@@ -27,9 +27,9 @@ def ledger_path(root):
     return os.environ.get("SPEND_LEDGER") or os.path.join(root, "share", "spend-ledger.json")
 
 
-def read_json(path, default):
+def read_json(path, default=None):
     try:
-        with open(path) as handle:
+        with open(path, encoding="utf-8") as handle:
             return json.load(handle)
     except (OSError, ValueError):
         return default
