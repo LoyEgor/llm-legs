@@ -32,13 +32,13 @@ REPO="$WORK/repo"
 new_repo "$REPO"
 SHA=$(git -C "$REPO" rev-parse HEAD)
 suite "$REPO" test_cpu.sh 'i=0; while [ "$i" -lt 30000 ]; do i=$((i + 1)); done'
-suite "$REPO" test_env.sh "env | grep -E '^(WORKER_RUN_ID|SUITE_JOURNAL_PID)=' >\"$WORK/env.out\"; exit 0"
+suite "$REPO" test_env.sh "env | grep -E '^(WORKER_RUN_ID|SUITE_JOURNAL_PID|RUN_SUITES_JOURNAL|RUN_SUITES_TIMES)=' >\"$WORK/env.out\"; exit 0"
 suite "$REPO" test_fail.sh 'exit 3'
 printf '%s\ttest_gone.sh\t5\n/elsewhere\ttest_gone.sh\t5\n' "$REPO" >"$RUN_SUITES_TIMES"
 
 # A full run: its row names the run, the worker and chat it ran for, and each suite's verdict and CPU;
 # the suites it ran, which source the library too, journal nothing of their own.
-WORKER_RUN_ID=wr-7 CLAUDE_CODE_SESSION_ID=sess-7 bash "$ROOT/share/run-suites.sh" --repo "$REPO" -j 2 >/dev/null 2>&1
+RUN_SUITES_JOURNAL=$JOURNAL WORKER_RUN_ID=wr-7 CLAUDE_CODE_SESSION_ID=sess-7 bash "$ROOT/share/run-suites.sh" --repo "$REPO" -j 2 >/dev/null 2>&1
 assert test "$(wc -l <"$JOURNAL" | tr -d ' ')" = 1
 assert jqe --argjson keys "$KEYS" --arg repo "$REPO" --arg sha "$SHA" --arg slots "$WORK/slots/" '
   (keys == $keys) and .kind == "suites" and (.pid | type == "number") and .queued_at <= .started_at

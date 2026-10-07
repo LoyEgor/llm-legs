@@ -11,7 +11,7 @@ assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
 jqe() { jq -e "$@" >/dev/null; }
 assert_fails() { asserts=$((asserts + 1)); ! "$@" || fail "assert $asserts unexpectedly held: $*"; }
 export HARNESS_HOLDS_DIR="$WORK/holds" HARNESS_WAITS_DIR="$WORK/waits" SLOTS_POLL_S=0.2 STATUSLINE_CACHE_DIR="$WORK/sl" RUN_SUITES_TIMES="$WORK/times.tsv"
-unset RUN_SUITES_SLOT RUN_SUITES_JOURNAL NIGHT_FIXER_SLOT WORKER_RUN_RECORD WORKER_RUN_ID
+unset RUN_SUITES_SLOT NIGHT_FIXER_SLOT WORKER_RUN_RECORD WORKER_RUN_ID
 . "$ROOT/share/slots.sh"
 
 holder() { # dir count -> pid of a process holding one slot until killed

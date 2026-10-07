@@ -12,8 +12,7 @@ DOCTOR="$ROOT/bin/harness-doctor"
 # unresolved /var/folders path.
 WORK=$(mktemp -d "$(getconf DARWIN_USER_TEMP_DIR)hd.XXXXXX")
 trap '[ -z "${reused_pid:-}" ] || kill "$reused_pid" 2>/dev/null; rm -rf "$WORK"' EXIT
-# night-run hands tests/run-all the live RUN_SUITES_JOURNAL; HOME alone does not reroot it.
-unset RUN_SUITES_JOURNAL RUN_SUITES_TIMES RUN_SUITES_SLOTS_DIR XDG_CACHE_HOME
+unset RUN_SUITES_SLOTS_DIR XDG_CACHE_HOME
 export TZ=UTC HOME="$WORK/home"
 export CLAUDE_PROJECTS_DIR="$HOME/.claude/projects" HARNESS_SETTINGS="$HOME/.claude/settings.json"
 export STATUSLINE_CACHE_DIR="$WORK/statusline" MEMLOGD_DIR="$WORK/memlogd" INSTRUCTION_WATCH_STATE="$WORK/watch"

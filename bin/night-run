@@ -748,7 +748,7 @@ cmd_suites() {
     [ -n "$repo" ] && [ -x "$repo/tests/run-all" ] || continue
     name=$(basename "$repo") log="$nights_dir/$id.suites.$name.log"
     since=$(date +%s)
-    RUN_SUITES_JOURNAL=$journal bash "$repo/tests/run-all" >"$log" 2>&1 &
+    bash "$repo/tests/run-all" >"$log" 2>&1 &
     pid=$!
     wait "$pid"
     rc=$?

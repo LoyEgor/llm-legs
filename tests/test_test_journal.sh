@@ -7,8 +7,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 WORK=$(cd "$(mktemp -d)" && pwd -P)
 trap 'rm -rf "$WORK"' EXIT
 export HOME="$WORK/home" STATUSLINE_CACHE_DIR="$WORK/cache" WORKER_RUN_DIR="$WORK/runs" TZ=UTC
-# night-run hands run-all its own journal; the probe and run-suites here must read and write the fixture's.
-unset RUN_SUITES_JOURNAL XDG_CACHE_HOME SPEED_DOCTOR_DIR
+unset XDG_CACHE_HOME SPEED_DOCTOR_DIR
 mkdir -p "$HOME" "$STATUSLINE_CACHE_DIR" "$WORKER_RUN_DIR/codex-5-5-live" "$HOME/.cache/claude-worker-tags/th"
 asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
