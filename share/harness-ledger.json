@@ -3242,9 +3242,9 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-06",
-      "reviewed_by": "night fixer harness-speed-20261006T032930Z-7b67",
-      "note": "2026-10-06: 39 min/day in 24 h, 20 since 2026-10-05 19:00. 87 waits (29.7 min, up to 56 s) were on ~/.llm-limits.json.lock, the store lock llm-limits.sh holds over its merge (share/store-lock.sh store_lock_acquire, 240 x 0.25 s). Its writers are the refresh heartbeat, the statusline refresher and the menu; none runs inside a chat or worker tool call. share/time_budget.py budget() still moves every wait row out of tools, so these charge nobody's real wall (blind spot wait-caller-kind). Real: ~9 min/day of worker-run wait poll lag (WAIT_POLL 5 s; a builtin exit_code test each second between full checks would cut ~7). Ruled out: a stale or leaked lock (holders lived, waits ended under 60 s), the lock holder doing network work under the lock (the merge is local jq).",
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
+      "note": "2026-10-06: 39 min/day in 24 h, 20 since 2026-10-05 19:00. 87 waits (29.7 min, up to 56 s) were on ~/.llm-limits.json.lock, the store lock llm-limits.sh holds over its merge (share/store-lock.sh store_lock_acquire, 240 x 0.25 s). Its writers are the refresh heartbeat, the statusline refresher and the menu; none runs inside a chat or worker tool call. share/time_budget.py budget() still moves every wait row out of tools, so these charge nobody's real wall (blind spot wait-caller-kind). Real: ~9 min/day of worker-run wait poll lag (WAIT_POLL 5 s; a builtin exit_code test each second between full checks would cut ~7). Ruled out: a stale or leaked lock (holders lived, waits ended under 60 s), the lock holder doing network work under the lock (the merge is local jq). 2026-10-07: quiet in the doctor's window; the cause stands in code (share/store-lock.sh 240 x 0.25 s unchanged, worker-run WAIT_POLL still 5 s), fix stays with the speed-floors handoff.",
       "handoff": "docs/handoffs/2026-10-06-speed-floors.md"
     },
     {
@@ -3443,6 +3443,284 @@
       "reviewed_by": "night fixer harness-hooks-20261006T032924Z-3077",
       "note": "In a worker every Bash call paid jq, realpath, the heredoc mask, grep, awk and tr. Only a `git` segment running checkout/restore/reset/clean/stash is ever denied, so the hook now exits unless the raw payload from the command key on holds `git` and one of them; 66 -> 9 ms on a worker's trivial call (tests/test_worker_git_guard.sh, red on the old code). A main-session call still exits before it.",
       "handoff": null
+    },
+    {
+      "id": "log_audit:affected-suite-list-handling",
+      "title": "tests/affected and run-all broke on bash 3.2 and on zsh's unsplit suite list",
+      "match": {
+        "rule": "log_audit",
+        "ident": "affected-suite-list-handling"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-07T03:30:00+03:00",
+          "by": "night fixer harness-doctor-20261006T234242Z-1fa6",
+          "files": [
+            "share/affected-suites.sh",
+            "share/run-suites.sh",
+            "tests/test_run_suites_journal.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
+      "note": "Confirmed: /bin/bash 3.2 cannot parse share/affected-suites.sh line 35 (a case pattern without its leading paren inside $(...)); tests/affected execs PATH bash, so a PATH with /bin first broke it. zsh never splits `$suites`, so run-suites got one newline-joined argument and said 'no such suite'. Fixed: the leading paren, run-suites splits a multi-line suite argument. Ruled out: run-suites itself (it re-execs Homebrew bash).",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:pretooluse-awk-multibyte-error",
+      "title": "worker-launch-gate's awk died on Cyrillic text and the gate let the call through",
+      "match": {
+        "rule": "log_audit",
+        "ident": "pretooluse-awk-multibyte-error"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-07T03:30:00+03:00",
+          "by": "night fixer harness-doctor-20261006T234242Z-1fa6",
+          "files": [
+            "bin/worker-launch-gate.sh",
+            "bin/worker-tag-hook.sh",
+            "bin/worker-git-guard.sh",
+            "share/heredoc-mask.sh",
+            "tests/test_worker_launch_gate_visibility.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
+      "note": "Confirmed: macOS awk 20200816 in a UTF-8 locale counts bytes in substr() but decodes in a regex match, so a lone byte of a multibyte character dies with 'towc: multibyte conversion failure'; worker-launch-gate's prestrip pipeline then hit '|| exit 0' and skipped its scan. Fixed: LC_ALL=C on the command-text awks of worker-launch-gate, worker-tag-hook, worker-git-guard and share/heredoc-mask. Probed every PreToolUse:Bash hook of claude-setup with five Cyrillic shapes: none printed the error (cd-guard's mask gives the same output in both locales).",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:run-suites-journal-env-leak",
+      "title": "Suites inherited night-run's live RUN_SUITES_JOURNAL",
+      "match": {
+        "rule": "log_audit",
+        "ident": "run-suites-journal-env-leak"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-07T03:30:00+03:00",
+          "by": "night fixer harness-doctor-20261006T234242Z-1fa6",
+          "files": [
+            "share/run-suites.sh",
+            "bin/night-run",
+            "tests/test_run_suites_journal.sh",
+            "tests/test_slots.sh",
+            "tests/test_test_journal.sh",
+            "tests/test_harness_doctor.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
+      "note": "Confirmed: night-run prefixed run-all with RUN_SUITES_JOURNAL and run-suites passed it on to every suite, so a suite's nested fixture run journaled into the live runs.jsonl; three suites had each unset it on their own. Fixed once: run-suites unsets RUN_SUITES_JOURNAL and RUN_SUITES_TIMES in each suite's environment, night-run drops the prefix, the three per-suite unsets are gone.",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:foreground-run-all-10min-cap",
+      "title": "claudeb workers' covering suite runs died at Claude Code's 10-minute Bash cap",
+      "match": {
+        "rule": "log_audit",
+        "ident": "foreground-run-all-10min-cap"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-07T03:30:00+03:00",
+          "by": "night fixer harness-doctor-20261006T234242Z-1fa6",
+          "files": [
+            "bin/worker-run",
+            "tests/worker_run_harness.sh",
+            "tests/test_worker_run_entry.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
+      "note": "Confirmed: worker-run sets CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 for claudeb workers, so suites run in the foreground under the default 600000 ms Bash ceiling (exit 143). Fixed: worker-run exports BASH_MAX_TIMEOUT_MS = (WORKER_RUN_IDLE_S - 300) s, 25 min by default, which the idle watchdog still bounds. Not fixed: codex/gemini/grok workers (their CLIs' own command timeouts) and setsid missing on macOS (model knowledge).",
+      "handoff": null
+    },
+    {
+      "id": "log_audit:launch-gate-refusals-first-attempt",
+      "title": "Relays' first worker-run start refused for an ACCOUNT:/MODEL: flag",
+      "match": {
+        "rule": "log_audit",
+        "ident": "launch-gate-refusals-first-attempt"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
+      "note": "Confirmed in the skeletons: 9 of 15 refusals were 'the brief says ACCOUNT: locomthebest, so the launch passes --account': the header line sat in the relay's prompt, not in the brief file it copied, while the agent text says never to rebuild header lines as flags. The gate is right; the fix is the claude-setup agent text, see the handoff. workdir-is-home and NESTED_MODEL_REFUSED were single orchestrator mistakes.",
+      "handoff": "docs/handoffs/2026-10-07-log-audit-leftovers.md"
+    },
+    {
+      "id": "log_audit:sleep-poll-loops-waiting",
+      "title": "Relays poll in 9-minute rounds and models sleep-poll throttled jobs",
+      "match": {
+        "rule": "log_audit",
+        "ident": "sleep-poll-loops-waiting"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
+      "note": "Relay rounds are bounded by the chat's 10-minute Bash cap (WAIT_CEILING 540); raising BASH_MAX_TIMEOUT_MS in the chats' settings and deriving the gate's ceiling from it cuts the rounds (cross-repo, handoff). The 110-minute throttle waits are logo-vectorizer-bench's own throttle under load (weather); its 'all busy, 4 of 8 slots open' message belongs to that repository.",
+      "handoff": "docs/handoffs/2026-10-07-log-audit-leftovers.md"
+    },
+    {
+      "id": "log_audit:wip-owner-misattribution",
+      "title": "The edit-conflict notice named a quiet chat as the owner of foreign WIP",
+      "match": {
+        "rule": "log_audit",
+        "ident": "wip-owner-misattribution"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
+      "note": "The chat's own correction says the edit hook named «Updater doctor» because it had been quiet for 44 minutes, while that chat's writes came from a worker in its own worktree; bin/land's attribution was right, and the second wrong claim was an ad-hoc journal query. The component is claude-setup hooks/edit-conflict-notice.sh, handed off.",
+      "handoff": "docs/handoffs/2026-10-07-log-audit-leftovers.md"
+    },
+    {
+      "id": "log_audit:worker-on-exhausted-account",
+      "title": "Parallel lanes pinned to one account hit its session wall together",
+      "match": {
+        "rule": "log_audit",
+        "ident": "worker-on-exhausted-account"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
+      "note": "Working as specified (shared-invariants rows j/k: selection below 100 %, one reroute, a resumed session stays on its account). The loss comes from several lanes copying one ACCOUNT: line; the proposal (worker-pick counting live runs per account) is in the handoff.",
+      "handoff": "docs/handoffs/2026-10-07-log-audit-leftovers.md"
+    },
+    {
+      "id": "log_audit:night-debt-passes-not-capped",
+      "title": "A night ran more debt review rounds than its one fit and one bugs round",
+      "match": {
+        "rule": "log_audit",
+        "ident": "night-debt-passes-not-capped"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
+      "note": "docs/night-run.md step 5 states one round of each kind per debt job; the extra rounds were the orchestrator's. Also seen: resume_night adds debt-<n> whenever none is pending. A mechanical cap is proposed in the handoff.",
+      "handoff": "docs/handoffs/2026-10-07-log-audit-leftovers.md"
+    },
+    {
+      "id": "log_audit:shared-ledger-landing-conflicts",
+      "title": "Night fixers conflict on the shared ledger and calibration pin",
+      "match": {
+        "rule": "log_audit",
+        "ident": "shared-ledger-landing-conflicts"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
+      "note": "Every fixer appends ledger rows and repins PINNED in tests/test_harness_doctor.sh, so parallel branches conflict on the same lines (this run adds rows too). A row-wise merge driver is proposed in the handoff.",
+      "handoff": "docs/handoffs/2026-10-07-log-audit-leftovers.md"
+    },
+    {
+      "id": "log_audit:limit-reset-no-auto-resume",
+      "title": "A chat sat idle after its wake-up fired before its own reset",
+      "match": {
+        "rule": "log_audit",
+        "ident": "limit-reset-no-auto-resume"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
+      "note": "Not reproduced here; the resume timer and llm-reset-redeem are to be checked against the account's resets_at, see the handoff.",
+      "handoff": "docs/handoffs/2026-10-07-log-audit-leftovers.md"
+    },
+    {
+      "id": "log_audit:browser-worker-launch-failures",
+      "title": "Browser worker launches failed repeatedly before any work",
+      "match": {
+        "rule": "log_audit",
+        "ident": "browser-worker-launch-failures"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
+      "note": "Owned by the chat «Оптимизация работы с браузерами DIA и Chrome.»: its fixes landed 2026-10-06 evening (a4e0b030, f877336c, 36cf6f25, f1a98bde) and its fix/browser-* branches are tonight's leftovers; no probe launch has confirmed them yet.",
+      "handoff": "docs/handoffs/2026-10-07-log-audit-leftovers.md"
+    },
+    {
+      "id": "log_audit:overbuilt-before-asking",
+      "title": "Mechanisms built for hours before Egor was asked whether he needed them",
+      "match": {
+        "rule": "log_audit",
+        "ident": "overbuilt-before-asking"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
+      "note": "Ruled out as a harness bug: model judgment with no hook, gate or launcher behind it; dismissal proposed in the handoff.",
+      "handoff": "docs/handoffs/2026-10-07-log-audit-leftovers.md"
+    },
+    {
+      "id": "log_audit:reports-jargon-and-unverified-claims",
+      "title": "Reports used undefined jargon, re-asked decided questions or claimed unverified behavior",
+      "match": {
+        "rule": "log_audit",
+        "ident": "reports-jargon-and-unverified-claims"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
+      "note": "Ruled out as a harness bug: model conduct with no component; dismissal proposed in the handoff.",
+      "handoff": "docs/handoffs/2026-10-07-log-audit-leftovers.md"
+    },
+    {
+      "id": "log_audit:memory-guard-lane-pause",
+      "title": "A logo-bench lane killed by the memory guard sat paused 192 minutes",
+      "match": {
+        "rule": "log_audit",
+        "ident": "memory-guard-lane-pause"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-doctor-20261006T234242Z-1fa6",
+      "note": "Ruled out as a harness bug: the memory guard killed the lane as designed (exit 137) and the pause was the lane's own resume at load 164 (weather); dismissal proposed in the handoff.",
+      "handoff": "docs/handoffs/2026-10-07-log-audit-leftovers.md"
     },
     {
       "id": "unjournaled-night-run-wall",

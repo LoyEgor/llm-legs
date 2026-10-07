@@ -12,8 +12,7 @@ state that grows with history, and the edit or release that made any of them slo
 readable at a glance: numbers in aligned columns, problems in red, each row saying what it affects.
 The `Test time (temp)` experiment is folded into it.
 
-The evidence behind it is `docs/handoffs/2026-09-28-speed-investigation.md`. For six days a
-PostToolUse hook's 10 s timeout added 7-8 s to every tool call of every chat, and nothing on the
+Why it exists: for six days a PostToolUse hook's 10 s timeout added 7-8 s to every tool call of every chat, and nothing on the
 machine showed it. The collector's backfill later found an earlier, unnoticed episode, 09-07 to
 09-15, with trivial-Bash medians of 11-58 s.
 
