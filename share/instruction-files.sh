@@ -269,8 +269,54 @@ instruction_visible_paths() {
 # input stamped after the marker taken before the walk may have moved mid-walk: nothing is kept. One
 # read and array slices: a pattern expansion over the file's 60 KB costs bash a second.
 _instruction_stamp_lines() { local IFS=$_instruction_nl; stamps="${lines[*]:1:$1}"; }
+# Claude Code's Edit and Write rename a new file over the old one, moving the directory's mtime: that
+# cost every edit the whole enumeration (~240 ms). A moved repository directory keeps the set when its
+# subdirectories are all stamped and its candidates (repo_files' name rule) are exactly the set's. The
+# stamps kept predate the listing, so a directory moving during it is compared again next call.
+# Reads n, lines[] and paths[] of instruction_visible_cached.
+_instruction_moved_dirs_kept() { # home root cache-file header current-stamps
+  local home=$1 root=$2 file=$3 want=$4 i p listing
+  local -a now=() moved=()
+  [ -n "$root" ] || return 1
+  set -f
+  local IFS=$_instruction_nl
+  now=($5)
+  set +f
+  [ "${#now[@]}" -eq "$n" ] || return 1
+  for ((i = 0; i < n; i++)); do
+    [ "${now[i]}" = "${lines[i + 1]}" ] && continue
+    p=${paths[i]}
+    [ "${now[i]#*"$_instruction_tab"}" = "$p" ] && [ -d "$p" ] && [ ! -L "$p" ] || return 1
+    case $p/ in "$home"/.claude/*) return 1 ;; "$root"/*) moved+=("$p") ;; *) return 1 ;; esac
+  done
+  [ "${#moved[@]}" -gt 0 ] && [ "${#moved[@]}" -le 8 ] || return 1
+  listing=$({ find "${moved[@]}" -mindepth 1 -maxdepth 1 \( "${_instruction_pruned[@]}" \) -prune -o -type d -print0 &&
+              printf '\035\0' && find "${moved[@]}" -mindepth 1 -maxdepth 1 -type f -print0 && printf '\035\0'; } 2>/dev/null |
+            _instruction_emit_paths) || return 1
+  { printf '%s\n' "${moved[@]}" $'\035' "${paths[@]}" $'\035' "${lines[@]:n+1}" $'\035' "$listing"; } |
+    LC_ALL=C awk -v root="$root" -v md="$INSTRUCTION_MD_EXTENSIONS" '
+      BEGIN { gsub(/ /, "|", md); ext = "\\.(" md ")$" }
+      $0 == "\035" { part++; next }
+      part == 0 { moved[$0] = 1; next }
+      part == 1 { stamped[$0] = 1; next }
+      part == 2 { d = $0; sub(/\/[^\/]*$/, "", d); if (d in moved) want[$0] = 1; next }
+      part == 3 { if (!($0 in stamped)) { bad = 1; exit } next }
+      part == 4 {
+        rel = substr($0, length(root) + 1); base = $0; sub(/.*\//, "", base); lb = tolower(base)
+        if (lb == "claude.md" || lb == "claude.local.md" || lb == "skill.md" ||
+            (rel ~ /\/\.claude\// && rel !~ /\/\.claude\/local\// && (base == "review-debt-ignore" || lb ~ ext))) {
+          if (!($0 in want)) { bad = 1; exit }
+          seen[$0] = 1
+        }
+      }
+      END { if (bad || part != 5) exit 1; for (p in want) if (!(p in seen)) exit 1 }' || return 1
+  { printf '%s%s%s\n%s\n' "$want" "$_instruction_tab" "$n" "$5"
+    [ "${#lines[@]}" -le $((n + 1)) ] || printf '%s\n' "${lines[@]:n+1}"; } >"$file.$$" 2>/dev/null &&
+    mv -f "$file.$$" "$file" 2>/dev/null || rm -f "$file.$$" 2>/dev/null
+  return 0
+}
 instruction_visible_cached() { # home ranked-cache root state-dir
-  local home=${1:-$HOME} cache=${2:-} root=${3:-} dir=${4:-} file key want n p stamps='' set
+  local home=${1:-$HOME} cache=${2:-} root=${3:-} dir=${4:-} file key want n p stamps='' set cur
   local -a lines=() paths=()
   key=${root:-none}
   key=${key//[!A-Za-z0-9._-]/_}
@@ -287,7 +333,8 @@ instruction_visible_cached() { # home ranked-cache root state-dir
       paths=("${lines[@]:1:n}")
       paths=("${paths[@]#*"$_instruction_tab"}")
       _instruction_stamp_lines "$n"
-      if [ "$(stat -L -f '%.9Fm%t%N' -- "${paths[@]}" 2>/dev/null)" = "$stamps" ]; then
+      cur=$(stat -L -f '%.9Fm%t%N' -- "${paths[@]}" 2>/dev/null)
+      if [ "$cur" = "$stamps" ] || _instruction_moved_dirs_kept "$home" "$root" "$file" "$want" "$cur"; then
         [ "${#lines[@]}" -le $((n + 1)) ] || printf '%s\n' "${lines[@]:n+1}"
         return 0
       fi

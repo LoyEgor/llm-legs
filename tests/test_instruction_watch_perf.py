@@ -268,6 +268,38 @@ class InstructionPerformance(unittest.TestCase):
             self.assertTrue(any('ADDED ' + str(p) in context for p in (added, added.resolve())), context)
             self.assertEqual('', self.hook('check').stdout)
 
+    def test_a_file_replaced_in_place_reuses_the_enumeration(self):
+        self.git('init', '-q')
+        self.put(self.repo / '.gitignore', 'build/\n')
+        self.put(self.repo / 'build/out.txt')
+        for name in ('pkg/CLAUDE.md', 'pkg/notes.md', '.claude/rules/a.md', '.claude/rules/c.txt', 'top.txt'):
+            self.put(self.repo / name)
+        self.assertEqual(0, self.hook('baseline').returncode)
+        self.assertEqual('', self.hook('check').stdout)
+        log = self.work / 'exec.log'
+        path = self.shim('git', 'case " $* " in *" ls-files "*) echo ls-files >> "$PROBE_LOG" ;; esac\nexec @REAL@ "$@"\n')
+
+        def check():
+            return self.context(self.hook('check', PATH=path, PROBE_LOG=str(log)))
+
+        def replace(name, content='edited\n'):
+            spare = self.repo / (name + '.tmp')
+            spare.write_text(content)
+            os.replace(spare, self.repo / name)
+
+        for name in ('pkg/notes.md', 'top.txt', '.claude/rules/c.txt'):
+            replace(name)
+            self.assertEqual('', check())
+        replace('pkg/CLAUDE.md', 'rules\nmore rules\n')
+        self.assertIn('pkg/CLAUDE.md', check())
+        self.assertFalse(log.exists(), 'a file replaced in place re-ran the git enumeration')
+        for old, new in (('pkg/notes.md', 'pkg/CLAUDE.local.md'), ('.claude/rules/c.txt', '.claude/rules/c.md')):
+            os.rename(self.repo / old, self.repo / new)
+            context = check()
+            self.assertIn('ADDED ', context)
+            self.assertIn(new, context)
+            self.assertEqual('', check())
+
     def test_spent_budget_leaves_the_rest_for_the_next_call(self):
         self.git('init', '-q')
         docs = [self.put(self.home / f'.claude/docs/{n}.md') for n in 'abc']
