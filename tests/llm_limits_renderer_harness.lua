@@ -2981,7 +2981,7 @@ local function doctorDocument(asOf)
         regressed = 1, top = "grok47 pool empty ×1 · opus crashed ×1", top_kind = "bug",
         problems = {
           { kind = "bug", label = "failed · crashed", models = { "opus" }, count = 1, trend = "",
-            spark = "      █", last_seen = "2h", status = "regressed", status_text = "regressed ×1",
+            spark = "▁▁▁▁▁▁█", last_seen = "2h", status = "regressed", status_text = "regressed ×1",
             looked = "looked at 1d ago",
             ledger = { id = "R7", title = "an export refusal worded crashed", status = "fixed",
               fixes = { { at = "2026-09-23T10:00:00+03:00", by = "Review-bench improvements",
@@ -3082,10 +3082,10 @@ do
   local reviewers = blockRow(menu, "Reviewers")
   local inside = submenuTitles(reviewers)
   assert(inside[1] == "owner: Review-bench improvements · 120 legs in 24h", inside[1])
-  assert(inside[2] == "failed · crashed      1           █   2h  regressed ×1  opus", inside[2])
-  assert(inside[3] == "failed · pool empty   1  ↑  █        22m  new           grok47", inside[3])
+  assert(inside[2] == "failed · crashed      1  ▁▁▁▁▁▁█   2h  regressed ×1  opus", inside[2])
+  assert(inside[3] == "failed · pool empty   1  █        22m  new           grok47", inside[3])
   assert(inside[4] == "-", inside[4])
-  assert(inside[5] == "cap                  12  ↓  ▁▃█       1h                grok, flash38", inside[5])
+  assert(inside[5] == "cap                  12  ▁▃█       1h                grok, flash38", inside[5])
   assert(inside[6] == "top: grok47 pool empty ×1 · opus crashed ×1" and inside[7] == "-"
     and inside[8] == "By model" and inside[9] == "Copy brief for the owner" and #inside == 9,
     table.concat(inside, "|"))

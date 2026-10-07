@@ -504,6 +504,7 @@ doctor = importlib.util.module_from_spec(spec)
 loader.exec_module(doctor)
 days = doctor.trend_days(calendar.timegm((2026, 10, 25, 21, 30, 0)))
 assert len(set(days)) == 14 and days[-1] == "2026-10-25" and days[0] == "2026-10-12", days
+assert doctor.spark([0, 2, 4]) == "▁▄█", doctor.spark([0, 2, 4])
 PY
 
 "$DOCTOR" --dry-run --block reviewers >"$WORK/view.txt" || fail "the text view failed"

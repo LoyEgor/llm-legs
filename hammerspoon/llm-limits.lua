@@ -1184,7 +1184,6 @@ local DOCTOR_WINDOWS = {
 local DOCTOR_BLOCK_NAMES = { reviewers = "Reviewers", workers = "Workers", light = "Light", image = "Image" }
 -- The collector's own column words, in its order; blank for zero so a class keeps its column.
 local DOCTOR_MODEL_COLUMNS = { "walled", "off", "cap", "stalled", "failed", "theirs", "slow", "escaped", "retried" }
-local TREND_MARK = { up = "↑", down = "↓" }
 local DOCTOR_COUNTED = { new = true, open = true, regressed = true }
 local lastLlmDoctorKick = 0
 
@@ -1434,7 +1433,7 @@ local function blockMenu(entry, windowLabel, hours)
   for _, problem in ipairs(type(entry.problems) == "table" and entry.problems or {}) do
     if type(problem) == "table" then
       local row = { tostring(problem.label or ""), tostring(tonumber(problem.count) or 0),
-        TREND_MARK[problem.trend] or "", tostring(problem.spark or ""), tostring(problem.last_seen or ""),
+        tostring(problem.spark or ""), tostring(problem.last_seen or ""),
         tostring(problem.status_text or ""),
         table.concat(type(problem.models) == "table" and problem.models or {}, ", ") }
       if problem.kind == "weather" then
@@ -1452,12 +1451,11 @@ local function blockMenu(entry, windowLabel, hours)
   local problems = {}
   for _, problem in ipairs(bugProblems) do problems[#problems + 1] = problem end
   for _, problem in ipairs(weatherProblems) do problems[#problems + 1] = problem end
-  local titles = doctorTableTitles(all, { [2] = true, [5] = true }, function(index, c)
+  local titles = doctorTableTitles(all, { [2] = true, [4] = true }, function(index, c)
     local problem = problems[index]
     local loud = problem.status == "new" or problem.status == "regressed"
     if problem.kind ~= "bug" then return "dim" end
-    if c == 1 or c == 6 then return loud and "warn" or nil end
-    if c == 3 then return problem.trend == "up" and "warn" or "dim" end
+    if c == 1 or c == 5 then return loud and "warn" or nil end
     return "dim"
   end)
   for index, problem in ipairs(problems) do

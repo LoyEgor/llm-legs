@@ -1680,7 +1680,7 @@ def spark(values):
     top = max(values) if values else 0
     if top <= 0:
         return ""
-    return "".join(" " if value == 0 else SPARK[min(len(SPARK) - 1, (value * len(SPARK) - 1) // top)]
+    return "".join(SPARK[0] if value == 0 else SPARK[min(len(SPARK) - 1, (value * len(SPARK) - 1) // top)]
                    for value in values)
 
 

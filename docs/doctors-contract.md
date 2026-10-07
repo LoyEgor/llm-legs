@@ -25,12 +25,12 @@ unchanged under `LLM details`. Fixture render:
 
 ```
 Doctors: 8 problems
-LLM        2          ▁▁▂▃▄▆█ ↑    3 ▸
-Harness    3          ▁▁▂▃▄▆█ ↑    3 ▸
-Updater    0          ▁▁▂▃▄▆█ ↑    3 ▸
-Code       3          ▁▁▂▃▄▆█ ↑    3 ▸
-Speed     12 min/day  ▁▁▂▃▄▆█ ↑   25 ▸
-System     2          ▁▁▂▃▄▆█ ↑    3 ▸
+LLM        2          ▁▁▂▃▄▆█    3 ▸
+Harness    3          ▁▁▂▃▄▆█    3 ▸
+Updater    0          ▁▁▂▃▄▆█    3 ▸
+Code       3          ▁▁▂▃▄▆█    3 ▸
+Speed     12 min/day  ▁▁▂▃▄▆█   25 ▸
+System     2          ▁▁▂▃▄▆█    3 ▸
 Last night 5 Oct · stopped early: no jobs
 ──────────
 Cleanup now
@@ -45,15 +45,15 @@ LLM ▸     8  reviewers crashed
 ```
 
 - Summary row, fixed cells: name (7, in the status color) · value (4, right) · unit (7: `min/day` for Speed, blank
-  for counts) · 7 bars · arrow · usual (4, right, DIM). Counts are bare; the only time unit is min/day
+  for counts) · 7 bars · usual (4, right, DIM), no trend arrow. Counts are bare; the only time unit is min/day
   (Speed: Harness time budget `lost_min_day`; its problems stay counted by Harness alone).
 - Status color of the name (no dot: `●` is the LLM Limits pin mark): GREEN ok, RED problems or collector error, DIM_RED watch/blind/pending update, DIM no data or
   stale (Speed also without an observation dated today). Missing value: DIM `–`.
 - Bars: six completed local dates and today, daily `max` of `problem-days.jsonl` (Speed: the daily
   maxima in Harness's `menu.txt` header). Eight heights against the window maximum. An unmeasured date
-  is a blank cell, never an invented bar or a dash (as every other spark line). Today is DIM; a completed date above `usual` is RED, others DIM.
-- `usual` is the median of measured completed dates, never today; arrow is yesterday against it:
-  RED ↑ above, GREEN ↓ below, DIM → equal, blank without both.
+  is a blank cell, never an invented bar or a dash; a zero is `▁` (as every other spark line, Chats → Other's
+  load graph the model). Every bar is DIM, never RED.
+- `usual` is the median of measured completed dates, never today.
 - A doctor's first level: up to three issue rows (RED count, the problem's own short name;
   Speed's floor gaps in min/day, plus nonempty `Needs Egor` rows), Fix, fixer, separator,
   `LLM details`. The details hold every previous row in order, the non-ordinary status title
