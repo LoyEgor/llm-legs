@@ -496,7 +496,7 @@ EOF
   out=$(cj_run enable)
   assert grep -qx 'OUTCOME: ENABLED relaunched' <<<"$out"
   assert grep -q 'quit' "$cj/osa.log"
-  assert grep -qx -- '-g -a Google Chrome --args --profile-directory=Profile 1' "$cj/open.log"
+  assert grep -qx -- '-g -a Google Chrome --args --profile-directory=Profile 1 --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --disable-background-timer-throttling --disable-features=IntensiveWakeUpThrottling' "$cj/open.log"
   assert jq -e '.browser == {other:1, allow_javascript_apple_events:true} and .profile.name == "Egor work"' "$cj/data/Profile 1/Preferences" >/dev/null
   assert grep -qx 'OUTCOME: ALREADY_ON' <<<"$(cj_run enable)"
   kill "$holder" 2>/dev/null || true

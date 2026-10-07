@@ -5379,6 +5379,7 @@ case "${1:-}" in
   browse) shift; browse_run "$@"; exit $? ;;
   _deliver) complete_run "$2" "$3"; chrome_run_edge "$2" end; exit 0 ;;
   _chrome-runs) if [ "${2:-}" = --browser ]; then chrome_runs "$CHROME_BROWSER_RUN"; else chrome_runs; fi; exit 0 ;;
+  _chrome-flags) printf '%s\n' "${CHROME_FLAGS[@]}"; exit 0 ;;
   _supervise) shift; supervise "$@"; rc=$?; end_run_orphans "$1"; slot_release "$NIGHT_SLOT"; exit "$rc" ;;
   *) usage ;;
 esac

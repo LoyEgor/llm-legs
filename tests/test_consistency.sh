@@ -908,7 +908,7 @@ assert grep -Fq 'claudeb needs an explicit account or claudeb_profile pin when w
 assert grep -Fq 'account=main' "$WORKER_RUN"
 assert grep -Fq 'contradicts the brief header' "$WORKER_RUN"
 for agent in "$CLAUDEB_AGENT" "$CODEX_AGENT" "$GEMINI_AGENT"; do
-  assert grep -Fq "worker-run reads the brief's \`ACCOUNT:\`, \`MODEL:\` and \`EFFORT:\` header lines itself" "$agent"
+  assert grep -Eq "worker-run reads the brief's \`ACCOUNT:\`, \`MODEL:\`(,| and) \`EFFORT:\`[^.]* header lines itself" "$agent"
   assert grep -Fq 'worker-run start' "$agent"
 done
 # worker-run reads a RESUME first line and refuses a --resume flag that disagrees with it; a relay told to

@@ -77,7 +77,8 @@ with open(path + ".tmp", "w") as handle:
 os.replace(path + ".tmp", path)
 PY
 
-"$OPEN" -g -a 'Google Chrome' --args --profile-directory="$profile"
+mapfile -t flags < <("$SCRIPT_DIRECTORY/worker-run" _chrome-flags)
+"$OPEN" -g -a 'Google Chrome' --args --profile-directory="$profile" "${flags[@]}"
 deadline=$((SECONDS + WAIT_S))
 until [ -n "$(chrome_pids)" ]; do
   [ "$SECONDS" -lt "$deadline" ] || { printf 'OUTCOME: LAUNCH_TIMEOUT\n'; exit 1; }
