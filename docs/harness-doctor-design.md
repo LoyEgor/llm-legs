@@ -580,9 +580,8 @@ up to three events as evidence (`stop:<ts>/<session>`, `words:<ts>/<session>`, `
   `changed-while-watcher-off`, `baseline-missing`, `dropped` and `baseline-silent` are `tripwire`;
   `watcher-down` is `never-started`, `stale`, `error` or `no-root`. No state directory reads `blind`.
   Not judged: ungated growth of a skill or plugin under `~/.claude/{skills,plugins}/synced/<bucket>`
-  that the bucket's `manifest.json` lists, with a `lastUpdated` no older than 15 min before the
-  growth (Claude Code's org sync bumps it only when content lands; the manifest's mtime moves every
-  round and proves nothing); growth that re-lands bytes the same real path grew by, or a gate priced, in another checkout
+  that the bucket's `manifest.json` lists, with a `lastUpdated` within 15 min of the growth or the
+  entry's `updatedAt` (vendor version time) up to 1 h before it; growth that re-lands bytes the same real path grew by, or a gate priced, in another checkout
   within 24 h (a merge, patch or copy between a worktree and its main checkout), each sibling growth
   excusing one landing of its bytes; ungated growth git delivered, i.e. the file's repository reflog
   shows a checkout, merge, pull or rebase in the 24 h before the growth (60 s after it allowed) to a

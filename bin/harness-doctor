@@ -3668,6 +3668,7 @@ DETAIL_MAX = 40
 NEAR_SHARE = 0.5
 LANDING_S = 86400
 SYNC_JOIN_S = 900
+SYNC_LAG_S = 3600
 FIXTURE_PATH_RE = re.compile(r"/\.pytest_cache/|/home/\.(?:claude|codex|gemini|grok)/|^(?:/private)?/(?:tmp|var/folders)/")
 HEALTH_LIMITS = {"ask-deferred": ("ask_deferred_s", "s"), "stop-silent": ("silent_s", "s"),
                  "baseline-silent": ("silent_s", "s"), "growth-denied": ("growth_min_b", "B"),
@@ -3892,7 +3893,9 @@ def file_key(path):
 
 def vendor_synced(path, at, manifests):
     """Claude Code's org sync lists what it lands in the bucket's manifest.json and bumps its lastUpdated
-    only when it lands content; the file's mtime moves every round, so it proves nothing."""
+    only when it lands content; the file's mtime moves every round, so it proves nothing. A later round
+    moves lastUpdated past an earlier landing, so the entry's own updatedAt (the vendor's version time,
+    landed minutes after) proves that one."""
     found = re.match(r"(%s/\.claude/(?:skills|plugins)/synced/[^/]+)/([^/]+)/" % re.escape(base_home().rstrip("/")),
                      str(path))
     if not found:
@@ -3904,7 +3907,9 @@ def vendor_synced(path, at, manifests):
     listed = [i for i in (manifest.get("skills") or []) + (manifest.get("plugins") or [])
               if isinstance(i, dict) and i.get("name") == name]
     stamp = manifest.get("lastUpdated")
-    return bool(listed) and isinstance(stamp, (int, float)) and abs(stamp / 1000.0 - at) <= SYNC_JOIN_S
+    if listed and isinstance(stamp, (int, float)) and abs(stamp / 1000.0 - at) <= SYNC_JOIN_S:
+        return True
+    return any(0 <= at - (iso_epoch(i.get("updatedAt")) or float("inf")) <= SYNC_LAG_S for i in listed)
 
 
 UPSTREAM_MOVE_RE = re.compile(r"(?:checkout|merge|pull|rebase)\b")

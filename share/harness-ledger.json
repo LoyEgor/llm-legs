@@ -454,7 +454,7 @@
         "rule": "growth-ungated",
         "ident": "~/\\.claude/skills/synced/.+"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-04T17:30:00+03:00",
@@ -465,12 +465,22 @@
           ],
           "in": "llm-legs@ac75a868",
           "regressed_at": "2026-10-07T03:01:31+03:00"
+        },
+        {
+          "at": "2026-10-08T00:46:28+03:00",
+          "by": "night fixer harness-guards-20261007T214017Z-0a76",
+          "files": [
+            "llm-legs/bin/harness-doctor",
+            "llm-legs/tests/test_harness_doctor.sh"
+          ],
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-04",
-      "reviewed_by": "Harness Doctor",
-      "note": "Fixed 2026-10-04 by Harness Doctor: growth-ungated skips ~/.claude/skills/synced and ~/.claude/plugins/synced (VENDOR_SYNC_RE), Claude Code's org sync no gate can see; growth a gate denied there stays red; handoff option (b). 2026-10-04 check: no skills/synced event in the window; still harness-written beside manifest.json, cause stands. 2026-10-03 check: pptx SKILL.md +2282 B into all three synced dirs at 2026-10-02T22:14-22:22Z, still vendor sync, cause stands; the plugins/synced tree has its own row guards-synced-plugins-vendor-sync. Narrowed to one cause: 2026-09-29 20:14/20:20/20:33Z the harness itself synced the newly published org skill google-workspace (SKILL.md + references/*.md, 13-47 kB each) into the three synced/<org>_<account>/ dirs beside manifest.json and .last-complete-round; the dir is gitignored in claude-setup and written by no tool call. Dismissal proposed in the handoff. Follow-up 2026-10-01: Current retained events include vendor docs/docx syncs at 2026-09-30T00:44-03:59Z, including watcher 6abc6f522478d465 and tripwire bba946b035711a7e. This extends the prior google-workspace-only note: the match still names the vendor-owned synced tree, not a model file writer. No native PreToolUse event is available for org synchronization; retain open row and propose dismissal to Harness Doctor without broadening its match. Duplicate observations and missing write keys are separately handed off; the source cannot prove all sync records are distinct writes. 2026-10-04 (critique round): the path-only VENDOR_SYNC_RE excuse is gone; harness-doctor vendor_synced() skips ungated synced-tree growth only when the bucket's manifest.json lists the skill/plugin with lastUpdated within SYNC_JOIN_S (900 s) before the growth; a hand-written synced SKILL.md is judged (test_harness_doctor, red under a return-True mutation).",
+      "last_reviewed": "2026-10-08",
+      "reviewed_by": "night fixer harness-guards-20261007T214017Z-0a76",
+      "note": "Fixed 2026-10-04 by Harness Doctor: growth-ungated skips ~/.claude/skills/synced and ~/.claude/plugins/synced (VENDOR_SYNC_RE), Claude Code's org sync no gate can see; growth a gate denied there stays red; handoff option (b). 2026-10-04 check: no skills/synced event in the window; still harness-written beside manifest.json, cause stands. 2026-10-03 check: pptx SKILL.md +2282 B into all three synced dirs at 2026-10-02T22:14-22:22Z, still vendor sync, cause stands; the plugins/synced tree has its own row guards-synced-plugins-vendor-sync. Narrowed to one cause: 2026-09-29 20:14/20:20/20:33Z the harness itself synced the newly published org skill google-workspace (SKILL.md + references/*.md, 13-47 kB each) into the three synced/<org>_<account>/ dirs beside manifest.json and .last-complete-round; the dir is gitignored in claude-setup and written by no tool call. Dismissal proposed in the handoff. Follow-up 2026-10-01: Current retained events include vendor docs/docx syncs at 2026-09-30T00:44-03:59Z, including watcher 6abc6f522478d465 and tripwire bba946b035711a7e. This extends the prior google-workspace-only note: the match still names the vendor-owned synced tree, not a model file writer. No native PreToolUse event is available for org synchronization; retain open row and propose dismissal to Harness Doctor without broadening its match. Duplicate observations and missing write keys are separately handed off; the source cannot prove all sync records are distinct writes. 2026-10-04 (critique round): the path-only VENDOR_SYNC_RE excuse is gone; harness-doctor vendor_synced() skips ungated synced-tree growth only when the bucket's manifest.json lists the skill/plugin with lastUpdated within SYNC_JOIN_S (900 s) before the growth; a hand-written synced SKILL.md is judged (test_harness_doctor, red under a return-True mutation). 2026-10-08 regression cause: the 2026-10-06T23:36-23:39Z google-workspace SKILL.md +994 B landings (all three buckets, entry updatedAt 23:31:35Z) joined lastUpdated only where no later round bumped it; c677/e705 rounds landing built-in-browser etc. at 00:01/00:15Z moved lastUpdated 24-36 min past them. vendor_synced now also joins on the listed entry's own updatedAt (vendor version time, identical across buckets, landed 4-25 min later in every journaled landing since 2026-09-30) up to SYNC_LAG_S 3600 s after it; a growth >1 h after the entry's version stays judged (test_harness_doctor, red under SYNC_LAG_S=-1). Same code serves guards-synced-plugins-vendor-sync (plugin entries carry updatedAt too). Ruled out: watcher missing manifest writes (manifest.json is not an instruction file, never journaled), .last-complete-round (round id, no time).",
       "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md"
     },
     {

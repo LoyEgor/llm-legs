@@ -1302,6 +1302,13 @@ check(judged(health(G, events=[change(T - 600, os.path.join(home, ".claude", "sk
 check(judged(health(G, events=[change(T - 20000, synced[0], 5000)]))
       == {("growth-ungated", "~/.claude/skills/synced/org_acct/pptx"): "red"},
       "Guards: growth hours before the sync's own landing is not the sync's")
+late = os.path.join(home, ".claude", "skills", "synced", "org_late")
+put(os.path.join(late, "manifest.json"), json.dumps({"lastUpdated": (T - 100) * 1000, "skills": [
+    {"name": "gws", "updatedAt": iso(T - 2400)}, {"name": "pptx", "updatedAt": iso(T - 9000)}]}))
+check(judged(health(G, events=[change(T - 2000, os.path.join(late, "gws", "SKILL.md"), 994),
+                               change(T - 2000, os.path.join(late, "pptx", "SKILL.md"), 994)]))
+      == {("growth-ungated", "~/.claude/skills/synced/org_late/pptx"): "red"},
+      "Guards: a landing a later round's lastUpdated moved past is the sync's by its entry's own updatedAt, and only then")
 tree, landing = os.path.join(home, "p", ".claude", "worktrees", "b1", "AGENTS.md"), os.path.join(home, "p", "AGENTS.md")
 check(judged(health(G, gates=[dict(passed, file=tree, at=T - 80050)], events=[change(T - 80000, tree), change(T - 600, landing)]))
       == {}, "Guards: a merge or copy landing bytes a worktree already grew by, up to a day before, is not new growth")
