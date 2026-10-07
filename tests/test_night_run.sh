@@ -492,7 +492,11 @@ rm "$DATA/opener-fails"
 night start --resume "$id6" >/dev/null || fail "resume for the wall cases"
 walled=$(jq -r .session "$R6")
 wall() { printf '{"session_id": "%s", "error": "%s"}' "$1" "$2" | NIGHT_RUN_WALL_SYNC=1 NIGHT_RUN_WALL_POLL=1 night wall; }
+mkdir -p "$HOME/.claude/hooks/lib"
+printf 'printf "%%s\\n" "${0##*/}${1:+ $1}" >>"%s/hook-time-keys"\n' "$WORK" >"$HOME/.claude/hooks/lib/hook-time.sh"
 wall "$walled" overloaded >"$WORK/out" || fail "a stop that is no wall failed"
+assert [ "$(cat "$WORK/hook-time-keys")" = "night-run wall" ]
+rm "$HOME/.claude/hooks/lib/hook-time.sh"
 wall not-an-orchestrator rate_limit >>"$WORK/out" || fail "a wall outside every night failed"
 assert [ ! -s "$WORK/out" ]
 assert [ "$(jq -r .session "$R6")" = "$walled" ]

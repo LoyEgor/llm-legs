@@ -3434,6 +3434,31 @@
       "handoff": null
     },
     {
+      "id": "unjournaled-night-run-wall",
+      "title": "night-run wall, the StopFailure rate_limit hook, wrote no hook-time line",
+      "match": {
+        "rule": "unjournaled",
+        "ident": "night-run wall"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-07T03:03:16+03:00",
+          "by": "night fixer harness-hook-health-20261006T234300Z-3ec7",
+          "files": [
+            "llm-legs/bin/night-run"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-hook-health-20261006T234300Z-3ec7",
+      "note": "Added as a StopFailure hook in b74a9e23 without the hook-time source line. night-run now sources hooks/lib/hook-time.sh first thing when its first argument is wall, so HOOK_TIME_KEY reads 'night-run wall' = hook_key (tests/test_night_run.sh, red on the old code). The hook stays cheap: a rate_limit stop outside a night returns after one jq over the nights; inside one the failover is detached. NIGHT_RUN_WALL_SYNC (tests only) runs the failover in-process, whose lock replaces the EXIT trap, so that path writes no line. Proof needs StopFailure rate_limit events, which are rare: E>=20 may take weeks.",
+      "handoff": null
+    },
+    {
       "id": "guards-ungated-claude-md-pathlib-assign",
       "title": "The write gate missed a python write through x=pathlib.Path(name), so a worktree CLAUDE.md grew unjudged and landed in ~/.claude/CLAUDE.md",
       "match": {
