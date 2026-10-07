@@ -22,8 +22,16 @@ for name in repo other; do
   printf '%s\n' "$WORK/$name" >>"$WORK/sweep-repos"
 done
 git init -q "$WORK/foreign"
+git init -q --bare -b main "$WORK/helper.git" && git init -q -b main "$WORK/helper"
+printf 'v1\n' >"$WORK/helper/gate.py" && git -C "$WORK/helper" add gate.py &&
+  git -C "$WORK/helper" -c user.name=t -c user.email=t@t commit -qm init &&
+  git -C "$WORK/helper" remote add origin "$WORK/helper.git" && git -C "$WORK/helper" push -q origin main
+git -C "$WORK/helper" branch -q egor-side
+printf 'wip\n' >"$WORK/helper/wip.txt"
+printf '%s\n' "$WORK/helper" >"$WORK/helper-repos"
+export NIGHT_RUN_HELPER_REPOS="$WORK/helper-repos"
 H="$WORK/repo/docs/handoffs"
-printf '# A\n\nStatus: open\n\nFor the chat «Gone Chat». Needs a change in other too, and in %s/foreign/hooks/gate.sh.\n' "$WORK" >"$H/2026-09-28-old.md"
+printf '# A\n\nStatus: open\n\nFor the chat «Gone Chat». Needs a change in other too, and in %s/foreign/hooks/gate.sh and %s/helper/gate.py.\n' "$WORK" "$WORK" >"$H/2026-09-28-old.md"
 printf '# B\n\nStatus: open (half done)\n\nTo: «Live Chat».\n\nMentions «Gone Chat» later.\n' >"$H/2026-10-03-live.md"
 printf '# C\n\nStatus: settled 20261003T0000Z-0001: fixed\n' >"$H/2026-09-29-settled.md"
 printf '# D\n\nStatus: trade for Egor\nCost: one click.\nLoss: a stray error.\nRecommendation: click.\n' >"$WORK/other/docs/handoffs/2026-10-02-ask.md"
@@ -53,6 +61,24 @@ assert grep -qF "Settle the handoff \`$WORK/repo/docs/handoffs/2026-09-28-old.md
 assert grep -qF 'Cost:`, `Loss:` and `Recommendation:`' "$brief"
 assert grep -qF "Not the night's, so never a worktree, branch or commit there: \`$WORK/foreign\`. When the fix lies there" "$brief"
 assert [ "$(grep -c "Not the night's" "$brief")" = 1 ]
+# A helper repository is the night's to fix: based, an ADD-DIR worktree, no ban; it lands only the night's commits.
+hwt="$WORK/helper/.claude/worktrees/night-N1-handoff-2026-09-28-old"
+assert git -C "$WORK/helper" rev-parse -q --verify refs/night/N1/base >/dev/null
+assert jqe '.bases.helper != null' "$NIGHTS/N1.json"
+assert grep -qxF "ADD-DIR: $hwt" "$brief"
+assert_fails grep -qF "\`$WORK/helper\`" "$brief"
+printf 'v2\n' >"$hwt/gate.py" && git -C "$hwt" -c user.name=t -c user.email=t@t commit -qam fix &&
+  git -C "$hwt" rebase -q --onto main refs/night/N1/base &&
+  git -C "$WORK/helper" merge -q --ff-only night/N1/handoff-2026-09-28-old && git -C "$WORK/helper" push -q origin main ||
+  fail "the helper's night branch did not land"
+night job N1 set handoff-2026-09-28-old "commits=helper:$(git -C "$WORK/helper" rev-parse main)" pushed=true >/dev/null ||
+  fail "a pushed helper night commit was refused"
+assert [ "$(git -C "$WORK/helper" rev-list --count origin/main)" = 2 ]
+assert_fails git -C "$WORK/helper" cat-file -e main:wip.txt 2>/dev/null
+assert [ "$(cat "$WORK/helper/wip.txt")" = wip ]
+night leftovers >"$WORK/helper-left" || fail "leftovers with a helper"
+assert grep -qF "helper night/N1/handoff-2026-09-28-old · $hwt · landed · " "$WORK/helper-left"
+assert_fails grep -qF "helper egor-side" "$WORK/helper-left"
 assert grep -qF 'failed `test_x.sh` in '"$WORK/other"' (log `/l/other.log`)' "$(cut -f2 "$WORK/carry.out" | tail -1)"
 night carry N1 >"$WORK/again.out" || fail "a second carry failed"
 assert [ ! -s "$WORK/again.out" ]
@@ -254,6 +280,12 @@ with open(lone, "w") as handle:
     handle.write(f"# Lone\n\nStatus: open\n\nTo: «Solo».\n\nFix {foreign}/.claude/worktrees/x/hooks/gate.sh and {repo}/bin/x.\n")
 assert h.outside_repos(lone, [repo]) == [foreign], h.outside_repos(lone, [repo])
 assert h.outside_repos(lone, [repo, foreign]) == []
+os.environ["NIGHT_RUN_HELPER_REPOS"] = os.path.join(os.path.dirname(foreign), "lone-helpers")
+open(os.environ["NIGHT_RUN_HELPER_REPOS"], "w").write(foreign + "\n")
+assert h.outside_repos(lone, [repo]) == [], "a helper repository is the night's"
+del os.environ["NIGHT_RUN_HELPER_REPOS"]
+os.environ["NIGHT_RUN_SWEEP_REPOS"] = "/nonexistent"
+assert "/Volumes/Work/Projects/usage-ai-report" not in h.helper_repos(), "a faked sweep list never reaches the real helpers"
 item = {"path": lone, "repo": repo, "at": None, "to": ["Solo"]}
 h.owner_picks = lambda handoffs, repos, chats: [(item, None, h.pick_owner("Solo", None, {}), {})]
 chats = [{"name": "Solo", "session": "sess-solo"}]

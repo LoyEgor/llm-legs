@@ -180,6 +180,11 @@ def sweep_dirs():
     return sweep_repos()
 
 
+def helper_dirs():
+    from handoffs import helper_repos
+    return helper_repos()
+
+
 @functools.lru_cache(maxsize=None)
 def repo_files(top):
     try:
@@ -191,10 +196,10 @@ def repo_files(top):
 
 
 def own_sources(name):
-    """`repo/path` of the sweep-repository files a cause names: itself when it is one such `repo/path`, else every
-    file of its basename; an own app maps to its config entry."""
+    """`repo/path` of the night-fixable files a cause names: itself when it is one such `repo/path` of a sweep or helper
+    repository, else every sweep-repository file of its basename; an own app maps to its config entry."""
     found = []
-    for top in sweep_dirs():
+    for top in sweep_dirs() + (helper_dirs() if "/" in name else []):
         repo = os.path.basename(top.rstrip("/"))
         named = APP_SOURCES.get(name) or (name if "/" in name else None)
         if named:
@@ -207,7 +212,8 @@ def own_sources(name):
 
 def source_path(rel):
     repo, _, path = rel.partition("/")
-    return next((os.path.join(top, path) for top in sweep_dirs() if os.path.basename(top.rstrip("/")) == repo), None)
+    return next((os.path.join(top, path) for top in sweep_dirs() + helper_dirs() if os.path.basename(top.rstrip("/")) == repo),
+                None)
 
 
 RULE_LEVERS = {"job-loop": "find why it exits (its own log, not launchd's), back off before exiting non-zero, keep its "

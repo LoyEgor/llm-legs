@@ -19,6 +19,9 @@ nights_dir="${DOCTORS_DIR:-$HOME/.cache/doctors}/nights"
 lock_dir="$nights_dir/.lock"
 holds_dir="$nights_dir/holds"
 sweep_repos="${NIGHT_RUN_SWEEP_REPOS:-$HOME/.claude/sweep-repos}"
+# a faked sweep list means a test: the real helpers would get its night refs
+helper_repos="${NIGHT_RUN_HELPER_REPOS-${NIGHT_RUN_SWEEP_REPOS:+/dev/null}}"
+helper_repos="${helper_repos:-$repo_root/share/night-helper-repos}"
 KINDS=' fixer vendor debt leftover handoff suite owner-chat '
 STATES=' pending merged left failed-launch blocked-on-egor nothing-to-do '
 SPEED_WINDOW_H=6
@@ -290,7 +293,7 @@ repo_dir() { # name-or-path -> repository directory
   [ -r "$sweep_repos" ] || return 1
   while IFS= read -r line; do
     [ -n "$line" ] && [ "$(basename "$line")" = "$1" ] && { printf '%s\n' "$line"; return 0; }
-  done <"$sweep_repos"
+  done < <(cat "$sweep_repos" "$helper_repos" 2>/dev/null)
   return 1
 }
 
@@ -376,7 +379,7 @@ cmd_base() {
     commit=$(snapshot "$line" "$id") || die "cannot snapshot $line"
     bases=$(jq -c --arg r "$(basename "$line")" --arg c "$commit" '. + {($r): $c}' <<<"$bases")
     printf '%s\t%s\n' "$(basename "$line")" "$commit"
-  done <"$sweep_repos"
+  done < <(cat "$sweep_repos" "$helper_repos" 2>/dev/null)
   lock
   night_set "$id" "$JQ_EVENTS"' .bases = $b | events([{phase: "base", at: $at, secs: $s, repos: ($b | length)}]; $t)' \
     --argjson b "$bases" --arg at "$at" --argjson s "$((SECONDS - began))" --arg t "$(stamp)" || die "cannot write night $id"
@@ -608,7 +611,7 @@ carry_brief() { # id kind ref repo what log worktree branch -> the brief file
   local id=$1 kind=$2 ref=$3 repo=$4 what=$5 log=$6 wt=$7 branch=$8 file="$nights_dir/$1.$3.brief.md" other outside
   {
     printf 'ROUND: none\n'
-    for other in $(grep -vxF -e "$repo" -e '' "$sweep_repos" 2>/dev/null); do
+    for other in $(grep -vxF -e "$repo" -e '' "$sweep_repos" 2>/dev/null; [ "$kind" = suite ] || grep -vxF '' "$helper_repos" 2>/dev/null); do
       [ "$kind" = suite ] || grep -qF "$(basename "$other")" "$repo/$what" 2>/dev/null || continue
       night_sibling_worktrees "$id" "$branch" "$ref" "$other" | sed 's/^/ADD-DIR: /'
     done
@@ -680,7 +683,7 @@ carry_owner_chats() { # id -> <ref>\t<prompt>\topened <account> <session>|messag
     while IFS= read -r repo; do
       jq -e --arg r "$repo" 'IN(.repos[]; $r)' <<<"$batch" >/dev/null ||
         grep -qF "$(basename "$repo")" $(jq -r '.handoffs[]' <<<"$batch") 2>/dev/null && repos+=("$repo")
-    done < <(grep -vxF '' "$sweep_repos" 2>/dev/null)
+    done < <(grep -hvxF '' "$sweep_repos" "$helper_repos" 2>/dev/null)
     wts=$(night_sibling_worktrees "$id" "$branch" "$ref" ${repos[@]+"${repos[@]}"} 2>/dev/null)
     if [ -z "$wts" ]; then why='no night worktree'
     elif ! prompt=$(owner_prompt "$id" "$ref" "$branch" "$sweep" "$batch" "$wts"); then why='prompt not written'
@@ -827,26 +830,29 @@ branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locke
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$repo" "${branch:--}" "${wt:--}" "$landed" "$ahead" "$behind" "$dirty" "$state" "$why"
 }
 
-# Every non-main branch and worktree of the sweep repositories, every night's included: repo branch|-
+# Every non-main branch and worktree of the sweep repositories, every night's included, and the night/* ones
+# of the helper repositories: repo branch|-
 # worktree|- landed ahead behind dirty live|landed|leftover why. Landed = in main, or a night branch still
 # at its night's base, since a nothing-to-do job never committed. `-`, not an empty field: a tab is IFS
 # whitespace, so read would shift every field after an empty one.
-branch_rows() { # [repo...], default the sweep repositories
-  local repo wt branch main locked seen HELD
+branch_rows() { # [repo...], default the sweep repositories and the helpers' night branches
+  local repo wt branch main locked seen HELD only
   [ $# -gt 0 ] || [ -r "$sweep_repos" ] || return 0
   HELD=$(cat "$holds_dir"/*.json 2>/dev/null | jq -r '.words as $w | .branches[]? | [.repo, .branch, $w] | @tsv' 2>/dev/null)
-  while IFS= read -r repo; do
+  while IFS=$'\t' read -r repo only; do
     [ -n "$repo" ] && [ -d "$repo" ] || continue
     git -C "$repo" rev-parse -q --verify refs/heads/main >/dev/null || continue
     seen=' main '
     while IFS=$'\t' read -r wt branch main locked; do
       [ "$branch" != - ] || branch=''
+      [ -z "$only" ] || [[ $branch == night/* ]] || continue
       [ "$branch" = main ] || [ ! -d "$wt" ] || { seen="$seen$branch "; branch_row "$repo" "$wt" "$branch" "$main" "$locked"; }
     done < <(worktree_lines "$repo")
     while IFS= read -r branch; do
+      [ -z "$only" ] || [[ $branch == night/* ]] || continue
       [[ "$seen" == *" $branch "* ]] || branch_row "$repo" '' "$branch" 0 0
     done < <(git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads)
-  done < <(if [ $# -gt 0 ]; then printf '%s\n' "$@"; else cat "$sweep_repos"; fi)
+  done < <(if [ $# -gt 0 ]; then printf '%s\n' "$@"; else cat "$sweep_repos"; grep -vxF '' "$helper_repos" 2>/dev/null | sed $'s/$/\tnight/'; fi)
 }
 
 worktree_lines() { # repo -> worktree<TAB>branch|-<TAB>main-checkout(0|1)<TAB>locked(0|1) per worktree

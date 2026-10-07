@@ -1064,6 +1064,23 @@ for reports_seen, target in ((named[:1] * 3 + named[2:], True), (named[2:] * 3 +
 check(m.own_sources("helper/bin/gate.py") == [] and m.source_path("llm-legs/bin/x.py") == script
       and m.levers("llm-legs/bin/statusline.sh", "cohort") == [m.LEVERS[0][1]],
       "a helper repository's script stays report-only; a repo/path cause finds its file and levers by basename")
+for name in ("helper", "other"):
+    subprocess.run(["git", "init", "-q", os.path.join(repos, name)], check=True)
+os.makedirs(os.path.join(repos, "other", "bin"), exist_ok=True)
+open(os.path.join(repos, "other", "bin", "y.py"), "w").write("#\n")
+open(os.path.join(work, "helper-repos"), "w").write(os.path.join(repos, "helper") + "\n")
+os.environ["NIGHT_RUN_HELPER_REPOS"] = os.path.join(work, "helper-repos")
+m.repo_files.cache_clear()
+check(m.own_sources("helper/bin/gate.py") == ["helper/bin/gate.py"]
+      and m.source_path("helper/bin/gate.py") == os.path.join(repos, "helper", "bin", "gate.py")
+      and m.own_sources("other/bin/y.py") == [] and m.source_path("other/bin/y.py") is None and m.own_sources("gate.py") == [],
+      "a listed helper repository's repo/path is night-fixable with its absolute path; another sibling and a bare name there are not")
+helper_report = dict(named[0], name="helper/bin/gate.py")
+other_report = dict(named[0], name="other/bin/y.py")
+for reports_seen, target in (([helper_report] * 3, True), ([other_report] * 3, False)):
+    ssd = judged(days=day_rows(250), night={"as_of_s": now, "reports": reports_seen})[0]["ssd-writes:internal"]["cause"]
+    check(ssd["fix_target"] is target, "a helper's cause is a fix target, another sibling's report-only: %s" % ssd)
+del os.environ["NIGHT_RUN_HELPER_REPOS"]
 
 endless = os.path.join(work, "bin", "endless-log")
 with open(endless, "w") as handle:

@@ -42,13 +42,26 @@ EVIDENCE_CACHE_VERSION = 2
 SCAN_CHUNK = 400
 
 
-def sweep_repos():
-    path = os.environ.get("NIGHT_RUN_SWEEP_REPOS") or os.path.expanduser("~/.claude/sweep-repos")
+def repo_list(path):
     try:
         with open(path) as handle:
             return [line.strip() for line in handle if line.strip()]
     except OSError:
         return []
+
+
+def sweep_repos():
+    return repo_list(os.environ.get("NIGHT_RUN_SWEEP_REPOS") or os.path.expanduser("~/.claude/sweep-repos"))
+
+
+def helper_repos():
+    """The harness's helper repositories (share/night-helper-repos): night-fixable, never swept."""
+    path = os.environ.get("NIGHT_RUN_HELPER_REPOS")
+    if path is None:
+        # a faked sweep list means a test: the real helpers would get its night refs
+        path = os.devnull if os.environ.get("NIGHT_RUN_SWEEP_REPOS") else os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "night-helper-repos")
+    return repo_list(path)
 
 
 def written_at(path):
@@ -193,7 +206,7 @@ def outside_repos(path, repos):
             text = handle.read()
     except OSError:
         return []
-    night = {os.path.realpath(repo) for repo in repos}
+    night = {os.path.realpath(repo) for repo in list(repos) + helper_repos()}
     found = []
     for token in PATH_RE.findall(text):
         if not token.startswith(os.sep):
