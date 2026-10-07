@@ -1,6 +1,6 @@
 # Speed floors one night cannot close
 
-Status: trade for Egor
+Status: settled 2026-10-07: Egor agreed to keep the night-worker ceiling at the cores; slots stay paced by load and memory admission, the suite, suite-wait and workers-active floors stay open as their own ledger rows
 
 From night 20261006T032009Z-f253 (ledger rows `time_floor:*`); night 20261006T233611Z-7777 settled the rest:
 walled attempts are work, not retries; only waits a chat or worker paid leave tools (`caller` on wait rows);
