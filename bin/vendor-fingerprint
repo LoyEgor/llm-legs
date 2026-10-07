@@ -186,7 +186,10 @@ codex_facets() {
       "${homes[@]/%//models_cache.json}" >"$work/catalog" 2>/dev/null && [ -s "$work/catalog" ]; then
       # Prompts ride in the catalog as long strings; they change without any capability changing.
       # priority only orders the list: every launch passes a resolved -m, so it serves nothing.
-      jq 'delpaths([paths(type == "string" and length > 300)]) | map_values(del(.priority))' "$work/catalog" | put catalog
+      # A per-account prompt goes whole: its emptied {per_account: []} shell vanishing when the
+      # accounts converge on one text was a substantive catalog event with no diff line (0.161.0).
+      jq 'delpaths([paths(type == "string" and length > 300) | if .[-2] == "per_account" then .[:-2] else . end])
+        | map_values(del(.priority))' "$work/catalog" | put catalog
       jq 'map_values(.priority) | with_entries(select(.value != null))' "$work/catalog" | put catalog_order
       jq -r 'paths(type == "string" and length > 300) as $p | [($p | map(tostring) | join(".")), (getpath($p) | @base64)] | @tsv' \
         "$work/catalog" | while IFS=$'\t' read -r key text; do

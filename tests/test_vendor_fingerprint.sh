@@ -664,6 +664,12 @@ codex_cache "$HOME/.codex-profiles/y" "$v" '[{"slug":"gpt-7-test","available_in_
 bash "$SCRIPT" snapshot codex >"$WORK/merge.json"
 assert jqe '.facets.catalog["gpt-7-test"].available_in_plans.per_account == [[], ["pro"]]' "$WORK/merge.json"
 assert jqe '[.failed[] | select(.facet == "catalog")] == []' "$WORK/merge.json"
+# Accounts served two prompt texts leave no trace in the catalog, only in catalog_text.
+codex_cache "$HOME/.codex-profiles/x" "$v" "[{\"slug\":\"gpt-7-test\",\"model_messages\":{\"policy\":\"$PROMPT\"}}]"
+codex_cache "$HOME/.codex-profiles/y" "$v" "[{\"slug\":\"gpt-7-test\",\"model_messages\":{\"policy\":\"$PROMPT v2\"}}]"
+bash "$SCRIPT" snapshot codex >"$WORK/texts.json"
+assert jqe '.facets.catalog["gpt-7-test"].model_messages == {}' "$WORK/texts.json"
+assert jqe '.facets.catalog_text | has("gpt-7-test.model_messages.policy.per_account.1")' "$WORK/texts.json"
 codex_cache "$HOME/.codex-profiles/z" "$v" '[1]'
 bash "$SCRIPT" snapshot codex >"$WORK/broken.json"
 assert jqe '(.facets | has("catalog") | not) and ([.failed[] | select(.facet == "catalog")] == [{facet: "catalog", where: "local"}])' "$WORK/broken.json"
