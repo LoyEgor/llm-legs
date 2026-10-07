@@ -2416,7 +2416,7 @@
         "rule": "test_daily_cost",
         "ident": "llm-legs:test_llm_limits(_(claudeb|refresh|render|grok))?"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-03T11:30:00+03:00",
@@ -2433,12 +2433,22 @@
           ],
           "in": "llm-legs@b66c3b9c",
           "regressed_at": "2026-10-07T04:15:29+03:00"
+        },
+        {
+          "at": "2026-10-08T02:10:00+03:00",
+          "by": "night fixer harness-tests-20261007T214027Z-31b6",
+          "files": [
+            "llm-legs/tests/llm_limits_harness.sh",
+            "llm-legs/tests/test_llm_limits_render.sh"
+          ],
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-03",
-      "reviewed_by": "night fixer harness-tests-20261003T042544Z-7568",
-      "note": "test_llm_limits.sh was one 3460-line serial script of ~400 llm-limits.sh calls at ~0.5-3 s each (375 s alone, 288-696 s in full runs; no single hot spot, its sleeps ~5 s in all). 2026-10-03: split at section boundaries into tests/test_llm_limits{,_claudeb,_refresh,_render,_grok}.sh over tests/llm_limits_harness.sh (shared fixtures; the later suites restore the HOME, claudeb store and Gemini cache state the first one left), which run-suites runs in parallel, ~75 s each alone. Proven equivalent by logging every collector call of the original and of the parts: every asserted field matches; the only differences are state carried by accident from earlier sections (a Gemini refresh_error, a blocked alona, Codex refresh_errors) and suite-clock staleness, which no assert reads. The sleep 1 for rollout mtime order became a touch -t. bin/llm-selfcheck now runs every part (it ran the monolith under a 300 s cap the suite had outgrown). Daily machine time stays about the same; what a waiting agent pays per run falls to the longest part. The ident follows every part.",
+      "last_reviewed": "2026-10-08",
+      "reviewed_by": "night fixer harness-tests-20261007T214027Z-31b6",
+      "note": "2026-10-03: the 375 s serial monolith was split into tests/test_llm_limits{,_claudeb,_refresh,_render,_grok}.sh over tests/llm_limits_harness.sh, proven call-for-call equivalent; daily machine time stayed the same because the doctor sums a family's parts. Regressed 2026-10-07 at 11293 s / 77 runs: the parts ran ~30 s each at low load except _render at ~131 s, whose 10 prov/exp collections ran with the real HOME and each made a live ElevenLabs balance request (llm-limits.sh share/elevenlabs_balance.py, ~9.5 s at 7% CPU; ~770 live API calls a day). 2026-10-08 fix: the harness exports ELEVENLABS_KEYS to a missing fixture file (also shields the real key mirrors the elevenlabs-one-pool branch syncs on every writing poll), those calls get an empty fixture HOME, and three sleep-1 birth-order loops became born_in_order (touch -t backdates the birth time); side by side at load ~5 the render part went 135 s -> 33 s, the family's summed run ~257 s -> ~160 s. Ruled out: no other part calls the collector with the real HOME (a wrapper logged every call); the remaining cost is ~400 collector calls at ~0.1-0.3 s CPU with no hot spot; the sleeps left (render 35/61 rollout mtime vs cache mtime, claudeb sleep 2 under a 1 s timeout, grok lockf 5 s holder killed at once) are load-bearing or free. 34 of 77 runs were _grok alone named by workers (tests/affected), not a repeat loop. The other suites calling llm-limits.sh (test_llm_refresh, test_codexb, test_geminib, test_grokb_export, test_opencode_go, test_store_lock) set a fixture HOME on those calls by reading, not by a runtime wrapper.",
       "handoff": null
     },
     {
@@ -4629,6 +4639,31 @@
       "reviewed_by": "night fixer harness-speed-machine-contention-20261007T214023Z-1502",
       "note": "Before (bin/speed-doctor --json 2026-10-08 01:20 local, days 2026-09-30..10-07): P 8.15 OM/d; load-band share <1 0.453, 1-2 0.132, 2-4 0.178, >4 0.237; probe ms 16.7/30.9/39.5/56.4; unattributed CPU 0.953. Since e2c3ec43 every run-suites wave dropped to nice 10 while the keyboard was used, so a chat's own run (its owner waiting) competed at the same priority as worker and night waves. Fix: share/run-suites.sh unattended() keeps the presence-gated nice 10 only for a run with WORKER_RUN_ID or no chat session; night-run suites drops the orchestrator's session so the night's detached full run stays unattended. Ruled out as levers: taskpolicy -b / ProcessType Background (starved Speed 50 min 2026-10-04, a research run 40 min, the llm-refresh collector for hours: harness-doctor exec_speed, system-doctor-design, test_llm_refresh); static nice on night or worker trees (nice only rises, so a tree niced while Egor is present would stay behind his benchmark's nice-0 load once he leaves, the 2026-10-06 10-60x starvation); merge-kick is already under /usr/bin/nice (hammerspoon/llm-limits.lua). Left: an attended run now competes with Egor's other chats at nice 0, the design's choice (speed-doctor-design 5); a headless claude outside worker-run (a review cell) that calls run-all with its own session reads attended; the 0.953 unattributed CPU share hides which unattended load dominates the >4 band (blind spot unattributed-cpu).",
       "handoff": null
+    },
+    {
+      "id": "test_daily_cost-statusline-hooks",
+      "title": "test_statusline_hooks · llm-legs cost 2 h 15 min of wall clock in 24 h over 48 runs",
+      "match": {
+        "rule": "test_daily_cost",
+        "ident": "llm-legs:test_statusline_hooks"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-08T02:10:00+03:00",
+          "by": "night fixer harness-tests-20261007T214027Z-31b6",
+          "files": [
+            "llm-legs/tests/test_statusline_hooks.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-08",
+      "reviewed_by": "night fixer harness-tests-20261007T214027Z-31b6",
+      "note": "Of the 48 runs, 23 (3925 s) were one worker (claudeb-1791368833-96854-3ac2, worktree fix-suite-flakes-statusline-browse) rerunning the suite on one unchanged head 8b661c8d to chase a flake, and 10 (1350 s) were this fixer's own profiling; the other ~15 cost ~3000 s, a watch. Per run ~126 s at load ~5 (CPU ~100 s, sys > user: fork-bound); timing wrappers put ~87 s in the code under test (387 statusline.sh renders ~26 s, 227 worker-launch-gate ~21 s, 294 workdir-hook ~16 s, 80 worker-tag-hook ~14 s, 62 subagent-statusline ~7 s), so the test side held ~40 s. Fixed: the slow Codex refresher held 10 s of pure sleep (now a release file, max 10 s, so a blocking render still fails < 8 s; mutation: a synchronous kick goes red at assert 1024), and debt_render polled 5 s for a cache a missing review-debt binary never writes; side by side 126 s -> 108 s. Left as load-bearing: the 3 s .claim.lock hold (tag_lock's 30 x 0.1 s), the 8.5 MB transcript renders (~1.6 s each, the code's own scan), the 1 s and 0.2-0.3 s negative-check waits. A flake hunt's repeat runs on one head count as daily cost like any other: see blind_spots.",
+      "handoff": null
     }
   ],
   "blind_spots": [
@@ -4827,6 +4862,20 @@
       "reason": "speed-doctor machine.label_cpu_s reads 95.3 % of 7 days' CPU as unattributed (2026-10-08); only launchd labels resolve, so worker trees, night runs and the owner's benchmark share one bucket and the next QoS lever cannot be picked",
       "since": "2026-10-08",
       "would_catch_if": "C7 census bursts mapped ancestor chains to worker run, night job, chat session or a non-harness root, and label_cpu_s showed those buckets"
+    },
+    {
+      "id": "test-cost-repeat-runs",
+      "what": "how much of a suite's daily cost is one run id repeating it on one unchanged head (a flake hunt or a profiling loop)",
+      "reason": "test_daily_cost sums every run; 2026-10-07 test_statusline_hooks read red at 48 runs while 23 were one worker on head 8b661c8d and 10 were the fixer's own profiling, found only by grouping runs.jsonl by repo, head and worker_run by hand",
+      "since": "2026-10-08",
+      "would_catch_if": "the row's evidence named the largest (worker_run, head) group with its runs and seconds"
+    },
+    {
+      "id": "test-live-collector-reads",
+      "what": "suites whose llm-limits.sh calls run with the real HOME and so reach live vendor reads (the ElevenLabs balance) or real key mirrors",
+      "reason": "test_llm_limits_render made ~10 live ElevenLabs requests a run unseen until a per-line profile showed 9.5 s waits at 7% CPU; nothing flags a suite that reads the real HOME",
+      "since": "2026-10-08",
+      "would_catch_if": "the suite journal recorded, per suite, outbound connections or reads under the real HOME its children made"
     }
   ]
 }
