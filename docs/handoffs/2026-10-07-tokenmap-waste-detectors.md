@@ -18,7 +18,7 @@ From «Updater doctor», 2026-10-07, after Egor agreed that work for tokenmap go
 ## Detectors wanted
 Each detector is a `tracking.json` section with a share of Claude spend, the Δ, a candidate count and a sample of candidates (file, session, line).
 
-1. **Duplicate reads.** (Done in token-map b044500: the `Repeated reads` row.) The same file read again in one context while its content is unchanged, or the same command re-run with an identical output. This is fully mechanical: compare the hash of the result.
+1. **Duplicate reads.** Done in token-map b044500 (`Repeated reads`).
 2. **Hook-forced repeats.** After a hook block, a forced Stop re-answer or an injected note, the next output repeats what was already said. Example: english-gate made models rewrite a finished Russian reply in English.
    - An exact or near-exact repeat is mechanical.
    - A paraphrase or a language switch is a candidate.
@@ -26,10 +26,11 @@ Each detector is a `tracking.json` section with a share of Claude spend, the Δ,
 4. **Chunking that does not pay.** A fan-out (log-audit chunks, review cells, image takes) whose startup per chunk is larger than the chunk's own work.
 5. **Delegation that retells.** A worker brief whose size is close to the delegated work, while the delegating chat's account had room to do the work itself.
 6. **Outputs nobody reads.** Scheduled LLM jobs (launchd wrappers in `~/.local/libexec`, reports, digests): the cost per run, and whether any model or menu reads the output afterwards.
-7. **Startup that is never used.** (Done in token-map b044500: the `Unused startup` row; Spend's startup audits read it, llm-legs doctor-fix.) For each skill, MCP server, connector and deferred tool in the listing: its startup cost × contexts, against its invocations over the last 30 days.
+7. **Startup that is never used.** Done in token-map b044500 (`Unused startup`, read by Spend's startup audits).
 8. **Frontier model on a small task.** Model and size per task. This one is shown only, never a cut: model choice is Egor's.
 
 9. **Export which causes are avoidable.** Harness `share/spend.py` (llm-legs 90cae246) copies tokenmap's unavoidable cache re-write causes (`expired (1h+ idle)` and the others from FINDINGS §26). Put an `avoidable` flag on each cause row in `tracking.json`, so the doctor reads it rather than keeping a copy. — Done in token-map 3e3b078; the Spend side is in `2026-10-07-harness-index.md`.
+   - Resumes (llm-legs night 20261007T213650Z-7b98): `Worker cold resumes` counts sidechain 5-min re-writes inside a running worker (115 of 151 events in the 7 days to 2026-10-07, image-gen, gone since claude-setup 01f7357) as resumes; count main contexts only, and flag a cold resume compacted within 10 requests (8 of 36, 2.7M).
 
 ## Done when
 - Each detector is in `tracking.json` with its own tests.

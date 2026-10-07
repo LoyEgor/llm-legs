@@ -15,6 +15,17 @@
    },
    "verdict": "kept",
    "note": "kept: 216 asserts each pin one write-gate parse incident; ~0.25 CPU-s a call is the gate's own non-fast path (hook_full_work:instruction-write-gate.sh, not a test cost), harness overhead ~4 ms a call, setup 0.24 s; no cross-suite duplicates, 3 identical in-file pass asserts (~0.75 s) not worth a cut; 248 s/run was the pre-split 7-day median (42 s now)"
+  },
+  {
+   "id": "resumes",
+   "title": "worker cold resumes",
+   "audited_at": "2026-10-08T01:21:43+03:00",
+   "by": "harness-speed-spend-resumes-20261007T214023Z-1d4d",
+   "share": 0.016485,
+   "prices": {},
+   "sources": {},
+   "verdict": "kept",
+   "note": "7d to 2026-10-07: 36 main-context RESUMEs (11.2M, 89%) each carry a new brief into a 60-260k context the chat chose to keep (CLAUDE.md same-session rule), cache past Claude Code's own 1h TTL; the only cheaper path, a fresh worker with a distilled brief, drops that context and cannot replay to identical decisions; 115 image-gen sidechain 5m expiries (1.4M, 11%) already gone at source (claude-setup 4f0dcd0 1h TTL, 01f7357 agent removed); worker-run's RESUME-COLD warning prints after the decision into the relay, which never forwards it, so it changes nothing"
   }
  ]
 }
