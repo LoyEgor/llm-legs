@@ -19,7 +19,7 @@ holder() { # dir count -> pid of a process holding one slot until killed
     >/dev/null 2>&1 &
   printf '%s\n' "$!" >>"$WORK/holders"
   local i
-  for i in $(seq 1 50); do [ "$(cat "$1"/*/pid 2>/dev/null | grep -cx "$!")" = 1 ] && break; sleep 0.1; done
+  for i in $(seq 1 300); do [ "$(cat "$1"/*/pid 2>/dev/null | grep -cx "$!")" = 1 ] && break; sleep 0.1; done
   printf '%s\n' "$!"
 }
 unheld() { local pid=''; read -r pid 2>/dev/null <"$1/pid"; ! kill -0 "$pid" 2>/dev/null; }
@@ -230,6 +230,25 @@ RUN_SUITES_SLOT="$RUN_SUITES_SLOTS_DIR/1" bash "$ROOT/share/run-suites.sh" --rep
   fail "a nested run failed: $(cat "$WORK/stamp.out")"
 assert grep -Eq 'PASS: stamp=[0-9]+$' "$WORK/stamp.out"
 kill "$h5"; until_gone "$h5"
+# A run down to its last suite frees its slot: a queued run goes through while that suite still runs.
+mkdir -p "$WORK/tail/tests"
+printf '#!/usr/bin/env bash\n: >"%s/long-started"\nuntil [ -e "%s/tail-go" ]; do sleep 0.1; done\n' "$WORK" "$WORK" \
+  >"$WORK/tail/tests/test_long.sh"
+printf '#!/usr/bin/env bash\n:\n' >"$WORK/tail/tests/test_short.sh"
+bash "$ROOT/share/run-suites.sh" --repo "$WORK/tail" -j 2 >"$WORK/tail.out" 2>&1 &
+tail_run=$!
+pids+=("$tail_run")
+for i in $(seq 1 100); do [ -e "$WORK/long-started" ] && break; sleep 0.1; done
+bash "$ROOT/share/run-suites.sh" --repo "$WORK/repo" >"$WORK/after-tail.out" 2>&1 &
+next_run=$!
+pids+=("$next_run")
+for i in $(seq 1 100); do kill -0 "$next_run" 2>/dev/null || break; sleep 0.1; done
+assert_fails kill -0 "$next_run"
+assert kill -0 "$tail_run"
+: >"$WORK/tail-go"
+wait "$tail_run" || fail "the tail run failed: $(cat "$WORK/tail.out")"
+assert grep -q '2 PASS' "$WORK/tail.out"
+assert [ ! -e "$RUN_SUITES_SLOTS_DIR/1" ]
 # A worker's run stops queueing once that worker has ended; an exit code already there is a stale export.
 h7=$(holder "$RUN_SUITES_SLOTS_DIR" 1)
 mkdir -p "$WORK/wrun"

@@ -38,7 +38,7 @@ Exit 1 if any suite failed, with the last 30 lines of each failure.
 
 Machine-wide at most RUN_SUITES_SLOTS runs at once (default cores / 3 clamped 2 to 4 always, up to 4
 while the machine has room); a run waits for a free slot under RUN_SUITES_SLOTS_DIR, its wait a
-limiter hold. Inside a worker (WORKER_RUN_ID set) --changed skips the slow layer, tests/slow-suites,
+limiter hold, and frees it once only its last suite runs. Inside a worker (WORKER_RUN_ID set) --changed skips the slow layer, tests/slow-suites,
 except a suite the worker edited; the landing and the night full run run them.
 
 A suite running past its bound is killed with its whole process tree and reads FAIL 124, TIMEOUT:
@@ -403,6 +403,13 @@ for entry in ${wave[@]+"${wave[@]}"}; do
   run_one "$entry" &
   running=$((running + 1))
 done
+# A slot caps one fan-out: down to its last suite, the run frees it for a queued one. A single-suite
+# run keeps it, or such runs would go uncapped; so does a serial tail, the suites that want quiet.
+if [ -n "$own_slot" ] && [ "${#wave[@]}" -gt 1 ] && [ "${#tail_wave[@]}" -eq 0 ]; then
+  while [ "$running" -gt 1 ]; do wait -n 2>/dev/null || :; running=$((running - 1)); done
+  slot_release "$own_slot"
+  own_slot=''
+fi
 wait
 # In the background so a trapped signal ends this wait at once, as it did a foreground suite at HEAD;
 # run_one gives the tail suite back the Ctrl-C a background job ignores.
