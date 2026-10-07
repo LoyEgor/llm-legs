@@ -21,6 +21,7 @@ holds_dir="$nights_dir/holds"
 sweep_repos="${NIGHT_RUN_SWEEP_REPOS:-$HOME/.claude/sweep-repos}"
 KINDS=' fixer vendor debt leftover handoff suite owner-chat '
 STATES=' pending merged left failed-launch blocked-on-egor nothing-to-do '
+SPEED_WINDOW_H=6
 . "$repo_root/share/chat-open.sh"
 . "$repo_root/share/store-lock.sh"
 . "$repo_root/share/test-scope.sh"
@@ -43,6 +44,7 @@ usage: night-run start [--cleanup | --resume <id> [--job <ref>]]
        night-run leftovers [--json]
        night-run survey [--post] [<repo>...]
        night-run hold
+       night-run speed-gate <id> <ref>
        night-run report [<id>] [--post]
        night-run latest --menu
        night-run wall                 (StopFailure hook: JSON on stdin)
@@ -94,6 +96,10 @@ carry: first an owner-chat job per owner chat (share/handoffs.py --batches: the 
   suite the newest earlier night's full run failed; each gets its night worktree and a brief; prints
   <ref>\t<brief>\t<worktree>. A handoff job blocked-on-egor needs the trade in reason= as Cost:,
   Loss: and Recommendation:
+speed-gate, run by worker-run once a night worker takes its slot: a Speed fixer (the harness run of area
+  speed) whose first start comes SPEED_WINDOW_H (6) hours or more after the night's started_at exits 3,
+  its job left with reason `speed window closed (6 h)` and its run abandoned; an earlier start is
+  recorded as a speed-start event, after which a resumed worker of that fixer always passes
 suites: every sweep repository's tests/run-all, one after another, detached unless --wait, into the
   night's suites {started_at, finished_at, repos: [{repo, exit, passed, failed[], log}]}
 pushed=true is refused unless every commit of the job is on its repository's origin main and not
@@ -855,6 +861,26 @@ worktree_lines() { # repo -> worktree<TAB>branch|-<TAB>main-checkout(0|1)<TAB>lo
   done < <(git -C "$1" worktree list --porcelain; echo)
 }
 
+cmd_speed_gate() { # id ref -> exit 3 once the Speed window closed before the fixer's first start
+  local id=$1 ref=$2 file run verdict reason="speed window closed ($SPEED_WINDOW_H h)"
+  file=$(night_file "$id") run="${nights_dir%/*}/runs/$ref.json"
+  [ -s "$file" ] && jq -e '.doctor == "harness" and .area == "speed"' "$run" >/dev/null 2>&1 || return 0
+  lock
+  verdict=$(jq -r --arg r "$ref" --argjson h "$SPEED_WINDOW_H" 'if any(.events[]?; .phase == "speed-start" and .job == $r) then "again"
+    elif now < (.started_at | fromdateiso8601) + $h * 3600 then "open" else "closed" end' "$file") || die "cannot read night $id"
+  case $verdict in
+    again) return 0 ;;
+    open) night_events "$id" "$(jq -cn --arg r "$ref" '[{phase: "speed-start", job: $r}]')" || die "cannot write night $id"
+      return 0 ;;
+  esac
+  unlock
+  "$repo_root/bin/doctor-fix" abandon "$ref" --reason "$reason" >/dev/null 2>&1
+  ! jq -e --arg r "$ref" 'any(.jobs[]; .ref == $r)' "$file" >/dev/null ||
+    (job_set "$id" "$ref" state=left "reason=$reason" >/dev/null) || die "cannot leave job $ref of night $id"
+  printf '%s: night %s job %s left, its fixer not started\n' "$reason" "$id" "$ref"
+  exit 3
+}
+
 cmd_hold() {
   local sid=${CLAUDE_CODE_SESSION_ID:-} grant words tops repo wt branch main branches='[]' tmp
   [ $# -eq 0 ] || usage
@@ -1081,7 +1107,7 @@ repo_debt() { # -> one line per sweep repository: its review debt now
 }
 
 cmd_report() {
-  local file unverified run post=false id='' table
+  local file unverified speed run post=false id='' table
   while [ $# -gt 0 ]; do
     case $1 in
       --post) post=true ;;
@@ -1095,6 +1121,10 @@ cmd_report() {
     run="${nights_dir%/*}/runs/$ref.json"
     [ ! -f "$run" ] || jq -c --arg r "$ref" '{($r): [.decisions[]? | select(.component == "unverified") | .id]}' "$run"
   done | jq -sc 'add // {}')
+  speed=$(jq -r '.jobs[].ref' "$file" | while IFS= read -r ref; do
+    run="${nights_dir%/*}/runs/$ref.json"
+    [ ! -f "$run" ] || jq -c --arg r "$ref" 'select(.doctor == "harness" and .area == "speed") | {($r): (.problems | length)}' "$run"
+  done | jq -sc 'add // {}')
   table=$(python3 -B "$repo_root/share/time_budget.py" table "$repo_root/bin/worker-run" "$file") || die "no comparison table for $file"
   if $post; then
     table_block "$table" | post_block night-report
@@ -1105,11 +1135,14 @@ cmd_report() {
   python3 -B "$repo_root/share/night_spend.py" "$repo_root/bin/worker-run" "$file" || die "no spend header for $file"
   python3 -B "$repo_root/share/night_churn.py" "$repo_root/bin/worker-run" "$file" 2>/dev/null || true
   jq -r --argjson u "$unverified" --argjson lines "$(code_lines "$file")" --arg status "$(night_status "$file")" \
-    "$JQ_TOTALS"' totals as $t
+    --argjson speed "$speed" --argjson h "$SPEED_WINDOW_H" "$JQ_TOTALS"' totals as $t
     | "night \(.id) · \(.started_at | hm)–\(.finished_at | hm)"
       + (if $t.running then " · running" elif $t.unfinished then " · UNFINISHED" else "" end),
       (if .note then "note · \(.note)" else empty end),
       doctor_lines,
+      ([.events[]? | select(.phase == "speed-start") | .job] as $began
+       | if $speed == {} then empty else "speed · levers \([$speed[]] | add) selected · \([$began | unique[] | $speed[.] // 0] | add // 0) started · "
+         + "\([.jobs[] | select(.reason == "speed window closed (\($h) h)") | $speed[.ref] // 0] | add // 0) left by the \($h) h window" end),
       (.jobs[] | ([(if .state == "merged" then "landed" else .state end), .kind, .ref]
         + (if .branch and .state != "merged" then [.branch] else [] end)
         + (if .review then ["review \(.review)"] else [] end)
@@ -1246,6 +1279,7 @@ case "${1:-}" in
   carry) shift; cmd_carry "$@" ;;
   suites) shift; cmd_suites "$@" ;;
   hold) shift; cmd_hold "$@" ;;
+  speed-gate) shift; [ $# -eq 2 ] || usage; known_night "$1"; cmd_speed_gate "$@" ;;
   *) usage ;;
 esac
 exit; }

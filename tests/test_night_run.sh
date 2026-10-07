@@ -1183,6 +1183,41 @@ rendered=$(python3 "$ROOT/share/report_frame.py" block <"$DATA/bus-docs") || fai
 assert [ "$(wc -l <<<"$rendered" | tr -d ' ')" = "$(($(jq '.rows | length' "$DATA/bus-docs") + 2))" ]
 unset NIGHT_RUN_REPORT_BUS
 
+# Speed window: a Speed fixer's first start past 6 h of the night's start leaves its job and abandons its
+# run; one started inside it passes again later, and any other fixer is never gated. A night without a
+# Speed run has no speed line.
+assert_fails grep -q '^speed · ' "$WORK/report"
+speed_night() { # id hours-ago job-ref...
+  jq -n --arg id "$1" --argjson h "$2" '{id: $id, started_at: (now - $h * 3600 | floor | todate), finished_at: null,
+    jobs: [$ARGS.positional[] | {kind: "fixer", ref: ., state: "pending", reason: null, branch: null, review: null,
+    commits: [], pushed: false}]}' --args "${@:3}" >"$(record "$1")"
+}
+speed_run() { # ref area problems
+  jq -n --arg id "$1" --arg a "$2" --argjson n "$3" '{id: $id, doctor: "harness", area: $a, launched_at: "2026-10-07T00:00:00Z",
+    closed_at: null, abandoned_at: null, failed_at: null, note: null, problems: [range($n) | {id: "p\(.)"}]}' >"$DOCTORS_DIR/runs/$1.json"
+}
+speed_run hs-late speed 3; speed_run hs-early speed 2; speed_run hs-in speed 4; speed_run hh-late hooks 1
+speed_night nlate 7 hs-late hs-early hh-late
+jq '.events = [{id: 1, phase: "speed-start", job: "hs-early"}]' "$(record nlate)" >"$WORK/tmp" && mv "$WORK/tmp" "$(record nlate)"
+speed_night nopen 1 hs-in
+rc=0; night speed-gate nlate hs-late >"$WORK/out" 2>&1 || rc=$?
+assert [ "$rc" = 3 ]
+assert grep -qxF "speed window closed (6 h): night nlate job hs-late left, its fixer not started" "$WORK/out"
+assert jqe '.jobs[0].state == "left" and .jobs[0].reason == "speed window closed (6 h)"' "$(record nlate)"
+assert jqe '.abandoned_at != null and .note == "speed window closed (6 h)"' "$DOCTORS_DIR/runs/hs-late.json"
+night speed-gate nlate hs-early || fail "a Speed fixer started inside the window was refused on its resume"
+night speed-gate nlate hh-late || fail "a non-speed fixer was gated by the speed window"
+assert jqe '[.jobs[1:][] | .state] == ["pending", "pending"] and ([.events[] | select(.phase == "speed-start")] | length) == 1' "$(record nlate)"
+assert jqe '.abandoned_at == null' "$DOCTORS_DIR/runs/hh-late.json"
+night speed-gate nopen hs-in || fail "a Speed fixer inside the window was refused"
+night speed-gate nopen hs-in || fail "a started Speed fixer was refused again"
+assert jqe '.jobs[0].state == "pending" and [.events[] | select(.phase == "speed-start") | .job] == ["hs-in"]' "$(record nopen)"
+night report nlate >"$WORK/report" || fail "report of the speed night"
+assert grep -qxF "speed · levers 5 selected · 2 started · 3 left by the 6 h window" "$WORK/report"
+night report nopen >"$WORK/report" || fail "report of the open speed night"
+assert grep -qxF "speed · levers 4 selected · 4 started · 0 left by the 6 h window" "$WORK/report"
+rm "$(record nlate)" "$(record nopen)"
+
 # No night at all: the menu prints nothing.
 rm "$NIGHTS"/*.json
 assert [ -z "$(night latest --menu)" ]

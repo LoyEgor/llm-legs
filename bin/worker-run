@@ -1380,6 +1380,15 @@ supervise() {
       { persist_run_files "$directory"; return 4; }
     export NIGHT_FIXER_SLOT=$NIGHT_SLOT
     meta_update "$directory" '.slot_at = (now | floor)' || :
+    local night gate
+    night=${branch#night/} night=${night%%/*}
+    gate=$("$SCRIPT_DIRECTORY/night-run" speed-gate "$night" "${branch#"night/$night/"}" 2>/dev/null)
+    # Only 3 refuses: a night-run failure (no such night, a lock) never stops a fixer.
+    if [ $? -eq 3 ]; then
+      printf 'worker-run: %s\n' "$gate" >>"$directory/err"
+      persist_run_files "$directory"
+      return 4
+    fi
   fi
   while :; do
     # The slot's ceiling runs from its mtime, and each walled reroute is an attempt with a deadline of its own.

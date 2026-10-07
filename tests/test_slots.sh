@@ -364,6 +364,32 @@ bash "$ROOT/bin/worker-run" _supervise "$WORK/run" >/dev/null 2>&1
 assert [ $? = 4 ]
 assert [ "$(holds_of night-workers)" = 0 ]
 kill "$h7"
+until_gone "$h7"
+# The Speed window, checked once the slot is taken: a Speed fixer whose slot comes 6 h or more after the
+# night's start is not started and its job is left; one inside the window starts; a non-speed fixer after
+# 6 h starts too.
+export DOCTORS_DIR="$WORK/doctors"
+mkdir -p "$DOCTORS_DIR/runs" "$DOCTORS_DIR/nights"
+gated() { # night hours-ago ref area -> the supervised run's err once it ended
+  jq -n --arg id "$1" --argjson h "$2" --arg r "$3" '{id: $id, started_at: (now - $h * 3600 | floor | todate),
+    finished_at: null, jobs: [{kind: "fixer", ref: $r, state: "pending", reason: null}]}' >"$DOCTORS_DIR/nights/$1.json"
+  jq -n --arg id "$3" --arg a "$4" '{id: $id, doctor: "harness", area: $a, launched_at: "2026-10-07T00:00:00Z",
+    closed_at: null, abandoned_at: null, failed_at: null, problems: [{id: "p"}]}' >"$DOCTORS_DIR/runs/$3.json"
+  git -C "$WORK/night" worktree add -q -b "night/$1/$3" "$WORK/wt-$3"
+  mkdir -p "$WORK/run-$3"
+  jq -n --arg w "$WORK/wt-$3" '{vendor: "none", workdir: $w, started_at: 1}' >"$WORK/run-$3/meta.json"
+  bash "$ROOT/bin/worker-run" _supervise "$WORK/run-$3" >/dev/null 2>&1
+  cat "$WORK/run-$3/err" 2>/dev/null
+}
+assert [ "$(gated nlate 7 hs-late speed)" = "worker-run: speed window closed (6 h): night nlate job hs-late left, its fixer not started" ]
+assert jq -e '.jobs[0].state == "left" and .jobs[0].reason == "speed window closed (6 h)" and all(.events[]; .phase != "speed-start")' "$DOCTORS_DIR/nights/nlate.json" >/dev/null
+assert jq -e '.abandoned_at != null' "$DOCTORS_DIR/runs/hs-late.json" >/dev/null
+assert [ -z "$(gated nopen 5 hs-in speed)" ]
+assert jq -e '.jobs[0].state == "pending" and [.events[] | .phase] == ["speed-start"]' "$DOCTORS_DIR/nights/nopen.json" >/dev/null
+assert [ -z "$(gated nhooks 7 hh-late hooks)" ]
+assert jq -e '.jobs[0].state == "pending" and .events == null' "$DOCTORS_DIR/nights/nhooks.json" >/dev/null
+assert jq -e '.abandoned_at == null' "$DOCTORS_DIR/runs/hh-late.json" >/dev/null
+assert [ ! -e "$NIGHT_FIXER_SLOTS_DIR/1" ]
 # A slot taken or refused at once is no wait: slot polling never journals a lock row.
 assert jqe 'length == 0' <(waits_of lock)
 
