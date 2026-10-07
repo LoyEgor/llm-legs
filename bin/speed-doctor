@@ -784,11 +784,6 @@ def with_time(opportunities, budget):
     return sorted(out, key=rank_key)
 
 
-def row_state(row):
-    return "new" if not row else "open" if row.get("status") == "open" else "fixed-pending" \
-        if row.get("status") == "fixed-pending" else "regressed" if row.get("status") == "fixed" else "watch"
-
-
 def floor_rows(budget, ledger):
     """Named rows proven fixed only by the measurement returning under them: a class more than FLOOR_ROW_MIN_DAY
     over its floor in the last day, and workers under ACTIVE_FLOOR model time over the last night."""
@@ -804,7 +799,7 @@ def floor_rows(budget, ledger):
     out = []
     for key, value, limit, unit, fact in found:
         row = H.ledger_row(ledger, "time_floor", key)
-        out.append({"id": row["id"] if row else "time_floor:%s" % key, "rule": "time_floor", "state": row_state(row),
+        out.append({"id": row["id"] if row else "time_floor:%s" % key, "rule": "time_floor", "state": H.ledger_state(row),
                     "fact": fact + " · proof: back under it", "value": value, "limit": limit, "unit": unit,
                     "window_h": 24, "exposure": None, "count": None, "first_seen": None, "last_seen": None,
                     "evidence": [], "ledger": row["id"] if row else None, "group": "time", "ident": key})
@@ -1022,7 +1017,7 @@ def collect(write, now):
     for reg in regressions:
         row = H.ledger_row(ledger, "regression", reg["key"])
         metric, ident, band = reg["key"].split("|")
-        problems.append({"id": row["id"] if row else "regression:%s" % reg["key"], "rule": "regression", "state": row_state(row),
+        problems.append({"id": row["id"] if row else "regression:%s" % reg["key"], "rule": "regression", "state": H.ledger_state(row),
                          "fact": "%s %s over %s on %s (%s OM/d)" % (metric, reg["value"], reg["limit"], ", ".join(reg["days"]),
                                                                   reg["om_day"]),
                          "value": reg["value"], "limit": reg["limit"], "unit": metric.split(".")[-1], "window_h": 48,

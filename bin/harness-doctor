@@ -4956,7 +4956,7 @@ def settle_title(document):
                                                 else "blind · " + ", ".join(blind_areas) if blind_areas else "ok"))
 
 
-def apply_speed(document, speed):
+def apply_speed(document, speed, ledger=None):
     """Lays bin/speed-doctor's section into a Harness document. Whatever an earlier section added or demoted is
     undone first, so a carried-over or repeated section never stacks; a rule whose component Speed judges against
     a baseline keeps its verdict only as `was_state`, so each rule is counted once."""
@@ -4975,7 +4975,7 @@ def apply_speed(document, speed):
             component = covers.get((p.get("rule"), p.get("ident"))) or covers.get((p.get("rule"), "*"))
             if component and p["state"] != "fixed-pending":
                 problems[i] = dict(p, state="watch", was_state=p["state"], judged_by="speed:" + component)
-        problems += [dict(p, speed=True, group=SPEED_GROUP) for p in speed.get("problems") or ()]
+        problems += [dict(speed_restate(p, ledger), speed=True, group=SPEED_GROUP) for p in speed.get("problems") or ()]
         blind += [dict(b, id="speed:%s" % b.get("id")) for b in speed.get("blind_spots") or ()]
         document["speed"] = speed
     document["problems"], document["blind_spots"] = problems, blind
@@ -5254,6 +5254,24 @@ def ledger_row(ledger, rule, ident):
 
 def ledger_row_by_id(ledger, ident):
     return next((r for r in ledger.get("rows") or () if r.get("id") == ident), None)
+
+
+def ledger_state(row):
+    """A Speed row's state off its ledger row alone: Speed proves a fix by its measurement, never by events."""
+    return "new" if not row else "open" if row.get("status") == "open" else "fixed-pending" \
+        if row.get("status") == "fixed-pending" else "regressed" if row.get("status") == "fixed" else "watch"
+
+
+def speed_restate(problem, ledger):
+    """Speed's store was judged against the ledger Speed read; a night close reruns this doctor on its own branch."""
+    rule = problem.get("rule")
+    if ledger is None or rule not in ("time_floor", "regression"):
+        return problem
+    # A regression's ident is only the middle of the key its row matches; an unmatched id is rule:key.
+    key = problem["id"][len(rule) + 1:] if problem["id"].startswith(rule + ":") else None
+    row = ledger_row_by_id(ledger, problem.get("ledger") or "") or (ledger_row(ledger, rule, key) if key else None)
+    return dict(problem, state=ledger_state(row), id=row["id"] if row else problem["id"],
+                ledger=row["id"] if row else None)
 
 
 def last_fix_at(entry):
@@ -5838,7 +5856,7 @@ def collect(write, now):
         "sections": sections, "periods": periods, "extras": extras,
         "footer": "as of %s" % time.strftime("%H:%M", time.localtime(now)),
     }
-    apply_speed(document, read_json(os.path.join(folder, "latest.json"), {}).get("speed"))
+    apply_speed(document, read_json(os.path.join(folder, "latest.json"), {}).get("speed"), ledger)
     speed_flush(state, now, write)
     if write:
         write_json(os.path.join(folder, "state.json"), state)

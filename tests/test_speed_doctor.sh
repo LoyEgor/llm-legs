@@ -443,6 +443,12 @@ bare = h.apply_speed(copy.deepcopy(merged), None)
 check([p["state"] for p in bare["problems"]] == ["new", "new", "open"] and "speed" not in bare
       and not [p for p in bare["problems"] if "judged_by" in p] and bare["problem_count"] == 3,
       "without a section every rule gets its own verdict back")
+pending = {"rows": [{"id": "regression-row", "match": {"rule": "regression", "ident": "chat[.]om_per_100_prompts.*"},
+                     "status": "fixed-pending"}]}
+restated = [(p["id"], p["state"], p["ledger"]) for p in h.apply_speed(copy.deepcopy(harness), red, pending)["problems"]
+            if p.get("speed") and p["rule"] == "regression"]
+check(restated == [("regression-row", "fixed-pending", "regression-row")],
+      "Speed's carried rows read the ledger handed in, as a night close's own branch ledger: %s" % restated)
 lines = h.menu_text(merged).splitlines()
 check(lines[2].startswith("0\t\tr:") and "Speed: 1 problem · 12 min/day over the floor · 179 OM/d · 3.9 of 7 days covered" in lines[2]
       and lines.index("1\t\t\tWaits: watch · a wait") > 2 and any(l.startswith("0\t") and "Guards: 1 problem" in l
