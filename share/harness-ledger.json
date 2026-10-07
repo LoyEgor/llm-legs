@@ -1623,9 +1623,9 @@
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-06",
-      "reviewed_by": "night fixer harness-hooks-20261006T032924Z-3077",
-      "note": "2026-10-06: open again at 1.55 s p50 wall in the last hour at load 100-150; not profiled tonight. The load-judged proposal of 2026-10-05-hook-cuts-left.md §3 stands. 2026-10-04: the regression's own cause was the run backstop, the one synchronous part ahead of the notices and timed only inside the dispatcher: for a chat with live relayed runs (the night orchestrator, 12) it ran jq and a ps liveness probe per run before asking whether a relay owned it, 2.2-2.7 s a stop at load 220. It now settles ownership first (llm-legs bin/worker-run-backstop.sh): 0.9-1.1 s. The stop.d parts stay under 240 ms p50. Test: test_worker_run_backstop.sh, no ps for an owned run. notice-chat-names (lib/chat_names.py last_assistant_text) json-parsed every line of the transcript to find the last assistant row: 1.3 s of a 2.9 s stop on a 39 MB transcript, the longest of the parallel notices, so the dispatcher's critical path. It now reads from the end with a growing window: 938 ms to 240 ms on that transcript (Python start dominates the rest). Ruled out: the backstop (57-94 ms here; one live exit 124 at load 250 with 16 background tasks), the asks (under 200 ms), words_journal (full reads only on a turn a notice fired). Tests: test_stop_dispatch.sh, the tail-parse count (3002 parses on the old code) and an assistant row past the first window. 2026-10-05: back over the limit, and both earlier fixes still hold; this time it is load. 671 ms CPU in total against 3.5 s wall at load 318 on 10 cores. ask-run-unfinished is the biggest part at 159 ms CPU (1.0 s wall); the rest are ≤ 70 ms. Narrowed to load; the dismissal is proposed to the owner. 2026-10-04: the regression's own cause was the run backstop, the one synchronous part ahead of the notices and timed only inside the dispatcher: for a chat with live relayed runs (the night orchestrator, 12) it ran jq and a ps liveness probe per run before asking whether a relay owned it, 2.2-2.7 s a stop at load 220. It now settles ownership first (llm-legs bin/worker-run-backstop.sh): 0.9-1.1 s. The stop.d parts stay under 240 ms p50. Test: test_worker_run_backstop.sh, no ps for an owned run. notice-chat-names (lib/chat_names.py last_assistant_text) json-parsed every line of the transcript to find the last assistant row: 1.3 s of a 2.9 s stop on a 39 MB transcript, the longest of the parallel notices, so the dispatcher's critical path. It now reads from the end with a growing window: 938 ms to 240 ms on that transcript (Python start dominates the rest). Ruled out: the backstop (57-94 ms here; one live exit 124 at load 250 with 16 background tasks), the asks (under 200 ms), words_journal (full reads only on a turn a notice fired). Tests: test_stop_dispatch.sh, the tail-parse count (3002 parses on the old code) and an assistant row past the first window. 2026-10-05: back over the limit, and both earlier fixes still hold; this time it is load. 671 ms CPU in total against 3.5 s wall at load 318 on 10 cores. ask-run-unfinished is the biggest part at 159 ms CPU (1.0 s wall); the rest are ≤ 70 ms. Narrowed to load; the dismissal is proposed to the owner. 2026-10-06: not flagged by the 06:26 doctor run; the judge stays.",
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-hooks-20261006T234303Z-2a24",
+      "note": "2026-10-07: quiet in this window; stop-dispatch.sh, lib/chat_names.py and bin/worker-run-backstop.sh unchanged since the 2026-10-06 note, so the cause stands as recorded there; not profiled tonight (this run took the eight Bash-call rows). 2026-10-06: open again at 1.55 s p50 wall in the last hour at load 100-150; not profiled tonight. The load-judged proposal of 2026-10-05-hook-cuts-left.md §3 stands. 2026-10-04: the regression's own cause was the run backstop, the one synchronous part ahead of the notices and timed only inside the dispatcher: for a chat with live relayed runs (the night orchestrator, 12) it ran jq and a ps liveness probe per run before asking whether a relay owned it, 2.2-2.7 s a stop at load 220. It now settles ownership first (llm-legs bin/worker-run-backstop.sh): 0.9-1.1 s. The stop.d parts stay under 240 ms p50. Test: test_worker_run_backstop.sh, no ps for an owned run. notice-chat-names (lib/chat_names.py last_assistant_text) json-parsed every line of the transcript to find the last assistant row: 1.3 s of a 2.9 s stop on a 39 MB transcript, the longest of the parallel notices, so the dispatcher's critical path. It now reads from the end with a growing window: 938 ms to 240 ms on that transcript (Python start dominates the rest). Ruled out: the backstop (57-94 ms here; one live exit 124 at load 250 with 16 background tasks), the asks (under 200 ms), words_journal (full reads only on a turn a notice fired). Tests: test_stop_dispatch.sh, the tail-parse count (3002 parses on the old code) and an assistant row past the first window. 2026-10-05: back over the limit, and both earlier fixes still hold; this time it is load. 671 ms CPU in total against 3.5 s wall at load 318 on 10 cores. ask-run-unfinished is the biggest part at 159 ms CPU (1.0 s wall); the rest are ≤ 70 ms. Narrowed to load; the dismissal is proposed to the owner. 2026-10-04: the regression's own cause was the run backstop, the one synchronous part ahead of the notices and timed only inside the dispatcher: for a chat with live relayed runs (the night orchestrator, 12) it ran jq and a ps liveness probe per run before asking whether a relay owned it, 2.2-2.7 s a stop at load 220. It now settles ownership first (llm-legs bin/worker-run-backstop.sh): 0.9-1.1 s. The stop.d parts stay under 240 ms p50. Test: test_worker_run_backstop.sh, no ps for an owned run. notice-chat-names (lib/chat_names.py last_assistant_text) json-parsed every line of the transcript to find the last assistant row: 1.3 s of a 2.9 s stop on a 39 MB transcript, the longest of the parallel notices, so the dispatcher's critical path. It now reads from the end with a growing window: 938 ms to 240 ms on that transcript (Python start dominates the rest). Ruled out: the backstop (57-94 ms here; one live exit 124 at load 250 with 16 background tasks), the asks (under 200 ms), words_journal (full reads only on a turn a notice fired). Tests: test_stop_dispatch.sh, the tail-parse count (3002 parses on the old code) and an assistant row past the first window. 2026-10-05: back over the limit, and both earlier fixes still hold; this time it is load. 671 ms CPU in total against 3.5 s wall at load 318 on 10 cores. ask-run-unfinished is the biggest part at 159 ms CPU (1.0 s wall); the rest are ≤ 70 ms. Narrowed to load; the dismissal is proposed to the owner. 2026-10-06: not flagged by the 06:26 doctor run; the judge stays.",
       "handoff": "docs/handoffs/2026-10-05-hook-cuts-left.md"
     },
     {
@@ -2355,9 +2355,9 @@
       "same_cause": [
         "floor-edit-hooks"
       ],
-      "last_reviewed": "2026-10-06",
-      "reviewed_by": "night fixer harness-hooks-20261006T032924Z-3077",
-      "note": "2026-10-06: cause stands, 423 ms wall p50 at load 100-150 (watch); since claude-setup@6e4b1ac it reads owners from the writes journal, the owner's cut (one status for dirtiness and owner) not made tonight: this run took the seven every-call rows first. Owner decision 2026-10-04 (Harness Doctor): cut, limit stays. What stays: six git calls per Edit (rev-parse :143, snapshot of the named path, status :157 and :778); cut: one status for dirtiness and owner. A night fixer's change. 2026-10-04: cause stands, code path unchanged on it; 356 ms CPU p50; a false workdir catch on nested task worktrees was fixed in claude-setup (hook_p50 row). 2026-10-03: cause stands, hooks/edit-conflict-notice.sh unchanged since claude-setup@e746412, 188 ms p50 over 11 runs in the last hour. Narrowed to its process floor: 195 ms p50 in 24 h at night load 50-60; a probe on a dirty file took 426 ms spread over six git calls, shasum, two jq, one find over the review journal and the library source, none over 65 ms. The per-record forks were cut 2026-09-30 (floor-edit-hooks). Under 150 ms needs fewer git calls per Edit (one status for owner and dirtiness): a design change for the owner.",
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-hooks-20261006T234303Z-2a24",
+      "note": "2026-10-07: cause stands and the doctor sees it again (247 ms watch at load ~100). Since claude-setup@6e4b1ac three git forks remain: rev-parse --show-toplevel :145, status :163, the family status :782; the owner's cut (one status for dirtiness and owner, the toplevel found by a builtin walk to .git) is still not made: this run took the eight every-call rows first. 2026-10-06: cause stands, 423 ms wall p50 at load 100-150 (watch); since claude-setup@6e4b1ac it reads owners from the writes journal, the owner's cut (one status for dirtiness and owner) not made tonight: this run took the seven every-call rows first. Owner decision 2026-10-04 (Harness Doctor): cut, limit stays. What stays: six git calls per Edit (rev-parse :143, snapshot of the named path, status :157 and :778); cut: one status for dirtiness and owner. A night fixer's change. 2026-10-04: cause stands, code path unchanged on it; 356 ms CPU p50; a false workdir catch on nested task worktrees was fixed in claude-setup (hook_p50 row). 2026-10-03: cause stands, hooks/edit-conflict-notice.sh unchanged since claude-setup@e746412, 188 ms p50 over 11 runs in the last hour. Narrowed to its process floor: 195 ms p50 in 24 h at night load 50-60; a probe on a dirty file took 426 ms spread over six git calls, shasum, two jq, one find over the review journal and the library source, none over 65 ms. The per-record forks were cut 2026-09-30 (floor-edit-hooks). Under 150 ms needs fewer git calls per Edit (one status for owner and dirtiness): a design change for the owner.",
       "handoff": null
     },
     {
@@ -2726,10 +2726,10 @@
       "status": "open",
       "fixes": [],
       "handoff": null,
-      "note": "2026-10-06: see hook-sync-edit-conflict-notice; not cut tonight. Owner decision 2026-10-04 (Harness Doctor): cut, limit stays; the cut is the one of this hook's hook_sync / hook_every_call row. Wall over 1 s at CPU 0.3-0.45 s is load; a hook_p50 judged per load band or on CPU is proposed to the doctor's owner. 2026-10-04 at load 220-230 on 10 cores (logo-vectorizer-bench batch plus the night): 1.18 s wall p50 at 356 ms CPU (236 runs, 4 h). Narrowed to load on its six-git-call floor (hook-sync-edit-conflict-notice). Found on the way and fixed (claude-setup@d85da98): a file in <workdir>/.claude/worktrees/ was claimed by a live run's workdir scope, so every night fixer edit drew a FOREIGN WIP notice and a liveness probe. 2026-10-05 (quiet row, cause checked): edit-conflict-notice.sh is unchanged since that fix (it landed as claude-setup@81ca637, two lines, no git call), and its six git calls stay the floor.",
+      "note": "2026-10-07: see hook-sync-edit-conflict-notice; not cut tonight. 2026-10-06: see hook-sync-edit-conflict-notice; not cut tonight. Owner decision 2026-10-04 (Harness Doctor): cut, limit stays; the cut is the one of this hook's hook_sync / hook_every_call row. Wall over 1 s at CPU 0.3-0.45 s is load; a hook_p50 judged per load band or on CPU is proposed to the doctor's owner. 2026-10-04 at load 220-230 on 10 cores (logo-vectorizer-bench batch plus the night): 1.18 s wall p50 at 356 ms CPU (236 runs, 4 h). Narrowed to load on its six-git-call floor (hook-sync-edit-conflict-notice). Found on the way and fixed (claude-setup@d85da98): a file in <workdir>/.claude/worktrees/ was claimed by a live run's workdir scope, so every night fixer edit drew a FOREIGN WIP notice and a liveness probe. 2026-10-05 (quiet row, cause checked): edit-conflict-notice.sh is unchanged since that fix (it landed as claude-setup@81ca637, two lines, no git call), and its six git calls stay the floor.",
       "same_cause": [],
-      "last_reviewed": "2026-10-06",
-      "reviewed_by": "night fixer harness-hooks-20261006T032924Z-3077"
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-hooks-20261006T234303Z-2a24"
     },
     {
       "id": "hook-p50-worker-limit-gate",
@@ -2920,11 +2920,12 @@
       "status": "open",
       "fixes": [],
       "same_cause": [
-        "hook-every-call-context-nudge"
+        "hook-every-call-context-nudge",
+        "hook-full-work-context-nudge"
       ],
-      "last_reviewed": "2026-10-06",
-      "reviewed_by": "night fixer harness-hooks-20261006T032924Z-3077",
-      "note": "2026-10-06: 54 ms wall / 47 ms CPU p50 over 9 704 runs in 12 h (bash 5 rows), under 150 ms; the new hook_full_work:context-nudge.sh row (78 ms on a trivial call) is the next cut. 2026-10-05: 203 ms a run in the last hour, at 53 ms CPU against 220 ms wall at load 286-330 on 10 cores. The 64 KiB tail read of hook-every-call-context-nudge still holds; what is left is a process floor stretched by load. Narrowed to load; the dismissal is proposed to the owner. 2026-10-05: 203 ms a run in the last hour, at 53 ms CPU against 220 ms wall at load 286-330 on 10 cores. The 64 KiB tail read of hook-every-call-context-nudge still holds; what is left is a process floor stretched by load. Narrowed to load; the dismissal is proposed to the owner. 2026-10-06: not flagged by the 06:26 doctor run; the judge stays.",
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-hooks-20261006T234303Z-2a24",
+      "note": "2026-10-07: quiet (under 150 ms); tonight's byte-bound skip (hook-full-work-context-nudge) takes calls under stage1 from 6 forks to 2, so this row's floor drops with it; left open until that row's proof. 2026-10-06: 54 ms wall / 47 ms CPU p50 over 9 704 runs in 12 h (bash 5 rows), under 150 ms; the new hook_full_work:context-nudge.sh row (78 ms on a trivial call) is the next cut. 2026-10-05: 203 ms a run in the last hour, at 53 ms CPU against 220 ms wall at load 286-330 on 10 cores. The 64 KiB tail read of hook-every-call-context-nudge still holds; what is left is a process floor stretched by load. Narrowed to load; the dismissal is proposed to the owner. 2026-10-05: 203 ms a run in the last hour, at 53 ms CPU against 220 ms wall at load 286-330 on 10 cores. The 64 KiB tail read of hook-every-call-context-nudge still holds; what is left is a process floor stretched by load. Narrowed to load; the dismissal is proposed to the owner. 2026-10-06: not flagged by the 06:26 doctor run; the judge stays.",
       "handoff": "docs/handoffs/2026-10-05-hook-cuts-left.md"
     },
     {
@@ -2937,9 +2938,9 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-05",
-      "reviewed_by": "Night fixer harness-hooks-20261005T061324Z-2ae0",
-      "note": "2026-10-05: 1.1 s a render; 306 ms CPU p50 (p90 378) and 1.19 s mean wall at load 286-330. `refreshInterval: 3` in ~/.claude/settings.json over about 8 chats made 127k renders in 14.4 h, 11.1 CPU-hours (about 0.77 core). Handed off: memoize the dearest segments first, and bring the interval to Egor as a trade only if that falls short. 2026-10-06 (night f253): 216k renders, 1089 CPU-min on 10-05 (302 ms a render, half while idle); per-segment cost is unmeasurable without the live store, so the interval is the trade in the handoff.",
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-hooks-20261006T234303Z-2a24",
+      "note": "2026-10-07: quiet; the render path is untouched by this run and the interval stays 3 s per the settled hand-off; the remaining lever is a per-segment profile of live renders. 2026-10-05: 1.1 s a render; 306 ms CPU p50 (p90 378) and 1.19 s mean wall at load 286-330. `refreshInterval: 3` in ~/.claude/settings.json over about 8 chats made 127k renders in 14.4 h, 11.1 CPU-hours (about 0.77 core). Handed off: memoize the dearest segments first, and bring the interval to Egor as a trade only if that falls short. 2026-10-06 (night f253): 216k renders, 1089 CPU-min on 10-05 (302 ms a render, half while idle); per-segment cost is unmeasurable without the live store, so the interval is the trade in the handoff.",
       "handoff": "docs/handoffs/2026-10-05-hook-cuts-left.md"
     },
     {
@@ -3433,7 +3434,7 @@
         "rule": "hook_full_work",
         "ident": "eod-sorted-gate\\.sh"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-06T08:00:00+03:00",
@@ -3444,12 +3445,24 @@
           ],
           "in": "claude-setup@16f3d32",
           "regressed_at": null
+        },
+        {
+          "at": "2026-10-07T04:15:00+03:00",
+          "by": "night fixer harness-hooks-20261006T234303Z-2a24",
+          "files": [
+            "claude-setup/hooks/eod-sorted-gate.sh",
+            "claude-setup/hooks/lib/splice.sh"
+          ],
+          "in": null,
+          "regressed_at": null
         }
       ],
-      "same_cause": [],
-      "last_reviewed": "2026-10-06",
-      "reviewed_by": "night fixer harness-hooks-20261006T032924Z-3077",
-      "note": "It read the end-report state with three jq and cat before asking whether the call commits. Fixed: with last-run.json present it reads the raw payload as rj_command_segments does (JSON whitespace escapes as whitespace, quotes and backslashes dropped) and exits unless `commit` or `gh pr create|ready` is in it; 46 -> 9 ms on a trivial call (tests/test_eod_commits.sh: four non-commit calls start no jq, red on the old code). eod_candidates reuses a payload its caller already read.",
+      "same_cause": [
+        "hook-cut-eod-sorted-gate"
+      ],
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-hooks-20261006T234303Z-2a24",
+      "note": "2026-10-07: regressed by its own fix: the raw-payload screen of claude-setup@16f3d32 ran ${input//…/} under bash 3.2, cubic whenever the payload holds a quote (141 ms on a trivial call at the rerun, 5 s cuts on long commands); see hook-cut-eod-sorted-gate for the regex that replaced it. It read the end-report state with three jq and cat before asking whether the call commits. Fixed: with last-run.json present it reads the raw payload as rj_command_segments does (JSON whitespace escapes as whitespace, quotes and backslashes dropped) and exits unless `commit` or `gh pr create|ready` is in it; 46 -> 9 ms on a trivial call (tests/test_eod_commits.sh: four non-commit calls start no jq, red on the old code). eod_candidates reuses a payload its caller already read.",
       "handoff": null
     },
     {
@@ -3475,6 +3488,213 @@
       "last_reviewed": "2026-10-06",
       "reviewed_by": "night fixer harness-hooks-20261006T032924Z-3077",
       "note": "In a worker every Bash call paid jq, realpath, the heredoc mask, grep, awk and tr. Only a `git` segment running checkout/restore/reset/clean/stash is ever denied, so the hook now exits unless the raw payload from the command key on holds `git` and one of them; 66 -> 9 ms on a worker's trivial call (tests/test_worker_git_guard.sh, red on the old code). A main-session call still exits before it.",
+      "handoff": null
+    },
+    {
+      "id": "hook-cut-eod-sorted-gate",
+      "title": "eod-sorted-gate stripped quotes from the raw payload with bash 3.2 ${input//…/}, cubic: 2 KB of command took 5 s",
+      "match": {
+        "rule": "hook_cut",
+        "ident": "eod-sorted-gate\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-07T04:15:00+03:00",
+          "by": "night fixer harness-hooks-20261006T234303Z-2a24",
+          "files": [
+            "claude-setup/hooks/eod-sorted-gate.sh",
+            "claude-setup/hooks/lib/splice.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "hook-full-work-eod-sorted-gate"
+      ],
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-hooks-20261006T234303Z-2a24",
+      "note": "2026-10-07: 9 cuts an hour at launch, 32 at the rerun. claude-setup@16f3d32 (night 2026-10-06) screened the raw payload with three ${input//…/} substitutions under /bin/bash 3.2, cubic once the pattern matches: a heredoc command of 1 KB took 1.0 s, 2 KB 4.8 s (the 5 s cut), 4 KB 24 s, 8 KB over 2 min. Fixed: the screen is one linear regex over the raw payload, each word spliced past quotes, backslashes and JSON escapes (hooks/lib/splice.sh, which review-flow-gate's private rf_splice became); 100 KB in 53 ms. Same defect, same fix, under 3 s at 16 KB but unbounded above: comment-gate, commit-report, english-gate (may_launch), pr-ready-mattermost. Test: tests/test_hook_long_command.sh runs the five under /bin/bash on a 16 KB heredoc with a 4 s alarm (red on eod-sorted-gate, comment-gate, english-gate, commit-report old code). Reproduced with the screen alone: a 2 KB heredoc naming no commit, so neither eod_candidates nor the jq state reads were reached.",
+      "handoff": null
+    },
+    {
+      "id": "hook-full-work-resume-timer-guard",
+      "title": "resume-timer-guard did its full work on a trivial Bash call",
+      "match": {
+        "rule": "hook_full_work",
+        "ident": "resume-timer-guard\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-07T04:15:00+03:00",
+          "by": "night fixer harness-hooks-20261006T234303Z-2a24",
+          "files": [
+            "claude-setup/hooks/resume-timer-guard.sh",
+            "claude-setup/hooks/lib/splice.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-hooks-20261006T234303Z-2a24",
+      "note": "cat, jq, awk (heredoc cut), tr twice and grep on every Bash call before asking whether it names the timer. Now a builtin payload read and one spliced regex over the raw payload for ClaudeContinue|startTimerFor|stopTimerFor|claude-resume-timer, past the quotes and backslashes the scan below drops: 0 forks on a call naming none; probe incl. bash start 59 -> 12 ms. Test: test_resume_timer_guard.sh fork count (red on old: cat jq awk tr tr grep) and a quoted-apart name still denied.",
+      "handoff": null
+    },
+    {
+      "id": "hook-full-work-word-gate",
+      "title": "word-gate did its full work on a trivial Bash call",
+      "match": {
+        "rule": "hook_full_work",
+        "ident": "word-gate\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-07T04:15:00+03:00",
+          "by": "night fixer harness-hooks-20261006T234303Z-2a24",
+          "files": [
+            "claude-setup/hooks/word-gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-hooks-20261006T234303Z-2a24",
+      "note": "Sourced lib/words.sh and ran three jq (command, tool, the table) on every Bash call. Now a Bash call is screened with builtins first: the door-less families' `commands` read line by line off word-families.json (a family whose door shares its line drops out; an array across lines screens nothing) and matched against the raw payload. 0 forks on a call naming none; probe 50 -> 22 ms. Test: test_word_triggers.sh fork count now counts jq (red on old), the jq-written multi-line demo table still gated.",
+      "handoff": null
+    },
+    {
+      "id": "hook-full-work-chat-switch-link",
+      "title": "chat-switch-link did its full work on a trivial Bash call",
+      "match": {
+        "rule": "hook_full_work",
+        "ident": "chat-switch-link\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-07T04:15:00+03:00",
+          "by": "night fixer harness-hooks-20261006T234303Z-2a24",
+          "files": [
+            "claude-setup/hooks/chat-switch-link.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-hooks-20261006T234303Z-2a24",
+      "note": "cat, /usr/bin/jq and grep on every Bash call. Now a builtin read and a raw-payload match on claude-chat-switch before jq: 0 forks on a call naming none; probe 32 -> 17 ms. Test: test_chat_switch_link.sh fork count (red on old).",
+      "handoff": null
+    },
+    {
+      "id": "hook-full-work-dia-not-chrome",
+      "title": "dia-not-chrome did its full work on a trivial Bash call",
+      "match": {
+        "rule": "hook_full_work",
+        "ident": "dia-not-chrome\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-07T04:15:00+03:00",
+          "by": "night fixer harness-hooks-20261006T234303Z-2a24",
+          "files": [
+            "claude-setup/hooks/dia-not-chrome.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-hooks-20261006T234303Z-2a24",
+      "note": "cat and jq before its chrom screen. The screen now runs on the raw payload (its drop class plus the JSON escape letters): 0 forks on a call naming no Chrome; probe 30 -> 17 ms. Test: test_dia_not_chrome.sh fork count (red on old).",
+      "handoff": null
+    },
+    {
+      "id": "hook-full-work-skill-install-scope-gate",
+      "title": "skill-install-scope-gate did its full work on a trivial Bash call",
+      "match": {
+        "rule": "hook_full_work",
+        "ident": "skill-install-scope-gate\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-07T04:15:00+03:00",
+          "by": "night fixer harness-hooks-20261006T234303Z-2a24",
+          "files": [
+            "claude-setup/hooks/skill-install-scope-gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-hooks-20261006T234303Z-2a24",
+      "note": "cat and jq before its skills/hyperframes globs. The globs now screen the raw payload first: 0 forks on a call naming neither; probe 29 -> 17 ms. Test: test_skill_install_scope_gate.sh fork count (red on old).",
+      "handoff": null
+    },
+    {
+      "id": "hook-full-work-worker-pin-gate-bash",
+      "title": "worker-pin-gate.sh bash did its full work on a trivial Bash call",
+      "match": {
+        "rule": "hook_full_work",
+        "ident": "worker-pin-gate\\.sh bash"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-07T04:15:00+03:00",
+          "by": "night fixer harness-hooks-20261006T234303Z-2a24",
+          "files": [
+            "llm-legs/bin/worker-pin-gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-hooks-20261006T234303Z-2a24",
+      "note": "bash mode ran cat, two jq and two grep (plus a subshell for the chat-pins name) on every Bash call. Now the payload is read with the read builtin and a call naming neither worker-model nor the chat-pins directory exits before anything forks; probe 58 -> 19 ms. Test: tests/test_worker_pin_gate.sh fork count (red on old: cat jq jq grep grep).",
+      "handoff": null
+    },
+    {
+      "id": "hook-full-work-context-nudge",
+      "title": "context-nudge did its full work on a trivial Bash call",
+      "match": {
+        "rule": "hook_full_work",
+        "ident": "context-nudge\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-07T04:15:00+03:00",
+          "by": "night fixer harness-hooks-20261006T234303Z-2a24",
+          "files": [
+            "claude-setup/hooks/context-nudge.sh",
+            "claude-setup/hooks/lib/context-size.jq"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "hook-sync-context-nudge"
+      ],
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-hooks-20261006T234303Z-2a24",
+      "note": "PostToolUse on every tool: jq on the payload, wc, tail|grep for a boundary and tail|jq for the size, whatever the context. Its work is per call by design, so the cut is a ceiling: lib/context-size.jq with `--arg bound 1` also prints the counted usage's output_tokens plus the bytes of its line and every later one; the hook keeps size+that, the transcript size and path in <session>.size, and while no nudge is spent and ceiling + bytes written since + 20000 (CONTEXT_NUDGE_SKIP_MARGIN: reminders and tool schemas Claude Code adds unwritten) stays under stage1 it exits after wc (2 forks instead of 6). A token is at least a byte, so the skip never hides a crossing the transcript shows. Test: test_context_nudge.sh (no tail under the ceiling, red on old; growth that can reach stage1 is read again and nudges). Ruled out: dropping the payload jq (top-level key order is the only other reader) and a time-based throttle (no bound on growth).",
       "handoff": null
     },
     {

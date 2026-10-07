@@ -775,4 +775,13 @@ assert allowed "$(write_event "$PIN_FILE" "$(printf 'worker=codex\ncodex_profile
 assert denied "$(write_event "$PIN_FILE" "$(printf 'worker=auto\ncodex_profile=alpha,beta\nclaudeb_model=sonnet\n')")"
 assert denied "$(edit_event "$PIN_FILE" 'codex_profile=alpha,beta' 'codex_profile=opus')"
 
+# Every Bash call pays this door: one naming neither the pin file nor the chat pins forks nothing.
+for tool in cat jq grep sed basename dirname; do
+  printf '%s() { printf "%s\\n" >>"$FORKS"; command %s "$@"; }\n' "$tool" "$tool" "$tool"
+done >"$WORK/count-forks.sh"
+: >"$WORK/forks"
+jq -cn '{hook_event_name: "PreToolUse", session_id: "s", tool_name: "Bash", tool_input: {command: "ls -la | head -5"}}' |
+  BASH_ENV="$WORK/count-forks.sh" FORKS="$WORK/forks" bash "$GATE" bash >/dev/null 2>&1
+assert [ ! -s "$WORK/forks" ]
+
 printf 'PASS: %s asserts; the account pin moves only by Egor'\''s hand — a pin grant of his words opens it for a window and a grant for this chat'\''s own pin does not, a session editing ~/.claude/worker-model — by Edit/Write, by shell redirect, or by `use` at the command door in either direction — is denied whatever way it spells the path, while reading the pin, his own shell and every test fixture stay untouched; the same door refuses storing a `*_model=` value no implementation worker may run or a light row naming a vendor or model the light table does not hold, and no grant unlocks either\n' "$asserts"

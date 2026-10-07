@@ -22,6 +22,15 @@
 set -u
 
 MODE="${1:-}"
+IFS= read -r -d '' input
+# Every Bash call pays this door: one naming neither the pin file nor the chat-pins directory forks
+# nothing.
+if [ "$MODE" = bash ]; then
+  case $input in
+    *worker-model* | *claude-chat-pins*) ;;
+    *) [ -n "${CHAT_PINS_DIR:-}" ] && [[ $input == *"${CHAT_PINS_DIR##*/}"* ]] || exit 0 ;;
+  esac
+fi
 GRANT_TTL_MIN="${WORKER_MODEL_PIN_TTL_MIN:-30}"
 PIN_KEY_RE='^(claudeb|codex|gemini|grok)_profile='
 
@@ -252,7 +261,6 @@ deny() {
 DENY_REASON="Blocked: the account pin (claudeb_profile / codex_profile / gemini_profile / grok_profile) in ~/.claude/worker-model is Egor's to move, and he has not named it here. This gate is the rule, not a suggestion — do not reach the file another way; \`claudeb use|codexb use|geminib use|grokb use\` is refused at the same door. A per-task account belongs in the brief's ACCOUNT: line, which needs no pin. Edit/Write may change non-pin fields while preserving every pin line. Bash permits only the two literal worker/effort substitutions documented in shared-invariants row ae; other shell writes, including model replacements, require a pin grant. If the pin itself should move, ask him in one line and wait."
 
 command -v jq >/dev/null 2>&1 || exit 0
-input=$(cat) || exit 0
 
 case "$MODE" in
   write)
