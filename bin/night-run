@@ -25,6 +25,7 @@ helper_repos="${helper_repos:-$repo_root/share/night-helper-repos}"
 KINDS=' fixer vendor debt leftover handoff suite owner-chat trade '
 STATES=' pending merged left failed-launch blocked-on-egor nothing-to-do '
 SPEED_WINDOW_H=6
+redeploy="${NIGHT_RUN_REDEPLOY:-$repo_root/bin/harness-doctor --redeploy}"
 JQ_SPEED_RUN='def speed_run: .doctor == "harness" and (.area // "" | test("^speed(-|$)"));'
 . "$repo_root/share/chat-open.sh"
 . "$repo_root/share/store-lock.sh"
@@ -349,6 +350,7 @@ cmd_start() {
   fi
   trades_recheck "$id"
   unlock
+  $redeploy || true
   if ! opened=$(CHAT_OPEN_OPENER="${NIGHT_RUN_OPENER:-open -a Terminal}" \
     CHAT_OPEN_WORKER_PICK="${NIGHT_RUN_WORKER_PICK:-$repo_root/bin/worker-pick}" \
     CHAT_OPEN_PREFIX="caffeinate -i env CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=200" \
@@ -962,6 +964,8 @@ cmd_finish() {
   for file in "$holds_dir"/*.json; do
     if jq -e --arg t "$at" '.at <= $t' "$file" >/dev/null 2>&1; then rm -f "$file"; fi
   done
+  unlock
+  $redeploy || true
 }
 
 branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locked(0|1) -> TSV row; reads HELD

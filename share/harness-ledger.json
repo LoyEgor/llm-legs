@@ -4125,6 +4125,34 @@
       "reviewed_by": "night fixer harness-guards-20261006T234258Z-7309",
       "note": "Event 2026-10-06T18:11:13Z, browser-ui-work.md +453 B = eab2019 +280 (the pathlib miss) + 418d15a +38 + d8861ff +135, all python heredocs of chat 24cb1f32 in the worktree docs-browser-chrome-automation, the last two after C=<worktree>; cd $C with relative global/docs/browser-ui-work.md. instruction_carved_out carved every non-CLAUDE markdown file of a worktree out, the cd loop dropped a cd through a variable, and only spellings relative to the cwd itself were matched. Fixed: a worktree copy whose main-checkout counterpart resolves into a guarded directory stays guarded, cd $VAR resolves a literal assignment of the same command, and a worktree cwd also spells names relative to its main checkout. Not covered still: a cd into a directory the same command creates (here the gate judged the main-checkout spelling, which denies too). The landing itself (a chat git merge into main) is judged by no gate; growth born in a gated write is credited by harness-doctor's landing pool. test_instruction_gate red on the old code.",
       "handoff": null
+    },
+    {
+      "id": "deploy-drift-report-bus-no-redeploy",
+      "title": "A landed change to a deployed source stayed undeployed until someone ran its installer by hand",
+      "match": {
+        "rule": "deploy-drift",
+        "ident": "^\\~/\\.local/libexec/report\\-bus$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-08T01:30:00+03:00",
+          "by": "night fixer harness-deploys-20261007T214008Z-1811",
+          "files": [
+            "bin/harness-doctor",
+            "bin/night-run",
+            "tests/test_harness_doctor.sh",
+            "tests/test_night_run.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-08",
+      "reviewed_by": "night fixer harness-deploys-20261007T214008Z-1811",
+      "note": "Cause: night commit 816bb553 (report-bus resolve_session, one grep per hop) landed in main on 2026-10-07, and nothing reran bin/memlogd install-agent, so launchd's memlogd kept the 6 Oct copy and the doctor read drift for 237 runs; the only redeploy path was the prose 'rerun install-agent after editing' (bin/memlogd header, docs/memory-guard.md), and the night spent a whole fixer run on a one-command fix. Fixed: bin/harness-doctor --redeploy reruns the DEPLOYS fix of every installed group with a drifted copy (hand copies copied), keeping a group whose source is uncommitted in the main checkout; night-run start (before the doctors refresh, so no fixer is launched for it) and finish (after the landings) call it. Ran live 2026-10-08: memlogd reinstalled, report-bus matches. Not covered: a hand-copied launchd/*.plist is copied but not reloaded (the doctor's own cp fix has the same gap); a day edit stays drifted until the next night start.",
+      "handoff": null
     }
   ],
   "blind_spots": [

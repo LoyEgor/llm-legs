@@ -605,7 +605,7 @@ up to three events as evidence (`stop:<ts>/<session>`, `words:<ts>/<session>`, `
   `~/.local/libexec`): a byte copy must match, a generated wrapper must exec the source script, a
   generated plist must run its wrapper. A group none of whose copies exists is not installed and not
   judged; a missing or differing copy of an installed one is `deploy-drift` keyed by the copy, its fix
-  the installer command. Incident: memlogd ran a 28 Sep copy without `machine_tick` for a week.
+  the installer command; `--redeploy` (night-run start, finish) reruns it unless a source is uncommitted.
 - **Browser** reads only what the supervisor writes — `WORKER_RUN_DIR`'s `browse/accounts.json` (enrollment) and
   `browse/log.jsonl` (one line per browser run, 7 days) — plus Dia's process arguments; never a file a browser
   writes (Chrome and Dia rewrite theirs live: a compacted leveldb hid a device, 2026-10-06). One row per enrolled

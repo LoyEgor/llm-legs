@@ -4253,21 +4253,66 @@ def deploy_drift(target, kind, source):
     return None if program == source else "runs %s" % file_key(program)
 
 
+def deploy_source():
+    return os.environ.get("HARNESS_DEPLOY_SOURCE") or main_checkout(ROOT_DIR)
+
+
+def installed_deploys(source):
+    """(fix, [(target, kind, src, why)]) per installed group of DEPLOYS; a group none of whose copies exists is not
+    installed. `why` is the drift of that copy, None when it matches."""
+    dirs = {"libexec": libexec_dir(), "agents": os.path.join(base_home(), "Library", "LaunchAgents")}
+    for fix, copies in DEPLOYS:
+        targets = [(os.path.join(dirs[where], name), kind, src) for where, name, kind, src in copies]
+        if any(os.path.lexists(t) for t, _, _ in targets):
+            yield fix, [(target, kind, src, deploy_drift(target, kind, os.path.join(dirs["libexec"], src)
+                                                         if kind == "program" else os.path.join(source, src)))
+                        for target, kind, src in targets]
+
+
+def redeploy():
+    """Reruns the fix of every installed group with a drifted copy from the main checkout the Deploys section
+    judges. A group with an uncommitted source is left alone: a chat may be mid-edit, and launchd would run it."""
+    source, failed = deploy_source(), 0
+    for fix, copies in installed_deploys(source):
+        drifted = [(target, src) for target, _, src, why in copies if why]
+        if not drifted:
+            continue
+        sources = [src for _, kind, src, _ in copies if kind != "program"]
+        try:
+            dirty = subprocess.run(["git", "-C", source, "status", "--porcelain", "--"] + sources,
+                                   capture_output=True, text=True, timeout=30).stdout.rstrip()
+        except (OSError, subprocess.SubprocessError) as exc:
+            dirty = "?? " + str(exc)
+        name = fix or "cp " + " ".join(src for _, src in drifted)
+        if dirty:
+            print("redeploy kept %s: uncommitted %s" % (name, " ".join(line[3:] for line in dirty.splitlines())))
+            continue
+        try:
+            if fix:
+                done = subprocess.run(fix.split(), cwd=source, stdin=subprocess.DEVNULL, capture_output=True,
+                                      text=True, timeout=300)
+                error = done.returncode and (done.stderr.strip() or "exit %d" % done.returncode)
+            else:
+                for target, src in drifted:
+                    shutil.copyfile(os.path.join(source, src), target)
+                    shutil.copymode(os.path.join(source, src), target)
+                error = None
+        except (OSError, subprocess.SubprocessError) as exc:
+            error = str(exc)
+        failed += bool(error)
+        print("redeploy %s %s: %s" % ("failed" if error else "ran", name,
+                                      error or ", ".join(file_key(target) for target, _ in drifted)))
+    return 1 if failed else 0
+
+
 def deploys_section(now):
     """Each copy an installer of this repository deployed, against its source in the main checkout: launchd runs
     the deployed copy, so an edit to the source does nothing until the installer runs again. A group none of whose
     copies exists is not installed and is not judged."""
-    source = os.environ.get("HARNESS_DEPLOY_SOURCE") or main_checkout(ROOT_DIR)
-    dirs = {"libexec": libexec_dir(), "agents": os.path.join(base_home(), "Library", "LaunchAgents")}
     rows, checked = [], 0
-    for fix, copies in DEPLOYS:
-        targets = [(os.path.join(dirs[where], name), kind, src) for where, name, kind, src in copies]
-        if not any(os.path.lexists(t) for t, _, _ in targets):
-            continue
-        for target, kind, src in targets:
+    for fix, copies in installed_deploys(deploy_source()):
+        for target, kind, src, why in copies:
             checked += 1
-            wanted = os.path.join(dirs["libexec"], src) if kind == "program" else os.path.join(source, src)
-            why = deploy_drift(target, kind, wanted)
             if not why:
                 continue
             ident, command = file_key(target), fix or "cp %s %s" % (src, file_key(target))
@@ -5924,7 +5969,10 @@ def main():
     parser.add_argument("--json", action="store_true", help="print the document and persist nothing")
     parser.add_argument("--menu", action="store_true", help="print the menu lines and persist nothing")
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--redeploy", action="store_true", help="rerun the installer of every drifted deployed copy")
     args = parser.parse_args()
+    if args.redeploy:
+        return redeploy()
     now, started = now_s(), time.time()
     if args.json or args.menu:
         document = guarded_collect(False, now)
