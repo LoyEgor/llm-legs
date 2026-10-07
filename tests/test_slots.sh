@@ -381,10 +381,10 @@ gated() { # night hours-ago ref area -> the supervised run's err once it ended
   bash "$ROOT/bin/worker-run" _supervise "$WORK/run-$3" >/dev/null 2>&1
   cat "$WORK/run-$3/err" 2>/dev/null
 }
-assert [ "$(gated nlate 7 hs-late speed)" = "worker-run: speed window closed (6 h): night nlate job hs-late left, its fixer not started" ]
+assert [ "$(gated nlate 7 hs-late speed-tests-llm-legs-test-a)" = "worker-run: speed window closed (6 h): night nlate job hs-late left, its fixer not started" ]
 assert jq -e '.jobs[0].state == "left" and .jobs[0].reason == "speed window closed (6 h)" and all(.events[]; .phase != "speed-start")' "$DOCTORS_DIR/nights/nlate.json" >/dev/null
 assert jq -e '.abandoned_at != null' "$DOCTORS_DIR/runs/hs-late.json" >/dev/null
-assert [ -z "$(gated nopen 5 hs-in speed)" ]
+assert [ -z "$(gated nopen 5 hs-in speed-chat-hooks)" ]
 assert jq -e '.jobs[0].state == "pending" and [.events[] | .phase] == ["speed-start"]' "$DOCTORS_DIR/nights/nopen.json" >/dev/null
 assert [ -z "$(gated nhooks 7 hh-late hooks)" ]
 assert jq -e '.jobs[0].state == "pending" and .events == null' "$DOCTORS_DIR/nights/nhooks.json" >/dev/null

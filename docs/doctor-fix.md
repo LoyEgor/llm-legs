@@ -173,9 +173,9 @@ files (`hammerspoon/automation_menu.lua`, `llm-legs/hammerspoon/llm-limits.lua`)
 
 ### Speed: same intelligence, less waiting
 
-A `speed` run holds the Speed block's regressions and its chosen `opportunity:` rows; each carries
-its lever, saving and proof in `opportunity` and `docs/speed-doctor-design.md` §5 bounds what may
-change. Never touch a model, effort or thinking knob: a night `close` refuses any such added or
+A `speed-<lever>` run holds one row of the Speed block (a regression or a chosen `opportunity:`), or
+the rows sharing a component file; each carries its lever, saving and proof in `opportunity` and
+`docs/speed-doctor-design.md` §5 bounds what may change. Never touch a model, effort or thinking knob: a night `close` refuses any such added or
 removed line and names it (`docs/doctors-contract.md` §4).
 
 ### The judge is not yours to loosen

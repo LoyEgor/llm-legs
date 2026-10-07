@@ -22,6 +22,7 @@ sweep_repos="${NIGHT_RUN_SWEEP_REPOS:-$HOME/.claude/sweep-repos}"
 KINDS=' fixer vendor debt leftover handoff suite owner-chat '
 STATES=' pending merged left failed-launch blocked-on-egor nothing-to-do '
 SPEED_WINDOW_H=6
+JQ_SPEED_RUN='def speed_run: .doctor == "harness" and (.area // "" | test("^speed(-|$)"));'
 . "$repo_root/share/chat-open.sh"
 . "$repo_root/share/store-lock.sh"
 . "$repo_root/share/test-scope.sh"
@@ -97,8 +98,8 @@ carry: first an owner-chat job per owner chat (share/handoffs.py --batches: the 
   suite the newest earlier night's full run failed; each gets its night worktree and a brief; prints
   <ref>\t<brief>\t<worktree>. A handoff job blocked-on-egor needs the trade in reason= as Cost:,
   Loss: and Recommendation:
-speed-gate, run by worker-run once a night worker takes its slot: a Speed fixer (the harness run of area
-  speed) whose first start comes SPEED_WINDOW_H (6) hours or more after the night's started_at exits 3,
+speed-gate, run by worker-run once a night worker takes its slot: a Speed fixer (a harness run of area
+  speed-<lever>, one per lever or per levers sharing a file) whose first start comes SPEED_WINDOW_H (6) hours or more after the night's started_at exits 3,
   its job left with reason `speed window closed (6 h)` and its run abandoned; an earlier start is
   recorded as a speed-start event, after which a resumed worker of that fixer always passes
 suites: every sweep repository's tests/run-all, one after another, detached unless --wait, into the
@@ -865,7 +866,7 @@ worktree_lines() { # repo -> worktree<TAB>branch|-<TAB>main-checkout(0|1)<TAB>lo
 cmd_speed_gate() { # id ref -> exit 3 once the Speed window closed before the fixer's first start
   local id=$1 ref=$2 file run verdict reason="speed window closed ($SPEED_WINDOW_H h)"
   file=$(night_file "$id") run="${nights_dir%/*}/runs/$ref.json"
-  [ -s "$file" ] && jq -e '.doctor == "harness" and .area == "speed"' "$run" >/dev/null 2>&1 || return 0
+  [ -s "$file" ] && jq -e "$JQ_SPEED_RUN"' speed_run' "$run" >/dev/null 2>&1 || return 0
   lock
   verdict=$(jq -r --arg r "$ref" --argjson h "$SPEED_WINDOW_H" 'if any(.events[]?; .phase == "speed-start" and .job == $r) then "again"
     elif now < (.started_at | fromdateiso8601) + $h * 3600 then "open" else "closed" end' "$file") || die "cannot read night $id"
@@ -1130,7 +1131,7 @@ cmd_report() {
   done | jq -sc 'add // {}')
   speed=$(jq -r '.jobs[].ref' "$file" | while IFS= read -r ref; do
     run="${nights_dir%/*}/runs/$ref.json"
-    [ ! -f "$run" ] || jq -c --arg r "$ref" 'select(.doctor == "harness" and .area == "speed") | {($r): (.problems | length)}' "$run"
+    [ ! -f "$run" ] || jq -c --arg r "$ref" "$JQ_SPEED_RUN"' select(speed_run) | {($r): (.problems | length)}' "$run"
   done | jq -sc 'add // {}')
   table=$(python3 -B "$repo_root/share/time_budget.py" table "$repo_root/bin/worker-run" "$file") || die "no comparison table for $file"
   if $post; then

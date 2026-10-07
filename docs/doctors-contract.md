@@ -208,7 +208,7 @@ value × exposure.
 
 **Top-K exception (the Code doctor and Harness's Speed block).** Speed's `watch` opportunities enter
 the snapshot only as its `speed.selection` names them, in that order and `quality: equivalent` only,
-after the loud regressions, in area `speed`: `bin/speed-doctor` `select` charges each regression its
+after the loud regressions, one run per row in area `speed-<lever>` (rows sharing a component file in one run): `bin/speed-doctor` `select` charges each regression its
 component's cheapest lever, then takes every opportunity with a positive score by score, with no
 count or worker-hour cap (the worker slots' admission paces them), one hook lever per night. The Code doctor's snapshot takes at most K problems per run, by judged
 `value`: `TOP_K` 3, or `TOP_K_LOW_YIELD` 1 while its yield per 1000 tokens spent is under

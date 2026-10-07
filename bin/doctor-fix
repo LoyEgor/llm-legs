@@ -274,7 +274,7 @@ def snapshot(doctor, doc_file, night=None):
         problems += [{"id": r["id"], "rule": (r.get("match") if isinstance(r.get("match"), dict) else {}).get("rule"),
                       "ledger": r["id"], "state": "quiet", "fact": r.get("title")}
                      for r in rows.values() if r.get("status") == "open" and r.get("id") and r["id"] not in seen]
-    kept, watched, opportunities = [], [], {}
+    kept, watched, opportunities, speed = [], [], {}, set()
     chosen = strings((doc.get("speed") or {}).get("selection")) if doctor == "harness" else []
     for problem in problems:
         pid, rule, state = problem.get("id"), problem.get("rule"), problem.get("state")
@@ -309,6 +309,8 @@ def snapshot(doctor, doc_file, night=None):
                 what = "review-bench doctor class %s · %s" % (pid[10:], what)
         elif doctor == "harness":
             area = problem.get("group") if problem.get("speed") else sections.get(rule) or OWN_AREA
+            if problem.get("speed"):
+                speed.add(pid)
             kind, _, target = str((problem.get("opportunity") or {}).get("target") or "").partition("/")
             ident = target if kind == "hooks" else target.replace("/", ":", 1) if kind == "tests" else \
                 (problem.get("opportunity") or {}).get("hook") if rule == "opportunity" and \
@@ -393,8 +395,30 @@ def snapshot(doctor, doc_file, night=None):
         elif state == "watch" and doctor == "harness" and area in HOOK_AREAS:
             watched.append(((problem.get("value") or 0) * (problem.get("exposure") or 0), entry))
     watched.sort(key=lambda pair: -pair[0])
-    print(json.dumps(kept + [opportunities[pid] for pid in chosen if pid in opportunities]
-                     + [entry for _, entry in watched[:8]]))
+    entries = kept + [opportunities[pid] for pid in chosen if pid in opportunities] + [entry for _, entry in watched[:8]]
+    split_speed([entry for entry in entries if entry["id"] in speed])
+    print(json.dumps(entries))
+
+
+def split_speed(entries):
+    """One run per Speed row, so each claims its own slot and window; rows sharing a component file stay in one run."""
+    groups = []
+    for entry in entries:
+        files = set(entry["component"]["files"])
+        hits = [group for group in groups if group["files"] & files]
+        group = hits[0] if hits else {"area": "speed-" + slug(re.sub(r"^opportunity:", "", str(entry["id"]))),
+                                      "files": set(), "entries": []}
+        if not hits:
+            groups.append(group)
+        for other in hits[1:]:
+            group["files"] |= other["files"]
+            group["entries"] += other["entries"]
+            groups.remove(other)
+        group["files"] |= files
+        group["entries"].append(entry)
+    for group in groups:
+        for entry in group["entries"]:
+            entry["area"] = group["area"]
 
 
 def git(folder, *args):

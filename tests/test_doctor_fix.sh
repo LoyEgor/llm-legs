@@ -802,8 +802,9 @@ assert_fails fix launch code --night n7 2>"$WORK/err"
 assert grep -qF 'report-only scope' "$WORK/err"
 assert [ "$(ls "$RUNS"/code-*.json)" = "$before" ]
 
-# Speed: a harness night takes the loud regressions and Speed's chosen opportunities as area speed. Over the calibration
-# transcripts, a quiet-band contention probe and a heavy llm-legs suite, that is design §6's Night 1: #2, #1, #5 stage 1.
+# Speed: a harness night takes the loud regressions and Speed's chosen opportunities, one run (area speed-<lever>) per
+# lever so each claims its own slot and window. Over the calibration transcripts, a quiet-band contention probe and a
+# heavy llm-legs suite, that is design §6's Night 1: #2, #1, #5 stage 1.
 S="$WORK/speed-cal"
 mkdir -p "$L/tests" && : >"$L/tests/test_llm_limits.sh"
 python3 - "$ROOT" "$S" <<'EOF' || fail "the calibration fixture did not build"
@@ -851,10 +852,15 @@ jq --arg c "$rfg" '. + {model: "opus"} | .hooks.PreToolUse[0].hooks += [{type: "
 git -C "$L" update-ref refs/night/n8/base HEAD
 env "${speed_env[@]}" bash "$FIX" launch harness --night n8 >"$WORK/out" 2>"$WORK/err" ||
   fail "the speed night did not launch: $(cat "$WORK/err")"
-assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 1 ]
-sid=$(cut -f1 "$WORK/out")
-assert jqe --argjson n "$night1" --arg t "$L/tests/test_llm_limits.sh" --arg h "$rfg" '.area == "speed" and [.problems[].id] == $n
-  and [.problems[].component.files] == [[$t], [$h], [], []]' "$(record "$sid")"
+speed_runs() { # -> each launched run as [area, [problem id, component files]...], by area
+  for r in $(cut -f1 "$WORK/out"); do jq -c '[.area] + [.problems[] | [.id, .component.files]]' "$(record "$r")"; done | jq -sc 'sort'
+}
+assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 4 ]
+assert jqe --arg t "$L/tests/test_llm_limits.sh" --arg h "$rfg" '. == [
+  ["speed-chat-hooks", ["opportunity:chat/hooks", [$h]]], ["speed-chat-tests", ["opportunity:chat/tests", []]],
+  ["speed-machine-contention", ["opportunity:machine/contention", []]],
+  ["speed-tests-llm-legs-test-llm-limits", ["opportunity:tests/llm-legs/test_llm_limits", [$t]]]]' <(speed_runs)
+sid=$(grep -F 'speed-machine-contention' "$WORK/out" | cut -f1)
 
 # Its close refuses any added or removed line that sets a model, effort or thinking knob, committed, uncommitted,
 # untracked or in the live settings and worker-model files; a speed diff touching none of them closes.
@@ -872,9 +878,6 @@ mkdir -p "$HOME/.claude" && printf 'claudeb_model=sonnet\n' >"$HOME/.claude/work
 jq -n --argjson s $(($(now) + 5)) '{contract: 1, doctor: "harness", as_of_s: $s, judge: "base-harness", problems: []}' \
   >"$DATA/harness-doc.json"
 printf 'opportunity:machine/contention\truled-out\tnone\tthe lever is elsewhere\n' >"$WORK/sd"
-printf 'opportunity:chat/hooks\truled-out\tclaude-setup/hooks/review-flow-gate.sh\tthe snapshot stays\n' >>"$WORK/sd"
-printf 'opportunity:tests/llm-legs/test_llm_limits\truled-out\tllm-legs/tests/test_llm_limits.sh\tno sleeps\n' >>"$WORK/sd"
-printf 'opportunity:chat/tests\truled-out\tnone\tthe suites are elsewhere\n' >>"$WORK/sd"
 assert_fails fix close "$sid" --decisions "$WORK/sd" "tuned" 2>"$WORK/err"
 knob() { grep -qF "model/effort knob, $1: $2" "$WORK/err"; }
 assert knob "share/worker-model.sh table" "llm-legs/share/worker-model.sh:2: +claudeb opus medium"
@@ -897,13 +900,34 @@ assert live "settings model/effort/thinking" "$WORK/settings.json:$(grep -n '"mo
 assert live "worker-model" "$HOME/.claude/worker-model:1: +claudeb_model=sonnet"
 sed -i '' 's/"haiku"/"opus"/' "$WORK/settings.json" && rm "$HOME/.claude/worker-model"
 rm "$DATA/harness-doc.json"
+# An open lever run holds its own area only; the next night launches the levers it does not hold.
+gate="$WORK/projects/claude-setup/hooks/gate.sh"
 jq --argjson s "$(now)" '.as_of_s = $s
-  | (.problems[] | select(.id == "opportunity:chat/tests") | .opportunity.quality) = "risk"' "$S/harness/latest.json" >"$S/risk.json" &&
-  mv "$S/risk.json" "$S/harness/latest.json"
+  | (.problems[] | select(.id == "opportunity:chat/tests") | .opportunity.quality) = "risk"
+  | (.problems[] | select(.id == "opportunity:machine/contention") | .opportunity.hook) = "gate.sh"' \
+  "$S/harness/latest.json" >"$S/risk.json" && mv "$S/risk.json" "$S/harness/latest.json"
 git -C "$L" update-ref refs/night/n9/base HEAD
 env "${speed_env[@]}" bash "$FIX" launch harness --night n9 >"$WORK/out" 2>"$WORK/err" || fail "speed night n9: $(cat "$WORK/err")"
-assert jqe --argjson n "$night1" '[.problems[].id] == $n - ["opportunity:chat/tests"]' "$(record "$(cut -f1 "$WORK/out")")"
+assert jqe --arg g "$gate" '. == [["speed-machine-contention", ["opportunity:machine/contention", [$g]]]]' <(speed_runs)
+for open in $(fix runs harness --open --json | jq -r '.[].id'); do fix abandon "$open" >/dev/null; done
+# Three levers on distinct files: three runs. Two levers sharing a hook script ride in one run, the third alone.
+git -C "$L" update-ref refs/night/n11/base HEAD
+env "${speed_env[@]}" bash "$FIX" launch harness --night n11 >"$WORK/out" 2>"$WORK/err" || fail "speed night n11: $(cat "$WORK/err")"
+assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 3 ]
+assert jqe --arg t "$L/tests/test_llm_limits.sh" --arg h "$rfg" --arg g "$gate" '. == [
+  ["speed-chat-hooks", ["opportunity:chat/hooks", [$h]]], ["speed-machine-contention", ["opportunity:machine/contention", [$g]]],
+  ["speed-tests-llm-legs-test-llm-limits", ["opportunity:tests/llm-legs/test_llm_limits", [$t]]]]' <(speed_runs)
 assert [ ! -s "$WORK/err" ]
+for open in $(fix runs harness --open --json | jq -r '.[].id'); do fix abandon "$open" >/dev/null; done
+jq --argjson s "$(now)" '.as_of_s = $s
+  | (.problems[] | select(.id == "opportunity:machine/contention") | .opportunity.hook) = "review-flow-gate.sh"' \
+  "$S/harness/latest.json" >"$S/shared.json" && mv "$S/shared.json" "$S/harness/latest.json"
+git -C "$L" update-ref refs/night/n12/base HEAD
+env "${speed_env[@]}" bash "$FIX" launch harness --night n12 >"$WORK/out" 2>"$WORK/err" || fail "speed night n12: $(cat "$WORK/err")"
+assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 2 ]
+assert jqe --arg t "$L/tests/test_llm_limits.sh" --arg h "$rfg" '. == [
+  ["speed-chat-hooks", ["opportunity:chat/hooks", [$h]], ["opportunity:machine/contention", [$h]]],
+  ["speed-tests-llm-legs-test-llm-limits", ["opportunity:tests/llm-legs/test_llm_limits", [$t]]]]' <(speed_runs)
 # A Speed section that selects nothing says why on stderr instead of skipping silently.
 jq --argjson s "$(now)" '.as_of_s = $s | .speed.selection = [] | .speed.why_none = "295 min/day recoverable, but 2 need Egor; 1.2 of 7 days covered"' \
   "$S/harness/latest.json" >"$S/picked-none.json" && mv "$S/picked-none.json" "$S/harness/latest.json"
@@ -912,4 +936,4 @@ env "${speed_env[@]}" bash "$FIX" launch harness --night n10 >"$WORK/out" 2>"$WO
 assert [ ! -s "$WORK/out" ]
 assert [ "$(cat "$WORK/err")" = "harness: Speed selects nothing: 295 min/day recoverable, but 2 need Egor; 1.2 of 7 days covered" ]
 
-echo "PASS: $asserts asserts; code runs (one area, top-K, needs-Egor out, close through code-doctor check); launch refusals (no or foreign or stale document, nothing to fix, open run under 12 h), an old run abandoned, the snapshot without watch/fixed-pending, the chat through the shared opener, the record fields, a failed opener, close refusals (doctor not rerun, undecided id, missing path, missing commit, a directory, no evidence, bad verdict, judge changed without its line), a clean close, show, runs, updater records and launch, parallel ids, night launch (areas, worktrees, branches, briefs, the packet, one open run per area), night vendor records, a night without a base ref, llm components with their block's entry file, fixed only once the doctor reads it fixed-pending or gone, night close (markdown net zero per worktree: committed, untracked and cut bytes, a worktree without its base; a day run unmeasured; the doctor rerun once in the worktree, a handed-in document refused, purpose touching its component, judge), abandon, a failed worktree, harness sections and top watch rows under parallel launch, updater machinery, a legacy release run, a merge citation, a malformed ledger row, a failed collector, an unwritten launched_at, a launcher killed under the lock, quiet open ledger rows (their own brief section, the day launch), a speed night (design Night 1 over the calibration fixture, an empty Speed pick named on stderr, a refusal per worktree model/effort knob site, a live settings change only a note, a knob-free diff closes)"
+echo "PASS: $asserts asserts; code runs (one area, top-K, needs-Egor out, close through code-doctor check); launch refusals (no or foreign or stale document, nothing to fix, open run under 12 h), an old run abandoned, the snapshot without watch/fixed-pending, the chat through the shared opener, the record fields, a failed opener, close refusals (doctor not rerun, undecided id, missing path, missing commit, a directory, no evidence, bad verdict, judge changed without its line), a clean close, show, runs, updater records and launch, parallel ids, night launch (areas, worktrees, branches, briefs, the packet, one open run per area), night vendor records, a night without a base ref, llm components with their block's entry file, fixed only once the doctor reads it fixed-pending or gone, night close (markdown net zero per worktree: committed, untracked and cut bytes, a worktree without its base; a day run unmeasured; the doctor rerun once in the worktree, a handed-in document refused, purpose touching its component, judge), abandon, a failed worktree, harness sections and top watch rows under parallel launch, updater machinery, a legacy release run, a merge citation, a malformed ledger row, a failed collector, an unwritten launched_at, a launcher killed under the lock, quiet open ledger rows (their own brief section, the day launch), a speed night (design Night 1 over the calibration fixture as one run per lever, levers sharing a hook script in one run, an open lever run holding only its area, an empty Speed pick named on stderr, a refusal per worktree model/effort knob site, a live settings change only a note, a knob-free diff closes)"

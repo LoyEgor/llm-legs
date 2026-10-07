@@ -59,7 +59,8 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
      - Each run gets a worktree on branch `night/<night-id>/<run-id>` and a brief file.
      - The orchestrator starts each brief as a headless worker (`worker-run`, `--workdir` the
        worktree; account from `worker-pick`).
-     - Speed's fixer starts only inside a 6-hour wall-clock window from the night's `started_at`: `worker-run`
+     - Speed gets one fixer per lever (levers sharing a file share one), each starting only inside a 6-hour
+       wall-clock window from the night's `started_at`: `worker-run`
        runs `night-run speed-gate` once its slot is taken (a `speed-start` event); a first start past the window
        is not launched, its job `left` with `speed window closed (6 h)` and its run abandoned, its levers ranked
        again the next night. `report` shows `speed · levers N selected · S started · L left by the 6 h window`.
