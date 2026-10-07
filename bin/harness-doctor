@@ -5142,8 +5142,8 @@ def menu_text(document):
         "issues": [[count, group] for group, count in groups.most_common(3)],
         "speed": {k: speed[k] for k in ("as_of_s", "status", "lost_min_day", "lost_min_day_by_day") if k in speed}}
     if speed.get("spend"):
-        header["spend"] = {k: speed["spend"][k] for k in ("as_of_s", "status", "share", "share_by_day", "issues")
-                           if k in speed["spend"]}
+        header["spend"] = {k: speed["spend"][k] for k in ("as_of_s", "status", "index", "index_by_day", "change", "tone",
+                                                          "issues") if k in speed["spend"]}
     header["speed"]["issues"] = [[f["recoverable_min_day"], f["label"]]
                                  for f in sorted((speed.get("budget") or {}).get("floors") or (),
                                                  key=lambda f: -f["recoverable_min_day"])

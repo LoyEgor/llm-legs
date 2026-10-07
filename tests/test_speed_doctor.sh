@@ -534,7 +534,7 @@ check(doc.get("lost_min_day_by_day") == first.get("lost_min_day_by_day") == {tod
                      "issues": [[1, "Waits"], [1, "Guards"], [1, "Memory guard"]],
                      "speed": {"as_of_s": first["as_of_s"], "status": first["status"], "lost_min_day": 12.0,
                                "lost_min_day_by_day": {today: 12.0}, "issues": [[8.7, "suites running"], [3.3, "stop hooks"]]},
-                     "spend": {"as_of_s": first["as_of_s"], "status": "nodata", "share": None, "share_by_day": {},
+                     "spend": {"as_of_s": first["as_of_s"], "status": "nodata", "index": None, "index_by_day": {},
                                "issues": []}}
       and repeated.get("lost_min_day_by_day") == json.load(open(state_path)).get("lost_min_day_by_day")
       == {today: 100, yesterday: 20},

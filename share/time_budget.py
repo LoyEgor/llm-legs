@@ -24,6 +24,7 @@ import handoffs  # noqa: E402
 import limiter_hold  # noqa: E402
 import night_churn  # noqa: E402
 import night_spend  # noqa: E402
+import spend as spend_block  # noqa: E402
 
 CLASSES = (("model", "model turns", "plain"), ("tools", "tool execution", "plain"),
            ("compaction", "compaction", "plain"), ("hooks", "hooks", "harness"), ("stop", "stop hooks", "harness"),
@@ -47,7 +48,7 @@ FLOORS = {"hooks": 0, "stop": 0, "suite_wait": 0, "slot": 0, "retries": 0, "lock
 ACTIVE_FLOOR_SHARE = 0.70
 FLOOR_ROW_MIN_DAY = 30
 ROI_DAYS = 3
-IMPROVEMENT_RULES = ("opportunity", "regression", "time_floor")
+IMPROVEMENT_RULES = ("opportunity", "regression", "time_floor", spend_block.RULE)
 SETTLE_S = 24 * 3600
 KEEP_DAYS = 35
 TOP_SUITES = 10
@@ -633,6 +634,8 @@ def lines_of(night):
 def improvement_class(rule, pid):
     """The time class a Speed or time row's fix should shrink; None measures the harness total."""
     ident = pid.split(":", 1)[1] if ":" in pid else ""
+    if rule == spend_block.RULE:
+        return pid
     if rule == "time_floor" or ident.startswith("time/"):
         key = ident[5:] if ident.startswith("time/") else ident
         return key if key in FLOORS else None
@@ -698,14 +701,34 @@ def saved_min_day(item, landed, now):
     return round(statistics.mean(before) - statistics.mean(after), 1)
 
 
+def spend_proofs():
+    doc = read_json(os.path.join(harness_dir(), "latest.json"), None)
+    found = (((doc or {}).get("speed") or {}).get("spend") or {}).get("proofs") if isinstance(doc, dict) else None
+    return found if isinstance(found, dict) else {}
+
+
+def timed(row):
+    return [i for i in row.get("improvements") or () if not i["class"].startswith("spend:")]
+
+
 def roi_lines(rows, now):
     """Per improvement job of the night, per night, and cumulative over the trend: weighted spend against the
-    minutes per day saved once the change ran a full day. No gain reads 'spend without result', never a revert."""
-    out, total_spend, total_saved, measured = [], 0.0, 0.0, 0
+    minutes per day saved once the change ran a full day. No gain reads 'spend without result', never a revert. A
+    Spend audit reads its proof from Harness's latest.json instead and stays out of the minute totals."""
+    out, total_spend, total_saved, measured, proofs = [], 0.0, 0.0, 0, None
     for row in (r for r in rows if r):
         spend = saved = 0.0
         pending = unmeasured = 0
         for item in row.get("improvements") or ():
+            if item["class"].startswith("spend:"):
+                if row is rows[-1]:
+                    if proofs is None:
+                        proofs = spend_proofs()
+                    out.append("roi · %s · %s · %.1fM · %+d/-%d lines · %s" % (
+                        item["ref"][:40], item["class"][6:], item["spend_m"], item["lines"][0], item["lines"][1],
+                        spend_block.proof_text(proofs.get(item["class"][6:]))
+                        if item["merged"] else "not landed"))
+                continue
             gain = saved_min_day(item, row.get("ended") or row["started"] + row["hours"] * 3600, now) \
                 if item["merged"] else None
             if gain == UNMEASURED:
@@ -723,12 +746,12 @@ def roi_lines(rows, now):
                     item["lines"][1], "not landed" if not item["merged"] else "pending a full day" if gain is None
                     else "unmeasured before or after it" if gain == UNMEASURED
                     else "saves %.1f min/day" % gain if gain > 0 else "spend without result"))
-        if row is rows[-1] and row.get("improvements"):
+        if row is rows[-1] and timed(row):
             out.append("roi · night: improvements %.1fM · gained %.1f min/day%s%s" % (
                 spend, saved, " · %d pending" % pending if pending else "",
                 " · %d unmeasured" % unmeasured if unmeasured else ""))
         total_spend, total_saved = total_spend + spend, total_saved + saved
-    if any(r and r.get("improvements") for r in rows):
+    if any(r and timed(r) for r in rows):
         out.append("roi · last %d nights: improvements %.1fM · gained %.1f min/day%s" % (
             len([r for r in rows if r]), total_spend, total_saved, "" if not total_spend and not total_saved
             else " · nothing measured yet" if not measured

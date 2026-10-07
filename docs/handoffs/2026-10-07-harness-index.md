@@ -1,6 +1,6 @@
 # Harness index: Spend's headline and a chart of its own
 
-Status: open — To: Harness Doctor (collector), Updater doctor (the Doctors menu chart)
+Status: done (Spend head, index history and Doctors chart in share/spend.py and hammerspoon/doctors.lua) — To: Harness Doctor (collector), Updater doctor (the Doctors menu chart)
 
 From «Token spending tracking and optimization», 2026-10-07, token-map 3e3b078. Egor asked for this number to be integrated like the other harness metrics and charted in Doctor.
 

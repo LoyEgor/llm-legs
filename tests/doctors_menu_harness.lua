@@ -212,7 +212,7 @@ local series = { 0, 1, 2, 3, 4, 6, 8 }
 local function spendDays(values)
   local days = {}
   for index = 1, 7 do
-    if values[index] then days[trendDay(index - 7)] = values[index] end
+    if values[index] then days[trendDay(index - 7)] = values[index] / 10 end
   end
   return days
 end
@@ -240,12 +240,12 @@ write("/system-doctor/latest.json", { contract = 1, doctor = "system", as_of_s =
 local metadata = { status = "problems", problems = {}, issues = { { 3, "Hooks" } },
   speed = { status = "ok", as_of_s = now, lost_min_day = 12, lost_min_day_by_day = writeDays(series),
     issues = { { 12, "hooks" } } },
-  spend = { status = "watch", as_of_s = now, share = 9.2, share_by_day = spendDays(series),
+  spend = { status = "watch", as_of_s = now, index = 0.46, tone = "better", index_by_day = spendDays(series),
     issues = { { 1.888, "compaction summaries" } } } }
 local function trendHarness()
   write("/harness-doctor/menu.txt", "T\t3\t" .. now .. "\tHarness doctor: 3 problems\nH\t" .. hs.json.encode(metadata)
     .. "\n0\t\t\tLost time: ok · 179 OM/d\n1\td\t\t12 min/day over the floor\n"
-    .. "1\td\t\tNeeds Egor: nothing\n0\t\t\tSpend: watch · 9.2 % of spend · 1 audit due\n"
+    .. "1\td\t\tNeeds Egor: nothing\n0\t\t\tSpend: watch · index 0.46 (-54%) · 1 audit due\n"
     .. "1\t\t\t1.9 % · compaction summaries · Δ -6% · audit due: never audited\n"
     .. "0\t\t\tHooks: 3 problems\n1\td\t\tall hook details\n")
 end
@@ -255,12 +255,13 @@ local trendDoctor = loadDoctors()
 local trendItems = trendDoctor.menuItems()
 local trendNight = tasks[#tasks]
 local names, values = { "LLM", "Harness", "Updater", "Code", "Lost time", "Spend", "System" },
-  { "2", "3", "0", "3", "12", "9", "2" }
-local UNITS = { [5] = "min/day", [6] = "% of spend" }
+  { "2", "3", "0", "3", "12", "0.46", "2" }
+local UNITS = { [5] = "min/day", [6] = "index" }
+local USUAL = { [5] = "25", [6] = "0.25" }
 local bars = "▁▁▂▃▄▆█"
 for index, name in ipairs(names) do
   local title = trendItems[index] and trendItems[index].title
-  local want = row(name, values[index], UNITS[index], bars, index == 5 and "25" or "3")
+  local want = row(name, values[index], UNITS[index], bars, USUAL[index] or "3")
   check(title and text(title) == want, "trend summary " .. name .. ": " .. (title and text(title) or "missing"))
   for day = 1, 7 do
     check(title and sameColor(colorAt(title, BAR_AT + day - 1), palette.DIM), "every bar DIM, above usual too " .. name .. " day " .. day)
@@ -287,13 +288,14 @@ check(aligned({ table.unpack(trendItems, 1, 7) }), "summary columns line up at t
 for index = 1, 7 do
   local title = trendItems[index].title
   check(span(title, UNIT_AT, UNIT_AT + 9) == string.format("%-10s", UNITS[index] or "")
-    and not span(title, VALUE_AT - 3, USUAL_AT):gsub("min/day", ""):gsub("%% of spend", ""):match("[%a%%]"),
-    "min/day and % of spend are the only units on the summary rows, counts bare: " .. text(title))
+    and not span(title, VALUE_AT - 3, USUAL_AT):gsub("min/day", ""):gsub("index", ""):match("[%a%%]"),
+    "min/day and index are the only units on the summary rows, counts bare: " .. text(title))
 end
 check(#trendItems == 10 and trendItems[8].title == "-" and text(trendItems[9].title) == "Cleanup now"
   and text(trendItems[10].title) == "Run everything now", "top level: seven summaries, System last, then the actions")
 check(span(trendItems[5].title, 1, 9) == "Lost time" and span(trendItems[6].title, 1, 5) == "Spend"
   and sameColor(colorAt(trendItems[6].title, 1), palette.DIM_RED), "the time row reads Lost time; Spend beside it, DIM_RED while an audit is due")
+check(sameColor(colorAt(trendItems[6].title, VALUE_AT), palette.GREEN), "Spend's index GREEN when tokenmap's tone is better")
 check(span(trendItems[3].title, 1, 7) == "Updater" and sameColor(colorAt(trendItems[3].title, 1), palette.GREEN)
   and sameColor(colorAt(trendItems[3].title, 7), palette.GREEN), "ok name GREEN")
 check(span(trendItems[1].title, 1, 3) == "LLM" and sameColor(colorAt(trendItems[1].title, 1), palette.RED), "problem name RED")
@@ -429,13 +431,13 @@ local flatRed = false
 for at = BAR_AT, BAR_AT + 6 do flatRed = flatRed or sameColor(colorAt(flat, at), palette.RED) end
 check(text(flat) == row("LLM", "2", nil, "███████", "5") and not flatRed, "a flat week has no RED bar: " .. text(flat))
 metadata.speed.lost_min_day_by_day = writeDays({ false, 1, 2, 3, 4, 6, 8 })
-metadata.spend.share_by_day = spendDays({ false, 1, 2, 3, 4, 6, 8 })
+metadata.spend.index_by_day = spendDays({ false, 1, 2, 3, 4, 6, 8 })
 trendHarness()
 local cold = trendDoctor.menuItems()
 for index, name in ipairs(names) do
   local title = cold[index].title
   check(text(title) == row(name, values[index], UNITS[index], " ▁▂▃▄▆█",
-    index == 5 and "30" or "3"),
+    index == 5 and "30" or index == 6 and "0.30" or "3"),
     "cold start: an unmeasured day is a blank cell, measured days keep their bars: " .. text(title))
 end
 check(aligned({ table.unpack(cold, 1, 7) }), "cold start rows stay aligned")
@@ -453,13 +455,16 @@ check(text(unknownSpeed.title) == row("Lost time", "–", "min/day", " ▁▂▃
   and sameColor(colorAt(unknownSpeed.title, 1), palette.DIM) and sameColor(colorAt(unknownSpeed.title, VALUE_AT), palette.DIM),
   "a missing Speed floor is a DIM – despite today's retained history: " .. text(unknownSpeed.title))
 metadata.speed.lost_min_day = 12
-metadata.spend.status, metadata.spend.share = "nodata", nil
+metadata.spend.tone = "worse"
+trendHarness()
+check(sameColor(colorAt(trendDoctor.menuItems()[6].title, VALUE_AT), palette.RED), "Spend's index RED when tokenmap's tone is worse")
+metadata.spend.status, metadata.spend.index = "nodata", nil
 trendHarness()
 local staleSpend = trendDoctor.menuItems()[6]
-check(text(staleSpend.title) == row("Spend", "–", "% of spend", " ▁▂▃▄▆█", "3")
+check(text(staleSpend.title) == row("Spend", "–", "index", " ▁▂▃▄▆█", "0.30")
   and sameColor(colorAt(staleSpend.title, 1), palette.DIM) and sameColor(colorAt(staleSpend.title, VALUE_AT), palette.DIM),
-  "a stale tracking.json is a DIM – on Spend, never its old share: " .. text(staleSpend.title))
-metadata.spend.status, metadata.spend.share = "watch", 9.2
+  "a stale tracking.json is a DIM – on Spend, never its old index: " .. text(staleSpend.title))
+metadata.spend.status, metadata.spend.index, metadata.spend.tone = "watch", 0.46, "better"
 trendHarness()
 write("/doctors/problem-days.jsonl", "")
 trendItems = trendDoctor.menuItems()

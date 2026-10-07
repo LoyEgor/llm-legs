@@ -747,9 +747,14 @@ local function styled(segments)
 end
 
 local function rounded(value) return string.format("%d", math.floor(value + 0.5)) end
+local function ratio(value)
+  return value < 9.995 and string.format("%.2f", value) or value < 99.95 and string.format("%.1f", value) or rounded(value)
+end
+local VALUE_TONES = { worse = style.RED, better = style.GREEN }
 local function padded(text, width) return string.rep(" ", width - cells(text)) .. text end
 
-local function summaryTitle(name, value, unit, status, history, now, stale)
+local function summaryTitle(name, value, unit, status, history, now, stale, show, valueTone)
+  show = show or rounded
   local days, prior, high = {}, {}, 0
   local date = os.date("*t", now)
   for index = 1, 7 do
@@ -767,13 +772,13 @@ local function summaryTitle(name, value, unit, status, history, now, stale)
     or (status == "error" or status == "problems") and style.RED
     or (status == "blind" or status == "watch") and style.DIM_RED or style.GREEN
   local segments = { { string.format("%-9s", name), tone }, { " " },
-    value and { padded(rounded(value), 4) } or { padded(MISSING, 4), style.DIM }, { string.format(" %-10s  ", unit or "") } }
+    value and { padded(show(value), 4), valueTone } or { padded(MISSING, 4), style.DIM }, { string.format(" %-10s  ", unit or "") } }
   for index = 1, 7 do
     local amount = days[index]
     segments[#segments + 1] = amount == nil and { " " }
       or { BARS[high == 0 and 1 or math.max(1, math.ceil(amount / high * 8))], style.DIM }
   end
-  segments[#segments + 1] = { " " .. padded(median and rounded(median) or MISSING, 4), style.DIM }
+  segments[#segments + 1] = { " " .. padded(median and show(median) or MISSING, 4), style.DIM }
   return styled(segments)
 end
 
@@ -890,9 +895,9 @@ local function compute()
       for _, issue in ipairs(type(cost.issues) == "table" and cost.issues or {}) do
         if tonumber(issue[1]) then spendRows[#spendRows + 1] = issueRow(tonumber(issue[1]), "%", tostring(issue[2]), "%.1f") end
       end
-      local share = cost.status ~= "nodata" and tonumber(cost.share) or nil
-      spend = { title = summaryTitle("Spend", share, "% of spend", share and cost.status or "nodata",
-        type(cost.share_by_day) == "table" and cost.share_by_day or {}, now, stale),
+      local index = cost.status ~= "nodata" and tonumber(cost.index) or nil
+      spend = { title = summaryTitle("Spend", index, "index", index and cost.status or "nodata",
+        type(cost.index_by_day) == "table" and cost.index_by_day or {}, now, stale, ratio, VALUE_TONES[cost.tone]),
         menu = egorLayer(spendRows, menu, spendMenu), problems = 0 }
     end
   end

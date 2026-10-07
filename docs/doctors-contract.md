@@ -30,7 +30,7 @@ Harness      3             ▁▁▂▃▄▆█    3 ▸
 Updater      0             ▁▁▂▃▄▆█    3 ▸
 Code         3             ▁▁▂▃▄▆█    3 ▸
 Lost time   12 min/day     ▁▁▂▃▄▆█   25 ▸
-Spend        9 % of spend  ▁▁▂▃▄▆█    3 ▸
+Spend     0.46 index       ▁▁▂▃▄▆█ 0.71 ▸
 System       2             ▁▁▂▃▄▆█    3 ▸
 Last night 5 Oct · stopped early: no jobs
 ──────────
@@ -46,13 +46,14 @@ LLM ▸     8  reviewers crashed
 ```
 
 - Summary row, fixed cells: name (9, in the status color) · value (4, right) · unit (10: `min/day` for Lost time,
-  `% of spend` for Spend, blank for counts) · 7 bars · usual (4, right, DIM), no trend arrow. Counts are bare
-  (Lost time, internally Speed: Harness time budget `lost_min_day`; Spend: the summed share of Claude spend of the
-  harness components tokenmap prices, `share/spend.py`; the problems of both stay counted by Harness alone).
+  `index` for Spend, blank for counts) · 7 bars · usual (4, right, DIM), no trend arrow. Counts are bare
+  (Lost time, internally Speed: Harness time budget `lost_min_day`; Spend: tokenmap's `harness_index.value` from
+  `tracking.json` via `share/spend.py`, two decimals, 1.00 = the previous 7 days' harness price per unit of use, the
+  value RED/GREEN by its `tone`; the problems of both stay counted by Harness alone).
 - Status color of the name (no dot: `●` is the LLM Limits pin mark): GREEN ok, RED problems or collector error, DIM_RED watch/blind/pending update, DIM no data or
-  stale (Speed also without an observation dated today; Spend while `tracking.json` is past its `stale_after_hours`). Missing value: DIM `–`.
+  stale (Speed also without an observation dated today; Spend while `tracking.json` is past its `stale_after_hours`, has no `harness_index` or its value is null). Missing value: DIM `–`.
 - Bars: six completed local dates and today, daily `max` of `problem-days.jsonl` (Speed: the daily
-  maxima in Harness's `menu.txt` header; Spend: its stored value of each completed day, tokenmap's window over it). Eight heights against the window maximum. An unmeasured date
+  maxima in Harness's `menu.txt` header; Spend: its stored index of each day, the 7-day window ending that day). Eight heights against the window maximum. An unmeasured date
   is a blank cell, never an invented bar or a dash; a zero is `▁` (as every other spark line, Chats → Other's
   load graph the model). Every bar is DIM, never RED.
 - `usual` is the median of measured completed dates, never today.
@@ -305,9 +306,13 @@ Harness doctor (added 2026-09-29 by its owner chat):
   `regression:<metric>|<ident>|<band>` counts, `opportunity:<component>` is `watch`. A rule whose component
   Speed judges against a baseline is `watch` with `judged_by`, its own state kept as `was_state`, so no rule
   counts twice in `problem_count`; each problem carries its verdict's `ident`, which Speed's `covers` match.
-  Its `spend` (`share/spend.py`) adds `spend:<component>` problems, rule `spend_audit`, group `Spend`, `watch`: an
-  avoidable component whose audit is due (never audited, a source blob moved, share ≥ 1.5× its share at audit);
-  `spend.selection` names the one a night audits, area `speed-spend-<component>`.
+  Its `spend` (`share/spend.py`) adds `spend:<component>` problems, rule `spend_audit`, group `Spend`, `watch`: a
+  harness-owned component whose audit is due (never audited, a source blob moved, share ≥ 1.5× its share at audit).
+  Harness-owned: hook scripts, startup instruction parts (CLAUDE.md + memory index, nested CLAUDE.md, skill listing),
+  worker cold resumes, subagent/worker spawns, re-write causes tokenmap flags `avoidable`; compaction summaries, the
+  other re-writes and system + tools are Claude Code's, shown and never targeted. `spend.selection` names the one a
+  night audits, area `speed-spend-<component>`; `spend.proofs` holds each audited component's share and part price
+  against the audit, which the night's `roi` lines read.
 
 LLM doctor (added 2026-09-29 by its owner chat):
 - `as_of` is ISO as §1 says; the epoch stays under the doctor's own key `as_of_s`, which the menu
