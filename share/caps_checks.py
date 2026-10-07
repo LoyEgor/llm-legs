@@ -72,6 +72,18 @@ def trim(target):
     os.replace(target + ".tmp", target)
 
 
+def caps_drift(part: str, live: list[str] | None, known: list[str], gone: bool = True) -> list[str]:
+    """`part: +added -gone` when a page offers other options than the manifest; [] when they match. `live` None is a
+    part the page did not show; `gone` False when the page shows only a sample of the options."""
+    if live is None:
+        return [f"{part}: unread"]
+    items = [f"+{x}" for x in dict.fromkeys(live) if x not in known]
+    items += [f"-{x}" for x in known if x not in live] if gone else []
+    if not items:
+        return []
+    return [f"{part}: {' '.join(items[:6])}" + (f" …{len(items) - 6} more" if len(items) > 6 else "")]
+
+
 def record(vendor, section, stale, what=""):
     try:
         if not (isinstance(vendor, str) and NAME.match(vendor) and isinstance(section, str) and NAME.match(section)):
