@@ -82,14 +82,13 @@ resolve_session() {
   while :; do
     seen="$seen$current|"
     next=''
-    for entry in "$runroot"/*/worker-session; do
-      [ -f "$entry" ] || continue
-      grep -qxF -- "$current" "$entry" || continue
+    # One grep for every run: a grep per run directory cost each stop notice 7 s at 1400 runs.
+    while IFS= read -r entry; do
       owner=$(cat "${entry%/worker-session}/launcher" 2>/dev/null) || owner=''
       valid_name "$owner" || continue
       if [ -n "$next" ] && [ "$next" != "$owner" ]; then next=''; break; fi
       next=$owner
-    done
+    done < <(grep -lxF -- "$current" "$runroot"/*/worker-session 2>/dev/null)
     valid_name "$next" || break
     case "$seen" in *"|$next|"*) break ;; esac
     current=$next

@@ -551,9 +551,9 @@
       "same_cause": [
         "word-miss-deferred-reading-lost"
       ],
-      "last_reviewed": "2026-10-06",
-      "reviewed_by": "night fixer harness-stop-hooks-20261006T032932Z-5fd0",
-      "note": "stop-dispatch.sh holds asks for background work at most STOP_DISPATCH_HELD_CAP (3600 s), then runs them at that stop with busy empty and the journal line's held naming what it would have called busy, and the hold restarts; ask-span-drill stays silent under STOP_HELD; ask-run-unfinished also sees waiter tasks under the 2.1.285 label subagent. The doctor's ask-busy rule does not see asks run under held, by design. The 2026-09-30 06:55-08:16 regression was transitional (tasks started before e5909cd landed). The 2026-10-01 regression (10896605, 10:17-13:08Z, 10269 s) was the 959efae stale-hold rule misfiring: no stop from 10:32 to 12:11Z because a task notification at 11:40Z opened a 31-min turn, the old tasks ended inside it and a new one started, so 'no stop for the cap and none of its tasks live' restarted the hold of a live chat. The held file is now 'since chat-pid' ($PPID, the Claude Code process: hook-time rows show one stable ppid per chat process) and only a different process (a closed chat resumed) restarts it; old-format files restart once. Ruled out: notice timing, ask-span-drill, worker-run holds (busy was bg-task throughout). Risk to watch: a harness that wrapped hooks in a per-call shell would restart every hold and bring the unbounded hold back; this rule would show it. The 2026-10-06 regression (2ddedf36, 28600 s) is the doctor's streak crossing a closed chat: held asks ran 17:52:24Z, the old process's last stop was 17:53:39Z, `claude --resume` (pid 24067) started 01:32:12Z and the cap ran the asks 03:30:55Z, so the asks waited 1 min + 1 h 56 min of live process. The dispatcher kept its spec; the doctor now ends a streak where a stop line's pid repeats after a change (a chat process; a pid new on every stop, a per-call shell, still streaks), which needs stop-dispatch.sh to journal pid (its chat_pid) on each line: that half is in claude-setup, so the fix stays pending until both files are committed.",
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-stop-hooks-20261006T234309Z-703e",
+      "note": "2026-10-07 review: both 2026-10-06 evidences are the same closed-chat streak, the dispatcher kept its cap. 2ddedf36: cap ran the asks 06:41:53Z (pid 24067), skipped stops to 07:37:38Z, resumed as pid 8381 at 10:23:37Z, skipped to 11:10:23Z (16011 s streak, 47 min of the new process). 40991e51: 06:37:00Z pid 96678, resumed pid 33575 10:31:52Z, cap ran the asks 11:39:29Z (17454 s streak). Pids from the folded hook-time rows (stop-dispatch.sh ppid column). stop-dispatch.sh holds asks for background work at most STOP_DISPATCH_HELD_CAP (3600 s), then runs them at that stop with busy empty and the journal line's held naming what it would have called busy, and the hold restarts; ask-span-drill stays silent under STOP_HELD; ask-run-unfinished also sees waiter tasks under the 2.1.285 label subagent. The doctor's ask-busy rule does not see asks run under held, by design. The 2026-09-30 06:55-08:16 regression was transitional (tasks started before e5909cd landed). The 2026-10-01 regression (10896605, 10:17-13:08Z, 10269 s) was the 959efae stale-hold rule misfiring: no stop from 10:32 to 12:11Z because a task notification at 11:40Z opened a 31-min turn, the old tasks ended inside it and a new one started, so 'no stop for the cap and none of its tasks live' restarted the hold of a live chat. The held file is now 'since chat-pid' ($PPID, the Claude Code process: hook-time rows show one stable ppid per chat process) and only a different process (a closed chat resumed) restarts it; old-format files restart once. Ruled out: notice timing, ask-span-drill, worker-run holds (busy was bg-task throughout). Risk to watch: a harness that wrapped hooks in a per-call shell would restart every hold and bring the unbounded hold back; this rule would show it. The 2026-10-06 regression (2ddedf36, 28600 s) is the doctor's streak crossing a closed chat: held asks ran 17:52:24Z, the old process's last stop was 17:53:39Z, `claude --resume` (pid 24067) started 01:32:12Z and the cap ran the asks 03:30:55Z, so the asks waited 1 min + 1 h 56 min of live process. The dispatcher kept its spec; the doctor now ends a streak where a stop line's pid repeats after a change (a chat process; a pid new on every stop, a per-call shell, still streaks), which needs stop-dispatch.sh to journal pid (its chat_pid) on each line: that half is in claude-setup, so the fix stays pending until both files are committed.",
       "handoff": "docs/handoffs/2026-10-06-stop-hooks-judge.md"
     },
     {
@@ -3003,7 +3003,7 @@
         "rule": "hook-held",
         "ident": "worker-run-backstop\\.sh"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-06T06:54:29+03:00",
@@ -3014,12 +3014,23 @@
           ],
           "in": "llm-legs@f72bf339",
           "regressed_at": null
+        },
+        {
+          "at": "2026-10-07T03:58:00+03:00",
+          "by": "Updater doctor chat (llm-legs@c9087e4b), recorded by night fixer harness-stop-hooks-20261006T234309Z-703e",
+          "files": [
+            "llm-legs/bin/worker-run-backstop.sh",
+            "llm-legs/bin/worker-run",
+            "llm-legs/tests/test_worker_run_backstop.sh"
+          ],
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-06",
-      "reviewed_by": "Harness Doctor",
-      "note": "The only held line in the stop journal: 2026-10-04T07:02:23Z/2ddedf36. Runs claudeb-1791096939-3244-6832 and claudeb-1791097006-94194-5582 (com, opus) were launched by the relays a739c43940f0a8f91 and abd6d30e75c31e1a2 inside the Fable judging workers 227ac46a and 5b28a455; launcher = the root chat (bin/worker-run start_run, CLAUDE_LAUNCHER_SESSION) while the relay tags sit in the workers' caches, so owned() found none in the root's: the hold is as specified and reached its goal (the chat attached both, saw the com misroute, killed them, exit 143). Cause upstream: Fable headless workers delegate (2 of 3 Fable parents of nested runs this week). Unconfirmed: why ~25 other nested runs since 09-29 never held (most lived about a minute; one root stop at 2026-10-03T06:54:53Z/fa230c90 fell inside a live nested run with no held line; the backstop journals no silent reason). Fixed 2026-10-06 by Harness Doctor (night 20261006T032009Z-f253): worker-run refuses a workers-role start nested in a Fable worker unless it stays claudeb fable (OUTCOME NESTED_MODEL_REFUSED), so a Fable worker can no longer swap its brief to Opus; a hold of this shape would now mean the guard was bypassed.",
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-stop-hooks-20261006T234309Z-703e",
+      "note": "Second cause, 2026-10-06T21:13-21:29Z, 22 holds of 233cceb1 (Updater doctor): bin/log-audit's chunk runs (claudeb sonnet, launched under its own relay token log-audit:<pid>) had no relay tag in the chat, so the backstop held each. c9087e4b (worker-run writes script-owner, the backstop leaves a run to a live script older than it) was on feat/log-audit while the live hook read main, which took it at 23:04Z; no hold since, code-doctor-judge runs at 23:38Z went unheld; test_worker_run_backstop goes red without the exemption. First cause: the only held line in the stop journal: 2026-10-04T07:02:23Z/2ddedf36. Runs claudeb-1791096939-3244-6832 and claudeb-1791097006-94194-5582 (com, opus) were launched by the relays a739c43940f0a8f91 and abd6d30e75c31e1a2 inside the Fable judging workers 227ac46a and 5b28a455; launcher = the root chat (bin/worker-run start_run, CLAUDE_LAUNCHER_SESSION) while the relay tags sit in the workers' caches, so owned() found none in the root's: the hold is as specified and reached its goal (the chat attached both, saw the com misroute, killed them, exit 143). Cause upstream: Fable headless workers delegate (2 of 3 Fable parents of nested runs this week). Unconfirmed: why ~25 other nested runs since 09-29 never held (most lived about a minute; one root stop at 2026-10-03T06:54:53Z/fa230c90 fell inside a live nested run with no held line; the backstop journals no silent reason). Fixed 2026-10-06 by Harness Doctor (night 20261006T032009Z-f253): worker-run refuses a workers-role start nested in a Fable worker unless it stays claudeb fable (OUTCOME NESTED_MODEL_REFUSED), so a Fable worker can no longer swap its brief to Opus; a hold of this shape would now mean the guard was bypassed.",
       "handoff": "docs/handoffs/2026-10-05-fable-worker-delegates.md"
     },
     {
@@ -3101,7 +3112,7 @@
         "rule": "hook-error",
         "ident": "notice-chat-names\\.sh"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-06T07:25:00+03:00",
@@ -3111,14 +3122,24 @@
           ],
           "in": "claude-setup@71697c4",
           "regressed_at": null
+        },
+        {
+          "at": "2026-10-07T03:58:00+03:00",
+          "by": "night fixer harness-stop-hooks-20261006T234309Z-703e",
+          "files": [
+            "llm-legs/bin/report-bus",
+            "llm-legs/tests/test_report_bus.sh"
+          ],
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [
         "hook-error-ask-span-drill-budget"
       ],
-      "last_reviewed": "2026-10-06",
-      "reviewed_by": "night fixer harness-stop-hooks-20261006T032932Z-5fd0",
-      "note": "Two exit-124 stops, both headless, both at CPU busy 1.0 with swap near full: 1f9d738e 2026-10-05T22:12:56Z is a claudeb worker (run claudeb-1791234785-7228-2802), 4b013ca5 22:17:32Z is the usage-ai-report gate (cwd /). A worker's notice reaches nobody, and its report's commit shas each sent chat_names.py into a corpus walk, so the hook now exits under CLAUDEB_WORKER/GROK_WORKER like notice-word-attested and notice-word-journal (test_stop_dispatch). The gate's stop is the open usage-gate handoff: hooks off there.",
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-stop-hooks-20261006T234309Z-703e",
+      "note": "The shared cause was report-bus, not the load: resolve_session forked one grep per run directory (1381 under ~/.cache/claude-worker-runs) to fold a worker session to its launcher, so every rb_emit cost 7-8 s idle; the hook only emits when the last message names a chat id, which is why it went slow on some stops only (folded hook-time: 1584 runs, 100 over 1 s, 12 over 3 s, max 6.4 s). 10896605 2026-10-06T22:36:23Z, an interactive chat whose message named its own uuid, at busy 0.98: chat_names.py and chat-name took under 1 s, the hook 5.01 s (cap). Now one grep -l over all worker-session files per hop: emit 0.3-0.5 s (test_report_bus counts the greps). Earlier: 1f9d738e (claudeb worker) and 4b013ca5 (usage-ai-report gate, open usage-gate handoff) 2026-10-05; workers now exit at the top of the hook (claude-setup@71697c4).",
       "handoff": "docs/handoffs/2026-10-05-usage-gate-hooks.md"
     },
     {
@@ -3128,12 +3149,24 @@
         "rule": "reading-miss",
         "ident": "unprompted"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-07T03:58:00+03:00",
+          "by": "night fixer harness-stop-hooks-20261006T234309Z-703e",
+          "files": [
+            "claude-setup/hooks/lib/words.py",
+            "claude-setup/hooks/lib/words_journal.py",
+            "claude-setup/tests/test_words_log.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "last_reviewed": "2026-10-06",
-      "reviewed_by": "night fixer harness-stop-hooks-20261006T032932Z-5fd0",
-      "note": "7c93bbe2 turn 154 (2026-10-05T20:09Z): Egor said 'let us launch' with no family word, and the model wrote '⚡ понял: запуск пунктов 1–4 на стенде'. Model behaviour, not a hook fault: no family covers a bare go-ahead, the gate-open experiment was not on (the ask fired), and ask-word-reading asked at the first stop with its asks unheld (20:29:21Z, held cap), after which the model told Egor the line was its own. Decided 2026-10-07 (night 20261006T233611Z-7777): an owned-up reading stays red. The model acted before the ask, owning up afterwards is ask-word-reading doing its job, and the doctor cannot tell an honest go-ahead from an invented one; the clear path for a reading Egor did mean stays his own `ok` mark (words-log, honored by the doctor), never a doctor rule.",
+      "last_reviewed": "2026-10-07",
+      "reviewed_by": "night fixer harness-stop-hooks-20261006T234309Z-703e",
+      "note": "Two causes. (1) Hook bug, fixed: 24cb1f32 turn 14 (2026-10-06T15:56Z) got the notice '⚡ pin → auto' and answered it, but Claude Code runs UserPromptSubmit when he QUEUES a message (word-intake at 15:56:22.507, enqueue row 22.491, none at the dequeue), so the intake of the queued 'Запусти, пожалуйста, Opus вместо Flash.' overwrote last.json before the turn's Stop journal read it; the row read notice '' and unprompted, labelled with the queued message's turn. Now record_last keeps the replaced record as prior (with its turn) and words_journal reads prior while last.txt is a still-pending enqueue (test_words_log). Not fixed, no evidence yet: a queued message injected mid-turn (enqueue then remove) still replaces the turn's notice. (2) Model behaviour: 7c93bbe2 turn 154 (2026-10-05T20:09Z), Egor said 'let us launch' with no family word and the model wrote '⚡ понял: запуск пунктов 1–4 на стенде', then owned it up when ask-word-reading asked. Decided 2026-10-07 (night 20261006T233611Z-7777): an owned-up reading stays red. The model acted before the ask, owning up afterwards is ask-word-reading doing its job, and the doctor cannot tell an honest go-ahead from an invented one; the clear path for a reading Egor did mean stays his own `ok` mark (words-log, honored by the doctor), never a doctor rule.",
       "handoff": "docs/handoffs/2026-10-06-stop-hooks-judge.md"
     },
     {

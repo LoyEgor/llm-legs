@@ -173,9 +173,18 @@ doc chain | "$BUS" post --kind review --id chain
 assert test "$(count "$STORE/launch-chat/pending")" = 1
 WORKER_RUN_DIR="$WORKER_RUN_DIR/inner" CLAUDE_LAUNCHER_SESSION=wrong "$BUS" post --kind review --id direct <<<"$(doc direct)"
 assert test "$(count "$STORE/launch-chat/pending")" = 2
+# The chain walk greps once per hop, never once per run directory: a stop notice paid a fork per run.
+for n in $(seq 1 40); do mkdir -p "$WORKER_RUN_DIR/other-$n" && printf 'other-%s\n' "$n" >"$WORKER_RUN_DIR/other-$n/worker-session"; done
+mkdir -p "$WORK/grep-count"
+printf '#!/bin/sh\necho >>"%s"\nexec %s "$@"\n' "$WORK/grep-calls" "$(command -v grep)" >"$WORK/grep-count/grep"
+chmod +x "$WORK/grep-count/grep"
+PATH="$WORK/grep-count:$PATH" "$BUS" post --kind review --id hop-greps <<<"$(doc hops)"
+assert test "$(count "$STORE/launch-chat/pending")" = 3
+assert test "$(wc -l <"$WORK/grep-calls" | tr -d ' ')" -le 3
+rm -rf "$WORKER_RUN_DIR"/other-*
 unset CLAUDE_LAUNCHER_SESSION
 doc chain | "$BUS" post --kind review --id env-chain
-assert test "$(count "$STORE/launch-chat/pending")" = 3
+assert test "$(count "$STORE/launch-chat/pending")" = 4
 export CLAUDE_CODE_SESSION_ID=plain-chat
 doc plain | "$BUS" post --kind notice --id plain
 assert test "$(count "$STORE/plain-chat/pending")" = 1
