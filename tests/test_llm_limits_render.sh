@@ -322,18 +322,19 @@ done
 
 # Header-origin week must render unknown, not as a number that walls the account.
 PROV_STORE="$WORK/prov-store"
-mkdir -p "$PROV_STORE/limits" "$PROV_STORE/tokens"
+PROV_HOME="$WORK/prov-home"
+mkdir -p "$PROV_STORE/limits" "$PROV_STORE/tokens" "$PROV_HOME"
 printf 'prov\n' >"$PROV_STORE/.claudeb-state"
 : >"$PROV_STORE/tokens/prov"
 printf '{"five_hour":{"used_percentage":5,"resets_at":%s,"as_of":%s,"origin":"headers"},"seven_day":{"used_percentage":100,"resets_at":%s,"as_of":%s,"origin":"headers"},"auth":{"status":"ok","checked_at":%s}}\n' \
   "$((now + 5000))" "$now" "$((now + 300000))" "$now" "$now" >"$PROV_STORE/limits/prov.json"
-prov_json=$(CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null) \
+prov_json=$(HOME="$PROV_HOME" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null) \
   || fail "header-origin weekly fixture failed"
 jq -e '.vendors.claude.accounts[0] | (.weekly == null) and .five_hour.used_pct == 5' <<<"$prov_json" >/dev/null \
   || fail "a header-origin weekly bucket was reported instead of being dropped"
 printf '{"five_hour":{"used_percentage":5,"resets_at":%s,"as_of":%s,"origin":"headers"},"seven_day":{"used_percentage":76,"resets_at":%s,"as_of":%s,"origin":"session"},"auth":{"status":"ok","checked_at":%s}}\n' \
   "$((now + 5000))" "$now" "$((now + 300000))" "$now" "$now" >"$PROV_STORE/limits/prov.json"
-prov_measured=$(CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null) \
+prov_measured=$(HOME="$PROV_HOME" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null) \
   || fail "session-origin weekly fixture failed"
 jq -e '.vendors.claude.accounts[0].weekly.used_pct == 76' <<<"$prov_measured" >/dev/null \
   || fail "a measured weekly reading was dropped"
@@ -342,37 +343,37 @@ EXP_REG="$WORK/experiments.json"
 EXP_MARKER="$WORK/experiment-marker"
 printf '{"until":9999999999,"reason":"fixture"}\n' >"$EXP_MARKER"
 printf '[{"id":"trial-x","what":"fixture experiment for the banner contract","started":"2026-01-01","review_by":"2999-01-01","state_marker":"%s","surfaces":["fixture"],"how_to_remove":"delete the fixture"}]\n' "$EXP_MARKER" >"$EXP_REG"
-exp_json=$(EXPERIMENTS_REGISTRY="$EXP_REG" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null) \
+exp_json=$(EXPERIMENTS_REGISTRY="$EXP_REG" HOME="$PROV_HOME" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null) \
   || fail "experiment-registry fixture failed"
 jq -e '.experiments == []' <<<"$exp_json" >/dev/null \
   || fail "an in-date experiment must stay off the banner"
-exp_table=$(EXPERIMENTS_REGISTRY="$EXP_REG" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --table --no-write 2>/dev/null)
+exp_table=$(EXPERIMENTS_REGISTRY="$EXP_REG" HOME="$PROV_HOME" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --table --no-write 2>/dev/null)
 ! grep -Fq 'EXPERIMENT trial-x' <<<"$exp_table" || fail "--table announced an in-date experiment"
 printf '[{"id":"undated","what":"fixture experiment with no review date","started":"2026-01-01","state_marker":"%s","surfaces":["fixture"],"how_to_remove":"delete the fixture"}]\n' "$EXP_MARKER" >"$EXP_REG"
-exp_undated=$(EXPERIMENTS_REGISTRY="$EXP_REG" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null)
+exp_undated=$(EXPERIMENTS_REGISTRY="$EXP_REG" HOME="$PROV_HOME" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null)
 jq -e '.experiments == ["EXPERIMENT undated until  — temporary, see EXPERIMENTS.json"]' <<<"$exp_undated" >/dev/null \
   || fail "an experiment without review_by must keep announcing (it can never go OVERDUE)"
 printf '[{"id":"spent","what":"fixture experiment whose review date has passed","started":"2026-01-01","review_by":"2026-01-02","state_marker":"%s","surfaces":["fixture"],"how_to_remove":"delete the fixture"}]\n' "$EXP_MARKER" >"$EXP_REG"
-exp_past=$(EXPERIMENTS_REGISTRY="$EXP_REG" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null)
+exp_past=$(EXPERIMENTS_REGISTRY="$EXP_REG" HOME="$PROV_HOME" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null)
 jq -e '.experiments == ["EXPERIMENT spent OVERDUE since 2026-01-02 — decide: remove or extend (EXPERIMENTS.json)"]' <<<"$exp_past" >/dev/null \
   || fail "an overdue-but-live experiment is not announced as OVERDUE"
 
 printf '[{"id":"broken",,}]\n' >"$EXP_REG"
-exp_broken=$(EXPERIMENTS_REGISTRY="$EXP_REG" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null)
+exp_broken=$(EXPERIMENTS_REGISTRY="$EXP_REG" HOME="$PROV_HOME" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null)
 jq -e '.experiments | length == 1 and (.[0] | startswith("EXPERIMENT registry unreadable"))' <<<"$exp_broken" >/dev/null \
   || fail "an unreadable experiment registry was silently reported as no experiments"
 
 printf '[{"id":"trial-x","what":"fixture experiment for the banner contract","started":"2026-01-01","review_by":"2999-01-01","state_marker":"%s","surfaces":["fixture"],"how_to_remove":"delete the fixture"}]\n' "$EXP_MARKER" >"$EXP_REG"
 for spent_until in -1 1.5; do
   printf '{"until":%s,"reason":"fixture"}\n' "$spent_until" >"$EXP_MARKER"
-  exp_numeric=$(EXPERIMENTS_REGISTRY="$EXP_REG" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null)
+  exp_numeric=$(EXPERIMENTS_REGISTRY="$EXP_REG" HOME="$PROV_HOME" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null)
   jq -e '.experiments == []' <<<"$exp_numeric" >/dev/null \
     || fail "a marker with until=$spent_until is spent but still announced"
 done
 
 printf '{"until":1,"reason":"fixture"}\n' >"$EXP_MARKER"
 printf '[{"id":"resumed","what":"fixture experiment whose marker has expired","started":"2026-01-01","review_by":"2999-01-01","state_marker":"%s","surfaces":["fixture"],"how_to_remove":"delete the fixture"}]\n' "$EXP_MARKER" >"$EXP_REG"
-exp_spent_marker=$(EXPERIMENTS_REGISTRY="$EXP_REG" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null)
+exp_spent_marker=$(EXPERIMENTS_REGISTRY="$EXP_REG" HOME="$PROV_HOME" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null)
 jq -e '.experiments == []' <<<"$exp_spent_marker" >/dev/null || fail "an expired marker is still being announced"
 
 # Account order in the cache is the order every surface renders: the hardcoded primaries first,
@@ -381,11 +382,18 @@ jq -e '.experiments == []' <<<"$exp_spent_marker" >/dev/null || fail "an expired
 ORDER_HOME="$WORK/order-home"
 ORDER_STORE="$WORK/order-claudeb-store"
 mkdir -p "$ORDER_HOME/.claude" "$ORDER_HOME/.claude-profiles" "$ORDER_STORE/limits"
+born_in_order() { # dir name... -> a directory per name, each born 10 s after the one before
+  local dir=$1 age=60 name
+  shift
+  for name in "$@"; do
+    mkdir -p "$dir/$name"
+    # A touch -t into the past moves the birth time back with the mtime.
+    touch -t "$(date -r "$((now - age))" +%Y%m%d%H%M.%S)" "$dir/$name"
+    age=$((age - 10))
+  done
+}
 # Created youngest-name-first so a passing order cannot also be the alphabet.
-for order_profile in zed mid abe com notcom; do
-  mkdir -p "$ORDER_HOME/.claude-profiles/$order_profile"
-  sleep 1
-done
+born_in_order "$ORDER_HOME/.claude-profiles" zed mid abe com notcom
 for order_account in zed mid abe com notcom ghosta ghostb; do
   order_pct=5
   # The current account is neither first in render order nor the only one with data, so a
@@ -417,10 +425,7 @@ order_claude_table=$(HOME="$ORDER_HOME" CLAUDEB_DIR="$ORDER_STORE" LLM_LIMITS_CA
 ORDER_CODEX_HOME="$WORK/order-codex-home"
 ORDER_CODEX_CACHE="$WORK/order-codex-cache.json"
 mkdir -p "$ORDER_CODEX_HOME/.codex"
-for order_profile in zed abe; do
-  mkdir -p "$ORDER_CODEX_HOME/.codex-profiles/$order_profile"
-  sleep 1
-done
+born_in_order "$ORDER_CODEX_HOME/.codex-profiles" zed abe
 cat >"$ORDER_CODEX_CACHE" <<EOF
 {"accounts":[{"account":"abe","five_hour":{"used_pct":3,"resets_at":$((now + 5000))},"weekly":{"used_pct":4,"resets_at":$((now + 90000))},"as_of":$now},{"account":"ghost","five_hour":{"used_pct":5,"resets_at":$((now + 5000))},"weekly":{"used_pct":6,"resets_at":$((now + 90000))},"as_of":$now},{"account":"zed","five_hour":{"used_pct":7,"resets_at":$((now + 5000))},"weekly":{"used_pct":8,"resets_at":$((now + 90000))},"as_of":$now},{"account":"main","five_hour":{"used_pct":9,"resets_at":$((now + 5000))},"weekly":{"used_pct":10,"resets_at":$((now + 90000))},"as_of":$now}],"current":"abe"}
 EOF
@@ -433,10 +438,7 @@ jq -e '[.vendors.codex.accounts[].account] == ["main","zed","abe","ghost"] and
 ORDER_GEMINI_PROFILES="$WORK/order-gemini-profiles"
 ORDER_GEMINI_CACHE_DIR="$WORK/order-gemini-cache"
 mkdir -p "$ORDER_GEMINI_CACHE_DIR"
-for order_profile in zed abe com; do
-  mkdir -p "$ORDER_GEMINI_PROFILES/$order_profile"
-  sleep 1
-done
+born_in_order "$ORDER_GEMINI_PROFILES" zed abe com
 order_gemini_snapshot='{"groups":[{"displayName":"Gemini Models","buckets":[{"window":"weekly","remainingFraction":0.5,"resetTime":"2099-01-01T00:00:00Z"},{"window":"5h","remainingFraction":0.6,"resetTime":"2099-01-01T00:00:00Z"}]}]}'
 for order_account in zed abe com; do
   printf '%s\n' "$order_gemini_snapshot" >"$ORDER_GEMINI_CACHE_DIR/$order_account.json"

@@ -3075,7 +3075,9 @@ CQ_FAIL="$FIXTURES/codex-refresher-fail"
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\nprintf boom >&2\nexit 3\n' "$CQ_ARGS" > "$CQ_FAIL"
 chmod +x "$CQ_FAIL"
 CQ_SLOW="$FIXTURES/codex-refresher-slow"
-printf '#!/usr/bin/env bash\nsleep 10\nprintf "%%s\\n" "$*" >> "%s"\n' "$CQ_ARGS" > "$CQ_SLOW"
+CQ_RELEASE="$WORK/codex-refresher-release"
+printf '#!/usr/bin/env bash\nfor _ in $(seq 1 200); do [ -e "%s" ] && break; sleep 0.05; done\nprintf "%%s\\n" "$*" >> "%s"\n' \
+  "$CQ_RELEASE" "$CQ_ARGS" > "$CQ_SLOW"
 chmod +x "$CQ_SLOW"
 cq_stamp() { printf '%s' "$STATE_DIR/codex-quota-kick-$1"; }
 cq_reset() {
@@ -3159,6 +3161,8 @@ cq_start=$(date +%s)
 CLAUDEGPT_ACCOUNT=work4 CODEX_REFRESH_CMD="$CQ_SLOW" run_statusline "$cq_payload" >/dev/null \
   || fail "claudegpt kick with slow refresher exited nonzero"
 assert test "$(( $(date +%s) - cq_start ))" -lt 8
+assert test ! -s "$CQ_ARGS"
+: > "$CQ_RELEASE"
 # Its late write must land here, not in a later case's args file.
 for _ in $(seq 1 400); do [ -s "$CQ_ARGS" ] && break; sleep 0.05; done
 assert_eq "--refresh-account codex/work4" "$(cat "$CQ_ARGS")"
@@ -4927,7 +4931,7 @@ debt_render() { # session repo
   rmdir "$STATE_DIR/repo-debt-"*.lock 2>/dev/null
   payload=$(statusline_payload "$1" "" "$2")
   run_statusline "$payload" >/dev/null || fail "repo debt render failed: $1"
-  for i in $(seq 1 100); do
+  [ -x "${DEBT_CMD:-}" ] && for i in $(seq 1 100); do
     compgen -G "$STATE_DIR/repo-debt-*" >/dev/null 2>&1 &&
       ! compgen -G "$STATE_DIR/repo-debt-*.lock" >/dev/null 2>&1 && break
     sleep 0.05
