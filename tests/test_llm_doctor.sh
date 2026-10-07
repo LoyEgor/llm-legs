@@ -983,6 +983,18 @@ late_git(1000, "checkout", "-q", "main")
 late_git(1000, "merge", "-q", "--no-ff", "-m", "land two", "night/n/two")
 assert [doctor.fix_landed("late@" + ref, late_repos) for ref in (two_fix, open_fix, other_fix)] \
     == [now - 1000, None, now - 8000]
+# A fix with `in` null holds from its landing too: absent from main (a night branch) it regresses nothing,
+# committed there it dates from that commit, poured uncommitted it holds from its `at`.
+for name in ("a.sh", "b.sh", "c.sh"):
+    open(os.path.join(late, name), "w").write("old\n")
+late_git(900, "add", "a.sh", "b.sh", "c.sh")
+late_git(900, "commit", "-q", "-m", "files")
+open(os.path.join(late, "b.sh"), "w").write("fixed\n")
+late_git(100, "commit", "-q", "-am", "land b")
+open(os.path.join(late, "c.sh"), "w").write("poured\n")
+for name, states in (("a.sh", ["fixed", "fixed"]), ("b.sh", ["fixed", "regressed"]), ("c.sh", ["regressed", "regressed"])):
+    pending = fixture_ledger([entry(narrow, "fixed-pending", fixes=[dict(fix_at(500, None), files=["late/" + name])])])
+    assert [doctor.judge_leg_state(pending, crashed(start, start - 10))[0] for start in (200, 50)] == states, name
 # Run in a worktree (a night close), the doctor still reads the main checkouts: a landed fix keeps its date.
 saved_root = doctor.ROOT_DIR
 del os.environ["LLM_DOCTOR_REPOS"]

@@ -30,7 +30,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 
 import collector_runs
-from fix_commit import SETTLED_FILE, fix_commit, fix_landed, main_checkout, merge_settled, read_settled, record_settled, siblings_dir
+from fix_commit import NOT_LANDED, SETTLED_FILE, fix_commit, fix_held_from, fix_landed, main_checkout, merge_settled, read_settled, record_settled, siblings_dir
 from limiter_hold import hold_dir, wait_dir
 from machine_probe import host_ticks, spawn_pid, sysctl
 
@@ -5308,10 +5308,7 @@ def ledger_row_by_id(ledger, ident):
 
 def last_fix_at(entry):
     fixes = (entry or {}).get("fixes") or []
-    if not fixes:
-        return None
-    at, landed = at_epoch(fixes[-1].get("at")), fix_landed(fixes[-1].get("in"), repos_dir())
-    return at if at is None or landed is None else max(at, landed)
+    return fix_held_from(fixes[-1], at_epoch(fixes[-1].get("at")), repos_dir()) if fixes else None
 
 
 def all_verdicts(sections):
@@ -5427,7 +5424,7 @@ def problems_from(sections, ledger, state, now, extra=()):
     shown = {p["ledger"] for p in problems if p["ledger"]}
     for entry in ledger.get("rows") or ():
         fix_at = last_fix_at(entry)
-        if entry.get("status") not in ("fixed-pending", "fixed") or not fix_at or entry["id"] in shown:
+        if entry.get("status") not in ("fixed-pending", "fixed") or not fix_at or fix_at == NOT_LANDED or entry["id"] in shown:
             continue
         proof = proof_state.get(entry["id"])
         if not proof or proof.get("at") != fix_at:

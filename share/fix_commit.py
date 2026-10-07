@@ -131,14 +131,11 @@ def fix_epoch(text):
         return None
 
 
-def fix_commit(fix, repos):
-    """`repo@hash` of the newest commit once every file of the fix is clean and committed since the fix
-    was made, its repositories under `repos`; None while any file is dirty, uncommitted or unreadable."""
-    names = [name.strip("/") for name in fix.get("files") or ()]
-    if not names:
-        return None
-    since, found = (fix_epoch(fix.get("at")) or 0) - CLOCK_SLACK_S, []
-    for name in names:
+def file_commits(files, repos):
+    """`(dirty, last commit time or None, repo, hash)` of every `repo/path` in its checkout under `repos`; None
+    while any is unreadable."""
+    rows = []
+    for name in (name.strip("/") for name in files):
         repo, _, path = name.partition("/")
         top = os.path.join(repos, repo)
         if not path or not os.path.isdir(top):
@@ -151,10 +148,21 @@ def fix_commit(fix, repos):
         except (OSError, subprocess.SubprocessError):
             return None
         words = last.stdout.split()
-        if dirty.returncode or dirty.stdout.strip() or last.returncode or len(words) != 2 or int(words[1]) < since:
+        if dirty.returncode or last.returncode or len(words) not in (0, 2):
             return None
-        found.append((int(words[1]), repo, words[0]))
-    _, repo, commit = max(found)
+        rows.append((bool(dirty.stdout.strip()), int(words[1]) if words else None, repo, words[0] if words else None))
+    return rows
+
+
+def fix_commit(fix, repos):
+    """`repo@hash` of the newest commit once every file of the fix is clean and committed since the fix
+    was made, its repositories under `repos`; None while any file is dirty, uncommitted or unreadable."""
+    names = fix.get("files") or ()
+    rows = file_commits(names, repos) if names else None
+    since = (fix_epoch(fix.get("at")) or 0) - CLOCK_SLACK_S
+    if not rows or any(dirty or time is None or time < since for dirty, time, _, _ in rows):
+        return None
+    _, repo, commit = max((time, repo, commit) for _, time, repo, commit in rows)
     return "%s@%s" % (repo, commit)
 
 
@@ -186,3 +194,32 @@ def fix_landed(ref, repos):
         if len(parts) > 2 and parts[1] in descendants:
             oldest = parts
     return int(oldest[0]) if oldest and oldest[2] != words[1] else int(words[0])
+
+
+NOT_LANDED = float("inf")
+
+
+def fix_held_from(fix, at, repos):
+    """When the fix began to hold in its checkouts under `repos`, `at` its own time as an epoch (doctors-contract
+    §2): the later of `at` and when its commit reached HEAD, that commit being `in` or, while `in` is null, the one
+    that settles it; NOT_LANDED while git shows every file clean and older there, as a night fix on its branch
+    is; `at` for a poured fix and whenever git cannot tell."""
+    if at is None:
+        return None
+    ref = fix.get("in") or _found(tuple(fix.get("files") or ()), at, repos)
+    if ref == NOT_LANDED:
+        return NOT_LANDED
+    landed = fix_landed(ref, repos) if ref else None
+    return at if landed is None else max(at, landed)
+
+
+@functools.lru_cache(maxsize=None)
+def _found(files, at, repos):
+    rows = file_commits(files, repos) if files else None
+    if not rows or any(dirty for dirty, _, _, _ in rows):
+        return None
+    if all(time is None or time < at - CLOCK_SLACK_S for _, time, _, _ in rows):
+        return NOT_LANDED
+    if any(time is None or time < at - CLOCK_SLACK_S for _, time, _, _ in rows):
+        return None
+    return "%s@%s" % max((time, repo, commit) for _, time, repo, commit in rows)[1:]

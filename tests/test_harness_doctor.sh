@@ -940,6 +940,26 @@ check([p["state"] for p in m.problems_from([{"rows": [before_landing]}], {"rows"
       == ["fixed-pending"]
       and [p["state"] for p in m.problems_from([{"rows": [back]}], {"rows": [late_row]}, {}, T)] == ["regressed"],
       "a fix dates from when its commit landed, so an event between its at and the landing regresses nothing")
+night = os.path.join(work, "nightrepo")
+subprocess.run(["git", "init", "-q", night], check=True)
+for name in ("a.sh", "b.sh", "c.sh"):
+    put(os.path.join(night, name), "old\n")
+def night_commit(at, *args):
+    subprocess.run(["git", "-C", night, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q"] + list(args),
+                   check=True, env=dict(os.environ, GIT_COMMITTER_DATE="@%d" % at, GIT_AUTHOR_DATE="@%d" % at))
+subprocess.run(["git", "-C", night, "add", "."], check=True)
+night_commit(T - 9000, "-m", "x")
+put(os.path.join(night, "b.sh"), "fixed\n")
+night_commit(T - 600, "-am", "land b")
+put(os.path.join(night, "c.sh"), "poured\n")
+pending_of = {name: dict(fixed_row, status="fixed-pending", fixes=[dict(fixed_row["fixes"][0], files=["nightrepo/" + name],
+                                                                        **{"in": None})]) for name in ("a.sh", "b.sh", "c.sh")}
+check([[p["state"] for p in m.problems_from([{"rows": [ev]}], {"rows": [pending_of[name]]}, {}, T)]
+       for name in ("a.sh", "b.sh", "c.sh") for ev in (before_landing, back)]
+      == [["fixed-pending"], ["fixed-pending"], ["fixed-pending"], ["regressed"], ["regressed"], ["regressed"]]
+      and [p["id"] for p in m.problems_from([{"rows": [quiet_v]}], {"rows": [pending_of["a.sh"]]}, {}, T)] == [],
+      "a fix with in null holds from its landing: absent from main (a night branch) nothing regresses or proves it, "
+      "committed there it dates from that commit, poured uncommitted from its at")
 
 roots = os.environ.pop("HARNESS_WATCH_ROOTS")
 check(os.path.join(m.ROOT_DIR, "hammerspoon") in m.watch_roots(), "the change log watches hammerspoon/*.lua")

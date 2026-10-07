@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 
 import collector_runs
 import handoffs
-from fix_commit import FIX_KEYS, SETTLED_FILE, fix_commit, fix_landed, load_merged, record_settled, siblings_dir
+from fix_commit import FIX_KEYS, SETTLED_FILE, fix_commit, fix_held_from, fix_landed, load_merged, record_settled, siblings_dir
 
 
 def load_gemini_weather():
@@ -1499,8 +1499,7 @@ def last_fix_at(row):
     fixes = row.get("fixes") or []
     if not fixes or not isinstance(fixes[-1], dict):
         return None
-    at, landed = zoned_epoch(fixes[-1].get("at")), fix_landed(fixes[-1].get("in"), repos_dir())
-    return at if at is None or landed is None else max(at, landed)
+    return fix_held_from(fixes[-1], zoned_epoch(fixes[-1].get("at")), repos_dir())
 
 
 def load_ledger():
