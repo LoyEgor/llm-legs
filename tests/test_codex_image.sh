@@ -9,6 +9,7 @@ FIXTURE="$ROOT/tests/fixtures/fake-codex-image.sh"
 arg_after() { grep -A1 -x -- "ARG=$1" "$FAKE_CODEX_CALLS" | grep -qx -- "ARG=$2"; }
 WORK="$(mktemp -d)"
 export IMAGE_LEG_LOG="$WORK/image-legs.jsonl" VENDOR_CLI_UPDATE_STATE_DIR="$WORK/vendor-cli-update"
+sidecar() { (. "$ROOT/share/image-leg.sh"; image_leg_sidecar "$1"); }
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
 fail() {
@@ -461,7 +462,7 @@ assert grep -qx 'account=other' "$IMAGE_OUT"
 assert grep -qx "session=$RESUME_ID" "$IMAGE_OUT"
 assert test ! -e "$WORK/media-starts/codex/other"
 assert test "$(tail -n 1 "$IMAGE_OUT")" = "edit_depth=1 root=$OUTPUT_DIR/first.png"
-assert test "$(jq -c '.edits | map([.prompt, .route, .vendor, .account])' "$OUTPUT_DIR/resumed.png.edit.json")" = \
+assert test "$(jq -c '.edits | map([.prompt, .route, .vendor, .account])' "$(sidecar "$OUTPUT_DIR/resumed.png")")" = \
   '[["now make it bluer","cli","codex","other"]]'
 # With no reference the edit target is the thread's own last image, which is what
 # num_last_images_to_include names — referenced_image_paths would need a local path per target.
@@ -481,7 +482,7 @@ assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$IMAGE_OUT"
 assert grep -qx "rendered=$OUTPUT_DIR/resumed2.rendered.png" "$IMAGE_OUT"
 assert cmp "$CODEX_PROFILES/other/generated_images/$RESUME_ID/exec-fixture.png" "$OUTPUT_DIR/resumed2.rendered.png"
 assert test "$(tail -n 1 "$IMAGE_OUT")" = "edit_depth=2 root=$OUTPUT_DIR/first.png"
-assert test "$(jq -r '.edits[1].composite.kind' "$OUTPUT_DIR/resumed2.png.edit.json")" = auto
+assert test "$(jq -r '.edits[1].composite.kind' "$(sidecar "$OUTPUT_DIR/resumed2.png")")" = auto
 "$REAL_MAGICK" -size 64x64 'xc:#00FF00' "PNG24:$WORK/green-ref.png"
 assert image_run --dest "$OUTPUT_DIR/composited.png" --prompt 'add a blue circle' --ref "$WORK/green-ref.png" --account explicit
 assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$IMAGE_OUT"
@@ -709,7 +710,7 @@ assert grep -qx 'The first image is the one to edit; the other images are refere
 assert grep -Eqx 'composite=auto changed=[0-9.]+%' "$IMAGE_OUT"
 assert grep -qx "rendered=$OUTPUT_DIR/edited-web.rendered.png" "$IMAGE_OUT"
 assert grep -qx "edit_depth=1 root=$WORK/edit-base.png" "$IMAGE_OUT"
-assert test "$(jq -r '.root' "$OUTPUT_DIR/edited-web.png.edit.json")" = "$WORK/edit-base.png"
+assert test "$(jq -r '.root' "$(sidecar "$OUTPUT_DIR/edited-web.png")")" = "$WORK/edit-base.png"
 assert jq -se '.[-1] | .composite.kind == "auto" and (.composite.changed | type) == "number" and .size == 4' "$IMAGE_LEG_LOG" >/dev/null
 ROUTE_ARGS=(--route cli)
 web_run unset --dest "$OUTPUT_DIR/edited-cli.png" --prompt 'add a blue circle' --edit "$WORK/edit-base.png" \

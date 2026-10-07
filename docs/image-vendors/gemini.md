@@ -187,7 +187,8 @@ pixel-identical. One decision serves them all (`image_leg_composite_plan` and
   composite prints `composite=failed` and keeps the model's image, with a stderr note. Each Flow
   `--count` take is composited, its lines after its `variant=` line.
 
-Every delivered image gets `<dest>.edit.json`:
+Every edited image gets a lineage `edit.json` in the work store ([image-vendors](../image-vendors.md), never
+beside the image):
 `{"root": <path>, "depth": <n>, "edits": [{"prompt", "region", "points", "route", "vendor", "account", "composite"}]}`,
 `composite` = `{kind: auto|region|points|refused|skipped|failed, changed, reason}`.
 The first input (the `--ref`s, the resumed conversation's last image) that has a sidecar is the

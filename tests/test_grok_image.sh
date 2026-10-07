@@ -8,6 +8,7 @@ SCRIPT="$ROOT/bin/grok-image"
 FIXTURE="$ROOT/tests/fixtures/fake-grokb-image.sh"
 WORK="$(mktemp -d)"
 export IMAGE_LEG_LOG="$WORK/image-legs.jsonl" VENDOR_CLI_UPDATE_STATE_DIR="$WORK/vendor-cli-update"
+sidecar() { (. "$ROOT/share/image-leg.sh"; image_leg_sidecar "$1"); }
 # Every `worker_model_*` call shells `grokb models`: the fixture list answers it, and the
 # `grok` CLI behind it can never be reached (row `cu`).
 export GROKB_CACHE_DIR="$WORK/grokb-cache"
@@ -276,7 +277,7 @@ assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$IMAGE_OUT"
 assert grep -qx "rendered=$OUTPUT_DIR/g1.rendered.png" "$IMAGE_OUT"
 assert cmp "$WORK/circle.png" "$OUTPUT_DIR/g1.rendered.png"
 assert test "$(tail -n 1 "$IMAGE_OUT")" = "edit_depth=1 root=$OUTPUT_DIR/g0.png"
-assert test "$(jq -r '.edits[0] | "\(.vendor) \(.composite.kind)"' "$OUTPUT_DIR/g1.png.edit.json")" = 'grok auto'
+assert test "$(jq -r '.edits[0] | "\(.vendor) \(.composite.kind)"' "$(sidecar "$OUTPUT_DIR/g1.png")")" = 'grok auto'
 FAKE_GROKB_IMAGE_FORMAT=png FAKE_GROKB_IMAGE_FROM="$WORK/circle.png" \
   assert image_run --dest "$OUTPUT_DIR/g2.png" --prompt 'add a blue circle' --ref "$WORK/green.png" --account explicit
 assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$IMAGE_OUT"

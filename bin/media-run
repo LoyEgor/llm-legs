@@ -17,6 +17,7 @@ resolve_root() {
 
 root=$(resolve_root)
 . "$root/share/image-caps.sh"
+. "$root/share/image-leg.sh"
 caps_root=${MEDIA_RUN_CAPS_ROOT:-$root}
 caps_dir=$(image_caps_dir "$caps_root")
 bin_dir=${MEDIA_RUN_BIN_DIR:-$root/bin}
@@ -123,7 +124,7 @@ if [ "$fanout" = true ]; then
        exit 2 ;;
   esac
   state=''
-  [ "$dry_run" = true ] || [ -z "$dest_dir" ] || state="$dest_dir/fanout.state.json"
+  [ "$dry_run" = true ] || [ -z "$dest_dir" ] || state=$(image_leg_work_file fanout "$dest_dir" fanout.state.json)
   write_pointer "fanout · $short" all "$state"
   exec "$bin_dir/image-fanout" "${fanout_args[@]}" "$@"
 fi

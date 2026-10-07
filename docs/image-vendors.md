@@ -155,9 +155,10 @@ it, otherwise the flag is dropped (vendor default) and the adaptation is reporte
 Roster rows whose lister status is `login needed` / `Not logged in` are `skipped`
 with reason `login needed`. Wrapper exit 4 (pool disabled) is `skipped`, not `failed`.
 Outputs land at `<dest-dir>/<vendor>-<account>.png` (`.mp4` for video; pick mode uses
-`<vendor>-pick.<ext>`). The table is `<dest-dir>/fanout.tsv` (live runs only), one row per
+`<vendor>-pick.<ext>`); nothing else is written to dest-dir. The table, printed at the end, is also kept as
+`fanout.tsv` in the work store (live runs only, see below), one row per
 delivered file (a packed job's variants each get one) with the vendor's `job`, `route`,
-`fallback_from`, `phases` and `composite` appended; `<dest-dir>/fanout.state.json` holds the live cells
+`fallback_from`, `phases` and `composite` appended; `fanout.state.json` beside it holds the live cells
 (`vendor, account, status, exit, job, dest, take, request`). Exit 0
 if any row is `ok`, 3 if every attempted row hit a usage limit, 2 on usage errors,
 1 otherwise. A `caps=stale` / `model_caps=stale` token on a row is repeated as
@@ -209,8 +210,12 @@ Two local tools answer it ([gemini page](image-vendors/gemini.md#local-composite
   Flow `--count` take. `--no-composite` opts out; never with `--transparent` or Flow's `--remove-bg`, on codex `--remove-bg`
   only asked ([background removal](#background-removal));
   `--composite[=auto|x,y,w,h]` forces it and picks the mask; `codex-image --region`/`--point` feed it.
-- `<dest>.edit.json` `{root, depth, edits:[{prompt, region, points, route, vendor, account, composite}]}`
-  beside every `gemini-image`, `codex-image` and `grok-image` output, accumulated through `--ref` /
+- Work store: `<dirname of IMAGE_LEG_LOG>/<kind>/<hash of the path>/` (`image_leg_work_file`) holds the
+  fanout table, live cells and failed takes' `.stderr` per dest-dir, and the edit lineage per image; a write
+  prunes that kind's files untouched for 14 days. Nothing lands beside the images.
+- The lineage `edit.json` `{root, depth, edits:[{prompt, region, points, route, vendor, account, composite}]}`
+  of every edited `gemini-image`, `codex-image` and `grok-image` output (a plain generation keeps none and
+  drops a stale one; an old `<image>.edit.json` beside the image is still read), accumulated through `--ref` /
   `--resume` inputs; the run's last line is `edit_depth=<n> root=<path>`. Composited small edits keep
   chaining on the last result; only after a refused (global) composite or with `--no-composite`, from
   the third edit on, go back to `root` and apply all `edits` in one.

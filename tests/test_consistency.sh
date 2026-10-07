@@ -3284,9 +3284,10 @@ assert jq -e '.whole == {"code": "code", "system": "system"}' "$ROOT/share/docto
 assert doc_has '| dj | Doctor roster |'
 
 # Row dk: an explicit --account is never read as "none": every media entry point refuses an empty or
-# malformed name through the one shared check before anything is spent.
+# malformed name through the one shared check before anything is spent. media-run sources image-leg.sh
+# for the fan-out's work-store path only; it reads --account for its tag and execs the script that checks it.
 media_account_scripts="codex-image gemini-image grok-image grok-video gemini-video gemini-music gemini-sfx gemini-listen gemini-speech"
-assert eq "$(cd "$ROOT/bin" && grep -lE -- '^ *--account\)' $(grep -lF '. "$root/share/image-leg.sh"' -- *) | sort | tr '\n' ' ')" \
+assert eq "$(cd "$ROOT/bin" && grep -lE -- '^ *--account\)' $(grep -lF '. "$root/share/image-leg.sh"' -- * | grep -vx media-run) | sort | tr '\n' ' ')" \
   "$(printf '%s\n' $media_account_scripts | sort | tr '\n' ' ')"
 for name in $media_account_scripts; do
   assert grep -qxF '. "$root/share/account-arg.sh"' "$ROOT/bin/$name"

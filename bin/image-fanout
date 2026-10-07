@@ -445,8 +445,9 @@ tree_alive() { # tree rows -> the rows still running the same command
   local pids
   [ -n "$1" ] || return 0
   pids=$(cut -f1 <<<"$1" | paste -sd, -)
-  ps -o pid=,comm= -p "$pids" 2>/dev/null | awk -v rows="$1" '
-    BEGIN { n = split(rows, r, "\n"); for (i = 1; i <= n; i++) { split(r[i], f, "\t"); want[f[1]] = f[2] } }
+  # macOS awk refuses a multi-line -v value ("newline in string"), so the rows come through the env.
+  ps -o pid=,comm= -p "$pids" 2>/dev/null | TREE_ROWS=$1 awk '
+    BEGIN { n = split(ENVIRON["TREE_ROWS"], r, "\n"); for (i = 1; i <= n; i++) { split(r[i], f, "\t"); want[f[1]] = f[2] } }
     { pid = $1; $1 = ""; sub(/^ +/, ""); if (want[pid] == $0) print pid "\t" $0 }' || :
 }
 
@@ -468,7 +469,8 @@ unit_alive() { # unit -> 0 while its group or a recorded descendant runs
 
 jobs_dir=$(mktemp -d "${TMPDIR:-/tmp}/image-fanout.XXXXXX")
 run_id="fanout-$(date -u +%Y%m%dT%H%M%SZ)-$$"
-state_file="$dest_dir/fanout.state.json"
+state_file=$(image_leg_work_file fanout "$dest_dir" fanout.state.json)
+work_dir=${state_file%/*}
 state_dirty=1
 
 # Groups: one request x one vendor. Units: one launch (a take, or several packed into one --count).
@@ -850,6 +852,7 @@ write_state() {
 # Read by the launching agent's task row (bin/subagent-statusline.sh) while the jobs run.
 refresh_state() {
   [ "$dry_run" = false ] && [ "$state_dirty" = 1 ] || return 0
+  mkdir -p "$work_dir" 2>/dev/null || :
   if write_state; then state_dirty=0; else rm -f "$state_file.tmp.$$"; fi
 }
 
@@ -1189,7 +1192,9 @@ stale_lines=''
 if [ "$dry_run" = true ]; then
   tsv="$jobs_dir/fanout.tsv"
 else
-  tsv="$dest_dir/fanout.tsv"
+  image_leg_work_prune "$state_file"
+  mkdir -p "$work_dir"
+  tsv="$work_dir/fanout.tsv"
 fi
 
 count_status() {
@@ -1263,7 +1268,7 @@ count_status() {
     fi
     if [ "$status" != ok ] && [ -s "$dir/err" ]; then
       stem=${u_dest[u]##*/}
-      cp "$dir/err" "$dest_dir/${stem%.*}.stderr"
+      cp "$dir/err" "$work_dir/${stem%.*}.stderr"
       err_last=$(grep -v '^[[:space:]]*$' "$dir/err" | tail -n1 | tr '\t' ' ' | cut -c1-200)
       [ -z "$err_last" ] || reason=$(join_adapt "$reason" "$err_last")
     fi

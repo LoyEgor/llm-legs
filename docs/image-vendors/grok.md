@@ -197,7 +197,7 @@ single `--ref`, or `--resume` of a session whose last image this machine deliver
 is composited by default like on every vendor — `composite=auto changed=<percent>` and
 `rendered=<dest stem>.rendered.<ext>`, `composite=refused reason=global ...` for a global edit,
 `composite=skipped reason=...` otherwise, nothing with `--no-composite` or `--transparent`; rules,
-`--composite[=auto|x,y,w,h]` and the `<dest>.edit.json` lineage are on the
+`--composite[=auto|x,y,w,h]` and the edit lineage are on the
 [gemini page](gemini.md#local-composite-and-edit-lineage). `grok-video` prints eight lines,
 inserting `duration=` after `format=`. `session=none` means the stream carried no `sessionId`.
 

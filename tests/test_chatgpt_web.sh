@@ -28,6 +28,7 @@ export CHATGPT_WEB_DIR="$WORK/home/.chatgpt-web" GEMINI_WEB_DIR="$WORK/home/.gem
 export GEMINI_WEB_CHROME="$WORK/no-chrome.app"
 export CODEX_PROFILES_DIR="$WORK/codex-profiles" CODEXB_PROFILES_DIR="$WORK/codex-profiles"
 export WORKER_PICK_CONFIG_FILE="$WORK/pins" WORKER_CLAIMS_DIR="$WORK/claims" IMAGE_LEG_LOG="$WORK/image-legs.jsonl"
+sidecar() { (. "$ROOT/share/image-leg.sh"; image_leg_sidecar "$1"); }
 mkdir -p "$HOME/.codex" "$CODEX_PROFILES_DIR"/{alpha,beta,gamma,acct} "$CODEX_PROFILES_DIR/.codexb" "$CHATGPT_WEB_DIR"
 : >"$WORKER_PICK_CONFIG_FILE"
 
@@ -1457,7 +1458,7 @@ assert test "$(image_rc --route web --dest "$OUT/c1.png" --prompt 'blue corner' 
 assert grep -Eq '^composite=region changed=' "$IMAGE_OUT"
 assert test "$(pixel_at "$OUT/c1.png" 32,24)" = 'srgb(0,255,0)'
 assert test "$(tail -n 1 "$IMAGE_OUT")" = "edit_depth=1 root=$WORK/green.png"
-assert test "$(jq -r '.edits[0].region' "$OUT/c1.png.edit.json")" = 0,0,0.2,0.2
+assert test "$(jq -r '.edits[0].region' "$(sidecar "$OUT/c1.png")")" = 0,0,0.2,0.2
 assert test "$(image_rc --route web --dest "$OUT/c2.png" --prompt 'blue left' --resume "$WEB_CHAT" --region 0,0,0.5,1)" = 0
 assert grep -Eq '^composite=region changed=' "$IMAGE_OUT"
 assert test "$(pixel_at "$OUT/c2.png" 24,24)" = 'srgb(0,0,255)'
@@ -1466,7 +1467,7 @@ assert test "$(tail -n 1 "$IMAGE_OUT")" = "edit_depth=2 root=$WORK/green.png"
 assert test "$(image_rc --route web --dest "$OUT/c3.png" --ref "$OUT/c2.png" --point '0.5,0.5=blue dot')" = 0
 assert grep -Eq '^composite=points changed=' "$IMAGE_OUT"
 assert test "$(tail -n 1 "$IMAGE_OUT")" = "edit_depth=3 root=$WORK/green.png"
-assert test "$(jq -c '.edits[2] | [.points, .route, .vendor]' "$OUT/c3.png.edit.json")" = '[["0.5,0.5=blue dot"],"web","codex"]'
+assert test "$(jq -c '.edits[2] | [.points, .route, .vendor]' "$(sidecar "$OUT/c3.png")")" = '[["0.5,0.5=blue dot"],"web","codex"]'
 assert test "$(image_rc --route web --dest "$OUT/c9.png" --prompt 'blue corner' --ref "$WORK/green.png" --region 0,0,0.2,0.2)" = 0
 assert test "$(image_rc --route web --dest "$OUT/c9.png" --prompt 'blue left' --resume "$WEB_CHAT" --region 0,0,0.5,1)" = 0
 assert test "$(pixel_at "$OUT/c9.png" 42,24)" = 'srgb(0,255,0)'
@@ -1478,7 +1479,7 @@ assert_fails grep -q '^composite=' "$IMAGE_OUT"
 assert test "$(image_rc --route web --dest "$OUT/c6.png" --prompt 'blue dot' --ref "$WORK/green.png" --composite=0.5,0,0.5,1)" = 0
 assert grep -Eq '^composite=region changed=' "$IMAGE_OUT"
 assert test "$(pixel_at "$OUT/c6.png" 24,24)" = 'srgb(0,255,0)'
-assert test "$(jq -r '.edits[0].region' "$OUT/c6.png.edit.json")" = 0.5,0,0.5,1
+assert test "$(jq -r '.edits[0].region' "$(sidecar "$OUT/c6.png")")" = 0.5,0,0.5,1
 assert test "$(image_rc --route web --dest "$OUT/c7.png" --prompt 'blue dot' --ref "$WORK/green.png" --composite)" = 0
 assert grep -Eq '^composite=auto changed=' "$IMAGE_OUT"
 for refused in "--ref $WORK/green.png --composite --no-composite" "--ref $WORK/green.png --composite=0.5,0.5,0.6,0.1" \

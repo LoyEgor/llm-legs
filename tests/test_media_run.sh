@@ -137,7 +137,7 @@ IFS=$'\037' read -r _ p_tag _ < <(pointer "$(cat "$LOG/codex-image.pid")")
 ok
 run image --vendors codex,zeta -- --dest-dir /tmp/fan --prompt x
 IFS=$'\037' read -r _ p_tag p_label p_state _ < <(pointer "$(cat "$LOG/image-fanout.pid")")
-[ "$p_tag" = 'fanout · img' ] && [ "$p_label" = all ] && [ "$p_state" = /tmp/fan/fanout.state.json ] ||
+[ "$p_tag" = 'fanout · img' ] && [ "$p_label" = all ] && [ "$p_state" = "$(. "$ROOT/share/image-leg.sh"; image_leg_work_file fanout /tmp/fan fanout.state.json)" ] ||
   fail "a fan-out pointer reads '$p_tag|$p_label|$p_state'"
 ok
 [ "$(cat "$LOG/image-fanout.job")" = unset ] || fail "a fan-out inherited one job id for all its cells"

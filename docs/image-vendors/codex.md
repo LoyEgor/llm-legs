@@ -201,7 +201,7 @@ with `--composite` (a matte, above).
 prints `composite=<region|points|auto> changed=<percent>` plus `rendered=<dest stem>.rendered.<ext>` (the
 model's own image), or `composite=refused reason=global|no-local-change changed=<percent> kind=<mask>`
 (more than 60% changed or nothing local found: the model's image is delivered), right before the last line
-`edit_depth=<n> root=<path>` of `<dest>.edit.json`.
+`edit_depth=<n> root=<path>` of the edit lineage.
 
 ## Web route (the default) and the CLI fallback
 

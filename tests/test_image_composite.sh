@@ -80,12 +80,16 @@ assert test ! -e "$WORK/bad.png"
 
 # Lineage: the sidecar chain and the session index, through the shared helpers.
 export IMAGE_LEG_LOG="$WORK/legs/legs.jsonl"
+sidecar() { (. "$ROOT/share/image-leg.sh"; image_leg_sidecar "$1"); }
 lineage() { (account=acct; . "$ROOT/share/image-leg.sh"; image_leg_lineage "$@") >"$WORK/out" 2>"$WORK/err"; }
 session_input() { (. "$ROOT/share/image-leg.sh"; image_leg_session_input "$@"); }
 cp "$base" "$WORK/gen.png"
+stale=$(sidecar "$WORK/gen.png")
+mkdir -p "${stale%/*}"
+printf '{"root":"%s","depth":3,"edits":[]}\n' "$WORK/older.png" >"$stale"
 assert lineage gemini cli "$WORK/gen.png" conv-1 'a portrait' '' ''
 assert grep -qx "edit_depth=0 root=$WORK/gen.png" "$WORK/out"
-assert test "$(jq -c . "$WORK/gen.png.edit.json")" = "{\"root\":\"$WORK/gen.png\",\"depth\":0,\"edits\":[]}"
+assert test ! -e "$(sidecar "$WORK/gen.png")"
 assert test "$(session_input gemini conv-1)" = "$WORK/gen.png"
 cp "$base" "$WORK/e1.png"
 assert lineage gemini cli "$WORK/e1.png" conv-1 'red hair' '0.1,0.1,0.5,0.5' '' "$(session_input gemini conv-1)"
@@ -94,13 +98,25 @@ assert test "$(session_input gemini conv-1)" = "$WORK/e1.png"
 cp "$base" "$WORK/e2.png"
 assert lineage codex web "$WORK/e2.png" chat-2 '' '' $'0.5,0.8=moon pendant\n0.2,0.2=strap' "$WORK/plain.png" "$WORK/e1.png"
 assert grep -qx "edit_depth=2 root=$WORK/gen.png" "$WORK/out"
-assert test "$(jq -c '.edits' "$WORK/e2.png.edit.json")" = '[{"prompt":"red hair","region":"0.1,0.1,0.5,0.5","points":[],"route":"cli","vendor":"gemini","account":"acct"},{"prompt":"","region":null,"points":["0.5,0.8=moon pendant","0.2,0.2=strap"],"route":"web","vendor":"codex","account":"acct"}]'
+assert test "$(jq -c '.edits' "$(sidecar "$WORK/e2.png")")" = '[{"prompt":"red hair","region":"0.1,0.1,0.5,0.5","points":[],"route":"cli","vendor":"gemini","account":"acct"},{"prompt":"","region":null,"points":["0.5,0.8=moon pendant","0.2,0.2=strap"],"route":"web","vendor":"codex","account":"acct"}]'
 cp "$base" "$WORK/plain.png"
 cp "$base" "$WORK/p1.png"
 assert lineage gemini cli "$WORK/p1.png" none 'bluer' '' '' "$WORK/plain.png"
 assert grep -qx "edit_depth=1 root=$WORK/plain.png" "$WORK/out"
-assert test "$(jq -r '.edits | length' "$WORK/p1.png.edit.json")" = 1
+assert test "$(jq -r '.edits | length' "$(sidecar "$WORK/p1.png")")" = 1
 assert test ! -e "$WORK/legs/sessions/gemini/none"
+cp "$base" "$WORK/legacy.png"
+printf '{"root":"%s","depth":2,"edits":[]}\n' "$WORK/older.png" >"$WORK/legacy.png.edit.json"
+assert lineage gemini cli "$WORK/l1.png" none 'warmer' '' '' "$WORK/legacy.png"
+assert grep -qx "edit_depth=3 root=$WORK/older.png" "$WORK/out"
+assert test "$(jq -r '.depth' "$(sidecar "$WORK/l1.png")")" = 3
+aged=$(sidecar "$WORK/aged.png")
+mkdir -p "${aged%/*}"
+: >"$aged"
+touch -t 202001010000 "$aged"
+assert lineage gemini cli "$WORK/l2.png" none 'cooler' '' '' "$WORK/l1.png"
+assert test ! -e "$aged" -a ! -d "${aged%/*}"
+assert test "$(find "$WORK" -maxdepth 1 -name '*.edit.json' ! -name 'legacy.png.edit.json' | wc -l | tr -d ' ')" = 0
 rm "$WORK/e1.png"
 assert test -z "$(session_input gemini conv-1)"
 
@@ -141,8 +157,8 @@ scenario() { # name render [decide args after render: resume repaint refs...]
     decide "$vendor" "${resume:+$resume-$vendor}" "$repaint" "$render" "$WORK/$name-$vendor.png" "$@" || rc=$?
     printf 'rc=%s\n' "$rc" >>"$WORK/out"
     sed -e "s/-$vendor\././g" -e "s/$vendor-last/vendor-last/g" "$WORK/out" >"$WORK/$name-$vendor.out"
-    [ ! -e "$WORK/$name-$vendor.png.edit.json" ] ||
-      jq -c '.edits[-1].composite // "none"' "$WORK/$name-$vendor.png.edit.json" >>"$WORK/$name-$vendor.out"
+    [ ! -e "$(sidecar "$WORK/$name-$vendor.png")" ] ||
+      jq -c '.edits[-1].composite // "none"' "$(sidecar "$WORK/$name-$vendor.png")" >>"$WORK/$name-$vendor.out"
   done
   assert cmp "$WORK/$name-codex.out" "$WORK/$name-gemini.out"
   assert cmp "$WORK/$name-codex.out" "$WORK/$name-grok.out"

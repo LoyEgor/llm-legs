@@ -346,17 +346,41 @@ image_leg_session_route() { # vendor session
   sed -n 2p "$(image_leg_session_file "$1" "$2")" 2>/dev/null | grep -E '^[a-z]+$'
 }
 
+# Work files never sit beside the images; a write prunes its kind's files untouched for 14 days.
+image_leg_work_file() { # kind path name
+  local log key
+  log=$(image_leg_log_path)
+  case $log in */*) log=${log%/*} ;; *) log=. ;; esac
+  case $2 in /*) key=$2 ;; *) key=$PWD/$2 ;; esac
+  key=$(printf '%s' "$key" | shasum | cut -c1-16)
+  printf '%s/%s/%s/%s\n' "$log" "$1" "$key" "$3"
+}
+
+image_leg_work_prune() { # work file
+  local kind_dir=${1%/*/*}
+  find "$kind_dir" -type f -mtime +14 -delete 2>/dev/null || :
+  find "$kind_dir" -mindepth 1 -type d -empty -delete 2>/dev/null || :
+}
+
+# `<image>.edit.json` beside the image is the old place, still read.
+image_leg_sidecar() { # image -> its edit-chain sidecar
+  image_leg_work_file lineage "$1" edit.json
+}
+
+# A plain generation keeps no sidecar (a missing one reads as a root at depth 0) and drops a stale one.
 # Parent = the first input with a sidecar; with none the first input is a root at depth 0, and no
 # input makes dest itself the root. Prints the main take's composite lines before edit_depth=.
 image_leg_lineage() { # vendor route dest session prompt region points(newline-separated) [input...]
   local vendor=$1 route=$2 dest=$3 session=$4 prompt=$5 region=$6 points=$7 parent='' previous=null input sidecar file made
   shift 7
   for input in "$@"; do
-    if jq -e '(.root | type) == "string" and (.depth | type) == "number" and (.edits | type) == "array"' \
-        "$input.edit.json" >/dev/null 2>&1; then
-      parent=$input previous=$(cat "$input.edit.json")
-      break
-    fi
+    for file in "$(image_leg_sidecar "$input")" "$input.edit.json"; do
+      if jq -e '(.root | type) == "string" and (.depth | type) == "number" and (.edits | type) == "array"' \
+          "$file" >/dev/null 2>&1; then
+        parent=$input previous=$(cat "$file")
+        break 2
+      fi
+    done
   done
   [ -n "$parent" ] || parent=${1:-}
   made=$(image_leg_composite_record) || made=null
@@ -371,9 +395,15 @@ image_leg_lineage() { # vendor route dest session prompt region points(newline-s
           route: $route, vendor: $vendor, account: $account}
           + (if $made == null then {} else {composite: $made} end)])}
     end') || return 0
-  if ! printf '%s\n' "$sidecar" >"$dest.edit.json.$$" || ! mv -f "$dest.edit.json.$$" "$dest.edit.json"; then
-    rm -f "$dest.edit.json.$$"
-    printf '%s: could not write %s.edit.json\n' "${IMAGE_LEG_TOOL:-image}" "$dest" >&2
+  if [ -n "$parent" ]; then
+    file=$(image_leg_sidecar "$dest")
+    image_leg_work_prune "$file"
+    if ! mkdir -p "${file%/*}" || ! printf '%s\n' "$sidecar" >"$file.$$" || ! mv -f "$file.$$" "$file"; then
+      rm -f "$file.$$"
+      printf '%s: could not write %s\n' "${IMAGE_LEG_TOOL:-image}" "$file" >&2
+    fi
+  else
+    rm -f "$(image_leg_sidecar "$dest")" "$dest.edit.json"
   fi
   if [ "$session" != none ] && [[ "$session" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
     file=$(image_leg_session_file "$vendor" "$session")

@@ -15,6 +15,7 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; cat "$WORK/err" >&2 2>/dev/null; exit 1; 
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
 export HOME="$WORK/home" TMPDIR="$WORK/tmp" GEMINI_WEB_DIR="$WORK/home/.gemini-web" PYTHONDONTWRITEBYTECODE=1
 export IMAGE_LEG_LOG="$WORK/image-legs.jsonl" FAKE_CALLS="$WORK/calls" FLOW_IMAGE_ENGINE="$WORK/flow-engine"
+sidecar() { (. "$ROOT/share/image-leg.sh"; image_leg_sidecar "$1"); }
 mkdir -p "$HOME" "$TMPDIR" "$WORK/media" "$WORK/out" "$GEMINI_WEB_DIR"
 M=$WORK/media
 magick -size 1200x896 xc:steelblue "$M/a.jpg" || exit 1
@@ -197,7 +198,7 @@ magick "$M/green.png" -fill blue -draw 'rectangle 5,5 20,20' "$M/patched.png" ||
 FAKE_A="$M/patched.png" assert image --dest "$WORK/out/comp.png" --prompt 'add a patch' --ref "$M/green.png" --composite
 assert grep -Eq '^composite=auto changed=[0-9.]+%$' "$WORK/stdout"
 assert grep -qx "edit_depth=1 root=$M/green.png" "$WORK/stdout"
-assert test "$(jq -r '.edits[0].route' "$WORK/out/comp.png.edit.json")" = flow
+assert test "$(jq -r '.edits[0].route' "$(sidecar "$WORK/out/comp.png")")" = flow
 # By default too, and on every take of a --count: each composited, each render kept beside its file.
 magick "$M/patched.png" -fill white -colorize 4% "$M/drifted.png" || exit 1
 FAKE_A="$M/drifted.png" FAKE_B="$M/drifted.png" assert image --dest "$WORK/out/takes.png" --prompt 'add a patch' \
@@ -313,7 +314,7 @@ assert test "$(pixel "$png" 302,201)" = "$(pixel "$M/scene.png" 302,201)"
 assert grep -qx 'tool=cutout bg_model=modnet on_device=true' "$WORK/stdout"
 assert grep -qx 'route=flow tool=cutout' "$WORK/stdout"
 assert test "$(grep -c '^composite=' "$WORK/stdout")" -eq 0
-assert test "$(jq -r '.edits[0].route' "$png.edit.json")" = flow
+assert test "$(jq -r '.edits[0].route' "$(sidecar "$png")")" = flow
 FAKE_CUTOUT=opaque expect_rc 1 --dest "$WORK/out/opaque.png" --ref "$M/scene.png" --remove-bg
 assert test "$(cat "$WORK/err")" = "gemini-image: Flow's Cutout returned no transparency; nothing delivered"
 assert test ! -e "$WORK/out/opaque.png"
@@ -343,7 +344,7 @@ calls=$(tr '\n' ' ' <"$FAKE_CALLS")
 assert grep -q -- " --prompt a navy box; a red dot --point 0.2,0.23=a navy box --point 0.7,0.7=a red dot $" <<<"$calls"
 assert grep -Eq '^composite=points ' "$WORK/stdout"
 assert test "$(pixel "$png" 900,100)" = "$(pixel "$M/scene.png" 900,100)"
-assert test "$(jq -c '.edits[-1].points' "$png.edit.json")" != null
+assert test "$(jq -c '.edits[-1].points' "$(sidecar "$png")")" != null
 
 # Outpaint: a prompt-less --aspect on one image; the canvas changes, so nothing composites.
 magick -size 1333x750 xc:olive "$M/outpainted.png" || exit 1
