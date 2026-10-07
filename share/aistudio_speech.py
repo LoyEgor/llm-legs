@@ -23,6 +23,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import caps_checks  # noqa: E402
 import gemini_web as gw  # noqa: E402
 
 gw.ROUTE = "aistudio"
@@ -41,6 +42,10 @@ MINUTE_WALL_S = 900
 SEND_WAIT_S = 12
 STOP = re.compile(r"(^|\s)Stop$|^Cancel generation")
 LINE = re.compile(r"^\s*([A-Za-z][\w-]*)\s*(?:\(([^)]*)\))?\s*:\s*(.*\S)\s*$", re.S)
+TTS_ID = re.compile(r"^[a-z0-9][a-z0-9.-]*-tts(-[a-z0-9.-]+)?$")
+VOICE_COUNT = re.compile(r'- text: (.+)\n\s*- button "View all (\d+)"')
+VOICE_NAME = re.compile(r'^\s*- button "([A-Z][\w-]*)(?: \(Current\))?":', re.M)
+DIRECTOR = {"delivery": "Style", "pace": "Pace", "accent": "Accent"}
 RIFF = lambda head: head[:4] == b"RIFF"  # noqa: E731
 
 
@@ -294,10 +299,100 @@ def close_panel(page) -> None:
     page.wait_for_timeout(500)
 
 
+def name_pattern(text: str, tail: str) -> re.Pattern:
+    """Playwright writes a regex name into its selector as /…/, so an unescaped slash (Promo/Hype) is an
+    InvalidSelectorError."""
+    return re.compile("^" + re.escape(text).replace("/", r"\/") + tail)
+
+
 def title(text: str) -> re.Pattern:
-    """An item whose accessible name starts with text. Playwright writes a regex name into its selector as /…/, so
-    an unescaped slash (Promo/Hype) is an InvalidSelectorError."""
-    return re.compile("^" + re.escape(text).replace("/", r"\/") + r"(\s|$)")
+    """An item whose accessible name starts with text."""
+    return name_pattern(text, r"(\s|$)")
+
+
+def read_part(page, read):
+    try:
+        return read()
+    except Exception:  # noqa: BLE001
+        with contextlib.suppress(Exception):
+            page.keyboard.press("Escape")
+        return None
+
+
+def live_models(page, model_id: str) -> list[str]:
+    page.get_by_role("button", name=re.compile(re.escape(model_id))).first.click(timeout=8000)
+    pane = page.locator(".cdk-overlay-pane").filter(has=page.get_by_role("region", name="Model carousel")).last
+    try:
+        pane.get_by_role("button", name="Audio", exact=True).click(timeout=8000)
+        page.wait_for_timeout(800)
+        lines = pane.evaluate("(el) => [...el.querySelectorAll('button')].flatMap(b => b.innerText.split('\\n'))")
+    finally:
+        with contextlib.suppress(Exception):
+            pane.get_by_role("button", name="Close panel").click(timeout=5000)
+    return sorted({line.strip() for line in lines if TTS_ID.match(line.strip())})
+
+
+def live_tags(page, block) -> list[str]:
+    toggle = block.get_by_role("button", name=re.compile(r"Expression$"))
+    toggle.click(timeout=8000)
+    try:
+        bar = page.get_by_role("toolbar", name="Expression tags").first
+        bar.wait_for(timeout=8000)
+        return [" ".join(t.split()) for t in bar.get_by_role("button").all_inner_texts()]
+    finally:
+        with contextlib.suppress(Exception):
+            toggle.click(timeout=5000)
+
+
+def live_voices(page, block, classic: bool) -> dict:
+    """The 3.8 panel shows each use case's count and its first three voices; the older models' panel lists all."""
+    chip(block).first.click(timeout=8000)
+    pane = panel(page)
+    try:
+        region = pane.get_by_role("region", name="Available voices")
+        region.wait_for(timeout=8000)
+        page.wait_for_timeout(500)
+        snap = region.aria_snapshot()
+        shown = {"counts": [f"{use} {n}" for use, n in VOICE_COUNT.findall(snap)], "names": VOICE_NAME.findall(snap)}
+        for key, label in DIRECTOR.items() if classic else ():
+            def menu(label=label):
+                pane.get_by_role("button", name=label, exact=True).first.click(timeout=8000)
+                items = page.get_by_role("menuitem")
+                items.first.wait_for(timeout=8000)
+                options = [t.split("\n")[0].strip() for t in items.all_inner_texts()]
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(300)
+                return options
+            shown[key] = read_part(page, menu)
+        return shown
+    finally:
+        close_panel(page)
+
+
+def page_caps(page, plan: dict) -> list[str]:
+    """`.speech` is the only place a caller learns the options, so each take compares what the composer offers with
+    it before composing: an added model, voice, tag or director option shows as `caps=stale`, not only a removed one."""
+    c = caps()
+    fam = c["families"][plan["family"]]
+    block = blocks(page).first
+    classic = plan["family"] == "classic"
+    drift = gw.caps_drift("models", read_part(page, lambda: live_models(page, plan["model_id"])),
+                          [m["id"] for m in c["models"].values()])
+    drift += gw.caps_drift("tags", read_part(page, lambda: live_tags(page, block)), fam["tags"])
+    shown = read_part(page, lambda: live_voices(page, block, classic)) or {}
+    roster = family_voices(plan["family"], c)
+    if classic:
+        drift += gw.caps_drift("voices", shown.get("names"), roster)
+        for key, label in DIRECTOR.items():
+            drift += gw.caps_drift(f"director {label}", shown.get(key), fam["director"][key])
+    else:
+        uses: dict[str, int] = {}
+        for name in roster:
+            uses[c["voices"][name][3]] = uses.get(c["voices"][name][3], 0) + 1
+        drift += gw.caps_drift("voice counts", shown.get("counts"), [f"{use} {n}" for use, n in uses.items()])
+        drift += gw.caps_drift("voices", shown.get("names"), roster, gone=False)
+    caps_checks.record("gemini", "speech", bool(drift), "; ".join(drift))
+    return drift
 
 
 def pick_menu(page, scope, name: str, item: str) -> None:
@@ -329,12 +424,12 @@ def set_speaker(page, block, number: int, voice: str, plan: dict) -> None:
         if shown != want:
             pane.get_by_role("textbox", name="Search voices").fill(voice, timeout=8000)
             page.wait_for_timeout(1200)
-            pane.get_by_role("button", name=re.compile("^" + re.escape(voice).replace("/", r"\/") + r"( \(Current\))?$")).first.click(timeout=8000)
+            pane.get_by_role("button", name=name_pattern(voice, r"( \(Current\))?$")).first.click(timeout=8000)
             page.wait_for_timeout(800)
         if classic:
             pane.get_by_role("textbox", name=re.compile("^Describe the voice persona")).fill(plan["style"], timeout=8000)
             for name, item in plan["director"].items():
-                pick_menu(page, pane, {"delivery": "Style", "pace": "Pace", "accent": "Accent"}[name], item)
+                pick_menu(page, pane, DIRECTOR[name], item)
     except gw.Failure:
         raise
     except Exception as error:  # noqa: BLE001
@@ -361,19 +456,6 @@ def set_style(page, block, style: str) -> None:
         raise drift("no Style field on the speech block") from error
     if " ".join(style.split())[:30] not in " ".join(shown.split()):
         raise drift(f"the block's Style shows {shown.strip()!r}, not the style asked")
-
-
-def set_switch(page, name: str, on: bool) -> None:
-    switch = page.get_by_role("switch", name=name, exact=True)
-    try:
-        if (switch.first.get_attribute("aria-checked", timeout=8000) == "true") != on:
-            switch.first.click(timeout=8000)
-            page.wait_for_timeout(400)
-        ok = (switch.first.get_attribute("aria-checked") == "true") == on
-    except Exception as error:  # noqa: BLE001
-        raise drift(f"no {name!r} switch in the run settings") from error
-    if not ok:
-        raise drift(f"the {name!r} switch does not stick")
 
 
 def set_temperature(page, value: float) -> None:
@@ -421,7 +503,7 @@ def compose(page, plan: dict) -> dict:
         index = next(i for i, t in enumerate(plan["turns"]) if t["voice"] == voice)
         set_speaker(page, blocks(page).nth(index), number, voice, plan)
     if plan["family"] == "design" and len(plan["speakers"]) == 2:
-        set_switch(page, "Filler words", plan["filler_words"])
+        gw.set_switch(page, "Filler words", plan["filler_words"], drift, "the run settings")
     set_temperature(page, plan["temperature"])
     return {"model": plan["model_id"], "speakers": [chip_text(blocks(page).nth(
                 next(i for i, t in enumerate(plan["turns"]) if t["voice"] == v))) for v in plan["speakers"]],
@@ -538,9 +620,11 @@ def one_take(context, account: str, plan: dict) -> dict:
     page = context.new_page()
     replies = Replies(page)
     accepted = open_composer(page, account, plan["model_id"])
+    drift = page_caps(page, plan)
     controls = compose(page, plan)
     if plan["dry_run"]:
-        return {"ok": True, "dry_run": True, "account": account, "controls": controls, "terms_accepted": accepted}
+        return {"ok": True, "dry_run": True, "account": account, "controls": controls, "terms_accepted": accepted,
+                "caps": drift}
     gw.note_started(account)
     gw.ledger({"kind": "aistudio-speech", "event": "queued", "account": account, "model": plan["model_id"],
                "speakers": plan["speakers"], "chars": sum(len(t["text"]) for t in plan["turns"])})
@@ -554,7 +638,8 @@ def one_take(context, account: str, plan: dict) -> dict:
                "bytes": size, "render_s": render_s})
     page.close()
     return {"audio": str(audio), "account": account, "model": plan["model_id"], "speakers": controls["speakers"],
-            "bytes": size, "render_s": render_s, "terms_accepted": accepted, "url": f"{SITE}/generate-speech"}
+            "bytes": size, "render_s": render_s, "terms_accepted": accepted, "url": f"{SITE}/generate-speech",
+            "caps": drift}
 
 
 def generate_on(account: str, plan: dict) -> dict:
@@ -562,7 +647,7 @@ def generate_on(account: str, plan: dict) -> dict:
         result = one_take(context, account, plan)
     if result.get("dry_run"):
         return result
-    return {"ok": True, "account": account, "takes": [result]}
+    return {"ok": True, "account": account, "takes": [result], "caps": result.pop("caps")}
 
 
 def cmd_generate(args) -> None:

@@ -8,7 +8,7 @@ FIXTURE="$ROOT/tests/fixtures/fake-grokb-video.sh"
 MANIFEST="$ROOT/share/image-caps/grok.json"
 VERIFIED_CLI=$(jq -r .cli.version "$MANIFEST")
 WORK="$(mktemp -d)"
-export IMAGE_LEG_LOG="$WORK/image-legs.jsonl"
+export IMAGE_LEG_LOG="$WORK/image-legs.jsonl" VENDOR_CLI_UPDATE_STATE_DIR="$WORK/vendor-cli-update"
 # Every `worker_model_*` call shells `grokb models`: the fixture list answers it, and the
 # `grok` CLI behind it can never be reached (row `cu`).
 export GROKB_CACHE_DIR="$WORK/grokb-cache"

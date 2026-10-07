@@ -13,6 +13,7 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; cat "$WORK/err" >&2 2>/dev/null; exit 1; 
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
 export HOME="$WORK/home" TMPDIR="$WORK/tmp" GEMINI_WEB_DIR="$WORK/home/.gemini-web" PYTHONDONTWRITEBYTECODE=1
 export IMAGE_LEG_LOG="$WORK/image-legs.jsonl" FAKE_CALLS="$WORK/calls" GEMINI_SPEECH_ENGINE="$WORK/engine"
+export VENDOR_CLI_UPDATE_STATE_DIR="$WORK/vendor-cli-update"
 mkdir -p "$HOME" "$TMPDIR" "$WORK/out" "$GEMINI_WEB_DIR"
 ffmpeg -v error -f lavfi -i 'sine=frequency=220:sample_rate=24000:duration=1' -ac 1 -c:a pcm_s16le "$WORK/take.wav" || exit 1
 export FAKE_WAV="$WORK/take.wav"
@@ -358,6 +359,98 @@ try:
 except gw.Failure as failure:
     assert "holds 144 bytes" in failure.reason, failure.reason
 print("engine checks ok")
+PY
+
+# The engine's comparison of the page with `.speech` is the footer's caps= line, on a take and on a dry run.
+cat >"$WORK/caps-engine" <<'EOF'
+#!/usr/bin/env bash
+out='' dry=false
+while [ "$#" -gt 0 ]; do case "$1" in --out-dir) out=$2; shift 2 ;; --dry-run) dry=true; shift ;; *) shift ;; esac; done
+[ "$dry" = false ] || { jq -cn --argjson c "$FAKE_CAPS" '{ok: true, dry_run: true, account: "com", controls: {}, caps: $c}'; exit 0; }
+cp "$FAKE_WAV" "$out/take1.wav"
+jq -cn --arg a "$out/take1.wav" --argjson c "$FAKE_CAPS" '{ok: true, account: "com", caps: $c,
+  takes: [{audio: $a, account: "com", model: "gemini-3.8-flash-tts", speakers: ["Speaker 1 - Fola"]}]}'
+EOF
+chmod +x "$WORK/caps-engine"
+GEMINI_SPEECH_ENGINE="$WORK/caps-engine" FAKE_CAPS='[]' expect_rc 0 --dest "$out" --text hi
+assert test "$(tail -n 1 "$WORK/stdout")" = caps=fresh
+GEMINI_SPEECH_ENGINE="$WORK/caps-engine" FAKE_CAPS='["models: +gemini-4-flash-tts", "tags: -yawn"]' \
+  expect_rc 0 --dest "$out" --text hi --dry-run
+assert grep -qx 'caps=stale what=models: +gemini-4-flash-tts; tags: -yawn' "$WORK/stdout"
+
+# The engine compares models, tags, the voice roster and the director's menus with `.speech`; what it cannot
+# read is stale too.
+assert python3 - "$ROOT" <<'PY'
+import os, sys, types
+sys.path.insert(0, os.path.join(sys.argv[1], "share"))
+import gemini_web as gw
+import aistudio_speech as s
+
+c = s.caps()
+ids = [m["id"] for m in c["models"].values()]
+classic = c["families"]["classic"]
+
+
+def uses(roster):
+    counts = {}
+    for name in roster:
+        counts[c["voices"][name][3]] = counts.get(c["voices"][name][3], 0) + 1
+    return [f"{use} {n}" for use, n in counts.items()]
+
+
+class Page:
+    keyboard = types.SimpleNamespace(press=lambda key: None)
+
+    def get_by_role(self, role, name=None, exact=False):
+        return types.SimpleNamespace(first=None)
+
+
+def check(family, models=ids, tags=None, voices=None):
+    s.live_models = models if callable(models) else lambda page, model_id: models
+    s.live_tags = lambda page, block: c["families"][family]["tags"] if tags is None else tags
+    s.live_voices = lambda page, block, older: voices
+    return s.page_caps(Page(), {"family": family, "model_id": ids[0]})
+
+
+design_voices = {"counts": uses(sorted(c["voices"])), "names": ["Bodi", "Fola", "Achernar"]}
+assert check("design", voices=design_voices) == []
+tags = [t for t in c["families"]["design"]["tags"] if t != "yawn"] + ["hum"]
+drift = check("design", models=[*ids, "gemini-4-flash-tts"], tags=tags,
+              voices={"counts": [*design_voices["counts"][1:], "Narrator 3"], "names": ["Bodi", "Nova"]})
+first = design_voices["counts"][0]
+assert drift == ["models: +gemini-4-flash-tts", "tags: +hum -yawn", f"voice counts: +Narrator 3 -{first}",
+                 "voices: +Nova"], drift
+older = {"names": list(c["classic_voices"]), **{k: list(v) for k, v in classic["director"].items()}}
+assert check("classic", voices=older) == []
+drift = check("classic", voices={**older, "names": older["names"][:-1], "accent": [*older["accent"], "Irish"]})
+assert drift == [f"voices: -{older['names'][-1]}", "director Accent: +Irish"], drift
+
+
+def unread(page, model_id):
+    raise TimeoutError("no model panel")
+
+
+assert check("classic", models=unread, voices=None) == ["models: unread", "voices: unread", "director Style: unread",
+                                                         "director Pace: unread", "director Accent: unread"]
+import caps_checks
+rows = [(r["state"], r["what"]) for r in caps_checks.read() if (r["vendor"], r["section"]) == ("gemini", "speech")]
+assert [state for state, _ in rows] == ["fresh", "stale", "fresh", "stale", "stale"], rows
+assert rows[3] == ("stale", "; ".join(drift)) and rows[0] == ("fresh", ""), rows
+assert gw.caps_drift("tags", list("abcdefgh"), []) == ["tags: +a +b +c +d +e +f …2 more"]
+
+# The page's own words: the model panel's id lines and the voice panel's aria snapshot.
+assert [x for x in ("gemini-3.8-flash-tts", "gemini-3.1-flash-tts-preview", "gemini-3.5-transcribe", "lyria-3.5",
+                    "Gemini 3.8 Flash TTS") if s.TTS_ID.match(x)] == ["gemini-3.8-flash-tts", "gemini-3.1-flash-tts-preview"]
+snap = '''- text: Tutor
+- button "View all 7"
+- button "Bodi": Bodi Quiet and intimate. · Low pitch
+- button "Favorite Bodi"
+- button "Play voice sample"
+- text: Call Center
+- button "View all 7"
+- button "Fola (Current)": Fola Current Clear and friendly. · Medium pitch'''
+assert s.VOICE_COUNT.findall(snap) == [("Tutor", "7"), ("Call Center", "7")]
+assert s.VOICE_NAME.findall(snap) == ["Bodi", "Fola"]
 PY
 
 printf 'PASS: test_gemini_speech (%s asserts)\n' "$asserts"

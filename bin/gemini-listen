@@ -7,6 +7,8 @@ set -euo pipefail
 usage() {
   image_leg_cause "$@"
   printf 'usage: gemini-listen "<question>" <absolute media path>... [-o <absolute .md path>] [--model pro|flash] [--account <geminib profile>]\n' >&2
+  printf '       gemini-listen "<question>" --compare <absolute A> <absolute B> -o <absolute .md path> [--model pro|flash]\n' >&2
+  printf '  --compare asks twice, A,B then B,A, each reply ending WINNER: first|second|tie; footer winner=A|B|tie votes=<n>/2, tie unless both orders agree\n' >&2
   printf '  Gemini watches and listens through agy on a subscription account: video with its sound, audio, images\n' >&2
   printf '  files over %s bytes (agy views at most 20 MB) are sent as a proxy: video 720p at the bitrate that fits, audio mp3\n' "$limit_bytes" >&2
   printf '  audio goes as wav with 2-4 test beeps appended; a reply that miscounts them is asked once more, then exit 1\n' >&2
@@ -42,12 +44,14 @@ question=''
 out=''
 model_key=$(image_caps_get "$root" gemini '.listen.model_default')
 account=''
+compare=false
 media=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -o | --out) [ "$#" -ge 2 ] || usage "$1 needs a value"; out=$2; shift 2 ;;
     --model) [ "$#" -ge 2 ] || usage "$1 needs a value"; model_key=$2; shift 2 ;;
     --account) [ "$#" -ge 2 ] || usage "$1 needs a value"; account_arg "$2"; account=$2; shift 2 ;;
+    --compare) compare=true; shift ;;
     -h | --help) image_leg_help usage ;;
     -*) usage "unknown argument $1" ;;
     *)
@@ -64,6 +68,7 @@ if [ -n "$account" ] && ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then usage "
 family_kind=$(image_caps_get "$root" gemini ".listen.models[\"$model_key\"].family // empty")
 [ -n "$family_kind" ] || say "--model is pro or flash"
 effort=$(image_caps_get "$root" gemini ".listen.models[\"$model_key\"].effort")
+beeps_on=$(image_caps_get "$root" gemini ".listen.models[\"$model_key\"].beeps")
 for file in "${media[@]}"; do
   [[ "$file" = /* ]] || say "$file is not an absolute path"
   [ -f "$file" ] || say "$file is not a file"
@@ -72,6 +77,39 @@ command -v "$ffprobe_cmd" >/dev/null 2>&1 && command -v "$ffmpeg_cmd" >/dev/null
   say "ffmpeg and ffprobe are required" 1
 
 started=$(date +%s)
+# One verdict is noise and the first file tends to win (2026-10-07), so a comparison is two
+# independent calls in both orders; each sub-call logs its own leg.
+if [ "$compare" = true ]; then
+  [ "${#media[@]}" -eq 2 ] || usage "--compare takes exactly two files"
+  [ -n "$out" ] || usage "--compare needs -o"
+  IMAGE_LEG_SKIP=1
+  pass=(--model "$model_key")
+  [ -z "$account" ] || pass+=(--account "$account")
+  : >"$out"
+  winners='' rows=''
+  for order in A,B B,A; do
+    if [ "$order" = A,B ]; then pair=("${media[0]}" "${media[1]}"); else pair=("${media[1]}" "${media[0]}"); fi
+    printf '## Order %s: File 1 = %s (%s), File 2 = %s (%s)\n\n' "$order" "${order%,*}" "${pair[0]##*/}" \
+      "${order#*,}" "${pair[1]##*/}" >>"$out"
+    rc=0
+    footer=$(GEMINI_LISTEN_WINNER=1 "$root/bin/gemini-listen" "$question" "${pair[@]}" -o "$out.part" "${pass[@]}") || rc=$?
+    [ "$rc" -eq 0 ] || { rm -f "$out.part"; exit "$rc"; }
+    { cat "$out.part"; printf '\n'; } >>"$out"
+    rm -f "$out.part"
+    verdict=$(sed -n 's/^verdict=//p' <<<"$footer")
+    case "$verdict" in first) winner=${order%,*} ;; second) winner=${order#*,} ;; *) winner=tie ;; esac
+    winners+="$winner "
+    rows+="order$([ "$order" = A,B ] && printf 1 || printf 2)=$order verdict=$winner $(grep -E '^(account|session|model|calls)=' <<<"$footer" | paste -sd' ' -)"$'\n'
+  done
+  read -r first second <<<"$winners"
+  winner=tie
+  [ "$first" != "$second" ] || winner=$first
+  votes=0
+  for each in $winners; do [ "$each" != "$winner" ] || votes=$((votes + 1)); done
+  printf 'dest=%s\n%swinner=%s votes=%s/2\na=%s\nb=%s\nseconds=%s\n' "$out" "$rows" "$winner" "$votes" \
+    "${media[0]}" "${media[1]}" "$(($(date +%s) - started))"
+  exit 0
+fi
 base_home=$HOME
 gemini_base_home=$base_home
 gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$base_home/.gemini-profiles}"
@@ -80,7 +118,9 @@ gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$base_home/.gemini-profiles}"
 . "$root/share/worker-pool.sh"
 . "$root/share/worker-claims.sh"
 
-tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/gemini-listen.XXXXXX")
+# macOS TMPDIR ends in /: the model opened the path without the //, and no view_file matched it.
+tmp_root=${TMPDIR:-/tmp}
+tmp_dir=$(mktemp -d "${tmp_root%/}/gemini-listen.XXXXXX")
 trap 'image_leg_exit; rm -rf "$tmp_dir"' EXIT
 mkdir "$tmp_dir/media"
 
@@ -108,11 +148,16 @@ video_proxy() { # source dest seconds
   say "the proxy of $1 is still over $limit_bytes bytes" 1
 }
 
-# Pro sometimes believes view_file gave it a transcript, though agy sent the sound (2026-10-07); a reply
-# must count these beeps, so one not built on the sound never passes.
+# Pro sometimes believes view_file gave it a transcript, though agy's record shows the sound arrived
+# (2026-10-07); a Pro reply must count these beeps. Flash miscounts them under a long question, so it
+# gets none.
 with_beeps() { # source dest beeps ffmpeg-output-args...
   local source=$1 dest=$2 beeps=$3 rate channels
   shift 3
+  if [ "$beeps" -eq 0 ]; then
+    "$ffmpeg_cmd" -v error -y -i "$source" -map 0:a:0 "$@" "$dest" || say "ffmpeg could not convert $source" 1
+    return
+  fi
   IFS=, read -r rate channels < <("$ffprobe_cmd" -v error -select_streams a:0 -show_entries stream=sample_rate,channels \
     -of csv=p=0 "$source" | head -n 1)
   "$ffmpeg_cmd" -v error -y -i "$source" -filter_complex \
@@ -158,7 +203,8 @@ for file in "${media[@]}"; do
   esac
   if [ "$kind" = audio ]; then
     # agy refuses flac, aac, m4a and aiff as unsupported mime types, so the lossless copy is always wav.
-    beeps=$((RANDOM % 3 + 2))
+    beeps=0
+    [ "$beeps_on" != true ] || beeps=$((RANDOM % 3 + 2))
     codec=$(stream_of "$file" a)
     [[ "$ext" = wav && "$codec" =~ ^pcm_ ]] || codec=pcm_s16le
     send="$tmp_dir/media/file$index.wav"
@@ -171,8 +217,12 @@ for file in "${media[@]}"; do
       proxied=$((proxied + 1))
       proxy_lines+="proxy=file$index.$proxy_ext $(size_of "$send") bytes from $bytes: $file"$'\n'
     fi
-    beep_counts+=" $index:$beeps"
-    heard_lines+="audio=heard file$index: $file"$'\n'
+    if [ "$beeps" -gt 0 ]; then
+      beep_counts+=" $index:$beeps"
+      heard_lines+="audio=heard file$index: $file"$'\n'
+    else
+      heard_lines+="audio=delivered file$index: $file"$'\n'
+    fi
   elif [ "$bytes" -le "$limit_bytes" ] && [[ "$ext" =~ ^($keep)$ ]]; then
     send="$tmp_dir/media/file$index.$ext"
     cp "$file" "$send"
@@ -187,11 +237,11 @@ for file in "${media[@]}"; do
   fi
   case "$kind" in
     video) desc="video, $seconds s, $(shape_of "$send"), $([ -n "$(stream_of "$send" a)" ] && printf 'with sound' || printf 'silent')" ;;
-    audio) desc="audio, $seconds s, then the test beeps" ;;
+    audio) desc="audio, $seconds s$([ "$beeps" -eq 0 ] || printf ', then the test beeps')" ;;
     image) desc="image, $(shape_of "$send")" ;;
   esac
   labels+="File $index: $send ($desc; the caller's file ${file##*/})"$'\n'
-  printf '%s\t%s\n' "$send" "$file" >>"$tmp_dir/sent"
+  printf '%s\t%s\t%s\n' "$send" "$file" "$kind" >>"$tmp_dir/sent"
 done
 
 off_roster_rc=1
@@ -226,17 +276,22 @@ prefix=$("$root/bin/geminib" families 2>/dev/null |
 [ -n "$prefix" ] || say "\`geminib families\` printed no $family_kind row" 1
 agy_model="$prefix-$effort"
 
-beeps_rule=''
-[ -z "$beep_counts" ] || beeps_rule="
-view_file gives you the real sound of an audio file, never a text transcript of it: its one text line is only a header, and a script quoted in the question is not the file's content. After each audio file a second of silence and then a few short test beeps were added; they are not part of the media, so leave them out of the answer and its timings. The first line of your reply must be BEEPS and then, for each audio file, its number, a colon and how many test beeps you heard at its end, like BEEPS${beep_counts//:[0-9]/:N}. If view_file gives you no sound for an audio file, reply with the single line NO_AUDIO <file number>.
+audio_rule=''
+[ -z "$beep_counts" ] || audio_rule="
+Short test beeps were added at the very end of each audio file, after its own sound; leave them out of the answer and its timings. The first line of your reply must be BEEPS${beep_counts//:[0-9]/:N}, where each N is how many short test beeps are at the very end of that file, after its own sound."
+[ -z "$heard_lines" ] || audio_rule+="
+If view_file gives you no sound for an audio file, reply with the single line NO_AUDIO <file number>.
 "
 instruction="Answer a question about the media files below. First open every file with your view_file tool: it shows you the picture of a video or an image and lets you hear the sound of a video or an audio file. Open each file whole, one view_file call per file, and never run a shell command or write a file. Answer only from what you saw and heard; say so when something cannot be told from the media.
-${beeps_rule}${labels}
+${audio_rule}${labels}
 If view_file fails on a file, reply with the single line CANNOT_OPEN <file number> <the error>.
 If a quota or usage-limit error stops you, reply with the single word QUOTA.
 
 Question:
 $question"
+[ -z "${GEMINI_LISTEN_WINNER:-}" ] || instruction+="
+
+End your reply with one last line that is exactly WINNER: first, WINNER: second or WINNER: tie, where first means File 1 and second means File 2."
 
 image_leg_mark "${#media[@]}"
 limit_re='GEMINI_USAGE_LIMIT|RESOURCE_EXHAUSTED|Individual quota reached|credits balance is too low|usage limit|quota exceeded|rate limit'
@@ -278,22 +333,41 @@ while :; do
   fi
   [ -n "$answer" ] || { tail -n 20 "$tmp_dir/stderr" >&2; say "agy returned no answer (exit $rc)" 1; }
   deaf=''
-  while IFS=$'\t' read -r sent original; do
+  while IFS=$'\t' read -r sent original _; do
     jq -e --arg path "$sent" 'any(.[]; .event == "step_update" and .step_update.state == "DONE" and
         .step_update.tool_name == "view_file" and .step_update.tool_info.parameters.AbsolutePath == $path and
         ((.step_update.tool_info.error // "") == ""))' \
       "$events" >/dev/null || deaf=${deaf:-"the model answered without opening $original"}
     answer=${answer//"$sent"/"$original"}
   done <"$tmp_dir/sent"
+  record="$(gemini_account_home "$account")/.gemini/antigravity-cli/brain/$session/.system_generated/logs/transcript_full.jsonl"
+  while IFS=$'\t' read -r sent original kind && [ -z "$deaf" ]; do
+    if [ ! -f "$record" ]; then
+      deaf="agy kept no record of session $session to show what view_file returned"
+    elif ! jq -se --arg path "$sent" --arg kind "$kind/" 'reduce .[] as $step ({calls: [], seen: false};
+        if $step.type == "PLANNER_RESPONSE" then .calls += [($step.tool_calls // [])[] | .args.AbsolutePath // ""]
+        elif $step.type == "GENERIC" and (.calls | length) > 0 then
+          .seen = (.seen or (.calls[0] == $path and any($step.media[]?; .mime_type | startswith($kind))))
+          | .calls |= .[1:]
+        else . end) | .seen' "$record" >/dev/null; then
+      deaf="view_file gave the model $original without its $kind"
+    fi
+  done <"$tmp_dir/sent"
+  if [ -z "$deaf" ] && [ -n "$heard_lines" ] && [[ "$first_line$last_line" =~ NO_AUDIO ]]; then
+    deaf="the model says view_file gave it no sound"
+  fi
   if [ -z "$deaf" ] && [ -n "$beep_counts" ]; then
-    if [[ "$first_line$last_line" =~ NO_AUDIO ]]; then
-      deaf="the model says view_file gave it no sound"
-    elif ! [[ "$first_line" =~ ^[[:space:]]*BEEPS ]] ||
+    if ! [[ "$first_line" =~ ^[[:space:]]*BEEPS ]] ||
       [ "$(printf '%s\n' "$first_line" | sed 's/: */:/g' | grep -Eo '[0-9]+:[0-9]+' | sort | tr '\n' ' ')" != "$want_beeps" ]; then
       deaf="the model did not hear the test beeps (BEEPS$beep_counts wanted, its first line: ${first_line:0:80})"
     else
       answer=$(printf '%s\n' "$answer" | awk 'cut == 0 { if (NF) cut = 1; next } cut == 1 && !NF { next } { cut = 2; print }')
     fi
+  fi
+  verdict=''
+  if [ -z "$deaf" ] && [ -n "${GEMINI_LISTEN_WINNER:-}" ]; then
+    verdict=$(printf '%s\n' "$last_line" | tr -d '*`' | sed -nE 's/^[[:space:]]*WINNER: (first|second|tie)[[:space:]]*$/\1/p')
+    [ -n "$verdict" ] || deaf="the reply's last line is not WINNER: first|second|tie (it is: ${last_line:0:80})"
   fi
   [ -n "$deaf" ] || break
   [ "$attempt" -lt 2 ] || say "$deaf, in $attempt calls; the answer is not grounded" 1
@@ -302,9 +376,11 @@ done
 
 model_label=${observed_model:-$agy_model}
 body=$(printf '<!-- %s -->\n%s\n' "$model_label" "$answer")
-footer=$(printf 'dest=%s\naccount=%s\nsession=%s\nmodel=%s\nfiles=%s proxied=%s\n%s%scalls=%s\nseconds=%s' \
+verdict_line=''
+[ -z "$verdict" ] || verdict_line="verdict=$verdict"$'\n'
+footer=$(printf 'dest=%s\naccount=%s\nsession=%s\nmodel=%s\nfiles=%s proxied=%s\n%s%scalls=%s\n%sseconds=%s' \
   "${out:--}" "$account" "$session" "$model_label" "${#media[@]}" "$proxied" "$proxy_lines" "$heard_lines" "$attempt" \
-  "$(($(date +%s) - started))")
+  "$verdict_line" "$(($(date +%s) - started))")
 if [ -n "$out" ]; then
   printf '%s\n' "$body" >"$out"
   printf '%s\n' "$footer"

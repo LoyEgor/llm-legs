@@ -37,6 +37,7 @@ import urllib.parse
 from pathlib import Path
 
 import account_roster
+import caps_checks
 
 faulthandler.register(signal.SIGTERM, all_threads=True, chain=True)
 
@@ -904,6 +905,19 @@ def click_if_visible(page, role: str, name: str, exact: bool = True, done=None) 
     return False
 
 
+def set_switch(page, name: str, on: bool, drift, where: str) -> None:
+    switch = page.get_by_role("switch", name=name, exact=True).first
+    try:
+        if (switch.get_attribute("aria-checked", timeout=8000) == "true") != on:
+            switch.click(timeout=8000)
+            page.wait_for_timeout(400)
+        ok = (switch.get_attribute("aria-checked") == "true") == on
+    except Exception as error:  # noqa: BLE001
+        raise drift(f"no {name!r} switch in {where}") from error
+    if not ok:
+        raise drift(f"the {name!r} switch does not stick")
+
+
 RIGHTS_NOTICES = ("necessary rights", "A reminder about creating")
 DECLINE = ("No thanks", "Not now", "Maybe later", "Dismiss", "Skip", "Close")
 _closed: set[tuple[str, str]] = set()
@@ -1212,6 +1226,9 @@ def extend_composer(page, source: dict, label: str) -> str:
 
 def video_caps() -> dict:
     return json.loads(MANIFEST.read_text())["video"]
+
+
+caps_drift = caps_checks.caps_drift
 
 
 def walls() -> dict:

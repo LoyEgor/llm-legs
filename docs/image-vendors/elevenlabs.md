@@ -63,6 +63,10 @@ about a minute later (the costs above for those were measured that way, one call
 
 ## Re-verify
 
+Every run compares `GET /v1/models` (at most once a day, cached in `~/.config/elevenlabs/models-check.json`)
+with the manifest's `served_models` and prints `model_caps=fresh|stale|unknown` (stale names `new=`, `newer=`
+a generation past its kind's default, `gone=`; on stderr for dry runs and `--list-voices`).
+
 `GET /v1/models` for the model list, the OpenAPI spec (`https://api.elevenlabs.io/openapi.json`) for
 parameters and ranges; one `--dry-run` per kind prints the request without spending; one smallest live
 call per changed kind; then bump `verified` in the manifest.

@@ -10,7 +10,7 @@ trap 'rm -rf "$WORK"' EXIT
 asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; cat "$WORK/out" "$WORK/err" >&2 2>/dev/null; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
-export ELEVENLABS_KEYS="$WORK/keys.txt" ELEVENLABS_API_BASE="http://127.0.0.1:9" IMAGE_LEG_LOG="$WORK/legs.jsonl"
+export ELEVENLABS_KEYS="$WORK/keys.txt" ELEVENLABS_API_BASE="http://127.0.0.1:9" IMAGE_LEG_LOG="$WORK/legs.jsonl" VENDOR_CLI_UPDATE_STATE_DIR="$WORK/vendor-cli-update"
 printf 'fixture-key trimmed\n' >"$ELEVENLABS_KEYS"
 el() { python3 "$ROOT/share/elevenlabs_media.py" "$@" >"$WORK/out" 2>"$WORK/err"; }
 python3 -c 'import sys, wave
@@ -73,6 +73,79 @@ for refused, code, rc in (("missing_permissions", 401, 0), ("invalid_api_key", 4
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
         assert b.main() == rc, refused
     assert rc or '"account": "one"' in out.getvalue(), out.getvalue()
+PY
+
+# The account's own model list is compared with `served_models` at most once a day: a dead host is unknown and
+# never fails the run, a new model is stale and named, one of a newer generation than its kind's default doubly.
+assert grep -qx 'elevenlabs-speech: model_caps=unknown' <(python3 "$ROOT/share/elevenlabs_media.py" speech \
+  --dest "$WORK/a.wav" --text hi --voice abcdefghij0123456789 --dry-run 2>&1 >/dev/null)
+assert python3 - "$ROOT/share" "$WORK" <<'PY'
+import contextlib, http.server, io, json, os, sys, threading, time
+sys.path.insert(0, sys.argv[1])
+import elevenlabs_media as m
+
+served = [{"model_id": i, "can_do_text_to_speech": "sts" not in i, "can_do_voice_conversion": "sts" in i}
+          for i in m.caps()["served_models"]]
+answer, asked = {"models": served}, []
+
+
+class Fake(http.server.BaseHTTPRequestHandler):
+    def reply(self, body, headers=()):
+        self.send_response(200)
+        for name, value in headers:
+            self.send_header(name, value)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        asked.append(self.path)
+        if self.path == "/v1/models":
+            self.reply(json.dumps(answer["models"]).encode())
+        else:
+            self.reply(json.dumps({"character_count": 1, "character_limit": 10}).encode())
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers["Content-Length"]))
+        self.reply(b"ID3fake", [("character-cost", "2")])
+
+    def log_message(self, *args):
+        pass
+
+
+server = http.server.HTTPServer(("127.0.0.1", 0), Fake)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+m.API = f"http://127.0.0.1:{server.server_port}"
+cache = m.KEYS.parent / "models-check.json"
+with contextlib.suppress(FileNotFoundError):
+    cache.unlink()
+
+
+def speech():
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+        assert m.main(["speech", "--dest", os.path.join(sys.argv[2], "s.mp3"), "--text", "hi",
+                       "--voice", "abcdefghij0123456789"]) == 0
+    return out.getvalue().splitlines()
+
+
+lines = speech()
+assert lines[-1] == "model_caps=fresh" and "model=eleven_v4" in lines, lines
+assert asked.count("/v1/models") == 1 and json.loads(cache.read_text())["account"] == "trimmed", asked
+answer["models"] = [x for x in served if x["model_id"] != "eleven_flash_v2"] + [
+    {"model_id": "eleven_v5", "can_do_text_to_speech": True},
+    {"model_id": "eleven_sts_v3", "can_do_voice_conversion": True}, {"model_id": "eleven_v4_flash", "can_do_text_to_speech": True}]
+assert m.models_check("trimmed") == "model_caps=fresh" and asked.count("/v1/models") == 1, asked
+cache.write_text(json.dumps({**json.loads(cache.read_text()), "at": int(time.time()) - m.MODELS_CHECK_S - 60}))
+speech_stale = ("models: +eleven_v5 +eleven_sts_v3 +eleven_v4_flash -eleven_flash_v2; "
+                "newer=eleven_v5>eleven_v4,eleven_sts_v3>eleven_multilingual_sts_v2")
+assert speech()[-1] == "model_caps=stale " + speech_stale, asked
+assert asked.count("/v1/models") == 2, asked
+cache.unlink()
+m.API = "http://127.0.0.1:9"
+assert m.models_check("trimmed") == "model_caps=unknown" and not cache.exists()
+import caps_checks
+rows = [(r["state"], r["what"]) for r in caps_checks.read() if (r["vendor"], r["section"]) == ("elevenlabs", "served_models")]
+assert rows == [("fresh", ""), ("fresh", ""), ("stale", speech_stale)], rows
 PY
 
 echo "PASS test_elevenlabs_media ($asserts asserts)"

@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+{
+set -euo pipefail
+
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+
+usage() {
+  [ -z "${1:-}" ] || printf 'audio-score: %s\n' "$1" >&2
+  printf 'usage: audio-score <absolute audio>... [--json]\n' >&2
+  printf '  local and free: utmos=<1-5> (UTMOS22 speech MOS) and aes_pq aes_pc aes_ce aes_cu (Audiobox Aesthetics, 1-10) per file\n' >&2
+  printf '  the first run downloads the models into ~/.cache/torch/hub and ~/.cache/huggingface\n' >&2
+  exit 2
+}
+
+args=()
+files=0
+for arg in "$@"; do
+  case "$arg" in
+    -h | --help) usage ;;
+    --json) args+=("$arg") ;;
+    -*) usage "unknown argument $arg" ;;
+    *)
+      [[ "$arg" = /* ]] || usage "$arg is not an absolute path"
+      [ -f "$arg" ] || usage "$arg is not a file"
+      args+=("$arg")
+      files=$((files + 1))
+      ;;
+  esac
+done
+[ "$files" -gt 0 ] || usage "missing an audio file"
+
+uv_cmd=${AUDIO_SCORE_UV:-$(command -v uv || printf /opt/homebrew/bin/uv)}
+exec "$uv_cmd" run -q --script "$(resolve_root)/share/audio_score.py" "${args[@]}"
+exit; }

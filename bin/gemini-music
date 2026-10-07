@@ -271,6 +271,7 @@ if [ "$(jq -r '.dry_run // false' <<<"$result")" = true ]; then
   else
     printf 'dry_run=ok\naccount=%s\nchips=%s\n' "$account" "$(jq -c '.chips' <<<"$result")"
   fi
+  image_caps_page_check "$result"
   exit 0
 fi
 
@@ -336,5 +337,6 @@ else
 fi
 printf '%saccount=%s\nmodel=%s\ncredits=%s\nseconds=%s\n' \
   "$footer" "$account" "${observed_model:-unknown}" "$credits" "$(($(date +%s) - started))"
+image_caps_page_check "$result"
 exit
 }

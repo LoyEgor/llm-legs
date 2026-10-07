@@ -5,7 +5,7 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/bin/image-fanout"
 WORK="$(mktemp -d)"
-export IMAGE_LEG_LOG="$WORK/image-legs.jsonl"
+export IMAGE_LEG_LOG="$WORK/image-legs.jsonl" VENDOR_CLI_UPDATE_STATE_DIR="$WORK/vendor-cli-update"
 # Every `worker_model_*` call shells `grokb models`: the fixture list answers it, and the
 # `grok` CLI behind it can never be reached (row `cu`).
 export GROKB_CACHE_DIR="$WORK/grokb-cache"
@@ -1026,8 +1026,21 @@ assert test ! -e "$STATE_DEST/fanout.state.json"
 # shellcheck source=share/image-caps.sh
 . "$ROOT/share/image-caps.sh"
 video_model=$(jq -r '.model.video' "$ROOT/share/image-caps/grok.json")
+checks="$VENDOR_CLI_UPDATE_STATE_DIR/caps-checks.jsonl"
+mkdir -p "$VENDOR_CLI_UPDATE_STATE_DIR"
+: >"$checks"
 assert test "$(image_caps_model_check "$ROOT" grok video "$video_model")" = "model=$video_model model_caps=fresh"
 assert test "$(image_caps_model_check "$ROOT" grok video '')" = 'model=unknown model_caps=unknown'
 assert test "$(image_caps_model_check "$ROOT" grok video 'other-model')" = "model=other-model model_caps=stale verified=$video_model"
+assert test "$(jq -c 'select(.vendor == "grok" and .section == "model.video") | [.state, .what]' "$checks" | paste -sd' ' -)" = \
+  "[\"fresh\",\"model=$video_model verified=$video_model\"] [\"stale\",\"model=other-model verified=$video_model\"]"
+cli_version=$(jq -r '.cli.version' "$ROOT/share/image-caps/grok.json")
+printf '#!/bin/sh\necho "grok %s"\n' "$cli_version" >"$WORK/grok-current"
+printf '#!/bin/sh\necho "grok 9.9.9"\n' >"$WORK/grok-newer"
+chmod +x "$WORK/grok-current" "$WORK/grok-newer"
+image_caps_check "$ROOT" grok "$WORK/grok-current" >/dev/null
+image_caps_check "$ROOT" grok "$WORK/grok-newer" >/dev/null
+assert test "$(jq -c 'select(.vendor == "grok" and .section == "cli") | [.state, .what]' "$checks" | paste -sd' ' -)" = \
+  "[\"fresh\",\"cli=$cli_version verified=$cli_version\"] [\"stale\",\"cli=9.9.9 verified=$cli_version\"]"
 
 printf 'PASS: %s asserts; registry-driven vendors (no name in the script, another manifest picked up), roster JSON and pool lines (login, pool, walls), dry-run plans/adaptations (refs incl. --edit, aspect auto, Codex prose, size, video skip/ref, no video spares or packs), tsv columns incl. job/route/fallback_from/phases, per-account scheduling with no overlap, exit-5 requeue, pinned retry and give-up, usage-limit moves, spares cancelled by process group with no orphan (TERM and KILL), --jobs batch with per-job dest/job ids/state keys, --pack variants as takes, memory admission (floor and pressure), launch spacing and the Chrome shortcut (own-session Chrome by parent pid, its KILL after the wrapper died), a non-blocking kill grace that holds the account, primaries before spares, lazy spares of packs, busy/limit left to the scheduler with the next route as last resort, a flagged account told from a usage limit, least recently used pool order, dest spaces, dry-run dest-dir untouched, exit 0/3/1/2, STALE value, pick without --account, live fanout.state.json cells, caps model check\n' "$asserts"

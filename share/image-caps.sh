@@ -20,9 +20,15 @@ image_caps_check() { # root vendor binary -> "caps=fresh" | "caps=stale cli=<liv
   live=$("$binary" "${args[@]}" 2>/dev/null | head -n 1 | LC_ALL=C grep -oE '[0-9]+(\.[0-9]+)+' | head -n 1) || live=''
   if [ -n "$live" ] && [ "$live" = "$expected" ]; then
     printf 'caps=fresh\n'
+    image_caps_record "$vendor" cli fresh "cli=$live verified=$expected"
   else
     printf 'caps=stale cli=%s verified=%s\n' "${live:-unknown}" "$expected"
+    image_caps_record "$vendor" cli stale "cli=${live:-unknown} verified=$expected"
   fi
+}
+
+image_caps_record() { # vendor section fresh|stale what
+  python3 "${BASH_SOURCE[0]%/*}/caps_checks.py" record "$@" >/dev/null 2>&1 || :
 }
 
 image_caps_model_check() { # root vendor kind observed -> "model=<observed> model_caps=fresh|stale|unknown"
@@ -32,12 +38,18 @@ image_caps_model_check() { # root vendor kind observed -> "model=<observed> mode
     printf 'model=unknown model_caps=unknown\n'
   elif [ "$observed" = "$expected" ]; then
     printf 'model=%s model_caps=fresh\n' "$observed"
+    image_caps_record "$vendor" "model.$kind" fresh "model=$observed verified=$expected"
   elif [[ "$expected" == "$observed"-* ]]; then
     # The file names the family but not its version: it neither confirms nor contradicts the manifest.
     printf 'model=%s model_caps=unknown verified=%s\n' "$observed" "$expected"
   else
     printf 'model=%s model_caps=stale verified=%s\n' "$observed" "${expected:-none}"
+    image_caps_record "$vendor" "model.$kind" stale "model=$observed verified=${expected:-none}"
   fi
+}
+
+image_caps_page_check() { # engine-result-json -> "caps=fresh" | "caps=stale what=<diff>" | nothing when it compared nothing
+  jq -r 'select(.caps != null) | if (.caps | length) == 0 then "caps=fresh" else "caps=stale what=" + (.caps | join("; ")) end' <<<"$1"
 }
 
 image_caps_nearest_aspect() { # want list-csv -> the listed W:H closest to want (auto only if listed)

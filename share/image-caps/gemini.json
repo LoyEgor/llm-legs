@@ -361,15 +361,19 @@
     "models": {
       "pro": {
         "family": "pro",
-        "effort": "high"
+        "effort": "high",
+        "beeps": true
       },
       "flash": {
         "family": "flash",
-        "effort": "high"
+        "effort": "high",
+        "beeps": false
       }
     },
-    "model_default": "pro"
+    "model_default": "pro",
+    "compare": "--compare <A> <B> -o <.md>: two independent calls, A,B then B,A, each reply's last line strictly WINNER: first|second|tie (else asked once more, then exit 1); footer winner=A|B|tie votes=<n>/2, tie unless both orders agree (one Pro verdict is noise and the first file tends to win, 2026-10-07)"
   },
+  "audio_score": "bin/audio-score <audio>... [--json], not a media-run route: local and free, CPU, one uv process (share/audio_score.py), ~3 GB RAM, ~1 s a file after loading. utmos=1-5 (UTMOS22 strong, tarepan/SpeechMOS v1.2.0; trained on English and Japanese speech, underrates whispers, laughs and shouts) and aes_pq aes_pc aes_ce aes_cu 1-10 (Meta Audiobox Aesthetics). First run downloads into ~/.cache/torch/hub and ~/.cache/huggingface",
   "music": {
     "surface": "gemini-app",
     "engine": "share/gemini_music.py",
@@ -470,11 +474,15 @@
     "edit": {
       "cover": {
         "price": 5,
+        "menu": "Cover",
+        "ask": "Make a cover of my uploaded audio",
         "takes": "a library song; --prompt (the instruction) and/or --lyrics; --strength 0-1 (0.5 by default, 1 = more different); --seed",
         "gives": "a new song of about the source's length in the asked style"
       },
       "extend": {
         "price": 5,
+        "menu": "Extend",
+        "ask": "Extend my uploaded audio until {to}",
         "takes": "a library song; --to <s> (the new total length); --from <s> (where the new part starts, the song's end by default); --prompt and/or --lyrics; --seed",
         "gives": "the song kept up to --from, then new music until --to",
         "window_s": [
@@ -484,21 +492,32 @@
       },
       "replace": {
         "price": 5,
+        "menu": "Replace",
+        "ask": "Replace {span} of my uploaded audio",
         "takes": "a library song; --from <s> --to <s> inside it; --prompt and/or --lyrics; --seed",
         "gives": "the same song with that span regenerated"
       },
       "variation": {
         "price": 5,
+        "menu": "Use prompt",
+        "ask": "Make a variation of my uploaded audio",
         "takes": "a library song; nothing else",
         "gives": "a new song from the source's own prompt, lyrics and length with a new seed (no audio conditioning)"
       },
       "trim": {
         "price": 0,
+        "menu": "Trim",
+        "ask": "Trim my uploaded audio to {span}",
         "takes": "a library song; --from <s> --to <s> inside it",
         "gives": "the span as a new library song titled \"<source> (trim <from>-<to>)\", saved at once"
       }
     },
-    "uploads": "refused in this region: every upload so far read has_vocals=true (a Flow drum stem included) and is_in_restricted_remix_region refuses vocals, so --ref-audio and --edit <non-Flow audio> exit 1"
+    "uploads": "refused in this region: every upload so far read has_vocals=true (a Flow drum stem included) and is_in_restricted_remix_region refuses vocals, so --ref-audio and --edit <non-Flow audio> exit 1",
+    "menus": {
+      "More options": ["Remix", "Details", "Download", "Share...", "Add to...", "Split stems", "Report", "Delete"],
+      "Remix": ["Start session", "Cover", "Replace", "Extend", "Use prompt", "Variation", "Trim"],
+      "Download": ["Download video", "Get stems", "M4A", "MP3", "WAV"]
+    }
   },
   "flow_image": {
     "verified": "2026-10-02",

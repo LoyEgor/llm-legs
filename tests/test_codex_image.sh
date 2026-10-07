@@ -8,7 +8,7 @@ FIXTURE="$ROOT/tests/fixtures/fake-codex-image.sh"
 . "$ROOT/tests/fixtures/codexb-models.sh"
 arg_after() { grep -A1 -x -- "ARG=$1" "$FAKE_CODEX_CALLS" | grep -qx -- "ARG=$2"; }
 WORK="$(mktemp -d)"
-export IMAGE_LEG_LOG="$WORK/image-legs.jsonl"
+export IMAGE_LEG_LOG="$WORK/image-legs.jsonl" VENDOR_CLI_UPDATE_STATE_DIR="$WORK/vendor-cli-update"
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
 fail() {

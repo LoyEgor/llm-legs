@@ -25,6 +25,7 @@ import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import caps_checks  # noqa: E402
 import gemini_web as gw  # noqa: E402
 
 gw.ROUTE = "flow-music"
@@ -36,6 +37,9 @@ NOTICE_KEY = "agreed_flow_music"
 START_S = 90
 MAGIC = {"wav": lambda b: b[:4] == b"RIFF", "mp3": lambda b: b[:3] == b"ID3" or b[:1] == b"\xff",
          "m4a": lambda b: b[4:8] == b"ftyp"}
+MENUS = """() => [...document.querySelectorAll('[role=menu]')].map(m => [...m.querySelectorAll('[role=menuitem]')]
+  .filter(i => i.closest('[role=menu]') === m).map(i => i.innerText.split('\\n')[0].trim()))"""
+SEEN: dict[str, list[str]] = {}
 
 
 def caps() -> dict:
@@ -168,19 +172,6 @@ def field(page, label: str):
     return page.get_by_text(label, exact=True).locator("xpath=following::input[1]").first
 
 
-def set_switch(page, name: str, on: bool) -> None:
-    switch = page.get_by_role("switch", name=name, exact=True)
-    try:
-        if (switch.get_attribute("aria-checked", timeout=8000) == "true") != on:
-            switch.click(timeout=8000)
-            page.wait_for_timeout(400)
-        ok = (switch.get_attribute("aria-checked") == "true") == on
-    except Exception as error:  # noqa: BLE001
-        raise drift(f"no {name!r} toggle in the compose panel") from error
-    if not ok:
-        raise drift(f"the {name!r} toggle does not stick")
-
-
 def fill(page, target, value: str, what: str) -> None:
     try:
         target.fill("", timeout=8000)
@@ -191,13 +182,33 @@ def fill(page, target, value: str, what: str) -> None:
         raise drift(f"no {what} field in the compose panel") from error
 
 
+def note_menus(page, *names: str) -> None:
+    """The open menus' items, outermost first, for page_caps."""
+    with contextlib.suppress(Exception):
+        SEEN.update(zip(names, page.evaluate(MENUS)))
+
+
+def page_caps() -> list[str]:
+    """`.flow_music` is the only place a caller learns the models and edits, so every menu a run opens is compared
+    with it: an added Lyria version or song-menu item shows as `caps=stale`, not only a removed one."""
+    c = caps()
+    known = {"models": list(c["models"].values()), **c["menus"]}
+    lines = [line for part, live in sorted(SEEN.items()) for line in gw.caps_drift(part, live, known.get(part, []))]
+    if SEEN:
+        caps_checks.record("gemini", "flow_music", bool(lines), "; ".join(lines))
+    return lines
+
+
 def pick_model(page, label: str) -> None:
     current = page.get_by_role("button", name=re.compile(r"^Lyria ")).first
     try:
-        if current.inner_text(timeout=8000).strip() != label:
-            current.click()
-            page.get_by_role("menuitem", name=re.compile("^" + re.escape(label) + " ")).first.click(timeout=8000)
-            page.wait_for_timeout(500)
+        current.click(timeout=8000)
+        item = page.get_by_role("menuitem", name=re.compile("^" + re.escape(label) + " ")).first
+        item.wait_for(timeout=8000)
+        with contextlib.suppress(Exception):
+            SEEN["models"] = page.evaluate(MENUS)[-1]
+        item.click(timeout=8000)
+        page.wait_for_timeout(500)
         chosen = current.inner_text().strip()
     except Exception as error:  # noqa: BLE001
         raise drift(f"no menu item for the model {label!r}") from error
@@ -215,9 +226,9 @@ def compose(page, plan: dict) -> dict:
     except Exception as error:  # noqa: BLE001
         raise drift("no compose panel (Toggle compose panel)") from error
     fill(page, page.get_by_role("textbox", name="Lyrics", exact=True), plan["lyrics"], "Lyrics")
-    set_switch(page, "Toggle instrumental mode", plan["instrumental"])
+    gw.set_switch(page, "Toggle instrumental mode", plan["instrumental"], drift, "the compose panel")
     fill(page, sound, plan["sound"], "Sound description")
-    set_switch(page, "Toggle advanced sound mode", True)
+    gw.set_switch(page, "Toggle advanced sound mode", True, drift, "the compose panel")
     for label in ("BPM", "Length", "Seed"):
         fill(page, field(page, label), plan[label.lower()], label)
     if plan["length"] and field(page, "Length").input_value() != plan["length"]:
@@ -306,10 +317,8 @@ def chat_opening(plan: dict) -> str:
     if not plan.get("mode"):
         return f"Make a song with my uploaded audio as the reference track. Sound: {plan['sound']}"
     span = f"{clock(plan['from_s'] or 0)}-{clock(plan['to_s'] or 0)}"
-    asked = {"cover": "Make a cover of my uploaded audio", "variation": "Make a variation of my uploaded audio",
-             "extend": f"Extend my uploaded audio until {clock(plan['to_s'] or 0)}",
-             "replace": f"Replace {span} of my uploaded audio", "trim": f"Trim my uploaded audio to {span}"}
-    return f"{asked[plan['mode']]}. Title the result \"{plan['title']}\". {plan['sound']}".strip()
+    asked = caps()["edit"][plan["mode"]]["ask"].format(to=clock(plan["to_s"] or 0), span=span)
+    return f"{asked}. Title the result \"{plan['title']}\". {plan['sound']}".strip()
 
 
 def send(page, traffic: Traffic, plan: dict) -> None:
@@ -405,12 +414,14 @@ def submenu_pick(page, parent: str, name: str) -> None:
         page.keyboard.press("ArrowRight")
         page.wait_for_timeout(500)
     target.first.focus(timeout=8000)
+    note_menus(page, "More options", parent)
     page.keyboard.press("Enter")
 
 
 def song_menu(page, title: str):
     page.get_by_role("button", name=f"More options for {title}", exact=True).first.click(timeout=30000)
     page.wait_for_timeout(500)
+    note_menus(page, "More options")
 
 
 def to_library(page, traffic: Traffic, account: str, title: str) -> None:
@@ -453,9 +464,6 @@ def split_stems(page, traffic: Traffic, account: str, title: str, names: list[st
     raise gw.Failure(1, f"the stem split returned no take on {account} within {timeout_s:.0f}s")
 
 
-EDIT_MENU = {"cover": "Cover", "extend": "Extend", "replace": "Replace", "variation": "Use prompt", "trim": "Trim"}
-
-
 def clock(seconds: int) -> str:
     return f"{seconds // 60}:{seconds % 60:02d}"
 
@@ -475,10 +483,11 @@ def open_edit(page, traffic: Traffic, account: str, plan: dict) -> list[str]:
     to_library(page, traffic, account, plan["edit"])
     trimmed = trimmed_titles(page, plan["edit"])
     song_menu(page, plan["edit"])
+    label = caps()["edit"][plan["mode"]]["menu"]
     try:
-        submenu_pick(page, "Remix", EDIT_MENU[plan["mode"]])
+        submenu_pick(page, "Remix", label)
     except Exception as error:  # noqa: BLE001
-        raise drift(f"no Remix → {EDIT_MENU[plan['mode']]} menu item for {plan['edit']!r}") from error
+        raise drift(f"no Remix → {label} menu item for {plan['edit']!r}") from error
     page.wait_for_timeout(2000)
     return trimmed
 
@@ -706,9 +715,9 @@ def generate_on(account: str, plan: dict) -> dict:
                 error.takes = takes
                 raise
             if result.get("dry_run"):
-                return result
+                return {**result, "caps": page_caps()}
             takes.append(result)
-    return {"ok": True, "account": account, "takes": takes}
+    return {"ok": True, "account": account, "takes": takes, "caps": page_caps()}
 
 
 def child_command() -> list[str]:
@@ -746,22 +755,25 @@ def fan_out(args, accounts: list[str]) -> None:
         out_dir.mkdir(parents=True, exist_ok=True)
         runs.append((account, subprocess.Popen([*child_command(), *child_argv(args, account, out_dir)],
                                                stdout=subprocess.PIPE, text=True)))
-    takes, failed = [], []
+    takes, failed, drift = [], [], None
     for account, run in runs:
         out, _ = run.communicate()
         result = last_json(out)
+        if "caps" in result:
+            drift = sorted({*(drift or []), *result["caps"]})
         if result.get("ok") and result.get("dry_run"):
             takes.append({"account": account, "dry_run": True, "controls": result.get("controls")})
         elif result.get("ok"):
             takes += result.get("takes") or []
         else:
             failed.append((account, run.returncode or 1, result.get("reason") or f"exit {run.returncode}"))
+    checked = {} if drift is None else {"caps": drift}
     if args.dry_run and takes:
-        gw.emit({"ok": True, "dry_run": True, "account": takes[0]["account"], "runs": takes})
+        gw.emit({"ok": True, "dry_run": True, "account": takes[0]["account"], "runs": takes, **checked})
         return
     summary = "; ".join(f"{account}: {reason}" for account, _, reason in failed)
     if takes:
-        result = {"ok": True, "account": takes[0]["account"], "takes": takes}
+        result = {"ok": True, "account": takes[0]["account"], "takes": takes, **checked}
         if failed:
             result["short"] = f"{len(accounts) - len(failed)} of {len(accounts)} accounts delivered; {summary}"
         gw.emit(result)

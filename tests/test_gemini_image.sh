@@ -4,7 +4,7 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK=$(mktemp -d)
-export IMAGE_LEG_LOG="$WORK/image-legs.jsonl"
+export IMAGE_LEG_LOG="$WORK/image-legs.jsonl" VENDOR_CLI_UPDATE_STATE_DIR="$WORK/vendor-cli-update"
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; cat "$WORK/err" >&2; exit 1; }

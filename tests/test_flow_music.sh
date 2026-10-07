@@ -12,7 +12,7 @@ asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; cat "$WORK/err" >&2 2>/dev/null; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
 export HOME="$WORK/home" TMPDIR="$WORK/tmp" GEMINI_WEB_DIR="$WORK/home/.gemini-web" PYTHONDONTWRITEBYTECODE=1
-export IMAGE_LEG_LOG="$WORK/image-legs.jsonl" FAKE_CALLS="$WORK/calls"
+export IMAGE_LEG_LOG="$WORK/image-legs.jsonl" FAKE_CALLS="$WORK/calls" VENDOR_CLI_UPDATE_STATE_DIR="$WORK/vendor-cli-update"
 export FLOW_MUSIC_ENGINE="$WORK/flow-engine" GEMINI_MUSIC_ENGINE="$WORK/app-engine"
 mkdir -p "$HOME" "$TMPDIR" "$WORK/media" "$WORK/out" "$GEMINI_WEB_DIR"
 mkdir -p "$HOME/.gemini-profiles"/{good,poor,gone,walled,flagged,fresh,dry,flaky}
@@ -1174,6 +1174,96 @@ rows = [json.loads(line) for line in open(gw.ROOT / "jobs.jsonl")]
 assert [(r["event"], r["mode"]) for r in rows if r.get("kind") == "flow-music" and r.get("mode")][-2:] == \
     [("queued", "trim"), ("saved", "trim")], rows[-2:]
 print("edit checks ok")
+PY
+
+# The engine's comparison of the menus a run opened with `.flow_music` is the footer's caps= line.
+cat >"$WORK/caps-engine" <<'EOF'
+#!/usr/bin/env bash
+out='' dry=false
+while [ "$#" -gt 0 ]; do case "$1" in --out-dir) out=$2; shift 2 ;; --dry-run) dry=true; shift ;; *) shift ;; esac; done
+[ "$dry" = false ] || { jq -cn --argjson c "$FAKE_CAPS" '{ok: true, dry_run: true, account: "flowacct", controls: {}, caps: $c}'; exit 0; }
+cp "$FAKE_WAV" "$out/take1.mp3"
+jq -cn --arg a "$out/take1.mp3" --argjson c "$FAKE_CAPS" '{ok: true, account: "flowacct", caps: $c,
+  takes: [{audio: $a, account: "flowacct", url: "u", model: "lyria-3.5", charged: 5, credits: 10, notes: "n"}]}'
+EOF
+chmod +x "$WORK/caps-engine"
+FLOW_MUSIC_ENGINE="$WORK/caps-engine" FAKE_CAPS='[]' expect_rc 0 --route flow --dest "$WORK/out/c.mp3" --prompt 'a theme'
+assert test "$(tail -n 1 "$WORK/stdout")" = caps=fresh
+FLOW_MUSIC_ENGINE="$WORK/caps-engine" FAKE_CAPS='["Remix: +Stretch", "models: +Lyria 4"]' \
+  expect_rc 0 --route flow --dest "$WORK/out/c.mp3" --prompt 'a theme' --dry-run
+assert grep -qx 'caps=stale what=Remix: +Stretch; models: +Lyria 4' "$WORK/stdout"
+
+# The model picker and every song menu a run opens are read; an added or missing item is stale, the fan-out merges
+# its accounts' readings.
+assert python3 - "$ROOT" "$WORK" <<'PY'
+import contextlib, io, json, os, sys, types
+root, work = sys.argv[1], sys.argv[2]
+sys.path.insert(0, os.path.join(root, "share"))
+import flow_music as fm
+
+c = fm.caps()
+models = list(c["models"].values())
+
+
+class Item:
+    def __init__(self, page):
+        self.page, self.first = page, self
+
+    def click(self, timeout=None):
+        self.page.clicks += 1
+
+    def wait_for(self, timeout=None):
+        pass
+
+    def inner_text(self, timeout=None):
+        return "Lyria 3.5"
+
+
+class MenuPage:
+    def __init__(self, menus):
+        self.menus, self.clicks = menus, 0
+
+    def get_by_role(self, role, name=None, exact=False):
+        return Item(self)
+
+    def evaluate(self, script):
+        assert script == fm.MENUS
+        return self.menus
+
+    def wait_for_timeout(self, ms):
+        pass
+
+
+page = MenuPage([models])
+fm.pick_model(page, "Lyria 3.5")
+assert fm.SEEN == {"models": models} and page.clicks == 2, (fm.SEEN, page.clicks)
+fm.song_menu(MenuPage([c["menus"]["More options"]]), "t")
+assert fm.SEEN.get("More options") == c["menus"]["More options"], fm.SEEN
+fm.note_menus(MenuPage([c["menus"]["More options"], c["menus"]["Remix"]]), "More options", "Remix")
+fm.note_menus(MenuPage([c["menus"]["More options"], c["menus"]["Download"]]), "More options", "Download")
+assert set(fm.SEEN) == {"models", "More options", "Remix", "Download"} and fm.page_caps() == [], fm.SEEN
+fm.SEEN["models"] = [*models, "Lyria 4"]
+fm.SEEN["Remix"] = [x for x in c["menus"]["Remix"] if x != "Trim"] + ["Stretch"]
+assert fm.page_caps() == ["Remix: +Stretch -Trim", "models: +Lyria 4"], fm.page_caps()
+rows = [(r["state"], r["what"]) for r in fm.caps_checks.read()[-2:] if (r["vendor"], r["section"]) == ("gemini", "flow_music")]
+assert rows == [("fresh", ""), ("stale", "Remix: +Stretch -Trim; models: +Lyria 4")], rows
+
+child = os.path.join(work, "caps-child")
+with open(child, "w") as out:
+    out.write("#!/usr/bin/env python3\nimport json, sys\nargv = sys.argv[1:]\naccount = argv[argv.index('--account') + 1]\n"
+              "caps = {'one': ['models: +Lyria 4'], 'two': ['Remix: -Trim']}[account]\n"
+              "print(json.dumps({'ok': True, 'dry_run': True, 'account': account, 'controls': {}, 'caps': caps}))\n")
+os.chmod(child, 0o755)
+os.environ["FLOW_MUSIC_CHILD"] = child
+args = types.SimpleNamespace(prompt="p", out_dir=os.path.join(work, "capsfan"), model="lyria-3.5", format="mp3", count=1,
+                             edit=None, mode=None, from_s=None, to_s=None, strength=None, stems=False, dry_run=True,
+                             **dict.fromkeys(("lyrics", "vocals", "genre", "duration", "length", "bpm", "seed", "ref_audio",
+                                              "title")))
+said = io.StringIO()
+with contextlib.redirect_stdout(said):
+    fm.fan_out(args, ["one", "two"])
+result = json.loads(said.getvalue().splitlines()[-1])
+assert result["caps"] == ["Remix: -Trim", "models: +Lyria 4"], result
 PY
 
 printf 'PASS: test_flow_music (%s asserts)\n' "$asserts"

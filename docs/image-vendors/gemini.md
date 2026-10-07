@@ -451,7 +451,8 @@ gemini-sfx keeps every rejected take (no soundtrack, silent, loudness not measur
 `bin/gemini-music --route flow` → `share/flow_music.py` drives flowmusic.app's compose panel in the same
 hidden Chrome, profiles and account locks. `--model lyria-3-pro` implies the route; the app route stays the
 default until the reliability bench says otherwise. Use it for Lyria 3 Pro, WAV masters, stems, an exact
-length, lyrics, BPM and seed.
+length, lyrics, BPM and seed. Every run compares the Lyria picker and each song menu it opens (⋯, Remix,
+Download) with `.flow_music.models` / `.menus` and prints `caps=fresh` or `caps=stale what=…`.
 
 | Fact (2026-10-01) | Evidence |
 | --- | --- |
@@ -569,8 +570,37 @@ length. By ear, 1 of 3 text takes was usable (the others had a drone or hiss und
 
 **Listening** — `bin/gemini-listen` asks Gemini (agy, Pro or Flash) to watch and hear files through
 `view_file`. Files over `.listen.view_max_bytes` (agy shows at most 20 MB) are sent as a proxy: video at
-720p, audio as mp3. A reply that never opened a file is refused, and so is one whose `view_file` step returned an error. It judges sound and sync well, but
-it echoes timings from the question, so measure exact times with ffmpeg.
+720p, audio as mp3. Audio otherwise goes as wav, since agy refuses flac, aac, m4a and aiff as unsupported
+mime types. A reply that never opened a file is refused, and so is one whose `view_file` step returned an
+error. It judges sound and sync well, but it echoes timings from the question, so measure exact times
+with ffmpeg.
+
+Sometimes Pro says `view_file` gave it a text transcript and then scores 1 (2026-10-07: 6 of 70 Pro
+calls). It is the model's belief, not agy: agy's record of each run
+(`brain/<session>/.system_generated/logs/transcript_full.jsonl` in the profile) showed an `audio/*`
+media part in all 345 `view_file` opens checked, including the 4 failing calls. The stream-json events do
+not carry that part. So every call is checked against the record: each sent file must come back with a
+media part of its kind, and a missing record counts as a failure. A reply whose first or last line is
+`NO_AUDIO` also fails. With Pro (`.listen.models.pro.beeps`), 2–4 test beeps go at the end of each
+audio file, and the reply's first line must count them (`BEEPS 1:3`); the tool removes that line. Pro
+miscounted them in 4 of 39 calls, and 2 of 36 runs exited 1. Flash miscounts them under a long question
+(9 of 18), though it counts them right alone (24 of 24), so Flash gets no beeps. Any of these failures asks once more, then
+exits 1. The footer shows `audio=heard` (beeps counted) or `audio=delivered` (record only) per audio
+file, and `calls=`. Refusals of the form "answered without opening" came from macOS's `TMPDIR`, which
+ends in `/`: the model opened the path without the `//`.
+
+To pick between two takes, use `--compare <A> <B> -o <.md>`, never one call with both. One Pro verdict
+is noise, several takes in one call get mixed up, and the file shown first tends to win. So it makes two
+independent calls, A,B then B,A, each with the checks above. Each reply must end with the line
+`WINNER: first|second|tie`; any other last line fails that call. The .md holds both replies. The footer
+gives `order1=`/`order2=` (each order's verdict, account, session, calls), `winner=A|B|tie votes=<n>/2`
+(a tie unless both orders agree), then `a=` and `b=`. For a free number next to the judgement, use
+`bin/audio-score <audio>... [--json]` (local, no account, not a media-run route). It gives `utmos=` 1–5
+(UTMOS22 strong, tarepan/SpeechMOS v1.2.0) and `aes_pq aes_pc aes_ce aes_cu` 1–10 (Meta Audiobox
+Aesthetics) per file. It runs in one uv process on the CPU: about 3 GB of RAM and 24 s for 18 files. The
+first run downloads the models into `~/.cache/torch/hub` and `~/.cache/huggingface`. UTMOS is trained on
+English and Japanese read speech: it underrates whispers, laughs and shouts, so read it as a cleanliness
+score, not as acting quality.
 
 ## Speech on AI Studio
 
@@ -594,6 +624,10 @@ touched. Plain `media-run speech` runs here (`default_for` in gemini.json since 
 | The first Run after typing sometimes sends nothing; a Run with neither a `GenerateContent` nor the Stop ("Cancel generation") button in 12 s is clicked again. 2.5 Pro shows Stop well before its first reply, so Stop counts as sent | REPL probes; a 2.5 Pro take misread as a disabled Run (2026-10-07) |
 | A short take renders in about 3 s (wrapper run 10–20 s); 2.5 Pro renders 327 chars of Russian in 17.8 s and 407 in 25.5 s (wrapper 34 s), far inside `timeout_s` 300 | `render_s` in the ledger, `seconds=` footers |
 | First use shows a terms page or dialog (tick only "I acknowledge that I am at least 18…", never the e-mail opt-in, then Continue) or a "Welcome to AI Studio" plan dialog (Continue). The owner's yes (2026-10-06) covers both; the engine records `aistudio_terms_accepted_at` in the account meta and a `terms-accepted` ledger row. Needed on loiyehor and tronjhon; locomthebest showed the welcome dialog once | runs on all six pool accounts |
+
+Each take, dry runs included, first compares the page with `.speech` (models in the Audio filter, the family's
+tag chips, the voice panel, the older models' Director's note menus; about 3-5 s) and prints `caps=fresh` or
+`caps=stale what=<part>: +added -gone`.
 
 Live takes (2026-10-06, one short sentence each, ffprobe): single voice Kore 2.64 s; dialogue Puck/Kore 3.32 s and
 Algenib (per-line style) / Achernar with filler words 4.24 s — two segments split by a 0.8–1.0 s gap, median F0

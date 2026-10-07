@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import io
 import json
 import mimetypes
@@ -25,6 +26,9 @@ import zipfile
 from email.parser import BytesParser
 from email.policy import default as email_policy
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import caps_checks  # noqa: E402
 
 API = os.environ.get("ELEVENLABS_API_BASE", "https://api.elevenlabs.io")
 ROOT = Path(__file__).resolve().parent.parent
@@ -120,7 +124,7 @@ class Client:
         self.account = account
         self.key = key
 
-    def call(self, method: str, path: str, *, query=None, body=None, fields=None, files=None, timeout=900):
+    def call(self, method: str, path: str, *, query=None, body=None, fields=None, files=None, timeout=900, once=False):
         url = API + path + ("?" + urllib.parse.urlencode(query) if query else "")
         headers = {"xi-api-key": self.key}
         data = None
@@ -135,13 +139,13 @@ class Client:
                     return response.read(), {k.lower(): v for k, v in response.headers.items()}
             except urllib.error.HTTPError as error:
                 status, message = error_of(error.read())
-                if error.code == 429 and attempt < 3:
+                if error.code == 429 and attempt < 3 and not once:
                     time.sleep(3 * (attempt + 1))
                     continue
                 raise self.classify(error.code, status, message) from None
             except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
                 # A POST that timed out may still be billed and delivered server-side; resending it pays twice.
-                if method == "GET" and attempt < 2:
+                if method == "GET" and attempt < 2 and not once:
                     time.sleep(2)
                     continue
                 raise Fail(1, f"network: {error}") from None
@@ -322,6 +326,51 @@ class Run:
         tail.append("route=api")
         tail += self.ids
         print("\n".join(self.lines + tail))
+
+
+MODELS_CHECK_S = 86400
+GENERATION = re.compile(r"_v(\d+)(?:_(\d+))?")
+
+
+def generation(model: str) -> tuple[int, int]:
+    match = GENERATION.search(model or "")
+    return (int(match.group(1)), int(match.group(2) or 0)) if match else (0, 0)
+
+
+def models_check(account: str) -> str:
+    """`served_models` is how a caller learns a release exists (eleven_v4 sat unnoticed beside an eleven_v3 default
+    for weeks), so the account's own model list is compared with it at most once a day; never fails the run."""
+    cache = KEYS.parent / "models-check.json"
+    try:
+        seen = json.loads(cache.read_text())
+    except (OSError, ValueError):
+        seen = {}
+    try:
+        if time.time() - seen.get("at", 0) > MODELS_CHECK_S:
+            keys, seen = accounts(), {}
+            for name in [n for n in dict.fromkeys((account, *caps()["accounts"]["pool"]["default"])) if n in keys][:2]:
+                with contextlib.suppress(Fail, ValueError):
+                    served = Client(name, keys[name]).json("GET", "/v1/models", timeout=20, once=True)
+                    seen = {"at": int(time.time()), "account": name,
+                            "models": [{key: m.get(key) for key in ("model_id", "can_do_text_to_speech",
+                                                                    "can_do_voice_conversion")} for m in served]}
+                    with contextlib.suppress(OSError):
+                        cache.write_text(json.dumps(seen))
+                    break
+        if not seen:
+            return "model_caps=unknown"
+        c = caps()
+        live = [m["model_id"] for m in seen["models"]]
+        new = [m for m in seen["models"] if m["model_id"] not in c["served_models"]]
+        defaults = {"can_do_text_to_speech": c["speech"]["model"], "can_do_voice_conversion": c["revoice"]["model"]}
+        newer = [f"{m['model_id']}>{default}" for m in new for flag, default in defaults.items()
+                 if m.get(flag) and generation(m["model_id"]) > generation(default)]
+    except Exception:  # noqa: BLE001
+        return "model_caps=unknown"
+    what = "; ".join([*caps_checks.caps_drift("models", live, c["served_models"]),
+                      *(["newer=" + ",".join(newer)] if newer else [])])
+    caps_checks.record("elevenlabs", "served_models", bool(what), what)
+    return f"model_caps=stale {what}" if what else "model_caps=fresh"
 
 
 def leg_state(skip: bool, run: Run | None) -> None:
@@ -934,8 +983,12 @@ def main(argv: list[str]) -> int:
         run = Run(kind, args.account)
         run.dry = bool(args.dry_run)
         KINDS[kind](args, run)
+        checked = models_check(run.client.account if run.client else run.pool[0])
         if not run.dry and run.client is not None:
             run.finish()
+            print(checked)
+        else:
+            print(f"elevenlabs-{kind}: {checked}", file=sys.stderr)
         rc = 0
     except Fail as error:
         print(f"elevenlabs-{kind}: {error.message}", file=sys.stderr)

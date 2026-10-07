@@ -160,6 +160,7 @@ fi
 account=$(jq -r '.account' <<<"$result")
 if [ "$(jq -r '.dry_run // false' <<<"$result")" = true ]; then
   printf 'dry_run=ok\naccount=%s\ncontrols=%s\n' "$account" "$(jq -c '.controls' <<<"$result")"
+  image_caps_page_check "$result"
   exit 0
 fi
 take=$(jq -c '.takes[0] // empty' <<<"$result")
@@ -176,5 +177,6 @@ seconds=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$dest" 2>/
 printf 'dest=%s\nduration=%s\nformat=%s\naccount=%s\nmodel=%s\nvoices=%s\ncredits=free (AI Studio, no API key)\nseconds=%s\n' \
   "$dest" "$(awk -v s="${seconds:-0}" 'BEGIN { printf "%.2f", s }')" "$ext" "$account" "${observed_model:-unknown}" \
   "$(jq -r '.speakers | map(sub("^Speaker [0-9]+ - "; "")) | join(",")' <<<"$take")" "$(($(date +%s) - started))"
+image_caps_page_check "$result"
 exit
 }

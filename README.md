@@ -292,6 +292,7 @@ The claude-setup agent definitions call these bare, so each needs its PATH link
 - `bin/gemini-music` → `~/.local/bin/gemini-music` — music through the Gemini app's Lyria tool.
 - `bin/gemini-sfx` → `~/.local/bin/gemini-sfx` — sound effects from a Flow Omni render.
 - `bin/gemini-listen` → `~/.local/bin/gemini-listen` — a Gemini model's judgement of video or audio.
+- `bin/audio-score` → `~/.local/bin/audio-score` — local UTMOS and Audiobox Aesthetics scores per audio file (no account).
 - `bin/gemini-web` → `~/.local/bin/gemini-web` — the hidden Chrome behind the Gemini media scripts (`login <profile>`, which `geminib web <profile>` runs for a roster account).
 - `bin/chatgpt-web` → `~/.local/bin/chatgpt-web` — the same hidden Chrome on chatgpt.com, behind `codex-image --route web` (`login <codex profile>`, which `codexb web <codex profile>` runs for a roster account).
 - `bin/llm-doctor` → `~/.local/bin/llm-doctor` — LLM doctor; claude-setup's night-sweep skill runs it and the six below by name.
