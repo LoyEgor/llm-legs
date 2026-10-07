@@ -4040,7 +4040,8 @@ running_report() {
 
 wait_poll_lag() { # directory run-id wait-started: how long an exit the poll had not yet seen waited
   local ended
-  ended=$(store_lock_mtime "$1/exit_code") && [ "$ended" -ge "$3" ] 2>/dev/null &&
+  ended=$(stat -f %Fm "$1/exit_code" 2>/dev/null || stat -c %.3Y "$1/exit_code" 2>/dev/null) &&
+    [ "${ended%.*}" -ge "$3" ] 2>/dev/null &&
     wait_note poll "worker-run wait $2" "$ended"
   return 0
 }
@@ -4151,7 +4152,7 @@ inbox_carry_resume() { # directory session
 
 wait_run() {
   [ "$#" -ge 1 ] || usage
-  local run_id="$1" max=100 directory wait_started now waited remaining sleep_for pid
+  local run_id="$1" max=100 directory wait_started now waited remaining sleep_for ticks pid
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -4187,8 +4188,9 @@ wait_run() {
     if [ "$waited" -ge "$max" ]; then running_report "$directory"; return 0; fi
     remaining=$((max - waited))
     sleep_for=$WAIT_POLL; [ "$remaining" -ge "$sleep_for" ] || sleep_for=$remaining
-    while [ "$sleep_for" -gt 0 ] && [ ! -f "$directory/exit_code" ]; do
-      sleep 1; sleep_for=$((sleep_for - 1))
+    ticks=$((sleep_for * 5))
+    while [ "$ticks" -gt 0 ] && [ ! -f "$directory/exit_code" ]; do
+      sleep 0.2; ticks=$((ticks - 1))
     done
   done
 }
