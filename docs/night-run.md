@@ -22,7 +22,8 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
      job's doc (its `path`, else the one its ref's slug names) whose `Status:` reads settled. Every check holding (or the doc settled), the job goes
      `settled` with `settled` {at, night, evidence}; otherwise it becomes a pending `trade` job
      `trade-<ref>` of this night carrying the answer and `from` {night, ref, kind, trade, path}, the old job
-     marked `carried`, and `carry` gives it a night worktree and a brief. An unanswered trade stays.
+     marked `carried`, and `carry` gives it a night worktree and a brief. An unanswered trade stays. The
+     same check runs when `answer=` is set, so a trade carried out in the chat that got the answer settles at once.
    - The sweep word arms the sweep span. The span carries the review grant, and commit and push, as
      a hand-typed «сделай чистку» does (claude-setup `hooks/lib/word-families.json` family `sweep`).
      The night-sweep skill reads the `night run <id>` marker and follows its **Night mode** section.

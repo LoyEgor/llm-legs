@@ -89,7 +89,8 @@ commits=<repo>:<hash>[,<repo>:<hash>...]  replaces the job's list; <repo> is a s
   is kept under integration, never as the job's own
 answer="<Egor's words>" on a blocked-on-egor job records his answer to its trade {words, at, by, done};
   done=<check>[,<check>...] names how its carrying out shows: commit:<repo>:<hash> (on main),
-  file:<abs path> (exists), gone:<abs path> (does not), keep (nothing to carry out)
+  file:<abs path> (exists), gone:<abs path> (does not), keep (nothing to carry out); every check
+  holding, the trade settles at once, else the next start carries it
 leftover: ref is a leftover branch, adopted in every sweep repository where it is one: its WIP
   committed, night/<id>/leftover-<slug> made at its tip with its night worktree, the old worktree and
   branch removed; the job's ref becomes leftover-<slug>; --ready "<why>" records its owner's handover
@@ -267,34 +268,40 @@ trade_check() { # check -> its evidence; fails when it does not hold
 }
 
 # Only a recorded answer moves a trade: a handoff doc's settled Status, or answer= with its done= checks.
+trade_settle() { # night ref by (locked) -> 0 settled with its evidence, 1 answered but not carried out, 2 unanswered
+  local night=$1 ref=$2 id=$3 job path status check line evidence='[]'
+  job=$(jq -c --arg r "$ref" 'first(.jobs[] | select(.ref == $r))' "$(night_file "$night")")
+  path=$(jq -r 'select(.kind == "handoff") | .path // empty' <<<"$job") status=''
+  if [ -z "$path" ] && [[ $ref == handoff-* ]]; then
+    path=$(sed "s|\$|/docs/handoffs/${ref#handoff-}.md|" "$sweep_repos" 2>/dev/null | while IFS= read -r line; do
+      [ ! -f "$line" ] || printf '%s\n' "$line"; done)
+    [ "$(grep -c . <<<"$path")" = 1 ] || path=''
+  fi
+  [ -z "$path" ] || status=$(python3 -B "$repo_root/share/handoffs.py" --status "$path" 2>/dev/null)
+  if [[ $status == [Ss]ettled* ]]; then
+    evidence=$(jq -cn --arg e "$path: Status: $status" '[$e]')
+  elif jq -e '.answer.words != null' <<<"$job" >/dev/null; then
+    while IFS= read -r check; do
+      line=$(trade_check "$check") || { evidence='[]'; break; }
+      evidence=$(jq -c --arg e "$line" '. + [$e]' <<<"$evidence")
+    done < <(jq -r '.answer.done[]?' <<<"$job")
+  else
+    return 2
+  fi
+  [ "$evidence" != '[]' ] || return 1
+  night_set "$night" "$JQ_EVENTS"' .jobs |= map(if .ref == $r then .state = "settled" | .settled = {at: $t, night: $id, evidence: $e} else . end)
+    | events([{phase: "trade-settled", job: $r, night: $id}]; $t)' \
+    --arg r "$ref" --arg id "$id" --argjson e "$evidence" --arg t "$(stamp)" || die "cannot write night $night"
+  printf 'trade %s %s settled: %s\n' "$night" "$ref" "$(jq -r 'join("; ")' <<<"$evidence")"
+}
+
 trades_recheck() { # id (locked) -> per answered trade of the other nights: settled with its evidence, or carried into night id
-  local id=$1 night ref job path status check line evidence new
+  local id=$1 night ref job new rc
   while IFS=$'\t' read -r night ref; do
+    rc=0
+    trade_settle "$night" "$ref" "$id" || rc=$?
+    [ "$rc" = 1 ] || continue
     job=$(jq -c --arg r "$ref" 'first(.jobs[] | select(.ref == $r))' "$(night_file "$night")")
-    path=$(jq -r 'select(.kind == "handoff") | .path // empty' <<<"$job") status='' evidence='[]'
-    if [ -z "$path" ] && [[ $ref == handoff-* ]]; then
-      path=$(sed "s|\$|/docs/handoffs/${ref#handoff-}.md|" "$sweep_repos" 2>/dev/null | while IFS= read -r line; do
-        [ ! -f "$line" ] || printf '%s\n' "$line"; done)
-      [ "$(grep -c . <<<"$path")" = 1 ] || path=''
-    fi
-    [ -z "$path" ] || status=$(python3 -B "$repo_root/share/handoffs.py" --status "$path" 2>/dev/null)
-    if [[ $status == [Ss]ettled* ]]; then
-      evidence=$(jq -cn --arg e "$path: Status: $status" '[$e]')
-    elif jq -e '.answer.words != null' <<<"$job" >/dev/null; then
-      while IFS= read -r check; do
-        line=$(trade_check "$check") || { evidence='[]'; break; }
-        evidence=$(jq -c --arg e "$line" '. + [$e]' <<<"$evidence")
-      done < <(jq -r '.answer.done[]?' <<<"$job")
-    else
-      continue
-    fi
-    if [ "$evidence" != '[]' ]; then
-      night_set "$night" "$JQ_EVENTS"' .jobs |= map(if .ref == $r then .state = "settled" | .settled = {at: $t, night: $id, evidence: $e} else . end)
-        | events([{phase: "trade-settled", job: $r, night: $id}]; $t)' \
-        --arg r "$ref" --arg id "$id" --argjson e "$evidence" --arg t "$(stamp)" || die "cannot write night $night"
-      printf 'trade %s %s settled: %s\n' "$night" "$ref" "$(jq -r 'join("; ")' <<<"$evidence")"
-      continue
-    fi
     new="trade-$ref"
     ! jq -e --arg r "$new" 'any(.jobs[]; .ref == $r)' "$(night_file "$id")" >/dev/null || new="$new-${night##*-}"
     night_set "$id" "$JQ_EVENTS"' .jobs += [{kind: "trade", ref: $n, state: "pending", reason: null, branch: "night/\($id)/\($n)",
@@ -725,6 +732,7 @@ job_set() { # id ref key=value...
     --arg r "$ref" --argjson p "$patch" --argjson ev "$events" --arg t "$(stamp)" ||
     die "cannot write night $id"
   printf 'night %s: job %s %s\n' "$id" "$ref" "$(jq -r '[.state, (if .pushed then "pushed" else empty end)] | join(" ")' <<<"$job")"
+  ! jq -e 'has("answer")' <<<"$patch" >/dev/null || trade_settle "$id" "$ref" "$id" || true
 }
 
 carry_list() { # id -> kind<TAB>slug<TAB>repo<TAB>what<TAB>log, one per job carry adds

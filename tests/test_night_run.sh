@@ -1258,7 +1258,7 @@ rm "$NIGHTS"/*.json
 assert [ -z "$(night latest --menu)" ]
 assert_fails night report 2>/dev/null
 
-# Trades: before a night starts every answered trade (a blocked-on-egor job) of the other nights is re-checked.
+# Trades: when answer= is set and before a night starts, every answered trade (a blocked-on-egor job) is re-checked.
 # Carried out, it settles with its evidence; not carried out, it becomes a trade job of the new night; never
 # answered, it stays. Answers are recorded ones only: answer= with its done= checks, or a handoff doc settled,
 # found by the job's path or, on a job from before paths, by its ref's slug.
@@ -1277,9 +1277,11 @@ trade() { jq -nc --arg k "$1" --arg r "$2" --arg p "${3:-}" '{kind: $k, ref: $r,
 jq -n --argjson j "[$(trade fixer t-done), $(trade fixer t-todo), $(trade fixer t-bare), $(trade handoff t-doc "$TR/docs/handoffs/s.md"),
   $(trade handoff t-open "$TR/docs/handoffs/o.md"), $(trade fixer t-none), $(trade handoff handoff-s)]" \
   '{id: "tn", started_at: "2026-01-02T00:00:00Z", finished_at: "2026-01-02T03:00:00Z", session: null, jobs: $j}' >"$(record tn)"
-night job tn set t-done "answer=merge it" "done=commit:trades:$done_hash,file:$TR/docs/handoffs/o.md,gone:$TR/nothing" >/dev/null ||
+night job tn set t-done "answer=merge it" "done=commit:trades:$done_hash,file:$TR/docs/handoffs/o.md,gone:$TR/nothing" >"$WORK/out" ||
   fail "answer with checks"
-night job tn set t-todo "answer=raise it" "done=commit:trades:$undone_hash" >/dev/null || fail "answer not carried out"
+assert grep -qxF "trade tn t-done settled: commit trades@$done_hash on main; file $TR/docs/handoffs/o.md exists; file $TR/nothing is gone" "$WORK/out"
+night job tn set t-todo "answer=raise it" "done=commit:trades:$undone_hash" >"$WORK/out" || fail "answer not carried out"
+assert [ "$(grep -c '^trade ' "$WORK/out")" = 0 ]
 night job tn set t-bare "answer=look at it" >/dev/null || fail "answer without checks"
 assert_fails night job tn set t-none done=keep 2>"$WORK/err"
 assert grep -qF 'done= comes with answer=' "$WORK/err"
@@ -1291,26 +1293,25 @@ assert jqe '(.jobs[0].answer | .words == "merge it" and (.done | length) == 3 an
   and .jobs[2].answer.done == [] and (.jobs[5] | has("answer") | not)' "$(record tn)"
 night start >"$WORK/out" || fail "start with trades"
 tid=$(sed -n 's/^night \([^ ]*\) started:.*/\1/p' "$WORK/out")
-assert grep -qxF "trade tn t-done settled: commit trades@$done_hash on main; file $TR/docs/handoffs/o.md exists; file $TR/nothing is gone" "$WORK/out"
 assert grep -qxF "trade tn t-doc settled: $TR/docs/handoffs/s.md: Status: settled 2026-10-07: Egor agreed to keep it" "$WORK/out"
 assert grep -qxF "trade tn t-todo -> trade-t-todo" "$WORK/out"
 assert grep -qxF "trade tn t-bare -> trade-t-bare" "$WORK/out"
 assert grep -qxF "trade tn handoff-s settled: $TR/docs/handoffs/s.md: Status: settled 2026-10-07: Egor agreed to keep it" "$WORK/out"
-assert [ "$(grep -c '^trade ' "$WORK/out")" = 5 ]
+assert [ "$(grep -c '^trade ' "$WORK/out")" = 4 ]
 assert jqe --arg n "$tid" '[.jobs[] | [.ref, .state, (.settled.night // null), (.carried.ref // null)]] == [
-    ["t-done", "settled", $n, null], ["t-todo", "blocked-on-egor", null, "trade-t-todo"],
+    ["t-done", "settled", "tn", null], ["t-todo", "blocked-on-egor", null, "trade-t-todo"],
     ["t-bare", "blocked-on-egor", null, "trade-t-bare"], ["t-doc", "settled", $n, null],
     ["t-open", "blocked-on-egor", null, null], ["t-none", "blocked-on-egor", null, null], ["handoff-s", "settled", $n, null],
     ["d1", "pending", null, null]]
   and .jobs[0].settled.evidence[0] == "commit trades@'"$done_hash"' on main"
-  and [.events[] | select(.phase | startswith("trade-")) | [.phase, .job, .night]] == [["trade-settled", "t-done", $n],
+  and [.events[] | select(.phase | startswith("trade-")) | [.phase, .job, .night]] == [["trade-settled", "t-done", "tn"],
     ["trade-carried", "t-todo", $n], ["trade-carried", "t-bare", $n], ["trade-settled", "t-doc", $n], ["trade-settled", "handoff-s", $n]]' "$(record tn)"
 assert jqe --arg n "$tid" '[.jobs[] | [.kind, .ref, .state, .branch, .answer.words, .from.night, .from.ref, .from.trade]] == [
     ["trade", "trade-t-todo", "pending", "night/\($n)/trade-t-todo", "raise it", "tn", "t-todo", "Cost: c. Loss: l. Recommendation: r."],
     ["trade", "trade-t-bare", "pending", "night/\($n)/trade-t-bare", "look at it", "tn", "t-bare", "Cost: c. Loss: l. Recommendation: r."]]
   and [.events[] | select(.phase == "add") | .job] == ["trade-t-todo", "trade-t-bare"]' "$(record "$tid")"
 night report tn >"$WORK/report" || fail "report of the trade night"
-assert grep -qF "settled · fixer · t-done · Cost: c. Loss: l. Recommendation: r. · settled by night $tid: commit trades@" "$WORK/report"
+assert grep -qF "settled · fixer · t-done · Cost: c. Loss: l. Recommendation: r. · settled by night tn: commit trades@" "$WORK/report"
 assert grep -qxF "blocked-on-egor · fixer · t-todo · Cost: c. Loss: l. Recommendation: r. · answered, carried to night $tid as trade-t-todo" "$WORK/report"
 assert grep -qxF "total · 4 blocked-on-egor · 3 settled · 1 pending" "$WORK/report"
 # Carried or never answered, no trade moves at the next start.
