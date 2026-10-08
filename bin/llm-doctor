@@ -93,8 +93,8 @@ FAILURE_REASONS = (
         r"|hit the (?:rate|credit) limit for your plan|free-usage-exhausted", re.IGNORECASE)),
     ("throttled", re.compile(
         r"provider_rate_limit_exceeded|rate_limit_error|provider rate limit"
-        r"|rate limit exceeded|too many requests", re.IGNORECASE)),
-    ("bare 429", re.compile(r"(?:" + HTTP_STATUS_PREFIX + r"429\b|\b429\s+Too\s+Many\b|\(code 429\))")),
+        r"|rate limit exceeded|(?<!429 )too many requests", re.IGNORECASE)),
+    ("bare 429", re.compile(r"(?:" + HTTP_STATUS_PREFIX + r"429\b|\b429\s+(?i:too\s+many)\b|\(code 429\))")),
     ("capacity", re.compile(r"at capacity|temporarily unavailable|overloaded"
                             r"|No capacity available for model"
                             r"|geminib: capacity \S+ after \d+ steps, not relaunched", re.IGNORECASE)),
