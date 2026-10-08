@@ -238,6 +238,18 @@ codex_cache "$HOME/.codex-profiles/a" 0.156.1 \
 check
 assert [ "$(field '.changed | join(",")')" = catalog_text ]
 assert [ "$(field .status)" = auto-closed ]
+# A field gaining an empty container has a diff line for its close to decide, like any other value.
+codex_cache "$HOME/.codex-profiles/a" 0.156.1 \
+  "[{\"slug\":\"gpt-6-sol\",\"context_window\":272000,\"supports_computer_use\":true,\"input_modalities\":[],\"model_messages\":{\"instructions_template\":\"$PROMPT changed\"}}]"
+check
+assert [ "$(field '.substantive | join(",")')" = catalog ]
+assert grep -qxF '+gpt-6-sol.input_modalities = []' "$(field .diff)"
+taken
+codex_cache "$HOME/.codex-profiles/a" 0.156.1 \
+  "[{\"slug\":\"gpt-6-sol\",\"context_window\":272000,\"supports_computer_use\":true,\"model_messages\":{\"instructions_template\":\"$PROMPT changed\"}}]"
+check
+assert grep -qxF -- '-gpt-6-sol.input_modalities = []' "$(field .diff)"
+taken
 
 # Accounts served different catalogs: a field they disagree on is recorded as its value set, and
 # ~/.codex dropping in and out of the homes as the app and our client take turns writing it is no
@@ -457,6 +469,10 @@ assert_fails grep -qxF '### version' "$EVENTS/$here.diff"
 assert_fails quiet bash "$SCRIPT" close "$here" "nothing new"
 sed -n 's/^### \(.*\)/\1	+*	not-applicable	docs\/vendor-release.md	nothing new/p' "$EVENTS/$here.diff" >"$WORK/decisions"
 assert bash "$SCRIPT" close "$here" --decisions "$WORK/decisions" "nothing new"
+# A request before any check baselined its vendor points its event at the snapshot its diff was taken from.
+fresh_id=$(VENDOR_CLI_UPDATE_STATE_DIR="$WORK/unbaselined" bash "$SCRIPT" request --here grok | head -n 1)
+assert jqe --arg f "$WORK/unbaselined/events/$fresh_id.fingerprint" '.fingerprint == $f' "$WORK/unbaselined/events/$fresh_id.json"
+assert jqe '.facets.ids | length > 0' "$WORK/unbaselined/events/$fresh_id.fingerprint"
 assert_fails quiet bash "$SCRIPT" request nosuch
 
 # A check while another holds the lock does nothing.
@@ -472,6 +488,9 @@ assert_fails quiet check
 assert [ "$(events)" = "$count" ]
 # Parallel vendor workers run `check --here` at nearly the same time: it waits for the lock, bounded.
 assert_fails quiet env VENDOR_FINGERPRINT_LOCK_WAIT=1 bash "$SCRIPT" check --here grok
+assert [ "$(events)" = "$count" ]
+# A request waits for it too: a check's launch_pending would see it requested and open a second chat.
+assert_fails quiet env VENDOR_FINGERPRINT_LOCK_WAIT=1 bash "$SCRIPT" request grok
 assert [ "$(events)" = "$count" ]
 (sleep 1; kill "$HOLDER" 2>/dev/null) &
 

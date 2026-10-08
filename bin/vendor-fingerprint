@@ -111,8 +111,9 @@ put_text() { # facet command...
 }
 
 # Packed string tables glue an id onto the next string (gemini-3.1-pro-highparse mime type): a lowercase
-# run is cut off after another id, a digit run, or an effort word or word other ids hold as a whole
-# component, unless the component it grows is one other ids hold.
+# run is cut off after a digit run, or an effort word or word other ids hold as a whole component,
+# unless the component it grows is one other ids hold; after another id it is cut always, since one
+# neighbour glues onto many ids alike (gpt-6-lunaopenai, gpt-5.6-lunaopenai in codex 0.161).
 unglue() { # sorted ids -> the same ids cut off their glued neighbours
   LC_ALL=C awk '
     {
@@ -258,7 +259,7 @@ snapshot() { # vendor -> {vendor, version, facets, failed}
 render() { # facet value on stdin -> diffable lines
   jq -r 'if type == "string" then .
     elif type == "array" then .[] | (if type == "string" then . else tojson end)
-    elif type == "object" then (paths(scalars) as $p | "\($p | map(tostring) | join(".")) = \(getpath($p) | tojson)")
+    elif type == "object" then (paths((type != "object" and type != "array") or . == {} or . == []) as $p | "\($p | map(tostring) | join(".")) = \(getpath($p) | tojson)")
     else tojson end'
 }
 
@@ -462,7 +463,11 @@ manual_event() { # vendor note... -> id
   shift
   version=$(version_of timeout_command 30 "$(cli_of "$vendor")" --version)
   id=$(new_event "$vendor" "${version:-unknown}" "${version:-unknown}" open "manual request${*:+: $*}" '[]' '[]')
-  [ -s "$fingerprint" ] || { fingerprint="$events_dir/$id.fingerprint"; snapshot "$vendor" >"$fingerprint"; }
+  if [ ! -s "$fingerprint" ]; then
+    fingerprint="$events_dir/$id.fingerprint"
+    snapshot "$vendor" >"$fingerprint"
+    event_set "$id" '.fingerprint = $f' --arg f "$fingerprint"
+  fi
   # The whole current fingerprint is its diff, so close gates the full checklist line by line.
   {
     printf 'manual request: integrate every capability of %s %s against the manifests and surfaces\n' "$vendor" "${version:-unknown}"
@@ -563,11 +568,12 @@ night_request() { # night-id -> per vendor with a real waiting release: its fixe
 
 request() { # [--here] vendor|--all [note...] | --night <night-id>
   local here=false vendor id ids=()
+  [ "${1:-}" != --night ] || [ -n "${2:-}" ] || usage
+  mkdir -p "$fp_dir" "$events_dir"
+  # Unlocked, a check's launch_pending sees requested_at before launched_at and opens a second chat.
+  [ -n "${VENDOR_FINGERPRINT_LOCKED:-}" ] || exec env VENDOR_FINGERPRINT_LOCKED=1 \
+    lockf -k -t "${VENDOR_FINGERPRINT_LOCK_WAIT:-600}" "$fp_dir/check.lock" "$script_path" request "$@"
   if [ "${1:-}" = --night ]; then
-    [ -n "${2:-}" ] || usage
-    mkdir -p "$fp_dir" "$events_dir"
-    [ -n "${VENDOR_FINGERPRINT_LOCKED:-}" ] || exec env VENDOR_FINGERPRINT_LOCKED=1 \
-      lockf -k -t "${VENDOR_FINGERPRINT_LOCK_WAIT:-600}" "$fp_dir/check.lock" "$script_path" request --night "$2"
     night_request "$2"
     return
   fi
@@ -575,7 +581,6 @@ request() { # [--here] vendor|--all [note...] | --night <night-id>
   vendor=${1:-}
   [ -n "$vendor" ] || usage
   shift
-  mkdir -p "$fp_dir" "$events_dir"
   if [ "$vendor" = --all ]; then
     # Every vendor in one chat now: a waiting event already carries its vendor's pass.
     for vendor in $vendors; do [ -n "$(waiting "$vendor")" ] || manual_event "$vendor" "$@" >/dev/null; done

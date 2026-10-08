@@ -222,9 +222,13 @@ def redeem_codex(account: str, target: str) -> int:
     published = snapshot.get("rateLimitResetCredits")
     if not isinstance(published, dict):
         published = {}
-    credit = next((item["id"] for item in published.get("credits") or []
-                   if isinstance(item, dict) and item.get("status") == "available"
-                   and isinstance(item.get("id"), str) and item["id"]), None)
+    available = [item for item in published.get("credits") or []
+                 if isinstance(item, dict) and item.get("status") == "available"
+                 and isinstance(item.get("id"), str) and item["id"]]
+    # The menu shows the soonest deadline (codex-quota credits_expiry), so that is the credit spent.
+    dated = [item for item in available if number(item.get("expiresAt"))]
+    spending = min(dated, key=lambda item: item["expiresAt"]) if dated else next(iter(available), None)
+    credit = spending["id"] if spending else None
     if credit is None:
         count = published.get("availableCount")
         # The count and the id come from two different halves of the same payload, and a summary
@@ -573,6 +577,14 @@ def fire(vendor: str, account: str, now: int, wall: str) -> None:
         return
     attempts = [line.split() for line in lines[1:] if len(line.split()) == 2]
     row = store_row(vendor, account, now)
+    # A transient attempt may have landed with its reply lost, which also clears the wall: a reset
+    # gone since then is that one, and a kept arm would spend the next period's at its first wall.
+    lost = any(attempt[1] == str(EXIT_TRANSIENT) for attempt in attempts)
+    if lost and number(row.get("credits")) and row["credits"] < 1:
+        reason = f"{target}: no usage reset left after an attempt whose reply was lost"
+        disarm(vendor, account, reason)
+        alert(f"Auto-redeem disarmed · {reason}")
+        return
     if not (wall == "weekly" or row.get("weekly_wall") is True):
         return
     if not number(row.get("credits")) or row["credits"] < 1:
@@ -589,8 +601,8 @@ def fire(vendor: str, account: str, now: int, wall: str) -> None:
         alert(f"Auto-redeemed at the weekly wall · {line}")
         return
     failures = 1 + sum(1 for attempt in attempts if attempt[1] == str(EXIT_TRANSIENT))
-    if code in (EXIT_EXPIRED, EXIT_NO_BACKEND) or (code == EXIT_TRANSIENT
-                                                   and failures >= ATTEMPTS_MAX):
+    if code in (EXIT_EXPIRED, EXIT_NO_BACKEND) or (code == EXIT_NOTHING and lost) or (
+            code == EXIT_TRANSIENT and failures >= ATTEMPTS_MAX):
         reason = line if code != EXIT_TRANSIENT else f"{failures} attempts failed · {line}"
         disarm(vendor, account, reason)
         alert(f"Auto-redeem disarmed · {reason}")

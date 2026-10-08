@@ -338,6 +338,13 @@ while IFS= read -r line; do
           rateLimits:{primary:{usedPercent:10,windowDurationMins:300,resetsAt:0},
                       secondary:{usedPercent:20,windowDurationMins:10080,resetsAt:0},planType:"plus"},
           rateLimitResetCredits:{availableCount:2}}}'
+      elif [ "\$(cat "$CODEX_STATE")" = unsorted ]; then
+        jq -cn '{jsonrpc:"2.0",id:2,result:{
+          rateLimits:{primary:{usedPercent:10,windowDurationMins:300,resetsAt:0},
+                      secondary:{usedPercent:20,windowDurationMins:10080,resetsAt:0},planType:"plus"},
+          rateLimitResetCredits:{availableCount:2,credits:[
+            {id:"credit-later",status:"available",expiresAt:1799999999},
+            {id:"$CREDIT_ID",status:"available",expiresAt:1789949804}]}}}'
       else
         jq -cn '{jsonrpc:"2.0",id:2,result:{
           rateLimits:{primary:{usedPercent:10,windowDurationMins:300,resetsAt:0},
@@ -350,7 +357,7 @@ while IFS= read -r line; do
     *rateLimitResetCredit/consume*)
       printf '%s\n' "\$line" >>"$CODEX_CALL_LOG"
       case "\$(cat "$CODEX_STATE")" in
-        reset) jq -cn '{jsonrpc:"2.0",id:2,result:{outcome:"reset"}}' ;;
+        reset|unsorted) jq -cn '{jsonrpc:"2.0",id:2,result:{outcome:"reset"}}' ;;
         already) jq -cn '{jsonrpc:"2.0",id:2,result:{outcome:"alreadyRedeemed"}}' ;;
         nothing) jq -cn '{jsonrpc:"2.0",id:2,result:{outcome:"nothingToReset"}}' ;;
         falsy) jq -cn '{jsonrpc:"2.0",id:2,result:{nothingToReset:false,outcome:"reset"}}' ;;
@@ -403,6 +410,14 @@ codex_redeem codex/main >/dev/null
 codex_redeem codex/nexerod >/dev/null 2>&1
 [ "$(grep consume "$CODEX_CALL_LOG" | jq -r '.params.idempotencyKey')" != "$first_key" ] \
   || fail "two accounts shared one idempotency key"
+pass
+
+# Two credits listed latest-first: the one spent is the soonest deadline the menu shows.
+printf 'unsorted\n' >"$CODEX_STATE"
+: >"$CODEX_CALL_LOG"
+codex_redeem codex/main >/dev/null || fail "two available credits: the redeem failed ($(cat "$WORK/last.err"))"
+[ "$(grep consume "$CODEX_CALL_LOG" | jq -r '.params.creditId')" = "$CREDIT_ID" ] \
+  || fail "the consume spent a later credit than the soonest: $(grep consume "$CODEX_CALL_LOG")"
 pass
 
 # Answered under our own key, `alreadyRedeemed` says the earlier attempt landed — a redeem, not a
@@ -937,6 +952,28 @@ grep -q '3 attempts failed' "$AUTO/alerts" && [ "$(wc -l <"$AUTO/alerts" | tr -d
   || fail "the transient ladder did not alert its reason once: $(cat "$AUTO/alerts")"
 auto --fire-armed
 [ "$(claude_posts)" -eq 3 ] || fail "a disarmed account was tried a fourth time"
+pass
+
+# A transient attempt may have landed with its reply lost: a reset gone since then is that one, so the
+# arm drops, by the redeem finding nothing or by the store showing none, never spending the next period's.
+arm
+fresh; store 100 0 1
+printf 'post503\n' >"$CLAUDE_STATE"
+auto --fire-armed
+backdate; printf 'zero\n' >"$CLAUDE_STATE"
+auto --fire-armed
+[ "$(claude_posts)" -eq 1 ] && [ ! -e "$ARM" ] && [ "$(wc -l <"$AUTO/alerts" | tr -d ' ')" -eq 1 ] \
+  || fail "nothing left to redeem after a lost reply kept the arm: $(cat "$ARM" 2>&1)"
+arm
+fresh; store 100 0 1
+printf 'post503\n' >"$CLAUDE_STATE"
+auto --fire-armed
+store 10 0 0
+auto --fire-armed
+[ "$(claude_posts)" -eq 1 ] && [ ! -e "$ARM" ] && grep -q 'reply was lost' "$AUTO/alerts" \
+  || fail "a store with no reset left after a lost reply kept the arm: $(cat "$ARM" 2>&1)"
+printf 'one\n' >"$CLAUDE_STATE"
+store 100 0 1
 pass
 
 # A refused token disarms at once, with the reason.
