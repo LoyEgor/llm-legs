@@ -86,7 +86,7 @@ reliability_tests() {
       eval "$(sed -n '/^record_run_wall() {/,/^}/p' "$RUNNER")"
       . "$ROOT/share/worker-walls.sh"
       . "$ROOT/share/processes.sh"
-      worker_model_clear_walled_pin() { :; }
+      worker_model_clear_walled_pin() { sleep 2; }
       SCRIPT_DIRECTORY="$WORK/redeem-bin" WORKER_RUN_ID=redeem-run
       export WORKER_RUN_ID
       mkdir -p "$SCRIPT_DIRECTORY" "$CLAUDEB_DIR/reset-arm" "$WORK/redeem-wall"
