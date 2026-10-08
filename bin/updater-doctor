@@ -17,6 +17,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 import caps_checks  # noqa: E402
 import collector_runs  # noqa: E402
+from fix_commit import fix_held_from, siblings_dir  # noqa: E402
 from spend import read_json  # noqa: E402
 
 HOME = os.path.expanduser("~")
@@ -43,6 +44,7 @@ FACET_WORDS = {"catalog": "model catalog", "catalog_order": "model catalog", "ca
 LOG_TAIL_BYTES = 1 << 20
 
 LOG_LINE = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ) (\S+) (\S+)(?: (.*))?$")
+PASS_LINE = re.compile(r"^\S+ -> \S+$")
 
 
 def state_dir():
@@ -55,6 +57,11 @@ def out_dir():
 
 def ledger_path():
     return os.environ.get("UPDATER_DOCTOR_LEDGER") or os.path.join(ROOT_DIR, "share", "updater-ledger.json")
+
+
+# Not repos_dir(): doctor-fix takes a doctor module's repos_dir() over its own projects directory.
+def fix_repos():
+    return os.environ.get("UPDATER_DOCTOR_REPOS") or siblings_dir(ROOT_DIR)
 
 
 def codex_homes():
@@ -140,6 +147,21 @@ def event_evidence(event):
         pass
     return {"at": iso_time(iso_epoch(event.get("created_at"))), "ref": event.get("id"), "account": None,
             "excerpt": clip(excerpt)}
+
+
+def diff_added(event, facet):
+    try:
+        with open(event.get("diff") or "", encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+    except OSError:
+        return set()
+    added, inside = set(), False
+    for line in text.splitlines():
+        if line.startswith("### "):
+            inside = line[4:] == facet
+        elif inside and line.startswith("+") and not line.startswith("+++"):
+            added.add(line[1:])
+    return added
 
 
 def model_keys(facet):
@@ -253,7 +275,8 @@ class Collector:
                 if status == "fixed-pending":
                     problem["state"] = "fixed-pending"
                 elif status == "fixed":
-                    fixed_at = max([iso_epoch(f.get("at")) or 0 for f in row.get("fixes") or [] if isinstance(f, dict)] or [0])
+                    fixes = [f for f in row.get("fixes") or [] if isinstance(f, dict)]
+                    fixed_at = (fix_held_from(fixes[-1], iso_epoch(fixes[-1].get("at")), fix_repos()) if fixes else None) or 0
                     problem["state"] = "regressed" if problem["state"] != "watch" and (last or 0) > fixed_at else "watch"
                 elif problem["state"] != "watch":
                     problem["state"] = "open"
@@ -311,6 +334,8 @@ def collect(now):
         fp_log = [line for line in log if line["who"] == "fingerprint" and line["word"] == vendor]
         for facet in facets.get("probe_failures") or []:
             noted = [e for e in vendor_events if "probe_failures" in (e.get("changed") or [])]
+            began = [i for i, e in enumerate(noted) if facet in diff_added(e, "probe_failures")]
+            noted = noted[began[-1]:] if began else []
             evidence = [event_evidence(e) for e in noted[::-1]] or log_evidence(fp_log)
             first = iso_epoch(noted[0].get("created_at")) if noted else at
             col.add("probe-broken", "%s/%s" % (vendor, facet), "new",
@@ -367,7 +392,14 @@ def collect(now):
         lines = [line for line in log if line["who"] == vendor]
         result = entry.get("result")
         if result not in PASS_OK:
-            failed = [line for line in lines if line["word"] == result]
+            failed = []
+            for line in lines:
+                if not PASS_LINE.match(line["rest"]):
+                    continue
+                if line["word"] != result or failed and line["at"] - failed[-1]["at"] > LIMITS["pass_stale_h"] * 3600:
+                    failed = []
+                if line["word"] == result:
+                    failed.append(line)
             col.add("pass-failed", vendor, "new", "%s: the last update pass ended %s (installed %s, latest %s)" % (
                 vendor, result, entry.get("installed") or "-", entry.get("latest") or "-"),
                 1, 0, "passes", None, exposure, len(failed) or 1,
@@ -379,7 +411,8 @@ def collect(now):
                 if line["word"] == "updated":
                     since, streak = None, []
                 elif line["word"] in ("busy", "install-failed"):
-                    if streak and line["at"] - streak[-1]["at"] > LIMITS["pass_stale_h"] * 3600:
+                    if streak and (line["at"] - streak[-1]["at"] > LIMITS["pass_stale_h"] * 3600
+                                   or line["rest"].split(" -> ")[0] != streak[-1]["rest"].split(" -> ")[0]):
                         since, streak = None, []
                     since = since or line["at"]
                     streak.append(line)

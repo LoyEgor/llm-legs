@@ -84,6 +84,7 @@ case $1 in
     printf 'npm install %s\n' "$3" >>"$CALLS"
     [ -z "${NPM_INSTALL_FAIL:-}" ] || exit 1
     [ -z "${NPM_INSTALL_NOOP:-}" ] || exit 0
+    [ -z "${NPM_LATEST_MOVES:-}" ] || printf '%s\n' "$NPM_LATEST_MOVES" >"$FAKE_BIN/latest-$(name "$3")"
     case $3 in
       *@latest) cp "$FAKE_BIN/latest-$(name "$3")" "$FAKE_BIN/ver-$(name "$3")" ;;
       *) printf '%s\n' "${3##*@}" >"$FAKE_BIN/ver-$(name "$3")" ;;
@@ -124,8 +125,8 @@ run() { : >"$CALLS"; bash "$SCRIPT" run; }
 # holding a login (b has none) and the grok list.
 set_versions 0.154.0 0.156.1 1.0.40 1.0.41
 run || fail "run exited non-zero"
-assert grep -qxF 'npm install @openai/codex@latest' "$CALLS"
-assert grep -qxF 'npm install @xai-official/grok@latest' "$CALLS"
+assert grep -qxF 'npm install @openai/codex@0.156.1' "$CALLS"
+assert grep -qxF 'npm install @xai-official/grok@1.0.41' "$CALLS"
 assert grep -qxF "codex-refresh $HOME/.codex" "$CALLS"
 assert grep -qxF "codex-refresh $HOME/.codex-profiles/a" "$CALLS"
 assert_fails grep -qF "codex-refresh $HOME/.codex-profiles/b" "$CALLS"
@@ -171,7 +172,7 @@ assert [ "$(result codex)" = "busy 0.156.1" ]
 assert [ "$(result grok)" = "busy 1.0.41" ]
 printf '%s\n' "$GROK_NATIVE" >"$BUSY"
 run
-assert grep -qxF 'npm install @openai/codex@latest' "$CALLS"
+assert grep -qxF 'npm install @openai/codex@0.157.0' "$CALLS"
 assert_fails grep -qF 'npm install @xai-official/grok' "$CALLS"
 assert [ "$(result grok)" = "busy 1.0.41" ]
 : >"$BUSY"
@@ -184,7 +185,7 @@ run
 assert [ "$(result claude)" = "busy 2.1.201" ]
 : >"$BUSY"
 run
-assert grep -qxF 'npm install @anthropic-ai/claude-code@latest' "$CALLS"
+assert grep -qxF 'npm install @anthropic-ai/claude-code@2.1.280' "$CALLS"
 assert [ "$(result claude)" = "updated 2.1.280" ]
 
 # The native claude runs ahead of npm's latest tag: the npm claude follows it to the same version when
@@ -203,12 +204,12 @@ assert [ "$(result claude)" = "current 2.1.282" ]
 printf '2.1.283\n' >"$FAKE_BIN/ver-native"
 printf '2.1.201\n' >"$FAKE_BIN/ver-claude"
 run
-assert grep -qxF 'npm install @anthropic-ai/claude-code@latest' "$CALLS"
+assert grep -qxF 'npm install @anthropic-ai/claude-code@2.1.280' "$CALLS"
 assert [ "$(result claude)" = "updated 2.1.280" ]
 printf '2.1.279\n' >"$FAKE_BIN/ver-native"
 printf '2.1.201\n' >"$FAKE_BIN/ver-claude"
 run
-assert grep -qxF 'npm install @anthropic-ai/claude-code@latest' "$CALLS"
+assert grep -qxF 'npm install @anthropic-ai/claude-code@2.1.280' "$CALLS"
 unset VENDOR_CLI_UPDATE_NATIVE_CLAUDE
 
 # No npm install of a CLI at all is recorded without a log line every run.
@@ -228,6 +229,10 @@ assert [ "$(cat "$FAKE_BIN/ver-grok")" = 1.0.41 ]
 set_versions 0.157.0 0.158.0 1.0.41 1.0.41
 NPM_INSTALL_NOOP=1 run
 assert [ "$(result codex)" = "install-failed 0.157.0" ]
+# npm's latest tag moving between the version read and the install gets the version read, an update.
+NPM_LATEST_MOVES=0.158.1 run
+assert grep -qxF 'npm install @openai/codex@0.158.0' "$CALLS"
+assert [ "$(result codex)" = "updated 0.158.0" ]
 
 # A second run while one holds the lock does nothing.
 set_versions 0.157.0 0.158.0 1.0.42 1.0.42
@@ -275,6 +280,11 @@ rm "$HOME/.codex-profiles/c/auth.json" "$HOME/.codex/models_cache.json"
 run
 assert [ "$(jq -r '.codex.divergence | length' "$STATE")" = 0 ]
 assert grep -qF 'codex divergence: none' "$LOG"
+# A pass that updates codex reads caches the client it just replaced wrote: no foreign writer.
+set_versions 0.157.0 0.158.0 1.0.42 1.0.42
+run
+assert [ "$(result codex)" = "updated 0.158.0" ]
+assert [ "$(jq -r '.codex.divergence | length' "$STATE")" = 0 ]
 
 # «выполни обновление»: the same pass with the fingerprint's own launch held, then one chat for every
 # vendor; from a chat it returns at once and runs detached.
@@ -346,7 +356,7 @@ assert [ "$(result codex)" = "busy 0.157.0" ]
 : >"$BUSY"
 set_versions 0.157.0 0.158.0 1.0.41 1.0.42
 due_run
-assert grep -qxF 'npm install @openai/codex@latest' "$CALLS"
+assert grep -qxF 'npm install @openai/codex@0.158.0' "$CALLS"
 assert_fails grep -qF 'npm install @xai-official/grok' "$CALLS"
 assert [ "$(result codex)" = "updated 0.158.0" ]
 assert [ "$(result grok)" = "current " ]
@@ -360,7 +370,7 @@ assert [ "$(result codex)" = "current 0.158.0" ]
 assert [ "$(cat "$CALLS")" = "doctor --quiet" ]
 due_state current current current "$(date -u -v-25H +%Y-%m-%dT%H:%M:%SZ)"
 due_run
-assert grep -qxF 'npm install @xai-official/grok@latest' "$CALLS"
+assert grep -qxF 'npm install @xai-official/grok@1.0.42' "$CALLS"
 assert [ "$(result grok)" = "updated 1.0.42" ]
 rm -f "$STATE"
 due_run

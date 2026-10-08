@@ -110,12 +110,12 @@ refresh_models() { # vendor bin-dir
 
 # Codex state is per home, and not only our CLI writes it: the ChatGPT app runs its own bundled codex
 # against ~/.codex. Each finding is a line `kind<TAB>where<TAB>what`.
-codex_divergence() { # bin-dir installed-version -> foreign writers before the refresh
+codex_divergence() { # bin-dir installed-version pre-pass-version -> foreign writers before the refresh
   local home client
   for home in "$HOME/.codex" "$codex_profiles_dir"/*; do
     [ -f "$home/models_cache.json" ] || continue
     client=$(jq -r '.client_version // "" | tostring' "$home/models_cache.json" 2>/dev/null)
-    [ -z "$client" ] || [ "$client" = "$2" ] || printf 'writer\t%s\t%s\n' "$(home_account "$home")" "$client"
+    [ -z "$client" ] || [ "$client" = "$2" ] || [ "$client" = "$3" ] || printf 'writer\t%s\t%s\n' "$(home_account "$home")" "$client"
   done
 }
 home_account() { if [ "$1" = "$HOME/.codex" ]; then printf main; else printf '%s' "${1##*/}"; fi; }
@@ -157,7 +157,7 @@ record_divergence() { # vendor findings
 }
 
 update_vendor() { # vendor
-  local vendor=$1 package bin_dir installed latest native spec=latest now
+  local vendor=$1 package bin_dir installed latest native now
   package=$(package_of "$vendor")
   bin_dir=$(node_bin_dir "$vendor") || { record "$vendor" not-installed '' ''; return 0; }
   installed=$(version_of "$bin_dir/$vendor" --version)
@@ -172,7 +172,7 @@ update_vendor() { # vendor
     native=$(version_of timeout_command 30 "${VENDOR_CLI_UPDATE_NATIVE_CLAUDE:-$HOME/.local/bin/claude}" --version)
     if [ -n "$native" ] && newer "$native" "$latest" &&
       [ "$(PATH="$bin_dir:$PATH" timeout_command 60 "$bin_dir/npm" view "$package@$native" version 2>/dev/null | tail -n 1)" = "$native" ]; then
-      latest=$native spec=$native
+      latest=$native
     fi
   fi
   if ! newer "$latest" "$installed"; then
@@ -183,7 +183,7 @@ update_vendor() { # vendor
     record "$vendor" busy "$installed" "$latest"
     return 0
   fi
-  if ! PATH="$bin_dir:$PATH" timeout_command 600 "$bin_dir/npm" install -g "$package@$spec" >>"$log_file" 2>&1; then
+  if ! PATH="$bin_dir:$PATH" timeout_command 600 "$bin_dir/npm" install -g "$package@$latest" >>"$log_file" 2>&1; then
     record "$vendor" install-failed "$installed" "$latest"
     return 0
   fi
@@ -209,11 +209,13 @@ due_vendors() { # -> `all` when a full pass is due, else the vendors whose last 
 # of the vendors a busy client or a failed install left behind, since a full pass re-reads every
 # account's model list.
 run_all() { # [--if-due]
-  local vendor bin_dir installed findings bin_dirs='' due=all
+  local vendor bin_dir installed findings bin_dirs='' due=all codex_before=''
   mkdir -p "$state_dir"
   if [ -z "${VENDOR_CLI_UPDATE_LOCKED:-}" ]; then
     exec env VENDOR_CLI_UPDATE_LOCKED=1 lockf -k -t 0 "$state_dir/run.lock" "$script_path" run "$@"
   fi
+  # The caches the divergence check reads were written before the refresh, by the client this pass may replace.
+  bin_dir=$(node_bin_dir codex) && codex_before=$(version_of "$bin_dir/codex" --version)
   if [ "${1:-}" = --if-due ]; then
     due=$(due_vendors)
     if [ "$due" != all ]; then
@@ -229,7 +231,7 @@ run_all() { # [--if-due]
     bin_dirs+=":$bin_dir"
     if [ "$vendor" = codex ]; then
       installed=$(version_of "$bin_dir/codex" --version)
-      findings=$(codex_divergence "$bin_dir" "$installed")
+      findings=$(codex_divergence "$bin_dir" "$installed" "$codex_before")
     fi
     # A server adds a model for the client already installed, so the lists are re-read every run,
     # not only after an update: every launch resolves its family word against them.

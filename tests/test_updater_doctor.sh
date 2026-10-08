@@ -122,15 +122,27 @@ assert_fails has event-stuck:grok-fresh
 assert_fails has event-waiting:grok-fresh
 assert_fails has event-waiting:gemini-closed
 assert jqe '.state == "new" and .value == 1' <<<"$(problem probe-broken:grok/ids)"
-# A probe broken across several events was first seen at the oldest of them.
-event grok-probe-old grok closed $((10 * D)) $((10 * D)) $((9 * D))
-event grok-probe-new grok closed $((2 * D)) $((2 * D)) $D
-for e in grok-probe-old grok-probe-new; do
-  jq '.changed = ["probe_failures"]' "$STATE/events/$e.json" >"$WORK/e" && mv "$WORK/e" "$STATE/events/$e.json"
-done
+probed() { # event-id created-ago probe_failures-diff-lines
+  event "$1" grok closed "$2" "$2" $(($2 - D))
+  printf '### probe_failures\n--- before\n+++ after\n%s\n' "$3" >"$STATE/events/$1.diff"
+  jq --arg d "$STATE/events/$1.diff" '.changed = ["probe_failures"] | .diff = $d' "$STATE/events/$1.json" >"$WORK/e" &&
+    mv "$WORK/e" "$STATE/events/$1.json"
+}
+# A probe broken across several events was first seen at the one that broke it, however many later ones broke others.
+probed grok-probe-old $((10 * D)) '+ids'
+probed grok-probe-new $((2 * D)) "$(printf ' ids\n+catalog')"
 run
 assert [ "$(problem probe-broken:grok/ids | jq -r '.first_seen[:10]')" = "$(date -r $(($(date +%s) - 10 * D)) +%Y-%m-%d)" ]
-rm "$STATE/events/grok-probe-old.json" "$STATE/events/grok-probe-new.json"
+# A break after a recovery starts anew; an event that broke none of it is no start.
+probed grok-probe-mid $((6 * D)) '-ids'
+probed grok-probe-new $((2 * D)) '+ids'
+run
+assert jqe --arg d "$(date -r $(($(date +%s) - 2 * D)) +%Y-%m-%d)" '.first_seen[:10] == $d and [.evidence[].ref] == ["grok-probe-new"]' <<<"$(problem probe-broken:grok/ids)"
+rm "$STATE"/events/grok-probe-*
+probed grok-probe-empty $((3 * D)) ''
+run
+assert jqe '.first_seen == .last_seen' <<<"$(problem probe-broken:grok/ids)"
+rm "$STATE"/events/grok-probe-*
 run
 assert [ "$(state_of catalog-missing:gemini)" = watch ]
 assert_fails has catalog-missing:claude
@@ -191,6 +203,14 @@ assert_fails has pass-failed:claude
 assert_fails has U2
 ledger '{"owner":"t","rows":[{"id":"U3","title":"t","match":{"rule":"cli-behind","key":"grok"},"status":"fixed","fixes":[{"at":"2026-01-01T00:00:00Z"}]}],"blind_spots":[]}'
 assert [ "$(state_of U3)" = regressed ]
+# A fix holds from when its commit reached HEAD: a problem last seen before that landing regresses nothing.
+fixgit() { git -C "$WORK/repos/llm-legs" -c user.name=t -c user.email=t@t -c core.hooksPath=/dev/null "$@" >/dev/null; }
+mkdir -p "$WORK/repos/llm-legs"
+fixgit init -q
+fixgit commit -q --allow-empty -m fix
+fixed=$(git -C "$WORK/repos/llm-legs" rev-parse HEAD)
+UPDATER_DOCTOR_REPOS="$WORK/repos" ledger '{"owner":"t","rows":[{"id":"U6","title":"t","match":{"rule":"cli-behind","key":"grok"},"status":"fixed","fixes":[{"at":"2026-01-01T00:00:00Z","in":"llm-legs@'"$fixed"'"}]}],"blind_spots":[]}'
+assert [ "$(state_of U6)" = watch ]
 ledger '{"owner":"t","rows":[{"id":"U4","title":"t","match":{"rule":"pass-failed"},"status":"not-a-bug"}],"blind_spots":[]}'
 assert has pass-failed:claude
 assert [ "$(state_of ledger:U4)" = new ]
@@ -219,6 +239,21 @@ assert jqe '[.problems[] | select(.rule == "cli-behind" and .state == "watch") |
 ledger '{"owner":"t","rows":[{"id":"U5","title":"t","match":{"rule":"cli-behind","key":"codex"},"status":"fixed","fixes":[{"at":"2026-01-01T00:00:00Z"}]}],"blind_spots":[]}'
 assert [ "$(state_of U5)" = watch ]
 state 3600
+
+# A failure run starts anew after an update between; a pending update starts anew once the installed version moved.
+mv "$STATE/update.log" "$WORK/update.log"
+t0=$(date +%s)
+{
+  printf '%s claude install-failed 2.1.282 -> 2.1.283\n' "$(ago $((30 * H)) "$t0")"
+  printf '%s claude updated 2.1.282 -> 2.1.283\n' "$(ago $((29 * H)) "$t0")"
+  printf '%s claude install-failed 2.1.283 -> 2.1.284\n' "$(ago $H "$t0")"
+  printf '%s grok busy 1.0.39 -> 1.0.40\n' "$(ago $((30 * H)) "$t0")"
+  printf '%s grok busy 1.0.40 -> 1.0.44\n' "$(ago $((2 * H)) "$t0")"
+} >"$STATE/update.log"
+run
+mv "$WORK/update.log" "$STATE/update.log"
+assert jqe --arg t "$(date -r $((t0 - H)) +%Y-%m-%dT%H:%M:%S)" '.count == 1 and (.first_seen | startswith($t))' <<<"$(problem pass-failed:claude)"
+assert jqe --arg t "$(date -r $((t0 - 2 * H)) +%H:%M)" '.state == "watch" and .count == 1 and .fact == "grok 1.0.40 → 1.0.44 waiting: busy since \($t)"' <<<"$(problem cli-behind:grok)"
 
 # A stale media manifest section is a problem until a later fresh check of it; sections are independent; no file is no problem.
 CAPS="$STATE/caps-checks.jsonl"
