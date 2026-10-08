@@ -74,7 +74,8 @@ fake_cli "$CODEX_PACKAGE/bin/codex.js" codex
 ln -s "$CODEX_PACKAGE/bin/codex.js" "$FAKE_BIN/codex"
 printf 'openai gpt-6-sol gpt-5.6-lunaopenai gpt-5.6-luna gpt-image-2 gpt-5.2-codexgemini-3.6-flash-high gpt-live-1-codextransport_closed\n' >"$CODEX_NATIVE"
 fake_cli "$FAKE_BIN/grok" grok
-printf 'grok-4.7 grok-imagine-video-1.5\n' >"$HOME/.grok/bin/grok-1.0.41"
+printf 'grok-4.7 grok-imagine-video-1.5\n/xai/target/release-dist/build/xai-grok-memory-api-38bd164a103e0d8a/out/grok.memory.v1.rs\n' \
+  >"$HOME/.grok/bin/grok-1.0.41"
 ln -s grok-1.0.41 "$HOME/.grok/bin/grok"
 # Glued as agy 1.3.0 packs its Go string table.
 fake_cli "$FAKE_BIN/agy" agy gemini-3.8-flash gemini-3.1-flash-image gemini-3.8-flash-highgemini-3.7-flash-lowGemini \
@@ -160,7 +161,7 @@ assert jqe '.facets.catalog["gpt-6-sol"].model_messages == {}' "$FP_CODEX"
 assert jqe '.facets.catalog_text | keys == ["gpt-6-sol.model_messages.instructions_template"]' "$FP_CODEX"
 assert jqe '.facets.features == ["image_generation stable", "agent_message_board under development"]' "$FP_CODEX"
 assert jqe '.facets.docs | keys == ["imagegen/SKILL.md"]' "$FP_CODEX"
-# Model ids from the native binary, not the launcher; glued neighbours are cut off.
+# Model ids from the native binary, not the launcher; glued neighbours and cargo build hashes are cut off.
 assert jqe '.facets.ids == ["gemini-3.6-flash-high", "gpt-5.2-codex", "gpt-5.6-luna", "gpt-6-sol", "gpt-image-2", "gpt-live-1-codex"]' "$FP_CODEX"
 assert jqe '.facets.ids == ["grok-4.7", "grok-imagine-video-1.5"]' "$STATE/fingerprints/grok.json"
 FP_GEMINI="$STATE/fingerprints/gemini.json"

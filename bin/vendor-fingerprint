@@ -148,8 +148,11 @@ reunglue() { # fingerprint file
 put_ids() { # vendor
   local native
   native=$(native_of "$1") && [ -f "$native" ] || { fail ids local; return 0; }
+  # A cargo build dir is `<crate>-<16 hex>`, rehashed every build: xai-grok-memory-api-38bd164a103e0d8a
+  # read as the id grok-memory-api-38b in grok 1.0.50, so the hash goes before ids are matched.
   LC_ALL=C strings -a -n 6 "$native" 2>/dev/null |
-    perl -pe "s/(?<=[a-z0-9])(?=(?:$id_prefixes)-)/\\n/g" | LC_ALL=C grep -oE "$id_re" | LC_ALL=C sort -u |
+    perl -pe "s/-[0-9a-f]{16}(?=\\/)//g; s/(?<=[a-z0-9])(?=(?:$id_prefixes)-)/\\n/g" | LC_ALL=C grep -oE "$id_re" |
+    LC_ALL=C sort -u |
     unglue >"$work/ids"
   # An empty dump means the binary moved or changed format, not that the vendor dropped its models.
   [ -s "$work/ids" ] || { fail ids local; return 0; }
