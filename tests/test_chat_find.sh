@@ -248,6 +248,37 @@ assert grep -q 'eeee-eeee' <<<"$OUT"
 # --all widens to what tools printed
 assert grep -q '2222-2222' <<<"$OUT"
 
+# ...including a tool result whose content arrives as text blocks rather than one string
+LISTED="$CORPUS/15151515-1515-1515-1515-151515151515.jsonl"
+emit "$LISTED" "{'type':'user','cwd':'/tmp/proj','timestamp':'2026-01-14T10:00:00.000Z','message':{'role':'user','content':[{'type':'tool_result','content':[{'type':'text','text':'блочный вывод инструмента'}]}]}}"
+said "$LISTED" 2026-01-14T10:01:00.000Z user 'спасибо'
+run --all блочный
+assert grep -q '1515-1515' <<<"$OUT"
+# ...but what a tool printed never quotes as what he typed
+ECHOED="$CORPUS/16161616-1616-1616-1616-161616161616.jsonl"
+said "$ECHOED" 2026-01-13T10:00:00.000Z user 'найди слово эхолот в конфиге'
+emit "$ECHOED" "{'type':'user','cwd':'/tmp/proj','timestamp':'2026-01-13T10:01:00.000Z','message':{'role':'user','content':[{'type':'tool_result','content':'config.lua: эхолот = true'}]}}"
+run --all эхолот
+assert grep -q 'said:        найди слово эхолот' <<<"$OUT"
+
+# --- a quote or a backslash he typed is found in the escaped JSON it is stored as ---------
+ESCAPED="$CORPUS/17171717-1717-1717-1717-171717171717.jsonl"
+printf '%s\n' '{"type":"user","cwd":"/tmp/proj","timestamp":"2026-01-12T10:00:00.000Z","message":{"role":"user","content":"открой C:\\temp\\журнал и \"кавычки\" тоже"}}' >"$ESCAPED"
+run 'C:\temp\журнал'
+assert grep -q '1717-1717' <<<"$OUT"
+run '"кавычки"'
+assert grep -q '1717-1717' <<<"$OUT"
+
+# --- an unreadable transcript costs its own hits, never the search -------------
+LOCKED="$CORPUS/18181818-1818-1818-1818-181818181818.jsonl"
+said "$LOCKED" 2026-01-11T10:00:00.000Z user 'оверлей за замком'
+chmod 000 "$LOCKED"
+run оверлей
+chmod 600 "$LOCKED"
+rm -f "$LOCKED"
+assert test "$RC" -eq 0
+assert grep -q '1111-1111' <<<"$OUT"
+
 # --- nothing found says so, and says how to widen ---------------------------
 run абракадабра
 assert test "$RC" -eq 0
@@ -391,11 +422,29 @@ printf '%s\n' '{"type":"user","cwd":"/tmp/proj","timestamp":"2026-02-12T11:00:00
 recent --days 1
 assert test "$RC" -eq 0
 assert test "$(cached_rows "$HOTC" '"обрезано \ud83d"')" = 1
+# ...and printed, by every output path, it costs that one character and never the listing.
+recent --json
+assert test "$RC" -eq 0
+assert grep -q 'обрезано' <<<"$OUT"
+recent
+assert test "$RC" -eq 0
+assert grep -q 'обрезано' <<<"$OUT"
+run обрезано
+assert test "$RC" -eq 0
+assert grep -q 'said:        обрезано' <<<"$OUT"
 rm -f "$CUT"
 # A deletion that is the run's only change still rewrites the cache without the row.
 recent --days 1
 assert test "$RC" -eq 0
 assert test "$(cached_rows "$HOTC" '"обрезано \ud83d"')" = 0
+
+# --- a chat closed right after /compact ends on what was said before it ---------
+COMPACTED="$CORPUS/19191919-1919-1919-1919-191919191919.jsonl"
+said "$COMPACTED" 2026-02-12T13:00:00.000Z user 'последнее слово до сжатия'
+emit "$COMPACTED" "{'type':'user','isCompactSummary':True,'isVisibleInTranscriptOnly':True,'cwd':'/tmp/proj','timestamp':'2026-02-12T13:05:00.000Z','message':{'role':'user','content':'This session is being continued from a previous conversation.'}}"
+recent
+assert grep -q '2026-02-12 13:00 .*последнее слово до сжатия$' <<<"$OUT"
+assert test -z "$(grep -o 'This session is being continued' <<<"$OUT")"
 
 # --- below a project directory only --agents looks ----------------------------
 # Real nested transcripts are sidechain subagents that never list anyway; this one speaks, so

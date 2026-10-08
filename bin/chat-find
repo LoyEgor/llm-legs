@@ -114,11 +114,15 @@ def visible_text(entry, include_all):
     if include_all and isinstance(content, str):
         return content
     if include_all and isinstance(content, list):
-        return "\n".join(
-            b.get("text") or b.get("content") or ""
-            for b in content
-            if isinstance(b, dict) and isinstance(b.get("text") or b.get("content"), str)
-        )
+        parts = []
+        for block in content:
+            value = (block.get("text") or block.get("content")) if isinstance(block, dict) else None
+            if isinstance(value, list):
+                value = "\n".join(b["text"] for b in value
+                                  if isinstance(b, dict) and isinstance(b.get("text"), str))
+            if isinstance(value, str):
+                parts.append(value)
+        return "\n".join(parts)
     return None
 
 
@@ -159,16 +163,19 @@ def scan_matches(terms, include_all, root):
     if not binary:
         die("neither rg nor grep is available to search with")
     command = argv + ["-a", "-i", "-H", "-F"]
-    for term in list(terms) + list(NAME_PATTERNS):
+    # The prefilter reads raw JSON, where a quote or backslash in the text is stored escaped.
+    for term in [json.dumps(t, ensure_ascii=False)[1:-1] for t in terms] + list(NAME_PATTERNS):
         command += ["-e", term]
     command.append(root)
 
     lowered = [t.lower() for t in terms]
     found = {}
     names = {}
+    streamed = False
     proc = subprocess.Popen(command, executable=binary, stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL)
     for raw in proc.stdout:
+        streamed = True
         raw = raw.rstrip(b"\n")
         # Only a genuine name event is consumed here; a message that merely quotes
         # the marker is still speech to be matched.
@@ -209,14 +216,18 @@ def scan_matches(terms, include_all, root):
         # assistant reply, which outranks a compact summary — a summary quotes the
         # conversation back in the model's words, which is the paraphrase this
         # tool exists to replace.
-        rank = 2 if entry.get("type") == "user" else 1
+        spoken = visible_text(entry, False) if include_all else text
+        rank = (2 if entry.get("type") == "user" else 1) if spoken else 0
         if text.lstrip().startswith(NOT_A_TITLE):
             rank = 0
         if state["snippet"] is None or rank >= state["rank"]:
             state["snippet"] = snippet(text, hit[0])
             state["rank"] = rank
     proc.stdout.close()
-    if proc.wait() not in (0, 1):
+    # Exit 2 after streamed matches is a per-file error (a transcript swept mid-scan, an
+    # unreadable one), not a failed search.
+    status = proc.wait()
+    if status not in (0, 1) and not (status == 2 and streamed):
         die("search failed (%s exited %d)" % (argv[0], proc.returncode))
     # Naming classifies a transcript the way main() does — the tail's entrypoint first, the
     # matched line's only where the tail has none. Off the matched line alone, a run whose
@@ -351,7 +362,7 @@ def tail_speech(path, size, window):
                 elif not ttl_settled and message.get("model") == spec["model"]:
                     spec["ttl"] = reply_ttl(message)
                     ttl_settled = bool(spec["ttl"])
-        if said is None:
+        if said is None and not entry.get("isCompactSummary"):
             text = visible_text(entry, False)
             when = stamp(entry) if text else None
             if when:
@@ -635,6 +646,8 @@ def main():
     parser.add_argument("--root", default=ROOT, help=argparse.SUPPRESS)
     parser.add_argument("--cache", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    # A lone surrogate escaped in a transcript decodes into the text and cannot encode as UTF-8.
+    sys.stdout.reconfigure(errors="replace")
 
     if not os.path.isdir(args.root):
         die("no transcript corpus at " + args.root)

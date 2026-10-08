@@ -168,15 +168,18 @@ def note_name(names, raw):
     return True
 
 
-def names_by_path(root=None, paths=None):
+def names_by_path(root=None, paths=None, strict=False):
     """path -> `{"custom": …, "ai": …}` for the transcripts named, from one grep pass.
 
     Narrowed to the chats actually being listed: naming a week of them is a pass over a few hundred
-    files instead of over every transcript ever written.
+    files instead of over every transcript ever written. `strict` answers None where the matcher
+    failed, for a caller that would otherwise remember "no name" for good.
     """
     argv, binary = searcher()
-    if not binary or paths == [] or (paths is None and root is None):
+    if paths == [] or (paths is None and root is None):
         return {}
+    if not binary:
+        return None if strict else {}
     command = argv + ["-a", "-H", "-F"]
     for pattern in NAME_PATTERNS:
         command += ["-e", pattern]
@@ -194,7 +197,8 @@ def names_by_path(root=None, paths=None):
         if len(raw) < NAME_LINE_MAX:
             note_name(names, raw)
     proc.stdout.close()
-    proc.wait()
+    if proc.wait() not in (0, 1) and strict:
+        return None
     return names
 
 
@@ -415,10 +419,12 @@ def transcript_name(session, store=None):
     if isinstance(row, dict) and row.get("key") == key:
         name = row.get("name")
     else:
-        found = names_by_path(paths=[path]).get(str(path)) or {}
+        scanned = names_by_path(paths=[path], strict=True)
+        found = (scanned or {}).get(str(path)) or {}
         name = found.get("custom") or found.get("ai")
-        state["rows"][session] = {"key": key, "name": name}
-        state["dirty"].add(session)
+        if scanned is not None:
+            state["rows"][session] = {"key": key, "name": name}
+            state["dirty"].add(session)
     return name or store_name(session, store)
 
 
@@ -507,9 +513,15 @@ def chat_title(session, launchers=None, store=None):
     which no window, list or picker Egor uses shows him. None where nothing here knows the session.
     """
     session = str(session or "")
+    if launchers is None:
+        launchers = worker_run_launchers()
     name = chat_name(session, launchers=launchers, store=store) if session else None
     if name or not session or not SESSION_OK.match(session):
         return name
+    # A worker is described as the chat that launched it, an ambiguous one as nothing.
+    session = fold_session(session, launchers)
+    if session is None:
+        return None
     path = transcript_path(session)
     if path is not None:
         return _described("untitled chat", project_label(_transcript_cwd(path)), _born(path))

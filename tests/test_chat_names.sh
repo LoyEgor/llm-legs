@@ -191,6 +191,23 @@ print((found.get(str(Path(root) / (session + ".jsonl"))) or {}).get("ai"))
 PY
 )" = "renamed after the cache was written"
 
+# --- a matcher that failed is no answer to remember ----------------------------
+# A finished chat's transcript never changes again, so "no name" cached off a failed scan would
+# keep it unnamed in every later process.
+assert test "$(python3 - "$ROOT/share/chat_names.py" "$NAMED" <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("chat_names", sys.argv[1])
+cn = importlib.util.module_from_spec(importlib.util.spec_from_loader("chat_names", loader))
+loader.exec_module(cn)
+cn._cache()["rows"].pop(sys.argv[2], None)
+working = cn.searcher
+cn.searcher = lambda: (["sh", "-c", "exit 2"], "/bin/sh")
+failed = cn.transcript_name(sys.argv[2])
+cn.searcher = working
+print(failed, sys.argv[2] in cn._cache()["rows"], cn.transcript_name(sys.argv[2]))
+PY
+)" = "None False мой заголовок"
+
 # --- bin/chat-name: the same answer for the surfaces that hold no Python ------
 # The shell hooks that print a chat to Egor (claude-setup commit-report.sh) go through this and
 # through nothing else. Two answers rather than one: a name, or exit 1 with an empty stdout — every
@@ -260,6 +277,14 @@ assert test "$(title "$CHAT")" = "renamed after the cache was written"
 assert grep -qE '^untitled chat · proj · [A-Z][a-z]{2} [0-9]{2}:[0-9]{2}$' <<<"$(title "$PLAIN")"
 assert grep -qE '^run with no transcript · com · [A-Z][a-z]{2} [0-9]{2}:[0-9]{2}$' <<<"$(title "$HEADLESS")"
 assert test "$(title 88888888-8888-8888-8888-888888888888)" = None
+# A worker whose launcher has no name is described as that launcher, never by its own project and
+# start; one two chats resumed is described as nothing.
+ERRAND=99999999-9999-9999-9999-999999999999
+printf '%s\n' '{"type":"user","cwd":"/tmp/errand","timestamp":"2026-01-20T09:00:00.000Z","message":{"role":"user","content":"TASK"}}' \
+  >"$CORPUS/$ERRAND.jsonl"
+worker_run 20260101T1500Z-unnamed "$PLAIN" "$ERRAND"
+assert grep -q '^untitled chat · proj · ' <<<"$(title "$ERRAND")"
+assert test "$(title "$SHARED")" = None
 plain=$("$CLI" --json "$PLAIN")
 assert test "$(jq -r '.name' <<<"$plain")" = ""
 assert test "$(jq -r '.short' <<<"$plain")" = 22222222
