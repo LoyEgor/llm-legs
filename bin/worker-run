@@ -2607,6 +2607,9 @@ start_run() {
   if [ "$vendor" = grok ]; then
     fast_role=$role
     [ -z "$light" ] || fast_role=light
+    # The account's catalog is only known at the second resolution below, which must judge the
+    # model as asked: handed the swapped twin it would take it for a named slug and skip the check.
+    grok_asked_model=$model
     model=$(worker_model_grok_launch_model "$model" "$fast_role")
   fi
   effort=${effort:-$(config_value "${vendor}_effort")}
@@ -2737,7 +2740,7 @@ start_run() {
   esac
   # The account's own Fast Mode is only known now; the chat's was applied above.
   if [ "$vendor" = grok ]; then
-    value=$(worker_model_grok_launch_model "$model" "$fast_role" '' "$account")
+    value=$(worker_model_grok_launch_model "$grok_asked_model" "$fast_role" '' "$account")
     if [ "$value" != "$model" ] && ! worker_model_effort_allowed grok "$value" "$effort" "$model_class"; then
       outcome_line EFFORT_REFUSED
       fail "grok model $value (this account's Fast Mode) does not allow effort $effort; allowed efforts: $(worker_model_effort_list grok "$value" "$model_class"). Nothing was launched and no account was spent."

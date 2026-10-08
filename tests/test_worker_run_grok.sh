@@ -63,6 +63,15 @@ assert test "$(jq -r '.model' "$RUN_DIR/meta.json")" = grok-4.7-build-fast
 assert await_done
 assert grep -qx 'ARG=-m' "$CALL_LOG"
 assert grep -qx 'ARG=grok-4.7-build-fast' "$CALL_LOG"
+# The chat's fast swap is judged against the picked account's own catalog too.
+mkdir -p "$GROKB_PROFILES_DIR/grokacct"
+printf '{"models":{"grok-4.7":{},"grok-4.6":{}}}\n' >"$GROKB_PROFILES_DIR/grokacct/models_cache.json"
+clear_stub
+CLAUDE_CODE_SESSION_ID=chat-fast start_ok grok
+assert await_done
+assert_fails grep -qx 'ARG=grok-4.7-build-fast' "$CALL_LOG"
+assert grep -q 'grok: grokacct lists no grok-4.7-build-fast now' "$WORK/start.err"
+rm -f "$GROKB_PROFILES_DIR/grokacct/models_cache.json"
 
 # A model someone named is a choice and travels as named: fast stands in for the default and for
 # `auto`, never for that.
