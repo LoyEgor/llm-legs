@@ -79,8 +79,8 @@ instruction_md_ere() {
 }
 
 instruction_is_md() {
-  local e name
-  name=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  local e name=$1
+  case "${1##*.}" in *[[:upper:]]*) name=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]') ;; esac
   for e in $INSTRUCTION_MD_EXTENSIONS; do
     case "$name" in *".$e") return 0 ;; esac
   done
