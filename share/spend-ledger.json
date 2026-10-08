@@ -128,7 +128,7 @@
    },
    "sources": {},
    "verdict": "cut",
-   "note": "relay agents omitClaudeMd (claude-setup 1bd5689): CLAUDE.md+MEMORY.md (~80% of the spawn's startup) leave every relay spawn; first request 13.8k->6.5k tokens, replayed decisions identical 16/17 (17th = MD-GUARD copy drop, baseline 34/669); MCP instructions remain (Claude Code injects them regardless of tools)"
+   "note": "relay agents omitClaudeMd (claude-setup 9d0aded): CLAUDE.md+MEMORY.md (~80% of the spawn's startup) leave every relay spawn; first request 13.8k->6.5k tokens, replayed decisions identical 16/17 (17th = MD-GUARD copy drop, baseline 34/669); MCP instructions remain (Claude Code injects them regardless of tools)"
   }
  ]
 }
