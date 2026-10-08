@@ -2302,7 +2302,7 @@ start_run() {
   local round_source='' spawn_round='' candidate='' rule=''
   local -a text_rounds=()
   local account pin config_model model_label agy_model='' gemini_family='' grok_turns='' root run_id='' directory=''
-  local explicit_model='' explicit_effort='' light='' light_model='' model_class=workers fix_rule='' chat_fast=false fast_role='' model_id='' slug_account=''
+  local explicit_model='' explicit_effort='' light='' light_model='' model_class=workers fix_rule='' chat_fast=false fast_role='' grok_asked_model='' model_id='' slug_account=''
   local light_offrow=false inbox_settings=''
   local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc launcher_session entry
   local web_search=false web_search_flag=false web_search_off_flag=false web_search_asked=''
