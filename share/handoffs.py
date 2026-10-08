@@ -210,6 +210,7 @@ def outside_repos(path, repos):
     except OSError:
         return []
     night = {os.path.realpath(repo) for repo in list(repos) + helper_repos()}
+    beside = {os.path.dirname(repo) for repo in night}
     found = []
     for token in PATH_RE.findall(text):
         if not token.startswith(os.sep):
@@ -220,7 +221,7 @@ def outside_repos(path, repos):
         while top != os.sep and not os.path.exists(os.path.join(top, ".git")):
             top = os.path.dirname(top)
         top = os.path.realpath(top)
-        if top != os.sep and top not in night and top not in found:
+        if os.path.dirname(top) in beside and top not in night and top not in found:
             found.append(top)
     return found
 
@@ -259,9 +260,10 @@ def scan(paths, names):
     found = {path: {"edits": {}, "mentions": {}} for path in paths}
     words = "|".join(n.replace(".", r"\.") for n in sorted(names, key=lambda n: (-len(n), n)))
     # rg's engine has no lookbehind, so the left boundary is matched and lies outside the group; an
-    # escaped \n or \t in the JSON is a boundary too.
+    # escaped \n or \t in the JSON is a boundary too. The boundary is a run because rg reads « or — as
+    # one codepoint, the bytes pattern that fullmatches rg's hits as two or three bytes.
     expr = "(?P<edit>%s)|(?P<type>%s)%s" % (EDIT_RE.decode(), TYPE_RE.decode(),
-                                          r"|(?:^|\\[nrt]|[^\w.\\-])(?P<name>%s)" % words if words else "")
+                                          r"|(?:^|\\[nrt]|[^\w.\\-]+)(?P<name>%s)" % words if words else "")
     pattern = re.compile(expr.encode())
     argv, exe = chat_names.searcher()
 

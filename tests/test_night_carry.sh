@@ -282,10 +282,14 @@ sys.path.insert(0, os.path.join(sys.argv[1], "share"))
 import handoffs as h
 
 repo, foreign = sys.argv[2], sys.argv[3]
+brew = os.path.join(os.path.dirname(foreign), "opt", "homebrew")
+os.makedirs(os.path.join(brew, ".git"))
 lone = os.path.join(repo, "docs", "handoffs", "lone.md")
 with open(lone, "w") as handle:
-    handle.write(f"# Lone\n\nStatus: open\n\nTo: «Solo».\n\nFix {foreign}/.claude/worktrees/x/hooks/gate.sh and {repo}/bin/x.\n")
-assert h.outside_repos(lone, [repo]) == [foreign], h.outside_repos(lone, [repo])
+    handle.write(f"# Lone\n\nStatus: open\n\nTo: «Solo».\n\nFix {foreign}/.claude/worktrees/x/hooks/gate.sh and {repo}/bin/x"
+                 f" under {brew}/bin/bash.\n")
+assert h.outside_repos(lone, [repo]) == [foreign], "a git checkout not beside the night's repositories is no repository: %s" % (
+    h.outside_repos(lone, [repo]),)
 assert h.outside_repos(lone, [repo, foreign]) == []
 os.environ["NIGHT_RUN_HELPER_REPOS"] = os.path.join(os.path.dirname(foreign), "lone-helpers")
 open(os.environ["NIGHT_RUN_HELPER_REPOS"], "w").write(foreign + "\n")
@@ -318,10 +322,10 @@ folder = os.path.join(sys.argv[2], "scan")
 os.makedirs(folder, exist_ok=True)
 said = os.path.join(folder, "said.jsonl")
 with open(said, "w") as handle:
-    handle.write('{"type":"user","message":{"content":"fix score.sh and hardcore.sh, then core.sh;\\ncore.sh in `share/core.sh`"}}\n')
+    handle.write('{"type":"user","message":{"content":"fix score.sh and hardcore.sh, then core.sh;\\ncore.sh in `share/core.sh`, «core.sh» and\u00a0core.sh—core.sh"}}\n')
 assert chat_names.searcher()[0][0] == "rg", chat_names.searcher()
 rows = h.scan([said, os.path.join(folder, "gone.jsonl")], {"core.sh"})
-assert rows == {said: {"edits": {}, "mentions": {"core.sh": 3}}}, rows
+assert rows == {said: {"edits": {}, "mentions": {"core.sh": 6}}}, "a name after a multibyte boundary counts: %s" % rows
 PY
 export NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-own" NIGHT_RUN_OWNER_CHATS=9
 new_night N5

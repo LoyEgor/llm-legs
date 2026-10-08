@@ -112,6 +112,7 @@ SHELLS = {"bash", "zsh", "sh", "dash"}
 RUNNERS = {"uv", "bun", "deno"}
 INLINE_OPTS = {"node": {"-e", "--eval", "-p", "--print"}, "perl": {"-e", "-E"}, "ruby": {"-e"}, "osascript": {"-e"},
                "bun": {"-e", "--eval"}, "deno": {"eval"}}
+INLINE_BUNDLED = {"perl": r"^-[0-9alnpsw]*[eE]$", "ruby": r"^-[alnpsw]*e$", "node": r"^-(pe|ep)$"}
 VALUE_OPTS = {"python": {"-X", "-W"}, "shell": {"-o", "-O", "+O"}, "node": {"-r", "--require", "--import", "--loader"},
               "uv": {"--with", "--python", "-p", "--project", "--directory"}}
 ARGV_WORDS = 8
@@ -378,7 +379,8 @@ def script_of(name, exe, rest, cwd):
                 venv = re.match(r"^(.*?)/\.?venv/", exe)
                 bases = tuple(b for b in (cwd() if cwd else None, venv.group(1) if venv else None) if b)
                 return ("module", module_file(module, bases) or module) if module else None
-            if word in INLINE_OPTS.get(kind, ()) or kind == "shell" and re.match(r"^-[A-Za-z]*c[A-Za-z]*$", word) or \
+            if word in INLINE_OPTS.get(kind, ()) or re.match(INLINE_BUNDLED.get(kind, "$^"), word) or \
+                    kind == "shell" and re.match(r"^-[A-Za-z]*c[A-Za-z]*$", word) or \
                     kind == "python" and re.match(r"^-[bBdEhiIOPqRsSuvVx]*c$", word):
                 return "inline", None
             if word in VALUE_OPTS.get(kind, ()):

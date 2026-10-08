@@ -440,13 +440,13 @@
      "at": "2026-10-08T01:11:08+03:00",
      "by": "code-code-20261007T214031Z-032f",
      "files": [
-      "bin/doctor-fix",
-      "bin/harness-doctor",
-      "bin/llm-doctor",
-      "bin/system-doctor",
-      "bin/updater-doctor",
-      "share/time_budget.py",
-      "share/spend.py"
+      "llm-legs/bin/doctor-fix",
+      "llm-legs/bin/harness-doctor",
+      "llm-legs/bin/llm-doctor",
+      "llm-legs/bin/system-doctor",
+      "llm-legs/bin/updater-doctor",
+      "llm-legs/share/time_budget.py",
+      "llm-legs/share/spend.py"
      ],
      "in": null,
      "regressed_at": null,

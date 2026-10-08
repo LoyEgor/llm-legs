@@ -1017,6 +1017,14 @@ check(m.classify("/opt/homebrew/bin/python3 bin/x.py", 501, roots, lambda: None)
       and m.classify("/opt/homebrew/bin/python3", 501, roots) == ("python3", "third-party")
       and m.classify("/opt/homebrew/bin/python3 -", 501, roots) == ("python3", "third-party"),
       "no readable script keeps the interpreter's name")
+llm = lambda: os.path.join(repos, "llm-legs")
+bundled = [m.describe(exe, words, roots, llm) for exe, words in (
+    ("/usr/bin/perl", ["-pe", "s/x/defined $1/"]), ("/usr/bin/perl", ["-lne", "print"]),
+    ("/usr/bin/perl", ["-0777", "-nE", "say"]), ("/usr/bin/ruby", ["-ne", "puts"]), ("/opt/homebrew/bin/node", ["-pe", "1"]))]
+check([b[2] for b in bundled] == ["inline"] * 5 and [b[0] for b in bundled] == ["perl", "perl", "perl", "ruby", "node"],
+      "an inline flag bundled with others is inline code, never a script named by its first word: %s" % bundled)
+check(m.describe("/usr/bin/perl", ["-Mbase", "x.pl"], roots, llm)[2] == "script",
+      "a module flag ending in e stays an option")
 check(m.program_name("%s/venv/bin/python3" % own, ["%s/venv/bin/python3" % own, "-u", script]) == "llm-legs/bin/x.py"
       and m.program_name("%s/bin/memlogd" % own, ["%s/bin/memlogd" % own, "--x"]) == "memlogd",
       "a launchd job running an interpreter is named by its script")
