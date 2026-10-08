@@ -25,19 +25,20 @@ run_worker=${WORKER_RUN_ID:-} run_session=${CLAUDE_CODE_SESSION_ID:-${CLAUDE_LAU
 
 usage() {
   cat >&2 <<'USAGE'
-usage: run-suites.sh [--repo <dir>] [--run-all] [-j <n>] [--changed] [--all] [--profile] [suite ...]
+usage: run-suites.sh [--repo <dir>] [--run-all] [--full] [-j <n>] [--changed] [--all] [--profile] [suite ...]
 
 Runs a repository's test suites in parallel, one log per suite, and prints one table.
 Exit 1 if any suite failed, with the last 30 lines of each failure.
 
   --repo <dir>  repository root (default: the git root of the current directory)
-  --run-all     set by every tests/run-all: under WORKER_RUN_ID a run naming no suite and no
-                --changed is refused (exit 3); the full run is the night's
+  --run-all     set by every tests/run-all: inside a worker or a chat (CLAUDE_CODE_SESSION_ID) a run
+                naming no suite and no --changed is refused (exit 3); the full run is the night's
+  --full        a chat's full run anyway, only on Egor's explicit word; never inside a worker
   -j <n>        parallel jobs (default: cores / 2, minimum 2)
   --changed     only suites whose text, or a tests/ helper file they name, mentions the basename
-                of a path in `git diff --name-only HEAD` or an untracked file. A HEURISTIC: a suite that
-                exercises a file it never names by basename is missed, so --changed is for
-                iterating, never for the final gate.
+                of a path in `git diff --name-only HEAD`, an untracked file or a commit of this branch
+                since main. A HEURISTIC: a suite that exercises a file it never names by basename is
+                missed; the day lands on it and the night's full run is the final gate.
   --all         also run the suites skipped by default because they read live machine state
                 (llm-legs e2e_surfaces.sh, test_instruction_rates_live.sh)
   --profile     each suite's calls of jq python3 lua git sleep date sed grep awk mktemp bash go through
@@ -71,12 +72,14 @@ changed=false
 include_live=false
 profile=false
 from_run_all=false
+full=false
 declare -a explicit=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --repo) [ "$#" -ge 2 ] || usage; repo="$2"; shift 2 ;;
     -j) [ "$#" -ge 2 ] || usage; jobs="$2"; shift 2 ;;
     --run-all) from_run_all=true; shift ;;
+    --full) full=true; shift ;;
     --changed) changed=true; shift ;;
     --all) include_live=true; shift ;;
     --profile) profile=true; shift ;;
@@ -167,9 +170,14 @@ if owner_ended; then
   owner_record='' run_worker=''
   unset WORKER_RUN_ID WORKER_RUN_RECORD
 fi
-if $from_run_all && [ -n "$run_worker" ] && ! $changed && [ "${#explicit[@]}" -eq 0 ]; then
-  printf 'run-all: a worker never runs every suite, the night does: tests/run-all $(tests/affected <file>...) or tests/run-all --changed\n' >&2
-  exit 3
+if $from_run_all && ! $changed && [ "${#explicit[@]}" -eq 0 ]; then
+  if [ -n "$run_worker" ]; then
+    printf 'run-all: a worker never runs every suite, the night does: tests/run-all $(tests/affected <file>...) or tests/run-all --changed\n' >&2
+    exit 3
+  elif [ -n "$run_session" ] && ! $full; then
+    printf 'run-all: a chat never runs every suite either, the night does: tests/run-all $(tests/affected <file>...) or tests/run-all --changed; tests/run-all --full only on Egor'"'"'s explicit word\n' >&2
+    exit 3
+  fi
 fi
 suite_watch() { # pid bound marker -> ends the suite's tree once it outlives the bound or its owner ended
   local deadline=$((SECONDS + $2))

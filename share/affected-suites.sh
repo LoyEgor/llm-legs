@@ -2,7 +2,8 @@
 # Suites covering changed files: a suite whose text, or a tests/ helper it names, mentions a file's
 # basename; test_consistency.sh too when docs/shared-invariants.md names one. A heuristic: a suite
 # that never names the file is missed. Sourced by run-suites.sh (--changed); run, it is tests/affected:
-#   affected-suites.sh --repo <dir> [file...]   (no file: every file changed against HEAD or untracked)
+#   affected-suites.sh --repo <dir> [file...]   (no file: every file changed against HEAD, untracked or
+#                                                committed on this branch since main)
 #   affected-suites.sh --repo <dir> --slow-refresh   the slow layer recomputed from the run-suites journal
 
 # Suites that read live machine state (the real limits store, the real instruction-file export) and so
@@ -16,11 +17,13 @@ live_suite() {
 }
 
 affected_names() { # repo [file...] -> basenames, one a line
-  local repo=$1 file
+  local repo=$1 file base
   shift
   if [ "$#" -eq 0 ]; then
     { git -C "$repo" diff --name-only HEAD 2>/dev/null
-      git -C "$repo" ls-files --others --exclude-standard 2>/dev/null; } | sort -u | while IFS= read -r file; do
+      git -C "$repo" ls-files --others --exclude-standard 2>/dev/null
+      base=$(git -C "$repo" merge-base main HEAD 2>/dev/null) && git -C "$repo" diff --name-only "$base" HEAD 2>/dev/null
+    } | sort -u | while IFS= read -r file; do
       [ -n "$file" ] && printf '%s\n' "${file##*/}"
     done
     return

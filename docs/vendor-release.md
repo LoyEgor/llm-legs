@@ -108,7 +108,7 @@ only with a stated reason), and every new capability is supported, per account, 
 12. Manifests: bump `cli.version`/`verified` only after the checks above pass; every value agrees
     with its `field_sources` note.
 13. Tests: every new behaviour asserted; each new assertion shown red on the old code (mutation);
-    `bash tests/run-all` green in every worktree touched.
+    `tests/run-all --changed` green in every worktree touched.
 14. Pour it into main, uncommitted, so it works at once: per worktree `git add -N` the new files,
     `git -C <worktree> diff HEAD >patch`, `git -C <main checkout> apply patch` — on top of others'
     uncommitted work, never reverting, stashing or overwriting it; a hunk that fails (`--reject`) is

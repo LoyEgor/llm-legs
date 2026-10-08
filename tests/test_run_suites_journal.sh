@@ -14,7 +14,7 @@ assert_fails() { asserts=$((asserts + 1)); ! "$@" || fail "assert $asserts unexp
 jqe() { jq -e "$@" >/dev/null; }
 export HOME="$WORK/home" XDG_CACHE_HOME="$WORK/xdg" HARNESS_HOLDS_DIR="$WORK/holds" STATUSLINE_CACHE_DIR="$WORK/sl" \
   RUN_SUITES_TIMES="$WORK/rs/times.tsv" RUN_SUITES_SLOTS_DIR="$WORK/slots" SLOTS_POLL_S=0.2
-unset RUN_SUITES_SLOT RUN_SUITES_JOURNAL SUITE_JOURNAL SUITE_JOURNAL_PID WORKER_RUN_ID CLAUDE_LAUNCHER_SESSION
+unset RUN_SUITES_SLOT RUN_SUITES_JOURNAL SUITE_JOURNAL SUITE_JOURNAL_PID WORKER_RUN_ID CLAUDE_LAUNCHER_SESSION CLAUDE_CODE_SESSION_ID
 LIB="$ROOT/tests/lib/suite-journal.sh"
 JOURNAL="$WORK/rs/runs.jsonl"
 KEYS='["complete","ended_at","head","j","kind","pid","queued_at","repo","repo_root","scope","session","signal","slot","started_at","suite_set","suites","worker_run"]'
@@ -338,8 +338,8 @@ assert grep -q 'test_sandboxed.sh .*PASS' <<<"$leak_out"
 assert test ! -e "$XDG_CACHE_HOME/claude-reports/leaky"
 assert jqe '.suites["test_leaks.sh"].rc == 1 and .suites["test_sandboxed.sh"].rc == 0' <(tail -1 "$JOURNAL")
 
-# tests/run-all refuses a worker's full run before any suite or journal row; a named suite, --changed
-# and a run outside a worker go through.
+# tests/run-all refuses a worker's or a chat's full run before any suite or journal row; a named suite,
+# --changed, a chat's --full and a run outside both (the night, Egor's terminal) go through.
 for wrapper in "$ROOT/tests/run-all" "${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/tests/run-all" \
   "${REVIEW_BENCH_ROOT:-$PROJECTS/review-bench}/tests/run-all"; do
   [ -r "$wrapper" ] && assert grep -qF -- '--run-all "$@"' "$wrapper"
@@ -365,6 +365,24 @@ assert test "$?" -eq 0
 bash "$ROOT/share/run-suites.sh" --repo "$R4" --run-all -j 2 >/dev/null 2>&1
 assert test "$?" -eq 0
 assert jqe '.scope == "full" and .worker_run == null' <(tail -1 "$JOURNAL")
+rows=$(wc -l <"$JOURNAL")
+CLAUDE_CODE_SESSION_ID=sess-9 bash "$ROOT/share/run-suites.sh" --repo "$R4" --run-all -j 2 >"$WORK/gate.out" 2>"$WORK/gate.err"
+assert test "$?" -eq 3
+assert grep -qF "tests/run-all --full only on Egor's explicit word" "$WORK/gate.err"
+assert test "$(wc -l <"$JOURNAL")" -eq "$rows"
+WORKER_RUN_ID=wr-9 bash "$ROOT/share/run-suites.sh" --repo "$R4" --run-all --full -j 2 >/dev/null 2>&1
+assert test "$?" -eq 3
+CLAUDE_CODE_SESSION_ID=sess-9 bash "$ROOT/share/run-suites.sh" --repo "$R4" --run-all --full -j 2 >/dev/null 2>&1
+assert test "$?" -eq 0
+assert jqe '.scope == "full" and .session == "sess-9"' <(tail -1 "$JOURNAL")
+# A chat's --changed on a clean branch is scoped by the branch's commits since main.
+git -C "$R4" branch -f main HEAD~1
+branch_out=$(CLAUDE_CODE_SESSION_ID=sess-9 bash "$ROOT/share/run-suites.sh" --repo "$R4" --run-all -j 2 --changed 2>&1)
+assert grep -q 'test_tool_part.sh .*PASS' <<<"$branch_out"
+assert_fails grep -q 'test_other.sh' <<<"$branch_out"
+branch_affected=$(bash "$ROOT/share/affected-suites.sh" --repo "$R4")
+assert grep -qxF "$R4/tests/test_tool_part.sh" <<<"$branch_affected"
+assert_fails grep -q test_other.sh <<<"$branch_affected"
 
 # --profile: each suite's shimmed calls land in its entry; without it no shim and no execs key.
 R7="$WORK/r7"

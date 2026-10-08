@@ -21,7 +21,8 @@ Cardinal rules:
 - Never mutate the live Hammerspoon singleton (`package.loaded["llm-limits"]`) — read-only calls
   (`menuItems()`) only, or the user's real menubar breaks silently.
 
-Suites: `bash tests/run-all` (`--all` adds the live ones). Cross-implementation invariants
+Suites: `tests/run-all --changed` (uncommitted, untracked and this branch's commits since main) or
+`tests/run-all $(tests/affected <file>...)`; the full run is the night's (`--full` only on Egor's word). Cross-implementation invariants
 (bash/jq/Lua/prose) are guarded by `docs/shared-invariants.md` + `bash tests/test_consistency.sh` —
 run it after touching a staleness threshold, the keychain service formula, the pin file paths or
 the weather HTTP class lists.
