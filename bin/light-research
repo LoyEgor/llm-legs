@@ -71,7 +71,8 @@ collect_run() { # run-id run-dir part-file
   # named none left the caller waiting on an answer whose grounding it could not tell.
   web=$(web_search_meta_state "$2/meta.json")
   case "$state" in
-    *'STATUS: running'*) COLLECT_RUNNING=true; printf 'RUN: %s\nSTATUS: running\nWEB: %s\n' "$1" "$web"; return 0 ;;
+    *'STATUS: running'*) COLLECT_RUNNING=true; printf 'RUN: %s\nSTATUS: running\nWEB: %s\n' "$1" "$web"
+      grep -E '^(LONG-RUN|MEMGUARD):' <<<"$state"; return 0 ;;
   esac
   printf '%s\n' "$state"
   account=$(jq -r .account "$2/meta.json")
@@ -151,7 +152,7 @@ units_load() { # run-id — true when the table holds that run
 # Collect every unit, then assemble — the exit code is the worst rc of the batch whether or not a
 # unit is still running, because a usage limit one unit hit is what the caller routes on.
 units_finish() {
-  local u rc running=false combined repo_heading counts total=0 verified=0 links=0 checked
+  local u rc running=false unit_failed=false combined repo_heading counts total=0 verified=0 links=0 checked
   local unit_verified unit_total unit_links
   for ((u=0; u<units; u++)); do
     if [ "$persist" = true ] && [ -f "$units_dir/rc.$u" ]; then
@@ -166,6 +167,7 @@ units_finish() {
         printf '%s\n' "$rc" >"$units_dir/rc.$u"
       fi
     fi
+    [ "$rc" -eq 0 ] || unit_failed=true
     [ "$(code_rank "$rc")" -le "$(code_rank "$worst")" ] || worst=$rc
   done
   [ "$persist" = false ] || printf '%s\n%s\n%s\n' "$question_count" "$fanout" "$worst" >"$units_dir/shape"
@@ -173,7 +175,8 @@ units_finish() {
     printf 'OUT: %s\n' "$out"
     return "$worst"
   fi
-  [ "$worst" -eq 0 ] || return "$worst"
+  # A worst that no unit brought back is a later launch's failure: the launched units still land.
+  [ "$unit_failed" = false ] || return "$worst"
   for ((u=0; u<units; u++)); do
     checked="$part_dir/checked.$u"
     if [ "$fanout" = true ]; then
@@ -187,7 +190,7 @@ units_finish() {
     links=$((links + unit_links))
   done
   combined="$part_dir/combined"
-  if [ "$units" -eq 1 ]; then
+  if [ "$units" -eq 1 ] && [ "$question_count" -eq 1 ] && [ "$fanout" = false ]; then
     research_citation_body "$part_dir/checked.0" >"$combined" || return 4
   else
     repo_heading='##'
@@ -205,7 +208,7 @@ units_finish() {
   { printf 'CITATIONS: %s/%s\nLINKS: %s\n' "$verified" "$total" "$links"; cat "$combined"; } >"$out" || return 4
   printf 'CITATIONS: %s/%s\nLINKS: %s\nANSWER: %s\nLINES: %s\n' "$verified" "$total" "$links" "$out" \
     "$(wc -l <"$out" | tr -d '[:space:]')"
-  return 0
+  return "$worst"
 }
 
 if [ -n "$attach" ]; then
@@ -325,7 +328,7 @@ done
 [ "$units" -gt 0 ] || exit "$launch_failed"
 worst=$launch_failed
 question_count=${#prompt_files[@]}
-if [ "$units" -gt 1 ]; then
+if [ "$units" -gt 1 ] || [ "$launch_failed" -ne 0 ]; then
   persist=true
   part_dir=$units_dir
   units_persist || exit 4

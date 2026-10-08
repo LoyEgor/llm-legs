@@ -52,6 +52,7 @@ EOF
 cat >"$FAKE_BIN/launchctl" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$LAUNCH_CALLS"
+case "${1:-}" in bootstrap|load) [ -z "${LAUNCHCTL_REFUSE:-}" ] || exit 5 ;; esac
 [ "${1:-}" != print ] && exit 0
 exit 1
 EOF
@@ -204,7 +205,12 @@ for _ in $(seq 1 65); do
 done
 assert test "$(wc -l <"$LOG" | tr -d ' ')" = 60
 
-printf 'timestamp=%s status=PASS failed_step=-\n' "$(iso_from_epoch $((NOW - 60)))" >"$LOG"
+# The debounce reads the clock against the daily 10:30 slot, so it runs on a pinned one.
+epoch_at() { date -j -f '%Y-%m-%d %H:%M:%S' "$1" '+%s' 2>/dev/null || date -d "$1" '+%s'; }
+CLOCK=$(epoch_at '2026-07-20 12:00:00')
+LLM_SELFCHECK_NOW=$CLOCK
+export LLM_SELFCHECK_NOW
+printf 'timestamp=%s status=PASS failed_step=-\n' "$(iso_from_epoch $((CLOCK - 60)))" >"$LOG"
 FRESH_LOG_CONTENT=$(cat "$LOG")
 : >"$CALLS"
 : >"$ALERTS"
@@ -213,18 +219,30 @@ assert test ! -s "$CALLS"
 assert test ! -s "$ALERTS"
 assert test "$(cat "$LOG")" = "$FRESH_LOG_CONTENT"
 
-printf 'timestamp=%s status=PASS failed_step=-\n' "$(iso_from_epoch $((NOW - 22 * 3600)))" >"$LOG"
+printf 'timestamp=%s status=PASS failed_step=-\n' "$(iso_from_epoch $((CLOCK - 22 * 3600)))" >"$LOG"
 : >"$CALLS"
 bash "$SCRIPT" || fail "catch-up bare invocation failed"
 assert test "$(paste -sd, "$CALLS")" = "e2e_surfaces.sh,test_llm_limits.sh,test_llm_limits_grok.sh,test_claudeb.sh,test_codexb.sh,test_geminib.sh,test_grokb.sh,test_llm_reset_redeem.sh"
 assert test ! -s "$ALERTS"
 
-printf 'timestamp=%s status=PASS failed_step=-\n' "$(iso_from_epoch $((NOW - 30 * 3600)))" >"$LOG"
+printf 'timestamp=%s status=PASS failed_step=-\n' "$(iso_from_epoch $((CLOCK - 30 * 3600)))" >"$LOG"
 : >"$CALLS"
 : >"$ALERTS"
 bash "$SCRIPT" || fail "stale bare invocation failed"
 assert test "$(paste -sd, "$CALLS")" = "e2e_surfaces.sh,test_llm_limits.sh,test_llm_limits_grok.sh,test_claudeb.sh,test_codexb.sh,test_geminib.sh,test_grokb.sh,test_llm_reset_redeem.sh"
 assert grep -q 'stale since' "$ALERTS"
+
+# One run per 10:30 slot: a run 20.5 h ago that followed yesterday's slot is not due again before
+# today's (the hourly tick no longer walks the run earlier each day), and the 10:30 tick runs
+# though the last run was only 4 h ago, before that slot.
+printf 'timestamp=%s status=PASS failed_step=-\n' "$(iso_from_epoch "$(epoch_at '2026-07-19 10:31:00')")" >"$LOG"
+: >"$CALLS"
+LLM_SELFCHECK_NOW=$(epoch_at '2026-07-20 07:01:00') bash "$SCRIPT" || fail "pre-slot bare invocation failed"
+assert test ! -s "$CALLS"
+printf 'timestamp=%s status=PASS failed_step=-\n' "$(iso_from_epoch "$(epoch_at '2026-07-20 06:31:00')")" >"$LOG"
+LLM_SELFCHECK_NOW=$(epoch_at '2026-07-20 10:30:05') bash "$SCRIPT" || fail "slot bare invocation failed"
+assert grep -q 'e2e_surfaces.sh' "$CALLS"
+unset LLM_SELFCHECK_NOW
 
 rm -f "$HOME/.claude-profiles/.claudeb/selfcheck.state"
 (
@@ -258,6 +276,12 @@ WRAPPER="$HOME/.local/libexec/llm-selfcheckd"
 assert test -x "$WRAPPER"
 assert grep -qF "exec $SCRIPT \"\$@\"" "$WRAPPER"
 assert grep -qF "<string>$WRAPPER</string>" "$PLIST"
+
+# bootstrap and its load fallback both refused: nothing is loaded, so no `Installed` and no exit 0.
+asserts=$((asserts + 1))
+LAUNCHCTL_REFUSE=1 bash "$SCRIPT" install >"$WORK/install-out" 2>&1 && fail "an unloaded agent installed"
+assert_fails grep -q '^Installed' "$WORK/install-out"
+assert grep -q 'could not load' "$WORK/install-out"
 
 bash "$SCRIPT" uninstall >/dev/null || fail "uninstall failed"
 assert test ! -e "$PLIST"

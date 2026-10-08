@@ -85,16 +85,29 @@ alert_stale() {
   printf '%s\n' "$last" >"$state_file"
 }
 
+slot_epoch() { # day [day-offset]
+  date -j -v"${2:-+0}"d -f '%Y-%m-%d %H:%M:%S' "$1 10:30:00" '+%s' 2>/dev/null ||
+    date -d "$(date -d "$1 ${2:-+0} day" '+%Y-%m-%d') 10:30:00" '+%s'
+}
+
+# The newest 10:30 at or before the epoch. A run is due once per slot: a fixed 20-hour debounce
+# let the hourly catch-up tick fire 20 hours after the last run, walking the run ~4 hours earlier
+# every day and skipping the 10:30 tick for good.
+daily_slot_epoch() {
+  local day slot
+  day=$(date -r "$1" '+%Y-%m-%d' 2>/dev/null || date -d "@$1" '+%Y-%m-%d')
+  slot=$(slot_epoch "$day")
+  [ "$slot" -le "$1" ] || slot=$(slot_epoch "$day" -1)
+  printf '%s\n' "$slot"
+}
+
 maybe_run() {
-  local now last age debounce_s stale_s
-  now=$(date '+%s')
+  local now last age stale_s
+  now=${LLM_SELFCHECK_NOW:-$(date '+%s')}
   last=$(last_run_epoch)
   if [ -n "$last" ]; then
-    debounce_s=$(( ${LLM_SELFCHECK_DEBOUNCE_HOURS:-20} * 3600 ))
+    [ "$last" -lt "$(daily_slot_epoch "$now")" ] || return 0
     age=$(( now - last ))
-    if [ "$age" -lt "$debounce_s" ]; then
-      return 0
-    fi
     stale_s=$(( ${LLM_SELFCHECK_STALE_ALERT_HOURS:-26} * 3600 ))
     if [ "$age" -ge "$stale_s" ]; then
       alert_stale "$last"
@@ -260,7 +273,10 @@ install_agent() {
 EOF
   launchctl bootout "gui/$UID" "$plist" >/dev/null 2>&1 || true
   if ! launchctl bootstrap "gui/$UID" "$plist"; then
-    launchctl load -w "$plist"
+    launchctl load -w "$plist" || {
+      printf 'llm-selfcheck: launchctl could not load %s\n' "$plist" >&2
+      return 1
+    }
   fi
   printf 'Installed %s for 10:30 daily, plus RunAtLoad and hourly catch-up checks (debounced).\n' "$label"
 }

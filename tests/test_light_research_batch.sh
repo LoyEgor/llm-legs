@@ -38,4 +38,24 @@ assert grep -q '^OUTCOME: GEMINI_USAGE_LIMIT$' "$WORK/out"; assert test ! -e "$W
 rm -f "$WORK/answer"; run --prompt-file "$WORK/prompt-unavail" --prompt-file "$WORK/prompt-quota"; rc=$?; assert test "$rc" -eq 3
 assert test ! -e "$WORK/answer"
 
+# A later launch refused: the units already launched still land their answers under their own
+# Q headings, the call keeps the launch's exit, and an --attach of a launched run keeps both.
+printf 'ROUND: bogus\nThird question.\n' >"$WORK/prompt-refused"
+rm -rf "$WORK/answer" "$WORK/answer.units"
+run --prompt-file "$WORK/prompt2" --prompt-file "$WORK/prompt-refused"; rc=$?; assert test "$rc" -eq 4
+assert grep -qx 'tracked Gemini answer' "$WORK/answer"
+assert grep -qx 'plain second answer' "$WORK/answer"
+assert grep -qx '## Q2' "$WORK/answer"; assert test "$(grep -c '^## Q' "$WORK/answer")" = 2
+assert grep -qx "ANSWER: $(cd "$WORK" && pwd -P)/answer" "$WORK/out"
+refused_run=$(sed -n 's/^RUN: //p' "$WORK/out" | head -n1)
+rm -f "$WORK/answer"; attach --attach "$refused_run" --out "$WORK/answer"; rc=$?; assert test "$rc" -eq 4
+assert grep -qx 'plain second answer' "$WORK/answer"
+rm -rf "$WORK/answer" "$WORK/answer.units"
+run --prompt-file "$WORK/prompt-refused"; rc=$?; assert test "$rc" -eq 4
+assert grep -qx '## Q1' "$WORK/answer"; assert grep -qx 'tracked Gemini answer' "$WORK/answer"
+refused_run=$(sed -n 's/^RUN: //p' "$WORK/out" | head -n1)
+rm -f "$WORK/answer"; attach --attach "$refused_run" --out "$WORK/answer"; rc=$?; assert test "$rc" -eq 4
+assert grep -qx '## Q1' "$WORK/answer"
+rm -rf "$WORK/answer.units"
+
 printf 'PASS: %s asserts; batched questions under one header and outcomes mapped to exits, the worst one winning a batch\n' "$asserts"

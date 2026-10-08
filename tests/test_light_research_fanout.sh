@@ -49,14 +49,16 @@ assert test "$rc" -eq 0
 assert test "$(head -n1 "$WORK/answer")" = 'CITATIONS: 1/2'
 assert grep -qx 'UNVERIFIED:' "$WORK/answer"
 
-# A launch that fails mid-batch waits out the units already started: abandoned, each keeps running
-# on an account of its own with nothing reading its answer.
+# A launch that fails mid-batch waits out the units already started and lands their answers under
+# the launch's exit: abandoned, each keeps running on an account of its own with nothing reading it.
 printf '%s\n' researcher 'BAD!' >"$WORK/pick-queue"
-rm -f "$WORK/answer"
+rm -rf "$WORK/answer" "$WORK/answer.units"
 PICK_QUEUE="$WORK/pick-queue" run --repo "$REPO2"; rc=$?
 assert test "$rc" -eq 4
 assert grep -q '^ACCOUNT: researcher (grok)$' "$WORK/out"
-assert test ! -e "$WORK/answer"
+assert grep -qx 'grok research answer' "$WORK/answer"
+assert grep -qx "## $(cd "$REPO" && pwd -P)" "$WORK/answer"
+rm -rf "$WORK/answer.units"
 rm -f "$TOGGLE"
 
 # A relative citation path is resolved against EVERY repository of the call: the same name in two

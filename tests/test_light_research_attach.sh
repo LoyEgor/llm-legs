@@ -12,8 +12,10 @@ while [ ! -e "${0%/bin/*}/gate" ] && [ -d "${0%/*}" ]; do sleep 0.1; done
 printf 'slow Gemini answer\n'
 GATED
 rm -f "$WORK/answer"
-LIGHT_RESEARCH_WAIT_MAX=0 run; rc=$?; assert test "$rc" -eq 0
+WORKER_RUN_LONG_RUN_S=0 LIGHT_RESEARCH_WAIT_MAX=0 run; rc=$?; assert test "$rc" -eq 0
 assert grep -q '^STATUS: running$' "$WORK/out"; assert test ! -e "$WORK/answer"
+# worker-run says LONG-RUN once per run, so a running round that drops it loses it for good.
+assert grep -q '^LONG-RUN: 0 min' "$WORK/out"
 # The state is recorded at launch, so the round that hands back a running id already names it.
 assert grep -qx 'WEB: on' "$WORK/out"
 assert grep -qx "OUT: $(cd "$WORK" && pwd -P)/answer" "$WORK/out"
