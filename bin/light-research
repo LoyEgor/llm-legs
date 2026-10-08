@@ -130,6 +130,7 @@ units_persist() {
   done
   printf '%s\n' "${resolved_repos[@]}" >"$units_dir/repos" || return 1
   printf '%s\n%s\n%s\n' "$question_count" "$fanout" "$worst" >"$units_dir/shape" || return 1
+  sed -n '/^OUTCOME:/p' <<<"$failed_launch" >"$units_dir/launch" || return 1
 }
 
 units_load() { # run-id — true when the table holds that run
@@ -158,9 +159,11 @@ units_finish() {
     if [ "$persist" = true ] && [ -f "$units_dir/rc.$u" ]; then
       rc=$(tr -d '[:space:]' <"$units_dir/rc.$u")
       [[ "$rc" =~ ^[0-9]+$ ]] || rc=4
+      sed -n '/^OUTCOME:/p' "$units_dir/state.$u" 2>/dev/null
     else
       rc=0
-      collect_run "${run_ids[$u]}" "${run_dirs[$u]}" "$part_dir/part.$u" || rc=$?
+      collect_run "${run_ids[$u]}" "${run_dirs[$u]}" "$part_dir/part.$u" >"$part_dir/state.$u" || rc=$?
+      cat "$part_dir/state.$u"
       if [ "$COLLECT_RUNNING" = true ]; then
         running=true
       elif [ "$persist" = true ]; then
@@ -214,6 +217,7 @@ units_finish() {
 if [ -n "$attach" ]; then
   [ "${#prompt_files[@]}" -eq 0 ] && [ "${#repos[@]}" -eq 0 ] && [ -z "$account" ] && [[ "$attach" =~ ^[a-z0-9][a-z0-9-]*$ ]] || usage
   if units_load "$attach"; then
+    cat "$units_dir/launch" 2>/dev/null
     units_finish
     exit $?
   fi
@@ -277,7 +281,7 @@ if [ "$vendor" = gemini ]; then
   geminib_bin=$(command -v geminib 2>/dev/null) || unavailable gemini 'geminib is missing'
 fi
 
-launch_failed=0
+launch_failed=0 failed_launch=''
 for ((question=0; question<${#prompt_files[@]}; question++)); do
   if [ "$fanout" = true ]; then targets=("${resolved_repos[@]}"); else targets=("${resolved_repos[0]}"); fi
   for target in "${targets[@]}"; do
@@ -308,7 +312,7 @@ for ((question=0; question<${#prompt_files[@]}; question++)); do
     printf '%s\n' "$launch"
     # The units already launched are spending accounts of their own: abandoned here, they run to
     # the end with nothing waiting on them and no answer anybody reads.
-    [ "$start_rc" -eq 0 ] || { launch_failed=$start_rc; break 2; }
+    [ "$start_rc" -eq 0 ] || { launch_failed=$start_rc; failed_launch=$launch; break 2; }
     run_id=$(sed -n 's/^RUN: //p' <<<"$launch" | head -n1)
     run_dir=$(sed -n 's/^DIR: //p' <<<"$launch" | head -n1)
     [ -n "$run_id" ] && [ -r "$run_dir/meta.json" ] || { launch_failed=4; break 2; }

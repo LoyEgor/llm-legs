@@ -60,7 +60,11 @@ assert grep -q '^STATUS: running$' "$WORK/out"
 assert test ! -e "$WORK/answer"
 assert test "$(grep -c . "$WORK/answer.units/table")" = 2
 assert test "$(cat "$WORK/answer.units/rc.0")" = 3
-: >"$WORK/gate"; rm -rf "$WORK/answer.units"
+: >"$WORK/gate"
+slow_run=$(sed -n 's/^RUN: //p' "$WORK/out" | tail -1)
+attach --attach "$slow_run" --out "$WORK/answer"; rc=$?; assert test "$rc" -eq 3
+assert grep -qx 'OUTCOME: GEMINI_USAGE_LIMIT' "$WORK/out"
+rm -rf "$WORK/answer.units"
 
 # --attach re-assembles the WHOLE batch, not the one run it was handed: the other units' answers
 # live beside --out, and the work directory of the launching call is long gone.

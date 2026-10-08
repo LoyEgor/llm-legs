@@ -57,5 +57,14 @@ refused_run=$(sed -n 's/^RUN: //p' "$WORK/out" | head -n1)
 rm -f "$WORK/answer"; attach --attach "$refused_run" --out "$WORK/answer"; rc=$?; assert test "$rc" -eq 4
 assert grep -qx '## Q1' "$WORK/answer"
 rm -rf "$WORK/answer.units"
+# The refused launch's OUTCOME line is the status the caller routes on, so an --attach repeats it.
+printf '%s\n' researcher EXIT3 >"$WORK/pick-queue"
+rm -f "$WORK/answer"
+PICK_QUEUE="$WORK/pick-queue" run --prompt-file "$WORK/prompt2"; rc=$?; assert test "$rc" -eq 4
+assert grep -qx 'OUTCOME: GEMINI_UNAVAILABLE' "$WORK/out"
+refused_run=$(sed -n 's/^RUN: //p' "$WORK/out" | head -n1)
+rm -f "$WORK/answer"; attach --attach "$refused_run" --out "$WORK/answer"; rc=$?; assert test "$rc" -eq 4
+assert grep -qx 'OUTCOME: GEMINI_UNAVAILABLE' "$WORK/out"
+rm -rf "$WORK/answer.units"
 
 printf 'PASS: %s asserts; batched questions under one header and outcomes mapped to exits, the worst one winning a batch\n' "$asserts"

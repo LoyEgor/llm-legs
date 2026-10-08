@@ -24,8 +24,10 @@ cat >"$BIN/worker-pick" <<'PICK'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$PICK_LOG"
 if [ -s "${PICK_QUEUE:-/dev/null}" ]; then
-  head -n1 "$PICK_QUEUE"
+  picked=$(head -n1 "$PICK_QUEUE")
   sed -i '' 1d "$PICK_QUEUE"
+  [ "$picked" != EXIT3 ] || exit 3
+  printf '%s\n' "$picked"
   exit 0
 fi
 printf 'researcher\n'
