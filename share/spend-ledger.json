@@ -143,6 +143,20 @@
    },
    "verdict": "kept",
    "note": "kept: only fork-free contains/not_contains + load_case helper, 977 asserts, 83.45 -> 82.54 CPU-s/run (-1.1%); every render is an exit check; the lever is product: worker-pick's own ~0.13 CPU-s per start x ~470 cases"
+  },
+  {
+   "id": "suite:llm-legs/test_night_run",
+   "title": "llm-legs/test_night_run",
+   "audited_at": "2026-10-08T03:50:09+03:00",
+   "by": "feat/suite-audit-night-run",
+   "cpu_run": 80.1,
+   "cpu_min_day": 39.85,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "29457015e61a2ba7ea81c1456d386be4c872fe88",
+    "llm-legs/tests/test_night_run.sh": "7e442e3a07e2c6a342ba314f2d942cea0bc15350"
+   },
+   "verdict": "cut",
+   "note": "job add leftover scanned every branch of every sweep repo per adoption; filtered to the adopted branch: 98 -> 64 CPU-s/run, 428 asserts unchanged, mutations red"
   }
  ]
 }
