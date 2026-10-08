@@ -1585,6 +1585,16 @@ check(sorted(c["what"].split()[0] for c in logged) == ["env.API_KEY", "permissio
 check([c["at"] for c in logged] == [T - 7200] * 2, "a setting change is dated by the file's mtime, even over an hour old")
 check("secret" not in json.dumps(logged) + json.dumps(watched["settings"]),
       "an env value never reaches the change log or the state")
+kept, gone = os.path.join(work, "piped", "kept.sh"), os.path.join(work, "piped", "gone.sh")
+put(kept, "true\n")
+put(gone, "true\n")
+watched = {"watched": {}, "settings": {}, "hooks": {"PreToolUse|Edit|Write|%s arg" % kept: 5,
+                                                    "PostToolUse|Edit|Write|%s" % gone: None}}
+logged = sorted(c["what"] for c in m.watch_changes(watched, T, {}, [{"event": "PreToolUse", "matcher": "Edit|Write",
+                                                                      "command": kept + " arg", "timeout": 10}])
+                if c["kind"].startswith("hook"))
+check(logged == ["PostToolUse gone", "PreToolUse kept arg 5 → 10 s"],
+      "a hook whose matcher holds | is logged by its script's name: %s" % logged)
 
 near_pair = [dict(test_row("llm-legs", "test_pair", T - 700, T - 100), repo_root="/r/llm-legs")]
 pair_marks = [{"start": T - 704, "label": "test_pair", "scope": "named", "pid": 1, "repo_root": "/r/llm-legs"},
@@ -1653,6 +1663,14 @@ os.environ["HARNESS_DOCTOR_DIR"] = saved_dir
 check(merged[yesterday]["floors"]["edit"][0] == on_disk["floors"]["edit"][0] == 2
       and yesterday not in late["journal"]["floor_days"],
       "floors that settle after their day was summarized join that day's summary")
+os.environ["HARNESS_DOCTOR_DIR"] = os.path.join(work, "keep")
+late = {"rebuilt": m.SUMMARY_V, "journal": {"days": {yesterday: {"hook.sh": json.loads(json.dumps(one))}}, "floor_days": {}}}
+merged = m.day_summaries(late, T, True, [], [], [])
+on_disk = m.read_json(os.path.join(os.environ["HARNESS_DOCTOR_DIR"], "days", yesterday + ".json"), {})
+os.environ["HARNESS_DOCTOR_DIR"] = saved_dir
+check(merged[yesterday]["hooks"]["hook.sh"][0] == on_disk["hooks"]["hook.sh"][0] == 1
+      and on_disk["floors"]["edit"][0] == 2 and yesterday not in late["journal"]["days"],
+      "hook timings a late spool folds after their day was summarized join that day's summary, never dropped")
 
 def full_run(end, secs, times, scope=None):
     out = dict(test_row("llm-legs", "suites", end - secs, end), repo_root="/r/llm-legs", suite_secs=times)
@@ -1772,6 +1790,19 @@ for ident in '[^z]{2,}' '.*' ''; do
   assert_eq '[true,["ledger_fault","new",true,1]]' "$(dismiss_wait "$ident")" \
     "a catch-all dismissal /$ident/ is dropped before judging and reported as ledger:<row id>"
 done
+jq '.rows += [{id: "bad-fixes", title: "t", match: {rule: "wait", ident: "bash:alpha"}, status: "open", fixes: ["x"]},
+  {id: "twice", match: {rule: "time_floor", ident: "edit-floor"}, status: "open", fixes: []},
+  {id: "twice", match: {rule: "time_floor", ident: "edit-floor"}, status: "open", fixes: []}, "junk"]' \
+  "$ROOT/share/harness-ledger.json" > "$WORK/rejected-ledger.json"
+mkdir -p "$WORK/rejected"
+jq -n '{speed: {problems: [{id: "time_floor:edit-floor", rule: "time_floor", ident: "edit-floor", state: "new",
+  fact: "an edit floor", window_h: 24}], covers: [], blind_spots: []}}' > "$WORK/rejected/latest.json"
+HARNESS_LEDGER="$WORK/rejected-ledger.json" HARNESS_DOCTOR_DIR="$WORK/rejected" HARNESS_DOCTOR_NOW=$((T + 900)) \
+  HARNESS_DOCTOR_FAKE_SAMPLE="" "$DOCTOR" --quiet || fail "a run over rejected ledger rows failed"
+assert_eq '[["ledger:#'"$(jq '.rows | length + 3' "$ROOT/share/harness-ledger.json")"'","ledger:bad-fixes","ledger:twice"],"new",["new",null]]' \
+  "$(jq -c '[([.problems[] | select(.rule == "ledger_fault") | .id] | sort), (.problems[] | select(.id == "wait:bash:alpha") | .state),
+    (.problems[] | select(.id == "time_floor:edit-floor") | [.state, .ledger])]' "$WORK/rejected/latest.json")" \
+  "a row whose fixes hold a non-object, a duplicated id or a non-object row is a ledger fault, judges neither Harness nor Speed's carried rows, and crashes nothing"
 holds="$WORK/holds"
 mkdir -p "$holds"
 dead_pid=$(bash -c 'echo $$')
@@ -1823,6 +1854,17 @@ hold_file dry "$dead_pid" 90 job
 HARNESS_HOLDS_DIR="$holds" HARNESS_DOCTOR_DIR="$WORK/held" HARNESS_DOCTOR_NOW=$held_now HARNESS_DOCTOR_FAKE_SAMPLE="" \
   "$DOCTOR" --json >/dev/null || fail "a --json run over a leaked hold failed"
 assert_eq 1 "$(ls "$holds" | grep -c '^dry-')" "a --json run, which persists nothing, swept a hold file"
+mixed="$WORK/mixed-holds"
+mkdir -p "$mixed"
+for pid in 1 999999; do
+  jq -cn --argjson pid $pid --argjson since $((held_now - 90)) '{limiter: "mixed", pid: $pid, held: {what: "job"}, since: $since}' \
+    > "$mixed/mixed-$pid.json"
+done
+assert_eq '[[1], [999999]]' "$(HARNESS_HOLDS_DIR="$mixed" python3 -c 'import importlib.machinery as l, json, sys
+m = l.SourceFileLoader("hd", sys.argv[1]).load_module()
+live, leaked = m.read_holds()
+print(json.dumps([[h["pid"] for h in live.get("mixed", [])], [h["pid"] for h in leaked.get("mixed", [])]]))' "$DOCTOR")" \
+  "a ps that fails on one pid (too large) leaves each hold to its own liveness check instead of judging every live hold leaked"
 writer="$WORK/writer-holds"
 assert_eq 'null None' "$(HARNESS_HOLDS_DIR="$writer" python3 -c 'import json, os, sys
 sys.path.insert(0, sys.argv[1])
@@ -2080,6 +2122,23 @@ def claims(texts, said="queued: will be delivered next round"):
     events = []
     m.read_transcript(path, {"off": 0}, events, {})
     return [e[2] + ":" + e[5] for e in events if e[0] == "o"]
+
+growing = os.path.join(work, "growing-projects", "p", "small.jsonl")
+os.makedirs(os.path.dirname(growing))
+with open(growing, "w") as handle:
+    handle.write("".join(json.dumps(l) + "\n" for l in [
+        rec(T - 600, type="assistant", entrypoint="cli",
+            message={"content": [{"type": "tool_use", "id": "tu1", "name": "Bash", "input": {"command": "ls"}}]}),
+        rec(T - 598, type="user", message={"content": [{"type": "tool_result", "tool_use_id": "tu1"}]})]))
+os.environ["CLAUDE_PROJECTS_DIR"] = os.path.dirname(os.path.dirname(growing))
+grown_state, grown = {}, []
+m.scan_transcripts(grown_state, T, grown, {})
+with open(growing, "a") as handle:
+    handle.write(json.dumps(rec(T - 597, type="system", subtype="x", pad="p" * 600)) + "\n")
+m.scan_transcripts(grown_state, T, grown, {})
+os.environ["CLAUDE_PROJECTS_DIR"] = projects
+check(os.path.getsize(growing) > 512 and [e[0] for e in grown] == ["c"],
+      "a transcript that grows past its first 512 bytes is read on from its offset, never again from 0: %s" % grown)
 
 B = T - 40000
 stale = chat("stale", [human(B), say(B + 10), done(B + 20), human(B + 18), say(B + 25), done(B + 130, ms=999999),

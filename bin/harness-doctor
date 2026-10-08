@@ -456,10 +456,10 @@ def transcript_files():
         os.path.join(root, "*", "*", "subagents", "*.jsonl"))
 
 
-def head_hash(path):
+def head_hash(path, size=512):
     try:
         with open(path, "rb") as handle:
-            return hashlib.sha1(handle.read(512)).hexdigest()[:12]
+            return hashlib.sha1(handle.read(size)).hexdigest()[:12]
     except OSError:
         return ""
 
@@ -481,12 +481,13 @@ def scan_transcripts(state, now, events, versions):
             continue
         if not rec and st.st_mtime < (horizon if first else now - 2 * 86400):
             files[path] = {"size": st.st_size, "mtime": st.st_mtime_ns, "head": head_hash(path),
-                           "off": st.st_size}
+                           "hlen": min(st.st_size, 512), "off": st.st_size}
             continue
         head = head_hash(path)
-        if not rec or rec.get("head") != head or st.st_size < rec.get("off", 0):
+        if not rec or st.st_size < rec.get("off", 0) or rec.get("head") not in (
+                head, head_hash(path, rec.get("hlen", 512))):
             rec = {"off": 0}
-        rec.update(size=st.st_size, mtime=st.st_mtime_ns, head=head)
+        rec.update(size=st.st_size, mtime=st.st_mtime_ns, head=head, hlen=min(st.st_size, 512))
         files[path] = rec
         read_transcript(path, rec, events, versions, boots)
     for path in list(files):
@@ -1107,10 +1108,11 @@ def day_summaries(state, now, write, samples, windows, today_rows):
                                            day_start(min(rebuilt)), day_end(max(rebuilt)))
         missing |= set(rebuilt)
         state["rebuilt"] = SUMMARY_V
-    for day in sorted(d for d in floor_days if oldest <= d < today and d in out and d not in missing):
-        floors = out[day].setdefault("floors", {})
-        for key, entry in floor_days[day].items():
-            hist_join(floors.setdefault(key, hist_new()), entry)
+    for day in sorted(d for d in set(floor_days) | set(journal_days) if oldest <= d < today and d in out
+                      and d not in missing):
+        for part, days in (("floors", floor_days), ("hooks", journal_days)):
+            for key, entry in (days.get(day) or {}).items():
+                hist_join(out[day].setdefault(part, {}).setdefault(key, hist_new()), entry)
         if write:
             write_json(os.path.join(folder, day + ".json"), out[day])
     for day in sorted(missing):
@@ -1270,10 +1272,13 @@ def watch_changes(state, now, versions, hooks):
     state["watched"] = current
 
     snapshot = {"%s|%s|%s" % (h["event"], h["matcher"], h["command"]): h["timeout"] for h in hooks}
+    commands = {"%s|%s|%s" % (h["event"], h["matcher"], h["command"]): h["command"] for h in hooks}
     old_hooks = state.get("hooks")
     if old_hooks is not None:
         for key in sorted(set(snapshot) | set(old_hooks)):
-            event, _, command = key.split("|", 2)
+            event, _, rest = key.partition("|")
+            command = commands.get(key) or next((rest[i + 1:] for i, c in enumerate(rest)
+                                                 if c == "|" and hook_script(rest[i + 1:])), rest.partition("|")[2])
             name = "%s %s" % (event, hook_label(command))
             if key not in old_hooks:
                 changes.append({"at": now, "kind": "hook added", "what": name})
@@ -5305,6 +5310,9 @@ def row_faults(entry, ids, probes):
     faults = ["id used twice"] if ids.count(entry["id"]) > 1 else []
     if entry.get("status") not in LEDGER_STATUSES:
         faults.append("status %r" % entry.get("status"))
+    fixes = entry.get("fixes") or []
+    if not isinstance(fixes, list) or not all(isinstance(f, dict) for f in fixes):
+        faults.append("fixes is a list of {at, ...}")
     match = entry.get("match") if isinstance(entry.get("match"), dict) else {}
     ident = match.get("ident")
     if not isinstance(match.get("rule"), str) or not isinstance(ident, str) or not ident:
@@ -5552,8 +5560,12 @@ def etime_s(text):
 def process_starts(pids):
     asked = time.time()
     try:
-        out = subprocess.run(["/bin/ps", "-o", "pid=,etime=", "-p", ",".join(map(str, sorted(pids)))],
-                             capture_output=True, text=True, timeout=10).stdout
+        done = subprocess.run(["/bin/ps", "-o", "pid=,etime=", "-p", ",".join(map(str, sorted(pids)))],
+                              capture_output=True, text=True, timeout=10)
+        # ps exits 1 with an empty stderr when every pid is gone; a message means it judged none of them.
+        if done.returncode and done.stderr.strip():
+            return None
+        out = done.stdout
         return {int(pid): asked - etime_s(etime) for pid, etime in (row.split() for row in out.splitlines() if row.strip())}
     except (OSError, subprocess.SubprocessError, ValueError):
         return None
@@ -5962,7 +5974,8 @@ def collect(write, now):
         "sections": sections, "periods": periods, "extras": extras,
         "footer": "as of %s" % time.strftime("%H:%M", time.localtime(now)),
     }
-    apply_speed(document, read_json(os.path.join(folder, "latest.json"), {}).get("speed"), ledger)
+    apply_speed(document, read_json(os.path.join(folder, "latest.json"), {}).get("speed"),
+                None if ledger is None else judging)
     speed_flush(state, now, write)
     if write:
         write_json(os.path.join(folder, "state.json"), state)
