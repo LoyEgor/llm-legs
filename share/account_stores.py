@@ -124,9 +124,9 @@ class PoolExclusions:
         lines = self._lines()
         if name not in (line.strip() for line in lines):
             return []
-        if not dry_run:
-            subprocess.run(["bash", "-c", '. "$0/worker-pool.sh" && worker_pool_set_disabled "$1" "$2" off',
-                            str(SHARE), str(_paths(self.word)["pool"]), name], check=True)
+        if not dry_run and subprocess.run(["bash", "-c", '. "$0/worker-pool.sh" && worker_pool_set_disabled "$1" "$2" off',
+                                           str(SHARE), str(_paths(self.word)["pool"]), name]).returncode:
+            raise OSError(f"cannot rewrite {self.file()} without {name}")
         return [f"{self.file()}[{name}]"]
 
 
@@ -229,7 +229,7 @@ def main(argv: list[str]) -> int:
     if argv[:1] == ["remnants"] and argv[1:] in ([], ["--json"]):
         try:
             found = remnants()
-        except account_roster.Unreadable as exc:
+        except (account_roster.Unreadable, OSError) as exc:
             print(f"account_stores: {exc}", file=sys.stderr)
             return 1
         if argv[1:]:

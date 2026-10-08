@@ -43,6 +43,15 @@ assert_fails worker_pool_override_current claudeb burn "$((epoch + 1))"
 assert_fails worker_pool_is_disabled "$CLAUDEB_DIR" burn
 assert worker_pool_override_clear claudeb burn
 
+# The menu's "Enable all" releases a shielded account the same way a single enable does.
+assert worker_pool_shield_set claudeb burn "$epoch"
+enable_out=$(bash "$ROOT/bin/claudeb" enable --all) || fail "claudeb enable --all failed for a shielded account"
+assert grep -q '^claudeb: enabled burn$' <<<"$enable_out"
+assert_fails worker_pool_shield_active claudeb burn
+assert worker_pool_override_current claudeb burn "$epoch"
+assert_fails worker_pool_is_disabled "$CLAUDEB_DIR" burn
+assert worker_pool_override_clear claudeb burn
+
 assert worker_pool_shield_override claudeb absent
 assert_fails worker_pool_shield_set claudeb ../escape "$epoch"
 assert_fails worker_pool_shield_set claudeb bad/name "$epoch"

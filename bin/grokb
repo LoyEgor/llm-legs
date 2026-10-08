@@ -382,7 +382,7 @@ pin_account() {
   esac
 }
 
-set_all_pool() { worker_pool_set_all "$pool_dir" grokb account_names "$1"; }
+set_all_pool() { worker_pool_set_all "$pool_dir" grokb account_names "$1" grok; }
 
 enable_account() {
   local name="${1:-}"

@@ -1574,7 +1574,7 @@ harvest_session_accounts() {
   lock_release "$lock"
 }
 
-set_all_pool() { worker_pool_set_all "$pool_dir" claudeb account_names "$1"; }
+set_all_pool() { worker_pool_set_all "$pool_dir" claudeb account_names "$1" claudeb; }
 
 enable_account() {
   local name="${1:-}" shield_overridden=false

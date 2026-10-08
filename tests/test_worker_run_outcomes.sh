@@ -368,4 +368,29 @@ this_minute=$(worker_walls_parse_reset "try again at $(date -r "$(( now / 60 * 6
 assert test "$this_minute" -le "$now"
 assert test "$(worker_walls_kind codex "$this_minute")" = unknown
 
+# Real wall wordings read as their reset, never now+1h: claude's zone suffix, comma and bare hour,
+# codex's dated retry behind a transcript's `git reset --hard`, gemini's compound duration, ISO UTC.
+wall_reset() { printf '%b\n' "$1" >"$WORK/wall.out"; worker_walls_parse_reset "$(worker_walls_extract_reset "$WORK/wall.out")"; }
+at() { date -j -f '%Y-%m-%d %H:%M:%S' "$1" +%s; }
+tomorrow=$(date -j -v+1d +%Y-%m-%d)
+kiev_2240=$(TZ=Europe/Kiev date -j -f '%Y-%m-%d %H:%M:%S' "$(TZ=Europe/Kiev date +%F) 22:40:00" +%s)
+[ "$kiev_2240" -gt "$((now - 300))" ] || kiev_2240=$((kiev_2240 + 86400))
+assert test "$(wall_reset '{"result":"You'\''ve hit your session limit · resets 10:40pm (Europe/Kiev)","is_error":true}')" = "$kiev_2240"
+assert test "$(wall_reset "You've hit your weekly limit · resets $(date -j -v+1d '+%b %e' | tr -s ' '), 9am")" = "$(at "$tomorrow 09:00:00")"
+assert test "$(wall_reset "\"result\":\"You've hit your weekly limit · resets $(date -j -v+1d '+%b %e' | tr -s ' ') at 10pm (Europe/Kiev)\"")" = \
+  "$(TZ=Europe/Kiev date -j -f '%Y-%m-%d %H:%M:%S' "$(TZ=Europe/Kiev date -j -v+1d +%F) 22:00:00" +%s)"
+three_pm=$(at "$(date +%F) 15:00:00")
+[ "$three_pm" -gt "$((now - 300))" ] || three_pm=$(at "$tomorrow 15:00:00")
+assert test "$(wall_reset 'resets 3pm')" = "$three_pm"
+assert test "$(wall_reset "run \`git reset --hard\` first\nor try again at $(date -j -v+2d '+%b %eth, %Y 3:52 AM' | tr -s ' ').")" = \
+  "$(at "$(date -j -v+2d +%F) 03:52:00")"
+gemini=$(wall_reset 'Individual quota reached. Resets in 1h40m8s.')
+assert test "$(( gemini - now ))" -ge 6008
+assert test "$(( gemini - now ))" -le 6068
+iso=$(date -u -j -v+1d +%Y-%m-%dT15:00:00)
+assert test "$(wall_reset "resets ${iso}Z")" = "$(TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%S' "$iso" +%s)"
+assert test -z "$(printf 'Connection reset by peer\npreset: 5\nretry at most once\n' >"$WORK/wall.out"; worker_walls_extract_reset "$WORK/wall.out")"
+dec31=$(at "$(date +%Y)-12-31 10:00:00")
+assert test "$(WORKER_WALLS_NOW=$dec31 worker_walls_parse_reset 'resets Jan 2 3:00 PM')" = "$(date -j -v+1y -f '%Y-%m-%d %H:%M:%S' "$(date +%Y)-01-02 15:00:00" +%s)"
+
 echo "PASS: $asserts asserts; read-only runs, outcome classification, codex trust and model retries, self-edit, pruning"

@@ -100,6 +100,20 @@ assert test "$(python3 "$ROOT/share/account_stores.py" remnants)" = \
 assert python3 "$ROOT/share/account_stores.py" purge codex ghost >/dev/null
 assert test ! -e "$walls/codex-ghost.tmp.4242" -a ! -e "$kicks/codex-quota-kick-ghost.lock"
 
+# A failed pool path read or pool rewrite is an error line and exit 1, never a traceback.
+fail_bash() { printf 'case "$BASH_EXECUTION_STRING" in *%s*) exit 3 ;; esac\n' "$1" >"$WORK/bash-env"; }
+fail_bash worker_walls_path
+out=$(BASH_ENV="$WORK/bash-env" python3 "$ROOT/share/account_stores.py" remnants 2>&1; echo "rc=$?")
+assert grep -q '^account_stores: cannot read the claudeb pool paths' <<<"$out"
+assert grep -qx 'rc=1' <<<"$out"
+stores fill codex ghost
+fail_bash worker_pool_set_disabled
+out=$(BASH_ENV="$WORK/bash-env" python3 "$ROOT/share/account_stores.py" purge codex ghost 2>&1; echo "rc=$?")
+assert grep -q '^account_stores: cannot rewrite .*/disabled without ghost$' <<<"$out"
+assert grep -qx 'rc=1' <<<"$out"
+assert python3 "$ROOT/share/account_stores.py" purge codex ghost >/dev/null
+assert test -z "$(stores held codex ghost)"
+
 # pipefail callers: an empty profiles directory, or one whose last entry is a file, still lists main.
 mkdir -p "$WORK/codex-empty" "$WORK/codex-file"; touch "$WORK/codex-file/zz"
 for dir in "$WORK/codex-empty" "$WORK/codex-file"; do

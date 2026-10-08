@@ -24,16 +24,18 @@ worker_walls_path() {
   printf '%s/%s-%s\n' "$(worker_walls_dir)" "$1" "$2"
 }
 
-# Same extraction print_outcome uses for RESET:.
-WORKER_WALLS_RESET_RE='(try again at|retry[_ -]?at|reset(s)?([_ -]?at|[ _-]?in)?)[[:space:]:=]+[^,;]+'
+# Same extraction print_outcome uses for RESET:. The value must open on a digit or a month and a
+# digit, or `git reset --hard` in a transcript masks the real wall line.
+WORKER_WALLS_RESET_RE='\<(try again at|retry[_ -]?at|reset(s)?([_ -]?at|[ _-]?in)?)[[:space:]:=]+([0-9]|(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?[[:space:]]+[0-9])([^,;"\\]|,[[:space:]]*[0-9])*'
 
 worker_walls_extract_reset() {
-  grep -Eioh "$WORKER_WALLS_RESET_RE" "$@" 2>/dev/null | head -n1
+  grep -Eioh "$WORKER_WALLS_RESET_RE" "$@" 2>/dev/null | tail -n1
 }
 
 worker_walls_parse_reset() {
-  local text="${1-}" rest epoch now n unit fmt
-  now=$(date +%s) || return 1
+  local text="${1-}" rest epoch now n unit fmt zone=''
+  local -a tz=()
+  now=${WORKER_WALLS_NOW:-$(date +%s)} || return 1
   if [ -z "$text" ]; then
     printf '%s\n' "$((now + 3600))"
     return 0
@@ -45,6 +47,10 @@ worker_walls_parse_reset() {
     *[!0-9]*) ;;
     *) printf '%s\n' "$rest"; return 0 ;;
   esac
+  if [[ "$rest" =~ ^(([0-9]+)h)?(([0-9]+)m)?(([0-9]+)s)?$ ]]; then
+    printf '%s\n' "$((now + 10#${BASH_REMATCH[2]:-0} * 3600 + 10#${BASH_REMATCH[4]:-0} * 60 + 10#${BASH_REMATCH[6]:-0}))"
+    return 0
+  fi
   n=$(printf '%s\n' "$rest" | sed -nE 's/^([0-9]+)[[:space:]]+[A-Za-z]+$/\1/p')
   unit=$(printf '%s\n' "$rest" | sed -nE 's/^[0-9]+[[:space:]]+//p' | tr '[:upper:]' '[:lower:]')
   if [ -n "$n" ]; then
@@ -54,22 +60,42 @@ worker_walls_parse_reset() {
       second|seconds|sec|secs|s) printf '%s\n' "$((now + n))"; return 0 ;;
     esac
   fi
+  case "$rest" in
+    *'('*')'*) zone=${rest##*(}; zone=${zone%%)*}; rest=${rest%%(*} ;;
+    *[0-9]Z) zone=UTC; rest=${rest%Z} ;;
+  esac
+  case "$zone" in
+    UTC) ;;
+    ''|*..*|/*) zone='' ;;
+    *) [ -f "/usr/share/zoneinfo/$zone" ] || zone='' ;;
+  esac
+  [ -z "$zone" ] || tz=(env "TZ=$zone")
+  rest=$(printf '%s\n' "$rest" | sed -E 's/,/ /g; s/[[:space:]]+at[[:space:]]+/ /I; s/[[:space:]]+/ /g; s/[[:space:]]+$//
+    s/(^|[[:space:]])([0-9]{1,2})[[:space:]]*([ap]m)$/\1\2:00\3/I')
+  # Every format takes the `%S` tail: without it date -j reads a prefix and fills the rest from now.
   for fmt in '%I:%M %p' '%I:%M%p' '%H:%M'; do
-    epoch=$(date -j -f "$fmt %S" "$rest 00" '+%s' 2>/dev/null) || continue
+    epoch=$(${tz[@]+"${tz[@]}"} date -j -f "$fmt %S" "$rest 00" '+%s' 2>/dev/null) || continue
     # A time without seconds that passed minutes ago is this wall clearing, not tomorrow's reset.
-    [ "$epoch" -gt "$((now - 300))" ] || epoch=$(date -j -v+1d -f "$fmt %S" "$rest 00" '+%s' 2>/dev/null) || continue
+    [ "$epoch" -gt "$((now - 300))" ] || epoch=$(${tz[@]+"${tz[@]}"} date -j -v+1d -f "$fmt %S" "$rest 00" '+%s' 2>/dev/null) || continue
     printf '%s\n' "$epoch"
     return 0
   done
   for fmt in '%b %e %I:%M %p' '%b %d %I:%M %p' '%b %e %I:%M%p' '%b %d %I:%M%p' \
-             '%b %e %H:%M' '%b %d %H:%M' '%Y-%m-%dT%H:%M:%S' '%Y-%m-%d %H:%M:%S' \
-             '%Y-%m-%dT%H:%M:%SZ'; do
-    epoch=$(date -j -f "$fmt" "$rest" '+%s' 2>/dev/null) || continue
+             '%b %e %H:%M' '%b %d %H:%M' '%b %e %Y %I:%M %p' '%b %e %Y %I:%M%p' '%b %e %Y %H:%M' \
+             '%Y-%m-%dT%H:%M:%S' '%Y-%m-%d %H:%M:%S'; do
+    epoch=$(${tz[@]+"${tz[@]}"} date -j -f "$fmt %S" "$rest 00" '+%s' 2>/dev/null) || continue
+    case "$fmt" in
+      %b*%Y*|%Y*) ;;
+      *) if [ "$epoch" -le "$now" ]; then
+           epoch=$(${tz[@]+"${tz[@]}"} date -j -v+1y -f "$fmt %S" "$rest 00" '+%s' 2>/dev/null) || continue
+           [ "$epoch" -le "$((now + 2678400))" ] || continue
+         fi ;;
+    esac
     [ "$epoch" -gt "$now" ] || continue
     printf '%s\n' "$epoch"
     return 0
   done
-  epoch=$(date -d "$rest" '+%s' 2>/dev/null) || true
+  epoch=$(${tz[@]+"${tz[@]}"} date -d "$rest" '+%s' 2>/dev/null) || true
   if [ -n "${epoch:-}" ] && [ "$epoch" -gt "$now" ]; then
     printf '%s\n' "$epoch"
     return 0

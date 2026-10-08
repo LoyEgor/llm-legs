@@ -2041,8 +2041,8 @@ def remnant_problems(window_h, now):
     ref = "share/account_stores.py"
     try:
         found = account_stores.remnants()
-    except account_roster.Unreadable as exc:
-        return [problem("remnant:roster", "account-remnant", "new", "account roster unreadable: %s" % exc, 1, 0,
+    except (account_roster.Unreadable, OSError) as exc:
+        return [problem("remnant:roster", "account-remnant", "new", "account roster or stores unreadable: %s" % exc, 1, 0,
                         "rosters", window_h, 0, 1, (now, now), [], None, group="accounts")]
     problems = []
     for vendor in sorted(found):

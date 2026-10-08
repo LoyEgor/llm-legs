@@ -328,7 +328,7 @@ pin_account() {
   esac
 }
 
-set_all_pool() { worker_pool_set_all "$pool_dir" codexb account_names "$1"; }
+set_all_pool() { worker_pool_set_all "$pool_dir" codexb account_names "$1" codex; }
 
 enable_account() {
   local name="${1:-}"

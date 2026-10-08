@@ -96,13 +96,14 @@ worker_pool_set_disabled() {
 # idempotent. `--all` is a flag to the caller and never an account name, whatever a directory
 # happens to be called.
 worker_pool_set_all() {
-  local dir="$1" tool="$2" names_fn="$3" mode="$4" name verb=enabled
+  local dir="$1" tool="$2" names_fn="$3" mode="$4" vendor="${5:-}" name verb=enabled
   if [ "$mode" = on ]; then verb=disabled; fi
   while IFS= read -r name; do
     [ -n "$name" ] && [ "$name" != --all ] || continue
     if [ "$mode" = on ]; then
       worker_pool_set_disabled "$dir" "$name" on
     else
+      [ -z "$vendor" ] || worker_pool_shield_override "$vendor" "$name"
       ! worker_pool_is_disabled "$dir" "$name" || worker_pool_set_disabled "$dir" "$name" off
     fi
     printf '%s: %s %s\n' "$tool" "$verb" "$name"
