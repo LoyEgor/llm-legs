@@ -1,16 +1,17 @@
 -- Automations ▸ Token tracking: tokenmap's week-over-week spend rows.
 --
 -- The whole Automations menu is rebuilt on every click, so this module reads one small JSON
--- tokenmap writes (tracking.json, or tracking-range.json for a chosen Compare range), decoded
--- once per size+mtime — never a query or a subprocess on the click path. Every number, label
--- and Δ tone is decided by tokenmap (tokenmap/tracking.py); this side only aligns the columns
--- and colours the tone.
+-- tokenmap writes (tracking.json, or tracking-range-<key>.json for a chosen Compare range),
+-- decoded once per size+mtime — never a query or a subprocess on the click path. Every number,
+-- label and Δ tone is decided by tokenmap (tokenmap/tracking.py); this side only aligns the
+-- columns and colours the tone. An export is current while its db_generation is the one in the
+-- `generation` file every tokenmap commit replaces; an outdated one is recomputed, never shown
+-- as current.
 
 local M = {}
 local menuStyle = require("menu-style")
 local HOME = os.getenv("HOME") or ""
 local DEFAULT_PATH = HOME .. "/.local/share/tokenmap/tracking.json"
-local DEFAULT_RANGE_PATH = HOME .. "/.local/share/tokenmap/tracking-range.json"
 local PAGE = HOME .. "/.local/share/tokenmap/tokenmap.html"
 local TOKENMAP = HOME .. "/.local/bin/tokenmap"
 local TASK_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -30,7 +31,7 @@ local DELTA_COLUMN = 3
 local RED = menuStyle.RED
 local TONES = { worse = RED, better = menuStyle.GREEN }
 
-local path, rangePath = DEFAULT_PATH, DEFAULT_RANGE_PATH
+local path = DEFAULT_PATH
 local caches = {}
 local pasteboardFn = function(text) hs.pasteboard.setContents(text) end
 local alertFn = function(text) hs.alert.show(text, 4) end
@@ -44,7 +45,9 @@ local function askSince(default)
 end
 local promptFn = askSince
 local scanTask, scanStarted, scanError, jobLabel = nil, nil, nil, nil
-local active, wanted = nil, nil
+local jobSoft, jobSerial, sevenOwed = false, 0, false
+local active, fallback = nil, nil
+local tried = {}
 
 local function readFile(file)
     local handle = io.open(file, "r")
@@ -70,6 +73,34 @@ local function load(file)
     end
     caches[file] = { stamp = stamp, data = data, problem = problem }
     return data, problem, attrs
+end
+
+local function besideExports(name)
+    return (path:match("^(.*)/[^/]*$") or ".") .. "/" .. name
+end
+
+-- Read on every call: a token is always 17 bytes, so a size+mtime stamp misses two commits in
+-- one second.
+local function generation()
+    local file = besideExports("generation")
+    local attrs = hs.fs.attributes(file)
+    if not attrs then return nil, nil end
+    return (readFile(file) or ""):match("^%s*(%x+)%s*$"), attrs
+end
+
+local function outdated(data)
+    local current = generation()
+    return current ~= nil and (type(data) ~= "table" or data.db_generation ~= current)
+end
+
+-- When the export last matched the database: a later scan that changed nothing confirms it.
+local function freshAt(data, attrs)
+    local current, genAttrs = generation()
+    local at = attrs.modification
+    if current and genAttrs and type(data) == "table" and data.db_generation == current then
+        at = math.max(at, genAttrs.modification)
+    end
+    return at
 end
 
 local function dimColor()
@@ -205,7 +236,7 @@ end
 local function isStale(data, attrs)
     if not data or not attrs then return true end
     local hours = tonumber(data.stale_after_hours) or STALE_HOURS
-    return os.time() - attrs.modification > hours * 3600
+    return os.time() - freshAt(data, attrs) > hours * 3600
 end
 
 local function rangeLabel(range)
@@ -227,8 +258,8 @@ local function activeRange()
     return active
 end
 
-local function activePath()
-    return activeRange() == RANGES[1] and path or rangePath
+local function rangeFile(range)
+    return range == RANGES[1] and path or besideExports("tracking-range-" .. range.key .. ".json")
 end
 
 local function statusItems(data, problem, attrs, snapshot)
@@ -239,7 +270,7 @@ local function statusItems(data, problem, attrs, snapshot)
     elseif problem == "unreadable" then
         items[#items + 1] = { title = style("data unreadable", RED), disabled = true }
     else
-        local age = os.time() - attrs.modification
+        local age = os.time() - (snapshot and attrs.modification or freshAt(data, attrs))
         local through = clock(data.data_through or data.generated_at)
         local verb = (snapshot and age > SNAPSHOT_HOURS * 3600) and "computed" or "scanned"
         local text = string.format("7 days to %s vs the 7 before · %s %s", through, verb, menuStyle.ago(age))
@@ -248,7 +279,11 @@ local function statusItems(data, problem, attrs, snapshot)
                 menuStyle.ago(age))
         end
         local stale = not snapshot and isStale(data, attrs)
-        if stale then text = "stale: " .. text end
+        if not running and outdated(data) then
+            stale, text = true, "outdated: " .. text
+        elseif stale then
+            text = "stale: " .. text
+        end
         items[#items + 1] = { title = style(text, stale and RED or dimColor()), disabled = true }
     end
     if running then
@@ -274,16 +309,19 @@ local function remember(range)
     settingsStore.set(SETTINGS_KEY, { key = range.key, since = range.since })
 end
 
-local function startStep(steps, index, onDone)
+local function startStep(steps, index, serial, onStep)
     local step = steps[index]
     local task = taskFn(step.launch, function(code, _, err)
+        if serial ~= jobSerial then return end
         scanTask = nil
         if code ~= 0 then
             scanError = lastLine(err) or ("exit " .. tostring(code))
-            return onDone(false)
+            return onStep(step, false)
         end
-        if index == #steps then return onDone(true) end
-        if not startStep(steps, index + 1, onDone) then onDone(false) end
+        onStep(step, true)
+        if index < #steps and not startStep(steps, index + 1, serial, onStep) then
+            onStep(steps[index + 1], false)
+        end
     end, step.args)
     if not task then
         scanError = "could not start " .. TOKENMAP
@@ -294,58 +332,93 @@ local function startStep(steps, index, onDone)
         scanError = "could not start " .. TOKENMAP
         return false
     end
-    scanTask = task
+    scanTask, jobSoft, jobLabel = task, step.soft or false, step.label
     return true
 end
 
-local function startJob(range, scanFirst)
+-- The view asked for runs at normal priority; the 7-day export a range run leaves behind its
+-- scan follows at nice 19, and the next click may cut it short: it is owed until a run writes it.
+local function startJob(range, scanFirst, quiet)
     if scanTask then return false end
     scanError = nil
-    local steps = {}
-    if scanFirst then steps[1] = { launch = TOKENMAP, args = { "scan", "--quiet" } } end
+    jobSerial = jobSerial + 1
     local ranged = range ~= RANGES[1]
+    local label = rangeLabel(range)
+    local steps = {}
+    if scanFirst and ranged then
+        steps[1] = { launch = TOKENMAP, args = { "scan", "--quiet", "--no-tracking" }, label = label }
+        sevenOwed = true
+    elseif scanFirst then
+        steps[1] = { launch = TOKENMAP, args = { "scan", "--quiet" }, label = nil, view = true, seven = true }
+    end
     if ranged then
-        local args = { "-n", "10", TOKENMAP, "tracking" }
+        local args = { "tracking" }
         if range.key == "custom" then
             args[#args + 1], args[#args + 2] = "--since", range.since
         else
             args[#args + 1], args[#args + 2] = "--range", range.key
         end
         args[#args + 1] = "--write"
-        steps[#steps + 1] = { launch = "/usr/bin/nice", args = args }
+        steps[#steps + 1] = { launch = TOKENMAP, args = args, label = label, view = true }
+        if sevenOwed then
+            steps[#steps + 1] = { launch = "/usr/bin/nice", label = RANGES[1].label, soft = true, seven = true,
+                                  args = { "-n", "19", TOKENMAP, "tracking", "--write" } }
+        end
+    elseif not scanFirst then
+        steps[1] = { launch = TOKENMAP, args = { "tracking", "--write" }, label = RANGES[1].label, view = true,
+                     seven = true }
     end
-    jobLabel = ranged and rangeLabel(range) or nil
-    wanted = ranged and range or nil
     scanStarted = os.time()
-    local what = ranged and ("Token tracking " .. rangeLabel(range)) or "Token tracking refresh"
-    local started = startStep(steps, 1, function(ok)
-        if ok and ranged and wanted == range then remember(range) end
+    local what = ranged and ("Token tracking " .. label) or "Token tracking refresh"
+    local started = startStep(steps, 1, jobSerial, function(step, ok)
+        if ok and step.seven then sevenOwed = false end
+        if step.soft then return end
+        if not step.view and ok then return end
+        if ok and ranged and active == range then remember(range) end
+        if not ok and ranged and active == range and fallback then active = fallback end
+        if quiet then return end
         if ok then
             alertFn(ranged and (what .. " ready") or "Token tracking updated")
         else
             alertFn(what .. " failed: " .. scanError)
         end
     end)
-    if not started then alertFn(what .. " failed: " .. scanError) end
+    if not started and not quiet then alertFn(what .. " failed: " .. scanError) end
     return started
 end
 
+local function yieldSoft()
+    if not (scanTask and jobSoft) then return not scanTask end
+    jobSerial = jobSerial + 1
+    scanTask:terminate()
+    scanTask, jobSoft, jobLabel = nil, false, nil
+    return true
+end
+
+local function lastScan()
+    local _, genAttrs = generation()
+    local attrs = genAttrs or hs.fs.attributes(path)
+    return attrs and attrs.modification
+end
+
 function M.rescan()
+    if not yieldSoft() then return false end
     return startJob(activeRange(), true)
 end
 
 function M.choose(range)
-    if range == RANGES[1] then
-        wanted = nil
-        remember(range)
-        return true
-    end
-    if scanTask then
+    if scanTask and not jobSoft and range ~= RANGES[1] then
         alertFn("Token tracking is busy; try again when it finishes")
         return false
     end
-    local attrs = hs.fs.attributes(path)
-    return startJob(range, not attrs or os.time() - attrs.modification > SCAN_FIRST_SECONDS)
+    if range == RANGES[1] then
+        remember(range)
+        return true
+    end
+    yieldSoft()
+    fallback, active = activeRange(), range
+    local scanned = lastScan()
+    return startJob(range, not scanned or os.time() - scanned > SCAN_FIRST_SECONDS)
 end
 
 local function compareItem()
@@ -377,8 +450,14 @@ function M.title(watcherAlarm)
 end
 
 function M.menuItems(changeLogItem)
-    local file = activePath()
+    local range = activeRange()
+    local file = rangeFile(range)
     local data, problem, attrs = load(file)
+    local current = generation()
+    if current and tried[file] ~= current and outdated(data) and (not scanTask or jobSoft and file ~= path) then
+        tried[file] = current
+        if yieldSoft() then startJob(range, false, true) end
+    end
     local items = statusItems(data, problem, attrs, file ~= path)
     items[#items + 1] = compareItem()
     if data then
@@ -411,14 +490,14 @@ function M.menuItems(changeLogItem)
         end }
     end
     items[#items + 1] = { title = "-" }
-    items[#items + 1] = scanTask and { title = "refreshing…", disabled = true }
+    items[#items + 1] = (scanTask and not jobSoft) and { title = "refreshing…", disabled = true }
         or { title = "Refresh", fn = function() M.rescan() end }
     return menuStyle.mono(items, style)
 end
 
-function M.setPath(value, rangeValue)
-    path, rangePath = value or DEFAULT_PATH, rangeValue or DEFAULT_RANGE_PATH
-    caches = {}
+function M.setPath(value)
+    path = value or DEFAULT_PATH
+    caches, tried = {}, {}
 end
 function M.setPasteboard(fn) pasteboardFn = fn or function(text) hs.pasteboard.setContents(text) end end
 function M.setAlert(fn) alertFn = fn or function(text) hs.alert.show(text, 4) end end

@@ -185,13 +185,14 @@ local stale = M.menuItems(nil, nil)
 check(text(stale[1].title):find("^stale: 7 days to ") ~= nil, "a 30h-old export is not stale: " .. text(stale[1].title))
 check(text(M.title("down")) == "Token tracking: stale · watcher down", "alarm title: " .. text(M.title("down")))
 
-local rangePath = dir .. "/tracking-range.json"
+local rangePath = dir .. "/tracking-range-24h.json"
 local stored, launched, answer = {}, {}, nil
 local store = { get = function(key) return stored[key] end, set = function(key, value) stored[key] = value end }
 local function fakeTask(launch, callback, args)
     local task = { launch = launch, callback = callback, args = args }
     function task:setEnvironment(env) self.env = env end
     function task:start() return true end
+    function task:terminate() self.terminated = true end
     launched[#launched + 1] = task
     return task
 end
@@ -204,7 +205,7 @@ local function compare(list)
     end
     return item, table.concat(marked, ",")
 end
-M.setPath(path, rangePath)
+M.setPath(path)
 M.setSettings(store)
 M.setTask(fakeTask)
 M.setPrompt(function() return answer end)
@@ -216,14 +217,15 @@ check(compareItem and ranged[2] == compareItem and marked == "7 days vs 7 before
     "the Compare submenu is not under the status line with 7 days checked: " .. marked)
 alerts = {}
 find(compareItem.menu, "24h vs 24h before").fn()
-check(#launched == 1 and argLine(launched[1]) == "nice -n 10 " .. os.getenv("HOME") .. "/.local/bin/tokenmap tracking --range 24h --write"
+check(#launched == 1 and argLine(launched[1]) == "tokenmap tracking --range 24h --write"
     and launched[1].env.HOME == os.getenv("HOME") and launched[1].env.PATH:find("/usr/bin", 1, true),
-    "a fresh export did not go straight to the nice'd range run: " .. argLine(launched[1]))
+    "a fresh export did not go straight to the range run at normal priority: " .. argLine(launched[1]))
 check(text(M.menuItems(nil)[2].title):find("^computing 24h vs 24h before since ") ~= nil, "no computing status while the range runs")
 find(compare(M.menuItems(nil)).menu, "3 days vs 3 before").fn()
 check(#launched == 1 and M.rescan() == false and alerts[1] and alerts[1]:find("busy", 1, true),
     "a second job started while one ran")
-check(select(2, compare(M.menuItems(nil))) == "7 days vs 7 before", "the checkmark moved before the range finished")
+check(select(2, compare(M.menuItems(nil))) == "24h vs 24h before" and stored["tokenTracking.range"] == nil,
+    "the chosen range is not shown while it computes, or was remembered before it finished")
 
 local rangeFixture = hs.json.decode(hs.json.encode(fixture))
 rangeFixture.version = 3
@@ -249,12 +251,18 @@ hs.fs.touch(path, os.time() - 40 * 60)
 check(text(M.title(nil)) == "Token tracking", "a 40m-old tracking.json raised the title alarm")
 launched = {}
 find(compare(M.menuItems(nil)).menu, "Today vs yesterday, same hours").fn()
-check(#launched == 1 and argLine(launched[1]) == "tokenmap scan --quiet", "a 40m-old export did not scan first")
+check(#launched == 1 and argLine(launched[1]) == "tokenmap scan --quiet --no-tracking", "a 40m-old export did not scan first")
 launched[1].callback(0, "", "")
-check(#launched == 2 and argLine(launched[2]):find("tracking --range today --write", 1, true) ~= nil,
+check(#launched == 2 and argLine(launched[2]) == "tokenmap tracking --range today --write",
     "the range did not follow the scan: " .. argLine(launched[2]))
 launched[2].callback(0, "", "")
-check(select(2, compare(M.menuItems(nil))) == "Today vs yesterday, same hours", "today is not checked")
+check(alerts[#alerts] == "Token tracking Today vs yesterday, same hours ready"
+    and #launched == 3 and argLine(launched[3]) == "nice -n 19 " .. os.getenv("HOME") .. "/.local/bin/tokenmap tracking --write",
+    "the 7-day export did not follow the range at nice 19: " .. argLine(launched[3]))
+local afterRange = M.menuItems(nil)
+check(select(2, compare(afterRange)) == "Today vs yesterday, same hours"
+    and text(afterRange[2].title):find("^computing 7 days vs 7 before since ") ~= nil,
+    "today is not checked, or the 7-day export is not shown computing")
 
 launched, answer = {}, "  yesterday 18:00 "
 find(compare(M.menuItems(nil)).menu, "Since…").fn()
@@ -277,13 +285,13 @@ launched[2].callback(0, "", "")
 check(select(2, compare(M.menuItems(nil))) == "Since yesterday 18:00", "the custom range is not checked")
 
 local reloaded = assert(loadfile(root .. "/hammerspoon/token-tracking.lua"))()
-reloaded.setPath(path, rangePath)
+reloaded.setPath(path)
 reloaded.setSettings(store)
 check(select(2, compare(reloaded.menuItems(nil))) == "Since yesterday 18:00", "the selection did not survive a reload")
 
 launched = {}
 find(M.menuItems(nil), "Refresh").fn()
-check(#launched == 1 and argLine(launched[1]) == "tokenmap scan --quiet", "Refresh did not scan first")
+check(#launched == 1 and argLine(launched[1]) == "tokenmap scan --quiet --no-tracking", "Refresh did not scan first")
 launched[1].callback(0, "", "")
 check(#launched == 2 and argLine(launched[2]):find("tracking --since yesterday 18:00 --write", 1, true) ~= nil,
     "Refresh did not re-run the active range")
@@ -300,6 +308,63 @@ check(#launched == 1 and argLine(launched[1]) == "tokenmap scan --quiet", "the d
 launched[1].callback(0, "", "")
 check(#launched == 1 and alerts[#alerts] == "Token tracking updated", "the default Refresh chained a range run")
 os.remove(rangePath)
+
+local genPath = dir .. "/generation"
+local function setGeneration(token)
+    local file = assert(io.open(genPath, "w"))
+    file:write(token .. "\n")
+    file:close()
+end
+local current = hs.json.decode(hs.json.encode(fixture))
+current.db_generation = "aaaa000000000001"
+write(hs.json.encode(current))
+setGeneration("aaaa000000000001")
+hs.fs.touch(path, os.time() - 30 * 3600)
+launched = {}
+local fresh = M.menuItems(nil)
+check(#launched == 0 and text(fresh[1].title):find("^7 days to ") ~= nil and text(M.title(nil)) == "Token tracking",
+    "an export a later scan confirmed is not current: " .. text(fresh[1].title))
+setGeneration("bbbb000000000002")
+local moved = M.menuItems(nil)
+check(#launched == 1 and argLine(launched[1]) == "tokenmap tracking --write"
+    and text(moved[2].title):find("^computing 7 days vs 7 before since ") ~= nil,
+    "an outdated export was not recomputed at once: " .. argLine(launched[1]))
+launched[1].callback(0, "", "")
+moved = M.menuItems(nil)
+check(#launched == 1 and text(moved[1].title):find("^outdated: 7 days to ") ~= nil,
+    "an export still outdated after its run is shown as current or run again: " .. text(moved[1].title))
+current.db_generation = "bbbb000000000002"
+write(hs.json.encode(current))
+local function writeRange(key)
+    local body = hs.json.decode(hs.json.encode(rangeFixture))
+    body.db_generation, body.range.key = "bbbb000000000002", key
+    local file = assert(io.open(dir .. "/tracking-range-" .. key .. ".json", "w"))
+    file:write(hs.json.encode(body))
+    file:close()
+end
+hs.fs.touch(genPath, os.time() - 40 * 60)
+find(compare(M.menuItems(nil)).menu, "24h vs 24h before").fn()
+launched[2].callback(0, "", "")
+hs.fs.touch(genPath)
+writeRange("24h")
+launched[3].callback(0, "", "")
+local soft = launched[4]
+check(argLine(soft):find("nice -n 19", 1, true) ~= nil and find(M.menuItems(nil), "Refresh").fn ~= nil,
+    "the 7-day export after a range is not soft or blocks Refresh")
+find(compare(M.menuItems(nil)).menu, "3 days vs 3 before").fn()
+check(soft.terminated and argLine(launched[5]) == "tokenmap tracking --range 3d --write"
+    and argLine(launched[6] or launched[5]):find("nice -n 19", 1, true) == nil,
+    "a click did not cut the soft 7-day export short: " .. argLine(launched[5]))
+soft.callback(15, "", "terminated")
+writeRange("3d")
+launched[5].callback(0, "", "")
+check(argLine(launched[6]):find("nice -n 19", 1, true) ~= nil and text(M.menuItems(nil)[2].title):find("^computing 7 days") ~= nil,
+    "the cut 7-day export is not owed to the next run, or its kill showed as a failure")
+launched[6].callback(0, "", "")
+find(compare(M.menuItems(nil)).menu, "7 days vs 7 before").fn()
+os.remove(genPath)
+os.remove(rangePath)
+os.remove(dir .. "/tracking-range-3d.json")
 
 write('{"rows": [{"label": null, "cells": ["1"], "weeks": [{"label": "Sep 22–28", "cell": "1"}],'
     .. ' "weeks_unit": "per context", "sections": []}], "unit_label": "limit tokens"}')

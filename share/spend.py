@@ -240,7 +240,9 @@ def day_value(day, cmd):
     """tokenmap's 7-day window ending with the day, the live reading's window then."""
     first = datetime.date.fromisoformat(day) - datetime.timedelta(days=6)
     after = datetime.date.fromisoformat(day) + datetime.timedelta(days=1)
-    out = subprocess.run(cmd + ["tracking", "--since", first.isoformat(), "--until", after.isoformat(), "--json"],
+    # Nobody waits on a backfill, and harness-doctor's launchd job is Standard at Nice 10 only.
+    out = subprocess.run(["/usr/bin/nice", "-n", "19", *cmd, "tracking", "--since", first.isoformat(), "--until",
+                          after.isoformat(), "--json"],
                          capture_output=True, text=True, timeout=TOKENMAP_S, stdin=subprocess.DEVNULL, check=True)
     return index_value(harness_index(json.loads(out.stdout)))
 
