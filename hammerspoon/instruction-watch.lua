@@ -181,7 +181,7 @@ function M.pump()
     watchStart()
     watchTick()
     local result = { delivered = 0, alerted = 0, stale = 0 }
-    local events = readJournal()
+    local _, events = readJournal()
     if #events == 0 then return result end
     if not ensureReceiptDir() then return result end
     pcall(resolveChatNames, events)
@@ -347,6 +347,7 @@ end
 -- receipts so a restart does not ask again. An id the resolver cannot name is retried hourly:
 -- a chat gains its title after its first turn, which is often after its first edit.
 local CHAT_RETRY = 3600
+local CHAT_WAIT = 30
 local chatNames, chatPending, chatRerun = nil, false, false
 local function chatCachePath() return stateDir .. "/chat-names.json" end
 local function loadChatNames()
@@ -509,6 +510,7 @@ exit 0
 ]==]
 
 local W = nil
+local downSince = nil
 local watchWanted = false
 local homeOverride = nil
 local function homeDir() return homeOverride or os.getenv("HOME") or "" end
@@ -628,9 +630,11 @@ local function writeHeartbeat()
     local roots, files = 0, 0
     for _ in pairs(W.watchers) do roots = roots + 1 end
     for _ in pairs(W.prev) do files = files + 1 end
+    local failure = W.error or W.pruneError
+    if failure or roots == 0 then downSince = downSince or os.time() else downSince = nil end
     hs.fs.mkdir(watchDir())
-    writeFile(heartbeatPath(), string.format("since=%d roots=%d files=%d%s\n", W.since, roots, files,
-        (W.error or W.pruneError) and (" error=" .. (W.error or W.pruneError)) or ""))
+    writeFile(heartbeatPath(), string.format("since=%d roots=%d files=%d%s\n", downSince or W.since, roots, files,
+        failure and (" error=" .. failure) or ""))
 end
 
 local function refreshInflight()
@@ -733,7 +737,10 @@ local function watchEmit(entries, kind)
             local keys = {}
             for _, entry in ipairs(claimed) do
                 keys[#keys + 1] = entry.key
-                if W then W.prev[entry.vis] = entry.old; W.dirty = true end
+                if W then
+                    W.prev[entry.vis], W.dirty = entry.old, true
+                    if entry.verb == "ADDED" then W.readd[entry.vis] = true end
+                end
             end
             runScan("release", keys)
             return
@@ -743,7 +750,13 @@ local function watchEmit(entries, kind)
     local sids = kind == "change" and writersAt(stamps) or {}
     if #sids == 0 then return finish() end
     record.sid = sids[1]
-    chatResolverFn(sids, function(stdout)
+    -- The marker is already claimed, so the hook stays silent for this write: a resolver that
+    -- never answers may not keep the record out of the journal.
+    local settled, guard = false, nil
+    local function settle(stdout)
+        if settled then return end
+        settled = true
+        if guard then guard:stop(); guard = nil end
         local found = parseResolver(stdout)
         local labels = {}
         for _, sid in ipairs(sids) do
@@ -756,7 +769,11 @@ local function watchEmit(entries, kind)
         local first = found[sids[1]:sub(1, 8)]
         if first and first.name ~= "" then record.chat = first.name end
         finish()
-    end)
+    end
+    if hs.timer and hs.timer.doAfter then
+        guard = hs.timer.doAfter(CHAT_WAIT, function() guard = nil; settle("") end)
+    end
+    chatResolverFn(sids, settle)
 end
 
 local function describeChange(verb, suffix, vis, delta)
@@ -798,7 +815,8 @@ local function watchCheck(paths, forceHash, suffix, kind, addedSince)
                     delta = -(old.size or 0) }
             end
         elseif old == nil then
-            local added = bornSince(path, addedSince)
+            local added = W.readd[path] or bornSince(path, addedSince)
+            W.readd[path] = nil
             cur.trust = not added
             W.prev[path], W.dirty = cur, true
             if added then
@@ -955,7 +973,7 @@ watchStart = function()
     if W or not watchWanted then return end
     if not (hs.pathwatcher and hs.pathwatcher.new) then return end
     if hs.fs.attributes(stateDir, "mode") ~= "directory" then return end
-    W = { prev = {}, watchers = {}, inflight = {}, list = {}, byReal = {}, since = os.time(), busy = true }
+    W = { prev = {}, watchers = {}, inflight = {}, list = {}, byReal = {}, readd = {}, since = os.time(), busy = true }
     hs.fs.mkdir(watchDir())
     local snapshotBorn = hs.fs.attributes(snapshotPath(), "modification")
     local snapshot = readSnapshot()
@@ -981,15 +999,23 @@ watchStart = function()
         else
             W.prev = snapshot
             watchCheck(paths, true, "-WHILE-WATCHER-OFF", "changed-while-watcher-off", snapshotBorn)
+            if W.error then return end
         end
         W.byReal = {}
         for _, path in ipairs(watchPaths()) do W.byReal[path] = path; W.byReal[realOf(path)] = path end
         writeSnapshot()
+        W.started = true
     end)
     if not ok and W then W.error = W.error or "start failed" end
     if W then
         writeHeartbeat()
         W.busy = false
+        -- A half-started W has an empty prev and no listing, so its first tick would take every
+        -- file as found and overwrite the snapshot: drop it and redo the start on the next tick.
+        if not W.started then
+            for _, watcherObj in pairs(W.watchers) do pcall(function() watcherObj:stop() end) end
+            W = nil
+        end
     end
 end
 
@@ -1355,6 +1381,7 @@ function M.stop()
     if timer then timer:stop(); timer = nil end
     watchStop()
     watchWanted = false
+    downSince = nil
 end
 
 -- Both exist for the test harness, which runs inside the real Hammerspoon: it points the module at

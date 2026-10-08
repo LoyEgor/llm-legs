@@ -599,6 +599,13 @@ local ok, err = pcall(function()
     end
     local doc, settings = wf.home .. "/.claude/docs/x.md", wf.home .. "/.claude/settings.json"
     local heartbeat = wf.state .. "/watcher/heartbeat"
+    local plainIo = io
+    local function failing(mode)
+        return setmetatable({ popen = function(command, ...)
+            if command:find(quoted(wf.state) .. " " .. mode .. " ", 1, true) then return nil end
+            return plainIo.popen(command, ...)
+        end }, { __index = plainIo })
+    end
 
     alerts = {}
     M.start()
@@ -740,6 +747,20 @@ local ok, err = pcall(function()
         "a change while the watcher was off was not journaled against its snapshot")
 
     M.stop()
+    before = #records()
+    write(doc, "while the first listing failed\n")
+    io = failing("list")
+    local listFailed = pcall(M.start)
+    io = plainIo
+    check(listFailed and (readFile(heartbeat) or ""):find("error=", 1, true) ~= nil,
+        "a failed first listing left no error in the heartbeat")
+    M.pump()
+    local relisted = records()
+    check(#relisted == before + 1
+        and tostring(relisted[#relisted].summary):find("CHANGED-WHILE-WATCHER-OFF " .. doc, 1, true) ~= nil,
+        "a watcher whose first listing failed took a change made while it was off as found: " .. (#relisted - before))
+
+    M.stop()
     local catalog = wf.home .. "/.claude/plugins/marketplaces/official/README.md"
     os.execute("mkdir -p " .. quoted(wf.home .. "/.claude/plugins/marketplaces/official"))
     write(catalog, "catalog clone grew\n", "w")
@@ -767,6 +788,46 @@ local ok, err = pcall(function()
     check(not (readFile(wf.state .. "/watcher/snapshot.tsv") or ""):find("marketplaces", 1, true)
         and not (readFile(heartbeat) or ""):find("error=", 1, true),
         "the next tick did not retry the failed unloaded scan")
+
+    local healthy = tonumber((readFile(heartbeat) or ""):match("since=(%d+)")) or os.time()
+    while os.time() <= healthy do os.execute("sleep 0.2") end
+    local failedFrom = os.time()
+    io = failing("list")
+    M.watchTick()
+    io = plainIo
+    local downBeat = readFile(heartbeat) or ""
+    check(downBeat:find("error=", 1, true) ~= nil and (tonumber(downBeat:match("since=(%d+)")) or 0) >= failedFrom,
+        "a watcher that began failing after it started reports down since its start: " .. downBeat)
+    M.watchTick()
+
+    local born = wf.home .. "/.claude/docs/born.md"
+    before = #records()
+    write(born, "new doc\n", "w")
+    io = failing("append")
+    M.watchTick()
+    io = plainIo
+    os.execute("touch -t 202001010000 " .. quoted(born))
+    M.watchTick()
+    local readded = records()
+    check(#readded == before + 1 and tostring(readded[#readded].summary):find("ADDED " .. born, 1, true) ~= nil,
+        "an addition whose journal append failed was taken as found on the retry: " .. (#readded - before))
+
+    local hung = "bbbb2222-0000-4000-8000-00000000000e"
+    write(wf.state .. "/inflight/" .. hung .. "@toolu_hung",
+        string.format("%d.000000000 toolu_hung Bash /tmp\n", os.time() - 5), "w")
+    local savedAfter, expire = hs.timer.doAfter, nil
+    hs.timer.doAfter = function(_, fn) expire = fn; return { stop = function() end } end
+    M.setChatResolver(function() end)
+    before = #records()
+    write(doc, "while the resolver hangs\n")
+    fire(doc)
+    hs.timer.doAfter = savedAfter
+    os.remove(wf.state .. "/inflight/" .. hung .. "@toolu_hung")
+    if expire then expire() end
+    local waited = records()
+    check(#waited == before + 1 and waited[#waited].sid == hung,
+        "a write whose chat-name never answered was never journaled: " .. (#waited - before))
+    M.setChatResolver(function(_, onDone) onDone("") end)
 
     local fresh = os.time()
     hs.fs.touch(heartbeat, fresh - 10 * 60, fresh - 10 * 60)
@@ -812,6 +873,7 @@ local ok, err = pcall(function()
     local last = bounded[#bounded] or {}
     check(#bounded == 400 and last.kind == "dropped" and last.count == 2,
         "the watcher's append past the bound dropped records without a dropped record: " .. #bounded)
+    check(readFile(wf.state .. "/receipts/flood0003") ~= nil, "a record behind the newest 200 was never receipted")
 
     M.stop()
     M.setHome(nil)
