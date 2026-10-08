@@ -228,6 +228,34 @@ EOF
   assert test "$(cat "$RUN_DIR/exit_code")" -eq 5
   assert grep -qx 'READ_ONLY_VIOLATION' "$RUN_DIR/research-outcome"
   rm -f "$nongit/leaked.txt" "$STUB_DIR/relay_hook"
+  # The non-git digest hashes its files in one git start, re-batching past a file it cannot read,
+  # and a one-byte edit still moves it.
+  (
+    eval "$(sed -n '/^non_git_tree_digest() {/,/^}/p' "$RUNNER")"
+    mkdir -p "$nongit/sub" "$WORK/digest-shim"
+    for name in a b c sub/d sub/e; do printf '%s\n' "$name" >"$nongit/$name"; done
+    ln -s a "$nongit/link"
+    printf '#!/usr/bin/env bash\necho >>"%s/starts"\nexec %s "$@"\n' "$WORK/digest-shim" "$(command -v git)" \
+      >"$WORK/digest-shim/git"
+    chmod +x "$WORK/digest-shim/git"
+    : >"$WORK/digest-shim/starts"
+    clean=$(PATH="$WORK/digest-shim:$PATH" non_git_tree_digest "$nongit")
+    assert test "$(wc -l <"$WORK/digest-shim/starts" | tr -d ' ')" = 1
+    assert grep -qxF "$(printf 'f\t%s\t./sub/d' "$(git hash-object "$nongit/sub/d")")" <<<"$clean"
+    assert grep -qxF "$(printf 'l\ta\t./link')" <<<"$clean"
+    assert grep -qxF "$(printf 'd\t./sub')" <<<"$clean"
+    chmod 000 "$nongit/b"
+    : >"$WORK/digest-shim/starts"
+    unreadable=$(PATH="$WORK/digest-shim:$PATH" non_git_tree_digest "$nongit")
+    assert test "$(wc -l <"$WORK/digest-shim/starts" | tr -d ' ')" = 3
+    assert grep -qxF "$(printf 'f\t-\t./b')" <<<"$unreadable"
+    assert test "$(grep -vF './b' <<<"$unreadable")" = "$(grep -vF './b' <<<"$clean")"
+    chmod 644 "$nongit/b"
+    printf 'c\r' >"$nongit/c"
+    assert test "$(non_git_tree_digest "$nongit")" != "$clean"
+    rm -rf "$nongit/sub" "$nongit/link" "$nongit/a" "$nongit/b" "$nongit/c"
+  )
+  assert test "$?" -eq 0
   # A claudeb worker is told up front what worker-edit-guard would otherwise refuse call by call.
   web_search_launch "$WORK/websearch/plain" claudeb
   assert grep -qF 'EDITS: change repository files only through the Edit and Write tools' "$RUN_DIR/brief.launch"

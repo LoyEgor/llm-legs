@@ -334,6 +334,41 @@ assert test "$(grep -c 'cx-no-event-failed' <<<"$report")" -eq 0
 assert grep -q '^RUN-FILES-PARTIAL: the run also ran shell commands' <<<"$report"
 assert grep -qx 'bin/cx-patched' "$WORK/transcript-files"
 
+# The watchdog parses a transcript again only once it moved, and no command after the first shell
+# write is classified: that write already settled the reason.
+cp "$CX_ROLLOUT" "$WORK/memo-rollout.saved"
+mkdir -p "$WORK/memo-run" "$WORK/memo-shim"
+jq -n --arg w "$cx_workdir" '{vendor: "codex", account: "codexfiles", workdir: $w, started_at: 0}' \
+  >"$WORK/memo-run/meta.json"
+printf 'session id: codex-session\n' >"$WORK/memo-run/err"
+printf '#!/usr/bin/env bash\necho >>"%s/starts"\nexec %s "$@"\n' "$WORK/memo-shim" "$(command -v python3)" \
+  >"$WORK/memo-shim/python3"
+chmod +x "$WORK/memo-shim/python3"
+{
+  cx_call exec_command "{\"cmd\":\"sed -i '' s/a/b/ bin/cx-patched\",\"workdir\":\"$cx_workdir\"}"
+  for memo_i in 1 2 3 4 5; do
+    cx_call exec_command "{\"cmd\":\"git status --short $memo_i\",\"workdir\":\"$cx_workdir\"}"
+  done
+} >"$CX_ROLLOUT"
+(
+  . "$WORK/transcript-report.fns"
+  TRANSCRIPT_MEMO=''
+  memo_parse() { : >"$WORK/memo-shim/starts"; PATH="$WORK/memo-shim:$PATH" compute_transcript_files "$WORK/memo-run"; }
+  memo_parse
+  assert test "$(grep -c '' "$WORK/memo-shim/starts")" = 1
+  assert grep -q 'wrote through the shell' <<<"$RUN_FILES_REASON"
+  first="$RUN_FILES_REASON|$RUN_FILES_LIST|$RUN_FILES_PARTIAL|$RUN_FILES_ESCAPE|$RUN_SHELL_COMMANDS"
+  memo_parse
+  assert test ! -s "$WORK/memo-shim/starts"
+  assert test "$RUN_FILES_REASON|$RUN_FILES_LIST|$RUN_FILES_PARTIAL|$RUN_FILES_ESCAPE|$RUN_SHELL_COMMANDS" = "$first"
+  cx_call exec_command "{\"cmd\":\"git log -1\",\"workdir\":\"$cx_workdir\"}" >>"$CX_ROLLOUT"
+  memo_parse
+  assert test "$(grep -c '' "$WORK/memo-shim/starts")" = 1
+  assert grep -qx 'git log -1' <<<"$RUN_SHELL_COMMANDS"
+)
+assert test "$?" -eq 0
+cp "$WORK/memo-rollout.saved" "$CX_ROLLOUT"
+
 # A target still carrying an unexpanded `$name` or a backtick is text, not a path anybody can
 # attribute: a run editing this suite's own fixtures patches their `*** Update File: $cx_workdir/…`
 # headers, and the variable reached a live run's file list as a file (2026-08-24). The run says so

@@ -1188,6 +1188,26 @@ printf '#!/usr/bin/env bash\nexit 1\n' >"$LIGHT_GATE_WORK/bin/worker-pick"
 light_pin_out=$(light_gate light-worker)
 assert grep -Fq '"permissionDecision":"deny"' <<<"$light_pin_out"
 assert grep -Fq 'account beta is at effective 100%' <<<"$light_pin_out"
+# A spawn worker-pick answered never reads the pin, so a `*` pin starts no second worker-pick. The
+# gate runs from a copy whose share/ resolves the pin's own worker-pick to the logging stub.
+mkdir -p "$LIGHT_GATE_WORK/tree/bin" "$LIGHT_GATE_WORK/tree/share"
+cp "$ROOT/bin/worker-limit-gate.sh" "$LIGHT_GATE_WORK/tree/bin/"
+cp "$ROOT/share/worker-model.sh" "$ROOT/share/worker-pool.sh" "$ROOT/share/worker-walls.sh" \
+  "$ROOT/share/codex-accounts.sh" "$LIGHT_GATE_WORK/tree/share/"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$LIGHT_PICK_LOG"\nprintf "beta\\n"\n' \
+  >"$LIGHT_GATE_WORK/tree/bin/worker-pick"
+chmod +x "$LIGHT_GATE_WORK/tree/bin/worker-pick"
+printf 'worker=codex\ncodex_profile=*\n' >"$LIGHT_GATE_WORK/worker-model"
+jq -n '{schema:1, vendors:{codex:{accounts:[{account:"alpha", five_hour:{used_pct:10}},
+  {account:"beta", five_hour:{used_pct:10}}]}}}' >"$LIGHT_GATE_WORK/limits.json"
+: >"$LIGHT_GATE_WORK/picks"
+assert test -z "$(jq -cn '{tool_input:{subagent_type:"codex-worker", prompt:"x"}}' |
+  LIGHT_PICK_LOG="$LIGHT_GATE_WORK/picks" WORKER_PICK_CONFIG_FILE="$LIGHT_GATE_WORK/worker-model" \
+  LLM_LIMITS_FILE="$LIGHT_GATE_WORK/limits.json" \
+  WORKER_GATE_WORKER_PICK="$LIGHT_GATE_WORK/tree/bin/worker-pick" \
+  CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" CLAUDEB_DIR="$LIGHT_GATE_WORK/store" \
+  WORKER_STATS_DIR="$LIGHT_GATE_WORK/stats" bash "$LIGHT_GATE_WORK/tree/bin/worker-limit-gate.sh")"
+assert test "$(wc -l <"$LIGHT_GATE_WORK/picks" | tr -d ' ')" = 1
 rm -rf "$LIGHT_GATE_WORK"
 
 assert test -r "$WORKER_GATE_SETTINGS"

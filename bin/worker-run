@@ -128,7 +128,7 @@ brief_add_dirs() { # brief
 # A named *.md is read as part of the brief (relays hand over to brief files), and
 # `<repo>/.claude/worktrees/<name>` resolves in every repository the text names.
 brief_worktree_roots() { # brief
-  local text value name root
+  local text value name root roots='' roots_read=''
   text=$(cat "$1" 2>/dev/null
     grep -oE '/[A-Za-z0-9._~+/-]+\.md' "$1" 2>/dev/null | sort -u |
       while IFS= read -r value; do [ -f "$value" ] && cat "$value" 2>/dev/null; done)
@@ -136,10 +136,14 @@ brief_worktree_roots() { # brief
     grep -oE '/[A-Za-z0-9._~+/-]+/\.claude/worktrees/[A-Za-z0-9._-]+' <<<"$text" | sed 's/\.*$//'
     grep -oE '(^|[^A-Za-z0-9._~+/-])[^[:space:]/]*/\.claude/worktrees/[A-Za-z0-9._-]+' <<<"$text" |
       sed 's/\.*$//' | sed 's#.*/##' | sort -u | while IFS= read -r name; do
-        grep -oE '/[A-Za-z0-9._~+-][A-Za-z0-9._~+/-]*' <<<"$text" | sed 's#[./]*$##' | sort -u |
+        if [ -z "$roots_read" ]; then
+          roots=$(grep -oE '/[A-Za-z0-9._~+-][A-Za-z0-9._~+/-]*' <<<"$text" | sed 's#[./]*$##' | sort -u; printf x)
+          roots=${roots%x} roots_read=1
+        fi
+        [ -z "$roots" ] ||
           while IFS= read -r root; do
             [ -e "$root/.git" ] && printf '%s/.claude/worktrees/%s\n' "$root" "$name"
-          done
+          done <<<"${roots%$'\n'}"
       done
   } | sort -u |
     while IFS= read -r value; do
@@ -447,11 +451,12 @@ activity_fingerprint() { # directory vendor workdir
     [ -n "$path" ] && [ -e "$path" ] || continue
     fingerprint+="$(stat -f '%N %z %m' "$path" 2>/dev/null || stat -c '%n %s %Y' "$path" 2>/dev/null)|"
   done
-  if stamp=$(workdir_activity_stamp "$directory" "$workdir" own); then
+  [ -z "$workdir" ] || compute_transcript_files "$directory"
+  if stamp=$(workdir_activity_stamp "$directory" "$workdir" own "${RUN_FILES_LIST-}"); then
     observed=y
     fingerprint+="edit $stamp|"
   fi
-  printf '%s~%s\n' "$observed" "$fingerprint"
+  FINGERPRINT="$observed~$fingerprint"
 }
 
 # The vendor CLI in a process group of its own, so one signal takes the whole tree it built: every
@@ -523,6 +528,8 @@ run_with_deadline() {
     WD_STARTED=0
     WD_ACCOUNT=''
     WD_RESUME=''
+    # Called in this shell, never in $(...): an unmoved transcript's parse is reused across ticks.
+    TRANSCRIPT_MEMO=''
     if [ -n "$directory" ] && [ -r "$directory/meta.json" ]; then
       # Not a tab: IFS whitespace collapses an empty field and shifts the next one into its place.
       IFS=$'\x1f' read -r vendor workdir WD_STARTED WD_ACCOUNT WD_RESUME < <(
@@ -544,7 +551,8 @@ run_with_deadline() {
     reason=''
     # Seeded before the first sleep, not left empty: an empty seed differs from every real reading,
     # so the first tick would always read as progress and no idle kill could land on its own hop.
-    seen=$(activity_fingerprint "$directory" "$vendor" "$workdir")
+    activity_fingerprint "$directory" "$vendor" "$workdir"
+    seen=$FINGERPRINT
     while [ "$wd_now" -lt "$end" ]; do
       sleep "$hop"
       kill -0 "$child" 2>/dev/null || exit 0
@@ -559,7 +567,8 @@ run_with_deadline() {
       [ -n "$directory" ] && { [ "$SILENT" -gt 0 ] || [ "$IDLE" -gt 0 ]; } || continue
       # claudeb prints its JSON result only at the end, so empty out/err alone is not silence: the
       # transcript and workdir stamps in the fingerprint are what tell a working run from a hung one.
-      current=$(activity_fingerprint "$directory" "$vendor" "$workdir")
+      activity_fingerprint "$directory" "$vendor" "$workdir"
+      current=$FINGERPRINT
       if [ "$current" != "$seen" ]; then
         # Only a move of something already observed is activity: a claudeb transcript first found
         # is how a hung start looks too.
@@ -1143,18 +1152,46 @@ supervise_gemini() {
   return "$rc"
 }
 
+# --stdin-paths stops at the first file it cannot hash: that one takes the per-file path, whose
+# shasum fallback the batch lacks, and the rest re-batch after it.
 non_git_tree_digest() { # dir
   (cd "$1" 2>/dev/null || exit 1
-   find . -mindepth 1 2>/dev/null | sort | while IFS= read -r item; do
-    if [ -L "$item" ]; then
-      printf 'l\t%s\t%s\n' "$(readlink "$item" 2>/dev/null)" "$item"
-    elif [ -d "$item" ]; then
-      printf 'd\t%s\n' "$item"
-    elif [ -f "$item" ]; then
-      sha=$(git hash-object -- "$item" 2>/dev/null) || sha=$(shasum -a 256 "$item" 2>/dev/null | cut -d' ' -f1)
-      printf 'f\t%s\t%s\n' "${sha:--}" "$item"
-    fi
-  done)
+   items=() kinds=() files=() shas=()
+   while IFS= read -r item; do
+     if [ -L "$item" ]; then kinds+=(l)
+     elif [ -d "$item" ]; then kinds+=(d)
+     elif [ -f "$item" ]; then kinds+=(f); files+=("$item")
+     else kinds+=(-)
+     fi
+     items+=("$item")
+   done < <(find . -mindepth 1 2>/dev/null | sort)
+   s=0
+   while [ "$s" -lt "${#files[@]}" ]; do
+     got=0
+     while IFS= read -r sha; do
+       shas[s + got]=$sha
+       got=$((got + 1))
+     done < <(printf '%s\n' "${files[@]:$s}" | git hash-object --stdin-paths 2>/dev/null)
+     s=$((s + got))
+     [ "$s" -lt "${#files[@]}" ] || break
+     shas[s]=$(git hash-object -- "${files[$s]}" 2>/dev/null) ||
+       shas[s]=$(shasum -a 256 "${files[$s]}" 2>/dev/null | cut -d' ' -f1)
+     s=$((s + 1))
+   done
+   i=0 n=0
+   while [ "$i" -lt "${#items[@]}" ]; do
+     item=${items[$i]}
+     case ${kinds[$i]} in
+       l) printf 'l\t%s\t%s\n' "$(readlink "$item" 2>/dev/null)" "$item" ;;
+       d) printf 'd\t%s\n' "$item" ;;
+       f)
+         sha=${shas[$n]}
+         n=$((n + 1))
+         printf 'f\t%s\t%s\n' "${sha:--}" "$item"
+         ;;
+     esac
+     i=$((i + 1))
+   done)
 }
 
 research_tree_digest() { # root...
@@ -1324,17 +1361,19 @@ reroute_walled() {
 # In the detached supervisor, before the first attempt: hashing a large dirty tree takes minutes, and
 # held in start's foreground a caller interrupted there left a run with no supervisor (ledger W6).
 take_floor() { # directory workdir
-  local directory="$1" workdir="$2" review_round
+  local directory="$1" workdir="$2" review_round shas_rc
   review_round=$(jq -r '.review_round // empty' "$directory/meta.json" 2>/dev/null) || review_round=''
   REPLY_ARRAY=()
   read_json_array '.add_dirs[]' "$directory/meta.json"
   # What was already uncommitted here before this run touched anything. It is the floor the dirt
   # snapshot at the end is measured against: without it, every file Egor or a co-tenant chat had
   # open would be evidence produced by whichever run happened to finish beside them.
-  workdir_dirty_paths "$workdir" >"$directory/dirty-before.tmp.$$" 2>/dev/null &&
+  workdir_dirty_shas "$workdir" "$directory/unshaped-before" "$directory/dirty-before.tmp.$$" \
+    >"$directory/dirty-before-shas.tmp.$$" 2>/dev/null; shas_rc=$?
+  [ -f "$directory/dirty-before.tmp.$$" ] &&
     mv -f "$directory/dirty-before.tmp.$$" "$directory/dirty-before" 2>/dev/null ||
     rm -f "$directory/dirty-before.tmp.$$" 2>/dev/null
-  workdir_dirty_shas "$workdir" "$directory/unshaped-before" >"$directory/dirty-before-shas.tmp.$$" 2>/dev/null &&
+  [ "$shas_rc" = 0 ] &&
     mv -f "$directory/dirty-before-shas.tmp.$$" "$directory/dirty-before-shas" 2>/dev/null ||
     rm -f "$directory/dirty-before-shas.tmp.$$" "$directory/unshaped-before" 2>/dev/null
   # And the commit the tree stood on, which is what a path NOT already dirty is measured against.
@@ -1354,8 +1393,8 @@ take_floor() { # directory workdir
     review_anchors run-start --repo "$workdir" --run "${directory##*/}" --session "$(cat "$directory/launcher")" \
       >/dev/null 2>&1 || :
   fi
-  [ ! -s "$directory/launcher" ] ||
-    snapshot_other_families "$directory" "$workdir" "$(cat "$directory/launcher")" "$review_round" \
+  [ -z "$review_round" ] || [ ! -s "$directory/launcher" ] ||
+    snapshot_other_families "$directory" "$workdir" "$(cat "$directory/launcher")" \
       ${REPLY_ARRAY[@]+"${REPLY_ARRAY[@]}"}
 }
 
@@ -1702,16 +1741,21 @@ workdir_dirty_paths() { # workdir [unshaped-list]
 # its own worker's fixes as debt owed by nobody, and a closed round covered none of them (live case
 # 2026-08-22). A path git cannot hash (gone, a directory, a special file) records `-`, which
 # compares equal only to itself.
-workdir_dirty_shas() { # workdir [unshaped-digest-out]
+# A paths-out file gets workdir_dirty_paths' answer whenever the status itself succeeded, even if
+# the hashing after it fails.
+workdir_dirty_shas() { # workdir [unshaped-digest-out] [paths-out]
   local top paths
-  top=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || return 1
-  [ -n "$top" ] || return 1
   if [ -n "${2:-}" ]; then
-    : >"$2.list" && paths=$(workdir_dirty_paths "$1" "$2.list") &&
-      unshaped_digest "$top" "$2.list" >"$2" || { rm -f "$2.list"; return 1; }
-    rm -f "$2.list"
+    : >"$2.list" && paths=$(workdir_dirty_paths "$1" "$2.list") || { rm -f "$2.list"; return 1; }
   else
     paths=$(workdir_dirty_paths "$1") || return 1
+  fi
+  [ -z "${3:-}" ] || { [ -z "$paths" ] || printf '%s\n' "$paths"; } >"$3" 2>/dev/null || rm -f "$3"
+  top=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) && [ -n "$top" ] ||
+    { [ -z "${2:-}" ] || rm -f "$2.list"; return 1; }
+  if [ -n "${2:-}" ]; then
+    unshaped_digest "$top" "$2.list" >"$2" || { rm -f "$2.list"; return 1; }
+    rm -f "$2.list"
   fi
   [ -n "$paths" ] || return 0
   printf '%s\n' "$paths" | tr '\n' '\0' | hash_workdir_paths "$top"
@@ -1757,28 +1801,16 @@ pack_loose_objects() { # workdir
     --task=loose-objects --quiet && git -C "$1" prune-packed --quiet' _ "$1" "$at" </dev/null >/dev/null 2>&1 &)
 }
 
-# LC_ALL=C on each awk path match (here and in produced_edit_rows): macOS awk compares strings with
-# strcoll, and under a UTF-8 locale two different Cyrillic names compare equal — another file's blob.
-snapshot_blob() { # directory top side path
-  local directory="$1" top="$2" side="$3" path="$4" sha head
-  sha=$(AWK_PATH=$path LC_ALL=C awk -F'\t' 'NF == 2 && $2 == ENVIRON["AWK_PATH"] { print $1; exit }' \
-    "$directory/dirty-$side-shas" 2>/dev/null)
-  if [ -z "$sha" ]; then
-    head=$(tr -d '[:space:]' <"$directory/head-$side" 2>/dev/null)
-    [ -z "$head" ] || sha=$(git -C "$top" rev-parse --verify --quiet "$head:$path" 2>/dev/null)
-  fi
-  printf '%s\n' "${sha:--}"
-}
-
-# `<before>\t<after>\t<path>` for each top-relative path on stdin, both sides read as snapshot_blob
-# reads them; with `changed`, the path alone and only where the two differ. One pass: a snapshot_blob
-# per path rescans the listing, and a checkout with thousands of dirty paths took minutes per fold.
-snapshot_pairs() { # directory top [changed]
+# `<before>\t<after>\t<path>` for each top-relative path on stdin, each side the path's first row in
+# that side's dirty listing, else its blob in that side's HEAD, else `-`; with `changed`, the path
+# alone and only where the two differ, with `changed-rows` the whole row. One pass: a lookup per path
+# rescans the listing, and a checkout with thousands of dirty paths took minutes per fold.
+snapshot_pairs() { # directory top [changed|changed-rows]
   python3 -c '
 import subprocess, sys
 
 directory, top = sys.argv[1], sys.argv[2]
-only_changed = sys.argv[3:] == ["changed"]
+mode = sys.argv[3] if len(sys.argv) > 3 else ""
 
 
 def listing(side):
@@ -1829,15 +1861,15 @@ for path in sys.stdin.buffer.read().split(b"\n"):
                 trees[side] = head_tree(side)
             sha = trees[side].get(path, b"")
         shas.append(sha or b"-")
-    if not only_changed:
+    if mode not in ("changed", "changed-rows"):
         out.append(b"\t".join(shas + [path]))
     elif shas[0] != shas[1]:
-        out.append(path)
+        out.append(b"\t".join(shas + [path]) if mode == "changed-rows" else path)
 sys.stdout.buffer.write(b"".join(row + b"\n" for row in out))
 ' "$@"
 }
 
-snapshot_changed_paths() { # directory top
+snapshot_changed_paths() { # directory top [changed-rows]
   local directory="$1" top="$2" before after changed paths path
   [ -f "$directory/dirty-before-shas" ] && [ -f "$directory/dirty-after-shas" ] &&
     [ -f "$directory/head-after" ] || return 1
@@ -1853,7 +1885,7 @@ snapshot_changed_paths() { # directory top
   fi
   paths=$({ cut -f2- "$directory/dirty-before-shas" "$directory/dirty-after-shas"
     [ -z "$changed" ] || printf '%s\n' "$changed"; } | sort -u)
-  snapshot_pairs "$directory" "$top" changed <<<"$paths"
+  snapshot_pairs "$directory" "$top" "${3:-changed}" <<<"$paths"
 }
 
 compute_snapshot_files() { # directory workdir
@@ -1933,32 +1965,109 @@ produced_spelling() { # top rel path
 # are hashed with `-w`: the reader prices a link by diffing the two blobs out of the object store,
 # and one never written there prices the whole file.
 produced_edit_rows() { # directory top rel head-before
-  local before="$1/dirty-before-shas" top="$2" rel="$3" head="$4" path prev cur after_head head_blob
+  local path row i mode=hash
+  local -a paths=() curs=()
   while IFS= read -r path; do
-    [ -n "$path" ] || continue
-    if [ -f "$1/head-after" ]; then
-      cur=$(snapshot_blob "$1" "$top" after "$path")
-      after_head=$(cat "$1/head-after")
-      if [ -n "$after_head" ] && [ "$after_head" != "$head" ] &&
-          ! AWK_PATH=$path LC_ALL=C awk -F'\t' '$2 == ENVIRON["AWK_PATH"] { found=1 } END { exit !found }' "$1/dirty-after-shas"; then
-        # A clean launch needs only the commit row; preexisting dirt has a different starting blob.
-        head_blob=''
-        [ -z "$head" ] || head_blob=$(git -C "$top" rev-parse --verify --quiet "$head:$path" 2>/dev/null)
-        [ "$(snapshot_blob "$1" "$top" before "$path")" != "${head_blob:--}" ] || continue
-      fi
-    else
-      cur=$(hash_workdir_path "$top" "$path")
-    fi
-    # Through the environment and never `-v`: awk expands escape sequences in a `-v` assignment, so
-    # a filename holding a backslash reaches the program as some other name and matches no row.
-    prev=$(AWK_PATH=$path LC_ALL=C awk -F'\t' 'NF == 2 && $2 == ENVIRON["AWK_PATH"] { print $1; exit }' \
-      "$before" 2>/dev/null)
-    [ -n "$prev" ] || [ -z "$head" ] ||
-      prev=$(git -C "$top" rev-parse --verify --quiet "$head:$path" 2>/dev/null)
-    [ -n "$prev" ] || prev=-
-    [ "$prev" != "$cur" ] || continue
-    printf '%s\t%s\t%s\n' "$prev" "$cur" "$(produced_spelling "$top" "$rel" "$path")"
+    [ -z "$path" ] || paths+=("$path")
   done
+  [ "${#paths[@]}" -ne 0 ] || return 0
+  if [ -f "$1/head-after" ]; then
+    mode=after
+  elif row=$(printf '%s\0' "${paths[@]}" | hash_workdir_paths "$2" 2>/dev/null); then
+    while IFS= read -r row; do curs+=("${row%%$'\t'*}"); done <<<"$row"
+  fi
+  for i in "${!paths[@]}"; do
+    printf '%s\0%s\0' "${paths[$i]}" "${curs[$i]:--}"
+  done | python3 -c '
+import os, re, subprocess, sys
+
+directory, top, rel, head = (os.fsencode(arg) for arg in sys.argv[1:5])
+after_mode = sys.argv[5] == "after"
+records = sys.stdin.buffer.read().split(b"\0")
+pairs = list(zip(records[0::2], records[1::2]))
+
+
+def read(path):
+    try:
+        with open(path, "rb") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def listing(name):
+    first, member = {}, set()
+    for line in (read(directory + b"/" + name) or b"").split(b"\n"):
+        cells = line.split(b"\t")
+        if len(cells) >= 2:
+            member.add(cells[1])
+        if len(cells) == 2:
+            first.setdefault(cells[1], cells[0])
+    return first, member
+
+
+# The ls-tree index answers only where `rev-parse <rev>:<path>` walks the tree exactly: rev-parse
+# reads `..`, `^`, `@`, `~` and `:` as revision syntax, and a non-ASCII name may be precomposed.
+SAFE = re.compile(rb"\A[A-Za-z0-9_+,=. -]+(?:/[A-Za-z0-9_+,=. -]+)*\Z")
+trees = {}
+
+
+def rev_parse(rev, path):
+    if rev not in trees:
+        listed = subprocess.run(["git", "-C", top, "ls-tree", "-r", "-t", "-z", "--full-tree", rev],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        entries = None
+        if listed.returncode == 0:
+            entries = {}
+            for entry in listed.stdout.split(b"\0"):
+                meta, tab, name = entry.partition(b"\t")
+                if tab:
+                    entries[name] = meta.split(b" ")[2]
+        trees[rev] = entries
+    entries = trees[rev]
+    if entries is not None and SAFE.match(path) and b".." not in path and b"/./" not in b"/" + path + b"/":
+        return entries.get(path, b"")
+    return subprocess.run(["git", "-C", top, "rev-parse", "--verify", "--quiet", rev + b":" + path],
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout.rstrip(b"\n")
+
+
+def stripped(name):
+    return b"".join((read(directory + b"/" + name) or b"").split())
+
+
+def snapshot_blob(side, path):
+    sha = listings[side][0].get(path, b"")
+    if not sha:
+        rev = stripped(b"head-" + side)
+        if rev:
+            sha = rev_parse(rev, path)
+    return sha or b"-"
+
+
+def spelling(path):
+    if not rel:
+        return path
+    return path[len(rel) + 1:] if path.startswith(rel + b"/") else top + b"/" + path
+
+
+listings = {side: listing(b"dirty-" + side + b"-shas") for side in (b"before", b"after")}
+after_head = (read(directory + b"/head-after") or b"").replace(b"\0", b"").rstrip(b"\n")
+out = []
+for path, cur in pairs:
+    if after_mode:
+        cur = snapshot_blob(b"after", path)
+        if after_head and after_head != head and path not in listings[b"after"][1]:
+            head_blob = rev_parse(head, path) if head else b""
+            if snapshot_blob(b"before", path) == (head_blob or b"-"):
+                continue
+    prev = listings[b"before"][0].get(path, b"")
+    if not prev and head:
+        prev = rev_parse(head, path)
+    prev = prev or b"-"
+    if prev != cur:
+        out.append(prev + b"\t" + cur + b"\t" + spelling(path) + b"\n")
+sys.stdout.buffer.write(b"".join(out))
+' "$1" "$2" "$3" "$4" "$mode"
 }
 
 # The same rows for the transitions the run's own commits made, with a fourth field `commit` — the
@@ -2303,7 +2412,7 @@ start_run() {
   local -a text_rounds=()
   local account pin config_model model_label agy_model='' gemini_family='' grok_turns='' root run_id='' directory=''
   local explicit_model='' explicit_effort='' light='' light_model='' model_class=workers fix_rule='' chat_fast=false fast_role='' grok_asked_model='' model_id='' slug_account=''
-  local light_offrow=false inbox_settings=''
+  local light_offrow=false inbox_settings='' resolved_add_dirs resolved_read
   local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc launcher_session entry
   local web_search=false web_search_flag=false web_search_off_flag=false web_search_asked=''
   local web_search_state='' brief_cyrillic=''
@@ -2505,10 +2614,17 @@ start_run() {
     done < <(jq -r '.repos[]? | objects | .repo // empty' "$(review_bench_dir "$review_round")/meta.json" 2>/dev/null)
   fi
   if [ "$light" != research ] && [ "$vendor" != grok ] && { [ "$vendor" != codex ] || [ -z "$resume" ]; }; then
+    resolved_add_dirs='' resolved_read=''
     while IFS= read -r value; do
       [ -d "$value" ] && value=$(cd "$value" && pwd -P) && [ "$value" != "$workdir" ] || continue
-      for entry in ${add_dirs[@]+"${add_dirs[@]}"}; do (cd "$entry" 2>/dev/null && pwd -P); done |
-        grep -qxF -- "$value" || add_dirs+=("$value")
+      if [ -z "$resolved_read" ]; then
+        resolved_add_dirs=$(for entry in ${add_dirs[@]+"${add_dirs[@]}"}; do (cd "$entry" 2>/dev/null && pwd -P); done)
+        resolved_read=1
+      fi
+      case $'\n'$resolved_add_dirs$'\n' in
+        *$'\n'"$value"$'\n'*) ;;
+        *) add_dirs+=("$value") resolved_add_dirs+=$'\n'$value ;;
+      esac
     done < <(brief_worktree_roots "$brief"; resumed_add_dirs "$resume")
     while IFS= read -r value; do
       [ -n "$(git_common_dir "$value")" ] && value=$(cd "$value" && pwd -P) &&
@@ -3298,10 +3414,8 @@ classify_tool_rows() { # rows workdir
       C)
         [ -n "$value" ] || continue
         shell=true
-        if writes_through_shell "$value"; then
-          [ -n "$RUN_FILES_REASON" ] ||
-            RUN_FILES_REASON='the run wrote through the shell, whose targets no transcript names'
-        fi
+        [ -n "$RUN_FILES_REASON" ] || ! writes_through_shell "$value" ||
+          RUN_FILES_REASON='the run wrote through the shell, whose targets no transcript names'
         ;;
       D)
         [ -z "$value" ] || places+="$(resolve_tool_path "$value" "$workdir")"$'\n'
@@ -3652,16 +3766,43 @@ compute_transcript_files() {
     RUN_FILES_REASON="no session transcript for $session"
     return 0
   fi
+  # A Task subagent's calls are in transcripts of their own beside the session's.
+  local sub key=''
+  local -a subagents=()
+  if [ "$vendor" = claudeb ]; then
+    for sub in "${transcript%.jsonl}"/subagents/*.jsonl; do [ ! -f "$sub" ] || subagents+=("$sub"); done
+  fi
+  if [ -n "${TRANSCRIPT_MEMO+x}" ]; then
+    key=$(printf '%s\x1f' "$vendor" "$account" "$workdir" "$started" "$session" &&
+      { stat -f '%N %z %Fm' "$transcript" ${subagents[@]+"${subagents[@]}"} 2>/dev/null ||
+        stat -c '%n %s %.9Y' "$transcript" ${subagents[@]+"${subagents[@]}"} 2>/dev/null; }) || key=''
+    if [ -n "$key" ] && [ "$key" = "$TRANSCRIPT_MEMO" ]; then
+      RUN_FILES_LIST=$TRANSCRIPT_MEMO_LIST RUN_FILES_REASON=$TRANSCRIPT_MEMO_REASON
+      RUN_FILES_PARTIAL=$TRANSCRIPT_MEMO_PARTIAL RUN_FILES_ESCAPE=$TRANSCRIPT_MEMO_ESCAPE
+      RUN_SHELL_COMMANDS=$TRANSCRIPT_MEMO_COMMANDS
+      return 0
+    fi
+  fi
+  compute_transcript_rows "$directory" "$vendor" "$transcript" "$workdir" "$started" ${subagents[@]+"${subagents[@]}"} ||
+    return 0
+  [ -z "$key" ] || {
+    TRANSCRIPT_MEMO=$key TRANSCRIPT_MEMO_LIST=$RUN_FILES_LIST TRANSCRIPT_MEMO_REASON=$RUN_FILES_REASON
+    TRANSCRIPT_MEMO_PARTIAL=$RUN_FILES_PARTIAL TRANSCRIPT_MEMO_ESCAPE=$RUN_FILES_ESCAPE
+    TRANSCRIPT_MEMO_COMMANDS=$RUN_SHELL_COMMANDS
+  }
+  return 0
+}
+
+# Nonzero where the transcript was unreadable, which no memo may stand for.
+compute_transcript_rows() { # directory vendor transcript workdir started [subagent...]
+  local directory="$1" vendor="$2" transcript="$3" workdir="$4" started="$5" rows
+  local -a subagents=("${@:6}")
   case "$vendor" in
     claudeb)
-      # A Task subagent's calls are in transcripts of their own beside the session's.
-      local sub
-      local -a subagents=()
-      for sub in "${transcript%.jsonl}"/subagents/*.jsonl; do [ ! -f "$sub" ] || subagents+=("$sub"); done
       if ! RUN_FILES_LIST=$(transcript_files "$transcript" "$workdir" "$started" ${subagents[@]+"${subagents[@]}"}); then
         RUN_FILES_LIST=''
         RUN_FILES_REASON='transcript unreadable'
-        return 0
+        return 1
       fi
       # A list of editor calls answers for editor calls: a run that also WROTE through the shell —
       # `sed -i`, a redirect, `mv` — changed files no transcript records as a tool call, and the list
@@ -3670,13 +3811,13 @@ compute_transcript_files() {
       transcript_wrote_through_shell "$transcript" "$started" ${subagents[@]+"${subagents[@]}"}
       case $? in
         0) RUN_FILES_PARTIAL="$SHELL_FLOOR_PARTIAL" ;;
-        2) RUN_FILES_LIST=''; RUN_FILES_REASON='transcript unreadable'; return 0 ;;
+        2) RUN_FILES_LIST=''; RUN_FILES_REASON='transcript unreadable'; return 1 ;;
       esac
       ;;
     gemini)
       rows=$(gemini_tool_rows "$transcript" "$started") || {
         RUN_FILES_REASON='transcript unreadable'
-        return 0
+        return 1
       }
       classify_tool_rows "$rows" "$workdir"
       RUN_SHELL_COMMANDS=$(printf '%s\n' "$rows" | sed -n $'s/^C\t//p')
@@ -3684,7 +3825,7 @@ compute_transcript_files() {
     codex)
       rows=$(codex_tool_rows "$transcript" "$started") || {
         RUN_FILES_REASON='transcript unreadable'
-        return 0
+        return 1
       }
       classify_tool_rows "$rows" "$workdir"
       RUN_SHELL_COMMANDS=$(printf '%s\n' "$rows" | sed -n $'s/^C\t//p')
@@ -3692,7 +3833,7 @@ compute_transcript_files() {
     grok)
       rows=$(grok_tool_rows "$transcript" "$started") || {
         RUN_FILES_REASON='transcript unreadable'
-        return 0
+        return 1
       }
       classify_tool_rows "$rows" "$workdir"
       RUN_SHELL_COMMANDS=$(printf '%s\n' "$rows" | sed -n $'s/^C\t//p')
@@ -3982,7 +4123,7 @@ last_edit_age() { # directory workdir now
 }
 
 # LAST-EDIT keeps the dirt view; the watchdog passes `own` to exclude co-tenant edits.
-workdir_activity_stamp() { # directory workdir [own]
+workdir_activity_stamp() { # directory workdir [own transcript-files]
   local directory="$1" workdir="$2" top path target mtime newest=''
   if [ "${3:-}" = own ]; then
     top=$workdir
@@ -4010,8 +4151,7 @@ workdir_activity_stamp() { # directory workdir [own]
     [ -n "$newest" ] && [ "$mtime" -le "$newest" ] || newest=$mtime
   done < <(
     if [ "${3:-}" = own ]; then
-      compute_transcript_files "$directory"
-      printf '%s\n' "$RUN_FILES_LIST"
+      printf '%s\n' "${4-}"
     else
       workdir_gained_paths "$directory" "$workdir"
     fi
@@ -4771,12 +4911,13 @@ run_result_text() {
   esac
 }
 
-# The families besides the workdir's this run may write in — its --add-dir trees — each get a
-# before-listing under `families/<n>/`, and in a round a run-start of their own. Folded from the
-# workdir alone, a fix that also edits them never anchors there.
-snapshot_other_families() { # directory workdir launcher round add-dir...
-  local directory="$1" workdir="$2" launcher="$3" round="$4" seen candidate common top sub n=0 branch sibling
-  shift 4
+# The families besides the workdir's a round run may write in — its --add-dir trees — each get a
+# before-listing under `families/<n>/` and a run-start of their own. Folded from the workdir alone, a
+# fix that also edits them never anchors there. Outside a round nothing reads them: only the round
+# fold writes their head-after, which claim requires.
+snapshot_other_families() { # directory workdir launcher add-dir...
+  local directory="$1" workdir="$2" launcher="$3" seen candidate common top sub n=0 branch sibling
+  shift 3
   seen=$(git -C "$workdir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || seen=''
   branch=$(linked_worktree_branch "$workdir")
   while IFS= read -r candidate; do
@@ -4792,8 +4933,7 @@ snapshot_other_families() { # directory workdir launcher round add-dir...
     mkdir -p "$sub" 2>/dev/null && printf '%s\n' "$top" >"$sub/top" 2>/dev/null || continue
     snapshot_workdir "$sub" "$top" before 2>/dev/null || continue
     printf '%s\n' "$common" >"$sub/anchors-common" 2>/dev/null || :
-    [ -z "$round" ] ||
-      review_anchors run-start --repo "$top" --run "${directory##*/}" --session "$launcher" >/dev/null 2>&1 || :
+    review_anchors run-start --repo "$top" --run "${directory##*/}" --session "$launcher" >/dev/null 2>&1 || :
   done < <(printf '%s\n' "$@")
 }
 
@@ -4825,7 +4965,7 @@ external_top_paths() { # directory top
 # PATHs given narrow the fold to them (a claim); otherwise a round fix owns only what the run's own
 # records name, since the snapshot diff also holds every concurrent run's edits in the family.
 fold_family_anchors() { # directory snap repo top launcher round [path...]
-  local directory="$1" snap="$2" changed pairs entry base after owned='' i
+  local directory="$1" snap="$2" pairs entry base after owned='' i
   local -a fold paths bases afters only=("${@:7}")
   fold=(run-fold --repo "$3" --run "${directory##*/}" --session "$5" --round "$6" --owned)
   paths=()
@@ -4838,9 +4978,10 @@ fold_family_anchors() { # directory snap repo top launcher round [path...]
   while IFS= read -r entry; do
     [ -z "$entry" ] || fold+=("./$entry")
   done <<<"$owned"
-  if changed=$(snapshot_changed_paths "$snap" "$4" 2>/dev/null) &&
-    { [ "${#only[@]}" -eq 0 ] || changed=$(grep -xF -f <(printf '%s\n' "${only[@]}") <<<"$changed"); true; } &&
-    pairs=$(snapshot_pairs "$snap" "$4" <<<"$changed" 2>/dev/null); then
+  if pairs=$(snapshot_changed_paths "$snap" "$4" changed-rows 2>/dev/null); then
+    [ "${#only[@]}" -eq 0 ] ||
+      pairs=$(LC_ALL=C awk 'FILENAME != "-" { want[$0] = 1; next }
+        { path = $0; sub(/^[^\t]*\t[^\t]*\t/, "", path) } path in want' <(printf '%s\n' "${only[@]}") - <<<"$pairs")
     # What each path stood at before this run: its own dirty-before blob, else the content the
     # HEAD it started from held, else nothing at all. Only a path the store has no anchor for
     # reads it, so a wrong base cannot move a path a review already knows.

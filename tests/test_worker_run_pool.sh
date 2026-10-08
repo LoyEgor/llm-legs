@@ -320,6 +320,21 @@ clear_stub
 start_ok codex
 assert await_done
 assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" = "$(jq -cn --arg d "$(cd "$other/.claude/worktrees/task-wt" && pwd -P)" '[$d]')"
+# Granted once whichever spelling names it; the roots are read once per brief and the granted set
+# resolved once per launch, not again per worktree name and per candidate.
+ln -s "$other" "$WORK/other-link"
+mkdir -p "$WORK/grep-shim"
+printf '#!/bin/bash\nprintf "%%s\\n" "$*" >>"%s"\nexec %s "$@"\n' "$WORK/grep.log" "$(command -v grep)" >"$WORK/grep-shim/grep"
+chmod +x "$WORK/grep-shim/grep"
+{ printf 'ACCOUNT: options\nADD-DIR: %s/.claude/worktrees/task-wt\n\nWork in %s/.claude/worktrees/task-wt, alias repo/.claude/worktrees/task-wt, not repo/.claude/worktrees/gone. Read %s.\n' \
+    "$WORK/other-link" "$other" "$other"; cat "$WORK/brief.plain"; } >"$WORK/brief"
+clear_stub
+: >"$WORK/grep.log"
+PATH="$WORK/grep-shim:$PATH" start_ok codex
+assert await_done
+assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" = "$(jq -cn --arg d "$WORK/other-link/.claude/worktrees/task-wt" '[$d]')"
+assert test "$(grep -cxF -- "-qxF -- $(cd "$other/.claude/worktrees/task-wt" && pwd -P)" "$WORK/grep.log")" -eq 0
+assert test "$(grep -cxF -- "-oE /[A-Za-z0-9._~+-][A-Za-z0-9._~+/-]*" "$WORK/grep.log")" -eq 1
 mkdir -p "$WORKER_RUN_DIR/prior-granted"
 printf 'claude-granted\n' >"$WORKER_RUN_DIR/prior-granted/worker-session"
 jq -n --arg d "$(cd "$WORK/inherited" && pwd -P)" '{add_dirs: [$d]}' >"$WORKER_RUN_DIR/prior-granted/meta.json"
@@ -373,7 +388,10 @@ assert_fails grep -q "^ARG=" "$CALL_LOG"
 real_git=$(command -v git)
 cat >"$WORK/bin/git" <<GIT
 #!/usr/bin/env bash
-case " \$* " in *' status --porcelain --no-renames -uall '*) while [ -e "$WORK/floor-hold" ]; do sleep 0.05; done ;; esac
+case " \$* " in *' status --porcelain --no-renames -uall '*)
+  printf 'GIT_STATUS\n' >>"\$CALL_LOG"
+  while [ -e "$WORK/floor-hold" ]; do sleep 0.05; done ;;
+esac
 exec "$real_git" "\$@"
 GIT
 chmod +x "$WORK/bin/git"
@@ -392,6 +410,9 @@ assert test ! -e "$RUN_DIR/dirty-before"
 rm -f "$WORK/floor-hold"
 assert await_done
 assert grep -qx dirty "$RUN_DIR/dirty-before"
+# One status walk gives the floor both its path list and its blobs.
+assert test "$(awk '/^CLAUDEB_CALL$/ { exit } /^GIT_STATUS$/ { n++ } END { print n + 0 }' "$CALL_LOG")" = 1
+assert test "$(cut -f2 "$RUN_DIR/dirty-before-shas")" = "$(cat "$RUN_DIR/dirty-before")"
 rm -f "$WORK/bin/git"
 
 # These picks keep naming the one account that walls — a picker that ignores

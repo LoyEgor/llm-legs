@@ -460,7 +460,7 @@ transcript_report() (
   local SCRIPT_DIRECTORY="$ROOT/bin" gemini_base_home="$HOME" gemini_profiles_dir="$GEMINIB_PROFILES_DIR"
   . "$ROOT/share/gemini-accounts.sh"
   if [ ! -s "$WORK/transcript-report.fns" ]; then
-    for name in compute_transcript_files session_id session_transcript codex_home grok_home \
+    for name in compute_transcript_files compute_transcript_rows session_id session_transcript codex_home grok_home \
         grok_end_field grok_session_dir_matches classify_tool_rows resolve_tool_path \
         writes_through_shell gemini_tool_rows codex_tool_rows grok_tool_rows transcript_files \
         listing_spelling transcript_wrote_through_shell workdir_escape_line; do

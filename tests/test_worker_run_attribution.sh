@@ -188,6 +188,7 @@ ANCHORS
   assert await_done
   assert grep -q '^STATUS: failed' "$WORK/wait.out"
   assert test ! -s "$ANCHOR_LOG"
+  assert test ! -e "$RUN_DIR/families"
   assert test ! -e "$HOME/.cache/claude/review-debt/gaps"
   rm -f "$repo/bin/plain-run"
   unset STUB_CODE
@@ -469,7 +470,59 @@ attribution_repair_tests() {
   git -C "$repo" worktree remove --force "$trees/task"
 }
 
+# produced_edit_rows reads every path's floor and end in one pass, whatever the path count: a
+# per-path awk/cat/git start was thousands of processes on a wide fix. A name is matched as bytes,
+# so `1` and `01` are two files, never one numeric value.
+produced_rows_tests() {
+  local repo="$WORK/produced-rows" run="$WORK/produced-rows-run" head path rows
+  git init -q "$repo"
+  for path in a b c d e 1 01; do printf '%s\n' "$path" >"$repo/$path"; done
+  git -C "$repo" add -A
+  git -C "$repo" -c user.email=t@t -c user.name=t commit -qm base
+  head=$(git -C "$repo" rev-parse HEAD)
+  mkdir -p "$run" "$WORK/produced-rows-shim"
+  for path in a b c d e 1; do printf 'x\n' >>"$repo/$path"; done
+  printf '%s\n' "$head" >"$run/head-before"
+  printf '%s\n' "$head" >"$run/head-after"
+  : >"$run/dirty-before-shas"
+  for path in a b c d e 1; do
+    printf '%s\t%s\n' "$(git -C "$repo" hash-object "$path")" "$path"
+  done >"$run/dirty-after-shas"
+  for path in git awk cat; do
+    printf '#!/usr/bin/env bash\necho %s >>"%s/starts"\nexec %s "$@"\n' "$path" "$WORK/produced-rows-shim" \
+      "$(command -v "$path")" >"$WORK/produced-rows-shim/$path"
+    chmod +x "$WORK/produced-rows-shim/$path"
+  done
+  : >"$WORK/produced-rows-shim/starts"
+  rows=$(
+    eval "$(sed -n '/^hash_workdir_paths() {/,/^}/p;/^hash_workdir_path() {/,/^}/p;/^snapshot_blob() {/,/^}/p
+      /^produced_spelling() {/,/^}/p;/^produced_edit_rows() {/,/^}/p' "$RUNNER")"
+    printf '%s\n' a b c d e 1 01 | PATH="$WORK/produced-rows-shim:$PATH" produced_edit_rows "$run" "$repo" '' "$head"
+  )
+  assert test "$(wc -l <"$WORK/produced-rows-shim/starts" | tr -d ' ')" -le 1
+  assert test "$(grep -c '' <<<"$rows")" = 6
+  assert grep -qxF "$(git -C "$repo" rev-parse "$head:1")	$(git -C "$repo" hash-object "$repo/1")	1" <<<"$rows"
+  assert_fails grep -q '	01$' <<<"$rows"
+  # A family fold reads its changed set and that set's bases off one snapshot_pairs pass.
+  (
+    eval "$(sed -n '/^path_shape_split() {/,/^}/p;/^snapshot_pairs() {/,/^}/p
+      /^snapshot_changed_paths() {/,/^}/p;/^fold_family_anchors() {/,/^}/p' "$RUNNER")"
+    eval "$(declare -f snapshot_pairs | sed '1s/snapshot_pairs/counted_snapshot_pairs/')"
+    snapshot_pairs() { echo >>"$WORK/produced-rows-shim/pairs"; counted_snapshot_pairs "$@"; }
+    review_anchors() { printf '%s\n' "$@" >"$WORK/produced-rows-shim/fold"; }
+    : >"$WORK/produced-rows-shim/pairs"
+    fold_family_anchors "$run" "$run" "$repo" "$repo" launcher round 1 01
+    assert test "$(grep -c '' "$WORK/produced-rows-shim/pairs")" = 1
+    assert test "$(grep -c '^--changed$' "$WORK/produced-rows-shim/fold")" = 1
+    assert grep -qxF -- "--base=./1=$(git -C "$repo" rev-parse "$head:1")" "$WORK/produced-rows-shim/fold"
+    assert grep -qxF -- "--after=./1=$(git -C "$repo" hash-object "$repo/1")" "$WORK/produced-rows-shim/fold"
+    assert_fails grep -q -- '^--base=./01=' "$WORK/produced-rows-shim/fold"
+  )
+  assert test "$?" -eq 0
+}
+
 anchors_store_tests
 attribution_repair_tests
+produced_rows_tests
 
 echo "PASS: $asserts asserts; the review-anchors store and attribution repair"

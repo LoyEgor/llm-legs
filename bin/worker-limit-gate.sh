@@ -85,10 +85,7 @@ if [ "$worker" = light-worker ]; then
   role_arg=light
   pin_key="${vendor}_profile"
 fi
-if [ -n "$pin_key" ]; then
-  _load_wm || true
-  pin=$(worker_model_pin_first "$vendor" 2>/dev/null || true)
-fi
+[ -z "$pin_key" ] || _load_wm || true
 
 # The toggle names the implementation worker for every session, and reading it before each
 # delegation is the one step of that rule a hook can take over. A mismatch is reported, never
@@ -216,6 +213,7 @@ if [ -z "$spawn_account" ]; then
   if [ "$router_rc" -eq 0 ]; then
     spawn_account=$router_account
   else
+    [ -z "$pin_key" ] || pin=$(worker_model_pin_first "$vendor" 2>/dev/null || true)
     spawn_account=$pin
     # claudeb and grok have no main account to name: claudeb keeps none, and grok's is the real
     # ~/.grok, which carries no login.
