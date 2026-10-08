@@ -4075,7 +4075,7 @@
       "same_cause": [],
       "last_reviewed": "2026-10-08",
       "reviewed_by": "night 20261007T213650Z-7b98 handoff-2026-10-07-log-audit-leftovers",
-      "note": "Every fixer appends ledger rows and repins PINNED in tests/test_harness_doctor.sh, so parallel branches conflict on the same lines (this run adds rows too). A row-wise merge driver is proposed in the handoff. 2026-10-08: Fixed half: the calibration replay pin derives every fixed row from this ledger, so a fixer's new row no longer repins one shared line (47 edits in 9 days). Row appends at the end of rows still meet in a rebase; a row-wise merge driver was not built: it needs per-clone git config the repository cannot carry, and a take-both resolution is mechanical. It recurred as row log_audit:harness-branches-conflict-on-shared-files.",
+      "note": "Every fixer appends ledger rows and repins PINNED in tests/test_harness_doctor.sh, so parallel branches conflict on the same lines (this run adds rows too). A row-wise merge driver is proposed in the handoff. 2026-10-08: Fixed half: the calibration replay pin derives every fixed row from this ledger, so a fixer's new row no longer repins one shared line (47 edits in 9 days). Row appends at the end of rows: the row-wise merge driver is built (share/merge_ledger.py via .gitattributes merge=ledger-rows, its global git config from claude-setup git-hooks/install.sh). It recurred as row log_audit:harness-branches-conflict-on-shared-files.",
       "handoff": null
     },
     {
@@ -4621,7 +4621,7 @@
       ],
       "last_reviewed": "2026-10-08",
       "reviewed_by": "night 20261007T213650Z-7b98 handoff-2026-10-07-log-audit-leftovers",
-      "note": "Same cause as log_audit:shared-ledger-landing-conflicts, carried tonight by job handoff-2026-10-07-log-audit-leftovers (item 6). Settled with it: the calibration replay pin derives from the ledger rows (test_harness_doctor); this rebase met only that pin's old literal and the rows both branches touched.",
+      "note": "Same cause as log_audit:shared-ledger-landing-conflicts, carried tonight by job handoff-2026-10-07-log-audit-leftovers (item 6). Settled with it: the calibration replay pin derives from the ledger rows (test_harness_doctor); this rebase met only that pin's old literal and the rows both branches touched, which the ledger-rows merge driver now merges by row id.",
       "handoff": null
     },
     {
