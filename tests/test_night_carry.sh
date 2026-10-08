@@ -326,6 +326,11 @@ with open(said, "w") as handle:
 assert chat_names.searcher()[0][0] == "rg", chat_names.searcher()
 rows = h.scan([said, os.path.join(folder, "gone.jsonl")], {"core.sh"})
 assert rows == {said: {"edits": {}, "mentions": {"core.sh": 6}}}, "a name after a multibyte boundary counts: %s" % rows
+longer = os.path.join(folder, "longer.jsonl")
+with open(longer, "w") as handle:
+    handle.write('{"type":"user","message":{"content":"core.sh.log core.shx core.sh-carry `core.sh.bak`, then core.sh. core.sh"}}\n')
+rows = h.scan([longer], {"core.sh"})
+assert rows == {longer: {"edits": {}, "mentions": {"core.sh": 2}}}, "a longer token is no mention: %s" % rows
 PY
 export NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-own" NIGHT_RUN_OWNER_CHATS=9
 new_night N5

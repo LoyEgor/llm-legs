@@ -1031,6 +1031,43 @@ fixer spend without proof · 5.0M weighted of 15.0M
 rewrite · 1 of 2 lines deleted tonight were written in the 7 days before (1 by earlier night commits)
 night 20260131T000000Z-now · 00:00–02:00" ]
 
+# Rewrites in a helper repository named by basename, under a user git config that reshapes porcelain diff
+# output, over paths git tab-ends and quotes; a line written tonight is no line of the 7 days before. A
+# doctor whose after read failed (null) proves nothing.
+HELP="$CHURN/helper/helperrepo"
+git init -q -b main "$HELP"
+churn_commit() { GIT_AUTHOR_DATE="$1" GIT_COMMITTER_DATE="$1" git -C "$HELP" -c user.email=t@example.com -c user.name=T commit -q -am x; }
+printf 'a\n' >"$HELP/my file.md"
+printf 'b1\nb2\n' >"$HELP/é.md"
+printf 'c\n' >"$HELP/plain.txt"
+git -C "$HELP" add .
+churn_commit 2026-01-25T00:00:00Z
+printf 'c\nd\n' >"$HELP/plain.txt"
+churn_commit 2026-01-31T01:00:00Z
+printf 'a2\n' >"$HELP/my file.md"
+printf 'x\n' >"$HELP/é.md"
+printf 'c\n' >"$HELP/plain.txt"
+churn_commit 2026-01-31T02:00:00Z
+printf '%s\n' "$HELP" >"$CHURN/helper-repos"
+printf '[diff]\n\tnoprefix = true\n\texternal = true\n[color]\n\tdiff = always\n' >"$CHURN/gitconfig"
+assert env NIGHT_RUN_SWEEP_REPOS="$CHURN/sweep-repos" NIGHT_RUN_HELPER_REPOS="$CHURN/helper-repos" \
+  GIT_CONFIG_GLOBAL="$CHURN/gitconfig" python3 -B - "$ROOT" "$HELP" <<'PY'
+import collections, os, subprocess, sys
+sys.path.insert(0, os.path.join(sys.argv[1], "share"))
+import night_churn as nc
+
+helper = sys.argv[2]
+assert nc.repo_dir("helperrepo") == helper, nc.repo_dir("helperrepo")
+head = subprocess.run(["git", "-C", helper, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+night = {"started_at": "2026-01-31T00:00:00Z", "jobs": [{"state": "merged", "commits": [{"repo": "helperrepo", "hash": head}]}]}
+assert nc.rewrite_counts(night) == (3, 4, 0, 0), nc.rewrite_counts(night)
+
+nc.fixer_spend = lambda *args: ([{"ref": "code-x-1"}], {"code-x-1": {"doctor": "code", "decisions": [{"id": "P1"}]}},
+                                {"code-x-1": collections.Counter(out=1000000)}, collections.Counter(out=1000000))
+line = nc.fixer_spend_line({"doctor_problems_after": {"code": None}}, None, "worker-run")
+assert line == "fixer spend without proof · 5.0M weighted of 5.0M", line
+PY
+
 # Comparison table: this night and the two previous finished nights with jobs, oldest left; an older one
 # and a night with no jobs stay out; a value with no source is a dash, never a number.
 TB="$WORK/table"

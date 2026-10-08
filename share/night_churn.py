@@ -34,7 +34,7 @@ def doctors_dir(night_path=None):
 def repo_dir(repo):
     if repo.startswith("/"):
         return repo
-    return next((p for p in handoffs.sweep_repos() if os.path.basename(p) == repo), None)
+    return next((p for p in handoffs.sweep_repos() + handoffs.helper_repos() if os.path.basename(p) == repo), None)
 
 
 def check_linguist_generated(repo_path, file_paths):
@@ -243,9 +243,9 @@ def fixer_spend_line(night, night_path, worker_run):
         decided_pids = [d["id"] for d in decisions if d.get("id")]
 
         has_proof = False
-        doc_probs = after_snapshot.get(doctor) or {}
+        doc_probs = after_snapshot.get(doctor)
         for pid in decided_pids:
-            if pid not in doc_probs or doc_probs[pid] == "proved":
+            if isinstance(doc_probs, dict) and (pid not in doc_probs or doc_probs[pid] == "proved"):
                 has_proof = True
                 break
         if not has_proof:
@@ -284,7 +284,8 @@ def rewrite_counts(night):
             unreadable += 1
             continue
 
-        res = subprocess.run(["git", "-C", d, "diff", "-U0", f"{h}^", h],
+        res = subprocess.run(["git", "-C", d, "-c", "core.quotePath=false", "diff", "--no-ext-diff", "--no-color",
+                              "--src-prefix=a/", "--dst-prefix=b/", "-U0", f"{h}^", h],
                              capture_output=True, text=True, errors="replace")
         if res.returncode != 0:
             unreadable += 1
@@ -293,8 +294,8 @@ def rewrite_counts(night):
         current_file = None
         file_ranges = collections.defaultdict(list)
         for line in res.stdout.splitlines():
-            if line.startswith("--- a/"):
-                current_file = line[6:]
+            if line.startswith("--- "):
+                current_file = line[6:].rstrip("\t") if line.startswith("--- a/") else None
             elif line.startswith("@@ ") and current_file:
                 m = re.match(r"^@@ -(\d+)(?:,(\d+))? \+", line)
                 if m:
@@ -310,9 +311,6 @@ def rewrite_counts(night):
         for fpath, ranges in file_ranges.items():
             if attr_map.get(fpath, False):
                 continue
-            for s, e, count in ranges:
-                total_M += count
-
             blame_args = ["git", "-C", d, "blame", "--porcelain"]
             for s, e, count in ranges:
                 blame_args.extend(["-L", f"{s},{e}"])
@@ -320,6 +318,7 @@ def rewrite_counts(night):
             bres = subprocess.run(blame_args, capture_output=True, text=True, errors="replace")
             if bres.returncode != 0:
                 continue
+            total_M += sum(count for s, e, count in ranges)
 
             commits_meta = {}
             current_sha = None
@@ -328,7 +327,7 @@ def rewrite_counts(night):
                     cm = commits_meta.get(current_sha, {})
                     atime = cm.get("author-time", 0)
                     summary = cm.get("summary", "")
-                    if atime >= cutoff:
+                    if cutoff <= atime < low:
                         total_N += 1
                         if summary.startswith("Night"):
                             total_P += 1

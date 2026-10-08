@@ -38,7 +38,7 @@ OWNER_DAYS = 60
 TYPE_RE = rb'"type":"(?:assistant|user|tool_result|attachment|progress)"'
 SPOKEN = {b'"type":"assistant"', b'"type":"user"'}
 TO_RE = re.compile(r"\bTo:\s*«?([^«»(]+)")
-EVIDENCE_CACHE_VERSION = 2
+EVIDENCE_CACHE_VERSION = 3
 SCAN_CHUNK = 400
 
 
@@ -261,9 +261,10 @@ def scan(paths, names):
     words = "|".join(n.replace(".", r"\.") for n in sorted(names, key=lambda n: (-len(n), n)))
     # rg's engine has no lookbehind, so the left boundary is matched and lies outside the group; an
     # escaped \n or \t in the JSON is a boundary too. The boundary is a run because rg reads « or — as
-    # one codepoint, the bytes pattern that fullmatches rg's hits as two or three bytes.
+    # one codepoint, the bytes pattern that fullmatches rg's hits as two or three bytes. The right boundary
+    # is checked on the token's consumed tail instead, so a longer token (night-run.log) is no mention.
     expr = "(?P<edit>%s)|(?P<type>%s)%s" % (EDIT_RE.decode(), TYPE_RE.decode(),
-                                          r"|(?:^|\\[nrt]|[^\w.\\-]+)(?P<name>%s)" % words if words else "")
+                                          r"|(?:^|\\[nrt]|[^\w.\\-]+)(?P<name>%s)(?P<tail>[\w.-]*)" % words if words else "")
     pattern = re.compile(expr.encode())
     argv, exe = chat_names.searcher()
 
@@ -275,7 +276,7 @@ def scan(paths, names):
         for hit in hits:
             if hit.group("edit"):
                 count(row["edits"], json.loads(b'"' + hit.group("file") + b'"'))
-            elif hit.group("name"):
+            elif hit.group("name") and not hit.group("tail").strip(b"."):
                 count(row["mentions"], hit.group("name").decode())
 
     if argv[0] == "rg":
