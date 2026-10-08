@@ -106,6 +106,9 @@ check(found["startup:CLAUDE.md + memory index"]["share"] == 6.0 and found["start
 flipped = {c["key"]: c["target"] for c in spend.components(payload(idle_avoidable=True), files, spend.file_texts())}
 check(flipped["rewrites:expired (1h+ idle)"] and found["rewrites:expired (5m ttl)"]["target"],
       "the avoidable flag is read from tracking.json: flipping it in the fixture makes the cause a target")
+check(found["rewrites:expired (5m ttl)"]["prev"] == 5e4 and found["rewrites:expired (5m ttl)"]["delta"] == "-70%",
+      "a below-threshold cell (<0.1M) is a small spend, never zero, so its Δ is a change, not new: %s"
+      % found["rewrites:expired (5m ttl)"])
 
 ledger = os.path.join(work, "spend-ledger.json")
 os.environ["SPEND_LEDGER"] = ledger
@@ -161,6 +164,8 @@ check(key == "setup/hooks/gate.sh" and spend.due(gate, None, {key: blob}) == "ne
       and spend.due(found["resumes"], {"sources": {}, "share": found["resumes"]["basis"] / 2}, {}) == "share ×2.0 since audit",
       "due: never audited, a source blob moved, a share at 1.5x its audit share; unchanged is not due, and a "
       "component with no source file is due only by its share")
+check(spend.due(found["resumes"], {"sources": {}, "share": 0.0}, {}) is None,
+      "an audit recorded at share 0 (no spend outside review-bench) is never due by share, not ×inf forever")
 path = os.environ["PATH"]
 os.environ["PATH"] = os.path.join(work, "no-git")
 unhashed = spend.blobs([source])
@@ -206,6 +211,16 @@ try:
 except SystemExit:
     refused = True
 check(refused, "a verdict other than cut, kept or trade is refused")
+before_git = open(ledger).read()
+os.environ["PATH"] = os.path.join(work, "no-git")
+try:
+    spend.record(root, os.path.join(work, "home"), os.path.join(work, "repos"), scripts, "hook:gate.sh", "kept", "", "", [])
+    refused = False
+except SystemExit:
+    refused = True
+os.environ["PATH"] = path
+check(refused and open(ledger).read() == before_git,
+      "a git that cannot hash the sources refuses the record, never stores them absent (a cut) and due at once")
 with open(ledger) as handle:
     kept = handle.read()
 with open(ledger, "w") as handle:
@@ -268,6 +283,18 @@ check(len(state["index_by_day"]) == 3 and len(open(os.path.join(work, "tokenmap.
       "the next run takes the next missing day: %s" % state["index_by_day"])
 collect(state=state, write=False)
 check(len(state["index_by_day"]) == 3, "a read-only run backfills nothing")
+failing = os.path.join(work, "tokenmap-failing")
+with open(failing, "w") as handle:
+    handle.write("#!/bin/sh\nexit 1\n")
+os.chmod(failing, 0o755)
+os.environ["SPEND_TOKENMAP"] = failing
+collect(state=state, write=True)
+os.environ["SPEND_TOKENMAP"] = fake
+held_days = len(state["index_by_day"])
+collect(state=state, write=True)
+check(held_days == 3 and len(state["index_by_day"]) == 4 and None not in state["index_by_day"].values(),
+      "a failed tokenmap run stores no day, so the next run retries it instead of a permanent gap: %s"
+      % state["index_by_day"])
 
 with open(ledger, "w") as handle:
     json.dump({"owner": "Harness Doctor", "rows": []}, handle)

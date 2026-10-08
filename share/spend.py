@@ -49,8 +49,9 @@ def epoch(text):
 
 
 def amount(cell):
-    found = re.fullmatch(r"([\d,.]+)\s*([kM]?)", str(cell or "").strip())
-    return float(found.group(1).replace(",", "")) * {"": 1, "k": 1e3, "M": 1e6}[found.group(2)] if found else 0.0
+    found = re.fullmatch(r"(<?)([\d,.]+)\s*([kM]?)", str(cell or "").strip())
+    return float(found.group(2).replace(",", "")) * {"": 1, "k": 1e3, "M": 1e6}[found.group(3)] \
+        * (0.5 if found.group(1) else 1) if found else 0.0
 
 
 def section(row, title):
@@ -188,8 +189,8 @@ def due(component, row, held):
     if moved(row, held):
         return "source changed"
     share = row.get("share")
-    if isinstance(share, (int, float)) and component["basis"] > 0 and component["basis"] >= SHARE_RISE * share:
-        return "share ×%.1f since audit" % (component["basis"] / share if share else float("inf"))
+    if isinstance(share, (int, float)) and share > 0 and component["basis"] >= SHARE_RISE * share:
+        return "share ×%.1f since audit" % (component["basis"] / share)
     return None
 
 
@@ -239,12 +240,9 @@ def day_value(day, cmd):
     """tokenmap's 7-day window ending with the day, the live reading's window then."""
     first = datetime.date.fromisoformat(day) - datetime.timedelta(days=6)
     after = datetime.date.fromisoformat(day) + datetime.timedelta(days=1)
-    try:
-        out = subprocess.run(cmd + ["tracking", "--since", first.isoformat(), "--until", after.isoformat(), "--json"],
-                             capture_output=True, text=True, timeout=TOKENMAP_S, stdin=subprocess.DEVNULL)
-        return index_value(harness_index(json.loads(out.stdout))) if out.returncode == 0 else None
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return None
+    out = subprocess.run(cmd + ["tracking", "--since", first.isoformat(), "--until", after.isoformat(), "--json"],
+                         capture_output=True, text=True, timeout=TOKENMAP_S, stdin=subprocess.DEVNULL, check=True)
+    return index_value(harness_index(json.loads(out.stdout)))
 
 
 def tokenmap_cmd(home):
@@ -263,7 +261,10 @@ def backfill(history, through, now, local_day, home):
         end = datetime.datetime.combine(datetime.date.fromisoformat(day) + datetime.timedelta(days=1),
                                         datetime.time()).timestamp()
         if day not in history and end <= through:
-            history[day] = day_value(day, cmd)
+            try:
+                history[day] = day_value(day, cmd)
+            except (OSError, subprocess.SubprocessError, ValueError):
+                pass
             return
 
 
@@ -381,7 +382,9 @@ def source_blobs(root, repos, sources, worktrees):
         real = os.path.realpath(source)
         top = next((m for m in mains if real.startswith(os.path.join(m, ""))), None)
         paths[repo_path(source, repos)] = os.path.join(mains[top], os.path.relpath(real, top)) if top else real
-    held = blobs(list(paths.values())) or {}
+    held = blobs(list(paths.values()))
+    if held is None:
+        raise SystemExit("git could not hash %s: nothing recorded, record the audit again" % ", ".join(sorted(paths)))
     return {p: held.get(real) for p, real in sorted(paths.items())}
 
 
