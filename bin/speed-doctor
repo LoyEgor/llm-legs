@@ -507,6 +507,7 @@ def machine_view(days, local_min_day):
     if sum(labels.values()):
         view["unattributed_share"] = round(labels.get("unattributed", 0.0) / sum(labels.values()), 3)
     view["label_cpu_s"] = {k: round(v, 1) for k, v in sorted(labels.items(), key=lambda x: -x[1])[:8]}
+    view["label_cpu_total_s"] = round(sum(labels.values()), 1)
     return view
 
 
@@ -538,10 +539,14 @@ def background_view(days, lo, now, collector_rows, covered_days):
             c["walls"].append(float(row.get("wall_s") or 0))
             c["cpu_s"] += float(row.get("cpu_s") or 0)
     per_day = lambda x: round(x / covered_days, 2) if covered_days else None
+    # Day files hold whole days, so lo's own day counts in full.
+    file_days = max((now - H.day_start(H.local_day(lo))) / 86400.0, 1e-9)
+    per_file_day = lambda x: round(x / file_days, 2)
     return {
-        "statusline": {"renders_day": per_day(statusline["renders"]),
+        "file_days": file_days,
+        "statusline": {"renders_day": per_file_day(statusline["renders"]),
                        "idle_share": round(statusline["idle"] / float(statusline["renders"]), 3) if statusline["renders"] else None,
-                       "cpu_min_day": per_day(cpu_ms / 60000.0) if cpu_ms is not None else None,
+                       "cpu_min_day": per_file_day(cpu_ms / 60000.0) if cpu_ms is not None else None,
                        "cpu_ms_per_session_hour": round(cpu_ms / statusline["session_hours"], 1)
                        if cpu_ms is not None and statusline["session_hours"] else None},
         "merge_kick": {"runs_day": per_day(len(kicks)), "cpu_min_day": per_day(kick_cpu / 60000.0)},
@@ -603,7 +608,9 @@ def day_values(day, credit, prompts, machine_day, statusline_day, kicks_day, run
     by_vendor = {}
     for run in runs:
         if H.local_day(run.get("ended_at") or 0) == day and run.get("cli_starts") and run.get("pid_started_at"):
-            by_vendor.setdefault(str(run.get("vendor")), []).append(float(run["cli_starts"][0]) - float(run["pid_started_at"]))
+            secs = float(run["cli_starts"][0]) - float(run["pid_started_at"])
+            if secs >= 0:
+                by_vendor.setdefault(str(run.get("vendor")), []).append(secs)
     for vendor, values in by_vendor.items():
         out["delegation.pre_cli_s|%s|-" % vendor] = [round(H.median(values), 2), len(values)]
     line = statusline_day or {}
@@ -799,7 +806,7 @@ def with_time(opportunities, budget):
             f["score"] = score_of(f["recoverable_min_day"], f["confidence"], f["effort_h"], f["night_cost_h"])
             continue
         fields = dict(opportunity_fields(gap, TIME_LEVERS[key]), floor=floor, actual_min_day=actual,
-                      worker_min_day=worker)
+                      worker_min_day=worker, floor_gap_min_day=gap, floor_worker_min_day=worker)
         out.append({"id": "opportunity:time/%s" % key, "rule": "opportunity", "state": "watch",
                     "fact": "%s · %s over the floor · %s" % (label, per_day(gap, worker), fields["levers"][0]),
                     "value": gap, "limit": LIMITS["worth_om_day"], "unit": "min/day", "window_h": 24, "exposure": None,
@@ -954,7 +961,7 @@ def collect(write, now):
     settle = not job["todo"] and not job.get("stored")
     since = H.local_day(now - (LIMITS["baseline_days"] if settle else ROW_DAYS) * 86400)
     keys = {row_key(r) for r in rows if r[0] in ("t", "d")}
-    back = [r for r in backfill_rows(since) + fresh if row_key(r) not in keys]
+    back = list({row_key(r): r for r in backfill_rows(since) + fresh if row_key(r) not in keys}.values())
     rows += back
     collector_rows = fold_jsonl(state, "collector", os.path.join(doctors_dir(), "collector-runs.jsonl"),
                                 now - JOURNAL_DAYS * 86400, lambda r: r.get("start"))
@@ -1006,17 +1013,17 @@ def collect(write, now):
     night = night_view()
     delegation = delegation_view(runs, lo)
 
-    def machine_om(component, machine, background, span):
+    def machine_om(component, machine, background):
         if component == "machine/contention":
             return machine["p_om_day"] or 0.0
-        share = background_share(background, machine, span)
+        share = background_share(background, machine)
         return (machine["p_om_day"] or 0.0) * share if share is not None else 0.0
 
     def component_om(component):
         if component is None:
             return 0.0
         if component in MACHINE_PRICED:
-            return machine_om(component, machine, background, covered)
+            return machine_om(component, machine, background)
         area, _, leaf = component.partition("/")
         return sum(tree.get(area, {}).values()) if not leaf else tree.get(area, {}).get(leaf, 0.0)
 
@@ -1070,7 +1077,7 @@ def collect(write, now):
                 after = {d: v for d, v in days.items() if d > since}
                 local_after = sum(s for (d, a, l), s in credit.items() if a == "chat" and l in LOCAL_LEAVES and d > since)
                 om = machine_om(component, machine_view(after, local_after / 60.0 / span),
-                                background_view(after, start, now, collector_rows, span), span)
+                                background_view(after, start, now, collector_rows, span))
                 seen = len(after)
             else:
                 secs = sum(s for (day, a, l), s in credit.items() if (a, l) == (area, leaf) and day > since)
@@ -1199,10 +1206,10 @@ def collect(write, now):
     return document
 
 
-def background_share(background, machine, covered):
+def background_share(background, machine):
     statusline = (background["statusline"].get("cpu_min_day") or 0.0) + (background["merge_kick"].get("cpu_min_day") or 0.0) + sum(
         p.get("cpu_min_day") or 0.0 for p in (background.get("probes") or {}).values())
-    labels = sum((machine.get("label_cpu_s") or {}).values()) / 60.0 / covered
+    labels = (machine.get("label_cpu_total_s") or 0.0) / 60.0 / background["file_days"]
     total = statusline + labels
     return statusline / total if total else None
 

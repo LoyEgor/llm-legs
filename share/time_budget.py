@@ -263,7 +263,7 @@ def run_split(run, lo, hi, suites, calls, hooks):
         return out
     own = [c for c in calls if c[8] == session]
     tools = [x for w in rest for x in clip([(c[1], c[1] + c[5]) for c in own], *w)]
-    tids = {c[7] for c in own}
+    tids = {c[7] for c in own if any(clip([(c[1], c[1] + c[5])], *w) for w in rest)}
     hook_s = min(length(tools), sum(h[5] for h in hooks if h[7] in tids and h[7]) / 1000.0)
     out["hooks"] = hook_s
     out["tools"] = length(tools) - hook_s
@@ -287,13 +287,14 @@ def budget(lo, hi, events=None):
     """Seconds per class over [lo, hi) for owner chats (Harness turn rows) and worker runs (worker-stats runs). A
     lock or poll wait comes out of tool time only when a chat or worker paid it (its row names a `caller`)."""
     events = events if events is not None else event_rows(lo, hi)
-    suites = suite_rows(lo, hi + 86400)
+    runs, jobs = worker_runs(lo, hi), []
+    suites = suite_rows(min([lo] + [num(r.get("pid_started_at")) or num(r.get("started_at")) or lo for r in runs]),
+                        hi + 86400)
     calls = [c for c in events.get("c", ()) if c[6] == "w"]
     chats, workers = collections.Counter(), collections.Counter()
     for row in events.get("t", ()):
         if row[3] > lo and row[1] < hi:
             chats += turn_split(row, lo, hi)
-    runs, jobs = worker_runs(lo, hi), []
     for run in runs:
         workers += run_split(run, lo, hi, suites, calls, events.get("h", ()))
         if NIGHT_WORKDIR in str(run.get("workdir") or "") and not run.get("round"):
@@ -569,6 +570,7 @@ def document(now, hours=24.0, write=True):
     events = event_rows(lo, now)
     b = budget(lo, now, events)
     med, covered = usual(now, write)
+    med = {k: v * hours / 24.0 for k, v in med.items()}
     if write:
         prune_days(now)
     total, harness, share = shares(b)
@@ -670,7 +672,7 @@ def night_split(night):
     low, high, sessions = night_spend.window(night)
     runs = []
     for run, _, meta, _ in night_spend.night_runs(low, high, sessions):
-        runs.append(dict(meta, run=run))
+        runs.append(dict(meta, run=run, round=meta.get("review_round"), walled=meta.get("walled_accounts")))
     hi = max([num(r.get("ended_at")) or 0 for r in runs] + [high])
     events = event_rows(low, hi, ("c", "h"))
     suites = suite_rows(low, hi + 86400)

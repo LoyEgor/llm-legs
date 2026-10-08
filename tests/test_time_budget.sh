@@ -119,6 +119,11 @@ check(round(clipped["suite_run"]) == 1000 and round(clipped["model"]) == 1300 an
       and round(orphan["other"]) == 8000 and not orphan["model"],
       "a window clips every span, and a run with no session file is unsplit, never model: %s %s"
       % (dict(clipped), dict(orphan)))
+late = T.run_split(run, D0 + 7700, D0 + 10000, T.suite_rows(0, 1e12),
+                   T.event_rows(D0, D0 + 86400)["c"] + [["c", D0 + 8500, "p", "Bash", 0, 200, "w", "tid0000009", "abcd1234", 1]],
+                   T.event_rows(D0, D0 + 86400)["h"])
+check(round(late["hooks"]) == 0 and round(late["tools"]) == 200,
+      "a call outside the window takes its hooks with it, never out of the window's tool time: %s" % dict(late))
 
 NOW = D0 + 20 * 3600
 for back in range(1, 8):
@@ -142,6 +147,9 @@ check(doc["band_days"] == 7 and by["suite_wait"]["usual_min"] == round(100 / 60.
       and "Hole: suite slot wait: 17 min, usually 2 min" in doc["lines"],
       "a harness class past twice its 7-day median by 15 minutes is a named hole; one under twice its median, one "
       "under the floor or a plain class never is: %s" % doc["holes"])
+long = T.document(NOW, 72.0, write=False)
+check(long["holes"] == [] and {r["class"]: r["usual_min"] for r in long["classes"]}["suite_wait"] == 5.0,
+      "a 72 h window is judged against three usual days, never one: %s" % long["holes"])
 check(T.holes({"worker": {"model": 900, "suite_run": 4500, "slot": 4600}, "seconds": {}}, {})
       == ["workers worked 9 % of their time; 45 % went to their own tests, 46 % to the slot queue"]
       and T.holes({"worker": {"model": 4000, "suite_run": 6000}, "seconds": {}}, {}) == [],
@@ -189,6 +197,8 @@ lines(os.path.join(work, "night-stats", "runs.jsonl"), [dict(run, workdir="/r/.c
 os.environ["WORKER_STATS_DIR"] = os.path.join(work, "night-stats")
 check(T.budget(D0, D0 + 86400)["jobs"] == [[D0 + 1000, D0 + 1600, D0 + 10000, 3000.0]],
       "a night worker enters the slot replay with its launch, first CLI start, end and own suite seconds")
+check(T.budget(D0 + 7000, D0 + 86400)["jobs"] == [[D0 + 1000, D0 + 1600, D0 + 10000, 3000.0]],
+      "a night worker that started before the window keeps the suite seconds it ran before it")
 os.environ["WORKER_STATS_DIR"] = os.path.join(work, "stats")
 b = T.budget(D0, D0 + 86400)
 wb = dict(b, seconds=dict(b["seconds"], walled=3600), worker=dict(b["worker"], walled=3600))
@@ -318,6 +328,18 @@ subprocess.run([sys.executable, os.path.join(root, "share", "time_budget.py"), "
 check(os.path.exists(os.path.join(moved, "night-ledger", "N1.json"))
       and not os.path.exists(os.path.join(work, "home", ".cache", "doctors")),
       "with no DOCTORS_DIR a night's ledger row is cached in the doctors directory its runs are read from")
+for name, meta in (("claudeb-%d-3-cccc" % (D0 + 2000), {"review_round": "R1", "pid_started_at": D0 + 2000,
+                                                         "cli_starts": [D0 + 2001], "ended_at": D0 + 2600}),
+                   ("claudeb-%d-4-dddd" % (D0 + 3000), {"walled_accounts": ["com"], "pid_started_at": D0 + 3000,
+                                                         "cli_starts": [D0 + 3100, D0 + 3300], "ended_at": D0 + 3500})):
+    os.makedirs(os.path.join(work, "runs", name))
+    for file, body in (("launcher", "launcher-1\n"), ("meta.json", json.dumps(dict(meta, vendor="claudeb")))):
+        with open(os.path.join(work, "runs", name, file), "w") as handle:
+            handle.write(body)
+split = T.night_split(night)[1]
+check(round(split["review"]) == 600 and round(split["walled"]) == 200 and round(split["retries"]) == 400,
+      "a night run's meta.json names its review round and usage walls as review_round and walled_accounts: %s"
+      % dict(split))
 print(count[0])
 EOF
 ) || exit 1

@@ -243,6 +243,13 @@ check([(o["id"], o["opportunity"]["recoverable_min_day"]) for o in timed]
       "a class over its floor ranks by recoverable min/day: its own time opportunity, or its gap added to the "
       "opportunity already pricing it; under the worth line it is no opportunity; the night takes them all, biggest first: %s"
       % [(o["id"], o["opportunity"]["recoverable_min_day"]) for o in timed])
+stop = gaps["floors"][-1]
+own = module.with_time([], {"floors": [dict(stop, label="hooks", recoverable_min_day=20.0, worker_min_day=4.0,
+                                            **{"class": "hooks"}), dict(stop, recoverable_min_day=10.0)]})
+check([(o["id"], o["opportunity"]["recoverable_min_day"], o["opportunity"]["worker_min_day"]) for o in own]
+      == [("opportunity:time/hooks", 30.0, 4.0)],
+      "with no hook opportunity the Stop gap adds to the hooks time row, never the larger of the two: %s"
+      % [(o["id"], o["opportunity"]) for o in own])
 rows = module.floor_rows(gaps, {"rows": [{"id": "L1", "match": {"rule": "time_floor", "ident": "slot"}, "status": "fixed"}]}, HI)
 held = [module.floor_rows(gaps, {"rows": [{"id": "L1", "match": {"rule": "time_floor", "ident": "slot"}, "status": "fixed",
                                            "fixes": [{"at": h.iso_time(HI - back * 3600), "files": [], "in": None}]}]},
@@ -404,6 +411,14 @@ check(both["headline"] == cold["headline"] and stored("speed-both") == stored("s
       and "2026-10-01.json" in stored("speed-both"),
       "backfilled turns Harness already holds count once, prompts included: %s vs %s"
       % (both["headline"], cold["headline"]))
+shutil.copytree(os.path.join(work, "speed-cold"), os.path.join(work, "speed-dup"))
+for path in glob.glob(os.path.join(work, "speed-dup", "backfill", "*.jsonl")):
+    body = open(path).read()
+    with open(path, "a") as handle:
+        handle.write(body)
+speed("speed-dup", "--quiet", HARNESS_DOCTOR_DIR=blank_dir, **transcripts)
+check(stored("speed-dup") == stored("speed-cold"),
+      "backfill rows appended twice by a run that died before its state.json count once, prompts included")
 resumed = os.path.join(work, "speed-resumed")
 speed("speed-resumed", "--quiet", HARNESS_DOCTOR_DIR=blank_dir, SPEED_DOCTOR_BACKFILL_S="0", **transcripts)
 job = json.load(open(os.path.join(resumed, "state.json")))["backfill"]
@@ -698,8 +713,23 @@ with open(os.path.join(kick_dir, "statusline-probes", "2026-10-01.tsv"), "w") as
 probe_view = module.background_view({}, mid, mid + 86400, [], 1.0)
 check(probe_view["probes"] == {"ports": {"runs_day": 1.0, "cpu_min_day": 0.01}, "work": {"runs_day": 3.0, "cpu_min_day": 1.0}},
       "each statusline probe kind counts its runs and CPU inside the window, a row without CPU as a run only")
-check(module.background_share(probe_view, {}, 1.0) == 1.0,
+check(module.background_share(probe_view, {}) == 1.0,
       "the probes' CPU is the statusline's background share")
+labelled = module.machine_view({"2026-10-01": {"label_cpu_s": {"l%d" % i: 90.0 for i in range(10)}}}, 0.0)
+check(len(labelled["label_cpu_s"]) == 8
+      and abs(module.background_share(probe_view, labelled) - 1.01 / (1.01 + 900 / 60.0 / 1.5)) < 1e-9,
+      "the background share divides by every label's CPU over the day files' span, not the top 8 shown: %s"
+      % module.background_share(probe_view, labelled))
+line_view = module.background_view({"2026-10-01": {"statusline": {"renders": 150, "cpu_ms": 600, "cpu_n": 10}}},
+                                   mid, mid + 86400, [], 1.0)
+check(line_view["statusline"]["renders_day"] == 100.0 and line_view["statusline"]["cpu_min_day"] == 0.1,
+      "a window starting mid-day reads that whole day file, so its statusline rates divide by the files' span: %s"
+      % line_view["statusline"])
+pre = module.day_values("2026-10-01", {}, {}, None, None, None, [
+    {"ended_at": mid, "vendor": "codex", "pid_started_at": mid - 100, "cli_starts": [mid - 95]},
+    {"ended_at": mid, "vendor": "codex", "pid_started_at": mid - 100, "cli_starts": [mid - 130]}], None)
+check(pre == {"delegation.pre_cli_s|codex|-": [5.0, 1]},
+      "a CLI start before its pid start is no pre-CLI time, as in the delegation view: %s" % pre)
 
 nights = os.path.join(work, "doctors", "nights")
 os.makedirs(nights, exist_ok=True)
