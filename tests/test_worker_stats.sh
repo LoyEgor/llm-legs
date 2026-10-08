@@ -296,6 +296,10 @@ assert contains "$retry_out" 'collect window 2026-07-10..2026-07-17: 1 new follo
 assert test "$(wc -l <"$CSD/ledger.jsonl")" -eq 3
 assert test ! -f "$CSD/pending-since"
 assert contains "$(collect_default valid)" 'collect window 2026-07-14..2026-07-17'
+# a skip older than a fresh start's reach stops pinning the window: a permanent failure cannot grow it forever
+echo 2026-06-01 >"$CSD/pending-since"
+assert contains "$(collect_default valid)" 'collect window 2026-07-14..2026-07-17'
+assert test ! -f "$CSD/pending-since"
 
 # an invalid answer followed by an infra failure is a skip, not a permanent C/rater-invalid
 CSD="$WORK/collect-invalid-infra"

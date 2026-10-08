@@ -580,6 +580,8 @@ def cmd_collect(args):
 
         today = datetime.now(timezone.utc).date()
         until = args.until or today.isoformat()
+        if pending and pending < (datetime.fromisoformat(until) - timedelta(days=FRESH_START_DAYS)).date().isoformat():
+            pending = ""
         if args.since:
             since = args.since
         else:
