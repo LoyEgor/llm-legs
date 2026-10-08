@@ -28,7 +28,7 @@ LIMITS = {
     "cli_behind_h": 24,
     "pass_stale_h": 36,
 }
-PASS_OK = ("current", "updated", "busy", "not-installed")
+PASS_OK = ("current", "updated", "busy", "not-installed", "self-update")
 VENDORS = ("codex", "grok", "gemini", "claude")
 CATALOG_VENDORS = ("codex", "grok", "gemini")
 COUNTED = ("new", "open", "regressed")
@@ -410,7 +410,7 @@ def collect(now):
             for line in lines:
                 if line["word"] == "updated":
                     since, streak = None, []
-                elif line["word"] in ("busy", "install-failed"):
+                elif line["word"] in ("busy", "install-failed", "self-update"):
                     if streak and (line["at"] - streak[-1]["at"] > LIMITS["pass_stale_h"] * 3600
                                    or line["rest"].split(" -> ")[0] != streak[-1]["rest"].split(" -> ")[0]):
                         since, streak = None, []
@@ -461,6 +461,9 @@ def collect(now):
             "events": [{k: e.get(k) for k in ("id", "status", "from", "to", "created_at", "launched_at", "closed_at")}
                        | {"changed": e.get("substantive") or e.get("changed") or []} for e in mine],
         })
+        native = state.get(vendor + "-native")
+        if isinstance(native, dict):
+            vendors[-1]["native"] = native.get("installed")
     return col, vendors
 
 
@@ -493,8 +496,9 @@ def view(doc):
     for problem in doc["problems"]:
         lines.append("  %-10s %s" % (problem["state"], problem["fact"]))
     for vendor in doc.get("vendors") or []:
-        lines.append("  %-7s %s (latest %s) · %d models" % (
-            vendor["vendor"], vendor["installed"] or "-", vendor["latest"] or "-", len(vendor["models"])))
+        lines.append("  %-7s %s%s (latest %s) · %d models" % (
+            vendor["vendor"], vendor["installed"] or "-", " · native %s" % vendor["native"] if "native" in vendor else "",
+            vendor["latest"] or "-", len(vendor["models"])))
     return "\n".join(lines)
 
 

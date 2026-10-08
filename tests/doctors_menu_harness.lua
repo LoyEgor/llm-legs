@@ -166,6 +166,8 @@ local updater = {
       } },
     { vendor = "claude", installed = "2.4.1", latest = "2.4.1", checked_at = iso(now - 3 * 3600), models = {},
       events = {} },
+    { vendor = "claude", installed = "2.5.0", native = "2.4.9", latest = "2.5.0", checked_at = iso(now - 3 * 3600),
+      models = {}, events = {} },
     { vendor = "grok", installed = "1.0.40", latest = "", checked_at = iso(now - 3 * 3600), result = "check-failed",
       models = {}, events = {} },
   },
@@ -648,6 +650,9 @@ check(codex and text(codex.title) == "codex 0.159.0 · checked 3h ago · latest 
   .. (codex and text(codex.title) or "missing"))
 local claude = find(details(up.menu), "claude 2.4.1")
 check(claude and text(claude.title) == "claude 2.4.1 · checked 3h ago", "an up-to-date vendor names no latest")
+local native = find(details(up.menu), "claude 2.5.0")
+check(native and text(native.title) == "claude 2.5.0 · native 2.4.9 · checked 3h ago · latest 2.5.0",
+  "a lagging native install names both versions and latest: " .. (native and text(native.title) or "missing"))
 local grok = find(details(up.menu), "grok 1.0.40")
 check(grok and text(grok.title) == "grok 1.0.40 · checked 3h ago" and dimmed(grok.title),
   "an empty latest is no update: " .. (grok and text(grok.title) or "missing"))

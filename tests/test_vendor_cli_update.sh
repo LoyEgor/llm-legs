@@ -20,8 +20,10 @@ HOME="$WORK/home"
 FAKE_BIN="$WORK/node/bin"
 NPM_ROOT="$WORK/node/lib/node_modules"
 CALLS="$WORK/calls"
+VIEWS="$WORK/views"
 BUSY="$WORK/busy"
-export HOME CALLS BUSY FAKE_BIN
+export HOME CALLS VIEWS BUSY FAKE_BIN
+export AGY_BIN="$WORK/agy" VENDOR_CLI_UPDATE_AGY_MANIFEST="file://$WORK/agy-manifest.json"
 unset CODEXB_PROFILES_DIR VENDOR_CLI_UPDATE_STATE_DIR VENDOR_CLI_UPDATE_LOCKED
 export VENDOR_CLI_UPDATE_BIN_DIR="$FAKE_BIN" VENDOR_CLI_UPDATE_GROKB="$FAKE_BIN/grokb"
 CODEX_NATIVE="$NPM_ROOT/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex"
@@ -75,6 +77,7 @@ cat >"$FAKE_BIN/npm" <<'EOF'
 name() { case $1 in @openai/codex*) printf codex ;; @xai-official/grok*) printf grok ;; @anthropic-ai/claude-code*) printf claude ;; esac; }
 case $1 in
   view)
+    printf 'npm view %s\n' "$2" >>"$VIEWS"
     case $2 in
       *@[0-9]*) grep -xF "${2##*@}" "$FAKE_BIN/published-$(name "$2")" 2>/dev/null ;;
       *) cat "$FAKE_BIN/latest-$(name "$2")" 2>/dev/null ;;
@@ -191,7 +194,15 @@ assert [ "$(result claude)" = "updated 2.1.280" ]
 # The native claude runs ahead of npm's latest tag: the npm claude follows it to the same version when
 # npm publishes that version, and stays on latest when it does not or when the native one is older.
 export VENDOR_CLI_UPDATE_NATIVE_CLAUDE="$WORK/native-claude"
-printf '#!/usr/bin/env bash\nprintf "%%s (Claude Code)\\n" "$(cat "$FAKE_BIN/ver-native")"\n' >"$VENDOR_CLI_UPDATE_NATIVE_CLAUDE"
+cat >"$VENDOR_CLI_UPDATE_NATIVE_CLAUDE" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1" = install ]; then
+  printf 'native install %s\n' "$2" >>"$CALLS"
+  [ -n "${NATIVE_INSTALL_FAIL:-}" ] || printf '%s\n' "$2" >"$FAKE_BIN/ver-native"
+  exit 0
+fi
+printf '%s (Claude Code)\n' "$(cat "$FAKE_BIN/ver-native")"
+EOF
 chmod +x "$VENDOR_CLI_UPDATE_NATIVE_CLAUDE"
 printf '2.1.282\n' >"$FAKE_BIN/ver-native"
 printf '2.1.282\n' >"$FAKE_BIN/published-claude"
@@ -210,6 +221,27 @@ printf '2.1.279\n' >"$FAKE_BIN/ver-native"
 printf '2.1.201\n' >"$FAKE_BIN/ver-claude"
 run
 assert grep -qxF 'npm install @anthropic-ai/claude-code@2.1.280' "$CALLS"
+# The native claude's own updater is off: it is installed natively to the npm claude's target, while
+# the npm claude runs too (a native version is its own file), and never downgraded.
+assert grep -qxF 'native install 2.1.280' "$CALLS"
+assert [ "$(result claude-native)" = "updated 2.1.280" ]
+assert grep -qE ' claude-native updated 2\.1\.279 -> 2\.1\.280$' "$LOG"
+printf '2.1.284\n' >"$FAKE_BIN/latest-claude"
+printf '2.1.284\n' >"$FAKE_BIN/ver-claude"
+printf '%s\n' "$CLAUDE_NATIVE" >"$BUSY"
+run
+assert grep -qxF 'native install 2.1.284' "$CALLS"
+assert [ "$(result claude-native)" = "updated 2.1.284" ]
+: >"$BUSY"
+printf '2.1.285\n' >"$FAKE_BIN/latest-claude"
+NATIVE_INSTALL_FAIL=1 run
+assert [ "$(jq -r '.["claude-native"] | .result + " " + .installed + " " + .latest' "$STATE")" = "install-failed 2.1.284 2.1.285" ]
+printf '2.1.286\n' >"$FAKE_BIN/ver-native"
+run
+assert_fails grep -qF 'native install' "$CALLS"
+assert [ "$(result claude-native)" = "current 2.1.286" ]
+printf '2.1.280\n' >"$FAKE_BIN/latest-claude"
+printf '2.1.280\n' >"$FAKE_BIN/ver-claude"
 unset VENDOR_CLI_UPDATE_NATIVE_CLAUDE
 
 # No npm install of a CLI at all is recorded without a log line every run.
@@ -334,17 +366,19 @@ assert grep -qF 'night update: pass done, no integration chat' "$LOG"
 
 # launchd's `run --if-due` every half hour: nothing while every vendor is current and checked within a
 # day; a busy or failed vendor alone is retried, and only an update brings the rest of the pass.
-due_state() { # codex-result grok-result claude-result checked-at
-  jq -n --arg c "$1" --arg g "$2" --arg l "$3" --arg t "$4" \
-    '{codex: {result: $c, checked_at: $t}, grok: {result: $g, checked_at: $t}, claude: {result: $l, checked_at: $t}}' >"$STATE"
+due_state() { # codex-result grok-result claude-result checked-at [passed-at]
+  jq -n --arg c "$1" --arg g "$2" --arg l "$3" --arg t "$4" --arg p "${5:-$4}" \
+    '{codex: {result: $c, checked_at: $t, passed_at: $p}, grok: {result: $g, checked_at: $t, passed_at: $p},
+      claude: {result: $l, checked_at: $t, passed_at: $p}, gemini: {result: "current", checked_at: $t}}' >"$STATE"
 }
-due_run() { : >"$CALLS"; bash "$SCRIPT" run --if-due; }
+due_run() { : >"$CALLS"; : >"$VIEWS"; bash "$SCRIPT" run --if-due; }
 fresh=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 set_versions 0.157.0 0.158.0 1.0.41 1.0.42
 printf '2.1.280\n' >"$FAKE_BIN/ver-claude"
 due_state current current current "$fresh"
 due_run || fail "an idle due run exited non-zero"
 assert [ ! -s "$CALLS" ]
+assert [ ! -s "$VIEWS" ]
 assert [ "$(result codex)" = "current " ]
 printf '%s\n' "$CODEX_NATIVE" >"$BUSY"
 due_state busy current current "$fresh"
@@ -375,6 +409,59 @@ assert [ "$(result grok)" = "updated 1.0.42" ]
 rm -f "$STATE"
 due_run
 assert grep -qE '^fingerprint check ' "$CALLS"
+# Between daily passes every vendor's version is checked once it is 2 h old: a release found installs
+# and brings the rest of the pass, none found only rewrites the Updater doctor; the daily clock is the
+# full pass's own, which a version check never moves.
+assert jq -e '[.codex, .grok, .claude | .passed_at] | all(. != null)' "$STATE" >/dev/null
+set_versions 0.158.0 0.158.0 1.0.42 1.0.42
+three_h=$(date -u -v-3H +%Y-%m-%dT%H:%M:%SZ)
+due_state current current current "$three_h" "$fresh"
+due_run
+assert [ "$(grep -c '^npm view ' "$VIEWS")" = 3 ]
+assert [ "$(cat "$CALLS")" = "doctor --quiet" ]
+assert [ "$(jq -r '.codex.passed_at' "$STATE")" = "$fresh" ]
+assert [ "$(jq -r '.codex.checked_at' "$STATE")" != "$three_h" ]
+due_run
+assert [ ! -s "$VIEWS" ]
+assert [ ! -s "$CALLS" ]
+set_versions 0.158.0 0.159.0 1.0.42 1.0.42
+due_state current current current "$three_h" "$fresh"
+due_run
+assert grep -qxF 'npm install @openai/codex@0.159.0' "$CALLS"
+assert [ "$(result codex)" = "updated 0.159.0" ]
+assert grep -qE '^fingerprint check ' "$CALLS"
+assert [ "$(tail -n 1 "$CALLS")" = "doctor --quiet" ]
+due_state current current current "$fresh" "$(date -u -v-25H +%Y-%m-%dT%H:%M:%SZ)"
+due_run
+assert grep -qE '^fingerprint check ' "$CALLS"
+# A failed native claude install is retried like an npm one.
+due_state current current current "$fresh"
+jq '.["claude-native"] = {result: "install-failed"}' "$STATE" >"$WORK/s" && mv "$WORK/s" "$STATE"
+due_run
+assert [ "$(cat "$VIEWS")" = "npm view @anthropic-ai/claude-code" ]
+
+# agy updates itself; the version check reads its updater's manifest and records how far behind it is.
+cat >"$AGY_BIN" <<'EOF'
+#!/usr/bin/env bash
+cat "$FAKE_BIN/ver-agy"
+EOF
+chmod +x "$AGY_BIN"
+printf '1.3.0\n' >"$FAKE_BIN/ver-agy"
+printf '{"version": "1.3.1", "url": "x"}\n' >"$WORK/agy-manifest.json"
+due_state current current current "$fresh"
+jq --arg t "$three_h" '.gemini.checked_at = $t' "$STATE" >"$WORK/s" && mv "$WORK/s" "$STATE"
+due_run
+assert [ "$(jq -r '.gemini | .result + " " + .installed + " " + .latest' "$STATE")" = "self-update 1.3.0 1.3.1" ]
+assert grep -qE ' gemini self-update 1\.3\.0 -> 1\.3\.1$' "$LOG"
+assert [ ! -s "$VIEWS" ]
+assert [ "$(cat "$CALLS")" = "doctor --quiet" ]
+printf '1.3.1\n' >"$FAKE_BIN/ver-agy"
+rm -f "$STATE"
+run
+assert [ "$(result gemini)" = "current 1.3.1" ]
+rm "$WORK/agy-manifest.json"
+run
+assert [ "$(result gemini)" = "check-failed 1.3.1" ]
 
 # launchd runs a wrapper named after the job, never a bare interpreter; uninstall removes both.
 WRAPPER="$HOME/.local/libexec/vendor-cli-update"
@@ -393,4 +480,4 @@ bash "$SCRIPT" uninstall >/dev/null || fail "uninstall failed"
 assert test ! -e "$WRAPPER"
 assert test ! -e "$PLIST"
 
-echo "PASS: $asserts asserts; update when the registry is newer (codex, grok and the npm claude, which follows the native claude version when npm has it), model caches re-read every run, divergence (foreign cache writers, foreign clients, per-account catalog gaps) recorded once per change, no reinstall or downgrade, busy clients left alone and retried within half an hour while a current install is left for a day, registry and install failures recorded, run lock, launchd wrapper, fingerprint check last with npm bin dirs appended, then the Updater doctor whose failure fails no pass, a manual update detached with one chat for every vendor"
+echo "PASS: $asserts asserts; update when the registry is newer (codex, grok and the npm claude, which follows the native claude version when npm has it), model caches re-read every run, divergence (foreign cache writers, foreign clients, per-account catalog gaps) recorded once per change, no reinstall or downgrade, busy clients left alone and retried within half an hour, every version checked every 2 h with no network on a tick not due while the full pass stays daily, the native claude installed natively to the npm claude's target, agy's lag read off its updater manifest, registry and install failures recorded, run lock, launchd wrapper, fingerprint check last with npm bin dirs appended, then the Updater doctor whose failure fails no pass, a manual update detached with one chat for every vendor"

@@ -494,9 +494,11 @@ local function updaterEntry(now)
     for _, vendor in ipairs(type(document.vendors) == "table" and document.vendors or {}) do
       if type(vendor) == "table" then
         local checked = limits.parseTime(vendor.checked_at)
-        local text = string.format("%s %s · %s", tostring(vendor.vendor or "?"), tostring(vendor.installed or "?"),
-          checked and ("checked " .. style.ago(now - checked)) or "never checked")
-        local behind = type(vendor.latest) == "string" and vendor.latest ~= "" and vendor.latest ~= vendor.installed
+        local native = type(vendor.native) == "string" and vendor.native ~= vendor.installed and vendor.native or nil
+        local text = string.format("%s %s%s · %s", tostring(vendor.vendor or "?"), tostring(vendor.installed or "?"),
+          native and (" · native " .. native) or "", checked and ("checked " .. style.ago(now - checked)) or "never checked")
+        local behind = type(vendor.latest) == "string" and vendor.latest ~= ""
+          and (vendor.latest ~= vendor.installed or native ~= nil and vendor.latest ~= native)
         if behind then text = text .. " · latest " .. tostring(vendor.latest) end
         items[#items + 1] = { title = infoTitle(text, false, not behind), menu = vendorMenu(vendor, now) }
       end

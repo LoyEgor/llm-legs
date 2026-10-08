@@ -18,15 +18,21 @@ state_dir="${VENDOR_CLI_UPDATE_STATE_DIR:-$HOME/.cache/vendor-cli-update}"
 state_file="$state_dir/state.json"
 log_file="$state_dir/update.log"
 codex_profiles_dir="${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}"
+native_claude="${VENDOR_CLI_UPDATE_NATIVE_CLAUDE:-$HOME/.local/bin/claude}"
+agy="${AGY_BIN:-$HOME/.local/bin/agy}"
+agy_manifest="${VENDOR_CLI_UPDATE_AGY_MANIFEST:-https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/darwin_arm64.json}"
 agent_dir="$HOME/Library/LaunchAgents"
 label="com.llm-legs.vendor-cli-update"
 plist="$agent_dir/$label.plist"
 wrapper="$HOME/.local/libexec/vendor-cli-update"
 pass_every_s=86400
-# agy and the native Claude Code update themselves; npm installs never do, and a vendor lists a new
-# model only to a client at least as new as the model's minimal_client_version. An npm claude is a
-# second install that any PATH with /usr/local/bin or nvm first runs instead of the native one.
+check_every_s=7200
+# agy updates itself; npm installs never do, and a vendor lists a new model only to a client at least
+# as new as the model's minimal_client_version. The native claude's own updater is off
+# (DISABLE_AUTOUPDATER), so it is updated here too; the npm claude is a second install that any PATH
+# with /usr/local/bin or nvm first runs instead of the native one.
 vendors="codex grok claude"
+checked="$vendors gemini"
 
 package_of() {
   case $1 in
@@ -158,6 +164,10 @@ record_divergence() { # vendor findings
 
 update_vendor() { # vendor
   local vendor=$1 package bin_dir installed latest native now
+  if [ "$vendor" = gemini ]; then
+    check_agy
+    return 0
+  fi
   package=$(package_of "$vendor")
   bin_dir=$(node_bin_dir "$vendor") || { record "$vendor" not-installed '' ''; return 0; }
   installed=$(version_of "$bin_dir/$vendor" --version)
@@ -166,14 +176,15 @@ update_vendor() { # vendor
     record "$vendor" check-failed "$installed" "$latest"
     return 0
   fi
-  # The native updater ships npm's `next` hours before `latest` moves: the npm claude follows the
-  # native version, or every release reads as a lagging install and opens a chat.
+  # A native claude ahead of npm's `latest` (a manual `claude update` ships `next` first) is the target
+  # when npm publishes it, so both installs converge on one version.
   if [ "$vendor" = claude ]; then
-    native=$(version_of timeout_command 30 "${VENDOR_CLI_UPDATE_NATIVE_CLAUDE:-$HOME/.local/bin/claude}" --version)
+    native=$(version_of timeout_command 30 "$native_claude" --version)
     if [ -n "$native" ] && newer "$native" "$latest" &&
       [ "$(PATH="$bin_dir:$PATH" timeout_command 60 "$bin_dir/npm" view "$package@$native" version 2>/dev/null | tail -n 1)" = "$native" ]; then
       latest=$native
     fi
+    [ -z "$native" ] || update_native_claude "$native" "$latest"
   fi
   if ! newer "$latest" "$installed"; then
     record "$vendor" current "$installed" "$latest"
@@ -195,19 +206,60 @@ update_vendor() { # vendor
   record "$vendor" updated "$now" "$latest" "$installed"
 }
 
-due_vendors() { # -> `all` when a full pass is due, else the vendors whose last result wants a retry
+# The native versions live in separate files (~/.local/share/claude/versions/<version>) behind the
+# ~/.local/bin/claude symlink, and the installer spares a version a running client holds a lock on
+# (~/.local/state/claude/locks): a running session keeps its binary, so no busy check here.
+update_native_claude() { # installed target
+  local now
+  if ! newer "$2" "$1"; then
+    record claude-native current "$1" "$2"
+    return 0
+  fi
+  if ! timeout_command 600 "$native_claude" install "$2" </dev/null >>"$log_file" 2>&1; then
+    record claude-native install-failed "$1" "$2"
+    return 0
+  fi
+  now=$(version_of timeout_command 30 "$native_claude" --version)
+  if [ "$now" = "$2" ]; then
+    record claude-native updated "$now" "$2" "$1"
+  else
+    record claude-native install-failed "$now" "$2" "$1"
+  fi
+}
+
+# agy updates itself; the manifest its updater reads tells only whether it fell behind.
+check_agy() {
+  local installed latest
+  if [ ! -x "$agy" ]; then
+    record gemini not-installed '' ''
+    return 0
+  fi
+  installed=$(version_of timeout_command 30 "$agy" --version)
+  latest=$(curl -fsS -m 30 "$agy_manifest" 2>/dev/null | jq -r '.version // empty' 2>/dev/null)
+  if [ -z "$installed" ] || [ -z "$latest" ]; then
+    record gemini check-failed "$installed" "$latest"
+  elif newer "$latest" "$installed"; then
+    record gemini self-update "$installed" "$latest"
+  else
+    record gemini current "$installed" "$latest"
+  fi
+}
+
+due_vendors() { # -> `all` when a full pass is due, else the vendors whose version check is due or whose last result wants a retry
   local due
-  due=$(jq -r --arg vendors "$vendors" --argjson now "$(date +%s)" --argjson max "$pass_every_s" '
+  due=$(jq -r --arg vendors "$vendors" --arg checked "$checked" --argjson now "$(date +%s)" --argjson max "$pass_every_s" --argjson check "$check_every_s" '
+    def at($f): $f // "" | try fromdateiso8601 catch 0;
     . as $s | ($vendors | split(" ")) as $v
-    | if any($v[]; ($s[.].checked_at // "" | try fromdateiso8601 catch 0) < $now - $max) then "all"
-      else $v[] | select($s[.].result | IN("busy", "install-failed", "check-failed")) end' \
+    | if any($v[]; at($s[.].passed_at) < $now - $max) then "all"
+      else $checked | split(" ")[] | select(at($s[.].checked_at) < $now - $check
+        or any($s[.].result, $s[. + "-native"].result; IN("busy", "install-failed", "check-failed"))) end' \
     "$state_file" 2>/dev/null) && [ -s "$state_file" ] || due=all
   printf '%s\n' "$due" | paste -sd ' ' -
 }
 
-# launchd starts `run --if-due` every half hour: a full pass once a day, and in between only a retry
-# of the vendors a busy client or a failed install left behind, since a full pass re-reads every
-# account's model list.
+# launchd starts `run --if-due` every half hour: a full pass once a day, and in between only the
+# version check (every 2 h) and a retry of the vendors a busy client or a failed install left behind,
+# since a full pass re-reads every account's model list.
 run_all() { # [--if-due]
   local vendor bin_dir installed findings bin_dirs='' due=all codex_before=''
   mkdir -p "$state_dir"
@@ -221,10 +273,11 @@ run_all() { # [--if-due]
     if [ "$due" != all ]; then
       [ -n "$due" ] || return 0
       for vendor in $due; do update_vendor "$vendor"; done
-      jq -e --arg due "$due" 'any(($due | split(" "))[] as $v | .[$v].result; . == "updated")' "$state_file" >/dev/null ||
+      jq -e --arg due "$due" 'any(($due | split(" "))[] as $v | .[$v, $v + "-native"].result?; . == "updated")' "$state_file" >/dev/null ||
         { run_doctor; return 0; }
     fi
   fi
+  [ "$due" = all ] && update_vendor gemini
   for vendor in $vendors; do
     [ "$due" = all ] && update_vendor "$vendor"
     bin_dir=$(node_bin_dir "$vendor") || continue
@@ -242,10 +295,19 @@ run_all() { # [--if-due]
       record_divergence codex "$findings"
     fi
   done
+  [ "$due" = all ] && mark_passed
   # Appended, not prepended: the native claude in ~/.local/bin must stay the one found first.
   PATH="$PATH$bin_dirs" timeout_command 900 "${VENDOR_CLI_UPDATE_FINGERPRINT:-$repo_root/bin/vendor-fingerprint}" check \
     >>"$log_file" 2>&1 || printf '%s fingerprint check failed\n' "$(stamp)" >>"$log_file"
   run_doctor
+}
+
+mark_passed() {
+  local tmp
+  tmp=$(mktemp "$state_dir/state.XXXXXX") || return 0
+  { [ -s "$state_file" ] && cat "$state_file" || printf '{}\n'; } |
+    jq --arg vendors "$vendors" --arg t "$(stamp)" 'reduce ($vendors | split(" "))[] as $v (.; .[$v].passed_at = $t)' >"$tmp" 2>/dev/null &&
+    mv -f "$tmp" "$state_file" || rm -f "$tmp"
 }
 
 run_doctor() {
@@ -340,7 +402,7 @@ EOF
   if ! launchctl bootstrap "gui/$UID" "$plist"; then
     launchctl load -w "$plist"
   fi
-  printf 'Installed %s: a full pass daily, a busy or failed vendor retried every 30 minutes.\n' "$label"
+  printf 'Installed %s: a full pass daily, versions checked every 2 hours, a busy or failed vendor retried every 30 minutes.\n' "$label"
 }
 
 uninstall_agent() {

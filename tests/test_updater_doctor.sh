@@ -255,6 +255,26 @@ mv "$WORK/update.log" "$STATE/update.log"
 assert jqe --arg t "$(date -r $((t0 - H)) +%Y-%m-%dT%H:%M:%S)" '.count == 1 and (.first_seen | startswith($t))' <<<"$(problem pass-failed:claude)"
 assert jqe --arg t "$(date -r $((t0 - 2 * H)) +%H:%M)" '.state == "watch" and .count == 1 and .fact == "grok 1.0.40 → 1.0.44 waiting: busy since \($t)"' <<<"$(problem cli-behind:grok)"
 
+# The native claude is a second install with its own row: behind latest it is a pending update while
+# the npm claude is current, and claude's vendor row names both versions. agy's self-update lag counts
+# from its first behind check and is red past a day, never a failed pass.
+jq --arg t "$(ago 600)" '.claude = {result: "current", installed: "2.1.295", latest: "2.1.295", checked_at: $t}
+  | .["claude-native"] = {result: "install-failed", installed: "2.1.288", latest: "2.1.295", checked_at: $t}
+  | .gemini = {result: "self-update", installed: "1.3.0", latest: "1.3.1", checked_at: $t}' "$STATE/state.json" >"$WORK/s" &&
+  mv "$WORK/s" "$STATE/state.json"
+mv "$STATE/update.log" "$WORK/update.log"
+printf '%s gemini self-update 1.3.0 -> 1.3.1\n' "$(ago $((30 * H)))" "$(ago $((2 * H)))" >"$STATE/update.log"
+run
+mv "$WORK/update.log" "$STATE/update.log"
+assert_fails has cli-behind:claude
+assert jqe '.state == "watch" and (.fact | startswith("claude-native 2.1.288 → 2.1.295 waiting: install-failed since "))' <<<"$(problem cli-behind:claude-native)"
+assert jqe '.vendors[3] | .installed == "2.1.295" and .native == "2.1.288" and .latest == "2.1.295"' "$DOC"
+assert jqe '.vendors[2] | .installed == "1.3.0" and .latest == "1.3.1" and has("native") == false' "$DOC"
+assert jqe '.state == "new" and .count == 2 and (.fact | startswith("gemini 1.3.0 → 1.3.1 waiting: self-update since ")) and (.fact | endswith(" · 30h"))' <<<"$(problem cli-behind:gemini)"
+assert_fails has pass-failed:gemini
+assert grep -qF 'claude  2.1.295 · native 2.1.288 (latest 2.1.295)' <("$DOCTOR")
+state 3600
+
 # A stale media manifest section is a problem until a later fresh check of it; sections are independent; no file is no problem.
 CAPS="$STATE/caps-checks.jsonl"
 REC="$ROOT/share/caps_checks.py"
@@ -340,4 +360,4 @@ assert jqe -s 'length == 2 and .[1].trigger == "background"' "$RUNS/collector-ru
 assert jqe -s --slurpfile doc "$DOC" 'length == 1 and .[0].doctor == "updater" and .[0].count == $doc[0].problem_count
   and .[0].day == (now | strflocaltime("%Y-%m-%d"))' "$RUNS/problem-days.jsonl"
 
-echo "PASS:$asserts asserts; envelope, every rule (event-waiting, event-stuck, probe-broken, catalog-missing, cli-behind as a watch row from the first skip and red past a day, client-too-old, pass-stale, pass-failed, foreign-client, caps-stale cleared by a later fresh check per section) with its negatives, the caps-checks recorder that never fails and stays bounded, vendors for the menu, blind on a stale or missing pass, judge over code and ledger, ledger open/dismissed/regressed/fault, pinned ledger shape, under 1 s"
+echo "PASS:$asserts asserts; envelope, every rule (event-waiting, event-stuck, probe-broken, catalog-missing, cli-behind as a watch row from the first skip and red past a day (the native claude and agy's self-update too), client-too-old, pass-stale, pass-failed, foreign-client, caps-stale cleared by a later fresh check per section) with its negatives, the caps-checks recorder that never fails and stays bounded, vendors for the menu, blind on a stale or missing pass, judge over code and ledger, ledger open/dismissed/regressed/fault, pinned ledger shape, under 1 s"
