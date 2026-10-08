@@ -984,6 +984,7 @@ for step in '1. What each check guards' '2. Where the CPU goes' 'Never shorten a
   assert grep -qF "$step" "$brief"
 done
 assert_fails grep -qF -- '--fresh' "$brief"
+assert grep -qF -- 'tests/run-all --profile <suite>' "$brief"
 
 # A log-audit reading names no file, so its run gets every sweep repository (a gate's cause sat in claude-setup).
 for r in "$RUNS"/harness-*.json; do
