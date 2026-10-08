@@ -60,7 +60,7 @@ IMPROVEMENT_RULES = ("opportunity", "regression", "time_floor", spend_block.RULE
 UNITS = {"suite_run": ("CPU-s/run", suite_audit.PROOF_RUNS, suite_audit.PROOF_RATIO),
          "hooks": ("ms/call", 50, 0.55), "stop": ("ms/call", 50, 0.55),
          "suite_wait": ("s/wait", 20, 0.4), "slot": ("s/wait", 20, 0.4), "locks": ("s/wait", 20, 0.4)}
-WAIT_OF = {"suite_wait": ("run-suites",), "slot": ("workers",), "locks": WAIT_CLASSES}
+WAIT_OF = {"suite_wait": ("run-suites",), "slot": ("workers", "review-cells"), "locks": WAIT_CLASSES}
 UNIT_BEFORE_DAYS = 7
 SETTLE_S = 24 * 3600
 KEEP_DAYS = 35
