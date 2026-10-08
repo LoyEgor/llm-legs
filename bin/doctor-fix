@@ -48,6 +48,11 @@ on_exit() {
   fi
 }
 trap on_exit EXIT
+# Untrapped, bash runs on_exit the moment the signal lands while a child (a record_set mv) still writes, and
+# that orphan overwrites the failed record; a trapped signal waits for the foreground child first.
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 locked() { # command... -> runs it under the runs-dir lock
   local status

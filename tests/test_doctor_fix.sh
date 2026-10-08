@@ -706,9 +706,10 @@ for f in $new; do assert jqe '.failed_at != null and .launched_at == null and .n
 # A launcher killed while it holds the runs lock still fails its pending run on the way out.
 for open in $(fix runs --open --json | jq -r '.[].id'); do fix abandon "$open" >/dev/null; done
 doc llm "$(now)" problems 3 j1
+before=$(ls "$RUNS"/*.json)
 : >"$DATA/mv-term-launch"
 assert_fails env LLM_STORE_LOCK_RETRIES=8 bash "$FIX" launch llm >/dev/null 2>&1
-killed=$(fix runs llm --json | jq -r '.[0].id')
+killed=$(comm -13 <(printf '%s\n' "$before") <(ls "$RUNS"/*.json) | sed 's|.*/||; s|\.json$||')
 assert grep -qE '^llm-all-' <<<"$killed"
 assert jqe '.failed_at != null and .note == "the launcher exited before the run opened"' "$(record "$killed")"
 assert [ ! -e "$RUNS/.lock" ]
