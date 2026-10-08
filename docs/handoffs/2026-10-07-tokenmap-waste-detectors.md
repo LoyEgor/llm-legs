@@ -1,6 +1,6 @@
 # Tokenmap: detectors for spend that buys nothing
 
-Status: open — To: «Token spending tracking and optimization»
+Status: done (token-map b044500, 93c2a59, cf68b86, 03057cb, 3f597e7; every row carries `candidate_count` and `candidates` with file, session, line) — To: «Token spending tracking and optimization»
 
 From «Updater doctor», 2026-10-07, after Egor agreed that work for tokenmap goes to tokenmap.
 
