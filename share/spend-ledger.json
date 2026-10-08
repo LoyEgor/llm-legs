@@ -133,16 +133,16 @@
   {
    "id": "suite:llm-legs/test_worker_pick",
    "title": "llm-legs/test_worker_pick",
-   "audited_at": "2026-10-08T03:53:31+03:00",
+   "audited_at": "2026-10-08T04:01:43+03:00",
    "by": "feat/suite-audit-worker-pick",
-   "cpu_run": 78.6,
-   "cpu_min_day": 51.92,
+   "cpu_run": 78.9,
+   "cpu_min_day": 52.53,
    "sources": {
     "llm-legs/tests/lib/suite-journal.sh": "29457015e61a2ba7ea81c1456d386be4c872fe88",
-    "llm-legs/tests/test_worker_pick.sh": "f36261d728a3a6b3b394752890e53ca68b0e2845"
+    "llm-legs/tests/test_worker_pick.sh": "67e3163f53027cbcbae87f8f63b76611842ed9c4"
    },
-   "verdict": "cut",
-   "note": "27 unread renders -> load_case store writes, fork-free contains; 977 asserts kept; 85.3 -> 79.5 CPU-s/run (-6.9%); rest is ~0.13 CPU-s per worker-pick start x ~470 distinct cases"
+   "verdict": "kept",
+   "note": "kept: only fork-free contains/not_contains + load_case helper, 977 asserts, 83.45 -> 82.54 CPU-s/run (-1.1%); every render is an exit check; the lever is product: worker-pick's own ~0.13 CPU-s per start x ~470 cases"
   }
  ]
 }
