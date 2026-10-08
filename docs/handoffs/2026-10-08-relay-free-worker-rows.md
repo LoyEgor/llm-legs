@@ -1,0 +1,55 @@
+# Relay-free worker rows: a `worker` work line instead of the Sonnet relay subagents
+
+Status: open. To: «Light помощник и унификация workers». From: «Token spending tracking and optimization», 2026-10-08.
+
+## Why
+Every delegation spawns a relay subagent on Sonnet: claudeb-, codex-, gemini- and grok-worker, light-worker, light-research, and review-waiter for review-bench. The relay only launches `worker-run`, waits in 9-minute rounds, and relays the report.
+
+- **Cost.** In the week to 2026-10-08 relays cost about 4.6% of Claude spend. The claudeb-worker relay alone was 41.4M limit tokens: 1,029 spawns, about 10 requests and 40k each.
+- **Already cut.** `omitClaudeMd: true` (claude-setup 1bd5689, 2026-10-08 03:38) brought relay startup down from 12.5k to 3.4k per spawn.
+- **Egor's goal.** Spend zero tokens on holding a worker.
+
+## Egor's requirements
+- **What the row must keep.** Today's relay row shows account, model, effort, task title, state and elapsed time. A replacement must keep all of it.
+- **Visual mock first, implementation later.** Before any implementation, show him a visual mock in his own chat:
+  - what a worker line looks like and how it is coloured;
+  - where it sits;
+  - what happens when a shell line and a worker line run at once;
+  - what two workers look like, and what overflow (more than 3 lines) looks like.
+- **He decides strategically on the mock.** Today's panel design suits him, so a new design has to prove it can carry the same information.
+
+## Findings
+1. **Background Bash cannot draw a panel row.** Claude Code 2.1.288 hands `subagentStatusLine` only `local_agent` tasks.
+   - A probe on 2026-10-08 ran a 75 s background Bash. The renderer was called 31 times and never received it.
+   - `docs/statusline-contract.md` § Task rows says the same.
+2. **Work lines already exist.**
+   - The pipeline: `bin/statusline-work-probe.sh` writes the `work-<sid>` cache, and `bin/statusline.sh` draws it under line 2.
+   - Look: magenta `<class> · <repo>`, then a dim label and elapsed time. At most 3 lines, then `+N`.
+   - Precedent: the `media` line (`bin/media-run` writes `$STATUSLINE_CACHE_DIR/media-<pid>`) replaced the image-gen agent row on 2026-10-04.
+   - Egor saw a `shell · token-map · sleep` line live and confirmed the placement works. He said a shell line is not a worker line.
+3. **The data for a worker line is already there.**
+   - The run dir holds `tag` (`acct · model · effort`), `meta.json`, and `state.json` (`phase`, `started_epoch`). Elapsed can therefore count from the run start, not from each wait round.
+   - Title: take it from the hook-rewritten Agent description (`~/.cache/claude-worker-tags/<sid>/<agent-id>`; `bin/subagent-statusline.sh` strips the tag from it around line 264), else from the brief's first line after its header lines.
+   - The relay's `worker-run wait <run-id>` process sits in the chat's process tree today. So the line can be drawn before the relays are retired.
+   - The probe already skips a Bash call whose subtree runs `worker-run` or `review-bench`, so a worker will not also show up as a `shell` line.
+4. **Fallback: a Haiku relay.**
+   - A Haiku 4.5 relay was tried from 2026-07-20 to 2026-07-22 (claude-setup 21dc75f → 1a520e5). It implemented tasks itself in 6 proven runs and was reverted.
+   - Haiku 5.5 was released on 2026-10-07. CLI 2.1.288 doesn't know it; the latest CLI is 2.1.295.
+   - This is the option if the mock fails: the panel row stays and the relay gets cheaper, though not free.
+
+## Wanted
+1. **A temporary visual mock in Egor's own status line.** Gate it to his session by a marker file, show it, then remove it. Show:
+   - a worker line next to a shell line;
+   - two worker lines;
+   - overflow.
+
+   Get his yes on the look.
+2. **Only after his yes:**
+   - the real `worker` work line;
+   - direct launches, where the chat runs `worker-run` as a background Bash call. `worker-launch-gate.sh` refuses chat-run launches today;
+   - retire the relays, review-waiter included;
+   - the CLAUDE.md delegation rules;
+   - the relay-audit hooks;
+   - token-map's relay detector (`tracking.py` `RELAYS`).
+
+   Rough size: about 300 lines across about 10 files in llm-legs and claude-setup.
