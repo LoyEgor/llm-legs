@@ -212,7 +212,9 @@ for file in "${media[@]}"; do
     if [ "$(size_of "$send")" -gt "$limit_bytes" ]; then
       rm "$send"
       send="$tmp_dir/media/file$index.$proxy_ext"
-      with_beeps "$file" "$send" "$beeps" -c:a libmp3lame -b:a 192k
+      kbps=$(awk -v b="$((limit_bytes * 9 / 10))" -v s="$seconds" 'BEGIN { k = int(b * 8 / (s + 4) / 1000); print (k > 192 ? 192 : k) }')
+      [ "$kbps" -ge 32 ] || say "$file is too long to send as one audio file; cut it into parts"
+      with_beeps "$file" "$send" "$beeps" -c:a libmp3lame -b:a "${kbps}k"
       [ "$(size_of "$send")" -le "$limit_bytes" ] || say "$file is too long to send as one audio file; cut it into parts"
       proxied=$((proxied + 1))
       proxy_lines+="proxy=file$index.$proxy_ext $(size_of "$send") bytes from $bytes: $file"$'\n'

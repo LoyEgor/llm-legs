@@ -120,6 +120,10 @@ assert grep -qx "audio=delivered file2: $M/long.wav" "$WORK/err"
 assert test "$(grep -c BEEPS "$FAKE_GEMINIB_PROMPT")" -eq 0
 assert grep -q 'reply with the single line NO_AUDIO <file number>' "$FAKE_GEMINIB_PROMPT"
 
+ffmpeg -v error -f lavfi -i sine=frequency=440:sample_rate=44100 -t 840 -c:a libmp3lame -b:a 96k "$M/talk.mp3" || exit 1
+assert listen 'what is said?' "$M/talk.mp3" --account explicit
+assert grep -qE "^proxy=file1\.mp3 [0-9]+ bytes from [0-9]+: $M/talk\.mp3$" "$WORK/err"
+
 FAKE_GEMINIB_MODE=skip-view expect_rc 1 'q' "$M/clip.mp4" "$M/tone.wav" --account explicit
 assert grep -q "answered without opening $M/tone.wav" "$WORK/err"
 FAKE_GEMINIB_MODE=view-error expect_rc 1 'q' "$M/clip.mp4" "$M/tone.wav" --account explicit

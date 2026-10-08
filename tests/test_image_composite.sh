@@ -117,6 +117,12 @@ touch -t 202001010000 "$aged"
 assert lineage gemini cli "$WORK/l2.png" none 'cooler' '' '' "$WORK/l1.png"
 assert test ! -e "$aged" -a ! -d "${aged%/*}"
 assert test "$(find "$WORK" -maxdepth 1 -name '*.edit.json' ! -name 'legacy.png.edit.json' | wc -l | tr -d ' ')" = 0
+assert lineage gemini cli "$WORK/s1.png" none 'paler' '' '' "$WORK//./p1.png"
+assert grep -qx "edit_depth=2 root=$WORK/plain.png" "$WORK/out"
+printf '{"root":"%s","depth":5,"edits":[]}\n' "$WORK/older.png" >"$WORK/p1.png.edit.json"
+assert lineage gemini cli "$WORK/p1.png" none 'paler' '' '' "$WORK/p1.png"
+assert grep -qx "edit_depth=2 root=$WORK/plain.png" "$WORK/out"
+assert test ! -e "$WORK/p1.png.edit.json"
 rm "$WORK/e1.png"
 assert test -z "$(session_input gemini conv-1)"
 

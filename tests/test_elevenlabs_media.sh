@@ -213,6 +213,21 @@ master.write_text("sk_bbbb2222 com\n")
 with contextlib.redirect_stderr(io.StringIO()):
     s.main()
 assert mirror.read_text().splitlines()[1:] == ["sk_bbbb2222 com", "sk_mine3333 reserve=7"]
+modes, real_replace = [], os.replace
+def failing_replace(source, target):
+    modes.append(oct(os.stat(source).st_mode)[-3:])
+    raise OSError("disk full")
+s.os.replace = failing_replace
+master.write_text("sk_cccc3333 new\n")
+try:
+    with contextlib.redirect_stderr(io.StringIO()):
+        s.main()
+    raise AssertionError("a failed replace passed")
+except OSError:
+    pass
+finally:
+    s.os.replace = real_replace
+assert modes == ["600"] and sorted(p.name for p in work.glob(".mirror.txt.sync-*")) == [], modes
 del os.environ["ELEVENLABS_MIRRORS"]
 assert s.mirrors() == []
 PY

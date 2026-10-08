@@ -364,7 +364,10 @@ image_leg_work_prune() { # work file
 
 # `<image>.edit.json` beside the image is the old place, still read.
 image_leg_sidecar() { # image -> its edit-chain sidecar
-  image_leg_work_file lineage "$1" edit.json
+  local path=$1 dir
+  case $path in /*) ;; *) path=$PWD/$path ;; esac
+  dir=$(CDPATH='' cd -P -- "${path%/*}/" 2>/dev/null && pwd -P) || dir=${path%/*}
+  image_leg_work_file lineage "$dir/${path##*/}" edit.json
 }
 
 # A plain generation keeps no sidecar (a missing one reads as a root at depth 0) and drops a stale one.
@@ -401,6 +404,8 @@ image_leg_lineage() { # vendor route dest session prompt region points(newline-s
     if ! mkdir -p "${file%/*}" || ! printf '%s\n' "$sidecar" >"$file.$$" || ! mv -f "$file.$$" "$file"; then
       rm -f "$file.$$"
       printf '%s: could not write %s\n' "${IMAGE_LEG_TOOL:-image}" "$file" >&2
+    else
+      rm -f "$dest.edit.json"
     fi
   else
     rm -f "$(image_leg_sidecar "$dest")" "$dest.edit.json"

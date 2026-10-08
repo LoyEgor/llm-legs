@@ -173,7 +173,7 @@ else
     { printf 'gemini-speech: could not encode the mp3\n' >&2; exit 1; }
 fi
 observed_model=$(jq -r '.model // empty' <<<"$take")
-seconds=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$dest" 2>/dev/null | head -n 1)
+seconds=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$dest" 2>/dev/null | head -n 1) || seconds=''
 printf 'dest=%s\nduration=%s\nformat=%s\naccount=%s\nmodel=%s\nvoices=%s\ncredits=free (AI Studio, no API key)\nseconds=%s\n' \
   "$dest" "$(awk -v s="${seconds:-0}" 'BEGIN { printf "%.2f", s }')" "$ext" "$account" "${observed_model:-unknown}" \
   "$(jq -r '.speakers | map(sub("^Speaker [0-9]+ - "; "")) | join(",")' <<<"$take")" "$(($(date +%s) - started))"

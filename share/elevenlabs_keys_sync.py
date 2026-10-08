@@ -61,9 +61,13 @@ def main() -> int:
         if text == old:
             continue
         temp = target.with_name(f".{target.name}.sync-{os.getpid()}")
-        temp.write_text(text)
-        temp.chmod(0o600)
-        os.replace(temp, target)
+        try:
+            with open(os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as handle:
+                handle.write(text)
+            os.replace(temp, target)
+        except OSError:
+            temp.unlink(missing_ok=True)
+            raise
     return 0
 
 

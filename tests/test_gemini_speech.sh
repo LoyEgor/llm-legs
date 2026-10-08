@@ -101,6 +101,11 @@ assert grep -q 'signed out' "$WORK/err"
 FAKE_ENGINE_MODE=dry expect_rc 0 --dest "$out" --text hi --dry-run
 assert grep -qx 'controls={"blocks":2}' "$WORK/stdout"
 assert grep -qx -- '--dry-run' "$FAKE_CALLS"
+mkdir -p "$WORK/no-ffprobe"
+printf '#!/bin/sh\nexit 127\n' >"$WORK/no-ffprobe/ffprobe"
+chmod +x "$WORK/no-ffprobe/ffprobe"
+PATH="$WORK/no-ffprobe:$PATH" expect_rc 0 --dest "$out" --text hi
+assert grep -qx 'duration=0.00' "$WORK/stdout"
 
 # The engine on fakes.
 assert python3 - "$ROOT" <<'PY'
