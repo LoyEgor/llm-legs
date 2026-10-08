@@ -93,6 +93,12 @@ assert [ "$(origin_main r)" = "$tip" ]
 assert [ ! -e "$X" ]
 assert_fails git -C "$R" rev-parse -q --verify refs/heads/feat/x
 assert_fails git -C "$WORK/r.git" rev-parse -q --verify refs/heads/feat/x
+D=$(wt new "$R" doctor-fix/d1)
+git -C "$R" update-ref refs/doctor-fix/d1/base main
+commit "$D" d1.txt d1 'day fix'
+wt land "$D" >/dev/null 2>"$WORK/err" || fail "land doctor-fix: $(cat "$WORK/err")"
+assert [ ! -e "$D" ]
+assert_fails git -C "$R" rev-parse -q --verify refs/doctor-fix/d1/base
 
 # Every refusal is one line, exit 1, everything in place.
 Y="$R/.claude/worktrees/feat-y"

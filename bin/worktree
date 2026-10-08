@@ -121,7 +121,8 @@ cmd_land() {
     printf 'kept %s: %s\n' "$wt" "$why"
   elif [ -n "$run" ]; then
     printf 'kept %s: code-doctor check reads the Code fixer run from it; night-run finish prunes it\n' "${wt:-$branch}"
-  elif ! out=$({ [ -z "$wt" ] || git -C "$top" worktree remove "$wt"; } 2>&1 && git -C "$top" branch -q -D "$branch" 2>&1); then
+  elif ! out=$({ [ -z "$wt" ] || git -C "$top" worktree remove "$wt"; } 2>&1 && git -C "$top" branch -q -D "$branch" 2>&1 &&
+    { [[ $branch != doctor-fix/* ]] || git -C "$top" update-ref -d "refs/$branch/base" 2>&1; }); then
     printf 'kept %s: git refused its removal: %s\n' "${wt:-$branch}" "$(tr -s '\n' ' ' <<<"$out")"
   elif git -C "$top" ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null 2>&1 &&
     ! out=$(git -C "$top" push -q origin --delete "$branch" 2>&1) &&
