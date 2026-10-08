@@ -511,6 +511,7 @@ exit 0
 
 local W = nil
 local downSince = nil
+local startFailedAt = nil
 local watchWanted = false
 local homeOverride = nil
 local function homeDir() return homeOverride or os.getenv("HOME") or "" end
@@ -973,6 +974,9 @@ watchStart = function()
     if W or not watchWanted then return end
     if not (hs.pathwatcher and hs.pathwatcher.new) then return end
     if hs.fs.attributes(stateDir, "mode") ~= "directory" then return end
+    -- Every pump lands here, and a start that failed on the 20 s scan guard would block the main
+    -- thread again on each journal append of a burst.
+    if startFailedAt and os.time() - startFailedAt < WATCH_TICK then return end
     W = { prev = {}, watchers = {}, inflight = {}, list = {}, byReal = {}, readd = {}, since = os.time(), busy = true }
     hs.fs.mkdir(watchDir())
     local snapshotBorn = hs.fs.attributes(snapshotPath(), "modification")
@@ -1012,7 +1016,10 @@ watchStart = function()
         W.busy = false
         -- A half-started W has an empty prev and no listing, so its first tick would take every
         -- file as found and overwrite the snapshot: drop it and redo the start on the next tick.
-        if not W.started then
+        if W.started then
+            startFailedAt = nil
+        else
+            startFailedAt = os.time()
             for _, watcherObj in pairs(W.watchers) do pcall(function() watcherObj:stop() end) end
             W = nil
         end
@@ -1381,7 +1388,7 @@ function M.stop()
     if timer then timer:stop(); timer = nil end
     watchStop()
     watchWanted = false
-    downSince = nil
+    downSince, startFailedAt = nil, nil
 end
 
 -- Both exist for the test harness, which runs inside the real Hammerspoon: it points the module at

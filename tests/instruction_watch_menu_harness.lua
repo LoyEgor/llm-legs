@@ -746,19 +746,57 @@ local ok, err = pcall(function()
         and tostring(off[#off].summary):find("CHANGED-WHILE-WATCHER-OFF " .. doc, 1, true) ~= nil,
         "a change while the watcher was off was not journaled against its snapshot")
 
+    local realTime = os.time
+    local function afterRetryFloor(fn)
+        os.time = function(t) if t then return realTime(t) end return realTime() + 121 end
+        local okFn, errFn = pcall(fn)
+        os.time = realTime
+        check(okFn, "a retry past the floor threw: " .. tostring(errFn))
+    end
+
     M.stop()
     before = #records()
     write(doc, "while the first listing failed\n")
-    io = failing("list")
+    local listScans, listFails = 0, true
+    io = setmetatable({ popen = function(command, ...)
+        if command:find(quoted(wf.state) .. " list ", 1, true) then
+            listScans = listScans + 1
+            if listFails then return nil end
+        end
+        return plainIo.popen(command, ...)
+    end }, { __index = plainIo })
     local listFailed = pcall(M.start)
-    io = plainIo
+    M.pump()
+    M.pump()
     check(listFailed and (readFile(heartbeat) or ""):find("error=", 1, true) ~= nil,
         "a failed first listing left no error in the heartbeat")
-    M.pump()
+    check(listScans == 1, "a failed start was retried inside the floor: " .. listScans .. " list scans")
+    listFails = false
+    afterRetryFloor(M.pump)
+    io = plainIo
+    check(listScans >= 2, "a failed start was not retried past the floor: " .. listScans .. " list scans")
     local relisted = records()
     check(#relisted == before + 1
         and tostring(relisted[#relisted].summary):find("CHANGED-WHILE-WATCHER-OFF " .. doc, 1, true) ~= nil,
         "a watcher whose first listing failed took a change made while it was off as found: " .. (#relisted - before))
+
+    M.stop()
+    local snapshotFile = wf.state .. "/watcher/snapshot.tsv"
+    local addedOff = wf.home .. "/.claude/docs/added-off.md"
+    write(addedOff, "added while off\n", "w")
+    os.execute("touch -t 202001010000 " .. quoted(snapshotFile))
+    before = #records()
+    io = failing("hash")
+    pcall(M.start)
+    io = plainIo
+    check((hs.fs.attributes(snapshotFile, "modification") or 0) < realTime() - 86400,
+        "a start whose snapshot comparison failed to hash overwrote snapshot.tsv")
+    afterRetryFloor(M.pump)
+    local addedRecords = records()
+    check(#addedRecords == before + 1
+        and tostring(addedRecords[#addedRecords].summary):find("ADDED-WHILE-WATCHER-OFF " .. addedOff, 1, true) ~= nil,
+        "a start whose snapshot comparison failed to hash took a file added while off as found: "
+        .. (#addedRecords - before))
 
     M.stop()
     local catalog = wf.home .. "/.claude/plugins/marketplaces/official/README.md"
