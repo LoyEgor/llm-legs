@@ -102,6 +102,20 @@ assert_contains "REVERTED" "$ctx"
 assert_contains "orchestrator's to edit" "$ctx"
 assert_contains "under MD-PROPOSAL in your RETURN" "$ctx"
 assert_eq "tier doc" "$(cat "$DOC")"
+# A rollback whose copy dies part-way leaves the file as the writer left it, never truncated.
+SHIM="$WORK/partial-cp"
+mkdir -p "$SHIM"
+printf '#!/bin/bash\ncase "$1" in */snapshot/*) head -c 3 "$1" > "$2"; exit 1 ;; esac\nexec /bin/cp "$@"\n' > "$SHIM/cp"
+chmod +x "$SHIM/cp"
+printf 'tier doc\n' > "$DOC"
+span_base sid-relay-partial >/dev/null
+relay_pre sid-relay-partial Bash command "sed -i '' -e 's/x/y/' $DOC"
+printf 'a line no worker was asked for\n' >> "$DOC"
+ctx=$(PATH="$SHIM:$PATH" relay_check sid-relay-partial Bash command "sed -i '' -e 's/x/y/' $DOC")
+assert_contains "CHANGED" "$ctx"
+assert_eq "tier doc
+a line no worker was asked for" "$(cat "$DOC")"
+printf 'tier doc\n' > "$DOC"
 # A shrink is not growth, here as much as inside the span.
 span_base sid-relay-shrink >/dev/null
 relay_pre sid-relay-shrink Bash command "sed -i '' -e 's/.*/tiny/' $DOC"

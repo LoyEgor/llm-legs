@@ -196,7 +196,7 @@ write_baseline() {
     had_prior=1
     # An older row format lands a fourth column other than 0/1. Distrusting the whole set over it
     # would be permanent — every later rewrite reads back the zeros this one wrote — so a prior
-    # this one cannot parse counts as no prior at all, from that row on.
+    # this one cannot parse counts as no prior at all, from that row on; so does one with no file row.
     { IFS= read -r -d $'\035' roots; IFS= read -r -d $'\035' kept; IFS= read -r -d $'\035' trusted
       IFS= read -r line; } < <(LC_ALL=C awk -F'\t' "$_watch_row_awk"'
         F[1] == "#root" { if (F[2] != "") print F[2]; next }
@@ -207,7 +207,7 @@ write_baseline() {
         END {
           printf "\035"; if (!bad) for (k = 1; k <= nk; k++) print K[k]
           printf "\035"; if (!bad) for (k = 1; k <= nt; k++) print T[k]
-          printf "\035%s\n", bad ? "bad" : ""
+          printf "\035%s\n", (bad || !nk) ? "bad" : ""
         }' "$prior")
     [ -z "$line" ] || had_prior=''
   fi
@@ -346,8 +346,11 @@ write_baseline() {
       key="$SNAP_DIR/$key-${r_h[$i]}"
       if [ -f "$key" ]; then
         stale+=("$key")
+      elif cp "${r_r[$i]}" "$key.$$" 2>/dev/null &&
+           [ "$(hash_of "$key.$$" "${wp[$i]}")" = "${r_h[$i]}" ]; then
+        mv -f "$key.$$" "$key" 2>/dev/null || rm -f "$key.$$" 2>/dev/null
       else
-        cp "${r_r[$i]}" "$key" 2>/dev/null
+        rm -f "$key.$$" 2>/dev/null
       fi
     done
     [ "${#stale[@]}" -eq 0 ] || touch -c "${stale[@]}" 2>/dev/null
@@ -712,7 +715,7 @@ revert_growth() {
   src="$SNAP_DIR/$(snap_key "$vis")-${b_hash[$i]}"
   [ -f "$src" ] || return 1
   parked=$(park_current "$real") || return 1
-  cp "$src" "$real" 2>/dev/null || return 1
+  cp "$src" "$real" 2>/dev/null || { cp "$parked" "$real" 2>/dev/null; return 1; }
   fp=$(stat -f '%Fm%t%z%t%i' "$real" 2>/dev/null)
   IFS=$'\t' read -r cur_mtime cur_size cur_ino <<<"$fp"
   pin "$vis" "$cur_mtime" "$cur_size" "$cur_ino" "${b_hash[$i]}" "${b_link[$i]}" "$real"

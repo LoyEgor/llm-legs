@@ -352,6 +352,38 @@ assert [ -n "$undo" ]
 eval "$undo"
 assert_eq "good bytes" "$(cat "$REAL_MD")"
 
+echo "== tripwire: a snapshot whose bytes moved after the hash is never kept under that hash"
+# A copy torn by a write landing between the hash and the copy, or by a kill mid-copy.
+SHIM="$WORK/torn-cp"
+mkdir -p "$SHIM"
+printf '#!/bin/bash\ncase "$2" in */snapshot/*) printf torn > "$2"; exit 0 ;; esac\nexec /bin/cp "$@"\n' > "$SHIM/cp"
+chmod +x "$SHIM/cp"
+TORN="$HOME/.claude/docs/torn.md"
+printf 'vetted torn doc\n' > "$TORN"
+PATH="$SHIM:$PATH" watch baseline sid-torn >/dev/null
+for f in "$INSTRUCTION_WATCH_STATE"/snapshot/torn.md-*; do
+  [ -f "$f" ] || continue
+  assert_eq "${f##*-}" "$(shasum -a 256 "$f" | cut -d' ' -f1)"
+done
+printf 'changed torn doc\n' > "$TORN"
+ctx=$(watch check sid-torn | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "CHANGED" "$ctx"
+undo=$(undo_from "$ctx")
+[ -z "$undo" ] || { eval "$undo"; assert_eq "vetted torn doc" "$(cat "$TORN")"; }
+rm -f "$TORN"
+
+echo "== tripwire: an emptied baseline is no baseline, not a session that trusts nothing"
+printf 'global rules\n' > "$REAL_MD"
+watch baseline sid-emptied >/dev/null
+: > "$(ls "$INSTRUCTION_WATCH_STATE"/session-*sid-emptied*.tsv)"
+ctx=$(watch check sid-emptied | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "BASELINE-MISSING" "$ctx"
+printf 'smuggled after the gap\n' > "$REAL_MD"
+ctx=$(watch check sid-emptied | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "CHANGED" "$ctx"
+assert_contains "puts them back" "$ctx"
+printf 'global rules\n' > "$REAL_MD"
+
 echo "== stamp sweep: a misconfigured stamp directory is not a licence to delete"
 # The sweep matched anything starting with a hex character and removed it recursively, so a
 # stamp directory pointed at real data would take ~/.claude/agents with it.
