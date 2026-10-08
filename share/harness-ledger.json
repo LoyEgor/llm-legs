@@ -4277,12 +4277,24 @@
           ],
           "in": null,
           "regressed_at": null
+        },
+        {
+          "at": "2026-10-08T22:45:00+03:00",
+          "by": "worker chore/day-night-shared",
+          "files": [
+            "llm-legs/bin/harness-doctor",
+            "llm-legs/bin/night-run",
+            "llm-legs/tests/test_harness_doctor.sh",
+            "llm-legs/tests/test_night_run.sh"
+          ],
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [],
       "last_reviewed": "2026-10-08",
       "reviewed_by": "night fixer harness-deploys-20261007T214008Z-1811",
-      "note": "Cause: night commit 816bb553 (report-bus resolve_session, one grep per hop) landed in main on 2026-10-07, and nothing reran bin/memlogd install-agent, so launchd's memlogd kept the 6 Oct copy and the doctor read drift for 237 runs; the only redeploy path was the prose 'rerun install-agent after editing' (bin/memlogd header, docs/memory-guard.md), and the night spent a whole fixer run on a one-command fix. Fixed: bin/harness-doctor --redeploy reruns the DEPLOYS fix of every installed group with a drifted copy (hand copies copied), keeping a group whose source is uncommitted in the main checkout; night-run start (before the doctors refresh, so no fixer is launched for it) and finish (after the landings) call it. Ran live 2026-10-08: memlogd reinstalled, report-bus matches. Not covered: a hand-copied launchd/*.plist is copied but not reloaded (the doctor's own cp fix has the same gap); a day edit stays drifted until the next night start.",
+      "note": "Cause: night commit 816bb553 (report-bus resolve_session, one grep per hop) landed in main on 2026-10-07, and nothing reran bin/memlogd install-agent, so launchd's memlogd kept the 6 Oct copy and the doctor read drift for 237 runs; the only redeploy path was the prose 'rerun install-agent after editing' (bin/memlogd header, docs/memory-guard.md), and the night spent a whole fixer run on a one-command fix. Fixed: bin/harness-doctor --redeploy reruns the DEPLOYS fix of every installed group with a drifted copy (hand copies copied), keeping a group whose source is uncommitted in the main checkout; night-run start (before the doctors refresh, so no fixer is launched for it) and finish (after the landings) call it. Ran live 2026-10-08: memlogd reinstalled, report-bus matches. Not covered: a hand-copied launchd/*.plist is copied but not reloaded (the doctor's own cp fix has the same gap); a day edit stayed drifted until the next night start. 2026-10-08: every doctor write run redeploys (main only, once per main commit, its own job reloaded from a new session), and night-run's two calls are gone.",
       "handoff": null
     },
     {

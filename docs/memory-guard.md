@@ -156,7 +156,7 @@ imports and runs those copies (the deployed bus sources the lock library beside 
 every guard notice went to `lost.log` with the chat recorded as told). macOS denies a
 LaunchAgent's Python /Volumes/Work, and every process that Python starts, even with memlogd itself
 granted Full Disk Access (seen live 2026-09-28: titles and the bus probe both refused after the
-grant). `night-run` start and finish redeploy an edit of any of them (`harness-doctor --redeploy`).
+grant). Every Harness doctor write run redeploys a landed edit of any of them (`harness-doctor --redeploy`).
 
 ## Agent process environment
 

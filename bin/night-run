@@ -25,7 +25,6 @@ helper_repos="${helper_repos:-$repo_root/share/night-helper-repos}"
 KINDS=' fixer vendor debt leftover handoff suite owner-chat trade '
 STATES=' pending merged left failed-launch blocked-on-egor nothing-to-do '
 SPEED_WINDOW_H=6
-redeploy="${NIGHT_RUN_REDEPLOY:-$repo_root/bin/harness-doctor --redeploy}"
 JQ_SPEED_RUN='def speed_run: .doctor == "harness" and (.area // "" | test("^speed(-|$)"));'
 JQ_DONE_JOB='def done_job: .state == "nothing-to-do" or .state == "settled"; def job_branch($n): .branch // "night/\($n)/\(.ref)";'
 . "$repo_root/share/chat-open.sh"
@@ -369,10 +368,9 @@ cmd_start() {
   fi
   trades_recheck "$id"
   unlock
-  $redeploy || true
   if ! opened=$(CHAT_OPEN_OPENER="${NIGHT_RUN_OPENER:-open -a Terminal}" \
     CHAT_OPEN_WORKER_PICK="${NIGHT_RUN_WORKER_PICK:-$repo_root/bin/worker-pick}" \
-    CHAT_OPEN_PREFIX="caffeinate -i env CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=200" \
+    CHAT_OPEN_PREFIX="caffeinate -i" \
     chat_open "$nights_dir/$id.command" "$(main_checkout)" "сделай чистку — night run $id$marker" 2>&1); then
     lock
     night_set "$id" '.note = $n | .finished_at = $t | del(.opener)
@@ -1021,7 +1019,6 @@ cmd_finish() {
     if jq -e --arg t "$at" '.at <= $t' "$file" >/dev/null 2>&1; then rm -f "$file"; fi
   done
   unlock
-  $redeploy || true
 }
 
 done_jobs() { # -> branch<TAB>ref<TAB>state<TAB>night per nothing-to-do or settled job of every night

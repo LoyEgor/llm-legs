@@ -4271,6 +4271,18 @@ def installed_deploys(source):
 
 def reload_agent(plist):
     domain = "gui/%d" % os.getuid()
+    try:
+        with open(plist, "rb") as handle:
+            own = plistlib.load(handle).get("Label") == os.environ.get("XPC_SERVICE_NAME")
+    except Exception:
+        own = False
+    if own:
+        # bootout ends this very job and launchd kills its process group: only a new session lives to bootstrap
+        env = {k: v for k, v in os.environ.items() if k != "XPC_SERVICE_NAME"}
+        subprocess.Popen([sys.executable, os.path.abspath(__file__), "--reload", plist], env=env,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+        return None
     subprocess.run([probe_command("launchctl"), "bootout", domain, plist], capture_output=True, timeout=30)
     for wait in (0, 0.5, 1, 2):
         time.sleep(wait)
@@ -4281,14 +4293,29 @@ def reload_agent(plist):
     return "launchctl bootstrap %s: %s" % (file_key(plist), loaded.stderr.strip() or "exit %d" % loaded.returncode)
 
 
-def redeploy():
+def redeploy(periodic=False):
     """Reruns the fix of every installed group with a drifted copy from the main checkout the Deploys section
-    judges. A group with an uncommitted source is left alone: a chat may be mid-edit, and launchd would run it."""
+    judges, on main only. A group with an uncommitted source is left alone: a chat may be mid-edit, and launchd
+    would run it. Every write run calls it periodic, so a day landing heals within one StartInterval; a periodic
+    call tries a group once per main commit, so an installer that leaves drift never restarts its job every run."""
     source, failed = deploy_source(), 0
-    for fix, copies in installed_deploys(source):
+    groups = [(fix, copies) for fix, copies in installed_deploys(source) if any(c[3] for c in copies)]
+    if not groups:
+        return 0
+    try:
+        branch, head = (subprocess.run(["git", "-C", source] + args, capture_output=True, text=True,
+                                       timeout=30).stdout.strip()
+                        for args in (["symbolic-ref", "-q", "--short", "HEAD"], ["rev-parse", "-q", "HEAD"]))
+    except (OSError, subprocess.SubprocessError):
+        branch = head = ""
+    if branch != "main":
+        if not periodic:
+            print("redeploy kept every group: %s is on %s, not main" % (file_key(source), branch or "no branch"))
+        return 0
+    tried_path = os.path.join(state_dir(), "redeploy-tried.json")
+    tried = read_json(tried_path, {}) if periodic else {}
+    for fix, copies in groups:
         drifted = [(target, src) for target, _, src, why in copies if why]
-        if not drifted:
-            continue
         sources = [src for _, kind, src, _ in copies if kind != "program"]
         try:
             dirty = subprocess.run(["git", "-C", source, "status", "--porcelain", "--"] + sources,
@@ -4297,8 +4324,12 @@ def redeploy():
             dirty = "?? " + str(exc)
         name = fix or "cp " + " ".join(src for _, src in drifted)
         if dirty:
-            print("redeploy kept %s: uncommitted %s" % (name, " ".join(line[3:] for line in dirty.splitlines())))
+            if not periodic:
+                print("redeploy kept %s: uncommitted %s" % (name, " ".join(line[3:] for line in dirty.splitlines())))
             continue
+        if tried.get(name) == head:
+            continue
+        tried[name] = head
         try:
             if fix:
                 done = subprocess.run(fix.split(), cwd=source, stdin=subprocess.DEVNULL, capture_output=True,
@@ -4317,6 +4348,8 @@ def redeploy():
         failed += bool(error)
         print("redeploy %s %s: %s" % ("failed" if error else "ran", name,
                                       error or ", ".join(file_key(target) for target, _ in drifted)))
+    if periodic:
+        write_json(tried_path, tried)
     return 1 if failed else 0
 
 
@@ -6001,9 +6034,14 @@ def main():
     parser.add_argument("--menu", action="store_true", help="print the menu lines and persist nothing")
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--redeploy", action="store_true", help="rerun the installer of every drifted deployed copy")
+    parser.add_argument("--reload", metavar="PLIST", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.redeploy:
         return redeploy()
+    if args.reload:
+        error = reload_agent(args.reload)
+        print(error or "reloaded %s" % file_key(args.reload))
+        return 1 if error else 0
     now, started = now_s(), time.time()
     if args.json or args.menu:
         document = guarded_collect(False, now)
@@ -6018,6 +6056,10 @@ def main():
             if not args.quiet:
                 print("harness-doctor: another run holds the lock", file=sys.stderr)
             return 0
+        try:
+            redeploy(periodic=True)
+        except Exception as exc:
+            print("harness-doctor: redeploy: %s" % error_line(exc), file=sys.stderr)
         document = guarded_collect(True, now)
     collector_runs.record("harness", started)
     if not args.quiet or document["status"] == "error":

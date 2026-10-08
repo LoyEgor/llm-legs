@@ -2,9 +2,9 @@
 # Source of truth; `memlogd install-agent` deploys a copy to ~/.local/libexec/memlogd, which is
 # what launchd runs. The copy is not a convenience: a LaunchAgent that execs off /Volumes/Work
 # gets EPERM from TCC unless that exact program path was granted, and a memory logger must also
-# keep running while that volume is unmounted. Re-run install-agent after editing this file or any
-# file it deploys beside the copy (chat-load, chat_names.py, report-bus, report_frame.py,
-# store-lock.sh, limiter-hold.sh).
+# keep running while that volume is unmounted. harness-doctor reruns install-agent once an edit of
+# this file or any file it deploys beside the copy (chat-load, chat_names.py, report-bus,
+# report_frame.py, store-lock.sh, limiter-hold.sh) lands in main.
 # Besides logging, this daemon ACTS: every tick runs chat-load, deployed beside this copy, which
 # keeps the per-chat load snapshot for the menubar and, when the machine is nearly out of RAM,
 # SIGKILLs the fattest job a chat launched (`docs/memory-guard.md` is the decision record).

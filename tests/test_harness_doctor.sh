@@ -1446,8 +1446,68 @@ rc, out = redeployed()[:2]
 m.time.sleep = real_sleep
 check(rc == 1 and out.startswith("redeploy failed cp launchd/job.plist: launchctl bootstrap "),
       "Redeploy: a plist launchd refuses to load is a failed redeploy")
+import plistlib
+os.remove(launchctl + ".refuse")
+put(os.path.join(up, "launchd", "job.plist"), plistlib.dumps({"Label": "com.test.self"}).decode())
+up_git("commit", "-qam", "self")
+put(plist, "job 1\n")
+put(launchctl, '#!/bin/sh\necho "$1 $(ps -o pgid= -p $$ | tr -d " ")" >>%s\n' % launchctl_log)
+put(launchctl_log, "")
+os.environ["XPC_SERVICE_NAME"] = "com.test.self"
+rc, out = redeployed()[:2]
+os.environ.pop("XPC_SERVICE_NAME")
+for _ in range(200):
+    reloads = open(launchctl_log).read().split()
+    if len(reloads) >= 4:
+        break
+    time.sleep(0.05)
+check(rc == 0 and out == "redeploy ran cp launchd/job.plist: %s\n" % m.file_key(plist) and reloads[::2] == ["bootout", "bootstrap"]
+      and reloads[1] == reloads[3] != str(os.getpgrp()),
+      "Redeploy: the doctor's own LaunchAgent is reloaded from a new session, which outlives the bootout of the job "
+      "running it: %s" % reloads)
 os.environ.pop("SYSTEM_DOCTOR_LAUNCHCTL")
 os.remove(plist)
+m.DEPLOYS = (("bin/install", (("libexec", "tool", "copy", "bin/tool"),)),)
+put(os.path.join(libexec, "tool"), "tool 0\n")
+base = open(installs).read().count("ran")
+up_git("checkout", "-qb", "side")
+check(redeployed() == (0, "redeploy kept every group: %s is on side, not main\n" % m.file_key(up), "tool 0\n", base),
+      "Redeploy: a main checkout on another branch deploys nothing, its commits are not main's")
+up_git("checkout", "-q", "main")
+os.makedirs(m.state_dir(), exist_ok=True)
+def periodic():
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = m.redeploy(periodic=True)
+    return rc, out.getvalue(), open(os.path.join(libexec, "tool")).read(), open(installs).read().count("ran")
+check(periodic() == (0, "redeploy ran bin/install: %s\n" % os.path.join(libexec, "tool"), "tool 3\n", base + 1),
+      "Redeploy periodic: a drifted group on main reruns its installer")
+put(os.path.join(libexec, "tool"), "tool 0\n")
+check(periodic() == (0, "", "tool 0\n", base + 1),
+      "Redeploy periodic: a group already tried at this main commit is not rerun, so its job never restarts every run")
+put(os.path.join(up, "bin", "tool"), "tool 4\n")
+up_git("checkout", "-qb", "side2")
+check(periodic() == (0, "", "tool 0\n", base + 1), "Redeploy periodic: a main checkout off main is silent")
+up_git("checkout", "-q", "main")
+check(periodic() == (0, "", "tool 0\n", base + 1), "Redeploy periodic: a kept uncommitted group is silent")
+up_git("commit", "-qam", "d")
+check(periodic() == (0, "redeploy ran bin/install: %s\n" % os.path.join(libexec, "tool"), "tool 4\n", base + 2),
+      "Redeploy periodic: the next main commit tries the group again")
+real_redeploy, real_collect, real_record, real_argv = m.redeploy, m.guarded_collect, m.collector_runs.record, sys.argv
+calls = []
+m.redeploy = lambda **kw: calls.append(("redeploy", kw))
+m.guarded_collect = lambda write, now: calls.append(("collect", write)) or {"status": "error", "title": "t", "footer": "f"}
+m.collector_runs.record = lambda *a: None
+sys.argv = ["harness-doctor", "--quiet"]
+with contextlib.redirect_stderr(io.StringIO()):
+    m.main()
+sys.argv = ["harness-doctor", "--json"]
+with contextlib.redirect_stdout(io.StringIO()):
+    m.main()
+m.redeploy, m.guarded_collect, m.collector_runs.record, sys.argv = real_redeploy, real_collect, real_record, real_argv
+check(calls == [("redeploy", {"periodic": True}), ("collect", True), ("collect", False)],
+      "Redeploy: every write run redeploys drift before it collects, so a day landing heals within one interval; "
+      "a read-only run never does: %s" % calls)
 m.DEPLOYS = real_deploys
 for name in ("tool", "hand"):
     os.remove(os.path.join(libexec, name))

@@ -28,7 +28,7 @@ export HOME DATA OPENED
 unset WORDS_DIR WORDS_ROOT
 export DOCTORS_DIR="$WORK/doctors" LLM_DOCTOR_DIR="$WORK/llm" HARNESS_DOCTOR_DIR="$WORK/harness" \
   UPDATER_DOCTOR_DIR="$WORK/updater" NIGHT_RUN_OPENER="$FAKE_BIN/opener" NIGHT_RUN_WORKER_PICK="$FAKE_BIN/worker-pick" \
-  NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-repos" NIGHT_RUN_REDEPLOY="$FAKE_BIN/redeploy"
+  NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-repos"
 PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
 mkdir -p "$FAKE_BIN" "$DATA" "$HOME" "$WORK/llm" "$WORK/harness" "$WORK/updater"
 : >"$OPENED"
@@ -42,7 +42,6 @@ printf '%s\n' "$!" >>"$DATA/orchestrators"
 EOF
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$DATA/pick-args"\nprintf "acct-n\\n"\n' >"$FAKE_BIN/worker-pick"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$FAKE_BIN/claudeb"
-printf '#!/usr/bin/env bash\necho redeploy >>"$DATA/redeploys"\nexit 1\n' >"$FAKE_BIN/redeploy"
 cat >"$FAKE_BIN/review-bench" <<'EOF'
 #!/usr/bin/env bash
 [ "$1" != review ] || { printf '%s\n' "$*" >>"$DATA/price-args"
@@ -78,7 +77,6 @@ assert jqe '.doctors_before == {llm: 5, harness: 3, updater: null, code: null, s
 session=$(jq -r .session "$R")
 assert [ "${#session}" = 36 ]
 assert [ "$(cat "$OPENED")" = "$NIGHTS/$id.command" ]
-assert [ "$(cat "$DATA/redeploys")" = redeploy ]
 assert jqe --arg c "$NIGHTS/$id.command" '.command == $c' "$R"
 main=$(dirname "$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)")
 assert grep -qF "cd $main " "$NIGHTS/$id.command"
@@ -86,7 +84,7 @@ assert grep -qF -- "--session-id $session " "$NIGHTS/$id.command"
 exec_line=$(grep '^exec ' "$NIGHTS/$id.command")
 eval "set -- ${exec_line#exec }"
 assert [ "${!#}" = "сделай чистку — night run $id" ]
-assert [ "$1 $2 $3 $4" = "caffeinate -i env CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=200" ]
+assert [ "$1 $2 $3" = "caffeinate -i $FAKE_BIN/claudeb" ]
 assert grep -qxF -- '--account claudeb --role chat --model opus --claim' "$DATA/pick-args"
 
 # A night whose orchestrator chat runs refuses a second start, however long it runs; no deadline flag.
@@ -273,7 +271,6 @@ assert_fails env CLAUDE_CODE_SESSION_ID=another-chat bash "$ROOT/bin/night-run" 
 assert grep -qF "night $id is still running: its orchestrator chat $session has run since" "$WORK/err"
 assert jqe '.finished_at == null' "$R"
 CLAUDE_CODE_SESSION_ID=$session night finish "$id" >/dev/null || fail "finish"
-assert [ "$(wc -l <"$DATA/redeploys" | tr -d ' ')" = 2 ]
 assert_fails night finish "$id" 2>/dev/null
 assert jqe '.doctors_after == {llm: 1, harness: 0, updater: 2, code: null, system: null} and .finished_at != null
   and ([.jobs[] | select(.state == "pending")] | length) == 0
