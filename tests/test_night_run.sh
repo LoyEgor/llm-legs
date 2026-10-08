@@ -158,7 +158,7 @@ local_hash=$(git -C "$WORK/repo" rev-parse HEAD)
 printf '%s\n' "$WORK/elsewhere/llm-legs" "$WORK/repo" >"$WORK/sweep-repos"
 assert_fails night job "$id" set llm-20260930T010203Z pushed=true 2>"$WORK/err"
 assert grep -qF 'needs the job' "$WORK/err"
-night job "$id" set llm-20260930T010203Z state=merged "commits=repo:$local_hash" review=rb-1 >/dev/null || fail "set merged"
+night job "$id" set llm-20260930T010203Z state=merged "commits=repo:$local_hash" >/dev/null || fail "set merged"
 night job "$id" set p7 review=rb-open suites=passed >/dev/null || fail "a pending job records its round and suites"
 assert jqe '[.jobs[] | select(.ref == "p7")][0] | .state == "pending" and .review == "rb-open" and .suites == "passed"' "$R"
 assert jqe '[.events[] | select(.job == "p7") | .phase] | index("suites") != null' "$R"
@@ -177,8 +177,7 @@ assert_fails env LLM_STORE_LOCK_DELAY=0.01 LLM_STORE_LOCK_RETRIES=40 bash "$ROOT
 assert grep -qF "commit $local_hash is not on origin" "$WORK/err"
 kill "$live" 2>/dev/null
 rm -rf "$NIGHTS/.lock"
-assert jqe '.jobs[0].pushed == false and .jobs[0].commits == [{repo: "repo", hash: "'"$local_hash"'"}]
-  and .jobs[0].review == "rb-1"' "$R"
+assert jqe '.jobs[0].pushed == false and .jobs[0].commits == [{repo: "repo", hash: "'"$local_hash"'"}]' "$R"
 assert_fails night job "$id" set llm-20260930T010203Z "commits=nowhere:$pushed_hash" pushed=true 2>"$WORK/err"
 assert grep -qF 'no repository nowhere' "$WORK/err"
 # origin moved on from a checkout this repository never fetched: its head is fetched before the ancestry check.
@@ -243,7 +242,7 @@ assert grep -qxF "updater - → 2 · proved 0 · pending 1 · new 0 · regressed
 assert grep -qxF "code - → -" "$WORK/report"
 assert grep -qxF "system - → -" "$WORK/report"
 assert [ -z "$(night latest --menu | grep -F 'harness 3 →')" ]
-assert grep -qxF "landed · fixer · llm-20260930T010203Z · review rb-1 · repo@${pushed_hash:0:7} · code +0/-0" "$WORK/report"
+assert grep -qxF "landed · fixer · llm-20260930T010203Z · repo@${pushed_hash:0:7} · code +0/-0" "$WORK/report"
 assert grep -qxF "left · debt · debt-round · hung: idle 1800" "$WORK/report"
 assert grep -qxF "failed-launch · fixer · harness-r1 · night/$id/harness-r1 · opener" "$WORK/report"
 assert grep -qxF "total · 2 landed · 8 left · 1 failed-launch · 1 blocked-on-egor" "$WORK/report"
@@ -268,7 +267,7 @@ assert jqe '[.events[].id] == [range(1; (.events | length) + 1)]
   and (.jobs | all(has("added_at") or has("events") | not))' "$R"
 assert jqe '[.events[] | select(.job == "llm-20260930T010203Z") | [.phase, .check, .ok]][0:4]
   == [["add", null, null], ["landing", null, null], ["set", null, null], ["validate", "push", false]]
-  and ([.events[] | select(.job == "llm-20260930T010203Z" and .phase == "set")][0].keys == ["commits", "pushed", "review"])' "$R"
+  and ([.events[] | select(.job == "llm-20260930T010203Z" and .phase == "set")][0].keys == ["commits", "pushed"])' "$R"
 assert jqe 'all(.events[]; .check != "review" and .check != "code")
   and any(.events[]; .job == "p1" and .phase == "owner-pause")
   and any(.events[]; .job == "debt-round" and .phase == "state" and .state == "left")' "$R"

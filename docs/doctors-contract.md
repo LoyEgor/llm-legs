@@ -379,10 +379,11 @@ Code doctor (added 2026-10-02, design `docs/code-doctor-design.md`):
 - `count` and `window_h` are null; `exposure` is the cause's unit count; `value` is the judged net
   benefit. Own keys: `candidates`, `cost`, `cost_per_cause`, `yield`, `queue_k`, `coverage`
   (rollup window, deep-pass slices), `index`, `last_judge`.
-- Fixer safety is mechanical, `code-doctor check`: a deletion needs a judged problem naming the
-  unit, no live entry point, no rollup hits, a quoted purpose or retirement reason and, at landing,
-  `--suites-passed`; no edit through a symlink into another repository; active work blocks; a
-  cross-repository merge deletes the old copy only on a later night than its `migrated` stage.
+- Fixer safety is mechanical, `code-doctor check` at `doctor-fix close`: a deletion needs a judged
+  problem naming the unit, no live entry point, no rollup hits and a quoted purpose or retirement reason;
+  a unit changed since its judgment on the base or on main goes back to the judge; no edit through a
+  symlink into another repository; active work blocks; a cross-repository merge deletes the old copy
+  only on a later night than its `migrated` stage.
 - `bin/code-doctor record-fix` writes the fixed-pending row (with its identity and yield) and, with
   `--mechanism`, `share/canonical-mechanisms.json`, which review-bench's fit lens reads.
 

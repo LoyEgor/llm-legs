@@ -1381,7 +1381,6 @@ cmd_report() {
          + "\([.jobs[] | select(.reason == "speed window closed (\($h) h)") | $speed[.ref] // 0] | add // 0) left by the \($h) h window" end),
       (.jobs[] | ([(if .state == "merged" then "landed" else .state end), .kind, .ref]
         + (if .branch and .state != "merged" then [.branch] else [] end)
-        + (if .review then ["review \(.review)"] else [] end)
         + (if .kind == "owner-chat" then ["«\(.owner)» \(.via) · \(.handoffs | length) handoffs"] else [] end)
         + (if .handover then ["handed over by \(.handover.by)\(if .handover.owner_verified == false then " (never worked in its worktree)" else "" end) at \(.handover.at | hm): \(.handover.why)"] else [] end)
         + [.commits[] | "\(.repo | split("/") | last)@\(.hash[0:7])"]

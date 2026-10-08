@@ -167,15 +167,6 @@ jq -n --arg w "$WT" --arg t "$(iso_ago 60)" '{id: "code-code-x", doctor: "code",
   branch: "night/n1/code-x", worktrees: [$w], launched_at: $t, problems: [{id: "cause:alpha/bin/old-sync", state: "new"}]}' \
   >"$C/record.json"
 assert "$CD" check "$C/record.json" --base refs/night/n1/base
-"$CD" check "$C/record.json" --base refs/night/n1/base --landing >"$WORK/check.out"
-assert test $? = 1
-assert grep -q 'green suites not confirmed' "$WORK/check.out"
-assert "$CD" check "$C/record.json" --base refs/night/n1/base --landing --suites-passed
-# Landed without a rebase (main had not moved): the deleted units are gone from main, which is no change.
-pre_land=$(git -C "$A" rev-parse HEAD)
-git -C "$A" merge -q --ff-only night/n1/code-x
-assert "$CD" check "$C/record.json" --base refs/night/n1/base --landing --suites-passed
-git -C "$A" reset -q --hard "$pre_land"
 rm "$WT/lib/manual_helpers.sh"
 "$CD" check "$C/record.json" --base refs/night/n1/base >"$WORK/check.out"
 assert grep -q 'alpha/lib/manual_helpers.sh: deleted, but no judged problem of this run names it' "$WORK/check.out"
@@ -185,11 +176,11 @@ printf '# through the link\n' >>"$WT/vendor/vendor.sh"
 assert grep -q 'edited through the symlink vendor into' "$WORK/check.out"
 git -C "$REPOS/beta" checkout -q -- lib/vendor.sh
 printf '# live work\n' >>"$A/lib/old_sync_lib.sh"
-"$CD" check "$C/record.json" --base refs/night/n1/base --landing --suites-passed >"$WORK/check.out"
-assert grep -q 'alpha/lib/old_sync_lib.sh: in active work (uncommitted in' "$WORK/check.out"
+"$CD" check "$C/record.json" --base refs/night/n1/base >"$WORK/check.out"
+assert grep -q 'in active work (alpha/lib/old_sync_lib.sh: uncommitted in' "$WORK/check.out"
 git -C "$A" checkout -q -- lib/old_sync_lib.sh
 "$CD" candidates >/dev/null
-assert "$CD" check "$C/record.json" --base refs/night/n1/base --landing --suites-passed
+assert "$CD" check "$C/record.json" --base refs/night/n1/base
 mkdir -p "$C/anchors-bin"
 cat >"$C/anchors-bin/review-anchors" <<'EOF'
 #!/usr/bin/env bash
@@ -198,8 +189,8 @@ echo '{"claims": {"lib/old_sync_lib.sh": {"session": "s-9", "round": "r1", "unti
   "bin/old-sync": {"session": "s-8", "round": "r0", "until": 1}}}'
 EOF
 chmod +x "$C/anchors-bin/review-anchors"
-PATH="$C/anchors-bin:$PATH" "$CD" check "$C/record.json" --base refs/night/n1/base --landing --suites-passed >"$WORK/check.out"
-assert grep -q 'alpha/lib/old_sync_lib.sh: in active work (under an open review claim of s-9)' "$WORK/check.out"
+PATH="$C/anchors-bin:$PATH" "$CD" check "$C/record.json" --base refs/night/n1/base >"$WORK/check.out"
+assert grep -q 'in active work (alpha/lib/old_sync_lib.sh: under an open review claim of s-9)' "$WORK/check.out"
 assert test "$(grep -c 'open review claim' "$WORK/check.out")" = 1
 
 # The structural digest: a rollup change re-judges nothing, a new caller re-judges its cause.
@@ -223,7 +214,7 @@ rm "$A/lib/extra.py"
 sed -i '' 's/int(fields\[1\] or 0)/int(fields[1] or 1)/' "$A/lib/drive_b.py"
 git -C "$A" add lib/drive_b.py && commit "$A" "seats default"
 jq '.problems = [{id: "cause:alpha/lib/drive_a.py#load_drivers", state: "new"}] | .worktrees = []' "$C/record.json" >"$C/record2.json"
-"$CD" check "$C/record2.json" --base refs/night/n1/base --landing --suites-passed >"$WORK/check.out"
+"$CD" check "$C/record2.json" --base refs/night/n1/base >"$WORK/check.out"
 assert grep -q 'alpha/lib/drive_b.py#load_drivers changed since the judgment' "$WORK/check.out"
 assert jqe '.["cause:alpha/lib/drive_a.py#load_drivers"] | .digest == null and (.sent_back.why | length > 0)' \
   "$CODE_DOCTOR_DIR/verdicts.json"
@@ -332,13 +323,6 @@ git -C "$REPOS/beta" checkout -q -- extra
 assert "$CD" check "$C/record.json" --base refs/night/n1/base
 
 # Landing after other night jobs: the run is its commits on top of the rebase onto, never the jobs it was rebased over.
-main_before=$(git -C "$A" rev-parse HEAD) wt_before=$(git -C "$WT" rev-parse HEAD)
-git -C "$A" rm -q lib/manual_helpers.sh && commit "$A" "another night job"
-git -C "$WT" -c user.name=t -c user.email=t@t rebase -q --onto main refs/night/n1/base || fail "rebase onto main"
-git -C "$A" merge -q --ff-only night/n1/code-x || fail "ff-merge"
-"$CD" check "$C/record.json" --base refs/night/n1/base --landing --suites-passed >"$WORK/check.out"
-assert test "$(grep -c 'manual_helpers.sh\|changed since the judgment' "$WORK/check.out")" = 0
-git -C "$A" reset -q --hard "$main_before" && git -C "$WT" reset -q --hard "$wt_before"
 assert "$CD" check "$C/record.json" --base refs/night/n1/base
 
 # Active work on a repository whose default branch is not main.
@@ -346,8 +330,8 @@ git -C "$A" branch -m main master
 git -C "$A" worktree add -q -b live-x "$C/live" master || fail "worktree add live-x"
 printf '# live branch\n' >>"$C/live/lib/old_sync_lib.sh"
 git -C "$C/live" add lib/old_sync_lib.sh && commit "$C/live" "live work"
-"$CD" check "$C/record.json" --base refs/night/n1/base --landing --suites-passed >"$WORK/check.out"
-assert grep -qF 'alpha/lib/old_sync_lib.sh: in active work (changed on live branch live-x)' "$WORK/check.out"
+"$CD" check "$C/record.json" --base refs/night/n1/base >"$WORK/check.out"
+assert grep -qF 'in active work (alpha/lib/old_sync_lib.sh: changed on live branch live-x)' "$WORK/check.out"
 git -C "$A" worktree remove --force "$C/live" && git -C "$A" branch -q -D live-x && git -C "$A" branch -m master main
 
 # A function removed from a kept file needs a judged problem of the run naming it, like a deleted file.
@@ -926,9 +910,9 @@ assert row["status"] == "fixed-pending" and row["match"]["cause"] == "cause:x", 
 assert len(cd.load_ledger()["rows"]) == 2
 span = {"file": "a/f", "unit": "a/f", "digest": "d"}
 assert cd.check_run({"problems": [{"id": "cause:y", "units": [span]}], "launched_at": "2026-10-08T00:00:00Z"},
-                    None, False, False) == []
+                    None) == []
 assert cd.file_lang("bin/tool", "#!/usr/bin/env sh\n") == "bash"
 assert cd.file_lang("bin/tool", "#!/usr/bin/env -S perl -w\n") == "undeclared:perl"
 PY
 
-echo "PASS: $asserts asserts; calibration $(grep -c '^PASS' "$WORK/calibration")/5 cases, a healthy repository with 0 problems, the incremental index, the needs-Egor registration with its research, a dangling registration researched (deleting or renaming commit, live references, an uncommitted deletion no problem) and settled only by the sweep-scope night judge, the judge's batched sessions with their token, wall and launch-failure stops, the durable rollup and its coverage blind spot, the top-K snapshot with active work out, the safety gate (suites, a deletion no problem names, an edit through a cross-repo symlink, active work), the structural digest (rollup no, caller yes), revalidation against the night base, the ledger's fixed-pending, regressed and faulty rows, the canonical mechanisms, review claims through review-anchors, tokenmap-measured instruction weight, a hook rooted through its ~/.claude link, a runner-less test of live code, PyObjC selectors, a symlink never pairing with its target, per-path kinds for identical bytes, link-target edits, raw-byte and same-named-symbol digests, ledger-renamed causes, launch-less day runs, a --repo scope (its own state dir, the Node/TS calibration, generic entry points, no runtime journal claimed, report-only snapshot and check), heavy tests judged only in a --repo scope (a sweep repository's are the Harness Speed block's), collector runs journalled, one concept spelled in bash, Python and a third place as one cause (common literals and links out), a prose layout beside the renderer, fresh code matched against helpers and judged first, test-case boilerplate weighed down, the worker-message promise (a claim bound to its code, a chat overclaim on the mechanism with no words kept, broken problems with their proof, kept and untested-outside-risk out, a changed claim first)"
+echo "PASS: $asserts asserts; calibration $(grep -c '^PASS' "$WORK/calibration")/5 cases, a healthy repository with 0 problems, the incremental index, the needs-Egor registration with its research, a dangling registration researched (deleting or renaming commit, live references, an uncommitted deletion no problem) and settled only by the sweep-scope night judge, the judge's batched sessions with their token, wall and launch-failure stops, the durable rollup and its coverage blind spot, the top-K snapshot with active work out, the safety gate (a deletion no problem names, an edit through a cross-repo symlink, active work), the structural digest (rollup no, caller yes), revalidation against the night base and main, the ledger's fixed-pending, regressed and faulty rows, the canonical mechanisms, review claims through review-anchors, tokenmap-measured instruction weight, a hook rooted through its ~/.claude link, a runner-less test of live code, PyObjC selectors, a symlink never pairing with its target, per-path kinds for identical bytes, link-target edits, raw-byte and same-named-symbol digests, ledger-renamed causes, launch-less day runs, a --repo scope (its own state dir, the Node/TS calibration, generic entry points, no runtime journal claimed, report-only snapshot and check), heavy tests judged only in a --repo scope (a sweep repository's are the Harness Speed block's), collector runs journalled, one concept spelled in bash, Python and a third place as one cause (common literals and links out), a prose layout beside the renderer, fresh code matched against helpers and judged first, test-case boilerplate weighed down, the worker-message promise (a claim bound to its code, a chat overclaim on the mechanism with no words kept, broken problems with their proof, kept and untested-outside-risk out, a changed claim first)"

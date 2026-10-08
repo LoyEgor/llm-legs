@@ -3168,12 +3168,6 @@ def diff_entries(tree, base):
     return [(fields[i], fields[i + 1]) for i in range(0, len(fields) - 1, 2) if fields[i]]
 
 
-def landed_unrebased(tree, top, base):
-    head = (git(tree, "rev-parse", "HEAD") or "").strip()
-    at_base = (git(tree, "rev-parse", "--verify", "--quiet", base + "^{commit}") or "").strip()
-    return bool(head) and head != at_base and git(top, "merge-base", "--is-ancestor", head, "HEAD") is not None
-
-
 def rebase_onto(tree):
     branch = (git(tree, "symbolic-ref", "-q", "HEAD") or "").strip()
     for line in (git(tree, "reflog", "show", "--format=%gs", branch) or "").splitlines() if branch else ():
@@ -3376,7 +3370,7 @@ def day_trees(record, tops):
     return out
 
 
-def check_run(record, base, landing, suites_passed):
+def check_run(record, base):
     errors = [report_only()] if report_only() else []
     since = iso_epoch(record.get("launched_at")) or iso_epoch(record.get("created_at")) or 0
     indexes = load_indexes()
@@ -3420,8 +3414,6 @@ def check_run(record, base, landing, suites_passed):
                 errors.append("%s: deletion proof: %d rollup hits since %s" % (label, hits[key], cover.get("start")))
             if not (verdict.get("reason") or "").strip():
                 errors.append("%s: deletion proof: the judgment quotes no purpose or retirement reason" % label)
-            if landing and not suites_passed:
-                errors.append("%s: deletion proof: green suites not confirmed (--suites-passed)" % label)
             if len(problem.get("repos") or ()) > 1 and problem.get("group") == "duplicate":
                 staged = [m for row in ledger.get("rows") or ()
                           if isinstance(row, dict) and row.get("id") in (pid, problem.get("ledger"))
@@ -3434,7 +3426,7 @@ def check_run(record, base, landing, suites_passed):
     day = {} if record.get("worktrees") else day_trees(record, tops)
     if not record.get("worktrees") and not (record.get("launched_at") or record.get("created_at")):
         errors.append("the run records no launch time: nothing bounds its changes in the main checkouts")
-    tree_of, landed_onto = {}, {}
+    tree_of = {}
     for tree in record.get("worktrees") or sorted(day):
         if not os.path.isdir(tree):
             errors.append("%s: the run's worktree is gone, nothing proves its changes: they land through a new Code fixer run" % tree)
@@ -3443,10 +3435,6 @@ def check_run(record, base, landing, suites_passed):
         repo = os.path.basename(os.path.dirname(common)) if common else os.path.basename(os.path.realpath(tree))
         tree_of[repo] = tree
         onto = rebase_onto(tree) if base and tree not in day else None
-        if onto:
-            landed_onto[repo] = onto
-        elif base and tree not in day and tops.get(repo) and landed_unrebased(tree, tops[repo], base):
-            landed_onto[repo] = base
         tree_base = day.get(tree) or onto or base
         entries = diff_entries(tree, tree_base) if tree_base else []
         if tree not in day:
@@ -3458,9 +3446,6 @@ def check_run(record, base, landing, suites_passed):
                 errors.append("%s/%s: edit through a cross-repo symlink refused (%s)" % (repo, rel, escape))
                 continue
             fid = "%s/%s" % (repo, rel)
-            busy = work.get(repo, {}).get(rel)
-            if busy and landing:
-                errors.append("%s: in active work (%s)" % (fid, busy))
             if "D" in kind:
                 owners = deleted_ok.get(fid)
                 if not owners:
@@ -3480,11 +3465,12 @@ def check_run(record, base, landing, suites_passed):
         if not problem.get("units"):
             continue
         changed = revalidate(problem, base, tops) if base else []
-        busy = [f for f in problem.get("files") or () if f.split("/", 1)[1] in work.get(f.split("/", 1)[0], {})]
+        busy = ["%s: %s" % (f, work[f.split("/", 1)[0]][f.split("/", 1)[1]]) for f in problem.get("files") or ()
+                if f.split("/", 1)[1] in work.get(f.split("/", 1)[0], {})]
         if busy:
             errors.append("%s: in active work (%s): it waits, its verdict stands" % (pid, ", ".join(busy)))
-        elif landing:
-            changed += [c for c in revalidate(problem, landed_onto or None, tops) if c not in changed]
+        elif base:
+            changed += [c for c in revalidate(problem, None, tops) if c not in changed]
         if changed:
             send_back(problem.get("cause") or pid, "; ".join(changed))
             errors.append("%s: its input changed since the judgment (%s): sent back to the judge" % (pid, "; ".join(changed)))
@@ -3578,8 +3564,6 @@ def main(argv=None):
     check = sub.add_parser("check", parents=[scoped], help="the fixer's safety gate over a doctor-fix run record")
     check.add_argument("record")
     check.add_argument("--base")
-    check.add_argument("--landing", action="store_true")
-    check.add_argument("--suites-passed", action="store_true")
     snap = sub.add_parser("snapshot", parents=[scoped], help="internal: the problems a fixer run takes, top-K by value, revalidated")
     snap.add_argument("doc")
     snap.add_argument("--night")
@@ -3643,7 +3627,7 @@ def main(argv=None):
         return 0 if record["stop"] not in ("launch-failed", "list-failed", "record-failed") else 1
     if args.command == "check":
         record = read_json(args.record, {}) or {}
-        errors = check_run(record, args.base, args.landing, args.suites_passed)
+        errors = check_run(record, args.base)
         for line in errors:
             print(line)
         return 1 if errors else 0
