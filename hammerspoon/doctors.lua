@@ -688,6 +688,7 @@ end
 
 -- The same set bin/doctor-fix snapshots as quiet: open ledger rows no problem of the document names.
 local function quietRow(doctor)
+  if doctor.key == "code" then return nil end
   local document = doctorDocument(doctor)
   local path = ledgerPath(doctor)
   local ledger = path and readJson(path)

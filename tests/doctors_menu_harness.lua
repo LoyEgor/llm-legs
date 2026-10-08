@@ -970,6 +970,17 @@ local quietHarness = details(items[2].menu)[#details(items[2].menu) - 2]
 check(text(quietHarness.title) == "known, quiet" and text(quietHarness.menu[1].title) == "suites-llm-legs-concurrent-load",
   "the Harness doctor's quiet row: " .. text(quietHarness.title))
 check(text(details(items[3].menu)[#details(items[3].menu) - 2].title) == "Refresh", "no ledger rows, no quiet row")
+write("/code-doctor/latest.json", { contract = 1, doctor = "code", as_of_s = now, status = "ok", problem_count = 0,
+  problems = {} })
+write("/code-ledger.json", { rows = { { id = "C1", status = "open", title = "a code row" } } })
+items = doctors.menuItems()
+local codeQuiet = false
+for _, row in ipairs(details(items[4].menu)) do
+  codeQuiet = codeQuiet or row.title ~= "-" and text(row.title) == "known, quiet"
+end
+check(not codeQuiet, "the Code fixer takes no quiet rows (doctor-fix snapshot), so its menu shows none")
+remove("/code-doctor/latest.json")
+remove("/code-ledger.json")
 quietDoc.status = "error"
 write("/llm-doctor/latest.json", quietDoc)
 items = doctors.menuItems()
