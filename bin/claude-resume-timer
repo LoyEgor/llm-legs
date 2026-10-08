@@ -57,11 +57,12 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# A newline in the message would be typed into the chat as a submit, and the call it builds is
-# invisible to the cross-repo guard on this entry point (shared-invariants row bh).
+# A newline in the message would be typed into the chat as a submit (an ESC or a tab is a keystroke
+# too), and the call it builds is invisible to the cross-repo guard on this entry point
+# (shared-invariants row bh); json.dumps also writes such a byte as \u00XX, which Lua cannot parse.
 case $custom_message in
-  *$'\n'*)
-    echo "claude-resume-timer: -m/--message must be a single line" >&2
+  *[[:cntrl:]]*)
+    echo "claude-resume-timer: -m/--message must be a single line of printable text" >&2
     exit 2
     ;;
 esac
@@ -102,6 +103,10 @@ surface=terminal
 extra=${extra:-10}
 
 is_int "$extra" || { usage; exit 2; }
+case $extra in
+  -*) extra=$(( -10#${extra#-} )) ;;
+  *) extra=$(( 10#$extra )) ;;
+esac
 
 run_bounded() {
   local seconds=$1 pid watchdog_pid timeout_cmd rc
@@ -159,6 +164,7 @@ if [ -n "${WORKER_RUN_RECORD:-}" ]; then
   exit 1
 fi
 target_tty=$(detect_controlling_tty) || target_tty=""
+own_tty=$target_tty
 chat_ttys=$(enumerate_claude_ttys)
 if [ "$arm_all" -eq 1 ] && [ -z "$chat_ttys" ]; then
   echo "claude-resume-timer: no active Claude chat ttys" >&2
@@ -169,18 +175,19 @@ if [ -z "$target_tty" ] || ! grep -qxF "$target_tty" <<<"$chat_ttys"; then
   exit 1
 fi
 
-# Another chat, by the name peers address it by or its session id. Every profile's registry is read,
+# Every live chat a registry names, as `tty<TAB>pid<TAB>session`; with $1, only the ones answering
+# to it by the name peers address it by or its session id. Every profile's registry is read,
 # since a chat on another account is as much his; the glob skips `.claudeb`, which is no profile.
 # The name is share/chat_names.py's, never the registry's `.name`: that one carries the derived
 # placeholders no chat is shown under, and lags a title set in the transcript.
 # A registry left behind by a crashed chat can name a pid the system has since handed to another
 # process: `procStart` must match that pid's own start, as claude-chat-switch's live_registry checks.
-chat_tty() {
-  local file pid session started tty found="" records names
+live_chats() {
+  local file pid session started tty records names=""
   records=$(for file in "$HOME"/.claude/sessions/*.json "$HOME"/.claude-profiles/*/sessions/*.json; do
     [ -f "$file" ] && jq -r '[(.sessionId // "" | tostring), (.pid // "" | tostring), (.procStart // "" | tostring)] | @tsv' "$file" 2>/dev/null
   done)
-  names=$(cut -f1 <<<"$records" | grep -v '^$' | sort -u |
+  [ -z "${1-}" ] || names=$(cut -f1 <<<"$records" | grep -v '^$' | sort -u |
     python3 -c 'import sys
 sys.path.insert(0, sys.argv[1])
 from chat_names import chat_name, fold_session
@@ -189,44 +196,51 @@ for session in sys.stdin.read().split():
       "${legs_root:-/nonexistent}/share" 2>/dev/null)
   while IFS=$'\t' read -r session pid started; do
     [ -n "$session" ] || continue
-    [ "$session" = "$1" ] || grep -qxF "$session"$'\t'"$1" <<<"$names" || continue
+    [ -z "${1-}" ] || [ "$session" = "$1" ] || grep -qxF "$session"$'\t'"$1" <<<"$names" || continue
     case $pid in ''|*[!0-9]*) continue ;; esac
     [ -z "$started" ] ||
       [ "$(env LC_ALL=C TZ=UTC ps -o lstart= -p "$pid" 2>/dev/null | sed 's/[[:space:]]*$//')" = "$started" ] || continue
     tty=$(ps -o tty= -p "$pid" 2>/dev/null | tr -d ' ')
     case $tty in ''|'?'|'??') continue ;; esac
-    found="$found/dev/${tty#/dev/}"$'\t'"$pid"$'\n'
-  done <<<"$records"
-  found=$(printf '%s' "$found" | sort -u -t$'\t' -k1,1)
+    printf '/dev/%s\t%s\t%s\n' "${tty#/dev/}" "$pid" "$session"
+  done <<<"$records" | sort -u
+}
+chat_tty() {
+  local found
+  found=$(live_chats "$1" | sort -u -t$'\t' -k1,1)
   case $found in
     '') echo "claude-resume-timer: no live chat is named '$1'" >&2; return 1 ;;
     *$'\n'*) echo "claude-resume-timer: several live chats answer to '$1': $(cut -f1 <<<"$found" | tr '\n' ' ')" >&2; return 1 ;;
   esac
-  target_pid=${found#*$'\t'}
-  found=${found%%$'\t'*}
-  grep -qxF "$found" <<<"$chat_ttys" || {
-    echo "claude-resume-timer: '$1' sits on $found, where no Claude chat runs" >&2
+  grep -qxF "${found%%$'\t'*}" <<<"$chat_ttys" || {
+    echo "claude-resume-timer: '$1' sits on ${found%%$'\t'*}, where no Claude chat runs" >&2
     return 1
   }
-  printf '%s\t%s\n' "$found" "$target_pid"
+  printf '%s\n' "$found"
 }
 target_pid=""
+target_session=${CLAUDE_CODE_SESSION_ID:-}
 if [ -n "$to_chat" ]; then
   target=$(chat_tty "$to_chat") || exit 1
-  target_tty=${target%%$'\t'*} target_pid=${target#*$'\t'}
+  target_tty=${target%%$'\t'*} target=${target#*$'\t'}
+  target_pid=${target%%$'\t'*} target_session=${target#*$'\t'}
 fi
 
 # The per-tty slot holds ONE timer, and arming it at +0 replaces a resume timer already waiting there.
 if [ "$fire_now" -eq 1 ]; then
   timer_state="${RESUME_TIMER_STATE:-$HOME/.hammerspoon/claude_continue_state.json}"
-  pending_fire=$(jq -r --arg tty "$target_tty" '
-    .timers // {} | to_entries[]
-    | select(.key == ("terminal:" + $tty) or (.key == "terminal" and .value.targetTty == $tty))
-    | .value.firesAt // empty' "$timer_state" 2>/dev/null | head -n1)
-  if [ -n "$pending_fire" ]; then
-    echo "claude-resume-timer: $target_tty already holds a resume timer (fires ~$(date -r "${pending_fire%%.*}" '+%H:%M' 2>/dev/null || echo "?")); --now would replace it, so nothing was sent" >&2
-    exit 1
-  fi
+  now_ttys=$target_tty
+  [ "$arm_all" -eq 0 ] || now_ttys=$chat_ttys
+  for tty in $now_ttys; do
+    pending_fire=$(jq -r --arg tty "$tty" '
+      .timers // {} | to_entries[]
+      | select(.key == ("terminal:" + $tty) or (.key == "terminal" and .value.targetTty == $tty))
+      | .value.firesAt // empty' "$timer_state" 2>/dev/null | head -n1)
+    if [ -n "$pending_fire" ]; then
+      echo "claude-resume-timer: $tty already holds a resume timer (fires ~$(date -r "${pending_fire%%.*}" '+%H:%M' 2>/dev/null || echo "?")); --now would replace it, so nothing was sent" >&2
+      exit 1
+    fi
+  done
 fi
 
 now=$(date +%s)
@@ -244,26 +258,6 @@ if [ "$fire_now" -eq 0 ]; then
     exit 1
   fi
   . "$legs_root/share/chat-account.sh"
-  # Another chat's account is ITS environment's, read off its process; the caller's own says nothing.
-  if [ -n "$target_pid" ]; then
-    target_env=$(ps -E -o command= -p "$target_pid" 2>/dev/null | tr ' ' '\n')
-    grep -q '^PATH=' <<<"$target_env" || {
-      echo "claude-resume-timer: cannot read the environment of '$to_chat' (pid $target_pid); refusing to guess its account" >&2
-      exit 1
-    }
-    resolved=$(
-      unset CLAUDEGPT_ACCOUNT CLAUDE_LIMITS_ACCOUNT CLAUDE_CONFIG_DIR
-      while IFS='=' read -r name value; do export "$name=$value"; done \
-        < <(grep -E '^(CLAUDEGPT_ACCOUNT|CLAUDE_LIMITS_ACCOUNT|CLAUDE_CONFIG_DIR)=' <<<"$target_env")
-      chat_account_resolve
-      printf '%s\t%s' "$CHAT_ACCOUNT_VENDOR" "$CHAT_ACCOUNT_NAME"
-    )
-    CHAT_ACCOUNT_VENDOR=${resolved%%$'\t'*} CHAT_ACCOUNT_NAME=${resolved#*$'\t'}
-  else
-    chat_account_resolve
-  fi
-  vendor=$CHAT_ACCOUNT_VENDOR
-  account=${CHAT_ACCOUNT_NAME:-notcom}
 
   # The staleness threshold OF the five_hour bucket (not a five-hour one), from the one place it
   # is written down (docs/shared-invariants.md row a) — never a literal of this script's own.
@@ -290,17 +284,6 @@ if [ "$fire_now" -eq 0 ]; then
     ' "$cache" 2>/dev/null | head -n1
   }
 
-  # A refresh is real OAuth/usage traffic, and one spent on a reading minutes old buys nothing while
-  # self-inflicting 429s under capacity weather (Egor, 2026-07-17). Asked of the store first: only a
-  # row that is missing, unreadable, marked stale or expired, or past its own threshold is worth it.
-  if command -v llm-limits >/dev/null 2>&1; then
-    as_of=$(fresh_five_hour_as_of)
-    if [ -z "$as_of" ] || [ -z "$stale_after" ] ||
-       [ "$(( $(date +%s) - ${as_of%%.*} ))" -ge "$stale_after" ]; then
-      run_bounded 20 llm-limits --refresh
-    fi
-  fi
-
   # Same ISO8601-with-offset parser llm-limits.sh uses, so resets_at math stays in sync.
   iso_def='def iso2epoch:
     if type != "string" then null
@@ -313,15 +296,63 @@ if [ "$fire_now" -eq 0 ]; then
            end)
       end
     end;'
+fi
+
+# Sets minutes and fallback_reason for the chat on tty $1: pid $2 and session $3, or an empty pid
+# for the caller's own chat. 1 when that chat's account cannot be read.
+time_chat() {
+  local tty=$1 pid=$2 session=$3 target_env resolved bucket track_version="" model="" as_of window resets_epoch
+  # Another chat's account is ITS environment's, read off its process; the caller's own says nothing.
+  if [ -n "$pid" ]; then
+    target_env=$(ps -E -o command= -p "$pid" 2>/dev/null | tr ' ' '\n')
+    grep -q '^PATH=' <<<"$target_env" || {
+      echo "claude-resume-timer: cannot read the environment of '${to_chat:-the chat on $tty}' (pid $pid); refusing to guess its account" >&2
+      return 1
+    }
+    resolved=$(
+      unset CLAUDEGPT_ACCOUNT CLAUDE_LIMITS_ACCOUNT CLAUDE_CONFIG_DIR
+      while IFS='=' read -r name value; do export "$name=$value"; done \
+        < <(grep -E '^(CLAUDEGPT_ACCOUNT|CLAUDE_LIMITS_ACCOUNT|CLAUDE_CONFIG_DIR)=' <<<"$target_env")
+      chat_account_resolve
+      printf '%s\t%s\t%s' "$(chat_model_bucket)" "$CHAT_ACCOUNT_VENDOR" "$CHAT_ACCOUNT_NAME"
+    )
+    bucket=${resolved%%$'\t'*} resolved=${resolved#*$'\t'}
+    CHAT_ACCOUNT_VENDOR=${resolved%%$'\t'*} CHAT_ACCOUNT_NAME=${resolved#*$'\t'}
+  else
+    chat_account_resolve
+    bucket=$(chat_model_bucket)
+  fi
+  vendor=$CHAT_ACCOUNT_VENDOR
+  account=${CHAT_ACCOUNT_NAME:-notcom}
+  # The statusline's track holds the model of the chat's last reply; a chat with none is on the default.
+  [ -z "$session" ] || read -r track_version _ _ _ _ model _ 2>/dev/null \
+    <"${STATUSLINE_CACHE_DIR:-$HOME/.cache/claude-statusline}/cache-ttl-track-$session"
+  if [ "$track_version" = v2 ] && [ -n "$model" ] && [ "$model" != - ]; then
+    bucket=$(chat_model_bucket "$model")
+  fi
+
+  # A refresh is real OAuth/usage traffic, and one spent on a reading minutes old buys nothing while
+  # self-inflicting 429s under capacity weather (Egor, 2026-07-17). Asked of the store first: only a
+  # row that is missing, unreadable, marked stale or expired, or past its own threshold is worth it.
+  if command -v llm-limits >/dev/null 2>&1; then
+    as_of=$(fresh_five_hour_as_of)
+    if [ -z "$as_of" ] || [ -z "$stale_after" ] ||
+       [ "$(( $(date +%s) - ${as_of%%.*} ))" -ge "$stale_after" ]; then
+      run_bounded 20 llm-limits --refresh-account "$vendor/$account"
+    fi
+  fi
 
   # A week at its wall outlasts the five hours: woken at the 5h reset, the chat met the same wall and
-  # sat idle till Egor came back (log_audit:limit-reset-no-auto-resume).
+  # sat idle till Egor came back (log_audit:limit-reset-no-auto-resume). A Fable chat has a week of
+  # its own besides the general one; with both walled, the later reset is the one it waits for.
   window=five_hour
   resets_epoch=""
   if [ -f "$cache" ]; then
-    read -r window resets_epoch < <(jq -r --arg acct "$account" --arg vendor "$vendor" "$iso_def"'
+    read -r window resets_epoch < <(jq -r --arg acct "$account" --arg vendor "$vendor" --arg bucket "$bucket" "$iso_def"'
       first(.vendors[$vendor].accounts[]? | select(.account == $acct)) as $a
-      | (if (($a.weekly.effective_pct // $a.weekly.used_pct // 0) >= 100) then "weekly" else "five_hour" end) as $w
+      | (["weekly", (if $bucket == "fable" then "fable" else empty end)]
+         | map(select(($a[.].effective_pct // $a[.].used_pct // 0) >= 100))
+         | max_by($a[.].resets_at | iso2epoch // 0) // "five_hour") as $w
       | $a[$w].resets_at as $resets
       | "\($w) \(if $resets == null then "" else (($resets | iso2epoch) // "") end)"
     ' "$cache" 2>/dev/null)
@@ -336,7 +367,7 @@ if [ "$fire_now" -eq 0 ]; then
   elif ! is_int "$resets_epoch"; then
     fallback_reason="unparseable resets_at for account '$vendor/$account'"
   elif [ "$resets_epoch" -le "$now" ]; then
-    fallback_reason="$([ "$window" = weekly ] && echo weekly || echo 5h) window for account '$vendor/$account' already reset"
+    fallback_reason="$([ "$window" = five_hour ] && echo 5h || echo "$window") window for account '$vendor/$account' already reset"
   fi
 
   if [ -n "$fallback_reason" ]; then
@@ -345,7 +376,7 @@ if [ "$fire_now" -eq 0 ]; then
     minutes=$(( (resets_epoch - now) / 60 + extra ))
     [ "$minutes" -ge 1 ] || minutes=1
   fi
-fi
+}
 
 if ! command -v hs >/dev/null 2>&1; then
   echo "claude-resume-timer: 'hs' not found on PATH; is Hammerspoon's CLI installed?" >&2
@@ -357,16 +388,18 @@ lua_quote() {
 }
 
 arm_one() {
-  local target_tty=$1 hs_output hs_status target_note lua_msg=nil
+  local target_tty=$1 hs_output hs_status target_note lua_msg=nil fires_epoch fires_clock
   if [ -n "$custom_message" ]; then
-    lua_msg=$(lua_quote "$custom_message") || exit 1
+    lua_msg=$(lua_quote "$custom_message") || return 1
   fi
   hs_output=$(hs -q -c "ClaudeContinue.startTimerFor(\"$surface\", $minutes, $lua_msg, \"$target_tty\")" 2>&1)
   hs_status=$?
   if [ "$hs_status" -ne 0 ]; then
-    echo "claude-resume-timer: could not reach hs (Hammerspoon CLI): $hs_output" >&2
-    exit 1
+    echo "claude-resume-timer: could not reach hs (Hammerspoon CLI), so $target_tty is not armed: $hs_output" >&2
+    return 1
   fi
+  fires_epoch=$(( now + minutes * 60 ))
+  fires_clock=$(date -r "$fires_epoch" '+%H:%M' 2>/dev/null || date -j -f %s "$fires_epoch" '+%H:%M' 2>/dev/null || echo "?")
   target_note=" (target $target_tty)"
   [ -n "$custom_message" ] && target_note="${target_note} (custom message)"
   if [ -n "$fallback_reason" ]; then
@@ -376,23 +409,32 @@ arm_one() {
   fi
 }
 
-fires_epoch=$(( now + minutes * 60 ))
-fires_clock=$(date -r "$fires_epoch" '+%H:%M' 2>/dev/null || date -j -f %s "$fires_epoch" '+%H:%M' 2>/dev/null || echo "?")
-
+# Each chat is timed off its own account and model, so `all` reads every other chat off its registry.
 if [ "$arm_all" -eq 1 ]; then
-  all_ttys=$(enumerate_claude_ttys)
-  if [ -z "$all_ttys" ]; then
-    echo "claude-resume-timer: no active Claude chat ttys" >&2
-    exit 1
-  fi
-  while IFS= read -r target_tty; do
-    [ -n "$target_tty" ] || continue
-    arm_one "$target_tty"
-  done <<EOF
-$all_ttys
-EOF
-  exit 0
+  failed=0
+  [ "$fire_now" -eq 1 ] || chats=$(live_chats)
+  for tty in $chat_ttys; do
+    if [ "$fire_now" -eq 0 ]; then
+      if [ "$tty" = "$own_tty" ]; then
+        time_chat "$tty" "" "${CLAUDE_CODE_SESSION_ID:-}" || { failed=1; continue; }
+      else
+        chat=$(grep -F "$tty"$'\t' <<<"$chats")
+        case $chat in
+          ''|*$'\n'*)
+            echo "claude-resume-timer: no one live chat registry names $tty, so its account is unknown and it is not armed" >&2
+            failed=1
+            continue
+            ;;
+        esac
+        chat=${chat#*$'\t'}
+        time_chat "$tty" "${chat%%$'\t'*}" "${chat#*$'\t'}" || { failed=1; continue; }
+      fi
+    fi
+    arm_one "$tty" || failed=1
+  done
+  exit "$failed"
 fi
 
+[ "$fire_now" -eq 1 ] || time_chat "$target_tty" "$target_pid" "$target_session" || exit 1
 arm_one "$target_tty"
 exit; }

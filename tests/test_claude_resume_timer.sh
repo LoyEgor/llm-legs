@@ -148,6 +148,35 @@ sed -i '' 's/"effective_pct":100/"effective_pct":99/' "$FIXTURE_HOME/.llm-limits
 out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=alona "$SCRIPT" terminal 0) || fail "weekly-open run failed"
 minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
 [ "$minutes" = "20" ] || fail "an open week should arm for the five-hour reset (expected 20, got $minutes): $out"
+
+# A Fable chat walled on its own Fable week waits for that week though the general one is open; a
+# chat on another model spends no Fable week, and with both weeks walled the later reset wins.
+write_limits_fable() { # weekly-pct
+  cat >"$FIXTURE_HOME/.llm-limits.json" <<EOF
+{"vendors":{"claude":{"accounts":[{"account":"alona",
+  "five_hour":{"effective_pct":40,"resets_at":"$(date -u -r "$((now + 1200 + 30))" +%Y-%m-%dT%H:%M:%SZ)"},
+  "weekly":{"effective_pct":$1,"resets_at":"$(date -u -r "$((now + 9000 + 30))" +%Y-%m-%dT%H:%M:%SZ)"},
+  "fable":{"effective_pct":100,"resets_at":"$(date -u -r "$((now + 5400 + 30))" +%Y-%m-%dT%H:%M:%SZ)"}}]}}}
+EOF
+}
+mkdir -p "$WORK/tracks"
+track_model() { printf 'v2 0 0 0 0 %s ?\n' "$1" >"$WORK/tracks/cache-ttl-track-sid-own"; }
+fable_minutes() {
+  out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=alona STATUSLINE_CACHE_DIR="$WORK/tracks" \
+    CLAUDE_CODE_SESSION_ID=sid-own CHAT_MODEL_SETTINGS=/nonexistent "$SCRIPT" terminal 0) || fail "fable-week run failed"
+  echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+'
+}
+write_limits_fable 40
+track_model claude-fable-5-1
+minutes=$(fable_minutes)
+[ "$minutes" = "90" ] || fail "a Fable chat at its Fable wall should arm for the Fable week (expected 90, got $minutes)"
+track_model claude-opus-5-5
+minutes=$(fable_minutes)
+[ "$minutes" = "20" ] || fail "an Opus chat spends no Fable week (expected 20, got $minutes)"
+write_limits_fable 100
+track_model claude-fable-5-1
+minutes=$(fable_minutes)
+[ "$minutes" = "150" ] || fail "with both weeks walled the later reset wins (expected 150, got $minutes)"
 write_limits_other
 
 out=$(run_timer env -u CLAUDE_CONFIG_DIR -u CLAUDEGPT_ACCOUNT CLAUDE_LIMITS_ACCOUNT=- \
@@ -222,6 +251,14 @@ out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal 25) || fail 
 minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
 [ "$minutes" = "85" ] || fail "60 minutes to reset + 25 extra should be 85 (got $minutes): $out"
 
+# A leading zero is decimal, never octal: 08 died as an invalid octal digit and 010 read as 8.
+for padded in 08:68 010:70; do
+  out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal "${padded%%:*}" 2>&1) ||
+    fail "extra ${padded%%:*} run failed: $out"
+  minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
+  [ "$minutes" = "${padded#*:}" ] || fail "extra ${padded%%:*} should add decimal minutes (expected ${padded#*:}, got $minutes): $out"
+done
+
 write_limits notcom "$(date -u -r "$((now + 300))" +%Y-%m-%dT%H:%M:%SZ)"
 out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal -310) || fail "floor-clamped run failed"
 minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
@@ -251,6 +288,8 @@ grep -q 'LLM_LIMITS --refresh' "$CALLS" && fail "a row the collector calls fresh
 write_limits_bucket false 3600
 run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal 0 >/dev/null || fail "aged-row run failed"
 grep -q 'LLM_LIMITS --refresh' "$CALLS" || fail "a row past the five-hour threshold must be refreshed: $(cat "$CALLS")"
+grep -qxF 'LLM_LIMITS --refresh-account claude/notcom' "$CALLS" ||
+  fail "the refresh should collect this chat's account alone, not every vendor's: $(cat "$CALLS")"
 
 # The flag is written at collection time and cannot age, so it is asked as well as the clock: a
 # minutes-old row the collector marked stale (expired auth, cached origin) is not one to arm off.
@@ -281,6 +320,13 @@ ttys006 /opt/homebrew/bin/node /Users/e/dev/server.js
 ?? /usr/bin/login claude
 EOF
 
+mkdir -p "$FIXTURE_HOME/.claude/sessions"
+for n in 2 3 4; do
+  printf '{"pid":60%s,"sessionId":"sid-all-%s"}' "$n" "$n" >"$FIXTURE_HOME/.claude/sessions/60$n.json"
+  echo "ttys00$n" >"$PS_FIXTURE.pid.60$n"
+  echo '/Users/e/.local/bin/claude PATH=/usr/bin CLAUDE_LIMITS_ACCOUNT=notcom' >"$PS_FIXTURE.env.60$n"
+done
+
 write_limits notcom "$(date -u -r "$((now + 1200 + 30))" +%Y-%m-%dT%H:%M:%SZ)"
 out=$(run_timer env FAKE_TTY=ttys001 CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" all 0) || fail "all run failed"
 for tty in ttys001 ttys002 ttys003 ttys004; do
@@ -292,6 +338,48 @@ for tty in ttys005 ttys006; do
 done
 armed=$(grep -cF 'nil, "/dev/tty' "$CALLS")
 [ "$armed" = "4" ] || fail "all should arm each claude tty exactly once (expected 4, got $armed): $(cat "$CALLS")"
+
+# Every chat is timed off its OWN account, read from its own process, never the caller's.
+write_limits_other
+echo '/Users/e/.local/bin/claude PATH=/usr/bin CLAUDE_LIMITS_ACCOUNT=alona' >"$PS_FIXTURE.env.603"
+run_timer env FAKE_TTY=ttys001 CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" all 0 >/dev/null || fail "mixed-account all run failed"
+grep -qF 'startTimerFor("terminal", 150, nil, "/dev/ttys003")' "$CALLS" ||
+  fail "all should time an alona chat off alona's window: $(cat "$CALLS")"
+grep -qF 'startTimerFor("terminal", 20, nil, "/dev/ttys002")' "$CALLS" ||
+  fail "all should still time a notcom chat off notcom's window: $(cat "$CALLS")"
+
+# A chat no registry names has no account to time it by: it is skipped and said, the rest still armed.
+rm -f "$FIXTURE_HOME/.claude/sessions/604.json"
+out=$(run_timer env FAKE_TTY=ttys001 CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" all 0 2>&1)
+[ $? -ne 0 ] || fail "all with an unnamed chat should exit non-zero"
+grep -qF '/dev/ttys004' "$CALLS" && fail "all must not arm a chat whose account is unknown: $(cat "$CALLS")"
+echo "$out" | grep -q 'ttys004.*not armed' || fail "all should name the chat it skipped: $out"
+armed=$(grep -cF 'nil, "/dev/tty' "$CALLS")
+[ "$armed" = "3" ] || fail "all should still arm the other chats (expected 3, got $armed): $(cat "$CALLS")"
+
+# One tty hs refuses neither stops the rest nor passes for success.
+cp "$FAKE_BIN/hs" "$WORK/hs.ok"
+cat >"$FAKE_BIN/hs" <<'EOF'
+#!/usr/bin/env bash
+printf 'HS %s\n' "$*" >>"$CALLS"
+case $* in *ttys002*) echo 'hs: no response' >&2; exit 69 ;; esac
+exit 0
+EOF
+out=$(run_timer env FAKE_TTY=ttys001 CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" all --now 2>&1)
+[ $? -ne 0 ] || fail "all with one hs failure should exit non-zero"
+grep -qF '"/dev/ttys003")' "$CALLS" || fail "an hs failure on one tty should not stop the rest: $(cat "$CALLS")"
+echo "$out" | grep -q 'ttys002 is not armed' || fail "an hs failure should name the tty left unarmed: $out"
+cp "$WORK/hs.ok" "$FAKE_BIN/hs"
+
+# all --now fires through every chat's one slot, so a resume timer waiting in any of them is kept.
+printf '{"timers":{"terminal:/dev/ttys003":{"firesAt":%s,"targetTty":"/dev/ttys003"}}}' "$((now + 3600))" \
+  >"$WORK/continue-state.json"
+out=$(run_timer env RESUME_TIMER_STATE="$WORK/continue-state.json" FAKE_TTY=ttys001 CLAUDE_LIMITS_ACCOUNT=notcom \
+  "$SCRIPT" all --now 2>&1)
+[ $? -ne 0 ] || fail "all --now over another chat's armed resume timer should refuse"
+grep -q HS "$CALLS" && fail "all --now over an armed resume timer must not reach hs: $(cat "$CALLS")"
+echo "$out" | grep -q 'ttys003 already holds a resume timer' || fail "all --now should name the armed chat: $out"
+rm -rf "$FIXTURE_HOME/.claude" "$WORK/continue-state.json" "$PS_FIXTURE".pid.* "$PS_FIXTURE".env.*
 
 : >"$PS_FIXTURE"
 out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" all 0 2>&1)
@@ -322,6 +410,11 @@ status=$?
 [ "$status" -eq 2 ] || fail "a multi-line message should exit 2 (got $status): $out"
 echo "$out" | grep -q "single line" || fail "a multi-line message should say why: $out"
 grep -q HS "$CALLS" && fail "a rejected message must not reach hs: $(cat "$CALLS")"
+
+# An ESC is a keystroke in the chat too, and json.dumps writes it as \u001b, which Lua cannot parse.
+out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal 0 -m $'go\033[A' 2>&1)
+[ $? -eq 2 ] || fail "a message with a control character should exit 2: $out"
+grep -q HS "$CALLS" && fail "a control character must not reach hs: $(cat "$CALLS")"
 
 # --- --to: another live chat by name or session id; --now: fires at once, no limits read ---
 
