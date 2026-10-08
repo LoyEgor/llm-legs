@@ -16,7 +16,8 @@ WORK="$(mktemp -d)"
 # `grok` CLI behind it can never be reached (row `cu`).
 export GROKB_CACHE_DIR="$WORK/grokb-cache"
 . "$ROOT/tests/fixtures/grokb-models.sh"
-trap 'rm -rf "$WORK"' EXIT
+# Renders leave detached probes writing into $WORK for a moment; a shard can end right behind them.
+trap 'for _ in 1 2 3 4 5 6 7 8 9 10; do rm -rf "$WORK" 2>/dev/null && break; sleep 0.3; done' EXIT
 asserts=0
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -1508,6 +1509,7 @@ assert grep -Fq "shown: $TOP_D" <<< "$("$PLACE" why --session status-gone-main)"
 assert grep -Fq "shown: the project dir (no journal at" <<< "$("$PLACE" why --session status-none)"
 
 fi
+printf '{}' > "$WORK/limits.json"
 if suite_shard_owns 2 render-branch; then
 # Outside a worktree the branch always shows, detached HEAD as `@sha`.
 detached_output=$(run_statusline "$(statusline_payload status-detached '' "$REPO_K")") || fail "statusline detached failed"
@@ -4236,7 +4238,9 @@ worker_payload() {
      tool_input:{command:$command,description:$description,timeout:42}}'
 }
 TAGDIR="$HOME/.cache/claude-worker-tags/wt"
-# The main-account limits render-pins leaves behind, so the worker-tag renders read them in any shard.
+# The limits state render-pins leaves behind, so the worker-tag renders read it in any shard.
+printf '{}' > "$WORK/limits.json"
+RUN_STATUSLINE_DEFAULT_ACCOUNT=
 if [ ! -e "$HOME/.claude/statusline-cache-rl" ]; then
   mkdir -p "$HOME/.claude"
   jq -cn --argjson now "$(date +%s)" '

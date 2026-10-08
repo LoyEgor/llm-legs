@@ -25,7 +25,8 @@ cat >"$REPO/tests/test_sharded.sh" <<EOF
 #!/usr/bin/env bash
 # shards: 3
 . "$LIB"
-section() { printf '%s\\n' "\$1" >>"$WORK/sections"; }
+ran=0
+section() { printf '%s\\n' "\$1" >>"$WORK/sections"; ran=\$((ran + 1)); }
 echo setup
 mkdir "$WORK/live.\$\$"; trap 'rmdir "$WORK/live.\$\$"' EXIT
 ls -d "$WORK"/live.* | wc -l | tr -d ' ' >>"$WORK/concurrent"
@@ -34,7 +35,7 @@ if suite_shard_owns 2 b; then section b; i=0; while [ "\$i" -lt 200000 ]; do i=\
 if suite_shard_owns 3 c; then section c; sleep 3; [ -z "\${FAIL_C:-}" ] || { echo "c failed"; exit 5; }; fi
 if suite_shard_owns 1 d; then section d; fi
 bash "$WORK/child.sh"
-echo "end of \${suite_shard:-whole}"
+echo "PASS: \$ran sections run"
 EOF
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "${SUITE_SHARD:-}" >>"%s/child"\n' "$WORK" >"$WORK/child.sh"
 run() { # env... -- runner-arg... -> run-suites over $REPO, its output in $WORK/out
@@ -64,7 +65,8 @@ for st in "$logdir"/test_sharded.sh.shard-*.st; do
 done
 suite_journal_secs cpu_sum "$cpu_ms"
 assert jqe --argjson cpu "$cpu_sum" '.suites["test_sharded.sh"].cpu_s == $cpu' <(row)
-assert grep -qx 'test_sharded.sh  PASS .*end of 3/3' "$WORK/out"
+# The table's last line counts every shard's sections, not the last shard's.
+assert grep -qx 'test_sharded.sh  PASS .*  PASS: 4 sections run' "$WORK/out"
 # A suite the shard runs is whole: SUITE_SHARD stops at the suite that owns it.
 assert test "$(sort -u "$WORK/child")" = ''
 
