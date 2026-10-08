@@ -184,10 +184,16 @@ def fix_commit(fix, repos):
     return "%s@%s" % (repo, commit)
 
 
-@functools.lru_cache(maxsize=None)
 def fix_landed(ref, repos):
     """When the fix's `in` commit `repo@hash` reached HEAD of its checkout under `repos`: its own commit time
-    when it sits on HEAD's first-parent line, else the time of the merge that brought it in; None if unknown."""
+    when it sits on HEAD's first-parent line, else the time of the merge that brought it in; None if unknown
+    or not on HEAD."""
+    landed = _landing(ref, repos)
+    return None if landed == NOT_LANDED else landed
+
+
+@functools.lru_cache(maxsize=None)
+def _landing(ref, repos):
     repo, _, commit = str(ref or "").partition("@")
     top = os.path.join(repos, repo)
     if not commit or not os.path.isdir(top):
@@ -197,8 +203,11 @@ def fix_landed(ref, repos):
     try:
         own = git("log", "-1", "--format=%ct %H", commit, "--")
         words = own.stdout.split()
-        if own.returncode or len(words) != 2 or git("merge-base", "--is-ancestor", words[1], "HEAD").returncode:
+        if own.returncode or len(words) != 2:
             return None
+        ancestor = git("merge-base", "--is-ancestor", words[1], "HEAD").returncode
+        if ancestor:
+            return NOT_LANDED if ancestor == 1 else None
         line = git("log", "--first-parent", "--format=%ct %H %P", words[1] + "..HEAD", "--")
         below = git("rev-list", "--ancestry-path", words[1] + "..HEAD", "--")
     except (OSError, subprocess.SubprocessError):
@@ -221,13 +230,13 @@ def fix_held_from(fix, at, repos):
     """When the fix began to hold in its checkouts under `repos`, `at` its own time as an epoch (doctors-contract
     §2): the later of `at` and when its commit reached HEAD, that commit being `in` or, while `in` is null, the one
     that settles it; NOT_LANDED while git shows every file clean and older there, as a night fix on its branch
-    is; `at` for a poured fix and whenever git cannot tell."""
+    is, or `in` is off HEAD; `at` for a poured fix and whenever git cannot tell."""
     if at is None:
         return None
     ref = fix.get("in") or _found(tuple(fix.get("files") or ()), at, repos)
     if ref == NOT_LANDED:
         return NOT_LANDED
-    landed = fix_landed(ref, repos) if ref else None
+    landed = _landing(ref, repos) if ref else None
     return at if landed is None else max(at, landed)
 
 

@@ -111,9 +111,16 @@ def run_usage(worker_run, run, vendor, seen):
         transcript = found.stdout.strip() if found.returncode == 0 else ""
     if not os.path.isfile(transcript):
         return None
-    return {"claudeb": lambda: claude_usage(transcript, seen), "codex": lambda: codex_usage(transcript),
-            "gemini": lambda: gemini_usage(transcript), "grok": lambda: grok_usage(transcript)}.get(
+    # A RESUME shares its session's transcript, and these vendors' counts are the whole session's.
+    whole = os.path.realpath(transcript)
+    if vendor != "claudeb" and whole in seen:
+        return collections.Counter()
+    usage = {"claudeb": lambda: claude_usage(transcript, seen), "codex": lambda: codex_usage(transcript),
+             "gemini": lambda: gemini_usage(transcript), "grok": lambda: grok_usage(transcript)}.get(
         vendor, lambda: None)()
+    if usage is not None:
+        seen.add(whole)
+    return usage
 
 
 def bench_usage(bench):

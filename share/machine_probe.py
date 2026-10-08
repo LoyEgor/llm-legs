@@ -247,7 +247,8 @@ def _argv(pid):
         return []
     raw = buffer.raw[:size.value]
     argc = int.from_bytes(raw[:4], "little")
-    return [part.decode(errors="replace") for part in raw[4:].split(b"\0") if part][1:argc + 1]
+    args = raw[4:].partition(b"\0")[2].lstrip(b"\0").split(b"\0")[:argc]
+    return [part.decode(errors="replace") for part in args]
 
 
 def proc_rusage(pid):

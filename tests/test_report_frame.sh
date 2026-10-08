@@ -66,6 +66,7 @@ room = f.WIDTH - f.LABEL_WIDTH
 path = "/Volumes/Work/Projects/review-bench/share/rbench/report.py"
 fitted = f.fit(path, room)
 assert fitted.startswith("…/") and fitted.endswith("/rbench/report.py") and len(fitted) <= room, fitted
+assert f.fit("see /Users/egor/abcdefgh/ijklmnop/qrstuv/wxyz12", 28) == "see …/ijklmnop/qrstuv/wxyz12"
 prose = "the panel cut three chunks and two of them stalled under the duration cap"
 fitted = f.fit(prose, room)
 assert len(fitted) <= room and fitted.endswith("…") and not fitted.endswith(" …"), fitted

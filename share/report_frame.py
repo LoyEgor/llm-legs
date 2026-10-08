@@ -68,7 +68,7 @@ def fit(text, room):
     prefix = f"{head} " if head else ""
     tail_room = room - len(prefix) - 1
     slash = last[-tail_room:].find("/") if tail_room >= 8 else -1
-    if 0 < slash < tail_room - 1:
+    if 0 <= slash < tail_room - 1:
         return prefix + MORE + last[-tail_room:][slash:]
     cut = text[:room - 1]
     space = cut.rfind(" ")

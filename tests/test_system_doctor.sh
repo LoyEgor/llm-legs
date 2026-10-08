@@ -1178,5 +1178,18 @@ except ValueError as error:
 check(raised == "first" and time.monotonic() - began < 10,
       "an on_line that raises kills the probe instead of waiting it out: %r after %.1fs" % (raised, time.monotonic() - began))
 
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "", "--flag"],
+                         env=dict(os.environ, PROBE_SECRET="secret"))
+try:
+    deadline = time.monotonic() + 10
+    while "--flag" not in m.machine_probe._argv(child.pid) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    seen = m.machine_probe._argv(child.pid)
+finally:
+    child.kill()
+    child.wait()
+check(seen[-2:] == ["", "--flag"] and not any("PROBE_SECRET" in word for word in seen),
+      "an empty argument shifts _argv into the environment: %r" % seen)
+
 print("OK: PASS: %d system doctor checks" % asserts)
 PY

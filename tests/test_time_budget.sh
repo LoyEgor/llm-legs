@@ -255,6 +255,17 @@ for back, wait in ((1, 40), (2, 40), (3, 40), (4, 9000)):
                  {"settled": True, "seconds": {"suite_wait": wait, "model": 5000}, "worker": {}})
 check(night_spend.spend(night, "/usr/bin/false")["hours"] == 2.5,
       "the night report's worker wall starts at each run's pid, not its restamped started_at")
+rollout = os.path.join(work, "codex-rollout.jsonl")
+lines(rollout, [{"payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 1000,
+                                                                                    "output_tokens": 100}}}}])
+for resumed in ("codex-1-1-aaaa", "codex-2-2-bbbb"):
+    os.makedirs(os.path.join(work, "runs", resumed))
+    with open(os.path.join(work, "runs", resumed, "session-file"), "w") as handle:
+        handle.write(rollout + "\n")
+seen = set()
+check([night_spend.run_usage("/usr/bin/false", resumed, "codex", seen)["out"]
+       for resumed in ("codex-1-1-aaaa", "codex-2-2-bbbb")] == [100, 0],
+      "a codex RESUME sharing its session's rollout counts that session's whole total once, not once per run")
 out = subprocess.run([sys.executable, os.path.join(root, "share", "time_budget.py"), "night", "/usr/bin/false",
                       os.path.join(nights, "N1.json")], capture_output=True, text=True).stdout.splitlines()
 check(out[:6] == ["ledger · night N1 · 3.1 h",

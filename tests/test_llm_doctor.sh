@@ -1014,6 +1014,7 @@ late_git(1000, "checkout", "-q", "main")
 late_git(1000, "merge", "-q", "--no-ff", "-m", "land two", "night/n/two")
 assert [doctor.fix_landed("late@" + ref, late_repos) for ref in (two_fix, open_fix, other_fix)] \
     == [now - 1000, None, now - 8000]
+assert doctor.fix_held_from({"in": "late@" + open_fix}, now - 5000, late_repos) == float("inf")
 # A fix with `in` null holds from its landing too: absent from main (a night branch) it regresses nothing,
 # committed there it dates from that commit, poured uncommitted it holds from its `at`.
 for name in ("a.sh", "b.sh", "c.sh"):
