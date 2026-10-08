@@ -408,6 +408,56 @@ print("corpus-unit-ok")
 PY
 assert test "$?" -eq 0
 
+# worker-corpus end to end over a fixture transcript: a background dispatch whose result arrives as
+# a notification, an ATTACH to its run, a split multi-line response and a never-reported dispatch.
+python3 - "$CORPUS" "$WORK/corpus-home" <<'PY'
+import json,os,subprocess,sys
+corpus,home=sys.argv[1],sys.argv[2]
+proj=os.path.join(home,".claude","projects","p"); os.makedirs(proj)
+S="11111111-2222-3333-4444-555555555555"; run="cx-1788280367-68398-037f"
+def ts(m,s=0): return f"2026-07-15T00:{m:02d}:{s:02d}.000Z"
+def ev(t,kind,**kw): return dict({"type":kind,"sessionId":S,"timestamp":t},**kw)
+def agent(t,mid,tid,prompt):
+    return ev(t,"assistant",message={"id":mid,"usage":{"output_tokens":5},"content":[{"type":"tool_use",
+        "name":"Agent","id":tid,"input":{"subagent_type":"codex-worker","description":"do it","prompt":prompt}}]})
+def result(t,tid,text):
+    return ev(t,"user",message={"content":[{"type":"tool_result","tool_use_id":tid,"content":text}]})
+def said(t,mid,tokens,block):
+    return ev(t,"assistant",message={"id":mid,"usage":{"output_tokens":tokens},"content":[block]})
+rows=[ev(ts(0),"user",message={"content":"start"}),
+      agent(ts(0,1),"m0","tu1","MODEL: grok-4.7. EFFORT: high. ACCOUNT: acc. Fix the bug."),
+      result(ts(0,2),"tu1","Async agent launched successfully. agentId: a1"),
+      said(ts(5),"m1",1000,{"type":"text","text":"unrelated work while the worker runs"}),
+      ev(ts(10),"queue-operation",content="<task-notification><tool-use-id>tu1</tool-use-id>"
+         f"<status>completed</status><result>OUTCOME: done RUN: {run}</result></task-notification>"),
+      said(ts(12),"m2",300,{"type":"text","text":"reading the result"}),
+      said(ts(12,1),"m2",300,{"type":"tool_use","name":"Bash","id":"b1","input":{"command":"ls"}}),
+      agent(ts(20),"m3","tu2",f"ATTACH {run}: keep waiting and report."),
+      result(ts(20,1),"tu2","OUTCOME: done"),
+      agent(ts(30),"m4","tu3","Another task entirely."),
+      result(ts(30,1),"tu3","Async agent launched successfully. agentId: a3")]
+with open(os.path.join(proj,S+".jsonl"),"w") as f:
+    f.writelines(json.dumps(r)+"\n" for r in rows)
+out=subprocess.run([corpus,"--since","2026-07-15","--until","2026-07-15"],capture_output=True,text=True,
+                   env=dict(os.environ,HOME=home),check=True).stdout
+recs=[json.loads(l) for l in out.splitlines()]
+dl={r["tool_use_id"]:r for r in recs if r["type"]=="delegation"}
+fu={r["tool_use_id"]:r for r in recs if r["type"]=="followup"}
+errors=[]
+def check(cond,msg):
+    if not cond: errors.append(msg)
+check("tu2" not in dl,f"an ATTACH was written as a fresh delegation record: {sorted(dl)}")
+check(dl.get("tu1",{}).get("model")=="grok-4.7",f"a dotted model was cut at its dot: {dl.get('tu1',{}).get('model')}")
+check(fu.get("tu2",{}).get("fable_tokens_cycle")==300,
+      f"cycle must start at the notification and count a split response once: {fu.get('tu2',{}).get('fable_tokens_cycle')}")
+check(dl.get("tu3",{}).get("duration_ms") is None,
+      f"a dispatch with no notification yet got the launch stub's latency as its duration: {dl.get('tu3',{}).get('duration_ms')}")
+check(dl.get("tu1",{}).get("duration_ms")==599000,f"background duration: {dl.get('tu1',{}).get('duration_ms')}")
+for e in errors: print("SUBFAIL:",e)
+sys.exit(1 if errors else 0)
+PY
+assert test "$?" -eq 0
+
 # worker-stats helper units
 python3 - "$SCRIPT" <<'PY'
 import importlib.util,importlib.machinery,sys
