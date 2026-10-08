@@ -10,6 +10,7 @@ import os
 import re
 import statistics
 import subprocess
+import time
 
 import handoffs
 import night_spend
@@ -159,15 +160,17 @@ def epoch(text):
 
 
 def changed_at(top, paths, held, row):
-    """When a moved source last changed: its last commit, or its mtime while the change is uncommitted."""
-    recorded = row.get("sources") or {}
+    """When a moved source last changed: its last commit (a dropped one's removal), or its mtime while the change is
+    uncommitted, now when a dropped one has neither."""
+    recorded, base = row.get("sources") or {}, os.path.dirname(top.rstrip("/"))
     at = []
-    for path in paths:
-        key = spend.repo_path(path, os.path.dirname(top.rstrip("/")))
+    for path in set(paths) | {os.path.join(base, k) for k in recorded if k not in held}:
+        key = spend.repo_path(path, base)
         if recorded.get(key) != held.get(key):
             stamp = git(top, "log", "-1", "--format=%ct", "--", os.path.relpath(path, top))
             dirty = git(top, "status", "--porcelain", "--", os.path.relpath(path, top))
-            at.append(os.path.getmtime(path) if dirty or not stamp.isdigit() else float(stamp))
+            at.append(os.path.getmtime(path) if (dirty or not stamp.isdigit()) and os.path.exists(path)
+                      else float(stamp) if stamp.isdigit() and not dirty else time.time())
     return max(at, default=0.0)
 
 
@@ -198,7 +201,7 @@ def due(c, row, held, median, new):
         return "source changed", False, changed_at(c["top"], c["sources"], held, row)
     then = row.get("cpu_run")
     if isinstance(then, (int, float)) and then > 0 and c["p50"] >= CPU_RISE * then:
-        return "CPU a run ×%.1f since audit" % (c["p50"] / then), False, audited
+        return "CPU a run ×%.1f since audit" % (c["p50"] / then), False, max(c["history"][-1]["end"], audited + 1)
     return None
 
 
@@ -256,7 +259,8 @@ def collect(now, journal, root):
         c["sources"] = sources(c["path"])
         row = ledger.get(ROW + c["key"])
         held = spend.blobs(c["sources"]) if row else {}
-        held = {spend.repo_path(p, os.path.dirname(c["top"].rstrip("/"))): h for p, h in held.items()}
+        held = None if held is None else {spend.repo_path(p, os.path.dirname(c["top"].rstrip("/"))): h
+                                          for p, h in held.items()}
         reasons[c["key"]] = due(c, row, held, median, new)
         if row and not reasons[c["key"]]:
             out["proofs"][c["key"]] = dict(proof(c, row), verdict=row.get("verdict"), audited_at=row.get("audited_at"))
@@ -265,7 +269,7 @@ def collect(now, journal, root):
     out["selection"] = [p["id"] for p in out["problems"]]
     out["issues"] = [[c["cpu_min_day"], c["key"]] for c in queue[:3]]
     total = sum(c["cpu_min_day"] for c in found)
-    workers = sum(h["cpu"] for c in found for h in c["history"] if h["worker"])
+    workers = sum(c["p50"] for c in found for h in c["history"] if h["worker"])
     out.update(status="watch" if queue else "ok", cpu_min_day=round(total, 1),
                components=[{k: c[k] for k in ("key", "cpu_min_day", "p50", "runs")} for c in found],
                head="%d due · %.0f CPU-min/day over %d suites · workers %d %%%s" % (
@@ -319,10 +323,10 @@ def record(root, journal, key, verdict, note, by, worktrees, now):
 
 
 def samples(journal, lo, hi, named=()):
-    """{repo/label: [CPU-s a run]} of runs in [lo, hi), only the named suites when any."""
+    """{repo/label: [CPU-s a run]} of passing runs in [lo, hi), only the named suites when any."""
     out = {}
     for r in runs(journal, lo):
         key = "%s/%s" % (r["repo"], os.path.splitext(r["name"])[0])
-        if r["end"] < hi and (not named or key in named):
+        if r["end"] < hi and r["ok"] and (not named or key in named):
             out.setdefault(key, []).append(r["cpu"])
     return out

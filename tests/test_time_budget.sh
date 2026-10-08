@@ -280,6 +280,10 @@ check(T.saved_min_day(item, D0 + 11000, D0 + 86400 * 2.5) is None
 check(T.roi_lines([{"started": D0, "hours": 3.0, "improvements": [dict(item, ref="r", spend_m=2.0, lines=[1, 1])]}],
                   D0 + 86400 * 2.5)[-1] == "roi · last 1 nights: improvements 2.0M · gained 0.0 min/day · nothing measured yet",
       "while every change still pends the cumulative line says nothing was measured, never spend without result")
+shown = T.roi_lines([{"started": D0, "hours": 3.0, "improvements": [dict(item, ref="r", spend_m=2.0, lines=[1, 1],
+                                                                        **{"class": None})]}], D0 + 86400 * 2.5)
+check(shown[0] == "roi · r · harness total · 2.0M · +1/-1 lines · pending a full day",
+      "an improvement whose class is None measures the harness total, never crashes the ROI lines: %s" % shown)
 L = D0 + 20 * 86400 + 43200
 for back in (1, 2, 3):
     T.write_json(T.day_cache_path(T.local_day(L - back * 86400)), {"settled": True, "seconds": {"slot": 0, "model": 0}, "worker": {}})

@@ -142,7 +142,7 @@ def components(payload, files, texts):
             amount(item["cells"][1]))
     contexts = [max(float(startup.get(k) or 0) - sum(amount(i["cells"][side]) for i in spawns), 0.0)
                 for side, k in ((0, "cur"), (1, "prev"))]
-    parts = section(startup, "Per context that loads it (avg)")
+    parts = section(startup, "Main contexts, total by part")
     sums = [sum(amount(i["cells"][side]) for i in parts) for side in (0, 1)]
     for item in parts:
         add("startup:" + str(item.get("label")), "startup " + str(item.get("label")),
@@ -169,14 +169,17 @@ def blobs(paths):
     try:
         out = subprocess.run(["git", "hash-object", "--"] + real, capture_output=True, text=True, timeout=20, cwd="/")
     except (OSError, subprocess.SubprocessError):
-        return {}
+        return None
     hashes = out.stdout.split() if out.returncode == 0 else []
-    return dict(zip(real, hashes)) if len(hashes) == len(real) else {}
+    return dict(zip(real, hashes)) if len(hashes) == len(real) else None
 
 
 def moved(row, held):
+    """held None: git could not hash, so nothing moved; a source recorded None was absent at audit (a cut)."""
+    if held is None:
+        return False
     recorded = row.get("sources") if isinstance(row.get("sources"), dict) else {}
-    return set(recorded) != set(held) or any(recorded[p] != held[p] for p in held)
+    return {p: h for p, h in recorded.items() if h is not None} != held
 
 
 def due(component, row, held):
@@ -313,8 +316,8 @@ def collect(now, state, write, scripts, home, repos, root, local_day):
     reasons = {}
     for c in found:
         if c["target"]:
-            reasons[c["key"]] = due(c, rows.get(c["key"]), {repo_path(s, repos): h for s, h in held.items()
-                                                             if s in c["sources"]})
+            reasons[c["key"]] = due(c, rows.get(c["key"]), None if held is None else {
+                repo_path(s, repos): h for s, h in held.items() if s in c["sources"]})
     proofs = {c["key"]: proof(c, rows[c["key"]], index, made) for c in found
               if c["target"] and c["key"] in rows and not reasons.get(c["key"])}
     at = datetime.datetime.fromtimestamp(made).astimezone().isoformat(timespec="seconds")
@@ -378,13 +381,15 @@ def source_blobs(root, repos, sources, worktrees):
         real = os.path.realpath(source)
         top = next((m for m in mains if real.startswith(os.path.join(m, ""))), None)
         paths[repo_path(source, repos)] = os.path.join(mains[top], os.path.relpath(real, top)) if top else real
-    held = blobs(list(paths.values()))
+    held = blobs(list(paths.values())) or {}
     return {p: held.get(real) for p, real in sorted(paths.items())}
 
 
 def save_row(root, row):
     path = ledger_path(root)
-    ledger = read_json(path, {}) or {}
+    ledger = read_json(path, None) if os.path.exists(path) else {}
+    if not isinstance(ledger, dict):
+        raise SystemExit("%s is no JSON object (conflict markers?): fix it, then record the audit" % path)
     ledger.setdefault("owner", "Harness Doctor")
     ledger["rows"] = [r for r in ledger.get("rows") or () if isinstance(r, dict) and r.get("id") != row["id"]] + [row]
     with open(path + ".tmp", "w") as handle:

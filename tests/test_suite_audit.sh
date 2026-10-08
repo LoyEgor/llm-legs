@@ -168,8 +168,15 @@ check({p["suite"]["component"]: p["suite"]["due"] for p in collect()["problems"]
       == "source changed", "an audited suite whose tests/ helper changed is due again")
 write("tests/helper.sh", "helper\n")
 ledger([dict(recorded, cpu_run=20 / 1.5)])
-check({p["suite"]["component"]: p["suite"]["due"] for p in collect()["problems"]}.get("alpha/test_mid")
-      == "CPU a run ×1.5 since audit", "CPU a run at 1.5x the audit's is due again")
+rose = {p["suite"]["component"]: p for p in collect()["problems"]}.get("alpha/test_mid")
+check(rose and rose["suite"]["due"] == "CPU a run ×1.5 since audit"
+      and suite_audit.restate([rose], {"suite:alpha/test_mid": dict(recorded, cpu_run=20 / 1.5)}) == [rose],
+      "CPU a run at 1.5x the audit's is due again, and the audit it rose over does not settle it for a night close")
+dropped = dict(recorded, sources=dict(recorded["sources"], **{"alpha/tests/gone.sh": "0" * 40}))
+ledger([dropped])
+gone = {p["suite"]["component"]: p for p in collect()["problems"]}.get("alpha/test_mid")
+check(gone and gone["suite"]["due"] == "source changed" and suite_audit.restate([gone], {"suite:alpha/test_mid": dropped})
+      == [gone], "a source the audit recorded and the suite no longer has is a change the old audit does not settle")
 ledger([dict(recorded, cpu_run=20 / 1.4)])
 check("alpha/test_mid" not in {p["suite"]["component"] for p in collect()["problems"]}, "1.4x is not due")
 ledger([recorded])
@@ -178,9 +185,12 @@ save(journal + later)
 proof = collect(NOW + 600)["proofs"]["alpha/test_mid"]
 check(proof["proven"] and suite_audit.proof_text(proof) == "CPU-s a run 20 → 8.0 (×0.40, 5 runs) · proven",
       "an audit is proven once 5 runs after it read 0.75x or less of its CPU a run: %s" % proof)
-save(journal + [row(NOW - 3 * 86400 + i, {"test_mid": cpu(250)}, cheap) for i in range(30)]
+save(journal + [row(NOW - 3 * 86400 + i, {"test_mid": cpu(250)}, cheap, worker=True) for i in range(30)]
      + [row(NOW - 3600 + i, {"test_mid": cpu(40)}, split) for i in range(suite_audit.RECENT_RUNS)])
-mid = {c["key"]: c for c in collect()["components"]}["alpha/test_mid"]
+cut = collect()
+mid = {c["key"]: c for c in cut["components"]}["alpha/test_mid"]
+check("workers 33 %" in cut["head"], "the workers' share prices their runs at the suite's CPU a run like the total it "
+      "divides, so runs before a cut never read over 100 %%: %s" % cut["head"])
 recorded = suite_audit.record(root, os.environ["RUN_SUITES_JOURNAL"], "alpha/test_mid", "kept", "split", "night-x", [],
                               NOW)
 check(mid["p50"] == 40 and recorded["cpu_run"] == 40 and mid["cpu_min_day"] == round(40 * 60 / 7 / 60.0, 2),
@@ -211,6 +221,9 @@ save(journal + later[:4])
 check(item["class"] == "suite_run" and time_budget.roi_lines([night], NOW + 600)[0]
       == "roi · night-x · 1.5M · +3/-9 · CPU-s/run: 4 of 5 since",
       "a suite improvement waits for 5 runs after the night, not a full day")
+save(journal + later[:4] + [row(NOW + 120 + i, {"test_mid": cpu(1, rc=1)}, split) for i in range(5)])
+check(time_budget.roi_lines([night], NOW + 600)[0] == "roi · night-x · 1.5M · +3/-9 · CPU-s/run: 4 of 5 since",
+      "failed runs stop early and are no proof sample: cheap failures after a night never prove it")
 save(journal + later)
 check(time_budget.roi_lines([night], NOW + 600)
       == ["roi · night-x · 1.5M · +3/-9 · 20 → 8.0 CPU-s/run · proven",

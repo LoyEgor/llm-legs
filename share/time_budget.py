@@ -837,7 +837,7 @@ def spend_proofs():
 
 
 def timed(row):
-    return [i for i in row.get("improvements") or () if not i["class"].startswith("spend:")]
+    return [i for i in row.get("improvements") or () if not (i["class"] or "").startswith("spend:")]
 
 
 def roi_lines(rows, now):
@@ -850,7 +850,7 @@ def roi_lines(rows, now):
         spend = saved = 0.0
         pending = unmeasured = proven = 0
         for item in row.get("improvements") or ():
-            if item["class"].startswith("spend:"):
+            if (item["class"] or "").startswith("spend:"):
                 if row is rows[-1]:
                     if proofs is None:
                         proofs = spend_proofs()

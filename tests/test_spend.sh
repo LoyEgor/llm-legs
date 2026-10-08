@@ -70,7 +70,11 @@ def payload(made=NOW - 3600, idle_avoidable=False, hook_price=300.0, index=True,
         {"key": "rewrites", "sections": [causes]},
         {"key": "startup", "cur": 1.2e5, "prev": 1.1e5, "sections": [rows("Per context that loads it (avg)", [
             ("CLAUDE.md + memory index", ["6.0k", "5.0k"], 0), ("system + tools (not in total)", ["7.9k", "7.1k"], 1),
-            ("skill listing", ["4.0k", "5.0k"], 0)]), rows("Subagent spawns, by agent", [
+            ("skill listing", ["4.0k", "5.0k"], 0), ("nested CLAUDE.md files", ["10.0k", "1.0k"], 0)]),
+            rows("Main contexts, total by part", [
+                ("CLAUDE.md + memory index", ["60k", "50k"], 0), ("system + tools (not in total)", ["79k", "71k"], 1),
+                ("skill listing", ["39k", "49k"], 0), ("nested CLAUDE.md files", ["1k", "1k"], 0)]),
+            rows("Subagent spawns, by agent", [
                 ("claudeb-worker", ["20k", "10k"], 0)])]},
         {"key": "hidden", "sections": [rows("Compaction summaries, by zone", [("worker", ["5k", "1k"], 0),
                                                                              ("chat", ["150k", "4k"], 0)])]},
@@ -90,11 +94,13 @@ check(found["hook:drill.sh"]["cur"] == 20000 and found["hook:drill.sh"]["sources
       % found["hook:drill.sh"])
 check(not [k for k in found if "17 more" in k or "system + tools" in k] and "thinking" not in found,
       "the dim tail rows and the model's own spend (thinking) are no component: %s" % sorted(found))
-check(found["startup:CLAUDE.md + memory index"]["share"] == 6.0 and found["compaction"]["share"] == 15.5
+check(found["startup:CLAUDE.md + memory index"]["share"] == 6.0 and found["startup:nested CLAUDE.md files"]["share"] == 0.1
+      and found["compaction"]["share"] == 15.5
       and found["spawn:claudeb-worker"]["share"] == 2.0 and found["spawn:claudeb-worker"]["target"]
       and found["resumes"]["share"] == 5.0 and not found["rewrites:expired (1h+ idle)"]["target"]
       and found["rewrites:expired (5m ttl)"]["target"] and not found["compaction"]["target"],
-      "spawns are their own components and startup parts split the rest by their per-context size; compaction sums "
+      "spawns are their own components and startup parts split the rest by tokenmap's main-context totals, never "
+      "by the per-context averages that inflate a rarely loaded part; compaction sums "
       "its zones and, like a cause tokenmap does not flag avoidable, is shown, never targeted: %s"
       % {k: (c["share"], c["target"]) for k, c in found.items()})
 flipped = {c["key"]: c["target"] for c in spend.components(payload(idle_avoidable=True), files, spend.file_texts())}
@@ -155,6 +161,16 @@ check(key == "setup/hooks/gate.sh" and spend.due(gate, None, {key: blob}) == "ne
       and spend.due(found["resumes"], {"sources": {}, "share": found["resumes"]["basis"] / 2}, {}) == "share ×2.0 since audit",
       "due: never audited, a source blob moved, a share at 1.5x its audit share; unchanged is not due, and a "
       "component with no source file is due only by its share")
+path = os.environ["PATH"]
+os.environ["PATH"] = os.path.join(work, "no-git")
+unhashed = spend.blobs([source])
+os.environ["PATH"] = path
+check(unhashed is None and spend.due(gate, row, None) is None
+      and spend.due(found["resumes"], {"sources": {key: None}, "share": found["resumes"]["basis"]}, {}) is None
+      and spend.due(found["resumes"], {"sources": {key: None}, "share": found["resumes"]["basis"]}, {key: blob})
+      == "source changed",
+      "a git that cannot hash leaves every source unmoved, never all due at once; a source recorded absent (a cut "
+      "deleted it) and still absent has not moved, one back has")
 
 with open(ledger, "w") as handle:
     json.dump({"owner": "Harness Doctor", "rows": [row, {"id": "resumes", "sources": {},
@@ -190,6 +206,20 @@ try:
 except SystemExit:
     refused = True
 check(refused, "a verdict other than cut, kept or trade is refused")
+with open(ledger) as handle:
+    kept = handle.read()
+with open(ledger, "w") as handle:
+    handle.write(kept.replace('"rows": [', '"rows": [\n<<<<<<< ours', 1))
+broken = open(ledger).read()
+try:
+    spend.save_row(root, {"id": "resumes", "verdict": "kept"})
+    refused = False
+except SystemExit:
+    refused = True
+check(refused and open(ledger).read() == broken,
+      "a ledger that is no JSON (merge conflict markers) refuses the record and keeps its rows, never overwritten")
+with open(ledger, "w") as handle:
+    handle.write(kept)
 before = collect()
 later = time.time() + 60
 same, cheaper = (collect(made=later, hook_price=price)["proofs"].get("hook:gate.sh") for price in (300.0, 150.0))
