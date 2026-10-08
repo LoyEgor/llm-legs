@@ -129,6 +129,20 @@
    "sources": {},
    "verdict": "cut",
    "note": "relay agents omitClaudeMd (claude-setup 9d0aded): CLAUDE.md+MEMORY.md (~80% of the spawn's startup) leave every relay spawn; first request 13.8k->6.5k tokens, replayed decisions identical 16/17 (17th = MD-GUARD copy drop, baseline 34/669); MCP instructions remain (Claude Code injects them regardless of tools)"
+  },
+  {
+   "id": "suite:llm-legs/test_worker_pick",
+   "title": "llm-legs/test_worker_pick",
+   "audited_at": "2026-10-08T03:53:31+03:00",
+   "by": "feat/suite-audit-worker-pick",
+   "cpu_run": 78.6,
+   "cpu_min_day": 51.92,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "29457015e61a2ba7ea81c1456d386be4c872fe88",
+    "llm-legs/tests/test_worker_pick.sh": "f36261d728a3a6b3b394752890e53ca68b0e2845"
+   },
+   "verdict": "cut",
+   "note": "27 unread renders -> load_case store writes, fork-free contains; 977 asserts kept; 85.3 -> 79.5 CPU-s/run (-6.9%); rest is ~0.13 CPU-s per worker-pick start x ~470 distinct cases"
   }
  ]
 }
