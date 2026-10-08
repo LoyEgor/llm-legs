@@ -316,35 +316,35 @@ run_doctor() {
   return 0
 }
 
-# Egor's «сделай апдейт» (word family `update`): this pass, then every vendor's integration in one chat at once. It
-# returns at once, since the pass takes minutes and the chat that asked must not wait on it.
-# `--night` (night-run prep) blocks until the pass ends and opens no chat: `vendor-fingerprint request --night`
-# takes the waiting events next, and a chat would have claimed them first.
+# Egor's «сделай апдейт» (word family `update`): this pass, then the night's per-vendor fixer runs off main, dispatched
+# by one orchestrator chat. It returns at once, since the pass takes minutes and the chat that asked must not wait on it.
+# `--night` (night-run prep) blocks until the pass ends and requests nothing: `vendor-fingerprint request --night`
+# takes the waiting events next, and a day request would have claimed them first.
 update_now() {
   local night=false
   [ "${1:-}" = --night ] && night=true
   mkdir -p "$state_dir"
   if ! $night && [ -z "${VENDOR_CLI_UPDATE_DETACHED:-}" ]; then
     if ! lockf -k -t 0 "$state_dir/manual.lock" true 2>/dev/null; then
-      printf 'vendor update already running: its integration chat opens when the pass ends; progress in %s\n' "$log_file"
+      printf 'vendor update already running: its orchestrator chat opens when the pass ends; progress in %s\n' "$log_file"
       return 0
     fi
     VENDOR_CLI_UPDATE_DETACHED=1 perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' \
       lockf -k -t 0 "$state_dir/manual.lock" "$script_path" now </dev/null >>"$state_dir/launchd.log" 2>&1 &
-    printf 'vendor update started: CLIs, model lists and fingerprints first, then one integration chat for every vendor opens in Terminal; progress in %s\n' "$log_file"
+    printf 'vendor update started: CLIs, model lists and fingerprints first, then one orchestrator chat dispatching a fixer per vendor opens in Terminal; progress in %s\n' "$log_file"
     return 0
   fi
   local rc=0 vendor bin_dir bin_dirs=''
   printf '%s manual update: pass started\n' "$(stamp)" >>"$log_file"
   VENDOR_FINGERPRINT_HOLD=1 lockf -k -t 900 "$state_dir/run.lock" env VENDOR_CLI_UPDATE_LOCKED=1 "$script_path" run ||
     rc=$?
-  # 75 is lockf's timeout: the pass never ran, so an integration chat would read CLIs nobody updated.
+  # 75 is lockf's timeout: the pass never ran, so its fixers would read CLIs nobody updated.
   if [ "$rc" = 75 ]; then
-    printf '%s manual update: another run held the lock for 900s; no pass, no integration chat\n' "$(stamp)" >>"$log_file"
+    printf '%s manual update: another run held the lock for 900s; no pass, no fixers\n' "$(stamp)" >>"$log_file"
     return 1
   fi
   if $night; then
-    printf '%s night update: pass done, no integration chat\n' "$(stamp)" >>"$log_file"
+    printf '%s night update: pass done, no orchestrator chat\n' "$(stamp)" >>"$log_file"
     run_doctor
     return 0
   fi

@@ -999,12 +999,15 @@ write_ticks(minutes(10, births_s=1500, births_seen=10, births_top=[["statusline.
 json.dump({"owner": "System doctor", "rows": [], "blind_spots": []}, open(os.environ["SYSTEM_DOCTOR_LEDGER"], "w"))
 os.remove(os.path.join(work, "state", "nightly.json"))
 check(cli().returncode == 0, "the judge writes a fresh document")
+fixer_repo = os.path.join(work, "fixer-repo")
+subprocess.run(["git", "init", "-q", "-b", "main", fixer_repo], check=True)
+subprocess.run(["git", "-C", fixer_repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base"], check=True)
 env = dict(os.environ, PATH=fake + ":/usr/bin:/bin", DOCTOR_FIX_OPENER=os.path.join(fake, "opener"),
-           DOCTOR_FIX_WORKER_PICK=os.path.join(fake, "worker-pick"))
+           DOCTOR_FIX_WORKER_PICK=os.path.join(fake, "worker-pick"), DOCTOR_FIX_WORKTREE_REPO=fixer_repo)
 run = subprocess.run(["bash", os.path.join(root, "bin", "doctor-fix"), "launch", "system"], capture_output=True, text=True, env=env)
-check(run.returncode == 0 and run.stdout.startswith("system fixer opened"), "doctor-fix launch system opens a fixer: %s %s"
+check(run.returncode == 0 and run.stdout.endswith("system fixer opened: 1 runs in one orchestrator chat\n"), "doctor-fix launch system opens a fixer: %s %s"
       % (run.stdout, run.stderr))
-fixer = json.load(open(glob.glob(os.path.join(work, "doctors", "runs", "system-all-*.json"))[0]))
+fixer = json.load(open(glob.glob(os.path.join(work, "doctors", "runs", "system-system-*.json"))[0]))
 routed = {p["id"]: p for p in fixer["problems"]}
 check(sorted(routed) == ["kernel:machine", "spawn:machine"] and routed["spawn:machine"]["cause"] == "statusline.sh"
       and routed["spawn:machine"]["area"] == "system"

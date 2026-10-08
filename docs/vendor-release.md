@@ -2,8 +2,9 @@
 
 A vendor shipped something (a model, a CLI version, a tool parameter, a doc) and
 `bin/vendor-fingerprint` saw it change. Turn that event into a fully integrated, tested, reported
-change nobody has to ask about. Egor opened this chat with the Updater doctor's Fix button or «сделай
-апдейт» (night: §6) and may be away: work autonomously, go deep; his word only where a gate says so.
+change nobody has to ask about. You are a headless worker the fix orchestrator dispatched
+(`docs/fix-orchestrator.md`) after the Updater doctor's Fix button or «сделай апдейт» (night: §6): work
+autonomously, go deep, never wait for Egor.
 
 The standing goal: every surface runs each vendor's newest model with no hardcoded id (a pin survives
 only with a stated reason), and every new capability is supported, per account, over a changing set.
@@ -14,9 +15,8 @@ only with a stated reason), and every new capability is supported, per account, 
   the paths of its `.diff` and of the current fingerprint (`snapshot <vendor>` re-takes one).
 - Read your vendor's lines in `docs/vendor-release-open.md`: prove what this release lets you
   prove, and never re-check what a closed event already settled.
-- No id given: `bin/vendor-fingerprint events` lists the open ones; handle each vendor's together.
-- Several ids given: the chat carries every event that waited when Egor asked, each already folding
-  its vendor's changes since it opened; do the procedure per event, one vendor after another.
+- Several ids given: every event of your vendor that waited when Egor asked, each already folding its
+  vendor's changes since it opened; do the procedure per event.
 - A manual request (`request [--here] <vendor>` with no event waiting) diffs the whole current
   fingerprint: the full checklist, every line decided (a `+*` row per facet is fine).
 - Model: this runs on a strong model (Opus 5.5+ or Fable). Any other session model stops here and
@@ -29,15 +29,16 @@ only with a stated reason), and every new capability is supported, per account, 
   commit that made it, its handoff or design doc, its `docs/shared-invariants.md` row. Say its goal
   in one sentence and check the release still serves it, not only that the tests stay green; a pin
   or fallback kept for a reason that no longer holds is removed, one whose reason holds stays.
-- Work in a worktree per repository you change (llm-legs, review-bench, claude-setup), on branch
-  `vendor-release/<vendor>-<version>`, per `~/.claude/docs/worktrees.md`. Never review, commit or
-  push: Egor's end-of-day pass does all three for everything at once (night: §6).
+- Work only in the brief's worktree and its `ADD-DIR:` worktrees (review-bench, claude-setup), on its
+  branch; a change in a repository without one is a handoff. Commit there; never push, merge or review:
+  the orchestrator lands it.
 - Workers and reviews use exactly the vendors Egor's worker switches allow; the chat gets no pin. A
   live proof that needs a vendor he switched off is not run: it goes into the report's ask.
 - Tests use fixtures only; never point one at `~/.claude-profiles/.claudeb`, a real `~/.codex`,
   `~/.grok` or `~/.gemini`, and never mutate the live Hammerspoon singleton (`menuItems()` only).
-- Never generate an image or video: every generation needs Egor's «сгенерируй». Collect what only a
-  generation can prove (§3 step 10) into one ask in the report.
+- Never generate an image or video: every generation needs Egor's «сгенерируй». What only a generation
+  can prove (§3 step 10), or any step needing his word, is decided `blocked` with evidence
+  `blocked-on-egor: <what his word unlocks>`.
 - Before building a capability for this vendor, study how the other vendors expose the same or an
   analogous one — the Hammerspoon menu, `<vendor>b` verbs, worker-run, chat pins, statusline, review
   pins — and put it in the same places with the same names and look (codex's per-account "Fast Mode
@@ -109,13 +110,9 @@ only with a stated reason), and every new capability is supported, per account, 
     with its `field_sources` note.
 13. Tests: every new behaviour asserted; each new assertion shown red on the old code (mutation);
     `tests/run-all --changed` green in every worktree touched.
-14. Pour it into main, uncommitted, so it works at once: per worktree `git add -N` the new files,
-    `git -C <worktree> diff HEAD >patch`, `git -C <main checkout> apply patch` — on top of others'
-    uncommitted work, never reverting, stashing or overwriting it; a hunk that fails (`--reject`) is
-    merged by hand, keeping both sides. Rerun the suites your diff touches in the main checkout, then
-    remove the worktree and its branch.
-    Last, `bin/vendor-fingerprint check --here <vendor>`: your change can move what a facet reads (a
-    new cache field), and the event it records is yours to decide and close, never a new chat's.
+14. Commit on your branch in every worktree you changed. Last, `bin/vendor-fingerprint check --here
+    <vendor>` in your worktree (it waits for the shared lock): your change can move what a facet reads (a
+    new cache field), and the event it records is yours to decide and close, never a new run's.
 
 ## 4. Close — the completeness gate
 
@@ -128,23 +125,14 @@ nowhere. First update `docs/vendor-release-open.md` (a line per `blocked` or unp
 you proved or made moot deleted), and fail yourself if a capability claim has neither a schema/doc
 line nor an artifact, or an "observed" value came from our own config.
 
-## 5. Report — to Egor, in Russian, short
+## 5. Report — to the orchestrator, in English, short
 
 Per feature: integrated (where, which test), not applicable (why), blocked (what his word unlocks).
-What became automatic (hardcodes removed), every pin moved with its proof, what was poured into main
-(files) for the end-of-day pass, the one ask for generations (step 10's list). No session ids, diffs
-or transcripts.
+What became automatic (hardcodes removed), every pin moved with its proof, the commits as `repo@hash`,
+every `blocked-on-egor` line. No session ids, diffs or transcripts.
 
 ## 6. Night (`docs/night-run.md`)
 
-`bin/vendor-fingerprint request --night <night-id>` prints `<run>\t<brief>\t<worktree>` per vendor with
-a real waiting release (never a manual one): an updater fixer run, a brief beside the event, a worktree
-`.claude/worktrees/night-<night>-<vendor>` on branch `night/<night>/<vendor>`, and the same branch's
-worktrees in review-bench and claude-setup as the brief's `ADD-DIR:` lines. Every repository needs its
-`refs/night/<night>/base`; without it that worktree is not made. The day procedure holds except:
-- Step 14: commit on your branch in every worktree you changed; a change in a repository without one
-  is a handoff. No pour, push, merge or removal: the orchestrator reviews, rebases and pushes.
-  `check --here <vendor>` runs in your worktree, waiting for the shared lock.
-- Steps 3 and 4 start in parallel. A generation (step 10), or any step needing Egor's word, is decided
-  `blocked` with evidence `blocked-on-egor: <what his word unlocks>`; never wait for him.
-- The report is the brief's, in English, to the orchestrator; §5 is the day chat's.
+`bin/vendor-fingerprint request --night <night-id>` takes per vendor only its real waiting release (never
+a manual one), on branch `night/<night>/<vendor>` from `refs/night/<night>/base` in every repository;
+without that ref the worktree is not made. Steps 3 and 4 start in parallel.

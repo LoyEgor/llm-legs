@@ -1,12 +1,13 @@
 # Doctor fixer run
 
-One run of one doctor's fixer: by day a chat Egor's Fix button opened, at night a headless worker on
-one area (`docs/night-run.md`). Work autonomously and go deep. Updater release events follow
+One run of one doctor's fixer on one area: a headless worker the fix orchestrator dispatched
+(`docs/fix-orchestrator.md`), by day after Egor's Fix button, at night in `docs/night-run.md`. Work
+autonomously and go deep. Updater release events follow
 `docs/vendor-release.md`; shared shapes are in `docs/doctors-contract.md`.
 
 ## 0. Entry
 
-- Run `bin/doctor-fix show <run id>` (a night brief carries it). Per problem: the snapshot, its
+- Run `bin/doctor-fix show <run id>` (the brief carries it). Per problem: the snapshot, its
   ledger row, earlier runs' decisions, the component with its files and rule line, each file's first
   and last 5 commits, and the handoffs, invariant rows and memory files naming it. These ids are your
   scope; a problem that appeared after launch goes into the report for the next run.
@@ -64,21 +65,30 @@ job (your section says what it counts); never wait for it.
 
 ## 4. Ground rules
 
-- Work in a worktree per repository you change, per `~/.claude/docs/worktrees.md`. By day the
-  branch is `doctor-fix/<run id>`; at night see Night.
-  - By day, pour the result into main uncommitted, as `docs/vendor-release.md` §3 step 14 does.
-    Never revert, stash or overwrite someone else's uncommitted work. Never commit, push or review:
-    Egor's end-of-day pass does all three.
+- The brief (`<runs>/<id>.brief.md`) names your area, worktree and branch (`doctor-fix/<run id>` from main
+  by day, `night/<night-id>/<run id>` from `refs/night/<night>/base` at night: the run's `base`). Work only
+  there and in the `ADD-DIR:` worktrees at its top, one per other repository the components name (every
+  sweep repository for a run holding test speed or a log-audit reading), on the same branch and base. A
+  change in any other repository is a handoff. Never write a main checkout: hooks and other chats read it.
+- Commit on your branch (one long line). Never push, review or merge: the orchestrator checks the branch,
+  has you fix findings and lands it.
+- Never ask Egor anything and never stop on a question: decide, or hand off (§2).
+- Markdown is net zero: `close` refuses a worktree whose `*.md` bytes (committed, untracked, deleted) grew
+  since the base; cut stale lines (`~/.claude/docs/context-file-hygiene.md`).
 - Tests use fixtures only. Never point one at `~/.claude-profiles/.claudeb`, and never mutate the
   live Hammerspoon singleton.
 - A hook or gate change gets an adversarial edge-case critique (missed catches, false catches)
   before it counts as done. A worker's "done" is a claim: diff every test it changed against HEAD.
 - Comments near zero. Never generate an image.
+- No deadline ends a run. A worker the `worker-run` watchdog stopped for no progress is hung: the
+  orchestrator abandons its run, which closes no more, and its branch stays unlanded.
 
 ## 5. Close
 
-1. Rerun the doctor. By day, `bin/llm-doctor --quiet`, `bin/harness-doctor --quiet` or
-   `bin/updater-doctor --quiet` rewrites `latest.json`; at night close reruns it (see Night).
+1. Close, from the worktree, reruns `bin/<doctor>-doctor --json` there itself into
+   `<runs>/<id>.d/latest.json` (live journals, your branch's code and ledger, nothing shared written),
+   never the shared `latest.json`; the judge is compared with your branch's base, so a limit or
+   dismissal you changed shows.
 2. Write a decisions file with one line per problem id of the run:
    `id<TAB>fixed|ruled-out|weather|blind-spot|handoff<TAB>purpose<TAB>evidence`. `evidence` is a
    test name, a `file:line`, a document fact or a handoff path. If `judge` moved since launch, add
@@ -93,29 +103,8 @@ job (your section says what it counts); never wait for it.
 
 ## 6. Report
 
-By day to Egor in short Russian, at night to the orchestrator in English: per problem the verdict,
-one line of why and where it was fixed and tested; handoffs and blind spots added; what was poured
-(day) or committed as `repo@hash` (night). No session ids, diffs or transcripts.
-
-## Night
-
-The brief (`<runs>/<id>.brief.md`) names your area, worktree and branch `night/<night-id>/<run-id>`.
-It replaces the pour:
-- Work only in that worktree and the `ADD-DIR:` worktrees at the top of the brief: one per other
-  repository the components name (every sweep repository for a run holding test speed or a log-audit reading), on the same branch, started from that repository's
-  `refs/night/<night>/base` (main as pressed, uncommitted work included). A change in any other
-  repository is a handoff. Never write a main checkout: hooks and other chats read it.
-- Commit on your branch (one long line). Never push, review or merge: the orchestrator reviews the
-  branch, has you fix findings, rebases and pushes.
-- Never ask Egor anything and never stop on a question: decide, or hand off (§2).
-- Close from the worktree. It reruns `bin/<doctor>-doctor --json` there itself into
-  `<runs>/<id>.d/latest.json` (live journals, your branch's code and ledger, nothing shared written),
-  never the shared `latest.json` that launchd and other fixers rewrite. The judge is compared with
-  your branch's base, so a limit or dismissal you changed shows.
-- Markdown is net zero: `close` refuses a worktree whose `*.md` bytes (committed, untracked, deleted)
-  grew since `refs/night/<night>/base`; cut stale lines (`~/.claude/docs/context-file-hygiene.md`).
-- No deadline ends a run. A worker the `worker-run` watchdog stopped for no progress is hung: the
-  orchestrator abandons its run, which closes no more, and its branch stays unmerged.
+To the orchestrator, in English: per problem the verdict, one line of why and where it was fixed and
+tested; handoffs and blind spots added; the commits as `repo@hash`. No session ids, diffs or transcripts.
 
 ## Updater doctor
 
@@ -165,7 +154,7 @@ Never edit `in` by hand.
 `test_long_pole`, `test_daily_cost`, `test_slow`, `suites_at_once`, `test_hang` and `menu_build` are fixed by the
 run that holds them, never handed off: `close` refuses a `handoff` line for them. Test speed: split a
 long pole into independent suite files `tests/run-all` runs in parallel, cut redundant cases, make
-timing asserts load-robust, cache fixtures, in any sweep repository (a night run holding one gets a
+timing asserts load-robust, cache fixtures, in any sweep repository (a run holding one gets a
 worktree in each); every assert keeps its coverage. A hung suite (`test_hang`) is the same: fix why it
 blocks (stdin from /dev/null, a timeout on a waiting child, a tty probe) until the doctor reads no
 `test_hang` row for it. Menu delays: the packet names the menu's build
@@ -175,7 +164,7 @@ files (`hammerspoon/automation_menu.lua`, `llm-legs/hammerspoon/llm-limits.lua`)
 
 A `speed-<lever>` run holds one row of the Speed block (a regression or a chosen `opportunity:`), or
 the rows sharing a component file; each carries its lever, saving and proof in `opportunity` and
-`docs/speed-doctor-design.md` §5 bounds what may change. Never touch a model, effort or thinking knob: a night `close` refuses any such added or
+`docs/speed-doctor-design.md` §5 bounds what may change. Never touch a model, effort or thinking knob: `close` refuses any such added or
 removed line and names it (`docs/doctors-contract.md` §4).
 
 ### Spend: same result, fewer tokens
@@ -301,13 +290,11 @@ refuses it, its snapshot is empty, `check` fails): its problems are for Egor to 
 
 ### Recompute and prove
 - `bin/code-doctor refresh` reindexes and recomputes; `bin/code-doctor check <record> --base
-  refs/night/<night>/base` is the proof close runs: a deletion names a judged unit with no live entry
+  <base>` is the proof close runs: a deletion names a judged unit with no live entry
   point, no rollup hits and a quoted reason. Run the suites of every repository you touched; the
-  orchestrator lands the job with `night-run job set … state=merged suites=passed`, which reruns the
-  check against main as it is then.
-  The check reads the run's own snapshot, never the live document; a run whose worktree is gone fails it,
-  and a day run (no worktree) is checked over main's commits since its launch.
-- A unit that changed since the night base is not yours: its verdict went back to the judge.
+  orchestrator's `worktree land --suites-passed` reruns the check against main as it is then.
+  The check reads the run's own snapshot, never the live document; a run whose worktree is gone fails it.
+- A unit that changed since the base is not yours: its verdict went back to the judge.
 - After a landed cleanup, `bin/code-doctor record-fix <cause> --by <run id> --files … --lines-removed N`
   (plus `--mechanism`, `--canonical`, `--replaced` when one module now owns the job), so the doctor
   reads it `fixed-pending`, counts the yield, and review-bench's fit lens learns the canonical module.

@@ -118,7 +118,19 @@ codex_cache "$HOME/.codex-profiles/a" 0.156.1 \
 # The ChatGPT app's older codex wrote this home: its list is not the installed client's.
 codex_cache "$HOME/.codex" 0.154.0 '[{"slug":"gpt-5.6-sol"}]'
 
-SCRIPT="$ROOT/bin/vendor-fingerprint"
+# Day requests make worktrees in the script's repository: a fixture one, never this checkout.
+fixture_repo() { # dir
+  mkdir -p "$1/bin" "$1/share" "$1/docs"
+  cp "$ROOT/bin/vendor-fingerprint" "$ROOT/bin/doctor-fix" "$1/bin/"
+  cp "$ROOT"/share/{chat-open.sh,worktree.sh,store-lock.sh,test-scope.sh,report_frame.py,doctor-areas.json,fix_commit.py,spend.py,knobs.py} "$1/share/"
+  cp "$ROOT/docs/vendor-release.md" "$1/docs/"
+  git -C "$1" init -q -b main
+  git -C "$1" add -A
+  git -C "$1" -c user.name=t -c user.email=t@t commit -qm base
+}
+DREPO="$WORK/day-repo"
+fixture_repo "$DREPO"
+SCRIPT="$DREPO/bin/vendor-fingerprint"
 check() { bash "$SCRIPT" check "$@"; }
 quiet() { "$@" 2>/dev/null; }
 events() { find "$EVENTS" -name '*.json' 2>/dev/null | wc -l | tr -d ' '; }
@@ -191,22 +203,31 @@ assert [ "$(field '.substantive | join(",")')" = ids ]
 assert grep -qxF '+grok-imagine-image-3.0' "$EVENTS/$fid.diff"
 assert [ ! -s "$OPENED" ]
 assert [ "$(field '.launched_at == null')" = true ]
-# Egor's request takes the vendor's waiting release event and opens one integration chat on the strong
-# model, in this repository, through the shared opener, and records it as a fixer run of doctor updater.
+# Egor's request takes the vendor's waiting release event into its own fixer run of doctor updater, a
+# worktree off main and a brief, as a night does, then opens one orchestrator chat on the strong model,
+# in this repository, through the shared opener.
 id=$(bash "$SCRIPT" request grok | head -n 1)
 assert [ "$id" = "$fid" ]
-assert [ "$(cat "$OPENED")" = "$EVENTS/$id.command" ]
-assert grep -qxF "cd $(printf '%q' "$ROOT") || exit 1" "$EVENTS/$id.command"
-launch_sid=$(sed -n 's/.* --session-id \([^ ]*\) .*/\1/p' "$EVENTS/$id.command")
-assert grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' <<<"$launch_sid"
-assert grep -qF -- "exec $FAKE_BIN/claudeb profile acct-b --session-id $launch_sid --model opus --effort high Vendor\\ release\\ event\\ $id:\\ read\\ $ROOT/docs/vendor-release.md" "$EVENTS/$id.command"
-# The chat it opens gets no chat pin: vendors are Egor's worker switches, never a launch default.
-assert [ "$(grep -c 'chat-pin' "$EVENTS/$id.command")" = 0 ]
-assert jqe '.launched_at != null' "$EVENTS/$id.json"
 run=$(jq -r .run "$EVENTS/$id.json")
-assert jqe --arg id "$id" --arg s "$launch_sid" --arg c "$EVENTS/$id.command" '.doctor == "updater" and .launched_at != null
+tree="$DREPO/.claude/worktrees/vendor-$id"
+assert [ "$(cat "$EVENTS/$run.lines")" = "$run	$EVENTS/$id.brief.md	$tree" ]
+assert [ "$(git -C "$tree" rev-parse --abbrev-ref HEAD)" = "vendor/$id" ]
+assert [ "$(git -C "$tree" rev-parse HEAD)" = "$(git -C "$DREPO" rev-parse main)" ]
+assert [ "$(head -n 1 "$EVENTS/$id.brief.md")" = "ROUND: none" ]
+assert grep -qxF "Vendor release events of grok:" "$EVENTS/$id.brief.md"
+assert grep -qF "Working directory: $tree, the llm-legs worktree on branch vendor/$id." "$EVENTS/$id.brief.md"
+assert_fails grep -qi 'night' "$EVENTS/$id.brief.md"
+assert [ "$(cat "$OPENED")" = "$EVENTS/$run.command" ]
+assert grep -qxF "cd $(printf '%q' "$DREPO") || exit 1" "$EVENTS/$run.command"
+launch_sid=$(sed -n 's/.* --session-id \([^ ]*\) .*/\1/p' "$EVENTS/$run.command")
+assert grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' <<<"$launch_sid"
+assert grep -qF -- "exec $FAKE_BIN/claudeb profile acct-b --session-id $launch_sid --model opus --effort high Fix\\ orchestrator:\\ read\\ $DREPO/docs/fix-orchestrator.md\\ in\\ full\\ and\\ follow\\ it\\ for\\ the\\ runs\\ in\\ $EVENTS/$run.lines." "$EVENTS/$run.command"
+# The chat it opens gets no chat pin: vendors are Egor's worker switches, never a launch default.
+assert [ "$(grep -c 'chat-pin' "$EVENTS/$run.command")" = 0 ]
+assert jqe '.launched_at != null and .launched == "day" and .night == null' "$EVENTS/$id.json"
+assert jqe --arg id "$id" --arg s "$launch_sid" --arg c "$EVENTS/$run.command" --arg w "$tree" '.doctor == "updater" and .launched_at != null
   and .closed_at == null and .account == "acct-b" and .session == $s and .command == $c and .judge_at_launch == "u1"
-  and (.problems | map(.id)) == [$id]' "$RUNS/$run.json"
+  and .night == null and .branch == "vendor/\($id)" and .worktrees == [$w] and (.problems | map(.id)) == [$id]' "$RUNS/$run.json"
 check
 assert [ "$(wc -l <"$OPENED" | tr -d ' ')" = 1 ]
 assert [ ! -e "$EVENTS/$fid.base" ]
@@ -214,9 +235,7 @@ taken
 # The account is a chat's, asked past the workers switch; and launchd's PATH carries no repo bin, so
 # the picker is the one beside the script.
 assert grep -qxF -- '--account claudeb --role chat --model opus --claim' "$DATA/pick-args"
-mkdir -p "$WORK/repo/bin" "$WORK/repo/share"
-cp "$SCRIPT" "$WORK/repo/bin/vendor-fingerprint"
-cp "$ROOT/share/chat-open.sh" "$ROOT/share/worktree.sh" "$WORK/repo/share/"
+fixture_repo "$WORK/repo"
 printf '#!/usr/bin/env bash\nprintf "repo-acct\\n"\n' >"$WORK/repo/bin/worker-pick"
 chmod +x "$WORK/repo/bin/worker-pick"
 : >"$OPENED"
@@ -416,8 +435,9 @@ assert [ "$(jq -r .vendor "$EVENTS/$unrequested.json")" = gemini ]
 rm "$DATA/opener-fails"
 check
 check
-assert [ "$(cat "$OPENED")" = "$EVENTS/$retry.command" ]
+assert [ "$(cat "$OPENED")" = "$EVENTS/$(jq -r .run "$EVENTS/$retry.json").command" ]
 assert jqe '.launched_at != null and .run != null' "$EVENTS/$retry.json"
+assert [ "$(jq -s --arg e "$retry" '[.[] | select(.problems[0].id == $e) | .failed_at != null] | sort' "$RUNS"/updater-*.json | jq -c .)" = '[false,true,true]' ]
 assert jqe '.launched_at == null' "$EVENTS/$unrequested.json"
 taken
 
@@ -456,7 +476,7 @@ assert grep -qxF "$id" <(bash "$SCRIPT" events --all | cut -f1)
 mv "$FAKE_BIN/grok" "$HOME/.nvm/versions/node/v24.0.0/bin/grok"
 manual=$(bash "$SCRIPT" request grok 'catch up' | head -n 1)
 assert [ "$(jq -r '"\(.status) \(.reason) \(.to)"' "$EVENTS/$manual.json")" = "open manual request: catch up 1.0.41" ]
-assert [ "$(cat "$OPENED")" = "$EVENTS/$manual.command" ]
+assert [ "$(cat "$OPENED")" = "$EVENTS/$(jq -r .run "$EVENTS/$manual.json").command" ]
 # Inside a chat already doing the pass, --here records it without opening another. A manual event's
 # diff is the vendor's whole fingerprint, so it never closes on its note alone.
 : >"$OPENED"
@@ -548,52 +568,51 @@ rm "$DATA/opener-fails"
 VENDOR_FINGERPRINT_HOLD=1 bash "$SCRIPT" check
 assert [ ! -s "$OPENED" ]
 assert jqe '.launched_at == null' "$EVENTS/$manual.json"
-# Egor's update word: every vendor in one chat now — the waiting events carry their vendors' passes,
-# each other vendor gets a manual one — recorded as one fixer run.
+# Egor's update word: every vendor now — the waiting events carry their vendors' passes, each other
+# vendor gets a manual one — a fixer run per vendor, all in one orchestrator chat.
 bash "$SCRIPT" request --all "update word" >"$WORK/all-ids"
 assert [ "$(xargs -I{} jq -r .vendor "$EVENTS/{}.json" <"$WORK/all-ids" | sort -u | xargs)" = "claude codex gemini grok" ]
 for waiting_id in "$grok_id" "$claude_id" "$manual"; do assert grep -qxF "$waiting_id" "$WORK/all-ids"; done
 assert [ "$(wc -l <"$OPENED" | tr -d ' ')" = 1 ]
-assert [ "$(cat "$OPENED")" = "$EVENTS/$claude_id.command" ]
-/usr/bin/grep '^exec ' "$EVENTS/$claude_id.command" | /usr/bin/grep -F "events\\ $claude_id" >"$WORK/batch-line"
-assert grep -qF "\\ $grok_id:\\ read" "$WORK/batch-line"
-assert grep -qF 'for\ each\ event\ in\ turn' "$WORK/batch-line"
+OPENED_CMD=$(cat "$OPENED")
+lines="${OPENED_CMD%.command}.lines"
+assert [ "$(wc -l <"$lines" | tr -d ' ')" = 4 ]
+assert [ "$(cut -f1 "$lines" | sort -u | wc -l | tr -d ' ')" = 4 ]
+assert [ "$(xargs -I{} jq -r .run "$EVENTS/{}.json" <"$WORK/all-ids" | sort)" = "$(cut -f1 "$lines" | sort)" ]
+grok_run=$(jq -r .run "$EVENTS/$grok_id.json")
+assert grep -qxF "$grok_run	$EVENTS/$grok_id.brief.md	$DREPO/.claude/worktrees/vendor-$grok_id" "$lines"
+assert grep -qF "bin/vendor-fingerprint show $grok_id" "$EVENTS/$grok_id.brief.md"
+assert grep -qF 'per event in turn' "$EVENTS/$grok_id.brief.md"
 assert [ "$(xargs -I{} jq -r '.launched_at != null' "$EVENTS/{}.json" <"$WORK/all-ids" | sort -u)" = true ]
 assert [ "$(ls "$EVENTS"/*.base 2>/dev/null | wc -l | tr -d ' ')" = 0 ]
-run=$(jq -r .run "$EVENTS/$claude_id.json")
-assert [ "$(xargs -I{} jq -r .run "$EVENTS/{}.json" <"$WORK/all-ids" | sort -u)" = "$run" ]
-jq -R . "$WORK/all-ids" | jq -s . >"$WORK/all-ids.json"
-assert jqe --slurpfile ids "$WORK/all-ids.json" '.doctor == "updater" and (.problems | map(.id)) == $ids[0] and .closed_at == null' "$RUNS/$run.json"
-# The run closes with its last event, one decision line per event, past a decisions array a killed close left.
+while IFS=$'\t' read -r run _; do
+  assert jqe --arg c "$OPENED_CMD" '.doctor == "updater" and .closed_at == null and .command == $c and (.problems | length) == 1' "$RUNS/$run.json"
+done <"$lines"
+# Each run closes with its event, one decision line per event, past a decisions array a killed close left;
+# the others stay open meanwhile.
 printf '[{"id":"stale"}]\n' >"$EVENTS/updater-release-stale.decisions.json"
-n=$(wc -l <"$WORK/all-ids" | tr -d ' ')
-i=0
+open=4
 while IFS= read -r event_id; do
-  i=$((i + 1))
+  run=$(jq -r .run "$EVENTS/$event_id.json")
   awk '/^### / { f = substr($0, 5); next } $0 == "--- before" || $0 == "+++ after" { next }
     /^[+-]/ { l = $0; if (index(l, "\t")) l = substr(l, 1, index(l, "\t") - 1) "*"
       print f "\t" l "\tintegrated\tdocs/vendor-release.md\ttests/test_x.sh" }' "$EVENTS/$event_id.diff" >"$WORK/decide"
   bash "$SCRIPT" close "$event_id" --decisions "$WORK/decide" "done $event_id" </dev/null || fail "close $event_id failed"
-  [ "$i" = "$n" ] || assert jqe '.closed_at == null and .decisions == []' "$RUNS/$run.json"
+  open=$((open - 1))
+  assert jqe --arg e "$event_id" '.closed_at != null and .judge_at_close == "u1" and (.decisions | map(.id)) == [$e]' "$RUNS/$run.json"
+  assert [ "$(cut -f1 "$lines" | xargs -I{} jq -r 'select(.closed_at == null) | .id' "$RUNS/{}.json" | wc -l | tr -d ' ')" = "$open" ]
 done <"$WORK/all-ids"
-assert jqe --slurpfile ids "$WORK/all-ids.json" '.closed_at != null and .judge_at_close == "u1" and (.decisions | map(.id)) == $ids[0]' "$RUNS/$run.json"
 assert [ "$(ls "$EVENTS" | grep -c 'decisions')" = 1 ]
 rm "$EVENTS/updater-release-stale.decisions.json"
 assert jqe --arg g "$grok_id" '.decisions[] | select(.id == $g) | .verdict == "integrated" and .purpose == "docs/vendor-release.md"
-  and (.evidence | startswith("2 decision rows: 2 integrated, 0 not-applicable, 0 blocked · done "))' "$RUNS/$run.json"
-assert jqe --arg m "$manual" '.decisions[] | select(.id == $m) | .verdict == "integrated" and .purpose == "docs/vendor-release.md"' "$RUNS/$run.json"
-assert jqe --arg g "$grok_id" '.note | contains("\($g): done \($g)")' "$RUNS/$run.json"
+  and (.evidence | startswith("2 decision rows: 2 integrated, 0 not-applicable, 0 blocked · done "))' "$RUNS/$grok_run.json"
+assert jqe --arg m "$manual" '.decisions[] | select(.id == $m) | .verdict == "integrated" and .purpose == "docs/vendor-release.md"' "$RUNS/$(jq -r .run "$EVENTS/$manual.json").json"
+assert jqe --arg g "$grok_id" '.note | contains("\($g): done \($g)")' "$RUNS/$grok_run.json"
 
 # Night: each vendor with a real waiting release gets its own worktree, branch and brief; a manual
 # request waiting beside it is left for the day, and no chat opens.
 NREPO="$WORK/night-repo"
-mkdir -p "$NREPO/bin" "$NREPO/share" "$NREPO/docs"
-cp "$SCRIPT" "$ROOT/bin/doctor-fix" "$NREPO/bin/"
-cp "$ROOT"/share/{chat-open.sh,worktree.sh,store-lock.sh,test-scope.sh,report_frame.py,doctor-areas.json,fix_commit.py,spend.py,knobs.py} "$NREPO/share/"
-cp "$ROOT/docs/vendor-release.md" "$NREPO/docs/"
-git -C "$NREPO" init -q
-git -C "$NREPO" add -A
-git -C "$NREPO" -c user.name=t -c user.email=t@t commit -qm base
+fixture_repo "$NREPO"
 night() { bash "$NREPO/bin/vendor-fingerprint" request --night "$@"; }
 : >"$OPENED"
 assert night N0 >"$WORK/night0"
@@ -693,4 +712,4 @@ codex_cache "$HOME/.codex-profiles/z" "$v" '[1]'
 bash "$SCRIPT" snapshot codex >"$WORK/broken.json"
 assert jqe '(.facets | has("catalog") | not) and ([.failed[] | select(.facet == "catalog")] == [{facet: "catalog", where: "local"}])' "$WORK/broken.json"
 
-echo "PASS: $asserts asserts; baseline, version-only releases close themselves, new ids/catalog fields/docs/help/newly lagging installs/divergence open an event each, an install catching up, still lagging or ahead of the primary closes itself, prompts and foreign clients are informational, unreadable facets keep their value, broken local probes are reported, manual requests, close, lock, check --here, no chat from check for a waiting event however old, a failed manual request retried by check, waiting events joined and reverts closed, every vendor in one chat on request --all, each chat a fixer run of doctor updater that closes with its last event, a request taking its vendor's waiting event, manual diffs that carry the whole fingerprint, decision purposes judged by doctor-fix, a bounded lock wait for check --here, one worktree, branch, brief and updater fixer run (the printed ref) per vendor on request --night and none without a base ref, a codex catalog merge across homes whose field shapes differ, a failed merge reported as a broken probe, a night request under the check lock, and purposes that cannot be judged holding the close"
+echo "PASS: $asserts asserts; baseline, version-only releases close themselves, new ids/catalog fields/docs/help/newly lagging installs/divergence open an event each, an install catching up, still lagging or ahead of the primary closes itself, prompts and foreign clients are informational, unreadable facets keep their value, broken local probes are reported, manual requests, close, lock, check --here, no chat from check for a waiting event however old, a failed manual request retried by check, waiting events joined and reverts closed, day requests as per-vendor fixer runs of doctor updater (worktree off main, brief) dispatched by one orchestrator chat, every vendor in that chat on request --all, each run closing with its event, a failed chat failing its run, a request taking its vendor's waiting event, manual diffs that carry the whole fingerprint, decision purposes judged by doctor-fix, a bounded lock wait for check --here, one worktree, branch, brief and updater fixer run (the printed ref) per vendor on request --night and none without a base ref, a codex catalog merge across homes whose field shapes differ, a failed merge reported as a broken probe, a night request under the check lock, and purposes that cannot be judged holding the close"

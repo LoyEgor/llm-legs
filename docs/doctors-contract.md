@@ -184,11 +184,12 @@ never builds the detector in a fix run: that is the doctor owner's work.
 `bin/doctor-fix` keeps one record per run in `${DOCTORS_DIR:-~/.cache/doctors}/runs/<id>.json`, the
 id being `<doctor>-<area>-<UTC %Y%m%dT%H%M%SZ>-<4 hex>`, unique under parallel launch. Every
 read-modify-write holds the runs directory's lock (`share/store-lock.sh`). Fields:
-- `id`, `doctor`, `area` (`all` for a day run, `release` for a vendor-fingerprint run), `night` or null;
+- `id`, `doctor`, `area` (`all` for an old day run, `release` for a vendor-fingerprint run), `night` or null;
 - `created_at`, `launched_at`, `closed_at`, `abandoned_at`, `failed_at`: ISO UTC, or null. A run is
   closed, abandoned, failed (with its `note`) or open; a launch never leaves it in between;
-- `account`, `session`, `command`: the day chat's Claude account, session and command file;
-- `branch`, `worktrees`: a night run's `night/<night>/<id>` and its worktree paths;
+- `account`, `session`, `command`: a day run's orchestrator chat's Claude account, session and command file;
+- `branch`, `base`, `worktrees`: `night/<night>/<id>` from `refs/night/<night>/base` at night, `doctor-fix/<id>`
+  from `refs/doctor-fix/<id>/base` (main at launch) by day, and its worktree paths;
 - `judge_at_launch`, `judge_at_close`: the doctor document's `judge` (a night run's from its branch
   base), or null;
 - `problems`: `[{id, state, fact, rule, ledger, area, component: {what, files, rule_at}}]`, the
@@ -196,7 +197,7 @@ read-modify-write holds the runs directory's lock (`share/store-lock.sh`). Field
 - `quiet`: the same shape with state `quiet`: the ledger's `open` rows no problem of the document
   names (its window did not see them), assigned to areas like problems; they need no decision line;
 - `decisions`: `[{id, verdict, purpose, evidence}]`;
-- `knobs_at_launch` (a Harness night run): `{path: [lines]}`, the model, effort and thinking lines of
+- `knobs_at_launch` (a Harness or System run): `{path: [lines]}`, the model, effort and thinking lines of
   the live settings and worker-model files at launch;
 - `note`.
 
@@ -225,16 +226,14 @@ The menu reads `doctor-fix runs [doctor] [--open] [--json]` (newest first) to sh
 · closed / still open". `doctor-fix show <id>` prints the run and, per problem, the packet: its
 ledger row, earlier decisions on the id, the component and its git history, and the handoffs,
 invariant rows and memory files naming it. Launch:
-- `launch llm|harness|code|system`: the day chat. Refused when the document's `contract` is not 1 or it is
-  older than 2 h, when it reads `ok` with no problem and no quiet open row, or while a run of that doctor opened less than
-  12 h ago is open; an older open run is marked `abandoned_at`. The chat opens through
-  `share/chat-open.sh` on `docs/doctor-fix.md`.
-- `launch llm|harness|updater|code|system --night <night-id>`: no chat. Per area with problems or quiet rows and no open run
-  of (doctor, area), a record, a worktree `<repo>/.claude/worktrees/night-<night>-<id>` on its branch,
-  and `<runs>/<id>.brief.md`; one line `<id>\t<brief>\t<worktree>` each. Nothing to do prints
-  nothing, but a harness night whose Speed section selects nothing first prints `harness: Speed selects nothing:
+- `launch llm|harness|updater|code|system [--night <night-id>]`: per area with problems or quiet rows and no open run
+  of (doctor, area) opened less than 12 h ago (an older one is marked `abandoned_at`), a record, a worktree
+  `<repo>/.claude/worktrees/<branch, / -> ->` and `<runs>/<id>.brief.md`; one line `<id>\t<brief>\t<worktree>` each.
+  Refused when the document's `contract` is not 1 or it is older than 2 h. By day (not `updater`) it then
+  opens one orchestrator chat on those lines (`orchestrate <lines>`, `docs/fix-orchestrator.md`; no chat fails the runs and drops their worktrees) and refuses
+  nothing to fix; at night nothing to do prints nothing, but a harness night whose Speed section selects nothing first prints `harness: Speed selects nothing:
   <why_none>` on stderr; a failed worktree or brief fails its run and the exit status.
-- `launch updater`: runs `vendor-cli-update now`. Every chat `vendor-fingerprint` opens writes its
+- `launch updater`: runs `vendor-cli-update now`. Every per-vendor run `vendor-fingerprint` makes writes its
   record through `doctor-fix record updater` (area `release`): `problems` are the event ids, and each
   event's `run` names the record. It closes through `record-close` when `vendor-fingerprint close`
   closes the last of its events, one decision per event (`verdict` integrated, not-applicable,
@@ -243,8 +242,8 @@ invariant rows and memory files naming it. Launch:
 - `abandon <id> [--reason TEXT]`: the deadline's verb; a closed run refuses it.
 
 `doctor-fix close <id> --decisions <file> [--doc <document>] <note>` closes any other run:
-- A night run needs `--doc`, a run-local contract-1 document of its doctor (never the shared
-  `latest.json`); a day run defaults to the shared one. It refuses until that document's `as_of` is
+- A run with a worktree reruns its doctor there into a run-local document (never the shared
+  `latest.json`); an old day run without one reads the shared one. It refuses until that document's `as_of` is
   later than `launched_at`, and it refuses an abandoned or failed run.
 - The file has one line per problem id of the snapshot:
   `id<TAB>fixed|ruled-out|weather|blind-spot|handoff<TAB>purpose<TAB>evidence`. `purpose` says where
@@ -257,10 +256,10 @@ invariant rows and memory files naming it. Launch:
   touching the doctor's code or ledger.
 - It refuses while any line is undecided or unresolvable, listing every one, the same gate as
   `vendor-fingerprint close`. `doctor-fix touches <record> <id> <purpose>` exposes the purpose rule.
-- A Code run also refuses while `bin/code-doctor check <record> --base refs/night/<night>/base`
-  prints a line (§6).
-- A Harness night run also refuses every added or removed line that sets a model, effort or thinking
-  knob (`KNOBS` in `share/knobs.py`): in its worktrees against `refs/night/<night>/base`, committed,
+- Every worktree's `*.md` bytes must not have grown since the run's `base`.
+- A Code run also refuses while `bin/code-doctor check <record> --base <base>` prints a line (§6).
+- A Harness or System run also refuses every added or removed line that sets a model, effort or thinking
+  knob (`KNOBS` in `share/knobs.py`): in its worktrees against its `base`, committed,
   uncommitted or untracked, and in the live settings and worker-model files against
   `knobs_at_launch`. Sites: settings `model`, `effortLevel`, `alwaysThinkingEnabled`,
   `MAX_THINKING_TOKENS`, `modelSettings`; `worker-model`; the `share/worker-model.sh` table;

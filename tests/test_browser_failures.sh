@@ -437,15 +437,18 @@ assert jq -e '[.problems[] | select(.id | test("codex-image|walled"))] == []' "$
 
 # The fixer of a browser word is sent to the engine that drives the page, not to the leg recorder.
 export DOCTORS_DIR="$WORK/doctors" DOCTOR_FIX_PROJECTS="$WORK/projects" LLM_DOCTOR_REPOS="$WORK/projects" \
-  DOCTOR_FIX_OPENER="$WORK/bin/opener" DOCTOR_FIX_WORKER_PICK="$WORK/bin/worker-pick" DOCTOR_FIX_DOCS="$WORK/docs"
-mkdir -p "$WORK/projects" "$WORK/docs/handoffs" "$LLM_DOCTOR_DIR"
+  DOCTOR_FIX_OPENER="$WORK/bin/opener" DOCTOR_FIX_WORKER_PICK="$WORK/bin/worker-pick" DOCTOR_FIX_DOCS="$WORK/docs" \
+  DOCTOR_FIX_WORKTREE_REPO="$WORK/projects/llm-legs"
+mkdir -p "$WORK/projects/llm-legs" "$WORK/docs/handoffs" "$LLM_DOCTOR_DIR"
+git -C "$WORK/projects/llm-legs" init -q -b main
+git -C "$WORK/projects/llm-legs" -c user.name=t -c user.email=t@t commit -q --allow-empty -m base
 printf '#!/usr/bin/env bash\nexit 0\n' >"$WORK/bin/opener"
 printf '#!/usr/bin/env bash\nprintf "acct-b\\n"\n' >"$WORK/bin/worker-pick"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$WORK/bin/claudeb"
 chmod +x "$WORK/bin/opener" "$WORK/bin/worker-pick" "$WORK/bin/claudeb"
 jq '.as_of_s = (now | floor) | .contract = 1' "$WORK/doc.json" >"$LLM_DOCTOR_DIR/latest.json"
 assert bash "$ROOT/bin/doctor-fix" launch llm >"$WORK/fix.out"
-run=$(sed -n 's/^llm fixer opened: run \(llm-[a-z]*-[0-9TZ]*-[0-9a-f]*\),.*/\1/p' "$WORK/fix.out")
+run=$(awk -F'\t' '$1 ~ /^llm-image-/ { print $1 }' "$WORK/fix.out")
 assert test -n "$run"
 assert jq -e --arg p "$WORK/projects" '.problems[] | select(.id == "leg-failure:image/browser upload") | .component
   | .files == ([$p + "/llm-legs/share/chatgpt_web.py", $p + "/llm-legs/share/flow_music.py", $p + "/llm-legs/share/gemini_music.py", $p + "/llm-legs/share/gemini_web.py", $p + "/llm-legs/share/image-leg.sh"])

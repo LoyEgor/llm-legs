@@ -328,7 +328,7 @@ assert [ "$(tail -n 2 "$CALLS" | head -n 1 | cut -d' ' -f1-4)" = "fingerprint re
 assert [ "$(tail -n 1 "$CALLS")" = "doctor --quiet" ]
 # The request probes each CLI's --version, so it gets the npm bin dirs the check got.
 assert [ "$(tail -n 2 "$CALLS" | head -n 1 | sed 's/.*PATH=//')" = "$PATH:$FAKE_BIN:$FAKE_BIN:$FAKE_BIN" ]
-# A lock held past lockf's 900s means no pass ran: no integration chat for CLIs nobody updated.
+# A lock held past lockf's 900s means no pass ran: no orchestrator chat for CLIs nobody updated.
 : >"$CALLS"
 printf '#!/usr/bin/env bash\ncase "$*" in *run.lock*) exit 75 ;; esac\nexec /usr/bin/lockf "$@"\n' >"$FAKE_BIN/lockf"
 chmod +x "$FAKE_BIN/lockf"
@@ -340,7 +340,7 @@ assert grep -qF 'another run held the lock' "$LOG"
 assert grep -qF 'vendor update started' <(bash "$SCRIPT" now)
 for _ in $(seq 1 50); do grep -qF 'request --all' "$CALLS" && break; sleep 0.2; done
 assert grep -qF 'fingerprint request --all' "$CALLS"
-# A second click during the detached pass starts no second pass and no second integration chat.
+# A second click during the detached pass starts no second pass and no second orchestrator chat.
 for _ in $(seq 1 50); do lockf -k -t 0 "$HOME/.cache/vendor-cli-update/manual.lock" true 2>/dev/null && break; sleep 0.2; done
 lockf -k "$HOME/.cache/vendor-cli-update/manual.lock" sleep 30 &
 HOLDER=$!
@@ -356,13 +356,13 @@ kill "$HOLDER" 2>/dev/null
 wait "$HOLDER" 2>/dev/null
 HOLDER=""
 
-# Night prep: the same pass in the foreground, no integration chat, so `request --night` still finds the events.
+# Night prep: the same pass in the foreground, no orchestrator chat, so `request --night` still finds the events.
 : >"$CALLS"
 bash "$SCRIPT" now --night
 assert grep -qE '^fingerprint check HOLD=1 ' "$CALLS"
 assert_fails grep -qF 'fingerprint request' "$CALLS"
 assert [ "$(tail -n 1 "$CALLS")" = "doctor --quiet" ]
-assert grep -qF 'night update: pass done, no integration chat' "$LOG"
+assert grep -qF 'night update: pass done, no orchestrator chat' "$LOG"
 
 # launchd's `run --if-due` every half hour: nothing while every vendor is current and checked within a
 # day; a busy or failed vendor alone is retried, and only an update brings the rest of the pass.

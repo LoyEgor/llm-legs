@@ -32,6 +32,7 @@ JQ_EPOCH='def epoch: if type == "number" then . elif type == "string" then
   else null end;'
 JQ_OPEN='def open: .closed_at == null and .abandoned_at == null and .failed_at == null;'
 JQ_AREA='def area: .area // (if .doctor == "updater" then "release" else "all" end);'
+JQ_BASE='def base: .base // (if .night then "refs/night/\(.night)/base" else null end);'
 JQ_COUNTS='"\(.problems | length) problems" + (if (.quiet // []) | length > 0 then " · \(.quiet | length) known, quiet" else "" end)'
 TEST_SPEED_RULES=' test_long_pole test_daily_cost test_slow suites_at_once '
 TEST_FIX_RULES="$TEST_SPEED_RULES test_hang "
@@ -108,7 +109,7 @@ new_record() { # doctor area night (locked) -> id
   jq -n --arg id "$id" --arg doctor "$1" --arg area "$2" --arg night "$3" --arg t "$(stamp)" \
     '{id: $id, doctor: $doctor, area: $area, night: (if $night == "" then null else $night end), created_at: $t,
       launched_at: null, closed_at: null, abandoned_at: null, failed_at: null, account: null, session: null,
-      command: null, branch: null, worktrees: [], judge_at_launch: null, judge_at_close: null,
+      command: null, branch: null, base: null, worktrees: [], judge_at_launch: null, judge_at_close: null,
       problems: [], quiet: [], decisions: [], note: null}' >"$tmp" && mv -f "$tmp" "$file" || { rm -f "$tmp" "$file"; return 1; }
   printf '%s\n' "$id"
 }
@@ -557,13 +558,13 @@ def knob_lines():
 
 
 def knobs(record_file):
-    """Lines of the run that set a model, effort or thinking knob: its worktrees against the night base (untracked
+    """Lines of the run that set a model, effort or thinking knob: its worktrees against the base of the run (untracked
     files count as added); the live settings and worker-model files against their lines at launch only as notes, since
     a /model or effort change by Egor lands there too and no record says who wrote it."""
     record = read_json(record_file, {})
-    base = "refs/night/%s/base" % record.get("night")
+    base = record.get("base") or ("refs/night/%s/base" % record["night"] if record.get("night") else None)
     hits = []
-    for tree in strings(record.get("worktrees")):
+    for tree in strings(record.get("worktrees")) if base else ():
         name = os.path.basename(os.path.dirname("".join(git(tree, "rev-parse", "--path-format=absolute", "--git-common-dir"))))
         hits += [(knob_site(path, line[1:]), "%s/%s:%d" % (name, path, number), line)
                  for path, number, line in changed_lines(tree, base)]
@@ -652,30 +653,41 @@ claim_run() { # doctor area night problems-file -> id; refuses (exit 3) while an
   printf '%s\n' "$id"
 }
 
-launch_day() { # llm|harness|code|system
-  local doctor=$1 id prompt opened account session n count
-  count=$(check_doc "$doctor") || exit 1
-  py snapshot "$doctor" "$(doc_path "$doctor")" >"$runs_dir/.$$.problems" || die "cannot snapshot the $doctor doctor"
-  [ "$count" != none ] || [ "$(jq 'map(select(.state == "quiet")) | length' "$runs_dir/.$$.problems")" != 0 ] ||
-    { rm -f "$runs_dir/.$$.problems"; die "nothing to fix: the $doctor doctor reads ok with 0 problems and no quiet open ledger row."; }
-  [ "$(jq length "$runs_dir/.$$.problems")" != 0 ] ||
-    { rm -f "$runs_dir/.$$.problems"; die "nothing to fix: every $doctor doctor problem is held back (needs Egor, under active work or over its budget)."; }
-  id=$(locked claim_run "$doctor" all '' "$runs_dir/.$$.problems") || { rm -f "$runs_dir/.$$.problems"; exit 1; }
-  rm -f "$runs_dir/.$$.problems"
-  pending_id=$id
-  prompt="Doctor fixer run $id: read $repo_root/docs/doctor-fix.md in full and follow it for this run."
+launch_day() { # llm|harness|code|system -> the night's runs off main, then one orchestrator chat dispatching them
+  local doctor=$1 lines="$runs_dir/.$$.lines" first
+  launch_runs "$doctor" '' >"$lines"
+  [ -s "$lines" ] || { rm -f "$lines"; exit 1; }
+  first=$(head -n 1 "$lines" | cut -f1)
+  mv -f "$lines" "$runs_dir/$first.lines" || die "cannot write $runs_dir/$first.lines"
+  orchestrate "$runs_dir/$first.lines" || die "the $doctor fixer did not open"
+  printf '%s fixer opened: %s runs in one orchestrator chat\n' "$doctor" "$(wc -l <"$runs_dir/$first.lines" | tr -d ' ')"
+}
+
+orchestrate() { # lines-file -> its <ref>\t<brief>\t<worktree> lines once one chat dispatching them opened; else every run failed
+  local lines=$1 opened account session id ids=() branch base wt top
+  while IFS=$'\t' read -r id _; do ids+=("$id"); done <"$lines"
+  [ ${#ids[@]} -gt 0 ] || die "no runs in $lines"
   if ! opened=$(CHAT_OPEN_OPENER="${DOCTOR_FIX_OPENER:-open -a Terminal}" \
     CHAT_OPEN_WORKER_PICK="${DOCTOR_FIX_WORKER_PICK:-$repo_root/bin/worker-pick}" \
-    chat_open "$runs_dir/$id.command" "$repo_root" "$prompt" 2>&1); then
-    locked fail_run "$id" "chat did not open: $opened"
-    pending_id=''
-    die "the $doctor fixer did not open: $opened"
+    chat_open "${lines%.lines}.command" "$repo_root" \
+      "Fix orchestrator: read $repo_root/docs/fix-orchestrator.md in full and follow it for the runs in $lines." 2>&1); then
+    for id in "${ids[@]}"; do
+      locked fail_run "$id" "chat did not open: $opened"
+      while IFS=$'\t' read -r branch base wt; do
+        top=$(worktree_main "$wt") && git -C "$top" worktree remove "$wt" 2>/dev/null &&
+          git -C "$top" branch -q -d "$branch" 2>/dev/null
+        [[ $base != refs/doctor-fix/* ]] || git -C "$top" update-ref -d "$base"
+      done < <(jq -r '[.branch, (.base // "")] as $b | .worktrees[]? | $b + [.] | @tsv' "$(record_file "$id")")
+    done
+    printf 'doctor-fix: the orchestrator chat did not open: %s\n' "$opened" >&2
+    return 1
   fi
   read -r account session <<<"$opened"
-  locked record_set "$id" '.launched_at = $t | .account = $a | .session = $s | .command = $c' \
-    --arg t "$(stamp)" --arg a "$account" --arg s "$session" --arg c "$runs_dir/$id.command" || die "cannot write run $id"
-  pending_id=''
-  printf '%s fixer opened: run %s, %s\n' "$doctor" "$id" "$(jq -r "$JQ_COUNTS" "$(record_file "$id")")"
+  for id in "${ids[@]}"; do
+    locked record_set "$id" '.account = $a | .session = $s | .command = $c' \
+      --arg a "$account" --arg s "$session" --arg c "${lines%.lines}.command" || die "cannot write run $id"
+  done
+  cat "$lines"
 }
 
 worktree_top() {
@@ -685,9 +697,9 @@ worktree_top() {
 }
 
 write_brief() { # id worktree -> the brief file
-  local id=$1 wt=$2 file doctor area night branch decisions title
+  local id=$1 wt=$2 file doctor area night branch base decisions title
   file=$(record_file "$id")
-  IFS=$'\t' read -r doctor area night branch < <(jq -r '[.doctor, .area, .night, .branch] | @tsv' "$file")
+  IFS=$'\t' read -r doctor area night branch base < <(jq -r "$JQ_BASE"' [.doctor, .area, (.night // "-"), .branch, base] | @tsv' "$file")
   mkdir -p "$runs_dir/$id.d" || return 1
   decisions="$runs_dir/$id.d/decisions.tsv"
   case $doctor in llm) title=LLM ;; harness) title=Harness ;; code) title=Code ;; system) title=System ;; *) title=Updater ;; esac
@@ -695,12 +707,13 @@ write_brief() { # id worktree -> the brief file
     ! jq -e --arg rules ' suite_audit ' "$JQ_HAS_RULES" "$file" >/dev/null || printf 'STRONG: yes\n'
     printf 'ROUND: %s\n' "$(jq -r '.lens_round // "none"' "$file")"
     jq -r '.worktrees[1:][] | "ADD-DIR: \(.)"' "$file"
-    printf 'Working directory: %s\n\n# Night fixer run %s\n\n' "$wt" "$id"
-    printf 'Night %s · %s doctor · area %s · %s. Worktree `%s` on branch `%s`.\n\n' \
-      "$night" "$doctor" "$area" "$(jq -r "$JQ_COUNTS" "$file")" "$wt" "$branch"
-    printf '1. Read `%s/docs/doctor-fix.md`: sections 0-6, "Night" and "%s doctor" only.\n' "$wt" "$title"
-    printf '2. Your scope is the problems below and the known quiet rows after them, nothing else. Work only in the worktree and the `ADD-DIR:` worktrees of the other repositories your component lives in, all on the branch `%s`, started from their `refs/night/%s/base`; a change another repository needs is a handoff. Look at the older blocks around what you touch, not only at what you add: is a workaround there obsolete now, because the vendor does it natively or its reason is gone? Then remove it.\n' "$branch" "$night"
-    printf '3. Commit on that branch; never push, never touch a main checkout, never ask Egor: decide what research settles (git log -S, the journals, the docs, the owning chat) and hand off to the next night, whose `night-run carry` makes every open handoff a job; Egor gets only a trade, a handoff whose `To:` names him carrying `Cost:`, `Loss:` and `Recommendation:` lines. Markdown is net zero at night: close refuses a worktree whose *.md bytes (handoffs included) grew since `refs/night/%s/base`, so for every line you add cut stale ones (closed handoffs first, then history, restated code, duplicated rules; ~/.claude/docs/context-file-hygiene.md).\n' "$night"
+    printf 'Working directory: %s\n\n# Fixer run %s\n\n' "$wt" "$id"
+    [ "$night" = - ] || printf 'Night %s · ' "$night"
+    printf '%s doctor · area %s · %s. Worktree `%s` on branch `%s`.\n\n' \
+      "$doctor" "$area" "$(jq -r "$JQ_COUNTS" "$file")" "$wt" "$branch"
+    printf '1. Read `%s/docs/doctor-fix.md`: sections 0-6 and "%s doctor" only.\n' "$wt" "$title"
+    printf '2. Your scope is the problems below and the known quiet rows after them, nothing else. Work only in the worktree and the `ADD-DIR:` worktrees of the other repositories your component lives in, all on the branch `%s`, started from their `%s`; a change another repository needs is a handoff. Look at the older blocks around what you touch, not only at what you add: is a workaround there obsolete now, because the vendor does it natively or its reason is gone? Then remove it.\n' "$branch" "$base"
+    printf '3. Commit on that branch; never push, never touch a main checkout, never ask Egor: decide what research settles (git log -S, the journals, the docs, the owning chat) and hand off to the next night, whose `night-run carry` makes every open handoff a job; Egor gets only a trade, a handoff whose `To:` names him carrying `Cost:`, `Loss:` and `Recommendation:` lines. Markdown is net zero: close refuses a worktree whose *.md bytes (handoffs included) grew since `%s`, so for every line you add cut stale ones (closed handoffs first, then history, restated code, duplicated rules; ~/.claude/docs/context-file-hygiene.md).\n' "$base"
     printf '4. Close, from the worktree:\n\n'
     printf '       cd %q && DOCTORS_DIR=%q bin/doctor-fix close %s --decisions %q <one-line note>\n\n' \
       "$wt" "${runs_dir%/runs}" "$id" "$decisions"
@@ -710,9 +723,9 @@ write_brief() { # id worktree -> the brief file
     ! jq -e '.lens_round' "$file" >/dev/null ||
       printf 'Speed lens: the `ROUND:` above is a `--lens speed` review of your component files aimed at the problems below; its confirmed findings, appended after this brief, are your leads to them. Each finding gets its verdicts.jsonl row (fixed, or false when it is not real or would trade quality); your decision lines still answer the problems.\n\n'
     [ "$doctor" != code ] ||
-      printf 'Code runs: every problem carries its judged plan and proof obligations; a deletion lands only through `bin/code-doctor check` (close runs it against `refs/night/%s/base`), never edit through a symlink into another repository, and a cross-repository merge lands in stages over nights (the shared module and the callers first, `merges: [{stage: "migrated", night}]` in the ledger row, the old copy on a later night). Record each landed cleanup with `bin/code-doctor record-fix <cause> --by <run> --files ... --lines-removed N [--mechanism M --canonical PATH --replaced PATH...]`.\n\n' "$night"
+      printf 'Code runs: every problem carries its judged plan and proof obligations; a deletion lands only through `bin/code-doctor check` (close runs it against `%s`), never edit through a symlink into another repository, and a cross-repository merge lands in stages over nights (the shared module and the callers first, `merges: [{stage: "migrated", night}]` in the ledger row, the old copy on a later night). Record each landed cleanup with `bin/code-doctor record-fix <cause> --by <run> --files ... --lines-removed N [--mechanism M --canonical PATH --replaced PATH...]`.\n\n' "$base"
     [ "$doctor" != system ] ||
-      printf 'System runs: each problem names one own cause, a script of the sweep repositories by its `repo/path` or basename, and the levers that apply to it. A cause in a helper repository (`share/night-helper-repos`) is fixed in its `ADD-DIR:` night worktree there and lands like a sweep repository'"'"'s, only the night'"'"'s commits; any other repository stays report-only. Make output-equivalent changes only: the same output, files and exit codes for the same inputs, fewer processes and less CPU; speed never trades model, effort or thinking (close refuses a changed knob). Record a fix as a `share/system-ledger.json` row whose `match` is `{rule, key, cause}`, status `fixed-pending`, with a `fixes[]` entry; close runs `bin/system-doctor check --record`, and the doctor proves the fix later with `bin/system-doctor check <cause>`: that cause'"'"'s births/s and CPU after the fix reached main against the 7 days before.\n\n'
+      printf 'System runs: each problem names one own cause, a script of the sweep repositories by its `repo/path` or basename, and the levers that apply to it. A cause in a helper repository (`share/night-helper-repos`) is fixed in its `ADD-DIR:` worktree there and lands like a sweep repository'"'"'s, only the night'"'"'s commits; any other repository stays report-only. Make output-equivalent changes only: the same output, files and exit codes for the same inputs, fewer processes and less CPU; speed never trades model, effort or thinking (close refuses a changed knob). Record a fix as a `share/system-ledger.json` row whose `match` is `{rule, key, cause}`, status `fixed-pending`, with a `fixes[]` entry; close runs `bin/system-doctor check --record`, and the doctor proves the fix later with `bin/system-doctor check <cause>`: that cause'"'"'s births/s and CPU after the fix reached main against the 7 days before.\n\n'
     ! jq -e --arg rules "$TEST_SPEED_RULES" "$JQ_HAS_RULES" "$file" >/dev/null ||
       printf 'Test speed is this run'"'"'s to fix, never a handoff (`close` refuses one): for `test_long_pole`, `test_daily_cost`, `test_slow` and `suites_at_once` make the suites faster yourself in any sweep repository (an `ADD-DIR:` worktree each): split a long pole into independent suite files that `tests/run-all` runs in parallel, cut redundant cases, make timing asserts load-robust, cache fixtures; every assert keeps its coverage.\n\n'
     ! jq -e --arg rules ' test_hang ' "$JQ_HAS_RULES" "$file" >/dev/null ||
@@ -767,13 +780,19 @@ component_repos() { # id top -> the main checkouts other than top that hold the 
   done | sort -u
 }
 
-launch_night() { # doctor night
-  local doctor=$1 night=$2 snap area id top wt branch err judge='' brief siblings repo repos failed=0
-  [[ $night =~ ^[A-Za-z0-9._-]+$ ]] || die "night id '$night' is not branch-safe"
-  check_doc "$doctor" >/dev/null || exit 1
-  snap=$(py snapshot "$doctor" "$(doc_path "$doctor")" "$night") || die "cannot snapshot the $doctor doctor"
+launch_runs() { # doctor night-or-empty -> per area with problems a run, its worktrees and brief: <ref>\t<brief>\t<worktree>
+  local doctor=$1 night=$2 count snap area id top wt branch base err judge='' brief siblings repo repos failed=0
+  [ -z "$night" ] || [[ $night =~ ^[A-Za-z0-9._-]+$ ]] || die "night id '$night' is not branch-safe"
+  count=$(check_doc "$doctor") || exit 1
+  snap=$(py snapshot "$doctor" "$(doc_path "$doctor")" ${night:+"$night"}) || die "cannot snapshot the $doctor doctor"
   [ "$doctor" != harness ] || jq -r '.speed | select(. != null and (.selection // []) == [])
     | "harness: Speed selects nothing: \(.why_none // "no reason recorded")"' "$(doc_path harness)" >&2 2>/dev/null || true
+  if [ -z "$night" ]; then
+    [ "$count" != none ] || [ "$(jq 'map(select(.state == "quiet")) | length' <<<"$snap")" != 0 ] ||
+      die "nothing to fix: the $doctor doctor reads ok with 0 problems and no quiet open ledger row."
+    [ "$snap" != '[]' ] ||
+      die "nothing to fix: every $doctor doctor problem is held back (needs Egor, under active work or over its budget)."
+  fi
   [ "$snap" != '[]' ] || return 0
   top=$(worktree_top) || die "no repository at $repo_root"
   for area in $(jq -r 'map(.area) | unique[]' <<<"$snap"); do
@@ -786,10 +805,12 @@ launch_night() { # doctor night
     esac
     pending_id=$id
     [ "$doctor" != harness ] && [ "$doctor" != system ] || locked record_set "$id" '.knobs_at_launch = $k' --argjson k "$(py knob-lines)"
-    branch="night/$night/$id"
-    wt="$top/.claude/worktrees/night-$night-$id"
-    locked record_set "$id" '.branch = $b | .worktrees = [$w]' --arg b "$branch" --arg w "$wt"
-    if ! err=$(worktree_new "$top" "$branch" 2>&1 >/dev/null); then
+    if [ -n "$night" ]; then branch="night/$night/$id" base="refs/night/$night/base"
+    else branch="doctor-fix/$id" base="refs/doctor-fix/$id/base"; fi
+    wt=$(worktree_path "$top" "$branch")
+    locked record_set "$id" '.branch = $b | .base = $r | .worktrees = [$w]' --arg b "$branch" --arg r "$base" --arg w "$wt"
+    if ! err=$(worktree_new "$top" "$branch" 2>&1 >/dev/null) ||
+      { [ -z "$night" ] && ! err=$(git -C "$wt" update-ref "$base" HEAD 2>&1); }; then
       locked fail_run "$id" "worktree not created: ${err:-git worktree add failed}"
       printf 'run %s failed: worktree not created: %s\n' "$id" "$err" >&2
       pending_id='' failed=1
@@ -801,6 +822,7 @@ launch_night() { # doctor night
       ! jq -e --arg rules "$TEST_FIX_RULES log_audit " "$JQ_HAS_RULES" "$(record_file "$id")" >/dev/null ||
         grep -vxF -e "$top" -e '' "${NIGHT_RUN_SWEEP_REPOS:-$HOME/.claude/sweep-repos}" 2>/dev/null; } | sort -u)
     siblings=$(worktree_siblings "$branch" ${repos[@]+"${repos[@]}"})
+    [ -n "$night" ] || while IFS= read -r repo; do [ -z "$repo" ] || git -C "$repo" update-ref "$base" HEAD; done <<<"$siblings"
     [ -z "$siblings" ] || locked record_set "$id" '.worktrees += ($s | split("\n"))' --arg s "$siblings"
     [ -n "$judge" ] || judge=$( (cd "$wt" && "bin/$doctor-doctor" --json 2>/dev/null) | jq -r '.judge // empty' 2>/dev/null)
     [ -z "$judge" ] || locked record_set "$id" '.judge_at_launch = $j' --arg j "$judge"
@@ -834,7 +856,7 @@ launch() { # llm|harness|updater|code|system [--night <id>]
   case "$doctor:${2:-}" in
     llm: | harness: | code: | system:) launch_day "$doctor" ;;
     updater:) "${DOCTOR_FIX_VENDOR_CLI_UPDATE:-$repo_root/bin/vendor-cli-update}" now ;;
-    llm:--night | harness:--night | updater:--night | code:--night | system:--night) [ -n "${3:-}" ] && [ $# -eq 3 ] || usage; launch_night "$doctor" "$3" ;;
+    llm:--night | harness:--night | updater:--night | code:--night | system:--night) [ -n "${3:-}" ] && [ $# -eq 3 ] || usage; launch_runs "$doctor" "$3" ;;
     all:--night)
       [ -n "${3:-}" ] && [ $# -eq 3 ] || usage
       for doctor in llm harness updater code system; do
@@ -844,38 +866,27 @@ launch() { # llm|harness|updater|code|system [--night <id>]
   esac
 }
 
-record_updater() { # --session S --account A --command F | --night N --branch B --worktree W..., then --problems id...
-  local session='' account='' command='' night='' branch='' worktree='' worktrees=() id event problems=()
+record_updater() { # [--night N] --branch B --worktree W..., then --problems id...
+  local night='' branch='' worktrees=() id event problems=()
   while [ $# -gt 0 ]; do
     case $1 in
-      --session) session=${2:-}; shift 2 || usage ;;
-      --account) account=${2:-}; shift 2 || usage ;;
-      --command) command=${2:-}; shift 2 || usage ;;
       --night) night=${2:-}; shift 2 || usage ;;
       --branch) branch=${2:-}; shift 2 || usage ;;
-      --worktree) worktree=${2:-}; worktrees+=("$worktree"); shift 2 || usage ;;
+      --worktree) [ -n "${2:-}" ] || usage; worktrees+=("$2"); shift 2 ;;
       --problems) shift; problems=("$@"); break ;;
       *) usage ;;
     esac
   done
-  [ ${#problems[@]} -gt 0 ] || usage
-  if [ -n "$night$branch$worktree" ]; then
-    [ -n "$night" ] && [ -n "$branch" ] && [ -n "$worktree" ] && [ -z "$session$account$command" ] || usage
-  else
-    [ -n "$session" ] && [ -n "$account" ] && [ -n "$command" ] || usage
-  fi
+  [ ${#problems[@]} -gt 0 ] && [ -n "$branch" ] && [ ${#worktrees[@]} -gt 0 ] || usage
   mkdir -p "$runs_dir" || die "cannot make $runs_dir"
   for event in "${problems[@]}"; do
     jq -c --arg id "$event" '{id: $id, state: "open", fact: "\(.vendor) \(.from) → \(.to): \((.substantive // []) | if length > 0 then join(", ") else "manual request" end)"}' \
       "$events_dir/$event.json" 2>/dev/null || jq -nc --arg id "$event" '{id: $id, state: "open", fact: null}'
   done | jq -s . >"$runs_dir/.$$.problems"
   id=$(locked new_record updater release "$night") || die "cannot write a run record under $runs_dir"
-  locked record_set "$id" 'def opt: if . == "" then null else . end;
-    .launched_at = .created_at | .account = ($a | opt) | .session = ($s | opt) | .command = ($c | opt)
-    | .branch = ($b | opt) | .worktrees = $w
-    | .judge_at_launch = ($j | opt) | .problems = $p[0]' \
-    --arg a "$account" --arg s "$session" --arg c "$command" --arg b "$branch" --arg j "$(doc_judge updater)" \
-    --argjson w "$(jq -nc '$ARGS.positional' --args ${worktrees[@]+"${worktrees[@]}"})" \
+  locked record_set "$id" '.launched_at = .created_at | .branch = $b | .worktrees = $w
+    | .judge_at_launch = (if $j == "" then null else $j end) | .problems = $p[0]' \
+    --arg b "$branch" --arg j "$(doc_judge updater)" --argjson w "$(jq -nc '$ARGS.positional' --args "${worktrees[@]}")" \
     --slurpfile p "$runs_dir/.$$.problems" || { rm -f "$runs_dir/.$$.problems"; die "cannot write run $id"; }
   rm -f "$runs_dir/.$$.problems"
   printf '%s\n' "$id"
@@ -982,7 +993,7 @@ close_run() { # id --decisions <file> note...
     *) die "run $id names no doctor" ;;
   esac
   refuse_unless_open "$id"
-  if jq -e '.night == null' "$file" >/dev/null; then
+  if jq -e '(.worktrees // []) == []' "$file" >/dev/null; then
     doc=$(doc_path "$doctor")
   else
     doc=$(rerun_doc "$id" "$doctor") || exit 1
@@ -1044,14 +1055,14 @@ close_run() { # id --decisions <file> note...
     while IFS= read -r line; do
       [ -z "$line" ] || bad+=("code-doctor check: $line")
     done < <("${DOCTOR_FIX_CODE_DOCTOR:-$repo_root/bin/code-doctor}" check "$file" \
-      $(jq -r 'if .night then "--base\nrefs/night/\(.night)/base" else empty end' "$file") 2>&1)
+      $(jq -r "$JQ_BASE"' base // empty | "--base\n\(.)"' "$file") 2>&1)
   fi
-  if jq -e '.night != null' "$file" >/dev/null; then
-    base="refs/night/$(jq -r .night "$file")/base"
+  base=$(jq -r "$JQ_BASE"' base // empty' "$file")
+  if [ -n "$base" ]; then
     while IFS= read -r wt; do
       growth=$(md_growth "$wt" "$base") || { bad+=("markdown: no $base in $wt to measure it against"); continue; }
       [ "${growth%%$'\n'*}" -gt 0 ] || continue
-      bad+=("markdown grew by ${growth%%$'\n'*} bytes since $base in $wt ($(sed 1d <<<"$growth" | paste -sd, - | sed 's/,/, /g')): markdown is net zero at night — cut stale lines (closed handoffs first, then history, restated code, duplicated rules; ~/.claude/docs/context-file-hygiene.md) until it does not grow")
+      bad+=("markdown grew by ${growth%%$'\n'*} bytes since $base in $wt ($(sed 1d <<<"$growth" | paste -sd, - | sed 's/,/, /g')): markdown is net zero — cut stale lines (closed handoffs first, then history, restated code, duplicated rules; ~/.claude/docs/context-file-hygiene.md) until it does not grow")
     done < <(jq -r '.worktrees[]?' "$file")
   fi
   if [ "$doctor" = system ]; then
@@ -1059,7 +1070,7 @@ close_run() { # id --decisions <file> note...
       [ -z "$line" ] || bad+=("system-doctor check: $line")
     done < <("${DOCTOR_FIX_SYSTEM_DOCTOR:-$repo_root/bin/system-doctor}" check --record "$file" --decisions "$decisions" 2>&1)
   fi
-  if { [ "$doctor" = harness ] || [ "$doctor" = system ]; } && jq -e '.night != null' "$file" >/dev/null; then
+  if [ "$doctor" = harness ] || [ "$doctor" = system ]; then
     while IFS= read -r line; do
       [ -z "$line" ] || bad+=("$line")
     done < <(py knobs "$file")
@@ -1104,7 +1115,7 @@ show_run() { # id
   [ -n "${1:-}" ] && [ -f "$file" ] || die "no run ${1:-}"
   jq -r "def status: $(run_status); $JQ_AREA"' "run \(.id) · \(.doctor) doctor · area \(area) · \(status)",
     "created \(.created_at) · launched \(.launched_at // "-") · closed \(.closed_at // "-")\(if .abandoned_at then " · abandoned \(.abandoned_at)" else "" end)\(if .failed_at then " · failed \(.failed_at)" else "" end)",
-    (if .night then "night \(.night) · branch \(.branch // "-") · worktrees \((.worktrees // []) | join(" "))" else "account \(.account // "-") · command \(.command // "-")" end),
+    (if .branch then "\(if .night then "night \(.night) · " else "" end)branch \(.branch) · worktrees \((.worktrees // []) | join(" "))" else "account \(.account // "-") · command \(.command // "-")" end),
     "judge at launch \((.judge_at_launch // "-")[:12]) · at close \((.judge_at_close // "-")[:12])",
     "problems (\(.problems | length)):"' "$file"
   py packet "$file" problems
@@ -1139,10 +1150,10 @@ usage: doctor-fix launch llm|harness|updater|code|system [--night <night-id>]
        doctor-fix launch all --night <night-id>   (every doctor in roster order; one that fails prints a line, the rest still launch)
        doctor-fix show <id>
        doctor-fix runs [llm|harness|updater|code|system] [--open] [--json]
-       doctor-fix close <id> --decisions <file> <note...>   (a night run reruns its doctor in its worktree)
+       doctor-fix close <id> --decisions <file> <note...>   (reruns the doctor in the run's worktree)
        doctor-fix abandon <id> [--reason TEXT]
-       doctor-fix record updater --session <s> --account <a> --command <file> --problems <event id>...   (internal)
-       doctor-fix record updater --night <night-id> --branch <b> --worktree <w> [--worktree <w>...] --problems <event id>...   (internal)
+       doctor-fix record updater [--night <night-id>] --branch <b> --worktree <w> [--worktree <w>...] --problems <event id>...   (internal)
+       doctor-fix orchestrate <lines-file>   (internal: one chat dispatching the runs of its <ref>\t<brief>\t<worktree> lines)
        doctor-fix record-close <id> --decisions <json-file> <note...>   (internal, updater release runs)
        doctor-fix ledger-sync <worktree>   (night close: the doctors' settled ledger fields into that worktree's tracked ledgers)
        doctor-fix touches <record-file> <id> <purpose>   (internal: 0 resolves and touches, 1 resolves nowhere, 2 misses the component, 3 the problem's component names no file: close records it component unverified)
@@ -1153,6 +1164,7 @@ usage() { usage_text >&2; exit 2; }
 case "${1:-}" in
   launch) launch "${@:2}" ;;
   record) [ "${2:-}" = updater ] || usage; record_updater "${@:3}" ;;
+  orchestrate) [ $# -eq 2 ] && [ -f "$2" ] || usage; orchestrate "$2" ;;
   record-close) record_close "${@:2}" ;;
   show) show_run "${2:-}" ;;
   runs) list_runs "${@:2}" ;;

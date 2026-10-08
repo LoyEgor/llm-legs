@@ -72,11 +72,10 @@ code_run_of() { # name -> the Code fixer run id a branch or job ref ends in, els
 }
 
 code_refusal() { # night-or-empty run-id suites -> why the Code fixer run cannot land, empty when code-doctor check passes
-  local record="${DOCTORS_DIR:-$HOME/.cache/doctors}/runs/$2.json" out night
+  local record="${DOCTORS_DIR:-$HOME/.cache/doctors}/runs/$2.json" out base
   [ -s "$record" ] || { printf 'job %s: no doctor-fix run record %s for code-doctor check\n' "$2" "$record"; return; }
-  night=$(jq -r '.night // empty' "$record" 2>/dev/null)
-  night=${night:-$1}
-  out=$("${NIGHT_RUN_CODE_DOCTOR:-$repo_root/bin/code-doctor}" check "$record" ${night:+--base "refs/night/$night/base"} --landing \
+  base=$(jq -r --arg n "$1" '.base // ((.night // $n) | select(. != "") | "refs/night/\(.)/base")' "$record" 2>/dev/null)
+  out=$("${NIGHT_RUN_CODE_DOCTOR:-$repo_root/bin/code-doctor}" check "$record" ${base:+--base "$base"} --landing \
     $([ "$3" != passed ] || printf -- --suites-passed) 2>&1) ||
     printf 'job %s cannot land, code-doctor check refuses (suites=passed attests green suites):\n%s\n' "$2" "$out"
 }

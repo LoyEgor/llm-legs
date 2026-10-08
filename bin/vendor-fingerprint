@@ -28,7 +28,6 @@ info_facets="version catalog_text catalog_order foreign_clients"
 id_prefixes='gpt|grok|gemini|imagen|veo|sora|claude'
 id_re="($id_prefixes)(-[a-z]+)*-[0-9]+[a-z]?(\\.[0-9]+)*(-[a-z0-9]+){0,3}"
 doctor_fix="${VENDOR_FINGERPRINT_DOCTOR_FIX:-$repo_root/bin/doctor-fix}"
-. "$repo_root/share/chat-open.sh"
 . "$repo_root/share/worktree.sh"
 # npm puts codex and grok under nvm, which neither a LaunchAgent's PATH nor a plain shell's carries.
 # Appended, so a native install earlier on PATH (~/.local/bin/claude) stays the one that runs.
@@ -396,46 +395,45 @@ check_vendor() { # vendor
   log "$vendor event $id $status: $(jq -r 'join(", ")' <<<"$changed")"
 }
 
-launch_event() { # id... -> one chat for all of them, recorded as one fixer run of doctor updater
-  local id file prompt opened account session run
-  file="$events_dir/$1.command"
-  if [ $# = 1 ]; then
-    prompt="Vendor release event $1: read $repo_root/docs/vendor-release.md in full and follow it."
-  else
-    printf -v prompt '%s, ' "$@"
-    prompt="Vendor release events ${prompt%, }: read $repo_root/docs/vendor-release.md in full and follow it for each event in turn."
-  fi
-  if ! opened=$(CHAT_OPEN_OPENER="${VENDOR_FINGERPRINT_OPENER:-open -a Terminal}" \
-    CHAT_OPEN_WORKER_PICK="${VENDOR_FINGERPRINT_WORKER_PICK:-$repo_root/bin/worker-pick}" \
-    chat_open "$file" "$repo_root" "$prompt" 2>&1); then
-    log "could not open integration chat for $*: $opened; retried next run if requested"
-    return 1
-  fi
-  read -r account session <<<"$opened"
-  run=$("$doctor_fix" record updater --session "$session" --account "$account" --command "$file" --problems "$@" 2>/dev/null) ||
-    { run=''; log "no fixer run recorded for $*"; }
-  for id in "$@"; do
-    event_set "$id" '.launched_at = $t | .run = (if $r == "" then null else $r end)' --arg t "$(stamp)" --arg r "$run"
-    rm -f "$events_dir/$id.base"
+requested() { # vendor -> its open events Egor asked for that no run has taken yet
+  local file
+  for file in "$events_dir/$1"-*.json; do
+    [ -f "$file" ] && jq -e '.status == "open" and .launched_at == null
+      and (.requested_at != null or (.reason // "" | startswith("manual request")))' "$file" >/dev/null 2>&1 && basename "$file" .json
   done
-  log "opened integration chat for $*${run:+ (run $run)}"
+  return 0
 }
 
 # Chats open only on Egor's request. A request whose chat failed to open is his own ask, so the next
 # check retries it.
 launch_pending() {
-  local file ids=()
   # A manual update opens its own chat for every vendor right after this check.
   [ -z "${VENDOR_FINGERPRINT_HOLD:-}" ] || return 0
-  for file in "$events_dir"/*.json; do
-    [ -f "$file" ] || continue
-    jq -e '.status == "open" and .launched_at == null
-      and (.requested_at != null or (.reason // "" | startswith("manual request")))' "$file" >/dev/null 2>&1 &&
-      ids+=("$(jq -r .id "$file")")
-  done
-  [ ${#ids[@]} -gt 0 ] || return 0
-  launch_event "${ids[@]}"
+  day_launch >/dev/null
   return 0
+}
+
+day_launch() { # -> the requested events' runs, then one orchestrator chat dispatching them
+  local lines file run opened event
+  lines=$(mktemp "$events_dir/.lines.XXXXXX") || return 1
+  vendor_runs '' >"$lines"
+  [ -s "$lines" ] || { rm -f "$lines"; return 0; }
+  file="$events_dir/$(head -n 1 "$lines" | cut -f1)"
+  mv -f "$lines" "$file.lines" || { rm -f "$lines"; return 1; }
+  if ! opened=$(DOCTOR_FIX_OPENER="${VENDOR_FINGERPRINT_OPENER:-open -a Terminal}" \
+    DOCTOR_FIX_WORKER_PICK="${VENDOR_FINGERPRINT_WORKER_PICK:-$repo_root/bin/worker-pick}" \
+    "$doctor_fix" orchestrate "$file.lines" 2>&1 >/dev/null); then
+    while IFS=$'\t' read -r run _; do
+      for event in "$events_dir"/*.json; do
+        jq -e --arg r "$run" '.run == $r' "$event" >/dev/null 2>&1 &&
+          event_set "$(basename "$event" .json)" '.launched_at = null | .launched = null | .run = null'
+      done
+    done <"$file.lines"
+    log "could not open the orchestrator chat for $(cut -f1 "$file.lines" | paste -sd ' ' -): $opened; retried next run if requested"
+    return 1
+  fi
+  log "opened the orchestrator chat for $(cut -f1 "$file.lines" | paste -sd ' ' -)"
+  cat "$file.lines"
 }
 
 check() { # [--here] [vendor...]
@@ -487,79 +485,92 @@ waiting() { # [vendor] -> the open events no chat has taken yet
   return 0
 }
 
-night_worktree() { # main-checkout night vendor -> the llm-legs worktree on branch night/<night>/<vendor>
-  worktree_new "$1" "night/$2/$3"
-}
-
-night_brief() { # main-checkout night id worktree sibling-worktree... -> the brief a headless worker runs
-  local top=$1 night=$2 id=$3 worktree=$4 vendor sibling
+vendor_brief() { # top night-or-empty branch worktree id... -> the brief a headless worker runs, after its ROUND: and ADD-DIR: lines
+  local top=$1 night=$2 branch=$3 worktree=$4 id vendor
   shift 4
-  vendor=$(jq -r .vendor "$events_dir/$id.json")
-  printf 'ROUND: none\n'
-  for sibling in "$@"; do printf 'ADD-DIR: %s\n' "$sibling"; done
+  vendor=$(jq -r .vendor "$events_dir/$1.json")
+  printf '%sVendor release events of %s:\n' "${night:+Night run $night: }" "$vendor"
+  for id in "$@"; do
+    printf -- '- %s (%s): `bin/vendor-fingerprint show %s`, its diff %s\n' "$id" \
+      "$(jq -r '"\(.from) -> \(.to), changed: \(if .substantive == [] then .reason else (.substantive | join(", ")) end)"' "$events_dir/$id.json")" \
+      "$id" "$events_dir/$id.diff"
+  done
   cat <<EOF
-Night run $night: vendor release event $id ($(jq -r '"\(.vendor) \(.from) -> \(.to), changed: \(.substantive | join(", "))"' "$events_dir/$id.json")).
 
-Working directory: $worktree, the llm-legs worktree on branch night/$night/$vendor.
+Working directory: $worktree, the llm-legs worktree on branch $branch.
 Never write a main checkout.
 
-Read $top/docs/vendor-release.md in full and follow it with its §6 Night rules:
-- \`bin/vendor-fingerprint show $id\` is your event; its diff is $events_dir/$id.diff.
+Read $top/docs/vendor-release.md in full and follow it${night:+ with its §6 Night rules}, per event in turn:
 - The other repositories you may change have their worktrees on the same branch: the \`ADD-DIR:\`
-  lines above. A repository with none is not yours tonight: its change is a handoff.
+  lines above. A repository with none is not yours: its change is a handoff.
 - Commit on that branch in every worktree you changed. Never push, merge or rebase.
 - \`bin/vendor-fingerprint check --here $vendor\` runs in this worktree, then
-  \`bin/vendor-fingerprint close $id --decisions <file> <note>\`.
+  \`bin/vendor-fingerprint close <id> --decisions <file> <note>\`.
 - A generation, or any step that needs Egor's word, is decided \`blocked\` with evidence starting
   \`blocked-on-egor:\` and naming what his word unlocks. Never wait for him.
 - Start the research leg (step 3) and the blind cross-check leg (step 4) in parallel.
 - Look at the older blocks around what you touch, not only at what you add: is a workaround there
   obsolete now, because the vendor does it natively or its reason is gone? Then remove it.
 
-Report in English, under 300 words, outcome first: event $id closed or not; the branch and commit
+Report in English, under 300 words, outcome first: each event closed or not; the branch and commit
 hash per repository; every blocked-on-egor line; the suites run with PASS counts.
 EOF
 }
 
-night_request() { # night-id -> per vendor with a real waiting release: its fixer run, brief and worktree
-  local night=$1 top common vendor id worktree brief run repo repos record_args siblings failed=0
-  [[ $night =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || usage
+# A night takes per vendor its one real waiting release (never a manual request), branched from
+# refs/night/<night>/base; a day takes every event Egor requested, branched from main.
+vendor_runs() { # night-or-empty -> per vendor its fixer run, brief and worktree: <run>\t<brief>\t<worktree>
+  local night=$1 top common vendor id ids branch worktree brief run repo repos record_args siblings failed=0
+  [ -z "$night" ] || [[ $night =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || usage
   common=$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=''
   if [ "$(basename "$common")" = .git ]; then top=$(dirname "$common"); else top=$repo_root; fi
   for vendor in $vendors; do
-    id=$(pending_event "$vendor")
-    [ -n "$id" ] || continue
-    brief="$events_dir/$id.brief.md"
+    ids=()
+    if [ -n "$night" ]; then
+      id=$(pending_event "$vendor")
+      [ -z "$id" ] || ids=("$id")
+    else
+      while IFS= read -r id; do ids+=("$id"); done < <(requested "$vendor")
+    fi
+    [ ${#ids[@]} -gt 0 ] || continue
+    if [ -n "$night" ]; then branch="night/$night/$vendor"; else branch="vendor/${ids[0]}"; fi
+    brief="$events_dir/${ids[0]}.brief.md"
     siblings=() record_args=()
-    if worktree=$(night_worktree "$top" "$night" "$vendor"); then
+    if worktree=$(worktree_new "$top" "$branch"); then
       repos=()
       for repo in $sibling_repos; do [ ! -d "${top%/*}/$repo" ] || repos+=("${top%/*}/$repo"); done
       while IFS= read -r repo; do siblings+=("$repo") record_args+=(--worktree "$repo"); done < <(
-        worktree_siblings "night/$night/$vendor" ${repos[@]+"${repos[@]}"})
+        worktree_siblings "$branch" ${repos[@]+"${repos[@]}"})
     fi
-    if [ -z "$worktree" ] || ! night_brief "$top" "$night" "$id" "$worktree" ${siblings[@]+"${siblings[@]}"} >"$brief"; then
-      log "night $night: no worktree or brief for $id, it keeps waiting"
-      printf 'vendor-fingerprint: night %s: no worktree or brief for %s\n' "$night" "$id" >&2
+    if [ -z "$worktree" ] || ! { printf 'ROUND: none\n'
+      for repo in ${siblings[@]+"${siblings[@]}"}; do printf 'ADD-DIR: %s\n' "$repo"; done
+      vendor_brief "$top" "$night" "$branch" "$worktree" "${ids[@]}"; } >"$brief"; then
+      log "${night:+night $night: }no worktree or brief for ${ids[*]}, it keeps waiting"
+      printf 'vendor-fingerprint: %sno worktree or brief for %s\n' "${night:+night $night: }" "${ids[*]}" >&2
       failed=1
       continue
     fi
-    if ! run=$("$doctor_fix" record updater --night "$night" --branch "night/$night/$vendor" --worktree "$worktree" \
-      ${record_args[@]+"${record_args[@]}"} --problems "$id" 2>/dev/null) || [ -z "$run" ]; then
-      log "night $night: no fixer run recorded for $id, it keeps waiting"
-      printf 'vendor-fingerprint: night %s: no fixer run recorded for %s\n' "$night" "$id" >&2
+    if ! run=$("$doctor_fix" record updater ${night:+--night "$night"} --branch "$branch" --worktree "$worktree" \
+      ${record_args[@]+"${record_args[@]}"} --problems "${ids[@]}" 2>/dev/null) || [ -z "$run" ]; then
+      log "${night:+night $night: }no fixer run recorded for ${ids[*]}, it keeps waiting"
+      printf 'vendor-fingerprint: %sno fixer run recorded for %s\n' "${night:+night $night: }" "${ids[*]}" >&2
       failed=1
       continue
     fi
-    if ! event_set "$id" '.launched_at = $t | .launched = "night" | .night = $n | .worktree = $w | .brief = $b | .run = $r' \
-      --arg t "$(stamp)" --arg n "$night" --arg w "$worktree" --arg b "$brief" --arg r "$run"; then
+    for id in "${ids[@]}"; do
+      event_set "$id" '.launched_at = $t | .launched = (if $n == "" then "day" else "night" end) | .night = (if $n == "" then null else $n end)
+        | .worktree = $w | .brief = $b | .run = $r' \
+        --arg t "$(stamp)" --arg n "$night" --arg w "$worktree" --arg b "$brief" --arg r "$run" || break
+      rm -f "${events_dir:?}/$id.base"
+    done
+    if [ "$(jq -r .run "$events_dir/$id.json" 2>/dev/null)" != "$run" ]; then
       "$doctor_fix" abandon "$run" --reason "event $id not written" >/dev/null 2>&1
-      log "night $night: event $id not written, run $run abandoned, it keeps waiting"
-      printf 'vendor-fingerprint: night %s: event %s not written\n' "$night" "$id" >&2
+      log "${night:+night $night: }event $id not written, run $run abandoned, it keeps waiting"
+      printf 'vendor-fingerprint: %sevent %s not written\n' "${night:+night $night: }" "$id" >&2
       failed=1
       continue
     fi
-    rm -f "${events_dir:?}/$id.base"
-    log "night $night: $id to $worktree (run $run)"
+    log "${night:+night $night: }${ids[*]} to $worktree (run $run)"
     printf '%s\t%s\t%s\n' "$run" "$brief" "$worktree"
   done
   return "$failed"
@@ -573,7 +584,7 @@ request() { # [--here] vendor|--all [note...] | --night <night-id>
   [ -n "${VENDOR_FINGERPRINT_LOCKED:-}" ] || exec env VENDOR_FINGERPRINT_LOCKED=1 \
     lockf -k -t "${VENDOR_FINGERPRINT_LOCK_WAIT:-600}" "$fp_dir/check.lock" "$script_path" request "$@"
   if [ "${1:-}" = --night ]; then
-    night_request "$2"
+    vendor_runs "$2"
     return
   fi
   [ "${1:-}" = --here ] && { here=true; shift; }
@@ -581,7 +592,7 @@ request() { # [--here] vendor|--all [note...] | --night <night-id>
   [ -n "$vendor" ] || usage
   shift
   if [ "$vendor" = --all ]; then
-    # Every vendor in one chat now: a waiting event already carries its vendor's pass.
+    # A waiting event already carries its vendor's pass.
     for vendor in $vendors; do [ -n "$(waiting "$vendor")" ] || manual_event "$vendor" "$@" >/dev/null; done
     while IFS= read -r id; do ids+=("$id"); done < <(waiting)
   else
@@ -594,7 +605,7 @@ request() { # [--here] vendor|--all [note...] | --night <night-id>
     for id in "${ids[@]}"; do event_set "$id" '.launched_at = $t | .launched = "here"' --arg t "$(stamp)"; rm -f "$events_dir/$id.base"; done
   else
     for id in "${ids[@]}"; do event_set "$id" '.requested_at //= $t' --arg t "$(stamp)"; done
-    launch_event "${ids[@]}"
+    day_launch >/dev/null
   fi
   return 0
 }

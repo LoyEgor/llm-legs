@@ -29,7 +29,7 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
      The night-sweep skill reads the `night run <id>` marker and follows its **Night mode** section.
 2. **Prep** (serial, a few minutes; the orchestrator does it):
    - `vendor-cli-update now --night` runs first and blocks, so CLI installs finish before any worker holds a CLI busy;
-     it opens no integration chat, which would claim the events `request --night` hands to workers.
+     it requests nothing, which would claim the events `request --night` hands to workers.
    - Refresh all five doctors so their documents are fresh. The Code doctor's refresh is
      `bin/code-doctor refresh` (index, journal rollup, candidates), then
      `bin/code-doctor judge --night <night-id>`: worker-run judgments of the waiting candidates,
@@ -64,9 +64,8 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
          `share/doctor-areas.json` holds those words and the renamed old
          areas (`llm-health` → `debt`, `harness-self` and `updater-machinery` → `doctor`), so old runs
          keep their label; `tests/test_doctors_menu.sh` checks every label against the rendered menu.
-     - Each run gets a worktree on branch `night/<night-id>/<run-id>` and a brief file.
-     - The orchestrator starts each brief as a headless worker (`worker-run`, `--workdir` the
-       worktree; account from `worker-pick`).
+     - Each run gets a worktree on branch `night/<night-id>/<run-id>` and a brief file, as a day launch does
+       off main; `docs/fix-orchestrator.md` dispatches and lands them.
      - Speed gets one fixer per lever (levers sharing a file share one), each starting only inside a 6-hour
        wall-clock window from the night's `started_at`: `worker-run`
        runs `night-run speed-gate` once its slot is taken (a `speed-start` event); a first start past the window
@@ -79,20 +78,10 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
      per vendor.
    - **Press-time tree.** The orchestrator commits and pushes each sweep repository as it stood at
      press time, one commit each, unreviewed: every branch lands on it, and the debt pass reviews it.
-4. **Per branch, as soon as its worker returns** (a completion notification, an owner chat's
-   SendMessage, never polling):
-   - The run closed: its close gate reran the doctor inside the worktree and passed.
-   - No per-branch review (Egor, 2026-10-03: per-branch rounds took about 60% of a night's spend).
-   - The orchestrator reads the decision table itself and checks every non-`fixed` verdict. That is
-     the second model on a fixer's self-clearing; what it finds goes to the SAME worker (RESUME).
-   - The worker rebases onto main's HEAD and resolves conflicts, since it knows its intent. Suites must pass.
-   - `bin/worktree land <worktree> [--review <round>] [--suites-passed]` lands it as by day (gates, rebase,
-     ff-merge, push proof, removal; a refusal leaves it in place); its `commits=` go to `night-run job set …
-     state=merged pushed=true`, which reruns the gates of `share/worktree.sh`: an open `review` round (fix it
-     or `review-bench close <round> --nofix`), and for a Code fixer (`code-*`) `bin/code-doctor check
-     --landing` on its run record, `suites=passed` attesting the suites; `land` keeps that worktree for it.
-   - One commit per branch is fine: commit count does not matter to Egor. Merges into main are
-     serial and short; everything else is parallel.
+4. **Per branch, as soon as its worker returns**: `docs/fix-orchestrator.md`, then `night-run job set …
+   state=merged commits=… pushed=true`, which reruns the gates of `share/worktree.sh` (a `code-*` job adds
+   `suites=passed`). No per-branch review (Egor, 2026-10-03: per-branch rounds took about 60% of a night's
+   spend). Merges into main are serial and short; everything else is parallel.
 5. **Debt pass, after the landings** (the `debt` job, once no other job is `pending`): night-sweep
    step 3 once — one fit round, then one bugs round, each ONE chunked round across all sweep
    repositories, over the press-time debt plus everything the night landed — then one fix pass, the
@@ -117,10 +106,7 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
      the night's `leftovers` and the held ones under `held`, and `night-run report` lists both.
 
 ## Isolation rules
-- At night a worker never writes the main checkout.
-  - There is no pour step: `docs/doctor-fix.md` and `docs/vendor-release.md` each get a Night section
-    that replaces the pour with a commit on the worker's own branch.
-  - A second repository gets its own worktree on the same branch name.
+- A worker never writes the main checkout; a second repository gets its own worktree on the same branch.
 - Tests in a worktree run against the job's own worktree set: `share/run-suites.sh` exports a
   sibling repository's worktree on the same branch, else that repository's main checkout (a job that
   did not touch it tests against main, which is its true base).
@@ -306,7 +292,3 @@ progress, not pushed) is plain with its word, red only where Egor is needed: a j
 or a failed launch. Output: a title line `text\ttone\trunning\tid`, then one
 `text\ttone\treason\tref\tkind\tresumable` line per job (`tone` 0 dim, 2 plain, 1 red;
 `resumable` 1 for an unfinished job of a night that does not run).
-
-## Day Fix button
-Unchanged. It opens an interactive chat on one doctor, and that chat pours into main uncommitted.
-The night brief and the day chat follow the same procedure file; only the last step differs.
