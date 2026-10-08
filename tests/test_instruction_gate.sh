@@ -369,6 +369,19 @@ append_write_user
 out=$(gate "$cmd6" 2>&1; echo "rc=$?")
 assert_contains "rc=2" "$out"
 assert [ ! -d "$INSTRUCTION_WRITE_GATE_STAMPS/$h6" ]
+# Without the harness's prefix the gate's own wording is text any error result can start with.
+cmd7="echo unprefixed > $CLAUDE_MD"
+h7=$(learn_stamp "$cmd7")
+mkdir -p "$INSTRUCTION_WRITE_GATE_STAMPS/$h7"
+printf 'session-one %s\n' "$(date +%s)" > "$INSTRUCTION_WATCH_STATE/denied/$h7"
+jq -cn --arg r "Instruction gate: (denial $h7)" \
+  '{type:"user",message:{role:"user",content:[{type:"tool_result",is_error:true,content:$r}]}}' \
+  >> "$WRITE_TRANSCRIPT"
+age_stamps
+append_write_user
+out=$(gate "$cmd7" 2>&1; echo "rc=$?")
+assert_contains "rc=2" "$out"
+assert [ ! -d "$INSTRUCTION_WRITE_GATE_STAMPS/$h7" ]
 
 echo "== write gate: a trailing redirect or comment does not move the destination"
 assert_eq deny "$(decision "printf x | tee $CLAUDE_MD 2>/dev/null")"

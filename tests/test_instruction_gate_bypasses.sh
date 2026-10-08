@@ -46,6 +46,8 @@ deny echo x > $'CLAUDE.md'
 deny echo x > $'CLAUDE.m\\x64'
 deny echo hi >> ~/.claude/claude.md
 deny echo hi >> ~/.claude/Claude.MD
+deny printf x >> ~/.claude/docs/Notes.MD
+deny echo x > ~/.claude/agents/new.Markdown
 deny python3 -c "import os; os.rename('/tmp/x', 'CLAUDE.md')"
 deny python3 -c "import os; open('CLAUDE.md','w').write('x'); print(1)"
 deny node -e "require('fs').renameSync('/tmp/x', 'CLAUDE.md')"
@@ -83,6 +85,18 @@ pass python3 -c "x = 1; y = x >> ~/.claude/CLAUDE.md"
 deny python3 -c "x = 1; y = 2"; printf x >> ~/.claude/CLAUDE.md
 pass python3 -c "print(open('CLAUDE.md').read()); x = 1"
 CASES
+
+# A repository path holding sed's delimiter or `&` still names the files its stash lands.
+GH="$WORK/R#&D"
+mkdir -p "$GH"
+git -C "$GH" init -q
+printf 'rules\n' > "$GH/CLAUDE.md"
+git -C "$GH" add CLAUDE.md
+git -C "$GH" -c user.name=t -c user.email=t@t commit -qm init
+printf 'more rules\n' >> "$GH/CLAUDE.md"
+git -C "$GH" -c user.name=t -c user.email=t@t stash -q
+assert_eq "$(cd "$GH" && pwd -P)/CLAUDE.md" "$(share_call 'instruction_git_landing "git stash pop" "$2"' "$GH")"
+assert_eq deny "$(GATE_CWD="$GH" decision 'git stash pop')"
 
 echo "== bypasses: the bloat gate prices every spelling and every edit tool"
 mkdir -p "$HOME/.claude/rules" "$HOME/.claude/skills-on-demand/s"

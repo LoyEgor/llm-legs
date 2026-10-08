@@ -79,9 +79,10 @@ instruction_md_ere() {
 }
 
 instruction_is_md() {
-  local e
+  local e name
+  name=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
   for e in $INSTRUCTION_MD_EXTENSIONS; do
-    case "$1" in *".$e") return 0 ;; esac
+    case "$name" in *".$e") return 0 ;; esac
   done
   return 1
 }
@@ -1730,7 +1731,8 @@ instruction_git_landing() { # command cwd → absolute paths, one per line
           case "$w" in -*) ;; *) ref=$w; break ;; esac
         done
         stash="$stash$( { git -C "$gcwd" stash show --name-only --include-untracked ${ref:+"$ref"} 2>/dev/null ||
-          git -C "$gcwd" stash show --name-only ${ref:+"$ref"} 2>/dev/null; } | sed "s#^#$top/#")"$'\n'
+          git -C "$gcwd" stash show --name-only ${ref:+"$ref"} 2>/dev/null; } |
+          while IFS= read -r f; do printf '%s/%s\n' "$top" "$f"; done)"$'\n'
         ;;
     esac
   done < <(instruction_split_commands "$cmd")
@@ -1869,7 +1871,7 @@ _instruction_deny_witnessed() { # hash transcript
     | .message.content? | arrays | .[]
     | select(type == "object" and .type == "tool_result" and .is_error == true)
     | (.content | if type == "string" then . else ([.[]? | objects | .text? | strings] | join("")) end)
-    | select(test("^(PreToolUse:[A-Za-z]+ hook error: )?(\\[[^\\]]+\\] )?Instruction(-bloat)? gate: ") and contains($tag))' >/dev/null 2>&1
+    | select(test("^PreToolUse:[A-Za-z]+ hook error: (\\[[^\\]]+\\] )?Instruction(-bloat)? gate: ") and contains($tag))' >/dev/null 2>&1
 }
 
 instruction_stamp_consume() {
