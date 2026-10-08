@@ -946,6 +946,10 @@ assert not_contains "$output" 'worker opus·high PINNED'
 : >"$WORK/chat-pins/chat-t"
 run_filter golden "$TWO_BY_TWO"
 assert contains "$(nrow 1)" 'claude/worker opus·high PINNED'
+# `open=all` pins nothing: the global pin still leads that chat.
+printf 'open=all\n' >"$WORK/chat-pins/chat-t"
+run_filter golden "$TWO_BY_TWO"
+assert contains "$(nrow 1)" 'claude/worker opus·high PINNED'
 run_env=("${base_env[@]}" CLAUDE_CODE_SESSION_ID=chat-other)
 printf 'grok_profile=*\n' >"$WORK/chat-pins/chat-t"
 run_filter golden "$TWO_BY_TWO"

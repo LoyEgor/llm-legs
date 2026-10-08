@@ -261,10 +261,10 @@ Snapshot store and schema live in `~/.claude-profiles/` (documented in its READM
   symlink is the whole install: the shell surfaces that hold no Python find
   it on PATH (`../claude-setup/hooks/commit-report.sh`) and fall silently back to a bare uuid when
   they cannot, so an unlinked entry point is a feature that never once runs.
-- `bin/chat-pin` → `~/.local/bin/chat-pin` — `[claudeb|claude|codex|gemini|grok|<account>|auto]`
+- `bin/chat-pin` → `~/.local/bin/chat-pin` — `[claudeb|claude|codex|gemini|grok|<account>|all|auto]`
   pins THIS chat's workers in `${CHAT_PINS_DIR:-~/.cache/claude-chat-pins}/<session_id>`, replacing
-  the global pins there: a vendor means any of its pool accounts (`*`), `auto` drops the pin, no
-  argument prints it. Inside a session it runs only on the grant Egor's own words wrote.
+  the global pins there: a vendor means any of its pool accounts (`*`), `all` opens every vendor
+  switch for this chat and keeps the global pins, `auto` drops the pin, no argument prints it. Inside a session it runs only on the grant Egor's own words wrote.
 - `bin/claude-resume-timer` → `~/.local/bin/claude-resume-timer` — `[terminal|all] [extra-minutes]`
   reads the chat's account's 5h window from `~/.llm-limits.json` and arms the Hammerspoon
   `ClaudeContinue.startTimerFor` terminal slot of the calling chat's tty (`all`: every live chat)

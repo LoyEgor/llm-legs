@@ -537,8 +537,9 @@ worker_model_chat_pin_file_r() {
   return "$_WM_CHAT_PIN_STATUS"
 }
 
-# A non-empty chat file replaces the global pin tier whole — a vendor it does not name is unpinned
-# for that chat, never filled in from the global file.
+# A chat file holding a `<vendor>_profile=` line replaces the global pin tier whole — a vendor it does
+# not name is unpinned for that chat, never filled in from the global file. `open=all` alone pins
+# nothing, so the global pins still lead there.
 worker_model_chat_opens_all() {
   local file
   file=$(worker_model_chat_pin_file) && grep -qx 'open=all' "$file" 2>/dev/null
@@ -550,7 +551,12 @@ worker_model_pin_file() {
 }
 
 worker_model_pin_file_r() {
-  worker_model_chat_pin_file_r && [ -s "$WORKER_MODEL_R" ] && return 0
+  local line
+  if worker_model_chat_pin_file_r && [ -s "$WORKER_MODEL_R" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in claudeb_profile=* | codex_profile=* | gemini_profile=* | grok_profile=*) return 0 ;; esac
+    done <"$WORKER_MODEL_R"
+  fi
   worker_model_file_r
 }
 

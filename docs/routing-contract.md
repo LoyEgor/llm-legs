@@ -113,11 +113,11 @@ only pace math anywhere — one formula in one shared home, never a per-surface 
    decides (another vendor, or resume after the reset); only `--resume` never moves, because the
    session lives there.
    **Chat pin.** One chat may carry its own pin tier: `${CHAT_PINS_DIR:-~/.cache/claude-chat-pins}/<session_id>`
-   holds the same `<vendor>_profile=<name>|*` lines, and when that file exists and is non-empty it
+   holds the same `<vendor>_profile=<name>|*` lines, and when that file holds one it
    REPLACES the global pin tier for that session — every `*_profile=` line of the global file is
    ignored there, and every other chat keeps the global pins. The session id is
    `CLAUDE_CODE_SESSION_ID`; the Agent hooks export it from their stdin `.session_id` before asking
-   `worker-pick`. No session id, no file or an empty file means the global pins. Resolution lives in
+   `worker-pick`. No session id, no file, or a file with no `*_profile=` line (`open=all` alone) means the global pins. Resolution lives in
    `share/worker-model.sh` alone (`worker_model_pin_file`), and every reader takes pins through it. The
    same file may carry `<vendor>_fast=on` beside the pin (`chat-pin grok-fast`/`codex-fast`): on a
    WORKERS run of that vendor grok swaps in the `-fast` sibling `grokb models` lists, but only
@@ -306,10 +306,9 @@ an ordinary candidate ranked by pool and spending like any other. The global pin
 <vendor>», Egor 2026-09-23) is a whole test permission, workers and reviews alike, and the pool still
 picks which account reviews (`chat_opens` in `bin/worker-pick`). «воркер на все» (`chat-pin all`) writes the one line
 `open=all` instead: no vendor is pinned, and every `<vendor>_workers=off` and `<vendor>_reviewers=off`
-is open for that chat, so the pool ranks all vendors as if no switch were closed. A paused vendor,
-walls and the Light switch still apply. `bin/vendor-fingerprint` opens every integration chat with
-this line already written (Egor 2026-09-23: test chats get every permission; the switches exist to
-steer models acting on their own).
+is open for that chat, so the pool ranks all vendors as if no switch were closed. The global pins
+still lead its workers, and a walled pin falls through to that open pool (Egor 2026-10-08: «все» opens,
+a pin chooses). A paused vendor, walls and the Light switch still apply.
 
 `image` and `computer` ignore `<vendor>_workers=off` and the pin alike: a picture or a GUI app is
 not code work, so such a query is pool membership + login + not walled, ordered by free budget, and
