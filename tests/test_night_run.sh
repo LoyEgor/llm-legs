@@ -1433,4 +1433,59 @@ assert grep -qxF "live prune keeps: it holds ignored files (.env)" "$WORK/out"
 assert grep -qxF "pruned prune cache" "$WORK/out"
 assert [ "$(cat "$PI/.claude/worktrees/keeps/.env")" = s ]
 
+# A night branch whose job closed without landing it (nothing-to-do, settled) is superseded in every repository
+# it is in: listed as such, never adopted nor added to a night, pruned by finish only once its tip is kept and
+# recorded on its job; a dirty one stays. A left job's branch is still an ordinary leftover.
+rm -f "$NIGHTS"/*.json
+: >"$WORK/sweep-repos"
+for r in sa sb; do
+  git init -q -b main "$WORK/$r" && oc "$WORK/$r" commit -q --allow-empty -m root
+  printf '.claude/\n' >>"$WORK/$r/.git/info/exclude"
+  printf '%s\n' "$WORK/$r" >>"$WORK/sweep-repos"
+  git -C "$WORK/$r" update-ref refs/night/cx/base main
+  git -C "$WORK/$r" worktree add -q -b night/sx/handoff-x "$WORK/$r/.claude/worktrees/hx" main
+  for n in 1 2; do oc "$WORK/$r/.claude/worktrees/hx" commit -q --allow-empty -m "superseded $n"; done
+done
+sa_tip=$(git -C "$WORK/sa" rev-parse night/sx/handoff-x) sb_tip=$(git -C "$WORK/sb" rev-parse night/sx/handoff-x)
+oc "$WORK/sa" branch night/sx/trade-y "$(oc "$WORK/sa" commit-tree "main^{tree}" -p main -m settled)"
+oc "$WORK/sa" branch night/sx/fixer-z "$(oc "$WORK/sa" commit-tree "main^{tree}" -p main -m left)"
+oc "$WORK/sa" worktree add -q -b night/sx/dirty-n "$WORK/sa/.claude/worktrees/dn" main
+oc "$WORK/sa/.claude/worktrees/dn" commit -q --allow-empty -m dirty
+printf 'wip\n' >"$WORK/sa/.claude/worktrees/dn/wip"
+jq -n '{id: "sx", started_at: "2026-01-05T00:00:00Z", finished_at: "2026-01-05T01:00:00Z", session: null, jobs: [
+  {kind: "handoff", ref: "handoff-x", state: "nothing-to-do", reason: "superseded", branch: "night/sx/handoff-x"},
+  {kind: "trade", ref: "trade-y", state: "settled", branch: null},
+  {kind: "fixer", ref: "fixer-z", state: "left", reason: "hung", branch: "night/sx/fixer-z"},
+  {kind: "handoff", ref: "dirty-n", state: "nothing-to-do", branch: "night/sx/dirty-n"}]}' >"$(record sx)"
+jq -n '{id: "cx", started_at: "2026-01-06T00:00:00Z", finished_at: null, session: null, jobs: []}' >"$(record cx)"
+night leftovers >"$WORK/left" || fail "leftovers with superseded branches"
+for r in sa sb; do
+  assert grep -qxF "$r night/sx/handoff-x · $WORK/$r/.claude/worktrees/hx · unlanded · +2/-0 main · 0 dirty · superseded (by job handoff-x nothing-to-do, 2 unlanded commits)" "$WORK/left"
+done
+assert grep -qxF "sa night/sx/trade-y · no worktree · unlanded · +1/-0 main · 0 dirty · superseded (by job trade-y settled, 1 unlanded commits)" "$WORK/left"
+assert grep -qxF "sa night/sx/fixer-z · no worktree · unlanded · +1/-0 main · 0 dirty · leftover (1 unlanded commits)" "$WORK/left"
+assert jqe '[.[] | select(.branch == "night/sx/handoff-x") | .state] == ["superseded", "superseded"]' <(night leftovers --json)
+assert_fails night job cx add leftover night/sx/handoff-x 2>"$WORK/err"
+assert grep -qxF "night-run: night/sx/handoff-x is superseded in sa: by job handoff-x nothing-to-do, 2 unlanded commits" "$WORK/err"
+assert_fails night job cx add handoff handoff-x --branch night/sx/handoff-x 2>"$WORK/err"
+assert grep -qF "night/sx/handoff-x is superseded in sa: by job handoff-x nothing-to-do" "$WORK/err"
+assert jqe '.jobs == []' "$(record cx)"
+night job cx add leftover night/sx/fixer-z >/dev/null || fail "a left job's branch is still adopted"
+night finish cx >"$WORK/out" || fail "finish with superseded branches"
+assert grep -qxF "pruned sa night/sx/handoff-x (superseded, tip $sa_tip)" "$WORK/out"
+assert grep -qxF "pruned sb night/sx/handoff-x (superseded, tip $sb_tip)" "$WORK/out"
+assert grep -qxF "pruned sa night/sx/trade-y (superseded, tip $(git -C "$WORK/sa" rev-parse refs/night/sx/pruned/trade-y))" "$WORK/out"
+assert grep -qxF "superseded sa night/sx/dirty-n: by job dirty-n nothing-to-do, 1 unlanded commits, 1 uncommitted files, kept" "$WORK/out"
+for r in sa sb; do
+  assert_fails git -C "$WORK/$r" rev-parse -q --verify refs/heads/night/sx/handoff-x
+  assert [ ! -e "$WORK/$r/.claude/worktrees/hx" ]
+done
+assert jqe --arg a "$sa_tip" --arg b "$sb_tip" '(.jobs[] | select(.ref == "handoff-x") | .pruned | map([.repo, .tip, .ref]))
+  == [["sa", $a, "refs/night/sx/pruned/handoff-x"], ["sb", $b, "refs/night/sx/pruned/handoff-x"]]' "$(record sx)"
+assert [ "$(git -C "$WORK/sa" rev-parse refs/night/sx/pruned/handoff-x)" = "$sa_tip" ]
+assert [ "$(git -C "$WORK/sb" rev-parse refs/night/sx/pruned/handoff-x)" = "$sb_tip" ]
+git -C "$WORK/sa" branch night/sx/handoff-x "$sa_tip" || fail "the recorded tip restores the branch"
+assert [ "$(cat "$WORK/sa/.claude/worktrees/dn/wip")" = wip ]
+assert git -C "$WORK/sa" rev-parse -q --verify refs/heads/night/sx/dirty-n >/dev/null
+
 echo "PASS: test_night_run.sh ($asserts asserts)"

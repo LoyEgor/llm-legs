@@ -221,6 +221,14 @@ N|diverged[, WIP in the way: <files>]` for a main checkout behind origin/main:
 - `landed`: landed, clean, not live, not held; `finish` removes its worktree and deletes the branch,
   except a worktree holding ignored files besides caches (`__pycache__`, `.pytest_cache`, `node_modules`,
   `.venv`, `.DS_Store`): removal would delete them, so it prints `live … it holds ignored files (…)`.
+- `superseded`: a night branch, not landed, whose job closed without landing it: `nothing-to-do` (the
+  job's verdict is that nothing lands, e.g. main already holds a newer copy) or `settled` (a trade whose
+  recorded answer was found carried out elsewhere). `blocked-on-egor` still waits on his answer and
+  `left`/`failed-launch` are unfinished work a later Cleanup lands, so those stay `leftover`. In every
+  repository the branch is in, it is never adopted (`job add leftover`) nor added to a night (`job add …
+  --branch`); `finish` prunes it like a landed one, but only after keeping its tip under
+  `refs/night/<night>/pruned/<rest>` and in its job's `pruned[]` {repo, branch, tip, ref, at}, so `git branch
+  <name> <tip>` restores it; a worktree with uncommitted files stays (`superseded … , kept`).
 - `leftover`: everything else (unlanded commits or uncommitted files). It is unfinished work and goes
   into main as a night job. `night-run job <id> add leftover <branch>` adopts it into the night's own
   namespace, where the review-flow gate lets workers commit, in every sweep repository where that
@@ -237,7 +245,7 @@ N|diverged[, WIP in the way: <files>]` for a main checkout behind origin/main:
 `night-run survey [--post] [<repo>...]` is the sweep's opening report (repositories default to the sweep
 list; a name resolves through it, a path need not be in it). Per repository `<name> · debt N lines/M
 files · due D lines/E files · K dirty · whole|N chunks`, then per linked worktree `  <branch> · +ahead/-behind main · K dirty ·
-debt N · take|keep (<reason>)`, closing `total · …`. Debt and the chunk column come from one `review-bench
+debt N · take|keep|drop (<reason>)`, closing `total · …`. Debt and the chunk column come from one `review-bench
 review --debt --repo <A> … --tier T2 --price`, the due part (stable or critical, what the bugs round
 reads) from the same with `--due` (launches nothing; a checkout it does not list owes 0, a
 failed price prints `?`); keep is `live` or `held` by the same predicate as `leftovers`, for a

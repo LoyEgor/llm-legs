@@ -27,6 +27,7 @@ STATES=' pending merged left failed-launch blocked-on-egor nothing-to-do '
 SPEED_WINDOW_H=6
 redeploy="${NIGHT_RUN_REDEPLOY:-$repo_root/bin/harness-doctor --redeploy}"
 JQ_SPEED_RUN='def speed_run: .doctor == "harness" and (.area // "" | test("^speed(-|$)"));'
+JQ_DONE_JOB='def done_job: .state == "nothing-to-do" or .state == "settled"; def job_branch($n): .branch // "night/\($n)/\(.ref)";'
 . "$repo_root/share/chat-open.sh"
 . "$repo_root/share/store-lock.sh"
 . "$repo_root/share/test-scope.sh"
@@ -102,7 +103,9 @@ leftover: ref is a leftover branch, adopted in every sweep repository where it i
 leftovers lists every non-main branch and worktree of the sweep repositories: live (main checkout, locked,
   a running night's branch) and held ones stay, recent activity or a process inside keeps none,
   landed ones go at finish, every other is a leftover to carry; finish records those under the night's
-  leftovers and held
+  leftovers and held. A night branch whose job is nothing-to-do or settled is superseded: never adopted
+  nor added by job add --branch; finish prunes it once its tip is kept under refs/night/<night>/pruned/
+  and in its job's pruned[], a dirty worktree staying
 hold, run by the chat Egor said `сделай холд` in (word family night-hold), holds that chat's worktrees
   in the sweep repositories out of the nights until the next one finishes (a running one: it, named):
   nights/holds/<session>.json, a second hold of the chat adding to the first
@@ -486,7 +489,7 @@ adopt_leftover() { # id branch ready-why repos -> sets branch and adopted (JSON)
   elif [ -n "$3" ] && [ "$(wc -l <<<"$rows")" -gt 1 ]; then
     die "$old is in $(cut -f1 <<<"$rows" | sed 's|.*/||' | paste -sd ' ' -): --ready hands over one chat's branch, so name the repositories it covers and retry with $(cut -f1 <<<"$rows" | sed 's|.*/|--repo |' | paste -sd '|' - | sed 's/|/ or /g')"
   fi
-  row=$(awk -F '\t' '$8 == "live" || $8 == "held"' <<<"$rows" | head -1)
+  row=$(awk -F '\t' '$8 == "live" || $8 == "held" || $8 == "superseded"' <<<"$rows" | head -1)
   [ -z "$row" ] || die "$old is $(cut -f8 <<<"$row") in $(basename "${row%%$'\t'*}"): $(cut -f9 <<<"$row")"
   rows=$(awk -F '\t' '$8 == "leftover"' <<<"$rows")
   [ -n "$rows" ] || die "$old is no leftover: landed, finish prunes it"
@@ -542,7 +545,7 @@ adopt_undo() { # branch adopted -> drops the night branch and worktree of every 
 }
 
 cmd_job() {
-  local id=${1:-} verb=${2:-} kind ref branch='' adopted='' at=$(stamp) began=$SECONDS adopt='{}' ready='' repos='' handover=null
+  local id=${1:-} verb=${2:-} kind ref branch='' row adopted='' at=$(stamp) began=$SECONDS adopt='{}' ready='' repos='' handover=null
   [ -n "$id" ] || usage
   known_night "$id"
   case $verb in
@@ -561,6 +564,8 @@ cmd_job() {
         esac
       done
       [ -z "$ready$repos" ] || [ "$kind" = leftover ] || usage
+      [ -z "$branch" ] || ! row=$(ROWS_BRANCH=$branch branch_rows | awk -F '\t' '$8 == "superseded"' | head -1) || [ -z "$row" ] ||
+        die "$branch is superseded in $(basename "${row%%$'\t'*}"): $(cut -f9 <<<"$row"); it never lands"
       if [ "$kind" = leftover ]; then
         [ -z "$branch" ] || usage
         adopt_leftover "$id" "$ref" "$ready" "${repos%$'\n'}"
@@ -1000,8 +1005,8 @@ cmd_finish() {
   $redeploy || true
 }
 
-branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locked(0|1) -> TSV row; reads HELD
-  local repo=$1 wt=$2 branch=$3 ref head behind ahead landed=false dirty=0 night='' why='' state=live hold cherry
+branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locked(0|1) -> TSV row; reads HELD, DONE_JOBS
+  local repo=$1 wt=$2 branch=$3 ref head behind ahead landed=false dirty=0 night='' why='' state=live hold cherry job
   ref=${branch:+refs/heads/$branch}
   head=$(git -C "${wt:-$repo}" rev-parse -q --verify "${ref:-HEAD}^{commit}") || return 0
   read -r behind ahead < <(git -C "$repo" rev-list --left-right --count "refs/heads/main...$head")
@@ -1026,19 +1031,24 @@ branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locke
     $landed || { state=leftover why="$ahead unlanded commits"; }
     [ "$dirty" = 0 ] || { state=leftover why="${why:+$why, }$dirty uncommitted files"; }
     [ "$state" = landed ] || [ -n "$branch" ] || why="$why, detached HEAD"
+    job=$(awk -F '\t' -v b="$branch" '$1 == b { print $2 " " $3; exit }' <<<"$DONE_JOBS")
+    [ "$state" = landed ] || [ -z "$night" ] || [ -z "$job" ] || state=superseded why="by job $job, $why"
   fi
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$repo" "${branch:--}" "${wt:--}" "$landed" "$ahead" "$behind" "$dirty" "$state" "$why"
 }
 
 # Every non-main branch and worktree of the sweep repositories, every night's included, and the night/* ones
 # of the helper repositories: repo branch|-
-# worktree|- landed ahead behind dirty live|landed|leftover why. Landed = in main, or a night branch still
-# at its night's base, since a nothing-to-do job never committed. `-`, not an empty field: a tab is IFS
-# whitespace, so read would shift every field after an empty one.
+# worktree|- landed ahead behind dirty live|landed|leftover|superseded why. Landed = in main, or a night branch still
+# at its night's base, since a nothing-to-do job never committed. Superseded = an unlanded night branch whose
+# job closed without landing it (nothing-to-do, settled): never landed nor adopted, finish prunes it with its
+# tip kept. `-`, not an empty field: a tab is IFS whitespace, so read would shift every field after an empty one.
 branch_rows() { # [repo...], default the sweep repositories and the helpers' night branches; ROWS_BRANCH=b: b's rows only
-  local repo wt branch main locked seen HELD only want=${ROWS_BRANCH:-}
+  local repo wt branch main locked seen HELD DONE_JOBS only want=${ROWS_BRANCH:-}
   [ $# -gt 0 ] || [ -r "$sweep_repos" ] || return 0
   HELD=$(cat "$holds_dir"/*.json 2>/dev/null | jq -r '.words as $w | .branches[]? | [.repo, .branch, $w] | @tsv' 2>/dev/null)
+  DONE_JOBS=$(cat "$nights_dir"/*.json 2>/dev/null | jq -r "$JQ_DONE_JOB"' .id as $n | .jobs[]? | select(done_job)
+    | [job_branch($n), .ref, .state] | @tsv' 2>/dev/null)
   while IFS=$'\t' read -r repo only; do
     [ -n "$repo" ] && [ -d "$repo" ] || continue
     git -C "$repo" rev-parse -q --verify refs/heads/main >/dev/null || continue
@@ -1218,9 +1228,10 @@ survey_lines() { # price due-price repo... -> the survey's lines
             *) reason=$why ;;
           esac ;;
         landed) reason=landed ;;
+        superseded) reason='superseded by job state' ;;
         *) if [ "$landed" = true ]; then reason='uncommitted files'; else reason='unlanded commits'; fi ;;
       esac
-      case $state in live | held) take=keep ;; *) take=take ;; esac
+      case $state in live | held) take=keep ;; superseded) take=drop ;; *) take=take ;; esac
       [ "$branch" != - ] || branch="${wt##*/} (detached)"
       printf '  %s · +%s/-%s main · %s dirty · debt %s · %s (%s)\n' "$branch" "$ahead" "$behind" "$dirty" \
         "$(price_of "$price" "$wt" | cut -f1)" "$take" "$reason"
@@ -1255,22 +1266,43 @@ cmd_survey() {
   ! $post || printf '%s\n' "$out" | frame_rows survey | post_block night-survey
 }
 
+# A superseded branch is pruned only once its tip is kept: refs/night/<night>/pruned/<rest> holds it past gc and
+# its job's pruned[] records it, so `git branch <name> <tip>` restores it.
+keep_tip() { # repo branch -> the tip kept for restore, else fails saying why
+  local night=${2#night/} tip keep
+  night=${night%%/*} keep="refs/night/$night/pruned/${2#night/*/}"
+  tip=$(git -C "$1" rev-parse -q --verify "refs/heads/$2^{commit}") && git -C "$1" update-ref "$keep" "$tip" ||
+    { printf 'cannot keep its tip under %s\n' "$keep"; return 1; }
+  lock
+  night_set "$night" "$JQ_DONE_JOB"' .jobs |= map(if job_branch($n) == $b then .pruned = ((.pruned // [])
+      + [{repo: $r, branch: $b, tip: $tip, ref: $k, at: $t}]) else . end)' \
+    --arg n "$night" --arg b "$2" --arg r "$(basename "$1")" --arg tip "$tip" --arg k "$keep" --arg t "$(stamp)" ||
+    { unlock; printf 'cannot record its tip %s in night %s\n' "$tip" "$night"; return 1; }
+  unlock
+  printf '%s\n' "$tip"
+}
+
 prune_landed() {
-  local repo branch wt landed ahead behind dirty state why name
+  local repo branch wt landed ahead behind dirty state why name held tip
   while IFS=$'\t' read -r repo branch wt landed ahead behind dirty state why; do
     [ "$branch" != - ] && name="$(basename "$repo") $branch" || name="$(basename "$repo") $wt"
     case $state in
-      live | leftover | held) printf '%s %s: %s\n' "$state" "$name" "$why" ;;
-      landed)
-        if [ "$wt" != - ] && why=$(cwd_held "$wt"); then printf 'live %s: %s\n' "$name" "$why"
-        elif [ "$wt" != - ] && why=$(git -C "$wt" ls-files -o -i --exclude-standard --directory |
-          grep -vE '(^|/)(__pycache__|\.pytest_cache|node_modules|\.venv|\.DS_Store)(/|$)' | head -3 | paste -sd ' ' -) && [ -n "$why" ]; then
-          printf 'live %s: it holds ignored files (%s)\n' "$name" "$why"
-        else
-          { [ "$wt" = - ] || git -C "$repo" worktree remove "$wt"; } &&
-            { [ "$branch" = - ] || git -C "$repo" branch -q -D "$branch"; } && printf 'pruned %s\n' "$name"
-        fi ;;
+      live | leftover | held) printf '%s %s: %s\n' "$state" "$name" "$why"; continue ;;
+      superseded) [ "$dirty" = 0 ] || { printf 'superseded %s: %s, kept\n' "$name" "$why"; continue; } ;;
+      landed) ;;
+      *) continue ;;
     esac
+    tip=''
+    if [ "$wt" != - ] && held=$(cwd_held "$wt"); then printf 'live %s: %s\n' "$name" "$held"
+    elif [ "$wt" != - ] && held=$(git -C "$wt" ls-files -o -i --exclude-standard --directory |
+      grep -vE '(^|/)(__pycache__|\.pytest_cache|node_modules|\.venv|\.DS_Store)(/|$)' | head -3 | paste -sd ' ' -) && [ -n "$held" ]; then
+      printf 'live %s: it holds ignored files (%s)\n' "$name" "$held"
+    elif [ "$state" = superseded ] && ! tip=$(keep_tip "$repo" "$branch"); then
+      printf 'superseded %s: %s, kept: %s\n' "$name" "$why" "$tip"
+    else
+      { [ "$wt" = - ] || git -C "$repo" worktree remove "$wt"; } &&
+        { [ "$branch" = - ] || git -C "$repo" branch -q -D "$branch"; } && printf 'pruned %s%s\n' "$name" "${tip:+ (superseded, tip $tip)}"
+    fi
   done < <(branch_rows)
 }
 
