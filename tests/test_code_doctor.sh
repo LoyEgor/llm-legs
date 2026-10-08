@@ -924,6 +924,9 @@ cd.load_candidates = lambda: [{"id": "cause:x", "units": []}]
 row = cd.record_fix("cause:x", "code-code-z", [], 0, 0, 0, None, None, None)
 assert row["status"] == "fixed-pending" and row["match"]["cause"] == "cause:x", row
 assert len(cd.load_ledger()["rows"]) == 2
+span = {"file": "a/f", "unit": "a/f", "digest": "d"}
+assert cd.check_run({"problems": [{"id": "cause:y", "units": [span]}], "launched_at": "2026-10-08T00:00:00Z"},
+                    None, False, False) == []
 assert cd.file_lang("bin/tool", "#!/usr/bin/env sh\n") == "bash"
 assert cd.file_lang("bin/tool", "#!/usr/bin/env -S perl -w\n") == "undeclared:perl"
 PY

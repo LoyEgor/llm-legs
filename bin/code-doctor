@@ -3491,7 +3491,7 @@ def check_run(record, base, landing, suites_passed):
         candidate = candidates.get(problem.get("cause") or pid)
         if candidate and candidate.get("evidence_digest") != problem.get("digest") and problem.get("digest"):
             errors.append("%s: its evidence changed since the snapshot: sent back to the judge" % pid)
-        fixed = any(isinstance(row, dict) and pid in (row.get("id"), (row.get("match") or {}).get("cause"))
+        fixed = any(isinstance(row, dict) and pid in (row.get("id"), isinstance(row.get("match"), dict) and row["match"].get("cause"))
                     and any(isinstance(fix, dict) and fix.get("by") == record.get("id") for fix in row.get("fixes") or ())
                     for row in ledger.get("rows") or ())
         if fixed and record.get("id") and all(
