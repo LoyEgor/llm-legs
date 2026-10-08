@@ -164,9 +164,12 @@ def result_of(run_id, deadline):
     subprocess.run([worker_run(), "wait", run_id, "--max", str(int(max(1, deadline - time.time())))],
                    capture_output=True, text=True, env=relay_env())
     report = subprocess.run([worker_run(), "report", run_id], capture_output=True, text=True).stdout
-    if re.search(r"^STATUS: (running|queued)", report, re.M):
-        return None
-    return report.split("RESULT:\n", 1)[1] if "RESULT:\n" in report else ""
+    status = re.search(r"^STATUS: (\w+)", report, re.M)
+    if status and status.group(1) in ("running", "queued"):
+        return None, None
+    if not status or status.group(1) != "done":
+        return None, "run %s %s" % (run_id, status.group(1) if status else "unreported")
+    return (report.split("RESULT:\n", 1)[1] if "RESULT:\n" in report else ""), None
 
 
 def slug(text):
@@ -188,8 +191,12 @@ def merged(raw, folder, deadline):
     path = os.path.join(folder, "merge.md")
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(brief)
-    run_id, error = launch(path)
-    text = result_of(run_id, deadline) if run_id else None
+    if time.time() >= deadline:
+        run_id, error = None, "no wall left for the merge"
+    else:
+        run_id, error = launch(path)
+    text, failure = result_of(run_id, deadline) if run_id else (None, None)
+    error = error or failure
     found = objects(text or "", ("id", "title"))
     if found:
         return by_minutes(found)[:TOP], None
@@ -203,6 +210,7 @@ def detach(args):
     os.makedirs(state_dir(), exist_ok=True)
     log = open(os.path.join(state_dir(), "detached.log"), "a", encoding="utf-8")
     command = [os.path.realpath(__file__), "run", "--parallel", str(args.parallel), "--max-wall", str(args.max_wall)]
+    command += ["--dry-run"] if args.dry_run else []
     child = subprocess.Popen(command + (["--night", args.night] if args.night else []), stdin=subprocess.DEVNULL,
                              stdout=log, stderr=log, start_new_session=True)
     print("log-audit: reading in the background (pid %d); its line lands in %s" % (child.pid, log.name))
@@ -241,7 +249,10 @@ def run(args):
             queue.pop(0)
         if not pending:
             break
-        text = result_of(pending.pop(0), deadline)
+        text, failure = result_of(pending.pop(0), deadline)
+        if failure:
+            error, stop = failure, "failed"
+            continue
         if text is None:
             stop = "wall"
             continue

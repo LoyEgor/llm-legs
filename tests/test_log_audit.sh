@@ -59,7 +59,7 @@ case "$1" in
   wait) echo 'STATUS: done' ;;
   report)
     n=${2#fake-}
-    printf 'STATUS: done\nRESULT:\n'
+    printf 'STATUS: %s\nRESULT:\n' "${FAKE_STATUS:-done}"
     if grep -q '^# Log audit: merge' "$CALLS.brief.$n"; then
       echo '{"id": "small-first", "title": "A one-minute thing the merge listed first", "where": [], "quotes": [], "minutes": 1}'
       echo '{"id": "hook-awk-multibyte", "title": "A Bash hook prints an awk multibyte error", "kind": "gate", "where": ["Fixture chat"], "quotes": ["H×3: PreToolUse:Bash stderr awk"], "why": "noise on every call", "minutes": 4, "fix": "hooks"}'
@@ -155,4 +155,31 @@ assert jqe '.found | length == 2 and .[0].rule == "log_audit" and .[0].ident == 
   and .[0].evidence[0].ref == "Fixture chat" and (.[0].evidence[0].excerpt | startswith("H×3"))' <(verdicts "$at")
 assert jqe '.found == [] and (.at | type) == "number"' <(verdicts "$((at + 49 * 3600))")
 
-echo "PASS: $asserts asserts; the transcript skeleton (asked, said, done, failed, gaps, long turns, repeated hook lines once with a count; tool output and injected context dropped), a full read on Claude Sonnet under the log-audit relay type that skips its own transcripts, the merge, an incremental next read, a refused launch that keeps the findings and the start, a detached read, and the Harness doctor's red problem per finding until the read goes stale"
+# A chunk whose run fails is not read: the read stops without a merge and the next one rereads its logs.
+printf '{"type": "user", "timestamp": "%s", "message": {"content": "и опять"}}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
+  >>"$WORK/projects/-repo/chat.jsonl"
+: >"$CALLS"
+FAKE_STATUS=failed "$ROOT/bin/log-audit" run --night N5 >"$WORK/out"; rc=$?
+assert test "$rc" -eq 1
+assert grep -q '^log-audit: stopped (failed) after 0 of 1 chunks: run fake-1 failed' "$WORK/out"
+assert test "$(wc -l <"$CALLS" | tr -d ' ')" -eq 1
+assert jqe '.stop == "failed" and .read == 0' <(tail -1 "$LOG_AUDIT_DIR/runs.jsonl")
+assert jqe '.night == "N4"' "$LOG_AUDIT_DIR/findings.json"
+
+# A detached dry run stays a dry run.
+: >"$CALLS"
+"$ROOT/bin/log-audit" run --night N6 --detach --dry-run >/dev/null
+for _ in $(seq 1 100); do grep -q 'dry run, nothing launched' "$LOG_AUDIT_DIR/detached.log" 2>/dev/null && break; sleep 0.1; done
+assert grep -q 'dry run, nothing launched' "$LOG_AUDIT_DIR/detached.log"
+assert test ! -s "$CALLS"
+assert test "$(wc -l <"$LOG_AUDIT_DIR/runs.jsonl" | tr -d ' ')" -eq 5
+
+# Chunks that use up the wall leave no merge run to be abandoned unread.
+: >"$CALLS"
+"$ROOT/bin/log-audit" run --night N7 --max-wall 0 >"$WORK/out"; rc=$?
+assert test "$rc" -eq 1
+assert test "$(wc -l <"$CALLS" | tr -d ' ')" -eq 1
+assert jqe '.stop == "wall" and .read == 1 and .error == "no wall left for the merge"' <(tail -1 "$LOG_AUDIT_DIR/runs.jsonl")
+assert test "$(run_field 6 since)" = "$(run_field 5 since)"
+
+echo "PASS: $asserts asserts; the transcript skeleton (asked, said, done, failed, gaps, long turns, repeated hook lines once with a count; tool output and injected context dropped), a full read on Claude Sonnet under the log-audit relay type that skips its own transcripts, the merge, an incremental next read, a refused launch that keeps the findings and the start, a detached read, the Harness doctor's red problem per finding until the read goes stale, a failed chunk run that leaves its logs for the next read, a detached dry run that launches nothing, and no merge launched past the wall"
