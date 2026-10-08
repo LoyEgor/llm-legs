@@ -35,6 +35,8 @@ JQ_AREA='def area: .area // (if .doctor == "updater" then "release" else "all" e
 JQ_COUNTS='"\(.problems | length) problems" + (if (.quiet // []) | length > 0 then " · \(.quiet | length) known, quiet" else "" end)'
 TEST_SPEED_RULES=' test_long_pole test_daily_cost test_slow suites_at_once '
 TEST_FIX_RULES="$TEST_SPEED_RULES test_hang "
+SPEED_LENS_RULES="$TEST_SPEED_RULES opportunity regression time_floor suite_audit hook_p50 hook_sync hook_full_work hook_every_call "
+SPEED_LENS_TIER=T2
 JQ_HAS_RULES='any(.problems[]; .rule as $r | $rules | split(" ") | index($r))'
 
 die() { printf 'doctor-fix: %s\n' "$*" >&2; exit 1; }
@@ -725,7 +727,7 @@ write_brief() { # id worktree -> the brief file
   case $doctor in llm) title=LLM ;; harness) title=Harness ;; code) title=Code ;; system) title=System ;; *) title=Updater ;; esac
   {
     ! jq -e --arg rules ' suite_audit ' "$JQ_HAS_RULES" "$file" >/dev/null || printf 'STRONG: yes\n'
-    printf 'ROUND: none\n'
+    printf 'ROUND: %s\n' "$(jq -r '.lens_round // "none"' "$file")"
     jq -r '.worktrees[1:][] | "ADD-DIR: \(.)"' "$file"
     printf 'Working directory: %s\n\n# Night fixer run %s\n\n' "$wt" "$id"
     printf 'Night %s · %s doctor · area %s · %s. Worktree `%s` on branch `%s`.\n\n' \
@@ -739,6 +741,8 @@ write_brief() { # id worktree -> the brief file
     printf '   Close reruns `bin/%s-doctor --json` in this worktree itself; a `fixed` problem must read fixed-pending or be gone there.\n' "$doctor"
     printf '5. Whatever you found but did not fix, and every cause you ruled out, goes into the ledger (a row'"'"'s `note`, a new row or a `blind_spots` row), so the next fixer does not dig the same ground.\n'
     printf '6. Report: per problem the verdict and one line of why, the commits (repo@hash) and every handoff.\n\n'
+    ! jq -e '.lens_round' "$file" >/dev/null ||
+      printf 'Speed lens: the `ROUND:` above is a `--lens speed` review of your component files aimed at the problems below; its confirmed findings, appended after this brief, are your leads to them. Each finding gets its verdicts.jsonl row (fixed, or false when it is not real or would trade quality); your decision lines still answer the problems.\n\n'
     [ "$doctor" != code ] ||
       printf 'Code runs: every problem carries its judged plan and proof obligations; a deletion lands only through `bin/code-doctor check` (close runs it against `refs/night/%s/base`), never edit through a symlink into another repository, and a cross-repository merge lands in stages over nights (the shared module and the callers first, `merges: [{stage: "migrated", night}]` in the ledger row, the old copy on a later night). Record each landed cleanup with `bin/code-doctor record-fix <cause> --by <run> --files ... --lines-removed N [--mechanism M --canonical PATH --replaced PATH...]`.\n\n' "$night"
     [ "$doctor" != system ] ||
@@ -759,6 +763,33 @@ write_brief() { # id worktree -> the brief file
     show_run "$id"
   } >"$runs_dir/$id.brief.md" || return 1
   printf '%s\n' "$runs_dir/$id.brief.md"
+}
+
+speed_lens() { # id worktree top -> a Speed run's component files in top's repository get a speed-lens review in its worktree, its round on the record
+  local id=$1 wt=$2 top=$3 file path rel key round out ledger="$runs_dir/speed-lens.tsv" files=()
+  file=$(record_file "$id")
+  [ "$(jq -r .doctor "$file")" = harness ] && jq -e --arg rules "$SPEED_LENS_RULES" "$JQ_HAS_RULES" "$file" >/dev/null || return 0
+  while IFS= read -r path; do
+    rel=${path#"$top"/}
+    [ "$rel" != "$path" ] && [ -f "$wt/$rel" ] && files+=("$rel")
+  done < <(jq -r '[.problems[].component.files[]?] | unique[]' "$file")
+  [ ${#files[@]} -gt 0 ] || return 0
+  key=$({ printf '%s\n' "$SPEED_LENS_TIER" "${files[@]}"; git -C "$wt" hash-object -- "${files[@]}"; } | shasum -a 256 | cut -c1-16)
+  if round=$(awk -F'\t' -v k="$key" '$1 == k { r = $2 } END { if (r == "") exit 1; print r }' "$ledger" 2>/dev/null); then
+    printf 'doctor-fix: %s gets no speed lens: round %s read the same files at the same content\n' "$id" "$round" >&2
+    return 0
+  fi
+  out=$(cd "$wt" && "${DOCTOR_FIX_REVIEW_BENCH:-review-bench}" review --repo "$wt" --files "${files[@]}" --lens speed \
+    --tier "$SPEED_LENS_TIER" --scope-lines "$(git diff --numstat "$(git hash-object -t tree /dev/null)" HEAD -- "${files[@]}" | awk '{ s += $1 } END { print s + 0 }')" \
+    --focus "Aimed by the Harness doctor's measured rows: $(jq -r '[.problems[] | .fact // .id] | join(" | ")' "$file"). Find what makes them slow; keep every check." 2>&1 </dev/null)
+  round=$(sed -En 's/^run id: ([0-9]{8}T[0-9]{6}Z-[0-9a-f]{7})$/\1/p' <<<"$out" | head -1)
+  if [ -z "$round" ]; then
+    printf 'doctor-fix: %s gets no speed lens: %s\n' "$id" "$(grep -m1 '^review-bench:' <<<"$out" || grep . <<<"$out" | tail -1)" >&2
+    return 0
+  fi
+  locked record_set "$id" '.lens_round = $r' --arg r "$round" || return 0
+  printf '%s\t%s\t%s\n' "$key" "$round" "$id" >>"$ledger"
+  printf 'doctor-fix: %s waits for speed lens round %s: dispatch its brief when that round'"'"'s review-waiter returns\n' "$id" "$round" >&2
 }
 
 component_repos() { # id top -> the main checkouts other than top that hold the run's component files
@@ -807,6 +838,7 @@ launch_night() { # doctor night
     [ -z "$siblings" ] || locked record_set "$id" '.worktrees += ($s | split("\n"))' --arg s "$siblings"
     [ -n "$judge" ] || judge=$( (cd "$wt" && "bin/$doctor-doctor" --json 2>/dev/null) | jq -r '.judge // empty' 2>/dev/null)
     [ -z "$judge" ] || locked record_set "$id" '.judge_at_launch = $j' --arg j "$judge"
+    speed_lens "$id" "$wt" "$top"
     if ! brief=$(write_brief "$id" "$wt"); then
       locked fail_run "$id" "brief not written"
       printf 'run %s failed: brief not written\n' "$id" >&2

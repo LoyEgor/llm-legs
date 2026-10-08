@@ -825,7 +825,7 @@ assert [ "$(ls "$RUNS"/code-*.json)" = "$before" ]
 # lever so each claims its own slot and window. Over the calibration transcripts, a quiet-band contention probe and a
 # heavy llm-legs suite, that is design §6's Night 1: #2, #1, #5 stage 1.
 S="$WORK/speed-cal"
-mkdir -p "$L/tests" && : >"$L/tests/test_llm_limits.sh"
+mkdir -p "$L/tests" && printf 'a\nb\nc' >"$L/tests/test_llm_limits.sh"
 python3 - "$ROOT" "$S" <<'EOF' || fail "the calibration fixture did not build"
 import json, os, sys, time
 root, work = sys.argv[1:3]
@@ -850,7 +850,14 @@ with open(os.path.join(work, "harness", "latest.json"), "w") as handle:
 with open(os.path.join(work, "ledger.json"), "w") as handle:
     json.dump({"owner": "H", "rows": [], "blind_spots": []}, handle)
 EOF
-speed_env=(HARNESS_DOCTOR_DIR="$S/harness" HARNESS_LEDGER="$S/ledger.json")
+speed_env=(HARNESS_DOCTOR_DIR="$S/harness" HARNESS_LEDGER="$S/ledger.json" DOCTOR_FIX_REVIEW_BENCH="$FAKE_BIN/review-bench")
+cat >"$FAKE_BIN/review-bench" <<'EOF'
+#!/usr/bin/env bash
+[ ! -e "$DATA/rb-fails" ] || { printf 'reviewing x\nreview-bench: no lens named speed\n' >&2; exit 2; }
+printf '%s\t%s\n' "$PWD" "$*" >>"$DATA/rb-args"
+printf 'reviewing x\nrun id: 20261008T000000Z-abcdef%s\n' "$(wc -l <"$DATA/rb-args" | tr -d ' ')"
+EOF
+chmod +x "$FAKE_BIN/review-bench"
 env "${speed_env[@]}" CODE_LEDGER="$S/none.json" STATUSLINE_CACHE_DIR="$S/sl" SPEED_DOCTOR_NOW=1790967000 \
   SPEED_DOCTOR_DIR="$S/speed" WORKER_STATS_DIR="$S/ws" CODE_DOCTOR_DIR="$S/code" "$ROOT/bin/speed-doctor" --quiet ||
   fail "speed-doctor did not merge its section"
@@ -863,7 +870,7 @@ printf '    "T0": {"efforts": {"claude": "low", "codex": "low"}},\n' >"$L/share/
 printf -- '---\nname: w\nmodel: opus\n---\nbody\n' >"$L/agents/w.md"
 printf "CLAUDEB_CLAUDE_MODEL='fable'\n" >"$L/bin/claudeb"
 printf 'EFFORT: high\nDo the thing.\n' >"$L/share/briefs/r.md"
-git -C "$L" add share agents bin/claudeb && git -C "$L" -c user.name=t -c user.email=t@t commit -qm knobs
+git -C "$L" add share agents bin/claudeb tests && git -C "$L" -c user.name=t -c user.email=t@t commit -qm knobs
 rfg="$WORK/projects/claude-setup/hooks/review-flow-gate.sh"
 printf '#!/bin/bash\n' >"$rfg"
 jq --arg c "$rfg" '. + {model: "opus"} | .hooks.PreToolUse[0].hooks += [{type: "command", command: $c}]' "$WORK/settings.json" \
@@ -880,6 +887,17 @@ assert jqe --arg t "$L/tests/test_llm_limits.sh" --arg h "$rfg" '. == [
   ["speed-machine-contention", ["opportunity:machine/contention", []]],
   ["speed-tests-llm-legs-test-llm-limits", ["opportunity:tests/llm-legs/test_llm_limits", [$t]]]]' <(speed_runs)
 sid=$(grep -F 'speed-machine-contention' "$WORK/out" | cut -f1)
+# A Speed run whose component files live in the night's repository waits for a speed-lens review of them in its
+# worktree: its brief names that round, so worker-run hands the fixer the round's findings; the others get none.
+IFS=$'\t' read -r tid tbrief twt < <(grep -F 'speed-tests-llm-legs-test-llm-limits' "$WORK/out")
+assert [ "$(cat "$DATA/rb-args")" = "$twt	review --repo $twt --files tests/test_llm_limits.sh --lens speed --tier T2 --scope-lines 3 --focus Aimed by the Harness doctor's measured rows: $(jq -r '.problems[0].fact' "$(record "$tid")"). Find what makes them slow; keep every check." ]
+assert grep -qxF "doctor-fix: $tid waits for speed lens round 20261008T000000Z-abcdef1: dispatch its brief when that round's review-waiter returns" "$WORK/err"
+assert grep -qx 'ROUND: 20261008T000000Z-abcdef1' "$tbrief"
+assert grep -qF 'Speed lens: the `ROUND:` above' "$tbrief"
+for r in $(grep -vF "$tid" "$WORK/out" | cut -f2); do
+  assert grep -qx 'ROUND: none' "$r"
+  assert_fails grep -qF 'Speed lens:' "$r"
+done
 
 # Its close refuses any added or removed line that sets a model, effort or thinking knob, committed, uncommitted,
 # untracked or in the live settings and worker-model files; a speed diff touching none of them closes.
@@ -936,14 +954,24 @@ assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 3 ]
 assert jqe --arg t "$L/tests/test_llm_limits.sh" --arg h "$rfg" --arg g "$gate" '. == [
   ["speed-chat-hooks", ["opportunity:chat/hooks", [$h]]], ["speed-machine-contention", ["opportunity:machine/contention", [$g]]],
   ["speed-tests-llm-legs-test-llm-limits", ["opportunity:tests/llm-legs/test_llm_limits", [$t]]]]' <(speed_runs)
-assert [ ! -s "$WORK/err" ]
+# The same files at the same content are not read twice.
+tid=$(grep -F 'speed-tests-llm-legs-test-llm-limits' "$WORK/out" | cut -f1)
+assert [ "$(cat "$WORK/err")" = "doctor-fix: $tid gets no speed lens: round 20261008T000000Z-abcdef1 read the same files at the same content" ]
+assert [ "$(wc -l <"$DATA/rb-args" | tr -d ' ')" = 1 ]
+assert grep -qx 'ROUND: none' "$(grep -F "$tid" "$WORK/out" | cut -f2)"
 for open in $(fix runs harness --open --json | jq -r '.[].id'); do fix abandon "$open" >/dev/null; done
 jq --argjson s "$(now)" '.as_of_s = $s
   | (.problems[] | select(.id == "opportunity:machine/contention") | .opportunity.hook) = "review-flow-gate.sh"' \
   "$S/harness/latest.json" >"$S/shared.json" && mv "$S/shared.json" "$S/harness/latest.json"
 git -C "$L" update-ref refs/night/n12/base HEAD
+rm "$RUNS/speed-lens.tsv" && : >"$DATA/rb-fails"
 env "${speed_env[@]}" bash "$FIX" launch harness --night n12 >"$WORK/out" 2>"$WORK/err" || fail "speed night n12: $(cat "$WORK/err")"
+rm "$DATA/rb-fails"
 assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 2 ]
+# A review that does not launch leaves the run its own search, said on stderr.
+tid=$(grep -F 'speed-tests-llm-legs-test-llm-limits' "$WORK/out" | cut -f1)
+assert [ "$(cat "$WORK/err")" = "doctor-fix: $tid gets no speed lens: review-bench: no lens named speed" ]
+assert grep -qx 'ROUND: none' "$(grep -F "$tid" "$WORK/out" | cut -f2)"
 assert jqe --arg t "$L/tests/test_llm_limits.sh" --arg h "$rfg" '. == [
   ["speed-chat-hooks", ["opportunity:chat/hooks", [$h]], ["opportunity:machine/contention", [$h]]],
   ["speed-tests-llm-legs-test-llm-limits", ["opportunity:tests/llm-legs/test_llm_limits", [$t]]]]' <(speed_runs)
@@ -956,15 +984,17 @@ assert [ ! -s "$WORK/out" ]
 assert [ "$(cat "$WORK/err")" = "harness: Speed selects nothing: 295 min/day recoverable, but 2 need Egor; 1.2 of 7 days covered" ]
 # Spend: a night takes one audit, the due component Spend ranked first, in a run of its own whose brief carries the
 # audit's five steps.
-jq --argjson s "$(now)" --arg g "$gate" '.as_of_s = $s
+jq --argjson s "$(now)" --arg g "$gate" --arg t "$L/tests/test_llm_limits.sh" '.as_of_s = $s
   | .problems += [{id: "spend:hook:gate.sh", rule: "spend_audit", state: "watch", speed: true, group: "Spend",
-      fact: "gate.sh · 4.0 % of spend · Δ +33% · audit due: never audited", spend: {component: "hook:gate.sh", sources: [$g]}},
+      fact: "gate.sh · 4.0 % of spend · Δ +33% · audit due: never audited", spend: {component: "hook:gate.sh", sources: [$g, $t]}},
     {id: "spend:resumes", rule: "spend_audit", state: "watch", speed: true, group: "Spend",
       fact: "worker cold resumes · 1.2 % of spend · Δ +69% · audit due: never audited", spend: {component: "resumes", sources: []}}]
   | .speed.spend = {selection: ["spend:hook:gate.sh"]}' "$S/harness/latest.json" >"$S/spend.json" && mv "$S/spend.json" "$S/harness/latest.json"
 git -C "$L" update-ref refs/night/n13/base HEAD
 env "${speed_env[@]}" bash "$FIX" launch harness --night n13 >"$WORK/out" 2>"$WORK/err" || fail "spend night n13: $(cat "$WORK/err")"
-assert jqe --arg g "$gate" '. == [["speed-spend-hook-gate-sh", ["spend:hook:gate.sh", [$g]]]]' <(speed_runs)
+assert jqe --arg g "$gate" --arg t "$L/tests/test_llm_limits.sh" '. == [["speed-spend-hook-gate-sh", ["spend:hook:gate.sh", [$g, $t]]]]' <(speed_runs)
+# A spend audit is no Speed row: no lens, though a component file lives in the night's repository.
+assert [ "$(wc -l <"$DATA/rb-args" | tr -d ' ')" = 1 ]
 brief=$(cut -f2 "$WORK/out")
 for step in '1. Why it exists' '2. Price per day' '3. Effect' 'a Sonnet judge (never Haiku) reads a sample' \
   '4. A cheaper equivalent' 'replaying last week' '5. Spend tokenmap cannot see' 'bin/speed-doctor --spend-audit'; do
