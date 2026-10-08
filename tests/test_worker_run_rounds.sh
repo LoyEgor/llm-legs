@@ -278,12 +278,21 @@ assert test "$(sed -n '7p' "$RUN_DIR/brief.launch" | cut -c1-10)" = "AUDIENCE: "
 assert cmp -s "$WORK/round-brief" "$RUN_DIR/brief"
 await_done || fail "the round run never finished"
 clear_stub
+# Naming verdicts.jsonl in prose is no rule: the findings still come along.
 printf 'ROUND: 20260801T140000Z-0a1b2c3\nWrite one row per finding into $WORKER_RUN_RECORD/verdicts.jsonl.\n' >"$WORK/round-brief"
 round_start || fail "verdicts round start failed: $(<"$WORK/round.err")"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
 RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
-assert_fails grep -q 'STUB FIX RULE' "$RUN_DIR/brief.launch"
+assert grep -qx 'STUB FIX RULE fix 20260801T140000Z-0a1b2c3 --print' "$RUN_DIR/brief.launch"
 await_done || fail "the verdicts round run never finished"
+clear_stub
+# A brief that already holds the whole rule (a `review-bench fix --brief` file) does not get it twice.
+printf 'ROUND: 20260801T140000Z-0a1b2c3\nSTUB FIX RULE fix 20260801T140000Z-0a1b2c3 --print\nwrite verdicts.jsonl rows\n' >"$WORK/round-brief"
+round_start || fail "rule round start failed: $(<"$WORK/round.err")"
+RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
+RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
+assert [ "$(grep -c 'STUB FIX RULE' "$RUN_DIR/brief.launch")" = 1 ]
+await_done || fail "the rule round run never finished"
 clear_stub
 printf 'ROUND: 20260801T140000Z-0a1b2c3\nNothing is left.\n' >"$WORK/round-brief"
 REVIEW_BENCH_STUB_EMPTY=1 round_start || fail "fixed round start failed: $(<"$WORK/round.err")"

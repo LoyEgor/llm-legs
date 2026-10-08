@@ -2595,10 +2595,13 @@ start_run() {
   fi
   [ -z "$review_round" ] || [ "$role" = workers ] ||
     fail "a research run fixes nothing: drop --round / the ROUND: line, or launch it as a worker"
-  if [ -n "$review_round" ] && ! grep -Fq verdicts.jsonl "$brief"; then
+  if [ -n "$review_round" ]; then
     # Composed once at start: a relaunch or an ATTACH must hand the worker the same rule text.
     fix_rule=$(review-bench fix "$review_round" --print 2>/dev/null) ||
       fail "review-bench fix $review_round --print failed: a round-tagged brief without the verdicts.jsonl rule cannot launch"
+    # Only a brief holding every line of it (a `review-bench fix --brief` file) goes without it; a brief
+    # merely naming verdicts.jsonl used to launch its fixer without the round's findings.
+    [ -n "$(grep . <<<"$fix_rule" | grep -Fxv -f "$brief")" ] || fix_rule=''
   fi
   brief_cyrillic=$(cyrillic_share <"$brief") ||
     fail "the brief's language could not be measured ($CYRILLIC_SHARE): nothing was launched; fix the tool rather than skipping the check"
