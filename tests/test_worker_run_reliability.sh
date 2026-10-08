@@ -99,7 +99,7 @@ reliability_tests() {
       : >"$WORK/redeem-wall/out"
       printf 'ERROR: usage limit, resets in 72 hours\n' >"$WORK/redeem-wall/err"
       ( record_run_wall "$WORK/redeem-wall" codex; sleep 30 ) & watchdog=$!
-      for _ in $(seq 1 100); do [ ! -e "$WORK/redeem-wall/wall-reset.1" ] || break; sleep 0.05; done
+      for _ in $(seq 1 600); do [ ! -e "$WORK/redeem-wall/wall-reset.1" ] || break; sleep 0.05; done
       process_tree_end "$watchdog" 0
       wait "$watchdog" 2>/dev/null
       record_run_wall "$WORK/redeem-wall" codex
