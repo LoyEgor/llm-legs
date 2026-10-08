@@ -253,6 +253,11 @@ TOKENMAP_RATES="$C/read-rates.json" "$CD" refresh --quiet
 assert grep -qF 'alpha/docs/old-sync.md is ~' "$CODE_DOCTOR_DIR/candidates.jsonl"
 assert grep -qF '~600000 a day, measured on-demand by tokenmap over 30 d' "$CODE_DOCTOR_DIR/candidates.jsonl"
 assert test "$(grep -c 'alpha/CLAUDE.md is ~' "$CODE_DOCTOR_DIR/candidates.jsonl")" = 0
+ln -s "$A/docs" "$C/docs-alias"
+jq --arg d "$A/docs/old-sync.md" --arg a "$C/docs-alias/old-sync.md" \
+  '.paths.entries |= with_entries(if .key == $d then .key = $a else . end)' "$C/read-rates.json" >"$C/rates-alias.json"
+TOKENMAP_RATES="$C/rates-alias.json" "$CD" refresh --quiet
+assert grep -qF '~600000 a day, measured on-demand by tokenmap over 30 d' "$CODE_DOCTOR_DIR/candidates.jsonl"
 jq 'del(.paths.entries[] | select(.mode == "on_demand"))' "$C/read-rates.json" >"$C/rates.tmp"
 TOKENMAP_RATES="$C/rates.tmp" "$CD" refresh --quiet
 assert test "$(grep -c 'old-sync.md is ~' "$CODE_DOCTOR_DIR/candidates.jsonl")" = 0
@@ -542,12 +547,15 @@ mkdir -p "$G/hooks" "$G/data" "$G/.claude" "$HOME/Library/LaunchAgents"
 printf 'x\n' >"$G/hooks/gone-hook.sh" && printf 'x\n' >"$G/bin/old-job" && printf 'x\n' >"$G/data/feed.txt"
 printf 'x\n' >"$G/bin/runner-a"
 printf '#!/bin/bash\n. "$HOME/.claude/hooks/lib/hook-time.sh"\n' >"$G/hooks/quiet.sh"
-git -C "$G" add -A && commit "$G" "hooks, job and feed land"
+git -C "$G" add -A && GIT_AUTHOR_DATE="$(iso_ago 2592000)" commit "$G" "hooks, job and feed land"
 git -C "$G" rm -q hooks/gone-hook.sh bin/old-job data/feed.txt && commit "$G" "gone-hook, old-job and feed retire"
 git -C "$G" mv bin/runner-a bin/runner-b && commit "$G" "runner-a becomes runner-b"
+printf '#!/bin/bash\n. "$HOME/.claude/hooks/lib/hook-time.sh"\n' >"$G/hooks/fresh.sh"
+git -C "$G" add hooks/fresh.sh && commit "$G" "fresh hook lands"
 printf 'settings.json holds the hooks\n' >>"$HOME/.claude/CLAUDE.md"
-jq -n --arg c "$G/hooks/gone-hook.sh" --arg q "$G/hooks/quiet.sh" \
-  '{hooks: {Stop: [{hooks: [{type: "command", command: $c}, {type: "command", command: $q}]}]}}' >"$G/.claude/settings.json"
+jq -n --arg c "$G/hooks/gone-hook.sh" --arg q "$G/hooks/quiet.sh" --arg f "$G/hooks/fresh.sh" \
+  '{hooks: {Stop: [{hooks: [{type: "command", command: $c}, {type: "command", command: $q}, {type: "command", command: $f}]}],
+    SubagentStop: [{hooks: [{type: "command", command: $c}]}]}}' >"$G/.claude/settings.json"
 mkdir -p "$CODE_DOCTOR_DIR/rollup"
 for d in $(seq 1 15); do
   printf '{"day": "%s", "complete": true, "sources": {"hooks": {"hits": {}, "ms": {}, "sessions": 1}}}\n' \
@@ -565,6 +573,10 @@ agent com.test.oldjob /bin/bash "$G/bin/old-job"
 agent com.test.feed /bin/cat "$G/data/feed.txt"
 agent com.test.runner /bin/bash "$G/bin/runner-a"
 agent com.test.behind /bin/bash "$G/bin/new-job"
+mkdir -p "$HOME/.local/libexec"
+printf '#!/bin/bash\nLOG=%s/logs/keeper.log\nexec /bin/bash %s/bin/runner-b "$@" >>"$LOG"\n' "$G" "$G" >"$HOME/.local/libexec/keeper"
+chmod +x "$HOME/.local/libexec/keeper"
+agent com.test.keeper "$HOME/.local/libexec/keeper"
 printf '#!/usr/bin/env bash\necho a\n' >"$G/bin/spare-a" && printf '#!/usr/bin/env bash\necho b\n' >"$G/bin/spare-b"
 git -C "$G" add -A && commit "$G" "the test no longer calls old-tool"
 jq -n '{"cause:good/bin/spare-a": {verdict: "problem", fact: "spare-a is dead", plan: "rm bin/spare-a", proofs: [],
@@ -577,6 +589,11 @@ assert jqe --arg id "cause:registration:$G/hooks/gone-hook.sh" \
     and .repos == ["good"] and (.fact | contains("nothing references gone-hook.sh")))' "$P"
 assert jqe 'select(.rules | index("silent")) | .needs_egor == false and .units[0].unit == "good/hooks/quiet.sh"' \
   "$CODE_DOCTOR_DIR/candidates.jsonl"
+assert jqe -s 'map(select(.rules | index("silent"))) | length == 1' "$CODE_DOCTOR_DIR/candidates.jsonl"
+assert jqe -s --arg id "cause:registration:$G/hooks/gone-hook.sh" 'map(select(.id == $id)) | length == 1' \
+  "$CODE_DOCTOR_DIR/candidates.jsonl"
+assert jqe --arg id "cause:registration:$G/logs/keeper.log" '[.problems[] | select(.id == $id)] | length == 1
+  and (.[0] | .needs_egor and (.fact | contains("whose program still exists")))' "$P"
 assert jqe --arg id "cause:registration:$G/bin/old-job" '[.problems[] | select(.id == $id)] | length == 1 and .[0].needs_egor == false' "$P"
 assert jqe --arg id "cause:registration:$G/data/feed.txt" '[.problems[] | select(.id == $id)] | length == 1
   and (.[0] | .needs_egor and (.fact | startswith("needs Egor: Cost: ") and contains("Recommendation: boot it out")))' "$P"
@@ -608,10 +625,12 @@ assert jqe -s --arg l "$LB/old-tool" --arg t "$G/bin/old-tool" \
 assert test "$(cat "$WORK/reg/launchctl.log")" = "bootout gui/$(id -u)/com.test.oldjob"
 assert test ! -e "$HOME/Library/LaunchAgents/com.test.oldjob.plist" -a -f "$CODE_DOCTOR_DIR/retired-launchagents/com.test.oldjob.plist"
 assert test -f "$HOME/Library/LaunchAgents/com.test.feed.plist" -a -f "$HOME/Library/LaunchAgents/com.test.runner.plist"
+assert test -f "$HOME/Library/LaunchAgents/com.test.keeper.plist"
 assert jqe -s --arg p "$HOME/Library/LaunchAgents/com.test.oldjob.plist" --arg m "$CODE_DOCTOR_DIR/retired-launchagents/com.test.oldjob.plist" \
   'map(select(.night == "r3" and .stage == "fix" and .plist == $p and .moved_to == $m and .label == "com.test.oldjob")) | length == 1' \
   "$CODE_DOCTOR_DIR/accounting.jsonl"
-rm "$G/.claude/settings.json" "$HOME/Library/LaunchAgents/com.test.feed.plist" "$HOME/Library/LaunchAgents/com.test.runner.plist"
+rm "$G/.claude/settings.json" "$HOME/Library/LaunchAgents/com.test.feed.plist" "$HOME/Library/LaunchAgents/com.test.runner.plist" \
+  "$HOME/Library/LaunchAgents/com.test.keeper.plist"
 "$CD" refresh --quiet
 assert jqe '[.problems[] | select(.rule == "registration")] == []' "$P"
 
@@ -868,6 +887,16 @@ CODE_DOCTOR_REVIEW_DEBT="$CR/review-debt" CR_RECORDED="$CR/recorded" CR_RECORD_R
   fail "code-doctor critical passed though review-debt refused the verdicts"
 assert grep -q '^critical: 0 judged · 2 waiting · 1000 tokens · .* stop record-failed$' "$CR/out"
 assert grep -q 'record-critical rc 1: locked' "$CR/err"
+mkdir -p "$CR/repo2"
+CODE_DOCTOR_REVIEW_DEBT="$CR/review-debt" CR_RECORDED="$CR/recorded" CR_RECORD_RC=1 CODE_DOCTOR_FAKE_LOG="$CR/judged.tsv" \
+  CODE_DOCTOR_FAKE_VERDICTS="$CR/verdicts.json" "$CD" critical --repo "$CR/repo" --repo "$CR/repo2" --night n2b >"$CR/out" 2>"$CR/err" &&
+  fail "code-doctor critical passed though review-debt refused the verdicts of the first repository"
+assert grep -q '^critical: 0 judged · 4 waiting · 1000 tokens · .* stop record-failed$' "$CR/out"
+assert grep -q 'record-critical rc 1: locked' "$CR/err"
+CODE_DOCTOR_REVIEW_DEBT="$CR/review-debt" CODE_DOCTOR_WORKER_RUN="$CR/missing" "$CD" critical --repo "$CR/repo" --night n2c \
+  >"$CR/out" 2>"$CR/err" && fail "code-doctor critical passed without worker-run"
+assert grep -q '^critical: 0 judged · 2 waiting · 0 tokens · .* stop launch-failed$' "$CR/out"
+assert grep -q '^critical: worker-run start: ' "$CR/err"
 CODE_DOCTOR_REVIEW_DEBT="$CR/missing" "$CD" critical --repo "$CR/repo" --night n3 >"$CR/out" 2>"$CR/err" &&
   fail "code-doctor critical passed without review-debt"
 assert grep -q 'stop list-failed$' "$CR/out"
@@ -884,6 +913,19 @@ cd.account("n1", "critical:repo", "critical", tokens=400000)
 assert cd.queue_k(cd.accounting_summary({})) == cd.TOP_K
 cd.account("n1", "x", "fix", tokens=400000)
 assert cd.queue_k(cd.accounting_summary({})) == cd.TOP_K_LOW_YIELD
+PY
+CODE_DOCTOR_DIR="$WORK/record-fix" CODE_DOCTOR_LEDGER="$WORK/record-fix.json" python3 - "$CD" <<'PY' || fail "record-fix broke on a malformed ledger match"
+import importlib.machinery, sys
+
+cd = importlib.machinery.SourceFileLoader("code_doctor", sys.argv[1]).load_module()
+cd.os.makedirs(cd.state_dir(), exist_ok=True)
+cd.write_json(cd.ledger_path(), {"rows": [{"id": "odd", "match": "a string"}, {"id": "cause:x", "match": None}]})
+cd.load_candidates = lambda: [{"id": "cause:x", "units": []}]
+row = cd.record_fix("cause:x", "code-code-z", [], 0, 0, 0, None, None, None)
+assert row["status"] == "fixed-pending" and row["match"]["cause"] == "cause:x", row
+assert len(cd.load_ledger()["rows"]) == 2
+assert cd.file_lang("bin/tool", "#!/usr/bin/env sh\n") == "bash"
+assert cd.file_lang("bin/tool", "#!/usr/bin/env -S perl -w\n") == "undeclared:perl"
 PY
 
 echo "PASS: $asserts asserts; calibration $(grep -c '^PASS' "$WORK/calibration")/5 cases, a healthy repository with 0 problems, the incremental index, the needs-Egor registration with its research, a dangling registration researched (deleting or renaming commit, live references, an uncommitted deletion no problem) and settled only by the sweep-scope night judge, the judge's batched sessions with their token, wall and launch-failure stops, the durable rollup and its coverage blind spot, the top-K snapshot with active work out, the safety gate (suites, a deletion no problem names, an edit through a cross-repo symlink, active work), the structural digest (rollup no, caller yes), revalidation against the night base, the ledger's fixed-pending, regressed and faulty rows, the canonical mechanisms, review claims through review-anchors, tokenmap-measured instruction weight, a hook rooted through its ~/.claude link, a runner-less test of live code, PyObjC selectors, a symlink never pairing with its target, per-path kinds for identical bytes, link-target edits, raw-byte and same-named-symbol digests, ledger-renamed causes, launch-less day runs, a --repo scope (its own state dir, the Node/TS calibration, generic entry points, no runtime journal claimed, report-only snapshot and check), heavy tests judged only in a --repo scope (a sweep repository's are the Harness Speed block's), collector runs journalled, one concept spelled in bash, Python and a third place as one cause (common literals and links out), a prose layout beside the renderer, fresh code matched against helpers and judged first, test-case boilerplate weighed down, the worker-message promise (a claim bound to its code, a chat overclaim on the mechanism with no words kept, broken problems with their proof, kept and untested-outside-risk out, a changed claim first)"

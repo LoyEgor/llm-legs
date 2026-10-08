@@ -168,8 +168,10 @@ the same cause re-appearing under another name is a `regressed` problem, not a n
   recommendation), never set by rule. A dangling registration's proofs are the commit that deleted or
   renamed its target and the tracked non-markdown files outside `docs/` still naming it; the night
   judge (sweep scope) removes or relinks such a `~/.local/bin` link and boots out a LaunchAgent whose
-  program is gone (plist into the state dir), journaled in `accounting.jsonl`; an in-repo settings
-  file is the fixer's edit. A silent hook goes to the judge, which researches before any trade;
+  program is gone (plist into the state dir), journaled in `accounting.jsonl` — the program is the
+  plist's, or what a `~/.local/libexec` wrapper's `exec` line runs; any other path the wrapper names
+  is a trade; an in-repo settings file is the fixer's edit. A hook silent over the covered days since
+  it landed goes to the judge, which researches before any trade;
 - cross-repo merges land in safe order: shared module and migrated callers first, the old copy is
   deleted on a later night after the new path is proven;
 - every fix stays under review-bench's scope limit and goes through a review round whose lens reads

@@ -15,6 +15,7 @@ import os
 import plistlib
 import re
 import resource
+import shlex
 import shutil
 import subprocess
 import sys
@@ -30,7 +31,7 @@ import collector_runs  # noqa: E402
 
 DETECTOR_VERSION = 4
 GROUP_DETECTOR = {"dead": 3, "heavy": 3, "promise": 1}
-PARSER_VERSION = 6
+PARSER_VERSION = 7
 LIMITS = {
     "silent_days": 14,
     "heavy_test_s": 120,
@@ -354,6 +355,9 @@ def file_lang(rel, head):
         return EXT_LANG[ext]
     first = head.split("\n", 1)[0]
     if first.startswith("#!"):
+        words = first[2:].split()
+        if words and words[0].rsplit("/", 1)[-1] == "env":
+            first = "#!/" + " ".join(w for w in words[1:] if not w.startswith("-") and "=" not in w)
         for word, lang in SHEBANG_LANG:
             if word in first:
                 return lang
@@ -1831,9 +1835,10 @@ def instruction_costs(graph, sessions):
                 out.append((target, graph.files[target], 1.0))
     found = {}
     measured = read_rates()
+    by_real = {os.path.realpath(path): entry for path, entry in (measured or {}).items()}
     for fid, record, weight in out:
         tokens = (record.get("size") or 0) / 4.0
-        entry = measured.get(os.path.join(graph.top_of(fid), fid.split("/", 1)[1])) if measured is not None else None
+        entry = by_real.get(graph.real.get(fid))
         if measured is None:
             per_day, source = tokens * weight * (sessions or 1), None
         elif not entry:
@@ -2103,11 +2108,17 @@ def build_candidates():
                 journaled = False
             key = "hook:" + os.path.basename(script)
             if journaled and not hits.get(key):
+                born = (git(graph.top_of(fid), "log", "--diff-filter=A", "--date=short", "--format=%ad", "--",
+                            fid.split("/", 1)[1], timeout=20) or "").split()
+                since = max([cover["tail_start"]] + born[-1:])
+                silent_days = (datetime.date.fromisoformat(cover["end"]) - datetime.date.fromisoformat(since)).days + 1
+                if silent_days < LIMITS["silent_days"]:
+                    continue
                 item = {"kind": "settings", "source": source, "target": script, "command": command}
                 signals.append({"group": "dead", "rule": "silent", "units": [unit_span(fid, graph.files[fid])],
                                 "registration": item, "step": registration_step(item),
                                 "detail": "%s fired 0 times over %d covered days since %s" % (
-                                    os.path.basename(script), cover["tail_days"], cover["tail_start"]),
+                                    os.path.basename(script), silent_days, since),
                                 "value": graph.files[fid].get("lines") or 0})
 
     slow, timed = heavy_tests(graph)
@@ -2233,20 +2244,32 @@ def read_plist(path):
     return plist if isinstance(plist, dict) else None
 
 
+def launchd_programs_of(args):
+    found = set(os.path.realpath(a) for a in args[:1])
+    if args and re.match(r"^((ba|z)?sh|python[\d.]*|node|perl|ruby|osascript)$", os.path.basename(args[0])):
+        found.update(os.path.realpath(a) for a in args[1:2])
+    return found
+
+
 def launchd_programs(path):
     plist = read_plist(path) or {}
     args = [os.path.expanduser(str(a)) for a in (plist.get("ProgramArguments") or [])]
     if plist.get("Program"):
         args.insert(0, os.path.expanduser(str(plist["Program"])))
-    found = set(os.path.realpath(a) for a in args[:1])
-    if args and re.match(r"^((ba|z)?sh|python[\d.]*|node|perl|ruby|osascript)$", os.path.basename(args[0])):
-        found.update(os.path.realpath(a) for a in args[1:2])
+    found = launchd_programs_of(args)
     if args and os.path.dirname(os.path.realpath(args[0])) == os.path.realpath(os.path.join(base_home(), ".local", "libexec")):
         try:
             with open(args[0], errors="replace") as handle:
-                found.update(os.path.realpath(os.path.expanduser(t)) for t in tokens_of(handle.read(20000)) if t.startswith(("/", "~/")))
+                text = handle.read(20000)
         except OSError:
-            pass
+            return found
+        names = dict(re.findall(r"^\s*(?:export\s+)?([A-Za-z_]\w*)=[\"']?([^\"'\s;]+)", text, re.M))
+        for line in re.findall(r"^\s*exec\s+(.+)$", text, re.M):
+            line = re.sub(r"\$\{?([A-Za-z_]\w*)\}?", lambda m: names.get(m.group(1), m.group(0)), line)
+            try:
+                found |= launchd_programs_of([os.path.expanduser(w) for w in shlex.split(line, comments=True)])
+            except ValueError:
+                continue
     return found
 
 
@@ -2358,6 +2381,10 @@ def cluster(signals, graph, edges, roots, ledger, indexes, hits):
                     continue
                 if a["unit"] == b["unit"] or not (signals[i]["rule"] in SITE_RULES or signals[j]["rule"] in SITE_RULES):
                     parent[find(i)] = find(j)
+    by_anchor = {}
+    for i, signal in enumerate(signals):
+        if signal.get("anchor") and not signal["units"] and not signal.get("cause"):
+            parent[find(i)] = find(by_anchor.setdefault(signal["anchor"], i))
     groups = {}
     for i in range(len(signals)):
         groups.setdefault(find(i), []).append(signals[i])
@@ -2641,8 +2668,11 @@ def judge_relay_env():
 
 def worker_judge(brief_file, workdir, vendor, remaining):
     """(run id, report, error): one judge brief through worker-run, waited on at most `remaining` seconds."""
-    launch = subprocess.run([worker_run_cmd(), "start", vendor, "--brief", brief_file, "--workdir", workdir,
-                             "--effort", "low"], capture_output=True, text=True, env=judge_relay_env())
+    try:
+        launch = subprocess.run([worker_run_cmd(), "start", vendor, "--brief", brief_file, "--workdir", workdir,
+                                 "--effort", "low"], capture_output=True, text=True, env=judge_relay_env())
+    except OSError as exc:
+        return None, "", "worker-run start: %s" % exc
     run_id = next((l[5:].strip() for l in launch.stdout.splitlines() if l.startswith("RUN: ")), None)
     if launch.returncode != 0 or not run_id:
         output = " | ".join(part.strip() for part in (launch.stderr, launch.stdout) if part.strip())
@@ -2692,9 +2722,10 @@ def run_critical(night, max_tokens, max_wall, vendor, batch_size=JUDGE_BATCH):
     folder = os.path.join(state_dir(), "critical", night or "day")
     os.makedirs(folder, exist_ok=True)
     for top in repo_paths():
-        pending, error = unjudged_debt(top)
-        if error:
-            stop = "list-failed"
+        pending, list_error = unjudged_debt(top)
+        if list_error:
+            if stop == "done":
+                stop, error = "list-failed", list_error
             break
         waiting += len(pending)
         while pending and stop == "done":
@@ -3477,12 +3508,15 @@ def record_fix(cause, by, files, lines_removed, suite_s, tokens_cut, mechanism, 
     rows = ledger.setdefault("rows", [])
     candidates = {c["id"]: c for c in load_candidates()}
     candidate = candidates.get(cause) or {}
-    row = next((r for r in rows if isinstance(r, dict) and (r.get("id") == cause or (r.get("match") or {}).get("cause") == cause)), None)
+    row = next((r for r in rows if isinstance(r, dict) and (r.get("id") == cause or isinstance(r.get("match"), dict)
+                                                           and r["match"].get("cause") == cause)), None)
     if not row:
         row = {"id": cause, "title": clip(candidate.get("detail") or cause, 160), "match": {"cause": cause},
                "group": candidate.get("group"), "status": "open", "fixes": [], "same_cause": [], "last_reviewed": None,
                "reviewed_by": None, "note": None, "handoff": None}
         rows.append(row)
+    if not isinstance(row.get("match"), dict):
+        row["match"] = {"cause": cause}
     if candidate:
         row["match"]["identity"] = identity_of(candidate, load_indexes())
     row["status"] = "fixed-pending"
