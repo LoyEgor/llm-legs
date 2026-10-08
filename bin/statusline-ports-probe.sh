@@ -39,7 +39,8 @@ file_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
 # One probe per session at a time; reclaim a stale lock (a killed lsof).
 if ! mkdir "$lock" 2>/dev/null; then
   now=$EPOCHSECONDS; m=$(file_mtime "$lock" 2>/dev/null)
-  if [[ "${now:-}" =~ ^[0-9]+$ ]] && [[ "${m:-}" =~ ^[0-9]+$ ]] && [ "$((now - m))" -gt 120 ]; then
+  # 15s render trigger + 30s stays under the render's 60s cut, so a probe killed holding the lock hides no port.
+  if [[ "${now:-}" =~ ^[0-9]+$ ]] && [[ "${m:-}" =~ ^[0-9]+$ ]] && [ "$((now - m))" -gt 30 ]; then
     rmdir "$lock" 2>/dev/null && mkdir "$lock" 2>/dev/null || exit 0
   else
     exit 0

@@ -180,8 +180,8 @@ def bash_hit($bindings):
      else $last end) as $last
   # A relative path resolves against this command's own earlier cds, not against the tool's cwd.
   | (reduce ($hits[] | select(.cd_hit == "1" and .at < ($last.at // 0) and .scope == $last.scope[0:(.scope | length)])) as $h (".";
-       if . == null or $h.unknown == "1" then null
-       else ($h.path | unquote_word) as $p | (if $p | abs_word then $p else . + "/" + $p end) end)) as $base
+       if $h.unknown == "1" then null
+       else ($h.path | unquote_word) as $p | (if $p | abs_word then $p elif . == null then null else . + "/" + $p end) end)) as $base
   | if $base == null and (($last.path // "") | test("^$|^-") | not) and (($last.path | unquote_word | abs_word) | not)
     then {path: "", sep: "", worktree: "", worktree_base: ""}
     else $last + {rel_base: (if ($base // ".") == "." then "" else $base end)} end;

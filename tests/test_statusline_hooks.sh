@@ -244,6 +244,8 @@ assert_eq git "$(last_kind place-var)"
 assert_eq "$TOP_A" "$(last_main place-var)"
 place_case place-var-unbound 'cd $NOWHERE && git commit -m m'
 assert_eq "$TOP_A" "$(last_tree place-var-unbound)"
+place_case place-unknown-then-abs "cd \$NOWHERE; cd - && cd '$REPO_B' && git commit -m m"
+assert_eq "$TOP_B" "$(last_tree place-unknown-then-abs)"
 
 # A wrapper or a shell keyword before the cd or git opens no segment of its own.
 place_case place-lead-env "env FOO=1 git -C '$REPO_B' commit -m m"
@@ -3869,6 +3871,16 @@ assert_eq "" "$(cat "$STATE_DIR/ports-pp-noroot")"
 printf '5173\n' > "$STATE_DIR/ports-pp-death"
 STATUSLINE_PS="$FAKE_PS" STATUSLINE_LSOF="$FAKE_LSOF_EMPTY" "$PORTS_PROBE" pp-death 1001
 assert_eq "" "$(cat "$STATE_DIR/ports-pp-death")"
+
+# A lock left by a killed probe is reclaimed before the render's 60s cut hides the segment.
+printf '5173\n' > "$STATE_DIR/ports-pp-killed"
+mkdir "$STATE_DIR/ports-pp-killed.lock"
+STATUSLINE_PS="$FAKE_PS" STATUSLINE_LSOF="$FAKE_LSOF_EMPTY" "$PORTS_PROBE" pp-killed 1001
+assert_eq "5173" "$(cat "$STATE_DIR/ports-pp-killed")"
+touch -t "$(date -r $(($(date +%s) - 40)) +%Y%m%d%H%M.%S)" "$STATE_DIR/ports-pp-killed.lock"
+STATUSLINE_PS="$FAKE_PS" STATUSLINE_LSOF="$FAKE_LSOF_EMPTY" "$PORTS_PROBE" pp-killed 1001
+assert_eq "" "$(cat "$STATE_DIR/ports-pp-killed")"
+assert test ! -e "$STATE_DIR/ports-pp-killed.lock"
 
 # One process table and one listener walk serve every chat's probes: a second chat inside the
 # snapshot's ten seconds runs neither ps nor lsof and records what its own walk would have.

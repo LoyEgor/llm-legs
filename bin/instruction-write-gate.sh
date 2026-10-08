@@ -65,36 +65,6 @@ instruction_inflight_mark "$sid" "$tool_use_id" Bash "$cwd" "$agent_id"
 # anchored within a line: `cp src \` + newline + the path walked through untouched.
 command=${command//\\$'\n'/ }
 
-# A program FILE run by path is judged like an inline program, each file as its own invocation: the
-# command text of `S=…; python3 $S/patch.py` names nothing the script writes.
-script_texts=()
-haystack=$command
-if [[ $command =~ $_INSTRUCTION_INTERP ]]; then
-  while IFS=$'\t' read -r script_interp script_path; do
-    [ -n "$script_path" ] || continue
-    script_body=$(head -c 262144 "$script_path" 2>/dev/null | LC_ALL=C tr '\000|\n' '   ') || continue
-    script_texts+=("$script_interp $script_body")
-    haystack+=" $script_body"
-  done < <(instruction_interp_scripts "$command" "${cwd:-$PWD}")
-fi
-
-# Fast path before any glob or realpath: this runs ahead of every Bash call, and a command that
-# names none of the guarded things cannot be a write to one.
-# `.md` rather than the guarded basenames: a command typed from inside ~/.claude/docs names its
-# target `review-tiers.md` and carries no other guarded substring at all. The spellings list
-# already knows the cwd-relative form, so the fast path was the only thing hiding it.
-# `review-debt-ignore` carries no `.md` and is written from inside `.claude/` as a bare name, so
-# neither of the first two patterns sees it and the guarded basename below is never reached.
-# An ANSI-C quoted run spells a name through escapes, a quote or a backslash splits it
-# (`CLAUDE.m\d`), and the volume folds letter case, so none of those is a reason to leave early.
-# `git apply` and `git stash pop` name no destination at all.
-case "$command" in *"\$'"*) ;; *)
-  case "${haystack//[\\\"\']/}" in
-    *.[Mm][Dd]*|*.claude/*|*[Rr][Ee][Vv][Ii][Ee][Ww]-[Dd][Ee][Bb][Tt]*|*git*apply*|*git*stash*) ;;
-    *) exit 0 ;;
-  esac ;;
-esac
-
 # Every `cd DIR` a command runs moves where the relative names after it land, and a name may sit
 # before or after any of them: each directory the command can stand in is judged, the latest cd
 # first, so a denial names the file the write most likely reaches.
@@ -129,6 +99,40 @@ while IFS= read -r segment; do
   here=$lead
   cwds=("$lead" "${cwds[@]}")
 done <<< "$segments"
+
+# A program FILE run by path is judged like an inline program, each file as its own invocation: the
+# command text of `S=…; python3 $S/patch.py` names nothing the script writes.
+script_texts=()
+haystack=$command
+if [[ $command =~ $_INSTRUCTION_INTERP ]]; then
+  script_seen=$'\n'
+  while IFS=$'\t' read -r script_interp script_path; do
+    [ -n "$script_path" ] || continue
+    case "$script_seen" in *$'\n'"$script_interp $script_path"$'\n'*) continue ;; esac
+    script_seen+="$script_interp $script_path"$'\n'
+    script_body=$(head -c 262144 "$script_path" 2>/dev/null | LC_ALL=C tr '\000|\n' '   ') || continue
+    script_texts+=("$script_interp $script_body")
+    haystack+=" $script_body"
+  done < <(for here in "${cwds[@]}"; do instruction_interp_scripts "$command" "$here"; done)
+fi
+
+# Fast path before any glob or realpath: this runs ahead of every Bash call, and a command that
+# names none of the guarded things cannot be a write to one.
+# `.md` rather than the guarded basenames: a command typed from inside ~/.claude/docs names its
+# target `review-tiers.md` and carries no other guarded substring at all. The spellings list
+# already knows the cwd-relative form, so the fast path was the only thing hiding it.
+# `review-debt-ignore` carries no `.md` and is written from inside `.claude/` as a bare name, so
+# neither of the first two patterns sees it and the guarded basename below is never reached.
+# An ANSI-C quoted run spells a name through escapes, a quote or a backslash splits it
+# (`CLAUDE.m\d`), and the volume folds letter case, so none of those is a reason to leave early.
+# `git apply` and `git stash pop` name no destination at all.
+case "$command" in *"\$'"*) ;; *)
+  case "${haystack//[\\\"\']/}" in
+    *.[Mm][Dd]*|*.claude/*|*[Rr][Ee][Vv][Ii][Ee][Ww]-[Dd][Ee][Bb][Tt]*|*git*apply*|*git*stash*) ;;
+    *) exit 0 ;;
+  esac ;;
+esac
+
 # A worktree's relative name is the main checkout's relative name: `global/docs/x.md` typed inside a
 # claude-setup worktree is the copy a landing delivers to ~/.claude/docs.
 spell_cwds=()

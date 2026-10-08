@@ -148,6 +148,8 @@ if '--apply' in sys.argv:
     open('$HOME/.claude/skills/demo/SKILL.md', 'a').write('x')
 EOF
 assert_eq deny "$(GATE_CWD="$WORK" decision 'python3 land.py --apply')"
+assert_eq deny "$(GATE_CWD="$WORK" decision 'cd scratchpad && python3 patch.py')"
+assert_eq deny "$(GATE_CWD=/ decision "cd $SCRATCH; python3 patch.py")"
 cat > "$SCRATCH/read.py" <<EOF
 import os
 C = "$AGENTS/"
