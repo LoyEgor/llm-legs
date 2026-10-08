@@ -46,7 +46,8 @@ end
 local promptFn = askSince
 local scanTask, scanStarted, scanError, jobLabel = nil, nil, nil, nil
 local jobSoft, jobSerial, sevenOwed = false, 0, false
-local active, fallback = nil, nil
+local jobScan, jobQuiet, jobFile, jobRange, pending = false, false, nil, nil, nil
+local active = nil
 local tried = {}
 
 local function readFile(file)
@@ -286,7 +287,10 @@ local function statusItems(data, problem, attrs, snapshot)
         end
         items[#items + 1] = { title = style(text, stale and RED or dimColor()), disabled = true }
     end
-    if running then
+    if running and pending then
+        items[#items + 1] = { title = style("computing " .. rangeLabel(pending) .. " after the scan…", dimColor()),
+                              disabled = true }
+    elseif running then
         local doing = jobLabel and ("computing " .. jobLabel) or "refreshing"
         items[#items + 1] = { title = style(doing .. " since " .. menuStyle.clock(scanStarted) .. "…", dimColor()),
                               disabled = true }
@@ -309,16 +313,22 @@ local function remember(range)
     settingsStore.set(SETTINGS_KEY, { key = range.key, since = range.since })
 end
 
+local startJob
+
 local function startStep(steps, index, serial, onStep)
     local step = steps[index]
     local task = taskFn(step.launch, function(code, _, err)
         if serial ~= jobSerial then return end
         scanTask = nil
-        if code ~= 0 then
-            scanError = lastLine(err) or ("exit " .. tostring(code))
-            return onStep(step, false)
+        if code ~= 0 then scanError = lastLine(err) or ("exit " .. tostring(code)) end
+        onStep(step, code == 0)
+        if step.scan and pending then
+            local range = pending
+            pending = nil
+            startJob(range, false)
+            return
         end
-        onStep(step, true)
+        if code ~= 0 then return end
         if index < #steps and not startStep(steps, index + 1, serial, onStep) then
             onStep(steps[index + 1], false)
         end
@@ -333,23 +343,26 @@ local function startStep(steps, index, serial, onStep)
         return false
     end
     scanTask, jobSoft, jobLabel = task, step.soft or false, step.label
+    jobScan, jobFile = step.scan or false, step.file
     return true
 end
 
 -- The view asked for runs at normal priority; the 7-day export a range run leaves behind its
 -- scan follows at nice 19, and the next click may cut it short: it is owed until a run writes it.
-local function startJob(range, scanFirst, quiet)
+function startJob(range, scanFirst, quiet)
     if scanTask then return false end
     scanError = nil
     jobSerial = jobSerial + 1
+    jobQuiet, jobRange = quiet or false, range
     local ranged = range ~= RANGES[1]
     local label = rangeLabel(range)
     local steps = {}
     if scanFirst and ranged then
-        steps[1] = { launch = TOKENMAP, args = { "scan", "--quiet", "--no-tracking" }, label = label }
+        steps[1] = { launch = TOKENMAP, args = { "scan", "--quiet", "--no-tracking" }, label = label, scan = true }
         sevenOwed = true
     elseif scanFirst then
-        steps[1] = { launch = TOKENMAP, args = { "scan", "--quiet" }, label = nil, view = true, seven = true }
+        steps[1] = { launch = TOKENMAP, args = { "scan", "--quiet" }, label = nil, view = true, seven = true,
+                     scan = true }
     end
     if ranged then
         local args = { "tracking" }
@@ -359,14 +372,14 @@ local function startJob(range, scanFirst, quiet)
             args[#args + 1], args[#args + 2] = "--range", range.key
         end
         args[#args + 1] = "--write"
-        steps[#steps + 1] = { launch = TOKENMAP, args = args, label = label, view = true }
+        steps[#steps + 1] = { launch = TOKENMAP, args = args, label = label, view = true, file = rangeFile(range) }
         if sevenOwed then
             steps[#steps + 1] = { launch = "/usr/bin/nice", label = RANGES[1].label, soft = true, seven = true,
-                                  args = { "-n", "19", TOKENMAP, "tracking", "--write" } }
+                                  args = { "-n", "19", TOKENMAP, "tracking", "--write" }, file = path }
         end
     elseif not scanFirst then
         steps[1] = { launch = TOKENMAP, args = { "tracking", "--write" }, label = RANGES[1].label, view = true,
-                     seven = true }
+                     seven = true, file = path }
     end
     scanStarted = os.time()
     local what = ranged and ("Token tracking " .. label) or "Token tracking refresh"
@@ -375,7 +388,7 @@ local function startJob(range, scanFirst, quiet)
         if step.soft then return end
         if not step.view and ok then return end
         if ok and ranged and active == range then remember(range) end
-        if not ok and ranged and active == range and fallback then active = fallback end
+        if not ok and ranged and active == range then active = nil end
         if quiet then return end
         if ok then
             alertFn(ranged and (what .. " ready") or "Token tracking updated")
@@ -387,11 +400,12 @@ local function startJob(range, scanFirst, quiet)
     return started
 end
 
-local function yieldSoft()
-    if not (scanTask and jobSoft) then return not scanTask end
+local function cancelJob()
+    if not scanTask or jobScan then return not scanTask end
     jobSerial = jobSerial + 1
     scanTask:terminate()
-    scanTask, jobSoft, jobLabel = nil, false, nil
+    if jobFile then tried[jobFile] = nil end
+    scanTask, jobSoft, jobLabel, jobQuiet = nil, false, nil, false
     return true
 end
 
@@ -402,21 +416,26 @@ local function lastScan()
 end
 
 function M.rescan()
-    if not yieldSoft() then return false end
+    if scanTask and not (jobSoft or jobQuiet) then return false end
+    cancelJob()
     return startJob(activeRange(), true)
 end
 
 function M.choose(range)
-    if scanTask and not jobSoft and range ~= RANGES[1] then
-        alertFn("Token tracking is busy; try again when it finishes")
-        return false
+    local seven = range == RANGES[1]
+    if scanTask and jobScan then
+        pending = (not seven or jobRange ~= RANGES[1]) and range or nil
+        if seven then remember(range) else active = range end
+        if pending then alertFn("Token tracking: computing " .. rangeLabel(range) .. " after the scan…") end
+        return true
     end
-    if range == RANGES[1] then
+    if seven then
+        if jobSoft or jobRange ~= RANGES[1] then cancelJob() end
         remember(range)
         return true
     end
-    yieldSoft()
-    fallback, active = activeRange(), range
+    cancelJob()
+    active = range
     local scanned = lastScan()
     return startJob(range, not scanned or os.time() - scanned > SCAN_FIRST_SECONDS)
 end
@@ -456,7 +475,7 @@ function M.menuItems(changeLogItem)
     local current = generation()
     if current and tried[file] ~= current and outdated(data) and (not scanTask or jobSoft and file ~= path) then
         tried[file] = current
-        if yieldSoft() then startJob(range, false, true) end
+        if cancelJob() then startJob(range, false, true) end
     end
     local items = statusItems(data, problem, attrs, file ~= path)
     items[#items + 1] = compareItem()
@@ -490,7 +509,7 @@ function M.menuItems(changeLogItem)
         end }
     end
     items[#items + 1] = { title = "-" }
-    items[#items + 1] = (scanTask and not jobSoft) and { title = "refreshing…", disabled = true }
+    items[#items + 1] = (scanTask and not (jobSoft or jobQuiet)) and { title = "refreshing…", disabled = true }
         or { title = "Refresh", fn = function() M.rescan() end }
     return menuStyle.mono(items, style)
 end
