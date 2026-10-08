@@ -1876,7 +1876,7 @@
     "detail": "the speaker panel did not take|no speech composer within|first-use terms show no enabled Continue|the Run button stays disabled|in the Style menu"
    },
    "title": "AI Studio speech route drifts while it landed",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-07T01:57:00+03:00",
@@ -1884,7 +1884,7 @@
      "files": [
       "llm-legs/share/aistudio_speech.py"
      ],
-     "in": null,
+     "in": "llm-legs@12d5b84a",
      "regressed_at": null
     }
    ],
@@ -1903,7 +1903,7 @@
     "detail": "the WAV download"
    },
    "title": "AI Studio's Download button closed the hidden Chrome's target",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-06T23:30:00+03:00",
@@ -1911,7 +1911,7 @@
      "files": [
       "llm-legs/share/aistudio_speech.py"
      ],
-     "in": null,
+     "in": "llm-legs@12d5b84a",
      "regressed_at": null
     }
    ],
@@ -1948,7 +1948,7 @@
     "detail": "the trim made no track on"
    },
    "title": "Flow Music trim not found in the library while the mode landed",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-06T23:27:40+03:00",
@@ -1956,7 +1956,7 @@
      "files": [
       "llm-legs/share/flow_music.py"
      ],
-     "in": null,
+     "in": "llm-legs@a9e29da0",
      "regressed_at": null
     }
    ],
@@ -1975,7 +1975,7 @@
     "detail": "IndexError: tuple index out of range"
    },
    "title": "library_row indexed a two-group regex match by three",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-06T23:27:40+03:00",
@@ -1983,7 +1983,7 @@
      "files": [
       "llm-legs/share/flow_music.py"
      ],
-     "in": null,
+     "in": "llm-legs@a9e29da0",
      "regressed_at": null
     }
    ],

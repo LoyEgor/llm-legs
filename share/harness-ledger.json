@@ -454,7 +454,7 @@
         "rule": "growth-ungated",
         "ident": "~/\\.claude/skills/synced/.+"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-04T17:30:00+03:00",
@@ -473,7 +473,7 @@
             "llm-legs/bin/harness-doctor",
             "llm-legs/tests/test_harness_doctor.sh"
           ],
-          "in": null,
+          "in": "llm-legs@593d07bc",
           "regressed_at": null
         }
       ],
@@ -2360,7 +2360,7 @@
         "rule": "hook_sync",
         "ident": "edit-conflict-notice\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-08T01:05:00+03:00",
@@ -2368,7 +2368,7 @@
           "files": [
             "claude-setup/hooks/edit-conflict-notice.sh"
           ],
-          "in": null,
+          "in": "claude-setup@d373484",
           "regressed_at": null
         }
       ],
@@ -2416,7 +2416,7 @@
         "rule": "test_daily_cost",
         "ident": "llm-legs:test_llm_limits(_(claudeb|refresh|render|grok))?"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-03T11:30:00+03:00",
@@ -2441,7 +2441,7 @@
             "llm-legs/tests/llm_limits_harness.sh",
             "llm-legs/tests/test_llm_limits_render.sh"
           ],
-          "in": null,
+          "in": "llm-legs@9571b2f4",
           "regressed_at": null
         }
       ],
@@ -2619,7 +2619,7 @@
         "rule": "opportunity",
         "ident": "time/locks"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-08T01:03:55+03:00",
@@ -2628,7 +2628,7 @@
             "llm-legs/bin/worker-run",
             "llm-legs/tests/test_wait_journal.sh"
           ],
-          "in": null,
+          "in": "llm-legs@43d3703e",
           "regressed_at": null,
           "equivalence": {
             "compared": "worker-run wait at HEAD vs the fix: stdout and exit code with timestamps and the script path masked",
@@ -3011,7 +3011,7 @@
         "rule": "hook-error",
         "ident": "ask-span-drill\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-06T06:36:00+03:00",
@@ -3019,7 +3019,7 @@
           "files": [
             "usage-ai-report/llm_gate.py"
           ],
-          "in": null,
+          "in": "usage-ai-report@c86e433",
           "regressed_at": null
         }
       ],
@@ -3038,7 +3038,7 @@
         "rule": "hook-error",
         "ident": "ask-word-reading\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-06T06:36:00+03:00",
@@ -3046,7 +3046,7 @@
           "files": [
             "usage-ai-report/llm_gate.py"
           ],
-          "in": null,
+          "in": "usage-ai-report@c86e433",
           "regressed_at": null
         }
       ],
@@ -3273,7 +3273,7 @@
         "rule": "time_floor",
         "ident": "suite_wait"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-07T02:58:00+03:00",
@@ -3293,7 +3293,7 @@
             "llm-legs/bin/speed-doctor",
             "llm-legs/tests/test_speed_doctor.sh"
           ],
-          "in": null,
+          "in": "llm-legs@654b36e6",
           "regressed_at": null
         }
       ],
@@ -3613,7 +3613,7 @@
             "llm-legs/tests/test_worker_run_lifecycle.sh"
           ],
           "in": "llm-legs@59f456ca",
-          "regressed_at": null
+          "regressed_at": "2026-10-07T13:59:20+03:00"
         }
       ],
       "same_cause": [],
@@ -3993,7 +3993,7 @@
         "rule": "log_audit",
         "ident": "wip-owner-misattribution"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-08T01:30:00+03:00",
@@ -4002,7 +4002,7 @@
             "claude-setup/hooks/lib/review-journal.sh",
             "claude-setup/tests/test_review_journal.sh"
           ],
-          "in": null,
+          "in": "claude-setup@9e3244b",
           "regressed_at": null
         }
       ],
@@ -4292,7 +4292,7 @@
         "rule": "hook_grows_repos",
         "ident": "eod-sorted-gate\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-08T01:05:00+03:00",
@@ -4301,7 +4301,7 @@
             "claude-setup/hooks/lib/eod-commits.sh",
             "claude-setup/hooks/eod-sorted-gate.sh"
           ],
-          "in": null,
+          "in": "claude-setup@d373484",
           "regressed_at": null
         }
       ],
@@ -4318,7 +4318,7 @@
         "rule": "menu_build",
         "ident": "doctors"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-08T01:05:00+03:00",
@@ -4326,7 +4326,7 @@
           "files": [
             "llm-legs/hammerspoon/llm-limits.lua"
           ],
-          "in": null,
+          "in": "llm-legs@67632717",
           "regressed_at": null
         }
       ],
@@ -4353,7 +4353,7 @@
             "tests/test_worker_run_entry.sh"
           ],
           "in": null,
-          "regressed_at": null
+          "regressed_at": "2026-10-08T02:14:19+03:00"
         }
       ],
       "same_cause": [],
@@ -4459,7 +4459,7 @@
             "tests/test_log_audit.sh"
           ],
           "in": null,
-          "regressed_at": null
+          "regressed_at": "2026-10-08T02:14:19+03:00"
         }
       ],
       "same_cause": [],
@@ -4512,7 +4512,7 @@
             "tests/test_worker_run_browse.sh"
           ],
           "in": null,
-          "regressed_at": null
+          "regressed_at": "2026-10-08T02:14:19+03:00"
         }
       ],
       "same_cause": [],
@@ -4676,7 +4676,7 @@
         "rule": "opportunity",
         "ident": "chat/tests"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-08T01:30:00+03:00",
@@ -4685,7 +4685,7 @@
             "llm-legs/bin/codex-image",
             "llm-legs/tests/test_codexb.sh"
           ],
-          "in": null,
+          "in": "llm-legs@b98523c5",
           "regressed_at": null,
           "equivalence": {
             "compared": "test_codexb and every suite tests/affected names for bin/codex-image, base vs fix: PASS lines and assert counts (test_codexb 423 at base, 427 with the four new asserts)",
@@ -4707,7 +4707,7 @@
         "rule": "opportunity",
         "ident": "machine/contention"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-08T01:40:00+03:00",
@@ -4718,7 +4718,7 @@
             "llm-legs/tests/test_run_suites_nice.sh",
             "llm-legs/tests/test_night_carry.sh"
           ],
-          "in": null,
+          "in": "llm-legs@2d97ac31",
           "regressed_at": null,
           "equivalence": {
             "compared": "suite outcomes of the same suites with the wave at nice 10 (worker run, keyboard faked present) and at the caller's nice 0 (the level a chat's own run now keeps)",
@@ -4740,7 +4740,7 @@
         "rule": "test_daily_cost",
         "ident": "llm-legs:test_statusline_hooks"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-08T02:10:00+03:00",
@@ -4748,7 +4748,7 @@
           "files": [
             "llm-legs/tests/test_statusline_hooks.sh"
           ],
-          "in": null,
+          "in": "llm-legs@9571b2f4",
           "regressed_at": null
         }
       ],
