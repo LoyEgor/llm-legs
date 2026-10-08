@@ -71,11 +71,11 @@ leaves = sum(v for area in doc["partition"].values() for v in area.values())
 check(abs(leaves - doc["headline"]) < 0.1 and all(abs(sum(doc["partition"][a].values()) - v) < 0.05
                                                    for a, v in doc["areas"].items()),
       "the partition's leaves sum to their areas and to the headline: %.2f vs %.1f" % (leaves, doc["headline"]))
-check(doc["head"] == "12 min/day over the floor · 179 OM/d · 3.9 of 7 days covered · R 2/10: 88/238"
-      and doc["lost_min_day"] == doc["budget"]["lost_min_day"] == 12.0, "the headline: %s" % doc["head"])
 backlog = [p for p in doc["problems"] if p["rule"] == "opportunity"]
+check(doc["head"] == "3.3 min/day over the floor · 179 OM/d · 3.9 of 7 days covered · R 2/10: 88/238"
+      and doc["lost_min_day"] == doc["budget"]["lost_min_day"] == 3.3, "the headline: %s" % doc["head"])
 check([(p["id"], p["opportunity"]["recoverable_min_day"]) for p in backlog]
-      == [("opportunity:chat/tests", 8.7), ("opportunity:chat/hooks", 3.3)],
+      == [("opportunity:chat/hooks", 3.3), ("opportunity:chat/tests", 0.91)],
       "the backlog by recoverable min/day holds only equivalent levers; risk levers with no quality evidence are not "
       "shown; a class over its floor adds its gap to the opportunity already pricing it: %s"
       % [(p["id"], p["opportunity"]["recoverable_min_day"]) for p in backlog])
@@ -84,7 +84,7 @@ check(all(p["state"] == "watch" and set(p["opportunity"]) >= {"om_day", "saving"
           and p["opportunity"]["score"] == round(p["opportunity"]["recoverable_min_day"] * p["opportunity"]["confidence"]
                                                  / (p["opportunity"]["effort_h"] + p["opportunity"]["night_cost_h"]), 3)
           for p in backlog), "every opportunity stores its score fields and the score recomputes from them")
-check(doc["selection"] == ["opportunity:chat/tests", "opportunity:chat/hooks"],
+check(doc["selection"] == ["opportunity:chat/hooks", "opportunity:chat/tests"],
       "the night takes the biggest recoverable gap first: %s" % doc["selection"])
 check({"cost", "yield"} <= set(doc) and set(doc["cost"]) == {"collector_cpu_min_day", "fixer_worker_min", "review_min",
                                                               "slot_queue_min", "landing_delay_min"}
@@ -217,21 +217,25 @@ check(module.select(six) == [o["id"] for o in six],
 check(module.select(scored[1:2] + [dict(scored[0], id="opportunity:chat/hooks")], [{"component": "chat"}])
       == ["opportunity:chat/tests", "opportunity:chat/hooks"],
       "an opportunity on the lever a loud regression already took rides with it, charged once")
-gaps = {"lost_min_day": 95.0, "lines": ["Without the harness ≈ 40 % faster"],
-        "floors": [{"class": "slot", "label": "worker slot queue", "floor_min_day": 0, "actual_min_day": 50.0,
-                    "recoverable_min_day": 50.0},
-                   {"class": "suite_run", "label": "suites running", "floor_min_day": 60, "actual_min_day": 100.0,
-                    "recoverable_min_day": 40.0},
+gaps = {"lost_min_day": 95.3, "lines": ["Without the harness ≈ 40 % faster"],
+        "floors": [{"class": "slot", "label": "worker slot queue", "floor_min_day": "slots lent during suites",
+                    "actual_min_day": 300.0, "recoverable_min_day": 50.0, "chat_min_day": 0.0, "worker_min_day": 50.0},
+                   {"class": "suite_run", "label": "suites running", "floor_min_day": "uncontended p10 wall",
+                    "actual_min_day": 100.0, "recoverable_min_day": 40.0, "chat_min_day": 10.0, "worker_min_day": 30.0},
                    {"class": "locks", "label": "locks and polls", "floor_min_day": 0, "actual_min_day": 0.3,
-                    "recoverable_min_day": 0.3},
+                    "recoverable_min_day": 0.3, "chat_min_day": 0.3, "worker_min_day": 0.0},
                    {"class": "stop", "label": "stop hooks", "floor_min_day": 0, "actual_min_day": 5.0,
-                    "recoverable_min_day": 5.0}],
-        "workers_active": {"share": 0.1, "floor_share": 0.7, "recoverable_min_day": 200.0},
-        "last_night": {"id": "N9", "wall_s": 36000, "model_s": 3600, "share": 0.1}}
+                    "recoverable_min_day": 5.0, "chat_min_day": 5.0, "worker_min_day": 0.0}],
+        "workers_active": {"share": 0.1, "floor_share": 0.125, "recoverable_min_day": 80.0,
+                           "parts": {"slot": 50.0, "suite_run": 30.0}}}
 timed = module.with_time(copy.deepcopy(backlog), gaps)
+check(all("workers-active" not in o["id"] for o in timed)
+      and [module.per_day(o["opportunity"]["recoverable_min_day"], o["opportunity"].get("worker_min_day", 0.0))
+           for o in timed[:2]] == ["50 w-min/day", "10 min + 30 w-min/day"],
+      "workers active is the parent of the worker classes and never ranks beside them; a gap's worker-minutes carry "
+      "their own unit: %s" % [(o["id"], o["opportunity"].get("worker_min_day")) for o in timed])
 check([(o["id"], o["opportunity"]["recoverable_min_day"]) for o in timed]
-      == [("opportunity:time/workers-active", 200.0), ("opportunity:time/slot", 50.0), ("opportunity:chat/tests", 48.7),
-          ("opportunity:chat/hooks", 8.3)]
+      == [("opportunity:time/slot", 50.0), ("opportunity:chat/tests", 40.0), ("opportunity:chat/hooks", 8.3)]
       and module.select(timed) == [o["id"] for o in timed]
       and all(o["opportunity"]["score"] == module.score_of(o["opportunity"]["recoverable_min_day"], o["opportunity"]["confidence"],
                                                            o["opportunity"]["effort_h"], 0.0) for o in timed),
@@ -251,12 +255,18 @@ pending_held = [module.floor_rows(gaps, {"rows": [{"id": "L1", "match": {"rule":
 check(pending_held == ["fixed-pending", "regressed"],
       "a fixed-pending row over its floor regresses too once its 24 h window starts after the fix held: %s" % pending_held)
 check([(r["id"], r["state"], r["value"], r["limit"]) for r in rows]
-      == [("L1", "open", 50.0, 30), ("time_floor:suite_run", "new", 40.0, 30), ("time_floor:workers-active", "new", 0.1, 0.3)]
-      and rows[2]["fact"] == "workers were model-active 10 % of their wall on night N9 (floor 30 %) · proof: back under it"
-      and rows[1]["fact"] == "suites running 40 min/day over its floor of 60 min/day · proof: back under it"
-      and module.floor_rows(dict(gaps, floors=gaps["floors"][2:], last_night=dict(gaps["last_night"], share=0.3)), {}, HI) == [],
-      "a class more than 30 min/day over its floor and a night under 30 %% model activity are named rows through the "
-      "ledger's states; back under them there is no row: %s" % [(r["id"], r["state"]) for r in rows])
+      == [("L1", "open", 50.0, 30), ("time_floor:suite_run", "new", 40.0, 30)]
+      and rows[1]["fact"] == "suites running 10 min + 30 w-min/day over its floor of uncontended p10 wall · proof: back "
+      "under it"
+      and module.floor_rows(dict(gaps, floors=gaps["floors"][2:]), {}, HI) == [],
+      "a class more than 30 min/day over its floor is a named row through the ledger's states, workers active never "
+      "beside its parts; back under it there is no row: %s" % [(r["id"], r["state"]) for r in rows])
+parts = json.loads(next(l for l in h.menu_text({
+    "problem_count": 0, "as_of_s": HI, "title": "t", "status": "error", "problems": [], "sections": [], "footer": "f",
+    "speed": {"status": "ok", "budget": gaps}}).splitlines() if l.startswith("H\t"))[2:])["speed"]["issues"]
+check(parts == [[50.0, "worker slot queue", "w-min/day"], [30.0, "suites running", "w-min/day"],
+                [10.0, "suites running", "min/day"]],
+      "the menu header's floor gaps are chats' and workers' parts apart, each with its unit: %s" % parts)
 saved_env, saved = dict(os.environ), (module.with_time, module.time_budget.section)
 os.environ.update({k: v for k, v in base.items() if k != "PATH"}, SPEED_DOCTOR_DIR=os.path.join(work, "speed-floor"))
 module.with_time = lambda opportunities, budget: [dict(o, opportunity=dict(o["opportunity"], quality="risk"))
@@ -266,8 +276,8 @@ floored = module.collect(False, HI)
 module.with_time, module.time_budget.section = saved
 os.environ.clear()
 os.environ.update(saved_env)
-check(floored["selection"] == [] and floored["why_none"].startswith("295 min/day recoverable, but 4 are not output-equivalent")
-      and floored["head"].startswith("95 min/day over the floor · ") and floored["problem_count"] == 3
+check(floored["selection"] == [] and floored["why_none"].startswith("95 min/day recoverable, but 3 are not output-equivalent")
+      and floored["head"].startswith("15 min + 80 w-min/day over the floor · ") and floored["problem_count"] == 2
       and [l[3] for l in floored["menu"] if l[2]] == [r["fact"] for r in floored["problems"] if r["rule"] == "time_floor"]
       and [0, "", False, "Without the harness ≈ 40 % faster"] in floored["menu"],
       "an empty pick while minutes are recoverable names them; the floor rows count and show red in the menu beside "
@@ -327,10 +337,10 @@ check(module.covers({"chat.om_per_100_prompts|all|-": {"days": 6}}) == []
 
 menu, _ = speed("speed", "--menu")
 lines = menu.stdout.splitlines()
-check(lines[0] == "T\t0\t%d\tHarness doctor: ok" % HI and lines[2] == "0\t\t\tLost time: ok · 12 min/day over the floor · 179 OM/d · 3.9 of 7 days covered · R 2/10: 88/238"
+check(lines[0] == "T\t0\t%d\tHarness doctor: ok" % HI and lines[2] == "0\t\t\tLost time: ok · 3.3 min/day over the floor · 179 OM/d · 3.9 of 7 days covered · R 2/10: 88/238"
       and "1\t\t\tChat turns: 103 min/day · model 64 · tools 30 · tests 5.4" in lines
       and "1\t\t\tDelegation: +76 min/day · workers 54 · background Bash 17 · media 2.7" in lines
-      and "2\td\t\t2 · chat/hooks · saves 3.3 min/day · S · provable-absence fast path for the hook setting the Pre-Bash floor"
+      and "2\td\t\t1 · chat/hooks · saves 3.3 min/day · S · provable-absence fast path for the hook setting the Pre-Bash floor"
       in lines and "1\td\t\tNeeds Egor: nothing" in lines,
       "the Harness menu opens on the Speed line with the area lines and the ranked backlog under it: %s" % lines[:3])
 
@@ -482,7 +492,7 @@ restated = [(p["id"], p["state"], p["ledger"]) for p in h.apply_speed(copy.deepc
 check(restated == [("regression-row", "fixed-pending", "regression-row")],
       "Speed's carried rows read the ledger handed in, as a night close's own branch ledger: %s" % restated)
 lines = h.menu_text(merged).splitlines()
-check(lines[2].startswith("0\t\tr:") and "Lost time: 1 problem · 12 min/day over the floor · 179 OM/d · 3.9 of 7 days covered" in lines[2]
+check(lines[2].startswith("0\t\tr:") and "Lost time: 1 problem · 3.3 min/day over the floor · 179 OM/d · 3.9 of 7 days covered" in lines[2]
       and lines.index("1\t\t\tWaits: watch · a wait") > 2 and any(l.startswith("0\t") and "Guards: 1 problem" in l
                                                                    for l in lines),
       "the Speed line heads the menu with its count, the Waits section under it, Guards after it: %s" % lines[1:3])
@@ -516,7 +526,7 @@ latest = json.load(open(os.path.join(harness_dir, "latest.json")))
 first = latest["speed"]
 menu_txt = open(os.path.join(harness_dir, "menu.txt")).read().splitlines()
 check(out.returncode == 0 and first["headline"] == doc["headline"] and counted_once(latest)
-      and menu_txt[2] == "0\t\tr:11:9\tLost time: 1 problem · 12 min/day over the floor · 179 OM/d · 3.9 of 7 days covered · R 2/10: 88/238"
+      and menu_txt[2] == "0\t\tr:11:9\tLost time: 1 problem · 3.3 min/day over the floor · 179 OM/d · 3.9 of 7 days covered · R 2/10: 88/238"
       and latest["problems"][0]["state"] == "new" and latest["problem_count"] == 3
       and not os.path.exists(os.path.join(own, "latest.json")) and not os.path.exists(os.path.join(own, "menu.txt")),
       "a persisting run lays its section into Harness's latest.json and the top of its menu.txt and writes neither "
@@ -539,12 +549,12 @@ with open(state_path, "w") as handle:
     json.dump(state, handle)
 speed("speed-own", "--quiet")
 repeated = json.load(open(os.path.join(harness_dir, "latest.json")))["speed"]
-check(doc.get("lost_min_day_by_day") == first.get("lost_min_day_by_day") == {today: 12.0}
+check(doc.get("lost_min_day_by_day") == first.get("lost_min_day_by_day") == {today: 3.3}
       and header == {"status": latest["status"],
                      "problems": [{k: p[k] for k in ("id", "ledger") if k in p} for p in latest["problems"]],
                      "issues": [[1, "Waits"], [1, "Guards"], [1, "Memory guard"]],
-                     "speed": {"as_of_s": first["as_of_s"], "status": first["status"], "lost_min_day": 12.0,
-                               "lost_min_day_by_day": {today: 12.0}, "issues": [[8.7, "suites running"], [3.3, "stop hooks"]]},
+                     "speed": {"as_of_s": first["as_of_s"], "status": first["status"], "lost_min_day": 3.3,
+                               "lost_min_day_by_day": {today: 3.3}, "issues": [[3.3, "stop hooks", "min/day"]]},
                      "spend": {"as_of_s": first["as_of_s"], "status": "nodata", "index": None, "index_by_day": {},
                                "issues": []}}
       and repeated.get("lost_min_day_by_day") == json.load(open(state_path)).get("lost_min_day_by_day")

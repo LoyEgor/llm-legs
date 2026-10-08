@@ -1,6 +1,7 @@
 # Speed floors that measure a settled policy
 
-Status: open — To: Harness Doctor
+Status: settled 2026-10-08 (branch fix/speed-recoverable): slot priced by a lent-slot burst replay, suites by their p10
+wall, workers active the parent of its parts with a derived floor and no row of its own — To: Harness Doctor
 
 From night 20261007T213650Z-7b98 run harness-speed-time-floor-suite-wait; rows `time_floor:slot`, `:workers-active`,
 `:suite_run`. Egor kept the night-worker ceiling at the cores on 2026-10-07, so no fixer has a lever on these

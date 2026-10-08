@@ -838,7 +838,7 @@ local function harnessSection(entryMenu, prefix, issues, unit, format)
     if item.title ~= "-" and plainText(item.title):match("^" .. prefix .. ":") then details = item.menu or {} break end
   end
   for _, issue in ipairs(type(issues) == "table" and issues or {}) do
-    if tonumber(issue[1]) then rows[#rows + 1] = issueRow(tonumber(issue[1]), unit, tostring(issue[2]), format) end
+    if tonumber(issue[1]) then rows[#rows + 1] = issueRow(tonumber(issue[1]), tostring(issue[3] or unit), tostring(issue[2]), format) end
   end
   return details, rows
 end

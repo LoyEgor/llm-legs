@@ -58,7 +58,7 @@ LLM ▸     8  reviewers crashed
   load graph the model). Every bar is DIM, never RED.
 - `usual` is the median of measured completed dates, never today.
 - A doctor's first level: up to three issue rows (RED count, the problem's own short name;
-  Speed's floor gaps in min/day, plus nonempty `Needs Egor` rows), Fix, fixer, separator,
+  Speed's floor gaps in min/day or workers' w-min/day, plus nonempty `Needs Egor` rows), Fix, fixer, separator,
   `LLM details`. The details hold every previous row in order, the non-ordinary status title
   (stale, failed, pending) first; Lost time's and Spend's details are Harness's `Lost time:` and `Spend:` subtrees.
 - Harness's `menu.txt` carries `H<TAB><JSON>` right after `T`: status, problem ids/ledger refs,

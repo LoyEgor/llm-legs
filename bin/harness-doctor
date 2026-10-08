@@ -5211,10 +5211,9 @@ def menu_text(document):
     if speed.get("spend"):
         header["spend"] = {k: speed["spend"][k] for k in ("as_of_s", "status", "index", "index_by_day", "change", "tone",
                                                           "issues") if k in speed["spend"]}
-    header["speed"]["issues"] = [[f["recoverable_min_day"], f["label"]]
-                                 for f in sorted((speed.get("budget") or {}).get("floors") or (),
-                                                 key=lambda f: -f["recoverable_min_day"])
-                                 if f["recoverable_min_day"] > 0][:3]
+    parts = [[f[key], f["label"], unit] for f in (speed.get("budget") or {}).get("floors") or ()
+             for key, unit in (("chat_min_day", "min/day"), ("worker_min_day", "w-min/day")) if f.get(key, 0) > 0]
+    header["speed"]["issues"] = sorted(parts, key=lambda p: -p[0])[:3]
     menu.lines.append("H\t" + json.dumps(header, separators=(",", ":")))
     sections = document.get("sections") or ()
     if document["status"] != "error":

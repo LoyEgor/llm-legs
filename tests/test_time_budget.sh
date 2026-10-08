@@ -106,9 +106,13 @@ check(dict((k, round(v)) for k, v in split.items() if v) == {
       "(the call inside them absorbed), tools net of their hooks, the rest model: %s" % dict(split))
 walled = T.run_split(dict(run, walled=["com"]), 0, 1e12, T.suite_rows(0, 1e12), T.event_rows(D0, D0 + 86400)["c"],
                      T.event_rows(D0, D0 + 86400)["h"])
-check(not walled["retries"] and round(walled["model"]) == 4800 and round(walled["slot"]) == 600
-      and round(sum(walled.values())) == 9000,
-      "a walled run's earlier attempts are weather, never retries: they are split as its work: %s" % dict(walled))
+check(not walled["retries"] and round(walled["walled"]) == 400 and round(walled["model"]) == 4400
+      and round(walled["slot"]) == 600 and round(sum(walled.values())) == 9000,
+      "a walled run's earlier attempts are weather, neither retries nor work: %s" % dict(walled))
+bench = T.run_split(dict(run, workdir="/w/logo-vectorizer-bench/lane"), 0, 1e12, T.suite_rows(0, 1e12),
+                    T.event_rows(D0, D0 + 86400)["c"], T.event_rows(D0, D0 + 86400)["h"])
+check(dict(bench) == {"bench": 9000} and T.worker_wall({"model": 60, "bench": 9000}) == 60,
+      "a bench worker is its own class, whole, outside the workers' wall: %s" % dict(bench))
 clipped = T.run_split(run, D0 + 5000, D0 + 7300, T.suite_rows(0, 1e12), [], [])
 orphan = T.run_split(dict(run, run="claudeb-1-9-none"), 0, 1e12, [], [], [])
 check(round(clipped["suite_run"]) == 1000 and round(clipped["model"]) == 1300 and round(sum(clipped.values())) == 2300
@@ -154,19 +158,38 @@ check(lever["prompt-cache hits"]["value"] == "90 % of cached input read from cac
       and lever["fewer process starts"]["value"] == "1 CLI starts, 0.1 min launching"
       and lever["smaller context per turn"]["measured"] is False,
       "levers are measured where the journals hold the data and marked ideas where not: %s" % lever)
-gap = {f["class"]: f["recoverable_min_day"] for f in doc["floors"]}
-check(gap == {"hooks": 3.3, "stop": 0.3, "suite_wait": 16.7, "slot": 10.0, "retries": 6.7, "locks": 0.7, "suite_run": 0.0}
-      and doc["lost_min_day"] == 37.7 and T.recoverable("suite_run", 7200, 1) == 60.0
-      and T.recoverable("model", 9999, 1) == 0.0 and T.recoverable("slot", 600, 0.5) == 20.0
-      and doc["lines"][2] == "Over the floor: 38 min/day recoverable · suite slot wait 17 min · worker slot queue 10 min"
-      " · retries and relaunches 7 min",
-      "each class is judged against its floor: zero for hooks, gates and waits, a 60 min/day suite budget for tests, "
-      "none for plain Claude Code; the gap is recoverable min/day: %s %s" % (gap, doc["lines"][2]))
-active = T.worker_floor({"model": 900, "suite_run": 4500, "slot": 4600}, 1)
-check(active == {"share": 0.09, "floor_share": 0.7, "recoverable_min_day": 101.7}
-      and T.worker_floor({"model": 7000, "suite_run": 3000}, 1)["recoverable_min_day"] == 0.0
-      and doc["workers_active"]["floor_share"] == 0.7,
-      "workers are judged against 70 %% model activity of their wall, the shortfall is recoverable: %s" % active)
+gap = {f["class"]: (f["chat_min_day"], f["worker_min_day"]) for f in doc["floors"]}
+check(gap == {"hooks": (1.7, 1.7), "stop": (0.3, 0.0), "suite_wait": (0.0, 16.7), "slot": (0.0, 0.0),
+              "retries": (0.0, 6.7), "locks": (0.7, 0.0), "suite_run": (0.7, 0.0)},
+      "each class is judged against its floor, chats' and workers' parts apart: zero for hooks, gates and waits, "
+      "none for plain Claude Code: %s" % gap)
+check(T.suite_floor(D0, D0 + 86400) == {"worker": 1.0, "chat": 0.5} and gap["suite_run"] == (0.7, 0.0),
+      "suites keep their uncontended p10 wall: only a caller's suite seconds above each suite's p10 are recoverable, "
+      "never a flat budget: %s" % T.suite_floor(D0, D0 + 86400))
+critical = [[0, 0, 100, 60], [0, 100, 200, 60], [1000, 1000, 1100, 50]]
+idle = [[0, 0, 1000, 0], [0, 0, 100, 50], [0, 100, 200, 50]]
+check(T.slot_gain(critical) == 60 and T.slot_gain(idle) == 0 and gap["slot"] == (0.0, 0.0)
+      and by["slot"]["min"] == 10.0,
+      "the slot queue is priced by what lending slots during suites moves the bursts' ends, so a queue off the "
+      "critical path recovers nothing: %s %s" % (T.slot_gain(critical), T.slot_gain(idle)))
+active = T.worker_floor({"model": 900, "suite_run": 4500, "slot": 4600, "bench": 5000},
+                        {"suite_run": (300, 1500), "slot": (0, 600)}, 1)
+check(active == {"share": 0.09, "floor_share": 0.114, "recoverable_min_day": 35.0,
+                 "parts": {"suite_run": 25.0, "slot": 10.0}},
+      "workers' floor share is derived: model time over the wall left once every part is at its floor, bench "
+      "outside the wall; the parent's recoverable is the sum of its parts: %s" % active)
+check(doc["workers_active"]["floor_share"] == 0.543 and doc["workers_active"]["recoverable_min_day"] == 25.0
+      and doc["lost_min_day"] == 28.3
+      and doc["lines"][1:4] == ["Chats 16 min · workers 2.7 w-h", "Over the floor: chats 3 min/day · hooks 2 min",
+                                "Workers active 46 % of their wall (floor 54 %) · over it 25 w-min/day · suite slot "
+                                "wait 17 w-min · retries and relaunches 7 w-min · hooks 2 w-min"],
+      "workers active is the parent of its parts, the headline counts each minute once, worker-minutes carry "
+      "their own unit: %s %s" % (doc["lost_min_day"], doc["lines"][1:4]))
+lines(os.path.join(work, "night-stats", "runs.jsonl"), [dict(run, workdir="/r/.claude/worktrees/night-x-y")])
+os.environ["WORKER_STATS_DIR"] = os.path.join(work, "night-stats")
+check(T.budget(D0, D0 + 86400)["jobs"] == [[D0 + 1000, D0 + 1600, D0 + 10000, 3000.0]],
+      "a night worker enters the slot replay with its launch, first CLI start, end and own suite seconds")
+os.environ["WORKER_STATS_DIR"] = os.path.join(work, "stats")
 section = T.section(NOW)
 check(open(os.path.join(work, "harness", "budget.txt")).read().splitlines() == section["lines"]
       and not os.path.exists(T.day_cache_path("2026-01-10")),
@@ -269,10 +292,6 @@ check(empty["total_min"] == 0 and empty["floors"] == [] and empty["lost_min_day"
 cached = json.load(open(os.path.join(work, "doctors", "night-ledger", "N1.json")))
 check(cached["wall_s"] == 9000 and cached["split_s"]["slot"] == 600,
       "a finished night's ledger row is cached, so its numbers outlive the pruned run and event stores")
-with open(T.ledger_cache("N1"), "w") as handle:
-    json.dump(dict(cached, wall_s=12000, split_s=dict(cached["split_s"], model=1200)), handle)
-check(T.last_night() == {"id": "N1", "wall_s": 12000, "model_s": 1200, "share": 0.1},
-      "the last night's worker activity is the newest finished night's cached ledger row: %s" % T.last_night())
 moved = os.path.join(work, "moved-doctors")
 shutil.copytree(os.path.join(work, "doctors"), moved)
 shutil.rmtree(os.path.join(moved, "night-ledger"))
