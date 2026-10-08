@@ -5925,7 +5925,8 @@ assert_eq 'review · abcdef1' "$(head -n1 "$TR_HOME_CACHE/tr-rev/waiter2")"
 # A launch after a heredoc is still the launch; the heredoc body is not.
 tr_after=$(worker_payload claudeb-worker traft 'Ship it' $'cat > /tmp/brief <<EOF\nclaudeb profile fake --model opus -p x\nEOF\nclaudeb profile real --model sonnet -p "$(cat /tmp/brief)"' tr-after)
 printf '%s' "$tr_after" | "$WORKER_HOOK" >/dev/null || fail "after-heredoc launch exited nonzero"
-assert_eq 'real · sonnet · high' "$(head -n1 "$TR_HOME_CACHE/tr-after/traft")"
+# Effort is sonnet's own default, as the spawn hook seeds it — never the default model's.
+assert_eq 'real · sonnet · medium' "$(head -n1 "$TR_HOME_CACHE/tr-after/traft")"
 
 # No account in the launch text: the agent's own earlier tag, then worker-pick, then `?`.
 TR_PICK="$WORK/tr-worker-pick"

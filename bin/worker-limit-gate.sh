@@ -28,14 +28,13 @@ claim_delegated_triage() {
   # The brief is the prompt plus every readable file an absolute path in it names: a worker is
   # routinely told "follow the brief at /path" and the review-bench commands stand in that file.
   brief_text=$prompt
-  for brief_file in $(printf '%s\n' "$prompt" | grep -Eo '/[^[:space:]"'"'"'`<>]+' |
-      sed -E 's/[.,;:)]+$//' | sort -u); do
+  while IFS= read -r brief_file; do
     [ -f "$brief_file" ] || continue
     real_brief=$(realpath "$brief_file" 2>/dev/null) || continue
     [ -f "$real_brief" ] && [ -r "$real_brief" ] || continue
     [ "$(wc -c <"$real_brief" | tr -d '[:space:]')" -le 1048576 ] || continue
     brief_text="$brief_text"$'\n'"$(cat "$real_brief")"
-  done
+  done < <(printf '%s\n' "$prompt" | grep -Eo '/[^[:space:]"'"'"'`<>]+' | sed -E 's/[.,;:)]+$//' | sort -u)
   for claimed_run in $(printf '%s' "$brief_text" |
       grep -Eo "review-bench[[:blank:]]+record[[:blank:]]+$run_id_re" | awk '{print $NF}' | sort -u); do
     claim_stamp="$REVIEW_STATE/benches/$claimed_run/delegated"
@@ -117,6 +116,7 @@ if [ "$worker" = light-worker ]; then
   esac
   spec_worker="${vendor}-worker"
   role_arg=light
+  pin_key="${vendor}_profile"
 fi
 if [ -n "$pin_key" ]; then
   _load_wm || true

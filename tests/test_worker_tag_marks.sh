@@ -34,6 +34,36 @@ call light-research a3 'light-research --attach lr-20260924-ab12 --out /tmp/o'
 assert_eq 'run=lr-20260924-ab12' "$(grep '^run=' "$TAGS/a3")"
 assert_eq 0 "$(grep -c '^start=' "$TAGS/a3")"
 
+# A here-string or a quoted `<<` opens no heredoc body: the launch on a later line still marks the row.
+for cmd in $'jq . <<< "$payload"\nworker-run start codex --brief /tmp/b' \
+    $'cat <<<"$brief" >/tmp/b\nworker-run start codex --brief /tmp/b' \
+    $'echo \'<<X\'\nworker-run start codex --brief /tmp/b'; do
+  printf 'acct · astra · high\n' >"$TAGS/a4"
+  call codex-worker a4 "$cmd"
+  assert_eq 1 "$(grep -c '^start=[0-9]' "$TAGS/a4")"
+done
+# A real heredoc's body is still a brief being written, not a launch.
+printf 'acct · astra · high\n' >"$TAGS/a5"
+call codex-worker a5 $'cat > /tmp/b <<EOF\nworker-run start codex --brief /tmp/b\nEOF'
+assert_eq 0 "$(grep -c '^start=' "$TAGS/a5")"
+
+# A seed is spent only once its tag file is written: a failed rewrite keeps it for the next call.
+printf 'acct · astra · high\nspawn=0000000000000000\n' >"$TAGS/pending-codex-worker-k1"
+printf 'mv() { return 1; }\n' >"$WORK/fail-mv.sh"
+jq -cn '{hook_event_name:"PreToolUse",tool_name:"Bash",session_id:"s1",agent_type:"codex-worker",agent_id:"a6",tool_input:{command:"ls"}}' |
+  BASH_ENV="$WORK/fail-mv.sh" bash "$HOOK" >/dev/null 2>&1
+assert_eq 1 "$(ls "$TAGS" | grep -c '^pending-codex-worker-k1$')"
+assert_eq 0 "$(ls "$TAGS" | grep -c '^a6$')"
+call codex-worker a6 'ls'
+assert_eq 0 "$(ls "$TAGS" | grep -c '^pending-codex-worker-k1$')"
+assert_eq 'acct · astra · high' "$(head -n1 "$TAGS/a6")"
+
+# A claudeb launch naming its model without --effort takes that model's default effort, not opus's.
+call claudeb-worker a7 'claudeb profile acct -p --model fable "do it"'
+assert_eq 'acct · fable · low' "$(head -n1 "$TAGS/a7")"
+call claudeb-worker a8 'claudeb profile acct -p --model sonnet "do it"'
+assert_eq 'acct · sonnet · medium' "$(head -n1 "$TAGS/a8")"
+
 # A main-session payload carries no agent_type key: it exits on builtins, before any cat or jq.
 printf '%s\n' 'jq() { printf "call\n" >> "$FORKS"; command jq "$@"; }' \
   'cat() { printf "call\n" >> "$FORKS"; command cat "$@"; }' >"$WORK/count-forks.sh"

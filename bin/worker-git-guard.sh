@@ -17,7 +17,7 @@ esac
 
 command -v jq >/dev/null 2>&1 || exit 0
 parsed=$(jq -r '[.hook_event_name // "", .agent_type // "", .session_id // "", .tool_input.command // "",
-  .cwd // ""] | @sh' <<<"$input" 2>/dev/null) || exit 0
+  .cwd // "", .agent_id // ""] | @sh' <<<"$input" 2>/dev/null) || exit 0
 fields=()
 eval "fields=($parsed)"
 
@@ -36,7 +36,12 @@ esac
 session_id=${fields[2]-}
 [[ "$session_id" =~ ^[A-Za-z0-9_-]+$ ]] || exit 0
 [ -n "${HOME:-}" ] || exit 0
-[ -e "$HOME/.cache/claude-worker-tags/$session_id/git-unlock-$agent_type" ] && exit 0
+# The permission is one spawn's, carried by its seed into that agent's own tag file: a marker keyed
+# by session and agent type unlocked every later sibling whose brief never asked.
+agent_id=${fields[5]-}
+agent_id=${agent_id//[^A-Za-z0-9_-]/}
+[ -n "$agent_id" ] && grep -qx 'git_cleanup=allowed' "$HOME/.cache/claude-worker-tags/$session_id/$agent_id" 2>/dev/null &&
+  exit 0
 
 command_text=${fields[3]-}
 [ -n "$command_text" ] || exit 0

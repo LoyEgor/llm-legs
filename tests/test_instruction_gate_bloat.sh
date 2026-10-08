@@ -339,6 +339,11 @@ printf '{}\n' > "$WORK/liveproj/settings.json"
 assert_eq pass "$(bloat_decision "$WORK/liveproj/settings.json")"
 printf 'x\n' > "$WORK/liveproj/notes.txt"
 assert_eq pass "$(bloat_decision "$WORK/liveproj/notes.txt")"
+# A class directory's rate is the price of its markdown; a helper script beside a skill is never loaded.
+assert_eq pass "$(bloat_decision "$HOME/.claude/skills/foo/scripts/run.py")"
+assert_eq pass "$(bloat_decision "$HOME/.claude/agents/helper.sh")"
+assert_eq pass "$(bloat_decision "$HOME/.claude/instructions/table.json")"
+assert_eq deny "$(bloat_decision "$HOME/.claude/skills/foo/SKILL.md")"
 
 echo "== bloat gate: a memory index is priced by the project its path encodes"
 # The index never sits in the directory tokenmap recorded — its parent is the memory/ subdirectory

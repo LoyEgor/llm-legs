@@ -279,16 +279,10 @@ if [ -d "$pending_dir" ] || mkdir -p "$pending_dir" 2>/dev/null; then
     [ -z "${review_run:-}" ] || printf 'review=%s\n' "$review_run"
     [ -z "$attach_run" ] || printf 'run=%s\n' "$attach_run"
     [ -z "$prompt_round" ] || printf 'round=%s\n' "$prompt_round"
-    [ -z "${seed_extra:-}" ] || printf '%s\n' "$seed_extra"; } > "$tmp_pending" 2>/dev/null &&
-    mv -f "$tmp_pending" "$pending_dir/pending-$subagent-$spawn_key" 2>/dev/null
+    [ -z "${seed_extra:-}" ] || printf '%s\n' "$seed_extra"
+    [ "$unlock_asked" = 0 ] || printf 'git_cleanup=allowed\n'; } > "$tmp_pending" 2>/dev/null &&
+    mv -f "$tmp_pending" "$pending_dir/pending-$subagent-$spawn_key" 2>/dev/null && unlock_done=$unlock_asked
   [ ! -e "$tmp_pending" ] || rm -f "$tmp_pending" 2>/dev/null
-  if [ "$unlock_asked" = 1 ]; then
-    git_unlock="$pending_dir/git-unlock-$subagent"
-    tmp_unlock="$git_unlock.tmp.$$"
-    : > "$tmp_unlock" 2>/dev/null && mv -f "$tmp_unlock" "$git_unlock" 2>/dev/null
-    rm -f "$tmp_unlock" 2>/dev/null
-    [ -e "$git_unlock" ] && unlock_done=1
-  fi
 fi
 # The unlock the guard reads is a file, and a cache directory it cannot write silently voids a
 # `GIT-CLEANUP: allowed` the brief demonstrably carries: the worker is then refused with "only a

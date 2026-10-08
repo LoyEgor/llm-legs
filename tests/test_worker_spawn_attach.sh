@@ -47,7 +47,7 @@ seed="$HOME/.cache/claude-worker-tags/s1/pending-claudeb-worker-u-forks"
 assert_eq "spawn=$(printf 'ACCOUNT: acct3\n' | shasum -a 256 | cut -c1-16)" "$(grep '^spawn=' "$seed")"
 assert_eq 'round=r-1x' "$(grep '^round=' "$seed")"
 asserts=$((asserts + 1))
-[ -e "$HOME/.cache/claude-worker-tags/s1/git-unlock-claudeb-worker" ] || fail "GIT-CLEANUP: allowed left no unlock"
+grep -qx 'git_cleanup=allowed' "$seed" || fail "GIT-CLEANUP: allowed left no unlock"
 assert_eq 1 "$(jq -r '.hookSpecificOutput.updatedInput.prompt' <<<"$out" | grep -c '^MD-GUARD (hook-injected)')"
 
 # An ATTACH relay's row is the attached run's own account and model, and its seed names the run.

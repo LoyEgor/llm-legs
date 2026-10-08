@@ -34,23 +34,6 @@ session_id=$(field '.session_id' | tr -cd 'A-Za-z0-9_-')
 
 command=$(field '.tool_input.command')
 description=$(field '.tool_input.description')
-# A heredoc body is blanked line for line, delimiter included: a brief written through `<<EOF`
-# quotes launch-shaped lines that launch nothing, while the command after the delimiter is real.
-launch=$(printf '%s\n' "$command" | LC_ALL=C awk '
-  delim != "" { probe = $0; if (dash) sub(/^\t+/, "", probe); if (probe == delim) delim = ""; print ""; next }
-  {
-    line = $0
-    if (match(line, /<<-?[[:space:]]*("[^"]*"|\047[^\047]*\047|\\?[A-Za-z_][A-Za-z0-9_.-]*)/) &&
-        substr(line, RSTART, 3) != "<<<") {
-      token = substr(line, RSTART, RLENGTH)
-      dash = (substr(token, 3, 1) == "-")
-      delim = token
-      sub(/^<<-?[[:space:]]*/, "", delim)
-      gsub(/["\047\\]/, "", delim)
-      line = substr(line, 1, RSTART - 1) substr(line, RSTART + RLENGTH)
-    }
-    print line
-  }')
 
 cache_root="$HOME/.cache/claude-worker-tags"
 cache_dir="$cache_root/$session_id"
@@ -76,6 +59,12 @@ _load_worker_model() {
   . "$SELF_DIR/../share/worker-model.sh" 2>/dev/null
 }
 _load_worker_model || true
+# A heredoc body is blanked line for line, delimiter included: a brief written through `<<EOF`
+# quotes launch-shaped lines that launch nothing, while the command after the delimiter is real.
+# '\n' can match no single line, so no body counts as fed to a shell.
+launch=$command
+command -v heredoc_mask >/dev/null 2>&1 || . "$SELF_DIR/../share/heredoc-mask.sh" 2>/dev/null
+! command -v heredoc_mask >/dev/null 2>&1 || launch=$(heredoc_mask '\n' '\n' <<<"$command")
 # worker-run refuses start and wait inside Claude Code to anything but a relay named by this token, so
 # every call of a relay carries it: the text gates never read a script's body, the environment reaches
 # it. An ATTACH relay's token says so, and worker-run starts nothing for it.
@@ -192,8 +181,9 @@ write_tag_file_locked() { # tag [key=value]...
       printf '%s\n' "$kv"
     done
     for kv in "$@"; do [ -z "${kv#*=}" ] || printf '%s\n' "$kv"; done
-  } > "$tmp" 2>/dev/null && mv -f "$tmp" "$tag_file" 2>/dev/null
+  } > "$tmp" 2>/dev/null && mv -f "$tmp" "$tag_file" 2>/dev/null && return 0
   rm -f "$tmp" 2>/dev/null
+  return 1
 }
 grab() { printf '%s' "$launch" | grep -oE -e "$1" 2>/dev/null | head -n1; }
 review_tag() { # run-id
@@ -294,6 +284,7 @@ elif printf '%s' "$launch" | grep -qE "${cmd_word}"'claudeb["'\'']?([[:space:]]|
   [ -n "$model" ] || model=opus
   effort=$(grab '\-\-effort[= ]+[a-z]+' | grep -oE '[a-z]+$')
   [ -n "$effort" ] || effort=$(worker_conf claudeb_effort)
+  [ -n "$effort" ] || effort=$(worker_model_default_effort claudeb "$model")
   [ -n "$effort" ] || effort=$(worker_model_default_effort claudeb "$(worker_model_default_model claudeb)")
   tag="$acct · $model · $effort"
 elif { printf '%s' "$launch" | grep -qE "${cmd_word}"'agy([[:space:]]|$)' ||

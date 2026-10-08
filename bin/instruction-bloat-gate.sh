@@ -171,11 +171,12 @@ if [ -z "$class_reads" ]; then
 fi
 # This hook runs before every Edit and every Write in every session, so what it does for a file it
 # will never price has to be nothing. Only markdown is ever measured (the export indexes no other
-# extension) and only markdown carries a class rate, so a source file with neither leaves here
-# rather than paying for a lookup over the whole rate index.
+# extension) and only markdown carries a class rate, so a source file leaves here rather than paying
+# for a lookup over the whole rate index — whatever class_reads says, as instruction_read_rate's
+# directory patterns match a script under skills/ too.
 case "$file_path" in
   *.[Mm][Dd]|*.[Mm][Aa][Rr][Kk][Dd][Oo][Ww][Nn]) ;;
-  *) [ -n "$class_reads" ] || [ -n "$global" ] || exit 0 ;;
+  *) [ -n "$global" ] || exit 0 ;;
 esac
 
 payload_fault() { gate_journal bloat fault "$sid" "$file_path" '' 'edit payload unreadable'; exit 0; }
