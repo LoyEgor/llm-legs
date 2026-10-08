@@ -2,6 +2,17 @@
 
 Status: open; design approved by Egor 2026-10-08 (§ Approved design), implementation not started. To: «Workers и review bench унификация отображения». From: «Token spending tracking and optimization», 2026-10-08.
 
+## Goal
+Cut the Sonnet relay subagents out of delegation entirely, so that holding a worker costs zero Claude tokens.
+
+- **What we move to.**
+  - The chat starts `worker-run` itself as a background Bash call and gets notified when it ends.
+  - Its live state is drawn as a work line under the status line (§ Approved design).
+  - The way inside is `/tasks`.
+- **What we drop.** Every relay agent and the rules and hooks that exist only for them (§ Wanted 2).
+- **Considered and set aside.** A Haiku 5.5 relay would keep the panel row but stay a paid relay. Egor chose the zero-token path after approving the mock.
+- **Done when.** token-map's relay detector (`tracking.py` `RELAYS`) shows no relay spawns for a week of normal delegation, and every worker, review and image run is visible as a work line.
+
 ## Why
 Every delegation spawns a relay subagent on Sonnet: claudeb-, codex-, gemini- and grok-worker, light-worker, light-research, and review-waiter for review-bench. The relay only launches `worker-run`, waits in 9-minute rounds, and relays the report.
 
