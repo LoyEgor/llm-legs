@@ -190,6 +190,13 @@ os.environ["WORKER_STATS_DIR"] = os.path.join(work, "night-stats")
 check(T.budget(D0, D0 + 86400)["jobs"] == [[D0 + 1000, D0 + 1600, D0 + 10000, 3000.0]],
       "a night worker enters the slot replay with its launch, first CLI start, end and own suite seconds")
 os.environ["WORKER_STATS_DIR"] = os.path.join(work, "stats")
+b = T.budget(D0, D0 + 86400)
+wb = dict(b, seconds=dict(b["seconds"], walled=3600), worker=dict(b["worker"], walled=3600))
+rec, wrec = T.recoverable(b, D0, D0 + 86400), T.recoverable(wb, D0, D0 + 86400)
+check(sum(map(sum, wrec.values())) - sum(map(sum, rec.values())) == 0
+      and T.worker_floor(wb["worker"], wrec, 1) == T.worker_floor(b["worker"], rec, 1),
+      "a walled run's relaunch minutes add 0 to lost_min_day and leave the workers' shares alone: usage walls are "
+      "weather: %s" % wrec)
 section = T.section(NOW)
 check(open(os.path.join(work, "harness", "budget.txt")).read().splitlines() == section["lines"]
       and not os.path.exists(T.day_cache_path("2026-01-10")),
@@ -292,7 +299,12 @@ check(empty["total_min"] == 0 and empty["floors"] == [] and empty["lost_min_day"
 cached = json.load(open(os.path.join(work, "doctors", "night-ledger", "N1.json")))
 check(cached["wall_s"] == 9000 and cached["split_s"]["slot"] == 600,
       "a finished night's ledger row is cached, so its numbers outlive the pruned run and event stores")
-moved = os.path.join(work, "moved-doctors")
+with open(T.ledger_cache("N1"), "w") as handle:
+    json.dump(dict(cached, split_s=dict(cached["split_s"], model=1200, walled=5000)), handle)
+check(T.last_night() == {"id": "N1", "wall_s": 5800, "model_s": 1200, "share": 0.207},
+      "the last night's worker activity is the newest finished night's cached ledger row, its usage-wall relaunches "
+      "outside the wall: %s" % T.last_night())
+moved =os.path.join(work, "moved-doctors")
 shutil.copytree(os.path.join(work, "doctors"), moved)
 shutil.rmtree(os.path.join(moved, "night-ledger"))
 env = dict(os.environ)

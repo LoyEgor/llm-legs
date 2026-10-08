@@ -848,7 +848,7 @@ speed_env=(HARNESS_DOCTOR_DIR="$S/harness" HARNESS_LEDGER="$S/ledger.json")
 env "${speed_env[@]}" CODE_LEDGER="$S/none.json" STATUSLINE_CACHE_DIR="$S/sl" SPEED_DOCTOR_NOW=1790967000 \
   SPEED_DOCTOR_DIR="$S/speed" WORKER_STATS_DIR="$S/ws" CODE_DOCTOR_DIR="$S/code" "$ROOT/bin/speed-doctor" --quiet ||
   fail "speed-doctor did not merge its section"
-night1='["opportunity:tests/llm-legs/test_llm_limits", "opportunity:chat/hooks", "opportunity:machine/contention", "opportunity:chat/tests"]'
+night1='["opportunity:chat/hooks", "opportunity:machine/contention", "opportunity:tests/llm-legs/test_llm_limits", "opportunity:chat/tests"]'
 assert jqe --argjson n "$night1" '.speed.selection == $n' "$S/harness/latest.json"
 mkdir -p "$L/share/rbench" "$L/share/briefs" "$L/agents"
 printf '# the per-model call\nclaudeb opus high high,xhigh low,medium,max no\n' >"$L/share/worker-model.sh"

@@ -810,10 +810,17 @@ def with_time(opportunities, budget):
 
 def floor_rows(budget, ledger, now):
     """Named rows proven fixed only by the measurement returning under them: a class more than FLOOR_ROW_MIN_DAY
-    over its floor in the last day."""
+    over its floor in the last day, and the last night's workers more than FLOOR_ROW_MIN_DAY minutes under their derived
+    floor share."""
     found = [(key, gap, time_budget.FLOOR_ROW_MIN_DAY, "min/day", "%s %s over its floor of %s" % (
         label, per_day(gap, worker), floor if isinstance(floor, str) else "%s min/day" % fmt(floor)))
              for key, label, _, gap, floor, worker in time_gaps(budget) if gap > time_budget.FLOOR_ROW_MIN_DAY]
+    night, floor = budget.get("last_night") or {}, (budget.get("workers_active") or {}).get("floor_share")
+    if night.get("share") is not None and floor and night["share"] < floor \
+            and night["wall_s"] - night["model_s"] / floor > 60 * time_budget.FLOOR_ROW_MIN_DAY:
+        found.append(("workers-active", night["share"], floor, "share",
+                      "workers were model-active %d %% of their wall on night %s (floor %d %%)" % (
+                          round(100 * night["share"]), night["id"], round(100 * floor))))
     out = []
     for key, value, limit, unit, fact in found:
         row = H.ledger_row(ledger, "time_floor", key)

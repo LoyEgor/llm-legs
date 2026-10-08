@@ -136,18 +136,17 @@ Sources: the 2026-10-02 research notes, now retired: [CT] chat turns, [HC] hooks
 
 Proven reads `fixed · −X <unit> · ≈Y OM/d`. Only `disproven` counts toward the freeze (two disproven fixes freeze a component); a freeze lifts on a structural change (the component's code digest or a new ident), never on volume. `pending-exposure` waits as long as it needs; a later regression stamps `regressed_at`.
 
-**Floor** (`share/time_budget.py`). Each class has a floor, chats' and workers' parts apart: zero for hooks, Stop hooks,
-suite waits, retries and locks (plain Claude Code has none); suites keep each suite's uncontended p10 wall; the slot
-queue counts only how much sooner each night-worker burst ends in a FIFO replay at its peak concurrency with slots lent
-during the holder's own suites. Workers active (bench outside, walled relaunches weather) is the parent of the worker
-parts: floor share = model over the wall less their gaps; never ranked or a row beside them. `lost_min_day` counts each
-minute once (`<chat> min + <worker> w-min/day`; w-min sum parallel workers). The 7-day band only
-names sudden regressions as holes. A class gap ≥ 0.5 min/day adds to the best-ranked opportunity whose fix
+**Floor** (`share/time_budget.py`). Each class has a floor, chats and workers apart: zero for hooks, Stop hooks, suite
+waits, retries and locks (plain Claude Code has none); suites their uncontended p10 wall; the slot queue how much sooner
+night-worker bursts end in a FIFO replay lending slots during the holder's suites. Workers active (bench and usage walls
+outside) is the parent of its parts, never ranked: floor share = model over the wall less their gaps. `lost_min_day`
+counts each minute once (`<chat> min + <worker> w-min/day`). The 7-day band only names sudden regressions as holes. A class gap ≥ 0.5 min/day adds to the best-ranked opportunity whose fix
 `time_budget.improvement_class` scores against that class (hooks and Stop → chat/hooks, suites → chat/tests, suite wait →
 chat/queue), else it is `opportunity:time/<class>` (`TIME_LEVERS`); recoverable minutes set the score, so the night takes
 the biggest gap even when nothing regressed, and an empty pick names them in `why_none`.
 **Floor rows** (rule `time_floor`, counted, ledger states as regressions): `time_floor:<class>` more than `FLOOR_ROW_MIN_DAY` (30)
-over its floor in the last day; the proof of a fix is the measurement back under it (no row).
+over its floor in the last day, `:workers-active` when the last night's wall is as far over model/floor share;
+the proof of a fix is the measurement back under it (no row).
 
 **ROI** (`night-run report`, `roi ·` lines). A fixer job whose problem is a Speed or time row (`opportunity`,
 `regression`, `time_floor`, `test_*`) is an improvement: weighted spend, lines changed, and min/day saved = its class's mean

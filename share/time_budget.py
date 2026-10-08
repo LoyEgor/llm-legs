@@ -448,7 +448,7 @@ def holes(b, med):
 
 
 def worker_wall(worker):
-    return sum(v for k, v in worker.items() if k != "bench")
+    return sum(v for k, v in worker.items() if k not in ("bench", "walled"))
 
 
 def suite_secs(r):
@@ -529,6 +529,21 @@ def floors_of(b, rec, days):
             for k in FLOORS]
 
 
+def last_night():
+    """The newest finished night's worker wall against its model time, from its cached ledger row when there is one."""
+    nights = [read_json(p, {}) for p in glob.glob(os.path.join(night_churn.doctors_dir(), "nights", "*.json"))]
+    nights = sorted((n for n in nights if n.get("finished_at") and n.get("started_at") and n.get("id")),
+                    key=lambda n: (n["started_at"], n["id"]))
+    if not nights:
+        return None
+    night = nights[-1]
+    row = read_json(ledger_cache(night["id"]), None)
+    split = row["split_s"] if isinstance(row, dict) and row.get("finished") and "split_s" in row else night_split(night)[1]
+    wall, model = worker_wall(split), split.get("model", 0)
+    return {"id": night["id"], "wall_s": round(wall), "model_s": round(model),
+            "share": round(model / wall, 3) if wall else None}
+
+
 def pct(part, whole):
     return round(100.0 * part / whole) if whole else 0
 
@@ -571,6 +586,7 @@ def document(now, hours=24.0, write=True):
     doc["floors"] = floors_of(b, rec, days) if rec else []
     doc["lost_min_day"] = round(sum(sum(v) for v in rec.values()) / 60.0 / days, 1) if rec else None
     doc["workers_active"] = worker_floor(b["worker"], rec, days)
+    doc["last_night"] = last_night()
     doc["lines"] = plain_lines(doc)
     return doc
 

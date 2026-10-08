@@ -226,8 +226,9 @@ gaps = {"lost_min_day": 95.3, "lines": ["Without the harness ≈ 40 % faster"],
                     "recoverable_min_day": 0.3, "chat_min_day": 0.3, "worker_min_day": 0.0},
                    {"class": "stop", "label": "stop hooks", "floor_min_day": 0, "actual_min_day": 5.0,
                     "recoverable_min_day": 5.0, "chat_min_day": 5.0, "worker_min_day": 0.0}],
-        "workers_active": {"share": 0.1, "floor_share": 0.125, "recoverable_min_day": 80.0,
-                           "parts": {"slot": 50.0, "suite_run": 30.0}}}
+        "workers_active": {"share": 0.1, "floor_share": 0.15, "recoverable_min_day": 80.0,
+                           "parts": {"slot": 50.0, "suite_run": 30.0}},
+        "last_night": {"id": "N9", "wall_s": 36000, "model_s": 3600, "share": 0.1}}
 timed = module.with_time(copy.deepcopy(backlog), gaps)
 check(all("workers-active" not in o["id"] for o in timed)
       and [module.per_day(o["opportunity"]["recoverable_min_day"], o["opportunity"].get("worker_min_day", 0.0))
@@ -255,12 +256,19 @@ pending_held = [module.floor_rows(gaps, {"rows": [{"id": "L1", "match": {"rule":
 check(pending_held == ["fixed-pending", "regressed"],
       "a fixed-pending row over its floor regresses too once its 24 h window starts after the fix held: %s" % pending_held)
 check([(r["id"], r["state"], r["value"], r["limit"]) for r in rows]
-      == [("L1", "open", 50.0, 30), ("time_floor:suite_run", "new", 40.0, 30)]
+      == [("L1", "open", 50.0, 30), ("time_floor:suite_run", "new", 40.0, 30),
+          ("time_floor:workers-active", "new", 0.1, 0.15)]
       and rows[1]["fact"] == "suites running 10 min + 30 w-min/day over its floor of uncontended p10 wall · proof: back "
       "under it"
-      and module.floor_rows(dict(gaps, floors=gaps["floors"][2:]), {}, HI) == [],
-      "a class more than 30 min/day over its floor is a named row through the ledger's states, workers active never "
-      "beside its parts; back under it there is no row: %s" % [(r["id"], r["state"]) for r in rows])
+      and rows[2]["fact"] == "workers were model-active 10 % of their wall on night N9 (floor 15 %) · proof: back under it"
+      and module.floor_rows(dict(gaps, floors=gaps["floors"][2:], last_night=dict(gaps["last_night"], share=0.3)), {}, HI) == [],
+      "a class more than 30 min/day over its floor and a night under the derived workers' floor share are named rows "
+      "through the ledger's states; back under them there is no row: %s" % [(r["id"], r["state"]) for r in rows])
+near = dict(gaps["last_night"], model_s=5300, share=0.147)
+check(module.floor_rows(dict(gaps, floors=[], last_night=near), {}, HI) == []
+      and [r["ident"] for r in module.floor_rows(dict(gaps, floors=[], last_night=dict(near, model_s=4000, share=0.111)),
+                                                {}, HI)] == ["workers-active"],
+      "the night row needs more than 30 minutes of the night's wall under the derived floor share, not a share point")
 parts = json.loads(next(l for l in h.menu_text({
     "problem_count": 0, "as_of_s": HI, "title": "t", "status": "error", "problems": [], "sections": [], "footer": "f",
     "speed": {"status": "ok", "budget": gaps}}).splitlines() if l.startswith("H\t"))[2:])["speed"]["issues"]
@@ -277,7 +285,7 @@ module.with_time, module.time_budget.section = saved
 os.environ.clear()
 os.environ.update(saved_env)
 check(floored["selection"] == [] and floored["why_none"].startswith("95 min/day recoverable, but 3 are not output-equivalent")
-      and floored["head"].startswith("15 min + 80 w-min/day over the floor · ") and floored["problem_count"] == 2
+      and floored["head"].startswith("15 min + 80 w-min/day over the floor · ") and floored["problem_count"] == 3
       and [l[3] for l in floored["menu"] if l[2]] == [r["fact"] for r in floored["problems"] if r["rule"] == "time_floor"]
       and [0, "", False, "Without the harness ≈ 40 % faster"] in floored["menu"],
       "an empty pick while minutes are recoverable names them; the floor rows count and show red in the menu beside "
