@@ -222,6 +222,12 @@ assert contains "$again" '0 new followups to classify'
 assert test "$(wc -l <"$CSD/ledger.jsonl")" -eq 2
 assert test "$(wc -l <"$CSD/delegations.jsonl")" -eq 2
 
+# an ATTACH relay left in an older snapshot is dropped on the next collect
+printf '%s\n' '{"tool_use_id":"att1","timestamp":"2026-07-15T02:00:00Z","subagent_type":"codex-worker","prompt_head":"ATTACH codex-123456789-1-abc: wait"}' >>"$CSD/delegations.jsonl"
+run_collect valid >/dev/null
+assert test "$(wc -l <"$CSD/delegations.jsonl")" -eq 2
+assert not_contains "$(cat "$CSD/delegations.jsonl")" 'att1'
+
 # quote-validation fallback -> C/rater-invalid, complexity null
 CSD="$WORK/collect-badquote"
 run_collect badquote >/dev/null

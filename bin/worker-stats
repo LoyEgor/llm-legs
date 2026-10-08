@@ -33,6 +33,7 @@ STALE_LEDGER_DAYS = 3
 CLASSIFY_TIMEOUT_S = 300
 VALID_CLASSES = ("A", "B", "C")
 COST_OUTLIER_MAX = 50000
+ATTACH_RE = re.compile(r"ATTACH\s+[a-z0-9][a-z0-9-]*:")
 DELEGATION_FIELDS = ("tool_use_id", "timestamp", "subagent_type", "model", "effort",
                      "is_resume", "outcome", "duration_ms", "retry_of",
                      "worker_tokens", "orchestrator_patch", "prompt_head", "result_head")
@@ -513,7 +514,9 @@ def refresh_delegations(path, recs):
     """Merge the corpus run's delegation records into the snapshot, deduped/refreshed
     by tool_use_id (outcome/duration/tokens sharpen as notifications land later).
     Write atomically: temp file then os.replace()."""
-    snapshot = {d["tool_use_id"]: d for d in read_jsonl(path) if d.get("tool_use_id")}
+    # worker-corpus no longer emits ATTACH relays; older snapshots still hold them.
+    snapshot = {d["tool_use_id"]: d for d in read_jsonl(path)
+                if d.get("tool_use_id") and not ATTACH_RE.match((d.get("prompt_head") or "").strip())}
     for r in recs:
         if r.get("type") != "delegation":
             continue
