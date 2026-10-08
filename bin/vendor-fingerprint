@@ -29,7 +29,7 @@ id_prefixes='gpt|grok|gemini|imagen|veo|sora|claude'
 id_re="($id_prefixes)(-[a-z]+)*-[0-9]+[a-z]?(\\.[0-9]+)*(-[a-z0-9]+){0,3}"
 doctor_fix="${VENDOR_FINGERPRINT_DOCTOR_FIX:-$repo_root/bin/doctor-fix}"
 . "$repo_root/share/chat-open.sh"
-. "$repo_root/share/night-worktree.sh"
+. "$repo_root/share/worktree.sh"
 # npm puts codex and grok under nvm, which neither a LaunchAgent's PATH nor a plain shell's carries.
 # Appended, so a native install earlier on PATH (~/.local/bin/claude) stays the one that runs.
 while IFS= read -r nvm_bin; do PATH="$PATH:$nvm_bin"; done < <(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | sort -rV)
@@ -488,8 +488,7 @@ waiting() { # [vendor] -> the open events no chat has taken yet
 }
 
 night_worktree() { # main-checkout night vendor -> the llm-legs worktree on branch night/<night>/<vendor>
-  local path="$1/.claude/worktrees/night-$2-$3"
-  night_worktree_add "$1" "$2" "night/$2/$3" "$path" && printf '%s\n' "$path"
+  worktree_new "$1" "night/$2/$3"
 }
 
 night_brief() { # main-checkout night id worktree sibling-worktree... -> the brief a headless worker runs
@@ -536,7 +535,7 @@ night_request() { # night-id -> per vendor with a real waiting release: its fixe
       repos=()
       for repo in $sibling_repos; do [ ! -d "${top%/*}/$repo" ] || repos+=("${top%/*}/$repo"); done
       while IFS= read -r repo; do siblings+=("$repo") record_args+=(--worktree "$repo"); done < <(
-        night_sibling_worktrees "$night" "night/$night/$vendor" "$vendor" ${repos[@]+"${repos[@]}"})
+        worktree_siblings "night/$night/$vendor" ${repos[@]+"${repos[@]}"})
     fi
     if [ -z "$worktree" ] || ! night_brief "$top" "$night" "$id" "$worktree" ${siblings[@]+"${siblings[@]}"} >"$brief"; then
       log "night $night: no worktree or brief for $id, it keeps waiting"

@@ -85,16 +85,12 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
    - No per-branch review (Egor, 2026-10-03: per-branch rounds took about 60% of a night's spend).
    - The orchestrator reads the decision table itself and checks every non-`fixed` verdict. That is
      the second model on a fixer's self-clearing; what it finds goes to the SAME worker (RESUME).
-   - `night-run job set … state=merged` still refuses a job whose optional `review` round has open
-     findings, until it is fixed through `review-bench fix` or closed `review-bench close <round>
-     --nofix --reason '…'`; tonight's merged jobs carry no `review`.
-   - A Code fixer job (`code-*`) merges only through `bin/code-doctor check --landing` on its run
-     record, against its night base and the main checkouts as they are then (active work,
-     revalidation, deletion proof); `night-run job set … state=merged suites=passed` attests the
-     suites that passed after the rebase.
-   - The branch is rebased onto main's HEAD. The same worker resolves conflicts, since it knows its
-     intent. Suites must pass.
-   - Commit (one long line) and push.
+   - The worker rebases onto main's HEAD and resolves conflicts, since it knows its intent. Suites must pass.
+   - `bin/worktree land <worktree> [--review <round>] [--suites-passed]` lands it as by day (gates, rebase,
+     ff-merge, push proof, removal; a refusal leaves it in place); its `commits=` go to `night-run job set …
+     state=merged pushed=true`, which reruns the gates of `share/worktree.sh`: an open `review` round (fix it
+     or `review-bench close <round> --nofix`), and for a Code fixer (`code-*`) `bin/code-doctor check
+     --landing` on its run record, `suites=passed` attesting the suites; `land` keeps that worktree for it.
    - One commit per branch is fine: commit count does not matter to Egor. Merges into main are
      serial and short; everything else is parallel.
 5. **Debt pass, after the landings** (the `debt` job, once no other job is `pending`): night-sweep

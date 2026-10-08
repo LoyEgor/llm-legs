@@ -23,7 +23,7 @@ VERDICTS=' fixed ruled-out weather blind-spot handoff '
 . "$repo_root/share/chat-open.sh"
 . "$repo_root/share/store-lock.sh"
 . "$repo_root/share/test-scope.sh"
-. "$repo_root/share/night-worktree.sh"
+. "$repo_root/share/worktree.sh"
 
 JQ_EPOCH='def epoch: if type == "number" then . elif type == "string" then
   ((capture("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})([.][0-9]+)?(?<z>Z|(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2}))$")
@@ -789,7 +789,7 @@ launch_night() { # doctor night
     branch="night/$night/$id"
     wt="$top/.claude/worktrees/night-$night-$id"
     locked record_set "$id" '.branch = $b | .worktrees = [$w]' --arg b "$branch" --arg w "$wt"
-    if ! err=$(night_worktree_add "$top" "$night" "$branch" "$wt" 2>&1 >/dev/null); then
+    if ! err=$(worktree_new "$top" "$branch" 2>&1 >/dev/null); then
       locked fail_run "$id" "worktree not created: ${err:-git worktree add failed}"
       printf 'run %s failed: worktree not created: %s\n' "$id" "$err" >&2
       pending_id='' failed=1
@@ -800,7 +800,7 @@ launch_night() { # doctor night
     while IFS= read -r repo; do repos+=("$repo"); done < <({ component_repos "$id" "$top"
       ! jq -e --arg rules "$TEST_FIX_RULES log_audit " "$JQ_HAS_RULES" "$(record_file "$id")" >/dev/null ||
         grep -vxF -e "$top" -e '' "${NIGHT_RUN_SWEEP_REPOS:-$HOME/.claude/sweep-repos}" 2>/dev/null; } | sort -u)
-    siblings=$(night_sibling_worktrees "$night" "$branch" "$id" ${repos[@]+"${repos[@]}"})
+    siblings=$(worktree_siblings "$branch" ${repos[@]+"${repos[@]}"})
     [ -z "$siblings" ] || locked record_set "$id" '.worktrees += ($s | split("\n"))' --arg s "$siblings"
     [ -n "$judge" ] || judge=$( (cd "$wt" && "bin/$doctor-doctor" --json 2>/dev/null) | jq -r '.judge // empty' 2>/dev/null)
     [ -z "$judge" ] || locked record_set "$id" '.judge_at_launch = $j' --arg j "$judge"
