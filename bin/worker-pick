@@ -331,7 +331,7 @@ limits_reading() {
     ($buckets | map([(.as_of | numbers), ((.effective_pct // .used_pct) | numbers)] |
                     select(length == 2))) |
     select(length == ($buckets | length)) |
-    [(map(.[0]) | min), (map(.[1]) | max)] | @tsv' "$LIMITS_FILE" 2>/dev/null |
+    [(map(.[0]) | min), (map(.[1]) | max | ceil)] | @tsv' "$LIMITS_FILE" 2>/dev/null |
     head -n1
 }
 walls_list() { # vendor var
@@ -435,9 +435,11 @@ fail_safe() {
   case "$worker_mode" in
     gemini) fs_next=$(printf 'gemini %s · %s · %s — unavailable (%s)' "${gm_pin:-?}" "$gm_model" "$gm_effort" "$1") ;;
     grok) fs_next=$(printf 'grok %s · %s · %s — unavailable (%s)' "${gr_pin:-?}" "$gr_model" "$gr_effort" "$1") ;;
-    # No data means no ranking, so the lead is the first vendor of the fixed order still running:
+    # No data means no ranking, so the lead is codex where the toggle chose it, else the first vendor of the fixed order still running:
     # claudeb rotating where it is, and its successor where Egor parked it.
-    *) if [ "$cb_paused" = false ]; then
+    *) if [ "$worker_mode" = codex ] && [ "$cx_paused" = false ]; then
+         fs_next=$(printf 'codex %s · %s · %s — unavailable (%s)' "${cx_pin:-?}" "$cx_model" "$cx_effort" "$1")
+       elif [ "$cb_paused" = false ]; then
          fs_next=$(printf 'claudeb (rotating) — %s' "$1")
          [ "$worker_mode" != auto ] || [ "$gm_paused" = true ] ||
            fs_next="$fs_next  |  gemini unavailable"

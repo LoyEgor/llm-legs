@@ -1992,6 +1992,14 @@ write_config 'claudeb_paused=on' 'gemini_paused=on' 'grok_paused=on'
 run_store paused-fail-safe
 assert test "$(next_fail)" = 'NEXT: codex unavailable (limits parse failed)'
 assert not_contains "$output" claudeb
+# worker=codex leads its fail-safe with codex, as its ranked NEXT does, and a parked codex falls through.
+printf '%s\n' 'worker=codex' 'codex_effort=high' 'codex_profile=main' >"$CONFIG"
+run_store codex-fail-safe
+assert contains "$(next_fail)" 'NEXT: codex main · '
+assert contains "$(next_fail)" ' · high — unavailable (limits parse failed)'
+printf '%s\n' 'worker=codex' 'codex_paused=on' >"$CONFIG"
+run_store codex-paused-fail-safe
+assert contains "$(next_fail)" 'NEXT: claudeb (rotating) — limits parse failed'
 write_config
 # A duplicate hand-edited line resolves first-wins, as every other key in this file does.
 printf '%s\n' 'worker=auto' 'grok_paused=on' 'grok_paused=off' >"$CONFIG"
@@ -2233,6 +2241,16 @@ assert contains "$(vsection grok)" 'WALLED'
 assert test -e "$WALLS/grok-supergrok"
 grok_read_store 2000000100 0
 run_store grok-wall-read-open
+assert not_contains "$(vsection grok)" 'WALLED'
+assert test ! -e "$WALLS/grok-supergrok"
+# grok stores creditUsagePercent unrounded: a fractional reading lapses the record like a whole one,
+# and one rounding up to 100 does not.
+printf '2000003600\n2000000000\n' >"$WALLS/grok-supergrok"
+grok_read_store 2000000100 99.2
+run_store grok-wall-read-full-fraction
+assert test -e "$WALLS/grok-supergrok"
+grok_read_store 2000000100 61.2
+run_store grok-wall-read-open-fraction
 assert not_contains "$(vsection grok)" 'WALLED'
 assert test ! -e "$WALLS/grok-supergrok"
 clear_walls
