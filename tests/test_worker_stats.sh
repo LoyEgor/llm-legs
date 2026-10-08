@@ -152,7 +152,7 @@ assert not_contains "$(WORKER_STATS_DIR="$SD" "$SCRIPT")" 'hint: ledger is'
 MOCK_CORPUS="$WORK/mock-corpus"
 cat >"$MOCK_CORPUS" <<'PY'
 #!/usr/bin/env python3
-import sys,json
+import os,sys,json
 out=None
 a=sys.argv
 for i,x in enumerate(a):
@@ -162,14 +162,16 @@ def deleg(tid):
             "subagent_type":"codex-worker","model":"gpt-6-astra","effort":"high","is_resume":False,
             "outcome":"ok","duration_ms":1000,"retry_of":None,"worker_tokens":10,"orchestrator_patch":False,
             "prompt_head":"build the thing","result_head":"OUTCOME: done"}
-def fu(tid,pid,brief):
-    return {"type":"followup","tool_use_id":tid,"timestamp":"2026-07-16T01:00:00Z",
+def fu(tid,pid,brief,ts="2026-07-16T01:00:00Z"):
+    return {"type":"followup","tool_use_id":tid,"timestamp":ts,
             "subagent_type":"codex-worker","parent_tool_use_id":pid,"model":None,"effort":None,
             "account":None,"is_resume":True,"fable_tokens_cycle":5000,
             "brief_text_masked":brief,"parent_brief_head_masked":"build a thing"}
 recs=[deleg("p1"),deleg("p2"),
       fu("f1","p1","please fix the broken build now"),
       fu("f2","p2","again, fix the broken build")]
+if os.environ.get("MOCK_OLD"):
+    recs.append(fu("f0","p1","an old fix for the broken build","2026-07-10T01:00:00Z"))
 with open(out,"w") as f:
     for r in recs: f.write(json.dumps(r)+"\n")
 PY
@@ -178,8 +180,18 @@ chmod +x "$MOCK_CORPUS"
 MOCK_CLAUDEB="$WORK/mock-claudeb"
 cat >"$MOCK_CLAUDEB" <<'PY'
 #!/usr/bin/env python3
-import os,json
+import os,sys,json,signal
 mode=os.environ.get("MOCK_MODE","valid")
+calls=0
+if os.environ.get("MOCK_COUNT"):
+    with open(os.environ["MOCK_COUNT"],"a+") as f:
+        f.write("x"); f.seek(0); calls=len(f.read())
+if mode=="infra-old" and "an old fix" in sys.argv[sys.argv.index("-p")+1]:
+    exit(1)
+if mode=="invalid-then-infra":
+    mode="infra" if calls%2==0 else "badquote"
+if mode=="interrupt" and calls==2:
+    os.kill(os.getppid(),signal.SIGKILL); exit(1)
 if mode=="badquote":
     inner={"class":"A","quote":"NOT PRESENT IN ANY BRIEF","reason":"x","complexity":3}
 elif mode=="badcplx":
@@ -210,6 +222,7 @@ assert contains "$first" '"class": "A"'
 assert contains "$first" '"model": null'          # VERBATIM followup field, not parent gpt-6-astra
 assert not_contains "$first" 'gpt-6-astra'
 assert contains "$first" '"complexity": 3'
+assert contains "$first" '"parent_tool_use_id": "p1"'
 assert test -f "$CSD/delegations.jsonl"
 assert test "$(wc -l <"$CSD/delegations.jsonl")" -eq 2
 # auditability fields carried verbatim into the snapshot
@@ -268,6 +281,94 @@ assert contains "$args_out" 'window 2026-07-01..2026-07-02'
 assert contains "$args_out" 'paid by alona'
 assert contains "$args_out" 'nothing written'
 assert test ! -f "$CSD/ledger.jsonl"
+
+# a followup skipped on an infra failure keeps the next default window open back to its day,
+# even after newer followups of the same run were classified
+CSD="$WORK/collect-pending"
+collect_default() {
+  WORKER_STATS_DIR="$CSD" WORKER_CORPUS_BIN="$MOCK_CORPUS" CLAUDEB_BIN="$MOCK_CLAUDEB" MOCK_OLD=1 \
+    MOCK_MODE="$1" "$SCRIPT" collect --until 2026-07-17
+}
+collect_default infra-old >/dev/null
+assert test "$(wc -l <"$CSD/ledger.jsonl")" -eq 2
+retry_out=$(collect_default valid)
+assert contains "$retry_out" 'collect window 2026-07-10..2026-07-17: 1 new followups'
+assert test "$(wc -l <"$CSD/ledger.jsonl")" -eq 3
+assert test ! -f "$CSD/pending-since"
+assert contains "$(collect_default valid)" 'collect window 2026-07-14..2026-07-17'
+
+# an invalid answer followed by an infra failure is a skip, not a permanent C/rater-invalid
+CSD="$WORK/collect-invalid-infra"
+MOCK_COUNT="$WORK/invalid-infra.count" run_collect invalid-then-infra >/dev/null
+assert test ! -f "$CSD/ledger.jsonl"
+
+# each classification reaches the ledger as it is paid for: a killed collect keeps the earlier ones
+CSD="$WORK/collect-interrupt"
+MOCK_COUNT="$WORK/interrupt.count" run_collect interrupt >/dev/null 2>&1 || true
+assert test "$(wc -l <"$CSD/ledger.jsonl")" -eq 1
+
+# a collect that finds nothing new still counts as a refresh for the staleness hint
+CSD="$WORK/collect-touch"
+run_collect valid >/dev/null
+touch -t "$(date -v-5d +%Y%m%d%H%M 2>/dev/null || date -d '5 days ago' +%Y%m%d%H%M)" "$CSD/ledger.jsonl"
+run_collect valid >/dev/null
+assert not_contains "$(WORKER_STATS_DIR="$CSD" "$SCRIPT")" 'hint: ledger is'
+
+# a followup's fault lands on the configuration of the dispatch it reworks (through a chain of
+# resumes), not on the resume's own header-less model/effort
+RSD="$WORK/resume-attribution"
+mkdir -p "$RSD"
+cat >"$RSD/delegations.jsonl" <<'J'
+{"tool_use_id":"p","subagent_type":"codex-worker","model":"gpt","effort":"high","is_resume":false,"outcome":"ok"}
+{"tool_use_id":"r1","subagent_type":"codex-worker","model":null,"effort":null,"is_resume":true,"outcome":"ok"}
+{"tool_use_id":"r2","subagent_type":"codex-worker","model":null,"effort":"low","is_resume":true,"outcome":"ok"}
+J
+cat >"$RSD/ledger.jsonl" <<'J'
+{"tool_use_id":"r1","parent_tool_use_id":"p","worker":"codex-worker","model":null,"effort":null,"class":"A"}
+{"tool_use_id":"r2","parent_tool_use_id":"r1","worker":"codex-worker","model":null,"effort":"low","class":"A"}
+J
+attr=$(WORKER_STATS_DIR="$RSD" "$SCRIPT" --json | python3 -c '
+import json,sys
+rows={"/".join((r["worker"],r["model"],r["effort"])):r for r in json.load(sys.stdin)["rows"]}
+print(rows["codex-worker/gpt/high"]["fault"], sorted(k for k,r in rows.items() if r["fault"]))')
+assert test "$attr" = "2 ['codex-worker/gpt/high']"
+
+# two rater specs sharing model/effort are told apart in the reviews table
+VSD="$WORK/reviews-labels"
+mkdir -p "$VSD"
+cat >"$VSD/reviews.jsonl" <<'J'
+{"run_id":"b1","rater":"opus-high","rater_model":"opus","rater_effort":"high","findings":2,"confirmed":2,"p1":1}
+{"run_id":"b1","rater":"opus-high#2","rater_model":"opus","rater_effort":"high","findings":2,"confirmed":1,"p2":1}
+{"run_id":"b1","rater":"sonnet-high","rater_model":"sonnet","rater_effort":"high","findings":1}
+J
+reviews_table=$(WORKER_STATS_DIR="$VSD" "$SCRIPT")
+assert contains "$reviews_table" 'opus/high opus-high#2'
+assert contains "$reviews_table" 'opus/high opus-high '
+assert not_contains "$reviews_table" 'sonnet/high sonnet-high'
+
+# the interactive view ignores unbound keys (an arrow's escape bytes) and exits on Ctrl-C,
+# which raw mode delivers as a byte instead of SIGINT
+python3 - "$SCRIPT" <<'PY'
+import importlib.util,importlib.machinery,sys,os,pty,termios,threading,time,signal,io,contextlib
+loader=importlib.machinery.SourceFileLoader("ws",sys.argv[1])
+spec=importlib.util.spec_from_loader("ws",loader)
+ws=importlib.util.module_from_spec(spec); loader.exec_module(ws)
+master,slave=pty.openpty()
+def type_keys():
+    # setraw flushes queued input, so the keys go in only once the view has gone raw
+    while termios.tcgetattr(slave)[3] & termios.ICANON:
+        time.sleep(0.01)
+    os.write(master,b"x\x1b[A\x03")
+threading.Thread(target=type_keys,daemon=True).start()
+sys.stdin=os.fdopen(slave,"r")
+signal.alarm(5)
+views=[]
+with contextlib.redirect_stdout(io.StringIO()):
+    ws.interactive_tables(lambda: views.append("impl"), lambda: views.append("reviews"))
+signal.alarm(0)
+assert views==["impl"], views
+PY
+assert test "$?" -eq 0
 
 # --- part 4: worker-corpus extraction unit tests + timestamp handling ---------
 WORKER_STATS_DIR="$SD" python3 - "$CORPUS" <<'PY'
@@ -482,4 +583,4 @@ print("ws-unit-ok")
 PY
 assert test "$?" -eq 0
 
-printf 'PASS: %s assertions; leaderboard aggregation (fault/infra/retry/orchP/medDur/medCplx/n<10/sort/killed-excl/outlier/!/dedup), staleness hint, collect (verbatim/complexity/dedupe/fallback/args/infra-unseen/atomic-write/shortquote), worker-corpus outcome+retry+model-shape+timestamp units, a read set that keeps retired workers as history while the dispatch set drops them, and an ATTACH re-attach linked as a followup of the dispatch that started the RUN IT NAMES — nearest-dispatch only where nothing reported that run id — instead of counted as a fresh dispatch\n' "$asserts"
+printf 'PASS: %s assertions; leaderboard aggregation (fault/infra/retry/orchP/medDur/medCplx/n<10/sort/killed-excl/outlier/!/dedup), staleness hint, collect (verbatim/complexity/dedupe/fallback/args/infra-unseen/atomic-write/shortquote), worker-corpus outcome+retry+model-shape+timestamp units, infra-skipped followups retried, per-record ledger append, resume faults on their dispatch, reviews rater labels, raw-mode keys, a read set that keeps retired workers as history while the dispatch set drops them, and an ATTACH re-attach linked as a followup of the dispatch that started the RUN IT NAMES — nearest-dispatch only where nothing reported that run id — instead of counted as a fresh dispatch\n' "$asserts"

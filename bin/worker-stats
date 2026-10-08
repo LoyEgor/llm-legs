@@ -33,6 +33,9 @@ STALE_LEDGER_DAYS = 3
 CLASSIFY_TIMEOUT_S = 300
 VALID_CLASSES = ("A", "B", "C")
 COST_OUTLIER_MAX = 50000
+# Raw mode turns off ISIG, so Ctrl-C/Ctrl-D arrive as bytes; "" is EOF.
+INTERACTIVE_EXIT_KEYS = ("\r", "\n", "q", "Q", "\x03", "\x04", "")
+INTERACTIVE_TOGGLE_KEYS = ("\t", "r", "R")
 ATTACH_RE = re.compile(r"ATTACH\s+[a-z0-9][a-z0-9-]*:")
 DELEGATION_FIELDS = ("tool_use_id", "timestamp", "subagent_type", "model", "effort",
                      "is_resume", "outcome", "duration_ms", "retry_of",
@@ -107,10 +110,20 @@ def aggregate(ledger, delegations):
     def bucket(key):
         return buckets.setdefault(key, {"A": 0, "B": 0, "C": 0, "costs": [], "cplx": []})
 
+    parent_of = {r["tool_use_id"]: r.get("parent_tool_use_id") for r in deduped}
+
+    def fault_key(r):
+        # A RESUME/ATTACH brief rarely restates MODEL/EFFORT: the fault is the dispatch it reworks.
+        root, seen = r.get("parent_tool_use_id"), set()
+        while parent_of.get(root) and root not in seen:
+            seen.add(root)
+            root = parent_of[root]
+        return cfg_of.get(root) or cfg_key(r.get("worker"), r.get("model"), r.get("effort"))
+
     all_fault_costs = []
     outliers_excluded = 0
     for r in deduped:
-        key = cfg_key(r.get("worker"), r.get("model"), r.get("effort"))
+        key = fault_key(r)
         b = bucket(key)
         cls = r.get("class", "C")
         if cls not in VALID_CLASSES:
@@ -297,8 +310,11 @@ def print_reviews_table(rows, reviews_path, reviews, lens=None):
               f"{'unique%':>9}{'miss%':>8}{'score':>8}")
     print(header)
     print("-" * len(header))
+    labels = Counter(f"{row['rater_model']}/{row['rater_effort']}" for row in rows)
     for row in rows:
         label = f"{row['rater_model']}/{row['rater_effort']}"
+        if labels[label] > 1 and row["rater"]:
+            label += f" {row['rater']}"
         print(f"{label:<22}{row['benches']:>7}{row['findings_per_bench']:>9.2f}"
               f"{percent(row['confirmed_pct']):>10}{percent(row['false_positive_pct']):>7}"
               f"{percent(row['unique_catch_rate']):>9}{percent(row['miss_rate']):>8}"
@@ -328,14 +344,15 @@ def interactive_tables(implementation, reviews):
         try:
             tty.setraw(fd)
             key = sys.stdin.read(1)
+            while key not in INTERACTIVE_EXIT_KEYS + INTERACTIVE_TOGGLE_KEYS:
+                key = sys.stdin.read(1)
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, previous)
         print()
-        if key in ("\r", "\n", "q", "Q"):
+        if key in INTERACTIVE_EXIT_KEYS:
             return
-        if key in ("\t", "r", "R"):
-            current = "reviews" if current == "implementation" else "implementation"
-            print("\033[2J\033[H", end="")
+        current = "reviews" if current == "implementation" else "implementation"
+        print("\033[2J\033[H", end="")
 
 
 def cmd_view(args):
@@ -504,8 +521,8 @@ def classify(followup, account):
             return {"class": cls, "quote": quote, "reason": obj.get("reason", ""),
                     "complexity": valid_complexity(obj.get("complexity")),
                     "rater": "claudeb-opus-high"}, last_session
-    if last_session is None:
-        return None, None
+    if text is None or last_session is None:
+        return None, last_session
     return {"class": "C", "quote": "", "reason": "rater-invalid",
             "complexity": None, "rater": "claudeb-opus-high"}, last_session
 
@@ -555,9 +572,11 @@ def cmd_collect(args):
     try:
         ledger_path = sd / "ledger.jsonl"
         deleg_path = sd / "delegations.jsonl"
+        pending_path = sd / "pending-since"
 
         ledger = read_jsonl(ledger_path)
         seen_ids = {r["tool_use_id"] for r in ledger if r.get("tool_use_id")}
+        pending = pending_path.read_text().strip()[:10] if pending_path.exists() else ""
 
         today = datetime.now(timezone.utc).date()
         until = args.until or today.isoformat()
@@ -570,6 +589,8 @@ def cmd_collect(args):
                 since = (last_day - timedelta(days=OVERLAP_DAYS)).isoformat()
             else:
                 since = (today - timedelta(days=FRESH_START_DAYS)).isoformat()
+            if pending and pending < since:
+                since = pending
 
         recs = run_corpus(since, until)
         new_followups = [
@@ -588,12 +609,14 @@ def cmd_collect(args):
 
         session_ids = []
         appended = 0
-        to_append = []
+        skipped_days = [pending] if pending and not since <= pending <= until else []
         for fu in new_followups:
             if fu.get("tool_use_id") in seen_ids:
                 continue
             fields, session_id = classify(fu, args.account)
             if fields is None:
+                if fu.get("timestamp"):
+                    skipped_days.append(fu["timestamp"][:10])
                 continue
             if session_id:
                 session_ids.append(session_id)
@@ -610,15 +633,19 @@ def cmd_collect(args):
                 "complexity": fields["complexity"],
                 "fable_tokens_cycle": fu.get("fable_tokens_cycle"),
                 "rater": fields["rater"],
+                "parent_tool_use_id": fu.get("parent_tool_use_id"),
             }
-            to_append.append(record)
+            with open(ledger_path, "a") as f:
+                f.write(json.dumps(record) + "\n")
             seen_ids.add(fu["tool_use_id"])
             appended += 1
 
-        if to_append:
-            with open(ledger_path, "a") as f:
-                for record in to_append:
-                    f.write(json.dumps(record) + "\n")
+        if skipped_days:
+            pending_path.write_text(min(skipped_days) + "\n")
+        elif pending_path.exists():
+            pending_path.unlink()
+        if ledger_path.exists():
+            os.utime(ledger_path)
 
         total = refresh_delegations(deleg_path, recs)
         print(f"appended {appended} followups; delegation snapshot now {total} records")
