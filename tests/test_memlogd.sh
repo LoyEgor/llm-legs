@@ -183,6 +183,15 @@ if [ "$#" -eq 1 ] && [ "$1" = "+%F" ] && [ -n "${DAY_FILE:-}" ]; then
   printf '%s\n' "${days[$index]}"
   exit 0
 fi
+if [ "$#" -eq 1 ] && [ "$1" = "+%s" ] && [ -n "${EPOCH_FILE:-}" ]; then
+  count=$(cat "$EPOCH_TICK" 2>/dev/null || echo 0)
+  printf '%s' "$((count + 1))" >"$EPOCH_TICK"
+  read -r -a epochs <<<"$(cat "$EPOCH_FILE")"
+  index=$count
+  [ "$index" -lt "${#epochs[@]}" ] || index=$(( ${#epochs[@]} - 1 ))
+  printf '%s\n' "${epochs[$index]}"
+  exit 0
+fi
 # A case that needs an episode older than the retention window declares the episode file's stamp;
 # the daemon's own cutoff stays real, so the two cannot drift onto the same side of it.
 if [ "$#" -eq 3 ] && [ "$1" = "-r" ] && [ "$3" = "+%Y-%m-%dT%H%M%S" ] && [ -n "${FRAME_STAMP:-}" ]; then
@@ -292,6 +301,14 @@ probes 8192 1024
 assert run_memlogd "$MACHINE_FAIL_DIR" MEMLOGD_MAX_TICKS=1 JQ_FAILS=1
 assert grep -qE '^[0-9]{10} load1=-1 ncpu=8 swap_mb=1024 swapin_pages_s=-1 thermal=0 boot=1790882097 probe_ms=-1$' \
   "$MACHINE_FAIL_DIR/machine/$run_day.log"
+
+# A wall clock stepped backwards is a new sample, not a gap of silence until it catches up.
+MACHINE_BACK_DIR="$WORK/machine-back"
+printf '2000000000 1999999000 1999999001' >"$WORK/epochs"
+probes 8192 1024
+assert run_memlogd "$MACHINE_BACK_DIR" MEMLOGD_MAX_TICKS=3 EPOCH_FILE="$WORK/epochs" EPOCH_TICK="$WORK/epoch-tick"
+assert test "$(wc -l <"$MACHINE_BACK_DIR/machine/$run_day.log")" -eq 2
+assert grep -q '^1999999000 .* probe_ms=' "$MACHINE_BACK_DIR/machine/$run_day.log"
 
 # --- a failed probe never reads as zero available ------------------------------------------------
 PROBE_DIR="$WORK/probe"
@@ -629,6 +646,50 @@ probes 8192 1024
 assert run_memlogd "$LOCK_DIR" MEMLOGD_MAX_TICKS=1
 assert grep -q ' quiet avail_mb=8192 ' "$(log_file "$LOCK_DIR")"
 assert_fails test -e "$LOCK_DIR/memlogd.lock"
+
+# A forced reboot skips the EXIT trap, and its pid then names whatever process got that number.
+mkdir -p "$LOCK_DIR/memlogd.lock"
+printf '%s 1700000000\n' "$$" >"$LOCK_DIR/memlogd.lock/pid"
+probes 8192 1024
+assert run_memlogd "$LOCK_DIR" MEMLOGD_MAX_TICKS=1
+assert_fails test -e "$LOCK_DIR/memlogd.lock"
+mkdir -p "$LOCK_DIR/memlogd.lock"
+printf '%s 1790882097\n' "$$" >"$LOCK_DIR/memlogd.lock/pid"
+probes 8192 1024
+refusal=$(run_memlogd "$LOCK_DIR" MEMLOGD_MAX_TICKS=1 2>&1)
+assert test "$?" -eq 3
+assert grep -q "already running (pid $$)" <<<"$refusal"
+rm -rf "$LOCK_DIR/memlogd.lock"
+
+# --- install-agent, against a fixture HOME and a fake launchctl ----------------------------------
+INSTALL_HOME="$WORK/install-home"
+LAUNCHCTL_BIN="$WORK/launchctl-bin"
+mkdir -p "$INSTALL_HOME" "$LAUNCHCTL_BIN"
+cat >"$LAUNCHCTL_BIN/launchctl" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in bootstrap|load) [ -z "${LAUNCHCTL_FAILS:-}" ] || exit 5 ;; esac
+exit 0
+EOF
+chmod +x "$LAUNCHCTL_BIN/launchctl"
+install_out=$(HOME="$INSTALL_HOME" PATH="$LAUNCHCTL_BIN:$PATH" bash "$SCRIPT" install-agent 2>&1)
+assert test "$?" -eq 0
+assert grep -q '^Installed com.egor.memlogd' <<<"$install_out"
+# The deployed bus finds its lock library beside itself: ~/.local/share is not llm-legs' share, and
+# the guard's kill notice once went to lost.log while chat-load recorded the chat as told.
+deployed_post() {
+  printf '%s' '{"word":"memory","rows":[["killed","x"]]}' |
+    XDG_CACHE_HOME="$INSTALL_HOME/cache" REPORT_FRAME="$INSTALL_HOME/.local/libexec/report_frame.py" \
+      "$INSTALL_HOME/.local/libexec/report-bus" post --kind notice --id t1 \
+      --session 11111111-1111-1111-1111-111111111111 2>/dev/null
+}
+assert deployed_post
+assert test -n "$(find "$INSTALL_HOME/cache/claude-reports" -path '*/pending/*__notice__t1.txt')"
+assert_fails test -e "$INSTALL_HOME/cache/claude-reports/lost.log"
+install_out=$(HOME="$INSTALL_HOME" PATH="$LAUNCHCTL_BIN:$PATH" LAUNCHCTL_FAILS=1 bash "$SCRIPT" install-agent 2>&1)
+assert test "$?" -ne 0
+assert_fails grep -q '^Installed' <<<"$install_out"
+HOME="$INSTALL_HOME" PATH="$LAUNCHCTL_BIN:$PATH" bash "$SCRIPT" uninstall-agent >/dev/null
+assert test -z "$(ls -A "$INSTALL_HOME/.local/libexec")"
 
 # --- the memory guard (bin/chat-load, run by the daemon every tick) ----------------------------
 # Every case spawns REAL process groups and asserts against real signals: a fixture process table
@@ -1233,7 +1294,7 @@ assert grep -q '^GUARD_AVAIL_MB = 3072$' "$ROOT/bin/chat-load"
 assert grep -q '^GUARD_JOB_MB = 1536$' "$ROOT/bin/chat-load"
 assert grep -qF 'chat_load="$(dirname "$script_path")/chat-load"' "$SCRIPT"
 # So are the resolver and the bus it runs: macOS denies the daemon's Python /Volumes/Work.
-assert grep -qF 'for source in bin/chat-load share/chat_names.py bin/report-bus share/report_frame.py; do' "$SCRIPT"
+assert grep -qF 'for source in bin/chat-load share/chat_names.py bin/report-bus share/report_frame.py share/store-lock.sh share/limiter-hold.sh; do' "$SCRIPT"
 assert grep -qF 'mv -f "$deployed_tmp" "$(dirname "$wrapper")/${source##*/}"' "$SCRIPT"
 assert grep -q '3072' "$ROOT/docs/memory-guard.md"
 assert grep -q '1536' "$ROOT/docs/memory-guard.md"
@@ -1247,4 +1308,4 @@ assert test "$(plutil -extract ProcessType raw "$ROOT/launchd/com.egor.memlogd.p
 
 reap_trees
 
-echo "PASS: $asserts asserts; quiet line format and node roll-up, a failed vm_stat probe that never fakes pressure, durable writes that fsync the day log and frames file and never call sync(2), incident entry on available RAM alone with a marker naming its frames file and full pid/ppid/pgid/rss/etime blocks in frames/ not the day file, swap reported everywhere but deciding neither entry nor exit (drowning swap with healthy RAM stays quiet, recovery lands with swap unmoved), a probe that breaks mid-incident never latching it, recovery hysteresis both ways (held open under the window, closed and back to quiet once met), an incident spanning midnight marking the new day's file with frames continuing in the episode file, three-day rotation that spares neither an INCIDENT day nor a non-log file nor today's log and honours the retention knob including old frames, rotation sparing the frames file a live episode is still writing even when its name predates the window, a frames-directory budget that evicts the oldest file first and never the current episode, survives a name with a space and a file that vanished under the listing, an episode cap that stops the frames and says EPISODE-CAP once while the summaries keep coming, fast-then-slow incident frame cadence, a quiet-state jump that writes one frame headed jump and a JUMP marker without opening an incident, stays quiet below both thresholds and treats a failed ps probe as -1 rather than a rise on the next healthy tick, a LaunchAgent scheduled Interactive so it keeps running under a saturated CPU, and a single-instance lock that refuses a live holder, refuses one that has written no pid yet, and takes over a dead one; plus the memory guard on real process groups — neither low RAM nor a fat job convicting alone, a chat's own Bash job killed whole with its CLI left standing and the chat notified while the job was still alive, a registered CLI and its ancestors protected inside one group, a worker run attributed to its launching chat with supervisor and CLI protected and the run's memguard record written, a legacy run protecting its supervisor only, a bench cell's record naming bench and cell, an ended run protecting nothing, a failed probe never convicting, only the fattest job cut, nothing no chat launched ever a candidate, a fat CLI never convicted on its own weight, a worker's job billed to the launching chat with both sessions notified (both notices in flight at once, each before the kill), the menu snapshot's aligned one-line rows, shortened titles, state words and units, an untitled chat never taking a neighbour's title, a macOS denial of /Volumes/Work and an undelivered notice each shown as such, and the MEMGUARD: line the run report renders from the record in every shape"
+echo "PASS: $asserts asserts; quiet line format and node roll-up, a failed vm_stat probe that never fakes pressure, durable writes that fsync the day log and frames file and never call sync(2), incident entry on available RAM alone with a marker naming its frames file and full pid/ppid/pgid/rss/etime blocks in frames/ not the day file, swap reported everywhere but deciding neither entry nor exit (drowning swap with healthy RAM stays quiet, recovery lands with swap unmoved), a probe that breaks mid-incident never latching it, recovery hysteresis both ways (held open under the window, closed and back to quiet once met), an incident spanning midnight marking the new day's file with frames continuing in the episode file, three-day rotation that spares neither an INCIDENT day nor a non-log file nor today's log and honours the retention knob including old frames, rotation sparing the frames file a live episode is still writing even when its name predates the window, a frames-directory budget that evicts the oldest file first and never the current episode, survives a name with a space and a file that vanished under the listing, an episode cap that stops the frames and says EPISODE-CAP once while the summaries keep coming, fast-then-slow incident frame cadence, a quiet-state jump that writes one frame headed jump and a JUMP marker without opening an incident, stays quiet below both thresholds and treats a failed ps probe as -1 rather than a rise on the next healthy tick, a LaunchAgent scheduled Interactive so it keeps running under a saturated CPU, a single-instance lock that refuses a live holder, refuses one that has written no pid yet, and takes over a dead one or one left by an earlier boot, a machine sampler that keeps sampling after the clock steps back, and an install-agent whose deployed bus queues a notice and that fails when launchctl cannot load the agent; plus the memory guard on real process groups — neither low RAM nor a fat job convicting alone, a chat's own Bash job killed whole with its CLI left standing and the chat notified while the job was still alive, a registered CLI and its ancestors protected inside one group, a worker run attributed to its launching chat with supervisor and CLI protected and the run's memguard record written, a legacy run protecting its supervisor only, a bench cell's record naming bench and cell, an ended run protecting nothing, a failed probe never convicting, only the fattest job cut, nothing no chat launched ever a candidate, a fat CLI never convicted on its own weight, a worker's job billed to the launching chat with both sessions notified (both notices in flight at once, each before the kill), the menu snapshot's aligned one-line rows, shortened titles, state words and units, an untitled chat never taking a neighbour's title, a macOS denial of /Volumes/Work and an undelivered notice each shown as such, and the MEMGUARD: line the run report renders from the record in every shape"

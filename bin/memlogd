@@ -3,7 +3,8 @@
 # what launchd runs. The copy is not a convenience: a LaunchAgent that execs off /Volumes/Work
 # gets EPERM from TCC unless that exact program path was granted, and a memory logger must also
 # keep running while that volume is unmounted. Re-run install-agent after editing this file or any
-# file it deploys beside the copy (chat-load, chat_names.py, report-bus, report_frame.py).
+# file it deploys beside the copy (chat-load, chat_names.py, report-bus, report_frame.py,
+# store-lock.sh, limiter-hold.sh).
 # Besides logging, this daemon ACTS: every tick runs chat-load, deployed beside this copy, which
 # keeps the per-chat load snapshot for the menubar and, when the machine is nearly out of RAM,
 # SIGKILLs the fattest job a chat launched (`docs/memory-guard.md` is the decision record).
@@ -143,7 +144,8 @@ contention_probe_ms() {
 
 machine_tick() { # now swap vm_text
   local now="$1" swap="$2" load1=-1 swapins=-1 rate=-1 thermal=-1 text probe=""
-  [ -z "$machine_at" ] || [ $((now - machine_at)) -ge "$machine_interval" ] || return 0
+  [ -z "$machine_at" ] || [ "$now" -lt "$machine_at" ] || [ $((now - machine_at)) -ge "$machine_interval" ] || \
+    return 0
   machine_at=$now
   text=$(sysctl -n vm.loadavg 2>/dev/null) || text=""
   [[ "$text" =~ ^\{\ *([0-9.]+) ]] && load1=${BASH_REMATCH[1]}
@@ -156,7 +158,7 @@ machine_tick() { # now swap vm_text
   prev_swapins_at=$now
   text=$(notifyutil -g com.apple.system.thermalpressurelevel 2>/dev/null) || text=""
   [[ "$text" =~ \ ([0-9]+)$ ]] && thermal=${BASH_REMATCH[1]}
-  if [ -z "$probe_at" ] || [ $((now - probe_at)) -ge "$probe_interval" ]; then
+  if [ -z "$probe_at" ] || [ "$now" -lt "$probe_at" ] || [ $((now - probe_at)) -ge "$probe_interval" ]; then
     probe_at=$now
     probe=" probe_ms=$(contention_probe_ms)"
   fi
@@ -260,12 +262,13 @@ rotate() {
 }
 
 acquire_lock() {
-  local holder attempt
+  local holder holder_boot attempt stale=0
   if ! mkdir "$lock_dir" 2>/dev/null; then
     # A lock whose pid is not written yet belongs to a daemon still starting, never to a crash:
     # taking it over on an empty holder is how two daemons end up sampling the same file.
     for attempt in 1 2; do
-      holder=$(cat "$lock_dir/pid" 2>/dev/null || true)
+      holder="" holder_boot=""
+      read -r holder holder_boot 2>/dev/null <"$lock_dir/pid" || true
       [ -z "$holder" ] || break
       [ "$attempt" = 2 ] || sleep 0.5
     done
@@ -273,7 +276,12 @@ acquire_lock() {
       printf 'memlogd: lock at %s is held with no pid written; not taking it over\n' "$lock_dir" >&2
       exit 3
     fi
-    if kill -0 "$holder" 2>/dev/null; then
+    # A pid left by an earlier boot (a forced reboot skips the EXIT trap) names whatever process
+    # holds that number now, often this very daemon.
+    [ "$holder" != "$$" ] || stale=1
+    [ "$boot_id" = -1 ] || [ -z "$holder_boot" ] || [ "$holder_boot" = -1 ] || \
+      [ "$holder_boot" = "$boot_id" ] || stale=1
+    if [ "$stale" = 0 ] && kill -0 "$holder" 2>/dev/null; then
       printf 'memlogd: already running (pid %s)\n' "$holder" >&2
       exit 3
     fi
@@ -283,7 +291,7 @@ acquire_lock() {
       exit 3
     }
   fi
-  printf '%s\n' "$$" >"$lock_dir/pid"
+  printf '%s %s\n' "$$" "$boot_id" >"$lock_dir/pid"
   trap 'rm -rf "$lock_dir"' EXIT
   trap 'exit 129' HUP INT TERM
 }
@@ -292,8 +300,8 @@ run_loop() {
   local today day now avail swap counts node_count node_rss stamp jump_file vm_text
   local state=quiet recover_since=0 ticks=0 interval
   mkdir -p "$log_dir" || return 1
-  acquire_lock
   boot_facts
+  acquire_lock
   today=$(date +%F)
   rotate
   current_file=$(log_path "$today")
@@ -406,7 +414,7 @@ install_agent() {
   cat "$script_path" >"$deployed_tmp"
   chmod 755 "$deployed_tmp"
   mv -f "$deployed_tmp" "$wrapper"
-  for source in bin/chat-load share/chat_names.py bin/report-bus share/report_frame.py; do
+  for source in bin/chat-load share/chat_names.py bin/report-bus share/report_frame.py share/store-lock.sh share/limiter-hold.sh; do
     deployed_tmp=$(mktemp "${wrapper}.tmp.XXXXXX") || return 1
     cat "$repo_root/$source" >"$deployed_tmp" || return 1
     chmod 755 "$deployed_tmp"
@@ -415,7 +423,10 @@ install_agent() {
   cp "$plist_source" "$agent_plist"
   launchctl bootout "gui/$UID" "$agent_plist" >/dev/null 2>&1 || true
   if ! launchctl bootstrap "gui/$UID" "$agent_plist"; then
-    launchctl load -w "$agent_plist"
+    launchctl load -w "$agent_plist" || {
+      printf 'memlogd: launchctl could not load %s\n' "$agent_plist" >&2
+      return 1
+    }
   fi
   printf 'Installed %s from %s; logs under %s.\n' "$label" "$wrapper" "$log_dir"
 }
@@ -425,7 +436,8 @@ uninstall_agent() {
     launchctl unload -w "$agent_plist" >/dev/null 2>&1 || true
   rm -f "$agent_plist"
   if [ -f "$wrapper" ] && grep -qF "label=$label" "$wrapper"; then
-    (cd "$(dirname "$wrapper")" && rm -f "$wrapper" chat-load chat_names.py report-bus report_frame.py)
+    (cd "$(dirname "$wrapper")" && rm -f "$wrapper" chat-load chat_names.py report-bus report_frame.py \
+      store-lock.sh limiter-hold.sh)
   fi
   printf 'Uninstalled %s.\n' "$label"
 }

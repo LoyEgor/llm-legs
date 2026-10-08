@@ -150,11 +150,13 @@ plus `queue_stuck_s` carry the verdict to the menubar ⚠ and the Harness doctor
 
 ## Nothing it runs lives on /Volumes/Work
 
-`install-agent` deploys `chat-load`, `chat_names.py`, `report-bus` and `report_frame.py` beside the
-daemon copy in `~/.local/libexec/`, and chat-load imports and runs those copies. macOS denies a
+`install-agent` deploys `chat-load`, `chat_names.py`, `report-bus`, `report_frame.py` and the bus's
+`store-lock.sh` and `limiter-hold.sh` beside the daemon copy in `~/.local/libexec/`, and chat-load
+imports and runs those copies (the deployed bus sources the lock library beside itself; without it
+every guard notice went to `lost.log` with the chat recorded as told). macOS denies a
 LaunchAgent's Python /Volumes/Work, and every process that Python starts, even with memlogd itself
 granted Full Disk Access (seen live 2026-09-28: titles and the bus probe both refused after the
-grant). `night-run` start and finish redeploy an edit of any of the four (`harness-doctor --redeploy`).
+grant). `night-run` start and finish redeploy an edit of any of them (`harness-doctor --redeploy`).
 
 ## Agent process environment
 

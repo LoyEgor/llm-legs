@@ -4214,6 +4214,8 @@ DEPLOYS = (
                                    ("libexec", "chat_names.py", "copy", "share/chat_names.py"),
                                    ("libexec", "report-bus", "copy", "bin/report-bus"),
                                    ("libexec", "report_frame.py", "copy", "share/report_frame.py"),
+                                   ("libexec", "store-lock.sh", "copy", "share/store-lock.sh"),
+                                   ("libexec", "limiter-hold.sh", "copy", "share/limiter-hold.sh"),
                                    ("agents", "com.egor.memlogd.plist", "copy", "launchd/com.egor.memlogd.plist"))),
     ("bin/llm-refresh install-agent", (("libexec", "llm-refresh-heartbeat", "exec", "bin/llm-refresh"),
                                        ("agents", "com.llm-refresh.plist", "copy", "launchd/com.llm-refresh.plist"))),

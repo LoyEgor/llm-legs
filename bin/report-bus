@@ -11,7 +11,11 @@ while [ -L "$self" ]; do
 done
 share=$(cd -P "${self%/*}/.." 2>/dev/null && pwd)/share
 FRAME=${REPORT_FRAME:-$share/report_frame.py}
-. "$share/store-lock.sh"
+# memlogd install-agent deploys this file and store-lock.sh into ~/.local/libexec, where ../share is
+# not llm-legs' share.
+lib=${self%/*}
+[ -r "$lib/store-lock.sh" ] || lib=$share
+. "$lib/store-lock.sh"
 locked=false
 tmp=''
 usage() { printf 'report-bus: invalid arguments (post | emit | lose | flush | list | doctor); emit exits 3 on a duplicate\n' >&2; exit 2; }
