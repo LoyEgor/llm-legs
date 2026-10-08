@@ -83,7 +83,7 @@ fake_cli "$FAKE_BIN/agy" agy gemini-3.8-flash gemini-3.1-flash-image gemini-3.8-
   gemini-3.1-pro-previewgemini-3-pro-previewtext/x-python gemini-3.1-pro-preview-customtools gemini-3.1-flash-lite \
   gemini-2.5-flash-liteuserStatus gemini-3.5-flashcheckUrl gpt-oss-20b-maasTRIGGER gpt-oss-120b-maasunmarshal \
   gemini-2.5-pro-windsurf-debugStarting gemini-2.5-pro-windsurfgenerate_commit grok-shell-2025-11-25transportFailed \
-  claude-opus-5-5@default
+  RESPONSE_STYLE_CREATIVEgemini-3.7-flash-tieredopenai/gpt-oss-20b-maasRenew claude-opus-5-5@default
 fake_cli "$FAKE_BIN/claude" claude claude-opus-5-5 claude-sonnet-5
 cat >"$FAKE_BIN/opener" <<'EOF'
 #!/usr/bin/env bash
@@ -168,7 +168,8 @@ FP_GEMINI="$STATE/fingerprints/gemini.json"
 assert jqe '.facets.ids == ["claude-opus-5-5", "gemini-2.5-flash-lite", "gemini-2.5-pro-windsurf",
   "gemini-2.5-pro-windsurf-debug", "gemini-3-pro-preview", "gemini-3.1-flash-image", "gemini-3.1-flash-lite",
   "gemini-3.1-pro-high", "gemini-3.1-pro-low", "gemini-3.1-pro-low-thinking", "gemini-3.1-pro-preview",
-  "gemini-3.1-pro-preview-customtools", "gemini-3.5-flash", "gemini-3.7-flash-low", "gemini-3.8-flash",
+  "gemini-3.1-pro-preview-customtools", "gemini-3.5-flash", "gemini-3.7-flash-low", "gemini-3.7-flash-tiered",
+  "gemini-3.8-flash",
   "gemini-3.8-flash-high", "gpt-oss-120b-maas", "gpt-oss-20b-maas", "grok-shell-2025-11-25"]' "$FP_GEMINI"
 assert jqe '.facets["help: agy --help"] | test("Model for the current CLI session")' "$STATE/fingerprints/gemini.json"
 assert jqe '.facets["help: claude --help"] | test("Claude Code <version>")' "$STATE/fingerprints/claude.json"
@@ -177,11 +178,13 @@ assert jqe '.facets.probe_failures == []' "$STATE/fingerprints/claude.json"
 check
 assert [ "$(events)" = 0 ]
 # A list an older glue rule stored is no release once the current rule cuts it the same way.
-jq '.facets.ids += ["gemini-3.1-pro-low-thinkingx", "gemini-3.5-flashcheck"]' "$FP_GEMINI" >"$WORK/glued"
+jq '.facets.ids += ["gemini-3.1-pro-low-thinkingx", "gemini-3.5-flashcheck", "gemini-3.7-flash-tieredopenai"]' \
+  "$FP_GEMINI" >"$WORK/glued"
 mv "$WORK/glued" "$FP_GEMINI"
 check
 assert [ "$(events)" = 0 ]
 assert jqe '.facets.ids | index("gemini-3.1-pro-low-thinkingx") == null' "$FP_GEMINI"
+assert jqe '.facets.ids | index("gemini-3.7-flash-tieredopenai") == null' "$FP_GEMINI"
 
 # A release that changes nothing but the version closes itself.
 printf '2.1.281\n' >"$DATA/ver-claude"

@@ -1,6 +1,6 @@
 # Gemini images through Antigravity CLI
 
-Verified on 2026-10-08 against **agy 1.3.1** (help and the binary's `generate_image` schema; the last
+Verified on 2026-10-09 against **agy 1.3.2** (help and the binary's `generate_image` schema; the last
 live `--route cli` generation ran on 1.2.16), launched by `geminib` with a Google
 subscription. The runtime contract is [gemini.json](../../share/image-caps/gemini.json);
 its `field_sources` maps each capability to evidence. This page concerns the subscription

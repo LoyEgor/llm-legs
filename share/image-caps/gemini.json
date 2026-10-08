@@ -1,6 +1,6 @@
 {
   "vendor": "gemini",
-  "verified": "2026-10-08",
+  "verified": "2026-10-09",
   "routes": ["flow", "cli"],
   "scripts": {"image": "gemini-image", "video": "gemini-video", "music": "gemini-music", "sfx": "gemini-sfx", "listen": "gemini-listen", "speech": "gemini-speech"},
   "default_for": ["music", "sfx", "speech"],
@@ -8,7 +8,7 @@
   "spares": {"image": {"ratio": 0.25, "min": 1}},
   "cli": {
     "name": "agy",
-    "version": "1.3.1",
+    "version": "1.3.2",
     "version_args": [
       "--version"
     ]
@@ -241,12 +241,12 @@
   "sources": {
     "binary": {
       "location": "/Users/egorloy/.local/bin/agy",
-      "version": "1.3.1",
+      "version": "1.3.2",
       "method": "strings -n 8; generateImageArgs schema tags, GenerateImageTool description, CortexStepGenerateImage protobuf"
     },
     "help": {
       "location": "agy --help; agy --version",
-      "observed": "1.3.1; --conversation, --continue, --output-format stream-json"
+      "observed": "1.3.2; --conversation, --continue, --output-format stream-json"
     },
     "headless": {
       "url": "https://antigravity.google/docs/cli/headless/"
