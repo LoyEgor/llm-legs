@@ -349,6 +349,63 @@ class GatewayAuthResolverTests(unittest.TestCase):
                 app.main()
         self.assertEqual(str(failure.exception), "claudegpt: cannot read the codex account roster: 3")
 
+    def test_a_roster_failure_after_the_first_read_fails_with_one_line(self):
+        unreadable = app.gateway_auth.account_roster.Unreadable("cannot read the codex account roster: 3")
+        listed = app.gateway_auth.account_roster.roster("codex", fresh=True)
+        for label, argv, reads in (("list", [str(source), "list"], [unreadable]),
+                                   ("prepare", [str(source), "p", "burkhartor"], [listed, unreadable])):
+            with self.subTest(path=label), patch.object(app, "STATE", self.home), \
+                 patch.object(sys, "argv", argv), \
+                 patch.object(app.gateway_auth.account_roster, "roster", side_effect=reads), \
+                 patch.object(app.subprocess, "Popen") as launch:
+                with self.assertRaises(SystemExit) as failure:
+                    app.main()
+                self.assertEqual(str(failure.exception), "claudegpt: cannot read the codex account roster: 3")
+                launch.assert_not_called()
+
+    def test_a_projection_refused_after_prepare_fails_with_one_line(self):
+        refused = ValueError("burkhartor: refresh needed")
+        with patch.object(app, "STATE", self.home), \
+             patch.object(sys, "argv", [str(source), "p", "burkhartor"]), \
+             patch.object(app.os, "access", return_value=True), \
+             patch.object(app.gateway_auth, "project", side_effect=refused) as project, \
+             patch.object(app.subprocess, "Popen") as launch:
+            with self.assertRaises(SystemExit) as failure:
+                app.main()
+        self.assertEqual(str(failure.exception), "claudegpt: burkhartor: refresh needed")
+        self.assertEqual(project.call_args.kwargs["expected_id"], "acct-burkhartor")
+        launch.assert_not_called()
+
+    def test_keeper_outlives_a_transient_roster_failure(self):
+        path = app.gateway_auth.project("burkhartor", Path(self.root.name) / "projection")
+        write_codex_profile(self.profiles, "burkhartor", expires_in=-60)
+        stopped = MagicMock()
+        stopped.wait.side_effect = [False, False, True]
+        real = app.gateway_auth.account_roster.roster
+        failures = [app.gateway_auth.account_roster.Unreadable(
+            "cannot read the codex account roster: timed out")]
+        def roster(*args, **kwargs):
+            if failures:
+                raise failures.pop()
+            return real(*args, **kwargs)
+        def renew(*_args):
+            write_codex_profile(self.profiles, "burkhartor", expires_in=90000)
+        with patch.object(app.gateway_auth.account_roster, "roster", side_effect=roster), \
+             patch.object(app.gateway_auth.codex_appserver, "call", side_effect=renew), \
+             patch.object(sys, "stderr", io.StringIO()) as errors:
+            app.keep_projection("burkhartor", Path(path).parent, path, str(self.home),
+                                "acct-burkhartor", stopped)
+        self.assertIn("cannot read the codex account roster: timed out", errors.getvalue())
+        self.assertTrue(app.gateway_auth.projection_is_current("burkhartor", path))
+
+    def test_a_running_chat_hears_the_real_status_not_an_identity_change(self):
+        write_codex_profile(self.profiles, "burkhartor", tokens={
+            "access_token": fixture_token(-60), "account_id": "acct-burkhartor"})
+        with self.assertRaises(ValueError) as refusal:
+            app.gateway_auth.prepare("burkhartor", expected_id="acct-burkhartor")
+        self.assertIn(app.gateway_auth.EXPIRED, str(refusal.exception))
+        self.assertNotIn("identity changed", str(refusal.exception))
+
     def test_two_renewals_share_one_canonical_refresh(self):
         from concurrent.futures import ThreadPoolExecutor
         write_codex_profile(self.profiles, "burkhartor", expires_in=-60)
@@ -862,6 +919,36 @@ class ConcurrentLauncherSubprocessTests(unittest.TestCase):
             actual = self.capture_effort_launch(result.stdout.strip().split())
             if mode[0] == "switch":
                 self.assertEqual(app.forwarded_value(actual, "--resume"), "fixture-session")
+
+    def test_a_worker_settings_reach_claude_untouched_while_ccr_gets_the_picker(self):
+        log = self.root / "claude-calls.jsonl"
+        self.env["TEST_CLAUDE_LOG"] = str(log)
+        (self.bin_dir / "ccr").write_text(
+            "#!/usr/bin/env python3\nimport json, os, sys\n"
+            "if 'launch' not in sys.argv: sys.exit(0)\n"
+            "settings = os.path.join(os.environ['TEST_READY_DIR'], 'ccr-settings.json')\n"
+            "with open(settings, 'w') as f: json.dump({'env': {}}, f)\n"
+            "os.execvp('claude', ['claude', '--settings', settings])\n")
+        (self.bin_dir / "claude").write_text(
+            "#!/usr/bin/env python3\nimport json, os, subprocess, sys\n"
+            "args = sys.argv[1:]\n"
+            "value = args[args.index('--settings') + 1]\n"
+            "seen = json.load(open(value)) if os.path.isfile(value) else value\n"
+            "with open(os.environ['TEST_CLAUDE_LOG'], 'a') as f: f.write(json.dumps([args, seen]) + '\\n')\n"
+            "if not os.environ.get('TEST_NESTED'):\n"
+            "    os.environ['TEST_NESTED'] = '1'\n"
+            "    subprocess.run(['claude', '-p', '--settings', '{\"hooks\": {}}', 'brief'])\n"
+            "    worker = os.path.join(os.environ['TEST_READY_DIR'], 'worker-settings.json')\n"
+            "    with open(worker, 'w') as f: f.write('{\"hooks\": {}}')\n"
+            "    subprocess.run(['claude', '--settings', worker])\n")
+        proc = self.launch("first")
+        _stdout, stderr = proc.communicate(timeout=10)
+        self.assertEqual(proc.returncode, 0, stderr.decode())
+        calls = [json.loads(line) for line in log.read_text().splitlines()]
+        self.assertEqual(len(calls), 3, stderr.decode())
+        self.assertEqual(calls[0][1]["modelPicker"], app.menu_settings()["modelPicker"])
+        self.assertEqual(calls[1], [["-p", "--settings", '{"hooks": {}}', "brief"], '{"hooks": {}}'])
+        self.assertEqual(calls[2][1], {"hooks": {}})
 
     def test_two_launches_same_account_and_cwd_both_run_and_cleanup_first(self):
         p1 = self.launch("first")

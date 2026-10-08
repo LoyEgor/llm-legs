@@ -216,8 +216,8 @@ def keep_projection(account, directory, path, home, expected_id, stopped, interv
             if not gateway_auth.projection_is_current(account, path, home=home):
                 gateway_auth.project(account, directory, home=home, expected_id=expected_id)
             previous_error = None
-        except (OSError, ValueError) as error:
-            message = str(error) if isinstance(error, ValueError) else "authorization file unavailable"
+        except (OSError, ValueError, gateway_auth.account_roster.Unreadable) as error:
+            message = "authorization file unavailable" if isinstance(error, OSError) else str(error)
             if message != previous_error:
                 print(f"claudegpt: {message}", file=sys.stderr)
                 previous_error = message
@@ -242,7 +242,11 @@ def main():
     if forwarded[:1] == ["--"]:
         forwarded = forwarded[1:]
     if args.action == "list":
-        for entry in gateway_auth.roster(home=str(STATE)):
+        try:
+            entries = gateway_auth.roster(home=str(STATE))
+        except gateway_auth.account_roster.Unreadable as error:
+            fail(str(error))
+        for entry in entries:
             source = " via codex login" if entry.source == "codex" else ""
             detail = f" ({entry.detail})" if entry.detail else ""
             print(f"{entry.name}: {entry.status}{source}{detail}")
@@ -258,7 +262,7 @@ def main():
     account = account_dir(args.account)
     auth = account / "auth"
     logins = list(auth.glob("*.json"))
-    resolved = gateway_auth.resolve(args.account, home=str(STATE))
+    resolved = gateway_auth.resolve(args.account, home=str(STATE), listed=listed)
     if args.action == "login" and logins:
         fail("this profile already has a gateway login; use another name for a new login")
     if args.action == "login" and resolved.source == "codex":
@@ -269,7 +273,7 @@ def main():
     if not needs_login:
         try:
             resolved = gateway_auth.prepare(args.account, home=str(STATE))
-        except ValueError as error:
+        except (ValueError, gateway_auth.account_roster.Unreadable) as error:
             fail(str(error))
     for executable in ("ccr", "cli-proxy-api"):
         if not os.access(BIN / executable, os.X_OK):
@@ -296,7 +300,11 @@ def main():
         bridge_auth = auth
         if not needs_login and resolved.source == "codex":
             bridge_auth = temp / "auth"
-            projection = gateway_auth.project(args.account, bridge_auth, home=str(STATE))
+            try:
+                projection = gateway_auth.project(args.account, bridge_auth, home=str(STATE),
+                                                  expected_id=resolved.account_id)
+            except (ValueError, gateway_auth.account_roster.Unreadable) as error:
+                fail(str(error))
         settings = temp / "proxy.yaml"
         settings.write_text(json.dumps(config(bridge_auth, port)))
         proxy_command = [str(BIN / "cli-proxy-api"), "-config", str(settings)]
@@ -364,7 +372,7 @@ def main():
             claude_wrapper.write_text(
                 "#!" + sys.executable + "\nimport json, os, sys\nfrom pathlib import Path\n"
                 "args = sys.argv[1:]\n"
-                "if '--settings' in args:\n"
+                "if os.environ.pop('CLAUDEGPT_PICKER', None) and '--settings' in args:\n"
                 "    index = args.index('--settings') + 1\n"
                 "    path = Path(args[index])\n"
                 "    settings = json.loads(path.read_text())\n"
@@ -381,6 +389,9 @@ def main():
                                    + shlex.quote(worker_run) + ' "$@"\n')
                 wrapper.chmod(0o700)
             env["PATH"] = str(wrappers) + os.pathsep + env.get("PATH", "")
+            # The wrappers stay first on PATH inside the chat, so a worker's own `claude --settings`
+            # reaches this wrapper too; only ccr's direct child sees the marker.
+            env["CLAUDEGPT_PICKER"] = "1"
             command = [str(BIN / "ccr"), "--db", str(db), "launch", "--model", args.model,
                        "--auth-mode", "provider-only", "--no-history", "--no-lifecycle", "--no-statusline"]
             # ccr owns --permission-mode and refuses every CCR option that follows `--`, so a

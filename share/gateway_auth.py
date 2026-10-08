@@ -201,10 +201,10 @@ def resolve(name, home=None, listed=None):
 
 def prepare(name, home=None, expected_id=None):
     account = resolve(name, home)
-    if expected_id and account.account_id != expected_id:
-        raise ValueError("saved account identity changed; refusing to switch a running chat")
     if not account.ready:
         raise ValueError(f"{name}: {account.status}: {account.detail}")
+    if expected_id and account.account_id != expected_id:
+        raise ValueError("saved account identity changed; refusing to switch a running chat")
     if account.status != REFRESH:
         return account
     # Serialize gateway requests; Codex itself reloads and refreshes the canonical login.
