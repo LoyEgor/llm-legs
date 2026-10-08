@@ -1005,6 +1005,11 @@ cmd_finish() {
   $redeploy || true
 }
 
+done_jobs() { # -> branch<TAB>ref<TAB>state<TAB>night per nothing-to-do or settled job of every night
+  cat "$nights_dir"/*.json 2>/dev/null | jq -r "$JQ_DONE_JOB"' .id as $n | .jobs[]? | select(done_job)
+    | [job_branch($n), .ref, .state, $n] | @tsv' 2>/dev/null
+}
+
 branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locked(0|1) -> TSV row; reads HELD, DONE_JOBS
   local repo=$1 wt=$2 branch=$3 ref head behind ahead landed=false dirty=0 night='' why='' state=live hold cherry job
   ref=${branch:+refs/heads/$branch}
@@ -1047,8 +1052,7 @@ branch_rows() { # [repo...], default the sweep repositories and the helpers' nig
   local repo wt branch main locked seen HELD DONE_JOBS only want=${ROWS_BRANCH:-}
   [ $# -gt 0 ] || [ -r "$sweep_repos" ] || return 0
   HELD=$(cat "$holds_dir"/*.json 2>/dev/null | jq -r '.words as $w | .branches[]? | [.repo, .branch, $w] | @tsv' 2>/dev/null)
-  DONE_JOBS=$(cat "$nights_dir"/*.json 2>/dev/null | jq -r "$JQ_DONE_JOB"' .id as $n | .jobs[]? | select(done_job)
-    | [job_branch($n), .ref, .state] | @tsv' 2>/dev/null)
+  DONE_JOBS=$(done_jobs)
   while IFS=$'\t' read -r repo only; do
     [ -n "$repo" ] && [ -d "$repo" ] || continue
     git -C "$repo" rev-parse -q --verify refs/heads/main >/dev/null || continue
@@ -1231,7 +1235,7 @@ survey_lines() { # price due-price repo... -> the survey's lines
         superseded) reason='superseded by job state' ;;
         *) if [ "$landed" = true ]; then reason='uncommitted files'; else reason='unlanded commits'; fi ;;
       esac
-      case $state in live | held) take=keep ;; superseded) take=drop ;; *) take=take ;; esac
+      case $state in live | held) take=keep ;; superseded) [ "$dirty" = 0 ] && take=drop || take=keep ;; *) take=take ;; esac
       [ "$branch" != - ] || branch="${wt##*/} (detached)"
       printf '  %s · +%s/-%s main · %s dirty · debt %s · %s (%s)\n' "$branch" "$ahead" "$behind" "$dirty" \
         "$(price_of "$price" "$wt" | cut -f1)" "$take" "$reason"
@@ -1273,9 +1277,12 @@ keep_tip() { # repo branch -> the tip kept for restore, else fails saying why
   night=${night%%/*} keep="refs/night/$night/pruned/${2#night/*/}"
   tip=$(git -C "$1" rev-parse -q --verify "refs/heads/$2^{commit}") && git -C "$1" update-ref "$keep" "$tip" ||
     { printf 'cannot keep its tip under %s\n' "$keep"; return 1; }
+  # The superseding job may be another night's, added with --branch: its night, not the name's, gets the record.
+  night=$(done_jobs | awk -F '\t' -v b="$2" '$1 == b { print $4; exit }')
   lock
-  night_set "$night" "$JQ_DONE_JOB"' .jobs |= map(if job_branch($n) == $b then .pruned = ((.pruned // [])
-      + [{repo: $r, branch: $b, tip: $tip, ref: $k, at: $t}]) else . end)' \
+  [ -n "$night" ] && night_set "$night" "$JQ_DONE_JOB"' if any(.jobs[]; done_job and job_branch($n) == $b) | not then error("no job superseded \($b)")
+      else .jobs |= map(if done_job and job_branch($n) == $b then .pruned = ((.pruned // [])
+      + [{repo: $r, branch: $b, tip: $tip, ref: $k, at: $t}]) else . end) end' \
     --arg n "$night" --arg b "$2" --arg r "$(basename "$1")" --arg tip "$tip" --arg k "$keep" --arg t "$(stamp)" ||
     { unlock; printf 'cannot record its tip %s in night %s\n' "$tip" "$night"; return 1; }
   unlock

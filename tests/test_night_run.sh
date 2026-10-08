@@ -1471,7 +1471,20 @@ assert_fails night job cx add handoff handoff-x --branch night/sx/handoff-x 2>"$
 assert grep -qF "night/sx/handoff-x is superseded in sa: by job handoff-x nothing-to-do" "$WORK/err"
 assert jqe '.jobs == []' "$(record cx)"
 night job cx add leftover night/sx/fixer-z >/dev/null || fail "a left job's branch is still adopted"
+# A night's job on another night's branch (--branch) supersedes it: the record goes to that job, not the name's night.
+oc "$WORK/sa" branch night/sx/fixer-w "$(oc "$WORK/sa" commit-tree "main^{tree}" -p main -m foreign)"
+jq '.jobs += [{kind: "fixer", ref: "fixer-w", state: "left", branch: "night/sx/fixer-w"}]' "$(record sx)" >"$WORK/sx" &&
+  mv "$WORK/sx" "$(record sx)"
+night job cx add fixer cw --branch night/sx/fixer-w >/dev/null || fail "a leftover branch added to another night"
+jq '(.jobs[] | select(.ref == "cw")).state = "nothing-to-do"' "$(record cx)" >"$WORK/cx" && mv "$WORK/cx" "$(record cx)"
+fw_tip=$(git -C "$WORK/sa" rev-parse night/sx/fixer-w)
+night survey "$WORK/sa" >"$WORK/survey.out" || fail "survey with superseded branches"
+assert grep -qE '^  night/sx/handoff-x · .* · drop \(superseded by job state\)$' "$WORK/survey.out"
+assert grep -qE '^  night/sx/dirty-n · .* · 1 dirty · .* · keep \(superseded by job state\)$' "$WORK/survey.out"
 night finish cx >"$WORK/out" || fail "finish with superseded branches"
+assert grep -qxF "pruned sa night/sx/fixer-w (superseded, tip $fw_tip)" "$WORK/out"
+assert jqe --arg t "$fw_tip" '[.jobs[] | select(.ref == "cw") | .pruned[] | [.repo, .tip]] == [["sa", $t]]' "$(record cx)"
+assert jqe '[.jobs[] | select(.ref == "fixer-w") | has("pruned")] == [false]' "$(record sx)"
 assert grep -qxF "pruned sa night/sx/handoff-x (superseded, tip $sa_tip)" "$WORK/out"
 assert grep -qxF "pruned sb night/sx/handoff-x (superseded, tip $sb_tip)" "$WORK/out"
 assert grep -qxF "pruned sa night/sx/trade-y (superseded, tip $(git -C "$WORK/sa" rev-parse refs/night/sx/pruned/trade-y))" "$WORK/out"
