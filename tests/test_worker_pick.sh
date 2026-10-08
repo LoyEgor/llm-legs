@@ -703,7 +703,7 @@ GROK_PAIR_JSON='{"available":true,"accounts":[
 # vendor is simply absent from the render, never a wall and never a failed lookup.
 run_case golden
 assert not_contains "$output" grok
-assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 14
+assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 15
 query_case golden --account grok
 assert test "$query_rc" -eq 3
 assert test -z "$query_out"
@@ -711,6 +711,7 @@ assert grep -q 'no selectable grok account (no quota data)' "$WORK/query.err"
 
 grok_case "$GROK_PAIR"
 assert contains "$(nrow 1)" 'grok/spare grok·high'
+assert contains "$output" 'START: worker-run start grok'
 assert contains "$(vsection grok)" '10% – spare grok·high'
 assert contains "$(vsection grok)" '40% – supergrok grok·high'
 assert contains "$(section_order)" 'codex grok gemini'
@@ -718,7 +719,7 @@ assert contains "$(section_order)" 'codex grok gemini'
 # budget of the six, is the one left to its own section.
 assert test "$(grep -c -- '^ [0-9]  ' <<<"$output")" -eq 5
 assert not_contains "$(next_block)" 'codex/main'
-assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 17
+assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 18
 write_config 'grok_model=grok-4.5' 'grok_effort=medium'
 grok_case "$GROK_PAIR"
 assert contains "$(nrow 1)" 'grok/spare grok·med'
@@ -1871,7 +1872,8 @@ assert not_contains "$output" 'RESERVE'
 assert test "$(sed -n '1p' <<<"$output" | cut -c1-4)" = NEXT
 assert test "$(section_order)" = 'claude codex gemini'
 assert test "$(grep -c -- '^DATA: ' <<<"$output")" -eq 1
-assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 14
+assert test "$(sed -n '7p' <<<"$output")" = 'START: worker-run start claudeb'
+assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 15
 assert not_contains "$output" '# Worker routing policy'
 assert cmp -s <(printf '%s\n' "$output") "$GOLDEN"
 # Display bands are render-only: an unreachable account stays visible, below the candidates.
@@ -1890,7 +1892,7 @@ write_config 'gemini_paused=on'
 run_filter golden 'del(.vendors.gemini)'
 assert not_contains "$output" gemini
 assert not_contains "$output" paused
-assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 10
+assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 11
 # Read off the switch as well as off the store: the collector only drops the vendor on its next
 # run, and a snapshot written before the switch must not keep the parked vendor on screen.
 run_case golden
@@ -2037,50 +2039,16 @@ assert set_paused light on
 assert grep -Fqx 'light_paused=on' "$PAUSE_MODEL"
 assert set_paused light off
 assert test -z "$(grep light_paused "$PAUSE_MODEL")"
-# With the switch the two Light agent types leave or rejoin every chat's agent list, through the
-# settings file every profile links to; nothing else in it moves.
+# The switch leaves the settings file every profile links to untouched: Light has no agent type left.
 LIGHT_SETTINGS_REAL="$WORK/claude-setup-settings.json"
 mkdir -p "$HOME_FIXTURE/.claude"
 printf '%s\n' '{"model":"opus","permissions":{"deny":["Bash(rm -rf *)"],"allow":["Read"]}}' | jq . >"$LIGHT_SETTINGS_REAL"
 ln -sf "$LIGHT_SETTINGS_REAL" "$HOME_FIXTURE/.claude/settings.json"
-light_deny() { jq -c '.permissions.deny' "$LIGHT_SETTINGS_REAL"; }
-assert set_paused light on
-assert test "$(light_deny)" = '["Bash(rm -rf *)","Agent(light-research)","Agent(light-worker)"]'
-assert test -L "$HOME_FIXTURE/.claude/settings.json"
-assert test "$(jq -c '[.model, .permissions.allow]' "$LIGHT_SETTINGS_REAL")" = '["opus",["Read"]]'
 light_bytes=$(cksum <"$LIGHT_SETTINGS_REAL")
 assert set_paused light on
 assert test "$(cksum <"$LIGHT_SETTINGS_REAL")" = "$light_bytes"
-assert set_paused grok off
+assert set_paused light off
 assert test "$(cksum <"$LIGHT_SETTINGS_REAL")" = "$light_bytes"
-assert set_paused light off
-assert test "$(light_deny)" = '["Bash(rm -rf *)"]'
-assert test -z "$(find "$WORK" -maxdepth 1 -name 'claude-setup-settings.json.light.*')"
-# The file keeps its mode, and a write Claude Code lands while the rules are computed survives.
-chmod 644 "$LIGHT_SETTINGS_REAL"
-mkdir -p "$WORK/racing-jq"
-real_jq=$(command -v jq)
-cat >"$WORK/racing-jq/jq" <<RACE
-#!/bin/sh
-"$real_jq" "\$@"; rc=\$?
-case "\$*" in *light-research*)
-  if [ ! -e "$WORK/racing-jq/landed" ]; then
-    : >"$WORK/racing-jq/landed"
-    "$real_jq" '.permissions.allow += ["Write"]' "$LIGHT_SETTINGS_REAL" >"$WORK/racing-jq/next" &&
-      cat "$WORK/racing-jq/next" >"$LIGHT_SETTINGS_REAL"
-  fi ;;
-esac
-exit \$rc
-RACE
-chmod +x "$WORK/racing-jq/jq"
-assert env PATH="$WORK/racing-jq:$PATH" env -u CLAUDECODE "HOME=$HOME_FIXTURE" "WORKER_PICK_CONFIG_FILE=$PAUSE_MODEL" \
-  bash -c '. "$1"; worker_model_set_paused light on' _ "$ROOT/share/worker-model.sh"
-assert test -e "$WORK/racing-jq/landed"
-assert test "$(jq -c '.permissions.allow' "$LIGHT_SETTINGS_REAL")" = '["Read","Write"]'
-assert test "$(light_deny)" = '["Bash(rm -rf *)","Agent(light-research)","Agent(light-worker)"]'
-assert test "$(stat -f %Lp "$LIGHT_SETTINGS_REAL" 2>/dev/null || stat -c %a "$LIGHT_SETTINGS_REAL")" = 644
-assert set_paused light off
-# An unreadable settings file never fails the switch itself: the gates still refuse a Light spawn.
 rm -f "$HOME_FIXTURE/.claude/settings.json"
 assert set_paused light on
 assert grep -Fqx 'light_paused=on' "$PAUSE_MODEL"

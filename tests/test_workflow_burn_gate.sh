@@ -164,6 +164,7 @@ wf() { jq -cn --arg s "$1" --arg p "${2:-}" '{hook_event_name:"PreToolUse",tool_
   env HOME="$HOME_DIR" LLM_LIMITS_FILE="$WORK/limits.json" CLAUDE_LIMITS_ACCOUNT="$ACCOUNT_ENV" bash "$GATE"; }
 assert denied "$(wf "await agent('x', {subagent_type: 'codex-worker'})")"
 assert denied "$(wf "await agent('run worker-run start codex --brief b')")"
+assert contains "$(wf "await agent('then worker-run wait r1')")" 'reaches `worker-run wait`, but a worker run or relay inside a workflow has no chat waiting on it. Start workers from the chat itself'
 assert lacks "$(wf "await agent('grep the repo')")" 'permissionDecision'
 assert lacks "$(wf "await agent('review bin/worker-run, the codex-worker relay and review-waiter docs')")" 'permissionDecision'
 assert denied "$(wf "await agent(\"x\", {subagent_type: \"review-waiter\"})")"
@@ -171,4 +172,4 @@ assert denied "$(wf "await agent('run light-research --out o q')")"
 printf "agent('y', {agentType: 'claudeb-worker'})\n" >"$WORK/wf.js"
 assert denied "$(wf "" "$WORK/wf.js")"
 
-printf 'PASS: %s asserts; workflow-burn-gate warns at 70%% and denies at 95%% for the session account on the 5h window and the weekly bucket its model spends (fable for Fable, weekly otherwise), naming it from the gateway launcher, the environment, the profile config dir or claudeb state, denying only on an account the session itself names while a claudeb-state guess always speaks and warns that it may belong to another chat, warns without a number when nothing can name it, denies a workflow that reaches a relay agent type or worker-run, inline or from its script file, and stays out of every other tool call\n' "$asserts"
+printf 'PASS: %s asserts; workflow-burn-gate warns at 70%% and denies at 95%% for the session account on the 5h window and the weekly bucket its model spends (fable for Fable, weekly otherwise), naming it from the gateway launcher, the environment, the profile config dir or claudeb state, denying only on an account the session itself names while a claudeb-state guess always speaks and warns that it may belong to another chat, warns without a number when nothing can name it, denies a workflow that reaches a retired relay agent type or a worker-run start or wait, pointing at the chat'"'"'s own start and background wait, inline or from its script file, and stays out of every other tool call\n' "$asserts"

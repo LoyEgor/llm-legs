@@ -1,21 +1,12 @@
 #!/usr/bin/env bash
-# PreToolUse(Agent) for relay-worker spawns: rewrite the call's
-# description to the canonical `<account> · [<model> · ]<effort>: <title>`
-# form deterministically — account from the brief/router fallback, model+effort
-# from the brief's MODEL:/EFFORT: lines with worker-model defaults — instead
-# of trusting the orchestrating model to compose it. Fail-open: on any doubt
-# leave the call untouched.
+# PreToolUse(Agent): delegation is the chat's own `worker-run` call, never a subagent. A relay or
+# native type is denied with the direct protocol; a fork spawns, its description rewritten to the
+# canonical `fork · <model> · <account>: <title>` and seeded for worker-tag-hook.sh. Fail-open.
 {
 [ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u
 
-# A hook runs on the interactive path: it reads the model list, it never refreshes it. A cold
-# or expired cache would otherwise put a 30 s bounded `grok models` in front of the keystroke,
-# and every concurrent hook would start its own.
-export GROKB_MODELS_NO_FETCH=1
-
 input=$(cat) || exit 0
-WORKER_PICK="${WORKER_SPAWN_WORKER_PICK:-$HOME/.local/bin/worker-pick}"
 
 parsed=$(jq -r '[.session_id // "", .hook_event_name // "", .tool_name // "",
   .tool_input.subagent_type // "", .tool_input.description // "", .tool_input.prompt // "",
@@ -27,57 +18,29 @@ hook_session=${fields[0]-}
 
 [ "${fields[1]-}" = PreToolUse ] || exit 0
 [ "${fields[2]-}" != Workflow ] || exit 0
-RELAY_TYPES='claudeb-worker codex-worker gemini-worker grok-worker light-worker'
-NATIVE_ALLOWLIST='fork review-waiter light-research'
 subagent=${fields[3]-}
 description=${fields[4]-}
 prompt=${fields[5]-}
 
-# The prime is local: worker-pick may rewrite the file between lookups, and a pin read later in
-# this shell must not see the text primed here.
-worker_conf() { # key
-  local _WM_PIN_FILE _WM_PIN_TEXT
-  worker_model_file_r
-  worker_model_prime_pins "$WORKER_MODEL_R"
-  worker_model_pinned_account "$1"
+deny() {
+  jq -cn --arg hook "${0##*/}" --arg r "$1" \
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:("[" + $hook + "] " + $r)}}'
+  exit 0
 }
-
-self_dir() {
-  local path=${BASH_SOURCE[0]} dir
-  while [ -L "$path" ]; do
-    dir=$(cd -P "$(dirname "$path")" && pwd) || return 1
-    path=$(readlink "$path")
-    [[ "$path" = /* ]] || path="$dir/$path"
-  done
-  cd -P "$(dirname "$path")" && pwd
+direct() { # vendor word
+  printf 'Delegate from this chat: write the brief to a file; Bash `worker-run start %s --brief <file> --workdir <dir>` (prints RUN:/TAG:/DIR:); then Bash with run_in_background `worker-run wait <run-id>`; on its completion notification, `worker-run report <run-id>`. Mid-run note: `worker-run say <run-id> "<text>"`; a run in flight with no live wait gets `worker-run wait <run-id>` in the background again.' "$1"
 }
-SELF_DIR=$(self_dir) || SELF_DIR=''
-_load_worker_model() {
-  command -v worker_model_pin_first >/dev/null 2>&1 && return 0
-  [ -n "$SELF_DIR" ] || return 1
-  . "$SELF_DIR/../share/worker-model.sh" 2>/dev/null
-}
-_load_worker_model || true
-case " $RELAY_TYPES $NATIVE_ALLOWLIST " in
-  *" ${subagent:-general-purpose} "*) ;;
+case "${subagent:-general-purpose}" in
+  fork) ;;
+  claudeb-worker | codex-worker | gemini-worker | grok-worker | light-worker)
+    vendor=${subagent%-worker}
+    deny "the $subagent relay is retired. $(direct "$vendor")" ;;
+  light-research)
+    deny "the light-research agent is retired. Run \`light-research --prompt-file <file> --out <answer-file> --repo <abs>\` as a Bash with run_in_background; its completion notification wakes this chat and the answer is in --out; a call that ends on \`STATUS: running\` is resumed with \`light-research --attach <run-id> --out <answer-file>\` in the background." ;;
+  review-waiter)
+    deny "review-waiter is retired. Run \`review-bench wait <run-id>\` as a Bash with run_in_background; its completion notification wakes this chat (\`--relaunch\` / \`--finish-partial\` recover a dead or interrupted run)." ;;
   *)
-    relays='claudeb-worker, codex-worker, gemini-worker, grok-worker or light-worker; light-research for a read-only question'
-    if command -v worker_light_off >/dev/null 2>&1 && worker_light_off; then
-      relays='claudeb-worker, codex-worker, gemini-worker or grok-worker; a read-only question is a brief that says so'
-    fi
-    jq -cn --arg hook "${0##*/}" --arg r "native ${subagent:-general-purpose} is not spawned: spawn the relay Agent worker-pick's NEXT row names instead ($relays), which runs worker-run itself" \
-      '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:("[" + $hook + "] " + $r)}}'
-    exit 0 ;;
-esac
-# The harness itself denies both Light types while Light is off (worker_light_agents_sync), so a
-# Light run still in flight is waited out by its vendor's plain relay, as the Stop ask names it.
-case "$subagent" in
-  light-research | light-worker)
-    if command -v worker_light_off >/dev/null 2>&1 && worker_light_off; then
-      jq -cn --arg hook "${0##*/}" --arg r "Light is off (Egor's menu: LLM Limits -> Light): work as if it did not exist. Give this brief to the regular worker relay worker-pick names (its NEXT row); a research brief says it is read-only and carries \`WEB: on\` when it needs the web. An \`ATTACH <run-id>:\` brief goes to the relay of that run's vendor (\`<vendor>-worker\`, the vendor is the run id's first word)." \
-        '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:("[" + $hook + "] " + $r)}}'
-      exit 0
-    fi ;;
+    deny "native ${subagent:-general-purpose} is not spawned. $(direct '<vendor of worker-pick'"'"'s START line>')" ;;
 esac
 session_account() {
   local acct=${CLAUDE_LIMITS_ACCOUNT:-}
@@ -86,174 +49,19 @@ session_account() {
   fi
   printf '%s' "${acct:-main}"
 }
-# The row names the model, not the table's key. A hook runs where `geminib families` may be
-# unreachable, so the slug's own shape is the offline label: the version digits are its tail.
-gemini_label() { # table slug or agy id → the family without `gemini-`
-  local family
-  family=$(worker_model_gemini_family "$1" | cut -f1)
-  [ -n "$family" ] || family=$(printf '%s' "$1" |
-    sed -E 's/-(high|medium|low)$//; s/^([a-z]+)([0-9])([0-9]+)$/\2.\3-\1/; s/^([a-z]+)([0-9]+)$/\2-\1/')
-  printf '%s' "${family#gemini-}"
-}
 model_short() { # model id
   local model=${1#claude-}
   printf '%s' "${model%%-*}"
 }
-brief_line() { [[ $'\n'$prompt =~ $'\n'$1:[[:blank:]]*([A-Za-z0-9_.-]+) ]] && printf '%s' "${BASH_REMATCH[1]}"; }
-flag_account() {
-  local token pattern
-  pattern="--account[= ]+(\"[a-z0-9][a-z0-9-]*\"|'[a-z0-9][a-z0-9-]*'|[a-z0-9][a-z0-9-]*)"
-  token=$(printf '%s' "$prompt" | grep -m1 -oE -- "$pattern" | sed -E 's/^--account[= ]+//')
-  case "$token" in
-    \"*\") token=${token#\"}; token=${token%\"} ;;
-    \'*\') token=${token#\'}; token=${token%\'} ;;
-  esac
-  printf '%s' "$token"
-}
-route_account() {
-  [ -x "$WORKER_PICK" ] || return 0
-  "$WORKER_PICK" --account "$@" 2>/dev/null || true
-}
-
-light_label() { # vendor model
-  case "$1:$2" in
-    gemini:*) gemini_label "$2" ;;
-    codex:*) printf '%s' "${2##*-}" ;;
-    grok:auto | grok:grok-*) printf grok ;;
-    *) printf '%s' "$2" ;;
-  esac
-}
-
-codex_model_short_label() {
-  local model
-  model=$(worker_model_allowed_models codex | head -n1)
-  printf '%s' "${model##*-}"
-}
-
-if [ "$subagent" = claudeb-worker ]; then
-  acct=$(brief_line ACCOUNT)
-  [ -n "$acct" ] || acct=$(route_account claudeb)
-  [ -n "$acct" ] || acct=$(worker_model_pin_first claudeb 2>/dev/null || true)
-  model=$(brief_line MODEL)
-  [ -n "$model" ] || model=$(worker_conf claudeb_model)
-  [ -n "$model" ] || model=opus
-  effort=$(brief_line EFFORT)
-  [ -n "$effort" ] || effort=$(worker_conf claudeb_effort)
-  [ -n "$effort" ] || effort=$(worker_model_default_effort claudeb "$model")
-  prefix="${acct:-?} · $model · $effort"
-elif [ "$subagent" = codex-worker ]; then
-  acct=$(brief_line ACCOUNT)
-  [ -n "$acct" ] || [ "$(brief_line COMPUTER)" != yes ] || acct=$(route_account codex --role computer)
-  [ -n "$acct" ] || acct=$(route_account codex)
-  [ -n "$acct" ] || acct=$(worker_model_pin_first codex 2>/dev/null || true)
-  [ -n "$acct" ] || acct=main
-  codex_model=$(brief_line MODEL)
-  effort=$(brief_line EFFORT)
-  [ -n "$effort" ] || effort=$(worker_conf codex_effort)
-  [ -n "$effort" ] || effort=$(worker_model_default_effort codex "${codex_model:-$(worker_model_default_model codex)}")
-  codex_model=${codex_model##*-}
-  [ -n "$codex_model" ] || codex_model=$(codex_model_short_label)
-  prefix="$acct · $codex_model · $effort"
-elif [ "$subagent" = grok-worker ]; then
-  acct=$(brief_line ACCOUNT)
-  [ -n "$acct" ] || acct=$(route_account grok)
-  [ -n "$acct" ] || acct=$(worker_model_pin_first grok 2>/dev/null || true)
-  model=$(brief_line MODEL)
-  [ -n "$model" ] || model=$(worker_conf grok_model)
-  [ -n "$model" ] || model=auto
-  # A relay subagent is always a WORKERS leg, so the fast pin applies here exactly as it does in
-  # `worker-run start`; both resolve the slug through the one helper.
-  model=$(worker_model_grok_launch_model "$model" workers '' "$acct")
-  model=$(worker_model_grok_label "$model")
-  effort=$(brief_line EFFORT)
-  [ -n "$effort" ] || effort=$(worker_conf grok_effort)
-  [ -n "$effort" ] || effort=$(worker_model_default_effort grok "$(worker_model_default_model grok)")
-  prefix="${acct:-?} · $model · $effort"
-elif [ "$subagent" = fork ]; then
-  model=${fields[6]-}
-  if [ -z "$model" ]; then
-    transcript=${fields[7]-}
-    [ ! -r "$transcript" ] || model=$(tail -n 200 "$transcript" 2>/dev/null |
-      jq -rR 'fromjson? | select(type == "object" and .type == "assistant") | .message | objects | .model // empty' 2>/dev/null |
-      tail -n1)
-  fi
-  model=$(model_short "$model")
-  prefix="fork · ${model:-inherit} · $(session_account)"
-elif [ "$subagent" = review-waiter ]; then
-  review_run=$(printf '%s' "$prompt" | grep -m1 -oE '^(WAIT|ATTACH) [0-9]{8}T[0-9]{6}Z-[0-9a-f]+(-[0-9]+)?' |
-    sed -E 's/^[A-Z]+ //')
-  progress_dir="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}/progress"
-  review_doc=''
-  [ -z "$review_run" ] || review_doc=$(cat "$progress_dir"/*.json 2>/dev/null |
-    jq -c --arg run "$review_run" 'select(.run_id? == $run)' 2>/dev/null | tail -n1)
-  prefix=''
-  if [ -n "$review_doc" ]; then
-    prefix=$(printf '%s' "$review_doc" | jq -r 'def word(d): (if . == null then "" else tostring | gsub("[^A-Za-z0-9_.-]"; "") end) | if . == "" then d else . end;
-      (if (.kind // "") == "task" or (.hunt // false) then "task" else "review" end) as $kind
-      | [(.tier | word("T?")), (.composition | word("standard")), (.lens | word($kind))] | join(" · ")' 2>/dev/null)
-  fi
-  [ -n "$prefix" ] || prefix="review · ${review_run: -7}"
-  [ -n "$review_run" ] || prefix="review · ?"
-elif [ "$subagent" = light-research ] || [ "$subagent" = light-worker ]; then
-  # A pin answers first, then the router under the role the leg spends: a workers query reads the
-  # workers switch and would answer `off` for a vendor parked for workers alone, naming an account
-  # the run will not land on.
-  role=edit route_role=light
-  [ "$subagent" = light-worker ] || role=research route_role=research
-  vendor=$(worker_light_vendor "$role" 2>/dev/null) || vendor=gemini
-  model=$(worker_light_model "$role" 2>/dev/null) || model=$(worker_model_default_model "$vendor")
-  acct=$(brief_line ACCOUNT)
-  [ -n "$acct" ] || acct=$(flag_account)
-  [ -n "$acct" ] || acct=$(route_account "$vendor" --role "$route_role")
-  [ -n "$acct" ] || acct=$(worker_model_pin_first "$vendor" 2>/dev/null || true)
-  [ -n "$acct" ] || acct='?'
-  prefix="light $role · $(light_label "$vendor" "$model") · $acct"
-  seed_extra=light=$role
-else
-  acct=$(brief_line ACCOUNT)
-  [ -n "$acct" ] || acct=$(route_account gemini)
-  [ -n "$acct" ] || acct=$(worker_model_pin_first gemini 2>/dev/null || true)
-  [ -n "$acct" ] || acct=main
-  model=$(brief_line MODEL)
-  [ -n "$model" ] || model=$(worker_conf gemini_model)
-  [ -n "$model" ] || model=$(worker_model_default_model gemini)
-  # `worker-run` raises every Gemini run to high, so the row names what will be spent rather than
-  # what the brief or the knob asked for.
-  prefix="$acct · $(gemini_label "$model") · high"
+model=${fields[6]-}
+if [ -z "$model" ]; then
+  transcript=${fields[7]-}
+  [ ! -r "$transcript" ] || model=$(tail -n 200 "$transcript" 2>/dev/null |
+    jq -rR 'fromjson? | select(type == "object" and .type == "assistant") | .message | objects | .model // empty' 2>/dev/null |
+    tail -n1)
 fi
-
-# An ATTACH relay waits on a run that already chose its account and model: the row is that run's tag,
-# and the seed names the run so the Stop backstop counts it owned before the relay's first call.
-attach_run=''
-case "$subagent" in
-  claudeb-worker | codex-worker | gemini-worker | grok-worker | light-worker | light-research)
-    [[ ${prompt%%$'\n'*} =~ ^ATTACH\ ([a-z0-9][a-z0-9-]*): ]] && attach_run=${BASH_REMATCH[1]} ;;
-esac
-attach_dir="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}/$attach_run"
-[ -d "$attach_dir" ] || attach_run=''
-if [ -n "$attach_run" ] && IFS= read -r run_tag <"$attach_dir/tag" 2>/dev/null && [[ "$run_tag" = *' · '*' · '* ]]; then
-  case "$subagent" in
-    light-*)
-      run_model=${run_tag#* · }
-      prefix="light $role · $(light_label "$(jq -r '.vendor // empty' "$attach_dir/meta.json" 2>/dev/null)" "${run_model%% · *}") · ${run_tag%% · *}" ;;
-    *) prefix=$run_tag ;;
-  esac
-fi
-
-# Read by worker-run's brief_review_round header rules; `worker-run start` adopts it from the tag
-# file when the relay rewrote the brief without it. `none` is seeded too: dropped, the orchestrator's
-# opt-out turns into worker-run's prose round-ask.
-prompt_round=''
-case "$subagent" in
-  claudeb-worker | codex-worker | gemini-worker | grok-worker | light-worker)
-    while IFS= read -r line || [ -n "$line" ]; do
-      case "$line" in
-        ROUND:*) prompt_round=${line#ROUND:} prompt_round=${prompt_round//[^A-Za-z0-9-]/}; break ;;
-        RESUME\ *:* | ATTACH\ *:*) continue ;;
-      esac
-      [[ "$line" =~ ^[A-Z][A-Z-]*: ]] || break
-    done <<<"$prompt" ;;
-esac
+model=$(model_short "$model")
+prefix="fork · ${model:-inherit} · $(session_account)"
 
 title=$description
 [[ $title =~ ^[A-Za-z0-9_.?-]+(\ [a-z]+)?(\ ·\ [A-Za-z0-9_.?-]+){1,3}(:\ |\ —\ ) ]] && title=${title#"${BASH_REMATCH[0]}"}
@@ -262,11 +70,8 @@ title=$description
 session_id=${hook_session//[^A-Za-z0-9_-]/}
 [ -n "$session_id" ] || session_id=_
 pending_dir="$HOME/.cache/claude-worker-tags/$session_id"
-unlock_asked=0
-unlock_done=0
-[[ $'\n'$prompt =~ $'\n'GIT-CLEANUP:[[:blank:]]*allowed ]] && unlock_asked=1
-# One seed per spawn: two agents of one type spawned in the same turn each claim their own, oldest
-# first, instead of the second overwriting the first one's tag.
+# One seed per spawn: two forks spawned in the same turn each claim their own, oldest first,
+# instead of the second overwriting the first one's tag.
 spawn_key=${fields[8]-}
 spawn_key=${spawn_key//[^A-Za-z0-9_-]/}
 [ -n "$spawn_key" ] || spawn_key="$(date +%s)-$$-$RANDOM"
@@ -275,60 +80,19 @@ if [ -d "$pending_dir" ] || mkdir -p "$pending_dir" 2>/dev/null; then
   tmp_pending="$pending_dir/.pending-$subagent.tmp.$$"
   first_line=${prompt%%$'\n'*}
   spawn_hash=$(printf '%s\n' "$first_line" | if command -v sha256sum >/dev/null; then sha256sum; else shasum -a 256; fi 2>/dev/null)
-  { printf '%s\n' "$prefix"; printf 'spawn=%s\n' "${spawn_hash:0:16}"
-    [ -z "${review_run:-}" ] || printf 'review=%s\n' "$review_run"
-    [ -z "$attach_run" ] || printf 'run=%s\n' "$attach_run"
-    [ -z "$prompt_round" ] || printf 'round=%s\n' "$prompt_round"
-    [ -z "${seed_extra:-}" ] || printf '%s\n' "$seed_extra"
-    [ "$unlock_asked" = 0 ] || printf 'git_cleanup=allowed\n'; } > "$tmp_pending" 2>/dev/null &&
-    mv -f "$tmp_pending" "$pending_dir/pending-$subagent-$spawn_key" 2>/dev/null && unlock_done=$unlock_asked
+  { printf '%s\n' "$prefix"; printf 'spawn=%s\n' "${spawn_hash:0:16}"; } > "$tmp_pending" 2>/dev/null &&
+    mv -f "$tmp_pending" "$pending_dir/pending-$subagent-$spawn_key" 2>/dev/null
   [ ! -e "$tmp_pending" ] || rm -f "$tmp_pending" 2>/dev/null
-fi
-# The unlock the guard reads is a file, and a cache directory it cannot write silently voids a
-# `GIT-CLEANUP: allowed` the brief demonstrably carries: the worker is then refused with "only a
-# 'GIT-CLEANUP: allowed' line in the brief unlocks these commands", cannot resolve the
-# contradiction, and reports a blocked task. Said in the brief instead — the one channel that
-# cannot fail — so the worker knows which of the two is true before it spends the run on it.
-cleanup_note=''
-if [ "$unlock_asked" = 1 ] && [ "$unlock_done" = 0 ]; then
-  cleanup_note="GIT-CLEANUP NOTE (hook-injected): this brief allows git cleanup, but the unlock marker under $pending_dir could not be written, so worker-git-guard.sh will still refuse revert/restore/reset/clean/stash. Do not fight it: do the rest of the task, and report in your RETURN that the cleanup was blocked by an unwritable ~/.cache/claude-worker-tags rather than by the brief."
 fi
 
 updated="$prefix: $title"
+[ "$updated" != "$description" ] || exit 0
 
-# Workers produce code; instruction/context .md files are curated by the orchestrator. The text is
-# the gates' own relay refusal, which no brief line unlocks; a brief already carrying MD-GUARD (a
-# re-injection on RESUME) is left alone.
-md_guard=''
-if [ "$subagent" != fork ] && [ "$subagent" != review-waiter ] &&
-   [[ $'\n'$prompt != *$'\n'MD-GUARD* ]]; then
-  md_files='CLAUDE.md / CLAUDE.local.md / MEMORY.md / files in memory/ dirs / anything under ~/.claude, even when one of them goes stale from your change'
-  if [ -n "$SELF_DIR" ] && . "$SELF_DIR/../share/instruction-files.sh" 2>/dev/null; then
-    md_rule=$(instruction_relay_refusal "$md_files")
-  else
-    md_rule="Do not write $md_files; put the exact proposed text under MD-PROPOSAL in your RETURN."
-  fi
-  md_guard="MD-GUARD (hook-injected): $md_rule The checkout is SHARED: uncommitted or untracked changes you did not make this run are other agents' live work — never git checkout/restore/reset/clean/stash over them, whatever git status suggests about authorship; report unexpected tree state in your RETURN and leave it in place."
-fi
-
-# These types are pinned to their frontmatter model, which a tool-call model would override.
-strip_model=''
-case "$subagent" in
-  review-waiter|light-research) [ -z "${fields[6]-}" ] || strip_model=1 ;;
-esac
-
-[ "$updated" = "$description" ] && [ -z "$md_guard" ] && [ -z "$cleanup_note" ] && [ -z "$strip_model" ] && exit 0
-
-printf '%s' "$input" | jq -c --arg description "$updated" --arg guard "$md_guard" \
-  --arg cleanup "$cleanup_note" --arg strip "$strip_model" '
+printf '%s' "$input" | jq -c --arg description "$updated" '
   {hookSpecificOutput: {
     hookEventName: "PreToolUse",
     permissionDecision: "allow",
-    updatedInput: (.tool_input
-      | .description = $description
-      | if $guard != "" then .prompt = (.prompt + "\n\n" + $guard) else . end
-      | if $cleanup != "" then .prompt = (.prompt + "\n\n" + $cleanup) else . end
-      | if $strip != "" then del(.model) else . end)
+    updatedInput: (.tool_input | .description = $description)
   }}
 ' 2>/dev/null
 exit 0

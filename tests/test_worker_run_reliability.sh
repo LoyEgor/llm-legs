@@ -260,7 +260,7 @@ EOF
     "$RUNNER" start codex --brief "$WORK/brief" --account busy --resume busy-session >"$WORK/busy.out" 2>&1 || rc=$?
     assert test "$rc" -eq 4
     assert grep -qx "OUTCOME: RESUME_BUSY $old_id" "$WORK/busy.out"
-    assert grep -qx "ATTACH $old_id" "$WORK/busy.out"
+    assert grep -qx "WAIT: worker-run wait $old_id (as a background Bash)" "$WORK/busy.out"
     kill -TERM "$(jq -r '.pid' "$old_dir/meta.json")"
     "$RUNNER" wait "$old_id" --max 60 >/dev/null
     unset STUB_SLEEP
@@ -280,7 +280,7 @@ EOF
     WORKER_RUN_ALLOW_DUPLICATE=0 "$RUNNER" start codex --brief "$WORK/brief" --account duplicate >"$WORK/duplicate.out" 2>&1 || rc=$?
     assert test "$rc" -eq 4
     assert grep -qx "OUTCOME: DUPLICATE_RUN $old_id" "$WORK/duplicate.out"
-    assert grep -qx "ATTACH $old_id" "$WORK/duplicate.out"
+    assert grep -qx "WAIT: worker-run wait $old_id (as a background Bash)" "$WORK/duplicate.out"
     unset STUB_SLEEP
     WORKER_RUN_ALLOW_DUPLICATE=1 start_ok codex --account duplicate
     assert await_done

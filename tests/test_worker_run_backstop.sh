@@ -6,7 +6,7 @@ HOOK="$ROOT/bin/worker-run-backstop.sh"
 WORK=$(mktemp -d)
 sleep 300 &
 LIVE_PID=$!
-trap 'kill "$LIVE_PID" 2>/dev/null; rm -rf "$WORK"' EXIT
+trap 'kill "$LIVE_PID" ${WAIT_PIDS:-} 2>/dev/null; rm -rf "$WORK"' EXIT
 export HOME="$WORK/home" WORKER_RUN_DIR="$WORK/runs" WORKER_STATS_DIR="$WORK/stats"
 unset CLAUDEB_WORKER
 asserts=0
@@ -14,8 +14,7 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert_eq() { asserts=$((asserts + 1)); [ "$1" = "$2" ] || fail "expected [$1] got [$2]"; }
 assert_has() { asserts=$((asserts + 1)); case "$2" in *"$1"*) ;; *) fail "[$2] lacks [$1]" ;; esac; }
 
-TAGS="$HOME/.cache/claude-worker-tags/s1"
-mkdir -p "$TAGS" "$WORKER_STATS_DIR/progress"
+mkdir -p "$WORKER_STATS_DIR/progress"
 run() { # id launcher vendor [pid]
   mkdir -p "$WORKER_RUN_DIR/$1"
   printf '%s\n' "$2" >"$WORKER_RUN_DIR/$1/launcher"
@@ -29,24 +28,33 @@ stop() { # [extra jq]
 forget() { rm -rf "$HOME/.cache/claude/stop-backstop"; }
 reason() { jq -r '.reason // empty' 2>/dev/null; }
 
-# A live run of this chat with no relay holds the stop and names the ATTACH spawn and the run's tag.
+# A live run of this chat with no live wait holds the stop and names the wait and the run's tag.
 run r1 s1 codex
 out=$(stop)
 assert_eq block "$(jq -r .decision <<<"$out")"
-assert_has 'worker run r1 (acct · astra · high) — spawn codex-worker `ATTACH r1:`' "$(reason <<<"$out")"
+assert_has 'worker run r1 (acct · astra · high) — `worker-run wait r1`' "$(reason <<<"$out")"
+assert_has 'Start each wait now as a Bash with run_in_background: true' "$(reason <<<"$out")"
 
-# A relay tag naming the run owns it; one marked stopped does not; a fresh ATTACH seed does, a stale one not.
+# A live `worker-run wait r1` under the chat owns it; one under another process tree, or one waiting on
+# another run, does not.
 forget
-printf 'acct · astra · high\nrun=r1\n' >"$TAGS/agent1"
+mkdir -p "$WORK/bin"
+printf '#!/bin/sh\nwhile :; do sleep 1; done\n' >"$WORK/bin/worker-run"
+cp "$WORK/bin/worker-run" "$WORK/bin/review-bench"
+chmod +x "$WORK/bin/worker-run" "$WORK/bin/review-bench"
+wait_on() { "$WORK/bin/$1" wait "$2" & WAIT_PIDS="${WAIT_PIDS:-} $!"; sleep 0.2; }
+end_waits() { kill $WAIT_PIDS 2>/dev/null; wait $WAIT_PIDS 2>/dev/null; WAIT_PIDS=''; }
+export WORKER_RUN_BACKSTOP_CHAT_PID=$$
+wait_on worker-run r1x
+assert_eq block "$(stop | jq -r .decision)"
+wait_on worker-run r1
 assert_eq "" "$(stop)"
-printf 'stopped=1\n' >>"$TAGS/agent1"
+assert_eq block "$(WORKER_RUN_BACKSTOP_CHAT_PID=$LIVE_PID stop | jq -r .decision)"
+end_waits; forget
 assert_eq block "$(stop | jq -r .decision)"
 forget
-printf 'acct · astra · high\nspawn=x\nrun=r1\n' >"$TAGS/pending-codex-worker-t1"
-assert_eq "" "$(stop)"
-touch -t "$(date -v-20M +%Y%m%d%H%M.%S)" "$TAGS/pending-codex-worker-t1"
-assert_eq block "$(stop | jq -r .decision)"
-rm -f "$TAGS/pending-codex-worker-t1" "$TAGS/agent1"
+assert_eq "" "$(bash "$HOOK" --relay "$WORKER_RUN_DIR/r1" </dev/null)"
+rm -rf "$WORKER_RUN_DIR/r1"; forget
 
 # Not this chat's, finished, dead, or still inside `worker-run start` (no state.json yet): nothing to hold.
 rm -rf "$WORKER_RUN_DIR"; forget
@@ -59,32 +67,11 @@ jq -c --argjson t "$(($(date +%s) - 86400))" '.pid_started_at = $t' "$WORKER_RUN
   mv "$WORK/m" "$WORKER_RUN_DIR/recycled/meta.json"
 assert_eq "" "$(stop)"
 
-# A run a live script launched under its relay token is the script's to wait out; a gone script, or
-# a pid younger than the run (recycled), leaves it unowned.
-scripted() { # id owner-pid run-age-s
-  run "$1" s1 claudeb
-  printf 'log-audit %s\n' "$2" >"$WORKER_RUN_DIR/$1/script-owner"
-  jq -c --argjson t "$(($(date +%s) - $3))" '.pid_started_at = $t' "$WORKER_RUN_DIR/$1/meta.json" >"$WORK/m" &&
-    mv "$WORK/m" "$WORKER_RUN_DIR/$1/meta.json"
-}
-scripted audited "$LIVE_PID" 0
-assert_eq "" "$(stop)"
-scripted orphaned 999999 0
-assert_has 'worker run orphaned' "$(stop | reason)"
-rm -rf "$WORKER_RUN_DIR/orphaned"; forget
-. "$ROOT/share/run-liveness.sh"
-read -r old_pid old_age < <(ps -Ao pid=,etime= | while read -r p e; do [ "$p" -gt 1 ] && printf '%s %s\n' "$p" "$(etime_seconds "$e")"; done | sort -k2 -n | tail -1)
-scripted recycled-owner "$LIVE_PID" "$old_age"
-jq -c --argjson p "$old_pid" '.pid = $p' "$WORKER_RUN_DIR/recycled-owner/meta.json" >"$WORK/m" &&
-  mv "$WORK/m" "$WORKER_RUN_DIR/recycled-owner/meta.json"
-assert_has 'worker run recycled-owner' "$(stop | reason)"
-rm -rf "$WORKER_RUN_DIR/recycled-owner" "$WORKER_RUN_DIR/audited"; forget
-
 # Inside a headless worker or a subagent the backstop is silent.
 run r2 s1 claudeb
 assert_eq "" "$(CLAUDEB_WORKER=1 stop)"
 assert_eq "" "$(stop '+ {agent_id:"a1"}')"
-assert_has 'spawn claudeb-worker `ATTACH r2:`' "$(stop | reason)"
+assert_has '`worker-run wait r2`' "$(stop | reason)"
 # Inside Egor's autonomy span the stop is never held.
 forget
 printf 'words_span_live() { [ "$1" = s1 ] && [ "$2" = /t/s1.jsonl ]; }\n' >"$WORK/span-words.sh"
@@ -92,36 +79,20 @@ assert_eq "" "$(WORDS_LIB="$WORK/span-words.sh" stop '+ {transcript_path:"/t/s1.
 assert_eq block "$(WORDS_LIB="$WORK/span-words.sh" stop | jq -r .decision)"
 rm -rf "$WORKER_RUN_DIR/r2"; forget
 
-# A live review of this chat needs a live review-waiter tag; a stale heartbeat is a dead panel.
+# A live review of this chat needs a live `review-bench wait` under the chat; a stale heartbeat is a dead panel.
 R=20260924T010203Z-abc1234
 jq -nc --arg r "$R" --argjson hb "$(date +%s)" '{run_id:$r,session:"s1",state:"running",heartbeat_epoch:$hb}' \
   >"$WORKER_STATS_DIR/progress/x.json"
-assert_has "review $R — spawn review-waiter \`ATTACH $R:\`" "$(stop | reason)"
+assert_has "review $R — \`review-bench wait $R\`" "$(stop | reason)"
 forget
-printf 'T2 · double · bugs\nreview=%s\n' "$R" >"$TAGS/waiter1"
+wait_on worker-run "$R"
+assert_eq block "$(stop | jq -r .decision)"
+wait_on review-bench "$R"
 assert_eq "" "$(stop)"
-rm -f "$TAGS/waiter1"
+end_waits; forget
 jq '.heartbeat_epoch -= 3600' "$WORKER_STATS_DIR/progress/x.json" >"$WORK/x" && mv "$WORK/x" "$WORKER_STATS_DIR/progress/x.json"
 assert_eq "" "$(stop)"
 rm -f "$WORKER_STATS_DIR/progress/x.json"
-
-# The relay follows the run's Light marker while Light is on, and the vendor's plain relay once it is off.
-export WORKER_PICK_CONFIG_FILE="$WORK/worker-model"
-: >"$WORKER_PICK_CONFIG_FILE"
-run l1 s1 codex
-jq -c '. + {light:"edit"}' "$WORKER_RUN_DIR/l1/meta.json" >"$WORK/m" && mv "$WORK/m" "$WORKER_RUN_DIR/l1/meta.json"
-assert_has 'spawn light-worker `ATTACH l1:`' "$(stop | reason)"
-assert_eq light-worker "$(bash "$HOOK" --relay "$WORKER_RUN_DIR/l1")"
-forget
-run l2 s1 gemini
-jq -c '. + {role:"research"}' "$WORKER_RUN_DIR/l2/meta.json" >"$WORK/m" && mv "$WORK/m" "$WORKER_RUN_DIR/l2/meta.json"
-assert_has 'spawn gemini-worker `ATTACH l2:`' "$(stop | reason)"
-forget
-printf 'light_paused=on\n' >"$WORKER_PICK_CONFIG_FILE"
-assert_has 'spawn codex-worker `ATTACH l1:`' "$(stop | reason)"
-assert_eq codex-worker "$(bash "$HOOK" --relay "$WORKER_RUN_DIR/l1")"
-rm -rf "$WORKER_RUN_DIR/l1" "$WORKER_RUN_DIR/l2"; forget
-unset WORKER_PICK_CONFIG_FILE
 
 # Three holds in a row, then the stop goes through; a hold minutes apart starts the count over.
 run r3 s1 gemini
@@ -131,24 +102,16 @@ printf '%s 9\n' "$(($(date +%s) - 900))" >"$HOME/.cache/claude/stop-backstop/s1"
 assert_eq block "$(stop | jq -r .decision)"
 rm -rf "$WORKER_RUN_DIR/r3"; forget
 
-# An orchestrator's tag cache holds hundreds of files; a read of it per run outran the stop's 5 s
-# hook cap under load (exit 124), so a dozen live runs still cost a few processes whatever its size.
-for i in $(seq 300); do printf 'acct · astra · high\nrun=old%s\nstopped=1\n' "$i" >"$TAGS/agent$i"; done
-for i in $(seq 4 15); do printf 'acct · astra · high\nrun=r%s\n' "$i" >"$TAGS/agent30$i"; run "r$i" s1 codex; done
-printf 'run=x\n' >"$TAGS/agent3000"; chmod 000 "$TAGS/agent3000"
+# An orchestrator's dozen live runs cost one process-table read per stop, and an owned run is settled
+# before its liveness probe: a jq and a ps each per run were 2.2-2.7 s of the dispatcher's critical
+# path at load 220.
 mkdir -p "$WORK/shim"
-printf '#!/bin/sh\necho >>"%s/greps"\nexec %s "$@"\n' "$WORK" "$(command -v grep)" >"$WORK/shim/grep"
-chmod +x "$WORK/shim/grep"
-assert_eq "" "$(PATH="$WORK/shim:$PATH" stop)"
-asserts=$((asserts + 1)); [ "$(cat "$WORK/greps" 2>/dev/null | wc -l)" -le 5 ] ||
-  fail "$(wc -l <"$WORK/greps" | tr -d ' ') greps for 12 runs over 312 tag files"
-# An owned run is settled before its liveness probe: the orchestrator's dozen relayed runs paid a
-# jq and a ps each on every stop, 2.2-2.7 s of the dispatcher's critical path at load 220.
-printf '#!/bin/sh\necho >>"%s/ps-runs"\nexec %s "$@"\n' "$WORK" "$(command -v ps)" >"$WORK/shim/ps"
+printf '#!/bin/sh\necho "$*" >>"%s/ps-calls"\nexec %s "$@"\n' "$WORK" "$(command -v ps)" >"$WORK/shim/ps"
 chmod +x "$WORK/shim/ps"
 WORKER_RUN_DIR="$WORK/runs-owned"
-run r4 s1 codex
+for i in $(seq 4 15); do run "r$i" s1 codex; wait_on worker-run "r$i"; done
 assert_eq "" "$(PATH="$WORK/shim:$PATH" stop)"
-asserts=$((asserts + 1)); [ ! -e "$WORK/ps-runs" ] || fail "an owned run was probed with ps"
+assert_eq 1 "$(wc -l <"$WORK/ps-calls" | tr -d ' ')"
+end_waits
 
-printf 'PASS: %s asserts; a live worker or review run of this chat that no live relay tag or fresh ATTACH seed owns holds the stop naming the ATTACH spawn, while another chat'"'"'s, a finished, a dead or a still-starting run, a stale panel, a worker, a subagent and a run its live launching script waits on pass, and three holds in a row release the fourth\n' "$asserts"
+printf 'PASS: %s asserts; a live worker or review run of this chat that no live `worker-run wait` / `review-bench wait` under the chat process owns holds the stop naming that wait, while another chat'"'"'s, a finished, a dead or a still-starting run, a stale panel, a worker, a subagent and the retired --relay mode pass, a dozen owned runs cost one process-table read, and three holds in a row release the fourth\n' "$asserts"

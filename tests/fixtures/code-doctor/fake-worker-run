@@ -3,10 +3,7 @@
 # its cause id; CODE_DOCTOR_FAKE_LAUNCH_FAIL fails the launch, CODE_DOCTOR_FAKE_DROP omits that cause's block and
 # CODE_DOCTOR_FAKE_MANGLE answers that cause with a malformed one.
 set -u
-case ${1:-}:${WORKER_RUN_RELAY:-} in
-  start:code-doctor-judge:?* | wait:code-doctor-judge:?* | report:*) ;;
-  *) echo "worker-run: $1 runs only inside its relay" >&2; exit 2 ;;
-esac
+[ -z "${WORKER_RUN_RELAY+x}" ] || { echo "worker-run: the retired relay token reached a judge run" >&2; exit 2; }
 case ${1:-} in
   start)
     if [ -n "${CODE_DOCTOR_FAKE_LAUNCH_FAIL:-}" ]; then

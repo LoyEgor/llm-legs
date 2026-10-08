@@ -76,7 +76,7 @@ review_anchors() { # subcommand argument...
   "$anchors" "$@"
 }
 
-# The same line worker-launch-gate holds a relay's flag to: the first `KEY: value` of the brief.
+# The header line a flag must agree with: the first `KEY: value` of the brief.
 brief_line_value() { # brief key
   head -n 400 "$1" 2>/dev/null | grep -m1 -oE "^$2:[[:space:]]*[A-Za-z0-9_.-]+" | sed -E "s/^$2:[[:space:]]*//"
 }
@@ -103,6 +103,28 @@ brief_review_round() {
   review_round_ok "$round" ||
     fail "brief names no review round on record: '$line' — the shape is 'ROUND: <review-bench run id YYYYMMDDTHHMMSSZ-<7 hex>>'"
   printf '%s\n' "$round"
+}
+
+# The run's name on its work line: the first body line past the header block, cut to 100 characters.
+brief_title() { # brief
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%$'\r'}
+    case "$line" in
+      RESUME\ *:* | ATTACH\ *:*) continue ;;
+    esac
+    [[ "$line" =~ ^[A-Z][A-Z-]*: ]] && continue
+    [[ "$line" =~ [^[:space:]] ]] || continue
+    printf '%s\n' "$line" | perl -CSD -ne 's/^\s+|\s+$//g; print substr($_, 0, 100), "\n"'
+    return 0
+  done <"$1"
+}
+
+md_guard_text() {
+  local files='CLAUDE.md / CLAUDE.local.md / MEMORY.md / files in memory/ dirs / anything under ~/.claude, even when one of them goes stale from your change' rule
+  rule=$(. "$SCRIPT_DIRECTORY/../share/instruction-files.sh" 2>/dev/null && instruction_relay_refusal "$files") ||
+    rule="Do not write $files; put the exact proposed text under MD-PROPOSAL in your RETURN."
+  printf '%s\n' "MD-GUARD (worker-run-injected): $rule The checkout is SHARED: uncommitted or untracked changes you did not make this run are other agents' live work — never git checkout/restore/reset/clean/stash over them, whatever git status suggests about authorship; report unexpected tree state in your RETURN and leave it in place."
 }
 
 # Header-only, as ROUND: is: a brief's prose names other repositories to read far more often than to
@@ -232,7 +254,7 @@ gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}"
 # prepended — the brief's own first line is load-bearing (`RESUME <id>:`, `ATTACH <id>:`, which
 # both the relay agents and the spawn gate read off the top), and a rule a model must still obey at
 # edit 60 belongs where it read last.
-BRIEF_PREAMBLE='AUDIENCE: your reader is another model (the orchestrator), never Egor — write the report and every message in English; Russian only as code in backticks. TEST LOOP: while iterating run a one-off probe or ONE covering suite, never every suite after each edit; a mutation check is one run of the covering suite (revert → fails → restore); at the end run, in one `tests/run-all <suite>...` call, only the suites covering the files you changed (`tests/affected <file>...` lists them where the repo has it) plus the one that goes red on the old code, and report PASS counts; never the full `tests/run-all`, which the night runs once in the background. Work in the files the brief names; if the brief covers more than ~8 findings or ~6 files, do them in the order given. RETURN: first line the outcome — done, partially done or failed, plus one clause; then changed files, verification with PASS counts and anything undone; mark anything you could not confirm and say where you looked. The relay puts `worker-run report`'"'"'s `ACCOUNT: <account> (<vendor>)` line second, so never write one; an `OUTCOME:` line is a worker-run status code, written only where a preamble names its code. A command that ended by signal 9 (exit 137) was killed by the machine'"'"'s memory guard: do not rerun it as is — run one project'"'"'s tests, never the whole monorepo'"'"'s, or split the work. REUSE FIRST: nothing the project may already have is written from scratch — before writing a function, helper, wrapper over a platform API, list, constant or pattern, grep the whole project for an existing one (its name, the API it wraps, the literal) and use it; editing an existing value or call needs no search; one search, then proceed.'
+BRIEF_PREAMBLE='AUDIENCE: your reader is another model (the orchestrator), never Egor — write the report and every message in English; Russian only as code in backticks. TEST LOOP: while iterating run a one-off probe or ONE covering suite, never every suite after each edit; a mutation check is one run of the covering suite (revert → fails → restore); at the end run, in one `tests/run-all <suite>...` call, only the suites covering the files you changed (`tests/affected <file>...` lists them where the repo has it) plus the one that goes red on the old code, and report PASS counts; never the full `tests/run-all`, which the night runs once in the background. Work in the files the brief names; if the brief covers more than ~8 findings or ~6 files, do them in the order given. RETURN: first line the outcome — done, partially done or failed, plus one clause; then changed files, verification with PASS counts and anything undone; mark anything you could not confirm and say where you looked. `worker-run report` puts its own `ACCOUNT: <account> (<vendor>)` line second, so never write one; an `OUTCOME:` line is a worker-run status code, written only where a preamble names its code. A command that ended by signal 9 (exit 137) was killed by the machine'"'"'s memory guard: do not rerun it as is — run one project'"'"'s tests, never the whole monorepo'"'"'s, or split the work. REUSE FIRST: nothing the project may already have is written from scratch — before writing a function, helper, wrapper over a platform API, list, constant or pattern, grep the whole project for an existing one (its name, the API it wraps, the literal) and use it; editing an existing value or call needs no search; one search, then proceed.'
 
 # Grok is the one research leg with no read-only mode: supervise_grok digests every tree it may read
 # before and after, and ANY difference ends a finished run as READ_ONLY_VIOLATION with the answer
@@ -328,7 +350,7 @@ launch_attempt() { # directory
       printf '\n'
       cat "$directory/fix-rule" || return 1
     fi
-    for preamble in research-fence edit-fence; do
+    for preamble in research-fence edit-fence md-guard; do
       [ -s "$directory/$preamble" ] || continue
       printf '\n'
       cat "$directory/$preamble" || return 1
@@ -2181,10 +2203,9 @@ journal_worker_attempt() { # directory session
   jq -c --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg run "${directory##*/}" --arg session "$2" \
     --arg attempt "$(head -n1 "$directory/attempt" 2>/dev/null)" \
     --arg launcher "$(head -n1 "$directory/launcher" 2>/dev/null)" \
-    --arg agent "$(head -n1 "$directory/agent-task" 2>/dev/null)" \
     '{ts: $ts, run: $run, attempt: (($attempt | tonumber?) // null), session: $session,
       vendor, account, role, light: (.light // null), model, workdir,
-      launcher: (($launcher | select(. != "")) // null), agent: (($agent | select(. != "")) // null)}' \
+      launcher: (($launcher | select(. != "")) // null)}' \
     "$directory/meta.json" >>"$journal" 2>/dev/null || :
 }
 
@@ -2225,22 +2246,19 @@ journal_worker_run() { # directory status exit-code
 
 # The task row the chat paints for this run reads this file, so every transition rewrites it whole.
 write_run_state() { # directory phase [exit-code]
-  local directory="$1" phase="$2" code="${3:-}" tag='' rest agent session tmp
+  local directory="$1" phase="$2" code="${3:-}" tag='' rest session tmp
   [ -d "$directory" ] || return 0
-  agent=$(jq -r '.agent_task_id // empty' "$directory/state.json" 2>/dev/null) || agent=''
-  [ -n "$agent" ] || agent=$(cat "$directory/agent-task" 2>/dev/null) || agent=''
-  [ -n "$agent" ] || agent=${CLAUDE_AGENT_ID:-}
   IFS= read -r tag 2>/dev/null <"$directory/tag" || :
   rest=${tag#* · }
   session=$(cat "$directory/launcher" 2>/dev/null) || session=''
   tmp="$directory/state.json.tmp.$$"
-  if jq -n --arg phase "$phase" --arg code "$code" --arg agent "$agent" \
+  if jq -n --arg phase "$phase" --arg code "$code" \
     --arg session "$session" --arg account "${tag%% · *}" --arg model "${rest%% · *}" --arg effort "${rest##* · }" \
     --arg round_id "$(jq -r '.review_round // empty' "$directory/meta.json" 2>/dev/null)" \
     --arg started "$(jq -r '.pid_started_at // .started_at // empty' "$directory/meta.json" 2>/dev/null)" \
     'def opt: if . == "" then null else . end;
      {phase: $phase, exit_code: ($code | opt | if . == null then . else (tonumber? // .) end),
-      agent_task_id: ($agent | opt), session: ($session | opt), account: ($account | opt),
+      session: ($session | opt), account: ($account | opt),
       model: ($model | opt), effort: ($effort | opt), round_id: ($round_id | opt),
       started_epoch: ($started | opt | if . == null then . else (tonumber? // null) end),
       ts: (now | floor | todate)}' >"$tmp" 2>/dev/null; then
@@ -2250,19 +2268,21 @@ write_run_state() { # directory phase [exit-code]
   fi
 }
 
-# The agent whose task row shows this run: CLAUDE_AGENT_ID where the harness sets it, else the tag file
-# worker-tag-hook marked `start=` for this very launch in the launching chat's tag cache. The claim
-# swaps that mark for `run=<id>` and the tag for the one this launch resolved.
-claim_agent_tag() { # directory launcher
-  local dir="$HOME/.cache/claude-worker-tags/$2"
-  [ -n "$2" ] && [ -d "$dir" ] || return 0
-  with_agent_tag_lock "$dir" claim_agent_tag_locked "$1" "$dir"
+# The pressure check a chat's delegation passes before any account is picked: a deny refuses the
+# launch, a note rides along on stderr.
+limit_gate() { # vendor light brief
+  local gate=${WORKER_RUN_LIMIT_GATE:-$SCRIPT_DIRECTORY/worker-limit-gate.sh} verdict reason note
+  [ -x "$gate" ] || return 0
+  verdict=$("$gate" --start "$([ -z "$2" ] && printf '%s' "$1" || printf light)" "$3" 2>/dev/null) || return 0
+  [ -n "$verdict" ] || return 0
+  reason=$(jq -r 'select(.hookSpecificOutput.permissionDecision == "deny") | .hookSpecificOutput.permissionDecisionReason // empty' <<<"$verdict" 2>/dev/null)
+  [ -z "$reason" ] || fail "$reason Nothing was launched and no account was spent."
+  note=$(jq -r '.hookSpecificOutput.additionalContext // empty' <<<"$verdict" 2>/dev/null)
+  [ -z "$note" ] || printf 'worker-run: note: %s\n' "$note" >&2
 }
 
-# Every read of the chat's fresh `start=` marks runs under this lock: two launches of one chat that
-# both read the newest `start=` before either swaps it claim ONE agent's row for two runs. A holder
-# that died is outwaited.
-with_agent_tag_lock() { # tag-dir command...
+# One writer at a time on a run's inbox; a holder that died is outwaited.
+with_lock() { # directory command...
   local lock="$1/.claim.lock" waited=0 rc=0
   shift
   while ! mkdir "$lock" 2>/dev/null; do
@@ -2281,63 +2301,6 @@ with_agent_tag_lock() { # tag-dir command...
   "$@" || rc=$?
   [ -z "$lock" ] || rmdir "$lock" 2>/dev/null || :
   return "$rc"
-}
-
-fresh_agent_tags() { # tag-dir — "mark<TAB>file", one per tag file marked `start=` in the last 120 s
-  local file mark now
-  now=$(date +%s)
-  for file in "$1"/*; do
-    case "${file##*/}" in pending-* | git-unlock-* | *.tmp.* | *.claim.*) continue ;; esac
-    [ -f "$file" ] || continue
-    mark=$(sed -n 's/^start=//p' "$file" 2>/dev/null | tail -n1)
-    [[ "$mark" =~ ^[0-9]+$ ]] && [ $((now - mark)) -le 120 ] || continue
-    printf '%s\t%s\n' "$mark" "$file"
-  done
-}
-
-launch_agent_tag() { # tag-dir
-  local dir="$1"
-  if [ -n "${CLAUDE_AGENT_ID:-}" ] && [ -f "$dir/${CLAUDE_AGENT_ID//[^A-Za-z0-9_-]/}" ]; then
-    printf '%s' "$dir/${CLAUDE_AGENT_ID//[^A-Za-z0-9_-]/}"
-  else
-    fresh_agent_tags "$dir" | sort -s -t $'\t' -k1,1nr | head -n1 | cut -f2- | tr -d '\n'
-  fi
-}
-
-# The spawning Agent prompt's ROUND: header, which worker-spawn-hook seeds into the relay's tag file
-# in the spawning chat's cache: a relay that rewrites the brief drops the header, never this.
-spawn_review_round() {
-  local session=${CLAUDE_CODE_SESSION_ID:-} dir
-  case "$session" in ''|.|..|*[!A-Za-z0-9._-]*) return 0 ;; esac
-  dir="$HOME/.cache/claude-worker-tags/$session"
-  [ -d "$dir" ] || return 0
-  with_agent_tag_lock "$dir" spawn_review_round_locked "$dir"
-}
-
-# The claim comes at the end of the launch, so without CLAUDE_AGENT_ID the newest `start=` may be a
-# sibling relay's: a round is adopted only when every fresh tag file agrees on it.
-spawn_review_round_locked() { # tag-dir
-  local dir="$1" rounds
-  if [ -n "${CLAUDE_AGENT_ID:-}" ] && [ -f "$dir/${CLAUDE_AGENT_ID//[^A-Za-z0-9_-]/}" ]; then
-    sed -n 's/^round=//p' "$dir/${CLAUDE_AGENT_ID//[^A-Za-z0-9_-]/}" 2>/dev/null | tail -n1
-    return 0
-  fi
-  rounds=$(fresh_agent_tags "$dir" | cut -f2- | while IFS= read -r file; do
-    printf '%s\n' "$(sed -n 's/^round=//p' "$file" 2>/dev/null | tail -n1)"
-  done | sort -u)
-  [ "$(printf '%s\n' "$rounds" | wc -l)" -eq 1 ] || return 0
-  printf '%s\n' "$rounds"
-}
-
-claim_agent_tag_locked() { # directory tag-dir
-  local directory="$1" dir="$2" best tag tmp
-  best=$(launch_agent_tag "$dir")
-  [ -n "$best" ] || return 0
-  printf '%s\n' "${best##*/}" >"$directory/agent-task" 2>/dev/null || :
-  IFS= read -r tag 2>/dev/null <"$directory/tag" || IFS= read -r tag 2>/dev/null <"$best" || tag=''
-  tmp="$best.tmp.$$"
-  { printf '%s\n' "$tag"; tail -n +2 "$best" | grep -vE '^start=' | grep -vxF "run=${directory##*/}"; printf 'run=%s\n' "${directory##*/}"; } \
-    >"$tmp" 2>/dev/null && mv -f "$tmp" "$best" 2>/dev/null || rm -f "$tmp" 2>/dev/null
 }
 
 allocate_run_directory() { # vendor — sets root, run_id, directory
@@ -2382,7 +2345,7 @@ refuse_live_run() { # brief resume
       pid=$(jq -r '.pid // 0' "$directory/meta.json" 2>/dev/null)
       supervisor_running "$directory" "$pid" || continue
       outcome_line "RESUME_BUSY ${directory##*/}"
-      printf 'ATTACH %s\n' "${directory##*/}"
+      printf 'WAIT: worker-run wait %s (as a background Bash)\n' "${directory##*/}"
       exit 4
     done < <(refuse_live_matches "$resume" "$root" worker-session)
   fi
@@ -2406,7 +2369,7 @@ refuse_live_run() { # brief resume
     other_sha=$(shasum -a 256 "$directory/brief" 2>/dev/null | awk '{print $1}')
     [ "$sha" = "$other_sha" ] || continue
     outcome_line "DUPLICATE_RUN ${directory##*/}"
-    printf 'ATTACH %s\n' "${directory##*/}"
+    printf 'WAIT: worker-run wait %s (as a background Bash)\n' "${directory##*/}"
     exit 4
   done < <(refuse_live_matches "$owner" "$root" launcher)
   return 0
@@ -2415,7 +2378,7 @@ refuse_live_run() { # brief resume
 start_run() {
   [ "$#" -ge 1 ] || usage
   local vendor="$1" brief='' workdir="$PWD" explicit_account='' model='' effort='' resume='' first_line='' review_round='' round_flag='' role='workers' research_timeout='' sandbox_exec=''
-  local round_source='' spawn_round='' candidate='' rule=''
+  local round_source='' candidate='' rule=''
   local -a text_rounds=()
   local account pin config_model model_label agy_model='' gemini_family='' grok_turns='' root run_id='' directory=''
   local explicit_model='' explicit_effort='' light='' light_model='' model_class=workers fix_rule='' chat_fast=false fast_role='' grok_asked_model='' model_id='' slug_account=''
@@ -2507,7 +2470,6 @@ start_run() {
       add_dirs+=("$value")
     done < <(brief_add_dirs "$brief")
   fi
-  relay_start_door "$vendor" "$role"
   if worker_light_off; then
     if [ "$vendor" = light ]; then
       outcome_line LIGHT_OFF
@@ -2545,6 +2507,7 @@ start_run() {
     usage
   fi
   [ -r "$brief" ] || fail "brief is not readable: $brief"
+  [ "$role" != workers ] || [ -z "${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-}" ] || limit_gate "$vendor" "$light" "$brief"
   # The first line is the run's handle: the spawn gate and the relay agents read `RESUME <id>:` and
   # `ATTACH <id>:` off the top of it, and every reader that falls back to a prefix of the brief
   # matches nothing useful with a blank one.
@@ -2565,17 +2528,6 @@ start_run() {
   else
     review_round=$(brief_review_round "$brief") || exit 4
     [ -z "$review_round" ] || round_source=header
-  fi
-  spawn_round=$(spawn_review_round)
-  if [ -n "$spawn_round" ] && [ -n "$review_round" ] && [ "$review_round" != "$spawn_round" ]; then
-    fail "--round/ROUND: says '$review_round' but the Agent prompt that spawned this relay says 'ROUND: $spawn_round': launch with the prompt's ROUND: line, or have the orchestrator respawn with the right one"
-  elif [ "$spawn_round" = none ] && [ -z "$review_round" ]; then
-    review_round=none
-  elif [ -n "$spawn_round" ] && [ -z "$review_round" ]; then
-    review_round_ok "$spawn_round" ||
-      fail "the Agent prompt that spawned this relay names no review round on record: 'ROUND: $spawn_round'"
-    review_round=$spawn_round
-    round_source=prompt
   fi
   if [ -z "$round_flag" ]; then
     if [ "$review_round" = none ]; then
@@ -2959,6 +2911,10 @@ start_run() {
 
   allocate_run_directory "$vendor"
   cp "$brief" "$directory/brief" || fail 'could not copy brief'
+  value=$(brief_title "$brief")
+  printf '%s\n' "$value" >"$directory/title.tmp.$$" && mv -f "$directory/title.tmp.$$" "$directory/title" ||
+    fail 'could not write the run title'
+  grep -q '^MD-GUARD' "$brief" || md_guard_text >"$directory/md-guard" || fail 'could not write the md guard'
   [ -z "$fix_rule" ] || printf '%s\n' "$fix_rule" >"$directory/fix-rule" || fail 'could not write the fix rule'
   [ "$vendor" != grok ] || [ "$role" != research ] ||
     printf '%s\n' "$GROK_RESEARCH_FENCE" >"$directory/research-fence" || fail 'could not write the research fence'
@@ -3035,7 +2991,6 @@ start_run() {
     ''|.|..|*[!A-Za-z0-9._-]*) ;;
     *)
       printf '%s\n' "$launcher_session" >"$directory/launcher"
-      case "$RELAY_TYPE" in end-report | code-doctor-judge | log-audit) printf '%s %s\n' "$RELAY_TYPE" "$RELAY_AGENT" >"$directory/script-owner" ;; esac
       "$SCRIPT_DIRECTORY/statusline-place" add --session "$launcher_session" --kind worker-start \
         --path "$workdir" >/dev/null 2>&1 || :
       export CLAUDE_LAUNCHER_SESSION="$launcher_session"
@@ -3099,8 +3054,6 @@ exit "$rc"'
   inbox_carry_commit "$directory"
   # Before the run is readable and not only when it ends: a resumed session journals under an id
   # this launch already knows, and the gate that prices a live run's worker work reads this file.
-  # The claim first: the resumed session's attempt line is journalled here, once, and names its agent.
-  [ ! -s "$directory/launcher" ] || claim_agent_tag "$directory" "$(cat "$directory/launcher")"
   record_worker_session "$directory"
   write_run_state "$directory" start
   : >"$directory/.ready"
@@ -4008,7 +3961,7 @@ readonly_report_hint() {
     marker_month=$(date -r "$started" +%Y-%m 2>/dev/null || date -d "@$started" +%Y-%m 2>/dev/null) || continue
     [ "$marker_month" != "$month" ] || count=$((count + 1))
   done
-  printf 'HINT: this run edited nothing — a read-only lookup is cheaper on the light-research agent (see ~/.claude/CLAUDE.md, Model routing); read-only relay runs this month: %s\n' "$count"
+  printf 'HINT: this run edited nothing — a read-only lookup is cheaper as a light research run (`light-research`, see ~/.claude/CLAUDE.md, Model routing); read-only worker runs this month: %s\n' "$count"
 }
 
 # The agent's answer, reassembled out of the stream: `text` events carry it in chunks, and a raw
@@ -4193,10 +4146,9 @@ running_report() {
   err_bytes=$(wc -c <"$directory/err" | tr -d '[:space:]')
   printf 'STATUS: running\nELAPSED: %s\n' "$elapsed"
   # Once per RUN, not once per round. The marker is written where the line is printed, so a `wait`
-  # that never got to print it still owes it. A relay never returns on it: its row is the run's only
-  # visible trace.
+  # that never got to print it still owes it.
   if [ "$elapsed" -ge "${WORKER_RUN_LONG_RUN_S:-1500}" ] && [ ! -e "$directory/long-run-said" ]; then
-    printf 'LONG-RUN: %s min — the orchestrator'"'"'s prompt cache cools past the hour; the relay keeps waiting until the run ends\n' "$((elapsed / 60))"
+    printf 'LONG-RUN: %s min — the orchestrator'"'"'s prompt cache cools past the hour; the wait keeps going until the run ends\n' "$((elapsed / 60))"
     : >"$directory/long-run-said" 2>/dev/null || :
   fi
   printf 'OUT-BYTES: %s\nERR-BYTES: %s\nSESSION: %s\n' "$out_bytes" "$err_bytes" "$(session_id "$directory")"
@@ -4275,7 +4227,7 @@ say_run() {
   mode=$(inbox_mode "$directory")
   line=$(jq -cn --arg at "$(inbox_now)" --arg by "${CLAUDE_LAUNCHER_SESSION:-${CLAUDE_CODE_SESSION_ID:-${USER:-?}}}" \
     --arg text "$2" '{at: $at, by: $by, text: $text}') || fail 'could not encode the message. Nothing was sent.'
-  with_agent_tag_lock "$directory" inbox_append "$directory" "$line" || fail "could not write $directory/inbox. Nothing was sent."
+  with_lock "$directory" inbox_append "$directory" "$line" || fail "could not write $directory/inbox. Nothing was sent."
   end=$INBOX_APPENDED_END
   if [ "$mode" = hook ]; then
     while :; do
@@ -4308,7 +4260,7 @@ inbox_carry_from() { # prior-directory directory
 inbox_carry_commit() { # directory
   local entry
   for entry in ${INBOX_CARRIES[@]+"${INBOX_CARRIES[@]}"}; do
-    with_agent_tag_lock "${entry#*$'\t'}" inbox_record "${entry#*$'\t'}" "${entry%%$'\t'*}" "resume:${1##*/}"
+    with_lock "${entry#*$'\t'}" inbox_record "${entry#*$'\t'}" "${entry%%$'\t'*}" "resume:${1##*/}"
   done
   INBOX_CARRIES=()
 }
@@ -4318,13 +4270,84 @@ inbox_carry_resume() { # directory session
   while IFS= read -r entry; do
     prior=${entry%/worker-session}
     [ "$prior" != "$1" ] && [ -s "$prior/inbox" ] || continue
-    with_agent_tag_lock "$prior" inbox_carry_from "$prior" "$1"
+    with_lock "$prior" inbox_carry_from "$prior" "$1"
   done < <(refuse_live_matches "$2" "${1%/*}" worker-session)
+}
+
+# What `wait` streams to the chat's /tasks view: one line per tool call or short message of the
+# worker, read off its live session log with the same extractors the run's file list uses.
+progress_rows() { # vendor transcript since
+  case "$1" in
+    claudeb)
+      jq -rR --argjson since "$3" 'fromjson? | objects | select(.type? == "assistant")
+        | select((((.timestamp? // "") | tostring | sub("\\.[0-9]+"; "")) | fromdateiso8601? // 0) >= $since)
+        | .message.content[]? | objects
+        | if .type? == "tool_use" then
+            ["X", ((.name // "tool") + " " + ((.input.command // .input.file_path // .input.notebook_path // .input.pattern
+              // .input.url // .input.query // .input.description // "") | tostring))]
+          elif .type? == "text" then ["M", (.text // "")]
+          else empty end | .[0] + "\t" + (.[1] | gsub("[\n\r\t]+"; " "))' "$2" 2>/dev/null ;;
+    codex) codex_tool_rows "$2" "$3" ;;
+    gemini) gemini_tool_rows "$2" "$3" ;;
+    grok) grok_tool_rows "$2" "$3" ;;
+  esac | awk -F'\t' '
+    $1 == "F" { print "edit " $2; next }
+    $1 == "C" { print "$ " $2; next }
+    $1 == "X" && $2 !~ / (outcome|arguments)$/ { print $2; next }
+    $1 == "M" && $2 ~ /[^ ]/ { print "» " $2 }'
+}
+
+elapsed_label() { # seconds
+  if [ "$1" -ge 3600 ]; then printf '%dh%02dm' "$(($1 / 3600))" "$(($1 % 3600 / 60))"
+  elif [ "$1" -ge 60 ]; then printf '%dm%02ds' "$(($1 / 60))" "$(($1 % 60))"
+  else printf '%ds' "$1"; fi
+}
+
+# The worker's own tokens so far — the total share/night_spend.py run_usage prices the run at.
+run_tokens() { # run-id vendor transcript
+  python3 - "$SCRIPT_DIRECTORY/../share" "$SCRIPT_PATH" "$1" "$2" "$3" 2>/dev/null <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import night_spend
+usage = night_spend.run_usage(sys.argv[2], sys.argv[3], sys.argv[4], set(), {sys.argv[3]: sys.argv[5]})
+if usage is not None:
+    print(sum(usage.values()))
+PY
+}
+
+WAIT_STAMP=''
+declare -A WAIT_PRINTED=()
+wait_progress() { # directory run-id
+  local directory="$1" vendor account workdir started transcript stamp row now prefix tokens
+  local -A counts=()
+  { IFS= read -r vendor; IFS= read -r account; IFS= read -r workdir; IFS= read -r started; } \
+    < <(jq -r '.vendor, .account, .workdir, (.pid_started_at // .started_at // 0)' "$directory/meta.json" 2>/dev/null)
+  transcript=''
+  [ "$vendor" != claudeb ] || { IFS= read -r transcript <"$directory/session-file"; } 2>/dev/null || transcript=''
+  [ -n "$transcript" ] && [ -f "$transcript" ] ||
+    transcript=$(session_transcript "$vendor" "$account" "$(session_id "$directory")" "$workdir") || return 0
+  stamp="$transcript $(stat -f '%z %Fm' "$transcript" 2>/dev/null || stat -c '%s %.9Y' "$transcript" 2>/dev/null)"
+  [ "$stamp" != "$WAIT_STAMP" ] || return 0
+  WAIT_STAMP=$stamp
+  now=$(date +%s)
+  [[ "$started" =~ ^[0-9]+$ ]] || started=$now
+  prefix="[$(elapsed_label "$((now > started ? now - started : 0))")] "
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    counts[$row]=$((${counts[$row]:-0} + 1))
+    [ "${counts[$row]}" -gt "${WAIT_PRINTED[$row]:-0}" ] || continue
+    WAIT_PRINTED[$row]=${counts[$row]}
+    printf '%s\n' "$prefix$row" | perl -CSD -ne 'chomp; print length($_) > 120 ? substr($_, 0, 119) . "\x{2026}" : $_, "\n"'
+  done < <(progress_rows "$vendor" "$transcript" "$started")
+  tokens=$(run_tokens "$2" "$vendor" "$transcript")
+  [[ "$tokens" =~ ^[0-9]+$ ]] || return 0
+  printf '%s\n' "$tokens" >"$directory/tokens.tmp.$$" && mv -f "$directory/tokens.tmp.$$" "$directory/tokens" ||
+    rm -f "$directory/tokens.tmp.$$"
 }
 
 wait_run() {
   [ "$#" -ge 1 ] || usage
-  local run_id="$1" max=100 directory wait_started now waited remaining sleep_for ticks pid
+  local run_id="$1" max='' stream=false directory wait_started now waited remaining sleep_for ticks pid
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -4332,13 +4355,17 @@ wait_run() {
       *) usage ;;
     esac
   done
+  # No --max blocks until the run ends and streams its progress; a --max poll answers STATUS: running.
+  if [ -z "$max" ]; then stream=true max=$((1 << 62)); fi
   [[ "$max" =~ ^[0-9]+$ ]] || usage
   directory=$(run_path "$run_id")
   [ -d "$directory" ] && [ -r "$directory/meta.json" ] || fail "unknown run: $run_id"
   wait_started=$(date +%s)
   write_run_state "$directory" wait
   while :; do
+    [ "$stream" = false ] || wait_progress "$directory" "$run_id"
     if [ -f "$directory/exit_code" ]; then
+      [ "$stream" = false ] || { WAIT_STAMP=''; wait_progress "$directory" "$run_id"; }
       wait_poll_lag "$directory" "$run_id" "$wait_started"; run_state_terminal "$directory"; terminal_report "$directory"; return 0
     fi
     pid=$(jq -r '.pid' "$directory/meta.json")
@@ -4346,6 +4373,7 @@ wait_run() {
     # process group and report a never-started run as alive.
     if ! supervisor_running "$directory" "$pid" || run_overdue "$directory"; then
       sleep 0.1
+      [ "$stream" = false ] || { WAIT_STAMP=''; wait_progress "$directory" "$run_id"; }
       if [ -f "$directory/exit_code" ]; then
         run_state_terminal "$directory"
         terminal_report "$directory"
@@ -5536,51 +5564,12 @@ browse_run() {
   esac
 }
 
-# Inside Claude Code a run belongs to the relay agent whose Bash call worker-tag-hook.sh stamped with
-# WORKER_RUN_RELAY=<agent-type>:<agent-id>[:attach]; a main chat's script, eval, interpreter, Monitor
-# or background shell carries none, whatever the text gates read. Unset before anything launches: the
-# worker a run spawns inherits this environment, and a worker is never a relay. Egor's own shell and
-# launchd carry no CLAUDECODE and stay open.
-RELAY_TYPE='' RELAY_AGENT='' RELAY_ATTACH=false
-relay_door() { # subcommand
-  local token=${WORKER_RUN_RELAY:-} rest
-  unset WORKER_RUN_RELAY
+# A run belongs to the chat that started it and waits on it; a headless worker starting or awaiting
+# one would spend an account with nobody waiting on the result.
+worker_door() { # subcommand
   case "$1" in start | wait) ;; *) return 0 ;; esac
-  [ -n "${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-}" ] || [ "${CLAUDEB_WORKER:-}" = 1 ] || return 0
-  RELAY_TYPE=${token%%:*}
-  rest=${token#*:}
-  RELAY_AGENT=${rest%%:*}
-  case "$token" in *:attach) RELAY_ATTACH=true ;; esac
-  case "$RELAY_TYPE" in
-    claudeb-worker | codex-worker | gemini-worker | grok-worker | light-worker | light-research | end-report | code-doctor-judge | log-audit) ;;
-    *) RELAY_TYPE='' ;;
-  esac
-  if [ -z "$RELAY_TYPE" ] || [ "$token" = "$RELAY_TYPE" ] || [[ ! "$RELAY_AGENT" =~ ^[A-Za-z0-9_-]+$ ]]; then
-    fail "\`worker-run $1\` runs only inside the relay agent that owns the run — the owner is what draws its magenta task row and wakes the chat when it ends. Spawn the Agent instead: claudeb-worker, codex-worker, gemini-worker, grok-worker or light-worker (light-research for a read-only research brief), the vendor worker-pick's NEXT row names; it runs worker-run itself. A run already in flight is re-attached by the same agent type with a brief starting \`ATTACH <run-id>:\`. A script, eval, interpreter, Monitor or background shell reaching worker-run is this same launch. Nothing was launched and no account was spent."
-  fi
-  case "$RELAY_TYPE" in end-report | code-doctor-judge | log-audit) ;; *) [ -n "${CLAUDE_AGENT_ID:-}" ] || CLAUDE_AGENT_ID=$RELAY_AGENT ;; esac
-}
-
-# The run a relay starts is the one its agent type names: a claudeb-worker relabelled as a codex run,
-# or any relay asking for the research role, would spend a vendor or a role the spawn gates priced
-# for something else. An ATTACH relay waits on a run in flight and starts nothing.
-relay_start_door() { # vendor role
-  [ -n "$RELAY_TYPE" ] || return 0
-  [ "$RELAY_ATTACH" = false ] ||
-    fail "this $RELAY_TYPE was spawned with an \`ATTACH <run-id>:\` brief: it waits on that run (\`worker-run wait <run-id>\`) and starts nothing. A new run needs a new spawn with its own brief. Nothing was launched and no account was spent."
-  case "$RELAY_TYPE:$1:$2" in
-    claudeb-worker:claudeb:workers | codex-worker:codex:workers | gemini-worker:gemini:workers | \
-      grok-worker:grok:workers | light-worker:light:workers | light-research:*:research | end-report:*:workers | code-doctor-judge:*:workers | \
-      log-audit:claudeb:workers) ;;
-    light-research:*)
-      fail "a light-research relay starts research runs only, through light-research itself. Nothing was launched and no account was spent." ;;
-    log-audit:*)
-      fail "the log audit reads on Claude only (Egor, 2026-10-07): \`worker-run start claudeb\`, not \`$1\`. Nothing was launched and no account was spent." ;;
-    *:*:research)
-      fail "the research role belongs to the light-research Agent: a $RELAY_TYPE runs \`worker-run start ${RELAY_TYPE%-worker}\` as a worker. Nothing was launched and no account was spent." ;;
-    *)
-      fail "a $RELAY_TYPE relay starts \`worker-run start ${RELAY_TYPE%-worker}\`, not \`$1\`: another vendor is another relay, spawned from the chat as that vendor's Agent. Nothing was launched and no account was spent." ;;
-  esac
+  [ "${CLAUDEB_WORKER:-}" != 1 ] ||
+    fail "\`worker-run $1\` runs from the chat that owns the run, never inside a headless worker: report what should be delegated in your RETURN. Nothing was launched and no account was spent."
 }
 
 CONFIG_FILE="${WORKER_RUN_CONFIG_FILE:-$HOME/.claude/worker-model}"
@@ -5591,7 +5580,7 @@ CODEX_CONFIG="${WORKER_RUN_CODEX_CONFIG:-$HOME/.codex/config.toml}"
 # the script from a byte offset once the last top-level command returns — a file
 # that changed size since then parses as garbage, so a finished run dies with a
 # syntax error and exit 2 (live-caught: a successful codex run reported EXIT: 2).
-relay_door "${1:-}"
+worker_door "${1:-}"
 case "${1:-}" in
   start) shift; start_run "$@"; exit $? ;;
   wait) shift; wait_run "$@"; exit $? ;;

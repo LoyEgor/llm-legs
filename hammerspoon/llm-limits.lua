@@ -2732,7 +2732,7 @@ local function routingSubmenu()
   local normalized = cache.text:gsub("\r\n", "\n"):gsub("\r", "\n")
   for line in (normalized .. "\n"):gmatch("(.-)\n") do
     if line == "# Worker routing policy" then break end
-    table.insert(lines, line)
+    if not line:match("^START:") then table.insert(lines, line) end
   end
   while #lines > 0 and lines[#lines]:match("^%s*$") do
     table.remove(lines)

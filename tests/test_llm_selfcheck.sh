@@ -99,13 +99,11 @@ cat >"$FIXTURE/README.md" <<'EOF'
 - `bin/gemini-music` → `~/.local/bin/gemini-music` — music.
 EOF
 install_light() {
-  mkdir -p "$HOME/.local/bin" "$HOME/.claude/agents"
+  mkdir -p "$HOME/.local/bin"
   for name in light-research gemini-music; do
     : >"$FIXTURE/bin/$name"
     ln -sfn "$FIXTURE/bin/$name" "$HOME/.local/bin/$name"
   done
-  printf 'x\n' >"$HOME/.claude/agents/light-research.md"
-  printf 'x\n' >"$HOME/.claude/agents/light-worker.md"
 }
 install_light
 
@@ -158,15 +156,13 @@ assert tail -n 1 "$LOG" | grep -Eq ' status=FAIL failed_step=test_claudeb.sh$'
 assert grep -q '^hs .*hs.alert.show.*test_claudeb.sh' "$ALERTS"
 assert grep -q '^osascript .*display notification .*test_claudeb.sh' "$ALERTS"
 
-# A broken PATH link or Light install fails before a single suite runs, and the alert names the step.
+# A broken PATH link fails before a single suite runs, and the alert names the step.
 mkdir -p "$WORK/elsewhere"
 : >"$WORK/elsewhere/gemini-music"
 for light_break in 'path-links:rm -f "$HOME/.local/bin/light-research"' \
                    'path-links:ln -sfn /nowhere/light-research "$HOME/.local/bin/light-research"' \
                    'path-links:rm -f "$HOME/.local/bin/gemini-music"' \
-                   'path-links:ln -sfn "$WORK/elsewhere/gemini-music" "$HOME/.local/bin/gemini-music"' \
-                   'light-install:rm -f "$HOME/.claude/agents/light-research.md"' \
-                   'light-install:rm -f "$HOME/.claude/agents/light-worker.md"'; do
+                   'path-links:ln -sfn "$WORK/elsewhere/gemini-music" "$HOME/.local/bin/gemini-music"'; do
   step=${light_break%%:*}
   install_light
   eval "${light_break#*:}"
@@ -187,7 +183,7 @@ install_light
 : >"$ALERTS"
 bash "$SCRIPT" run --force || fail "restored install run failed"
 assert grep -q 'status=PASS step=path-links detail=ok' < <(tail -n 4 "$LOG")
-assert grep -q 'status=PASS step=light-install detail=ok' < <(tail -n 3 "$LOG")
+assert test -z "$(grep 'step=light-install' "$LOG")"
 assert test ! -s "$ALERTS"
 
 # A relative symlink is how the Light launcher is installed by hand: it resolves through `..`
@@ -299,4 +295,4 @@ assert grep -qF 'with\ space/bin/llm-selfcheck' "$WRAPPER"
 bash "$SPACED/llm-selfcheck" uninstall >/dev/null || fail "uninstall from a spaced path failed"
 assert test ! -e "$WRAPPER"
 
-echo "PASS: $asserts asserts; config tripwire, ordered suites and skip list, daily fixture-only e2e vs manual --e2e, log format and trimming, failure alerts, every README-listed PATH link and the Light agent files checked before any suite runs, absolute and relative symlinks, debounce/catch-up/stale-alert dedup, install and uninstall plist"
+echo "PASS: $asserts asserts; config tripwire, ordered suites and skip list, daily fixture-only e2e vs manual --e2e, log format and trimming, failure alerts, every README-listed PATH link checked before any suite runs with no Light agent-file step left, absolute and relative symlinks, debounce/catch-up/stale-alert dedup, install and uninstall plist"

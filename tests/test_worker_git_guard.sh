@@ -41,9 +41,12 @@ payload() {
 }
 is_deny() { jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<< "$1" >/dev/null 2>&1; }
 
+# A worker-typed case runs as the headless worker session it stands for: only that marker guards.
+worker_env() { case "$1" in grok-worker) printf GROK_WORKER=1 ;; *-worker) printf CLAUDEB_WORKER=1 ;; *) printf GUARD_TEST=1 ;; esac; }
+
 assert_deny() {
   local name=$1 agent=$2 command=$3 output
-  output=$(payload "$agent" "$command" | "$GUARD") || {
+  output=$(payload "$agent" "$command" | env "$(worker_env "$agent")" "$GUARD") || {
     fail "$name exited nonzero"
     return
   }
@@ -56,7 +59,7 @@ assert_deny() {
 
 assert_allow() {
   local name=$1 agent=$2 command=$3 output
-  output=$(payload "$agent" "$command" | "$GUARD") || {
+  output=$(payload "$agent" "$command" | env "$(worker_env "$agent")" "$GUARD") || {
     fail "$name exited nonzero"
     return
   }
@@ -106,7 +109,7 @@ printf '%s\n' 'realpath() { printf "call\n" >> "$JQ_CALLS"; command realpath "$@
   'grep() { printf "call\n" >> "$JQ_CALLS"; command grep "$@"; }' >> "$HOME/count-jq.sh"
 for command in 'make test' 'git status && git diff --stat' $'cat <<EOF\nreset the flag\nEOF'; do
   : > "$HOME/jq-calls"
-  payload claudeb-worker "$command" | BASH_ENV="$HOME/count-jq.sh" JQ_CALLS="$HOME/jq-calls" bash "$GUARD" >/dev/null
+  payload claudeb-worker "$command" | CLAUDEB_WORKER=1 BASH_ENV="$HOME/count-jq.sh" JQ_CALLS="$HOME/jq-calls" bash "$GUARD" >/dev/null
   if [ ! -s "$HOME/jq-calls" ]; then pass; else fail "a worker's $command, no revert subcommand, forked"; fi
 done
 : > "$HOME/jq-calls"
@@ -169,75 +172,26 @@ assert_allow 'heredoc to a file naming git checkout and rm' codex-worker $'cat <
 assert_allow 'crontab listed beside a heredoc' codex-worker $'crontab -l\ncat > notes <<\'EOF\'\ngit stash is prose\nEOF'
 assert_allow 'commit body prose naming source' codex-worker $'git commit -F - <<\'EOF\'\nFix the source loader\ngit checkout -- stays a worker\'s last resort.\nEOF'
 
-unlock_session=unlocked-session
-unlock_dir="$HOME/.cache/claude-worker-tags/$unlock_session"
-mkdir -p "$unlock_dir"
-: > "$unlock_dir/git-unlock-codex-worker"
-printf 'acct · astra · high\ngit_cleanup=allowed\n' > "$unlock_dir/agent-unlocked"
-unlock_output=$(payload codex-worker 'git restore file' "$unlock_session" agent-unlocked | "$GUARD") || fail 'unlock exited nonzero'
-if [ -z "$unlock_output" ]; then pass; else fail 'unlock emitted output'; fi
-# The permission is the agent's own: neither a sibling of the same type nor a headless run in that
-# session inherits it, and a legacy per-type marker unlocks nobody.
-sibling_output=$(payload codex-worker 'git restore file' "$unlock_session" agent-sibling | "$GUARD")
-if is_deny "$sibling_output"; then pass; else fail "a sibling inherited another spawn's git unlock"; fi
-keyless_output=$(payload codex-worker 'git restore file' "$unlock_session" | "$GUARD")
-if is_deny "$keyless_output"; then pass; else fail 'an agent with no id was unlocked'; fi
-
-spawn_payload() {
-  jq -cn --arg session "$1" --arg prompt "$2" '
-    {hook_event_name:"PreToolUse",session_id:$session,
-     tool_input:{subagent_type:"codex-worker",description:"Implement guard",prompt:$prompt}}'
+# The unlock is the run's own: the GIT-CLEANUP line of the brief worker-run recorded for it, read
+# through the WORKER_RUN_RECORD it hands the worker, and only under the run store.
+export WORKER_RUN_DIR="$HOME/runs"
+record() { # id brief-text [root]
+  mkdir -p "${3:-$WORKER_RUN_DIR}/$1"
+  printf '%s\n' "$2" >"${3:-$WORKER_RUN_DIR}/$1/brief"
+  printf '%s' "${3:-$WORKER_RUN_DIR}/$1"
 }
-
-spawn_session=spawn-unlocked
-spawn_output=$(spawn_payload "$spawn_session" $'ACCOUNT: main\nEFFORT: high\nGIT-CLEANUP: allowed\nTask' |
-  WORKER_SPAWN_WORKER_PICK=/nonexistent "$SPAWN_HOOK") || fail 'unlocked spawn exited nonzero'
-if grep -qx 'git_cleanup=allowed' "$HOME/.cache/claude-worker-tags/$spawn_session"/pending-codex-worker-* 2>/dev/null; then
-  pass
-else
-  fail 'spawn hook did not create unlock flag'
-fi
-# The seed is claimed by the spawned agent's first call; only then, and only for that agent, does the
-# guard open. A sibling spawned in the same session without the line stays guarded.
-TAG_HOOK="$ROOT/bin/worker-tag-hook.sh"
-tag_claim() { # session agent-id
-  jq -cn --arg s "$1" --arg a "$2" '{hook_event_name:"PreToolUse",agent_type:"codex-worker",agent_id:$a,
-    session_id:$s,tool_input:{command:"ls",description:"look"}}' | WORKER_TAG_WORKER_PICK=/nonexistent "$TAG_HOOK" >/dev/null 2>&1
+unlocked=$(record r-open $'ACCOUNT: main\nGIT-CLEANUP: allowed\nTask')
+locked=$(record r-shut $'ACCOUNT: main\nTask')
+prose=$(record r-prose $'Task: say GIT-CLEANUP: allowed in prose')
+outside=$(record r-out $'GIT-CLEANUP: allowed' "$HOME/elsewhere")
+guarded() { # record [marker]
+  payload '' 'git restore file' | env "${2:-CLAUDEB_WORKER=1}" WORKER_RUN_RECORD="$1" "$GUARD"
 }
-tag_claim "$spawn_session" agent-asked
-claimed_output=$(payload codex-worker 'git restore file' "$spawn_session" agent-asked | "$GUARD")
-if [ -z "$claimed_output" ]; then pass; else fail 'the spawn that asked for git cleanup was refused it'; fi
-spawn_payload "$spawn_session" $'ACCOUNT: main\nEFFORT: high\nSibling task' |
-  WORKER_SPAWN_WORKER_PICK=/nonexistent "$SPAWN_HOOK" >/dev/null || fail 'sibling spawn exited nonzero'
-tag_claim "$spawn_session" agent-unasked
-unasked_output=$(payload codex-worker 'git restore file' "$spawn_session" agent-unasked | "$GUARD")
-if is_deny "$unasked_output"; then pass; else fail "a later spawn without GIT-CLEANUP inherited the earlier spawn's unlock"; fi
-
-locked_session=spawn-locked
-locked_output=$(spawn_payload "$locked_session" $'ACCOUNT: main\nEFFORT: high\nTask' |
-  WORKER_SPAWN_WORKER_PICK=/nonexistent "$SPAWN_HOOK") || fail 'locked spawn exited nonzero'
-if [ ! -e "$HOME/.cache/claude-worker-tags/$locked_session/git-unlock-codex-worker" ]; then
-  pass
-else
-  fail 'spawn hook created an unlock flag without permission'
-fi
-
-# The unlock the guard reads is a file in a cache dir that can be unwritable, and a brief the
-# worker can read says GIT-CLEANUP is allowed while the guard still refuses: the worker cannot
-# resolve that on its own, so the hook says which of the two is true in the brief itself.
-blocked_session=spawn-unwritable
-blocked_dir="$HOME/.cache/claude-worker-tags"
-mkdir -p "$blocked_dir"
-chmod 500 "$blocked_dir"
-blocked_output=$(spawn_payload "$blocked_session" $'ACCOUNT: main\nEFFORT: high\nGIT-CLEANUP: allowed\nTask' |
-  WORKER_SPAWN_WORKER_PICK=/nonexistent "$SPAWN_HOOK") || fail 'blocked spawn exited nonzero'
-chmod 700 "$blocked_dir"
-if jq -e '.hookSpecificOutput.updatedInput.prompt | test("GIT-CLEANUP NOTE")' \
-  <<< "$blocked_output" >/dev/null 2>&1; then
-  pass
-else
-  fail 'an unwritable unlock dir left the brief claiming a cleanup the guard will refuse'
-fi
+if [ -z "$(guarded "$unlocked")" ]; then pass; else fail 'the run whose brief allows git cleanup was refused it'; fi
+if [ -z "$(guarded "$unlocked" GROK_WORKER=1)" ]; then pass; else fail 'a grok run whose brief allows git cleanup was refused it'; fi
+for record_dir in "$locked" "$prose" "$outside" "$WORKER_RUN_DIR/r-missing" ''; do
+  if is_deny "$(guarded "$record_dir")"; then pass; else fail "the record [$record_dir] unlocked git cleanup"; fi
+done
 
 # A headless grok run is a worker session, not a subagent of one: its payload carries no
 # agent_type, so only the launcher's mark brings it under the guard.
@@ -251,22 +205,6 @@ fi
 grok_unmarked=$(payload '' 'git clean -fd' grok-headless-session | "$GUARD") ||
   fail 'unmarked headless exited nonzero'
 if [ -z "$grok_unmarked" ]; then pass; else fail 'an unmarked session was guarded as a worker'; fi
-
-# The unlock is per agent kind: a cleanup permission granted to a grok worker unlocks nothing else.
-grok_unlock_dir="$HOME/.cache/claude-worker-tags/grok-unlocked"
-mkdir -p "$grok_unlock_dir"
-: > "$grok_unlock_dir/git-unlock-grok-worker"
-printf 'sg · grok · high\ngit_cleanup=allowed\n' > "$grok_unlock_dir/grok-agent"
-grok_unlocked=$(payload grok-worker 'git restore file' grok-unlocked grok-agent | "$GUARD") ||
-  fail 'grok unlock exited nonzero'
-if [ -z "$grok_unlocked" ]; then pass; else fail 'grok unlock emitted output'; fi
-grok_borrowed=$(payload codex-worker 'git restore file' grok-unlocked | "$GUARD") ||
-  fail 'codex under grok unlock exited nonzero'
-if jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<< "$grok_borrowed" >/dev/null 2>&1; then
-  pass
-else
-  fail "grok's unlock let a codex worker through"
-fi
 
 if [ "$failures" -eq 0 ]; then
   printf 'PASS: %d assertions\n' "$passes"

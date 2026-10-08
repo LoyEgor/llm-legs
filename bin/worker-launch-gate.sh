@@ -9,10 +9,8 @@
 # chain segment running a sanctioned launcher in command position passes whatever else it spells,
 # and exempts that segment only: `worker-run report x; codex exec …` is still a bare launch.
 #
-# The text gate reads the common spellings only. A worker run spelled past it — `eval`, a script
-# file, an interpreter — reaches worker-run without the relay token worker-tag-hook.sh stamps on a
-# relay's calls, and worker-run refuses it (relay_door); a review launch past it carries no
-# REVIEW_BENCH_DOOR nonce, and review-bench refuses it.
+# The text gate reads the common spellings only. A review launch spelled past it — `eval`, a script
+# file, an interpreter — carries no REVIEW_BENCH_DOOR nonce, and review-bench refuses it.
 #
 # Quoted text is collapsed into ONE word first, then quotes and backslashes are stripped from the
 # whole string, so `'claude' -p`, `"codex" exec` and `\claude -p` are the launches they spell while
@@ -25,13 +23,10 @@
 # Interactive launches — no -p/--print/--prompt, no `exec`, no `run` — are the human, never a
 # worker, and are not this gate's business. Fail-open on its own errors, like the sibling gates.
 #
-# The same door has a second side, the OWNED class: a launcher that is sanctioned only in the hands
-# of the agent type owning it. `worker-run start|wait` belongs to the relay agents. A run started or
-# awaited from the main chat's Bash is owned by a turn instead of an agent — no magenta tagged row,
-# and nothing to wake the chat when it ends. `report` prints a finished record and spends nothing,
-# and the edit-conflict hook names it to the chat itself. The media scripts and
-# the generating subcommands of their web engines have one door for every session, `media-run`,
-# whose job pointer is what renders the account a generation spends.
+# `worker-run start|wait` belongs to the main chat, which waits on a run as a background Bash; an
+# agent or a headless worker never starts or awaits one. The media scripts and the generating
+# subcommands of their web engines have one door for every session, `media-run`, whose job pointer
+# is what renders the account a generation spends.
 {
 [ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u
@@ -79,37 +74,32 @@ LAUNCH_RES=(
 )
 
 # The worker-run subcommands that own a run's LIFE, judged in command position like every vendor
-# word above. `claim` is bookkeeping any surface may do, `report` only prints a record that already
-# exists, and a bare `worker-run` prints help, so none of the three is here;
-# `bash tests/test_worker_run.sh` has `bash` in command position and is not a run.
-OWNED_RUN_RE="${VENDOR_WORD}worker-run[[:space:]]+(start|wait)${EDGE}"
+# word above, and light-research, which starts and awaits them itself. `claim` is bookkeeping any
+# surface may do, `report` only prints a record that already exists, and a bare `worker-run` prints
+# help, so none of the three is here; `bash tests/test_worker_run.sh` is not a run.
+OWNED_RUN_RE="${VENDOR_WORD}(worker-run[[:space:]]+(start|wait)|light-research)${EDGE}"
 # A variable this door could not expand, standing where worker-run would, is read as worker-run.
 UNREADABLE_RUN_RE="${VENDOR_WORD}[\$][{]?[A-Za-z_][A-Za-z0-9_]*[}]?[[:space:]]+(start|wait)${EDGE}"
 
 # Called past media-run, a media script or a web engine's generating subcommand spends an account
-# with no work line naming it, so every hand is refused, a relay's and a fork's included.
+# with no work line naming it, so every hand is refused, an agent's included.
 OWNED_IMAGE_RE="${VENDOR_WORD}((codex|gemini|grok)-image|grok-video|gemini-(video|music|sfx|listen|speech)|elevenlabs-(sfx|music|stems|speech|revoice|isolate|transcribe|align|dub|voice)|image-fanout)${EDGE}"
 MEDIA_ENGINE_RE="${VENDOR_WORD}(chatgpt-web[[:space:]]+(generate|resize|comment|remove-bg)|gemini-web[[:space:]]+generate)${EDGE}"
 
-# A review run's wait is owned the same way, by the `review-waiter` agent, and light-research by its
-# own agent type: from the chat's Bash neither has a row nor anything that wakes the chat.
-OWNED_REVIEW_WAIT_RE="${VENDOR_WORD}review-bench[[:space:]]+wait${EDGE}"
-OWNED_RESEARCH_RE="${VENDOR_WORD}light-research${EDGE}"
-# A recovery relaunches review cells, so outside review-waiter it is a launch; a plain
-# `review-bench wait` spends nothing.
+# A recovery relaunches review cells, so inside an agent it is a launch; a plain `review-bench wait`
+# spends nothing.
 WORKER_REVIEW_RE="${VENDOR_WORD}review-bench[[:space:]]+wait[[:space:]].*--(relaunch|finish-partial)"
 # The legs and probes that spend an account with no launcher around them. No agent type owns them:
 # `--extract-served-model` and `--help` spend nothing.
 OWNED_LEGS_RE="${VENDOR_WORD}(ask_(claude|codex|gemini)\.sh|codex-fast-probe|gemini-probe)${EDGE}"
 LEGS_FREE_RE='[[:space:]]--(extract-served-model|help)([[:space:]]|$)'
-WAIT_ASK="wait through the ATTACH relay / review-waiter agent so the run has a magenta row"
 REVIEW_LAUNCH_RE="${VENDOR_WORD}review-bench[[:space:]]+(review|run)${EDGE}"
 REVIEW_IDLE_RE='[[:space:]](--help|-h|--price)([[:space:]]|$)'
 SCHEDULE_RE='^[[:space:]]*(at|batch|crontab)([[:space:]]|$)'
-RELAY_AGENTS="a relay Agent — claudeb-worker, codex-worker, gemini-worker, grok-worker or light-worker, the one worker-pick's NEXT row names, or light-research for a read-only question — which runs worker-run itself"
-# The owner tokens worker-run and review-bench check are the hooks' to stamp; a command setting one
-# by hand is a forged owner.
-FORGED_TOKEN_RE="^[[:space:]]*((export|env|declare|typeset|local|readonly)([[:space:]]+-[^[:space:]]+)*[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*(WORKER_RUN_RELAY|REVIEW_BENCH_DOOR)="
+DIRECT_ASK="a worker run the chat starts itself: \`worker-run start <vendor> --brief <file> --workdir <dir>\` (worker-pick's START line names the vendor), then \`worker-run wait <run-id>\` as a background Bash and \`worker-run report <run-id>\` when it ends"
+# The owner token review-bench checks is the hooks' to stamp; a command setting it by hand is a
+# forged owner.
+FORGED_TOKEN_RE="^[[:space:]]*((export|env|declare|typeset|local|readonly)([[:space:]]+-[^[:space:]]+)*[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*(REVIEW_BENCH_DOOR)="
 
 SANCTIONED_RE="${SANCTIONED_WORD}(worker-run|review-bench|llm-limits(\.sh)?|claude-session-driver|opencode-go|light-research|claudeb[[:space:]]+(revive|warm))${EDGE}"
 
@@ -155,7 +145,7 @@ input_field() { # jq path -> what `jq -r '<path> // empty'` prints for it (`// f
 # Every check below needs one of these words in the text it reads: each is a check's own literal with
 # its command-position prefix dropped, which can only match more; a check added below needs its
 # literal here too.
-MAY_LAUNCH_RES=("(${VENDOR_BINS})${EDGE}" 'worker-run|review-bench|light-research|WORKER_RUN_RELAY|REVIEW_BENCH_DOOR'
+MAY_LAUNCH_RES=("(${VENDOR_BINS})${EDGE}" 'worker-run|review-bench|light-research|REVIEW_BENCH_DOOR'
   "${UNREADABLE_RUN_RE#"$VENDOR_WORD"}" "${OWNED_LEGS_RE#"$VENDOR_WORD"}" "${OWNED_IMAGE_RE#"$VENDOR_WORD"}"
   "${MEDIA_ENGINE_RE#"$VENDOR_WORD"}")
 # The same words read off the raw command with builtins, before any fork: quotes and backslashes go
@@ -175,22 +165,18 @@ may_launch() {
 }
 case "$tool" in Bash | Monitor) may_launch || exit 0 ;; esac
 # A Bash call that provably writes nothing runs no program, so it launches nothing. The forged-owner
-# check reads the text with its quotes gone, so a call naming either token still takes the full path.
+# check reads the text with its quotes gone, so a call naming the token still takes the full path.
 if [ "$tool" = Bash ]; then
   case "${cmd//[\'\"\\]/}" in
-    *WORKER_RUN_RELAY* | *REVIEW_BENCH_DOOR*) ;;
+    *REVIEW_BENCH_DOOR*) ;;
     *) . "${READONLY_COMMAND_LIB:-$HOME/.claude/hooks/lib/readonly-command.sh}" 2>/dev/null &&
          rc_readonly_command "$cmd" && exit 0 ;;
   esac
 fi
-if self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) && . "${self%/*}/../share/worker-model.sh" 2>/dev/null &&
-  worker_light_off; then
-  RELAY_AGENTS="a relay Agent — claudeb-worker, codex-worker, gemini-worker or grok-worker, the one worker-pick's NEXT row names, a read-only question in a brief that says so — which runs worker-run itself"
-fi
 case "$tool" in
   Bash | Monitor) ;;
   mcp__codex__*)
-    deny "Blocked: \`${tool}\` runs codex headless on this session's own codex login — no worker-run record, no task row naming the account, no workers switch. Work for a model goes to ${RELAY_AGENTS}; Computer Use is a codex-worker brief carrying \`COMPUTER: yes\`." ;;
+    deny "Blocked: \`${tool}\` runs codex headless on this session's own codex login — no worker-run record, no task row naming the account, no workers switch. Work for a model is ${DIRECT_ASK}; Computer Use is a codex brief carrying \`COMPUTER: yes\`." ;;
   *) exit 0 ;;
 esac
 [ -n "$cmd" ] || exit 0
@@ -300,42 +286,44 @@ for re in "${MAY_LAUNCH_RES[@]}"; do may_launch_args+=(-e "$re"); done
 grep -Eq "${may_launch_args[@]}" <<<"$unsplit"$'\n'"$scan" 2>/dev/null
 [ $? -ne 1 ] || exit 0
 
-# Inside a relay agent this whole door behaves as it always has; everywhere else — the main chat
-# above all — a worker-run that starts or awaits a run is denied, because the run would then belong
-# to a Bash turn nobody can see instead of to the agent whose row shows who is spending quota.
 agent_type=$(input_field .agent_type)
 first_hit() { # regex
   local hit
   hit=$(grep -Eo "$1" <<<"$scan" 2>/dev/null) || return 0
   printf '%s\n' "${hit%%$'\n'*}" | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//'
 }
-forged=$(grep -Eo "$FORGED_TOKEN_RE" <<<"$scan" 2>/dev/null | head -n1 | grep -Eo '(WORKER_RUN_RELAY|REVIEW_BENCH_DOOR)=$')
+forged=$(grep -Eo "$FORGED_TOKEN_RE" <<<"$scan" 2>/dev/null | head -n1 | grep -Eo '(REVIEW_BENCH_DOOR)=$')
 [ -z "$forged" ] ||
-  deny "Blocked: \`${forged%=}\` is stamped by the hooks alone — it names the relay that owns a worker run, or the review Egor's word opened — and a command setting it by hand forges that owner. Spawn ${RELAY_AGENTS}; a review is launched plainly from the chat's own shell on his word."
+  deny "Blocked: \`${forged%=}\` is stamped by the hooks alone — it names the review Egor's word opened — and a command setting it by hand forges that owner. A review is launched plainly from the chat's own shell on his word."
 # A Monitor is a background command like any other, so every check below reads it too. The review
 # door is registered for Bash alone, so a Monitor launching a panel would skip his word.
 if [ "$tool" = Monitor ]; then
   monitor_hit=$(first_hit "${VENDOR_WORD}(worker-run|review-bench)[[:space:]]+wait${EDGE}")
-  [ -z "$monitor_hit" ] || deny "Blocked: a Monitor on \`${monitor_hit}\` owns no task row — ${WAIT_ASK}."
+  [ -z "$monitor_hit" ] ||
+    deny "Blocked: a Monitor polling \`${monitor_hit}\` re-reads the run every round. Run \`${monitor_hit} <run-id>\` once as a Bash call with \`run_in_background: true\`: it blocks until the run ends, streams its progress to /tasks, and its completion notification wakes this chat."
   monitor_review=$(grep -Ev -e "$REVIEW_IDLE_RE" <<<"$scan" 2>/dev/null | grep -Eo "$REVIEW_LAUNCH_RE" | head -n1)
   [ -z "$monitor_review" ] ||
-    deny "Blocked: a Monitor running \`$(tr -s '[:space:]' ' ' <<<"$monitor_review" | sed -e 's/^ //' -e 's/ $//')\` launches a review panel past the door that holds it for Egor's word. Launch it with a plain Bash call from this chat on his word, then spawn review-waiter on the run id."
+    deny "Blocked: a Monitor running \`$(tr -s '[:space:]' ' ' <<<"$monitor_review" | sed -e 's/^ //' -e 's/ $//')\` launches a review panel past the door that holds it for Egor's word. Launch it with a plain Bash call from this chat on his word, then run \`review-bench wait <run-id>\` as a background Bash."
 fi
 # A review panel spends the chat's grant and a pool of accounts, and only the chat's own shell holds
-# that grant: an agent of any type — a relay, review-waiter, a fork — or a headless worker launching
-# one is a review nobody granted. review-waiter keeps the recovery of the run it waits on.
+# that grant; a worker run likewise belongs to the chat that waits on it. An agent of any type or a
+# headless worker launching either is a run nobody granted and nobody waits on.
 agent_id=$(input_field .agent_id)
 if [ -n "$agent_id" ] || [ "${CLAUDEB_WORKER:-}" = 1 ]; then
   worker_review_hit=$(grep -Ev -e "$REVIEW_IDLE_RE" <<<"$scan" 2>/dev/null | grep -Eo "$REVIEW_LAUNCH_RE" | head -n1 |
     tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
-  [ -n "$worker_review_hit" ] || [ "$agent_type" = review-waiter ] || worker_review_hit=$(first_hit "$WORKER_REVIEW_RE")
+  [ -n "$worker_review_hit" ] || worker_review_hit=$(first_hit "$WORKER_REVIEW_RE")
   [ -z "$worker_review_hit" ] ||
     deny "Blocked: \`${worker_review_hit}\` inside an agent or a headless worker launches review cells on a grant that is the chat's alone, spending a pool of accounts nobody granted. An agent never runs a review: report that one is due, and the chat launches it from its own shell on Egor's word."
+  owned_hit=$(first_hit "$OWNED_RUN_RE")
+  [ -n "$owned_hit" ] || owned_hit=$(first_hit "$UNREADABLE_RUN_RE")
+  [ -z "$owned_hit" ] ||
+    deny "Blocked: \`${owned_hit}\` inside an agent or a headless worker starts or awaits a worker run that belongs to the chat: the chat starts it, waits on it as a background Bash and reads its report. Report what should be delegated in your RETURN instead. \`worker-run report\`, \`worker-run claim\` and the test suites are not gated."
 fi
 legs_hit=$(grep -E "$OWNED_LEGS_RE" <<<"$scan" 2>/dev/null | grep -Ev -e "$LEGS_FREE_RE" | head -n1 |
   grep -Eo "$OWNED_LEGS_RE" | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
 [ -z "$legs_hit" ] || span_live ||
-  deny "Blocked: \`${legs_hit}\` spends a Claude, Codex or Gemini account from Claude Code's Bash with no worker-run record and no task row naming the account. A question for a model goes to ${RELAY_AGENTS}; a live probe is Egor's to run — hand him the paste-ready command for his own terminal."
+  deny "Blocked: \`${legs_hit}\` spends a Claude, Codex or Gemini account from Claude Code's Bash with no worker-run record naming the account. A question for a model is ${DIRECT_ASK}; a live probe is Egor's to run — hand him the paste-ready command for his own terminal."
 HELP_TAIL='([[:space:]]+[0-9]*[<>]+[[:space:]]*[^[:space:]]*)*[[:space:]]*$'
 # Exempt by line and only as typed: a wrapper (`xargs -J --help`) or an expanded `$VAR` makes a line
 # that reads as help yet runs the script with other arguments.
@@ -354,219 +342,9 @@ image_hit=$(scan=$image_scan; first_hit "$OWNED_IMAGE_RE")
 [ -n "$image_hit" ] || image_hit=$(first_hit "$MEDIA_ENGINE_RE")
 [ -z "$image_hit" ] ||
   deny "Blocked: \`${image_hit}\` runs media past \`media-run\`, the one door that renders the account it spends: load the media skill, write the prompt yourself and run \`media-run <kind> --vendor <v> -- <the script's own args>\` (\`media-run --help\` lists the kinds) (several vendors, \`--takes\` or \`--jobs\` fan out). Quoting one inside a heredoc body is not running it."
-case "$agent_type" in
-  review-waiter) ;;
-  *)
-    review_wait_hit=''
-    [ -z "$agent_type" ] && [ "${CLAUDEB_WORKER:-}" = 1 ] || review_wait_hit=$(first_hit "$OWNED_REVIEW_WAIT_RE")
-    if [ -n "$review_wait_hit" ]; then
-      recovery=$(grep -Eo -e '--(relaunch|finish-partial)' <<<"$scan" 2>/dev/null | head -n1)
-      if [ -n "$recovery" ]; then
-        deny "Blocked: \`${review_wait_hit} ${recovery}\` from this Bash owns no task row — ${WAIT_ASK}. Spawn \`review-waiter\` with the brief \`ATTACH <run-id>: ${recovery}\`; it runs the recovery itself and waits the run out."
-      fi
-      deny "Blocked: \`${review_wait_hit}\` from this Bash owns no task row — ${WAIT_ASK}. \`review-bench review\` returns at once and stays sanctioned; spawn \`review-waiter\` with a brief \`WAIT <run-id>: <what>\`, or \`ATTACH <run-id>: --relaunch\` / \`ATTACH <run-id>: --finish-partial\` for a dead or interrupted run."
-    fi
-    ;;
-esac
-case "$agent_type" in
-  light-research) ;;
-  *)
-    research_hit=$(first_hit "$OWNED_RESEARCH_RE")
-    [ -z "$research_hit" ] ||
-      deny "Blocked: \`${research_hit}\` runs a research leg from this chat's own Bash, where it has no tagged row and nothing wakes the chat when it lands. Spawn the \`light-research\` Agent with the question, the absolute repository paths and the wanted answer shape; it runs the launcher itself."
-    ;;
-esac
-case "$agent_type" in
-  claudeb-worker | codex-worker | gemini-worker | grok-worker | light-worker) ;;
-  *)
-    owned_hit=$(first_hit "$OWNED_RUN_RE")
-    [ -n "$owned_hit" ] || owned_hit=$(first_hit "$UNREADABLE_RUN_RE")
-    [ -z "$owned_hit" ] ||
-      deny "Blocked: \`${owned_hit}\` runs the worker from this chat's own Bash. A worker run must be owned by a relay agent for its whole life — that ownership is what renders it as a magenta tagged row in the task list and what wakes the chat when the run ends, while a Bash wait owns nothing and dies with the turn. Launch it by spawning the matching Agent (\`claudeb-worker\`, \`codex-worker\`, \`gemini-worker\`, \`grok-worker\`, \`light-worker\`), which does the \`worker-run start\` itself; to re-attach to a run already in flight, spawn THE SAME agent type again with a brief starting \`ATTACH <run-id>:\` — never a background Bash wait. \`worker-run report\` (it only prints a record), \`worker-run claim\`, a bare \`worker-run\` and the test suites are not gated."
-    ;;
-esac
-
-# A relay's own side of the same ownership: the wait must outlive the poll it asks for. The Bash
-# tool's default timeout is 120s, so `--max 540` is killed a fifth of the way in — the run keeps
-# spending an account with nobody waiting on it, no checkpoint and no notification, which is the
-# invisible run this whole door exists to prevent. The call carries its own timeout; require it.
-# The default is read out of worker-run rather than restated here: the two disagreeing would deny
-# one spelling of a poll and wave the identical other one through. 540 is the largest `--max` the
-# harness's own 600000ms ceiling can cover, so an unreadable value has to be taken for that.
-WAIT_CEILING=540
-HARNESS_TIMEOUT_MAX=600000
-wait_default=$(grep -m1 -Eo 'run_id="\$1" max=[0-9]+' \
-  "$HOME/.local/bin/worker-run" 2>/dev/null | grep -Eo '[0-9]+$')
-[[ "$wait_default" =~ ^[0-9]+$ ]] || wait_default=100
-
-# review-waiter's poll has no default: `review-bench wait` without `--max` blocks until the panel
-# is over. A light-research call is one round of up to the ceiling and takes no `--max`.
-poll_lines=''
-case "$agent_type" in
-  claudeb-worker | codex-worker | gemini-worker | grok-worker | light-worker)
-    poll_word='worker-run wait'
-    poll_lines=$(grep -E "${VENDOR_WORD}(worker-run|[\$][{]?[A-Za-z_][A-Za-z0-9_]*[}]?)[[:space:]]+wait${EDGE}" <<<"$scan" 2>/dev/null) ;;
-  review-waiter)
-    poll_word='review-bench wait'
-    poll_lines=$(grep -E "${VENDOR_WORD}review-bench[[:space:]]+wait${EDGE}" <<<"$scan" 2>/dev/null)
-    wait_default='' ;;
-  light-research)
-    poll_word='light-research'
-    poll_lines=$(grep -E "$OWNED_RESEARCH_RE" <<<"$scan" 2>/dev/null)
-    wait_default=$WAIT_CEILING ;;
-esac
-if [ -n "$poll_lines" ]; then
-  [ "$(input_field .tool_input.run_in_background)" != true ] ||
-    deny "Blocked: \`${poll_word}\` with \`run_in_background\` returns at once, so this relay can return and its task row close while the run still spends. Run the identical call in the foreground with \`timeout: 600000\`."
-  # A trailing `&` backgrounds the poll inside a foreground call just the same. Redirections and
-  # `&&` are dropped first, or `2>&1` reads as one. A group or subshell holding the poll backgrounds it
-  # too, and `unsplit` is read before expansion, so a `$W wait` is a poll here as in poll_lines.
-  poll_re="((worker-run|review-bench|[\$][{]?[A-Za-z_][A-Za-z0-9_]*[}]?)[[:space:]]+wait|light-research)"
-  ! sed -E 's/[0-9]*>&[0-9-]*//g; s/&>>?//g; s/[|]&/|/g; s/&&/ ; /g' <<<"$unsplit" 2>/dev/null |
-    grep -Eq "${poll_re}[^;&|]*&|[{(][^&]*${poll_re}[^&]*[)}][[:space:]]*&" ||
-    deny "Blocked: \`${poll_word}\` followed by \`&\` runs in the background, so this relay can return and its task row close while the run still spends. Drop the \`&\` and run the call in the foreground with \`timeout: 600000\`."
-  # A `--max` whose value is a variable or a substitution states no duration at all, and the
-  # poll it hides is the one this guard exists for; a wait with no `--max` is not unbounded
-  # either — it polls worker-run's default, and letting that spelling pass while denying the
-  # identical explicit number is two verdicts for one poll. Polls in one call run one after
-  # another, so the call must outlive their sum.
-  max_re='--max(=|[[:space:]]+)([^[:space:]]*)'
-  wait_max=0 polls=0
-  while IFS= read -r poll; do
-    polls=$((polls + 1))
-    if ! [[ $poll =~ $max_re ]]; then
-      [ -n "$wait_default" ] ||
-        deny "Blocked: \`${poll_word}\` with no \`--max\` blocks until the whole panel is over, and the harness kills the call long before that. Add \`--max ${WAIT_CEILING}\` and pass \`timeout: ${HARNESS_TIMEOUT_MAX}\`."
-      poll_max=$wait_default
-      if [ "$agent_type" = light-research ]; then
-        wait_says="\`light-research\` polls its run for up to ${poll_max}s in one call"
-      else
-        wait_says="this wait carries no \`--max\`, so worker-run polls its default ${poll_max}s"
-      fi
-    elif poll_max=${BASH_REMATCH[2]} && [[ $poll_max =~ ^[0-9]+$ ]]; then
-      poll_max=$((10#$poll_max))
-      wait_says="\`${poll_word} … --max ${poll_max}\` polls for up to ${poll_max}s"
-    else
-      poll_max=$WAIT_CEILING
-      wait_says="\`--max\` here is spelled with a variable, so the gate has to read it as the ${WAIT_CEILING}s ceiling"
-    fi
-    wait_max=$((wait_max + poll_max))
-  done <<<"$poll_lines"
-  [ "$polls" -eq 1 ] || wait_says="this call's ${polls} \`${poll_word}\` polls run one after another for up to ${wait_max}s together"
-  wait_needed=$(((10#$wait_max + 30) * 1000))
-  # Above the ceiling no timeout the harness accepts can cover the poll, so asking for one
-  # would be an instruction nobody can carry out: the only answer left is a shorter `--max`.
-  [ "$wait_needed" -le "$HARNESS_TIMEOUT_MAX" ] ||
-    deny "Blocked: ${wait_says}, and no Bash timeout can cover it — the harness caps \`timeout\` at ${HARNESS_TIMEOUT_MAX}ms, which is ${WAIT_CEILING}s of polling plus its margin. Retry with \`--max ${WAIT_CEILING}\` or lower and \`timeout: ${HARNESS_TIMEOUT_MAX}\`."
-  call_timeout=$(input_field .tool_input.timeout)
-  [[ "$call_timeout" =~ ^[0-9]+$ ]] || call_timeout=0
-  [ "$call_timeout" -ge "$wait_needed" ] ||
-    deny "Blocked: ${wait_says}, but this Bash call carries a timeout of ${call_timeout}ms — the harness kills it mid-poll and the run goes on with nobody waiting on it and no wake-up. Retry the identical call with \`timeout: 600000\` (at least ${wait_needed}), or spell a literal \`--max\` that fits the timeout you pass."
-fi
-
-# A relay is a pipe: the brief's MODEL: line IS the launch's --model, and its ACCOUNT: line the
-# --account. A relay that resolves a family word itself hands worker-run a full slug, which reads as
-# a deliberate pin (live 2026-09-23: `MODEL: sol` launched as gpt-5.6-sol off a stale list). The
-# brief is the relay's first prompt in its own transcript; without that transcript nothing is judged.
-relay_brief() {
-  local self
-  self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) && . "${self%/*}/../share/relay-transcript.sh" 2>/dev/null || return 0
-  relay_first_prompt "$(input_field .transcript_path)" "$(input_field .agent_id)" | head -n 400
-}
-brief_value() { grep -m1 -oE "^$1:[[:space:]]*[A-Za-z0-9_.-]+" <<<"$brief" | sed -E "s/^$1:[[:space:]]*//"; }
-# worker-run reads a header line itself when its flag is absent, so a missing flag only matters when
-# the brief this start line launches does not carry the line the relay was handed. Only a heredoc
-# written in this call to the start line's own --brief counts, and research starts never adopt a line
-# in worker-run, so nothing is carried for them.
-carried() { # key value
-  local target
-  case " $start_line " in *[[:space:]]--role[[:space:]=][\"\']research[\"\'][[:space:]]* | *[[:space:]]--role[[:space:]=]research[[:space:]]*) return 1 ;; esac
-  target=$(grep -oE -e "--brief(=|[[:space:]]+)(\"[^\"]*\"|'[^']*'|[^[:space:];&|]+)" <<<"$start_line" | head -n 1 |
-    sed -E "s/^--brief(=|[[:space:]]+)//; s/^[\"']//; s/[\"']$//")
-  [ -n "$target" ] || return 1
-  # A brief file written before this call is what worker-run reads, but only when nothing in the call
-  # runs before the launch and the path cannot resolve elsewhere: an earlier segment may rewrite it
-  # under another spelling (`$B`, `./b`, a symlink, after a `cd`), so its old text proves nothing.
-  if [ "${target#/}" != "$target" ] && [ "$(grep -m1 '[^[:space:]]' <<<"$scan")" = "$start_line" ] &&
-    [ -f "$target" ] && [ -r "$target" ] && [ "$(grep -oF -- "$target" <<<"$cmd" | wc -l)" -eq 1 ]; then
-    [ "$(head -n 400 "$target" | grep -m1 -oE "^$1:[[:space:]]*[A-Za-z0-9_.-]+" | sed -E "s/^$1:[[:space:]]*//")" = "$2" ]
-    return
-  fi
-  # The target is read expanded, a redirect as typed: `B=/tmp/b; cat >"$B"` writes the target when
-  # every assignment of B in the call names it.
-  [ "$(LC_ALL=C awk -v target="$target" -v q="'" -v assigns="$(printf '%s\n' ${assigned[@]+"${assigned[@]}"})" '
-    BEGIN { doc = "(^|[^<])<<-?[ \t]*[\"" q "]?[A-Za-z_][A-Za-z0-9_]*[\"" q "]?"; to = "(^|[^>])>[ \t]*[\"" q "]?[^ \t\"" q ";&|<>()]+"
-      n = split(assigns, a, "\n")
-      for (i = 1; i <= n; i++) if ((k = index(a[i], "=")) > 1) { if (substr(a[i], k + 1) == target) same[substr(a[i], 1, k - 1)] = 1; else other[substr(a[i], 1, k - 1)] = 1 } }
-    body { line = $0; if (strip) sub(/^\t+/, "", line); if (line == delim) { body = 0; if (hit) exit; next } if (hit) print; next }
-    match($0, doc) {
-      delim = substr($0, RSTART, RLENGTH); strip = delim ~ /<<-/
-      sub(/^[^<]*<<-?[ \t]*/, "", delim); gsub("[\"" q "]", "", delim)
-      rest = $0; hit = 0
-      while (match(rest, to)) {
-        r = substr(rest, RSTART, RLENGTH); rest = substr(rest, RSTART + RLENGTH)
-        sub(/^[^>]?>[ \t]*/, "", r); gsub("[\"" q "]", "", r)
-        if (r == target) hit = 1
-        name = r; if (gsub(/^\$[{]?|[}]$/, "", name) && (name in same) && !(name in other)) hit = 1
-      }
-      body = 1
-    }' <<<"$cmd" | head -n 400 | grep -m1 -oE "^$1:[[:space:]]*[A-Za-z0-9_.-]+" | sed -E "s/^$1:[[:space:]]*//")" = "$2" ]
-}
-# A value left as `$M` (or a `$(…)` cut to `$`) is no flag the brief's word can equal.
-flag_value() {
-  grep -oE -e "--$1(=|[[:space:]]+)[\"']?[\$A-Za-z0-9_.{}-]+" <<<"$start_line" | head -n 1 |
-    sed -E "s/^--$1(=|[[:space:]]+)[\"']?//"
-}
-# A denied call runs nothing, so the brief its heredoc writes never exists: a relay that retries only
-# the launch re-finds a brief by listing /tmp and launches another relay's (live: DUPLICATE_RUN).
-header_deny() {
-  deny "$1 This call did not run, so the brief file it writes does not exist either: retry the SAME call whole — brief heredoc and launch together — with the flag fixed."
-}
-case "$agent_type" in
-  claudeb-worker | codex-worker | gemini-worker | grok-worker | light-worker)
-    if grep -Eq "${VENDOR_WORD}worker-run[[:space:]]+start${EDGE}" <<<"$scan" 2>/dev/null &&
-      grep -Eq "(claudeb|codex|gemini|grok|light)-brief[^[:space:]]*[*?[]|(^|[^A-Za-z0-9_.-])(ls|find)[^;&()]*(claudeb|codex|gemini|grok|light)-brief" <<<"$unsplit" 2>/dev/null; then
-      deny "Blocked: this launch finds its brief by listing or globbing /tmp's *-brief files, which returns whichever relay wrote last — another relay's brief. Write your own in this same call: \`BRIEF=\$(mktemp /tmp/<vendor>-brief.XXXXXX) && cat >\"\$BRIEF\" <<'BRIEF_EOF' … BRIEF_EOF\` followed by the launch."
-    fi
-    brief=''
-    while IFS= read -r start_line; do
-      [ -n "$brief" ] || brief=$(relay_brief)
-      [ -n "$brief" ] || break
-      want_model=$(brief_value MODEL)
-      [ "$agent_type" != light-worker ] || want_model=''
-      have_model=$(flag_value model)
-      if [ "$have_model" != "$want_model" ] && { [ -n "$have_model" ] || ! carried MODEL "$want_model"; }; then
-        if [ -z "$want_model" ]; then
-          header_deny "Blocked: this launch passes \`--model ${have_model}\`, but the brief carries no MODEL: line$([ "$agent_type" != light-worker ] || printf ' (a light-worker never passes one: the light row decides)'). Drop \`--model\`; worker-run resolves the default itself."
-        fi
-        header_deny "Blocked: the brief says \`MODEL: ${want_model}\`, so the launch passes \`--model ${want_model}\` exactly as written$([ -z "$have_model" ] || printf ', not `--model %s`' "$have_model"). Never resolve a family word into a slug yourself: worker-run resolves it on the account the run lands on, and a full slug would pin that version."
-      fi
-      want_account=$(brief_value ACCOUNT)
-      have_account=$(flag_value account)
-      [ -n "$want_account" ] || [ -z "$have_account" ] ||
-        header_deny "Blocked: this launch passes \`--account ${have_account}\`, but the brief carries no ACCOUNT: line. Drop \`--account\`: worker-run routes the run itself, and only the orchestrator's brief names an account."
-      [ -z "$want_account" ] || [ "$have_account" = "$want_account" ] ||
-        { [ -z "$have_account" ] && carried ACCOUNT "$want_account"; } ||
-        header_deny "Blocked: the brief says \`ACCOUNT: ${want_account}\`, so the launch passes \`--account ${want_account}\`$([ -z "$have_account" ] || printf ', not `--account %s`' "$have_account")."
-      # Computer Use opens codex under codex_workers=off, so only the orchestrator's brief may ask for it.
-      want_computer=no
-      [ "$(brief_value COMPUTER)" != yes ] || want_computer=yes
-      have_computer=no
-      ! grep -Eq -- '--computer([[:space:]]|$)' <<<"$start_line" || have_computer=yes
-      [ "$want_computer" = no ] || [ "$have_computer" = yes ] || carried COMPUTER yes ||
-        header_deny "Blocked: the brief says \`COMPUTER: yes\`, so the launch passes \`--computer\`."
-      [ "$have_computer" = no ] || [ "$want_computer" = yes ] ||
-        header_deny "Blocked: this launch passes \`--computer\`, but the brief carries no \`COMPUTER: yes\` line. Drop \`--computer\`: whether a task needs Computer Use is the orchestrator's call, made in the brief."
-    done < <(grep -E "${VENDOR_WORD}worker-run[[:space:]]+start${EDGE}" <<<"$scan" 2>/dev/null)
-    ;;
-esac
 
 unsanctioned=$(grep -Ev "$SANCTIONED_RE" <<<"$scan")
-case "$agent_type" in
-  claudeb-worker | codex-worker | gemini-worker | grok-worker | light-worker)
-    launch_ask="Launch it through \`worker-run start <claudeb|codex|gemini|grok|light> --brief <file> --workdir <dir>\`" ;;
-  *) launch_ask="A worker is ${RELAY_AGENTS}" ;;
-esac
+launch_ask="A worker is ${DIRECT_ASK}"
 # A vendor CLI fed on stdin runs headless with no print flag, and a scheduler runs its command later,
 # where no gate reads it.
 piped=$(grep -Eo "(^|[^|])[|][[:space:]]*((${WRAPPER})[[:space:]]+)*([^[:space:]/|;&]*/)*(${VENDOR_BINS})([[:space:]]+[^[:space:]|;&]+)?([[:space:]]|\$)" <<<"$unsplit" 2>/dev/null |

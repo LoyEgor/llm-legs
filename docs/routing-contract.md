@@ -199,7 +199,8 @@ recording a run. Every headless run therefore goes through `worker-run` or a too
 own launches, and this is the whole list: `worker-run`, `review-bench`,
 `llm-limits`, `claudeb revive`, `claudeb warm`, `claude-session-driver`, `opencode-go`,
 `light-research`, plus the
-OWNED pair — `worker-run start|wait`, which only a relay agent may spell, and the media scripts
+OWNED pair — `worker-run start|wait`, which only the chat itself spells (never an agent or a
+headless worker), and the media scripts
 `codex-image` / `gemini-image` / `grok-image` / `grok-video` / `image-fanout` / `gemini-video` /
 `gemini-music` / `gemini-sfx` / `gemini-listen` with the engine calls `chatgpt-web
 generate|resize|comment|remove-bg` and `gemini-web generate`, which no hand may spell: every
@@ -211,45 +212,52 @@ launcher in command position exempts only its own segment, and a comment or an o
 exempts nothing), and denying an owned one outside the hand or door that owns it. The `ask_*.sh`
 legs, `codex-fast-probe` and `gemini-probe` are denied from every Claude Code Bash outside Egor's
 autonomy span (`words_span_live`), and no agent,
-no Monitor and no headless worker (`CLAUDEB_WORKER=1`) launches a review panel (`review-waiter`
-keeps only the recoveries of the run it waits on). The run itself is the backstop: a live
-run of the chat that no relay owns holds the chat's Stop outside his span (`bin/worker-run-backstop.sh`). It reads the whole command string, and a vendor name counts only where a
+no Monitor and no headless worker (`CLAUDEB_WORKER=1`) launches a review panel. The run itself is
+the backstop: a live run of the chat with no live `worker-run wait` / `review-bench wait` process
+under the chat holds the chat's Stop outside his span (`bin/worker-run-backstop.sh`). It reads the whole command string, and a vendor name counts only where a
 shell would run it: quoted text collapses into one operand word before the quotes come off, so
 `'claude' -p` and `X="a b" claude -p` are denied while a launch quoted inside an echo or a grep is
 the operand it is. It fails open on its own errors. Interactive launches — no `-p` / `--print` /
 `--prompt`, no `exec`, no `run` — are the user, not a worker, and are never gated.
 
 A text gate reads the Bash command line only, so a launch from a script, an interpreter or a
-Monitor never reaches it; the launchers hold runtime doors of their own. Inside Claude Code
-`worker-run start|wait` runs only under the `WORKER_RUN_RELAY` token `bin/worker-tag-hook.sh`
-stamps on every Bash call of a relay agent (shared-invariants row `cx`): a relay starts its own
-vendor only, `light-research` research only, and an ATTACH relay nothing. `review-bench
+Monitor never reaches it; the launchers hold runtime doors of their own. `worker-run start|wait`
+refuses inside a headless worker (`CLAUDEB_WORKER=1`, shared-invariants row `cx`), and `worker-run
+start` runs `bin/worker-limit-gate.sh --start` on its own brief inside Claude Code. `review-bench
 review|run` runs only with the single-use nonce the review door stamps on the main-chat call it
-let through on Egor's word (row `cy`). Setting either token by hand is denied, and Egor's own
+let through on Egor's word (row `cy`). Setting that token by hand is denied, and Egor's own
 terminal carries none of the markers and is never refused.
 The codex MCP tools (`mcp__codex__codex`, `mcp__codex__codex-reply`) are a headless codex launch
 and are denied outright; the legacy `Task` name reaches the same two Agent gates.
 
 The other half of the same rule is the Agent tool, and the gate there is
 `bin/worker-spawn-hook.sh`, the one owner of the native-type policy (shared-invariants row `bt`).
-Workers are unified: every run that edits, reviews, verifies or scans is a relay worker through
-`worker-run`, so on every session a NATIVE agent type is refused outright, because it runs on the
-session's own model, which is the one quota the whole relay design exists to spare. Four
-`general-purpose` read-only checks at 35–45k tokens each on a live Fable chat is the case this
-closes. The allowlist is `fork`, `review-waiter` and `light-research` (`fork` and
-Workflow need no word of Egor's: neither can reach worker-run nor a review, so they spend only the
-session's quota); `Explore`, `Plan`, `general-purpose`, `claude-code-guide` and anything custom are
-denied with the ask to use a relay worker instead — read-only research goes to `light-research`
-by name. With Light off (`light_paused=on`) the refusal texts drop both Light types, and the menu
-switch writes the deny rules `Agent(light-research)` and `Agent(light-worker)` into
-`~/.claude/settings.json` (`worker_light_agents_sync`, share/worker-model.sh), from which the
-harness removes a denied type from every chat's agent list; switching Light on removes them. The same file denies `Agent(Explore)`, `Agent(general-purpose)`, `Agent(Plan)` and
-`Agent(claude-code-guide)` for good — types this hook refuses anyway — so no chat is offered them;
-Workflow `agent()` runs its own default type and is unaffected (probed 2026-09-29). A Light
-run still in flight is then attached through its vendor's plain relay. The refusal carries no retry and does not depend on the session model: a stamped
-one-shot deny is a rule a model walks through by calling twice. `bin/worker-limit-gate.sh` judges
-no native type and has no session-model rule, since a deny there would outrank the spawn hook's
-allow; explicit tool models on a native spawn buy no bypass.
+Workers are unified and relay-free: every run that edits, reviews, verifies or scans is a
+`worker-run` the chat drives itself, spending zero Claude tokens to hold it —
+
+1. write the brief to a file; Bash `worker-run start <vendor> --brief <file> --workdir <dir>`
+   (worker-pick's `START:` line names the vendor) prints `RUN:` / `TAG:` / `DIR:`;
+2. Bash with `run_in_background` `worker-run wait <run-id>`: it blocks until the run ends and streams
+   `[elapsed] row` progress lines (edits, commands, tools, messages) the chat reads in /tasks;
+3. on its completion notification, `worker-run report <run-id>`.
+
+A mid-run note is `worker-run say <run-id> "<text>"`; a run in flight with no live wait gets the
+background wait again; `RESUME <session-id>:` stays the brief's first line. A review is
+`review-bench review …` then `review-bench wait <run-id>` as a background Bash; read-only research
+is `light-research --prompt-file <file> --out <answer> --repo <abs>` as a background Bash. Each run
+dir carries `title` (the brief's first prose line) and `tokens` (the run's usage so far, written by
+the wait) for the rows that render it.
+
+So on every session every relay type (`claudeb-`, `codex-`, `gemini-`, `grok-`, `light-worker`,
+`light-research`, `review-waiter`) and every NATIVE type is refused with that protocol, because a
+native type runs on the session's own model — four `general-purpose` read-only checks at 35–45k
+tokens each on a live Fable chat is the case this closes. Only `fork` spawns (it and Workflow
+spend only the session's quota and can reach neither worker-run nor a review); its description is
+rewritten to `fork · <model> · <account>: <title>`. The settings file denies `Agent(Explore)`,
+`Agent(general-purpose)`, `Agent(Plan)` and `Agent(claude-code-guide)` for good — types this hook
+refuses anyway — so no chat is offered them; Workflow `agent()` runs its own default type and is
+unaffected (probed 2026-09-29). The refusal carries no retry and does not depend on the session
+model: a stamped one-shot deny is a rule a model walks through by calling twice.
 
 ## Roles
 

@@ -151,14 +151,13 @@ printf 'walled-session\n' >>"$RUN_DIR/worker-session"
 assert test "$(grep -c . "$RUN_DIR/worker-session")" -eq 2
 assert_fails grep -q '^PARTIAL: ' "$RUN_DIR/files"
 
-# Started inside a relay agent, the run claims the tag file its launch marked in the LAUNCHER's tag
-# cache — the main chat's, not the session id the worker process journals under — and every
-# transition rewrites the state the task row reads.
+# The chat's run records the LAUNCHER — the main chat, not the session id the worker process journals
+# under — claims no agent tag file, and every transition rewrites the state its row reads.
 clear_stub
 TR_TAGS="$HOME/.cache/claude-worker-tags/chat-main"
 mkdir -p "$TR_TAGS"
 printf 'seed · opus · high\nstart=%s\nedit=1\n' "$(date +%s)" >"$TR_TAGS/agent-x"
-printf 'other · opus · high\nstart=%s\n' "$(($(date +%s) - 600))" >"$TR_TAGS/agent-stale"
+tr_before=$(cat "$TR_TAGS/agent-x")
 # The gated stub polls with the sleep builtin: no external `sleep 0.05` reaches PATH while it waits.
 mkdir -p "$WORK/sleep-shim"
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"%s/sleeps"\nexec /bin/sleep "$@"\n' "$WORK" >"$WORK/sleep-shim/sleep"
@@ -166,56 +165,48 @@ chmod +x "$WORK/sleep-shim/sleep"
 : >"$WORK/sleeps"
 PATH="$WORK/sleep-shim:$PATH" CLAUDE_LAUNCHER_SESSION=chat-main start_gated claudeb
 assert test "$(cat "$RUN_DIR/launcher")" = chat-main
-assert jq -e --arg run "$RUN_ID" '.phase == "start" and .agent_task_id == "agent-x" and .session == "chat-main"' \
-  "$RUN_DIR/state.json" >/dev/null
-assert test "$(head -n1 "$TR_TAGS/agent-x")" = "recordacct · opus · high"
-assert test "$(grep -c '^start=' "$TR_TAGS/agent-x")" = 0
-assert grep -qx "run=$RUN_ID" "$TR_TAGS/agent-x"
-assert grep -qx 'edit=1' "$TR_TAGS/agent-x"
-assert grep -q '^start=' "$TR_TAGS/agent-stale"
+assert jq -e '.phase == "start" and (has("agent_task_id") | not) and .session == "chat-main"' "$RUN_DIR/state.json" >/dev/null
+assert test "$(cat "$TR_TAGS/agent-x")" = "$tr_before"
+assert test ! -e "$RUN_DIR/agent-task"
+# The row's title is the brief's first prose line, and every launch carries the instruction-file guard.
+assert test "$(cat "$RUN_DIR/title")" = 'test brief'
+assert test "$(grep -c '^MD-GUARD (worker-run-injected): Instruction files are the orchestrator.s to edit (Egor.s rule): do not write CLAUDE.md' "$RUN_DIR/brief.launch")" = 1
 "$RUNNER" wait "$RUN_ID" --max 0 >/dev/null
-assert jq -e '.phase == "wait" and (has("round") | not) and .agent_task_id == "agent-x"' "$RUN_DIR/state.json" >/dev/null
+assert jq -e '.phase == "wait" and (has("round") | not)' "$RUN_DIR/state.json" >/dev/null
 gate_open
 assert await_done
 assert jq -e '.phase == "done" and .exit_code == 0 and (has("round") | not)' "$RUN_DIR/state.json" >/dev/null
 assert test "$(grep -cx 0.05 "$WORK/sleeps")" = 0
-# Two launches of one chat claiming at once take two rows, never the newest one twice; the sed shim
-# widens the read-then-swap window so the race is not left to timing.
-RACE_TAGS="$HOME/.cache/claude-worker-tags/chat-race"
-mkdir -p "$RACE_TAGS" "$WORK/race-a" "$WORK/race-b" "$WORK/slow-sed"
-printf 'a · opus · high\n' >"$WORK/race-a/tag"
-printf 'b · opus · high\n' >"$WORK/race-b/tag"
-printf 'a · opus · high\nstart=%s\n' "$(($(date +%s) - 5))" >"$RACE_TAGS/agent-old"
-printf 'b · opus · high\nstart=%s\n' "$(date +%s)" >"$RACE_TAGS/agent-new"
-printf '#!/bin/bash\nsleep 0.5\nexec /usr/bin/sed "$@"\n' >"$WORK/slow-sed/sed"
-chmod +x "$WORK/slow-sed/sed"
-sed -n -e '/^claim_agent_tag() {/,/^}/p' -e '/^claim_agent_tag_locked() {/,/^}/p' \
-  -e '/^launch_agent_tag() {/,/^}/p' -e '/^with_agent_tag_lock() {/,/^}/p' \
-  -e '/^fresh_agent_tags() {/,/^}/p' "$RUNNER" >"$WORK/claim-race.fns"
-claim_race() ( # directory [slow]
-  . "$WORK/claim-race.fns"
+rm -rf "$TR_TAGS"
+# A brief with a guard of its own gets none injected, and its KEY: header lines are no title.
+clear_stub
+cp "$WORK/brief" "$WORK/brief.plain"
+printf 'MD-GUARD: the orchestrator wrote this one\n\n   Fix the gate wording %0120d  \n' 0 >"$WORK/brief"
+start_ok claudeb
+assert test "$(cat "$RUN_DIR/title")" = "Fix the gate wording $(printf '%079d' 0)"
+assert test "$(grep -c '^MD-GUARD' "$RUN_DIR/brief.launch")" = 1
+assert await_done
+mv "$WORK/brief.plain" "$WORK/brief"
+# A writer that outwaits a live holder of a run's lock leaves that holder's lock alone; a lock a dead
+# holder left more than a minute ago is cleared on the way in, without first sitting out the wait.
+LOCK_RUN="$WORK/lock-run"
+mkdir -p "$LOCK_RUN"
+sed -n -e '/^with_lock() {/,/^}/p' "$RUNNER" >"$WORK/with-lock.fns"
+locked_write() (
+  . "$WORK/with-lock.fns"
   sleep() { printf .\\n >>"$WORK/claim-sleeps"; command sleep "$@"; }
-  [ -z "${2:-}" ] || PATH="$WORK/slow-sed:$PATH"
-  unset CLAUDE_AGENT_ID
-  claim_agent_tag "$1" chat-race
+  with_lock "$LOCK_RUN" touch "$LOCK_RUN/written"
 )
-claim_race "$WORK/race-a" slow & race_a=$!
-claim_race "$WORK/race-b" slow & race_b=$!
-wait "$race_a" "$race_b"
-assert test "$(cat "$WORK/race-a/agent-task" "$WORK/race-b/agent-task" | sort | tr '\n' ,)" = 'agent-new,agent-old,'
-assert test ! -e "$RACE_TAGS/.claim.lock"
-# A launch that outwaits a live holder leaves that holder's lock alone; a lock a dead holder left
-# more than a minute ago is cleared on the way in, without first sitting out the live holder's wait.
-printf 'c · opus · high\nstart=%s\n' "$(date +%s)" >"$RACE_TAGS/agent-live"
-mkdir "$RACE_TAGS/.claim.lock"
+mkdir "$LOCK_RUN/.claim.lock"
 : >"$WORK/claim-sleeps"
-claim_race "$WORK/race-a"
-assert test -d "$RACE_TAGS/.claim.lock"
+locked_write
+assert test -d "$LOCK_RUN/.claim.lock"
+assert test -e "$LOCK_RUN/written"
 assert test "$(grep -c . "$WORK/claim-sleeps")" -eq 50
-touch -t 202001010000 "$RACE_TAGS/.claim.lock"
+touch -t 202001010000 "$LOCK_RUN/.claim.lock"
 : >"$WORK/claim-sleeps"
-claim_race "$WORK/race-b"
-assert test ! -e "$RACE_TAGS/.claim.lock"
+locked_write
+assert test ! -e "$LOCK_RUN/.claim.lock"
 assert test "$(grep -c . "$WORK/claim-sleeps")" -eq 0
 
 clear_stub
@@ -637,4 +628,4 @@ knobs_changed_tests
 snapshot_blobs_packed_tests
 
 
-echo "PASS: $asserts asserts; served model and cost, transcript file lists, snapshot and guard attribution"
+echo "PASS: $asserts asserts; served model and cost, transcript file lists, snapshot and guard attribution, the run title and the injected MD-GUARD"

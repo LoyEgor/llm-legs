@@ -61,10 +61,6 @@ def worker_run():
     return os.environ.get("LOG_AUDIT_WORKER_RUN") or os.path.join(ROOT_DIR, "bin", "worker-run")
 
 
-def relay_env():
-    return dict(os.environ, WORKER_RUN_RELAY="log-audit:%d" % os.getpid())
-
-
 def roots():
     return sorted({os.path.realpath(path) for path in chat_names.transcript_roots() if os.path.isdir(path)})
 
@@ -152,7 +148,7 @@ def objects(text, required):
 
 def launch(brief_file):
     done = subprocess.run([worker_run(), "start", "claudeb", "--model", MODEL, "--effort", EFFORT, "--brief", brief_file,
-                           "--workdir", ROOT_DIR], capture_output=True, text=True, env=relay_env())
+                           "--workdir", ROOT_DIR], capture_output=True, text=True)
     run_id = next((line[5:].strip() for line in done.stdout.splitlines() if line.startswith("RUN: ")), None)
     if done.returncode != 0 or not run_id:
         said = " | ".join(part.strip() for part in (done.stderr, done.stdout) if part.strip())
@@ -162,7 +158,7 @@ def launch(brief_file):
 
 def result_of(run_id, deadline):
     subprocess.run([worker_run(), "wait", run_id, "--max", str(int(max(1, deadline - time.time())))],
-                   capture_output=True, text=True, env=relay_env())
+                   capture_output=True, text=True)
     report = subprocess.run([worker_run(), "report", run_id], capture_output=True, text=True).stdout
     status = re.search(r"^STATUS: (\w+)", report, re.M)
     if status and status.group(1) in ("running", "queued"):

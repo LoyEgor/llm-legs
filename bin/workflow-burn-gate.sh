@@ -15,20 +15,20 @@ WARN_AT="${WORKFLOW_GATE_WARN_PCT:-70}"
 input=$(cat) || exit 0
 printf '%s' "$input" | jq -e '.hook_event_name == "PreToolUse" and .tool_name == "Workflow"' >/dev/null 2>&1 || exit 0
 
-# A workflow's agents never pass worker-spawn-hook.sh: an agent of a relay type, or a worker-run it
-# starts, would spend an account on no task row of its own. Relays are spawned with the Agent tool.
+# A workflow's agents never pass worker-spawn-hook.sh, and a worker run started or awaited inside one
+# belongs to no chat that waits on it.
 script=$(printf '%s' "$input" | jq -r '.tool_input.script // empty' 2>/dev/null)
 script_path=$(printf '%s' "$input" | jq -r '.tool_input.scriptPath // empty' 2>/dev/null)
 [ -z "$script_path" ] || [ ! -r "$script_path" ] || script="$script
 $(cat "$script_path" 2>/dev/null)"
-# A relay is reached by its agent type as a string of its own or by a launch; the same words inside
-# prose (a workflow told to review bin/worker-run) reach nothing.
+# A retired relay type still resolves while its agent file exists. A run is reached by a launch or a
+# quoted type; the same words inside prose (a workflow told to review bin/worker-run) reach nothing.
 relay_word=$({
   grep -oE "['\"\`]((claudeb|codex|gemini|grok|light)-worker|light-research|review-waiter)['\"\`]" <<<"$script"
   grep -oE 'worker-run[[:space:]]+(start|wait)([^A-Za-z0-9_-]|$)|light-research[[:space:]]+-' <<<"$script"
-} 2>/dev/null | head -n1 | grep -oE '[a-z]+-[a-z]+(-[a-z]+)?' | head -n1)
+} 2>/dev/null | head -n1 | grep -oE '[a-z]+-[a-z]+(-[a-z]+)?([[:space:]]+(start|wait))?' | head -n1 | tr -s '[:space:]' ' ' | sed 's/ $//')
 if [ -n "$relay_word" ]; then
-  jq -cn --arg hook "${0##*/}" --arg r "Blocked: this workflow reaches \`$relay_word\`, but a workflow's agents never get the account·model task row a relay spawned with the Agent tool gets, so Egor could not see what it spends. Spawn relay workers (and review-waiter, light-research) with the Agent tool; keep the workflow to native agents on this session's own account." \
+  jq -cn --arg hook "${0##*/}" --arg r "Blocked: this workflow reaches \`$relay_word\`, but a worker run or relay inside a workflow has no chat waiting on it. Start workers from the chat itself (\`worker-run start\`, then \`worker-run wait <run-id>\` as a background Bash); keep the workflow to native agents on this session's own account." \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:("[" + $hook + "] " + $r)}}' 2>/dev/null
   exit 0
 fi
@@ -128,13 +128,13 @@ span_live() {
     words_span_live "$(jq -r '.session_id // ""' <<<"$input")" "$(jq -r '.transcript_path // ""' <<<"$input")" ) >/dev/null 2>&1
 }
 if [ "$pct_int" -ge "$DENY_AT" ] 2>/dev/null && ! span_live; then
-  jq -cn --arg hook "${0##*/}" --arg r "Session account $vendor/$own is at ${pct}% — a workflow fan-out would burn this same account and wall the session before its own task finishes. Do not run the workflow now: shrink the work to inline/single agents, route implementation through claudeb-/codex-workers (run worker-pick), or ask Egor." \
+  jq -cn --arg hook "${0##*/}" --arg r "Session account $vendor/$own is at ${pct}% — a workflow fan-out would burn this same account and wall the session before its own task finishes. Do not run the workflow now: shrink the work to inline/single agents, route implementation through workers (run worker-pick), or ask Egor." \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:("[" + $hook + "] " + $r)}}' 2>/dev/null
   exit 0
 fi
 
 if [ "$pct_int" -ge "$WARN_AT" ] 2>/dev/null; then
-  jq -cn --arg c "Heads-up: this workflow's agents will spend the SESSION account ($vendor/$own), currently at ${pct}%. A large fleet can wall this session mid-task. Keep the fan-out small, run the workflow inside a claudeb-worker (bills a rotation account instead), or move implementation stages to workers (run worker-pick) — and mention the risk to Egor." \
+  jq -cn --arg c "Heads-up: this workflow's agents will spend the SESSION account ($vendor/$own), currently at ${pct}%. A large fleet can wall this session mid-task. Keep the fan-out small, or move implementation stages to workers (run worker-pick) — and mention the risk to Egor." \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$c}}' 2>/dev/null
   exit 0
 fi

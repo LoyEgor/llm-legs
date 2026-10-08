@@ -71,7 +71,7 @@ old_name="gemini""-research"
 assert test -z "$(git -C "$ROOT" grep -l -F "$old_name" -- . 2>/dev/null)"
 setup_root=${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}
 if [ -d "$setup_root/agents" ]; then
-  assert test ! -e "$setup_root/agents/$old_name.md"; assert test -f "$setup_root/agents/light-worker.md"
+  assert test ! -e "$setup_root/agents/$old_name.md"
 fi
 
 printf 'PASS: %s asserts; light toggle rows and defaults, tracked gemini research with its read-only sandbox, a log-only quota walling the account, and a research brief that names a round but never fixes it\n' "$asserts"

@@ -5,24 +5,22 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 HOOK="$ROOT/bin/worker-spawn-hook.sh"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-export HOME="$WORK/home" WORKER_RUN_DIR="$WORK/runs" WORKER_SPAWN_WORKER_PICK=/nonexistent
-unset CLAUDEB_WORKER WORKER_PICK_CONFIG_FILE
+export HOME="$WORK/home" WORKER_RUN_DIR="$WORK/runs"
+unset CLAUDEB_WORKER WORKER_PICK_CONFIG_FILE CLAUDE_LIMITS_ACCOUNT CLAUDE_CONFIG_DIR
 mkdir -p "$HOME" "$WORKER_RUN_DIR"
+TAGS="$HOME/.cache/claude-worker-tags/s1"
 asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert_eq() { asserts=$((asserts + 1)); [ "$1" = "$2" ] || fail "expected [$1] got [$2]"; }
+assert_has() { asserts=$((asserts + 1)); case "$2" in *"$1"*) ;; *) fail "[$2] lacks [$1]" ;; esac; }
 
-spawn() { # type prompt use
-  jq -cn --arg t "$1" --arg p "$2" --arg u "$3" \
+spawn() { # type prompt use [model]
+  jq -cn --arg t "$1" --arg p "$2" --arg u "$3" --arg m "${4:-}" \
     '{hook_event_name:"PreToolUse",tool_name:"Agent",session_id:"s1",tool_use_id:$u,
-      tool_input:{subagent_type:$t,description:"Do the task",prompt:$p}}' | bash "$HOOK" >/dev/null 2>&1
-  cat "$HOME/.cache/claude-worker-tags/s1/pending-$1-$3" 2>/dev/null
+      tool_input:({subagent_type:$t,description:"Do the task",prompt:$p} + (if $m == "" then {} else {model:$m} end))}' |
+    bash "$HOOK" 2>/dev/null
 }
-mkrun() { # id vendor tag [light]
-  mkdir -p "$WORKER_RUN_DIR/$1"
-  printf '%s\n' "$3" >"$WORKER_RUN_DIR/$1/tag"
-  jq -nc --arg v "$2" --arg l "${4:-}" '{vendor:$v,role:"workers",light:$l}' >"$WORKER_RUN_DIR/$1/meta.json"
-}
+reason() { jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null; }
 
 cat >"$WORK/count-jq.sh" <<'SH'
 jq() { printf 'call\n' >> "$JQ_CALLS"; command jq "$@"; }
@@ -32,61 +30,30 @@ BASH_ENV="$WORK/count-jq.sh" JQ_CALLS="$WORK/jq-calls" bash "$HOOK" <<'JSON'
 JSON
 assert_eq 1 "$(wc -l <"$WORK/jq-calls" | tr -d ' ')"
 
-# A brief naming its account, model and effort is read with builtins: a spawn costs its two jq and
-# the hash of its first line, never a grep, sed or tr per header.
-for f in grep sed tr head cut shasum mkdir; do printf '%s() { printf "%s " >>"$FORKS"; command %s "$@"; }\n' "$f" "$f" "$f"; done >"$WORK/count-forks.sh"
-brief=$'ACCOUNT: acct3\nMODEL: opus\nEFFORT: high\nROUND: r-1/x\nGIT-CLEANUP: allowed\n\nNo MD-GUARD line yet, so the hook adds one.'
-mkdir -p "$HOME/.cache/claude-worker-tags/s1"
-: >"$WORK/forks"
-out=$(jq -cn --arg p "$brief" '{hook_event_name:"PreToolUse",tool_name:"Agent",session_id:"s1",tool_use_id:"u-forks",
-  tool_input:{subagent_type:"claudeb-worker",description:"acct1 · opus · low: Do the task",prompt:$p}}' |
-  BASH_ENV="$WORK/count-forks.sh" FORKS="$WORK/forks" bash "$HOOK")
-assert_eq '' "$(cat "$WORK/forks")"
-assert_eq 'acct3 · opus · high: Do the task' "$(jq -r '.hookSpecificOutput.updatedInput.description' <<<"$out")"
-seed="$HOME/.cache/claude-worker-tags/s1/pending-claudeb-worker-u-forks"
-assert_eq "spawn=$(printf 'ACCOUNT: acct3\n' | shasum -a 256 | cut -c1-16)" "$(grep '^spawn=' "$seed")"
-assert_eq 'round=r-1x' "$(grep '^round=' "$seed")"
-asserts=$((asserts + 1))
-grep -qx 'git_cleanup=allowed' "$seed" || fail "GIT-CLEANUP: allowed left no unlock"
-assert_eq 1 "$(jq -r '.hookSpecificOutput.updatedInput.prompt' <<<"$out" | grep -c '^MD-GUARD (hook-injected)')"
+# Every retired relay is refused with the chat's own protocol for its vendor, and leaves no seed.
+for relay in claudeb codex gemini grok light; do
+  out=$(spawn "$relay-worker" $'ACCOUNT: a1\nFix it.' "u-$relay")
+  assert_eq deny "$(jq -r '.hookSpecificOutput.permissionDecision' <<<"$out")"
+  assert_has "the $relay-worker relay is retired. Delegate from this chat: write the brief to a file; Bash \`worker-run start $relay --brief <file> --workdir <dir>\`" "$(reason <<<"$out")"
+  assert_has 'then Bash with run_in_background `worker-run wait <run-id>`; on its completion notification, `worker-run report <run-id>`' "$(reason <<<"$out")"
+done
+assert_has 'Run `light-research --prompt-file <file> --out <answer-file> --repo <abs>` as a Bash with run_in_background' \
+  "$(spawn light-research 'Where is X?' u-lr | reason)"
+assert_has 'Run `review-bench wait <run-id>` as a Bash with run_in_background' "$(spawn review-waiter 'WAIT r1: x' u-rw | reason)"
+for native in general-purpose Explore Plan claude statusline-setup ''; do
+  assert_has "native ${native:-general-purpose} is not spawned. Delegate from this chat" "$(spawn "$native" 'Look around.' "u-n$native" | reason)"
+done
+assert_eq '' "$(ls "$TAGS" 2>/dev/null)"
 
-# An ATTACH relay's row is the attached run's own account and model, and its seed names the run.
-mkrun codex-1-a codex 'acct7 · astra · xhigh'
-seed=$(spawn codex-worker 'ATTACH codex-1-a:' u1)
-assert_eq 'acct7 · astra · xhigh' "$(head -n1 <<<"$seed")"
-assert_eq 'run=codex-1-a' "$(grep '^run=' <<<"$seed")"
-
-mkrun grok-2-b grok 'sg2 · grok-5 · high'
-assert_eq 'sg2 · grok-5 · high' "$(spawn codex-worker 'ATTACH grok-2-b: keep waiting' u2 | head -n1)"
-
-mkrun gem-3-c codex 'acct9 · gpt-6-astra · low' edit
-assert_eq 'light edit · astra · acct9' "$(spawn light-worker 'ATTACH gem-3-c:' u3 | head -n1)"
-
-# A missing run or a plain brief keeps the predicted row and names no run.
-seed=$(spawn codex-worker 'ATTACH nope-9:' u4)
-assert_eq '' "$(grep '^run=' <<<"$seed")"
-assert_eq 1 "$(grep -c ' · ' <<<"$seed")"
-assert_eq '' "$(spawn codex-worker 'Fix codex-1-a' u5 | grep '^run=')"
-
-# The prompt's ROUND: header rides the seed into the agent's tag file, where `worker-run start` adopts
-# it once the relay rewrote the brief; ACCOUNT:/EFFORT: may precede it, prose seeds nothing, and
-# `none` rides as the opt-out it is.
-seed=$(spawn claudeb-worker $'ACCOUNT: com\nEFFORT: high\nROUND: 20260928T011240Z-c3c2395\nFix it.' u6)
-assert_eq 'round=20260928T011240Z-c3c2395' "$(grep '^round=' <<<"$seed")"
-assert_eq 'round=none' "$(spawn claudeb-worker $'ACCOUNT: com\nROUND: none\nFix it.' u7 | grep '^round=')"
-assert_eq '' "$(spawn codex-worker $'ACCOUNT: com\nFix it.\nROUND: 20260928T011240Z-c3c2395' u8 | grep '^round=')"
-rm -f "$HOME/.cache/claude-worker-tags/s1"/pending-*
-spawn claudeb-worker $'ROUND: 20260928T011240Z-c3c2395\nFix it.' u9 >/dev/null
-jq -cn '{hook_event_name:"PreToolUse",tool_name:"Bash",session_id:"s1",agent_type:"claudeb-worker",agent_id:"agent-r",
-  tool_input:{command:"worker-run start claudeb --brief /tmp/b",description:"launch"}}' |
-  bash "$ROOT/bin/worker-tag-hook.sh" >/dev/null 2>&1
-assert_eq 'round=20260928T011240Z-c3c2395' "$(grep '^round=' "$HOME/.cache/claude-worker-tags/s1/agent-r" 2>/dev/null)"
-assert_eq 1 "$(grep -c '^start=' "$HOME/.cache/claude-worker-tags/s1/agent-r" 2>/dev/null)"
-
-seed=$(spawn codex-worker $'ATTACH codex-1-a:\nKeep the literal \'quote\' and $(touch '"$WORK/injected"$') text.\n' u-literal)
-assert_eq 'acct7 · astra · xhigh' "$(head -n1 <<<"$seed")"
-assert_eq 'run=codex-1-a' "$(grep '^run=' <<<"$seed")"
+# A fork spawns, renamed to its own model and the session account, and seeds its tag for the tag hook.
+out=$(spawn fork $'Map the gate.\nKeep the literal \'quote\' and $(touch '"$WORK/injected"$') text.' u-f1 claude-opus-5-5)
+assert_eq allow "$(jq -r '.hookSpecificOutput.permissionDecision' <<<"$out")"
+assert_eq 'fork · opus · main: Do the task' "$(jq -r '.hookSpecificOutput.updatedInput.description' <<<"$out")"
+assert_eq 'fork · opus · main' "$(head -n1 "$TAGS/pending-fork-u-f1")"
+assert_eq "spawn=$(printf 'Map the gate.\n' | shasum -a 256 | cut -c1-16)" "$(grep '^spawn=' "$TAGS/pending-fork-u-f1")"
 asserts=$((asserts + 1))
 [ ! -e "$WORK/injected" ] || fail "payload text was executed"
+assert_eq 'fork · inherit · acct2: Do the task' \
+  "$(CLAUDE_LIMITS_ACCOUNT=acct2 spawn fork 'Go.' u-f2 | jq -r '.hookSpecificOutput.updatedInput.description')"
 
-printf 'PASS: %s asserts; an ATTACH relay spawn takes its row from the attached run'"'"'s own tag (light relays relabelled as light rows), seeds run=<id> for the Stop backstop, a missing run or plain brief keeps the predicted row, and a prompt ROUND: header reaches the agent tag file\n' "$asserts"
+printf 'PASS: %s asserts; every retired relay type (vendor relays, light-research, review-waiter) and every native type is refused with the chat'"'"'s own worker-run start / background wait / report protocol and leaves no seed, while a fork spawns renamed `fork · <model> · <account>: <title>` with a seed keyed by its first prompt line\n' "$asserts"

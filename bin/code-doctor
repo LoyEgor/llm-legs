@@ -2662,23 +2662,18 @@ def split_tokens(tokens, count):
     return [tokens - share * (count - 1)] + [share] * (count - 1)
 
 
-def judge_relay_env():
-    return dict(os.environ, WORKER_RUN_RELAY="code-doctor-judge:%d" % os.getpid())
-
-
 def worker_judge(brief_file, workdir, vendor, remaining):
     """(run id, report, error): one judge brief through worker-run, waited on at most `remaining` seconds."""
     try:
         launch = subprocess.run([worker_run_cmd(), "start", vendor, "--brief", brief_file, "--workdir", workdir,
-                                 "--effort", "low"], capture_output=True, text=True, env=judge_relay_env())
+                                 "--effort", "low"], capture_output=True, text=True)
     except OSError as exc:
         return None, "", "worker-run start: %s" % exc
     run_id = next((l[5:].strip() for l in launch.stdout.splitlines() if l.startswith("RUN: ")), None)
     if launch.returncode != 0 or not run_id:
         output = " | ".join(part.strip() for part in (launch.stderr, launch.stdout) if part.strip())
         return None, "", "worker-run start rc %d: %s" % (launch.returncode, output[-LAUNCH_ERROR_MAX:] or "no output")
-    subprocess.run([worker_run_cmd(), "wait", run_id, "--max", str(int(max(1, remaining)))], capture_output=True, text=True,
-                   env=judge_relay_env())
+    subprocess.run([worker_run_cmd(), "wait", run_id, "--max", str(int(max(1, remaining)))], capture_output=True, text=True)
     return run_id, subprocess.run([worker_run_cmd(), "report", run_id], capture_output=True, text=True).stdout, None
 
 

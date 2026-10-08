@@ -933,7 +933,7 @@ sid=$(grep -F 'speed-machine-contention' "$WORK/out" | cut -f1)
 # worktree: its brief names that round, so worker-run hands the fixer the round's findings; the others get none.
 IFS=$'\t' read -r tid tbrief twt < <(grep -F 'speed-tests-llm-legs-test-llm-limits' "$WORK/out")
 assert [ "$(cat "$DATA/rb-args")" = "$twt	review --repo $twt --files tests/test_llm_limits.sh --lens speed --tier T2 --scope-lines 3 --focus Aimed by the Harness doctor's measured rows: $(jq -r '.problems[0].fact' "$(record "$tid")"). Find what makes them slow; keep every check." ]
-assert grep -qxF "doctor-fix: $tid waits for speed lens round 20261008T000000Z-abcdef1: dispatch its brief when that round's review-waiter returns" "$WORK/err"
+assert grep -qxF "doctor-fix: $tid waits for speed lens round 20261008T000000Z-abcdef1: dispatch its brief when that round's \`review-bench wait\` returns" "$WORK/err"
 assert grep -qx 'ROUND: 20261008T000000Z-abcdef1' "$tbrief"
 assert grep -qF 'Speed lens: the `ROUND:` above' "$tbrief"
 for r in $(grep -vF "$tid" "$WORK/out" | cut -f2); do

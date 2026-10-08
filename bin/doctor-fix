@@ -768,7 +768,7 @@ speed_lens() { # id worktree top -> a Speed run's component files in top's repos
   fi
   locked record_set "$id" '.lens_round = $r' --arg r "$round" || return 0
   printf '%s\t%s\t%s\n' "$key" "$round" "$id" >>"$ledger"
-  printf 'doctor-fix: %s waits for speed lens round %s: dispatch its brief when that round'"'"'s review-waiter returns\n' "$id" "$round" >&2
+  printf 'doctor-fix: %s waits for speed lens round %s: dispatch its brief when that round'"'"'s `review-bench wait` returns\n' "$id" "$round" >&2
 }
 
 component_repos() { # id top -> the main checkouts other than top that hold the run's component files

@@ -174,18 +174,6 @@ run_checks() {
     return 1
   fi
   write_step_log PASS path-links ok
-  light_missing=''
-  for path in "$HOME/.claude/agents/light-research.md" "$HOME/.claude/agents/light-worker.md"; do
-    [ -f "$path" ] || light_missing="${light_missing:+$light_missing; }$path absent"
-  done
-  if [ -n "$light_missing" ]; then
-    write_step_log FAIL light-install "$light_missing"
-    write_log FAIL light-install
-    printf 'llm-selfcheck: light-install failed (%s)\n' "$light_missing" >&2
-    alert_failure light-install
-    return 1
-  fi
-  write_step_log PASS light-install ok
   local -a steps=("e2e_surfaces.sh:${LLM_SELFCHECK_E2E_TIMEOUT:-900}")
   for path in "$repo_root"/tests/test_llm_limits.sh "$repo_root"/tests/test_llm_limits_*.sh; do
     steps+=("${path##*/}:${LLM_SELFCHECK_SUITE_TIMEOUT:-300}")

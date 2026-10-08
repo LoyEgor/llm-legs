@@ -51,7 +51,7 @@ case "$1" in
     shift
     brief=''; args="$*"
     while [ $# -gt 0 ]; do [ "$1" = --brief ] && brief=$2; shift; done
-    printf '%s\t%s\t%s\n' "${WORKER_RUN_RELAY%%:*}" "$args" "$brief" >>"$CALLS"
+    printf '%s\t%s\t%s\n' "${WORKER_RUN_RELAY-unset}" "$args" "$brief" >>"$CALLS"
     [ "$FAKE_RC" = 0 ] || { echo 'OUTCOME: CLAUDEB_USAGE_LIMIT'; exit "$FAKE_RC"; }
     n=$(wc -l <"$CALLS" | tr -d ' ')
     cp "$brief" "$CALLS.brief.$n"
@@ -86,12 +86,12 @@ assert grep -qx 'H×3: PreToolUse:Bash stderr awk: towc: multibyte conversion fa
 assert test "$(grep -c 'multibyte' <<<"$skeleton")" -eq 2
 assert test "$(grep -c 'SECRET-OUTPUT\|huge context' <<<"$skeleton")" -eq 0
 
-# A full read: every chunk and the merge run on Claude Sonnet under the log-audit relay type, and the
+# A full read: every chunk and the merge run on Claude Sonnet with no relay token at all, and the
 # audit's own transcripts are never read back.
 out=$("$ROOT/bin/log-audit" run --night N1)
 assert grep -q '^log-audit: 1 transcripts in 1 chunks read, 2 findings for the Harness doctor$' <<<"$out"
 assert test "$(wc -l <"$CALLS" | tr -d ' ')" -eq 2
-assert test "$(cut -f1 "$CALLS" | sort -u)" = log-audit
+assert test "$(cut -f1 "$CALLS" | sort -u)" = unset
 assert test "$(cut -f2 "$CALLS" | grep -c '^claudeb --model sonnet --effort medium ')" -eq 2
 assert grep -q '^# Log audit: chunk 1 of 1$' "$CALLS.brief.1"
 assert test "$(head -1 "$CALLS.brief.1")$(head -1 "$CALLS.brief.2")" = 'ROUND: noneROUND: none'

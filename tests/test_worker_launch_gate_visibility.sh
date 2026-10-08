@@ -68,8 +68,12 @@ expect deny '' 'gemini-probe --account rawi'
 expect deny codex-worker 'ask_gemini.sh q'
 expect pass '' 'ask_claude.sh --extract-served-model /tmp/out.json'
 
-# 13: a review-waiter owns its review wait, not worker-run launches.
-expect deny review-waiter 'worker-run start codex --brief /tmp/b --workdir /tmp'
+# 13: the chat starts and awaits its own worker runs, in the foreground or the background.
+expect pass '' 'worker-run start codex --brief /tmp/b --workdir /tmp'
+expect pass '' 'worker-run wait r1' '' true
+expect pass '' 'worker-run wait r1 --max 540' 120000
+expect pass '' 'light-research --prompt-file /tmp/q --out /tmp/a --repo /w' '' true
+expect pass '' 'review-bench wait 20260924T000000Z-abc1234' '' true
 
 # 23: a headless worker never launches a review panel; a plain wait stays open.
 expect pass '' 'review-bench review --mode diff'
@@ -80,21 +84,13 @@ asserts=$((asserts + 1))
 asserts=$((asserts + 1))
 [ "$(CLAUDEB_WORKER=1 verdict '' 'review-bench wait 20260924T000000Z-abc1234 --relaunch')" = deny ] ||
   fail "worker review-bench wait --relaunch passed"
-
-# 10: `--max=N` is read as N.
-expect pass codex-worker 'worker-run wait r1 --max=540' 600000
-expect deny codex-worker 'worker-run wait r1 --max=540' 200000
-
-# 43: review-waiter and light-research polls are held to the same timeout rule.
-expect deny review-waiter 'review-bench wait 20260924T000000Z-abc1234' 600000
-expect deny review-waiter 'review-bench wait 20260924T000000Z-abc1234 --max 540' 120000
-expect pass review-waiter 'review-bench wait 20260924T000000Z-abc1234 --max 540' 600000
-expect deny light-research 'light-research --attach r1 --out /tmp/o' 120000
-expect pass light-research 'light-research --attach r1 --out /tmp/o' 600000
-
-# 44: a backgrounded poll, or one through a variable with no timeout, lets the relay return early.
-expect deny codex-worker 'worker-run wait r1 --max 540' 600000 true
-expect deny codex-worker 'W=~/.local/bin/worker-run; $W wait r1'
+# A headless worker never starts or awaits a run of its own.
+for owned in 'worker-run start codex --brief /tmp/b --workdir /tmp' 'worker-run wait r1' 'light-research --prompt-file /tmp/q --out /tmp/a'; do
+  asserts=$((asserts + 1))
+  [ "$(CLAUDEB_WORKER=1 verdict '' "$owned")" = deny ] || fail "worker [$owned] passed"
+done
+asserts=$((asserts + 1))
+[ "$(CLAUDEB_WORKER=1 verdict '' 'worker-run report r1')" != deny ] || fail "worker report denied"
 
 # The hook payload as the harness sends it: an agent's call carries its id beside its type.
 raw_verdict() { # extra-json command
@@ -112,9 +108,18 @@ expect_as() { # decision extra-json command [reason-fragment]
   [ -z "${4:-}" ] || jq -r '.hookSpecificOutput.permissionDecisionReason' <<<"$out" | grep -Fq -- "$4" ||
     fail "[$3] as $2: the reason does not say [$4]"
 }
-RELAY='{"agent_type":"codex-worker","agent_id":"a1","tool_input":{"timeout":600000}}'
-WAITER='{"agent_type":"review-waiter","agent_id":"a2","tool_input":{"timeout":600000}}'
+AGENT='{"agent_type":"general-purpose","agent_id":"a1","tool_input":{"timeout":600000}}'
 FORK='{"agent_type":"fork","agent_id":"a3","tool_input":{"timeout":600000}}'
+
+# A worker run belongs to the chat that waits on it: no agent starts, awaits or researches through one.
+for agent in "$AGENT" "$FORK"; do
+  for owned in 'worker-run start codex --brief /tmp/b --workdir /tmp' 'cd /w && worker-run wait r1 --max 540' \
+    'light-research --prompt-file /tmp/q --out /tmp/a'; do
+    expect_as deny "$agent" "$owned" 'starts or awaits a worker run that belongs to the chat'
+  done
+  expect_as pass "$agent" 'worker-run report r1'
+done
+expect_as pass '{}' 'grep -n "worker-run start" bin/worker-run'
 
 # The codex MCP tools are a headless codex launch outside every launcher.
 for mcp_tool in mcp__codex__codex mcp__codex__codex-reply; do
@@ -122,19 +127,16 @@ for mcp_tool in mcp__codex__codex mcp__codex__codex-reply; do
 done
 expect_as pass '{"tool_name":"mcp__other__tool","tool_input":{"prompt":"hi"}}' ''
 
-# The relay and review tokens are the hooks' to stamp; a command setting one forges its owner.
-for forged in 'WORKER_RUN_RELAY=codex-worker:a1 worker-run start codex --brief /tmp/b --workdir /tmp' \
-  'export WORKER_RUN_RELAY=codex-worker:a1; bash /tmp/launch.sh' 'env WORKER_RUN_RELAY=x python3 go.py' \
-  'X=1 REVIEW_BENCH_DOOR=abc review-bench review --mode diff' 'declare -x REVIEW_BENCH_DOOR=abc' \
-  'export WORKER_RUN_RELAY=codex-worker:a1; ls' "export WORKER_RUN_REL''AY=x; ls" "declare -x 'REVIEW_BENCH_DOOR'=abc"; do
-  expect_as deny "$RELAY" "$forged" 'stamped by the hooks alone'
+# The review token is the door's to stamp; a command setting it forges its owner.
+for forged in 'X=1 REVIEW_BENCH_DOOR=abc review-bench review --mode diff' 'declare -x REVIEW_BENCH_DOOR=abc' \
+  "declare -x 'REVIEW_BENCH_DOOR'=abc" "export REVIEW_BENCH_DO''OR=x; ls"; do
+  expect_as deny "$AGENT" "$forged" 'stamped by the hooks alone'
   expect_as deny '{}' "$forged" 'stamped by the hooks alone'
 done
-expect_as pass '{}' 'echo "$WORKER_RUN_RELAY"'
-expect_as pass '{}' 'grep -n WORKER_RUN_RELAY= bin/worker-run'
+expect_as pass '{}' 'export WORKER_RUN_RELAY=codex-worker:a1; ls'
 
 # A review panel belongs to the chat's own shell: no agent type launches one, not even from a Monitor.
-for agent in "$RELAY" "$WAITER" "$FORK" '{"agent_type":"general-purpose","agent_id":"a4"}'; do
+for agent in "$AGENT" "$FORK" '{"agent_type":"claude","agent_id":"a4"}'; do
   expect_as deny "$agent" 'review-bench review --tier T0' 'An agent never runs a review'
   expect_as deny "$agent" 'cd /tmp && review-bench run --preset x' 'An agent never runs a review'
   expect_as pass "$agent" 'review-bench review --help'
@@ -142,15 +144,19 @@ done
 expect_as deny '{"tool_name":"Monitor"}' 'review-bench review --tier T0' 'launches a review panel past the door'
 expect_as deny '{"tool_name":"Monitor"}' 'while true; do review-bench run --preset x; done' 'launches a review panel past the door'
 expect_as pass '{"tool_name":"Monitor"}' 'tail -f /tmp/log'
-# review-waiter alone keeps the recovery of the run it waits on.
-expect_as pass "$WAITER" 'review-bench wait 20260924T000000Z-abc1234 --max 540 --relaunch'
-expect_as pass "$WAITER" 'review-bench wait 20260924T000000Z-abc1234 --max 540 --finish-partial'
+expect_as deny '{"tool_name":"Monitor"}' 'review-bench review --tier T0' 'then run `review-bench wait <run-id>` as a background Bash'
+# A Monitor polling a wait re-reads the run every round; the background Bash wait is the one form.
+expect_as deny '{"tool_name":"Monitor"}' 'worker-run wait r1 --max 60' 'Run `worker-run wait <run-id>` once as a Bash call with `run_in_background: true`'
+expect_as deny '{"tool_name":"Monitor"}' 'while :; do review-bench wait 20260924T000000Z-abc1234 --max 30; done' '`run_in_background: true`'
+# The chat keeps the recoveries of the review it waits on; an agent has none.
+expect_as pass '{}' 'review-bench wait 20260924T000000Z-abc1234 --relaunch'
+expect_as pass '{}' 'review-bench wait 20260924T000000Z-abc1234 --finish-partial'
 expect_as deny "$FORK" 'review-bench wait 20260924T000000Z-abc1234 --max 540 --relaunch' 'An agent never runs a review'
 
 # A sanctioned tool exempts only its own segment, never the launch chained after it.
 expect_as deny '{}' 'llm-limits --table --no-write; claude -p hi' 'bare headless vendor launch'
 expect_as deny '{}' 'review-bench debt && codex exec hi' 'bare headless vendor launch'
-expect_as deny "$RELAY" 'worker-run wait r1 --max 540; codex exec hi' 'bare headless vendor launch'
+expect_as deny '{}' 'worker-run wait r1 --max 540; codex exec hi' 'bare headless vendor launch'
 expect_as pass '{}' 'llm-limits --table --no-write'
 
 # A help screen launches nothing, while a real launch chained beside one still does.
@@ -159,7 +165,7 @@ for help in 'codex help exec' 'codex exec --help' 'claude -p --help' 'claude -p 
   'codex exec --help 2>&1 | head -30' 'codex exec -h 2>&1' 'codex exec --help >/tmp/x.txt' 'codex help exec 2>&1' \
   'codex exec --help > /tmp/out' 'claude -p --help 2> /dev/null'; do
   expect_as pass '{}' "$help"
-  expect_as pass "$RELAY" "$help"
+  expect_as pass "$AGENT" "$help"
 done
 expect_as deny '{}' 'codex exec --help; codex exec hi' 'bare headless vendor launch'
 expect_as deny '{}' 'claude -p "explain --help"' 'bare headless vendor launch'
@@ -191,27 +197,13 @@ for plain in 'crontab -l' 'crontab -u me -l' 'false || claude' 'echo x | grep ge
   expect_as pass '{}' "$plain"
 done
 
-# With Light off the relay Agents a deny names are the four vendor relays alone.
+# The deny names the way that works, the same for the chat and an agent: the chat's own worker run.
+for asker in '{}' "$AGENT"; do
+  expect_as deny "$asker" 'claude -p hi' 'A worker is a worker run the chat starts itself: `worker-run start <vendor> --brief <file> --workdir <dir>`'
+  expect_as deny "$asker" 'ask_codex.sh q' 'then `worker-run wait <run-id>` as a background Bash and `worker-run report <run-id>` when it ends'
+done
 printf 'light_paused=on\n' >"$WORK/light-toggle"
-WORKER_PICK_CONFIG_FILE="$WORK/light-toggle" expect_as deny '{}' 'claude -p hi' \
-  "gemini-worker or grok-worker, the one worker-pick's NEXT row names, a read-only question in a brief"
-expect_as deny '{}' 'claude -p hi' 'or light-research for a read-only question'
-
-# The deny names the way that works: a relay is told worker-run start, everyone else the relay Agents.
-expect_as deny "$RELAY" 'claude -p hi' 'Launch it through `worker-run start'
-expect_as deny '{}' 'claude -p hi' 'claudeb-worker, codex-worker, gemini-worker, grok-worker or light-worker'
-expect_as deny '{}' 'ask_codex.sh q' 'claudeb-worker, codex-worker, gemini-worker, grok-worker or light-worker'
-
-# A relay's poll backgrounded behind a redirection or a chain returns before the run does.
-expect_as deny "$RELAY" 'worker-run wait r1 --max 540 >/tmp/o 2>&1 &'
-expect_as deny "$RELAY" 'cd /tmp && worker-run wait r1 --max 540 &'
-expect_as pass "$RELAY" 'worker-run wait r1 --max 540 2>&1'
-expect_as pass "$RELAY" 'worker-run wait r1 --max 540 >/tmp/o 2>&1 && cat /tmp/o'
-# The `&` a poll is judged by is a shell one, never a character inside a heredoc body or a quote.
-expect_as pass '{"agent_type":"light-research","agent_id":"a4","tool_input":{"timeout":600000}}' \
-  $'cat >/tmp/q <<\'Q\'\ncompare light-research & worker-run\nQ\nlight-research --question-file /tmp/q'
-expect_as pass '{"agent_type":"light-research","agent_id":"a4","tool_input":{"timeout":600000}}' \
-  'light-research --question "light-research & worker-run"'
+WORKER_PICK_CONFIG_FILE="$WORK/light-toggle" expect_as deny '{}' 'claude -p hi' "worker-pick's START line names the vendor"
 
 # A sanctioned launcher reading its stdin is still that launcher.
 expect_as pass '{}' 'yes | claudeb revive acct1'
@@ -229,29 +221,6 @@ done
 expect_as deny '{}' $'echo "a\nb"; claude -p hi'
 expect_as deny '{}' $'echo "a\\"b\nc"; claude -p hi'
 
-# A relay's header deny says the call ran nothing, and a brief re-found by listing /tmp is another
-# relay's.
-mkdir -p "$WORK/t/subagents"
-jq -cn '{type:"user", message:{content:"ACCOUNT: acct1\nFix it."}}' >"$WORK/t/subagents/agent-a1.jsonl"
-RELAY_T=$(jq -cn --arg t "$WORK/t.jsonl" '{agent_type:"codex-worker",agent_id:"a1",transcript_path:$t,tool_input:{timeout:600000}}')
-expect_as deny "$RELAY_T" $'BRIEF=$(mktemp /tmp/codex-brief.XXXXXX) && cat >"$BRIEF" <<\'BRIEF_EOF\'\nx\nBRIEF_EOF\nworker-run start codex --brief "$BRIEF" --workdir /w' \
-  'retry the SAME call whole'
-expect_as pass "$RELAY_T" $'BRIEF=$(mktemp /tmp/codex-brief.XXXXXX) && cat >"$BRIEF" <<\'BRIEF_EOF\'\nx\nBRIEF_EOF\nworker-run start codex --brief "$BRIEF" --workdir /w --account acct1'
-for refound in 'BRIEF=$(ls -t /tmp/claudeb-brief.* | head -1); worker-run start codex --brief "$BRIEF" --workdir /w --account acct1' \
-  'worker-run start codex --brief "$(find /tmp -name codex-brief.X -newer /tmp/x)" --workdir /w --account acct1' \
-  'for b in /tmp/codex-brief.*; do :; done; worker-run start codex --brief "$b" --workdir /w --account acct1'; do
-  expect_as deny "$RELAY_T" "$refound" 'another relay'"'"'s brief'
-done
-# A flag value the gate cannot expand is not the brief's word, and a brief written through a variable
-# holding a literal path is the brief the launch reads.
-jq -cn '{type:"user", message:{content:"ACCOUNT: acct1\nMODEL: sol\nFix it."}}' >"$WORK/t/subagents/agent-a5.jsonl"
-RELAY_M=$(jq -cn --arg t "$WORK/t.jsonl" '{agent_type:"codex-worker",agent_id:"a5",transcript_path:$t,tool_input:{timeout:600000}}')
-BRIEF_M=$'cat >"$B" <<\'E\'\nACCOUNT: acct1\nMODEL: sol\nE\n'
-expect_as deny "$RELAY_M" "M=\$(resolve sol); B=\$(mktemp /tmp/codex-brief.XXXXXX) && ${BRIEF_M}worker-run start codex --brief \"\$B\" --workdir /w --model \"\$M\"" 'not `--model $M`'
-expect_as deny "$RELAY_M" "A=\$(pick); B=\$(mktemp /tmp/codex-brief.XXXXXX) && ${BRIEF_M}worker-run start codex --brief \"\$B\" --workdir /w --account \"\$A\"" 'not `--account $A`'
-expect_as pass "$RELAY_M" "B=/tmp/codex-brief.lg; ${BRIEF_M}worker-run start codex --brief \"\$B\" --workdir /w"
-expect_as deny "$RELAY_M" "B=/tmp/codex-brief.lg; ${BRIEF_M}B=/tmp/other; worker-run start codex --brief \"\$B\" --workdir /w" 'MODEL: sol'
-
 # A wrapper flag's own operand, or a sanctioned word swallowed by a loose wrapper's operands, leaves
 # the launch in command position; a quoted value split by an unquoted variable is the launch it spells.
 for wrapped in 'timeout -s KILL 600 claude -p x' 'env -u FOO claude -p x' 'exec codex exec "review bin/worker-run"' \
@@ -262,15 +231,6 @@ done
 for plain in 'env -u FOO worker-run report r1' 'sudo -u me worker-run report r1' 'C="hello world"; echo $C'; do
   expect_as pass '{}' "$plain"
 done
-# A grouped or variable poll backgrounded is backgrounded, and the polls of one call add up.
-expect_as deny "$RELAY" 'W=worker-run; $W wait r1 --max 60 &' 'followed by `&`'
-expect_as deny "$RELAY" '{ worker-run wait r1 --max 60; } &' 'followed by `&`'
-expect_as deny "$RELAY" 'worker-run wait a --max 300; worker-run wait b --max 300' 'no Bash timeout can cover'
-expect_as deny '{"agent_type":"codex-worker","agent_id":"a1","tool_input":{"timeout":120000}}' \
-  'worker-run wait a --max 30; worker-run wait b' 'one after another'
-expect_as pass '{"agent_type":"codex-worker","agent_id":"a1","tool_input":{"timeout":170000}}' \
-  'worker-run wait a --max 30; worker-run wait b'
-
 # Egor's autonomy span hands the ask_*/probe legs and scheduling back to the model; the mechanical
 # denials stay.
 printf 'words_span_live() { [ "$1" = s1 ]; }\n' >"$WORK/span-on.sh"
@@ -301,4 +261,4 @@ PATH="$WORK/shim:$PATH" bash "$GATE" <"$WORK/plain.json" >/dev/null 2>&1
 asserts=$((asserts + 1))
 [ "$(tr '\n' ' ' <"$WORK/starts")" = "jq " ] || fail "a plain write call started: $(tr '\n' ' ' <"$WORK/starts")"
 
-printf 'PASS: %s asserts; the launch gate denies inline print flags, every headless codex subcommand, wrapped and program-string vendor calls, comment and operand exemptions, the ask_*/probe legs, review-waiter worker-run launches, worker review panels, relay polls that are backgrounded (behind a redirection or a chain too) or outrun their timeout (--max=N read, review-waiter and light-research included), hand-set relay and review tokens, review launches from any agent or a Monitor (review-waiter keeps its recoveries), a launch chained after a sanctioned segment and the package-runner, flock and exec wrappers, a vendor fed through a pipe, at/batch/crontab scheduling and the codex MCP tools, with deny texts naming the relay Agents, while plain reads pass\n' "$asserts"
+printf 'PASS: %s asserts; the launch gate denies inline print flags, every headless codex subcommand, wrapped and program-string vendor calls, comment and operand exemptions, the ask_*/probe legs, worker review panels, worker-run start/wait and light-research inside any agent or a headless worker while the chat runs them in the foreground or background, a Monitor polling a wait, a hand-set review token, review launches from any agent or a Monitor (the chat keeps its recoveries), a launch chained after a sanctioned segment and the package-runner, flock and exec wrappers, a vendor fed through a pipe, at/batch/crontab scheduling and the codex MCP tools, with deny texts naming the chat'"'"'s own worker-run start, background wait and report, while plain reads pass\n' "$asserts"

@@ -4,8 +4,8 @@
 set -u
 
 IFS= read -r -d '' input || :
-[ "${CLAUDEB_WORKER:-}" = 1 ] || [ "${GROK_WORKER:-}" = 1 ] ||
-  case $input in *'"agent_type"'*) ;; *) exit 0 ;; esac
+# A headless worker is a session of its own, so claudeb and grokb mark its environment.
+[ "${CLAUDEB_WORKER:-}" = 1 ] || [ "${GROK_WORKER:-}" = 1 ] || exit 0
 # Only a `git` segment running one of these subcommands is ever denied below, and both words stand in
 # the raw payload from the command on (cwd and transcript paths come before it): a worker's ordinary
 # call starts no process.
@@ -22,26 +22,14 @@ fields=()
 eval "fields=($parsed)"
 
 [ "${fields[0]-}" = PreToolUse ] || exit 0
-agent_type=${fields[1]-}
-case "$agent_type" in
-  codex-worker|claudeb-worker|gemini-worker|grok-worker|light-worker) ;;
-  # A headless claudeb run is a worker session itself, not a subagent of one, so its
-  # agent_type is empty; claudeb marks it so the guard still covers it, and grokb marks a
-  # headless grok run the same way.
-  *) if [ "${CLAUDEB_WORKER:-}" = 1 ]; then agent_type=claudeb-headless
-     elif [ "${GROK_WORKER:-}" = 1 ]; then agent_type=grok-headless
-     else exit 0; fi ;;
-esac
-
-session_id=${fields[2]-}
-[[ "$session_id" =~ ^[A-Za-z0-9_-]+$ ]] || exit 0
 [ -n "${HOME:-}" ] || exit 0
-# The permission is one spawn's, carried by its seed into that agent's own tag file: a marker keyed
-# by session and agent type unlocked every later sibling whose brief never asked.
-agent_id=${fields[5]-}
-agent_id=${agent_id//[^A-Za-z0-9_-]/}
-[ -n "$agent_id" ] && grep -qx 'git_cleanup=allowed' "$HOME/.cache/claude-worker-tags/$session_id/$agent_id" 2>/dev/null &&
-  exit 0
+# The permission is one run's: worker-run hands the worker its own run record, whose brief is the
+# orchestrator's text byte for byte.
+run_record=${WORKER_RUN_RECORD:-}
+case "$run_record" in
+  "${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"/*)
+    grep -Eq '^GIT-CLEANUP:[[:blank:]]*allowed' "$run_record/brief" 2>/dev/null && exit 0 ;;
+esac
 
 command_text=${fields[3]-}
 [ -n "$command_text" ] || exit 0

@@ -164,13 +164,12 @@ worker-end $place_top"
   clear_stub
 }
 report_bus_tests
-# A finished worker posts nothing to Egor's chat; its outcome is the relay's to read.
+# A finished worker posts nothing to Egor's chat; its outcome is the chat's to read through its report.
 assert test ! -s "$REPORT_BUS_LOG"
 
 
-# Inside Claude Code, start and wait belong to the relay agent the tag hook stamps WORKER_RUN_RELAY for;
-# a script, an interpreter, a Monitor or a background shell of any other agent holds no token.
-relay_refused() { # expected-text env-assignments... -- worker-run-args...
+# Start and wait belong to the chat that owns the run; a headless worker holds none of its own.
+door_refused() { # expected-text env-assignments... -- worker-run-args...
   local expected="$1" rc=0 runs_before
   shift
   local assignments=()
@@ -178,70 +177,71 @@ relay_refused() { # expected-text env-assignments... -- worker-run-args...
   shift
   clear_stub
   runs_before=$(find "$WORKER_RUN_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l)
-  env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u CLAUDEB_WORKER -u WORKER_RUN_RELAY "${assignments[@]}" \
-    "$RUNNER" "$@" >"$WORK/relay.out" 2>"$WORK/relay.err" || rc=$?
+  env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u CLAUDEB_WORKER "${assignments[@]}" \
+    "$RUNNER" "$@" >"$WORK/door.out" 2>"$WORK/door.err" || rc=$?
   assert test "$rc" -eq 4
-  assert grep -Fq -- "$expected" "$WORK/relay.err"
+  assert grep -Fq -- "$expected" "$WORK/door.err"
   assert test ! -s "$CALL_LOG"
   assert test ! -s "$PICK_LOG"
   assert test "$runs_before" = "$(find "$WORKER_RUN_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l)"
 }
 
-relay_door_tests() {
-  local owner='runs only inside the relay agent that owns the run' marker token
+worker_door_tests() {
+  local owner='runs from the chat that owns the run, never inside a headless worker' gate="$WORK/limit-gate"
   set_config
   export PICK_RC=0 PICK_ACCOUNT=picked
-  for marker in CLAUDECODE=1 CLAUDE_CODE_ENTRYPOINT=cli CLAUDEB_WORKER=1; do
-    relay_refused "$owner" "$marker" -- start claudeb --brief "$WORK/brief" --workdir "$WORK/workdir"
-    relay_refused "$owner" "$marker" -- wait claudeb-1-1-abcd --max 0
-  done
-  for token in claudeb-worker claudeb-worker: 'claudeb-worker:a/b' general-purpose:ag1 fork:ag1 review-waiter:ag1; do
-    relay_refused "$owner" CLAUDECODE=1 "WORKER_RUN_RELAY=$token" -- start claudeb --brief "$WORK/brief" --workdir "$WORK/workdir"
-  done
-  relay_refused 'was spawned with an `ATTACH <run-id>:` brief' CLAUDECODE=1 WORKER_RUN_RELAY=claudeb-worker:ag1:attach -- \
+  door_refused "$owner" CLAUDEB_WORKER=1 -- start claudeb --brief "$WORK/brief" --workdir "$WORK/workdir"
+  door_refused "$owner" CLAUDEB_WORKER=1 -- wait claudeb-1-1-abcd --max 0
+  # Inside Claude Code the chat's start passes the limit gate on its own brief first.
+  cat >"$gate" <<'GATE'
+#!/bin/sh
+printf '%s\n' "$*" >>"$LIMIT_GATE_LOG"
+case "$LIMIT_GATE_MODE" in
+  deny) printf '{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"Blocked: claudeb is walled."}}\n' ;;
+  note) printf '{"hookSpecificOutput":{"additionalContext":"Claude account picked is at 90%%."}}\n' ;;
+esac
+GATE
+  chmod +x "$gate"
+  export WORKER_RUN_LIMIT_GATE="$gate" LIMIT_GATE_LOG="$WORK/limit-gate.log"
+  : >"$LIMIT_GATE_LOG"
+  door_refused 'Blocked: claudeb is walled. Nothing was launched and no account was spent.' CLAUDECODE=1 LIMIT_GATE_MODE=deny -- \
     start claudeb --brief "$WORK/brief" --workdir "$WORK/workdir"
-  relay_refused 'a claudeb-worker relay starts `worker-run start claudeb`, not `codex`' CLAUDECODE=1 WORKER_RUN_RELAY=claudeb-worker:ag1 -- \
-    start codex --brief "$WORK/brief" --workdir "$WORK/workdir"
-  relay_refused 'the research role belongs to the light-research Agent' CLAUDECODE=1 WORKER_RUN_RELAY=codex-worker:ag1 -- \
-    start codex --role research --brief "$WORK/brief" --workdir "$WORK/workdir"
-  relay_refused 'a light-research relay starts research runs only' CLAUDECODE=1 WORKER_RUN_RELAY=light-research:ag1 -- \
-    start codex --brief "$WORK/brief" --workdir "$WORK/workdir"
-  relay_refused 'the research role belongs to the light-research Agent' CLAUDECODE=1 WORKER_RUN_RELAY=code-doctor-judge:42 -- \
-    start claudeb --role research --brief "$WORK/brief" --workdir "$WORK/workdir"
-  relay_refused 'the log audit reads on Claude only' CLAUDECODE=1 WORKER_RUN_RELAY=log-audit:42 -- \
-    start codex --brief "$WORK/brief" --workdir "$WORK/workdir"
+  assert test "$(cat "$LIMIT_GATE_LOG")" = "--start claudeb $WORK/brief"
   clear_stub
-  CLAUDECODE=1 CLAUDE_CODE_SESSION_ID=audit-owner WORKER_RUN_RELAY=log-audit:42 start_ok claudeb
-  await_done || fail "the log-audit run never finished"
-  assert test "$(cat "$WORKER_RUN_DIR/$RUN_ID/script-owner")" = 'log-audit 42'
-  clear_stub
-  CLAUDECODE=1 WORKER_RUN_RELAY=code-doctor-judge:42 start_ok claudeb
-  await_done || fail "the code-doctor-judge run never finished"
-  assert grep -q '^STATUS: done' "$WORK/wait.out"
-  clear_stub
-  CLAUDECODE=1 WORKER_RUN_RELAY=claudeb-worker:ag1 start_ok claudeb
+  CLAUDECODE=1 LIMIT_GATE_MODE=note start_ok claudeb
+  assert grep -Fqx 'worker-run: note: Claude account picked is at 90%.' "$WORK/start.err"
   local output index
   for index in $(seq 1 100); do
-    output=$(CLAUDECODE=1 WORKER_RUN_RELAY=claudeb-worker:ag1:attach "$RUNNER" wait "$RUN_ID" --max 0)
+    output=$(CLAUDECODE=1 "$RUNNER" wait "$RUN_ID" --max 0)
     grep -q '^STATUS: done\|^STATUS: failed' <<<"$output" && break
     sleep 0.05
   done
   assert grep -q '^STATUS: done' <<<"$output"
-  assert test "$(cat "$STUB_DIR/relay_env")" = __unset__
   assert test "$(cat "$STUB_DIR/background_env")" = "1 1500000 1500000"
   assert grep -q '^CLAUDEB_CALL$' "$CALL_LOG"
   assert test "$(grep -A1 -xF 'ARG=--disallowedTools' "$CALL_LOG" | tail -n +2)" = 'ARG=WebSearch\,WebFetch\,ScheduleWakeup\,CronCreate'
-  relay_refused "$owner" CLAUDECODE=1 -- wait "$RUN_ID" --max 0
+  : >"$LIMIT_GATE_LOG"
+  clear_stub
+  CLAUDE_CODE_ENTRYPOINT=cli start_ok codex
+  assert grep -Fqx -- "--start codex $WORK/brief" "$LIMIT_GATE_LOG"
+  await_done
+  # Outside Claude Code (Egor's terminal, the night's scripts) no gate is asked.
+  : >"$LIMIT_GATE_LOG"
+  clear_stub
+  start_ok claudeb
+  assert test ! -s "$LIMIT_GATE_LOG"
+  await_done
+  unset WORKER_RUN_LIMIT_GATE LIMIT_GATE_LOG
 }
 
 nested_model_tests() {
   local parent="$WORK/fable-parent"
   mkdir -p "$parent"
   printf '{"vendor":"claudeb","model":"fable"}\n' >"$parent/meta.json"
-  relay_refused 'nested in a Fable worker and would hand its brief to claudeb opus' WORKER_RUN_RECORD="$parent" -- \
+  door_refused 'nested in a Fable worker and would hand its brief to claudeb opus' WORKER_RUN_RECORD="$parent" -- \
     start claudeb --model opus --account main --brief "$WORK/brief" --workdir "$WORK/workdir"
-  assert grep -qx 'OUTCOME: NESTED_MODEL_REFUSED' "$WORK/relay.out"
-  relay_refused 'nested in a Fable worker and would hand its brief to codex astra' WORKER_RUN_RECORD="$parent" -- \
+  assert grep -qx 'OUTCOME: NESTED_MODEL_REFUSED' "$WORK/door.out"
+  door_refused 'nested in a Fable worker and would hand its brief to codex astra' WORKER_RUN_RECORD="$parent" -- \
     start codex --model astra --account main --brief "$WORK/brief" --workdir "$WORK/workdir"
   clear_stub
   WORKER_RUN_RECORD="$parent" start_ok claudeb --model fable --account main
@@ -253,7 +253,7 @@ nested_model_tests() {
 }
 
 model_effort_tests
-relay_door_tests
+worker_door_tests
 nested_model_tests
 
-echo "PASS: $asserts asserts; the report bus, effort refusals before launch and the relay door"
+echo "PASS: $asserts asserts; the report bus, effort refusals before launch, the worker door refusing a headless worker's start and wait, and the limit gate a chat's start passes (deny refuses unlaunched, a note rides on stderr, none asked outside Claude Code)"

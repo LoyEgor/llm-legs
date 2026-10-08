@@ -85,13 +85,8 @@ for site in "$REPORT_BUS" "$REPORT_NOTICE"; do
   assert grep -Fq '[ -z "$agent" ] ||' "$site"
   assert grep -Fq '*/subagents/*)' "$site"
 done
-# A relay's own transcript is located and read by share/relay-transcript.sh alone.
-for site in "$ROOT/bin/worker-launch-gate.sh" "$ROOT/bin/worker-tag-hook.sh"; do
-  assert grep -Fq 'relay_first_prompt "' "$site"
-  assert test "$(grep -c -e '/subagents/' -e 'fromjson?' "$site")" = 0
-done
 report_types='codex-worker|claudeb-worker|gemini-worker|grok-worker|light-worker|light-research'
-for site in "$REPORT_BUS" "$REPORT_TAG"; do assert grep -Fq "$report_types)" "$site"; done
+assert grep -Fq "$report_types)" "$REPORT_BUS"
 for marker in CLAUDEB_WORKER=1 agent_id /subagents/ agent_type codex-worker claudeb-worker gemini-worker grok-worker light-worker light-research; do
   assert doc_has "$marker"
   assert grep -Fq "$marker" "$REPORT_DOC"
@@ -447,7 +442,6 @@ assert grep -Fq 'retired_flash = "agy-" + "flash35-"' "$RB_RATERS"
 assert grep -Fq 'return "flash35-" + rater[len(retired_flash):]' "$RB_RATERS"
 # Every family the bench can launch resolves to its slug in the tag hook: a family the statusline
 # cannot name shows the configured default instead of the model the run is actually spending.
-assert grep -Fq 'model=$(worker_model_gemini_family "$(printf' "$ROOT/bin/worker-tag-hook.sh"
 while IFS=$'\t' read -r fam_family fam_slug fam_prefix _; do
   assert eq "$(bash -c '. "$1"; worker_model_gemini_family "$2" | cut -f2' _ "$ROOT/share/worker-model.sh" "$fam_prefix-high")" "$fam_slug"
   assert eq "$(bash -c '. "$1"; worker_model_gemini_family "$2" | cut -f1' _ "$ROOT/share/worker-model.sh" "$fam_slug")" "$fam_family"
@@ -685,14 +679,11 @@ assert doc_has 'grokb: grok models failed; no cache; using the built-in list'
 # A hook reads the list, it never refreshes it: the no-fetch switch is one name, read in grokb and
 # exported by both hooks.
 assert grep -Fq '[ "${GROKB_MODELS_NO_FETCH:-}" != 1 ] || no_fetch=true' "$GROKB_BIN"
-for no_fetch_site in "$ROOT/bin/worker-tag-hook.sh" "$ROOT/bin/worker-spawn-hook.sh"; do
-  assert grep -Fqx 'export GROKB_MODELS_NO_FETCH=1' "$no_fetch_site"
-done
 assert doc_has '`GROKB_MODELS_NO_FETCH=1`'
 # One resolution of the slug a `chat-pin grok-fast` chat launches, or a task row names a model the
 # run does not use.
 assert grep -Fq 'worker_model_grok_launch_model() { # model role [chat-pin-file]' "$ROOT/share/worker-model.sh"
-for fast_site in "$ROOT/bin/worker-run" "$ROOT/bin/worker-spawn-hook.sh"; do
+for fast_site in "$ROOT/bin/worker-run"; do
   assert grep -Fq 'worker_model_grok_launch_model' "$fast_site"
 done
 assert doc_has '`worker_model_grok_launch_model`'
@@ -843,7 +834,7 @@ assert eq "$(grok_launch_acct auto research "$CONSISTENCY_CACHE/grok-no-pin" fas
 assert eq "$(grok_launch_acct grok-4.6 workers "$CONSISTENCY_CACHE/grok-no-pin" fastacct)" grok-4.6
 assert eq "$(grok_launch auto light "$grok_fast_pin")" auto
 assert eq "$(grok_launch auto workers "$CONSISTENCY_CACHE/no-such-pin")" auto
-for label_site in "$WORKER_RUN" "$ROOT/bin/worker-tag-hook.sh" "$ROOT/bin/worker-spawn-hook.sh"; do
+for label_site in "$WORKER_RUN"; do
   assert grep -Fq 'worker_model_grok_label' "$label_site"
   assert test "$(grep -Fc 'grok-4.6' "$label_site")" -eq 0
 done
@@ -884,21 +875,13 @@ for site in "$ROOT/share/worker-policy.md" "$ROOT/docs/routing-contract.md" \
 done
 # The relay briefs may not offer a cheap model as a per-task MODEL: option.
 for agent in "$CLAUDEB_AGENT" "$CODEX_AGENT" "$GEMINI_AGENT" "$GROK_AGENT"; do
-  assert test -r "$agent"
+  [ -r "$agent" ] || continue
   # The frontmatter `model:` is the RELAY's own model, not a model it may ask a worker to run.
   assert test "$(grep -Ev '^model: ' "$agent" | grep -Eic '(sonnet|haiku|flash3[0-59]|gpt-5\.6-(terra|luna))')" -eq 0
 done
 assert doc_has 'Allowed worker models'
 assert doc_has 'claudeb `opus`, codex `astra` (the newest slug of the family `codexb models` lists, row `cv`), gemini the newest Flash family `geminib families` prints, the table'"'"'s first gemini row since `pro` is emitted last whatever its version (also every other slug the list prints, row `cr`), grok `auto` (the CLI'"'"'s own default, plus every slug `grokb models` prints, row `cu`)'
 
-SPAWN_HOOK="$ROOT/bin/worker-spawn-hook.sh"
-assert grep -Fq 'acct=$(worker_model_pin_first gemini' "$SPAWN_HOOK"
-assert grep -Fq 'WORKER_PICK="${WORKER_SPAWN_WORKER_PICK:-$HOME/.local/bin/worker-pick}"' "$SPAWN_HOOK"
-assert grep -Fq 'acct=$(brief_line ACCOUNT)' "$SPAWN_HOOK"
-for vendor in claudeb codex gemini grok; do
-  assert grep -Fq '[ -n "$acct" ] || acct=$(route_account '"$vendor"')' "$SPAWN_HOOK"
-done
-assert grep -Fq '[ -n "$acct" ] || acct=main' "$SPAWN_HOOK"
 assert grep -Fq '`gemini_profile=<name>`' "$WORKER_COMMAND"
 assert grep -Fq -- '--account) [ "$#" -ge 2 ] || usage; explicit_account="$2"; shift 2 ;;' "$WORKER_RUN"
 assert grep -Fq '"$picker" --account "$vendor"' "$WORKER_RUN"
@@ -1088,15 +1071,15 @@ chmod +x "$LIGHT_GATE_WORK/bin/worker-pick"
 jq -n '{schema:1, vendors:{claude:{accounts:[{account:"alpha", five_hour:{used_pct:100}}]}}}' \
   >"$LIGHT_GATE_WORK/limits.json"
 light_gate() {
-  jq -cn --arg w "$1" --arg p "${2:-x}" '{tool_input:{subagent_type:$w, prompt:$p}}' |
-    LIGHT_PICK_LOG="$LIGHT_GATE_WORK/picks" \
+  printf '%s\n' "${2:-x}" >"$LIGHT_GATE_WORK/brief"
+  LIGHT_PICK_LOG="$LIGHT_GATE_WORK/picks" \
     WORKER_PICK_CONFIG_FILE="$LIGHT_GATE_WORK/worker-model" \
     LLM_LIMITS_FILE="$LIGHT_GATE_WORK/limits.json" \
     WORKER_GATE_WORKER_PICK="$LIGHT_GATE_WORK/bin/worker-pick" \
     WORKER_GATE_STAMPS="$LIGHT_GATE_WORK/stamps" \
     WORKER_STATS_DIR="$LIGHT_GATE_WORK/stats" \
     CLAUDEB_DIR="$LIGHT_GATE_WORK/store" \
-      bash "$ROOT/bin/worker-limit-gate.sh"
+      bash "$ROOT/bin/worker-limit-gate.sh" --start "${1%-worker}" "$LIGHT_GATE_WORK/brief"
 }
 : >"$LIGHT_GATE_WORK/picks"
 light_gate_out=$(light_gate light-worker)
@@ -1121,10 +1104,7 @@ assert test -z "$(light_gate light-worker $'ACCOUNT: alpha\nx')"
 assert test -z "$(light_gate light-worker)"
 light_mismatch_out=$(light_gate light-worker $'ACCOUNT: beta\nx')
 assert test "$(jq -r '.hookSpecificOutput.additionalContext' <<<"$light_mismatch_out")" = 'ACCOUNT beta ≠ worker-pick alpha (allowed).'
-# A re-attach to a live run launches nothing and says nothing, even under a disagreeing toggle.
-mkdir -p "$LIGHT_GATE_WORK/runs/claudeb-1-attach"
-assert test -z "$(WORKER_RUN_DIR="$LIGHT_GATE_WORK/runs" light_gate claudeb-worker $'ATTACH claudeb-1-attach: keep waiting')"
-# A vendor relay under the same toggle still hears it.
+# A vendor start under the same toggle still hears it.
 assert grep -Fq 'The worker toggle says worker=codex' <<<"$(light_gate claudeb-worker)"
 # A Computer Use brief routes codex under `computer`, a role codex_workers=off does not close.
 printf 'worker=claudeb\ncodex_workers=off\n' >"$LIGHT_GATE_WORK/worker-model"
@@ -1201,17 +1181,16 @@ printf 'worker=codex\ncodex_profile=*\n' >"$LIGHT_GATE_WORK/worker-model"
 jq -n '{schema:1, vendors:{codex:{accounts:[{account:"alpha", five_hour:{used_pct:10}},
   {account:"beta", five_hour:{used_pct:10}}]}}}' >"$LIGHT_GATE_WORK/limits.json"
 : >"$LIGHT_GATE_WORK/picks"
-assert test -z "$(jq -cn '{tool_input:{subagent_type:"codex-worker", prompt:"x"}}' |
-  LIGHT_PICK_LOG="$LIGHT_GATE_WORK/picks" WORKER_PICK_CONFIG_FILE="$LIGHT_GATE_WORK/worker-model" \
+printf 'x\n' >"$LIGHT_GATE_WORK/brief"
+assert test -z "$(LIGHT_PICK_LOG="$LIGHT_GATE_WORK/picks" WORKER_PICK_CONFIG_FILE="$LIGHT_GATE_WORK/worker-model" \
   LLM_LIMITS_FILE="$LIGHT_GATE_WORK/limits.json" \
   WORKER_GATE_WORKER_PICK="$LIGHT_GATE_WORK/tree/bin/worker-pick" \
   CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" CLAUDEB_DIR="$LIGHT_GATE_WORK/store" \
-  WORKER_STATS_DIR="$LIGHT_GATE_WORK/stats" bash "$LIGHT_GATE_WORK/tree/bin/worker-limit-gate.sh")"
+  WORKER_STATS_DIR="$LIGHT_GATE_WORK/stats" bash "$LIGHT_GATE_WORK/tree/bin/worker-limit-gate.sh" --start codex "$LIGHT_GATE_WORK/brief")"
 assert test "$(wc -l <"$LIGHT_GATE_WORK/picks" | tr -d ' ')" = 1
 rm -rf "$LIGHT_GATE_WORK"
 
 assert test -r "$WORKER_GATE_SETTINGS"
-assert eq "$(jq '[.hooks.PreToolUse[] | select(.matcher == "Agent|Task") | .hooks[] | select(.command == "~/.claude/hooks/worker-limit-gate.sh")] | length' "$WORKER_GATE_SETTINGS")" 1
 # The legacy Task name reaches the same two Agent gates, and the codex MCP tools the launch gate.
 assert eq "$(jq '[.hooks.PreToolUse[] | select(.matcher == "Agent|Task") | .hooks[] | select(.command == "~/.claude/hooks/worker-spawn-hook.sh")] | length' "$WORKER_GATE_SETTINGS")" 1
 assert eq "$(jq '[.hooks.PreToolUse[] | select(.matcher | split("|") | index("mcp__codex__codex") and index("mcp__codex__codex-reply")) | .hooks[] | select(.command == "~/.claude/hooks/worker-launch-gate.sh")] | length' "$WORKER_GATE_SETTINGS")" 1
@@ -1222,19 +1201,19 @@ assert grep -Fq 'hard `100`% wall' "$ROOT/$DOC"
 assert doc_has 'Worker spawn pressure gate'
 
 # --- Row bt: native agent types --------------------------------------------------
-# One owner: the spawn hook's lists; the doc and routing-contract prose repeat them in words. A deny
+# One owner: the spawn hook's case; the doc and routing-contract prose repeat it in words. A deny
 # from a second gate on the same Agent call outranks the owner's allow, so the limit gate carries none.
 ROUTING_DOC="$ROOT/docs/routing-contract.md"
 SPAWN_HOOK_BIN="$ROOT/bin/worker-spawn-hook.sh"
-native_list() { sed -nE "s/^$1='([^']*)'\$/\1/p" "$SPAWN_HOOK_BIN" | head -n1; }
-assert eq "$(native_list RELAY_TYPES)" 'claudeb-worker codex-worker gemini-worker grok-worker light-worker'
-assert eq "$(native_list NATIVE_ALLOWLIST)" 'fork review-waiter light-research'
-for native in $(native_list NATIVE_ALLOWLIST); do
-  assert grep -Fq "\`$native\`" "$ROOT/$DOC"
-  assert grep -Fq "\`$native\`" "$ROUTING_DOC"
+assert test "$(grep -Ec '^  fork\) ;;$' "$SPAWN_HOOK_BIN")" -eq 1
+assert grep -Fq 'claudeb-worker | codex-worker | gemini-worker | grok-worker | light-worker)' "$SPAWN_HOOK_BIN"
+for retired in claudeb-worker codex-worker gemini-worker grok-worker light-worker light-research review-waiter; do
+  assert grep -Fq "$retired" "$SPAWN_HOOK_BIN"
+  assert grep -Fq "$retired" "$ROOT/$DOC"
 done
-assert grep -Fq "spawn the relay Agent worker-pick's NEXT row names instead" "$SPAWN_HOOK_BIN"
-assert doc_has "the ask to spawn the relay Agent worker-pick's NEXT row names instead"
+assert grep -Fq 'worker-run start %s --brief <file> --workdir <dir>' "$SPAWN_HOOK_BIN"
+assert grep -Fq '`worker-run start <vendor> --brief <file> --workdir <dir>`' "$ROUTING_DOC"
+assert doc_has 'DENIED with the direct protocol'
 assert test "$(grep -Ec '^NATIVE_[A-Z_]+=' "$WORKER_GATE")" -eq 0
 assert test "$(grep -Fc "runs on this session's own quota" "$WORKER_GATE")" -eq 0
 assert test "$(grep -Fc 'light-research' "$WORKER_GATE")" -eq 0
@@ -1249,7 +1228,6 @@ for retired_doc in "$ROOT/$DOC" "$ROUTING_DOC"; do
 done
 # The limit gate prices no native type at all: with the media relay gone it has no session-model rule.
 assert test "$(grep -Ec 'orchestrator_model|claude-fable-|anthropic\.ccr' "$WORKER_GATE")" -eq 0
-assert grep -Fq 'explicit tool models' "$ROUTING_DOC"
 assert doc_has 'Native agent types'
 
 # --- Rows bu/bv: worker-run deadlines and the launched brief -----------------
@@ -1615,15 +1593,14 @@ JOURNAL_LIB="$CLAUDE_SETUP/hooks/lib/review-journal.sh"
 assert doc_has 'Worker run liveness identity'
 assert grep -Fq '.pid_started_at = $began' "$ROOT/bin/worker-run"
 assert eq "$(grep -c '\.pid_started_at = ' "$ROOT/bin/worker-run")" 1
-# Wait, report, both launch guards, the relay hold and the Stop backstop share the supervisor
+# Wait, report, both launch guards and the Stop backstop share the supervisor
 # identity check.
 RUN_LIVENESS="$ROOT/share/run-liveness.sh"
 assert grep -Fq '. "$SCRIPT_DIRECTORY/../share/run-liveness.sh"' "$ROOT/bin/worker-run"
-assert grep -Fq 'supervisor_running "$directory" "$pid"' "$ROOT/bin/worker-relay-hold.sh"
 assert grep -Fq 'supervisor_running "$run" "$pid"' "$ROOT/bin/worker-run-backstop.sh"
 assert grep -Fq 'supervisor_running "$2" "$3"' "$ROOT/bin/llm-doctor"
 assert eq "$(grep -cE 'os\.kill|[^[:alnum:]_]etime' "$ROOT/bin/llm-doctor")" 0
-assert eq "$(grep -c '^[^#]*kill -0' "$ROOT/bin/worker-relay-hold.sh" "$ROOT/bin/worker-run-backstop.sh" | awk -F: '{s += $2} END {print s}')" 0
+assert eq "$(grep -c '^[^#]*kill -0' "$ROOT/bin/worker-run-backstop.sh" | awk -F: '{s += $2} END {print s}')" 0
 assert grep -Fq 'PID_START_SLACK=30' "$RUN_LIVENESS"
 assert grep -Fq 'ps -p "$2" -o etime=' "$RUN_LIVENESS"
 # 0 is the pre-launch placeholder both sides must refuse to probe: `ps -p 0` answers nothing while
@@ -1720,7 +1697,6 @@ assert grep -Fq "printf '%s/chat-%s' \"\$(dirname \"\$(worker_model_pin_grant)\"
 assert doc_has '`${WORDS_DIR:-$HOME/.cache/claude/words}/<session_id>/grant.pin`'
 assert grep -Fq 'words_grant_target "$(worker_model_chat_session)" pin' "$ROOT/bin/chat-pin"
 assert doc_has 'claude-setup `hooks/word-intake.sh` (writer)'
-assert grep -Fq '[ -z "$sid" ] || export CLAUDE_CODE_SESSION_ID="$sid"' "$ROOT/bin/worker-limit-gate.sh"
 assert grep -Fq '[ -z "$hook_session" ] || export CLAUDE_CODE_SESSION_ID="$hook_session"' "$ROOT/bin/worker-spawn-hook.sh"
 assert grep -Fq "CLAUDE_CODE_SESSION_ID='' worker_model_pin_first grok" "$ROOT/llm-limits.sh"
 
@@ -2687,7 +2663,6 @@ assert eq "$(grep -o '_G\.ClaudeChatSwitch\.cancel([^)]*)' "$HAMMER" | sort -u)"
 # One default pair spelled in five places, and the one rule that is not a default: `auto` is the
 # ABSENCE of a model override, so a surface that renders it as a version, or a launcher that
 # substitutes one, answers for a choice nobody made.
-GROK_TAG_HOOK="$ROOT/bin/worker-tag-hook.sh"
 assert grep -Fq 'conf_get grok_model; gr_model=${conf_val:-auto}' "$WORKERPICK"
 assert grep -Fq 'conf_get grok_effort; gr_effort=${conf_val:-$(worker_model_default_effort grok "$gr_model")}' "$WORKERPICK"
 assert grep -Fq 'model=${model:-$(worker_model_default_model "$vendor")}' "$WORKER_RUN"
@@ -2695,10 +2670,6 @@ assert grep -Fq 'effort=${effort:-$(worker_model_default_effort "$vendor" "$mode
 assert grep -Fq '[ "$model" = auto ] || command_meta+=(-m "$model")' "$WORKER_RUN"
 assert grep -Fq 'worker_model_effort_allowed "$vendor" "$model" "$effort"' "$WORKER_RUN"
 assert grep -Fq 'outcome_line EFFORT_REFUSED' "$WORKER_RUN"
-for grok_knob_hook in "$SPAWN_HOOK" "$GROK_TAG_HOOK"; do
-  assert grep -Fq 'worker_conf grok_model' "$grok_knob_hook"
-  assert grep -Fq 'worker_conf grok_effort' "$grok_knob_hook"
-done
 assert grep -Fq '`grok_model=auto|<slug>` (`auto` is the Grok CLI'"'"'s own default; a slug is one `grokb models` prints) and `grok_effort=high|xhigh`' "$WORKER_COMMAND"
 assert doc_has 'Grok worker knobs'
 assert doc_has '`grok_model=auto`, `grok_effort=high`'
@@ -3048,24 +3019,15 @@ done
 assert doc_has 'ONE table, `share/web-search.sh` `web_search_table`'
 
 # --- Rows cx, cy: the runtime doors ------------------------------------------------
-# One relay list in three spellings: the types the tag hook stamps, the types worker-run accepts
-# (plus the end-report composer), and the spawn hook's RELAY_TYPES beside light-research.
-TAG_HOOK_BIN="$ROOT/bin/worker-tag-hook.sh"
+# worker-run's own door and the text gate refuse the same pair; the review nonce is the only token left.
 WORKER_RUN_BIN="$ROOT/bin/worker-run"
-stamped_types=$(awk '/^relay_prefix=/{on=1} on && /^  [a-z|-]+\)$/{gsub(/[ )]/, ""); print; exit}' "$TAG_HOOK_BIN" | tr '|' '\n' | sort | xargs)
-accepted_types=$(awk '/^  case "\$RELAY_TYPE" in$/{getline; sub(/\) ;;$/, ""); gsub(/ /, ""); print; exit}' "$WORKER_RUN_BIN" |
-  tr '|' '\n' | grep -vx 'end-report\|code-doctor-judge\|log-audit' | sort | xargs)
-assert eq "$stamped_types" "$(printf '%s\n' $(native_list RELAY_TYPES) light-research | sort | xargs)"
-assert eq "$accepted_types" "$stamped_types"
-assert grep -Fq 'relay_prefix="export WORKER_RUN_RELAY=$relay_token"' "$TAG_HOOK_BIN"
-assert grep -Fq 'relay_token="$agent_type:${agent_id//[^A-Za-z0-9_-]/}"' "$TAG_HOOK_BIN"
-assert grep -Fq 'relay_door "${1:-}"' "$WORKER_RUN_BIN"
-assert grep -Fq 'unset WORKER_RUN_RELAY' "$WORKER_RUN_BIN"
-assert grep -Fq '(WORKER_RUN_RELAY|REVIEW_BENCH_DOOR)=' "$ROOT/bin/worker-launch-gate.sh"
-assert grep -Fq 'WORKER_RUN_RELAY="end-report:%d"' "$FAMILY_SETUP_ROOT/skills-on-demand/end-report/compose.py"
-assert grep -Fq 'WORKER_RUN_RELAY="code-doctor-judge:%d"' "$ROOT/bin/code-doctor"
-assert grep -Fq 'WORKER_RUN_RELAY="log-audit:%d"' "$ROOT/bin/log-audit"
-assert doc_has '`WORKER_RUN_RELAY=<agent_type>:<agent_id>[:attach]`'
+assert grep -Fq 'worker_door "${1:-}"' "$WORKER_RUN_BIN"
+assert grep -Fq 'case "$1" in start | wait) ;;' "$WORKER_RUN_BIN"
+assert grep -Fq 'OWNED_RUN_RE="${VENDOR_WORD}(worker-run[[:space:]]+(start|wait)|light-research)${EDGE}"' "$ROOT/bin/worker-launch-gate.sh"
+assert grep -Fq '[[:space:]]+)*(REVIEW_BENCH_DOOR)="' "$ROOT/bin/worker-launch-gate.sh"
+assert grep -Fq 'local gate=${WORKER_RUN_LIMIT_GATE:-$SCRIPT_DIRECTORY/worker-limit-gate.sh}' "$WORKER_RUN_BIN"
+assert test -z "$(git -C "$ROOT" grep -l 'WORKER_RUN_RELAY' -- bin share 2>/dev/null)"
+assert doc_has '`worker-run` refuses both inside a headless worker (`CLAUDEB_WORKER=1`, `worker_door`)'
 # The review nonce: one directory, one TTL, one variable name on both sides of the door.
 REVIEW_DOOR_HOOK="$FAMILY_SETUP_ROOT/hooks/review-flow-gate.sh"
 assert grep -Fq 'door_dir=$HOME/.cache/claude-review-door' "$REVIEW_DOOR_HOOK"

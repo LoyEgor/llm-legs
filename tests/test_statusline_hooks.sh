@@ -4332,556 +4332,38 @@ if [ ! -e "$HOME/.claude/statusline-cache-rl" ]; then
 fi
 
 if suite_shard_owns 3 worker-tags; then
-# A codex launch command derives the tag (main, high), stores it, and prefixes.
-seed=$(worker_payload codex-worker worker/one 'Investigate the suite' "codex exec -c model_reasoning_effort=high 'go'")
-seed_output=$(printf '%s' "$seed" | "$WORKER_HOOK") || fail "worker seed exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "main · astra · high — Investigate the suite"' <<< "$seed_output" >/dev/null
-assert_eq 'main · astra · high' "$(cat "$TAGDIR/workerone")"
-
-rm -f "$HOME/.claude/worker-model"
-default_effort_seed=$(worker_payload codex-worker worker/default-effort 'Use table defaults' "codex exec 'go'")
-printf '%s' "$default_effort_seed" | "$WORKER_HOOK" >/dev/null || fail "default-effort codex tag exited nonzero"
-assert_eq 'main · astra · low' "$(cat "$TAGDIR/workerdefault-effort")"
-default_effort_claudeb=$(worker_payload claudeb-worker worker/default-effort-claudeb 'Use table defaults' 'claudeb --model opus -p task')
-printf '%s' "$default_effort_claudeb" | "$WORKER_HOOK" >/dev/null || fail "default-effort claudeb tag exited nonzero"
-assert_eq '? · opus · high' "$(cat "$TAGDIR/workerdefault-effort-claudeb")"
-
-# A later non-launch command reuses the stored tag to prefix its description.
-later=$(worker_payload codex-worker worker/one 'Run focused tests' 'bash tests/focused.sh')
-later_output=$(printf '%s' "$later" | "$WORKER_HOOK") || fail "worker rewrite exited nonzero"
-assert jq -e '.hookSpecificOutput.hookEventName == "PreToolUse" and
-  .hookSpecificOutput.permissionDecision == "allow" and
-  .hookSpecificOutput.updatedInput.description == "main · astra · high — Run focused tests" and
-  .hookSpecificOutput.updatedInput.command == "export WORKER_RUN_RELAY=codex-worker:workerone\nbash tests/focused.sh" and
-  .hookSpecificOutput.updatedInput.timeout == 42' <<< "$later_output" >/dev/null
-
-# An already-prefixed description is left untouched (no stacking); the relay token rides every call.
-prefixed=$(worker_payload codex-worker worker/one 'main · astra · high — Run focused tests' true)
-prefixed_output=$(printf '%s' "$prefixed" | "$WORKER_HOOK") || fail "prefixed worker call exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "main · astra · high — Run focused tests" and
-  .hookSpecificOutput.updatedInput.command == "export WORKER_RUN_RELAY=codex-worker:workerone\ntrue"' <<< "$prefixed_output" >/dev/null
-
-mkdir -p "$HOME/.codex"
-for config_model in gpt-9-zenith gpt-5.6-terra; do
-  printf 'model = "%s"\n' "$config_model" > "$HOME/.codex/config.toml"
-  seed_default=$(worker_payload codex-worker worker/default 'Optimize compute' "codex exec -c model_reasoning_effort=high 'go'")
-  seed_default_out=$(printf '%s' "$seed_default" | "$WORKER_HOOK") || fail "default model seed exited nonzero"
-  assert_eq 'main · astra · high' "$(cat "$TAGDIR/workerdefault")"
-  for label_script in "$WORKER_HOOK" "$SPAWN_HOOK"; do
-    label=$(
-      . "$ROOT/share/worker-model.sh"
-      eval "$(sed -n '/^codex_model_short_label() {/,/^}/p' "$label_script")"
-      codex_model_short_label
-    )
-    assert_eq astra "$label"
-  done
+# A fork's first call claims the seed its spawn left and prefixes the tag; later calls reuse it, a
+# prefixed description never stacks, and no relay token rides any call.
+mkdir -p "$TAGDIR"
+printf 'fork · opus · com\nspawn=0000000000000000\n' > "$TAGDIR/pending-fork-u1"
+fork_first=$(worker_payload fork worker/one 'Investigate the suite' 'ls' | "$WORKER_HOOK") || fail "fork seed exited nonzero"
+assert jq -e '.hookSpecificOutput.updatedInput == {command:"ls",description:"fork · opus · com — Investigate the suite",timeout:42}' <<< "$fork_first" >/dev/null
+assert_eq 'fork · opus · com' "$(head -n1 "$TAGDIR/workerone")"
+assert test ! -e "$TAGDIR/pending-fork-u1"
+fork_later=$(worker_payload fork worker/one 'Run focused tests' 'worker-run report codex-1-2-abcd' | "$WORKER_HOOK") || fail "fork rewrite exited nonzero"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "fork · opus · com — Run focused tests" and
+  .hookSpecificOutput.updatedInput.command == "worker-run report codex-1-2-abcd"' <<< "$fork_later" >/dev/null
+assert_eq "" "$(worker_payload fork worker/one 'fork · opus · com — Run focused tests' true | "$WORKER_HOOK")"
+# A retired relay type gets no tag and no token, launch line or not.
+for retired in codex-worker claudeb-worker light-research review-waiter; do
+  assert_eq "" "$(worker_payload "$retired" worker/retired 'Launch the run' "codex exec -c model_reasoning_effort=high 'go'" | "$WORKER_HOOK")"
 done
-rm -f "$HOME/.codex/config.toml"
-
-# worker-run wait/report adopt the tag the launcher wrote into its run dir, and
-# re-derive it on every call (the launcher may resolve a different account than
-# the spawn-time seed predicted).
-WRDIR="$HOME/.cache/claude-worker-runs/codex-1-2-abcd"
-mkdir -p "$WRDIR"
-printf 'work6 · astra · high\n' > "$WRDIR/tag"
-wr_wait=$(worker_payload codex-worker worker/wrun 'Wait for the run' 'worker-run wait codex-1-2-abcd --max 500')
-wr_out=$(printf '%s' "$wr_wait" | "$WORKER_HOOK") || fail "worker-run wait exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "work6 · astra · high — Wait for the run"' <<< "$wr_out" >/dev/null
-assert_eq 'work6 · astra · high' "$(head -n1 "$TAGDIR/workerwrun")"
-assert_eq 'run=codex-1-2-abcd' "$(sed -n 2p "$TAGDIR/workerwrun")"
-printf 'work3 · astra · high\n' > "$WRDIR/tag"
-wr_report=$(worker_payload codex-worker worker/wrun 'Collect the report' 'worker-run report codex-1-2-abcd')
-wr_report_out=$(printf '%s' "$wr_report" | "$WORKER_HOOK") || fail "worker-run report exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "work3 · astra · high — Collect the report"' <<< "$wr_report_out" >/dev/null
-# A report only prints a record: reading another run's never moves this agent's row off its own.
-mkdir -p "$HOME/.cache/claude-worker-runs/codex-9-9-ffff"
-printf 'other · astra · low\n' > "$HOME/.cache/claude-worker-runs/codex-9-9-ffff/tag"
-wr_other=$(worker_payload codex-worker worker/wrun 'Read the old run' 'worker-run report codex-9-9-ffff')
-wr_other_out=$(printf '%s' "$wr_other" | "$WORKER_HOOK") || fail "worker-run foreign report exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "work3 · astra · high — Read the old run"' <<< "$wr_other_out" >/dev/null
-assert_eq 'run=codex-1-2-abcd' "$(sed -n 2p "$TAGDIR/workerwrun")"
-
-# A run id hidden behind a shell variable is unresolvable from command text; the
-# hook must degrade to the previously stored tag, not crash or mis-tag.
-wr_var=$(worker_payload codex-worker worker/wrun 'Keep waiting' 'worker-run wait "$RUN_ID" --max 100')
-wr_var_out=$(printf '%s' "$wr_var" | "$WORKER_HOOK") || fail "worker-run variable-id wait exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "work3 · astra · high — Keep waiting"' <<< "$wr_var_out" >/dev/null
-
-# `worker-run start claudeb ...` names a vendor as an argument, not a launch:
-# with no run dir, no stored tag and no pending seed the hook tags nothing and only stamps the token
-# worker-run opens start and wait to inside Claude Code.
-wr_start=$(worker_payload claudeb-worker worker/wrstart 'Launch the run' 'worker-run start claudeb --brief /tmp/b --workdir /x')
-wr_start_out=$(printf '%s' "$wr_start" | "$WORKER_HOOK") || fail "worker-run start exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput == {
-    command: "export WORKER_RUN_RELAY=claudeb-worker:workerwrstart\nworker-run start claudeb --brief /tmp/b --workdir /x",
-    description: "Launch the run", timeout: 42} and .hookSpecificOutput.permissionDecision == "allow"' <<< "$wr_start_out" >/dev/null
-assert test ! -f "$TAGDIR/workerwrstart"
-# An ATTACH relay's token says so, and worker-run starts nothing for it; light-research gets the
-# token with no allow, and an agent that is no relay gets neither.
-relay_parent="$WORK/relay-attach-parent.jsonl"
-mkdir -p "${relay_parent%.jsonl}/subagents"
-jq -cn '{type:"user",message:{role:"user",content:"ATTACH codex-1-2-abcd: finish it\nmore"}}' \
-  >"${relay_parent%.jsonl}/subagents/agent-attach1.jsonl"
-jq -cn '{type:"user",message:{role:"user",content:"Fix the ATTACH parser\nATTACH x: y"}}' \
-  >"${relay_parent%.jsonl}/subagents/agent-plain1.jsonl"
-relay_call() { # agent-type agent-id
-  worker_payload "$1" "$2" 'Look around' 'ls' | jq -c --arg t "$relay_parent" '. + {transcript_path: $t}' | "$WORKER_HOOK"
-}
-assert jq -e '.hookSpecificOutput.updatedInput.command == "export WORKER_RUN_RELAY=codex-worker:attach1:attach\nls"' \
-  <<< "$(relay_call codex-worker attach1)" >/dev/null
-assert jq -e '.hookSpecificOutput.updatedInput.command == "export WORKER_RUN_RELAY=codex-worker:plain1\nls"' \
-  <<< "$(relay_call codex-worker plain1)" >/dev/null
-assert jq -e '.hookSpecificOutput.updatedInput.command == "export WORKER_RUN_RELAY=light-research:plain1\nls" and
-  (.hookSpecificOutput | has("permissionDecision") | not)' <<< "$(relay_call light-research plain1)" >/dev/null
-for non_relay in fork review-waiter general-purpose; do
-  non_relay_out=$(relay_call "$non_relay" plain1)
-  assert test -z "$(jq -r '.hookSpecificOutput.updatedInput.command // empty | select(test("WORKER_RUN_RELAY"))' <<< "$non_relay_out" 2>/dev/null)"
-done
-
-
-# A claudeb launch command derives the 3-part tag.
-glob_seed=$(worker_payload claudeb-worker worker/two 'Ship it' 'claudeb profile com -p --model sonnet --effort high')
-glob_seed_output=$(printf '%s' "$glob_seed" | "$WORKER_HOOK") || fail "glob-tag seed exited nonzero"
-assert_eq 'com · sonnet · high' "$(cat "$TAGDIR/workertwo")"
-glob_later=$(worker_payload claudeb-worker worker/two 'Run tests' true)
-glob_later_output=$(printf '%s' "$glob_later" | "$WORKER_HOOK") || fail "glob-tag rewrite exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "com · sonnet · high — Run tests"' \
-  <<< "$glob_later_output" >/dev/null
-
-# The launcher counts only as a command word, and the wrappers the real launches
-# run under (path prefix, timeout, nohup, nice) sit between it and the separator.
-for claudeb_launch in \
-  'claudeb profile com --model sonnet --effort high -p x' \
-  'cd /somewhere && claudeb profile com --model sonnet -p x' \
-  '~/.local/bin/claudeb profile com --model sonnet -p x' \
-  '"$HOME/.local/bin/claudeb" profile com --model sonnet -p x' \
-  'cd /somewhere && timeout 540 ~/.local/bin/claudeb profile com --model sonnet -p x' \
-  'nohup claudeb profile com --model sonnet -p x &' \
-  'nice -n 5 env CLAUDE_X=1 claudeb profile com --model sonnet -p x' \
-  'claudeb profile com --resume abc123 -p continue'; do
-  claudeb_form=$(worker_payload claudeb-worker worker/forms 'Resume it' "$claudeb_launch")
-  printf '%s' "$claudeb_form" | "$WORKER_HOOK" >/dev/null || fail "claudeb launch form exited nonzero"
-  assert grep -q '^com · ' "$TAGDIR/workerforms"
-  rm -f "$TAGDIR/workerforms"
-done
-
-# The documented codex launch carries its account in a CODEX_HOME assignment,
-# which stands between the separator and the command word.
-codex_env=$(worker_payload codex-worker worker/cenv 'Ship it' \
-  'cd /x && env timeout 600 CODEX_HOME="$HOME/.codex-profiles/alt" codex exec -c model_reasoning_effort=low go')
-printf '%s' "$codex_env" | "$WORKER_HOOK" >/dev/null || fail "codex env-prefixed launch exited nonzero"
-assert_eq 'alt · astra · low' "$(cat "$TAGDIR/workercenv")"
-
-# A profile name never starts with a hyphen: a malformed launch must fall back to
-# the configured account, not tag the flag that followed.
-printf 'claudeb_model=opus\nclaudeb_effort=high\n' > "$HOME/.claude/worker-model"
-malformed=$(worker_payload claudeb-worker worker/malformed 'Run it' 'claudeb profile --resume abc123 -p x')
-printf '%s' "$malformed" | "$WORKER_HOOK" >/dev/null || fail "malformed-profile launch exited nonzero"
-assert_eq '? · opus · high' "$(cat "$TAGDIR/workermalformed")"
-
-# Heredoc bodies are quoted text, not commands: neither a launch named mid-prose
-# nor one at the start of a body line may derive a tag. The pre-seeded pending
-# tag stands instead of the quoted word.
-PROSEDIR="$HOME/.cache/claude-worker-tags/wt-prose"
-for prose_body in \
-  'Avoid switching claudeb profile fake mid-switch when you pass -p to it.' \
-  'claudeb profile fake --model opus -p "x"'; do
-  rm -rf "$PROSEDIR"; mkdir -p "$PROSEDIR"
-  printf 'pend · opus · high\n' > "$PROSEDIR/pending-claudeb-worker"
-  prose=$(worker_payload claudeb-worker worker/prose 'Save the brief' \
-    "cat > /tmp/brief.md <<BRIEF
-$prose_body
-BRIEF" wt-prose)
-  prose_output=$(printf '%s' "$prose" | "$WORKER_HOOK") || fail "prose-quoting call exited nonzero"
-  assert_eq 'pend · opus · high' "$(cat "$PROSEDIR/workerprose")"
-  assert jq -e '.hookSpecificOutput.updatedInput.description == "pend · opus · high — Save the brief"' \
-    <<< "$prose_output" >/dev/null
-done
-
-# A real launch that merely feeds itself a heredoc still tags: the cut is at the
-# operator, and the launcher precedes it.
-heredoc_launch=$(worker_payload claudeb-worker worker/hd 'Ship it' \
-  'claudeb profile com --model sonnet -p "$(cat <<BRIEF
-do the thing
-BRIEF
-)"')
-printf '%s' "$heredoc_launch" | "$WORKER_HOOK" >/dev/null || fail "heredoc-fed launch exited nonzero"
-assert_eq 'com · sonnet · high' "$(cat "$TAGDIR/workerhd")"
-
-printf 'claudeb_model=opus\nclaudeb_effort=high\n' > "$HOME/.claude/worker-model"
-unknown_spawn=$(jq -cn '{
-  hook_event_name:"PreToolUse",session_id:"spawn-claudeb-unknown",
-  tool_input:{subagent_type:"claudeb-worker",description:"Implement fixture",
-              prompt:"MODEL: opus\nEFFORT: high\nWorking directory: /tmp"}}')
-unknown_spawn_out=$(printf '%s' "$unknown_spawn" | "$SPAWN_HOOK") || fail "unknown-account spawn hook exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "? · opus · high: Implement fixture"' \
-  <<<"$unknown_spawn_out" >/dev/null
-assert_eq '? · opus · high' \
-  "$(seed_of spawn-claudeb-unknown claudeb-worker)"
-
-# Light switched off in Egor's menu: a new Light spawn is refused with the way around it, and an
-# ATTACH to a run started before the switch still waits it out.
-printf 'light_paused=on\n' > "$HOME/.claude/worker-model"
-for light_agent in light-research light-worker; do
-  light_off_out=$(jq -cn --arg agent "$light_agent" '{hook_event_name:"PreToolUse",session_id:"spawn-light-off",
-    tool_input:{subagent_type:$agent,description:"Map the hooks",prompt:"Map the hooks."}}' | "$SPAWN_HOOK") ||
-    fail "light-off spawn hook exited nonzero"
-  assert jq -e '.hookSpecificOutput.permissionDecision == "deny"
-    and (.hookSpecificOutput.permissionDecisionReason | contains("Light is off"))' <<<"$light_off_out" >/dev/null
-done
-light_attach() { # run-id
-  jq -cn --arg p "ATTACH $1: wait" '{hook_event_name:"PreToolUse",session_id:"spawn-light-off",
-    tool_input:{subagent_type:"light-research",description:"Map the hooks",prompt:$p}}' | "$SPAWN_HOOK" ||
-    fail "light-off attach spawn hook exited nonzero"
-}
-# The harness denies the Light types themselves, so even a live run's ATTACH is sent to its vendor's relay.
-light_runs="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"
-mkdir -p "$light_runs/codex-1-live"
-printf '{}\n' >"$light_runs/codex-1-live/meta.json"
-for light_run in codex-1-live run-never; do
-  assert jq -e '.hookSpecificOutput.permissionDecision == "deny"
-    and (.hookSpecificOutput.permissionDecisionReason | contains("goes to the relay of that run'"'"'s vendor"))' \
-    <<<"$(light_attach "$light_run")" >/dev/null
-done
-rm -rf "$light_runs/codex-1-live"
-
-rm -f "$HOME/.claude/worker-model"
-default_effort_spawn=$(jq -cn '{
-  hook_event_name:"PreToolUse",session_id:"spawn-codex-default-effort",
-  tool_input:{subagent_type:"codex-worker",description:"Implement fixture",prompt:"Working directory: /tmp"}}')
-default_effort_spawn_out=$(printf '%s' "$default_effort_spawn" | WORKER_SPAWN_WORKER_PICK=/nonexistent "$SPAWN_HOOK") || fail "default-effort codex spawn exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "main · astra · low: Implement fixture"' \
-  <<<"$default_effort_spawn_out" >/dev/null
-assert_eq 'main · astra · low' \
-  "$(seed_of spawn-codex-default-effort codex-worker)"
-default_effort_claudeb_spawn=$(jq -cn '{
-  hook_event_name:"PreToolUse",session_id:"spawn-claudeb-default-effort",
-  tool_input:{subagent_type:"claudeb-worker",description:"Implement fixture",prompt:"Working directory: /tmp"}}')
-printf '%s' "$default_effort_claudeb_spawn" | WORKER_SPAWN_WORKER_PICK=/nonexistent "$SPAWN_HOOK" >/dev/null || fail "default-effort claudeb spawn exited nonzero"
-assert_eq '? · opus · high' \
-  "$(seed_of spawn-claudeb-default-effort claudeb-worker)"
-
-unknown_tag=$(worker_payload claudeb-worker worker/unknown 'Run it' 'claudeb --model opus -p task')
-unknown_tag_out=$(printf '%s' "$unknown_tag" | "$WORKER_HOOK") || fail "unknown-account tag hook exited nonzero"
-assert_eq '? · opus · high' "$(cat "$TAGDIR/workerunknown")"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "? · opus · high — Run it"' \
-  <<<"$unknown_tag_out" >/dev/null
-
-gemini_seed=$(worker_payload gemini-worker worker/gemini 'Implement it' \
-  "$HOME/.local/bin/geminib profile work --model gemini-3.6-flash --effort medium --print-timeout 20m --dangerously-skip-permissions --print task")
-gemini_seed_output=$(printf '%s' "$gemini_seed" | "$WORKER_HOOK") || fail "gemini-tag seed exited nonzero"
-assert_eq 'work · flash36 · medium' "$(cat "$TAGDIR/workergemini")"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "work · flash36 · medium — Implement it"' \
-  <<< "$gemini_seed_output" >/dev/null
-
-for gemini_launch in \
-  'geminib p short --model gemini-3.6-flash --effort medium --print task' \
-  'geminib run routed --model gemini-3.6-flash --effort medium --print task' \
-  'geminib direct exec --model gemini-3.6-flash --effort medium --print task'; do
-  gemini_form=$(worker_payload gemini-worker worker/gemini 'Resume it' "$gemini_launch")
-  gemini_form_output=$(printf '%s' "$gemini_form" | "$WORKER_HOOK") \
-    || fail "gemini shorthand tag exited nonzero"
-  expected_account=$(printf '%s\n' "$gemini_launch" | awk '{if ($2 == "p" || $2 == "run") print $3; else print $2}')
-  assert_eq "$expected_account · flash36 · medium" "$(cat "$TAGDIR/workergemini")"
-  assert jq -e --arg account "$expected_account" \
-    '.hookSpecificOutput.updatedInput.description == ($account + " · flash36 · medium — Resume it")' \
-    <<<"$gemini_form_output" >/dev/null
-done
-
-# The launch line's own model has to be the one that shows: the default `grokb models` marks
-# collapses to the vendor word and would render the same as the knob fallback, so the seed names a
-# model neither path produces.
-printf 'grok_model=auto\ngrok_effort=high\n' > "$HOME/.claude/worker-model"
-grok_seed=$(worker_payload grok-worker worker/grok 'Implement it' \
-  "env GROK_MEMORY=0 $HOME/.local/bin/grokb profile supergrok --prompt-file /tmp/brief --output-format streaming-json -m grok-4.5 --reasoning-effort xhigh")
-grok_seed_output=$(printf '%s' "$grok_seed" | "$WORKER_HOOK") || fail "grok-tag seed exited nonzero"
-assert_eq 'supergrok · grok-4.5 · xhigh' "$(cat "$TAGDIR/workergrok")"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "supergrok · grok-4.5 · xhigh — Implement it"' \
-  <<< "$grok_seed_output" >/dev/null
-# The default of `grokb models` is the one launch-line model that does collapse to the vendor word.
-grok_collapse=$(worker_payload grok-worker worker/grokcollapse 'Implement it' \
-  "grokb profile supergrok --prompt-file /tmp/brief -m grok-4.7 --reasoning-effort xhigh")
-printf '%s' "$grok_collapse" | "$WORKER_HOOK" >/dev/null || fail "grok collapse tag exited nonzero"
-assert_eq 'supergrok · grok · xhigh' "$(cat "$TAGDIR/workergrokcollapse")"
-
-# The knobs answer for what the launch line leaves out, exactly as they do for the other vendors.
-printf 'grok_model=grok-4.5\ngrok_effort=medium\n' > "$HOME/.claude/worker-model"
-for grok_launch in \
-  'grokb profile routed --prompt-file /tmp/brief' \
-  'grokb p short --prompt-file /tmp/brief' \
-  'grokb run rerouted --prompt-file /tmp/brief' \
-  'grokb direct exec --prompt-file /tmp/brief'; do
-  grok_form=$(worker_payload grok-worker worker/grok 'Resume it' "$grok_launch")
-  grok_form_output=$(printf '%s' "$grok_form" | "$WORKER_HOOK") || fail "grok shorthand tag exited nonzero"
-  expected_account=$(printf '%s\n' "$grok_launch" | awk '{if ($2 == "p" || $2 == "run" || $2 == "profile") print $3; else print $2}')
-  assert_eq "$expected_account · grok-4.5 · medium" "$(cat "$TAGDIR/workergrok")"
-  assert jq -e --arg account "$expected_account" \
-    '.hookSpecificOutput.updatedInput.description == ($account + " · grok-4.5 · medium — Resume it")' \
-    <<<"$grok_form_output" >/dev/null
-done
-
-# `auto` never reaches a tag: the vendor word stands in, like codex's `astra`.
-printf 'grok_model=auto\ngrok_effort=high\n' > "$HOME/.claude/worker-model"
-grok_auto_form=$(worker_payload grok-worker worker/grok 'Resume it' 'grokb profile routed --prompt-file /tmp/brief')
-grok_auto_form_output=$(printf '%s' "$grok_auto_form" | "$WORKER_HOOK") || fail "grok auto tag exited nonzero"
-assert_eq 'routed · grok · high' "$(cat "$TAGDIR/workergrok")"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "routed · grok · high — Resume it"' \
-  <<<"$grok_auto_form_output" >/dev/null
-
-# A grokb line that prints nothing headless is the human at the keyboard, and derives no tag.
-rm -f "$TAGDIR/workergrokint"
-grok_interactive=$(worker_payload grok-worker worker/grokint 'Look around' 'grokb profile supergrok models')
-grok_interactive_output=$(printf '%s' "$grok_interactive" | "$WORKER_HOOK") \
-  || fail "grok interactive tag exited nonzero"
-assert test ! -e "$TAGDIR/workergrokint"
-assert jq -e '.hookSpecificOutput.updatedInput == {description: "Look around", timeout: 42,
-  command: "export WORKER_RUN_RELAY=grok-worker:workergrokint\ngrokb profile supergrok models"}' <<< "$grok_interactive_output" >/dev/null
-
-printf 'grok_model=auto\ngrok_effort=high\n' > "$HOME/.claude/worker-model"
-# The brief's MODEL: line has to reach the row, so it names a model the knob fallback and the
-# default's collapse both cannot produce.
-grok_spawn=$(jq -cn '{
-  hook_event_name:"PreToolUse",session_id:"spawn-grok",
-  tool_input:{subagent_type:"grok-worker",description:"Implement fixture",
-              prompt:"ACCOUNT: supergrok\nMODEL: grok-4.5\nEFFORT: high\nWorking directory: /tmp"}}')
-grok_spawn_output=$(printf '%s' "$grok_spawn" | "$SPAWN_HOOK") || fail "grok spawn hook exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "supergrok · grok-4.5 · high: Implement fixture"' \
-  <<< "$grok_spawn_output" >/dev/null
-assert_eq 'supergrok · grok-4.5 · high' \
-  "$(seed_of spawn-grok grok-worker)"
-
-# No MODEL: line and grok_model=auto — the row says the vendor, not the knob word.
-grok_auto_spawn=$(jq -cn '{
-  hook_event_name:"PreToolUse",session_id:"spawn-grok-auto",
-  tool_input:{subagent_type:"grok-worker",description:"Implement fixture",
-              prompt:"ACCOUNT: supergrok\nEFFORT: high\nWorking directory: /tmp"}}')
-grok_auto_output=$(printf '%s' "$grok_auto_spawn" | "$SPAWN_HOOK") || fail "grok auto spawn hook exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "supergrok · grok · high: Implement fixture"' \
-  <<< "$grok_auto_output" >/dev/null
-assert_eq 'supergrok · grok · high' \
-  "$(seed_of spawn-grok-auto grok-worker)"
-
-# In a chat pinned with `chat-pin grok-fast` the run launches the `-fast` sibling, so the row has to
-# name it: the hook and `worker-run start` resolve the slug through the one helper, and a row that
-# named the default here would disagree with the launch-line tag a second later.
-printf 'grok_profile=*\ngrok_fast=on\n' >"$CHAT_PINS_DIR/spawn-grok-fast"
-grok_fast_spawn=$(jq -cn '{
-  hook_event_name:"PreToolUse",session_id:"spawn-grok-fast",
-  tool_input:{subagent_type:"grok-worker",description:"Implement fixture",
-              prompt:"ACCOUNT: supergrok\nEFFORT: high\nWorking directory: /tmp"}}')
-grok_fast_output=$(printf '%s' "$grok_fast_spawn" | "$SPAWN_HOOK") || fail "grok fast spawn hook exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "supergrok · grok-4.7-build-fast · high: Implement fixture"' \
-  <<< "$grok_fast_output" >/dev/null
-assert_eq 'supergrok · grok-4.7-build-fast · high' \
-  "$(seed_of spawn-grok-fast grok-worker)"
-# A brief naming a slug is a choice and travels as named, fast pin or not.
-grok_fast_named=$(jq -cn '{
-  hook_event_name:"PreToolUse",session_id:"spawn-grok-fast",
-  tool_input:{subagent_type:"grok-worker",description:"Implement fixture",
-              prompt:"ACCOUNT: supergrok\nMODEL: grok-4.5\nEFFORT: high\nWorking directory: /tmp"}}')
-assert jq -e '.hookSpecificOutput.updatedInput.description == "supergrok · grok-4.5 · high: Implement fixture"' \
-  <<< "$(printf '%s' "$grok_fast_named" | "$SPAWN_HOOK")" >/dev/null
-rm -f "$CHAT_PINS_DIR/spawn-grok-fast"
-
-# A hook runs on the interactive path, so it READS the model list and never refreshes it: a cold
-# cache must not put a 30 s bounded `grok models` in front of the keystroke. The fixture's stub
-# records every call it is handed, and the paired control is what makes the absence mean something.
-grok_signed_in="$WORK/grok-signed-in"
-mkdir -p "$grok_signed_in/supergrok"
-printf '{"key":"k","email":"w@example.com","refresh_token":"r","expires_at":"2099-01-01T00:00:00Z"}\n' \
-  >"$grok_signed_in/supergrok/auth.json"
-env GROKB_PROFILES_DIR="$grok_signed_in" GROKB_CACHE_DIR="$WORK/grok-cold-control" \
-  GROK_FETCH_MARKER="$WORK/grok-fetch-control" "$ROOT/bin/grokb" models >/dev/null 2>&1
-assert test -s "$WORK/grok-fetch-control"
-grok_cold_out=$(printf '%s' "$grok_auto_spawn" |
-  env GROKB_PROFILES_DIR="$grok_signed_in" GROKB_CACHE_DIR="$WORK/grok-cold-cache" \
-    GROK_FETCH_MARKER="$WORK/grok-fetch-hook" "$SPAWN_HOOK") ||
-  fail "cold-cache grok spawn hook exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "supergrok · grok · high: Implement fixture"' \
-  <<< "$grok_cold_out" >/dev/null
-assert test ! -e "$WORK/grok-fetch-hook"
-
-printf 'gemini_model=flash38\ngemini_effort=high\n' > "$HOME/.claude/worker-model"
-spawn_payload=$(jq -cn '{
-  hook_event_name:"PreToolUse",session_id:"spawn-gemini",
-  tool_input:{subagent_type:"gemini-worker",description:"Implement fixture",
-              prompt:"ACCOUNT: second\nMODEL: flash\nEFFORT: medium\nWorking directory: /tmp"}}')
-spawn_output=$(printf '%s' "$spawn_payload" | "$SPAWN_HOOK") || fail "gemini spawn hook exited nonzero"
-# `EFFORT: medium` in the brief is not what will be spent: worker-run raises every Gemini run to
-# high, and the row names the launch rather than the ask.
-assert jq -e '.hookSpecificOutput.updatedInput.description == "second · 3.8-flash · high: Implement fixture"' \
-  <<< "$spawn_output" >/dev/null
-assert_eq 'second · 3.8-flash · high' \
-  "$(seed_of spawn-gemini gemini-worker)"
-assert test "$(cat "$HOME/.cache/claude-worker-tags/spawn-gemini"/pending-gemini-worker-* | grep -c '^light=')" -eq 0
-
-# `geminib families` is a hook-time call, and the hook runs where geminib may be missing: the row
-# still names the model, read off the slug's own shape rather than a family literal (those live in
-# geminib alone, tests/test_consistency.sh).
-NO_GEMINIB="$WORK/no-geminib"
-mkdir -p "$NO_GEMINIB/bin"
-cp -R "$ROOT/share" "$NO_GEMINIB/share"
-cp "$SPAWN_HOOK" "$NO_GEMINIB/bin/"
-assert test ! -e "$NO_GEMINIB/bin/geminib"
-offline_spawn=$(jq -cn '{
-  hook_event_name:"PreToolUse",session_id:"spawn-gemini-offline",
-  tool_input:{subagent_type:"gemini-worker",description:"Implement fixture",
-              prompt:"ACCOUNT: second\nMODEL: flash38\nEFFORT: high\nWorking directory: /tmp"}}')
-offline_output=$(printf '%s' "$offline_spawn" | "$NO_GEMINIB/bin/worker-spawn-hook.sh") \
-  || fail "offline gemini spawn hook exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "second · 3.8-flash · high: Implement fixture"' \
-  <<< "$offline_output" >/dev/null
-assert_eq 'second · 3.8-flash · high' \
-  "$(seed_of spawn-gemini-offline gemini-worker)"
-
-# light-research is not a worker: its row is `light research · <model>`, the model the light_research
-# row's and never the worker-model knobs. The account IS predicted — a
-# pin first, then the router under `--role research`, the role this leg spends under, so a gemini
-# parked for workers alone still answers — and `?` only where nothing answers at all.
-research_spawn() { # session prompt [worker-pick]
-  jq -cn --arg session "$1" --arg prompt "$2" '{
-    hook_event_name:"PreToolUse",session_id:$session,
-    tool_input:{subagent_type:"light-research",description:"Map the hooks",prompt:$prompt}}' |
-    WORKER_SPAWN_WORKER_PICK="${3:-$HOME/.local/bin/worker-pick}" "$SPAWN_HOOK"
-}
-RESEARCH_PICK="$WORK/research-worker-pick"
-printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"%s"\necho routedaccount\n' \
-  "$WORK/research-pick.log" > "$RESEARCH_PICK"
-chmod +x "$RESEARCH_PICK"
-: > "$WORK/research-pick.log"
-# A knob that must not reach this row: worker-model says flash36/medium, the launcher says otherwise.
-printf 'gemini_model=flash36\ngemini_effort=medium\n' > "$HOME/.claude/worker-model"
-research_routed=$(research_spawn spawn-research 'Where is the tag written?' "$RESEARCH_PICK")
-assert jq -e '.hookSpecificOutput.updatedInput.description == "light research · 3.8-flash · routedaccount: Map the hooks"' \
-  <<< "$research_routed" >/dev/null
-assert_eq 'light research · 3.8-flash · routedaccount' \
-  "$(seed_of spawn-research light-research)"
-# The role travels with the query: the plain `--account gemini` reads the workers switch and
-# answers `off` for a vendor open to research.
-assert_eq '--account gemini --role research' "$(cat "$WORK/research-pick.log")"
-
-: > "$WORK/research-pick.log"
-research_pinned=$(research_spawn spawn-research-pin $'ACCOUNT: pinned\nWhere is the tag written?' "$RESEARCH_PICK")
-assert_eq 'light research · 3.8-flash · pinned' \
-  "$(seed_of spawn-research-pin light-research)"
-
-# An `--account` the brief spells on the launch line is the same pin by another spelling.
-research_flag=$(research_spawn spawn-research-flag \
-  $'Run light-research --account flagged --prompt-file /tmp/q --out /tmp/a --repo /tmp/r' "$RESEARCH_PICK")
-assert_eq 'light research · 3.8-flash · flagged' \
-  "$(seed_of spawn-research-flag light-research)"
-
-quoted_failures=0
-for quoted_account in '"quoted"' "'quoted'"; do
-  research_quoted=$(research_spawn spawn-research-quoted \
-    "Run light-research --account $quoted_account --prompt-file /tmp/q" "$RESEARCH_PICK")
-  asserts=$((asserts + 1))
-  if [ "$(seed_of spawn-research-quoted light-research)" != 'light research · 3.8-flash · quoted' ]; then
-    printf 'FAIL: quoted research account %s\n' "$quoted_account" >&2
-    quoted_failures=$((quoted_failures + 1))
-  fi
-done
-[ "$quoted_failures" -eq 0 ] || exit 1
-
-# A pin outranks the router, which is not asked at all where the brief already named the account.
-assert test ! -s "$WORK/research-pick.log"
-
-# `?` is the answer to silence alone: a picker that names nobody leaves the row saying so.
-SILENT_PICK="$WORK/silent-worker-pick"
-printf '#!/usr/bin/env bash\nexit 3\n' > "$SILENT_PICK"
-chmod +x "$SILENT_PICK"
-research_silent=$(research_spawn spawn-research-none 'Where is the tag written?' "$SILENT_PICK")
-assert_eq 'light research · 3.8-flash · ?' \
-  "$(seed_of spawn-research-none light-research)"
-printf 'gemini_model=flash38\ngemini_effort=high\n' > "$HOME/.claude/worker-model"
-
-# The light_research row moves the vendor, the model and the router query together.
-printf 'light_research=claudeb:sonnet\n' > "$HOME/.claude/worker-model"
-: > "$WORK/research-pick.log"
-research_spawn spawn-research-claudeb 'Where is the tag written?' "$RESEARCH_PICK" >/dev/null
-assert_eq 'light research · sonnet · routedaccount' "$(seed_of spawn-research-claudeb light-research)"
-assert_eq '--account claudeb --role research' "$(cat "$WORK/research-pick.log")"
-research_tag=$(worker_payload light-research worker/researchsonnet 'Search the tree' \
-  'light-research --prompt-file /tmp/q --out /tmp/a --repo /tmp/r --account worker')
-research_tag_out=$(printf '%s' "$research_tag" | "$WORKER_HOOK") || fail "research tag hook exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "worker · sonnet · medium — Search the tree"' \
-  <<< "$research_tag_out" >/dev/null
-
-# light-worker is a relay whose vendor, model and effort are the light_edit row's.
-light_worker_spawn() { # session prompt [worker-pick]
-  jq -cn --arg session "$1" --arg prompt "$2" '{
-    hook_event_name:"PreToolUse",session_id:$session,
-    tool_input:{subagent_type:"light-worker",description:"Fix typo",prompt:$prompt}}' |
-    WORKER_SPAWN_WORKER_PICK="${3:-$HOME/.local/bin/worker-pick}" "$SPAWN_HOOK"
-}
-printf 'light_edit=codex\n' > "$HOME/.claude/worker-model"
-: > "$WORK/research-pick.log"
-light_edit_out=$(light_worker_spawn spawn-light-edit 'Fix the typo' "$RESEARCH_PICK")
-assert jq -e '.hookSpecificOutput.updatedInput.description == "light edit · astra · routedaccount: Fix typo"' \
-  <<< "$light_edit_out" >/dev/null
-assert_eq '--account codex --role light' "$(cat "$WORK/research-pick.log")"
-assert grep -qx 'light=edit' "$(ls -t "$HOME/.cache/claude-worker-tags/spawn-light-edit"/pending-light-worker-* | head -n1)"
-: > "$HOME/.claude/worker-model"
-light_worker_spawn spawn-light-default $'ACCOUNT: pinned\nFix the typo' "$RESEARCH_PICK" >/dev/null
-assert_eq 'light edit · 3.8-flash · pinned' "$(seed_of spawn-light-default light-worker)"
-# `<vendor>_workers=off` closes neither Light role, so the row names the account the run will land
-# on; asked as a workers query it would fall through to `?` and predict an account nobody spends.
-ROLE_PICK="$WORK/role-worker-pick"
-cat >"$ROLE_PICK" <<'ROLEPICK'
-#!/usr/bin/env bash
-case "$*" in
-  *'--role light'*) printf 'lightaccount\n' ;;
-  *) exit 3 ;;
-esac
-ROLEPICK
-chmod +x "$ROLE_PICK"
-printf 'light_edit=gemini\ngemini_workers=off\n' > "$HOME/.claude/worker-model"
-light_worker_spawn spawn-light-off 'Fix the typo' "$ROLE_PICK" >/dev/null
-assert_eq 'light edit · 3.8-flash · lightaccount' "$(seed_of spawn-light-off light-worker)"
-printf 'gemini_model=flash38\ngemini_effort=high\n' > "$HOME/.claude/worker-model"
-
-# In flight, `--account` on the launch line is the account being spent.
-research_tag=$(worker_payload light-research worker/research 'Search the tree' \
-  'light-research --prompt-file /tmp/q --out /tmp/a --repo /tmp/r --account rawilimo')
-research_tag_out=$(printf '%s' "$research_tag" | "$WORKER_HOOK") || fail "research tag hook exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "rawilimo · flash38 · high — Search the tree"' \
-  <<< "$research_tag_out" >/dev/null
-assert_eq 'rawilimo · flash38 · high' "$(head -n1 "$TAGDIR/workerresearch")"
-assert grep -Eqx 'start=[0-9]+' "$TAGDIR/workerresearch"
-# A relay worker already bypasses permissions, so `allow` there only spares it a second prompt;
-# light-research runs INSIDE this session, where the same word would grant a call nobody granted.
-assert jq -e '.hookSpecificOutput | has("permissionDecision") | not' <<< "$research_tag_out" >/dev/null
-assert jq -e '.hookSpecificOutput.permissionDecision == "allow"' <<< "$seed_output" >/dev/null
-
-# Without one the script asks worker-pick at run time, so the spawn seed is the better answer.
-printf 'seeded · flash38 · high\n' > "$TAGDIR/pending-light-research"
-research_seeded=$(worker_payload light-research worker/researchseed 'Search the tree' \
-  'light-research --prompt-file /tmp/q --out /tmp/a --repo /tmp/r')
-research_seeded_out=$(printf '%s' "$research_seeded" | "$WORKER_HOOK") \
-  || fail "seeded research tag hook exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "seeded · flash38 · high — Search the tree"' \
-  <<< "$research_seeded_out" >/dev/null
+assert test ! -e "$TAGDIR/workerretired"
 
 # A stored tag carrying regex-special chars is matched literally, so an
 # already-prefixed description never stacks.
-mkdir -p "$TAGDIR"; printf 'com [1m] · high\n' > "$TAGDIR/workerbr"
-br=$(worker_payload claudeb-worker worker/br 'com [1m] · high — Run tests' true)
-br_output=$(printf '%s' "$br" | "$WORKER_HOOK") || fail "bracket-tag idempotent call exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "com [1m] · high — Run tests" and
-  .hookSpecificOutput.updatedInput.command == "export WORKER_RUN_RELAY=claudeb-worker:workerbr\ntrue"' <<< "$br_output" >/dev/null
+printf 'com [1m] · high\n' > "$TAGDIR/workerbr"
+br_output=$(worker_payload fork worker/br 'com [1m] · high — Run tests' true | "$WORKER_HOOK") || fail "bracket-tag idempotent call exited nonzero"
+assert_eq "" "$br_output"
 
 no_agent=$(jq -cn '{hook_event_name:"PreToolUse",tool_name:"Bash",agent_id:"workerone",tool_input:{command:"true",description:"Run"}}')
 no_agent_output=$(printf '%s' "$no_agent" | "$WORKER_HOOK") || fail "no-agent call exited nonzero"
 assert_eq "" "$no_agent_output"
 
-wrong_event=$(worker_payload codex-worker worker/three 'Worker account: alt · high' true | jq -c '.hook_event_name = "PostToolUse"')
+wrong_event=$(worker_payload fork worker/three 'Worker account: alt · high' true | jq -c '.hook_event_name = "PostToolUse"')
 wrong_event_output=$(printf '%s' "$wrong_event" | "$WORKER_HOOK") || fail "non-PreToolUse seed exited nonzero"
 assert_eq "" "$wrong_event_output"
-assert test ! -e "$HOME/.cache/claude-worker-tags/workerthree"
-
-wrong_rewrite=$(worker_payload codex-worker worker/one 'Run more tests' true | jq -c '.hook_event_name = "SessionStart"')
-wrong_rewrite_output=$(printf '%s' "$wrong_rewrite" | "$WORKER_HOOK") || fail "non-PreToolUse rewrite exited nonzero"
-assert_eq "" "$wrong_rewrite_output"
+assert test ! -e "$TAGDIR/workerthree"
 
 broken_output=$(printf '{broken' | "$WORKER_HOOK") || fail "broken JSON exited nonzero"
 assert_eq "" "$broken_output"
@@ -5463,7 +4945,7 @@ gate_payload() {
 }
 gate_agent_payload() {
   jq -cn --arg agent "$1" --arg command "$2" \
-    '{hook_event_name:"PreToolUse",tool_name:"Bash",agent_type:$agent,tool_input:{command:$command}}'
+    '{hook_event_name:"PreToolUse",tool_name:"Bash",agent_type:$agent,agent_id:"a1",tool_input:{command:$command}}'
 }
 gate_decision() { jq -r '.hookSpecificOutput.permissionDecision // "pass"' 2>/dev/null; }
 if suite_shard_owns 2 launch-gate-grok; then
@@ -5484,19 +4966,19 @@ for gate_denied in \
   'grok --prompt-json=/tmp/brief.json'; do
   gate_out=$(gate_payload "$gate_denied" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
   assert jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<<"$gate_out" >/dev/null
-  # The chat is pointed at the relay Agent that runs worker-run, a relay at worker-run itself.
-  assert jq -e '.hookSpecificOutput.permissionDecisionReason | contains("claudeb-worker, codex-worker, gemini-worker, grok-worker or light-worker")' \
+  # Chat and agent alike are pointed at the chat's own worker-run start.
+  assert jq -e '.hookSpecificOutput.permissionDecisionReason | contains("worker-run start <vendor> --brief <file> --workdir <dir>")' \
     <<<"$gate_out" >/dev/null
-  gate_out=$(gate_agent_payload grok-worker "$gate_denied" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  gate_out=$(gate_agent_payload fork "$gate_denied" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
   assert jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<<"$gate_out" >/dev/null
-  assert jq -e '.hookSpecificOutput.permissionDecisionReason | test("worker-run start <claudeb\\|codex\\|gemini\\|grok")' \
+  assert jq -e '.hookSpecificOutput.permissionDecisionReason | contains("worker-run start <vendor> --brief <file> --workdir <dir>")' \
     <<<"$gate_out" >/dev/null
 done
-gate_out=$(gate_agent_payload grok-worker 'worker-run start grok --brief /tmp/brief --workdir /tmp' | "$LAUNCH_GATE_BIN") ||
+gate_out=$(gate_payload 'worker-run start grok --brief /tmp/brief --workdir /tmp' | "$LAUNCH_GATE_BIN") ||
   fail "launch gate exited nonzero"
 assert_eq "" "$gate_out"
 # worker-run exempts its own segment only: a bare launch chained after it is still a bare launch.
-gate_out=$(gate_agent_payload grok-worker 'worker-run start grok --brief /tmp/brief ; grokb profile supergrok --prompt-file /tmp/brief' |
+gate_out=$(gate_payload 'worker-run start grok --brief /tmp/brief ; grokb profile supergrok --prompt-file /tmp/brief' |
   "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
 assert jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<<"$gate_out" >/dev/null
 for gate_allowed in \
@@ -5512,10 +4994,9 @@ done
 
 fi
 if suite_shard_owns 3 launch-gate-relay; then
-# --- worker-launch-gate.sh: a run belongs to a relay agent ------------------------------------
-# `worker-run` is a sanctioned launcher, but only in the hands of the agent whose row shows who is
-# spending quota. Started or awaited from the chat's own Bash the run is owned by a turn: no
-# magenta tagged row, and nothing to wake the chat when it ends.
+# --- worker-launch-gate.sh: a run belongs to the chat --------------------------------------------
+# The chat starts a run and waits on it as a background Bash; an agent spelling either through any
+# wrapper, keyword or shell string starts a run nobody waits on.
 for owned_denied in \
   'worker-run wait cb-20260901-abcdef' \
   'worker-run wait cb-20260901-abcdef --max 540' \
@@ -5552,19 +5033,20 @@ worker-run wait cb-20260901-abcdef' \
   'W=/x/bin/worker-run; $W wait cb-20260901-abcdef --max 3000; $W report cb-20260901-abcdef' \
   'export W=worker-run && "${W}" wait cb-20260901-abcdef' \
   '$RUNNER start claudeb --brief /tmp/brief --workdir /tmp'; do
-  gate_out=$(gate_payload "$owned_denied" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  gate_out=$(gate_agent_payload fork "$owned_denied" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
   assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
-  assert jq -e '.hookSpecificOutput.permissionDecisionReason | test("ATTACH <run-id>:")' \
+  assert jq -e '.hookSpecificOutput.permissionDecisionReason | contains("starts or awaits a worker run that belongs to the chat")' \
     <<<"$gate_out" >/dev/null
+  gate_out=$(gate_payload "$owned_denied" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  assert_eq "" "$gate_out"
 done
 # Bookkeeping, help, a finished record and the suite that exercises the launcher are not a run: the
 # command WORD is what is judged, never the substring, and a REAL heredoc body — one whose
 # delimiter arrives, fed to something that is not a shell — is text a command is written into.
 # `ssh host <<EOF` is neither, and it stands here so its verdict is on record rather than assumed:
 # that body DOES reach a shell, the remote one, and this door reads it as text anyway because
-# nothing in it runs on THIS machine — no local quota is spent, no row could show the run, and an
-# `ATTACH` would have nothing to attach to. The local shapes are the rule; this one is the exception
-# that names itself.
+# nothing in it runs on THIS machine — no local quota is spent and no local wait could watch the run.
+# The local shapes are the rule; this one is the exception that names itself.
 for owned_allowed in \
   'worker-run claim codex alt' \
   'worker-run' \
@@ -5584,93 +5066,36 @@ EOF' \
   'grep -n "worker-run start" bin/worker-run' \
   'W=/x/bin/worker-run; $W report cb-20260901-abcdef' \
   'WORK=/tmp; ls $WORK; W=/x/bin/worker-run; echo $W start'; do
-  gate_out=$(gate_payload "$owned_allowed" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  gate_out=$(gate_agent_payload fork "$owned_allowed" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
   assert_eq "" "$gate_out"
 done
-# Inside a relay agent the door is exactly what it was before this rule existed — with one clause
-# of its own: a `wait` polls for `--max` seconds and the Bash call dies at its own timeout, so the
-# harness's 120s default would kill the wait a fifth of the way in and leave the run unwatched.
 fi
 gate_timeout_payload() { # agent command timeout-ms|null
   jq -cn --arg agent "$1" --arg command "$2" --argjson timeout "$3" \
-    '{hook_event_name:"PreToolUse",tool_name:"Bash",agent_type:$agent,
+    '{hook_event_name:"PreToolUse",tool_name:"Bash",agent_type:$agent,agent_id:"a1",
       tool_input:({command:$command} + (if $timeout == null then {} else {timeout:$timeout} end))}'
 }
 if suite_shard_owns 1 launch-gate-wait; then
-for gate_agent in claudeb-worker codex-worker gemini-worker grok-worker; do
-  for owned_relayed in \
-    'worker-run start claudeb --brief /tmp/brief --workdir /tmp' \
-    'worker-run report cb-20260901-abcdef'; do
-    gate_out=$(gate_agent_payload "$gate_agent" "$owned_relayed" | "$LAUNCH_GATE_BIN") ||
-      fail "launch gate exited nonzero"
-    assert_eq "" "$gate_out"
-  done
-  for gate_timeout_denied in null 120000 400000; do
+# An agent of any type owns no run, whatever timeout its call carries, and a headless worker owns
+# none either.
+for gate_agent in fork Explore claudeb-worker; do
+  for gate_timeout in null 600000; do
     gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef --max 540' \
-      "$gate_timeout_denied" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+      "$gate_timeout" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
     assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
-    assert jq -e '.hookSpecificOutput.permissionDecisionReason | test("timeout: 600000")' \
-      <<<"$gate_out" >/dev/null
   done
-  gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef --max 540' \
-    600000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
-  assert_eq "" "$gate_out"
-  gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef --max 100' \
-    130000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
-  assert_eq "" "$gate_out"
-  # A wait with no `--max` polls worker-run's own default, and a `--max` spelled with a variable
-  # states no duration at all: neither may buy a pass the same poll spelled out would be denied.
-  # The default is READ OUT of worker-run, so the fixture states one of its own: with the gate
-  # falling back to its hardcoded number instead, a default that moved in bin/worker-run would
-  # change production denials with this case still green.
-  mkdir -p "$HOME/.local/bin"
-  printf '%s\n' '#!/usr/bin/env bash' 'wait_run() { local run_id="$1" max=200 tries; }' \
-    >"$HOME/.local/bin/worker-run"
-  gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef' \
-    220000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
-  assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
-  gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef' \
-    230000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
-  assert_eq "" "$gate_out"
-  rm -f "$HOME/.local/bin/worker-run"
-  gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef' \
-    120000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
-  assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
-  gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef' \
-    130000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
-  assert_eq "" "$gate_out"
-  # An `--max` no timeout the harness allows could cover is refused for the duration itself: an
-  # answer of "pass a bigger timeout" would be an instruction nobody can carry out.
-  gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef --max 600' \
-    600000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
-  assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
-  assert jq -e '.hookSpecificOutput.permissionDecisionReason | test("--max 540")' \
-    <<<"$gate_out" >/dev/null
-  # A leading zero is a decimal number to everyone but the shell that reads it as octal: read as
-  # octal the arithmetic dies and the door falls open on the poll it was there to judge.
-  gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef --max 08' \
-    1000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
-  assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
-  gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef --max 08' \
-    40000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
-  assert_eq "" "$gate_out"
-  gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef --max "$secs"' \
-    130000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
-  assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
-  gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef --max "$secs"' \
-    570000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  gate_out=$(gate_agent_payload "$gate_agent" 'worker-run report cb-20260901-abcdef' | "$LAUNCH_GATE_BIN")
   assert_eq "" "$gate_out"
   gate_out=$(gate_agent_payload "$gate_agent" 'claudeb notcom -p go' | "$LAUNCH_GATE_BIN")
   assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
 done
+gate_out=$(gate_payload 'worker-run wait cb-20260901-abcdef' | CLAUDEB_WORKER=1 "$LAUNCH_GATE_BIN")
+assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
 # A media script has one door, media-run, in every hand: a fork's call past it is refused.
 gate_out=$(gate_agent_payload fork 'codex-image --dest /tmp/a.png --prompt cat' | "$LAUNCH_GATE_BIN")
 assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
 gate_out=$(gate_agent_payload fork 'media-run image --vendor codex -- --dest /tmp/a.png --prompt cat' | "$LAUNCH_GATE_BIN")
 assert_eq "" "$gate_out"
-# An agent type nobody sanctioned owns no run either.
-gate_out=$(gate_agent_payload Explore 'worker-run wait cb-20260901-abcdef' | "$LAUNCH_GATE_BIN")
-assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
 
 # A lookup executes nothing: `command -v` / `-V`, and `type` / `which` / `hash -t`, ask where a word
 # lives, and asking that about an owned launcher is routine diagnostics. `command` without one of
@@ -5706,130 +5131,11 @@ for gate_lookup_denied in \
   'command claudeb notcom -p go' \
   'command -v light-research && light-research --prompt-file /tmp/q' \
   'command -v claudeb; claudeb notcom -p go'; do
-  gate_out=$(gate_payload "$gate_lookup_denied" | "$LAUNCH_GATE_BIN") ||
+  gate_out=$(gate_agent_payload fork "$gate_lookup_denied" | "$LAUNCH_GATE_BIN") ||
     fail "launch gate exited nonzero"
   assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
 done
 
-# --- worker-launch-gate.sh: a relay passes the brief's MODEL:/ACCOUNT: through as written --------
-# Live 2026-09-23: a codex relay handed `MODEL: sol` resolved it itself off a stale list and
-# launched `--model gpt-5.6-sol` — a full slug, which worker-run reads as a deliberate pin.
-relay_parent="$WORK/relay-parent.jsonl"
-: >"$relay_parent"
-mkdir -p "${relay_parent%.jsonl}/subagents"
-relay_brief_file() { # agent-id brief
-  jq -cn --arg brief "$2" '{type:"user",message:{role:"user",content:$brief}}' \
-    >"${relay_parent%.jsonl}/subagents/agent-$1.jsonl"
-}
-relay_payload() { # agent-type agent-id command
-  jq -cn --arg agent "$1" --arg id "$2" --arg command "$3" --arg transcript "$relay_parent" \
-    '{hook_event_name:"PreToolUse",tool_name:"Bash",agent_type:$agent,agent_id:$id,transcript_path:$transcript,
-      tool_input:{command:$command,timeout:600000}}'
-}
-relay_brief_file relaysol $'ACCOUNT: notcom\nMODEL: sol\n\n# Probe\nRun codex --version.'
-relay_brief_file relaynomodel $'ACCOUNT: notcom\n\n# Task\nNames the sol model only in prose, where no MODEL: line starts.'
-relay_brief_file relaybare $'# Task\nNo header lines at all.'
-relay_brief_file relaycomputer $'COMPUTER: yes\n\n# Task\nSend a message in the Telegram app.'
-jq -cn '{type:"user",message:{role:"user",content:[{type:"text",text:"ACCOUNT: work4\nMODEL: astra\n\nbody"}]}}' \
-  >"${relay_parent%.jsonl}/subagents/agent-relayblocks.jsonl"
-launch_with() { # flags [brief-text]
-  printf 'BRIEF=$(mktemp /tmp/codex-brief.XXXXXX) && cat >"$BRIEF" <<'"'"'BRIEF_EOF'"'"'\n%s\nBRIEF_EOF\nworker-run start codex --brief "$BRIEF" --workdir /tmp %s\n' "${2:-MODEL: gpt-5.6-sol}" "$1"
-}
-for relay_case in \
-  "codex-worker relaysol --account notcom --model gpt-5.6-sol|MODEL: sol" \
-  "codex-worker relaysol --account notcom|MODEL: sol" \
-  "codex-worker relaysol --account work4 --model sol|ACCOUNT: notcom" \
-  "codex-worker relaysol --model sol|ACCOUNT: notcom" \
-  "codex-worker relaynomodel --account notcom --model astra|no MODEL: line" \
-  "light-worker relaysol --account notcom --model sol|light row decides" \
-  "claudeb-worker relayblocks --account work4 --model=opus|MODEL: astra" \
-  "codex-worker relaycomputer|COMPUTER: yes" \
-  "codex-worker relaynomodel --account notcom --computer|no \`COMPUTER: yes\` line" \
-  "codex-worker relaybare --account work4|no ACCOUNT: line"; do
-  relay_spec=${relay_case%%|*} relay_reason=${relay_case#*|}
-  read -r relay_type relay_id relay_flags <<<"$relay_spec"
-  gate_out=$(relay_payload "$relay_type" "$relay_id" "$(launch_with "$relay_flags")" | "$LAUNCH_GATE_BIN") ||
-    fail "launch gate exited nonzero"
-  assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
-  assert jq -e --arg r "$relay_reason" '.hookSpecificOutput.permissionDecisionReason | contains($r)' <<<"$gate_out" >/dev/null
-done
-for relay_case in \
-  "codex-worker relaysol --account notcom --model sol" \
-  "codex-worker relaysol --model 'sol' --account=notcom" \
-  "codex-worker relaynomodel --account notcom" \
-  "codex-worker relaybare" \
-  "light-worker relaynomodel --account notcom" \
-  "claudeb-worker relayblocks --account work4 --model astra" \
-  "codex-worker relaymissing --model gpt-5.6-sol" \
-  "codex-worker relaycomputer --computer"; do
-  read -r relay_type relay_id relay_flags <<<"$relay_case"
-  gate_out=$(relay_payload "$relay_type" "$relay_id" "$(launch_with "$relay_flags")" | "$LAUNCH_GATE_BIN") ||
-    fail "launch gate exited nonzero"
-  assert_eq "" "$gate_out"
-done
-# A relay that saved its brief verbatim and forgot the flags passes: worker-run reads the same lines.
-# One whose written brief says something else is still held to the brief it was handed.
-gate_out=$(relay_payload codex-worker relaysol "$(launch_with "" $'ACCOUNT: notcom\nMODEL: sol\n\nbody')" | "$LAUNCH_GATE_BIN") ||
-  fail "launch gate exited nonzero"
-assert_eq "" "$gate_out"
-gate_out=$(relay_payload codex-worker relaycomputer "$(launch_with "" $'COMPUTER: yes\n\nbody')" | "$LAUNCH_GATE_BIN") ||
-  fail "launch gate exited nonzero"
-assert_eq "" "$gate_out"
-gate_out=$(relay_payload codex-worker relaysol "$(launch_with "" $'ACCOUNT: work4\nMODEL: sol\n\nbody')" | "$LAUNCH_GATE_BIN") ||
-  fail "launch gate exited nonzero"
-assert jq -e '.hookSpecificOutput.permissionDecision == "deny" and
-  (.hookSpecificOutput.permissionDecisionReason | contains("ACCOUNT: notcom"))' <<<"$gate_out" >/dev/null
-# A brief file the orchestrator wrote earlier carries its own lines; one the same call also writes
-# proves nothing by its old text.
-printf 'ACCOUNT: notcom\nMODEL: sol\n\nbody\n' >"$WORK/saved-brief.md"
-gate_out=$(relay_payload codex-worker relaysol "worker-run start codex --brief $WORK/saved-brief.md --workdir /tmp" | "$LAUNCH_GATE_BIN") ||
-  fail "launch gate exited nonzero"
-assert_eq "" "$gate_out"
-gate_out=$(relay_payload codex-worker relaysol "printf 'ACCOUNT: work4\n' >$WORK/saved-brief.md; worker-run start codex --brief $WORK/saved-brief.md --workdir /tmp" | "$LAUNCH_GATE_BIN") ||
-  fail "launch gate exited nonzero"
-assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
-mkdir -p "$WORK/saved-sub"
-printf 'ACCOUNT: work4\nMODEL: sol\n' >"$WORK/saved-sub/saved-brief.md"
-ln -sfn "$WORK/saved-brief.md" "$WORK/saved-link.md"
-for saved_respelled in \
-  "B=$WORK/saved-brief.md; printf 'ACCOUNT: work4\n' >\"\$B\"; worker-run start codex --brief \"\$B\" --workdir /tmp" \
-  "cd $WORK && printf 'ACCOUNT: work4\n' >./saved-brief.md; worker-run start codex --brief $WORK/saved-brief.md --workdir /tmp" \
-  "printf 'ACCOUNT: work4\n' >$WORK/saved-brief.md; worker-run start codex --brief $WORK/saved-link.md --workdir /tmp" \
-  "cd $WORK/saved-sub && worker-run start codex --brief saved-brief.md --workdir /tmp"; do
-  gate_out=$(cd "$WORK" && relay_payload codex-worker relaysol "$saved_respelled" | "$LAUNCH_GATE_BIN") ||
-    fail "launch gate exited nonzero"
-  assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
-done
-printf 'ACCOUNT: work4\nMODEL: sol\n\nbody\n' >"$WORK/other-brief.md"
-gate_out=$(relay_payload codex-worker relaysol "worker-run start codex --brief $WORK/other-brief.md --workdir /tmp" | "$LAUNCH_GATE_BIN") ||
-  fail "launch gate exited nonzero"
-assert jq -e '.hookSpecificOutput.permissionDecisionReason | contains("ACCOUNT: notcom")' <<<"$gate_out" >/dev/null
-# Only the heredoc written to that start line's own --brief carries a line, and research starts adopt
-# nothing in worker-run, so the line elsewhere in the call carries nothing for them.
-for carried_elsewhere in \
-  $': <<\'N\'\nACCOUNT: notcom\nMODEL: sol\nN\nworker-run start codex --brief /tmp/other-brief --workdir /tmp' \
-  $'cat >/tmp/b1 <<\'E\'\nACCOUNT: notcom\nMODEL: sol\nE\nworker-run start codex --brief /tmp/b1 --workdir /tmp\nworker-run start codex --brief /tmp/b2 --workdir /tmp' \
-  $'cat >>/tmp/b1 <<\'E\'\nACCOUNT: notcom\nMODEL: sol\nE\nworker-run start codex --brief /tmp/b1 --workdir /tmp' \
-  $'echo "x\nACCOUNT: notcom\nMODEL: sol" >/dev/null; worker-run start codex --brief /tmp/nohdr --workdir /tmp' \
-  $'cat >"$BRIEF" <<\'E\'\nACCOUNT: notcom\nMODEL: sol\nE\nworker-run start codex --brief "$BRIEF" --workdir /tmp --role research --research-timeout 10m'; do
-  gate_out=$(relay_payload codex-worker relaysol "$carried_elsewhere" | "$LAUNCH_GATE_BIN") ||
-    fail "launch gate exited nonzero"
-  assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
-done
-gate_out=$(relay_payload codex-worker relaysol $'cat <<\'E\' >/tmp/b1\nACCOUNT: notcom\nMODEL: sol\nE\nworker-run start codex --brief=/tmp/b1 --workdir /tmp' |
-  "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
-assert_eq "" "$gate_out"
-gate_out=$(relay_payload codex-worker relaysol $'cat >/tmp/research-b.md <<\'E\'\nACCOUNT: notcom\nMODEL: sol\nE\nworker-run start codex --role workers --brief /tmp/research-b.md --workdir /tmp' |
-  "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
-assert_eq "" "$gate_out"
-# Every start line of the call is held to the brief, not the first alone.
-gate_out=$(relay_payload codex-worker relaysol "$(printf 'worker-run start codex --brief /tmp/b --workdir /tmp --account notcom --model sol\nworker-run start codex --brief /tmp/b --workdir /tmp --account work4 --model sol\n')" |
-  "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
-assert jq -e '.hookSpecificOutput.permissionDecision == "deny" and
-  (.hookSpecificOutput.permissionDecisionReason | contains("ACCOUNT: notcom"))' <<<"$gate_out" >/dev/null
-# Not a launch: a relay's wait or report is never judged against the brief.
-gate_out=$(relay_payload codex-worker relaysol 'worker-run wait codex-1-2-3 --max 540' | "$LAUNCH_GATE_BIN")
-assert_eq "" "$gate_out"
 
 
 fi
@@ -5845,21 +5151,12 @@ tr_spawn() { # session type prompt [tool_use_id] [model]
     WORKER_SPAWN_WORKER_PICK=/nonexistent "$SPAWN_HOOK"
 }
 
-# Every native type off the allowlist is refused with the limit gate's deny shape; the relay path is named in it.
+# Every native type is refused with the chat's own worker-run protocol, and leaves no seed.
 for tr_native in Explore Plan general-purpose claude-code-guide statusline-setup some-new-type ''; do
   tr_out=$(tr_spawn tr-native "$tr_native" 'look around') || fail "native spawn exited nonzero"
   assert_eq deny "$(printf '%s' "$tr_out" | gate_decision)"
-  assert jq -e '.hookSpecificOutput.permissionDecisionReason | contains("spawn the relay Agent worker-pick'"'"'s NEXT row names instead")' <<<"$tr_out" >/dev/null
+  assert jq -e '.hookSpecificOutput.permissionDecisionReason | contains("is not spawned. Delegate from this chat")' <<<"$tr_out" >/dev/null
 done
-# The refusal names the Light types only while Light is on, and puts no word of Egor's on fork or Workflow.
-tr_reason() { tr_spawn tr-native Explore 'look around' | jq -r '.hookSpecificOutput.permissionDecisionReason'; }
-printf 'light_paused=on\n' >"$WORK/tr-light-toggle"
-tr_light_on=$(tr_reason)
-tr_light_off=$(WORKER_PICK_CONFIG_FILE="$WORK/tr-light-toggle" tr_reason)
-assert grep -Fq 'light-research for a read-only question' <<<"$tr_light_on"
-assert grep -Fq 'gemini-worker or grok-worker; a read-only question is a brief that says so' <<<"$tr_light_off"
-assert_fails grep -Fq 'light-' <<<"$tr_light_off"
-assert_fails grep -Fq "Egor's word" <<<"$tr_light_on"
 assert test ! -e "$TR_HOME_CACHE/tr-native"
 tr_wf=$(jq -cn '{hook_event_name:"PreToolUse",tool_name:"Workflow",session_id:"tr-wf",tool_input:{script:"x"}}' |
   "$SPAWN_HOOK") || fail "Workflow spawn exited nonzero"
@@ -5876,28 +5173,14 @@ tr_fork_inherit=$(jq -cn --arg t "$WORK/tr-fork.jsonl" '{hook_event_name:"PreToo
   CLAUDE_LIMITS_ACCOUNT=forkacct "$SPAWN_HOOK") || fail "fork spawn exited nonzero"
 assert jq -e '.hookSpecificOutput.updatedInput.description == "fork · fable · forkacct: Look"' <<<"$tr_fork_inherit" >/dev/null
 
-# The codex row names the brief's MODEL: line.
-tr_codex=$(tr_spawn tr-codex codex-worker $'ACCOUNT: alt\nMODEL: gpt-5.6-terra\nEFFORT: high\nx') || fail "codex spawn exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "alt · terra · high: Do the task"' <<<"$tr_codex" >/dev/null
-# With no EFFORT: line the row names the default of the brief's own model, not of the vendor's default.
-tr_codex=$(tr_spawn tr-codex-sol codex-worker $'ACCOUNT: alt\nMODEL: sol\nx') || fail "codex spawn exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "alt · sol · medium: Do the task"' <<<"$tr_codex" >/dev/null
-tr_codex=$(tr_spawn tr-claudeb-fable claudeb-worker $'ACCOUNT: alt\nMODEL: fable\nx') || fail "claudeb spawn exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "alt · fable · low: Do the task"' <<<"$tr_codex" >/dev/null
-tr_guard=$(jq -r '.hookSpecificOutput.updatedInput.prompt' <<<"$tr_codex")
-assert grep -Fq "MD-GUARD (hook-injected): $( . "$ROOT/share/instruction-files.sh" && instruction_relay_refusal 'CLAUDE.md /' | sed 's| /;.*| /|')" <<<"$tr_guard"
-assert grep -Fq 'under MD-PROPOSAL in your RETURN' <<<"$tr_guard"
-assert_fails grep -Eq 'DOCS IMPACT|MD-EDIT' <<<"$tr_guard"
-# A Computer Use brief's row names the account the picker gives the `computer` role, which
-# codex_workers=off leaves open while the workers query is refused.
-printf '#!/usr/bin/env bash\ncase " $* " in *" --role computer "*) echo cuacct ;; *) exit 3 ;; esac\n' >"$WORK/tr-computer-pick"
-chmod +x "$WORK/tr-computer-pick"
-tr_codex=$(jq -cn '{hook_event_name:"PreToolUse",tool_name:"Agent",session_id:"tr-computer",
-  tool_input:{subagent_type:"codex-worker",description:"Do the task",prompt:"COMPUTER: yes\nx"}}' |
-  WORKER_SPAWN_WORKER_PICK="$WORK/tr-computer-pick" "$SPAWN_HOOK") || fail "computer spawn exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description | startswith("cuacct · ")' <<<"$tr_codex" >/dev/null
+# A retired relay is refused and seeds no row.
+for tr_relay in codex-worker claudeb-worker light-worker light-research review-waiter; do
+  tr_out=$(tr_spawn tr-relay "$tr_relay" $'ACCOUNT: alt\nx') || fail "relay spawn exited nonzero"
+  assert_eq deny "$(printf '%s' "$tr_out" | gate_decision)"
+done
+assert test ! -e "$TR_HOME_CACHE/tr-relay"
 
-# A review-waiter row reads tier, composition and lens off the run's progress document and seeds `review=`.
+# The review run the rendered rows below read off its progress document.
 TR_STATS="$WORK/tr-stats"
 mkdir -p "$TR_STATS/progress"
 TR_REVIEW=20260916T223010Z-e66f8e6
@@ -5905,100 +5188,52 @@ jq -cn --arg run "$TR_REVIEW" '{run_id:$run,tier:"T2",composition:"double",kind:
   cells:["claude-opus-high","codex-sol-high","agy-flash38-high","grok-grok-high"],
   done:["agy-flash38-high","grok-grok-high"],failed_cells:["grok-grok-high"],
   accounts:{"claude-opus-high":"locomthebest"}}' > "$TR_STATS/progress/llm-legs__x-1.json"
-tr_waiter=$(WORKER_STATS_DIR="$TR_STATS" tr_spawn tr-rev review-waiter "WAIT $TR_REVIEW: task hunt") ||
-  fail "review-waiter spawn exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "T2 · double · task: Do the task"' <<<"$tr_waiter" >/dev/null
-tr_rev_seed=$(ls "$TR_HOME_CACHE/tr-rev"/pending-review-waiter-*)
-assert_eq "review=$TR_REVIEW" "$(grep '^review=' "$tr_rev_seed")"
-tr_waiter_nodoc=$(WORKER_STATS_DIR="$TR_STATS" tr_spawn tr-rev-nodoc review-waiter "WAIT 20260101T000000Z-abcdef1: gone") ||
-  fail "review-waiter spawn exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "review · abcdef1: Do the task"' <<<"$tr_waiter_nodoc" >/dev/null
-
-# Two spawns of one type in one turn each keep a seed, and the agents claim them oldest first.
-tr_spawn tr-pair claudeb-worker $'ACCOUNT: first\nx' toolu_first >/dev/null
-tr_spawn tr-pair claudeb-worker $'ACCOUNT: second\nx' toolu_second >/dev/null
-touch -t "$(date -v-5S +%Y%m%d%H%M.%S)" "$TR_HOME_CACHE/tr-pair/pending-claudeb-worker-toolu_first"
-assert_eq 2 "$(ls "$TR_HOME_CACHE/tr-pair" | grep -c '^pending-claudeb-worker-')"
-printf '%s' "$(worker_payload claudeb-worker agentA 'Save brief' 'true' tr-pair)" | "$WORKER_HOOK" >/dev/null
-printf '%s' "$(worker_payload claudeb-worker agentB 'Save brief' 'true' tr-pair)" | "$WORKER_HOOK" >/dev/null
-assert_eq 'first · opus · high' "$(head -n1 "$TR_HOME_CACHE/tr-pair/agentA")"
-assert_eq 'second · opus · high' "$(head -n1 "$TR_HOME_CACHE/tr-pair/agentB")"
+# Two forks spawned in one turn each keep a seed, and the forks claim them oldest first.
+CLAUDE_LIMITS_ACCOUNT=first tr_spawn tr-pair fork $'ACCOUNT: first\nx' toolu_first >/dev/null
+CLAUDE_LIMITS_ACCOUNT=second tr_spawn tr-pair fork $'ACCOUNT: second\nx' toolu_second >/dev/null
+touch -t "$(date -v-5S +%Y%m%d%H%M.%S)" "$TR_HOME_CACHE/tr-pair/pending-fork-toolu_first"
+assert_eq 2 "$(ls "$TR_HOME_CACHE/tr-pair" | grep -c '^pending-fork-')"
+printf '%s' "$(worker_payload fork agentA 'Save brief' 'true' tr-pair)" | "$WORKER_HOOK" >/dev/null
+printf '%s' "$(worker_payload fork agentB 'Save brief' 'true' tr-pair)" | "$WORKER_HOOK" >/dev/null
+assert_eq 'fork · inherit · first' "$(head -n1 "$TR_HOME_CACHE/tr-pair/agentA")"
+assert_eq 'fork · inherit · second' "$(head -n1 "$TR_HOME_CACHE/tr-pair/agentB")"
 assert_eq 0 "$(ls "$TR_HOME_CACHE/tr-pair" | grep -c '^pending-')"
 assert_fails grep -q '^spawn=' "$TR_HOME_CACHE/tr-pair/agentA"
 
-# A denied spawn's seed is never another spawn's: the agent's transcript names its prompt, and
+# A cancelled spawn's seed is never another spawn's: the fork's transcript names its prompt, and
 # without one a seed past the age limit is left alone.
-tr_spawn tr-stale claudeb-worker $'ACCOUNT: denied\nx' toolu_denied >/dev/null
-touch -t 202601010000 "$TR_HOME_CACHE/tr-stale/pending-claudeb-worker-toolu_denied"
-tr_spawn tr-stale claudeb-worker $'ACCOUNT: live\nx' toolu_live >/dev/null
-touch -t "$(date -v-5S +%Y%m%d%H%M.%S)" "$TR_HOME_CACHE/tr-stale/pending-claudeb-worker-toolu_live"
+CLAUDE_LIMITS_ACCOUNT=denied tr_spawn tr-stale fork $'ACCOUNT: denied\nx' toolu_denied >/dev/null
+touch -t 202601010000 "$TR_HOME_CACHE/tr-stale/pending-fork-toolu_denied"
+CLAUDE_LIMITS_ACCOUNT=live tr_spawn tr-stale fork $'ACCOUNT: live\nx' toolu_live >/dev/null
+touch -t "$(date -v-5S +%Y%m%d%H%M.%S)" "$TR_HOME_CACHE/tr-stale/pending-fork-toolu_live"
 tr_stale_transcript="$WORK/tr-stale-parent.jsonl"
 mkdir -p "$WORK/tr-stale-parent/subagents"
 jq -cn '{type:"user",message:{role:"user",content:"ACCOUNT: live\nx"}}' > "$WORK/tr-stale-parent/subagents/agent-agentL.jsonl"
-printf '%s' "$(worker_payload claudeb-worker agentL 'Save brief' 'true' tr-stale | jq -c --arg t "$tr_stale_transcript" '.transcript_path = $t')" |
+printf '%s' "$(worker_payload fork agentL 'Save brief' 'true' tr-stale | jq -c --arg t "$tr_stale_transcript" '.transcript_path = $t')" |
   WORKER_TAG_SEED_MAX_AGE_S=999999999 "$WORKER_HOOK" >/dev/null
-assert_eq 'live · opus · high' "$(head -n1 "$TR_HOME_CACHE/tr-stale/agentL")"
-assert test -f "$TR_HOME_CACHE/tr-stale/pending-claudeb-worker-toolu_denied"
-printf '%s' "$(worker_payload claudeb-worker agentN 'Save brief' 'true' tr-stale)" | "$WORKER_HOOK" >/dev/null
+assert_eq 'fork · inherit · live' "$(head -n1 "$TR_HOME_CACHE/tr-stale/agentL")"
+assert test -f "$TR_HOME_CACHE/tr-stale/pending-fork-toolu_denied"
+printf '%s' "$(worker_payload fork agentN 'Save brief' 'true' tr-stale)" | "$WORKER_HOOK" >/dev/null
 assert test ! -e "$TR_HOME_CACHE/tr-stale/agentN"
-assert test -f "$TR_HOME_CACHE/tr-stale/pending-claudeb-worker-toolu_denied"
+assert test -f "$TR_HOME_CACHE/tr-stale/pending-fork-toolu_denied"
 
-# Every seed carries a spawn key, an empty first line included, and an agent that knows its key never
+# Every seed carries a spawn key, an empty first line included, and a fork that knows its key never
 # takes a keyless seed.
-tr_spawn tr-keyless claudeb-worker $'\nACCOUNT: blank' toolu_blank >/dev/null
-assert grep -q '^spawn=[0-9a-f]\{16\}$' "$TR_HOME_CACHE/tr-keyless/pending-claudeb-worker-toolu_blank"
-printf 'other · opus · high\n' > "$TR_HOME_CACHE/tr-keyless/pending-claudeb-worker-legacy"
+tr_spawn tr-keyless fork $'\nACCOUNT: blank' toolu_blank >/dev/null
+assert grep -q '^spawn=[0-9a-f]\{16\}$' "$TR_HOME_CACHE/tr-keyless/pending-fork-toolu_blank"
+printf 'fork · opus · other\n' > "$TR_HOME_CACHE/tr-keyless/pending-fork-legacy"
 mkdir -p "$WORK/tr-keyless-parent/subagents"
 jq -cn '{type:"user",message:{role:"user",content:"ACCOUNT: mine\nx"}}' > "$WORK/tr-keyless-parent/subagents/agent-agentK.jsonl"
-printf '%s' "$(worker_payload claudeb-worker agentK 'Save brief' 'true' tr-keyless | jq -c --arg t "$WORK/tr-keyless-parent.jsonl" '.transcript_path = $t')" |
+printf '%s' "$(worker_payload fork agentK 'Save brief' 'true' tr-keyless | jq -c --arg t "$WORK/tr-keyless-parent.jsonl" '.transcript_path = $t')" |
   "$WORKER_HOOK" >/dev/null
-assert test ! -e "$TR_HOME_CACHE/tr-keyless/agentK" -a -f "$TR_HOME_CACHE/tr-keyless/pending-claudeb-worker-legacy"
+assert test ! -e "$TR_HOME_CACHE/tr-keyless/agentK" -a -f "$TR_HOME_CACHE/tr-keyless/pending-fork-legacy"
 
 # A seed claim that cannot take `.claim.lock` leaves the seed in place for the next call.
-tr_spawn tr-locked claudeb-worker $'ACCOUNT: kept\nx' toolu_kept >/dev/null
+tr_spawn tr-locked fork $'ACCOUNT: kept\nx' toolu_kept >/dev/null
 mkdir "$TR_HOME_CACHE/tr-locked/.claim.lock"
-printf '%s' "$(worker_payload claudeb-worker agentS 'Save brief' 'true' tr-locked)" | WORKER_TAG_LOCK_TRIES=0 "$WORKER_HOOK" >/dev/null
-assert test ! -e "$TR_HOME_CACHE/tr-locked/agentS" -a -f "$TR_HOME_CACHE/tr-locked/pending-claudeb-worker-toolu_kept"
+printf '%s' "$(worker_payload fork agentS 'Save brief' 'true' tr-locked)" | WORKER_TAG_LOCK_TRIES=0 "$WORKER_HOOK" >/dev/null
+assert test ! -e "$TR_HOME_CACHE/tr-locked/agentS" -a -f "$TR_HOME_CACHE/tr-locked/pending-fork-toolu_kept"
 rmdir "$TR_HOME_CACHE/tr-locked/.claim.lock"
-
-# review-waiter and light-research run on their own frontmatter model: a tool-call model is
-# stripped; a fork keeps it.
-for tr_pinned in review-waiter light-research; do
-  tr_spawn tr-pinned "$tr_pinned" 'WAIT 20260101T000000Z-abcdef1: x' '' opus > "$WORK/tr-pinned-$tr_pinned.json"
-done
-assert jq -se 'length == 2 and all(.[]; .hookSpecificOutput.updatedInput | has("model") | not)' \
-  "$WORK/tr-pinned-review-waiter.json" "$WORK/tr-pinned-light-research.json" >/dev/null
-
-# The review-waiter's wait writes the run's tag and `review=`, names itself to review-bench through
-# `--waiter <agent id>`, and is granted nothing.
-tr_rev_out=$(printf '%s' "$(worker_payload review-waiter waiter1 'Wait' "review-bench wait $TR_REVIEW --max 540 | tail -n 3" tr-rev)" |
-  WORKER_STATS_DIR="$TR_STATS" "$WORKER_HOOK") || fail "review-waiter tag exited nonzero"
-assert_eq 'T2 · double · task' "$(head -n1 "$TR_HOME_CACHE/tr-rev/waiter1")"
-assert_eq "review=$TR_REVIEW" "$(sed -n 2p "$TR_HOME_CACHE/tr-rev/waiter1")"
-assert jq -e --arg c "review-bench wait $TR_REVIEW --waiter waiter1 --max 540 | tail -n 3" '.hookSpecificOutput.updatedInput.command == $c' <<<"$tr_rev_out" >/dev/null
-assert jq -e '.hookSpecificOutput | has("permissionDecision") | not' <<<"$tr_rev_out" >/dev/null
-tr_rev_again=$(printf '%s' "$(worker_payload review-waiter waiter1 'Wait' "review-bench wait $TR_REVIEW --waiter waiter1 --max 540" tr-rev)" |
-  WORKER_STATS_DIR="$TR_STATS" "$WORKER_HOOK") || fail "review-waiter tag exited nonzero"
-assert jq -e --arg c "review-bench wait $TR_REVIEW --waiter waiter1 --max 540" '(.hookSpecificOutput.updatedInput.command // $c) == $c' <<<"$tr_rev_again" >/dev/null
-printf '%s' "$(worker_payload review-waiter waiter2 'Wait' 'review-bench wait 20260101T000000Z-abcdef1 --max 540' tr-rev)" |
-  WORKER_STATS_DIR="$TR_STATS" "$WORKER_HOOK" >/dev/null
-assert_eq 'review · abcdef1' "$(head -n1 "$TR_HOME_CACHE/tr-rev/waiter2")"
-
-# A launch after a heredoc is still the launch; the heredoc body is not.
-tr_after=$(worker_payload claudeb-worker traft 'Ship it' $'cat > /tmp/brief <<EOF\nclaudeb profile fake --model opus -p x\nEOF\nclaudeb profile real --model sonnet -p "$(cat /tmp/brief)"' tr-after)
-printf '%s' "$tr_after" | "$WORKER_HOOK" >/dev/null || fail "after-heredoc launch exited nonzero"
-# Effort is sonnet's own default, as the spawn hook seeds it — never the default model's.
-assert_eq 'real · sonnet · medium' "$(head -n1 "$TR_HOME_CACHE/tr-after/traft")"
-
-# No account in the launch text: the agent's own earlier tag, then worker-pick, then `?`.
-TR_PICK="$WORK/tr-worker-pick"
-printf '#!/usr/bin/env bash\necho pickedacct\n' > "$TR_PICK"; chmod +x "$TR_PICK"
-printf '%s' "$(worker_payload claudeb-worker trpick 'Go' 'claudeb --model opus -p x' tr-pick)" |
-  WORKER_TAG_WORKER_PICK="$TR_PICK" "$WORKER_HOOK" >/dev/null
-assert_eq 'pickedacct · opus · high' "$(head -n1 "$TR_HOME_CACHE/tr-pick/trpick")"
-printf '%s' "$(worker_payload claudeb-worker trpick 'Go' 'claudeb --model opus -p x' tr-pick)" |
-  WORKER_TAG_WORKER_PICK=/nonexistent "$WORKER_HOOK" >/dev/null
-assert_eq 'pickedacct · opus · high' "$(head -n1 "$TR_HOME_CACHE/tr-pick/trpick")"
 
 # The media tag of a media-run job says what runs where, off the launch's own flags: the route for
 # codex images (the manifest's first route when none is named) and music, the model for Flow video.
@@ -6015,23 +5250,7 @@ assert_eq 'sfx' "$(media_tag_of gemini sfx '--dest /tmp/a.wav --prompt x')"
 assert_eq 'img·gem' "$(media_tag_of gemini image '--dest /tmp/a.png --prompt x')"
 assert_eq 'vid·grok' "$(media_tag_of grok video '--dest /tmp/a.mp4 --prompt x')"
 
-# worker-run start marks the agent's tag file; wait names the run, by literal id or through the state
-# file that names this agent when the id is a shell variable.
 tr_runs="$HOME/.cache/claude-worker-runs"
-mkdir -p "$TR_HOME_CACHE/tr-run"
-printf 'seed · opus · high\n' > "$TR_HOME_CACHE/tr-run/pending-claudeb-worker-a"
-printf '%s' "$(worker_payload claudeb-worker trrun 'Launch' 'worker-run start claudeb --brief /tmp/b --workdir /tmp' tr-run)" | "$WORKER_HOOK" >/dev/null
-assert grep -Eq '^start=[0-9]+$' "$TR_HOME_CACHE/tr-run/trrun"
-mkdir -p "$tr_runs/claudeb-1-2-lit" "$tr_runs/claudeb-1-3-var"
-printf 'runacct · opus · high\n' > "$tr_runs/claudeb-1-2-lit/tag"
-printf '%s' "$(worker_payload claudeb-worker trrun 'Wait' 'worker-run wait claudeb-1-2-lit --max 540' tr-run)" | "$WORKER_HOOK" >/dev/null
-assert_eq 'runacct · opus · high' "$(head -n1 "$TR_HOME_CACHE/tr-run/trrun")"
-assert_eq 'run=claudeb-1-2-lit' "$(grep '^run=' "$TR_HOME_CACHE/tr-run/trrun")"
-printf 'varacct · opus · high\n' > "$tr_runs/claudeb-1-3-var/tag"
-printf '{"phase":"wait","round":1,"agent_task_id":"trvar"}\n' > "$tr_runs/claudeb-1-3-var/state.json"
-printf '%s' "$(worker_payload claudeb-worker trvar 'Wait' 'worker-run wait "$RUN_ID" --max 540' tr-run)" | "$WORKER_HOOK" >/dev/null
-assert_eq 'varacct · opus · high' "$(head -n1 "$TR_HOME_CACHE/tr-run/trvar")"
-assert_eq 'run=claudeb-1-3-var' "$(grep '^run=' "$TR_HOME_CACHE/tr-run/trvar")"
 
 # A subagent's edit is counted into its own tag file, the tag line kept.
 mkdir -p "$TR_HOME_CACHE/tr-edit"
@@ -6043,65 +5262,54 @@ assert_eq 'edit=2' "$(grep '^edit=' "$TR_HOME_CACHE/tr-edit/a1")"
 run_workdir_hook "$(agent_payload Read tr-edit "$REPO_A" "$REPO_A/one.txt")"
 assert_eq 'edit=2' "$(grep '^edit=' "$TR_HOME_CACHE/tr-edit/a1")"
 # Two writers racing on one tag file serialize through the directory's `.claim.lock`: no count is
-# lost and the other writer's key survives.
+# lost and the fork's own rewrite (clearing its stopped= mark) is never undone by an edit count.
+printf 'stopped=1790000000\n' >> "$TR_HOME_CACHE/tr-edit/a1"
 tr_edit_payload=$(agent_payload Write tr-edit "$REPO_A" "$REPO_A/two.txt")
-tr_start_payload=$(worker_payload claudeb-worker a1 'Launch' 'worker-run start codex --brief /tmp/b --workdir /tmp' tr-edit)
+tr_fork_payload=$(worker_payload fork a1 'List' 'ls' tr-edit)
 for _ in 1 2 3 4 5 6 7 8 9 10; do
   printf '%s' "$tr_edit_payload" | "$WORKDIR_HOOK" >/dev/null 2>&1 &
-  printf '%s' "$tr_start_payload" | "$WORKER_HOOK" >/dev/null 2>&1 &
+  printf '%s' "$tr_fork_payload" | "$WORKER_HOOK" >/dev/null 2>&1 &
 done
 wait
 assert_eq 'edit=12' "$(grep '^edit=' "$TR_HOME_CACHE/tr-edit/a1")"
-assert grep -q '^start=[0-9]*$' "$TR_HOME_CACHE/tr-edit/a1"
+assert_fails grep -q '^stopped=' "$TR_HOME_CACHE/tr-edit/a1"
 assert test ! -e "$TR_HOME_CACHE/tr-edit/.claim.lock"
-# The gate: a Monitor on a wait is refused, and so is a review wait from the chat's own Bash.
+# The gate: a Monitor on a wait is refused; the chat's own Bash waits.
 monitor_payload() { jq -cn --arg command "$1" '{hook_event_name:"PreToolUse",tool_name:"Monitor",tool_input:{command:$command}}'; }
 for tr_monitored in 'worker-run wait cb-1-2-abc --max 540' "review-bench wait $TR_REVIEW" 'until review-bench  wait x; do sleep 5; done'; do
   gate_out=$(monitor_payload "$tr_monitored" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
   assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
-  assert jq -e '.hookSpecificOutput.permissionDecisionReason | test("ATTACH relay / review-waiter agent so the run has a magenta row")' <<<"$gate_out" >/dev/null
+  assert jq -e '.hookSpecificOutput.permissionDecisionReason | contains("once as a Bash call with `run_in_background: true`")' <<<"$gate_out" >/dev/null
 done
 gate_out=$(monitor_payload 'tail -f /tmp/server.log' | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
 assert_eq "" "$gate_out"
 # The Monitor branch reads the masked scan: a quoted mention is an operand, and every owned spelling behind it is judged.
 gate_out=$(monitor_payload "grep -n 'review-bench wait' /tmp/notes.txt" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
 assert_eq "" "$gate_out"
-for tr_monitor_owned in 'worker-run start codex --brief /tmp/b --workdir /tmp' 'codex-image --dest /tmp/a.png --prompt cat' \
-  'light-research --prompt-file /tmp/q --out /tmp/a'; do
+for tr_monitor_owned in 'codex-image --dest /tmp/a.png --prompt cat' 'review-bench review --tier T2'; do
   gate_out=$(monitor_payload "$tr_monitor_owned" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
   assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
 done
-# Recovery of a dead review run goes through the review-waiter too, and the denial names the brief.
-for tr_recovery in --relaunch --finish-partial; do
-  gate_out=$(gate_payload "review-bench wait $TR_REVIEW $tr_recovery" | env -u CLAUDEB_WORKER "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
-  assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
-  assert jq -e --arg want "Spawn \`review-waiter\` with the brief \`ATTACH <run-id>: $tr_recovery\`" \
-    '.hookSpecificOutput.permissionDecisionReason | contains($want)' <<<"$gate_out" >/dev/null
-done
-gate_out=$(gate_payload "review-bench wait $TR_REVIEW --max 540" | env -u CLAUDEB_WORKER "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
-assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
-assert jq -e '.hookSpecificOutput.permissionDecisionReason | test("review-waiter")' <<<"$gate_out" >/dev/null
-# A headless worker process has no task list to give the wait to.
-gate_out=$(gate_payload "review-bench wait $TR_REVIEW --max 540" | CLAUDEB_WORKER=1 "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
-assert_eq "" "$gate_out"
-for tr_review_ok in 'review-bench review --tier T2' "review-bench report $TR_REVIEW" 'review-bench findings'; do
-  gate_out=$(gate_payload "$tr_review_ok" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+# The chat's own Bash runs every review wait, its recoveries and light-research; an agent or a
+# headless worker recovers no review and runs no light-research.
+for tr_chat_ok in "review-bench wait $TR_REVIEW --max 540" "review-bench wait $TR_REVIEW --relaunch" \
+  "review-bench wait $TR_REVIEW --finish-partial" 'review-bench review --tier T2' "review-bench report $TR_REVIEW" \
+  'review-bench findings' 'light-research --prompt-file /tmp/q --out /tmp/a --repo /tmp/r' \
+  'light-research --attach gemini-1-2-abcd --out /tmp/a' 'worker-run start light --brief /tmp/b --workdir /tmp'; do
+  gate_out=$(gate_payload "$tr_chat_ok" | env -u CLAUDEB_WORKER "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
   assert_eq "" "$gate_out"
 done
-gate_out=$(gate_timeout_payload review-waiter "review-bench wait $TR_REVIEW --max 540" 600000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+for tr_recovery in --relaunch --finish-partial; do
+  gate_out=$(gate_payload "review-bench wait $TR_REVIEW $tr_recovery" | CLAUDEB_WORKER=1 "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
+done
+gate_out=$(gate_payload "review-bench wait $TR_REVIEW --max 540" | CLAUDEB_WORKER=1 "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
 assert_eq "" "$gate_out"
-gate_out=$(gate_payload 'light-research --prompt-file /tmp/q --out /tmp/a --repo /tmp/r' | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
-assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
-gate_out=$(gate_timeout_payload light-research '~/.local/bin/light-research --prompt-file /tmp/q --out /tmp/a' 600000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
-assert_eq "" "$gate_out"
-gate_out=$(gate_timeout_payload light-research 'light-research --attach gemini-1-2-abcd --out /tmp/a' 600000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
-assert_eq "" "$gate_out"
-gate_out=$(gate_payload 'light-research --attach gemini-1-2-abcd --out /tmp/a' | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
-assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
-gate_out=$(gate_agent_payload light-worker 'worker-run start light --brief /tmp/b --workdir /tmp' | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
-assert_eq "" "$gate_out"
-gate_out=$(gate_payload 'worker-run start light --brief /tmp/b --workdir /tmp' | env -u CLAUDEB_WORKER "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
-assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
+for tr_agent_owned in '~/.local/bin/light-research --prompt-file /tmp/q --out /tmp/a' 'light-research --attach gemini-1-2-abcd --out /tmp/a' \
+  'worker-run start light --brief /tmp/b --workdir /tmp'; do
+  gate_out=$(gate_timeout_payload fork "$tr_agent_owned" 600000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
+done
 
 # The renderer paints every running local_agent task, state from the run's files, and fits `columns`.
 RENDER_BIN="$ROOT/bin/subagent-statusline.sh"
@@ -6417,12 +5625,6 @@ jq '.state = "dead"' "$TR_STATS/progress/llm-legs__x-1.json" > "$TR_STATS/progre
 jq '.tier = null' "$TR_STATS/progress/llm-legs__x-1.json" > "$TR_STATS/progress/tmp" &&
   mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-1.json"
 assert grep -Fq 'T? · double · task — hunt over the task rows · ' <<<"$(tr_row "$(tr_render 300)" r1)"
-printf '%s' "$(worker_payload review-waiter waiterT 'Wait' "review-bench wait $TR_REVIEW --max 540" tr-rev)" |
-  WORKER_STATS_DIR="$TR_STATS" "$WORKER_HOOK" >/dev/null
-assert_eq 'T? · double · task' "$(head -n1 "$TR_HOME_CACHE/tr-rev/waiterT")"
-tr_waiter_tierless=$(WORKER_STATS_DIR="$TR_STATS" tr_spawn tr-rev-tierless review-waiter "WAIT $TR_REVIEW: hunt") ||
-  fail "review-waiter spawn exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description | startswith("T? · double · task: ")' <<<"$tr_waiter_tierless" >/dev/null
 # A review whose progress document is gone keeps the tag it had.
 rm -f "$TR_STATS/progress/llm-legs__x-1.json"
 assert_eq 'T2 · double · task — hunt over the task rows · 1m 5s · ↓ 500 tok' "$(tr_row "$(tr_render 300)" r1)"
@@ -6431,4 +5633,4 @@ assert_eq 'T2 · double · task — hunt over the task rows · 1m 5s · ↓ 500 
 no_status=$(printf '{"session_id":"x","columns":80,"tasks":[{"id":"ns1","type":"local_agent","description":"acc · astra · high: No status","startTime":1789600000000}]}' | bash "$RENDER_BIN")
 assert grep -Fq 'acc · astra · high' <<<"$no_status"
 fi
-echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, an ATOMIC middle block computed from ONE shown tree — the tree of the last line of this chat's place journal — no per-chat review debt number whatever the gate would answer, the gate's autonomy dot asked once per TTL with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini/grok worker tag propagation with the bare-launch gate that denies the spellings they replace, media-run work lines tagged account·kind·route from the job pointer with gen/edit states and fan-out cells, task rows painted for every agent with run/review/light state fitted to the columns, native agent spawns refused but fork, Monitor and chat-Bash waits refused, an explicit-vendor pin hidden only by that vendor's ABSENCE from a loaded pick line and never by a field that is merely unusable, and a run's start/wait reserved to the relay agent that owns it through every wrapper, keyword and sh -c string that spells one, while a read-only report and a heredoc body quoting the spelling are not gated"
+echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, an ATOMIC middle block computed from ONE shown tree — the tree of the last line of this chat's place journal — no per-chat review debt number whatever the gate would answer, the gate's autonomy dot asked once per TTL with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, fork tag propagation with the bare-launch gate that denies the spellings they replace, media-run work lines tagged account·kind·route from the job pointer with gen/edit states and fan-out cells, task rows painted for every agent with run/review/light state fitted to the columns, native agent spawns refused but fork, Monitor waits refused, an explicit-vendor pin hidden only by that vendor's ABSENCE from a loaded pick line and never by a field that is merely unusable, and a run's start/wait reserved to the chat, refused to an agent through every wrapper, keyword and sh -c string that spells one, while a read-only report and a heredoc body quoting the spelling are not gated"

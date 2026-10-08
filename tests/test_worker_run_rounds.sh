@@ -269,12 +269,12 @@ RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
 RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
 assert test "$(jq -r '.review_round' "$RUN_DIR/meta.json")" = 20260801T140000Z-0a1b2c3
 # A round brief a chat wrote by hand carries no fixer-row rule; the launch gets review-bench's.
-assert test "$(sed '/^AUDIENCE: /,$d' "$RUN_DIR/brief.launch")" = "ROUND: 20260801T140000Z-0a1b2c3
+assert test "$(sed '/^MD-GUARD (worker-run-injected): /,$d' "$RUN_DIR/brief.launch")" = "ROUND: 20260801T140000Z-0a1b2c3
 Fix the confirmed findings.
 
 STUB FIX RULE fix 20260801T140000Z-0a1b2c3 --print
 write verdicts.jsonl rows"
-assert test "$(sed -n '7p' "$RUN_DIR/brief.launch" | cut -c1-10)" = "AUDIENCE: "
+assert test "$(sed -n '9p' "$RUN_DIR/brief.launch" | cut -c1-10)" = "AUDIENCE: "
 assert cmp -s "$WORK/round-brief" "$RUN_DIR/brief"
 await_done || fail "the round run never finished"
 clear_stub
@@ -298,7 +298,8 @@ printf 'ROUND: 20260801T140000Z-0a1b2c3\nNothing is left.\n' >"$WORK/round-brief
 REVIEW_BENCH_STUB_EMPTY=1 round_start || fail "fixed round start failed: $(<"$WORK/round.err")"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
 RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
-assert test "$(sed -n '4p' "$RUN_DIR/brief.launch" | cut -c1-10)" = "AUDIENCE: "
+assert test "$(sed -n '4p' "$RUN_DIR/brief.launch" | cut -c1-28)" = "MD-GUARD (worker-run-injecte"
+assert test "$(sed -n '6p' "$RUN_DIR/brief.launch" | cut -c1-10)" = "AUDIENCE: "
 await_done || fail "the fixed round run never finished"
 clear_stub
 printf 'ROUND: 20260801T140000Z-0a1b2c3\nFix it.\n' >"$WORK/round-brief"
@@ -332,114 +333,24 @@ assert test "$rc" -eq 4
 assert grep -Fq "open review round(s) 20260801T140000Z-0a1b2c3 but has no ROUND: line" "$WORK/round.err"
 assert_fails grep -q '^RUN: ' "$WORK/round.out"
 
-# A relay that rewrote its brief drops the ROUND: header the orchestrator's Agent prompt carried
-# (round c3c2395's fixer, 2026-09-28): worker-spawn-hook seeds it into the agent's tag file and the
-# launch adopts it from there, and a brief or flag naming another round is refused.
+# The chat writes the brief the run reads, so the round comes from the flag or the header alone: a
+# stale tag-file seed of the retired relays binds nothing and refuses nothing.
 SPAWN_TAGS="$HOME/.cache/claude-worker-tags/chat-spawn-round"
-spawn_seed() { # round [agent]
-  mkdir -p "$SPAWN_TAGS"
-  printf 'seed · opus · high\nstart=%s\nround=%s\n' "$(date +%s)" "$1" >"$SPAWN_TAGS/${2:-agent-relay}"
-}
+mkdir -p "$SPAWN_TAGS"
+printf 'seed · opus · high\nstart=%s\nround=20260801T140000Z-0a1b2c3\n' "$(date +%s)" >"$SPAWN_TAGS/agent-relay"
 clear_stub
-spawn_seed 20260801T140000Z-0a1b2c3
 printf 'Repository: somewhere\n\nFix the findings.\n' >"$WORK/round-brief"
-CLAUDE_CODE_SESSION_ID=chat-spawn-round round_start || fail "prompt-round start failed: $(<"$WORK/round.err")"
-RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
-RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
-assert test "$(jq -r '.review_round' "$RUN_DIR/meta.json")" = 20260801T140000Z-0a1b2c3
-assert test "$(jq -r '.round_source' "$RUN_DIR/meta.json")" = prompt
-assert grep -q 'STUB FIX RULE fix 20260801T140000Z-0a1b2c3' "$RUN_DIR/brief.launch"
-assert test "$(cat "$RUN_DIR/agent-task")" = agent-relay
-await_done || fail "the prompt-round run never finished"
-clear_stub
-spawn_seed 20260801T140000Z-0a1b2c3
-printf 'ROUND: 20260801T140000Z-0a1b2c3\nFix the findings.\n' >"$WORK/round-brief"
-CLAUDE_CODE_SESSION_ID=chat-spawn-round round_start || fail "agreeing prompt-round start failed: $(<"$WORK/round.err")"
-RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
-RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
-assert test "$(jq -r '.round_source' "$RUN_DIR/meta.json")" = header
-await_done || fail "the agreeing prompt-round run never finished"
-for conflict in 'ROUND: 20260801T130000Z-def4560' 'ROUND: none' '--round'; do
-  clear_stub
-  spawn_seed 20260801T140000Z-0a1b2c3
-  conflict_args=()
-  if [ "$conflict" = --round ]; then
-    printf 'Fix the findings.\n' >"$WORK/round-brief"
-    conflict_args=(--round 20260801T130000Z-def4560)
-  else
-    printf '%s\nFix the findings.\n' "$conflict" >"$WORK/round-brief"
-  fi
-  rc=0
-  CLAUDE_CODE_SESSION_ID=chat-spawn-round round_start ${conflict_args[@]+"${conflict_args[@]}"} || rc=$?
-  assert test "$rc" -eq 4
-  assert grep -Fq "the Agent prompt that spawned this relay says 'ROUND: 20260801T140000Z-0a1b2c3'" "$WORK/round.err"
-  assert_fails grep -q '^RUN: ' "$WORK/round.out"
-done
-rm -rf "$SPAWN_TAGS"
-
-# The prompt's `ROUND: none` is the orchestrator's opt-out and survives the rewrite too: the prose scan
-# asks nothing, and a brief naming a round under it is refused like any other mismatch.
-clear_stub
-spawn_seed none
-printf 'Audit the labels of review round 20260801T140000Z-0a1b2c3 (see the bench). Edit nothing.\n' >"$WORK/round-brief"
-CLAUDE_CODE_SESSION_ID=chat-spawn-round round_start || fail "prompt-none start failed: $(<"$WORK/round.err")"
-RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
+CLAUDE_AGENT_ID=agent-relay CLAUDE_CODE_SESSION_ID=chat-spawn-round round_start || fail "seeded start failed: $(<"$WORK/round.err")"
 RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
 assert test "$(jq 'has("review_round") or has("round_source")' "$RUN_DIR/meta.json")" = false
-assert_fails grep -q 'STUB FIX RULE' "$RUN_DIR/brief.launch"
-await_done || fail "the prompt-none run never finished"
-for conflict in 'ROUND: 20260801T140000Z-0a1b2c3' '--round'; do
-  clear_stub
-  spawn_seed none
-  conflict_args=()
-  if [ "$conflict" = --round ]; then
-    printf 'Fix the findings.\n' >"$WORK/round-brief"
-    conflict_args=(--round 20260801T140000Z-0a1b2c3)
-  else
-    printf '%s\nFix the findings.\n' "$conflict" >"$WORK/round-brief"
-  fi
-  rc=0
-  CLAUDE_CODE_SESSION_ID=chat-spawn-round round_start ${conflict_args[@]+"${conflict_args[@]}"} || rc=$?
-  assert test "$rc" -eq 4
-  assert grep -Fq "the Agent prompt that spawned this relay says 'ROUND: none'" "$WORK/round.err"
-  assert_fails grep -q '^RUN: ' "$WORK/round.out"
-done
-rm -rf "$SPAWN_TAGS"
-
-# Two relays of one chat launching within the claim window, no CLAUDE_AGENT_ID: the newest `start=`
-# may be the sibling's, so disagreeing seeds bind nothing and refuse nothing; CLAUDE_AGENT_ID picks.
+assert test ! -e "$RUN_DIR/agent-task"
+await_done || fail "the seeded run never finished"
 clear_stub
-spawn_seed 20260801T140000Z-0a1b2c3
-spawn_seed 20260801T130000Z-def4560 agent-sibling
-printf 'Fix the findings.\n' >"$WORK/round-brief"
-(unset CLAUDE_AGENT_ID; CLAUDE_CODE_SESSION_ID=chat-spawn-round round_start) || fail "ambiguous prompt-round start failed: $(<"$WORK/round.err")"
-RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
+printf 'ROUND: 20260801T130000Z-def4560\nFix the findings.\n' >"$WORK/round-brief"
+CLAUDE_AGENT_ID=agent-relay CLAUDE_CODE_SESSION_ID=chat-spawn-round round_start || fail "seeded header start was refused: $(<"$WORK/round.err")"
 RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
-assert test "$(jq 'has("review_round")' "$RUN_DIR/meta.json")" = false
-await_done || fail "the ambiguous prompt-round run never finished"
-clear_stub
-rm -rf "$SPAWN_TAGS"
-spawn_seed 20260801T140000Z-0a1b2c3
-spawn_seed 20260801T130000Z-def4560 agent-sibling
-printf 'ROUND: 20260801T140000Z-0a1b2c3\nFix the findings.\n' >"$WORK/round-brief"
-(unset CLAUDE_AGENT_ID; CLAUDE_CODE_SESSION_ID=chat-spawn-round round_start) || fail "ambiguous header start was refused: $(<"$WORK/round.err")"
-RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
-RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
-assert test "$(jq -r '.round_source' "$RUN_DIR/meta.json")" = header
-await_done || fail "the ambiguous header run never finished"
-clear_stub
-rm -rf "$SPAWN_TAGS"
-spawn_seed 20260801T130000Z-def4560
-spawn_seed 20260801T140000Z-0a1b2c3 agent-sibling
-printf 'Fix the findings.\n' >"$WORK/round-brief"
-CLAUDE_AGENT_ID=agent-sibling CLAUDE_CODE_SESSION_ID=chat-spawn-round round_start || fail "agent-id prompt-round start failed: $(<"$WORK/round.err")"
-RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
-RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
-assert test "$(jq -r '.review_round' "$RUN_DIR/meta.json")" = 20260801T140000Z-0a1b2c3
-assert test "$(jq -r '.round_source' "$RUN_DIR/meta.json")" = prompt
-assert test "$(cat "$RUN_DIR/agent-task")" = agent-sibling
-await_done || fail "the agent-id prompt-round run never finished"
-clear_stub
+assert test "$(jq -r '[.review_round, .round_source] | join(" ")' "$RUN_DIR/meta.json")" = '20260801T130000Z-def4560 header'
+await_done || fail "the seeded header run never finished"
 rm -rf "$SPAWN_TAGS"
 
 # A brief that names an open round in prose alone is refused, never bound: bound, a read-only audit
