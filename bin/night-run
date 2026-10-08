@@ -119,7 +119,8 @@ carry: first an owner-chat job per owner chat (share/handoffs.py --batches: the 
   suite the newest earlier night's full run failed; each gets its night worktree and a brief; prints
   <ref>\t<brief>\t<worktree>. A handoff job blocked-on-egor needs the trade in reason= as Cost:,
   Loss: and Recommendation:
-speed-gate, run by worker-run once a night worker takes its slot: a Speed fixer (a harness run of area
+speed-gate, run by worker-run once a night worker takes its slot: exits 3 while a process stands in the
+  job's night worktree (a resumed night's earlier worker), naming it, the job untouched; a Speed fixer (a harness run of area
   speed-<lever>, one per lever or per levers sharing a file) whose first start comes SPEED_WINDOW_H (6) hours or more after the night's started_at exits 3,
   its job left with reason `speed window closed (6 h)` and its run abandoned; an earlier start is
   recorded as a speed-start event, after which a resumed worker of that fixer always passes
@@ -1085,8 +1086,15 @@ worktree_lines() { # repo -> worktree<TAB>branch|-<TAB>main-checkout(0|1)<TAB>lo
   done < <(git -C "$1" worktree list --porcelain; echo)
 }
 
-cmd_speed_gate() { # id ref -> exit 3 once the Speed window closed before the fixer's first start
-  local id=$1 ref=$2 file run verdict reason="speed window closed ($SPEED_WINDOW_H h)"
+cmd_speed_gate() { # id ref -> exit 3 while the job's night worktree is worked in, or once the Speed window closed before the fixer's first start
+  local id=$1 ref=$2 file run verdict reason="speed window closed ($SPEED_WINDOW_H h)" repo wt holders
+  while IFS= read -r repo; do
+    wt="$repo/.claude/worktrees/night-$id-$ref"
+    [ -d "$wt" ] && holders=$(cwd_holders "$wt") && [ -n "$holders" ] || continue
+    printf 'night %s job %s: its worktree %s is still worked in by %s; it is handed out again once they exit\n' \
+      "$id" "$ref" "$wt" "${holders//$'\n'/; }"
+    exit 3
+  done < <(grep -hvxF '' "$sweep_repos" "$helper_repos" 2>/dev/null)
   file=$(night_file "$id") run="${nights_dir%/*}/runs/$ref.json"
   [ -s "$file" ] && jq -e "$JQ_SPEED_RUN"' speed_run' "$run" >/dev/null 2>&1 || return 0
   lock

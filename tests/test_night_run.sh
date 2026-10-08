@@ -1309,6 +1309,21 @@ assert jqe '[.jobs[] | .state] == ["left", "pending", "left", "pending"]' "$(rec
 night speed-gate nopen hs-in || fail "a Speed fixer inside the window was refused"
 night speed-gate nopen hs-in || fail "a started Speed fixer was refused again"
 assert jqe '.jobs[0].state == "pending" and [.events[] | select(.phase == "speed-start") | .job] == ["hs-in"]' "$(record nopen)"
+# A resumed night's job whose night worktree its earlier worker still stands in is not handed out again
+# while that process lives, the job untouched; once it exits, it is.
+wt="$(head -1 "$WORK/sweep-repos")/.claude/worktrees/night-nopen-hs-in"
+mkdir -p "$wt"
+(cd "$wt" && exec sleep 600) &
+holder=$!
+printf '%s\n' "$holder" >>"$DATA/orchestrators"
+for _ in $(seq 50); do lsof -a -p "$holder" -d cwd -Fn 2>/dev/null | grep -qxF "n$wt" && break; sleep 0.1; done
+rc=0; night speed-gate nopen hs-in >"$WORK/out" 2>&1 || rc=$?
+assert [ "$rc" = 3 ]
+assert grep -qxF "night nopen job hs-in: its worktree $wt is still worked in by $holder sleep 600; it is handed out again once they exit" "$WORK/out"
+assert jqe '.jobs[0].state == "pending"' "$(record nopen)"
+kill "$holder"; wait "$holder" 2>/dev/null
+night speed-gate nopen hs-in || fail "a job whose worktree holder exited was still refused"
+rm -rf "$wt"
 night report nlate >"$WORK/report" || fail "report of the speed night"
 assert grep -qxF "speed · levers 6 selected · 2 started · 4 left by the 6 h window" "$WORK/report"
 night report nopen >"$WORK/report" || fail "report of the open speed night"
