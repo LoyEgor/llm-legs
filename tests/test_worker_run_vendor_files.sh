@@ -730,16 +730,13 @@ unset STUB_SESSION
 # priced as nobody's, which is the hole the pair on record exists to close.
 clear_stub
 export STUB_SESSION=resumed-session STUB_SLEEP=0.5
-RESUME_TAGS="$HOME/.cache/claude-worker-tags/chat-resume"
-mkdir -p "$RESUME_TAGS"
-printf 'seed · opus · high\nstart=%s\n' "$(date +%s)" >"$RESUME_TAGS/agent-resumed"
 CLAUDE_LAUNCHER_SESSION=chat-resume start_ok claudeb --account resumeacct --resume resumed-session
 assert test "$(cat "$RUN_DIR/worker-session")" = resumed-session
 assert await_done
 # And once per id, however many times the record is rewritten over it.
 assert test "$(grep -c . "$RUN_DIR/worker-session")" -eq 1
-# Its one attempt line is written at launch, so it names the agent the launch claimed.
-assert test "$(jq -r --arg run "$RUN_ID" 'select(.run == $run) | .agent' "$CLAUDEB_DIR/worker-stats/worker-attempts.jsonl" | paste -sd, -)" = agent-resumed
+# Its one attempt line is written at launch.
+assert test "$(jq -r --arg run "$RUN_ID" 'select(.run == $run) | .run' "$CLAUDEB_DIR/worker-stats/worker-attempts.jsonl" | grep -c .)" -eq 1
 unset STUB_SESSION STUB_SLEEP
 
 # "429" only counts as a limit signature with digit boundaries: an error id that

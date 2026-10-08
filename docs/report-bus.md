@@ -59,10 +59,9 @@ and appends its text to
 history, with no pending file. Optional `--context` adds
 `hookSpecificOutput.additionalContext` with `hookEventName` from `--event` (default
 `PostToolUse`), preserving model directives alongside the user-facing report. `flush` reads hook JSON from stdin
-when `--session` is absent: `session_id`, `agent_id`, `transcript_path`, `agent_type`.
-It skips `CLAUDEB_WORKER=1`, nonempty `agent_id`, `/subagents/` in the transcript path, and
-the worker-tag agent types `codex-worker`, `claudeb-worker`, `gemini-worker`, `grok-worker`,
-`light-worker`, `light-research`. Skipped queues stay pending. A `media-run` job is a Bash call
+when `--session` is absent: `session_id`, `agent_id`, `transcript_path`.
+It skips `CLAUDEB_WORKER=1`, nonempty `agent_id` and `/subagents/` in the transcript path.
+Skipped queues stay pending. A `media-run` job is a Bash call
 of the chat itself, so nothing skips it: run in the background it lands as the harness's own task
 notification, and its account is the `media` work line (`docs/statusline-contract.md`).
 

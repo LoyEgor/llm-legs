@@ -1,6 +1,6 @@
 # Relay-free worker rows: a `worker` work line instead of the Sonnet relay subagents
 
-Status: open; design approved by Egor 2026-10-08 (§ Approved design), implementation not started. To: «Workers и review bench унификация отображения». From: «Token spending tracking and optimization», 2026-10-08.
+Status: implemented 2026-10-09 (§ Approved design, approved by Egor 2026-10-08); open until the done-when week passes. To: «Workers и review bench унификация отображения». From: «Token spending tracking and optimization», 2026-10-08.
 
 ## Goal
 Cut the Sonnet relay subagents out of delegation entirely, so that holding a worker costs zero Claude tokens.

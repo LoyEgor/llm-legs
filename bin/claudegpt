@@ -409,8 +409,8 @@ def main():
                 command += ["--effort", env.get("CLAUDE_CODE_EFFORT_LEVEL") or "high"]
             if agents:
                 command += ["--agents", json.dumps(agents), "--append-system-prompt",
-                            "For implementation tasks, implement directly or delegate through the selected "
-                            "worker-run relay from worker-pick. Never use native implementation agents. Task size "
+                            "For implementation tasks, implement directly or delegate through "
+                            "worker-pick's START line. Never use native implementation agents. Task size "
                             "is never a refusal condition: delegate larger tasks and verify the result. Preserve "
                             "existing worker-pool, account, permission, and model-routing rules."]
             session, pin = launch_session(forwarded)

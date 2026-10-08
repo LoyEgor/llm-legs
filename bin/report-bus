@@ -103,9 +103,6 @@ skip_flush() {
   [ "${CLAUDEB_WORKER:-}" = 1 ] && return 0
   [ -z "$agent" ] || return 0
   case "$transcript" in */subagents/*) return 0 ;; esac
-  case "$agent_type" in
-    codex-worker|claudeb-worker|gemini-worker|grok-worker|light-worker|light-research) return 0 ;;
-  esac
   return 1
 }
 render() {
@@ -256,11 +253,11 @@ case "$verb" in
       "$self" post --kind notice --id "lost-$id" --session "$session" ;;
   flush)
     case "$event" in PostToolUse|SubagentStop|Stop|UserPromptSubmit) ;; *) usage ;; esac
-    agent='' transcript='' agent_type=''
+    agent='' transcript=''
     if [ -z "$session" ]; then
       payload=$(cat)
-      fields=$(printf '%s' "$payload" | jq -er '[.session_id // "", .agent_id // "", .transcript_path // "", .agent_type // ""] | .[]' 2>/dev/null) || exit 0
-      { IFS= read -r session; IFS= read -r agent; IFS= read -r transcript; IFS= read -r agent_type; } <<<"$fields"
+      fields=$(printf '%s' "$payload" | jq -er '[.session_id // "", .agent_id // "", .transcript_path // ""] | .[]' 2>/dev/null) || exit 0
+      { IFS= read -r session; IFS= read -r agent; IFS= read -r transcript; } <<<"$fields"
     fi
     skip_flush && exit 0
     [ -n "$session" ] || resolve_session

@@ -3840,7 +3840,7 @@ def stop_hooks_section(now):
                 health_hit(items, "hook-error", name, "%s: %s" % (name, reason or "error"), at, ref=ref, excerpt=reason,
                            head="an end-of-turn check failed")
             elif outcome == "held":
-                health_hit(items, "hook-held", name, "%s: held a run no relay owns" % name, at, ref=ref,
+                health_hit(items, "hook-held", name, "%s: held a run no wait owns" % name, at, ref=ref,
                            excerpt=reason, head="an end-of-turn check held a worker run nobody owns")
             elif outcome == "asked":
                 key = (session, name, reason[:120])

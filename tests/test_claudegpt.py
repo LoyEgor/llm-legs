@@ -31,12 +31,12 @@ class CodexFamilyTests(unittest.TestCase):
 
 
 class ChatLaunchTests(unittest.TestCase):
-    def test_gateway_prompt_allows_direct_or_relay_and_forbids_native_agents(self):
+    def test_gateway_prompt_allows_direct_or_start_line_and_forbids_native_agents(self):
         text = source.read_text()
         compact = "".join(line.strip().strip('"') for line in text.splitlines()
-                           if "implementation tasks" in line or "worker-run relay" in line
+                           if "implementation tasks" in line or "START line" in line
                            or "is never a refusal" in line or "existing worker-pool" in line)
-        self.assertIn("implement directly or delegate through the selected worker-run relay from worker-pick", compact)
+        self.assertIn("implement directly or delegate through worker-pick's START line", compact)
         self.assertIn("Never use native implementation agents", compact)
         self.assertIn("Task size is never a refusal condition: delegate larger tasks and verify the result", compact)
 

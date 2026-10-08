@@ -85,9 +85,8 @@ for site in "$REPORT_BUS" "$REPORT_NOTICE"; do
   assert grep -Fq '[ -z "$agent" ] ||' "$site"
   assert grep -Fq '*/subagents/*)' "$site"
 done
-report_types='codex-worker|claudeb-worker|gemini-worker|grok-worker|light-worker|light-research'
-assert grep -Fq "$report_types)" "$REPORT_BUS"
-for marker in CLAUDEB_WORKER=1 agent_id /subagents/ agent_type codex-worker claudeb-worker gemini-worker grok-worker light-worker light-research; do
+assert test -z "$(grep -F agent_type "$REPORT_BUS")"
+for marker in CLAUDEB_WORKER=1 agent_id /subagents/; do
   assert doc_has "$marker"
   assert grep -Fq "$marker" "$REPORT_DOC"
 done

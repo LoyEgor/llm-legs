@@ -345,45 +345,24 @@ Fit: budget = `columns − SUBAGENT_ROW_RESERVE` (default 3, the same margin as 
 characters, then the title tail to nothing (the `—` with it); the token count; the elapsed time. The
 tag and the state are never dropped.
 
-State files: `worker-run` rewrites `state.json` (tmp + rename) on start, on every `wait`
-and at the end: `{phase, exit_code, agent_task_id, session, account, model, effort, round_id,
-started_epoch, ts}`; `session` is the launching chat (`CLAUDE_LAUNCHER_SESSION`, else
-`CLAUDE_CODE_SESSION_ID`). `worker-tag-hook` marks `start=<epoch>` on the agent's tag file before a
-`worker-run start`; the run swaps the freshest mark (≤120s), or the `CLAUDE_AGENT_ID` file, for
-`run=<id>` and its resolved tag, keeping every other key line; a relay's `WORKER_RUN_RELAY` token
-(shared-invariants row `cx`) sets `CLAUDE_AGENT_ID` from its agent id, so the claim finds that
-agent's file however the start was spelled, and a `report` never moves the row off the agent's run.
-Spawn seeds are
-`pending-<type>-<tool_use_id or epoch-pid-rand>`, one per spawn, carrying `spawn=<key>` (the first 16
-hex of the SHA-256 of the brief's first line), claimed by the agent's first Bash call: the seed whose
-key matches the first prompt line of the agent's own transcript (`<parent>/subagents/agent-<id>.jsonl`),
-else — no key on either side — the oldest seed no older than `WORKER_TAG_SEED_MAX_AGE_S` (600), so a
-denied or cancelled spawn's seed is never another spawn's tag; `spawn=` never reaches the tag file.
-Every tag-file rewrite — `worker-tag-hook`, the `edit=N` count, the `exit=N` stamp, `worker-run`'s claim — holds the
-session directory's `.claim.lock` (mkdir lock; one older than a minute is broken once, a live one
-outwaited ~3 s — `WORKER_TAG_LOCK_TRIES` × 0.1 s, default 30 — and the write skipped). A `review-waiter`'s `review-bench wait <run-id>` is rewritten (`updatedInput`) to carry
-`--waiter <agent id>` — the id the tag cache is keyed on — so review-bench records the doc's
-`waiter {session, task_id}`. `light-research` waits one `worker-run wait --max 540` round per call:
-a run still going prints `RUN: <id>` and `STATUS: running` and exits 0, and
-`light-research --attach <run-id> --out <answer>` waits the next round (allowed only inside the
-`light-research` agent).
+State files: `worker-run` rewrites `state.json` (tmp + rename) on start, on every `wait` and at the
+end: `{phase, exit_code, session, account, model, effort, round_id, started_epoch, ts}`; `session`
+is the launching chat (`CLAUDE_LAUNCHER_SESSION`, else `CLAUDE_CODE_SESSION_ID`). At start it also
+writes `title` (the brief's first non-header line, ≤100 characters) and, while a `wait` runs,
+`tokens` (the worker's own total, rewritten when its session log changes); both feed the worker
+work line. Every tag-file rewrite — `worker-tag-hook`, the `edit=N` count, the `exit=N` stamp —
+holds the session directory's `.claim.lock` (mkdir lock; one older than a minute is broken once, a
+live one outwaited ~3 s — `WORKER_TAG_LOCK_TRIES` × 0.1 s, default 30 — and the write skipped).
 
-Gates bound to these rows: `worker-spawn-hook` is the one owner of the native-type policy and denies
-(`permissionDecision: "deny"`) every type outside `RELAY_TYPES` and `NATIVE_ALLOWLIST` (`fork`,
-`review-waiter`, `light-research`) — `Explore`, `Plan`, `general-purpose`,
-`claude-code-guide` included; a Workflow call is untouched; `worker-limit-gate` judges no native type
-(shared-invariants row `bt`). `worker-launch-gate` reads a Monitor's command through the same masked
-scan as a Bash call: a Monitor on `worker-run wait` or `review-bench wait` in command position is
-denied, and every owned spelling behind it (`worker-run start`, the media scripts, `light-research`)
-meets the same checks a Bash call does; a `review-bench wait` from any Bash but a `review-waiter`'s (a
-headless `CLAUDEB_WORKER=1` process excepted) is denied with the brief to spawn instead — `WAIT
-<run-id>: <what>`, or `ATTACH <run-id>: --relaunch` / `--finish-partial` for a recovery, which the
-review-waiter passes to its first wait (the Stop ask names the same spawns); `light-research` is
-denied outside its own agent. A running `light-research` round prints `RUN:`, `STATUS: running` and
-`OUT: <answer path>` for the next `--attach` call, and `--attach` refuses an `--out` inside the run's
-workdir or add-dirs as the launch does. Foreign runs
-(another chat's review) have no task here and are drawn in no row of this chat; review-bench keeps
-the document (phase `report`) for the task row after the report is taken.
+Gates bound to these rows: `worker-spawn-hook` is the one owner of the native-type policy: it
+admits `fork` alone and denies (`permissionDecision: "deny"`) every other type — the retired relays
+with the direct command that replaces each, `Explore`, `Plan`, `general-purpose` and
+`claude-code-guide` included; a Workflow call is untouched; `worker-limit-gate` judges no native
+type (shared-invariants row `bt`). `worker-launch-gate` reads a Monitor's command through the same
+masked scan as a Bash call: a Monitor on `worker-run wait` or `review-bench wait` in command position
+is denied with the background-Bash spelling, and every owned spelling behind it (`worker-run start`,
+the media scripts, `light-research`) meets the same checks a Bash call does. Foreign runs (another
+chat's review) are drawn in no row or line of this chat.
 
 ## Store merge-kick (background, not a rendered segment)
 
@@ -500,8 +479,8 @@ warm arrow.
   honestly — gitignore it.
 - **Work lines see processes, not intent.** A test run a worker of a run with
   no task row here starts is drawn as this chat's work line when its environment
-  still names this chat's `claude`; a live run whose waiter ended has no row and
-  no line until the Stop ask's ATTACH; a runner outside the list above is
+  still names this chat's `claude`; a live run whose wait ended has no line
+  until the Stop ask's background wait; a runner outside the list above is
   `shell`, and a call faster than one probe (~6s) is never drawn. WebFetch,
   WebSearch, MCP calls and compaction run inside `claude` or a long-lived server
   with no process per call, so no line or row can show them: the harness

@@ -93,9 +93,7 @@ post skipped item
 output=$(CLAUDEB_WORKER=1 "$BUS" flush --session skipped --event Stop </dev/null)
 assert test -z "$output"
 assert test "$(count "$STORE/skipped/pending")" = 1
-for payload in '{"agent_id":"child"}' '{"transcript_path":"/tmp/subagents/child.jsonl"}' \
-  '{"agent_type":"codex-worker"}' '{"agent_type":"claudeb-worker"}' '{"agent_type":"gemini-worker"}' \
-  '{"agent_type":"grok-worker"}' '{"agent_type":"light-research"}' '{"agent_type":"light-worker"}'; do
+for payload in '{"agent_id":"child"}' '{"transcript_path":"/tmp/subagents/child.jsonl"}'; do
   output=$(jq '. + {session_id:"skipped"}' <<<"$payload" | "$BUS" flush --event Stop)
   assert test -z "$output"
   assert test "$(count "$STORE/skipped/pending")" = 1

@@ -28,7 +28,7 @@ TOP = 15
 OWN_MARK = "# Log audit"
 
 LEGEND = """You read skeletons of Claude Code transcripts from Egor's machine: his interactive chats and the headless
-workers they launch. The machine runs llm-legs (multi-account LLM orchestration: hooks, gates, worker relays,
+workers they launch. The machine runs llm-legs (multi-account LLM orchestration: hooks, gates, worker runs,
 doctors, a nightly self-improvement run) and claude-setup (the hooks and skills). Read-only: change nothing, run
 nothing; the skeleton below is everything you need.
 
