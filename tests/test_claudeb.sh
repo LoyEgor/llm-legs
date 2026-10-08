@@ -296,6 +296,21 @@ wk_row=$(account_data wkorigin)
 assert jq -e '.wk_raw == null and .wk == 0 and .walled == false' <<<"$wk_row" >/dev/null
 rm -f "$snapshot_wk"
 
+# A messages-probe 200 proves the login works, so it heals an auth_needed stamp like merge_usage does.
+printf '{"auth_needed":true,"auth_cause":"logged out","auth_checked_at":1}' >"$snapshot_wk"
+assert merge_headers wkorigin "$headers_wk"
+assert jq -e '.auth.status == "ok" and ([has("auth_needed"), has("auth_cause"), has("auth_checked_at")] == [false, false, false])' \
+  "$snapshot_wk" >/dev/null
+rm -f "$snapshot_wk"
+
+# A resets_at the strict epoch parser cannot read yields no jq output at all; that must fail
+# the merge, not move an empty file over the snapshot.
+printf '{"five_hour":{"used_percentage":11,"resets_at":5,"as_of":5,"origin":"usage"}}' >"$snapshot_wk"
+printf '{"five_hour":{"utilization":3,"resets_at":"2026-10-08T10:00:00+02:00"},"limits":[]}' >"$WORK/usage-offset.json"
+assert_fails merge_usage wkorigin "$WORK/usage-offset.json"
+assert jq -e '.five_hour.used_percentage == 11' "$snapshot_wk" >/dev/null
+rm -f "$snapshot_wk"
+
 # The wall is worker-pick's, on both buckets alike: 100 walls, 99 does not.
 wall_snap="$CLAUDEB_DIR/limits/wallcheck.json"
 wall_row() {
@@ -1394,6 +1409,82 @@ chmod +x "$FAKE_BIN/security" "$FAKE_BIN/claude" "$FAKE_BIN/curl"
     assert jq -e '.auth.status == "ok"' "$limits_dir/wf1.json" >/dev/null
     assert test "$(cat "$WORK/wthr-f-uc")" = 2
   )
+
+  # A robot probe of an expired token is robot-skip (rc 255, http 000): curl never ran, so
+  # convergence must not re-probe it as network weather for the whole budget.
+  (
+    unset CLAUDEB_WARM_USER_EXPLICIT
+    account_names() { printf 'wh1\n'; }
+    curl() { return 97; }
+    seed_expired wh1 rt-wh1
+    printf '{}' >"$oauth_attempts_file"
+    : >"$token_attempts_file"
+    wh_dir="$WORK/wthr-h"; mkdir -p "$wh_dir"
+    CLAUDEB_REFRESH_CONVERGE_S=240 probe_accounts "$wh_dir" false false false
+    assert test "$(cat "$wh_dir/wh1.result")" = 'no-spend 255 000'
+    assert test "$(jq -sc '[.[] | select(.account == "wh1" and .outcome == "robot-skip")] | length' "$token_attempts_file")" = 1
+    assert_fails probe_weather_failed wh1 "$wh_dir" 0
+  )
+
+  # An account appearing while the probe runs got no background probe_one; waiting for its
+  # .result hung refresh/status forever.
+  (
+    account_names() {
+      if [ -e "$WORK/wthr-i-late" ]; then printf 'wi1\nwi2\n'; else : >"$WORK/wthr-i-late"; printf 'wi1\n'; fi
+    }
+    curl() {
+      local out='' prev='' a
+      for a in "$@"; do [ "$prev" = -o ] && out="$a"; prev="$a"; done
+      [ -z "$out" ] || printf '%s' '{"five_hour":{"utilization":4,"resets_at":null},"limits":[]}' >"$out"
+      printf '200'
+    }
+    rm -f "$WORK/wthr-i-late"
+    seed_valid wi1 rt-wi1
+    wi_dir="$WORK/wthr-i"; mkdir -p "$wi_dir"
+    probe_accounts "$wi_dir" false false false &
+    wi_pid=$!
+    wi_tries=0
+    while kill -0 "$wi_pid" 2>/dev/null && [ "$wi_tries" -lt 100 ]; do sleep 0.1; wi_tries=$((wi_tries + 1)); done
+    if kill -0 "$wi_pid" 2>/dev/null; then kill "$wi_pid" 2>/dev/null; fi
+    assert wait "$wi_pid"
+    assert test "$(cat "$wi_dir/wi1.display")" = live
+  )
+
+  # The full rl-global wait (200 tries, ~40s live) outlives the rlock's 30s stale threshold, so
+  # the waiter must keep its rlock fresh or a second refresher of the account breaks it.
+  (
+    export CLAUDEB_LOCK_DELAY=0.01
+    curl() {
+      case "$*" in
+        *'/oauth/token'*) cat >/dev/null; printf '{"access_token":"at-new","expires_in":3600,"refresh_token":"rt-wr1b"}\n200' ;;
+        *) return 97 ;;
+      esac
+    }
+    seed_expired wr1 rt-wr1
+    printf '{}' >"$oauth_attempts_file"
+    wr_glock="$oauth_attempts_file.rl-global"
+    wr_rlock="$oauth_attempts_file.rl.wr1"
+    mkdir "$wr_glock"
+    ( for _ in $(seq 40); do touch "$wr_glock"; sleep 0.1; done; rmdir "$wr_glock" ) &
+    wr_holder=$!
+    oauth_refresh wr1 "$(svc_of wr1)" "$(security find-generic-password -s "$(svc_of wr1)" -w)" >/dev/null 2>&1 &
+    wr_pid=$!
+    wr_tries=0
+    while ! [ -d "$wr_rlock" ] && [ "$wr_tries" -lt 100 ]; do sleep 0.02; wr_tries=$((wr_tries + 1)); done
+    touch -t 202001010000 "$wr_rlock"
+    wr_fresh=false
+    wr_tries=0
+    while [ "$wr_tries" -lt 15 ]; do
+      sleep 0.1
+      wr_tries=$((wr_tries + 1))
+      wr_mt=$(file_mtime "$wr_rlock" 2>/dev/null) || continue
+      [[ "$wr_mt" =~ ^[0-9]+$ ]] || continue
+      if [ "$(($(date +%s) - wr_mt))" -lt 10 ]; then wr_fresh=true; break; fi
+    done
+    wait "$wr_pid" || true
+    wait "$wr_holder" || true
+    assert test "$wr_fresh" = true
+  )
 )
 
 # --- robot curl refresh is off (shared-invariants row f): no robot path POSTs the token
@@ -1786,6 +1877,18 @@ printf '{}' >"$oauth_attempts_file"
   if warm_accounts zeta >/dev/null 2>"$WORK/warm-429.err"; then fail "429 warm unexpectedly succeeded"; fi
   assert grep -qx 'claudeb: warm failed account=zeta cause=warm-429' "$WORK/warm-429.err"
   assert test "$(wc -l <"$WORK/warm-429.err" | tr -d ' ')" = 1
+
+  # A 429 inside the JSON result's ids and counters is not a rate limit.
+  printf '{}' >"$oauth_attempts_file"
+  run_warm_session() {
+    printf '{"type":"result","is_error":true,"duration_ms":4291,"session_id":"0f3a4291-c429-4290-8429-04290f3a4291","total_cost_usd":0.0429}\n' >"$3"
+    return 7
+  }
+  if warm_accounts zeta >/dev/null 2>"$WORK/warm-429-ids.err"; then fail "429-ids warm unexpectedly succeeded"; fi
+  assert grep -qx 'claudeb: warm failed account=zeta cause=warm-failed' "$WORK/warm-429-ids.err"
+  run_warm_session() { printf 'API Error: 429 {"type":"error"}\n' >"$3"; return 7; }
+  if warm_accounts zeta >/dev/null 2>"$WORK/warm-429-api.err"; then fail "429-api warm unexpectedly succeeded"; fi
+  assert grep -qx 'claudeb: warm failed account=zeta cause=warm-429' "$WORK/warm-429-api.err"
 
   run_warm_session() { return 0; }
   for refresh_http in 429 529; do
@@ -2206,6 +2309,33 @@ source "$SCRIPT"
   assert jq -e '. == {}' "$oauth_attempts_file" >/dev/null
 ) || exit 1
 
+# ...unless tokens/<name> holds a setup token: a `claudeb add` account never has a keychain
+# item, and its messages probe is what proves it alive.
+(
+  security() { return 44; }
+  curl() {
+    local hdr='' prev='' a
+    for a in "$@"; do [ "$prev" = -D ] && hdr="$a"; prev="$a"; done
+    case "$*" in
+      *'/v1/messages'*)
+        printf 'anthropic-ratelimit-unified-5h-utilization: 0.2\nanthropic-ratelimit-unified-5h-reset: %s\n' "$(($(date +%s) + 3600))" >"$hdr"
+        printf '200'
+        ;;
+      *) return 97 ;;
+    esac
+  }
+  printf 'sk-ant-oat01-st' >"$CLAUDEB_DIR/tokens/st44"
+  printf '{"auth_needed":true,"auth_cause":"no keychain credentials","auth_checked_at":1}' >"$limits_dir/st44.json"
+  st_dir="$WORK/probe-st44"; mkdir -p "$st_dir"
+  assert_fails detect_logged_out st44
+  probe_one st44 "$st_dir" true true
+  assert test "$(cat "$st_dir/st44.result")" = 'messages 0 200'
+  process_probe_result st44 "$st_dir"
+  assert test "$(cat "$st_dir/st44.display")" = 'live*'
+  assert jq -e '.auth.status == "ok" and (has("auth_needed") | not) and .five_hour.used_percentage == 20' "$limits_dir/st44.json" >/dev/null
+  rm -f "$CLAUDEB_DIR/tokens/st44" "$limits_dir/st44.json"
+) || exit 1
+
 # any OTHER keychain error (exit 1) is weather: NO auth verdict, old auth preserved.
 (
   cat >"$FAKE_BIN/security" <<'LOEOF'
@@ -2237,6 +2367,21 @@ accounts_picked=beta
 accounts_mode=cached
 
 assert test "$(sorted_account_names name | tr '\n' ' ')" = "alpha beta gamma "
+
+# A live render reaching an account the probe never saw (added after it ran, so no .display)
+# shows it unconfirmed instead of aborting the table under set -e.
+(
+  accounts_mode=live
+  accounts_probe_dir="$WORK/rp-late"; mkdir -p "$accounts_probe_dir"
+  printf 'live\n' >"$accounts_probe_dir/gamma.display"
+  printf 'live\n' >"$accounts_probe_dir/alpha.display"
+  # errexit is ignored anywhere under ||/if, so the render runs as a bare statement.
+  set +e
+  (set -e; render_plain_accounts >"$WORK/rp-late.out")
+  rp_rc=$?
+  assert test "$rp_rc" = 0
+  assert grep -q '^beta .*!' "$WORK/rp-late.out"
+)
 
 nav=(alpha beta gamma)
 assert test "$(selection_after_move down '' "${nav[@]}")" = alpha
@@ -2630,6 +2775,15 @@ EOF
   assert test ! -e "$CLAUDEB_DIR/oauth-attempts.json.bypass.blk"
 
   assert_fails "$SCRIPT" remove main
+  # A dot-leading name is a directory of ~/.claude-profiles itself (the live store is
+  # .claudeb); with no keychain item and no token it read as a dead account and was rm -rf'd.
+  mkdir -p "$HOME/.claude-profiles/.dotstore"
+  touch "$HOME/.claude-profiles/.dotstore/ledger"
+  dot_rc=0
+  "$SCRIPT" remove .dotstore >/dev/null 2>&1 || dot_rc=$?
+  assert test "$dot_rc" -eq 2
+  assert test -e "$HOME/.claude-profiles/.dotstore/ledger"
+  rm -rf "$HOME/.claude-profiles/.dotstore"
   ghost_out=$("$SCRIPT" remove ghost-account 2>&1)
   ghost_rc=$?
   assert test "$ghost_rc" -eq 2

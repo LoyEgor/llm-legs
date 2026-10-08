@@ -334,7 +334,7 @@ merge_headers() {
           resets_at: ($hreset | tonumber),
           as_of: $now, origin: "headers"
         }} +
-        {auth: {status: "ok", checked_at: $now}}' > "$tmp" 2>/dev/null; then
+        {auth: {status: "ok", checked_at: $now}} | del(.auth_needed, .auth_cause, .auth_checked_at)' > "$tmp" 2>/dev/null; then
       rm -f "$tmp"
       return 1
     fi
@@ -387,7 +387,7 @@ merge_usage() {
         | if $soonest == null then del(.reset_credits_expires_at)
           else . + {reset_credits_expires_at: ($soonest | todateiso8601)} end
       else del(.reset_credits, .reset_credits_as_of, .reset_credits_expires_at) end' \
-      "$body" > "$tmp" 2>/dev/null; then
+      "$body" > "$tmp" 2>/dev/null || ! [ -s "$tmp" ]; then
       rm -f "$tmp"
       return 1
     fi
@@ -479,7 +479,7 @@ detect_logged_out() {
   service=$(keychain_service "$name")
   sec_rc=0
   creds=$(security find-generic-password -s "$service" -w 2>/dev/null) || sec_rc=$?
-  if [ "$sec_rc" -eq 44 ]; then
+  if [ "$sec_rc" -eq 44 ] && ! [ -s "$tokens_dir/$name" ]; then
     mark_auth_needed "$name" 'no keychain credentials'
     return 0
   fi
@@ -801,7 +801,7 @@ keychain_write() {
 # re-read and the previous JSON is restored on any mismatch.
 oauth_refresh() {
   local name="$1" service="$2" prev="$3" body response new_creds readback headers http rc=0 retry='' retry_until=0 weather_http=0 http_num=0 refresh_rc=1
-  local prev_rt prev_expires_at current current_rt rlock='' lock_trap glock glock_held spacing
+  local prev_rt prev_expires_at current current_rt rlock='' lock_trap glock glock_held glock_tries spacing
   # A robot skip is weather, not a verdict: journal it, write no auth verdict, no
   # strike, no oauth-attempts change; the distinct rc 76 surfaces as `robot-skip`.
   if ! user_refresh_explicit; then
@@ -856,8 +856,15 @@ oauth_refresh() {
     # must cover the worst-case hold — the default 2s budget times out and the herd returns.
     glock="$oauth_attempts_file.rl-global"
     glock_held=false
-    if lock_acquire "$glock" 200; then
-      glock_held=true
+    glock_tries=0
+    # Waited in 25-try slices that re-touch the rlock: one 200-try wait outlives its 30s stale
+    # threshold and a second refresher of this account breaks it and POSTs the same refresh token.
+    while [ "$glock_tries" -lt 8 ]; do
+      touch "$rlock" 2>/dev/null || true
+      if lock_acquire "$glock" 25; then glock_held=true; break; fi
+      glock_tries=$((glock_tries + 1))
+    done
+    if [ "$glock_held" = true ]; then
       printf -v lock_trap 'lock_release %q; lock_release %q' "$glock" "$rlock"
       trap "$lock_trap" EXIT
     fi
@@ -1000,7 +1007,8 @@ probe_one() {
   credentials=$(security find-generic-password -s "$service" -w 2>/dev/null) || sec_rc=$?
   # Affirmative logged-out before any token operation: keychain item-not-found
   # (exit 44) or a readable wipe (both tokens blank). No curl, no oauth-attempt.
-  if [ "$sec_rc" -eq 44 ]; then
+  # Exit 44 with a saved setup token is a `claudeb add` account, probed by messages_probe.
+  if [ "$sec_rc" -eq 44 ] && ! [ -s "$tokens_dir/$name" ]; then
     mark_auth_needed "$name" 'no keychain credentials'
     printf 'logged-out 0 000\n' > "$dir/$name.result"
     return
@@ -1303,7 +1311,9 @@ probe_weather_failed() {
   [ "$source" != logged-out ] || return 1
   if [ "$rc" != 0 ] && [ "$rc" != 255 ]; then return 0; fi
   # Usage-endpoint 429/5xx/000 (rc=0, valid token) leaves no oauth-attempts trace; 401/403 stay out via the caller's display gate.
-  case "$http" in 000|429|5[0-9][0-9]) return 0 ;; esac
+  if [ "$rc" = 0 ]; then
+    case "$http" in 000|429|5[0-9][0-9]) return 0 ;; esac
+  fi
   outcome=$(oauth_backoff_outcome "$name")
   attempted_at=$(jq -r --arg n "$name" '.[$n].attempted_at // 0' "$oauth_attempts_file" 2>/dev/null) || attempted_at=0
   [[ "$attempted_at" =~ ^[0-9]+$ ]] || attempted_at=0
@@ -1340,13 +1350,14 @@ probe_accounts() {
 
 probe_accounts_run() {
   local dir="$1" allow_spend="$2" start_windows="${3:-false}" heal="${4:-false}" name pid pids="" now hreset allow_refresh=true
-  local run_start retry_names="" rem min_rem converge_budget round spent wait actual
+  local run_start retry_names="" rem min_rem converge_budget round spent wait actual launched=''
   run_start=$(date +%s)
   [ "$heal" != true ] || allow_refresh=false
   while IFS= read -r name; do
     probe_one "$name" "$dir" "$allow_spend" "$allow_refresh" &
     pid=$!
     pids="$pids $pid"
+    launched="$launched$name"$'\n'
   done < <(account_names)
   # Publish in completion order — a wait-all barrier would hold every account's
   # fresh numbers hostage to the slowest probe. probe_one writes .result last on
@@ -1364,7 +1375,7 @@ probe_accounts_run() {
       else
         remaining=true
       fi
-    done < <(account_names)
+    done < <(printf '%s' "$launched")
     [ "$remaining" = true ] || break
     [ "$progress" = true ] || sleep 0.2
   done
@@ -1654,7 +1665,7 @@ remove_account() {
         ;;
     esac
   done
-  if [ -z "$name" ] || [ "$name" = main ] || ! [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  if [ -z "$name" ] || [ "$name" = main ] || ! [[ "$name" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]; then
     printf 'usage: claudeb remove <name> [--force]\n' >&2
     exit 2
   fi
@@ -2056,6 +2067,11 @@ warm_failure() {
   fi
 }
 
+# A bare 429 also matches session_id UUIDs, duration_ms and cost decimals in the JSON output.
+warm_rate_limited() {
+  grep -Eqi '(^|[[:space:]])429([[:space:]]|$)|rate.?limit' "$1" 2>/dev/null
+}
+
 warm_accounts() {
   local name dir output session_rc reason failure_cause service credentials expires_at now started probe_dir probe_source probe_rc probe_http asof failed=0 until probe_ok usage_rate_limited backoff_mode explicit=false refresh_rc start_window=false hreset arg
   local CLAUDEB_OAUTH_BYPASS_BACKOFF="${CLAUDEB_OAUTH_BYPASS_BACKOFF:-false}"
@@ -2122,7 +2138,7 @@ warm_accounts() {
     reason=''
     usage_rate_limited=false
     if run_warm_session "$dir" "$name" "$output" /usage; then :; else session_rc=$?; fi
-    if [ "$session_rc" -ne 0 ] && grep -Eqi '429|rate.?limit' "$output" 2>/dev/null; then
+    if [ "$session_rc" -ne 0 ] && warm_rate_limited "$output"; then
       usage_rate_limited=true
     fi
     # A failed /usage warm reports and stops; it must not spend. The paid haiku
@@ -2142,7 +2158,7 @@ warm_accounts() {
       if [ "$session_rc" -eq 124 ]; then
         reason='timeout'
         failure_cause=timeout
-      elif grep -Eqi '429|rate.?limit' "$output" 2>/dev/null; then
+      elif warm_rate_limited "$output"; then
         reason='warm 429'
         failure_cause=warm-429
       elif grep -Eqi 'needs? re-?login|login required|not logged in|authentication required|run /login' "$output" 2>/dev/null; then
@@ -2440,7 +2456,7 @@ render_plain_accounts() {
        ((.disabled // false) | tostring)] | join("\u001f")')
     age_text="$age"
     if [ "$accounts_mode" = live ]; then
-      probe_state=$(cat "$accounts_probe_dir/$name.display")
+      probe_state=$(cat "$accounts_probe_dir/$name.display" 2>/dev/null || true)
       if [ "$probe_state" = live ] || [ "$probe_state" = 'live*' ] || [ "$probe_state" = 'auth!' ] || [ "$probe_state" = login ]; then
         age_text="$probe_state"
       else
