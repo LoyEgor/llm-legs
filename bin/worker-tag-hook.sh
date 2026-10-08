@@ -17,7 +17,23 @@ export GROKB_MODELS_NO_FETCH=1
 IFS= read -r -d '' input || :
 case $input in *'"agent_type"'*) ;; *) exit 0 ;; esac
 
-field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
+fields=()
+eval "fields=($(jq -rn '[inputs] | select(length == 1) | .[0]
+  | [.hook_event_name, .agent_type, .agent_id, .session_id, .tool_input.command, .tool_input.description, .transcript_path]
+  | select(all(.[]; type != "object" and type != "array"))
+  | map(if . == null or . == false then "" elif type == "string" then . else tojson end) | @sh' <<<"$input" 2>/dev/null))"
+field() {
+  local i
+  case $1 in
+    .hook_event_name) i=0 ;; .agent_type) i=1 ;; .agent_id) i=2 ;; .session_id) i=3 ;;
+    .tool_input.command) i=4 ;; .tool_input.description) i=5 ;; .transcript_path) i=6 ;;
+  esac
+  if [ "${#fields[@]}" = 7 ] && [ -n "${i:-}" ]; then
+    printf '%s\n' "${fields[$i]}"
+  else
+    printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null
+  fi
+}
 
 [ "$(field '.hook_event_name')" = PreToolUse ] || exit 0
 agent_type=$(field '.agent_type')
@@ -148,9 +164,10 @@ account_fallback() { # vendor
 # One lock per session directory serializes every tag-file rewrite: this hook, the `edit=N` count in
 # statusline-workdir-hook.sh and worker-run's claim_agent_tag all take `.claim.lock`.
 tag_lock() {
-  local tries=0 broke=0
+  local tries=0 broke=0 max=${WORKER_TAG_LOCK_TRIES:-30}
+  [[ $max =~ ^[0-9]+$ ]] || max=30
   until mkdir "$cache_dir/.claim.lock" 2>/dev/null; do
-    if [ "$tries" -ge 30 ]; then
+    if [ "$tries" -ge "$max" ]; then
       [ "$broke" = 0 ] && [ -n "$(find "$cache_dir/.claim.lock" -maxdepth 0 -mmin +1 2>/dev/null)" ] || return 1
       rmdir "$cache_dir/.claim.lock" 2>/dev/null
       broke=1 tries=0

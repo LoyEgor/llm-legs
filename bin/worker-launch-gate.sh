@@ -126,11 +126,31 @@ span_live() {
 
 command -v jq >/dev/null 2>&1 || exit 0
 IFS= read -r -d '' input || :
-parsed=$(jq -r 'select(.hook_event_name == "PreToolUse") | [.tool_name // "", .tool_input.command // ""] | @sh' \
+parsed=$(jq -rn '[inputs] as $docs | $docs[] | select(.hook_event_name == "PreToolUse")
+  | [.agent_type, .agent_id, .tool_input.run_in_background, .tool_input.timeout, .transcript_path] as $more
+  | [.tool_name // "", .tool_input.command // "",
+     ($docs | length) == 1 and all($more[]; type != "object" and type != "array"),
+     ($more | to_entries[] | .key as $k | .value
+       | if . == null or . == false then (if $k == 2 then "false" else "" end)
+         elif type == "string" then . else tojson end)] | @sh' \
   <<<"$input" 2>/dev/null) || exit 0
 fields=()
 eval "fields=($parsed)"
 tool=${fields[0]-} cmd=${fields[1]-}
+input_field() { # jq path -> what `jq -r '<path> // empty'` prints for it (`// false` for run_in_background)
+  local i
+  case $1 in
+    .agent_type) i=3 ;; .agent_id) i=4 ;; .tool_input.run_in_background) i=5 ;; .tool_input.timeout) i=6 ;;
+    .transcript_path) i=7 ;;
+  esac
+  if [ "${#fields[@]}" = 8 ] && [ "${fields[2]}" = true ]; then
+    printf '%s\n' "${fields[$i]}"
+  elif [ "$1" = .tool_input.run_in_background ]; then
+    printf '%s' "$input" | jq -r "$1 // false" 2>/dev/null
+  else
+    printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null
+  fi
+}
 
 # Every check below needs one of these words in the text it reads: each is a check's own literal with
 # its command-position prefix dropped, which can only match more; a check added below needs its
@@ -283,7 +303,7 @@ grep -Eq "${may_launch_args[@]}" <<<"$unsplit"$'\n'"$scan" 2>/dev/null
 # Inside a relay agent this whole door behaves as it always has; everywhere else — the main chat
 # above all — a worker-run that starts or awaits a run is denied, because the run would then belong
 # to a Bash turn nobody can see instead of to the agent whose row shows who is spending quota.
-agent_type=$(printf '%s' "$input" | jq -r '.agent_type // empty' 2>/dev/null)
+agent_type=$(input_field .agent_type)
 first_hit() { # regex
   local hit
   hit=$(grep -Eo "$1" <<<"$scan" 2>/dev/null) || return 0
@@ -304,7 +324,7 @@ fi
 # A review panel spends the chat's grant and a pool of accounts, and only the chat's own shell holds
 # that grant: an agent of any type — a relay, review-waiter, a fork — or a headless worker launching
 # one is a review nobody granted. review-waiter keeps the recovery of the run it waits on.
-agent_id=$(printf '%s' "$input" | jq -r '.agent_id // empty' 2>/dev/null)
+agent_id=$(input_field .agent_id)
 if [ -n "$agent_id" ] || [ "${CLAUDEB_WORKER:-}" = 1 ]; then
   worker_review_hit=$(grep -Ev -e "$REVIEW_IDLE_RE" <<<"$scan" 2>/dev/null | grep -Eo "$REVIEW_LAUNCH_RE" | head -n1 |
     tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
@@ -396,7 +416,7 @@ case "$agent_type" in
     wait_default=$WAIT_CEILING ;;
 esac
 if [ -n "$poll_lines" ]; then
-  [ "$(printf '%s' "$input" | jq -r '.tool_input.run_in_background // false' 2>/dev/null)" != true ] ||
+  [ "$(input_field .tool_input.run_in_background)" != true ] ||
     deny "Blocked: \`${poll_word}\` with \`run_in_background\` returns at once, so this relay can return and its task row close while the run still spends. Run the identical call in the foreground with \`timeout: 600000\`."
   # A trailing `&` backgrounds the poll inside a foreground call just the same. Redirections and
   # `&&` are dropped first, or `2>&1` reads as one. A group or subshell holding the poll backgrounds it
@@ -438,7 +458,7 @@ if [ -n "$poll_lines" ]; then
   # would be an instruction nobody can carry out: the only answer left is a shorter `--max`.
   [ "$wait_needed" -le "$HARNESS_TIMEOUT_MAX" ] ||
     deny "Blocked: ${wait_says}, and no Bash timeout can cover it — the harness caps \`timeout\` at ${HARNESS_TIMEOUT_MAX}ms, which is ${WAIT_CEILING}s of polling plus its margin. Retry with \`--max ${WAIT_CEILING}\` or lower and \`timeout: ${HARNESS_TIMEOUT_MAX}\`."
-  call_timeout=$(printf '%s' "$input" | jq -r '.tool_input.timeout // empty' 2>/dev/null)
+  call_timeout=$(input_field .tool_input.timeout)
   [[ "$call_timeout" =~ ^[0-9]+$ ]] || call_timeout=0
   [ "$call_timeout" -ge "$wait_needed" ] ||
     deny "Blocked: ${wait_says}, but this Bash call carries a timeout of ${call_timeout}ms — the harness kills it mid-poll and the run goes on with nobody waiting on it and no wake-up. Retry the identical call with \`timeout: 600000\` (at least ${wait_needed}), or spell a literal \`--max\` that fits the timeout you pass."
@@ -451,8 +471,7 @@ fi
 relay_brief() {
   local self
   self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) && . "${self%/*}/../share/relay-transcript.sh" 2>/dev/null || return 0
-  relay_first_prompt "$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null)" \
-    "$(printf '%s' "$input" | jq -r '.agent_id // empty' 2>/dev/null)" | head -n 400
+  relay_first_prompt "$(input_field .transcript_path)" "$(input_field .agent_id)" | head -n 400
 }
 brief_value() { grep -m1 -oE "^$1:[[:space:]]*[A-Za-z0-9_.-]+" <<<"$brief" | sed -E "s/^$1:[[:space:]]*//"; }
 # worker-run reads a header line itself when its flag is absent, so a missing flag only matters when

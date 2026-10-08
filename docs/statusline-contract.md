@@ -331,7 +331,7 @@ else — no key on either side — the oldest seed no older than `WORKER_TAG_SEE
 denied or cancelled spawn's seed is never another spawn's tag; `spawn=` never reaches the tag file.
 Every tag-file rewrite — `worker-tag-hook`, the `edit=N` count, the `exit=N` stamp, `worker-run`'s claim — holds the
 session directory's `.claim.lock` (mkdir lock; one older than a minute is broken once, a live one
-outwaited ~3 s and the write skipped). A `review-waiter`'s `review-bench wait <run-id>` is rewritten (`updatedInput`) to carry
+outwaited ~3 s — `WORKER_TAG_LOCK_TRIES` × 0.1 s, default 30 — and the write skipped). A `review-waiter`'s `review-bench wait <run-id>` is rewritten (`updatedInput`) to carry
 `--waiter <agent id>` — the id the tag cache is keyed on — so review-bench records the doc's
 `waiter {session, task_id}`. `light-research` waits one `worker-run wait --max 540` round per call:
 a run still going prints `RUN: <id>` and `STATUS: running` and exits 0, and
