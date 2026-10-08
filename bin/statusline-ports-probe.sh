@@ -66,7 +66,7 @@ snapshot_listeners() { # key
   local listen cwds="" cwd_chunk="" cwd_n=0 pid
   listen=$("$LSOF_CMD" -a -u "$UID" -iTCP -sTCP:LISTEN -nP 2>/dev/null)
   if [[ "$listen" != *'(LISTEN)'* ]]; then
-    printf '%s\t0\t%s\n' "$EPOCHSECONDS" "$1"
+    printf '%s\t0\t%s\n' "${STATUSLINE_NOW:-$EPOCHSECONDS}" "$1"
     return 0
   fi
   while IFS= read -r pid; do
@@ -80,7 +80,7 @@ snapshot_listeners() { # key
     $0 == "" || $1 == "COMMAND" { next }
     { for (j=2;j<=NF;j++) if ($j ~ /^[0-9]+$/) { print $j; break } }' | sort -u)"
   [ -z "$cwd_chunk" ] || cwds+=$("$LSOF_CMD" -a -d cwd -Fn -p "$cwd_chunk" 2>/dev/null)$'\n'
-  printf '%s\t1\t%s\n%s\036lsof\n%s\n' "$EPOCHSECONDS" "$1" "$cwds" "$listen"
+  printf '%s\t1\t%s\n%s\036lsof\n%s\n' "${STATUSLINE_NOW:-$EPOCHSECONDS}" "$1" "$cwds" "$listen"
 }
 
 snapshot_take ps_snap ps-snapshot 10 "$PS_CMD" snapshot_ps || { write_cache ""; exit 0; }
@@ -102,7 +102,7 @@ ports=""
 snapshot_take listen_snap ports-snapshot 10 "$LSOF_CMD" snapshot_listeners || snapshot_meta=0
 if [ "$snapshot_meta" = 1 ]; then
 # A listener newer than the process table has no command or parent to be judged by.
-[ "$ps_at" -ge "$snapshot_at" ] || snapshot_take ps_snap ps-snapshot "$((EPOCHSECONDS - snapshot_at))" "$PS_CMD" snapshot_ps ||
+[ "$ps_at" -ge "$snapshot_at" ] || snapshot_take ps_snap ps-snapshot "$((${STATUSLINE_NOW:-$EPOCHSECONDS} - snapshot_at))" "$PS_CMD" snapshot_ps ||
   snapshot_take ps_snap ps-snapshot 10 "$PS_CMD" snapshot_ps || :
 
 # Every working tree of the project, main checkout first (`worktree list` orders it so). A port is

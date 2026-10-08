@@ -6,11 +6,11 @@
 # Header `<epoch>\t<meta>\t<key>`, then the body. A stale or differently keyed snapshot is rebuilt by
 # whichever probe asks first; two asking at once both build and the last rename wins.
 snapshot_take() { # var name ttl key builder -> var = the snapshot's path, snapshot_at/snapshot_meta its header
-  local out=$1 file="$cache_dir/$2" ttl=$3 key=$4 builder=$5 have="" tmp
+  local out=$1 file="$cache_dir/$2" ttl=$3 key=$4 builder=$5 have="" tmp now=${STATUSLINE_NOW:-$EPOCHSECONDS}
   snapshot_at="" snapshot_meta=""
   { IFS=$'\t' read -r snapshot_at snapshot_meta have < "$file"; } 2>/dev/null
-  if [[ "$snapshot_at" =~ ^[0-9]+$ ]] && [ "$have" = "$key" ] && [ "$snapshot_at" -le "$EPOCHSECONDS" ] &&
-    [ "$((EPOCHSECONDS - snapshot_at))" -le "$ttl" ]; then
+  if [[ "$snapshot_at" =~ ^[0-9]+$ ]] && [ "$have" = "$key" ] && [ "$snapshot_at" -le "$now" ] &&
+    [ "$((now - snapshot_at))" -le "$ttl" ]; then
     printf -v "$out" '%s' "$file"
     return 0
   fi
@@ -31,7 +31,7 @@ snapshot_ps() { # key
   local body
   body=$("${STATUSLINE_PS:-ps}" -axo pid=,ppid=,etime=,command= 2>/dev/null)
   [ -n "$body" ] || return 1
-  printf '%s\t-\t%s\n%s\n' "$EPOCHSECONDS" "$1" "$body"
+  printf '%s\t-\t%s\n%s\n' "${STATUSLINE_NOW:-$EPOCHSECONDS}" "$1" "$body"
 }
 
 # `<start_us>\t<wall_ms>\t<cpu_ms>\t<kind>`: the merge-kick journal's columns plus the kind; cpu_ms is

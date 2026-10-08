@@ -3835,58 +3835,48 @@ assert_eq "" "$(cat "$STATE_DIR/ports-pp-death")"
 SNAP_CALLS="$WORK/snapshot-calls"
 SNAP_PS="$FIXTURES/snap-ps"; SNAP_LSOF="$FIXTURES/snap-lsof"
 printf '#!/usr/bin/env bash\nprintf "ps\\n" >> "%s"\nexec "%s" "$@"\n' "$SNAP_CALLS" "$FAKE_PS" > "$SNAP_PS"
-cat > "$SNAP_LSOF" <<SNAPLSOF
-#!/usr/bin/env bash
-printf 'lsof\n' >> "$SNAP_CALLS"
-case " \$* " in *" -iTCP "*) head -1 "$STATE_DIR/ps-snapshot" | cut -f1 > "$SNAP_CALLS.table" ;; esac
-exec "$FAKE_LSOF" "\$@"
-SNAPLSOF
+printf '#!/usr/bin/env bash\nprintf "lsof\\n" >> "%s"\nexec "%s" "$@"\n' "$SNAP_CALLS" "$FAKE_LSOF" > "$SNAP_LSOF"
 chmod +x "$SNAP_PS" "$SNAP_LSOF"
-snap_probe() { STATUSLINE_PS="$SNAP_PS" STATUSLINE_LSOF="$SNAP_LSOF" "$PORTS_PROBE" "$1" 1001 /proj; }
+snap_t0=$(date +%s); snap_now=$snap_t0
+snap_probe() { STATUSLINE_NOW=$snap_now STATUSLINE_PS="$SNAP_PS" STATUSLINE_LSOF="$SNAP_LSOF" "$PORTS_PROBE" "$1" 1001 /proj; }
 snap_calls() { grep -c "^$1\$" "$SNAP_CALLS" 2>/dev/null || :; }
 snap_at() { local at; { IFS=$'\t' read -r at _; } < "$STATE_DIR/$1"; printf '%s' "$at"; }
+snap_ats() { printf '%s %s' "$(($(snap_at ps-snapshot) - snap_t0))" "$(($(snap_at ports-snapshot) - snap_t0))"; }
 snap_head() { # file epoch
   local rest; { IFS=$'\t' read -r _ rest; } < "$STATE_DIR/$1"
   { printf '%s\t%s\n' "$2" "$rest"; tail -n +2 "$STATE_DIR/$1"; } > "$STATE_DIR/$1.edit" && mv "$STATE_DIR/$1.edit" "$STATE_DIR/$1"
 }
-# A walk whose second ticked past the table's own retakes the table, so a fresh probe runs ps twice
-# then; the fake lsof notes the table's second for the count to follow the clock instead of racing it.
-snap_retake() { [ "$(<"$SNAP_CALLS.table")" -lt "$(snap_at ports-snapshot)" ] && echo 1 || echo 0; }
-# Both snapshots moved to this second, their order kept, so a stall under load never ages them out.
-snap_fresh() {
-  local ps_at walk_at
-  ps_at=$(snap_at ps-snapshot) walk_at=$(snap_at ports-snapshot)
-  snap_head ps-snapshot "$(($(date +%s) - (walk_at > ps_at ? walk_at - ps_at : 0)))"
-  snap_head ports-snapshot "$(($(date +%s) - (ps_at > walk_at ? ps_at - walk_at : 0)))"
-}
 : > "$SNAP_CALLS"
 snap_probe pp-snap-a
-snap_ps=$((1 + $(snap_retake)))
-assert_eq "$snap_ps 2" "$(snap_calls ps) $(snap_calls lsof)"
-snap_fresh
-snap_probe pp-snap-b
-assert_eq "$snap_ps 2" "$(snap_calls ps) $(snap_calls lsof)"
-assert_eq "$(cat "$STATE_DIR/ports-pp-orphan")" "$(cat "$STATE_DIR/ports-pp-snap-b")"
+assert_eq "1 2" "$(snap_calls ps) $(snap_calls lsof)"
+assert_eq "0 0" "$(snap_ats)"
 # The work probe reads the same table inside its own three seconds.
-snap_fresh
-STATUSLINE_PS="$SNAP_PS" STATUSLINE_LSOF="$SNAP_LSOF" WORKER_RUN_DIR="$WORK/none" "$ROOT/bin/statusline-work-probe.sh" wp-snap 1001
-assert_eq "$snap_ps 2" "$(snap_calls ps) $(snap_calls lsof)"
+snap_now=$((snap_t0 + 3))
+STATUSLINE_NOW=$snap_now STATUSLINE_PS="$SNAP_PS" STATUSLINE_LSOF="$SNAP_LSOF" WORKER_RUN_DIR="$WORK/none" \
+  "$ROOT/bin/statusline-work-probe.sh" wp-snap 1001
+assert_eq "1 2" "$(snap_calls ps) $(snap_calls lsof)"
+snap_now=$((snap_t0 + 10))
+snap_probe pp-snap-b
+assert_eq "1 2" "$(snap_calls ps) $(snap_calls lsof)"
+assert_eq "$(cat "$STATE_DIR/ports-pp-orphan")" "$(cat "$STATE_DIR/ports-pp-snap-b")"
 # A snapshot past its age is walked again, and a process table older than the listener walk is
 # retaken: a listener it does not hold has no command to be judged by.
-snap_head ps-snapshot "$(($(date +%s) - 30))"
-snap_head ports-snapshot "$(($(date +%s) - 30))"
+snap_now=$((snap_t0 + 11))
 snap_probe pp-snap-c
-snap_ps=$((snap_ps + 1 + $(snap_retake)))
-assert_eq "$snap_ps 4" "$(snap_calls ps) $(snap_calls lsof)"
-snap_head ps-snapshot "$(($(date +%s) - 5))"
+assert_eq "2 4" "$(snap_calls ps) $(snap_calls lsof)"
+assert_eq "11 11" "$(snap_ats)"
+snap_head ps-snapshot "$((snap_t0 + 15))"
 rm -f "$STATE_DIR/ports-snapshot"
+snap_now=$((snap_t0 + 20))
 snap_probe pp-snap-d
-assert_eq "$((snap_ps + 1)) 6" "$(snap_calls ps) $(snap_calls lsof)"
+assert_eq "3 6" "$(snap_calls ps) $(snap_calls lsof)"
+assert_eq "20 20" "$(snap_ats)"
 assert_eq "$(cat "$STATE_DIR/ports-pp-orphan")" "$(cat "$STATE_DIR/ports-pp-snap-d")"
 # A failed ps is never published as an empty machine for the other chats.
-STATUSLINE_PS=true STATUSLINE_LSOF="$SNAP_LSOF" "$PORTS_PROBE" pp-snap-empty 1001 /proj
+STATUSLINE_NOW=$((snap_t0 + 40)) STATUSLINE_PS=true STATUSLINE_LSOF="$SNAP_LSOF" "$PORTS_PROBE" pp-snap-empty 1001 /proj
 assert_eq "" "$(cat "$STATE_DIR/ports-pp-snap-empty")"
 assert test "$(head -1 "$STATE_DIR/ps-snapshot" | cut -f3)" = "$SNAP_PS"
+assert_eq "20" "$(($(snap_at ps-snapshot) - snap_t0))"
 
 # Every probe run journals its own cost for the Speed doctor, builtins only.
 probe_rows="$HOME/.cache/speed-doctor/statusline-probes/$(date +%Y-%m-%d).tsv"
