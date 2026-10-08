@@ -45,11 +45,16 @@ EDGE="([[:space:]]|\$)"
 # lets `/usr/local/bin/codex exec` read as `codex exec` while keeping `~/.claude` and
 # `.claude/hooks` from reading as the `claude` binary.
 KEYWORD="([{!]|if|then|else|elif|do|while|until)[[:space:]]+"
-WRAPPER="(env|command|exec|builtin|nohup|nice|time|timeout|gtimeout|stdbuf|setsid|caffeinate|unbuffer|arch|sudo|xargs|npx|bunx|pnpx|(npm|pnpm|yarn|bun)[[:space:]]+(exec|dlx|x))([[:space:]]+(-[^[:space:]]*|[0-9][^[:space:]]*))*"
+WRAPPER_NAME="(env|command|exec|builtin|nohup|nice|time|timeout|gtimeout|stdbuf|setsid|caffeinate|unbuffer|arch|sudo|xargs|npx|bunx|pnpx|(npm|pnpm|yarn|bun)[[:space:]]+(exec|dlx|x))"
+WRAPPER="${WRAPPER_NAME}([[:space:]]+(-[^[:space:]]*|[0-9][^[:space:]]*))*"
 # Wrappers whose operands are not flags alone — a user, a host, a path, a lock file, a session name,
 # the `-a` of `exec` — so any words may stand between them and the command they run.
 LOOSE_WRAPPER="(sudo|script|watch|ssh|find|tmux|screen|launchctl|xargs|flock|exec)([[:space:]]+.*)?"
-VENDOR_WORD="^[[:space:]]*(${KEYWORD})*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|${WRAPPER}|${LOOSE_WRAPPER})[[:space:]]+)*([^[:space:]/]*/)*"
+# A flag may take one word (`timeout -s KILL`, `env -u FOO`). That word and the loose wrappers' `.*`
+# can swallow a vendor word, so they read a launch and never a sanctioned launcher: on the exempting
+# side `env -i codex exec worker-run` would exempt a codex launch.
+SANCTIONED_WORD="^[[:space:]]*(${KEYWORD})*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|${WRAPPER})[[:space:]]+)*([^[:space:]/]*/)*"
+VENDOR_WORD="^[[:space:]]*(${KEYWORD})*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|${WRAPPER_NAME}([[:space:]]+(-[^[:space:]]*([[:space:]]+[^-[:space:]][^[:space:]]*)?|[0-9][^[:space:]]*))*|${LOOSE_WRAPPER})[[:space:]]+)*([^[:space:]/]*/)*"
 # The flag or subcommand that turns a vendor CLI into a headless run, reached past any number of
 # other flags.
 PRINT_FLAG="([[:space:]]+[^[:space:]]+)*[[:space:]]+(-p|--print|--prompt)(=[^[:space:]]*)?${EDGE}"
@@ -106,7 +111,7 @@ RELAY_AGENTS="a relay Agent — claudeb-worker, codex-worker, gemini-worker, gro
 # by hand is a forged owner.
 FORGED_TOKEN_RE="^[[:space:]]*((export|env|declare|typeset|local|readonly)([[:space:]]+-[^[:space:]]+)*[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*(WORKER_RUN_RELAY|REVIEW_BENCH_DOOR)="
 
-SANCTIONED_RE="${VENDOR_WORD}(worker-run|review-bench|llm-limits(\.sh)?|claude-session-driver|opencode-go|light-research|claudeb[[:space:]]+(revive|warm))${EDGE}"
+SANCTIONED_RE="${SANCTIONED_WORD}(worker-run|review-bench|llm-limits(\.sh)?|claude-session-driver|opencode-go|light-research|claudeb[[:space:]]+(revive|warm))${EDGE}"
 
 deny() {
   jq -cn --arg hook "${0##*/}" --arg r "$1" \
@@ -251,9 +256,15 @@ scan_literal=$scan
 # workers with no row (2026-09-24). Names assigned in this command are expanded in place; a value
 # that itself holds a `$` is skipped, or its expansion would never end.
 ASSIGN_RE='^[[:space:]]*((export|local|readonly|declare|typeset)[[:space:]]+(-[^[:space:]]+[[:space:]]+)*)?[A-Za-z_][A-Za-z0-9_]*=[^[:space:]$]+'
+# The scan has joined a quoted value's words, and an unquoted `$C` splits them again (`C="codex
+# exec"; $C hi`), so a quoted value is read off the raw command first, its spaces kept.
+QUOTED_ASSIGN_RE="(^|[;&|({[:space:]])[A-Za-z_][A-Za-z0-9_]*=(\"[^\"\$\`\\\\&]*\"|'[^'\$\\\\&]*')"
+assigned=()
 while IFS= read -r assign; do
   [ -n "$assign" ] || continue
-  assign=$(sed -E 's/^[[:space:]]*((export|local|readonly|declare|typeset)[[:space:]]+(-[^[:space:]]+[[:space:]]+)*)?//' <<<"$assign")
+  assign=$(sed -E -e 's/^[[:space:]]*((export|local|readonly|declare|typeset)[[:space:]]+(-[^[:space:]]+[[:space:]]+)*)?//' \
+    -e "s/^[;&|({[:space:]]//; s/=[\"']/=/; s/[\"']\$//" <<<"$assign")
+  assigned+=("$assign")
   scan=$(LC_ALL=C awk -v n="${assign%%=*}" -v v="${assign#*=}" '{
     gsub("\\$[{]" n "[}]", v)
     out = ""
@@ -262,7 +273,7 @@ while IFS= read -r assign; do
       $0 = substr($0, RSTART + 1 + length(n))
     }
     print out $0 }' <<<"$scan")
-done < <(grep -Eo "$ASSIGN_RE" <<<"$scan")
+done < <(grep -Eo "$QUOTED_ASSIGN_RE" <<<"$cmd"; grep -Eo "$ASSIGN_RE" <<<"$scan")
 
 may_launch_args=(-e "$SCHEDULE_RE")
 for re in "${MAY_LAUNCH_RES[@]}"; do may_launch_args+=(-e "$re"); done
@@ -388,31 +399,40 @@ if [ -n "$poll_lines" ]; then
   [ "$(printf '%s' "$input" | jq -r '.tool_input.run_in_background // false' 2>/dev/null)" != true ] ||
     deny "Blocked: \`${poll_word}\` with \`run_in_background\` returns at once, so this relay can return and its task row close while the run still spends. Run the identical call in the foreground with \`timeout: 600000\`."
   # A trailing `&` backgrounds the poll inside a foreground call just the same. Redirections and
-  # `&&` are dropped first, or `2>&1` reads as one.
+  # `&&` are dropped first, or `2>&1` reads as one. A group or subshell holding the poll backgrounds it
+  # too, and `unsplit` is read before expansion, so a `$W wait` is a poll here as in poll_lines.
+  poll_re="((worker-run|review-bench|[\$][{]?[A-Za-z_][A-Za-z0-9_]*[}]?)[[:space:]]+wait|light-research)"
   ! sed -E 's/[0-9]*>&[0-9-]*//g; s/&>>?//g; s/[|]&/|/g; s/&&/ ; /g' <<<"$unsplit" 2>/dev/null |
-    grep -Eq "(worker-run|review-bench)[[:space:]]+wait[^;&|]*&|light-research([[:space:]][^;&|]*)?&" ||
+    grep -Eq "${poll_re}[^;&|]*&|[{(][^&]*${poll_re}[^&]*[)}][[:space:]]*&" ||
     deny "Blocked: \`${poll_word}\` followed by \`&\` runs in the background, so this relay can return and its task row close while the run still spends. Drop the \`&\` and run the call in the foreground with \`timeout: 600000\`."
-  wait_max=$(grep -Eo -- '--max(=|[[:space:]]+)[0-9]+' <<<"$poll_lines" 2>/dev/null |
-    grep -Eo '[0-9]+$' | sort -rn | head -n1)
   # A `--max` whose value is a variable or a substitution states no duration at all, and the
   # poll it hides is the one this guard exists for; a wait with no `--max` is not unbounded
   # either — it polls worker-run's default, and letting that spelling pass while denying the
-  # identical explicit number is two verdicts for one poll.
-  if grep -Eq -- '--max(=|[[:space:]]+)[^0-9[:space:]]' <<<"$poll_lines" 2>/dev/null; then
-    wait_max=$WAIT_CEILING
-    wait_says="\`--max\` here is spelled with a variable, so the gate has to read it as the ${WAIT_CEILING}s ceiling"
-  elif [ -z "$wait_max" ] && [ -z "$wait_default" ]; then
-    deny "Blocked: \`${poll_word}\` with no \`--max\` blocks until the whole panel is over, and the harness kills the call long before that. Add \`--max ${WAIT_CEILING}\` and pass \`timeout: ${HARNESS_TIMEOUT_MAX}\`."
-  elif [ -z "$wait_max" ]; then
-    wait_max=$wait_default
-    if [ "$agent_type" = light-research ]; then
-      wait_says="\`light-research\` polls its run for up to ${wait_max}s in one call"
+  # identical explicit number is two verdicts for one poll. Polls in one call run one after
+  # another, so the call must outlive their sum.
+  max_re='--max(=|[[:space:]]+)([^[:space:]]*)'
+  wait_max=0 polls=0
+  while IFS= read -r poll; do
+    polls=$((polls + 1))
+    if ! [[ $poll =~ $max_re ]]; then
+      [ -n "$wait_default" ] ||
+        deny "Blocked: \`${poll_word}\` with no \`--max\` blocks until the whole panel is over, and the harness kills the call long before that. Add \`--max ${WAIT_CEILING}\` and pass \`timeout: ${HARNESS_TIMEOUT_MAX}\`."
+      poll_max=$wait_default
+      if [ "$agent_type" = light-research ]; then
+        wait_says="\`light-research\` polls its run for up to ${poll_max}s in one call"
+      else
+        wait_says="this wait carries no \`--max\`, so worker-run polls its default ${poll_max}s"
+      fi
+    elif poll_max=${BASH_REMATCH[2]} && [[ $poll_max =~ ^[0-9]+$ ]]; then
+      poll_max=$((10#$poll_max))
+      wait_says="\`${poll_word} … --max ${poll_max}\` polls for up to ${poll_max}s"
     else
-      wait_says="this wait carries no \`--max\`, so worker-run polls its default ${wait_max}s"
+      poll_max=$WAIT_CEILING
+      wait_says="\`--max\` here is spelled with a variable, so the gate has to read it as the ${WAIT_CEILING}s ceiling"
     fi
-  else
-    wait_says="\`${poll_word} … --max ${wait_max}\` polls for up to ${wait_max}s"
-  fi
+    wait_max=$((wait_max + poll_max))
+  done <<<"$poll_lines"
+  [ "$polls" -eq 1 ] || wait_says="this call's ${polls} \`${poll_word}\` polls run one after another for up to ${wait_max}s together"
   wait_needed=$(((10#$wait_max + 30) * 1000))
   # Above the ceiling no timeout the harness accepts can cover the poll, so asking for one
   # would be an instruction nobody can carry out: the only answer left is a shorter `--max`.
@@ -453,8 +473,12 @@ carried() { # key value
     [ "$(head -n 400 "$target" | grep -m1 -oE "^$1:[[:space:]]*[A-Za-z0-9_.-]+" | sed -E "s/^$1:[[:space:]]*//")" = "$2" ]
     return
   fi
-  [ "$(LC_ALL=C awk -v target="$target" -v q="'" '
-    BEGIN { doc = "(^|[^<])<<-?[ \t]*[\"" q "]?[A-Za-z_][A-Za-z0-9_]*[\"" q "]?"; to = "(^|[^>])>[ \t]*[\"" q "]?[^ \t\"" q ";&|<>()]+" }
+  # The target is read expanded, a redirect as typed: `B=/tmp/b; cat >"$B"` writes the target when
+  # every assignment of B in the call names it.
+  [ "$(LC_ALL=C awk -v target="$target" -v q="'" -v assigns="$(printf '%s\n' ${assigned[@]+"${assigned[@]}"})" '
+    BEGIN { doc = "(^|[^<])<<-?[ \t]*[\"" q "]?[A-Za-z_][A-Za-z0-9_]*[\"" q "]?"; to = "(^|[^>])>[ \t]*[\"" q "]?[^ \t\"" q ";&|<>()]+"
+      n = split(assigns, a, "\n")
+      for (i = 1; i <= n; i++) if ((k = index(a[i], "=")) > 1) { if (substr(a[i], k + 1) == target) same[substr(a[i], 1, k - 1)] = 1; else other[substr(a[i], 1, k - 1)] = 1 } }
     body { line = $0; if (strip) sub(/^\t+/, "", line); if (line == delim) { body = 0; if (hit) exit; next } if (hit) print; next }
     match($0, doc) {
       delim = substr($0, RSTART, RLENGTH); strip = delim ~ /<<-/
@@ -464,12 +488,14 @@ carried() { # key value
         r = substr(rest, RSTART, RLENGTH); rest = substr(rest, RSTART + RLENGTH)
         sub(/^[^>]?>[ \t]*/, "", r); gsub("[\"" q "]", "", r)
         if (r == target) hit = 1
+        name = r; if (gsub(/^\$[{]?|[}]$/, "", name) && (name in same) && !(name in other)) hit = 1
       }
       body = 1
     }' <<<"$cmd" | head -n 400 | grep -m1 -oE "^$1:[[:space:]]*[A-Za-z0-9_.-]+" | sed -E "s/^$1:[[:space:]]*//")" = "$2" ]
 }
+# A value left as `$M` (or a `$(…)` cut to `$`) is no flag the brief's word can equal.
 flag_value() {
-  grep -oE -e "--$1(=|[[:space:]]+)[\"']?[A-Za-z0-9_.-]+" <<<"$start_line" | head -n 1 |
+  grep -oE -e "--$1(=|[[:space:]]+)[\"']?[\$A-Za-z0-9_.{}-]+" <<<"$start_line" | head -n 1 |
     sed -E "s/^--$1(=|[[:space:]]+)[\"']?//"
 }
 # A denied call runs nothing, so the brief its heredoc writes never exists: a relay that retries only

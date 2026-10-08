@@ -242,6 +242,34 @@ for refound in 'BRIEF=$(ls -t /tmp/claudeb-brief.* | head -1); worker-run start 
   'for b in /tmp/codex-brief.*; do :; done; worker-run start codex --brief "$b" --workdir /w --account acct1'; do
   expect_as deny "$RELAY_T" "$refound" 'another relay'"'"'s brief'
 done
+# A flag value the gate cannot expand is not the brief's word, and a brief written through a variable
+# holding a literal path is the brief the launch reads.
+jq -cn '{type:"user", message:{content:"ACCOUNT: acct1\nMODEL: sol\nFix it."}}' >"$WORK/t/subagents/agent-a5.jsonl"
+RELAY_M=$(jq -cn --arg t "$WORK/t.jsonl" '{agent_type:"codex-worker",agent_id:"a5",transcript_path:$t,tool_input:{timeout:600000}}')
+BRIEF_M=$'cat >"$B" <<\'E\'\nACCOUNT: acct1\nMODEL: sol\nE\n'
+expect_as deny "$RELAY_M" "M=\$(resolve sol); B=\$(mktemp /tmp/codex-brief.XXXXXX) && ${BRIEF_M}worker-run start codex --brief \"\$B\" --workdir /w --model \"\$M\"" 'not `--model $M`'
+expect_as deny "$RELAY_M" "A=\$(pick); B=\$(mktemp /tmp/codex-brief.XXXXXX) && ${BRIEF_M}worker-run start codex --brief \"\$B\" --workdir /w --account \"\$A\"" 'not `--account $A`'
+expect_as pass "$RELAY_M" "B=/tmp/codex-brief.lg; ${BRIEF_M}worker-run start codex --brief \"\$B\" --workdir /w"
+expect_as deny "$RELAY_M" "B=/tmp/codex-brief.lg; ${BRIEF_M}B=/tmp/other; worker-run start codex --brief \"\$B\" --workdir /w" 'MODEL: sol'
+
+# A wrapper flag's own operand, or a sanctioned word swallowed by a loose wrapper's operands, leaves
+# the launch in command position; a quoted value split by an unquoted variable is the launch it spells.
+for wrapped in 'timeout -s KILL 600 claude -p x' 'env -u FOO claude -p x' 'exec codex exec "review bin/worker-run"' \
+  'find bin -name worker-run -exec codex exec x {} \;' "find ~/src/review-bench -name '*.py' -exec claude -p x {} \\;" \
+  'C="codex exec"; $C hi' "P='claude -p'; \$P hi"; do
+  expect_as deny '{}' "$wrapped" 'bare headless vendor launch'
+done
+for plain in 'env -u FOO worker-run report r1' 'sudo -u me worker-run report r1' 'C="hello world"; echo $C'; do
+  expect_as pass '{}' "$plain"
+done
+# A grouped or variable poll backgrounded is backgrounded, and the polls of one call add up.
+expect_as deny "$RELAY" 'W=worker-run; $W wait r1 --max 60 &' 'followed by `&`'
+expect_as deny "$RELAY" '{ worker-run wait r1 --max 60; } &' 'followed by `&`'
+expect_as deny "$RELAY" 'worker-run wait a --max 300; worker-run wait b --max 300' 'no Bash timeout can cover'
+expect_as deny '{"agent_type":"codex-worker","agent_id":"a1","tool_input":{"timeout":120000}}' \
+  'worker-run wait a --max 30; worker-run wait b' 'one after another'
+expect_as pass '{"agent_type":"codex-worker","agent_id":"a1","tool_input":{"timeout":170000}}' \
+  'worker-run wait a --max 30; worker-run wait b'
 
 # Egor's autonomy span hands the ask_*/probe legs and scheduling back to the model; the mechanical
 # denials stay.
