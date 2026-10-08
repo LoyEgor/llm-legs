@@ -103,7 +103,7 @@ reliability_tests() {
       process_tree_end "$watchdog" 0
       wait "$watchdog" 2>/dev/null
       record_run_wall "$WORK/redeem-wall" codex
-      sleep 3
+      for _ in $(seq 1 300); do [ "$(cat "$WORK/redeem.log" 2>/dev/null)" = '--fire-armed codex/armed --wall weekly unset' ] && break; sleep 0.1; done
       [ "$(cat "$WORK/redeem.log" 2>/dev/null)" = '--fire-armed codex/armed --wall weekly unset' ]
     )
     assert test "$?" -eq 0
