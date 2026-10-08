@@ -115,14 +115,23 @@ run_bounded() { # seconds command...
 }
 
 snapshot_lock_acquire() {
-  local lock="$1" now mtime
+  local lock="$1" now mtime again rc=1
   mkdir "$lock" 2>/dev/null && return 0
   now=$EPOCHSECONDS
   file_mtime_to mtime "$lock" || return 1
   [[ "$mtime" =~ ^[0-9]+$ ]] || return 1
   [ "$((now - mtime))" -gt 120 ] || return 1
-  rmdir "$lock" 2>/dev/null || return 1
-  mkdir "$lock" 2>/dev/null
+  # Two renders that both saw the dead lock would each rmdir it, the second removing the fresh lock
+  # the first just made: reclaimers go one at a time and recheck that the lock is still the dead one.
+  if ! mkdir "$lock.reclaim" 2>/dev/null; then
+    file_mtime_to again "$lock.reclaim" && [[ "$again" =~ ^[0-9]+$ ]] &&
+      [ "$((now - again))" -gt 120 ] && rmdir "$lock.reclaim" 2>/dev/null
+    return 1
+  fi
+  file_mtime_to again "$lock" && [ "$again" = "$mtime" ] && rmdir "$lock" 2>/dev/null &&
+    mkdir "$lock" 2>/dev/null && rc=0
+  rmdir "$lock.reclaim" 2>/dev/null
+  return "$rc"
 }
 
 # One git call per directory for everything the render needs about its repository:
@@ -245,7 +254,7 @@ review_session_line() { # session now
   local gate="${STATUSLINE_REVIEW_GATE:-$HOME/.claude/hooks/review-flow-gate.sh}"
   local cache="$statusline_cache_dir/review-autonomy-$sid"
   local lock="$cache.lock"
-  local cached cache_mtime lock_mtime timeout_bin
+  local cached cache_mtime lock_mtime
   [ -n "$sid" ] && [ -x "$gate" ] || { printf -v "$out" '%s' 'no'; return 0; }
   file_mtime_to cache_mtime "$cache"
   cached=""
@@ -262,13 +271,10 @@ review_session_line() { # session now
       (
         refresh_start_us=${EPOCHREALTIME//[!0-9]/}
         snapshot_lock_acquire "$lock" || exit 0
-        trap 'rmdir "$lock" 2>/dev/null' EXIT
-        timeout_bin=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
-        if [ -n "$timeout_bin" ]; then
-          auto=$("$timeout_bin" 10 "$gate" autonomous "$sid" 2>/dev/null | head -1)
-        else
-          auto=$("$gate" autonomous "$sid" 2>/dev/null | head -1)
-        fi
+        lock_id="$(file_inode "$lock"):$(file_mtime "$lock")"
+        trap '[ "$(file_inode "$lock"):$(file_mtime "$lock")" = "$lock_id" ] &&
+          rmdir "$lock" 2>/dev/null' EXIT
+        auto=$(run_bounded 10 "$gate" autonomous "$sid" 2>/dev/null | head -1)
         [ "$auto" = yes ] || auto=no
         tmp="$cache.tmp.${BASHPID:-$$}"
         printf '%s' "$auto" > "$tmp" 2>/dev/null &&
@@ -301,7 +307,6 @@ unpushed_marker() { # toplevel session now
   local cache="$statusline_cache_dir/unpushed-${sid:-unknown}"
   local lock="$cache.lock"
   local key cached_key cached cache_mtime lock_mtime commondir head upstream commit_mtime debt_mtime
-  local timeout_bin
   [ -n "$sid" ] && [ -n "$top" ] && [ -x "$gate" ] || { printf -v "$out" '%s' off; return 0; }
   # A branch with no upstream owes nothing here — nothing on this machine knows where it would go —
   # and one whose upstream is HEAD is a branch with nothing ahead at all. Both answer without the
@@ -345,15 +350,11 @@ unpushed_marker() { # toplevel session now
       (
         refresh_start_us=${EPOCHREALTIME//[!0-9]/}
         snapshot_lock_acquire "$lock" || exit 0
-        trap 'rmdir "$lock" 2>/dev/null' EXIT
+        lock_id="$(file_inode "$lock"):$(file_mtime "$lock")"
+        trap '[ "$(file_inode "$lock"):$(file_mtime "$lock")" = "$lock_id" ] &&
+          rmdir "$lock" 2>/dev/null' EXIT
         answer=off
-        timeout_bin=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
-        if [ -n "$timeout_bin" ]; then
-          [ -n "$("$timeout_bin" 10 "$gate" unpushed "$top" "$sid" 2>/dev/null | head -1)" ] &&
-            answer=unpushed
-        else
-          [ -n "$("$gate" unpushed "$top" "$sid" 2>/dev/null | head -1)" ] && answer=unpushed
-        fi
+        [ -n "$(run_bounded 10 "$gate" unpushed "$top" "$sid" 2>/dev/null | head -1)" ] && answer=unpushed
         tmp="$cache.tmp.${BASHPID:-$$}"
         printf '%s\n%s' "$key" "$answer" > "$tmp" 2>/dev/null &&
           mv -f "$tmp" "$cache" 2>/dev/null || rm -f "$tmp" 2>/dev/null
@@ -611,6 +612,7 @@ rl_merge() {
 
 rl_from_cache=""
 rl_mtime=""
+rl_written=""
 # The rate-limit cache is per ACCOUNT and shared by every chat on it, so the spend a merge was
 # last accepted at is remembered per session instead — and a render with no session to remember
 # through passes no cost at all, or it would claim liveness on every idle replay forever.
@@ -668,13 +670,14 @@ elif [ -n "$rl_json" ]; then
         printf '%s\n' "$cost_raw" > "$tmp_cost" 2>/dev/null &&
           mv "$tmp_cost" "$rl_cost_file" 2>/dev/null || rm -f "$tmp_cost" 2>/dev/null
       fi
+      rl_written=1
     fi
     rmdir "$snapshot_lock" 2>/dev/null
   else
     rl_merge "$rl_target"
   fi
   [ -n "$merged_rl" ] && rl_json="$merged_rl"
-  store_merge_kick
+  [ -n "$rl_written" ] && store_merge_kick
 else
   rl_cache_file="$account_cache"
   [ "$acct" = main ] && rl_cache_file="$cache_rl"
@@ -883,7 +886,7 @@ if [ -n "$active_top" ]; then
   done <<< "$status_v2"
 fi
 if [ -n "$active_top" ]; then
-  [ "$branch" != '(detached)' ] && [ "$branch_oid" != '(initial)' ] || branch=HEAD
+  [ "$branch" != '(detached)' ] || branch=HEAD
   if [ "$git_status_rc" -ne 0 ]; then
     branch=$(git -C "$git_dir" rev-parse --abbrev-ref HEAD 2>/dev/null)
     branch_oid=$(git -C "$git_dir" rev-parse -q --verify HEAD 2>/dev/null)

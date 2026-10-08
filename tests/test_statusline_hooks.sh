@@ -1481,6 +1481,14 @@ assert grep -Fq "$(basename "$TOP_D")" <<< "$foreign_output"
 assert grep -Fq '⎇ main' <<< "$foreign_output"
 assert test "${foreign_output#*⧉}" = "$foreign_output"
 
+# An unborn branch (`branch.oid (initial)`, no commit yet) is still a named branch: never a bare `@`.
+UNBORN_REPO="$FIXTURES/unborn-repo"
+git init -q -b fresh-start "$UNBORN_REPO"
+place_set status-unborn "$(git -C "$UNBORN_REPO" rev-parse --show-toplevel)"
+unborn_output=$(run_statusline "$(statusline_payload status-unborn)") || fail "statusline unborn repo failed"
+assert grep -Fq '⎇ fresh-start' <<< "$unborn_output"
+assert test "${unborn_output#*"${RED}@"}" = "$unborn_output"
+
 same_payload=$(statusline_payload status-same)
 place_set status-same "$TOP_A"
 same_output=$(run_statusline "$same_payload") || fail "statusline same-repo failed"
@@ -3006,7 +3014,8 @@ RUN_STATUSLINE_DEFAULT_ACCOUNT=
 KICK_STAMP="$STATE_DIR/store-merge-kick"
 KICK_LOCK="$STATE_DIR/store-merge-kick.lock"
 KICK_MARK="$WORK/kick-marker"
-kick_reset() { rm -f "$KICK_STAMP" "$KICK_MARK"; rmdir "$KICK_LOCK" 2>/dev/null || true; }
+KICK_CACHE="$CLAUDEB_FIX/limits/kickacct.json"
+kick_reset() { rm -f "$KICK_STAMP" "$KICK_MARK" "$KICK_CACHE"; rmdir "$KICK_LOCK" 2>/dev/null || true; }
 wait_for_mark() { local i; for i in $(seq 1 60); do [ -f "$KICK_MARK" ] && return 0; sleep 0.05; done; return 1; }
 
 FAKE_COLLECTOR="$FIXTURES/fake-collector"
@@ -3079,6 +3088,37 @@ CLAUDE_CODE_SESSION_ID=sess-1 WORKER_RUN_ID=run-1 STORE_MERGE_CMD="$ENV_COLLECTO
   >/dev/null || fail "statusline kick with env collector exited nonzero"
 assert wait_for_mark
 assert_eq "|" "$(cat "$KICK_MARK")"
+
+# F: an idle chat re-sending its last rate_limits copy writes nothing, so it kicks nothing either —
+# not even the stamp, which a kick writes before it returns.
+kick_reset
+STORE_MERGE_CMD="$FAKE_COLLECTOR" run_statusline "$kick_payload" kickacct >/dev/null \
+  || fail "statusline first idle-replay render failed"
+assert wait_for_mark
+for _ in $(seq 1 60); do [ -d "$KICK_LOCK" ] || break; sleep 0.05; done
+assert test ! -d "$KICK_LOCK"
+rm -f "$KICK_STAMP" "$KICK_MARK"
+STORE_MERGE_CMD="$FAKE_COLLECTOR" run_statusline "$kick_payload" kickacct >/dev/null \
+  || fail "statusline idle-replay render failed"
+assert test ! -e "$KICK_STAMP"
+
+# G: a dead rate-limit cache lock is reclaimed by one render at a time. While another render holds
+# the reclaim, this one leaves the lock and the cache alone; a reclaim left by a dead render is
+# cleared, and the render after that takes the lock and writes.
+kick_reset
+mkdir -p "$KICK_CACHE.lock" "$KICK_CACHE.lock.reclaim"
+touch -t 202001010000 "$KICK_CACHE.lock"
+run_statusline "$kick_payload" kickacct >/dev/null || fail "statusline reclaim-held render failed"
+assert test ! -e "$KICK_CACHE"
+assert test -d "$KICK_CACHE.lock"
+touch -t 202001010000 "$KICK_CACHE.lock.reclaim"
+run_statusline "$kick_payload" kickacct >/dev/null || fail "statusline dead-reclaim render failed"
+assert test ! -e "$KICK_CACHE.lock.reclaim"
+run_statusline "$kick_payload" kickacct >/dev/null || fail "statusline reclaiming render failed"
+assert test -s "$KICK_CACHE"
+assert test ! -e "$KICK_CACHE.lock"
+assert test ! -e "$KICK_CACHE.lock.reclaim"
+kick_reset
 
 # --- Codex quota kick (bin/statusline.sh) ---
 CQ_ARGS="$WORK/codex-kick-args"
@@ -5125,6 +5165,7 @@ UNPUSHED_STUB="$FIXTURES/unpushed-gate-stub.sh"
 cat > "$UNPUSHED_STUB" <<'STUB'
 #!/bin/bash
 printf '%s\n' "$*" >> "$GATE_LOG"
+[ -z "${GATE_SLEEP:-}" ] || sleep "$GATE_SLEEP"
 case "$1" in
   unpushed) printf '%s\n' "$UNPUSHED_ANSWER" ;;
   *) printf '%s\n' "$GATE_ANSWER" ;;
@@ -5141,7 +5182,7 @@ shift
 exec "$@"
 TIMEOUT
 chmod +x "$UNPUSHED_TIMEOUT_BIN/timeout"
-export UNPUSHED_TIMEOUT_LOG
+export UNPUSHED_TIMEOUT_LOG GATE_SLEEP
 export UNPUSHED_ANSWER=""
 GATE_CMD="$UNPUSHED_STUB"
 # Named for nothing in the marker's own vocabulary: the directory label prints the repository name,
@@ -5210,6 +5251,41 @@ assert test "${unpushed_order_line%%"$UNPUSHED_MARK"*}" != "$unpushed_order_line
 unpushed_fit_out=$(FIT_COLUMNS=20 PATH="$UNPUSHED_TIMEOUT_BIN:$PATH" \
   unpushed_render unpushed-fit "$AHEAD_REPO")
 assert grep -Fq "${RED}↑!${RESET}" <<< "$unpushed_fit_out"
+
+# Both gate asks are bounded by run_bounded, the deadline every probe shares: STATUSLINE_TIMEOUT_BIN
+# is the one they run under, and with none installed its watchdog bounds them.
+: > "$GATE_LOG"
+: > "$UNPUSHED_TIMEOUT_LOG"
+STATUSLINE_TIMEOUT_BIN="$UNPUSHED_TIMEOUT_BIN/timeout" unpushed_render unpushed-bounded "$AHEAD_REPO" >/dev/null
+assert_eq "10 $UNPUSHED_STUB unpushed $AHEAD_TOP unpushed-bounded" \
+  "$(grep -m1 -F "$UNPUSHED_STUB unpushed " "$UNPUSHED_TIMEOUT_LOG")"
+STATUSLINE_TIMEOUT_BIN="$UNPUSHED_TIMEOUT_BIN/timeout" review_session_render autonomy-bounded "$AHEAD_REPO" >/dev/null
+assert_eq "10 $UNPUSHED_STUB autonomous autonomy-bounded" \
+  "$(grep -m1 -F "$UNPUSHED_STUB autonomous autonomy-" "$UNPUSHED_TIMEOUT_LOG")"
+# The lock a gate ask removes is the one it made: one swept as dead while the ask ran belongs to the
+# render that swept it, and removing it would let a third ask start beside the second.
+GATE_SLEEP=0.8
+for gate_owner in unpushed review-autonomy; do
+  gate_owner_cache="$STATE_DIR/$gate_owner-gate-lock-owner"
+  rm -f "$gate_owner_cache"
+  rmdir "$gate_owner_cache.lock" 2>/dev/null
+  run_statusline "$(statusline_payload gate-lock-owner "" "$AHEAD_REPO")" >/dev/null ||
+    fail "gate lock-owner render failed"
+  for gate_wait in $(seq 1 100); do
+    [ -d "$gate_owner_cache.lock" ] && break
+    sleep 0.05
+  done
+  assert test -d "$gate_owner_cache.lock"
+  rmdir "$gate_owner_cache.lock" && mkdir "$gate_owner_cache.lock"
+  for gate_wait in $(seq 1 100); do
+    [ -s "$gate_owner_cache" ] && break
+    sleep 0.05
+  done
+  sleep 0.2
+  assert test -d "$gate_owner_cache.lock"
+  rmdir "$gate_owner_cache.lock" 2>/dev/null
+done
+GATE_SLEEP=
 
 # A gate naming no commit is a branch ahead of its upstream by nobody's work here — a co-tenant's
 # commits are theirs — and the marker says nothing rather than pointing at the count.
