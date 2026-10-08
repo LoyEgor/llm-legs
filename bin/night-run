@@ -85,7 +85,7 @@ states: pending merged left failed-launch blocked-on-egor nothing-to-do (left an
 commits=<repo>:<hash>[,<repo>:<hash>...]  replaces the job's list; <repo> is a sweep-repos
   basename or an absolute path; a changed list clears pushed unless pushed=true comes with it
   A merged job whose branch exists records its own commits instead: those its branch's reflog made
-  (commit, commit (amend)) and what it was created with past the night's base, each as landed on main
+  (commit, commit (amend), commit (cherry-pick), cherry-pick, revert; never a merge) and what it was created with past the night's base, each as landed on main
   (author, author time and subject survive a rebase), else as on the branch; every other listed commit
   is kept under integration, never as the job's own
 answer="<Egor's words>" on a blocked-on-egor job records his answer to its trade {words, at, by, done};
@@ -104,7 +104,8 @@ leftovers lists every non-main branch and worktree of the sweep repositories: li
   landed ones go at finish, every other is a leftover to carry; finish records those under the night's
   leftovers and held
 hold, run by the chat Egor said `сделай холд` in (word family night-hold), holds that chat's worktrees
-  in the sweep repositories out of the nights until the next one finishes: nights/holds/<session>.json
+  in the sweep repositories out of the nights until the next one finishes (a running one: it, named):
+  nights/holds/<session>.json, a second hold of the chat adding to the first
 carry: first an owner-chat job per owner chat (share/handoffs.py --batches: the ledger row naming the
   handoff, else its first addressee) with a decision section or two or more open handoffs: its night
   worktree, and its chat resumed with the batch (live: the sweep SendMessages it); at most
@@ -242,7 +243,7 @@ resume_night() { # id job-ref-or-empty (locked): reopens the night for a new orc
     jq -e --arg r "$job" "$JQ_UNFINISHED"' any(.jobs[]; .ref == $r and unfinished)' "$file" >/dev/null ||
       die "night $id has no unfinished job $job"
   else
-    jq -e "$JQ_UNFINISHED"' any(.jobs[]; unfinished)' "$file" >/dev/null || die "night $id has no unfinished job"
+    jq -e "$JQ_UNFINISHED"' .finished_at == null or any(.jobs[]; unfinished)' "$file" >/dev/null || die "night $id has no unfinished job"
   fi
   night_set "$id" "$JQ_UNFINISHED$JQ_EVENTS"' .previous_sessions = ((.previous_sessions // []) + [.session | values])
     | .session = null | .opener = $opener | .finished_at = null | .doctors_after = null | .doctor_states_after = null | .doctor_problems_after = null | .note = null
@@ -332,7 +333,8 @@ cmd_start() {
   [ "$scope" = all ] || marker=" $scope"
   lock
   open=$(open_nights | head -1)
-  [ -z "$open" ] || die "night $open is still running: its orchestrator chat is open; night-run finish $open closes it."
+  [ -z "$open" ] || die "night $open is still running: $(jq -r '"its orchestrator chat \(.session // "(opening, pid \(.opener))") has run since \(.started_at)"' \
+    "$(night_file "$open")") and finishes the night itself; a new night starts after that."
   if [ -n "$resume" ]; then
     id=$resume
     resume_night "$id" "$job"
@@ -356,7 +358,13 @@ cmd_start() {
     CHAT_OPEN_PREFIX="caffeinate -i env CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=200" \
     chat_open "$nights_dir/$id.command" "$(main_checkout)" "сделай чистку — night run $id$marker" 2>&1); then
     lock
-    night_set "$id" '.note = $n | .finished_at = $t | del(.opener)' --arg n "orchestrator chat did not open: $opened" --arg t "$(stamp)"
+    night_set "$id" '.note = $n | .finished_at = $t | del(.opener)
+      | if $resume == "" then .jobs = [] else .jobs |= map(if .state == "pending" then .state = "left" | .reason = (.reason // $n) else . end) end' \
+      --arg n "orchestrator chat did not open: $opened" --arg t "$(stamp)" --arg resume "$resume"
+    [ -n "$resume" ] || all_nights | jq -r --arg id "$id" '.[] | select(any(.jobs[]; .carried.night? == $id)) | .id' |
+      while IFS= read -r file; do
+        night_set "$file" '.jobs |= map(if .carried.night? == $id then del(.carried) else . end)' --arg id "$id"
+      done
     die "night $id: the orchestrator chat did not open: $opened"
   fi
   read -r account session <<<"$opened"
@@ -603,7 +611,7 @@ own_commits() { # id branch -> [{repo, hash}] the branch made, each as landed on
     created=$(tail -n 1 <<<"$log" | cut -f1)
     stop=$(git -C "$repo" rev-parse -q --verify "refs/night/$id/base^{commit}") ||
       stop=$(git -C "$repo" merge-base refs/heads/main "$created") || continue
-    made=$({ awk -F '\t' '$2 ~ /^commit(: | \(amend\): )/ { print $1 }' <<<"$log"
+    made=$({ awk -F '\t' '$2 ~ /^(commit( \((amend|cherry-pick)\))?|cherry-pick|revert): / { print $1 }' <<<"$log"
       git -C "$repo" rev-list "$created" "^$stop"; } | sort -u)
     [ -n "$made" ] || continue
     while IFS= read -r hash; do
@@ -812,7 +820,8 @@ owner_prompt() { # id ref branch sweep batch-json worktrees -> the prompt file
       sort -u | sed 's/.*/`&`/' | paste -sd, - | sed 's/,/, /g')
     [ -z "$outside" ] ||
       printf '   Not the night'"'"'s, so it lands none of your work there: %s. Fix those on their own branch and landing, as your day work.\n' "$outside"
-    printf '3. When done, SendMessage the sweep chat %s: per handoff its outcome, the commits as repo@hash, each trade'"'"'s three lines.\n' "$4"
+    printf '3. When done, SendMessage the sweep chat %s (the night may have moved to another chat since: `%s "$(jq -r .session %s)"` names the one now): per handoff its outcome, the commits as repo@hash, each trade'"'"'s three lines.\n' \
+      "$4" "$repo_root/bin/chat-name" "$(night_file "$id")"
   } >"$file" || return 1
   printf '%s\n' "$file"
 }
@@ -1083,7 +1092,7 @@ cmd_speed_gate() { # id ref -> exit 3 once the Speed window closed before the fi
 }
 
 cmd_hold() {
-  local sid=${CLAUDE_CODE_SESSION_ID:-} grant words tops repo wt branch main branches='[]' tmp
+  local sid=${CLAUDE_CODE_SESSION_ID:-} grant words tops repo wt branch main branches='[]' tmp until
   [ $# -eq 0 ] || usage
   [ -n "$sid" ] || die "hold runs inside the chat Egor said «сделай холд» in"
   . "${WORDS_LIB:-$HOME/.claude/hooks/lib/words.sh}" 2>/dev/null || die "cannot read the word store library"
@@ -1099,11 +1108,15 @@ cmd_hold() {
     done < <(worktree_lines "$repo")
   done <"$sweep_repos"
   [ "$branches" != '[]' ] || die "this chat has no worktree in the sweep repositories to hold"
+  [ ! -s "$holds_dir/$sid.json" ] ||
+    branches=$(jq -c --argjson b "$branches" '.branches + $b | unique_by([.repo, .branch])' "$holds_dir/$sid.json") ||
+    die "cannot read $holds_dir/$sid.json"
+  until=$(open_nights | head -1)
   mkdir -p "$holds_dir" && tmp=$(mktemp "$holds_dir/.hold.XXXXXX") || die "cannot write under $holds_dir"
   jq -n --arg s "$sid" --arg w "$words" --arg at "$(stamp)" --argjson b "$branches" \
     '{session: $s, words: $w, at: $at, branches: $b}' >"$tmp" && mv -f "$tmp" "$holds_dir/$sid.json" ||
     { rm -f "$tmp"; die "cannot write $holds_dir/$sid.json"; }
-  jq -r --arg w "$words" '.[] | "held \(.repo | split("/") | last) \(.branch) until the next night finishes: \($w)"' <<<"$branches"
+  jq -r --arg w "$words" --arg u "${until:+night $until}" '.[] | "held \(.repo | split("/") | last) \(.branch) until \(if $u == "" then "the next night" else $u end) finishes: \($w)"' <<<"$branches"
 }
 
 checkout_rows() {
@@ -1250,6 +1263,9 @@ prune_landed() {
       live | leftover | held) printf '%s %s: %s\n' "$state" "$name" "$why" ;;
       landed)
         if [ "$wt" != - ] && why=$(cwd_held "$wt"); then printf 'live %s: %s\n' "$name" "$why"
+        elif [ "$wt" != - ] && why=$(git -C "$wt" ls-files -o -i --exclude-standard --directory |
+          grep -vE '(^|/)(__pycache__|\.pytest_cache|node_modules|\.venv|\.DS_Store)(/|$)' | head -3 | paste -sd ' ' -) && [ -n "$why" ]; then
+          printf 'live %s: it holds ignored files (%s)\n' "$name" "$why"
         else
           { [ "$wt" = - ] || git -C "$repo" worktree remove "$wt"; } &&
             { [ "$branch" = - ] || git -C "$repo" branch -q -D "$branch"; } && printf 'pruned %s\n' "$name"

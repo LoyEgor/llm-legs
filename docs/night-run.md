@@ -154,8 +154,8 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
     {words, at, by, done[]} once Egor answered), `settled` (a trade whose answer start found carried out) or `nothing-to-do`;
   - `branch`, `review` (run id, optional: a night branch gets no review of its own), `commits[]`
     ({repo, hash}), `integration[]` and `pushed` (bool, as verified against the remote, integration included).
-    A merged job whose branch exists records as `commits` only what its branch made: its reflog's `commit`
-    and `commit (amend)` entries plus what it was created with past the night's base, each found on main by
+    A merged job whose branch exists records as `commits` only what its branch made: its reflog's `commit`,
+    `commit (amend)`, `commit (cherry-pick)`, `cherry-pick` and `revert` entries (never a merge) plus what it was created with past the night's base, each found on main by
     author, author time and subject (a rebase or cherry-pick keeps them), else on the branch; any other
     commit `commits=` lists goes to `integration`, never counted as the job's lines.
 
@@ -164,7 +164,8 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
 Jobs start `pending`; `finish` turns any still `pending` into `left`. `pushed` is set only after
 the commits are verified on the remote (`ls-remote`, the remote head fetched when it is missing
 locally, plus ancestry); a changed `commits` list clears it until `pushed=true` checks again. A chat that fails to open finishes
-the night at once with a note: red in the menu, never blocking a retry.
+the night at once with a note: red in the menu, never blocking a retry; its `pending` jobs go `left` with that note, and a new
+night's carried trades go back to their own nights for the next start.
 
 A night not finished reads `running` while a process carrying its orchestrator's `--session-id`
 lives, and `UNFINISHED` (red) once that chat is gone. Before the session is recorded the night
@@ -177,7 +178,7 @@ process lives, so a start killed mid-open never blocks the next one. Only a runn
   (prompt `сделай чистку — night run <id> resume`): `finished_at`, `doctors_after` and `doctor_states_after` go null, the old
   `session` is appended to `previous_sessions`, and the unfinished (`left`, `pending`) jobs, or the one
   `--job` names, go back to `pending` with their reasons kept. Without `--job` a `debt-<n>` job is
-  added when no debt job is pending. The review-flow gate needs no change: it reads the night's
+  added when no debt job is pending, so a night not finished yet reopens even with every job closed. The review-flow gate needs no change: it reads the night's
   `finished_at` and live `session`, so resumed workers commit on their `night/<id>/…` branches again.
 - `night-run wall` is the `StopFailure` hook (matcher `rate_limit`, wired in the shared
   `~/.claude/settings.json`): when the stopped chat is a running night's orchestrator it starts a
@@ -215,8 +216,11 @@ N|diverged[, WIP in the way: <files>]` for a main checkout behind origin/main:
   (repeatable) to scope it.
 - `held`, not live: Egor's `сделай холд` (word family `night-hold`) in the owning chat runs `night-run
   hold`, which on that chat's fresh grant writes `nights/holds/<session>.json` for its non-main worktrees
-  (review journal or cwd); why `Egor: <words>`, refused even with `--ready`, dropped by the next `finish`.
-- `landed`: landed, clean, not live, not held; `finish` removes its worktree and deletes the branch.
+  (review journal or cwd), a second hold adding to the first; why `Egor: <words>`, refused even with
+  `--ready`, dropped by the next `finish`, which is a running night's own: `hold` then names it.
+- `landed`: landed, clean, not live, not held; `finish` removes its worktree and deletes the branch,
+  except a worktree holding ignored files besides caches (`__pycache__`, `.pytest_cache`, `node_modules`,
+  `.venv`, `.DS_Store`): removal would delete them, so it prints `live … it holds ignored files (…)`.
 - `leftover`: everything else (unlanded commits or uncommitted files). It is unfinished work and goes
   into main as a night job. `night-run job <id> add leftover <branch>` adopts it into the night's own
   namespace, where the review-flow gate lets workers commit, in every sweep repository where that

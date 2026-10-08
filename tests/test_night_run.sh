@@ -92,6 +92,9 @@ assert grep -qxF -- '--account claudeb --role chat --model opus --claim' "$DATA/
 # A night whose orchestrator chat runs refuses a second start, however long it runs; no deadline flag.
 assert_fails night start 2>"$WORK/err"
 assert grep -qF "night $id is still running" "$WORK/err"
+# The refusal names the live chat and never sends the caller to finish a running night.
+assert grep -qF "its orchestrator chat $session has run since $(jq -r .started_at "$R")" "$WORK/err"
+assert_fails grep -qF 'night-run finish' "$WORK/err"
 assert_fails night start --deadline-h 2 2>/dev/null
 assert [ "$(wc -l <"$OPENED" | tr -d ' ')" = 1 ]
 
@@ -488,6 +491,8 @@ stop_chat "$(jq -r .session "$R6")"
 touch "$DATA/opener-fails"
 assert_fails night start --resume "$id6" 2>/dev/null
 assert jqe '.finished_at != null and (.note | startswith("orchestrator chat did not open")) and (.previous_sessions | length) == 4' "$R6"
+assert jqe '([.jobs[] | select(.state == "pending")] == []) and (.jobs[] | select(.ref == "debt-2")
+  | .state == "left" and (.reason | startswith("orchestrator chat did not open")))' "$R6"
 rm "$DATA/opener-fails"
 
 # Wall: an orchestrator stopped by a usage wall (StopFailure error rate_limit) has its chat ended and
@@ -529,6 +534,13 @@ assert_fails env NIGHT_RUN_WALL_MAX=2 bash -c 'printf "{\"session_id\": \"%s\", 
   NIGHT_RUN_WALL_SYNC=1 bash "$2/bin/night-run" wall' _ "$walled" "$ROOT" 2>"$WORK/err"
 assert grep -qF "orchestrator walls already" "$WORK/err"
 assert jqe --arg w "$walled" '.session == $w and .events[-1].phase == "wall-gave-up"' "$R6"
+# A wall after every job closed, before finish, still moves the night: the new orchestrator closes it.
+for r in $(jq -r '.jobs[] | select(.state == "pending" or .state == "left") | .ref' "$R6"); do
+  night job "$id6" set "$r" state=nothing-to-do >/dev/null
+done
+wall "$walled" rate_limit >"$WORK/out" || fail "a wall after the last job closed"
+assert [ "$(cat "$WORK/out")" = "night $id6 resumed: orchestrator on acct-n" ]
+walled=$(jq -r .session "$R6")
 stop_chat "$walled"
 night finish "$id6" >/dev/null
 
@@ -706,6 +718,16 @@ assert_fails night job "$idc" add leftover stale-open --branch x 2>/dev/null
 assert git -C "$WORK/repo" rev-parse -q --verify refs/heads/landed-x >/dev/null
 assert_fails night job "$idc" add leftover onhold --ready "owner says done" 2>"$WORK/err"
 assert grep -qxF "night-run: onhold is held in repo: Egor: сделай холд, я ещё тут" "$WORK/err"
+# A second hold from another worktree adds to the first; a running night is named as the one whose finish drops it.
+printf '%s\n' "$wt/frozen" >"$journal/chat-h.repos"
+sleep 600 & runner=$!
+printf '%s\n' "$runner" >>"$DATA/orchestrators"
+jq -n --argjson p "$runner" '{id: "nrun", started_at: "2026-01-04T00:00:00Z", finished_at: null, session: null, opener: $p, jobs: []}' >"$(record nrun)"
+(cd "$WORK" && CLAUDE_CODE_SESSION_ID=chat-h night hold) >"$WORK/out" || fail "a second hold"
+assert [ "$(cat "$WORK/out")" = "held repo frozen until night nrun finishes: сделай холд, я ещё тут
+held repo onhold until night nrun finishes: сделай холд, я ещё тут" ]
+kill "$runner"; rm "$(record nrun)"
+printf '%s\n' "$wt/onhold" >"$journal/chat-h.repos"
 rm "$NIGHTS/holds/chat-h.json"
 assert [ -d "$wt/onhold" ] && [ -d "$wt/stale-open" ]
 # Recent activity keeps no branch out of the night: one committed a minute ago is a leftover adopted
@@ -1330,6 +1352,15 @@ assert jqe '.jobs[] | select(.ref == "trade-t-todo") | .answer == null' "$(recor
 night start >"$WORK/out" || fail "start after a carried trade blocked again"
 assert [ "$(grep -c '^trade ' "$WORK/out")" = 0 ]
 stop_chat "$(jq -r .session "$(record "$(sed -n 's/^night \([^ ]*\) started:.*/\1/p' "$WORK/out")")")"
+# A new night whose chat did not open hands the trades it carried back to their nights.
+jq -n --argjson j "[$(trade fixer t-back)]" '{id: "tf", started_at: "2026-01-02T05:00:00Z", finished_at: "2026-01-02T06:00:00Z",
+  session: null, jobs: $j}' >"$(record tf)"
+night job tf set t-back "answer=do it" "done=commit:trades:$undone_hash" >/dev/null || fail "answer t-back"
+touch "$DATA/opener-fails"
+assert_fails night start 2>/dev/null
+rm "$DATA/opener-fails"
+assert jqe '.jobs[0] | has("carried") | not' "$(record tf)"
+assert jqe '[.[] | select((.note // "") | startswith("orchestrator chat did not open")) | .jobs] == [[]]' <(jq -s . "$NIGHTS"/*.json)
 
 # Each merged job records the commits its own branch made, as landed on main, whatever the orchestrator lists:
 # two jobs landed through one integration commit (2026-10-07: night 7777 gave eight fixers its fea660fb) each
@@ -1380,5 +1411,26 @@ jd=$(git -C "$OC" rev-parse night/on/jd)
 assert [ "$jd" != "$jd_branch" ]
 night job on set jd state=merged >/dev/null || fail "jd merged"
 assert jqe --arg h "$jd" '.jobs[3].commits == [{repo: "own", hash: $h}] and .jobs[3].integration == []' "$(record on)"
+# A commit the branch got by cherry-pick is its own too.
+night job on add fixer je --branch night/on/je >/dev/null
+git -C "$OC" worktree add -q -b night/on/je "$WORK/own-je" refs/night/on/base
+oc "$WORK/own-je" checkout -q -b je-side && printf 'f\n' >"$WORK/own-je/f.txt" && oc "$WORK/own-je" add f.txt && oc "$WORK/own-je" commit -qm 'je work'
+oc "$WORK/own-je" checkout -q night/on/je && oc "$WORK/own-je" cherry-pick je-side >/dev/null || fail "je cherry-pick"
+night job on set je state=merged >/dev/null || fail "je merged"
+assert jqe --arg h "$(git -C "$OC" rev-parse night/on/je)" '.jobs[4].commits == [{repo: "own", hash: $h}]' "$(record on)"
+
+# finish keeps a landed worktree holding ignored files besides caches: removing it would delete them.
+PI="$WORK/prune"
+git init -q -b main "$PI" && oc "$PI" commit -q --allow-empty -m root
+printf '.env\n__pycache__/\n.claude/\n' >>"$PI/.git/info/exclude"
+printf '%s\n' "$PI" >"$WORK/sweep-repos"
+for b in keeps cache; do git -C "$PI" worktree add -q -b "$b" "$PI/.claude/worktrees/$b" main; done
+printf 's\n' >"$PI/.claude/worktrees/keeps/.env"
+mkdir "$PI/.claude/worktrees/cache/__pycache__" && : >"$PI/.claude/worktrees/cache/__pycache__/x.pyc"
+jq -n '{id: "pi", started_at: "2026-01-04T00:00:00Z", finished_at: null, session: null, jobs: []}' >"$(record pi)"
+night finish pi >"$WORK/out" || fail "finish with ignored files"
+assert grep -qxF "live prune keeps: it holds ignored files (.env)" "$WORK/out"
+assert grep -qxF "pruned prune cache" "$WORK/out"
+assert [ "$(cat "$PI/.claude/worktrees/keeps/.env")" = s ]
 
 echo "PASS: test_night_run.sh ($asserts asserts)"

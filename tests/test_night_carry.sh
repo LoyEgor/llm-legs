@@ -172,6 +172,8 @@ prompt="$NIGHTS/N2.owner-chat-alpha-doctor.prompt.md"
 assert grep -qxF -- "- \`$H/2026-09-20-a1.md\`" "$prompt"
 assert grep -qF "Work on branch \`night/N2/owner-chat-alpha-doctor\` in its night worktrees: \`$awt\`" "$prompt"
 assert grep -qF 'SendMessage the sweep chat running night N2' "$prompt"
+# The orchestrator may change after carry (a wall failover): the owner resolves it when it reports.
+assert grep -qF "\`$ROOT/bin/chat-name \"\$(jq -r .session $NIGHTS/N2.json)\"\` names the one now" "$prompt"
 assert grep -qxF '«Alpha Doctor» open · 2 handoffs' <(night report N2 2>/dev/null | grep -o '«Alpha Doctor».*handoffs')
 night carry N2 >"$WORK/n2b.out" 2>/dev/null || fail "a second owner carry failed"
 assert [ ! -s "$WORK/n2b.out" ]
