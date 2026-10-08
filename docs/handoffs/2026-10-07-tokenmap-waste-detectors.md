@@ -31,6 +31,7 @@ Each detector is a `tracking.json` section with a share of Claude spend, the Δ,
 
 9. **Export which causes are avoidable.** Harness `share/spend.py` (llm-legs 90cae246) copies tokenmap's unavoidable cache re-write causes (`expired (1h+ idle)` and the others from FINDINGS §26). Put an `avoidable` flag on each cause row in `tracking.json`, so the doctor reads it rather than keeping a copy. — Done in token-map 3e3b078; the Spend side is in `2026-10-07-harness-index.md`.
    - Resumes (llm-legs night 20261007T213650Z-7b98): `Worker cold resumes` counts sidechain 5-min re-writes inside a running worker (115 of 151 events in the 7 days to 2026-10-07, image-gen, gone since claude-setup 01f7357) as resumes; count main contexts only, and flag a cold resume compacted within 10 requests (8 of 36, 2.7M).
+   - Startup parts (llm-legs feat/spend-audit-nested-claude-md): Spend splits the main-context startup by `Per context that loads it (avg)`, an average over carriers only, so `nested CLAUDE.md files` (6 of 1881 contexts, 59k of 948M limit tokens, 0.006 %) read 0.889 % and took 8.4M from the others; export each part's total (`comps`, already summed in `startup()`) as a section and let `share/spend.py` read it instead of scaling averages.
 
 ## Done when
 - Each detector is in `tracking.json` with its own tests.

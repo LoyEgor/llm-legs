@@ -26,6 +26,21 @@
    },
    "verdict": "kept",
    "note": "kept (re-audit 2026-10-08): 45-52 CPU-s/run (3 runs, load 7-22, 2/3 sys = forks); a stub-gate run of the same 216 asserts costs 5.8 s, so ~88% is the gate's guarded-name slow path (220-380 ms a call, spread over ~40 forking lines, no hotspot; ordinary live calls take the 40 ms path); test-side cuts (one jq per call, 3 duplicate fast-path asserts) are ~4% and would move the harness blob shared by 7 sibling suites, re-queueing their audits; no sleeps or timeouts"
+  },
+  {
+   "id": "startup:nested CLAUDE.md files",
+   "title": "startup nested CLAUDE.md files",
+   "audited_at": "2026-10-08T03:19:23+03:00",
+   "by": "feat/spend-audit-nested-claude-md",
+   "share": 0.010995,
+   "prices": {
+    "worker": 26143.393762135063,
+    "chat": 34987.16713699263,
+    "subagent": 15017.701136311005
+   },
+   "sources": {},
+   "verdict": "kept",
+   "note": "real cost 0.006 % (59k limit tokens over 6 of 1881 main contexts, 7 days): Claude Code loads an out-of-cwd CLAUDE.md, in sweep repos only claude-setup/global/CLAUDE.md (3 loads, exact copy of the symlinked user file) and llm-legs worktree copies in main-cwd chats (3, exact); claudeMdExcludes could drop them but risks the symlinked user file for ~9k tokens/week; the 0.889 % is Spend scaling per-carrier averages, handed to tokenmap-waste-detectors"
   }
  ]
 }
