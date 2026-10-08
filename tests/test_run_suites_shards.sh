@@ -74,6 +74,12 @@ assert test "$(sort -u "$WORK/child")" = ''
 run RUN_SUITES_SHARDS=on -- -j 2
 assert test "$(sections)" = 'a b c d '
 assert test "$(sort -n "$WORK/concurrent" | tail -1)" -le 2
+# So do the shards of a serial-tail suite.
+cp "$REPO/tests/test_sharded.sh" "$REPO/tests/test_review_flow_gate.sh"
+run RUN_SUITES_SHARDS=on -- -j 2 test_review_flow_gate.sh
+assert test "$(sections)" = 'a b c d '
+assert test "$(sort -n "$WORK/concurrent" | tail -1)" -le 2
+rm "$REPO/tests/test_review_flow_gate.sh"
 
 # A failing shard fails the suite, and the failure tail is that shard's.
 run RUN_SUITES_SHARDS=on FAIL_C=1 -- -j 3

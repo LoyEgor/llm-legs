@@ -547,9 +547,13 @@ for entry in ${tail_wave[@]+"${tail_wave[@]}"}; do
   n=${shards[${entry##*/}]:-1}
   if [ "$n" -lt 2 ]; then run_one "$entry" & wait "$!"
   else
-    declare -a tail_shards=()
-    for ((i = 1; i <= n; i++)); do run_one "$entry" "$i/$n" & tail_shards+=("$!"); done
-    wait "${tail_shards[@]}"
+    running=0
+    for ((i = 1; i <= n; i++)); do
+      while [ "$running" -ge "$jobs" ]; do wait -n 2>/dev/null || :; running=$((running - 1)); done
+      run_one "$entry" "$i/$n" &
+      running=$((running + 1))
+    done
+    wait
   fi
 done
 wall=$(( $(date +%s) - wall_start ))
