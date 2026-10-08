@@ -94,6 +94,7 @@ found=$(awk -v start="$start_pid" -v runs="$runs" '
         if (w[i] == "-m" && b ~ /^python/ && i < nw) { pi = i + 1; return base(w[pi]) }
         if (w[i] == "--test" && b == "node") return "node --test"
         if ((b == "timeout" && w[i] ~ /^-[sk]$/) || (b == "nice" && w[i] == "-n") || (b == "caffeinate" && w[i] ~ /^-[tw]$/) ||
+            (b == "env" && w[i] ~ /^-[uCP]$/) || (b ~ /^(bash|sh|zsh|dash)$/ && w[i] ~ /^-[oO]$/) ||
             (b == "sudo" && w[i] ~ /^-[ugCDhpt]$/) || (b ~ /^(uv|npx)$/ && w[i] ~ /^(--with|--python|-p|--package|--project|--directory|--from)$/)) i++
       }
       if (i <= nw && b == "timeout" && w[i] ~ /^[0-9.]+[smhd]?$/) i++
@@ -139,7 +140,7 @@ found=$(awk -v start="$start_pid" -v runs="$runs" '
     lbl = test_label(pid)
     if (lbl != "") {
       if (tag == "R") print "R\t" run_of_visit "\t" secs(et[pid]) "\t" lbl "\t" pid
-      else print tag "\ttests\t" pid "\t" secs(et[pid]) "\t" lbl "\t" tpath
+      else print tag "\ttests\t" pid "\t" secs(et[pid]) "\t" lbl "\t" tpath "\t" ppid[pid]
       return 1
     }
     hit = 0
@@ -180,7 +181,7 @@ found=$(awk -v start="$start_pid" -v runs="$runs" '
         # snapshot, which a command that execs its program replaces. A hook runs outside one, and
         # one still going at 5s holds the chat the way a tool call does.
         if (cmd[c] !~ /\/shell-snapshots\/snapshot-/) {
-          if ((lbl = test_label(c)) != "") { print "M\ttests\t" c "\t" secs(et[c]) "\t" lbl "\t" tpath; continue }
+          if ((lbl = test_label(c)) != "") { print "M\ttests\t" c "\t" secs(et[c]) "\t" lbl "\t" tpath "\t" ppid[c]; continue }
           if (prog(c) ~ media) { print "MEDIA\t" c "\t" secs(et[c]); continue }
           if (w[pi] ~ /\/hooks\/[^\/]+$/ && secs(et[c]) >= 5) {
             lbl = base(w[pi]); sub(/\.[a-z]+$/, "", lbl); print "M\tshell\t" c "\t" secs(et[c]) "\thook " lbl
@@ -224,7 +225,7 @@ fi
 # \037, never on tab: tab is IFS whitespace, so `read` would fold an empty field into the next one.
 items=""; pids=""; runs_out=""; media_records=""
 while IFS= read -r found_line; do
-  IFS=$'\037' read -r kind a b c d e _ <<< "${found_line//$'\t'/$'\037'}"
+  IFS=$'\037' read -r kind a b c d e f _ <<< "${found_line//$'\t'/$'\037'}"
   case "$kind" in
     MEDIA)
       # media-run's pointer for its own pid, stamped as it started: an older one belongs to a reused pid.
@@ -237,8 +238,9 @@ while IFS= read -r found_line; do
       media_records+="main"$'\t'"media"$'\t'"$m_stamp"$'\t'"$m_tag"$'\t'"$m_label"$'\t'"$m_counts"$'\t\t'$'\n' ;;
     M|O)
       [ "$kind" = M ] || [[ " $mine " = *" $b "* ]] || continue
-      items+="$b"$'\037'"$a"$'\037'"$c"$'\037'"$d"$'\037'"$e"$'\n'
-      pids="${pids:+$pids,}$b" ;;
+      items+="$b"$'\037'"$a"$'\037'"$c"$'\037'"$d"$'\037'"$e"$'\037'"$f"$'\n'
+      pids="${pids:+$pids,}$b"
+      case "$e" in /*) ;; */*) [[ ! "$f" =~ ^[0-9]+$ ]] || [ "$f" -le 1 ] || pids+=",$f" ;; esac ;;
     R)
       logdir="" srepo="" stamp=""
       [ "$c" != suites ] || [ ! -f "$cache_dir/suites-$d" ] || IFS=$'\t' read -r logdir _ srepo stamp < "$cache_dir/suites-$d" || :
@@ -269,7 +271,7 @@ if [ -n "$pids" ]; then
 fi
 
 records=""
-while IFS=$'\037' read -r pid class elapsed label tpath; do
+while IFS=$'\037' read -r pid class elapsed label tpath parent; do
   [ -n "$pid" ] || continue
   cwd=${cwd_by_pid[$pid]:-}
   done_n=$'\t' total="" srepo="" logdir="" stamp="" outcome_dir=""
@@ -285,14 +287,18 @@ while IFS=$'\037' read -r pid class elapsed label tpath; do
     if [ -n "$outcome_dir" ]; then elapsed=$((now - stamp)); else label='suites queued' done_n=$'\t' total="" srepo=""; fi
   fi
   # A run started from another repository's directory is that repository's: the script it runs or
-  # the one run-suites was handed names it, the cwd only when neither does.
-  top="" root=""
+  # the one run-suites was handed names it, the cwd only when neither does. A relative script path is
+  # its parent's: the test's own cwd moves with any `cd` it makes.
+  top="" root="" pcwd=""
+  [ -z "$parent" ] || pcwd=${cwd_by_pid[$parent]:-}
   case "$tpath" in
     /*) git_top "${tpath%/*}" ;;
-    */*) [ -z "$cwd" ] || git_top "$cwd/${tpath%/*}" ;;
+    */*) { [ -n "$pcwd" ] && git_top "$pcwd/${tpath%/*}"; } || [ -z "$cwd" ] || git_top "$cwd/${tpath%/*}" ;;
   esac
   [ -n "$top" ] || [ -z "$srepo" ] || git_top "$srepo" || top=$srepo
   [ -n "$top" ] || [ -z "$cwd" ] || git_top "$cwd" || top=$cwd
+  # Ended between the snapshot and lsof: a repo-less row would be journaled a second time next probe.
+  [ -n "$top" ] || [ -n "$cwd" ] || [ "${label#suites}" != "$label" ] || kill -0 "$pid" 2>/dev/null || continue
   repo=""
   case "$top" in
     '') ;;

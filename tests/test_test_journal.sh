@@ -177,6 +177,36 @@ probe
 { printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28; } > "$WORK/snap"
 probe
 assert_eq "\"$layouts/proj\"" "$(jq -c 'select(.label == "test_bare") | .repo_root' "$STATUSLINE_CACHE_DIR/test-history.jsonl")"
+# A test started by a relative path keeps the repository it was launched from after it cds away.
+mkdir -p "$WORK/repo/tests" "$WORK/elsewhere"
+printf 'cat "%s/lsof-extra" 2>/dev/null\n' "$WORK" >> "$WORK/lsof"
+printf 'p89\nfcwd\nn%s\np90\nfcwd\nn%s\n' "$WORK/repo" "$WORK/elsewhere" > "$WORK/lsof-extra"
+{ printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28
+  shell_line 89 00:41; printf '90 89 00:40 bash tests/test_cd.sh\n'; } > "$WORK/snap"
+probe
+assert_eq repo "$(awk -F'\t' '$5 == "test_cd" { print $4 }' "$STATUSLINE_CACHE_DIR/work-th")"
+{ printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28; } > "$WORK/snap"
+probe
+assert_eq repo "$(jq -r 'select(.label == "test_cd") | .repo' "$STATUSLINE_CACHE_DIR/test-history.jsonl")"
+# A test that ends between the process snapshot and lsof is journaled once, never again as repo-less.
+sleep 0 & dead_pid=$!; wait "$dead_pid"
+printf 'p%s\nfcwd\nn%s\n' "$dead_pid" "$WORK/repo" > "$WORK/lsof-extra"
+{ printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28
+  shell_line 91 00:21; printf '%s 91 00:20 pytest -q\n' "$dead_pid"; } > "$WORK/snap"
+probe
+: > "$WORK/lsof-extra"
+probe
+{ printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28; } > "$WORK/snap"
+probe
+assert_eq '["repo"]' "$(jq -sc 'map(select(.label == "pytest" and .who == "chat") | .repo)' "$STATUSLINE_CACHE_DIR/test-history.jsonl")"
+# A wrapper option's value is never taken for the program.
+printf 'p93\nfcwd\nn%s\n' "$WORK/repo" > "$WORK/lsof-extra"
+{ printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28
+  shell_line 92 00:21; printf '93 92 00:20 env -u FOO bash -o pipefail tests/test_wrapped.sh\n'; } > "$WORK/snap"
+probe
+assert_eq test_wrapped "$(awk -F'\t' '$5 == "test_wrapped" { print $5 }' "$STATUSLINE_CACHE_DIR/work-th")"
+{ printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28; } > "$WORK/snap"
+probe
 
 # run-suites declares its scope, and a marker names the repo_root its run folds into.
 suites_repo="$WORK/suites-repo"
@@ -212,6 +242,7 @@ c5_row suites 90 "$((c5_now - 112))" test_1.sh
 c5_row suites 91 "$((c5_now - 300))" test_1.sh
 c5_row direct 93 "$((c5_now - 41))" test_dup.sh
 c5_row direct 702 "$((c5_now - 109))" test_wdup.sh
+printf 'p95\nfcwd\nn%s\n' "$WORK/repo" > "$WORK/lsof-extra"
 { printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28
   suite_run 90 r-c5 1 "$((c5_now - 110))" 0; suite_run 91 r-c5-reused 1 "$((c5_now - 110))" 0
   shell_line 92 00:41; printf '93 92 00:40 bash tests/test_dup.sh\n'

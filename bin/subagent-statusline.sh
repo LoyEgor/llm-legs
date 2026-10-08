@@ -71,7 +71,12 @@ gemini_label() {
 }
 
 review_doc() { # run-id
-  cat "$progress_dir"/*.json 2>/dev/null | jq -c --arg run "$1" 'select(.run_id? == $run)' 2>/dev/null | tail -n1
+  local f doc="" one
+  while IFS= read -r f; do
+    one=$(jq -c --arg run "$1" 'select(.run_id? == $run)' "$f" 2>/dev/null)
+    [ -z "$one" ] || doc=${one##*$'\n'}
+  done < <(grep -lF -- "$1" "$progress_dir"/*.json 2>/dev/null)
+  [ -z "$doc" ] || printf '%s\n' "$doc"
 }
 
 # Sets the full state and the short form the fit falls back to (a review's cell detail dropped).
@@ -156,7 +161,11 @@ review_state() { # run-id session tag-cache-path
   IFS=$'\x1f' read -r state phase confirmed j_account j_model j_effort phase_at < <(jq -r '
     def word: if type == "string" then gsub("[^A-Za-z0-9_.-]"; "") else "" end;
     def epoch: if type == "number" then floor
-      elif type == "string" then (try fromdateiso8601 catch null) else null end;
+      elif type == "string" then
+        ((capture("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})([.][0-9]+)?(?<z>Z|(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2}))$")
+          | (.d + "Z" | fromdateiso8601) - (if .z == "Z" then 0
+              else ((.h | tonumber) * 3600 + (.m | tonumber) * 60) * (if .s == "-" then -1 else 1 end) end)) // null)
+      else null end;
     (if (.judge | type) == "object" then .judge else {} end) as $j |
     [(.state // "running" | if . == "failed" then "dead" else . end), (.phase // "review"),
      (.confirmed // "" | tostring), ($j.account | word), ($j.model | word), ($j.effort | word),

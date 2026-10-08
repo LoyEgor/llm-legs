@@ -6227,6 +6227,20 @@ assert_eq 'T0 · double · bugs · all 2/2 agy ✓ opus ✓ · ✓ done · 4m 5s
 judge: locomthebest · opus · high · c0ffee1 · 0s' "$(trj_row 100)"
 assert test -s "$TR_HOME_CACHE/$TR_RSESS/j1.judge"
 rm -f "$TR_HOME_CACHE/$TR_RSESS/j1.judge"
+# review-bench stamps Python isoformat: fractional seconds and a numeric offset.
+trj_doc ".phase_at = ($((TRJ_NOW - 65 + 7200)) | todate | sub(\"Z\$\"; \".123456+02:00\"))"
+assert_eq 'T0 · double · bugs · all 2/2 agy ✓ opus ✓ · ✓ done · 3m 0s · ↓ 2.4k tok
+judge: locomthebest · opus · high · c0ffee1 · 1m 5s' "$(trj_row 100)"
+trj_doc "del(.phase_at) | .judge.ts = ($((TRJ_NOW - 65)) | todate | sub(\"Z\$\"; \".5+00:00\"))"
+assert_eq 'T0 · double · bugs · all 2/2 agy ✓ opus ✓ · ✓ done · 3m 0s · ↓ 2.4k tok
+judge: locomthebest · opus · high · c0ffee1 · 1m 5s' "$(trj_row 100)"
+assert test ! -e "$TR_HOME_CACHE/$TR_RSESS/j1.judge"
+# A progress file caught mid-write hides no other run's document.
+trj_doc .
+printf '{"run_id":"20260917T120000Z-bad","sta' > "$TR_STATS/progress/a-torn.json"
+assert_eq 'T0 · double · bugs · all 2/2 agy ✓ opus ✓ · ✓ done · 3m 0s · ↓ 2.4k tok
+judge: locomthebest · opus · high · c0ffee1 · 1m 5s' "$(trj_row 100)"
+rm -f "$TR_STATS/progress/a-torn.json"
 # Rows appear in sequence: no judge row before the judge phase, and it stays through the report.
 trj_doc '.phase = "review" | .done = ["agy-flash37-high#1"]'
 assert_eq 'T0 · double · bugs · all 1/2 agy ✓ opus 0/1 · 4m 5s · ↓ 2.4k tok' "$(trj_row 100)"
