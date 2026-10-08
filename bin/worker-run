@@ -984,9 +984,11 @@ supervise_claudeb() {
   # A -p session ends when its turn does: a suite sent to the background dies unread with it, and
   # the worker's closing "I'll report once they finish" leaves the round without its verdicts.
   local -x CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1
-  # So a covering suite run stays in the foreground, where Claude Code's own 10-minute Bash cap killed
-  # it (exit 143) and the worker reran it detached; the idle watchdog is what bounds one tool call.
+  # So a covering suite run stays in the foreground, where Claude Code's own 10-minute Bash cap (and
+  # the 2-minute default for a call naming no timeout) killed it (exit 143) and the worker reran it
+  # detached, polling with sleeps; the idle watchdog is what bounds one tool call.
   local -x BASH_MAX_TIMEOUT_MS=$((IDLE > 900 ? (IDLE - 300) * 1000 : 600000))
+  local -x BASH_DEFAULT_TIMEOUT_MS=$BASH_MAX_TIMEOUT_MS
   run_with_deadline "${command[@]}" <"$directory/brief.launch" >"$directory/out" 2>"$directory/err"
   rc=$?
   if [ "$rc" -ne 0 ] && grep -Eiq -- '((unknown|unrecognized|invalid|unexpected|unsupported|not supported).{0,80}--effort|--effort.{0,80}(unknown|unrecognized|invalid|unexpected|unsupported|not supported))' "$directory/err"; then
