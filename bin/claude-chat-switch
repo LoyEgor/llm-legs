@@ -288,6 +288,9 @@ source_kind=claude
 wait_pid=""
 shell_pid=0
 cwd_arg=""
+positionals=()
+# Flags after <profile> are still flags: a trailing --dry-run read as the session id would arm
+# the switch for real.
 while [ $# -gt 0 ]; do
   case "$1" in
     --gateway) gateway_mode=1; shift ;;
@@ -298,23 +301,24 @@ while [ $# -gt 0 ]; do
     --cwd)   [ $# -ge 2 ] || usage; cwd_arg="$2"; shift 2 ;;
     --cwd=*) cwd_arg="${1#--cwd=}"; shift ;;
     -h|--help) usage ;;
-    --*) usage ;;
-    *) break ;;
+    -*) usage ;;
+    *) positionals+=("$1"); shift ;;
   esac
 done
 
-[ $# -ge 1 ] || usage
+[ "${#positionals[@]}" -ge 1 ] && [ "${#positionals[@]}" -le 2 ] || usage
 [ "$front_mode" -eq 1 ] && [ "$self_mode" -eq 1 ] && die "--front and --self are mutually exclusive."
 
-profile="$1"
-session_id="${2:-}"
+profile="${positionals[0]}"
+session_id="${positionals[1]:-}"
 
 if [ -n "$cwd_arg" ]; then
   [ -d "$cwd_arg" ] || die "--cwd: no such directory: $cwd_arg"
   # `--` so a directory named like a flag still resolves; a cd that fails anyway
   # (unreadable directory) must not leave an empty cwd_arg, which would silently
   # drop the whole point of the flag and resume in the wrong project.
-  cwd_arg=$(cd -- "$cwd_arg" 2>/dev/null && pwd -P) || die "--cwd: cannot enter directory: $cwd_arg"
+  cwd_real=$(cd -- "$cwd_arg" 2>/dev/null && pwd -P) || die "--cwd: cannot enter directory: $cwd_arg"
+  cwd_arg="$cwd_real"
   [ -n "$cwd_arg" ] || die "--cwd: cannot resolve directory"
   case "$cwd_arg" in *[$'\n\r']*) die "--cwd: path contains a newline" ;; esac
 fi
@@ -422,6 +426,10 @@ elif [ "$front_mode" -eq 1 ] || [ "$self_mode" -eq 1 ]; then
 else
   if [ -z "$session_id" ]; then
     session_id="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
+    if [ -n "$cwd_arg" ] && [ -n "$session_id" ] &&
+       [ ! -f "$HOME/.claude/projects/$(project_slug "$cwd_arg")/$session_id.jsonl" ]; then
+      session_id=""
+    fi
   fi
 
   if [ -z "$session_id" ]; then
@@ -487,7 +495,8 @@ resume_cmd="$launcher"
 # A bare shell launches fresh in whatever directory it is sitting in; the one exception is an id
 # named on the command line, whose conversation belongs to its own project and not to this tab.
 { [ "$mode" = has_chat ] || { [ "$mode" = bare_shell ] && [ -n "$resume_id" ]; }; } &&
-  [ -n "$cd_target" ] && resume_cmd="cd '${cd_target//\'/\'\\\'\'}' && $launcher"
+  [ -n "$cd_target" ] && sq="'" && sq_escaped="'\\''" &&
+  resume_cmd="cd '${cd_target//$sq/$sq_escaped}' && $launcher"
 if [ "$dry_run" -eq 1 ]; then
   printf 'mode=%s source_kind=%s claude_pid=%s wait_pid=%s shell_pid=%s tty=%s\ncwd=%s\ncommand=%s\n' \
     "$mode" "$source_kind" "$claude_pid" "$wait_pid" "$shell_pid" "${tty_dev:-}" "$cd_target" "$resume_cmd"

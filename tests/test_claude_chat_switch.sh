@@ -233,6 +233,40 @@ run_switch -- --cwd "$FOREIGN" olx
 assert test "$RC" -eq 0
 assert grep -q "\"$FSID\"" <<<"$PAYLOAD"
 
+# The calling chat's own id is the target only when its transcript lives under --cwd.
+run_switch CLAUDE_CODE_SESSION_ID=calling-chat-0001 -- --cwd "$FOREIGN" olx
+assert test "$RC" -eq 0
+assert grep -q "\"$FSID\"" <<<"$PAYLOAD"
+run_switch CLAUDE_CODE_SESSION_ID=older-one -- --cwd "$FOREIGN" olx
+assert test "$RC" -eq 0
+assert grep -q '"older-one"' <<<"$PAYLOAD"
+
+# --- a flag after <profile> is still a flag ---------------------------------
+run_switch -- --cwd "$FOREIGN" olx "$FSID" --dry-run
+assert test "$RC" -eq 0
+assert test -z "$PAYLOAD"
+assert grep -Fq "command=cd '$FOREIGN_REAL' && claudeb profile olx --resume $FSID" <<<"$OUT"
+run_switch -- --cwd "$FOREIGN" olx --dry-run
+assert test "$RC" -eq 0
+assert test -z "$PAYLOAD"
+run_switch -- olx "$FSID" extra
+assert test "$RC" -eq 2
+
+# --- a --cwd that cannot be entered is named in the error ------------------
+LOCKED="$WORK/locked"; mkdir -p "$LOCKED"; chmod 000 "$LOCKED"
+run_switch -- --cwd "$LOCKED" olx "$FSID"
+chmod 700 "$LOCKED"
+assert test "$RC" -eq 1
+assert grep -Fq "cannot enter directory: $LOCKED" <<<"$OUT"
+
+# --- a quote in the target directory pastes back under /bin/bash 3.2 too ----
+QUOTED="$WORK/it's"; mkdir -p "$QUOTED"
+QUOTED_REAL=$(cd "$QUOTED" && pwd -P)
+mkdir -p "$HOME/.claude/projects/$(slug_of "$QUOTED")"
+touch "$HOME/.claude/projects/$(slug_of "$QUOTED")/$FSID.jsonl"
+OUT=$(env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_SESSION_ID /bin/bash "$SCRIPT" --dry-run --cwd "$QUOTED" olx "$FSID" 2>&1)
+assert grep -Fq "command=cd '${QUOTED_REAL%/*}/it'\\''s' && claudeb profile olx --resume $FSID" <<<"$OUT"
+
 # --- --cwd without the target's transcript -> error ------------------------
 run_switch -- --self --cwd "$WORK" olx "$FSID"
 assert test "$RC" -eq 1

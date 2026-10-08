@@ -603,10 +603,32 @@ class LauncherTests(unittest.TestCase):
             # A chat nothing can resume cannot be reopened, so its stamp goes with it —
             # and every stamp whose transcript is still there stays.
             (slug / "kept-0001.jsonl").write_text("{}\n")
+            os.utime(stamps / named, (0, 0))
             with patch.dict(os.environ, environment):
                 self.launch(state, ["claudegpt", "p", "work4", "--resume", "kept-0001"])
             self.assertTrue((stamps / "kept-0001").exists())
             self.assertFalse((stamps / named).exists())
+
+    def test_a_sweep_spares_a_chat_still_waiting_for_its_first_message(self):
+        # Another launch's exit sweeps while this chat, already stamped, has no transcript yet.
+        with tempfile.TemporaryDirectory() as temporary:
+            home, corpus = Path(temporary) / "store", Path(temporary) / "projects"
+            (corpus / "-project").mkdir(parents=True)
+            fresh = app.chat_resume.write_stamp("fresh-0001", "work4", "sol", home=str(home))
+            stale = Path(app.chat_resume.write_stamp("stale-0002", "work4", "sol", home=str(home)))
+            os.utime(stale, (0, 0))
+            in_flight = home / "sessions" / ("other-0003.tmp.%d" % os.getpid())
+            in_flight.write_text("v1 work4 sol\n")
+            self.assertEqual(app.chat_resume.sweep_stamps(str(corpus), home=str(home)), 1)
+            self.assertTrue(Path(fresh).exists())
+            self.assertTrue(in_flight.exists())
+            self.assertFalse(stale.exists())
+
+    def test_a_stamp_that_is_not_text_reads_as_no_stamp(self):
+        with tempfile.TemporaryDirectory() as home:
+            (Path(home) / "sessions").mkdir()
+            (Path(home) / "sessions" / "binary-0001").write_bytes(b"\xff\xfe v1 work4\n")
+            self.assertIsNone(app.chat_resume.read_stamp("binary-0001", home=home))
 
     def test_a_reopen_pins_its_permission_mode_on_the_router(self):
         # `ccr launch --help`: CCR owns --permission-mode and every CCR-owned option must

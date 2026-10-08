@@ -9,6 +9,7 @@ import argparse
 import os
 import re
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gateway_auth  # noqa: E402
@@ -30,6 +31,10 @@ STAMP_VERSION = "v1"
 # A chat is reopened months after it was launched, so the stamp is not a cache: it is the
 # only record of which gateway account a transcript belongs to.
 STAMP_DIR = "sessions"
+# Claude Code writes a transcript only at the first message, so a chat still open in another tab
+# can hold a stamp with nothing to match; any claudegpt exit sweeps, and that chat never re-stamps.
+# The grace also covers write_stamp's in-flight temp file.
+STAMP_SWEEP_GRACE = 30 * 86400
 # What stands in for the account of a gateway chat nobody stamped — every chat launched
 # before stamping existed. A line carrying it is for him to complete, never to run.
 UNKNOWN_ACCOUNT = "<gateway-account>"
@@ -66,7 +71,7 @@ def read_stamp(session, home=None):
     try:
         with open(path, encoding="utf-8") as handle:
             fields = handle.readline().split()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
     if len(fields) < 2 or fields[0] != STAMP_VERSION or not ACCOUNT_OK.match(fields[1]):
         return None
@@ -117,11 +122,15 @@ def sweep_stamps(corpus=None, home=None):
     except OSError:
         return 0
     dropped = 0
+    cutoff = time.time() - STAMP_SWEEP_GRACE
     for name in stamps:
         if name in live:
             continue
+        path = os.path.join(root, name)
         try:
-            os.unlink(os.path.join(root, name))
+            if os.lstat(path).st_mtime > cutoff:
+                continue
+            os.unlink(path)
             dropped += 1
         except OSError:
             pass
