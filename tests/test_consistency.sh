@@ -2329,7 +2329,7 @@ assert grep -Fq 'mv -f "$directory/dirty.tmp.$$" "$directory/dirty"' "$WORKER_RU
 # The reader of those two listings is the run's OWN fold, and no second walk of the records: the
 # changed set is their difference, each path carrying the blob it stood on, and the store takes both
 # through the flags it documents. Read anywhere else, a shared checkout's dirt is one chat's work.
-assert grep -Fq 'changed=$(snapshot_changed_paths "$snap" "$4" 2>/dev/null)' "$WORKER_RUN"
+assert grep -Fq 'pairs=$(snapshot_changed_paths "$snap" "$4" changed-rows 2>/dev/null)' "$WORKER_RUN"
 assert grep -Fq 'fold+=("./$entry")' "$WORKER_RUN"
 assert grep -Fq 'fold+=("--base=./$entry=$base" "--after=./$entry=$after")' "$WORKER_RUN"
 assert grep -Fq "p.add_argument(\"--changed\", nargs=\"*\", default=[])" "$RB_ANCHORS"
@@ -2342,7 +2342,7 @@ assert doc_has '`<run-dir>/dirty-before`'
 # fourth field — because a sweep reading a field it did not expect writes a path where a blob goes.
 assert grep -Fq 'mv -f "$directory/head-before.tmp.$$" "$directory/head-before"' "$WORKER_RUN"
 assert grep -Fq 'mv -f "$directory/produced.tmp.$$" "$directory/produced"' "$WORKER_RUN"
-assert grep -Fq "printf '%s\\t%s\\t%s\\n' \"\$prev\" \"\$cur\"" "$WORKER_RUN"
+assert grep -Fq 'out.append(prev + b"\t" + cur + b"\t" + spelling(path) + b"\n")' "$WORKER_RUN"
 assert grep -Fq 'printf "%s\t%s\t%s\tcommit\n", prev, cur, path' "$WORKER_RUN"
 assert grep -Fq 'log --raw -m --no-renames --no-abbrev --reverse -z --format=%H "$head..$after"' \
   "$WORKER_RUN"
