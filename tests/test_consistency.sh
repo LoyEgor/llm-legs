@@ -1544,7 +1544,7 @@ fi
 assert doc_has 'The statusline shows repository debt'
 assert grep -Fq 'answer=$(run_bounded 60 "$debt" --repo "$top" 2>/dev/null | head -1)' "$STATUSLINE"
 assert grep -Fq 'if [[ "$answer" =~ ^LINES=([0-9]+)[[:space:]]FILES=[0-9]+$ ]]; then' "$STATUSLINE"
-assert grep -Fq 'line = f"LINES={sum(lines for _, lines, _ in rows)} FILES={len(rows)}"' "$RB_DEBT"
+assert grep -Fq 'line = f"LINES={sum(lines for _, lines, _, _ in rows)} FILES={len(rows)}"' "$RB_DEBT"
 assert grep -Fq 'return line, None' "$RB_DEBT"
 assert test -z "$(grep -E 'verdict_form|"\$gate" verdict|review-journal/.*\.repos' "$STATUSLINE")"
 # Nothing prices another chat's debt. Spelled per file — the statusline's own `ph_foreign`/
