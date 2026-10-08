@@ -116,6 +116,19 @@
    "sources": {},
    "verdict": "cut",
    "note": "relays (claudeb/codex/gemini/grok-worker, light-*, review-waiter) run with omitClaudeMd: true (claude-setup f3d2d49): they carried 11.7M of the row's 26.7M in 7 days and in 1,231 relay transcripts one acted on a CLAUDE.md rule (llm-limits, hook-covered); global CLAUDE.md lines kept: none provably dead, duplicated or hook-enforced"
+  },
+  {
+   "id": "spawn:claudeb-worker",
+   "title": "spawn claudeb-worker",
+   "audited_at": "2026-10-08T03:39:10+03:00",
+   "by": "feat/spend-audit-worker-spawn",
+   "share": 0.015393,
+   "prices": {
+    "subagent": 15017.701136311005
+   },
+   "sources": {},
+   "verdict": "cut",
+   "note": "relay agents omitClaudeMd (claude-setup 1bd5689): CLAUDE.md+MEMORY.md (~80% of the spawn's startup) leave every relay spawn; first request 13.8k->6.5k tokens, replayed decisions identical 16/17 (17th = MD-GUARD copy drop, baseline 34/669); MCP instructions remain (Claude Code injects them regardless of tools)"
   }
  ]
 }
