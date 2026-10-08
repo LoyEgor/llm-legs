@@ -183,9 +183,9 @@ save(journal + [row(NOW - 3 * 86400 + i, {"test_mid": cpu(250)}, cheap) for i in
 mid = {c["key"]: c for c in collect()["components"]}["alpha/test_mid"]
 recorded = suite_audit.record(root, os.environ["RUN_SUITES_JOURNAL"], "alpha/test_mid", "kept", "split", "night-x", [],
                               NOW)
-check(mid["p50"] == 40 and recorded["cpu_run"] == 40 and mid["cpu_min_day"] == round(8500 / 7 / 60.0, 2),
-      "CPU a run reads the last %d passing runs, so a suite cut or split days ago is audited at its new cost while "
-      "CPU-min/day still counts the whole window: %s %s" % (suite_audit.RECENT_RUNS, mid, recorded))
+check(mid["p50"] == 40 and recorded["cpu_run"] == 40 and mid["cpu_min_day"] == round(40 * 60 / 7 / 60.0, 2),
+      "CPU a run reads the last %d passing runs and CPU-min/day prices the window's runs at it, so a suite cut or split "
+      "days ago is queued and audited at its new cost: %s %s" % (suite_audit.RECENT_RUNS, mid, recorded))
 
 loader = importlib.machinery.SourceFileLoader("harness_doctor", os.path.join(root, "bin", "harness-doctor"))
 h = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_doctor", loader))

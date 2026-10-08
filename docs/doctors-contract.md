@@ -314,7 +314,7 @@ Harness doctor (added 2026-09-29 by its owner chat):
   night audits, area `speed-spend-<component>`; `spend.proofs` holds each audited component's share and part price
   against the audit, which the night's `roi` lines read.
   Its `suites` (`share/suite_audit.py`) adds `suite_audit:<repo>:<suite>` problems, group `Suite audits`, `watch`: every
-  suite of the sweep and night helper repositories priced at CPU-min/day over 7 days of run-suites' journal (every
+  suite of the sweep and night helper repositories priced at CPU-min/day (its last 20 runs' median CPU times its runs over 7 days of run-suites' journal, every
   runner), due when never audited, the suite or a tests/ helper it names has another blob, or CPU
   a run (passing runs' p50) ≥ 1.5× the audit's; a rise ≥ 1.5× and ≥ 30 s between commits or a new suite (not a split)
   over 3× the median suite a run is due at once and names its commit. `suites.selection` is the queue by CPU-min/day; a night takes the first its red test rules do not hold, area `speed-suite-audit-<repo>-<suite>`,
