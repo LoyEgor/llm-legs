@@ -160,6 +160,9 @@ assert test "$(bash "$SCRIPT" pick)" = main
 printf '{"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"}\n' "$future" "$week" >"$HOME/quota-main.json"
 printf '{"primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"}\n' "$future" "$week" >"$HOME/quota-alpha.json"
 assert test "$(bash "$SCRIPT" pick)" = main
+# A placeholder reset names no window that has rolled over, so a spent account stays spent.
+printf '{"primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":0},"secondary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"}\n' "$week" >"$HOME/quota-alpha.json"
+assert test "$(bash "$SCRIPT" pick)" = main
 
 printf '{"primary":{"usedPercent":0,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":0,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"}\n' "$future" "$week" >"$HOME/quota-main.json"
 printf '{"primary":{"usedPercent":99,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"}\n' "$future" "$week" >"$HOME/quota-alpha.json"
@@ -204,6 +207,11 @@ assert test "$(bash "$SCRIPT" pick)" = main
 : >"$CODEX_CALLS"
 assert_fails cx alpha exec -m fixture -
 assert grep -q 'alpha is out of the worker pool' "$POOL_OUT"
+assert_fails grep -q 'account=alpha' "$CODEX_CALLS"
+# Codex takes its options ahead of the subcommand, so an option first is still a headless run.
+assert_fails cx p alpha -m fixture exec -
+assert grep -q 'alpha is out of the worker pool' "$POOL_OUT"
+assert_fails cx p alpha -c 'k="v"' exec -
 assert_fails grep -q 'account=alpha' "$CODEX_CALLS"
 # An interactive session is the user, never a worker, and is not gated at all.
 assert cx profile alpha
@@ -438,6 +446,15 @@ for model_flag in -m --model --model=gpt-5.6-sol; do
   assert test "$(grep -Ec '^ARG=(-m|--model|--model=)' "$CODEX_CALLS")" -eq 1
   assert grep -q 'gpt-5.6-sol' "$CODEX_CALLS"
 done
+# A model chosen through the config override is still the user's choice, which a prepended -m beats.
+for config_form in "-c model=\"gpt-5.5\"" "--config model=\"gpt-5.5\"" "--config=model=\"gpt-5.5\""; do
+  : >"$CODEX_CALLS"
+  bash "$SCRIPT" profile alpha $config_form || fail "config model launch failed"
+  assert_fails grep -qx 'ARG=-m' "$CODEX_CALLS"
+done
+: >"$CODEX_CALLS"
+bash "$SCRIPT" profile alpha -c 'model_reasoning_effort="high"' || fail "config effort launch failed"
+assert grep -qx 'ARG=-m' "$CODEX_CALLS"
 for command in login logout --version --help mcp; do
   : >"$CODEX_CALLS"
   bash "$SCRIPT" profile alpha "$command" || fail "$command passthrough failed"
@@ -1220,5 +1237,19 @@ for flag in --account --model --runs; do
   perl -e 'alarm 10; exec @ARGV' bash "$ROOT/bin/codex-fast-probe" "$flag" >/dev/null 2>&1 || rc=$?
   assert test "$rc" -eq 2
 done
+
+# A shell inside `codexb p <name>` inherits that profile's CODEX_HOME, and main is never read through it.
+jwt_part() { printf '%s' "$1" | base64 | tr '+/' '-_' | tr -d '=\n'; }
+export_token() { printf '%s.%s.sig' "$(jwt_part '{"alg":"none"}')" "$(jwt_part "{\"exp\":$((now + 7200))}")"; }
+OTHER_HOME="$WORK/other-codex-home"
+mkdir -p "$OTHER_HOME"
+for auth_home in "$HOME/.codex:main-account" "$OTHER_HOME:other-account"; do
+  printf '{"tokens":{"id_token":"%s","access_token":"%s","refresh_token":"r","account_id":"%s"}}\n' \
+    "$(export_token)" "$(export_token)" "${auth_home#*:}" >"${auth_home%%:*}/auth.json"
+done
+CODEX_HOME="$OTHER_HOME" bash "$SCRIPT" export-auth main --to "$WORK/exported-auth.json" >/dev/null \
+  || fail "export-auth main failed"
+assert test "$(jq -r .tokens.account_id "$WORK/exported-auth.json")" = main-account
+assert test "$(jq -r .tokens.refresh_token "$WORK/exported-auth.json")" = ''
 
 echo "PASS: $asserts asserts; add and shared-link trap, codexb web (a roster-gated chatgpt-web login held until its window is quit, then status: ready with the plan or the reason and exit 4; offered once after a first interactive login on a tty, default no), worker-pool exclusion and shield override (pick skips it, headless runs are refused however named, interactive and pinned runs pass, the last member goes out too, visible in list/status), list/status, quota-aware authenticated pick by descending daily budget, reset credits, auth-needed cache markers, dead-token classification (short cause, no raw RPC blob) with list/status/pick honoring the marker over lying local auth.json, a transient non-auth error preserving the definite auth verdict while fresh weather on a never-marked account stays non-auth, and marker recovery only on a genuinely good probe, exact run environments/arguments, one-step profile auto-create with shared links, browser-OAuth menu login passthrough with device-auth de-advertised everywhere yet still working manually, and missing-name guard, existing-profile relaunch stays quiet, creation-only reserved-name guards, leading-hyphen and charset rejection parity, multi-account cache compatibility, remove forgets profiles including reserved legacy names and prunes the cache entry, the base account removed by marker alone (hidden from list/status/pin/pick/launch, the real ~/.codex untouched, the cache's current falling to the first account left, undone by deleting the marker), use pin set/show/clear/refusal parity, and Codex image generation routing with claimed automatic picks, prompt, account environments, rescue, generation deadline with garbage-value fallback, destination checks made before a generation is spent, and limits"

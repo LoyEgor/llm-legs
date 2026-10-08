@@ -142,6 +142,14 @@ assert_eq "$(FAKE_CODEX_VERSION=0.156.1 ranked --family astra)" gpt-6.1-astra
 jq '.client_version = "0.157.0"' "$CODEXB_PROFILES_DIR/beta/models_cache.json" >"$WORK/c" &&
   mv "$WORK/c" "$CODEXB_PROFILES_DIR/beta/models_cache.json"
 assert_eq "$(FAKE_CODEX_VERSION=0.156.1 ranked --family astra)" gpt-6-astra
+# A cache naming no writer is kept, not passed over: its empty first column must not shift the rest.
+NO_CLIENT="$WORK/no-client"
+mkdir -p "$NO_CLIENT/.codex" "$NO_CLIENT/profiles/alpha"
+jq '.client_version = "0.157.0"' "$FIXTURE" >"$NO_CLIENT/.codex/models_cache.json"
+jq 'del(.client_version) | .models |= map(select(.slug != "gpt-6.1-astra"))' "$FIXTURE" \
+  >"$NO_CLIENT/profiles/alpha/models_cache.json"
+assert_eq "$(HOME="$NO_CLIENT" CODEXB_PROFILES_DIR="$NO_CLIENT/profiles" FAKE_CODEX_VERSION=0.156.1 \
+  ranked --family astra)" gpt-6-astra
 # With no installed CLI to measure against, the newest writer wins.
 assert_eq "$(FAKE_CODEX_VERSION='' ranked --family astra)" gpt-6.1-astra
 # One writer version everywhere: the longest list, then fetched_at, decides and the CLI is never asked.

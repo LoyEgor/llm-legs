@@ -388,7 +388,7 @@ pick_account() {
     selected=$(jq -r --arg account "$name" --argjson now "$now" "$LIMITS_VIEW_JQ"'
       def effective($bucket):
         if ($bucket.used_pct | type) != "number" then null
-        elif ($bucket.resets_at | type) == "number" and $bucket.resets_at <= $now then 0
+        elif ($bucket.resets_at | type) == "number" and limits_bucket_expired($now; $bucket.resets_at) then 0
         else $bucket.used_pct
         end;
       [.accounts[] | select(.account == $account and (.auth_needed // false) != true) |
@@ -423,7 +423,13 @@ codex_launch_needs_default_model() {
       -m|--model|--model=*) return 1 ;;
       -h|--help|-V|--version) return 1 ;;
       --) break ;;
-      -c|--config|-p|--profile|-C|--cd|-s|--sandbox|-a|--ask-for-approval|-i|--image|--enable|--disable|--add-dir|--local-provider)
+      -c|--config)
+        if [ "$#" -ge 2 ]; then
+          [[ ! "$2" =~ ^[[:space:]]*model[[:space:]]*= ]] || return 1
+          shift
+        fi ;;
+      --config=*) [[ ! "${1#--config=}" =~ ^[[:space:]]*model[[:space:]]*= ]] || return 1 ;;
+      -p|--profile|-C|--cd|-s|--sandbox|-a|--ask-for-approval|-i|--image|--enable|--disable|--add-dir|--local-provider)
         [ "$#" -lt 2 ] || shift ;;
       -*) ;;
       *)
@@ -437,6 +443,20 @@ codex_launch_needs_default_model() {
     shift
   done
   [ "$launch" = true ]
+}
+
+codex_launch_command() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --) return 1 ;;
+      -c|--config|-m|--model|-p|--profile|-C|--cd|-s|--sandbox|-a|--ask-for-approval|-i|--image|--enable|--disable|--add-dir|--local-provider)
+        [ "$#" -lt 2 ] || shift ;;
+      -*) ;;
+      *) printf '%s\n' "$1"; return 0 ;;
+    esac
+    shift
+  done
+  return 1
 }
 
 codex_launch_needs_fast_mode_off() {
@@ -472,7 +492,7 @@ run_account() {
   shift 2
   # `codex exec` is a program calling codexb; an interactive session is Egor, and only the
   # program half answers to the pool.
-  if [ "${1:-}" = exec ]; then
+  if [ "$(codex_launch_command "$@" || :)" = exec ]; then
     interactive=false
     worker_pool_refuse_headless codex "$name" "$(worker_model_pinned_account codex_profile)" || exit 2
   fi
@@ -588,7 +608,7 @@ timeout_command() {
 # paid family machine-wide; the day keeps an unused home's list of a model the server has since
 # dropped from outliving every fresher one. fetched_at breaks a tie. No network here.
 models_source() { # -> path of the cache to read, or nothing
-  local path rows='' kept='' client count stamp installed listed
+  local path rows='' kept='' row client installed listed
   if [ -n "${CODEXB_MODELS_CACHE:-}" ]; then
     [ -z "$(models_cache_rows "$CODEXB_MODELS_CACHE")" ] || printf '%s\n' "$CODEXB_MODELS_CACHE"
     return 0
@@ -600,9 +620,10 @@ models_source() { # -> path of the cache to read, or nothing
   [ -n "$rows" ] || return 0
   if [ "$(printf '%s' "$rows" | cut -f1 | LC_ALL=C sort -u | wc -l)" -gt 1 ] &&
      installed=$(installed_client) && [ -n "$installed" ]; then
-    while IFS=$'\t' read -r client count stamp path; do
+    while IFS= read -r row; do
+      client=${row%%$'\t'*}
       { [ -z "$client" ] || version_le "$client" "$installed"; } || continue
-      kept+="$client"$'\t'"$count"$'\t'"$stamp"$'\t'"$path"$'\n'
+      kept+="$row"$'\n'
     done <<<"${rows%$'\n'}"
   fi
   printf '%s' "${kept:-$rows}" | LC_ALL=C sort -t $'\t' -k1,1V -k3,3n |
@@ -738,7 +759,7 @@ export_auth() {
     printf 'usage: codexb export-auth <name> --to <path> [--min-seconds N]\n' >&2
     return 2
   fi
-  CODEXB_SHARE="$codexb_root/share" python3 - "$name" "$target" "$min_seconds" <<'PYTHON'
+  env -u CODEX_HOME CODEXB_SHARE="$codexb_root/share" python3 - "$name" "$target" "$min_seconds" <<'PYTHON'
 import calendar, json, os, sys, time
 from pathlib import Path
 

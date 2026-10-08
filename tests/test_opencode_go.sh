@@ -104,6 +104,15 @@ case ${1:-} in
       if [ "${!i}" = -w ]; then j=$((i + 1)); printf '%s' "${!j}" >"$SECURITY_STORE"; fi
     done
     exit 0 ;;
+  -i)
+    while IFS= read -r line; do
+      printf 'STDIN %s\n' "$line" >>"$SECURITY_CALLS"
+      eval "set -- $line"
+      for ((i = 1; i <= $#; i++)); do
+        if [ "${!i}" = -w ]; then j=$((i + 1)); printf '%s' "${!j}" >"$SECURITY_STORE"; fi
+      done
+    done
+    exit 0 ;;
   find-generic-password)
     if [ -e "$SECURITY_ACCOUNT_ONLY" ]; then
       case " $* " in *" -a "*) ;; *) exit 44 ;; esac
@@ -369,6 +378,24 @@ assert_fails env "$SCRIPT" run glm-5.2 hello --no-reasoning --stream 2>"$WORK/er
 assert test "$(calls)" = 1
 assert grep -q 'provider error inside stream' "$WORK/err"
 assert_fails grep -q 'answered nothing' "$WORK/err"
+# A 200 whose stream is unusable is no completion the plan served, so it retires no wall.
+rm -rf "$WORKER_STATS_DIR"
+reset_calls
+printf '200|%s|0\n' "$WORK/error.sse" >"$CURL_PLAN"
+assert_fails env "$SCRIPT" run glm-5.2 hello --stream 2>"$WORK/err"
+assert_fails test -e "$WORKER_STATS_DIR/opencode-seen/opencode-go"
+reset_calls
+printf '200|%s|0\n' "$WORK/answer.json" >"$CURL_PLAN"
+assert_fails env "$SCRIPT" run glm-5.2 hello --stream 2>"$WORK/err"
+assert grep -q 'no SSE data chunks' "$WORK/err"
+assert_fails test -e "$WORKER_STATS_DIR/opencode-seen/opencode-go"
+
+# A reasoning-only reply carries content null, which is no answer rather than the word null.
+printf '{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":null}}]}' >"$WORK/null.json"
+reset_calls
+printf '200|%s|0\n' "$WORK/null.json" >"$CURL_PLAN"
+out=$("$SCRIPT" run glm-5.2 hello 2>"$WORK/err") || fail "a null-content reply failed: $(cat "$WORK/err")"
+assert test -z "$out"
 
 # Every launchd context runs without USER, and set -u turns that into an instant death.
 reset_calls
@@ -395,7 +422,9 @@ printf '# Primary accounts\n# Keep this comment\n' >"$HOME/.config/opencode-go/p
 rm -f "$SECURITY_CALLS" "$SECURITY_STORE"
 out=$(printf 'sk-team-one\n' | "$SCRIPT" profile team-one 2>"$WORK/err") \
   || fail "profile creation failed: $(cat "$WORK/err")"
-assert grep -q 'SEC add-generic-password -U -a .* -s opencode-go-team-one -w sk-team-one' "$SECURITY_CALLS"
+# The key reaches security on stdin only: an argv value is visible to every local process via ps.
+assert grep -q 'STDIN add-generic-password -U -a ".*" -s "opencode-go-team-one" -w "sk-team-one"' "$SECURITY_CALLS"
+assert_fails grep -q '^SEC .*sk-team-one' "$SECURITY_CALLS"
 assert grep -q 'SEC find-generic-password -a .* -s opencode-go-team-one -w' "$SECURITY_CALLS"
 assert grep -qx 'stored (keychain: opencode-go-team-one)' <<<"$out"
 assert grep -qx 'roster: added team-one' <<<"$out"
@@ -466,6 +495,10 @@ assert grep -qx 'usage: opencode-go profile <name> (lowercase letters, numbers, 
 status=0
 rm -f "$SECURITY_STORE"
 printf '\n' | "$SCRIPT" profile empty-key >"$WORK/out" 2>"$WORK/err" || status=$?
+assert test "$status" = 1
+assert grep -qx 'API key must not be empty' "$WORK/err"
+status=0
+printf '' | "$SCRIPT" key >"$WORK/out" 2>"$WORK/err" || status=$?
 assert test "$status" = 1
 assert grep -qx 'API key must not be empty' "$WORK/err"
 
@@ -644,6 +677,11 @@ printf '200|%s|0\n' "$WORK/answer.json" >"$CURL_PLAN"
 "$SCRIPT" raw models >/dev/null 2>&1 || fail "raw call failed"
 assert_fails test -e "$WORKER_STATS_DIR/opencode-seen/opencode-go"
 assert test "$(grep -c . "$WALLS")" = 1
+# A 429 whose body died mid-transfer is still the plan's refusal, through raw as through run.
+reset_calls
+printf '429|%s|0|18\n' "$WORK/wall.json" >"$CURL_PLAN"
+assert_fails quiet "$SCRIPT" raw chat/completions '{"model":"glm-5.2"}'
+assert test "$(grep -c . "$WALLS")" = 2
 
 # A store that refuses the write is not a store that says the account is open: the answer is real,
 # the record of it is not, and a caller reading exit 0 would act on a wall nobody retired.
@@ -743,6 +781,14 @@ printf '200|%s|0\n' "$WORK/answer.json" >"$CURL_PLAN"
 "$SCRIPT" wall-check >/dev/null 2>&1
 assert test "$(probe_leftovers)" = 0
 
+# A probe with no key to send is stopped at the missing key, not sent with an empty bearer.
+reset_calls
+status=0
+out=$(env -u OPENCODE_GO_KEY "$SCRIPT" wall-check 2>"$WORK/err") || status=$?
+assert test "$status" = 1
+assert test "$(calls)" = 0
+assert grep -q '^inconclusive — No OpenCode Go API key' "$WORK/err"
+
 # --- wall-check --all ---------------------------------------------------------
 # The leg's one refresh action asks the collector which accounts are walled, so it sends one
 # request per standing wall and none at all for the rest of the roster.
@@ -763,6 +809,12 @@ reset_calls
 out=$("$SCRIPT" wall-check --all 2>&1) || fail "wall-check --all on an open leg failed: $out"
 assert test "$(calls)" = 0
 assert grep -q '^dormant' <<<"$out"
+# A collector file nobody can read says nothing about the leg, as it says nothing about one account.
+status=0
+out=$(LLM_LIMITS_CACHE="$WORK/no-such-limits.json" "$SCRIPT" wall-check --all 2>&1) || status=$?
+assert test "$status" = 1
+assert test "$(calls)" = 0
+assert grep -q '^inconclusive' <<<"$out"
 
 # --- wall-check --probe-clear -------------------------------------------------
 # An account's age is the stamp of the last completion the plan served it, so a clear account left

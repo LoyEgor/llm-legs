@@ -241,7 +241,7 @@ require_key() {
   printf '%s' "$key"
 }
 store_key() {
-  local service=${1:-$KEY_SERVICE} masked=${2:-false} key= stored= char
+  local service=${1:-$KEY_SERVICE} masked=${2:-false} key= stored= escaped= char
   if [[ -t 0 && $masked == true ]]; then
     printf 'OpenCode Go API key: ' >&2
     while IFS= read -rsn 1 char; do
@@ -265,7 +265,7 @@ store_key() {
     IFS= read -rs key || true
     printf '\n' >&2
   else
-    IFS= read -r key || [[ -n $key ]]
+    IFS= read -r key || true
   fi
   if [[ -z $key ]]; then
     printf 'API key must not be empty\n' >&2
@@ -275,7 +275,10 @@ store_key() {
     printf 'security command not found\n' >&2
     exit 1
   fi
-  security add-generic-password -U -a "$KEY_ACCOUNT" -s "$service" -w "$key" >/dev/null
+  escaped=${key//\\/\\\\}
+  escaped=${escaped//\"/\\\"}
+  printf 'add-generic-password -U -a "%s" -s "%s" -w "%s"\n' "$KEY_ACCOUNT" "$service" "$escaped" |
+    security -i >/dev/null
   stored=$(security find-generic-password -a "$KEY_ACCOUNT" -s "$service" -w)
   if [[ $stored != "$key" ]]; then
     printf 'Keychain verification failed\n' >&2
@@ -605,8 +608,8 @@ run_model() {
     sleep "$delay"
   done
   local record_rc=0
-  record_call "$status" "$response" completion || record_rc=$?
   if [[ $status != 2?? ]]; then
+    record_call "$status" "$response" completion || :
     printf 'HTTP %s\n' "$status" >&2
     cat "$response" >&2
     printf '\n' >&2
@@ -625,10 +628,11 @@ run_model() {
     fi
     printf '%s' "$envelope" >"$response"
   fi
+  record_call "$status" "$response" completion || record_rc=$?
   if $json; then
     cat "$response"
   else
-    jq -r '.choices[0].message.content' "$response"
+    jq -r '.choices[0].message.content // ""' "$response"
   fi
   # The answer is real, the record of it is not: exiting 0 here would tell every caller the wall
   # was retired while the store still says it stands.
@@ -648,8 +652,8 @@ raw_request() {
       --config "$authcfg" "$BASE_URL/$path") || curl_rc=$?
   fi
   if (( curl_rc != 0 )); then
-    printf 'curl exit %d, no HTTP status\n' "$curl_rc" >&2
-    status=000
+    [[ $status =~ ^[45][0-9][0-9]$ ]] || status=000
+    printf 'curl exit %d (HTTP %s)\n' "$curl_rc" "$status" >&2
   fi
   local record_rc=0
   record_call "$status" "$response" raw || record_rc=$?
@@ -702,8 +706,14 @@ wall_check() {
   # A subshell because run_model exits on a refusal, and a refusal is the answer here. It re-arms
   # the request cleanup because a subshell inherits no EXIT trap, and it records the 429 itself on
   # the way out, so this only has to read the record back.
-  ( trap cleanup_request EXIT
-    run_model "$model" --max-tokens 16 --retries 1 ping ) >/dev/null 2>"$probe_errors" || rc=$?
+  # Not `( … ) || rc=$?`: a subshell on the left of || runs with errexit ignored, so a failed
+  # `key=$(require_key)` would send the probe with an empty bearer.
+  set +e
+  ( set -e
+    trap cleanup_request EXIT
+    run_model "$model" --max-tokens 16 --retries 1 ping ) >/dev/null 2>"$probe_errors"
+  rc=$?
+  set -e
   if (( rc == 0 )); then
     if [[ $walled == true ]]; then
       printf 'served — the plan answered a completion; the wall is retired\n'
@@ -759,8 +769,11 @@ wall_check_all() {
       return 1
     fi
   else
-    targets=$(jq -r '.vendors.opencode.accounts[]? | select(.walled == true) | .account' \
-      "$LIMITS_CACHE" 2>/dev/null) || targets=
+    if ! targets=$(jq -r '.vendors.opencode.accounts[]? | select(.walled == true) | .account' \
+      "$LIMITS_CACHE" 2>/dev/null); then
+      printf 'inconclusive — %s is unreadable\n' "$LIMITS_CACHE" >&2
+      return 1
+    fi
     if [[ -z $targets ]]; then
       printf 'dormant — no wall stands on the leg, so nothing was sent\n'
       return 0
