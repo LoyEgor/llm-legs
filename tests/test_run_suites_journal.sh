@@ -180,7 +180,8 @@ for b in /bin/bash "$BASH"; do
 done
 assert jqe -s 'length == 2 and all(.[]; .signal == 15 and .complete == false and .suites["test_term.sh"].rc == 143)' "$WORK/term.jsonl"
 # `trap - EXIT HUP` gives HUP back to the journal, never ignores it; a test's own signal action still reads its $?.
-# HUP, not INT: run-suites starts suites in the background, where INT is ignored and untrappable.
+# HUP, not INT: run-suites starts suites in the background, where INT is ignored and untrappable; a HUP
+# ignored on entry (a detached `nohup` run) is untrappable too, so the disposition is reset first.
 suite "$REPO" test_untrap.sh "trap 'true' EXIT
 trap - EXIT HUP
 trap -p HUP >\"$WORK/untrap-\$1\"
@@ -188,7 +189,7 @@ trap 'printf %s \"\$?\" >\"$WORK/sig-rc-\$1\"' TERM
 sh -c 'kill -TERM \$PPID; exit 7'"
 for b in /bin/bash "$BASH"; do
   tag=${b//\//_}
-  SUITE_JOURNAL="$WORK/untrap.jsonl" "$b" "$REPO/tests/test_untrap.sh" "$tag"
+  SUITE_JOURNAL="$WORK/untrap.jsonl" perl -e '$SIG{HUP} = "DEFAULT"; exec @ARGV or die' "$b" "$REPO/tests/test_untrap.sh" "$tag"
   assert grep -q 'suite_journal_die 1' "$WORK/untrap-$tag"
   assert test "$(cat "$WORK/sig-rc-$tag")" = 7
 done
