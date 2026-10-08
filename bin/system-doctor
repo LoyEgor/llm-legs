@@ -105,7 +105,7 @@ CACHE_BUDGET_S = 120
 TOP = 12
 EVIDENCE_MAX = 3
 EXCERPT_MAX = 300
-PID_WRAP = 99999
+PID_WRAP = 99899
 INTERPRETERS = {"bash", "zsh", "sh", "dash", "Python", "python", "python3", "node", "perl", "ruby", "env", "osascript",
                 "uv", "bun", "deno"}
 SHELLS = {"bash", "zsh", "sh", "dash"}
@@ -876,10 +876,37 @@ def job_owner(label, program):
     return "own" if (program or "").startswith(own_roots()) else "third-party"
 
 
+def wrapper_target(program):
+    """argv the last `exec` line of a libexec_dir() wrapper runs (its `name=value` lines expanded, "$@" dropped), or None."""
+    if os.path.dirname(program) != libexec_dir().rstrip("/"):
+        return None
+    try:
+        with open(program, errors="replace") as handle:
+            text = handle.read(4096)
+        names = {key: (shlex.split(value) or [""])[0] for key, value in re.findall(r"^(\w+)=(\S+)$", text, re.M)}
+        argv = shlex.split([line for line in text.split("\n") if line.strip().startswith("exec ")][-1])[1:]
+    except (OSError, IndexError, ValueError):
+        return None
+    argv = [re.sub(r"\$\{?(\w+)\}?", lambda m: names.get(m.group(1), m.group(0)), word) for word in argv if word != "$@"]
+    return argv or None
+
+
 def program_name(program, args=()):
-    """A launchd job's cause name: the script its interpreter runs, else its program's basename."""
-    name, _owner, kind = describe(program, list(args[1:] if args and args[0] == program else args), own_roots())
-    return name if kind == "script" else os.path.basename(program)[:40]
+    """A launchd job's cause name: the script its interpreter runs, else its program's basename. A wrapper is named by
+    what it execs, and a script run directly by its `repo/path`, the names the ticks and crash reports give them."""
+    rest = list(args[1:] if args and args[0] == program else args)
+    target = wrapper_target(program)
+    if target:
+        program, rest = target[0], target[1:]
+    name, _owner, kind = describe(program, rest, own_roots())
+    if kind == "script":
+        return name
+    try:
+        with open(program, "rb") as handle:
+            script = handle.read(2) == b"#!"
+    except OSError:
+        script = False
+    return script_name(program) if script else os.path.basename(program)[:40]
 
 
 def job_plists():
@@ -894,7 +921,8 @@ def job_plists():
                 continue
             if not isinstance(plist, dict):
                 continue
-            program = plist.get("Program") or (plist.get("ProgramArguments") or [""])[0]
+            args = plist.get("ProgramArguments")
+            program = plist.get("Program") or (args[0] if isinstance(args, list) and args else "")
             if isinstance(program, str) and program:
                 found.append((str(plist.get("Label") or os.path.basename(path)[:-6]), program, plist))
     return found
@@ -1151,8 +1179,9 @@ def exit_text(code=None, signal_text=None):
     found = re.search(r":\s*(\d+)\s*$", signal_text or "")
     if found:
         return "signal %s" % found.group(1)
-    if code and re.match(r"^-?\d+$", code.strip()):
-        return "exit %s" % code.strip()
+    found = re.match(r"^(-?\d+)(?::.*)?$", (code or "").strip())
+    if found:
+        return "exit %s" % found.group(1)
     return None
 
 
@@ -1261,7 +1290,7 @@ def dumpstate(now=None):
     jobs, reloaded = {}, 0
     for service, entry in services.items():
         before = old.get(service)
-        if not previous:
+        if not old:
             runs = 0
         elif before is None:
             runs = entry["runs"]
@@ -1284,7 +1313,8 @@ def dumpstate(now=None):
            "services": len(services), "reloaded": reloaded, "jobs": moved[:80], "orphans": orphans,
            "self": {"wall_s": round(time.time() - began, 3), "cpu_s": round(collector_runs.cpu_total() - started_cpu, 3),
                     "steps": steps.out}}
-    write_json(path, {"t": now, "services": {k: [e["runs"], e["exit"]] for k, e in services.items()}})
+    if services:
+        write_json(path, {"t": now, "services": {k: [e["runs"], e["exit"]] for k, e in services.items()}})
     append_row("launchd", row)
     return row
 
@@ -1479,7 +1509,8 @@ def cohort_sums(rows):
                 items.setdefault((entry[0], entry[-1]), [0.0] * 6)[5] += entry[1] * dt
     out = [[tag, owner] + [round(v, 1) for v in values] for (tag, owner), values in items.items()]
     out.sort(key=lambda r: (-max(r[2] / COHORT["cpu_s"], r[3] / COHORT["births"], r[4] / COHORT["writes_b"],
-                                 r[5] / COHORT["reads_b"], r[6] / COHORT["wakes"]), r[0]))
+                                 r[5] / COHORT["reads_b"], r[6] / COHORT["wakes"], r[7] / DAY_S / COHORT["footprint_b"]),
+                               r[0]))
     return out[:COHORT["items_day"]]
 
 
@@ -1712,7 +1743,8 @@ class Judge:
                        "limit": None, "unit": None, "window_h": None, "exposure": None, "count": None,
                        "first_seen": None, "last_seen": None, "evidence": [], "ledger": row.get("id"),
                        "cause": {"name": match["cause"], "share": None, "owner": "own", "fix_target": True}}
-            if self.prove(problem, row) == "proven" and self.now - (problem["proof"].get("since") or 0) > PROOF_SHOW_S:
+            if self.prove(problem, row) == "proven" and self.now - (problem["proof"].get("since") or 0) - (
+                    problem["proof"].get("need_s") or 0) > PROOF_SHOW_S:
                 continue
             kept.append(problem)
         self.problems = kept
@@ -1818,7 +1850,9 @@ def judge_ticks(judge, rows, days):
 
 def judge_nightly(judge, night):
     now = judge.now
-    if not night or now - (night.get("as_of_s") or 0) > NIGHTLY_STALE_S:
+    failed = (read_json(os.path.join(state_dir(), "launched.json"), {}) or {}).get("nightly_failed")
+    if not night or now - (night.get("as_of_s") or 0) > NIGHTLY_STALE_S or isinstance(failed, (int, float)) and \
+            failed > night["as_of_s"]:
         judge.blind.append("nightly")
     if not night:
         return
@@ -1873,7 +1907,8 @@ def judge_launchd(judge, rows, harvests):
     schedule, or any job dying abnormally >= 3 times a day (hourly snapshots whose runs moved after an abnormal exit, or the unified log's exits if more)."""
     now = judge.now
     jobs = {}
-    for row in [r for r in rows if r["t"] >= now - DAY_S]:
+    day = [r for r in rows if r["t"] >= now - DAY_S]
+    for row in day:
         for job in row.get("jobs") or ():
             slot = jobs.setdefault(job["label"], {"rate": 0.0, "bad": 0, "logged": 0, "rows": []})
             slot["job"] = job
@@ -1905,7 +1940,7 @@ def judge_launchd(judge, rows, harvests):
                                                                               COLLECT["job_exits_day"])
             value, limit, unit = bad, COLLECT["job_exits_day"], "abnormal exits/day"
         seen = sorted(slot["rows"], key=lambda pair: -pair[0]["t"])
-        judge.add("job-loop", label, fact, value, limit, unit, 24, len(rows), len(seen),
+        judge.add("job-loop", label, fact, value, limit, unit, 24, len(day), len(seen),
                   seen[-1][0]["t"] if seen else None, seen[0][0]["t"] if seen else now,
                   [{"at": iso_time(r["t"]), "ref": "%s:%d" % ("launchd" if "jobs" in r else "harvest", r["t"]), "account": None,
                     "excerpt": "%s · %s runs · last exit %s" % (label, j.get("runs"), j.get("exit"))} for r, j in seen],
@@ -2100,7 +2135,8 @@ def check(name, rule=None, since=None, now=None):
     if rule not in RULE_LABELS:
         return 1, "%s: no ledger row names this cause, and no --rule was given" % name
     since = since if since is not None else fix_since(row)
-    found = proof(name, rule, since, now)
+    memo = read_json(proofs_path(), {})
+    found = proof(name, rule, since, now, memo=memo if isinstance(memo, dict) else {})
     return {"proven": 0, "refused": 1}.get(found["verdict"], 3), "%s %s: %s · %s" % (
         name, rule, found["verdict"], found["why"])
 
@@ -2143,6 +2179,9 @@ def check_record(record_file, decisions_file, now=None):
 def nightly_due(now):
     night = read_json(os.path.join(state_dir(), "nightly.json"), {}) or {}
     last = night.get("as_of_s")
+    failed = (read_json(os.path.join(state_dir(), "launched.json"), {}) or {}).get("nightly_failed")
+    if isinstance(failed, (int, float)) and now - failed < HOUR_S:
+        return False
     if not isinstance(last, (int, float)):
         return True
     return local_day(last) != local_day(now) and time.localtime(now).tm_hour >= NIGHTLY_HOUR or now - last > NIGHTLY_STALE_S
@@ -2169,6 +2208,8 @@ def agent():
         try:
             nightly()
         except Exception as error:
+            path = os.path.join(state_dir(), "launched.json")
+            write_json(path, dict(read_json(path, {}) or {}, nightly_failed=time.time()))
             write(error_document(started, error))
             return did
     if did or judge_due(time.time()):

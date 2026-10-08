@@ -84,9 +84,10 @@ check(m.LIMITS == {"spawn_s": 1000, "spawn_heavy_s": 2500, "kernel": 0.40, "kern
                    "swap_writes_gib_day": 20, "free_gib": 25, "free_heavy_gib": 10, "hammerspoon_crashes": 1,
                    "job_crashes_day": 1, "unclean_reboots": 1}, "the limits are the design's: %s" % m.LIMITS)
 
-# ---- births counter: PID deltas wrap at 99999, the closing ps itself is not a birth
+# ---- births counter: PIDs restart at 100 after 99998, the closing ps itself is not a birth
 check(m.births_rate(100, 2101, 2.0) == 1000.0, "births over a 2 s window: %s" % m.births_rate(100, 2101, 2.0))
-check(m.births_rate(99000, 1000, 2.0) == (1999 - 1) / 2.0, "births across the PID wrap: %s" % m.births_rate(99000, 1000, 2.0))
+check(m.births_rate(99000, 1000, 2.0) == (1899 - 1) / 2.0,
+      "births across the PID wrap, where macOS restarts at 100 after 99998: %s" % m.births_rate(99000, 1000, 2.0))
 check(m.births_rate(None, 5, 2.0) is None and m.births_rate(1, 5, 0) is None, "no rate without both pids and a window")
 
 # ---- classification of one process by its argv, kept in memory only
@@ -287,6 +288,18 @@ if broke:
     os.remove(os.path.join(work, "state", "latest.json"))
 check(did == ["nightly"] and broke.get("status") == "error" and "nightly broke" in broke["self"]["error"],
       "a failed nightly pass writes the error document, never leaves the last one standing: %s" % did)
+launched_path = os.path.join(work, "state", "launched.json")
+failed_at = m.read_json(launched_path, {}).get("nightly_failed")
+night_path = os.path.join(work, "state", "nightly.json")
+night_saved = open(night_path).read()
+json.dump(dict(json.loads(night_saved), as_of_s=failed_at - 40 * 3600), open(night_path, "w"))
+check(isinstance(failed_at, float) and not m.nightly_due(failed_at + 60) and m.nightly_due(failed_at + 3601),
+      "a failed nightly pass is retried an hour later, never on every minute's run: %s" % failed_at)
+open(night_path, "w").write(night_saved)
+judge = m.Judge(failed_at + 60, None)
+m.judge_nightly(judge, {"as_of_s": failed_at - 3600, "reports": []})
+check(judge.blind == ["nightly"], "the documents judged while the nightly pass is broken read it blind: %s" % judge.blind)
+m.write_json(launched_path, {k: v for k, v in m.read_json(launched_path, {}).items() if k != "nightly_failed"})
 
 # ---- the judge: each rule at its limit fires, just under it does not
 def tick_row(t, **values):
@@ -534,6 +547,28 @@ check(m.proof("memlogd", "job-crash", landed, now, dict(crash, reports=[dict(cra
                                                                                ref="memlogd-1.ips")]), memo)["verdict"] == "refused"
       and m.proof("memlogd", "job-crash", landed, now + 86400, dict(crash, as_of_s=now + 86400, reports=[]), memo)["verdict"]
       == "refused", "a crash after the fix still refuses it once its report ages out of the nightly pass: %s" % memo)
+night_path = os.path.join(work, "state", "nightly.json")
+night_saved = open(night_path).read()
+json.dump({"as_of_s": now, "reports": []}, open(night_path, "w"))
+m.write_json(m.proofs_path(), memo)
+check(m.check("memlogd", "job-crash", landed, now)[0] == 1,
+      "check <cause> reads the same memo as the document, so an aged-out crash still refuses: %s" % (m.check("memlogd", "job-crash", landed, now),))
+os.remove(m.proofs_path())
+check(m.check("memlogd", "job-crash", landed, now)[0] == 0, "with no memo and no report the same fix is proven")
+open(night_path, "w").write(night_saved)
+fix_since = m.fix_since
+shown = m.Judge(now, {"as_of_s": now, "reports": []})
+shown.rows = [{"id": "SYS-10", "status": "fixed-pending", "match": {"rule": "job-crash", "key": "memlogd", "cause": "memlogd"},
+               "fixes": [{"at": m.iso_time(landed)}]}]
+m.fix_since = lambda row: now - 8 * 86400
+shown.apply_ledger()
+fresh = [(p["id"], p["state"]) for p in shown.problems]
+shown.problems = []
+m.fix_since = lambda row: now - 15 * 86400
+shown.apply_ledger()
+m.fix_since = fix_since
+check(fresh == [("SYS-10", "watch")] and shown.problems == [],
+      "a crash fix proven after its 7 quiet days reads watch for 7 more, then leaves: %s %s" % (fresh, shown.problems))
 row = {"id": "SYS-9", "match": {"rule": "spawn", "key": "machine", "cause": "statusline.sh"}}
 fix_since = m.fix_since
 m.fix_since = lambda row: since
@@ -731,6 +766,14 @@ put("launchctl", dump(5, 9, 950, 300))
 reloaded = m.dumpstate(now + 1)
 check(reloaded["reloaded"] == 1 and {j["label"]: j["runs"] for j in reloaded["jobs"]}["com.llm-legs.memlogd"] == 5,
       "a counter that fell was re-registered: its runs since count: %s" % reloaded)
+put("launchctl", "")
+check(m.dumpstate(now + 2)["services"] == 0, "a dumpstate that timed out reads no service")
+put("launchctl", dump(6, 9, 950, 300))
+after_gap = m.dumpstate(now + 3)
+check({j["label"]: j["runs"] for j in after_gap["jobs"]} == {"com.llm-legs.memlogd": 1},
+      "the snapshot after a timed-out one counts against the last real one, never every counter since boot: %s" % after_gap["jobs"])
+check(m.exit_text("78: EX_CONFIG") == "exit 78" and m.abnormal(m.exit_text("78: EX_CONFIG"))
+      and m.exit_text("(never exited)") is None, "dumpstate's sysexits form `78: EX_CONFIG` is an abnormal exit")
 launch_rows = m.tick_rows(now - 2 * 86400, now + 0.5, "launchd")
 judge = m.Judge(now, None)
 m.judge_launchd(judge, launch_rows, [])
@@ -742,6 +785,10 @@ mem = loops["job-loop:com.llm-legs.memlogd"]
 check(mem["value"] == 120 and mem["unit"] == "runs/h" and mem["severity"] == "review" and mem["cause"]["name"] == "memlogd"
       and mem["cause"]["fix_target"] and mem["cause"]["files"] == ["llm-legs/bin/memlogd"] and mem["cause"]["label"] == "com.llm-legs.memlogd",
       "an own looping job is a fix target by its program's file: %s" % mem)
+judge = m.Judge(now, None)
+m.judge_launchd(judge, launch_rows + [dict(launch_rows[0], t=now - 3 * 86400)], [])
+check({p["id"]: p["exposure"] for p in judge.problems}["job-loop:com.llm-legs.memlogd"] == len(launch_rows),
+      "a job-loop's exposure is the snapshots of its 24 h window, not the whole lookback: %s" % judge.problems)
 sync = loops["job-loop:com.vendor.sync"]
 check(sync["value"] == 3 and sync["unit"] == "abnormal exits/day" and not sync["cause"]["fix_target"]
       and "(third-party, report only)" in sync["fact"] and "signal 11" in sync["fact"], "a third-party crashing job is report-only: %s" % sync)
@@ -898,6 +945,10 @@ held = score([["fat", "own", 0, 0, 0, 0, 0, 512 * 2 ** 20 * 86400]])[("fat", "ow
 half = score([["fat", "own", 0, 0, 0, 0, 0, 512 * 2 ** 20 * 43200]])[("fat", "own")]
 check(abs(held["B"] - 1) < 1e-9 and abs(half["B"] - 0.5) < 1e-9,
       "512 MiB held under pressure all day scores 1, under pressure half the day 0.5: %s %s" % (held, half))
+crowded = [{"t": now, "dt": 60, "comp_share": 0.5, "cpu_top": [["busy%d" % i, 1.0, "own"] for i in range(m.COHORT["items_day"])],
+            "mem_top": [["fat", 2 ** 30, "own"]]}]
+check("fat" in [r[0] for r in m.cohort_sums(crowded)],
+      "the day's cut ranks memory held under pressure beside the other terms: %s" % m.cohort_sums(crowded)[-1])
 launches = [{"t": now - 3600, "jobs": [{"name": "com.apple.thing", "owner": "apple", "runs": 1440 * 7}]}]
 apple = score([], launches)[("com.apple.thing", "apple")]
 check(abs(apple["B"] - 1) < 1e-9 and apple["unknown"] == ["W", "D", "R", "M"] and set(apple["terms"]) == {"C", "S", "L"},
@@ -1028,6 +1079,24 @@ check(m.describe("/usr/bin/perl", ["-Mbase", "x.pl"], roots, llm)[2] == "script"
 check(m.program_name("%s/venv/bin/python3" % own, ["%s/venv/bin/python3" % own, "-u", script]) == "llm-legs/bin/x.py"
       and m.program_name("%s/bin/memlogd" % own, ["%s/bin/memlogd" % own, "--x"]) == "memlogd",
       "a launchd job running an interpreter is named by its script")
+libexec = os.environ["SYSTEM_DOCTOR_LIBEXEC_DIR"]
+os.makedirs(libexec, exist_ok=True)
+wrappers = {"refresh-heartbeat": "script=%s\n[ -r \"$script\" ] || exit 0\nexec \"$script\" \"$@\"\n"
+                                  % os.path.join(repos, "llm-legs", "bin", "worker-run"),
+            "x-proxy": "exec /opt/homebrew/bin/python3 %s \"$@\"\n" % script,
+            "hs-app": "exec /Applications/Hammerspoon.app/Contents/MacOS/Hammerspoon \"$@\"\n"}
+for name, body in wrappers.items():
+    open(os.path.join(libexec, name), "w").write("#!/bin/sh\n" + body)
+named = {name: m.program_name(os.path.join(libexec, name), [os.path.join(libexec, name)]) for name in wrappers}
+check(named == {"refresh-heartbeat": "llm-legs/bin/worker-run", "x-proxy": "llm-legs/bin/x.py", "hs-app": "Hammerspoon"},
+      "a job behind a libexec wrapper is named by what the wrapper execs, as its ticks and crash reports name it: %s" % named)
+for name in wrappers:
+    os.remove(os.path.join(libexec, name))
+odd = os.path.join(work, "agents", "odd.plist")
+with open(odd, "wb") as handle:
+    plistlib.dump({"Label": "com.x.odd", "ProgramArguments": {"a": "b"}, "KeepAlive": True}, handle)
+check("com.x.odd" not in [label for label, _program, _plist in m.job_plists()], "a plist whose ProgramArguments is no list is skipped")
+os.remove(odd)
 job = m.parse_dumpstate("gui/501/com.x.py = {\n\tprogram = %s/venv/bin/python3\n\targuments = {\n\t\t%s/venv/bin/python3\n\t\t%s\n\t}\n"
                         "\truns = 3\n}\n" % (own, own, script))
 check(job["gui/501/com.x.py"]["name"] == "llm-legs/bin/x.py", "dumpstate names an interpreter job by its arguments: %s" % job)
