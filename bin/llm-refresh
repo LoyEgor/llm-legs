@@ -59,6 +59,12 @@ refresh_lock_acquire() {
   current=$(date +%s) || return 1
   store_lock_breakable "$lock" "$stale" "$tick_ceiling" "$current" || return 1
   kill_hung_holder "$lock" "$current"
+  # The killed holder's EXIT trap releases the lock on its way out.
+  if mkdir "$lock" 2>/dev/null; then
+    store_lock_claim "$lock" || return 1
+    active_lock=$lock
+    return 0
+  fi
   # Claim by rename so a racing tick that already recreated the lock keeps it.
   captured="${lock}.break.$$"
   mv "$lock" "$captured" 2>/dev/null || return 1
@@ -545,7 +551,7 @@ run_tick() {
   local stale tried outcome detail step target_rc errors post_stale refreshed_count claude_note
   local pushback next_interval new_clean lock_dir state_tmp refresh_log rc account blocked
   local opencode_result lock_lost=0 reserved='[]' timed_out_note=''
-  local direct expired probed session_account claude_touched
+  local direct expired probed session_account claude_touched dead
   local pushback_note wall_note stderr_hit signals rechecked cleared
 
   command -v jq >/dev/null 2>&1 || { echo 'llm-refresh: jq is required' >&2; return 3; }
@@ -587,11 +593,18 @@ run_tick() {
       # stretch, so the field the other three walk is left where it stands.
       # The probe is a real completion against a gateway that can be slow or wedged, and every other
       # vendor's next tick queues behind this lock; nothing the probe touches is shared, so the lock
-      # is handed back for its duration. Losing the re-acquire costs this tick its state write —
+      # is handed back for its duration. Losing the re-acquire costs this tick opencode's state write —
       # the journal line is an append and lands either way — and the next heartbeat repeats it.
+      # The vendors done before it reach the file first, as in the Claude session handback; with
+      # none done the file stays untouched, as a timed-out tick leaves it.
+      [ "$state" = "$(state_read)" ] || state_persist "$state" || return 5
       refresh_lock_release
       opencode_result=$(opencode_tick "$interval") || return 5
-      refresh_lock_acquire "$lock_dir" || lock_lost=1
+      if refresh_lock_acquire "$lock_dir"; then
+        state=$(state_read)
+      else
+        lock_lost=1
+      fi
       # Run in a subshell, opencode_tick hands its collect's timeout back only through its result.
       timed_out_note=$(jq -r '.timed_out // empty' < <(printf '%s\n' "$opencode_result"))
       if [ -n "$timed_out_note" ]; then
@@ -612,6 +625,7 @@ run_tick() {
     stale=$(stale_accounts_json "$vendor" "$interval")
     blocked=$(blocked_accounts_json "$vendor" "$interval")
     reserved='[]'
+    dead='[]'
     if [ "$vendor" = claude ]; then
       reserved=$(reserved_accounts "$stale")
       stale=$(drop_reserved "$stale")
@@ -751,6 +765,11 @@ run_tick() {
 
       post_stale=$(stale_accounts_json "$vendor" "$interval")
       [ "$vendor" != claude ] || post_stale=$(drop_reserved "$post_stale")
+      # A probe that finds an account auth-dead takes it off the stale list too; it stays
+      # unrefreshed whatever as_of the dead verdict carries.
+      dead=$(account_rows "$vendor" | awk -F'\t' '$3 == 1 { print $1 }' | jq -R -s -c --argjson stale "$stale" \
+        'split("\n") as $blocked | [$stale[] | select(IN($blocked[]))]')
+      post_stale=$(jq -c --argjson dead "$dead" '. + $dead' < <(printf '%s\n' "$post_stale"))
       refreshed_count=$(jq -n --argjson before "$stale" --argjson after "$post_stale" \
         '$before - $after | length')
       if [ "$pushback" -eq 1 ]; then
@@ -818,7 +837,8 @@ run_tick() {
       detail="login re-checked: $(jq -r 'join(",")' < <(printf '%s\n' "$rechecked"))$(jq -r \
         'if length > 0 then " (cleared: " + join(",") + ")" else "" end' < <(printf '%s\n' "$cleared")); $detail"
     fi
-    blocked=$(jq -c --argjson reserved "$reserved" '. + $reserved | unique' < <(printf '%s\n' "$blocked"))
+    blocked=$(jq -c --argjson reserved "$reserved" --argjson dead "$dead" '. + $reserved + $dead | unique' \
+      < <(printf '%s\n' "$blocked"))
     if [ "$(jq 'length' < <(printf '%s\n' "$blocked"))" -gt 0 ]; then
       detail="${detail:+$detail; }unrefreshable: $(jq -r 'join(",")' < <(printf '%s\n' "$blocked"))"
     fi

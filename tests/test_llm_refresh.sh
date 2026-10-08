@@ -42,6 +42,14 @@ printf '%s\n' "$*" >>"$STUB_LOG"
 sleep "${STUB_CALL_SECONDS:-0}"
 vendor=${target%%/*}
 account=${target#*/}
+if [ "${STUB_DEAD_TARGET:-}" = "$target" ]; then
+  tmp=$(mktemp "${LLM_LIMITS_CACHE}.tmp.XXXXXX") || exit 5
+  jq --arg vendor "$vendor" --arg account "$account" --argjson now "$LLM_REFRESH_NOW" '
+    .vendors[$vendor].accounts |= map(if .account == $account then
+      .auth={status:"failed"} | .five_hour.as_of=$now | .weekly.as_of=$now else . end)' \
+    "$LLM_LIMITS_CACHE" >"$tmp" && mv -f "$tmp" "$LLM_LIMITS_CACHE"
+  exit 0
+fi
 if [ "${STUB_PUSHBACK_TARGET:-}" = "$target" ]; then
   tmp=$(mktemp "${LLM_LIMITS_CACHE}.tmp.XXXXXX") || exit 5
   jq --arg vendor "$vendor" --argjson now "$LLM_REFRESH_NOW" \
@@ -203,6 +211,14 @@ case "${OC_STUB_RESULT:-clear}" in
     restate false null
     printf 'served — the plan answered a completion; the wall is retired\n'
     ;;
+  peek)
+    # A concurrent writer while the lock is out, as the Claude stub's peek.
+    printf 'codex-last=%s\n' "$(jq -r '.codex.last_attempt_epoch // "none"' "$LLM_REFRESH_STATE")" >>"$OC_LOG"
+    tmp=$(mktemp "${LLM_REFRESH_STATE}.other.XXXXXX") || exit 5
+    jq -c '.codex.interval_min=60' "$LLM_REFRESH_STATE" >"$tmp" && mv -f "$tmp" "$LLM_REFRESH_STATE"
+    restate false null
+    printf 'served — the plan answered a completion; the wall is retired\n'
+    ;;
   dormant)
     printf 'dormant — no wall stands on %s, so nothing was sent\n' "$profile"
     ;;
@@ -260,7 +276,8 @@ run_refresh() {
     LLM_LIMITS_REFRESH_REVIVE_TIMEOUT="${LLM_LIMITS_REFRESH_REVIVE_TIMEOUT:-240}" \
     LLM_LIMITS_REFRESH_PROBE_TIMEOUT="${LLM_LIMITS_REFRESH_PROBE_TIMEOUT:-90}" \
     LLM_LIMITS_REFRESH_LOCK_STALE_SECONDS="${LLM_LIMITS_REFRESH_LOCK_STALE_SECONDS:-1800}" \
-    STUB_PUSHBACK_TARGET="${STUB_PUSHBACK_TARGET:-}" STUB_REFRESH_SUCCEED="${STUB_REFRESH_SUCCEED:-1}" \
+    STUB_PUSHBACK_TARGET="${STUB_PUSHBACK_TARGET:-}" STUB_DEAD_TARGET="${STUB_DEAD_TARGET:-}" \
+    STUB_REFRESH_SUCCEED="${STUB_REFRESH_SUCCEED:-1}" \
     STUB_STDERR_TARGET="${STUB_STDERR_TARGET:-}" STUB_STDERR_TEXT="${STUB_STDERR_TEXT:-}" \
     STUB_PASSIVE_RC="${STUB_PASSIVE_RC:-0}" \
     STUB_PASSIVE_HANG="${STUB_PASSIVE_HANG:-}" STUB_HANG_TARGET="${STUB_HANG_TARGET:-}" \
@@ -736,6 +753,23 @@ jq -eR --arg pid "$holder_pid" 'fromjson | select(.vendor == "tick" and .outcome
 [ -s "$case_dir/state.json" ] || fail 'the tick did not run after killing the hung holder'
 pass
 
+# A hung tick's own EXIT trap releases the lock as TERM ends it: the lock is then free, not lost.
+case_dir="$WORK/hung-holder-releases"
+mkdir -p "$case_dir/home" "$case_dir/state.json.lock"
+write_store "$case_dir/store.json" "$NOW" 60 60 60
+holder="$case_dir/llm-refresh-holder"
+printf '#!/usr/bin/env bash\ntrap "rm -rf \\"$2\\"; exit 129" TERM\nsleep 60 &\nprintf "%%s %%s\\n" "$$" "$!" >"$1"\nwait\n' >"$holder"
+chmod +x "$holder"
+"$holder" "$case_dir/hang.pids" "$case_dir/state.json.lock" &
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$case_dir/hang.pids" ] && break; sleep 0.2; done
+read -r holder_pid _ <"$case_dir/hang.pids"
+printf '%s\n' "$holder_pid" >"$case_dir/state.json.lock/pid"
+touch -t 200001010000 "$case_dir/state.json.lock"
+run_refresh "$case_dir" "$NOW" || fail 'releasing hung-holder run failed'
+hang_tree_dead "$case_dir" || fail 'a live holder past the ceiling was left running'
+[ -s "$case_dir/state.json" ] || fail 'the tick skipped a lock its killed holder had already released'
+pass
+
 case_dir="$WORK/pushback"
 mkdir -p "$case_dir/home"
 write_store "$case_dir/store.json" "$NOW" 60 7200 60
@@ -759,6 +793,17 @@ due_codex_case() {
   jq '.vendors.codex.last_attempt_epoch=0' "$dir/state.json" >"$dir/state.tmp" && \
     mv "$dir/state.tmp" "$dir/state.json"
 }
+
+# An account the probe finds auth-dead leaves the stale list by turning unrefreshable, which the
+# refreshed count must not read as a refresh — for every vendor, not Claude's login note alone.
+case_dir="$WORK/probe-auth-dead"
+due_codex_case "$case_dir"
+STUB_DEAD_TARGET=codex/beta run_refresh "$case_dir" "$NOW" || fail 'auth-dead probe run failed'
+jq -eR 'fromjson | select(.vendor == "codex" and .accounts_tried == ["beta"] and
+  .outcome != "refreshed" and .outcome != "partial" and (.detail | test("unrefreshable: beta")))' \
+  "$case_dir/journal.jsonl" >/dev/null || \
+  fail "an account the probe found auth-dead was journaled as refreshed: $(cat "$case_dir/journal.jsonl")"
+pass
 
 # The codex usage RPC names itself in every one of its failures — `codex usage read failed:`, and
 # the vendor wording `failed to fetch codex rate limits: <real cause>`. Read as a rate-limit
@@ -1166,6 +1211,23 @@ grep -q '^lock-held$' "$case_dir/opencode.log" && \
   fail 'the tick lock was still held while the probe was out'
 pass
 
+# The handback puts the vendors done before it on disk, or a tick taking the free lock redoes
+# them, and re-reads the file after, or its end-of-tick write undoes whatever ran meanwhile.
+case_dir="$WORK/opencode-concurrent-tick"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$OC_NOW" 60 60 60
+write_state "$case_dir/state.json" 30 30 30 "$OC_NOW" "$OC_NOW"
+jq '.vendors.codex.last_attempt_epoch = 0' "$case_dir/state.json" >"$case_dir/state.tmp" &&
+  mv "$case_dir/state.tmp" "$case_dir/state.json"
+seed_opencode_wall "$case_dir/store.json" - \
+  "$(date -u -r "$((OC_NOW + 3 * 86400))" '+%Y-%m-%dT%H:%M:%SZ')"
+OC_STUB_RESULT=peek run_refresh "$case_dir" "$OC_NOW" || fail 'concurrent OpenCode run failed'
+grep -qx "codex-last=$OC_NOW" "$case_dir/opencode.log" || \
+  fail "codex's attempt was not on disk while the opencode probe ran: $(cat "$case_dir/opencode.log")"
+jq -e --argjson now "$OC_NOW" '.codex.interval_min == 60 and .opencode.last_attempt_epoch == $now' \
+  "$case_dir/state.json" >/dev/null || fail 'the tick wrote its pre-probe state over a concurrent write'
+pass
+
 case_dir="$WORK/opencode-nothing-sent"
 mkdir -p "$case_dir/home"
 write_store "$case_dir/store.json" "$OC_NOW" 60 60 60
@@ -1199,7 +1261,8 @@ pass
 case_dir="$WORK/opencode-collect-timeout"
 mkdir -p "$case_dir/home"
 write_store "$case_dir/store.json" "$OC_NOW" 60 60 60
-write_state "$case_dir/state.json" 30 30 30 "$OC_NOW" "$OC_NOW"
+# OpenCode alone is due: a vendor settled before its handback is persisted by design.
+write_state "$case_dir/state.json" 30 30 30 "$OC_NOW" "$OC_NOW" 30
 seed_opencode_wall "$case_dir/store.json" - \
   "$(date -u -r "$((OC_NOW + 3 * 86400))" '+%Y-%m-%dT%H:%M:%SZ')"
 cp "$case_dir/state.json" "$case_dir/state.before"
