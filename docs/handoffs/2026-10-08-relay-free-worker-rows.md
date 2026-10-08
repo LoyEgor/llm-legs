@@ -1,6 +1,6 @@
 # Relay-free worker rows: a `worker` work line instead of the Sonnet relay subagents
 
-Status: open; design approved by Egor 2026-10-08 (§ Approved design), implementation not started. To: «Light помощник и унификация workers». From: «Token spending tracking and optimization», 2026-10-08.
+Status: open; design approved by Egor 2026-10-08 (§ Approved design), implementation not started. To: «Workers и review bench унификация отображения». From: «Token spending tracking and optimization», 2026-10-08.
 
 ## Why
 Every delegation spawns a relay subagent on Sonnet: claudeb-, codex-, gemini- and grok-worker, light-worker, light-research, and review-waiter for review-bench. The relay only launches `worker-run`, waits in 9-minute rounds, and relays the report.
