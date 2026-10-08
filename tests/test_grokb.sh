@@ -260,6 +260,12 @@ else
     || missing_rc=$?
   assert test "$missing_rc" -eq 127
   assert grep -q 'grok CLI not found' <<<"$missing_out"
+  # No CLI to log in with leaves no empty profile behind to refuse the retry as "already exists".
+  missing_rc=0
+  (unset GROKB_GROK_BIN; env HOME="$WORK/empty-home" PATH="$bare_path" bash "$SCRIPT" add nocli) \
+    >/dev/null 2>&1 || missing_rc=$?
+  assert test "$missing_rc" -eq 127
+  assert test ! -e "$GROKB_PROFILES_DIR/nocli"
 fi
 
 # The menu's Fast Mode toggle: the same verb, marker layout and writer as codexb's.
@@ -268,6 +274,12 @@ assert test "$(bash "$SCRIPT" fast-mode alpha)" = off
 assert test "$(bash "$SCRIPT" fast-mode alpha on)" = on
 assert test "$(cat "$GROKB_PROFILES_DIR/.grokb/fast-mode/alpha")" = fast
 assert test "$(bash "$SCRIPT" fast-mode alpha off)" = off
+# A removed account takes its Fast Mode with it, or a new account under the name inherits it.
+assert test "$(bash "$SCRIPT" fast-mode alpha on)" = on
+bash "$SCRIPT" remove alpha --force >/dev/null 2>&1 || fail "remove fast alpha failed"
+assert test ! -e "$GROKB_PROFILES_DIR/.grokb/fast-mode/alpha"
+mkdir -p "$GROKB_PROFILES_DIR/alpha"
+assert test "$(bash "$SCRIPT" fast-mode alpha)" = off
 assert_fails bash "$SCRIPT" fast-mode nobody on >/dev/null 2>&1
 # `main` is an account the menu offers the toggle on, and worker-run reads its marker.
 assert test "$(bash "$SCRIPT" fast-mode main on)" = on

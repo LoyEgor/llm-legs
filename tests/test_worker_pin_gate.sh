@@ -115,6 +115,12 @@ assert allowed "$(edit_event "$PIN_FILE" 'worker=auto' 'worker=codex')"
 assert denied "$(edit_event "$PIN_FILE" 'worker=auto' 'worker=auto\ncodex_profile=x')"
 assert denied "$(edit_event "$PIN_FILE" 'codex_profile=main' '')"
 assert denied "$(edit_event "$PIN_FILE" 'grok_profile=main' '')"
+# An Edit of the pin's VALUE alone names no key, and it moves the pin all the same.
+cp "$PIN_FILE" "$WORK/pin.saved"
+printf 'worker=auto\ncodex_profile=alice\n' >"$PIN_FILE"
+assert denied "$(edit_event "$PIN_FILE" 'alice' 'bob')"
+assert allowed "$(edit_event "$PIN_FILE" 'worker=auto' 'worker=codex')"
+cp "$WORK/pin.saved" "$PIN_FILE"
 
 # Reading is never gated, whatever matcher the hook is registered under. A tool the gate does not
 # understand falls through rather than being denied on a text match: this door judges the two tools
@@ -217,9 +223,28 @@ for copy_in in \
   'mv /tmp/m ~/.claude/worker-model --force' \
   'install /tmp/m ~/.claude/worker-model -m 600' \
   'cp -t ~/.claude/worker-model /tmp/m' \
-  'cp --target-directory=~/.claude/worker-model /tmp/m'
+  'cp --target-directory=~/.claude/worker-model /tmp/m' \
+  'rsync ~/bak/worker-model ~/.claude/worker-model' \
+  'rsync -a ~/bak/worker-model ~/.claude/' \
+  'git checkout -- ~/.claude/worker-model' \
+  'git -C ~/.claude restore worker-model' \
+  'cd ~/.claude && cp worker-model.bak worker-model' \
+  '(cd ~/.claude && mv tmp worker-model)' \
+  'cd ~/.claude; cp ~/bak/worker-model .' \
+  'cd ~/.claude && mv worker-model /tmp/wm.bak' \
+  'mv "$HOME/.claude/worker-model" /tmp/wm.bak' \
+  'mv "${HOME}/.claude/worker-model" /tmp/wm.bak' \
+  'mv ~/.claude/worker-model "$TMPDIR/wm.bak"' \
+  'cp ~/bak/worker-model "$HOME/.claude/"'
 do
   assert denied "$(bash_event "$copy_in")"
+done
+for copy_out in \
+  'rsync ~/.claude/worker-model /tmp/backup' \
+  'cp "$HOME/.claude/worker-model" "$TMPDIR/"' \
+  'cd /tmp && cat ~/.claude/worker-model > x.txt'
+do
+  assert allowed "$(bash_event "$copy_out")"
 done
 # Trailing options/redirections are not the destination; a copy whose last *operand* is elsewhere
 # still is not a pin write, even with the same tails that hid a pin dest above.
@@ -467,6 +492,13 @@ pin_grant() { # scope
 pin_grant account
 assert allowed "$(write_event "$PIN_FILE")"
 assert allowed "$(bash_event "printf 'codex_profile=x\\n' > ~/.claude/worker-model")"
+# A heredoc body is what `cat > pin <<EOF` stores, and no grant unlocks an unlisted model in it.
+assert allowed "$(bash_event "cat > ~/.claude/worker-model <<'EOF'
+codex_model=astra
+EOF")"
+assert denied "$(bash_event "cat > ~/.claude/worker-model <<'EOF'
+codex_model=bogus
+EOF")"
 # «воркеры на codex» is this chat's pin, never the account pin every other chat reads.
 pin_grant chat
 assert denied "$(write_event "$PIN_FILE")"

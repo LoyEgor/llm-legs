@@ -223,7 +223,12 @@ chat_pins_written() { # command → 0 when it writes, copies over or deletes und
 # spelling instead of the file is a gate a session opens by typing the path differently.
 canonical_path() {
   local path="$1" dir base
-  case "$path" in '~') path="$HOME" ;; '~/'*) path="$HOME/${path#\~/}" ;; esac
+  case "$path" in
+    '~' | '$HOME' | '${HOME}') path="$HOME" ;;
+    '~/'*) path="$HOME/${path#\~/}" ;;
+    '$HOME/'*) path="$HOME/${path#\$HOME/}" ;;
+    '${HOME}/'*) path="$HOME/${path#\$\{HOME\}/}" ;;
+  esac
   dir=$(dirname -- "$path") || { printf '%s' "$path"; return; }
   base=$(basename -- "$path") || { printf '%s' "$path"; return; }
   if dir=$(cd -- "$dir" 2>/dev/null && pwd -P); then
@@ -298,8 +303,10 @@ case "$MODE" in
       pending=$(printf '%s' "$input" | jq -r '.tool_input.content // ""' | grep -E "$PIN_KEY_RE" | sort)
       [ "$pending" = "$(current_pins)" ] && exit 0
     else
+      # A value-only edit (`alice` → `bob`) names no key, so the rebuilt file's pin lines decide too.
       printf '%s' "$input" | jq -r '(.tool_input.old_string // "") + "\n" + (.tool_input.new_string // "")' \
-        | grep -Eq '(claudeb|codex|gemini|grok)_profile' || exit 0
+        | grep -Eq '(claudeb|codex|gemini|grok)_profile' ||
+        [ "$(grep -E "$PIN_KEY_RE" <<<"$model_text" | sort)" != "$(current_pins)" ] || exit 0
     fi
     deny "$DENY_REASON"
     ;;
@@ -585,13 +592,14 @@ case "$MODE" in
       local kind mode verb name
       while IFS="$row_sep" read -r kind mode verb name; do
         [ -n "$name" ] || continue
-        # A copy row is a guess about the destination, decided below instead.
-        [ "$kind" = copy ] && continue
+        # A copy row is a guess about the destination, decided below instead; `git checkout`/`restore`
+        # rows are not, and have no operand order to decide them by.
+        [ "$kind" = copy ] && case ${verb%/} in cp | mv | ln | install | rsync) continue ;; esac
         return 0
       done < <(instruction_write_targets "$1" "$PIN_NAME_RE")
       copies_onto_pin "$1"
     }
-    # `cp/mv/ln/install` name their DESTINATION last, and the shared parse cannot say which operand
+    # `cp/mv/ln/install/rsync` name their DESTINATION last, and the shared parse cannot say which operand
     # it read: for `cp <pin> /tmp/backup` it also emits `/tmp/backup/worker-model`, where a copy
     # INTO a directory would land, and this door read a BACKUP of the pin as a write over it. So the
     # copy verbs are decided from the last operand, resolved the way the shell would resolve it: a
@@ -600,11 +608,19 @@ case "$MODE" in
     # the conservative side and the one `cp x $(dirname …)/worker-model` is caught by. `-t DIR` /
     # `--target-directory=DIR` is that destination when present; trailing options and redirections
     # are not.
+    # After a `cd` this hook's own $PWD is not where a relative operand lands, so one is judged by name.
+    names_pin() { # path → 0 when it is the pin
+      case "$1" in
+        /* | '~' | '~/'* | '$HOME' | '$HOME/'* | '${HOME}' | '${HOME}/'*) is_pin_file "$1" ;;
+        *) { [ "$cd_seen" = 1 ] && [[ "${1%/}" =~ (^|/)worker-model$ ]]; } || is_pin_file "$1" ;;
+      esac
+    }
     copies_onto_pin() { # text → 0 when a copy verb in it writes over or removes the pin
-      local segment words nw vi i verb dest src nops tdest w skip saw_dd
+      local segment words nw vi i verb dest src nops tdest w skip saw_dd cd_seen=0
       local -a operands srcs
       while IFS= read -r -d '' segment; do
         [ -n "${segment//[[:space:]]/}" ] || continue
+        [[ "$segment" =~ ^[[:space:]\(]*(cd|pushd)([[:space:]]|$) ]] && { cd_seen=1; continue; }
         words=()
         read -ra words <<<"$segment"
         nw=${#words[@]}
@@ -612,7 +628,7 @@ case "$MODE" in
         verb='' vi=0
         for ((i = 0; i < nw; i++)); do
           case "${words[i]##*/}" in
-            cp|mv|ln|install) verb=${words[i]##*/} vi=$i; break ;;
+            cp|mv|ln|install|rsync) verb=${words[i]##*/} vi=$i; break ;;
           esac
         done
         [ -n "$verb" ] || continue
@@ -620,7 +636,8 @@ case "$MODE" in
         tdest=''
         saw_dd=0
         for ((i = vi + 1; i < nw; i++)); do
-          w=${words[i]}
+          w=${words[i]%"${words[i]##*[!)]}"}
+          [ -n "$w" ] || continue
           skip=0
           case "$w" in
             '>'|'>>'|'>|'|'<'|'<<'|'<<-'|'<<<'|'<>'|'>&'|'<&'|'&>'|'&>>') skip=2 ;;
@@ -676,20 +693,19 @@ case "$MODE" in
           done
         fi
         case "$dest" in
-          *'$'* | *'`'*) [[ "$dest" =~ ^${PIN_NAME_RE}$ ]] && return 0; continue ;;
+          *'$'* | *'`'*) [[ "$dest" =~ ^${PIN_NAME_RE}$ ]] && return 0 ;;
         esac
-        if [ "${dest%/}" != "$dest" ] || [ -d "$(canonical_path "${dest%/}")" ]; then
+        names_pin "$dest" && return 0
+        if [ "${dest%/}" != "$dest" ] || [ -d "$(canonical_path "${dest%/}")" ] || [ "$cd_seen" = 1 ]; then
           for ((i = 0; i < ${#srcs[@]}; i++)); do
             src=${srcs[i]##*/}
-            [ -n "$src" ] && is_pin_file "${dest%/}/$src" && return 0
+            [ -n "$src" ] && names_pin "${dest%/}/$src" && return 0
           done
-        else
-          is_pin_file "$dest" && return 0
         fi
         # A `mv` takes the pin AWAY, and a pin that left the file is a pin removed.
         if [ "$verb" = mv ]; then
           for ((i = 0; i < ${#srcs[@]}; i++)); do
-            is_pin_file "${srcs[i]}" && return 0
+            names_pin "${srcs[i]}" && return 0
           done
         fi
       done < <(instruction_split_commands "$1")
@@ -757,8 +773,9 @@ case "$MODE" in
     fi
     [ -z "$runtime" ] || scan="$cmd"
     # The scan, not the raw command: a `*_model=` pair the command CARRIES — quoted in a brief, or
-    # standing on the search side of a substitution — is not one it stores.
-    pending=$(drop_replaced "$scan")
+    # standing on the search side of a substitution — is not one it stores. The raw command rides
+    # along because the scan drops heredoc bodies, and `cat > pin <<EOF` stores exactly that body.
+    pending=$(drop_replaced "$scan"; drop_replaced "$cmd")
     offending=$(disallowed_models "$pending")
     [ -z "$offending" ] || deny_model "$offending"
     offending=$(disallowed_efforts "$pending" "$pending

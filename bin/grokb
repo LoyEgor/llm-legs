@@ -143,8 +143,8 @@ add_account() {
     printf 'grokb: account already exists: %s\n' "$name" >&2
     exit 2
   fi
-  mkdir -p "$directory"
   grok_bin=$(resolve_grok_bin) || exit 127
+  mkdir -p "$directory"
   printf 'GROK_HOME=%q %q login --device-auth\n' "$directory" "$grok_bin"
   env -u GROK_WORKER GROK_HOME="$directory" "$grok_bin" login --device-auth || rc=$?
   announce_account_added "$grokb_root" grok "$name"
@@ -272,6 +272,7 @@ models_add_efforts() { # catalog-file < rows -> rows with an efforts column
   local catalog=$1 efforts='{}'
   [ -r "$catalog" ] && efforts=$(jq -c '.models // {} | map_values([.info.reasoning_efforts[]?.id
       | select(type == "string" and length > 0)] | join(","))' "$catalog" 2>/dev/null) || efforts='{}'
+  [ -n "$efforts" ] || efforts='{}'
   jq -Rr --argjson efforts "$efforts" 'select(length > 0) | split("\t")
     | .[:3] + [($efforts[.[0]] // "") | if . == "" then "-" else . end] | join("\t")'
 }
@@ -445,7 +446,8 @@ run_bounded() { # seconds command...
   if [ -n "$timeout_cmd" ]; then "$timeout_cmd" "$seconds" "$@" </dev/null; return $?; fi
   "$@" </dev/null &
   pid=$!
-  (sleep "$seconds"; kill "$pid" 2>/dev/null || true) &
+  # Its `sleep` outlives the kill below, so an inherited stdout holds a caller's $(…) open until it ends.
+  (sleep "$seconds"; kill "$pid" 2>/dev/null || true) >/dev/null 2>&1 &
   watchdog=$!
   wait "$pid" 2>/dev/null; rc=$?
   kill "$watchdog" 2>/dev/null || true

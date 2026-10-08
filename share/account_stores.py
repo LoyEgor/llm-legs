@@ -189,7 +189,9 @@ def stores(vendor: str) -> list:
             Entries("quota cache", lambda: _dir("LLM_LIMITS_GEMINI_ACCOUNTS_DIR", "~/.llm-limits-gemini"),
                     r"{name}\.json(\.(err|tmp)\.[A-Za-z0-9]+)?"),
         ],
-        "grok": _shared("grok"),
+        "grok": _shared("grok") + [
+            Entries("fast-mode setting", lambda: _paths("grok")["pool"] / "fast-mode"),
+        ],
     }
     return table[vendor]
 

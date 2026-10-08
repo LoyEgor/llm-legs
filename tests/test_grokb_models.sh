@@ -202,6 +202,25 @@ assert_eq "$(models --cached)" "$expected"
 assert_eq "$(jq '.fetched_at' "$CACHE")" "$stamp"
 assert_eq "$(calls)" "$before"
 
+# --- An empty catalog is no efforts known, never an empty list cached for the whole TTL ---
+catalog="$GROKB_PROFILES_DIR/supergrok/models_cache.json"
+cp "$catalog" "$WORK/catalog.json"
+: >"$catalog"
+assert_eq "$(models --refresh | cut -f1,4 | tr '\n\t' ',:')" 'grok-4.7:-,grok-4.7-build-fast:-,grok-4.6:-,grok-4.5:-,'
+assert_eq "$(jq '.models | length' "$CACHE")" 4
+cp "$WORK/catalog.json" "$catalog"
+models --refresh >/dev/null
+
+# --- No `timeout` on PATH (stock macOS): the watchdog fallback returns when grok does ---
+mkdir -p "$WORK/no-timeout-bin"
+ln -sf "$(command -v jq)" "$WORK/no-timeout-bin/jq"
+ln -sf "$(command -v bash)" "$WORK/no-timeout-bin/bash"
+SECONDS=0
+watchdog_rows=$(env PATH="$WORK/no-timeout-bin:/usr/bin:/bin" LLM_LIMITS_GROK_TOUCH_TIMEOUT=8 \
+  "$WORK/no-timeout-bin/bash" "$SCRIPT" models --refresh 2>"$WORK/err")
+assert_eq "$watchdog_rows" "$expected"
+assert test "$SECONDS" -lt 5
+
 # --- The quota cache is not this list's file and is never touched ---
 assert test ! -e "$HOME/.llm-limits-grok.json"
 
