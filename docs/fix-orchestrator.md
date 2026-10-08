@@ -7,9 +7,9 @@ skill records as jobs first (`night-run job`, its only addition).
 
 ## Dispatch, all at once
 
-`worker-pick`, then one background relay worker per line: the brief file as its brief, `--workdir
-<worktree>`. A brief whose `ROUND:` is not `none` waits for that speed-lens round: one `review-waiter`
-per round, the brief dispatched on its return. Never poll.
+`worker-pick`, then per line its START line with the brief file and `--workdir <worktree>`, and a
+background `worker-run wait`. A brief whose `ROUND:` is not `none` waits for that speed-lens round: a
+background `review-bench wait` per round, the brief dispatched on its return. Never poll.
 
 ## Per branch, on its worker's completion notification
 
