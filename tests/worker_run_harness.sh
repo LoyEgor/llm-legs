@@ -89,6 +89,13 @@ cat >"$WORK/bin/review-bench" <<'REVIEWBENCH'
 [ -n "${REVIEW_BENCH_STUB_EMPTY:-}" ] || printf 'STUB FIX RULE %s\nwrite verdicts.jsonl rows\n' "$*"
 REVIEWBENCH
 chmod +x "$WORK/bin/review-bench"
+export CAFFEINATE_LOG="$WORK/caffeinate.calls"
+cat >"$WORK/bin/caffeinate" <<'CAFFEINATE'
+#!/usr/bin/env bash
+printf '%s run-id=%s\n' "$*" "${WORKER_RUN_ID-unset}" >>"$CAFFEINATE_LOG"
+exit 1
+CAFFEINATE
+chmod +x "$WORK/bin/caffeinate"
 printf 'model = "gpt-6-astra"\n' >"$WORKER_RUN_CODEX_CONFIG"
 printf 'test brief\nsecond line\n' >"$WORK/brief"
 printf 'image\n' >"$WORK/image.png"

@@ -598,6 +598,42 @@ snapshot_blobs_packed_tests() {
   assert test "$(git -C "$repo" cat-file -p "$(git -C "$repo" hash-object "$repo/b")")" = two
   clear_stub
 }
+
+# Knobs are Egor's: a run whose listed files changed one says so on the line after OUTCOME, and refuses nothing.
+knobs_changed_tests() {
+  local repo="$WORK/knob-repo" report
+  mkdir -p "$repo/agents" "$repo/share/briefs" "$WORK/outside"
+  git -C "$repo" init -q .
+  printf 'model: opus\n' >"$repo/agents/w.md"
+  printf '{\n  "model": "opus",\n  "hooks": {}\n}\n' >"$repo/settings.json"
+  printf 'readme\n' >"$repo/README"
+  git -C "$repo" add . && git -C "$repo" -c user.name=t -c user.email=t@t commit -qm base
+  clear_stub
+  set_config 'codex_effort=high'
+  export PICK_ACCOUNT=fast PICK_RC=0
+  start_ok codex --workdir "$repo"
+  assert await_done
+  git -C "$repo" rev-parse HEAD >"$RUN_DIR/head-before"
+  printf 'model: sonnet\n' >"$repo/agents/w.md"
+  printf '{\n  "model": "opus",\n  "hooks": {"Stop": []}\n}\n' >"$repo/settings.json"
+  printf 'EFFORT: high\n' >"$repo/share/briefs/new.md"
+  printf 'MODEL: haiku\n' >"$repo/README"
+  printf 'claudeb\n' >"$WORK/outside/worker-model"
+  printf '%s\n' "WORKDIR: $repo" agents/w.md settings.json share/briefs/new.md "$WORK/outside/worker-model" >"$RUN_DIR/files"
+  report=$("$RUNNER" report "$RUN_ID")
+  assert grep -qxF 'KNOBS CHANGED: agents/w.md: agent model frontmatter (line 1: -model: opus)' <<<"$report"
+  assert grep -qxF 'KNOBS CHANGED: share/briefs/new.md: brief-template EFFORT/MODEL (line 1: +EFFORT: high)' <<<"$report"
+  assert grep -qxF "KNOBS CHANGED: $WORK/outside/worker-model: worker-model (outside the run's repository, not diffed)" <<<"$report"
+  assert test "$(grep -c '^KNOBS CHANGED: ' <<<"$report")" -eq 3
+  assert grep -q '^STATUS: done$' <<<"$report"
+  printf '1\n' >"$RUN_DIR/exit_code"
+  report=$("$RUNNER" report "$RUN_ID")
+  assert grep -A1 '^OUTCOME: ' <<<"$report" | grep -q '^KNOBS CHANGED: '
+  printf '%s\n' "WORKDIR: $repo" settings.json >"$RUN_DIR/files"
+  assert test "$(grep -c '^KNOBS CHANGED: ' <<<"$("$RUNNER" report "$RUN_ID")")" -eq 0
+  clear_stub
+}
+knobs_changed_tests
 snapshot_blobs_packed_tests
 
 

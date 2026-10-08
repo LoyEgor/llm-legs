@@ -128,6 +128,7 @@ sys.path.insert(0, os.path.join(ROOT, "share"))
 from report_frame import fit
 from fix_commit import FIX_KEYS, fix_record_faults, fix_root_faults, load_merged, main_checkout, sync_settled
 from spend import read_json
+from knobs import changed_lines, knob_site
 DOCTORS = ("llm", "harness", "updater", "code", "system")
 HOOK_AREAS = ("Hooks", "Hook waits")
 LLM_ENTRIES = {"reviewers": ("review-bench/bin/review-bench",), "workers": ("llm-legs/bin/worker-run",),
@@ -147,18 +148,6 @@ SPEED_FILES = {"background/statusline": ("llm-legs/bin/statusline.sh",),
                "time/full-runs": ("llm-legs/share/run-suites.sh",),
                "time/locks": ("llm-legs/share/store-lock.sh",),
                "time/workers-active": ("llm-legs/bin/worker-run", "llm-legs/share/run-suites.sh")}
-KNOBS = (
-    ("settings model/effort/thinking", r"(^|/)settings(\.[\w-]+)?\.json$",
-     r"\"(model|effortLevel|alwaysThinkingEnabled|MAX_THINKING_TOKENS|modelSettings)\"\s*:"),
-    ("worker-model", r"(^|/)worker-model$", r"\S"),
-    ("share/worker-model.sh table", r"(^|/)share/worker-model\.sh$", r"^(?!\s*#).*\b(low|medium|high|xhigh|max)\b"),
-    ("share/worker-policy.md effort", r"(^|/)share/worker-policy\.md$", r"(?i)\beffort|^\|.*\b(low|medium|high|xhigh|max)\b"),
-    ("review-bench tier effort/rater", r"(^|/)share/rbench/catalog\.py$",
-     r"\"(low|medium|high|xhigh|max)\"|ROSTER|RATER|EFFORT|^\s*\(\"[\w.-]+\",\s*\d+\)"),
-    ("agent model frontmatter", r"(^|/)agents/[^/]+\.md$", r"^(model|effort):"),
-    ("claudeb default model", r"(^|/)(bin/claudeb|share/chat-open\.sh)$", r"CLAUDEB_CLAUDE_MODEL|--model|--effort"),
-    ("brief-template EFFORT/MODEL", r"", r"^\s*(printf\s+[\x27\"])?(EFFORT|MODEL):\s*\S"),
-)
 UPDATER_MACHINERY = {rule: "llm-legs/bin/vendor-cli-update" for rule in ("pass-stale", "pass-failed", "cli-behind", "client-too-old")}
 UPDATER_MACHINERY.update({rule: "llm-legs/bin/vendor-fingerprint" for rule in ("probe-broken", "catalog-missing", "event-stuck", "foreign-client")})
 WIDTH = 200
@@ -556,10 +545,6 @@ def live_knob_files():
             "worker-model": os.environ.get("WORKER_PICK_CONFIG_FILE") or os.path.join(HOME, ".claude", "worker-model")}
 
 
-def knob_site(path, text):
-    return next((site for site, where, what in KNOBS if re.search(where, path) and re.search(what, text)), None)
-
-
 def knob_lines():
     found = {}
     for site, path in live_knob_files().items():
@@ -580,28 +565,8 @@ def knobs(record_file):
     hits = []
     for tree in strings(record.get("worktrees")):
         name = os.path.basename(os.path.dirname("".join(git(tree, "rev-parse", "--path-format=absolute", "--git-common-dir"))))
-        path, old, new, header = "", 0, 0, False
-        for line in git(tree, "diff", "-U0", "--no-color", "--no-ext-diff", base):
-            hunk = re.match(r"^@@ -(\d+)(?:,\d+)? \+(\d+)", line)
-            if line.startswith("diff --git "):
-                header = True
-            elif header and line.startswith(("--- a/", "+++ b/")):
-                path = line[6:]
-            elif hunk:
-                old, new, header = int(hunk.group(1)), int(hunk.group(2)), False
-            elif not header and line.startswith("+"):
-                hits.append((knob_site(path, line[1:]), "%s/%s:%d" % (name, path, new), line))
-                new += 1
-            elif not header and line.startswith("-"):
-                hits.append((knob_site(path, line[1:]), "%s/%s:%d" % (name, path, old), line))
-                old += 1
-        for rel in git(tree, "ls-files", "--others", "--exclude-standard"):
-            try:
-                with open(os.path.join(tree, rel), errors="replace") as handle:
-                    hits += [(knob_site(rel, text.rstrip("\n")), "%s/%s:%d" % (name, rel, number), "+" + text.rstrip("\n"))
-                             for number, text in enumerate(handle, 1)]
-            except OSError:
-                pass
+        hits += [(knob_site(path, line[1:]), "%s/%s:%d" % (name, path, number), line)
+                 for path, number, line in changed_lines(tree, base)]
     for site, where, line in hits:
         if site:
             print("model/effort knob, %s: %s: %s · speed never trades intelligence, the change is Egor alone to make"

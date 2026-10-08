@@ -260,7 +260,7 @@ invariant rows and memory files naming it. Launch:
 - A Code run also refuses while `bin/code-doctor check <record> --base refs/night/<night>/base`
   prints a line (§6).
 - A Harness night run also refuses every added or removed line that sets a model, effort or thinking
-  knob (`KNOBS` in `bin/doctor-fix`): in its worktrees against `refs/night/<night>/base`, committed,
+  knob (`KNOBS` in `share/knobs.py`): in its worktrees against `refs/night/<night>/base`, committed,
   uncommitted or untracked, and in the live settings and worker-model files against
   `knobs_at_launch`. Sites: settings `model`, `effortLevel`, `alwaysThinkingEnabled`,
   `MAX_THINKING_TOKENS`, `modelSettings`; `worker-model`; the `share/worker-model.sh` table;
