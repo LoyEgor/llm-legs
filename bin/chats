@@ -423,9 +423,11 @@ def plan(rows):
     """
     sizes = [0] * len(CAPS)
     for row in rows:
+        # The wider of the two, since an expired cache shows the ctx label in its place.
+        ctx = "%dk" % (row["ctx"] // 1000) if row.get("ctx") else ""
         cells = (project_label(row.get("cwd")),
                  model_label(row),
-                 row.get("warm") or ("%dk" % (row["ctx"] // 1000) if row.get("ctx") else ""))
+                 max(row.get("warm") or "", ctx, key=width))
         sizes = [max(size, width(cell)) for size, cell in zip(sizes, cells)]
     return [min(size, cap) for size, cap in zip(sizes, CAPS)]
 
@@ -626,13 +628,15 @@ def run(screen, chats, names, used, profile, level, windows):
         if opening is not None and rows and rows[view["cursor"]].get("session") == opening:
             key = curses.KEY_ENTER
         opening = None
+        resting = rows[view["cursor"]] if rows else {}
+        expires = resting.get("until") if warm_name(resting, view["now"]) else None
         while key is None:
             try:
                 key = screen.get_wch()
             except KeyboardInterrupt:
                 return None
             except curses.error:
-                if listing.landed() or ranked.landed():
+                if listing.landed() or ranked.landed() or (expires and time.time() >= expires):
                     break
         if key is None:
             continue
@@ -740,6 +744,15 @@ def run(screen, chats, names, used, profile, level, windows):
         # the top of the loop reads as "widen the window". It clamps there.
 
 
+def reopen_argv(row, vendor, account):
+    """The command reopening `row` under the picked account, and whether the chat's own launcher
+    overrode it: a gateway chat picked onto a claudeb account keeps its gateway (resume_argv)."""
+    if chat_resume.is_gateway_chat(row["session"], row.get("model")) and vendor != "gpt":
+        return chat_resume.resume_argv(row["session"], account, row.get("model")), True
+    return chat_resume.switch_argv(row["session"], account, model_id=row.get("model"),
+                                   gateway=vendor == "gpt"), False
+
+
 def open_command(session, timeout):
     candidates = resolve_session(session)
     if len(candidates) != 1:
@@ -772,12 +785,9 @@ def open_command(session, timeout):
     if position is None:
         die("no logged-in account to open it under")
     vendor, account = names[position]
-    if chat_resume.is_gateway_chat(session, row.get("model")) and vendor != "gpt":
-        command = chat_resume.resume_argv(session, account, row.get("model"))
+    command, own = reopen_argv(row, vendor, account)
+    if own:
         source = "cache"
-    else:
-        command = chat_resume.switch_argv(session, account, model_id=row.get("model"),
-                                          gateway=vendor == "gpt")
     if source == "fallback" and not order:
         die("worker-pick did not answer within %gs, so no account is known to be logged in"
             % timeout)
@@ -829,16 +839,20 @@ def main():
     # Nothing is loaded before the screen: the listing and the account ranking are handed
     # in as None and run() loads both in the background, so the picker is up in
     # milliseconds instead of after sequential subprocesses.
-    chosen = curses.wrapper(run, None, None, None, None, 0, windows)
+    try:
+        chosen = curses.wrapper(run, None, None, None, None, 0, windows)
+    except KeyboardInterrupt:
+        return
     if not chosen:
         return
     (vendor, account), row, cwd = chosen
+    command, _ = reopen_argv(row, vendor, account)
+    if chat_resume.argv_account(command) == chat_resume.UNKNOWN_ACCOUNT:
+        die("gateway account unknown for this chat")
     # Pinned explicitly because a resumed session restores the mode it was left
     # in, not settings.json's defaultMode — one chat that ever drifted into auto
     # (the 2026-08-14 rollout flipped a batch) would reopen in auto forever.
-    command = chat_resume.switch_argv(row["session"], account, model_id=row.get("model"),
-                                      gateway=vendor == "gpt") \
-        + ["--permission-mode", "bypassPermissions"]
+    command += ["--permission-mode", "bypassPermissions"]
     launch = "cd %s && %s" % (shlex.quote(cwd), shlex.join(command))
     if show:
         print(launch)

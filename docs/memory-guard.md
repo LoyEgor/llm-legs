@@ -13,8 +13,11 @@ Trigger, both halves required, evaluated once per tick:
 - the **fattest chat job** > **1536 MB**, weighed as the summed RSS of its members.
 
 A **job** is one process group launched by one chat — every Bash call a chat makes is its own group
-— minus every protected process. Action: **post the notice, then SIGKILL every member of that one
-job**. The next tick re-evaluates; the next fattest goes then, if the pressure did not end.
+— minus every protected process, every process of another user (its kill could only fail) and every
+process the guard SIGKILLed in the last 30 s (still dying under swap, not a new job). Action: **post
+the notice, then SIGKILL every member of that one job** — the whole group at once when nothing else is
+in it, so what it forked while the notice was in flight goes too. The next tick re-evaluates; the next
+fattest goes then, if the pressure did not end.
 
 On a kill that landed, chat-load prints a `KILLED` line memlogd appends to its day log, appends a
 `MEMGUARD` record to the run directory of any worker run or review cell the job ran under, and the
@@ -24,7 +27,7 @@ menu shows a red `⚠ HH:MM guard killed a job of <chat> · freed N GB` row for 
 
 Every process a chat launches inherits `CLAUDE_CODE_SESSION_ID`, and `worker-run` exports
 `CLAUDE_LAUNCHER_SESSION` into every worker it starts. chat-load reads both from the kernel
-(`KERN_PROCARGS2`, same user only), cached per pid and start time. Order: the launcher, then the
+(`KERN_PROCARGS2`, same user only), cached per pid, start time (reckoned from when `ps` ran) and command name, so an exec re-reads it. Order: the launcher, then the
 process's own session, then the nearest ancestor that claims one or is a registered chat CLI, then
 the process's own registry entry (a top-level CLI carries neither variable). The session found is
 then walked up to the outermost chat, so a worker's job is billed to the chat that launched it.

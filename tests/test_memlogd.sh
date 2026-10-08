@@ -117,15 +117,17 @@ case "$*" in
     # is dictated, for the pids a case names — allocating 1.5 GB for real in a suite is not a test
     # of the guard, it is the bug the guard is for.
     [ -n "${GUARD_SCOPE:-}" ] || exit 0
-    /bin/ps -axo "$2" | awk -v scope="$GUARD_SCOPE" -v fat="${HEAVY_PIDS:-}" '
+    /bin/ps -axo "$2" | awk -v scope="$GUARD_SCOPE" -v fat="${HEAVY_PIDS:-}" -v foreign="${FOREIGN_PIDS:-}" '
       BEGIN {
         n = split(scope, groups, " ")
         for (i = 1; i <= n; i++) keep[groups[i] + 0] = 1
         n = split(fat, list, " ")
         # `pid` weighs the default; `pid=KB` weighs exactly that, for a case needing two weights.
         for (i = 1; i <= n; i++) heavy[list[i] + 0] = (split(list[i], part, "=") == 2) ? part[2] + 0 : 900000
+        n = split(foreign, list, " ")
+        for (i = 1; i <= n; i++) root[list[i] + 0] = 1
       }
-      (($3 + 0) in keep) { if (($1 + 0) in heavy) $5 = heavy[$1 + 0]; print }'
+      (($3 + 0) in keep) { if (($1 + 0) in heavy) $5 = heavy[$1 + 0]; if (($1 + 0) in root) $4 = 0; print }'
     ;;
   *pid,ppid,pgid,rss,etime,command*)
     printf '  PID  PPID  PGID    RSS  ELAPSED COMMAND\n'
@@ -645,6 +647,12 @@ set -u
 body=$(cat)
 [ -z "${BUS_FAIL:-}" ] || exit 126
 [ -z "${BUS_SLOW:-}" ] || sleep "$BUS_SLOW"
+if [ -n "${BUS_JOIN:-}" ]; then
+  python3 -c 'import os, sys, time; os.setpgid(0, int(sys.argv[1])); open(sys.argv[2], "w").write(str(os.getpid())); time.sleep(300)' \
+    "$BUS_JOIN" "$BUS_JOINED.tmp" >/dev/null 2>&1 &
+  for _ in $(seq 1 100); do [ ! -s "$BUS_JOINED.tmp" ] || break; sleep 0.02; done
+  mv "$BUS_JOINED.tmp" "$BUS_JOINED"
+fi
 alive=0
 for pid in ${BUS_WATCH:-}; do
   state=$(/bin/ps -o state= -p "$pid" 2>/dev/null | tr -d '[:space:]')
@@ -1115,6 +1123,86 @@ assert guard_run "$SLOW_DIR" MEMLOGD_MAX_TICKS=1 BUS_SLOW=5 HEAVY_PIDS="$TREE_KI
 assert grep -qE '^KILLED .* chat=chat-slow .* notified=none$' "$(log_file "$SLOW_DIR")"
 for _ in $(seq 1 100); do grep -q -- '--session chat-slow ' "$BUS_LOG" && break; sleep 0.1; done
 assert grep -qE -- '^post --kind notice --id memguard-[0-9]{10}-[0-9]+ --session chat-slow ' "$BUS_LOG"
+
+# A member this user cannot signal (a root child under sudo) is no part of a job: weighed in, its
+# chat would get a notice every tick for a kill that always fails with EPERM.
+clear_registry
+spawn_leaf
+register_session chat-rooted "$LEAF_ROOT"
+spawn_tree chat-rooted
+ROOTED_ROOT=$TREE_ROOT ROOTED_KIDS=$TREE_KIDS
+ROOTED_DIR="$WORK/guard-rooted"
+probes 2000 1024
+assert guard_run "$ROOTED_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$ROOTED_KIDS" FOREIGN_PIDS="$ROOTED_KIDS"
+assert_fails grep -q '^KILLED ' "$(log_file "$ROOTED_DIR")"
+assert test ! -s "$BUS_LOG"
+for pid in $ROOTED_ROOT $ROOTED_KIDS; do assert alive "$pid"; done
+
+# A job already SIGKILLed that has not finished dying under swap is not killed and announced again.
+clear_registry
+spawn_leaf
+register_session chat-dying "$LEAF_ROOT"
+spawn_tree chat-dying
+DYING_KIDS=$TREE_KIDS
+DYING_DIR="$WORK/guard-dying"
+mkdir -p "$DYING_DIR"
+jq -n --argjson at "$(date +%s)" --argjson kids "[${DYING_KIDS// /,}]" \
+  '{guard: {at: $at, session: "chat-dying", mb: 1800, title: "", told: true, killed: $kids}}' \
+  >"$DYING_DIR/chat-load.state.json"
+probes 2000 1024
+assert guard_run "$DYING_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$DYING_KIDS"
+assert_fails grep -q '^KILLED ' "$(log_file "$DYING_DIR")"
+assert test ! -s "$BUS_LOG"
+for pid in $DYING_KIDS; do assert alive "$pid"; done
+
+# What a job forks into its group while the notice is in flight goes with it (make -j, xargs -P).
+clear_registry
+spawn_leaf
+register_session chat-fork "$LEAF_ROOT"
+spawn_tree chat-fork
+FORK_ROOT=$TREE_ROOT FORK_KIDS=$TREE_KIDS
+FORK_DIR="$WORK/guard-fork"
+rm -f "$WORK/joined.pid"
+probes 2000 1024
+assert guard_run "$FORK_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$FORK_KIDS" BUS_JOIN="$FORK_ROOT" BUS_JOINED="$WORK/joined.pid"
+read -r FORK_LATE <"$WORK/joined.pid"
+TREE_PIDS+=("$FORK_LATE")
+assert grep -qE '^KILLED .* chat=chat-fork job_pgid='"$FORK_ROOT"' ' "$(log_file "$FORK_DIR")"
+for pid in $FORK_ROOT $FORK_KIDS $FORK_LATE; do assert gone "$pid"; done
+
+# exec keeps a pid and its start: an empty environment read off a shell before it exec'd python is
+# read again once the command changed, or the python would belong to no chat.
+clear_registry
+spawn_tree chat-exec
+EXEC_KIDS=$TREE_KIDS
+EXEC_DIR="$WORK/guard-exec"
+probes 8192 1024
+assert guard_run "$EXEC_DIR" MEMLOGD_MAX_TICKS=1
+jq '.env |= map_values([.[0], "", "", "bash"])' "$EXEC_DIR/chat-load.state.json" >"$WORK/exec-state.json"
+mv "$WORK/exec-state.json" "$EXEC_DIR/chat-load.state.json"
+probes 2000 1024
+assert guard_run "$EXEC_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$EXEC_KIDS"
+assert grep -qE '^KILLED .* chat=chat-exec ' "$(log_file "$EXEC_DIR")"
+
+# Process starts are reckoned from when ps ran: memlogd's `now` lags it by seconds that swing under
+# pressure, and a start shifted by that swing misses the env and CPU caches for every process.
+clear_registry
+spawn_tree chat-skew
+SKEW_DIR="$WORK/guard-skew"
+mkdir -p "$SKEW_DIR"
+chat_load_sample() { # log-dir now
+  env MEMLOGD_DIR="$1" WORKER_RUN_DIR="$GUARD_ROOT/runs" WORKER_STATS_DIR="$GUARD_ROOT/stats" \
+    CHAT_LOAD_SESSIONS="$SESSIONS_DIR" CHAT_NAME_ROOTS="$WORK/transcripts" CHAT_NAMES_CACHE="$WORK/chat-names.json" \
+    CHAT_LOAD_REPORT_BUS="$FAKE_BIN/report-bus" HARNESS_HOLDS_DIR="$EMPTY_REGISTRY/holds" GUARD_SCOPE="$GUARD_SCOPE" \
+    python3 "$ROOT/bin/chat-load" sample --now "$2" --avail 8192 --swap 0
+}
+assert chat_load_sample "$SKEW_DIR" "$(date +%s)"
+cp "$SKEW_DIR/chat-load.state.json" "$WORK/skew-before.json"
+assert chat_load_sample "$SKEW_DIR" "$(($(date +%s) - 5))"
+assert jq -e --slurpfile a "$WORK/skew-before.json" '
+  def apart(x; y): (x - y) | if . < 0 then -. else . end;
+  (.env | length) == 3 and ([.env | to_entries[] | apart(.value[0]; $a[0].env[.key][0]) <= 2] | all)
+  and ([.procs | to_entries[] | apart(.value[0]; $a[0].procs[.key][0]) <= 2] | all)' "$SKEW_DIR/chat-load.state.json"
 
 # --- MEMGUARD surfacing in worker-run report/wait -------------------------------------------------
 # The record is written by this daemon and read by worker-run, so the two ends are checked against

@@ -23,6 +23,7 @@ TITLE_WIDTH = 22
 PID_SLACK_S = 30
 HOLD_START_SLACK_S = 2
 QUEUE_STUCK_S = 1800
+KILLED_GRACE_S = 30
 SPARK = "▁▂▃▄▅▆▇█"
 ENV_KEYS = (b"CLAUDE_LAUNCHER_SESSION=", b"CLAUDE_CODE_SESSION_ID=")
 OTHER_KINDS = (("screen", {"WindowServer"}), ("kernel", {"kernel_task"}), ("signing", {"syspolicyd", "trustd"}))
@@ -101,6 +102,9 @@ def clock(text):
 def process_table():
     out = subprocess.run(["ps", "-axo", "pid=,ppid=,pgid=,uid=,rss=,time=,etime=,state=,comm="],
                          capture_output=True, text=True, timeout=20).stdout
+    # Starts are reckoned from when ps ran, not from memlogd's `now`: the lag between the two swings
+    # by seconds under pressure and would shift every start past the caches' 2 s match.
+    taken = time.time()
     table = {}
     for line in out.splitlines():
         fields = line.split(None, 8)
@@ -111,7 +115,7 @@ def process_table():
         except ValueError:
             continue
         table[pid] = {"ppid": ppid, "pgid": pgid, "uid": uid, "kb": rss, "cpu": clock(fields[5]),
-                      "age": clock(fields[6]), "zombie": fields[7].startswith("Z"),
+                      "age": clock(fields[6]), "start": taken - clock(fields[6]), "zombie": fields[7].startswith("Z"),
                       "comm": os.path.basename(fields[8].strip())}
     return table
 
@@ -187,19 +191,21 @@ def lineage(pid, table):
 
 # macOS hides a platform binary's environment (/bin/*, /usr/bin/*) from KERN_PROCARGS2: a shell or
 # `sleep` claims no chat of its own and is attributed through its ancestry in attribute().
-def environments(table, now, cache):
+def environments(table, cache):
     uid, fresh = os.getuid(), {}
     for pid, row in table.items():
         if row["uid"] != uid or row["age"] < 0:
             continue
-        start = now - row["age"]
+        start = row["start"]
         hit = cache.get(str(pid))
-        if hit and abs(hit[0] - start) <= 2:
+        # exec keeps the pid and the start but not the command: a shell sampled before it exec'd its
+        # python showed no environment, and that empty read must not outlive the exec.
+        if hit and abs(hit[0] - start) <= 2 and hit[3:] == [row["comm"]]:
             fresh[str(pid)] = hit
             continue
         parsed = procargs(pid)
         found = parsed[1] if parsed else ["", ""]
-        fresh[str(pid)] = [start, found[0], found[1]]
+        fresh[str(pid)] = [start, found[0], found[1], row["comm"]]
     return fresh
 
 
@@ -265,13 +271,16 @@ def post_notices(sids, identity, body):
     return posted
 
 
-def guard(now, avail, table, envs, tops, sessions, protected, roots, titles):
+def guard(now, avail, table, envs, tops, sessions, protected, roots, titles, last):
     if avail < 0 or avail >= GUARD_AVAIL_MB:
         return None
+    uid = os.getuid()
+    # A SIGKILLed process can take longer than a tick to go away under swapping: it is not a new job.
+    spent = set(last.get("killed", [])) if last and now - last.get("at", 0) < KILLED_GRACE_S else set()
     jobs = {}
     for pid, top in tops.items():
         row = table[pid]
-        if pid in protected or row["zombie"]:
+        if pid in protected or row["zombie"] or row["uid"] != uid or pid in spent:
             continue
         jobs.setdefault((top, row["pgid"]), []).append(pid)
     if not jobs:
@@ -297,7 +306,14 @@ def guard(now, avail, table, envs, tops, sessions, protected, roots, titles):
               if sid in sessions]
     posted = post_notices(notify, f"memguard-{now}-{pgid}", body)
     killed = []
-    for pid in sorted(members):
+    # The whole group at once when nothing else is in it, so what it forked during the notice goes too.
+    if all(p in members or row["zombie"] for p, row in table.items() if row["pgid"] == pgid):
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+            killed = sorted(members)
+        except OSError:
+            pass
+    for pid in [] if killed else sorted(members):
         try:
             os.kill(pid, signal.SIGKILL)
             killed.append(pid)
@@ -322,7 +338,7 @@ def guard(now, avail, table, envs, tops, sessions, protected, roots, titles):
     print(f"KILLED {now} chat={top} job_pgid={pgid} avail_mb={avail} job_rss_mb={job_mb} "
           f"killed={','.join(map(str, killed))} notified={','.join(posted) or 'none'}", flush=True)
     return {"at": now, "session": top, "mb": job_mb, "title": titles.get(top, {}).get("t", ""),
-            "told": bool(posted) or not notify}
+            "told": bool(posted) or not notify, "killed": killed}
 
 
 def name_chats(sids, now, cache):
@@ -420,7 +436,7 @@ def render(now, avail, swap, table, tops, sessions, state, prev, holds):
     for pid, row in table.items():
         if row["cpu"] < 0 or row["age"] < 0:
             continue
-        start = now - row["age"]
+        start = row["start"]
         procs[str(pid)] = [start, row["cpu"]]
         seen = before.get(str(pid))
         if seen and abs(seen[0] - start) <= 2:
@@ -535,7 +551,7 @@ def sample(now, avail, swap):
     state = {"guard": prev.get("guard"), "titles": prev.get("titles", {}), "hist": prev.get("hist", {}),
              "queues": prev.get("queues", {})}
     table = process_table()
-    envs = environments(table, now, prev.get("env", {}))
+    envs = environments(table, prev.get("env", {}))
     state["env"] = envs
     registered = live_sessions(table)
     sessions = {sid: entry for sid, entry in registered.items() if entry["own"]}
@@ -547,7 +563,7 @@ def sample(now, avail, swap):
     tops = attribute(table, envs, sessions)
     failure = ""
     try:
-        event = guard(now, avail, table, envs, tops, sessions, protected, roots, state["titles"])
+        event = guard(now, avail, table, envs, tops, sessions, protected, roots, state["titles"], prev.get("guard"))
         if event:
             state["guard"] = event
     except Exception as error:

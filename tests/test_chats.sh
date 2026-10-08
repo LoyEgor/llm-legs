@@ -883,6 +883,81 @@ with patch.object(chats, "resolve_session", lambda s: [s]), patch.object(chats, 
 assert asked and asked[0] and chats.board_of({"model": asked[0]}) == chats.board_of(row), asked
 PYBOARDS
 
+python3 - "$SCRIPT" "$WORK" <<'PYPICKED' || fail "picked-chat probe failed"
+import contextlib, importlib.machinery, importlib.util, io, sys, time
+from unittest.mock import patch
+
+loader = importlib.machinery.SourceFileLoader("chats", sys.argv[1])
+spec = importlib.util.spec_from_loader("chats", loader)
+chats = importlib.util.module_from_spec(spec)
+loader.exec_module(chats)
+c = chats.curses
+
+
+class Tty(io.StringIO):
+    def isatty(self):
+        return True
+
+
+def launch(chosen=None, interrupt=False):
+    out = Tty()
+    wrapper = patch.object(c, "wrapper", side_effect=KeyboardInterrupt) if interrupt \
+        else patch.object(c, "wrapper", return_value=chosen)
+    with patch.object(sys, "argv", ["chats", "--print"]), \
+            patch.object(chats.locale, "setlocale"), wrapper, \
+            patch.object(sys, "stdin", Tty()), contextlib.redirect_stdout(out):
+        chats.main()
+    return out.getvalue()
+
+
+# A gateway chat with no live cache lands on the default claudeb account; Enter still reopens it
+# through its own gateway, exactly as --open-command does, never as a Claude chat.
+stamped = dict(session="6ebc3bbe-66ec-498e-9f3d-736e61eed0ba", model="anthropic.ccr.astra")
+shown = launch((("claudeb", "alona"), stamped, sys.argv[2]))
+assert " && claudegpt p borodatch " in shown and "claudeb" not in shown, shown
+try:
+    launch((("claudeb", "alona"), dict(session="unstamped", model="anthropic.ccr.astra"), sys.argv[2]))
+    raise AssertionError("an unknown gateway account opened")
+except chats.Fatal as reason:
+    assert str(reason) == "gateway account unknown for this chat", reason
+# ^C while a load is awaited outside the key read quits like ^C anywhere else in the picker.
+assert launch(interrupt=True) == ""
+
+# An expired cache shows the ctx label in the column its account name sized.
+assert chats.plan([dict(warm="com", ctx=182000)])[2] == 4
+
+# A cache expiring under the resting cursor hands the account back before Enter reads it.
+names = [("claudeb", "alpha"), ("claudeb", "omega")]
+rows = [dict(session="a", cwd=sys.argv[2], model="opus", warm="omega", until=time.time() + 0.3)]
+
+
+class Screen:
+    def __init__(self):
+        self.events = iter([None] * 40 + ["\n"])
+
+    def getmaxyx(self):
+        return 7, 80
+
+    def timeout(self, delay):
+        pass
+
+    def get_wch(self):
+        event = next(self.events)
+        if event is None:
+            time.sleep(0.02)
+            raise c.error("no input")
+        return event
+
+
+with patch.multiple(c, curs_set=lambda _: None, start_color=lambda: None,
+                    use_default_colors=lambda: None, mouseinterval=lambda _: None,
+                    mousemask=lambda _: None), \
+        patch.object(chats, "draw", lambda *rest: None), \
+        patch.object(chats, "board_of", lambda row: "weekly"):
+    result = chats.run(Screen(), rows, list(names), {}, 0, 0, (7,))
+assert result[0] == ("claudeb", "alpha"), result
+PYPICKED
+
 echo "== non-interactive open command"
 OPEN_HOME="$WORK/open-home"
 OPEN_SID=12345678-1234-1234-1234-123456789abc
