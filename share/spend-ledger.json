@@ -13,6 +13,7 @@
    "note": "7d to 2026-10-07: 36 main-context RESUMEs (11.2M, 89%) each carry a new brief into a 60-260k context the chat chose to keep (CLAUDE.md same-session rule), cache past Claude Code's own 1h TTL; the only cheaper path, a fresh worker with a distilled brief, drops that context and cannot replay to identical decisions; 115 image-gen sidechain 5m expiries (1.4M, 11%) already gone at source (claude-setup 4f0dcd0 1h TTL, 01f7357 agent removed); worker-run's RESUME-COLD warning prints after the decision into the relay, which never forwards it, so it changes nothing"
   },
   {
+<<<<<<< HEAD
    "id": "suite:llm-legs/test_instruction_gate",
    "title": "llm-legs/test_instruction_gate",
    "audited_at": "2026-10-08T03:17:55+03:00",
@@ -33,6 +34,28 @@
    "audited_at": "2026-10-08T03:19:23+03:00",
    "by": "feat/spend-audit-nested-claude-md",
    "share": 0.010995,
+=======
+   "id": "startup:skill listing",
+   "title": "startup skill listing",
+   "audited_at": "2026-10-08T03:20:03+03:00",
+   "by": "feat/spend-audit-listings",
+   "share": 0.006616,
+   "prices": {
+    "worker": 26143.393762135063,
+    "chat": 34987.16713699263,
+    "subagent": 15017.701136311005
+   },
+   "sources": {},
+   "verdict": "cut",
+   "note": "cut: ~/.claude/settings.json skillOverrides user-invocable-only for schedule, keybindings-help, plugin-authoring, fewer-permission-prompts, simplify, security-review, init, loop, anthropic-skills:skill-creator (2119 of 6902 chars of the common listing, ~31% ≈ 0.16% of Claude spend); replay over 394 recorded invocations of 50 skills 2026-07-09..10-07: zero model Skill calls of any of them, the one /loop Egor typed still works; local skills/commands already on-demand (claude-setup 9c804e2, 84fbb03, 05e57ff), each model-invoked or rarely needed (wut-ticket 14, md-compact 5, worker, impeccable; trash/3d-review kept at ~65 chars)"
+  },
+  {
+   "id": "startup:MCP instructions",
+   "title": "startup MCP instructions",
+   "audited_at": "2026-10-08T03:20:03+03:00",
+   "by": "feat/spend-audit-listings",
+   "share": 0.001864,
+>>>>>>> e55ffea1 (Spend audit of the startup listings: skill listing cut by skillOverrides user-invocable-only for nine built-in/synced skills no model ever invoked (394 recorded invocations 2026-07-09..10-07, the one typed /loop keeps working; ~31% of the common listing, ~0.16% of Claude spend), MCP instructions kept (claude.ai Docs/Figma already off via disableClaudeAiConnectors since 2026-10-05, atlassian and claude-in-chrome used), agent listing and deferred tool list kept; the waste-detectors handoff gains the slash-only vs model-use split for Unused startup)
    "prices": {
     "worker": 26143.393762135063,
     "chat": 34987.16713699263,
@@ -40,7 +63,41 @@
    },
    "sources": {},
    "verdict": "kept",
+<<<<<<< HEAD
    "note": "real cost 0.006 % (59k limit tokens over 6 of 1881 main contexts, 7 days): Claude Code loads an out-of-cwd CLAUDE.md, in sweep repos only claude-setup/global/CLAUDE.md (3 loads, exact copy of the symlinked user file) and llm-legs worktree copies in main-cwd chats (3, exact); claudeMdExcludes could drop them but risks the symlinked user file for ~9k tokens/week; the 0.889 % is Spend scaling per-carrier averages, handed to tokenmap-waste-detectors"
+=======
+   "note": "kept: claude.ai Claude Docs and Figma already cut at source by disableClaudeAiConnectors (last listed 2026-10-05 18:48, avg 880 to 735 tokens a context; the 7-day row still holds Oct 1-5); left atlassian (used in Arbostar, loyegor.com, wut-ticket from llm-legs) and claude-in-chrome (used); project-scoping atlassian would drop Jira outside Arbostar for ~0.08%"
+  },
+  {
+   "id": "startup:agent listing",
+   "title": "startup agent listing",
+   "audited_at": "2026-10-08T03:20:03+03:00",
+   "by": "feat/spend-audit-listings",
+   "share": 0.001584,
+   "prices": {
+    "worker": 26143.393762135063,
+    "chat": 34987.16713699263,
+    "subagent": 15017.701136311005
+   },
+   "sources": {},
+   "verdict": "kept",
+   "note": "kept: every custom agent spawned in 30 days; the unused two are built-ins claude and statusline-setup (250k of 7d), whose only switch CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS works in non-interactive sessions alone and drops the general-purpose default too"
+  },
+  {
+   "id": "startup:deferred tool list",
+   "title": "startup deferred tool list",
+   "audited_at": "2026-10-08T03:20:03+03:00",
+   "by": "feat/spend-audit-listings",
+   "share": 0.000839,
+   "prices": {
+    "worker": 26143.393762135063,
+    "chat": 34987.16713699263,
+    "subagent": 15017.701136311005
+   },
+   "sources": {},
+   "verdict": "kept",
+   "note": "kept: ~335 tokens a context, mostly the used atlassian MCP names; never-called deferred built-ins are 81k of 7.5M unused startup (~1%), a disabledBuiltinTools cut saves ~20 tokens a context"
+>>>>>>> e55ffea1 (Spend audit of the startup listings: skill listing cut by skillOverrides user-invocable-only for nine built-in/synced skills no model ever invoked (394 recorded invocations 2026-07-09..10-07, the one typed /loop keeps working; ~31% of the common listing, ~0.16% of Claude spend), MCP instructions kept (claude.ai Docs/Figma already off via disableClaudeAiConnectors since 2026-10-05, atlassian and claude-in-chrome used), agent listing and deferred tool list kept; the waste-detectors handoff gains the slash-only vs model-use split for Unused startup)
   }
  ]
 }
