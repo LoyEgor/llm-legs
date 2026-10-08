@@ -47,7 +47,7 @@ local promptFn = askSince
 local scanTask, scanStarted, scanError, jobLabel = nil, nil, nil, nil
 local jobSoft, jobSerial, sevenOwed = false, 0, false
 local jobScan, jobQuiet, jobFile, jobRange, pending = false, false, nil, nil, nil
-local active = nil
+local active, asked = nil, nil
 local tried = {}
 
 local function readFile(file)
@@ -60,7 +60,7 @@ end
 
 local function load(file)
     local attrs = hs.fs.attributes(file)
-    local stamp = attrs and (tostring(attrs.size) .. "/" .. tostring(attrs.modification)) or "missing"
+    local stamp = attrs and table.concat({ attrs.ino or "", attrs.size, attrs.modification }, "/") or "missing"
     local entry = caches[file]
     if entry and entry.stamp == stamp then return entry.data, entry.problem, attrs end
     local data, problem = nil, "missing"
@@ -263,6 +263,10 @@ local function rangeFile(range)
     return range == RANGES[1] and path or besideExports("tracking-range-" .. range.key .. ".json")
 end
 
+local function sameRange(a, b)
+    return a ~= nil and b ~= nil and a.key == b.key and a.since == b.since
+end
+
 local function statusItems(data, problem, attrs, snapshot)
     local items = {}
     local running = scanTask ~= nil
@@ -280,18 +284,17 @@ local function statusItems(data, problem, attrs, snapshot)
                 menuStyle.ago(age))
         end
         local stale = not snapshot and isStale(data, attrs)
-        if not running and outdated(data) then
+        if outdated(data) then
             stale, text = true, "outdated: " .. text
+        elseif running and jobScan then
+            text = "updating: " .. text
         elseif stale then
             text = "stale: " .. text
         end
         items[#items + 1] = { title = style(text, stale and RED or dimColor()), disabled = true }
     end
-    if running and pending then
-        items[#items + 1] = { title = style("computing " .. rangeLabel(pending) .. " after the scan…", dimColor()),
-                              disabled = true }
-    elseif running then
-        local doing = jobLabel and ("computing " .. jobLabel) or "refreshing"
+    if running then
+        local doing = jobScan and "scanning new data" or ("computing " .. (jobLabel or rangeLabel(jobRange)))
         items[#items + 1] = { title = style(doing .. " since " .. menuStyle.clock(scanStarted) .. "…", dimColor()),
                               disabled = true }
     elseif scanError then
@@ -343,7 +346,7 @@ local function startStep(steps, index, serial, onStep)
         return false
     end
     scanTask, jobSoft, jobLabel = task, step.soft or false, step.label
-    jobScan, jobFile = step.scan or false, step.file
+    jobScan, jobFile, scanStarted = step.scan or false, step.file, os.time()
     return true
 end
 
@@ -381,14 +384,15 @@ function startJob(range, scanFirst, quiet)
         steps[1] = { launch = TOKENMAP, args = { "tracking", "--write" }, label = RANGES[1].label, view = true,
                      seven = true, file = path }
     end
-    scanStarted = os.time()
     local what = ranged and ("Token tracking " .. label) or "Token tracking refresh"
     local started = startStep(steps, 1, jobSerial, function(step, ok)
         if ok and step.seven then sevenOwed = false end
         if step.soft then return end
         if not step.view and ok then return end
-        if ok and ranged and active == range then remember(range) end
-        if not ok and ranged and active == range then active = nil end
+        if sameRange(asked, range) then
+            asked = nil
+            if ok then remember(range) else active = nil end
+        end
         if quiet then return end
         if ok then
             alertFn(ranged and (what .. " ready") or "Token tracking updated")
@@ -425,36 +429,44 @@ function M.choose(range)
     local seven = range == RANGES[1]
     if scanTask and jobScan then
         pending = (not seven or jobRange ~= RANGES[1]) and range or nil
-        if seven then remember(range) else active = range end
+        if seven then asked = nil; remember(range) else asked = range end
         if pending then alertFn("Token tracking: computing " .. rangeLabel(range) .. " after the scan…") end
         return true
     end
     if seven then
         if jobSoft or jobRange ~= RANGES[1] then cancelJob() end
+        asked = nil
         remember(range)
         return true
     end
     cancelJob()
-    active = range
+    asked = range
     local scanned = lastScan()
-    return startJob(range, not scanned or os.time() - scanned > SCAN_FIRST_SECONDS)
+    local scanFirst = not scanned or os.time() - scanned > SCAN_FIRST_SECONDS
+    if not scanFirst and generation() and not outdated((load(rangeFile(range)))) then active = range end
+    return startJob(range, scanFirst)
 end
 
 local function compareItem()
     local current = activeRange()
     local choices = {}
+    local function title(text, range)
+        return sameRange(asked, range) and (text .. " — computing…") or text
+    end
     for _, range in ipairs(RANGES) do
-        choices[#choices + 1] = { title = range.label, checked = current == range,
+        choices[#choices + 1] = { title = title(range.label, range), checked = current == range,
                                   fn = function() M.choose(range) end }
     end
     local custom = current.key == "custom"
     local sinceTitle = custom and ("Since " .. current.since) or "Since…"
+    if asked and asked.key == "custom" then sinceTitle = title("Since " .. asked.since, asked) end
     choices[#choices + 1] = { title = sinceTitle, checked = custom, fn = function()
         local text = promptFn(custom and current.since or "")
         text = text and text:match("^%s*(.-)%s*$")
         if text and text ~= "" then M.choose({ key = "custom", since = text }) end
     end }
-    return { title = "Compare: " .. rangeLabel(current), menu = choices }
+    return { title = asked and title("Compare: " .. rangeLabel(asked), asked) or ("Compare: " .. rangeLabel(current)),
+             menu = choices }
 end
 
 -- The Automations row itself: red when the export is stale or the instruction watcher is down,

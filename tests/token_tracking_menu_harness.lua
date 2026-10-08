@@ -229,8 +229,13 @@ check(#launched == 3 and launched[2].terminated and not launched[3].terminated
     and argLine(launched[3]) == "tokenmap tracking --range 24h --write", "two quick choices left more than the last running")
 launched[1].callback(15, "", "terminated")
 launched[2].callback(15, "", "terminated")
-check(select(2, compare(M.menuItems(nil))) == "24h vs 24h before" and stored["tokenTracking.range"] == nil and #alerts == 0,
-    "the chosen range is not shown while it computes, was remembered before it finished, or a cut run alerted")
+local computing = M.menuItems(nil)
+local computingItem, computingMarked = compare(computing)
+check(computingMarked == "7 days vs 7 before" and text(computing[1].title):find("^7 days to ") ~= nil
+    and find(computing, "prev 24h") == nil and text(computingItem.title) == "Compare: 24h vs 24h before — computing…"
+    and find(computingItem.menu, "24h vs 24h before — computing…")
+    and stored["tokenTracking.range"] == nil and #alerts == 0,
+    "the asked range read as current while it computes, or a cut run alerted: " .. text(computingItem.title))
 
 local rangeFixture = hs.json.decode(hs.json.encode(fixture))
 rangeFixture.version = 3
@@ -257,10 +262,32 @@ check(text(M.title(nil)) == "Token tracking", "a 40m-old tracking.json raised th
 launched = {}
 find(compare(M.menuItems(nil)).menu, "Today vs yesterday, same hours").fn()
 check(#launched == 1 and argLine(launched[1]) == "tokenmap scan --quiet --no-tracking", "a 40m-old export did not scan first")
+local function asking(list, header, phase)
+    local item, marked = compare(list)
+    return marked == "24h vs 24h before" and text(list[1].title):find(header, 1, true) == 1
+        and text(list[2].title):find(phase, 1, true) == 1
+        and text(item.title) == "Compare: Today vs yesterday, same hours — computing…"
+end
+local scanning = M.menuItems(nil)
+check(asking(scanning, "updating: 24h vs the 24h before", "scanning new data since "),
+    "the scan phase shows the asked range or its old view as current: " .. text(scanning[1].title))
 launched[1].callback(0, "", "")
 check(#launched == 2 and argLine(launched[2]) == "tokenmap tracking --range today --write",
     "the range did not follow the scan: " .. argLine(launched[2]))
+local stillComputing = M.menuItems(nil)
+check(asking(stillComputing, "24h vs the 24h before", "computing Today vs yesterday, same hours since "),
+    "the compute phase shows the asked range as current: " .. text(stillComputing[2].title))
+local todayFixture = hs.json.decode(hs.json.encode(rangeFixture))
+todayFixture.range.key, todayFixture.range.title = "today", "Today vs yesterday, same hours"
+handle = assert(io.open(dir .. "/tracking-range-today.json", "w"))
+handle:write(hs.json.encode(todayFixture))
+handle:close()
+local alertsBefore = #alerts
 launched[2].callback(0, "", "")
+local ready = M.menuItems(nil)
+check(#alerts == alertsBefore + 1 and text(ready[1].title):find("^Today vs yesterday, same hours · data to ") ~= nil
+    and text(compare(ready).title) == "Compare: Today vs yesterday, same hours",
+    "the ready alert and the menu disagree: " .. text(ready[1].title))
 check(alerts[#alerts] == "Token tracking Today vs yesterday, same hours ready"
     and #launched == 3 and argLine(launched[3]) == "nice -n 19 " .. os.getenv("HOME") .. "/.local/bin/tokenmap tracking --write",
     "the 7-day export did not follow the range at nice 19: " .. argLine(launched[3]))
@@ -392,8 +419,9 @@ find(M.menuItems(nil), "Refresh").fn()
 check(argLine(launched[4]) == "tokenmap scan --quiet", "the default Refresh is not a bare scan")
 find(compare(M.menuItems(nil)).menu, "3 days vs 3 before").fn()
 local queued = M.menuItems(nil)
-check(#launched == 4 and not launched[4].terminated and select(2, compare(queued)) == "3 days vs 3 before"
-    and text(queued[2].title) == "computing 3 days vs 3 before after the scan…"
+check(#launched == 4 and not launched[4].terminated and select(2, compare(queued)) == "7 days vs 7 before"
+    and text(queued[2].title):find("^scanning new data since ") ~= nil
+    and text(compare(queued).title) == "Compare: 3 days vs 3 before — computing…"
     and alerts[#alerts] == "Token tracking: computing 3 days vs 3 before after the scan…",
     "a click during a scan did not queue behind it: " .. text(queued[2].title))
 find(compare(M.menuItems(nil)).menu, "Today vs yesterday, same hours").fn()
@@ -401,6 +429,20 @@ launched[4].callback(0, "", "")
 check(#launched == 5 and argLine(launched[5]) == "tokenmap tracking --range today --write",
     "the last choice did not run right after the scan: " .. argLine(launched[5]))
 launched[5].callback(0, "", "")
+
+alerts = {}
+writeRange("3d", "cccc000000000003")
+hs.fs.touch(dir .. "/tracking-range-3d.json", os.time() - 3)
+find(compare(M.menuItems(nil)).menu, "3 days vs 3 before").fn()
+local hit, hitRun = M.menuItems(nil), launched[#launched]
+check(argLine(hitRun) == "tokenmap tracking --range 3d --write" and #alerts == 0
+    and select(2, compare(hit)) == "3 days vs 3 before — computing…"
+    and text(hit[1].title):find("^24h vs the 24h before · data to ") ~= nil,
+    "a current cached export was not shown at once: " .. text(hit[1].title))
+hitRun.callback(0, "", "")
+check(alerts[1] == "Token tracking 3 days vs 3 before ready"
+    and text(compare(M.menuItems(nil)).title) == "Compare: 3 days vs 3 before",
+    "a current cached export did not alert as its run returned: " .. tostring(alerts[1]))
 find(compare(M.menuItems(nil)).menu, "7 days vs 7 before").fn()
 os.remove(dir .. "/tracking-range-today.json")
 os.remove(genPath)
