@@ -287,6 +287,21 @@ assert grep -qxF "1 path(s) changed in the checkout during the run by another wr
 # The snapshot did NOT stand here, and saying it did is what sent the co-tenant's paths through.
 assert_fails grep -q 'snapshot attribution stands' "$RUN_DIR/files-note"
 
+# A Task subagent's edits are in its own transcript beside the session's, and they are the run's.
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Agent prompt 'edit it' >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+mkdir -p "$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session/subagents"
+tool_call Edit file_path "$DIRT_TOP/bin/by-a-subagent" \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session/subagents/agent-a1.jsonl"
+start_gated claudeb --workdir "$DIRT_REPO"
+printf 'a subagent wrote this\n' >"$DIRT_REPO/bin/by-a-subagent"
+gate_open
+assert await_done
+assert grep -qx 'bin/by-a-subagent' "$RUN_DIR/files"
+assert_fails grep -q 'by-a-subagent' "$RUN_DIR/files-note"
+rm -r "$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session"
+
 # A worker that merely RAN something — its own suite — named every file it wrote. Doubted there,
 # every serious run is back to claiming the whole window.
 clear_stub

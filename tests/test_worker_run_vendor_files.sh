@@ -616,6 +616,24 @@ transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
   <<<"$(transcript_report "$RUN_DIR")"
 
+# A walled attempt's edits stay the run's after the reroute: the rescue's transcript names only its own.
+clear_stub
+dirt_repo_init
+CX_TS=$(iso $(($(date +%s) + 60)))
+mkdir -p "$CODEX_PROFILES_DIR/wall/sessions/fixture" "$CODEX_PROFILES_DIR/rescue/sessions/fixture"
+cx_patch_event "$DIRT_TOP/bin/cx-walled-attempt" '' true >"$CODEX_PROFILES_DIR/wall/sessions/fixture/rollout-wall-session.jsonl"
+cx_patch_event "$DIRT_TOP/bin/cx-rescue-attempt" '' true >"$CODEX_PROFILES_DIR/rescue/sessions/fixture/rollout-codex-session.jsonl"
+printf 'wall\n' >"$STUB_DIR/wall_accounts"
+PICK_ACCOUNT=rescue STUB_WALL_SESSION=wall-session CLAUDE_CODE_SESSION_ID=chat-abc start_gated codex --account wall --workdir "$DIRT_REPO"
+printf 'walled attempt\n' >"$DIRT_REPO/bin/cx-walled-attempt"
+printf 'rescue attempt\n' >"$DIRT_REPO/bin/cx-rescue-attempt"
+gate_open
+assert await_done
+assert grep -qx 'REROUTE: walled on wall → continued on rescue' <<<"$("$RUNNER" report "$RUN_ID")"
+assert grep -qx 'bin/cx-walled-attempt' "$RUN_DIR/files"
+assert grep -qx 'bin/cx-rescue-attempt' "$RUN_DIR/files"
+assert_fails grep -q 'cx-walled-attempt' "$RUN_DIR/files-note"
+
 assert grep -E '^\| am \|.*record_workdir_escape.*workdir_escape_line' "$ROOT/docs/shared-invariants.md" >/dev/null
 
 clear_stub

@@ -1241,7 +1241,7 @@ grok_end_field() { # directory jq-expression
 }
 
 record_run_wall() {
-  local directory="$1" vendor="$2" account reset epoch event
+  local directory="$1" vendor="$2" account reset epoch event fire=false
   account=$(jq -r '.account' "$directory/meta.json" 2>/dev/null) || return 0
   [ -n "$account" ] || return 0
   event="$directory/wall-reset.$(head -n1 "$directory/attempt" 2>/dev/null)"
@@ -1249,14 +1249,18 @@ record_run_wall() {
     reset=$(worker_walls_extract_reset "$directory/out" "$directory/err")
     epoch=$(worker_walls_parse_reset "$reset") || epoch=$(($(date +%s) + 3600))
     printf '%s\n' "$epoch" >"$event" || return 1
+    fire=true
   fi
   worker_walls_record "$vendor" "$account" "$epoch" || true
   worker_model_clear_walled_pin "$vendor" "$account" || true
   local target="${vendor/#claudeb/claude}/$account" wall
-  if [ -f "${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/reset-arm/${target/\//-}" ]; then
+  # Once per attempt: the second call (reroute_walled after the watchdog's) no longer holds the reset
+  # text, and read without it a codex weekly wall is `unknown`. Detached and off the run's id, or the
+  # watchdog's tree kill and end_run_orphans end it while it waits for the arm lock.
+  if [ "$fire" = true ] && [ -f "${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/reset-arm/${target/\//-}" ]; then
     wall=$(worker_walls_kind "$vendor" "${reset:+$epoch}" "$directory/out" "$directory/err")
-    ${CHILD_GROUP_PREFIX[@]+"${CHILD_GROUP_PREFIX[@]}"} "$SCRIPT_DIRECTORY/llm-reset-redeem" \
-      --fire-armed "$target" --wall "$wall" </dev/null >/dev/null 2>&1 &
+    (env -u WORKER_RUN_ID ${CHILD_GROUP_PREFIX[@]+"${CHILD_GROUP_PREFIX[@]}"} "$SCRIPT_DIRECTORY/llm-reset-redeem" \
+      --fire-armed "$target" --wall "$wall" </dev/null >/dev/null 2>&1 &)
   fi
 }
 
@@ -1451,6 +1455,13 @@ persist_run_files() {
                                  shell_write_rows "$directory" "$workdir" "$snapshot"))
   RUN_LISTING_REASON=$RUN_FILES_REASON
   RUN_LISTING_PARTIAL=$RUN_FILES_PARTIAL
+  # This attempt's transcript names only its own calls: a reroute took a new session and restamped
+  # started_at, so the walled attempt's listing comes from what its own pass kept.
+  RUN_LISTING_LIST=$(sort -u <(sed '/^$/d' <<<"$RUN_LISTING_LIST") <(sed '/^$/d' "$directory/listed" 2>/dev/null))
+  [ -n "$RUN_LISTING_REASON$RUN_LISTING_PARTIAL" ] || RUN_LISTING_PARTIAL=$(cat "$directory/listed-partial" 2>/dev/null)
+  printf '%s\n' "$RUN_LISTING_LIST" >"$directory/listed" 2>/dev/null || :
+  [ -z "$RUN_LISTING_REASON$RUN_LISTING_PARTIAL" ] ||
+    printf '%s\n' "${RUN_LISTING_REASON:-$RUN_LISTING_PARTIAL}" >"$directory/listed-partial" 2>/dev/null || :
   RUN_FILES_EXTERNAL=''
   top=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) || top=''
   while IFS= read -r path; do
@@ -2364,7 +2375,8 @@ start_run() {
         ;;
       *) fail "the brief header 'BROWSER: $value' names no target: chrome, or yes/dia for Egor's Dia. Nothing was launched and no account was spent." ;;
     esac
-    ! { [ "$(brief_line_value "$brief" STRONG)" = yes ] && { [ "$vendor" = light ] || { [ "$vendor" = gemini ] && [[ $model != *pro* ]]; }; }; } ||
+    value=${model:-$(config_value gemini_model)}
+    ! { [ "$(brief_line_value "$brief" STRONG)" = yes ] && { [ "$vendor" = light ] || { [ "$vendor" = gemini ] && [[ ${value:-$(worker_model_default_model gemini)} != *pro* ]]; }; }; } ||
       fail "the brief header 'STRONG: yes' takes no Light or Gemini Flash worker: start it on the next vendor worker-pick ranks. Nothing was launched and no account was spent."
     # A relay that dropped --resume launched a RESUME brief as a fresh session (2026-10-02).
     value=$(sed -n '1s/^RESUME \([^[:space:]:]\{1,\}\):.*/\1/p' "$brief" 2>/dev/null)
@@ -2652,11 +2664,17 @@ start_run() {
     account="$explicit_account"
   else
     PICKED_RC=1
+    value=$(worker_claims_fresh "$vendor" 2>/dev/null) || value=''
     [ "$browser:$vendor:${browser_target:-chrome}" != true:claudeb:chrome ] || pick_account_listing "$vendor" \
       "$(browse_pool | jq -Rrn --argjson r "$(browse_registry)" '[inputs | select($r[.].status != "ok")] | join(",")')" "$model"
     [ "$PICKED_RC" -eq 0 ] && [ -n "$PICKED_ACCOUNT" ] || pick_account_listing "$vendor" '' "$model"
     if [ "$PICKED_RC" -eq 0 ] && [ -n "$PICKED_ACCOUNT" ]; then
       account="$PICKED_ACCOUNT"
+      # The pick claimed it for this launch; a refusal before the record exists hands it back.
+      if ! grep -qxF -- "$account" <<<"$value"; then
+        PICK_CLAIM="$vendor/$account"
+        trap '[ -z "$PICK_CLAIM" ] || worker_claims_release "${PICK_CLAIM%%/*}" "${PICK_CLAIM#*/}" 2>/dev/null || :' EXIT
+      fi
     elif [ "$PICKED_RC" -eq 3 ]; then
       if [ "$PICKED_POOL_EMPTY" = true ]; then
         outcome_line "$(vendor_name "$vendor")_UNAVAILABLE"
@@ -2868,6 +2886,7 @@ start_run() {
   # A picked account was claimed by worker-pick --claim; a named one spends the same window, so
   # unclaimed the next pick hands parallel lanes this account too (log_audit:worker-on-exhausted-account).
   [ -z "$explicit_account" ] || worker_claims_record "$vendor" "$account" 2>/dev/null || :
+  PICK_CLAIM=''
   # Who this run answers to, written where a hook can find it without parsing anything: a worker a
   # chat spawned IS that chat (Egor, 2026-08-17), and the run is the only place that fact exists —
   # the report says who a worker is, never who asked for it, so ownership read off a report is
@@ -3088,7 +3107,10 @@ has_limit_signature() {
     # "usage_limit" and "CODEX_USAGE_LIMIT" (live-caught misverdicts), so bare
     # tokens cannot count and the scan sees only the tail, where the CLI's own
     # fatal error is.
-    codex) pattern='hit your usage limit|usage limit (reached|exceeded)|usage_limit_reached|quota (exhausted|exceeded|reached)|rate limit (exceeded|reached)|too many requests|out of credits|402 Payment Required|deactivated_workspace'; scan=("$directory/err"); tail_lines=40 ;;
+    codex) pattern='hit your usage limit|usage limit (reached|exceeded)|usage_limit_reached|quota (exhausted|exceeded|reached)|rate limit (exceeded|reached)|too many requests|out of credits|402 Payment Required|deactivated_workspace'; scan=("$directory/err"); tail_lines=40
+      # In-run a quiet tail is also a file just read followed by a long silent command, and that kill
+      # takes a healthy run; the CLI states every wall as its own `ERROR: ` line (all live ones).
+      [ -z "$bytes" ] || pattern="^ERROR: .*($pattern)" ;;
     claudeb) pattern='hit your session limit|hit your usage limit|usage limit|(^|[^0-9])429([^0-9]|$)'; scan=("$directory/out" "$directory/err") ;;
     gemini) pattern='RESOURCE_EXHAUSTED|Individual quota reached|credits balance is too low|usage limit|quota|rate.?limit|(^|[^0-9])429([^0-9]|$)'; scan=("$directory/err") ;;
     # grok states a failure in two places — stderr and the stream's own error events — so its text
@@ -3575,10 +3597,11 @@ transcript_files() {
   # `fromdateiso8601` refuses the milliseconds every real transcript writes, hence the sub() — parsed
   # without it, every line reads as epoch 0 and a resumed run reports nothing at all.
   local transcript="$1" workdir="$2" since="${3:-0}" failed paths
+  local -a more=("${@:4}")
   [[ "$since" =~ ^[0-9]+$ ]] || since=0
   failed=$(jq -r '.. | objects
            | select((.type? == "tool_result") and (.is_error? == true))
-           | (.tool_use_id? // empty)' "$transcript" 2>/dev/null) || return 1
+           | (.tool_use_id? // empty)' "$transcript" ${more[@]+"${more[@]}"} 2>/dev/null) || return 1
   paths=$(jq -r --arg failed "$failed" --argjson since "$since" '
            ($failed | split("\n") | map(select(length > 0))) as $bad
            | select(((((.timestamp? // "") | tostring | sub("\\.[0-9]+"; ""))
@@ -3586,7 +3609,7 @@ transcript_files() {
            | .. | objects
            | select((.type? == "tool_use") and ((.name? // "") | test("^(Write|Edit|MultiEdit|NotebookEdit)$")))
            | select((.id? // "") as $id | ($bad | index($id)) == null)
-           | (.input.file_path? // .input.notebook_path? // empty)' "$transcript" 2>/dev/null) || return 1
+           | (.input.file_path? // .input.notebook_path? // empty)' "$transcript" ${more[@]+"${more[@]}"} 2>/dev/null) || return 1
   # Piped, never a here-string: bash writes a short one whole into a pipe only it reads, and a
   # transcript's path list past the 16K buffer a macOS pipe was left at blocked that write forever
   # (live 2026-10-04: four watchdog chains outlived their runs by 31 h).
@@ -3643,7 +3666,11 @@ compute_transcript_files() {
   fi
   case "$vendor" in
     claudeb)
-      if ! RUN_FILES_LIST=$(transcript_files "$transcript" "$workdir" "$started"); then
+      # A Task subagent's calls are in transcripts of their own beside the session's.
+      local sub
+      local -a subagents=()
+      for sub in "${transcript%.jsonl}"/subagents/*.jsonl; do [ ! -f "$sub" ] || subagents+=("$sub"); done
+      if ! RUN_FILES_LIST=$(transcript_files "$transcript" "$workdir" "$started" ${subagents[@]+"${subagents[@]}"}); then
         RUN_FILES_LIST=''
         RUN_FILES_REASON='transcript unreadable'
         return 0
@@ -3652,7 +3679,7 @@ compute_transcript_files() {
       # `sed -i`, a redirect, `mv` — changed files no transcript records as a tool call, and the list
       # is a floor rather than the whole of it. Said per run, because a run whose shell only READ
       # (its own test suite, `git status`) has a complete list and must not be doubted.
-      transcript_wrote_through_shell "$transcript" "$started"
+      transcript_wrote_through_shell "$transcript" "$started" ${subagents[@]+"${subagents[@]}"}
       case $? in
         0) RUN_FILES_PARTIAL="$SHELL_FLOOR_PARTIAL" ;;
         2) RUN_FILES_LIST=''; RUN_FILES_REASON='transcript unreadable'; return 0 ;;
@@ -3767,8 +3794,9 @@ compute_run_files() {
 }
 
 # 1 requires every Bash call in the window to be classified read-only; 0 is a floor, 2 unreadable.
-transcript_wrote_through_shell() { # transcript since
+transcript_wrote_through_shell() { # transcript since [transcript...]
   local transcript="$1" since="${2:-0}" commands command
+  local -a more=("${@:3}")
   [[ "$since" =~ ^[0-9]+$ ]] || since=0
   commands=$(jq -c --argjson since "$since" '
            (((.timestamp? // "") | tostring | sub("\\.[0-9]+"; ""))
@@ -3779,7 +3807,7 @@ transcript_wrote_through_shell() { # transcript since
              elif $stamp < $since then empty
              else (.input.command? // "") | tostring
                | if length == 0 then "__unclassified_shell_call__" else . end
-             end' "$transcript" 2>/dev/null) || return 2
+             end' "$transcript" ${more[@]+"${more[@]}"} 2>/dev/null) || return 2
   RUN_SHELL_COMMANDS=$commands
   [ -n "$commands" ] || return 1
   while IFS= read -r command; do
@@ -4007,9 +4035,11 @@ workdir_activity_stamp() { # directory workdir [own]
 # CPU the run has burned, summed over the whole process group: the supervisor is `setsid`'d, so its
 # pid IS the group and one `ps` covers the CLI and everything it spawned. The second half of the
 # liveness answer — a run whose files sit still is thinking if this keeps climbing.
-pid_group_cpu_seconds() { # pid
-  [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -gt 0 ] || return 1
-  ps -g "$1" -o time= 2>/dev/null |
+pid_group_cpu_seconds() { # pid...
+  local pid groups=''
+  for pid; do [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ] && groups+=${groups:+,}$pid; done
+  [ -n "$groups" ] || return 1
+  ps -g "$groups" -o time= 2>/dev/null |
     awk 'NF { n = split($1, f, ":"); s = 0; for (i = 1; i <= n; i++) s = s * 60 + f[i]; total += s; seen = 1 }
          END { if (!seen) exit 1; printf "%d\n", total }'
 }
@@ -4034,7 +4064,8 @@ running_report() {
   age=$(last_edit_age "$directory" "$workdir" "$now") || age=none
   printf 'LAST-EDIT: %s\n' "$age"
   memguard_lines "$directory"
-  cpu=$(pid_group_cpu_seconds "$(jq -r '.pid' "$directory/meta.json" 2>/dev/null)") &&
+  # The CLI leads a session of its own (CHILD_GROUP_PREFIX), so the supervisor's group never holds it.
+  cpu=$(pid_group_cpu_seconds $(jq -r '.pid // 0, .cli_pid // 0' "$directory/meta.json" 2>/dev/null)) &&
     printf 'CPU-SECONDS: %s\n' "$cpu"
   return 0
 }
@@ -4375,10 +4406,24 @@ record_produced() { # directory workdir
   if [ -s "$foreign" ]; then
     RUN_FOREIGN_NOTE='commits outside the run window landed in head-before..head-after; those paths are unattributed'
     sort -u "$foreign" | sed '/^$/d' >"$foreign.sorted"
+    local listed stripped
+    listed=$(listing_top_paths "$directory" "$top" "$workdir")
     grep -vxF -f "$foreign.sorted" "$directory/files" >"$directory/files.tmp.$$" 2>/dev/null &&
       mv -f "$directory/files.tmp.$$" "$directory/files" 2>/dev/null ||
       rm -f "$directory/files.tmp.$$" 2>/dev/null
     rm -f "$foreign.sorted"
+    # The run's own rows went with them and now answer to nobody: the dirt record is what UNNAMED offers.
+    stripped=$(comm -23 <(sed '/^$/d' <<<"$listed") <(listing_top_paths "$directory" "$top" "$workdir"))
+    if [ -n "$stripped" ]; then
+      { printf 'WORKDIR: %s\n' "$top"
+        { grep -v '^WORKDIR: ' "$directory/dirty" 2>/dev/null; printf '%s\n' "$stripped"; } | sed '/^$/d' | sort -u
+      } >"$directory/dirty.tmp.$$" && mv -f "$directory/dirty.tmp.$$" "$directory/dirty" 2>/dev/null ||
+        rm -f "$directory/dirty.tmp.$$" 2>/dev/null
+      grep -q '^PARTIAL: ' "$directory/files" ||
+        { awk 'NR == 1 { print; print "PARTIAL: commits outside the run window touched paths this run listed"; next } 1' \
+            "$directory/files" >"$directory/files.tmp.$$" && mv -f "$directory/files.tmp.$$" "$directory/files"; } 2>/dev/null
+      RUN_FOREIGN_NOTE+="; $(grep -c '' <<<"$stripped") of them this run's listing named are in the dirt record to claim"
+    fi
   fi
   rm -f "$foreign" "$commits"
   return 0
@@ -4515,7 +4560,7 @@ claim_run() {
   # `persist_run_files`, and the paths it named read back as nobody's again.
   [ -f "$directory/exit_code" ] ||
     fail "run $run_id is still running; claim its files once it has ended"
-  session="${CLAUDE_CODE_SESSION_ID:-}"
+  session="${CLAUDE_LAUNCHER_SESSION:-${CLAUDE_CODE_SESSION_ID:-}}"
   launcher=$(tr -d '[:space:]' <"$directory/launcher" 2>/dev/null)
   [ -n "$launcher" ] ||
     fail "run $run_id records no launching chat, so nobody may claim its files"

@@ -187,6 +187,7 @@ if [ -n "${STUB_TRANSCRIPT_GROW:-}" ] && [ -n "${STUB_TRANSCRIPT_SESSION:-}" ]; 
 else
   [ -z "${STUB_SLEEP:-}" ] || sleep "$STUB_SLEEP"
 fi
+[ -z "${STUB_BURN:-}" ] || while [ ! -e "$STUB_GATE" ] && [ -d "${STUB_GATE%/*}" ]; do :; done
 [ -z "${STUB_GATE:-}" ] || while [ ! -e "$STUB_GATE" ] && [ -d "${STUB_GATE%/*}" ]; do sleep 0.05; done
 has_effort=false
 for arg in "$@"; do [ "$arg" != --effort ] || has_effort=true; done
@@ -241,6 +242,7 @@ done
 codex_account=main
 case "${CODEX_HOME-}" in */*) codex_account=${CODEX_HOME##*/} ;; esac
 if [ -r "$STUB_DIR/wall_accounts" ] && grep -qx "$codex_account" "$STUB_DIR/wall_accounts"; then
+  [ -z "${STUB_WALL_SESSION:-}" ] || printf 'session id: %s\n' "$STUB_WALL_SESSION" >&2
   printf '%s\n' "${STUB_WALL_TEXT:-ERROR: You have hit your usage limit.}" >&2
   if [ -n "${STUB_WALL_ECHO:-}" ]; then
     for _ in $(seq "$STUB_WALL_ECHO"); do sleep 1; printf 'still reading files\n' >&2; done
@@ -351,7 +353,7 @@ clear_stub() {
   : >"$CALL_LOG"
   : >"$PICK_LOG"
   unset STUB_SLEEP STUB_HEARTBEAT STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT STUB_TRANSCRIPT_GROW STUB_TRANSCRIPT_GROW_TURNS \
-    STUB_EDIT_PATH STUB_PICK_WALL \
+    STUB_EDIT_PATH STUB_PICK_WALL STUB_BURN STUB_WALL_SESSION \
     STUB_ERROR STUB_CODE STUB_STDOUT STUB_GEMINI_LABEL STUB_SESSION STUB_GROK_SESSION STUB_GROK_MODEL \
     STUB_GROK_ANSWER STUB_GROK_ERROR_EVENT STUB_GROK_TURNS STUB_MODEL_USAGE
   rm -f "$STUB_DIR/claudeb_drop_effort" "$STUB_DIR/codex_trusted" "$STUB_DIR/codex.stdin" \

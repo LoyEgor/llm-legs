@@ -89,6 +89,12 @@ model_effort_tests() {
     assert grep -qF "the brief header 'STRONG: yes' takes no Light or Gemini Flash worker" "$WORK/effort.out"
     assert test ! -s "$CALL_LOG"
   done
+  # With no MODEL: line the configured gemini_model is the run's model, and pro is no Flash worker.
+  set_config 'gemini_model=pro'
+  clear_stub
+  start_ok gemini --account main
+  assert await_done
+  set_config 'claudeb_model=fable'
   clear_stub
   start_ok codex --account main
   assert await_done

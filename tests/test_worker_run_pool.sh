@@ -542,6 +542,14 @@ printf '%s\n' '0 lapsed' '0 ownlist' >"$STUB_DIR/pick_queue"
 start_ok codex --model astra
 assert test -e "$WORK/claims/codex/lapsed"
 assert await_done
+# A refusal after the pick launches nothing, and the claim the pick took is handed back.
+clear_stub
+set_config 'codex_workers=off'
+rm -f "$WORK/claims/codex/ownlist"
+printf '0 ownlist\n' >"$STUB_DIR/pick_queue"
+assert_fails "$RUNNER" start codex --brief "$WORK/brief" --workdir "$WORK/workdir" --model astra >/dev/null 2>&1
+assert test ! -e "$WORK/claims/codex/ownlist"
+set_config 'claudeb_model=opus' 'claudeb_effort=high'
 unset PICK_CLAIMS
 rm -rf "$WORK/claims"
 # A pinned slug is checked against the account's own catalog too, and so is an account whose

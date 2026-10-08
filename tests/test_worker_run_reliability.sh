@@ -79,6 +79,37 @@ reliability_tests() {
     assert test "$?" -eq 0
   fi
 
+  # The watchdog's wall fires the armed redeem from inside its own tree, which is killed whole the
+  # moment the CLI exits; reroute_walled's second record then reads no reset text.
+  if reliability_case R2-redeem; then
+    (
+      eval "$(sed -n '/^record_run_wall() {/,/^}/p' "$RUNNER")"
+      . "$ROOT/share/worker-walls.sh"
+      . "$ROOT/share/processes.sh"
+      worker_model_clear_walled_pin() { :; }
+      SCRIPT_DIRECTORY="$WORK/redeem-bin" WORKER_RUN_ID=redeem-run
+      export WORKER_RUN_ID
+      mkdir -p "$SCRIPT_DIRECTORY" "$CLAUDEB_DIR/reset-arm" "$WORK/redeem-wall"
+      printf '#!/bin/bash\nsleep 1\nprintf "%%s %%s\\n" "$*" "${WORKER_RUN_ID:-unset}" >>"%s"\n' "$WORK/redeem.log" \
+        >"$SCRIPT_DIRECTORY/llm-reset-redeem"
+      chmod +x "$SCRIPT_DIRECTORY/llm-reset-redeem"
+      : >"$CLAUDEB_DIR/reset-arm/codex-armed"
+      printf '{"account":"armed"}\n' >"$WORK/redeem-wall/meta.json"
+      printf '1\n' >"$WORK/redeem-wall/attempt"
+      : >"$WORK/redeem-wall/out"
+      printf 'ERROR: usage limit, resets in 72 hours\n' >"$WORK/redeem-wall/err"
+      ( record_run_wall "$WORK/redeem-wall" codex; sleep 30 ) & watchdog=$!
+      for _ in $(seq 1 100); do [ ! -e "$WORK/redeem-wall/wall-reset.1" ] || break; sleep 0.05; done
+      process_tree_end "$watchdog" 0
+      wait "$watchdog" 2>/dev/null
+      record_run_wall "$WORK/redeem-wall" codex
+      sleep 3
+      [ "$(cat "$WORK/redeem.log" 2>/dev/null)" = '--fire-armed codex/armed --wall weekly unset' ]
+    )
+    assert test "$?" -eq 0
+    rm -f "$CLAUDEB_DIR/reset-arm/codex-armed"
+  fi
+
   if reliability_case R3; then
     clear_stub
     : >"$STUB_DIR/codex_bad_model_always"
@@ -174,6 +205,17 @@ EOF
     assert test ! -e "$RUN_DIR/killed"
     assert test ! -e "$WORKER_WALLS_DIR/codex-wall"
     unset STUB_WALL_ECHO
+  fi
+
+  # A limit phrase in a file the worker just read is no wall, however long the stream then stays quiet.
+  if reliability_case A-quoted; then
+    clear_stub
+    printf 'wall\n' >"$STUB_DIR/wall_accounts"
+    STUB_WALL_TEXT='| a row this worker read: rate limit reached' STUB_WALL_ECHO=3 start_ok codex --account wall
+    result=$("$RUNNER" wait "$RUN_ID" --max 60)
+    assert grep -qx 'STATUS: done' <<<"$result"
+    assert_fails grep -q 'REROUTE\|KILLED' <<<"$result"
+    assert test ! -e "$WORKER_WALLS_DIR/codex-wall"
   fi
 
   if reliability_case A-resume; then

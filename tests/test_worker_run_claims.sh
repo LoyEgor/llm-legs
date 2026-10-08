@@ -260,6 +260,9 @@ mv "$RUN_DIR/exit_code.held" "$RUN_DIR/exit_code"
 assert_fails env CLAUDE_CODE_SESSION_ID=chat-somebody-else "$RUNNER" claim "$RUN_ID" --paths bin/claimed-one
 assert grep -q 'launched by chat-abc' \
   <<<"$(CLAUDE_CODE_SESSION_ID=chat-somebody-else "$RUNNER" claim "$RUN_ID" --paths bin/claimed-one 2>&1 >/dev/null)"
+# A worker of the launching chat answers for it, as every other owner check reads it.
+assert_fails grep -q 'launched by chat-abc' \
+  <<<"$(CLAUDE_CODE_SESSION_ID=worker-own CLAUDE_LAUNCHER_SESSION=chat-abc "$RUNNER" claim "$RUN_ID" --paths /etc/hosts 2>&1 >/dev/null)"
 
 # A shell that names no chat at all is not the launching chat either: read as an empty session it
 # would match a record whose launcher is empty and claim the work of a run nobody can answer for.
@@ -505,6 +508,17 @@ gate_open
 assert await_done
 # A terminal report answers with the run's files instead; a liveness row there is a run still going.
 assert test "$(grep -c '^LAST-EDIT: \|^CPU-SECONDS: ' "$WORK/wait.out")" -eq 0
+# The CLI leads a process group of its own, and its CPU is the worker's.
+clear_stub
+STUB_BURN=1 start_gated claudeb --workdir "$DIRT_REPO"
+for _ in $(seq 1 60); do
+  cpu=$("$RUNNER" wait "$RUN_ID" --max 0 | sed -n 's/^CPU-SECONDS: //p')
+  [ "${cpu:-0}" -lt 2 ] || break
+  sleep 0.5
+done
+assert test "${cpu:-0}" -ge 2
+gate_open
+assert await_done
 unset CLAUDE_CODE_SESSION_ID
 
 

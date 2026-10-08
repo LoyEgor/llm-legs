@@ -329,6 +329,22 @@ assert grep -q 'bin/ours' "$RUN_DIR/produced"
 assert_fails grep -q 'from-upstream' "$RUN_DIR/produced"
 assert_fails grep -qx 'bin/from-upstream' "$RUN_DIR/files"
 assert grep -q 'outside the run window' "$RUN_DIR/files-note"
+# A path such a commit touched that the run also edited loses its row, and the claim offer names it.
+clear_stub
+printf 'older upstream\n' >"$UP_REPO/bin/shared"
+GIT_AUTHOR_DATE='2020-01-02T00:00:00' GIT_COMMITTER_DATE='2020-01-02T00:00:00' \
+  git -C "$UP_REPO" -c user.email=t@t -c user.name=t commit -qam 'old upstream shared' >/dev/null
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Edit file_path "$CLONE_TOP/bin/shared" \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+start_gated claudeb --workdir "$WORK/run-clone"
+git -C "$WORK/run-clone" fetch -q origin && git -C "$WORK/run-clone" merge --ff-only -q FETCH_HEAD
+printf 'ours on top\n' >>"$WORK/run-clone/bin/shared"
+gate_open
+assert await_done
+assert_fails grep -qx 'bin/shared' "$RUN_DIR/files"
+assert grep -qx 'bin/shared' "$RUN_DIR/dirty"
+assert grep -qF "claim yours: worker-run claim $RUN_ID --paths $CLONE_TOP/bin/shared" "$WORK/wait.out"
 
 clear_stub
 TOOL_TS=$(iso $(($(date +%s) + 60)))
