@@ -21,7 +21,12 @@ trap 'for _ in 1 2 3 4 5 6 7 8 9 10; do rm -rf "$WORK" 2>/dev/null && break; sle
 asserts=0
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
-assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
+here_fq() { local text; IFS= read -r -d '' text; [[ $text == *"$1"* ]]; }
+is_here_fq() { [ "$#" = 3 ] && [ "$1" = grep ] && [ "$2" = -Fq ] && [[ $3 != *$'\n'* ]]; }
+assert() {
+  asserts=$((asserts + 1))
+  if is_here_fq "$@"; then here_fq "$3"; else "$@"; fi || fail "assert $asserts failed: $*"
+}
 assert_eq() {
   asserts=$((asserts + 1))
   [ "$1" = "$2" ] || fail "assert $asserts failed: expected '$1', got '$2'"
@@ -62,38 +67,50 @@ printf 'fixture\n' > "$REPO_A/tracked.txt"
 git -C "$REPO_A" add tracked.txt
 git -C "$REPO_A" -c user.name=Fixture -c user.email=fixture@example.com commit -qm initial
 git -C "$REPO_A" worktree add -q -b feature-x "$REPO_B"
-git -C "$REPO_A" worktree add -q --detach "$REPO_C"
 # The convention under test: worktrees live at <repo>/.claude/worktrees/<name>,
 # git-excluded so they never count as untracked content of the parent repo.
 printf '.claude/worktrees/\n' >> "$REPO_A/.git/info/exclude"
 REPO_E="$REPO_A/.claude/worktrees/feature-y"
 git -C "$REPO_A" worktree add -q -b feature-y "$REPO_E"
 REPO_F="$REPO_A/.claude/worktrees/auto-slug"
-git -C "$REPO_A" worktree add -q -b claude/agitated-fixture "$REPO_F"
 REPO_J="$REPO_A/.claude/worktrees/wut-25-portal"
 git -C "$REPO_A" worktree add -q -b WUT-259_feat_portal-fixes "$REPO_J"
 REPO_L="$REPO_A/.claude/worktrees/WUT-12345-fix-header"
-git -C "$REPO_A" worktree add -q -b wut-12345-fix "$REPO_L"
 REPO_M="$REPO_A/.claude/worktrees/WUT_12345-fix"
-git -C "$REPO_A" worktree add -q -b wut_12345-fix "$REPO_M"
-# A repository whose git dir lives outside the checkout: `<common>/..` is NOT the
-# main worktree, so the canonical-location check must ask git, not strip `/.git`.
 REPO_G="$FIXTURES/repo-g"
-mkdir -p "$REPO_G"
-git -C "$REPO_G" init -q --separate-git-dir "$FIXTURES/repo-g-gitdir" -b main
-printf 'sep\n' > "$REPO_G/tracked.txt"
-git -C "$REPO_G" add tracked.txt
-git -C "$REPO_G" -c user.name=Fixture -c user.email=fixture@example.com commit -qm initial
-printf '.claude/worktrees/\n' >> "$FIXTURES/repo-g-gitdir/info/exclude"
 REPO_H="$REPO_G/.claude/worktrees/sep-work"
-git -C "$REPO_G" worktree add -q -b sep-work "$REPO_H"
 REPO_K="$FIXTURES/repo-detached"
-mkdir -p "$REPO_K"
-git -C "$REPO_K" init -q -b main
-printf 'det\n' > "$REPO_K/tracked.txt"
-git -C "$REPO_K" add tracked.txt
-git -C "$REPO_K" -c user.name=Fixture -c user.email=fixture@example.com commit -qm initial
-git -C "$REPO_K" checkout -q --detach
+# Shard-local fixtures: built by the first section of a shard that reads them.
+fixture_repos_cfgh() {
+  [ -z "${TOP_H:-}" ] || return 0
+  git -C "$REPO_A" worktree add -q --detach "$REPO_C"
+  git -C "$REPO_A" worktree add -q -b claude/agitated-fixture "$REPO_F"
+  # A repository whose git dir lives outside the checkout: `<common>/..` is NOT the
+  # main worktree, so the canonical-location check must ask git, not strip `/.git`.
+  mkdir -p "$REPO_G"
+  git -C "$REPO_G" init -q --separate-git-dir "$FIXTURES/repo-g-gitdir" -b main
+  printf 'sep\n' > "$REPO_G/tracked.txt"
+  git -C "$REPO_G" add tracked.txt
+  git -C "$REPO_G" -c user.name=Fixture -c user.email=fixture@example.com commit -qm initial
+  printf '.claude/worktrees/\n' >> "$FIXTURES/repo-g-gitdir/info/exclude"
+  git -C "$REPO_G" worktree add -q -b sep-work "$REPO_H"
+  TOP_C=$(git -C "$REPO_C" rev-parse --show-toplevel)
+  TOP_F=$(git -C "$REPO_F" rev-parse --show-toplevel)
+  TOP_H=$(git -C "$REPO_H" rev-parse --show-toplevel)
+}
+fixture_repos_klm() {
+  [ -z "${SHORT_SHA:-}" ] || return 0
+  git -C "$REPO_A" worktree add -q -b wut-12345-fix "$REPO_L"
+  git -C "$REPO_A" worktree add -q -b wut_12345-fix "$REPO_M"
+  mkdir -p "$REPO_K"
+  git -C "$REPO_K" init -q -b main
+  printf 'det\n' > "$REPO_K/tracked.txt"
+  git -C "$REPO_K" add tracked.txt
+  git -C "$REPO_K" -c user.name=Fixture -c user.email=fixture@example.com commit -qm initial
+  git -C "$REPO_K" checkout -q --detach
+  TOP_K=$(git -C "$REPO_K" rev-parse --show-toplevel)
+  SHORT_SHA=$(git -C "$REPO_K" rev-parse --short HEAD)
+}
 REPO_D="$FIXTURES/repo-d"
 mkdir -p "$REPO_D"
 git -C "$REPO_D" init -q -b main
@@ -103,14 +120,9 @@ git -C "$REPO_D" -c user.name=Fixture -c user.email=fixture@example.com commit -
 ln -s "$REPO_B" "$HOME/project"
 TOP_A=$(git -C "$REPO_A" rev-parse --show-toplevel)
 TOP_B=$(git -C "$REPO_B" rev-parse --show-toplevel)
-TOP_C=$(git -C "$REPO_C" rev-parse --show-toplevel)
 TOP_D=$(git -C "$REPO_D" rev-parse --show-toplevel)
 TOP_E=$(git -C "$REPO_E" rev-parse --show-toplevel)
-TOP_F=$(git -C "$REPO_F" rev-parse --show-toplevel)
 TOP_J=$(git -C "$REPO_J" rev-parse --show-toplevel)
-TOP_H=$(git -C "$REPO_H" rev-parse --show-toplevel)
-TOP_K=$(git -C "$REPO_K" rev-parse --show-toplevel)
-SHORT_SHA=$(git -C "$REPO_K" rev-parse --short HEAD)
 
 DIM=$'\033[2m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RED=$'\033[31m'; MAGENTA=$'\033[35m'; RESET=$'\033[0m'
 BLUE=$'\033[34m'; CYAN=$'\033[36m'
@@ -147,11 +159,24 @@ place_set() { # session tree [main] [kind]
   [ -d "$STATE_DIR" ] || mkdir -p "$STATE_DIR"
   printf '%(%s)T\t%s\t%s\t%s\n' -1 "${4:-seed}" "$2" "${3:-$2}" >> "$STATE_DIR/place-$1"
 }
-last_tree() { tail -n 1 "$STATE_DIR/place-$1" 2>/dev/null | cut -f3; }
-last_kind() { tail -n 1 "$STATE_DIR/place-$1" 2>/dev/null | cut -f2; }
+place_field() { # session field -> `tail -n 1 | cut -f<field>` of the place journal
+  local line i
+  line=$(tail -n 1 "$STATE_DIR/place-$1" 2>/dev/null)
+  if [[ $line == *$'\t'* ]]; then
+    for ((i = 1; i < $2; i++)); do
+      [[ $line == *$'\t'* ]] || { line=; break; }
+      line=${line#*$'\t'}
+    done
+    line=${line%%$'\t'*}
+  fi
+  printf '%s\n' "$line"
+}
+last_tree() { place_field "$1" 3; }
+last_kind() { place_field "$1" 2; }
 place_count() { if [ -f "$STATE_DIR/place-$1" ]; then wc -l < "$STATE_DIR/place-$1" | tr -d ' '; else echo 0; fi; }
 
 if suite_shard_owns 1 workdir-hook; then
+fixture_repos_cfgh
 # Every write the hook makes goes to the session cache under $HOME, which these
 # cases redirect; a hardcoded absolute redirect (a debug probe left in) escapes
 # the sandbox entirely and no behavioural case below can see it.
@@ -230,7 +255,7 @@ run_workdir_hook "$(workdir_payload Bash session-git-mut-home "$REPO_A" "(git -C
 assert_eq "$TOP_B" "$(last_tree "$S")"
 
 # --- round 20260919T122344Z-4339d2a: what the place detector used to miss ---
-last_main() { tail -n 1 "$STATE_DIR/place-$1" 2>/dev/null | cut -f4; }
+last_main() { place_field "$1" 4; }
 place_case() { # session command [cwd] -> one event on a fresh journal seeded at TOP_A
   place_set "$1" "$TOP_A"
   run_workdir_hook "$(workdir_payload Bash "$1" "${3:-$REPO_A}" "$2")"
@@ -1265,7 +1290,10 @@ for trim_i in $(seq 1 400); do place_set "$S" "$TOP_A"; done
 assert_eq 200 "$(place_count "$S")"
 assert_eq "$TOP_D" "$(last_tree "$S")"
 fi
-assert_fails() { asserts=$((asserts + 1)); ! "$@" >/dev/null 2>&1 || fail "assert $asserts should have failed: $*"; }
+assert_fails() {
+  asserts=$((asserts + 1))
+  if is_here_fq "$@"; then ! here_fq "$3"; else ! "$@" >/dev/null 2>&1; fi || fail "assert $asserts should have failed: $*"
+}
 if suite_shard_owns 1 place-journal; then
 assert_fails "$PLACE" add --session "$S" --kind wander --path "$REPO_D"
 assert_fails "$PLACE" why
@@ -1301,6 +1329,11 @@ statusline_payload() {
   local extra="${2-}"
   local cwd="${3:-$REPO_A}"
   [ -n "$extra" ] || extra='{}'
+  if [ "$extra" = '{}' ] && [[ $1$cwd != *[!\ -~]* && $1$cwd != *[\"\\]* ]]; then
+    printf '{"session_id":"%s","cwd":"%s","workspace":{"current_dir":"%s","project_dir":"%s"},"model":{"display_name":"Fixture"},"effort":{"level":"high"},"context_window":{"used_percentage":12,"current_usage":{"input_tokens":1000}}}\n' \
+      "$1" "$cwd" "$cwd" "$cwd"
+    return
+  fi
   jq -cn --arg session "$1" --arg cwd "$cwd" --argjson extra "$extra" '
     {session_id:$session,cwd:$cwd,workspace:{current_dir:$cwd,project_dir:$cwd},
      model:{display_name:"Fixture"},effort:{level:"high"},
@@ -1330,6 +1363,7 @@ run_statusline() {
 
 
 if suite_shard_owns 1 render-limits; then
+fixture_repos_cfgh
 cg_now=$(date +%s)
 jq -cn --argjson now "$cg_now" '{vendors:{codex:{accounts:[
   {account:"work4",five_hour:{used_pct:36,effective_pct:36,as_of:$now,resets_at:($now+3600)},
@@ -1521,6 +1555,7 @@ assert grep -Fq "shown: the project dir (no journal at" <<< "$("$PLACE" why --se
 fi
 printf '{}' > "$WORK/limits.json"
 if suite_shard_owns 2 render-branch; then
+fixture_repos_klm
 # Outside a worktree the branch always shows, detached HEAD as `@sha`.
 detached_output=$(run_statusline "$(statusline_payload status-detached '' "$REPO_K")") || fail "statusline detached failed"
 assert grep -Fq "@$SHORT_SHA" <<< "$detached_output"
@@ -1542,6 +1577,7 @@ assert test "${fast_output#*Fast Mode}" = "$fast_output"
 fi
 worker_file="$HOME/.claude/worker-model"
 if suite_shard_owns 2 render-pins; then
+fixture_repos_klm
 rm -f "$worker_file"
 rm -f "$CHAT_PINS_DIR"/*
 
@@ -4190,7 +4226,7 @@ touch -t 202001010000 "$STATE_DIR/work-wl-two"
 assert_eq 2 "$(printf '%s\n' "$(run_statusline "$(statusline_payload wl-two)")" | wc -l | tr -d ' ')"
 rm -f "$STATE_DIR/work-wl-fire"
 run_statusline "$(statusline_payload wl-fire)" >/dev/null
-for wl_i in 1 2 3 4 5 6 7 8 9 10; do [ -e "$STATE_DIR/work-wl-fire" ] && break; sleep 0.3; done
+for wl_i in $(seq 1 60); do [ -e "$STATE_DIR/work-wl-fire" ] && break; sleep 0.05; done
 assert test -e "$STATE_DIR/work-wl-fire"
 
 # --- render of the two new segments ---
@@ -4978,13 +5014,15 @@ cat > "$DEBT_STUB" <<'STUB'
 #!/bin/bash
 printf '%s\n' "$*" >> "$DEBT_LOG"
 [ -n "${DEBT_SLEEP:-}" ] && sleep "$DEBT_SLEEP"
+[ -z "${DEBT_HOLD:-}" ] || for _ in $(seq 1 160); do [ -e "$DEBT_HOLD" ] && break; sleep 0.05; done
 printf '%s\n' "$DEBT_ANSWER"
 STUB
 chmod +x "$DEBT_STUB"
 DEBT_LOG="$WORK/repo-debt.log"
-export DEBT_LOG DEBT_ANSWER DEBT_SLEEP
+export DEBT_LOG DEBT_ANSWER DEBT_SLEEP DEBT_HOLD
 DEBT_ANSWER='LINES=0 FILES=0'
 DEBT_SLEEP=
+DEBT_HOLD=
 REVIEW_OTHER="$FIXTURES/review-other-folder"
 mkdir -p "$REVIEW_OTHER"
 git -C "$REVIEW_OTHER" init -q -b main
@@ -5089,7 +5127,8 @@ assert grep -Fq "${DIM}21${RESET}" <<< "$(NO_TIMEOUT_BIN=1 run_statusline \
 # The lock a probe removes is the one it made. A walk still running when its lock is swept as dead
 # leaves the sweeper's own lock standing, or two full walks run over the same tree at once.
 rm -f "$STATE_DIR/repo-debt-"* 2>/dev/null
-DEBT_SLEEP=0.8
+DEBT_SLEEP=
+DEBT_HOLD="$WORK/debt-hold-lock-owner"
 NO_TIMEOUT_BIN=1 run_statusline \
   "$(statusline_payload repo-debt-lock-owner "" "$REVIEW_DIRTY")" >/dev/null
 for debt_wait in $(seq 1 100); do
@@ -5098,6 +5137,7 @@ for debt_wait in $(seq 1 100); do
 done
 assert test -d "$debt_lock"
 rmdir "$debt_lock" && mkdir "$debt_lock"
+touch "$DEBT_HOLD"
 for debt_wait in $(seq 1 100); do
   [ -s "$debt_cache" ] && break
   sleep 0.05
@@ -5108,7 +5148,7 @@ rmdir "$debt_lock" 2>/dev/null
 # The walk prices the whole family, so an answer whose key still holds is asked again only past
 # 300s, and stands that long. The shown tree's HEAD and diff counters are in the key: moving them
 # asks again once the answer is 15s old, and the old number stands its 120s meanwhile.
-DEBT_SLEEP=
+DEBT_HOLD=
 DEBT_ANSWER='LINES=33 FILES=3'
 debt_render repo-debt-key "$REVIEW_DIRTY" >/dev/null
 debt_settle
@@ -5140,11 +5180,12 @@ assert debt_asked
 assert grep -Fq "${DIM}34${RESET}" <<< "$(run_statusline "$debt_payload")"
 printf 'line\n%.0s' {1..21} > "$REVIEW_DIRTY/change.txt"
 : > "$DEBT_LOG"; debt_age 200
-DEBT_SLEEP=0.8
+DEBT_HOLD="$WORK/debt-hold-moved"
 debt_moved_out=$(run_statusline "$debt_payload")
 assert test "${debt_moved_out#*${DIM}34${RESET}}" = "$debt_moved_out"
+touch "$DEBT_HOLD"
 debt_settle
-DEBT_SLEEP=
+DEBT_HOLD=
 DEBT_ANSWER='LINES=0 FILES=0'
 DEBT_CMD=
 rm -f "$STATE_DIR/repo-debt-"* 2>/dev/null
@@ -5176,7 +5217,7 @@ UNPUSHED_STUB="$FIXTURES/unpushed-gate-stub.sh"
 cat > "$UNPUSHED_STUB" <<'STUB'
 #!/bin/bash
 printf '%s\n' "$*" >> "$GATE_LOG"
-[ -z "${GATE_SLEEP:-}" ] || sleep "$GATE_SLEEP"
+[ -z "${GATE_HOLD:-}" ] || for _ in $(seq 1 160); do [ -e "$GATE_HOLD" ] && break; sleep 0.05; done
 case "$1" in
   unpushed) printf '%s\n' "$UNPUSHED_ANSWER" ;;
   *) printf '%s\n' "$GATE_ANSWER" ;;
@@ -5193,7 +5234,7 @@ shift
 exec "$@"
 TIMEOUT
 chmod +x "$UNPUSHED_TIMEOUT_BIN/timeout"
-export UNPUSHED_TIMEOUT_LOG GATE_SLEEP
+export UNPUSHED_TIMEOUT_LOG GATE_HOLD
 export UNPUSHED_ANSWER=""
 GATE_CMD="$UNPUSHED_STUB"
 # Named for nothing in the marker's own vocabulary: the directory label prints the repository name,
@@ -5275,8 +5316,8 @@ assert_eq "10 $UNPUSHED_STUB autonomous autonomy-bounded" \
   "$(grep -m1 -F "$UNPUSHED_STUB autonomous autonomy-" "$UNPUSHED_TIMEOUT_LOG")"
 # The lock a gate ask removes is the one it made: one swept as dead while the ask ran belongs to the
 # render that swept it, and removing it would let a third ask start beside the second.
-GATE_SLEEP=0.8
 for gate_owner in unpushed review-autonomy; do
+  GATE_HOLD="$WORK/gate-hold-$gate_owner"
   gate_owner_cache="$STATE_DIR/$gate_owner-gate-lock-owner"
   rm -f "$gate_owner_cache"
   rmdir "$gate_owner_cache.lock" 2>/dev/null
@@ -5288,6 +5329,7 @@ for gate_owner in unpushed review-autonomy; do
   done
   assert test -d "$gate_owner_cache.lock"
   rmdir "$gate_owner_cache.lock" && mkdir "$gate_owner_cache.lock"
+  touch "$GATE_HOLD"
   for gate_wait in $(seq 1 100); do
     [ -s "$gate_owner_cache" ] && break
     sleep 0.05
@@ -5296,7 +5338,7 @@ for gate_owner in unpushed review-autonomy; do
   assert test -d "$gate_owner_cache.lock"
   rmdir "$gate_owner_cache.lock" 2>/dev/null
 done
-GATE_SLEEP=
+GATE_HOLD=
 
 # A gate naming no commit is a branch ahead of its upstream by nobody's work here — a co-tenant's
 # commits are theirs — and the marker says nothing rather than pointing at the count.
@@ -5415,7 +5457,7 @@ gate_agent_payload() {
     '{hook_event_name:"PreToolUse",tool_name:"Bash",agent_type:$agent,tool_input:{command:$command}}'
 }
 gate_decision() { jq -r '.hookSpecificOutput.permissionDecision // "pass"' 2>/dev/null; }
-if suite_shard_owns 1 launch-gate-grok; then
+if suite_shard_owns 2 launch-gate-grok; then
 for gate_denied in \
   'grok -p "do the thing"' \
   'grok --print "do the thing"' \
@@ -5460,7 +5502,7 @@ done
 
 
 fi
-if suite_shard_owns 1 launch-gate-relay; then
+if suite_shard_owns 2 launch-gate-relay; then
 # --- worker-launch-gate.sh: a run belongs to a relay agent ------------------------------------
 # `worker-run` is a sanctioned launcher, but only in the hands of the agent whose row shows who is
 # spending quota. Started or awaited from the chat's own Bash the run is owned by a turn: no
@@ -6088,8 +6130,26 @@ tr_render() { # columns
     WORKER_STATS_DIR="$TR_STATS" SUBAGENT_ROW_RESERVE=0 CLAUDE_LIMITS_ACCOUNT=rowacct "$RENDER_BIN"
 }
 # A second may tick between the fixture's clock and the renderer's; both spell the same width.
-tr_row() { jq -r --arg id "$2" 'select(.id == $id) | .content' <<<"$1" | perl -pe 's/\e\[[0-9;]*m//g; s/(?<!tests )1m [0-9]+s/1m 5s/'; }
+tr_norm() { perl -pe 's/\e\[[0-9;]*m//g; s/(?<!tests )1m [0-9]+s/1m 5s/'; }
+declare -A tr_rows_of=()
+tr_indexed=''
+tr_index() { # snapshot -> tr_row answers for it from one jq and one perl pass, when every row allows
+  local id row
+  tr_indexed='' tr_rows_of=()
+  while IFS=$'\x1f' read -r id row; do
+    tr_indexed=$1
+    tr_rows_of[$id]+=$row$'\n'
+  done < <(jq -rn '[inputs] as $rows
+    | if all($rows[]; (.id | type) == "string" and (.id | test("^[A-Za-z0-9_.-]+$"))
+        and (.content | type) == "string" and (.content | contains("\n") | not))
+      then $rows[] | .id + "\u001f" + .content else empty end' <<<"$1" 2>/dev/null | tr_norm)
+}
+tr_row() {
+  if [ -n "$tr_indexed" ] && [ "$1" = "$tr_indexed" ]; then printf '%s' "${tr_rows_of[$2]-}"; return; fi
+  jq -r --arg id "$2" 'select(.id == $id) | .content' <<<"$1" | tr_norm
+}
 tr_wide=$(tr_render 300) || fail "renderer exited nonzero"
+tr_index "$tr_wide"
 assert_eq 10 "$(grep -c . <<<"$tr_wide")"
 # A worker at work has no state word: the elapsed time says it all.
 assert_eq 'acc · astra · high — Implement the parser fix · 1m 5s · ↓ 12.3k tok' "$(tr_row "$tr_wide" w1)"
@@ -6133,6 +6193,7 @@ assert_eq 'T2 · double · task · all 2/4 opus 0/1 sol 0/1 agy ✓ grok ✗1' "
 assert_eq 'T2 · double · task · all 2/4' "$(tr_row "$(tr_render 58)" r1)"
 assert_eq 'T2 · double · task · all 2/4' "$(tr_row "$(tr_render 30)" r1)"
 tr_60=$(tr_render 60) tr_40=$(tr_render 40) tr_30=$(tr_render 30)
+tr_index "$tr_40"
 assert_eq 'acc · astra · high — Implement the pa… · 1m 5s · ↓ 12.3k tok' "$(tr_row "$tr_60" w1)"
 assert_eq 'acc · astra · high · 1m 5s · ↓ 12.3k tok' "$(tr_row "$tr_40" w1)"
 assert_eq 'acc · astra · high · 1m 5s' "$(tr_row "$tr_30" w1)"

@@ -868,7 +868,7 @@ behind=""
 ahead=""
 head_known=0
 git_status_rc=1
-branch_oid=""; branch_upstream=""; branch_ab=""; branch=""; has_untracked=0
+branch_oid=""; branch_upstream=""; branch_ab=""; branch=""; has_untracked=0; status_dirty=0
 if [ -n "$active_top" ]; then
   status_v2=$(git -C "$active_top" status --porcelain=v2 --branch --untracked-files=normal --ahead-behind 2>/dev/null)
   git_status_rc=$?
@@ -881,7 +881,8 @@ if [ -n "$active_top" ]; then
         branch_ab=${status_line#\# branch.ab }
         status_rest=${branch_ab#+}
         ahead=${status_rest%% *}; behind=${status_rest#* -} ;;
-      '? '*) has_untracked=1 ;;
+      '? '*) has_untracked=1; status_dirty=1 ;;
+      '1 '* | '2 '* | 'u '*) status_dirty=1 ;;
     esac
   done <<< "$status_v2"
 fi
@@ -891,7 +892,7 @@ if [ -n "$active_top" ]; then
     branch=$(git -C "$git_dir" rev-parse --abbrev-ref HEAD 2>/dev/null)
     branch_oid=$(git -C "$git_dir" rev-parse -q --verify HEAD 2>/dev/null)
     branch_upstream=$(git -C "$git_dir" rev-parse --symbolic-full-name '@{upstream}' 2>/dev/null)
-    has_untracked=1
+    has_untracked=1 status_dirty=1
     [ -n "$branch" ] &&
       read -r behind ahead < <(git -C "$git_dir" rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null)
   fi
@@ -911,7 +912,7 @@ if [ -n "$active_top" ]; then
       branch_name="$branch"
     fi
   fi
-  if [ "$head_known" = 1 ]; then
+  if [ "$head_known" = 1 ] && [ "$status_dirty" = 1 ]; then
     # Uncommitted volume in the ACTIVE repo, whoever wrote it: staged+unstaged
     # vs HEAD plus untracked files. Lines: numstat + untracked text lines
     # (grep -cI yields 0 and BSD grep prints nothing for binaries; numstat "-"

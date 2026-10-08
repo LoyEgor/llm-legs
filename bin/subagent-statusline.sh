@@ -231,10 +231,16 @@ while IFS=$'\x1f' read -r sid columns id description start_ms tokens status mode
   cache="$cache_root/$sid/$id"
   if [ -n "$sid" ] && [ -f "$cache" ]; then
     IFS= read -r tag < "$cache"
-    run_id=$(sed -n 's/^run=//p' "$cache" | tail -n1 | tr -cd 'a-z0-9-')
-    review_id=$(sed -n 's/^review=//p' "$cache" | tail -n1 | tr -cd 'A-Za-z0-9-')
-    edits=$(sed -n 's/^edit=//p' "$cache" | tail -n1 | tr -cd '0-9')
-    light_role=$(sed -n 's/^light=//p' "$cache" | tail -n1 | tr -cd 'a-z')
+    while IFS= read -r cache_line || [ -n "$cache_line" ]; do
+      case $cache_line in
+        run=*) run_id=${cache_line#run=} ;;
+        review=*) review_id=${cache_line#review=} ;;
+        edit=*) edits=${cache_line#edit=} ;;
+        light=*) light_role=${cache_line#light=} ;;
+      esac
+    done < "$cache"
+    run_id=${run_id//[!a-z0-9-]/} review_id=${review_id//[!A-Za-z0-9-]/}
+    edits=${edits//[!0-9]/} light_role=${light_role//[!a-z]/}
   fi
   if [ -z "$tag" ] && printf '%s' "$description" | grep -qE "$tag_re: "; then
     tag=$(printf '%s' "$description" | grep -oE "$tag_re" | head -n1)
