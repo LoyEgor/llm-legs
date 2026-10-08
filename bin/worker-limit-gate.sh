@@ -184,6 +184,16 @@ account_off() { # vendor limits_vendor account
 if [ -n "$brief_account" ] && account_off "$vendor" "$limits_vendor" "$brief_account"; then
   deny "The brief's ACCOUNT: ${brief_account} is switched off or removed in Egor's menu, so a ${worker%-worker} run cannot start on it. Put worker-pick's NEXT account${router_account:+ (${router_account})} in the ACCOUNT line, or drop the line."
 fi
+# worker-pick's ACCOUNT: names an account of the vendor in its NEXT row 1, and the same name may be
+# a logged-out profile of another vendor.
+account_login_needed() { # vendor account
+  [ -x "$WORKER_PICK" ] || return 1
+  "$WORKER_PICK" --list --role "$role_arg" 2>/dev/null |
+    awk -F '\t' -v v="$1" -v a="$2" '$1 == v && $2 == a && $4 == "login" { found = 1 } END { exit !found }'
+}
+if [ -n "$brief_account" ] && account_login_needed "$vendor" "$brief_account"; then
+  deny "The brief's ACCOUNT: ${brief_account} needs a login as a ${label} account, so ${worker} cannot spawn on it. worker-pick's ACCOUNT: names the account of its NEXT row 1 vendor — check that column. Put worker-pick --account ${vendor}${router_account:+ (${router_account})} in the ACCOUNT line, or drop the line."
+fi
 
 spawn_account=$brief_account
 if [ -z "$spawn_account" ]; then

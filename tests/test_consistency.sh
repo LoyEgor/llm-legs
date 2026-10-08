@@ -1038,6 +1038,7 @@ printf 'worker=auto\nlight_edit=claudeb:sonnet\nclaudeb_workers=off\n' >"$LIGHT_
 cat >"$LIGHT_GATE_WORK/bin/worker-pick" <<'LIGHTPICK'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$LIGHT_PICK_LOG"
+if [ "$1" = --list ]; then cat "${LIGHT_PICK_LIST:-/dev/null}"; exit 0; fi
 printf 'alpha\n'
 LIGHTPICK
 chmod +x "$LIGHT_GATE_WORK/bin/worker-pick"
@@ -1120,6 +1121,18 @@ jq -n '{schema:1, vendors:{codex:{enabled:true, five_hour:{used_pct:10}}}}' >"$L
 assert grep -Fq 'ACCOUNT: main is switched off or removed' \
   <<<"$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex-worker $'ACCOUNT: main\nx')"
 rm -f "$LIGHT_GATE_WORK/codex/.codexb/disabled"
+# worker-pick's ACCOUNT: names the vendor of its NEXT row 1; the same name copied into another
+# vendor's brief where that profile needs a login is refused (2026-10-08: gemini/tronjhon into a
+# claudeb brief, "Not logged in").
+printf 'claudeb\ttronjhon\t-\tlogin\ngemini\ttronjhon\t14\tok\n' >"$LIGHT_GATE_WORK/list"
+jq -n '{schema:1, vendors:{claude:{accounts:[{account:"tronjhon", auth_needed:true}]},
+  gemini:{accounts:[{account:"tronjhon", five_hour:{used_pct:10}}]}}}' >"$LIGHT_GATE_WORK/limits.json"
+printf 'worker=auto\n' >"$LIGHT_GATE_WORK/worker-model"
+login_gate_out=$(LIGHT_PICK_LIST="$LIGHT_GATE_WORK/list" light_gate claudeb-worker $'ACCOUNT: tronjhon\nx')
+assert grep -Fq '"permissionDecision":"deny"' <<<"$login_gate_out"
+assert grep -Fq 'ACCOUNT: tronjhon needs a login as a Claude account' <<<"$login_gate_out"
+assert test "$(LIGHT_PICK_LIST="$LIGHT_GATE_WORK/list" light_gate gemini-worker $'ACCOUNT: tronjhon\nx' |
+  grep -c 'needs a login')" = 0
 # Light switched off in Egor's menu: the spawn hook refuses the spawn, and this gate neither prices
 # a Light quota nor asks for an account.
 printf 'light_paused=on\nlight_edit=claudeb:sonnet\n' >"$LIGHT_GATE_WORK/worker-model"
