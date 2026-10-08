@@ -258,7 +258,7 @@ local names, values = { "LLM", "Harness", "Updater", "Code", "Lost time", "Spend
   { "2", "3", "0", "3", "12", "0.46", "2" }
 local UNITS = { [5] = "min/day", [6] = "index" }
 local USUAL = { [5] = "25", [6] = "0.25" }
-local bars = "▁▁▂▃▄▆█"
+local bars = "▁▂▂▃▄▆█"
 for index, name in ipairs(names) do
   local title = trendItems[index] and trendItems[index].title
   local want = row(name, values[index], UNITS[index], bars, USUAL[index] or "3")
@@ -421,11 +421,11 @@ trendHarness()
 local previous = text(trendItems[1].title)
 writeDays({ 0, 1, 2, 6, 7, 8, 800 })
 local changed = trendDoctor.menuItems()[1].title
-check(text(changed) == row("LLM", "2", nil, "▁▁▁▁▁▁█", "4") and text(changed) ~= previous,
-  "today stays out of the median; a renamed journal invalidates the cache: " .. text(changed))
+check(text(changed) == row("LLM", "2", nil, "▁▂▂▂▂▂█", "4") and text(changed) ~= previous,
+  "today stays out of the median; a renamed journal invalidates the cache; a day at under 1/8 of the peak is not drawn as zero: " .. text(changed))
 writeDays({ 0, 1, 2, 3, 4, 0, 8 })
 local falling = trendDoctor.menuItems()[1].title
-check(text(falling) == row("LLM", "2", nil, "▁▁▂▃▄▁█", "2"), "no trend arrow, whichever way yesterday went: " .. text(falling))
+check(text(falling) == row("LLM", "2", nil, "▁▂▂▃▄▁█", "2"), "no trend arrow, whichever way yesterday went: " .. text(falling))
 writeDays({ 5, 5, 5, 5, 5, 5, 5 })
 local flat = trendDoctor.menuItems()[1].title
 local flatRed = false
@@ -437,7 +437,7 @@ trendHarness()
 local cold = trendDoctor.menuItems()
 for index, name in ipairs(names) do
   local title = cold[index].title
-  check(text(title) == row(name, values[index], UNITS[index], " ▁▂▃▄▆█",
+  check(text(title) == row(name, values[index], UNITS[index], " ▂▂▃▄▆█",
     index == 5 and "30" or index == 6 and "0.30" or "3"),
     "cold start: an unmeasured day is a blank cell, measured days keep their bars: " .. text(title))
 end
@@ -452,7 +452,7 @@ metadata.speed.lost_min_day_by_day[trendDay(0)] = 80
 metadata.speed.lost_min_day = nil
 trendHarness()
 local unknownSpeed = trendDoctor.menuItems()[5]
-check(text(unknownSpeed.title) == row("Lost time", "–", "min/day", " ▁▂▃▄▆█", "30")
+check(text(unknownSpeed.title) == row("Lost time", "–", "min/day", " ▂▂▃▄▆█", "30")
   and sameColor(colorAt(unknownSpeed.title, 1), palette.DIM) and sameColor(colorAt(unknownSpeed.title, VALUE_AT), palette.DIM),
   "a missing Speed floor is a DIM – despite today's retained history: " .. text(unknownSpeed.title))
 metadata.speed.lost_min_day = 12
@@ -462,7 +462,7 @@ check(sameColor(colorAt(trendDoctor.menuItems()[6].title, VALUE_AT), palette.RED
 metadata.spend.status, metadata.spend.index = "nodata", nil
 trendHarness()
 local staleSpend = trendDoctor.menuItems()[6]
-check(text(staleSpend.title) == row("Spend", "–", "index", " ▁▂▃▄▆█", "0.30")
+check(text(staleSpend.title) == row("Spend", "–", "index", " ▂▂▃▄▆█", "0.30")
   and sameColor(colorAt(staleSpend.title, 1), palette.DIM) and sameColor(colorAt(staleSpend.title, VALUE_AT), palette.DIM),
   "a stale tracking.json is a DIM – on Spend, never its old index: " .. text(staleSpend.title))
 metadata.spend.status, metadata.spend.index, metadata.spend.tone = "watch", 0.46, "better"

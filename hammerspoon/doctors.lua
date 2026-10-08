@@ -777,7 +777,7 @@ local function summaryTitle(name, value, unit, status, history, now, stale, show
   for index = 1, 7 do
     local amount = days[index]
     segments[#segments + 1] = amount == nil and { " " }
-      or { BARS[high == 0 and 1 or math.max(1, math.ceil(amount / high * 8))], style.DIM }
+      or { BARS[amount == 0 and 1 or math.max(2, math.ceil(amount / high * 8))], style.DIM }
   end
   segments[#segments + 1] = { " " .. padded(median and show(median) or MISSING, 4), style.DIM }
   return styled(segments)
