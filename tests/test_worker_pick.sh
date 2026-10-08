@@ -23,7 +23,7 @@ assert() {
   asserts=$((asserts + 1))
   "$@" || fail "assert $asserts failed: $*"
 }
-contains() { grep -Fq -- "$2" <<<"$1"; }
+contains() { [[ $1 == *"$2"* ]]; }
 # Vendor lines are optional — a vendor the store carries no row for prints none — so a case reads
 # the line it means by its prefix rather than by an index the next absent vendor would shift.
 # Section ORDER is asserted on its own, by `section_order` in the golden block.
@@ -48,7 +48,7 @@ vsection() {
     inside {inside = 0}
   ' <<<"$output" | squeeze
 }
-not_contains() { ! grep -Fq -- "$2" <<<"$1"; }
+not_contains() { [[ $1 != *"$2"* ]]; }
 before() {
   local text=$1 left=$2 right=$3 suffix
   suffix=${text#*"$left"}
@@ -132,13 +132,17 @@ run_store() {
   output=$(env "${run_env[@]}" "LLM_LIMITS_FILE=$STORE" "$SCRIPT" 2>"$WORK/note.err") ||
     fail "worker-pick failed for $1"
 }
+# The store only: a case that reads nothing but `query` answers pays for no render.
+load_case() {
+  jq -c --arg name "$1" ".[\$name] | ${2:-.}" "$FIXTURES" >"$STORE" ||
+    fail "fixture $1 transform failed"
+}
 run_case() {
-  jq -c --arg name "$1" '.[$name]' "$FIXTURES" >"$STORE" || fail "fixture $1 missing"
+  load_case "$1"
   run_store "$1"
 }
 run_filter() {
-  jq -c --arg name "$1" ".[\$name] | $2" "$FIXTURES" >"$STORE" ||
-    fail "fixture $1 transform failed"
+  load_case "$1" "$2"
   run_store "$1"
 }
 # `--account` answers a caller: stdout is one bare name, stderr carries anything else.
@@ -148,7 +152,7 @@ query() {
   query_rc=$?
 }
 query_case() {
-  jq -c --arg name "$1" '.[$name]' "$FIXTURES" >"$STORE" || fail "fixture $1 missing"
+  load_case "$1"
   shift
   query "$@"
 }
@@ -288,7 +292,7 @@ assert contains "$(nrow 1)" 'claude/later opus·high'
 # so it ranks behind every unclaimed candidate — and no further, since a claim is a rank key and
 # never a wall.
 clear_claims
-run_case claude_pool
+load_case claude_pool
 query --account claudeb --claim
 assert test "$query_rc" -eq 0
 assert test "$query_out" = session
@@ -319,7 +323,6 @@ query --account claudeb --exclude session,dry,tie-a,tie-b --claim
 assert test "$query_rc" -eq 3
 assert test -z "$(find "$CLAIMS" -type f -print -quit)"
 clear_claims
-run_case claude_pool
 
 # The five-hour deferral, the one soft rule in the contract: an account this deep into its
 # five-hour window walls after the first task, so weekly headroom does not make it the answer.
@@ -401,7 +404,7 @@ query --account claudeb --fable
 assert test "$query_out" = session
 # The fable bucket is paced by the reset it carries, not the weekly one: equal fable percentages
 # with equal weeks still order by which fable window rolls over sooner.
-run_filter claude_pool '.vendors.claude.accounts = [
+load_case claude_pool '.vendors.claude.accounts = [
   {account:"fb-late",enabled:true,weekly:{used_pct:0},fable:{used_pct:50,resets_at:2000432000}},
   {account:"fb-soon",enabled:true,weekly:{used_pct:0},fable:{used_pct:50,resets_at:2000010800}}]'
 query --account claudeb --fable
@@ -409,7 +412,7 @@ assert test "$query_rc" -eq 0
 assert test "$query_out" = fb-soon
 query --account claudeb --fable --exclude fb-soon
 assert test "$query_out" = fb-late
-run_case claude_pool
+load_case claude_pool
 query --account codex --fable
 assert test "$query_rc" -eq 2
 assert grep -q 'only means something with --account claudeb' "$WORK/query.err"
@@ -449,11 +452,11 @@ query --account claudeb
 assert test "$query_out" = session
 assert test ! -s "$WORK/query.err"
 write_config 'claudeb_profile=off'
-run_case claude_pool
+load_case claude_pool
 query --account claudeb --fable
 assert test "$query_out" = off
 write_config 'claudeb_profile=session'
-run_case claude_pool
+load_case claude_pool
 # ... but a pin is not a way around `--exclude`: both read the same candidate set.
 query --account claudeb --exclude session
 assert test "$query_out" = dry
@@ -472,7 +475,7 @@ query --account claudeb
 assert test "$query_out" = tie-a
 # Without the pin the same account is no candidate at all: the toggle is the wall for everyone else.
 write_config
-run_filter claude_pool '.vendors.claude.accounts |= map(
+load_case claude_pool '.vendors.claude.accounts |= map(
   if .account == "tie-a" then .enabled = false | .blocked = true |
     .rotation = {usable:{general:false,fable:false}} else . end)'
 query --account claudeb
@@ -503,7 +506,7 @@ assert test "$(acct_line)" = 'ACCOUNT: walled-wk'
 lapse_case tie-a '.vendors.claude.accounts |= map(
   if .account == "tie-a" then del(.weekly, .five_hour) else . end)' 'no quota data' session
 write_config 'claudeb_profile=dry'
-run_case claude_pool
+load_case claude_pool
 query --account claudeb --exclude dry
 assert test "$query_out" = session
 query --account claudeb --exclude dry,tie-b,tie-a,session
@@ -1236,7 +1239,7 @@ write_config
 
 # Research is independent of the implementation role switch and sees the pool without its pin.
 write_config 'gemini_profile=work' 'gemini_workers=off'
-run_filter gemini_fresh '.vendors.gemini = {available:true,accounts:[
+load_case gemini_fresh '.vendors.gemini = {available:true,accounts:[
   {account:"main",group:"Gemini Models",enabled:true,five_hour:{used_pct:10},weekly:{used_pct:10}},
   {account:"work",group:"Gemini Models",enabled:true,five_hour:{used_pct:40},weekly:{used_pct:40}}]}'
 query --account gemini --role research
@@ -1245,7 +1248,7 @@ assert test "$query_out" = main
 query --account gemini
 assert test "$query_rc" -eq 0
 assert test "$query_out" = work
-run_filter gemini_fresh '.vendors.gemini = {available:true,accounts:[
+load_case gemini_fresh '.vendors.gemini = {available:true,accounts:[
   {account:"main",group:"Gemini Models",enabled:false,five_hour:{used_pct:10},weekly:{used_pct:10}},
   {account:"work",group:"Gemini Models",enabled:false,five_hour:{used_pct:40},weekly:{used_pct:40}}]}'
 query --account gemini --role research
@@ -1256,7 +1259,7 @@ write_config
 # A light edit is not the implementation leg either: `<vendor>_workers=off` leaves `--role light`
 # selectable on every vendor while the same workers query is refused, and the pin is no override.
 write_config 'gemini_profile=work' 'gemini_workers=off'
-run_filter gemini_fresh '.vendors.gemini = {available:true,accounts:[
+load_case gemini_fresh '.vendors.gemini = {available:true,accounts:[
   {account:"main",group:"Gemini Models",enabled:true,five_hour:{used_pct:10},weekly:{used_pct:10}},
   {account:"work",group:"Gemini Models",enabled:true,five_hour:{used_pct:40},weekly:{used_pct:40}}]}'
 query --account gemini --role light
@@ -1285,7 +1288,7 @@ query --account gemini --role light
 assert test "$query_rc" -eq 3
 assert test "$(cat "$WORK/query.err")" = 'worker-pick: gemini is paused (gemini_paused=on in ~/.claude/worker-model)'
 write_config
-run_filter gemini_fresh '.vendors.gemini = {available:true,accounts:[
+load_case gemini_fresh '.vendors.gemini = {available:true,accounts:[
   {account:"main",group:"Gemini Models",enabled:false,five_hour:{used_pct:10},weekly:{used_pct:10}},
   {account:"work",group:"Gemini Models",enabled:false,five_hour:{used_pct:40},weekly:{used_pct:40}}]}'
 query --account gemini --role light
@@ -1293,7 +1296,7 @@ assert test "$query_rc" -eq 3
 assert grep -q 'every gemini account is out of the worker pool' "$WORK/query.err"
 # No `<vendor>_light` key is invented: the spelling is inert, not a wall.
 write_config 'gemini_light=off'
-run_filter gemini_fresh '.vendors.gemini = {available:true,accounts:[
+load_case gemini_fresh '.vendors.gemini = {available:true,accounts:[
   {account:"main",group:"Gemini Models",enabled:true,five_hour:{used_pct:10},weekly:{used_pct:10}}]}'
 query --account gemini --role light
 assert test "$query_rc" -eq 0
@@ -1303,7 +1306,7 @@ write_config
 # Image is not code work: workers-off is not a wall and the pin is not an override there; the
 # pool and its budgets answer, so the freer `main` beats the pinned `work`.
 write_config 'gemini_profile=work' 'gemini_workers=off'
-run_filter gemini_fresh '.vendors.gemini = {available:true,accounts:[
+load_case gemini_fresh '.vendors.gemini = {available:true,accounts:[
   {account:"main",group:"Gemini Models",enabled:true,five_hour:{used_pct:10},weekly:{used_pct:10}},
   {account:"work",group:"Gemini Models",enabled:true,five_hour:{used_pct:40},weekly:{used_pct:40}}]}'
 query --account gemini --role image
@@ -1319,14 +1322,14 @@ assert test "$query_out" = main
 query --account gemini
 assert test "$query_rc" -eq 3
 assert test "$(cat "$WORK/query.err")" = 'worker-pick: gemini is switched off for workers'
-run_filter gemini_fresh '.vendors.gemini = {available:true,accounts:[
+load_case gemini_fresh '.vendors.gemini = {available:true,accounts:[
   {account:"main",group:"Gemini Models",enabled:false,five_hour:{used_pct:10},weekly:{used_pct:10}},
   {account:"work",group:"Gemini Models",enabled:false,five_hour:{used_pct:40},weekly:{used_pct:40}}]}'
 query --account gemini --role image
 assert test "$query_rc" -eq 3
 assert grep -q 'every gemini account is out of the worker pool' "$WORK/query.err"
 write_config
-run_filter gemini_fresh '.vendors.gemini = {available:true,accounts:[
+load_case gemini_fresh '.vendors.gemini = {available:true,accounts:[
   {account:"main",group:"Gemini Models",enabled:true,five_hour:{used_pct:100},weekly:{used_pct:100}},
   {account:"work",group:"Gemini Models",enabled:true,five_hour:{used_pct:10},weekly:{used_pct:10}}]}'
 query --account gemini --role image
@@ -1346,7 +1349,7 @@ GEMINI_TRIO='.vendors.gemini = {available:true,accounts:[
   {account:"main",group:"Gemini Models",enabled:true,five_hour:{used_pct:10},weekly:{used_pct:10}},
   {account:"work",group:"Gemini Models",enabled:true,five_hour:{used_pct:40},weekly:{used_pct:40}},
   {account:"spare",group:"Gemini Models",enabled:true,five_hour:{used_pct:60},weekly:{used_pct:60}}]}'
-run_filter gemini_fresh "$GEMINI_TRIO"
+load_case gemini_fresh "$GEMINI_TRIO"
 query --account gemini --role image
 assert test "$query_out" = main
 stamp_start gemini main 202609300000
@@ -1362,13 +1365,13 @@ printf '2000003600\n' >"$WALLS/gemini-work"
 query --account gemini --role image
 assert test "$query_out" = main
 clear_walls
-run_filter gemini_fresh '.vendors.gemini = {available:true,accounts:[
+load_case gemini_fresh '.vendors.gemini = {available:true,accounts:[
   {account:"main",group:"Gemini Models",enabled:true,five_hour:{used_pct:10},weekly:{used_pct:10}},
   {account:"work",group:"Gemini Models",enabled:true,five_hour:{used_pct:100},weekly:{used_pct:100}},
   {account:"spare",group:"Gemini Models",enabled:true,five_hour:{used_pct:60},weekly:{used_pct:60}}]}'
 query --account gemini --role image
 assert test "$query_out" = main
-run_filter gemini_fresh "$GEMINI_TRIO"
+load_case gemini_fresh "$GEMINI_TRIO"
 query --account gemini --role image --claim
 assert test "$query_out" = work
 query --account gemini --role image --claim
@@ -1376,13 +1379,13 @@ assert test "$query_out" = main
 query --account gemini --role image --claim
 assert test "$query_out" = spare
 clear_claims; clear_starts
-run_filter gemini_fresh ".vendors.grok = $GROK_PAIR"
+load_case gemini_fresh ".vendors.grok = $GROK_PAIR"
 stamp_start grok spare 202610010000
 query --account grok --role image
 assert test "$query_out" = supergrok
 query --account grok
 assert test "$query_out" = spare
-run_filter gemini_fresh '.vendors.codex = {available:true,accounts:[
+load_case gemini_fresh '.vendors.codex = {available:true,accounts:[
   {account:"main",enabled:true,five_hour:{used_pct:10},weekly:{used_pct:10}},
   {account:"work",enabled:true,five_hour:{used_pct:40},weekly:{used_pct:40}}]}'
 stamp_start codex main 202610010000
@@ -1599,7 +1602,7 @@ query --account claudeb
 assert test "$query_out" = tie-b
 # The two buckets disagreeing is the whole point of the role: the weekly ranking takes `wk-free`
 # and the chat takes the account whose FABLE budget is the largest.
-run_filter claude_pool '.vendors.claude.accounts = [
+load_case claude_pool '.vendors.claude.accounts = [
   {account:"wk-free",enabled:true,five_hour:{used_pct:0},weekly:{used_pct:0},fable:{used_pct:90}},
   {account:"fb-free",enabled:true,five_hour:{used_pct:0},weekly:{used_pct:60},fable:{used_pct:10}}]'
 query --account claudeb
@@ -1637,7 +1640,7 @@ query --list --model opus
 assert test "$query_rc" -eq 2
 # The fable window has no five-hour twin to be paced by, so an account nobody measured one for is
 # no chat candidate, exactly as it is no `--fable` answer.
-run_filter claude_pool '.vendors.claude.accounts = [
+load_case claude_pool '.vendors.claude.accounts = [
   {account:"nofable",enabled:true,five_hour:{used_pct:0},weekly:{used_pct:0}},
   {account:"fb-free",enabled:true,five_hour:{used_pct:0},weekly:{used_pct:60},fable:{used_pct:10}}]'
 query --account claudeb
@@ -2118,7 +2121,7 @@ done
 write_config
 clear_claims
 clear_walls
-run_case claude_pool
+load_case claude_pool
 query --account claudeb
 assert test "$query_out" = session
 printf '2000003600\n' >"$WALLS/claudeb-session"
@@ -2269,7 +2272,8 @@ assert diff -u "$DECISIONS" <(decisions_now)
 
 
 write_config
-run_case codex_plain
+load_case codex_plain
+sync_fixture_pool
 live_pool_test=true
 . "$ROOT/share/worker-pool.sh"
 pool_fixture="$HOME_FIXTURE/.codex-profiles/.codexb"
@@ -2344,7 +2348,7 @@ query_out=$list_out
 assert test "$(next_of codex)" = -
 assert test "$(next_of grok)" = -
 # Dead auth wins the state column over the pool and the vendor switch: `chats` hides only `login`.
-run_filter claude_pool '.vendors.claude.accounts |= map(if .account == "dead" then .enabled = false else . end)'
+load_case claude_pool '.vendors.claude.accounts |= map(if .account == "dead" then .enabled = false else . end)'
 query --list
 assert test "$(list_line claudeb dead)" = "$(printf 'claudeb\tdead\t0\tlogin')"
 write_config 'claudeb_paused=on'
@@ -2387,7 +2391,7 @@ query --list --role workers
 assert test "$(list_line claudeb dry)" = "$(printf 'claudeb\tdry\t5\tok')"
 assert test "$(list_line claudeb tie-a)" = "$(printf 'claudeb\ttie-a\t20\tok')"
 # The NEXT line of the listing follows the same bucket as its rows.
-run_filter claude_pool '.vendors.claude.accounts = [
+load_case claude_pool '.vendors.claude.accounts = [
   {account:"wk-free",enabled:true,five_hour:{used_pct:0},weekly:{used_pct:0},fable:{used_pct:90}},
   {account:"fb-free",enabled:true,five_hour:{used_pct:0},weekly:{used_pct:60},fable:{used_pct:10}}]'
 query --list --role chat
