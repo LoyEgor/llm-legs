@@ -250,6 +250,12 @@ assert grep -q '2 PASS' "$WORK/tail.out"
 assert [ ! -e "$RUN_SUITES_SLOTS_DIR/1" ]
 # A worker's run stops queueing once that worker has ended; an exit code already there is a stale export.
 h7=$(holder "$RUN_SUITES_SLOTS_DIR" 1)
+# A run that cannot start fails before it queues.
+bash "$ROOT/share/run-suites.sh" --repo "$WORK/repo" test_nope.sh >"$WORK/nope.out" 2>&1 &
+nope_run=$!
+pids+=("$nope_run")
+until_gone "$nope_run" || fail "a run naming no suite queued for a slot"
+assert grep -q 'no such suite' "$WORK/nope.out"
 mkdir -p "$WORK/wrun"
 WORKER_RUN_RECORD="$WORK/wrun" WORKER_RUN_ID=wrun bash "$ROOT/share/run-suites.sh" --repo "$WORK/repo" test_a.sh \
   >"$WORK/ended.out" 2>&1 &
@@ -286,6 +292,7 @@ assert jqe 'map(select(.reason == "owner-ended")) | length == 2' <(waits_of run-
 kill "$h7"; until_gone "$h7"
 WORKER_RUN_RECORD="$WORK/wrun" WORKER_RUN_ID=wrun bash "$ROOT/share/run-suites.sh" --repo "$WORK/repo" test_a.sh \
   >"$WORK/stale.out" 2>&1 || fail "a stale worker export refused the run: $(cat "$WORK/stale.out")"
+assert jqe -s 'last | .worker_run == null' "$WORK/runs.jsonl"
 # Once its worker ends, a slotted run drops its queued suites and ends its running ones as a tree;
 # a run with no worker owner beside it runs on.
 export OWNER_FIXTURE="$WORK/of"
@@ -316,6 +323,7 @@ assert until_gone "$owned_child"
 assert [ ! -e "$OWNER_FIXTURE/next-ran" ]
 assert grep -Eq '^test_long\.sh +FAIL .*cancelled, its worker run ended$' "$WORK/owned.out"
 assert grep -Eq '^test_next\.sh +FAIL .*cancelled, its worker run ended$' "$WORK/owned.out"
+assert_fails grep -q 'No such file' "$WORK/owned.out"
 assert jqe -s --argjson p "$owned_run" 'map(select(.pid == $p)) | length == 1
   and .[0].reason == "owner-ended" and .[0].complete == false and .[0].suites == {}' "$WORK/runs.jsonl"
 assert kill -0 "$free_run"

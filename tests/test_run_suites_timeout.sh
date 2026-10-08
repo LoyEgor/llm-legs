@@ -5,7 +5,7 @@
 set -u
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 WORK=$(cd "$(mktemp -d)" && pwd -P)
-trap '[ ! -s "$WORK/grandchild" ] || kill "$(cat "$WORK/grandchild")" 2>/dev/null; rm -rf "$WORK"' EXIT
+trap 'cat "$WORK/grandchild" "$WORK/stubborn" 2>/dev/null | xargs kill -KILL 2>/dev/null; rm -rf "$WORK"' EXIT
 asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; [ ! -r "$WORK/out" ] || cat "$WORK/out" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
@@ -17,7 +17,8 @@ unset RUN_SUITES_SLOT SUITE_JOURNAL SUITE_JOURNAL_PID WORKER_RUN_ID CLAUDE_LAUNC
 REPO="$WORK/repo"
 mkdir -p "$HOME" "$WORK/rs" "$REPO/tests"
 
-printf '#!/usr/bin/env bash\nsleep 60 &\necho "$!" >"%s/grandchild"\nwait\n' "$WORK" >"$REPO/tests/test_hang.sh"
+printf '#!/usr/bin/env bash\nsleep 60 &\necho "$!" >"%s/grandchild"\n/bin/sh -c '"'"'trap "" TERM; exec sleep 60'"'"' &\necho "$!" >"%s/stubborn"\nwait\n' \
+  "$WORK" "$WORK" >"$REPO/tests/test_hang.sh"
 printf '#!/usr/bin/env bash\nsleep 3\necho ok\n' >"$REPO/tests/test_known.sh"
 printf '#!/usr/bin/env bash\nsleep 3\necho ok\n' >"$REPO/tests/test_slow.sh"
 printf '#!/usr/bin/env bash\necho ok\n' >"$REPO/tests/test_quick.sh"
@@ -46,6 +47,7 @@ assert grep -qE '^test_quick\.sh +PASS ' "$WORK/out"
 assert grep -qF '4 suites · 3 PASS · 1 FAIL' "$WORK/out"
 assert test -s "$WORK/grandchild"
 assert_fails kill -0 "$(cat "$WORK/grandchild")" 2>/dev/null
+assert_fails ps -p "$(cat "$WORK/stubborn")" >/dev/null
 assert jq -enR --arg r "$REPO" '[inputs | fromjson? | select(.repo_root == $r and .pid != null)]
   | length == 1 and .[0].suites["test_hang.sh"].rc == 124 and .[0].suites["test_known.sh"].rc == 0' "$RUN_SUITES_JOURNAL" >/dev/null
 assert jq -enR --arg r "$REPO" '[inputs | fromjson? | select(.repo_root == $r and .pid != null)][0].suites | map_values(.bound)

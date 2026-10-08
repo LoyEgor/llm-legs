@@ -87,7 +87,7 @@ assert jqe --arg repo "$REPO" --arg sha "$SHA" '.repo == $repo + "/.claude/workt
 R2="$WORK/r2"
 new_repo "$R2"
 suite "$R2" test_quick.sh 'exit 0'
-suite "$R2" test_wait.sh "while [ ! -e \"$WORK/release\" ]; do sleep 0.2; done"
+suite "$R2" test_wait.sh "echo \$\$ >\"$WORK/wait-pid\"; while [ ! -e \"$WORK/release\" ]; do sleep 0.2; done"
 bash "$ROOT/share/run-suites.sh" --repo "$R2" -j 2 >/dev/null 2>&1 &
 pid=$!
 for _ in $(seq 1 300); do
@@ -102,6 +102,7 @@ assert jqe --arg repo "$R2" '.repo == $repo and .signal == 15 and .complete == f
   <(tail -1 "$JOURNAL")
 assert_fails grep -qx "$pid" <(cat "$WORK"/slots/*/pid 2>/dev/null)
 assert test -f "$STATUSLINE_CACHE_DIR/suites-$pid.done"
+assert_fails kill -0 "$(cat "$WORK/wait-pid")"
 
 # signal group|pid command... once $READY exists -> "<returncode> <ms from signal to exit>"; a negative
 # returncode is a death by that signal. Dispositions reset: `< <(...)` starts it with SIGINT ignored.
@@ -309,7 +310,7 @@ git -C "$R6" checkout -q -- .
 printf 'echo v2\n' >"$R6/bin/rare.sh"
 slow_out=$(WORKER_RUN_ID=wr-9 bash "$ROOT/share/run-suites.sh" --repo "$R6" -j 2 --changed 2>&1) || fail "an all-slow change failed: $slow_out"
 assert test "$slow_out" = 'slow layer skipped: test_slow_c.sh (the landing and the night full run run them)'
-assert jqe '.skipped_slow == ["test_slow_c.sh"] and .suites == {} and .complete == true and .scope == "changed"' <(tail -1 "$JOURNAL")
+assert jqe '.skipped_slow == ["test_slow_c.sh"] and .suites == {} and .complete == true and .scope == "changed" and .suite_set == "00001505"' <(tail -1 "$JOURNAL")
 # --slow-refresh: the repo's suites whose 7-day median CPU of passing runs passes 45 s, never a gone one.
 now=$(date +%s)
 jq -nc --arg root "$R6" --argjson now "$now" '
@@ -345,6 +346,12 @@ for wrapper in "$ROOT/tests/run-all" "${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setu
 done
 git -C "$R4" add -A
 git -C "$R4" -c user.name=t -c user.email=t@t -c core.hooksPath=/dev/null commit -q -m tool
+# A worker that committed before its --changed run is scoped by its commits since head-before.
+mkdir -p "$WORK/wrec"
+git -C "$R4" rev-parse HEAD~1 >"$WORK/wrec/head-before"
+committed_out=$(WORKER_RUN_RECORD="$WORK/wrec" WORKER_RUN_ID=wr-9 bash "$ROOT/share/run-suites.sh" --repo "$R4" -j 2 --changed 2>&1)
+assert grep -q 'test_tool_part.sh .*PASS' <<<"$committed_out"
+assert_fails grep -q 'test_other.sh' <<<"$committed_out"
 rows=$(wc -l <"$JOURNAL")
 WORKER_RUN_ID=wr-9 bash "$ROOT/share/run-suites.sh" --repo "$R4" --run-all -j 2 >"$WORK/gate.out" 2>"$WORK/gate.err"
 assert test "$?" -eq 3
@@ -358,5 +365,14 @@ assert test "$?" -eq 0
 bash "$ROOT/share/run-suites.sh" --repo "$R4" --run-all -j 2 >/dev/null 2>&1
 assert test "$?" -eq 0
 assert jqe '.scope == "full" and .worker_run == null' <(tail -1 "$JOURNAL")
+
+# --profile: each suite's shimmed calls land in its entry; without it no shim and no execs key.
+R7="$WORK/r7"
+new_repo "$R7"
+suite "$R7" test_prof.sh 'for i in 1 2 3; do jq -n 1 >/dev/null; done; sleep 0.1; sleep 0.1'
+bash "$ROOT/share/run-suites.sh" --repo "$R7" --profile >/dev/null 2>&1
+assert jqe '.suites["test_prof.sh"] | .rc == 0 and .execs.jq == 3 and .execs.sleep == 2 and (.sleep_s - 0.2 | fabs) < 0.001' <(tail -1 "$JOURNAL")
+bash "$ROOT/share/run-suites.sh" --repo "$R7" >/dev/null 2>&1
+assert jqe '.suites["test_prof.sh"] | .rc == 0 and (has("execs") or has("sleep_s") | not)' <(tail -1 "$JOURNAL")
 
 printf 'PASS: %s asserts; run-suites and direct suite runs journal one row each\n' "$asserts"

@@ -85,10 +85,10 @@ suite_journal_digest() { # suite-name... in sorted order -> suite_journal_set
   printf -v suite_journal_set '%08x' "$h"
 }
 
-suite_journal_suite() { # name rc secs cpu-secs [wall-bound] -> appended to suite_journal_suites
+suite_journal_suite() { # name rc secs cpu-secs [wall-bound [json-members]] -> appended to suite_journal_suites
   local name
   suite_journal_str name "$1"
-  suite_journal_suites="${suite_journal_suites:+$suite_journal_suites,}$name:{\"rc\":$2,\"secs\":$3,\"cpu_s\":${4:-null},\"forks\":null${5:+,\"bound\":$5}}"
+  suite_journal_suites="${suite_journal_suites:+$suite_journal_suites,}$name:{\"rc\":$2,\"secs\":$3,\"cpu_s\":${4:-null},\"forks\":null${5:+,\"bound\":$5}${6:+,$6}}"
 }
 
 # kind pid queued started ended repo repo-root head scope worker-run session j slot signal complete [skipped-slow names [reason]]

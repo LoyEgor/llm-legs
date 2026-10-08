@@ -22,7 +22,7 @@ run_worker=${WORKER_RUN_ID:-} run_session=${CLAUDE_CODE_SESSION_ID:-${CLAUDE_LAU
 
 usage() {
   cat >&2 <<'USAGE'
-usage: run-suites.sh [--repo <dir>] [--run-all] [-j <n>] [--changed] [--all] [suite ...]
+usage: run-suites.sh [--repo <dir>] [--run-all] [-j <n>] [--changed] [--all] [--profile] [suite ...]
 
 Runs a repository's test suites in parallel, one log per suite, and prints one table.
 Exit 1 if any suite failed, with the last 30 lines of each failure.
@@ -37,6 +37,10 @@ Exit 1 if any suite failed, with the last 30 lines of each failure.
                 iterating, never for the final gate.
   --all         also run the suites skipped by default because they read live machine state
                 (llm-legs e2e_surfaces.sh, test_instruction_rates_live.sh)
+  --profile     each suite's calls of jq python3 lua git sleep date sed grep awk mktemp bash go through
+                PATH shims into its journal entry: `execs` {binary: count} and `sleep_s`, the seconds
+                its sleeps asked for. A fork per call, so never on by default; a suite that sets its
+                own PATH or calls absolute binaries shows fewer counts
   suite ...     explicit suite names or paths; skips discovery
 
 Machine-wide at most RUN_SUITES_SLOTS runs at once (default cores / 3 clamped 2 to 4 always, up to 4
@@ -57,6 +61,7 @@ repo=''
 jobs=0
 changed=false
 include_live=false
+profile=false
 from_run_all=false
 declare -a explicit=()
 while [ "$#" -gt 0 ]; do
@@ -66,6 +71,7 @@ while [ "$#" -gt 0 ]; do
     --run-all) from_run_all=true; shift ;;
     --changed) changed=true; shift ;;
     --all) include_live=true; shift ;;
+    --profile) profile=true; shift ;;
     -h|--help) usage ;;
     --) shift; while [ "$#" -gt 0 ]; do explicit+=("$1"); shift; done ;;
     -*) usage ;;
@@ -77,11 +83,6 @@ if [ "${#explicit[@]}" -gt 0 ]; then
   joined=$(printf '%s\n' "${explicit[@]}")
   explicit=()
   while IFS= read -r entry; do [ -z "$entry" ] || explicit+=("$entry"); done <<<"$joined"
-fi
-
-if $from_run_all && [ -n "$run_worker" ] && ! $changed && [ "${#explicit[@]}" -eq 0 ]; then
-  printf 'run-all: a worker never runs every suite, the night does: tests/run-all $(tests/affected <file>...) or tests/run-all --changed\n' >&2
-  exit 3
 fi
 
 [ -n "$repo" ] || repo=$(git rev-parse --show-toplevel 2>/dev/null) || fail 'no --repo and no git root here'
@@ -154,7 +155,14 @@ owner_ended() { # -> whether the worker run that asked for this run has ended: i
 }
 # A worker's backgrounded run outlives the worker; once it has ended nobody reads the run, which then
 # queued for and held a slot anyway (2026-10-05). An owner already ended at launch is a stale export.
-! owner_ended || owner_record=''
+if owner_ended; then
+  owner_record='' run_worker=''
+  unset WORKER_RUN_ID WORKER_RUN_RECORD
+fi
+if $from_run_all && [ -n "$run_worker" ] && ! $changed && [ "${#explicit[@]}" -eq 0 ]; then
+  printf 'run-all: a worker never runs every suite, the night does: tests/run-all $(tests/affected <file>...) or tests/run-all --changed\n' >&2
+  exit 3
+fi
 suite_watch() { # pid bound marker -> ends the suite's tree once it outlives the bound or its owner ended
   local deadline=$((SECONDS + $2))
   while kill -0 "$1" 2>/dev/null; do
@@ -202,23 +210,6 @@ user_present() {
 # (launchd, the night's detached full run) yields.
 unattended() { [ -n "$run_worker" ] || [ -z "$run_session" ]; }
 
-# Machine-wide, at most RUN_SUITES_SLOTS runs at once: each already fans out -j cores/2 suites, so
-# cores/3 (2 to 4) always run and up to 4, the count measured freeze-safe, while slot_room finds room.
-# A nested run (a suite testing this runner) inherits its parent's slot.
-own_slot=''
-if [ -z "${RUN_SUITES_SLOT:-}" ]; then
-  own_slot=$(SLOT_OWNER_ENDED=${owner_record:+owner_ended} slot_wait "${RUN_SUITES_SLOTS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/run-suites/slots}" \
-    "${RUN_SUITES_SLOTS:-$(run_suites_slots)}" $((6 * 3600)) run-suites "suites of $repo") || {
-    ! owner_ended || fail "worker ${run_worker:-run} ended while this run waited for a slot"
-    fail 'could not take a suite slot'
-  }
-  trap 'slot_release "$own_slot"' EXIT
-  export RUN_SUITES_SLOT=$own_slot
-  printf -v run_suites_start '%(%s)T' -1
-  run_suites_began=${EPOCHREALTIME:-$run_suites_start}
-fi
-run_slot=${RUN_SUITES_SLOT:-}
-
 declare -a suites=()
 if [ "${#explicit[@]}" -gt 0 ]; then
   for entry in "${explicit[@]}"; do
@@ -241,6 +232,12 @@ fi
 if [ "$changed" = true ]; then
   names_file=$(mktemp "${TMPDIR:-/tmp}/affected.XXXXXX") || fail 'could not create a names file'
   affected_names "$repo" >"$names_file"
+  # A worker that committed before asking leaves nothing in `git diff HEAD`: its commits count too.
+  if [ -n "$owner_record" ] && read -r base 2>/dev/null <"$owner_record/head-before" &&
+      git -C "$repo" merge-base --is-ancestor "$base" HEAD 2>/dev/null; then
+    mapfile -t committed < <(git -C "$repo" diff --name-only "$base" HEAD 2>/dev/null)
+    [ "${#committed[@]}" -eq 0 ] || affected_names "$repo" "${committed[@]}" >>"$names_file"
+  fi
   mapfile -t suites < <(printf '%s\n' "${suites[@]}" | affected_filter "$repo" "$names_file" | sort -u)
   slow_layer_split "$repo" "$names_file" ${suites[@]+"${suites[@]}"}
   suites=(${slow_kept[@]+"${slow_kept[@]}"})
@@ -269,6 +266,23 @@ if printf '%s\n' ${suites[@]+"${suites[@]}"} | grep -q '\.py$'; then
     fail "no python with pytest: tried $repo/.venv/bin/python, python3 and python3.X on PATH"
 fi
 
+# Machine-wide, at most RUN_SUITES_SLOTS runs at once: each already fans out -j cores/2 suites, so
+# cores/3 (2 to 4) always run and up to 4, the count measured freeze-safe, while slot_room finds room.
+# A nested run (a suite testing this runner) inherits its parent's slot.
+own_slot=''
+if [ -z "${RUN_SUITES_SLOT:-}" ]; then
+  own_slot=$(SLOT_OWNER_ENDED=${owner_record:+owner_ended} slot_wait "${RUN_SUITES_SLOTS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/run-suites/slots}" \
+    "${RUN_SUITES_SLOTS:-$(run_suites_slots)}" $((6 * 3600)) run-suites "suites of $repo") || {
+    ! owner_ended || fail "worker ${run_worker:-run} ended while this run waited for a slot"
+    fail 'could not take a suite slot'
+  }
+  trap 'slot_release "$own_slot"' EXIT
+  export RUN_SUITES_SLOT=$own_slot
+  printf -v run_suites_start '%(%s)T' -1
+  run_suites_began=${EPOCHREALTIME:-$run_suites_start}
+fi
+run_slot=${RUN_SUITES_SLOT:-}
+
 logdir=$(mktemp -d "${TMPDIR:-/tmp}/run-suites.XXXXXX") || fail 'could not create a log directory'
 # The statusline's work probe finds this run by its pid, counts its .status files for `n/m` and
 # names the repository from here: this process never leaves the caller's directory.
@@ -277,7 +291,7 @@ mkdir -p "${progress_file%/*}" 2>/dev/null &&
   printf '%s\t%s\t%s\t%s\n' "$logdir" "${#suites[@]}" "$repo" "$run_suites_start" >"$progress_file" 2>/dev/null
 find "${progress_file%/*}" -maxdepth 1 -name 'suites-*.done' -mmin +1 -delete 2>/dev/null
 journal_run() {
-  local entry name rc secs real cpu bound complete=true queued began ended reason=''
+  local entry name rc secs real cpu bound execs complete=true queued began ended reason=''
   local -a names=()
   suite_journal_suites=''
   for entry in ${suites[@]+"${suites[@]}"}; do
@@ -286,11 +300,15 @@ journal_run() {
     rc='' real='' cpu='' bound=''
     [ -r "$logdir/$name.status" ] && IFS=$'\t' read -r rc secs real bound cpu <"$logdir/$name.status"
     [ "$real" != - ] || real=''
-    if [[ "$rc" =~ ^[0-9]+$ ]]; then suite_journal_suite "$name" "$rc" "${real:-$secs}" "$cpu" "$bound"; else complete=false; fi
+    execs=''
+    [ ! -e "$logdir/$name.execs" ] || execs=$(LC_ALL=C awk '{ n[$1]++ }
+      $1 == "sleep" { for (i = 2; i <= NF; i++) { u = substr($i, length($i)); s += $i * (u == "m" ? 60 : u == "h" ? 3600 : u == "d" ? 86400 : 1) } }
+      END { printf "\"execs\":{"; for (b in n) printf "%s\"%s\":%d", c++ ? "," : "", b, n[b]; printf "},\"sleep_s\":%.3f", s }' "$logdir/$name.execs")
+    if [[ "$rc" =~ ^[0-9]+$ ]]; then suite_journal_suite "$name" "$rc" "${real:-$secs}" "$cpu" "$bound" "$execs"; else complete=false; fi
   done
   [ -z "$run_signal" ] || complete=false
   [ ! -e "$logdir/owner-ended" ] || reason=owner-ended
-  mapfile -t names < <(printf '%s\n' ${names[@]+"${names[@]}"} | LC_ALL=C sort)
+  [ "${#names[@]}" -eq 0 ] || mapfile -t names < <(printf '%s\n' "${names[@]}" | LC_ALL=C sort)
   suite_journal_digest ${names[@]+"${names[@]}"}
   suite_journal_git "$repo"
   suite_journal_ms queued "$run_suites_queued"; suite_journal_secs queued "$queued"
@@ -310,7 +328,11 @@ finish_run() {
   [ -z "$own_slot" ] || slot_release "$own_slot"
 }
 on_signal() { # number name
+  local job
   run_signal=$1
+  # Background suites ignore SIGINT and never see a TERM sent to this pid alone; ended before the slot frees.
+  for job in $(jobs -p); do process_tree_end "$job" 10 & done
+  wait
   finish_run
   trap - EXIT "$2"
   kill -"$2" "$$"
@@ -349,6 +371,16 @@ run_one() { # suite-path
     # A fixture's slot and lock waits would read as the machine's own in the Harness doctor.
     export HARNESS_WAITS_DIR="$TMPDIR/waits"
     mkdir -p "$TMPDIR"
+    if $profile && mkdir -p "$logdir/$name.shims" && : >"$logdir/$name.execs"; then
+      for bin in jq python3 lua git sleep date sed grep awk mktemp bash; do
+        real=$(type -P "$bin") || continue
+        args=''; [ "$bin" != sleep ] || args=' $*'
+        printf '%s\n' '#!/bin/sh' "printf '%s\\n' \"$bin$args\" >>\"$logdir/$name.execs\"" "exec \"$real\" \"\$@\"" \
+          >"$logdir/$name.shims/$bin"
+      done
+      chmod +x "$logdir/$name.shims"/*
+      PATH="$logdir/$name.shims:$PATH"
+    fi
     cd "$repo" || exit 4
     # Absolute, not -n: a nested run must stay at 10, not sink further. $BASHPID, not $$:
     # $$ in this subshell is the parent, and nice only rises, so a parent dropped to 10
@@ -367,7 +399,7 @@ run_one() { # suite-path
   watch=$!
   wait "$suite"
   rc=$?
-  if [ -e "$logdir/owner-ended" ]; then wait "$watch"; else kill "$watch" 2>/dev/null; fi
+  if [ -e "$logdir/owner-ended" ] || [ -e "$logdir/$name.timeout" ]; then wait "$watch"; else kill "$watch" 2>/dev/null; fi
   if [ -e "$logdir/owner-ended" ] && [ "$rc" -ne 0 ]; then
     printf 'run-suites: cancelled, its worker run ended\n' >>"$logdir/$name.log"
     return
@@ -445,7 +477,7 @@ for entry in "${suites[@]}"; do
   ran[$name]=1
   rc=1
   seconds=0
-  IFS=$'\t' read -r rc seconds _ <"$logdir/$name.status" 2>/dev/null || { rc=1; seconds=0; }
+  IFS=$'\t' read -r rc seconds _ 2>/dev/null <"$logdir/$name.status" || { rc=1; seconds=0; }
   serial_total=$((serial_total + seconds))
   verdict=PASS
   [ "$rc" -eq 0 ] || { verdict="FAIL $rc"; failed+=("$name"); }
