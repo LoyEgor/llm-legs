@@ -104,22 +104,50 @@ def grok_usage(path):
                                 "out": session.get("outputTokens", 0)})
 
 
-def run_usage(worker_run, run, vendor, seen):
+def transcripts(worker_run, runs):
+    """run -> the path `worker-run transcript <run>` prints, "" where it finds none; one process for all."""
+    if not runs:
+        return {}
+    found = subprocess.run([worker_run, "transcript", *runs], capture_output=True, text=True)
+    if len(runs) == 1:
+        return {runs[0]: found.stdout.strip() if found.returncode == 0 else ""}
+    lines = found.stdout.split("\n")
+    return {run: lines[index].strip() if index < len(lines) else "" for index, run in enumerate(runs)}
+
+
+def claude_files(whole):
+    """(path, size, mtime) of a Claude transcript and its subagents, the files claude_usage reads."""
+    stamps = []
+    for path in [whole] + sorted(glob.glob(whole[:-len(".jsonl")] + "/subagents/*.jsonl")):
+        try:
+            stat = os.stat(path)
+        except OSError:
+            continue
+        stamps.append((path, stat.st_size, stat.st_mtime_ns))
+    return ("claude-files", tuple(stamps))
+
+
+def run_usage(worker_run, run, vendor, seen, found=None):
     transcript = read(f"{RUNS}/{run}/session-file")
     if not os.path.isfile(transcript):
-        found = subprocess.run([worker_run, "transcript", run], capture_output=True, text=True)
-        transcript = found.stdout.strip() if found.returncode == 0 else ""
+        transcript = (found if found is not None and run in found else transcripts(worker_run, [run]))[run]
     if not os.path.isfile(transcript):
         return None
     # A RESUME shares its session's transcript, and these vendors' counts are the whole session's.
     whole = os.path.realpath(transcript)
     if vendor != "claudeb" and whole in seen:
         return collections.Counter()
+    # Read unchanged, every message id in it is already in `seen`: a re-read adds nothing.
+    files = claude_files(whole) if vendor == "claudeb" else None
+    if files is not None and files in seen:
+        return collections.Counter()
     usage = {"claudeb": lambda: claude_usage(transcript, seen), "codex": lambda: codex_usage(transcript),
              "gemini": lambda: gemini_usage(transcript), "grok": lambda: grok_usage(transcript)}.get(
         vendor, lambda: None)()
     if usage is not None:
         seen.add(whole)
+        if files is not None:
+            seen.add(files)
     return usage
 
 
@@ -194,12 +222,15 @@ def spend(night, worker_run):
     kinds = {"fixers": collections.Counter(), "reviews": collections.Counter(),
              "orchestrator": collections.Counter()}
     models, hours, blind, seen = collections.Counter(), 0.0, 0, set()
-    for run, _, meta, vendor in night_runs(low, high, sessions):
+    listed = list(night_runs(low, high, sessions))
+    found = transcripts(worker_run, [run for run, *_ in listed
+                                     if not os.path.isfile(read(f"{RUNS}/{run}/session-file"))])
+    for run, _, meta, vendor in listed:
         models[f"{vendor}/{meta.get('served_model') or meta.get('model') or '?'}"] += 1
         start = meta.get("pid_started_at") or meta.get("started_at")
         if start and meta.get("ended_at"):
             hours += max(meta["ended_at"] - start, 0) / 3600
-        usage = run_usage(worker_run, run, vendor, seen)
+        usage = run_usage(worker_run, run, vendor, seen, found)
         if usage is None:
             blind += 1
         else:

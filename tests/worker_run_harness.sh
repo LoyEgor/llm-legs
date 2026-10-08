@@ -188,6 +188,7 @@ else
   [ -z "${STUB_SLEEP:-}" ] || sleep "$STUB_SLEEP"
 fi
 [ -z "${STUB_BURN:-}" ] || while [ ! -e "$STUB_GATE" ] && [ -d "${STUB_GATE%/*}" ]; do :; done
+[ -z "${STUB_GATE:-}" ] || enable -f "${BASH%/bin/*}/lib/bash/sleep" sleep 2>/dev/null || :
 [ -z "${STUB_GATE:-}" ] || while [ ! -e "$STUB_GATE" ] && [ -d "${STUB_GATE%/*}" ]; do sleep 0.05; done
 has_effort=false
 for arg in "$@"; do [ "$arg" != --effort ] || has_effort=true; done
@@ -299,6 +300,7 @@ if [ -n "${STUB_SLEEP:-}" ]; then
   printf '%s\n' "$!" >"$STUB_DIR/codex.child.pid"
   wait $!
 fi
+[ -z "${STUB_GATE:-}" ] || enable -f "${BASH%/bin/*}/lib/bash/sleep" sleep 2>/dev/null || :
 [ -z "${STUB_GATE:-}" ] || while [ ! -e "$STUB_GATE" ] && [ -d "${STUB_GATE%/*}" ]; do sleep 0.05; done
 [ -z "${STUB_ERROR:-}" ] || printf '%s\n' "$STUB_ERROR" >&2
 if [ "${STUB_CODE:-0}" -eq 0 ]; then

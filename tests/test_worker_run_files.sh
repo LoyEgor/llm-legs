@@ -126,7 +126,6 @@ set_config 'codex_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=filesacct
 start_ok codex
 assert await_done
-transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: unknown (no session transcript for codex-session)' \
   <<<"$(transcript_report "$RUN_DIR")"
 
@@ -160,7 +159,12 @@ TR_TAGS="$HOME/.cache/claude-worker-tags/chat-main"
 mkdir -p "$TR_TAGS"
 printf 'seed · opus · high\nstart=%s\nedit=1\n' "$(date +%s)" >"$TR_TAGS/agent-x"
 printf 'other · opus · high\nstart=%s\n' "$(($(date +%s) - 600))" >"$TR_TAGS/agent-stale"
-CLAUDE_LAUNCHER_SESSION=chat-main start_gated claudeb
+# The gated stub polls with the sleep builtin: no external `sleep 0.05` reaches PATH while it waits.
+mkdir -p "$WORK/sleep-shim"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"%s/sleeps"\nexec /bin/sleep "$@"\n' "$WORK" >"$WORK/sleep-shim/sleep"
+chmod +x "$WORK/sleep-shim/sleep"
+: >"$WORK/sleeps"
+PATH="$WORK/sleep-shim:$PATH" CLAUDE_LAUNCHER_SESSION=chat-main start_gated claudeb
 assert test "$(cat "$RUN_DIR/launcher")" = chat-main
 assert jq -e --arg run "$RUN_ID" '.phase == "start" and .agent_task_id == "agent-x" and .session == "chat-main"' \
   "$RUN_DIR/state.json" >/dev/null
@@ -174,6 +178,7 @@ assert jq -e '.phase == "wait" and (has("round") | not) and .agent_task_id == "a
 gate_open
 assert await_done
 assert jq -e '.phase == "done" and .exit_code == 0 and (has("round") | not)' "$RUN_DIR/state.json" >/dev/null
+assert test "$(grep -cx 0.05 "$WORK/sleeps")" = 0
 # Two launches of one chat claiming at once take two rows, never the newest one twice; the sed shim
 # widens the read-then-swap window so the race is not left to timing.
 RACE_TAGS="$HOME/.cache/claude-worker-tags/chat-race"
@@ -184,30 +189,34 @@ printf 'a · opus · high\nstart=%s\n' "$(($(date +%s) - 5))" >"$RACE_TAGS/agent
 printf 'b · opus · high\nstart=%s\n' "$(date +%s)" >"$RACE_TAGS/agent-new"
 printf '#!/bin/bash\nsleep 0.5\nexec /usr/bin/sed "$@"\n' >"$WORK/slow-sed/sed"
 chmod +x "$WORK/slow-sed/sed"
-claim_race() (
-  eval "$(sed -n '/^claim_agent_tag() {/,/^}/p' "$RUNNER")"
-  eval "$(sed -n '/^claim_agent_tag_locked() {/,/^}/p' "$RUNNER")"
-  eval "$(sed -n '/^launch_agent_tag() {/,/^}/p' "$RUNNER")"
-  eval "$(sed -n '/^with_agent_tag_lock() {/,/^}/p' "$RUNNER")"
-  eval "$(sed -n '/^fresh_agent_tags() {/,/^}/p' "$RUNNER")"
-  PATH="$WORK/slow-sed:$PATH"
+sed -n -e '/^claim_agent_tag() {/,/^}/p' -e '/^claim_agent_tag_locked() {/,/^}/p' \
+  -e '/^launch_agent_tag() {/,/^}/p' -e '/^with_agent_tag_lock() {/,/^}/p' \
+  -e '/^fresh_agent_tags() {/,/^}/p' "$RUNNER" >"$WORK/claim-race.fns"
+claim_race() ( # directory [slow]
+  . "$WORK/claim-race.fns"
+  sleep() { printf .\\n >>"$WORK/claim-sleeps"; command sleep "$@"; }
+  [ -z "${2:-}" ] || PATH="$WORK/slow-sed:$PATH"
   unset CLAUDE_AGENT_ID
   claim_agent_tag "$1" chat-race
 )
-claim_race "$WORK/race-a" & race_a=$!
-claim_race "$WORK/race-b" & race_b=$!
+claim_race "$WORK/race-a" slow & race_a=$!
+claim_race "$WORK/race-b" slow & race_b=$!
 wait "$race_a" "$race_b"
 assert test "$(cat "$WORK/race-a/agent-task" "$WORK/race-b/agent-task" | sort | tr '\n' ,)" = 'agent-new,agent-old,'
 assert test ! -e "$RACE_TAGS/.claim.lock"
 # A launch that outwaits a live holder leaves that holder's lock alone; a lock a dead holder left
-# more than a minute ago is cleared on the way in.
+# more than a minute ago is cleared on the way in, without first sitting out the live holder's wait.
 printf 'c · opus · high\nstart=%s\n' "$(date +%s)" >"$RACE_TAGS/agent-live"
 mkdir "$RACE_TAGS/.claim.lock"
+: >"$WORK/claim-sleeps"
 claim_race "$WORK/race-a"
 assert test -d "$RACE_TAGS/.claim.lock"
+assert test "$(grep -c . "$WORK/claim-sleeps")" -eq 50
 touch -t 202001010000 "$RACE_TAGS/.claim.lock"
+: >"$WORK/claim-sleeps"
 claim_race "$WORK/race-b"
 assert test ! -e "$RACE_TAGS/.claim.lock"
+assert test "$(grep -c . "$WORK/claim-sleeps")" -eq 0
 
 clear_stub
 dirt_repo_init

@@ -1660,7 +1660,6 @@ fit_h5_time=$(TZ=Europe/Kyiv date -r $((FIT_NOW + 3600)) +%H:%M)
 fit_wk_label=$(LC_ALL=C TZ=Europe/Kyiv date -r $((FIT_NOW + 259200)) '+%a %H:%M')
 fit_fb_label=$(LC_ALL=C TZ=Europe/Kyiv date -r $((FIT_NOW + 172800)) '+%a %H:%M')
 
-fit_both=$(fit_render fit-full "")
 fit_line2() { printf '%s' "${1#*$'\n'}"; }
 
 fit_both=$(fit_render fit-full "")

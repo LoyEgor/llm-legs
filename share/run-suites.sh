@@ -13,6 +13,9 @@ if ! eval "$have_wait_n"; then
 fi
 {
 set -u
+# Every suite's watcher polls for its whole life: a forked `sleep` per poll, and a killed watcher's
+# in-flight sleep kept the run's output pipe open past its end.
+enable -f "${BASH%/bin/*}/lib/bash/sleep" sleep 2>/dev/null || :
 # Inherited from a git hook or `git bisect run`, these aim every fixture's `git init` at the real
 # repository (it was left core.bare=true on 2026-10-08).
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY

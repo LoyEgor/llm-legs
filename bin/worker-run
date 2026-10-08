@@ -16,7 +16,7 @@ usage() {
     '       worker-run wait <run-id> [--max <sec>]' \
     '       worker-run report <run-id>' \
     '       worker-run say [<run-id>] <text>' \
-    '       worker-run transcript <run-id>' \
+    '       worker-run transcript <run-id>...' \
     '       worker-run claim <run-id> --paths <path>... [--complete]' \
     '       worker-run browse [--enroll <account|all> [--pin <dir>] | --canary | --window <account> | --seen <token> [--target dia] | --json | --hide | --show | --toggle]' >&2
   exit 2
@@ -2263,8 +2263,12 @@ with_agent_tag_lock() { # tag-dir command...
   local lock="$1/.claim.lock" waited=0 rc=0
   shift
   while ! mkdir "$lock" 2>/dev/null; do
+    if { [ "$waited" -eq 0 ] || [ "$waited" -ge 50 ]; } \
+      && [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+      rmdir "$lock" 2>/dev/null
+      waited=50
+    fi
     if [ "$waited" -ge 50 ]; then
-      [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ] && rmdir "$lock" 2>/dev/null
       lock=''
       break
     fi
@@ -4356,8 +4360,12 @@ wait_run() {
 }
 
 transcript_run() {
-  [ "$#" -eq 1 ] || usage
-  local directory
+  [ "$#" -ge 1 ] || usage
+  local directory run
+  if [ "$#" -gt 1 ]; then
+    for run; do printf '%s\n' "$( (transcript_run "$run") 2>/dev/null)"; done
+    return 0
+  fi
   directory=$(run_path "$1")
   [ -r "$directory/meta.json" ] || fail "unknown run: $1"
   session_transcript "$(jq -r '.vendor' "$directory/meta.json")" "$(jq -r '.account' "$directory/meta.json")" \

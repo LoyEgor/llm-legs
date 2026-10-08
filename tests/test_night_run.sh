@@ -956,6 +956,36 @@ assert [ "$(body "$WORK/spend-report" | sed -n '9,11p')" = "reviews · per-branc
 problems · no snapshot
 fixer spend without proof · no snapshot" ]
 assert [ "$(body "$WORK/spend-report" | sed -n 12p | cut -d' ' -f1-2)" = "night 20260102T000000Z-bbbb" ]
+# One worker-run lookup for every run without a session-file, and a transcript two runs share is read
+# once while it stays unchanged; once it grows, the next run reads it again.
+TZ=UTC WORKER_RUN_DIR="$SP/runs" CLAUDEB_PROFILES_ROOT="$SP/profiles" WORKER_STATS_DIR="$SP/stats" \
+  CODEX_PROFILES_DIR="$SP/codex" CHAT_NAME_ROOTS="$SP/profiles/p2/projects:$SP/profiles/p1/projects" \
+  CHAT_NAMES_CACHE="$SP/chat-names.json" python3 -B - "$ROOT" "$SP" "$T1" <<'PY' || fail "night_spend lookups and reads"
+import collections, json, os, subprocess, sys
+sys.path.insert(0, os.path.join(sys.argv[1], "share"))
+import night_spend as ns
+
+worker_run, spend_dir, t1 = os.path.join(sys.argv[1], "bin", "worker-run"), sys.argv[2], os.path.realpath(sys.argv[3])
+calls, reads, real_run, real_rows = [], collections.Counter(), subprocess.run, ns.rows
+ns.subprocess.run = lambda args, **kw: calls.append(args[2:]) or real_run(args, **kw)
+ns.rows = lambda path: reads.update([os.path.realpath(path)]) or real_rows(path)
+with open(f"{spend_dir}/doctors/nights/20260102T000000Z-bbbb.json") as handle:
+    now = ns.spend(json.load(handle), worker_run)
+assert calls == [["claudeb-1767312500-6-ffff", "codex-1767312300-3-cccc"]], calls
+assert reads[t1] == 1, reads
+assert now["blind"] == 1 and ns.weighted(now["kinds"]["fixers"]) == 11700000, now
+with open(t1) as handle:
+    kept = handle.read()
+seen = set()
+ns.run_usage(worker_run, "claudeb-1767312100-1-aaaa", "claudeb", seen)
+with open(t1, "a") as handle:
+    handle.write(json.dumps({"type": "assistant", "timestamp": "2026-01-02T00:05:00Z",
+                             "message": {"id": "m9", "usage": {"output_tokens": 7}}}) + "\n")
+grown = ns.run_usage(worker_run, "claudeb-1767312200-2-bbbb", "claudeb", seen)
+assert grown["out"] == 7 and sum(grown.values()) == 7, grown
+with open(t1, "w") as handle:
+    handle.write(kept)
+PY
 
 # Observational churn block: review rounds per-branch vs other, problems touched again without proof,
 # regressed from after snapshot, proved excluded, fixer spend without proof, and rewrites in past 7 days.

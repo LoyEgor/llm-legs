@@ -59,4 +59,15 @@ RUN_SUITES_SUITE_FLOOR=0 bash "$ROOT/share/run-suites.sh" --repo "$REPO" test_qu
 assert test "$rc" = 4
 assert grep -qF 'RUN_SUITES_SUITE_FLOOR must be whole seconds' "$WORK/out"
 
+# The watcher polls without forking a sleep per poll: only the suite's own `sleep 1` reaches PATH.
+printf '#!/usr/bin/env bash\nsleep 1\necho ok\n' >"$REPO/tests/test_brief.sh"
+mkdir -p "$WORK/sleep-shim"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"%s/sleeps"\nexec /bin/sleep "$@"\n' "$WORK" >"$WORK/sleep-shim/sleep"
+chmod +x "$WORK/sleep-shim/sleep"
+rc=0
+PATH="$WORK/sleep-shim:$PATH" bash "$ROOT/share/run-suites.sh" --repo "$REPO" test_brief.sh >"$WORK/out" 2>&1 || rc=$?
+assert test "$rc" = 0
+assert grep -qx 1 "$WORK/sleeps"
+assert test "$(grep -cvx 1 "$WORK/sleeps")" = 0
+
 printf 'PASS: %s asserts\n' "$asserts"
