@@ -15,17 +15,17 @@
   {
    "id": "suite:llm-legs/test_instruction_gate",
    "title": "llm-legs/test_instruction_gate",
-   "audited_at": "2026-10-08T03:17:55+03:00",
-   "by": "feat/suite-audit-instruction-gate",
-   "cpu_run": 46.3,
-   "cpu_min_day": 69.72,
+   "audited_at": "2026-10-08T01:02:26+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-instruction-gate-20261007T214024Z-5137",
+   "cpu_run": 43.0,
+   "cpu_min_day": 69.36,
    "sources": {
     "llm-legs/tests/instruction_gate_harness.sh": "8c221c5b4f21b43b2247d00dafb1cf9a9c7345d0",
     "llm-legs/tests/lib/suite-journal.sh": "29457015e61a2ba7ea81c1456d386be4c872fe88",
     "llm-legs/tests/test_instruction_gate.sh": "1d9ca897ba732a4175c6ec8888c9e3a37bc8cb2c"
    },
    "verdict": "kept",
-   "note": "kept (re-audit 2026-10-08): 45-52 CPU-s/run (3 runs, load 7-22, 2/3 sys = forks); a stub-gate run of the same 216 asserts costs 5.8 s, so ~88% is the gate's guarded-name slow path (220-380 ms a call, spread over ~40 forking lines, no hotspot; ordinary live calls take the 40 ms path); test-side cuts (one jq per call, 3 duplicate fast-path asserts) are ~4% and would move the harness blob shared by 7 sibling suites, re-queueing their audits; no sleeps or timeouts"
+   "note": "kept: 216 asserts each pin one write-gate parse incident; ~0.25 CPU-s a call is the gate's own non-fast path (hook_full_work:instruction-write-gate.sh, not a test cost), harness overhead ~4 ms a call, setup 0.24 s; no cross-suite duplicates, 3 identical in-file pass asserts (~0.75 s) not worth a cut; 248 s/run was the pre-split 7-day median (42 s now)"
   },
   {
    "id": "startup:nested CLAUDE.md files",
@@ -101,6 +101,21 @@
    "sources": {},
    "verdict": "kept",
    "note": "kept: ~335 tokens a context, mostly the used atlassian MCP names; never-called deferred built-ins are 81k of 7.5M unused startup (~1%), a disabledBuiltinTools cut saves ~20 tokens a context"
+  },
+  {
+   "id": "startup:CLAUDE.md + memory index",
+   "title": "startup CLAUDE.md + memory index",
+   "audited_at": "2026-10-08T03:23:12+03:00",
+   "by": "feat/spend-audit-claude-md",
+   "share": 0.011741,
+   "prices": {
+    "worker": 26143.393762135063,
+    "chat": 34987.16713699263,
+    "subagent": 15017.701136311005
+   },
+   "sources": {},
+   "verdict": "cut",
+   "note": "relays (claudeb/codex/gemini/grok-worker, light-*, review-waiter) run with omitClaudeMd: true (claude-setup f3d2d49): they carried 11.7M of the row's 26.7M in 7 days and in 1,231 relay transcripts one acted on a CLAUDE.md rule (llm-limits, hook-covered); global CLAUDE.md lines kept: none provably dead, duplicated or hook-enforced"
   }
  ]
 }
