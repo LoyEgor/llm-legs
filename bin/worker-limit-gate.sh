@@ -17,41 +17,10 @@ worker=$(printf '%s' "$input" | jq -r '.tool_input.subagent_type // empty' 2>/de
 sid=$(printf '%s' "$input" | jq -r '.session_id // ""' 2>/dev/null) || sid=''
 [ -z "$sid" ] || export CLAUDE_CODE_SESSION_ID="$sid"
 
-# Stamped from warn() because every allowed spawn leaves through it and no refused one does: a
-# denied spawn, a fork or a plain agent quoting `record <id>` must not silence the triage Stop
-# gate. Claimed at the spawn because `worker-run` stamps its pid about a minute later and the
-# Stop gate fires in that minute; the pid stamp overwrites the claim, which is live for
-# DELEGATED_CLAIM_SECONDS (review-bench) and dead after.
-claim_delegated_triage() {
-  case "$worker" in claudeb-worker|codex-worker|gemini-worker|grok-worker) ;; *) return 0 ;; esac
-  local claimed_run claim_stamp brief_text brief_file real_brief
-  # The brief is the prompt plus every readable file an absolute path in it names: a worker is
-  # routinely told "follow the brief at /path" and the review-bench commands stand in that file.
-  brief_text=$prompt
-  while IFS= read -r brief_file; do
-    [ -f "$brief_file" ] || continue
-    real_brief=$(realpath "$brief_file" 2>/dev/null) || continue
-    [ -f "$real_brief" ] && [ -r "$real_brief" ] || continue
-    [ "$(wc -c <"$real_brief" | tr -d '[:space:]')" -le 1048576 ] || continue
-    brief_text="$brief_text"$'\n'"$(cat "$real_brief")"
-  done < <(printf '%s\n' "$prompt" | grep -Eo '/[^[:space:]"'"'"'`<>]+' | sed -E 's/[.,;:)]+$//' | sort -u)
-  for claimed_run in $(printf '%s' "$brief_text" |
-      grep -Eo "review-bench[[:blank:]]+record[[:blank:]]+$run_id_re" | awk '{print $NF}' | sort -u); do
-    claim_stamp="$REVIEW_STATE/benches/$claimed_run/delegated"
-    [ -d "$REVIEW_STATE/benches/$claimed_run" ] || continue
-    # Never over a live worker's pid stamp: only an absent stamp or an earlier claim is replaced.
-    if [ -e "$claim_stamp" ] && ! head -n1 "$claim_stamp" 2>/dev/null | grep -q '^claimed '; then
-      continue
-    fi
-    printf 'claimed %s %s\n' "${sid:-unknown}" "$(date +%s)" >"$claim_stamp" 2>/dev/null || :
-  done
-}
-
 # Carries $toggle_note, so a vendor that disagrees with the toggle is reported without
 # stealing the exit from a limit verdict that matters more. `warn ""` is the quiet path.
 warn() {
   local msg=${1:-}
-  claim_delegated_triage
   if [ -n "${toggle_note:-}" ]; then
     if [ -n "$msg" ]; then msg="${toggle_note} ${msg}"; else msg="$toggle_note"; fi
   fi
@@ -66,9 +35,7 @@ deny() {
   exit 0
 }
 
-REVIEW_STATE="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}"
 prompt=$(printf '%s' "$input" | jq -r '.tool_input.prompt // empty' 2>/dev/null) || prompt=''
-run_id_re='[0-9]{8}T[0-9]{6}Z-[0-9a-f]+(-[0-9]+)?'
 
 case "$worker" in
   claudeb-worker|codex-worker|gemini-worker|grok-worker|light-worker) ;;

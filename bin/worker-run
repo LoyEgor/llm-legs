@@ -2969,23 +2969,6 @@ exit "$rc"'
     "$directory/meta.json" >"$directory/meta.json.tmp.$$" \
     && mv -f "$directory/meta.json.tmp.$$" "$directory/meta.json" || fail 'could not record supervisor pid'
   inbox_carry_commit "$directory"
-  # A brief carrying a bench run's own `record` command is that run's triage, delegated: stamp the
-  # bench with the supervisor's pid so the Stop gate nagging for an untriaged report stays quiet
-  # while this worker lives — and asks again the moment it dies, which is the case the nag is for.
-  # The launch instant stands beside the pid on that first line, and the reader compares it: the
-  # number is reused within a day, and read alone it silences an untriaged run for as long as
-  # whatever inherited it lives (shared-invariants row `ar`).
-  # Written before .ready, since the supervisor waits on that file and the triage starts after it.
-  delegated_state="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}"
-  grep -Eo 'review-bench[[:blank:]]+record[[:blank:]]+[0-9]{8}T[0-9]{6}Z-[0-9a-f]+(-[0-9]+)?' \
-    "$directory/brief" 2>/dev/null | awk '{print $NF}' | sort -u |
-    while IFS= read -r delegated_run; do
-      [ -d "$delegated_state/benches/$delegated_run" ] || continue
-      {
-        printf '%s %s\n' "$pid" "$pid_began"
-        [ ! -s "$directory/launcher" ] || cat "$directory/launcher"
-      } >"$delegated_state/benches/$delegated_run/delegated" 2>/dev/null || :
-    done
   # Before the run is readable and not only when it ends: a resumed session journals under an id
   # this launch already knows, and the gate that prices a live run's worker work reads this file.
   # The claim first: the resumed session's attempt line is journalled here, once, and names its agent.

@@ -1179,17 +1179,6 @@ printf 'worker=auto\nlight_edit=claudeb:sonnet\nclaudeb_workers=off\n' >"$LIGHT_
 : >"$LIGHT_GATE_WORK/picks"
 assert test -z "$(light_gate light-research)"
 assert test ! -s "$LIGHT_GATE_WORK/picks"
-# A brief's absolute path is read as that one file: a glob in it expands to nothing, so a file it
-# would match that quotes `record <id>` claims no triage nobody delegated.
-printf 'worker=codex\n' >"$LIGHT_GATE_WORK/worker-model"
-jq -n '{schema:1, vendors:{codex:{accounts:[{account:"alpha", five_hour:{used_pct:10}}]}}}' \
-  >"$LIGHT_GATE_WORK/limits.json"
-mkdir -p "$LIGHT_GATE_WORK/stats/benches/20260823T010000Z-c1a1bed" "$LIGHT_GATE_WORK/briefs"
-printf 'review-bench record 20260823T010000Z-c1a1bed\n' >"$LIGHT_GATE_WORK/briefs/other.md"
-light_gate codex-worker "Fix the tests under $LIGHT_GATE_WORK/briefs/*" >/dev/null
-assert test ! -e "$LIGHT_GATE_WORK/stats/benches/20260823T010000Z-c1a1bed/delegated"
-light_gate codex-worker "Follow $LIGHT_GATE_WORK/briefs/other.md" >/dev/null
-assert test -e "$LIGHT_GATE_WORK/stats/benches/20260823T010000Z-c1a1bed/delegated"
 # With worker-pick down a light-worker is priced on the vendor's pin, the account worker-run then
 # launches on, not on whichever account of the vendor happens to be freest.
 printf 'light_edit=claudeb:sonnet\nclaudeb_profile=beta\n' >"$LIGHT_GATE_WORK/worker-model"

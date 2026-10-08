@@ -237,9 +237,7 @@ assert meta_account_is walled2
 assert jq -e '.walled_accounts == ["walled1"]' "$RUN_DIR/meta.json" >/dev/null
 assert grep -qx 'REROUTE: walled on walled1 → continued on walled2' "$WORK/wait.out"
 
-# A brief carrying a bench run's own `record` command is that run's triage, delegated: the bench is
-# stamped with the supervisor's pid, which is what tells the Stop gate somebody is writing the
-# report — and, once the pid is gone, that nobody is.
+# A brief quoting a bench run's own `record` command names no review round it fixes.
 clear_stub
 export PICK_ACCOUNT=deleg PICK_RC=0
 gate_shut
@@ -248,25 +246,11 @@ mkdir -p "$DELEG_BENCHES/20260801T120000Z-abc123f" "$DELEG_BENCHES/20260801T1300
 cat >"$WORK/deleg-brief" <<'DELEGBRIEF'
 STEP 1 — blind triage.
 Record exactly with: review-bench record 20260801T120000Z-abc123f --no-corpus --verdicts /tmp/v.jsonl
-No bench holds review-bench record 20260801T990000Z-fffffff, so nothing is stamped for it.
 DELEGBRIEF
 REVIEW_BENCH_STUB_EMPTY=1 "$RUNNER" start codex --brief "$WORK/deleg-brief" --workdir "$WORK/workdir" \
   >"$WORK/deleg.out" 2>"$WORK/deleg.err" || fail "delegated start failed: $(<"$WORK/deleg.err")"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/deleg.out")
 RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/deleg.out")
-assert test -s "$DELEG_BENCHES/20260801T120000Z-abc123f/delegated"
-assert test "$(awk 'NR == 1 {print $1}' "$DELEG_BENCHES/20260801T120000Z-abc123f/delegated")" \
-  = "$(jq -r '.pid' "$RUN_DIR/meta.json")"
-assert kill -0 "$(awk 'NR == 1 {print $1}' "$DELEG_BENCHES/20260801T120000Z-abc123f/delegated")"
-# The launch instant stands beside the pid, and it is the same one the record stamps: read on the
-# pid alone the stamp silences an untriaged run for as long as whatever recycled the number lives
-# (shared-invariants row ar).
-assert test "$(awk 'NR == 1 {print $2}' "$DELEG_BENCHES/20260801T120000Z-abc123f/delegated")" \
-  = "$(jq -r '.pid_started_at' "$RUN_DIR/meta.json")"
-# The stamp answers for a run that exists: an id no bench holds is not a directory to invent, and a
-# brief that delegates no triage stamps nothing at all.
-assert test ! -e "$DELEG_BENCHES/20260801T990000Z-fffffff"
-assert test ! -e "$DELEG_BENCHES/20260801T130000Z-def4560/delegated"
 assert test "$(jq 'has("review_round")' "$RUN_DIR/meta.json")" = false
 gate_open
 await_done || fail "the delegated run never finished"
