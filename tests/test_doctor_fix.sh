@@ -205,6 +205,11 @@ jq '.rows = [{id: "R1", fixes: [{at: "2026-09-01T00:00:00+00:00", by: "c", files
   "$WORK/ledger-kept" >"$WORK/ledgers/llm.json"
 assert_fails fix close "$id2" --decisions "$WORK/decisions" "x" 2>"$WORK/err"
 assert grep -qF "ledger $WORK/ledgers/llm.json: row R1 fixes[0] lacks regressed_at: every fix record is {at, by, files, in, regressed_at}" "$WORK/err"
+assert_fails grep -qF "name no repository" "$WORK/err"
+jq '.rows = [{id: "R1", fixes: [{at: "2026-09-01T00:00:00+00:00", by: "c", files: ["llm-legs/bin/x", "bin/x"], in: null, regressed_at: null}]}]' \
+  "$WORK/ledger-kept" >"$WORK/ledgers/llm.json"
+assert_fails fix close "$id2" --decisions "$WORK/decisions" "x" 2>"$WORK/err"
+assert grep -qxF "ledger $WORK/ledgers/llm.json: row R1 fixes[0] files bin/x name no repository under $WORK/projects: every fix file is repo/path" "$WORK/err"
 cp "$WORK/ledger-kept" "$WORK/ledgers/llm.json"
 # A day run's markdown is nobody's to measure: only a night run is net zero.
 printf '%0500d\n' 0 >"$L/DAY.md"

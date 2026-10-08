@@ -124,6 +124,24 @@ def fix_record_faults(ledger):
     return faults
 
 
+def unrooted_files(files, repos):
+    """Each fix file whose first segment names no repository checkout under `repos`."""
+    return [name for name in files if not isinstance(name, str)
+            or not os.path.isdir(os.path.join(repos, name.strip("/").partition("/")[0], ".git"))]
+
+
+def fix_root_faults(ledger, repos):
+    """`(row id, index, unrooted files)` of every ledger fix naming a file outside the repositories under `repos`."""
+    faults = []
+    for row in (ledger.get("rows") if isinstance(ledger, dict) else None) or ():
+        for index, fix in enumerate((row.get("fixes") if isinstance(row, dict) else None) or ()):
+            files = fix.get("files") if isinstance(fix, dict) else None
+            unrooted = unrooted_files(files, repos) if isinstance(files, list) else []
+            if unrooted:
+                faults.append((row.get("id") or "?", index, unrooted))
+    return faults
+
+
 def fix_epoch(text):
     try:
         return datetime.datetime.fromisoformat(str(text).replace("Z", "+00:00")).timestamp()

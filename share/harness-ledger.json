@@ -3842,9 +3842,9 @@
           "at": "2026-10-07T03:30:00+03:00",
           "by": "night fixer harness-doctor-20261006T234242Z-1fa6",
           "files": [
-            "share/affected-suites.sh",
-            "share/run-suites.sh",
-            "tests/test_run_suites_journal.sh"
+            "llm-legs/share/affected-suites.sh",
+            "llm-legs/share/run-suites.sh",
+            "llm-legs/tests/test_run_suites_journal.sh"
           ],
           "in": null,
           "regressed_at": null
@@ -3869,11 +3869,11 @@
           "at": "2026-10-07T03:30:00+03:00",
           "by": "night fixer harness-doctor-20261006T234242Z-1fa6",
           "files": [
-            "bin/worker-launch-gate.sh",
-            "bin/worker-tag-hook.sh",
-            "bin/worker-git-guard.sh",
-            "share/heredoc-mask.sh",
-            "tests/test_worker_launch_gate_visibility.sh"
+            "llm-legs/bin/worker-launch-gate.sh",
+            "llm-legs/bin/worker-tag-hook.sh",
+            "llm-legs/bin/worker-git-guard.sh",
+            "llm-legs/share/heredoc-mask.sh",
+            "llm-legs/tests/test_worker_launch_gate_visibility.sh"
           ],
           "in": null,
           "regressed_at": null
@@ -3898,12 +3898,12 @@
           "at": "2026-10-07T03:30:00+03:00",
           "by": "night fixer harness-doctor-20261006T234242Z-1fa6",
           "files": [
-            "share/run-suites.sh",
-            "bin/night-run",
-            "tests/test_run_suites_journal.sh",
-            "tests/test_slots.sh",
-            "tests/test_test_journal.sh",
-            "tests/test_harness_doctor.sh"
+            "llm-legs/share/run-suites.sh",
+            "llm-legs/bin/night-run",
+            "llm-legs/tests/test_run_suites_journal.sh",
+            "llm-legs/tests/test_slots.sh",
+            "llm-legs/tests/test_test_journal.sh",
+            "llm-legs/tests/test_harness_doctor.sh"
           ],
           "in": null,
           "regressed_at": null
@@ -3928,9 +3928,9 @@
           "at": "2026-10-07T03:30:00+03:00",
           "by": "night fixer harness-doctor-20261006T234242Z-1fa6",
           "files": [
-            "bin/worker-run",
-            "tests/worker_run_harness.sh",
-            "tests/test_worker_run_entry.sh"
+            "llm-legs/bin/worker-run",
+            "llm-legs/tests/worker_run_harness.sh",
+            "llm-legs/tests/test_worker_run_entry.sh"
           ],
           "in": null,
           "regressed_at": null
@@ -3959,7 +3959,7 @@
             "claude-setup/agents/codex-worker.md",
             "claude-setup/agents/gemini-worker.md",
             "claude-setup/agents/grok-worker.md",
-            "tests/test_consistency.sh"
+            "llm-legs/tests/test_consistency.sh"
           ],
           "in": null,
           "regressed_at": null
@@ -4025,8 +4025,8 @@
           "at": "2026-10-08T01:30:00+03:00",
           "by": "night 20261007T213650Z-7b98 handoff-2026-10-07-log-audit-leftovers",
           "files": [
-            "bin/worker-run",
-            "tests/test_worker_run_pool.sh"
+            "llm-legs/bin/worker-run",
+            "llm-legs/tests/test_worker_run_pool.sh"
           ],
           "in": null,
           "regressed_at": null
@@ -4066,7 +4066,7 @@
           "at": "2026-10-08T01:30:00+03:00",
           "by": "night 20261007T213650Z-7b98 handoff-2026-10-07-log-audit-leftovers",
           "files": [
-            "tests/test_harness_doctor.sh"
+            "llm-legs/tests/test_harness_doctor.sh"
           ],
           "in": null,
           "regressed_at": null
@@ -4091,8 +4091,8 @@
           "at": "2026-10-08T01:30:00+03:00",
           "by": "night 20261007T213650Z-7b98 handoff-2026-10-07-log-audit-leftovers",
           "files": [
-            "bin/claude-resume-timer",
-            "tests/test_claude_resume_timer.sh"
+            "llm-legs/bin/claude-resume-timer",
+            "llm-legs/tests/test_claude_resume_timer.sh"
           ],
           "in": null,
           "regressed_at": null
@@ -4117,9 +4117,9 @@
           "at": "2026-10-06T19:26:00+03:00",
           "by": "chat «Оптимизация работы с браузерами DIA и Chrome.»",
           "files": [
-            "bin/worker-run",
-            "share/ext_leveldb.py",
-            "tests/test_worker_run_browse.sh"
+            "llm-legs/bin/worker-run",
+            "llm-legs/share/ext_leveldb.py",
+            "llm-legs/tests/test_worker_run_browse.sh"
           ],
           "in": null,
           "regressed_at": null
@@ -4270,10 +4270,10 @@
           "at": "2026-10-08T01:30:00+03:00",
           "by": "night fixer harness-deploys-20261007T214008Z-1811",
           "files": [
-            "bin/harness-doctor",
-            "bin/night-run",
-            "tests/test_harness_doctor.sh",
-            "tests/test_night_run.sh"
+            "llm-legs/bin/harness-doctor",
+            "llm-legs/bin/night-run",
+            "llm-legs/tests/test_harness_doctor.sh",
+            "llm-legs/tests/test_night_run.sh"
           ],
           "in": null,
           "regressed_at": null
@@ -4349,8 +4349,8 @@
           "at": "2026-10-07T04:39:31+03:00",
           "by": "6c1173cd (night fixer harness-doctor-20261006T234242Z-1fa6)",
           "files": [
-            "bin/worker-run",
-            "tests/test_worker_run_entry.sh"
+            "llm-legs/bin/worker-run",
+            "llm-legs/tests/test_worker_run_entry.sh"
           ],
           "in": null,
           "regressed_at": "2026-10-08T02:14:19+03:00"
@@ -4375,8 +4375,8 @@
           "at": "2026-10-08T01:40:00+03:00",
           "by": "night fixer harness-doctor-20261007T214015Z-24b7",
           "files": [
-            "bin/worker-run",
-            "tests/test_worker_run_entry.sh"
+            "llm-legs/bin/worker-run",
+            "llm-legs/tests/test_worker_run_entry.sh"
           ],
           "in": null,
           "regressed_at": null
@@ -4401,10 +4401,10 @@
           "at": "2026-10-08T01:40:00+03:00",
           "by": "night fixer harness-doctor-20261007T214015Z-24b7",
           "files": [
-            "bin/night-run",
-            "bin/doctor-fix",
-            "tests/test_night_carry.sh",
-            "tests/test_doctor_fix.sh"
+            "llm-legs/bin/night-run",
+            "llm-legs/bin/doctor-fix",
+            "llm-legs/tests/test_night_carry.sh",
+            "llm-legs/tests/test_doctor_fix.sh"
           ],
           "in": null,
           "regressed_at": null
@@ -4429,8 +4429,8 @@
           "at": "2026-10-07T13:43:17+03:00",
           "by": "91662812, 55cf01c9 (chat «Updater doctor»)",
           "files": [
-            "bin/night-run",
-            "tests/test_night_run.sh"
+            "llm-legs/bin/night-run",
+            "llm-legs/tests/test_night_run.sh"
           ],
           "in": null,
           "regressed_at": null
@@ -4455,8 +4455,8 @@
           "at": "2026-10-07T00:25:31+03:00",
           "by": "c9087e4b, ffed4d0b",
           "files": [
-            "bin/log-audit",
-            "tests/test_log_audit.sh"
+            "llm-legs/bin/log-audit",
+            "llm-legs/tests/test_log_audit.sh"
           ],
           "in": null,
           "regressed_at": "2026-10-08T02:14:19+03:00"
@@ -4481,9 +4481,9 @@
           "at": "2026-10-07T14:12:53+03:00",
           "by": "529674a9",
           "files": [
-            "bin/night-run",
-            "docs/night-run.md",
-            "tests/test_night_run.sh"
+            "llm-legs/bin/night-run",
+            "llm-legs/docs/night-run.md",
+            "llm-legs/tests/test_night_run.sh"
           ],
           "in": null,
           "regressed_at": null
@@ -4508,8 +4508,8 @@
           "at": "2026-10-07T04:20:45+03:00",
           "by": "86e84d19 (owner chat)",
           "files": [
-            "bin/worker-run",
-            "tests/test_worker_run_browse.sh"
+            "llm-legs/bin/worker-run",
+            "llm-legs/tests/test_worker_run_browse.sh"
           ],
           "in": null,
           "regressed_at": "2026-10-08T02:14:19+03:00"
@@ -4553,7 +4553,7 @@
             "claude-setup/agents/codex-worker.md",
             "claude-setup/agents/gemini-worker.md",
             "claude-setup/agents/grok-worker.md",
-            "tests/test_consistency.sh"
+            "llm-legs/tests/test_consistency.sh"
           ],
           "in": null,
           "regressed_at": null
@@ -4610,7 +4610,7 @@
           "at": "2026-10-08T01:30:00+03:00",
           "by": "night 20261007T213650Z-7b98 handoff-2026-10-07-log-audit-leftovers",
           "files": [
-            "tests/test_harness_doctor.sh"
+            "llm-legs/tests/test_harness_doctor.sh"
           ],
           "in": null,
           "regressed_at": null

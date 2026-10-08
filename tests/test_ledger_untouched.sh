@@ -14,8 +14,9 @@ assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
 commit() { git -C "$1" -c user.name=t -c user.email=t@t commit -qm "$2"; }
 
 PROJECTS=$(dirname "$(dirname "$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)")")
-unrooted=$(jq -r '.rows[].fixes[]?.files[]?' "$ROOT/share/code-ledger.json" | while IFS= read -r f; do
-  [ -d "$PROJECTS/${f%%/*}/.git" ] || printf '%s ' "$f"; done)
+unrooted=$(python3 -c 'import json, sys; sys.path.insert(0, sys.argv[1]); from fix_commit import fix_root_faults
+for path in sys.argv[3:]: print(*fix_root_faults(json.load(open(path)), sys.argv[2]))' "$ROOT/share" "$PROJECTS" \
+  "$ROOT"/share/{doctor,harness,code,updater,system}-ledger.json | tr -d '\n')
 assert test -z "$unrooted"
 
 export HOME="$WORK/home" DOCTORS_DIR="$WORK/doctors" CLAUDEB_DIR="$WORK/claudeb" DOCTOR_TRIGGER=fixture

@@ -851,7 +851,9 @@ os.remove(harness)
 
 # The judge's short ruling has its own ledger row, never R1's review-cell shapes.
 os.environ["LLM_DOCTOR_LEDGER"] = os.path.join(os.path.dirname(os.path.dirname(sys.argv[1])), "share", "doctor-ledger.json")
+fixture_repos = os.environ.pop("LLM_DOCTOR_REPOS")
 ledger = doctor.load_ledger()
+os.environ["LLM_DOCTOR_REPOS"] = fixture_repos
 short = doctor.leg("reviewers", "judge", "opus", now, "failed", "bad output", "bad output", "ours",
                    text="the judge ruled on 3 of 5 claims")
 assert doctor.ledger_match(ledger, short)["id"] == "V14"
@@ -863,7 +865,9 @@ unseen = doctor.leg("reviewers", "review", "astra", now, "failed", "pool empty",
 assert doctor.judge_leg_state(ledger, unseen) == ("new", None)
 assert doctor.leg_id(unseen, None) == "leg-failure:reviewers/pool empty"
 committed = json.load(open(os.environ["LLM_DOCTOR_LEDGER"]))
+os.environ.pop("LLM_DOCTOR_REPOS")
 assert doctor.ledger_faults(committed) == [], doctor.ledger_faults(committed)
+os.environ["LLM_DOCTOR_REPOS"] = fixture_repos
 
 # The judge is pinned: loosening a dismissal, a theirs word, an exemption or a limit is an edit here.
 assert sorted((row["id"], row["match"].get("until")) for row in committed["rows"]
@@ -937,6 +941,11 @@ for status, extra in (("fixed", {}), ("fixed", {"fixes": [fix_at(100, None)]}),
                       ("open", {"fixed_in": ["review-bench@abc1234"]}), ("open", {"same_cause": ["Q"]}),
                       ("closed", {})):
     assert doctor.row_faults(entry(narrow, status, **extra), ["Z"]), (status, extra)
+os.makedirs(os.path.join(os.environ["LLM_DOCTOR_REPOS"], "llm-legs", ".git"))
+assert doctor.fix_faults(dict(fix_at(100), files=["llm-legs/bin/x"])) == []
+assert doctor.fix_faults(dict(fix_at(100), files=["bin/x"])) \
+    == ["fix files bin/x name no repository under %s" % os.environ["LLM_DOCTOR_REPOS"]]
+shutil.rmtree(os.path.join(os.environ["LLM_DOCTOR_REPOS"], "llm-legs"))
 path = os.path.join(unit, "ledger.json")
 os.environ["LLM_DOCTOR_DIR"] = os.path.join(unit, "doctor-unit")
 def fixture_ledger(rows):
@@ -982,7 +991,7 @@ late_git(8000, "checkout", "-q", "main")
 late_git(8000, "commit", "-q", "--allow-empty", "-m", "other")
 late_git(3000, "merge", "-q", "--no-ff", "-m", "land", "night/n/job")
 os.environ["LLM_DOCTOR_REPOS"] = late_repos
-landed = fixture_ledger([entry(narrow, "fixed", fixes=[fix_at(7200, "late@" + branch_fix)])])
+landed = fixture_ledger([entry(narrow, "fixed", fixes=[dict(fix_at(7200, "late@" + branch_fix), files=["late/x.py"])])])
 assert [doctor.judge_leg_state(landed, crashed(start, start - 50))[0] for start in (5000, 2000)] \
     == ["fixed", "regressed"]
 other_fix = late_git(8000, "rev-parse", "--short", "HEAD^1")
@@ -1096,7 +1105,7 @@ assert doctor.missing_commit("late@" + branch_fix) is None and doctor.missing_co
 os.environ["PATH"] = unit
 assert doctor.missing_commit("late@deadbee") is None
 os.environ["PATH"] = saved_path
-bogus = fixture_ledger([entry(narrow, "fixed", fixes=[fix_at(7200, "late@deadbee")])])
+bogus = fixture_ledger([entry(narrow, "fixed", fixes=[dict(fix_at(7200, "late@deadbee"), files=["late/x.py"])])])
 _, bogus_faults = doctor.settle_fixes(bogus)
 assert bogus_faults == [("Z", "deadbee is no commit of late")] and "Z" not in bogus["by_id"], bogus_faults
 assert doctor.judge_leg_state(bogus, crashed(100, 50)) == ("new", None)

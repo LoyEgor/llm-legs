@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 
 import collector_runs
 import handoffs
-from fix_commit import FIX_KEYS, SETTLED_FILE, fix_commit, fix_held_from, fix_landed, load_merged, record_settled, siblings_dir
+from fix_commit import FIX_KEYS, SETTLED_FILE, fix_commit, fix_held_from, fix_landed, load_merged, record_settled, siblings_dir, unrooted_files
 from spend import read_json
 
 
@@ -1389,6 +1389,9 @@ def fix_faults(fix):
     files = fix.get("files")
     if not isinstance(files, list) or not all(isinstance(path, str) and "/" in path.strip("/") for path in files):
         faults.append("fix files are repo/path strings")
+    elif unrooted_files(files, repos_dir()):
+        faults.append("fix files %s name no repository under %s" % (", ".join(unrooted_files(files, repos_dir())),
+                                                                    repos_dir()))
     if fix.get("in") is not None and not FIX_IN_RE.match(str(fix["in"])):
         faults.append("fix in %r is not repo@hash" % fix["in"])
     if fix.get("regressed_at") is not None and zoned_epoch(fix["regressed_at"]) is None:

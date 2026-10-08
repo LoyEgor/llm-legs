@@ -119,7 +119,7 @@ import glob, importlib.machinery, importlib.util, json, os, re, subprocess, sys
 ROOT, PROJECTS, RUNS, HOME, DOCS = (os.environ["DF_" + k] for k in ("ROOT", "PROJECTS", "RUNS", "HOME", "DOCS"))
 sys.path.insert(0, os.path.join(ROOT, "share"))
 from report_frame import fit
-from fix_commit import FIX_KEYS, fix_record_faults, load_merged, main_checkout, sync_settled
+from fix_commit import FIX_KEYS, fix_record_faults, fix_root_faults, load_merged, main_checkout, sync_settled
 from spend import read_json
 DOCTORS = ("llm", "harness", "updater", "code", "system")
 HOOK_AREAS = ("Hooks", "Hook waits")
@@ -622,6 +622,9 @@ def fix_faults(record_file, doctor):
         for row, index, missing in fix_record_faults(read_json(ledger, {})):
             print("ledger %s: row %s fixes[%d] lacks %s: every fix record is {%s}"
                   % (ledger, row, index, ", ".join(missing), ", ".join(sorted(FIX_KEYS))))
+        for row, index, unrooted in fix_root_faults(read_json(ledger, {}), repos_dir(doctor)):
+            print("ledger %s: row %s fixes[%d] files %s name no repository under %s: every fix file is repo/path"
+                  % (ledger, row, index, ", ".join(map(str, unrooted)), repos_dir(doctor)))
 
 
 if __name__ == "__main__":
