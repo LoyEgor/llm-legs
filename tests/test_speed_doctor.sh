@@ -276,6 +276,28 @@ check(module.floor_rows(dict(gaps, floors=[], last_night=near), {}, HI) == []
       and [r["ident"] for r in module.floor_rows(dict(gaps, floors=[], last_night=dict(near, model_s=4000, share=0.111)),
                                                 {}, HI)] == ["workers-active"],
       "the night row needs more than 30 minutes of the night's wall under the derived floor share, not a share point")
+runs_journal = os.path.join(work, "full-runs.jsonl")
+with open(runs_journal, "w") as handle:
+    for session, scope, end, minutes in (("chatAAAAxyz", "full", HI - 600, 25), ("chatAAAAxyz", "all", HI - 60, 15),
+                                         (None, "full", HI - 300, 60), ("chatBBBBxyz", "changed", HI - 300, 50),
+                                         ("chatBBBBxyz", "full", HI - 90000, 50)):
+        handle.write(json.dumps({"kind": "suites", "scope": scope, "session": session, "worker_run": None,
+                                 "started_at": end - 60 * minutes, "ended_at": end}) + "\n")
+    handle.write("{torn\n")
+saved_runs_dir = os.environ.get("WORKER_RUN_DIR")
+os.environ["WORKER_RUN_DIR"] = os.path.join(work, "no-worker-runs")
+full = module.full_runs(HI, runs_journal)
+os.environ.pop("WORKER_RUN_DIR")
+if saved_runs_dir is not None:
+    os.environ["WORKER_RUN_DIR"] = saved_runs_dir
+full_rows = module.floor_rows({}, {}, HI, full)
+check(full == {"min_day": 40.0, "chats": [("chatAAAA", 2)]}
+      and [(r["id"], r["value"], r["limit"], r["fact"]) for r in full_rows]
+      == [("time_floor:full-runs", 40.0, 30, "every-suite runs outside the night 40 min/day over its floor of none "
+           "(chatAAAA ×2) · proof: back under it")]
+      and module.floor_rows({}, {}, HI, dict(full, min_day=30.0)) == [],
+      "every-suite runs a chat started in the last day are a floor row past 30 min/day, named by chat; the night's "
+      "unsessioned run, a --changed run and an older run are not: %s %s" % (full, [r["fact"] for r in full_rows]))
 parts = json.loads(next(l for l in h.menu_text({
     "problem_count": 0, "as_of_s": HI, "title": "t", "status": "error", "problems": [], "sections": [], "footer": "f",
     "speed": {"status": "ok", "budget": gaps}}).splitlines() if l.startswith("H\t"))[2:])["speed"]["issues"]

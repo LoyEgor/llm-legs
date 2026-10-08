@@ -815,13 +815,44 @@ def with_time(opportunities, budget):
     return sorted(out, key=rank_key)
 
 
-def floor_rows(budget, ledger, now):
+def full_runs(now, journal):
+    """Every-suite runs of the last day a chat or a worker started: the night's own run and Egor's terminal carry no
+    session. -> {"min_day", "chats": [(name, runs)]}"""
+    import chat_names
+    total, by = 0.0, {}
+    try:
+        with open(journal, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(r, dict) or r.get("kind") != "suites" or r.get("scope") not in ("full", "all"):
+                    continue
+                who, end, start = r.get("session") or r.get("worker_run"), time_budget.num(r.get("ended_at")), time_budget.num(r.get("started_at"))
+                if who and end is not None and start is not None and end >= now - 86400:
+                    total += (end - start) / 60
+                    by[who] = by.get(who, 0) + 1
+    except OSError:
+        pass
+    names, launchers = {}, chat_names.worker_run_launchers() if by else {}
+    for who, runs in by.items():
+        name = chat_names.chat_label(who, launchers=launchers)
+        names[name] = names.get(name, 0) + runs
+    return {"min_day": round(total, 1), "chats": sorted(names.items(), key=lambda kv: (-kv[1], kv[0]))}
+
+
+def floor_rows(budget, ledger, now, full=None):
     """Named rows proven fixed only by the measurement returning under them: a class more than FLOOR_ROW_MIN_DAY
-    over its floor in the last day, and the last night's workers more than FLOOR_ROW_MIN_DAY minutes under their derived
-    floor share."""
+    over its floor in the last day, every-suite runs outside the night more than FLOOR_ROW_MIN_DAY minutes over their
+    floor of none, and the last night's workers more than FLOOR_ROW_MIN_DAY minutes under their derived floor share."""
     found = [(key, gap, time_budget.FLOOR_ROW_MIN_DAY, "min/day", "%s %s over its floor of %s" % (
         label, per_day(gap, worker), floor if isinstance(floor, str) else "%s min/day" % fmt(floor)))
              for key, label, _, gap, floor, worker in time_gaps(budget) if gap > time_budget.FLOOR_ROW_MIN_DAY]
+    if full and full["min_day"] > time_budget.FLOOR_ROW_MIN_DAY:
+        found.append(("full-runs", full["min_day"], time_budget.FLOOR_ROW_MIN_DAY, "min/day",
+                      "every-suite runs outside the night %s min/day over its floor of none (%s)" % (
+                          fmt(full["min_day"]), ", ".join("%s ×%d" % kv for kv in full["chats"]))))
     night, floor = budget.get("last_night") or {}, (budget.get("workers_active") or {}).get("floor_share")
     if night.get("share") is not None and floor and night["share"] < floor \
             and night["wall_s"] - night["model_s"] / floor > 60 * time_budget.FLOOR_ROW_MIN_DAY:
@@ -1097,7 +1128,7 @@ def collect(write, now):
     opportunities += moved_opportunities(component_om, days, now, covered)
     budget = time_budget.section(now, write)
     opportunities = with_time(opportunities, budget)
-    problems += floor_rows(budget, ledger, now)
+    problems += floor_rows(budget, ledger, now, full_runs(now, H.suites_journal()))
     why = {}
     selection = select(opportunities, [p for p in problems if p["state"] in H.LOUD_STATES], why)
     coverage = {"days": round(covered, 2), "window_days": WINDOW_D, "backfill_files_done": job["files"] - len(job["todo"]),

@@ -144,6 +144,7 @@ SPEED_FILES = {"background/statusline": ("llm-legs/bin/statusline.sh",),
                "time/slot": ("llm-legs/share/slots.sh", "llm-legs/bin/worker-run"),
                "time/suite_wait": ("llm-legs/share/run-suites.sh", "llm-legs/share/slots.sh"),
                "time/suite_run": ("llm-legs/share/run-suites.sh",), "time/retries": ("llm-legs/bin/worker-run",),
+               "time/full-runs": ("llm-legs/share/run-suites.sh",),
                "time/locks": ("llm-legs/share/store-lock.sh",),
                "time/workers-active": ("llm-legs/bin/worker-run", "llm-legs/share/run-suites.sh")}
 KNOBS = (

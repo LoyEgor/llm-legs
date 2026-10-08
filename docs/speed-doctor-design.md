@@ -145,7 +145,9 @@ counts each minute once (`<chat> min + <worker> w-min/day`). The 7-day band only
 chat/queue), else it is `opportunity:time/<class>` (`TIME_LEVERS`); recoverable minutes set the score, so the night takes
 the biggest gap even when nothing regressed, and an empty pick names them in `why_none`.
 **Floor rows** (rule `time_floor`, counted, ledger states as regressions): `time_floor:<class>` more than `FLOOR_ROW_MIN_DAY` (30)
-over its floor in the last day, `:workers-active` when the last night's wall is as far over model/floor share;
+over its floor in the last day, `:full-runs` when every-suite runs a chat or a worker started (the night's run and
+Egor's terminal carry no session) take as many minutes, named by chat, `:workers-active` when the last night's wall is as
+far over model/floor share;
 the proof of a fix is the measurement back under it (no row).
 
 **ROI** (`night-run report`, `roi ·` lines). A fixer job whose problem is a Speed or time row (`opportunity`,
