@@ -505,6 +505,7 @@ loader.exec_module(doctor)
 days = doctor.trend_days(calendar.timegm((2026, 10, 25, 21, 30, 0)))
 assert len(set(days)) == 14 and days[-1] == "2026-10-25" and days[0] == "2026-10-12", days
 assert doctor.spark([0, 2, 4]) == "▁▄█", doctor.spark([0, 2, 4])
+assert doctor.spark([0, 1, 8]) == "▁▂█", doctor.spark([0, 1, 8])
 PY
 
 "$DOCTOR" --dry-run --block reviewers >"$WORK/view.txt" || fail "the text view failed"
@@ -699,6 +700,9 @@ made = worker("made", files={"files-note": "UNKNOWN: transcript names a write ou
                              "no content baseline was recorded: /Volumes/Work/r/.claude/worktrees/tmp/t.sh\n"})
 assert doctor.classify_worker(made, {"worktrees_made": ["/Volumes/Work/r/.claude/worktrees/tmp"]}, "", 0)[0] is None
 assert doctor.classify_worker(made, {}, "", 0)[0] == "escaped"
+itself = worker("itself", files={"files-note": "UNKNOWN: transcript names a write outside the snapshotted repository; "
+                                 "no content baseline was recorded: /Volumes/Work/other\n"})
+assert doctor.classify_worker(itself, {"add_dirs": ["/Volumes/Work/other"]}, "", 0)[0] is None
 turns = worker("turns", files={"outcome": "GROK_MAX_TURNS\n", "err": "x"})
 assert doctor.classify_worker(turns, {}, "", 1)[:2] == ("cap", "turns")
 phase = worker("phase", files={"state.json": '{"phase": "failed"}', "err": "sandbox_apply failed: internal error\n"})
@@ -931,7 +935,8 @@ for match in ({"word": "crashed"}, {"word": "crashed", "detail": ".*"}, {"word":
               {"word": "crashed", "detail": "abc|"}, {"word": "crashed", "model": "^o"},
               {"word": "crashed", "until": "2026-09-01T00:00:00+03:00"}, {"word": "walled", "detail": "usage limit"},
               {"word": "crashed", "detail": "abcdef", "until": "yesterday"}, {"health": "debt", "key": ".*"},
-              {"machinery": "anchors", "word": "crashed"}, {"health": "hooks", "key": "^hook-error:x"}):
+              {"machinery": "anchors", "word": "crashed"}, {"health": "hooks", "key": "^hook-error:x"},
+              dict(narrow, until="2026-09-01T00:00:00")):
     assert doctor.row_faults(entry(match), ["Z"]), match
 # A machinery row matches a whole review-bench class: open or fixed, never dismissed.
 assert [bool(doctor.row_faults(entry({"machinery": "integrity"}, status), ["Z"])) for status in
@@ -943,6 +948,9 @@ for status, extra in (("fixed", {}), ("fixed", {"fixes": [fix_at(100, None)]}),
     assert doctor.row_faults(entry(narrow, status, **extra), ["Z"]), (status, extra)
 os.makedirs(os.path.join(os.environ["LLM_DOCTOR_REPOS"], "llm-legs", ".git"))
 assert doctor.fix_faults(dict(fix_at(100), files=["llm-legs/bin/x"])) == []
+assert doctor.fix_faults(dict(fix_at(100), files=["llm-legs/bin/x"], at="2026-10-08T12:00:00Z")) == []
+assert doctor.fix_faults(dict(fix_at(100), files=["llm-legs/bin/x"], at="2026-10-08T12:00:00")) \
+    == ["fix at is no ISO time with offset"]
 assert doctor.fix_faults(dict(fix_at(100), files=["bin/x"])) \
     == ["fix files bin/x name no repository under %s" % os.environ["LLM_DOCTOR_REPOS"]]
 shutil.rmtree(os.path.join(os.environ["LLM_DOCTOR_REPOS"], "llm-legs"))

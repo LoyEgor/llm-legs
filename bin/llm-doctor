@@ -455,6 +455,12 @@ def zoned_epoch(value):
     return epoch
 
 
+def offset_epoch(value):
+    """zoned_epoch of a time that names its offset: share/fix_commit reads a bare one as local time, not UTC."""
+    return zoned_epoch(value) if iso_epoch(value) is not None and re.search(r"(?:Z|[+-]\d{2}:?\d{2})$", value[19:]) \
+        else None
+
+
 def as_int(value):
     if isinstance(value, bool):
         return None
@@ -954,7 +960,7 @@ def classify_worker(run_dir, meta, killed, exit_code):
         return "escaped", "escaped", "worked in %s" % project_of(escapes[0]), ""
     note = read_text(os.path.join(run_dir, "files-note")) or ""
     outside = [path for path in outside_paths("\n".join(OUTSIDE_WRITE_RE.findall(note)))
-               if not any(path.startswith(root) for root in granted)]
+               if not any((path.rstrip("/") + "/").startswith(root) for root in granted)]
     if outside:
         return "escaped", "escaped", "wrote %s" % project_of(outside[0]), ""
     research = first_line(os.path.join(run_dir, "research-outcome"))
@@ -1382,7 +1388,7 @@ def fix_faults(fix):
     if not isinstance(fix, dict) or not set(fix) <= FIX_KEYS:
         return ["a fix is {at, by, files, in, regressed_at}"]
     faults = []
-    if zoned_epoch(fix.get("at")) is None:
+    if offset_epoch(fix.get("at")) is None:
         faults.append("fix at is no ISO time with offset")
     if not isinstance(fix.get("by"), str) or not fix["by"].strip():
         faults.append("fix by names no chat")
@@ -1440,7 +1446,7 @@ def row_faults(row, ids):
         for key in ("model", "detail"):
             if match.get(key) and not narrow_regex(match[key]):
                 faults.append("%s %r matches every leg" % (key, match[key]))
-        if "until" in match and zoned_epoch(match["until"]) is None:
+        if "until" in match and offset_epoch(match["until"]) is None:
             faults.append("until is no ISO time with offset")
     fixes = row.get("fixes")
     if not isinstance(fixes, list):
@@ -1682,7 +1688,7 @@ def spark(values):
     top = max(values) if values else 0
     if top <= 0:
         return ""
-    return "".join(SPARK[0] if value == 0 else SPARK[min(len(SPARK) - 1, (value * len(SPARK) - 1) // top)]
+    return "".join(SPARK[0] if value == 0 else SPARK[min(len(SPARK) - 1, max(1, (value * len(SPARK) - 1) // top))]
                    for value in values)
 
 
