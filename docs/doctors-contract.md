@@ -30,7 +30,7 @@ Harness      3             ▁▁▂▃▄▆█    3 ▸
 Updater      0             ▁▁▂▃▄▆█    3 ▸
 Code         3             ▁▁▂▃▄▆█    3 ▸
 Lost time   12 min/day     ▁▁▂▃▄▆█   25 ▸
-Spend     0.46 index       ▁▁▂▃▄▆█ 0.71 ▸
+Spend     0.46             ▁▁▂▃▄▆█ 0.71 ▸
 System       2             ▁▁▂▃▄▆█    3 ▸
 Last night 5 Oct · stopped early: no jobs
 ──────────
@@ -45,12 +45,13 @@ LLM ▸     8  reviewers crashed
        LLM details ▸   (the doctor's whole previous tree)
 ```
 
-- Summary row, fixed cells: name (9, in the status color) · value (4, right) · unit (10: `min/day` for Lost time,
-  `index` for Spend, blank for counts) · 7 bars · usual (4, right, DIM), no trend arrow. Counts are bare
+- Summary row, fixed cells: name (9, in the status color) · value (4, right, plain) · unit (10: `min/day` for Lost
+  time, blank for the rest) · 7 bars · usual (4, right, DIM), no trend arrow. Counts are bare
   (Lost time, internally Speed: Harness time budget `lost_min_day`; Spend: tokenmap's `harness_index.value` from
-  `tracking.json` via `share/spend.py`, two decimals, 1.00 = the previous 7 days' harness price per unit of use, the
-  value RED/GREEN by its `tone`; the problems of both stay counted by Harness alone).
-- Status color of the name (no dot: `●` is the LLM Limits pin mark): GREEN ok, RED problems or collector error, DIM_RED watch/blind/pending update, DIM no data or
+  `tracking.json` via `share/spend.py`, two decimals, 1.00 = the previous 7 days' harness price per unit of use, its
+  `tone` unshown; the problems of both stay counted by Harness alone).
+- Status color of the name (no dot: `●` is the LLM Limits pin mark): GREEN ok, RED problems or collector error (Spend: an
+  audit due, as Lost time's floor gaps), DIM_RED watch/blind/pending update, DIM no data or
   stale (Speed also without an observation dated today; Spend while `tracking.json` is past its `stale_after_hours`, has no `harness_index` or its value is null). Missing value: DIM `–`.
 - Bars: six completed local dates and today, daily `max` of `problem-days.jsonl` (Speed: the daily
   maxima in Harness's `menu.txt` header; Spend: its stored index of each day, the 7-day window ending that day). Eight heights against the window maximum. An unmeasured date

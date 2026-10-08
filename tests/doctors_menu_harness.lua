@@ -258,7 +258,7 @@ local trendItems = trendDoctor.menuItems()
 local trendNight = tasks[#tasks]
 local names, values = { "LLM", "Harness", "Updater", "Code", "Lost time", "Spend", "System" },
   { "2", "3", "0", "3", "12", "0.46", "2" }
-local UNITS = { [5] = "min/day", [6] = "index" }
+local UNITS = { [5] = "min/day" }
 local USUAL = { [5] = "25", [6] = "0.25" }
 local bars = "▁▂▂▃▄▆█"
 for index, name in ipairs(names) do
@@ -290,14 +290,15 @@ check(aligned({ table.unpack(trendItems, 1, 7) }), "summary columns line up at t
 for index = 1, 7 do
   local title = trendItems[index].title
   check(span(title, UNIT_AT, UNIT_AT + 9) == string.format("%-10s", UNITS[index] or "")
-    and not span(title, VALUE_AT - 3, USUAL_AT):gsub("min/day", ""):gsub("index", ""):match("[%a%%]"),
-    "min/day and index are the only units on the summary rows, counts bare: " .. text(title))
+    and not span(title, VALUE_AT - 3, USUAL_AT):gsub("min/day", ""):match("[%a%%]"),
+    "min/day is the only unit on the summary rows, counts and Spend bare: " .. text(title))
 end
 check(#trendItems == 10 and trendItems[8].title == "-" and text(trendItems[9].title) == "Cleanup now"
   and text(trendItems[10].title) == "Run everything now", "top level: seven summaries, System last, then the actions")
 check(span(trendItems[5].title, 1, 9) == "Lost time" and span(trendItems[6].title, 1, 5) == "Spend"
-  and sameColor(colorAt(trendItems[6].title, 1), palette.DIM_RED), "the time row reads Lost time; Spend beside it, DIM_RED while an audit is due")
-check(sameColor(colorAt(trendItems[6].title, VALUE_AT), palette.GREEN), "Spend's index GREEN when tokenmap's tone is better")
+  and sameColor(colorAt(trendItems[6].title, 1), palette.RED), "the time row reads Lost time; Spend beside it, RED while an audit is due")
+check(colorAt(trendItems[6].title, VALUE_AT) == nil and colorAt(trendItems[5].title, VALUE_AT) == nil,
+  "Spend's value is plain like every other value, whatever tokenmap's tone")
 check(span(trendItems[3].title, 1, 7) == "Updater" and sameColor(colorAt(trendItems[3].title, 1), palette.GREEN)
   and sameColor(colorAt(trendItems[3].title, 7), palette.GREEN), "ok name GREEN")
 check(span(trendItems[1].title, 1, 3) == "LLM" and sameColor(colorAt(trendItems[1].title, 1), palette.RED), "problem name RED")
@@ -460,11 +461,11 @@ check(text(unknownSpeed.title) == row("Lost time", "–", "min/day", " ▂▂▃
 metadata.speed.lost_min_day = 12
 metadata.spend.tone = "worse"
 trendHarness()
-check(sameColor(colorAt(trendDoctor.menuItems()[6].title, VALUE_AT), palette.RED), "Spend's index RED when tokenmap's tone is worse")
+check(colorAt(trendDoctor.menuItems()[6].title, VALUE_AT) == nil, "Spend's value stays plain when tokenmap's tone is worse")
 metadata.spend.status, metadata.spend.index = "nodata", nil
 trendHarness()
 local staleSpend = trendDoctor.menuItems()[6]
-check(text(staleSpend.title) == row("Spend", "–", "index", " ▂▂▃▄▆█", "0.30")
+check(text(staleSpend.title) == row("Spend", "–", nil, " ▂▂▃▄▆█", "0.30")
   and sameColor(colorAt(staleSpend.title, 1), palette.DIM) and sameColor(colorAt(staleSpend.title, VALUE_AT), palette.DIM),
   "a stale tracking.json is a DIM – on Spend, never its old index: " .. text(staleSpend.title))
 metadata.spend.status, metadata.spend.index, metadata.spend.tone = "watch", 0.46, "better"
