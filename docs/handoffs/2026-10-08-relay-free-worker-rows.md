@@ -1,6 +1,6 @@
 # Relay-free worker rows: a `worker` work line instead of the Sonnet relay subagents
 
-Status: open. To: «Light помощник и унификация workers». From: «Token spending tracking and optimization», 2026-10-08.
+Status: open; design approved by Egor 2026-10-08 (§ Approved design), implementation not started. To: «Light помощник и унификация workers». From: «Token spending tracking and optimization», 2026-10-08.
 
 ## Why
 Every delegation spawns a relay subagent on Sonnet: claudeb-, codex-, gemini- and grok-worker, light-worker, light-research, and review-waiter for review-bench. The relay only launches `worker-run`, waits in 9-minute rounds, and relays the report.
@@ -37,14 +37,59 @@ Every delegation spawns a relay subagent on Sonnet: claudeb-, codex-, gemini- an
    - Haiku 5.5 was released on 2026-10-07. CLI 2.1.288 doesn't know it; the latest CLI is 2.1.295.
    - This is the option if the mock fails: the panel row stays and the relay gets cheaper, though not free.
 
-## Wanted
-1. **A temporary visual mock in Egor's own status line.** Gate it to his session by a marker file, show it, then remove it. Show:
-   - a worker line next to a shell line;
-   - two worker lines;
-   - overflow.
+## Approved design
+Egor saw a live mock in his status line on 2026-10-08 and approved it. The exact rendering code is in `2026-10-08-relay-free-worker-rows.mock.sh` beside this file. It is demo-only, so rebuild it properly. It changes every work line, not only workers.
 
-   Get his yes on the look.
-2. **Only after his yes:**
+Preview at 80 columns (ANSI stripped):
+```
+locomthebest · opus · high — Speed up tracking r…  tests      12m 36s  ↓ 184k
+com · sonnet · medium — Split merged reviews per…  working     8m 29s   ↓ 37k
+codex · gpt-6 · high — Review menu cache           reviewing  16m 34s   ↓ 92k
+gemini · 3.5-pro — Audit relay hooks               working    10m 24s   ↓ 51k
+image · logo — generate icon                                   6m 54s
++2 workers, 4 commands
+```
+With commands visible (70 columns):
+```
+locomthebest · opus · high — Speed up tr…  tests     6m 12s  ↓ 184k
+shell · token-map — pytest -q tests/test…            40s
+tests · llm-legs — test_statusline_hooks…  12/41 ✗1  1m 35s
+```
+
+**Order and cap.**
+- Agent rows come first: workers of every vendor (light included), review runs and images. Command rows follow: shell, tests and the other probe classes.
+- At most 5 rows. The rest becomes one dim line, `+3 workers, 1 image, 4 commands`: hidden counts by kind, with no "more" word and no total.
+- This replaces today's 3-row cap and its `· +N` suffix on row 3.
+
+**Row.** Each row reads `<head> — <title>`, then a right block.
+- The head is magenta on agent rows and cyan on command rows.
+  - A worker's head is `account · model · effort`, the same tag as today's panel, with no "worker" word.
+  - An image's head is `image · <repo>`.
+  - A command's head is `<class> · <repo>`.
+- The title starts right where the head ends, so titles are not aligned under each other. It is bright on agent rows and dim on command rows.
+- The right block is three columns shared by the visible rows:
+  - **state:** left-aligned within its column, dim. A test counter like `12/41 ✗1` goes here, with `✗N` in red.
+  - **elapsed:** right-aligned, dim.
+  - **tokens:** right-aligned, dim.
+
+  A column that no visible row fills takes no space.
+- The block sits at `min(COLUMNS − STATUSLINE_FIT_MARGIN, widest natural row)`. That keeps a wide window from opening a gap after short titles.
+
+**Width.** As the window narrows, only the title shrinks, ending in `…`. Head, state, elapsed and tokens never shrink.
+
+**Values.**
+- **Elapsed** counts from the run's start (`state.json` `started_epoch`), not from a wait round. Seconds are padded to two digits so the width does not jump: `4m 05s`, `1h 02m`.
+- **Tokens** are the worker's own, read from its live session log: the run dir's `session-file` for claudeb, vendor logs for the others. Today's panel shows the relay's `tokenCount`, which is the Sonnet relay's spend, not the worker's. If the count is unknown, the cell is blank.
+
+**Going inside.** A status line row cannot be clicked; Egor asked about this and accepted the substitute below.
+- CLI 2.1.295 has `/tasks` → "Shell details", which shows the last 8 KiB a background shell wrote.
+- So a directly launched `worker-run` must print the worker's progress (tool calls, short messages) to its stdout. That way `/tasks` shows what the worker is doing.
+
+**Contract.** The real line must pass the checklist in `docs/statusline-contract.md` and its tests in `tests/test_statusline_hooks.sh`. Update the § Work lines section (cap, order, colours, overflow line) in the same change.
+
+## Wanted
+1. ~~A temporary visual mock in Egor's own status line.~~ Done and approved on 2026-10-08 (§ Approved design). The mock was removed from `bin/statusline.sh`.
+2. **Next:**
    - the real `worker` work line;
    - direct launches, where the chat runs `worker-run` as a background Bash call. `worker-launch-gate.sh` refuses chat-run launches today;
    - retire the relays, review-waiter included;
