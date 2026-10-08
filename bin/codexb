@@ -416,8 +416,9 @@ fast_mode() {
   python3 "$codexb_root/share/codex_fast_mode.py" "$profiles_dir" "$name" "$mode"
 }
 
-codex_launch_needs_default_model() {
-  local command_seen=false launch=true
+codex_launch_needs_default_model() { # config.toml codex-args...
+  local config=$1 command_seen=false launch=true profile=''
+  shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
       -m|--model|--model=*) return 1 ;;
@@ -429,7 +430,13 @@ codex_launch_needs_default_model() {
           shift
         fi ;;
       --config=*) [[ ! "${1#--config=}" =~ ^[[:space:]]*model[[:space:]]*= ]] || return 1 ;;
-      -p|--profile|-C|--cd|-s|--sandbox|-a|--ask-for-approval|-i|--image|--enable|--disable|--add-dir|--local-provider)
+      -p|--profile)
+        if [ "$#" -ge 2 ]; then
+          profile=$2
+          shift
+        fi ;;
+      --profile=*) profile=${1#--profile=} ;;
+      -C|--cd|-s|--sandbox|-a|--ask-for-approval|-i|--image|--enable|--disable|--add-dir|--local-provider)
         [ "$#" -lt 2 ] || shift ;;
       -*) ;;
       *)
@@ -442,7 +449,15 @@ codex_launch_needs_default_model() {
     esac
     shift
   done
-  [ "$launch" = true ]
+  [ "$launch" = true ] || return 1
+  [ -n "$profile" ] || return 0
+  ! python3 -c 'import sys, tomllib
+try:
+    profiles = tomllib.load(open(sys.argv[1], "rb")).get("profiles")
+except (OSError, ValueError):
+    sys.exit(1)
+chosen = profiles.get(sys.argv[2]) if isinstance(profiles, dict) else None
+sys.exit(0 if isinstance(chosen, dict) and "model" in chosen else 1)' "$config" "$profile"
 }
 
 codex_launch_command() {
@@ -524,7 +539,7 @@ run_account() {
     printf "codexb: new profile '%s' created at %s — Codex will ask you to log in once.\n" "$name" "$directory" >&2
   fi
   ensure_profile "$directory"
-  if codex_launch_needs_default_model "$@"; then
+  if codex_launch_needs_default_model "$directory/config.toml" "$@"; then
     local default_slug
     default_slug=$(worker_model_codex_slug "$(worker_model_default_model codex)") || default_slug=''
     if [ -z "$default_slug" ]; then

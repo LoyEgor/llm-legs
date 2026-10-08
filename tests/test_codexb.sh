@@ -455,6 +455,19 @@ done
 : >"$CODEX_CALLS"
 bash "$SCRIPT" profile alpha -c 'model_reasoning_effort="high"' || fail "config effort launch failed"
 assert grep -qx 'ARG=-m' "$CODEX_CALLS"
+cp "$HOME/.codex/config.toml" "$WORK/config.toml.saved"
+printf '[profiles.pinned]\nmodel = "gpt-5.5"\n[profiles.plain]\nmodel_reasoning_effort = "high"\n' >>"$HOME/.codex/config.toml"
+for profile_form in "-p pinned" "--profile pinned" "--profile=pinned"; do
+  : >"$CODEX_CALLS"
+  bash "$SCRIPT" profile alpha $profile_form || fail "profile model launch failed"
+  assert_fails grep -qx 'ARG=-m' "$CODEX_CALLS"
+done
+for profile_form in "-p plain" "-p missing"; do
+  : >"$CODEX_CALLS"
+  bash "$SCRIPT" profile alpha $profile_form || fail "profile launch failed"
+  assert grep -qx 'ARG=-m' "$CODEX_CALLS"
+done
+cp "$WORK/config.toml.saved" "$HOME/.codex/config.toml"
 for command in login logout --version --help mcp; do
   : >"$CODEX_CALLS"
   bash "$SCRIPT" profile alpha "$command" || fail "$command passthrough failed"
