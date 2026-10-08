@@ -1423,7 +1423,7 @@ assert doc_has 'Refresh error list'
 assert doc_has '`refresh_errors`'
 assert doc_has '`classify_cause`'
 
-sl_late_pair=$(grep -oE '\[[0-9]+ \* \$expected_ms, [0-9]+\]' "$ROOT/bin/subagent-statusline.sh")
+sl_late_pair=$(grep -oE '\[[0-9]+ \* \$expected_ms, [0-9]+\]' "$ROOT/bin/statusline-work-probe.sh")
 sl_late_multiplier=$(grep -oE '[0-9]+' <<<"$sl_late_pair" | head -n1)
 sl_late_floor_ms=$(grep -oE '[0-9]+' <<<"$sl_late_pair" | tail -n1)
 assert test "$(wc -l <<<"$sl_late_pair" | tr -d ' ')" -eq 1
@@ -1431,14 +1431,14 @@ assert eq "$sl_late_multiplier" 3
 assert eq "$sl_late_floor_ms" 120000
 assert eq "$(grep -c 'expected_ms' "$STATUSLINE")" 0
 assert grep -Fq 'shared-invariants row `u`' "$ROOT/docs/statusline-contract.md"
-# The bench stopped reporting a late review; the task row judges one alone, and only the
+# The bench stopped reporting a late review; the review work line judges one alone, and only the
 # `expected` map the bench still writes makes that judgement possible.
 assert eq "$(grep -c 'REVIEW_LATE' "$RB_REPORT")" 0
 assert grep -Fq '"expected": dict(expected or {}),' "$RB_STORE"
 # A chunked cell is judged per PASS: the bench stamps when the running pass began and the
 # reader measures from that stamp, or a fourteen-chunk round is red from its third median on.
 assert grep -Fq 'progress.setdefault("chunk_started", {})[cell]' "$RB_STORE"
-assert grep -Fq 'chunk_started' "$ROOT/bin/subagent-statusline.sh"
+assert grep -Fq 'chunk_started' "$ROOT/bin/statusline-work-probe.sh"
 assert doc_has '`chunk_started[cell]`'
 assert doc_has 'Late review threshold'
 assert doc_has '`3` ×'

@@ -2138,44 +2138,113 @@ if [ -n "$session_id" ]; then
   if { ! [[ "$work_mtime" =~ ^[0-9]+$ ]] || [ "$((now - work_mtime))" -gt 4 ]; } && [ -x "$work_bin" ]; then
     ( "$work_bin" "$session_id" "$PPID" >/dev/null 2>&1 & ) 2>/dev/null
   fi
-  work_more=0
   if [[ "$work_mtime" =~ ^[0-9]+$ ]] && [ "$((now - work_mtime))" -le 15 ]; then
-    # Split on \037: tab is IFS whitespace, so `read` would fold an empty repo into the label.
+    w_agents=() w_cmds=()
     while IFS= read -r work_line || [ -n "$work_line" ]; do
-      IFS=$'\037' read -r w_kind w_class w_start w_repo w_label w_done w_failed w_total _ <<<"${work_line//$'\t'/$'\037'}"
-      [ "$w_kind" = main ] && [[ "$w_start" =~ ^[0-9]+$ ]] || continue
-      if [ "${#work_rows[@]}" -ge 3 ]; then work_more=$((work_more + 1)); continue; fi
+      case "$work_line" in
+        main$'\t'worker$'\t'* | main$'\t'review$'\t'* | main$'\t'media$'\t'*) w_agents+=("$work_line") ;;
+        main$'\t'*) w_cmds+=("$work_line") ;;
+      esac
+    done < "$work_cache"
+    w_n=0 w_hid_worker=0 w_hid_review=0 w_hid_media=0 w_hid_cmd=0
+    w_agent=() w_head=() w_title=() w_state=() w_el=() w_tok=() w_late=()
+    for work_line in ${w_agents[@]+"${w_agents[@]}"} ${w_cmds[@]+"${w_cmds[@]}"}; do
+      # Split on \037: tab is IFS whitespace, so `read` would fold an empty field into the next one.
+      IFS=$'\037' read -r _ w_class w_start w_h w_t w_done w_failed w_total w_tokens _ <<<"${work_line//$'\t'/$'\037'}"
+      [[ "$w_start" =~ ^[0-9]+$ ]] || continue
+      if [ "$w_n" -ge 5 ]; then
+        case "$w_class" in
+          worker) w_hid_worker=$((w_hid_worker + 1)) ;; review) w_hid_review=$((w_hid_review + 1)) ;;
+          media) w_hid_media=$((w_hid_media + 1)) ;; *) w_hid_cmd=$((w_hid_cmd + 1)) ;;
+        esac
+        continue
+      fi
       w_secs=$((now - w_start))
       [ "$w_secs" -ge 0 ] || w_secs=0
-      if [ "$w_secs" -lt 60 ]; then w_el="${w_secs}s"
-      elif [ "$w_secs" -lt 3600 ]; then w_el="$((w_secs / 60))m $((w_secs % 60))s"
-      else w_el="$((w_secs / 3600))h $(((w_secs % 3600) / 60))m"
+      if [ "$w_secs" -lt 60 ]; then w_e="${w_secs}s"
+      elif [ "$w_secs" -lt 3600 ]; then printf -v w_e '%dm %02ds' $((w_secs / 60)) $((w_secs % 60))
+      else printf -v w_e '%dh %02dm' $((w_secs / 3600)) $((w_secs % 3600 / 60))
       fi
-      w_count="" w_count_color=""
+      w_s=""
       if [[ "$w_total" =~ ^[0-9]+$ ]] && [[ "$w_done" =~ ^[0-9]+$ ]]; then
-        w_count="$w_done/$w_total" w_count_color="$w_done/$w_total"
-        if [[ "$w_failed" =~ ^[1-9][0-9]*$ ]]; then
-          w_count="$w_count ✗$w_failed" w_count_color="$w_count_color ${RESET}${RED}✗$w_failed${RESET}${DIM}"
+        w_s="$w_done/$w_total"
+        [[ ! "$w_failed" =~ ^[1-9][0-9]*$ ]] || w_s="$w_s ✗$w_failed"
+        [ "$w_class" != review ] || [ "$w_total" -eq 0 ] || [ "$w_done" -lt "$w_total" ] ||
+          w_s="judge${w_s#"$w_done/$w_total"}"
+      elif [ "$w_class" = worker ]; then
+        w_s=$w_done
+      fi
+      w_k=""
+      if [ "$w_class" = worker ] && [[ "$w_tokens" =~ ^[0-9]+$ ]]; then
+        if [ "$w_tokens" -lt 1000 ]; then w_k="↓ $w_tokens"
+        elif [ "$w_tokens" -lt 1000000 ]; then w_k="↓ $((w_tokens / 1000))k"
+        else w_k="↓ $((w_tokens / 1000000)).$((w_tokens % 1000000 / 100000))M"
         fi
       fi
-      w_compose() {
-        w_row="${MAGENTA}${w_class}${w_repo:+ · $w_repo}${RESET}"
-        [ -z "$w_label$w_count" ] || w_row="$w_row ${DIM}· ${w_label}${w_label:+${w_count:+ }}${w_count_color}${RESET}"
-        w_row="$w_row ${DIM}· ${w_el}${RESET}"
-      }
-      w_compose
-      if [ -n "$fit_cols" ]; then
-        fit_width "$w_row"
-        [ "$fit_len" -le "$fit_cols" ] || [ "$w_class" = media ] || { w_repo=""; w_compose; fit_width "$w_row"; }
-        if [ "$fit_len" -gt "$fit_cols" ] && [ -n "$w_label" ]; then
-          w_keep=$(( ${#w_label} - (fit_len - fit_cols) - 1 ))
-          if [ "$w_keep" -ge 1 ]; then w_label="${w_label:0:w_keep}…"; else w_label=""; fi
-          w_compose
+      case "$w_class" in worker | review | media) w_agent+=(1) ;; *) w_agent+=("") ;; esac
+      if [ "$w_class" = review ] && [ "$w_tokens" = late ]; then w_late+=(1); else w_late+=(""); fi
+      w_head+=("${w_class}${w_h:+ · $w_h}") w_title+=("$w_t") w_state+=("$w_s") w_el+=("$w_e") w_tok+=("$w_k")
+      [ "${w_agent[w_n]}" != 1 ] || w_head[w_n]=${w_h:-$w_class}
+      w_n=$((w_n + 1))
+    done
+    w_lw=0 w_sw=0 w_ew=0 w_tw=0
+    for ((w_i = 0; w_i < w_n; w_i++)); do
+      w_len=${#w_head[w_i]}
+      [ -z "${w_title[w_i]}" ] || w_len=$((w_len + 3 + ${#w_title[w_i]}))
+      [ "$w_len" -le "$w_lw" ] || w_lw=$w_len
+      [ "${#w_state[w_i]}" -le "$w_sw" ] || w_sw=${#w_state[w_i]}
+      [ "${#w_el[w_i]}" -le "$w_ew" ] || w_ew=${#w_el[w_i]}
+      [ "${#w_tok[w_i]}" -le "$w_tw" ] || w_tw=${#w_tok[w_i]}
+    done
+    w_right=$((2 + w_ew))
+    [ "$w_sw" -eq 0 ] || w_right=$((w_right + 2 + w_sw))
+    [ "$w_tw" -eq 0 ] || w_right=$((w_right + 2 + w_tw))
+    w_left=$w_lw
+    [ -z "$fit_cols" ] || [ "$((fit_cols - w_right))" -ge "$w_left" ] || w_left=$((fit_cols - w_right))
+    for ((w_i = 0; w_i < w_n; w_i++)); do
+      w_h=${w_head[w_i]} w_t=${w_title[w_i]}
+      w_avail=$((w_left - ${#w_h} - 3))
+      if [ "${#w_t}" -gt "$w_avail" ]; then
+        if [ "$w_avail" -ge 2 ]; then w_t="${w_t:0:$((w_avail - 1))}…"; else w_t=""; fi
+      fi
+      w_len=${#w_h}
+      [ -z "$w_t" ] || w_len=$((w_len + 3 + ${#w_t}))
+      w_pad=$((w_left - w_len))
+      [ "$w_pad" -ge 0 ] || w_pad=0
+      printf -v w_pad '%*s' "$w_pad" ''
+      if [ -n "${w_agent[w_i]}" ]; then
+        w_row="${MAGENTA}${w_h}${RESET}"
+        [ -z "$w_t" ] || w_row="$w_row ${DIM}—${RESET} ${w_t}"
+      else
+        w_row="${CYAN}${w_h}${RESET}"
+        [ -z "$w_t" ] || w_row="$w_row ${DIM}— ${w_t}${RESET}"
+      fi
+      w_row="$w_row$w_pad"
+      if [ "$w_sw" -gt 0 ]; then
+        w_s=${w_state[w_i]}
+        printf -v w_p '%*s' $((w_sw - ${#w_s})) ''
+        if [ -n "${w_late[w_i]}" ]; then w_s="${RESET}${RED}${w_s}${RESET}${DIM}"
+        elif [[ "$w_s" == *✗* ]]; then w_s="${w_s%%✗*}${RESET}${RED}✗${w_s#*✗}${RESET}${DIM}"
         fi
+        w_row="$w_row  ${DIM}${w_s}${w_p}${RESET}"
+      fi
+      printf -v w_p '%*s' $((w_ew - ${#w_el[w_i]})) ''
+      w_row="$w_row  ${DIM}${w_p}${w_el[w_i]}${RESET}"
+      if [ -n "${w_tok[w_i]}" ]; then
+        printf -v w_p '%*s' $((w_tw - ${#w_tok[w_i]})) ''
+        w_row="$w_row  ${DIM}${w_p}${w_tok[w_i]}${RESET}"
       fi
       work_rows+=("$w_row")
-    done < "$work_cache"
-    [ "$work_more" -eq 0 ] || work_rows[2]="${work_rows[2]} ${DIM}· +${work_more}${RESET}"
+    done
+    w_more=""
+    [ "$w_hid_worker" -eq 0 ] || w_more="$w_hid_worker worker"
+    [ "$w_hid_worker" -le 1 ] || w_more="${w_more}s"
+    [ "$w_hid_review" -eq 0 ] || w_more="${w_more:+$w_more, }$w_hid_review review"
+    [ "$w_hid_review" -le 1 ] || w_more="${w_more}s"
+    [ "$w_hid_media" -eq 0 ] || w_more="${w_more:+$w_more, }$w_hid_media media"
+    [ "$w_hid_cmd" -eq 0 ] || w_more="${w_more:+$w_more, }$w_hid_cmd command"
+    [ "$w_hid_cmd" -le 1 ] || w_more="${w_more}s"
+    [ -z "$w_more" ] || work_rows+=("${DIM}+${w_more}${RESET}")
   fi
 fi
 

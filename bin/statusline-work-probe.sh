@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Shell work of one session, for the statusline's work lines and the `tests` field of its worker
-# rows — docs/statusline-contract.md, "Work lines". Fired from the render; writes the cache the
-# render and bin/subagent-statusline.sh read.
+# Work of one session — its worker and review runs, media jobs and shell work — for the statusline's
+# work lines (docs/statusline-contract.md, "Work lines"). Fired from the render; writes the cache it reads.
 # `env bash` resolves to macOS bash 3.2 when PATH lists /bin before Homebrew; this script needs bash 5.
 if [ "${BASH_VERSINFO[0]}" -lt 5 ]; then
   for modern_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
@@ -23,7 +22,7 @@ cache_dir="${STATUSLINE_CACHE_DIR:-$HOME/.cache/claude-statusline}"
 cache_file="$cache_dir/work-$session_id"
 lock="$cache_file.lock"
 runs_root="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"
-tags_dir="$HOME/.cache/claude-worker-tags/$session_id"
+progress_dir="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}/progress"
 PS_CMD="${STATUSLINE_PS:-ps}"
 LSOF_CMD="${STATUSLINE_LSOF:-lsof}"
 
@@ -58,22 +57,19 @@ snapshot_take ps_snap ps-snapshot 3 "$PS_CMD" snapshot_ps || { write_cache ""; e
 # Every start is the snapshot's moment minus an etime, so the clock is the snapshot's too.
 now=$snapshot_at
 
-# This session's live worker runs, from the rows its task-row cache names: their supervisors are
-# setsid'd away from the chat, so ancestry from the chat never reaches their tests.
+# The worker runs this session launched and that have not ended. Their supervisors are setsid'd away
+# from the chat, so ancestry from the chat never reaches them or their tests.
 runs=""
-for tag_file in "$tags_dir"/*; do
-  [ -f "$tag_file" ] || continue
-  run=""
-  while IFS= read -r tag_line || [ -n "$tag_line" ]; do
-    case "$tag_line" in run=*) run=${tag_line#run=} ;; esac
-  done < "$tag_file"
-  run=${run//[^a-z0-9-]/}
-  [ -n "$run" ] && [ -f "$runs_root/$run/meta.json" ] && [ ! -f "$runs_root/$run/exit_code" ] || continue
-  pid=$(jq -r '.pid // 0' "$runs_root/$run/meta.json" 2>/dev/null)
-  [[ "$pid" =~ ^[1-9][0-9]*$ ]] && runs="$runs $run:$pid"
+for run_dir in "$runs_root"/*/; do
+  [ ! -e "${run_dir}exit_code" ] && [ -f "${run_dir}launcher" ] || continue
+  launcher=""
+  { IFS= read -r launcher < "${run_dir}launcher"; } 2>/dev/null
+  [ "$launcher" = "$session_id" ] || continue
+  run_dir=${run_dir%/}
+  runs="$runs ${run_dir##*/}"
 done
 
-found=$(awk -v start="$start_pid" -v runs="$runs" '
+found=$(awk -v start="$start_pid" -v runs="$runs" -v runs_root="$runs_root" -v now="$now" '
   function secs(e,   d, n, p) {
     d = 0
     if (index(e, "-")) { d = substr(e, 1, index(e, "-") - 1) + 0; e = substr(e, index(e, "-") + 1) }
@@ -135,6 +131,7 @@ found=$(awk -v start="$start_pid" -v runs="$runs" '
     seen[pid] = 1
     if (tag != "R" && prog(pid) ~ owned) {
       if (tag == "M" && prog(pid) ~ media) print "MEDIA\t" pid "\t" secs(et[pid])
+      if (tag == "M") waits(pid)
       return 1
     }
     lbl = test_label(pid)
@@ -155,6 +152,26 @@ found=$(awk -v start="$start_pid" -v runs="$runs" '
     n = split(kids[pid], a, " ")
     for (i = 1; i <= n; i++) orphans(a[i], depth + 1)
   }
+  function waits(pid,   p, r) {
+    p = prog(pid)
+    if (p !~ /^(worker-run|review-bench)$/ || arg(1) != "wait" || (r = arg(2)) !~ /^[A-Za-z0-9_-]+$/) return
+    if (p == "worker-run") waited[r] = 1
+    else print "RWAIT\t" r "\t" secs(et[pid])
+  }
+  # A run is live while its recorded supervisor pid is listed and started when the record says: a
+  # recycled pid answers ps like the supervisor would (share/run-liveness.sh, PID_START_SLACK).
+  function run_meta(id,   f, l, v, live) {
+    mpid = 0; mstart = 0; f = runs_root "/" id "/meta.json"
+    while ((getline l < f) > 0) {
+      if (match(l, /"pid": *[0-9]+/)) { v = substr(l, RSTART, RLENGTH); sub(/.*: */, "", v); mpid = v + 0 }
+      if (match(l, /"pid_started_at": *[0-9]+/)) { v = substr(l, RSTART, RLENGTH); sub(/.*: */, "", v); mstart = v + 0 }
+    }
+    close(f)
+    if (mpid == 0) return "?"
+    if (!(mpid in cmd)) return 0
+    live = now - secs(et[mpid]) - mstart
+    return (mstart == 0 || (live <= 30 && live >= -30)) ? 1 : 0
+  }
   function base_of(pid,   s) { split(cmd[pid], s, /[ \t]+/); return base(s[1]) }
   FNR == 1 { next }
   {
@@ -171,8 +188,6 @@ found=$(awk -v start="$start_pid" -v runs="$runs" '
       pid = ppid[pid]; depth++
     }
     print "ROOT\t" root
-    nr = split(runs, rr, " ")
-    for (i = 1; i <= nr; i++) { split(rr[i], kv, ":"); runpid[kv[2]] = kv[1] }
     if (root != "") {
       n = split(kids[root], a, " ")
       for (i = 1; i <= n; i++) {
@@ -183,6 +198,7 @@ found=$(awk -v start="$start_pid" -v runs="$runs" '
         if (cmd[c] !~ /\/shell-snapshots\/snapshot-/) {
           if ((lbl = test_label(c)) != "") { print "M\ttests\t" c "\t" secs(et[c]) "\t" lbl "\t" tpath "\t" ppid[c]; continue }
           if (prog(c) ~ media) { print "MEDIA\t" c "\t" secs(et[c]); continue }
+          if (prog(c) ~ /^(worker-run|review-bench)$/) { waits(c); continue }
           if (w[pi] ~ /\/hooks\/[^\/]+$/ && secs(et[c]) >= 5) {
             lbl = base(w[pi]); sub(/\.[a-z]+$/, "", lbl); print "M\tshell\t" c "\t" secs(et[c]) "\thook " lbl
           }
@@ -200,7 +216,15 @@ found=$(awk -v start="$start_pid" -v runs="$runs" '
         print "M\tshell\t" c "\t" secs(et[c]) "\t" lbl
       }
     }
-    for (p in runpid) if (p in cmd) { run_of_visit = runpid[p]; delete seen; visit(p, "R", 0) }
+    nr = split(runs, rr, " ")
+    for (i = 1; i <= nr; i++) mine[rr[i]] = 1
+    for (r in waited) mine[r] = 1
+    for (r in mine) {
+      live = run_meta(r)
+      if (live == 1) runpid[mpid] = r
+      if (live != 0 || (r in waited)) print "RUN\t" r "\t" live "\t" ((r in waited) ? 1 : 0)
+    }
+    for (p in runpid) { run_of_visit = runpid[p]; delete seen; visit(p, "R", 0) }
     delete seen
     n = split(kids[1], a, " ")
     for (i = 1; i <= n; i++) orphans(a[i], 0)
@@ -223,10 +247,12 @@ fi
 
 # pid of the cwd to read, class, elapsed, label, test script — one per main-line work item. Split on
 # \037, never on tab: tab is IFS whitespace, so `read` would fold an empty field into the next one.
-items=""; pids=""; runs_out=""; media_records=""
+items=""; pids=""; runs_out=""; media_records=""; worker_runs=(); declare -A review_waits=()
 while IFS= read -r found_line; do
   IFS=$'\037' read -r kind a b c d e f _ <<< "${found_line//$'\t'/$'\037'}"
   case "$kind" in
+    RUN) worker_runs+=("$a"$'\037'"$b"$'\037'"$c") ;;
+    RWAIT) [ -n "${review_waits[$a]+set}" ] || review_waits[$a]=$((now - b)) ;;
     MEDIA)
       # media-run's pointer for its own pid, stamped as it started: an older one belongs to a reused pid.
       [ -f "$cache_dir/media-$a" ] || continue
@@ -255,6 +281,114 @@ while IFS= read -r found_line; do
   esac
 done <<< "$found"
 runs_out=${runs_out%$'\n'}
+
+# Small reads by builtins only: a record is rebuilt every probe for every live run.
+one_line() { # var file
+  local line=""
+  { IFS= read -r line < "$2"; } 2>/dev/null
+  line=${line//[$'\t\037\r']/ }
+  printf -v "$1" '%s' "${line:0:200}"
+}
+slurp() { # var file
+  local text=""
+  { IFS= read -r -d '' text < "$2"; } 2>/dev/null
+  printf -v "$1" '%s' "$text"
+}
+agent_records=""
+re_started='"started_epoch": *([0-9]+)' re_started_at='"started_at": *([0-9]+)' re_phase='"phase": *"([a-z_-]*)"'
+re_key='^[A-Z][A-Z0-9_-]*:([[:space:]]|$)' re_resume='^(RESUME|ATTACH)[[:space:]]+[^[:space:]]+:[[:space:]]*(.*)$'
+for worker_run in ${worker_runs[@]+"${worker_runs[@]}"}; do
+  IFS=$'\037' read -r run live waited <<< "$worker_run"
+  dir="$runs_root/$run"
+  [ ! -e "$dir/exit_code" ] || continue
+  slurp state "$dir/state.json"
+  start="" phase=""
+  [[ $state =~ $re_started ]] && start=${BASH_REMATCH[1]}
+  [[ $state =~ $re_phase ]] && phase=${BASH_REMATCH[1]}
+  if [ -z "$start" ]; then slurp meta "$dir/meta.json"; [[ $meta =~ $re_started_at ]] && start=${BASH_REMATCH[1]}; fi
+  [ -n "$start" ] || start=$now
+  # A start that never recorded its supervisor is dropped once it is older than any start takes.
+  [ "$live" != '?' ] || [ "$waited" = 1 ] || [ "$((now - start))" -le 300 ] || continue
+  one_line head "$dir/tag"
+  one_line title "$dir/title"
+  if [ -z "$title" ] && [ -f "$dir/brief" ]; then
+    brief_lines=0
+    while IFS= read -r line && [ "$brief_lines" -lt 40 ]; do
+      brief_lines=$((brief_lines + 1))
+      line=${line#"${line%%[![:space:]]*}"}
+      [ -n "$line" ] && ! [[ $line =~ $re_key ]] || continue
+      if [[ $line =~ $re_resume ]]; then line=${BASH_REMATCH[2]}; [ -n "$line" ] || continue; fi
+      line=${line//[$'\t\037\r']/ }
+      title=${line:0:200}
+      break
+    done < "$dir/brief"
+  fi
+  tokens=""
+  one_line tokens "$dir/tokens"
+  [[ "$tokens" =~ ^[0-9]+$ ]] || tokens=""
+  wstate=working
+  [ "$phase" != start ] || wstate=start
+  [[ $'\n'"$runs_out" != *$'\n'"run"$'\t'"$run"$'\t'* ]] || wstate=tests
+  agent_records+="main"$'\t'"worker"$'\t'"$start"$'\t'"${head:-worker · ${run: -7}}"$'\t'"$title"$'\t'"$wstate"$'\t\t\t'"$tokens"$'\n'
+done
+
+# Review runs: each one this chat waits on, and each unfinished one it launched. A document whose
+# heartbeat stopped belongs to a dead launcher (review-bench's PROGRESS_STALE_AFTER_S).
+declare -A review_docs=()
+re_run_id='"run_id": *"([A-Za-z0-9_-]+)"' re_running='"state": *"running"' re_mine="\"session\": *\"$session_id\""
+for doc_file in "$progress_dir"/*.json; do
+  [ -f "$doc_file" ] || continue
+  slurp doc "$doc_file"
+  run=""
+  [[ $doc =~ $re_run_id ]] && run=${BASH_REMATCH[1]}
+  [ -n "$run" ] || continue
+  if [ -n "${review_waits[$run]+set}" ] ||
+    { [[ $doc =~ $re_mine ]] && [[ $doc =~ $re_running ]]; }; then
+    review_docs[$run]=$doc_file
+  fi
+done
+for run in "${!review_waits[@]}"; do [ -n "${review_docs[$run]+set}" ] || review_docs[$run]=""; done
+for run in "${!review_docs[@]}"; do
+  review=""
+  [ -z "${review_docs[$run]}" ] || review=$(jq -r --argjson now "$now" --arg waited "${review_waits[$run]+1}" '
+    def word(d): (if . == null then "" else tostring | gsub("[^A-Za-z0-9_.-]"; "") end) | if . == "" then d else . end;
+    def line: tostring | split("\n") | map(select(test("\\S"))) | (.[0] // "") | gsub("[\t\u001f\r]"; " ") | .[0:200];
+    select($waited != "" or ((.heartbeat_epoch | numbers) // $now) >= $now - 300)
+    | (if (.kind // "") == "task" or (.hunt // false) then "task" else "review" end) as $kind
+    | (.lens | word($kind)) as $lens | (.cells // []) as $cells | (.failed_cells // []) as $failed
+    | ($failed + (.done // [])) as $finished | .repo as $repo
+    | (if (.started_epoch | type) == "number" and (.started_epoch | floor) == .started_epoch and .started_epoch > 0
+       then .started_epoch else null end) as $started_epoch
+    | (if (.expected | type) == "object" then .expected else {} end) as $expected
+    | (if (.chunks | type) == "object" then .chunks else {} end) as $chunks
+    | (if (.chunk_started | type) == "object" then .chunk_started else {} end) as $chunk_started
+    # Late (shared-invariants row `u`): a pending cell past both 3 x its median and 120 s, a chunked
+    # cell timed from the pass now running.
+    | ([$cells[] | select(. as $c | $finished | index([$c]) == null) | . as $cell
+        | ($chunks[$cell] // null) as $pass
+        | (($pass | type) == "array" and ($pass | length) == 2 and ($pass[0] | type) == "number"
+           and ($pass[1] | type) == "number" and $pass[1] > 1) as $chunked
+        | ((if $chunked then $chunk_started[$cell] else null end
+            | if type == "number" and . > 0 and (. | floor) == . then . else null end) // $started_epoch) as $late_from
+        | $expected[$cell] as $expected_ms
+        | select($late_from != null and ($expected_ms | type) == "number" and $expected_ms >= 0
+            and (($now - $late_from) * 1000 > ([3 * $expected_ms, 120000] | max)))] | length > 0) as $late
+    | [(.started_epoch | numbers | floor | tostring) // "",
+       ([(.tier | word("T?")), (.composition | word("standard")), $lens] | join(" · ")),
+       ((if $lens == "task" then (.task // .title // "" | line) else "" end)
+        | if . == "" then ($repo // "" | tostring | sub("/+$"; "") | split("/") | last // "" | line) else . end),
+       ([$cells[] | select(. as $c | $finished | index([$c]) != null)] | length | tostring),
+       ($failed | length | tostring), ($cells | length | tostring), (if $late then "late" else "" end)]
+    | join("\u001f")' "${review_docs[$run]}" 2>/dev/null)
+  if [ -z "$review" ]; then
+    [ -n "${review_waits[$run]+set}" ] || continue
+    review=${review_waits[$run]}$'\037'"review · ${run: -7}"$'\037\037\037\037\037'
+  fi
+  IFS=$'\037' read -r start head title r_done r_failed r_total r_late <<< "$review"
+  [[ "$start" =~ ^[0-9]+$ ]] || start=${review_waits[$run]:-$now}
+  [ "${r_total:-0}" != 0 ] || r_done="" r_failed="" r_total=""
+  agent_records+="main"$'\t'"review"$'\t'"$start"$'\t'"$head"$'\t'"$title"$'\t'"$r_done"$'\t'"$r_failed"$'\t'"$r_total"$'\t'"$r_late"$'\n'
+done
 
 declare -A cwd_by_pid=()
 if [ -n "$pids" ]; then
@@ -310,9 +444,11 @@ while IFS=$'\037' read -r pid class elapsed label tpath parent; do
   records="${records}main"$'\t'"$class"$'\t'"$((now - elapsed))"$'\t'"$repo"$'\t'"$label"$'\t'"$done_n"$'\t'"$total"$'\t'"$outcome_dir"$'\t'"$root$spid"$'\n'
 done <<< "$items"
 
-records+=$media_records
+records+=$agent_records$media_records
 sorted_records=""
-[ -z "$records" ] || sorted_records=$(printf '%s' "$records" | sort -t$'\t' -k2,2r -k3,3n)
+[ -z "$records" ] || sorted_records=$(printf '%s' "$records" |
+  awk -F'\t' '{ r = index(" worker review media tests shell ", " " $2 " "); print (r ? r : 99) "\t" $0 }' |
+  sort -t$'\t' -k1,1n -k4,4n | cut -f2-)
 new_cache="$sorted_records${runs_out:+
 $runs_out}"
 

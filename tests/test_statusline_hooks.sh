@@ -4006,11 +4006,49 @@ git -C "$WP_REPO" worktree add -q --detach "$WP_REPO/.claude/worktrees/wt-one"
 mkdir -p "$WORK/wp-plain" "$WORK/wp-other/tests"
 git -C "$WORK/wp-other" init -q
 WP_RUNS="$WORK/wp-runs"
-mkdir -p "$WP_RUNS/codex-7-7-live" "$WP_RUNS/codex-7-7-done" "$HOME/.cache/claude-worker-tags/wp-sess"
-printf '{"pid":2000}\n' > "$WP_RUNS/codex-7-7-live/meta.json"
-printf '{"pid":2100}\n' > "$WP_RUNS/codex-7-7-done/meta.json"; printf '0\n' > "$WP_RUNS/codex-7-7-done/exit_code"
-printf 'acc · astra · high\nrun=codex-7-7-live\n' > "$HOME/.cache/claude-worker-tags/wp-sess/t1"
-printf 'acc · astra · high\nrun=codex-7-7-done\n' > "$HOME/.cache/claude-worker-tags/wp-sess/t2"
+wp_now=$(date +%s)
+# Worker runs (bin/worker-run): one launched here and testing, one launched elsewhere that this chat
+# waits on (its title from the brief past its header lines), one so new it has no supervisor pid yet;
+# none for an ended run, a dead or recycled supervisor, or a pid-less start older than any start takes.
+wp_run() { # run-id launcher state-json meta-json
+  mkdir -p "$WP_RUNS/$1"
+  printf '%s\n' "$2" > "$WP_RUNS/$1/launcher"; printf '%s\n' "$3" > "$WP_RUNS/$1/state.json"
+  printf '%s\n' "$4" > "$WP_RUNS/$1/meta.json"
+}
+wp_run codex-7-7-live wp-sess "{\"phase\": \"wait\", \"started_epoch\": $((wp_now - 600))}" \
+  "{\n  \"pid\": 2000,\n  \"cli_pid\": 2001,\n  \"pid_started_at\": $((wp_now - 180))\n}"
+printf 'acc · astra · high\n' > "$WP_RUNS/codex-7-7-live/tag"; printf 'Fix the parser\n' > "$WP_RUNS/codex-7-7-live/title"
+printf '184321\n' > "$WP_RUNS/codex-7-7-live/tokens"
+wp_run codex-7-7-other other-sess '{"phase": "wait"}' "{\"pid\": 2200, \"started_at\": $((wp_now - 300)), \"pid_started_at\": $((wp_now - 300))}"
+printf 'com · opus · high\n' > "$WP_RUNS/codex-7-7-other/tag"; printf 'unknown\n' > "$WP_RUNS/codex-7-7-other/tokens"
+printf 'ACCOUNT: com\nEFFORT: high\n\n  RESUME 1a2b-3c: Map the hooks\nmore\n' > "$WP_RUNS/codex-7-7-other/brief"
+wp_run codex-7-7-new wp-sess "{\"phase\": \"start\", \"started_epoch\": $((wp_now - 20))}" '{"pid": 0}'
+printf 'MODEL: opus\nNew task\n' > "$WP_RUNS/codex-7-7-new/brief"
+wp_run codex-7-7-done wp-sess '{"phase": "done"}' '{"pid": 2100}'; printf '0\n' > "$WP_RUNS/codex-7-7-done/exit_code"
+wp_run codex-7-7-foreign other-sess '{"phase": "wait"}' "{\"pid\": 2300, \"pid_started_at\": $((wp_now - 240))}"
+wp_run codex-7-7-gone wp-sess '{"phase": "wait"}' '{"pid": 2900}'
+wp_run codex-7-7-recyc wp-sess '{"phase": "wait"}' "{\"pid\": 2001, \"pid_started_at\": $((wp_now - 5000))}"
+wp_run codex-7-7-stuck wp-sess "{\"phase\": \"start\", \"started_epoch\": $((wp_now - 4000))}" '{}'
+# Review runs (review-bench progress documents): one waited on here, one this chat launched and no
+# process here waits on, one waited on with no document; none for a finished run, a dead launcher's
+# document (its heartbeat stopped) or another chat's.
+WP_STATS="$WORK/wp-stats"
+mkdir -p "$WP_STATS/progress"
+wp_doc() { # file jq-object
+  jq -cn --argjson now "$wp_now" "$2" > "$WP_STATS/progress/$1.json"
+}
+wp_doc llm-legs__w '{run_id:"20261008T100000Z-aaaaaaa",tier:"T0",composition:"double",lens:"bugs",repo:"/r/llm-legs",
+  state:"running",session:"other",started_epoch:($now - 900),heartbeat_epoch:($now - 2000),
+  cells:["a#1","a#2","b#1","b#2","c#1","c#2","d#1","d#2"],done:["a#1","b#1","c#1","c#2"],failed_cells:["d#1"]}'
+wp_doc llm-legs__s '{run_id:"20261008T100000Z-ccccccc",tier:"T2",lens:"task",task:"\nHunt the stale rows\nsecond",repo:"/r/llm-legs",
+  state:"running",session:"wp-sess",started_epoch:($now - 400),heartbeat_epoch:$now,cells:["a#1","b#1"],done:[],failed_cells:[],
+  expected:{"a#1":50000}}'
+wp_doc llm-legs__f '{run_id:"20261008T100000Z-ddddddd",tier:"T1",state:"done",session:"wp-sess",started_epoch:($now - 400),
+  heartbeat_epoch:$now,cells:["a#1"],done:["a#1"]}'
+wp_doc llm-legs__h '{run_id:"20261008T100000Z-eeeeeee",tier:"T1",state:"running",session:"wp-sess",started_epoch:($now - 4000),
+  heartbeat_epoch:($now - 3600),cells:["a#1"],done:[]}'
+wp_doc llm-legs__o '{run_id:"20261008T100000Z-fffffff",tier:"T1",state:"running",session:"other",started_epoch:($now - 400),
+  heartbeat_epoch:$now,cells:["a#1"],done:[]}'
 WP_LOGS="$WORK/wp-logs"
 mkdir -p "$WP_LOGS"
 printf '0\t3\n' > "$WP_LOGS/test_a.sh.status"; printf '1\t2\n' > "$WP_LOGS/test_b.sh.status"
@@ -4045,8 +4083,12 @@ wrap 1200 1000 00:30 "'sed -n 1,9p tests/test_x.sh; git push origin main'"
 printf '1201 1200 00:29 git push origin main\n'
 wrap 1210 1000 00:05 "'make build'"
 printf '1211 1210 00:04 make build\n'
-wrap 1220 1000 02:00 "'worker-run wait codex-7-7-live'"
-printf '1221 1220 01:59 bash /x/bin/worker-run wait codex-7-7-live\n'
+wrap 1220 1000 02:00 "'worker-run wait codex-7-7-other'"
+printf '1221 1220 01:59 bash /x/bin/worker-run wait codex-7-7-other --max 540\n'
+wrap 1500 1000 03:00 "'review-bench wait 20261008T100000Z-aaaaaaa'"
+printf '1501 1500 02:59 /usr/bin/python3 /x/bin/review-bench wait 20261008T100000Z-aaaaaaa\n'
+printf '1510 1000 00:50 /usr/bin/python3 /x/bin/review-bench wait 20261008T100000Z-bbbbbbb\n'
+printf '6001 4001 01:00 bash /x/bin/review-bench wait 20261008T100000Z-fffffff\n'
 wrap 1230 1000 01:00 "'python3 -m pytest -q'"
 printf '1231 1230 00:59 /usr/bin/python3 -m pytest -q\n'
 wrap 1260 1000 00:45 "'while :; do :; done'"
@@ -4072,6 +4114,8 @@ cat <<'SNAP'
 2003 2002 01:29 node /opt/homebrew/bin/pnpm test
 2100 1 03:00 bash -c supervisor _ /x/bin/worker-run /runs/codex-7-7-done
 2101 2100 02:00 bash tests/test_done_run.sh
+2200 1 05:00 bash -c supervisor _ /x/bin/worker-run /runs/codex-7-7-other
+2300 1 04:00 bash -c supervisor _ /x/bin/worker-run /runs/codex-7-7-foreign
 3000 1 02:00 bash tests/test_orphan.sh
 3100 1 02:00 bash tests/test_other.sh
 3200 1 01:10 bash tests/test_sid.sh
@@ -4106,7 +4150,6 @@ printf 'p3000\nfcwd\nn%s\n' "$WP_REPO"
 printf 'p3200\nfcwd\nn%s\n' "$WP_REPO"
 LSEOF
 chmod +x "$FAKE_LSOF_WORK"
-wp_now=$(date +%s)
 # media-run's pointers (bin/media-run): a pid whose pointer predates its process is a reused pid (1431),
 # a media process with no pointer at all draws nothing (1441), a fan-out counts its cells' state.
 WP_FAN="$WORK/wp-fan"
@@ -4117,18 +4160,31 @@ printf '%s\tfanout · img\tall\t%s\t\n' "$((wp_now - 119))" "$WP_FAN/fanout.stat
 printf '%s\tcom · mus·app\tedit\t\tj3\n' "$((wp_now - 59))" > "$STATE_DIR/media-1420"
 printf '%s\tpool · img·grok\tgen\t\tj4\n' 1000 > "$STATE_DIR/media-1431"
 printf '%s\tpool · speech·elevenlabs\tgen\t\tj5\n' "$((wp_now - 29))" > "$STATE_DIR/media-1450"
-STATUSLINE_PS="$FAKE_PS_WORK" STATUSLINE_LSOF="$FAKE_LSOF_WORK" WORKER_RUN_DIR="$WP_RUNS" "$WORK_PROBE" wp-sess 1250
-# Tests first, oldest first, then plain shell work; the start column is checked apart from the rest.
-# Not shown: a call younger than 10s (1210), a relay's own worker-run wait, which its task row
-# carries (1220), processes that are no Bash call (the MCP server, the statusline), an orphan whose
-# environment names another chat (3100), a finished run's supervisor (2100), and another chat's
-# tests (4002). A test file only NAMED by a command (`sed … tests/test_x.sh`) is no test. Nor a hook
-# younger than 5s (1281) or a review panel's cell test, whose waiter row carries it (5001).
+STATUSLINE_PS="$FAKE_PS_WORK" STATUSLINE_LSOF="$FAKE_LSOF_WORK" WORKER_RUN_DIR="$WP_RUNS" WORKER_STATS_DIR="$WP_STATS" \
+  "$WORK_PROBE" wp-sess 1250
+# Agent work first — workers, reviews, media, each oldest first — then tests and plain shell work,
+# oldest first; the start column is checked apart from the rest. A worker is `tests` while a test
+# runs under its supervisor, `start` until its first wait. Not shown as shell work: a call younger
+# than 10s (1210), a call waiting on a run, which the run's own line carries (1220, 1500), processes
+# that are no Bash call (the MCP server, the statusline), an orphan whose environment names another
+# chat (3100), a finished run's supervisor (2100), and another chat's tests and waits (4002, 6001). A
+# test file only NAMED by a command (`sed … tests/test_x.sh`) is no test. Nor a hook younger than 5s
+# (1281) or a review panel's cell test, whose review line carries it (5001).
 # A suite run is the repository it was handed whatever the cwd (1101); one with no pointer of its own
 # (1321: older than its process) is still queued for a slot. A script under another repository is that
 # repository's whatever the cwd (1311); a test that exec'd over its snapshot shell is still a test (1270); a shell label takes the
 # plain word after the program only, never an option's operand (1300).
 assert_eq "$(printf '%s\n' \
+  $'main\tworker\tacc · astra · high\tFix the parser\ttests\t\t' \
+  $'main\tworker\tcom · opus · high\tMap the hooks\tworking\t\t' \
+  $'main\tworker\tworker · 7-7-new\tNew task\tstart\t\t' \
+  $'main\treview\tT0 · double · bugs\tllm-legs\t5\t1\t8' \
+  $'main\treview\tT2 · standard · task\tHunt the stale rows\t0\t0\t2' \
+  $'main\treview\treview · bbbbbbb\t\t\t\t' \
+  $'main\tmedia\tpool · img·web\tgen\t\t\t' \
+  $'main\tmedia\tfanout · img\tall\t2\t1\t3' \
+  $'main\tmedia\tcom · mus·app\tedit\t\t\t' \
+  $'main\tmedia\tpool · speech·elevenlabs\tgen\t\t\t' \
   $'main\ttests\twp repo\tsuites\t2\t1\t5' \
   $'main\ttests\twp repo\tsuites queued\t\t\t' \
   $'main\ttests\twp repo\ttest_orphan\t\t\t' \
@@ -4141,24 +4197,28 @@ assert_eq "$(printf '%s\n' \
   $'main\tshell\twp-plain\tcurl\t\t\t' \
   $'main\tshell\t⧉ wt-one\tgit push\t\t\t' \
   $'main\tshell\twp-plain\thook instruction-watch\t\t\t' \
-  $'main\tmedia\tpool · img·web\tgen\t\t\t' \
-  $'main\tmedia\tfanout · img\tall\t2\t1\t3' \
-  $'main\tmedia\tcom · mus·app\tedit\t\t\t' \
-  $'main\tmedia\tpool · speech·elevenlabs\tgen\t\t\t' \
   $'run\tcodex-7-7-live\tpnpm test')" "$(cut -f1,2,4-8 "$STATE_DIR/work-wp-sess")"
 assert_eq "$((wp_now - 179))" "$(awk -F'\t' '$4 == "pool · img·web" { print $3 }' "$STATE_DIR/work-wp-sess")"
+# A worker starts at its run's start (state.json, else meta.json), a review at its document's, a
+# document-less wait at the wait's own start; the worker's own token count rides in the ninth field.
+assert_eq "600 300 20 900 400 50" "$(awk -F'\t' -v now="$wp_now" '$2 == "worker" || $2 == "review" { printf "%s%s", s, now - $3; s = " " }' \
+  "$STATE_DIR/work-wp-sess" | sed -E 's/ (4[6-9]|50)$/ 50/')"
+assert_eq "184321||" "$(awk -F'\t' '$2 == "worker" { printf "%s%s", s, $9; s = "|" }' "$STATE_DIR/work-wp-sess")"
+# A review holding a pending cell late by shared-invariants row `u` says so in the same field.
+assert_eq "|late|" "$(awk -F'\t' '$2 == "review" { printf "%s%s", s, $9; s = "|" }' "$STATE_DIR/work-wp-sess")"
 wp_start=$(awk -F'\t' '$4 == "wp repo" && $5 == "suites" { print $3 }' "$STATE_DIR/work-wp-sess")
 assert_eq "$WP_STAMP" "$wp_start"
 wp_run_start=$(awk -F'\t' '$1 == "run" { print $3 }' "$STATE_DIR/work-wp-sess")
 assert test "$wp_run_start" -ge "$((wp_now - 91))" -a "$wp_run_start" -le "$((wp_now - 87))"
 # A suite run counts from its pointer's stamp, the moment it took its slot.
-assert_eq "$WP_LOGS" "$(awk -F'\t' '$1 == "main" && $9 != "" { printf "%s%s", s, $9; s = " " }' "$STATE_DIR/work-wp-sess")"
+assert_eq "$WP_LOGS" "$(awk -F'\t' '$2 == "tests" && $9 != "" { printf "%s%s", s, $9; s = " " }' "$STATE_DIR/work-wp-sess")"
 wp_real=$(cd "$WP_REPO" && pwd -P)
 assert_eq "$wp_real $wp_real" \
   "$(awk -F'\t' '$4 == "wp repo" && $5 == "suites" || $4 == "⧉ wt-one" { printf "%s%s", s, $10; s = " " }' "$STATE_DIR/work-wp-sess")"
 wp_cols=$(cut -f1,2,4-8 "$STATE_DIR/work-wp-sess")
 rm -f "$STATE_DIR/work-wp-sess"
-STATUSLINE_PS="$FAKE_PS_WORK" STATUSLINE_LSOF="$FAKE_LSOF_WORK" WORKER_RUN_DIR="$WP_RUNS" /bin/bash "$WORK_PROBE" wp-sess 1250
+STATUSLINE_PS="$FAKE_PS_WORK" STATUSLINE_LSOF="$FAKE_LSOF_WORK" WORKER_RUN_DIR="$WP_RUNS" WORKER_STATS_DIR="$WP_STATS" \
+  /bin/bash "$WORK_PROBE" wp-sess 1250
 assert_eq "$wp_cols" "$(cut -f1,2,4-8 "$STATE_DIR/work-wp-sess" 2>/dev/null)"
 # No chat above the start pid, or no process list: nothing is claimed.
 STATUSLINE_PS="$FAKE_PS_WORK" STATUSLINE_LSOF="$FAKE_LSOF_WORK" WORKER_RUN_DIR="$WORK/none" "$WORK_PROBE" wp-noroot 3000
@@ -4189,46 +4249,105 @@ assert_eq "" "$(cat "$STATE_DIR/ports-pp-idle-empty")"
 assert test ! -e "$IDLE_CALLS"
 
 # --- work lines ---
-# The render reads the probe's cache only: each `main` record is one magenta line under line 2, tag
-# `<class> · <repo>` then the dim label, the suite count with its failures in red, and the elapsed
-# time recomputed from the start column on every render.
+# The render reads the probe's cache only. Agent rows (worker, review, media) come before command rows
+# (tests, shell) whatever the cache order; each row is `<head> — <title>` then three columns the
+# visible rows share — state, elapsed, tokens — elapsed recomputed from the start column every render.
 wl_strip() { perl -pe 's/\e\[[0-9;]*m//g'; }
+# A second may tick between the fixture's clock and the render's; both spell the same width.
+wl_norm() { perl -pe 's/\b4m 0[56]s\b/4m 05s/g; s/(?<![0-9])4[56]s\b/45s/g; s/\b1m 0[56]s\b/1m 05s/g; s/(?<![0-9])3[01]s\b/30s/g'; }
+wl_rows() { run_statusline "$(statusline_payload "$1")" | tail -n +3 | wl_strip | wl_norm; }
 wl_now=$(date +%s)
-printf 'main\ttests\t%s\tllm-legs\tsuites\t2\t1\t5\nmain\tshell\t%s\t⧉ wt-one\tgit push\t\t\t\nrun\tcodex-7-7-live\t%s\tpnpm test\n' \
-  "$((wl_now - 300))" "$((wl_now - 30))" "$((wl_now - 90))" > "$STATE_DIR/work-wl-two"
-wl_out=$(run_statusline "$(statusline_payload wl-two)")
-assert_eq 4 "$(printf '%s\n' "$wl_out" | wc -l | tr -d ' ')"
-# A record with no repository keeps its fields in place: tab is IFS whitespace to `read`.
-printf 'main\ttests\t%s\t\tsuites\t2\t1\t5\n' "$((wl_now - 300))" > "$STATE_DIR/work-wl-norepo"
-assert grep -Eq '^tests · suites 2/5 ✗1 · 5m [0-9]+s$' <<< "$(run_statusline "$(statusline_payload wl-norepo)" | sed -n 3p | wl_strip)"
-assert grep -Eq '^tests · llm-legs · suites 2/5 ✗1 · 5m [0-9]+s$' <<< "$(sed -n 3p <<< "$wl_out" | wl_strip)"
-assert grep -Eq '^shell · ⧉ wt-one · git push · 3[0-9]s$' <<< "$(sed -n 4p <<< "$wl_out" | wl_strip)"
-assert grep -Fq "${MAGENTA}tests · llm-legs${RESET}" <<< "$wl_out"
-assert grep -Fq "${RED}✗1${RESET}" <<< "$wl_out"
-# Too narrow: the repo goes first, then the label shrinks to nothing; class, count and time stay.
-wl_narrow=$(FIT_COLUMNS=34 FIT_MARGIN=0 run_statusline "$(statusline_payload wl-two)")
-assert grep -Eq '^tests · suites 2/5 ✗1 · 5m [0-9]+s$' <<< "$(sed -n 3p <<< "$wl_narrow" | wl_strip)"
-wl_narrow=$(FIT_COLUMNS=24 FIT_MARGIN=0 run_statusline "$(statusline_payload wl-two)")
-assert grep -Eq '^tests · 2/5 ✗1 · 5m [0-9]+s$' <<< "$(sed -n 3p <<< "$wl_narrow" | wl_strip)"
-# A media-run job: the tag `<acct> · <what>·<where>` stands in the repo's place and is never
-# dropped for width; a fan-out counts its cells.
-printf 'main\tmedia\t%s\tnotcom · img·web\tedit\t\t\t\nmain\tmedia\t%s\tfanout · img\tall\t2\t1\t3\n' \
+{
+  printf 'main\ttests\t%s\tllm-legs\ttest_statusline_hooks\t12\t1\t41\t\t\n' "$((wl_now - 245))"
+  printf 'main\tshell\t%s\ttoken-map\tsleep\t\t\t\n' "$((wl_now - 45))"
+  printf 'main\tworker\t%s\tlocomthebest · opus · high\tSpeed up tracking\ttests\t\t\t184321\n' "$((wl_now - 3725))"
+  printf 'main\tworker\t%s\tcom · sonnet · medium\tSplit reviews\tworking\t\t\t900\n' "$((wl_now - 245))"
+  printf 'main\treview\t%s\tT1 · standard · bugs\tllm-legs\t5\t1\t8\t\n' "$((wl_now - 45))"
+  printf 'run\tcodex-7-7-live\t%s\tpnpm test\n' "$((wl_now - 90))"
+} > "$STATE_DIR/work-wl-mix"
+wl_out=$(run_statusline "$(statusline_payload wl-mix)")
+assert_eq "$(printf '%s\n' \
+  'locomthebest · opus · high — Speed up tracking  tests     1h 02m  ↓ 184k' \
+  'com · sonnet · medium — Split reviews           working   4m 05s   ↓ 900' \
+  'T1 · standard · bugs — llm-legs                 5/8 ✗1       45s' \
+  'tests · llm-legs — test_statusline_hooks        12/41 ✗1  4m 05s' \
+  'shell · token-map — sleep                                    45s')" "$(tail -n +3 <<< "$wl_out" | wl_strip | wl_norm)"
+# Heads magenta on agent rows and cyan on command rows; an agent's title bright, a command's dim; ✗N red.
+assert grep -Fq "${MAGENTA}locomthebest · opus · high${RESET} ${DIM}—${RESET} Speed up tracking " <<< "$wl_out"
+assert grep -Fq "${MAGENTA}T1 · standard · bugs${RESET} ${DIM}—${RESET} llm-legs " <<< "$wl_out"
+assert grep -Fq "${CYAN}tests · llm-legs${RESET} ${DIM}— test_statusline_hooks${RESET}" <<< "$wl_out"
+assert grep -Fq "${CYAN}shell · token-map${RESET} ${DIM}— sleep${RESET}" <<< "$wl_out"
+assert grep -Fq "${DIM}12/41 ${RESET}${RED}✗1${RESET}${DIM}${RESET}" <<< "$wl_out"
+assert_fails grep -Fq "${RED}5/8" <<< "$wl_out"
+# A late review's whole state is red.
+printf 'main\treview\t%s\tT0 · double · bugs\tllm-legs\t2\t0\t4\tlate\n' "$((wl_now - 45))" > "$STATE_DIR/work-wl-late"
+assert grep -Fq "${DIM}${RESET}${RED}2/4${RESET}${DIM}${RESET}" <<< "$(run_statusline "$(statusline_payload wl-late)")"
+# Every cell finished while the run lives: the judge is at work.
+printf 'main\treview\t%s\tT0 · double · bugs\tllm-legs\t4\t1\t4\t\n' "$((wl_now - 45))" > "$STATE_DIR/work-wl-judge"
+assert_eq 'T0 · double · bugs — llm-legs  judge ✗1  45s' "$(wl_rows wl-judge)"
+# Narrower: the block moves left and only titles shrink; head, state, elapsed and tokens never do.
+assert_eq "$(printf '%s\n' \
+  'locomthebest · opus · high — Spee…  tests     1h 02m  ↓ 184k' \
+  'com · sonnet · medium — Split rev…  working   4m 05s   ↓ 900' \
+  'T1 · standard · bugs — llm-legs     5/8 ✗1       45s' \
+  'tests · llm-legs — test_statuslin…  12/41 ✗1  4m 05s' \
+  'shell · token-map — sleep                        45s')" "$(FIT_COLUMNS=63 FIT_MARGIN=3 wl_rows wl-mix)"
+assert_eq 'locomthebest · opus · high  tests     1h 02m  ↓ 184k' "$(FIT_COLUMNS=40 FIT_MARGIN=0 wl_rows wl-mix | head -n1)"
+# A column no visible row fills takes no space; a short row is padded so elapsed ends where the rest do.
+{
+  printf 'main\tshell\t%s\tr\tsleep\t\t\t\n' "$((wl_now - 45))"
+  printf 'main\tshell\t%s\trepo\tgit push\t\t\t\n' "$((wl_now - 245))"
+} > "$STATE_DIR/work-wl-plain"
+assert_eq "$(printf '%s\n' \
+  'shell · r — sleep           45s' \
+  'shell · repo — git push  4m 05s')" "$(wl_rows wl-plain)"
+assert_eq "$(printf '%s\n' \
+  'shell · r — sleep     45s' \
+  'shell · repo — g…  4m 05s')" "$(FIT_COLUMNS=25 FIT_MARGIN=0 wl_rows wl-plain)"
+# A record with no repository or no label keeps its fields in place: tab is IFS whitespace to `read`.
+printf 'main\ttests\t%s\t\tsuites\t2\t1\t5\nmain\tshell\t%s\tr\t\t\t\t\n' "$((wl_now - 45))" "$((wl_now - 45))" > "$STATE_DIR/work-wl-norepo"
+assert_eq "$(printf '%s\n' 'tests — suites  2/5 ✗1  45s' 'shell · r               45s')" "$(wl_rows wl-norepo)"
+# Elapsed pads its seconds or minutes to two digits; tokens read ↓ 900, ↓ 37k, ↓ 184k, ↓ 1.2M.
+{
+  printf 'main\tworker\t%s\ta · m · e\tone\tworking\t\t\t900\n' "$((wl_now - 3725))"
+  printf 'main\tworker\t%s\ta · m · e\ttwo\tworking\t\t\t37400\n' "$((wl_now - 245))"
+  printf 'main\tworker\t%s\ta · m · e\tthree\tworking\t\t\t184999\n' "$((wl_now - 45))"
+  printf 'main\tworker\t%s\ta · m · e\tfour\tstart\t\t\t1234567\n' "$((wl_now - 7))"
+  printf 'main\tworker\t%s\ta · m · e\tfive\tworking\t\t\t\n' "$((wl_now - 65))"
+} > "$STATE_DIR/work-wl-tok"
+assert_eq "$(printf '%s\n' \
+  'a · m · e — one    working  1h 02m   ↓ 900' \
+  'a · m · e — two    working  4m 05s   ↓ 37k' \
+  'a · m · e — three  working     45s  ↓ 184k' \
+  'a · m · e — four   start        7s  ↓ 1.2M' \
+  'a · m · e — five   working  1m 05s')" "$(wl_rows wl-tok | perl -pe 's/(?<![0-9])[78]s\b/7s/')"
+# A media-run job: its tag is the head, its label the title, a fan-out's cells the state.
+printf 'main\tmedia\t%s\tnotcom · img·web\tedit\t\t\t\t\nmain\tmedia\t%s\tfanout · img\tall\t2\t1\t3\t\n' \
   "$((wl_now - 65))" "$((wl_now - 30))" > "$STATE_DIR/work-wl-media"
-wl_media=$(run_statusline "$(statusline_payload wl-media)")
-assert grep -Eq '^media · notcom · img·web · edit · 1m [0-9]+s$' <<< "$(sed -n 3p <<< "$wl_media" | wl_strip)"
-assert grep -Eq '^media · fanout · img · all 2/3 ✗1 · 3[0-9]s$' <<< "$(sed -n 4p <<< "$wl_media" | wl_strip)"
-assert grep -Fq "${MAGENTA}media · notcom · img·web${RESET}" <<< "$wl_media"
-wl_media=$(FIT_COLUMNS=30 FIT_MARGIN=0 run_statusline "$(statusline_payload wl-media)")
-assert grep -Eq '^media · notcom · img·web · 1m [0-9]+s$' <<< "$(sed -n 3p <<< "$wl_media" | wl_strip)"
-# At most three lines; the third says how many more are running.
-wl_now=$(date +%s)
-for wl_i in 1 2 3 4 5; do printf 'main\tshell\t%s\tr\tjob%s\t\t\t\n' "$((wl_now - 60 + wl_i))" "$wl_i"; done > "$STATE_DIR/work-wl-cap"
-wl_cap=$(run_statusline "$(statusline_payload wl-cap)")
-assert_eq 5 "$(printf '%s\n' "$wl_cap" | wc -l | tr -d ' ')"
-assert grep -Eq '^shell · r · job3 · (5[0-9]s|1m [0-9]+s) · \+2$' <<< "$(sed -n 5p <<< "$wl_cap" | wl_strip)"
+assert_eq "$(printf '%s\n' \
+  'notcom · img·web — edit          1m 05s' \
+  'fanout · img — all       2/3 ✗1     30s')" "$(wl_rows wl-media)"
+assert grep -Fq "${MAGENTA}notcom · img·web${RESET}" <<< "$(run_statusline "$(statusline_payload wl-media)")"
+# At most five rows; the rest is one dim line of hidden counts by kind, agents first, singular for one.
+wl_cap() { # session workers reviews media commands
+  local i
+  for ((i = 0; i < $2; i++)); do printf 'main\tworker\t%s\ta · m · e\tw%s\tworking\t\t\t\n' "$((wl_now - 100 + i))" "$i"; done
+  for ((i = 0; i < $3; i++)); do printf 'main\treview\t%s\tT0 · double · bugs\tr%s\t\t\t\t\n' "$((wl_now - 100 + i))" "$i"; done
+  for ((i = 0; i < $4; i++)); do printf 'main\tmedia\t%s\tpool · img·web\tgen\t\t\t\t\n' "$((wl_now - 100 + i))"; done
+  for ((i = 0; i < $5; i++)); do printf 'main\tshell\t%s\tr\tjob%s\t\t\t\n' "$((wl_now - 100 + i))" "$i"; done
+}
+wl_cap wl-cap 8 2 1 3 > "$STATE_DIR/work-wl-cap"
+wl_capped=$(run_statusline "$(statusline_payload wl-cap)")
+assert_eq 8 "$(printf '%s\n' "$wl_capped" | wc -l | tr -d ' ')"
+assert_eq "${DIM}+3 workers, 2 reviews, 1 media, 3 commands${RESET}" "$(tail -n1 <<< "$wl_capped")"
+assert_eq 'w0 w1 w2 w3 w4' "$(sed -n 3,7p <<< "$wl_capped" | wl_strip | awk '{ print $7 }' | paste -sd' ' -)"
+wl_cap wl-cap1 6 1 0 1 > "$STATE_DIR/work-wl-cap1"
+assert_eq '+1 worker, 1 review, 1 command' "$(wl_rows wl-cap1 | tail -n1)"
+wl_cap wl-cap5 5 0 0 0 > "$STATE_DIR/work-wl-cap5"
+assert_eq 5 "$(wl_rows wl-cap5 | grep -c .)"
 # A cache the probe stopped refreshing is hidden, and an absent one sends the probe to write it.
-touch -t 202001010000 "$STATE_DIR/work-wl-two"
-assert_eq 2 "$(printf '%s\n' "$(run_statusline "$(statusline_payload wl-two)")" | wc -l | tr -d ' ')"
+touch -t 202001010000 "$STATE_DIR/work-wl-mix"
+assert_eq 2 "$(printf '%s\n' "$(run_statusline "$(statusline_payload wl-mix)")" | wc -l | tr -d ' ')"
 rm -f "$STATE_DIR/work-wl-fire"
 run_statusline "$(statusline_payload wl-fire)" >/dev/null
 for wl_i in $(seq 1 60); do [ -e "$STATE_DIR/work-wl-fire" ] && break; sleep 0.05; done
@@ -5311,323 +5430,64 @@ for tr_agent_owned in '~/.local/bin/light-research --prompt-file /tmp/q --out /t
   assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
 done
 
-# The renderer paints every running local_agent task, state from the run's files, and fits `columns`.
+# The renderer paints every running local_agent task — fork and native agents — and fits `columns`.
+# Workers and reviews have no rows of their own any more (their work lines carry them), so a leftover
+# relay tag file paints its tag line and the description's title, never a run's or a review's state.
 RENDER_BIN="$ROOT/bin/subagent-statusline.sh"
 TR_RSESS=tr-render
-mkdir -p "$TR_HOME_CACHE/$TR_RSESS" "$tr_runs/codex-9-9-wait" "$tr_runs/codex-9-9-done" "$tr_runs/codex-9-9-live" \
-  "$tr_runs/codex-9-9-fix" "$tr_runs/gemini-9-9-res"
+mkdir -p "$TR_HOME_CACHE/$TR_RSESS"
 printf 'acc · astra · high\nrun=codex-9-9-wait\n' > "$TR_HOME_CACHE/$TR_RSESS/w1"
-printf '{"phase":"wait","round":3}\n' > "$tr_runs/codex-9-9-wait/state.json"
-printf 'acc · astra · high\nrun=codex-9-9-done\n' > "$TR_HOME_CACHE/$TR_RSESS/w2"
-printf '{"phase":"done","round":4,"exit_code":0}\n' > "$tr_runs/codex-9-9-done/state.json"; printf '0\n' > "$tr_runs/codex-9-9-done/exit_code"
-printf 'acc · astra · high\nrun=codex-9-9-live\n' > "$TR_HOME_CACHE/$TR_RSESS/w3"
-printf 'acc · astra · high\nrun=codex-9-9-live\n' > "$TR_HOME_CACHE/$TR_RSESS/w4"
-printf '{"phase":"wait","round":6}\n' > "$tr_runs/codex-9-9-live/state.json"
 printf 'T2 · double · task\nreview=%s\n' "$TR_REVIEW" > "$TR_HOME_CACHE/$TR_RSESS/r1"
 printf 'fork · inherit · acc\nedit=3\n' > "$TR_HOME_CACHE/$TR_RSESS/l1"
-printf 'acc · astra · high\nrun=codex-9-9-fix\n' > "$TR_HOME_CACHE/$TR_RSESS/f1"
-printf 'acc · astra · high\nrun=codex-9-9-fix\n' > "$TR_HOME_CACHE/$TR_RSESS/f2"
-printf '{"phase":"wait","round":1,"round_id":"%s"}\n' "$TR_REVIEW" > "$tr_runs/codex-9-9-fix/state.json"
+printf 'fork · inherit · acc\n' > "$TR_HOME_CACHE/$TR_RSESS/l2"
 printf 'rawilimo · flash38 · high\nlight=research\nrun=gemini-9-9-res\n' > "$TR_HOME_CACHE/$TR_RSESS/g1"
-printf '{"phase":"wait","round":2}\n' > "$tr_runs/gemini-9-9-res/state.json"
+printf 'agent · inherit · acc\nedit=2\n' > "$TR_HOME_CACHE/$TR_RSESS/a1"
 tr_render() { # columns [the one task id to render]
   local start=$(( ($(date +%s) - 65) * 1000 ))
   jq -cn --argjson cols "$1" --argjson start "$start" --arg sess "$TR_RSESS" --arg rev "$TR_REVIEW" --arg only "${2-}" '{session_id:$sess,columns:$cols,tasks:[
     {id:"w1",type:"local_agent",status:"running",description:"acc · astra · high: Implement the parser fix",label:"Running suites",startTime:$start,tokenCount:12345,model:"claude-sonnet-5"},
-    {id:"w2",type:"local_agent",status:"running",description:"Done run",label:"Done",startTime:$start},
     {id:"w3",type:"local_agent",status:"completed",description:"Finished run",startTime:$start},
     {id:"w4",type:"local_agent",status:"killed",description:"Killed run",startTime:$start},
-    {id:"r1",type:"local_agent",status:"running",description:("T2 · double · task: WAIT " + $rev + ": hunt over the task rows"),startTime:$start,tokenCount:500},
+    {id:"r1",type:"local_agent",status:"running",description:("T2 · double · task: WAIT " + $rev + ": hunt"),startTime:$start,tokenCount:500},
     {id:"l1",type:"local_agent",status:"running",description:"Refactor",startTime:$start,model:"claude-fable-5-1"},
-    {id:"n1",type:"local_agent",status:"running",description:"Look around",startTime:$start,model:"claude-haiku-4-5-20251001"},
-    {id:"f1",type:"local_agent",status:"running",description:"acc · astra · high — Patch the gate",label:"Reading files",startTime:$start,tokenCount:900},
-    {id:"f2",type:"local_agent",status:"running",description:"fix: e66f8e6 Patch again",startTime:$start},
+    {id:"l2",type:"local_agent",status:"running",description:"Look",startTime:$start,model:"claude-fable-5-1"},
+    {id:"n1",type:"local_agent",status:"running",description:"Look around",startTime:$start,model:"claude-sonnet-5-5"},
+    {id:"a1",type:"local_agent",status:"running",description:"Teammate",startTime:$start,model:"claude-opus-5-5"},
     {id:"g1",type:"local_agent",status:"running",description:"light research · 3.8-flash · rawilimo: Map the hooks",startTime:$start,model:"claude-sonnet-5"},
     {id:"b1",type:"local_bash",status:"running",label:"sleep"}]} | if $only == "" then . else .tasks |= map(select(.id == $only)) end' |
     WORKER_STATS_DIR="$TR_STATS" SUBAGENT_ROW_RESERVE=0 CLAUDE_LIMITS_ACCOUNT=rowacct "$RENDER_BIN"
 }
 # A second may tick between the fixture's clock and the renderer's; both spell the same width.
-tr_norm() { perl -pe 's/\e\[[0-9;]*m//g; s/(?<!tests )1m [0-9]+s/1m 5s/'; }
-declare -A tr_rows_of=()
-tr_indexed=''
-tr_index() { # snapshot -> tr_row answers for it from one jq and one perl pass, when every row allows
-  local id row
-  tr_indexed='' tr_rows_of=()
-  while IFS=$'\x1f' read -r id row; do
-    tr_indexed=$1
-    tr_rows_of[$id]+=$row$'\n'
-  done < <(jq -rn '[inputs] as $rows
-    | if all($rows[]; (.id | type) == "string" and (.id | test("^[A-Za-z0-9_.-]+$"))
-        and (.content | type) == "string" and (.content | contains("\n") | not))
-      then $rows[] | .id + "\u001f" + .content else empty end' <<<"$1" 2>/dev/null | tr_norm)
-}
-tr_row() {
-  if [ -n "$tr_indexed" ] && [ "$1" = "$tr_indexed" ]; then printf '%s' "${tr_rows_of[$2]-}"; return; fi
-  jq -r --arg id "$2" 'select(.id == $id) | .content' <<<"$1" | tr_norm
-}
+tr_norm() { perl -pe 's/\e\[[0-9;]*m//g; s/1m [0-9]+s/1m 5s/'; }
+tr_row() { jq -r --arg id "$2" 'select(.id == $id) | .content' <<<"$1" | tr_norm; }
+# A run record in the work cache is the worker's work line now, never a state on a task row.
+printf 'run\tcodex-9-9-wait\t%s\tpnpm test\n' "$(( $(date +%s) - 75 ))" > "$STATE_DIR/work-$TR_RSESS"
 tr_wide=$(tr_render 300) || fail "renderer exited nonzero"
-tr_index "$tr_wide"
-assert_eq 10 "$(grep -c . <<<"$tr_wide")"
-# A worker at work has no state word: the elapsed time says it all.
+rm -f "$STATE_DIR/work-$TR_RSESS"
+assert_eq 9 "$(grep -c . <<<"$tr_wide")"
 assert_eq 'acc · astra · high — Implement the parser fix · 1m 5s · ↓ 12.3k tok' "$(tr_row "$tr_wide" w1)"
-# Only running tasks have rows; a run that ended under a running agent shows no state.
-assert_eq 'acc · astra · high — Done run · 1m 5s' "$(tr_row "$tr_wide" w2)"
+assert_fails grep -Fq 'Running suites' <<<"$tr_wide"
 # A finished task is answered with an empty content, never left out: the harness draws its own
 # native row for a listed id the renderer is silent about, and only "" removes the row.
 assert_eq '{"id":"w3","content":""}{"id":"w4","content":""}' \
   "$(jq -c 'select(.id == "w3" or .id == "w4")' <<<"$tr_wide" | tr -d '\n')"
-assert_eq 'T2 · double · task — hunt over the task rows · all 2/4 opus 0/1 sol 0/1 agy ✓ grok ✗1 · 1m 5s · ↓ 500 tok' "$(tr_row "$tr_wide" r1)"
+assert_eq "T2 · double · task — WAIT $TR_REVIEW: hunt · 1m 5s · ↓ 500 tok" "$(tr_row "$tr_wide" r1)"
+assert_eq 'rawilimo · flash38 · high — Map the hooks · 1m 5s' "$(tr_row "$tr_wide" g1)"
+# Native rows name the harness model: a fork explores until its first edit, then counts them.
 assert_eq 'fork · fable · acc — Refactor · edit 3 · 1m 5s' "$(tr_row "$tr_wide" l1)"
-assert_eq 'agent · haiku · rowacct — Look around · 1m 5s' "$(tr_row "$tr_wide" n1)"
-assert_fails grep -Fq 'Running suites' <<<"$tr_wide"
-# Review and fix rows carry no title; worker and light rows keep theirs. A fix row is
-# `fix: <tag> · <round hash> · <state>`.
-assert_eq 'fix: acc · astra · high · e66f8e6 · 1m 5s · ↓ 900 tok' "$(tr_row "$tr_wide" f1)"
-assert_eq 'fix: acc · astra · high · e66f8e6 · 1m 5s' "$(tr_row "$tr_wide" f2)"
-# A worker whose run is running tests says so, from the work probe's cache;
-# a cache the probe stopped refreshing says nothing.
-printf 'run\tcodex-9-9-wait\t%s\tpnpm test\n' "$(( $(date +%s) - 75 ))" > "$STATE_DIR/work-$TR_RSESS"
-assert_eq 'acc · astra · high — Implement the parser fix · tests 1m 15s · 1m 5s · ↓ 12.3k tok' \
-  "$(tr_row "$(tr_render 300)" w1 | perl -pe 's/tests 1m [0-9]+s/tests 1m 15s/')"
-touch -t 202001010000 "$STATE_DIR/work-$TR_RSESS"
-assert_eq 'acc · astra · high — Implement the parser fix · 1m 5s · ↓ 12.3k tok' "$(tr_row "$(tr_render 300)" w1)"
-rm -f "$STATE_DIR/work-$TR_RSESS"
-assert grep -Fq "${MAGENTA}fix: acc · astra · high${RESET} ${DIM}· e66f8e6${RESET}" <<<"$(jq -r 'select(.id == "f1") | .content' <<<"$tr_wide")"
-assert_fails grep -Fq 'Patch again' <<<"$(tr_row "$tr_wide" f2)"
-assert_fails grep -Fq 'WAIT' <<<"$(tr_row "$tr_wide" r1)"
-assert_fails grep -Fq 'Patch the gate' <<<"$(tr_row "$tr_wide" f1)"
-assert grep -Fq 'Implement the parser fix' <<<"$(tr_row "$tr_wide" w1)"
-# The light leg names the model doing the work and never the relay agent's shell model.
-assert_eq 'light research · 3.8-flash · rawilimo — Map the hooks · 1m 5s' "$(tr_row "$tr_wide" g1)"
-assert grep -Fq "${MAGENTA}T2 · double · task${RESET}" <<<"$(jq -r 'select(.id == "r1") | .content' <<<"$tr_wide")"
-assert_fails grep -Fq 'done' <<<"$(tr_row "$tr_wide" w2)"
-# Narrower: the title goes first, then tok, elapsed, a fix row's hash, and the cell detail last (counts stay); the state never.
-assert_eq 'T2 · double · task — hunt ov… · all 2/4 opus 0/1 sol 0/1 agy ✓ grok ✗1 · 1m 5s · ↓ 500 tok' "$(tr_row "$(tr_render 90 r1)" r1)"
-assert_eq 'T2 · double · task · all 2/4 opus 0/1 sol 0/1 agy ✓ grok ✗1 · 1m 5s' "$(tr_row "$(tr_render 78 r1)" r1)"
-assert_eq 'T2 · double · task · all 2/4 opus 0/1 sol 0/1 agy ✓ grok ✗1 · 1m 5s' "$(tr_row "$(tr_render 67 r1)" r1)"
-assert_eq 'T2 · double · task · all 2/4 opus 0/1 sol 0/1 agy ✓ grok ✗1' "$(tr_row "$(tr_render 66 r1)" r1)"
-assert_eq 'T2 · double · task · all 2/4 opus 0/1 sol 0/1 agy ✓ grok ✗1' "$(tr_row "$(tr_render 59 r1)" r1)"
-assert_eq 'T2 · double · task · all 2/4' "$(tr_row "$(tr_render 58 r1)" r1)"
-assert_eq 'T2 · double · task · all 2/4' "$(tr_row "$(tr_render 30 r1)" r1)"
-tr_60=$(tr_render 60) tr_40=$(tr_render 40) tr_30=$(tr_render 30)
-tr_index "$tr_40"
-assert_eq 'acc · astra · high — Implement the pa… · 1m 5s · ↓ 12.3k tok' "$(tr_row "$tr_60" w1)"
-assert_eq 'acc · astra · high · 1m 5s · ↓ 12.3k tok' "$(tr_row "$tr_40" w1)"
-assert_eq 'acc · astra · high · 1m 5s' "$(tr_row "$tr_30" w1)"
-assert_eq 'fix: acc · astra · high · e66f8e6 · 1m 5s · ↓ 900 tok' "$(tr_row "$(tr_render 53 f1)" f1)"
-assert_eq 'fix: acc · astra · high · e66f8e6 · 1m 5s' "$(tr_row "$(tr_render 52 f1)" f1)"
-assert_eq 'fix: acc · astra · high · e66f8e6' "$(tr_row "$tr_40" f1)"
-assert_eq 'fix: acc · astra · high · e66f8e6' "$(tr_row "$(tr_render 33 f1)" f1)"
-assert_eq 'fix: acc · astra · high' "$(tr_row "$(tr_render 32 f1)" f1)"
-assert_eq 'light research · 3.8-flash · rawilimo' "$(tr_row "$tr_40" g1)"
-# A chunked panel's fraction counts chunk passes; the row total stays cells.
-jq '.chunks = {"claude-opus-high":[2,5],"codex-sol-high":[1,5],"agy-flash38-high":[5,5]}' "$TR_STATS/progress/llm-legs__x-1.json" > "$TR_STATS/progress/tmp" &&
-  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-1.json"
-assert_eq 'T2 · double · task · all 2/4 opus 2/5 sol 1/5 agy ✓ grok ✗1 · 1m 5s' "$(tr_row "$(tr_render 67 r1)" r1)"
-assert_eq 'T2 · double · task · all 2/4' "$(tr_row "$(tr_render 58 r1)" r1)"
-jq 'del(.chunks)' "$TR_STATS/progress/llm-legs__x-1.json" > "$TR_STATS/progress/tmp" &&
-  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-1.json"
-# Cells group by label, so a panel of eight keeps them at an ordinary width.
-TR_REVIEW8=20260917T010000Z-a8c3d21
-jq -cn --arg run "$TR_REVIEW8" '{run_id:$run,tier:"T0",composition:"double",lens:"bugs",state:"running",phase:"review",
-  cells:["agy-flash37-high#1","agy-flash37-high#2","agy-flash37-high#3","agy-flash37-high#4",
-         "claude-opus-low#1","claude-opus-low#2","codex-sol-low#1","codex-sol-low#2"],
-  done:["agy-flash37-high#1","agy-flash37-high#4","claude-opus-low#1","codex-sol-low#1","codex-sol-low#2"],
-  failed_cells:["agy-flash37-high#4"]}' \
-  > "$TR_STATS/progress/llm-legs__x-8.json"
-printf 'T0 · double · bugs\nreview=%s\n' "$TR_REVIEW8" > "$TR_HOME_CACHE/$TR_RSESS/r8"
-tr8_row() { # columns
-  jq -cn --argjson cols "$1" --argjson start "$(( ($(date +%s) - 300) * 1000 ))" --arg sess "$TR_RSESS" '{session_id:$sess,columns:$cols,
-    tasks:[{id:"r8",type:"local_agent",status:"running",description:"T0 debt review of chunk rows and the post-round delta",startTime:$start}]}' |
-    WORKER_STATS_DIR="$TR_STATS" "$RENDER_BIN" | jq -r '.content' | perl -pe 's/\e\[[0-9;]*m//g; s/5m [0-9]+s/5m 0s/'
-}
-assert_eq 'T0 · double · bugs · all 5/8 agy 2/4 ✗1 opus 1/2 sol ✓ · 5m 0s' "$(tr8_row 200)"
-# The default reserve is the top statusline's fit margin, 3: 62 cells fit in 65 columns.
+assert_eq 'fork · fable · acc — Look · explore · 1m 5s' "$(tr_row "$tr_wide" l2)"
+assert_eq 'agent · sonnet · rowacct — Look around · 1m 5s' "$(tr_row "$tr_wide" n1)"
+assert_eq 'agent · opus · acc — Teammate · edit 2 · 1m 5s' "$(tr_row "$tr_wide" a1)"
+assert grep -Fq "${MAGENTA}fork · fable · acc${RESET} ${DIM}—${RESET} Refactor ${DIM}· edit 3${RESET}" <<<"$(jq -r 'select(.id == "l1") | .content' <<<"$tr_wide")"
+# Narrower: the title goes first, then tok, then elapsed; the tag and the state never.
+assert_eq 'acc · astra · high — Implement the pa… · 1m 5s · ↓ 12.3k tok' "$(tr_row "$(tr_render 60 w1)" w1)"
+assert_eq 'acc · astra · high · 1m 5s · ↓ 12.3k tok' "$(tr_row "$(tr_render 40 w1)" w1)"
+assert_eq 'acc · astra · high · 1m 5s' "$(tr_row "$(tr_render 30 w1)" w1)"
+assert_eq 'fork · fable · acc · edit 3' "$(tr_row "$(tr_render 20 l1)" l1)"
+# The default reserve is the top statusline's fit margin, 3.
 assert_eq "$(sed -nE 's/^STATUSLINE_FIT_MARGIN=\$\{STATUSLINE_FIT_MARGIN:-([0-9]+)\}$/\1/p' "$ROOT/bin/statusline.sh")" \
   "$(sed -nE 's/^reserve=\$\{SUBAGENT_ROW_RESERVE:-([0-9]+)\}$/\1/p' "$RENDER_BIN")"
 assert_eq 3 "$(sed -nE 's/^reserve=\$\{SUBAGENT_ROW_RESERVE:-([0-9]+)\}$/\1/p' "$RENDER_BIN")"
-assert_eq 'T0 · double · bugs · all 5/8 agy 2/4 ✗1 opus 1/2 sol ✓ · 5m 0s' "$(tr8_row 65)"
-assert_eq 'T0 · double · bugs · all 5/8 agy 2/4 ✗1 opus 1/2 sol ✓' "$(tr8_row 64)"
-# Claude Code hands an ~80-column chat `columns: 67`: this row renders whole, and elapsed goes before any group.
-TR_REVIEWMC=20260917T120000Z-b1c2d3e
-jq -cn --arg run "$TR_REVIEWMC" '{run_id:$run,tier:"T1",composition:"standard",lens:"md-compact",state:"running",phase:"review",
-  cells:["agy-flash37-high#1","agy-flash37-high#2","claude-opus-high#1","claude-opus-high#2"],
-  done:["agy-flash37-high#1","claude-opus-high#1"],failed_cells:[]}' > "$TR_STATS/progress/llm-legs__x-mc.json"
-printf 'T1 · standard · md-compact\nreview=%s\n' "$TR_REVIEWMC" > "$TR_HOME_CACHE/$TR_RSESS/mc"
-trmc_row() { # columns
-  jq -cn --argjson cols "$1" --argjson start "$(( ($(date +%s) - 54) * 1000 ))" --arg sess "$TR_RSESS" '{session_id:$sess,columns:$cols,
-    tasks:[{id:"mc",type:"local_agent",status:"running",description:"x",startTime:$start}]}' |
-    WORKER_STATS_DIR="$TR_STATS" "$RENDER_BIN" | jq -r '.content' | perl -pe 's/\e\[[0-9;]*m//g; s/5[4-9]s$/54s/'
-}
-for trmc_cols in 67 62; do
-  assert_eq 'T1 · standard · md-compact · all 2/4 agy 1/2 opus 1/2 · 54s' "$(trmc_row "$trmc_cols")"
-done
-for trmc_cols in 61 60 56; do
-  assert_eq 'T1 · standard · md-compact · all 2/4 agy 1/2 opus 1/2' "$(trmc_row "$trmc_cols")"
-done
-for trmc_cols in 55 50; do
-  assert_eq 'T1 · standard · md-compact · all 2/4' "$(trmc_row "$trmc_cols")"
-done
-rm -f "$TR_STATS/progress/llm-legs__x-mc.json"
-# The judge phase freezes the panel row at `✓ done` and puts the judge in a second row of the same
-# content: `judge: <account> · <model> · <effort> · <hash> · <elapsed>`, shedding hash, effort, model,
-# elapsed in that order; `SUBAGENT_JUDGE_ROW=inline` folds it back into the single row.
-TR_REVIEWJ=20260917T130000Z-c0ffee1
-TRJ_NOW=$(date +%s)
-trj_doc() { # jq filter
-  jq -cn --arg run "$TR_REVIEWJ" --argjson at "$((TRJ_NOW - 65))" '{run_id:$run,tier:"T0",composition:"double",lens:"bugs",state:"running",phase:"judge",
-    cells:["agy-flash37-high#1","claude-opus-high#1"],done:["agy-flash37-high#1","claude-opus-high#1"],
-    phase_at:$at,judge:{model:"opus",effort:"high",account:"locomthebest"}}' |
-    jq -c "$1" > "$TR_STATS/progress/llm-legs__x-j.json"
-}
-trj_row() { # columns
-  jq -cn --argjson cols "$1" --argjson start "$(( (TRJ_NOW - 245) * 1000 ))" --arg sess "$TR_RSESS" '{session_id:$sess,columns:$cols,
-    tasks:[{id:"j1",type:"local_agent",status:"running",description:"x",startTime:$start,tokenCount:2400}]}' |
-    WORKER_STATS_DIR="$TR_STATS" SUBAGENT_JUDGE_ROW="${TRJ_MODE:-}" "$RENDER_BIN" | jq -r '.content' |
-    perl -pe 's/\e\[[0-9;]*m//g; s/1m [0-9]+s/1m 5s/; s/4m [0-9]+s/4m 5s/'
-}
-printf 'T0 · double · bugs\nreview=%s\n' "$TR_REVIEWJ" > "$TR_HOME_CACHE/$TR_RSESS/j1"
-trj_doc .
-assert_eq 'T0 · double · bugs · all 2/2 agy ✓ opus ✓ · ✓ done · 3m 0s · ↓ 2.4k tok
-judge: locomthebest · opus · high · c0ffee1 · 1m 5s' "$(trj_row 100)"
-assert_eq 'T0 · double · bugs · all 2/2 agy ✓ opus ✓ · ✓ done
-judge: locomthebest · opus · high · c0ffee1 · 1m 5s' "$(trj_row 54)"
-assert_eq 'T0 · double · bugs · all 2/2 agy ✓ opus ✓ · ✓ done
-judge: locomthebest · opus · high · 1m 5s' "$(trj_row 53)"
-assert_eq 'T0 · double · bugs · all 2/2 · ✓ done
-judge: locomthebest · opus · 1m 5s' "$(trj_row 43)"
-assert_eq 'T0 · double · bugs · all 2/2 · ✓ done
-judge: locomthebest · 1m 5s' "$(trj_row 35)"
-assert_eq 'T0 · double · bugs · all 2/2 · ✓ done
-judge: locomthebest' "$(trj_row 28)"
-TRJ_MODE=inline
-assert_eq 'T0 · double · bugs · judge: locomthebest · opus · high · c0ffee1 · 1m 5s · ↓ 2.4k tok' "$(trj_row 100)"
-TRJ_MODE=
-trj_doc 'del(.judge)'
-assert_eq 'T0 · double · bugs · all 2/2 agy ✓ opus ✓ · ✓ done · 3m 0s · ↓ 2.4k tok
-judge: c0ffee1 · 1m 5s' "$(trj_row 100)"
-trj_doc '.judge = {account:"rawilimo"}'
-assert_eq 'T0 · double · bugs · all 2/2 agy ✓ opus ✓ · ✓ done · 3m 0s · ↓ 2.4k tok
-judge: rawilimo · c0ffee1 · 1m 5s' "$(trj_row 100)"
-# No timestamp in the document: the first sighting of the phase is cached next to the tag.
-rm -f "$TR_HOME_CACHE/$TR_RSESS/j1.judge"
-trj_doc 'del(.phase_at)'
-assert_eq 'T0 · double · bugs · all 2/2 agy ✓ opus ✓ · ✓ done · 4m 5s · ↓ 2.4k tok
-judge: locomthebest · opus · high · c0ffee1 · 0s' "$(trj_row 100)"
-assert test -s "$TR_HOME_CACHE/$TR_RSESS/j1.judge"
-rm -f "$TR_HOME_CACHE/$TR_RSESS/j1.judge"
-# review-bench stamps Python isoformat: fractional seconds and a numeric offset.
-trj_doc ".phase_at = ($((TRJ_NOW - 65 + 7200)) | todate | sub(\"Z\$\"; \".123456+02:00\"))"
-assert_eq 'T0 · double · bugs · all 2/2 agy ✓ opus ✓ · ✓ done · 3m 0s · ↓ 2.4k tok
-judge: locomthebest · opus · high · c0ffee1 · 1m 5s' "$(trj_row 100)"
-trj_doc "del(.phase_at) | .judge.ts = ($((TRJ_NOW - 65)) | todate | sub(\"Z\$\"; \".5+00:00\"))"
-assert_eq 'T0 · double · bugs · all 2/2 agy ✓ opus ✓ · ✓ done · 3m 0s · ↓ 2.4k tok
-judge: locomthebest · opus · high · c0ffee1 · 1m 5s' "$(trj_row 100)"
-assert test ! -e "$TR_HOME_CACHE/$TR_RSESS/j1.judge"
-# A progress file caught mid-write hides no other run's document.
-trj_doc .
-printf '{"run_id":"20260917T120000Z-bad","sta' > "$TR_STATS/progress/a-torn.json"
-assert_eq 'T0 · double · bugs · all 2/2 agy ✓ opus ✓ · ✓ done · 3m 0s · ↓ 2.4k tok
-judge: locomthebest · opus · high · c0ffee1 · 1m 5s' "$(trj_row 100)"
-rm -f "$TR_STATS/progress/a-torn.json"
-# Rows appear in sequence: no judge row before the judge phase, and it stays through the report.
-trj_doc '.phase = "review" | .done = ["agy-flash37-high#1"]'
-assert_eq 'T0 · double · bugs · all 1/2 agy ✓ opus 0/1 · 4m 5s · ↓ 2.4k tok' "$(trj_row 100)"
-trj_doc '.state = "done" | .phase = "report" | .confirmed = 17'
-assert_eq 'T0 · double · bugs · ✓ report 17 · 3m 0s · ↓ 2.4k tok
-judge: locomthebest · opus · high · c0ffee1 · 1m 5s' "$(trj_row 100)"
-rm -f "$TR_STATS/progress/llm-legs__x-j.json"
-tr8_narrow=$(tr8_row 120)
-assert grep -Fq ' · all 5/8 agy 2/4 ✗1 opus 1/2 sol ✓ · 5m 0s' <<<"$tr8_narrow"
-assert_fails grep -Fq 'post-round delta' <<<"$tr8_narrow"
-jq '.done += ["agy-flash37-high#2","agy-flash37-high#3"]' "$TR_STATS/progress/llm-legs__x-8.json" > "$TR_STATS/progress/tmp" &&
-  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-8.json"
-assert grep -Fq ' · all 7/8 agy 4/4 ✗1 opus 1/2 sol ✓ · ' <<<"$(tr8_row 200)"
-jq '.done = ["agy-flash37-high#1","claude-opus-low#1","claude-opus-low#2"] | .failed_cells = [] |
-  .chunks = {"agy-flash37-high#1":[5,5],"agy-flash37-high#2":[2,5],"agy-flash37-high#3":[0,5],"agy-flash37-high#4":[0,5],
-             "codex-sol-low#1":[3,5],"codex-sol-low#2":[0,5]}' "$TR_STATS/progress/llm-legs__x-8.json" > "$TR_STATS/progress/tmp" &&
-  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-8.json"
-assert grep -Fq ' · all 3/8 agy 7/20 opus ✓ sol 3/10 · 5m 0s' <<<"$(tr8_row 200)"
-# A group holding a late pending cell (the top statusline's rule) is red for the launching chat alone.
-jq --arg sess "$TR_RSESS" --argjson began "$(( $(date +%s) - 400 ))" '.done = ["agy-flash37-high#1","claude-opus-low#1"] |
-  .failed_cells = [] | del(.chunks) | .session = $sess | .started_epoch = $began |
-  .expected = {"agy-flash37-high#2":50000,"claude-opus-low#2":200000}' "$TR_STATS/progress/llm-legs__x-8.json" > "$TR_STATS/progress/tmp" &&
-  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-8.json"
-tr8_raw() { # session
-  mkdir -p "$TR_HOME_CACHE/$1" && cp "$TR_HOME_CACHE/$TR_RSESS/r8" "$TR_HOME_CACHE/$1/r8"
-  jq -cn --arg sess "$1" '{session_id:$sess,columns:200,tasks:[{id:"r8",type:"local_agent",status:"running",description:"x"}]}' |
-    WORKER_STATS_DIR="$TR_STATS" "$RENDER_BIN" | jq -r '.content'
-}
-tr8_own=$(tr8_raw "$TR_RSESS")
-assert grep -Fq "${RED}agy 1/4${RESET}" <<<"$tr8_own"
-assert_eq 'T0 · double · bugs · all 2/8 agy 1/4 opus 1/2 sol 0/2' "$(perl -pe 's/\e\[[0-9;]*m//g' <<<"$tr8_own")"
-assert_fails grep -Fq "${RED}opus" <<<"$tr8_own"
-assert_fails grep -Fq "${RED}sol" <<<"$tr8_own"
-assert_fails grep -Fq "$RED" <<<"$(tr8_raw tr-other)"
-jq '.session = "tr-launcher" | .waiter = {session:"tr-other",task_id:"r8"}' "$TR_STATS/progress/llm-legs__x-8.json" > "$TR_STATS/progress/tmp" &&
-  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-8.json"
-assert grep -Fq "${RED}agy 1/4${RESET}" <<<"$(tr8_raw tr-other)"
-assert_fails grep -Fq "$RED" <<<"$(tr8_raw "$TR_RSESS")"
-jq '.expected = {} | .started_epoch = 1' "$TR_STATS/progress/llm-legs__x-8.json" > "$TR_STATS/progress/tmp" &&
-  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-8.json"
-assert_fails grep -Fq "$RED" <<<"$(tr8_raw tr-other)"
-# The same rule per pass: a chunked cell far past 3 x its median by the run clock is not late while
-# the pass it is on is fresh, and is late as soon as that pass is the one running long.
-tr8_chunked() { # chunk-started-age-or-empty
-  jq --arg sess "$TR_RSESS" --argjson began "$(( $(date +%s) - 400 ))" --arg age "$1" '
-    .done = ["agy-flash37-high#1","claude-opus-low#1"] | .failed_cells = [] | del(.waiter) |
-    .session = $sess | .started_epoch = $began |
-    .expected = {"agy-flash37-high#2":50000} |
-    .chunks = {"agy-flash37-high#2":[2,5]} |
-    if $age == "" then del(.chunk_started)
-    else .chunk_started = {"agy-flash37-high#2":($age | tonumber)} end' \
-    "$TR_STATS/progress/llm-legs__x-8.json" > "$TR_STATS/progress/tmp" &&
-    mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-8.json"
-}
-tr8_chunked "$(date +%s)"
-assert_fails grep -Fq "$RED" <<<"$(tr8_raw "$TR_RSESS")"
-tr8_chunked "$(( $(date +%s) - 400 ))"
-assert grep -Fq "${RED}agy 3/8${RESET}" <<<"$(tr8_raw "$TR_RSESS")"
-tr8_chunked ""
-assert grep -Fq "${RED}agy 3/8${RESET}" <<<"$(tr8_raw "$TR_RSESS")"
-jq 'del(.chunks)' "$TR_STATS/progress/llm-legs__x-8.json" > "$TR_STATS/progress/tmp" &&
-  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-8.json"
-# A group whose cell's verifier runs says `verify` after its fraction and earns `✓` only once it is collected.
-jq '.done = .cells | .failed_cells = [] | .phase = "verify" |
-  .verifying = {"agy-flash37-high#1":"done","agy-flash37-high#2":"running","claude-opus-low#1":"done"}' \
-  "$TR_STATS/progress/llm-legs__x-8.json" > "$TR_STATS/progress/tmp" && mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-8.json"
-assert_eq 'T0 · double · bugs · all 8/8 agy 4/4 verify opus ✓ sol ✓ · 5m 0s' "$(tr8_row 200)"
-jq '.verifying["agy-flash37-high#2"] = "done"' "$TR_STATS/progress/llm-legs__x-8.json" > "$TR_STATS/progress/tmp" &&
-  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-8.json"
-assert_eq 'T0 · double · bugs · all 8/8 agy ✓ opus ✓ sol ✓ · 5m 0s' "$(tr8_row 200)"
-jq 'del(.verifying)' "$TR_STATS/progress/llm-legs__x-8.json" > "$TR_STATS/progress/tmp" &&
-  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-8.json"
-assert_eq 'T0 · double · bugs · all 8/8 agy ✓ opus ✓ sol ✓ · 5m 0s' "$(tr8_row 200)"
-rm -f "$TR_STATS/progress/llm-legs__x-8.json"
-# Review end states.
-jq '.state = "done" | .confirmed = 17' "$TR_STATS/progress/llm-legs__x-1.json" > "$TR_STATS/progress/tmp" &&
-  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-1.json"
-assert grep -Fq '· ✓ report 17 ·' <<<"$(tr_row "$(tr_render 300)" r1)"
-jq '.state = "running" | .phase = "judge"' "$TR_STATS/progress/llm-legs__x-1.json" > "$TR_STATS/progress/tmp" &&
-  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-1.json"
-tr_judge=$(tr_row "$(tr_render 300)" r1)
-assert grep -Fq '· ✓ done ·' <<<"$tr_judge"
-assert grep -q '^judge: ' <<<"$(sed -n 2p <<<"$tr_judge")"
-jq '.state = "dead"' "$TR_STATS/progress/llm-legs__x-1.json" > "$TR_STATS/progress/tmp" &&
-  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-1.json"
-assert grep -Fq '· ✗ dead ·' <<<"$(tr_row "$(tr_render 300)" r1)"
-jq '.state = "cancelled"' "$TR_STATS/progress/llm-legs__x-1.json" > "$TR_STATS/progress/tmp" &&
-  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-1.json"
-assert_eq 'T2 · double · task — hunt over the task rows · 1m 5s · ↓ 500 tok' "$(tr_row "$(tr_render 300)" r1)"
-jq '.state = "dead"' "$TR_STATS/progress/llm-legs__x-1.json" > "$TR_STATS/progress/tmp" &&
-  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-1.json"
-# A document with no tier keeps the `T?` default through the sanitizer.
-jq '.tier = null' "$TR_STATS/progress/llm-legs__x-1.json" > "$TR_STATS/progress/tmp" &&
-  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-1.json"
-assert grep -Fq 'T? · double · task — hunt over the task rows · ' <<<"$(tr_row "$(tr_render 300)" r1)"
-# A review whose progress document is gone keeps the tag it had.
-rm -f "$TR_STATS/progress/llm-legs__x-1.json"
-assert_eq 'T2 · double · task — hunt over the task rows · 1m 5s · ↓ 500 tok' "$(tr_row "$(tr_render 300)" r1)"
 
 # A payload whose tasks carry no status field is a running list (the harness omits the field on older builds).
 no_status=$(printf '{"session_id":"x","columns":80,"tasks":[{"id":"ns1","type":"local_agent","description":"acc · astra · high: No status","startTime":1789600000000}]}' | bash "$RENDER_BIN")
