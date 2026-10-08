@@ -183,6 +183,9 @@ assert grep -qF 'line 3 (E): no evidence' "$WORK/err"
 sed 's#\truled-out\t#\tdone\t#' "$WORK/decisions" >"$WORK/bad-verdict"
 assert_fails fix close "$id2" --decisions "$WORK/bad-verdict" "done" 2>"$WORK/err"
 assert grep -qF "line 2 (B): verdict 'done' is not one of" "$WORK/err"
+sed 's#\truled-out\t#\tfixed ruled-out\t#' "$WORK/decisions" >"$WORK/bad-verdict"
+assert_fails fix close "$id2" --decisions "$WORK/bad-verdict" "done" 2>"$WORK/err"
+assert grep -qF "line 2 (B): verdict 'fixed ruled-out' is not one of" "$WORK/err"
 # A judge that changed since launch needs its own line.
 doc llm $(($(now) + 5)) problems 3 j2
 assert_fails fix close "$id2" --decisions "$WORK/decisions" "done" 2>"$WORK/err"
@@ -565,6 +568,16 @@ assert jqe '.problems[0].id == "load:host" and .problems[0].component.files == [
 fix touches "$(record "$load")" load:host proj/README
 assert [ $? = 3 ]
 fix touches "$(record "$load")" "row 1" proj/README || fail "a purpose for no listed problem only has to resolve"
+fix touches "$(record "$load")" load:host no/such/file
+assert [ $? = 1 ]
+fix touches "$(record "$load")" load:host "proj@$other"
+assert [ $? = 3 ]
+fix touches "$(record "$hk")" quiet-hook proj/README
+assert [ $? = 2 ]
+# A quiet row's component repository gets its sibling worktree like a problem's.
+assert [ "$(runs_dir="$WORK/qr"; mkdir -p "$runs_dir"; eval "$(sed -n '/^record_file() /p;/^component_repos() {/,/^}/p' "$FIX")"
+  . "$ROOT/share/test-scope.sh"; jq -n --arg f "$WORK/projects/proj/README" '{problems: [], quiet: [{component: {files: [$f]}}]}' >"$runs_dir/q.json"
+  component_repos q "$L")" = "$WORK/projects/proj" ]
 jq -n --argjson s $(($(now) + 5)) '{contract: 1, doctor: "harness", as_of_s: $s, judge: "base-harness",
   problems: [{id: "load:host", state: "fixed-pending"}]}' >"$DATA/harness-doc.json"
 printf 'load:host\tfixed\tproj/README\ttests/test_x.sh\n' >"$WORK/ld"
@@ -877,7 +890,7 @@ sed -i '' 's/"opus"/"haiku"/' "$WORK/settings.json"
 mkdir -p "$HOME/.claude" && printf 'claudeb_model=sonnet\n' >"$HOME/.claude/worker-model"
 jq -n --argjson s $(($(now) + 5)) '{contract: 1, doctor: "harness", as_of_s: $s, judge: "base-harness", problems: []}' \
   >"$DATA/harness-doc.json"
-printf 'opportunity:machine/contention\truled-out\tnone\tthe lever is elsewhere\n' >"$WORK/sd"
+printf 'opportunity:machine/contention\truled-out\tproj/README\tthe lever is elsewhere\n' >"$WORK/sd"
 assert_fails fix close "$sid" --decisions "$WORK/sd" "tuned" 2>"$WORK/err"
 knob() { grep -qF "model/effort knob, $1: $2" "$WORK/err"; }
 assert knob "share/worker-model.sh table" "llm-legs/share/worker-model.sh:2: +claudeb opus medium"
@@ -970,6 +983,7 @@ for step in '1. What each check guards' '2. Where the CPU goes' 'Never shorten a
   'assert count unchanged' 'every mutation still red' 'kept (the suite is fine: a normal outcome)' 'bin/speed-doctor --suite-audit'; do
   assert grep -qF "$step" "$brief"
 done
+assert_fails grep -qF -- '--fresh' "$brief"
 
 # A log-audit reading names no file, so its run gets every sweep repository (a gate's cause sat in claude-setup).
 for r in "$RUNS"/harness-*.json; do
