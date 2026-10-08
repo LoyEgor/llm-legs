@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 2
 . "$(dirname "$0")/instruction_gate_harness.sh"
 
+if suite_shard_owns 1 write-gate-early; then
 echo "== write gate: denies a shell write to a protected file"
 assert_eq deny "$(decision "python3 -c \"open('$CLAUDE_MD','w').write('x')\"")"
 assert_eq deny "$(decision "echo hi > $CLAUDE_MD")"
@@ -171,6 +173,8 @@ assert_eq deny "$(decision 'echo hi > ${HOME}/.claude/CLAUDE.md')"
 assert_eq deny "$(decision 'python3 -c "open(\"~/.claude/CLAUDE.md\",\"w\").write(1)"')"
 assert_eq pass "$(decision 'grep rules ~/.claude/CLAUDE.md')"
 
+fi
+if suite_shard_owns 2 write-gate-late; then
 echo "== write gate: every protected class"
 assert_eq deny "$(decision "echo x > $HOME/.claude/docs/review-tiers.md")"
 assert_eq deny "$(decision "echo x > $HOME/.claude/agents/codex-worker.md")"
@@ -485,4 +489,5 @@ assert_eq pass "$(GATE_CWD="$WT" decision 'echo x >> notes/plain.md')"
 assert_eq pass "$(decision "python3 -c \"open('$WT/notes/plain.md','a').write('x')\"")"
 assert_eq pass "$(decision "D=$WORK; cd \$D && echo x >> guide.md")"
 
+fi
 echo "OK ($asserts assertions)"

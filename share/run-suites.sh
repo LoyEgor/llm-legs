@@ -48,6 +48,11 @@ while the machine has room); a run waits for a free slot under RUN_SUITES_SLOTS_
 limiter hold, and frees it once only its last suite runs. Inside a worker (WORKER_RUN_ID set) --changed skips the slow layer, tests/slow-suites,
 except a suite the worker edited; the landing and the night full run run them.
 
+A suite whose first 5 lines hold `# shards: N` runs as N jobs, each with SUITE_SHARD=i/N and only
+the sections `suite_shard_owns i <name>` (tests/lib/suite-journal.sh) gives it; one verdict, one
+journal entry (max shard wall, summed CPU). RUN_SUITES_SHARDS=on|off, default only while slot_room
+finds room.
+
 A suite running past its bound is killed with its whole process tree and reads FAIL 124, TIMEOUT:
 5 x the p90 of its last 50 passes in the journal, never under RUN_SUITES_SUITE_FLOOR (default 1800 s,
 doubled for tests/slow-suites), twice that floor before it has 3 passes.
@@ -172,7 +177,7 @@ suite_watch() { # pid bound marker -> ends the suite's tree once it outlives the
   done
 }
 
-declare -A last_secs=()
+declare -A last_secs=() shards=()
 if [ -r "$times_file" ]; then
   while IFS=$'\t' read -r key name secs; do
     [ "$key" = "$times_key" ] && [[ "$secs" =~ ^[0-9]+$ ]] && last_secs[$name]=$secs
@@ -304,6 +309,7 @@ journal_run() {
     [ ! -e "$logdir/$name.execs" ] || execs=$(LC_ALL=C awk '{ n[$1]++ }
       $1 == "sleep" { for (i = 2; i <= NF; i++) { u = substr($i, length($i)); s += $i * (u == "m" ? 60 : u == "h" ? 3600 : u == "d" ? 86400 : 1) } }
       END { printf "\"execs\":{"; for (b in n) printf "%s\"%s\":%d", c++ ? "," : "", b, n[b]; printf "},\"sleep_s\":%.3f", s }' "$logdir/$name.execs")
+    [ -z "${shards[$name]:-}" ] || execs="\"shards\":${shards[$name]}${execs:+,$execs}"
     if [[ "$rc" =~ ^[0-9]+$ ]]; then suite_journal_suite "$name" "$rc" "${real:-$secs}" "$cpu" "$bound" "$execs"; else complete=false; fi
   done
   [ -z "$run_signal" ] || complete=false
@@ -347,9 +353,36 @@ else scope=full; fi
 [ "${#suites[@]}" -gt 0 ] || exit 0
 test_scope_mark "$scope" suites "$repo" "$run_suites_start"
 
-run_one() { # suite-path
-  local path="$1" name start finish rc began ended cpu bound suite watch
+shard_merge() { # name shards -> once its last shard has ended, the suite's .status and .log from theirs
+  local name=$1 n=$2 i rc secs real bound cpu out_rc=0 out_secs=0 out_real=0 out_cpu=0 ms
+  local -a passed=() failed_shards=()
+  for ((i = 1; i <= n; i++)); do [ -e "$logdir/$name.shard-$i.st" ] || return 0; done
+  mkdir "$logdir/$name.merge" 2>/dev/null || return 0
+  for ((i = 1; i <= n; i++)); do
+    IFS=$'\t' read -r rc secs real bound cpu <"$logdir/$name.shard-$i.st"
+    if [ "$rc" = 0 ]; then passed+=("$i"); else failed_shards+=("$i"); [ "$out_rc" != 0 ] || out_rc=$rc; fi
+    [ "$secs" -le "$out_secs" ] || out_secs=$secs
+    if [ "$real" = - ] || [ "$out_real" = - ]; then out_real=-
+    else ms=$(( ${real%.*} * 1000 + 10#${real#*.} )); [ "$ms" -le "$out_real" ] || out_real=$ms; fi
+    if [ -z "$cpu" ] || [ -z "$out_cpu" ]; then out_cpu=''
+    else out_cpu=$(( out_cpu + ${cpu%.*} * 1000 + 10#${cpu#*.} )); fi
+  done
+  [ "$out_real" = - ] || suite_journal_secs out_real "$out_real"
+  [ -z "$out_cpu" ] || suite_journal_secs out_cpu "$out_cpu"
+  # A failing shard's log last, so the failure tail is its own.
+  for i in ${passed[@]+"${passed[@]}"} ${failed_shards[@]+"${failed_shards[@]}"}; do
+    IFS=$'\t' read -r rc _ <"$logdir/$name.shard-$i.st"
+    printf '== run-suites: shard %s/%s, exit %s\n' "$i" "$n" "$rc"
+    cat "$logdir/$name.shard-$i.log" 2>/dev/null
+  done >"$logdir/$name.log"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$out_rc" "$out_secs" "$out_real" "$bound" "$out_cpu" >"$logdir/$name.status"
+}
+
+run_one() { # suite-path [shard i/N]
+  local path="$1" shard=${2:-} name job start finish rc began ended cpu bound suite watch
   name=$(basename "$path")
+  job=$name
+  [ -z "$shard" ] || job="$name.shard-${shard%/*}"
   if [ -e "$logdir/owner-ended" ]; then printf 'run-suites: cancelled, its worker run ended\n' >"$logdir/$name.log"; return; fi
   suite_bound bound "$name"
   printf -v start '%(%s)T' -1
@@ -358,8 +391,9 @@ run_one() { # suite-path
   # (test_consistency prices the INSTALLED hooks), and a fabricated HOME would make them pass
   # against nothing. TMPDIR is what mktemp fixtures collide on, and it is safe to move.
   (
-    export TMPDIR="$logdir/tmp-$name" SUITE_JOURNAL_PID=$$
-    export REPORT_BUS_LIVE_ROOT=$live_reports REPORT_BUS_LEAK_LOG="$logdir/$name.bus-leak"
+    export TMPDIR="$logdir/tmp-$job" SUITE_JOURNAL_PID=$$
+    export REPORT_BUS_LIVE_ROOT=$live_reports REPORT_BUS_LEAK_LOG="$logdir/$job.bus-leak"
+    [ -z "$shard" ] || export SUITE_SHARD=$shard
     # A suite judges hooks the way a chat meets them; run from inside a worker it would inherit the
     # worker's markers and be judged as one, and a fixture HOME would still read the real toggle.
     # The chat's session id would hand every suite that chat's own worker pin; bytecode a suite's
@@ -371,15 +405,15 @@ run_one() { # suite-path
     # A fixture's slot and lock waits would read as the machine's own in the Harness doctor.
     export HARNESS_WAITS_DIR="$TMPDIR/waits"
     mkdir -p "$TMPDIR"
-    if $profile && mkdir -p "$logdir/$name.shims" && : >"$logdir/$name.execs"; then
+    if $profile && mkdir -p "$logdir/$job.shims" && : >>"$logdir/$name.execs"; then
       for bin in jq python3 lua git sleep date sed grep awk mktemp bash; do
         real=$(type -P "$bin") || continue
         args=''; [ "$bin" != sleep ] || args=' $*'
         printf '%s\n' '#!/bin/sh' "printf '%s\\n' \"$bin$args\" >>\"$logdir/$name.execs\"" "exec \"$real\" \"\$@\"" \
-          >"$logdir/$name.shims/$bin"
+          >"$logdir/$job.shims/$bin"
       done
-      chmod +x "$logdir/$name.shims"/*
-      PATH="$logdir/$name.shims:$PATH"
+      chmod +x "$logdir/$job.shims"/*
+      PATH="$logdir/$job.shims:$PATH"
     fi
     cd "$repo" || exit 4
     # Absolute, not -n: a nested run must stay at 10, not sink further. $BASHPID, not $$:
@@ -393,32 +427,38 @@ run_one() { # suite-path
       # own off PATH gets macOS 3.2, where `declare -A` fails while the table still prints PASS.
       *) exec "$BASH" "$path" ;;
     esac
-  ) >"$logdir/$name.log" 2>&1 &
+  ) >"$logdir/$job.log" 2>&1 &
   suite=$!
-  suite_watch "$suite" "$bound" "$logdir/$name.timeout" &
+  suite_watch "$suite" "$bound" "$logdir/$job.timeout" &
   watch=$!
   wait "$suite"
   rc=$?
-  if [ -e "$logdir/owner-ended" ] || [ -e "$logdir/$name.timeout" ]; then wait "$watch"; else kill "$watch" 2>/dev/null; fi
+  if [ -e "$logdir/owner-ended" ] || [ -e "$logdir/$job.timeout" ]; then wait "$watch"; else kill "$watch" 2>/dev/null; fi
   if [ -e "$logdir/owner-ended" ] && [ "$rc" -ne 0 ]; then
-    printf 'run-suites: cancelled, its worker run ended\n' >>"$logdir/$name.log"
+    printf 'run-suites: cancelled, its worker run ended\n' >>"$logdir/$job.log"
+    [ -z "$shard" ] || cat "$logdir/$job.log" >>"$logdir/$name.log"
     return
   fi
-  if [ -s "$logdir/$name.bus-leak" ]; then
-    cat "$logdir/$name.bus-leak" >>"$logdir/$name.log"
+  if [ -s "$logdir/$job.bus-leak" ]; then
+    cat "$logdir/$job.bus-leak" >>"$logdir/$job.log"
     [ "$rc" -ne 0 ] || rc=1
   fi
-  if [ -e "$logdir/$name.timeout" ]; then
+  if [ -e "$logdir/$job.timeout" ]; then
     rc=124
-    printf 'run-suites: TIMEOUT after %s s, its process tree killed\n' "$bound" >>"$logdir/$name.log"
+    printf 'run-suites: TIMEOUT after %s s, its process tree killed\n' "$bound" >>"$logdir/$job.log"
   fi
   printf -v finish '%(%s)T' -1
   suite_journal_ms ended
   # run_one runs as its own subshell, so the children line of `times` is this one suite's tree.
-  suite_journal_cpu cpu "$logdir/$name.time" children
+  suite_journal_cpu cpu "$logdir/$job.time" children
   [ -z "$began" ] || suite_journal_secs began "$(( ended - began ))"
   # `-`, never empty: IFS=$'\t' is whitespace to read, so an empty field collapses and cpu lands in it.
-  printf '%s\t%s\t%s\t%s\t%s\n' "$rc" "$((finish - start))" "${began:--}" "$bound" "$cpu" >"$logdir/$name.status"
+  if [ -z "$shard" ]; then
+    printf '%s\t%s\t%s\t%s\t%s\n' "$rc" "$((finish - start))" "${began:--}" "$bound" "$cpu" >"$logdir/$name.status"
+  else
+    printf '%s\t%s\t%s\t%s\t%s\n' "$rc" "$((finish - start))" "${began:--}" "$bound" "$cpu" >"$logdir/$job.st"
+    shard_merge "$name" "${shard#*/}"
+  fi
 }
 
 declare -a wave=() tail_wave=()
@@ -433,7 +473,28 @@ if [ "${#wave[@]}" -gt 1 ]; then
   done | sort -t $'\t' -k1,1nr -k2,2n | cut -f3-)
 fi
 
-printf 'run-suites: %s suites, -j %s, logs under %s\n' "${#suites[@]}" "$jobs" "$logdir"
+# Shards are jobs of this run's -j, so a slot still caps the fan-out; with no cores free they would
+# add their duplicated setup and save no wall, so auto shards only while slot_room finds room.
+shard_room=${RUN_SUITES_SHARDS:-auto}
+case $shard_room in
+  on) ;;
+  off) shard_room='' ;;
+  *) slot_room >/dev/null || shard_room='' ;;
+esac
+if [ -n "$shard_room" ]; then
+  for entry in "${suites[@]}"; do
+    case $entry in *.sh) suite_shard_count "$entry" >/dev/null; [ "$suite_shard_n" -lt 2 ] || shards[${entry##*/}]=$suite_shard_n ;; esac
+  done
+fi
+declare -a wave_jobs=()
+for entry in ${wave[@]+"${wave[@]}"}; do
+  n=${shards[${entry##*/}]:-1}
+  if [ "$n" -lt 2 ]; then wave_jobs+=("$entry"); else for ((i = 1; i <= n; i++)); do wave_jobs+=("$entry"$'\t'"$i/$n"); done; fi
+done
+
+tail_jobs=0
+for entry in ${tail_wave[@]+"${tail_wave[@]}"}; do tail_jobs=$((tail_jobs + ${shards[${entry##*/}]:-1})); done
+printf 'run-suites: %s suites, %s jobs, -j %s, logs under %s\n' "${#suites[@]}" "$(( ${#wave_jobs[@]} + tail_jobs ))" "$jobs" "$logdir"
 if [ "${#tail_wave[@]}" -gt 0 ] && unattended; then
   printf 'run-suites: %s wall-clock suite(s) stay at nice %s; the wave is nice 10 while someone is at the keyboard\n' \
     "${#tail_wave[@]}" "$(ps -o nice= -p $$ | tr -d '[:space:]')"
@@ -445,14 +506,16 @@ if [ -n "$owner_record" ]; then
 fi
 wall_start=$(date +%s)
 running=0
-for entry in ${wave[@]+"${wave[@]}"}; do
+for entry in ${wave_jobs[@]+"${wave_jobs[@]}"}; do
   while [ "$running" -ge "$jobs" ]; do wait -n 2>/dev/null || :; running=$((running - 1)); done
-  run_one "$entry" &
+  shard=''
+  [[ $entry != *$'\t'* ]] || shard=${entry#*$'\t'}
+  run_one "${entry%%$'\t'*}" "$shard" &
   running=$((running + 1))
 done
 # A slot caps one fan-out: down to its last suite, the run frees it for a queued one. A single-suite
 # run keeps it, or such runs would go uncapped; so does a serial tail, the suites that want quiet.
-if [ -n "$own_slot" ] && [ "${#wave[@]}" -gt 1 ] && [ "${#tail_wave[@]}" -eq 0 ]; then
+if [ -n "$own_slot" ] && [ "${#wave_jobs[@]}" -gt 1 ] && [ "${#tail_wave[@]}" -eq 0 ]; then
   while [ "$running" -gt 1 ]; do wait -n 2>/dev/null || :; running=$((running - 1)); done
   slot_release "$own_slot"
   own_slot=''
@@ -460,7 +523,15 @@ fi
 wait
 # In the background so a trapped signal ends this wait at once, as it did a foreground suite at HEAD;
 # run_one gives the tail suite back the Ctrl-C a background job ignores.
-for entry in ${tail_wave[@]+"${tail_wave[@]}"}; do run_one "$entry" & wait "$!"; done
+for entry in ${tail_wave[@]+"${tail_wave[@]}"}; do
+  n=${shards[${entry##*/}]:-1}
+  if [ "$n" -lt 2 ]; then run_one "$entry" & wait "$!"
+  else
+    declare -a tail_shards=()
+    for ((i = 1; i <= n; i++)); do run_one "$entry" "$i/$n" & tail_shards+=("$!"); done
+    wait "${tail_shards[@]}"
+  fi
+done
 wall=$(( $(date +%s) - wall_start ))
 
 declare -a failed=()

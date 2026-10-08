@@ -117,8 +117,44 @@ suite_journal_append() { # journal -> appends suite_journal_line
   return 0
 }
 
+suite_shard_count() { # suite-file -> its `# shards: N` header line's N, else 1
+  local line n=0
+  suite_shard_n=1
+  while [ "$n" -lt 5 ] && IFS= read -r line; do
+    n=$((n + 1))
+    case $line in '# shards: '[1-9]*) [[ ${line#'# shards: '} =~ ^[1-9][0-9]*$ ]] && suite_shard_n=${line#'# shards: '} ;; esac
+  done 2>/dev/null <"$1"
+  printf '%s\n' "$suite_shard_n"
+}
+
+# Code outside every section runs in every shard.
+suite_shard_owns() { # shard section -> whether this run executes the section
+  if ! [[ ${1:-} =~ ^[1-9][0-9]*$ ]] || [ "$1" -gt "$suite_shard_n" ] || [ -z "${2:-}" ] ||
+      [[ " $suite_shard_seen " == *" $2 "* ]]; then
+    printf 'suite_shard_owns: section %s of shard %s: a shard of 1..%s (the `# shards:` header of %s) and a name no other section has\n' \
+      "${2:-?}" "${1:-?}" "$suite_shard_n" "$suite_shard_top" >&2
+    exit 2
+  fi
+  suite_shard_seen="$suite_shard_seen $2"
+  [ -n "$suite_shard" ] || return 0
+  if ! [[ $suite_shard =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] || [ "${BASH_REMATCH[2]}" != "$suite_shard_n" ] ||
+      [ "${BASH_REMATCH[1]}" -gt "$suite_shard_n" ]; then
+    printf 'suite_shard_owns: SUITE_SHARD=%s is none of the %s shards %s declares\n' "$suite_shard" "$suite_shard_n" "$suite_shard_top" >&2
+    exit 2
+  fi
+  [ "${suite_shard%/*}" = "$1" ]
+}
+# Read before the suite can cd away from a relative path. A suite this suite runs is whole: the
+# shard is the top suite's alone.
+if [ -z "${suite_shard_top:-}" ]; then
+  suite_shard_top=${BASH_SOURCE[${#BASH_SOURCE[@]}-1]} suite_shard_seen='' suite_shard=${SUITE_SHARD:-}
+  suite_shard_count "$suite_shard_top" >/dev/null
+  unset SUITE_SHARD
+fi
+
 [ "${1:-}" != --lib ] || return 0
 [ -z "${SUITE_JOURNAL_PID:-}" ] || return 0
+[ -z "$suite_shard" ] || return 0
 export SUITE_JOURNAL_PID=$$
 suite_journal_file=${SUITE_JOURNAL:-${RUN_SUITES_JOURNAL:-${XDG_CACHE_HOME:-$HOME/.cache}/run-suites/runs.jsonl}}
 suite_journal_ms suite_journal_began

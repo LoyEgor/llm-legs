@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 3
 set -u
 unset WORKER_PICK_CONFIG_FILE WORKER_RUN_CONFIG_FILE CLAUDEB_WORKER
 
@@ -25,6 +26,7 @@ assert_eq() {
   [ "$1" = "$2" ] || fail "assert $asserts failed: expected '$1', got '$2'"
 }
 
+if suite_shard_owns 1 cg-identity; then
 cg_identity() (
   eval "$(sed -n '/^fit_cb_part() {/,/^}/p' "$STATUSLINE")"
   acct=work4; cb_show=1; fit_acct_max=0; MAGENTA=''; RESET=''
@@ -35,6 +37,7 @@ cg_identity() (
 assert_eq ' main' "$(cg_identity main)"
 assert_eq ' work4' "$(cg_identity work4)"
 assert_eq ' work4' "$(cg_identity '')"
+fi
 
 HOME="$WORK/home"
 FIXTURES="$WORK/fixtures"
@@ -147,6 +150,7 @@ last_tree() { tail -n 1 "$STATE_DIR/place-$1" 2>/dev/null | cut -f3; }
 last_kind() { tail -n 1 "$STATE_DIR/place-$1" 2>/dev/null | cut -f2; }
 place_count() { if [ -f "$STATE_DIR/place-$1" ]; then wc -l < "$STATE_DIR/place-$1" | tr -d ' '; else echo 0; fi; }
 
+if suite_shard_owns 1 workdir-hook; then
 # Every write the hook makes goes to the session cache under $HOME, which these
 # cases redirect; a hardcoded absolute redirect (a debug probe left in) escapes
 # the sandbox entirely and no behavioural case below can see it.
@@ -1257,7 +1261,9 @@ for trim_i in $(seq 1 400); do place_set "$S" "$TOP_A"; done
 "$PLACE" add --session "$S" --kind edit --path "$REPO_D/other.txt"
 assert_eq 200 "$(place_count "$S")"
 assert_eq "$TOP_D" "$(last_tree "$S")"
+fi
 assert_fails() { asserts=$((asserts + 1)); ! "$@" >/dev/null 2>&1 || fail "assert $asserts should have failed: $*"; }
+if suite_shard_owns 1 place-journal; then
 assert_fails "$PLACE" add --session "$S" --kind wander --path "$REPO_D"
 assert_fails "$PLACE" why
 assert_eq 200 "$(place_count "$S")"
@@ -1287,6 +1293,7 @@ run_workdir_hook "$(workdir_payload Edit session-prune-new "$REPO_A" "$REPO_A/tr
 assert test ! -e "$STATE_DIR/place-session-prune-old"
 assert_eq 2 "$(place_count session-prune-new)"
 
+fi
 statusline_payload() {
   local extra="${2-}"
   local cwd="${3:-$REPO_A}"
@@ -1319,6 +1326,7 @@ run_statusline() {
 }
 
 
+if suite_shard_owns 1 render-limits; then
 cg_now=$(date +%s)
 jq -cn --argjson now "$cg_now" '{vendors:{codex:{accounts:[
   {account:"work4",five_hour:{used_pct:36,effective_pct:36,as_of:$now,resets_at:($now+3600)},
@@ -1499,6 +1507,8 @@ assert grep -Fq "»${RESET} ${BLUE}$(basename "$TOP_D")${RESET}" <<< "$gone_outp
 assert grep -Fq "shown: $TOP_D" <<< "$("$PLACE" why --session status-gone-main)"
 assert grep -Fq "shown: the project dir (no journal at" <<< "$("$PLACE" why --session status-none)"
 
+fi
+if suite_shard_owns 2 render-branch; then
 # Outside a worktree the branch always shows, detached HEAD as `@sha`.
 detached_output=$(run_statusline "$(statusline_payload status-detached '' "$REPO_K")") || fail "statusline detached failed"
 assert grep -Fq "@$SHORT_SHA" <<< "$detached_output"
@@ -1517,7 +1527,9 @@ assert test "${fast_output#*Fast Mode}" = "$fast_output"
 
 # Pin segment: this session's chat file only. No file → nothing; * → vendor word; else account.
 # Global worker-model pin is never shown. claudeb_profile=* renders `claude`, not `claudeb`.
+fi
 worker_file="$HOME/.claude/worker-model"
+if suite_shard_owns 2 render-pins; then
 rm -f "$worker_file"
 rm -f "$CHAT_PINS_DIR"/*
 
@@ -3881,7 +3893,9 @@ assert grep -Eq $'^[0-9]{16}\t[0-9]+\t([0-9]+|-)\twork$' "$probe_rows"
 
 # The hourly sweep: a temporary an hour old was left by a killed writer, here and in the account
 # store; per-session caches go after a week, the place journals never.
+fi
 age_path() { touch -t "$(date -r "$(($(date +%s) - $1))" +%Y%m%d%H%M.%S)" "$2"; }
+if suite_shard_owns 2 sweep; then
 prune_limits="$HOME/.claude-profiles/.claudeb/limits"
 mkdir -p "$prune_limits" "$STATE_DIR/old-probe.lock"
 for prune_file in x.tmp.1 y.tmp.2 work-old work-new scan-old rl-cost-old unpushed-old review-autonomy-old \
@@ -4208,6 +4222,7 @@ place_set r-tree-foreign "$TOP_D"
 rtforeign_out=$(run_statusline "$(statusline_payload r-tree-foreign '' "$TOP_A")")
 assert test "${rtforeign_out#*⇢}" = "$rtforeign_out"
 
+fi
 # One seed per spawn: the newest `pending-<type>-<key>` file the spawn hook left in that session.
 seed_of() { # session agent-type
   local seed
@@ -4221,7 +4236,16 @@ worker_payload() {
      tool_input:{command:$command,description:$description,timeout:42}}'
 }
 TAGDIR="$HOME/.cache/claude-worker-tags/wt"
+# The main-account limits render-pins leaves behind, so the worker-tag renders read them in any shard.
+if [ ! -e "$HOME/.claude/statusline-cache-rl" ]; then
+  mkdir -p "$HOME/.claude"
+  jq -cn --argjson now "$(date +%s)" '
+    {five_hour:{used_percentage:70,resets_at:($now+3600),as_of:$now,origin:"session"},
+     seven_day:{used_percentage:7,resets_at:($now+86400),as_of:$now,origin:"session"},auth:{status:"ok",checked_at:$now}}' \
+    >"$HOME/.claude/statusline-cache-rl"
+fi
 
+if suite_shard_owns 3 worker-tags; then
 # A codex launch command derives the tag (main, high), stores it, and prefixes.
 seed=$(worker_payload codex-worker worker/one 'Investigate the suite' "codex exec -c model_reasoning_effort=high 'go'")
 seed_output=$(printf '%s' "$seed" | "$WORKER_HOOK") || fail "worker seed exited nonzero"
@@ -5294,6 +5318,7 @@ assert_eq 1 "$(place_count example-3)"
 assert example_home "$(example_render example-3 "$REVIEW_CLEAN")"
 
 
+fi
 # --- worker-launch-gate.sh: grok ------------------------------------------------------------------
 # A vendor launched as a bare headless CLI from a chat's Bash is a worker nobody can see. grok
 # spells that four ways, and the profile wrapper is denied beside the bare binary exactly as the
@@ -5309,6 +5334,7 @@ gate_agent_payload() {
     '{hook_event_name:"PreToolUse",tool_name:"Bash",agent_type:$agent,tool_input:{command:$command}}'
 }
 gate_decision() { jq -r '.hookSpecificOutput.permissionDecision // "pass"' 2>/dev/null; }
+if suite_shard_owns 1 launch-gate-grok; then
 for gate_denied in \
   'grok -p "do the thing"' \
   'grok --print "do the thing"' \
@@ -5352,6 +5378,8 @@ for gate_allowed in \
 done
 
 
+fi
+if suite_shard_owns 1 launch-gate-relay; then
 # --- worker-launch-gate.sh: a run belongs to a relay agent ------------------------------------
 # `worker-run` is a sanctioned launcher, but only in the hands of the agent whose row shows who is
 # spending quota. Started or awaited from the chat's own Bash the run is owned by a turn: no
@@ -5430,11 +5458,13 @@ done
 # Inside a relay agent the door is exactly what it was before this rule existed — with one clause
 # of its own: a `wait` polls for `--max` seconds and the Bash call dies at its own timeout, so the
 # harness's 120s default would kill the wait a fifth of the way in and leave the run unwatched.
+fi
 gate_timeout_payload() { # agent command timeout-ms|null
   jq -cn --arg agent "$1" --arg command "$2" --argjson timeout "$3" \
     '{hook_event_name:"PreToolUse",tool_name:"Bash",agent_type:$agent,
       tool_input:({command:$command} + (if $timeout == null then {} else {timeout:$timeout} end))}'
 }
+if suite_shard_owns 1 launch-gate-wait; then
 for gate_agent in claudeb-worker codex-worker gemini-worker grok-worker; do
   for owned_relayed in \
     'worker-run start claudeb --brief /tmp/brief --workdir /tmp' \
@@ -5670,6 +5700,8 @@ gate_out=$(relay_payload codex-worker relaysol 'worker-run wait codex-1-2-3 --ma
 assert_eq "" "$gate_out"
 
 
+fi
+if suite_shard_owns 3 task-rows; then
 # --- Task rows: spawn gate, per-spawn seeds, run/review/light state, the renderer's fit -----------
 TR_HOME_CACHE="$HOME/.cache/claude-worker-tags"
 tr_spawn() { # session type prompt [tool_use_id] [model]
@@ -6232,4 +6264,5 @@ assert_eq 'T2 · double · task — hunt over the task rows · 1m 5s · ↓ 500 
 # A payload whose tasks carry no status field is a running list (the harness omits the field on older builds).
 no_status=$(printf '{"session_id":"x","columns":80,"tasks":[{"id":"ns1","type":"local_agent","description":"acc · astra · high: No status","startTime":1789600000000}]}' | bash "$RENDER_BIN")
 assert grep -q 'acc · astra · high' <<<"$no_status"
+fi
 echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, an ATOMIC middle block computed from ONE shown tree — the tree of the last line of this chat's place journal — no per-chat review debt number whatever the gate would answer, the gate's autonomy dot asked once per TTL with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini/grok worker tag propagation with the bare-launch gate that denies the spellings they replace, media-run work lines tagged account·kind·route from the job pointer with gen/edit states and fan-out cells, task rows painted for every agent with run/review/light state fitted to the columns, native agent spawns refused but fork, Monitor and chat-Bash waits refused, an explicit-vendor pin hidden only by that vendor's ABSENCE from a loaded pick line and never by a field that is merely unusable, and a run's start/wait reserved to the relay agent that owns it through every wrapper, keyword and sh -c string that spells one, while a read-only report and a heredoc body quoting the spelling are not gated"

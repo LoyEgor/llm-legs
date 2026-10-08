@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 2
 . "$(dirname "$0")/llm_limits_harness.sh"
 
 home_fixture_after_first_suite
@@ -35,6 +36,7 @@ grok_env=(HOME="$GROK_HOME" GROKB_PROFILES_DIR="$GROK_PROFILES" LLM_LIMITS_GROKB
   LLM_LIMITS_CACHE="$GROK_STORE" GROK_QUOTA_SENTINEL="$GROK_SENTINEL"
   FAKE_GROK_ROSTER="supergrok second")
 
+if suite_shard_owns 1 grok-collect; then
 grok_json=$(env "${grok_env[@]}" FAKE_GROK_CASE=busy FAKE_GROK_AS_OF="$now" \
   LLM_LIMITS_GROK_QUOTA_TIMEOUT=7 bash "$SCRIPT" --refresh --json 2>/dev/null) \
   || fail "grok refresh collection failed"
@@ -337,6 +339,8 @@ jq -e '.vendors.grok.accounts[0] | .reset_credits == 2 and .reset_credits_stale 
   .weekly.stale == false' <<<"$grok_credits_stale" >/dev/null \
   || fail "an old grok reset-credit reading was not marked stale: $grok_credits_stale"
 
+fi
+if suite_shard_owns 2 grok-rows; then
 # The real helper against a dead endpoint: the access token in auth.json may reach neither the
 # store nor a log, however the read fails.
 GROK_SECRET_HOME="$WORK/grok-secret-home"
@@ -831,4 +835,5 @@ HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_CREDITS" LLM_LIMITS_CACHE="$CLAUDEB_C
   || fail "Claude reset credits missing from CR"
 HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_CREDITS" LLM_LIMITS_CACHE="$CLAUDEB_CREDITS_CACHE" bash "$SCRIPT" --plain \
   | grep -q '^claude/alona\*: .* | cr ↻1 | ' || fail "Claude reset credits missing from plain"
+fi
 echo "PASS: Grok weekly quota, shield, paused vendors, structured refresh_errors, flaky Gemini login verdicts, Claude reset credits"
