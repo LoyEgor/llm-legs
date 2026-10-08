@@ -32,7 +32,7 @@ sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 import collector_runs
 from fix_commit import NOT_LANDED, SETTLED_FILE, fix_commit, fix_held_from, fix_landed, main_checkout, merge_settled, read_settled, record_settled, siblings_dir
 from limiter_hold import hold_dir, wait_dir
-from machine_probe import host_ticks, spawn_pid, sysctl
+from machine_probe import command as probe_command, host_ticks, spawn_pid, sysctl
 import spend
 from spend import read_json
 import suite_audit
@@ -4262,6 +4262,18 @@ def installed_deploys(source):
                         for target, kind, src in targets]
 
 
+def reload_agent(plist):
+    domain = "gui/%d" % os.getuid()
+    subprocess.run([probe_command("launchctl"), "bootout", domain, plist], capture_output=True, timeout=30)
+    for wait in (0, 0.5, 1, 2):
+        time.sleep(wait)
+        loaded = subprocess.run([probe_command("launchctl"), "bootstrap", domain, plist], capture_output=True,
+                                text=True, timeout=30)
+        if loaded.returncode == 0:
+            return None
+    return "launchctl bootstrap %s: %s" % (file_key(plist), loaded.stderr.strip() or "exit %d" % loaded.returncode)
+
+
 def redeploy():
     """Reruns the fix of every installed group with a drifted copy from the main checkout the Deploys section
     judges. A group with an uncommitted source is left alone: a chat may be mid-edit, and launchd would run it."""
@@ -4290,6 +4302,9 @@ def redeploy():
                     shutil.copyfile(os.path.join(source, src), target)
                     shutil.copymode(os.path.join(source, src), target)
                 error = None
+                for target, _, _, _ in copies:
+                    if target.endswith(".plist"):
+                        error = error or reload_agent(target)
         except (OSError, subprocess.SubprocessError) as exc:
             error = str(exc)
         failed += bool(error)
@@ -5341,13 +5356,17 @@ def ledger_row_by_id(ledger, ident):
 
 def ledger_state(row, window_h=None, now=None):
     """A Speed row's state off its ledger row and its window: Speed proves a fix by its measurement, never by events,
-    so a fixed row regresses only once its whole window ran after the fix held, as problems_from judges a row with
-    no evidence."""
-    status = (row or {}).get("status")
-    if status == "fixed":
-        held = last_fix_at(row) if window_h and now is not None else None
-        return "fixed-pending" if held and now - window_h * 3600 < held else "regressed"
-    return "new" if not row else status if status in ("open", "fixed-pending") else "watch"
+    so a fixed or fixed-pending row regresses only once its whole window ran after the fix held, as problems_from
+    judges a row with no evidence."""
+    if not row:
+        return "new"
+    status = row.get("status")
+    if status not in ("open", "fixed", "fixed-pending"):
+        return "watch"
+    held = last_fix_at(row)
+    if status == "open" or not held:
+        return "open"
+    return "fixed-pending" if window_h and now is not None and now - window_h * 3600 < held else "regressed"
 
 
 def speed_restate(problem, ledger, now=None):

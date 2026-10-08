@@ -832,6 +832,17 @@ local function egorLayer(rows, menu, details)
   return rows
 end
 
+local function harnessSection(entryMenu, prefix, issues, unit, format)
+  local details, rows = {}, {}
+  for _, item in ipairs(entryMenu or {}) do
+    if item.title ~= "-" and plainText(item.title):match("^" .. prefix .. ":") then details = item.menu or {} break end
+  end
+  for _, issue in ipairs(type(issues) == "table" and issues or {}) do
+    if tonumber(issue[1]) then rows[#rows + 1] = issueRow(tonumber(issue[1]), unit, tostring(issue[2]), format) end
+  end
+  return details, rows
+end
+
 local function compute()
   local now = os.time()
   local entries, histories, speed, spend, machine = {}, {}, nil, nil, nil
@@ -873,13 +884,7 @@ local function compute()
     if doctor.key == "harness" then
       local metrics = document and type(document.speed) == "table" and document.speed or {}
       local byDay = type(metrics.lost_min_day_by_day) == "table" and metrics.lost_min_day_by_day or {}
-      local speedMenu, speedRows = {}, {}
-      for _, item in ipairs(entry.menu or {}) do
-        if item.title ~= "-" and plainText(item.title):match("^Lost time:") then speedMenu = item.menu or {} break end
-      end
-      for _, issue in ipairs(type(metrics.issues) == "table" and metrics.issues or {}) do
-        if tonumber(issue[1]) then speedRows[#speedRows + 1] = issueRow(tonumber(issue[1]), "min/day", tostring(issue[2])) end
-      end
+      local speedMenu, speedRows = harnessSection(entry.menu, "Lost time", metrics.issues, "min/day")
       for _, item in ipairs(speedMenu) do
         local text = item.title ~= "-" and plainText(item.title) or ""
         if text:match("^Needs Egor") and text ~= "Needs Egor: nothing" then speedRows[#speedRows + 1] = item end
@@ -888,13 +893,7 @@ local function compute()
       speed = { title = summaryTitle("Lost time", lost, "min/day", lost and metrics.status or "nodata", byDay, now,
         stale or not byDay[os.date("%Y-%m-%d", now)]), menu = egorLayer(speedRows, menu, speedMenu), problems = 0 }
       local cost = document and type(document.spend) == "table" and document.spend or {}
-      local spendMenu, spendRows = {}, {}
-      for _, item in ipairs(entry.menu or {}) do
-        if item.title ~= "-" and plainText(item.title):match("^Spend:") then spendMenu = item.menu or {} break end
-      end
-      for _, issue in ipairs(type(cost.issues) == "table" and cost.issues or {}) do
-        if tonumber(issue[1]) then spendRows[#spendRows + 1] = issueRow(tonumber(issue[1]), "%", tostring(issue[2]), "%.1f") end
-      end
+      local spendMenu, spendRows = harnessSection(entry.menu, "Spend", cost.issues, "%", "%.1f")
       local index = cost.status ~= "nodata" and tonumber(cost.index) or nil
       spend = { title = summaryTitle("Spend", index, "index", index and cost.status or "nodata",
         type(cost.index_by_day) == "table" and cost.index_by_day or {}, now, stale, ratio, VALUE_TONES[cost.tone]),

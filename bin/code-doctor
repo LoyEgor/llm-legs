@@ -2570,24 +2570,30 @@ def judge_brief(batch, indexes):
     return "\n".join(lines) + "\n"
 
 
-def parse_results(text, ids):
-    found = {}
+def json_objects(text):
     decoder = json.JSONDecoder()
     position = 0
     while True:
         start = text.find("{", position)
         if start < 0:
-            break
+            return
         try:
             value, consumed = decoder.raw_decode(text[start:])
         except ValueError:
             position = start + 1
             continue
-        if isinstance(value, dict) and value.get("verdict") in ("problem", "not-now", "kept") and value.get("id") in ids:
+        if isinstance(value, dict):
+            yield value
+        position = start + max(consumed, 1)
+
+
+def parse_results(text, ids):
+    found = {}
+    for value in json_objects(text):
+        if value.get("verdict") in ("problem", "not-now", "kept") and value.get("id") in ids:
             if value["verdict"] != "kept" or value.get("kept_by") and (value["id"].startswith("cause:overclaim:")
                                                                      or "#promise:" in value["id"]):
                 found[value["id"]] = value
-        position = start + max(consumed, 1)
     return found
 
 
@@ -2665,13 +2671,18 @@ def critical_brief(top, rows):
 
 
 def unjudged_debt(top):
-    proc = subprocess.run([review_debt_cmd(), "--repo", top, "--list", "--split"], capture_output=True, text=True)
+    try:
+        proc = subprocess.run([review_debt_cmd(), "--repo", top, "--list", "--split"], capture_output=True, text=True)
+    except OSError as exc:
+        return [], "review-debt --list: %s" % exc
+    if proc.returncode != 0:
+        return [], "review-debt --list rc %d: %s" % (proc.returncode, (proc.stderr or proc.stdout).strip()[-LAUNCH_ERROR_MAX:])
     rows = []
     for line in proc.stdout.splitlines():
         cells = line.split("\t")
         if len(cells) == 6 and cells[3] == "unjudged":
             rows.append({"path": cells[0], "blob": cells[4], "fan_in": cells[5]})
-    return rows
+    return rows, None
 
 
 def run_critical(night, max_tokens, max_wall, vendor, batch_size=JUDGE_BATCH):
@@ -2681,7 +2692,10 @@ def run_critical(night, max_tokens, max_wall, vendor, batch_size=JUDGE_BATCH):
     folder = os.path.join(state_dir(), "critical", night or "day")
     os.makedirs(folder, exist_ok=True)
     for top in repo_paths():
-        pending = unjudged_debt(top)
+        pending, error = unjudged_debt(top)
+        if error:
+            stop = "list-failed"
+            break
         waiting += len(pending)
         while pending and stop == "done":
             batch, pending = pending[: max(1, batch_size)], pending[max(1, batch_size):]
@@ -2705,22 +2719,23 @@ def run_critical(night, max_tokens, max_wall, vendor, batch_size=JUDGE_BATCH):
             tokens = report_tokens(report, brief, result)
             spent += tokens
             history.append(tokens)
-            found = {}
-            decoder = json.JSONDecoder()
-            for start in (m.start() for m in re.finditer(r"\{", result)):
-                try:
-                    value, _ = decoder.raw_decode(result[start:])
-                except ValueError:
-                    continue
-                if isinstance(value, dict) and isinstance(value.get("critical"), bool):
-                    found[value.get("id")] = value
+            found = {value.get("id"): value for value in json_objects(result) if isinstance(value.get("critical"), bool)}
             verdicts = [{"path": row["path"], "blob": row["blob"], "critical": found[row["path"]]["critical"],
                          "reason": found[row["path"]].get("reason") or ""} for row in batch if row["path"] in found]
-            subprocess.run([review_debt_cmd(), "--repo", top, "--record-critical"], capture_output=True, text=True,
-                           input="".join(json.dumps(verdict) + "\n" for verdict in verdicts))
-            judged += len(verdicts)
+            try:
+                recorded = subprocess.run([review_debt_cmd(), "--repo", top, "--record-critical"], capture_output=True,
+                                          text=True, input="".join(json.dumps(verdict) + "\n" for verdict in verdicts))
+                if recorded.returncode != 0:
+                    error = "review-debt --record-critical rc %d: %s" % (
+                        recorded.returncode, (recorded.stderr or recorded.stdout).strip()[-LAUNCH_ERROR_MAX:])
+            except OSError as exc:
+                error = "review-debt --record-critical: %s" % exc
             account(night, "critical:%s" % os.path.basename(top), "critical", tokens=tokens,
-                    wall_s=time.time() - call_start, note=run_id, run=run_id)
+                    wall_s=time.time() - call_start, note=error or run_id, run=run_id)
+            if error:
+                stop = "record-failed"
+                break
+            judged += len(verdicts)
             if re.search(r"^STATUS: running", report, re.M):
                 stop = "wall"
     record = {"night": night, "at": iso_time(now_s()), "stop": stop, "judged": judged, "pending": waiting - judged,
@@ -2826,8 +2841,11 @@ def account(night, cause, stage, tokens=0, wall_s=0.0, cpu_s=0.0, note=None, **e
 def accounting_summary(ledger):
     rows = read_jsonl(os.path.join(state_dir(), "accounting.jsonl"))
     per_cause, totals = {}, {"tokens": 0, "wall_s": 0.0, "cpu_s": 0.0}
+    critical_tokens = 0
     for row in rows:
         totals["tokens"] += row.get("tokens") or 0
+        if row.get("stage") == "critical":
+            critical_tokens += row.get("tokens") or 0
         totals["wall_s"] += row.get("wall_s") or 0
         totals["cpu_s"] += row.get("cpu_s") or 0
         if row.get("cause"):
@@ -2845,11 +2863,11 @@ def accounting_summary(ledger):
             for key in ("lines_removed", "suite_s_saved", "tokens_cut"):
                 gained[key] += int(((fix or {}).get("yield") or {}).get(key) or 0)
     totals = {k: round(v, 1) if isinstance(v, float) else v for k, v in totals.items()}
-    return {"totals": totals, "per_cause": per_cause, "yield": gained}
+    return {"totals": totals, "per_cause": per_cause, "yield": gained, "critical_tokens": critical_tokens}
 
 
 def queue_k(summary):
-    spent = summary["totals"]["tokens"]
+    spent = summary["totals"]["tokens"] - summary.get("critical_tokens", 0)
     if spent < 100000:
         return TOP_K
     gained = summary["yield"]["lines_removed"] + summary["yield"]["suite_s_saved"] / 6.0 + summary["yield"]["tokens_cut"] / 1000.0
@@ -3586,7 +3604,9 @@ def main(argv=None):
     if args.command == "critical":
         record = run_critical(args.night, args.max_tokens, args.max_wall, args.vendor, args.batch)
         print("critical: %(judged)d judged · %(pending)d waiting · %(tokens)d tokens · %(wall_s)ss · stop %(stop)s" % record)
-        return 0 if record["stop"] != "launch-failed" else 1
+        if record["error"]:
+            print("critical: " + record["error"], file=sys.stderr)
+        return 0 if record["stop"] not in ("launch-failed", "list-failed", "record-failed") else 1
     if args.command == "check":
         record = read_json(args.record, {}) or {}
         errors = check_run(record, args.base, args.landing, args.suites_passed)

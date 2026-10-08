@@ -29,6 +29,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import caps_checks  # noqa: E402
+from spend import read_json  # noqa: E402
 
 API = os.environ.get("ELEVENLABS_API_BASE", "https://api.elevenlabs.io")
 ROOT = Path(__file__).resolve().parent.parent
@@ -344,10 +345,7 @@ def models_check(account: str) -> str:
     """`served_models` is how a caller learns a release exists (eleven_v4 sat unnoticed beside an eleven_v3 default
     for weeks), so the account's own model list is compared with it at most once a day; never fails the run."""
     cache = KEYS.parent / "models-check.json"
-    try:
-        seen = json.loads(cache.read_text())
-    except (OSError, ValueError):
-        seen = {}
+    seen = read_json(cache, {})
     try:
         if time.time() - seen.get("at", 0) > MODELS_CHECK_S:
             keys, seen = accounts(), {}

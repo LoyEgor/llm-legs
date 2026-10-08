@@ -628,6 +628,22 @@ full_commits() { # job -> its commits and integration ones as [{repo: basename, 
   printf '%s\n' "$out"
 }
 
+copies_of() { # own full -> full's entries with the author, author time and subject of an own commit of their repository
+  local repo dir hash mine theirs out='[]' fmt='%H%x1f%ae%x1f%at%x1f%s'
+  while IFS= read -r repo; do
+    dir=$(repo_dir "$repo") || continue
+    mine=$(jq -r --arg r "$repo" '.[] | select(.repo == $r) | .hash' <<<"$1")
+    theirs=$(jq -r --arg r "$repo" '.[] | select(.repo == $r) | .hash' <<<"$2")
+    [ -n "$mine" ] && [ -n "$theirs" ] || continue
+    while IFS= read -r hash; do
+      out=$(jq -c --arg r "$repo" --arg h "$hash" '. + [{repo: $r, hash: $h}]' <<<"$out")
+    done < <(awk -F '\037' 'FILENAME == ARGV[1] { mine[$2 FS $3 FS $4]; next } ($2 FS $3 FS $4) in mine { print $1 }' \
+      <(git -C "$dir" log --no-walk --ignore-missing --format="$fmt" $mine) \
+      <(git -C "$dir" log --no-walk --ignore-missing --format="$fmt" $theirs))
+  done < <(jq -r '[.[].repo] | unique[]' <<<"$1")
+  printf '%s\n' "$out"
+}
+
 job_set() { # id ref key=value...
   local id=$1 ref=${2:-} pair key value patch='{}' item repo hash dir commits_set=false pushed='' suites='' branch
   [ -n "$ref" ] && [ $# -ge 3 ] || usage
@@ -656,7 +672,7 @@ job_set() { # id ref key=value...
       *) die "no job key $key: state, reason, branch, review, commits, pushed, suites, answer or done" ;;
     esac
   done
-  local file job checked='' refusal='' round code_run events='[]' at began own
+  local file job checked='' refusal='' round code_run events='[]' at began own full
   file=$(night_file "$id")
   if jq -e 'has("answer")' <<<"$patch" >/dev/null; then
     jq -e '.answer.words != null' <<<"$patch" >/dev/null || die "done= comes with answer=<Egor's words>"
@@ -670,8 +686,9 @@ job_set() { # id ref key=value...
     branch=$(jq -r 'select(.state == "merged") | .branch // empty' <<<"$job")
     if [ -n "$branch" ] && own=$(own_commits "$id" "$branch") && [ "$own" != null ]; then
       commits_set=true
-      patch=$(jq -c --argjson o "$own" --argjson g "$(full_commits "$job")" \
-        '.commits = $o | .integration = ($g - $o | unique_by([.repo, .hash]))' <<<"$patch")
+      full=$(full_commits "$job")
+      patch=$(jq -c --argjson o "$own" --argjson g "$full" --argjson c "$(copies_of "$own" "$full")" \
+        '.commits = $o | .integration = ($g - $o - $c | unique_by([.repo, .hash]))' <<<"$patch")
     fi
   fi
   if [ "$pushed" = true ]; then
@@ -711,6 +728,11 @@ job_set() { # id ref key=value...
     [ "$(jq -c --arg r "$ref" 'first(.jobs[] | select(.ref == $r)) | .commits' "$file")" != "$(jq -c '.commits' <<<"$job")" ]; then
     patch=$(jq -c '.pushed = false' <<<"$patch")
     job=$(jq -c '.pushed = false' <<<"$job")
+  fi
+  if jq -e '.state == "blocked-on-egor" and (has("answer") | not)' <<<"$patch" >/dev/null &&
+    [ "$(jq -r --arg r "$ref" 'first(.jobs[] | select(.ref == $r)) | .state' "$file")" != blocked-on-egor ]; then
+    patch=$(jq -c '.answer = null' <<<"$patch")
+    job=$(jq -c '.answer = null' <<<"$job")
   fi
   case $(jq -r '.state' <<<"$job") in
     left) [ "$(jq -r '.reason // ""' <<<"$job")" != "" ] || die "state left needs reason=<why it stayed>" ;;

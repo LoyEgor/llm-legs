@@ -25,6 +25,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import caps_checks  # noqa: E402
 import gemini_web as gw  # noqa: E402
+from spend import read_json  # noqa: E402
 
 gw.ROUTE = "aistudio"
 
@@ -62,10 +63,7 @@ def usage(reason: str) -> gw.Failure:
 
 
 def walls() -> dict:
-    try:
-        return json.loads((gw.ROOT / WALLS).read_text())
-    except (OSError, ValueError):
-        return {}
+    return gw.walls(WALLS)
 
 
 def set_wall(account: str, until: float) -> None:
@@ -74,10 +72,7 @@ def set_wall(account: str, until: float) -> None:
 
 def resting(now: float | None = None) -> set[str]:
     """Accounts the owner rests (the flow-rest experiment): never driven while its `until` is ahead."""
-    try:
-        rest = json.loads((gw.ROOT / REST).read_text())
-    except (OSError, ValueError):
-        return set()
+    rest = read_json(gw.ROOT / REST, {})
     return set(rest.get("accounts") or []) if rest.get("until", 0) > (now or time.time()) else set()
 
 
@@ -95,10 +90,7 @@ def take_accounts(pinned: str | None) -> list[str]:
     gw.refuse_out_of_pool(pinned)
     if pinned in resting():
         raise gw.Failure(3, f"{pinned} is resting ({gw.ROOT / REST}); nothing was sent", account=pinned)
-    until = walls().get(pinned, 0)
-    if until > time.time():
-        raise gw.Failure(3, f"{pinned} is walled until {time.strftime('%Y-%m-%d %H:%M', time.localtime(until))} "
-                            f"({WALLS}); nothing was sent", account=pinned)
+    gw.refuse_walled(pinned, WALLS)
     return [pinned]
 
 

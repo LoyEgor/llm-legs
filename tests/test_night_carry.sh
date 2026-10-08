@@ -290,7 +290,8 @@ open(os.environ["NIGHT_RUN_HELPER_REPOS"], "w").write(foreign + "\n")
 assert h.outside_repos(lone, [repo]) == [], "a helper repository is the night's"
 del os.environ["NIGHT_RUN_HELPER_REPOS"]
 os.environ["NIGHT_RUN_SWEEP_REPOS"] = "/nonexistent"
-assert "/Volumes/Work/Projects/usage-ai-report" not in h.helper_repos(), "a faked sweep list never reaches the real helpers"
+real_helpers = h.repo_list(os.path.join(os.path.dirname(h.__file__), "night-helper-repos"))
+assert real_helpers and not set(real_helpers) & set(h.helper_repos()), "a faked sweep list never reaches the real helpers"
 item = {"path": lone, "repo": repo, "at": None, "to": ["Solo"]}
 h.owner_picks = lambda handoffs, repos, chats: [(item, None, h.pick_owner("Solo", None, {}), {})]
 chats = [{"name": "Solo", "session": "sess-solo"}]

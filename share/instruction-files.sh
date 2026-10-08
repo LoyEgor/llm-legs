@@ -891,8 +891,17 @@ instruction_interp_dir_join() { # one construct of the rule above → VARIABLE<T
 
 # A `$VAR` prefix expands only from a `VAR=value` earlier in the command: the hook's environment is
 # not the shell's.
+instruction_expand_var() { # word assigns(newline-joined VAR=value, latest last) → expanded word
+  [[ $1 =~ ^\$\{?([A-Za-z_][A-Za-z_0-9]*)\}?(/.*)?$ ]] || return 1
+  local var=${BASH_REMATCH[1]} rest=${BASH_REMATCH[2]} val
+  val=${2%$'\n'"$var="*}
+  [ "$val" != "$2" ] || return 1
+  val=${2#"$val"$'\n'"$var="}
+  printf '%s%s' "${val%%$'\n'*}" "$rest"
+}
+
 instruction_interp_scripts() { # command cwd → INTERPRETER<TAB>PATH lines
-  local cwd=${2:-$PWD} seg w interp op var val assigns=$'\n' skip
+  local cwd=${2:-$PWD} seg w interp op assigns=$'\n' skip
   local -a words
   while IFS= read -r -d '' seg; do
     read -ra words <<< "${seg//$'\n'/ }"
@@ -931,13 +940,7 @@ instruction_interp_scripts() { # command cwd → INTERPRETER<TAB>PATH lines
     case "$op" in
       '~/'*) op="$HOME/${op#\~/}" ;;
       '$HOME/'*|'${HOME}/'*) op="$HOME/${op#*/}" ;;
-      '$'*)
-        [[ $op =~ ^\$\{?([A-Za-z_][A-Za-z_0-9]*)\}?(/.*)$ ]] || continue
-        var=${BASH_REMATCH[1]} val=${assigns%$'\n'"$var="*}
-        [ "$val" != "$assigns" ] || continue
-        val=${assigns#"$val"$'\n'"$var="}; val=${val%%$'\n'*}
-        op=$val${BASH_REMATCH[2]}
-        ;;
+      '$'*) op=$(instruction_expand_var "$op" "$assigns") || continue ;;
     esac
     case "$op" in *'$'*|*'`'*) continue ;; /*) ;; *) op="$cwd/$op" ;; esac
     [ -f "$op" ] && [ -r "$op" ] && printf '%s\t%s\n' "$interp" "$op"

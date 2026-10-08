@@ -1558,45 +1558,14 @@ workdir_escape_line() { # directory
   }'
 }
 
-# The uncommitted paths of the repository the workdir belongs to, one per line, spelled against
-# that repository's top — which is what `--porcelain` answers in, whatever subdirectory the run was
-# launched from. Untracked files are listed individually (`-uall`): a file the run created and
-# nothing tracks is exactly the work that reaches no other record at all.
-#
 # Same arms as ../claude-setup/hooks/lib/review-journal.sh `rj_path_shape_ok`: a path the reader
 # would skip must never land in `produced` and then vanish from the ledger. It stays out of the
 # listing and goes into the snapshot's `unshaped` digest instead: a run that changed one fails the
 # snapshot closed, and one stray `-` file no longer blinds every run in its tree (logo-vectorizer-bench
-# 2026-10-01: 47 runs a day folded as `snapshots unreadable`).
-path_shape_ok() { # path
-  case $1 in
-    ''|.|..) return 1 ;;
-    /*|\~*|-*) return 1 ;;
-    ../*|*/../*|*/..) return 1 ;;
-    *[[:cntrl:]]*) return 1 ;;
-  esac
-  return 0
-}
-
-# A symlink's git blob is the link text, never the target. `test -f` follows the link, so a
-# symlink-to-dir or a dangling link hashed as `-` and read as a deletion.
-hash_workdir_path() { # top path
-  local top="$1" path="$2" sha
-  if [ -L "$top/$path" ]; then
-    sha=$(printf '%s' "$(readlink "$top/$path")" | git -C "$top" hash-object -w --stdin 2>/dev/null) || sha=
-  elif [ -f "$top/$path" ]; then
-    sha=$(git -C "$top" hash-object -w -- "$path" 2>/dev/null) || sha=
-  fi
-  printf '%s\n' "${sha:--}"
-}
-
-# Nonzero where git could not answer at all, never an empty answer: read as a clean tree, a status
-# that failed at launch makes every file Egor already had open content this run gained.
-workdir_dirty_paths() { # workdir [unshaped-list]
-  local answer
-  [ -n "${1:-}" ] && [ "$1" != null ] || return 1
-  answer=$(git -C "$1" status --porcelain --no-renames -uall -z 2>/dev/null |
-    python3 -c '
+# 2026-10-01: 47 runs a day folded as `snapshots unreadable`). NUL-terminated entries in, `skip`
+# bytes cut off each; an empty unshaped-out fails on the first unshaped path instead.
+path_shape_split() { # skip unshaped-out
+  python3 -c '
 import locale, re, sys
 
 try:
@@ -1607,44 +1576,30 @@ cntrl = rb"[\x00-\x1f\x7f]"
 if locale.nl_langinfo(locale.CODESET) == "UTF-8":
     cntrl += rb"|\xc2[\x80-\x9f]"
 unshaped_re = re.compile(rb"\A(?:\.\.?\Z|[/~-]|\.\./)|/\.\./|/\.\.\Z|" + cntrl)
+skip, out = int(sys.argv[1]), sys.argv[2]
 shaped, unshaped = [], []
 for entry in sys.stdin.buffer.read().split(b"\0")[:-1]:
-    path = entry[3:]
+    path = entry[skip:]
     if path:
         (unshaped if unshaped_re.search(path) else shaped).append(path)
-if unshaped and sys.argv[1]:
-    with open(sys.argv[1], "ab") as fh:
+if unshaped:
+    if not out:
+        sys.exit(1)
+    with open(out, "ab") as fh:
         fh.write(b"".join(path + b"\0" for path in unshaped))
 sys.stdout.buffer.write(b"".join(path + b"\n" for path in shaped))
-' "${2:-}"; status=("${PIPESTATUS[@]}");
-    [ "${status[0]}" = 0 ] && [ "${status[1]}" = 0 ]) || return 1
-  [ -z "$answer" ] || printf '%s\n' "$answer" | sort -u
+' "$1" "$2"
 }
 
-# The content standing at each already-uncommitted path, as `<blob sha>\t<path>`, so the snapshot
-# at the end can tell a file this run REWROTE from one it merely found dirty. Without it a worker
-# whose vendor keeps no per-file record and whose fix pass edits files that were already dirty —
-# which is every fixing pass over a review scope — reaches no store at all: the launching chat saw
-# its own worker's fixes as debt owed by nobody, and a closed round covered none of them (live case
-# 2026-08-22). A path git cannot hash (gone, a directory, a special file) records `-`, which
-# compares equal only to itself.
-workdir_dirty_shas() { # workdir [unshaped-digest-out]
-  local top paths
-  top=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || return 1
-  [ -n "$top" ] || return 1
-  if [ -n "${2:-}" ]; then
-    : >"$2.list" && paths=$(workdir_dirty_paths "$1" "$2.list") &&
-      unshaped_digest "$top" "$2.list" >"$2" || { rm -f "$2.list"; return 1; }
-    rm -f "$2.list"
-  else
-    paths=$(workdir_dirty_paths "$1") || return 1
-  fi
-  [ -n "$paths" ] || return 0
-  printf '%s\n' "$paths" | python3 -c '
+# A symlink's git blob is the link text, never the target. `test -f` follows the link, so a
+# symlink-to-dir or a dangling link hashed as `-` and read as a deletion.
+# NUL-terminated top-relative paths in, `<sha>\t<path>` rows out; `-` where git cannot hash one.
+hash_workdir_paths() { # top
+  python3 -c '
 import os, stat, subprocess, sys, tempfile
 
 top = sys.argv[1]
-paths = [path for path in sys.stdin.buffer.read().split(b"\n") if path]
+paths = [path for path in sys.stdin.buffer.read().split(b"\0") if path]
 shas = [b"-"] * len(paths)
 
 
@@ -1660,7 +1615,7 @@ def hash_into(indices, names, flags):
     # with the shas before it printed, so the rest re-batches after that one path alone.
     pending = []
     for i in indices:
-        if names[i].startswith(b"\""):
+        if names[i].startswith(b"\"") or b"\n" in names[i]:
             one(i)
         else:
             pending.append(i)
@@ -1701,7 +1656,52 @@ if links:
                 fh.write(text.rstrip(b"\n"))
         hash_into(links, texts, ["--no-filters"])
 sys.stdout.buffer.write(b"".join(sha + b"\t" + path + b"\n" for sha, path in zip(shas, paths)))
-' "$top"
+' "$1"
+}
+
+hash_workdir_path() { # top path
+  local row
+  row=$(printf '%s\0' "$2" | hash_workdir_paths "$1" 2>/dev/null) || row=
+  row=${row%%$'\t'*}
+  printf '%s\n' "${row:--}"
+}
+
+# The uncommitted paths of the repository the workdir belongs to, one per line, spelled against
+# that repository's top — which is what `--porcelain` answers in, whatever subdirectory the run was
+# launched from. Untracked files are listed individually (`-uall`): a file the run created and
+# nothing tracks is exactly the work that reaches no other record at all.
+#
+# Nonzero where git could not answer at all, never an empty answer: read as a clean tree, a status
+# that failed at launch makes every file Egor already had open content this run gained.
+workdir_dirty_paths() { # workdir [unshaped-list]
+  local answer
+  [ -n "${1:-}" ] && [ "$1" != null ] || return 1
+  answer=$(git -C "$1" status --porcelain --no-renames -uall -z 2>/dev/null |
+    path_shape_split 3 "${2:-/dev/null}"; status=("${PIPESTATUS[@]}");
+    [ "${status[0]}" = 0 ] && [ "${status[1]}" = 0 ]) || return 1
+  [ -z "$answer" ] || printf '%s\n' "$answer" | sort -u
+}
+
+# The content standing at each already-uncommitted path, as `<blob sha>\t<path>`, so the snapshot
+# at the end can tell a file this run REWROTE from one it merely found dirty. Without it a worker
+# whose vendor keeps no per-file record and whose fix pass edits files that were already dirty —
+# which is every fixing pass over a review scope — reaches no store at all: the launching chat saw
+# its own worker's fixes as debt owed by nobody, and a closed round covered none of them (live case
+# 2026-08-22). A path git cannot hash (gone, a directory, a special file) records `-`, which
+# compares equal only to itself.
+workdir_dirty_shas() { # workdir [unshaped-digest-out]
+  local top paths
+  top=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || return 1
+  [ -n "$top" ] || return 1
+  if [ -n "${2:-}" ]; then
+    : >"$2.list" && paths=$(workdir_dirty_paths "$1" "$2.list") &&
+      unshaped_digest "$top" "$2.list" >"$2" || { rm -f "$2.list"; return 1; }
+    rm -f "$2.list"
+  else
+    paths=$(workdir_dirty_paths "$1") || return 1
+  fi
+  [ -n "$paths" ] || return 0
+  printf '%s\n' "$paths" | tr '\n' '\0' | hash_workdir_paths "$top"
 }
 
 unshaped_digest() { # top list
@@ -1835,11 +1835,7 @@ snapshot_changed_paths() { # directory top
     [ -n "$before" ] || before=$(git -C "$top" hash-object -w -t tree --stdin </dev/null)
     [ -n "$after" ] || after=$(git -C "$top" hash-object -w -t tree --stdin </dev/null)
     changed=$(git -C "$top" diff --no-renames --name-only -z "$before" "$after" -- |
-      (while IFS= read -r -d '' path; do
-        [ -z "$path" ] && continue
-        path_shape_ok "$path" || exit 1
-        printf '%s\n' "$path"
-      done); status=("${PIPESTATUS[@]}");
+      path_shape_split 0 ''; status=("${PIPESTATUS[@]}");
       [ "${status[0]}" = 0 ] && [ "${status[1]}" = 0 ]) || return 1
   fi
   paths=$({ cut -f2- "$directory/dirty-before-shas" "$directory/dirty-after-shas"
@@ -5403,6 +5399,7 @@ case "${1:-}" in
   _deliver) complete_run "$2" "$3"; chrome_run_edge "$2" end; exit 0 ;;
   _chrome-runs) if [ "${2:-}" = --browser ]; then chrome_runs "$CHROME_BROWSER_RUN"; else chrome_runs; fi; exit 0 ;;
   _chrome-flags) printf '%s\n' "${CHROME_FLAGS[@]}"; exit 0 ;;
+  _chrome-data) browse_chrome_data; exit 0 ;;
   _supervise) shift; supervise "$@"; rc=$?; end_run_orphans "$1"; slot_release "$NIGHT_SLOT"; exit "$rc" ;;
   *) usage ;;
 esac

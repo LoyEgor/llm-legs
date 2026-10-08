@@ -38,6 +38,7 @@ from pathlib import Path
 
 import account_roster
 import caps_checks
+from spend import read_json
 
 faulthandler.register(signal.SIGTERM, all_threads=True, chain=True)
 
@@ -1231,11 +1232,8 @@ def video_caps() -> dict:
 caps_drift = caps_checks.caps_drift
 
 
-def walls() -> dict:
-    try:
-        return json.loads((ROOT / "walls.json").read_text())
-    except (OSError, ValueError):
-        return {}
+def walls(name: str = "walls.json") -> dict:
+    return read_json(ROOT / name, {})
 
 
 def update_json(name: str, change) -> None:
@@ -1332,11 +1330,11 @@ def rotation(cost: int) -> list[str]:
     return least_recent(ready)
 
 
-def refuse_walled(account: str) -> None:
-    until = walls().get(account, 0)
+def refuse_walled(account: str, name: str = "walls.json") -> None:
+    until = walls(name).get(account, 0)
     if until > time.time():
         raise Failure(3, f"{account} is walled until {time.strftime('%Y-%m-%d %H:%M', time.localtime(until))} "
-                         "(walls.json); nothing was sent", account=account, until=until)
+                         f"({name}); nothing was sent", account=account, until=until)
 
 
 def take_accounts(pinned: str | None, rotated, walled: str) -> list[str]:

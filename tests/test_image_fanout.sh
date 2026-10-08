@@ -134,13 +134,15 @@ if [ "$rc" -ne 0 ]; then printf 'failed\n' >&2; exit "$rc"; fi
 mkdir -p "$(dirname "$dest")"
 : >"$dest"
 printf 'job=%s\nroute=cli\nfallback_from=web\nfallback_reason=test\nphases={"lock":0.1,"saved":1.2}\n' "${IMAGE_JOB_ID:-none}"
-printf 'composite=skipped reason=several-inputs\n'
+[ -n "${FANOUT_VARIANT_COMPOSITE:-}" ] || printf 'composite=skipped reason=several-inputs\n'
 printf 'dest=%s\nsize=64x64\nformat=png\naccount=%s\nsession=sess-1\nmodel=test-model model_caps=fresh\ncaps=fresh\n' \
   "$dest" "$account"
 for ((i = 2; i <= count; i++)); do
   : >"${dest%.*}-$i.${dest##*.}"
   printf 'variant=%s size=32x32 session=sess-%s\n' "${dest%.*}-$i.${dest##*.}" "$i"
+  [ -z "${FANOUT_VARIANT_COMPOSITE:-}" ] || [ "$i" = 4 ] || printf 'composite=%s\n' "$([ "$i" = 3 ] && echo 'refused reason=global' || echo 'auto changed=4.0%')"
 done
+[ -z "${FANOUT_VARIANT_COMPOSITE:-}" ] || printf 'model=test-model\ncomposite=region changed=2.0%%\n'
 EOF
 chmod +x "$FAKE_BIN/fake-image"
 ln -s "$FAKE_BIN/fake-image" "$FAKE_BIN/codex-image"
@@ -616,6 +618,13 @@ assert grep -Fq 'ok=4 ' "$FANOUT_OUT"
 assert test "$(dest_col "$(fanout_work "$DEST")/fanout.tsv" "$DEST/gemini-gamma-3.png" 7)" = sess-3
 assert test "$(dest_col "$(fanout_work "$DEST")/fanout.tsv" "$DEST/gemini-gamma.png" 7)" = sess-1
 assert test "$(dest_col "$(fanout_work "$DEST")/fanout.tsv" "$DEST/gemini-gamma.png" 6)" = 64x64
+# Each variant's composite= line, the one right after its variant= line, is its own; the main take's comes after.
+rc=0
+FANOUT_VARIANT_COMPOSITE=1 fanout --dest-dir "$DEST" --prompt 'badge' --vendors gemini --takes 4 --pack 4 --spare 0 || rc=$?
+assert test "$rc" -eq 0
+assert test "$(for f in gemini-gamma.png gemini-gamma-2.png gemini-gamma-3.png gemini-gamma-4.png; do
+  printf '%s|' "$(dest_col "$(fanout_work "$DEST")/fanout.tsv" "$DEST/$f" 15)"; done)" = \
+  'region changed=2.0%|auto changed=4.0%|refused reason=global|region changed=2.0%|'
 rc=0
 fanout --dest-dir "$DEST" --prompt 'badge' --vendors gemini,grok --takes 3 --pack 2 --dry-run || rc=$?
 assert test "$rc" -eq 0

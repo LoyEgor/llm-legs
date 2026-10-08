@@ -1424,6 +1424,30 @@ rc, out, tool, runs = redeployed()
 check((rc, out, tool, runs) == (0, "redeploy ran bin/install: %s\n" % os.path.join(libexec, "tool"), "tool 3\n", 2)
       and redeployed()[1:] == ("", "tool 3\n", 2),
       "Redeploy: once committed the group redeploys, and with nothing drifted nothing runs")
+put(os.path.join(up, "launchd", "job.plist"), "job 2\n")
+up_git("add", ".")
+up_git("commit", "-qm", "c")
+put(os.path.join(agents, "job.plist"), "job 1\n")
+launchctl, launchctl_log = os.path.join(work, "launchctl"), os.path.join(work, "launchctl.log")
+put(launchctl, '#!/bin/sh\necho "$@" >>%s\n[ "$1" != bootstrap ] || [ ! -e %s.refuse ]\n' % (launchctl_log, launchctl))
+os.chmod(launchctl, 0o755)
+os.environ["SYSTEM_DOCTOR_LAUNCHCTL"] = launchctl
+m.DEPLOYS = ((None, (("libexec", "hand", "copy", "launchd/hand"), ("agents", "job.plist", "copy", "launchd/job.plist"))),)
+plist = os.path.join(agents, "job.plist")
+rc, out = redeployed()[:2]
+domain = "gui/%d" % os.getuid()
+check(rc == 0 and open(plist).read() == "job 2\n"
+      and open(launchctl_log).read() == "bootout %s %s\nbootstrap %s %s\n" % (domain, plist, domain, plist),
+      "Redeploy: a hand-copied LaunchAgent plist is reloaded in launchd, not only copied")
+put(plist, "job 1\n")
+put(launchctl + ".refuse", "")
+real_sleep, m.time.sleep = m.time.sleep, lambda _: None
+rc, out = redeployed()[:2]
+m.time.sleep = real_sleep
+check(rc == 1 and out.startswith("redeploy failed cp launchd/job.plist: launchctl bootstrap "),
+      "Redeploy: a plist launchd refuses to load is a failed redeploy")
+os.environ.pop("SYSTEM_DOCTOR_LAUNCHCTL")
+os.remove(plist)
 m.DEPLOYS = real_deploys
 for name in ("tool", "hand"):
     os.remove(os.path.join(libexec, name))

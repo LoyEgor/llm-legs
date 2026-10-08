@@ -1323,6 +1323,13 @@ night start >"$WORK/out" || fail "start after the trades moved"
 assert [ "$(grep -c '^trade ' "$WORK/out")" = 0 ]
 assert jqe '[.jobs[] | select(.carried != null) | .ref] == ["t-todo", "t-bare"]' "$(record tn)"
 stop_chat "$(jq -r .session "$(record "$(sed -n 's/^night \([^ ]*\) started:.*/\1/p' "$WORK/out")")")"
+# A carried trade blocked on Egor again asks a new question: the answer it carried answers none of it.
+night job "$tid" set trade-t-todo state=blocked-on-egor "reason=Cost: c2. Loss: l2. Recommendation: r2." >/dev/null ||
+  fail "a carried trade blocked again"
+assert jqe '.jobs[] | select(.ref == "trade-t-todo") | .answer == null' "$(record "$tid")"
+night start >"$WORK/out" || fail "start after a carried trade blocked again"
+assert [ "$(grep -c '^trade ' "$WORK/out")" = 0 ]
+stop_chat "$(jq -r .session "$(record "$(sed -n 's/^night \([^ ]*\) started:.*/\1/p' "$WORK/out")")")"
 
 # Each merged job records the commits its own branch made, as landed on main, whatever the orchestrator lists:
 # two jobs landed through one integration commit (2026-10-07: night 7777 gave eight fixers its fea660fb) each
@@ -1362,5 +1369,16 @@ assert jqe --arg i "$integ" '.jobs[0].integration == [{repo: "own", hash: $i}]' 
 night job on add fixer jc --branch night/on/jc >/dev/null
 night job on set jc state=merged "commits=own:$integ" >/dev/null || fail "jc merged"
 assert jqe --arg i "${integ}" '.jobs[2].commits == [{repo: "own", hash: $i}] and (.jobs[2] | has("integration") | not)' "$(record on)"
+# A branch hash recorded before its landing rebased it is the job's own commit, never integration.
+night job on add fixer jd --branch night/on/jd >/dev/null
+git -C "$OC" worktree add -q -b night/on/jd "$WORK/own-jd" refs/night/on/base
+printf 'e\n' >"$WORK/own-jd/e.txt" && oc "$WORK/own-jd" add e.txt && oc "$WORK/own-jd" commit -qm 'jd work'
+jd_branch=$(git -C "$OC" rev-parse night/on/jd)
+night job on set jd "commits=own:$jd_branch" >/dev/null || fail "jd commits from the report"
+oc "$WORK/own-jd" rebase -q main && git -C "$OC" merge -q --ff-only night/on/jd || fail "jd did not land"
+jd=$(git -C "$OC" rev-parse night/on/jd)
+assert [ "$jd" != "$jd_branch" ]
+night job on set jd state=merged >/dev/null || fail "jd merged"
+assert jqe --arg h "$jd" '.jobs[3].commits == [{repo: "own", hash: $h}] and .jobs[3].integration == []' "$(record on)"
 
 echo "PASS: test_night_run.sh ($asserts asserts)"

@@ -1242,7 +1242,8 @@ count_status() {
     got_fallback=$(kv_last fallback_from "${combined[@]}")
     got_phases=$(kv_last phases "${combined[@]}")
     got_failed=$(kv_last failed "${combined[@]}")
-    got_composite=$(sed -n '/^composite=/{s/^composite=//p;q;}' "${combined[@]}" | tr '\t' ' ')
+    got_composite=$(awk '/^composite=/ && prev !~ /^variant=/ {print substr($0, 11); exit} {prev = $0}' "${combined[@]}" |
+      tr '\t' ' ')
     [ -n "$got_dest" ] || got_dest=${u_dest[u]}
     [ -n "$got_job" ] || got_job=${u_job[u]}
     [ -z "$got_account" ] || account=$got_account
@@ -1277,16 +1278,19 @@ count_status() {
       "$got_job" "$got_route" "$got_fallback" "$got_phases" "$got_composite"
     count_status "$status"
     if [ -f "$dir/out" ]; then
-      while IFS= read -r line; do
+      while IFS=$'\t' read -r line v_composite; do
         v_path=$(variant_path "$line")
         [ -e "$v_path" ] || continue
         v_size=$(sed -n 's/.* size=\([^ ]*\).*/\1/p' <<<"$line")
         v_session=$(sed -n 's/.* session=\([^ ]*\).*/\1/p' <<<"$line")
+        [ -n "$v_composite" ] || v_composite=$got_composite
         printf '%s\t%s\tok\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$vendor" "$account" "$reason" \
           "$v_path" "$v_size" "$v_session" "$got_model" "$got_model_caps" "$got_caps" \
-          "$got_job" "$got_route" "$got_fallback" "$got_phases" "$got_composite"
+          "$got_job" "$got_route" "$got_fallback" "$got_phases" "${v_composite//$'\t'/ }"
         count_status ok
-      done < <(grep '^variant=' "$dir/out" || true)
+      done < <(awk '/^variant=/ {if (v != "") print v "\t"; v = $0; next}
+                    v != "" {print v "\t" (/^composite=/ ? substr($0, 11) : ""); v = ""}
+                    END {if (v != "") print v "\t"}' "$dir/out")
     fi
     stale_hit=''
     if grep -h -E -q '(^|[[:space:]])model_caps=stale' "${combined[@]}" 2>/dev/null; then

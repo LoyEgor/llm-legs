@@ -2320,22 +2320,22 @@ assert grep -Fq 'log --raw -m --no-renames --no-abbrev --reverse -z --format=%H 
 # Writer and reader must refuse the same path shapes, or a `-foo` row is dropped by the
 # sweep and the run is still stamped journaled.
 _shape_lib="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/lib/review-journal.sh"
-writer_shape=$(sed -n '/^path_shape_ok()/,/^}/p' "$WORKER_RUN" | sed -n '/case /,/esac/p')
-reader_shape=$(sed -n '/^rj_path_shape_ok()/,/^}/p' "$_shape_lib" | sed -n '/case /,/esac/p')
-assert eq "$writer_shape" "$reader_shape"
-# The snapshot lister filters in python, never through path_shape_ok: both must split one tree alike.
 _shape_repo="$CONSISTENCY_CACHE/shape-repo"
 git init -q "$_shape_repo"
 for _name in ok '-dash' '~tilde' $'tab\there' $'c1\xc2\x85name' 'with space' '..dots' 'dots..'; do
   : >"$_shape_repo/$_name"
 done
-_shape_split=$(bash -c 'eval "$(sed -n "/^path_shape_ok()/,/^}/p; /^workdir_dirty_paths()/,/^}/p" "$1")"
+_shape_split=$(bash -c 'eval "$(sed -n "/^path_shape_split()/,/^}/p; /^workdir_dirty_paths()/,/^}/p" "$1")"
   : >"$2.unshaped"; workdir_dirty_paths "$2" "$2.unshaped"; echo ---; tr "\0" "\n" <"$2.unshaped" | sort' \
   _ "$WORKER_RUN" "$_shape_repo")
-_shape_want=$(bash -c 'eval "$(sed -n "/^path_shape_ok()/,/^}/p" "$1")"; cd "$2" || exit 1; shopt -s dotglob
-  for p in *; do [ "$p" = .git ] || ! path_shape_ok "$p" || printf "%s\n" "$p"; done | sort -u; echo ---
-  for p in *; do [ "$p" = .git ] || path_shape_ok "$p" || printf "%s\n" "$p"; done | sort' _ "$WORKER_RUN" "$_shape_repo")
+_shape_want=$(bash -c 'eval "$(sed -n "/^rj_path_shape_ok()/,/^}/p" "$1")"; cd "$2" || exit 1; shopt -s dotglob
+  for p in *; do [ "$p" = .git ] || ! rj_path_shape_ok "$p" || printf "%s\n" "$p"; done | sort -u; echo ---
+  for p in *; do [ "$p" = .git ] || rj_path_shape_ok "$p" || printf "%s\n" "$p"; done | sort' _ "$_shape_lib" "$_shape_repo")
 assert eq "$_shape_split" "$_shape_want"
+assert test "$(printf 'ok\0' | bash -c 'eval "$(sed -n "/^path_shape_split()/,/^}/p" "$1")"; path_shape_split 0 ""' \
+  _ "$WORKER_RUN")" = ok
+assert test "$(bash -c 'eval "$(sed -n "/^path_shape_split()/,/^}/p" "$1")"
+  printf "ok\0-dash\0" | path_shape_split 0 "" || echo refused' _ "$WORKER_RUN")" = refused
 # Only for a run some chat answers for, and never rewritten once it stands: a claim APPENDS.
 assert grep -Fq '[ -s "$directory/launcher" ] || return 0' "$WORKER_RUN"
 assert grep -Fq '>>"$directory/produced"' "$WORKER_RUN"

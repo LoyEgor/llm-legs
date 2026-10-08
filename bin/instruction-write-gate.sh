@@ -103,24 +103,20 @@ here=${cwd:-$PWD}
 segments=${command//&&/$'\n'}; segments=${segments//||/$'\n'}; segments=${segments//;/$'\n'}
 cd_re='^[[:space:]({]*cd[[:space:]]+([^[:space:]&|)]+)[[:space:]]*[)}]*[[:space:]]*$'
 set_re='^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z_0-9]*)=([^[:space:]&|;<>()`]+)[[:space:]]*$'
-var_re='^\$\{?([A-Za-z_][A-Za-z_0-9]*)\}?(/.*)?$'
 assigned=$'\n'
 while IFS= read -r segment; do
   if [[ $segment =~ $set_re ]]; then
     value=${BASH_REMATCH[3]}; value=${value#[\"\']}; value=${value%[\"\']}
-    assigned=$'\n'"${BASH_REMATCH[2]}=$value$assigned"
+    assigned+="${BASH_REMATCH[2]}=$value"$'\n'
     continue
   fi
   [[ $segment =~ $cd_re ]] || continue
   lead=${BASH_REMATCH[1]}
   lead=${lead#[\"\']}; lead=${lead%[\"\']}
-  if [[ $lead =~ $var_re ]] && [ "${BASH_REMATCH[1]}" != HOME ]; then
-    case "$assigned" in
-      *$'\n'"${BASH_REMATCH[1]}="*)
-        value=${assigned#*$'\n'"${BASH_REMATCH[1]}="}
-        lead=${value%%$'\n'*}${BASH_REMATCH[2]} ;;
-    esac
-  fi
+  case "$lead" in
+    '$HOME'|'$HOME/'*|'${HOME}'|'${HOME}/'*) ;;
+    '$'*) value=$(instruction_expand_var "$lead" "$assigned") && lead=$value ;;
+  esac
   case "$lead" in
     '~') lead=$HOME ;;
     '~/'*) lead="$HOME/${lead#\~/}" ;;

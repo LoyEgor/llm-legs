@@ -244,8 +244,14 @@ held = [module.floor_rows(gaps, {"rows": [{"id": "L1", "match": {"rule": "time_f
                           HI)[0]["state"] for back in (20, 25)]
 check(held == ["fixed-pending", "regressed"],
       "a fixed row over its floor regresses only once its 24 h window starts after the fix held: %s" % held)
+pending_held = [module.floor_rows(gaps, {"rows": [{"id": "L1", "match": {"rule": "time_floor", "ident": "slot"},
+                                                   "status": "fixed-pending",
+                                                   "fixes": [{"at": h.iso_time(HI - back * 3600), "files": [], "in": None}]}]},
+                                  HI)[0]["state"] for back in (20, 25)]
+check(pending_held == ["fixed-pending", "regressed"],
+      "a fixed-pending row over its floor regresses too once its 24 h window starts after the fix held: %s" % pending_held)
 check([(r["id"], r["state"], r["value"], r["limit"]) for r in rows]
-      == [("L1", "regressed", 50.0, 30), ("time_floor:suite_run", "new", 40.0, 30), ("time_floor:workers-active", "new", 0.1, 0.3)]
+      == [("L1", "open", 50.0, 30), ("time_floor:suite_run", "new", 40.0, 30), ("time_floor:workers-active", "new", 0.1, 0.3)]
       and rows[2]["fact"] == "workers were model-active 10 % of their wall on night N9 (floor 30 %) · proof: back under it"
       and rows[1]["fact"] == "suites running 40 min/day over its floor of 60 min/day · proof: back under it"
       and module.floor_rows(dict(gaps, floors=gaps["floors"][2:], last_night=dict(gaps["last_night"], share=0.3)), {}, HI) == [],
@@ -470,7 +476,7 @@ check([p["state"] for p in bare["problems"]] == ["new", "new", "open"] and "spee
       and not [p for p in bare["problems"] if "judged_by" in p] and bare["problem_count"] == 3,
       "without a section every rule gets its own verdict back")
 pending = {"rows": [{"id": "regression-row", "match": {"rule": "regression", "ident": "chat[.]om_per_100_prompts.*"},
-                     "status": "fixed-pending"}]}
+                     "status": "fixed-pending", "fixes": [{"at": h.iso_time(HI - 3600), "files": [], "in": None}]}]}
 restated = [(p["id"], p["state"], p["ledger"]) for p in h.apply_speed(copy.deepcopy(harness), red, pending)["problems"]
             if p.get("speed") and p["rule"] == "regression"]
 check(restated == [("regression-row", "fixed-pending", "regression-row")],

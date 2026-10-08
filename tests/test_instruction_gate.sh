@@ -135,6 +135,7 @@ EOF
 assert_eq deny "$(decision "S=$SCRATCH; python3 \$S/patch.py")"
 assert_eq deny "$(decision "S=$SCRATCH && python3 -u \${S}/patch.py")"
 assert_eq deny "$(decision "S=\"$SCRATCH\"; python3 \"\$S/patch.py\"")"
+assert_eq deny "$(decision "P=$SCRATCH/patch.py; python3 \$P")"
 assert_eq deny "$(decision "python3 -I $SCRATCH/patch.py")"
 printf 'const C = "%s/";\nfs.writeFileSync(path.join(C, "codex-worker.md"), "x");\n' "$AGENTS" > "$SCRATCH/patch.js"
 assert_eq deny "$(decision "deno run $SCRATCH/patch.js")"
