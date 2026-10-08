@@ -2,21 +2,6 @@
  "owner": "Harness Doctor",
  "rows": [
   {
-   "id": "suite:llm-legs/test_instruction_gate",
-   "title": "llm-legs/test_instruction_gate",
-   "audited_at": "2026-10-08T01:02:26+03:00",
-   "by": "harness-speed-suite-audit-llm-legs-test-instruction-gate-20261007T214024Z-5137",
-   "cpu_run": 43.0,
-   "cpu_min_day": 69.36,
-   "sources": {
-    "llm-legs/tests/instruction_gate_harness.sh": "8c221c5b4f21b43b2247d00dafb1cf9a9c7345d0",
-    "llm-legs/tests/lib/suite-journal.sh": "29457015e61a2ba7ea81c1456d386be4c872fe88",
-    "llm-legs/tests/test_instruction_gate.sh": "1d9ca897ba732a4175c6ec8888c9e3a37bc8cb2c"
-   },
-   "verdict": "kept",
-   "note": "kept: 216 asserts each pin one write-gate parse incident; ~0.25 CPU-s a call is the gate's own non-fast path (hook_full_work:instruction-write-gate.sh, not a test cost), harness overhead ~4 ms a call, setup 0.24 s; no cross-suite duplicates, 3 identical in-file pass asserts (~0.75 s) not worth a cut; 248 s/run was the pre-split 7-day median (42 s now)"
-  },
-  {
    "id": "resumes",
    "title": "worker cold resumes",
    "audited_at": "2026-10-08T01:21:43+03:00",
@@ -26,6 +11,21 @@
    "sources": {},
    "verdict": "kept",
    "note": "7d to 2026-10-07: 36 main-context RESUMEs (11.2M, 89%) each carry a new brief into a 60-260k context the chat chose to keep (CLAUDE.md same-session rule), cache past Claude Code's own 1h TTL; the only cheaper path, a fresh worker with a distilled brief, drops that context and cannot replay to identical decisions; 115 image-gen sidechain 5m expiries (1.4M, 11%) already gone at source (claude-setup 4f0dcd0 1h TTL, 01f7357 agent removed); worker-run's RESUME-COLD warning prints after the decision into the relay, which never forwards it, so it changes nothing"
+  },
+  {
+   "id": "suite:llm-legs/test_instruction_gate",
+   "title": "llm-legs/test_instruction_gate",
+   "audited_at": "2026-10-08T03:17:55+03:00",
+   "by": "feat/suite-audit-instruction-gate",
+   "cpu_run": 46.3,
+   "cpu_min_day": 69.72,
+   "sources": {
+    "llm-legs/tests/instruction_gate_harness.sh": "8c221c5b4f21b43b2247d00dafb1cf9a9c7345d0",
+    "llm-legs/tests/lib/suite-journal.sh": "29457015e61a2ba7ea81c1456d386be4c872fe88",
+    "llm-legs/tests/test_instruction_gate.sh": "1d9ca897ba732a4175c6ec8888c9e3a37bc8cb2c"
+   },
+   "verdict": "kept",
+   "note": "kept (re-audit 2026-10-08): 45-52 CPU-s/run (3 runs, load 7-22, 2/3 sys = forks); a stub-gate run of the same 216 asserts costs 5.8 s, so ~88% is the gate's guarded-name slow path (220-380 ms a call, spread over ~40 forking lines, no hotspot; ordinary live calls take the 40 ms path); test-side cuts (one jq per call, 3 duplicate fast-path asserts) are ~4% and would move the harness blob shared by 7 sibling suites, re-queueing their audits; no sleeps or timeouts"
   }
  ]
 }
