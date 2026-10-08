@@ -357,7 +357,7 @@ now=$(date +%s)
 reset_2341=$(date -j -f '%Y-%m-%d %H:%M:%S' "$(date +%F) 23:41:00" +%s)
 [ "$reset_2341" -gt "$now" ] || reset_2341=$(date -j -v+1d -f '%Y-%m-%d %H:%M:%S' "$(date +%F) 23:41:00" +%s)
 for text in 'try again at 11:41 PM.' '11:41PM' '23:41'; do
-  assert test "$(worker_walls_parse_reset "$text")" = "$reset_2341"
+  assert test "$(WORKER_WALLS_NOW=$now worker_walls_parse_reset "$text")" = "$reset_2341"
 done
 passed=$(( (now - 3600) / 60 * 60 ))
 rolled=$(worker_walls_parse_reset "$(date -r "$passed" +%H:%M)")
