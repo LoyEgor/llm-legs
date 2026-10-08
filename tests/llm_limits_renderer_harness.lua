@@ -1031,6 +1031,9 @@ local stalledRow = titleText(stalledModule.menuItems()[1])
 assert(stalledRow:find("⚠ refresh stalled 11h — last tick ", 1, true)
   and stalledRow:find(os.date("%H:%M", stalledAt), 1, true), "stalled heartbeat row: " .. stalledRow)
 assert(stalledModule.refreshState().prefix == "⚠ ", "a stalled heartbeat did not warn the menubar")
+assert(type(stalledModule.title()) == "table" and stalledModule.title().text == "LLM Limits: refresh stalled 11h"
+  and isRed(stalledModule.title().attributes),
+  "a stalled heartbeat did not reach the Automation title: " .. titleText({ title = stalledModule.title() }))
 local tickingModule = loadModule({ schema = 1, refresh_heartbeat = { last_tick_at = os.time() - 60, stalled = false },
   vendors = deadFixture.vendors })
 for _, item in ipairs(tickingModule.menuItems()) do
@@ -2431,6 +2434,30 @@ watchCallbacks[watchModule.workerModelPath]()
 assert(watchNotifies == 5, "worker-model watcher did not re-render the menu")
 assert(#watchTasks == 3 and watchStarts == 3, "worker-model watcher did not refresh routing")
 
+do
+  local pendingTimers = {}
+  watchHs.timer = { doAfter = function(seconds, fn)
+    local timer = { seconds = seconds, fn = fn }
+    function timer:stop() self.stopped = true end
+    table.insert(pendingTimers, timer)
+    return timer
+  end }
+  watchNotifies = 0
+  watchClock.now = 3000; watchCallbacks[watchModule.cachePath]()
+  watchClock.now = 3001; watchCallbacks[watchModule.cachePath]()
+  watchCallbacks[watchModule.cachePath]()
+  assert(watchNotifies == 1 and #pendingTimers == 1 and pendingTimers[1].seconds == 2,
+    "a store write inside the throttle scheduled no single trailing re-render")
+  watchClock.now = 3003; pendingTimers[1].fn()
+  assert(watchNotifies == 2, "the trailing re-render after a suppressed store write never ran")
+  watchClock.now = 3004; watchCallbacks[watchModule.cachePath]()
+  assert(#pendingTimers == 2, "a suppressed write after the trailing re-render scheduled no timer")
+  watchClock.now = 3005; watchCallbacks[watchModule.cachePath]()
+  assert(watchNotifies == 3 and pendingTimers[2].stopped and watchModule.storeRerenderTimer == nil,
+    "a re-render past the throttle left the pending trailing timer armed")
+  watchHs.timer = nil
+end
+
 -- The vendor section header is a control, not a caption: it carries the vendor's role switches and
 -- a free vendor-scoped refresh, and it names the vendor like every other surface. Pool membership
 -- is per account only — a whole-vendor switch was one click from emptying the pool by accident.
@@ -2922,6 +2949,23 @@ do
 end
 
 do
+  local exits, alerts = {}, {}
+  local snapshot = { as_of = os.time(), total = 4, anomalies = { orphan_debt = 4 }}
+  local module = doctorModule(doctorFixture, function(_, callback)
+    table.insert(exits, callback)
+    return { setEnvironment = function() end, start = function() return true end,
+      isRunning = function() return false end }
+  end, nil, function(text) table.insert(alerts, text) end, nil, nil, nil, nil, snapshot)
+  module.rescanDoctor()
+  exits[#exits](1, "", "boom")
+  assert(alerts[#alerts] == "Review machinery: rescan failed",
+    "a failed rescan alerted the old snapshot: " .. tostring(alerts[#alerts]))
+  module.rescanDoctor()
+  exits[#exits](0, "", "")
+  assert(alerts[#alerts] == "Review machinery: 4", tostring(alerts[#alerts]))
+end
+
+do
   local single = { as_of = os.time(), total = 1, anomalies = { orphan_debt = 1 }}
   local row = doctorRow(doctorModule(doctorFixture, nil, nil, nil, nil, nil, nil, nil,
     single).menuItems())
@@ -3181,7 +3225,7 @@ do
   assert(row().status == "error", tostring(row().status))
 
   local exits, alerts = {}, {}
-  local function forcedRefreshAlert()
+  local function forcedRefreshAlert(exitCode)
     local module = doctorModule(doctorFixture, function(path, callback, args)
       table.insert(exits, callback)
       return { setEnvironment = function(self) return self end, start = function() return true end,
@@ -3190,12 +3234,14 @@ do
     for _, item in ipairs(doctorRow(module.menuItems()).menu) do
       if titleText(item) == "Refresh" then item.fn() end
     end
-    exits[#exits](0)
+    exits[#exits](exitCode or 0)
     return alerts[#alerts]
   end
   assert(forcedRefreshAlert() == "LLM doctor: collector failed", tostring(alerts[#alerts]))
   document.status, document.problem_count = "blind", 0
   assert(forcedRefreshAlert() == "LLM doctor: blind", tostring(alerts[#alerts]))
+  assert(forcedRefreshAlert(1) == "LLM doctor: refresh failed",
+    "a failed forced llm-doctor run alerted the old latest.json: " .. tostring(alerts[#alerts]))
 end
 
 do
@@ -3814,6 +3860,23 @@ do
   harnessMenuText = "garbage"
   row = harnessRow(loadModule(roleFixture))
   assert(titleText(row) == "Harness doctor: no data yet", "an unreadable menu.txt was rendered")
+  harnessMenuText = menuText(os.time())
+  do
+    local harnessExits, harnessAlerts = {}, {}
+    local refreshing = loadModule(roleFixture, function(_, callback)
+      table.insert(harnessExits, callback)
+      return { setEnvironment = function() end, start = function() return true end,
+        isRunning = function() return false end }
+    end, nil, function(text) table.insert(harnessAlerts, text) end)
+    local refreshItems = harnessRow(refreshing).menu
+    refreshItems[#refreshItems].fn()
+    harnessExits[#harnessExits](1, "", "boom")
+    assert(harnessAlerts[#harnessAlerts] == "Harness doctor: refresh failed",
+      "a failed Harness doctor refresh alerted the old menu.txt: " .. tostring(harnessAlerts[#harnessAlerts]))
+    refreshItems[#refreshItems].fn()
+    harnessExits[#harnessExits](0, "", "")
+    assert(harnessAlerts[#harnessAlerts] == "Harness doctor: 1 problem", tostring(harnessAlerts[#harnessAlerts]))
+  end
 
   local inode = 1
   local cached = loadModule(roleFixture, nil, nil, nil, nil, nil, function(path)

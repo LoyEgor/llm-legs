@@ -936,7 +936,7 @@ local function startDiagnosticsTask(field, path, args, onExit)
     M[field] = nil
     logAction("diagnostics-exit", path .. " exit=" .. tostring(exitCode)
       .. (exitCode ~= 0 and stdErr and stdErr ~= "" and (" " .. stdErr:gsub("%s+$", "")) or ""))
-    if onExit then onExit() end
+    if onExit then onExit(exitCode) end
   end, args)
   if not task then return end
   task:setEnvironment(M.diagnosticsEnvironment())
@@ -947,8 +947,8 @@ end
 
 function M.rescanDoctor()
   startDiagnosticsTask("doctorRescanTask", resolveCommand(M.reviewBenchCmd or "review-bench"),
-    { "doctor", "--snapshot" }, function()
-      local snapshot = readDoctorSnapshot()
+    { "doctor", "--snapshot" }, function(exitCode)
+      local snapshot = exitCode == 0 and readDoctorSnapshot() or nil
       local total = snapshot and tonumber(snapshot.total) or nil
       hs.alert.show(total and string.format("Review machinery: %d", total) or "Review machinery: rescan failed", 2.5)
     end)
@@ -1264,11 +1264,11 @@ local function kickLlmDoctor(document, force, stale)
   local path = M.llmDoctorCmd or (repoRoot and repoRoot .. "/bin/llm-doctor")
   if not path then return end
   lastLlmDoctorKick = now
-  startDiagnosticsTask("llmDoctorTask", path, { "--window", tostring(selected), "--quiet" }, force and function()
+  startDiagnosticsTask("llmDoctorTask", path, { "--window", tostring(selected), "--quiet" }, force and function(exitCode)
     local latest = readLlmDoctor()
     local parts = llmDoctorSummary(latest, 0)
-    hs.alert.show("LLM doctor: " .. (not latest and "no data yet" or #parts > 0 and table.concat(parts, " · ") or "ok"),
-      2.5)
+    hs.alert.show("LLM doctor: " .. (exitCode ~= 0 and "refresh failed" or not latest and "no data yet"
+      or #parts > 0 and table.concat(parts, " · ") or "ok"), 2.5)
   end or nil)
 end
 
@@ -1840,9 +1840,10 @@ end
 local function runHarnessDoctor()
   local path = M.harnessDoctorCmd or (repoRoot and repoRoot .. "/bin/harness-doctor")
   if not path then return end
-  startDiagnosticsTask("harnessDoctorTask", path, { "--quiet" }, function()
+  startDiagnosticsTask("harnessDoctorTask", path, { "--quiet" }, function(exitCode)
     local latest = readHarnessMenu()
-    hs.alert.show(latest and latest.title or "Harness doctor: no data yet", 2.5)
+    hs.alert.show(exitCode ~= 0 and "Harness doctor: refresh failed" or latest and latest.title
+      or "Harness doctor: no data yet", 2.5)
   end)
 end
 
@@ -3326,6 +3327,9 @@ function M.title()
   if state.staleCount > 0 then
     parts[#parts + 1] = "stale " .. style.age(state.staleOldest)
   end
+  if state.stalledSince then
+    parts[#parts + 1] = "refresh stalled " .. style.age(os.time() - state.stalledSince)
+  end
   if #parts == 0 then return "LLM Limits" end
   return hs.styledtext.new("LLM Limits: " .. table.concat(parts, " · "),
     { font = (hs.styledtext.defaultFonts or {}).menu, color = redColor })
@@ -3347,9 +3351,22 @@ end
 -- Re-render ONLY (title via onRefreshStateChanged; the menu itself rebuilds on
 -- open). It must never start a collector: the collector writes the store, which
 -- would re-fire this watcher forever.
+-- A suppressed change still schedules one trailing re-render, or the burst's last write is lost.
 local function onStoreChanged()
   local now = os.time()
-  if not M.shouldRerenderOnStoreChange(now, lastStoreRenderEpoch) then return end
+  if not M.shouldRerenderOnStoreChange(now, lastStoreRenderEpoch) then
+    if not M.storeRerenderTimer and hs.timer and hs.timer.doAfter then
+      M.storeRerenderTimer = hs.timer.doAfter(STORE_RERENDER_THROTTLE, function()
+        M.storeRerenderTimer = nil
+        onStoreChanged()
+      end)
+    end
+    return
+  end
+  if M.storeRerenderTimer then
+    M.storeRerenderTimer:stop()
+    M.storeRerenderTimer = nil
+  end
   lastStoreRenderEpoch = now
   M.refreshRouting()
   notifyRefreshState()
