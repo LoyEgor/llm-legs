@@ -470,7 +470,7 @@ cmd_base() {
 adopt_leftover() { # id branch ready-why repos -> sets branch and adopted (JSON)
   local id=$1 old=$2 repos=$4 rows row repo br wt landed ahead behind dirty state why tip wip path keep ignored
   branch="night/$id/leftover-${old//\//-}" adopted='[]'
-  rows=$(branch_rows | awk -F '\t' -v b="$old" '$2 == b')
+  rows=$(ROWS_BRANCH=$old branch_rows)
   [ -n "$rows" ] || die "no branch $old in the sweep repositories besides main"
   if [ -n "$repos" ]; then
     rows=$(awk -F '\t' 'NR == FNR { keep[$0]; next } $1 in keep' <(printf '%s\n' "$repos") - <<<"$rows")
@@ -1026,8 +1026,8 @@ branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locke
 # worktree|- landed ahead behind dirty live|landed|leftover why. Landed = in main, or a night branch still
 # at its night's base, since a nothing-to-do job never committed. `-`, not an empty field: a tab is IFS
 # whitespace, so read would shift every field after an empty one.
-branch_rows() { # [repo...], default the sweep repositories and the helpers' night branches
-  local repo wt branch main locked seen HELD only
+branch_rows() { # [repo...], default the sweep repositories and the helpers' night branches; ROWS_BRANCH=b: b's rows only
+  local repo wt branch main locked seen HELD only want=${ROWS_BRANCH:-}
   [ $# -gt 0 ] || [ -r "$sweep_repos" ] || return 0
   HELD=$(cat "$holds_dir"/*.json 2>/dev/null | jq -r '.words as $w | .branches[]? | [.repo, .branch, $w] | @tsv' 2>/dev/null)
   while IFS=$'\t' read -r repo only; do
@@ -1037,10 +1037,12 @@ branch_rows() { # [repo...], default the sweep repositories and the helpers' nig
     while IFS=$'\t' read -r wt branch main locked; do
       [ "$branch" != - ] || branch=''
       [ -z "$only" ] || [[ $branch == night/* ]] || continue
+      [ -z "$want" ] || [ "$branch" = "$want" ] || continue
       [ "$branch" = main ] || [ ! -d "$wt" ] || { seen="$seen$branch "; branch_row "$repo" "$wt" "$branch" "$main" "$locked"; }
     done < <(worktree_lines "$repo")
     while IFS= read -r branch; do
       [ -z "$only" ] || [[ $branch == night/* ]] || continue
+      [ -z "$want" ] || [ "$branch" = "$want" ] || continue
       [[ "$seen" == *" $branch "* ]] || branch_row "$repo" '' "$branch" 0 0
     done < <(git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads)
   done < <(if [ $# -gt 0 ]; then printf '%s\n' "$@"; else cat "$sweep_repos"; grep -vxF '' "$helper_repos" 2>/dev/null | sed $'s/$/\tnight/'; fi)
