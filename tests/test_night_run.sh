@@ -46,9 +46,7 @@ cat >"$FAKE_BIN/review-bench" <<'EOF'
 #!/usr/bin/env bash
 [ "$1" != review ] || { printf '%s\n' "$*" >>"$DATA/price-args"
   case " $* " in *' --due '*) cat "$DATA/price-due" >&2 ;; *) cat "$DATA/price" >&2 ;; esac; exit 0; }
-[ "$1 $3" = "fix --print" ] || exit 2
-[ ! -e "$DATA/unreadable-$2" ] || { echo "no round $2" >&2; exit 1; }
-[ ! -e "$DATA/open-$2" ] || cat "$DATA/open-$2"
+exit 2
 EOF
 chmod +x "$FAKE_BIN"/*
 
@@ -161,56 +159,11 @@ printf '%s\n' "$WORK/elsewhere/llm-legs" "$WORK/repo" >"$WORK/sweep-repos"
 assert_fails night job "$id" set llm-20260930T010203Z pushed=true 2>"$WORK/err"
 assert grep -qF 'needs the job' "$WORK/err"
 night job "$id" set llm-20260930T010203Z state=merged "commits=repo:$local_hash" review=rb-1 >/dev/null || fail "set merged"
-# A job merges only once its review round is settled: fixed through its brief or closed nofix.
-printf 'ROUND: rb-open\n\n  0  P2  a.txt  defect\n' >"$DATA/open-rb-open"
-: >"$DATA/unreadable-rb-gone"
-assert_fails night job "$id" set p7 state=merged review=rb-open 2>"$WORK/err"
-assert grep -qF "job p7 cannot be merged while its review round rb-open has open findings" "$WORK/err"
-assert grep -qF "review-bench close rb-open --nofix" "$WORK/err"
-night job "$id" set p7 review=rb-open >/dev/null || fail "a pending job records its open round"
-assert_fails night job "$id" set p7 state=merged 2>"$WORK/err"
-assert grep -qF "review round rb-open has open findings" "$WORK/err"
-assert_fails night job "$id" set p7 state=merged review=rb-gone 2>"$WORK/err"
-assert grep -qF "job p7: review round rb-gone cannot be read: no round rb-gone" "$WORK/err"
-assert jqe '[.jobs[] | select(.ref == "p7")][0] | .state == "pending" and .review == "rb-open"' "$R"
+night job "$id" set p7 review=rb-open suites=passed >/dev/null || fail "a pending job records its round and suites"
+assert jqe '[.jobs[] | select(.ref == "p7")][0] | .state == "pending" and .review == "rb-open" and .suites == "passed"' "$R"
+assert jqe '[.events[] | select(.job == "p7") | .phase] | index("suites") != null' "$R"
+assert_fails night job "$id" set p7 suites=green 2>/dev/null
 night job "$id" set p7 review= >/dev/null || fail "clear review"
-# A Code fixer job lands only through code-doctor check on its run record; suites=passed attests green suites.
-cat >"$FAKE_BIN/code-doctor" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >>"$DATA/code-checks"
-case " $* " in *" --suites-passed "*) exit 0 ;; esac
-echo "alpha/bin/x: deletion proof: green suites not confirmed (--suites-passed)"
-exit 1
-EOF
-chmod +x "$FAKE_BIN/code-doctor"
-export NIGHT_RUN_CODE_DOCTOR="$FAKE_BIN/code-doctor"
-jq '.id = "ncode" | .started_at = "2020-01-01T00:00:00Z" | .jobs = []' "$R" >"$NIGHTS/ncode.json"
-cref=code-code-20261001T020700Z-0b0b
-night job ncode add fixer "$cref" >/dev/null || fail "add the code job"
-assert_fails night job ncode set "$cref" state=merged 2>"$WORK/err"
-assert grep -qF "job $cref: no doctor-fix run record" "$WORK/err"
-mkdir -p "$DOCTORS_DIR/runs"
-printf '{"id": "%s", "doctor": "code"}\n' "$cref" >"$DOCTORS_DIR/runs/$cref.json"
-assert_fails night job ncode set "$cref" state=merged 2>"$WORK/err"
-assert grep -qF "green suites not confirmed" "$WORK/err"
-assert grep -qxF "check $DOCTORS_DIR/runs/$cref.json --base refs/night/ncode/base --landing" "$DATA/code-checks"
-night job ncode set "$cref" state=merged suites=passed >/dev/null || fail "a code job with its suites passed lands"
-assert jqe --arg r "$cref" '[.jobs[] | select(.ref == $r)][0] | .state == "merged" and .suites == "passed"' "$NIGHTS/ncode.json"
-# Each code-doctor check is a timed repository validation, a refused one included; the suite pass and the
-# landing follow the passing one.
-assert jqe --arg r "$cref" '[.events[] | select(.job == $r) | [.phase, .check, .ok]]
-  == [["add", null, null], ["validate", "code", false], ["validate", "code", false], ["validate", "code", true], ["suites", null, null], ["landing", null, null]]
-  and (.events | all(.secs == null or (.secs | type) == "number"))' "$NIGHTS/ncode.json"
-assert_fails night job ncode set "$cref" suites=green 2>/dev/null
-lref="leftover-night-n0-$cref"
-printf '{"id": "%s", "doctor": "code", "night": "n0"}\n' "$cref" >"$DOCTORS_DIR/runs/$cref.json"
-jq --arg r "$lref" --arg b "night/n0/$cref" '.jobs += [{kind: "leftover", ref: $r, state: "pending", reason: null, branch: null,
-  review: null, commits: [], pushed: false, adopted: [{repo: "/x", branch: $b}]}]' "$NIGHTS/ncode.json" >"$WORK/tmp" &&
-  mv "$WORK/tmp" "$NIGHTS/ncode.json"
-assert_fails night job ncode set "$lref" state=merged 2>"$WORK/err"
-assert grep -qF "job $cref cannot land, code-doctor check refuses" "$WORK/err"
-assert grep -qxF "check $DOCTORS_DIR/runs/$cref.json --base refs/night/n0/base --landing" "$DATA/code-checks"
-rm "$NIGHTS/ncode.json"
 assert_fails night job "$id" set llm-20260930T010203Z pushed=true 2>"$WORK/err"
 assert grep -qF "commit $local_hash is not on origin" "$WORK/err"
 assert_fails night job "$id" set llm-20260930T010203Z "commits=repo:$side_hash" pushed=true 2>"$WORK/err"
@@ -313,10 +266,10 @@ assert jqe '[.events[].id] == [range(1; (.events | length) + 1)]
   and (.events as $e | [range(0; $e | length) as $i | $e[$i] | select(.job != null)
     | .pred == ([$e[:$i][] | select(.job == $e[$i].job) | .id] | .[-1:])] | all)
   and (.jobs | all(has("added_at") or has("events") | not))' "$R"
-assert jqe '[.events[] | select(.job == "llm-20260930T010203Z") | [.phase, .check, .ok]][0:5]
-  == [["add", null, null], ["validate", "review", true], ["landing", null, null], ["set", null, null], ["validate", "push", false]]
+assert jqe '[.events[] | select(.job == "llm-20260930T010203Z") | [.phase, .check, .ok]][0:4]
+  == [["add", null, null], ["landing", null, null], ["set", null, null], ["validate", "push", false]]
   and ([.events[] | select(.job == "llm-20260930T010203Z" and .phase == "set")][0].keys == ["commits", "pushed", "review"])' "$R"
-assert jqe 'any(.events[]; .job == "p7" and .phase == "validate" and .check == "review" and .ok == false)
+assert jqe 'all(.events[]; .check != "review" and .check != "code")
   and any(.events[]; .job == "p1" and .phase == "owner-pause")
   and any(.events[]; .job == "debt-round" and .phase == "state" and .state == "left")' "$R"
 # A refusal behind a held lock is not recorded: it never waits for the lock.

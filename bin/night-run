@@ -127,10 +127,6 @@ suites: every sweep repository's tests/run-all, one after another, detached unle
   night's suites {started_at, finished_at, repos: [{repo, exit, passed, failed[], log}]}
 pushed=true is refused unless every commit of the job, its integration ones included, is on its
   repository's origin main and not in the night's refs/night/<id>/base
-state=merged with a review is refused while `review-bench fix <review> --print` names open findings:
-  the round is fixed through its brief or closed with `review-bench close <review> --nofix`
-state=merged of a Code fixer job (ref code-*, or a leftover carrying a code-* branch) is refused unless `code-doctor check` passes on its run
-  record against refs/night/<id>/base and the main checkouts now; suites=passed attests its green suites
 EOF
   exit 2
 }
@@ -640,7 +636,7 @@ copies_of() { # own full -> full's entries with the author, author time and subj
 }
 
 job_set() { # id ref key=value...
-  local id=$1 ref=${2:-} pair key value patch='{}' item repo hash dir commits_set=false pushed='' suites='' branch
+  local id=$1 ref=${2:-} pair key value patch='{}' item repo hash dir commits_set=false pushed='' branch
   [ -n "$ref" ] && [ $# -ge 3 ] || usage
   shift 2
   for pair in "$@"; do
@@ -657,7 +653,7 @@ job_set() { # id ref key=value...
       pushed) case $value in true | false) pushed=$value ;; *) die "pushed takes true or false, not $value" ;; esac
         patch=$(jq -c --argjson v "$value" '.pushed = $v' <<<"$patch") ;;
       suites) [ "$value" = passed ] || die "suites takes passed, not $value"
-        suites=$value patch=$(jq -c '.suites = "passed"' <<<"$patch") ;;
+        patch=$(jq -c '.suites = "passed"' <<<"$patch") ;;
       answer) [ -n "$value" ] || die "answer takes Egor's words"
         patch=$(jq -c --arg v "$value" --arg by "${CLAUDE_CODE_SESSION_ID:-${USER:-?}}" --arg at "$(stamp)" \
           '.answer = {words: $v, at: $at, by: $by, done: (.answer.done // [])}' <<<"$patch") ;;
@@ -667,7 +663,7 @@ job_set() { # id ref key=value...
       *) die "no job key $key: state, reason, branch, review, commits, pushed, suites, answer or done" ;;
     esac
   done
-  local file job checked='' refusal='' round code_run events='[]' at began own full
+  local file job checked='' refusal='' events='[]' at began own full
   file=$(night_file "$id")
   if jq -e 'has("answer")' <<<"$patch" >/dev/null; then
     jq -e '.answer.words != null' <<<"$patch" >/dev/null || die "done= comes with answer=<Egor's words>"
@@ -698,23 +694,6 @@ job_set() { # id ref key=value...
       [ -z "$refusal" ] || break
     done < <(jq -r '.[] | [.repo, .hash] | @tsv' <<<"$checked")
     checked_event push
-  fi
-  if jq -e 'has("state") or has("review")' <<<"$patch" >/dev/null; then
-    job=$(job_of "$file" "$ref" "$patch")
-    [ -n "$job" ] || die "night $id has no job $ref"
-    round=$(jq -r 'select(.state == "merged") | .review // empty' <<<"$job")
-    if [ -n "$round" ]; then
-      at=$(stamp) began=$SECONDS
-      refusal=$(review_refusal "$ref" "$round")
-      checked_event review
-    fi
-    code_run=$(jq -r 'select(.state == "merged") | [.ref, .adopted[]?.branch]
-      | map(strings | capture("(?<r>code-code-[0-9]{8}T[0-9]{6}Z(-[0-9a-f]+)?)$").r) | first // empty' <<<"$job")
-    if [ -n "$code_run" ]; then
-      at=$(stamp) began=$SECONDS
-      refusal=$(code_refusal "$id" "$code_run" "${suites:-$(jq -r '.suites // ""' <<<"$job")}")
-      checked_event code
-    fi
   fi
   lock
   job=$(job_of "$file" "$ref" "$patch")

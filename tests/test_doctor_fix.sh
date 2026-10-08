@@ -893,6 +893,8 @@ EOF
 speed_env=(HARNESS_DOCTOR_DIR="$S/harness" HARNESS_LEDGER="$S/ledger.json" DOCTOR_FIX_REVIEW_BENCH="$FAKE_BIN/review-bench")
 cat >"$FAKE_BIN/review-bench" <<'EOF'
 #!/usr/bin/env bash
+[ "$1 $3" != "fix --print" ] || { [ ! -e "$DATA/rb-gone-$2" ] || { echo "no round $2" >&2; exit 1; }
+  [ ! -e "$DATA/rb-open-$2" ] || cat "$DATA/rb-open-$2"; exit 0; }
 [ ! -e "$DATA/rb-fails" ] || { printf 'reviewing x\nreview-bench: no lens named speed\n' >&2; exit 2; }
 printf '%s\t%s\n' "$PWD" "$*" >>"$DATA/rb-args"
 printf 'reviewing x\nrun id: 20261008T000000Z-abcdef%s\n' "$(wc -l <"$DATA/rb-args" | tr -d ' ')"
@@ -969,6 +971,15 @@ sed -i '' 's/the per-model call/the per-model table/' "$swt/share/worker-model.s
 sed -i '' 's/Plain prose/Plain words/' "$swt/share/worker-policy.md"
 gw commit -qam "words"
 printf 'cache=1\n' >"$swt/bin/statusline-cache.sh"
+# A run whose speed-lens round has open findings stays open until they are fixed or the round is closed nofix.
+jq '.lens_round = "rb-lens"' "$(record "$sid")" >"$WORK/lens.json" && mv "$WORK/lens.json" "$(record "$sid")"
+printf 'ROUND: rb-lens\n\n  0  P2  a.txt  defect\n' >"$DATA/rb-open-rb-lens"
+assert_fails fix close "$sid" --decisions "$WORK/sd" "a speed diff" 2>"$WORK/err"
+assert grep -qxF "review round rb-lens has open findings: fix them (review-bench fix rb-lens --brief <file>) or close the round (review-bench close rb-lens --nofix --reason '<why>')" "$WORK/err"
+rm "$DATA/rb-open-rb-lens" && : >"$DATA/rb-gone-rb-lens"
+assert_fails fix close "$sid" --decisions "$WORK/sd" "a speed diff" 2>"$WORK/err"
+assert grep -qxF "review round rb-lens cannot be read: no round rb-lens " "$WORK/err"
+rm "$DATA/rb-gone-rb-lens"
 # A live settings or worker-model change since launch may be Egor's own /model: a note, never a refusal.
 fix close "$sid" --decisions "$WORK/sd" "a speed diff" >/dev/null 2>"$WORK/err" ||
   fail "a speed diff touching no knob stays open: $(cat "$WORK/err")"

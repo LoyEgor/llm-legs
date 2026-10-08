@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# landed_keep needs share/processes.sh and code_refusal $repo_root from the sourcing script.
+# landed_keep needs share/processes.sh from the sourcing script.
 
 worktree_main() { # repo -> its main checkout, as given when repo is one
   local common
@@ -55,29 +55,6 @@ worktree_siblings() { # branch repo... -> each repository's worktree on branch, 
       printf 'no worktree in %s: %s\n' "$repo" "${err:-git worktree add failed}" >&2
     fi
   done
-}
-
-review_refusal() { # ref round -> why the review round blocks landing, empty when it is settled
-  local open err
-  err=$(mktemp) || { printf 'cannot ask review-bench about round %s\n' "$2"; return; }
-  open=$(review-bench fix "$2" --print 2>"$err") || {
-    printf 'job %s: review round %s cannot be read: %s\n' "$1" "$2" "$(tr '\n' ' ' <"$err")"; rm -f "$err"; return; }
-  rm -f "$err"
-  [ -z "$open" ] || printf "job %s cannot be merged while its review round %s has open findings: fix them (review-bench fix %s --brief <file>, its worker RESUMEd on that brief) or close the round (review-bench close %s --nofix --reason '<why>')\n" \
-    "$1" "$2" "$2" "$2"
-}
-
-code_run_of() { # name -> the Code fixer run id a branch or job ref ends in, else nothing
-  [[ $1 =~ (code-code-[0-9]{8}T[0-9]{6}Z(-[0-9a-f]+)?)$ ]] && printf '%s\n' "${BASH_REMATCH[1]}"
-}
-
-code_refusal() { # night-or-empty run-id suites -> why the Code fixer run cannot land, empty when code-doctor check passes
-  local record="${DOCTORS_DIR:-$HOME/.cache/doctors}/runs/$2.json" out base
-  [ -s "$record" ] || { printf 'job %s: no doctor-fix run record %s for code-doctor check\n' "$2" "$record"; return; }
-  base=$(jq -r --arg n "$1" '.base // ((.night // $n) | select(. != "") | "refs/night/\(.)/base")' "$record" 2>/dev/null)
-  out=$("${NIGHT_RUN_CODE_DOCTOR:-$repo_root/bin/code-doctor}" check "$record" ${base:+--base "$base"} --landing \
-    $([ "$3" != passed ] || printf -- --suites-passed) 2>&1) ||
-    printf 'job %s cannot land, code-doctor check refuses (suites=passed attests green suites):\n%s\n' "$2" "$out"
 }
 
 origin_refusal() { # dir hash -> why hash is not on origin main, empty when it is

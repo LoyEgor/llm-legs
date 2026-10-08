@@ -79,8 +79,7 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
    - **Press-time tree.** The orchestrator commits and pushes each sweep repository as it stood at
      press time, one commit each, unreviewed: every branch lands on it, and the debt pass reviews it.
 4. **Per branch, as soon as its worker returns**: `docs/fix-orchestrator.md`, then `night-run job set …
-   state=merged commits=… pushed=true`, which reruns the gates of `share/worktree.sh` (a `code-*` job adds
-   `suites=passed`). No per-branch review (Egor, 2026-10-03: per-branch rounds took about 60% of a night's
+   state=merged commits=… pushed=true`. No per-branch review (Egor, 2026-10-03: per-branch rounds took about 60% of a night's
    spend). Merges into main are serial and short; everything else is parallel.
 5. **Debt pass, after the landings** (the `debt` job, once no other job is `pending`): night-sweep
    step 3 once — one fit round, then one bugs round, each ONE chunked round across all sweep

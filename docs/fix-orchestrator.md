@@ -18,7 +18,9 @@ per round, the brief dispatched on its return. Never poll.
 3. What you find goes to the SAME worker (`RESUME <session>:`), the brief's `ADD-DIR:` lines copied right
    under it; it resolves conflicts and gets suites green in its worktree. At night, once that repository's
    press-time tree is pushed, it first runs `git rebase --onto main refs/night/<id>/base`.
-4. `bin/worktree land <worktree> [--review <round>] [--suites-passed]`; a refusal goes to step 3.
+4. `git -C <worktree> rebase main` (night: `--onto main refs/night/<id>/base`); in the main checkout `git merge
+   --ff-only <branch>` (hooks push), `git worktree remove <worktree>`, `git branch -D <branch>`, `git push origin
+   --delete <branch>`, by day `git update-ref -d refs/doctor-fix/<ref>/base`; a conflict goes to step 3.
 5. A worker the `worker-run` watchdog killed (`KILLED: idle|silent|deadline`) is hung: `doctor-fix abandon
    <ref>`; its branch stays unlanded.
 

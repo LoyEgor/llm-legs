@@ -975,6 +975,16 @@ untraded_handoff() { # record evidence -> the cited handoff addressed to Egor th
   done
 }
 
+review_refusal() { # round -> why the run's review round keeps it open, empty when it is settled
+  local open err
+  err=$(mktemp) || { printf 'cannot ask review-bench about round %s\n' "$1"; return; }
+  open=$("${DOCTOR_FIX_REVIEW_BENCH:-review-bench}" fix "$1" --print 2>"$err") || {
+    printf 'review round %s cannot be read: %s\n' "$1" "$(tr '\n' ' ' <"$err")"; rm -f "$err"; return; }
+  rm -f "$err"
+  [ -z "$open" ] || printf "review round %s has open findings: fix them (review-bench fix %s --brief <file>) or close the round (review-bench close %s --nofix --reason '<why>')\n" \
+    "$1" "$1" "$1"
+}
+
 close_run() { # id --decisions <file> note...
   local id=${1:-} decisions='' doc file doctor as_of launched judge_then judge_now line_no=0
   local pid verdict purpose evidence decided='' unverified='' problems bad=() touch state failure line rule base wt growth
@@ -1078,6 +1088,9 @@ close_run() { # id --decisions <file> note...
   while IFS= read -r line; do
     [ -z "$line" ] || bad+=("$line")
   done < <(py fix-faults "$file" "$doctor")
+  line=$(jq -r '.lens_round // empty' "$file")
+  [ -z "$line" ] || line=$(review_refusal "$line")
+  [ -z "$line" ] || bad+=("$line")
   if [ ${#bad[@]} -gt 0 ]; then
     printf 'doctor-fix: run %s stays open; rows are id<TAB>fixed|ruled-out|weather|blind-spot|handoff<TAB>purpose<TAB>evidence, purpose a repo@hash or a file of the component stating why it exists:\n' "$id" >&2
     printf '%s\n' "${bad[@]}" >&2

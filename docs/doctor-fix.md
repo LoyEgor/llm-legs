@@ -97,7 +97,7 @@ job (your section says what it counts); never wait for it.
 3. Run `bin/doctor-fix close <run id> --decisions <file> <one-line note>`. It refuses until every
    id is decided, every citation resolves and touches its component, and every `fixed` id reads
    `fixed-pending` or is gone in the doctor's document, which must not read `status: error`; it
-   refuses an abandoned or failed run. A launch on a `status: error` document snapshots one
+   refuses an abandoned or failed run, or one whose `ROUND:` has open findings. A launch on a `status: error` document snapshots one
    problem, `collector:error`, whose component is the doctor itself.
 4. Rewrite the `Status:` line of every handoff you settled.
 
@@ -291,8 +291,7 @@ refuses it, its snapshot is empty, `check` fails): its problems are for Egor to 
 ### Recompute and prove
 - `bin/code-doctor refresh` reindexes and recomputes; `bin/code-doctor check <record> --base
   <base>` is the proof close runs: a deletion names a judged unit with no live entry
-  point, no rollup hits and a quoted reason. Run the suites of every repository you touched; the
-  orchestrator's `worktree land --suites-passed` reruns the check against main as it is then.
+  point, no rollup hits and a quoted reason. Run the suites of every repository you touched.
   The check reads the run's own snapshot, never the live document; a run whose worktree is gone fails it.
 - A unit that changed since the base is not yours: its verdict went back to the judge.
 - After a landed cleanup, `bin/code-doctor record-fix <cause> --by <run id> --files … --lines-removed N`
