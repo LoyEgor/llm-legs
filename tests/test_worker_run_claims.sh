@@ -250,9 +250,22 @@ assert grep -qxF "UNNAMED: 2 path(s) changed in this run's window that no record
 # A live run is still writing its own record, and a claim landing mid-flight is overwritten by the
 # next sweep — so the run has to have ended before anybody may name its files.
 mv "$RUN_DIR/exit_code" "$RUN_DIR/exit_code.held"
+cp "$RUN_DIR/meta.json" "$RUN_DIR/meta.json.held"
+sleep 60 &
+live_supervisor=$!
+jq --argjson p "$live_supervisor" --argjson t "$(date +%s)" '.pid = $p | .pid_started_at = $t | .started_at = $t' \
+  "$RUN_DIR/meta.json.held" >"$RUN_DIR/meta.json"
 assert_fails "$RUNNER" claim "$RUN_ID" --paths bin/claimed-one
 assert grep -q 'is still running' \
   <<<"$("$RUNNER" claim "$RUN_ID" --paths bin/claimed-one 2>&1 >/dev/null)"
+# A supervisor that died without writing exit_code (a reboot, a SIGKILL) ended the run as wait and
+# report already read it: nothing will ever write that file, so the claim is open.
+kill "$live_supervisor"; wait "$live_supervisor" 2>/dev/null
+assert_fails grep -q 'is still running' \
+  <<<"$("$RUNNER" claim "$RUN_ID" --paths /etc/hosts 2>&1 >/dev/null)"
+assert grep -q '/etc/hosts is not under this run' \
+  <<<"$("$RUNNER" claim "$RUN_ID" --paths /etc/hosts 2>&1 >/dev/null)"
+mv "$RUN_DIR/meta.json.held" "$RUN_DIR/meta.json"
 mv "$RUN_DIR/exit_code.held" "$RUN_DIR/exit_code"
 
 # Only the chat that spawned the run may name its work: another chat signing for it is one session

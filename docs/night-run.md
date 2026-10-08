@@ -171,7 +171,7 @@ A night not finished reads `running` while a process carrying its orchestrator's
 lives, and `UNFINISHED` (red) once that chat is gone. Before the session is recorded the night
 carries `opener`, the pid of the `start` opening its chat, and reads `running` only while that
 process lives, so a start killed mid-open never blocks the next one. Only a running night refuses
-`start`.
+`start`, and `finish` from any chat but its orchestrator (its `CLAUDE_CODE_SESSION_ID`, or a process under it).
 
 ## Continue and Cleanup
 - `night-run start --resume <id> [--job <ref>]` reopens the SAME night for a new orchestrator
@@ -206,13 +206,15 @@ landed (in main or origin/main, or a night branch still at its night's base), ah
 count and a state, the one predicate `finish` prunes by; its text form also prints `checkout <repo>: behind
 N|diverged[, WIP in the way: <files>]` for a main checkout behind origin/main:
 - `live`, never touched: the main checkout, a locked worktree (the owning chat's `git worktree lock`),
-  or a branch of a running night. Neither recent activity nor a process inside keeps anything (Egor,
+  a branch of a running night, or a night branch's leftover worktree a process still stands in (a night
+  worker outlives a dead orchestrator and cannot ask for a hold). Otherwise neither recent activity nor a process inside keeps anything (Egor,
   2026-10-07: finished work commits on its branch in the evening and the night lands it; only an
   explicit block protects a branch): a branch someone is still on stays out only by `сделай холд` or
   its lock. A process inside still keeps the worktree directory from removal (`cwd_held`), never the
   branch from being landed or adopted. `night-run job <id> add leftover <branch> --ready "<why>"`, given when the owning chat
   declared the branch finished, records `handover` {by (`CLAUDE_CODE_SESSION_ID`, else `$USER`), at,
-  why} on the job, shown in `night-run report`; a name in several repositories needs `--repo <name>`
+  why, owner_verified (`by` worked in an adopted worktree: its review journal or cwd, as `hold` reads it)} on the job,
+  shown in `night-run report`, an unverified one marked `(never worked in its worktree)`; a name in several repositories needs `--repo <name>`
   (repeatable) to scope it.
 - `held`, not live: Egor's `сделай холд` (word family `night-hold`) in the owning chat runs `night-run
   hold`, which on that chat's fresh grant writes `nights/holds/<session>.json` for its non-main worktrees

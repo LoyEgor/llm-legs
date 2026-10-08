@@ -96,7 +96,7 @@ answer="<Egor's words>" on a blocked-on-egor job records his answer to its trade
 leftover: ref is a leftover branch, adopted in every sweep repository where it is one: its WIP
   committed, night/<id>/leftover-<slug> made at its tip with its night worktree, the old worktree and
   branch removed; the job's ref becomes leftover-<slug>; --ready "<why>" records its owner's handover
-  {by, at, why} on the job;
+  {by, at, why, owner_verified: whether by worked in its worktree} on the job;
   --repo R (a sweep-repos basename or absolute path, repeatable) limits the adoption to those
   repositories, and --ready refuses a branch found in more than one of them without it;
   a held branch is refused, --ready or not
@@ -228,6 +228,19 @@ night_status() { # night-file -> finished, running, or unfinished when its orche
       else printf 'unfinished\n'; fi ;;
     *) if pgrep -f -- "--(session-id|resume) $session" >/dev/null; then printf 'running\n'; else printf 'unfinished\n'; fi ;;
   esac
+}
+
+orchestrator_caller() { # night-file -> whether this process is the night's orchestrator chat: its session, or under its process
+  local session pid chat
+  session=$(jq -r '.session // empty' "$1")
+  [ -n "$session" ] || return 1
+  [ "${CLAUDE_CODE_SESSION_ID:-}" != "$session" ] || return 0
+  chat=$(pgrep -f -- "--(session-id|resume) $session") pid=$$
+  while [[ $pid =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ]; do
+    grep -qxF "$pid" <<<"$chat" && return 0
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+  done
+  return 1
 }
 
 open_nights() { # -> ids of nights whose orchestrator chat still runs
@@ -546,7 +559,7 @@ adopt_undo() { # branch adopted -> drops the night branch and worktree of every 
 }
 
 cmd_job() {
-  local id=${1:-} verb=${2:-} kind ref branch='' row adopted='' at=$(stamp) began=$SECONDS adopt='{}' ready='' repos='' handover=null
+  local id=${1:-} verb=${2:-} kind ref branch='' row adopted='' at=$(stamp) began=$SECONDS adopt='{}' ready='' repos='' handover=null tops=''
   [ -n "$id" ] || usage
   known_night "$id"
   case $verb in
@@ -569,11 +582,13 @@ cmd_job() {
         die "$branch is superseded in $(basename "${row%%$'\t'*}"): $(cut -f9 <<<"$row"); it never lands"
       if [ "$kind" = leftover ]; then
         [ -z "$branch" ] || usage
+        [ -z "$ready" ] || [ -z "${CLAUDE_CODE_SESSION_ID:-}" ] || tops=$(chat_tops "$CLAUDE_CODE_SESSION_ID")
         adopt_leftover "$id" "$ref" "$ready" "${repos%$'\n'}"
         ref=${branch##*/}
         adopt="{\"adopt_secs\": $((SECONDS - began))}"
         [ -z "$ready" ] || handover=$(jq -nc --arg by "${CLAUDE_CODE_SESSION_ID:-${USER:-?}}" --arg at "$at" --arg why "$ready" \
-          '{by: $by, at: $at, why: $why}')
+          --arg tops "$tops" --argjson a "$adopted" '{by: $by, at: $at, why: $why,
+            owner_verified: (($tops | split("\n")) as $t | any($a[]; .worktree != null and (.worktree | IN($t[]))))}')
       fi
       lock
       jq -e --arg r "$ref" 'any(.jobs[]; .ref == $r)' "$(night_file "$id")" >/dev/null &&
@@ -983,6 +998,9 @@ cmd_finish() {
   known_night "$id"
   lock
   jq -e '.finished_at == null' "$(night_file "$id")" >/dev/null || die "night $id is already finished"
+  [ "$(night_status "$(night_file "$id")")" != running ] || orchestrator_caller "$(night_file "$id")" ||
+    die "night $id is still running: $(jq -r '"its orchestrator chat \(.session // "(opening, pid \(.opener))") has run since \(.started_at)"' \
+      "$(night_file "$id")") and only it finishes the night."
   night_set "$id" "$JQ_EVENTS"' .finished_at = $t | .doctors_after = $after | .doctor_states_after = $states
     | .doctor_problems_after = $problems
     | .jobs |= map(if .state == "pending" then .state = "left" | .reason = "no outcome recorded by the close" else . end)
@@ -1012,7 +1030,7 @@ done_jobs() { # -> branch<TAB>ref<TAB>state<TAB>night per nothing-to-do or settl
 }
 
 branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locked(0|1) -> TSV row; reads HELD, DONE_JOBS
-  local repo=$1 wt=$2 branch=$3 ref head behind ahead landed=false dirty=0 night='' why='' state=live hold cherry job
+  local repo=$1 wt=$2 branch=$3 ref head behind ahead landed=false dirty=0 night='' why='' state=live hold cherry job inside
   ref=${branch:+refs/heads/$branch}
   head=$(git -C "${wt:-$repo}" rev-parse -q --verify "${ref:-HEAD}^{commit}") || return 0
   read -r behind ahead < <(git -C "$repo" rev-list --left-right --count "refs/heads/main...$head")
@@ -1039,6 +1057,8 @@ branch_row() { # repo worktree-or-empty branch-or-empty main-checkout(0|1) locke
     [ "$state" = landed ] || [ -n "$branch" ] || why="$why, detached HEAD"
     job=$(awk -F '\t' -v b="$branch" '$1 == b { print $2 " " $3; exit }' <<<"$DONE_JOBS")
     [ "$state" = landed ] || [ -z "$night" ] || [ -z "$job" ] || state=superseded why="by job $job, $why"
+    # A night worker outlives a dead orchestrator and cannot ask for a hold: adopting under it commits its half-done edit.
+    [ "$state" != leftover ] || [ -z "$night" ] || [ -z "$wt" ] || ! inside=$(cwd_held "$wt") || state=live why="night $night worker: $inside"
   fi
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$repo" "${branch:--}" "${wt:--}" "$landed" "$ahead" "$behind" "$dirty" "$state" "$why"
 }
@@ -1113,6 +1133,10 @@ cmd_speed_gate() { # id ref -> exit 3 while the job's night worktree is worked i
   exit 3
 }
 
+chat_tops() { # session -> the checkouts that chat worked in: its review journal and the current toplevel
+  cat "$HOME/.cache/claude/review-journal/$1.repos" 2>/dev/null; git rev-parse --show-toplevel 2>/dev/null
+}
+
 cmd_hold() {
   local sid=${CLAUDE_CODE_SESSION_ID:-} grant words tops repo wt branch main branches='[]' tmp until
   [ $# -eq 0 ] || usage
@@ -1120,7 +1144,7 @@ cmd_hold() {
   . "${WORDS_LIB:-$HOME/.claude/hooks/lib/words.sh}" 2>/dev/null || die "cannot read the word store library"
   grant=$(words_grant_fresh "$sid" night-hold) || die "no fresh night-hold word of Egor's in this chat: «сделай холд» opens it"
   words=$(jq -r '.excerpt // empty' <<<"$grant")
-  tops=$(cat "$HOME/.cache/claude/review-journal/$sid.repos" 2>/dev/null; git rev-parse --show-toplevel 2>/dev/null)
+  tops=$(chat_tops "$sid")
   [ -r "$sweep_repos" ] || die "no sweep repositories at $sweep_repos"
   while IFS= read -r repo; do
     [ -n "$repo" ] && [ -d "$repo" ] || continue
@@ -1418,7 +1442,7 @@ cmd_report() {
         + (if .branch and .state != "merged" then [.branch] else [] end)
         + (if .review then ["review \(.review)"] else [] end)
         + (if .kind == "owner-chat" then ["«\(.owner)» \(.via) · \(.handoffs | length) handoffs"] else [] end)
-        + (if .handover then ["handed over by \(.handover.by) at \(.handover.at | hm): \(.handover.why)"] else [] end)
+        + (if .handover then ["handed over by \(.handover.by)\(if .handover.owner_verified == false then " (never worked in its worktree)" else "" end) at \(.handover.at | hm): \(.handover.why)"] else [] end)
         + [.commits[] | "\(.repo | split("/") | last)@\(.hash[0:7])"]
         + [.integration[]? | "integration \(.repo | split("/") | last)@\(.hash[0:7])"]
         + (.ref as $r | if ($lines | has($r)) | not then []

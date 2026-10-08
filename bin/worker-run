@@ -4698,7 +4698,7 @@ claim_run() {
   [ -d "$directory" ] && [ -r "$directory/meta.json" ] || fail "unknown run: $run_id"
   # A live run is still writing its own record: a claim landing mid-flight is overwritten by the next
   # `persist_run_files`, and the paths it named read back as nobody's again.
-  [ -f "$directory/exit_code" ] ||
+  ! run_live "$directory" ||
     fail "run $run_id is still running; claim its files once it has ended"
   session="${CLAUDE_LAUNCHER_SESSION:-${CLAUDE_CODE_SESSION_ID:-}}"
   launcher=$(tr -d '[:space:]' <"$directory/launcher" 2>/dev/null)

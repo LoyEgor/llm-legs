@@ -268,7 +268,11 @@ doc harness 0 '[{"id": "c1", "state": "fixed-pending", "fact": "fixed · 25 even
   {"id": "c3", "state": "fixed-pending", "fact": "fixed · 30 events since · 2 matched · c"}, {"id": "c4", "state": "new"}, {"id": "c5", "state": "new"}]'
 doc updater 2 '[{"id": "u1", "state": "watch", "rule": "fix-proof", "fact": "W1 · fixed 0d · 0 since · 0 matched · unproven"}]'
 
-night finish "$id" >/dev/null || fail "finish"
+# Another chat cannot finish a night whose orchestrator chat runs; the orchestrator itself can.
+assert_fails env CLAUDE_CODE_SESSION_ID=another-chat bash "$ROOT/bin/night-run" finish "$id" 2>"$WORK/err"
+assert grep -qF "night $id is still running: its orchestrator chat $session has run since" "$WORK/err"
+assert jqe '.finished_at == null' "$R"
+CLAUDE_CODE_SESSION_ID=$session night finish "$id" >/dev/null || fail "finish"
 assert [ "$(wc -l <"$DATA/redeploys" | tr -d ' ')" = 2 ]
 assert_fails night finish "$id" 2>/dev/null
 assert jqe '.doctors_after == {llm: 1, harness: 0, updater: 2, code: null, system: null} and .finished_at != null
@@ -340,7 +344,7 @@ assert grep -qF "has no refs/night/$id2/base" "$WORK/err"
 git -C "$WORK/repo" update-ref "refs/night/$id2/base" "$based_hash"
 night job "$id2" set f1 state=merged "commits=repo:$pushed_hash" pushed=true >/dev/null
 night job "$id2" set v1 state=nothing-to-do >/dev/null
-night finish "$id2" >/dev/null
+CLAUDE_CODE_SESSION_ID=$(jq -r .session "$(record "$id2")") night finish "$id2" >/dev/null
 day2=$(jq -r '.started_at | fromdateiso8601 | strflocaltime("%d %b") | ltrimstr("0")' "$(record "$id2")")
 assert [ "$(night latest --menu | head -1)" = "$(printf 'Last night %s: 2 of 2\t0\t0\t%s' "$day2" "$id2")" ]
 night report | body | sed -n 9p | grep -q "^night $id2 " || fail "report without an id reads the latest night"
@@ -439,7 +443,7 @@ assert [ "$(git -C "$WORK/snap" status --porcelain)" = "$before_status" ]
 assert jqe --arg c "$(git -C "$WORK/snap" rev-parse "refs/night/$id6/base")" '.bases.snap == $c' "$(record "$id6")"
 assert jqe '.events[-1] | .phase == "base" and .repos == 1 and .pred == [] and .job == null and (.secs | type) == "number"' \
   "$(record "$id6")"
-night finish "$id6" >/dev/null
+CLAUDE_CODE_SESSION_ID=$(jq -r .session "$(record "$id6")") night finish "$id6" >/dev/null
 
 # Resume: the SAME night reopens under a new orchestrator for its unfinished jobs, the old session kept
 # in previous_sessions; the review-flow gate reads finished_at null and the new session's live process.
@@ -681,6 +685,21 @@ assert grep -qxF "held · repo · onhold · Egor: сделай холд, я ещ
 # The hold lasted that one night: its finish released it.
 assert [ ! -e "$NIGHTS/holds/chat-h.json" ]
 assert grep -qxF "repo onhold · $wt/onhold · unlanded · +1/-3 main · 0 dirty · leftover (1 unlanded commits)" <(night leftovers)
+# A finished night's worker still writing in its dirty worktree keeps that branch live: adopting it would
+# commit the worker's half-done edit under it. Once the worker exits, it is a leftover.
+git -C "$WORK/repo" worktree add -q -b "night/$idc/worked" "$wt/worked" "$pushed_hash"
+: >"$wt/worked/half"
+(cd "$wt/worked" && exec sleep 600) &
+worker=$!
+printf '%s\n' "$worker" >>"$DATA/orchestrators"
+for _ in $(seq 50); do lsof -a -p "$worker" -d cwd -Fn 2>/dev/null | grep -qxF "n$wt/worked" && break; sleep 0.1; done
+assert grep -qxF "repo night/$idc/worked · $wt/worked · landed · +0/-$behind main · 1 dirty · live (night $idc worker: processes inside: $worker sleep 600)" <(night leftovers)
+assert_fails night job "$idc" add leftover "night/$idc/worked" 2>"$WORK/err"
+assert grep -qF "night/$idc/worked is live in repo: night $idc worker: processes inside: $worker sleep 600" "$WORK/err"
+assert [ "$(git -C "$wt/worked" status --porcelain)" = "?? half" ]
+kill "$worker"; wait "$worker" 2>/dev/null
+assert grep -qxF "repo night/$idc/worked · $wt/worked · landed · +0/-$behind main · 1 dirty · leftover (1 uncommitted files)" <(night leftovers)
+git -C "$WORK/repo" worktree remove --force "$wt/worked" && git -C "$WORK/repo" branch -q -D "night/$idc/worked" || fail "drop the worked branch"
 
 # A leftover job adopts the branch into the night's namespace, where workers may commit: its WIP
 # committed, night/<id>/leftover-<slug> at its tip in a night worktree, the old worktree and branch gone.
@@ -759,6 +778,7 @@ assert_fails night job "$idc" add leftover held --ready "owner says done" 2>"$WO
 assert grep -qxF "night-run: held is live in repo: locked" "$WORK/err"
 assert_fails night job "$idc" add debt handed --ready "owner says done" 2>/dev/null
 assert [ -d "$wt/edited" ]
+printf '%s\n' "$wt/edited" >"$journal/owner-1.repos"
 CLAUDE_CODE_SESSION_ID=owner-1 night job "$idc" add leftover edited --ready "owner declared it finished" >"$WORK/out" ||
   fail "a handed-over branch is adopted"
 assert grep -qxF "night $idc: job leftover leftover-edited added" "$WORK/out"
@@ -767,6 +787,14 @@ assert jqe '.jobs[-1] | .ref == "leftover-edited" and .handover.by == "owner-1"
   and .handover.why == "owner declared it finished" and (.handover.at | test("^[0-9-]+T[0-9:]+Z$"))' "$(record "$idc")"
 assert jqe '[.jobs[] | select(.ref == "leftover-stale-dirty" or .ref == "leftover-stale-bare") | has("handover")] == [false, false]' "$(record "$idc")"
 assert grep -qE "^pending · leftover · leftover-edited · .* · handed over by owner-1 at [0-9]{2}:[0-9]{2}: owner declared it finished$" \
+  <(night report "$idc")
+assert jqe '.jobs[-1].handover.owner_verified == true' "$(record "$idc")"
+# A handover passed on by a chat that never worked in the branch's worktree is recorded as such, never as the owner's.
+old worktree add -q -b passed "$wt/passed" "$side_hash"
+(cd "$WORK" && CLAUDE_CODE_SESSION_ID=relay-1 night job "$idc" add leftover passed --ready "its owner said so") >/dev/null ||
+  fail "a passed-on handover is adopted"
+assert jqe '.jobs[-1] | .ref == "leftover-passed" and .handover.by == "relay-1" and .handover.owner_verified == false' "$(record "$idc")"
+assert grep -qE "^pending · leftover · leftover-passed · .* · handed over by relay-1 \(never worked in its worktree\) at [0-9]{2}:[0-9]{2}: its owner said so$" \
   <(night report "$idc")
 # One name, every sweep repository: a leftover branch in two repositories is adopted in both as one job;
 # live in any of them, it is refused everywhere.
