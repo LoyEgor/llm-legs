@@ -51,7 +51,6 @@ BAND_MIN_S = 15 * 60
 ACTIVE_FLOOR = 0.30
 FLOORS = {"hooks": 0, "stop": 0, "suite_wait": 0, "slot": "slots lent during suites", "retries": 0, "locks": 0,
           "suite_run": "uncontended p10 wall"}
-NIGHT_WORKDIR = "/.claude/worktrees/night-"
 BENCH_WORKDIR = re.compile(r"/logo-vectorizer-bench(/|$)")
 FLOOR_ROW_MIN_DAY = 30
 ROI_DAYS = 3
@@ -61,7 +60,7 @@ IMPROVEMENT_RULES = ("opportunity", "regression", "time_floor", spend_block.RULE
 UNITS = {"suite_run": ("CPU-s/run", suite_audit.PROOF_RUNS, suite_audit.PROOF_RATIO),
          "hooks": ("ms/call", 50, 0.55), "stop": ("ms/call", 50, 0.55),
          "suite_wait": ("s/wait", 20, 0.4), "slot": ("s/wait", 20, 0.4), "locks": ("s/wait", 20, 0.4)}
-WAIT_OF = {"suite_wait": ("run-suites",), "slot": ("night-workers",), "locks": WAIT_CLASSES}
+WAIT_OF = {"suite_wait": ("run-suites",), "slot": ("workers",), "locks": WAIT_CLASSES}
 UNIT_BEFORE_DAYS = 7
 SETTLE_S = 24 * 3600
 KEEP_DAYS = 35
@@ -297,7 +296,7 @@ def budget(lo, hi, events=None):
             chats += turn_split(row, lo, hi)
     for run in runs:
         workers += run_split(run, lo, hi, suites, calls, events.get("h", ()))
-        if NIGHT_WORKDIR in str(run.get("workdir") or "") and not run.get("round"):
+        if not run.get("round"):
             own = run_split(run, float("-inf"), float("inf"), suites, (), ())
             start = num(run.get("pid_started_at")) or num(run.get("started_at"))
             jobs.append([start, start + own["slot"], run["ended_at"], own["suite_run"] + own["suite_wait"]])
@@ -475,7 +474,7 @@ def suite_floor(lo, hi):
 
 
 def burst_gain(burst):
-    """Seconds sooner a burst of night workers [start, first CLI start, end, own suite s] ends when a slot is held only
+    """Seconds sooner a burst of worker runs [start, first CLI start, end, own suite s] ends when a slot is held only
     outside the run's own suites: FIFO replays at the burst's peak concurrency, held against lent."""
     edges = sorted([(j[1], 1) for j in burst] + [(j[2], -1) for j in burst])
     slots = max(1, max(itertools.accumulate(d for _, d in edges)))

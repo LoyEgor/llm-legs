@@ -742,12 +742,12 @@ check(load_levels(bench) == {"busy": None, "unseen": None} and state_of(m.load_s
 slots = os.path.join(work, "held-slots")
 put(os.path.join(slots, "suites", "1", "pid"), "%d\n" % os.getpid())
 put(os.path.join(slots, "suites", "2", "pid"), "999999\n")
-put(os.path.join(slots, "fixers", "1", "pid"), "%d\n" % os.getppid())
-put(os.path.join(slots, "fixers", "2", "pid"), "junk\n")
-os.environ.update(RUN_SUITES_SLOTS_DIR=os.path.join(slots, "suites"), NIGHT_FIXER_SLOTS_DIR=os.path.join(slots, "fixers"))
+put(os.path.join(slots, "workers", "1", "pid"), "%d\n" % os.getppid())
+put(os.path.join(slots, "workers", "2", "pid"), "junk\n")
+os.environ.update(RUN_SUITES_SLOTS_DIR=os.path.join(slots, "suites"), WORKER_SLOTS_DIR=os.path.join(slots, "workers"))
 check(m.held_slots() == 2, "a slot counts as held only while the pid in it runs")
 os.environ.pop("RUN_SUITES_SLOTS_DIR")
-os.environ.pop("NIGHT_FIXER_SLOTS_DIR")
+os.environ.pop("WORKER_SLOTS_DIR")
 
 suites = [test_row(r, "suites", T - 900, T - 100) for r in ("a", "b", "c", "d", "e")]
 check(state_of(m.tests_section(suites, T)) == "problem", "Tests: 5 suites at once are red")
@@ -1881,7 +1881,7 @@ mkdir -p "$WORK/held-memlogd"
 jq -n --argjson now "$held_now" '{as_of: $now, queue_stuck_s: 1800, queues: [
   {limiter: "bench-throttle", stuck: true}, {limiter: "suite-slots", stuck: false}]}' > "$WORK/held-memlogd/chats.json"
 run_held() {
-  HARNESS_LEDGER="$WORK/hold-ledger.json" RUN_SUITES_SLOTS_DIR="$WORK/no-slots" NIGHT_FIXER_SLOTS_DIR="$WORK/no-slots" \
+  HARNESS_LEDGER="$WORK/hold-ledger.json" RUN_SUITES_SLOTS_DIR="$WORK/no-slots" WORKER_SLOTS_DIR="$WORK/no-slots" \
     HARNESS_HOLDS_DIR="$holds" HARNESS_DOCTOR_DIR="$WORK/held" HARNESS_DOCTOR_NOW=$held_now HARNESS_DOCTOR_FAKE_SAMPLE="" \
     MEMLOGD_DIR="$WORK/held-memlogd" "$DOCTOR" --quiet
 }
@@ -1897,14 +1897,14 @@ assert_eq "$(jq -cn --arg b "gone-$dead_pid.json" --arg d "reused-$reused_pid.js
   "a hold over 60 s is a watch, red only in a queue chat-load judged stuck, one under 60 s nothing; a dead pid's file and one whose pid started after since a leak"
 assert_eq 2 "$(grep -c $'^[1-9][0-9]*\t.*holds [0-9]* jobs*, longest [0-9]* min: memory pressure' "$WORK/held/menu.txt")" \
   "the doctor's menu names each hold over 60 s, what it holds, for how long and why"
-mkdir -p "$WORK/night-slots/1" && echo "$$" > "$WORK/night-slots/1/pid"
-HARNESS_LEDGER="$WORK/hold-ledger.json" RUN_SUITES_SLOTS_DIR="$WORK/no-slots" NIGHT_FIXER_SLOTS_DIR="$WORK/night-slots" \
+mkdir -p "$WORK/worker-slots/1" && echo "$$" > "$WORK/worker-slots/1/pid"
+HARNESS_LEDGER="$WORK/hold-ledger.json" RUN_SUITES_SLOTS_DIR="$WORK/no-slots" WORKER_SLOTS_DIR="$WORK/worker-slots" \
   HARNESS_HOLDS_DIR="$holds" MEMLOGD_DIR="$WORK/held-memlogd" \
   HARNESS_DOCTOR_DIR="$WORK/held-night" HARNESS_DOCTOR_NOW=$held_now HARNESS_DOCTOR_FAKE_SAMPLE="" "$DOCTOR" --quiet ||
-  fail "a run over holds under a night slot failed"
-assert_eq '["watch","bench-throttle holds 3 jobs, longest 7 min: memory pressure — the queue is stuck while 1 suite or night-fixer slots ran"]' \
+  fail "a run over holds under a worker slot failed"
+assert_eq '["watch","bench-throttle holds 3 jobs, longest 7 min: memory pressure — the queue is stuck while 1 suite or worker slots ran"]' \
   "$(jq -c '[.problems[] | select(.id == "limiter_hold:bench-throttle") | .state, .fact]' "$WORK/held-night/latest.json")" \
-  "a stuck queue while a suite or night-fixer slot runs is the night's own requested load: a watch, never red"
+  "a stuck queue while a suite or worker slot runs is the harness's own requested load: a watch, never red"
 assert_eq "bench-throttle-1-7001.json bench-throttle-1-7002.json bench-throttle-1.json quick-1.json suite-slots-1.json" \
   "$(ls "$holds" | tr '\n' ' ' | sed 's/ $//')" "a run that reported a leak did not sweep its files, or swept a live hold"
 run_held || fail "a second run over the swept holds failed"

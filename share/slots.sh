@@ -14,7 +14,12 @@ slots_from_cores() { # divisor floor [ceiling] -> cores / divisor, clamped
 
 # The floor is each pool's count before room existed, so admission never falls below it.
 run_suites_slots() { printf '%s-4\n' "$(slots_from_cores 3 2 4)"; }
-night_worker_slots() { printf '%s-%s\n' "$(slots_from_cores 2 2 8)" "$(slots_from_cores 1 2 12)"; }
+worker_slots() {
+  local max
+  max=$(($(slots_from_cores 1 2) * 4))
+  [ "$max" -le 40 ] || max=40
+  printf '%s-%s\n' "$(slots_from_cores 2 2 8)" "$max"
+}
 
 # Load is judged against its own 15-minute base, never against the cores: the owner's benchmark
 # holds that base at 130-340 on 10 cores, and only a burst above it is ours.

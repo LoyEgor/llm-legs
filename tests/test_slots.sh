@@ -11,7 +11,7 @@ assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts: $*"; }
 jqe() { jq -e "$@" >/dev/null; }
 assert_fails() { asserts=$((asserts + 1)); ! "$@" || fail "assert $asserts unexpectedly held: $*"; }
 export HARNESS_HOLDS_DIR="$WORK/holds" HARNESS_WAITS_DIR="$WORK/waits" SLOTS_POLL_S=0.2 STATUSLINE_CACHE_DIR="$WORK/sl" RUN_SUITES_TIMES="$WORK/times.tsv"
-unset RUN_SUITES_SLOT NIGHT_FIXER_SLOT WORKER_RUN_RECORD WORKER_RUN_ID
+unset RUN_SUITES_SLOT WORKER_SLOT WORKER_RUN_RECORD WORKER_RUN_ID
 . "$ROOT/share/slots.sh"
 
 holder() { # dir count -> pid of a process holding one slot until killed
@@ -33,19 +33,22 @@ assert [ "$(slots_from_cores 1 2 4)" = 4 ]
 assert [ "$(slots_from_cores 1 2)" = 12 ]
 sysctl() { echo 3; }
 assert [ "$(slots_from_cores 1 2 4)" = 3 ]
-# Each pool's floor is its count before room: suites cores / 3 (2 to 4), night workers cores / 2 (2 to 8).
+# Each pool's floor is its count before room: suites cores / 3 (2 to 4), workers cores / 2 (2 to 8), then up to
+# 4 x the cores capped at 40 while there is room.
 sysctl() { echo 10; }
 assert [ "$(run_suites_slots)" = 3-4 ]
-assert [ "$(night_worker_slots)" = 5-10 ]
-night_slots=$(night_worker_slots)
+assert [ "$(worker_slots)" = 5-40 ]
+pool_slots=$(worker_slots)
 sysctl() { echo 2; }
 assert [ "$(run_suites_slots)" = 2-4 ]
-assert [ "$(night_worker_slots)" = 2-2 ]
+assert [ "$(worker_slots)" = 2-8 ]
+sysctl() { echo 6; }
+assert [ "$(worker_slots)" = 3-24 ]
 sysctl() { echo 32; }
 assert [ "$(run_suites_slots)" = 4-4 ]
-assert [ "$(night_worker_slots)" = 8-12 ]
+assert [ "$(worker_slots)" = 8-40 ]
 assert grep -qF '${RUN_SUITES_SLOTS:-$(run_suites_slots)}' "$ROOT/share/run-suites.sh"
-assert grep -qF '${NIGHT_FIXER_SLOTS:-$(night_worker_slots)}' "$ROOT/bin/worker-run"
+assert grep -qF '${WORKER_SLOTS:-$(worker_slots)}' "$ROOT/bin/worker-run"
 unset -f sysctl
 
 # Room: pressure level, load1, load15 and free MB, read by stubs from one file a background waiter sees too.
@@ -85,7 +88,7 @@ mkdir -p "$WORK/lr"
 room 2 150 140 $((guard + 1))
 l1=$(holder "$WORK/lr" 1)
 lr_tick() { printf '%s\n' "${SLOT_WHY:-limit}" >>"$WORK/lr-ticks"; }
-(HARNESS_WAITS_DIR="$WORK/lr-waits" SLOTS_ROOM_POLL_S=0.2 slot_wait "$WORK/lr" 1-2 3600 night-workers "last refusal" lr_tick \
+(HARNESS_WAITS_DIR="$WORK/lr-waits" SLOTS_ROOM_POLL_S=0.2 slot_wait "$WORK/lr" 1-2 3600 workers "last refusal" lr_tick \
   >"$WORK/lr-waited") &
 waiter=$!
 for i in $(seq 1 100); do grep -q pressure "$WORK/lr-ticks" 2>/dev/null && break; sleep 0.1; done
@@ -96,16 +99,21 @@ assert [ "$(tail -n 1 "$WORK/lr-ticks")" = limit ]
 kill "$l2"; until_gone "$l2"
 wait "$waiter" || fail "slot_wait never took the slot freed under it"
 assert [ "$(cat "$WORK/lr-waited")" = "$WORK/lr/2" ]
-assert jqe -s 'length == 1 and .[0].class == "night-workers" and .[0].allowed == 2 and .[0].held == 2 and .[0].reason == "limit"' \
+assert jqe -s 'length == 1 and .[0].class == "workers" and .[0].allowed == 2 and .[0].held == 2 and .[0].reason == "limit"' \
   "$WORK/lr-waits"/*.jsonl
 slot_release "$WORK/lr/2"; kill "$l1"; until_gone "$l1"; rm -rf "$WORK/lr"
-# Under memory pressure the night pool still takes its whole floor of 5, and only the sixth waits.
+# Under memory pressure the worker pool still takes its whole floor of 5, and only the sixth waits.
 mkdir -p "$WORK/f"
 room 2 150 140 $((guard + 1))
-for i in 1 2 3 4 5; do assert [ "$(slot_take "$WORK/f" "$night_slots" 3600)" = "$WORK/f/$i" ]; done
-slot_take "$WORK/f" "$night_slots" 3600 >/dev/null
+for i in 1 2 3 4 5; do assert [ "$(slot_take "$WORK/f" "$pool_slots" 3600)" = "$WORK/f/$i" ]; done
+slot_take "$WORK/f" "$pool_slots" 3600 >/dev/null
 assert [ "$SLOT_WHY" = 'memory pressure level 2' ] && assert [ ! -e "$WORK/f/6" ]
-for i in 1 2 3 4 5; do slot_release "$WORK/f/$i"; done; rm -rf "$WORK/f"
+# With room it fills to 4 x the cores, 40 here, and the 41st waits for a held slot, not for room.
+room 1 150 140 $((guard + 1))
+for i in $(seq 6 41); do slot_take "$WORK/f" "$pool_slots" 3600 >/dev/null || break; done
+assert [ "$i" = 41 ] && assert [ -e "$WORK/f/40" ] && assert [ ! -e "$WORK/f/41" ]
+assert [ -z "$SLOT_WHY" ]
+for i in $(seq 1 40); do slot_release "$WORK/f/$i"; done; rm -rf "$WORK/f"
 unset -f sysctl vm_stat
 
 mkdir -p "$WORK/s"
@@ -332,47 +340,65 @@ wait "$free_run" || fail "an ownerless run failed: $(cat "$WORK/ownerless.out")"
 assert jqe -s --argjson p "$free_run" 'map(select(.pid == $p)) | length == 1
   and (.[0] | has("reason") | not) and .[0].complete and .[0].suites["test_free.sh"].rc == 0' "$WORK/runs.jsonl"
 
-# worker-run: a run on a night branch waits for one of NIGHT_FIXER_SLOTS, its deadline counted from
-# the slot; its slot goes when it ends. Any other branch never waits.
+# worker-run: a run waits for one of WORKER_SLOTS, its deadline counted from the slot; its slot goes
+# when it ends.
 git -C "$WORK" init -q night && git -C "$WORK/night" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
 git -C "$WORK/night" worktree add -q -b night/n1/llm-health-1 "$WORK/night-wt"
 mkdir -p "$WORK/run"
 jq -n --arg w "$WORK/night-wt" '{vendor: "none", workdir: $w, started_at: 1}' >"$WORK/run/meta.json"
-export NIGHT_FIXER_SLOTS_DIR="$WORK/fs" NIGHT_FIXER_SLOTS=1
-mkdir -p "$NIGHT_FIXER_SLOTS_DIR"
-h6=$(holder "$NIGHT_FIXER_SLOTS_DIR" 1)
+export WORKER_SLOTS_DIR="$WORK/fs" WORKER_SLOTS=1
+mkdir -p "$WORKER_SLOTS_DIR"
+h6=$(holder "$WORKER_SLOTS_DIR" 1)
 bash "$ROOT/bin/worker-run" _supervise "$WORK/run" >/dev/null 2>&1 &
 sup=$!
 pids+=("$sup")
-for i in $(seq 1 50); do [ "$(holds_of night-workers)" = 1 ] && break; sleep 0.1; done
-assert [ "$(holds_of night-workers)" = 1 ]
-assert jqe '.held.what | test("^worker run run on night/n1/llm-health-1$")' "$HARNESS_HOLDS_DIR"/night-workers-*.json
+for i in $(seq 1 50); do [ "$(holds_of workers)" = 1 ] && break; sleep 0.1; done
+assert [ "$(holds_of workers)" = 1 ]
+assert jqe '.held.what | test("^worker run run on night/n1/llm-health-1$")' "$HARNESS_HOLDS_DIR"/workers-*.json
 assert kill -0 "$sup"
 before=$(date +%s)
 kill "$h6"
 wait "$sup"
 assert [ $? = 4 ]
 assert jqe --argjson b "$before" '.started_at == 1 and .slot_at >= $b' "$WORK/run/meta.json"
-assert [ ! -e "$NIGHT_FIXER_SLOTS_DIR/1" ]
-assert [ "$(holds_of night-workers)" = 0 ]
-assert jqe 'length == 1 and (.[0].source | test("^worker run run on night/n1/llm-health-1$"))' <(waits_of night-workers)
+assert [ ! -e "$WORKER_SLOTS_DIR/1" ]
+assert [ "$(holds_of workers)" = 0 ]
+assert jqe 'length == 1 and (.[0].source | test("^worker run run on night/n1/llm-health-1$"))' <(waits_of workers)
 # A night run nested under a slot holder's worker inherits its slot instead of waiting on its ancestor.
-h8=$(holder "$NIGHT_FIXER_SLOTS_DIR" 1)
-NIGHT_FIXER_SLOT="$NIGHT_FIXER_SLOTS_DIR/1" bash "$ROOT/bin/worker-run" _supervise "$WORK/run" >/dev/null 2>&1 &
+h8=$(holder "$WORKER_SLOTS_DIR" 1)
+WORKER_SLOT="$WORKER_SLOTS_DIR/1" bash "$ROOT/bin/worker-run" _supervise "$WORK/run" >/dev/null 2>&1 &
 nested=$!
 until_gone "$nested" || { kill "$nested"; fail "a nested night run waited for the slot its ancestor holds"; }
 wait "$nested"
 assert [ $? = 4 ]
-assert [ "$(holds_of night-workers)" = 0 ]
-assert [ "$(cat "$NIGHT_FIXER_SLOTS_DIR/1/pid")" = "$h8" ]
+assert [ "$(holds_of workers)" = 0 ]
+assert [ "$(cat "$WORKER_SLOTS_DIR/1/pid")" = "$h8" ]
 kill "$h8"; until_gone "$h8"
+# A day branch and a workdir outside git wait for the same pool and start once a slot frees.
+admitted() { # run-dir what
+  local h sup i
+  h=$(holder "$WORKER_SLOTS_DIR" 1)
+  bash "$ROOT/bin/worker-run" _supervise "$1" >/dev/null 2>&1 &
+  sup=$!
+  pids+=("$sup")
+  for i in $(seq 1 50); do [ "$(holds_of workers)" = 1 ] && break; sleep 0.1; done
+  assert [ "$(holds_of workers)" = 1 ]
+  assert jqe --arg w "worker run ${1##*/} on $2" '.held.what == $w' "$HARNESS_HOLDS_DIR"/workers-*.json
+  assert kill -0 "$sup"
+  kill "$h"
+  wait "$sup"
+  assert [ $? = 4 ]
+  assert jqe '.slot_at >= .started_at' "$1/meta.json"
+  assert [ ! -e "$WORKER_SLOTS_DIR/1" ]
+  assert [ "$(holds_of workers)" = 0 ]
+}
 git -C "$WORK/night-wt" checkout -q -b day-branch
-h7=$(holder "$NIGHT_FIXER_SLOTS_DIR" 1)
-bash "$ROOT/bin/worker-run" _supervise "$WORK/run" >/dev/null 2>&1
-assert [ $? = 4 ]
-assert [ "$(holds_of night-workers)" = 0 ]
-kill "$h7"
-until_gone "$h7"
+admitted "$WORK/run" day-branch
+mkdir -p "$WORK/plain" "$WORK/run-plain"
+jq -n --arg w "$WORK/plain" '{vendor: "none", workdir: $w, started_at: 1}' >"$WORK/run-plain/meta.json"
+admitted "$WORK/run-plain" "$WORK/plain"
+assert jqe --arg p "worker run run-plain on $WORK/plain" 'length == 3 and .[1].source == "worker run run on day-branch"
+  and .[2].source == $p' <(waits_of workers)
 # The Speed window, checked once the slot is taken: a Speed fixer whose slot comes 6 h or more after the
 # night's start is not started and its job is left; one inside the window starts; a non-speed fixer after
 # 6 h starts too.
@@ -397,7 +423,15 @@ assert jq -e '.jobs[0].state == "pending" and [.events[] | .phase] == ["speed-st
 assert [ -z "$(gated nhooks 7 hh-late hooks)" ]
 assert jq -e '.jobs[0].state == "pending" and .events == null' "$DOCTORS_DIR/nights/nhooks.json" >/dev/null
 assert jq -e '.abandoned_at == null' "$DOCTORS_DIR/runs/hh-late.json" >/dev/null
-assert [ ! -e "$NIGHT_FIXER_SLOTS_DIR/1" ]
+# The Speed window is the night's own deadline: only a run on a night branch asks night-run speed-gate.
+mkdir -p "$WORK/fake/bin"
+cp "$ROOT/bin/worker-run" "$WORK/fake/bin/worker-run"
+ln -s "$ROOT/share" "$WORK/fake/share"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"%s/gate-calls"\n' "$WORK" >"$WORK/fake/bin/night-run"
+chmod +x "$WORK/fake/bin/night-run"
+for r in run run-plain run-hs-in; do bash "$WORK/fake/bin/worker-run" _supervise "$WORK/$r" >/dev/null 2>&1; done
+assert [ "$(cat "$WORK/gate-calls")" = 'speed-gate nopen hs-in' ]
+assert [ ! -e "$WORKER_SLOTS_DIR/1" ]
 # A slot taken or refused at once is no wait: slot polling never journals a lock row.
 assert jqe 'length == 0' <(waits_of lock)
 

@@ -216,7 +216,7 @@ command -v worker_walls_record >/dev/null ||
 . "$SCRIPT_DIRECTORY/../share/store-lock.sh" ||
   fail 'share/store-lock.sh is missing: worker-run cannot rotate the worker-attempts journal safely'
 . "$SCRIPT_DIRECTORY/../share/slots.sh" || fail 'share/slots.sh is missing'
-NIGHT_SLOT=''
+RUN_SLOT=''
 . "$SCRIPT_DIRECTORY/../share/worktree-branch.sh" ||
   fail 'share/worktree-branch.sh is missing: worker-run cannot find a sibling worktree on its branch'
 . "$SCRIPT_DIRECTORY/../share/worker-claims.sh" ||
@@ -1414,20 +1414,22 @@ supervise() {
   # the record of a run still going, and a reader takes that for a run that wrote nothing.
   cd "$workdir" || { persist_run_files "$directory"; return 4; }
   take_floor "$directory" "$workdir"
-  # At most NIGHT_FIXER_SLOTS workers on night branches at once (cores / 2 clamped 2 to 8, up to the cores
-  # capped at 12 while slot_room finds room): a night worker is model-bound between suite runs, which run-suites caps on its own. started_at
-  # stays the launch, so a night's hours include the queue; the deadline clock is slot_at, the slot's
-  # instant, kept fresh through the wait.
+  # Every run takes one of WORKER_SLOTS (cores / 2 clamped 2 to 8, then up to 4 x the cores capped at 40
+  # while slot_room finds room): a worker is model-bound between suite runs, which run-suites caps on its
+  # own. started_at stays the launch, so the queue counts in a run's hours; the deadline clock is slot_at,
+  # the slot's instant, kept fresh through the wait.
   local branch
   branch=$(linked_worktree_branch "$workdir")
-  # A run nested under a slot holder's worker inherits NIGHT_FIXER_SLOT: waiting would deadlock on its ancestor.
-  if [[ $branch == night/*/* ]] && [ -z "${NIGHT_FIXER_SLOT:-}" ]; then
-    NIGHT_SLOT=$(slot_wait "${NIGHT_FIXER_SLOTS_DIR:-${DOCTORS_DIR:-$HOME/.cache/doctors}/fixer-slots}" \
-      "${NIGHT_FIXER_SLOTS:-$(night_worker_slots)}" $((2 * DEADLINE + 900)) night-workers \
-      "worker run ${directory##*/} on $branch" meta_update "$directory" '.slot_at = (now | floor)' 2>/dev/null) ||
+  # A run nested under a slot holder's worker inherits WORKER_SLOT: waiting would deadlock on its ancestor.
+  if [ -z "${WORKER_SLOT:-}" ]; then
+    RUN_SLOT=$(slot_wait "${WORKER_SLOTS_DIR:-${DOCTORS_DIR:-$HOME/.cache/doctors}/worker-slots}" \
+      "${WORKER_SLOTS:-$(worker_slots)}" $((2 * DEADLINE + 900)) workers \
+      "worker run ${directory##*/} on ${branch:-$workdir}" meta_update "$directory" '.slot_at = (now | floor)' 2>/dev/null) ||
       { persist_run_files "$directory"; return 4; }
-    export NIGHT_FIXER_SLOT=$NIGHT_SLOT
+    export WORKER_SLOT=$RUN_SLOT
     meta_update "$directory" '.slot_at = (now | floor)' || :
+  fi
+  if [ -n "$RUN_SLOT" ] && [[ $branch == night/*/* ]]; then
     local night gate
     night=${branch#night/} night=${night%%/*}
     gate=$("$SCRIPT_DIRECTORY/night-run" speed-gate "$night" "${branch#"night/$night/"}" 2>/dev/null)
@@ -1440,7 +1442,7 @@ supervise() {
   fi
   while :; do
     # The slot's ceiling runs from its mtime, and each walled reroute is an attempt with a deadline of its own.
-    [ -z "$NIGHT_SLOT" ] || touch "$NIGHT_SLOT" 2>/dev/null
+    [ -z "$RUN_SLOT" ] || touch "$RUN_SLOT" 2>/dev/null
     case "$vendor" in
       claudeb) supervise_claudeb "$directory" ;;
       codex) supervise_codex "$directory" ;;
@@ -5586,7 +5588,7 @@ case "${1:-}" in
   _chrome-runs) if [ "${2:-}" = --browser ]; then chrome_runs "$CHROME_BROWSER_RUN"; else chrome_runs; fi; exit 0 ;;
   _chrome-flags) printf '%s\n' "${CHROME_FLAGS[@]}"; exit 0 ;;
   _chrome-data) browse_chrome_data; exit 0 ;;
-  _supervise) shift; supervise "$@"; rc=$?; end_run_orphans "$1"; slot_release "$NIGHT_SLOT"; exit "$rc" ;;
+  _supervise) shift; supervise "$@"; rc=$?; end_run_orphans "$1"; slot_release "$RUN_SLOT"; exit "$rc" ;;
   *) usage ;;
 esac
 exit; }

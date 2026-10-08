@@ -244,7 +244,7 @@ too, since 2026-10-07 on its own CPU (wall stays context): over 20 CPU-s (`colle
 first backfill, is a problem.
 
 Machine load is weather (Egor, 2026-10-05): `load:busy` and `load:unseen` are shown, never judged
-(2026-10-07). Each sample records the run-suites and night-fixer slots a live process holds (`held`).
+(2026-10-07). Each sample records the run-suites and worker slots a live process holds (`held`).
 A full `suites` run that another run-suites run of
 the same `repo_root` overlapped (`runs.jsonl`) stays a watch however slow, and `suites at once`
 counts the runs that journal holds as well as `test-history.jsonl`.
@@ -663,11 +663,11 @@ job of one chat for about 4 h under memory pressure and nothing reached Egor.
   `refreshState().prefix` follows the same order.
 - **llm-legs limiters.** `share/slots.sh` `slot_wait` writes one: `run-suites` (at most
   `RUN_SUITES_SLOTS` suite runs machine-wide: cores / 3 clamped 2–4 always, up to 4 while `slot_room`
-  finds room) and `night-workers` (`worker-run` on a `night/*/*` branch, `NIGHT_FIXER_SLOTS`: cores / 2
-  clamped 2–8 always, up to the cores capped at 12 while `slot_room` finds room; `run_suites_slots` and
-  `night_worker_slots` in `share/slots.sh`). Room only adds slots above the old defaults. Room = memory pressure normal, available
+  finds room) and `workers` (every `worker-run` run, `WORKER_SLOTS`: cores / 2
+  clamped 2–8 always, up to 4 × the cores capped at 40 while `slot_room` finds room; a nested run inherits
+  `WORKER_SLOT`; `run_suites_slots` and `worker_slots` in `share/slots.sh`). Room only adds slots above the old defaults. Room = memory pressure normal, available
   memory above `bin/chat-load` `GUARD_AVAIL_MB` + `SLOTS_ROOM_MB` (1500), and load1 within the cores of
-  load15 (the benchmark's base). A night worker's `started_at` stays its launch; its deadline clock is
+  load15 (the benchmark's base). A worker run's `started_at` stays its launch; its deadline clock is
   `slot_at`. A queued suite run is
   no test yet (no `suites-<pid>` pointer); the `worker-run` watchdog counts a live hold in its run's
   process tree as activity. **Every wait is measured** even when normal: `hold_clear`, a lock that

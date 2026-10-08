@@ -31,7 +31,7 @@ wait_note() {
   ms=$(wait_ms "${4:-}") || ms=$(( $(wait_ms "${EPOCHREALTIME:-$(date +%s)}") - start ))
   [ "$ms" -ge 0 ] 2>/dev/null || return 0
   source=${2//\\/\\\\}; source=${source//\"/\\\"}; source=${source//[[:cntrl:]]/ }
-  if [ "$1" = night-workers ] || [ "$1" = run-suites ] || [ -n "$reason" ]; then
+  if [ "$1" = workers ] || [ "$1" = run-suites ] || [ -n "$reason" ]; then
     [[ "$allowed" =~ ^[0-9]+$ ]] || allowed=null
     [[ "$held" =~ ^[0-9]+$ ]] || held=null
     [ -z "$reason" ] && reason=null || reason="\"${reason//[^A-Za-z0-9_.-]/_}\""

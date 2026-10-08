@@ -1352,12 +1352,12 @@ def running_tests(now):
 
 
 def held_slots():
-    """Suite and night-fixer slots a live process holds: the machine's requested parallel work."""
+    """Suite and worker slots a live process holds: the machine's requested parallel work."""
     count = 0
     for root in (os.environ.get("RUN_SUITES_SLOTS_DIR") or os.path.join(
                      os.environ.get("XDG_CACHE_HOME") or os.path.join(base_home(), ".cache"), "run-suites", "slots"),
-                 os.environ.get("NIGHT_FIXER_SLOTS_DIR") or os.path.join(env_dir("DOCTORS_DIR", ".cache", "doctors"),
-                                                                         "fixer-slots")):
+                 os.environ.get("WORKER_SLOTS_DIR") or os.path.join(env_dir("DOCTORS_DIR", ".cache", "doctors"),
+                                                                    "worker-slots")):
         for path in glob.glob(os.path.join(root, "*", "pid")):
             try:
                 with open(path) as handle:
@@ -5679,7 +5679,7 @@ def hold_verdicts(now, held):
             fact="%s holds %d job%s, longest %s: %s%s" % (
                 limiter, len(holds), "" if len(holds) == 1 else "s", fmt_long(longest),
                 holds[0].get("why") or "no reason given",
-                (" — the queue is stuck" + (" while %d suite or night-fixer slots ran" % held if held else ""))
+                (" — the queue is stuck" + (" while %d suite or worker slots ran" % held if held else ""))
                 if over else ""),
             evidence=[evidence(h["since"], "holds/" + h["file"], "%s · %s" % (held_of(h).get("what"), h.get("why")),
                                str(held_of(h).get("session") or held_of(h).get("cwd") or "")) for h in holds],
@@ -5694,7 +5694,7 @@ def hold_verdicts(now, held):
     return out, [os.path.join(hold_dir(), h["file"]) for holds in leaked.values() for h in holds]
 
 
-SLOT_WAIT_CLASSES = ("night-workers", "run-suites")
+SLOT_WAIT_CLASSES = ("workers", "run-suites")
 
 
 def wait_classes(now):

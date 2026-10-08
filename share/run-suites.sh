@@ -431,10 +431,10 @@ run_one() { # suite-path [shard i/N]
     # SourceFileLoader import leaves in bin/ reads to a review's integrity check as a new file.
     # This run's own journal and times files are the live ones whenever a caller exported them.
     unset CLAUDEB_WORKER WORKER_RUN_RECORD WORKER_RUN_ID CLAUDE_LAUNCHER_SESSION WORKER_PICK_CONFIG_FILE CLAUDE_CODE_SESSION_ID \
-      RUN_SUITES_JOURNAL RUN_SUITES_TIMES
+      RUN_SUITES_JOURNAL RUN_SUITES_TIMES WORKER_SLOT
     export PYTHONDONTWRITEBYTECODE=1
     # A fixture's slot and lock waits would read as the machine's own in the Harness doctor.
-    export HARNESS_WAITS_DIR="$TMPDIR/waits"
+    export HARNESS_WAITS_DIR="$TMPDIR/waits" WORKER_SLOTS_DIR="$TMPDIR/worker-slots"
     mkdir -p "$TMPDIR"
     if $profile && mkdir -p "$logdir/$job.shims" && : >>"$logdir/$name.execs"; then
       for bin in jq python3 lua git sleep date sed grep awk mktemp bash; do

@@ -93,7 +93,7 @@ lines(os.path.join(work, "harness", "events", "2026-01-10.jsonl"), [
 lines(os.path.join(work, "harness", "waits", "2026-01-10.jsonl"),
       [{"class": "lock", "source": "x", "started": D0 + 7100, "seconds": 40, "pid": 1, "caller": "sessA"},
        {"class": "lock", "source": "heartbeat", "started": D0 + 7200, "seconds": 30, "pid": 2},
-       {"class": "night-workers", "source": "j", "started": D0 + 1000, "seconds": 600, "pid": 1}])
+       {"class": "workers", "source": "j", "started": D0 + 1000, "seconds": 600, "pid": 1}])
 lines(os.path.join(work, "watch", "gates.jsonl"), [{"at": D0 + 100, "decision": "denied"},
                                                    {"at": D0 + 100, "decision": "passed"}])
 
@@ -199,6 +199,13 @@ check(T.budget(D0, D0 + 86400)["jobs"] == [[D0 + 1000, D0 + 1600, D0 + 10000, 30
       "a night worker enters the slot replay with its launch, first CLI start, end and own suite seconds")
 check(T.budget(D0 + 7000, D0 + 86400)["jobs"] == [[D0 + 1000, D0 + 1600, D0 + 10000, 3000.0]],
       "a night worker that started before the window keeps the suite seconds it ran before it")
+lines(os.path.join(work, "day-stats", "runs.jsonl"), [dict(run, workdir="/r/.claude/worktrees/feat-x"),
+                                                      dict(review, workdir="/r/.claude/worktrees/feat-x")])
+os.environ["WORKER_STATS_DIR"] = os.path.join(work, "day-stats")
+check(T.budget(D0, D0 + 86400)["jobs"] == [[D0 + 1000, D0 + 1600, D0 + 10000, 3000.0]],
+      "a day worker takes a slot from the same pool and enters the slot replay too; a review round stays out")
+check(dict(T.unit_samples({"class": "slot"}, D0, D0 + 86400)) == {"workers": [600]},
+      "the slot class's unit samples are the workers pool's waits")
 os.environ["WORKER_STATS_DIR"] = os.path.join(work, "stats")
 b = T.budget(D0, D0 + 86400)
 wb = dict(b, seconds=dict(b["seconds"], walled=3600), worker=dict(b["worker"], walled=3600))

@@ -42,11 +42,12 @@ assert test ! -e "$WORK/renices"
 out=$(CLAUDE_LAUNCHER_SESSION=chat-1 WORKER_RUN_ID=w-1 bash "$ROOT/share/run-suites.sh" --repo "$WORK/repo" 2>&1)
 assert test "$(grep -c 'PASS: nice=10' <<<"$out")" = 2
 
-# A suite never sees the launching chat's session id (its worker pin) and writes no bytecode.
+# A suite never sees the launching chat's session id (its worker pin) or its worker's slot, takes worker slots
+# from a pool of its own, and writes no bytecode.
 mkdir -p "$WORK/env/tests"
-printf '#!/usr/bin/env bash\necho "PASS: sid=${CLAUDE_CODE_SESSION_ID:-none} pyc=${PYTHONDONTWRITEBYTECODE:-}"\n' >"$WORK/env/tests/test_env.sh"
-out=$(CLAUDE_CODE_SESSION_ID=chat-1 bash "$ROOT/share/run-suites.sh" --repo "$WORK/env" 2>&1)
-assert grep -q 'PASS: sid=none pyc=1' <<<"$out"
+printf '#!/usr/bin/env bash\necho "PASS: sid=${CLAUDE_CODE_SESSION_ID:-none} pyc=${PYTHONDONTWRITEBYTECODE:-} slot=${WORKER_SLOT:-none} pool=${WORKER_SLOTS_DIR#"$TMPDIR/"}"\n' >"$WORK/env/tests/test_env.sh"
+out=$(CLAUDE_CODE_SESSION_ID=chat-1 WORKER_SLOT=/held bash "$ROOT/share/run-suites.sh" --repo "$WORK/env" 2>&1)
+assert grep -q 'PASS: sid=none pyc=1 slot=none pool=worker-slots$' <<<"$out"
 
 # Wall-clock budget suites stay at the caller's nice; the parallel wave is what drops to 10.
 mkdir -p "$WORK/prio/tests"

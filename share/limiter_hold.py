@@ -61,7 +61,7 @@ def wait_note(cls, source, started, seconds=None, allowed=None, held=None, reaso
             return
         row = {"class": re.sub(r"[^A-Za-z0-9_.-]", "_", cls), "source": str(source), "started": round(started, 3),
                "seconds": seconds, "pid": os.getpid()}
-        if cls in ("night-workers", "run-suites") or reason is not None:
+        if cls in ("workers", "run-suites") or reason is not None:
             row.update(allowed=allowed, held=held, reason=reason)
         caller = os.environ.get("WORKER_RUN_ID") or os.environ.get("CLAUDE_CODE_SESSION_ID")
         if caller:

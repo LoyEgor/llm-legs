@@ -137,7 +137,7 @@ TIME_LEVERS = {k: dict({"component": "time/" + k, "effort": "M", "confidence": "
     "stop": {"lever": "Stop hooks off the turn's critical path", "proof": "latency", "hooks": True},
     "suite_run": {"lever": "bring suite walls to their uncontended p10 and keep every check", "proof": "tests"},
     "suite_wait": {"lever": "covering suites start without a slot queue"},
-    "slot": {"lever": "a night slot lent while its holder runs its own suites"},
+    "slot": {"lever": "a worker slot lent while its holder runs its own suites"},
     "retries": {"lever": "fewer failed attempts before a worker's last start"},
     "locks": {"lever": "shorter lock holds and polls"}}.items()}
 validate_levers(LEVERS + [TEST_LEVER, HOOK_LEVER] + list(TIME_LEVERS.values()))
