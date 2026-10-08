@@ -29,7 +29,7 @@ assert test "$(jq 'has("served_model")' "$RUN_DIR/meta.json")" = false
 report=$("$RUNNER" report "$RUN_ID")
 assert grep -qx 'MODEL: opus·high' <<<"$report"
 assert_fails grep -q '^SERVED:' <<<"$report"
-assert grep -qx 'HINT: this run edited nothing — a read-only lookup is cheaper as a light research run (`light-research`, see ~/.claude/CLAUDE.md, Model routing); read-only worker runs this month: 1' <<<"$report"
+assert grep -qx 'HINT: this run edited nothing — a read-only lookup is cheaper as a light research run (a background Bash `light-research --prompt-file <f> --out <answer> --repo <abs>`); read-only worker runs this month: 1' <<<"$report"
 assert test -f "$RUN_DIR/report-readonly"
 
 clear_stub
@@ -38,7 +38,7 @@ export STUB_TRANSCRIPT_ACCOUNT=readonly-two
 start_ok claudeb
 assert await_done
 report=$("$RUNNER" report "$RUN_ID")
-assert grep -qx 'HINT: this run edited nothing — a read-only lookup is cheaper as a light research run (`light-research`, see ~/.claude/CLAUDE.md, Model routing); read-only worker runs this month: 2' <<<"$report"
+assert grep -qx 'HINT: this run edited nothing — a read-only lookup is cheaper as a light research run (a background Bash `light-research --prompt-file <f> --out <answer> --repo <abs>`); read-only worker runs this month: 2' <<<"$report"
 assert test -f "$RUN_DIR/report-readonly"
 
 clear_stub

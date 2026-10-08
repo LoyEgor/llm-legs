@@ -3961,7 +3961,7 @@ readonly_report_hint() {
     marker_month=$(date -r "$started" +%Y-%m 2>/dev/null || date -d "@$started" +%Y-%m 2>/dev/null) || continue
     [ "$marker_month" != "$month" ] || count=$((count + 1))
   done
-  printf 'HINT: this run edited nothing — a read-only lookup is cheaper as a light research run (`light-research`, see ~/.claude/CLAUDE.md, Model routing); read-only worker runs this month: %s\n' "$count"
+  printf 'HINT: this run edited nothing — a read-only lookup is cheaper as a light research run (a background Bash `light-research --prompt-file <f> --out <answer> --repo <abs>`); read-only worker runs this month: %s\n' "$count"
 }
 
 # The agent's answer, reassembled out of the stream: `text` events carry it in chunks, and a raw

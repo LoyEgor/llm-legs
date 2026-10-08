@@ -4096,6 +4096,8 @@ wrap 1290 1000 00:40 "'timeout 600 git push'"
 printf '1291 1290 00:39 timeout -s KILL 600 git push origin\n'
 wrap 1300 1000 00:38 "'curl --user secretword https://x'"
 printf '1301 1300 00:37 curl --user secretword https://x\n'
+wrap 1330 1000 00:35 "'perl -le 1'"
+printf '1331 1330 00:34 perl -le select(undef,undef,undef,secretcode)\n'
 wrap 1310 1000 01:30 "'bash /abs/test_y.sh'"
 printf '1311 1310 01:29 bash %s/tests/test_y.sh\n' "$WORK/wp-other"
 wrap 1320 1000 03:00 "'bash /o/tests/run-all'"
@@ -4144,7 +4146,7 @@ printf 'p1101\nfcwd\nn%s\n' "$WORK/wp-plain"
 printf 'p1200\nfcwd\nn%s\n' "$WP_REPO/.claude/worktrees/wt-one"
 printf 'p1231\nfcwd\nn%s\n' "$WORK/wp-plain"
 printf 'p1260\nfcwd\nn%s\n' "$WORK/wp-plain"
-for p in 1270 1280 1290 1300 1311; do printf 'p%s\nfcwd\nn%s\n' "\$p" "$WORK/wp-plain"; done
+for p in 1270 1280 1290 1300 1311 1330; do printf 'p%s\nfcwd\nn%s\n' "\$p" "$WORK/wp-plain"; done
 printf 'p1321\nfcwd\nn%s\n' "$WP_REPO"
 printf 'p3000\nfcwd\nn%s\n' "$WP_REPO"
 printf 'p3200\nfcwd\nn%s\n' "$WP_REPO"
@@ -4173,7 +4175,7 @@ STATUSLINE_PS="$FAKE_PS_WORK" STATUSLINE_LSOF="$FAKE_LSOF_WORK" WORKER_RUN_DIR="
 # A suite run is the repository it was handed whatever the cwd (1101); one with no pointer of its own
 # (1321: older than its process) is still queued for a slot. A script under another repository is that
 # repository's whatever the cwd (1311); a test that exec'd over its snapshot shell is still a test (1270); a shell label takes the
-# plain word after the program only, never an option's operand (1300).
+# plain word after the program only, never an option's operand (1300) nor inline code (1330).
 assert_eq "$(printf '%s\n' \
   $'main\tworker\tacc · astra · high\tFix the parser\ttests\t\t' \
   $'main\tworker\tcom · opus · high\tMap the hooks\tworking\t\t' \
@@ -4195,6 +4197,7 @@ assert_eq "$(printf '%s\n' \
   $'main\tshell\twp-plain\t\t\t\t' \
   $'main\tshell\twp-plain\tgit push\t\t\t' \
   $'main\tshell\twp-plain\tcurl\t\t\t' \
+  $'main\tshell\twp-plain\tperl\t\t\t' \
   $'main\tshell\t⧉ wt-one\tgit push\t\t\t' \
   $'main\tshell\twp-plain\thook instruction-watch\t\t\t' \
   $'run\tcodex-7-7-live\tpnpm test')" "$(cut -f1,2,4-8 "$STATE_DIR/work-wp-sess")"

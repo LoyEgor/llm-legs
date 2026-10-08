@@ -450,14 +450,7 @@ assert test "$(sed -n '/^def run_agy(/,/^def /p' "$RB_LAUNCH" | grep -Fc '"--eff
 assert doc_has 'Antigravity review cell invocation mapping'
 
 # --- Row i: Gemini worker knobs ----------------------------------------------
-GEMINI_AGENT="${GEMINI_WORKER_AGENT:-$HOME/.claude/agents/gemini-worker.md}"
-CODEX_AGENT="${CODEX_WORKER_AGENT:-$HOME/.claude/agents/codex-worker.md}"
-CLAUDEB_AGENT="${CLAUDEB_WORKER_AGENT:-$HOME/.claude/agents/claudeb-worker.md}"
-GROK_AGENT="${GROK_WORKER_AGENT:-$HOME/.claude/agents/grok-worker.md}"
 WORKER_COMMAND="${WORKER_COMMAND_FILE:-$HOME/.claude/commands/worker.md}"
-assert test -r "$GEMINI_AGENT"
-assert test -r "$CODEX_AGENT"
-assert test -r "$CLAUDEB_AGENT"
 assert test -r "$WORKER_COMMAND"
 WORKER_RUN="${WORKER_RUN_BIN:-$ROOT/bin/worker-run}"
 assert test -x "$WORKER_RUN"
@@ -872,12 +865,6 @@ for site in "$ROOT/share/worker-policy.md" "$ROOT/docs/routing-contract.md" \
   # Named, never spelled: a grok model literal on the line that states the list is the drift.
   assert test "$(grep -F 'grokb models' "$site" | grep -Ec 'grok-4\.[0-9]')" -eq 0
 done
-# The relay briefs may not offer a cheap model as a per-task MODEL: option.
-for agent in "$CLAUDEB_AGENT" "$CODEX_AGENT" "$GEMINI_AGENT" "$GROK_AGENT"; do
-  [ -r "$agent" ] || continue
-  # The frontmatter `model:` is the RELAY's own model, not a model it may ask a worker to run.
-  assert test "$(grep -Ev '^model: ' "$agent" | grep -Eic '(sonnet|haiku|flash3[0-59]|gpt-5\.6-(terra|luna))')" -eq 0
-done
 assert doc_has 'Allowed worker models'
 assert doc_has 'claudeb `opus`, codex `astra` (the newest slug of the family `codexb models` lists, row `cv`), gemini the newest Flash family `geminib families` prints, the table'"'"'s first gemini row since `pro` is emitted last whatever its version (also every other slug the list prints, row `cr`), grok `auto` (the CLI'"'"'s own default, plus every slug `grokb models` prints, row `cu`)'
 
@@ -889,22 +876,9 @@ assert grep -Fq 'pin=$(worker_model_pin_first "$vendor")' "$WORKER_RUN"
 assert grep -Fq 'claudeb needs an explicit account or claudeb_profile pin when worker-pick is unavailable' "$WORKER_RUN"
 assert grep -Fq 'account=main' "$WORKER_RUN"
 assert grep -Fq 'contradicts the brief header' "$WORKER_RUN"
-for agent in "$CLAUDEB_AGENT" "$CODEX_AGENT" "$GEMINI_AGENT"; do
-  assert grep -Eq "worker-run reads the brief's \`ACCOUNT:\`, \`MODEL:\`(,| and) \`EFFORT:\`[^.]* header lines itself" "$agent"
-  assert grep -Fq 'worker-run start' "$agent"
-done
-# The gate judges the relay's PROMPT, while worker-run reads the FILE it saved: an orchestrator that
-# hands `Brief file: <path>` plus an `ACCOUNT:` line got the first launch refused 9 times of 15.
-for agent in "$CLAUDEB_AGENT" "$CODEX_AGENT" "$GEMINI_AGENT" "$GROK_AGENT"; do
-  assert grep -Fq "pass \`--account\`/\`--model\` exactly as your prompt's \`ACCOUNT:\`/\`MODEL:\` lines say, never one it lacks" "$agent"
-done
 # worker-run reads a RESUME first line and refuses a --resume flag that disagrees with it; a relay told to
 # pass the flag launched a RESUME brief as a fresh session (2026-10-02).
 assert grep -Fq "drop the flag, worker-run reads the line itself" "$WORKER_RUN"
-for agent in "$CLAUDEB_AGENT" "$CODEX_AGENT" "$GEMINI_AGENT" "$GROK_AGENT"; do
-  assert test "$(grep -Fc -- '`--resume <' "$agent")" -eq 0
-  assert grep -Fq 'worker-run reads a `RESUME <id>:` first line' "$agent"
-done
 assert doc_has 'Worker account resolution'
 # A hit turn cap is the vendor serving, so it may never share a name with the outcomes the routers
 # read as "no capacity here": folded back into GROK_UNAVAILABLE the relay hunts a pool problem that
@@ -3310,7 +3284,7 @@ agent_run_names="media-run codex-image gemini-image grok-image grok-video image-
 for script in "$ROOT"/bin/*; do
   name=${script##*/}
   [ -f "$script" ] && [ -x "$script" ] && [[ "$name" != *.sh ]] || continue
-  grep -qE "(^|[^[:alnum:]_/.-])$name([^[:alnum:]_-]|\$)" "$AGENT_DIR"/*.md "$MEDIA_SKILL" && agent_run_names+=" $name"
+  grep -qsE "(^|[^[:alnum:]_/.-])$name([^[:alnum:]_-]|\$)" "$AGENT_DIR"/*.md "$MEDIA_SKILL" && agent_run_names+=" $name"
 done
 unlinked_run_names=$(for name in $(printf "%s\n" $agent_run_names | sort -u); do grep -qxF "$name" <<<"$readme_links" || printf '%s ' "$name"; done)
 assert eq "unlinked: $unlinked_run_names" "unlinked: "

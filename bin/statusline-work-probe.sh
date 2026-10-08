@@ -86,7 +86,8 @@ found=$(awk -v start="$start_pid" -v runs="$runs" -v runs_root="$runs_root" -v n
     nw = split(cmd[pid], w, /[ \t]+/); pi = 1; b = base(w[1])
     while (b ~ /^(env|nohup|time|timeout|nice|sudo|caffeinate|setsid|uv|poetry|npx|bash|sh|zsh|dash|python[0-9.]*|node|perl|ruby|lua|luajit)$/ && pi < nw) {
       for (i = pi + 1; i <= nw && (w[i] ~ /^-/ || (b == "env" && w[i] ~ /=/)); i++) {
-        if (w[i] == "-c" && b ~ /^(bash|sh|zsh|dash|python[0-9.]*|perl|ruby|lua|luajit)$/) return b
+        if ((w[i] == "-c" && b ~ /^(bash|sh|zsh|dash|python[0-9.]*)$/) || (w[i] ~ /^-[a-zA-Z]*[eE]$/ && b ~ /^(perl|ruby|lua|luajit|node)$/) ||
+            (b == "node" && w[i] ~ /^(--eval|--print|-p)$/)) return b
         if (w[i] == "-m" && b ~ /^python/ && i < nw) { pi = i + 1; return base(w[pi]) }
         if (w[i] == "--test" && b == "node") return "node --test"
         if ((b == "timeout" && w[i] ~ /^-[sk]$/) || (b == "nice" && w[i] == "-n") || (b == "caffeinate" && w[i] ~ /^-[tw]$/) ||
