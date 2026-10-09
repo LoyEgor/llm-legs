@@ -2346,7 +2346,7 @@ assert grep -Fq 'mv -f "$directory/head-before.tmp.$$" "$directory/head-before"'
 assert grep -Fq 'mv -f "$directory/produced.tmp.$$" "$directory/produced"' "$WORKER_RUN"
 assert grep -Fq 'out.append(prev + b"\t" + cur + b"\t" + spelling(path) + b"\n")' "$WORKER_RUN"
 assert grep -Fq 'printf "%s\t%s\t%s\tcommit\n", prev, cur, path' "$WORKER_RUN"
-assert grep -Fq 'log --raw -m --no-renames --no-abbrev --reverse -z --format=%H "$head..$after"' \
+assert grep -Fq 'log --raw -m --no-renames --no-abbrev --reverse -z --format='"'"'%H %ct'"'"' "$head..$after"' \
   "$WORKER_RUN"
 # Writer and reader must refuse the same path shapes, or a `-foo` row is dropped by the
 # sweep and the run is still stamped journaled.

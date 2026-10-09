@@ -2131,43 +2131,6 @@ sys.stdout.buffer.write(b"".join(out))
 ' "$1" "$2" "$3" "$4" "$mode"
 }
 
-# The same rows for the transitions the run's own commits made, with a fourth field `commit` — the
-# one distinction the reader needs, since a commit's blob may already have been produced by whoever
-# wrote it (a merge, a cherry-pick) and only the first row naming it owns it. An all-zero sha is a
-# side that holds no content, which is this record's `-`.
-produced_commit_rows() { # top rel head-before
-  local top="$1" rel="$2" head="$3" after
-  after=${4-}
-  [ "$#" -ge 4 ] || after=$(git -C "$top" rev-parse --verify --quiet HEAD 2>/dev/null) || return 0
-  [ -n "$after" ] && [ "$after" != "$head" ] || return 0
-  {
-    if [ -n "$head" ] && git -C "$top" merge-base --is-ancestor "$head" "$after" 2>/dev/null; then
-      git -C "$top" log --raw -m --no-renames --no-abbrev --reverse -z --format=%H "$head..$after"
-    else
-      [ -n "$head" ] || head=$(git -C "$top" hash-object -w -t tree --stdin </dev/null)
-      git -C "$top" diff --raw --no-renames --no-abbrev -z "$head" "$after" --
-    fi
-  } 2>/dev/null | tr '\0' '\n' |
-    AWK_TOP=$top AWK_REL=$rel awk '
-      BEGIN { top = ENVIRON["AWK_TOP"]; rel = ENVIRON["AWK_REL"] }
-      !NF { next }
-      pending != "" {
-        path = $0
-        if (rel != "") {
-          if (index(path, rel "/") == 1) path = substr(path, length(rel) + 2)
-          else path = top "/" path
-        }
-        split(pending, f, " ")
-        prev = f[3]; cur = f[4]
-        if (prev ~ /^0+$/) prev = "-"
-        if (cur ~ /^0+$/) cur = "-"
-        printf "%s\t%s\t%s\tcommit\n", prev, cur, path
-        pending = ""
-        next
-      }
-      /^:/ { pending = $0 }'
-}
-
 record_workdir_dirt() { # directory workdir
   local directory="$1" workdir="$2" top gained
   [ -z "$RUN_FILES_REASON" ] || return 0
@@ -4424,6 +4387,20 @@ grok_live_session() { # account workdir started resume
     sort -n | awk 'NR == 1 { print $2 }' | grep .
 }
 
+run_transcript() { # directory vendor account workdir started [cached]
+  local directory="$1" vendor="$2" transcript=''
+  if [ "$vendor" = claudeb ]; then
+    { IFS= read -r transcript <"$directory/session-file"; } 2>/dev/null || transcript=''
+  elif [ "$vendor" != gemini ] && [ -f "${6-}" ]; then
+    transcript=$6
+  fi
+  [ -n "$transcript" ] && [ -f "$transcript" ] ||
+    transcript=$(session_transcript "$vendor" "$3" "$(session_id "$directory" "$vendor")" "$4") ||
+    { [ "$vendor" = grok ] && transcript=$(session_transcript grok "$3" "$(grok_live_session "$3" "$4" "$5" \
+        "$(jq -r '.resume // empty' "$directory/meta.json" 2>/dev/null)")" "$4"); } || return 1
+  printf '%s\n' "$transcript"
+}
+
 # What `wait` streams to the chat's /tasks view: one line per tool call or short message of the
 # worker, read off its live session log with the same extractors the run's file list uses.
 # A claudeb log is read from byte offset `from` on, and its first row `O<TAB>n` counts the bytes of the
@@ -4502,15 +4479,7 @@ wait_progress() { # directory run-id stream
   wait_clock
   [ "$force" = true ] || [ "$vendor" = claudeb ] || [ "$WAIT_CLOCK" -ge "$WAIT_ROWS_NEXT" ] ||
     [ "$WAIT_CLOCK" -ge "$WAIT_TOKENS_NEXT" ] || return 0
-  if [ "$vendor" = claudeb ]; then
-    { IFS= read -r transcript <"$directory/session-file"; } 2>/dev/null || transcript=''
-  elif [ "$vendor" != gemini ] && [ -f "$WAIT_TRANSCRIPT" ]; then
-    transcript=$WAIT_TRANSCRIPT
-  fi
-  [ -n "$transcript" ] && [ -f "$transcript" ] ||
-    transcript=$(session_transcript "$vendor" "$account" "$(session_id "$directory" "$vendor")" "$workdir") ||
-    { [ "$vendor" = grok ] && transcript=$(session_transcript grok "$account" "$(grok_live_session "$account" "$workdir" "$started" \
-        "$(jq -r '.resume // empty' "$directory/meta.json" 2>/dev/null)")" "$workdir"); } || return 0
+  transcript=$(run_transcript "$directory" "$vendor" "$account" "$workdir" "$started" "$WAIT_TRANSCRIPT") || return 0
   stamp=$(stat -f '%z %Fm' "$transcript" 2>/dev/null || stat -c '%s %.9Y' "$transcript" 2>/dev/null)
   size=${stamp%% *}
   if [ "$transcript" != "$WAIT_TRANSCRIPT" ] || ! [ "$size" -ge "$WAIT_OFFSET" ] 2>/dev/null; then
@@ -4737,10 +4706,8 @@ last_messages() { # directory
   local directory="$1" vendor account workdir started transcript=''
   { IFS= read -r vendor; IFS= read -r account; IFS= read -r workdir; IFS= read -r started; } \
     < <(jq -r '.vendor, .account, .workdir, (.started_at // 0)' "$directory/meta.json" 2>/dev/null)
-  [ "$vendor" != claudeb ] || { IFS= read -r transcript <"$directory/session-file"; } 2>/dev/null || transcript=''
-  [ -n "$transcript" ] && [ -f "$transcript" ] ||
-    transcript=$(session_transcript "$vendor" "$account" "$(session_id "$directory")" "$workdir") || return 0
   [[ "$started" =~ ^[0-9]+$ ]] || started=0
+  transcript=$(run_transcript "$directory" "$vendor" "$account" "$workdir" "$started") || return 0
   progress_rows "$vendor" "$transcript" "$started" 0 | sed -n 's/^» //p' | tail -n 3 |
     awk 'NR == 1 { print "(no final answer; the worker'"'"'s last messages:)" } { print }'
 }
