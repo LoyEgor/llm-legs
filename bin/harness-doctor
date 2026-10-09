@@ -19,6 +19,7 @@ import pickle
 import plistlib
 import random
 import re
+import shlex
 import shutil
 import statistics
 import subprocess
@@ -201,8 +202,11 @@ C1_QUEUE_KEPT = 20
 C1_NOTE_IDS = re.compile(r"<(tool-use-id|task-id)>([^<]+)</")
 C1_SUITE = re.compile(r"(?:^|[;&|(\n])\s*(?:\w+=\S*\s+)*(?:(?:bash|sh|python3?|env|nice|timeout\s+\S+)\s+)*"
                       r"(?:\S*/)?(?:run-all|run-suites\.sh|test_[\w.-]+\.(?:sh|bash|py|lua))(?=\s|$|[;&|)])")
-MEDIA_TOOL = re.compile(r"(?:^|[\s/;&|(])(media-run|codex-image|gemini-image|grok-image|image-fanout|gemini-video|grok-video|"
-                        r"video-chain|gemini-music|gemini-sfx|gemini-listen|gemini-speech|chatgpt-web|gemini-web)(?=\s|$|[;&|)])")
+MEDIA_TOOLS = ("media-run", "codex-image", "gemini-image", "grok-image", "image-fanout", "gemini-video", "grok-video",
+               "video-chain", "gemini-music", "gemini-sfx", "gemini-listen", "gemini-speech", "chatgpt-web", "gemini-web")
+MEDIA_TOOL = re.compile(r"(?<![\w.-])(%s)(?![\w.-])" % "|".join(MEDIA_TOOLS))
+HEREDOC_BODY = re.compile(r"(^[^\n]*?(?<!<)<<-?[ \t]*(['\"]?)(\w+)\2[^\n]*)\n.*?\n[ \t]*\3[ \t]*(?=\n|$)", re.S | re.M)
+HEREDOC_SHELL = re.compile(r">\s*\S+\.(?:sh|bash)\b|(?:^|[\s;&|(])(?:bash|sh|zsh)(?:\s+-\w+)*\s*<<")
 WORKER_WAIT = re.compile(r"(?:^|[\s/;&|(])(?:worker-run\s+wait|light-research)(?=\s|$|[;&|)])")
 REVIEW_WAIT = re.compile(r"(?:^|[\s/;&|(])review-bench\s+wait(?=\s|$|[;&|)])")
 C1_BYTES = (b'"user"', b'"assistant"', b'"system"', b'"queue-operation"', b'"queued_command"')
@@ -572,9 +576,9 @@ def read_transcript(path, rec, events, versions, boots=(), limit=-1):
                 name = str(block.get("name") or "")
                 command = (block.get("input") or {}).get("command") if name == "Bash" else None
                 pend[block["id"]] = [t, name, 1 if trivial_bash(command) else 0, None if subagent else at // 1024]
-                media = MEDIA_TOOL.search(str(command or ""))
+                media = media_tool(str(command or ""))
                 if media:
-                    pend[block["id"]].append(media.group(1))
+                    pend[block["id"]].append(media)
             elif block.get("type") == "tool_result" and block.get("tool_use_id") in pend:
                 start, name, trivial, kb, phase = (pend.pop(block["tool_use_id"]) + [None, None])[:5]
                 who = session_kind(rec)
@@ -610,6 +614,55 @@ def command_mechanism(command):
             return None
         sub = words[1] if len(words) > 1 and re.fullmatch(r"[a-z][a-z-]{1,20}", words[1]) else None
         return name + (" " + sub if sub else "")
+    return None
+
+
+@functools.lru_cache(maxsize=4096)
+def media_tool(command):
+    """The media script a Bash call runs: a command word or a $VAR assigned its path. A media path that is only an
+    argument, a quoted string or a heredoc line (an edit, a grep, a commit message) is no media wait."""
+    if not MEDIA_TOOL.search(command):
+        return None
+    text = HEREDOC_BODY.sub(lambda h: h.group(0) if HEREDOC_SHELL.search(h.group(1)) else h.group(1),
+                            command.replace("\\\n", " "))
+    lex = shlex.shlex(text, posix=True, punctuation_chars="();<>|&\n")
+    lex.whitespace, lex.commenters = " \t\r", ""
+    lex.wordchars += "${}:@%+,^!#[]"
+    try:
+        tokens = list(lex)
+    except ValueError:
+        return None
+    aliases, head, target, nested, shell = {}, True, False, False, False
+    for token in tokens:
+        if token[:1] in ("<", ">") and set(token) <= set("<>&|"):
+            target = True
+        elif token and set(token) <= set("();|&\n"):
+            head, target = True, False
+        elif target:
+            target = False
+        elif nested or "$(" in token:
+            nested, tool = False, media_tool(token if nested else token.split("$(", 1)[1])
+            if tool:
+                return tool
+        elif head:
+            name, eq, value = token.partition("=")
+            if eq and re.fullmatch(r"[A-Za-z_]\w*", name):
+                if os.path.basename(value) in MEDIA_TOOLS:
+                    aliases[name] = os.path.basename(value)
+                continue
+            if shell and token == "-n":
+                head = False
+                continue
+            nested, shell = token in ("eval", "-c"), token in ("bash", "sh", "zsh")
+            if nested or shell or os.path.basename(token) in SHELL_WRAPPERS or token in SHELL_KEYWORDS \
+                    or token in ("else", "{", "!") or token.startswith("-") \
+                    or re.fullmatch(r"[0-9.]+[smhd]?", token):
+                continue
+            var = re.fullmatch(r"\$\{?(\w+)\}?", token)
+            tool = aliases.get(var.group(1)) if var else os.path.basename(token)
+            if tool in MEDIA_TOOLS:
+                return tool
+            head = False
     return None
 
 
@@ -882,7 +935,7 @@ def c1_entry(c, out, entry, t, session, boots):
                 name, args = str(block.get("name") or ""), block.get("input") or {}
                 command = str(args.get("command") or "") if name == "Bash" else ""
                 layer = "ask" if name in C1_ASK else "test" if C1_SUITE.search(command) else "media" if (
-                    MEDIA_TOOL.search(command)) else "tool"
+                    media_tool(command)) else "tool"
                 what = name + (":" + str(args["subagent_type"]) if args.get("subagent_type") else ":media" if layer == "media"
                                else ":worker" if WORKER_WAIT.search(command) else ":review" if REVIEW_WAIT.search(command) else "")
                 turn["open"][block["id"]] = [t, layer, what]

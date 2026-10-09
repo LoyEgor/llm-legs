@@ -2333,6 +2333,24 @@ media = chat("media", [human(M), say(M + 10, tools=[("tm", "Bash", {"command": "
                        result(M + 70, "tm"), result(M + 90, "ta"), say(M + 95), done(M + 100), human(M + 110)])
 check(by(media, "t", M)[9].get("media") == 80.0 and by(media, "t", M)[11] == [["tm", "media"], ["ta", "media"]],
       "C1 a media script and a media-run call are the media layer, and the row lists its calls")
+named = chat("named", [human(M + 1000), say(M + 1010, tools=[
+    ("tn", "Bash", {"command": "python3 - <<'EOF'\np = 'bin/codex-image'\nmedia-run image x\nEOF\nbash -n bin/codex-image"})]),
+    result(M + 1070, "tn"), say(M + 1075), done(M + 1080), human(M + 1090)])
+check(by(named, "t", M + 1000)[9].get("tool") == 60.0 and by(named, "t", M + 1000)[11] == [["tn", "tool"]],
+      "C1 an edit and a syntax check naming a media script are no media wait: %s" % by(named, "t", M + 1000))
+runs = {"cd /x && media-run image --vendor gemini -- --dest a.png": "media-run",
+        "MR=bin/media-run; el() { $MR speech --vendor elevenlabs; }; el a": "media-run",
+        "( /usr/bin/time -p bin/media-run image \\\n --prompt \"p q\" ) 2> t &": "media-run",
+        "for m in a b; do eval \"bin/media-run music --mode $m --dry-run\"; done": "media-run",
+        "IMAGE_JOB_ID=x \"$S/bin/codex-image\" --prompt \"p q\"": "codex-image",
+        "out=\"$(gemini-listen --file a.wav)\"; echo \"$out\"": "gemini-listen",
+        "timeout 600 gemini-image --prompt x | tail -3": "gemini-image",
+        "grep -n 'codex-image\\|gemini-image' bin/image-fanout": None,
+        "git commit -q -m \"media-run: skip x\" && sed -n 1,9p bin/media-run": None,
+        "cp /tmp/mut.sh bin/gemini-listen; ls > bin/media-run": None,
+        "msg=\"$(git log -1 --format=%s); skips media-run, dk's row\"": None}
+check({c: m.media_tool(c) for c in runs} == runs,
+      "C1 a media script counts only where it runs: %s" % {c: m.media_tool(c) for c in runs if m.media_tool(c) != runs[c]})
 
 P = B + 22000
 killed = chat("killed", [human(P), say(P + 10), human(P + 300), say(P + 310), done(P + 320), human(P + 330)])
