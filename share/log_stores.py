@@ -14,6 +14,7 @@ MB = 1 << 20
 KB = 1024
 CLEANERS = ("self", "sweep", "cap", "keep")
 CRITERIA = ("days", "max_mb", "keep_newest", "tail_mb")
+KINDS = ("log", "app")
 NEEDS_CRITERION = ("self", "sweep")
 SLACK = {"days": 2, "keep_newest": 1, "max_mb": 1.25, "tail_mb": 2.0}
 
@@ -34,8 +35,9 @@ def criterion(entry):
 
 
 def load(path=None):
-    """The registry, validated: every store has a name, globs, a known cleaner and at most one criterion, which a
-    `self` or `sweep` store must have; every ignore entry has a glob and a reason. Raises ValueError naming the fault."""
+    """The registry, validated: every store has a name, globs, a kind, a known cleaner and at most one criterion, which a
+    `self` or `sweep` store must have, and a log store lists its readers; every ignore entry has a glob and a reason.
+    Raises ValueError naming the fault."""
     path = path or registry_path()
     with open(path, encoding="utf-8") as handle:
         registry = json.load(handle)
@@ -50,6 +52,11 @@ def load(path=None):
         found = [key for key in CRITERIA if key in entry]
         if len(found) > 1 or entry["cleaner"] in NEEDS_CRITERION and not found:
             raise ValueError("store %s: %s needs exactly one of %s" % (name, entry["cleaner"], "/".join(CRITERIA)))
+        if entry.get("kind") not in KINDS:
+            raise ValueError("store %s: needs a kind in %s" % (name, "/".join(KINDS)))
+        readers = entry.get("readers")
+        if entry["kind"] == "log" and not (isinstance(readers, list) and all(isinstance(r, str) and r for r in readers)):
+            raise ValueError("store %s: a log store needs readers, a list of program names or []" % name)
     for entry in registry.get("ignore") or ():
         if not entry.get("glob") or not entry.get("why"):
             raise ValueError("ignore entry %r: needs a glob and a why" % entry)
@@ -73,7 +80,16 @@ def units(entry):
     kept = [p for p in found if not any(fnmatch.fnmatch(p, x) for x in excluded)]
     if entry.get("type") == "file":
         kept = [p for p in kept if not os.path.isdir(p) or os.path.islink(p)]
+    elif entry.get("type") == "dir":
+        kept = [p for p in kept if os.path.isdir(p) and not os.path.islink(p) and owned(p)]
     return outermost(kept)
+
+
+def owned(path):
+    try:
+        return os.lstat(path).st_uid == os.getuid()
+    except OSError:
+        return False
 
 
 def unit_stats(path):
@@ -249,3 +265,24 @@ def ignore_paths(registry):
     for entry in registry.get("ignore") or ():
         found += [os.path.normpath(p) for p in glob.glob(expand(entry["glob"]), include_hidden=True)]
     return found
+
+
+def app_claims(registry, sizes):
+    """{unit: bytes} of every app store unit, never counted but claimed so the fallback skips it: du's size when du
+    listed it, else its own (a file du never lists, a directory below du's depth)."""
+    claims = {}
+    for entry in registry.get("stores") or ():
+        if entry.get("kind") != "app":
+            continue
+        for path in units(entry):
+            if path in sizes:
+                claims[path] = sizes[path] * KB
+            else:
+                row = unit_stats(path)
+                if row:
+                    claims[path] = row["bytes"]
+    return claims
+
+
+def logs(registry):
+    return [entry for entry in registry.get("stores") or () if entry.get("kind") == "log"]

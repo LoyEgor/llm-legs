@@ -193,11 +193,15 @@ new. Writers stay free: no format or location standard, we only measure and clea
 - **Registry** `share/log-stores.json` (`share/log_stores.py`): one entry per store, `globs` (one match = one unit; a
   directory ages by the newest mtime inside it), `writer`, `owner`, `cleaner` (`self` the writer prunes, `sweep`
   `bin/log-sweep`, `cap` the app caps, `keep` measured only) and at most one criterion (`days`, `max_mb`,
-  `keep_newest`, `tail_mb`; `self` and `sweep` need one), each with its `why`. Stores token-map reads keep 60 days.
+  `keep_newest`, `tail_mb`; `self` and `sweep` need one), each with its `why`. `kind` is `log` (a tool writes it on
+  its own and it accumulates: the only kind the doctor counts) or `app` (app data, binaries, browser profiles,
+  outputs: listed so the fallback skips it, never measured). A log store lists its `readers`, found by grepping our
+  repos, or `[]`. Logs token-map reads keep 30 days (it shows 4 weeks); session scratch and top-level tmp sandboxes
+  (`"type": "dir"`, own directories only) 7 days idle; unread logs the shortest that still serves debugging.
   `ignore` lists what is clearly not an LLM log, each with a reason; nothing is ignored silently.
-- **Collector** `logstores`, daily after 04:00 (or after 36 h), detached like the others: `bin/log-sweep`, then every
-  store's bytes, files, units and oldest unit, and what lies past its criterion plus slack (2 days, 1 unit, 25 %, 2×
-  the tail). Rows in `logstores/<day>.jsonl` (90 days).
+- **Collector** `logstores`, daily after 04:00 (or after 36 h), detached like the others: `bin/log-sweep` (every
+  `sweep` store, any kind), then every log store's bytes, files, units and oldest unit, and what lies past its
+  criterion plus slack (2 days, 1 unit, 25 %, 2× the tail). Rows in `logstores/<day>.jsonl` (90 days).
 - **Fallback** for unregistered writers: one `du -k -x` per top scan root, deep enough to reach 3 levels below every
   root inside it. A directory 1–3 levels below its root that no store unit or ignore entry covers is judged on its
   residual (its size minus covered, nested-root and already-reported parts below it): reported at 200 MB, or at
@@ -210,6 +214,7 @@ new. Writers stay free: no format or location standard, we only measure and clea
 | `log-store` | a store holds units past its criterion plus slack, or log-sweep failed (cause: log-sweep, or the `self` writer) | — |
 | `log-growth` | the total of all stores grew ≥ 1 GiB/day over ≥ 5 days of the newest 7 and grew in the last day | ≥ 3 GiB/day |
 | `unregistered-store` | a directory the fallback names (key: its path), report-only | — |
+| `log-unread` | a log store with `readers: []` holding bytes: written, read by nobody (no cause; the fix is a reader or less writing) | — |
 
 `log-growth` threshold: with every big store under a criterion the total plateaus; 1 GiB/day sits under the biggest
 single inflow measured (tmp session scratch, ~1.3 GB/day) and above a retention-limited store's daily swing; re-tune

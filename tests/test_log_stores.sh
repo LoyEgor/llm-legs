@@ -61,6 +61,7 @@ def age(rel, age_days):
 
 
 def registry(stores, ignore=(), scan=None):
+    stores = [dict({"kind": "log", "readers": ["r"]}, **s) for s in stores]
     value = {"stores": stores, "ignore": list(ignore), "scan": scan or {}}
     with open(os.environ["LOG_STORES_REGISTRY"], "w") as handle:
         json.dump(value, handle)
@@ -88,8 +89,16 @@ check(raises({"stores": [{"name": "a", "globs": ["~/a"], "cleaner": "keep"}, {"n
       "a repeated name is refused")
 check(raises({"stores": [], "ignore": [{"glob": "~/x"}]}), "an ignore entry without a reason is refused")
 check(raises({"stores": [{"name": "a", "globs": ["~/a"], "cleaner": "trash"}]}), "an unknown cleaner is refused")
-check(ls.load(os.path.join(root, "share", "log-stores.json")) and
-      raises({"stores": [{"name": "a", "globs": ["~/a"], "cleaner": "cap"}]}) is None, "a cap store needs no criterion")
+check(raises({"stores": [{"name": "a", "globs": ["~/a"], "cleaner": "cap", "kind": "app"}]}) is None,
+      "a cap store needs no criterion, an app store no readers")
+check("needs a kind" in (raises({"stores": [{"name": "a", "globs": ["~/a"], "cleaner": "cap"}]}) or ""),
+      "a store without a kind is refused")
+check("needs readers" in (raises({"stores": [{"name": "a", "globs": ["~/a"], "cleaner": "cap", "kind": "log"}]}) or "")
+      and raises({"stores": [{"name": "a", "globs": ["~/a"], "cleaner": "cap", "kind": "log", "readers": []}]}) is None,
+      "a log store lists its readers, [] allowed")
+check(all(isinstance(e.get("readers"), list) for e in real["stores"] if e["kind"] == "log")
+      and {e["name"] for e in real["stores"] if e["kind"] == "app"} >= {"claude-desktop", "gemini-web-profiles", "transcriptions-gpt"},
+      "the shipped registry names readers for every log store and keeps app data apart")
 check(ls.expand("$TMPDIR/x") == os.path.join(work, "tmpdir", "x") and ls.expand("~/a/") == os.path.join(home, "a"),
       "~ and $TMPDIR expand")
 
@@ -108,6 +117,10 @@ rows = {os.path.basename(r["path"]): r for r in ls.measure(entry)}
 check(sorted(rows) == ["s1", "s2", "s3"], "exclude drops units by pattern: %s" % sorted(rows))
 check([os.path.basename(r["path"]) for r in ls.measure({"name": "f", "globs": ["~/logs/*"], "type": "file", "cleaner": "keep"})]
       == ["top.jsonl"], "type file keeps the loose files beside the directories")
+os.symlink(os.path.join(home, "logs", "s1"), os.path.join(home, "logs", "link"))
+check(sorted(os.path.basename(r["path"]) for r in ls.measure({"name": "d", "globs": ["~/logs/*"], "type": "dir", "cleaner": "keep"}))
+      == ["keep", "s1", "s2", "s3"], "type dir keeps directories, never a loose file or a symlink")
+os.remove(os.path.join(home, "logs", "link"))
 check(rows["s1"]["files"] == 2 and rows["s1"]["newest"] >= now - DAY - 5 and rows["s1"]["bytes"] > 0,
       "a directory unit ages by the newest mtime inside it")
 gone = sorted(os.path.basename(r["path"]) for r, action in ls.doomed(entry, list(rows.values()), now))
@@ -170,6 +183,13 @@ check(H + "/h/i/j/k" not in scan and H + "/h/i/j" in scan, "only 1..depth levels
 reported, _scan = ls.unregistered(sizes, roots, 3, claims, ignores, 200 * K, 50 * K, 10 * K)
 check(H + "/e" not in [r["path"] for r in reported], "with no earlier scan a small dir is not reported")
 check(ls.du_plan([H, H + "/L/Caches", "/t"], 3) == [(H, 5), ("/t", 3)], "one du per top root, deep enough for nested roots")
+put("appbin/tool-1", 8192)
+os.makedirs(os.path.join(home, "appbin", "cache"), exist_ok=True)
+apps = ls.app_claims({"stores": [{"name": "b", "kind": "app", "globs": ["~/appbin/*"], "cleaner": "keep"},
+                                 {"name": "l", "kind": "log", "readers": [], "globs": ["~/logs/*"], "cleaner": "keep"}]},
+                     {H + "/appbin/cache": 700})
+check(apps == {H + "/appbin/tool-1": os.lstat(H + "/appbin/tool-1").st_blocks * 512, H + "/appbin/cache": 700 * K},
+      "app units are claimed, log units not: a file du never lists by its own size, a listed dir by du's: %s" % apps)
 check(ls.parse_du("12\t/a/b/\nbad\n7\t/c\n") == {"/a/b": 12, "/c": 7}, "du lines parse")
 
 # ---- log-sweep: dry run, then the real sweep
@@ -228,26 +248,35 @@ put("logs/s4/a.txt", 100, 80)
 age("logs/s4", 80)
 registry([{"name": "s", "globs": ["~/logs/*"], "exclude": ["*/keep", "*.jsonl"], "cleaner": "self", "days": 60,
            "writer": "worker-run", "owner": "own"},
-          {"name": "v", "globs": ["~/vers/*"], "cleaner": "self", "keep_newest": 2, "writer": "Vendor", "owner": "third-party"}],
+          {"name": "v", "globs": ["~/vers/*"], "cleaner": "self", "keep_newest": 2, "writer": "Vendor", "owner": "third-party"},
+          {"name": "u", "globs": ["~/unread/*"], "cleaner": "sweep", "days": 7, "readers": [], "writer": "Vendor"},
+          {"name": "a", "kind": "app", "globs": ["~/appdata/*"], "cleaner": "keep"}],
          ignore=[{"glob": "~/ignored", "why": "test"}],
          scan={"roots": ["~", "~/cache"], "depth": 3, "min_mb": 200, "grow_mb_day": 50, "floor_mb": 10, "budget_s": 60})
+put("unread/trace.jsonl", 100, 1)
+put("appdata/vm/disk.img", 5000)
 with open(os.path.join(work, "du-lines"), "w") as handle:
     handle.write("".join("%d\t%s\n" % (kb, path) for path, kb in (
         (home + "/cache/stray", 300 * K), (home + "/cache", 300 * K), (home + "/ignored", 900 * K),
-        (home + "/logs", 1 * K), (home, 1300 * K))))
+        (home + "/appdata/vm", 400 * K), (home + "/appdata", 400 * K), (home + "/logs", 1 * K), (home, 1700 * K))))
 row = m.logstores(now)
 stores = {s["name"]: s for s in row["stores"]}
 check(row.get("sweep", {}).get("errors") == 0 and stores["s"]["over_units"] == 2 and stores["v"]["over_units"] == 2,
       "the collector sweeps, then measures every store: %s" % row)
+check(set(stores) == {"s", "v", "u"} and row["total_bytes"] == sum(s["bytes"] for s in stores.values()),
+      "an app store is neither measured nor counted in the total: %s" % sorted(stores))
 check([u["path"] for u in row["unregistered"]] == ["~/cache/stray"] and row["scan"]["cut"] == [],
-      "the fallback names the uncovered 300 MB dir as ~/…, never the ignored one: %s" % row["unregistered"])
+      "the fallback names the uncovered 300 MB dir as ~/…, never the ignored one or an app store's: %s" % row["unregistered"])
 check(os.path.exists(os.path.join(work, "state", "logscan", m.local_day(now) + ".json")), "the scan is kept for growth")
 later = now + 1
 judge = m.Judge(later, None)
 logs = m.tick_rows(now - 9 * DAY, later, "logstores")
 m.judge_logstores(judge, logs)
 found = {p["id"]: p for p in judge.problems}
-check(set(found) == {"log-store:s", "log-store:v", "unregistered-store:~/cache/stray"}, "problems: %s" % sorted(found))
+check(set(found) == {"log-store:s", "log-store:v", "log-unread:u", "unregistered-store:~/cache/stray"},
+      "problems: %s" % sorted(found))
+check("read by nobody" in found["log-unread:u"]["fact"] and "7 days" in found["log-unread:u"]["fact"]
+      and found["log-unread:u"]["cause"] is None, "a log with no reader is its own problem: %s" % found["log-unread:u"])
 check(found["log-store:s"]["cause"]["name"] == "worker-run" and found["log-store:s"]["cause"]["owner"] == "own"
       and "60 days" in found["log-store:s"]["fact"], "a broken self cleaner names its writer: %s" % found["log-store:s"])
 check(found["log-store:v"]["cause"]["fix_target"] is False and "newest 2" in found["log-store:v"]["fact"],

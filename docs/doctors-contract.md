@@ -390,7 +390,7 @@ Code doctor (added 2026-10-02, design `docs/code-doctor-design.md`):
 System doctor (added 2026-10-06, design `docs/system-doctor-design.md`):
 - Machine rules `spawn`, `kernel`, `compressor`, `swap`, `swap-writes`, `ssd-writes`, `free-space`,
   `hammerspoon-crash`, `job-crash`, `unclean-reboot`, the job rule `job-loop`, the standing-cost
-  rule `cohort` and the log rules `log-store`, `log-growth`, `unregistered-store` (registry
+  rule `cohort` and the log rules `log-store`, `log-growth`, `unregistered-store`, `log-unread` (registry
   `share/log-stores.json`); ids `<rule>:<key>` (`machine`, a volume, a job name, a cohort item's name, a log
   store's name, `total`, a directory path). A ledger
   row matches `{rule, key}` exactly; a row without both is `ledger:<id>`.

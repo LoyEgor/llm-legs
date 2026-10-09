@@ -83,7 +83,7 @@ RULE_LABELS = {"spawn": "new processes", "job-loop": "job relaunch loop", "cohor
                "swap": "swap full", "ssd-writes": "SSD writes", "swap-writes": "swap writes",
                "hammerspoon-crash": "Hammerspoon crash", "job-crash": "job crashes", "unclean-reboot": "unclean reboot",
                "free-space": "low disk space", "log-store": "log cleaner broken", "log-growth": "LLM logs growing",
-               "unregistered-store": "unregistered log store"}
+               "unregistered-store": "unregistered log store", "log-unread": "log read by nobody"}
 COUNTED = ("new", "open", "regressed")
 DISMISSED = ("not-a-bug", "weather")
 HOUR_S = 3600
@@ -1546,10 +1546,11 @@ def logstores(now=None):
         return row
     row["sweep"] = steps("sweep", run_log_sweep)
     stores, claims = [], {}
-    for entry in registry.get("stores") or ():
+    for entry in log_stores.logs(registry):
         rows = steps("store:" + entry["name"], log_stores.measure, entry)
         claims.update((r["path"], r["bytes"]) for r in rows)
-        stores.append(dict(log_stores.summary(entry, rows, now), writer=entry.get("writer"), owner=entry.get("owner")))
+        stores.append(dict(log_stores.summary(entry, rows, now), writer=entry.get("writer"), owner=entry.get("owner"),
+                           readers=entry["readers"]))
     scan = registry.get("scan") or {}
     depth = scan.get("depth", 3)
     roots = [r for r in (log_stores.expand(r) for r in scan.get("roots") or ()) if os.path.isdir(r)]
@@ -1567,6 +1568,7 @@ def logstores(now=None):
 
     steps("du", du_all)
     old, old_days = previous_scan(now)
+    claims = steps("apps", log_stores.app_claims, registry, sizes) | claims
     reported, dirs = steps("fallback", log_stores.unregistered, sizes, roots, depth, claims,
                            log_stores.ignore_paths(registry), scan.get("min_mb", 200) * 1024,
                            scan.get("grow_mb_day", 50) * 1024, scan.get("floor_mb", 10) * 1024, old, old_days)
@@ -2150,8 +2152,9 @@ def criterion_words(store):
 
 
 def judge_logstores(judge, rows):
-    """A store holding units past its criterion plus slack (its cleaner is broken), a failed sweep, the total of all
-    stores growing log_growth_gib_day a day over 7 days and still growing, and each directory the du fallback names."""
+    """A store holding units past its criterion plus slack (its cleaner is broken), a failed sweep, a log store no
+    program reads, the total of all log stores growing log_growth_gib_day a day over 7 days and still growing, and each
+    directory the du fallback names."""
     now = judge.now
     rows = [r for r in rows if r.get("stores") is not None]
     if not rows:
@@ -2173,6 +2176,15 @@ def judge_logstores(judge, rows):
                   latest["t"], [{"at": iso_time(latest["t"]), "ref": "logstores:%s" % store["name"], "account": None,
                                  "excerpt": "%d units, %.2f GB in all" % (store["units"], store["bytes"] / 1e9)}],
                   found=store_cause(store))
+    for store in latest["stores"]:
+        if store.get("readers") != [] or not store.get("bytes"):
+            continue
+        judge.add("log-unread", store["name"], "%s: %.2f GB in %d files written by %s, read by nobody; kept %s" % (
+            store["name"], store["bytes"] / 1e9, store["files"], store.get("writer") or "?",
+            criterion_words(store) if store.get("criterion") else "by its %s cleaner" % store["cleaner"]),
+            store["bytes"], 0, "bytes", 24, store["units"], store["units"], store.get("oldest_s"), latest["t"],
+            [{"at": iso_time(latest["t"]), "ref": "logstores:%s" % store["name"], "account": None,
+              "excerpt": "readers [] in share/log-stores.json"}])
     one, seven = log_growth(rows)
     if seven is not None and seven >= LIMITS["log_growth_gib_day"] and one is not None and one > 0:
         judge.add("log-growth", "total", "LLM log stores grew %.1f GiB a day over 7 days (%.1f GiB in the last day), %.0f GB "
@@ -2210,7 +2222,8 @@ def logstores_view(rows):
             "growth_gb_day_7d": round(seven * GIB / 1e9, 2) if seven is not None else None,
             "stores": [[s["name"], round(s["bytes"] / 1e9, 2), s["files"],
                         round((latest["t"] - s["oldest_s"]) / DAY_S, 1) if s.get("oldest_s") else None, s["cleaner"],
-                        criterion_words(s) if s.get("criterion") else None, s.get("over_units")] for s in stores],
+                        criterion_words(s) if s.get("criterion") else None, s.get("over_units"),
+                        s.get("readers")] for s in stores],
             "unregistered": latest.get("unregistered"), "sweep": latest.get("sweep"), "scan": latest.get("scan")}
 
 
