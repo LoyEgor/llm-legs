@@ -50,10 +50,13 @@ def read(path):
         return ""
 
 
+def claude_paths(whole):
+    return [whole] + sorted(glob.glob(whole[:-len(".jsonl")] + "/subagents/*.jsonl"))
+
+
 def claude_usage(path, seen, window=None):
     total = collections.Counter()
-    path = os.path.realpath(path)
-    for transcript in [path] + sorted(glob.glob(path[:-len(".jsonl")] + "/subagents/*.jsonl")):
+    for transcript in claude_paths(os.path.realpath(path)):
         for row in rows(transcript):
             message = row.get("message") or {}
             usage = message.get("usage")
@@ -118,7 +121,7 @@ def transcripts(worker_run, runs):
 def claude_files(whole):
     """(path, size, mtime) of a Claude transcript and its subagents, the files claude_usage reads."""
     stamps = []
-    for path in [whole] + sorted(glob.glob(whole[:-len(".jsonl")] + "/subagents/*.jsonl")):
+    for path in claude_paths(whole):
         try:
             stat = os.stat(path)
         except OSError:

@@ -2440,9 +2440,7 @@ def nightly_due(now):
     failed = (read_json(os.path.join(state_dir(), "launched.json"), {}) or {}).get("nightly_failed")
     if isinstance(failed, (int, float)) and now - failed < HOUR_S:
         return False
-    if not isinstance(last, (int, float)):
-        return True
-    return local_day(last) != local_day(now) and time.localtime(now).tm_hour >= NIGHTLY_HOUR or now - last > NIGHTLY_STALE_S
+    return logstores_due(last, now)
 
 
 def judge_due(now):

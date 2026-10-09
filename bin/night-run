@@ -33,6 +33,7 @@ JQ_DONE_JOB='def done_job: .state == "nothing-to-do" or .state == "settled"; def
 . "$repo_root/share/worktree.sh"
 . "$repo_root/share/processes.sh"
 . "$repo_root/share/slots.sh"
+. "$repo_root/share/run-liveness.sh"
 
 die() { printf 'night-run: %s\n' "$*" >&2; exit 1; }
 stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -955,7 +956,8 @@ cmd_suites() {
     return 0
   fi
   lock
-  night_set "$id" '.suites = {started_at: $t, finished_at: null, pid: $p, repos: []}' --arg t "$(stamp)" --argjson p "$$" \
+  night_set "$id" '.suites = {started_at: $t, finished_at: null, pid: $p, pid_started_at: $b, repos: []}' --arg t "$(stamp)" \
+    --argjson p "$$" --argjson b "$(date +%s)" \
     || die "cannot write night $id"
   unlock
   while IFS= read -r repo; do
@@ -1382,9 +1384,9 @@ repo_debt() { # -> one line per sweep repository: its review debt now
 }
 
 suites_live() { # night file -> status 0 while its unfinished suites run's process lives
-  local pid
-  pid=$(jq -r 'if .suites.finished_at == null then .suites.pid // empty else empty end' "$1" 2>/dev/null)
-  [ -n "$pid" ] && ps -p "$pid" -o args= 2>/dev/null | grep -q 'night-run suites'
+  local pid began
+  read -r pid began < <(jq -r 'if .suites.finished_at == null then "\(.suites.pid // "") \(.suites.pid_started_at // "")" else empty end' "$1" 2>/dev/null)
+  pid_alive_since "${pid:-}" "${began:-}"
 }
 
 suites_wait() { # night file -> once its suites run finished, died or NIGHT_RUN_SUITES_WAIT_S passed; the wait journaled

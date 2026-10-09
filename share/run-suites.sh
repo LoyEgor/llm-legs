@@ -492,13 +492,7 @@ fi
 
 # Shards are jobs of this run's -j, so a slot still caps the fan-out; with no cores free they would
 # add their duplicated setup and save no wall, so auto shards only while slot_room finds room.
-shard_room=${RUN_SUITES_SHARDS:-auto}
-case $shard_room in
-  on) ;;
-  off) shard_room='' ;;
-  *) slot_room >/dev/null || shard_room='' ;;
-esac
-if [ -n "$shard_room" ]; then
+if suite_shard_wanted; then
   for entry in "${suites[@]}"; do
     case $entry in *.sh) suite_shard_count "$entry" >/dev/null; [ "$suite_shard_n" -lt 2 ] || shards[${entry##*/}]=$suite_shard_n ;; esac
   done

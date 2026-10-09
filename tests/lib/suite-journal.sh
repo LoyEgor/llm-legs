@@ -174,6 +174,11 @@ if [ -z "${suite_shard_top:-}" ]; then
   unset SUITE_SHARD
 fi
 
+suite_shard_wanted() { # -> status 0 under RUN_SUITES_SHARDS=on, or auto while slot_room finds room
+  case ${RUN_SUITES_SHARDS:-auto} in on) return 0 ;; off) return 1 ;; esac
+  ( declare -F slot_room >/dev/null || . "${BASH_SOURCE[0]%/*}/../../share/slots.sh" && slot_room ) >/dev/null 2>&1
+}
+
 [ "${1:-}" != --lib ] || return 0
 [ -z "${SUITE_JOURNAL_PID:-}" ] || return 0
 [ -z "$suite_shard" ] || return 0
@@ -264,9 +269,7 @@ builtin trap 'suite_journal_die 2' INT
 builtin trap 'suite_journal_die 15' TERM
 
 # A direct run splits like a run-suites one: RUN_SUITES_SHARDS=on|off, auto only while slot_room.
-if [ "$suite_shard_n" -gt 1 ] && [ "${RUN_SUITES_SHARDS:-auto}" != off ] && [ "${BASH_VERSINFO[0]}" -ge 4 ] &&
-    { [ "${RUN_SUITES_SHARDS:-auto}" = on ] ||
-      ( . "${BASH_SOURCE[0]%/*}/../../share/slots.sh" && slot_room ) >/dev/null 2>&1; }; then
+if [ "$suite_shard_n" -gt 1 ] && [ "${BASH_VERSINFO[0]}" -ge 4 ] && suite_shard_wanted; then
   suite_shard_logs=$(mktemp -d) suite_shard_pids='' suite_shard_rc=0 suite_shard_passed='' suite_shard_failed=''
   for ((suite_shard_i = 1; suite_shard_i <= suite_shard_n; suite_shard_i++)); do
     SUITE_SHARD=$suite_shard_i/$suite_shard_n "$BASH" "$suite_shard_top" "$@" \

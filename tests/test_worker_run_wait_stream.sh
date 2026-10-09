@@ -64,7 +64,7 @@ assert [ "$(cat "$RUN/tokens" 2>/dev/null)" = 115 ]
 # A live claudeb run: the wait reads each log line once (bytes it already read are never re-read, so
 # the rewritten first line stays unprinted), keeps a partial last line for the next read, and counts
 # the tokens on its first and last read only.
-row() { jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" --arg text "$1" '{type:"assistant",timestamp:$ts,message:{content:[{type:"text",text:$text}]}}'; }
+row() { jq -nc --arg ts "$(iso "$(date +%s)")" --arg text "$1" '{type:"assistant",timestamp:$ts,message:{content:[{type:"text",text:$text}]}}'; }
 await() { local i; for i in $(seq 100); do grep -Fq -- "$1" "$WORK/live.out" && return 0; sleep 0.1; done; fail "no [$1] in $(cat "$WORK/live.out")"; }
 rm -f "$RUN/exit_code" "$RUN/tokens"
 sleep 300 &
@@ -100,7 +100,7 @@ mkdir -p "$CRUN" "$HOME/.codex/sessions/2026"
 jq -nc --argjson s "$now" --argjson p "$$" '{vendor:"codex",account:"main",workdir:"/tmp",pid:$p,started_at:$s,pid_started_at:$s}' >"$CRUN/meta.json"
 printf 'session id: abc123\n' >"$CRUN/err"
 : >"$CRUN/out"
-jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" '{timestamp:$ts,payload:{type:"function_call",name:"exec_command",arguments:"{\"cmd\":\"ls\"}"}}' \
+jq -nc --arg ts "$(iso "$(date +%s)")" '{timestamp:$ts,payload:{type:"function_call",name:"exec_command",arguments:"{\"cmd\":\"ls\"}"}}' \
   >"$HOME/.codex/sessions/2026/rollout-abc123.jsonl"
 sleep 300 &
 live=$!

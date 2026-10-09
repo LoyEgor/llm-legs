@@ -1079,8 +1079,7 @@ run_mode() {
   baseline=$(session_baseline "${sid:-}")
   case "$1" in
     baseline) cmd_baseline "$baseline" ;;
-    check)    pending=${baseline##*/session-}
-              instruction_baseline_wait "$STATE_DIR/pending-${pending%.tsv}"
+    check)    instruction_baseline_wait "$STATE_DIR/pending-$(instruction_sid_name "${sid:-}")"
               cmd_check "$baseline" "$event" "$sid" ;;
     *)        gate_journal watch fault "$sid" '' '' "unknown mode $1"; exit 0 ;;
   esac

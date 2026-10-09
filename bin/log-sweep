@@ -59,7 +59,7 @@ def glob_base(pattern):
 
 
 def prune_parents(path, bases):
-    base = max((b for b in bases if path.startswith(b.rstrip("/") + "/")), key=len, default=None)
+    base = log_stores.root_of(path, bases)
     up = os.path.dirname(path)
     while base and up.startswith(base.rstrip("/") + "/"):
         try:

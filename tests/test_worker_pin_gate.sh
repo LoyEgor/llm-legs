@@ -641,18 +641,14 @@ WORDS_LIB="$WORK/span-only.sh" CLAUDE_CODE_SESSION_ID=s \
 export WORDS_LIB="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/lib/words.sh" WORDS_DIR="$WORK/words-cmd"
 export CLAUDE_CODE_SESSION_ID=s
 mkdir -p "$WORDS_DIR/s"
-cmd_grant() { # scope
-  jq -nc --arg s "$1" '{family: "pin", turn: 1, at: 0, excerpt: "x", lifetime: "ttl:30m",
-    source: "stem", target: "codex", scope: $s}' >"$WORDS_DIR/s/grant.pin"
-}
 assert_fails worker_model_pin_account claudeb_profile claudeb accounts never_disabled beta
-cmd_grant chat
+pin_grant chat
 assert_fails worker_model_pin_account claudeb_profile claudeb accounts never_disabled beta
 jq -nc --argjson u "$(($(date +%s) + 3600))" '{until: $u}' >"$WORDS_DIR/gate-open"
 assert worker_model_pin_account claudeb_profile claudeb accounts never_disabled beta
 assert contains "$(cat "$REAL_PIN")" 'claudeb_profile=beta'
 rm -f "$WORDS_DIR/gate-open"
-cmd_grant account
+pin_grant account
 assert worker_model_pin_account claudeb_profile claudeb accounts never_disabled --clear
 assert lacks "$(cat "$REAL_PIN")" 'claudeb_profile='
 chmod 000 "$WORDS_DIR/s"

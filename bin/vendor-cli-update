@@ -86,15 +86,18 @@ busy() { # vendor npm-root
   [ "${#files[@]}" -gt 0 ] && [ -n "$(lsof -t -- "${files[@]}" 2>/dev/null)" ]
 }
 
-record() { # vendor result installed latest [from]
+state_apply() { # jq-args...
   local tmp
+  tmp=$(mktemp "$state_dir/state.XXXXXX") || return 0
+  { [ -s "$state_file" ] && cat "$state_file" || printf '{}\n'; } | jq "$@" >"$tmp" 2>/dev/null &&
+    mv -f "$tmp" "$state_file" || rm -f "$tmp"
+}
+
+record() { # vendor result installed latest [from]
   [ "$2" = current ] || [ "$2" = not-installed ] ||
     printf '%s %s %s %s -> %s\n' "$(stamp)" "$1" "$2" "${5:-${3:--}}" "${4:--}" >>"$log_file"
-  tmp=$(mktemp "$state_dir/state.XXXXXX") || return 0
-  { [ -s "$state_file" ] && cat "$state_file" || printf '{}\n'; } |
-    jq --arg v "$1" --arg r "$2" --arg i "$3" --arg l "$4" --arg t "$(stamp)" \
-      '.[$v] = ((.[$v] // {}) + {result: $r, installed: $i, latest: $l, checked_at: $t})' >"$tmp" 2>/dev/null &&
-    mv -f "$tmp" "$state_file" || rm -f "$tmp"
+  state_apply --arg v "$1" --arg r "$2" --arg i "$3" --arg l "$4" --arg t "$(stamp)" \
+    '.[$v] = ((.[$v] // {}) + {result: $r, installed: $i, latest: $l, checked_at: $t})'
 }
 
 refresh_models() { # vendor bin-dir
@@ -153,13 +156,10 @@ codex_catalog_gaps() { # installed-version
   done
 }
 record_divergence() { # vendor findings
-  local tmp before
+  local before
   before=$(jq -r --arg v "$1" '.[$v].divergence // [] | .[]' "$state_file" 2>/dev/null)
   [ "$before" = "$2" ] || printf '%s %s divergence: %s\n' "$(stamp)" "$1" "$(printf '%s' "${2:-none}" | tr '\t\n' ' ;')" >>"$log_file"
-  tmp=$(mktemp "$state_dir/state.XXXXXX") || return 0
-  { [ -s "$state_file" ] && cat "$state_file" || printf '{}\n'; } |
-    jq --arg v "$1" --arg d "$2" '.[$v].divergence = ($d | split("\n") | map(select(length > 0)))' >"$tmp" 2>/dev/null &&
-    mv -f "$tmp" "$state_file" || rm -f "$tmp"
+  state_apply --arg v "$1" --arg d "$2" '.[$v].divergence = ($d | split("\n") | map(select(length > 0)))'
 }
 
 update_vendor() { # vendor
@@ -303,11 +303,7 @@ run_all() { # [--if-due]
 }
 
 mark_passed() {
-  local tmp
-  tmp=$(mktemp "$state_dir/state.XXXXXX") || return 0
-  { [ -s "$state_file" ] && cat "$state_file" || printf '{}\n'; } |
-    jq --arg vendors "$vendors" --arg t "$(stamp)" 'reduce ($vendors | split(" "))[] as $v (.; .[$v].passed_at = $t)' >"$tmp" 2>/dev/null &&
-    mv -f "$tmp" "$state_file" || rm -f "$tmp"
+  state_apply --arg vendors "$vendors" --arg t "$(stamp)" 'reduce ($vendors | split(" "))[] as $v (.; .[$v].passed_at = $t)'
 }
 
 run_doctor() {
