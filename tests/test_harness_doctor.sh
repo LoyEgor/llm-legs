@@ -2246,6 +2246,17 @@ check(bash[3] == N + 200 and bash[7] == N + 150 and bash[9] == 0,
 check(len(cont) == 1 and cont[0][3] == N + 1100 and cont[0][7] == N + 1000 and cont[0][9] == 1 and cont[0][5] == [0, 1, 1],
       "C1 continuation: the notification opens its follow-up turn, answered after 3 min: %s" % cont)
 check(by(notes, "t", N + 1000.5)[4] == "n", "C1 continuation: the turn a notification opens has origin n")
+N2 = N + 6000
+wl = [human(N2), say(N2 + 5, tools=[("toolu_w1", "Bash", {"command": "worker-run wait cb-1"}),
+                                    ("toolu_w2", "Bash", {"command": "review-bench wait 20261009T000000Z-abc"})]),
+      result(N2 + 6, "toolu_w1", backgroundTaskId="bw1"), result(N2 + 6, "toolu_w2", backgroundTaskId="bw2"),
+      say(N2 + 10), done(N2 + 20),
+      queue(N2 + 150, "enqueue", "<task-notification><task-id>bw1</task-id></task-notification>"),
+      queue(N2 + 150.4, "dequeue"), note(N2 + 150.5, task="bw1"), say(N2 + 160), done(N2 + 200),
+      queue(N2 + 300, "enqueue", "<task-notification><task-id>bw2</task-id></task-notification>"),
+      queue(N2 + 300.4, "dequeue"), note(N2 + 300.5, task="bw2"), say(N2 + 310), done(N2 + 350)]
+waits = sorted(r[4] for r in chat("waits", wl) if r[0] == "d")
+check(waits == ["Bash:review", "Bash:worker"], "C1 a background worker-run / review-bench wait is a worker / review delegation: %s" % waits)
 a_min, b_min = m.owner_minutes(notes, 1, N - 1, N + 5000)
 check(abs(a_min * 60 - (20 + 100 + 99.5)) < 0.01 and abs(b_min * 60 - (1000 - 230)) < 0.01,
       "C1 B: an opened delegation adds from his last prompt to its notification, a mid-turn one nothing: %s %s"

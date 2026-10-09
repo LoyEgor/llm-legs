@@ -203,6 +203,8 @@ C1_SUITE = re.compile(r"(?:^|[;&|(\n])\s*(?:\w+=\S*\s+)*(?:(?:bash|sh|python3?|e
                       r"(?:\S*/)?(?:run-all|run-suites\.sh|test_[\w.-]+\.(?:sh|bash|py|lua))(?=\s|$|[;&|)])")
 MEDIA_TOOL = re.compile(r"(?:^|[\s/;&|(])(media-run|codex-image|gemini-image|grok-image|image-fanout|gemini-video|grok-video|"
                         r"video-chain|gemini-music|gemini-sfx|gemini-listen|gemini-speech|chatgpt-web|gemini-web)(?=\s|$|[;&|)])")
+WORKER_WAIT = re.compile(r"(?:^|[\s/;&|(])(?:worker-run\s+wait|light-research)(?=\s|$|[;&|)])")
+REVIEW_WAIT = re.compile(r"(?:^|[\s/;&|(])review-bench\s+wait(?=\s|$|[;&|)])")
 C1_BYTES = (b'"user"', b'"assistant"', b'"system"', b'"queue-operation"', b'"queued_command"')
 DONE_WORDS = ("delivered", "passed", "sent", "fixed", "landed", "передал", "отправил", "доставлен", "починил")
 DONE_BYTES = tuple({v.encode() for w in DONE_WORDS for v in (w, w.capitalize(), w.upper())})
@@ -881,7 +883,8 @@ def c1_entry(c, out, entry, t, session, boots):
                 command = str(args.get("command") or "") if name == "Bash" else ""
                 layer = "ask" if name in C1_ASK else "test" if C1_SUITE.search(command) else "media" if (
                     MEDIA_TOOL.search(command)) else "tool"
-                what = name + (":" + str(args["subagent_type"]) if args.get("subagent_type") else ":media" if layer == "media" else "")
+                what = name + (":" + str(args["subagent_type"]) if args.get("subagent_type") else ":media" if layer == "media"
+                               else ":worker" if WORKER_WAIT.search(command) else ":review" if REVIEW_WAIT.search(command) else "")
                 turn["open"][block["id"]] = [t, layer, what]
         return
     if kind == "system":

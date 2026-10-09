@@ -98,6 +98,9 @@ check(doc["partition"]["chat"]["model"] > 0 and not [p for p in doc["problems"] 
 module_loader = importlib.machinery.SourceFileLoader("speed_doctor", os.path.join(root, "bin", "speed-doctor"))
 module = importlib.util.module_from_spec(importlib.util.spec_from_loader("speed_doctor", module_loader))
 module_loader.exec_module(module)
+check([module.delegation_leaf(w) for w in ("Bash:worker", "Bash:review", "Agent:codex-worker", "Agent:review-waiter", "Bash")]
+      == ["workers", "reviews", "workers", "reviews", "background Bash"],
+      "a chat's own background worker-run / review-bench wait is a worker / review delegation, as the relays were")
 check(doc["coverage"] == {"days": 3.91, "window_days": 7, "backfill_files_done": 0, "backfill_files": 0}
       and doc["why_none"] is None and all(0 < p["opportunity"]["data_confidence"] <= round(4 / 7.0, 2) for p in backlog)
       and [module.seen_need("seen_days", d) for d in (7, 3.91, 1)] == [3, 2, 1],

@@ -419,9 +419,9 @@ def delegation_leaf(what):
     # Agent:image-gen: transcripts from before media-run still sit inside the 28-day window.
     if what in ("Bash:media", "Agent:image-gen"):
         return "media"
-    if what == "Agent:review-waiter":
+    if what in ("Bash:review", "Agent:review-waiter"):
         return "reviews"
-    if what.startswith("Agent:") and what.endswith("-worker"):
+    if what == "Bash:worker" or what.startswith("Agent:") and what.endswith("-worker"):
         return "workers"
     return "other"
 

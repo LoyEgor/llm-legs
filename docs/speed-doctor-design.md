@@ -22,7 +22,7 @@ Sources: the 2026-10-02 research notes, now retired: [CT] chat turns, [HC] hooks
   - No cap in any sum; the 30-min cap applies to percentiles only, long turns get a count row.
   - Clipped at boots (`kern.boottime` change, pmset "powerd process is started") and pmset Sleep/Wake. A telemetry gap is *unknown coverage*, never sleep, and never drops a whole interval.
   - Chat start, CLI launch → first prompt ready, counts for chats he opens (C11).
-- **B, blocked delegation.** Any background job a chat launched (Agent, `run_in_background` Bash, worker-run, review-waiter, media): from max(launch, his last prompt in any owner chat) to the notification, when he answers the follow-up turn within R of its end. That follow-up turn is A.
+- **B, blocked delegation.** Any background job a chat launched (Agent, `run_in_background` Bash, worker-run, review-bench, media): from max(launch, his last prompt in any owner chat) to the notification, when he answers the follow-up turn within R of its end. That follow-up turn is A.
 - **C, direct UI waits.** Menu click → display; Hammerspoon main-thread lag over 50 ms (`hs-lag.tsv`).
 
 **OM/d** = |A ∪ B ∪ C| per local day. Parallel blocked chats share each minute equally, for attribution only.
