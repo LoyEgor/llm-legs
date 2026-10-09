@@ -381,6 +381,8 @@ assert jq -e --argjson ended "$(printf '%s\n' "${ended[@]}" | jq -s .)" --argjso
   "$RUN_DIR/meta.json" >/dev/null
 assert jq -se --arg run "$RUN_ID" 'map(select(.run == $run)) | length == 1 and (.[0].orphans | length) == 6' \
   "$CLAUDEB_DIR/worker-stats/runs.jsonl" >/dev/null
+assert grep -qx 'ENDED: 6 processes the run left running outside its tree, ended with it, so whatever they were still doing did not finish: bash -c WORKER_RUN_ID=claudeb-1-1-nested bash -c "sleep 3006; :" & sleep 3007; : · bash -c sleep 3001; : · bash -c sleep 3002; :' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
 orphan_cleanup
 trap 'rm -rf "$WORK"' EXIT
 

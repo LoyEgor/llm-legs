@@ -4039,6 +4039,13 @@ result_pointer() { # directory
 # that names nothing, and the supervisor survived precisely so this line can be printed: without it
 # the run reports a failure whose cause is only in a daemon log nobody reads. One line per kill,
 # since a long run can be cut more than once.
+# A result can promise a chain "still running" or "queued last" that end_run_orphans has already ended (live
+# 2026-10-08, logo-vectorizer-bench: 31 traces of a done run never finished).
+ended_orphans_line() { # directory
+  jq -r '(.orphans_ended // []) | select(length > 0) | "ENDED: \(length) process\(if length == 1 then "" else "es" end) the run left running outside its tree, ended with it, so whatever they were still doing did not finish: \([.[].command] | unique | .[:3] | join(" · "))"' \
+    "$1/meta.json" 2>/dev/null || :
+}
+
 memguard_lines() { # directory
   [ -s "$1/memguard" ] || return 0
   awk '$1 == "MEMGUARD" {
@@ -4574,6 +4581,7 @@ report_run() {
     printf 'STATUS: %s\nEXIT: %s\nSESSION: %s\n' "$status" "$code" "$(session_id "$directory")"
     memguard_lines "$directory"
     outcome_with_knobs "$directory" print_outcome "$directory" "$vendor" "$code"
+    ended_orphans_line "$directory"
     readonly_report_hint "$directory"
     escalate_lines "$directory" "$vendor"
     if [ "$code" != 0 ]; then
