@@ -1126,6 +1126,8 @@ jq -n '{schema:1, vendors:{codex:{accounts:[{account:"beta", enabled:true, five_
 printf 'worker=codex\n' >"$LIGHT_GATE_WORK/worker-model"
 assert grep -Fq 'ACCOUNT: beta is switched off or removed' \
   <<<"$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex-worker $'ACCOUNT: beta\nx')"
+assert grep -Fq "The brief's ACCOUNT: beta is switched off or removed" \
+  <<<"$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex-worker $'ACCOUNT: beta\nx' beta)"
 light_gate_flag=$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex-worker x beta)
 assert grep -Fq -- "--account beta is switched off or removed" <<<"$light_gate_flag"
 assert grep -Fq -- "to --account, or drop the flag" <<<"$light_gate_flag"
@@ -1159,6 +1161,11 @@ printf 'worker=auto\n' >"$LIGHT_GATE_WORK/worker-model"
 login_gate_out=$(LIGHT_PICK_LIST="$LIGHT_GATE_WORK/list" light_gate claudeb-worker $'ACCOUNT: tronjhon\nx')
 assert grep -Fq '"permissionDecision":"deny"' <<<"$login_gate_out"
 assert grep -Fq 'ACCOUNT: tronjhon needs a login as a Claude account' <<<"$login_gate_out"
+assert grep -Fq "The brief's ACCOUNT: tronjhon needs a login" \
+  <<<"$(LIGHT_PICK_LIST="$LIGHT_GATE_WORK/list" light_gate claudeb-worker $'ACCOUNT: tronjhon\nx' tronjhon)"
+login_gate_out=$(LIGHT_PICK_LIST="$LIGHT_GATE_WORK/list" light_gate claudeb-worker x tronjhon)
+assert grep -Fq -- "--account tronjhon needs a login as a Claude account" <<<"$login_gate_out"
+assert grep -Fq -- "to --account, or drop the flag" <<<"$login_gate_out"
 assert test "$(LIGHT_PICK_LIST="$LIGHT_GATE_WORK/list" light_gate gemini-worker $'ACCOUNT: tronjhon\nx' |
   grep -c 'needs a login')" = 0
 # Light switched off in Egor's menu: the spawn hook refuses the spawn, and this gate neither prices
