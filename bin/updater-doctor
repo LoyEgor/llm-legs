@@ -180,6 +180,8 @@ def event_new_models(event, fingerprint):
         return []
     before, after = base.get("facets") or {}, fingerprint.get("facets") or {}
     for facet in ("catalog", "ids"):
+        if facet == "ids" and "ids" not in (event.get("substantive") or []):
+            continue
         old = set(model_keys(before.get(facet)))
         added = [key for key in model_keys(after.get(facet)) if key not in old]
         if added:

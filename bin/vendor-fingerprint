@@ -197,6 +197,7 @@ codex_facets() {
       jq 'delpaths([paths(type == "string" and length > 300) | if .[-2] == "per_account" then .[:-2] else . end])
         | map_values(del(.priority))' "$work/catalog" | put catalog
       jq 'map_values(.priority) | with_entries(select(.value != null))' "$work/catalog" | put catalog_order
+      jq -r 'keys[]' "$work/catalog" >"$work/served"
       jq -r 'paths(type == "string" and length > 300) as $p | [($p | map(tostring) | join(".")), (getpath($p) | @base64)] | @tsv' \
         "$work/catalog" | while IFS=$'\t' read -r key text; do
         printf '%s\t%s\n' "$key" "$(printf '%s' "$text" | base64 -D 2>/dev/null | shasum -a 256 | cut -c1-16)"
@@ -222,6 +223,7 @@ grok_facets() {
   put_text 'help: grok --help' grok --help
   if jq -e '.models | type == "array" and length > 0' "$grokb_cache" >/dev/null 2>&1; then
     jq '.models | map({key: .slug, value: del(.slug)}) | from_entries' "$grokb_cache" | put catalog
+    jq -r '.models[].slug // empty' "$grokb_cache" >"$work/served"
   else
     fail catalog remote
   fi
@@ -232,13 +234,20 @@ gemini_facets() {
   put_text 'help: agy --help' agy --help
   if timeout_command 30 agy models </dev/null 2>/dev/null | LC_ALL=C grep -E $'^[a-z0-9][a-z0-9._-]*\t' >"$work/models"; then
     jq -R . "$work/models" | jq -s . | put catalog
+    cut -f1 "$work/models" >"$work/served"
   else
     fail catalog remote
   fi
 }
 
 claude_facets() {
+  local native
   put_text 'help: claude --help' claude --help
+  # The binary bakes the model catalog its aliases resolve through: every served model is an entry.
+  native=$(native_of claude) && [ -f "$native" ] &&
+    LC_ALL=C strings -a -n 6 "$native" 2>/dev/null | LC_ALL=C grep -oE 'first_party:"[a-z0-9.-]+"' |
+    sed -E 's/^first_party:"(.*)"$/\1/' >"$work/served"
+  return 0
 }
 
 snapshot() { # vendor -> {vendor, version, facets, failed}
@@ -249,13 +258,16 @@ snapshot() { # vendor -> {vendor, version, facets, failed}
   work=$(mktemp -d "${TMPDIR:-/tmp}/vendor-fingerprint.XXXXXX") || return 1
   : >"$work/facets.jsonl"
   : >"$work/failed.tsv"
+  : >"$work/served"
   jq -n --arg v "$version" '$v' | put version
   put_installs "$vendor"
   "${vendor}_facets"
   put_ids "$vendor"
   jq -n --arg vendor "$vendor" --arg version "$version" \
-    --slurpfile facets "$work/facets.jsonl" --rawfile failed "$work/failed.tsv" \
+    --slurpfile facets "$work/facets.jsonl" --rawfile failed "$work/failed.tsv" --rawfile served "$work/served" \
     '{vendor: $vendor, version: $version,
+      served: ($served | split("\n") | map(select(length > 0)) | if length == 0 then null
+               else . + map(sub("-(minimal|low|medium|high|xhigh)$"; "")) | unique end),
       facets: ($facets | map({(.k): .v}) | add // {}),
       failed: ($failed | split("\n") | map(select(length > 0) | split("\t") | {facet: .[0], where: .[1]}))}'
   rm -rf "$work"
@@ -312,11 +324,25 @@ catalog_regrouped() { # previous current
     | all(.[]; . as $k | (($c | vals($k)) - ($p | vals($k))) == [])' "$1" "$2" >/dev/null
 }
 
+# Strings in a binary hold ids nothing serves (claude-haiku-3-55, gemini-3.7-flash-tiered): an id
+# counts only when the served catalog lists it, or when no served model shares its family, so a family no
+# catalog covers (gpt-image, grok-imagine) is still news.
+ids_unserved() { # previous current -> true when every added or removed id is one the catalog should list and does not
+  jq -e -s 'def stem: split("-") | (map(test("^[0-9]")) | index(true)) as $i | if $i == null then . else .[:$i] end | join("-");
+    (.[1].served | type == "array") and (
+      ((.[0].served // []) + .[1].served) as $s | ($s | map(stem)) as $st
+      | (.[0].facets.ids // []) as $p | (.[1].facets.ids // []) as $c
+      | all(($c - $p)[], ($p - $c)[]; . as $id | (any($s[]; . == $id) | not) and any($st[]; . == ($id | stem))))' "$1" "$2" >/dev/null
+}
+
 changes() { # vendor previous current -> changed-json<TAB>substantive-json
   local changed substantive
   changed=$(jq -s -c '.[0].facets as $p | .[1].facets as $c
     | [(($p | keys) + ($c | keys) | unique)[] | select(($p[.] // null) != ($c[.] // null))]' "$2" "$3")
   substantive=$(jq -c --arg info "$info_facets" '($info | split(" ")) as $i | map(select(. as $f | $i | index($f) | not))' <<<"$changed")
+  if jq -e 'index("ids")' <<<"$substantive" >/dev/null && ids_unserved "$2" "$3"; then
+    substantive=$(jq -c 'map(select(. != "ids"))' <<<"$substantive")
+  fi
   if [ "$1" = codex ] && jq -e 'index("catalog")' <<<"$substantive" >/dev/null && catalog_regrouped "$2" "$3"; then
     substantive=$(jq -c 'map(select(. != "catalog"))' <<<"$substantive")
   fi
@@ -360,6 +386,7 @@ check_vendor() { # vendor
        + {foreign_clients: (($p.facets.foreign_clients // {}) + ($s.facets.foreign_clients // {}))}
        + {probe_failures: ($s.failed | map(select(.where == "local") | .facet) | unique)}) as $facets
     | {vendor: $s.vendor, version: $s.version, checked_at: $t, facets: $facets,
+       served: (if $s.served != null then $s.served elif any($s.failed[]; .facet == "catalog") then $p.served else null end),
        remote_failures: ($s.failed | map(select(.where == "remote") | .facet) | unique)}' \
     <({ [ -s "$previous" ] && cat "$previous" || printf 'null\n'; }) "$current.raw" >"$current"
   rm -f "$current.raw"
@@ -491,6 +518,14 @@ waiting() { # [vendor] -> the open events no chat has taken yet
   return 0
 }
 
+cheap_events() { # id... -> true when every event changed only help text or bundled docs, Sonnet's to integrate
+  local id
+  for id in "$@"; do
+    jq -e '(.reason // "" | startswith("manual request") | not) and (.changed | length > 0)
+      and all(.substantive[]; startswith("help: ") or . == "docs")' "$events_dir/$id.json" >/dev/null 2>&1 || return 1
+  done
+}
+
 vendor_brief() { # top night-or-empty branch worktree id... -> the brief a headless worker runs, after its ROUND: and ADD-DIR: lines
   local top=$1 night=$2 branch=$3 worktree=$4 id vendor
   shift 4
@@ -522,6 +557,8 @@ Read $top/docs/vendor-release.md in full and follow it${night:+ with its §6 Nig
 Report in English, under 300 words, outcome first: each event closed or not; the branch and commit
 hash per repository; every blocked-on-egor line; the suites run with PASS counts.
 EOF
+  ! cheap_events "$@" || printf '\nYou run on Sonnet: on a new served model, a tool schema or flag change, a conflict in logic or a
+failure whose cause is unclear, stop editing, write what you found and end with `ESCALATE: <reason>`.\n'
 }
 
 # A night takes per vendor its one real waiting release (never a manual request), branched from
@@ -550,6 +587,7 @@ vendor_runs() { # night-or-empty -> per vendor its fixer run, brief and worktree
         worktree_siblings "$branch" ${repos[@]+"${repos[@]}"})
     fi
     if [ -z "$worktree" ] || ! { printf 'ROUND: none\n'
+      ! cheap_events "${ids[@]}" || printf 'MODEL: sonnet\n'
       for repo in ${siblings[@]+"${siblings[@]}"}; do printf 'ADD-DIR: %s\n' "$repo"; done
       vendor_brief "$top" "$night" "$branch" "$worktree" "${ids[@]}"; } >"$brief"; then
       log "${night:+night $night: }no worktree or brief for ${ids[*]}, it keeps waiting"

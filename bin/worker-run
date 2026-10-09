@@ -4052,6 +4052,22 @@ terminal_status() { # directory vendor code
   printf 'done\n'
 }
 
+# A cheap-model run that met a responsible decision ends with `ESCALATE: <reason>`; it cannot start a
+# run itself, so its report hands the dispatcher the same brief, ready for the default model.
+escalate_lines() { # directory vendor
+  local reason brief="$1/escalate.brief.md"
+  reason=$(run_result_text "$1" "$2" | sed -n 's/^ESCALATE:[[:space:]]*//p' | tail -n 1)
+  [ -n "$reason" ] || return 0
+  printf 'ESCALATE: %s\n' "$reason"
+  [ -r "$1/brief" ] || return 0
+  [ -s "$brief" ] || {
+    awk '!cut && /^(MODEL|EFFORT):/ { next } !/^[A-Z][A-Z-]*:/ { cut = 1 } { print }' "$1/brief"
+    printf '\nThe %s run on this brief escalated: %s. Its report: `%s report %s`; read it first.\n' \
+      "$(jq -r '.model // "cheap-model"' "$1/meta.json" 2>/dev/null)" "$reason" "$SCRIPT_PATH" "$(basename "$1")"
+  } >"$brief" 2>/dev/null
+  printf 'ESCALATE-BRIEF: %s\n' "$brief"
+}
+
 terminal_report() {
   local directory="$1" code vendor status
   code=$(tr -d '[:space:]' <"$directory/exit_code")
@@ -4063,6 +4079,7 @@ terminal_report() {
   workdir_escape_line "$directory"
   memguard_lines "$directory"
   print_outcome "$directory" "$vendor" "$code"
+  escalate_lines "$directory" "$vendor"
   denied_tools_line "$directory"
   lang_line "$directory"
   inbox_lines "$directory"
@@ -4459,6 +4476,7 @@ report_run() {
     memguard_lines "$directory"
     outcome_with_knobs "$directory" print_outcome "$directory" "$vendor" "$code"
     readonly_report_hint "$directory"
+    escalate_lines "$directory" "$vendor"
     if [ "$code" != 0 ]; then
       printf 'ERR-TAIL:\n'
       tail -n 80 "$directory/err" 2>/dev/null

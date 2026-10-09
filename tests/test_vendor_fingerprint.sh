@@ -109,7 +109,9 @@ printf 'image_generation         stable             true\nagent_message_board   
 printf 'gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n' >"$DATA/models-agy"
 printf 'image generation skill\n' >"$HOME/.codex-profiles/a/skills/.system/imagegen/SKILL.md"
 printf '# Headless\n' >"$HOME/.grok/docs/14-headless-mode.md"
-printf '{"models":[{"slug":"grok-4.7","default":true,"label":"grok-4.7"}]}\n' >"$HOME/.cache/grokb/models.json"
+# grokb lists the models the later checks find new in the binary: only a served id is a release.
+printf '{"models":[{"slug":"grok-4.7","default":true,"label":"grok-4.7"},{"slug":"grok-5"},{"slug":"grok-6"},{"slug":"grok-7"},{"slug":"grok-8"}]}\n' \
+  >"$HOME/.cache/grokb/models.json"
 codex_cache() { # home client-version models-json
   printf '{"client_version":"%s","fetched_at":"2026-09-23T00:00:00Z","models":%s}\n' "$2" "$3" >"$1/models_cache.json"
 }
@@ -696,6 +698,43 @@ assert bash "$n_tree/bin/vendor-fingerprint" close "$night_grok" --decisions "$W
 assert jqe '.status == "closed" and (.decisions | map(.purpose) | unique) == ["docs/new-surface.md"]' "$EVENTS/$night_grok.json"
 assert jqe --arg e "$night_grok" '.closed_at != null and .decisions[0].id == $e and .decisions[0].verdict == "integrated"' "$RUNS/$n_run.json"
 
+# A string id no served catalog lists opens nothing (claude-haiku-3-55, gemini-3.5-flash-lite in 2026-10);
+# one the catalog serves does. Claude's catalog is the one its binary bakes in.
+held_check() { VENDOR_FINGERPRINT_HOLD=1 check "$@"; }
+claude_ids='claude-opus-5-5 claude-sonnet-5 claude-opus-6 claude-opus-7 first_party:"claude-opus-5-5" first_party:"claude-haiku-4-5"'
+fake_cli "$FAKE_BIN/claude" claude $claude_ids
+held_check claude
+taken
+count=$(events)
+fake_cli "$FAKE_BIN/claude" claude $claude_ids claude-haiku-3-55
+held_check claude
+assert [ "$(events)" = $((count + 1)) ]
+assert [ "$(field '"\(.vendor) \(.status) \(.changed | join(","))"')" = "claude auto-closed ids" ]
+sed -i '' '2s/$/ gemini-3.5-flash-lite/' "$FAKE_BIN/agy"
+held_check gemini
+assert [ "$(events)" = $((count + 2)) ]
+assert [ "$(field '"\(.vendor) \(.status)"')" = "gemini auto-closed" ]
+fake_cli "$FAKE_BIN/claude" claude $claude_ids claude-haiku-3-55 claude-haiku-5-5 'first_party:"claude-haiku-5-5"'
+held_check claude
+night_claude=$(field .id)
+assert [ "$(field '"\(.vendor) \(.status) \(.substantive | join(","))"')" = "claude open ids" ]
+assert grep -qxF '+claude-haiku-5-5' "$EVENTS/$night_claude.diff"
+# Help text alone goes to Sonnet, told when to hand itself back; a new served model stays on the default.
+printf 'grok usage\n  -p, --print\n  --fast\n' >"$DATA/help-grok"
+held_check grok
+night_help=$(field .id)
+assert [ "$(field '"\(.vendor) \(.status) \(.substantive | join(","))"')" = "grok open help: grok --help" ]
+git -C "$NREPO" update-ref refs/night/N2/base HEAD
+git -C "$SIB" update-ref refs/night/N2/base HEAD
+assert night N2 >"$WORK/night2"
+help_brief=$(jq -r .brief "$EVENTS/$night_help.json")
+assert [ "$(sed -n 2p "$help_brief")" = "MODEL: sonnet" ]
+assert grep -qF 'end with `ESCALATE: <reason>`' "$help_brief"
+claude_brief=$(jq -r .brief "$EVENTS/$night_claude.json")
+assert_fails grep -q '^MODEL:' "$claude_brief"
+assert_fails grep -q 'ESCALATE' "$claude_brief"
+assert_fails grep -q '^MODEL:' "$n_brief"
+
 # A field that is a leaf in one home and a container in another no longer kills the codex catalog
 # merge (gpt-6.1-sol vanished from every catalog facet this way), and a merge that does fail is a
 # broken probe, never a silently missing facet.
@@ -716,4 +755,4 @@ codex_cache "$HOME/.codex-profiles/z" "$v" '[1]'
 bash "$SCRIPT" snapshot codex >"$WORK/broken.json"
 assert jqe '(.facets | has("catalog") | not) and ([.failed[] | select(.facet == "catalog")] == [{facet: "catalog", where: "local"}])' "$WORK/broken.json"
 
-echo "PASS: $asserts asserts; baseline, version-only releases close themselves, new ids/catalog fields/docs/help/newly lagging installs/divergence open an event each, an install catching up, still lagging or ahead of the primary closes itself, prompts and foreign clients are informational, unreadable facets keep their value, broken local probes are reported, manual requests, close, lock, check --here, no chat from check for a waiting event however old, a failed manual request retried by check, waiting events joined and reverts closed, day requests as per-vendor fixer runs of doctor updater (worktree off main, brief) dispatched by one orchestrator chat, every vendor in that chat on request --all, each run closing with its event, a failed chat failing its run, a request taking its vendor's waiting event, manual diffs that carry the whole fingerprint, decision purposes judged by doctor-fix, a bounded lock wait for check --here, one worktree, branch, brief and updater fixer run (the printed ref) per vendor on request --night and none without a base ref, a codex catalog merge across homes whose field shapes differ, a failed merge reported as a broken probe, a night request under the check lock, and purposes that cannot be judged holding the close"
+echo "PASS: $asserts asserts; baseline, version-only releases close themselves, new ids/catalog fields/docs/help/newly lagging installs/divergence open an event each, an install catching up, still lagging or ahead of the primary closes itself, prompts and foreign clients are informational, unreadable facets keep their value, broken local probes are reported, manual requests, close, lock, check --here, no chat from check for a waiting event however old, a failed manual request retried by check, waiting events joined and reverts closed, day requests as per-vendor fixer runs of doctor updater (worktree off main, brief) dispatched by one orchestrator chat, every vendor in that chat on request --all, each run closing with its event, a failed chat failing its run, a request taking its vendor's waiting event, manual diffs that carry the whole fingerprint, decision purposes judged by doctor-fix, a bounded lock wait for check --here, one worktree, branch, brief and updater fixer run (the printed ref) per vendor on request --night and none without a base ref, a codex catalog merge across homes whose field shapes differ, a failed merge reported as a broken probe, a night request under the check lock, purposes that cannot be judged holding the close, string ids no served catalog lists opening nothing, and help-only releases briefed for Sonnet"

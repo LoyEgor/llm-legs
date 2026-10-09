@@ -60,6 +60,7 @@ brief=$(cut -f2 "$WORK/carry.out" | head -1)
 assert grep -qxF "ADD-DIR: $WORK/other/.claude/worktrees/night-N1-handoff-2026-09-28-old" "$brief"
 assert grep -qF "Settle the handoff \`$WORK/repo/docs/handoffs/2026-09-28-old.md\`" "$brief"
 assert grep -qF 'Cost:`, `Loss:` and `Recommendation:`' "$brief"
+assert_fails grep -q '^MODEL:' "$brief"
 assert grep -qF "Not the night's, so never a worktree, branch or commit there: \`$WORK/foreign\`. When the fix lies there" "$brief"
 assert [ "$(grep -c "Not the night's" "$brief")" = 1 ]
 # A helper repository is the night's to fix: based, an ADD-DIR worktree, no ban; it lands only the night's commits.
@@ -407,5 +408,26 @@ assert grep -qxF 'His answer: merge it' "$NIGHTS/N6.trade-t1.brief.md"
 assert grep -qF "Its handoff: \`$WORK/dupb/docs/handoffs/2026-10-09-same.md\`" "$NIGHTS/N6.trade-t1.brief.md"
 night carry N6 >"$WORK/n6d.out" 2>/dev/null || fail "a second carry of a trade job failed"
 assert_fails grep -q '^trade-' "$WORK/n6d.out"
+
+# A suite already green in the press-time tree closes with no worker; a red one gets a Sonnet brief.
+git init -q "$WORK/suites" && mkdir -p "$WORK/suites/tests"
+printf '#!/usr/bin/env bash\n[ "$*" = test_ok.sh ]\n' >"$WORK/suites/tests/run-all"
+chmod +x "$WORK/suites/tests/run-all"
+touch "$WORK/suites/tests/test_ok.sh" "$WORK/suites/tests/test_red.sh"
+gt -C "$WORK/suites" add -A && gt -C "$WORK/suites" commit -qm init
+printf '%s\n' "$WORK/suites" >"$WORK/sweep-suites"
+export NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-suites"
+jq -n --arg r "$WORK/suites" '{id: "N7p", started_at: "2026-10-05T00:00:00Z", finished_at: "2026-10-05T03:00:00Z", jobs: [],
+  suites: {repos: [{repo: $r, exit: 1, passed: 0, failed: ["test_ok.sh", "test_red.sh"], log: "/l/suites.log"}]}}' >"$NIGHTS/N7p.json"
+jq -n '{id: "N7", started_at: "2026-10-06T00:00:00Z", finished_at: null, session: null, jobs: []}' >"$NIGHTS/N7.json"
+night base N7 >/dev/null || fail "night base N7 failed"
+night carry N7 >"$WORK/n7.out" 2>"$WORK/n7.err" || fail "carry of suite jobs failed"
+assert jqe '[.jobs[] | [.ref, .state, .reason]] == [["suite-suites-test_ok", "nothing-to-do", "test_ok.sh green at press time"],
+  ["suite-suites-test_red", "pending", null]]' "$NIGHTS/N7.json"
+assert grep -qxF 'night-run: test_ok.sh is green at press time: suite-suites-test_ok nothing-to-do' "$WORK/n7.err"
+assert [ "$(cut -f1 "$WORK/n7.out")" = suite-suites-test_red ]
+assert [ "$(sed -n 2p "$NIGHTS/N7.suite-suites-test_red.brief.md")" = 'MODEL: sonnet' ]
+assert grep -qF 'end with `ESCALATE: <reason>`' "$NIGHTS/N7.suite-suites-test_red.brief.md"
+assert [ ! -e "$NIGHTS/N7.suite-suites-test_ok.brief.md" ]
 
 printf 'PASS: test_night_carry.sh (%s asserts)\n' "$asserts"

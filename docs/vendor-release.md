@@ -15,12 +15,12 @@ only with a stated reason), and every new capability is supported, per account, 
   the paths of its `.diff` and of the current fingerprint (`snapshot <vendor>` re-takes one).
 - Read your vendor's lines in `docs/vendor-release-open.md`: prove what this release lets you
   prove, and never re-check what a closed event already settled.
-- Several ids given: every event of your vendor that waited when Egor asked, each already folding its
-  vendor's changes since it opened; do the procedure per event.
+- Several ids given: the procedure per event, each already folding its vendor's changes since it opened.
 - A manual request (`request [--here] <vendor>` with no event waiting) diffs the whole current
   fingerprint: the full checklist, every line decided (a `+*` row per facet is fine).
-- Model: this runs on a strong model (Opus 5.5+ or Fable). Any other session model stops here and
-  says so. Research legs run on a strong model with web access, never on Light.
+- Model: a strong model (Opus 5.5+ or Fable); Sonnet only under the brief's `MODEL: sonnet`, which ends
+  `ESCALATE: <reason>` on more than it names. Any other stops here and says so. Research legs: a strong
+  model with web access, never Light.
 
 ## 1. Ground rules
 
@@ -134,6 +134,6 @@ every `blocked-on-egor` line. No session ids, diffs or transcripts.
 
 ## 6. Night (`docs/night-run.md`)
 
-`bin/vendor-fingerprint request --night <night-id>` takes per vendor only its real waiting release (never
-a manual one), on branch `night/<night>/<vendor>` from `refs/night/<night>/base` in every repository;
-without that ref the worktree is not made. Steps 3 and 4 start in parallel.
+`bin/vendor-fingerprint request --night <night-id>` takes per vendor only its real waiting release, on
+branch `night/<night>/<vendor>` from `refs/night/<night>/base` in every repository. Steps 3 and 4 start
+in parallel.

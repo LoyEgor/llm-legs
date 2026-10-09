@@ -656,6 +656,14 @@ nwt="$wt/night-$idc-leftover-stale-dirty"
 night job "$idc" add leftover stale-dirty >"$WORK/out" || fail "adopt a dirty leftover"
 assert grep -qxF "adopted repo stale-dirty into night/$idc/leftover-stale-dirty at $nwt" "$WORK/out"
 assert grep -qxF "night $idc: job leftover leftover-stale-dirty added" "$WORK/out"
+# Landing a leftover is Sonnet's, told when to hand itself back; its brief is written, not improvised.
+lbrief=$(sed -n "s/^night $idc: brief //p" "$WORK/out")
+assert [ "$(head -n 3 "$lbrief")" = "ROUND: none
+MODEL: sonnet
+Working directory: $nwt" ]
+assert grep -qF "The leftover branch \`stale-dirty\`, adopted as \`night/$idc/leftover-stale-dirty\`: in its worktree, \`git rebase refs/night/$idc/base\`" "$lbrief"
+assert grep -qF "\`tests/run-all \$(tests/affected \$(git diff --name-only refs/night/$idc/base...HEAD))\` green" "$lbrief"
+assert grep -qF 'end with `ESCALATE: <reason>`' "$lbrief"
 assert [ "$(git -C "$WORK/repo" show "night/$idc/leftover-stale-dirty:wip")" = wip ]
 assert [ "$(git -C "$WORK/repo" log -1 --format=%s "night/$idc/leftover-stale-dirty")" = "Leftover WIP from stale-dirty, adopted by night $idc" ]
 assert [ "$(git -C "$WORK/repo" rev-parse "night/$idc/leftover-stale-dirty^")" = "$pushed_hash" ]

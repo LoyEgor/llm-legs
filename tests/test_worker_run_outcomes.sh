@@ -31,6 +31,17 @@ assert grep -qx 'MODEL: opus·high' <<<"$report"
 assert_fails grep -q '^SERVED:' <<<"$report"
 assert grep -qx 'HINT: this run edited nothing — a read-only lookup is cheaper as a light research run (a background Bash `light-research --prompt-file <f> --out <answer> --repo <abs>`); read-only worker runs this month: 1' <<<"$report"
 assert test -f "$RUN_DIR/report-readonly"
+assert_fails grep -q '^ESCALATE' <<<"$report"
+# A cheap-model run hands itself back: its ESCALATE line is surfaced with the brief, ready for the default model.
+printf 'MODEL: sonnet\nEFFORT: medium\nROUND: none\nland it\nMODEL: prose stays\n' >"$RUN_DIR/brief"
+printf 'found a logic conflict\nESCALATE: rebase conflict in logic\n' >"$RUN_DIR/result"
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'ESCALATE: rebase conflict in logic' <<<"$report"
+assert grep -qx "ESCALATE-BRIEF: $WORKER_RUN_DIR/$RUN_ID/escalate.brief.md" <<<"$report"
+assert test "$(head -n 3 "$RUN_DIR/escalate.brief.md")" = $'ROUND: none\nland it\nMODEL: prose stays'
+assert grep -qF "escalated: rebase conflict in logic. Its report: \`$RUNNER report $RUN_ID\`" "$RUN_DIR/escalate.brief.md"
+assert grep -qx 'ESCALATE: rebase conflict in logic' < <("$RUNNER" wait "$RUN_ID")
+rm -f "$RUN_DIR/result"
 
 clear_stub
 export PICK_RC=0 PICK_ACCOUNT=readonly-two STUB_TRANSCRIPT_SESSION=readonly-two STUB_SESSION=readonly-two

@@ -74,6 +74,11 @@ based() { # event-id base-facets-json
 }
 based claude-stuck '{"ids": ["claude-a"]}'
 based gemini-waiting '{"catalog": ["gemini-3.7-flash\tOld"], "ids": []}'
+# A new string id the served catalog does not list leaves ids out of substantive: no "new" model to name.
+event claude-help claude open $((3 * D)) - -
+based claude-help '{"ids": ["claude-a"]}'
+jq '.substantive = ["help: claude --help"] | .changed = ["help: claude --help", "ids"]' "$STATE/events/claude-help.json" >"$WORK/e" &&
+  mv "$WORK/e" "$STATE/events/claude-help.json"
 event grok-fresh grok open $((2 * D)) $D -
 event gemini-closed gemini closed $((5 * D)) $((5 * D)) $((4 * D))
 for n in 1 2 3 4 5 6; do event "codex-old$n" codex closed $(((20 + n) * D)) $(((20 + n) * D)) $(((19 + n) * D)); done
@@ -117,6 +122,7 @@ assert jqe '.state == "new" and .fact == "codex 0.158.0 → 0.159.0: changed mod
   and .evidence[0].ref == "codex-waiting" and (.evidence[0].excerpt | test("\\+gpt-7"))' <<<"$(problem event-waiting:codex-waiting)"
 assert jqe '.state == "new" and .value >= 3 and .limit == 2
   and .fact == "claude 0.158.0 → 0.159.0: new claude-b · integration chat open 3d, not closed"' <<<"$(problem event-stuck:claude-stuck)"
+assert jqe '.fact == "claude 0.158.0 → 0.159.0: changed help text · waiting 3d for integration"' <<<"$(problem event-waiting:claude-help)"
 assert jqe '.fact == "gemini 0.158.0 → 0.159.0: new gemini-3.8-flash, gemini-3.8-pro, gemini-4-a +1 more · waiting 3d for integration"' <<<"$(problem event-waiting:gemini-waiting)"
 assert_fails has event-stuck:grok-fresh
 assert_fails has event-waiting:grok-fresh
