@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-. "$(dirname "$0")/light_research_harness.sh"
+. "$(dirname "$0")/light_research_harness.sh" || exit 1
 
 # Light switched off in Egor's menu launches nothing and names why.
 printf 'light_paused=on\n' >"$TOGGLE"

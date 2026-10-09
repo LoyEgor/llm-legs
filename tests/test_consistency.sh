@@ -3378,6 +3378,9 @@ unjournaled=$(for f in "$ROOT"/tests/test_*.sh "$ROOT"/tests/e2e_*.sh; do
   [ "$line2" = '. "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"' ] || printf '%s ' "${f##*/}"
 done)
 assert eq "suites without the journal line 2: $unjournaled" "suites without the journal line 2: "
+# A copy run from elsewhere (/tmp/debug.sh) misses its harness, keeps the real HOME and writes its fixtures into ~/.claude (2026-10-08).
+unguarded=$(cd "$ROOT/tests" && grep -lE '^[[:space:]]*(\.|source)[[:space:]].*_harness\.sh"?[[:space:]]*$' test_*.sh e2e_*.sh | paste -sd' ' -)
+assert eq "suites sourcing a harness without || exit 1: $unguarded" "suites sourcing a harness without || exit 1: "
 # bash 5.3 in a UTF-8 locale reads a non-ASCII byte right after $name as part of the name: under set -u that dies.
 glued=$(cd "$ROOT" && git grep -lIP '\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F]' -- bin share tests | while IFS= read -r f; do
   { [ "${f##*.}" = sh ] || head -1 "$f" | grep -q bash; } && printf '%s ' "$f"

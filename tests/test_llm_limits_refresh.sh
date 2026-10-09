@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-. "$(dirname "$0")/llm_limits_harness.sh"
+. "$(dirname "$0")/llm_limits_harness.sh" || exit 1
 
 home_fixture_after_first_suite
 seed_claudeb_store

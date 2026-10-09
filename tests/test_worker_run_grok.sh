@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-. "$(dirname "$0")/worker_run_harness.sh"
+. "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
 # --- grok ----------------------------------------------------------------------------------------
 # The brief rides a FILE (1.0.13 takes no prompt on argv), memory is off by env because the flag

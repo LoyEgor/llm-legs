@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-. "$(dirname "$0")/worker_run_harness.sh"
+. "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
 # --- Per-file lists from the gemini and codex transcripts ----------------------------------------
 # Those vendors DO name the files they write, each in its own log, and a listless run claimed the

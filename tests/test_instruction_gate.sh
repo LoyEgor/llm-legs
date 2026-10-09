@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # shards: 2
-. "$(dirname "$0")/instruction_gate_harness.sh"
+. "$(dirname "$0")/instruction_gate_harness.sh" || exit 1
 
 if suite_shard_owns 1 write-gate-early; then
 echo "== write gate: denies a shell write to a protected file"

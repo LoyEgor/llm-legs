@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-. "$(dirname "$0")/light_research_harness.sh"
+. "$(dirname "$0")/light_research_harness.sh" || exit 1
 
 # Batching: several --prompt-file run side by side and land under ONE citation header.
 printf 'file:1 | "x" | the tracked file holds x\n' >"$WORK/q1-answer"

@@ -138,7 +138,8 @@ class InstructionPerformance(unittest.TestCase):
         kept = {self.put(self.home / '.claude' / p) for p in (
             'agents/a.md', 'plugins/cache/mp/p/1.0/skills/s/SKILL.md', 'skills/s/.hidden/x.md')}
         for p in ('file-history/sess/notes.md', 'plugins/marketplaces/mp/plugins/p/skills/s/SKILL.md',
-                  'plugins/.trash/1/p/SKILL.md', '.premove-backup-1/skills/s/SKILL.md'):
+                  'plugins/.trash/1/p/SKILL.md', 'skills/.trash/1-2-x/s/SKILL.md',
+                  '.premove-backup-1/skills/s/SKILL.md'):
             self.put(self.home / '.claude' / p)
         output = subprocess.check_output(['bash', '-c', '. "$1"; _instruction_class_files "$2"', '_',
                                           str(ROOT / 'share/instruction-files.sh'), str(self.home)],

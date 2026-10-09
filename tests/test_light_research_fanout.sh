@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-. "$(dirname "$0")/light_research_harness.sh"
+. "$(dirname "$0")/light_research_harness.sh" || exit 1
 
 # G6: grok's --cwd is its whole directory grant, so a two-repository question becomes one run per
 # repository, each brief naming its own; every other vendor keeps the single run with --add-dir.

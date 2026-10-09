@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-. "$(dirname "$0")/worker_run_harness.sh"
+. "$(dirname "$0")/worker_run_harness.sh" || exit 1
 set_config 'claudeb_model=opus' 'claudeb_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=recordacct CLAUDE_CODE_SESSION_ID=chat-abc
 mkdir -p "$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture"

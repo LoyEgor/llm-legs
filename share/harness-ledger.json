@@ -418,7 +418,7 @@
         "rule": "growth-ungated",
         "ident": "between-sessions"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-09-30T03:59:26+03:00",
@@ -438,14 +438,26 @@
             "llm-legs/hammerspoon/instruction-watch.lua"
           ],
           "in": "llm-legs@cb70ea74",
+          "regressed_at": "2026-10-08T20:16:46+03:00"
+        },
+        {
+          "at": "2026-10-09T06:45:00+03:00",
+          "by": "night fixer harness-guards-20261009T024729Z-7a2d",
+          "files": [
+            "llm-legs/share/instruction-files.sh",
+            "llm-legs/tests/test_instruction_watch_perf.py"
+          ],
+          "in": null,
           "regressed_at": null
         }
       ],
-      "same_cause": [],
-      "last_reviewed": "2026-10-07",
-      "reviewed_by": "night fixer harness-guards-20261006T234258Z-7309",
-      "note": "Regression 2026-10-06 settled: claude-setup main rebased at 03:25:13Z (checkout origin/main, then the media and press-time commits picked back), rewriting skills/media/SKILL.md and skills-on-demand/night-sweep/SKILL.md with the bytes they already held under a new mtime. The claim key is path+hash@mtime, so resumed sessions whose baselines predated the earlier writes journaled the whole net since then as between-sessions growth: 03:30:27Z media +1327 B = 181+159 (gate-passed 10-05 21:11Z) +987 (journaled 23:31Z-02:25Z); 10:57:13Z night-sweep +6419 B against a baseline older than its journaled 10-04..10-06 writes. Fix: watch_claim (bin/instruction-watch.sh, eval'd by the Hammerspoon watcher) keeps per path the content hash the journal last carried and journals no write of the same bytes; a deletion or other bytes in between clears it. Tests: test_instruction_gate_tripwire (same bytes under a new mtime, then A->B again) and test_instruction_gate_bypasses (watcher claim script), both red on the old code. Earlier: alert_once journals only files this check claimed (73a54ec).",
-      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md"
+      "same_cause": [
+        "guards-trash-unloaded"
+      ],
+      "last_reviewed": "2026-10-09",
+      "reviewed_by": "night fixer harness-guards-20261009T024729Z-7a2d",
+      "note": "Regression 2026-10-08T17:16:46-17:17:19Z, 4 files: no rejournal. Claude Code moved four synced skills (built-in-browser, chrome-browser, computer-use, deep-research) into ~/.claude/skills/.trash/<ms>-<pid>-<rand>/ (second batch 17:17Z, first 16:30Z read live as guards-trash-unloaded). Nothing loads that tree, but INSTRUCTION_HOME_UNLOADED_ERE pruned only plugins/.trash, so each session's baseline check journaled the moved SKILL.md files as between-sessions growth. Fix: the ERE prunes a .trash bin at any depth (([^/]+/)+\\.trash). A hidden dir inside a skill stays watched (test_home_walk_skips_the_trees_nothing_loads, red on the old code). This row matches every between-sessions growth, so each fix here has had its own cause: 73a54ec rejournal, cb70ea74 same bytes under a new mtime, now the trash bin. Earlier: 2026-10-06 rebase rewrite settled by watch_claim (cb70ea74).",
+      "handoff": null
     },
     {
       "id": "guards-synced-skills-vendor-sync",
@@ -481,7 +493,7 @@
       "last_reviewed": "2026-10-08",
       "reviewed_by": "night fixer harness-guards-20261007T214017Z-0a76",
       "note": "Fixed 2026-10-04 by Harness Doctor: growth-ungated skips ~/.claude/skills/synced and ~/.claude/plugins/synced (VENDOR_SYNC_RE), Claude Code's org sync no gate can see; growth a gate denied there stays red; handoff option (b). 2026-10-04 check: no skills/synced event in the window; still harness-written beside manifest.json, cause stands. 2026-10-03 check: pptx SKILL.md +2282 B into all three synced dirs at 2026-10-02T22:14-22:22Z, still vendor sync, cause stands; the plugins/synced tree has its own row guards-synced-plugins-vendor-sync. Narrowed to one cause: 2026-09-29 20:14/20:20/20:33Z the harness itself synced the newly published org skill google-workspace (SKILL.md + references/*.md, 13-47 kB each) into the three synced/<org>_<account>/ dirs beside manifest.json and .last-complete-round; the dir is gitignored in claude-setup and written by no tool call. Dismissal proposed in the handoff. Follow-up 2026-10-01: Current retained events include vendor docs/docx syncs at 2026-09-30T00:44-03:59Z, including watcher 6abc6f522478d465 and tripwire bba946b035711a7e. This extends the prior google-workspace-only note: the match still names the vendor-owned synced tree, not a model file writer. No native PreToolUse event is available for org synchronization; retain open row and propose dismissal to Harness Doctor without broadening its match. Duplicate observations and missing write keys are separately handed off; the source cannot prove all sync records are distinct writes. 2026-10-04 (critique round): the path-only VENDOR_SYNC_RE excuse is gone; harness-doctor vendor_synced() skips ungated synced-tree growth only when the bucket's manifest.json lists the skill/plugin with lastUpdated within SYNC_JOIN_S (900 s) before the growth; a hand-written synced SKILL.md is judged (test_harness_doctor, red under a return-True mutation). 2026-10-08 regression cause: the 2026-10-06T23:36-23:39Z google-workspace SKILL.md +994 B landings (all three buckets, entry updatedAt 23:31:35Z) joined lastUpdated only where no later round bumped it; c677/e705 rounds landing built-in-browser etc. at 00:01/00:15Z moved lastUpdated 24-36 min past them. vendor_synced now also joins on the listed entry's own updatedAt (vendor version time, identical across buckets, landed 4-25 min later in every journaled landing since 2026-09-30) up to SYNC_LAG_S 3600 s after it; a growth >1 h after the entry's version stays judged (test_harness_doctor, red under SYNC_LAG_S=-1). Same code serves guards-synced-plugins-vendor-sync (plugin entries carry updatedAt too). Ruled out: watcher missing manifest writes (manifest.json is not an instruction file, never journaled), .last-complete-round (round id, no time).",
-      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md"
+      "handoff": null
     },
     {
       "id": "guards-baseline-missing-probe-sids",
@@ -507,7 +519,7 @@
       "last_reviewed": "2026-10-04",
       "reviewed_by": "Harness Doctor",
       "note": "Fixed 2026-10-04 by Harness Doctor: baseline-missing counts only a sid a chat transcript owns (chat_owns over the projects dirs), so made-up profiling sids are not judged; a real chat losing its baseline still reds; handoff option (a). Narrowed to one cause: every baseline-missing record since 2026-09-28T23:00Z names a sid no chat owns (perf-big-93348, perf-big-8746, perf-lvb, hlprof-a): ad-hoc hook profiling ran instruction-watch.sh check with made-up session ids against ~/.cache/claude-instruction-watch rather than INSTRUCTION_WATCH_STATE. Re-checked 2026-10-01 to 10-04: events.jsonl still ends its baseline-missing records at hlprof-a 2026-09-29T15:05Z, and git log --all -S hlprof/perf-big in llm-legs and claude-setup finds only ledger commits, so there is no producer to fix. bin/instruction-watch.sh cmd_check (BASELINE-MISSING) cannot tell a synthetic sid from a real chat whose baseline was swept without a transcript lookup, and filtering in harness-doctor would loosen the judge: both are the owner's call in the open handoff. A real chat losing its baseline matches this row too, so it stays open.",
-      "handoff": "docs/handoffs/2026-09-30-harness-guards-vendor-sync-and-probe-sids.md"
+      "handoff": null
     },
     {
       "id": "ask-deferred-bg-task-hold-cap",
@@ -1000,7 +1012,7 @@
       ],
       "same_cause": [],
       "note": "Same cause as guards-growth-video-r1-a-hf-claude-md: event 078d5d2199bf5f20 also post-dates the files' mtimes. Cause: the hook tripwire reported ADDED for a file that only the shared ranked cache names after ANOTHER session re-cut it mid-session; the file mtime (2026-09-30 13:46Z) precedes both events. Fixed: inside a check a ranked-only newcomer last written before this session baseline is recorded silently, as at session start; test_instruction_gate.sh case \"another session's re-cut\" red on the old code. The original creation by hyperframes init on 2026-09-30 was outside the 24 h window and is not claimed here.  Earlier: Event 078d5d2199bf5f20 at 2026-09-30T14:48:58Z reports an 8238-byte addition, writer ambiguous. Both current video/alona/R1-{A,B}/hf/CLAUDE.md copies are 8238 bytes; their filesystem mtimes precede the observer call. The observer transcript at 14:48:55 edits harness/skill/SKILL.md and briefs/alona.md, not these files, so observer identity is not writer evidence. No file history was returned by git log for the current paths. Originating initializer/copy is unconfirmed; video/film-lab is outside authorized worktrees. Ask its owner to identify the creator and gate generated instruction copies; do not trim its content here.",
-      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "handoff": null,
       "last_reviewed": "2026-10-02",
       "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
     },
@@ -1026,7 +1038,7 @@
       ],
       "same_cause": [],
       "note": "Same cause as guards-growth-video-r1-a-hf-claude-md: event 078d5d2199bf5f20 also post-dates the files' mtimes. Cause: the hook tripwire reported ADDED for a file that only the shared ranked cache names after ANOTHER session re-cut it mid-session; the file mtime (2026-09-30 13:46Z) precedes both events. Fixed: inside a check a ranked-only newcomer last written before this session baseline is recorded silently, as at session start; test_instruction_gate.sh case \"another session's re-cut\" red on the old code. The original creation by hyperframes init on 2026-09-30 was outside the 24 h window and is not claimed here.  Earlier: Event 078d5d2199bf5f20 at 2026-09-30T14:48:58Z reports an 8238-byte addition, writer ambiguous. Both current video/alona/R1-{A,B}/hf/CLAUDE.md copies are 8238 bytes; their filesystem mtimes precede the observer call. The observer transcript at 14:48:55 edits harness/skill/SKILL.md and briefs/alona.md, not these files, so observer identity is not writer evidence. No file history was returned by git log for the current paths. Originating initializer/copy is unconfirmed; video/film-lab is outside authorized worktrees. Ask its owner to identify the creator and gate generated instruction copies; do not trim its content here.",
-      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "handoff": null,
       "last_reviewed": "2026-10-02",
       "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
     },
@@ -1052,7 +1064,7 @@
       ],
       "same_cause": [],
       "note": "Every event in the window (00:36:51, 00:45:16, 09:37:55Z) and the 2026-09-30 one are worktree paths. Cause: instruction_repo_files matched `/.claude/` on the absolute path, and every worktree sits under `<repo>/.claude/worktrees/`, so a session rooted in a worktree watched every markdown file of the repository (64 files in an llm-legs worktree against 2 in the main checkout) and reported ordinary repository work as instruction growth, against instruction_carved_out. Fixed: the segment is matched below the repository root in both the git listing and the walk; test_repository_under_a_claude_directory red on the old code.  Earlier: Event 8eacc04fff044452 at 2026-09-30T02:49:37Z is +396 bytes in the previous night Codex worktree docs/shared-invariants.md, writer ambiguous. gates.jsonl has no matching pass in the existing 900s-before/60s-after window; later 04:25 growth has exact-worktree passes. Main-checkout passes are different paths and cannot authorize this copy. The tripwire caught actual external-worker growth; hook coverage of that writer remains unconfirmed. Owner must decide how non-Claude workers attest instruction audits; widening the temporal/path join would loosen the judge.",
-      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "handoff": null,
       "last_reviewed": "2026-10-02",
       "reviewed_by": "night fixer harness-guards-20261002T093034Z-0c00"
     },
@@ -1104,7 +1116,7 @@
       ],
       "same_cause": [],
       "note": "2026-10-03: the 2026-10-02 'cause gone from the watch set' was wrong. Cause: llm-legs 2267da0 pruned plugins/marketplaces from instruction_visible_paths, but the Hammerspoon watcher (hammerspoon/instruction-watch.lua watchPaths) keeps every row of its persisted watcher/snapshot.tsv watched, and the live snapshot still held 240 marketplace rows, so marketplace pulls kept journaling. Fixed: watchStart drops loaded snapshot rows under INSTRUCTION_HOME_UNLOADED_ERE (tests/instruction_watch_menu_harness.lua).",
-      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "handoff": null,
       "last_reviewed": "2026-10-03",
       "reviewed_by": "night fixer harness-guards-20261003T042540Z-6416"
     },
@@ -1129,7 +1141,7 @@
       ],
       "same_cause": [],
       "note": "2026-10-03: the 2026-10-02 'cause gone from the watch set' was wrong. Cause: llm-legs 2267da0 pruned plugins/marketplaces from instruction_visible_paths, but the Hammerspoon watcher (hammerspoon/instruction-watch.lua watchPaths) keeps every row of its persisted watcher/snapshot.tsv watched, and the live snapshot still held 240 marketplace rows, so marketplace pulls kept journaling. Fixed: watchStart drops loaded snapshot rows under INSTRUCTION_HOME_UNLOADED_ERE (tests/instruction_watch_menu_harness.lua).",
-      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "handoff": null,
       "last_reviewed": "2026-10-03",
       "reviewed_by": "night fixer harness-guards-20261003T042540Z-6416"
     },
@@ -1154,7 +1166,7 @@
       ],
       "same_cause": [],
       "note": "2026-10-03: the 2026-10-02 'cause gone from the watch set' was wrong. Cause: llm-legs 2267da0 pruned plugins/marketplaces from instruction_visible_paths, but the Hammerspoon watcher (hammerspoon/instruction-watch.lua watchPaths) keeps every row of its persisted watcher/snapshot.tsv watched, and the live snapshot still held 240 marketplace rows, so marketplace pulls kept journaling. Fixed: watchStart drops loaded snapshot rows under INSTRUCTION_HOME_UNLOADED_ERE (tests/instruction_watch_menu_harness.lua).",
-      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "handoff": null,
       "last_reviewed": "2026-10-03",
       "reviewed_by": "night fixer harness-guards-20261003T042540Z-6416"
     },
@@ -1179,7 +1191,7 @@
       ],
       "same_cause": [],
       "note": "2026-10-03: the 2026-10-02 'cause gone from the watch set' was wrong. Cause: llm-legs 2267da0 pruned plugins/marketplaces from instruction_visible_paths, but the Hammerspoon watcher (hammerspoon/instruction-watch.lua watchPaths) keeps every row of its persisted watcher/snapshot.tsv watched, and the live snapshot still held 240 marketplace rows, so marketplace pulls kept journaling. Fixed: watchStart drops loaded snapshot rows under INSTRUCTION_HOME_UNLOADED_ERE (tests/instruction_watch_menu_harness.lua).",
-      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "handoff": null,
       "last_reviewed": "2026-10-03",
       "reviewed_by": "night fixer harness-guards-20261003T042540Z-6416"
     },
@@ -1204,7 +1216,7 @@
       ],
       "same_cause": [],
       "note": "2026-10-03: the 2026-10-02 'cause gone from the watch set' was wrong. Cause: llm-legs 2267da0 pruned plugins/marketplaces from instruction_visible_paths, but the Hammerspoon watcher (hammerspoon/instruction-watch.lua watchPaths) keeps every row of its persisted watcher/snapshot.tsv watched, and the live snapshot still held 240 marketplace rows, so marketplace pulls kept journaling. Fixed: watchStart drops loaded snapshot rows under INSTRUCTION_HOME_UNLOADED_ERE (tests/instruction_watch_menu_harness.lua).",
-      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "handoff": null,
       "last_reviewed": "2026-10-03",
       "reviewed_by": "night fixer harness-guards-20261003T042540Z-6416"
     },
@@ -1229,7 +1241,7 @@
       ],
       "same_cause": [],
       "note": "2026-10-03: the 2026-10-02 'cause gone from the watch set' was wrong. Cause: llm-legs 2267da0 pruned plugins/marketplaces from instruction_visible_paths, but the Hammerspoon watcher (hammerspoon/instruction-watch.lua watchPaths) keeps every row of its persisted watcher/snapshot.tsv watched, and the live snapshot still held 240 marketplace rows, so marketplace pulls kept journaling. Fixed: watchStart drops loaded snapshot rows under INSTRUCTION_HOME_UNLOADED_ERE (tests/instruction_watch_menu_harness.lua).",
-      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "handoff": null,
       "last_reviewed": "2026-10-03",
       "reviewed_by": "night fixer harness-guards-20261003T042540Z-6416"
     },
@@ -1255,7 +1267,7 @@
       ],
       "same_cause": [],
       "note": "Watcher batches 6abce54f1ee2d7ca, 6abd23085f903f23 and 6abdbc4e6d7b9082 at 10:32:47/14:56:08/01:50:06Z reinstall the same ten global SKILL.md roots. Intervening deletion batches at 10:38 and 01:23, plus 01:52 removal, rule out mere repeated observation as the shared cause. A video worker transcript at 2026-10-01T01:49:21Z runs npx -y hyperframes init hf; init internally installs global skills. The owning video chat added init protection at 01:53:37Z and refined it at 01:55:54Z, already in claude-setup base 83cf539 hooks/skill-install-scope-gate.sh. Do not duplicate that active fix or claim new credit. Owner must confirm rollout and later absence; generic shell-parser bypasses and actual runtime hook loading were not established. Fixed in this run: inherited HYPERFRAMES_SKIP_SKILLS=1 previously bypassed init inspection even when the command cleared or overrode it. The gate now evaluates the effective value per command prefix and export/unset segment. Regression suite adds six inherited-environment cases and clears ambient skip state for deterministic tests; old code fails the explicit =0 case, and six fixture probes pass after the change. This hardens the existing init fix rather than replacing it; runtime rollout remains the owner follow-up.",
-      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "handoff": null,
       "last_reviewed": "2026-10-01",
       "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
     },
@@ -1281,7 +1293,7 @@
       ],
       "same_cause": [],
       "note": "Watcher batches 6abce54f1ee2d7ca, 6abd23085f903f23 and 6abdbc4e6d7b9082 at 10:32:47/14:56:08/01:50:06Z reinstall the same ten global SKILL.md roots. Intervening deletion batches at 10:38 and 01:23, plus 01:52 removal, rule out mere repeated observation as the shared cause. A video worker transcript at 2026-10-01T01:49:21Z runs npx -y hyperframes init hf; init internally installs global skills. The owning video chat added init protection at 01:53:37Z and refined it at 01:55:54Z, already in claude-setup base 83cf539 hooks/skill-install-scope-gate.sh. Do not duplicate that active fix or claim new credit. Owner must confirm rollout and later absence; generic shell-parser bypasses and actual runtime hook loading were not established. Fixed in this run: inherited HYPERFRAMES_SKIP_SKILLS=1 previously bypassed init inspection even when the command cleared or overrode it. The gate now evaluates the effective value per command prefix and export/unset segment. Regression suite adds six inherited-environment cases and clears ambient skip state for deterministic tests; old code fails the explicit =0 case, and six fixture probes pass after the change. This hardens the existing init fix rather than replacing it; runtime rollout remains the owner follow-up.",
-      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "handoff": null,
       "last_reviewed": "2026-10-01",
       "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
     },
@@ -1307,7 +1319,7 @@
       ],
       "same_cause": [],
       "note": "Watcher batches 6abce54f1ee2d7ca, 6abd23085f903f23 and 6abdbc4e6d7b9082 at 10:32:47/14:56:08/01:50:06Z reinstall the same ten global SKILL.md roots. Intervening deletion batches at 10:38 and 01:23, plus 01:52 removal, rule out mere repeated observation as the shared cause. A video worker transcript at 2026-10-01T01:49:21Z runs npx -y hyperframes init hf; init internally installs global skills. The owning video chat added init protection at 01:53:37Z and refined it at 01:55:54Z, already in claude-setup base 83cf539 hooks/skill-install-scope-gate.sh. Do not duplicate that active fix or claim new credit. Owner must confirm rollout and later absence; generic shell-parser bypasses and actual runtime hook loading were not established. Fixed in this run: inherited HYPERFRAMES_SKIP_SKILLS=1 previously bypassed init inspection even when the command cleared or overrode it. The gate now evaluates the effective value per command prefix and export/unset segment. Regression suite adds six inherited-environment cases and clears ambient skip state for deterministic tests; old code fails the explicit =0 case, and six fixture probes pass after the change. This hardens the existing init fix rather than replacing it; runtime rollout remains the owner follow-up.",
-      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "handoff": null,
       "last_reviewed": "2026-10-01",
       "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
     },
@@ -1333,7 +1345,7 @@
       ],
       "same_cause": [],
       "note": "Watcher batches 6abce54f1ee2d7ca, 6abd23085f903f23 and 6abdbc4e6d7b9082 at 10:32:47/14:56:08/01:50:06Z reinstall the same ten global SKILL.md roots. Intervening deletion batches at 10:38 and 01:23, plus 01:52 removal, rule out mere repeated observation as the shared cause. A video worker transcript at 2026-10-01T01:49:21Z runs npx -y hyperframes init hf; init internally installs global skills. The owning video chat added init protection at 01:53:37Z and refined it at 01:55:54Z, already in claude-setup base 83cf539 hooks/skill-install-scope-gate.sh. Do not duplicate that active fix or claim new credit. Owner must confirm rollout and later absence; generic shell-parser bypasses and actual runtime hook loading were not established. Fixed in this run: inherited HYPERFRAMES_SKIP_SKILLS=1 previously bypassed init inspection even when the command cleared or overrode it. The gate now evaluates the effective value per command prefix and export/unset segment. Regression suite adds six inherited-environment cases and clears ambient skip state for deterministic tests; old code fails the explicit =0 case, and six fixture probes pass after the change. This hardens the existing init fix rather than replacing it; runtime rollout remains the owner follow-up.",
-      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "handoff": null,
       "last_reviewed": "2026-10-01",
       "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
     },
@@ -1359,7 +1371,7 @@
       ],
       "same_cause": [],
       "note": "Watcher batches 6abce54f1ee2d7ca, 6abd23085f903f23 and 6abdbc4e6d7b9082 at 10:32:47/14:56:08/01:50:06Z reinstall the same ten global SKILL.md roots. Intervening deletion batches at 10:38 and 01:23, plus 01:52 removal, rule out mere repeated observation as the shared cause. A video worker transcript at 2026-10-01T01:49:21Z runs npx -y hyperframes init hf; init internally installs global skills. The owning video chat added init protection at 01:53:37Z and refined it at 01:55:54Z, already in claude-setup base 83cf539 hooks/skill-install-scope-gate.sh. Do not duplicate that active fix or claim new credit. Owner must confirm rollout and later absence; generic shell-parser bypasses and actual runtime hook loading were not established. Fixed in this run: inherited HYPERFRAMES_SKIP_SKILLS=1 previously bypassed init inspection even when the command cleared or overrode it. The gate now evaluates the effective value per command prefix and export/unset segment. Regression suite adds six inherited-environment cases and clears ambient skip state for deterministic tests; old code fails the explicit =0 case, and six fixture probes pass after the change. This hardens the existing init fix rather than replacing it; runtime rollout remains the owner follow-up.",
-      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "handoff": null,
       "last_reviewed": "2026-10-01",
       "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
     },
@@ -1385,7 +1397,7 @@
       ],
       "same_cause": [],
       "note": "Watcher batches 6abce54f1ee2d7ca, 6abd23085f903f23 and 6abdbc4e6d7b9082 at 10:32:47/14:56:08/01:50:06Z reinstall the same ten global SKILL.md roots. Intervening deletion batches at 10:38 and 01:23, plus 01:52 removal, rule out mere repeated observation as the shared cause. A video worker transcript at 2026-10-01T01:49:21Z runs npx -y hyperframes init hf; init internally installs global skills. The owning video chat added init protection at 01:53:37Z and refined it at 01:55:54Z, already in claude-setup base 83cf539 hooks/skill-install-scope-gate.sh. Do not duplicate that active fix or claim new credit. Owner must confirm rollout and later absence; generic shell-parser bypasses and actual runtime hook loading were not established. Fixed in this run: inherited HYPERFRAMES_SKIP_SKILLS=1 previously bypassed init inspection even when the command cleared or overrode it. The gate now evaluates the effective value per command prefix and export/unset segment. Regression suite adds six inherited-environment cases and clears ambient skip state for deterministic tests; old code fails the explicit =0 case, and six fixture probes pass after the change. This hardens the existing init fix rather than replacing it; runtime rollout remains the owner follow-up.",
-      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "handoff": null,
       "last_reviewed": "2026-10-01",
       "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
     },
@@ -1411,7 +1423,7 @@
       ],
       "same_cause": [],
       "note": "Watcher batches 6abce54f1ee2d7ca, 6abd23085f903f23 and 6abdbc4e6d7b9082 at 10:32:47/14:56:08/01:50:06Z reinstall the same ten global SKILL.md roots. Intervening deletion batches at 10:38 and 01:23, plus 01:52 removal, rule out mere repeated observation as the shared cause. A video worker transcript at 2026-10-01T01:49:21Z runs npx -y hyperframes init hf; init internally installs global skills. The owning video chat added init protection at 01:53:37Z and refined it at 01:55:54Z, already in claude-setup base 83cf539 hooks/skill-install-scope-gate.sh. Do not duplicate that active fix or claim new credit. Owner must confirm rollout and later absence; generic shell-parser bypasses and actual runtime hook loading were not established. Fixed in this run: inherited HYPERFRAMES_SKIP_SKILLS=1 previously bypassed init inspection even when the command cleared or overrode it. The gate now evaluates the effective value per command prefix and export/unset segment. Regression suite adds six inherited-environment cases and clears ambient skip state for deterministic tests; old code fails the explicit =0 case, and six fixture probes pass after the change. This hardens the existing init fix rather than replacing it; runtime rollout remains the owner follow-up.",
-      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "handoff": null,
       "last_reviewed": "2026-10-01",
       "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
     },
@@ -1437,7 +1449,7 @@
       ],
       "same_cause": [],
       "note": "Watcher batches 6abce54f1ee2d7ca, 6abd23085f903f23 and 6abdbc4e6d7b9082 at 10:32:47/14:56:08/01:50:06Z reinstall the same ten global SKILL.md roots. Intervening deletion batches at 10:38 and 01:23, plus 01:52 removal, rule out mere repeated observation as the shared cause. A video worker transcript at 2026-10-01T01:49:21Z runs npx -y hyperframes init hf; init internally installs global skills. The owning video chat added init protection at 01:53:37Z and refined it at 01:55:54Z, already in claude-setup base 83cf539 hooks/skill-install-scope-gate.sh. Do not duplicate that active fix or claim new credit. Owner must confirm rollout and later absence; generic shell-parser bypasses and actual runtime hook loading were not established. Fixed in this run: inherited HYPERFRAMES_SKIP_SKILLS=1 previously bypassed init inspection even when the command cleared or overrode it. The gate now evaluates the effective value per command prefix and export/unset segment. Regression suite adds six inherited-environment cases and clears ambient skip state for deterministic tests; old code fails the explicit =0 case, and six fixture probes pass after the change. This hardens the existing init fix rather than replacing it; runtime rollout remains the owner follow-up.",
-      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "handoff": null,
       "last_reviewed": "2026-10-01",
       "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
     },
@@ -1463,7 +1475,7 @@
       ],
       "same_cause": [],
       "note": "Watcher batches 6abce54f1ee2d7ca, 6abd23085f903f23 and 6abdbc4e6d7b9082 at 10:32:47/14:56:08/01:50:06Z reinstall the same ten global SKILL.md roots. Intervening deletion batches at 10:38 and 01:23, plus 01:52 removal, rule out mere repeated observation as the shared cause. A video worker transcript at 2026-10-01T01:49:21Z runs npx -y hyperframes init hf; init internally installs global skills. The owning video chat added init protection at 01:53:37Z and refined it at 01:55:54Z, already in claude-setup base 83cf539 hooks/skill-install-scope-gate.sh. Do not duplicate that active fix or claim new credit. Owner must confirm rollout and later absence; generic shell-parser bypasses and actual runtime hook loading were not established. Fixed in this run: inherited HYPERFRAMES_SKIP_SKILLS=1 previously bypassed init inspection even when the command cleared or overrode it. The gate now evaluates the effective value per command prefix and export/unset segment. Regression suite adds six inherited-environment cases and clears ambient skip state for deterministic tests; old code fails the explicit =0 case, and six fixture probes pass after the change. This hardens the existing init fix rather than replacing it; runtime rollout remains the owner follow-up.",
-      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "handoff": null,
       "last_reviewed": "2026-10-01",
       "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
     },
@@ -1489,7 +1501,7 @@
       ],
       "same_cause": [],
       "note": "Watcher batches 6abce54f1ee2d7ca, 6abd23085f903f23 and 6abdbc4e6d7b9082 at 10:32:47/14:56:08/01:50:06Z reinstall the same ten global SKILL.md roots. Intervening deletion batches at 10:38 and 01:23, plus 01:52 removal, rule out mere repeated observation as the shared cause. A video worker transcript at 2026-10-01T01:49:21Z runs npx -y hyperframes init hf; init internally installs global skills. The owning video chat added init protection at 01:53:37Z and refined it at 01:55:54Z, already in claude-setup base 83cf539 hooks/skill-install-scope-gate.sh. Do not duplicate that active fix or claim new credit. Owner must confirm rollout and later absence; generic shell-parser bypasses and actual runtime hook loading were not established. Fixed in this run: inherited HYPERFRAMES_SKIP_SKILLS=1 previously bypassed init inspection even when the command cleared or overrode it. The gate now evaluates the effective value per command prefix and export/unset segment. Regression suite adds six inherited-environment cases and clears ambient skip state for deterministic tests; old code fails the explicit =0 case, and six fixture probes pass after the change. This hardens the existing init fix rather than replacing it; runtime rollout remains the owner follow-up.",
-      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "handoff": null,
       "last_reviewed": "2026-10-01",
       "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
     },
@@ -2044,7 +2056,7 @@
         "guards-growth-claude-agents-light-worker-md"
       ],
       "note": "Narrowed 2026-10-05 by night fixer harness-guards-20261005T061312Z-11fb. Event 2026-10-04T16:35:05Z (+158 B) is the fast-forward of claude-setup main to 091caf4 at 16:35:03Z. Writer: chat «LLM Doctor меню refactoring», Write of a scratchpad w7_patch.py, then Bash `python3 $S/w7_patch.py` at 13:45:47Z in the worktree fix-llm-doctor-handoffs-20261004, writing open(C + name, 'w') with C = '…/agents/'. Neither shape is read by the write gate (design §11): a script file named on the command line, and a name built at run time. No gate record exists; the watcher prunes worktrees, so the landing credit had no sibling growth. Ruled out: the agents symlink join (the same chat's Edit of skills/media/SKILL.md has a bloat passed record), vendor sync, and a doctor fault (the tripwire did its job). Gate widening is proposed to the owner in the handoff. Fixed 2026-10-06 by Harness Doctor: the write gate now reads a script file run by path and a guarded directory joined to a variable (llm-legs@3a3531d7).",
-      "handoff": "docs/handoffs/2026-10-05-harness-guards-script-file-writes.md",
+      "handoff": null,
       "last_reviewed": "2026-10-06",
       "reviewed_by": "Harness Doctor"
     },
@@ -2076,7 +2088,7 @@
         "guards-growth-claude-agents-light-worker-md"
       ],
       "note": "Narrowed 2026-10-05 by night fixer harness-guards-20261005T061312Z-11fb: the same w7_patch.py script-file write and 091caf4 landing as guards-growth-claude-agents-codex-worker-md (+147 B); cause and ruled-out ground are in that row. Fixed 2026-10-06 by Harness Doctor: the write gate now reads a script file run by path and a guarded directory joined to a variable (llm-legs@3a3531d7).",
-      "handoff": "docs/handoffs/2026-10-05-harness-guards-script-file-writes.md",
+      "handoff": null,
       "last_reviewed": "2026-10-06",
       "reviewed_by": "Harness Doctor"
     },
@@ -2108,7 +2120,7 @@
         "guards-growth-claude-agents-light-worker-md"
       ],
       "note": "Narrowed 2026-10-05 by night fixer harness-guards-20261005T061312Z-11fb: the same w7_patch.py script-file write and 091caf4 landing as guards-growth-claude-agents-codex-worker-md (+152 B); cause and ruled-out ground are in that row. Fixed 2026-10-06 by Harness Doctor: the write gate now reads a script file run by path and a guarded directory joined to a variable (llm-legs@3a3531d7).",
-      "handoff": "docs/handoffs/2026-10-05-harness-guards-script-file-writes.md",
+      "handoff": null,
       "last_reviewed": "2026-10-06",
       "reviewed_by": "Harness Doctor"
     },
@@ -2140,7 +2152,7 @@
         "guards-growth-claude-agents-grok-worker-md"
       ],
       "note": "Narrowed 2026-10-05 by night fixer harness-guards-20261005T061312Z-11fb: the same w7_patch.py script-file write and 091caf4 landing as guards-growth-claude-agents-codex-worker-md (+160 B); cause and ruled-out ground are in that row. Fixed 2026-10-06 by Harness Doctor: the write gate now reads a script file run by path and a guarded directory joined to a variable (llm-legs@3a3531d7).",
-      "handoff": "docs/handoffs/2026-10-05-harness-guards-script-file-writes.md",
+      "handoff": null,
       "last_reviewed": "2026-10-06",
       "reviewed_by": "Harness Doctor"
     },
@@ -2540,7 +2552,7 @@
       ],
       "same_cause": [],
       "note": "Event 2026-10-02T21:27:54Z +639 B, official marketplace merge d182ca4. Cause: llm-legs 2267da0 pruned plugins/marketplaces from instruction_visible_paths, but the Hammerspoon watcher (hammerspoon/instruction-watch.lua watchPaths) keeps every row of its persisted watcher/snapshot.tsv watched, and the live snapshot still held 240 marketplace rows, so marketplace pulls kept journaling. Fixed: watchStart drops loaded snapshot rows under INSTRUCTION_HOME_UNLOADED_ERE (tests/instruction_watch_menu_harness.lua).",
-      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "handoff": null,
       "last_reviewed": "2026-10-03",
       "reviewed_by": "night fixer harness-guards-20261003T042540Z-6416"
     },
@@ -2566,7 +2578,7 @@
       ],
       "same_cause": [],
       "note": "Fixed 2026-10-04 by Harness Doctor: Same fix as guards-synced-skills-vendor-sync (VENDOR_SYNC_RE covers plugins/synced). 2026-10-04 check: no plugins/synced event in the window; the sync is still harness-written with no tool call, cause stands. Watcher event 2026-10-02T09:31:02Z (sid empty, no tool call in any transcript) ADDED cowork-plugin-management SKILL.md +9698/+13350 B with references/*.md beside manifest.json and .last-complete-round in the org/account bucket; its ~g2 staging copy was deleted at 10:45:58Z. Vendor org sync, the plugins twin of guards-synced-skills-vendor-sync; dismissal proposed in the handoff, judge unchanged. 2026-10-04 (critique round): the path-only VENDOR_SYNC_RE excuse is gone; harness-doctor vendor_synced() skips ungated synced-tree growth only when the bucket's manifest.json lists the skill/plugin with lastUpdated within SYNC_JOIN_S (900 s) before the growth; a hand-written synced SKILL.md is judged (test_harness_doctor, red under a return-True mutation).",
-      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "handoff": null,
       "last_reviewed": "2026-10-04",
       "reviewed_by": "Harness Doctor"
     },
@@ -4836,6 +4848,75 @@
       "reviewed_by": "night fixer harness-stop-hooks-20261009T024811Z-29b3",
       "note": "words:1791513530/349272e0 (night 20261009T023738Z-817e sweep chat, Opus): night-run's own message 'сделай чистку — night run <id>' raised ⚡ span on + ⚡ sweep; the chat ran the sweep with no ⚡ reading line. The seven night sweep chats before it (2026-10-03..10-08) all wrote them and nothing in night-sweep SKILL.md, docs/night-run.md or the launch message changed since: a model miss. ask-word-reading.sh was skipped-busy at every stop until the dispatcher's hold cap released the asks at 03:45:38Z; it asked and the chat's late reading marked the row ok at 03:45:44Z, so the net worked and the doctor counted the row an hour before it could. Ruled out: intake regex, journal ordering. Dismissal, or a doctor that waits for a busy chat's deferred ask, proposed to the owner (handoff item 2).",
       "handoff": "docs/handoffs/2026-10-09-stop-asks-and-night-reading.md"
+    },
+    {
+      "id": "guards-trash-unloaded",
+      "title": "Claude Code's ~/.claude/skills/.trash was watched as instruction files, so skills it moved there read as ungated growth",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "\\~/\\.claude/[^/]+/\\.trash/.+"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-09T06:45:00+03:00",
+          "by": "night fixer harness-guards-20261009T024729Z-7a2d",
+          "files": [
+            "llm-legs/share/instruction-files.sh",
+            "llm-legs/tests/test_instruction_watch_perf.py"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "guards-tripwire-rejournal"
+      ],
+      "last_reviewed": "2026-10-09",
+      "reviewed_by": "night fixer harness-guards-20261009T024729Z-7a2d",
+      "note": "2026-10-08T16:38:23Z: SKILL.md of deep-research +13132, computer-use +9267, built-in-browser +6529 and chrome-browser +5881 B, under ~/.claude/skills/.trash/1791477026259-21835-*/. The ids are <epoch ms>-<pid>-<random>, the same scheme as plugins/.trash, so this is the harness's own trash bin. No gate can see it, and nothing loads it. Fixed in share/instruction-files.sh: INSTRUCTION_HOME_UNLOADED_ERE prunes a .trash bin at any depth. The walk, the baseline drop (instruction-watch.sh) and the Hammerspoon unloaded scan all read that one ERE. Ruled out: vendor_synced (that covers skills/synced, not .trash), and a write by any chat (no transcript names the paths).",
+      "handoff": null
+    },
+    {
+      "id": "guards-watcher-off-test-leak",
+      "title": "A suite copied out of tests/ ran without its harness and wrote its fixtures into the real ~/.claude",
+      "match": {
+        "rule": "changed-while-watcher-off",
+        "ident": "^tripwire$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-09T06:45:00+03:00",
+          "by": "night fixer harness-guards-20261009T024729Z-7a2d",
+          "files": [
+            "llm-legs/tests/test_instruction_gate_bypasses.sh",
+            "llm-legs/tests/test_consistency.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-09",
+      "reviewed_by": "night fixer harness-guards-20261009T024729Z-7a2d",
+      "note": "Event 2026-10-08T05:44:09Z ADDED-WHILE-WATCHER-OFF: ~/.claude/skills-on-demand/s/s.md, ~/.claude/hooks/policy.md and ~/.claude/rules/r.md (2, 7 and 2 B). These are the fixtures of tests/test_instruction_gate_bypasses.sh. At 05:44:04Z the worker fixing branch fix/menubar-instruction-watch ran `sed … tests/test_instruction_gate_bypasses.sh > /tmp/iw-debug.sh; cd tests && bash /tmp/iw-debug.sh`. From /tmp, `. \"$(dirname \"$0\")/instruction_gate_harness.sh\"` sourced nothing and the script went on with the real HOME. The watcher was off at that moment because llm-legs main had just landed hammerspoon changes at 05:43:44Z and Hammerspoon reloaded; that part is inferred, see blind spot watcher-off-history. Fixed: all 36 harness-sourcing suites do `|| exit 1`, and test_consistency fails on any suite that does not (red on the old code). The three leaked files are still in the live home (hooks/policy.md is untracked in the claude-setup main checkout); their deletion is handed off in docs/handoffs/2026-10-09-harness-guards-param-path-writes.md.",
+      "handoff": null
+    },
+    {
+      "id": "guards-ungated-llm-legs-claude-md-param-path",
+      "title": "The write gate missed a python write whose guarded name arrived as a function argument, so llm-legs/CLAUDE.md grew unjudged",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^/Volumes/Work/Projects/llm\\-legs/CLAUDE\\.md$"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-09",
+      "reviewed_by": "night fixer harness-guards-20261009T024729Z-7a2d",
+      "note": "Event 2026-10-08T18:55:46Z, +145 B: the fast-forward of feat/run-all-chat-gate (847c18ad). The write came from chat «Updater doctor» at 18:47:08Z: a scratchpad gate.py run by heredoc and then python3, with p = w / path; p.write_text(...) and sub(\"CLAUDE.md\", ...). Replayed through the write gate under the test harness, it passes. This is a gate-scope widening, so it is the owner's call: docs/handoffs/2026-10-09-harness-guards-param-path-writes.md. Ruled out: the landing credit (no gate pass on the worktree path, gates.jsonl has no row), the vendor sync, and the tripwire, which did see it at the landing.",
+      "handoff": "docs/handoffs/2026-10-09-harness-guards-param-path-writes.md"
     }
   ],
   "blind_spots": [
@@ -4961,7 +5042,7 @@
     {
       "id": "watcher-off-history",
       "what": "why and for how long the instruction watcher was off",
-      "reason": "watcher/heartbeat is overwritten every tick, so a changed-while-watcher-off record (2026-10-01T12:51:14Z, claude-setup review-floor merge 6413519 at 12:40:33Z) cannot name the off interval or its cause",
+      "reason": "watcher/heartbeat is overwritten every tick, so a changed-while-watcher-off record (2026-10-01T12:51:14Z, claude-setup review-floor merge 6413519 at 12:40:33Z) cannot name the off interval or its cause; again 2026-10-08T05:44:09Z (a Hammerspoon reload after the 05:43:44Z llm-legs landing is the likely cause, unprovable)",
       "since": "2026-10-02",
       "would_catch_if": "the watcher journaled each start and stop (with the reason: Hammerspoon reload, load error, busy tick) beside its heartbeat"
     },

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-. "$(dirname "$0")/light_research_harness.sh"
+. "$(dirname "$0")/light_research_harness.sh" || exit 1
 
 # One wait round per call: a run still going hands back its id, and --attach waits one more round
 # and lands the answer with the run's own exit code.

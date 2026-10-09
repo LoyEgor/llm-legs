@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-. "$(dirname "$0")/worker_run_harness.sh"
+. "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
 # A brief with no first line cannot identify its run: RESUME/ATTACH are read off the top of it, and
 # a discovery prefix taken from a blank line matches every transcript in the tree at once.

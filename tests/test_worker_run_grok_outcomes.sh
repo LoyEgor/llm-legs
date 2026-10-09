@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-. "$(dirname "$0")/worker_run_harness.sh"
+. "$(dirname "$0")/worker_run_harness.sh" || exit 1
 grok_workdir=$(cd "$WORK/workdir" && pwd -P)
 
 # A vendor switched off for workers is a decision, not a wall: the sentence handed back must be the

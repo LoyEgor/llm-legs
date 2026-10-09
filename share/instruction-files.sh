@@ -97,9 +97,9 @@ instruction_is_md() {
 # Also pruned, and dropped from every baseline that still lists them (instruction-watch.sh), the trees
 # under ~/.claude loaded by nothing: file-history (the harness's edit backups), plugins/marketplaces
 # (catalog clones its auto-update pulls; an installed plugin loads from plugins/cache),
-# plugins/.trash and hidden top-level backups. Together over half the watch set, and the harness's
-# own rewrites of them were reported as instruction-file changes.
-INSTRUCTION_HOME_UNLOADED_ERE='(file-history|plugins/marketplaces|plugins/\.trash|\.[^/]*)'
+# the harness's .trash bins at any depth (plugins/, skills/) and hidden top-level backups. Together
+# over half the watch set, and the harness's own rewrites of them were reported as changes.
+INSTRUCTION_HOME_UNLOADED_ERE='(file-history|plugins/marketplaces|([^/]+/)+\.trash|\.[^/]*)'
 # awk: unloaded(path) is true under one of those trees of $_INSTRUCTION_HOME/.claude.
 _instruction_unloaded_awk='
   function unloaded(p,  h) {

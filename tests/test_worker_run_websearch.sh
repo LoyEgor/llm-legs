@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-. "$(dirname "$0")/worker_run_harness.sh"
+. "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
 # Web search, every vendor against every entry point, driven from the one table the launcher reads:
 # a vendor or an entry point added without the capability fails here rather than answering a

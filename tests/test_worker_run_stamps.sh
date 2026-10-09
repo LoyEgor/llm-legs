@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-. "$(dirname "$0")/worker_run_harness.sh"
+. "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
 # A model outside the table is refused before the account is resolved: an explicit --model, the
 # vendor's own `*_model=` key, and the default a missing key falls back to are three roads to the
