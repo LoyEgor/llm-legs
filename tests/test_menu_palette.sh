@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # hammerspoon/menu-style.lua is the only palette: no other menu module builds a colour, and every
-# palette colour is RED's saturation and lightness at its own hue, opaque or at DIM_RED's alpha.
+# palette is exactly PALETTE, each colour opaque or at DIM_RED's alpha.
 set -u
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -9,12 +9,12 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 check() {
 python3 - "$@" <<'PY'
-import colorsys
 import re
 import sys
 
 style_path, *modules = sys.argv[1:]
-HOME = "add the colour to hammerspoon/menu-style.lua and use it from there"
+HOME = "take the colour from hammerspoon/menu-style.lua"
+PALETTE = {"RED", "DIM_RED", "GREEN", "DIM"}
 COLOR = [
     (re.compile(r"\b(red|green|blue|hue|saturation|brightness|white)\s*=\s*[-+]?[0-9.]"), "a colour component"),
     (re.compile(r"\balpha\s*="), "an alpha"),
@@ -58,27 +58,18 @@ for name, fields in palette.items():
     if "list" in fields:
         if fields["list"] != '"System"':
             problems.append(f"menu-style.lua: {name} names a colour outside the System list")
-for need in ("RED", "DIM_RED", "GREEN"):
-    if need not in palette:
-        problems.append(f"menu-style.lua has no {need}")
+if set(palette) != PALETTE:
+    problems.append(f"menu-style.lua: the palette is {sorted(palette)}, expected {sorted(PALETTE)};"
+                    " a new or changed colour is Egor's call, then update PALETTE here")
 if not problems:
     rgb = lambda f: tuple(float(f[k]) for k in ("red", "green", "blue"))  # noqa: E731
-    _, red_l, red_s = colorsys.rgb_to_hls(*rgb(palette["RED"]))
     dim_alpha = float(palette["DIM_RED"].get("alpha", 1))
     if "alpha" in palette["RED"] or rgb(palette["DIM_RED"]) != rgb(palette["RED"]) or dim_alpha >= 1:
         problems.append("menu-style.lua: RED must be opaque and DIM_RED be RED at an alpha below 1")
     for name, fields in palette.items():
-        if "list" in fields:
-            continue
-        _, light, sat = colorsys.rgb_to_hls(*rgb(fields))
         alpha = float(fields.get("alpha", 1))
-        if abs(light - red_l) > 0.01 or abs(sat - red_s) > 0.01:
-            problems.append(f"menu-style.lua: {name} is not RED's saturation {red_s:.3f} and lightness {red_l:.3f}"
-                            f" at another hue (has {sat:.3f}, {light:.3f})")
-        if alpha not in (1.0, dim_alpha):
+        if "list" not in fields and alpha not in (1.0, dim_alpha):
             problems.append(f"menu-style.lua: {name}'s alpha {alpha:g} is neither opaque nor DIM_RED's {dim_alpha:g}")
-    if float(palette["GREEN"].get("alpha", 1)) != dim_alpha:
-        problems.append("menu-style.lua: GREEN is not at DIM_RED's alpha")
 print("\n".join(problems))
 PY
 }
@@ -95,10 +86,10 @@ trap 'rm -rf "$WORK"' EXIT
 printf 'local x = { red = 0.13, green = 0.55, blue = 0.25 }\nlocal y = "#ff0000"\n-- { alpha = 0.5 } in a comment\nlocal z = hs.drawing.color.x11.red\n' >"$WORK/rogue.lua"
 rogue=$(check "$ROOT/hammerspoon/menu-style.lua" "$WORK/rogue.lua")
 [ "$(printf '%s\n' "$rogue" | grep -c 'menu-style.lua')" = 3 ] || fail "a colour built outside menu-style.lua passed: $rogue"
-sed 's/^M.GREEN = .*/M.GREEN = { red = 0.13, green = 0.55, blue = 0.25 }/' "$ROOT/hammerspoon/menu-style.lua" >"$WORK/menu-style.lua"
+{ cat "$ROOT/hammerspoon/menu-style.lua"; printf 'M.TEAL = { red = 0.1, green = 0.6, blue = 0.6 }\n'; } >"$WORK/menu-style.lua"
+added=$(check "$WORK/menu-style.lua")
+case "$added" in *"Egor's call"*) ;; *) fail "an invented palette colour passed: $added" ;; esac
+sed 's/^M.GREEN = .*/M.GREEN = { red = 0.13, green = 0.55, blue = 0.25, alpha = 0.3 }/' "$ROOT/hammerspoon/menu-style.lua" >"$WORK/menu-style.lua"
 shade=$(check "$WORK/menu-style.lua")
-case "$shade" in
-  *"GREEN is not RED's saturation"*"GREEN is not at DIM_RED's alpha"*) ;;
-  *) fail "an invented green shade passed: $shade" ;;
-esac
+case "$shade" in *"GREEN's alpha 0.3"*) ;; *) fail "an invented alpha passed: $shade" ;; esac
 echo "OK: menu-style.lua is the only palette"

@@ -192,6 +192,8 @@ local header = find(cat, "limit tokens")
 local spend, startup = find(cat, "Claude spend"), find(cat, "Startup")
 local codex, codexAt = find(cat, "Codex")
 check(header and text(header.title):find("share", 1, true), "no unit header with a share column")
+check(find(items, "Harness index") and not find(cat, "Harness index"),
+    "the harness index is not on the top level only")
 check(header and spend and startup and codex
     and cellEnd(header, "Δ") == cellEnd(spend, "-21%") and cellEnd(spend, "-21%") == cellEnd(startup, "+37%")
     and cellEnd(startup, "+37%") == cellEnd(codex, "-49%"),

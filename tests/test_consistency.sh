@@ -3129,7 +3129,7 @@ assert grep -Fxq 'DELTA_TIMES_FROM = 11' "$HARNESS_DOCTOR_BIN"
 assert grep -Fxq 'DELTA_MATERIAL = 0.10' "$HARNESS_DOCTOR_BIN"
 assert grep -Fxq 'local TONES = { worse = RED, better = menuStyle.GREEN }' "$ROOT/hammerspoon/token-tracking.lua"
 assert grep -Fxq 'local redColor, dimRedColor, greenColor, menuFont = style.RED, style.DIM_RED, style.GREEN, style.MONO' "$ROOT/hammerspoon/llm-limits.lua"
-assert grep -Fxq 'M.GREEN = { red = 0.2, green = 0.9, blue = 0.2, alpha = 0.55 }' "$ROOT/hammerspoon/menu-style.lua"
+assert grep -Fxq 'M.GREEN = { red = 0.13, green = 0.55, blue = 0.25 }' "$ROOT/hammerspoon/menu-style.lua"
 assert doc_has '`7 days · prev 7 · Δ`'
 
 # --- Row dc: limiter hold files ---------------------------------------------------------

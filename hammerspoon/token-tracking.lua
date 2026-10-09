@@ -532,7 +532,13 @@ local function categoryItem()
     local items = statusItems(data, problem, attrs, file ~= path)
     if data then
         items[#items + 1] = { title = "-" }
-        for _, item in ipairs(tableItems(data)) do items[#items + 1] = item end
+        local rest = {}
+        for key, value in pairs(data) do rest[key] = value end
+        rest.rows = {}
+        for _, row in ipairs(data.rows or {}) do
+            if row.key ~= "harness_index" then rest.rows[#rest.rows + 1] = row end
+        end
+        for _, item in ipairs(tableItems(rest)) do items[#items + 1] = item end
         items[#items + 1] = { title = "-" }
         items[#items + 1] = { title = "By week", menu = byWeekMenu(data) }
     end
