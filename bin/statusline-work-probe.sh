@@ -248,7 +248,7 @@ fi
 
 # pid of the cwd to read, class, elapsed, label, test script — one per main-line work item. Split on
 # \037, never on tab: tab is IFS whitespace, so `read` would fold an empty field into the next one.
-items=""; pids=""; runs_out=""; media_records=""; worker_runs=(); declare -A review_waits=()
+items=""; pids=""; runs_out=""; media_records=""; worker_runs=(); declare -A review_waits=() run_tests_at=()
 while IFS= read -r found_line; do
   IFS=$'\037' read -r kind a b c d e f _ <<< "${found_line//$'\t'/$'\037'}"
   case "$kind" in
@@ -274,6 +274,7 @@ while IFS= read -r found_line; do
       [ -n "$logdir" ] && [ -d "$logdir" ] && [[ "$stamp" =~ ^[0-9]+$ ]] && [ "$stamp" -ge "$((now - b - 3))" ] || logdir=""
       # A suite run counts from the progress file it writes once it holds a slot; before that it is queued.
       [ "$c" != suites ] || { [ -n "$logdir" ] && b=$((now - stamp)); } || c='suites queued'
+      [ -n "${run_tests_at[$a]+set}" ] || run_tests_at[$a]=$((now - b))
       if [ "$c" = suites ] || [ "$c" = 'suites queued' ]; then
         runs_out+="run"$'\t'"$a"$'\t'"$((now - b))"$'\t'"$c"$'\t\t\t\t\t'"$logdir"$'\t'"$srepo"$'\t'"$d"$'\n'
       else
@@ -298,15 +299,19 @@ slurp() { # var file
 agent_records=""
 re_started='"started_epoch": *([0-9]+)' re_started_at='"started_at": *([0-9]+)' re_phase='"phase": *"([a-z_-]*)"'
 re_key='^[A-Z][A-Z0-9_-]*:([[:space:]]|$)' re_resume='^(RESUME|ATTACH)[[:space:]]+[^[:space:]]+:[[:space:]]*(.*)$'
+re_light='"light": *"([a-z]+)"' re_round='"round_id": *"?([A-Za-z0-9_-]+)'
 for worker_run in ${worker_runs[@]+"${worker_runs[@]}"}; do
   IFS=$'\037' read -r run live waited <<< "$worker_run"
   dir="$runs_root/$run"
   [ ! -e "$dir/exit_code" ] || continue
   slurp state "$dir/state.json"
-  start="" phase=""
+  slurp meta "$dir/meta.json"
+  start="" phase="" light="" round=""
   [[ $state =~ $re_started ]] && start=${BASH_REMATCH[1]}
   [[ $state =~ $re_phase ]] && phase=${BASH_REMATCH[1]}
-  if [ -z "$start" ]; then slurp meta "$dir/meta.json"; [[ $meta =~ $re_started_at ]] && start=${BASH_REMATCH[1]}; fi
+  [[ $state =~ $re_round ]] && round=${BASH_REMATCH[1]}
+  [[ $meta =~ $re_light ]] && light=${BASH_REMATCH[1]}
+  [ -n "$start" ] || { [[ $meta =~ $re_started_at ]] && start=${BASH_REMATCH[1]}; }
   [ -n "$start" ] || start=$now
   # A start that never recorded its supervisor is dropped once it is older than any start takes.
   [ "$live" != '?' ] || [ "$waited" = 1 ] || [ "$((now - start))" -le 300 ] || continue
@@ -324,18 +329,33 @@ for worker_run in ${worker_runs[@]+"${worker_runs[@]}"}; do
       break
     done < "$dir/brief"
   fi
+  head=${head:-worker · ${run: -7}}
+  # A light run's tag names the account first; its row reads like the light call that made it.
+  if [ -n "$light" ] && [[ $head == *' · '*' · '* ]] && [[ $head != 'light '* ]]; then
+    model=${head#* · }; model=${model%% · *}
+    if [[ $model =~ ^flash([0-9])([0-9])$ ]]; then model="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}-flash"
+    elif [[ $model =~ ^gemini-([0-9.]+)-(flash|pro)(-(high|medium|low))?$ ]]; then model="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"
+    fi
+    head="light $light · $model · ${head%% · *}"
+  fi
+  if [ -n "$round" ]; then
+    head="fix: $head" title=$round
+    [ "${#round}" -le 7 ] || title=${round: -7}
+  fi
   tokens=""
   one_line tokens "$dir/tokens"
   [[ "$tokens" =~ ^[0-9]+$ ]] || tokens=""
-  wstate=working
+  wstate=working tests_at=""
   [ "$phase" != start ] || wstate=start
-  [[ $'\n'"$runs_out" != *$'\n'"run"$'\t'"$run"$'\t'* ]] || wstate=tests
-  agent_records+="main"$'\t'"worker"$'\t'"$start"$'\t'"${head:-worker · ${run: -7}}"$'\t'"$title"$'\t'"$wstate"$'\t\t\t'"$tokens"$'\n'
+  [ -z "${run_tests_at[$run]+set}" ] || wstate=tests tests_at=${run_tests_at[$run]}
+  agent_records+="main"$'\t'"worker"$'\t'"$start"$'\t'"$head"$'\t'"$title"$'\t'"$wstate"$'\t'"$tests_at"$'\t\t'"$tokens"$'\n'
 done
 
 # Review runs: each one this chat waits on, and each unfinished one it launched. A document whose
 # heartbeat stopped belongs to a dead launcher (review-bench's PROGRESS_STALE_AFTER_S).
 declare -A review_docs=()
+old_cache=""
+[ ! -r "$cache_file" ] || IFS= read -r -d '' old_cache < "$cache_file" || :
 re_run_id='"run_id": *"([A-Za-z0-9_-]+)"' re_running='"state": *"running"' re_mine="\"session\": *\"$session_id\""
 for doc_file in "$progress_dir"/*.json; do
   [ -f "$doc_file" ] || continue
@@ -354,41 +374,78 @@ for run in "${!review_docs[@]}"; do
   [ -z "${review_docs[$run]}" ] || review=$(jq -r --argjson now "$now" --arg waited "${review_waits[$run]+1}" '
     def word(d): (if . == null then "" else tostring | gsub("[^A-Za-z0-9_.-]"; "") end) | if . == "" then d else . end;
     def line: tostring | split("\n") | map(select(test("\\S"))) | (.[0] // "") | gsub("[\t\u001f\r]"; " ") | .[0:200];
+    def epoch: if type == "number" then floor
+      elif type == "string" then
+        ((capture("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})([.][0-9]+)?(?<z>Z|(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2}))$")
+          | (.d + "Z" | fromdateiso8601) - (if .z == "Z" then 0
+              else ((.h | tonumber) * 3600 + (.m | tonumber) * 60) * (if .s == "-" then -1 else 1 end) end)) // null)
+      else null end;
     select($waited != "" or ((.heartbeat_epoch | numbers) // $now) >= $now - 300)
     | (if (.kind // "") == "task" or (.hunt // false) then "task" else "review" end) as $kind
     | (.lens | word($kind)) as $lens | (.cells // []) as $cells | (.failed_cells // []) as $failed
-    | ($failed + (.done // [])) as $finished | .repo as $repo
+    | (.done // []) as $done | .repo as $repo
     | (if (.started_epoch | type) == "number" and (.started_epoch | floor) == .started_epoch and .started_epoch > 0
        then .started_epoch else null end) as $started_epoch
     | (if (.expected | type) == "object" then .expected else {} end) as $expected
     | (if (.chunks | type) == "object" then .chunks else {} end) as $chunks
     | (if (.chunk_started | type) == "object" then .chunk_started else {} end) as $chunk_started
-    # Late (shared-invariants row `u`): a pending cell past both 3 x its median and 120 s, a chunked
-    # cell timed from the pass now running.
-    | ([$cells[] | select(. as $c | $finished | index([$c]) == null) | . as $cell
+    | (if (.verifying | type) == "object" then .verifying else {} end) as $verifying
+    | (if (.judge | type) == "object" then .judge else {} end) as $j
+    | (.state // "running") as $state | ((.phase // "") | IN("judge", "report")) as $judging
+    | [$cells[] | . as $cell | (($failed | index([$cell])) != null) as $failed_cell
+        | ($failed_cell or ($done | index([$cell])) != null) as $fin
         | ($chunks[$cell] // null) as $pass
         | (($pass | type) == "array" and ($pass | length) == 2 and ($pass[0] | type) == "number"
            and ($pass[1] | type) == "number" and $pass[1] > 1) as $chunked
+        # Late (shared-invariants row `u`): a pending cell past both 3 x its median and 120 s, a
+        # chunked cell timed from the pass now running.
         | ((if $chunked then $chunk_started[$cell] else null end
             | if type == "number" and . > 0 and (. | floor) == . then . else null end) // $started_epoch) as $late_from
         | $expected[$cell] as $expected_ms
-        | select($late_from != null and ($expected_ms | type) == "number" and $expected_ms >= 0
-            and (($now - $late_from) * 1000 > ([3 * $expected_ms, 120000] | max)))] | length > 0) as $late
+        | (if $chunked then $pass[1] | floor else 1 end) as $total
+        | {label: ($cell | tostring | sub("#.*$"; "") | if test("^(claude|codex|oc|opencode|gemini)-") then sub("^[^-]*-"; "") else . end
+             | sub("-.*$"; "") | gsub("[^A-Za-z0-9_.]"; "")),
+           fin: $fin, failed: $failed_cell, total: $total,
+           read: (if $fin then $total elif $chunked then $pass[0] | floor else 0 end),
+           verify: ($verifying[$cell] == "running"),
+           late: (($fin | not) and $late_from != null and ($expected_ms | type) == "number" and $expected_ms >= 0
+             and (($now - $late_from) * 1000 > ([3 * $expected_ms, 120000] | max)))}] as $rows
+    | ($rows | reduce .[].label as $l ([]; if index([$l]) then . else . + [$l] end)
+       | map(. as $l | [$rows[] | select(.label == $l)]
+         | (length) as $n | (map(select(.fin)) | length) as $d | (map(select(.failed)) | length) as $f
+         | any(.verify) as $v
+         | (if ($v | not) and $f == 0 and $d == $n then "✓" elif ($v | not) and $f == $n then "✗\($f)"
+            else "\(map(.read) | add)/\(map(.total) | add)" + (if $f > 0 then " ✗\($f)" else "" end)
+              + (if $v then " verify" else "" end) end) as $detail
+         | if any(.late) then " {\($l) \($detail)}" else " \($l) \($detail)" end) | join("")) as $groups
+    | "all \($rows | map(select(.fin)) | length)/\($cells | length)" as $all
+    | (if $state == "failed" then ["✗ dead", "✗ dead"]
+       elif $state == "cancelled" then ["", ""]
+       elif $state == "done" then ("✓ report" + (.confirmed // "" | tostring | if . == "" then "" else " " + . end)) | [., .]
+       elif .phase == "report" then ["report", "report"]
+       elif ($cells | length) == 0 then ["", ""]
+       else [$all + $groups, $all] | if $judging then map(. + " · ✓ done") else . end end) as $st
+    | ($judging and ($state | IN("failed", "cancelled") | not)) as $judge_row
     | [(.started_epoch | numbers | floor | tostring) // "",
        ([(.tier | word("T?")), (.composition | word("standard")), $lens] | join(" · ")),
        ((if $lens == "task" then (.task // .title // "" | line) else "" end)
         | if . == "" then ($repo // "" | tostring | sub("/+$"; "") | split("/") | last // "" | line) else . end),
-       ([$cells[] | select(. as $c | $finished | index([$c]) != null)] | length | tostring),
-       ($failed | length | tostring), ($cells | length | tostring), (if $late then "late" else "" end)]
+       $st[0], $st[1],
+       (if $judge_row then [$j.account, $j.model, $j.effort] | map(word("")) | map(select(. != "")) | join(" · ") else "" end),
+       (if $judge_row then (.phase_at // $j.ts // null) | epoch // "?" | tostring else "" end)]
     | join("\u001f")' "${review_docs[$run]}" 2>/dev/null)
   if [ -z "$review" ]; then
     [ -n "${review_waits[$run]+set}" ] || continue
     review=${review_waits[$run]}$'\037'"review · ${run: -7}"$'\037\037\037\037\037'
   fi
-  IFS=$'\037' read -r start head title r_done r_failed r_total r_late <<< "$review"
+  IFS=$'\037' read -r start head title r_state r_short j_head j_since <<< "$review"
   [[ "$start" =~ ^[0-9]+$ ]] || start=${review_waits[$run]:-$now}
-  [ "${r_total:-0}" != 0 ] || r_done="" r_failed="" r_total=""
-  agent_records+="main"$'\t'"review"$'\t'"$start"$'\t'"$head"$'\t'"$title"$'\t'"$r_done"$'\t'"$r_failed"$'\t'"$r_total"$'\t'"$r_late"$'\n'
+  # A document that never stamped its judge phase keeps the moment this chat first saw it.
+  if [ "$j_since" = '?' ]; then
+    j_since=$now re_seen=$'\nmain\treview\t[^\n]*\t([0-9]+)\t'"$run"$'(\n|$)'
+    [[ $'\n'"$old_cache" =~ $re_seen ]] && j_since=${BASH_REMATCH[1]}
+  fi
+  agent_records+="main"$'\t'"review"$'\t'"$start"$'\t'"$head"$'\t'"$title"$'\t'"$r_state"$'\t'"$r_short"$'\t'"$j_head"$'\t'"$j_since"$'\t'"$run"$'\n'
 done
 
 declare -A cwd_by_pid=()
@@ -456,8 +513,7 @@ $runs_out}"
 # A test the last probe saw and this one does not has finished; its time goes to the journal the
 # Harness doctor's Tests section reads. A start re-derived from etime drifts by a second, so an item
 # still running matches within 3s.
-old_cache=""; old_mtime=""
-[ ! -r "$cache_file" ] || IFS= read -r -d '' old_cache < "$cache_file" || :
+old_mtime=""
 if [[ "$old_cache" = *$'main\ttests\t'* || "$old_cache" = *$'run\t'* ]]; then
   old_mtime=$(file_mtime "$cache_file")
 fi

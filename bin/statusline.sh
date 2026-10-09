@@ -2146,13 +2146,47 @@ if [ -n "$session_id" ]; then
         main$'\t'*) w_cmds+=("$work_line") ;;
       esac
     done < "$work_cache"
-    w_n=0 w_hid_worker=0 w_hid_review=0 w_hid_media=0 w_hid_cmd=0
-    w_agent=() w_head=() w_title=() w_state=() w_el=() w_tok=() w_late=()
+    # ${#s} counts bytes outside a UTF-8 locale: the columns would drift and a cut could split a `·`.
+    w_probe=$'\xc2\xb7'
+    if [ "${#w_probe}" -ne 1 ]; then
+      for w_loc in C.UTF-8 en_US.UTF-8; do LC_ALL=$w_loc; [ "${#w_probe}" -ne 1 ] || break; done 2>/dev/null
+    fi
+    w_fmt() { # var seconds
+      local s=$2
+      [ "$s" -ge 0 ] || s=0
+      if [ "$s" -lt 60 ]; then printf -v "$1" '%ds' "$s"
+      elif [ "$s" -lt 3600 ]; then printf -v "$1" '%dm %02ds' $((s / 60)) $((s % 60))
+      else printf -v "$1" '%dh %02dm' $((s / 3600)) $((s % 3600 / 60))
+      fi
+    }
+    # `{…}` wraps a late review group, drawn wholly red; ✓ is green and ✗N red outside one.
+    w_paint() { # var state
+      local s=$2 out="" pre d red=""
+      while :; do
+        pre=${s%%[✓✗\{\}]*}
+        out+=$pre s=${s:${#pre}}
+        case "$s" in
+          '') break ;;
+          ✓*) s=${s:1}; if [ -n "$red" ]; then out+=✓; else out+="${RESET}${GREEN}✓${RESET}${DIM}"; fi ;;
+          ✗*)
+            s=${s:1} d=${s%%[!0-9]*}; s=${s:${#d}}
+            if [ -n "$red" ]; then out+="✗$d"; else out+="${RESET}${RED}✗$d${RESET}${DIM}"; fi ;;
+          '{'*) s=${s:1} red=1 out+="${RESET}${RED}" ;;
+          *) s=${s:1} red="" out+="${RESET}${DIM}" ;;
+        esac
+      done
+      printf -v "$1" '%s' "$out"
+    }
+    w_n=0 w_full="" w_hid_worker=0 w_hid_review=0 w_hid_media=0 w_hid_cmd=0
+    w_agent=() w_head=() w_title=() w_state=() w_short=() w_el=() w_tok=()
     for work_line in ${w_agents[@]+"${w_agents[@]}"} ${w_cmds[@]+"${w_cmds[@]}"}; do
       # Split on \037: tab is IFS whitespace, so `read` would fold an empty field into the next one.
-      IFS=$'\037' read -r _ w_class w_start w_h w_t w_done w_failed w_total w_tokens _ <<<"${work_line//$'\t'/$'\037'}"
+      IFS=$'\037' read -r _ w_class w_start w_h w_t w_6 w_7 w_8 w_9 w_10 _ <<<"${work_line//$'\t'/$'\037'}"
       [[ "$w_start" =~ ^[0-9]+$ ]] || continue
-      if [ "$w_n" -ge 5 ]; then
+      w_judge=""
+      [ "$w_class" != review ] || ! [[ "$w_9" =~ ^[0-9]+$ ]] || w_judge=1
+      if [ -n "$w_full" ] || [ "$((w_n + ${w_judge:-0} + 1))" -gt 5 ]; then
+        w_full=1
         case "$w_class" in
           worker) w_hid_worker=$((w_hid_worker + 1)) ;; review) w_hid_review=$((w_hid_review + 1)) ;;
           media) w_hid_media=$((w_hid_media + 1)) ;; *) w_hid_cmd=$((w_hid_cmd + 1)) ;;
@@ -2160,47 +2194,83 @@ if [ -n "$session_id" ]; then
         continue
       fi
       w_secs=$((now - w_start))
-      [ "$w_secs" -ge 0 ] || w_secs=0
-      if [ "$w_secs" -lt 60 ]; then w_e="${w_secs}s"
-      elif [ "$w_secs" -lt 3600 ]; then printf -v w_e '%dm %02ds' $((w_secs / 60)) $((w_secs % 60))
-      else printf -v w_e '%dh %02dm' $((w_secs / 3600)) $((w_secs % 3600 / 60))
-      fi
-      w_s=""
-      if [[ "$w_total" =~ ^[0-9]+$ ]] && [[ "$w_done" =~ ^[0-9]+$ ]]; then
-        w_s="$w_done/$w_total"
-        [[ ! "$w_failed" =~ ^[1-9][0-9]*$ ]] || w_s="$w_s ✗$w_failed"
-        [ "$w_class" != review ] || [ "$w_total" -eq 0 ] || [ "$w_done" -lt "$w_total" ] ||
-          w_s="judge${w_s#"$w_done/$w_total"}"
-      elif [ "$w_class" = worker ]; then
-        w_s=$w_done
-      fi
-      w_k=""
-      if [ "$w_class" = worker ] && [[ "$w_tokens" =~ ^[0-9]+$ ]]; then
-        if [ "$w_tokens" -lt 1000 ]; then w_k="↓ $w_tokens"
-        elif [ "$w_tokens" -lt 1000000 ]; then w_k="↓ $((w_tokens / 1000))k"
-        else w_k="↓ $((w_tokens / 1000000)).$((w_tokens % 1000000 / 100000))M"
-        fi
-      fi
-      case "$w_class" in worker | review | media) w_agent+=(1) ;; *) w_agent+=("") ;; esac
-      if [ "$w_class" = review ] && [ "$w_tokens" = late ]; then w_late+=(1); else w_late+=(""); fi
-      w_head+=("${w_class}${w_h:+ · $w_h}") w_title+=("$w_t") w_state+=("$w_s") w_el+=("$w_e") w_tok+=("$w_k")
-      [ "${w_agent[w_n]}" != 1 ] || w_head[w_n]=${w_h:-$w_class}
+      w_s="" w_sh="" w_k=""
+      case "$w_class" in
+        worker)
+          w_s=$w_6 w_sh=$w_6
+          if [ "$w_6" = tests ] && [[ "$w_7" =~ ^[0-9]+$ ]]; then w_fmt w_s "$((now - w_7))"; w_s="tests $w_s"; fi
+          if [[ "$w_9" =~ ^[0-9]+$ ]]; then
+            if [ "$w_9" -lt 1000 ]; then w_k="↓ $w_9"
+            elif [ "$w_9" -lt 1000000 ]; then w_k="↓ $((w_9 / 1000))k"
+            else w_k="↓ $((w_9 / 1000000)).$((w_9 % 1000000 / 100000))M"
+            fi
+          fi ;;
+        review)
+          w_s=$w_6 w_sh=$w_7
+          [ -z "$w_judge" ] || [ "$w_9" -le "$w_start" ] || w_secs=$((w_9 - w_start)) ;;
+        *)
+          if [[ "$w_8" =~ ^[0-9]+$ ]] && [[ "$w_6" =~ ^[0-9]+$ ]]; then
+            w_s="$w_6/$w_8"
+            [[ ! "$w_7" =~ ^[1-9][0-9]*$ ]] || w_s="$w_s ✗$w_7"
+          fi
+          w_sh=$w_s ;;
+      esac
+      case "$w_class" in
+        worker | review) w_agent+=(1) w_head+=("${w_h:-$w_class}") ;;
+        media) w_agent+=(1) w_head+=("media${w_h:+ · $w_h}") ;;
+        *) w_agent+=("") w_head+=("${w_class}${w_h:+ · $w_h}") ;;
+      esac
+      w_fmt w_e "$w_secs"
+      w_title+=("$w_t") w_state+=("$w_s") w_short+=("$w_sh") w_el+=("$w_e") w_tok+=("$w_k")
       w_n=$((w_n + 1))
+      if [ -n "$w_judge" ]; then
+        w_fmt w_e "$((now - w_9))"
+        w_t=$w_10
+        [ "${#w_t}" -le 7 ] || w_t=${w_t: -7}
+        w_agent+=(1) w_head+=("judge:${w_8:+ $w_8}") w_title+=("$w_t") w_state+=("") w_short+=("") w_el+=("$w_e") w_tok+=("")
+        w_n=$((w_n + 1))
+      fi
     done
-    w_lw=0 w_sw=0 w_ew=0 w_tw=0
+    # Claude Code draws the status line in a footer padded two cells on each side, so a row of
+    # COLUMNS − 3 cells loses its last cell to the harness's own `…`: work rows keep one more.
+    w_cols=""
+    [ -z "$fit_cols" ] || w_cols=$((fit_cols - 1))
+    # Only the title gives way; past that the states go short, then heads lose their tail.
+    for w_step in full short; do
+      w_lw=0 w_sw=0 w_ew=0 w_tw=0 w_fits=1
+      [ "$w_step" = full ] || w_state=(${w_short[@]+"${w_short[@]}"})
+      for ((w_i = 0; w_i < w_n; w_i++)); do
+        w_len=${#w_head[w_i]}
+        [ -z "${w_title[w_i]}" ] || w_len=$((w_len + 3 + ${#w_title[w_i]}))
+        [ "$w_len" -le "$w_lw" ] || w_lw=$w_len
+        w_s=${w_state[w_i]//[\{\}]/}
+        [ "${#w_s}" -le "$w_sw" ] || w_sw=${#w_s}
+        [ "${#w_el[w_i]}" -le "$w_ew" ] || w_ew=${#w_el[w_i]}
+        [ "${#w_tok[w_i]}" -le "$w_tw" ] || w_tw=${#w_tok[w_i]}
+      done
+      w_right=$((2 + w_ew))
+      [ "$w_sw" -eq 0 ] || w_right=$((w_right + 2 + w_sw))
+      [ "$w_tw" -eq 0 ] || w_right=$((w_right + 2 + w_tw))
+      w_left=$w_lw
+      [ -z "$w_cols" ] || [ "$((w_cols - w_right))" -ge "$w_left" ] || w_left=$((w_cols - w_right))
+      for ((w_i = 0; w_i < w_n; w_i++)); do [ "${#w_head[w_i]}" -le "$w_left" ] || w_fits=""; done
+      [ -z "$w_fits" ] || break
+    done
+    w_floor=$w_left
     for ((w_i = 0; w_i < w_n; w_i++)); do
-      w_len=${#w_head[w_i]}
-      [ -z "${w_title[w_i]}" ] || w_len=$((w_len + 3 + ${#w_title[w_i]}))
-      [ "$w_len" -le "$w_lw" ] || w_lw=$w_len
-      [ "${#w_state[w_i]}" -le "$w_sw" ] || w_sw=${#w_state[w_i]}
-      [ "${#w_el[w_i]}" -le "$w_ew" ] || w_ew=${#w_el[w_i]}
-      [ "${#w_tok[w_i]}" -le "$w_tw" ] || w_tw=${#w_tok[w_i]}
+      w_h=${w_head[w_i]}
+      [ "${#w_h}" -gt "$w_left" ] || continue
+      w_keep=$((w_left - 1)) w_first=${w_h%% *}
+      [ "$w_keep" -ge "${#w_first}" ] || w_keep=${#w_first}
+      if [ "$w_keep" -lt "${#w_h}" ]; then
+        w_h=${w_h:0:w_keep}
+        w_h="${w_h%"${w_h##*[! ·]}"}…"
+      fi
+      w_head[w_i]=$w_h
+      [ "${#w_h}" -le "$w_floor" ] || w_floor=${#w_h}
     done
-    w_right=$((2 + w_ew))
-    [ "$w_sw" -eq 0 ] || w_right=$((w_right + 2 + w_sw))
-    [ "$w_tw" -eq 0 ] || w_right=$((w_right + 2 + w_tw))
-    w_left=$w_lw
-    [ -z "$fit_cols" ] || [ "$((fit_cols - w_right))" -ge "$w_left" ] || w_left=$((fit_cols - w_right))
+    # Past the floor every row overflows alike, so the columns still line up.
+    w_left=$w_floor
     for ((w_i = 0; w_i < w_n; w_i++)); do
       w_h=${w_head[w_i]} w_t=${w_title[w_i]}
       w_avail=$((w_left - ${#w_h} - 3))
@@ -2221,11 +2291,9 @@ if [ -n "$session_id" ]; then
       fi
       w_row="$w_row$w_pad"
       if [ "$w_sw" -gt 0 ]; then
-        w_s=${w_state[w_i]}
+        w_s=${w_state[w_i]//[\{\}]/}
         printf -v w_p '%*s' $((w_sw - ${#w_s})) ''
-        if [ -n "${w_late[w_i]}" ]; then w_s="${RESET}${RED}${w_s}${RESET}${DIM}"
-        elif [[ "$w_s" == *✗* ]]; then w_s="${w_s%%✗*}${RESET}${RED}✗${w_s#*✗}${RESET}${DIM}"
-        fi
+        w_paint w_s "${w_state[w_i]}"
         w_row="$w_row  ${DIM}${w_s}${w_p}${RESET}"
       fi
       printf -v w_p '%*s' $((w_ew - ${#w_el[w_i]})) ''
