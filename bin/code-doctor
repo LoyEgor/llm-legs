@@ -2664,6 +2664,7 @@ def split_tokens(tokens, count):
 
 def worker_judge(brief_file, workdir, vendor, remaining):
     """(run id, report, error): one judge brief through worker-run, waited on at most `remaining` seconds."""
+    started = time.time()
     try:
         launch = subprocess.run([worker_run_cmd(), "start", vendor, "--brief", brief_file, "--workdir", workdir,
                                  "--effort", "low"], capture_output=True, text=True)
@@ -2673,7 +2674,9 @@ def worker_judge(brief_file, workdir, vendor, remaining):
     if launch.returncode != 0 or not run_id:
         output = " | ".join(part.strip() for part in (launch.stderr, launch.stdout) if part.strip())
         return None, "", "worker-run start rc %d: %s" % (launch.returncode, output[-LAUNCH_ERROR_MAX:] or "no output")
-    subprocess.run([worker_run_cmd(), "wait", run_id, "--max", str(int(max(1, remaining)))], capture_output=True, text=True)
+    waited = subprocess.run([worker_run_cmd(), "wait", run_id, "--max", str(int(max(1, remaining)))],
+                            capture_output=True, text=True).stdout
+    collector_runs.worker_launched("code", started, "CODE_DOCTOR_DIR", run_id, waited)
     return run_id, subprocess.run([worker_run_cmd(), "report", run_id], capture_output=True, text=True).stdout, None
 
 

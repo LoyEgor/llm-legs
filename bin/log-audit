@@ -17,6 +17,7 @@ import time
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 import chat_names  # noqa: E402
+import collector_runs  # noqa: E402
 import log_skeleton  # noqa: E402
 
 MODEL, EFFORT = "sonnet", "medium"
@@ -26,6 +27,7 @@ MAX_WALL_S = 2400
 LOOKBACK_S, LOOKBACK_MAX_S = 86400, 36 * 3600
 TOP = 15
 OWN_MARK = "# Log audit"
+STARTED = {}
 
 LEGEND = """You read skeletons of Claude Code transcripts from Egor's machine: his interactive chats and the headless
 workers they launch. The machine runs llm-legs (multi-account LLM orchestration: hooks, gates, worker runs,
@@ -147,18 +149,21 @@ def objects(text, required):
 
 
 def launch(brief_file):
+    started = time.time()
     done = subprocess.run([worker_run(), "start", "claudeb", "--model", MODEL, "--effort", EFFORT, "--brief", brief_file,
                            "--workdir", ROOT_DIR], capture_output=True, text=True)
     run_id = next((line[5:].strip() for line in done.stdout.splitlines() if line.startswith("RUN: ")), None)
     if done.returncode != 0 or not run_id:
         said = " | ".join(part.strip() for part in (done.stderr, done.stdout) if part.strip())
         return None, "worker-run start rc %d: %s" % (done.returncode, said[-300:] or "no output")
+    STARTED[run_id] = started
     return run_id, None
 
 
 def result_of(run_id, deadline):
-    subprocess.run([worker_run(), "wait", run_id, "--max", str(int(max(1, deadline - time.time())))],
-                   capture_output=True, text=True)
+    waited = subprocess.run([worker_run(), "wait", run_id, "--max", str(int(max(1, deadline - time.time())))],
+                            capture_output=True, text=True).stdout
+    collector_runs.worker_launched("log-audit", STARTED.pop(run_id, time.time()), "LOG_AUDIT_DIR", run_id, waited)
     report = subprocess.run([worker_run(), "report", run_id], capture_output=True, text=True).stdout
     status = re.search(r"^STATUS: (\w+)", report, re.M)
     if status and status.group(1) in ("running", "queued"):

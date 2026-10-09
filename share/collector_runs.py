@@ -1,6 +1,8 @@
 """One row per doctor collector run in ${DOCTORS_DIR:-~/.cache/doctors}/collector-runs.jsonl
 (docs/shared-invariants.md row `ea`): {doctor, start, wall_s, cpu_s, trigger}; and one row per doctor per local
-day in problem-days.jsonl (row `ee`): {day, doctor, count, max, status, at}."""
+day in problem-days.jsonl (row `ee`): {day, doctor, count, max, status, at}; and one row per model session a doctor
+or updater launched in launches.jsonl: {doctor, session, run, started_at, finished_at}, read by token-map, whose
+spend pie counts that session as Doctors inside [started_at, finished_at] (finished_at null: from started_at on)."""
 
 import fcntl
 import json
@@ -96,3 +98,30 @@ def record(doctor, started, command=None):
             handle.write(json.dumps(row) + "\n")
     except OSError:
         pass
+
+
+def iso_utc(epoch):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
+
+
+def launched(doctor, started, own_env, session=None, run=None, finished=None):
+    """Appends the launch's row; `session` or `run` (a worker-run run id, which names every attempt session)
+    says which sessions are the doctor's. Never fails its caller; a fixture run (own_env set, no DOCTORS_DIR)
+    never reaches the live journal."""
+    if not (session or run) or os.environ.get(own_env) and not os.environ.get("DOCTORS_DIR"):
+        return
+    row = {"doctor": doctor, "session": session or None, "run": run or None, "started_at": iso_utc(started),
+           "finished_at": iso_utc(finished) if finished is not None else None}
+    try:
+        os.makedirs(folder(), exist_ok=True)
+        with open(os.path.join(folder(), "launches.jsonl"), "a") as handle:
+            handle.write(json.dumps(row) + "\n")
+    except OSError:
+        pass
+
+
+def worker_launched(doctor, started, own_env, run, waited):
+    """launched() for a worker-run run, off the output of its `worker-run wait`: a run still going has no end."""
+    said = dict(line.split(": ", 1) for line in waited.splitlines() if ": " in line)
+    finished = None if said.get("STATUS", "").strip() in ("running", "queued") else time.time()
+    launched(doctor, started, own_env, session=said.get("SESSION", "").strip(), run=run, finished=finished)

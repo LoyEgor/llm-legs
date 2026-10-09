@@ -86,8 +86,11 @@ assert test "$(judged)" = 1
 assert grep -q 'stop wall' "$WORK/judge.out"
 assert test "$(judged)" = 1
 assert jqe 'select(.night == "n0" and .stop == "tokens" and .tokens == 90000)' "$CODE_DOCTOR_DIR/judge-runs.jsonl"
-"$CD" judge --night n1 >"$WORK/judge.out"
+assert test ! -e "$HOME/.cache/doctors/launches.jsonl"
+DOCTORS_DIR="$WORK/doctors" "$CD" judge --night n1 >"$WORK/judge.out"
 assert grep -q 'stop done' "$WORK/judge.out"
+assert jqe -s 'length == 1 and (.[0] | .doctor == "code" and (.run | startswith("fake-")) and .session == null
+  and (.started_at | test("Z$")) and .finished_at >= .started_at)' "$WORK/doctors/launches.jsonl"
 assert test "$(awk 'FNR == 1' "$CODE_DOCTOR_DIR"/judge/n1/batch-*.md | sort -u)" = "ROUND: none"
 assert test "$(judged)" = 3
 assert test "$(tail -2 "$CODE_DOCTOR_FAKE_LOG" | cut -f1 | sort -u | wc -l | tr -d ' ')" = 1

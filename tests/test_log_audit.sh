@@ -88,8 +88,10 @@ assert test "$(grep -c 'SECRET-OUTPUT\|huge context' <<<"$skeleton")" -eq 0
 
 # A full read: every chunk and the merge run on Claude Sonnet with no relay token at all, and the
 # audit's own transcripts are never read back.
-out=$("$ROOT/bin/log-audit" run --night N1)
+out=$(DOCTORS_DIR="$WORK/doctors" "$ROOT/bin/log-audit" run --night N1)
 assert grep -q '^log-audit: 1 transcripts in 1 chunks read, 2 findings for the Harness doctor$' <<<"$out"
+assert jqe -s '[.[] | select(.doctor == "log-audit" and .finished_at >= .started_at) | .run] == ["fake-1", "fake-2"]' \
+  "$WORK/doctors/launches.jsonl"
 assert test "$(wc -l <"$CALLS" | tr -d ' ')" -eq 2
 assert test "$(cut -f1 "$CALLS" | sort -u)" = unset
 assert test "$(cut -f2 "$CALLS" | grep -c '^claudeb --model sonnet --effort medium ')" -eq 2
