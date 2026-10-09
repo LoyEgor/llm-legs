@@ -1,6 +1,30 @@
 {
   "owner": "System doctor",
-  "rows": [],
+  "rows": [
+    {
+      "id": "hs-cli-dead-port",
+      "title": "Hammerspoon SIGTRAPs sending an hs CLI result to a client that already gave up",
+      "status": "fixed-pending",
+      "match": {
+        "rule": "hammerspoon-crash",
+        "key": "Hammerspoon",
+        "cause": "Hammerspoon"
+      },
+      "note": "All three crashes (10-02 14:25:15, 10-03 11:26:51, 10-08 08:44:06) fault in ipc_callback -> ipc_sendMessage -> CFMessagePortSendRequest -> CFMessagePortIsValid (freed port, PAC check): hs.ipc's COMMAND handler sends RETURN to a client whose port died while the command ran or waited. 10-02 and 10-03 each have an hs CLI crash 0-4 s earlier whose parent had already exited; 10-08 has none (a SIGKILL leaves no report) and test_llm_limits_grok, which killed its hs after 3 s, ran in the minute before. Hammerspoon answers one client at a time, so a test client queued behind another suite's harness (instruction gate ~11 s) outlived its -t (default 4 s) or its python kill bound. Fix: every live hs call in llm-legs and hammerspoon tests waits under /usr/bin/lockf -k -t 600 /tmp/hs-cli.lock with hs -t >= 20 and a kill bound past both; tests/test_hs_cli_lock.sh in both repos keeps it; the retry loops of test_presence and test_dia_js (for concurrent suite clients) are gone. Not fixed, same chain still open: production callers run hs unlocked with the default 4 s -t (llm-legs bin/claude-chat-switch, claude-resume-timer, llm-selfcheck, llm-reset-redeem; hammerspoon bin/claude-keys, claude-latency; claude-setup hooks/compact-auto.sh, session-trash.sh; the BTT TypeWhisper.toggle action) and can still queue behind a test harness; a Lua guard in init.lua was not tried, as it cannot be tested without crashing the live Hammerspoon. Ruled out for these crashes: AX polling and leaked drawings (neither in the faulting stack). Side finding: hammerspoon tests/test_menu_cache.sh is red on the night base (test_menu_cache.lua:141, Reports title.text nil), unrelated.",
+      "fixes": [
+        {
+          "at": "2026-10-09T06:40:16+03:00",
+          "by": "system-system-20261009T024839Z-3dad",
+          "files": [
+            "llm-legs/tests/test_hs_cli_lock.sh",
+            "hammerspoon/tests/test_hs_cli_lock.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ]
+    }
+  ],
   "blind_spots": [
     {
       "id": "ssd-writers",
@@ -22,6 +46,13 @@
       "reason": "proc_pid_rusage of other users' processes needs root, so their cohort score counts CPU, births and launches only and lists W, D, R and M as unknown",
       "since": "2026-10-06",
       "would_catch_if": "a consented privileged sample"
+    },
+    {
+      "id": "hs-client-of-crash",
+      "what": "which hs CLI client was inside Hammerspoon when it crashed",
+      "reason": "A Hammerspoon ipc crash report names no client; an hs killed by a timeout leaves no report of its own, so the client is inferred from the suites running in the tick before",
+      "since": "2026-10-09",
+      "would_catch_if": "the hs calls journaled their start, end, exit and caller"
     }
   ]
 }

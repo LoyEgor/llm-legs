@@ -80,8 +80,8 @@ source = "[[" + sys.argv[3] + "]]" if sys.argv[3] else "nil"
 only = "true" if sys.argv[4] else "false"
 baseline = "[[" + sys.argv[5] + "]]" if sys.argv[5] else "nil"
 try:
-    result = subprocess.run(["hs", "-c", f"return loadfile([[{sys.argv[1]}]])([[{sys.argv[2]}]], {source}, {only}, {baseline})"],
-                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(["/usr/bin/lockf", "-k", "-t", "600", "/tmp/hs-cli.lock", "hs", "-t", "120", "-c", f"return loadfile([[{sys.argv[1]}]])([[{sys.argv[2]}]], {source}, {only}, {baseline})"],
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=730)
 except (FileNotFoundError, subprocess.TimeoutExpired):
     raise SystemExit(124)
 sys.stdout.write(result.stdout)

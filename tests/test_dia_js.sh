@@ -136,15 +136,9 @@ assert test ! -e "$WORK/open.log"
 
 if command -v hs >/dev/null 2>&1; then
   output=$(python3 - "$ROOT/tests/dia_flag_watch_harness.lua" <<'HSPY'
-import subprocess, sys, time
-# Concurrent `hs -c` clients make the CLI exit 65 or crash now and then; a real harness error repeats.
-for attempt in range(4):
-    if attempt:
-        time.sleep(attempt)
-    result = subprocess.run(["hs", "-q", "-t", "60", "-c", f"return loadfile([[{sys.argv[1]}]])()"],
-                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=70)
-    if result.returncode == 0:
-        break
+import subprocess, sys
+result = subprocess.run(["/usr/bin/lockf", "-k", "-t", "600", "/tmp/hs-cli.lock", "hs", "-q", "-t", "60", "-c", f"return loadfile([[{sys.argv[1]}]])()"],
+                        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=670)
 sys.stdout.write(result.stdout)
 sys.stderr.write(result.stderr)
 raise SystemExit(result.returncode)

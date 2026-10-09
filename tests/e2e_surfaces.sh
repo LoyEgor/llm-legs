@@ -61,7 +61,7 @@ print(table.concat(out, "\n"))
 
 hs_menu() {
   local out
-  out=$(hs -c "$HS_SERIALIZE" </dev/null 2>/dev/null)
+  out=$(/usr/bin/lockf -k -t 600 /tmp/hs-cli.lock hs -t 120 -c "$HS_SERIALIZE" </dev/null 2>/dev/null)
   case "$out" in
     HS_ERR*) fail "live menu read path: ${out#HS_ERR }" ;;
   esac
@@ -70,7 +70,7 @@ hs_menu() {
 }
 
 hs_alona_five_style() {
-  hs -c '
+  /usr/bin/lockf -k -t 600 /tmp/hs-cli.lock hs -t 120 -c '
 local m = package.loaded["llm-limits"]
 local menu = m and m.menuItems()
 local seen = false
@@ -329,7 +329,7 @@ assert_isolated_menu_contracts() {
   opencode_rows=${opencode_rows#*	}
   case "$opencode_rows" in ''|null) fail "llm-limits.sh emitted no OpenCode rows for the menu fixture" ;; esac
   [ -n "$opencode_evyoxqy_reset" ] || fail "the OpenCode fixture recorded no evyoxqy horizon: $opencode_rows"
-  output=$(hs -q -t 120 -c '
+  output=$(/usr/bin/lockf -k -t 600 /tmp/hs-cli.lock hs -q -t 120 -c '
 local path = "'"$(cd "$(dirname "$0")/.." && pwd)"'/hammerspoon/llm-limits.lua"
 local realJsonDecode = hs.json.decode
 local function styled(text, attributes)
@@ -666,7 +666,7 @@ return "OK isolated menu contracts"
 }
 
 # 1. hs CLI reachable and Hammerspoon responding.
-[ "$(hs -q -t 120 -c 'return "ok"' </dev/null 2>/dev/null)" = "ok" ] || fail "Hammerspoon not responding to hs -c"
+[ "$(/usr/bin/lockf -k -t 600 /tmp/hs-cli.lock hs -q -t 120 -c 'return "ok"' </dev/null 2>/dev/null)" = "ok" ] || fail "Hammerspoon not responding to hs -c"
 pass "hs CLI reachable, Hammerspoon responding"
 assert_isolated_menu_contracts
 pass "isolated menu contracts: menu build starts no collector; refresh actions dispatch; completion re-rendered"

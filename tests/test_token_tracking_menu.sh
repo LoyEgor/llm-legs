@@ -12,8 +12,8 @@ import subprocess
 import sys
 
 try:
-    result = subprocess.run(["hs", "-c", f"return dofile([[{sys.argv[1]}]])"],
-                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20)
+    result = subprocess.run(["/usr/bin/lockf", "-k", "-t", "600", "/tmp/hs-cli.lock", "hs", "-t", "120", "-c", f"return dofile([[{sys.argv[1]}]])"],
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=730)
 except (FileNotFoundError, subprocess.TimeoutExpired):
     raise SystemExit(124)
 sys.stdout.write(result.stdout)

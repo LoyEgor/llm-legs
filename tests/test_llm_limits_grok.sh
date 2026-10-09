@@ -725,11 +725,11 @@ import sys
 
 try:
     result = subprocess.run(
-        ["hs", *sys.argv[1:]],
+        ["/usr/bin/lockf", "-k", "-t", sys.argv[1], "/tmp/hs-cli.lock", "hs", "-t", "30", *sys.argv[2:]],
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
-        timeout=3,
+        timeout=int(sys.argv[1]) + 40,
     )
 except (FileNotFoundError, subprocess.TimeoutExpired):
     raise SystemExit(124)
@@ -739,8 +739,8 @@ raise SystemExit(result.returncode)
 PY
 }
 
-if command -v hs >/dev/null 2>&1 && [ "$(hs_bounded -c 'return "ok"' 2>/dev/null)" = ok ]; then
-  renderer_output=$(hs_bounded -c "_G.HS_ROOT = [[${HS_ROOT:-$HOME/.hammerspoon}]]; return dofile([[$ROOT/tests/llm_limits_renderer_harness.lua]])" 2>/dev/null) \
+if command -v hs >/dev/null 2>&1 && [ "$(hs_bounded 3 -c 'return "ok"' 2>/dev/null)" = ok ]; then
+  renderer_output=$(hs_bounded 600 -c "_G.HS_ROOT = [[${HS_ROOT:-$HOME/.hammerspoon}]]; return dofile([[$ROOT/tests/llm_limits_renderer_harness.lua]])" 2>/dev/null) \
     || fail "Hammerspoon renderer contract checks threw"
   [ "$renderer_output" = "PASS: Hammerspoon projection contract" ] \
     || fail "Hammerspoon renderer contract checks: $renderer_output"

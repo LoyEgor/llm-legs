@@ -308,11 +308,9 @@ import subprocess
 import sys
 
 try:
-    # Hammerspoon answers one `hs -c` at a time, so this bound also covers another suite's harness
-    # (test_claude_chat_switch) queued ahead of ours; the menu harness alone takes ~11s. -q: that
-    # harness's print() lines otherwise reach this instance too.
-    result = subprocess.run(["hs", "-q", "-t", "120", *sys.argv[1:]], stdin=subprocess.DEVNULL,
-                            capture_output=True, text=True, timeout=130)
+    # The menu harness alone takes ~11s. -q: another client's print() lines otherwise reach this one.
+    result = subprocess.run(["/usr/bin/lockf", "-k", "-t", "600", "/tmp/hs-cli.lock", "hs", "-q", "-t", "120", *sys.argv[1:]], stdin=subprocess.DEVNULL,
+                            capture_output=True, text=True, timeout=730)
 except (FileNotFoundError, subprocess.TimeoutExpired):
     raise SystemExit(124)
 sys.stdout.write(result.stdout)
