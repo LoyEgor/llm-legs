@@ -1807,11 +1807,11 @@ fi
 # short / off forms; the steps below are applied in a fixed order, re-measuring after each
 # (docs/statusline-contract.md "Progressive fit"). The red alarm blocks and `↓N↑N` have no `off`
 # form at all — a width small enough to need them gone is a width that keeps them.
-STATUSLINE_FIT_MARGIN=${STATUSLINE_FIT_MARGIN:-3}
+STATUSLINE_FIT_MARGIN=${STATUSLINE_FIT_MARGIN:-4}
 if [[ "$STATUSLINE_FIT_MARGIN" =~ ^[0-9]+$ ]]; then
   STATUSLINE_FIT_MARGIN=$((10#$STATUSLINE_FIT_MARGIN))
 else
-  STATUSLINE_FIT_MARGIN=3
+  STATUSLINE_FIT_MARGIN=4
 fi
 fit_repo_debt=1
 fit_diff_sign=1
@@ -2231,10 +2231,6 @@ if [ -n "$session_id" ]; then
         w_n=$((w_n + 1))
       fi
     done
-    # Claude Code draws the status line in a footer padded two cells on each side, so a row of
-    # COLUMNS − 3 cells loses its last cell to the harness's own `…`: work rows keep one more.
-    w_cols=""
-    [ -z "$fit_cols" ] || w_cols=$((fit_cols - 1))
     # Only the title gives way; past that the states go short, then heads lose their tail.
     for w_step in full short; do
       w_lw=0 w_sw=0 w_ew=0 w_tw=0 w_fits=1
@@ -2252,7 +2248,7 @@ if [ -n "$session_id" ]; then
       [ "$w_sw" -eq 0 ] || w_right=$((w_right + 2 + w_sw))
       [ "$w_tw" -eq 0 ] || w_right=$((w_right + 2 + w_tw))
       w_left=$w_lw
-      [ -z "$w_cols" ] || [ "$((w_cols - w_right))" -ge "$w_left" ] || w_left=$((w_cols - w_right))
+      [ -z "$fit_cols" ] || [ "$((fit_cols - w_right))" -ge "$w_left" ] || w_left=$((fit_cols - w_right))
       for ((w_i = 0; w_i < w_n; w_i++)); do [ "${#w_head[w_i]}" -le "$w_left" ] || w_fits=""; done
       [ -z "$w_fits" ] || break
     done

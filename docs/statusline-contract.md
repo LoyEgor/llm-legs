@@ -159,8 +159,8 @@ Worked examples:
 
 Each line is re-composed until it fits `$COLUMNS − STATUSLINE_FIT_MARGIN` (`COLUMNS` exported fresh
 per call). Claude Code cuts a row at the edge with its own `…`; its status box is padded two cells a
-side (2.1.295 bundle), so `COLUMNS − 4` show: lines 1–2 keep margin 3, work rows take one more. The
-margin defaults to `3`, set by the same-named env variable (tests, calibration); non-integer → `3`.
+side (2.1.295 bundle), so `COLUMNS − 4` show, every line and row alike. The
+margin defaults to `4`, set by the same-named env variable (tests, calibration); non-integer → `4`.
 Notifications that shorten the row further are not fitted. With `COLUMNS` unset or empty **nothing
 shrinks**.
 
@@ -287,7 +287,7 @@ shell · token-map — pytest -q tests/test_track…                            
   command rows, unaligned.
 - **Right block:** columns shared by the visible rows — state (left, dim, `✓` green, `✗N` red, a
   late review group red), elapsed, tokens (right, dim), two spaces before each, an empty column
-  takes none. It starts at `min(COLUMNS − STATUSLINE_FIT_MARGIN − 1, widest row) − its width`.
+  takes none. It starts at `min(COLUMNS − STATUSLINE_FIT_MARGIN, widest row) − its width`.
 - **Fit**, re-measured per step: titles shrink to `…`, then go; states take short forms; heads lose
   their tail to `…`, keeping the first word. Elapsed and tokens never shrink; past that floor rows
   overflow alike. Widths are cells (a non-UTF-8 locale switches to `C.UTF-8`/`en_US.UTF-8`).
@@ -333,7 +333,7 @@ distinguishable.
 | fork | `fork · <model> · <account>` (tool model, else the parent transcript's; the renderer shows the harness model) | `explore`, then `edit N` from the tag line `edit=N` (`statusline-workdir-hook` PostToolUse Edit/Write/NotebookEdit of that agent) |
 | Workflow agent, teammate, anything else | the tag cache line, else `agent · <model> · <account>` | `edit N` when counted, else none |
 
-Fit: budget = `columns − SUBAGENT_ROW_RESERVE` (default 3, the same margin as the top statusline's
+Fit: budget = `columns − SUBAGENT_ROW_RESERVE` (default 4, the same margin as the top statusline's
 `STATUSLINE_FIT_MARGIN`, pinned equal by `tests/test_statusline_hooks.sh`; the harness passes `columns: 67` for an
 ~80-column chat). Over budget a row drops, in order: the title tail (`…`) down to `TITLE_FLOOR` (20)
 characters, then the title tail to nothing (the `—` with it); the token count; the elapsed time. The

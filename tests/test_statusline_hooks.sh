@@ -1356,7 +1356,7 @@ run_statusline() {
   # from whatever terminal runs the suite would shrink lines every other case measures at full width.
   printf '%s' "$1" | CLAUDE_LIMITS_ACCOUNT="${2:-${RUN_STATUSLINE_DEFAULT_ACCOUNT:-main}}" CLAUDEB_DIR="$CLAUDEB_FIX" \
     CODEXB_PROFILES_DIR="$CODEX_FIX" \
-    COLUMNS="${FIT_COLUMNS:-}" STATUSLINE_FIT_MARGIN="${FIT_MARGIN:-}" \
+    COLUMNS="${FIT_COLUMNS:-}" STATUSLINE_FIT_MARGIN="${FIT_MARGIN:-3}" \
     CHAT_PINS_DIR="$CHAT_PINS_DIR" \
     LLM_LIMITS_FILE="$WORK/limits.json" STATUSLINE_PS=true STATUSLINE_LSOF=true \
     STATUSLINE_STORE_MERGE_CMD="${STORE_MERGE_CMD:-/usr/bin/true}" \
@@ -4347,19 +4347,19 @@ assert_eq "$(printf '%s\n' \
   'judge: notcom — 12345…                     4m 05s' \
   'T0 · double · bugs      all 4/4 · ✓ done   3m 20s' \
   'judge: notcom · opus…                         45s' \
-  'T1 · standard · bugs    ✗ dead             1m 05s')" "$(FIT_COLUMNS=50 FIT_MARGIN=0 wl_rows wl-judge)"
+  'T1 · standard · bugs    ✗ dead             1m 05s')" "$(FIT_COLUMNS=50 FIT_MARGIN=1 wl_rows wl-judge)"
 assert_eq "$(printf '%s\n' \
   'locomthebest · opus · high — Spe…  tests     1h 02m  ↓ 184k' \
   'com · sonnet · medium — Split re…  working   4m 05s   ↓ 900' \
   'T1 · standard · bugs — llm-legs    all 5/8      45s' \
   'tests · llm-legs — test_statusli…  12/41 ✗1  4m 05s' \
-  'shell · token-map — sleep                       45s')" "$(FIT_COLUMNS=63 FIT_MARGIN=3 wl_rows wl-mix)"
+  'shell · token-map — sleep                       45s')" "$(FIT_COLUMNS=63 FIT_MARGIN=4 wl_rows wl-mix)"
 assert_eq "$(printf '%s\n' \
   'locomthebest…  tests     1h 02m  ↓ 184k' \
   'com · sonnet…  working   4m 05s   ↓ 900' \
   'T1 · standar…  all 5/8      45s' \
   'tests · llm-…  12/41 ✗1  4m 05s' \
-  'shell · toke…               45s')" "$(FIT_COLUMNS=40 FIT_MARGIN=0 wl_rows wl-mix)"
+  'shell · toke…               45s')" "$(FIT_COLUMNS=40 FIT_MARGIN=1 wl_rows wl-mix)"
 # A column no visible row fills takes no space; a short row is padded so elapsed ends where the rest do.
 {
   printf 'main\tshell\t%s\tr\tsleep\t\t\t\n' "$((wl_now - 45))"
@@ -4371,7 +4371,7 @@ assert_eq "$(printf '%s\n' \
 # Work rows keep one cell more than the shared margin: the harness pads its footer two cells a side.
 assert_eq "$(printf '%s\n' \
   'shell · r — sleep     45s' \
-  'shell · repo — g…  4m 05s')" "$(FIT_COLUMNS=26 FIT_MARGIN=0 wl_rows wl-plain)"
+  'shell · repo — g…  4m 05s')" "$(FIT_COLUMNS=26 FIT_MARGIN=1 wl_rows wl-plain)"
 # A record with no repository or no label keeps its fields in place: tab is IFS whitespace to `read`.
 printf 'main\ttests\t%s\t\tsuites\t2\t1\t5\nmain\tshell\t%s\tr\t\t\t\t\n' "$((wl_now - 45))" "$((wl_now - 45))" > "$STATE_DIR/work-wl-norepo"
 assert_eq "$(printf '%s\n' 'tests — suites  2/5 ✗1  45s' 'shell · r               45s')" "$(wl_rows wl-norepo)"
@@ -4426,7 +4426,7 @@ assert_eq 'w0 w1 w2 r abcdefg +1 command' "$(wl_rows wl-pair3 | awk '{ print ($1
 wl_pair wl-pair4 4 > "$STATE_DIR/work-wl-pair4"
 assert_eq '+1 review, 1 command' "$(wl_rows wl-pair4 | tail -n1)"
 assert_eq 4 "$(wl_rows wl-pair4 | grep -c ' — w')"
-# Every width, UTF-8 or not: a row never outgrows COLUMNS − STATUSLINE_FIT_MARGIN − 1 while its floor
+# Every width, UTF-8 or not: a row never outgrows COLUMNS − STATUSLINE_FIT_MARGIN while its floor
 # (first head word, short states, elapsed, tokens) fits; past that it is exactly that floor. Elapsed and
 # tokens stay whole and the right columns line up across rows.
 {
@@ -4444,9 +4444,9 @@ for wl_locale in UTF-8 C; do
     # A cache older than 4s sends the render's probe to rewrite it, and this one has no process behind it.
     touch "$STATE_DIR/work-wl-wide"
     if [ "$wl_locale" = C ]; then
-      LC_ALL=C FIT_COLUMNS=$wl_cols wl_rows wl-wide > "$WORK/wl-wide/$wl_locale-$wl_cols" &
+      LC_ALL=C FIT_COLUMNS=$wl_cols FIT_MARGIN=4 wl_rows wl-wide > "$WORK/wl-wide/$wl_locale-$wl_cols" &
     else
-      FIT_COLUMNS=$wl_cols wl_rows wl-wide > "$WORK/wl-wide/$wl_locale-$wl_cols" &
+      FIT_COLUMNS=$wl_cols FIT_MARGIN=4 wl_rows wl-wide > "$WORK/wl-wide/$wl_locale-$wl_cols" &
     fi
     wl_jobs=$((wl_jobs + 1))
     [ "$((wl_jobs % 16))" -ne 0 ] || wait
@@ -4455,7 +4455,7 @@ done
 wait
 assert_eq "" "$(perl -CSD -Mutf8 -e '
   for my $f (@ARGV) {
-    my ($cols) = $f =~ /-(\d+)$/; my $budget = $cols - 3 - 1; my (%end, $n);
+    my ($cols) = $f =~ /-(\d+)$/; my $budget = $cols - 4; my (%end, $n);
     open my $h, "<", $f or die; my ($tag) = $f =~ m{([^/]+)$};
     while (<$h>) {
       chomp; $n++;
@@ -5606,7 +5606,7 @@ assert_eq 'fork · fable · acc · edit 3' "$(tr_row "$(tr_render 20 l1)" l1)"
 # The default reserve is the top statusline's fit margin, 3.
 assert_eq "$(sed -nE 's/^STATUSLINE_FIT_MARGIN=\$\{STATUSLINE_FIT_MARGIN:-([0-9]+)\}$/\1/p' "$ROOT/bin/statusline.sh")" \
   "$(sed -nE 's/^reserve=\$\{SUBAGENT_ROW_RESERVE:-([0-9]+)\}$/\1/p' "$RENDER_BIN")"
-assert_eq 3 "$(sed -nE 's/^reserve=\$\{SUBAGENT_ROW_RESERVE:-([0-9]+)\}$/\1/p' "$RENDER_BIN")"
+assert_eq 4 "$(sed -nE 's/^reserve=\$\{SUBAGENT_ROW_RESERVE:-([0-9]+)\}$/\1/p' "$RENDER_BIN")"
 
 # A payload whose tasks carry no status field is a running list (the harness omits the field on older builds).
 no_status=$(printf '{"session_id":"x","columns":80,"tasks":[{"id":"ns1","type":"local_agent","description":"acc · astra · high: No status","startTime":1789600000000}]}' | bash "$RENDER_BIN")

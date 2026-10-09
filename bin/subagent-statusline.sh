@@ -35,8 +35,8 @@ parsed=$(printf '%s' "$input" | jq -r '
 MAGENTA=$'\033[35m'; DIM=$'\033[2m'; RESET=$'\033[0m'
 cache_root="$HOME/.cache/claude-worker-tags"
 # The harness prints the tree glyph and the agent-type label before the content this script emits.
-reserve=${SUBAGENT_ROW_RESERVE:-3}
-[[ "$reserve" =~ ^[0-9]+$ ]] || reserve=3
+reserve=${SUBAGENT_ROW_RESERVE:-4}
+[[ "$reserve" =~ ^[0-9]+$ ]] || reserve=4
 TITLE_FLOOR=20
 tag_re='^[A-Za-z0-9_.?-]+( [a-z]+)?( · [A-Za-z0-9_.?-]+){1,3}'
 now_ms=$(( $(date +%s) * 1000 ))
