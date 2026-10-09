@@ -85,6 +85,15 @@ assert test "$(field "$R/$L" r1 value)" = v2
 assert test "$(ids "$R/$L")" = "r1 r2 r3 y"
 assert test "$(top "$R/$L" blind_spots)" = "[]"
 
+setup blind-spots
+on main; edit "$R/$L" 'd["blind_spots"] = [{"id": "b1", "what": "base"}]'; save main
+git -C "$R" branch -f feature main
+on main; edit "$R/$L" 'd["blind_spots"].append({"id": "b-main", "what": "m"})'; save main
+on feature; edit "$R/$L" 'd["blind_spots"][0]["what"] = "feature"; d["blind_spots"].append({"id": "b-feat", "what": "f"})'; save feature
+assert rebase
+assert valid "$R/$L"
+assert test "$(python3 -c 'import json,sys; print(" ".join(b["id"] + "=" + b["what"] for b in json.load(open(sys.argv[1]))["blind_spots"]))' "$R/$L")" = "b1=feature b-main=m b-feat=f"
+
 setup both-changed
 on main; edit "$R/$L" 'd["rows"][1]["value"] = "main"; d["rows"].append(row("m"))'; save main
 on feature; edit "$R/$L" 'd["rows"][1]["value"] = "feature"; d["rows"].append(row("f"))'; save feature

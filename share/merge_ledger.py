@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Git merge driver `merge_ledger.py %O %A %B %P` for share/*-ledger.json: a three-way merge by row `id` and by
+"""Git merge driver `merge_ledger.py %O %A %B %P` for share/*-ledger.json: a three-way merge by row `id` (in `rows`
+and in every other top-level list whose entries all carry a unique string `id`, such as `blind_spots`) and by
 top-level key, writing the result into %A in the file's own layout. A side that changed an entry the other left
 alone wins; two different changes, or a deletion against a change, become git conflict markers around that entry
 and exit 1. A file it cannot read as a ledger gets git's own line merge, so nothing is lost, and still exits 1
@@ -72,21 +73,26 @@ def nested(value, level, indent):
     return json.dumps(value, ensure_ascii=False, indent=indent).replace("\n", "\n" + " " * indent * level)
 
 
-def by_id(doc):
-    return {row["id"]: row for row in doc.get("rows", [])}
+def id_list(value):
+    return (isinstance(value, list) and all(isinstance(entry, dict) and isinstance(entry.get("id"), str) for entry in value)
+            and len({entry["id"] for entry in value}) == len(value))
 
 
 def render(base, ours, theirs, indent):
-    rows = merge(by_id(base), by_id(ours), by_id(theirs))
-    top = merge(*({key: ROWS if key == "rows" else value for key, value in side.items()}
-                  for side in (base, ours, theirs)))
+    sides = (base, ours, theirs)
+    lists = {key for side in sides for key in side
+             if all(id_list(other[key]) for other in sides if key in other)}
+    merged_lists = {key: merge(*({entry["id"]: entry for entry in side.get(key, [])} for side in sides))
+                    for key in lists}
+    top = merge(*({key: ROWS + key if key in lists else value for key, value in side.items()} for side in sides))
 
     def member(key, value):
-        if key == "rows" and value == ROWS:
-            return '"rows": ' + container(rows, lambda _, row: nested(row, 2, indent), "[", "]", 1, indent)
+        if key in lists and value == ROWS + key:
+            return json.dumps(key, ensure_ascii=False) + ": " + container(
+                merged_lists[key], lambda _, entry: nested(entry, 2, indent), "[", "]", 1, indent)
         return json.dumps(key, ensure_ascii=False) + ": " + nested(value, 1, indent)
 
-    conflicts = any(conflict for _, _, conflict in top + rows)
+    conflicts = any(conflict for _, _, conflict in top + [e for entries in merged_lists.values() for e in entries])
     return container(top, member, "{", "}", 0, indent) + "\n", conflicts
 
 
