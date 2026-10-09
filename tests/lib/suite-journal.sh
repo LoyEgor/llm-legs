@@ -1,5 +1,4 @@
 # Row `dk` of docs/shared-invariants.md; share/run-suites.sh sources it with --lib.
-# A test may run under macOS bash 3.2 and pays this on every start: bash 3.2 and builtins only.
 
 suite_journal_str() { # var value -> a JSON string, or null when empty
   local s=$2
@@ -76,6 +75,42 @@ suite_journal_git() { # checkout -> suite_journal_head, and suite_journal_root: 
   return 0
 }
 
+suite_journal_content() {
+  suite_journal_tree=$(
+    (cd "$1" && git ls-files -z --cached --others --exclude-standard 2>/dev/null && printf '\0') |
+    python3 -S -c '
+import hashlib
+import os
+import stat
+import sys
+
+try:
+    os.chdir(sys.argv[1])
+    paths = sys.stdin.buffer.read()
+    if not paths.endswith(b"\0"):
+        raise OSError("not a git tree")
+    tree = hashlib.sha256()
+    for path in sorted(set(paths.split(b"\0")) - {b""}):
+        try:
+            mode = os.lstat(path).st_mode
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(mode):
+            kind, data = b"link", os.readlink(path)
+        elif stat.S_ISREG(mode):
+            kind = b"exec" if mode & 0o111 else b"file"
+            with open(path, "rb") as handle:
+                data = handle.read()
+        else:
+            raise OSError("unsupported tree entry")
+        tree.update(path + b"\0" + kind + b"\0" + hashlib.sha256(data).digest())
+    print(tree.hexdigest()[:16])
+except OSError:
+    pass
+' "$1"
+  ) || suite_journal_tree=''
+}
+
 suite_journal_digest() { # suite-name... in sorted order -> suite_journal_set
   local h=5381 s i c
   for s in "$@"; do
@@ -93,13 +128,14 @@ suite_journal_suite() { # name rc secs cpu-secs [wall-bound [json-members]] -> a
 
 # kind pid queued started ended repo repo-root head scope worker-run session j slot signal complete [skipped-slow names [reason]]
 suite_journal_row() {
-  local repo root head scope run session slot reason skipped='' name
+  local repo root head tree scope run session slot reason skipped='' name
   suite_journal_str repo "$6"; suite_journal_str root "$7"; suite_journal_str head "$8"
+  suite_journal_str tree "${suite_journal_tree:-}"
   suite_journal_str scope "$9"; suite_journal_str run "${10}"; suite_journal_str session "${11}"
   suite_journal_str slot "${13}"; suite_journal_str reason "${17:-}"
   for name in ${16:-}; do suite_journal_str name "$name"; skipped="${skipped:+$skipped,}$name"; done
-  printf -v suite_journal_line '{"kind":"%s","pid":%s,"queued_at":%s,"started_at":%s,"ended_at":%s,"repo":%s,"repo_root":%s,"head":%s,"scope":%s,"suite_set":"%s","worker_run":%s,"session":%s,"j":%s,"slot":%s,"signal":%s,"complete":%s%s%s,"suites":{%s}}' \
-    "$1" "$2" "$3" "$4" "$5" "$repo" "$root" "$head" "$scope" "$suite_journal_set" "$run" "$session" \
+  printf -v suite_journal_line '{"kind":"%s","pid":%s,"queued_at":%s,"started_at":%s,"ended_at":%s,"repo":%s,"repo_root":%s,"head":%s,"tree":%s,"scope":%s,"suite_set":"%s","worker_run":%s,"session":%s,"j":%s,"slot":%s,"signal":%s,"complete":%s%s%s,"suites":{%s}}' \
+    "$1" "$2" "$3" "$4" "$5" "$repo" "$root" "$head" "$tree" "$scope" "$suite_journal_set" "$run" "$session" \
     "${12}" "$slot" "${14:-null}" "${15}" "${16:+,\"skipped_slow\":[$skipped]}" "${17:+,\"reason\":$reason}" "${suite_journal_suites:-}"
 }
 
@@ -196,6 +232,8 @@ suite_journal_level=${BASH_SUBSHELL:-0}
 suite_journal_session=${CLAUDE_CODE_SESSION_ID:-${CLAUDE_LAUNCHER_SESSION:-}}
 suite_journal_run=${WORKER_RUN_ID:-}
 suite_journal_signal='' suite_journal_exit=''
+suite_journal_git "$suite_journal_repo"
+suite_journal_content "$suite_journal_repo"
 
 suite_journal_end() { # exit-code -> returns it
   [ -z "${suite_journal_done:-}" ] && [ "${BASHPID:-$$}" = "$$" ] || return "$1"
@@ -208,7 +246,6 @@ suite_journal_end() { # exit-code -> returns it
   [ -n "$suite_journal_began" ] || suite_journal_began=$(( ended - SECONDS * 1000 ))
   suite_journal_cpu cpu "$suite_journal_file.$$.times"
   [ -z "$suite_journal_signal" ] || { rc=$(( 128 + suite_journal_signal )); complete=false; }
-  suite_journal_git "$suite_journal_repo"
   suite_journal_digest "$name"
   suite_journal_secs secs "$(( ended - suite_journal_began ))"
   suite_journal_suites=''

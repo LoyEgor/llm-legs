@@ -17,7 +17,7 @@ export HOME="$WORK/home" XDG_CACHE_HOME="$WORK/xdg" HARNESS_HOLDS_DIR="$WORK/hol
 unset RUN_SUITES_SLOT RUN_SUITES_JOURNAL SUITE_JOURNAL SUITE_JOURNAL_PID WORKER_RUN_ID CLAUDE_LAUNCHER_SESSION CLAUDE_CODE_SESSION_ID
 LIB="$ROOT/tests/lib/suite-journal.sh"
 JOURNAL="$WORK/rs/runs.jsonl"
-KEYS='["complete","ended_at","head","j","kind","pid","queued_at","repo","repo_root","scope","session","signal","slot","started_at","suite_set","suites","worker_run"]'
+KEYS='["complete","ended_at","head","j","kind","pid","queued_at","repo","repo_root","scope","session","signal","slot","started_at","suite_set","suites","tree","worker_run"]'
 mkdir -p "$HOME" "$WORK/rs"
 
 new_repo() { # dir
@@ -28,6 +28,33 @@ new_repo() { # dir
 suite() { # repo name body
   printf '#!/usr/bin/env bash\n. "%s"\n%s\n' "$LIB" "$3" >"$1/tests/$2"
 }
+TREE_REPO="$WORK/tree"
+new_repo "$TREE_REPO"
+printf 'base' >"$TREE_REPO/tracked"
+printf 'ignored\n' >"$TREE_REPO/.gitignore"
+git -C "$TREE_REPO" add tracked .gitignore
+git -C "$TREE_REPO" -c user.name=t -c user.email=t@t -c core.hooksPath=/dev/null commit -qm content
+git -C "$TREE_REPO" worktree add -q --detach "$WORK/tree-peer"
+suite_journal_content "$TREE_REPO"; clean=$suite_journal_tree
+assert test -n "$clean"
+suite_journal_content "$WORK/tree-peer"; assert test "$clean" = "$suite_journal_tree"
+printf edit >"$TREE_REPO/tracked"
+suite_journal_content "$TREE_REPO"; edited=$suite_journal_tree
+assert test "$clean" != "$edited"
+printf edit >"$WORK/tree-peer/tracked"
+suite_journal_content "$WORK/tree-peer"; assert test "$edited" = "$suite_journal_tree"
+git -C "$TREE_REPO" add tracked
+suite_journal_content "$TREE_REPO"; assert test "$edited" = "$suite_journal_tree"
+printf ignored >"$TREE_REPO/ignored"
+suite_journal_content "$TREE_REPO"; assert test "$edited" = "$suite_journal_tree"
+printf new >"$TREE_REPO/untracked file"
+suite_journal_content "$TREE_REPO"; untracked=$suite_journal_tree
+assert test "$edited" != "$untracked"
+printf changed >"$TREE_REPO/untracked file"
+suite_journal_content "$TREE_REPO"; assert test "$untracked" != "$suite_journal_tree"
+rm "$TREE_REPO/tracked"
+suite_journal_content "$TREE_REPO"; assert test "$edited" != "$suite_journal_tree"
+suite_journal_content "$HOME"; assert test -z "$suite_journal_tree"
 REPO="$WORK/repo"
 new_repo "$REPO"
 SHA=$(git -C "$REPO" rev-parse HEAD)

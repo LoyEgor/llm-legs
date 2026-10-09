@@ -98,6 +98,44 @@ lines(os.path.join(work, "harness", "waits", "2026-01-10.jsonl"),
 lines(os.path.join(work, "watch", "gates.jsonl"), [{"at": D0 + 100, "decision": "denied"},
                                                    {"at": D0 + 100, "decision": "passed"}])
 
+old_gates = T.gates_path
+fixture = os.path.join(work, "recovery.jsonl")
+T.gates_path = lambda: fixture
+lines(fixture, [
+    {"at": D0 + 101, "gate": "write", "decision": "denied", "sid": "recover1-full", "tool_use_id": "denied1"},
+    {"at": D0 + 111, "gate": "write", "decision": "denied", "sid": "recover1-full", "tool_use_id": "denied2"},
+    {"at": D0 + 201, "gate": "relay", "decision": "relay-refused", "sid": "recover2", "tool_use_id": "denied3"},
+    {"at": D0 + 301, "gate": "cap", "decision": "denied", "sid": "recover3", "tool_use_id": "denied4"},
+    {"at": D0 + 301, "gate": "legacy", "decision": "denied", "sid": "recover3"},
+    {"at": D0 + 301, "gate": "passed", "decision": "passed", "sid": "recover3"}])
+def call(t, tid, sid):
+    return ["c", D0 + t, "p", "Bash", 0, 5, "c", tid, sid, 1]
+recovery_events = {"c": [call(100, "denied1", "recover1"), call(110, "denied2", "recover1"),
+                          call(120, "accepted", "recover1"), call(105, "elsewhere", "another"),
+                          call(200, "denied3", "recover2"), call(300, "denied4", "recover3")],
+                   "h": [["h", D0 + 124, "p", "PostToolUse", "hook", 1, "Bash", "accepted"]],
+                   "t": [["t", D0 + 190, "recover2", D0 + 230],
+                         ["t", D0 + 290, "recover3", D0 + 1000]]}
+recovery_events["c"][-1][6] = "h"
+cost = T.refusal_cost(D0, D0 + 86400, recovery_events)
+check(cost["seconds"] == 360 and cost["by_gate_s"] == {"cap": 300, "write": 30, "relay": 30}
+      and cost["measured"] == 4 and cost["unmeasured_by_gate"] == {"legacy": 1},
+      "exact refusal links skip denied retries and other sessions, use turn end, cap and name missing links: %s" % cost)
+check(cost["chat_s"] == 350, "overlapping retries are charged once in the wall partition")
+check(T.refusal_cost(D0 + 115, D0 + 125, recovery_events)["seconds"] == 10,
+      "recovery intervals are clipped at both reporting window boundaries")
+for row in recovery_events["t"]:
+    row.extend(["n", [0, 0, 0], 0, [], [], {"gen": row[3] - row[1]}, {}, []])
+recovery_events["t"].append(["t", D0 + 90, "recover1", D0 + 150, "n", [0, 0, 0], 0, [], [],
+                              {"gen": 60}, {}, []])
+charged = T.budget(D0, D0 + 86400, recovery_events)
+check(charged["seconds"]["refusal"] == 350 and charged["seconds"]["model"] >= 0,
+      "measured recovery moves from model time to the harness class without double charging retries")
+T.gates_path = old_gates
+baseline = T.budget(D0, D0 + 86400, recovery_events)
+check(sum(charged["seconds"].values()) == sum(baseline["seconds"].values()),
+      "reclassifying recovery preserves total measured wall time")
+
 split = T.run_split(run, 0, 1e12, T.suite_rows(0, 1e12), T.event_rows(D0, D0 + 86400)["c"],
                     T.event_rows(D0, D0 + 86400)["h"])
 check(dict((k, round(v)) for k, v in split.items() if v) == {
@@ -132,6 +170,10 @@ for back in range(1, 8):
     T.write_json(T.day_cache_path(day), {"settled": True, "seconds": {"suite_wait": 100, "suite_run": 1100, "model": 5000},
                                          "worker": {}})
 doc = T.document(NOW)
+check(doc["refusal_cost"]["unmeasured_by_gate"] == {"unknown": 1}
+      and doc["refusal_cost"]["min_day"] == 0
+      and any(r["class"] == "refusal" and r["floor_min_day"] == 0 for r in doc["floors"]),
+      "JSON reports the refusal cost coverage and a zero-floor harness class")
 by = {r["class"]: r for r in doc["classes"]}
 check(by["model"]["min"] == 80.0 and by["tools"]["min"] == round(760 / 60.0, 1) and by["locks"]["min"] == round(40 / 60.0, 1)
       and by["review"]["min"] == 10.0 and by["suite_run"]["min"] == round(2080 / 60.0, 1)
@@ -144,12 +186,13 @@ check(doc["total_min"] == round(10550 / 60.0, 1) and doc["harness_share"] == rou
       and abs(sum(r["share"] for r in doc["classes"]) - 1) < 0.01,
       "the headline is the harness classes over the total, the shares sum to one: %s" % doc["lines"][0])
 check(doc["band_days"] == 7 and by["suite_wait"]["usual_min"] == round(100 / 60.0, 1)
-      and doc["holes"] == ["suite slot wait: 17 min, usually 2 min"]
+      and doc["holes"][-1:] == ["suite slot wait: 17 min, usually 2 min"]
+      and "unknown: 1" in doc["holes"][0]
       and "Hole: suite slot wait: 17 min, usually 2 min" in doc["lines"],
       "a harness class past twice its 7-day median by 15 minutes is a named hole; one under twice its median, one "
       "under the floor or a plain class never is: %s" % doc["holes"])
 long = T.document(NOW, 72.0, write=False)
-check(long["holes"] == [] and {r["class"]: r["usual_min"] for r in long["classes"]}["suite_wait"] == 5.0,
+check(len(long["holes"]) == 1 and "unmeasured" in long["holes"][0] and {r["class"]: r["usual_min"] for r in long["classes"]}["suite_wait"] == 5.0,
       "a 72 h window is judged against three usual days, never one: %s" % long["holes"])
 check(T.holes({"worker": {"model": 900, "suite_run": 4500, "slot": 4600}, "seconds": {}}, {})
       == ["workers worked 9 % of their time; 46 % went to the slot queue"]
@@ -164,7 +207,7 @@ check(lever["prompt-cache hits"]["value"] == "90 % of cached input read from cac
       and lever["smaller context per turn"]["measured"] is False,
       "levers are measured where the journals hold the data and marked ideas where not: %s" % lever)
 gap = {f["class"]: (f["chat_min_day"], f["worker_min_day"]) for f in doc["floors"]}
-check(gap == {"hooks": (1.7, 1.7), "stop": (0.3, 0.0), "suite_wait": (0.0, 16.7), "slot": (0.0, 0.0),
+check(gap == {"refusal": (0.0, 0.0), "hooks": (1.7, 1.7), "stop": (0.3, 0.0), "suite_wait": (0.0, 16.7), "slot": (0.0, 0.0),
               "retries": (0.0, 6.7), "locks": (0.7, 0.0), "suite_run": (0.7, 0.0)},
       "each class is judged against its floor, chats' and workers' parts apart: zero for hooks, gates and waits, "
       "none for plain Claude Code: %s" % gap)

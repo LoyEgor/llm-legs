@@ -34,6 +34,7 @@ import suite_audit  # noqa: E402
 CLASSES = (("model", "model turns", "plain"), ("tools", "tool execution", "plain"),
            ("compaction", "compaction", "plain"), ("hooks", "hooks", "harness"), ("stop", "stop hooks", "harness"),
            ("suite_run", "suites running", "harness"), ("suite_wait", "suite slot wait", "harness"),
+           ("refusal", "gate refusal recovery", "harness"),
            ("slot", "worker slot queue", "harness"), ("retries", "retries and relaunches", "harness"),
            ("walled", "usage-wall relaunches", "other"), ("review", "review rounds", "harness"),
            ("bench", "bench workers", "other"), ("locks", "locks and polls", "harness"),
@@ -45,11 +46,12 @@ TURN_PART = {"gen": "model", "tool": "tools", "media": "tools", "compact": "comp
 TURN_AWAY = ("dark", "ask")
 WAIT_CLASSES = ("lock", "poll")
 GATE_REFUSALS = ("denied", "relay-refused")
+REFUSAL_CAP_S = 300
 BAND_DAYS = 7
 BAND_RATIO = 2.0
 BAND_MIN_S = 15 * 60
 ACTIVE_FLOOR = 0.30
-FLOORS = {"hooks": 0, "stop": 0, "suite_wait": 0, "slot": "slots lent during suites", "retries": 0, "locks": 0,
+FLOORS = {"refusal": 0, "hooks": 0, "stop": 0, "suite_wait": 0, "slot": "slots lent during suites", "retries": 0, "locks": 0,
           "suite_run": "uncontended p10 wall"}
 BENCH_WORKDIR = re.compile(r"/logo-vectorizer-bench(/|$)")
 FLOOR_ROW_MIN_DAY = 30
@@ -224,6 +226,47 @@ def refusals(lo, hi):
                if r.get("decision") in GATE_REFUSALS and lo <= (num(r.get("at")) or 0) < hi)
 
 
+def refusal_cost(lo, hi, events):
+    rows = [r for r in night_spend.rows(gates_path()) if r.get("decision") in GATE_REFUSALS
+            and lo - REFUSAL_CAP_S <= (num(r.get("at")) or 0) < hi]
+    calls = collections.defaultdict(list)
+    for c in events.get("c", ()):
+        calls[c[8]].append(c)
+    denied = {(str(r.get("sid") or "")[:8], str(r.get("tool_use_id") or "")[-10:]) for r in rows}
+    accepted = {(h[7], h[1]) for h in events.get("h", ()) if h[3] == "PostToolUse" and h[7]}
+    by, missing, spans, seen = collections.Counter(), collections.Counter(), collections.defaultdict(list), set()
+    measured = 0
+    for r in rows:
+        gate, at = r.get("gate") or "unknown", num(r.get("at")) or 0
+        sid, tid = str(r.get("sid") or "")[:8], str(r.get("tool_use_id") or "")[-10:]
+        matches = [c for c in calls[sid] if tid and c[7] == tid and c[1] <= at + 1
+                   and c[1] + c[5] >= at]
+        if not sid or len(matches) != 1:
+            if lo <= at < hi:
+                missing[gate] += 1
+            continue
+        c = matches[0]
+        ends = [t[3] for t in events.get("t", ()) if t[2] == sid and t[1] <= c[1] < t[3]]
+        ends += [n[1] for n in calls[sid] if n[1] > c[1] and (sid, n[7]) not in denied
+                 and any(tid_ == n[7] and n[1] <= t <= n[1] + n[5] + 1 for tid_, t in accepted)]
+        if not ends:
+            if lo <= at < hi:
+                missing[gate] += 1
+            continue
+        key = (sid, tid)
+        if key in seen:
+            continue
+        seen.add(key)
+        span = clip([(c[1], min(min(ends), c[1] + REFUSAL_CAP_S))], lo, hi)
+        by[gate] += length(span)
+        spans[(c[6], sid)].extend(span)
+        measured += 1
+    return {"seconds": sum(by.values()), "by_gate_s": dict(by.most_common(5)), "measured": measured,
+            "unmeasured_by_gate": dict(missing), "cap_s": REFUSAL_CAP_S,
+            "chat_s": sum(length(union(v)) for (kind, _), v in spans.items() if kind != "w"),
+            "worker_s": sum(length(union(v)) for (kind, _), v in spans.items() if kind == "w")}
+
+
 def run_session(run):
     text = night_spend.read(os.path.join(night_spend.RUNS, str(run), "session"))
     return text.splitlines()[0][:8] if text else None
@@ -305,6 +348,10 @@ def budget(lo, hi, events=None):
     ids = {r.get("run") for r in runs}
     paid = [(min(r["seconds"], max(0.0, hi - r["started"])), r["caller"] in ids) for r in wait_rows(lo, hi)
             if r.get("class") in WAIT_CLASSES and r.get("caller")]
+    recovery = refusal_cost(lo, hi, events)
+    for split, key in ((chats, "chat_s"), (workers, "worker_s")):
+        split["refusal"] = min(split["model"], recovery[key])
+        split["model"] -= split["refusal"]
     total = chats + workers
     total["locks"] = min(sum(s for s, _ in paid), total["tools"])
     total["tools"] -= total["locks"]
@@ -317,7 +364,7 @@ def budget(lo, hi, events=None):
     return {"lo": lo, "hi": hi, "seconds": {k: round(total[k], 1) for k, _, _ in CLASSES},
             "chat_s": round(sum(chats.values()), 1), "worker_s": round(sum(workers.values()), 1),
             "worker": {k: round(v, 1) for k, v in workers.items() if v}, "runs": len(runs), "jobs": jobs,
-            "hooks_by": {k: round(v, 1) for k, v in hooks_by.most_common(8)}, "refusals": refusals(lo, hi)}
+            "hooks_by": {k: round(v, 1) for k, v in hooks_by.most_common(8)}, "refusals": refusals(lo, hi), "refusal_cost": recovery}
 
 
 def shares(b):
@@ -412,6 +459,10 @@ def usual(now, store):
 def holes(b, med):
     """Named rows: workers under ACTIVE_FLOOR model time, and any class past BAND_RATIO x its usual day."""
     out = []
+    recovery = b.get("refusal_cost") or {}
+    if recovery.get("unmeasured_by_gate"):
+        out.append("gate refusal recovery unmeasured (missing exact call link or accepted call/turn end): " +
+                   ", ".join("%s: %d" % item for item in sorted(recovery["unmeasured_by_gate"].items())))
     w = b["worker"]
     wall = worker_wall(w)
     if wall >= BAND_MIN_S and w.get("model", 0) < ACTIVE_FLOOR * wall:
@@ -562,6 +613,10 @@ def document(now, hours=24.0, write=True):
            "hooks_by_min": {k: round(v / 60.0, 1) for k, v in b["hooks_by"].items()}, "refusals": b["refusals"],
            "worker_runs": b["runs"], "band_days": covered, "holes": holes(b, med),
            "levers": levers(events, lo, now), "problems_by_day": problem_trend(now)}
+    recovery = b["refusal_cost"]
+    doc["refusal_cost"] = dict(recovery, min_day=round(recovery["seconds"] / 60 / (hours / 24), 2),
+                               by_gate_min_day={k: round(v / 60 / (hours / 24), 2)
+                                                for k, v in recovery["by_gate_s"].items()})
     days, rec = hours / 24.0, recoverable(b, lo, now) if measured(b) else {}
     doc["floors"] = floors_of(b, rec, days) if rec else []
     doc["lost_min_day"] = round(sum(sum(v) for v in rec.values()) / 60.0 / days, 1) if rec else None
@@ -629,7 +684,7 @@ def print_day(doc):
                                      for r in doc["classes"] if r["min"]))
     if doc["hooks_by_min"]:
         print("hooks by event · " + " · ".join("%s %s" % (k, minutes(v * 60)) for k, v in doc["hooks_by_min"].items()))
-    print("gates · %d refusals (their time is inside hooks and the turns after)" % doc["refusals"])
+    print("gates · %d refusals · %.2f min/day measured recovery" % (doc["refusals"], doc["refusal_cost"]["min_day"]))
     for lever in doc["levers"]:
         print("lever · %s · %s" % (lever["lever"], lever["value"] if lever["measured"] else "idea, not measured"))
     for doctor, days in doc["problems_by_day"].items():

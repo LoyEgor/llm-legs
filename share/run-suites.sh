@@ -306,6 +306,8 @@ progress_file="${STATUSLINE_CACHE_DIR:-$HOME/.cache/claude-statusline}/suites-$$
 mkdir -p "${progress_file%/*}" 2>/dev/null &&
   printf '%s\t%s\t%s\t%s\n' "$logdir" "${#suites[@]}" "$repo" "$run_suites_start" >"$progress_file" 2>/dev/null
 find "${progress_file%/*}" -maxdepth 1 -name 'suites-*.done' -mmin +1 -delete 2>/dev/null
+suite_journal_git "$repo"
+suite_journal_content "$repo"
 journal_run() {
   local entry name rc secs real cpu bound execs complete=true queued began ended reason=''
   local -a names=()
@@ -327,7 +329,6 @@ journal_run() {
   [ ! -e "$logdir/owner-ended" ] || reason=owner-ended
   [ "${#names[@]}" -eq 0 ] || mapfile -t names < <(printf '%s\n' "${names[@]}" | LC_ALL=C sort)
   suite_journal_digest ${names[@]+"${names[@]}"}
-  suite_journal_git "$repo"
   suite_journal_ms queued "$run_suites_queued"; suite_journal_secs queued "$queued"
   suite_journal_ms began "$run_suites_began"; suite_journal_secs began "$began"
   suite_journal_ms ended; [ -n "$ended" ] || suite_journal_ms ended "$(date +%s)"; suite_journal_secs ended "$ended"
