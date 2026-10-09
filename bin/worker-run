@@ -4549,8 +4549,6 @@ wait_progress() { # directory run-id stream
     rm -f "$directory/tokens.tmp.$$"
 }
 
-# 0.2 s with no process start: a read timing out on a fifo this shell holds open both ways never gets data.
-
 wait_run() {
   [ "$#" -ge 1 ] || usage
   local run_id="$1" max='' stream=false directory wait_started now waited remaining sleep_for ticks pid
