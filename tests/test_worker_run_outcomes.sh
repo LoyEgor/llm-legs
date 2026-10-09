@@ -78,6 +78,27 @@ assert test "$(grep -c '^HINT:' <<<"$report")" -eq 0
 assert test ! -e "$RUN_DIR/report-readonly"
 rm -rf "$readonly_workdir/ignored"
 
+# Neither a failed run nor one whose transcript cannot be read is a read-only lookup.
+clear_stub
+export PICK_RC=0 PICK_ACCOUNT=readonly-failed STUB_TRANSCRIPT_SESSION=readonly-failed STUB_SESSION=readonly-failed
+export STUB_TRANSCRIPT_ACCOUNT=readonly-failed STUB_CODE=1
+export STUB_STDOUT='{"type":"result","is_error":true,"result":"API Error: 500","session_id":"readonly-failed"}'
+start_ok claudeb
+assert await_done
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'STATUS: failed' <<<"$report"
+assert test "$(grep -c '^HINT:' <<<"$report")" -eq 0
+assert test ! -e "$RUN_DIR/report-readonly"
+
+clear_stub
+export PICK_RC=0 PICK_ACCOUNT=readonly-blind STUB_SESSION=readonly-blind
+start_ok claudeb
+assert await_done
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'STATUS: done' <<<"$report"
+assert test "$(grep -c '^HINT:' <<<"$report")" -eq 0
+assert test ! -e "$RUN_DIR/report-readonly"
+
 declared_workdir="$WORK/declared-readonly-workdir"
 mkdir -p "$declared_workdir"
 git -C "$declared_workdir" init -q

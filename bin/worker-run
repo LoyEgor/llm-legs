@@ -3965,8 +3965,11 @@ run_files() {
 }
 
 readonly_report_hint() {
-  local directory="$1" workdir gained marker root month started marker_month count=0
+  local directory="$1" workdir gained marker root month started marker_month count=0 code
   [ -f "$directory/exit_code" ] || return 0
+  code=$(tr -d '[:space:]' <"$directory/exit_code")
+  [ "$(terminal_status "$directory" "$(jq -r '.vendor' "$directory/meta.json" 2>/dev/null)" "$code")" = done ] ||
+    return 0
   head -n1 "$directory/brief" 2>/dev/null | grep -Eiq '(^|[[:space:]])(READ-ONLY|RESEARCH):' && return 0
   # A Light run IS the cheaper leg the hint asks for, and a research run edits nothing by design:
   # told to route itself somewhere cheaper, either one is being asked to stop existing.
@@ -3982,7 +3985,7 @@ readonly_report_hint() {
   # Git sees no edit to an ignored path (a bench whose tracers/ and results/ are .gitignored), so the
   # run's own editor and shell calls get the last word before it is called read-only.
   compute_transcript_files "$directory"
-  if [ -n "$RUN_FILES_LIST" ] || [ -n "$RUN_FILES_PARTIAL" ]; then
+  if [ -n "$RUN_FILES_LIST" ] || [ -n "$RUN_FILES_PARTIAL" ] || [ -n "$RUN_FILES_REASON" ]; then
     rm -f "$directory/report-readonly"
     return 0
   fi
