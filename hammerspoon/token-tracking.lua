@@ -241,8 +241,8 @@ local function spendNums(node)
     return nums
 end
 
-local function spendMenu(spend, nodes, more, open)
-    local rows = { { label = "", nums = spend.columns or {}, dim = true } }
+local function spendMenu(columns, nodes, more, open)
+    local rows = { { label = "", nums = columns or {}, dim = true } }
     for _, node in ipairs(nodes) do rows[#rows + 1] = { label = node.label, nums = spendNums(node) } end
     if more then rows[#rows + 1] = { label = more.label, nums = spendNums(more), dim = true } end
     local items = {}
@@ -258,18 +258,21 @@ local function spendMenu(spend, nodes, more, open)
 end
 
 local function spendItem(spend)
-    local function leaves(node)
-        local shown = {}
-        for index, child in ipairs(node.children or {}) do
-            if node.more and index > (tonumber(node.more.after) or 0) then break end
-            shown[#shown + 1] = child
+    local function leaves(columns)
+        return function(node)
+            local shown = {}
+            for index, child in ipairs(node.children or {}) do
+                if node.more and index > (tonumber(node.more.after) or 0) then break end
+                shown[#shown + 1] = child
+            end
+            return spendMenu(columns, shown, node.more)
         end
-        return spendMenu(spend, shown, node.more)
     end
     local items = { { title = style(string.format("%d days to %s · %s", spend.days or 7, clock(spend.data_through),
         spend.unit_label or ""), dimColor()), disabled = true } }
-    for _, item in ipairs(spendMenu(spend, spend.tree or {}, nil, function(consumer)
-        return spendMenu(spend, consumer.children or {}, nil, leaves)
+    for _, item in ipairs(spendMenu(spend.columns, spend.tree or {}, nil, function(consumer)
+        local columns = consumer.columns or spend.columns
+        return spendMenu(columns, consumer.children or {}, nil, leaves(columns))
     end)) do
         items[#items + 1] = item
     end

@@ -65,21 +65,28 @@ local function spendNode(name, cells, children, more)
              children = children or {}, more = more }
 end
 local projects = {}
-for i = 1, 17 do projects[i] = spendNode("proj" .. i, { tostring(100 - i), "1.0%", "1.1%" }) end
+for i = 1, 17 do projects[i] = spendNode("proj" .. i, { "0.0" .. (100 - i) .. "M", "0.5%", "1.0%", "1.1%" }) end
 fixture.spend = {
     days = 7, data_through = "2026-09-25T13:53:01+03:00", unit_label = "Opus-priced limit tokens",
     columns = { "Opus-priced", "share", "plain", "Sep 22 (4d)", "Sep 15", "Sep 8", "Sep 1" },
     tree = {
         spendNode("Chat", { "120.0M", "55.0%", "54.0%" }, {
-            spendNode("Work", { "100.0M", "45.0%", "44.0%" }, projects,
-                { label = "2 other", after = 15, cells = { "167", "2.0%", "2.2%" }, weeks = { "1.0%", "—", "—", "—" } }),
-            spendNode("Harness", { "20.0M", "10.0%", "10.0%" }, { spendNode("Hooks", { "20.0M", "10.0%", "10.0%" }) }),
+            spendNode("Work", { "100.0M", "83.3%", "45.0%", "44.0%" }, projects,
+                { label = "2 other", after = 15, cells = { "0.167M", "1.7%", "2.0%", "2.2%" },
+                  weeks = { "1.0%", "—", "—", "—" } }),
+            spendNode("Harness", { "20.0M", "16.7%", "10.0%", "10.0%" },
+                { spendNode("Hooks", { "20.0M", "16.7%", "10.0%", "10.0%" }) }),
         }),
         spendNode("Workers", { "98.0M", "45.0%", "46.0%" }, {
-            spendNode("Work", { "98.0M", "45.0%", "46.0%" }, { spendNode("llm-legs", { "98.0M", "45.0%", "46.0%" }) }),
+            spendNode("Work", { "98.0M", "100.0%", "45.0%", "46.0%" },
+                { spendNode("llm-legs", { "98.0M", "100.0%", "45.0%", "46.0%" }) }),
         }),
     },
 }
+for _, consumer in ipairs(fixture.spend.tree) do
+    consumer.columns = { "Opus-priced", "of " .. consumer.label, "share", "plain", "Sep 22 (4d)", "Sep 15", "Sep 8",
+                         "Sep 1" }
+end
 write(hs.json.encode(fixture))
 M.setPath(path)
 M.setSettings({ get = function() end, set = function() end })
@@ -122,6 +129,10 @@ local folded = find(leaves, "2 other")
 check(#leaves == 17 and find(leaves, "proj15") and not find(leaves, "proj16") and folded and folded.disabled
     and cellEnd(folded, "2.2%") == cellEnd(find(leaves, "proj1 "), "1.1%"),
     "the leaves are not the top 15 plus an aligned other row")
+local leafHead, levelHead = find(leaves, "of Chat"), find(chat.menu, "of Chat")
+check(leafHead and leafHead.disabled and levelHead and cellEnd(leafHead, "of Chat") == cellEnd(folded, "1.7%")
+    and cellEnd(levelHead, "of Chat") == cellEnd(chatWork, "83.3%") and not find(pie, "of Chat"),
+    "the level-2 and leaf menus lack an aligned share-of-consumer column, or level 1 shows one")
 
 local header = find(items, "limit tokens")
 local spend, startup = find(items, "Claude spend"), find(items, "Startup")
