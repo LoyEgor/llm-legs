@@ -157,6 +157,21 @@
    "sources": {},
    "verdict": "kept",
    "note": "kept: the x1.7 is load (harness_index worker contexts 641->1086/7d) while this part per context fell 14.7k->12.9k (-12%) since the relay cut; workers act on the memory index (43 of 675 with it cite a slug or memory path, chats 26/37) and on global rules, log-audit readers judge instruction violations against them; one-shot no-tool claudeb -p callers outside llm-legs (llm_gate, judge_last, end-report compose: 90 calls, 0.97M chars) handed off with CLAUDE_CODE_DISABLE_CLAUDE_MDS/AUTO_MEMORY + replay (docs/handoffs/2026-10-09-one-shot-instructions.md)"
+  },
+  {
+   "id": "suite:llm-legs/test_consistency",
+   "title": "llm-legs/test_consistency",
+   "audited_at": "2026-10-09T08:26:15+03:00",
+   "by": "harness-speed-suite-audit-llm-legs-test-consistency-20261009T024801Z-5da3",
+   "cpu_run": 24.8,
+   "cpu_min_day": 58.27,
+   "sources": {
+    "llm-legs/tests/lib/suite-journal.sh": "ae3e1243f0942b305024d91a0ddcad3f87da24ab",
+    "llm-legs/tests/llm_limits_renderer_harness.lua": "bf6ffbb1d537c2745033fe7fcaffa281a5f0e054",
+    "llm-legs/tests/test_consistency.sh": "5924ede7c1641916332850dc6fa95e43a833fe14"
+   },
+   "verdict": "cut",
+   "note": "1130 grep -Fq literal probes answered in-process, line-2 read and row eh one awk: execs 3597->2033, paired runs 24.3->21.5 CPU-s, 1784 asserts unchanged, mutations red; rest is behavioural probes (rows n, bq, aj, ak, al, bp ~11 CPU-s) kept"
   }
  ]
 }
