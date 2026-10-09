@@ -5003,6 +5003,13 @@
       "reason": "test_llm_limits_render made ~10 live ElevenLabs requests a run unseen until a per-line profile showed 9.5 s waits at 7% CPU; nothing flags a suite that reads the real HOME",
       "since": "2026-10-08",
       "would_catch_if": "the suite journal recorded, per suite, outbound connections or reads under the real HOME its children made"
+    },
+    {
+      "id": "background-bash-floor",
+      "what": "how much of the delegation/background Bash wait runs past each command's own runtime, its floor",
+      "reason": "Night 20261009T023738Z-817e mapped the 34 attended d rows (2026-10-02..09, 69.6 min = 9.9 min/day) to their commands by hand: suites 22 min (pytest, run-all; the test-speed rows own them), project scripts and benches 23 (osascript, ab_awdl, tokenmap scan, cdp runs: their own runtime), poll loops 11 (`until ! pgrep ...; do sleep 15`, `sleep 470`, `sleep 150`: overshoot at most one interval), dev servers 4 (http.server, nx serve: the kill notification counted as a wait nobody had), one `hs -c` 7.6 (moved to background at its 120 s Bash timeout, killed at the 30 min cap with no output; the hs-lag timer phase shifts at 20:28:42 local, so Hammerspoon reloaded mid-call and the CLI waited for a reply past its -t; one incident in the week, no shim built). Rows journaled before a275d35c also file worker-run, light-research and review-bench waits as plain Bash",
+      "since": "2026-10-09",
+      "would_catch_if": "the d row carried the command class (suite, poll, server, script) and the command's exit time beside its notification, so the overshoot (poll intervals, kills at the 30 min cap, servers ended by a kill) separates from the runtime"
     }
   ]
 }
