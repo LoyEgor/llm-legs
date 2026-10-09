@@ -69,6 +69,11 @@ forget
 printf '999999 %s\n' "$live_began" >"$WORKER_RUN_DIR/r3/starter"
 assert_eq block "$(stop | jq -r .decision)"
 rm -rf "$WORKER_RUN_DIR/r3"; forget
+# A research run is picked up by light-research, which checks its citations and writes the answer file.
+run r4 s1 gemini
+jq -c '.light = "research"' "$WORKER_RUN_DIR/r4/meta.json" >"$WORK/m" && mv "$WORK/m" "$WORKER_RUN_DIR/r4/meta.json"
+assert_has '`light-research --attach r4 --out <answer-file>`' "$(stop | reason)"
+rm -rf "$WORKER_RUN_DIR/r4"; forget
 
 # Not this chat's, finished, dead, or still inside `worker-run start` (no state.json yet): nothing to hold.
 rm -rf "$WORKER_RUN_DIR"; forget

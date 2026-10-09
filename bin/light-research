@@ -43,9 +43,9 @@ root=$(resolve_root)
 worker_run="$root/bin/worker-run"
 . "$root/share/light-research.sh"
 . "$root/share/web-search.sh"
-# One round per call: the agent's Bash call must return inside the tool's 10-minute cap, and a run
-# still going is handed back as `RUN:`/`STATUS: running` for `--attach` to continue.
-wait_max=${LIGHT_RESEARCH_WAIT_MAX:-540}
+# Unset, one call waits the run out (the chat runs it as a background Bash); a bounded call hands a run
+# still going back as `RUN:`/`STATUS: running` for `--attach` to continue.
+wait_max=${LIGHT_RESEARCH_WAIT_MAX:-$((1 << 40))}
 start_seconds=$SECONDS
 
 unavailable() { # vendor reason

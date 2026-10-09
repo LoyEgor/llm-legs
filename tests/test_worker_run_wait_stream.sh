@@ -52,5 +52,7 @@ out=$("$RUNNER" wait "$ID" --max 0 2>&1)
 kill "$live" 2>/dev/null
 assert_eq 1 "$(grep -c '^STATUS: running' <<<"$out")"
 assert_eq 0 "$(grep -c '^\[' <<<"$out")"
+# ... and still writes the worker's tokens, so a script's bounded waits keep the row's token cell.
+assert_eq 115 "$(cat "$RUN/tokens" 2>/dev/null)"
 
-printf 'PASS: %s asserts; a wait with no --max streams one `[elapsed] row` line per transcript message, tool and edit (cut to 120 characters with an ellipsis, never repeated), writes the run'"'"'s tokens beside its tag and ends on the terminal report, while --max keeps the bounded STATUS: running poll\n' "$asserts"
+printf 'PASS: %s asserts; a wait with no --max streams one `[elapsed] row` line per transcript message, tool and edit (cut to 120 characters with an ellipsis, never repeated), writes the run'"'"'s tokens beside its tag and ends on the terminal report, while --max keeps the bounded STATUS: running poll and the tokens\n' "$asserts"

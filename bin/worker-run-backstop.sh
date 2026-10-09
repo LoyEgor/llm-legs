@@ -78,7 +78,10 @@ for run in "$run_root"/*/; do
   pid=$(jq -r '.pid // 0' "$run/meta.json" 2>/dev/null)
   [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && supervisor_running "$run" "$pid" || continue
   tag=$(head -n1 "$run/tag" 2>/dev/null)
-  lines=$lines${lines:+$'\n'}"- worker run $id${tag:+ ($tag)} — \`worker-run wait $id\`"
+  resume="worker-run wait $id"
+  [ "$(jq -r '.light // ""' "$run/meta.json" 2>/dev/null)" != research ] ||
+    resume="light-research --attach $id --out <answer-file>"
+  lines=$lines${lines:+$'\n'}"- worker run $id${tag:+ ($tag)} — \`$resume\`"
 done
 
 progress="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}/progress"
