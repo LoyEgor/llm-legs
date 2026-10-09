@@ -433,6 +433,7 @@ assert jqe '.launched_at == null and .run == null and .requested_at != null' "$E
 printf 'acct-b\n' >"$DATA/pick"
 check
 assert jqe '.launched_at == null' "$EVENTS/$retry.json"
+assert [ -s "$EVENTS/$retry.base" ]
 assert [ ! -s "$OPENED" ]
 printf 'gemini-3.8-flash-high\tGemini 3.8 Flash (High)\ngemini-4-flash\tGemini 4 Flash\n' >"$DATA/models-agy"
 VENDOR_FINGERPRINT_HOLD=1 check
@@ -443,6 +444,7 @@ check
 check
 assert [ "$(cat "$OPENED")" = "$EVENTS/$(jq -r .run "$EVENTS/$retry.json").command" ]
 assert jqe '.launched_at != null and .run != null' "$EVENTS/$retry.json"
+assert [ ! -e "$EVENTS/$retry.base" ]
 assert [ "$(jq -s --arg e "$retry" '[.[] | select(.problems[0].id == $e) | .failed_at != null] | sort' "$RUNS"/updater-*.json | jq -c .)" = '[false,true,true]' ]
 assert jqe '.launched_at == null' "$EVENTS/$unrequested.json"
 taken
@@ -754,5 +756,27 @@ assert jqe '.facets.catalog_text | has("gpt-7-test.model_messages.policy.per_acc
 codex_cache "$HOME/.codex-profiles/z" "$v" '[1]'
 bash "$SCRIPT" snapshot codex >"$WORK/broken.json"
 assert jqe '(.facets | has("catalog") | not) and ([.failed[] | select(.facet == "catalog")] == [{facet: "catalog", where: "local"}])' "$WORK/broken.json"
+
+# A vendor's later event that cannot be written gives back the earlier ones, base and all, so a
+# later request launches them all.
+: >"$DATA/opener-fails"
+bash "$SCRIPT" request codex >/dev/null
+rm "$DATA/opener-fails"
+printf 'Codex CLI\n  --model <MODEL>\n  --fast\n' >"$DATA/help-codex"
+held_check codex
+two=$(jq -r 'select(.status == "open" and .launched_at == null) | .id' "$EVENTS"/codex-*.json)
+assert [ "$(wc -l <<<"$two" | tr -d ' ')" = 2 ]
+bases=$(ls "$EVENTS"/codex-*.base)
+mkdir -p "$WORK/jq-fails"
+printf '#!/usr/bin/env bash\ncase "$*" in *".launched_at = \$t | .launched = (if"*) n=$(($(cat "$DATA/jq-calls" 2>/dev/null || echo 0) + 1)); echo "$n" >"$DATA/jq-calls"; [ "$n" -lt 2 ] || exit 1 ;; esac\nexec /usr/bin/jq "$@"\n' \
+  >"$WORK/jq-fails/jq"
+chmod +x "$WORK/jq-fails/jq"
+PATH="$WORK/jq-fails:$PATH" bash "$SCRIPT" request codex >/dev/null 2>&1
+assert [ "$(cat "$DATA/jq-calls")" = 2 ]
+for e in $two; do assert jqe '.launched_at == null and .run == null' "$EVENTS/$e.json"; done
+assert [ "$(ls "$EVENTS"/codex-*.base)" = "$bases" ]
+bash "$SCRIPT" request codex >/dev/null
+for e in $two; do assert jqe '.launched_at != null and .run != null' "$EVENTS/$e.json"; done
+assert [ "$(ls "$EVENTS"/codex-*.base 2>/dev/null)" = "" ]
 
 echo "PASS: $asserts asserts; baseline, version-only releases close themselves, new ids/catalog fields/docs/help/newly lagging installs/divergence open an event each, an install catching up, still lagging or ahead of the primary closes itself, prompts and foreign clients are informational, unreadable facets keep their value, broken local probes are reported, manual requests, close, lock, check --here, no chat from check for a waiting event however old, a failed manual request retried by check, waiting events joined and reverts closed, day requests as per-vendor fixer runs of doctor updater (worktree off main, brief) dispatched by one orchestrator chat, every vendor in that chat on request --all, each run closing with its event, a failed chat failing its run, a request taking its vendor's waiting event, manual diffs that carry the whole fingerprint, decision purposes judged by doctor-fix, a bounded lock wait for check --here, one worktree, branch, brief and updater fixer run (the printed ref) per vendor on request --night and none without a base ref, a codex catalog merge across homes whose field shapes differ, a failed merge reported as a broken probe, a night request under the check lock, purposes that cannot be judged holding the close, string ids no served catalog lists opening nothing, and help-only releases briefed for Sonnet"

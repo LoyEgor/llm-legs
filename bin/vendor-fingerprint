@@ -446,8 +446,27 @@ launch_pending() {
   return 0
 }
 
+run_events() { # run -> the ids of its events
+  local event
+  for event in "$events_dir"/*.json; do
+    jq -e --arg r "$1" '.run == $r' "$event" >/dev/null 2>&1 && basename "$event" .json
+  done
+  return 0
+}
+
+unlaunch() { # run -> its events wait again
+  local id
+  while IFS= read -r id; do event_set "$id" '.launched_at = null | .launched = null | .run = null'; done < <(run_events "$1")
+}
+
+# pending_event finds a waiting event by its .base, so it goes only once the event's chat is sure.
+unbase() { # run -> its events no longer keep the fingerprint they started from
+  local id
+  while IFS= read -r id; do rm -f "${events_dir:?}/$id.base"; done < <(run_events "$1")
+}
+
 day_launch() { # -> the requested events' runs, then one orchestrator chat dispatching them
-  local lines file run opened event
+  local lines file run opened
   lines=$(mktemp "$events_dir/.lines.XXXXXX") || return 1
   vendor_runs '' >"$lines"
   [ -s "$lines" ] || { rm -f "$lines"; return 0; }
@@ -456,15 +475,11 @@ day_launch() { # -> the requested events' runs, then one orchestrator chat dispa
   if ! opened=$(DOCTOR_FIX_OPENER="${VENDOR_FINGERPRINT_OPENER:-open -a Terminal}" \
     DOCTOR_FIX_WORKER_PICK="${VENDOR_FINGERPRINT_WORKER_PICK:-$repo_root/bin/worker-pick}" \
     "$doctor_fix" orchestrate "$file.lines" 2>&1 >/dev/null); then
-    while IFS=$'\t' read -r run _; do
-      for event in "$events_dir"/*.json; do
-        jq -e --arg r "$run" '.run == $r' "$event" >/dev/null 2>&1 &&
-          event_set "$(basename "$event" .json)" '.launched_at = null | .launched = null | .run = null'
-      done
-    done <"$file.lines"
+    while IFS=$'\t' read -r run _; do unlaunch "$run"; done <"$file.lines"
     log "could not open the orchestrator chat for $(cut -f1 "$file.lines" | paste -sd ' ' -): $opened; retried next run if requested"
     return 1
   fi
+  while IFS=$'\t' read -r run _; do unbase "$run"; done <"$file.lines"
   log "opened the orchestrator chat for $(cut -f1 "$file.lines" | paste -sd ' ' -)"
   cat "$file.lines"
 }
@@ -606,15 +621,16 @@ vendor_runs() { # night-or-empty -> per vendor its fixer run, brief and worktree
       event_set "$id" '.launched_at = $t | .launched = (if $n == "" then "day" else "night" end) | .night = (if $n == "" then null else $n end)
         | .worktree = $w | .brief = $b | .run = $r' \
         --arg t "$(stamp)" --arg n "$night" --arg w "$worktree" --arg b "$brief" --arg r "$run" || break
-      rm -f "${events_dir:?}/$id.base"
     done
     if [ "$(jq -r .run "$events_dir/$id.json" 2>/dev/null)" != "$run" ]; then
+      unlaunch "$run"
       "$doctor_fix" abandon "$run" --reason "event $id not written" >/dev/null 2>&1
       log "${night:+night $night: }event $id not written, run $run abandoned, it keeps waiting"
       printf 'vendor-fingerprint: %sevent %s not written\n' "${night:+night $night: }" "$id" >&2
       failed=1
       continue
     fi
+    [ -z "$night" ] || unbase "$run"
     log "${night:+night $night: }${ids[*]} to $worktree (run $run)"
     printf '%s\t%s\t%s\n' "$run" "$brief" "$worktree"
   done
