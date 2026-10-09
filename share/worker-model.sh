@@ -591,7 +591,7 @@ worker_model_pin_allowed() {
     grant=$(words_grant_fresh "$sid" pin)
     [ "$?" != 3 ] || exit 1
     [ "${WORDS_OPENED_BY:-}" = word ] || exit 0
-    [ "$(jq -r '.scope // empty' <<<"$grant")" = account ] ) >/dev/null 2>&1
+    [ "$(jq -r '.scope // empty' < <(printf '%s\n' "$grant"))" = account ] ) >/dev/null 2>&1
   case $? in 0) return 0 ;; 1) return 1 ;; esac
   [ -n "$(find "$(worker_model_pin_grant)" -mmin "-$WORKER_MODEL_PIN_TTL_MIN" 2>/dev/null)" ]
 }
