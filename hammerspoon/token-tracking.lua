@@ -532,7 +532,8 @@ function M.menuItems(changeLogItem)
         if cancelJob() then startJob(range, false, true) end
     end
     local items = statusItems(data, problem, attrs, file ~= path)
-    if data and type(data.spend) == "table" then items[#items + 1] = spendItem(data.spend) end
+    local seven = file == path and data or load(path)
+    if seven and type(seven.spend) == "table" then items[#items + 1] = spendItem(seven.spend) end
     items[#items + 1] = compareItem()
     if data then
         local rows = { { label = data.unit_label or "", nums = data.columns or { "7 days", "prev 7", "Δ" },

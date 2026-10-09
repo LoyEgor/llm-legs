@@ -277,7 +277,7 @@ check(computingMarked == "7 days vs 7 before" and text(computing[1].title):find(
     "the asked range read as current while it computes, or a cut run alerted: " .. text(computingItem.title))
 
 local rangeFixture = hs.json.decode(hs.json.encode(fixture))
-rangeFixture.version = 3
+rangeFixture.version, rangeFixture.spend = 3, nil
 rangeFixture.range = { key = "24h", title = "24h vs the 24h before", cur_label = "24h", prev_label = "prev 24h" }
 rangeFixture.columns = { "24h", "prev 24h", "Δ", "share" }
 local handle = assert(io.open(rangePath, "w"))
@@ -290,6 +290,7 @@ check(text(ranged[1].title):find("^24h vs the 24h before · data to 13:53 · sca
     "the range status line: " .. text(ranged[1].title))
 check(find(ranged, "prev 24h") and select(2, compare(ranged)) == "24h vs 24h before"
     and stored["tokenTracking.range"].key == "24h", "the finished range is not shown, checked and remembered")
+check(find(ranged, "Spend") and find(ranged, "Spend").menu, "a range view lost the 7-day Spend submenu")
 check(alerts[#alerts] == "Token tracking 24h vs 24h before ready", "no success alert: " .. tostring(alerts[#alerts]))
 
 hs.fs.touch(rangePath, os.time() - 7 * 3600)
