@@ -55,7 +55,7 @@ assert jq -e 'select(.tool == "elevenlabs-sfx" and .rc == 143)' "$IMAGE_LEG_LOG"
 # The balance skips only a key without the read permission; a revoked or unpaid key exits 1 so the menubar keeps
 # its last reading.
 assert python3 - "$ROOT/share" "$WORK" <<'PY'
-import contextlib, io, sys
+import contextlib, io, json, sys, threading
 sys.path.insert(0, sys.argv[1])
 import elevenlabs_balance as b
 import elevenlabs_media as m
@@ -73,6 +73,16 @@ for refused, code, rc in (("missing_permissions", 401, 0), ("invalid_api_key", 4
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
         assert b.main() == rc, refused
     assert rc or '"account": "one"' in out.getvalue(), out.getvalue()
+
+both = threading.Barrier(2, timeout=10)
+def answer(self, method, path, **kwargs):
+    both.wait()
+    return {"character_count": len(self.account), "character_limit": 10}
+m.Client.json = b.Client.json = answer
+out = io.StringIO()
+with contextlib.redirect_stdout(out):
+    assert b.main() == 0
+assert [a["account"] for a in json.loads(out.getvalue())["accounts"]] == ["one", "two"], out.getvalue()
 PY
 
 # The account's own model list is compared with `served_models` at most once a day: a dead host is unknown and

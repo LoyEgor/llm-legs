@@ -5622,6 +5622,39 @@
       "handoff": null,
       "last_reviewed": "2026-10-09",
       "reviewed_by": "night fixer harness-speed-chat-media-20261009T024749Z-0b86"
+    },
+    {
+      "id": "speed-chat-tools-serial-reads",
+      "title": "Speed's tools lever: our own read CLIs a chat waits on ran their independent reads one after another",
+      "match": {
+        "rule": "opportunity",
+        "ident": "chat/tools"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-09T07:00:00+03:00",
+          "by": "night fixer harness-speed-chat-tools-20261009T024752Z-14e9",
+          "files": [
+            "llm-legs/bin/worker-pick",
+            "llm-legs/share/elevenlabs_balance.py",
+            "llm-legs/tests/test_worker_pick.sh",
+            "llm-legs/tests/test_elevenlabs_media.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "worker-pick table output byte for byte, base vs fix; elevenlabs_balance.py `accounts` JSON (as_of aside), base vs fix",
+            "data": "live ~/.llm-limits.json and the 7 codex accounts' own catalogs, 3 runs each side; the 11 live ElevenLabs keys, 3 runs each side (read-only GETs every llm-limits read makes); test_worker_pick's 975 fixture asserts incl. the golden output",
+            "result": "6/6 identical; worker-pick table 8.9-10.6 s -> 5.8-6.3 s at load ~270, elevenlabs_balance 9.5-10.2 s -> 2.7-3.5 s at load ~200"
+          }
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-09",
+      "reviewed_by": "night fixer harness-speed-chat-tools-20261009T024752Z-14e9",
+      "note": "Before: chat/tools 17.77 OM/d (latest.json 2026-10-09, 168 h). Owner-chat Bash calls 10-02..10-09 inside turn tool layers, joined to transcripts, hook ms subtracted: 11.6k calls, 103k s net. Split: suite runs C1_SUITE misses ~27% (`bash tests/$t.sh` loops, quoted \"$F/tests/test_x.sh\", `env -u X bash`, `time`/`nice -n` prefixes, pytest, unittest; see blind_spots chat-tools-misfiled-suites); logo-vectorizer-bench runs ~22% (the chat's own work); foreground poll loops (until/while with sleep, pgrep, kill -0) ~13.5%, overshoot at most one sleep step; ~20 calls ran into the 600 s Bash timeout and were moved to the background (~12k s); edit scripts 7%; our CLIs 5.6%; tokenmap 3.4%; review-bench 3.3%; git 2.5% (a commit nets ~1.2 s, its ~4.5 s more is the chat/hooks leaf). Solo grep/sed/ls p50 0.47 s, p90 3.4 s, following load (10-05 p50 1.5 s, 10-07 0.15 s): machine/contention's ground; the 138 KB zsh shell snapshot costs ~50 ms a call. Fixed, outputs identical: worker-pick's per-codex-account `codexb models --own` checks run at once (7 accounts, ~3.6 s a table at load ~270; the list is only read as a set), elevenlabs_balance.py reads the keys' subscriptions concurrently in key order (~7 s off every llm-limits.sh run, chat --table reads and the collector alike). Before per unit: worker-pick in a chat call p50 3.2 s net (326 calls in 8 days); llm-limits --table --no-write ~9 s (52 calls). Not cut: llm-limits.sh's other ~12 s at load 270 (1.6 CPU-s, not traced), worker-pick's claims reads and grokb/geminib catalog calls (~0.7 s).",
+      "handoff": null
     }
   ],
   "blind_spots": [
@@ -5869,6 +5902,13 @@
       "reason": "2026-10-09 the same suites ran 1.2-3.6x slower inside run-all waves than direct (doctor_fix 175 s vs 48 s, night_run 148 s vs 58 s, watchdog 154 s vs 129 s), and test_daily_cost sums both alike; found only by splitting runs.jsonl by kind by hand",
       "since": "2026-10-09",
       "would_catch_if": "the row's evidence split runs and seconds by kind (direct, suites) and shards"
+    },
+    {
+      "id": "chat-tools-misfiled-suites",
+      "what": "suite runs a chat spells in forms bin/harness-doctor's C1_SUITE does not match, counted in chat/tools instead of chat/tests",
+      "reason": "2026-10-09 the chat/tools split by command put ~27% of its net seconds (1.36k calls in 8 days) in `for t in ...; do bash tests/$t.sh`, `bash \"$F/tests/test_x.sh\"`, `env -u X bash tests/...`, `time`/`nice -n 10` prefixes, `perl -e 'alarm N; exec @ARGV' bash ...`, pytest and unittest; the tests lever never sees them",
+      "since": "2026-10-09",
+      "would_catch_if": "C1_SUITE matched a test_*.sh path behind quotes, a variable directory or a time/nice/env -u/perl alarm prefix, a tests/$var.sh loop, and pytest/unittest runs"
     }
   ]
 }

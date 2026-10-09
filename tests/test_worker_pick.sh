@@ -641,6 +641,28 @@ env "${run_env[@]}" "LLM_LIMITS_FILE=$STORE" bash -x "$SCRIPT" --account claudeb
 assert not_contains "$(cat "$WORK/pick-trace")" 'bin/codexb models'
 env "${run_env[@]}" "LLM_LIMITS_FILE=$STORE" bash -x "$SCRIPT" --account codex >/dev/null 2>"$WORK/pick-trace"
 assert contains "$(cat "$WORK/pick-trace")" 'bin/codexb models'
+# The per-account catalog reads run at once: each account's first cache read waits for another's.
+mkdir -p "$HOME_FIXTURE/.codex-profiles/with-credit" "$WORK/jq-barrier/in"
+cp "$ROOT/tests/fixtures/codexb-models.json" "$HOME_FIXTURE/.codex-profiles/with-credit/models_cache.json"
+cat >"$WORK/jq-barrier/jq" <<'JQ'
+#!/bin/bash
+case "$*" in
+  */.codex-profiles/*/models_cache.json*)
+    mkdir "$BARRIER/in/$$"
+    for _ in $(seq 200); do
+      [ "$(ls "$BARRIER/in" | wc -l)" -ge 2 ] && exec "$REAL_JQ" "$@"
+      sleep 0.1
+    done
+    touch "$BARRIER/serial" ;;
+esac
+exec "$REAL_JQ" "$@"
+JQ
+chmod +x "$WORK/jq-barrier/jq"
+query_out=$(env "${run_env[@]}" "PATH=$WORK/jq-barrier:$WORK/bin:$PATH" "BARRIER=$WORK/jq-barrier" \
+  "REAL_JQ=$(command -v jq)" "LLM_LIMITS_FILE=$STORE" "$SCRIPT" --account codex 2>/dev/null)
+assert test "$query_out" = with-credit
+assert test ! -e "$WORK/jq-barrier/serial"
+rm -rf "$HOME_FIXTURE/.codex-profiles/with-credit"
 # The same miss in a list an older client wrote proves nothing: the picker never refreshes it.
 jq '.client_version = "0.150.0"' "$HOME_FIXTURE/.codex-profiles/plain/models_cache.json" >"$WORK/c" &&
   mv "$WORK/c" "$HOME_FIXTURE/.codex-profiles/plain/models_cache.json"

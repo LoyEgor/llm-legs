@@ -357,14 +357,15 @@ cb_walls=''; cx_walls=''; gm_walls=''; gr_walls=''
 # serve. No cache of its own (exit 3), or a miss in a list an older client wrote (exit 4: nothing here
 # refreshes it), is no evidence and keeps it. A codexb call per codex account, so an --account answer
 # for another vendor, which never reads it, skips it: every worker-limit-gate run paid ~1 s for it.
+# The calls run at once, so the list comes in any order: it is only ever read as a set.
 cx_unlisted=''
 if [ "$cx_paused" = false ] && [ -n "$cx_model" ] && { [ -z "$query_vendor" ] || [ "$query_vendor" = codex ]; }; then
   worker_model_codex_family_r "$cx_model"; cx_family=$WORKER_MODEL_R
   cx_unlisted=$(jq -r '.vendors.codex.accounts[]? | .account // "main"' "$LIMITS_FILE" 2>/dev/null |
-    while IFS= read -r account; do
-      "$worker_pick_share/../bin/codexb" models --own --family "$cx_family" --account "$account" >/dev/null 2>&1
-      [ "$?" -ne 1 ] || printf '%s\n' "$account"
-    done) || cx_unlisted=''
+    { while IFS= read -r account; do
+        { "$worker_pick_share/../bin/codexb" models --own --family "$cx_family" --account "$account" >/dev/null 2>&1
+          [ "$?" -ne 1 ] || printf '%s\n' "$account"; } &
+      done; wait; }) || cx_unlisted=''
 fi
 
 # A met wall drops the pin once. Limits at 100% never do. The walls are the ones read above: that

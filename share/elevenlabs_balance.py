@@ -11,6 +11,7 @@ import json
 import re
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from elevenlabs_media import KEYS, Client, Fail, accounts, reserves
 
@@ -31,14 +32,21 @@ def main() -> int:
     except Fail as error:
         print(error, file=sys.stderr)
         return 1
-    rows = []
-    for account, key in keys.items():
+
+    def read(item):
         try:
-            sub = Client(account, key).json("GET", "/v1/user/subscription", timeout=10)
+            return Client(*item).json("GET", "/v1/user/subscription", timeout=10)
         except Fail as error:
-            if error.status == "missing_permissions":
+            return error
+
+    with ThreadPoolExecutor(max_workers=max(1, len(keys))) as pool:
+        subs = list(pool.map(read, keys.items()))
+    rows = []
+    for account, sub in zip(keys, subs):
+        if isinstance(sub, Fail):
+            if sub.status == "missing_permissions":
                 continue
-            print(error, file=sys.stderr)
+            print(sub, file=sys.stderr)
             return 1
         rows.append({
             "account": account,
