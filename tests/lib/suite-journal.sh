@@ -144,6 +144,28 @@ suite_shard_owns() { # shard section -> whether this run executes the section
   fi
   [ "${suite_shard%/*}" = "$1" ]
 }
+
+# The whole suite's last line: shard lines alike but for their first number are one line with the
+# sum (`PASS: 1872 asserts`), any other mix is the shards' lines joined.
+suite_shard_last_line() { # shard-log...
+  local log line first='' joined='' shape='' sum=0 summed=1 alike=1 i=0
+  for log in "$@"; do
+    i=$((i + 1))
+    line=$(grep -v '^[[:space:]]*$' "$log" 2>/dev/null | tail -n1)
+    [ "$i" -gt 1 ] || first=$line
+    [ "$line" = "$first" ] || alike=''
+    joined="$joined${joined:+ | }$line"
+    if [[ $line =~ ^([^0-9]*)([0-9]+)(.*)$ ]] && { [ "$i" = 1 ] || [ "${BASH_REMATCH[1]}"$'\t'"${BASH_REMATCH[3]}" = "$shape" ]; }; then
+      shape=${BASH_REMATCH[1]}$'\t'${BASH_REMATCH[3]}
+      sum=$((sum + 10#${BASH_REMATCH[2]}))
+    else
+      summed=''
+    fi
+  done
+  if [ -n "$summed" ]; then printf '%s%s%s\n' "${shape%%$'\t'*}" "$sum" "${shape#*$'\t'}"
+  elif [ -n "$alike" ]; then printf '%s\n' "$first"
+  else printf '%s\n' "$joined"; fi
+}
 # Read before the suite can cd away from a relative path. A suite this suite runs is whole: the
 # shard is the top suite's alone.
 if [ -z "${suite_shard_top:-}" ]; then
@@ -185,7 +207,7 @@ suite_journal_end() { # exit-code -> returns it
   suite_journal_digest "$name"
   suite_journal_secs secs "$(( ended - suite_journal_began ))"
   suite_journal_suites=''
-  suite_journal_suite "$name" "$rc" "$secs" "$cpu"
+  suite_journal_suite "$name" "$rc" "$secs" "$cpu" '' "${suite_shard_ran:+\"shards\":$suite_shard_ran}"
   suite_journal_secs began "$suite_journal_began"
   suite_journal_secs ended "$ended"
   suite_journal_row direct "$$" "$began" "$began" "$ended" "$suite_journal_repo" "$suite_journal_root" \
@@ -240,3 +262,35 @@ builtin trap 'suite_journal_end $?' EXIT
 builtin trap 'suite_journal_die 1' HUP
 builtin trap 'suite_journal_die 2' INT
 builtin trap 'suite_journal_die 15' TERM
+
+# A direct run splits like a run-suites one: RUN_SUITES_SHARDS=on|off, auto only while slot_room.
+if [ "$suite_shard_n" -gt 1 ] && [ "${RUN_SUITES_SHARDS:-auto}" != off ] && [ "${BASH_VERSINFO[0]}" -ge 4 ] &&
+    { [ "${RUN_SUITES_SHARDS:-auto}" = on ] ||
+      ( . "${BASH_SOURCE[0]%/*}/../../share/slots.sh" && slot_room ) >/dev/null 2>&1; }; then
+  suite_shard_logs=$(mktemp -d) suite_shard_pids='' suite_shard_rc=0 suite_shard_passed='' suite_shard_failed=''
+  for ((suite_shard_i = 1; suite_shard_i <= suite_shard_n; suite_shard_i++)); do
+    SUITE_SHARD=$suite_shard_i/$suite_shard_n "$BASH" "$suite_shard_top" "$@" \
+      >"$suite_shard_logs/$suite_shard_i" 2>&1 </dev/null &
+    suite_shard_pids="$suite_shard_pids $!"
+  done
+  suite_journal_exit="kill$suite_shard_pids 2>/dev/null; rm -rf '$suite_shard_logs'"
+  suite_shard_i=0
+  for suite_shard_pid in $suite_shard_pids; do
+    suite_shard_i=$((suite_shard_i + 1))
+    wait "$suite_shard_pid"
+    suite_shard_status=$?
+    if [ "$suite_shard_status" = 0 ]; then suite_shard_passed="$suite_shard_passed $suite_shard_i:0"
+    else
+      suite_shard_failed="$suite_shard_failed $suite_shard_i:$suite_shard_status"
+      [ "$suite_shard_rc" != 0 ] || suite_shard_rc=$suite_shard_status
+    fi
+  done
+  for suite_shard_pid in $suite_shard_passed $suite_shard_failed; do
+    printf '== shard %s/%s, exit %s\n' "${suite_shard_pid%:*}" "$suite_shard_n" "${suite_shard_pid#*:}"
+    cat "$suite_shard_logs/${suite_shard_pid%:*}"
+  done
+  [ "$suite_shard_rc" != 0 ] || suite_shard_last_line "$suite_shard_logs"/*
+  rm -rf "$suite_shard_logs"
+  suite_journal_exit='' suite_shard_ran=$suite_shard_n
+  exit "$suite_shard_rc"
+fi

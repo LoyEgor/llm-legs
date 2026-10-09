@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 3
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
+if suite_shard_owns 1 files-served-model; then
 
 clear_stub
 set_config 'claudeb_model=opus' 'claudeb_effort=high'
@@ -214,9 +216,14 @@ touch -t 202001010000 "$LOCK_RUN/.claim.lock"
 locked_write
 assert test ! -e "$LOCK_RUN/.claim.lock"
 assert test "$(grep -c . "$WORK/claim-sleeps")" -eq 0
+fi
 
 clear_stub
 dirt_repo_init
+set_config 'claudeb_model=opus' 'claudeb_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=recordacct CLAUDE_CODE_SESSION_ID=chat-abc
+mkdir -p "$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture"
+if suite_shard_owns 2 files-transcript-lists; then
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 {
   tool_call Edit file_path "$DIRT_TOP/tests/tracked-by-the-editor"
@@ -417,6 +424,7 @@ assert grep -q '^UNKNOWN: ' "$RUN_DIR/files"
 assert test ! -e "$RUN_DIR/dirty"
 assert test ! -e "$RUN_DIR/dirty-before"
 
+fi
 snapshot_shell_tests() {
   local vendor path frozen variant note
   for vendor in claudeb codex gemini grok; do
@@ -505,7 +513,7 @@ EOF
   done
   clear_stub
 }
-snapshot_shell_tests
+if suite_shard_owns 3 files-snapshot-shell; then snapshot_shell_tests; fi
 
 # worker-edit-guard lets a shell write through by recording it in the run's `shell-writes`, spelled
 # against the physical top; the run folds it into its listing with no claim, a recorded directory
@@ -546,7 +554,7 @@ EOF
   unset GUARD_REPO
   clear_stub
 }
-guard_recorded_tests
+if suite_shard_owns 3 files-guard-recorded; then guard_recorded_tests; fi
 
 # A file the run wrote through an interpreter and committed is the run's: its own `git commit` names
 # the commit's subject. A commit whose subject no command of the run carries stays nobody's.
@@ -606,7 +614,7 @@ EOF
   unset GUARD_REPO
   clear_stub
 }
-guard_top_recorded_tests
+if suite_shard_owns 3 files-guard-top; then guard_top_recorded_tests; fi
 
 snapshot_blobs_packed_tests() {
   local repo="$WORK/never-committed" tries=0
@@ -661,8 +669,8 @@ knobs_changed_tests() {
   assert test "$(grep -c '^KNOBS CHANGED: ' <<<"$("$RUNNER" report "$RUN_ID")")" -eq 0
   clear_stub
 }
-knobs_changed_tests
-snapshot_blobs_packed_tests
+if suite_shard_owns 3 files-knobs; then knobs_changed_tests; fi
+if suite_shard_owns 3 files-blobs-packed; then snapshot_blobs_packed_tests; fi
 
 
 echo "PASS: $asserts asserts; served model and cost, transcript file lists, snapshot and guard attribution, the run title and the injected MD-GUARD"

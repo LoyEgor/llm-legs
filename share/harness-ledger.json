@@ -209,7 +209,7 @@
         "rule": "test_daily_cost",
         "ident": "llm-legs:test_worker_run(_(entry|reliability|browse|attribution|watchdog|websearch|lifecycle|pool|outcomes|files|claims|vendor_files|rounds|grok|grok_outcomes|stamps))?"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-01T14:10:00+03:00",
@@ -247,14 +247,26 @@
           ],
           "in": "llm-legs@92feff0e",
           "regressed_at": null
+        },
+        {
+          "at": "2026-10-09T07:30:00+03:00",
+          "by": "night fixer harness-tests-20261009T024814Z-377e",
+          "files": [
+            "llm-legs/tests/test_worker_run_watchdog.sh",
+            "llm-legs/tests/test_worker_run_files.sh",
+            "llm-legs/tests/test_worker_run_attribution.sh",
+            "llm-legs/tests/lib/suite-journal.sh"
+          ],
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [
         "test_long_pole-worker-run"
       ],
-      "last_reviewed": "2026-10-07",
-      "reviewed_by": "night fixer harness-tests-20261006T234311Z-79c1",
-      "note": "2026-10-07: the 17 h 22 min red was the statusline probe journaling one live 27-minute run-suites run 22 times, each row carrying the suite times so far; the probe now skips a suites run whose pid ps still lists while its progress file stands, and load_tests collapses such snapshots. The Tests rules had read only test-history since e5bd8fd1 (the probe skips runs with a run-suites journal row), so they missed nearly every real run; load_tests now reads ~/.cache/run-suites/runs.jsonl too. The true 24 h family cost is ~66 000 s: ~30 family runs a day (worker named runs 42 %, chat named runs of all 18 parts 29 %, full runs 10 %), each part's wall 4-6x its quiet minimum under load (quiet sum 884 s, CPU ~615 s). Cut: test_worker_run_claims held a 40 s stub sleep it then waited out (~37 s a run), now the gate. Ruled out: no fixed latency in worker-run's supervisor (run_with_deadline returns on the child's exit; a cycle is ~3400 traced lines of small forks); the watchdog suite's waits are its idle and deadline windows themselves. 2026-10-08: cost_line now charges a split family's run for its slowest part (the wall one agent waits); the parts' summed machine time over 2 h stays a watch.",
+      "last_reviewed": "2026-10-09",
+      "reviewed_by": "night fixer harness-tests-20261009T024814Z-377e",
+      "note": "2026-10-09 (4 h 01 min over 170 runs): the slowest parts are wait-bound, not CPU-bound (fastest-quintile wall/CPU s: watchdog 125/16, files 63/22, attribution 58/24), so shards cut their wall even on a loaded machine: watchdog 4 shards, files 3, attribution 2; sharded and whole runs give the same asserts (files 63+69+116, attribution 66+258). Direct runs now shard too (tests/lib/suite-journal.sh). Left: watchdog's paused and frozen cases flake at load 250+ sharded or whole (the stub's 1-3 s turns race the watchdog's first transcript read), and the pool/vendor_files parts (82/41, 80/41) stay whole. 2026-10-07: the 17 h 22 min red was the statusline probe journaling one live 27-minute run-suites run 22 times, each row carrying the suite times so far; the probe now skips a suites run whose pid ps still lists while its progress file stands, and load_tests collapses such snapshots. The Tests rules had read only test-history since e5bd8fd1 (the probe skips runs with a run-suites journal row), so they missed nearly every real run; load_tests now reads ~/.cache/run-suites/runs.jsonl too. The true 24 h family cost is ~66 000 s: ~30 family runs a day (worker named runs 42 %, chat named runs of all 18 parts 29 %, full runs 10 %), each part's wall 4-6x its quiet minimum under load (quiet sum 884 s, CPU ~615 s). Cut: test_worker_run_claims held a 40 s stub sleep it then waited out (~37 s a run), now the gate. Ruled out: no fixed latency in worker-run's supervisor (run_with_deadline returns on the child's exit; a cycle is ~3400 traced lines of small forks); the watchdog suite's waits are its idle and deadline windows themselves. 2026-10-08: cost_line now charges a split family's run for its slowest part (the wall one agent waits); the parts' summed machine time over 2 h stays a watch.",
       "handoff": null
     },
     {
@@ -4837,7 +4849,7 @@
         "rule": "test_daily_cost",
         "ident": "llm-legs:test_statusline_hooks"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-08T02:10:00+03:00",
@@ -4847,12 +4859,23 @@
           ],
           "in": "llm-legs@9571b2f4",
           "regressed_at": null
+        },
+        {
+          "at": "2026-10-09T07:30:00+03:00",
+          "by": "night fixer harness-tests-20261009T024814Z-377e",
+          "files": [
+            "llm-legs/tests/lib/suite-journal.sh",
+            "llm-legs/share/run-suites.sh",
+            "llm-legs/tests/test_run_suites_shards.sh"
+          ],
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-08",
-      "reviewed_by": "night fixer harness-tests-20261007T214027Z-31b6",
-      "note": "Of the 48 runs, 23 (3925 s) were one worker (claudeb-1791368833-96854-3ac2, worktree fix-suite-flakes-statusline-browse) rerunning the suite on one unchanged head 8b661c8d to chase a flake, and 10 (1350 s) were this fixer's own profiling; the other ~15 cost ~3000 s, a watch. Per run ~126 s at load ~5 (CPU ~100 s, sys > user: fork-bound); timing wrappers put ~87 s in the code under test (387 statusline.sh renders ~26 s, 227 worker-launch-gate ~21 s, 294 workdir-hook ~16 s, 80 worker-tag-hook ~14 s, 62 subagent-statusline ~7 s), so the test side held ~40 s. Fixed: the slow Codex refresher held 10 s of pure sleep (now a release file, max 10 s, so a blocking render still fails < 8 s; mutation: a synchronous kick goes red at assert 1024), and debt_render polled 5 s for a cache a missing review-debt binary never writes; side by side 126 s -> 108 s. Left as load-bearing: the 3 s .claim.lock hold (tag_lock's 30 x 0.1 s), the 8.5 MB transcript renders (~1.6 s each, the code's own scan), the 1 s and 0.2-0.3 s negative-check waits. A flake hunt's repeat runs on one head count as daily cost like any other: see blind_spots.",
+      "last_reviewed": "2026-10-09",
+      "reviewed_by": "night fixer harness-tests-20261009T024814Z-377e",
+      "note": "2026-10-09 (3 h 13 min over 166 runs): 63 of the 24 h runs were direct `bash tests/test_statusline_hooks.sh` (6321 s, 100 s each) that never sharded, against 71 s for a 3-shard run-suites run; 14 more were the doctor_fix flake hunt (claudeb-1791430989-1132-4908) looping this suite beside its own. Fixed: a direct run of any `# shards: N` suite now runs its shards side by side under the same RUN_SUITES_SHARDS / slot_room rule as run-suites, one journal row with shards: N. Left: a run-all wave's runs are 1.3-3x a direct run's wall from contention, not the suite. 2026-10-08: Of the 48 runs, 23 (3925 s) were one worker (claudeb-1791368833-96854-3ac2, worktree fix-suite-flakes-statusline-browse) rerunning the suite on one unchanged head 8b661c8d to chase a flake, and 10 (1350 s) were this fixer's own profiling; the other ~15 cost ~3000 s, a watch. Per run ~126 s at load ~5 (CPU ~100 s, sys > user: fork-bound); timing wrappers put ~87 s in the code under test (387 statusline.sh renders ~26 s, 227 worker-launch-gate ~21 s, 294 workdir-hook ~16 s, 80 worker-tag-hook ~14 s, 62 subagent-statusline ~7 s), so the test side held ~40 s. Fixed: the slow Codex refresher held 10 s of pure sleep (now a release file, max 10 s, so a blocking render still fails < 8 s; mutation: a synchronous kick goes red at assert 1024), and debt_render polled 5 s for a cache a missing review-debt binary never writes; side by side 126 s -> 108 s. Left as load-bearing: the 3 s .claim.lock hold (tag_lock's 30 x 0.1 s), the 8.5 MB transcript renders (~1.6 s each, the code's own scan), the 1 s and 0.2-0.3 s negative-check waits. A flake hunt's repeat runs on one head count as daily cost like any other: see blind_spots.",
       "handoff": null
     },
     {
@@ -5491,6 +5514,83 @@
       "reviewed_by": "night fixer harness-speed-time-floor-suite-run-20261009T024805Z-70d1",
       "note": "2026-10-09: 54 min/day, all the Updater doctor chat's: llm-legs full runs 10-08 18:01, 20:13, 21:08 (12-18 min, 151 suites) and four review-bench ones 16:10-20:13. Every one predates 847c18ad (21:55), from which tests/run-all refuses a chat's run naming no suite (exit 3) in every sweep repository (the runner is shared) and docs/vendor-release.md no longer asks for one; test_run_suites_journal's refusal block, red on the old code. No full run by a chat or worker since.",
       "handoff": null
+    },
+    {
+      "id": "test_daily_cost-doctor-fix",
+      "title": "test_doctor_fix · llm-legs cost 4 h 11 min of wall clock in 24 h over 244 runs",
+      "match": {
+        "rule": "test_daily_cost",
+        "ident": "llm-legs:test_doctor_fix"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-09T07:30:00+03:00",
+          "by": "night fixer harness-tests-20261009T024814Z-377e",
+          "files": [
+            "llm-legs/tests/test_doctor_fix.sh",
+            "llm-legs/tests/lib/suite-journal.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-09",
+      "reviewed_by": "night fixer harness-tests-20261009T024814Z-377e",
+      "note": "162 of the runs (7522 s) were one flake hunt (claudeb-1791430989-1132-4908, worktree fix-doctor-fix-lock-flake, head 1b695513, 2026-10-08 06:43-07:25) told to rerun the suite 30+ times under load; they leave the window 2026-10-09 ~07:25. Without them ~92 runs, ~8800 s: still red. Per run 48 s direct, 175 s inside run-all waves; CPU-bound (fastest quintile 34 s wall, 27 s CPU), bin/doctor-fix is fork-bound with no single hotspot (python ~20 %, jq ~16 %, git ~10 %, date ~9 %). Fixed: 3 shards (day runs, night runs and harness/updater, Speed), each owning its sections over shared fixtures; whole 401 asserts = 166 + 166 + 69 sharded; direct runs shard too. Left: the shards' duplicated setup is ~10 s CPU each.",
+      "handoff": null
+    },
+    {
+      "id": "test_daily_cost-night-run",
+      "title": "test_night_run · llm-legs cost 2 h 38 min of wall clock in 24 h over 102 runs",
+      "match": {
+        "rule": "test_daily_cost",
+        "ident": "llm-legs:test_night_run"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-09T07:30:00+03:00",
+          "by": "night fixer harness-tests-20261009T024814Z-377e",
+          "files": [
+            "llm-legs/tests/test_night_run.sh",
+            "llm-legs/tests/lib/suite-journal.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-09",
+      "reviewed_by": "night fixer harness-tests-20261009T024814Z-377e",
+      "note": "Per run 58 s direct (41 runs), 148 s inside run-all waves (48 runs); 14 runs were the doctor_fix flake hunt looping it beside its own suite. CPU-bound (fastest quintile 65 s wall, 53 s CPU), the time spread over bin/night-run calls. Fixed: 2 shards split at the suite's own state reset (rm of every night record before the killed-start case); stop_chat, wall and old moved to the shared helpers, the second shard seeds the runs dir and sweep-repos file the first half left; 342 + 132 asserts. Direct runs shard too.",
+      "handoff": null
+    },
+    {
+      "id": "test_daily_cost-review-bench",
+      "title": "test_review_bench · review-bench cost 2 h 09 min of wall clock in 24 h over 96 runs",
+      "match": {
+        "rule": "test_daily_cost",
+        "ident": "review-bench:test_review_bench"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-09T07:30:00+03:00",
+          "by": "night fixer harness-tests-20261009T024814Z-377e",
+          "files": [
+            "review-bench/tests/review_bench_harness.py"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-10-09",
+      "reviewed_by": "night fixer harness-tests-20261009T024814Z-377e",
+      "note": "The family charges its slowest part, test_review_bench (fastest quintile 78 s; lifecycle 58, panels 64, rounds 45). A 0.5 s stack sample put ~36 % of its wall in brief.seal_overlay_clone: every vendor cell seals the same fixture commits with ~10 git runs (2.9 s a seal at load 220). Fixed: the harness seals each (repo, commit) once through the real function and hands every later cell an APFS clone copy (0.08 s, clean status, same HEAD); direct rb.seal_overlay_clone calls (the lifecycle and rounds sealing tests) stay unmemoized. The part passed in 285 s at load 220 against 600 s+ before.",
+      "handoff": null
     }
   ],
   "blind_spots": [
@@ -5731,6 +5831,13 @@
       "reason": "the split compares wall ms of all runs; big-transcript and many-repo chats are the night-hour ones and edit more markdown, so word-spend and instruction-bloat-gate read as growing with no size- or repo-dependent step on their common path (2026-10-09)",
       "since": "2026-10-09",
       "would_catch_if": "the split compared cpu_us, or each half against the same hour's trivial-call floor, or split the bloat gate's runs by priced vs unpriced path"
+    },
+    {
+      "id": "test-cost-wave-contention",
+      "what": "how much of a suite's daily cost is contention inside run-all waves rather than the suite",
+      "reason": "2026-10-09 the same suites ran 1.2-3.6x slower inside run-all waves than direct (doctor_fix 175 s vs 48 s, night_run 148 s vs 58 s, watchdog 154 s vs 129 s), and test_daily_cost sums both alike; found only by splitting runs.jsonl by kind by hand",
+      "since": "2026-10-09",
+      "would_catch_if": "the row's evidence split runs and seconds by kind (direct, suites) and shards"
     }
   ]
 }

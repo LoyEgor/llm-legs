@@ -55,15 +55,18 @@ assert grep -q '1 suites, 3 jobs, -j 3' "$WORK/out"
 assert test "$(sections)" = 'a b c d '
 assert test "$(sort -n "$WORK/concurrent" | tail -1)" = 3
 assert test "$(wc -l <"$RUN_SUITES_JOURNAL" | tr -d ' ')" = 1
-assert jqe '(.suites | keys) == ["test_sharded.sh"] and .suites["test_sharded.sh"].rc == 0
-  and .suites["test_sharded.sh"].shards == 3 and .suites["test_sharded.sh"].secs >= 3 and .suites["test_sharded.sh"].secs < 4' <(row)
 logdir=$(sed -n 's/.*logs under //p' "$WORK/out")
-cpu_ms=0
+cpu_ms=0 real_ms=0
 for st in "$logdir"/test_sharded.sh.shard-*.st; do
-  IFS=$'\t' read -r _ _ _ _ cpu <"$st"
+  IFS=$'\t' read -r _ _ real _ cpu <"$st"
   cpu_ms=$((cpu_ms + ${cpu%.*} * 1000 + 10#${cpu#*.}))
+  real_ms=$((real_ms + ${real%.*} * 1000 + 10#${real#*.}))
 done
 suite_journal_secs cpu_sum "$cpu_ms"
+suite_journal_secs real_sum "$real_ms"
+# Shard 1 sleeps 1 s beside shard 3's 3 s, so a summed wall never fits under the shards' sum.
+assert jqe --argjson sum "$real_sum" '(.suites | keys) == ["test_sharded.sh"] and .suites["test_sharded.sh"].rc == 0
+  and .suites["test_sharded.sh"].shards == 3 and .suites["test_sharded.sh"].secs >= 3 and .suites["test_sharded.sh"].secs < $sum' <(row)
 assert jqe --argjson cpu "$cpu_sum" '.suites["test_sharded.sh"].cpu_s == $cpu' <(row)
 # The table's last line counts every shard's sections, not the last shard's.
 assert grep -qx 'test_sharded.sh  PASS .*  PASS: 4 sections run' "$WORK/out"
@@ -101,6 +104,26 @@ assert test "$(sections)" = 'a b c d '
 : >"$WORK/sections"
 SUITE_SHARD=2/3 bash "$REPO/tests/test_sharded.sh" >/dev/null 2>&1
 assert test "$(sections)" = 'b '
+
+# A direct run splits alike: one journal row, every shard's output, the failing one last.
+: >"$WORK/sections"; : >"$WORK/concurrent"; : >"$WORK/child"
+RUN_SUITES_SHARDS=on bash "$REPO/tests/test_sharded.sh" >"$WORK/out" 2>&1
+assert test "$?" = 0
+assert test "$(sections)" = 'a b c d '
+assert test "$(sort -n "$WORK/concurrent" | tail -1)" = 3
+assert test "$(grep -c '^setup$' "$WORK/out")" = 3
+assert test "$(tail -1 "$WORK/out")" = 'PASS: 4 sections run'
+assert test "$(sort -u "$WORK/child")" = ''
+assert jqe '.kind == "direct" and .suites["test_sharded.sh"].shards == 3 and .suites["test_sharded.sh"].secs >= 3' <(row)
+RUN_SUITES_SHARDS=on FAIL_C=1 bash "$REPO/tests/test_sharded.sh" >"$WORK/out" 2>&1
+assert test "$?" = 5
+assert test "$(grep '^== shard' "$WORK/out" | tail -1)" = '== shard 3/3, exit 5'
+assert test "$(tail -1 "$WORK/out")" = 'c failed'
+: >"$WORK/sections"; : >"$WORK/concurrent"
+RUN_SUITES_SHARDS=off bash "$REPO/tests/test_sharded.sh" >"$WORK/out" 2>&1
+assert test "$(sections)" = 'a b c d '
+assert test "$(sort -n "$WORK/concurrent" | tail -1)" = 1
+assert jqe '.suites["test_sharded.sh"] | has("shards") | not' <(row)
 
 # No section can sit outside every shard: an index past the header, a missing or repeated name, and a
 # SUITE_SHARD the header does not declare each end the suite.

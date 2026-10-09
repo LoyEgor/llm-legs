@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 2
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -55,14 +56,18 @@ night() { bash "$ROOT/bin/night-run" "$@"; }
 body() { sed '1,/^$/d' "$@"; }
 record() { printf '%s/%s.json' "$NIGHTS" "$1"; }
 doc() { jq -n --argjson n "$2" --argjson p "${3:-[]}" '{contract: 1, problem_count: $n, problems: $p}' >"$WORK/$1/latest.json"; }
+stop_chat() { pkill -f -- "--session-id $1"; while pgrep -f -- "--session-id $1" >/dev/null; do sleep 0.1; done; }
+wall() { printf '{"session_id": "%s", "error": "%s"}' "$1" "$2" | NIGHT_RUN_WALL_SYNC=1 NIGHT_RUN_WALL_POLL=1 night wall; }
+old() { GIT_COMMITTER_DATE='2026-01-01T00:00:00Z' git -C "$WORK/repo" "$@"; }
 doc llm 5
 doc harness 3 '[{"id": "h1", "state": "new"}, {"id": "h2", "state": "open"}, {"id": "h3", "state": "regressed"}, {"id": "h4", "state": "watch", "fact": "fine"}]'
 
 # start: the record, the orchestrator chat on the main checkout with the sweep word, the session.
 night start >"$WORK/out" || fail "start failed"
 id=$(sed -n 's/^night \([0-9]\{8\}T[0-9]\{6\}Z-[0-9a-f]\{4\}\) started: orchestrator on acct-n$/\1/p' "$WORK/out")
-assert [ -n "$id" ]
 R=$(record "$id")
+if suite_shard_owns 1 nr-start-to-sweep; then
+assert [ -n "$id" ]
 assert jqe 'keys == (["id", "started_at", "finished_at", "session", "account", "command", "note",
   "doctors_before", "doctors_after", "doctor_states_before", "doctor_states_after",
   "doctor_problems_before", "doctor_problems_after", "jobs"] | sort)' "$R"
@@ -400,7 +405,6 @@ CLAUDE_CODE_SESSION_ID=$(jq -r .session "$(record "$id6")") night finish "$id6" 
 
 # Resume: the SAME night reopens under a new orchestrator for its unfinished jobs, the old session kept
 # in previous_sessions; the review-flow gate reads finished_at null and the new session's live process.
-stop_chat() { pkill -f -- "--session-id $1"; while pgrep -f -- "--session-id $1" >/dev/null; do sleep 0.1; done; }
 last_arg() { local line; line=$(grep '^exec ' "$NIGHTS/$1.command"); eval "set -- ${line#exec }"; printf '%s\n' "${!#}"; }
 R6=$(record "$id6")
 rm "$(record "$id5")"
@@ -457,7 +461,6 @@ rm "$DATA/opener-fails"
 # hit its five-hour wall at 10:39 and the night stood still until someone typed).
 night start --resume "$id6" >/dev/null || fail "resume for the wall cases"
 walled=$(jq -r .session "$R6")
-wall() { printf '{"session_id": "%s", "error": "%s"}' "$1" "$2" | NIGHT_RUN_WALL_SYNC=1 NIGHT_RUN_WALL_POLL=1 night wall; }
 mkdir -p "$HOME/.claude/hooks/lib"
 printf 'printf "%%s\\n" "${0##*/}${1:+ $1}" >>"%s/hook-time-keys"\n' "$WORK" >"$HOME/.claude/hooks/lib/hook-time.sh"
 wall "$walled" overloaded >"$WORK/out" || fail "a stop that is no wall failed"
@@ -516,7 +519,6 @@ stop_chat "$(jq -r .session "$(record "$idc")")"
 # in the owning chat, until the next night finishes; every other branch is a leftover to carry into main, never
 # kept. A process inside keeps only a landed worktree's directory from removal.
 wt="$WORK/repo/.claude/worktrees"
-old() { GIT_COMMITTER_DATE='2026-01-01T00:00:00Z' git -C "$WORK/repo" "$@"; }
 printf '%s\n' "$WORK/repo" >"$WORK/sweep-repos"
 git -C "$WORK/repo" update-ref "refs/night/$idc/base" "$based_hash"
 git -C "$WORK/repo" worktree add -q -b "night/$id/landed" "$wt/landed" "$pushed_hash"
@@ -843,7 +845,11 @@ for ref in llm-health-20261001T020632Z-3671 harness-self-20261001T020659Z-1dba u
 done
 assert [ "$(night latest --menu | cut -f1 | grep ' fixer' | sed 's/ · .*//' | paste -sd, -)" \
   = "LLM fixer: debt,Harness fixer,Updater fixer,LLM fixer,Harness fixer: hook waits,Code fixer" ]
+fi
 
+if suite_shard_owns 2 nr-opening-to-end; then
+mkdir -p "$DOCTORS_DIR/runs"
+printf '%s\n' "$WORK/repo" >"$WORK/sweep-repos"
 # A start killed before it recorded the session leaves a night that runs only while that start lives.
 rm "$NIGHTS"/*.json
 opening() { # opener-pid-json
@@ -1571,5 +1577,6 @@ assert [ "$(git -C "$WORK/sb" rev-parse refs/night/sx/pruned/handoff-x)" = "$sb_
 git -C "$WORK/sa" branch night/sx/handoff-x "$sa_tip" || fail "the recorded tip restores the branch"
 assert [ "$(cat "$WORK/sa/.claude/worktrees/dn/wip")" = wip ]
 assert git -C "$WORK/sa" rev-parse -q --verify refs/heads/night/sx/dirty-n >/dev/null
+fi
 
 echo "PASS: test_night_run.sh ($asserts asserts)"

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 3
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -34,6 +35,7 @@ PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
 mkdir -p "$FAKE_BIN" "$DATA" "$HOME" "$WORK/llm" "$WORK/harness" "$WORK/updater" "$WORK/vcu/events" "$WORK/projects" \
   "$WORK/docs/handoffs" "$WORK/ledgers"
 printf '{"owner": "LLM owner", "owners": {}, "rows": [], "blind_spots": []}\n' >"$WORK/ledgers/llm.json"
+cp "$WORK/ledgers/llm.json" "$WORK/ledger-kept"
 : >"$OPENED"
 cat >"$FAKE_BIN/opener" <<'EOF'
 #!/usr/bin/env bash
@@ -74,7 +76,9 @@ done
 chmod +x "$L"/bin/*
 git -C "$L" init -q && git -C "$L" add bin && git -C "$L" -c user.name=t -c user.email=t@t commit -qm base
 lhash=$(git -C "$L" rev-parse --short HEAD)
+printf '[{"id":"grok-1","verdict":"integrated","purpose":null,"evidence":"1 decision rows"}]\n' >"$WORK/ujson"
 
+if suite_shard_owns 1 df-day-launch; then
 # Launch refusals: no document, a foreign contract, a stale document, nothing to fix.
 assert_fails fix launch llm 2>"$WORK/err"
 assert grep -qF 'Refresh the doctor first.' "$WORK/err"
@@ -169,6 +173,7 @@ assert git -C "$L" rev-parse -q --verify "refs/heads/doctor-fix/$hid"
 assert_fails fix close "$failed" --decisions /dev/null "x" 2>"$WORK/err"
 assert grep -qF "run $failed failed to launch: chat did not open" "$WORK/err"
 
+fi
 # Close refusals. The doctor must have rerun since the launch.
 mkdir -p "$WORK/projects/proj"
 git -C "$WORK/projects/proj" init -q
@@ -176,6 +181,7 @@ printf 'why\n' >"$WORK/projects/proj/README"
 git -C "$WORK/projects/proj" add README
 git -C "$WORK/projects/proj" -c user.name=t -c user.email=t@t commit -qm purpose
 hash=$(git -C "$WORK/projects/proj" rev-parse --short HEAD)
+if suite_shard_owns 1 df-day-close; then
 printf 'A\tfixed\tllm-legs@%s\tbin/x.py:12 fixed; tests/test_x.sh\nB\truled-out\tllm-legs/bin/llm-doctor:40\tthe row is the design\nE\tweather\tllm-legs/bin/llm-doctor\tvendor 429s\n' \
   "$lhash" >"$WORK/decisions"
 : >"$DATA/llm-doctor-runs"
@@ -224,7 +230,6 @@ sed -i '' 's#^judge\tchanged\tdocs/doctors-contract.md#judge\tchanged\tbin/llm-d
 assert_fails fix close "$id2" --decisions "$WORK/decisions" "done" 2>"$WORK/err"
 assert grep -qxF 'line 1 (A): fixed, but the rerun llm doctor still reads it new: a fix leaves it fixed-pending or gone' "$WORK/err"
 jq '(.problems[] | select(.id == "A") | .state) = "fixed-pending"' "$DATA/llm-doc.json" >"$WORK/l" && mv "$WORK/l" "$DATA/llm-doc.json"
-cp "$WORK/ledgers/llm.json" "$WORK/ledger-kept"
 jq '.rows = [{id: "R1", fixes: [{at: "2026-09-01T00:00:00+00:00", by: "c", files: ["llm-legs/bin/x"], in: null}]}]' \
   "$WORK/ledger-kept" >"$WORK/ledgers/llm.json"
 assert_fails fix close "$id2" --decisions "$WORK/decisions" "x" 2>"$WORK/err"
@@ -274,7 +279,6 @@ assert jqe --arg w "$WORK/wt-day" '.doctor == "updater" and .area == "release" a
 assert [ "$(fix runs --open | cut -f1)" = "$uid" ]
 assert_fails fix close "$uid" --decisions "$WORK/decisions" "x" 2>"$WORK/err"
 assert grep -qF 'through vendor-fingerprint close' "$WORK/err"
-printf '[{"id":"grok-1","verdict":"integrated","purpose":null,"evidence":"1 decision rows"}]\n' >"$WORK/ujson"
 fix record-close "$uid" --decisions "$WORK/ujson" "grok-1: integrated" || fail "record-close failed"
 assert jqe '.closed_at != null and .judge_at_close == "u1" and .decisions[0].verdict == "integrated" and .note == "grok-1: integrated"' "$(record "$uid")"
 fix launch updater >"$WORK/out" || fail "launch updater failed"
@@ -298,6 +302,7 @@ for n in 1 2 3 4 5 6; do fix record updater --branch "b-$n" --worktree w --probl
 wait
 assert [ "$(cat "$DATA"/par-* | sort -u | grep -cE '^updater-release-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{4}$')" = 6 ]
 for n in 1 2 3 4 5 6; do assert jqe --arg b "b-$n" '.branch == $b' "$(record "$(cat "$DATA/par-$n")")"; done
+fi
 
 # Night fixtures: a component repository, docs and memory beside the llm-legs repository the worktrees branch from.
 mkdir -p "$WORK/projects/claude-setup/hooks" "$WORK/projects/review-bench/bin" "$HOME/.claude-profiles/p1/projects/-Volumes-Work-Projects-llm-legs/memory"
@@ -321,6 +326,7 @@ printf '| # | Invariant |\n|---|---|\n| zz | R9 stays narrow |\n| yy | nothing |
 M="$HOME/.claude-profiles/p1/projects/-Volumes-Work-Projects-llm-legs/memory"
 printf 'R9 was fixed twice.\n' >"$M/r9.md"
 printf 'R99 is another row.\n' >"$M/r99.md"
+mkdir -p "$RUNS"
 jq -n '{id: "llm-reviewers-20260101T000000Z-0000", doctor: "llm", area: "reviewers", created_at: "2026-01-01T00:00:00Z",
   launched_at: "2026-01-01T00:00:00Z", closed_at: "2026-01-01T01:00:00Z", problems: [],
   decisions: [{id: "R9", verdict: "ruled-out", purpose: "proj/README", evidence: "old evidence"}]}' \
@@ -336,6 +342,7 @@ jq -n --argjson s "$(now)" '{contract: 1, doctor: "llm", as_of_s: $s, judge: "li
     {id: "W", rule: "leg-failure", state: "watch", fact: "watched", ledger: null},
     {id: "machinery:anchors", rule: "machinery", state: "new", fact: "anchors", ledger: null}]}' >"$WORK/llm/latest.json"
 
+if suite_shard_owns 2 df-night-refusals; then
 # An unknown argument after the night id (a "--dry-run" probe) is refused before any run is launched.
 before=$(ls "$RUNS"/*.json)
 assert_fails fix launch harness --night n0 --dry-run >/dev/null 2>"$WORK/err"
@@ -348,12 +355,14 @@ assert_fails fix launch llm --night n0 >/dev/null 2>"$WORK/err"
 assert grep -qF "worktree not created: no refs/night/n0/base in $L" "$WORK/err"
 for f in $(comm -13 <(printf '%s\n' "$before") <(ls "$RUNS"/*.json)); do assert jqe '.failed_at != null and .launched_at == null' "$f"; done
 assert [ -z "$(git -C "$L" branch --list 'night/n0/*')" ]
+fi
 mkdir -p "$L/docs" && printf '%0199d\n' 0 >"$L/docs/stale.md"
 git -C "$L" add docs && git -C "$L" -c user.name=t -c user.email=t@t commit -qm stale
 for n in n1 n3 n4; do git -C "$L" update-ref "refs/night/$n/base" HEAD; done
 git -C "$WORK/projects/proj" update-ref refs/night/n1/base HEAD
 eval "$(sed -n '/^brief_add_dirs() {/,/^}/p' "$ROOT/bin/worker-run")"
 
+if suite_shard_owns 2 df-night-launch-close; then
 # A night launch opens no chat: one run per area, each with its worktree on its own branch and a brief.
 # A fix's files resolve where the doctor itself resolves them, never through doctor-fix's own projects dir.
 opened_before=$(wc -l <"$OPENED")
@@ -522,7 +531,9 @@ assert [ "$(printf '%s\n' "$new" | wc -l | tr -d ' ')" = 3 ]
 for f in $new; do assert jqe '.failed_at != null and .launched_at == null and (.note | startswith("worktree not created"))' "$f"; done
 assert grep -qF 'failed: worktree not created' "$WORK/err"
 assert [ -z "$(fix runs llm --open)" ]
+fi
 
+if suite_shard_owns 2 df-harness-doc; then
 # Harness: areas are the document's sections; the snapshot adds the top 8 watch rows of Hooks and Hook waits.
 jq -n --argjson s "$(now)" '{contract: 1, doctor: "harness", as_of_s: $s, judge: "h-live", status: "problems", problem_count: 3,
   sections: [
@@ -546,6 +557,7 @@ jq -n --argjson s "$(now)" '{contract: 1, doctor: "harness", as_of_s: $s, judge:
     {id: "load:quiet", rule: "load", state: "watch", fact: "quiet", value: 1000, exposure: 1000}]
     + [range(10) | {id: "hook_p50:w\(.)", rule: "hook_p50", state: "watch", fact: "w", value: ., exposure: 10}])}' \
   >"$WORK/harness/latest.json"
+fi
 mkdir -p "$WORK/projects/proj/tests" && printf '#!/bin/bash\n' >"$WORK/projects/proj/tests/test_x.sh"
 printf '{"owner": "H owner", "rows": [{"id": "gate-row", "status": "open", "match": {"rule": "hook_every_call", "ident": "gate\\\\.sh"}}, {"id": "quiet-hook", "title": "a hook gone quiet", "status": "open", "match": {"rule": "hook_every_call", "ident": "gate\\\\.sh"}}]}\n' \
   >"$WORK/ledgers/harness.json"
@@ -557,6 +569,7 @@ git init -q "$O" && git -C "$O" -c user.name=t -c user.email=t@t commit -q --all
 git -C "$O" update-ref refs/night/n3/base HEAD
 printf '%s\n' "$L" "$O" >"$WORK/sweep-repos"
 export NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-repos"
+if suite_shard_owns 2 df-harness-runs; then
 for n in 1 2 3 4; do bash "$FIX" launch harness --night n3 >"$DATA/h-$n" 2>/dev/null & done
 wait
 assert [ "$(cat "$DATA"/h-* | cut -f1 | sed -E 's/^harness-([a-z-]+)-[0-9]{8}.*/\1/' | sort | xargs)" = "doctor hook-waits hooks load" ]
@@ -637,7 +650,9 @@ fix show "$load" >"$WORK/show"
 assert grep -qxF "$(printf '  load:host\tfixed\tproj/README\ttests/test_x.sh\tcomponent unverified')" "$WORK/show"
 rm "$DATA/harness-doc.json"
 assert grep -qF 'sections 0-6 and "Harness doctor" only.' "$RUNS/$hk.brief.md"
+fi
 
+if suite_shard_owns 2 df-updater; then
 # Updater: its own machinery is one area, the doctor's own; vendor release events are vendor-fingerprint's. Nothing to do prints nothing.
 jq -n --argjson s "$(now)" '{contract: 1, doctor: "updater", as_of_s: $s, judge: "u1", status: "problems", problem_count: 1,
   problems: [{id: "event-waiting:grok-1", rule: "event-waiting", state: "new", fact: "waiting"},
@@ -684,7 +699,9 @@ assert jqe --arg f "$WORK/projects/llm-legs/share/image-caps/gemini.json" '[.pro
   and (.problems[0].component.what | test("share/image-caps/gemini\\.json \\.speech:") and test("bin/media-run") and test("bump `verified`"))' \
   "$(record "$cid")"
 assert grep -qF 'component: media manifest llm-legs/share/image-caps/gemini.json .speech: re-verify' "$RUNS/$cid.brief.md"
+fi
 
+if suite_shard_owns 2 df-merge-citation; then
 # A commit citation that is a merge touches what the merge brought in.
 P="$WORK/projects/proj"
 git -C "$P" checkout -qb side
@@ -694,9 +711,11 @@ git -C "$P" checkout -q -
 printf 'x\n' >"$P/MAIN" && git -C "$P" add MAIN && git -C "$P" -c user.name=t -c user.email=t@t commit -qm main
 git -C "$P" -c user.name=t -c user.email=t@t merge -q --no-ff side -m merge
 fix touches "$RR" R9 "proj@$(git -C "$P" rev-parse --short HEAD)" || fail "a merge that changed the component does not touch it"
+fi
 
 # A malformed ledger row the doctor reports still snapshots, so its fixer can repair it.
 for n in n5 n6 n7; do git -C "$L" update-ref "refs/night/$n/base" HEAD; done
+if suite_shard_owns 2 df-malformed-ledger; then
 jq -n '{owner: "LLM owner", owners: {}, blind_spots: [], rows: [{id: "R7", block: "workers", match: "bad",
   fixes: [null, {files: "proj/README"}, {at: "2026-09-02T00:00:00Z", files: ["proj/README", 3]}], same_cause: [1, "R6"]}]}' \
   >"$WORK/ledgers/llm.json"
@@ -708,7 +727,9 @@ assert jqe --arg w "$WORK/projects/llm-legs/bin/worker-run" --arg f "$WORK/proje
   '.area == "workers" and [.problems[] | {id, files: .component.files}] == [{id: "ledger:R7", files: [$w, $f]}]' "$(record "$mid")"
 assert grep -qxF "$(printf '  ledger:R7\tnew\tfixes[0] is no object')" "$RUNS/$mid.brief.md"
 cp "$WORK/ledger-kept" "$WORK/ledgers/llm.json"
+fi
 
+if suite_shard_owns 2 df-collector; then
 # A collector that failed is a problem of its own, and a fix of it holds only once the rerun doctor stops failing.
 jq -n --argjson s "$(now)" '{contract: 1, doctor: "llm", as_of_s: $s, judge: null, status: "error", problem_count: 0, problems: [],
   blind_spots: [], self: {collector_s: null, error: "KeyError: '\''x'\''"}}' >"$WORK/llm/latest.json"
@@ -724,7 +745,9 @@ assert_fails fix close "$cid" --decisions "$WORK/cd" "x" 2>"$WORK/err"
 assert grep -qxF "line 1 (collector:error): fixed, but the rerun llm doctor fails: KeyError: 'x'" "$WORK/err"
 jq -n --argjson s $(($(now) + 5)) '{contract: 1, doctor: "llm", as_of_s: $s, judge: "base-llm", status: "ok", problems: []}' >"$DATA/llm-doc.json"
 fix close "$cid" --decisions "$WORK/cd" "collector fixed" >/dev/null || fail "a fixed collector does not close"
+fi
 
+if suite_shard_owns 2 df-launch-lock; then
 # A launched_at that is not written fails that run, not only the last area's.
 cat >"$FAKE_BIN/mv" <<'EOF'
 #!/bin/bash
@@ -759,7 +782,9 @@ assert grep -qE '^llm-doctor-' <<<"$killed"
 assert jqe '.failed_at != null and .note == "the launcher exited before the run opened"' "$(record "$killed")"
 assert [ ! -e "$RUNS/.lock" ]
 rm "$FAKE_BIN/mv"
+fi
 
+if suite_shard_owns 1 df-help-chat-open; then
 fix --help >"$WORK/help"
 for word in launch show runs close abandon record record-close touches; do assert grep -qE "doctor-fix $word( |$)" "$WORK/help"; done
 assert_fails fix bogus 2>/dev/null
@@ -794,7 +819,9 @@ assert grep -qxF 'gw-acct sess-gw' "$WORK/resume-gw.out"
 CHAT_OPEN_OPENER="$FAKE_BIN/opener" CHAT_OPEN_WORKER_PICK="$FAKE_BIN/worker-pick" \
   chat_open "$WORK/resume-cb.command" "$WORK/wd" 'go on' sess-cb >"$WORK/resume-cb.out"
 assert grep -qxF "exec $FAKE_BIN/claudeb profile acct-b --resume sess-cb --permission-mode bypassPermissions go\\ on" "$WORK/resume-cb.command"
+fi
 
+if suite_shard_owns 1 df-quiet-day; then
 # A doctor that reads ok still opens its day fixer while a quiet open ledger row waits; with none, nothing to fix.
 mkdir -p "$WORK/llm-q"
 jq -n --argjson s "$(now)" '{contract: 1, doctor: "llm", as_of_s: $s, judge: "q", status: "ok", problem_count: 0, problems: []}' \
@@ -811,7 +838,9 @@ assert jqe '.area == "workers" and .problems == [] and [.quiet[].id] == ["Q7"]' 
 DOCTORS_DIR="$WORK/doctors-q" LLM_DOCTOR_LEDGER="$WORK/ledgers/q.json" bash "$FIX" show "$qid" >"$WORK/show"
 assert grep -qF 'known, quiet (1): ' "$WORK/show"
 assert grep -qxF "$(printf '  Q7\tquiet\tquiet')" "$WORK/show"
+fi
 
+if suite_shard_owns 1 df-code; then
 # Code: one area, top-K by value, needs-Egor problems stay out, close runs code-doctor check.
 export CODE_DOCTOR_DIR="$WORK/code" CODE_DOCTOR_REPOS="" CODE_DOCTOR_LEDGER="$WORK/ledgers/code.json"
 mkdir -p "$WORK/code"
@@ -874,7 +903,9 @@ assert [ "$(cat "$WORK/err")" = 'doctor-fix: report-only scope: /x/web is not a 
 assert_fails fix launch code --night n7 2>"$WORK/err"
 assert grep -qF 'report-only scope' "$WORK/err"
 assert [ "$(ls "$RUNS"/code-*.json)" = "$before" ]
+fi
 
+if suite_shard_owns 3 df-speed; then
 # Speed: a harness night takes the loud regressions and Speed's chosen opportunities, one run (area speed-<lever>) per
 # lever so each claims its own slot and window. Over the calibration transcripts, a quiet-band contention probe and a
 # heavy llm-legs suite, that is design §6's Night 1: #2, #1, #5 stage 1.
@@ -1126,5 +1157,6 @@ HARNESS_DOCTOR_DIR="$WORK/audit-h" bash "$FIX" launch harness --night n15 >"$WOR
 audit=$(cut -f1 "$WORK/out")
 assert jqe --arg o "$O/.claude/worktrees/night-n15-$audit" '[.problems[].rule] == ["log_audit"] and (.worktrees | index($o) != null)' \
   "$(record "$audit")"
+fi
 
 echo "PASS:$asserts asserts; code runs (one area, top-K, needs-Egor out, close through code-doctor check); launch refusals (no or foreign or stale document, nothing to fix, open run under 12 h), an old run abandoned, the snapshot without watch/fixed-pending, one orchestrator chat on the day runs through the shared opener, the record fields, a failed opener, close refusals (doctor not rerun, undecided id, missing path, missing commit, a directory, no evidence, bad verdict, judge changed without its line), a clean close, show, runs, updater records and launch, parallel ids, night launch (areas, worktrees, branches, briefs, the packet, one open run per area), night vendor records, a night without a base ref, llm components with their block's entry file, fixed only once the doctor reads it fixed-pending or gone, night close (markdown net zero per worktree: committed, untracked and cut bytes, a worktree without its base; a day run measured against its own base; the doctor rerun once in the worktree, a handed-in document refused, purpose touching its component, judge), abandon, a failed worktree, harness sections and top watch rows under parallel launch, updater machinery, a legacy release run, a merge citation, a malformed ledger row, a failed collector, an unwritten launched_at, a launcher killed under the lock, quiet open ledger rows (their own brief section, the day launch), a speed night (design Night 1 over the calibration fixture as one run per lever, levers sharing a hook script in one run, an open lever run holding only its area, an empty Speed pick named on stderr, a refusal per worktree model/effort knob site, a live settings change only a note, a knob-free diff closes), a spend night (one audit on a one-slot share, its five-step brief), a suite night (the first queued suite no red test rule holds, STRONG: yes, its steps), each kind's share of the free worker slots (hook levers, spend and suite audits), a floor row's ruled-out refused without a priced cut and a Speed or floor handoff without a trade to Egor"

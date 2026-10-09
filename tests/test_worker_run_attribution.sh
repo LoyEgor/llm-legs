@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 2
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
 # --- the anchors store ---------------------------------------------------------------------------
@@ -521,8 +522,8 @@ produced_rows_tests() {
   assert test "$?" -eq 0
 }
 
-anchors_store_tests
-attribution_repair_tests
-produced_rows_tests
+if suite_shard_owns 1 attr-anchors-store; then anchors_store_tests; fi
+if suite_shard_owns 2 attr-repair; then attribution_repair_tests; fi
+if suite_shard_owns 2 attr-produced-rows; then produced_rows_tests; fi
 
 echo "PASS: $asserts asserts; the review-anchors store and attribution repair"

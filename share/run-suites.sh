@@ -387,25 +387,10 @@ shard_merge() { # name shards -> once its last shard has ended, the suite's .sta
     printf '== run-suites: shard %s/%s, exit %s\n' "$i" "$n" "$rc"
     cat "$logdir/$name.shard-$i.log" 2>/dev/null
   done >"$logdir/$name.log"
-  # The table's last line is the whole suite's: shard lines alike but for their first number are one
-  # line with the sum (`PASS: 1872 asserts`), any other mix is the shards' lines joined.
   if [ "$out_rc" = 0 ]; then
-    local line first='' joined='' shape='' sum=0 summed=1 alike=1
-    for ((i = 1; i <= n; i++)); do
-      line=$(grep -v '^[[:space:]]*$' "$logdir/$name.shard-$i.log" 2>/dev/null | tail -n1)
-      [ "$i" -gt 1 ] || first=$line
-      [ "$line" = "$first" ] || alike=''
-      joined+="${joined:+ | }$line"
-      if [[ $line =~ ^([^0-9]*)([0-9]+)(.*)$ ]] && { [ "$i" = 1 ] || [ "${BASH_REMATCH[1]}"$'\t'"${BASH_REMATCH[3]}" = "$shape" ]; }; then
-        shape=${BASH_REMATCH[1]}$'\t'${BASH_REMATCH[3]}
-        sum=$((sum + 10#${BASH_REMATCH[2]}))
-      else
-        summed=''
-      fi
-    done
-    if [ -n "$summed" ]; then printf '%s%s%s\n' "${shape%%$'\t'*}" "$sum" "${shape#*$'\t'}"
-    elif [ -n "$alike" ]; then printf '%s\n' "$first"
-    else printf '%s\n' "$joined"; fi >>"$logdir/$name.log"
+    local -a logs=()
+    for ((i = 1; i <= n; i++)); do logs+=("$logdir/$name.shard-$i.log"); done
+    suite_shard_last_line "${logs[@]}" >>"$logdir/$name.log"
   fi
   printf '%s\t%s\t%s\t%s\t%s\n' "$out_rc" "$out_secs" "$out_real" "$bound" "$out_cpu" >"$logdir/$name.status"
 }

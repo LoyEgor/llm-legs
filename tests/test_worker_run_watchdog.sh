@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 4
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
 watchdog_tests() {
+if suite_shard_owns 1 wd-deadline; then
 # A wedged vendor CLI is killed at the deadline and the run turns terminal.
 clear_stub
 set_config 'codex_effort=high'
@@ -18,19 +20,23 @@ assert grep -q '^KILLED: deadline — the 1s ceiling' <<<"$deadline_wait"
 # The end and its reason are stamped apart: started_at keeps the launch it budgets the deadline from.
 assert jq -e --argjson l "$launched" '.terminal_reason == "deadline" and .started_at >= $l
   and .started_at <= .cli_starts[0] and .ended_at >= .started_at + 1 and .attempt_rcs == [143]' "$RUN_DIR/meta.json" >/dev/null
+fi
 
-# A run the deadline ended has no final answer, and its report carries its last messages instead.
-clear_stub
-set_config 'claudeb_model=opus' 'claudeb_effort=high'
-export PICK_RC=0 PICK_ACCOUNT=lastwords STUB_SLEEP=30 WORKER_RUN_DEADLINE=2 STUB_TRANSCRIPT_SESSION=lastwords-session \
-  STUB_TRANSCRIPT_ACCOUNT=lastwords STUB_TRANSCRIPT_SAY='Traced 40 of 120 files; next the c46 set.'
-start_ok claudeb
-unset STUB_SLEEP WORKER_RUN_DEADLINE STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT STUB_TRANSCRIPT_SAY
-"$RUNNER" wait "$RUN_ID" --max 30 >/dev/null
-lastwords_report=$("$RUNNER" report "$RUN_ID")
-assert grep -qx 'Traced 40 of 120 files; next the c46 set.' <<<"$lastwords_report"
-assert grep -q "^(no final answer; the worker's last messages:)$" <<<"$lastwords_report"
+if suite_shard_owns 1 wd-lastwords; then
+  # A run the deadline ended has no final answer, and its report carries its last messages instead.
+  clear_stub
+  set_config 'claudeb_model=opus' 'claudeb_effort=high'
+  export PICK_RC=0 PICK_ACCOUNT=lastwords STUB_SLEEP=30 WORKER_RUN_DEADLINE=2 STUB_TRANSCRIPT_SESSION=lastwords-session \
+    STUB_TRANSCRIPT_ACCOUNT=lastwords STUB_TRANSCRIPT_SAY='Traced 40 of 120 files; next the c46 set.'
+  start_ok claudeb
+  unset STUB_SLEEP WORKER_RUN_DEADLINE STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT STUB_TRANSCRIPT_SAY
+  "$RUNNER" wait "$RUN_ID" --max 30 >/dev/null
+  lastwords_report=$("$RUNNER" report "$RUN_ID")
+  assert grep -qx 'Traced 40 of 120 files; next the c46 set.' <<<"$lastwords_report"
+  assert grep -q "^(no final answer; the worker's last messages:)$" <<<"$lastwords_report"
+fi
 
+if suite_shard_owns 1 wd-busy; then
 # A worker that keeps writing is working, however long it takes: the idle watchdog reads the run's
 # own files, and a suite that runs for minutes returns through them.
 clear_stub
@@ -41,7 +47,9 @@ unset STUB_HEARTBEAT WORKER_RUN_IDLE_S WORKER_RUN_DEADLINE
 busy_wait=$("$RUNNER" wait "$RUN_ID" --max 60)
 assert grep -q '^STATUS: done$' <<<"$busy_wait"
 assert jq -e '.terminal_reason == "done" and .attempt_secs[0] >= 7 and .ended_at - .started_at >= 7' "$RUN_DIR/meta.json" >/dev/null
+fi
 
+if suite_shard_owns 2 wd-idle; then
 # A worker that writes nothing at all is wedged, and the ceiling is hours away.
 clear_stub
 set_config 'codex_effort=high'
@@ -55,7 +63,9 @@ assert grep -q '^KILLED: idle watchdog — nothing this run writes changed for 2
 assert grep -q '^KILLED: idle watchdog' <<<"$("$RUNNER" report "$RUN_ID")"
 assert jq -se --arg r "$RUN_ID" 'map(select(.run == $r)) | length == 1 and .[0].reason == "idle" and .[0].status == "failed"' \
   "$CLAUDEB_DIR/worker-stats/runs.jsonl" >/dev/null
+fi
 
+if suite_shard_owns 3 wd-patient; then
 # WORKER_RUN_IDLE_S=0 disarms the idle half alone: the same silent stub runs to its own end.
 clear_stub
 set_config 'codex_effort=high'
@@ -63,7 +73,9 @@ export PICK_RC=0 PICK_ACCOUNT=patient STUB_SLEEP=3 WORKER_RUN_IDLE_S=0 WORKER_RU
 start_ok codex
 unset STUB_SLEEP WORKER_RUN_IDLE_S WORKER_RUN_DEADLINE
 assert grep -q '^STATUS: done$' <<<"$("$RUNNER" wait "$RUN_ID" --max 60)"
+fi
 
+if suite_shard_owns 4 wd-transcript-session; then
 # A claudeb run killed before it could write `out` still names its session: the transcript carries
 # the id from the first turn, and without it three hours of work cannot be resumed.
 clear_stub
@@ -85,7 +97,9 @@ assert grep -qxF 'live-session-id' "$RUN_DIR/worker-session"
 # profile reaches through a symlink of its own.
 assert grep -qxF "$(cd "$CLAUDEB_PROFILES_ROOT/picked/projects" && pwd -P)/fixture/live-session-id.jsonl" \
   "$RUN_DIR/session-file"
+fi
 
+if suite_shard_owns 4 wd-linked-tree; then
 # And a profile whose `projects` IS that symlink answers at all: `find` handed a symlinked directory
 # as its own argument walks nothing, so every real profile here — each of them a link into the one
 # shared tree — resolved no session for any live run until the root was resolved physically (live
@@ -104,7 +118,9 @@ assert grep -qx 'SESSION: linked-session-id' <<<"$linked_wait"
 assert grep -qxF "$(cd "$SHARED_TREE" && pwd -P)/fixture/linked-session-id.jsonl" \
   "$RUN_DIR/session-file"
 assert grep -qxF 'linked-session-id' "$RUN_DIR/worker-session"
+fi
 
+if suite_shard_owns 3 wd-growing; then
 # Silence is nothing happening ANYWHERE, not an empty `out`: claudeb in `--output-format json`
 # writes its one line at the very end, so out/err stay empty for the whole run while the transcript
 # grows — read as silence that killed a working run at ten minutes (live 2026-09-08,
@@ -123,7 +139,9 @@ assert test "$(grep -c 'KILLED: silent' <<<"$growing_wait")" -eq 0
 assert test ! -e "$RUN_DIR/killed"
 # The run really did stay mute for longer than the window that would have killed it.
 assert test "$(wc -l <"$CLAUDEB_PROFILES_ROOT/growing/projects/fixture/growing-session.jsonl")" -ge 3
+fi
 
+if suite_shard_owns 2 wd-paused; then
 # A run that has worked and then sits in one long tool call (a suite, ten-plus minutes) freezes
 # every source; that is IDLE's to judge, never silence (live 2026-09-24: two fixers killed mid-suite).
 clear_stub
@@ -139,7 +157,9 @@ assert grep -qx 'STATUS: done' <<<"$paused_wait"
 assert test "$(grep -c 'KILLED: silent' <<<"$paused_wait")" -eq 0
 assert test ! -e "$RUN_DIR/killed"
 assert test "$(wc -l <"$CLAUDEB_PROFILES_ROOT/paused/projects/fixture/paused-session.jsonl")" -eq 4
+fi
 
+if suite_shard_owns 3 wd-frozen; then
 # And the same empty out/err with a transcript that never moves is still silence: killed.
 clear_stub
 set_config 'claudeb_profile=pinned'
@@ -153,7 +173,9 @@ assert grep -qx 'KILLED: silent — no output in 2s' <<<"$frozen_wait"
 assert grep -qx 'silent 2' "$RUN_DIR/killed"
 assert test ! -s "$RUN_DIR/out"
 assert test ! -s "$RUN_DIR/err"
+fi
 
+if suite_shard_owns 4 wd-symlink; then
 # Through a SYMLINK, because that is the only shape a real profile has: `<profile>/projects` points
 # at `~/.claude/projects`, and a walk that does not follow one answers an empty tree — so discovery
 # never succeeded for any live claudeb run on this machine, the launcher pairing was never written
@@ -169,7 +191,9 @@ unset STUB_SLEEP STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT WORKER_RUN_IDLE
 symlinked_wait=$("$RUNNER" wait "$RUN_ID" --max 60)
 assert grep -qx 'SESSION: through-a-symlink' <<<"$symlinked_wait"
 assert grep -qxF 'through-a-symlink' "$RUN_DIR/worker-session"
+fi
 
+if suite_shard_owns 3 wd-foreign; then
 # A transcript belonging to another task is not this run's session, whatever else the tree holds.
 clear_stub
 set_config 'claudeb_profile=pinned'
@@ -188,7 +212,9 @@ assert grep -q '^STATUS: failed$' <<<"$foreign_wait"
 assert grep -qx 'SESSION: -' <<<"$foreign_wait"
 assert grep -q '^KILLED: deadline — the 8s ceiling' <<<"$foreign_wait"
 rm -f "$foreign_dir/foreign-session.jsonl"
+fi
 
+if suite_shard_owns 1 wd-blind; then
 # A blind run is not an idle run. claudeb writes `out` once, at exit, so a claudeb run whose
 # transcript was never located and whose workdir is no repository emits nothing the watchdog can
 # read — and killing it for that silence killed a healthy 23-minute run whose worker was editing
@@ -201,7 +227,9 @@ unset STUB_SLEEP WORKER_RUN_IDLE_S WORKER_RUN_DEADLINE
 blind_wait=$("$RUNNER" wait "$RUN_ID" --max 60)
 assert grep -q '^STATUS: done$' <<<"$blind_wait"
 assert_fails grep -q '^KILLED: ' <<<"$blind_wait"
+fi
 
+if suite_shard_owns 2 wd-editing; then
 # And a run whose EDITS are the only thing moving is working: the transcript is written once and
 # never grows, `out` lands at exit, and the files under the workdir are what LAST-EDIT reads — so
 # the watchdog reads them too, or a worker mid-edit dies at the idle window.
@@ -225,7 +253,9 @@ editing_wait=$("$RUNNER" wait "$RUN_ID" --max 60)
 assert grep -q '^STATUS: done$' <<<"$editing_wait"
 assert_fails grep -q '^KILLED: ' <<<"$editing_wait"
 rm -f "$DIRT_REPO/bin/the-worker-is-mid-edit"
+fi
 
+if suite_shard_owns 4 wd-retry-cotenant; then
 # A run's SECOND attempt is a second session. Brief text cannot tell the two apart — the retry
 # hands the CLI the same words — so a run that relaunches adopts the transcript its abandoned
 # attempt left in the tree, and reports and RESUMEs a session holding none of its work. The token
@@ -266,7 +296,9 @@ assert grep -q '^STATUS: done$' <<<"$cotenant_wait"
 assert test ! -s "$RUN_DIR/session-file"
 assert_fails grep -q 'a-co-tenant' "$RUN_DIR/worker-session"
 rm -f "$retry_tree"/*.jsonl
+fi
 
+if suite_shard_owns 4 wd-signal; then
 # Killing the supervisor kills the run. A TERM that stops the supervisor and leaves the vendor CLI
 # writing is a worker nobody watches, a record that never gets an exit code, and edits landing in
 # the workdir after the launcher was told the run had ended (live 2026-09-04: run
@@ -309,7 +341,9 @@ assert_fails kill -0 "$stub_pid"
 # mid-edit in the real thing — outlives the run that was reported over.
 for waiting in $(seq 1 60); do kill -0 "$stub_child" 2>/dev/null || break; sleep 0.1; done
 assert_fails kill -0 "$stub_child"
+fi
 
+if suite_shard_owns 3 wd-hung; then
 # A watchdog tick that never returns is ended with the run, not left behind: killing the watchdog
 # alone orphaned its in-flight command substitutions, and one blocked forever (a here-string past a
 # full pipe) kept a chain of `_supervise` subshells alive 31 h after exit_code (live 2026-10-04,
@@ -346,6 +380,7 @@ for waiting in $(seq 1 100); do
 done
 [ -z "$leftover" ] || kill $leftover 2>/dev/null
 assert test -z "$leftover"
+fi
 }
 
 dirt_repo_init

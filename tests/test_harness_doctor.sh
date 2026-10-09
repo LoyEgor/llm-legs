@@ -2044,7 +2044,7 @@ assert_eq "$(jq -c --argjson head "$calibration_head" '($head | map(sub("=[^=]*$
   | select(.status == "fixed" or .status == "fixed-pending") | .id | select(IN($ids[]) | not) | . + "=fixed-pending"]' \
   "$ROOT/share/harness-ledger.json")" \
   "$first_ids" "the 2026-09-29 18:27 calibration reads its known watches and every night fix as pending proof"
-assert_eq '["test_daily_cost-worker-run 8577.0 23","test_daily_cost:llm-legs:test_instruction_gate 10377.0 38","test_long_pole-worker-run 0.957 1","test_long_pole-review-bench null 0","test_long_pole-review-bench-in-llm-legs null 0","test_daily_cost-llm-limits 314.0 0","test_daily_cost-review-flow-gate null 0","test_long_pole-commit-report null 0","test_long_pole-light-research null 0","test_slow-instruction-gate 344.0 0","test_daily_cost-statusline-hooks 332.0 0"]' \
+assert_eq '["test_daily_cost-worker-run 8577.0 23","test_daily_cost:llm-legs:test_instruction_gate 10377.0 38","test_long_pole-worker-run 0.957 1","test_long_pole-review-bench null 0","test_long_pole-review-bench-in-llm-legs null 0","test_daily_cost-llm-limits 314.0 0","test_daily_cost-review-flow-gate null 0","test_long_pole-commit-report null 0","test_long_pole-light-research null 0","test_slow-instruction-gate 344.0 0","test_daily_cost-statusline-hooks 332.0 0","test_daily_cost-doctor-fix 24.0 0","test_daily_cost-night-run null 0","test_daily_cost-review-bench null 0"]' \
   "$(jq -c '[.problems[] | select(.id | startswith("test_")) | "\(.id) \(.value) \(.exposure)"]' "$WORK/replay-1.json")" \
   "the calibration's 24 h of llm-legs tests: test_worker_run is the long pole, both suites cost over 2 h"
 
