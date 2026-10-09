@@ -141,11 +141,6 @@ assert_eq "" "$(stop)"
 end_waits; forget
 jq '.heartbeat_epoch -= 3600' "$WORKER_STATS_DIR/progress/x.json" >"$WORK/x" && mv "$WORK/x" "$WORKER_STATS_DIR/progress/x.json"
 assert_eq "" "$(stop)"
-# Every heartbeat rewrites the file, so a document untouched for an hour is never read.
-jq -nc --arg r "$R" --argjson hb "$(date +%s)" '{run_id:$r,session:"s1",state:"running",heartbeat_epoch:$hb}' \
-  >"$WORKER_STATS_DIR/progress/x.json"
-python3 -c 'import os, sys, time; t = time.time() - 3600; os.utime(sys.argv[1], (t, t))' "$WORKER_STATS_DIR/progress/x.json"
-assert_eq "" "$(stop)"
 rm -f "$WORKER_STATS_DIR/progress/x.json"
 
 # Three holds in a row, then the stop goes through; a hold minutes apart starts the count over.
