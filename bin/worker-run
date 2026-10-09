@@ -359,6 +359,10 @@ launch_attempt() { # directory
       printf '\n'
       cat "$directory/$preamble" || return 1
     done
+    # Live 2026-10-09: a judge rerouted off a walled account found its own half-written verdicts,
+    # took them for another agent's, refused to touch them and reported "judged 0/38".
+    [ "$attempt" -le 1 ] ||
+      printf '\nCONTINUATION (worker-run-injected): this is attempt %s of this run; an earlier attempt, cut off by an account limit or relaunched, may have done part of this brief. Files it created or changed are this run'"'"'s own work, not another agent'"'"'s: check them, keep what is valid and continue from where it stopped; never refuse because an output already exists, never redo finished parts.\n' "$attempt"
     printf '\n%s\n\nRUN-TOKEN: %s\n' "$BRIEF_PREAMBLE" "$token"; } \
     >"$directory/brief.launch.tmp.$$" &&
     mv -f "$directory/brief.launch.tmp.$$" "$directory/brief.launch" || return 1

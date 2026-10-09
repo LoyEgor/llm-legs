@@ -191,6 +191,7 @@ EOF
     assert grep -qx 'REROUTE: walled on wall → continued on rescue' <<<"$result"
     assert test "$(sed -n 1p "$WORKER_WALLS_DIR/codex-wall")" -gt "$(date +%s)"
     assert test "$(cat "$RUN_DIR/attempt")" = 2
+    assert grep -q '^CONTINUATION (worker-run-injected): this is attempt 2 of this run' "$RUN_DIR/brief.launch"
     assert_fails kill -0 "$(cat "$STUB_DIR/wall.pid")"
     assert_fails kill -0 "$(cat "$STUB_DIR/wall.child.pid")"
   fi

@@ -173,6 +173,7 @@ assert test ! -e "$RUN_DIR/agent-task"
 # The row's title is the brief's first prose line, and every launch carries the instruction-file guard.
 assert test "$(cat "$RUN_DIR/title")" = 'test brief'
 assert test "$(grep -c '^MD-GUARD (worker-run-injected): Instruction files are the orchestrator.s to edit (Egor.s rule): do not write CLAUDE.md' "$RUN_DIR/brief.launch")" = 1
+assert_fails grep -q '^CONTINUATION' "$RUN_DIR/brief.launch"
 "$RUNNER" wait "$RUN_ID" --max 0 >/dev/null
 assert jq -e '.phase == "wait" and (has("round") | not)' "$RUN_DIR/state.json" >/dev/null
 gate_open
