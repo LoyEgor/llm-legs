@@ -55,11 +55,14 @@ BENCH_WORKDIR = re.compile(r"/logo-vectorizer-bench(/|$)")
 FLOOR_ROW_MIN_DAY = 30
 ROI_DAYS = 3
 IMPROVEMENT_RULES = ("opportunity", "regression", "time_floor", spend_block.RULE, suite_audit.RULE)
-# (unit, samples a side needs, the after/before ratio proving it): p5 of median(N)/median(the samples before) on
-# unchanged code over the journals of 2026-09-29..10-07, so a lower ratio is no noise.
-UNITS = {"suite_run": ("CPU-s/run", suite_audit.PROOF_RUNS, suite_audit.PROOF_RATIO),
-         "hooks": ("ms/call", 50, 0.55), "stop": ("ms/call", 50, 0.55),
-         "suite_wait": ("s/wait", 20, 0.4), "slot": ("s/wait", 20, 0.4), "locks": ("s/wait", 20, 0.4)}
+# (unit, samples a side needs, the after/before ratio proving it, the gain's daily unit, units in one of it): the
+# ratio is p5 of median(N)/median(the samples before) on unchanged code over the journals of 2026-09-29..10-07, so a
+# lower ratio is no noise.
+UNITS = {"suite_run": ("CPU-s/run", suite_audit.PROOF_RUNS, suite_audit.PROOF_RATIO, "CPU-min/day", 60.0),
+         "hooks": ("ms/call", 50, 0.55, "min/day", 60000.0), "stop": ("ms/call", 50, 0.55, "min/day", 60000.0),
+         "suite_wait": ("s/wait", 20, 0.4, "min/day", 60.0), "slot": ("s/wait", 20, 0.4, "min/day", 60.0),
+         "locks": ("s/wait", 20, 0.4, "min/day", 60.0)}
+MEASURERS = ("bin/harness-doctor", "bin/speed-doctor", "share/suite_audit.py", "share/time_budget.py")
 WAIT_OF = {"suite_wait": ("run-suites",), "slot": ("workers", "review-cells"), "locks": WAIT_CLASSES}
 UNIT_BEFORE_DAYS = 7
 SETTLE_S = 24 * 3600
@@ -702,7 +705,7 @@ def lines_of(night):
                 continue
             parts = line.split("\t")
             if which and len(parts) == 3 and parts[0] != "-":
-                test = "/tests/" in "/" + parts[2] or os.path.basename(parts[2]).startswith("test_")
+                test = is_test(parts[2])
                 out[which][2 * test] += int(parts[0])
                 out[which][2 * test + 1] += int(parts[1])
     for j in night.get("jobs") or ():
@@ -710,6 +713,10 @@ def lines_of(night):
             if night_churn.repo_dir(c.get("repo") or "") is None:
                 out["unreadable"] += 1
     return out
+
+
+def is_test(path):
+    return "/tests/" in "/" + path or os.path.basename(path).startswith("test_")
 
 
 def improvement_class(rule, pid):
@@ -739,20 +746,75 @@ def improvements(night, path, worker_run):
                 and (p.get("rule") in IMPROVEMENT_RULES or str(p.get("rule") or "").startswith("test_"))]
         if not rows:
             continue
-        lines = [0, 0]
-        for commit in job.get("commits") or ():
-            repo = night_churn.repo_dir(commit.get("repo") or "")
-            shown = subprocess.run(["git", "-C", repo, "show", "--format=", "--numstat", str(commit.get("hash"))],
-                                   capture_output=True, text=True, errors="replace") if repo else None
-            for line in (shown.stdout.splitlines() if shown and shown.returncode == 0 else ()):
-                parts = line.split("\t")
-                if len(parts) == 3 and parts[0] != "-":
-                    lines = [lines[0] + int(parts[0]), lines[1] + int(parts[1])]
+        lines, files = job_changes(job)
         out.append({"ref": job["ref"], "ids": [p.get("id") for p in rows],
                     "class": improvement_class(str(rows[0].get("rule") or ""), str(rows[0].get("id") or "")),
                     "spend_m": round(night_spend.weighted(spend[job["ref"]]) / 1e6, 1), "lines": lines,
-                    "merged": job.get("state") == "merged"})
+                    "files": files, "merged": job.get("state") == "merged"})
     return out
+
+
+def job_changes(job):
+    """The +/- lines of a job's commits and the [repo, path] of each file they changed, None once a commit is
+    unreadable."""
+    lines, files = [0, 0], []
+    for commit in job.get("commits") or ():
+        repo = night_churn.repo_dir(commit.get("repo") or "")
+        shown = subprocess.run(["git", "-C", repo, "show", "--format=", "--numstat", str(commit.get("hash"))],
+                               capture_output=True, text=True, errors="replace") if repo else None
+        if not shown or shown.returncode != 0:
+            files = None
+            continue
+        for line in shown.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) == 3:
+                files = None if files is None else files + [[commit.get("repo"), parts[2]]]
+                if parts[0] != "-":
+                    lines = [lines[0] + int(parts[0]), lines[1] + int(parts[1])]
+    return lines, files
+
+
+def unit_names(item):
+    """The suites (repo/label) or hooks a fix's problem ids name; none measures its whole class."""
+    named = set()
+    for ident in item.get("ids") or ():
+        if item["class"] == "suite_run":
+            found = re.fullmatch(r"(?:test_\w+|%s):([\w.-]+):([\w.-]+)|opportunity:tests/([\w.-]+)/([\w.-]+)"
+                                 % suite_audit.RULE, str(ident))
+            if found:
+                named.add("%s/%s" % (found.group(1) or found.group(3), found.group(2) or found.group(4)))
+        elif item["class"] in ("hooks", "stop"):
+            found = re.fullmatch(r"\w+:hooks/(.+)", str(ident))
+            if found:
+                named.add(found.group(1))
+    return named
+
+
+def hook_key(command):
+    word, _, rest = command.partition(" ")
+    return (os.path.basename(word) + " " + rest).strip()
+
+
+def runtime_change(item):
+    """Whether a fix's commits changed code its measured unit runs: never by ledgers, docs, the measurers (their
+    baselines and windows) or tests, save a suite unit's own suite and test helpers; None when its files are unknown.
+    A unit's measurer is runtime only for that measurer's own suite."""
+    files = item.get("files")
+    if files is None:
+        return None
+    suites = {k.split("/", 1)[1] for k in unit_names(item)} if item["class"] == "suite_run" else set()
+    for _, path in files:
+        base = os.path.basename(path)
+        stem = os.path.splitext(base)[0]
+        if path.endswith(".md") or path.startswith("docs/") or (base.endswith(".json") and "ledger" in base):
+            continue
+        if path in MEASURERS and "test_" + stem.replace("-", "_") not in suites:
+            continue
+        if is_test(path) and (item["class"] != "suite_run" or suites and base.startswith("test_")
+                              and stem not in suites):
+            continue
+        return True
+    return False
 
 
 def class_min_day(day, key, now):
@@ -783,40 +845,54 @@ def saved_min_day(item, landed, now):
 
 
 def unit_samples(item, lo, hi):
-    """{key: [values]} of the class's natural unit in [lo, hi): per suite (only the suites its ids name, when any),
-    per hook script, per wait class."""
+    """{key: [values]} of the class's natural unit in [lo, hi): per suite (repo/label), per hook (its script's base
+    name and arguments), per wait class."""
     if item["class"] == "suite_run":
-        named = set()
-        for ident in item.get("ids") or ():
-            found = re.fullmatch(r"(?:test_\w+|%s):([\w.-]+):([\w.-]+)|opportunity:tests/([\w.-]+)/([\w.-]+)"
-                                 % suite_audit.RULE, str(ident))
-            if found:
-                named.add("%s/%s" % (found.group(1) or found.group(3), found.group(2) or found.group(4)))
-        return suite_audit.samples(suites_path(), lo, hi, named)
+        return suite_audit.samples(suites_path(), lo, hi)
     out = collections.defaultdict(list)
     if item["class"] in ("hooks", "stop"):
         for h in event_rows(lo, hi, ("h",)).get("h", ()):
             if len(h) > 5 and lo <= h[1] < hi and num(h[5]) is not None and (h[3] == "Stop") == (item["class"] == "stop"):
-                out[h[4]].append(h[5])
+                out[hook_key(str(h[4]))].append(h[5])
     for w in wait_rows(lo, hi) if item["class"] in WAIT_OF else ():
         if w.get("class") in WAIT_OF[item["class"]]:
             out[w["class"]].append(w["seconds"])
     return out
 
 
+def unit_gone(item, named, after, need, ended, now):
+    """A named suite whose file left its repository, or a named hook absent a full day after the night while others
+    ran."""
+    if item["class"] == "suite_run":
+        for key in named:
+            repo = night_churn.repo_dir(key.split("/", 1)[0])
+            if not repo or any(os.path.isfile(os.path.join(repo, "tests", key.split("/", 1)[1] + ext))
+                               for ext in (".sh", ".py")):
+                return False
+        return True
+    return (now - ended >= 86400 and not any(after.get(k) for k in named)
+            and sum(len(v) for v in after.values()) >= need)
+
+
 def unit_proof(item, started, ended, now):
     """A landed improvement whose class has a natural unit, proven from the journals once N samples follow the night:
-    the medians per key (suite, hook script, wait class) before the night and after it, weighted by the samples
-    after it, so a changed mix of suites or hooks reads as no gain. No sample before the night keeps the day
-    totals."""
+    the medians per key (the keys its ids name, else every suite, hook script or wait class) before the night and
+    after it, weighted by the samples after it, so a changed mix of suites or hooks reads as no gain. A proven gain
+    sums, over the keys proven on their own, the key's delta times its daily exposure since the night. No sample
+    before the night keeps the day totals; a named unit that no longer exists is `gone`."""
     unit = UNITS.get(item["class"])
     if not unit:
         return None
-    label, need, ratio = unit
+    label, need, ratio, daily, scale = unit
+    named = unit_names(item)
     before = unit_samples(item, started - UNIT_BEFORE_DAYS * 86400, started)
+    after = unit_samples(item, ended, now)
+    if named:
+        if unit_gone(item, named, after, need, ended, now):
+            return {"proven": False, "gone": True, "text": "%s no longer exists" % ", ".join(sorted(named))}
+        before, after = ({k: v for k, v in d.items() if k in named} for d in (before, after))
     if not any(before.values()):
         return None
-    after = unit_samples(item, ended, now)
     keys = [k for k, v in after.items() if len(v) >= need and before.get(k)]
     if not keys:
         return {"proven": None, "text": "%s: %d of %d since" % (
@@ -826,9 +902,14 @@ def unit_proof(item, started, ended, now):
     was = sum(weight[k] * statistics.median(before[k]) for k in keys) / total
     now_ = sum(weight[k] * statistics.median(after[k]) for k in keys) / total
     proven = now_ <= ratio * was
-    return {"proven": proven, "before": round(was, 2), "after": round(now_, 2), "samples": int(total),
-            "text": "%s → %s %s · %s" % (suite_audit.fmt(was), suite_audit.fmt(now_), label,
-                                         "proven" if proven else "not proven")}
+    days = max(1.0, (now - ended) / 86400.0)
+    gain = round(sum((statistics.median(before[k]) - statistics.median(after[k])) * weight[k] for k in keys
+                     if statistics.median(after[k]) <= ratio * statistics.median(before[k])) / days / scale,
+                 1) if proven else 0.0
+    span = "%s → %s %s" % (suite_audit.fmt(was), suite_audit.fmt(now_), label)
+    return {"proven": proven, "before": round(was, 2), "after": round(now_, 2), "samples": int(total), "span": span,
+            "gain": gain, "daily": daily,
+            "text": "%s · %s" % (span, "proven · %.1f %s" % (gain, daily) if proven else "not proven")}
 
 
 def spend_proofs():
@@ -841,15 +922,28 @@ def timed(row):
     return [i for i in row.get("improvements") or () if not (i["class"] or "").startswith("spend:")]
 
 
+def gained(minutes, other):
+    """Wall minutes a day, then each gain in its own unit (CPU-min/day), never folded into the minutes."""
+    return "gained %.1f min/day" % minutes + "".join(" · %.1f %s" % (v, k) for k, v in sorted(other.items()) if v)
+
+
+def plural(n, word, many):
+    return " · %d %s" % (n, word if n == 1 else many) if n else ""
+
+
 def roi_lines(rows, now):
     """Per improvement job of the night, per night, and cumulative over the trend: weighted spend against the
-    minutes per day saved once the change ran a full day, or, for a class with a natural unit, its per-unit proof. No
-    gain reads 'spend without result', never a revert. A Spend audit reads its proof from Harness's latest.json
-    instead and stays out of the minute totals."""
+    minutes per day saved once the change ran a full day, or, for a class with a natural unit, its per-unit proof
+    times the unit's daily exposure since the night, in the unit's own daily measure. A fix that changed no code its
+    unit runs (`runtime_change`), or whose named unit no longer exists, is a measurement fix and never a gain. No gain
+    reads 'spend without result', never a revert. A Spend audit reads its proof from Harness's latest.json instead
+    and stays out of the minute totals."""
     out, total_spend, total_saved, total_proven, measured, proofs = [], 0.0, 0.0, 0, 0, None
+    total_other = collections.Counter()
     for row in (r for r in rows if r):
         spend = saved = 0.0
-        pending = unmeasured = proven = 0
+        pending = unmeasured = proven = fixes = 0
+        other = collections.Counter()
         for item in row.get("improvements") or ():
             if (item["class"] or "").startswith("spend:"):
                 if row is rows[-1]:
@@ -861,15 +955,28 @@ def roi_lines(rows, now):
                         if item["merged"] else "not landed"))
                 continue
             ended = row.get("ended") or row["started"] + row["hours"] * 3600
+            what = ", ".join(sorted(unit_names(item))) or LABEL.get(item["class"], "harness total")
+            change = runtime_change(item) if item["merged"] else None
             shown = unit_proof(item, row["started"], ended, now) if item["merged"] else None
-            if shown:
+            if change is False or shown and shown.get("gone") and not change:
+                spend, fixes = spend + item["spend_m"], fixes + 1
+                if row is rows[-1]:
+                    out.append("roi · %s · %s · %.1fM · %+d/-%d lines · %smeasurement fix" % (
+                        item["ref"][:40], what, item["spend_m"], item["lines"][0], item["lines"][1],
+                        shown["span"] + " · " if shown and "span" in shown else ""))
+                continue
+            if shown and not shown.get("gone"):
                 if shown["proven"] is None:
                     pending += 1
                 else:
                     spend, measured, proven = spend + item["spend_m"], measured + 1, proven + shown["proven"]
+                    if shown["daily"] == "min/day":
+                        saved += shown["gain"]
+                    else:
+                        other[shown["daily"]] += shown["gain"]
                 if row is rows[-1]:
-                    out.append("roi · %s · %.1fM · %+d/-%d · %s" % (
-                        item["ref"][:40], item["spend_m"], item["lines"][0], item["lines"][1], shown["text"]))
+                    out.append("roi · %s · %s · %.1fM · %+d/-%d · %s" % (
+                        item["ref"][:40], what, item["spend_m"], item["lines"][0], item["lines"][1], shown["text"]))
                 continue
             gain = saved_min_day(item, ended, now) if item["merged"] else None
             if gain == UNMEASURED:
@@ -883,18 +990,21 @@ def roi_lines(rows, now):
                 measured += 1
             if row is rows[-1]:
                 out.append("roi · %s · %s · %.1fM · %+d/-%d lines · %s" % (
-                    item["ref"][:40], LABEL.get(item["class"], "harness total"), item["spend_m"], item["lines"][0],
+                    item["ref"][:40], what, item["spend_m"], item["lines"][0],
                     item["lines"][1], "not landed" if not item["merged"] else "pending a full day" if gain is None
                     else "unmeasured before or after it" if gain == UNMEASURED
                     else "saves %.1f min/day" % gain if gain > 0 else "spend without result"))
         if row is rows[-1] and timed(row):
-            out.append("roi · night: improvements %.1fM · gained %.1f min/day%s%s%s" % (
-                spend, saved, " · %d proven per unit" % proven if proven else "",
+            out.append("roi · night: improvements %.1fM · %s%s%s%s%s" % (
+                spend, gained(saved, other), plural(proven, "proven per unit", "proven per unit"),
+                plural(fixes, "measurement fix", "measurement fixes"),
                 " · %d pending" % pending if pending else "", " · %d unmeasured" % unmeasured if unmeasured else ""))
         total_spend, total_saved, total_proven = total_spend + spend, total_saved + saved, total_proven + proven
+        total_other.update(other)
     if any(r and timed(r) for r in rows):
-        out.append("roi · last %d nights: improvements %.1fM · gained %.1f min/day%s" % (
-            len([r for r in rows if r]), total_spend, total_saved, "" if not total_spend and not total_saved
+        out.append("roi · last %d nights: improvements %.1fM · %s%s" % (
+            len([r for r in rows if r]), total_spend, gained(total_saved, total_other),
+            "" if not total_spend and not total_saved
             else " · nothing measured yet" if not measured
             else " · %d proven per unit" % total_proven if total_proven and not total_saved
             else " · spend without result so far" if not total_saved
@@ -938,6 +1048,12 @@ def cached_row(worker_run, path):
         return None
     row = read_json(ledger_cache(night["id"], path), None)
     if isinstance(row, dict) and row.get("finished"):
+        stale = [i for i in row.get("improvements") or () if "files" not in i]
+        if stale:
+            jobs = {j.get("ref"): j for j in night.get("jobs") or ()}
+            for item in stale:
+                item["files"] = job_changes(jobs.get(item["ref"]) or {"commits": [{}]})[1]
+            write_json(ledger_cache(night["id"], path), row)
         return row
     row = ledger_row(worker_run, path, night)
     if row["finished"]:

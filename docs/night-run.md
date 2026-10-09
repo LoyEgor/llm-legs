@@ -94,7 +94,7 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
      stays unmerged and is named in the report.
 7. **Close.**
    - `night-run suites <id>` starts the night's one full `tests/run-all` per sweep repository,
-     detached: nothing waits for it (no worker ever runs it); `report` prints its result as weak spots.
+     detached: no worker waits for it; `report` waits out a live one (`NIGHT_RUN_SUITES_WAIT_S`, 1200 s), FAILs by suite.
    - Rerun the five doctors. This settles the ledger's `fixed-pending` rows into each doctor's overlay,
      never the main checkout. Then, in a worktree of llm-legs on `night/<id>/ledger-sync` from main's
      HEAD, `bin/doctor-fix ledger-sync <worktree>` writes the settled fields into its tracked ledgers;
@@ -279,9 +279,8 @@ touched again without proof; spend, plus what was deferred: a debt round left or
 per night for the last 7, oldest first, and their problem direction. A finished night's row is cached in
 `${DOCTORS_DIR}/night-ledger/<id>.json`, so it outlives the 7-day run directories and 8-day event files;
 nights before the run stamps (2026-10-03) read `not timed` / `?`. The `roi ·` lines close it: each improvement
-job (a fixer whose problem is a Speed or time row) with weighted spend, lines and min/day saved once it ran a full
-settled day, the night's improvement spend against minutes gained, and the cumulative return over the trend
-(rules in `docs/speed-doctor-design.md` §3 ROI).
+job (a fixer whose problem is a Speed or time row) as what · spend · lines · before → after unit · verdict · gain a
+day, then the night's and the trend's totals (rules in `docs/speed-doctor-design.md` §3 ROI).
 
 The Doctors menu shows the last night on one row from `night-run latest --menu`, such as
 `Last night 30 Sep: 11 of 13 · 2 unfinished`; its submenu lists every job, done or unfinished, with

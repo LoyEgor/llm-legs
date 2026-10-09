@@ -119,6 +119,21 @@ night suites N1x --wait || fail "suites of a crashed run-all failed"
 mv "$WORK/run-all.kept" "$WORK/repo/tests/run-all"
 assert jqe '.suites.repos[0] | .exit == 3 and .passed == 0 and .failed == ["run-all"]' "$NIGHTS/N1x.json"
 assert grep -qxF 'suites · repo · 0 PASS · 1 FAIL: run-all' <(night report N1x 2>/dev/null)
+# The report waits out a live full run, so its FAIL reaches the morning message, and journals the wait.
+jq -n '{id: "N1y", started_at: "2026-10-03T13:00:00Z", finished_at: null, jobs: []}' >"$NIGHTS/N1y.json"
+mv "$WORK/repo/tests/run-all" "$WORK/run-all.kept"
+printf '#!/usr/bin/env bash\nsleep 3\nexec "%s" "$@"\n' "$WORK/run-all.kept" >"$WORK/repo/tests/run-all"
+chmod +x "$WORK/repo/tests/run-all"
+night suites N1y >/dev/null || fail "suites did not detach"
+for i in $(seq 1 50); do jqe '.suites.pid' "$NIGHTS/N1y.json" 2>/dev/null && break; sleep 0.1; done
+HARNESS_WAITS_DIR="$WORK/waits" night report N1y >"$WORK/report-y" 2>/dev/null
+mv "$WORK/run-all.kept" "$WORK/repo/tests/run-all"
+assert grep -qxF 'suites · repo · 1 PASS · 1 FAIL: test_b.sh' "$WORK/report-y"
+assert jqe -s 'length == 1 and .[0].class == "night-suites" and .[0].source == "night-run report N1y" and .[0].seconds > 1' \
+  "$WORK"/waits/*.jsonl
+jq -n '{id: "N1z", started_at: "2026-10-03T14:00:00Z", finished_at: null, jobs: [],
+  suites: {started_at: "2026-10-03T14:00:00Z", finished_at: null, pid: 99999999, repos: []}}' >"$NIGHTS/N1z.json"
+assert grep -qE '^suites · stopped unfinished since [0-9]{2}:[0-9]{2}$' <(night report N1z 2>/dev/null)
 
 mkdir -p "$WORK/bin" "$WORK/repo/share" "$WORK/alpha-cwd"
 export PATH="$WORK/bin:$PATH" NIGHT_RUN_OPENER="$WORK/bin/opener" NIGHT_RUN_WORKER_PICK="$WORK/bin/pick"

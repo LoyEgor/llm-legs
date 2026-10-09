@@ -91,7 +91,7 @@ LIMITS = {
     "wait_growth_days": 3,
     "worker_orphans": 3,
 }
-WAIT_RED_S = {"lock": 60, "poll": 30}
+WAIT_RED_S = {"lock": 60, "poll": 30, "night-suites": 1200}
 WAIT_DAYS = 15
 
 SYNC_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop", "SubagentStop", "SessionStart",

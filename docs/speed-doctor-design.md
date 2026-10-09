@@ -151,12 +151,13 @@ far over model/floor share;
 the proof of a fix is the measurement back under it (no row).
 
 **ROI** (`night-run report`, `roi ·` lines). A fixer job whose problem is a Speed or time row (`opportunity`,
-`regression`, `time_floor`, `test_*`) is an improvement: weighted spend, lines changed, and min/day saved = its class's mean
-over up to 3 settled days before the night minus the mean over up to 3 settled days after a full day of the change
-(pending until then). A day with zero recorded time predates the measurement: it is unmeasured, never a zero day,
-and stays out of the band, the floors and both sides; a job with no measured day on a side reads `unmeasured before
-or after it` and its spend stays out of the return. Per night: improvement spend against minutes gained; cumulative
-over the trend's nights. No gain reads `spend without result` — a measurement, never a revert or a gate.
+`regression`, `time_floor`, `test_*`) is an improvement: spend, lines, gain. A class in `share/time_budget.py` `UNITS`
+is proven per unit (medians of its named suites or hooks, else all) and gains each proven key's delta × its daily
+exposure since the night, in its own daily unit (suites: CPU-min/day). Other classes save their mean over up to 3
+settled days before minus after a full day; a zero-time day is unmeasured, and a job without a measured day on a side
+reads `unmeasured before or after it`, its spend out of the return. Commits touching only measurers, ledgers, docs or
+other suites (`runtime_change`), or a named unit gone, read `measurement fix`, never a gain. No gain reads `spend
+without result`, never a revert or a gate.
 
 **Selection.**
 - Regressions (with a lever and ≥ 0.5 OM/d) first, then every qualifying opportunity by recoverable min/day. No count or worker-hour cap: the night's speed is the goal, and how many fixers run at once is the worker slots' load/memory admission (`share/slots.sh` `slot_room`), a queue included. The cut-off is time: the night's speed work has a 6-hour wall-clock window from the night's `started_at` (`bin/night-run` `SPEED_WINDOW_H`). `worker-run` asks `night-run speed-gate` once a Speed fixer takes its slot; a first start past the window is not launched, its job `left` with `speed window closed (6 h)` and its run abandoned, while a fixer started inside it finishes (and resumes) normally. Nothing carries over: the next night's pick recomputes from the data, so its levers rank again. A partition slice no `LEVERS` row names ranks on the generic slice lever (`slice_levers`).

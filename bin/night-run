@@ -124,7 +124,8 @@ speed-gate, run by worker-run once a night worker takes its slot: exits 3 while 
   its job left with reason `speed window closed (6 h)` and its run abandoned; an earlier start is
   recorded as a speed-start event, after which a resumed worker of that fixer always passes
 suites: every sweep repository's tests/run-all, one after another, detached unless --wait, into the
-  night's suites {started_at, finished_at, repos: [{repo, exit, passed, failed[], log}]}
+  night's suites {started_at, finished_at, pid, repos: [{repo, exit, passed, failed[], log}]}; report waits
+  for a live one up to NIGHT_RUN_SUITES_WAIT_S (1200) and journals the wait (class night-suites)
 pushed=true is refused unless every commit of the job, its integration ones included, is on its
   repository's origin main and not in the night's refs/night/<id>/base
 EOF
@@ -917,7 +918,8 @@ cmd_suites() {
     return 0
   fi
   lock
-  night_set "$id" '.suites = {started_at: $t, finished_at: null, repos: []}' --arg t "$(stamp)" || die "cannot write night $id"
+  night_set "$id" '.suites = {started_at: $t, finished_at: null, pid: $p, repos: []}' --arg t "$(stamp)" --argjson p "$$" \
+    || die "cannot write night $id"
   unlock
   while IFS= read -r repo; do
     [ -n "$repo" ] && [ -x "$repo/tests/run-all" ] || continue
@@ -1342,8 +1344,22 @@ repo_debt() { # -> one line per sweep repository: its review debt now
   done <"$sweep_repos"
 }
 
+suites_live() { # night file -> status 0 while its unfinished suites run's process lives
+  local pid
+  pid=$(jq -r 'if .suites.finished_at == null then .suites.pid // empty else empty end' "$1" 2>/dev/null)
+  [ -n "$pid" ] && ps -p "$pid" -o args= 2>/dev/null | grep -q 'night-run suites'
+}
+
+suites_wait() { # night file -> once its suites run finished, died or NIGHT_RUN_SUITES_WAIT_S passed; the wait journaled
+  local since
+  suites_live "$1" || return 0
+  since=$(date +%s)
+  while suites_live "$1" && [ "$(date +%s)" -lt $((since + ${NIGHT_RUN_SUITES_WAIT_S:-1200})) ]; do sleep 2; done
+  wait_note night-suites "night-run report $(basename "$1" .json)" "$since"
+}
+
 cmd_report() {
-  local file unverified speed run post=false id='' table
+  local file unverified speed run post=false id='' table live=false
   while [ $# -gt 0 ]; do
     case $1 in
       --post) post=true ;;
@@ -1353,6 +1369,8 @@ cmd_report() {
     shift
   done
   file=$(pick_night "$id")
+  suites_wait "$file"
+  ! suites_live "$file" || live=true
   unverified=$(jq -r '.jobs[].ref' "$file" | while IFS= read -r ref; do
     run="${nights_dir%/*}/runs/$ref.json"
     [ ! -f "$run" ] || jq -c --arg r "$ref" '{($r): [.decisions[]? | select(.component == "unverified") | .id]}' "$run"
@@ -1371,7 +1389,7 @@ cmd_report() {
   python3 -B "$repo_root/share/night_spend.py" "$repo_root/bin/worker-run" "$file" || die "no spend header for $file"
   python3 -B "$repo_root/share/night_churn.py" "$repo_root/bin/worker-run" "$file" 2>/dev/null || true
   jq -r --argjson u "$unverified" --argjson lines "$(code_lines "$file")" --arg status "$(night_status "$file")" \
-    --argjson speed "$speed" --argjson h "$SPEED_WINDOW_H" "$JQ_TOTALS"' totals as $t
+    --argjson speed "$speed" --argjson h "$SPEED_WINDOW_H" --argjson live "$live" "$JQ_TOTALS"' totals as $t
     | "night \(.id) · \(.started_at | hm)–\(.finished_at | hm)"
       + (if $t.running then " · running" elif $t.unfinished then " · UNFINISHED" else "" end),
       (if .note then "note · \(.note)" else empty end),
@@ -1393,7 +1411,8 @@ cmd_report() {
         + (if .carried then ["answered, carried to night \(.carried.night) as \(.carried.ref)"] else [] end)) | join(" · ")),
       (.leftovers[]? | "leftover · \(.repo) · \(.branch) · \(.why)"),
       (.held[]? | "held · \(.repo) · \(.branch) · \(.why)"),
-      (.suites // null | if . == null then empty elif .finished_at == null then "suites · running since \(.started_at | hm)"
+      (.suites // null | if . == null then empty elif .finished_at == null then
+         "suites · \(if $live then "running" else "stopped unfinished" end) since \(.started_at | hm)"
        else .repos[] | "suites · \(.repo | split("/") | last) · \(.passed) PASS · \(.failed | length) FAIL"
          + (if .failed == [] then "" else ": \(.failed | join(", "))" end) end),
       ($u | to_entries[] | select(.value | length > 0) | "unverified component · \(.key) · \(.value | join(", "))"),

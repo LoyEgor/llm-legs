@@ -219,34 +219,64 @@ item = {"ref": "night-x", "ids": ["test_slow:alpha:test_mid"], "class": time_bud
 night = {"started": NOW - 30, "ended": NOW, "hours": 0.0, "improvements": [item]}
 save(journal + later[:4])
 check(item["class"] == "suite_run" and time_budget.roi_lines([night], NOW + 600)[0]
-      == "roi · night-x · 1.5M · +3/-9 · CPU-s/run: 4 of 5 since",
+      == "roi · night-x · alpha/test_mid · 1.5M · +3/-9 · CPU-s/run: 4 of 5 since",
       "a suite improvement waits for 5 runs after the night, not a full day")
 save(journal + later[:4] + [row(NOW + 120 + i, {"test_mid": cpu(1, rc=1)}, split) for i in range(5)])
-check(time_budget.roi_lines([night], NOW + 600)[0] == "roi · night-x · 1.5M · +3/-9 · CPU-s/run: 4 of 5 since",
+check(time_budget.roi_lines([night], NOW + 600)[0] == "roi · night-x · alpha/test_mid · 1.5M · +3/-9 · CPU-s/run: 4 of 5 since",
       "failed runs stop early and are no proof sample: cheap failures after a night never prove it")
 save(journal + later)
 check(time_budget.roi_lines([night], NOW + 600)
-      == ["roi · night-x · 1.5M · +3/-9 · 20 → 8.0 CPU-s/run · proven",
-          "roi · night: improvements 1.5M · gained 0.0 min/day · 1 proven per unit",
-          "roi · last 1 nights: improvements 1.5M · gained 0.0 min/day · 1 proven per unit"],
-      "with 5 runs after it the night's roi line reads its per-unit before → after: %s"
-      % time_budget.roi_lines([night], NOW + 600))
+      == ["roi · night-x · alpha/test_mid · 1.5M · +3/-9 · 20 → 8.0 CPU-s/run · proven · 1.0 CPU-min/day",
+          "roi · night: improvements 1.5M · gained 0.0 min/day · 1.0 CPU-min/day · 1 proven per unit",
+          "roi · last 1 nights: improvements 1.5M · gained 0.0 min/day · 1.0 CPU-min/day · 1 proven per unit"],
+      "with 5 runs after it the night's roi line reads its per-unit before → after, and its gain in the unit's own "
+      "daily measure: 12 CPU-s a run × 5 runs in the first day: %s" % time_budget.roi_lines([night], NOW + 600))
+remeasured = dict(item, files=[["alpha", "share/suite_audit.py"], ["alpha", "tests/test_heavy.sh"]])
+check(time_budget.roi_lines([dict(night, improvements=[remeasured])], NOW + 600)
+      == ["roi · night-x · alpha/test_mid · 1.5M · +3/-9 lines · 20 → 8.0 CPU-s/run · measurement fix",
+          "roi · night: improvements 1.5M · gained 0.0 min/day · 1 measurement fix",
+          "roi · last 1 nights: improvements 1.5M · gained 0.0 min/day · nothing measured yet"]
+      and time_budget.roi_lines([dict(night, improvements=[dict(remeasured, files=[["alpha", "tests/test_mid.sh"]])])],
+                                NOW + 600)[0].endswith("proven · 1.0 CPU-min/day"),
+      "a suite's drop is a measurement fix unless the fix touched that suite's own code")
+gone = dict(item, ids=["suite_audit:alpha:test_gone"])
+check(time_budget.unit_proof(gone, NOW - 30, NOW, NOW + 600)["gone"]
+      and time_budget.roi_lines([dict(night, improvements=[gone])], NOW + 600)[0]
+      == "roi · night-x · alpha/test_gone · 1.5M · +3/-9 lines · measurement fix"
+      and time_budget.roi_lines([dict(night, improvements=[dict(gone, files=[["alpha", "code.py"]])])], NOW + 600)[0]
+      == "roi · night-x · alpha/test_gone · 1.5M · +3/-9 lines · pending a full day",
+      "a named suite that no longer exists proves nothing per unit: a measurement fix, or the day totals when the fix "
+      "changed runtime code")
 events = os.path.join(work, "harness", "events")
 os.makedirs(events)
 hooks = [["h", NOW - 3600 + i, "~", "PreToolUse", "gate.sh", 200, "Bash", "x"] for i in range(50)]
 hooks += [["h", NOW + 60 + i, "~", "PreToolUse", "gate.sh", 80, "Bash", "x"] for i in range(50)]
 hooks += [["h", t + i, "~", "Stop", "stop.sh", 900, "", "x"] for t in (NOW - 3600, NOW + 60) for i in range(50)]
+hooks += [["h", NOW - 3000 + i, "~", "PreToolUse", "~/.claude/hooks/other.sh fast", 1000, "Bash", "x"]
+          for i in range(50)]
+hooks += [["h", NOW + 60 + i, "~", "PreToolUse", "~/.claude/hooks/other.sh fast", 100, "Bash", "x"]
+          for i in range(50)]
+hooks += [["h", NOW - 3000 + i, "~", "PreToolUse", "~/.claude/hooks/gone.sh", 1000, "Bash", "x"] for i in range(50)]
 for day in {time_budget.local_day(r[1]) for r in hooks}:
     with open(os.path.join(events, day + ".jsonl"), "w") as handle:
         handle.write("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in hooks
                              if time_budget.local_day(r[1]) == day))
 shown = time_budget.unit_proof({"class": "hooks", "ids": ["time_floor:hooks"]}, NOW - 30, NOW, NOW + 600)
-check(shown["text"] == "200 → 80 ms/call · proven" and shown["samples"] == 50
+check(shown["text"] == "600 → 90 ms/call · proven · 0.8 min/day" and shown["samples"] == 100
+      and time_budget.unit_proof({"class": "hooks", "ids": ["opportunity:hooks/gate.sh"]}, NOW - 30, NOW,
+                                 NOW + 600)["text"] == "200 → 80 ms/call · proven · 0.1 min/day"
+      and time_budget.unit_proof({"class": "hooks", "ids": ["opportunity:hooks/other.sh fast"]}, NOW - 30, NOW,
+                                 NOW + 600)["gain"] == 0.8
+      and time_budget.unit_proof({"class": "hooks", "ids": ["opportunity:hooks/gone.sh"]}, NOW - 30, NOW,
+                                 NOW + 86400)["gone"]
+      and time_budget.unit_proof({"class": "hooks", "ids": ["opportunity:hooks/gone.sh"]}, NOW - 30, NOW,
+                                 NOW + 600)["proven"] is None
       and time_budget.unit_proof({"class": "hooks", "ids": []}, NOW - 30, NOW + 100, NOW + 600)["proven"] is None
       and time_budget.unit_proof({"class": "retries", "ids": []}, NOW - 30, NOW, NOW + 600) is None
       and time_budget.unit_proof({"class": "slot", "ids": []}, NOW - 30, NOW, NOW + 600) is None,
-      "a hook improvement reads ms a call per script (Stop hooks apart) from 50 calls after it; a class with no unit, "
-      "or no sample of it before the night, keeps the day totals: %s" % shown)
+      "a hook improvement reads ms a call per script (Stop hooks apart, only the hooks its ids name) from 50 calls "
+      "after it, its gain each key's ms saved × calls a day; a named hook absent a full day is gone; a class with no "
+      "unit, or no sample of it before the night, keeps the day totals: %s" % shown)
 print(count[0])
 EOF
 ) || { printf 'FAIL: the Suite audits block misjudged its fixture\n' >&2; exit 1; }

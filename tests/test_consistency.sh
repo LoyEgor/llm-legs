@@ -3310,11 +3310,12 @@ assert grep -qF 'local dir="${HARNESS_WAITS_DIR:-${HARNESS_DOCTOR_DIR:-$HOME/.ca
 assert grep -qF 'os.environ.get("HARNESS_DOCTOR_DIR") or os.path.expanduser("~/.cache/harness-doctor"), "waits")' "$ROOT/share/limiter_hold.py"
 assert grep -qF '. "${BASH_SOURCE[0]%/*}/limiter-hold.sh"' "$ROOT/share/store-lock.sh"
 assert grep -qF 'export HARNESS_WAITS_DIR="$TMPDIR/waits"' "$ROOT/share/run-suites.sh"
-assert grep -qF 'WAIT_RED_S = {"lock": 60, "poll": 30}' "$HARNESS_DOCTOR_BIN"
+assert grep -qF 'WAIT_RED_S = {"lock": 60, "poll": 30, "night-suites": 1200}' "$HARNESS_DOCTOR_BIN"
 assert grep -qF '"wait_red_s": 600,' "$HARNESS_DOCTOR_BIN"
 assert grep -Fxq 'WAIT_DAYS = 15' "$HARNESS_DOCTOR_BIN"
 assert doc_has '`${HARNESS_WAITS_DIR:-${HARNESS_DOCTOR_DIR:-$HOME/.cache/harness-doctor}/waits}/<YYYY-MM-DD>.jsonl`'
 assert doc_has 'else `wait_red_s` 600 s'
+assert doc_has 'poll 30 s, night-suites 1200 s, else'
 # Row ef: every copy an installer deploys is in harness-doctor's DEPLOYS, under the command and name the installer uses.
 for installer in $(cd "$ROOT" && grep -ls '^install_agent()' bin/*); do
   sub=$(grep -oE '^ *install(-agent)?\)' "$ROOT/$installer" | tr -d ' )' | head -1)

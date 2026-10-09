@@ -291,7 +291,7 @@ check(out[6:10] == ["trend · last 2 nights · oldest first",
       "the trend: one line per night oldest first, an untimed night reads ?, and the direction from the first "
       "night's start to the last night's end, so problems that came between nights count too: %s" % out[6:10])
 check(out[10:] == ["roi · harness-x-20260110T000000Z · suite slot wait · 0.0M · +5/-1 lines · saves 1.0 min/day",
-                   "roi · harness-y-20260110T000000Z · suites running · 0.0M · +0/-0 lines · not landed",
+                   "roi · harness-y-20260110T000000Z · repo/test_x · 0.0M · +0/-0 lines · not landed",
                    "roi · night: improvements 0.0M · gained 1.0 min/day",
                    "roi · last 2 nights: improvements 0.0M · gained 1.0 min/day"],
       "the ROI ledger: each Speed or time fixer job with its spend, lines and the min/day its class lost less over "
@@ -326,12 +326,42 @@ check(T.saved_min_day(dict(item, **{"class": "slot"}), L, L + 86400 * 9) == T.UN
           "roi · last 1 nights: improvements 0.0M · gained 0.0 min/day"],
       "days stored as zeros before measurement started are unmeasured: the ROI settles as unmeasured, never pending, "
       "and its spend stays out of the return")
+measure = dict(item, ref="r", spend_m=2.0, lines=[1, 1], ids=["opportunity:time/slot"], files=[
+    ["llm-legs", "bin/speed-doctor"], ["llm-legs", "share/harness-ledger.json"], ["llm-legs", "tests/test_x.sh"],
+    ["llm-legs", "docs/x.md"]], **{"class": "slot"})
+check(T.roi_lines([{"started": D0, "hours": 3.0, "improvements": [measure]}], D0 + 86400 * 9)
+      == ["roi · r · worker slot queue · 2.0M · +1/-1 lines · measurement fix",
+          "roi · night: improvements 2.0M · gained 0.0 min/day · 1 measurement fix",
+          "roi · last 1 nights: improvements 2.0M · gained 0.0 min/day · nothing measured yet"],
+      "a fix whose commits changed only a measurer, a ledger, tests or docs is a measurement fix, never a gain")
+suite = lambda files, ids=("suite_audit:llm-legs:test_gate",): T.runtime_change(
+    {"class": "suite_run", "ids": list(ids), "files": [["llm-legs", f] for f in files]})
+check(suite(["share/suite_audit.py", "tests/test_suite_audit.sh", "share/spend-ledger.json"]) is False
+      and suite(["tests/test_suite_audit.sh", "tests/test_gate.sh"]) is True
+      and suite(["tests/gate_harness.sh"]) is True
+      and suite(["share/suite_audit.py"], ["suite_audit:llm-legs:test_suite_audit"]) is True
+      and suite(["tests/test_other.sh"], ["opportunity:chat/tests"]) is True
+      and T.runtime_change(dict(measure, files=measure["files"] + [["llm-legs", "bin/worker-run"]])) is True
+      and T.runtime_change(dict(measure, files=None)) is None,
+      "runtime code of a unit: any code but measurers, ledgers and docs; tests only for a suite unit, and only its "
+      "named suite, test helpers, or a measurer for the measurer's own suite")
 empty = T.document(L + 86400 * 9, write=False)
 check(empty["total_min"] == 0 and empty["floors"] == [] and empty["lost_min_day"] is None,
       "a window with no recorded time is unmeasured, so it owes no floor: %s %s" % (empty["floors"], empty["lost_min_day"]))
 cached = json.load(open(os.path.join(work, "doctors", "night-ledger", "N1.json")))
 check(cached["wall_s"] == 9000 and cached["split_s"]["slot"] == 600,
       "a finished night's ledger row is cached, so its numbers outlive the pruned run and event stores")
+check(cached["improvements"][0]["files"] == [["repo", "code.py"], ["repo", "tests/test_x.sh"]],
+      "a night's ledger row records the files each improvement's commits changed: %s" % cached["improvements"])
+for each in cached["improvements"]:
+    del each["files"]
+with open(T.ledger_cache("N1"), "w") as handle:
+    json.dump(cached, handle)
+T.cached_row("/usr/bin/false", os.path.join(nights, "N1.json"))
+cached = json.load(open(T.ledger_cache("N1")))
+check(cached["improvements"][0]["files"] == [["repo", "code.py"], ["repo", "tests/test_x.sh"]]
+      and cached["improvements"][1]["files"] == [],
+      "a cached row from before files were recorded gets them from its night's commits, its numbers kept")
 with open(T.ledger_cache("N1"), "w") as handle:
     json.dump(dict(cached, split_s=dict(cached["split_s"], model=1200, walled=5000)), handle)
 check(T.last_night() == {"id": "N1", "wall_s": 5800, "model_s": 1200, "share": 0.207},
