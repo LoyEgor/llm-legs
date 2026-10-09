@@ -198,7 +198,7 @@ def due(c, row, held, median, new, dead=None):
     """(reason, at once, since): since is when the reason arose, so an audit recorded after it settles it."""
     audited = epoch((row or {}).get("audited_at")) or 0.0
     if dead and (not row or audited < dead["since"]):
-        return "dead: " + dead["reason"], False, dead["since"]
+        return dead.get("kind", "dead") + ": " + dead["reason"], False, dead["since"]
     rise = jump(c["history"])
     if rise and rise["at"] > audited:
         c["commit"] = culprit(c, rise)

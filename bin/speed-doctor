@@ -160,6 +160,12 @@ TEST_HEALTH_LEVERS = {k: dict({"component": "test-health/" + k, "effort": "M", "
                 "saving": 0.5, "confidence": "estimated", "proof": "orchestration"},
     "idle": {"lever": "event waits instead of sleeps and polls inside the suite, every check kept", "saving": 0.5},
     "flaky": {"lever": "make the suite pass or fail the same on the same code, every check kept", "saving": 1.0},
+    "pole": {"lever": "split the long-pole suite into shards so the run's other slots stay busy, every check kept",
+             "saving": 0.5},
+    "serial": {"lever": "multi-suite runs take their usual slots instead of one", "saving": 0.5,
+               "proof": "orchestration"},
+    "heavy": {"lever": "audit the suite (legacy checks, over-complication, a split, sleeps) and cut its wall, every "
+                       "requirement kept", "saving": 0.3, "confidence": "estimated"},
     "fan-out": {"lever": "tests/affected pulls only the suites that exercise the file", "saving": 0.3,
                 "confidence": "estimated", "proof": "orchestration"}}.items()}
 validate_levers(LEVERS + [TEST_LEVER, HOOK_LEVER] + list(TIME_LEVERS.values()) + list(TEST_HEALTH_LEVERS.values()))
@@ -792,9 +798,14 @@ def per_day(total, worker=0.0):
 
 def with_time(opportunities, budget):
     """A class over its floor adds its gap to the best-ranked opportunity already pricing it (the class
-    time_budget.improvement_class scores its fix against), else it becomes its own time opportunity. Recoverable minutes set the score, so the biggest gap is the one the night takes."""
+    time_budget.improvement_class scores its fix against), else it becomes its own time opportunity. Recoverable minutes set the score, so the biggest gap is the one the night takes.
+    The suites-running gap is net of what test-health opportunities already recover: one minute is offered once."""
     out = sorted(opportunities, key=rank_key)
+    offered = sum(o["opportunity"]["recoverable_min_day"] for o in out if o["id"].startswith(TEST_HEALTH_ID))
     for key, label, actual, gap, floor, worker in time_gaps(budget):
+        if key == "suite_run" and offered:
+            left = max(0.0, gap - offered)
+            gap, worker = round(left, 2), round(worker * left / gap, 2) if gap else 0.0
         if gap < LIMITS["worth_om_day"]:
             continue
         # chat/hooks prices the Stop leaf too (CHAT_LEAVES), though its fix is scored against hooks alone.
@@ -824,16 +835,47 @@ TEST_HEALTH_ID = "opportunity:test-health/"
 
 
 def test_opportunities(tests):
-    """Test health findings as opportunities priced at their own min/day; a floor gap never folds into one."""
+    """Test health findings as opportunities priced at their own min/day; a floor gap never folds into one. A heavy
+    suite carries its keep requirement as `protected`."""
     out = []
     for f in tests.get("findings") or ():
-        lever = TEST_HEALTH_LEVERS[f["class"]]
-        o = target_opportunity(f["target"], f["min_day"], lever, f["exposure"], seen_days=f["days"])
+        lever = dict(TEST_HEALTH_LEVERS[f["class"]], **({"confidence": f["confidence"]} if f.get("confidence") else {}))
+        protected = None
+        if f["class"] == "heavy":
+            repo, name = f["files"][0].split("/tests/", 1)
+            protected = test_requirement(repo, "tests/" + name)
+        o = target_opportunity(f["target"], f["min_day"], lever, f["exposure"], protected, seen_days=f["days"])
         fields = o["opportunity"]
         fields.update(files=f["files"], worker_min_day=round(f["worker_min_day"] * lever["saving"], 2))
-        o["fact"] = "%s · %s → saves %s · %s" % (f["fact"], per_day(f["min_day"], f["worker_min_day"]),
-                                                 per_day(fields["saving"], fields["worker_min_day"]), lever["lever"])
+        o["fact"] = "%s · %s → saves %s · %s%s" % (f["fact"], per_day(f["min_day"], f["worker_min_day"]),
+                                                   per_day(fields["saving"], fields["worker_min_day"]), lever["lever"],
+                                                   " · " + protected if protected else "")
         out.append(o)
+    return out
+
+
+def without_moved_heavy(opportunities, tests):
+    """A suite test health prices as heavy drops its moved `tests/<repo>/<label>` row: one minute, one offer."""
+    heavy = {"opportunity:tests/" + f["target"].split("/", 2)[2] for f in tests.get("findings") or ()
+             if f["class"] == "heavy"}
+    return [o for o in opportunities if o["id"] not in heavy]
+
+
+def test_regressions(tests, ledger, now):
+    """A test health line over its usual as a regression row the night picks, its expected gain the line's minutes
+    a day over the usual."""
+    out = []
+    for reg in tests.get("regressions") or ():
+        key = "test-health/" + reg["key"]
+        row = H.ledger_row(ledger, "regression", key)
+        out.append({"id": row["id"] if row else "regression:%s" % key, "rule": "regression",
+                    "state": H.ledger_state(row, 48, now),
+                    "fact": "%s %s %s over its usual %s (+%s min/day)" % (reg["label"], fmt(reg["now"]), reg["unit"],
+                                                                          fmt(reg["usual"]), fmt(reg["min_day"])),
+                    "value": reg["now"], "limit": round(test_health.BAND * reg["usual"], 2), "unit": reg["unit"],
+                    "window_h": 24, "exposure": None, "count": None, "first_seen": None, "last_seen": None,
+                    "evidence": [], "ledger": row["id"] if row else None, "group": "test-health", "component": key,
+                    "expected_min_day": max(0.0, reg["min_day"]), "band": "usual", "ident": reg["key"]})
     return out
 
 
@@ -1154,7 +1196,9 @@ def collect(write, now):
         tests = test_health.collect(now, H.suites_journal(), suite_audit.repos(), write)
     except Exception as exc:
         tests = {"status": "error", "head": H.error_line(exc), "findings": [], "candidates": {}, "menu": []}
-    opportunities += [o for o in test_opportunities(tests) if o["opportunity"]["om_day"] >= LIMITS["worth_om_day"]]
+    opportunities = without_moved_heavy(opportunities, tests) + [
+        o for o in test_opportunities(tests) if o["opportunity"]["om_day"] >= LIMITS["worth_om_day"]]
+    problems += test_regressions(tests, ledger, now)
     budget = time_budget.section(now, write)
     opportunities = with_time(opportunities, budget)
     problems += floor_rows(budget, ledger, now, full_runs(now, H.suites_journal()))
@@ -1170,10 +1214,11 @@ def collect(write, now):
         "transcript backfill at %d of %d files" % (coverage["backfill_files_done"], job["files"]) if job["todo"] else None]))
     for problem in problems:
         if problem["rule"] == "regression":
-            problem["expected_min_day"] = max((o["opportunity"]["recoverable_min_day"] for o in opportunities
-                                               if (o["id"] == "opportunity:" + problem.get("component", "")
-                                                   or o["id"].startswith("opportunity:" + problem.get("component", "") + "/"))
-                                               and not o["opportunity"]["needs_egor"] and o["opportunity"]["quality"] == "equivalent"), default=0)
+            problem["expected_min_day"] = max([problem.get("expected_min_day", 0)] + [
+                o["opportunity"]["recoverable_min_day"] for o in opportunities
+                if (o["id"] == "opportunity:" + problem.get("component", "")
+                    or o["id"].startswith("opportunity:" + problem.get("component", "") + "/"))
+                and not o["opportunity"]["needs_egor"] and o["opportunity"]["quality"] == "equivalent"])
     problems += opportunities
     problem_count = sum(1 for p in problems if p["state"] in H.LOUD_STATES)
 

@@ -153,17 +153,29 @@ far over model/floor share;
 the proof of a fix is the measurement back under it (no row).
 
 **Test health** (`share/test_health.py`, Speed's `tests` key; the one place test time is shown). From run-suites'
-journal, the last 24 h against the median of the 7 days before it, one line per class in one unit, red past 1.5× its
-usual and a least delta: wait (chats' and workers' queued-to-end suite spans, a union per caller), retests (a run of a
-`tree` already green on that checkout; a chat's or the night's run in a worktree after its worker's last run), runs per
-change landed on HEAD, suites per targeted run, idle (p10 wall over the CPU of the fastest runs, ≥ 2× and ≥ 10 s), red
-and flaky (red then green on one `tree`, or two every-suite runs of one head), wall per CPU second and the slot queue;
-then the 7-day heaviest suites (wall h, runs, avg, red %, CPU/wall). Findings over 7 days become
-`opportunity:test-health/{retests,idle/<repo>/<suite>,flaky/<repo>/<suite>,fan-out/<repo>/<path>}` (`TEST_HEALTH_LEVERS`)
-in min/day; a floor gap never folds into one. Fan-out reads tests/affected's rule in Python (a suite or a tests/ helper
-it names holding the basename as a word, shared-invariants.md → test_consistency), cached per `git ls-files -s`.
-Dead suites (a `$ROOT/` path gone from the repo, or no run in 30 days once the journal covers them) go to Suite
-audits' queue; nothing here deletes a test. Without `tree` rows the repeat count reads zero and says so.
+journal, the last 24 h against the median of the 7 days before it, one line per class in one unit over every caller,
+red past 1.5× its usual and a least delta: wait (queued-to-end suite spans, a union per caller: chats and workers by
+day, a night-run window from the nights journal whoever ran, no caller by day), retests (a run of content, its `tree`,
+already green on any checkout; of them a chat's or the night's in a worktree on the content its worker ran green; a
+landing rerun of rebased content is new content), runs per change landed on HEAD, suites per targeted run, idle (p10
+wall over the CPU of the fastest runs, ≥ 2× and ≥ 10 s, bounded by the median `sleep_s` of `--profile` runs and then
+`measured`, else `estimated`), long pole and serial runs, red and flaky (red then green on one `tree`, or two
+every-suite runs of one head), wall per CPU second and the slot queue; then the 7-day heaviest suites. Each row's wall,
+queued to end, splits once (`allocate`): a retest or flaky exec takes its share whole (share = its suite seconds over
+the row's, so concurrent suites never sum past the wall); else its idle part, the run's slack to the long-pole suite
+(its seconds over the row's suite seconds per slot) or, on one slot, to `serial` (against the usual slots), and the
+rest is `work`. Findings over 7 days become `opportunity:test-health/{retests,flaky,idle,pole/<repo>/<suite>,serial,
+heavy/<repo>/<suite>,fan-out/<repo>/<path>}` (`TEST_HEALTH_LEVERS`) in min/day: heavy at ≥ 15 work-min/day (it drops
+the moved `tests/<repo>/<suite>` row), fan-out from the targeted runs holding every suite a changed file pulls (each run
+to its widest file), on suites no heavy row prices, those shown beside it. The `time/suite_run` floor gap is net of the
+test-health rows' recoverable minutes. A line over its usual is `regression:test-health/<line>`, its expected gain the
+excess in min/day. Fan-out reads tests/affected's rule in Python (a suite or a tests/ helper it names holding the
+basename as a word, shared-invariants.md → test_consistency), cached per `git ls-files -s` and this reader's source.
+Dead suites (a `$ROOT/` path gone from the repo that the suite neither creates, removes, asserts absent nor single- or
+heredoc-quotes, or no run in 30 days once the journal covers them, never for live or tests/slow-suites ones) and
+pinned ones (≥ 5 source-text greps of a file shared-invariants.md does not list, the suite edited in ≥ 2 commits over
+7 days with ≥ 2 red runs) go to Suite audits' queue; nothing here deletes a test. Without `tree` rows the repeat count
+reads zero and says so.
 
 **ROI** (`night-run report`, `roi ·` lines). A fixer job whose problem is a Speed or time row (`opportunity`,
 `regression`, `time_floor`, `test_*`) is an improvement: spend, lines, gain. A class in `share/time_budget.py` `UNITS`
@@ -193,7 +205,7 @@ Harness doctor: 2 problems
 Speed: 1 problem · 169 OM/d · 3.9 of 7 days covered · R 2/10: 88/287
   Chat turns: 99 min/day · model 50 · tools 31 · compaction 4
   Delegation: +70 min/day · workers 56 · background Bash 14 · media <1
-  Test health: 928 min + 2113 w-min/day on suites · 3 of 9 lines over their usual · 2 heavy suites red · 6 dead
+  Test health: 287 min + 389 w-min/day by day, 2417 w-min/day at night · 5 of 12 lines over their usual · 2 heavy suites red · 3 dead or pinned
   Machine: 12 min/day contention · load 2.3/core · 31 % unattributed
   Background: statusline 0.9 CPU-cores · 18 % of P
   Night: last 5 h 50 m · first landing 4 h 47 m
