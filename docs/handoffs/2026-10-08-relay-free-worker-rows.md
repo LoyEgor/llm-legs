@@ -109,3 +109,7 @@ tests · llm-legs — test_statusline_hooks…  12/41 ✗1  1m 35s
    - token-map's relay detector (`tracking.py` `RELAYS`).
 
    Rough size: about 300 lines across about 10 files in llm-legs and claude-setup.
+3. **Dated removals, once relay history leaves each window** (2026-10-09 audit; earlier they mislabel old spend):
+   - from 2026-10-16, with the done-when check: token-map `tokenmap/pie.py`'s Relays leaf and its relay → Workers/Reviewers mapping (`tracking.py` `RELAYS` goes with the handoff's close);
+   - from 2026-11-06: llm-legs `bin/speed-doctor`'s `Agent:review-waiter` / `Agent:*-worker` leaves;
+   - from 2026-11-08: token-map `tokenmap/events.py`'s five relay-era denial signatures ("owned by a relay agent", "owns no task row", "polls for up to", "so the launch passes", "use a relay worker").
