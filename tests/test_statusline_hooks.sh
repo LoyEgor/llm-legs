@@ -186,14 +186,15 @@ fixture_repos_cfgh
 # the sandbox entirely and no behavioural case below can see it.
 assert_eq "" "$(grep -nE '(^|[[:space:]])>>?[[:space:]]*/' "$WORKDIR_HOOK" | grep -v '/dev/null')"
 
-# bash's `read` takes a pipe one byte per syscall: an 8 MB Write response cost ~8 s that way.
+# bash's `read` takes a pipe one byte per syscall: an 8 MB Write response cost ~8 s that way. A file
+# it reads in chunks, so the same payload from a file is the baseline; CPU, since load stretches wall time.
 head -c 8000000 /dev/zero | tr '\0' x > "$WORK/big-response"
-suite_journal_ms big_start
 workdir_payload Write session-big "$REPO_A" "$REPO_A/big.txt" \
-  | jq -c --rawfile big "$WORK/big-response" '.tool_response = {content: $big}' | "$WORKDIR_HOOK"
-suite_journal_ms big_end
-big_ms=$(( big_end - big_start ))
-[ "$big_ms" -lt 3000 ] || fail "workdir hook took ${big_ms} ms on an 8 MB payload"
+  | jq -c --rawfile big "$WORK/big-response" '.tool_response = {content: $big}' > "$WORK/big-payload"
+big_file_cpu=$("$WORKDIR_HOOK" < "$WORK/big-payload"; suite_journal_cpu_ms c "$WORK/big-times" children; echo "$c")
+big_pipe_cpu=$(cat "$WORK/big-payload" | "$WORKDIR_HOOK"; suite_journal_cpu_ms c "$WORK/big-times" children; echo "$c")
+[ -n "$big_file_cpu" ] && [ -n "$big_pipe_cpu" ] && [ "$big_pipe_cpu" -lt $(( 3 * big_file_cpu )) ] ||
+  fail "workdir hook took ${big_pipe_cpu} CPU ms on an 8 MB payload from a pipe, ${big_file_cpu} from a file"
 assert_eq "$TOP_A" "$(last_tree session-big)"
 
 payload=$(workdir_payload Bash session-cd "$REPO_A" "cd '$REPO_A' && make")
@@ -4007,6 +4008,8 @@ mkdir -p "$WORK/wp-plain" "$WORK/wp-other/tests"
 git -C "$WORK/wp-other" init -q
 WP_RUNS="$WORK/wp-runs"
 wp_now=$(date +%s)
+# The probe's clock is pinned: the stamps below are checked against starts it derives from ps etimes.
+export STATUSLINE_NOW=$wp_now
 # Worker runs (bin/worker-run): one launched here and testing, one launched elsewhere that this chat
 # waits on (its title from the brief past its header lines), one so new it has no supervisor pid yet;
 # none for an ended run, a dead or recycled supervisor, or a pid-less start older than any start takes.
@@ -4267,6 +4270,7 @@ perl -i -pe 's/\t[0-9]+(\t20261008T100000Z-jjjjjjj)$/\t12345$1/' "$STATE_DIR/wor
 STATUSLINE_PS="$FAKE_PS_WORK" STATUSLINE_LSOF="$FAKE_LSOF_WORK" WORKER_RUN_DIR="$WP_RUNS" WORKER_STATS_DIR="$WP_STATS" \
   "$WORK_PROBE" wp-sess 1250
 assert_eq 12345 "$(awk -F'\t' '$10 ~ /jjjjjjj$/ { print $9 }' "$STATE_DIR/work-wp-sess")"
+unset STATUSLINE_NOW
 # No chat above the start pid, or no process list: nothing is claimed.
 STATUSLINE_PS="$FAKE_PS_WORK" STATUSLINE_LSOF="$FAKE_LSOF_WORK" WORKER_RUN_DIR="$WORK/none" "$WORK_PROBE" wp-noroot 3000
 assert_eq "" "$(cat "$STATE_DIR/work-wp-noroot")"
@@ -4300,14 +4304,13 @@ assert test ! -e "$IDLE_CALLS"
 # (tests, shell) whatever the cache order; each row is `<head> — <title>` then three columns the
 # visible rows share — state, elapsed, tokens — elapsed recomputed from the start column every render.
 wl_strip() { perl -pe 's/\e\[[0-9;]*m//g'; }
-# A second may tick between the fixture's clock and the render's; both spell the same width.
-wl_norm_subs='s/\b4m 0[56]s\b/4m 05s/g; s/(?<![0-9])4[56]s\b/45s/g; s/\b1m 0[56]s\b/1m 05s/g; s/(?<![0-9])3[01]s\b/30s/g'
-wl_norm() { perl -pe "$wl_norm_subs"; }
-wl_rows() { run_statusline "$(statusline_payload "$1")" | perl -ne 'next if $. < 3; s/\e\[[0-9;]*m//g; '"$wl_norm_subs"'; print'; }
-wl_now=$(date +%s)
+# The render's clock is the fixture's: every fixture is written on wl_clock, which pins the render to it.
+wl_clock() { wl_now=$(date +%s); export STATUSLINE_NOW=$wl_now; }
+wl_rows() { run_statusline "$(statusline_payload "$1")" | perl -ne 'next if $. < 3; s/\e\[[0-9;]*m//g; print'; }
+wl_clock
 # Each render gets its fixture rewritten on a fresh clock: a cache older than 4s also sends the
 # render's probe to rewrite it, which empties one with no process behind it.
-wl_mix() { wl_now=$(date +%s); {
+wl_mix() { wl_clock; {
   printf 'main\ttests\t%s\tllm-legs\ttest_statusline_hooks\t12\t1\t41\t\t\n' "$((wl_now - 245))"
   printf 'main\tshell\t%s\ttoken-map\tsleep\t\t\t\n' "$((wl_now - 45))"
   printf 'main\tworker\t%s\tlocomthebest · opus · high\tSpeed up tracking\ttests\t%s\t\t184321\n' "$((wl_now - 3725))" "$((wl_now - 65))"
@@ -4322,7 +4325,7 @@ assert_eq "$(printf '%s\n' \
   'com · sonnet · medium — Split reviews           working                            4m 05s   ↓ 900' \
   'T1 · standard · bugs — llm-legs                 all 5/8 opus 2/3 ✗1 gpt 1/3 pro ✓     45s' \
   'tests · llm-legs — test_statusline_hooks        12/41 ✗1                           4m 05s' \
-  'shell · token-map — sleep                                                             45s')" "$(tail -n +3 <<< "$wl_out" | wl_strip | wl_norm)"
+  'shell · token-map — sleep                                                             45s')" "$(tail -n +3 <<< "$wl_out" | wl_strip)"
 # Heads magenta on agent rows and cyan on command rows; an agent's title bright, a command's dim; ✗N red.
 assert grep -Fq "${MAGENTA}locomthebest · opus · high${RESET} ${DIM}—${RESET} Speed up tracking " <<< "$wl_out"
 assert grep -Fq "${MAGENTA}T1 · standard · bugs${RESET} ${DIM}—${RESET} llm-legs " <<< "$wl_out"
@@ -4336,7 +4339,7 @@ printf 'main\treview\t%s\tT0 · double · bugs\tllm-legs\tall 2/4 {a 1/2 ✗1} b
 assert grep -Fq "${DIM}all 2/4 ${RESET}${RED}a 1/2 ✗1${RESET}${DIM} b ${RESET}${GREEN}✓" <<< "$(run_statusline "$(statusline_payload wl-late)")"
 # The judge phase: the review's elapsed stops at the phase start and a magenta judge row follows,
 # titled by the run's last seven characters and timed from the phase start; a dead run has none.
-wl_judge() { wl_now=$(date +%s); {
+wl_judge() { wl_clock; {
   printf 'main\treview\t%s\tT1 · standard · bugs\tllm-legs\t✓ report 3\t✓ report 3\tnotcom\t%s\t20261009T100000Z-1234567\n' "$((wl_now - 3725))" "$((wl_now - 245))"
   printf 'main\treview\t%s\tT0 · double · bugs\tllm-legs\tall 4/4 a ✓ b ✗2 · ✓ done\tall 4/4 · ✓ done\tnotcom · opus · high\t%s\t20261009T100000Z-abcdefg\n' "$((wl_now - 245))" "$((wl_now - 45))"
   printf 'main\treview\t%s\tT1 · standard · bugs\t\t✗ dead\t✗ dead\t\t\t20261009T100000Z-7654321\n' "$((wl_now - 65))"
@@ -4374,7 +4377,7 @@ assert_eq "$(printf '%s\n' \
   'tests · llm-…  12/41 ✗1  4m 05s' \
   'shell · toke…               45s')" "$(wl_mix; FIT_COLUMNS=40 FIT_MARGIN=1 wl_rows wl-mix)"
 # A column no visible row fills takes no space; a short row is padded so elapsed ends where the rest do.
-wl_plain() { wl_now=$(date +%s); {
+wl_plain() { wl_clock; {
   printf 'main\tshell\t%s\tr\tsleep\t\t\t\n' "$((wl_now - 45))"
   printf 'main\tshell\t%s\trepo\tgit push\t\t\t\n' "$((wl_now - 245))"
 } > "$STATE_DIR/work-wl-plain"; }
@@ -4386,11 +4389,11 @@ assert_eq "$(printf '%s\n' \
   'shell · r — sleep     45s' \
   'shell · repo — g…  4m 05s')" "$(wl_plain; FIT_COLUMNS=26 FIT_MARGIN=1 wl_rows wl-plain)"
 # A record with no repository or no label keeps its fields in place: tab is IFS whitespace to `read`.
-wl_now=$(date +%s)
+wl_clock
 printf 'main\ttests\t%s\t\tsuites\t2\t1\t5\nmain\tshell\t%s\tr\t\t\t\t\n' "$((wl_now - 45))" "$((wl_now - 45))" > "$STATE_DIR/work-wl-norepo"
 assert_eq "$(printf '%s\n' 'tests — suites  2/5 ✗1  45s' 'shell · r               45s')" "$(wl_rows wl-norepo)"
 # Elapsed pads its seconds or minutes to two digits; tokens read ↓ 900, ↓ 37k, ↓ 184k, ↓ 1.2M.
-wl_now=$(date +%s)
+wl_clock
 {
   printf 'main\tworker\t%s\ta · m · e\tone\tworking\t\t\t900\n' "$((wl_now - 3725))"
   printf 'main\tworker\t%s\ta · m · e\ttwo\tworking\t\t\t37400\n' "$((wl_now - 245))"
@@ -4403,9 +4406,9 @@ assert_eq "$(printf '%s\n' \
   'a · m · e — two    working  4m 05s   ↓ 37k' \
   'a · m · e — three  working     45s  ↓ 184k' \
   'a · m · e — four   start        7s  ↓ 1.2M' \
-  'a · m · e — five   working  1m 05s')" "$(wl_rows wl-tok | perl -pe 's/(?<![0-9])[78]s\b/7s/')"
+  'a · m · e — five   working  1m 05s')" "$(wl_rows wl-tok)"
 # A media-run job: `media · <tag>` is the head, its label the title, a fan-out's cells the state.
-wl_media() { wl_now=$(date +%s); printf 'main\tmedia\t%s\tnotcom · img·web\tedit\t\t\t\t\nmain\tmedia\t%s\tfanout · img\tall\t2\t1\t3\t\n' \
+wl_media() { wl_clock; printf 'main\tmedia\t%s\tnotcom · img·web\tedit\t\t\t\t\nmain\tmedia\t%s\tfanout · img\tall\t2\t1\t3\t\n' \
   "$((wl_now - 65))" "$((wl_now - 30))" > "$STATE_DIR/work-wl-media"; }
 assert_eq "$(printf '%s\n' \
   'media · notcom · img·web — edit          1m 05s' \
@@ -4493,6 +4496,7 @@ rm -f "$STATE_DIR/work-wl-fire"
 run_statusline "$(statusline_payload wl-fire)" >/dev/null
 for wl_i in $(seq 1 60); do [ -e "$STATE_DIR/work-wl-fire" ] && break; sleep 0.05; done
 assert test -e "$STATE_DIR/work-wl-fire"
+unset STATUSLINE_NOW
 
 # --- render of the two new segments ---
 # One record per line now, so these two fixtures carry the tab format; `-` is a port this session

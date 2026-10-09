@@ -362,7 +362,8 @@ trap 'on_signal 15 TERM' TERM
 if [ "${#explicit[@]}" -gt 0 ]; then scope=named; elif $changed; then scope=changed; elif $include_live; then scope=all
 else scope=full; fi
 [ "${#suites[@]}" -gt 0 ] || exit 0
-test_scope_mark "$scope" suites "$repo" "$run_suites_start"
+# bin/harness-doctor joins the marker to the process start the probe saw, before any slot wait.
+test_scope_mark "$scope" suites "$repo" "${run_suites_queued%%[.,]*}"
 
 shard_merge() { # name shards -> once its last shard has ended, the suite's .status and .log from theirs
   local name=$1 n=$2 i rc secs real bound cpu out_rc=0 out_secs=0 out_real=0 out_cpu=0 ms

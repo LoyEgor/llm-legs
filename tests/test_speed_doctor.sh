@@ -11,7 +11,7 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 asserts=$(python3 - "$ROOT" "$WORK" <<'EOF'
-import copy, fcntl, gzip, glob, importlib.machinery, importlib.util, json, os, shutil, subprocess, sys, time
+import copy, fcntl, gzip, glob, importlib.machinery, importlib.util, json, os, resource, shutil, subprocess, sys
 
 root, work = sys.argv[1], sys.argv[2]
 count = [0]
@@ -41,14 +41,16 @@ base = {"HOME": os.path.join(work, "home"), "HARNESS_DOCTOR_DIR": os.path.join(w
 
 
 def speed(folder, *args, **env):
-    started = time.monotonic()
+    """The output and the run's CPU seconds: the machine's load stretches its wall time, never its CPU."""
+    before = resource.getrusage(resource.RUSAGE_CHILDREN)
     out = subprocess.run([os.path.join(root, "bin", "speed-doctor")] + list(args or ["--json"]),
                          env=dict(base, SPEED_DOCTOR_DIR=os.path.join(work, folder), **env),
                          capture_output=True, text=True)
-    wall = time.monotonic() - started
+    after = resource.getrusage(resource.RUSAGE_CHILDREN)
+    cpu = after.ru_utime - before.ru_utime + after.ru_stime - before.ru_stime
     if "--json" in (args or ["--json"]):
-        return json.loads(out.stdout), wall
-    return out, wall
+        return json.loads(out.stdout), cpu
+    return out, cpu
 
 
 def counted_once(document):
@@ -59,10 +61,10 @@ def counted_once(document):
             and not [k for k in loud if k in covered or (k[0], "*") in covered])
 
 
-doc, wall = speed("speed")
+doc, cpu = speed("speed")
 check(doc["status"] == "ok" and doc["problem_count"] == 0 and not {"contract", "doctor", "title"} & set(doc),
       "the calibration section has nothing counted and no document keys of its own: %s" % doc["status"])
-check(wall <= 2.0, "speed-doctor reads its inputs in <= 2 s: %.2f s" % wall)
+check(cpu <= 2.0, "speed-doctor reads its inputs in <= 2 CPU s: %.2f s" % cpu)
 check(doc["headline"] == 179.3 and doc["areas"] == {"chat": 103.42, "delegation": 75.91},
       "calibration headline at R = 5 min: A 103.4 + B 75.9 = 179.3 OM/d: %s %s" % (doc["headline"], doc["areas"]))
 check(doc["r_band"] == [87.9, 237.9] and doc["presence"] is False,

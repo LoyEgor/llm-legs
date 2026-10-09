@@ -21,7 +21,9 @@ printf '#!/usr/bin/env bash\ncat "%s/snap"\n' "$WORK" > "$WORK/ps"
 printf '#!/usr/bin/env bash\nprintf "p11\\nfcwd\\nn%s\\np12\\nfcwd\\nn%s\\n"\n' "$WORK/repo" "$WORK/repo" > "$WORK/lsof"
 chmod +x "$WORK/ps" "$WORK/lsof"
 # Each probe here reads a process table the case just wrote, never the shared snapshot of the last one.
-probe() { rm -f "$STATUSLINE_CACHE_DIR/ps-snapshot"; STATUSLINE_PS="$WORK/ps" STATUSLINE_LSOF="$WORK/lsof" "$ROOT/bin/statusline-work-probe.sh" th 5; }
+# Its clock is pinned: a fixture's pointer stamps and its ps etimes must agree however long the suite runs.
+probe_now=$(date +%s)
+probe() { rm -f "$STATUSLINE_CACHE_DIR/ps-snapshot"; STATUSLINE_NOW=$probe_now STATUSLINE_PS="$WORK/ps" STATUSLINE_LSOF="$WORK/lsof" "$ROOT/bin/statusline-work-probe.sh" th 5; }
 shell_line() { printf '%s 5 %s /bin/zsh -c source /h/shell-snapshots/snapshot-zsh-1.sh && eval x\n' "$1" "$2"; }
 
 { printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'
@@ -66,7 +68,7 @@ suite_run() { # pid repo total stamp codes...
   for rc in "$@"; do i=$((i + 1)); printf '%s\t3\n' "$rc" > "$WORK/logs-$pid/test_$i.sh.status"; done
   shell_line "$((pid + 100))" 02:01; printf '%s %s 02:00 bash tests/run-all -j 5\n' "$pid" "$((pid + 100))"
 }
-fresh=$(($(date +%s) - 110))
+fresh=$((probe_now - 110))
 { printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'
   suite_run 21 r-pass 2 "$fresh" 0; suite_run 22 r-fail 3 "$fresh" 0 0; suite_run 23 r-short 3 "$fresh" 0 0
   suite_run 24 r-killed 2 "$fresh" 0 137; suite_run 25 r-gone 1 "$fresh" 0; suite_run 26 r-stale 1 1000 0
@@ -107,7 +109,7 @@ assert_eq '{"total":2,"failed":1,"ok":false}' \
 { printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28
   suite_run 60 r-late 1 1000 0; suite_run 61 r-wait 1 1000 0; suite_run 62 r-slot 1 1000 0; } > "$WORK/snap"
 probe
-slotted=$(($(date +%s) - 50))
+slotted=$((probe_now - 50))
 printf '%s\t1\t%s\t%s\n' "$WORK/logs-60" "$WORK/r-late" "$slotted" > "$STATUSLINE_CACHE_DIR/suites-60.done"
 rm -f "$STATUSLINE_CACHE_DIR/suites-60"
 printf '%s\t1\t%s\t%s\n' "$WORK/logs-62" "$WORK/r-slot" "$slotted" > "$STATUSLINE_CACHE_DIR/suites-62"
@@ -127,7 +129,7 @@ assert_eq 'r-gone null r-pass {"test_1.sh":3,"test_2.sh":1}' \
     "$STATUSLINE_CACHE_DIR/test-history.jsonl" | sort | paste -sd' ' -)"
 mkdir -p "$WORK/logs-702"
 printf '0\t7\n' > "$WORK/logs-702/test_w.sh.status"
-printf '%s\t1\t%s\t%s\n' "$WORK/logs-702" "$WORK/repo" "$(date +%s)" > "$STATUSLINE_CACHE_DIR/suites-702"
+printf '%s\t1\t%s\t%s\n' "$WORK/logs-702" "$WORK/repo" "$probe_now" > "$STATUSLINE_CACHE_DIR/suites-702"
 { printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28
   printf '700 1 03:00 bash -c supervisor\n702 700 01:50 bash tests/run-all -j 5\n'; } > "$WORK/snap"
 probe
@@ -221,19 +223,23 @@ done
 assert_eq "$(jq -cn --arg root "$suites_repo" '["full","all","changed","named"] | map({label: "suites", scope: ., repo_root: $root})')" \
   "$(jq -sc 'map({label, scope, repo_root})' "$STATUSLINE_CACHE_DIR/test-scope.jsonl")"
 mkdir -p "$WORK/slow-git"
-printf '#!/bin/bash\ncase " $* " in *" ls-files "*) date +%%s >> "%s"; sleep 3 ;; esac\nexec %s "$@"\n' "$WORK/ls-files-at" "$(command -v git)" > "$WORK/slow-git/git"
+printf '#!/bin/bash\ncase " $* " in *" ls-files "*) [ -s %s ] || date +%%s > %s; sleep 3 ;; esac\nexec %s "$@"\n' \
+  "$WORK/ls-files-at" "$WORK/ls-files-at" "$(command -v git)" > "$WORK/slow-git/git"
 chmod +x "$WORK/slow-git/git"
 : > "$STATUSLINE_CACHE_DIR/test-scope.jsonl"
-PATH="$WORK/slow-git:$PATH" RUN_SUITES_SLOT="$WORK/inherited-slot" RUN_SUITES_TIMES="$WORK/times.tsv" bash "$ROOT/share/run-suites.sh" \
+launched=$(date +%s)
+# Without an inherited slot the run takes its own after discovery: the marker still carries the launch.
+env -u RUN_SUITES_SLOT PATH="$WORK/slow-git:$PATH" RUN_SUITES_TIMES="$WORK/times.tsv" bash "$ROOT/share/run-suites.sh" \
   --repo "$suites_repo" -j 2 --changed >/dev/null 2>&1 || fail "run-suites --changed under a slow git failed"
-assert_eq yes "$(jq -r --argjson at "$(head -n1 "$WORK/ls-files-at")" 'if .start <= $at then "yes" else "\(.start - $at) s after discovery began" end' \
+assert_eq yes "$(jq -r --argjson launched "$launched" --argjson at "$(cat "$WORK/ls-files-at")" \
+  'if $launched <= .start and .start <= $at then "yes" else "\(.start - $at) s after discovery" end' \
   "$STATUSLINE_CACHE_DIR/test-scope.jsonl")" "run-suites stamps its scope marker with its own start, not after a slow discovery"
 
 # A run with its own row in the run-suites journal gets none here: run-suites by its pid, a test
 # sourcing tests/lib/suite-journal.sh by its name, each within 3s of the start this probe saw.
 c5_journal="$HOME/.cache/run-suites/runs.jsonl"
 mkdir -p "${c5_journal%/*}"
-c5_now=$(date +%s)
+c5_now=$probe_now
 c5_row() { # kind pid started suite
   printf '{"kind":"%s","pid":%s,"started_at":%s.250,"suites":{"%s":{"rc":0}}}\n' "$1" "$2" "$3" "$4" >>"$c5_journal"
 }

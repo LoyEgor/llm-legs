@@ -15,7 +15,8 @@ unset RUN_SUITES_SLOT WORKER_SLOT WORKER_RUN_RECORD WORKER_RUN_ID
 . "$ROOT/share/slots.sh"
 
 holder() { # dir count -> pid of a process holding one slot until killed
-  bash -c '. "$1/share/slots.sh"; slot_take "$2" "$3" 3600 >/dev/null || exit 1; exec sleep 300' _ "$ROOT" "$1" "$2" \
+  # A waiter's probe locks a free slot for a moment before it finds no room: one try could lose it to that.
+  bash -c '. "$1/share/slots.sh"; until slot_take "$2" "$3" 3600 >/dev/null; do sleep 0.1; done; exec sleep 300' _ "$ROOT" "$1" "$2" \
     >/dev/null 2>&1 &
   printf '%s\n' "$!" >>"$WORK/holders"
   local i

@@ -687,7 +687,7 @@ else
   file_mtime_to rl_mtime "$rl_cache_file"
 fi
 
-now=$EPOCHSECONDS
+now=${STATUSLINE_NOW:-$EPOCHSECONDS}
 h5_absent=false; h5_pct=""; h5_reset=""; h5_dim=""; wk_pct=""; wk_reset=""; wk_dim=""; wk_origin=""
 if [ -n "$rl_json" ]; then
   # Legacy raw-headers caches carry no as_of; the cache file's mtime is the honest lower bound

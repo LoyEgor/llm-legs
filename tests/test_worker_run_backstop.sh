@@ -4,10 +4,13 @@ set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 HOOK="$ROOT/bin/worker-run-backstop.sh"
 WORK=$(mktemp -d)
-sleep 300 &
+# A supervisor alive for as long as the suite: a `sleep 300` ended mid-suite under load, and every run read dead.
+( while kill -0 $$ 2>/dev/null; do sleep 1; done ) &
 LIVE_PID=$!
 trap 'kill "$LIVE_PID" ${WAIT_PIDS:-} 2>/dev/null; rm -rf "$WORK"' EXIT
 export HOME="$WORK/home" WORKER_RUN_DIR="$WORK/runs" WORKER_STATS_DIR="$WORK/stats"
+# The chat is this suite, never whatever `claude` happens to be among the runner's ancestors.
+export WORKER_RUN_BACKSTOP_CHAT_PID=$$
 unset CLAUDEB_WORKER
 export WORKER_RUN_BACKSTOP_CHAT_PID=$$
 asserts=0

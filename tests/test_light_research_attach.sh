@@ -53,8 +53,23 @@ QUOTASLOW
 chmod +x "$BIN/geminib"
 printf 'QUOTA-Q: the leg answers with a quota wall.\n' >"$WORK/prompt"
 printf 'Research the repository slowly.\n' >"$WORK/prompt-slow"
+# The slow unit launches only once the quota unit has ended: under load that unit outlived a timed round.
+# A pick with --exclude is the quota unit's own supervisor moving off the walled account.
+mv "$BIN/worker-pick" "$BIN/worker-pick.plain"
+cat >"$BIN/worker-pick" <<'PICKAFTER'
+#!/usr/bin/env bash
+case " $* " in
+  *" --exclude "*) ;;
+  *) for meta in "$WORKER_RUN_DIR"/*/meta.json; do
+       while [ -f "$meta" ] && [ ! -e "${meta%/*}/exit_code" ]; do sleep 0.1; done
+     done ;;
+esac
+exec "${0%/*}/worker-pick.plain" "$@"
+PICKAFTER
+chmod +x "$BIN/worker-pick"
 rm -f "$WORK/answer" "$WORK/gate"; rm -rf "$WORK/answer.units"
-LIGHT_RESEARCH_WAIT_MAX=10 run --prompt-file "$WORK/prompt-slow"; rc=$?
+LIGHT_RESEARCH_WAIT_MAX=0 run --prompt-file "$WORK/prompt-slow"; rc=$?
+mv -f "$BIN/worker-pick.plain" "$BIN/worker-pick"
 assert test "$rc" -eq 3
 assert grep -q '^STATUS: running$' "$WORK/out"
 assert test ! -e "$WORK/answer"
