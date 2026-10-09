@@ -110,7 +110,7 @@ jq -nc --arg ts "$(iso "$(date +%s)")" '{timestamp:$ts,payload:{type:"function_c
   >"$HOME/.codex/sessions/2026/rollout-abc123.jsonl"
 sleep 300 &
 live=$!
-jq -c --argjson p "$live" --argjson t "$(date +%s)" '.pid = $p | .pid_started_at = $t' "$CRUN/meta.json" >"$WORK/m" && mv "$WORK/m" "$CRUN/meta.json"
+jq -c --argjson p "$live" --argjson t "$now" '.pid = $p | .pid_started_at = $t' "$CRUN/meta.json" >"$WORK/m" && mv "$WORK/m" "$CRUN/meta.json"
 : >"$CALLS"
 WORKER_RUN_WAIT_POLL_S=1 "$RUNNER" wait "$CID" >"$WORK/live.out" 2>&1 &
 waiter=$!
@@ -124,11 +124,9 @@ assert [ "$(grep -c '^find .*-name \*abc123\*' "$CALLS")" = 1 ]
 rm -f "$CRUN/exit_code" "$CRUN/tokens"
 sleep 300 &
 live=$!
-jq -c --argjson p "$live" --argjson t "$(date +%s)" '.pid = $p | .pid_started_at = $t | .account = "main"' "$CRUN/meta.json" >"$WORK/m" &&
+jq -c --argjson p "$live" --argjson t "$now" '.pid = $p | .pid_started_at = $t | .account = "main"' "$CRUN/meta.json" >"$WORK/m" &&
   mv "$WORK/m" "$CRUN/meta.json"
 printf 'session id: abc123\n' >"$CRUN/err"
-jq -c --arg ts "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" '.timestamp = $ts' "$HOME/.codex/sessions/2026/rollout-abc123.jsonl" >"$WORK/m" &&
-  mv "$WORK/m" "$HOME/.codex/sessions/2026/rollout-abc123.jsonl"
 WORKER_RUN_WAIT_POLL_S=1 "$RUNNER" wait "$CID" >"$WORK/live.out" 2>&1 &
 waiter=$!
 await '$ ls'
