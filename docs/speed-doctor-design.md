@@ -164,12 +164,16 @@ already green on any checkout; of them a chat's or the night's in a worktree on 
 landing rerun of rebased content is new content), runs per change landed on HEAD, suites per targeted run, idle (p10
 wall over the CPU of the fastest runs, ≥ 2× and ≥ 10 s, bounded by the median `sleep_s` of `--profile` runs and then
 `measured`, else `estimated`), long pole and serial runs, red and flaky (red then green on one `tree`, or two
-every-suite runs of one head), wall per CPU second and the slot queue; then the 7-day heaviest suites. Each row's wall,
+every-suite runs of one head), wall per CPU second and the slot queue; then the heaviest suites by their median day of
+the trailing seven 24 h days (`per_day`), the 7-day mean beside it as the usual: a week's mean let 10-02..10-05 worker
+full runs rank test_instruction_gate at 210 min/day when it cost ~20, a 3-day mean still carries a third of one heavy
+day, the median ignores up to three, and a suite run on under four days reads 0 (sporadic cost is no daily lever). Each row's wall,
 queued to end, splits once (`allocate`): a retest or flaky exec takes its share whole (share = its suite seconds over
 the row's, so concurrent suites never sum past the wall); else its idle part, the run's slack to the long-pole suite
 (its seconds over the row's suite seconds per slot) or, on one slot, to `serial` (against the usual slots), and the
-rest is `work`. Findings over 7 days become `opportunity:test-health/{retests,flaky,idle,pole/<repo>/<suite>,serial,
-heavy/<repo>/<suite>,fan-out/<repo>/<path>}` (`TEST_HEALTH_LEVERS`) in min/day: heavy at ≥ 15 work-min/day (it drops
+rest is `work`. Findings become `opportunity:test-health/{retests,flaky,idle,pole/<repo>/<suite>,serial,
+heavy/<repo>/<suite>,fan-out/<repo>/<path>}` (`TEST_HEALTH_LEVERS`) in min/day, idle, pole, heavy and fan-out by
+`per_day`, retests, flaky and serial as their 7-day mean: heavy at ≥ 15 work-min/day (it drops
 the moved `tests/<repo>/<suite>` row), fan-out from the targeted runs holding every suite a changed file pulls (each run
 to its widest file), on suites no heavy row prices, those shown beside it. The `time/suite_run` floor gap is net of the
 test-health rows' recoverable minutes. A line over its usual is `regression:test-health/<line>`, its expected gain the

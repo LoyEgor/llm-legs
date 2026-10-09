@@ -132,7 +132,8 @@ row(T - 300, T - 250, [("test_b.sh", 1, 50, 25)], head="h2")
 row(T - 200, T - 150, [("test_b.sh", 0, 50, 25)], head="h2")
 row(T - 100, T - 60, [("test_b.sh", 143, 40, 20)], who="s-chat", signal=15)
 for i in range(10):
-    row(T - 86400 * 5 + i * 600, T - 86400 * 5 + i * 600 + 100, [("test_slow.sh", 0, 100 + i, 10),
+    back = 2 + i % 4
+    row(T - 86400 * back + i * 600, T - 86400 * back + i * 600 + 100, [("test_slow.sh", 0, 100 + i, 10),
                                                                 ("test_busy.sh", 0, 100 + i, 95)], scope="direct",
         kind="direct", sleep=30)
 for back in (2, 3, 4):
@@ -180,10 +181,11 @@ check(section["usual"]["wait_chat"] == 10.0 and section["usual_days"] == 4,
 
 findings = {f["target"]: f for f in section["findings"]}
 idle = findings.get("test-health/idle/alpha/test_slow")
-check(idle and abs(idle["min_day"] - sum(50.0 * 30 / (100 + i) for i in range(10)) / 60.0 / 7) < 0.01
+check(idle and abs(idle["min_day"] - min(sum(50.0 * 30 / (100 + i) for i in range(k, 10, 4)) for k in range(4))
+                   / 60.0) < 0.01
       and "test-health/idle/alpha/test_busy" not in findings,
       "idle: p10 wall far over the CPU of the fastest runs is idle, bounded by the profiled sleeps, on the run's wall "
-      "share; a busy suite is not: %s" % idle)
+      "share, priced at the median of the 7 days' sums; a busy suite is not: %s" % idle)
 check(idle["confidence"] == "measured" and "bounded by the sleeps 10 profiled runs" in idle["fact"],
       "idle: a profiled bound reads measured: %s" % idle)
 check(findings["test-health/flaky/alpha/test_b"]["exposure"] == 2, "flaky: one finding per suite, its flakes counted")
@@ -277,7 +279,7 @@ wait_row = problems.get("regression:test-health/wait_chat") or {}
 check(wait_row.get("rule") == "regression" and wait_row.get("expected_min_day") == regs["wait_chat"]["min_day"]
       and wait_row.get("component") == "test-health/wait_chat",
       "speed: a test health line over its usual is a regression row priced at its excess: %s" % wait_row)
-th.HEAVY_MIN_DAY = 0.1
+th.HEAVY_MIN_DAY = 0.0
 heavy_section = th.collect(NOW, journal, [repo])
 th.HEAVY_MIN_DAY = 15.0
 heavy_ids = {o["id"] for o in S.test_opportunities(heavy_section)}
@@ -287,8 +289,24 @@ check("opportunity:test-health/heavy/alpha/test_a" in heavy_ids
       == [{"id": "opportunity:tests/alpha/other"}],
       "speed: a heavy suite is a test-health row and drops its moved tests/ row: %s" % sorted(heavy_ids))
 tool_a = next(f for f in heavy_section["fan_out"] if f["path"] == "bin/tool-a")
-check(tool_a["heavy_min_day"] > 0 and tool_a["min_day"] == 0,
+check(tool_a["heavy_s"] > 0 and tool_a["wall_s"] == 0 and tool_a["min_day"] == 0,
       "fan-out: minutes on suites a heavy row prices stay there and are shown, never priced twice: %s" % tool_a)
+
+spike = os.path.join(work, "spike.jsonl")
+with open(spike, "w") as handle:
+    for back in range(7):
+        handle.write(json.dumps({"kind": "suites", "started_at": T - back * 86400 - 2000, "ended_at": T - back * 86400
+                                 - 800, "repo": repo, "repo_root": repo, "scope": "named", "j": 1, "suites": {
+                                     "test_a.sh": {"rc": 0, "secs": 1200, "cpu_s": 1100}}}) + "\n")
+    handle.write(json.dumps({"kind": "suites", "started_at": T - 6 * 86400 + 600, "ended_at": T - 6 * 86400 + 30600,
+                             "repo": repo, "repo_root": repo, "scope": "named", "j": 1,
+                             "suites": {"test_c.sh": {"rc": 0, "secs": 30000, "cpu_s": 29000}}}) + "\n")
+spiked = th.collect(NOW, spike, [repo])
+spiked_heavy = {f["target"] for f in spiked["findings"] if f["class"] == "heavy"}
+check(spiked_heavy == {"test-health/heavy/alpha/test_a"} and spiked["heavy"][0]["label"] == "test_a"
+      and spiked["heavy"][1]["min_day"] == 0 and spiked["heavy"][1]["usual_min_day"] > 60,
+      "heavy: one old heavy day never ranks a suite over one that costs minutes every day; its 7-day mean stays the "
+      "usual: %s %s" % (sorted(spiked_heavy), spiked["heavy"]))
 
 mini, M = os.path.join(work, "mini.jsonl"), NOW - 3600
 

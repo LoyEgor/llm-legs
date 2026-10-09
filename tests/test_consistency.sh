@@ -9,6 +9,9 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$ROOT/share/test-scope.sh"
 PROJECTS=$(git_projects "$ROOT")
+# A worker or harness may run this under a fixture HOME; ~user reads the password database, never $HOME.
+eval "REAL_HOME=~$(id -un)"
+HS_ROOT="${HS_ROOT:-$REAL_HOME/.hammerspoon}"
 DOC="docs/shared-invariants.md"
 CLAUDEB="$ROOT/bin/claudeb"
 STATUSLINE="$ROOT/bin/statusline.sh"
@@ -18,7 +21,7 @@ DRIVER="$ROOT/bin/claude-session-driver"
 
 HAMMER="$ROOT/hammerspoon/llm-limits.lua"
 WORKER_GATE="$ROOT/bin/worker-limit-gate.sh"
-WORKER_GATE_SETTINGS="${WORKER_GATE_SETTINGS:-$HOME/.claude/settings.json}"
+WORKER_GATE_SETTINGS="${WORKER_GATE_SETTINGS:-$REAL_HOME/.claude/settings.json}"
 
 CONSISTENCY_CACHE=$(mktemp -d)
 trap 'rm -rf "$CONSISTENCY_CACHE"' EXIT
@@ -188,7 +191,7 @@ assert grep -Fq 'Sol' "$ROOT/docs/claudegpt.md"
 # Each reads a different carrier — transcript, /model return id, harness payload, and the picker the
 # launcher writes — so a prefix that changes has to change in all four.
 CLAUDEGPT="$ROOT/bin/claudegpt"
-HS_COMPACT="${HS_ROOT:-$HOME/.hammerspoon}/claude_compact.lua"
+HS_COMPACT="$HS_ROOT/claude_compact.lua"
 assert test -r "$HS_COMPACT"
 assert grep -Fq 'anthropic.ccr.sol' "$CLAUDEGPT"
 assert grep -Fq 'anthropic.ccr.astra' "$CLAUDEGPT"
@@ -465,7 +468,7 @@ assert test "$(sed -n '/^def run_agy(/,/^def /p' "$RB_LAUNCH" | grep -Fc '"--eff
 assert doc_has 'Antigravity review cell invocation mapping'
 
 # --- Row i: Gemini worker knobs ----------------------------------------------
-WORKER_COMMAND="${WORKER_COMMAND_FILE:-$HOME/.claude/commands/worker.md}"
+WORKER_COMMAND="${WORKER_COMMAND_FILE:-$REAL_HOME/.claude/commands/worker.md}"
 assert test -r "$WORKER_COMMAND"
 WORKER_RUN="${WORKER_RUN_BIN:-$ROOT/bin/worker-run}"
 assert test -x "$WORKER_RUN"
@@ -1541,7 +1544,6 @@ assert doc_has 'One limits view'
 
 # --- Row aa: Hammerspoon launchd agent identity -------------------------------
 HS_LABEL="com.egor.hammerspoon"
-HS_ROOT="${HS_ROOT:-$HOME/.hammerspoon}"
 HS_PLIST="$HS_ROOT/launchd/$HS_LABEL.plist"
 HS_GUARD="$ROOT/hammerspoon/config/env_guard.lua"
 test -r "$HS_PLIST" || fail "row aa: $HS_PLIST is unreadable (set HS_ROOT)"
@@ -2467,7 +2469,7 @@ assert eq "$(grep -c '_store.chat_suffix(' "$RB_REPORT")" 1
 # The list of tools that own their launches is spelled in the contract and again in the gate's
 # regex. Drift either way is silent: a launcher the gate forgot has its every run denied, and a
 # spelling the contract forgot is a bare launch nobody can see.
-LAUNCH_GATE="${WORKER_LAUNCH_GATE:-$HOME/.claude/hooks/worker-launch-gate.sh}"
+LAUNCH_GATE="${WORKER_LAUNCH_GATE:-$REAL_HOME/.claude/hooks/worker-launch-gate.sh}"
 assert test -x "$LAUNCH_GATE"
 gate_sanctioned=$(grep -m1 '^SANCTIONED_RE=' "$LAUNCH_GATE" |
   grep -oE '[a-z][a-z-]+-(run|bench|limits|driver|image|go|research)' | sort -u | paste -sd' ' -)
@@ -2641,7 +2643,6 @@ assert eq "$journal_strays" ""
 # Read at the INSTALL path — a symlink into this repo today, a real file once the Lua moves to the
 # hammerspoon repo — so the pin survives the move and refuses to skip. `cancel` is reached through
 # `and` guards at its call site, so its drift degrades silently; that is why it is pinned.
-HS_ROOT="${HS_ROOT:-$HOME/.hammerspoon}"
 CONTINUE_LUA="$HS_ROOT/claude_continue.lua"
 SWITCH_LUA="$HS_ROOT/claude_chat_switch.lua"
 test -r "$CONTINUE_LUA" || fail "row bh: $CONTINUE_LUA is unreadable (set HS_ROOT)"

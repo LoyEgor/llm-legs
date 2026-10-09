@@ -170,7 +170,18 @@ def label(execs):
 # ---------------------------------------------------------------- per suite, over the stats window
 
 
-def per_suite(execs):
+def per_day(parts, now):
+    """Seconds a day: the median of the STATS_D trailing 24 h days' sums of (end, seconds), so one or three heavy days
+    never set a suite's cost; a 3-day mean would still carry a third of one."""
+    days = [0.0] * STATS_D
+    for end, secs in parts:
+        back = int((now - end) // 86400)
+        if 0 <= back < STATS_D:
+            days[back] += secs
+    return statistics.median(days)
+
+
+def per_suite(execs, now):
     by = collections.defaultdict(list)
     for e in execs:
         by[(e["repo"], e["name"])].append(e)
@@ -180,7 +191,7 @@ def per_suite(execs):
         passing = sorted((e for e in runs if e["ok"]), key=lambda e: e["secs"])
         wall = sum(e["secs"] for e in runs)
         s = {"repo": key[0], "name": key[1], "label": os.path.splitext(key[1])[0], "runs": len(runs),
-             "wall_s": wall, "avg_s": wall / len(runs), "red": sum(1 for e in judged if not e["ok"]),
+             "wall_s": wall, "avg_s": wall / len(runs), "day_s": per_day(((e["end"], e["secs"]) for e in runs), now), "red": sum(1 for e in judged if not e["ok"]),
              "judged": len(judged), "flaky": sum(1 for e in runs if e["flaky"]),
              "p50_s": passing[len(passing) // 2]["secs"] if passing else None, "idle_s": 0.0,
              "days": len({time_budget.local_day(e["end"]) for e in runs}),
@@ -461,6 +472,7 @@ def fan_out(tops, scanned, rows, heavy, lo, hi):
                 pulled[path] = (suites, count)
         found = {path: {"repo": repo, "top": top, "path": path, "changes": count, "suites": len(suites), "runs": 0,
                         "wall_s": 0.0, "heavy_s": 0.0} for path, (suites, count) in pulled.items()}
+        parts = {path: ([], []) for path in found}
         sets = collections.defaultdict(list)
         for r in rows:
             if r["repo"] == repo and r["kind"] == "suites" and r["scope"] in TARGETED and lo <= r["end"] < hi:
@@ -475,12 +487,14 @@ def fan_out(tops, scanned, rows, heavy, lo, hi):
             for r in runs:
                 for e in r["execs"]:
                     if e["name"] in suites:
-                        part = "heavy_s" if (repo, e["name"]) in heavy else "wall_s"
-                        f[part] += e["cost"].get("work", 0.0)
-        for f in found.values():
+                        is_heavy = (repo, e["name"]) in heavy
+                        f["heavy_s" if is_heavy else "wall_s"] += e["cost"].get("work", 0.0)
+                        parts[owner][is_heavy].append((e["end"], e["cost"].get("work", 0.0)))
+        for path, f in found.items():
             f.update(suite_min=round((f["wall_s"] + f["heavy_s"]) / 60.0 / f["runs"], 1) if f["runs"] else 0.0,
-                     min_day=round(f["wall_s"] / 60.0 / STATS_D, 1),
-                     heavy_min_day=round(f["heavy_s"] / 60.0 / STATS_D, 1))
+                     min_day=round(per_day(parts[path][False], hi) / 60.0, 1),
+                     heavy_min_day=round(per_day(parts[path][True], hi) / 60.0, 1),
+                     usual_min_day=round(f["wall_s"] / 60.0 / STATS_D, 1))
             files.append(f)
     files.sort(key=lambda f: (-f["min_day"], -f["runs"], -f["suites"], f["path"]))
     return files, landed, edits
@@ -530,48 +544,50 @@ def pinned(tops, scanned, stats, edits):
 # ---------------------------------------------------------------- findings and the block
 
 
-def finding(cls, target, secs, worker_secs, exposure, days, fact, files, confidence=None):
-    out = {"class": cls, "target": "test-health/" + target, "min_day": round(secs / 60.0 / STATS_D, 2),
-           "worker_min_day": round(worker_secs / 60.0 / STATS_D, 2), "exposure": exposure, "days": days, "fact": fact,
+def finding(cls, target, day_s, worker_day_s, exposure, days, fact, files, confidence=None):
+    out = {"class": cls, "target": "test-health/" + target, "min_day": round(day_s / 60.0, 2),
+           "worker_min_day": round(worker_day_s / 60.0, 2), "exposure": exposure, "days": days, "fact": fact,
            "files": files}
     if confidence:
         out["confidence"] = confidence
     return out
 
 
-def per_class(window, cls):
-    """{(repo, suite): (seconds, worker seconds, execs carrying it)} of one class."""
-    out = {}
+def per_class(window, cls, now):
+    """{(repo, suite): (seconds a day, worker seconds a day, execs carrying it)} of one class, by per_day."""
+    by = collections.defaultdict(list)
     for e in window:
-        part = e["cost"].get(cls, 0.0)
-        if part > 0:
-            secs, worker, runs = out.get((e["repo"], e["name"]), (0.0, 0.0, []))
-            out[(e["repo"], e["name"])] = (secs + part, worker + (part if e["who"] == "worker" else 0.0), runs + [e])
-    return out
+        if e["cost"].get(cls, 0.0) > 0:
+            by[(e["repo"], e["name"])].append(e)
+    return {key: (per_day(((e["end"], e["cost"][cls]) for e in runs), now),
+                  per_day(((e["end"], e["cost"][cls]) for e in runs if e["who"] == "worker"), now), runs)
+            for key, runs in by.items()}
 
 
-def heavy_keys(window):
-    return {k for k, (secs, _, _) in per_class(window, "work").items() if secs / 60.0 / STATS_D >= HEAVY_MIN_DAY}
+def heavy_keys(window, now):
+    return {k for k, (day_s, _, _) in per_class(window, "work", now).items() if day_s / 60.0 >= HEAVY_MIN_DAY}
 
 
-def findings(window, suites, files):
+def findings(window, suites, files, now):
     """Each minute of the window's suite wall in at most one finding: retests, flaky, idle, long pole, serial,
     heavy suites (their work at HEAVY_MIN_DAY or more), then fan-out on the rest."""
     out = []
     days = lambda runs: len({time_budget.local_day(e["end"]) for e in runs})
     retest = [e for e in window if e["repeat"]]
     if retest:
-        out.append(finding("retests", "retests", cost(retest, "retests"), cost(retest, "retests", "worker"),
+        out.append(finding("retests", "retests", cost(retest, "retests") / STATS_D,
+                           cost(retest, "retests", "worker") / STATS_D,
                            len(retest), days(retest),
                            "%d suite runs on content already green (same tree), %d of them a chat or the night after "
                            "its worker's green run" % (len(retest), sum(1 for e in retest if e["post"])),
                            ["llm-legs/share/run-suites.sh", "llm-legs/bin/worker-run"]))
     for cls in ("flaky", "idle", "pole", "work"):
-        found = per_class(window, cls)
+        found = per_class(window, cls, now)
         for (repo, name), (secs, worker, runs) in sorted(found.items(), key=lambda kv: (-kv[1][0], kv[0])):
             s, files_of = suites.get((repo, name)) or {}, ["%s/tests/%s" % (repo, name)]
             short = os.path.splitext(name)[0]
             if cls == "flaky":
+                secs, worker = cost(runs, "flaky") / STATS_D, cost(runs, "flaky", "worker") / STATS_D
                 out.append(finding("flaky", "flaky/%s/%s" % (repo, short), secs, worker, len(runs), days(runs),
                                    "%s · %s: %d red runs a later run of the same code passed" % (short, repo, len(runs)),
                                    files_of))
@@ -583,24 +599,24 @@ def findings(window, suites, files):
                                        ", bounded by the sleeps %d profiled runs journaled" % slept if slept else
                                        ", any wait (sleep, I/O, subprocess); no profiled run bounds it"), files_of,
                                    "measured" if slept else "estimated"))
-            elif cls == "pole" and secs / 60.0 / STATS_D >= time_budget.NIGHT_GAIN_MIN_DAY:
+            elif cls == "pole" and secs / 60.0 >= time_budget.NIGHT_GAIN_MIN_DAY:
                 out.append(finding("pole", "pole/%s/%s" % (repo, short), secs, worker, len(runs), days(runs),
                                    "%s · %s: the long pole of %d runs, the other slots idle while it runs" % (
                                        short, repo, len(runs)), files_of))
-            elif cls == "work" and secs / 60.0 / STATS_D >= HEAVY_MIN_DAY:
+            elif cls == "work" and secs / 60.0 >= HEAVY_MIN_DAY:
                 out.append(finding("heavy", "heavy/%s/%s" % (repo, short), secs, worker, len(runs), days(runs),
                                    "%s · %s: %d runs, %s wall-min a run after retests, flakes, idle and its pole; audit: "
                                    "legacy checks, over-complicated, splittable, sleeps" % (
-                                       short, repo, len(runs), plain(secs / 60.0 / len(runs))), files_of))
+                                       short, repo, len(runs), plain(cost(runs, "work") / 60.0 / len(runs))), files_of))
     serial = [e for e in window if e["cost"].get("serial")]
     if serial and cost(serial, "serial") / 60.0 / STATS_D >= time_budget.NIGHT_GAIN_MIN_DAY:
-        out.append(finding("serial", "serial", cost(serial, "serial"), cost(serial, "serial", "worker"),
+        out.append(finding("serial", "serial", cost(serial, "serial") / STATS_D, cost(serial, "serial", "worker") / STATS_D,
                            len({id(e["row"]) for e in serial}), days(serial),
                            "%d multi-suite runs on one slot, their suites one after another" % len(
                                {id(e["row"]) for e in serial}), ["llm-legs/share/run-suites.sh"]))
     for f in files[:3]:
         if f["runs"]:
-            out.append(finding("fan-out", "fan-out/%s/%s" % (f["repo"], f["path"]), f["wall_s"], 0.0, f["runs"],
+            out.append(finding("fan-out", "fan-out/%s/%s" % (f["repo"], f["path"]), f["min_day"] * 60.0, 0.0, f["runs"],
                                STATS_D, "%s · %s: %d suites, %d targeted runs held them all (%s suite-min a run), "
                                "%d changes in %d days; +%s min/day on heavy suites priced there" % (
                                    f["path"], f["repo"], f["suites"], f["runs"], plain(f["suite_min"]), f["changes"],
@@ -638,7 +654,7 @@ def block(now, normal, stats, files, found, queued, hours):
         body.append((("%-*s %7s %-10s usual %6s  Δ %6s" % (
             width, text, plain(now[key]), unit, plain(normal[key]),
             fmt(None if now[key] is None or normal[key] is None else now[key] - normal[key]))).rstrip(), hot, key))
-    heavy = sorted(stats.values(), key=lambda s: -s["wall_s"])[:TOP]
+    heavy = sorted(stats.values(), key=lambda s: (-s["day_s"], -s["wall_s"]))[:TOP]
     sick = [s for s in heavy if s["judged"] and s["red"] / s["judged"] >= RED_SHARE]
     rows = collections.defaultdict(list)
     for f in found:
@@ -657,14 +673,14 @@ def block(now, normal, stats, files, found, queued, hours):
         elif key == "per_change":
             emit(2, "%5d changes landed in %d h" % (now["landed"], round(hours)), "d")
         elif key == "targeted" and files:
-            emit(2, "suites  runs  suite-min  changes  min/day  file · %d days" % STATS_D, "d")
+            emit(2, "suites  runs  suite-min  changes  min/day  file · median day of %d" % STATS_D, "d")
             for f in files[:SHOWN]:
                 emit(2, "%6d %5d %10s %8d %8s  %s · %s" % (f["suites"], f["runs"], plain(f["suite_min"]), f["changes"],
                                                            plain(f["min_day"]), f["path"], f["repo"]), "d")
         elif key in ("idle", "pole"):
             shown = sorted(rows["idle"] if key == "idle" else rows["pole"] + rows["serial"], key=lambda f: -f["min_day"])
             if shown:
-                emit(2, "min/day  runs  suite · %d days" % STATS_D, "d")
+                emit(2, "min/day  runs  suite · median day of %d" % STATS_D, "d")
             for f in shown[:SHOWN]:
                 emit(2, "%7s %5d  %s" % (plain(f["min_day"]), f["exposure"], f["target"].split("/", 1)[1]), "d")
         elif key == "red":
@@ -676,11 +692,13 @@ def block(now, normal, stats, files, found, queued, hours):
                 emit(2, "%8d %6d %6d  %s · %s" % (s["red"], round(100.0 * s["red"] / s["judged"]), s["flaky"],
                                                   s["label"], s["repo"]), "d")
     priced = {f["target"].split("/", 2)[2]: f["min_day"] for f in rows["heavy"]}
-    emit(1, "  wall h   runs  avg min  red %  CPU/wall  min/day  heaviest suites · " + "%d days" % STATS_D, "d")
+    emit(1, "min/day   mean   runs  avg min  red %%  CPU/wall   priced  heaviest suites · median day of %d, mean of "
+         "them" % STATS_D, "d")
     for s in heavy:
         share = s["red"] / s["judged"] if s["judged"] else 0.0
-        emit(1, "%8.1f %6d %8.1f %6d %9s %8s  %s · %s" % (
-            s["wall_s"] / 3600.0, s["runs"], s["avg_s"] / 60.0, round(100 * share),
+        emit(1, "%7s %6s %6d %8.1f %6d %9s %8s  %s · %s" % (
+            plain(s["day_s"] / 60.0), plain(s["wall_s"] / 60.0 / STATS_D), s["runs"], s["avg_s"] / 60.0,
+            round(100 * share),
             "–" if s["cpu_share"] is None else "%.2f" % s["cpu_share"],
             plain(priced.get("%s/%s" % (s["repo"], s["label"]))), s["label"], s["repo"]), "", share >= RED_SHARE)
     if queued:
@@ -709,21 +727,23 @@ def collect(now, journal, tops=None, write=False, lo=None):
     recent = [e for e in execs if e["end"] >= first]
     stats_lo = now - STATS_D * 86400
     window = [e for e in recent if stats_lo <= e["end"] < now]
-    stats = per_suite(window)
+    stats = per_suite(window, now)
     multi = [r["j"] for r in rows if r["n"] >= 2 and r["j"] > 1 and r["end"] >= stats_lo]
     allocate([r for r in rows if r["end"] >= first], stats, statistics.median(multi) if multi else 1)
-    heavy = heavy_keys(window)
+    heavy = heavy_keys(window, now)
     cache = time_budget.read_json(cache_path(), {})
     scanned = scans(tops, cache if isinstance(cache, dict) else {}, write)
     files, landed, edits = fan_out(tops, scanned, rows, heavy, stats_lo, now)
     current = measure(rows, recent, landed, lo, now)
     normal, days = usual(rows, recent, landed, now)
     queued = dict(pinned(tops, scanned, stats, edits), **dead(tops, scanned, execs, journal_lo, now))
-    found = findings(window, stats, files)
+    found = findings(window, stats, files, now)
     out.update(status="watch" if any(red_line(k, current[k], normal[k], m) for k, _, _, m in LINES) else "ok",
                now=current, usual=normal, usual_days=days, findings=found, regressions=regressions(current, normal),
-               heavy=[{k: s[k] for k in ("repo", "label", "runs", "wall_s", "avg_s", "red", "judged", "flaky", "cpu_share")}
-                      for s in sorted(stats.values(), key=lambda s: -s["wall_s"])[:TOP]],
+               heavy=[dict({k: s[k] for k in ("repo", "label", "runs", "wall_s", "avg_s", "red", "judged", "flaky",
+                                              "cpu_share")}, min_day=round(s["day_s"] / 60.0, 1),
+                           usual_min_day=round(s["wall_s"] / 60.0 / STATS_D, 1))
+                      for s in sorted(stats.values(), key=lambda s: (-s["day_s"], -s["wall_s"]))[:TOP]],
                fan_out=files[:SHOWN], candidates=queued,
                journal_days=round((now - (journal_lo or now)) / 86400.0, 1))
     out["menu"] = block(current, normal, stats, files, found, queued, (now - lo) / 3600.0)
