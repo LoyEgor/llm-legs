@@ -2650,12 +2650,12 @@
     },
     {
       "id": "speed-locks-worker-run-wait-poll",
-      "title": "Speed's locks lever: worker-run wait sees a run's exit within 0.2 s and journals the lag from the exit file's sub-second mtime",
+      "title": "Speed's locks lever: worker-run wait wakes on a run's exit by kqueue, the store lock is held without network reads, and journals the lag from the exit file's sub-second mtime",
       "match": {
         "rule": "opportunity",
         "ident": "time/locks"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-08T01:03:55+03:00",
