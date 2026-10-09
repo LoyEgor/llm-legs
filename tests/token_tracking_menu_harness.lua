@@ -60,30 +60,33 @@ local fixture = {
                                                 tone = "" } } } } },
     },
 }
-local function spendNode(name, cells, children, more)
-    return { name = name, label = name, cells = cells, children = children or {}, more = more }
-end
+local SPEND_COLUMNS = { "7 days", "prev 7", "Δ", "share" }
+local function level(title, rows) return { { title = title, columns = SPEND_COLUMNS, rows = rows } } end
 local projects = {}
-for i = 1, 17 do projects[i] = spendNode("proj" .. i, { "0.0" .. (100 - i) .. "M", "0.5%", "1.0%", "1.1%", "-9%" }) end
-fixture.spend = {
-    range = "7 days vs the 7 before", data_through = "2026-09-25T13:53:01+03:00",
-    unit_label = "Opus-priced limit tokens", columns = { "7 days", "share", "prev 7", "Δ" },
-    tree = {
-        spendNode("Chat", { "120.0M", "55.0%", "54.0%", "+2%" }, {
-            spendNode("Work", { "100.0M", "83.3%", "45.0%", "44.0%", "+2%" }, projects,
-                { label = "2 other", after = 15, cells = { "0.167M", "1.7%", "2.0%", "2.2%", "-9%" } }),
-            spendNode("Harness", { "20.0M", "16.7%", "10.0%", "10.0%", "0%" },
-                { spendNode("Hooks", { "20.0M", "16.7%", "10.0%", "10.0%", "0%" }) }),
-        }),
-        spendNode("Workers", { "98.0M", "45.0%", "46.0%", "-2%" }, {
-            spendNode("Work", { "98.0M", "100.0%", "45.0%", "46.0%", "-2%" },
-                { spendNode("llm-legs", { "98.0M", "100.0%", "45.0%", "46.0%", "-2%" }) }),
-        }),
+for i = 1, 15 do projects[i] = { label = "proj" .. i, cells = { "0.0" .. (100 - i) .. "M", "0.1M", "-9%", "1.0%" }, tone = "better" } end
+projects[16] = { label = "2 more", cells = { "0.2M", "0.2M", "-9%", "2.0%" }, tone = "", dim = true }
+local spendFixture = {
+    version = 3, generated_at = "2026-09-25T13:54:45+03:00", data_through = "2026-09-25T13:53:01+03:00",
+    stale_after_hours = 26, unit_label = "Opus-priced limit tokens", columns = SPEND_COLUMNS,
+    range = { key = "7d", title = "7 days vs the 7 before", cur_label = "7 days", prev_label = "prev 7" },
+    rows = {
+        { label = "Chat", cells = { "120.0M", "100.0M", "+18%", "55.0%" }, tone = "worse", sections = level("Chat", {
+            { label = "Work", cells = { "100.0M", "80.0M", "+23%", "45.9%" }, tone = "worse",
+              child = { sections = level("Work", projects) } },
+            { label = "Unknown", cells = { "0.1M", "0.2M", "-50%", "0.1%" }, tone = "better" },
+        }) },
+        { label = "Workers", cells = { "98.0M", "110.0M", "-13%", "45.0%" }, tone = "better", sections = level("Workers", {
+            { label = "Work", cells = { "98.0M", "110.0M", "-13%", "45.0%" }, tone = "better" },
+        }) },
     },
 }
-for _, consumer in ipairs(fixture.spend.tree) do
-    consumer.columns = { "7 days", "of " .. consumer.label, "share", "prev 7", "Δ" }
+local function writeSpend(key, body)
+    local handle = assert(io.open(dir .. "/spend.tmp", "w"))
+    handle:write(hs.json.encode(body))
+    handle:close()
+    assert(os.rename(dir .. "/spend.tmp", dir .. "/spend-" .. key .. ".json"))
 end
+writeSpend("7d", spendFixture)
 write(hs.json.encode(fixture))
 M.setPath(path)
 M.setSettings({ get = function() end, set = function() end })
@@ -108,29 +111,38 @@ local function cellEnd(item, cell)
     return stop and utf8.len(line:sub(1, stop)) or -1
 end
 
+local function colorAt(item, cell)
+    local line = text(item.title)
+    local start = line:find(cell, 1, true)
+    if not start then return nil end
+    for _, run in ipairs(item.title:asTable()) do
+        if type(run) == "table" and run.starts <= start and start <= run.ends then
+            return hs.inspect(run.attributes.color)
+        end
+    end
+end
+
 local spendItem = items[2]
 local pie = spendItem and spendItem.menu or {}
 check(spendItem and text(spendItem.title) == "Spend" and #pie > 0, "no Spend submenu under the status line")
-check(pie[1] and pie[1].disabled and text(pie[1].title):find("7 days vs the 7 before · data to ", 1, true) == 1
-    and text(pie[1].title):find("13:53 · Opus-priced limit tokens", 1, true), "the Spend header lacks the range or data time")
-local pieHead, chat, workers = find(pie, "prev 7"), find(pie, "Chat"), find(pie, "Workers")
+check(pie[1] and pie[1].disabled and text(pie[1].title):find("^7 days vs the 7 before · data to [^·]*13:53 · scanned ") ~= nil,
+    "the Spend status line is not Token tracking's: " .. text(pie[1] and pie[1].title or ""))
+local spendCompare = find(pie, "Compare: ")
+check(spendCompare and text(spendCompare.title) == "Compare: 7 days vs 7 before" and #spendCompare.menu == 3
+    and spendCompare.menu[1].checked, "Spend lacks its own 7d · 24h · 3d choice")
+local pieHead, chat, workers = find(pie, "Opus-priced limit tokens"), find(pie, "Chat"), find(pie, "Workers")
 check(pieHead and pieHead.disabled and chat and chat.menu and workers and workers.menu
-    and cellEnd(pieHead, "prev 7") == cellEnd(chat, "54.0%") and cellEnd(chat, "54.0%") == cellEnd(workers, "46.0%")
-    and cellEnd(pieHead, "Δ") == cellEnd(chat, "+2%") and cellEnd(chat, "+2%") == cellEnd(workers, "-2%")
-    and utf8.len(text(pieHead.title)) == utf8.len(text(chat.title)),
-    "the Spend level-1 rows are missing or not aligned")
+    and cellEnd(pieHead, "prev 7") == cellEnd(chat, "100.0M") and cellEnd(chat, "100.0M") == cellEnd(workers, "110.0M")
+    and cellEnd(pieHead, "Δ") == cellEnd(chat, "+18%") and cellEnd(chat, "+18%") == cellEnd(workers, "-13%")
+    and cellEnd(pieHead, "share") == cellEnd(chat, "55.0%") and utf8.len(text(pieHead.title)) == utf8.len(text(chat.title)),
+    "the Spend level-1 rows are missing or not aligned as Token tracking's")
 local chatWork = chat and find(chat.menu, "Work")
 local leaves = chatWork and chatWork.menu or {}
-check(chatWork and find(chat.menu, "Harness").menu and find(chat.menu, "of Chat").disabled,
-    "a level-2 row does not open its leaves")
-local folded = find(leaves, "2 other")
-check(#leaves == 17 and find(leaves, "proj15") and not find(leaves, "proj16") and folded and folded.disabled
-    and cellEnd(folded, "2.2%") == cellEnd(find(leaves, "proj1 "), "1.1%"),
-    "the leaves are not the top 15 plus an aligned other row")
-local leafHead, levelHead = find(leaves, "of Chat"), find(chat.menu, "of Chat")
-check(leafHead and leafHead.disabled and levelHead and cellEnd(leafHead, "of Chat") == cellEnd(folded, "1.7%")
-    and cellEnd(levelHead, "of Chat") == cellEnd(chatWork, "83.3%") and not find(pie, "of Chat"),
-    "the level-2 and leaf menus lack an aligned share-of-consumer column, or level 1 shows one")
+check(chatWork and chat.menu[1].disabled and find(chat.menu, "Unknown").disabled, "a level-2 row does not open its leaves")
+local folded = find(leaves, "2 more")
+check(#leaves == 17 and find(leaves, "proj15") and folded and folded.disabled
+    and cellEnd(folded, "2.0%") == cellEnd(find(leaves, "proj1 "), "1.0%"),
+    "the leaves are not the top 15 plus an aligned more row")
 
 local header = find(items, "limit tokens")
 local spend, startup = find(items, "Claude spend"), find(items, "Startup")
@@ -152,6 +164,9 @@ for _, run in ipairs(startup.title:asTable()) do
 end
 check(red, "a worse Δ is not red")
 check(not shareRed, "the share column took the Δ tone")
+check(colorAt(chat, "+18%") == colorAt(startup, "+37%") and colorAt(workers, "-13%") == colorAt(spend, "-21%")
+    and colorAt(chat, "55.0%") == colorAt(startup, "2.1%") and colorAt(chat, "+18%") ~= colorAt(workers, "-13%"),
+    "Spend's cells are not coloured as Token tracking's")
 
 check(codexAt and items[codexAt - 1].title ~= "-" and text(items[codexAt - 1].title) == "Other vendors — each its own pool"
     and items[codexAt - 2].title == "-", "the vendor group has no separator and caption")
@@ -286,7 +301,7 @@ check(computingMarked == "7 days vs 7 before" and text(computing[1].title):find(
     "the asked range read as current while it computes, or a cut run alerted: " .. text(computingItem.title))
 
 local rangeFixture = hs.json.decode(hs.json.encode(fixture))
-rangeFixture.version, rangeFixture.spend.range = 3, "24h vs the 24h before"
+rangeFixture.version = 3
 rangeFixture.range = { key = "24h", title = "24h vs the 24h before", cur_label = "24h", prev_label = "prev 24h" }
 rangeFixture.columns = { "24h", "prev 24h", "Δ", "share" }
 local handle = assert(io.open(rangePath, "w"))
@@ -300,8 +315,8 @@ check(text(ranged[1].title):find("^24h vs the 24h before · data to 13:53 · sca
 check(find(ranged, "prev 24h") and select(2, compare(ranged)) == "24h vs 24h before"
     and stored["tokenTracking.range"].key == "24h", "the finished range is not shown, checked and remembered")
 local rangedSpend = find(ranged, "Spend")
-check(rangedSpend and text(rangedSpend.menu[1].title):find("24h vs the 24h before · data to ", 1, true) == 1,
-    "Spend under a range does not read that range's export")
+check(rangedSpend and text(rangedSpend.menu[1].title):find("7 days vs the 7 before · data to ", 1, true) == 1,
+    "Spend followed the Compare range instead of its own")
 check(alerts[#alerts] == "Token tracking 24h vs 24h before ready", "no success alert: " .. tostring(alerts[#alerts]))
 
 hs.fs.touch(rangePath, os.time() - 7 * 3600)
@@ -393,10 +408,13 @@ check(#launched == 1 and alerts[#alerts] == "Token tracking updated", "the defau
 os.remove(rangePath)
 
 local genPath = dir .. "/generation"
+local generationNow
 local function setGeneration(token)
     local file = assert(io.open(genPath, "w"))
     file:write(token .. "\n")
     file:close()
+    generationNow, spendFixture.db_generation = token, token
+    writeSpend("7d", spendFixture)
 end
 local current = hs.json.decode(hs.json.encode(fixture))
 current.db_generation = "aaaa000000000001"
@@ -495,6 +513,37 @@ check(alerts[1] == "Token tracking 3 days vs 3 before ready"
     and text(compare(M.menuItems(nil)).title) == "Compare: 3 days vs 3 before",
     "a current cached export did not alert as its run returned: " .. tostring(alerts[1]))
 find(compare(M.menuItems(nil)).menu, "7 days vs 7 before").fn()
+launched, alerts = {}, {}
+local compareKey = stored["tokenTracking.range"].key
+local function spendMenu() return find(M.menuItems(nil), "Spend").menu end
+find(find(spendMenu(), "Compare: ").menu, "24h vs 24h before").fn()
+check(#launched == 1 and argLine(launched[1]) == "tokenmap spend --range 24h --write"
+    and stored["tokenTracking.spendRange"].key == "24h" and stored["tokenTracking.range"].key == compareKey,
+    "a Spend choice did not start the spend-only export, or moved Compare: " .. argLine(launched[1]))
+local computingSpend = spendMenu()
+check(text(computingSpend[1].title) == "no data yet" and text(computingSpend[2].title):find("^computing 24h vs 24h before since ")
+    and text(find(computingSpend, "Compare: ").title) == "Compare: 24h vs 24h before — computing…",
+    "Spend does not show its own run: " .. text(computingSpend[2].title))
+local daySpend = hs.json.decode(hs.json.encode(spendFixture))
+daySpend.data_through, daySpend.columns = "2026-09-25T12:41:00+03:00", { "24h", "prev 24h", "Δ", "share" }
+daySpend.range = { key = "24h", title = "24h vs the 24h before", cur_label = "24h", prev_label = "prev 24h" }
+writeSpend("24h", daySpend)
+launched[1].callback(0, "", "")
+local daySpendMenu = spendMenu()
+check(text(daySpendMenu[1].title):find("^24h vs the 24h before · data to [^·]*12:41 · scanned ") and find(daySpendMenu, "prev 24h")
+    and alerts[#alerts] == "Spend 24h vs 24h before ready", "Spend does not read its own range's file: " .. text(daySpendMenu[1].title))
+find(find(spendMenu(), "Compare: ").menu, "7 days vs 7 before").fn()
+find(find(spendMenu(), "Compare: ").menu, "24h vs 24h before").fn()
+check(#launched == 1, "a Spend range already computed for this database ran again")
+setGeneration(generationNow:sub(1, -2) .. "f")
+spendMenu()
+local spendRun = launched[#launched]
+check(argLine(spendRun) == "tokenmap spend --range 24h --write" and not spendRun.terminated and #alerts == 1,
+    "an outdated Spend export was not recomputed quietly on open: " .. argLine(spendRun))
+spendRun.callback(0, "", "")
+check(#alerts == 1, "a quiet Spend recompute alerted")
+os.remove(dir .. "/spend-24h.json")
+os.remove(dir .. "/spend-7d.json")
 os.remove(dir .. "/tracking-range-today.json")
 os.remove(genPath)
 os.remove(rangePath)

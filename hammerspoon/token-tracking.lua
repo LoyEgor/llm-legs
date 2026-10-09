@@ -1,7 +1,8 @@
 -- Automations ▸ Token tracking: tokenmap's week-over-week spend rows.
 --
 -- The whole Automations menu is rebuilt on every click, so this module reads one small JSON
--- tokenmap writes (tracking.json, or tracking-range-<key>.json for a chosen Compare range),
+-- tokenmap writes (tracking.json, or tracking-range-<key>.json for a chosen Compare range, and
+-- spend-<key>.json for Spend's own range),
 -- decoded once per size+mtime — never a query or a subprocess on the click path. Every number,
 -- label and Δ tone is decided by tokenmap (tokenmap/tracking.py); this side only aligns the
 -- columns and colours the tone. An export is current while its db_generation is the one in the
@@ -19,6 +20,7 @@ local STALE_HOURS = 26
 local SCAN_FIRST_SECONDS = 30 * 60
 local SNAPSHOT_HOURS = 6
 local SETTINGS_KEY = "tokenTracking.range"
+local SPEND_KEY = "tokenTracking.spendRange"
 local SINCE_HINT = "Forms: 2026-09-29 18:00 · 18:00 · yesterday 18:00 · 6h · 90m"
 local RANGES = {
     { key = "7d", label = "7 days vs 7 before" },
@@ -26,6 +28,7 @@ local RANGES = {
     { key = "3d", label = "3 days vs 3 before" },
     { key = "today", label = "Today vs yesterday, same hours" },
 }
+local SPEND_RANGES = { RANGES[1], RANGES[2], RANGES[3] }
 local DELTA_COLUMN = 3
 
 local RED = menuStyle.RED
@@ -48,6 +51,7 @@ local scanTask, scanStarted, scanError, jobLabel = nil, nil, nil, nil
 local jobSoft, jobSerial, sevenOwed = false, 0, false
 local jobScan, jobQuiet, jobFile, jobRange, pending = false, false, nil, nil, nil
 local active, asked = nil, nil
+local spendTask, spendStarted, spendError, spendAsked, spendActive, spendSerial = nil, nil, nil, nil, nil, 0
 local tried = {}
 
 local function readFile(file)
@@ -234,44 +238,6 @@ local function clock(iso)
         min = tonumber(mi) }))
 end
 
-local function spendMenu(columns, nodes, more, open)
-    local rows = { { label = "", nums = columns or {}, dim = true } }
-    for _, node in ipairs(nodes) do rows[#rows + 1] = { label = node.label, nums = node.cells or {} } end
-    if more then rows[#rows + 1] = { label = more.label, nums = more.cells or {}, dim = true } end
-    local items = {}
-    for index, title in ipairs(aligned(rows)) do
-        local node = nodes[index - 1]
-        if node and open then
-            items[#items + 1] = { title = title, menu = open(node) }
-        else
-            items[#items + 1] = { title = title, disabled = true }
-        end
-    end
-    return items
-end
-
-local function spendItem(spend)
-    local function leaves(columns)
-        return function(node)
-            local shown = {}
-            for index, child in ipairs(node.children or {}) do
-                if node.more and index > (tonumber(node.more.after) or 0) then break end
-                shown[#shown + 1] = child
-            end
-            return spendMenu(columns, shown, node.more)
-        end
-    end
-    local items = { { title = style(string.format("%s · data to %s · %s", spend.range or "", clock(spend.data_through),
-        spend.unit_label or ""), dimColor()), disabled = true } }
-    for _, item in ipairs(spendMenu(spend.columns, spend.tree or {}, nil, function(consumer)
-        local columns = consumer.columns or spend.columns
-        return spendMenu(columns, consumer.children or {}, nil, leaves(columns))
-    end)) do
-        items[#items + 1] = item
-    end
-    return { title = "Spend", menu = items }
-end
-
 local function isStale(data, attrs)
     if not data or not attrs then return true end
     local hours = tonumber(data.stale_after_hours) or STALE_HOURS
@@ -305,9 +271,15 @@ local function sameRange(a, b)
     return a ~= nil and b ~= nil and a.key == b.key and a.since == b.since
 end
 
-local function statusItems(data, problem, attrs, snapshot)
+local function trackingJob()
+    if not scanTask then return { error = scanError } end
+    return { running = true, scan = jobScan, started = scanStarted,
+             doing = jobScan and "scanning new data" or ("computing " .. (jobLabel or rangeLabel(jobRange))) }
+end
+
+local function statusItems(data, problem, attrs, snapshot, job)
     local items = {}
-    local running = scanTask ~= nil
+    job = job or trackingJob()
     if problem == "missing" then
         items[#items + 1] = { title = style("no data yet", RED), disabled = true }
     elseif problem == "unreadable" then
@@ -324,19 +296,18 @@ local function statusItems(data, problem, attrs, snapshot)
         local stale = not snapshot and isStale(data, attrs)
         if outdated(data) then
             stale, text = true, "outdated: " .. text
-        elseif running and jobScan then
+        elseif job.running and job.scan then
             text = "updating: " .. text
         elseif stale then
             text = "stale: " .. text
         end
         items[#items + 1] = { title = style(text, stale and RED or dimColor()), disabled = true }
     end
-    if running then
-        local doing = jobScan and "scanning new data" or ("computing " .. (jobLabel or rangeLabel(jobRange)))
-        items[#items + 1] = { title = style(doing .. " since " .. menuStyle.clock(scanStarted) .. "…", dimColor()),
+    if job.running then
+        items[#items + 1] = { title = style(job.doing .. " since " .. menuStyle.clock(job.started) .. "…", dimColor()),
                               disabled = true }
-    elseif scanError then
-        items[#items + 1] = { title = style("last refresh failed: " .. scanError, RED), disabled = true }
+    elseif job.error then
+        items[#items + 1] = { title = style("last refresh failed: " .. job.error, RED), disabled = true }
     end
     return items
 end
@@ -485,16 +456,21 @@ function M.choose(range)
     return startJob(range, scanFirst)
 end
 
+local function rangeChoices(ranges, current, busy, choose)
+    local choices = {}
+    for _, range in ipairs(ranges) do
+        choices[#choices + 1] = { title = sameRange(busy, range) and (range.label .. " — computing…") or range.label,
+                                  checked = current == range, fn = function() choose(range) end }
+    end
+    return choices
+end
+
 local function compareItem()
     local current = activeRange()
-    local choices = {}
     local function title(text, range)
         return sameRange(asked, range) and (text .. " — computing…") or text
     end
-    for _, range in ipairs(RANGES) do
-        choices[#choices + 1] = { title = title(range.label, range), checked = current == range,
-                                  fn = function() M.choose(range) end }
-    end
+    local choices = rangeChoices(RANGES, current, asked, M.choose)
     local custom = current.key == "custom"
     local sinceTitle = custom and ("Since " .. current.since) or "Since…"
     if asked and asked.key == "custom" then sinceTitle = title("Since " .. asked.since, asked) end
@@ -505,6 +481,102 @@ local function compareItem()
     end }
     return { title = asked and title("Compare: " .. rangeLabel(asked), asked) or ("Compare: " .. rangeLabel(current)),
              menu = choices }
+end
+
+local function tableItems(data)
+    local rows = { { label = data.unit_label or "", nums = data.columns or { "7 days", "prev 7", "Δ" }, dim = true } }
+    for _, row in ipairs(data.rows) do
+        rows[#rows + 1] = { label = row.label, nums = row.cells, tone = row.tone }
+    end
+    local titles = aligned(rows)
+    local items = { { title = titles[1], disabled = true } }
+    local group = nil
+    for index, row in ipairs(data.rows) do
+        if group ~= nil and row.group ~= group then
+            items[#items + 1] = { title = "-" }
+            local caption = type(data.groups) == "table" and data.groups[row.group]
+            if caption then items[#items + 1] = { title = style(caption, dimColor()), disabled = true } end
+        end
+        group = row.group
+        items[#items + 1] = { title = titles[index + 1], menu = rowMenu(row) }
+    end
+    return items
+end
+
+local function spendRange()
+    if spendActive then return spendActive end
+    local saved = settingsStore.get(SPEND_KEY)
+    spendActive = SPEND_RANGES[1]
+    for _, range in ipairs(SPEND_RANGES) do
+        if type(saved) == "table" and saved.key == range.key then spendActive = range end
+    end
+    return spendActive
+end
+
+local function spendFile(range)
+    return besideExports("spend-" .. range.key .. ".json")
+end
+
+local function cancelSpend()
+    if not spendTask then return end
+    spendSerial = spendSerial + 1
+    spendTask:terminate()
+    spendTask, spendAsked = nil, nil
+end
+
+-- Spend has its own range and its own fast export (`tokenmap spend`), apart from Compare's.
+local function startSpend(range, quiet)
+    cancelSpend()
+    spendError = nil
+    local serial, what = spendSerial, "Spend " .. range.label
+    local task = taskFn(TOKENMAP, function(code, _, err)
+        if serial ~= spendSerial then return end
+        spendTask, spendAsked = nil, nil
+        if code ~= 0 then spendError = lastLine(err) or ("exit " .. tostring(code)) end
+        if quiet then return end
+        alertFn(code == 0 and (what .. " ready") or (what .. " failed: " .. spendError))
+    end, { "spend", "--range", range.key, "--write" })
+    if task then task:setEnvironment({ PATH = TASK_PATH, HOME = HOME }) end
+    if not (task and task:start()) then
+        spendError = "could not start " .. TOKENMAP
+        if not quiet then alertFn(what .. " failed: " .. spendError) end
+        return false
+    end
+    spendTask, spendStarted, spendAsked = task, os.time(), range
+    return true
+end
+
+function M.chooseSpend(range)
+    spendActive = range
+    settingsStore.set(SPEND_KEY, { key = range.key })
+    if generation() and not outdated((load(spendFile(range)))) then
+        if spendAsked and spendAsked ~= range then cancelSpend() end
+        return true
+    end
+    if sameRange(spendAsked, range) then return true end
+    return startSpend(range, false)
+end
+
+local function spendItem()
+    local range = spendRange()
+    local file = spendFile(range)
+    local data, problem, attrs = load(file)
+    local current = generation()
+    if current and not spendTask and tried[file] ~= current and outdated(data) then
+        tried[file] = current
+        startSpend(range, true)
+    end
+    local job = { error = spendError }
+    if spendTask then job = { running = true, started = spendStarted, doing = "computing " .. spendAsked.label } end
+    local items = statusItems(data, problem, attrs, false, job)
+    local title = "Compare: " .. range.label
+    if sameRange(spendAsked, range) then title = title .. " — computing…" end
+    items[#items + 1] = { title = title, menu = rangeChoices(SPEND_RANGES, range, spendAsked, M.chooseSpend) }
+    if data then
+        items[#items + 1] = { title = "-" }
+        for _, item in ipairs(tableItems(data)) do items[#items + 1] = item end
+    end
+    return { title = "Spend", menu = items }
 end
 
 -- The Automations row itself: red when the export is stale or the instruction watcher is down,
@@ -528,27 +600,11 @@ function M.menuItems(changeLogItem)
         if cancelJob() then startJob(range, false, true) end
     end
     local items = statusItems(data, problem, attrs, file ~= path)
-    if data and type(data.spend) == "table" then items[#items + 1] = spendItem(data.spend) end
+    items[#items + 1] = spendItem()
     items[#items + 1] = compareItem()
     if data then
-        local rows = { { label = data.unit_label or "", nums = data.columns or { "7 days", "prev 7", "Δ" },
-                         dim = true } }
-        for _, row in ipairs(data.rows) do
-            rows[#rows + 1] = { label = row.label, nums = row.cells, tone = row.tone }
-        end
-        local titles = aligned(rows)
         items[#items + 1] = { title = "-" }
-        items[#items + 1] = { title = titles[1], disabled = true }
-        local group = nil
-        for index, row in ipairs(data.rows) do
-            if group ~= nil and row.group ~= group then
-                items[#items + 1] = { title = "-" }
-                local caption = type(data.groups) == "table" and data.groups[row.group]
-                if caption then items[#items + 1] = { title = style(caption, dimColor()), disabled = true } end
-            end
-            group = row.group
-            items[#items + 1] = { title = titles[index + 1], menu = rowMenu(row) }
-        end
+        for _, item in ipairs(tableItems(data)) do items[#items + 1] = item end
         items[#items + 1] = { title = "-" }
         items[#items + 1] = { title = "By week", menu = byWeekMenu(data) }
     end
