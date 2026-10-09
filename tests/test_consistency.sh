@@ -3345,7 +3345,7 @@ assert eq "unlinked: $unlinked_run_names" "unlinked: "
 assert doc_has 'WORKER_RUNS_KEEP_DAYS=35'
 assert grep -qx 'WORKER_RUNS_KEEP_DAYS=35' "$ROOT/bin/worker-run"
 dk_keys=$(grep -o "'{\"kind\":\"%s\".*}}'" "$ROOT/tests/lib/suite-journal.sh" | grep -o '"[a-z_]*":' | tr -d '":' | paste -sd' ' -)
-assert eq "$dk_keys" 'kind pid queued_at started_at ended_at repo repo_root head scope suite_set worker_run session j slot signal complete suites'
+assert eq "$dk_keys" 'kind pid queued_at started_at ended_at repo repo_root head tree scope suite_set worker_run session j slot signal complete suites'
 assert doc_has "key order \`${dk_keys// /, }\`"
 # Row eb: the presence journal's path, line shape and keep, as the writer and the reader spell them.
 assert grep -qF 'base .. "/presence"' "$ROOT/hammerspoon/presence.lua"
