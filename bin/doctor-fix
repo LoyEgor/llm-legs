@@ -131,7 +131,6 @@ sys.path.insert(0, os.path.join(ROOT, "share"))
 from report_frame import fit
 from fix_commit import FIX_KEYS, fix_record_faults, fix_root_faults, load_merged, main_checkout, sync_settled
 from spend import read_json
-import time_budget
 from knobs import changed_lines, knob_site
 DOCTORS = ("llm", "harness", "updater", "code", "system")
 HOOK_AREAS = ("Hooks", "Hook waits")
@@ -399,13 +398,15 @@ def snapshot(doctor, doc_file, night=None):
                  "area": slug(area), "component": {"what": what, "files": sorted({norm(f) for f in files}),
                                                    "rule_at": rule_at(doctor, rule)}}
         if night and doctor == "harness":
+            import time_budget
             admission = dict(problem)
             source_root = norm(ROOT)
             paths = [norm(f) for f in files]
             changes = {"ids": [pid], "class": time_budget.improvement_class(rule or "", pid),
                        "files": [("", os.path.relpath(f, source_root) if f.startswith(source_root + os.sep)
                                   else os.path.relpath(f, repos_dir(doctor)).split("/", 1)[-1]) for f in paths]}
-            if files and time_budget.runtime_change(changes) is False and time_budget.night_speed_skip(admission):
+            if ((problem.get("speed") or rule in time_budget.IMPROVEMENT_RULES) and files
+                    and time_budget.runtime_change(changes) is False and time_budget.night_speed_skip(admission)):
                 admission["class"] = "measurement fix"
             if ((problem.get("speed") or rule in time_budget.IMPROVEMENT_RULES) and rule != "spend_audit" or rule in ("floor", "test_long_pole", "test_daily_cost", "test_slow", "suites_at_once", "hook_p50", "hook_sync", "hook_full_work", "hook_every_call")
                     or admission.get("class", (admission.get("opportunity") or {}).get("class")) == "measurement fix"):

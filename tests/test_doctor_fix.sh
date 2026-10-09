@@ -1165,8 +1165,7 @@ assert grep -qF 'skipped regression:small: expected gain <5 min/day or unpriced'
 assert grep -qF 'skipped repair:alone: measurement fix' "$WORK/admission.err"
 assert grep -qF 'skipped opportunity:chat/hooks: expected gain <5 min/day or unpriced' "$WORK/admission.err"
 assert test "$(wc -l <"$WORK/admission.err" | tr -d ' ')" = 1
-assert grep -qF 'skipped collector:repair: measurement fix' "$WORK/admission.err"
-assert jqe 'all(.[]; .id != "suite_audit:unpriced" and .id != "hook_p50:small" and .id != "collector:repair")' "$WORK/admission.json"
+assert jqe 'all(.[]; .id != "suite_audit:unpriced" and .id != "hook_p50:small") and any(.[]; .id == "collector:repair")' "$WORK/admission.json"
 assert jqe '[.[].id] | index("regression:small") != null and index("collector:repair") != null' <(night_snapshot "" 8)
 mv "$S/admission-before.json" "$S/harness/latest.json"
 # A Speed document whose three selections are empty never asks for the free slots it could not use.
