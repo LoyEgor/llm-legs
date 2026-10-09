@@ -59,7 +59,7 @@ end
 local KNOWN_COLORS = {}
 local palette = assert(loadfile(root .. "/hammerspoon/menu-style.lua"))()
 for _, color in ipairs({ dimTone(0), dimTone(1), palette.RED, palette.DIM_RED, palette.GREEN,
-    palette.tone(palette.GREEN, true) }) do
+    palette.tone(palette.GREEN, true), palette.tone(palette.RED, true) }) do
   KNOWN_COLORS[colorKey(color)] = true
 end
 
@@ -89,6 +89,32 @@ local function styled(text, attributes)
     attributes = attributes,
     runs = {{ text = text, attributes = attributes }},
   }, Styled)
+end
+
+function Styled:asTable()
+  local out, at = { self.text }, 1
+  for _, run in ipairs(self.runs) do
+    out[#out + 1] = { starts = at, ends = at + #run.text - 1, attributes = run.attributes }
+    at = at + #run.text
+  end
+  return out
+end
+
+function Styled:setStyle(attributes, starts, ends)
+  local result, at = styled("", {}), 1
+  result.text, result.attributes, result.runs = self.text, self.attributes, {}
+  for _, run in ipairs(self.runs) do
+    local merged = run.attributes
+    if at >= starts and at + #run.text - 1 <= ends then
+      merged = {}
+      for key, value in pairs(run.attributes or {}) do merged[key] = value end
+      for key, value in pairs(attributes) do merged[key] = value end
+      styled(run.text, merged)
+    end
+    result.runs[#result.runs + 1] = { text = run.text, attributes = merged }
+    at = at + #run.text
+  end
+  return result
 end
 
 function Styled.__concat(left, right)
@@ -249,7 +275,10 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
       }
     end,
   }, { __index = io })
-  local env = setmetatable({ hs = mock, io = fakeIo }, { __index = _G })
+  local env = setmetatable({ hs = mock, io = fakeIo, require = function(name)
+    if name == "menu-style" then return palette end
+    return require(name)
+  end }, { __index = _G })
   if nowOverride then
     local timeFn = type(nowOverride) == "function" and nowOverride
       or function() return nowOverride end
@@ -333,9 +362,12 @@ local function submenuTitles(row)
   return titles
 end
 
+local toned = { inactiveRed = colorKey(palette.tone(palette.RED, true)), raw = {
+  [colorKey(palette.RED)] = true, [colorKey(palette.DIM_RED)] = true, [colorKey(palette.GREEN)] = true,
+} }
 local function isRed(attributes)
   local color = attributes and attributes.color
-  return color and color.red == 0.9 and color.green == 0.25 and color.blue == 0.2
+  return color and (color.red == 0.9 and color.green == 0.25 and color.blue == 0.2 or colorKey(color) == toned.inactiveRed)
 end
 
 local function redRuns(title)
@@ -346,11 +378,27 @@ local function redRuns(title)
   return result
 end
 
-local function hasDimRed(title)
+-- A disabled row shows DIM_RED's look through the calibrated INACTIVE_RED.
+function toned.hasDimRed(title)
   for _, run in ipairs(title.runs or {}) do
-    if isRed(run.attributes) and run.attributes.color.alpha == 0.55 then return true end
+    if isRed(run.attributes) and (run.attributes.color.alpha == 0.55 or colorKey(run.attributes.color) == toned.inactiveRed) then
+      return true
+    end
   end
   return false
+end
+
+function toned.assert(items, where)
+  for _, item in ipairs(items or {}) do
+    if item.disabled and type(item.title) == "table" then
+      for _, run in ipairs(item.title.runs or {}) do
+        local color = run.attributes and run.attributes.color
+        assert(not (type(color) == "table" and toned.raw[colorKey(color)]),
+          where .. ": a disabled row kept a raw palette colour instead of tone(…, true): " .. tostring(run.text))
+      end
+    end
+    toned.assert(item.menu, where)
+  end
 end
 
 -- The dim tone is the system's own tertiaryLabelColor, the colour macOS paints the disabled
@@ -454,10 +502,11 @@ local fixture = { schema = 1, vendors = {
 }}
 
 local menu = loadModule(fixture).menuItems()
+toned.assert(menu, "the LLM Limits menu")
 local full = accountIndex(menu, "full")
 assert(#redRuns(menu[full].title) > 0, "at-limit account title is not red")
 assert(#redRuns(menu[full + 1].title) > 0, "at-limit five-hour row is not red")
-assert(hasDimRed(menu[full + 1].title), "stale at-limit five-hour row was not dimmed")
+assert(toned.hasDimRed(menu[full + 1].title), "stale at-limit five-hour row was not dimmed")
 assertNoRed(menu[full + 2], "under-limit weekly row rendered red")
 assertNoRed(menu[full + 3], "under-limit fable row rendered red")
 
@@ -3819,7 +3868,8 @@ do
   assert(titleText(items[5]) == "  median wait per call" and titleText(items[6]) == "-",
     "the section note does not close its section before the separator")
   local delta = items[9].title.runs
-  assert(#delta == 4 and delta[2].text == "+243%" and delta[2].attributes.color.red == 0.9
+  toned.assert(items, "the Harness doctor menu")
+  assert(#delta == 4 and delta[2].text == "+243%" and colorKey(delta[2].attributes.color) == toned.inactiveRed
       and delta[4].text == "-50%" and colorKey(delta[4].attributes.color) == colorKey(palette.tone(palette.GREEN, true)),
     "a worse Δ is not red and a better Δ not the disabled row's green")
   assert(titleText(items[#items]) == "Refresh" and items[#items].fn, "the Harness doctor has no Refresh")

@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # hammerspoon/menu-style.lua is the only palette: no other menu module builds a colour, and every
-# palette is exactly PALETTE, each colour opaque or at DIM_RED's alpha. GREEN reaches a title only
-# through M.tone, which holds the disabled-row green calibrated on the real menu.
+# palette is exactly PALETTE, each colour opaque or at DIM_RED's alpha. A disabled row takes the
+# calibrated colours of M.tone(color, true): every module with disabled rows passes its tree through
+# M.mono, which retones them, and a module whose titles skip that walk (M.toned) sends every RED,
+# DIM_RED and GREEN through tone(). GREEN goes through tone() everywhere.
 set -u
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -23,8 +25,12 @@ COLOR = [
     (re.compile(r"\blist\s*=\s*[\"']"), "a named colour"),
     (re.compile(r"hs\.drawing\.color\.(?!asRGB\b|asHSB\b)\w+"), "an hs.drawing.color name"),
 ]
-GREEN = re.compile(r"\.GREEN\b|\[\s*[\"']GREEN[\"']\s*\]")
-TONED = re.compile(r"\btone\(\s*[\w.]*(?:\.GREEN\b|\[\s*[\"']GREEN[\"']\s*\])")
+
+
+def raw(body, names):
+    def count(prefix):
+        return sum(len(re.findall(prefix + rf"(?:\.{name}\b|\[\s*[\"']{name}[\"']\s*\])", body)) for name in names)
+    return count("") > count(r"\btone\(\s*[\w.]*")
 
 
 def code(line):
@@ -43,19 +49,28 @@ def code(line):
 problems = []
 for path in modules:
     with open(path, encoding="utf-8") as handle:
-        for number, line in enumerate(handle, 1):
-            body = code(line)
-            for pattern, what in COLOR:
-                if pattern.search(body):
-                    problems.append(f"{path}:{number}: {what} outside menu-style.lua ({line.strip()}); {HOME}")
-            if len(GREEN.findall(body)) > len(TONED.findall(body)):
-                problems.append(f"{path}:{number}: a raw GREEN ({line.strip()}); pass it through menu-style.lua"
-                                " tone(GREEN, inactive) so a disabled row gets the calibrated green")
+        bodies = [code(line) for line in handle]
+    walked = any(".mono(" in body for body in bodies)
+    skips = any(".toned(" in body for body in bodies)
+    if not walked and any(re.search(r"\bdisabled\s*=\s*true\b", body) for body in bodies):
+        problems.append(f"{path}: disabled rows but no menu-style.lua mono() over the tree; return the menu through"
+                        " mono so a disabled row's red and green get tone(…, true)")
+    for number, body in enumerate(bodies, 1):
+        for pattern, what in COLOR:
+            if pattern.search(body):
+                problems.append(f"{path}:{number}: {what} outside menu-style.lua ({body.strip()}); {HOME}")
+        if raw(body, ["GREEN"]):
+            problems.append(f"{path}:{number}: a raw GREEN ({body.strip()}); pass it through menu-style.lua"
+                            " tone(GREEN, inactive) so a disabled row gets the calibrated green")
+        if skips and raw(body, ["RED", "DIM_RED"]):
+            problems.append(f"{path}:{number}: a raw RED in a module whose titles skip the retone walk (toned)"
+                            f" ({body.strip()}); pass it through menu-style.lua tone(RED, inactive)")
 
 with open(style_path, encoding="utf-8") as handle:
     style = handle.read()
-if not re.search(r"^function M\.tone\(color, inactive\)$", style, re.M) or "local INACTIVE_GREEN = {" not in style:
-    problems.append("menu-style.lua: M.tone(color, inactive) and its INACTIVE_GREEN are gone")
+if (not re.search(r"^function M\.tone\(color, inactive\)$", style, re.M) or "local INACTIVE_GREEN = {" not in style
+        or "local INACTIVE_RED = {" not in style or "item.title = inactiveTitle(item.title)" not in style):
+    problems.append("menu-style.lua: M.tone(color, inactive), its INACTIVE_GREEN/INACTIVE_RED or mono's retone are gone")
 palette = {}
 for name, body in re.findall(r"^M\.([A-Z_]+)\s*=\s*\{([^}]*)\}", style, re.M):
     fields = dict(re.findall(r"(\w+)\s*=\s*(\"[^\"]*\"|[-0-9.]+)", body))
@@ -96,6 +111,13 @@ rogue=$(check "$ROOT/hammerspoon/menu-style.lua" "$WORK/rogue.lua")
 [ "$(printf '%s\n' "$rogue" | grep -c 'menu-style.lua')" = 4 ] || fail "a colour built outside menu-style.lua passed: $rogue"
 case "$rogue" in *"rogue.lua:5: a raw GREEN"*) ;; *) fail "a raw GREEN outside tone() passed: $rogue" ;; esac
 case "$rogue" in *"rogue.lua:6:"*) fail "GREEN through tone() was rejected: $rogue" ;; esac
+printf 'local items = { { title = t, disabled = true } }\nreturn items\n' >"$WORK/unwalked.lua"
+printf 'local a = { color = style.RED }\nlocal b = style.tone(style.DIM_RED, true)\nreturn style.mono({ { title = style.toned(a), disabled = true } }, f)\n' >"$WORK/skipping.lua"
+printf 'local a = { color = style.RED }\nreturn style.mono({ { title = a, disabled = true } }, f)\n' >"$WORK/walked.lua"
+reds=$(check "$ROOT/hammerspoon/menu-style.lua" "$WORK/unwalked.lua" "$WORK/skipping.lua" "$WORK/walked.lua")
+case "$reds" in *"unwalked.lua: disabled rows but no menu-style.lua mono()"*) ;; *) fail "a disabled row outside mono passed: $reds" ;; esac
+case "$reds" in *"skipping.lua:1: a raw RED"*) ;; *) fail "a raw RED in a toned module passed: $reds" ;; esac
+case "$reds" in *"skipping.lua:2:"*|*"/walked.lua:"*) fail "a toned or walked red was rejected: $reds" ;; esac
 grep -v '^function M.tone' "$ROOT/hammerspoon/menu-style.lua" >"$WORK/menu-style.lua"
 untoned=$(check "$WORK/menu-style.lua")
 case "$untoned" in *"M.tone(color, inactive)"*) ;; *) fail "a palette without M.tone passed: $untoned" ;; esac

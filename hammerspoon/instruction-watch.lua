@@ -1334,7 +1334,7 @@ function M.menuItems()
                 { "-R", (os.getenv("HOME") or "") .. "/.claude/instruction-changes.log" }):start()
         end,
     }
-    return items
+    return menuStyle.mono(items, tostring)
 end
 
 local function journalStamp()

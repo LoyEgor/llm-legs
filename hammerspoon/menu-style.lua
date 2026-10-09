@@ -8,13 +8,52 @@ M.GREEN = { red = 0.13, green = 0.55, blue = 0.25 }
 M.DIM = { list = "System", name = "tertiaryLabelColor" }
 M.MONO = { name = "Menlo", size = 13 }
 
--- A disabled NSMenu row re-tints a custom text colour (dark green turns grey-green). Measured on the
--- light theme: this input in a disabled row renders as GREEN at DIM_RED's alpha in an enabled row.
+-- A disabled NSMenu row re-tints a custom text colour (dark green turns grey-green, red pales, a dim
+-- red dims twice). Measured on the light theme: each input in a disabled row renders as its colour
+-- at DIM_RED's alpha in an enabled row.
 local INACTIVE_GREEN = { red = 0.17, green = 0.73, blue = 0.36 }
+local INACTIVE_RED = { red = 0.92, green = 0.17, blue = 0.08 }
 
 function M.tone(color, inactive)
-  if inactive and color == M.GREEN then return INACTIVE_GREEN end
+  if not inactive then return color end
+  if color == M.GREEN then return INACTIVE_GREEN end
+  if color == M.RED or color == M.DIM_RED then return INACTIVE_RED end
   return color
+end
+
+local function same(shown, color)
+  for _, key in ipairs({ "red", "green", "blue", "alpha" }) do
+    if math.abs((shown[key] or 1) - (color[key] or 1)) > 1e-4 then return false end
+  end
+  return true
+end
+
+-- Keyed by title object: Doctors hands back the same cached titles every build, so a repeat costs a
+-- lookup instead of an asTable round trip per row.
+local settled = setmetatable({}, { __mode = "k" })
+
+-- A title whose tones were already chosen for its row's final enabled state skips the retone walk.
+function M.toned(title)
+  if type(title) ~= "string" then settled[title] = title end
+  return title
+end
+
+local function inactiveTitle(title)
+  if settled[title] then return settled[title] end
+  local out = title
+  for _, run in ipairs(title:asTable()) do
+    local shown = type(run) == "table" and run.attributes and run.attributes.color
+    if type(shown) == "table" then
+      for _, color in ipairs({ M.RED, M.DIM_RED, M.GREEN }) do
+        if same(shown, color) then
+          out = out:setStyle({ color = M.tone(color, true) }, run.starts, run.ends)
+          break
+        end
+      end
+    end
+  end
+  settled[title], settled[out] = out, out
+  return out
 end
 
 function M.age(seconds)
@@ -39,9 +78,15 @@ function M.day(epoch)
   return os.date("%b ", epoch) .. tonumber(os.date("%d", epoch))
 end
 
+-- Every menu tree passes through here, so a disabled row's palette colours get their tone(…, true)
+-- whichever builder painted them.
 function M.mono(items, style)
   for _, item in ipairs(items or {}) do
-    if type(item.title) == "string" and item.title ~= "-" then item.title = style(item.title) end
+    if type(item.title) == "string" and item.title ~= "-" then
+      item.title = style(item.title)
+    elseif item.disabled and type(item.title) ~= "string" and item.title ~= nil then
+      item.title = inactiveTitle(item.title)
+    end
     if type(item.menu) == "table" then M.mono(item.menu, style) end
   end
   return items

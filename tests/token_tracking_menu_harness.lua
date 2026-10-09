@@ -1,6 +1,10 @@
 local root = debug.getinfo(1, "S").source:match("^@(.+)/tests/[^/]+$")
 assert(root, "harness path is unavailable")
-local M = assert(loadfile(root .. "/hammerspoon/token-tracking.lua"))()
+local menuStyle = dofile(root .. "/hammerspoon/menu-style.lua")
+local M = assert(loadfile(root .. "/hammerspoon/token-tracking.lua", "t", setmetatable({ require = function(name)
+    if name == "menu-style" then return menuStyle end
+    return require(name)
+end }, { __index = _G })))()
 
 local failures = {}
 local function check(ok, message)
@@ -222,7 +226,6 @@ check(codexAt and cat[codexAt - 1].title ~= "-" and text(cat[codexAt - 1].title)
     and cat[codexAt - 2].title == "-", "the vendor group has no separator and caption")
 
 local drill = spend.menu
-local menuStyle = dofile(root .. "/hammerspoon/menu-style.lua")
 local function painted(item, cell, color)
     local start = text(item.title):find(cell, 1, true)
     for _, run in ipairs(start and item.title:asTable() or {}) do
@@ -242,6 +245,26 @@ check(painted(workers, "-13%", menuStyle.GREEN) and zone and zone.disabled
     and colorAt(zone, "-33%") ~= colorAt(workers, "-13%"),
     "a better Δ is not GREEN in an enabled row and the calibrated green in a disabled one: "
         .. tostring(colorAt(workers, "-13%")) .. " / " .. tostring(zone and colorAt(zone, "-33%")))
+local function rawInDisabled(menu)
+    for _, item in ipairs(menu or {}) do
+        if item.disabled and type(item.title) ~= "string" then
+            for _, run in ipairs(item.title:asTable()) do
+                local shown = type(run) == "table" and run.attributes and run.attributes.color
+                for _, raw in ipairs({ menuStyle.RED, menuStyle.DIM_RED, menuStyle.GREEN }) do
+                    local same = type(shown) == "table"
+                    for _, key in ipairs({ "red", "green", "blue", "alpha" }) do
+                        same = same and math.abs((shown[key] or 1) - (raw[key] or 1)) <= 1e-6
+                    end
+                    if same then return text(item.title) end
+                end
+            end
+        end
+        local found = rawInDisabled(item.menu)
+        if found then return found end
+    end
+end
+local rawRow = rawInDisabled(items)
+check(not rawRow, "a disabled row kept a raw palette colour instead of tone(…, true): " .. tostring(rawRow))
 check(text(drill[1].title):find("^By zone") ~= nil, "the drill does not open on its first section: " .. text(drill[1].title))
 local zoneHead, topHead = find(drill, "By zone"), find(drill, "Top projects")
 check(zoneHead and topHead and cellEnd(zoneHead, "Δ") == cellEnd(topHead, "Δ")

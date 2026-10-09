@@ -94,8 +94,13 @@ local fakeHs = setmetatable({
   end },
 }, { __index = hs })
 
+local palette = dofile(root .. "/hammerspoon/menu-style.lua")
+local function treeRequire(name)
+  if name == "menu-style" then return palette end
+  return require(name)
+end
 local limits = assert(loadfile(root .. "/hammerspoon/llm-limits.lua", "t",
-  setmetatable({ hs = fakeHs }, { __index = _G })))()
+  setmetatable({ hs = fakeHs, require = treeRequire }, { __index = _G })))()
 limits.llmDoctorPath = dir .. "/llm-doctor/latest.json"
 limits.harnessDoctorDir = dir .. "/harness-doctor"
 limits.doctorSnapshotPath = dir .. "/snapshot.json"
@@ -110,7 +115,7 @@ local pinnedOs = setmetatable({ time = function(date) return date and os.time(da
 local function loadDoctors(override)
   local env = setmetatable({ hs = fakeHs, os = pinnedOs, require = function(name)
     if name == "llm-limits" then return limits end
-    return require(name)
+    return treeRequire(name)
   end }, { __index = _G })
   local doctors = assert(loadfile(override or source or root .. "/hammerspoon/doctors.lua", "t", env))()
   doctors.doctorsDir = dir .. "/doctors"
@@ -174,7 +179,6 @@ local updater = {
 }
 write("/snapshot.json", { as_of = now, total = 0, anomalies = {} })
 
-local palette = require("menu-style")
 local function sameColor(actual, expected)
   if not actual then return false end
   expected = color(hs.styledtext.new("x", { font = palette.MONO, color = expected }))
@@ -304,7 +308,8 @@ check(span(trendItems[3].title, 1, 7) == "Updater" and sameColor(colorAt(trendIt
 check(span(trendItems[1].title, 1, 3) == "LLM" and sameColor(colorAt(trendItems[1].title, 1), palette.RED), "problem name RED")
 local function issue(menu, at, want)
   local item = menu and menu[at]
-  return item and text(item.title) == want and sameColor(colorAt(item.title, 1), palette.RED) and item.disabled
+  return item and text(item.title) == want and sameColor(colorAt(item.title, 1), palette.tone(palette.RED, true))
+    and item.disabled
 end
 check(issue(trendItems[1].menu, 1, "   8  reviewers crashed"), "LLM issue row")
 check(issue(trendItems[1].menu, 2, "   4  review anchors"), "LLM review machinery issue row")
@@ -315,6 +320,22 @@ check(issue(trendItems[5].menu, 1, "  40 w-min/day  suites running"), "a workers
 check(issue(trendItems[6].menu, 1, " 1.9 %  compaction summaries"), "Spend issue row: the due component by its share")
 check(issue(trendItems[7].menu, 1, "   1  new processes") and issue(trendItems[7].menu, 2, "   1  swap full")
   and not find(trendItems[7].menu, "   1  low disk space"), "System issue rows: one per loud problem by its short name")
+local function rawInDisabled(menu)
+  for _, item in ipairs(menu or {}) do
+    if item.disabled and type(item.title) ~= "string" then
+      for _, run in ipairs(item.title:asTable()) do
+        local shown = type(run) == "table" and run.attributes and run.attributes.color
+        for _, raw in ipairs({ palette.RED, palette.DIM_RED, palette.GREEN }) do
+          if shown and sameColor(shown, raw) then return text(item.title) end
+        end
+      end
+    end
+    local found = rawInDisabled(item.menu)
+    if found then return found end
+  end
+end
+local rawRow = rawInDisabled(trendItems)
+check(not rawRow, "a disabled row kept a raw palette colour instead of tone(…, true): " .. tostring(rawRow))
 local systemFix = find(trendItems[7].menu, "Fix —")
 check(systemFix and text(systemFix.title) == "Fix — open a fixer chat" and not systemFix.disabled and systemFix.fn,
   "System routes its own causes to a fixer: its Fix row opens a fixer chat")

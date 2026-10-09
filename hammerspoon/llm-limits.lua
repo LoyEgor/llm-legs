@@ -1730,13 +1730,13 @@ stuckQueues = function()
   return out
 end
 
-local function harnessLine(flags, spans, text, inactive)
+local function harnessLine(flags, spans, text)
   if flags:find("s", 1, true) then return { title = "-" } end
   local dim = flags:find("d", 1, true) ~= nil
   local title, at = nil, 1
   local function add(piece, red, pieceDim, green)
     if piece == "" then return end
-    local styled = green and hs.styledtext.new(piece, { font = menuFont, color = style.tone(style.GREEN, inactive) })
+    local styled = green and hs.styledtext.new(piece, { font = menuFont, color = style.tone(style.GREEN, false) })
       or infoTitle(piece, red, pieceDim and not red)
     title = title and (title .. styled) or styled
   end
@@ -1803,7 +1803,7 @@ local function readHarnessMenu()
           actionPath, actionArgs = harnessAction(packed)
         end
       end
-      local item = harnessLine(flags, spans, text, not actionPath)
+      local item = harnessLine(flags, spans, text)
       local chromeCheck = flags:find("v", 1, true) ~= nil
       if chromeCheck then item.plainTitle, chromeChecks[#chromeChecks + 1] = text, item end
       if item.title ~= "-" then
@@ -1811,7 +1811,6 @@ local function readHarnessMenu()
           item.fn = function() startDiagnosticsTask("harnessActionTask", actionPath, actionArgs) end
         else
           item.disabled = true
-          item.enabledTitle = function() return harnessLine(flags, spans, text, false).title end
         end
       end
       if not chromeCheck then parent[#parent + 1] = item end
@@ -1824,10 +1823,9 @@ local function readHarnessMenu()
   local function settle(items)
     for _, item in ipairs(items) do
       if item.children and #item.children > 0 then
-        if item.enabledTitle then item.title = item.enabledTitle() end
         item.menu, item.disabled = settle(item.children), nil
       end
-      item.children, item.enabledTitle = nil, nil
+      item.children = nil
     end
     return items
   end

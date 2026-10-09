@@ -3128,7 +3128,7 @@ fi
 assert grep -Fxq 'DELTA_TIMES_FROM = 11' "$HARNESS_DOCTOR_BIN"
 assert grep -Fxq 'DELTA_MATERIAL = 0.10' "$HARNESS_DOCTOR_BIN"
 assert grep -Fxq '    if tone == "better" then return menuStyle.tone(menuStyle.GREEN, inactive) end' "$ROOT/hammerspoon/token-tracking.lua"
-assert grep -Fq 'color = style.tone(style.GREEN, inactive) })' "$ROOT/hammerspoon/llm-limits.lua"
+assert grep -Fq 'color = style.tone(style.GREEN, false) })' "$ROOT/hammerspoon/llm-limits.lua"
 assert grep -Fxq 'M.GREEN = { red = 0.13, green = 0.55, blue = 0.25 }' "$ROOT/hammerspoon/menu-style.lua"
 assert doc_has '`7 days · prev 7 · Δ`'
 
@@ -3160,7 +3160,9 @@ for f in "$HS_ROOT"/*.lua; do [ -f "$f" ] && menu_lua+=("$f"); done
 menu_reds=$(perl -0ne 'while (/\{\s*red\s*=\s*([0-9.]+)\s*,\s*green\s*=\s*([0-9.]+)\s*,\s*blue\s*=\s*([0-9.]+)/g) {
   print "$ARGV $1 $2 $3\n" if $1 >= 0.5 && $2 < 0.4 && $3 < 0.4 }' "${menu_lua[@]}")
 assert [ -n "$menu_reds" ]
-assert test -z "$(grep -v ' 0.9 0.25 0.2$' <<<"$menu_reds")"
+assert test -z "$(grep -v ' 0.9 0.25 0.2$' <<<"$menu_reds" | grep -vxF "$ROOT/hammerspoon/menu-style.lua 0.92 0.17 0.08")"
+assert grep -Fxq 'local INACTIVE_RED = { red = 0.92, green = 0.17, blue = 0.08 }' "$ROOT/hammerspoon/menu-style.lua"
+assert doc_has '`INACTIVE_RED` `{ red = 0.92, green = 0.17, blue = 0.08 }`'
 assert test -z "$(grep -l 'systemRedColor' "${menu_lua[@]}")"
 menu_fontless=$(perl -0ne 'while (/hs\.styledtext\.new\(((?:[^()]++|\((?1)\))*)\)/g) { my $a = $1;
   print "$ARGV: $a\n" if $a =~ /,\s*[\{a-zA-Z]/ && $a !~ /font|attributes/ }' "${menu_lua[@]}")

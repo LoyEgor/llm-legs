@@ -32,9 +32,8 @@ local SPEND_RANGES = { RANGES[2], RANGES[3], RANGES[1] }
 local CATEGORY_RANGES = { RANGES[2], RANGES[3], RANGES[1], RANGES[4] }
 local DELTA_COLUMN = 3
 
-local RED = menuStyle.RED
 local function toneColor(tone, inactive)
-    if tone == "worse" then return RED end
+    if tone == "worse" then return menuStyle.tone(menuStyle.RED, inactive) end
     if tone == "better" then return menuStyle.tone(menuStyle.GREEN, inactive) end
 end
 
@@ -152,7 +151,7 @@ local function aligned(rows)
             if c == DELTA_COLUMN and row.tone then color = toneColor(row.tone, not row.active) or rowColor end
             title = title .. style("  " .. pad(nums[c] or "", numWidths[c], true), color)
         end
-        titles[index] = title
+        titles[index] = menuStyle.toned(title)
     end
     return titles
 end
@@ -303,9 +302,9 @@ local function statusItems(data, problem, attrs, snapshot, job)
         red = outdated(data) or (not snapshot and isStale(data, attrs))
     end
     if job.running then text = text .. " · refreshing…" end
-    local items = { { title = style(text, red and RED or dimColor()), disabled = true } }
+    local items = { { title = style(text, red and menuStyle.tone(menuStyle.RED, true) or dimColor()), disabled = true } }
     if not job.running and job.error then
-        items[2] = { title = style("last refresh failed: " .. job.error, RED), disabled = true }
+        items[2] = { title = style("last refresh failed: " .. job.error, menuStyle.tone(menuStyle.RED, true)), disabled = true }
     end
     return items
 end
@@ -609,7 +608,7 @@ function M.title(watcherAlarm)
     if isStale(data, attrs) then alarms[#alarms + 1] = "stale" end
     if watcherAlarm then alarms[#alarms + 1] = "watcher down" end
     if #alarms == 0 then return "Token tracking" end
-    return hs.styledtext.new("Token tracking: " .. table.concat(alarms, " · "), { color = RED, font = (hs.styledtext.defaultFonts or {}).menu })
+    return hs.styledtext.new("Token tracking: " .. table.concat(alarms, " · "), { color = menuStyle.tone(menuStyle.RED, false), font = (hs.styledtext.defaultFonts or {}).menu })
 end
 
 function M.menuItems(changeLogItem)
