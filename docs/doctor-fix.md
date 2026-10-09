@@ -176,8 +176,8 @@ never the lever.
 
 ### Suite audits: same checks, less CPU
 
-A `speed-suite-audit-<repo>-<suite>` run audits the suite the queue ranks first (one a night, beside the red test
-rules); its brief carries the steps, `STRONG: yes` keeps Light and Gemini Flash off it, and
+A `speed-suite-audit-<repo>-<suite>` run audits the suites the queue ranks first (its share of free worker slots,
+beside the red test rules); its brief carries the steps, `STRONG: yes` keeps Light and Gemini Flash off it, and
 `bin/speed-doctor --suite-audit` records the row in `share/spend-ledger.json`. `kept` is a normal verdict.
 
 ### The judge is not yours to loosen

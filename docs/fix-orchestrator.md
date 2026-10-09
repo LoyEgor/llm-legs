@@ -8,8 +8,8 @@ jobs (`night-run job`).
 ## Dispatch, all at once
 
 `worker-pick`, then per line its START line with the brief file and `--workdir <worktree>` (a `MODEL: sonnet`
-brief: `--account claudeb`), and a background `worker-run wait`; a report's `ESCALATE-BRIEF:` file is started
-again so. A brief whose `ROUND:` is not `none` waits for its speed-lens round (a background `review-bench
+brief: `worker-run start claudeb --account $(worker-pick --account claudeb)`), and a background `worker-run
+wait`; a report's `ESCALATE-BRIEF:` file starts again on the plain START line. A brief whose `ROUND:` is not `none` waits for its speed-lens round (a background `review-bench
 wait`). Never poll.
 
 A vendor's run also gets, per event, its blind cross-check (`docs/vendor-release.md` step 4): `worker-run
