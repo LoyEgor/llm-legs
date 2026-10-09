@@ -2,13 +2,13 @@
 -- category rows under By category.
 --
 -- The whole Automations menu is rebuilt on every click, so this module reads small JSONs
--- tokenmap writes (spend-<key>.json for the vendor trees, tracking.json or
--- tracking-range-<key>.json for the harness index row and By category),
+-- tokenmap writes (spend-<key>.json for the vendor trees and the harness index row, tracking.json
+-- or tracking-range-<key>.json for By category, which has its own range and refresh),
 -- decoded once per size+mtime — never a query or a subprocess on the click path. Every number,
 -- label and Δ tone is decided by tokenmap (tokenmap/tracking.py); this side only aligns the
 -- columns and colours the tone. An export is current while its db_generation is the one in the
--- `generation` file every tokenmap commit replaces; an outdated one is recomputed, never shown
--- as current.
+-- `generation` file every tokenmap commit replaces. An outdated spend export is recomputed on open;
+-- an outdated category export shows red until its own range or Refresh recomputes it.
 
 local M = {}
 local menuStyle = require("menu-style")
@@ -29,6 +29,7 @@ local RANGES = {
     { key = "today", label = "Today vs yesterday, same hours" },
 }
 local SPEND_RANGES = { RANGES[2], RANGES[3], RANGES[1] }
+local CATEGORY_RANGES = { RANGES[2], RANGES[3], RANGES[1], RANGES[4] }
 local DELTA_COLUMN = 3
 
 local RED = menuStyle.RED
@@ -49,9 +50,10 @@ end
 local promptFn = askSince
 local scanTask, scanError = nil, nil
 local jobSoft, jobSerial, sevenOwed = false, 0, false
-local jobScan, jobQuiet, jobFile, jobRange, pending = false, false, nil, nil, nil
+local jobScan, jobRange, pending = false, nil, nil
 local active, asked = nil, nil
 local spendTask, spendError, spendAsked, spendActive, spendSerial = nil, nil, nil, nil, 0
+local spendScanning = false
 local tried = {}
 
 local function readFile(file)
@@ -258,16 +260,17 @@ local function spendRange()
     return spendActive
 end
 
--- By category follows the one range unless Today or Since… is chosen inside it.
 local function activeRange()
     if active then return active end
     local saved = settingsStore.get(SETTINGS_KEY)
-    active = spendRange()
+    active = RANGES[1]
     if type(saved) == "table" and saved.key == "custom" and type(saved.since) == "string"
         and saved.since ~= "" then
         active = { key = "custom", since = saved.since }
-    elseif type(saved) == "table" and saved.key == RANGES[4].key then
-        active = RANGES[4]
+    elseif type(saved) == "table" then
+        for _, range in ipairs(RANGES) do
+            if range.key == saved.key then active = range end
+        end
     end
     return active
 end
@@ -345,18 +348,17 @@ local function startStep(steps, index, serial, onStep)
         scanError = "could not start " .. TOKENMAP
         return false
     end
-    scanTask, jobSoft = task, step.soft or false
-    jobScan, jobFile = step.scan or false, step.file
+    scanTask, jobSoft, jobScan = task, step.soft or false, step.scan or false
     return true
 end
 
 -- The view asked for runs at normal priority; the 7-day export a range run leaves behind its
 -- scan follows at nice 19, and the next click may cut it short: it is owed until a run writes it.
-function startJob(range, scanFirst, quiet)
+function startJob(range, scanFirst)
     if scanTask then return false end
     scanError = nil
     jobSerial = jobSerial + 1
-    jobQuiet, jobRange = quiet or false, range
+    jobRange = range
     local ranged = range ~= RANGES[1]
     local label = rangeLabel(range)
     local steps = {}
@@ -375,14 +377,13 @@ function startJob(range, scanFirst, quiet)
             args[#args + 1], args[#args + 2] = "--range", range.key
         end
         args[#args + 1] = "--write"
-        steps[#steps + 1] = { launch = TOKENMAP, args = args, view = true, file = rangeFile(range) }
+        steps[#steps + 1] = { launch = TOKENMAP, args = args, view = true }
         if sevenOwed then
             steps[#steps + 1] = { launch = "/usr/bin/nice", soft = true, seven = true,
-                                  args = { "-n", "19", TOKENMAP, "tracking", "--write" }, file = path }
+                                  args = { "-n", "19", TOKENMAP, "tracking", "--write" } }
         end
     elseif not scanFirst then
-        steps[1] = { launch = TOKENMAP, args = { "tracking", "--write" }, view = true,
-                     seven = true, file = path }
+        steps[1] = { launch = TOKENMAP, args = { "tracking", "--write" }, view = true, seven = true }
     end
     local what = ranged and ("Token tracking " .. label) or "Token tracking refresh"
     local started = startStep(steps, 1, jobSerial, function(step, ok)
@@ -393,14 +394,13 @@ function startJob(range, scanFirst, quiet)
             asked = nil
             if ok then remember(range) else active = nil end
         end
-        if quiet then return end
         if ok then
             alertFn(ranged and (what .. " ready") or "Token tracking updated")
         else
             alertFn(what .. " failed: " .. scanError)
         end
     end)
-    if not started and not quiet then alertFn(what .. " failed: " .. scanError) end
+    if not started then alertFn(what .. " failed: " .. scanError) end
     return started
 end
 
@@ -408,8 +408,7 @@ local function cancelJob()
     if not scanTask or jobScan then return not scanTask end
     jobSerial = jobSerial + 1
     scanTask:terminate()
-    if jobFile then tried[jobFile] = nil end
-    scanTask, jobSoft, jobQuiet = nil, false, false
+    scanTask, jobSoft = nil, false
     return true
 end
 
@@ -419,8 +418,10 @@ local function lastScan()
     return attrs and attrs.modification
 end
 
+local function scanning() return spendScanning or (scanTask ~= nil and jobScan) end
+
 function M.rescan()
-    if scanTask and not (jobSoft or jobQuiet) then return false end
+    if spendScanning or scanTask and not jobSoft then return false end
     cancelJob()
     return startJob(activeRange(), true)
 end
@@ -437,12 +438,13 @@ function M.choose(range)
         if jobSoft or jobRange ~= RANGES[1] then cancelJob() end
         asked = nil
         remember(range)
+        if not scanTask and generation() and outdated((load(path))) then return startJob(range, false) end
         return true
     end
     cancelJob()
     asked = range
     local scanned = lastScan()
-    local scanFirst = not scanned or os.time() - scanned > SCAN_FIRST_SECONDS
+    local scanFirst = not spendScanning and (not scanned or os.time() - scanned > SCAN_FIRST_SECONDS)
     if not scanFirst and generation() and not outdated((load(rangeFile(range)))) then active = range end
     return startJob(range, scanFirst)
 end
@@ -454,6 +456,24 @@ local function rangeChoices(ranges, current, busy, choose)
                                   checked = current == range, fn = function() choose(range) end }
     end
     return choices
+end
+
+local function compareItem()
+    local current = activeRange()
+    local function title(text, range)
+        return sameRange(asked, range) and (text .. " — computing…") or text
+    end
+    local choices = rangeChoices(CATEGORY_RANGES, current, asked, M.choose)
+    local custom = current.key == "custom"
+    local sinceTitle = custom and ("Since " .. current.since) or "Since…"
+    if asked and asked.key == "custom" then sinceTitle = title("Since " .. asked.since, asked) end
+    choices[#choices + 1] = { title = sinceTitle, checked = custom, fn = function()
+        local text = promptFn(custom and current.since or "")
+        text = text and text:match("^%s*(.-)%s*$")
+        if text and text ~= "" then M.choose({ key = "custom", since = text }) end
+    end }
+    return { title = asked and title("Compare: " .. rangeLabel(asked), asked) or ("Compare: " .. rangeLabel(current)),
+             menu = choices }
 end
 
 -- `lead` is one more row aligned with the table but placed by the caller; its title comes second.
@@ -493,43 +513,49 @@ local function spendFile(range)
 end
 
 local function cancelSpend()
-    if not spendTask then return end
+    if not spendTask or spendScanning then return end
     spendSerial = spendSerial + 1
     spendTask:terminate()
     spendTask, spendAsked = nil, nil
 end
 
--- The vendor trees' fast export (`tokenmap spend`). It never alerts: a range choice alerts once,
--- from By category's run, and a spend failure shows on the status line.
-local function startSpend(range)
+-- The vendor trees' fast export (`tokenmap spend`), after a scan that skips the category export
+-- when `scanFirst`. It never alerts: a failure shows on the status line.
+local function startSpend(range, scanFirst)
     cancelSpend()
     spendError = nil
     local serial = spendSerial
+    local args = scanFirst and { "scan", "--quiet", "--no-tracking" } or { "spend", "--range", range.key, "--write" }
     local task = taskFn(TOKENMAP, function(code, _, err)
         if serial ~= spendSerial then return end
-        spendTask, spendAsked = nil, nil
-        if code ~= 0 then spendError = lastLine(err) or ("exit " .. tostring(code)) end
-    end, { "spend", "--range", range.key, "--write" })
+        spendTask, spendAsked, spendScanning = nil, nil, false
+        if code ~= 0 then
+            spendError = lastLine(err) or ("exit " .. tostring(code))
+        elseif scanFirst then
+            startSpend(spendRange())
+        end
+    end, args)
     if task then task:setEnvironment({ PATH = TASK_PATH, HOME = HOME }) end
     if not (task and task:start()) then
         spendError = "could not start " .. TOKENMAP
         return false
     end
-    spendTask, spendAsked = task, range
+    spendTask, spendAsked, spendScanning = task, range, scanFirst or false
     return true
 end
 
--- Today and Since… compare categories only, so they live at the bottom of By category.
+function M.refresh()
+    if scanning() then return false end
+    return startSpend(spendRange(), true)
+end
+
+-- By category computes only when its own range or its own Refresh asks.
 local function categoryItem()
     local range = activeRange()
     local file = rangeFile(range)
     local data, problem, attrs = load(file)
-    local current = generation()
-    if current and tried[file] ~= current and outdated(data) and (not scanTask or jobSoft and file ~= path) then
-        tried[file] = current
-        if cancelJob() then startJob(range, false, true) end
-    end
     local items = statusItems(data, problem, attrs, file ~= path)
+    items[#items + 1] = compareItem()
     if data then
         items[#items + 1] = { title = "-" }
         local rest = {}
@@ -542,45 +568,29 @@ local function categoryItem()
         items[#items + 1] = { title = "-" }
         items[#items + 1] = { title = "By week", menu = byWeekMenu(data) }
     end
-    local function title(text, choice)
-        return sameRange(asked, choice) and (text .. " — computing…") or text
-    end
-    local custom = range.key == "custom"
-    local sinceTitle = custom and ("Since " .. range.since) or "Since…"
-    if asked and asked.key == "custom" then sinceTitle = title("Since " .. asked.since, asked) end
     items[#items + 1] = { title = "-" }
-    items[#items + 1] = { title = title(RANGES[4].label, RANGES[4]), checked = range == RANGES[4],
-                          fn = function() M.choose(RANGES[4]) end }
-    items[#items + 1] = { title = sinceTitle, checked = custom, fn = function()
-        local text = promptFn(custom and range.since or "")
-        text = text and text:match("^%s*(.-)%s*$")
-        if text and text ~= "" then M.choose({ key = "custom", since = text }) end
-    end }
-    local name = "By category"
-    local shown = asked or range
-    if shown.key == "today" or shown.key == "custom" then name = name .. ": " .. rangeLabel(shown) end
-    if asked then name = name .. " — computing…" end
-    return { title = name, menu = items }
+    items[#items + 1] = (spendScanning or scanTask and not jobSoft) and { title = "refreshing…", disabled = true }
+        or { title = "Refresh", fn = function() M.rescan() end }
+    return { title = asked and "By category — computing…" or "By category", menu = items }
 end
 
 function M.chooseRange(range)
     spendActive = range
     settingsStore.set(SPEND_KEY, { key = range.key })
-    if generation() and not outdated((load(spendFile(range)))) then
+    if spendScanning then
+        spendAsked = range
+    elseif generation() and not outdated((load(spendFile(range)))) then
         if spendAsked and spendAsked ~= range then cancelSpend() end
     elseif not sameRange(spendAsked, range) then
         startSpend(range)
     end
-    return M.choose(range)
+    return true
 end
 
--- The harness index row of the one range, aligned with the vendor trees under it.
-local function indexLead(range)
-    local data = load(rangeFile(range))
-    for _, row in ipairs(data and data.rows or {}) do
-        if row.key == "harness_index" then
-            return { label = row.label, nums = row.cells, tone = row.tone, dim = outdated(data) }, row
-        end
+local function indexLead(data)
+    local row = data and data.index
+    if type(row) == "table" then
+        return { label = row.label, nums = row.cells, tone = row.tone, dim = outdated(data) }, row
     end
     return { label = "Harness index", nums = { "…" }, dim = true }, nil
 end
@@ -605,16 +615,14 @@ function M.menuItems(changeLogItem)
         tried[file] = current
         startSpend(range)
     end
-    local category = categoryItem()
-    local items = statusItems(data, problem, attrs, false,
-        { running = spendTask ~= nil or scanTask ~= nil, error = spendError or scanError })
-    local lead, indexRow = indexLead(range)
+    local items = statusItems(data, problem, attrs, false, { running = spendTask ~= nil, error = spendError })
+    local lead, indexRow = indexLead(data)
     local rows, leadTitle
     if data then rows, leadTitle = tableItems(data, lead) else leadTitle = aligned({ lead })[1] end
     local indexMenu = indexRow and rowMenu(indexRow) or {}
     items[#items + 1] = #indexMenu > 0 and { title = leadTitle, menu = indexMenu } or { title = leadTitle, disabled = true }
     local title = "Compare: " .. range.label
-    if sameRange(spendAsked, range) or sameRange(asked, range) then title = title .. " — computing…" end
+    if sameRange(spendAsked, range) then title = title .. " — computing…" end
     items[#items + 1] = { title = title, menu = rangeChoices(SPEND_RANGES, range, spendAsked, M.chooseRange) }
     if data then
         items[#items + 1] = { title = "-" }
@@ -625,7 +633,7 @@ function M.menuItems(changeLogItem)
         end
     end
     items[#items + 1] = { title = "-" }
-    items[#items + 1] = category
+    items[#items + 1] = categoryItem()
     items[#items + 1] = { title = "-" }
     if changeLogItem then items[#items + 1] = changeLogItem end
     if hs.fs.attributes(PAGE) then
@@ -634,8 +642,8 @@ function M.menuItems(changeLogItem)
         end }
     end
     items[#items + 1] = { title = "-" }
-    items[#items + 1] = (scanTask and not (jobSoft or jobQuiet)) and { title = "refreshing…", disabled = true }
-        or { title = "Refresh", fn = function() M.rescan() end }
+    items[#items + 1] = scanning() and { title = "refreshing…", disabled = true }
+        or { title = "Refresh", fn = function() M.refresh() end }
     return menuStyle.mono(items, style)
 end
 

@@ -76,6 +76,10 @@ local spendFixture = {
     stale_after_hours = 26, unit_label = "tokens", columns = SPEND_COLUMNS,
     range = { key = "7d", title = "7 days vs the 7 before", cur_label = "7 days", prev_label = "prev 7" },
     groups = { codex = "Codex — its own units, never summed with Claude" },
+    index = { key = "harness_index", label = "Harness index", group = "harness", cells = { "1.14", "1.00", "+14%", "4.3%", "" },
+              tone = "worse", weeks = {}, weeks_unit = "index",
+              sections = { { title = "By part", columns = { "7 days", "prev 7", "Δ" },
+                             rows = { { label = "hooks", cells = { "1.20", "1.00", "+20%" }, tone = "worse" } } } } },
     rows = {
         { label = "Claude", group = "claude", cells = { "218.0M", "210.0M", "+4%", "", "×0.98" }, tone = "" },
         { label = "  Chat", group = "claude", cells = { "120.0M", "100.0M", "+18%", "55.0%", "×1.00" }, tone = "worse",
@@ -267,10 +271,14 @@ check(counts and counts.menu and find(counts.menu, "hook blocks"), "the Counts r
 
 check(codex and codex.menu and #codex.menu > 0 and codex.menu[1].title ~= "-"
     and text(codex.menu[1].title) == "Calendar weeks", "a drill with weeks but no sections opens on a separator")
-local today, since = find(cat, "Today vs yesterday, same hours"), find(cat, "Since…")
-check(today and today.fn and since and since.fn and select(2, find(cat, "Since…")) == #cat
-    and select(2, find(cat, "Today vs")) > select(2, find(cat, "By week")),
-    "Today and Since… are not the last choices of By category")
+local catCompare = cat[2]
+local catChoices = {}
+for _, choice in ipairs(catCompare and catCompare.menu or {}) do catChoices[#catChoices + 1] = text(choice.title) end
+check(catCompare and text(catCompare.title) == "Compare: 7 days vs 7 before"
+    and table.concat(catChoices, "|") == "24h vs 24h before|3 days vs 3 before|7 days vs 7 before|Today vs yesterday, same hours|Since…"
+    and catCompare.menu[3].checked, "By category lacks its own range under its status line: " .. table.concat(catChoices, "|"))
+check(text(cat[#cat].title) == "Refresh" and cat[#cat].fn and cat[#cat - 1].title == "-",
+    "By category lacks its own Refresh at its bottom")
 
 local _, logAt = find(items, "Instruction file changes")
 local _, refreshAt = find(items, "Refresh")
@@ -299,32 +307,33 @@ check(text(stale[1].title):find("^data to ") ~= nil and isRed(stale[1]), "a 30h-
 check(text(M.title("down")) == "Token tracking: stale · watcher down", "alarm title: " .. text(M.title("down")))
 
 local rangePath = dir .. "/tracking-range-24h.json"
-local stored, launched, spendRuns, answer = {}, {}, {}, nil
+local stored, launched, spendRuns, answer, spendHook = {}, {}, {}, nil, false
 local store = { get = function(key) return stored[key] end, set = function(key, value) stored[key] = value end }
 local function fakeTask(launch, callback, args)
     local task = { launch = launch, callback = callback, args = args }
     function task:setEnvironment(env) self.env = env end
     function task:start() return true end
     function task:terminate() self.terminated = true end
-    if args[1] == "spend" then spendRuns[#spendRuns + 1] = task else launched[#launched + 1] = task end
+    if args[1] == "spend" or args[3] == "--no-tracking" and spendHook then spendRuns[#spendRuns + 1] = task
+    else launched[#launched + 1] = task end
     return task
 end
 local function argLine(task) return task and (task.launch:match("[^/]+$") .. " " .. table.concat(task.args, " ")) or "none" end
 local function selector(list) return find(list, "Compare: ") end
-local function marked(list)
+local function catCompare(list) return find(category(list), "Compare: ") end
+local function checked(menu)
     local out = {}
-    for _, choice in ipairs(selector(list).menu) do
-        if choice.checked then out[#out + 1] = text(choice.title) end
-    end
-    for _, choice in ipairs(category(list)) do
+    for _, choice in ipairs(menu or {}) do
         if choice.checked then out[#out + 1] = text(choice.title) end
     end
     return table.concat(out, ",")
 end
-local function pick(list, label) return find(selector(list).menu, label) or find(category(list), label) end
-local function mainTitle(list) return text(selector(list).title) end
-local function catTitle(list) return text(find(list, "By category").title) end
+local function marked(list) return checked(catCompare(list).menu) end
+local function pickTop(list, label) return find(selector(list).menu, label) end
+local function pick(list, label) return find(catCompare(list).menu, label) end
+local function catTitle(list) return text(catCompare(list).title) end
 local function catStatus(list) return category(list)[1] end
+local function catRefresh(list) return find(category(list), "Refresh") or find(category(list), "refreshing…") end
 M.setPath(path)
 M.setSettings(store)
 M.setTask(fakeTask)
@@ -332,58 +341,66 @@ M.setPrompt(function() return answer end)
 hs.fs.touch(path, os.time() - 60)
 
 local ranged = M.menuItems(nil)
-check(ranged[3] == selector(ranged) and text(ranged[2].title):find("^Harness index") and marked(ranged) == "7 days vs 7 before",
-    "the one range selector is not under the harness index row with 7 days checked: " .. marked(ranged))
+check(ranged[3] == selector(ranged) and text(ranged[2].title):find("^Harness index") and checked(selector(ranged).menu) == "7 days vs 7 before"
+    and marked(ranged) == "7 days vs 7 before", "the two ranges do not both start at 7 days")
 alerts = {}
-pick(ranged, "24h vs 24h before").fn()
+pickTop(ranged, "24h vs 24h before").fn()
+check(#launched == 0 and #spendRuns == 1 and argLine(spendRuns[1]) == "tokenmap spend --range 24h --write"
+    and spendRuns[1].env.HOME == os.getenv("HOME") and marked(M.menuItems(nil)) == "7 days vs 7 before"
+    and stored["tokenTracking.spendRange"].key == "24h" and #alerts == 0,
+    "a Spend range switch started a category job or moved By category: " .. argLine(launched[1]))
+local spendComputing = M.menuItems(nil)
+check(text(spendComputing[1].title) == "no data yet · refreshing…" and text(selector(spendComputing).title) == "Compare: 24h vs 24h before — computing…"
+    and #launched == 0, "the top level does not show its own spend run, or a menu open started a category job")
+local daySpend = hs.json.decode(hs.json.encode(spendFixture))
+daySpend.data_through, daySpend.columns = "2026-09-25T12:41:00+03:00", { "24h", "prev 24h", "Δ", "share", "price" }
+daySpend.range = { key = "24h", title = "24h vs the 24h before", cur_label = "24h", prev_label = "prev 24h" }
+daySpend.index.cells = { "1.31", "1.00", "+31%", "4.3%", "" }
+writeSpend("24h", daySpend)
+spendRuns[1].callback(0, "", "")
+ranged = M.menuItems(nil)
+check(text(ranged[1].title):find("^data to [^·]*12:41$") and find(ranged, "prev 24h") and text(ranged[2].title):find("+31%", 1, true)
+    and #alerts == 0 and #launched == 0, "the top level does not read its range's spend file and harness index: " .. text(ranged[1].title))
+pickTop(ranged, "7 days vs 7 before").fn()
+check(#launched == 0 and #spendRuns == 2, "switching Spend back started a category job")
+spendRuns[2].callback(0, "", "")
+
+pick(M.menuItems(nil), "24h vs 24h before").fn()
 check(#launched == 1 and argLine(launched[1]) == "tokenmap tracking --range 24h --write"
-    and launched[1].env.HOME == os.getenv("HOME") and launched[1].env.PATH:find("/usr/bin", 1, true)
-    and #spendRuns == 1 and argLine(spendRuns[1]) == "tokenmap spend --range 24h --write",
-    "a range choice did not start By category's range run and the spend export: " .. argLine(launched[1]))
+    and launched[1].env.PATH:find("/usr/bin", 1, true) and #spendRuns == 2
+    and checked(selector(M.menuItems(nil)).menu) == "7 days vs 7 before",
+    "a By category range change did not start only its own run: " .. argLine(launched[1]))
 check(text(catStatus(M.menuItems(nil)).title):find("^data to .* · refreshing…$") ~= nil
-    and text(M.menuItems(nil)[1].title):find("· refreshing…$") ~= nil, "no refreshing state while the range runs")
+    and text(M.menuItems(nil)[1].title):find("refreshing", 1, true) == nil, "the refreshing state is not By category's own")
 pick(M.menuItems(nil), "3 days vs 3 before").fn()
 check(#launched == 2 and launched[1].terminated and argLine(launched[2]) == "tokenmap tracking --range 3d --write"
-    and spendRuns[1].terminated and argLine(spendRuns[2]) == "tokenmap spend --range 3d --write"
     and M.rescan() == false and #alerts == 0, "a newer choice did not supersede the running range: " .. argLine(launched[2]))
 pick(M.menuItems(nil), "24h vs 24h before").fn()
 check(#launched == 3 and launched[2].terminated and not launched[3].terminated
-    and argLine(launched[3]) == "tokenmap tracking --range 24h --write" and #spendRuns == 3 and spendRuns[2].terminated,
-    "two quick choices left more than the last running")
+    and argLine(launched[3]) == "tokenmap tracking --range 24h --write", "two quick choices left more than the last running")
 launched[1].callback(15, "", "terminated")
 launched[2].callback(15, "", "terminated")
-spendRuns[1].callback(15, "", "terminated")
 local computing = M.menuItems(nil)
-check(marked(computing) == "24h vs 24h before — computing…" and mainTitle(computing) == "Compare: 24h vs 24h before — computing…"
-    and catTitle(computing) == "By category — computing…" and text(catStatus(computing).title):find("^data to ") ~= nil
-    and find(category(computing), "prev 24h") == nil and stored["tokenTracking.range"] == nil and #alerts == 0,
-    "the asked range read as current in By category while it computes, or a cut run alerted: " .. catTitle(computing))
+check(marked(computing) == "7 days vs 7 before" and text(catStatus(computing).title):find("^data to ") ~= nil
+    and find(category(computing), "prev 24h") == nil and catTitle(computing) == "Compare: 24h vs 24h before — computing…"
+    and find(catCompare(computing).menu, "24h vs 24h before — computing…")
+    and text(find(computing, "By category").title) == "By category — computing…"
+    and stored["tokenTracking.range"] == nil and #alerts == 0,
+    "the asked range read as current while it computes, or a cut run alerted: " .. catTitle(computing))
 
 local rangeFixture = hs.json.decode(hs.json.encode(fixture))
 rangeFixture.version = 3
 rangeFixture.range = { key = "24h", title = "24h vs the 24h before", cur_label = "24h", prev_label = "prev 24h" }
 rangeFixture.columns = { "24h", "prev 24h", "Δ", "share" }
-rangeFixture.rows[1].cells = { "1.31", "1.00", "+31%", "4.3%" }
 local handle = assert(io.open(rangePath, "w"))
 handle:write(hs.json.encode(rangeFixture))
 handle:close()
 launched[3].callback(0, "", "")
 ranged = M.menuItems(nil)
-check(text(catStatus(ranged).title):find("^data to [^·]*13:53$") ~= nil,
-    "the range status line: " .. text(catStatus(ranged).title))
-check(find(category(ranged), "prev 24h") and catTitle(ranged) == "By category"
-    and stored["tokenTracking.range"].key == "24h", "the finished range is not shown and remembered")
+check(text(catStatus(ranged).title):find("^data to [^·]*13:53$") ~= nil, "the range status line: " .. text(catStatus(ranged).title))
+check(find(category(ranged), "prev 24h") and marked(ranged) == "24h vs 24h before"
+    and stored["tokenTracking.range"].key == "24h", "the finished range is not shown, checked and remembered")
 check(alerts[#alerts] == "Token tracking 24h vs 24h before ready", "no success alert: " .. tostring(alerts[#alerts]))
-check(text(ranged[2].title):find("+31%", 1, true) and text(ranged[1].title) == "no data yet · refreshing…",
-    "the harness index row does not follow the range, or the top level shows another range's spend")
-local daySpend = hs.json.decode(hs.json.encode(spendFixture))
-daySpend.data_through, daySpend.columns = "2026-09-25T12:41:00+03:00", { "24h", "prev 24h", "Δ", "share", "price" }
-daySpend.range = { key = "24h", title = "24h vs the 24h before", cur_label = "24h", prev_label = "prev 24h" }
-writeSpend("24h", daySpend)
-spendRuns[3].callback(0, "", "")
-ranged = M.menuItems(nil)
-check(text(ranged[1].title):find("^data to [^·]*12:41$") and find(ranged, "prev 24h") and #alerts == 1,
-    "the top level does not read the range's spend file, or the spend run alerted: " .. text(ranged[1].title))
 
 hs.fs.touch(rangePath, os.time() - 7 * 3600)
 hs.fs.touch(path, os.time() - 30 * 3600)
@@ -397,18 +414,16 @@ pick(M.menuItems(nil), "Today vs yesterday, same hours").fn()
 check(#launched == 1 and argLine(launched[1]) == "tokenmap scan --quiet --no-tracking", "a 40m-old export did not scan first")
 local function asking(list)
     return marked(list) == "24h vs 24h before" and text(catStatus(list).title):find("^data to .* · refreshing…$") ~= nil
-        and find(category(list), "prev 24h") ~= nil
-        and catTitle(list) == "By category: Today vs yesterday, same hours — computing…"
+        and find(category(list), "prev 24h") ~= nil and catTitle(list) == "Compare: Today vs yesterday, same hours — computing…"
 end
 local scanning = M.menuItems(nil)
-check(asking(scanning),
-    "the scan phase shows the asked range or its old view as current: " .. catTitle(scanning))
+check(asking(scanning), "the scan phase shows the asked range or its old view as current: " .. catTitle(scanning))
+check(text(find(scanning, "refreshing…").title) == "refreshing…" and not catRefresh(scanning).fn,
+    "a category scan left a Refresh to start a second scan")
 launched[1].callback(0, "", "")
 check(#launched == 2 and argLine(launched[2]) == "tokenmap tracking --range today --write",
     "the range did not follow the scan: " .. argLine(launched[2]))
-local stillComputing = M.menuItems(nil)
-check(asking(stillComputing),
-    "the compute phase shows the asked range as current: " .. catTitle(stillComputing))
+check(asking(M.menuItems(nil)), "the compute phase shows the asked range as current")
 local todayFixture = hs.json.decode(hs.json.encode(rangeFixture))
 todayFixture.range.key, todayFixture.range.title = "today", "Today vs yesterday, same hours"
 handle = assert(io.open(dir .. "/tracking-range-today.json", "w"))
@@ -418,15 +433,13 @@ local alertsBefore = #alerts
 launched[2].callback(0, "", "")
 local ready = M.menuItems(nil)
 check(#alerts == alertsBefore + 1 and text(catStatus(ready).title):find("^data to ") ~= nil
-    and catTitle(ready) == "By category: Today vs yesterday, same hours",
-    "the ready alert and the menu disagree: " .. catTitle(ready))
+    and catTitle(ready) == "Compare: Today vs yesterday, same hours", "the ready alert and the menu disagree: " .. catTitle(ready))
 check(alerts[#alerts] == "Token tracking Today vs yesterday, same hours ready"
     and #launched == 3 and argLine(launched[3]) == "nice -n 19 " .. os.getenv("HOME") .. "/.local/bin/tokenmap tracking --write",
     "the 7-day export did not follow the range at nice 19: " .. argLine(launched[3]))
 local afterRange = M.menuItems(nil)
-check(marked(afterRange) == "24h vs 24h before,Today vs yesterday, same hours"
-    and text(catStatus(afterRange).title):find("· refreshing…$") ~= nil,
-    "today is not checked in By category, or the 7-day export is not shown computing: " .. marked(afterRange))
+check(marked(afterRange) == "Today vs yesterday, same hours" and text(catStatus(afterRange).title):find("· refreshing…$") ~= nil,
+    "today is not checked, or the 7-day export is not shown computing")
 
 launched, answer = {}, "  yesterday 18:00 "
 pick(M.menuItems(nil), "Since…").fn()
@@ -439,39 +452,39 @@ launched[1].callback(0, "", "")
 check(argLine(launched[2]):find("tracking --since yesterday 18:00 --write", 1, true) ~= nil, "Since… ran " .. argLine(launched[2]))
 launched[2].callback(2, "", "tokenmap tracking: unreadable moment 'x'\n")
 ranged = M.menuItems(nil)
-check(marked(ranged) == "24h vs 24h before,Today vs yesterday, same hours"
+check(marked(ranged) == "Today vs yesterday, same hours"
     and text(category(ranged)[2].title) == "last refresh failed: tokenmap tracking: unreadable moment 'x'",
     "a failed range moved the selection or lost its error")
 launched = {}
 pick(M.menuItems(nil), "Since…").fn()
 launched[1].callback(0, "", "")
 launched[2].callback(0, "", "")
-check(marked(M.menuItems(nil)) == "24h vs 24h before,Since yesterday 18:00", "the custom range is not checked")
+check(marked(M.menuItems(nil)) == "Since yesterday 18:00", "the custom range is not checked")
 
 local reloaded = assert(loadfile(root .. "/hammerspoon/token-tracking.lua"))()
 reloaded.setPath(path)
 reloaded.setSettings(store)
-check(marked(reloaded.menuItems(nil)) == "24h vs 24h before,Since yesterday 18:00", "the selection did not survive a reload")
+check(marked(reloaded.menuItems(nil)) == "Since yesterday 18:00" and checked(selector(reloaded.menuItems(nil)).menu) == "7 days vs 7 before",
+    "the selections did not survive a reload")
 
 launched = {}
-find(M.menuItems(nil), "Refresh").fn()
-check(#launched == 1 and argLine(launched[1]) == "tokenmap scan --quiet --no-tracking", "Refresh did not scan first")
+catRefresh(M.menuItems(nil)).fn()
+check(#launched == 1 and argLine(launched[1]) == "tokenmap scan --quiet --no-tracking", "By category's Refresh did not scan first")
 launched[1].callback(0, "", "")
 check(#launched == 2 and argLine(launched[2]):find("tracking --since yesterday 18:00 --write", 1, true) ~= nil,
-    "Refresh did not re-run the active range")
+    "By category's Refresh did not re-run its range")
 launched[2].callback(0, "", "")
 
 launched = {}
 pick(M.menuItems(nil), "7 days vs 7 before").fn()
-spendRuns[#spendRuns].callback(0, "", "")
 local back = M.menuItems(nil)
-check(#launched == 0 and marked(back) == "7 days vs 7 before" and catTitle(back) == "By category"
+check(#launched == 0 and marked(back) == "7 days vs 7 before"
     and text(catStatus(back).title):find("^data to ") ~= nil and find(category(back), "prev 7") and stored["tokenTracking.range"].key == "7d",
-    "the range did not take By category straight back to tracking.json: " .. marked(back))
-find(M.menuItems(nil), "Refresh").fn()
-check(#launched == 1 and argLine(launched[1]) == "tokenmap scan --quiet", "the default Refresh is not a bare scan")
+    "the default did not switch straight back to tracking.json: " .. text(catStatus(back).title))
+catRefresh(M.menuItems(nil)).fn()
+check(#launched == 1 and argLine(launched[1]) == "tokenmap scan --quiet", "the default category Refresh is not a bare scan")
 launched[1].callback(0, "", "")
-check(#launched == 1 and alerts[#alerts] == "Token tracking updated", "the default Refresh chained a range run")
+check(#launched == 1 and alerts[#alerts] == "Token tracking updated", "the default category Refresh chained a range run")
 os.remove(rangePath)
 
 local genPath = dir .. "/generation"
@@ -488,22 +501,21 @@ current.db_generation = "aaaa000000000001"
 write(hs.json.encode(current))
 setGeneration("aaaa000000000001")
 hs.fs.touch(path, os.time() - 30 * 3600)
-launched = {}
+launched, spendRuns = {}, {}
 local fresh = M.menuItems(nil)
-check(#launched == 0 and text(catStatus(fresh).title):find("^data to [^·]*$") ~= nil and not isRed(catStatus(fresh))
-    and text(M.title(nil)) == "Token tracking" and not isRed(fresh[1]),
-    "an export a later scan confirmed is not current: " .. text(catStatus(fresh).title))
+check(#launched == 0 and #spendRuns == 0 and text(catStatus(fresh).title):find("^data to [^·]*$") ~= nil and not isRed(catStatus(fresh))
+    and text(M.title(nil)) == "Token tracking", "an export a later scan confirmed is not current: " .. text(catStatus(fresh).title))
 setGeneration("bbbb000000000002")
 local moved = M.menuItems(nil)
-check(#launched == 1 and argLine(launched[1]) == "tokenmap tracking --write"
-    and text(catStatus(moved).title):find("· refreshing…$") ~= nil,
-    "an outdated export was not recomputed at once: " .. argLine(launched[1]))
+check(#launched == 0 and #spendRuns == 0 and text(catStatus(moved).title):find("^data to [^·]*$") ~= nil and isRed(catStatus(moved))
+    and not isRed(moved[1]), "a menu open after a new generation started a category job, or showed its export as current")
+pick(moved, "7 days vs 7 before").fn()
+check(#launched == 1 and argLine(launched[1]) == "tokenmap tracking --write",
+    "choosing an outdated 7-day category range did not recompute it: " .. argLine(launched[1]))
 launched[1].callback(0, "", "")
-moved = M.menuItems(nil)
-check(#launched == 1 and text(catStatus(moved).title):find("^data to [^·]*$") ~= nil and isRed(catStatus(moved)),
-    "an export still outdated after its run is shown as current or run again: " .. text(catStatus(moved).title))
 current.db_generation = "bbbb000000000002"
 write(hs.json.encode(current))
+check(not isRed(catStatus(M.menuItems(nil))) and #launched == 1, "a recomputed 7-day export is not current")
 local function writeRange(key, token)
     local body = hs.json.decode(hs.json.encode(rangeFixture))
     body.db_generation, body.range.key = token or "bbbb000000000002", key
@@ -518,7 +530,7 @@ hs.fs.touch(genPath)
 writeRange("24h")
 launched[3].callback(0, "", "")
 local soft = launched[4]
-check(argLine(soft):find("nice -n 19", 1, true) ~= nil and find(M.menuItems(nil), "Refresh").fn ~= nil,
+check(argLine(soft):find("nice -n 19", 1, true) ~= nil and catRefresh(M.menuItems(nil)).fn ~= nil,
     "the 7-day export after a range is not soft or blocks Refresh")
 pick(M.menuItems(nil), "3 days vs 3 before").fn()
 check(soft.terminated and argLine(launched[5]) == "tokenmap tracking --range 3d --write"
@@ -535,37 +547,22 @@ pick(M.menuItems(nil), "7 days vs 7 before").fn()
 launched, alerts = {}, {}
 setGeneration("cccc000000000003")
 M.menuItems(nil)
-local quiet = launched[1]
-check(argLine(quiet) == "tokenmap tracking --write" and find(M.menuItems(nil), "Refresh").fn ~= nil,
-    "an outdated 7-day export was not recomputed quietly, or the quiet run blocks Refresh")
-pick(M.menuItems(nil), "24h vs 24h before").fn()
-check(quiet.terminated and #launched == 2 and argLine(launched[2]) == "tokenmap tracking --range 24h --write" and #alerts == 0,
-    "a click during the quiet recompute did not start the asked range: " .. argLine(launched[2]))
-quiet.callback(15, "", "terminated")
-writeRange("24h", "cccc000000000003")
-hs.fs.touch(rangePath, os.time() - 5)
-launched[2].callback(0, "", "")
-pick(M.menuItems(nil), "7 days vs 7 before").fn()
-M.menuItems(nil)
-check(#launched == 3 and argLine(launched[3]) == "tokenmap tracking --write",
-    "the cut 7-day export was not recomputed on a later menu open: " .. argLine(launched[3]))
-launched[3].callback(0, "", "")
+check(#launched == 0, "an outdated 7-day category export was recomputed on menu open")
 
-alerts = {}
-find(M.menuItems(nil), "Refresh").fn()
-check(argLine(launched[4]) == "tokenmap scan --quiet", "the default Refresh is not a bare scan")
+catRefresh(M.menuItems(nil)).fn()
+check(argLine(launched[1]) == "tokenmap scan --quiet", "the default category Refresh is not a bare scan")
 pick(M.menuItems(nil), "3 days vs 3 before").fn()
 local queued = M.menuItems(nil)
-check(#launched == 4 and not launched[4].terminated and marked(queued) == "3 days vs 3 before — computing…"
+check(#launched == 1 and not launched[1].terminated and marked(queued) == "7 days vs 7 before"
     and text(catStatus(queued).title):find("· refreshing…$") ~= nil
-    and mainTitle(queued) == "Compare: 3 days vs 3 before — computing…" and catTitle(queued) == "By category — computing…"
+    and catTitle(queued) == "Compare: 3 days vs 3 before — computing…"
     and alerts[#alerts] == "Token tracking: computing 3 days vs 3 before after the scan…",
     "a click during a scan did not queue behind it: " .. marked(queued))
 pick(M.menuItems(nil), "Today vs yesterday, same hours").fn()
-launched[4].callback(0, "", "")
-check(#launched == 5 and argLine(launched[5]) == "tokenmap tracking --range today --write",
-    "the last choice did not run right after the scan: " .. argLine(launched[5]))
-launched[5].callback(0, "", "")
+launched[1].callback(0, "", "")
+check(#launched == 2 and argLine(launched[2]) == "tokenmap tracking --range today --write",
+    "the last choice did not run right after the scan: " .. argLine(launched[2]))
+launched[2].callback(0, "", "")
 
 alerts = {}
 writeRange("3d", "cccc000000000003")
@@ -573,41 +570,45 @@ hs.fs.touch(dir .. "/tracking-range-3d.json", os.time() - 3)
 pick(M.menuItems(nil), "3 days vs 3 before").fn()
 local hit, hitRun = M.menuItems(nil), launched[#launched]
 check(argLine(hitRun) == "tokenmap tracking --range 3d --write" and #alerts == 0
-    and catTitle(hit) == "By category — computing…" and marked(hit):find("^3 days vs 3 before") and not marked(hit):find("Today")
+    and marked(hit) == "3 days vs 3 before — computing…"
     and text(catStatus(hit).title):find("^data to ") ~= nil and find(category(hit), "prev 24h"),
     "a current cached export was not shown at once: " .. marked(hit))
 hitRun.callback(0, "", "")
-check(alerts[1] == "Token tracking 3 days vs 3 before ready" and catTitle(M.menuItems(nil)) == "By category",
+check(alerts[1] == "Token tracking 3 days vs 3 before ready" and catTitle(M.menuItems(nil)) == "Compare: 3 days vs 3 before",
     "a current cached export did not alert as its run returned: " .. tostring(alerts[1]))
 pick(M.menuItems(nil), "7 days vs 7 before").fn()
+launched[#launched].callback(0, "", "")
 
 launched, alerts, spendRuns = {}, {}, {}
-pick(M.menuItems(nil), "24h vs 24h before").fn()
-check(#spendRuns == 1 and argLine(spendRuns[1]) == "tokenmap spend --range 24h --write"
-    and stored["tokenTracking.spendRange"].key == "24h" and argLine(launched[#launched]) == "tokenmap tracking --range 24h --write",
-    "a range choice did not start the spend export beside By category's run: " .. argLine(spendRuns[1]))
-local computingTop = M.menuItems(nil)
-check(text(computingTop[1].title):find("^data to [^·]*12:41 · refreshing…$") and isRed(computingTop[1])
-    and mainTitle(computingTop) == "Compare: 24h vs 24h before — computing…",
-    "the top level does not show its own spend run: " .. text(computingTop[1].title))
+spendHook = true
+find(M.menuItems(nil), "Refresh").fn()
+check(#spendRuns == 1 and argLine(spendRuns[1]) == "tokenmap scan --quiet --no-tracking" and #launched == 0,
+    "the top Refresh is not a scan that skips the category export: " .. argLine(spendRuns[1]))
+local topScanning = M.menuItems(nil)
+check(find(topScanning, "refreshing…") and not catRefresh(topScanning).fn and text(topScanning[1].title):find("· refreshing…$"),
+    "a Spend scan left a Refresh to start a second scan")
+pickTop(topScanning, "24h vs 24h before").fn()
+check(#spendRuns == 1 and not spendRuns[1].terminated and #launched == 0, "a Spend switch cut the scan or started a job")
+spendRuns[1].callback(0, "", "")
+check(#spendRuns == 2 and argLine(spendRuns[2]) == "tokenmap spend --range 24h --write" and #launched == 0 and #alerts == 0,
+    "the scan was not followed by the chosen range's spend export: " .. argLine(spendRuns[2]))
 daySpend.db_generation = generationNow
 writeSpend("24h", daySpend)
-spendRuns[1].callback(0, "", "")
-check(text(M.menuItems(nil)[1].title):find("^data to [^·]*12:41") and not isRed(M.menuItems(nil)[1])
-    and #alerts == 0, "a finished spend run is not current, or it alerted")
+spendRuns[2].callback(0, "", "")
+check(not isRed(M.menuItems(nil)[1]) and #alerts == 0, "a finished spend run is not current, or it alerted")
 local spendBefore = #spendRuns
-pick(M.menuItems(nil), "7 days vs 7 before").fn()
-pick(M.menuItems(nil), "24h vs 24h before").fn()
+pickTop(M.menuItems(nil), "7 days vs 7 before").fn()
+pickTop(M.menuItems(nil), "24h vs 24h before").fn()
 check(#spendRuns == spendBefore, "a spend range already computed for this database ran again")
 setGeneration(generationNow:sub(1, -2) .. "f")
 M.menuItems(nil)
 local spendRun = spendRuns[#spendRuns]
-local alertCount = #alerts
-check(argLine(spendRun) == "tokenmap spend --range 24h --write" and not spendRun.terminated and #spendRuns == spendBefore + 1,
-    "an outdated spend export was not recomputed quietly on open: " .. argLine(spendRun))
+check(argLine(spendRun) == "tokenmap spend --range 24h --write" and #spendRuns == spendBefore + 1 and #launched == 0,
+    "an outdated spend export was not recomputed alone on open: " .. argLine(spendRun))
 spendRun.callback(0, "", "")
-check(#alerts == alertCount, "a quiet spend recompute alerted")
-pick(M.menuItems(nil), "7 days vs 7 before").fn()
+check(#alerts == 0, "a quiet spend recompute alerted")
+spendHook = false
+pickTop(M.menuItems(nil), "7 days vs 7 before").fn()
 os.remove(dir .. "/spend-24h.json")
 os.remove(dir .. "/spend-7d.json")
 os.remove(dir .. "/tracking-range-today.json")
