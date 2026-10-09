@@ -4047,6 +4047,8 @@ wp_doc() { # file jq-object
 wp_doc llm-legs__w '{run_id:"20261008T100000Z-aaaaaaa",tier:"T0",composition:"double",lens:"bugs",repo:"/r/llm-legs",
   state:"running",session:"other",started_epoch:($now - 900),heartbeat_epoch:($now - 2000),
   cells:["a#1","a#2","b#1","b#2","c#1","c#2","d#1","d#2"],done:["a#1","b#1","c#1","c#2"],failed_cells:["d#1"]}'
+# A run over several repositories writes one document per repository: the title names them all.
+jq -c '.repo = "/r/claude-setup/"' "$WP_STATS/progress/llm-legs__w.json" > "$WP_STATS/progress/claude-setup__w.json"
 wp_doc llm-legs__s '{run_id:"20261008T100000Z-ccccccc",tier:"T2",lens:"task",task:"\nHunt the stale rows\nsecond",repo:"/r/llm-legs",
   state:"running",session:"wp-sess",started_epoch:($now - 400),heartbeat_epoch:$now,cells:["a#1","b#1"],done:[],failed_cells:[],
   expected:{"a#1":50000}}'
@@ -4205,7 +4207,7 @@ assert_eq "$(printf '%s\n' \
   $'main\tworker\tlight research · 3.5-flash · rawilimo\tFind the docs\tworking\t\t' \
   $'main\tworker\tfix: com · opus · high\t2b3c4d5\tworking\t\t' \
   $'main\tworker\tworker · 7-7-new\tNew task\tstart\t\t' \
-  $'main\treview\tT0 · double · bugs\tllm-legs\tall 5/8 a 1/2 b 1/2 c ✓ d 1/2 ✗1\tall 5/8\t' \
+  $'main\treview\tT0 · double · bugs\tclaude-setup, llm-legs\tall 5/8 a 1/2 b 1/2 c ✓ d 1/2 ✗1\tall 5/8\t' \
   $'main\treview\tT1 · standard · review\tllm-legs\t✓ report 3\t✓ report 3\tnotcom · opus · high' \
   $'main\treview\tT1 · standard · review\t\t✗ dead\t✗ dead\t' \
   $'main\treview\tT2 · standard · task\tHunt the stale rows\tall 0/2 {a 0/1} b 0/1\tall 0/2\t' \

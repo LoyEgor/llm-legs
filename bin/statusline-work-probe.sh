@@ -353,10 +353,11 @@ done
 
 # Review runs: each one this chat waits on, and each unfinished one it launched. A document whose
 # heartbeat stopped belongs to a dead launcher (review-bench's PROGRESS_STALE_AFTER_S).
-declare -A review_docs=()
+declare -A review_docs=() review_repos=()
 old_cache=""
 [ ! -r "$cache_file" ] || IFS= read -r -d '' old_cache < "$cache_file" || :
 re_run_id='"run_id": *"([A-Za-z0-9_-]+)"' re_running='"state": *"running"' re_mine="\"session\": *\"$session_id\""
+re_repo='"repo": *"([^"]+)"'
 for doc_file in "$progress_dir"/*.json; do
   [ -f "$doc_file" ] || continue
   slurp doc "$doc_file"
@@ -366,12 +367,16 @@ for doc_file in "$progress_dir"/*.json; do
   if [ -n "${review_waits[$run]+set}" ] ||
     { [[ $doc =~ $re_mine ]] && [[ $doc =~ $re_running ]]; }; then
     review_docs[$run]=$doc_file
+    if [[ $doc =~ $re_repo ]]; then
+      name=${BASH_REMATCH[1]%/} name=${name##*/}
+      [[ ", ${review_repos[$run]-}, " == *", $name, "* ]] || review_repos[$run]+=${review_repos[$run]:+, }$name
+    fi
   fi
 done
 for run in "${!review_waits[@]}"; do [ -n "${review_docs[$run]+set}" ] || review_docs[$run]=""; done
 for run in "${!review_docs[@]}"; do
   review=""
-  [ -z "${review_docs[$run]}" ] || review=$(jq -r --argjson now "$now" --arg waited "${review_waits[$run]+1}" '
+  [ -z "${review_docs[$run]}" ] || review=$(jq -r --argjson now "$now" --arg waited "${review_waits[$run]+1}" --arg repos "${review_repos[$run]-}" '
     def word(d): (if . == null then "" else tostring | gsub("[^A-Za-z0-9_.-]"; "") end) | if . == "" then d else . end;
     def line: tostring | split("\n") | map(select(test("\\S"))) | (.[0] // "") | gsub("[\t\u001f\r]"; " ") | .[0:200];
     def epoch: if type == "number" then floor
@@ -429,7 +434,8 @@ for run in "${!review_docs[@]}"; do
     | [(.started_epoch | numbers | floor | tostring) // "",
        ([(.tier | word("T?")), (.composition | word("standard")), $lens] | join(" · ")),
        ((if $lens == "task" then (.task // .title // "" | line) else "" end)
-        | if . == "" then ($repo // "" | tostring | sub("/+$"; "") | split("/") | last // "" | line) else . end),
+        | if . != "" then . elif $repos != "" then ($repos | line)
+          else ($repo // "" | tostring | sub("/+$"; "") | split("/") | last // "" | line) end),
        $st[0], $st[1],
        (if $judge_row then [$j.account, $j.model, $j.effort] | map(word("")) | map(select(. != "")) | join(" · ") else "" end),
        (if $judge_row then (.phase_at // $j.ts // null) | epoch // "?" | tostring else "" end)]
