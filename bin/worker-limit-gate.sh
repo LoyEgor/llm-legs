@@ -111,12 +111,13 @@ if [ "$worker" = codex-worker ] && { [ "$computer" = true ] || grep -Eq '^COMPUT
   toggle_note=''
 fi
 
-header_account=$(printf '%s\n' "$prompt" | sed -nE 's/^ACCOUNT:[[:space:]]*([A-Za-z0-9_.-]+)[[:space:]]*$/\1/p' | head -n1)
-brief_account=${4:-$header_account}
+brief_header_account() {
+  sed -nE 's/^ACCOUNT:[[:space:]]*([A-Za-z0-9_.-]+)[[:space:]]*$/\1/p' "$1" 2>/dev/null | head -n1
+}
+brief_account=${4:-$(printf '%s\n' "$prompt" | sed -nE 's/^ACCOUNT:[[:space:]]*([A-Za-z0-9_.-]+)[[:space:]]*$/\1/p' | head -n1)}
 # worker-run passes a brief's ACCOUNT: line as the account argument too: only an account the brief
-# does not name came from --account.
-account_flag=false
-[ -z "${4:-}" ] || [ "$4" = "$header_account" ] || account_flag=true
+# does not name came from --account. Read only on a deny path: the brief is otherwise unread when $4 is set.
+account_flag() { [ -n "${4:-}" ] && [ "$4" != "$(brief_header_account "$3")" ]; }
 
 router_account=''
 router_rc=0
@@ -192,7 +193,7 @@ account_off() { # vendor limits_vendor account
   ' "$LIMITS_FILE" >/dev/null 2>&1
 }
 if [ -n "$brief_account" ] && account_off "$vendor" "$limits_vendor" "$brief_account"; then
-  if [ "$account_flag" = true ]; then
+  if account_flag "$@"; then
     deny "worker-run's --account ${brief_account} is switched off or removed in Egor's menu, so a ${worker%-worker} run cannot start on it. Pass worker-pick's NEXT account${router_account:+ (${router_account})} to --account, or drop the flag."
   fi
   deny "The brief's ACCOUNT: ${brief_account} is switched off or removed in Egor's menu, so a ${worker%-worker} run cannot start on it. Put worker-pick's NEXT account${router_account:+ (${router_account})} in the ACCOUNT line, or drop the line."
@@ -205,7 +206,7 @@ account_login_needed() { # vendor account
     awk -F '\t' -v v="$1" -v a="$2" '$1 == v && $2 == a && $4 == "login" { found = 1 } END { exit !found }'
 }
 if [ -n "$brief_account" ] && account_login_needed "$vendor" "$brief_account"; then
-  if [ "$account_flag" = true ]; then
+  if account_flag "$@"; then
     deny "worker-run's --account ${brief_account} needs a login as a ${label} account, so ${worker} cannot spawn on it. worker-pick's ACCOUNT: names the account of its NEXT row 1 vendor — check that column. Pass worker-pick --account ${vendor}${router_account:+ (${router_account})} to --account, or drop the flag."
   fi
   deny "The brief's ACCOUNT: ${brief_account} needs a login as a ${label} account, so ${worker} cannot spawn on it. worker-pick's ACCOUNT: names the account of its NEXT row 1 vendor — check that column. Put worker-pick --account ${vendor}${router_account:+ (${router_account})} in the ACCOUNT line, or drop the line."
