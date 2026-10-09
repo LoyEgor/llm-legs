@@ -5,6 +5,10 @@ Status: done (Spend head, index history and Doctors chart in share/spend.py and 
 From «Token spending tracking and optimization», 2026-10-07, token-map 3e3b078. Egor asked for this number to be integrated like the other harness metrics and charted in Doctor.
 
 ## What exists now
+- Superseded 2026-10-09 (token-map 452a800, FINDINGS § One Harness): the index is priced on the Spend tree's Harness
+  leaves per consumer, per Claude request; `parts` became `cells` `[{consumer, leaf, units, price, cost, points}]`,
+  `coverage` is the tree's Harness share (≈12 % on 7d, was 6.5 %). Cache re-writes and System are no longer in it.
+  The rest below is the 2026-10-07 design.
 - `tracking.json` has a top-level `harness_index`:
   - `value` is a ratio. 1.00 means the harness costs the same per unit of use as in the previous 7 days, and 0.46 means it costs 54% less. `null` means too little use to price.
   - `change` holds the Δ cell (`-54%`) and `tone` holds `worse`, `better` or empty, following row db.

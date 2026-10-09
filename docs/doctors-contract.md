@@ -48,8 +48,8 @@ LLM ▸     8  reviewers crashed
 - Summary row, fixed cells: name (9, in the status color) · value (4, right, plain) · unit (10: `min/day` for Lost
   time, blank for the rest) · 7 bars · usual (4, right, DIM), no trend arrow. Counts are bare
   (Lost time, internally Speed: Harness time budget `lost_min_day`; Spend: tokenmap's `harness_index.value` from
-  `tracking.json` via `share/spend.py`, two decimals, 1.00 = the previous 7 days' harness price per unit of use, its
-  `tone` unshown; the problems of both stay counted by Harness alone).
+  `tracking.json` via `share/spend.py`, two decimals, 1.00 = the previous 7 days' harness price per Claude request,
+  Harness being the Spend tree's Harness leaves of every consumer, its `tone` unshown; the problems of both stay counted by Harness alone).
 - Status color of the name (no dot: `●` is the LLM Limits pin mark): GREEN ok, RED problems or collector error (Spend: an
   audit due, as Lost time's floor gaps), DIM_RED watch/blind/pending update, DIM no data or
   stale (Speed also without an observation dated today; Spend while `tracking.json` is past its `stale_after_hours`, has no `harness_index` or its value is null). Missing value: DIM `–`.

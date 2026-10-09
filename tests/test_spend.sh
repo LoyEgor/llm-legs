@@ -54,10 +54,11 @@ def payload(made=NOW - 3600, idle_avoidable=False, hook_price=300.0, index=True,
     causes = rows("By cause", [("expired (1h+ idle)", ["70k", "50k"], 0), ("expired (5m ttl)", ["30k", "<0.1M"], 0)])
     for cause, avoidable in zip(causes["rows"], (idle_avoidable, True)):
         cause["avoidable"] = avoidable
-    harness = {"value": value, "change": "-54%", "tone": "better", "coverage": 0.113, "parts": [
-        {"part": "hooks", "zone": "chat", "units": [100, 50], "price": [hook_price, 200.0], "points": -0.1},
-        {"part": "startup", "zone": "chat", "units": [10, 8], "price": [6000.0, 5000.0], "points": 0.1},
-        {"part": "startup", "zone": "subagent", "units": [4, 2], "price": [5000.0, 5000.0], "points": 0.0}]}
+    harness = {"value": value, "change": "-54%", "tone": "better", "coverage": 0.113, "cells": [
+        {"consumer": "Chat", "leaf": "Hooks", "units": [100, 50], "price": [hook_price, 200.0], "points": -0.1},
+        {"consumer": "Chat", "leaf": "prefix: CLAUDE.md + memory", "units": [100, 50], "price": [60.0, 50.0],
+         "points": 0.1},
+        {"consumer": "Workers", "leaf": "Relays", "units": [40, 20], "price": [50.0, 50.0], "points": 0.0}]}
     return {"generated_at": stamp(made), "data_through": stamp(NOW), "stale_after_hours": 26,
             **({"harness_index": harness} if index else {}), "rows": [
         {"key": "spend", "cur": 1e6, "prev": 5e5},
@@ -127,7 +128,7 @@ def collect(made=NOW - 3600, state=None, write=False, **fixture):
 out = collect()
 ids = [p["id"] for p in out["problems"]]
 check(out["status"] == "watch" and out["index"] == 0.46 and out["change"] == "-54%" and out["tone"] == "better"
-      and out["head"] == "index 0.46 (-54%%) · 11.3 %% of spend priced · %d audits due" % len(ids)
+      and out["head"] == "index 0.46 (-54%%) · Harness 11.3 %% of spend · %d audits due" % len(ids)
       and ids[:3] == ["spend:startup:CLAUDE.md + memory index", "spend:resumes", "spend:hook:gate.sh"]
       and "spend:rewrites:expired (1h+ idle)" not in ids and "spend:compaction" not in ids
       and "spend:spawn:claudeb-worker" in ids
@@ -202,9 +203,13 @@ recorded = spend.record(root, os.path.join(work, "home"), os.path.join(work, "re
 stored = json.load(open(ledger))["rows"]
 check(stored == [recorded] and recorded["verdict"] == "kept" and recorded["share"] == gate["basis"]
       and recorded["sources"] == {key: spend.blobs([source])[source]} and recorded["by"] == "night-x"
-      and recorded["prices"] == {"chat": 300.0},
-      "the audit record holds each source's blob, the share at audit on tokenmap's Δ basis, its harness_index part's "
-      "prices by zone, the verdict: %s" % recorded)
+      and recorded["prices"] == {"Chat · Hooks": 300.0}
+      and spend.part_prices(json.load(open(os.environ["SPEND_TRACKING"]))["harness_index"], "spawn:claudeb-worker")
+      == {"Workers · Relays": [40.0, 50.0]}
+      and spend.part_prices(json.load(open(os.environ["SPEND_TRACKING"]))["harness_index"], "rewrites:expired (5m ttl)")
+      == {},
+      "the audit record holds each source's blob, the share at audit on tokenmap's Δ basis, its harness_index cells' "
+      "prices by consumer and leaf (a re-write cause is Cold cache, never priced), the verdict: %s" % recorded)
 try:
     spend.record(root, os.path.join(work, "home"), os.path.join(work, "repos"), scripts, "hook:gate.sh", "maybe", "", "", [])
     refused = False
@@ -311,7 +316,7 @@ header = json.loads(lines[1][2:])
 spent = [p for p in document["problems"] if p["rule"] == "spend_audit"]
 check(document["problem_count"] == 0 and spent and all(p["group"] == "Spend" and p["speed"] for p in spent)
       and lines[2].startswith("0\t\t\tLost time: ok")
-      and "0\t\t\tSpend: watch · index 0.46 (-54%%) · 11.3 %% of spend priced · %d audits due" % len(spent) in lines
+      and "0\t\t\tSpend: watch · index 0.46 (-54%%) · Harness 11.3 %% of spend · %d audits due" % len(spent) in lines
       and "1\t\t\t6.0 % · startup CLAUDE.md + memory index · Δ -40% · audit due: never audited" in lines
       and "1\td\t\t15.5 % · compaction summaries · Δ ×16 · never targeted" in lines
       and header["spend"] == {k: section[k] for k in ("as_of_s", "status", "index", "index_by_day", "change", "tone",

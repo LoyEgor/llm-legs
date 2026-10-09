@@ -170,8 +170,8 @@ removed line and names it (`docs/doctors-contract.md` §4).
 ### Spend: same result, fewer tokens
 
 A `speed-spend-<component>` run audits one component of the Spend block; its brief carries the five steps and
-`bin/speed-doctor --spend-audit` records the row in `share/spend-ledger.json` with the share and the part prices at
-audit; it is proven once the share or the part price in `harness_index.parts` falls. Model, effort and thinking are
+`bin/speed-doctor --spend-audit` records the row in `share/spend-ledger.json` with the share and its Harness cells'
+prices at audit; it is proven once the share or that price in `harness_index.cells` falls. Model, effort and thinking are
 never the lever.
 
 ### Suite audits: same checks, less CPU

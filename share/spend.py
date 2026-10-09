@@ -8,8 +8,14 @@ import time
 
 from fix_commit import main_checkout
 
-PARTS = {"hook": ("hooks", None), "startup": ("startup", None), "spawn": ("startup", "subagent"),
-         "rewrites": ("rewrites", None)}
+LEAVES = {"hook": ("Hooks", "attachment: hook context"),
+          "startup:CLAUDE.md + memory index": ("prefix: CLAUDE.md + memory", "attachment: CLAUDE.md + memory"),
+          "startup:skill listing": ("attachment: skill listing",),
+          "startup:agent listing": ("attachment: agent listing",),
+          "startup:MCP instructions": ("attachment: MCP instructions",),
+          "startup:deferred tool list": ("attachment: deferred tool schemas",),
+          "startup:nested CLAUDE.md files": ("attachment: memory files",),
+          "spawn:claudeb-worker": ("Relays",)}
 SHARE_RISE = 1.5
 HOOK_SECTIONS = ("Blocked calls", "Stop-hook re-answers", "Injected text")
 RULE = "spend_audit"
@@ -205,11 +211,13 @@ def index_value(index):
 
 
 def part_prices(index, key):
-    """The zones of tokenmap's harness_index part a component belongs to: {zone: [units, price]} of this window."""
-    part, zone = PARTS.get(key.split(":", 1)[0], (None, None))
-    return {str(p.get("zone")): [float(p["units"][0]), float(p["price"][0])] for p in (index or {}).get("parts") or ()
-            if isinstance(p, dict) and part and p.get("part") == part and zone in (None, p.get("zone"))
-            and isinstance(p.get("units"), list) and isinstance(p.get("price"), list)}
+    """The cells of tokenmap's harness_index (the Spend tree's Harness leaves per consumer) a component belongs to:
+    {"consumer · leaf": [requests, price]} of this window. Cold cache (re-writes) is no Harness leaf, so no price."""
+    leaves = LEAVES.get(key) or LEAVES.get(key.split(":", 1)[0]) or ()
+    return {"%s · %s" % (c.get("consumer"), c.get("leaf")): [float(c["units"][0]), float(c["price"][0])]
+            for c in (index or {}).get("cells") or ()
+            if isinstance(c, dict) and c.get("leaf") in leaves
+            and isinstance(c.get("units"), list) and isinstance(c.get("price"), list)}
 
 
 def proof(c, row, index, made):
@@ -341,7 +349,7 @@ def collect(now, state, write, scripts, home, repos, root, local_day):
     out["head"] = "%s%s · %d audit%s due" % (
         "index %.2f (%s)" % (value, index.get("change") or "–") if value is not None
         else "harness index: too little use",
-        " · %.1f %% of spend priced" % (100 * coverage) if isinstance(coverage, (int, float)) else "",
+        " · Harness %.1f %% of spend" % (100 * coverage) if isinstance(coverage, (int, float)) else "",
         len(out["problems"]), "" if len(out["problems"]) == 1 else "s")
     out["menu"] = lines(found, rows, reasons, out["proofs"]) + [
         [0, "d", False, "tracking.json %s · 7 days" % time.strftime("%d %b %H:%M", time.localtime(made))]]
