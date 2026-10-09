@@ -5965,7 +5965,7 @@ def collect(write, now):
     if not audit_at or now - audit_at > AUDIT_STALE_S:
         blind.append({"id": "log-audit", "what": "odd behaviour in chat and worker transcripts",
                       "reason": "bin/log-audit has not read them for %d h" % (AUDIT_STALE_S // 3600), "since": iso_time(audit_at) if audit_at else None,
-                      "would_catch_if": "`log-audit run` reads them (the night's Close starts it)"})
+                      "would_catch_if": "`log-audit run` reads them (the night's Prep runs it)"})
     blind = blind_rows(judging, blind)
     elapsed = time.monotonic() - started
     held_now = (sample or {}).get("held") or held_slots()
