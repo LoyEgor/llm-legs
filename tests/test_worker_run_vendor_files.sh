@@ -256,6 +256,7 @@ report=$(transcript_report "$RUN_DIR")
 assert grep -qxF "WORKDIR-ESCAPE: the run named no path inside its own workdir; it worked in $WORK/extra/agy-went-elsewhere" \
   <<<"$report"
 assert grep -q '^RUN-FILES: unknown' <<<"$report"
+assert grep -q '^RUN-FILES-RULE: claim only the files the result names' <<<"$("$RUNNER" report "$RUN_ID")"
 assert grep -qxF "$WORK/extra/agy-went-elsewhere" "$RUN_DIR/workdir-escape"
 # The same sentence in the report `wait` prints the moment the run ends, which computes no list of
 # its own: read only where a report was asked for, the loudest fact about the run reaches nobody.

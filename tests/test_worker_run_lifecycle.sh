@@ -12,7 +12,7 @@ gate_timer=$!
 TIMEFORMAT='%U %S'
 { time start_ok codex 2>&3; } 3>&2 2>"$WORK/start.cpu"
 assert test "$(awk '{ printf "%d", ($1 + $2) * 1000 }' "$WORK/start.cpu")" -lt 2000
-assert test "$(wc -l <"$WORK/start.out" | tr -d ' ')" -eq 4
+assert test "$(wc -l <"$WORK/start.out" | tr -d ' ')" -eq 5
 assert grep -Eq '^RUN: codex-[0-9]+-[0-9]+-[0-9a-f]{4}$' "$WORK/start.out"
 assert grep -qx 'TAG: fast · astra · high' "$WORK/start.out"
 assert grep -qx 'WEB: off' "$WORK/start.out"

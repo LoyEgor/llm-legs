@@ -28,7 +28,7 @@ deny() {
   exit 0
 }
 direct() { # vendor word
-  printf 'Delegate from this chat: write the brief to a file; Bash `worker-run start %s --brief <file> --workdir <dir>` (prints RUN:/TAG:/DIR:); then Bash with run_in_background `worker-run wait <run-id>`; on its completion notification, `worker-run report <run-id>`. Mid-run note: `worker-run say <run-id> "<text>"`; a run in flight with no live wait gets `worker-run wait <run-id>` in the background again.' "$1"
+  printf 'Delegate from this chat: write the brief with the Write tool (a heredoc ends early at its delimiter); Bash `worker-run start %s --brief <file> --workdir <dir>` (prints RUN:/TAG:/DIR:); then Bash with run_in_background `worker-run wait <run-id>`; on its completion notification, `worker-run report <run-id>`. Mid-run note: `worker-run say <run-id> "<text>"`; a run in flight with no live wait gets `worker-run wait <run-id>` in the background again.' "$1"
 }
 case "${subagent:-general-purpose}" in
   fork) ;;

@@ -2379,7 +2379,7 @@ start_run() {
   [ "$#" -ge 1 ] || usage
   local vendor="$1" brief='' workdir="$PWD" explicit_account='' model='' effort='' resume='' first_line='' review_round='' round_flag='' role='workers' research_timeout='' sandbox_exec=''
   local round_source='' candidate='' rule='' image=''
-  local -a text_rounds=()
+  local -a text_rounds=() brief_images=()
   local account pin config_model model_label agy_model='' gemini_family='' grok_turns='' root run_id='' directory=''
   local explicit_model='' explicit_effort='' light='' light_model='' model_class=workers fix_rule='' chat_fast=false fast_role='' grok_asked_model='' model_id='' slug_account=''
   local light_offrow=false inbox_settings='' resolved_add_dirs resolved_read
@@ -2726,12 +2726,13 @@ start_run() {
     [ -r "${images[$value]}" ] || fail "image is not readable: ${images[$value]}"
     [[ "${images[$value]}" = /* ]] || images[$value]="$PWD/${images[$value]}"
   done
+  while IFS= read -r value; do brief_images+=("$value"); done < <(grep -oiE '(^|[[:space:]"'\''`(<])/[^[:space:]"'\''`()<>]+\.(png|jpe?g|webp|gif)' "$brief" | sed 's|^[^/]*||' | awk '!seen[$0]++')
   if [ "$vendor" = codex ]; then
-    while IFS= read -r value; do
+    for value in "${brief_images[@]}"; do
       [ -f "$value" ] && [ -r "$value" ] || continue
       for image in "${images[@]}"; do [ "$image" != "$value" ] || continue 2; done
       images+=("$value")
-    done < <(grep -oiE '(^|[[:space:]"'\''`(<])/[^[:space:]"'\''`()<>]+\.(png|jpe?g|webp|gif)' "$brief" | sed 's|^[^/]*||' | awk '!seen[$0]++')
+    done
   fi
   for value in "${!add_dirs[@]}"; do
     [[ "${add_dirs[$value]}" = /* ]] || add_dirs[$value]="$PWD/${add_dirs[$value]}"
@@ -3072,6 +3073,10 @@ exit "$rc"'
   # WEB: on the launch line, because the state the run really got is otherwise only in meta.json and
   # an orchestrator cannot tell a web-grounded answer from one written out of memory.
   printf 'RUN: %s\nTAG: %s · %s · %s\nWEB: %s\nDIR: %s\n' "$run_id" "$account" "${model_label:-$model}" "$effort" "$web_search_state" "$directory"
+  for value in "${brief_images[@]}"; do
+    [ -f "$value" ] && [ -r "$value" ] || printf 'IMAGE-MISSING: %s — the brief names it, it is not readable, the worker will not see it\n' "$value"
+  done
+  printf 'NEXT: worker-run wait %s as a background Bash; a mid-run note: worker-run say %s "<text>"\n' "$run_id" "$run_id"
 }
 
 session_id() {
@@ -3930,6 +3935,7 @@ run_files() {
   [ ! -s "$directory/files-note" ] || sed 's/^/RUN-FILES-NOTE: /' "$directory/files-note"
   if [ -n "$RUN_FILES_REASON" ]; then
     printf 'RUN-FILES: unknown (%s)\n' "$RUN_FILES_REASON"
+    printf 'RUN-FILES-RULE: claim only the files the result names; any other dirty file may be another chat'"'"'s\n'
     return 0
   fi
   if [ -z "$RUN_FILES_LIST" ]; then

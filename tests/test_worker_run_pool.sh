@@ -291,6 +291,9 @@ assert await_done
 assert test "$(grep -cxF "ARG=$WORK/shot.PNG" "$CALL_LOG")" = 1
 assert test "$(grep -cxF "ARG=$WORK/rel-image.png" "$CALL_LOG")" = 1
 assert test "$(grep -cx 'ARG=-i' "$CALL_LOG")" = 2
+assert grep -qxF "IMAGE-MISSING: $WORK/gone.png — the brief names it, it is not readable, the worker will not see it" "$WORK/start.out"
+assert test "$(grep -c '^IMAGE-MISSING:' "$WORK/start.out")" = 1
+assert grep -qxF "NEXT: worker-run wait $RUN_ID as a background Bash; a mid-run note: worker-run say $RUN_ID \"<text>\"" "$WORK/start.out"
 cp "$WORK/brief.noimg" "$WORK/brief"
 
 # A cross-repository brief grants its second repository in the header (the eight escaped legs of
