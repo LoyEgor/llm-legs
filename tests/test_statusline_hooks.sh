@@ -5291,7 +5291,8 @@ worker-run wait cb-20260901-abcdef' \
   assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
   assert jq -e '.hookSpecificOutput.permissionDecisionReason | contains("starts or awaits a worker run that belongs to the chat")' \
     <<<"$gate_out" >/dev/null
-  gate_out=$(gate_payload "$owned_denied" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  gate_out=$(gate_payload "$owned_denied" | jq -c '.tool_input.run_in_background = true' | "$LAUNCH_GATE_BIN") ||
+    fail "launch gate exited nonzero"
   assert_eq "" "$gate_out"
 done
 # Bookkeeping, help, a finished record and the suite that exercises the launcher are not a run: the
