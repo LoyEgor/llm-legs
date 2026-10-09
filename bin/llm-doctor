@@ -129,7 +129,7 @@ FAILURE_REASONS = (
         r"not logged in|not signed in|credentials were rejected|session has expired|oauth session expired"
         r"|failed to authenticate|unauthor|cell preparation refused|not eligible for antigravity|verify your account"
         r"|accounts\.google\.com/signin"
-        r"|" + HTTP_STATUS_PREFIX + r"40[13]\b|\b40[13]\s+(?:Unauthorized|Forbidden)\b", re.IGNORECASE)),
+        r"|" + HTTP_STATUS_PREFIX + r"40[13]\b|\b40[13]\s+(?:Unauthorized|Forbidden)\b|\(code 40[13]\)", re.IGNORECASE)),
     ("not found", re.compile(r"(?:" + HTTP_STATUS_PREFIX + r"404\b|\b404\s+Not\s+Found\b|\(code 404\))",
                              re.IGNORECASE)),
     ("chunks unread", re.compile(r"chunks unread", re.IGNORECASE)),

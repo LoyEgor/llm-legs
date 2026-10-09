@@ -574,6 +574,8 @@ assert text_reading("cell preparation refused: credential export: not logged in"
 # A status is a status: a cited line number or prose saying forbidden is not an auth failure.
 assert doctor.failure_reason("finding at panel.py:401 and 403 lines") == "unclassified"
 assert doctor.failure_reason("HTTP 403 Forbidden") == "auth"
+assert doctor.failure_reason("Error: Eligibility check failed: UNAUTHENTICATED (code 401): "
+                             "Request had invalid authentication credentials.") == "auth"
 assert doctor.failure_reason("rater task crashed: File /Volumes/Work/runner.py:429: ValueError") == "crashed"
 assert doctor.failure_reason("HTTP 429") == "bare 429"
 assert doctor.failure_reason("HTTP 429 Too Many Requests") == "bare 429"
