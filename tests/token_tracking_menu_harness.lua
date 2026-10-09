@@ -61,31 +61,28 @@ local fixture = {
     },
 }
 local function spendNode(name, cells, children, more)
-    return { name = name, label = name, cells = cells, weeks = { "50.0%", "40.0%", "—", "—" },
-             children = children or {}, more = more }
+    return { name = name, label = name, cells = cells, children = children or {}, more = more }
 end
 local projects = {}
-for i = 1, 17 do projects[i] = spendNode("proj" .. i, { "0.0" .. (100 - i) .. "M", "0.5%", "1.0%", "1.1%" }) end
+for i = 1, 17 do projects[i] = spendNode("proj" .. i, { "0.0" .. (100 - i) .. "M", "0.5%", "1.0%", "1.1%", "-9%" }) end
 fixture.spend = {
-    days = 7, data_through = "2026-09-25T13:53:01+03:00", unit_label = "Opus-priced limit tokens",
-    columns = { "Opus-priced", "share", "plain", "Sep 22 (4d)", "Sep 15", "Sep 8", "Sep 1" },
+    range = "7 days vs the 7 before", data_through = "2026-09-25T13:53:01+03:00",
+    unit_label = "Opus-priced limit tokens", columns = { "7 days", "share", "prev 7", "Δ" },
     tree = {
-        spendNode("Chat", { "120.0M", "55.0%", "54.0%" }, {
-            spendNode("Work", { "100.0M", "83.3%", "45.0%", "44.0%" }, projects,
-                { label = "2 other", after = 15, cells = { "0.167M", "1.7%", "2.0%", "2.2%" },
-                  weeks = { "1.0%", "—", "—", "—" } }),
-            spendNode("Harness", { "20.0M", "16.7%", "10.0%", "10.0%" },
-                { spendNode("Hooks", { "20.0M", "16.7%", "10.0%", "10.0%" }) }),
+        spendNode("Chat", { "120.0M", "55.0%", "54.0%", "+2%" }, {
+            spendNode("Work", { "100.0M", "83.3%", "45.0%", "44.0%", "+2%" }, projects,
+                { label = "2 other", after = 15, cells = { "0.167M", "1.7%", "2.0%", "2.2%", "-9%" } }),
+            spendNode("Harness", { "20.0M", "16.7%", "10.0%", "10.0%", "0%" },
+                { spendNode("Hooks", { "20.0M", "16.7%", "10.0%", "10.0%", "0%" }) }),
         }),
-        spendNode("Workers", { "98.0M", "45.0%", "46.0%" }, {
-            spendNode("Work", { "98.0M", "100.0%", "45.0%", "46.0%" },
-                { spendNode("llm-legs", { "98.0M", "100.0%", "45.0%", "46.0%" }) }),
+        spendNode("Workers", { "98.0M", "45.0%", "46.0%", "-2%" }, {
+            spendNode("Work", { "98.0M", "100.0%", "45.0%", "46.0%", "-2%" },
+                { spendNode("llm-legs", { "98.0M", "100.0%", "45.0%", "46.0%", "-2%" }) }),
         }),
     },
 }
 for _, consumer in ipairs(fixture.spend.tree) do
-    consumer.columns = { "Opus-priced", "of " .. consumer.label, "share", "plain", "Sep 22 (4d)", "Sep 15", "Sep 8",
-                         "Sep 1" }
+    consumer.columns = { "7 days", "of " .. consumer.label, "share", "prev 7", "Δ" }
 end
 write(hs.json.encode(fixture))
 M.setPath(path)
@@ -114,16 +111,17 @@ end
 local spendItem = items[2]
 local pie = spendItem and spendItem.menu or {}
 check(spendItem and text(spendItem.title) == "Spend" and #pie > 0, "no Spend submenu under the status line")
-check(pie[1] and pie[1].disabled and text(pie[1].title):find("7 days to", 1, true) == 1
-    and text(pie[1].title):find("13:53 · Opus-priced limit tokens", 1, true), "the Spend header lacks the data time")
-local pieHead, chat, workers = find(pie, "Opus-priced  "), find(pie, "Chat"), find(pie, "Workers")
+check(pie[1] and pie[1].disabled and text(pie[1].title):find("7 days vs the 7 before · data to ", 1, true) == 1
+    and text(pie[1].title):find("13:53 · Opus-priced limit tokens", 1, true), "the Spend header lacks the range or data time")
+local pieHead, chat, workers = find(pie, "prev 7"), find(pie, "Chat"), find(pie, "Workers")
 check(pieHead and pieHead.disabled and chat and chat.menu and workers and workers.menu
-    and cellEnd(pieHead, "plain") == cellEnd(chat, "54.0%") and cellEnd(chat, "54.0%") == cellEnd(workers, "46.0%")
+    and cellEnd(pieHead, "prev 7") == cellEnd(chat, "54.0%") and cellEnd(chat, "54.0%") == cellEnd(workers, "46.0%")
+    and cellEnd(pieHead, "Δ") == cellEnd(chat, "+2%") and cellEnd(chat, "+2%") == cellEnd(workers, "-2%")
     and utf8.len(text(pieHead.title)) == utf8.len(text(chat.title)),
     "the Spend level-1 rows are missing or not aligned")
 local chatWork = chat and find(chat.menu, "Work")
 local leaves = chatWork and chatWork.menu or {}
-check(chatWork and find(chat.menu, "Harness").menu and find(chat.menu, "Opus-priced").disabled,
+check(chatWork and find(chat.menu, "Harness").menu and find(chat.menu, "of Chat").disabled,
     "a level-2 row does not open its leaves")
 local folded = find(leaves, "2 other")
 check(#leaves == 17 and find(leaves, "proj15") and not find(leaves, "proj16") and folded and folded.disabled
@@ -288,7 +286,7 @@ check(computingMarked == "7 days vs 7 before" and text(computing[1].title):find(
     "the asked range read as current while it computes, or a cut run alerted: " .. text(computingItem.title))
 
 local rangeFixture = hs.json.decode(hs.json.encode(fixture))
-rangeFixture.version, rangeFixture.spend = 3, nil
+rangeFixture.version, rangeFixture.spend.range = 3, "24h vs the 24h before"
 rangeFixture.range = { key = "24h", title = "24h vs the 24h before", cur_label = "24h", prev_label = "prev 24h" }
 rangeFixture.columns = { "24h", "prev 24h", "Δ", "share" }
 local handle = assert(io.open(rangePath, "w"))
@@ -301,7 +299,9 @@ check(text(ranged[1].title):find("^24h vs the 24h before · data to 13:53 · sca
     "the range status line: " .. text(ranged[1].title))
 check(find(ranged, "prev 24h") and select(2, compare(ranged)) == "24h vs 24h before"
     and stored["tokenTracking.range"].key == "24h", "the finished range is not shown, checked and remembered")
-check(find(ranged, "Spend") and find(ranged, "Spend").menu, "a range view lost the 7-day Spend submenu")
+local rangedSpend = find(ranged, "Spend")
+check(rangedSpend and text(rangedSpend.menu[1].title):find("24h vs the 24h before · data to ", 1, true) == 1,
+    "Spend under a range does not read that range's export")
 check(alerts[#alerts] == "Token tracking 24h vs 24h before ready", "no success alert: " .. tostring(alerts[#alerts]))
 
 hs.fs.touch(rangePath, os.time() - 7 * 3600)
