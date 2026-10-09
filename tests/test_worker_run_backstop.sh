@@ -68,6 +68,13 @@ assert_eq block "$(stop | jq -r .decision)"
 forget
 printf '999999 %s\n' "$live_began" >"$WORKER_RUN_DIR/r3/starter"
 assert_eq block "$(stop | jq -r .decision)"
+forget
+# A ps that lists nothing, not even pid 1, cannot answer: the live starter still owns its run.
+mkdir -p "$WORK/mute"
+printf '#!/bin/sh\nexit 0\n' >"$WORK/mute/ps"
+chmod +x "$WORK/mute/ps"
+printf '%s %s\n' "$LIVE_PID" "$live_began" >"$WORKER_RUN_DIR/r3/starter"
+assert_eq "" "$(PATH="$WORK/mute:$PATH" stop)"
 rm -rf "$WORKER_RUN_DIR/r3"; forget
 # A research run is picked up by light-research, which checks its citations and writes the answer file.
 run r4 s1 gemini

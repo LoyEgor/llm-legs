@@ -23,37 +23,35 @@ etime_seconds() { # etime as ps prints it: [[dd-]hh:]mm:ss
 # is reached for only where ps itself proved unable to answer. A record
 # written before pid_started_at existed cannot be checked this way and keeps the old answer, or
 # every run started before that field went in would begin reading dead.
-supervisor_running() { # directory pid
-  local elapsed seconds started now begin drift
-  [[ "$2" =~ ^[0-9]+$ ]] && [ "$2" -gt 0 ] || return 1
-  command -v ps >/dev/null 2>&1 || { kill -0 "$2" 2>/dev/null; return; }
-  elapsed=$(ps -p "$2" -o etime= 2>/dev/null | tr -d '[:space:]')
+pid_alive_since() { # pid start-epoch (none: unchecked)
+  local elapsed seconds drift
+  [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -gt 0 ] || return 1
+  command -v ps >/dev/null 2>&1 || { kill -0 "$1" 2>/dev/null; return; }
+  elapsed=$(ps -p "$1" -o etime= 2>/dev/null | tr -d '[:space:]')
   if [ -z "$elapsed" ]; then
     # "No such process" and "ps could not answer" are the same empty output, and one of them is a
     # live run about to be reported failed. A pid that must be listed settles it — pid 1, not `$$`:
     # a sandbox hiding every process but our own still lists `$$`, and a foreign supervisor then
     # still reads gone. If init is not listed either, ps is what is broken and the probe answers.
     [ -n "$(ps -p 1 -o etime= 2>/dev/null | tr -d '[:space:]')" ] && return 1
-    kill -0 "$2" 2>/dev/null
+    kill -0 "$1" 2>/dev/null
     return
   fi
-  started=$(jq -r '.pid_started_at // empty' "$1/meta.json" 2>/dev/null)
-  [[ "$started" =~ ^[0-9]+$ ]] && [ "$started" -gt 0 ] || return 0
+  [[ "$2" =~ ^[0-9]+$ ]] && [ "$2" -gt 0 ] || return 0
   seconds=$(etime_seconds "$elapsed")
   [[ "$seconds" =~ ^[0-9]+$ ]] || return 0
-  now=$(date +%s)
-  begin=$((now - seconds))
-  drift=$((begin - started))
-  [ "$drift" -ge 0 ] || drift=$((-drift))
-  [ "$drift" -le "$PID_START_SLACK" ]
+  drift=$(($(date +%s) - seconds - $2))
+  [ "${drift#-}" -le "$PID_START_SLACK" ]
+}
+
+supervisor_running() { # directory pid
+  [[ "$2" =~ ^[0-9]+$ ]] && [ "$2" -gt 0 ] || return 1
+  pid_alive_since "$2" "$(jq -r '.pid_started_at // empty' "$1/meta.json" 2>/dev/null)"
 }
 
 starter_alive() { # directory
-  local pid began age
+  local pid began
   { read -r pid began <"$1/starter"; } 2>/dev/null || return 1
-  [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && [[ "$began" =~ ^[0-9]+$ ]] || return 1
-  age=$(etime_seconds "$(ps -p "$pid" -o etime= 2>/dev/null | tr -d '[:space:]')")
-  [ -n "$age" ] || return 1
-  age=$(($(date +%s) - age - began))
-  [ "${age#-}" -le "$PID_START_SLACK" ]
+  [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && [[ "$began" =~ ^[0-9]+$ ]] && [ "$began" -gt 0 ] || return 1
+  pid_alive_since "$pid" "$began"
 }

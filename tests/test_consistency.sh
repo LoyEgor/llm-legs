@@ -1590,7 +1590,10 @@ assert grep -Fq 'supervisor_running "$2" "$3"' "$ROOT/bin/llm-doctor"
 assert eq "$(grep -cE 'os\.kill|[^[:alnum:]_]etime' "$ROOT/bin/llm-doctor")" 0
 assert eq "$(grep -c '^[^#]*kill -0' "$ROOT/bin/worker-run-backstop.sh" | awk -F: '{s += $2} END {print s}')" 0
 assert grep -Fq 'PID_START_SLACK=30' "$RUN_LIVENESS"
-assert grep -Fq 'ps -p "$2" -o etime=' "$RUN_LIVENESS"
+assert grep -Fq -- '-v slack="$PID_START_SLACK"' "$ROOT/bin/statusline-work-probe.sh"
+assert grep -Fq '(live <= slack && live >= -slack)' "$ROOT/bin/statusline-work-probe.sh"
+assert grep -Fq 'ps -p "$1" -o etime=' "$RUN_LIVENESS"
+assert grep -Fq 'pid_alive_since "$pid" "$began"' "$RUN_LIVENESS"
 # 0 is the pre-launch placeholder both sides must refuse to probe: `ps -p 0` answers nothing while
 # pid 1 answers, so read as a pid it says the supervisor of a run that has not started is gone.
 assert grep -Fq '[ "$2" -gt 0 ] || return 1' "$RUN_LIVENESS"

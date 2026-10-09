@@ -18,6 +18,7 @@ payload=$(cat 2>/dev/null) || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
 [ "${CLAUDEB_WORKER:-}" = 1 ] && exit 0
 . "${self%/*}/../share/run-liveness.sh" 2>/dev/null || exit 0
+. "${self%/*}/../share/processes.sh" 2>/dev/null || exit 0
 { IFS= read -r session; IFS= read -r agent; IFS= read -r transcript; } <<EOF
 $(jq -r '(.session_id // ""), (.agent_id // ""), (.transcript_path // "")' <<<"$payload" 2>/dev/null)
 EOF
@@ -43,21 +44,19 @@ waits_read=false
 owned() { # key id
   if [ "$waits_read" = false ]; then
     waits_read=true
-    local root
+    local root listing
     root=$(chat_pid) || exit 0
-    waits=$(ps -Ao pid=,ppid=,command= 2>/dev/null | awk -v root="$root" '
-      { pid = $1; parent[pid] = $2; $1 = ""; $2 = ""; command[pid] = $0 }
-      END {
-        for (p in command) {
-          if (!match(command[p], /(^|[ \/])(worker-run|review-bench)[ ]+wait[ ]+[A-Za-z0-9._-]+/)) continue
-          q = p; n = 0
-          while (q != root && (q in parent) && n++ < 64) q = parent[q]
-          if (q != root || p == root) continue
-          split(substr(command[p], RSTART, RLENGTH), w, " ")
-          sub(/.*\//, "", w[1])
-          print (w[1] == "review-bench" ? "review" : "run") "=" w[3]
-        }
-      }')
+    listing=$(ps -Ao pid=,ppid=,command= 2>/dev/null)
+    waits=$(process_listing() { printf '%s\n' "$listing"; }
+      process_tree "$root" | awk -v root="$root" '
+      FNR == NR { if ($1 != root) below[$1] = 1; next }
+      ($1 in below) {
+        $1 = ""; $2 = ""
+        if (!match($0, /(^|[ \/])(worker-run|review-bench)[ ]+wait[ ]+[A-Za-z0-9._-]+/)) next
+        split(substr($0, RSTART, RLENGTH), w, " ")
+        sub(/.*\//, "", w[1])
+        print (w[1] == "review-bench" ? "review" : "run") "=" w[3]
+      }' - <(printf '%s\n' "$listing"))
   fi
   case $'\n'"$waits"$'\n' in *$'\n'"$1=$2"$'\n'*) return 0 ;; esac
   return 1

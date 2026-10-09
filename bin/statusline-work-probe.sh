@@ -35,6 +35,7 @@ fi
 . "${probe_self%/*}/../share/test-scope.sh"
 . "${probe_self%/*}/../tests/lib/suite-journal.sh" --lib
 . "${probe_self%/*}/../share/statusline-probe.sh"
+. "${probe_self%/*}/../share/run-liveness.sh"
 
 [ -d "$cache_dir" ] || mkdir -p "$cache_dir" 2>/dev/null || exit 0
 if ! mkdir "$lock" 2>/dev/null; then
@@ -69,7 +70,7 @@ for run_dir in "$runs_root"/*/; do
   runs="$runs ${run_dir##*/}"
 done
 
-found=$(awk -v start="$start_pid" -v runs="$runs" -v runs_root="$runs_root" -v now="$now" '
+found=$(awk -v start="$start_pid" -v runs="$runs" -v runs_root="$runs_root" -v now="$now" -v slack="$PID_START_SLACK" '
   function secs(e,   d, n, p) {
     d = 0
     if (index(e, "-")) { d = substr(e, 1, index(e, "-") - 1) + 0; e = substr(e, index(e, "-") + 1) }
@@ -171,7 +172,7 @@ found=$(awk -v start="$start_pid" -v runs="$runs" -v runs_root="$runs_root" -v n
     if (mpid == 0) return "?"
     if (!(mpid in cmd)) return 0
     live = now - secs(et[mpid]) - mstart
-    return (mstart == 0 || (live <= 30 && live >= -30)) ? 1 : 0
+    return (mstart == 0 || (live <= slack && live >= -slack)) ? 1 : 0
   }
   function base_of(pid,   s) { split(cmd[pid], s, /[ \t]+/); return base(s[1]) }
   FNR == 1 { next }
