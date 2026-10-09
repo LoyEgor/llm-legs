@@ -60,6 +60,26 @@ local fixture = {
                                                 tone = "" } } } } },
     },
 }
+local function spendNode(name, cells, children, more)
+    return { name = name, label = name, cells = cells, weeks = { "50.0%", "40.0%", "—", "—" },
+             children = children or {}, more = more }
+end
+local projects = {}
+for i = 1, 17 do projects[i] = spendNode("proj" .. i, { tostring(100 - i), "1.0%", "1.1%" }) end
+fixture.spend = {
+    days = 7, data_through = "2026-09-25T13:53:01+03:00", unit_label = "Opus-priced limit tokens",
+    columns = { "Opus-priced", "share", "plain", "Sep 22 (4d)", "Sep 15", "Sep 8", "Sep 1" },
+    tree = {
+        spendNode("Chat", { "120.0M", "55.0%", "54.0%" }, {
+            spendNode("Work", { "100.0M", "45.0%", "44.0%" }, projects,
+                { label = "2 other", after = 15, cells = { "167", "2.0%", "2.2%" }, weeks = { "1.0%", "—", "—", "—" } }),
+            spendNode("Harness", { "20.0M", "10.0%", "10.0%" }, { spendNode("Hooks", { "20.0M", "10.0%", "10.0%" }) }),
+        }),
+        spendNode("Workers", { "98.0M", "45.0%", "46.0%" }, {
+            spendNode("Work", { "98.0M", "45.0%", "46.0%" }, { spendNode("llm-legs", { "98.0M", "45.0%", "46.0%" }) }),
+        }),
+    },
+}
 write(hs.json.encode(fixture))
 M.setPath(path)
 M.setSettings({ get = function() end, set = function() end })
@@ -83,6 +103,25 @@ local function cellEnd(item, cell)
     local stop = select(2, line:find(cell, 1, true))
     return stop and utf8.len(line:sub(1, stop)) or -1
 end
+
+local spendItem = items[2]
+local pie = spendItem and spendItem.menu or {}
+check(spendItem and text(spendItem.title) == "Spend" and #pie > 0, "no Spend submenu under the status line")
+check(pie[1] and pie[1].disabled and text(pie[1].title):find("7 days to", 1, true) == 1
+    and text(pie[1].title):find("13:53 · Opus-priced limit tokens", 1, true), "the Spend header lacks the data time")
+local pieHead, chat, workers = find(pie, "Opus-priced  "), find(pie, "Chat"), find(pie, "Workers")
+check(pieHead and pieHead.disabled and chat and chat.menu and workers and workers.menu
+    and cellEnd(pieHead, "plain") == cellEnd(chat, "54.0%") and cellEnd(chat, "54.0%") == cellEnd(workers, "46.0%")
+    and utf8.len(text(pieHead.title)) == utf8.len(text(chat.title)),
+    "the Spend level-1 rows are missing or not aligned")
+local chatWork = chat and find(chat.menu, "Work")
+local leaves = chatWork and chatWork.menu or {}
+check(chatWork and find(chat.menu, "Harness").menu and find(chat.menu, "Opus-priced").disabled,
+    "a level-2 row does not open its leaves")
+local folded = find(leaves, "2 other")
+check(#leaves == 17 and find(leaves, "proj15") and not find(leaves, "proj16") and folded and folded.disabled
+    and cellEnd(folded, "2.2%") == cellEnd(find(leaves, "proj1 "), "1.1%"),
+    "the leaves are not the top 15 plus an aligned other row")
 
 local header = find(items, "limit tokens")
 local spend, startup = find(items, "Claude spend"), find(items, "Startup")
@@ -213,8 +252,8 @@ hs.fs.touch(path, os.time() - 60)
 
 local ranged = M.menuItems(nil)
 local compareItem, marked = compare(ranged)
-check(compareItem and ranged[2] == compareItem and marked == "7 days vs 7 before",
-    "the Compare submenu is not under the status line with 7 days checked: " .. marked)
+check(compareItem and ranged[3] == compareItem and text(ranged[2].title) == "Spend" and marked == "7 days vs 7 before",
+    "the Compare submenu is not under the status line and Spend with 7 days checked: " .. marked)
 alerts = {}
 find(compareItem.menu, "24h vs 24h before").fn()
 check(#launched == 1 and argLine(launched[1]) == "tokenmap tracking --range 24h --write"

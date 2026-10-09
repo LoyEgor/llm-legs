@@ -234,6 +234,48 @@ local function clock(iso)
         min = tonumber(mi) }))
 end
 
+local function spendNums(node)
+    local nums = {}
+    for _, cell in ipairs(node.cells or {}) do nums[#nums + 1] = cell end
+    for _, cell in ipairs(node.weeks or {}) do nums[#nums + 1] = cell end
+    return nums
+end
+
+local function spendMenu(spend, nodes, more, open)
+    local rows = { { label = "", nums = spend.columns or {}, dim = true } }
+    for _, node in ipairs(nodes) do rows[#rows + 1] = { label = node.label, nums = spendNums(node) } end
+    if more then rows[#rows + 1] = { label = more.label, nums = spendNums(more), dim = true } end
+    local items = {}
+    for index, title in ipairs(aligned(rows)) do
+        local node = nodes[index - 1]
+        if node and open then
+            items[#items + 1] = { title = title, menu = open(node) }
+        else
+            items[#items + 1] = { title = title, disabled = true }
+        end
+    end
+    return items
+end
+
+local function spendItem(spend)
+    local function leaves(node)
+        local shown = {}
+        for index, child in ipairs(node.children or {}) do
+            if node.more and index > (tonumber(node.more.after) or 0) then break end
+            shown[#shown + 1] = child
+        end
+        return spendMenu(spend, shown, node.more)
+    end
+    local items = { { title = style(string.format("%d days to %s · %s", spend.days or 7, clock(spend.data_through),
+        spend.unit_label or ""), dimColor()), disabled = true } }
+    for _, item in ipairs(spendMenu(spend, spend.tree or {}, nil, function(consumer)
+        return spendMenu(spend, consumer.children or {}, nil, leaves)
+    end)) do
+        items[#items + 1] = item
+    end
+    return { title = "Spend", menu = items }
+end
+
 local function isStale(data, attrs)
     if not data or not attrs then return true end
     local hours = tonumber(data.stale_after_hours) or STALE_HOURS
@@ -490,6 +532,7 @@ function M.menuItems(changeLogItem)
         if cancelJob() then startJob(range, false, true) end
     end
     local items = statusItems(data, problem, attrs, file ~= path)
+    if data and type(data.spend) == "table" then items[#items + 1] = spendItem(data.spend) end
     items[#items + 1] = compareItem()
     if data then
         local rows = { { label = data.unit_label or "", nums = data.columns or { "7 days", "prev 7", "Δ" },
