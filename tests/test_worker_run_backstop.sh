@@ -15,8 +15,8 @@ unset CLAUDEB_WORKER
 export WORKER_RUN_BACKSTOP_CHAT_PID=$$
 asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
-assert_eq() { asserts=$((asserts + 1)); [ "$1" = "$2" ] || fail "expected [$1] got [$2]"; }
-assert_has() { asserts=$((asserts + 1)); case "$2" in *"$1"*) ;; *) fail "[$2] lacks [$1]" ;; esac; }
+assert_eq() { asserts=$((asserts + 1)); [ "$1" = "$2" ] || fail "line ${BASH_LINENO[0]}: expected [$1] got [$2]"; }
+assert_has() { asserts=$((asserts + 1)); case "$2" in *"$1"*) ;; *) fail "line ${BASH_LINENO[0]}: [$2] lacks [$1]" ;; esac; }
 
 mkdir -p "$WORKER_STATS_DIR/progress"
 run() { # id launcher vendor [pid]
