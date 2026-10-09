@@ -219,10 +219,15 @@ span_check() { # sid tool key value transcript
 watch_sid() { # sid arg; WATCH_BASH picks the interpreter
   jq -cn --arg s "$1" '{session_id:$s,hook_event_name:"PostToolUse"}' | "${WATCH_BASH:-bash}" "$WATCH" "$2"
 }
-span_base() { watch_sid "$1" baseline; }
 grow_cmd="perl -pi -e 's/\$/ a line no human asked for/' $DOC"
 share_call() { # snippet arg... → the shared module, sourced, answering
   bash -c '. "$1" || exit 1; shift; eval "$1"' _ "$ROOT/share/instruction-files.sh" "$@"
+}
+# Outside INSTRUCTION_WATCH_CHAT=all the baseline lands behind the hook, before the session's first
+# writing call: a fixture's own write, standing for another process, waits for it the same way.
+span_base() {
+  watch_sid "$1" baseline
+  share_call 'instruction_baseline_wait "$INSTRUCTION_WATCH_STATE/pending-$2"' "$1"
 }
 raw_check() { # sid tool key value transcript
   arm_span "$1" "$5"

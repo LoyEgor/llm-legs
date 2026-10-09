@@ -521,7 +521,7 @@ cmd_baseline() {
   # version no baseline has vouched for since is abandoned. Every write refreshes the mtime of
   # the version still in use, so what this reaches is superseded copies alone.
   find "$STATE_DIR" -mindepth 1 -maxdepth 1 \( -name 'session-*' ! -path "${ref:-/}" -mtime +7 \
-    -o -name 'visible-*' -mtime +1 \) -delete 2>/dev/null
+    -o -name 'visible-*' -mtime +1 -o -name 'pending-*' -mtime +1 \) -delete 2>/dev/null
   find "$SNAP_DIR" -mindepth 1 -maxdepth 1 -type f -mtime +90 -delete 2>/dev/null
   find "$RECEIPT_DIR" -mindepth 1 -maxdepth 1 -type f -mtime +30 -delete 2>/dev/null
   find "$ALERT_DIR" -mindepth 1 -maxdepth 1 -type f -name '*.last' -mtime +30 -delete 2>/dev/null
@@ -1073,12 +1073,35 @@ fi
 case "${event:-}" in ''|*[!A-Za-z]*) event=PostToolUse ;; esac
 cwd=${cwd%$'\n'}
 agent_id=${agent_id%$'\n'}
-repo_root=$(instruction_repo_root "${cwd:-}") || repo_root=''
-baseline=$(session_baseline "${sid:-}")
 
-case "${1:-check}" in
-  baseline) cmd_baseline "$baseline" ;;
-  check)    cmd_check "$baseline" "$event" "$sid" ;;
-  *)        gate_journal watch fault "$sid" '' '' "unknown mode ${1:-}"; exit 0 ;;
-esac
+run_mode() {
+  repo_root=$(instruction_repo_root "${cwd:-}") || repo_root=''
+  baseline=$(session_baseline "${sid:-}")
+  case "$1" in
+    baseline) cmd_baseline "$baseline" ;;
+    check)    pending=${baseline##*/session-}
+              instruction_baseline_wait "$STATE_DIR/pending-${pending%.tsv}"
+              cmd_check "$baseline" "$event" "$sid" ;;
+    *)        gate_journal watch fault "$sid" '' '' "unknown mode $1"; exit 0 ;;
+  esac
+}
+
+# A between-sessions check never puts bytes back, so its report reaches the model only under
+# INSTRUCTION_WATCH_CHAT=all; otherwise the chat start does not wait for the baseline, and every
+# writing call waits for it instead (instruction_baseline_wait).
+if [ "${1:-check}" = baseline ] && [ "$CHAT" != all ]; then
+  pending=$STATE_DIR/pending-$(instruction_sid_name "${sid:-}")
+  if { [ -d "$STATE_DIR" ] || mkdir -p "$STATE_DIR"; } 2>/dev/null && printf '%s\n' "$$" >"$pending" 2>/dev/null; then
+    (
+      trap '' HUP
+      HOOK_TIME_KEY='instruction-watch.sh baseline-bg'
+      ! declare -F hook_time_begin >/dev/null || hook_time_begin
+      (run_mode baseline)
+      rm -f "$pending"
+    ) </dev/null >/dev/null 2>&1 &
+    [ ! -e "$pending" ] || printf '%s\n' "$!" >"$pending" 2>/dev/null
+    exit 0
+  fi
+fi
+run_mode "${1:-check}"
 exit; }

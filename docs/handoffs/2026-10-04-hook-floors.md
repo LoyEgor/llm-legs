@@ -1,11 +1,10 @@
 # Hand-off: hook floors, cut the dearest hooks one at a time
 
-Status: settled 20261006T233611Z-7777: a fix with `in` null holds from its landing (share/fix_commit.py `fix_held_from`): absent from main it regresses and proves nothing, so a night close reads it fixed-pending
+Status: open 20261009T023738Z-817e: dismiss `floor:event:Stop` below the 150 ms note
 
-Rows `floor-bash-other-hooks`, `floor-edit-hooks`, `floor:event:*`, `floor:tool`, `floor:read`. Egor 2026-10-05:
-no dispatcher (weigh one only from 2026-10-05-harness-time-budget.md); cut the dearest hooks one at a time.
+To: «Harness Doctor», next night. Rows `floor:event:*`, `floor:tool`, `floor:read`. Egor 2026-10-05:
+no dispatcher (2026-10-05-harness-time-budget.md); cut the dearest hooks one at a time.
 
-Cut: review-bench `bin/review-owner-gate.sh` (no `review-bench` in the command), claude-setup
-`hooks/report-flush.sh` (nothing pending for the payload session or `_orphan`). The setters
-(review-flow-gate, commit-journal, edit-conflict-notice, instruction-watch, stop-dispatch,
-context-nudge) are the hooks area's rows.
+SessionStart: instruction-watch writes its baseline in the background, writing calls wait on it.
+Stop: 11 forks cut (stop-dispatch, worker-run-backstop). Left: two python notices, two word asks in
+series, backstop, journal jq, ~170 ms; under 150 ms only a one-process stop.d, the declined class.

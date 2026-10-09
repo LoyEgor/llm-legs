@@ -384,6 +384,27 @@ assert_contains "CHANGED" "$ctx"
 assert_contains "puts them back" "$ctx"
 printf 'global rules\n' > "$REAL_MD"
 
+echo "== tripwire: a chat start does not wait for its baseline, the first writing call does"
+HOLD="$WORK/hold-stat"
+mkdir -p "$HOLD"
+printf '#!/bin/bash\nn=0\nwhile [ ! -e %q ] && [ $n -lt 100 ]; do sleep 0.05; n=$((n + 1)); done\nexec /usr/bin/stat "$@"\n' \
+  "$HOLD/release" > "$HOLD/stat"
+chmod +x "$HOLD/stat"
+PENDING="$INSTRUCTION_WATCH_STATE/pending-sid-detached"
+PATH="$HOLD:$PATH" INSTRUCTION_WATCH_CHAT=reverts watch_sid sid-detached baseline >/dev/null
+assert [ -e "$PENDING" ]
+assert [ ! -s "$INSTRUCTION_WATCH_STATE/session-sid-detached.tsv" ]
+( sleep 0.5; touch "$HOLD/release" ) &
+GATE_SID=sid-detached gate "$ANY_CALL" >/dev/null
+assert [ ! -e "$PENDING" ]
+assert [ -s "$INSTRUCTION_WATCH_STATE/session-sid-detached.tsv" ]
+wait
+# A writer that died leaves its pid behind, and no call may wait on it.
+printf '%s\n' "$(sh -c 'echo $$')" > "$INSTRUCTION_WATCH_STATE/pending-sid-dead"
+GATE_SID=sid-dead gate "$ANY_CALL" >/dev/null
+assert [ ! -e "$INSTRUCTION_WATCH_STATE/pending-sid-dead" ]
+rm -f "$INSTRUCTION_WATCH_STATE"/inflight/*
+
 echo "== stamp sweep: a misconfigured stamp directory is not a licence to delete"
 # The sweep matched anything starting with a hex character and removed it recursively, so a
 # stamp directory pointed at real data would take ~/.claude/agents with it.

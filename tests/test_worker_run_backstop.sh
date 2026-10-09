@@ -175,4 +175,16 @@ assert_eq "" "$(unset WORKER_RUN_BACKSTOP_CHAT_PID; PATH="$WORK/shim:$PATH" HOOK
   kill $w')"
 assert_eq 2 "$(wc -l <"$WORK/ps-calls" | tr -d ' ')"
 
+# A stop with nothing of this chat's to hold starts one jq and nothing else: another chat's review
+# in the progress store, and a quiet chat's stop at all, cost the dispatcher's critical path.
+mkdir -p "$WORK/count"
+for tool in cat date awk rm jq; do
+  printf '#!/bin/sh\necho %s >>"%s/forks"\nexec %s "$@"\n' "$tool" "$WORK" "$(command -v "$tool")" >"$WORK/count/$tool"
+  chmod +x "$WORK/count/$tool"
+done
+jq -nc --argjson hb "$(date +%s)" '{run_id:"other-review",session:"s9",state:"running",heartbeat_epoch:$hb}' \
+  >"$WORKER_STATS_DIR/progress/other.json"
+assert_eq "" "$(jq -cn '{hook_event_name:"Stop",session_id:"s7"}' | PATH="$WORK/count:$PATH" bash "$HOOK")"
+assert_eq jq "$(tr '\n' ' ' <"$WORK/forks" | sed 's/ $//')"
+rm -f "$WORKER_STATS_DIR/progress/other.json"
 printf 'PASS: %s asserts; a live worker or review run of this chat that no live `worker-run wait` / `review-bench wait` under the chat process owns holds the stop naming that wait, while another chat'"'"'s, a finished, a dead or a still-starting run, a stale panel, a worker, a subagent and the retired --relay mode pass, --unowned answers the Stop ask with the same verdict and resume command, a dozen owned runs cost one process-table read, and three holds in a row release the fourth\n' "$asserts"

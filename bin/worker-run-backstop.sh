@@ -35,7 +35,6 @@ chat_pid() {
       exit 1
     }'
 }
-now=$(date +%s)
 # One process table read per stop, and only once a run needs it: "<run|review>=<word>" for every word
 # of every waiting command line below the chat.
 waits=''
@@ -89,7 +88,8 @@ if [ "$#" -eq 1 ]; then
   exit 0
 fi
 
-payload=$(cat 2>/dev/null) || exit 0
+payload=''
+IFS= read -r -d '' payload || :
 { IFS= read -r session; IFS= read -r agent; IFS= read -r transcript; } <<EOF
 $(jq -r '(.session_id // ""), (.agent_id // ""), (.transcript_path // "")' <<<"$payload" 2>/dev/null)
 EOF
@@ -113,19 +113,31 @@ for run in "$run_root"/*/; do
 done
 
 progress="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}/progress"
-while IFS= read -r id; do
-  case "$id" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
-  held review "$id" && continue
-  lines=$lines${lines:+$'\n'}"- review $id — \`$(resume_of review "$id")\`"
-done < <(cat "$progress"/*.json 2>/dev/null | jq -r --arg s "$session" --argjson now "$now" \
-  'select((.session // "") == $s and .state == "running" and (.heartbeat_epoch | type) == "number" and ($now - .heartbeat_epoch) < 600)
-   | .run_id // empty' 2>/dev/null | awk '!seen[$0]++')
+named=''
+for f in "$progress"/*.json; do
+  [ -f "$f" ] || continue
+  body=''
+  IFS= read -r -d '' body <"$f" 2>/dev/null
+  case "$body" in *"\"$session\""*) named=1; break ;; esac
+done
+now=''
+[ -z "$named" ] || {
+  now=$(date +%s)
+  while IFS= read -r id; do
+    case "$id" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
+    held review "$id" && continue
+    lines=$lines${lines:+$'\n'}"- review $id — \`$(resume_of review "$id")\`"
+  done < <(cat "$progress"/*.json 2>/dev/null | jq -r --arg s "$session" --argjson now "$now" \
+    'select((.session // "") == $s and .state == "running" and (.heartbeat_epoch | type) == "number" and ($now - .heartbeat_epoch) < 600)
+     | .run_id // empty' 2>/dev/null | awk '!seen[$0]++')
+}
 
 hold="$HOME/.cache/claude/stop-backstop/$session"
 if [ -z "$lines" ]; then
-  rm -f "$hold" 2>/dev/null
+  [ ! -e "$hold" ] || rm -f "$hold" 2>/dev/null
   exit 0
 fi
+[ -n "$now" ] || now=$(date +%s)
 ( . "${WORDS_LIB:-$HOME/.claude/hooks/lib/words.sh}" && command -v words_span_live &&
   words_span_live "$session" "$transcript" ) >/dev/null 2>&1 && exit 0
 # A chat held three times in a row within a few minutes is not going to start the wait: the fourth

@@ -1500,12 +1500,24 @@
         "rule": "floor",
         "ident": "event:SessionStart"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-09T07:20:00+03:00",
+          "by": "night fixer harness-hook-waits 20261009T024734Z-1f86",
+          "files": [
+            "llm-legs/bin/instruction-watch.sh",
+            "llm-legs/share/instruction-files.sh",
+            "llm-legs/tests/test_instruction_gate_tripwire.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [],
-      "last_reviewed": "2026-10-08",
-      "reviewed_by": "night fixer harness-hook-waits 20261007T213650Z-7b98",
-      "note": "2026-10-08 ruled out, kept: under the 1000 ms limit, 547 ms p50 over 253 starts in 24 h; the 1 h reading (710 ms, 19 starts) is the night launch at 00:43, eight fixer sessions starting in new worktrees within 25 s at load 20-30, 0.5-1.5 s each. The setter is instruction-watch baseline alone, ~60 processes and ~0.3 s CPU a start; probe at load 20 (copied state dir): startup 36 ms, the five cmd_baseline find sweeps 52 ms (deleting nothing), the visible set 23 ms on a cache hit and 150-230 ms when a new root builds its cache, load_baseline 26 ms, write_baseline ~130 ms, all forks (awk, stat, perl, touch). Bash-side reads are under 10 ms (bash 5.3 here-strings ~40 us), so no read-loop rewrite pays. Cuts left, each under 10 s/day at ~250 starts: one find for the five sweeps, `mkdir -p` only when missing, a home-part visible cache a new worktree reuses. Below the 150 ms note only a one-process rewrite of the baseline path, the per-side dispatcher class Egor declined 2026-10-05 (the floor costs ~2.3 min/day). Ruled out earlier: a duplicate write_baseline (cmd_check writes it and exits), unbatched stat/shasum, an ungated ranked refresh.",
+      "last_reviewed": "2026-10-09",
+      "reviewed_by": "night fixer harness-hook-waits 20261009T024734Z-1f86",
+      "note": "2026-10-09 fixed: the setter was instruction-watch baseline, 609 ms p50 over 303 starts in 48 h (486 ms CPU), 1 483 ms p50 in the night launch hour at load 280. Its stdout is empty unless INSTRUCTION_WATCH_CHAT=all (a between-sessions check never reverts), so the hook now forks the baseline behind `pending-<session>` (the pid) and returns: 129 ms against 2 547 ms on a copied state dir at load 260, byte-identical baseline. Every writing call waits for it first (instruction_baseline_wait in instruction_inflight_mark and in check, 8 s cap, a dead pid or the cap drops the marker; the background run journals as `instruction-watch.sh baseline-bg`). Test: test_instruction_gate_tripwire (detached start, the first gate call waits, a dead writer's marker), red on the old hook and with the gate's wait removed. Narrowed: a write by a process outside this session landing while its baseline runs (~0.1-3 s after start) is in that baseline; every other live session's check still reports it. Left on the start: statusline-workdir-hook (26 ms p50) and the branch-slug one-liner. Not done: settings.json `async` (needs Egor, speed design §5 Never).",
       "handoff": "docs/handoffs/2026-10-04-hook-floors.md"
     },
     {
@@ -1518,9 +1530,9 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-10-08",
-      "reviewed_by": "night fixer harness-hook-waits 20261007T213650Z-7b98",
-      "note": "2026-10-08 ruled out, kept: under the 1000 ms limit, 302 ms p50 over 399 stops in 24 h (p95 881), 306 ms over 13 in 1 h, ~2 min/day; stop-dispatch is the only Stop hook and sets every batch. Its own cost is hook-p50-stop-dispatch, held that night by the hooks run harness-hooks-20261007T214019Z-6f5f, so this run did not profile it (2026-10-04: notices 63-116 ms each, asks 20-25 ms). Below the 150 ms note only the per-side dispatcher class Egor declined 2026-10-05. 2026-10-01 ruled out: blanket parallel asks (breaks notice-before-ask and first-block order), a vendor replacement for the busy/held journal contract.",
+      "last_reviewed": "2026-10-09",
+      "reviewed_by": "night fixer harness-hook-waits 20261009T024734Z-1f86",
+      "note": "2026-10-09 cut, kept open: 335 ms p50 in 1 h (stop-dispatch 347 ms CPU avg; notices word-journal 60, chat-names 52, word-attested 19, reports 10; asks run-unfinished 44, word-reading 24, span-drill 12, mattermost 10). At load 280 a stop is ~30 process starts at 50-150 ms each, so forks are the lever: 11 cut a quiet stop (worker-run-backstop: cat, date, the progress cat|jq|awk unless a progress file names the session, rm of an absent hold; stop-dispatch: dirname x2, the timeout subshell, own mktemp and rm), tests test_worker_run_backstop and claude-setup test_stop_dispatch count them, red on the old code. Cheapest cut left: run the backstop in prerun beside the notices, saves ~30 ms x 400/day = 12 s/day, costs an ordering guard (its words_sync races the notices' store reads, stop-dispatch prerun comment). Below the 150 ms note only a one-process stop.d, the dispatcher class Egor declined 2026-10-05; handoff proposes the dismissal. 2026-10-01 ruled out: blanket parallel asks (breaks notice-before-ask order), a vendor replacement for the busy/held journal contract.",
       "handoff": "docs/handoffs/2026-10-04-hook-floors.md"
     },
     {
@@ -1543,9 +1555,9 @@
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-08",
-      "reviewed_by": "night fixer harness-hook-waits 20261007T213650Z-7b98",
-      "note": "2026-10-08 (quiet row, cause checked): stands, left. 58 ms p50 over 688 calls in 24 h (p95 353). A 1 h reading of 661 ms over 6 calls is the night launch's Agent calls at 00:43 (worker-limit-gate 355-1087 ms beside worker-spawn-hook 387-724 ms, eight sessions starting, load 20-30); a quiet Agent call pays worker-limit-gate 130-240 ms, the gate's purpose (pricing the worker). d36db7b cut worker-spawn-hook to one payload parse; the floor then moved to worker-limit-gate. Per-side dispatcher is Egor's declined trade.",
+      "last_reviewed": "2026-10-09",
+      "reviewed_by": "night fixer harness-hook-waits 20261009T024734Z-1f86",
+      "note": "2026-10-09 (quiet row, cause checked): stands, left. A quiet Agent call pays worker-limit-gate 130-240 ms, the gate's purpose (pricing the worker); d36db7b cut worker-spawn-hook to one payload parse. This run adds an `[ -e pending ]` test to the instruction gates' in-flight mark (no fork; a wait only in a session's first seconds). Per-side dispatcher is Egor's declined trade. 2026-10-08: 58 ms p50 over 688 calls in 24 h (p95 353); the 661 ms 1 h reading was the night launch at load 20-30.",
       "handoff": "docs/handoffs/2026-10-04-hook-floors.md"
     },
     {
@@ -1560,9 +1572,9 @@
       "same_cause": [
         "floor:tool"
       ],
-      "last_reviewed": "2026-10-08",
-      "reviewed_by": "night fixer harness-hook-waits 20261007T213650Z-7b98",
-      "note": "2026-10-08 (quiet row, cause checked): stands, left. A Read waits 109 ms p50 over 589 calls in 24 h (p95 211), 18 ms over 4 in 1 h: only the PostToolUse `*` pair runs, context-nudge (34-37 ms p50) and report-flush (1 ms on a call with nothing pending since its 2026-10-06 cut). The 1.1-1.5 s readings of 2026-10-05 were load 330-410 on ~60 ms of CPU.",
+      "last_reviewed": "2026-10-09",
+      "reviewed_by": "night fixer harness-hook-waits 20261009T024734Z-1f86",
+      "note": "2026-10-09 (quiet row, cause checked): stands, left; no Read-matched hook changed. Only the PostToolUse `*` pair runs, context-nudge (34-37 ms p50) and report-flush (1 ms with nothing pending since its 2026-10-06 cut). 2026-10-08: 109 ms p50 over 589 calls in 24 h (p95 211); the 1.1-1.5 s readings of 2026-10-05 were load 330-410 on ~60 ms of CPU.",
       "handoff": "docs/handoffs/2026-10-04-hook-floors.md"
     },
     {

@@ -582,7 +582,9 @@ local ok, err = pcall(function()
         return os.execute(table.concat({ "env", "HOME=" .. quoted(wf.home), "PATH=" .. quoted(wf.path),
             "INSTRUCTION_WATCH_STATE=" .. quoted(wf.state),
             "INSTRUCTION_WATCH_LOG=" .. quoted(wf.home .. "/.claude/instruction-changes.log"),
-            "INSTRUCTION_WATCH_ALERT=" .. quoted(wf.home .. "/no-such-hs"), "INSTRUCTION_WATCH_CHAT=off",
+            -- `all` keeps the baseline in the hook's own run, so it is on disk before the next step.
+            "INSTRUCTION_WATCH_ALERT=" .. quoted(wf.home .. "/no-such-hs"),
+            "INSTRUCTION_WATCH_CHAT=" .. (mode == "baseline" and "all" or "off"),
             "TOKENMAP_RATES=" .. quoted(wf.home .. "/no-rates.json"),
             "bash", quoted(gate or wf.watch), mode, "<<'PAYLOAD' >/dev/null 2>&1\n" .. payload .. "\nPAYLOAD\n" }, " "))
     end

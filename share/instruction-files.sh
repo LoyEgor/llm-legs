@@ -1975,21 +1975,44 @@ instruction_ns_to() { # var epoch[.fraction]
   printf -v "$1" '%s' "$((10#$_ins_s * 1000000000 + 10#${_ins_f:0:9}))"
 }
 
+# SessionStart writes the baseline behind the hook while `pending-<session>` holds the writer's pid:
+# a write landing before it is in the baseline and reads as no change, so every writing call waits
+# for it first, at most 8 s once per session (the gates time out at 10 s). An empty file is a
+# writer still starting.
+instruction_baseline_wait() { # pending-file
+  local pid n=0
+  [ -e "$1" ] || return 0
+  while [ -e "$1" ]; do
+    pid=''
+    read -r pid <"$1" 2>/dev/null
+    case "$pid" in
+      ''|*[!0-9]*) ;;
+      *) kill -0 "$pid" 2>/dev/null || break ;;
+    esac
+    [ "$((n += 1))" -le 160 ] || break
+    sleep 0.05
+  done
+  rm -f "$1" 2>/dev/null
+  return 0
+}
+
 # PreToolUse marks the call in flight and PostToolUse `check` consumes the mark: bytes whose mtime
 # lies between the two are this call's. One file per call, `inflight/<session>@<tool_use_id>`, one
 # line `<start> <tool_use_id> <tool> <agent_id|-> <cwd>`: parallel calls of one session each keep
 # their own window, and a deny takes back only the mark its own call wrote.
 instruction_inflight_mark() { # session tool_use_id tool cwd [agent_id]
-  local dir now id=${2:-} cwd=${4:--} agent=${5:--}
+  local dir now id=${2:-} cwd=${4:--} agent=${5:--} name
   INSTRUCTION_INFLIGHT_FILE=''
   dir="$(instruction_watch_state)/inflight"
+  name=$(instruction_sid_name "$1")
+  instruction_baseline_wait "${dir%/inflight}/pending-$name"
   [ -d "$dir" ] || mkdir -p "$dir" 2>/dev/null || return 1
   now=$(instruction_now)
   [ -n "$id" ] || id="${now%%.*}-$$"
   id=${id//[^A-Za-z0-9._-]/_}
   cwd=${cwd//$'\n'/ }
   agent=${agent//[^A-Za-z0-9._-]/_}
-  INSTRUCTION_INFLIGHT_FILE="$dir/$(instruction_sid_name "$1")@$id"
+  INSTRUCTION_INFLIGHT_FILE="$dir/$name@$id"
   printf '%s %s %s %s %s\n' "$now" "$id" "${3:--}" "$agent" "$cwd" >"$INSTRUCTION_INFLIGHT_FILE" 2>/dev/null
 }
 
