@@ -462,11 +462,13 @@ def suite_secs(r):
 
 def suite_floor(lo, hi):
     """{"chat"|"worker": the share of that caller's suite seconds in [lo, hi) left with every suite at its p10 wall
-    over suite_audit's window, the cost a covering suite keeps on a quiet machine}."""
+    over suite_audit's window, the cost a covering suite keeps on a quiet machine; its passing runs only, as a failed
+    one may stop at its first check}."""
     walls, secs, floor = collections.defaultdict(list), collections.Counter(), collections.Counter()
     for r in suite_rows(hi - suite_audit.WINDOW_D * 86400, hi):
         for key, s in suite_secs(r):
-            walls[key].append(s)
+            if r["suites"][key[1]].get("rc") == 0:
+                walls[key].append(s)
     p10 = {k: sorted(v)[len(v) // 10] for k, v in walls.items()}
     for r in suite_rows(lo, hi):
         who = "worker" if r.get("worker_run") else "chat" if r.get("session") else None

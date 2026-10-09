@@ -175,6 +175,14 @@ check(gap == {"hooks": (1.7, 1.7), "stop": (0.3, 0.0), "suite_wait": (0.0, 16.7)
 check(T.suite_floor(D0, D0 + 86400) == {"worker": 1.0, "chat": 0.5} and gap["suite_run"] == (0.7, 0.0),
       "suites keep their uncontended p10 wall: only a caller's suite seconds above each suite's p10 are recoverable, "
       "never a flat budget: %s" % T.suite_floor(D0, D0 + 86400))
+failed = os.path.join(work, "suites-failed.jsonl")
+lines(failed, [{"kind": "direct", "queued_at": D0 - 86400, "started_at": D0 - 86400, "ended_at": D0 - 86399,
+                "worker_run": None, "session": "chat-2", "suites": {"test_a.sh": {"rc": 1, "secs": 1}}}]
+      + list(night_spend.rows(os.environ["RUN_SUITES_JOURNAL"])))
+os.environ["RUN_SUITES_JOURNAL"], journal = failed, os.environ["RUN_SUITES_JOURNAL"]
+check(T.suite_floor(D0, D0 + 86400) == {"worker": 1.0, "chat": 0.5},
+      "a failed run that stopped at its first check is no suite's floor: %s" % T.suite_floor(D0, D0 + 86400))
+os.environ["RUN_SUITES_JOURNAL"] = journal
 critical = [[0, 0, 100, 60], [0, 100, 200, 60], [1000, 1000, 1100, 50]]
 idle = [[0, 0, 1000, 0], [0, 0, 100, 50], [0, 100, 200, 50]]
 check(T.slot_gain(critical) == 60 and T.slot_gain(idle) == 0 and gap["slot"] == (0.0, 0.0)
