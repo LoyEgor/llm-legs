@@ -22,7 +22,7 @@ parsed=$(jq -r --arg hook "${0##*/}" --arg direct "$direct" '
       | (if IN($type; "claudeb-worker", "codex-worker", "gemini-worker", "grok-worker", "light-worker") then
            "the \($type) relay is retired. \($head)\($type | rtrimstr("-worker"))\($tail)"
          elif $type == "light-research" then
-           "the light-research agent is retired. Run `light-research --prompt-file <file> --out <answer-file> --repo <abs>` as a Bash with run_in_background; its completion notification wakes this chat and the answer is in --out; a call that ends on `STATUS: running` is resumed with `light-research --attach <run-id> --out <answer-file>` in the background."
+           "the light-research agent is retired. Run `light-research --prompt-file <file> --out <answer-file> --repo <abs>` as a Bash with run_in_background; its completion notification wakes this chat and the answer is in --out."
          elif $type == "review-waiter" then
            "review-waiter is retired. Run `review-bench wait <run-id>` as a Bash with run_in_background; its completion notification wakes this chat (`--relaunch` / `--finish-partial` recover a dead or interrupted run)."
          else "native \($type) is not spawned. \($head)<vendor of worker-pick'"'"'s START line>\($tail)" end) as $r
