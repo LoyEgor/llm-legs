@@ -218,6 +218,11 @@ unknown_note=''
 if [ -n "$spawn_account" ]; then
   pressure=$(account_pressure "$limits_vendor" "$spawn_account")
   if [ -n "$pressure" ] && jq -ne --argjson pct "$pressure" '$pct >= 100' >/dev/null; then
+    # routing-contract rule 2: limits at 100% never skip a pin; worker-run walks a met wall itself.
+    if [ -n "$pin_key" ] && _load_wm && command -v worker_model_pin_has >/dev/null 2>&1 &&
+      worker_model_pin_has "$vendor" "$spawn_account"; then
+      warn "${label} account ${spawn_account} is at ${pressure}% but pinned: worker-run starts it and moves to the next account once if the wall is met."
+    fi
     deny "${label} account ${spawn_account} is at effective ${pressure}% — 100% is a hard wall, so a ${worker%-worker} run cannot start."
   fi
   # No reading is not 0%: an unreadable limits file and an account at rest are the same emptiness

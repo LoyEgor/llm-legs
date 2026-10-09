@@ -1078,6 +1078,13 @@ assert grep -Fq '"permissionDecision":"deny"' <<<"$light_gate_out"
 assert grep -Fq 'Light on Claude' <<<"$light_gate_out"
 # `<vendor>_workers=off` is not the Light class's wall, so the query carries `--role light`.
 assert grep -qx -- '--account claudeb --role light' "$LIGHT_GATE_WORK/picks"
+# Limits at 100% never skip a pin (routing-contract rule 2): worker-run walks a met wall itself.
+printf 'worker=auto\nclaudeb_profile=alpha\n' >"$LIGHT_GATE_WORK/worker-model"
+pinned_wall_out=$(light_gate claudeb-worker)
+assert test "$(grep -c '"permissionDecision":"deny"' <<<"$pinned_wall_out")" = 0
+assert grep -Fq 'Claude account alpha is at 100% but pinned' <<<"$pinned_wall_out"
+printf 'worker=auto\nclaudeb_profile=beta\n' >"$LIGHT_GATE_WORK/worker-model"
+assert grep -Fq '"permissionDecision":"deny"' <<<"$(light_gate claudeb-worker)"
 # The Light leg is placed by the `light_edit` row and never by `worker=`, so a toggle naming
 # another vendor is no advice about where this spawn lands and reaches none of its notes.
 jq -n '{schema:1, vendors:{claude:{accounts:[{account:"alpha", five_hour:{used_pct:90}}]}}}' \
@@ -1175,8 +1182,8 @@ jq -n '{schema:1, vendors:{claude:{accounts:[{account:"alpha", five_hour:{used_p
   {account:"beta", five_hour:{used_pct:100}}]}}}' >"$LIGHT_GATE_WORK/limits.json"
 printf '#!/usr/bin/env bash\nexit 1\n' >"$LIGHT_GATE_WORK/bin/worker-pick"
 light_pin_out=$(light_gate light-worker)
-assert grep -Fq '"permissionDecision":"deny"' <<<"$light_pin_out"
-assert grep -Fq 'account beta is at effective 100%' <<<"$light_pin_out"
+assert test "$(grep -c '"permissionDecision":"deny"' <<<"$light_pin_out")" = 0
+assert grep -Fq 'account beta is at 100% but pinned' <<<"$light_pin_out"
 # A spawn worker-pick answered never reads the pin, so a `*` pin starts no second worker-pick. The
 # gate runs from a copy whose share/ resolves the pin's own worker-pick to the logging stub.
 mkdir -p "$LIGHT_GATE_WORK/tree/bin" "$LIGHT_GATE_WORK/tree/share"
