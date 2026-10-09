@@ -50,11 +50,11 @@ def rows(title, items):
     return {"title": title, "rows": [{"label": l, "cells": c, **({"dim": True} if d else {})} for l, c, d in items]}
 
 
-def payload(made=NOW - 3600, idle_avoidable=False, hook_price=300.0, index=True, value=0.4612):
+def payload(made=NOW - 3600, idle_avoidable=False, hook_price=300.0, index=True, value=0.4612, definition="d1"):
     causes = rows("By cause", [("expired (1h+ idle)", ["70k", "50k"], 0), ("expired (5m ttl)", ["30k", "<0.1M"], 0)])
     for cause, avoidable in zip(causes["rows"], (idle_avoidable, True)):
         cause["avoidable"] = avoidable
-    harness = {"value": value, "change": "-54%", "tone": "better", "coverage": 0.113, "cells": [
+    harness = {"definition": definition, "value": value, "change": "-54%", "tone": "better", "coverage": 0.113, "cells": [
         {"consumer": "Chat", "leaf": "Hooks", "units": [100, 50], "price": [hook_price, 200.0], "points": -0.1},
         {"consumer": "Chat", "leaf": "prefix: CLAUDE.md + memory", "units": [100, 50], "price": [60.0, 50.0],
          "points": 0.1},
@@ -272,7 +272,7 @@ day = lambda t: time.strftime("%Y-%m-%d", time.localtime(t))
 shift = lambda d, n: (datetime.date.fromisoformat(d) + datetime.timedelta(days=n)).isoformat()
 state = {"spend_by_day": {day(NOW - 86400): 26.0}}
 collect(state=state, write=True)
-check(state == {"index_by_day": {day(NOW - 3600): 0.46}} and not os.path.exists(os.path.join(work, "tokenmap.calls")),
+check(state == {"index_by_day": {day(NOW - 3600): 0.46}, "index_definition": "d1"} and not os.path.exists(os.path.join(work, "tokenmap.calls")),
       "a run stores the reading's index under its day and drops the old share history; a fixture tracking.json with "
       "no fixture tokenmap never reaches the live index: %s" % state)
 os.environ["SPEND_TOKENMAP"] = fake
@@ -300,6 +300,11 @@ collect(state=state, write=True)
 check(held_days == 3 and len(state["index_by_day"]) == 4 and None not in state["index_by_day"].values(),
       "a failed tokenmap run stores no day, so the next run retries it instead of a permanent gap: %s"
       % state["index_by_day"])
+
+redefined = {"index_by_day": dict(state["index_by_day"]), "index_definition": "d1"}
+collect(state=redefined, write=False, definition="d2")
+check(redefined == {"index_by_day": {}, "index_definition": "d2"},
+      "history recorded under another index definition is dropped, never charted beside the new one: %s" % redefined)
 
 with open(ledger, "w") as handle:
     json.dump({"owner": "Harness Doctor", "rows": []}, handle)

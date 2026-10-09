@@ -321,6 +321,9 @@ def collect(now, state, write, scripts, home, repos, root, local_day):
     if index is None:
         out["head"] = "no harness_index in tracking.json"
         return out
+    if state.get("index_definition") != index.get("definition"):
+        history.clear()
+        state["index_definition"] = index.get("definition")
     files, texts = hook_files(scripts), file_texts()
     found = components(payload, files, texts)
     rows = load_ledger(root)
