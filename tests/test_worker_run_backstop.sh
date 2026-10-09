@@ -56,6 +56,20 @@ forget
 assert_eq "" "$(bash "$HOOK" --relay "$WORKER_RUN_DIR/r1" </dev/null)"
 rm -rf "$WORKER_RUN_DIR/r1"; forget
 
+# A run whose starter (a script waiting on its runs one at a time) still lives is owned by it; a starter
+# that is gone, or whose pid now belongs to a younger process, is not.
+. "$ROOT/share/run-liveness.sh"
+live_began=$(($(date +%s) - $(etime_seconds "$(ps -p "$LIVE_PID" -o etime= | tr -d '[:space:]')")))
+run r3 s1 codex
+printf '%s %s\n' "$LIVE_PID" "$live_began" >"$WORKER_RUN_DIR/r3/starter"
+assert_eq "" "$(stop)"
+printf '%s %s\n' "$LIVE_PID" "$((live_began - 3600))" >"$WORKER_RUN_DIR/r3/starter"
+assert_eq block "$(stop | jq -r .decision)"
+forget
+printf '999999 %s\n' "$live_began" >"$WORKER_RUN_DIR/r3/starter"
+assert_eq block "$(stop | jq -r .decision)"
+rm -rf "$WORKER_RUN_DIR/r3"; forget
+
 # Not this chat's, finished, dead, or still inside `worker-run start` (no state.json yet): nothing to hold.
 rm -rf "$WORKER_RUN_DIR"; forget
 run other s2 codex

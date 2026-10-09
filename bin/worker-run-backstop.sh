@@ -6,8 +6,8 @@
 # it starts the wait as a background Bash.
 #
 # Owned = a live `worker-run wait <run-id>` (`review-bench wait <run-id>` for a review) in this chat's
-# process tree, below the nearest `claude` ancestor of this hook; a script that launched the run and
-# polls it is that same process. A run whose state.json is not written yet is still inside
+# process tree, below the nearest `claude` ancestor of this hook, or the process that started the
+# run still alive (a script waiting on its runs one at a time). A run whose state.json is not written yet is still inside
 # `worker-run start`. Fail-open everywhere.
 {
 set -u
@@ -74,6 +74,7 @@ for run in "$run_root"/*/; do
   id=${run##*/}
   case "$id" in *[!A-Za-z0-9._-]*) continue ;; esac
   owned run "$id" && continue
+  starter_alive "$run" && continue
   pid=$(jq -r '.pid // 0' "$run/meta.json" 2>/dev/null)
   [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && supervisor_running "$run" "$pid" || continue
   tag=$(head -n1 "$run/tag" 2>/dev/null)

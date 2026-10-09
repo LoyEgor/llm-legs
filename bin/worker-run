@@ -2991,6 +2991,10 @@ start_run() {
     ''|.|..|*[!A-Za-z0-9._-]*) ;;
     *)
       printf '%s\n' "$launcher_session" >"$directory/launcher"
+      # A script (log-audit, the code-doctor judge) that starts several runs waits on them itself, one
+      # at a time; the Stop hooks leave a run alone while the process that started it lives.
+      starter_age=$(etime_seconds "$(ps -p "$PPID" -o etime= 2>/dev/null | tr -d '[:space:]')")
+      [ -z "$starter_age" ] || printf '%s %s\n' "$PPID" "$(($(date +%s) - starter_age))" >"$directory/starter"
       "$SCRIPT_DIRECTORY/statusline-place" add --session "$launcher_session" --kind worker-start \
         --path "$workdir" >/dev/null 2>&1 || :
       export CLAUDE_LAUNCHER_SESSION="$launcher_session"

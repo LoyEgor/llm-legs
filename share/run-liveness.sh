@@ -47,3 +47,13 @@ supervisor_running() { # directory pid
   [ "$drift" -ge 0 ] || drift=$((-drift))
   [ "$drift" -le "$PID_START_SLACK" ]
 }
+
+starter_alive() { # directory
+  local pid began age
+  { read -r pid began <"$1/starter"; } 2>/dev/null || return 1
+  [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && [[ "$began" =~ ^[0-9]+$ ]] || return 1
+  age=$(etime_seconds "$(ps -p "$pid" -o etime= 2>/dev/null | tr -d '[:space:]')")
+  [ -n "$age" ] || return 1
+  age=$(($(date +%s) - age - began))
+  [ "${age#-}" -le "$PID_START_SLACK" ]
+}
