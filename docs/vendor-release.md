@@ -71,9 +71,10 @@ only with a stated reason), and every new capability is supported, per account, 
    no catalog model needs a newer client than the installed one.
 3. Research what changed: release notes/changelog of this version and of the models it names —
    new models, efforts, speed tiers, tools, tool parameters, limits, deprecations with dates.
-4. Blind cross-check: a research run on ANOTHER vendor (`worker-run start <vendor> --role research`,
-   web on, per `worker-pick`) writes its own feature list for this release from the same sources
-   without seeing yours; reconcile every difference with a source line.
+4. Blind cross-check: the orchestrator chat starts a research run on ANOTHER vendor alongside you (a
+   headless worker cannot start a run; every other vendor off for workers: another Claude account) that writes its own feature list for this release from the
+   same sources without seeing yours; the orchestrator resumes you with every difference, and you
+   reconcile each with a source line.
 5. Separate what the CLI carries from API-only features (image manifests keep them in `api_only`).
 6. Tool schemas (image, video, LLM tools): diff strings/help/docs against
    `share/image-caps/<vendor>.json` and the wrapper's flags. Every field is wired, `unsupported`, or

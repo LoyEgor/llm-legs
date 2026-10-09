@@ -514,7 +514,8 @@ Read $top/docs/vendor-release.md in full and follow it${night:+ with its §6 Nig
   \`bin/vendor-fingerprint close <id> --decisions <file> <note>\`.
 - A generation, or any step that needs Egor's word, is decided \`blocked\` with evidence starting
   \`blocked-on-egor:\` and naming what his word unlocks. Never wait for him.
-- Start the research leg (step 3) and the blind cross-check leg (step 4) in parallel.
+- Research (step 3) is yours, from primary sources; the blind cross-check (step 4) is the
+  orchestrator's, never a missing or blocked item of yours.
 - Look at the older blocks around what you touch, not only at what you add: is a workaround there
   obsolete now, because the vendor does it natively or its reason is gone? Then remove it.
 
