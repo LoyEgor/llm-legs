@@ -3087,13 +3087,23 @@
           ],
           "in": null,
           "regressed_at": null
+        },
+        {
+          "at": "2026-10-09T06:20:00+03:00",
+          "by": "night fixer harness-stop-hooks-20261009T024811Z-29b3",
+          "files": [
+            "llm-legs/bin/worker-run-backstop.sh",
+            "llm-legs/tests/test_worker_run_backstop.sh"
+          ],
+          "in": null,
+          "regressed_at": null
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-10-07",
-      "reviewed_by": "night fixer harness-stop-hooks-20261006T234309Z-703e",
-      "note": "Second cause, 2026-10-06T21:13-21:29Z, 22 holds of 233cceb1 (Updater doctor): bin/log-audit's chunk runs (claudeb sonnet, launched under its own relay token log-audit:<pid>) had no relay tag in the chat, so the backstop held each. c9087e4b (worker-run writes script-owner, the backstop leaves a run to a live script older than it) was on feat/log-audit while the live hook read main, which took it at 23:04Z; no hold since, code-doctor-judge runs at 23:38Z went unheld; test_worker_run_backstop goes red without the exemption. First cause: the only held line in the stop journal: 2026-10-04T07:02:23Z/2ddedf36. Runs claudeb-1791096939-3244-6832 and claudeb-1791097006-94194-5582 (com, opus) were launched by the relays a739c43940f0a8f91 and abd6d30e75c31e1a2 inside the Fable judging workers 227ac46a and 5b28a455; launcher = the root chat (bin/worker-run start_run, CLAUDE_LAUNCHER_SESSION) while the relay tags sit in the workers' caches, so owned() found none in the root's: the hold is as specified and reached its goal (the chat attached both, saw the com misroute, killed them, exit 143). Cause upstream: Fable headless workers delegate (2 of 3 Fable parents of nested runs this week). Unconfirmed: why ~25 other nested runs since 09-29 never held (most lived about a minute; one root stop at 2026-10-03T06:54:53Z/fa230c90 fell inside a live nested run with no held line; the backstop journals no silent reason). Fixed 2026-10-06 by Harness Doctor (night 20261006T032009Z-f253): worker-run refuses a workers-role start nested in a Fable worker unless it stays claudeb fable (OUTCOME NESTED_MODEL_REFUSED), so a Fable worker can no longer swap its brief to Opus; a hold of this shape would now mean the guard was bypassed.",
-      "handoff": "docs/handoffs/2026-10-05-fable-worker-delegates.md"
+      "last_reviewed": "2026-10-09",
+      "reviewed_by": "night fixer harness-stop-hooks-20261009T024811Z-29b3",
+      "note": "Shared cause of all three fixes: owned() recognised one shape of owner at a time, and each new way a chat or script waits (relay tags, scripts waiting in turn, background loops) read as no owner. Third cause, 2026-10-09: relay-free delegation (ee185fa8) left a literal `worker-run wait <id>` process as the only owner. 00:04:49Z b7514e35 started four runs and one background `for r in A B C D; do worker-run wait $r; done`; 00:45:16Z 2ddedf36 waited behind `R=<id>; sleep 30; while out=$(worker-run wait $R ...)`. Both held 15-40 s after the wait was started and the chat started duplicate waits (2ddedf36 also got the same from ask-run-unfinished.sh, handoff item 1). Fixed: a live command line under the chat that runs worker-run wait (review-bench wait) and names the id owns it. The 2026-10-08T08:40:02Z/233cceb1 evidence is the relay-era text ('no task row'), code gone with ee185fa8. Earlier causes: log-audit chunk runs held 233cceb1 2026-10-06 (c9087e4b, rebuilt without the relay token as the starter file in fbb35ae0); Fable workers delegating to nested Opus runs 2026-10-04 (f72bf339, NESTED_MODEL_REFUSED). Unconfirmed: an owner the backstop still cannot read is a wait whose ids come from an expansion (`for r in $(ls ...)`).",
+      "handoff": "docs/handoffs/2026-10-09-stop-asks-and-night-reading.md"
     },
     {
       "id": "wait-run-suites-slot-hogs",
@@ -4784,6 +4794,36 @@
       "reviewed_by": "night fixer harness-speed-delegation-reviews-20261009T024756Z-0064",
       "note": "2026-10-09: ruled out. The slice is attended `review-bench wait` (bin/speed-doctor delegation_leaf), launch to notification. Non-model parts measured: (1) the review-waiter Agent relay, retired in llm-legs@ee185fa8, cost 2.1 s spawn + 1.4 s final message (medians, 109 waiter transcripts in ~/.claude/projects) of a 671 s median wait; 62 of the window's 67 rows predate it; (2) review-bench cmd_wait polls panel_still_running every PANEL_POLL_S 2 s, ~1 s per review; (3) review-cells slot holds (launch.py admitted): all 106 on 2026-10-09 (9892 s, p50 68 s) belong to the unattended bench chat 7977deeb, none to the attended chat c0f23f02. The rest is reviewer cells' model time, which Speed never trades. Cheapest cut: event-driven panel exit instead of the 2 s poll saves ~1000 ms x ~3/day, costs a review-bench change (another repository). The slice lever's 30 % saving is the generic SLICE_LEVER, not a measurement: see blind_spots delegation-model-time.",
       "handoff": "docs/handoffs/2026-10-09-delegation-reviews-floor.md"
+    },
+    {
+      "id": "hook-error-ask-run-unfinished-stall",
+      "title": "ask-run-unfinished.sh ran out its 5 s slice blocked, not computing",
+      "match": {
+        "rule": "hook-error",
+        "ident": "ask-run-unfinished\\.sh"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-09",
+      "reviewed_by": "night fixer harness-stop-hooks-20261009T024811Z-29b3",
+      "note": "One exit 124 in 562 runs (2026-10-09T01:34:14Z/7977deeb): 5.02 s wall for 0.28 s CPU (hooks/folded 20735.tsv); the other 561 took at most 0.79 s. The chat had no live run then (its last ended 01:08Z), so the run loop only compared launcher files; commit-report.sh ran 5.47 s in the same seconds; load1 about 30, no swap-in (memlogd machine log), so a short machine stall. The dispatcher capped it as specified and ran the rest; the next stop (01:39Z) was silent. Ruled out: a stuck chat run, swap, the hook's own loop. Not proven which call blocked: the ps -axwwo scan, its awk, or a jq. Its run and live-review branches duplicate the run backstop, which runs first: handoff item 1 deletes them and their ps scan (claude-setup, no worktree in this run).",
+      "handoff": "docs/handoffs/2026-10-09-stop-asks-and-night-reading.md"
+    },
+    {
+      "id": "word-miss-night-sweep-no-reading",
+      "title": "The night sweep chat acted on its sweep and span words without writing the reading lines",
+      "match": {
+        "rule": "word-miss",
+        "ident": "span\\+sweep"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-09",
+      "reviewed_by": "night fixer harness-stop-hooks-20261009T024811Z-29b3",
+      "note": "words:1791513530/349272e0 (night 20261009T023738Z-817e sweep chat, Opus): night-run's own message 'сделай чистку — night run <id>' raised ⚡ span on + ⚡ sweep; the chat ran the whole sweep with no ⚡ reading line. The seven night sweep chats before it (2026-10-03..10-08) all wrote them, and nothing in night-sweep SKILL.md, docs/night-run.md or the launch message changed since, so a model miss. ask-word-reading.sh, the late-reading net, is skipped-busy at every stop of a chat busy all night (4 of 4 stops by 03:07Z), so the row stays red until its first idle stop. Ruled out: intake regex, journal ordering. Dismissal proposed to the owner (handoff item 2).",
+      "handoff": "docs/handoffs/2026-10-09-stop-asks-and-night-reading.md"
     }
   ],
   "blind_spots": [
