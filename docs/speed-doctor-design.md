@@ -167,7 +167,8 @@ wall over the CPU of the fastest runs, ≥ 2× and ≥ 10 s, bounded by the medi
 every-suite runs of one head), wall per CPU second and the slot queue; then the heaviest suites by their median day of
 the trailing seven 24 h days (`per_day`), the 7-day mean beside it as the usual: a week's mean let 10-02..10-05 worker
 full runs rank test_instruction_gate at 210 min/day when it cost ~20, a 3-day mean still carries a third of one heavy
-day, the median ignores up to three, and a suite run on under four days reads 0 (sporadic cost is no daily lever). Each row's wall,
+day, the median ignores up to three, and a suite run on under four days reads 0 (sporadic cost is no daily lever) unless its first journaled run falls inside
+the seven, when the median runs over its own days since, zero days included (a new heavy suite shows at once). Each row's wall,
 queued to end, splits once (`allocate`): a retest or flaky exec takes its share whole (share = its suite seconds over
 the row's, so concurrent suites never sum past the wall); else its idle part, the run's slack to the long-pole suite
 (its seconds over the row's suite seconds per slot) or, on one slot, to `serial` (against the usual slots), and the

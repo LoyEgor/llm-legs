@@ -247,7 +247,11 @@ check(any(l[3].startswith("wait · chats") and l[2] for l in lines) == th.red_li
 check(th.red_line("x", 46, 30, 15) and not th.red_line("x", 44, 30, 15) and not th.red_line("x", 60, 40, 30)
       and not th.red_line("x", 60, None, 1), "red: over the band and the least delta, never without a usual")
 heavy = [l for l in lines if l[0] == 1 and l[3].rstrip().endswith("· alpha")]
-check(heavy and heavy[0][3].split()[-3] == "test_a" and len(heavy) <= th.TOP, "block: heaviest suites by wall first")
+ranked = [s["min_day"] for s in section["heavy"]]
+check(heavy and heavy[0][3].split()[-3] == "test_c" and [l[3].split()[-3] for l in heavy] ==
+      [s["label"] for s in section["heavy"]] and ranked == sorted(ranked, reverse=True) and len(heavy) <= th.TOP,
+      "block: heaviest suites by min/day first, a suite first run today priced over its one day: %s"
+      % [l[3] for l in heavy])
 
 loader = importlib.machinery.SourceFileLoader("speed_doctor", os.path.join(root, "bin", "speed-doctor"))
 S = importlib.util.module_from_spec(importlib.util.spec_from_loader("speed_doctor", loader))
@@ -301,12 +305,21 @@ with open(spike, "w") as handle:
     handle.write(json.dumps({"kind": "suites", "started_at": T - 6 * 86400 + 600, "ended_at": T - 6 * 86400 + 30600,
                              "repo": repo, "repo_root": repo, "scope": "named", "j": 1,
                              "suites": {"test_c.sh": {"rc": 0, "secs": 30000, "cpu_s": 29000}}}) + "\n")
+    for back in (1, 0):
+        handle.write(json.dumps({"kind": "suites", "started_at": T - back * 86400 - 3000, "ended_at": T - back * 86400
+                                 - 1000, "repo": repo, "repo_root": repo, "scope": "named", "j": 1, "suites": {
+                                     "test_b.sh": {"rc": 0, "secs": 1000, "cpu_s": 900}}}) + "\n")
 spiked = th.collect(NOW, spike, [repo])
 spiked_heavy = {f["target"] for f in spiked["findings"] if f["class"] == "heavy"}
-check(spiked_heavy == {"test-health/heavy/alpha/test_a"} and spiked["heavy"][0]["label"] == "test_a"
-      and spiked["heavy"][1]["min_day"] == 0 and spiked["heavy"][1]["usual_min_day"] > 60,
+spiked_c = next(s for s in spiked["heavy"] if s["label"] == "test_c")
+check("test-health/heavy/alpha/test_c" not in spiked_heavy and spiked["heavy"][0]["label"] == "test_a"
+      and spiked_c["min_day"] == 0 and spiked_c["usual_min_day"] > 60,
       "heavy: one old heavy day never ranks a suite over one that costs minutes every day; its 7-day mean stays the "
       "usual: %s %s" % (sorted(spiked_heavy), spiked["heavy"]))
+check(spiked_heavy == {"test-health/heavy/alpha/test_a", "test-health/heavy/alpha/test_b"}
+      and spiked["heavy"][1]["label"] == "test_b" and abs(spiked["heavy"][1]["min_day"] - 1000 / 60.0) < 0.1,
+      "heavy: a suite first run 2 days ago, heavy both days, is priced over its own days and ranks heavy: %s %s"
+      % (sorted(spiked_heavy), spiked["heavy"]))
 
 mini, M = os.path.join(work, "mini.jsonl"), NOW - 3600
 
