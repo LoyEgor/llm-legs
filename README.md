@@ -272,12 +272,12 @@ Snapshot store and schema live in `~/.claude-profiles/` (documented in its READM
   or unknown. It arms nothing for a worker run or a caller outside every Claude chat; the app and
   Kimi slots are the Hammerspoon menu's alone.
 
-## Scripts the agents run by name
+## Scripts run by bare name
 
-The claude-setup agent definitions call these bare, so each needs its PATH link
-(`tests/test_consistency.sh` holds every name they run to this list):
+Each needs its PATH link (`tests/test_consistency.sh` holds every name the media skill runs to
+this list):
 
-- `bin/worker-run` → `~/.local/bin/worker-run` — relay launcher every worker agent drives (`start`, `wait`, `report`).
+- `bin/worker-run` → `~/.local/bin/worker-run` — launcher the chat drives (`start`, `wait`, `report`).
 - `bin/worker-pick` → `~/.local/bin/worker-pick` — account and vendor pick per `docs/routing-contract.md`.
 - `bin/grokb` → `~/.local/bin/grokb` — SuperGrok multi-account launcher.
 - `bin/media-run` → `~/.local/bin/media-run` — the one door to every media script: picks the vendor's script from `share/image-caps/*.json`, passes the script's own args byte for byte, fans several vendors, `--takes` or `--jobs` out through `image-fanout`, and drops the job pointer the statusline's `media` line reads.

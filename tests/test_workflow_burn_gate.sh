@@ -156,17 +156,16 @@ SESSION_ID= ACCOUNT_ENV=
 assert lacks "$(jq -cn '{hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{}}' |
   env HOME="$HOME_DIR" LLM_LIMITS_FILE="$WORK/limits.json" bash "$GATE")" 'additionalContext'
 
-# A workflow reaching a relay type or worker-run is denied whatever the pressure; one of native
+# A workflow reaching worker-run is denied whatever the pressure; one of native
 # agents is not, and a script file is read like an inline script.
 limits alona 10
 ACCOUNT_ENV=alona
 wf() { jq -cn --arg s "$1" --arg p "${2:-}" '{hook_event_name:"PreToolUse",tool_name:"Workflow",tool_input:({script:$s} + (if $p == "" then {} else {scriptPath:$p} end))}' |
   env HOME="$HOME_DIR" LLM_LIMITS_FILE="$WORK/limits.json" CLAUDE_LIMITS_ACCOUNT="$ACCOUNT_ENV" bash "$GATE"; }
-assert denied "$(wf "await agent('x', {subagent_type: 'codex-worker'})")"
 assert denied "$(wf "await agent('run worker-run start codex --brief b')")"
-assert contains "$(wf "await agent('then worker-run wait r1')")" 'reaches `worker-run wait`, but a worker run or relay inside a workflow has no chat waiting on it. Start workers from the chat itself'
+assert contains "$(wf "await agent('then worker-run wait r1')")" 'reaches `worker-run wait`, but a worker run inside a workflow has no chat waiting on it. Start workers from the chat itself'
 assert lacks "$(wf "await agent('grep the repo')")" 'permissionDecision'
-# The relay word is cut to shape only once a script reaches one.
+# The launch word is cut to shape only once a script reaches one.
 printf 'tr() { printf "tr %%s\\n" "$*" >>"$WF_CALLS"; command tr "$@"; }\nsed() { printf "sed %%s\\n" "$*" >>"$WF_CALLS"; command sed "$@"; }\n' \
   >"$WORK/wf-count.sh"
 : >"$WORK/wf-calls"
@@ -175,9 +174,8 @@ assert [ "$(grep -cE '^(tr -s \[:space:\]|sed s/ \$//)' "$WORK/wf-calls")" = 0 ]
 BASH_ENV="$WORK/wf-count.sh" WF_CALLS="$WORK/wf-calls" wf "await agent('then worker-run wait r1')" >/dev/null
 assert [ "$(grep -cE '^(tr -s \[:space:\]|sed s/ \$//)' "$WORK/wf-calls")" = 2 ]
 assert lacks "$(wf "await agent('review bin/worker-run, the codex-worker relay and review-waiter docs')")" 'permissionDecision'
-assert denied "$(wf "await agent(\"x\", {subagent_type: \"review-waiter\"})")"
 assert denied "$(wf "await agent('run light-research --out o q')")"
-printf "agent('y', {agentType: 'claudeb-worker'})\n" >"$WORK/wf.js"
+printf "agent('y: worker-run start claudeb --brief b')\n" >"$WORK/wf.js"
 assert denied "$(wf "" "$WORK/wf.js")"
 
-printf 'PASS: %s asserts; workflow-burn-gate warns at 70%% and denies at 95%% for the session account on the 5h window and the weekly bucket its model spends (fable for Fable, weekly otherwise), naming it from the gateway launcher, the environment, the profile config dir or claudeb state, denying only on an account the session itself names while a claudeb-state guess always speaks and warns that it may belong to another chat, warns without a number when nothing can name it, denies a workflow that reaches a retired relay agent type or a worker-run start or wait, pointing at the chat'"'"'s own start and background wait, inline or from its script file, and stays out of every other tool call\n' "$asserts"
+printf 'PASS: %s asserts; workflow-burn-gate warns at 70%% and denies at 95%% for the session account on the 5h window and the weekly bucket its model spends (fable for Fable, weekly otherwise), naming it from the gateway launcher, the environment, the profile config dir or claudeb state, denying only on an account the session itself names while a claudeb-state guess always speaks and warns that it may belong to another chat, warns without a number when nothing can name it, denies a workflow that reaches a worker-run start or wait, pointing at the chat'"'"'s own start and background wait, inline or from its script file, and stays out of every other tool call\n' "$asserts"

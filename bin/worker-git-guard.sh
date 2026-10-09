@@ -16,8 +16,7 @@ case $input in
 esac
 
 command -v jq >/dev/null 2>&1 || exit 0
-parsed=$(jq -r '[.hook_event_name // "", .agent_type // "", .session_id // "", .tool_input.command // "",
-  .cwd // "", .agent_id // ""] | @sh' <<<"$input" 2>/dev/null) || exit 0
+parsed=$(jq -r '[.hook_event_name // "", .tool_input.command // "", .cwd // ""] | @sh' <<<"$input" 2>/dev/null) || exit 0
 fields=()
 eval "fields=($parsed)"
 
@@ -31,10 +30,10 @@ case "$run_record" in
     grep -Eq '^GIT-CLEANUP:[[:blank:]]*allowed' "$run_record/brief" 2>/dev/null && exit 0 ;;
 esac
 
-command_text=${fields[3]-}
+command_text=${fields[1]-}
 [ -n "$command_text" ] || exit 0
 
-guard_cwd=${fields[4]-}
+guard_cwd=${fields[2]-}
 [ -d "$guard_cwd" ] || guard_cwd=$PWD
 
 # A checkout operand is a path when it names something already on disk — which is exactly the

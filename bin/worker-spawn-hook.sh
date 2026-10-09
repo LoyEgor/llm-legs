@@ -32,7 +32,6 @@ parsed=$(jq -r --arg hook "${0##*/}" --arg direct "$direct" '
 fields=()
 eval "fields=($parsed)"
 hook_session=${fields[0]-}
-[ -z "$hook_session" ] || export CLAUDE_CODE_SESSION_ID="$hook_session"
 
 case "${fields[1]-}" in
   fork) ;;

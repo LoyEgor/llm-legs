@@ -116,8 +116,8 @@ only pace math anywhere — one formula in one shared home, never a per-surface 
    holds the same `<vendor>_profile=<name>|*` lines, and when that file holds one it
    REPLACES the global pin tier for that session — every `*_profile=` line of the global file is
    ignored there, and every other chat keeps the global pins. The session id is
-   `CLAUDE_CODE_SESSION_ID`; the Agent hooks export it from their stdin `.session_id` before asking
-   `worker-pick`. No session id, no file, or a file with no `*_profile=` line (`open=all` alone) means the global pins. Resolution lives in
+   `CLAUDE_CODE_SESSION_ID`.
+   No session id, no file, or a file with no `*_profile=` line (`open=all` alone) means the global pins. Resolution lives in
    `share/worker-model.sh` alone (`worker_model_pin_file`), and every reader takes pins through it. The
    same file may carry `<vendor>_fast=on` beside the pin (`chat-pin grok-fast`/`codex-fast`): on a
    WORKERS run of that vendor grok swaps in the `-fast` sibling `grokb models` lists, but only

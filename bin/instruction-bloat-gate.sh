@@ -91,7 +91,7 @@ case "$file_path" in
     ;;
 esac
 
-# A relay worker never edits one of these files, and this stands ahead of every price and every
+# A headless worker never edits one of these files, and this stands ahead of every price and every
 # stamp below: the audit-then-retry protocol is honour-based, and a worker that re-reads the file
 # and asks again walks straight through it. Ordinary repository markdown and the memory files are
 # no part of this — `instruction_always_loaded` answers for the always-on classes alone.

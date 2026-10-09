@@ -5453,13 +5453,6 @@ tr_fork_inherit=$(jq -cn --arg t "$WORK/tr-fork.jsonl" '{hook_event_name:"PreToo
   CLAUDE_LIMITS_ACCOUNT=forkacct "$SPAWN_HOOK") || fail "fork spawn exited nonzero"
 assert jq -e '.hookSpecificOutput.updatedInput.description == "fork · fable · forkacct: Look"' <<<"$tr_fork_inherit" >/dev/null
 
-# A retired relay is refused and seeds no row.
-for tr_relay in codex-worker claudeb-worker light-worker light-research review-waiter; do
-  tr_out=$(tr_spawn tr-relay "$tr_relay" $'ACCOUNT: alt\nx') || fail "relay spawn exited nonzero"
-  assert_eq deny "$(printf '%s' "$tr_out" | gate_decision)"
-done
-assert test ! -e "$TR_HOME_CACHE/tr-relay"
-
 # The review run the rendered rows below read off its progress document.
 TR_STATS="$WORK/tr-stats"
 mkdir -p "$TR_STATS/progress"

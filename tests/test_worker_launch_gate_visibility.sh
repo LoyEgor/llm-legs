@@ -137,7 +137,6 @@ for forged in 'X=1 REVIEW_BENCH_DOOR=abc review-bench review --mode diff' 'decla
   expect_as deny "$AGENT" "$forged" 'stamped by the hooks alone'
   expect_as deny '{}' "$forged" 'stamped by the hooks alone'
 done
-expect_as pass '{}' 'export WORKER_RUN_RELAY=codex-worker:a1; ls'
 
 # A review panel belongs to the chat's own shell: no agent type launches one, not even from a Monitor.
 for agent in "$AGENT" "$FORK" '{"agent_type":"claude","agent_id":"a4"}'; do
@@ -264,5 +263,16 @@ jq -cn '{hook_event_name:"PreToolUse",tool_name:"Bash",session_id:"s1",
 PATH="$WORK/shim:$PATH" bash "$GATE" <"$WORK/plain.json" >/dev/null 2>&1
 asserts=$((asserts + 1))
 [ "$(tr '\n' ' ' <"$WORK/starts")" = "jq " ] || fail "a plain write call started: $(tr '\n' ' ' <"$WORK/starts")"
+for lone in 'worker-run report cb-1' ' worker-run say cb-1 done' 'worker-run claim cb-1 --paths bin/x' 'worker-run stop cb-1'; do
+  jq -cn --arg c "$lone" '{hook_event_name:"PreToolUse",tool_name:"Bash",session_id:"s1",tool_input:{command:$c}}' >"$WORK/lone.json"
+  : >"$WORK/starts"
+  PATH="$WORK/shim:$PATH" bash "$GATE" <"$WORK/lone.json" >/dev/null 2>&1
+  asserts=$((asserts + 1))
+  [ "$(tr '\n' ' ' <"$WORK/starts")" = "jq " ] || fail "[$lone] started: $(tr '\n' ' ' <"$WORK/starts")"
+done
+for chained in 'worker-run report cb-1; claude -p hi' 'worker-run report cb-1 && codex exec hi' $'worker-run report cb-1\nclaude -p hi' \
+  'worker-run report cb-1 | claude -p' 'worker-run say cb-1 $(claude -p hi)' 'worker-run stop cb-1 `codex exec hi`'; do
+  expect deny '' "$chained"
+done
 
 printf 'PASS: %s asserts; the launch gate denies inline print flags, every headless codex subcommand, wrapped and program-string vendor calls, comment and operand exemptions, the ask_*/probe legs, worker review panels, worker-run start/wait and light-research inside any agent or a headless worker while the chat runs them in the foreground or background, a Monitor polling a wait, a hand-set review token, review launches from any agent or a Monitor (the chat keeps its recoveries), a launch chained after a sanctioned segment and the package-runner, flock and exec wrappers, a vendor fed through a pipe, at/batch/crontab scheduling and the codex MCP tools, with deny texts naming the chat'"'"'s own worker-run start, background wait and report, while plain reads pass\n' "$asserts"

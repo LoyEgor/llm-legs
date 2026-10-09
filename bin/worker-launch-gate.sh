@@ -160,7 +160,9 @@ may_launch() {
   done
   return 1
 }
-case "$tool" in Bash | Monitor) may_launch || exit 0 ;; esac
+# `[[:blank:]]`, never `[[:space:]]`: a newline is a chain separator.
+SAFE_RUN_RE='^[[:blank:]]*worker-run[[:blank:]]+(report|say|claim|stop)([[:blank:]]+[A-Za-z0-9._/@%+=:,-]+)+[[:blank:]]*$'
+case "$tool" in Bash | Monitor) [[ ! $cmd =~ $SAFE_RUN_RE ]] && may_launch || exit 0 ;; esac
 # A Bash call that provably writes nothing runs no program, so it launches nothing. The forged-owner
 # check reads the text with its quotes gone, so a call naming the token still takes the full path.
 if [ "$tool" = Bash ]; then

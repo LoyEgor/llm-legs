@@ -676,4 +676,4 @@ job of one chat for about 4 h under memory pressure and nothing reached Egor.
   title; `share/run-suites.sh` queues suites behind its own `-j` inside one run the statusline
   shows as `suites n/m`; browser and deadline waits in `worker-run`/`codex-image` are bounded
   under 60 s or are kill ceilings. The gates (`worker-limit-gate`, `worker-launch-gate`,
-  `workflow-burn-gate`, `worker-relay-hold`) deny or send a relay back, which the caller sees.
+  `workflow-burn-gate`) deny, which the caller sees.

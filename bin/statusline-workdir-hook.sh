@@ -90,7 +90,7 @@ if [ -n "$agent_flag" ]; then
     *) exit 0 ;;
   esac
   if [ -n "$stamp" ] && [ -n "$agent_id" ]; then
-    # The same `.claim.lock` worker-tag-hook.sh and worker-run take: a rewrite racing this one loses the count.
+    # The same `.claim.lock` worker-tag-hook.sh takes: a rewrite racing this one loses the count.
     tag_lock="${tag_file%/*}/.claim.lock" tries=0 broke=0 locked=0
     if mkdir -p "${tag_file%/*}"; then
       until mkdir "$tag_lock" 2>/dev/null && locked=1; do

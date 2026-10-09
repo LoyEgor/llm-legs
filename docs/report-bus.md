@@ -114,7 +114,7 @@ The claude-setup `report-flush.sh` hook supplies the four event entry points. Th
 pins event draining; hook registration is verified in that repository.
 
 1. A report posted during a tool call is shown at that call's PostToolUse, in the same turn.
-2. A report posted inside a worker or subagent is shown when the Agent tool returns, through
+2. A report posted inside a subagent is shown when the Agent tool returns, through
    PostToolUse Agent or SubagentStop of the launcher. Worker transcripts receive no flush.
 3. A background report is shown at the chat's next hook event. Stop drains the queue within
    the payload cap and names any remainder; UserPromptSubmit drains reports posted while idle.

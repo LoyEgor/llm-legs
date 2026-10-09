@@ -17,7 +17,7 @@ LLMLIMITS="$ROOT/llm-limits.sh"
 DRIVER="$ROOT/bin/claude-session-driver"
 
 HAMMER="$ROOT/hammerspoon/llm-limits.lua"
-WORKER_GATE="${WORKER_LIMIT_GATE:-$HOME/.claude/hooks/worker-limit-gate.sh}"
+WORKER_GATE="$ROOT/bin/worker-limit-gate.sh"
 WORKER_GATE_SETTINGS="${WORKER_GATE_SETTINGS:-$HOME/.claude/settings.json}"
 
 CONSISTENCY_CACHE=$(mktemp -d)
@@ -1030,11 +1030,10 @@ assert eq "$(grep -E '^WARN_AT=[0-9]+$' "$WORKER_GATE" | cut -d= -f2)" "$GATE_WA
 assert eq "$(grep -E '^DENY_AT=[0-9]+$' "$WORKER_GATE" | cut -d= -f2)" "$GATE_DENY"
 assert test "$(grep -Ec '^WARN_AT=' "$WORKER_GATE")" -eq 1
 assert test "$(grep -Ec '^DENY_AT=' "$WORKER_GATE")" -eq 1
-for worker in claudeb-worker codex-worker gemini-worker grok-worker light-worker; do
-  assert grep -Fq "$worker" "$WORKER_GATE"
-done
+assert grep -Fq 'claudeb|codex|gemini|grok|light)' "$WORKER_GATE"
 for vendor in claudeb codex gemini grok; do
   assert grep -Fq "vendor=$vendor" "$WORKER_GATE"
+  assert grep -Fq "\"$vendor\": {" "$WORKER_GATE"
 done
 assert grep -Fq '"$WORKER_PICK" --account "$vendor"' "$WORKER_GATE"
 assert grep -Fq '[ "$router_rc" -eq 3 ]' "$WORKER_GATE"
@@ -1044,9 +1043,8 @@ assert grep -Fq 'fell back to local thresholds' "$WORKER_GATE"
 assert grep -Fq 'effective_pct' "$WORKER_GATE"
 assert grep -Fq '$reset != null and $reset <= $now then 0' "$WORKER_GATE"
 
-# light-worker is a relay type like the four vendor workers, priced against the vendor its
-# `light_edit` row names and routed under the `light` role. Run against the REPOSITORY's gate, not
-# the installed symlink, and on fixtures alone — every path the gate writes to is redirected.
+# A Light start is priced against the vendor its `light_edit` row names and routed under the
+# `light` role. Run on fixtures alone — every path the gate writes to is redirected.
 LIGHT_GATE_WORK=$(mktemp -d)
 mkdir -p "$LIGHT_GATE_WORK/bin"
 printf 'worker=auto\nlight_edit=claudeb:sonnet\nclaudeb_workers=off\n' >"$LIGHT_GATE_WORK/worker-model"
@@ -1068,11 +1066,11 @@ light_gate() {
     WORKER_GATE_STAMPS="$LIGHT_GATE_WORK/stamps" \
     WORKER_STATS_DIR="$LIGHT_GATE_WORK/stats" \
     CLAUDEB_DIR="$LIGHT_GATE_WORK/store" \
-      bash "$ROOT/bin/worker-limit-gate.sh" --start "${1%-worker}" "$LIGHT_GATE_WORK/brief" ${3:+"$3"}
+      bash "$ROOT/bin/worker-limit-gate.sh" --start "$1" "$LIGHT_GATE_WORK/brief" ${3:+"$3"}
 }
 : >"$LIGHT_GATE_WORK/picks"
-light_gate_out=$(light_gate light-worker)
-# The resolved vendor's 100% hard wall reaches light-worker too — without the relay row the gate
+light_gate_out=$(light_gate light)
+# The resolved vendor's 100% hard wall reaches a Light start too — without the light row the gate
 # would have exited 0 before reading a single limit.
 assert grep -Fq '"permissionDecision":"deny"' <<<"$light_gate_out"
 assert grep -Fq 'Light on Claude' <<<"$light_gate_out"
@@ -1080,41 +1078,41 @@ assert grep -Fq 'Light on Claude' <<<"$light_gate_out"
 assert grep -qx -- '--account claudeb --role light' "$LIGHT_GATE_WORK/picks"
 # Limits at 100% never skip a pin (routing-contract rule 2): worker-run walks a met wall itself.
 printf 'worker=auto\nclaudeb_profile=alpha\n' >"$LIGHT_GATE_WORK/worker-model"
-pinned_wall_out=$(light_gate claudeb-worker)
+pinned_wall_out=$(light_gate claudeb)
 assert test "$(grep -c '"permissionDecision":"deny"' <<<"$pinned_wall_out")" = 0
 assert grep -Fq 'Claude account alpha is at 100% but pinned' <<<"$pinned_wall_out"
 printf 'worker=auto\nclaudeb_profile=beta\n' >"$LIGHT_GATE_WORK/worker-model"
-assert grep -Fq '"permissionDecision":"deny"' <<<"$(light_gate claudeb-worker)"
+assert grep -Fq '"permissionDecision":"deny"' <<<"$(light_gate claudeb)"
 # The Light leg is placed by the `light_edit` row and never by `worker=`, so a toggle naming
-# another vendor is no advice about where this spawn lands and reaches none of its notes.
+# another vendor is no advice about where this start lands and reaches none of its notes.
 jq -n '{schema:1, vendors:{claude:{accounts:[{account:"alpha", five_hour:{used_pct:90}}]}}}' \
   >"$LIGHT_GATE_WORK/limits.json"
 printf 'worker=codex\nlight_edit=claudeb:sonnet\nclaudeb_workers=off\n' >"$LIGHT_GATE_WORK/worker-model"
-light_toggle_out=$(light_gate light-worker)
+light_toggle_out=$(light_gate light)
 assert grep -Fq 'Light on Claude account alpha is at 90%' <<<"$light_toggle_out"
 assert test "$(grep -c 'The worker toggle says' <<<"$light_toggle_out")" = 0
-# A spawn on worker-pick's own pick carries nothing back: the orchestrator ran worker-pick for it.
+# A start on worker-pick's own pick carries nothing back: the orchestrator ran worker-pick for it.
 jq -n '{schema:1, vendors:{claude:{accounts:[{account:"alpha", five_hour:{used_pct:10}},
   {account:"beta", five_hour:{used_pct:20}}]}}}' >"$LIGHT_GATE_WORK/limits.json"
-assert test -z "$(light_gate light-worker $'ACCOUNT: alpha\nx')"
-assert test -z "$(light_gate light-worker)"
-light_mismatch_out=$(light_gate light-worker $'ACCOUNT: beta\nx')
+assert test -z "$(light_gate light $'ACCOUNT: alpha\nx')"
+assert test -z "$(light_gate light)"
+light_mismatch_out=$(light_gate light $'ACCOUNT: beta\nx')
 assert test "$(jq -r '.hookSpecificOutput.additionalContext' <<<"$light_mismatch_out")" = 'ACCOUNT beta ≠ worker-pick alpha (allowed).'
 # worker-run's --account reaches the gate as an argument: judging the router's pick instead named another account.
-assert test "$(jq -r '.hookSpecificOutput.additionalContext' <<<"$(light_gate light-worker x beta)")" = 'ACCOUNT beta ≠ worker-pick alpha (allowed).'
+assert test "$(jq -r '.hookSpecificOutput.additionalContext' <<<"$(light_gate light x beta)")" = 'ACCOUNT beta ≠ worker-pick alpha (allowed).'
 # A vendor start under the same toggle still hears it.
-assert grep -Fq 'The worker toggle says worker=codex' <<<"$(light_gate claudeb-worker)"
+assert grep -Fq 'The worker toggle says worker=codex' <<<"$(light_gate claudeb)"
 # A Computer Use brief routes codex under `computer`, a role codex_workers=off does not close.
 printf 'worker=claudeb\ncodex_workers=off\n' >"$LIGHT_GATE_WORK/worker-model"
 : >"$LIGHT_GATE_WORK/picks"
-computer_gate_out=$(light_gate codex-worker $'COMPUTER: yes\nx')
+computer_gate_out=$(light_gate codex $'COMPUTER: yes\nx')
 assert grep -qx -- '--account codex --role computer' "$LIGHT_GATE_WORK/picks"
 assert test "$(grep -c 'The worker toggle says' <<<"$computer_gate_out")" = 0
 : >"$LIGHT_GATE_WORK/picks"
-light_gate computer-worker >/dev/null
+light_gate computer >/dev/null
 assert grep -qx -- '--account codex --role computer' "$LIGHT_GATE_WORK/picks"
 : >"$LIGHT_GATE_WORK/picks"
-light_gate codex-worker >/dev/null
+light_gate codex >/dev/null
 assert grep -qx -- '--account codex' "$LIGHT_GATE_WORK/picks"
 # A brief's ACCOUNT is judged by the worker pool itself, not the limits file's cached `enabled`:
 # an excluded account is refused even when that copy is stale, and a pinned one passes like
@@ -1125,31 +1123,31 @@ jq -n '{schema:1, vendors:{codex:{accounts:[{account:"beta", enabled:true, five_
   >"$LIGHT_GATE_WORK/limits.json"
 printf 'worker=codex\n' >"$LIGHT_GATE_WORK/worker-model"
 assert grep -Fq 'ACCOUNT: beta is switched off or removed' \
-  <<<"$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex-worker $'ACCOUNT: beta\nx')"
+  <<<"$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex $'ACCOUNT: beta\nx')"
 assert grep -Fq "The brief's ACCOUNT: beta is switched off or removed" \
-  <<<"$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex-worker $'ACCOUNT: beta\nx' beta)"
-light_gate_flag=$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex-worker x beta)
+  <<<"$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex $'ACCOUNT: beta\nx' beta)"
+light_gate_flag=$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex x beta)
 assert grep -Fq -- "--account beta is switched off or removed" <<<"$light_gate_flag"
 assert grep -Fq -- "to --account, or drop the flag" <<<"$light_gate_flag"
 jq -n '{schema:1, vendors:{codex:{accounts:[{account:"beta", enabled:false, five_hour:{used_pct:10}}]}}}' \
   >"$LIGHT_GATE_WORK/limits.json"
 printf 'worker=codex\ncodex_profile=beta\n' >"$LIGHT_GATE_WORK/worker-model"
-assert test "$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex-worker $'ACCOUNT: beta\nx' |
+assert test "$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex $'ACCOUNT: beta\nx' |
   grep -c '"permissionDecision":"deny"')" = 0
 rm -f "$LIGHT_GATE_WORK/codex/.codexb/disabled"
 jq -n '{schema:1, vendors:{codex:{accounts:[{account:"beta", removed:true, five_hour:{used_pct:10}}]}}}' \
   >"$LIGHT_GATE_WORK/limits.json"
 printf 'worker=codex\n' >"$LIGHT_GATE_WORK/worker-model"
 assert grep -Fq 'ACCOUNT: beta is switched off or removed' \
-  <<<"$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex-worker $'ACCOUNT: beta\nx')"
+  <<<"$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex $'ACCOUNT: beta\nx')"
 # A single-account vendor states main's removal on the vendor object itself.
 jq -n '{schema:1, vendors:{codex:{removed:true, status:"removed"}}}' >"$LIGHT_GATE_WORK/limits.json"
 assert grep -Fq 'ACCOUNT: main is switched off or removed' \
-  <<<"$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex-worker $'ACCOUNT: main\nx')"
+  <<<"$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex $'ACCOUNT: main\nx')"
 printf 'main\n' >"$LIGHT_GATE_WORK/codex/.codexb/disabled"
 jq -n '{schema:1, vendors:{codex:{enabled:true, five_hour:{used_pct:10}}}}' >"$LIGHT_GATE_WORK/limits.json"
 assert grep -Fq 'ACCOUNT: main is switched off or removed' \
-  <<<"$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex-worker $'ACCOUNT: main\nx')"
+  <<<"$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex $'ACCOUNT: main\nx')"
 rm -f "$LIGHT_GATE_WORK/codex/.codexb/disabled"
 # worker-pick's ACCOUNT: names the vendor of its NEXT row 1; the same name copied into another
 # vendor's brief where that profile needs a login is refused (2026-10-08: gemini/tronjhon into a
@@ -1158,40 +1156,39 @@ printf 'claudeb\ttronjhon\t-\tlogin\ngemini\ttronjhon\t14\tok\n' >"$LIGHT_GATE_W
 jq -n '{schema:1, vendors:{claude:{accounts:[{account:"tronjhon", auth_needed:true}]},
   gemini:{accounts:[{account:"tronjhon", five_hour:{used_pct:10}}]}}}' >"$LIGHT_GATE_WORK/limits.json"
 printf 'worker=auto\n' >"$LIGHT_GATE_WORK/worker-model"
-login_gate_out=$(LIGHT_PICK_LIST="$LIGHT_GATE_WORK/list" light_gate claudeb-worker $'ACCOUNT: tronjhon\nx')
+login_gate_out=$(LIGHT_PICK_LIST="$LIGHT_GATE_WORK/list" light_gate claudeb $'ACCOUNT: tronjhon\nx')
 assert grep -Fq '"permissionDecision":"deny"' <<<"$login_gate_out"
 assert grep -Fq 'ACCOUNT: tronjhon needs a login as a Claude account' <<<"$login_gate_out"
 assert grep -Fq "The brief's ACCOUNT: tronjhon needs a login" \
-  <<<"$(LIGHT_PICK_LIST="$LIGHT_GATE_WORK/list" light_gate claudeb-worker $'ACCOUNT: tronjhon\nx' tronjhon)"
-login_gate_out=$(LIGHT_PICK_LIST="$LIGHT_GATE_WORK/list" light_gate claudeb-worker x tronjhon)
+  <<<"$(LIGHT_PICK_LIST="$LIGHT_GATE_WORK/list" light_gate claudeb $'ACCOUNT: tronjhon\nx' tronjhon)"
+login_gate_out=$(LIGHT_PICK_LIST="$LIGHT_GATE_WORK/list" light_gate claudeb x tronjhon)
 assert grep -Fq -- "--account tronjhon needs a login as a Claude account" <<<"$login_gate_out"
 assert grep -Fq -- "to --account, or drop the flag" <<<"$login_gate_out"
-assert test "$(LIGHT_PICK_LIST="$LIGHT_GATE_WORK/list" light_gate gemini-worker $'ACCOUNT: tronjhon\nx' |
+assert test "$(LIGHT_PICK_LIST="$LIGHT_GATE_WORK/list" light_gate gemini $'ACCOUNT: tronjhon\nx' |
   grep -c 'needs a login')" = 0
-# Light switched off in Egor's menu: the spawn hook refuses the spawn, and this gate neither prices
-# a Light quota nor asks for an account.
+# Light switched off in Egor's menu: this gate neither prices a Light quota nor asks for an account.
 printf 'light_paused=on\nlight_edit=claudeb:sonnet\n' >"$LIGHT_GATE_WORK/worker-model"
 : >"$LIGHT_GATE_WORK/picks"
-assert test -z "$(light_gate light-worker)"
+assert test -z "$(light_gate light)"
 assert test ! -s "$LIGHT_GATE_WORK/picks"
 jq -n '{schema:1, vendors:{claude:{accounts:[{account:"alpha", five_hour:{used_pct:100}}]}}}' \
   >"$LIGHT_GATE_WORK/limits.json"
 printf 'worker=auto\nlight_edit=claudeb:sonnet\nclaudeb_workers=off\n' >"$LIGHT_GATE_WORK/worker-model"
 
-# A native type still leaves before any of it.
+# A name that is no vendor leaves before any of it.
 : >"$LIGHT_GATE_WORK/picks"
 assert test -z "$(light_gate light-research)"
 assert test ! -s "$LIGHT_GATE_WORK/picks"
-# With worker-pick down a light-worker is priced on the vendor's pin, the account worker-run then
+# With worker-pick down a Light start is priced on the vendor's pin, the account worker-run then
 # launches on, not on whichever account of the vendor happens to be freest.
 printf 'light_edit=claudeb:sonnet\nclaudeb_profile=beta\n' >"$LIGHT_GATE_WORK/worker-model"
 jq -n '{schema:1, vendors:{claude:{accounts:[{account:"alpha", five_hour:{used_pct:10}},
   {account:"beta", five_hour:{used_pct:100}}]}}}' >"$LIGHT_GATE_WORK/limits.json"
 printf '#!/usr/bin/env bash\nexit 1\n' >"$LIGHT_GATE_WORK/bin/worker-pick"
-light_pin_out=$(light_gate light-worker)
+light_pin_out=$(light_gate light)
 assert test "$(grep -c '"permissionDecision":"deny"' <<<"$light_pin_out")" = 0
 assert grep -Fq 'account beta is at 100% but pinned' <<<"$light_pin_out"
-# A spawn worker-pick answered never reads the pin, so a `*` pin starts no second worker-pick. The
+# A start worker-pick answered never reads the pin, so a `*` pin starts no second worker-pick. The
 # gate runs from a copy whose share/ resolves the pin's own worker-pick to the logging stub.
 mkdir -p "$LIGHT_GATE_WORK/tree/bin" "$LIGHT_GATE_WORK/tree/share"
 cp "$ROOT/bin/worker-limit-gate.sh" "$LIGHT_GATE_WORK/tree/bin/"
@@ -1723,7 +1720,6 @@ assert grep -Fq "printf '%s/chat-%s' \"\$(dirname \"\$(worker_model_pin_grant)\"
 assert doc_has '`${WORDS_DIR:-$HOME/.cache/claude/words}/<session_id>/grant.pin`'
 assert grep -Fq 'word_gate_allow "$sid" pin "$(words_quoted_cmd "chat-pin $1")"' "$ROOT/bin/chat-pin"
 assert doc_has 'claude-setup `hooks/word-intake.sh` (writer)'
-assert grep -Fq '[ -z "$hook_session" ] || export CLAUDE_CODE_SESSION_ID="$hook_session"' "$ROOT/bin/worker-spawn-hook.sh"
 assert grep -Fq "CLAUDE_CODE_SESSION_ID='' worker_model_pin_first grok" "$ROOT/llm-limits.sh"
 
 # --- Row ai: usage wall record ------------------------------------------------
@@ -3327,20 +3323,19 @@ assert eq "$(sed -nE 's/^ +--accounts\) .*accounts_mode=\$2.*/ok/p' "$ROOT/bin/i
 assert grep -Fq 'case "$accounts_mode" in all|pick) ;; *) usage ;; esac' "$ROOT/bin/image-fanout"
 assert doc_has '| dk | Explicit --account |'
 
-# Every script a claude-setup agent or the media skill runs by bare name has its README PATH link,
+# Every script the media skill runs by bare name has its README PATH link,
 # the inventory llm-selfcheck's path-links step checks; media-run reaches the media scripts as "that
 # vendor's script", hence the fixed floor.
-AGENT_DIR="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/agents"
 MEDIA_SKILL="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/skills/media/SKILL.md"
-[ -r "$MEDIA_SKILL" ] || fail "agent run names: $MEDIA_SKILL is unreadable (set CLAUDE_SETUP_ROOT)"
+[ -r "$MEDIA_SKILL" ] || fail "run names: $MEDIA_SKILL is unreadable (set CLAUDE_SETUP_ROOT)"
 readme_links=$(LC_ALL=C sed -nE 's/^- `bin\/([^`]+)` → `~\/\.local\/bin\/([^`]+)`.*/\1 \2/p' "$ROOT/README.md" | awk '$1 == $2 { print $1 }')
-agent_run_names="media-run codex-image gemini-image grok-image grok-video image-fanout gemini-video gemini-music gemini-sfx gemini-listen worker-run worker-pick"
+run_names="media-run codex-image gemini-image grok-image grok-video image-fanout gemini-video gemini-music gemini-sfx gemini-listen worker-run worker-pick"
 for script in "$ROOT"/bin/*; do
   name=${script##*/}
   [ -f "$script" ] && [ -x "$script" ] && [[ "$name" != *.sh ]] || continue
-  grep -qsE "(^|[^[:alnum:]_/.-])$name([^[:alnum:]_-]|\$)" "$AGENT_DIR"/*.md "$MEDIA_SKILL" && agent_run_names+=" $name"
+  grep -qE "(^|[^[:alnum:]_/.-])$name([^[:alnum:]_-]|\$)" "$MEDIA_SKILL" && run_names+=" $name"
 done
-unlinked_run_names=$(for name in $(printf "%s\n" $agent_run_names | sort -u); do grep -qxF "$name" <<<"$readme_links" || printf '%s ' "$name"; done)
+unlinked_run_names=$(for name in $(printf "%s\n" $run_names | sort -u); do grep -qxF "$name" <<<"$readme_links" || printf '%s ' "$name"; done)
 assert eq "unlinked: $unlinked_run_names" "unlinked: "
 
 # Row ec: the worker-run journal's horizon and the suite journal's key order, as both writers spell them.
@@ -3441,5 +3436,5 @@ assert grep -Fq '"lost_min_day_by_day") if k in speed' "$ROOT/bin/harness-doctor
 assert grep -Fq 'metrics.lost_min_day_by_day or {}' "$ROOT/hammerspoon/doctors.lua"
 assert doc_has 'an unmeasured date is a blank cell, never an invented bar'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the anchors store under the chat that launched it, the launching-chat pid walk only the progress writer runs, once, the doctor snapshot envelope the menubar reads, the one resolver every surface names a chat through, the review round a fixing worker'"'"'s brief carries in the one field both repositories read, the launchers a headless vendor run may reach the machine through, the one anchors store per git family every side resolves with the same command and one writer holds a lock over, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types the spawn hook alone admits and no second gate judges, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the four carriers that spell the gateway model-id prefix, the one Gemini family list `geminib families` prints, the one file that pins which Flash family the review cells run and no worker reads, the one Grok model list `grokb models` prints and the single rule that collapses its default to the vendor word, the one web-search table every vendor and every worker-run entry point resolves through, the Hammerspoon entry points this repository calls, pinned fail-closed at their install path, the hook and statusline journals the Harness doctor reads, the week-over-week Δ Token tracking and the Harness doctor share, the one limiter hold directory every writer raises a hold in and both the doctor and the menu read, the one red every Hammerspoon menu paints with styled text that always names its font, the one gemini-web media store the engines write and the menu only reads, the chatgpt-web image store beside it that shares its one Chrome clone, the one least-recently-started order every media route picks by, the one per-account store table every Remove purges through and the doctor checks against the roster, the five-doctor roster every lister spells in one order, the explicit --account every media entry point refuses empty before a spend, the speed doctor collector journals, the presence journal Speed reads, the one wait journal every wait class writes and the Harness doctor shows, every copy an installer deploys, which the Harness doctor compares with its source, the ledger overlay a measuring run settles into instead of a tracked file, and the README PATH link of every script a claude-setup agent runs by name) and match %s
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the anchors store under the chat that launched it, the launching-chat pid walk only the progress writer runs, once, the doctor snapshot envelope the menubar reads, the one resolver every surface names a chat through, the review round a fixing worker'"'"'s brief carries in the one field both repositories read, the launchers a headless vendor run may reach the machine through, the one anchors store per git family every side resolves with the same command and one writer holds a lock over, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types the spawn hook alone admits and no second gate judges, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the four carriers that spell the gateway model-id prefix, the one Gemini family list `geminib families` prints, the one file that pins which Flash family the review cells run and no worker reads, the one Grok model list `grokb models` prints and the single rule that collapses its default to the vendor word, the one web-search table every vendor and every worker-run entry point resolves through, the Hammerspoon entry points this repository calls, pinned fail-closed at their install path, the hook and statusline journals the Harness doctor reads, the week-over-week Δ Token tracking and the Harness doctor share, the one limiter hold directory every writer raises a hold in and both the doctor and the menu read, the one red every Hammerspoon menu paints with styled text that always names its font, the one gemini-web media store the engines write and the menu only reads, the chatgpt-web image store beside it that shares its one Chrome clone, the one least-recently-started order every media route picks by, the one per-account store table every Remove purges through and the doctor checks against the roster, the five-doctor roster every lister spells in one order, the explicit --account every media entry point refuses empty before a spend, the speed doctor collector journals, the presence journal Speed reads, the one wait journal every wait class writes and the Harness doctor shows, every copy an installer deploys, which the Harness doctor compares with its source, the ledger overlay a measuring run settles into instead of a tracked file, and the README PATH link of every script the media skill runs by name) and match %s
 ' "$asserts" "$DOC"

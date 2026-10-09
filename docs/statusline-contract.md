@@ -315,8 +315,7 @@ task with `{"id": <id>, "content": ""}` — the harness draws its own native row
 renderer says nothing about, and an empty content is the one answer that removes the row (Claude Code
 2.1.283 filters rows on `content !== ""`; `completed`/`failed`/`killed` are its terminal statuses).
 Worker, review and image runs have no task row: they are the chat's own background Bash calls and
-are drawn as work lines (above). A leftover relay agent is painted like any other agent — its tag
-line and title, never a run's or a review's state.
+are drawn as work lines (above).
 
 Every running task is painted `<tag>[ — <title>][ · <state>] · <elapsed>[ · ↓ tok]` — tag magenta,
 the rest dim but the title. A number always stands right of its element (`edit 3`; only `↓ 12k tok`
@@ -344,7 +343,7 @@ end: `{phase, exit_code, session, account, model, effort, round_id, started_epoc
 is the launching chat (`CLAUDE_LAUNCHER_SESSION`, else `CLAUDE_CODE_SESSION_ID`). At start it also
 writes `title` (the brief's first non-header line, ≤100 characters) and, while a `wait` runs,
 `tokens` (the worker's own total, rewritten when its session log changes); both feed the worker
-work line. Every tag-file rewrite — `worker-tag-hook`, the `edit=N` count, the `exit=N` stamp —
+work line. Every tag-file rewrite — `worker-tag-hook` and the `edit=N` count —
 holds the session directory's `.claim.lock` (mkdir lock; one older than a minute is broken once, a
 live one outwaited ~3 s — `WORKER_TAG_LOCK_TRIES` × 0.1 s, default 30 — and the write skipped).
 
