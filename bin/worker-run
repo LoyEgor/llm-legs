@@ -4564,7 +4564,7 @@ wait_run() {
   write_run_state "$directory" wait
   while :; do
     if [ -f "$directory/exit_code" ]; then
-      wait_progress "$directory" "$run_id" "$stream"
+      WAIT_STAMP=''; wait_progress "$directory" "$run_id" "$stream"
       wait_poll_lag "$directory" "$run_id" "$wait_started"; run_state_terminal "$directory"; terminal_report "$directory"; return 0
     fi
     wait_progress "$directory" "$run_id" "$stream"
@@ -4573,7 +4573,7 @@ wait_run() {
     # process group and report a never-started run as alive.
     if ! supervisor_running "$directory" "$pid" || run_overdue "$directory"; then
       sleep 0.1
-      wait_progress "$directory" "$run_id" "$stream"
+      WAIT_STAMP=''; wait_progress "$directory" "$run_id" "$stream"
       if [ -f "$directory/exit_code" ]; then
         run_state_terminal "$directory"
         terminal_report "$directory"
