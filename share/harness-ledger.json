@@ -2674,7 +2674,7 @@
         "rule": "opportunity",
         "ident": "chat/hooks"
       },
-      "status": "fixed",
+      "status": "fixed-pending",
       "fixes": [
         {
           "at": "2026-10-05T19:30:06+03:00",
@@ -2690,13 +2690,30 @@
             "data": "800 non-read-only Bash calls sampled (seed 13) from 31.6k unique calls of the last 3 days' transcripts, cwd as recorded; 650 generated splice/escape spellings (quotes, backslashes, line continuations, CR, tab, non-ASCII, eval/'' /$X wrappers); 98 hand-written adversarial spellings per trigger corner; scratch HOME/DOCTORS_DIR/CLAUDEB_DIR, snapshot writers stubbed, no replay-tagged file reached a live store",
             "result": "1548/1548 identical; fast path taken on 64% of write calls (11992 of 18792); trigger-free write CPU median 0.194 -> 0.088 s (60 calls x2, load 190)"
           }
+        },
+        {
+          "at": "2026-10-09T07:30:00+03:00",
+          "by": "night fixer harness-speed-chat-hooks-20261009T024744Z-4103",
+          "files": [
+            "claude-setup/hooks/review-flow-gate.sh",
+            "claude-setup/hooks/lib/splice.sh",
+            "claude-setup/hooks/lib/review-journal.sh",
+            "claude-setup/tests/test_review_flow_gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null,
+          "equivalence": {
+            "compared": "base vs fast path: every call the new pre-library screen clears must be one the base hook found door-idle with an empty rj_command_paths list; then the whole hook, exit code, stdout (door nonce masked) and stderr (library path masked)",
+            "data": "3000 unique Bash commands (seed 7) of the last 2 days' transcripts and 4721 generated spellings (spliced cp/mv/rm/tee/touch/ln/sed/git/gated words; 70 redirect corners: x2>f, \"a b\"2>f, a\\ 2>f, a\\<newline>2>f, &2>f, (2>f), &>f, >|f, 12>f, sed -'i'); whole-hook replay on 793 of them; /bin/bash 3.2, scratch HOME, git stubbed to fail so no live claude-writes was reached",
+            "result": "0 of 1066+549 cleared calls disagree with the base; 793/793 identical; screen clears 36% of real write calls (549 of 1530, 85% of what the base found idle with no target); paired 250 real calls at load ~240: wall 265 -> 194 ms mean, p50 paired delta 60 ms, CPU 44 -> 34 ms"
+          }
         }
       ],
       "same_cause": [],
-      "note": "2026-10-05 (night fixer harness-speed-20261005T061337Z-13f2): fixed with rf_door_idle in claude-setup hooks/review-flow-gate.sh: a write call with no raw `review`, no `git` with quotes/backslashes/newlines spliced in, and (when a `$`, backquote, `(`, backslash or empty quoted word could hide an unreadable binary) no whole gated word, skips the door's parse and keeps the snapshot with an empty landing. Bash 3.2's ${cmd//[...]/} took minutes over a 5 KB heredoc, so the splice is a precompiled regex. Remaining floor is the snapshot side (hook-sync-review-flow-gate, blind spot snapshot-cost-per-repo). Found, not fixed (old behaviour kept bit-for-bit): the review family is read off the raw text, so a launch spelled with spliced quotes (re\"\"view-bench re\"\"view) passes this door; review-bench's own door-nonce check still refuses it. Seen at load ~200 while proving it, not this row's: claude-setup test_commit_report failed once on the quiet `origin HEAD` push and passed on rerun (flake); llm-legs test_consistency assert 870 is red because review-bench c23eb96 dropped DEBT_ERR_LINE from share/rbench/debt.py. tests/test_harness_doctor.sh's ledger guard refused the `equivalence` key speed-doctor's OUTPUT_PROOF requires on a fix, so no Speed fix could be proven; it now takes that one extra key and only with compared, data and result.",
+      "note": "2026-10-09 (night fixer harness-speed-chat-hooks-20261009T024744Z-4103): the 10-05 fix (rf_door_idle) skipped the door's parse but still loaded the 2.1k-line library, computed the owner and ran rj_command_paths' awk on every idle write call. Now a pre-library screen (rf_door_idle plus rf_writes_none, a superset of rj_command_paths' targets: a `>` other than `>&`/a lone `2>`, cp/mv/rm/tee/touch/ln, sed beside -i) exits before the library; RJ_LIB is found without dirname/cd forks and jq reads the payload itself (tojson hands `input` back), so every call, read-only included, saves 4 forks and 2 execs. RJ_LANDING_SUBCOMMANDS/RJ_GATED_SUBCOMMANDS moved to hooks/lib/splice.sh for the screen. Pre-Bash floor setters on 2026-10-08 (first-order gain if zero, hooks/*.tsv): instruction-write-gate.sh 400 s, statusline-workdir-hook.sh 144 s, review-flow-gate.sh 130 s, worker-launch-gate.sh 91 s; the next lever is instruction-write-gate (blind spot speed-lever-hook-static). Found, not fixed (not this component): commit-report.sh and commit-push-gate.sh still find RJ_LIB with the dirname/cd forks. 2026-10-05: fixed with rf_door_idle (claude-setup@a9f0773). Found then, still so: the review family is read off the raw text, so re\"\"view-bench re\"\"view passes this door; review-bench's nonce check still refuses it.",
       "handoff": null,
-      "last_reviewed": "2026-10-05",
-      "reviewed_by": "night fixer harness-speed-20261005T061337Z-13f2"
+      "last_reviewed": "2026-10-09",
+      "reviewed_by": "night fixer harness-speed-chat-hooks-20261009T024744Z-4103"
     },
     {
       "id": "limiter-hold-logo-bench-throttle",
@@ -5474,6 +5491,13 @@
       "reason": "Night 20261009T023738Z-817e mapped the 34 attended d rows (2026-10-02..09, 69.6 min = 9.9 min/day) to their commands by hand: suites 22 min (pytest, run-all; the test-speed rows own them), project scripts and benches 23 (osascript, ab_awdl, tokenmap scan, cdp runs: their own runtime), poll loops 11 (`until ! pgrep ...; do sleep 15`, `sleep 470`, `sleep 150`: overshoot at most one interval), dev servers 4 (http.server, nx serve: the kill notification counted as a wait nobody had), one `hs -c` 7.6 (moved to background at its 120 s Bash timeout, killed at the 30 min cap with no output; the hs-lag timer phase shifts at 20:28:42 local, so Hammerspoon reloaded mid-call and the CLI waited for a reply past its -t; one incident in the week, no shim built). Rows journaled before a275d35c also file worker-run, light-research and review-bench waits as plain Bash",
       "since": "2026-10-09",
       "would_catch_if": "the d row carried the command class (suite, poll, server, script) and the command's exit time beside its notification, so the overshoot (poll intervals, kills at the 30 min cap, servers ended by a kill) separates from the runtime"
+    },
+    {
+      "id": "speed-lever-hook-static",
+      "what": "which hook sets the Pre-Bash floor now",
+      "reason": "speed-doctor LEVERS names review-flow-gate.sh as the chat/hooks lever's hook by hand; after the 10-05 and 10-09 cuts it set the floor on 15% of 10-08's calls while instruction-write-gate.sh set it on 20% with three times the gain",
+      "since": "2026-10-09",
+      "would_catch_if": "the chat/hooks opportunity named the hook with the largest first-order floor gain in the window (per call: max end minus the runner-up's end, hooks/*.tsv grouped by ppid and start)"
     }
   ]
 }
