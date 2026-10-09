@@ -499,7 +499,7 @@ transcript_report() (
         listing_spelling transcript_wrote_through_shell workdir_escape_line; do
       sed -n "/^$name() {/,/^}/p" "$RUNNER"
     done >"$WORK/transcript-report.fns"
-    sed -n '/^SHELL_FLOOR_PARTIAL=/p' "$RUNNER" >>"$WORK/transcript-report.fns"
+    sed -n '/^SHELL_FLOOR_PARTIAL=/p; /^GEMINI_WRITE_TOOLS=/p' "$RUNNER" >>"$WORK/transcript-report.fns"
   fi
   . "$WORK/transcript-report.fns"
   compute_transcript_files "$directory"
