@@ -555,11 +555,11 @@ jq -n --argjson s "$(now)" '{contract: 1, doctor: "harness", as_of_s: $s, judge:
     {id: "menu_build:automation", rule: "menu_build", state: "new", fact: "11 menu opens waited 450 ms"},
     {id: "floor:tool", rule: "floor", state: "watch", fact: "floor", value: 100, exposure: 100},
     {id: "load:quiet", rule: "load", state: "watch", fact: "quiet", value: 1000, exposure: 1000}]
-    + [range(10) | {id: "hook_p50:w\(.)", rule: "hook_p50", state: "watch", fact: "w", value: ., exposure: 10}])}' \
+    + [range(10) | {id: "hook_p50:w\(.)", rule: "hook_p50", state: "watch", fact: "w", value: ., exposure: 10}])} | .problems |= map(.expected_min_day = 5)' \
   >"$WORK/harness/latest.json"
 fi
 mkdir -p "$WORK/projects/proj/tests" && printf '#!/bin/bash\n' >"$WORK/projects/proj/tests/test_x.sh"
-printf '{"owner": "H owner", "rows": [{"id": "gate-row", "status": "open", "match": {"rule": "hook_every_call", "ident": "gate\\\\.sh"}}, {"id": "quiet-hook", "title": "a hook gone quiet", "status": "open", "match": {"rule": "hook_every_call", "ident": "gate\\\\.sh"}}]}\n' \
+printf '{"owner": "H owner", "rows": [{"id": "gate-row", "status": "open", "match": {"rule": "hook_every_call", "ident": "gate\\\\.sh"}}, {"id": "quiet-hook", "expected_min_day": 5, "title": "a hook gone quiet", "status": "open", "match": {"rule": "hook_every_call", "ident": "gate\\\\.sh"}}]}\n' \
   >"$WORK/ledgers/harness.json"
 mkdir -p "$WORK/projects/hammerspoon" "$L/hammerspoon"
 : >"$WORK/projects/hammerspoon/automation_menu.lua"
@@ -950,7 +950,9 @@ env "${speed_env[@]}" CODE_LEDGER="$S/none.json" STATUSLINE_CACHE_DIR="$S/sl" SP
   fail "speed-doctor did not merge its section"
 night1='["opportunity:chat/tools", "opportunity:delegation/background Bash", "opportunity:chat/hooks", "opportunity:machine/contention",
   "opportunity:tests/llm-legs/test_llm_limits", "opportunity:chat/tests", "opportunity:delegation/reviews"]'
-assert jqe --argjson n "$night1" '.speed.selection == $n' "$S/harness/latest.json"
+assert jqe '.speed.selection == ["opportunity:chat/tools", "opportunity:delegation/background Bash"]' "$S/harness/latest.json"
+jq --argjson n "$night1" '.speed.selection = $n | (.problems[] | select(.rule == "opportunity") | .opportunity.recoverable_min_day) = 5' \
+  "$S/harness/latest.json" >"$S/priced.json" && mv "$S/priced.json" "$S/harness/latest.json"
 mkdir -p "$L/share/rbench" "$L/share/briefs" "$L/agents"
 printf '# the per-model call\nclaudeb opus high high,xhigh low,medium,max no\n' >"$L/share/worker-model.sh"
 printf '| claudeb / opus | high | high, xhigh |\nPlain prose.\n' >"$L/share/worker-policy.md"
@@ -1108,8 +1110,8 @@ done
 # its own whose brief refuses a Light or Gemini Flash worker and carries the audit's steps.
 jq --argjson s "$(now)" --arg l "$L" '.as_of_s = $s | .speed.spend.selection = []
   | .problems += [{id: "test_daily_cost:llm-legs:test_heavy", rule: "test_daily_cost", ident: "llm-legs:test_heavy",
-      state: "new", fact: "test_heavy · llm-legs cost 2 h"},
-    ({rule: "suite_audit", state: "watch", speed: true, group: "Suite audits"} as $p
+      state: "new", expected_min_day: 5, fact: "test_heavy · llm-legs cost 2 h"},
+    ({rule: "suite_audit", state: "watch", speed: true, expected_min_day: 5, group: "Suite audits"} as $p
      | ["test_heavy", "test_mid", "test_light"][] as $t | $p + {id: "suite_audit:llm-legs:\($t)",
       fact: "\($t) · llm-legs · audit due: never audited", suite: {component: "llm-legs/\($t)", sources: ["\($l)/tests/\($t).sh"]}})]
   | .speed.suites = {selection: ["suite_audit:llm-legs:test_heavy", "suite_audit:llm-legs:test_mid",
@@ -1144,6 +1146,28 @@ assert jqe '[.[].id | select(test("^(spend|suite_audit):|hooks|contention"))] | 
   "suite_audit:llm-legs:test_mid"]' <(night_snapshot n16 8)
 assert jqe '[.[].id | select(test("^(spend|suite_audit):|hooks|contention"))] | sort == ["opportunity:chat/hooks",
   "spend:resumes", "suite_audit:llm-legs:test_mid"]' <(night_snapshot n17 4)
+cp "$S/harness/latest.json" "$S/admission-before.json"
+jq '.problems += [
+  {id: "collector:repair", rule: "collector", state: "new"},
+  {id: "suite_audit:unpriced", rule: "suite_audit", state: "new", speed: true},
+  {id: "hook_p50:small", rule: "hook_p50", state: "new", expected_min_day: 4.99},
+  {id: "regression:small", rule: "regression", state: "new", speed: true, expected_min_day: 4.99},
+  {id: "regression:enough", rule: "regression", state: "new", speed: true, expected_min_day: 5},
+  {id: "repair:alone", rule: "regression", state: "new", speed: true, class: "measurement fix"},
+  {id: "repair:needed", rule: "regression", state: "new", speed: true, class: "measurement fix", blind_for: ["regression:enough"]},
+  {id: "repair:small", rule: "regression", state: "new", speed: true, class: "measurement fix", blind_for: ["regression:small"]}]
+  | (.problems[] | select(.id == "opportunity:chat/hooks") | .opportunity.recoverable_min_day) = 4.99' \
+  "$S/harness/latest.json" >"$S/admission.json" && mv "$S/admission.json" "$S/harness/latest.json"
+night_snapshot admission 8 >"$WORK/admission.json" 2>"$WORK/admission.err"
+assert jqe '[.[].id | select(test("^(regression:|repair:)|chat/hooks"))] == ["regression:enough", "repair:needed"]' "$WORK/admission.json"
+assert grep -qF 'skipped regression:small: expected gain <5 min/day or unpriced' "$WORK/admission.err"
+assert grep -qF 'skipped repair:alone: measurement fix' "$WORK/admission.err"
+assert grep -qF 'skipped opportunity:chat/hooks: expected gain <5 min/day or unpriced' "$WORK/admission.err"
+assert test "$(wc -l <"$WORK/admission.err" | tr -d ' ')" = 1
+assert grep -qF 'skipped collector:repair: measurement fix' "$WORK/admission.err"
+assert jqe 'all(.[]; .id != "suite_audit:unpriced" and .id != "hook_p50:small" and .id != "collector:repair")' "$WORK/admission.json"
+assert jqe '[.[].id] | index("regression:small") != null and index("collector:repair") != null' <(night_snapshot "" 8)
+mv "$S/admission-before.json" "$S/harness/latest.json"
 # A Speed document whose three selections are empty never asks for the free slots it could not use.
 jq '.speed.selection = [] | .speed.spend.selection = [] | .speed.suites.selection = []' "$S/harness/latest.json" >"$S/none.json"
 cp "$S/harness/latest.json" "$S/cap.json" && mv "$S/none.json" "$S/harness/latest.json"

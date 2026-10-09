@@ -38,7 +38,8 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
      included, into `refs/night/<id>/base`, touching neither index nor working tree. Every night
      worktree starts there: main carries days of uncommitted work, and a branch from HEAD would fix
      code that no longer exists. A branch merges only after its repository's press-time debt is
-     committed, by `git rebase --onto main refs/night/<id>/base`.
+     committed. Land serially through `docs/fix-orchestrator.md`: worker final-commit green proof,
+     pre-rebase `tests/affected --overlap refs/night/<id>/base`, rebase, then only that overlap.
    - `night-run job` records every expected job before dispatch, a `leftover` job among them for
      every leftover branch `night-run leftovers` lists, adopted into the night (see Leftovers).
    - `night-run carry <id>` records what earlier days left. Handoffs go to the chat owning them, which

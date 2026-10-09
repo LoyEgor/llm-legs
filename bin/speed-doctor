@@ -726,14 +726,12 @@ def rank_key(o):
 
 
 def select(opportunities, why=None):
-    """Night pick (§3 Selection): every equivalent positive-score opportunity in rank order, recoverable minutes
-    first; how many of each kind a night takes is bin/doctor-fix's share of the free worker slots. Loud rows
-    (regressions, time_floor) go in on their own. `why` receives the skip reasons."""
+    """Equivalent positive-score opportunities worth the night's minimum gain, in rank order."""
     chosen, skipped = [], {}
     for o in opportunities:
         fields = o["opportunity"]
         reason = "egor" if fields["needs_egor"] else "risk" if fields["quality"] != "equivalent" \
-            else "score" if fields["score"] <= 0 else None
+            else "score" if fields["score"] <= 0 else time_budget.night_speed_skip(o, opportunities)
         if reason:
             skipped[reason] = skipped.get(reason, 0) + 1
         else:
@@ -748,7 +746,9 @@ def why_skipped(why):
     return ", ".join(text for key, text in (
         ("egor", "%d need Egor" % skipped.get("egor", 0)),
         ("risk", "%d are not output-equivalent" % skipped.get("risk", 0)),
-        ("score", "%d score 0" % skipped.get("score", 0))) if key in skipped)
+        ("score", "%d score 0" % skipped.get("score", 0)),
+        ("expected gain <5 min/day or unpriced", "%d expected gain <5 min/day or unpriced" % skipped.get("expected gain <5 min/day or unpriced", 0)),
+        ("measurement fix without a >=5 min/day blind opportunity", "%d measurement fixes without a >=5 min/day blind opportunity" % skipped.get("measurement fix without a >=5 min/day blind opportunity", 0))) if key in skipped)
 
 
 def test_requirement(repo, rel):
@@ -886,6 +886,7 @@ def floor_rows(budget, ledger, now, full=None):
         out.append({"id": row["id"] if row else "time_floor:%s" % key, "rule": "time_floor", "state": H.ledger_state(row, 24, now),
                     "fact": fact + " · proof: back under it", "value": value, "limit": limit, "unit": unit,
                     "window_h": 24, "exposure": None, "count": None, "first_seen": None, "last_seen": None,
+                    "expected_min_day": value if unit == "min/day" else (night["wall_s"] - night["model_s"] / floor) / 60,
                     "evidence": [], "ledger": row["id"] if row else None, "group": "time", "ident": key})
     return out
 
@@ -1166,6 +1167,12 @@ def collect(write, now):
         "%s min/day recoverable, but %s" % (fmt(recoverable), why_skipped(why)) if opportunities
         else "no owner turns from Harness" if not rows else "no opportunity worth %s OM/d on enough days" % LIMITS["worth_om_day"], gap,
         "transcript backfill at %d of %d files" % (coverage["backfill_files_done"], job["files"]) if job["todo"] else None]))
+    for problem in problems:
+        if problem["rule"] == "regression":
+            problem["expected_min_day"] = max((o["opportunity"]["recoverable_min_day"] for o in opportunities
+                                               if (o["id"] == "opportunity:" + problem.get("component", "")
+                                                   or o["id"].startswith("opportunity:" + problem.get("component", "") + "/"))
+                                               and not o["opportunity"]["needs_egor"] and o["opportunity"]["quality"] == "equivalent"), default=0)
     problems += opportunities
     problem_count = sum(1 for p in problems if p["state"] in H.LOUD_STATES)
 
@@ -1241,6 +1248,7 @@ def collect(write, now):
         document["suites"] = {"status": "error", "head": H.error_line(exc), "problems": [], "selection": [], "menu": []}
     problems += document["suites"].pop("problems")
     document["menu"] = menu_lines(document)
+    document["night_skipped"] = next(row[3] for row in document["menu"] if row[3].startswith("Night skipped:"))
     document["timing"] = {"cpu_s": round(H.cpu_s() - cpu_start, 2)}
     if write:
         os.makedirs(folder, exist_ok=True)
@@ -1335,6 +1343,9 @@ def menu_lines(document):
     emit(0, "-", "s")
     opportunities = [p for p in document["problems"] if p["rule"] == "opportunity"]
     ranked = [p for p in opportunities if not p["opportunity"]["needs_egor"]]
+    skipped = [(p["id"], time_budget.night_speed_skip(p, document["problems"])) for p in document["problems"]
+               if p["rule"] in SPEED_RULES + ("suite_audit",) or p.get("class") == "measurement fix"]
+    emit(0, "Night skipped: " + ("; ".join("%s (%s)" % (pid, reason) for pid, reason in skipped if reason) or "none"), "d")
     emit(0, "Opportunities · top %d of %d" % (min(len(ranked), 10), len(ranked)))
     for rank, p in enumerate(ranked[:10], 1):
         o = p["opportunity"]
@@ -1453,6 +1464,8 @@ def main():
     collector_runs.record("speed", started)
     if not args.quiet or speed["status"] == "error":
         print("Speed: " + speed["head"], file=sys.stderr if speed["status"] == "error" else sys.stdout)
+        if speed.get("night_skipped"):
+            print(speed["night_skipped"])
     return 1 if speed["status"] == "error" else 0
 
 

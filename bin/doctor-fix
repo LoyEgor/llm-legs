@@ -131,6 +131,7 @@ sys.path.insert(0, os.path.join(ROOT, "share"))
 from report_frame import fit
 from fix_commit import FIX_KEYS, fix_record_faults, fix_root_faults, load_merged, main_checkout, sync_settled
 from spend import read_json
+import time_budget
 from knobs import changed_lines, knob_site
 DOCTORS = ("llm", "harness", "updater", "code", "system")
 HOOK_AREAS = ("Hooks", "Hook waits")
@@ -279,7 +280,13 @@ def snapshot(doctor, doc_file, night=None):
         problems += [{"id": r["id"], "rule": (r.get("match") if isinstance(r.get("match"), dict) else {}).get("rule"),
                       "ledger": r["id"], "state": "quiet", "fact": r.get("title")}
                      for r in rows.values() if r.get("status") == "open" and r.get("id") and r["id"] not in seen]
+    for problem in problems:
+        row = rows.get(problem.get("ledger")) or rows.get(problem.get("id")) or {}
+        for key in ("class", "expected_min_day", "blind_for"):
+            if key not in problem and key in row:
+                problem[key] = row[key]
     kept, watched, opportunities, speed, held, hooked = [], [], {}, set(), set(), set()
+    skipped = []
     speed_doc = (doc.get("speed") or {}) if doctor == "harness" else {}
     for problem in problems:
         pid, rule, state = problem.get("id"), problem.get("rule"), problem.get("state")
@@ -391,6 +398,18 @@ def snapshot(doctor, doc_file, night=None):
         entry = {"id": pid, "state": state, "fact": problem.get("fact"), "rule": rule, "ledger": problem.get("ledger"),
                  "area": slug(area), "component": {"what": what, "files": sorted({norm(f) for f in files}),
                                                    "rule_at": rule_at(doctor, rule)}}
+        if night and doctor == "harness":
+            admission = dict(problem)
+            changes = {"ids": [pid], "class": time_budget.improvement_class(rule or "", pid),
+                       "files": [("", os.path.relpath(f, repos_dir(doctor)).split("/", 1)[-1]) for f in files]}
+            if files and time_budget.runtime_change(changes) is False and time_budget.night_speed_skip(admission):
+                admission["class"] = "measurement fix"
+            if (problem.get("speed") and rule != "spend_audit" or rule in ("floor", "test_long_pole", "test_daily_cost", "test_slow", "suites_at_once", "hook_p50", "hook_sync", "hook_full_work", "hook_every_call")
+                    or admission.get("class", (admission.get("opportunity") or {}).get("class")) == "measurement fix"):
+                reason = time_budget.night_speed_skip(admission, problems)
+                if reason:
+                    skipped.append("skipped %s: %s" % (pid, reason))
+                    continue
         if rule == "log_audit":
             entry["component"]["what"] = ("a Sonnet reading of the transcripts (bin/log-audit): find the quoted lines in them and "
                                           "confirm the cause before any fix; a reading that does not hold is ruled-out")
@@ -420,6 +439,8 @@ def snapshot(doctor, doc_file, night=None):
     hook_picks = [pid for pid in picks if pid in hooked][:share]
     chosen = [pid for pid in picks if pid not in hooked or pid in hook_picks] + spend[:share] + suites[:share]
     entries = kept + [opportunities[pid] for pid in chosen if pid in opportunities] + [entry for _, entry in watched[:8]]
+    if skipped:
+        print("speed-doctor: " + "; ".join(skipped), file=sys.stderr)
     split_speed([entry for entry in entries if entry["id"] in speed])
     print(json.dumps(entries))
 

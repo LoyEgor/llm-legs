@@ -91,6 +91,21 @@ affected_suites() { # repo [file...] -> suite paths covering the files, sorted a
   [ "${#slow_kept[@]}" -eq 0 ] || printf '%s\n' "${slow_kept[@]}"
 }
 
+affected_overlap() {
+  local repo=$1 base=$2 branch_files main_files branch_suites main_suites file
+  local -a branch=() upstream=()
+  branch_files=$(git -C "$repo" diff --no-renames --name-only "$base...HEAD") || return 4
+  main_files=$(git -C "$repo" diff --no-renames --name-only "$base..main") || return 4
+  [ -n "$branch_files" ] && [ -n "$main_files" ] || return 0
+  while IFS= read -r file; do branch+=("$file"); done <<<"$branch_files"
+  while IFS= read -r file; do upstream+=("$file"); done <<<"$main_files"
+  branch_suites=$(WORKER_RUN_ID= affected_suites "$repo" "${branch[@]}") || return 4
+  main_suites=$(WORKER_RUN_ID= affected_suites "$repo" "${upstream[@]}") || return 4
+  LC_ALL=C comm -12 <(printf '%s\n' "$branch_suites" | LC_ALL=C sort) \
+    <(printf '%s\n' "$main_suites" | LC_ALL=C sort) | grep -v '^$'
+  return 0
+}
+
 slow_refresh() { # repo -> the suites of its main checkout whose median CPU over 7 days of passing runs passes 45 s
   local top root name journal=${RUN_SUITES_JOURNAL:-${RUN_SUITES_TIMES:-${XDG_CACHE_HOME:-$HOME/.cache}/run-suites/times.tsv}}
   [ -n "${RUN_SUITES_JOURNAL:-}" ] || journal=${journal%/*}/runs.jsonl
@@ -112,6 +127,11 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   repo=$(cd "$repo" && pwd -P) || exit 4
   [ "${1:-}" != --slow-refresh ] || { slow_refresh "$repo"; exit; }
   [ "${1:-}" != -- ] || shift
-  affected_suites "$repo" "$@"
+  if [ "${1:-}" = --overlap ]; then
+    [ "$#" -eq 2 ] || { echo 'usage: tests/affected --overlap <base>' >&2; exit 4; }
+    affected_overlap "$repo" "$2"
+  else
+    affected_suites "$repo" "$@"
+  fi
 fi
 case $0 in "${BASH_SOURCE[0]}") exit; esac; }

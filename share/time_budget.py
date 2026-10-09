@@ -55,6 +55,7 @@ FLOORS = {"refusal": 0, "hooks": 0, "stop": 0, "suite_wait": 0, "slot": "slots l
           "suite_run": "uncontended p10 wall"}
 BENCH_WORKDIR = re.compile(r"/logo-vectorizer-bench(/|$)")
 FLOOR_ROW_MIN_DAY = 30
+NIGHT_GAIN_MIN_DAY = 5
 ROI_DAYS = 3
 IMPROVEMENT_RULES = ("opportunity", "regression", "time_floor", spend_block.RULE, suite_audit.RULE)
 # (unit, samples a side needs, the after/before ratio proving it, the gain's daily unit, units in one of it): the
@@ -780,6 +781,22 @@ def lines_of(night):
 
 def is_test(path):
     return "/tests/" in "/" + path or os.path.basename(path).startswith("test_")
+
+
+def night_speed_skip(problem, problems=()):
+    fields = problem.get("opportunity") or {}
+    if problem.get("class", fields.get("class")) == "measurement fix":
+        blind_for = problem.get("blind_for", fields.get("blind_for")) or []
+        if any(p.get("id") in blind_for and p.get("class", (p.get("opportunity") or {}).get("class")) != "measurement fix"
+               and not night_speed_skip(p) for p in problems):
+            return None
+        return "measurement fix without a >=5 min/day blind opportunity"
+    gain = num(problem.get("expected_min_day"))
+    if gain is None:
+        gain = num(fields.get("recoverable_min_day", fields.get("saving")))
+    if gain is None and problem.get("rule") == "time_floor" and problem.get("unit") == "min/day":
+        gain = num(problem.get("value"))
+    return None if gain is not None and gain >= NIGHT_GAIN_MIN_DAY else "expected gain <5 min/day or unpriced"
 
 
 def improvement_class(rule, pid):

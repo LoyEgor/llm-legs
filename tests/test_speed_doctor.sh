@@ -88,7 +88,7 @@ check(all(p["state"] == "watch" and set(p["opportunity"]) >= {"om_day", "saving"
           and p["opportunity"]["score"] == round(p["opportunity"]["recoverable_min_day"] * p["opportunity"]["confidence"]
                                                  / (p["opportunity"]["effort_h"] + p["opportunity"]["night_cost_h"]), 3)
           for p in backlog), "every opportunity stores its score fields and the score recomputes from them")
-check(doc["selection"] == [p["id"] for p in backlog],
+check(doc["selection"] == ["opportunity:chat/tools", "opportunity:delegation/background Bash"],
       "the night takes the biggest recoverable gap first: %s" % doc["selection"])
 check({"cost", "yield"} <= set(doc) and set(doc["cost"]) == {"collector_cpu_min_day", "fixer_worker_min", "review_min",
                                                               "slot_queue_min", "landing_delay_min"}
@@ -200,10 +200,24 @@ spike, pattern = ({"id": i, "opportunity": {"needs_egor": False, "score": 0.5, "
 check([o["id"] for o in sorted([spike, pattern], key=module.rank_key)] == ["b-pattern", "a-spike"],
       "a pattern seen on several days ranks above a one-day spike of the same score")
 low = {"id": "low", "opportunity": {"needs_egor": False, "quality": "equivalent", "score": 0.1, "effort_h": 1.0,
-                                    "night_cost_h": 0.0, "hooks": False}}
+                                    "night_cost_h": 0.0, "hooks": False, "recoverable_min_day": 5.0}}
 zero = {}
 check(module.select([low]) == ["low"] and module.select([dict(low, opportunity=dict(low["opportunity"], score=0.0))], zero) == []
       and module.why_skipped(zero) == "1 score 0", "the night pick has no score floor: any positive score enters it")
+below = dict(low, id="below", opportunity=dict(low["opportunity"], recoverable_min_day=4.99))
+unpriced = dict(low, id="unpriced", opportunity={k: v for k, v in low["opportunity"].items() if k != "recoverable_min_day"})
+repair = dict(low, id="repair", **{"class": "measurement fix"})
+needed = dict(repair, id="needed", blind_for=["low"])
+small = dict(repair, id="small", blind_for=["below"])
+why = {}
+check(module.select([below, low, unpriced, repair, needed, small], why) == ["low", "needed"],
+      "5 min/day is inclusive; smaller, unpriced and pure measurement fixes stay out; only a named big blind opportunity admits repair")
+check(module.why_skipped(why) == "2 expected gain <5 min/day or unpriced, 2 measurement fixes without a >=5 min/day blind opportunity",
+      "all skipped opportunities have visible reasons even when another is selected")
+check(module.time_budget.night_speed_skip({"rule": "time_floor", "unit": "min/day", "value": 31}) is None
+      and module.time_budget.FLOOR_ROW_MIN_DAY == 30,
+      "floor alarms keep their 30-minute detection threshold independently of night admission")
+
 scored = [{"id": "opportunity:%s" % i, "opportunity": dict(low["opportunity"], score=s, effort_h=e, hooks=i.startswith("hook"))}
           for i, s, e in (("time/workers-active", 236.0, 3.0), ("chat/tests", 72.0, 1.0), ("hook", 36.0, 1.0),
                           ("hook2", 20.0, 1.0), ("cheap", 0.16, 1.0), ("over", 0.1, 1.0))]
@@ -236,7 +250,7 @@ check([(o["id"], o["opportunity"]["recoverable_min_day"]) for o in timed]
       == [("opportunity:time/slot", 50.0), ("opportunity:chat/tests", 40.0), ("opportunity:chat/tools", 9.01),
           ("opportunity:chat/hooks", 8.3), ("opportunity:delegation/background Bash", 5.07),
           ("opportunity:delegation/reviews", 0.65)]
-      and module.select(timed) == [o["id"] for o in timed]
+      and module.select(timed) == [o["id"] for o in timed if o["opportunity"]["recoverable_min_day"] >= 5]
       and all(o["opportunity"]["score"] == module.score_of(o["opportunity"]["recoverable_min_day"], o["opportunity"]["confidence"],
                                                            o["opportunity"]["effort_h"], 0.0) for o in timed),
       "a class over its floor ranks by recoverable min/day: its own time opportunity, or its gap added to the "
@@ -373,6 +387,12 @@ check(module.covers({"chat.om_per_100_prompts|all|-": {"days": 6}}) == []
 
 menu, _ = speed("speed", "--menu")
 lines = menu.stdout.splitlines()
+skipped_lines = [line for line in lines if "Night skipped:" in line]
+check(doc["night_skipped"] in menu.stdout, "JSON and menu expose the same single skipped-jobs line")
+check(len(skipped_lines) == 1 and all(name in skipped_lines[0] for name in
+      ("opportunity:chat/hooks", "opportunity:chat/tests", "opportunity:delegation/reviews"))
+      and "opportunity:chat/tools" not in skipped_lines[0],
+      "one output line names the skipped small jobs while the qualifying jobs remain selected")
 check(lines[0] == "T\t0\t%d\tHarness doctor: ok" % HI and lines[2] == "0\t\t\tLost time: ok · 3.3 min/day over the floor · 179 OM/d · 3.9 of 7 days covered · R 2/10: 88/238"
       and "1\t\t\tChat turns: 103 min/day · model 64 · tools 30 · tests 5.4" in lines
       and "1\t\t\tDelegation: +76 min/day · workers 54 · background Bash 17 · media 2.7" in lines
@@ -429,7 +449,7 @@ blank_dir = os.path.join(work, "harness-blank")
 os.makedirs(blank_dir)
 cold, _ = speed("speed-cold", HARNESS_DOCTOR_DIR=blank_dir, **transcripts)
 check(cold["headline"] * cold["window"]["days"] >= doc["headline"] * doc["window"]["days"] > 0
-      and cold["selection"][-2:] == ["opportunity:chat/tests", "opportunity:chat/hooks"]
+      and cold["selection"] == [p["id"] for p in cold["problems"] if p["rule"] == "opportunity" and p["opportunity"]["recoverable_min_day"] >= 5]
       and all(p["opportunity"]["score"] < 0.2 for p in cold["problems"] if p["id"] == "opportunity:chat/tests")
       and "backfill" not in [b["id"] for b in cold["blind_spots"]],
       "a fresh state with no Harness turn rows backfills every calibration minute from the transcripts: %s %s"
@@ -638,7 +658,7 @@ check(len(cached) == folded, "the second run appends only the new row to its day
       % (len(cached), folded))
 check(module.score_of(2.0, 0.5, 1.0, 3.0) == 0.25, "a lever's night cost divides its score with the effort")
 pick = [{"id": i, "opportunity": {"effort_h": e, "night_cost_h": 0.0, "needs_egor": False, "quality": "equivalent",
-                                  "score": 1.0, "hooks": i == "c"}} for i, e in (("a", 1), ("b", 3), ("c", 1), ("d", 1))]
+                                  "score": 1.0, "recoverable_min_day": 5.0, "hooks": i == "c"}} for i, e in (("a", 1), ("b", 3), ("c", 1), ("d", 1))]
 check(module.select(pick) == ["a", "b", "c", "d"], "the pick keeps rank order and no count or hour cap")
 
 repos = base["HARNESS_REPOS_DIR"]

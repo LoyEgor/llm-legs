@@ -411,6 +411,35 @@ branch_affected=$(bash "$ROOT/share/affected-suites.sh" --repo "$R4")
 assert grep -qxF "$R4/tests/test_tool_part.sh" <<<"$branch_affected"
 assert_fails grep -q test_other.sh <<<"$branch_affected"
 
+R8="$WORK/overlap"
+new_repo "$R8"
+suite "$R8" test_pair.sh ': branch-input upstream-input'
+suite "$R8" test_disjoint.sh ': disjoint-input'
+printf 'test_pair.sh\n' >"$R8/tests/slow-suites"
+git -C "$R8" add tests
+git -C "$R8" -c user.name=t -c user.email=t@t -c core.hooksPath=/dev/null commit -qm suites
+base=$(git -C "$R8" rev-parse HEAD)
+git -C "$R8" branch -M main
+git -C "$R8" switch -qc worker
+printf 'worker\n' >"$R8/branch-input"
+git -C "$R8" add branch-input
+git -C "$R8" -c user.name=t -c user.email=t@t -c core.hooksPath=/dev/null commit -qm worker
+assert test -z "$(bash "$ROOT/share/affected-suites.sh" --repo "$R8" -- --overlap "$base")"
+git -C "$R8" switch -q main
+printf 'main\n' >"$R8/disjoint-input"
+git -C "$R8" add disjoint-input
+git -C "$R8" -c user.name=t -c user.email=t@t -c core.hooksPath=/dev/null commit -qm disjoint
+git -C "$R8" switch -q worker
+assert test -z "$(bash "$ROOT/share/affected-suites.sh" --repo "$R8" -- --overlap "$base")"
+git -C "$R8" switch -q main
+printf 'main\n' >"$R8/upstream-input"
+git -C "$R8" add upstream-input
+git -C "$R8" -c user.name=t -c user.email=t@t -c core.hooksPath=/dev/null commit -qm overlap
+git -C "$R8" switch -q worker
+assert test "$(WORKER_RUN_ID=wr-9 bash "$ROOT/share/affected-suites.sh" --repo "$R8" -- --overlap "$base")" = "$R8/tests/test_pair.sh"
+assert_fails bash "$ROOT/share/affected-suites.sh" --repo "$R8" -- --overlap missing-ref
+assert_fails bash "$ROOT/share/affected-suites.sh" --repo "$R8" -- --overlap
+
 # --profile: each suite's shimmed calls land in its entry; without it no shim and no execs key.
 R7="$WORK/r7"
 new_repo "$R7"

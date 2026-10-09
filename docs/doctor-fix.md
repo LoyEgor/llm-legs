@@ -39,7 +39,7 @@ recorded `component: unverified`, shown by `doctor-fix show` and `night-run repo
 
 | verdict | when | what you leave behind |
 |---|---|---|
-| `fixed` | a clear bug, or a component of ours that works as specified but misses its goal | the fix (a change or a deletion; deletions beat additions), a test red on the old code, a `fixes[]` entry and status `fixed-pending` per your doctor's section |
+| `fixed` | a clear bug, or a component of ours that works as specified but misses its goal | the fix (a change or a deletion; deletions beat additions), a red-on-old-code test for P1/P2 or behaviour bugs (P3, fit, cleanup and speed refactors: existing suites green; speed keeps its work-not-done proof), a `fixes[]` entry and status `fixed-pending` per your doctor's section |
 | `ruled-out` | not a bug of ours | an `open` ledger row narrowed to this cause, the reason in its `note`, and a handoff proposing the dismissal to the owner |
 | `weather` | vendor-side or external | the same as `ruled-out` |
 | `blind-spot` | cannot be measured yet | a ledger `blind_spots` row with `would_catch_if` |

@@ -17,16 +17,20 @@ start <other vendor> --role research --web-search`, account from `worker-pick --
 research`, never Gemini Flash; its brief names only the product and version range and forbids reading
 the repositories.
 
-## Per branch, when its worker completes
+## Per branch, serially when its worker completes
 
-1. `doctor-fix show <ref>` reads closed and its close gate passed.
+1. `doctor-fix show <ref>` reads closed. Its close gate does not prove suites green. Require all branch covering suites (including the slow layer) green on the worker's final commit in every worktree (report and run-suites journal `head`); missing proof goes to step 3.
 2. Check every non-`fixed` verdict of its decision table yourself, a vendor's run against its blind list
    too; no per-branch review.
 3. What you find goes to the SAME worker (`RESUME <session>:`, the brief's `ADD-DIR:` lines under it); it
    resolves conflicts and gets suites green; at night, after that repository's press-time push, it first
    rebases as step 4 does.
-4. `git -C <worktree> rebase main` (night: `--onto main refs/night/<id>/base`), then in the worktree `tests/run-all
-   $(tests/affected $(git diff --name-only main...HEAD))`; green: in the main checkout `git merge --ff-only
+4. Land one branch at a time, including its `ADD-DIR:` repositories; no parallel landing batches. Before
+   rebase, save `base=$(git merge-base main HEAD)` (night: `refs/night/<id>/base`) and
+   `suites=$(tests/affected --overlap "$base")` in the worktree; a selection error stops landing.
+   `git rebase main` (night: `--onto main "$base"`), then `if [ -n "$suites" ]; then tests/run-all "$suites"; fi`.
+   No overlap means no rerun: mapped inputs main did not touch are still the worker's green inputs.
+   Green: in the main checkout `git merge --ff-only
    <branch>` (hooks push), `git worktree remove <worktree>`, `git branch -D <branch>`, `git push origin --delete
    <branch>`, the same per `ADD-DIR:` repository (one without commits loses only its worktree and branch), by day
    `git update-ref -d refs/doctor-fix/<ref>/base`; a conflict or red goes to step 3.

@@ -115,6 +115,8 @@ Sources: the 2026-10-02 research notes, now retired: [CT] chat turns, [HC] hooks
 
 **Opportunity** (`watch`, never counted): a component ≥ 0.5 OM/d, seen on ≥ 3 days or ≥ 3 sessions (both scaled to the covered share of the 7 days, at least 1), with a `LEVERS` row. Id `opportunity:<area>/<component>`; field `opportunity {om_day, saving, confidence, effort_h, night_cost_h, score, levers[], seen_days, data_confidence}`, every field stored and the score recomputed from them; the backlog ranks by `recoverable_min_day`, then score × `data_confidence` (seen days of 7).
 
+**Night admission.** Expected recoverable gain must be >= 5 min/day, including loud Harness performance rows and suite audits (token-spend audits keep their own policy); the 30 min/day floor alarm stays unchanged. `expected_min_day` in a problem or its ledger row prices a job without an opportunity estimate. Unpriced rows and pure `class: measurement fix` jobs stay out, unless `blind_for` names a priced >= 5 min/day opportunity blind without that repair. Speed prints skipped ids and reasons on one line; day repair remains available.
+
 **Score** = saving × confidence ÷ (effort_h + night_cost_h), night_cost_h being the slot-queue and first-landing delay its run adds. Confidence 0.8 measured with a mechanical lever, 0.5 estimated, 0.3 unmeasured. Effort S 1 h, M 3 h; an L lever is split into budget-fitting stages; classes recalibrate to closed runs.
 
 **Discovery.** An unmeasured component ≥ 1 OM/d (the residual once above 5 % of A; today ≈ 10 %) is a §3 blind spot with `would_catch_if`, for the owner chat, never a fixer. Needs-Egor levers are ranked and shown, never taken.
@@ -173,11 +175,11 @@ other suites (`runtime_change`), or a named unit gone, read `measurement fix`, n
 without result`, never a revert or a gate.
 
 **Selection.**
-- Regressions (with a lever and ≥ 0.5 OM/d) first, then every qualifying opportunity by recoverable min/day. No count or worker-hour cap: the night's speed is the goal, and how many fixers run at once is the worker slots' load/memory admission (`share/slots.sh` `slot_room`), a queue included. The cut-off is time: the night's speed work has a 6-hour wall-clock window from the night's `started_at` (`bin/night-run` `SPEED_WINDOW_H`). `worker-run` asks `night-run speed-gate` once a Speed fixer takes its slot; a first start past the window is not launched, its job `left` with `speed window closed (6 h)` and its run abandoned, while a fixer started inside it finishes (and resumes) normally. Nothing carries over: the next night's pick recomputes from the data, so its levers rank again. A partition slice no `LEVERS` row names ranks on the generic slice lever (`slice_levers`).
+- Regressions with a lever and expected gain ≥ 5 min/day first, then every qualifying opportunity by recoverable min/day. No count or worker-hour cap: the night's speed is the goal, and how many fixers run at once is the worker slots' load/memory admission (`share/slots.sh` `slot_room`), a queue included. The cut-off is time: the night's speed work has a 6-hour wall-clock window from the night's `started_at` (`bin/night-run` `SPEED_WINDOW_H`). `worker-run` asks `night-run speed-gate` once a Speed fixer takes its slot; a first start past the window is not launched, its job `left` with `speed window closed (6 h)` and its run abandoned, while a fixer started inside it finishes (and resumes) normally. Nothing carries over: the next night's pick recomputes from the data, so its levers rank again. A partition slice no `LEVERS` row names ranks on the generic slice lever (`slice_levers`).
 - Hook/statusline/Hammerspoon levers, spend audits and suite audits each take, by size, a share of the free worker slots: `share/slots.sh` `worker_capacity` over `bin/doctor-fix` `NIGHT_KINDS`, at least one each.
 - One owner per cause file per night across doctors; the other doctor's row links as `same_cause`.
 - Skipped: active work (the Code doctor's rule), `pending-exposure`, frozen components, savings below their proof's noise.
-- No score floor: any equivalent, positive-score, non-needs-Egor lever qualifies. An empty pick's `why_none` names its true cause: levers needing Egor, not equivalent or scoring 0, or no opportunity.
+- No score floor: an equivalent, positive-score, non-needs-Egor lever qualifies at ≥ 5 min/day expected gain. An empty pick's `why_none` names its true cause: levers needing Egor, not equivalent or scoring 0, or no opportunity.
 
 **Own keys**: `cost {collector_cpu_min_day, fixer_worker_min, review_min, slot_queue_min, landing_delay_min}`, `yield {proven_om_day, pending_om_day}`.
 
@@ -232,13 +234,13 @@ The headline is the strict OM/d. Area lines are "of which" and sum to it (Harnes
 
 **Proof obligations of a `fixed` line:**
 1. The before value (unit and OM/d) with journal refs, snapshotted before its sources are pruned.
-2. A deterministic work-not-done test, red on the old code (a fork count through a PATH shim, no git on an idle render, no sleep); a shard instead shows disjoint, complete suite sets and the Σ and longest-suite numbers.
+2. Work-not-done proof remains required for a speed fix even when a refactor needs no new behaviour test: a deterministic test, red on the old code (a fork count through a PATH shim, no git on an idle render, no sleep); a shard instead shows disjoint, complete suite sets and the Σ and longest-suite numbers.
 3. The §3 recipe for its class, within a bounded bench (never 50 full runs).
 4. Isolation: every replay and bench runs with HOME, `HARNESS_DOCTOR_DIR` and store paths in scratch and `CLAUDE_PROJECT_DIR` unset, and asserts the live stores' mtimes unchanged.
 5. Output equivalence, every class: identical decisions or results on the replay, recorded as the fix's `equivalence` {compared, data, result}; hooks and gates on ≥ 500 replayed real calls (inputs rebuilt from transcripts); per-decision-class fixtures (deny, malformed input, timeout, Stop and SessionStart payloads); a generated JSON-escape corpus for fast paths; a two-call race test (edit, then commit within 100 ms) for anything detached.
 6. Touched repos' suites green, assertion inventories ≥ base through the requirement map, mutation-checked on the changed seam.
 
-**Unattended safety.** Night isolation rules apply; the single hooks/statusline/Hammerspoon branch lands last; suites pass after the rebase and before push. Within the hour the close runs a correctness canary: no new hook error, cut or unjournaled hook; decisions unchanged; statusline time segments advance; read-only `menuItems()` calls succeed and the hs-lag probe shows no new stall; the suite failure rate has not risen. Latency reverts only past a pinned ceiling, or > 1.3 × with ≥ 200 band-matched calls. Otherwise the orchestrator reverts the commit and records the job `left`.
+**Unattended safety.** Night isolation rules apply; the single hooks/statusline/Hammerspoon branch lands last; workers prove covering suites green on their final commit; land serially and rerun only the pre-rebase suite overlap (`docs/fix-orchestrator.md`). Within the hour the close runs a correctness canary: no new hook error, cut or unjournaled hook; decisions unchanged; statusline time segments advance; read-only `menuItems()` calls succeed and the hs-lag probe shows no new stall; the suite failure rate has not risen. Latency reverts only past a pinned ceiling, or > 1.3 × with ≥ 200 band-matched calls. Otherwise the orchestrator reverts the commit and records the job `left`.
 
 ## 6. Backlog, recomputed
 
