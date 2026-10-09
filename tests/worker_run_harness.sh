@@ -177,6 +177,10 @@ if [ -n "${STUB_TRANSCRIPT_SESSION:-}" ]; then
       '{timestamp:$timestamp,type:"assistant",message:{content:[{type:"tool_use",name:"Edit",input:{file_path:$path}}]}}' \
       >>"$transcript_dir/$transcript_name.jsonl"
   done <<<"${STUB_EDIT_PATH:-}"
+  [ -z "${STUB_TRANSCRIPT_SAY:-}" ] ||
+    jq -cn --arg t "$STUB_TRANSCRIPT_SAY" --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '{timestamp:$timestamp,type:"assistant",message:{content:[{type:"text",text:$t}]}}' \
+      >>"$transcript_dir/$transcript_name.jsonl"
 fi
 if [ -n "${STUB_TRANSCRIPT_GROW:-}" ] && [ -n "${STUB_TRANSCRIPT_SESSION:-}" ]; then
   # A working claudeb writes NOTHING to stdout until its very last line; the transcript growing is
@@ -360,7 +364,7 @@ set_config() {
 clear_stub() {
   : >"$CALL_LOG"
   : >"$PICK_LOG"
-  unset STUB_SLEEP STUB_HEARTBEAT STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT STUB_TRANSCRIPT_GROW STUB_TRANSCRIPT_GROW_TURNS \
+  unset STUB_SLEEP STUB_HEARTBEAT STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT STUB_TRANSCRIPT_SAY STUB_TRANSCRIPT_GROW STUB_TRANSCRIPT_GROW_TURNS \
     STUB_EDIT_PATH STUB_PICK_WALL STUB_BURN STUB_WALL_SESSION \
     STUB_ERROR STUB_CODE STUB_STDOUT STUB_GEMINI_LABEL STUB_SESSION STUB_GROK_SESSION STUB_GROK_MODEL \
     STUB_GROK_ANSWER STUB_GROK_ERROR_EVENT STUB_GROK_TURNS STUB_MODEL_USAGE

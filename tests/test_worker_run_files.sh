@@ -548,6 +548,37 @@ EOF
 }
 guard_recorded_tests
 
+# A file the run wrote through an interpreter and committed is the run's: its own `git commit` names
+# the commit's subject. A commit whose subject no command of the run carries stays nobody's.
+commit_attribution_tests() {
+  clear_stub
+  set_config 'claudeb_model=opus' 'claudeb_effort=high'
+  export PICK_RC=0 PICK_ACCOUNT=recordacct CLAUDE_CODE_SESSION_ID=chat-abc
+  mkdir -p "$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture"
+  cat >"$STUB_DIR/relay_hook" <<'EOF'
+#!/usr/bin/env bash
+c() { git -C "$GUARD_REPO" -c user.name=fixture -c user.email=fixture@example.test "$@"; }
+printf 'by python\n' >"$GUARD_REPO/bin/committed-by-run"
+c add bin/committed-by-run && c commit -qm 'run commits what python wrote'
+printf 'other\n' >"$GUARD_REPO/bin/committed-by-other"
+c add bin/committed-by-other && c commit -qm 'another writer commits meanwhile'
+EOF
+  chmod +x "$STUB_DIR/relay_hook"
+  export GUARD_REPO=$DIRT_REPO
+  TOOL_TS=$(iso $(($(date +%s) + 600)))
+  tool_call Bash command $'python3 - <<\'EOF\'\nopen("bin/committed-by-run", "w").write("x")\nEOF\ngit add -A bin && git commit -qm "run commits what python wrote"' \
+    >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+  start_ok claudeb --workdir "$DIRT_REPO"
+  assert await_done
+  assert grep -qx 'bin/committed-by-run' "$RUN_DIR/files"
+  assert grep -qx 'RUN-FILE: bin/committed-by-run' <<<"$("$RUNNER" report "$RUN_ID")"
+  assert_fails grep -q 'committed-by-other' "$RUN_DIR/files"
+  rm -f "$STUB_DIR/relay_hook"
+  unset GUARD_REPO
+  clear_stub
+}
+commit_attribution_tests
+
 # A contents copy into the top (`rsync -a src/ .`) is recorded as the top itself, answering for every
 # changed file under it; it is no write outside the repository.
 guard_top_recorded_tests() {

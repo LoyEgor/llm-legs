@@ -1524,7 +1524,8 @@ persist_run_files() {
   RUN_LISTING_PARTIAL=$RUN_FILES_PARTIAL
   # This attempt's transcript names only its own calls: a reroute took a new session and restamped
   # started_at, so the walled attempt's listing comes from what its own pass kept.
-  RUN_LISTING_LIST=$(sort -u <(sed '/^$/d' <<<"$RUN_LISTING_LIST") <(sed '/^$/d' "$directory/listed" 2>/dev/null))
+  RUN_LISTING_LIST=$(sort -u <(sed '/^$/d' <<<"$RUN_LISTING_LIST") <(sed '/^$/d' "$directory/listed" 2>/dev/null) \
+                             <(run_commit_paths "$directory" "$workdir" | sed '/^$/d'))
   [ -n "$RUN_LISTING_REASON$RUN_LISTING_PARTIAL" ] || RUN_LISTING_PARTIAL=$(cat "$directory/listed-partial" 2>/dev/null)
   printf '%s\n' "$RUN_LISTING_LIST" >"$directory/listed" 2>/dev/null || :
   [ -z "$RUN_LISTING_REASON$RUN_LISTING_PARTIAL" ] ||
@@ -1579,6 +1580,27 @@ persist_run_files() {
   [ -n "$RUN_FILES_REASON" ] || record_produced "$directory" "$workdir"
   transcript_crosscheck "$directory"
   return 0
+}
+
+# The files of the commits this run made itself: HEAD moved in its window and the commit's subject
+# stands in one of its own shell commands. A transcript names a `git commit`, never what it took, so
+# a run that wrote through python and committed it all listed none of it.
+run_commit_paths() { # directory workdir
+  local directory="$1" workdir="$2" top rel before after sha subject needle path
+  [ -n "${RUN_SHELL_COMMANDS:-}" ] || return 0
+  before=$(cat "$directory/head-before" 2>/dev/null) && [ -n "$before" ] || return 0
+  after=$(cat "$directory/head-after" 2>/dev/null) && [ -n "$after" ] && [ "$after" != "$before" ] || return 0
+  top=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) || return 0
+  rel=${workdir%/}
+  case "$rel" in "$top"/*) rel=${rel#"$top"/} ;; *) rel='' ;; esac
+  while IFS=$'\t' read -r sha subject; do
+    [ "${#subject}" -ge 16 ] || continue
+    needle=$(jq -Rr '@json' <<<"${subject:0:60}") || continue
+    needle=${needle:1:${#needle}-2}
+    grep -qF -- "$needle" <<<"$RUN_SHELL_COMMANDS" || continue
+    git -C "$top" diff-tree --no-commit-id --no-renames --name-only -r "$sha" -- 2>/dev/null |
+      while IFS= read -r path; do produced_spelling "$top" "$rel" "$path"; printf '\n'; done
+  done < <(git -C "$top" log --format='%H%x09%s' "$before..$after" -- 2>/dev/null)
 }
 
 # A worktree the run made after launch is its own to write (ledger W3), granted only when the run's
@@ -4576,7 +4598,25 @@ report_run() {
   run_files "$directory"
   unnamed_line "$directory"
   printf 'RESULT:\n'
-  run_result_text "$directory" "$vendor" | tail -n 400
+  if [ -n "$(run_result_text "$directory" "$vendor" | head -c 1)" ]; then
+    run_result_text "$directory" "$vendor" | tail -n 400
+  else
+    last_messages "$directory"
+  fi
+}
+
+# A run ended before its final answer (the deadline, a kill) still said where it stood: without its
+# last messages the chat redoes hours that a RESUME of the session would continue.
+last_messages() { # directory
+  local directory="$1" vendor account workdir started transcript=''
+  { IFS= read -r vendor; IFS= read -r account; IFS= read -r workdir; IFS= read -r started; } \
+    < <(jq -r '.vendor, .account, .workdir, (.started_at // 0)' "$directory/meta.json" 2>/dev/null)
+  [ "$vendor" != claudeb ] || { IFS= read -r transcript <"$directory/session-file"; } 2>/dev/null || transcript=''
+  [ -n "$transcript" ] && [ -f "$transcript" ] ||
+    transcript=$(session_transcript "$vendor" "$account" "$(session_id "$directory")" "$workdir") || return 0
+  [[ "$started" =~ ^[0-9]+$ ]] || started=0
+  progress_rows "$vendor" "$transcript" "$started" | sed -n 's/^» //p' | tail -n 3 |
+    awk 'NR == 1 { print "(no final answer; the worker'"'"'s last messages:)" } { print }'
 }
 
 produced_commit_rows() { # top rel head-before [after]

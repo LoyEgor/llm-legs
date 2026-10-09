@@ -221,13 +221,12 @@ done
 assert_eq "$(jq -cn --arg root "$suites_repo" '["full","all","changed","named"] | map({label: "suites", scope: ., repo_root: $root})')" \
   "$(jq -sc 'map({label, scope, repo_root})' "$STATUSLINE_CACHE_DIR/test-scope.jsonl")"
 mkdir -p "$WORK/slow-git"
-printf '#!/bin/bash\ncase " $* " in *" ls-files "*) sleep 3 ;; esac\nexec %s "$@"\n' "$(command -v git)" > "$WORK/slow-git/git"
+printf '#!/bin/bash\ncase " $* " in *" ls-files "*) date +%%s >> "%s"; sleep 3 ;; esac\nexec %s "$@"\n' "$WORK/ls-files-at" "$(command -v git)" > "$WORK/slow-git/git"
 chmod +x "$WORK/slow-git/git"
 : > "$STATUSLINE_CACHE_DIR/test-scope.jsonl"
-launched=$(date +%s)
-PATH="$WORK/slow-git:$PATH" RUN_SUITES_TIMES="$WORK/times.tsv" bash "$ROOT/share/run-suites.sh" --repo "$suites_repo" -j 2 \
-  --changed >/dev/null 2>&1 || fail "run-suites --changed under a slow git failed"
-assert_eq yes "$(jq -r --argjson at "$launched" 'if .start - $at <= 1 then "yes" else "\(.start - $at) s late" end' \
+PATH="$WORK/slow-git:$PATH" RUN_SUITES_SLOT="$WORK/inherited-slot" RUN_SUITES_TIMES="$WORK/times.tsv" bash "$ROOT/share/run-suites.sh" \
+  --repo "$suites_repo" -j 2 --changed >/dev/null 2>&1 || fail "run-suites --changed under a slow git failed"
+assert_eq yes "$(jq -r --argjson at "$(head -n1 "$WORK/ls-files-at")" 'if .start <= $at then "yes" else "\(.start - $at) s after discovery began" end' \
   "$STATUSLINE_CACHE_DIR/test-scope.jsonl")" "run-suites stamps its scope marker with its own start, not after a slow discovery"
 
 # A run with its own row in the run-suites journal gets none here: run-suites by its pid, a test

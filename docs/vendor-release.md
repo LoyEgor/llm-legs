@@ -101,8 +101,8 @@ only with a stated reason), and every new capability is supported, per account, 
    natively or its reason is gone? Then remove it.
 9. Per account: resolve and check each account the pool holds today (`codexb models --account`,
    per-account catalogs, entitlements); an entitlement refusal is typed apart from a usage limit.
-10. Live proof. LLM models: one real `worker-run` per new model (cheapest fitting account from
-    `worker-pick`), its `SERVED:` line must name it. Images/video: list each generation as
+10. Live proof. LLM models: your RETURN asks the orchestrator for one `worker-run` per new model
+    (you cannot start one); its `SERVED:` line must name it. Images/video: list each generation as
     "generation → the claim only it can settle", parameters riding in the same call, nothing a free
     source settles. The list is the report's one ask; typically empty for a CLI bump, 1–3 otherwise.
 11. Deprecations and silent fallbacks get a dated tripwire (a test that fails on the date), and a

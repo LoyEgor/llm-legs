@@ -19,6 +19,18 @@ assert grep -q '^KILLED: deadline — the 1s ceiling' <<<"$deadline_wait"
 assert jq -e --argjson l "$launched" '.terminal_reason == "deadline" and .started_at >= $l
   and .started_at <= .cli_starts[0] and .ended_at >= .started_at + 1 and .attempt_rcs == [143]' "$RUN_DIR/meta.json" >/dev/null
 
+# A run the deadline ended has no final answer, and its report carries its last messages instead.
+clear_stub
+set_config 'claudeb_model=opus' 'claudeb_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=lastwords STUB_SLEEP=30 WORKER_RUN_DEADLINE=2 STUB_TRANSCRIPT_SESSION=lastwords-session \
+  STUB_TRANSCRIPT_ACCOUNT=lastwords STUB_TRANSCRIPT_SAY='Traced 40 of 120 files; next the c46 set.'
+start_ok claudeb
+unset STUB_SLEEP WORKER_RUN_DEADLINE STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT STUB_TRANSCRIPT_SAY
+"$RUNNER" wait "$RUN_ID" --max 30 >/dev/null
+lastwords_report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'Traced 40 of 120 files; next the c46 set.' <<<"$lastwords_report"
+assert grep -q "^(no final answer; the worker's last messages:)$" <<<"$lastwords_report"
+
 # A worker that keeps writing is working, however long it takes: the idle watchdog reads the run's
 # own files, and a suite that runs for minutes returns through them.
 clear_stub
