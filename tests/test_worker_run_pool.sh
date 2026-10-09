@@ -456,6 +456,16 @@ for spec in 'claudeb:usage limit reached:CLAUDEB_USAGE_LIMIT' 'codex:quota exhau
   assert grep -qx 'WALL: pool exhausted (walled: limitacct)' "$WORK/wait.out"
 done
 
+# A research run on an explicit account never asks the pool, so its wall says nothing about the pool.
+clear_stub
+set_config 'claudeb_model=opus' 'claudeb_effort=high' 'light_research=claudeb:sonnet'
+export PICK_RC=0 PICK_ACCOUNT=spareacct STUB_CODE=9 STUB_ERROR='usage limit reached'
+start_ok claudeb --role research --account limitacct
+assert await_done
+assert grep -qx 'OUTCOME: CLAUDEB_USAGE_LIMIT' "$WORK/wait.out"
+assert grep -qx 'WALL: explicit account stays on limitacct' "$WORK/wait.out"
+assert_fails grep -q 'pool exhausted' "$WORK/wait.out"
+
 clear_stub
 set_config 'codex_effort=medium'
 export PICK_RC=0 PICK_ACCOUNT=limitacct STUB_CODE=9

@@ -3274,6 +3274,8 @@ print_outcome() {
     elif [ -n "$(jq -r '.resume // empty' "$directory/meta.json" 2>/dev/null)" ]; then
       printf 'WALL: resumed session stays on %s\n' \
         "$(jq -r '.account' "$directory/meta.json" 2>/dev/null)"
+    elif jq -e '.role == "research" and .explicit_account != ""' "$directory/meta.json" >/dev/null 2>&1; then
+      printf 'WALL: explicit account stays on %s\n' "$(jq -r '.account' "$directory/meta.json" 2>/dev/null)"
     elif jq -e '(.walled_accounts // []) | length > 0' "$directory/meta.json" >/dev/null 2>&1; then
       printf 'WALL: reroute cap reached (walled: %s) — the work done so far stays in the workdir\n' \
         "$(jq -r '((.walled_accounts // []) + [.account]) | join(", ")' "$directory/meta.json" 2>/dev/null)"
