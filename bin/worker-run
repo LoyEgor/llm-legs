@@ -2378,7 +2378,7 @@ refuse_live_run() { # brief resume
 start_run() {
   [ "$#" -ge 1 ] || usage
   local vendor="$1" brief='' workdir="$PWD" explicit_account='' model='' effort='' resume='' first_line='' review_round='' round_flag='' role='workers' research_timeout='' sandbox_exec=''
-  local round_source='' candidate='' rule=''
+  local round_source='' candidate='' rule='' image=''
   local -a text_rounds=()
   local account pin config_model model_label agy_model='' gemini_family='' grok_turns='' root run_id='' directory=''
   local explicit_model='' explicit_effort='' light='' light_model='' model_class=workers fix_rule='' chat_fast=false fast_role='' grok_asked_model='' model_id='' slug_account=''
@@ -2726,6 +2726,13 @@ start_run() {
     [ -r "${images[$value]}" ] || fail "image is not readable: ${images[$value]}"
     [[ "${images[$value]}" = /* ]] || images[$value]="$PWD/${images[$value]}"
   done
+  if [ "$vendor" = codex ]; then
+    while IFS= read -r value; do
+      [ -f "$value" ] && [ -r "$value" ] || continue
+      for image in "${images[@]}"; do [ "$image" != "$value" ] || continue 2; done
+      images+=("$value")
+    done < <(grep -oiE '(^|[[:space:]"'\''`(<])/[^[:space:]"'\''`()<>]+\.(png|jpe?g|webp|gif)' "$brief" | sed 's|^[^/]*||' | awk '!seen[$0]++')
+  fi
   for value in "${!add_dirs[@]}"; do
     [[ "${add_dirs[$value]}" = /* ]] || add_dirs[$value]="$PWD/${add_dirs[$value]}"
   done

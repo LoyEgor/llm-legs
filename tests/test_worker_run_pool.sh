@@ -276,6 +276,23 @@ assert await_done
 assert grep -qxF "ARG=$WORK/rel-extra" "$CALL_LOG"
 assert grep -qxF "ARG=$WORK/rel-image.png" "$CALL_LOG"
 
+# Absolute image paths a codex brief names ride as -i once each; a missing file, a URL or a path
+# inside a relative one never does.
+cp "$WORK/brief" "$WORK/brief.noimg"
+printf 'img\n' >"$WORK/shot.PNG"
+{ cat "$WORK/brief.noimg"; printf 'See %s and (%s), not %s/gone.png, https://x.io%s, docs%s.\n' \
+  "$WORK/shot.PNG" "$WORK/rel-image.png" "$WORK" "$WORK/shot.PNG" "$WORK/shot.PNG"; } >"$WORK/brief"
+clear_stub
+set_config 'codex_effort=high'
+(cd "$WORK" && "$RUNNER" start codex --brief "$WORK/brief" --workdir "$WORK/workdir" --account options --image rel-image.png) >"$WORK/start.out" 2>"$WORK/start.err" || fail "brief-image start failed: $(<"$WORK/start.err")"
+RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
+RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/start.out")
+assert await_done
+assert test "$(grep -cxF "ARG=$WORK/shot.PNG" "$CALL_LOG")" = 1
+assert test "$(grep -cxF "ARG=$WORK/rel-image.png" "$CALL_LOG")" = 1
+assert test "$(grep -cx 'ARG=-i' "$CALL_LOG")" = 2
+cp "$WORK/brief.noimg" "$WORK/brief"
+
 # A cross-repository brief grants its second repository in the header (the eight escaped legs of
 # 2026-09-29 named it only in prose); an ADD-DIR: past the first body line is prose, never a grant.
 cp "$WORK/brief" "$WORK/brief.plain"
