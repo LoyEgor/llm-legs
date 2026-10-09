@@ -88,14 +88,28 @@ slot_wait() { # dir count ceiling-seconds limiter what [tick command...] -> the 
 }
 
 slot_wait_end() { # dir count hold reason -> journals the hold's wait with the count allowed and held at its end
-  local allowed=${2#*-} held=0 file pid taken=${SLOT_TAKEN##*/}
+  local allowed=${2#*-} held taken=${SLOT_TAKEN##*/}
   [ -n "$3" ] || return 0
   if [ "${2%-*}" != "$allowed" ] && ! { [[ "$taken" =~ ^[0-9]+$ ]] && [ "$taken" -gt "${2%-*}" ]; } &&
     ! slot_room >/dev/null; then allowed=${2%-*}; fi
+  held=$(slots_held "$1")
+  hold_clear "$3" "$allowed" "$held" "$4"
+}
+
+slots_held() { # dir -> the slots a live process holds
+  local file pid held=0
   for file in "$1"/*/pid; do
     { read -r pid <"$file"; } 2>/dev/null && [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null && held=$((held + 1))
   done
-  hold_clear "$3" "$allowed" "$held" "$4"
+  printf '%s\n' "$held"
+}
+
+worker_capacity() { # -> the worker slots free now: the count slot_room admits less the live holders
+  local count=${WORKER_SLOTS:-$(worker_slots)} allowed held
+  allowed=${count#*-}
+  [ "${count%-*}" = "$allowed" ] || slot_room >/dev/null || allowed=${count%-*}
+  held=$(slots_held "${WORKER_SLOTS_DIR:-${DOCTORS_DIR:-$HOME/.cache/doctors}/worker-slots}")
+  printf '%s\n' $((allowed > held ? allowed - held : 0))
 }
 
 slot_release() { store_lock_release "${1:-}"; }

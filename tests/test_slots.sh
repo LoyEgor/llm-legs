@@ -78,6 +78,17 @@ assert jqe '.why == "memory pressure level 2"' "$HARNESS_HOLDS_DIR"/room-limiter
 room 1 150 140 $((guard + 1))
 wait "$waiter" || fail "slot_wait never took the room it was given"
 assert [ "$(cat "$WORK/room-waited")" = "$WORK/r/2" ]
+# Free worker capacity, the night's per-kind share: the count room admits less the live holders.
+capacity() { WORKER_SLOTS=2-5 WORKER_SLOTS_DIR="$WORK/cap" worker_capacity; }
+mkdir -p "$WORK/cap"
+assert [ "$(capacity)" = 5 ]
+capper=$(holder "$WORK/cap" 2-5)
+assert [ "$(capacity)" = 4 ]
+room 2 150 140 $((guard + 1))
+assert [ "$(capacity)" = 1 ]
+kill "$capper" && until_gone "$capper"
+assert [ "$(capacity)" = 2 ]
+room 1 150 140 $((guard + 1))
 # Its row: refused for room, re-judged on a later poll, admitted at the count room allows.
 assert jqe 'length == 1 and .[0].allowed == 2 and .[0].held == 2 and .[0].reason == "room"' <(waits_of room-limiter)
 assert_fails slot_take "$WORK/r" 1-2 3600

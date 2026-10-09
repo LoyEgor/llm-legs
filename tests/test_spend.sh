@@ -2,7 +2,7 @@
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 # share/spend.py, the Spend block of the Harness doctor, off a fixture tracking.json: tokenmap's harness_index as the
 # headline, components summed per hook script over tokenmap's three Hooks sections, only harness-owned ones targeted
-# (re-writes by tokenmap's avoidable flag), stale or no index -> nodata, the due rules, the night's one selection, the
+# (re-writes by tokenmap's avoidable flag), stale or no index -> nodata, the due rules, the night's ranked queue, the
 # restate a night close reads, the audit record and its proof, the roi line, the day backfill and the Harness menu.
 # Fixture directories only.
 set -u
@@ -137,8 +137,8 @@ check(out["status"] == "watch" and out["index"] == 0.46 and out["change"] == "-5
       "share, the largest (compaction) never among them: %s %s" % (out["head"], ids))
 check([p["id"] for p in collect(idle_avoidable=True)["problems"]][0] == "spend:rewrites:expired (1h+ idle)",
       "a cause tokenmap flags avoidable becomes a target and, the largest, the first audit")
-check(out["selection"] == ["spend:startup:CLAUDE.md + memory index"] and out["issues"][0] == [6.0, "startup CLAUDE.md + memory index"],
-      "the night selects exactly one audit, the top-ranked due component: %s" % out["selection"])
+check(out["selection"] == ids and out["issues"][0] == [6.0, "startup CLAUDE.md + memory index"],
+      "the night's queue is every due audit, largest first; bin/doctor-fix takes its slot share: %s" % out["selection"])
 stale = collect(made=NOW - 27 * 3600)
 check(stale["status"] == "nodata" and stale["index"] is None and stale["problems"] == [] and stale["selection"] == []
       and stale["head"].startswith("tracking.json stale since"),

@@ -159,15 +159,15 @@ or after it` and its spend stays out of the return. Per night: improvement spend
 over the trend's nights. No gain reads `spend without result` — a measurement, never a revert or a gate.
 
 **Selection.**
-- Regressions (with a lever and ≥ 0.5 OM/d) first, then every qualifying opportunity by recoverable min/day. No count or worker-hour cap: the night's speed is the goal, and how many fixers run at once is the worker slots' load/memory admission (`share/slots.sh` `slot_room`), a queue included. The cut-off is time: the night's speed work has a 6-hour wall-clock window from the night's `started_at` (`bin/night-run` `SPEED_WINDOW_H`). `worker-run` asks `night-run speed-gate` once a Speed fixer takes its slot; a first start past the window is not launched, its job `left` with `speed window closed (6 h)` and its run abandoned, while a fixer started inside it finishes (and resumes) normally. Nothing carries over: the next night's pick recomputes from the data, so its levers rank again. A loud row without a lever (`time_floor`) takes no hook turn (`bin/doctor-fix` dispatches it on its own); an opportunity on a lever a regression took rides with it.
-- At most one hooks/statusline/Hammerspoon lever per night (`HOOK_LEVERS`; one commit, one proof): they share the chat's hook floor, so two landing the same night cannot be told apart by its paired replay or its band-matched days.
+- Regressions (with a lever and ≥ 0.5 OM/d) first, then every qualifying opportunity by recoverable min/day. No count or worker-hour cap: the night's speed is the goal, and how many fixers run at once is the worker slots' load/memory admission (`share/slots.sh` `slot_room`), a queue included. The cut-off is time: the night's speed work has a 6-hour wall-clock window from the night's `started_at` (`bin/night-run` `SPEED_WINDOW_H`). `worker-run` asks `night-run speed-gate` once a Speed fixer takes its slot; a first start past the window is not launched, its job `left` with `speed window closed (6 h)` and its run abandoned, while a fixer started inside it finishes (and resumes) normally. Nothing carries over: the next night's pick recomputes from the data, so its levers rank again. A partition slice no `LEVERS` row names ranks on the generic slice lever (`slice_levers`).
+- Hook/statusline/Hammerspoon levers, spend audits and suite audits each take, by size, a share of the free worker slots: `share/slots.sh` `worker_capacity` over `bin/doctor-fix` `NIGHT_KINDS`, at least one each.
 - One owner per cause file per night across doctors; the other doctor's row links as `same_cause`.
 - Skipped: active work (the Code doctor's rule), `pending-exposure`, frozen components, savings below their proof's noise.
-- No score floor: any equivalent, positive-score, non-needs-Egor lever qualifies. An empty pick's `why_none` names its true cause: the hook turn taken, levers needing Egor, not equivalent or scoring 0, or no opportunity.
+- No score floor: any equivalent, positive-score, non-needs-Egor lever qualifies. An empty pick's `why_none` names its true cause: levers needing Egor, not equivalent or scoring 0, or no opportunity.
 
 **Own keys**: `cost {collector_cpu_min_day, fixer_worker_min, review_min, slot_queue_min, landing_delay_min}`, `yield {proven_om_day, pending_om_day}`.
 
-**Judge**: sha256 over `bin/speed-doctor`, the ledger's dismissals, `LIMITS`, `LEVERS`, `TIME_LEVERS`, the floors, `HOOK_LEVERS`, R, the bands and the proof table.
+**Judge**: sha256 over `bin/speed-doctor`, the ledger's dismissals, `LIMITS`, `LEVERS`, `TIME_LEVERS`, the floors, the slice lever, R, the bands and the proof table.
 
 ## 4. Menu
 

@@ -292,8 +292,9 @@ def lines(found, rows, reasons, proofs):
 
 def collect(now, state, write, scripts, home, repos, root, local_day):
     """The `spend` section: status, tokenmap's harness index as the value with its daily history, problems (one per
-    harness-owned component whose audit is due), the night's one selection, audit proofs, menu lines. A stale or
-    missing tracking.json or harness_index reads nodata: never an old number as current."""
+    harness-owned component whose audit is due), the night's queue (bin/doctor-fix takes its slot share),
+    audit proofs, menu lines. A stale or missing tracking.json or harness_index reads nodata: never an old number as
+    current."""
     state.pop("spend_by_day", None)
     history = state["index_by_day"] = {d: v for d, v in (state.get("index_by_day") or {}).items()
                                        if d >= local_day(now - DAYS_KEPT * 86400)}
@@ -325,7 +326,7 @@ def collect(now, state, write, scripts, home, repos, root, local_day):
               if c["target"] and c["key"] in rows and not reasons.get(c["key"])}
     at = datetime.datetime.fromtimestamp(made).astimezone().isoformat(timespec="seconds")
     out["problems"] = [problem(c, reasons[c["key"]], at) for c in found if reasons.get(c["key"])]
-    out["selection"] = [p["id"] for p in out["problems"][:1]]
+    out["selection"] = [p["id"] for p in out["problems"]]
     out["issues"] = [[p["value"], p["spend"]["label"]] for p in out["problems"][:3]]
     value = index_value(index)
     out.update(status="watch" if out["problems"] else "ok", index=value, change=index.get("change"),

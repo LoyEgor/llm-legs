@@ -43,7 +43,6 @@ PRESENCE_IDLE_S = 120
 LIMITS = {"regression_ratio": 1.3, "regression_days": 2, "worth_om_day": 0.5, "blind_om_day": 1.0,
           "residual_share": 0.05, "baseline_days": 28, "baseline_min_days": 7, "seen_days": 3, "seen_sessions": 3,
           "collector_s": 2.0}
-HOOK_LEVERS = 1
 EFFORT_H = {"S": 1.0, "M": 3.0}
 CONFIDENCE = {"measured": 0.8, "estimated": 0.5, "unmeasured": 0.3}
 BANDS = {"load": ("<1", "1-2", "2-4", ">4"), "size": ("<1", "1-10", ">10")}
@@ -80,7 +79,13 @@ LEVERS = [
     {"component": "background/statusline", "lever": "segment caches, contract-safe idle reprint",
      "effort": "M", "confidence": "unmeasured", "saving": 0.4, "night_cost_h": 0.0, "proof": "frequency", "hooks": True,
      "quality": "equivalent"},
+    {"component": "background/hs lag", "lever": "Hammerspoon main-thread work off its timers: async tasks, cached builds",
+     "effort": "M", "confidence": "measured", "saving": 0.5, "night_cost_h": 0.0, "proof": "tail", "hooks": True,
+     "quality": "equivalent"},
 ]
+SLICE_LEVER = {"effort": "M", "confidence": "unmeasured", "saving": 0.3, "night_cost_h": 0.0, "proof": "tail",
+               "quality": "equivalent"}
+NO_SLICE_LEVER = ("chat/residual",)
 CHAT_LEAVES = (("hook", "hooks"), ("stop", "hooks"), ("queue", "queue"), ("test", "tests"), ("media", "media"),
                ("tool", "tools"), ("compact", "compaction"), ("gen", "model"), ("resid", "residual"))
 HOLE_LAYERS = ("dark", "ask")
@@ -109,6 +114,16 @@ def validate_levers(levers):
         if lever.get("quality") not in QUALITY:
             raise ValueError("lever %r has no quality: equivalent|risk" % lever.get("lever"))
     return levers
+
+
+def slice_levers(partition):
+    """A partition slice no LEVERS row names still ranks by its minutes, on a generic output-equivalent lever; the
+    model slice stays forbidden and the residual is a blind spot."""
+    named = {l["component"] for l in LEVERS} | set(FORBIDDEN_COMPONENTS) | set(NO_SLICE_LEVER)
+    return [dict(SLICE_LEVER, component=component,
+                 lever="cut the %s wait toward its floor, outputs unchanged" % component.split("/", 1)[1])
+            for component in sorted("%s/%s" % (area, leaf) for area, leaves in partition.items() for leaf in leaves)
+            if component not in named and not FORBIDDEN_LEVER.search(component)]
 
 
 def lever_evidence(lever):
@@ -704,44 +719,27 @@ def rank_key(o):
             -fields["score"] * fields.get("data_confidence", 1.0), o["id"])
 
 
-def select(opportunities, regressions=(), why=None):
-    """Night pick (§3 Selection): the loud regressions with a lever first, each at its component's cheapest one, then
-    every equivalent positive-score opportunity by score, one hook lever per night; how many run at once is the worker
-    slots' admission. A loud row without a lever (time_floor) takes no hook turn; bin/doctor-fix dispatches it on its
-    own. An opportunity on a lever a regression took rides with it. `why` receives the skip reasons."""
-    chosen, hooks, taken, levers_taken = [], 0, 0, set()
-    for reg in regressions:
-        component = reg.get("component")
-        levers = sorted((EFFORT_H[l["effort"]] + l["night_cost_h"], bool(l.get("hooks")), l["component"]) for l in LEVERS
-                        if component and l["quality"] == "equivalent" and (l["component"] == component
-                                                                           or l["component"].startswith(component + "/")))
-        if levers:
-            _, hook, lever = levers[0]
-            hooks, taken = hooks + hook, taken + 1
-            levers_taken.add(lever)
-    skipped = {}
+def select(opportunities, why=None):
+    """Night pick (§3 Selection): every equivalent positive-score opportunity in rank order, recoverable minutes
+    first; how many of each kind a night takes is bin/doctor-fix's share of the free worker slots. Loud rows
+    (regressions, time_floor) go in on their own. `why` receives the skip reasons."""
+    chosen, skipped = [], {}
     for o in opportunities:
         fields = o["opportunity"]
         reason = "egor" if fields["needs_egor"] else "risk" if fields["quality"] != "equivalent" \
             else "score" if fields["score"] <= 0 else None
-        if not reason and o["id"].partition(":")[2] in levers_taken:
-            chosen.append(o["id"])
-            continue
-        reason = reason or ("hook" if fields["hooks"] and hooks >= HOOK_LEVERS else None)
         if reason:
             skipped[reason] = skipped.get(reason, 0) + 1
-            continue
-        chosen.append(o["id"])
-        hooks += fields["hooks"]
+        else:
+            chosen.append(o["id"])
     if why is not None:
-        why.update(skipped=skipped, regressions=taken)
+        why.update(skipped=skipped)
     return chosen
 
 
 def why_skipped(why):
     skipped = why.get("skipped") or {}
     return ", ".join(text for key, text in (
-        ("hook", "the night's hook lever is taken"),
         ("egor", "%d need Egor" % skipped.get("egor", 0)),
         ("risk", "%d are not output-equivalent" % skipped.get("risk", 0)),
         ("score", "%d score 0" % skipped.get("score", 0))) if key in skipped)
@@ -937,7 +935,7 @@ def judge_digest(ledger):
     with open(os.path.realpath(__file__), "rb") as handle:
         digest.update(handle.read())
     dismissals = [r for r in speed_rows(ledger) if r.get("status") in H.DISMISSED]
-    digest.update(json.dumps([dismissals, LIMITS, HEAVY_TEST_S, KEEP_WORDS.pattern, LEVERS, HOOK_LEVERS, H.C1_R_S, BANDS, PROOF, OUTPUT_PROOF,
+    digest.update(json.dumps([dismissals, LIMITS, HEAVY_TEST_S, KEEP_WORDS.pattern, LEVERS, SLICE_LEVER, NO_SLICE_LEVER, H.C1_R_S, BANDS, PROOF, OUTPUT_PROOF,
                               TIME_LEVERS, spend.SHARE_RISE, spend.PARTS, suite_audit.CPU_RISE, suite_audit.JUMP_S,
                               suite_audit.NEW_HEAVY, suite_audit.RECENT_RUNS, time_budget.FLOORS,
                               time_budget.FLOOR_ROW_MIN_DAY],
@@ -1093,7 +1091,7 @@ def collect(write, now):
                          "band": band, "ident": ident})
     opportunities = []
     components = {}
-    for lever in shown_levers(LEVERS):
+    for lever in shown_levers(LEVERS) + slice_levers(tree):
         components.setdefault(lever["component"], []).append(lever)
     for component, levers in components.items():
         om = component_om(component)
@@ -1130,7 +1128,7 @@ def collect(write, now):
     opportunities = with_time(opportunities, budget)
     problems += floor_rows(budget, ledger, now, full_runs(now, H.suites_journal()))
     why = {}
-    selection = select(opportunities, [p for p in problems if p["state"] in H.LOUD_STATES], why)
+    selection = select(opportunities, why)
     coverage = {"days": round(covered, 2), "window_days": WINDOW_D, "backfill_files_done": job["files"] - len(job["todo"]),
                 "backfill_files": job["files"]}
     gap = "%s of %d days covered" % (round(covered, 1), WINDOW_D) if covered < WINDOW_D else None

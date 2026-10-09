@@ -598,6 +598,20 @@ assert grep -qF 'line 4 (test_hang:proj:test_x): handoff refused' "$WORK/err"
 assert grep -qF 'line 5 (menu_build:automation): handoff refused' "$WORK/err"
 assert_fails grep -qF "(collector:run): handoff refused" "$WORK/err"
 assert_fails grep -qF "(quiet-hook): handoff refused" "$WORK/err"
+# A floor's target is zero: ruled-out needs its cheapest cut priced, and a handoff only a trade to Egor leaves it.
+hw=$(cat "$DATA"/h-* | awk -F'\t' '$1 ~ /^harness-hook-waits-/ {print $1}')
+assert grep -qF "A floor's target is zero, never a limit" "$RUNS/$hw.brief.md"
+assert_fails grep -qF "A floor's target is zero" "$RUNS/$hk.brief.md"
+printf 'floor:event:PreToolUse\truled-out\tclaude-setup/hooks/gate.sh\tkept under the 1000 ms limit: 547 ms p50\n' >"$WORK/fl"
+printf 'floor:tool\thandoff\tclaude-setup/hooks/gate.sh\tdocs/handoffs/x.md\nbogus\tnope\tx\ty\n' >>"$WORK/fl"
+assert_fails fix close "$hw" --decisions "$WORK/fl" "floors" 2>"$WORK/err"
+assert grep -qF "line 1 (floor:event:PreToolUse): ruled-out refused: a floor row's floor is zero" "$WORK/err"
+assert grep -qF "line 2 (floor:tool): handoff refused: a Speed or floor row is this run's to fix" "$WORK/err"
+printf 'floor:event:PreToolUse\truled-out\tclaude-setup/hooks/gate.sh\tcut the jq parse saves 40 ms × 900/day, costs one cache file\n' >"$WORK/fl"
+printf 'floor:tool\thandoff\tclaude-setup/hooks/gate.sh\tdocs/handoffs/2026-10-02-egor.md\nbogus\tnope\tx\ty\n' >>"$WORK/fl"
+assert_fails fix close "$hw" --decisions "$WORK/fl" "floors" 2>"$WORK/err"
+assert_fails grep -qF "refused" "$WORK/err"
+assert grep -qF "line 3 (bogus): verdict 'nope'" "$WORK/err"
 rm "$DATA/harness-doc.json"
 load=$(cat "$DATA"/h-* | awk -F'\t' '$1 ~ /^harness-load-/ {print $1}')
 assert jqe '.problems[0].id == "load:host" and .problems[0].component.files == []' "$(record "$load")"
@@ -890,7 +904,7 @@ with open(os.path.join(work, "harness", "latest.json"), "w") as handle:
 with open(os.path.join(work, "ledger.json"), "w") as handle:
     json.dump({"owner": "H", "rows": [], "blind_spots": []}, handle)
 EOF
-speed_env=(HARNESS_DOCTOR_DIR="$S/harness" HARNESS_LEDGER="$S/ledger.json" DOCTOR_FIX_REVIEW_BENCH="$FAKE_BIN/review-bench")
+speed_env=(HARNESS_DOCTOR_DIR="$S/harness" HARNESS_LEDGER="$S/ledger.json" DOCTOR_FIX_REVIEW_BENCH="$FAKE_BIN/review-bench" WORKER_SLOTS=4)
 cat >"$FAKE_BIN/review-bench" <<'EOF'
 #!/usr/bin/env bash
 [ "$1 $3" != "fix --print" ] || { [ ! -e "$DATA/rb-gone-$2" ] || { echo "no round $2" >&2; exit 1; }
@@ -903,7 +917,8 @@ chmod +x "$FAKE_BIN/review-bench"
 env "${speed_env[@]}" CODE_LEDGER="$S/none.json" STATUSLINE_CACHE_DIR="$S/sl" SPEED_DOCTOR_NOW=1790967000 \
   SPEED_DOCTOR_DIR="$S/speed" WORKER_STATS_DIR="$S/ws" CODE_DOCTOR_DIR="$S/code" "$ROOT/bin/speed-doctor" --quiet ||
   fail "speed-doctor did not merge its section"
-night1='["opportunity:chat/hooks", "opportunity:machine/contention", "opportunity:tests/llm-legs/test_llm_limits", "opportunity:chat/tests"]'
+night1='["opportunity:chat/tools", "opportunity:delegation/background Bash", "opportunity:chat/hooks", "opportunity:machine/contention",
+  "opportunity:tests/llm-legs/test_llm_limits", "opportunity:chat/tests", "opportunity:delegation/reviews"]'
 assert jqe --argjson n "$night1" '.speed.selection == $n' "$S/harness/latest.json"
 mkdir -p "$L/share/rbench" "$L/share/briefs" "$L/agents"
 printf '# the per-model call\nclaudeb opus high high,xhigh low,medium,max no\n' >"$L/share/worker-model.sh"
@@ -923,11 +938,18 @@ env "${speed_env[@]}" bash "$FIX" launch harness --night n8 >"$WORK/out" 2>"$WOR
 speed_runs() { # -> each launched run as [area, [problem id, component files]...], by area
   for r in $(cut -f1 "$WORK/out"); do jq -c '[.area] + [.problems[] | [.id, .component.files]]' "$(record "$r")"; done | jq -sc 'sort'
 }
-assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 4 ]
+assert [ "$(wc -l <"$WORK/out" | tr -d ' ')" = 7 ]
 assert jqe --arg t "$L/tests/test_llm_limits.sh" --arg h "$rfg" '. == [
   ["speed-chat-hooks", ["opportunity:chat/hooks", [$h]]], ["speed-chat-tests", ["opportunity:chat/tests", []]],
+  ["speed-chat-tools", ["opportunity:chat/tools", []]],
+  ["speed-delegation-background-bash", ["opportunity:delegation/background Bash", []]],
+  ["speed-delegation-reviews", ["opportunity:delegation/reviews", []]],
   ["speed-machine-contention", ["opportunity:machine/contention", []]],
   ["speed-tests-llm-legs-test-llm-limits", ["opportunity:tests/llm-legs/test_llm_limits", [$t]]]]' <(speed_runs)
+for r in $(grep -E 'speed-(chat-tools|delegation)' "$WORK/out" | cut -f1); do fix abandon "$r" >/dev/null; done
+jq '(["opportunity:chat/tools", "opportunity:delegation/background Bash", "opportunity:delegation/reviews"]) as $g
+  | .speed.selection -= $g | .problems |= map(select(.id as $i | $g | index($i) | not))' "$S/harness/latest.json" >"$S/core.json" &&
+  mv "$S/core.json" "$S/harness/latest.json"
 sid=$(grep -F 'speed-machine-contention' "$WORK/out" | cut -f1)
 # A Speed run whose component files live in the night's repository waits for a speed-lens review of them in its
 # worktree: its brief names that round, so worker-run hands the fixer the round's findings; the others get none.
@@ -1033,7 +1055,7 @@ git -C "$L" update-ref refs/night/n10/base HEAD
 env "${speed_env[@]}" bash "$FIX" launch harness --night n10 >"$WORK/out" 2>"$WORK/err" || fail "speed night n10: $(cat "$WORK/err")"
 assert [ ! -s "$WORK/out" ]
 assert [ "$(cat "$WORK/err")" = "harness: Speed selects nothing: 295 min/day recoverable, but 2 need Egor; 1.2 of 7 days covered" ]
-# Spend: a night takes one audit, the due component Spend ranked first, in a run of its own whose brief carries the
+# Spend: a night on a one-slot share takes one audit, the due component Spend ranked first, in a run of its own whose brief carries the
 # audit's five steps.
 jq --argjson s "$(now)" --arg g "$gate" --arg t "$L/tests/test_llm_limits.sh" '.as_of_s = $s
   | .problems += [{id: "spend:hook:gate.sh", rule: "spend_audit", state: "watch", speed: true, group: "Spend",
@@ -1072,6 +1094,24 @@ for step in '1. What each check guards' '2. Where the CPU goes' 'Never shorten a
 done
 assert_fails grep -qF -- '--fresh' "$brief"
 assert grep -qF -- 'tests/run-all --profile <suite>' "$brief"
+# Capacity, not one a night: each kind takes its share of the free worker slots, 8 over four kinds, in rank order.
+for open in $(fix runs harness --open --json | jq -r '.[].id'); do fix abandon "$open" >/dev/null; done
+jq --argjson s "$(now)" '.as_of_s = $s | .speed.spend.selection = ["spend:resumes", "spend:hook:gate.sh"]
+  | .speed.selection = ["opportunity:chat/hooks", "opportunity:machine/contention"]
+  | .speed.suites.selection += ["suite_audit:llm-legs:test_extra"]
+  | .problems += [.problems[] | select(.id == "suite_audit:llm-legs:test_light") | .id = "suite_audit:llm-legs:test_extra"]
+  | (.problems[] | select(.id == "opportunity:machine/contention") | .opportunity.hooks) = true' \
+  "$S/harness/latest.json" >"$S/cap.json" && mv "$S/cap.json" "$S/harness/latest.json"
+git -C "$L" update-ref refs/night/n16/base HEAD
+env "${speed_env[@]}" WORKER_SLOTS=8 bash "$FIX" launch harness --night n16 >"$WORK/out" 2>"$WORK/err" || fail "capacity night n16: $(cat "$WORK/err")"
+assert jqe '[.[][1:][][0] | select(test("^(spend|suite_audit):|hooks|contention"))] | sort == ["opportunity:chat/hooks",
+  "opportunity:machine/contention", "spend:hook:gate.sh", "spend:resumes", "suite_audit:llm-legs:test_light",
+  "suite_audit:llm-legs:test_mid"]' <(speed_runs)
+for open in $(fix runs harness --open --json | jq -r '.[].id'); do fix abandon "$open" >/dev/null; done
+git -C "$L" update-ref refs/night/n17/base HEAD
+env "${speed_env[@]}" bash "$FIX" launch harness --night n17 >"$WORK/out" 2>"$WORK/err" || fail "capacity night n17: $(cat "$WORK/err")"
+assert jqe '[.[][1:][][0] | select(test("^(spend|suite_audit):|hooks|contention"))] | sort == ["opportunity:chat/hooks",
+  "spend:resumes", "suite_audit:llm-legs:test_mid"]' <(speed_runs)
 
 # A log-audit reading names no file, so its run gets every sweep repository (a gate's cause sat in claude-setup).
 for r in "$RUNS"/harness-*.json; do
@@ -1087,4 +1127,4 @@ audit=$(cut -f1 "$WORK/out")
 assert jqe --arg o "$O/.claude/worktrees/night-n15-$audit" '[.problems[].rule] == ["log_audit"] and (.worktrees | index($o) != null)' \
   "$(record "$audit")"
 
-echo "PASS:$asserts asserts; code runs (one area, top-K, needs-Egor out, close through code-doctor check); launch refusals (no or foreign or stale document, nothing to fix, open run under 12 h), an old run abandoned, the snapshot without watch/fixed-pending, one orchestrator chat on the day runs through the shared opener, the record fields, a failed opener, close refusals (doctor not rerun, undecided id, missing path, missing commit, a directory, no evidence, bad verdict, judge changed without its line), a clean close, show, runs, updater records and launch, parallel ids, night launch (areas, worktrees, branches, briefs, the packet, one open run per area), night vendor records, a night without a base ref, llm components with their block's entry file, fixed only once the doctor reads it fixed-pending or gone, night close (markdown net zero per worktree: committed, untracked and cut bytes, a worktree without its base; a day run measured against its own base; the doctor rerun once in the worktree, a handed-in document refused, purpose touching its component, judge), abandon, a failed worktree, harness sections and top watch rows under parallel launch, updater machinery, a legacy release run, a merge citation, a malformed ledger row, a failed collector, an unwritten launched_at, a launcher killed under the lock, quiet open ledger rows (their own brief section, the day launch), a speed night (design Night 1 over the calibration fixture as one run per lever, levers sharing a hook script in one run, an open lever run holding only its area, an empty Speed pick named on stderr, a refusal per worktree model/effort knob site, a live settings change only a note, a knob-free diff closes), a spend night (one audit, its five-step brief), a suite night (the first queued suite no red test rule holds, STRONG: yes, its steps)"
+echo "PASS:$asserts asserts; code runs (one area, top-K, needs-Egor out, close through code-doctor check); launch refusals (no or foreign or stale document, nothing to fix, open run under 12 h), an old run abandoned, the snapshot without watch/fixed-pending, one orchestrator chat on the day runs through the shared opener, the record fields, a failed opener, close refusals (doctor not rerun, undecided id, missing path, missing commit, a directory, no evidence, bad verdict, judge changed without its line), a clean close, show, runs, updater records and launch, parallel ids, night launch (areas, worktrees, branches, briefs, the packet, one open run per area), night vendor records, a night without a base ref, llm components with their block's entry file, fixed only once the doctor reads it fixed-pending or gone, night close (markdown net zero per worktree: committed, untracked and cut bytes, a worktree without its base; a day run measured against its own base; the doctor rerun once in the worktree, a handed-in document refused, purpose touching its component, judge), abandon, a failed worktree, harness sections and top watch rows under parallel launch, updater machinery, a legacy release run, a merge citation, a malformed ledger row, a failed collector, an unwritten launched_at, a launcher killed under the lock, quiet open ledger rows (their own brief section, the day launch), a speed night (design Night 1 over the calibration fixture as one run per lever, levers sharing a hook script in one run, an open lever run holding only its area, an empty Speed pick named on stderr, a refusal per worktree model/effort knob site, a live settings change only a note, a knob-free diff closes), a spend night (one audit on a one-slot share, its five-step brief), a suite night (the first queued suite no red test rule holds, STRONG: yes, its steps), each kind's share of the free worker slots (hook levers, spend and suite audits), a floor row's ruled-out refused without a priced cut and a Speed or floor handoff without a trade to Egor"

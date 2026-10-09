@@ -36,6 +36,8 @@ JQ_BASE='def base: .base // (if .night then "refs/night/\(.night)/base" else nul
 JQ_COUNTS='"\(.problems | length) problems" + (if (.quiet // []) | length > 0 then " · \(.quiet | length) known, quiet" else "" end)'
 TEST_SPEED_RULES=' test_long_pole test_daily_cost test_slow suites_at_once '
 TEST_FIX_RULES="$TEST_SPEED_RULES test_hang "
+FLOOR_RULES=' floor time_floor '
+NIGHT_FIX_RULES=' floor time_floor opportunity regression '
 SPEED_LENS_RULES="$TEST_SPEED_RULES opportunity regression time_floor suite_audit hook_p50 hook_sync hook_full_work hook_every_call "
 SPEED_LENS_TIER=T2
 JQ_HAS_RULES='any(.problems[]; .rule as $r | $rules | split(" ") | index($r))'
@@ -143,6 +145,7 @@ BROWSER_ENGINE = ("llm-legs/share/gemini_web.py", "llm-legs/share/gemini_music.p
 MENU_BUILDERS = {"automation": ("hammerspoon/automation_menu.lua", "llm-legs/hammerspoon/llm-limits.lua"),
                  "llm-limits": ("llm-legs/hammerspoon/llm-limits.lua",)}
 SPEED_FILES = {"background/statusline": ("llm-legs/bin/statusline.sh",),
+               "background/hs lag": ("llm-legs/hammerspoon/doctors.lua", "llm-legs/hammerspoon/llm-limits.lua"),
                "time/slot": ("llm-legs/share/slots.sh", "llm-legs/bin/worker-run"),
                "time/suite_wait": ("llm-legs/share/run-suites.sh", "llm-legs/share/slots.sh"),
                "time/suite_run": ("llm-legs/share/run-suites.sh",), "time/retries": ("llm-legs/bin/worker-run",),
@@ -152,6 +155,17 @@ SPEED_FILES = {"background/statusline": ("llm-legs/bin/statusline.sh",),
 UPDATER_MACHINERY = {rule: "llm-legs/bin/vendor-cli-update" for rule in ("pass-stale", "pass-failed", "cli-behind", "client-too-old")}
 UPDATER_MACHINERY.update({rule: "llm-legs/bin/vendor-fingerprint" for rule in ("probe-broken", "catalog-missing", "event-stuck", "foreign-client")})
 WIDTH = 200
+NIGHT_KINDS = ("speed", "hooks", "suites", "spend")
+
+
+def kind_share():
+    """The free worker slots split over the kinds a night queues, at least one each: no kind takes every slot."""
+    try:
+        out = subprocess.run(["bash", "-c", ". \"$1\" && worker_capacity", "-", os.path.join(ROOT, "share", "slots.sh")],
+                             capture_output=True, text=True, timeout=20).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    return max(1, int(out) // len(NIGHT_KINDS)) if out.isdigit() else 1
 
 
 def ledger_path(doctor):
@@ -265,9 +279,8 @@ def snapshot(doctor, doc_file, night=None):
         problems += [{"id": r["id"], "rule": (r.get("match") if isinstance(r.get("match"), dict) else {}).get("rule"),
                       "ledger": r["id"], "state": "quiet", "fact": r.get("title")}
                      for r in rows.values() if r.get("status") == "open" and r.get("id") and r["id"] not in seen]
-    kept, watched, opportunities, speed, held = [], [], {}, set(), set()
+    kept, watched, opportunities, speed, held, hooked = [], [], {}, set(), set(), set()
     speed_doc = (doc.get("speed") or {}) if doctor == "harness" else {}
-    chosen = strings(speed_doc.get("selection")) + strings((speed_doc.get("spend") or {}).get("selection"))
     for problem in problems:
         pid, rule, state = problem.get("id"), problem.get("rule"), problem.get("state")
         if rule == "debt-handoff":
@@ -393,11 +406,18 @@ def snapshot(doctor, doc_file, night=None):
                 and (problem.get("opportunity") or {}).get("quality") == "equivalent" \
                 or rule in ("spend_audit", "suite_audit") and problem.get("speed"):
             opportunities[pid] = entry
+            if (problem.get("opportunity") or {}).get("hooks"):
+                hooked.add(pid)
         elif state == "watch" and doctor == "harness" and area in HOOK_AREAS:
             watched.append(((problem.get("value") or 0) * (problem.get("exposure") or 0), entry))
     watched.sort(key=lambda pair: -pair[0])
+    share = kind_share() if speed_doc else 0
+    picks = [pid for pid in strings(speed_doc.get("selection")) if pid in opportunities]
+    hook_picks = [pid for pid in picks if pid in hooked][:share]
+    chosen = [pid for pid in picks if pid not in hooked or pid in hook_picks]
+    chosen += [pid for pid in strings((speed_doc.get("spend") or {}).get("selection")) if pid in opportunities][:share]
     chosen += [pid for pid in strings((speed_doc.get("suites") or {}).get("selection"))
-               if pid in opportunities and pid.split(":", 1)[1] not in held][:1]
+               if pid in opportunities and pid.split(":", 1)[1] not in held][:share]
     entries = kept + [opportunities[pid] for pid in chosen if pid in opportunities] + [entry for _, entry in watched[:8]]
     split_speed([entry for entry in entries if entry["id"] in speed])
     print(json.dumps(entries))
@@ -728,6 +748,8 @@ write_brief() { # id worktree -> the brief file
       printf 'System runs: each problem names one own cause, a script of the sweep repositories by its `repo/path` or basename, and the levers that apply to it. A cause in a helper repository (`share/night-helper-repos`) is fixed in its `ADD-DIR:` worktree there and lands like a sweep repository'"'"'s, only the night'"'"'s commits; any other repository stays report-only. Make output-equivalent changes only: the same output, files and exit codes for the same inputs, fewer processes and less CPU; speed never trades model, effort or thinking (close refuses a changed knob). Record a fix as a `share/system-ledger.json` row whose `match` is `{rule, key, cause}`, status `fixed-pending`, with a `fixes[]` entry; close runs `bin/system-doctor check --record`, and the doctor proves the fix later with `bin/system-doctor check <cause>`: that cause'"'"'s births/s and CPU after the fix reached main against the 7 days before.\n\n'
     ! jq -e --arg rules "$TEST_SPEED_RULES" "$JQ_HAS_RULES" "$file" >/dev/null ||
       printf 'Test speed is this run'"'"'s to fix, never a handoff (`close` refuses one): for `test_long_pole`, `test_daily_cost`, `test_slow` and `suites_at_once` make the suites faster yourself in any sweep repository (an `ADD-DIR:` worktree each): split a long pole into independent suite files that `tests/run-all` runs in parallel, cut redundant cases, make timing asserts load-robust, cache fixtures; every assert keeps its coverage.\n\n'
+    ! jq -e --arg rules "$NIGHT_FIX_RULES" "$JQ_HAS_RULES" "$file" >/dev/null ||
+      printf 'Speed and floor rows (`floor`, `time_floor`, `opportunity`, `regression`) are this run'"'"'s to fix: `close` refuses a handoff on one unless it cites a trade to Egor. A floor'"'"'s target is zero, never a limit: `close` refuses `ruled-out` on a `floor` or `time_floor` row unless its evidence prices the cheapest cut as `cut <what> saves <N> ms × <M>/day, costs <Y>`.\n\n'
     ! jq -e --arg rules ' test_hang ' "$JQ_HAS_RULES" "$file" >/dev/null ||
       printf 'A hung suite (`test_hang`) is this run'"'"'s to fix, never a handoff (`close` refuses one): find what it blocked on and fix it so it cannot hang, e.g. stdin from /dev/null for a child that may read a tty, a timeout on a child that waits, a tty probe a fixture answers; every assert keeps its coverage. The proof is the doctor'"'"'s own: no `test_hang` row for that suite after the fix.\n\n'
     ! jq -e --arg rules ' menu_build ' "$JQ_HAS_RULES" "$file" >/dev/null ||
@@ -953,8 +975,8 @@ md_growth() { # worktree base -> the net *.md byte growth, then the 3 largest gr
   printf '%s' "$rows" | sort -t$'\t' -k1,1nr | head -n 3 | awk -F'\t' '{ printf "%s +%s\n", $2, $1 }'
 }
 
-untraded_handoff() { # record evidence -> the cited handoff addressed to Egor that lacks Cost:/Loss:/Recommendation:
-  local word dir path key missing words
+egor_handoffs() { # record evidence -> word<TAB>path of each handoff the evidence cites whose To: names Egor
+  local word path words
   read -ra words <<<"$2"
   for word in ${words[@]+"${words[@]}"}; do
     word=${word#[(\`]}
@@ -964,15 +986,25 @@ untraded_handoff() { # record evidence -> the cited handoff addressed to Egor th
     for path in "$word" $(jq -r '.worktrees[]? + "/" + $w' --arg w "$word" "$1") "$repo_root/$word" \
       "${DOCTOR_FIX_DOCS:-$repo_root/docs}/${word#docs/}"; do
       [ -f "$path" ] || continue
-      grep -iE '^[*_ ]*To[*_ ]*:' "$path" | grep -qiw egor || break
-      missing=''
-      for key in Cost Loss Recommendation; do
-        grep -qE "^[*_ >-]*$key[*_ ]*:" "$path" || missing+=" $key:"
-      done
-      [ -z "$missing" ] || { printf '%s lacks%s\n' "$word" "$missing"; return; }
+      ! grep -iE '^[*_ ]*To[*_ ]*:' "$path" | grep -qiw egor || printf '%s\t%s\n' "$word" "$path"
       break
     done
   done
+}
+
+untraded_handoff() { # record evidence -> the cited handoff addressed to Egor that lacks Cost:/Loss:/Recommendation:
+  local word path key missing
+  while IFS=$'\t' read -r word path; do
+    missing=''
+    for key in Cost Loss Recommendation; do
+      grep -qE "^[*_ >-]*$key[*_ ]*:" "$path" || missing+=" $key:"
+    done
+    [ -z "$missing" ] || { printf '%s lacks%s\n' "$word" "$missing"; return; }
+  done < <(egor_handoffs "$1" "$2")
+}
+
+priced_cut() { # evidence -> whether it prices the cheapest cut: cut <what> saves <N> ms × <M>/day, costs <Y>
+  grep -qiE 'cut .+ saves [0-9.]+ ?(ms|s|min) ?(×|x|\*) ?[0-9.]+ ?/ ?day.*costs? [^ ]' <<<"$1"
 }
 
 review_refusal() { # round -> why the run's review round keeps it open, empty when it is settled
@@ -1022,11 +1054,12 @@ close_run() { # id --decisions <file> note...
     elif [[ ! $verdict =~ ^[a-z-]+$ || $VERDICTS != *" $verdict "* ]]; then
       bad+=("line $line_no ($pid): verdict '$verdict' is not one of fixed|ruled-out|weather|blind-spot|handoff")
       continue
-    elif [ "$verdict" = handoff ] && rule=$(jq -r --arg p "$pid" \
-      'first((.problems + (.quiet // []))[] | select(.id == $p) | .rule) // ""' "$file") && [ -n "$rule" ] &&
-      [[ "$TEST_FIX_RULES menu_build " == *" $rule "* ]]; then
-      bad+=("line $line_no ($pid): handoff refused: test speed and menu delays are this run's to fix")
-      continue
+    else
+      rule=$(jq -r --arg p "$pid" 'first((.problems + (.quiet // []))[] | select(.id == $p) | .rule) // ""' "$file")
+      if [ "$verdict" = handoff ] && [ -n "$rule" ] && [[ "$TEST_FIX_RULES menu_build " == *" $rule "* ]]; then
+        bad+=("line $line_no ($pid): handoff refused: test speed and menu delays are this run's to fix")
+        continue
+      fi
     fi
     py touches "$file" "$pid" "$purpose"
     touch=$?
@@ -1038,6 +1071,15 @@ close_run() { # id --decisions <file> note...
     [ -n "$evidence" ] || { bad+=("line $line_no ($pid): no evidence"); continue; }
     if [ "$verdict" = handoff ] && failure=$(untraded_handoff "$file" "$evidence") && [ -n "$failure" ]; then
       bad+=("line $line_no ($pid): handoff to Egor $failure: Egor decides only a trade (each way's cost and loss, the recommendation); otherwise hand it to an owner or decide what research settles")
+      continue
+    fi
+    if [ "$verdict" = handoff ] && [ -n "$rule" ] && [[ $NIGHT_FIX_RULES == *" $rule "* ]] &&
+      [ -z "$(egor_handoffs "$file" "$evidence")" ]; then
+      bad+=("line $line_no ($pid): handoff refused: a Speed or floor row is this run's to fix; only a trade to Egor (a cited handoff whose To: names him) leaves it")
+      continue
+    fi
+    if [ "$verdict" = ruled-out ] && [ -n "$rule" ] && [[ $FLOOR_RULES == *" $rule "* ]] && ! priced_cut "$evidence"; then
+      bad+=("line $line_no ($pid): ruled-out refused: a floor row's floor is zero, never a limit; the evidence prices its cheapest cut as 'cut <what> saves <N> ms × <M>/day, costs <Y>'")
       continue
     fi
     if [ "$verdict" = fixed ]; then
