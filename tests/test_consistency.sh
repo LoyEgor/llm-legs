@@ -3230,8 +3230,8 @@ assert doc_has '`account_roster <vendor>` in `share/account-roster.sh` is the on
 # directory walks homes (CLI upkeep, model caches, logs), chat transcripts, or the store itself
 # against the roster (gemini_web cmd_accounts, the menu's gemini-web media rows) — never accounts.
 store_walk_re='(profiles_dir|PROFILES_DIR|PROFILES_ROOT|_profiles|-profiles)[}"]*/\*|(profiles|accounts)[^#]*\.(iterdir|glob|listdir|scandir)\(|(listdir|scandir|glob\.glob)\([^)]*(profiles|accounts|PROFILES)|hs\.fs\.dir\([^)]*(profiles|accounts)'
-assert eq "$(cd "$ROOT" && grep -rlIE "$store_walk_re" bin share hammerspoon llm-limits.sh | sort | tr '\n' ' ')" \
-  "bin/chat-load bin/chats bin/claude-chat-switch bin/claude-resume-timer bin/codexb bin/gemini-weather bin/llm-selfcheck bin/report-bus bin/updater-doctor bin/vendor-cli-update bin/vendor-fingerprint bin/worker-run hammerspoon/config/env_guard.lua hammerspoon/llm-limits.lua share/account-roster.sh share/chat_names.py share/gemini_web.py share/gemini-accounts.sh share/log-stores.json "
+assert eq "$(cd "$ROOT" && grep -rlIE "$store_walk_re" bin share hammerspoon llm-limits.sh | LC_ALL=C sort | tr '\n' ' ')" \
+  "bin/chat-load bin/chats bin/claude-chat-switch bin/claude-resume-timer bin/codexb bin/gemini-weather bin/llm-selfcheck bin/report-bus bin/updater-doctor bin/vendor-cli-update bin/vendor-fingerprint bin/worker-run hammerspoon/config/env_guard.lua hammerspoon/llm-limits.lua share/account-roster.sh share/chat_names.py share/gemini-accounts.sh share/gemini_web.py share/log-stores.json "
 for roster_site in bin/codexb bin/grokb; do
   assert grep -Eq '^account_names\(\) \{ [A-Z_]+="\$profiles_dir" account_roster (codex|grok); \}$' "$ROOT/$roster_site"
 done

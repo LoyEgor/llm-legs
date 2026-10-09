@@ -52,6 +52,7 @@ HS_CAPTURE="$WORK/hs_payload.txt"
 export HOME HS_CAPTURE
 export CLAUDEB_DIR="$WORK/claudeb-state"
 export CLAUDEGPT_HOME="$HOME/.local/share/claudegpt"
+unset CODEX_HOME CODEXB_PROFILES_DIR
 mkdir -p "$HOME/.claude-profiles/com" "$HOME/.claude-profiles/olx" \
          "$HOME/.claude/projects" "$FAKE_BIN"
 
@@ -279,11 +280,12 @@ assert test -z "$PAYLOAD"
 GW_HOME="$HOME/.local/share/claudegpt"
 # A gateway login serves only an account the codex roster lists (shared-invariants row dg).
 mkdir -p "$GW_HOME/accounts/work4/auth" "$GW_HOME/accounts/main/auth" "$GW_HOME/accounts/ghost/auth" \
-  "$GW_HOME/sessions" "$HOME/.codex-profiles/work4"
+  "$GW_HOME/sessions" "$HOME/.codex-profiles/work4" "$HOME/.codex"
 for gw_account in work4 main ghost; do
   printf '{"type":"codex","access_token":"fixture","account_id":"acct-%s"}\n' "$gw_account" \
     >"$GW_HOME/accounts/$gw_account/auth/codex-$gw_account-plus.json"
 done
+printf '{"tokens":{"access_token":"fixture","account_id":"acct-main"}}\n' >"$HOME/.codex/auth.json"
 # The other store a gateway target can live in: an OpenAI account signed in under codexb
 # and never given a second, browser-driven gateway login.
 CODEX_ONLY="$HOME/.codex-profiles/burkhartor"

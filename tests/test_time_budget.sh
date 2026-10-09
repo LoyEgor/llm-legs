@@ -11,7 +11,7 @@ export TZ=UTC HOME="$WORK/home" HARNESS_DOCTOR_DIR="$WORK/harness" DOCTORS_DIR="
   WORKER_STATS_DIR="$WORK/stats" WORKER_RUN_DIR="$WORK/runs" RUN_SUITES_JOURNAL="$WORK/suites.jsonl" \
   INSTRUCTION_WATCH_STATE="$WORK/watch" NIGHT_RUN_SWEEP_REPOS="$WORK/sweep-repos" \
   GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
-unset HARNESS_WAITS_DIR XDG_CACHE_HOME RUN_SUITES_TIMES CLAUDEB_DIR
+unset HARNESS_WAITS_DIR XDG_CACHE_HOME RUN_SUITES_TIMES CLAUDEB_DIR CHAT_NAME_ROOTS
 mkdir -p "$HOME"
 
 D0=1768003200
@@ -102,26 +102,27 @@ old_gates = T.gates_path
 fixture = os.path.join(work, "recovery.jsonl")
 T.gates_path = lambda: fixture
 lines(fixture, [
-    {"at": D0 + 101, "gate": "write", "decision": "denied", "sid": "recover1-full", "tool_use_id": "denied1"},
+    {"at": D0 + 101, "gate": "write", "decision": "denied", "sid": "recover1-full", "source": "journal"},
     {"at": D0 + 111, "gate": "write", "decision": "denied", "sid": "recover1-full", "tool_use_id": "denied2"},
     {"at": D0 + 201, "gate": "relay", "decision": "relay-refused", "sid": "recover2", "tool_use_id": "denied3"},
     {"at": D0 + 301, "gate": "cap", "decision": "denied", "sid": "recover3", "tool_use_id": "denied4"},
-    {"at": D0 + 301, "gate": "legacy", "decision": "denied", "sid": "recover3"},
+    {"at": D0 + 301, "gate": "legacy", "decision": "denied", "sid": "missing1"},
     {"at": D0 + 301, "gate": "passed", "decision": "passed", "sid": "recover3"}])
 def call(t, tid, sid):
     return ["c", D0 + t, "p", "Bash", 0, 5, "c", tid, sid, 1]
 recovery_events = {"c": [call(100, "denied1", "recover1"), call(110, "denied2", "recover1"),
                           call(120, "accepted", "recover1"), call(105, "elsewhere", "another"),
-                          call(200, "denied3", "recover2"), call(300, "denied4", "recover3")],
+                          call(200, "denied3", "recover2"), call(300, "denied4", "recover3"),
+                          call(230, "accepted2", "recover2"), call(1000, "accepted3", "recover3")],
                    "h": [["h", D0 + 124, "p", "PostToolUse", "hook", 1, "Bash", "accepted"]],
                    "t": [["t", D0 + 190, "recover2", D0 + 230],
                          ["t", D0 + 290, "recover3", D0 + 1000]]}
 recovery_events["c"][-1][6] = "h"
 cost = T.refusal_cost(D0, D0 + 86400, recovery_events)
-check(cost["seconds"] == 360 and cost["by_gate_s"] == {"cap": 300, "write": 30, "relay": 30}
+check(cost["seconds"] == 357 and cost["by_gate_s"] == {"cap": 300, "write": 28, "relay": 29}
       and cost["measured"] == 4 and cost["unmeasured_by_gate"] == {"legacy": 1},
-      "exact refusal links skip denied retries and other sessions, use turn end, cap and name missing links: %s" % cost)
-check(cost["chat_s"] == 350, "overlapping retries are charged once in the wall partition")
+      "session/time refusal links need no call ID, skip known denied retries and other sessions, cap and name missing calls: %s" % cost)
+check(cost["chat_s"] == 348, "overlapping retries are charged once in the wall partition")
 check(T.refusal_cost(D0 + 115, D0 + 125, recovery_events)["seconds"] == 10,
       "recovery intervals are clipped at both reporting window boundaries")
 for row in recovery_events["t"]:
@@ -129,8 +130,48 @@ for row in recovery_events["t"]:
 recovery_events["t"].append(["t", D0 + 90, "recover1", D0 + 150, "n", [0, 0, 0], 0, [], [],
                               {"gen": 60}, {}, []])
 charged = T.budget(D0, D0 + 86400, recovery_events)
-check(charged["seconds"]["refusal"] == 350 and charged["seconds"]["model"] >= 0,
+check(charged["seconds"]["refusal"] == 348 and charged["seconds"]["model"] >= 0,
       "measured recovery moves from model time to the harness class without double charging retries")
+transcript = os.path.join(work, "home", ".claude", "projects", "fixture", "recover4-full.jsonl")
+lines(transcript, [
+    {"timestamp": iso(D0 + 500), "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "blocked4", "is_error": True,
+         "content": "PreToolUse:Bash hook error: [worker-limit-gate.sh] Blocked"}]}},
+    {"timestamp": iso(D0 + 505), "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "blocked5", "is_error": True,
+         "content": [{"type": "text", "text": "PreToolUse:Bash hook error: [review-flow-gate.sh] Blocked"}]}]}},
+    {"timestamp": iso(D0 + 506), "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "ordinary", "is_error": True, "content": "command failed"}]}},
+    {"timestamp": iso(D0 + 507), "message": {"content": [
+        {"type": "text", "text": "PreToolUse:Bash hook error: [fake.sh] quoted text"}]}}])
+extra = {"c": [call(499, "blocked4", "recover4"), call(504, "blocked5", "recover4"),
+               call(520, "accepted4", "recover4")]}
+extra_cost = T.refusal_cost(D0 + 490, D0 + 530, extra)
+check(extra_cost["by_gate_s"] == {"worker-limit-gate.sh": 20, "review-flow-gate.sh": 15}
+      and extra_cost["chat_s"] == 20 and extra_cost["count"] == 2,
+      "native transcript denials count per hook, exclude denied c rows, and ignore ordinary errors and quoted text")
+lines(fixture, [{"at": D0 + 499, "sid": "recover4-full", "gate": "worker-limit", "decision": "denied"}])
+extra_cost = T.refusal_cost(D0 + 490, D0 + 530, extra)
+check(extra_cost["count"] == 2 and extra_cost["by_gate_s"] == {"worker-limit": 21, "review-flow-gate.sh": 15},
+      "a transcript denial enriches its journal row without charging it twice")
+profile = os.path.join(work, "home", ".claude-profiles", "fixture", "projects", "fixture",
+                       "recover4-full", "subagents", "agent-fixture.jsonl")
+lines(profile, [
+    {"timestamp": iso(D0 + 500), "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "blocked4", "is_error": True,
+         "content": "PreToolUse:Bash hook error: [worker-limit-gate.sh] Blocked"}]}},
+    {"timestamp": iso(D0 + 508), "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "blocked6", "is_error": True,
+         "content": "PreToolUse:Bash hook error: [cd-guard.sh] Blocked"}]}},
+    {"timestamp": iso(D0 + 509), "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "blocked7", "is_error": True,
+         "content": "PreToolUse:Bash hook error: Unnamed denial"}]}}])
+extra_cost = T.refusal_cost(D0 + 490, D0 + 530, extra)
+check(extra_cost["count"] == 4 and extra_cost["by_gate_s"]["cd-guard.sh"] == 12
+      and extra_cost["by_gate_s"]["unknown-hook"] == 11,
+      "profile subagent transcripts use the parent session, deduplicate copied calls and retain unnamed hooks")
+os.unlink(profile)
+os.unlink(transcript)
 T.gates_path = old_gates
 baseline = T.budget(D0, D0 + 86400, recovery_events)
 check(sum(charged["seconds"].values()) == sum(baseline["seconds"].values()),

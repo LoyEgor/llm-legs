@@ -221,47 +221,85 @@ def wait_rows(lo, hi):
     return [r for r in out if lo <= r["started"] < hi]
 
 
-def refusals(lo, hi):
-    return sum(1 for r in night_spend.rows(gates_path())
-               if r.get("decision") in GATE_REFUSALS and lo <= (num(r.get("at")) or 0) < hi)
+def refusal_rows(lo, hi):
+    rows = [r for r in night_spend.rows(gates_path()) if r.get("decision") in GATE_REFUSALS
+            and lo <= (num(r.get("at")) or 0) < hi]
+    journal = collections.defaultdict(list)
+    for r in rows:
+        journal[str(r.get("sid") or "")[:8]].append(r)
+    seen = set()
+    for path, (session, _) in handoffs.transcripts(lo).items():
+        sid = session[:8]
+        try:
+            with open(path, errors="replace") as handle:
+                for line in handle:
+                    if "PreToolUse:" not in line or "hook error:" not in line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                        at = night_spend.dt.datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00")).timestamp()
+                    except (ValueError, KeyError, TypeError):
+                        continue
+                    if not lo <= at < hi:
+                        continue
+                    content = (entry.get("message") or {}).get("content")
+                    if not isinstance(content, list):
+                        continue
+                    for block in content:
+                        if not isinstance(block, dict) or block.get("type") != "tool_result" or not block.get("is_error"):
+                            continue
+                        body = block.get("content")
+                        if isinstance(body, list):
+                            body = "\n".join(b.get("text", "") for b in body if isinstance(b, dict))
+                        if not isinstance(body, str):
+                            continue
+                        match = re.match(r"^PreToolUse:[\w]+ hook error: (?:\[([^\]]+)\])?", body)
+                        if not match:
+                            continue
+                        tid = str(block.get("tool_use_id") or "")[-10:]
+                        key = (sid, tid or at)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        duplicates = [r for r in journal[sid] if not r.get("tool_use_id")
+                                      and abs((num(r["at"]) or 0) - at) <= 2]
+                        if duplicates:
+                            min(duplicates, key=lambda r: abs(float(r["at"]) - at))["tool_use_id"] = tid
+                            continue
+                        gate = os.path.basename(match[1]) if match[1] else "unknown-hook"
+                        rows.append({"at": at, "sid": sid, "tool_use_id": tid, "gate": gate, "decision": "denied"})
+        except OSError:
+            continue
+    return rows
 
 
 def refusal_cost(lo, hi, events):
-    rows = [r for r in night_spend.rows(gates_path()) if r.get("decision") in GATE_REFUSALS
-            and lo - REFUSAL_CAP_S <= (num(r.get("at")) or 0) < hi]
+    rows = refusal_rows(lo - REFUSAL_CAP_S, hi)
     calls = collections.defaultdict(list)
     for c in events.get("c", ()):
-        calls[c[8]].append(c)
+        calls[str(c[8])[:8]].append(c)
     denied = {(str(r.get("sid") or "")[:8], str(r.get("tool_use_id") or "")[-10:]) for r in rows}
-    accepted = {(h[7], h[1]) for h in events.get("h", ()) if h[3] == "PostToolUse" and h[7]}
     by, missing, spans, seen = collections.Counter(), collections.Counter(), collections.defaultdict(list), set()
     measured = 0
     for r in rows:
         gate, at = r.get("gate") or "unknown", num(r.get("at")) or 0
-        sid, tid = str(r.get("sid") or "")[:8], str(r.get("tool_use_id") or "")[-10:]
-        matches = [c for c in calls[sid] if tid and c[7] == tid and c[1] <= at + 1
-                   and c[1] + c[5] >= at]
-        if not sid or len(matches) != 1:
+        sid = str(r.get("sid") or "")[:8]
+        following = [c for c in calls[sid] if c[1] > at and (sid, c[7]) not in denied]
+        if not sid or not following:
             if lo <= at < hi:
                 missing[gate] += 1
             continue
-        c = matches[0]
-        ends = [t[3] for t in events.get("t", ()) if t[2] == sid and t[1] <= c[1] < t[3]]
-        ends += [n[1] for n in calls[sid] if n[1] > c[1] and (sid, n[7]) not in denied
-                 and any(tid_ == n[7] and n[1] <= t <= n[1] + n[5] + 1 for tid_, t in accepted)]
-        if not ends:
-            if lo <= at < hi:
-                missing[gate] += 1
-            continue
-        key = (sid, tid)
+        c = min(following, key=lambda c: c[1])
+        key = (sid, at, gate)
         if key in seen:
             continue
         seen.add(key)
-        span = clip([(c[1], min(min(ends), c[1] + REFUSAL_CAP_S))], lo, hi)
+        span = clip([(at, min(c[1], at + REFUSAL_CAP_S))], lo, hi)
         by[gate] += length(span)
         spans[(c[6], sid)].extend(span)
         measured += 1
     return {"seconds": sum(by.values()), "by_gate_s": dict(by.most_common(5)), "measured": measured,
+            "count": sum(lo <= r["at"] < hi for r in rows),
             "unmeasured_by_gate": dict(missing), "cap_s": REFUSAL_CAP_S,
             "chat_s": sum(length(union(v)) for (kind, _), v in spans.items() if kind != "w"),
             "worker_s": sum(length(union(v)) for (kind, _), v in spans.items() if kind == "w")}
@@ -364,7 +402,7 @@ def budget(lo, hi, events=None):
     return {"lo": lo, "hi": hi, "seconds": {k: round(total[k], 1) for k, _, _ in CLASSES},
             "chat_s": round(sum(chats.values()), 1), "worker_s": round(sum(workers.values()), 1),
             "worker": {k: round(v, 1) for k, v in workers.items() if v}, "runs": len(runs), "jobs": jobs,
-            "hooks_by": {k: round(v, 1) for k, v in hooks_by.most_common(8)}, "refusals": refusals(lo, hi), "refusal_cost": recovery}
+            "hooks_by": {k: round(v, 1) for k, v in hooks_by.most_common(8)}, "refusals": recovery["count"], "refusal_cost": recovery}
 
 
 def shares(b):
@@ -461,7 +499,7 @@ def holes(b, med):
     out = []
     recovery = b.get("refusal_cost") or {}
     if recovery.get("unmeasured_by_gate"):
-        out.append("gate refusal recovery unmeasured (missing exact call link or accepted call/turn end): " +
+        out.append("gate refusal recovery unmeasured (missing session or next accepted call): " +
                    ", ".join("%s: %d" % item for item in sorted(recovery["unmeasured_by_gate"].items())))
     w = b["worker"]
     wall = worker_wall(w)
