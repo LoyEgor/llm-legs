@@ -31,9 +31,12 @@ printf '0\n' >"$RUN/exit_code"
 printf 'acct · opus · high\n' >"$RUN/tag"
 
 out=$("$RUNNER" wait "$ID" 2>&1)
-assert_has '[4m05s] » Reading the gate now' "$out"
-assert_has '[4m05s] Edit /w/bin/gate.sh' "$out"
-bash_row=$(grep -F '[4m05s] Bash grep -n door' <<<"$out")
+# The label is wall-clock elapsed at the wait's read: a loaded machine reaches it seconds after 4m05s.
+at=$(grep -oE '^\[4m[0-5][0-9]s\]' <<<"$out" | head -n 1)
+assert_eq '[4m0' "$(printf '%.4s' "$at")"
+assert_has "$at » Reading the gate now" "$out"
+assert_has "$at Edit /w/bin/gate.sh" "$out"
+bash_row=$(grep -F "$at Bash grep -n door" <<<"$out")
 assert_eq 120 "$(printf '%s' "$bash_row" | wc -m | tr -d ' ')"
 assert_eq '…' "$(printf '%s' "$bash_row" | perl -CSD -ne 'print substr($_, -1)')"
 assert_eq 1 "$(grep -c '^STATUS: done' <<<"$out")"
