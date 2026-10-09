@@ -64,6 +64,20 @@ assert test ! -e "$RUN_DIR/report-readonly"
 rm -f "$readonly_workdir/changed.txt"
 assert test -z "$(git -C "$readonly_workdir" status --porcelain -uall)"
 
+# An edit git cannot see — the path is ignored — is still an edit: the transcript's Edit call wins.
+clear_stub
+printf 'ignored/\n' >>"$readonly_workdir/.git/info/exclude"
+mkdir -p "$readonly_workdir/ignored"
+printf 'edited\n' >"$readonly_workdir/ignored/lane.py"
+export PICK_RC=0 PICK_ACCOUNT=readonly-ignored STUB_TRANSCRIPT_SESSION=readonly-ignored STUB_SESSION=readonly-ignored
+export STUB_TRANSCRIPT_ACCOUNT=readonly-ignored STUB_EDIT_PATH="$readonly_workdir/ignored/lane.py"
+start_ok claudeb
+assert await_done
+report=$("$RUNNER" report "$RUN_ID")
+assert test "$(grep -c '^HINT:' <<<"$report")" -eq 0
+assert test ! -e "$RUN_DIR/report-readonly"
+rm -rf "$readonly_workdir/ignored"
+
 declared_workdir="$WORK/declared-readonly-workdir"
 mkdir -p "$declared_workdir"
 git -C "$declared_workdir" init -q

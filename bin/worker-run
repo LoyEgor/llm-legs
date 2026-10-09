@@ -3979,6 +3979,13 @@ readonly_report_hint() {
   workdir_dirty_shas "$workdir" >/dev/null 2>&1 || return 0
   gained=$(workdir_gained_paths "$directory" "$workdir")
   [ -z "$gained" ] || return 0
+  # Git sees no edit to an ignored path (a bench whose tracers/ and results/ are .gitignored), so the
+  # run's own editor and shell calls get the last word before it is called read-only.
+  compute_transcript_files "$directory"
+  if [ -n "$RUN_FILES_LIST" ] || [ -n "$RUN_FILES_PARTIAL" ]; then
+    rm -f "$directory/report-readonly"
+    return 0
+  fi
   marker="$directory/report-readonly"
   [ -e "$marker" ] || : >"$marker"
   root=${directory%/*}
