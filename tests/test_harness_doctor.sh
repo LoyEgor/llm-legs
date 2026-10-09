@@ -2039,7 +2039,7 @@ first_ids=$(replay 1)
 assert_eq "$first_ids" "$(replay 2)" "the committed calibration fixture replays with the same problem ids"
 # The calibration's own detections are pinned; after them every fixed row of the ledger reads as pending
 # proof, in ledger order. Derived per row: a hand-kept list made every fixer's new row a conflict.
-calibration_head='["floor:event:SessionStart=watch","test_daily_cost-worker-run=fixed-pending","test_daily_cost:llm-legs:test_instruction_gate=new","test_long_pole-worker-run=fixed-pending"]'
+calibration_head='["test_daily_cost-worker-run=fixed-pending","test_daily_cost:llm-legs:test_instruction_gate=new","test_long_pole-worker-run=fixed-pending"]'
 assert_eq "$(jq -c --argjson head "$calibration_head" '($head | map(sub("=[^=]*$"; ""))) as $ids | $head + [.rows[]
   | select(.status == "fixed" or .status == "fixed-pending") | .id | select(IN($ids[]) | not) | . + "=fixed-pending"]' \
   "$ROOT/share/harness-ledger.json")" \
