@@ -579,6 +579,11 @@ assert doctor.failure_reason("HTTP 429") == "bare 429"
 assert doctor.failure_reason("HTTP 429 Too Many Requests") == "bare 429"
 assert doctor.failure_reason("error: 429 too many requests") == "bare 429"
 assert doctor.failure_reason("Your AI credits balance is too low to continue.") == "walled"
+# A stored chunk line is cut in the middle, so the status field before Claude's wall can be gone.
+assert text_reading('"usage":{"input_tokens":2 … 429,"result":"You\'ve hit your session limit · resets 6:20am"')[:2] \
+    == ("walled", "walled")
+assert doctor.failure_reason("You've hit your weekly limit · resets Oct 12") == "walled"
+assert doctor.failure_reason("crash; tail read pattern='hit your session limit|usage_limit'") == "unclassified"
 assert doctor.failure_reason('{"is_error":true,"api_error_status":429}') == "bare 429"
 # The provider's own clock is theirs.
 for text in ("upstream request timeout", "rpc error: DEADLINE_EXCEEDED", "504 Gateway Timeout", "gateway time-out"):

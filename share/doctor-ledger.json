@@ -88,9 +88,9 @@
    "status": "open",
    "fixes": [],
    "same_cause": [],
-   "last_reviewed": "2026-10-08",
-   "reviewed_by": "Night fixer llm-reviewers-20261007T214006Z-1af3",
-   "note": "kept apart from R1, which is about review-cell shapes. 2026-10-01: the cause still stands in code: review-bench judge.py parse_judge_answer refuses a partial answer whole, and the batch's ruled claims go to the manual path with the missing ones. Since 2e32983 (2026-09-22) a session judges at most JUDGE_BATCH_CLAIMS = 40 claims and none fell short in the window. Keeping a batch's ruled part is a design change for the owner, not a bug fix. 2026-10-02 to 2026-10-08: unchanged in review-bench share/rbench/judge.py (:185 raises `the judge ruled on N of M claims`, JUDGE_BATCH_CLAIMS = 40 at :25); no occurrence in any window.",
+   "last_reviewed": "2026-10-09",
+   "reviewed_by": "Night fixer llm-reviewers-20261009T024643Z-3362",
+   "note": "kept apart from R1, which is about review-cell shapes. 2026-10-01: the cause still stands in code: review-bench judge.py parse_judge_answer refuses a partial answer whole, and the batch's ruled claims go to the manual path with the missing ones. Since 2e32983 (2026-09-22) a session judges at most JUDGE_BATCH_CLAIMS = 40 claims and none fell short in the window. Keeping a batch's ruled part is a design change for the owner, not a bug fix. 2026-10-02 to 2026-10-09: unchanged in review-bench share/rbench/judge.py (:185 raises `the judge ruled on N of M claims`, JUDGE_BATCH_CLAIMS = 40 at :25); no occurrence in any window.",
    "handoff": null
   },
   {
@@ -650,9 +650,9 @@
    "status": "open",
    "fixes": [],
    "same_cause": [],
-   "last_reviewed": "2026-10-08",
-   "reviewed_by": "Night fixer llm-reviewers-20261007T214006Z-1af3",
-   "note": "2026-09-30: 5 of 35 were a stale stored closure word (fixer rows appended by hand, no fold); the doctor now recomputes it (review-bench share/rbench/debt.py doctor_pending_rows); the rest were real unfinished rounds. 2026-10-01 contract: the reviewers fixer settles each round itself (docs/doctor-fix.md \"Stuck review rounds\"); this row stays open. 2026-10-02: round 20261001T093742Z-64ee7b1 finding 2 resolved in main, recorded fixed, closure fixed; the class worked as specified. 2026-10-03/04: 0 pending. 2026-10-05/06: 20261004T180938Z-a8dfc61 skipped while its chat «make land for multiple workers in one repository» was live. 2026-10-07/08: that chat is dead (session 2b823a7f has no session file); its two open findings still hold in llm-legs bin/worker-run (night base 2dd856ba): 12 (the python `unshaped_re` in workdir_dirty_paths, :1607, is a second copy of path_shape_ok, :1569) and 13 (workdir_dirty_shas' python batch hasher, :1629-1705, re-implements hash_workdir_path, :1581); left open as night debt for the orchestrator, nothing picks it up mechanically; settled 0, nofix 0; no machinery cause.",
+   "last_reviewed": "2026-10-09",
+   "reviewed_by": "Night fixer llm-reviewers-20261009T024643Z-3362",
+   "note": "2026-09-30: 5 of 35 were a stale stored closure word (fixer rows appended by hand, no fold); the doctor now recomputes it (review-bench share/rbench/debt.py doctor_pending_rows); the rest were real unfinished rounds. 2026-10-01 contract: the reviewers fixer settles each round itself (docs/doctor-fix.md \"Stuck review rounds\"); this row stays open. 2026-10-02: round 20261001T093742Z-64ee7b1 finding 2 resolved in main, recorded fixed, closure fixed; the class worked as specified. 2026-10-03/04: 0 pending. 2026-10-05/06: 20261004T180938Z-a8dfc61 skipped while its chat «make land for multiple workers in one repository» was live. 2026-10-07/08: that chat dead, findings 12/13 left as night debt; 2026-10-09 the round is no longer listed. 2026-10-09: 1 pending, 20261008T132147Z-d65cca8 (worker-stats/merged/d65cca81c320c267, T1 double) skipped, its chat «Updater doctor» is live (pid 92245); settled 0, nofix 0; no machinery cause.",
    "handoff": "docs/handoffs/2026-09-30-review-machinery-classes.md"
   },
   {
@@ -690,9 +690,9 @@
    "status": "open",
    "fixes": [],
    "same_cause": [],
-   "last_reviewed": "2026-10-08",
-   "reviewed_by": "Night fixer llm-reviewers-20261007T214006Z-1af3",
-   "note": "Cause: tracked files edited in the shared checkout by other chats while a round ran (uncommitted work or a commit landing mid-round); the class cannot tell them from a cell's write, which is what it watches for, so it stays counted (owner, 2026-10-04). Ignored paths (.git/info/exclude included) were the second cause until the owner left them out (review-bench debt.py doctor_ignored; test_doctor_integrity_counts_paths_past_the_truncated_lists). Nightly counts 2026-10-01 to 2026-10-08: 11, 2, 1, 4, 1, 1, 2, 1, every one a tracked-file edit by another chat (e.g. 2026-10-06 llm-legs bin/night-run +4 from commit c4d9f13e mid-round 20261005T193613Z-73d6ca2); 2026-10-08's one row is 2026-10-07's 20261006T222631Z-127173d (claude-setup skills-on-demand/night-sweep/SKILL.md, committed after the round in 234fdc2) still in the window; no new cause.",
+   "last_reviewed": "2026-10-09",
+   "reviewed_by": "Night fixer llm-reviewers-20261009T024643Z-3362",
+   "note": "Cause: tracked files edited in the shared checkout by other chats while a round ran (uncommitted work or a commit landing mid-round); the class cannot tell them from a cell's write, which is what it watches for, so it stays counted (owner, 2026-10-04). Ignored paths (.git/info/exclude included) were the second cause until the owner left them out (review-bench debt.py doctor_ignored; test_doctor_integrity_counts_paths_past_the_truncated_lists). Nightly counts 2026-10-01 to 2026-10-09: 11, 2, 1, 4, 1, 1, 2, 1, 12, every one a tracked-file edit by another chat (e.g. 2026-10-06 llm-legs bin/night-run +4 from commit c4d9f13e mid-round 20261005T193613Z-73d6ca2). 2026-10-09's 16 rows (12 at launch): 10 rounds of the live «Updater doctor» over its own edits, 5 of «Workers и review bench унификация отображения» (llm-legs bin/system-doctor committed 0106037b, claude-setup night-sweep/SKILL.md committed f3e1ccd, both after the rounds launched), 1 token-map benches.py (a441f30); no new cause.",
    "handoff": "docs/handoffs/2026-09-30-review-machinery-classes.md"
   },
   {
@@ -2045,6 +2045,41 @@
    "reviewed_by": "Night image fixer",
    "note": "Split from I46 (2026-10-07): rawilimo 18:30Z 2026-10-05 take 2 of 2 in a parallel tab of an 18-leg fanout; once in the whole journal, upload() unchanged. Cause open. 2026-10-09 (Night image fixer): the same 10 codex-image web legs, none hit the chooser drift; upload() (share/chatgpt_web.py:408) unchanged. Retirement proposed in the handoff.",
    "handoff": "docs/handoffs/2026-10-06-image-night-triage.md"
+  },
+  {
+   "id": "R18",
+   "block": "reviewers",
+   "match": {
+    "word": "unclassified",
+    "detail": "hit your (session|weekly) limit"
+   },
+   "title": "a Claude cell's session wall read unclassified: the stored detail is cut mid-line, losing the api_error_status before the 429, and the walled vocabulary lacked Claude's own wall sentence",
+   "status": "fixed-pending",
+   "fixes": [
+    {
+     "at": "2026-10-09T06:20:00+03:00",
+     "by": "Night fixer llm-reviewers-20261009T024643Z-3362",
+     "files": [
+      "review-bench/share/rbench/panel.py"
+     ],
+     "in": null,
+     "regressed_at": null
+    },
+    {
+     "at": "2026-10-09T06:20:00+03:00",
+     "by": "Night fixer llm-reviewers-20261009T024643Z-3362",
+     "files": [
+      "llm-legs/bin/llm-doctor"
+     ],
+     "in": null,
+     "regressed_at": null
+    }
+   ],
+   "same_cause": [],
+   "last_reviewed": "2026-10-09",
+   "reviewed_by": "Night fixer llm-reviewers-20261009T024643Z-3362",
+   "note": "bench:20261008T013007Z-2bc6e3c/opus-high#0 and #2#1 (locomthebest), 06:10 local: `… 429,\"result\":\"You've hit your session limit · resets 6:20am\"`. At run time SIDE_WALL claude (accounts.is_429_error) saw the whole JSON and walled the account; only the word was wrong. Fixed: `you['’]ve hit your (session|weekly) limit` in the walled pattern of panel.py FAILURE_REASONS and its llm-doctor copy (test_llm_doctor.sh and test_review_bench.sh, red on the old code); a bare `hit your session limit` (a grep pattern echoed in a log) stays unclassified.",
+   "handoff": null
   }
  ],
  "blind_spots": [
