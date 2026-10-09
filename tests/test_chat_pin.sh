@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-# bin/chat-pin: one chat's own pin line, moved only with the grant Egor's words wrote for that chat
-# and that target. Every path is a fixture: HOME, CLAUDEB_DIR, CHAT_PINS_DIR and the limits store.
+# bin/chat-pin: one chat's own pin line. Every path is a fixture: HOME, CLAUDEB_DIR, CHAT_PINS_DIR and the limits store.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -24,7 +23,7 @@ export GROKB_PROFILES_DIR="$WORK/grok-profiles"
 export LLM_LIMITS_FILE="$WORK/llm-limits.json"
 export WORKER_PICK_CONFIG_FILE="$WORK/worker-model"
 export CLAUDE_CODE_SESSION_ID=sess-1
-unset WORKER_STATS_DIR WORKER_MODEL_PIN_TTL_MIN
+unset WORKER_STATS_DIR
 mkdir -p "$HOME" "$CODEXB_PROFILES_DIR/.codexb"
 printf 'benched\n' >"$CODEXB_PROFILES_DIR/.codexb/disabled"
 cat >"$LLM_LIMITS_FILE" <<'JSON'
@@ -37,7 +36,6 @@ cat >"$LLM_LIMITS_FILE" <<'JSON'
 JSON
 
 CHAT="$CHAT_PINS_DIR/sess-1"
-GRANT="$CLAUDEB_DIR/worker-stats/pin-grants/chat-sess-1"
 
 asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
@@ -52,9 +50,8 @@ exits() { # code command...
   got=$?
   [ "$got" = "$want" ] || { printf 'exit %s, wanted %s: %s\n' "$got" "$want" "$(cat "$WORK/out")" >&2; return 1; }
 }
-grant() { mkdir -p "$(dirname "$GRANT")"; printf '%s\n' "$1" >"$GRANT"; }
 
-# --- Outside a session: no grant needed ---------------------------------------------------------
+# --- Outside a session ------------------------------------------------------------------------
 unset CLAUDECODE
 assert contains "$("$PIN")" 'no chat pin'
 assert "$PIN" codex
@@ -126,163 +123,27 @@ for sid in '' '../x' 'a/b'; do
 done
 assert_fails test -e "$CHAT_PINS_DIR/x"
 
-# --- Inside a session: only his grant, for this chat and this target, opens it ------------------
+# --- Inside a session: any target moves this chat's pin, no word of his needed ------------------
 export CLAUDECODE=1
-rm -f "$GRANT"
-assert exits 3 "$PIN" codex
-assert contains "$(cat "$WORK/out")" "no fresh grant for 'codex'"
-assert_fails test -e "$CHAT"
-
-grant gemini
-assert exits 3 "$PIN" codex
-assert_fails test -e "$CHAT"
-
-grant codex
 assert "$PIN" codex
 assert chat_is 'codex_profile=*'
-
-# The alias the hook writes is the vendor key, so `claude` spends a `claudeb` grant.
-grant claudeb
 assert "$PIN" claude
 assert chat_is 'claudeb_profile=*'
-
-# Case never decides a grant: the hook folds his words, the pool keeps its own spelling.
-grant BETA
 assert "$PIN" beta
 assert chat_is 'codex_profile=beta'
-# The pool's own spelling is the name: the hook grants «workers on Zeta» as typed.
-grant Zeta
 assert exits 2 "$PIN" zeta
 assert "$PIN" Zeta
 assert chat_is 'gemini_profile=Zeta'
-grant beta
-assert "$PIN" beta
-
-# Another chat's grant opens nothing here.
-rm -f "$GRANT"
-mkdir -p "$(dirname "$GRANT")"
-printf 'codex\n' >"$(dirname "$GRANT")/chat-sess-2"
-assert exits 3 "$PIN" codex
-assert chat_is 'codex_profile=beta'
-
-grant auto
-touch -t 202601010000 "$GRANT"
-assert exits 3 "$PIN" auto
-assert chat_is 'codex_profile=beta'
-grant auto
-assert "$PIN" auto
-assert_fails test -e "$CHAT"
-
-# The TTL is the module's knob, not a second clock.
-grant grok
-touch -t "$(date -v-10M +%Y%m%d%H%M)" "$GRANT"
-assert exits 3 env WORKER_MODEL_PIN_TTL_MIN=5 "$PIN" grok
-assert env WORKER_MODEL_PIN_TTL_MIN=30 "$PIN" grok
-assert chat_is 'grok_profile=*'
-
-# Reading the state is never gated.
-rm -f "$GRANT"
-assert contains "$("$PIN")" 'every grok pool account (*)'
-
-# --- With the words library, the grant is the pin grant claude-setup's word intake wrote ---------
-export WORDS_LIB="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/lib/words.sh" WORDS_DIR="$WORK/words"
-[ -r "$WORDS_LIB" ] || fail "the words library is missing: $WORDS_LIB"
-words_grant() { # target [session]
-  mkdir -p "$WORDS_DIR/${2:-sess-1}"
-  jq -nc --arg t "$1" '{family: "pin", turn: 1, at: 0, excerpt: "x", lifetime: "ttl:30m",
-    source: "stem", target: $t, scope: "chat"}' >"$WORDS_DIR/${2:-sess-1}/grant.pin"
-}
-grant codex
-assert exits 3 "$PIN" codex
-words_grant gemini
-assert exits 3 "$PIN" codex
-assert "$PIN" gemini
-assert chat_is 'gemini_profile=*'
-words_grant BETA
-assert "$PIN" beta
-assert chat_is 'codex_profile=beta'
-assert exits 3 "$PIN" auto
-# A vendor grant also lets the chat drop its pin.
-words_grant codex
-assert "$PIN" auto
-assert_fails test -e "$CHAT"
-rm -f "$WORDS_DIR/sess-1/grant.pin"
-words_grant codex sess-2
-assert exits 3 "$PIN" codex
-words_grant codex
-touch -t 202601010000 "$WORDS_DIR/sess-1/grant.pin"
-assert exits 3 "$PIN" codex
-words_grant grok
-assert "$PIN" grok
-assert chat_is 'grok_profile=*'
-# `grok-fast` is its own target: the vendor's own grant does not open it.
-assert exits 3 "$PIN" grok-fast
-words_grant grok-fast
 assert "$PIN" grok-fast
 assert chat_is 'grok_profile=*
 grok_fast=on'
-# The modifier rides on the vendor word, so the fast grant opens the same escape hatch to `auto`
-# the plain vendor word does — «воркеры на grok быстро» must not leave the chat unable to unpin.
-assert "$PIN" auto
-assert_fails test -e "$CHAT"
-words_grant codex-fast
-assert "$PIN" codex-fast
-assert chat_is 'codex_profile=*
-codex_fast=on'
-assert "$PIN" auto
-assert_fails test -e "$CHAT"
-words_grant grok-fast
-assert "$PIN" grok-fast
-# The grant is decided by word_gate_allow, the one door every pin asks: its open gate opens any
-# target, his word only its own.
-rm -f "$WORDS_DIR/sess-1/grant.pin"
-assert exits 3 "$PIN" all
-assert contains "$(cat "$WORK/out")" "no fresh grant for 'all'"
-assert chat_is 'grok_profile=*
-grok_fast=on'
-jq -nc --argjson u "$(($(date +%s) + 3600))" '{until: $u}' >"$WORDS_DIR/gate-open"
 assert "$PIN" all
 assert chat_is 'open=all'
-words_grant codex
+assert "$PIN" auto
+assert_fails test -e "$CHAT"
 assert "$PIN" grok
-assert chat_is 'grok_profile=*'
-rm -f "$WORDS_DIR/gate-open"
-assert exits 3 "$PIN" all
-assert chat_is 'grok_profile=*'
-# A WORD= quote attests a grant naming the target the quoted words name, and opens that one only.
-rm -f "$WORDS_DIR/sess-1/grant.pin"
-printf 'воркеры на все\n' >"$WORDS_DIR/sess-1/last.txt"
-assert exits 3 env WORD='воркеры на все' "$PIN" codex
-assert chat_is 'grok_profile=*'
-assert [ "$(jq -r .target "$WORDS_DIR/sess-1/grant.pin")" = all ]
-rm -f "$WORDS_DIR/sess-1/grant.pin"
-assert env WORD='воркеры на все' "$PIN" all
-assert chat_is 'open=all'
-rm -f "$WORDS_DIR/sess-1/grant.pin"
-assert exits 3 env WORD='воркеры на всех' "$PIN" all
-words_grant grok
-assert "$PIN" grok
-rm -f "$WORDS_DIR/sess-1/last.txt"
-words_grant codex
-chmod 000 "$WORDS_DIR/sess-1"
-assert exits 3 "$PIN" codex
-chmod 700 "$WORDS_DIR/sess-1"
-assert chat_is 'grok_profile=*'
-words_grant grok-fast
+assert contains "$("$PIN")" 'every grok pool account (*)'
 assert "$PIN" grok-fast
-# Egor's autonomy span moves this chat's pin with no grant.
-rm -f "$WORDS_DIR/sess-1/grant.pin"
-# The span reads the chat's transcript first, so a span-off he queued mid-turn is caught.
-mkdir -p "$WORK/troot/projects/p" && : >"$WORK/troot/projects/p/sess-1.jsonl"
-export CLAUDE_TRANSCRIPT_ROOTS="$WORK/troot"
-printf '. %q\nwords_span_live() { [ "$1" = "$SPAN_SID" ] && [ "$2" = %q ]; }\n' "$WORDS_LIB" \
-  "$WORK/troot/projects/p/sess-1.jsonl" >"$WORK/span-words.sh"
-assert exits 3 env WORDS_LIB="$WORK/span-words.sh" SPAN_SID=sess-2 "$PIN" codex
-assert env WORDS_LIB="$WORK/span-words.sh" SPAN_SID=sess-1 "$PIN" codex
-assert chat_is 'codex_profile=*'
-assert env WORDS_LIB="$WORK/span-words.sh" SPAN_SID=sess-1 "$PIN" grok-fast
-unset WORDS_LIB WORDS_DIR CLAUDE_TRANSCRIPT_ROOTS
-rm -f "$GRANT"
 
 # --- The pin reaches the one resolver every reader uses -----------------------------------------
 . "$ROOT/share/worker-model.sh"
@@ -293,7 +154,7 @@ assert [ "$(worker_model_pin_scope codex)" = none ]
 assert worker_model_chat_fast grok
 assert_fails worker_model_chat_fast codex
 
-# A wall that empties the chat file removes it: an empty chat file would still ask for a grant.
+# A wall that empties the chat file removes it.
 export WORKER_WALLS_DIR="$WORK/walls"
 worker_walls_record grok delta "$(($(date +%s) + 3600))"
 assert worker_model_clear_walled_pin grok delta 2>/dev/null
@@ -324,4 +185,4 @@ printf 'codex_profile=*\n' >"$CHAT"
 assert [ -z "$(LLM_LIMITS_FILE="$WORK/missing.json" worker_model_pins codex 2>"$WORK/err")" ]
 assert contains "$(cat "$WORK/err")" "$WORK/missing.json"
 
-printf 'PASS: %s asserts; chat-pin writes one pin line for one chat — a vendor as `*`, an account through the vendor whose live pool holds it, `codex-fast`/`grok-fast` adding a second `<vendor>_fast=on` line that any other target clears, ambiguous and unknown names refused — and inside a session only with a fresh grant naming this chat and this target\n' "$asserts"
+printf 'PASS: %s asserts; chat-pin writes one pin line for one chat — a vendor as `*`, an account through the vendor whose live pool holds it, `codex-fast`/`grok-fast` adding a second `<vendor>_fast=on` line that any other target clears, ambiguous and unknown names refused — inside a session or out, with no word of his needed\n' "$asserts"

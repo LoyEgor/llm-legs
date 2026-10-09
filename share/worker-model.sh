@@ -494,28 +494,10 @@ worker_light_effort_r() {
   worker_model_default_effort_r "$vendor" "$model" light
 }
 
-# The pin is the ONE override above the pool, and a session that sets or clears it silently
-# redirects every worker after it — including the ones Egor never watches. So it is his hands only,
-# and both of them stay open: the menubar shells out from Hammerspoon, which carries no CLAUDECODE,
-# and words in chat are turned into a grant by worker-pin-gate.sh. A session helping itself to the
-# pin because an account merely came up in conversation is neither (Egor, 2026-08-08).
-WORKER_MODEL_PIN_TTL_MIN="${WORKER_MODEL_PIN_TTL_MIN:-30}"
-
-worker_model_pin_grant() {
-  local state="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}"
-  printf '%s/pin-grants/pin' "$state"
-}
-
 worker_model_chat_session() {
   local sid="${CLAUDE_CODE_SESSION_ID:-}"
   worker_pool_valid_name "$sid" || return 1
   printf '%s' "$sid"
-}
-
-worker_model_chat_pin_grant() {
-  local sid
-  sid=$(worker_model_chat_session) || return 1
-  printf '%s/chat-%s' "$(dirname "$(worker_model_pin_grant)")" "$sid"
 }
 
 worker_model_chat_pin_file() {
@@ -559,42 +541,6 @@ worker_model_pin_file_r() {
     done <"$WORKER_MODEL_R"
   fi
   worker_model_file_r
-}
-
-worker_model_canonical_path() {
-  local path="$1" dir base
-  case "$path" in '~') path="$HOME" ;; '~/'*) path="$HOME/${path#\~/}" ;; esac
-  dir=$(dirname -- "$path") || { printf '%s' "$path"; return; }
-  base=$(basename -- "$path") || { printf '%s' "$path"; return; }
-  if dir=$(cd -- "$dir" 2>/dev/null && pwd -P); then
-    printf '%s/%s' "$dir" "$base"
-  else
-    printf '%s' "$path"
-  fi
-}
-
-worker_model_pin_allowed() {
-  [ -n "${CLAUDECODE:-}" ] || return 0
-  # A fixture named through WORKER_PICK_CONFIG_FILE is a test's own file, not his — but the FILE
-  # decides that, never the spelling: `$HOME/.claude//worker-model` and a `..` hop reach the real
-  # pin, and a session that only has to type the path differently has no gate at all.
-  [ "$(worker_model_canonical_path "$(worker_model_file)")" \
-    = "$(worker_model_canonical_path "$HOME/.claude/worker-model")" ] || return 0
-  # Same answers as worker-pin-gate.sh fresh(), the file door over this pin, except an unreadable
-  # store, which keeps refusing here. Exit 2: no door in the library, the older grant decides.
-  ( . "${WORDS_LIB:-$HOME/.claude/hooks/lib/words.sh}" &&
-    command -v words_span_live && command -v words_session_transcript || exit 2
-    sid=$(worker_model_chat_session)
-    transcript=$(words_session_transcript "$sid")
-    words_span_live "$sid" "$transcript" && exit 0
-    command -v word_gate_allow || exit 2
-    word_gate_allow "$sid" pin "worker-model pin" "" "$(worker_model_file)" "$transcript" || exit 1
-    grant=$(words_grant_fresh "$sid" pin)
-    [ "$?" != 3 ] || exit 1
-    [ "${WORDS_OPENED_BY:-}" = word ] || exit 0
-    [ "$(jq -r '.scope // empty' < <(printf '%s\n' "$grant"))" = account ] ) >/dev/null 2>&1
-  case $? in 0) return 0 ;; 1) return 1 ;; esac
-  [ -n "$(find "$(worker_model_pin_grant)" -mmin "-$WORKER_MODEL_PIN_TTL_MIN" 2>/dev/null)" ]
 }
 
 # Set in the parent shell after the pin file's last write of this process. A cache filled inside
@@ -811,7 +757,7 @@ worker_model_pin_write() { # vendor key op(set|add|remove) argument [file]
   ) 9>"$file.lock"
 }
 
-# Ungated rewrite of one vendor pin key. Callers that need a grant check first.
+# Ungated rewrite of one vendor pin key.
 worker_model_pin_store() {
   worker_model_pin_write '' "$1" set "$2"
 }
@@ -1019,11 +965,6 @@ worker_model_pin_account() {
       fi
       ;;
   esac
-  if ! worker_model_pin_allowed; then
-    printf '%s: the pin is Egor'\''s to move, and he has not asked for it here. Ask him in one line, or leave it: the menubar (LLM Limits → account → Pin) is his own hand on it.\n' \
-      "$vendor" >&2
-    return 3
-  fi
   if ! current=$(worker_model_pin_line "$file" "$key"); then
     printf '%s: %s exists but cannot be read; refusing to touch the pin\n' "$vendor" "$file" >&2
     return 2

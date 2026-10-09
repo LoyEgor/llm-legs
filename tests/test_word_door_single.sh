@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-# Egor's words are read by one module and permitted by one door: a program in bin/ or share/ that
-# decides whether a step may run asks words.sh word_gate_allow, never the grant store directly.
-# Only the readers listed below may touch a grant, each for its stated reason.
+# Egor's words are read by one module: a program in bin/ or share/ reads the grant store only
+# through words.sh, and only the readers listed below read a grant at all, each for its stated reason.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -16,13 +15,9 @@ assert_fails() { asserts=$((asserts + 1)); ! "$@" || fail "assert $asserts shoul
 
 GRANT_READ='words_grant_(target|fresh)|(^|[/"'\''])grant\.([$]|[{]|[a-z])'
 
-# path<TAB>door|exempt<TAB>reason. `door`: the reader asks word_gate_allow first and reads the
-# grant only to hold his word to its own target or scope; `exempt`: decides without the door.
+# path<TAB>reason
 ALLOWED=$(cat <<'EOF'
-bin/chat-pin	door	after word_gate_allow opened on his word, the grant's target must be the one asked
-bin/worker-pin-gate.sh	door	after word_gate_allow opened on his word, the grant's scope must be the account pin
-share/worker-model.sh	door	worker_model_pin_allowed: as worker-pin-gate.sh, for the account pin's command path
-bin/night-run	door	after word_gate_allow opened the hold, the grant's excerpt is the words it records
+bin/night-run	the hold records the grant's excerpt as his words; it decides nothing on it
 EOF
 )
 
@@ -32,22 +27,18 @@ readers() { # root -> repo-relative files in bin/ and share/ reading a grant out
   done)
 }
 
-check() { # root -> 0 when every grant reader is listed and every door reader asks the door
-  local root=$1 file kind bad=0
+check() { # root -> 0 when every grant reader is listed
+  local root=$1 file bad=0
   while IFS= read -r file; do
-    kind=$(awk -F '\t' -v f="$file" '$1 == f { print $2 }' <<<"$ALLOWED")
-    case "$kind" in
-      door) grep -qE 'word_gate_allow[[:space:]]+"' "$root/$file" || { printf 'door reader without the door: %s\n' "$file"; bad=1; } ;;
-      exempt) ;;
-      *) printf 'reads a grant outside word_gate_allow: %s\n' "$file"; bad=1 ;;
-    esac
+    awk -F '\t' -v f="$file" '$1 == f { found = 1 } END { exit !found }' <<<"$ALLOWED" ||
+      { printf 'reads a grant unlisted: %s\n' "$file"; bad=1; }
   done < <(readers "$root")
   return "$bad"
 }
 
 listed_still_read() { # every allowlist entry still reads a grant, so no stale exemption outlives its reader
   local file
-  while IFS=$'\t' read -r file _ _; do
+  while IFS=$'\t' read -r file _; do
     [ -n "$file" ] || continue
     readers "$ROOT" | grep -qxF -- "$file" || { printf 'stale allowlist entry: %s\n' "$file"; return 1; }
   done <<<"$ALLOWED"
@@ -70,4 +61,4 @@ rm -f "$WORK/plant/share/planted.sh"
 printf 'g=$(words_grant_fresh "$sid" pin)\n' >"$WORK/plant/bin/chat-pin"
 assert_fails quiet_check "$WORK/plant"
 
-printf 'PASS: %s asserts; no program in bin/ or share/ decides on a grant of his words except through word_gate_allow, bar the listed readers\n' "$asserts"
+printf 'PASS: %s asserts; no program in bin/ or share/ reads a grant of his words bar the listed readers\n' "$asserts"

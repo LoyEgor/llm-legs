@@ -1,14 +1,9 @@
 #!/usr/bin/env bash
-# The account pin is Egor's own override above the pool, and a session that moves it silently
-# redirects every later worker. Two modes, `write` / `bash` (PreToolUse), deny a session moving the
-# pin inside ~/.claude/worker-model — through Edit/Write and through a shell redirect alike, since a
-# door on one of them is a door around the other — unless HIS words granted the pin: claude-setup
-# hooks/word-intake.sh writes `grant.pin`, read here through words.sh (word_gate_allow). The
-# command path — `claudeb use|codexb use|geminib use|grokb use` — is refused inside worker_model_pin_account itself,
-# the one chokepoint every spelling of that command reaches.
-#
-# A grant only UNBLOCKS. It buys no action on its own, so none of the bookkeeping a one-shot
-# permission would need has to exist. Fail-open on any error: a broken gate must never block work.
+# What ~/.claude/worker-model may hold, and who writes a chat pin. Two modes, `write` / `bash`
+# (PreToolUse), deny a write to ~/.claude/worker-model — through Edit/Write and through a shell
+# redirect alike, since a door on one of them is a door around the other — that stores a model, an
+# effort or a light row the table does not list, and any write under the chat-pins directory but
+# `chat-pin`'s own. Fail-open on any error: a broken gate must never block work.
 #
 # Threat model — and the boundary for every review of this file: the gate stops a well-meaning
 # session from moving the pin by accident, never an adversary. A session trying to evade it can
@@ -31,8 +26,6 @@ if [ "$MODE" = bash ]; then
     *) [ -n "${CHAT_PINS_DIR:-}" ] && [[ $input == *"${CHAT_PINS_DIR##*/}"* ]] || exit 0 ;;
   esac
 fi
-GRANT_TTL_MIN="${WORKER_MODEL_PIN_TTL_MIN:-30}"
-PIN_KEY_RE='^(claudeb|codex|gemini|grok)_profile='
 
 # `~/.claude/hooks/worker-pin-gate.sh` is a symlink into the repository, so a shared module — the
 # per-model table (`share/worker-model.sh`), the ONE command splitter
@@ -139,36 +132,6 @@ deny_effort() {
   deny "Blocked: ${detail}Effort defaults belong to the table in share/worker-model.sh; stored overrides must use its allowed efforts. No grant unlocks an unlisted effort."
 }
 
-grant_path() {
-  local state="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}"
-  printf '%s/pin-grants/pin' "$state"
-}
-
-# Without the words library this door keeps its older grant, the file the intake still touches for
-# worker_model_pin_allowed; with it, the words store decides and an unreadable store waves it on.
-fresh() { # call
-  local lib=${WORDS_LIB:-$HOME/.claude/hooks/lib/words.sh} sid grant
-  if [ -r "$lib" ] && . "$lib" 2>/dev/null && command -v word_gate_allow >/dev/null 2>&1; then
-    sid=$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null)
-    command -v words_span_live >/dev/null 2>&1 &&
-      words_span_live "$sid" "$(jq -r '.transcript_path // empty' <<<"$input" 2>/dev/null)" && return 0
-    word_gate_allow "$sid" pin "$(jq -r '.tool_input.command // empty' <<<"$input" 2>/dev/null)" \
-      "${1:-}" "$(pin_file)" "$(jq -r '.transcript_path // empty' <<<"$input" 2>/dev/null)" || return 1
-    [ "${WORDS_OPENED_BY:-}" = word ] || return 0
-    grant=$(words_grant_fresh "$sid" pin)
-    case $? in
-      # An unreadable store waves this door on; a door opened by a WORD= quote has no grant file to
-      # read, and «воркеры на codex» — a CHAT pin — must not move the account pin through it.
-      3) return 0 ;;
-      0) [ "$(jq -r '.scope // empty' <<<"$grant" 2>/dev/null)" = account ]; return ;;
-      1) [ "$(words_attested_scope "$sid" "${1:-}" "$(jq -r '.tool_input.command // empty' <<<"$input" 2>/dev/null)" \
-           2>/dev/null)" = account ]; return ;;
-      *) return 1 ;;
-    esac
-  fi
-  [ -n "$(find "$(grant_path)" -mmin "-$GRANT_TTL_MIN" 2>/dev/null)" ]
-}
-
 chat_pins_dir() { printf '%s' "${CHAT_PINS_DIR:-$HOME/.cache/claude-chat-pins}"; }
 
 # The longest existing ancestor resolved, the rest kept as typed: the chat-pins dir usually does
@@ -193,7 +156,7 @@ under_chat_pins() {
   return 1
 }
 
-CHAT_DENY_REASON="Blocked: the chat pin under $(chat_pins_dir) is Egor's to move, and only through \`chat-pin <vendor|account|auto>\`, which checks the grant his own words wrote. Do not write, copy over or delete that file another way. If he asked for workers on a vendor or an account in this chat, run \`chat-pin\`; otherwise ask him in one line."
+CHAT_DENY_REASON="Blocked: the chat pin under $(chat_pins_dir) moves only through \`chat-pin <vendor|account|auto>\`; do not write, copy over or delete that file another way."
 
 # The copy verbs deny on the name alone: a backup of a chat pin is a thing no session needs, and
 # false-deny is this door's side.
@@ -243,7 +206,6 @@ pin_file() { canonical_path "$HOME/.claude/worker-model"; }
 
 is_pin_file() { [ "$(canonical_path "$1")" = "$(pin_file)" ]; }
 
-current_pins() { grep -E "$PIN_KEY_RE" "$(pin_file)" 2>/dev/null | sort; }
 
 # The pin file as the shared write parse names it: any word whose last component is the config
 # file. Coarse on purpose, as this door has always been — a session has no reason to write a
@@ -263,8 +225,6 @@ deny() {
     2>/dev/null
   exit 0
 }
-
-DENY_REASON="Blocked: the account pin (claudeb_profile / codex_profile / gemini_profile / grok_profile) in ~/.claude/worker-model is Egor's to move, and he has not named it here. This gate is the rule, not a suggestion — do not reach the file another way; \`claudeb use|codexb use|geminib use|grokb use\` is refused at the same door. A per-task account belongs in the brief's ACCOUNT: line, which needs no pin. Edit/Write may change non-pin fields while preserving every pin line. Bash permits only the two literal worker/effort substitutions documented in shared-invariants row ae; other shell writes, including model replacements, require a pin grant. If the pin itself should move, ask him in one line and wait."
 
 command -v jq >/dev/null 2>&1 || exit 0
 
@@ -298,18 +258,6 @@ case "$MODE" in
     [ -z "$offending" ] || deny_effort "$offending"
     offending=$(disallowed_light_rows "$pending")
     [ -z "$offending" ] || deny_light_row "$offending"
-    fresh && exit 0
-    if [ "$tool" = Write ]; then
-      # The pin lines this write would leave behind, against the ones there now.
-      pending=$(printf '%s' "$input" | jq -r '.tool_input.content // ""' | grep -E "$PIN_KEY_RE" | sort)
-      [ "$pending" = "$(current_pins)" ] && exit 0
-    else
-      # A value-only edit (`alice` → `bob`) names no key, so the rebuilt file's pin lines decide too.
-      printf '%s' "$input" | jq -r '(.tool_input.old_string // "") + "\n" + (.tool_input.new_string // "")' \
-        | grep -Eq '(claudeb|codex|gemini|grok)_profile' ||
-        [ "$(grep -E "$PIN_KEY_RE" <<<"$model_text" | sort)" != "$(current_pins)" ] || exit 0
-    fi
-    deny "$DENY_REASON"
     ;;
   bash)
     printf '%s' "$input" | jq -e '.hook_event_name == "PreToolUse" and .tool_name == "Bash"' \
@@ -747,26 +695,6 @@ case "$MODE" in
       grep -Eq "[A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*worker-model|\\\$\\([^)]*worker-model|(^|[;&|(])[[:space:]]*(for|while|read)[[:space:]][^;&|]*worker-model" <<<"$1"
     }
 
-    pin_untouched_write() {
-      local home_re path_re key_re inplace_re temporary_re
-      home_re=$(printf '%s' "$HOME" | sed 's/[][\\.^$*+?(){}|]/\\&/g')
-      path_re="(~|\\\$HOME|$home_re)/\\.claude/worker-model"
-      key_re='(worker|codex_effort|claudeb_effort|gemini_effort|grok_effort)'
-      inplace_re="^sed -i '' 's/\^${key_re}=\.\*/${key_re}=[a-z0-9]+/' ${path_re}$"
-      temporary_re="^([A-Za-z_][A-Za-z0-9_]*)=${path_re}; sed 's/\^${key_re}=\.\*/${key_re}=[a-z0-9]+/' \"\\\$([A-Za-z_][A-Za-z0-9_]*)\" > \"\\\$([A-Za-z_][A-Za-z0-9_]*)\.tmp\.\\\$\\\$\" && mv -f \"\\\$([A-Za-z_][A-Za-z0-9_]*)\.tmp\.\\\$\\\$\" \"\\\$([A-Za-z_][A-Za-z0-9_]*)\"$"
-      if [[ "$1" =~ $inplace_re ]]; then
-        [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[2]}" ]
-      elif [[ "$1" =~ $temporary_re ]]; then
-        [ "${BASH_REMATCH[3]}" = "${BASH_REMATCH[4]}" ] &&
-          [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[5]}" ] &&
-          [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[6]}" ] &&
-          [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[7]}" ] &&
-          [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[8]}" ]
-      else
-        return 1
-      fi
-    }
-
     if targeted "$scan" || deletes "$scan"; then :
     elif [ -n "$runtime" ] && runtime_writes_pin "$cmd"; then :
     elif { [ -n "$ambiguous" ] || travels "$scan"; } && any_write "$scan"; then :
@@ -784,11 +712,6 @@ $(cat "$(pin_file)" 2>/dev/null)")
     [ -z "$offending" ] || deny_effort "$offending"
     offending=$(disallowed_light_rows "$pending")
     [ -z "$offending" ] || deny_light_row "$offending"
-    # The raw command, and only while nothing in it is a runtime: matched around one, the shape is
-    # a guess, and a guess is exactly what may not open this door.
-    if [ -z "$ambiguous$runtime" ] && pin_untouched_write "$cmd"; then exit 0; fi
-    fresh "$(jq -r '.tool_use_id // empty' <<<"$input" 2>/dev/null)" && exit 0
-    deny "$DENY_REASON"
     ;;
 esac
 exit 0

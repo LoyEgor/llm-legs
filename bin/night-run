@@ -1126,13 +1126,8 @@ cmd_hold() {
   local sid=${CLAUDE_CODE_SESSION_ID:-} grant words tops repo wt branch main branches='[]' tmp until
   [ $# -eq 0 ] || usage
   [ -n "$sid" ] || die "hold runs inside the chat Egor said «сделай холд» in"
-  . "${WORDS_LIB:-$HOME/.claude/hooks/lib/words.sh}" 2>/dev/null || die "cannot read the word store library"
-  word_gate_allow "$sid" night-hold "$(words_quoted_cmd "night-run hold")" "" "" ||
-    die "no fresh night-hold word of Egor's in this chat: «сделай холд» opens it"
-  grant=$(words_grant_fresh "$sid" night-hold)
-  # The door waves this family on over an unreadable store; the hold never did.
-  [ "$?" != 3 ] || die "no fresh night-hold word of Egor's in this chat: «сделай холд» opens it"
-  words=$(jq -r '.excerpt // empty' <<<"$grant")
+  grant=$(. "${WORDS_LIB:-$HOME/.claude/hooks/lib/words.sh}" 2>/dev/null && words_grant_fresh "$sid" night-hold)
+  words=$(jq -r '.excerpt // empty' <<<"$grant" 2>/dev/null)
   words=${words:-${WORD:-}}
   tops=$(chat_tops "$sid")
   [ -r "$sweep_repos" ] || die "no sweep repositories at $sweep_repos"

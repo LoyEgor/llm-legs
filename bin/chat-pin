@@ -20,8 +20,6 @@ USAGE='usage: chat-pin [claudeb|claude|codex|gemini|grok|codex-fast|grok-fast|<a
 
 die() { printf 'chat-pin: %s\n' "$1" >&2; exit "${2:-2}"; }
 
-lower() { LC_ALL=en_US.UTF-8 tr '[:upper:]' '[:lower:]' <<<"$1"; }
-
 show_state() {
   local file="$1" line key value vendor fast=''
   if grep -qx 'open=all' "$file" 2>/dev/null; then
@@ -49,33 +47,6 @@ account_vendors() { # name → every vendor whose live pool holds it, one per li
   for vendor in $VENDORS; do
     worker_model_pool_accounts "$vendor" 2>/dev/null | grep -qxF -- "$1" && printf '%s\n' "$vendor"
   done
-}
-
-granted() { # target
-  local grant content sid transcript lib=${WORDS_LIB:-$HOME/.claude/hooks/lib/words.sh}
-  [ -n "${CLAUDECODE:-}" ] || return 0
-  if [ -r "$lib" ] && . "$lib" 2>/dev/null && command -v word_gate_allow >/dev/null 2>&1; then
-    sid=$(worker_model_chat_session)
-    transcript=$(words_session_transcript "$sid")
-    words_span_live "$sid" "$transcript" && return 0
-    word_gate_allow "$sid" pin "$(words_quoted_cmd "chat-pin $1")" "" "$file" "$transcript" || return 1
-    grant=$(words_grant_fresh "$sid" pin)
-    # The door waves a pin on over an unreadable store; this one never did. Opened by anything but
-    # his word (the open gate), any target goes; opened by his word, only the target it names.
-    [ "$?" != 3 ] || return 1
-    [ "${WORDS_OPENED_BY:-}" = word ] || return 0
-    content=$(lower "$(jq -r '.target // empty' <<<"$grant" 2>/dev/null)")
-    [ -n "$content" ] || return 1
-    [ "$content" = "$(lower "$1")" ] && return 0
-    # `воркеры на grok быстро` grants `grok-fast`: the modifier rides on the vendor word and must
-    # not close the documented escape hatch the plain word opens.
-    [ "$1" = auto ] && [[ " $VENDORS " = *" ${content%-fast} "* ]]
-    return
-  fi
-  grant=$(worker_model_chat_pin_grant) || return 1
-  [ -n "$(find "$grant" -mmin "-$WORKER_MODEL_PIN_TTL_MIN" 2>/dev/null)" ] || return 1
-  content=$(head -n1 "$grant" 2>/dev/null) || return 1
-  [ "$(lower "$content")" = "$(lower "$1")" ]
 }
 
 store() { # file line-or-empty
@@ -125,9 +96,6 @@ case "$arg" in
 esac
 
 if [ -z "$line" ] && [ ! -s "$file" ]; then show_state "$file"; exit 0; fi
-
-granted "$target" ||
-  die "no fresh grant for '$target': the chat pin is Egor's to move — it opens when he says «workers on ${target}» (a pin grant of his words naming '$target', younger than ${WORKER_MODEL_PIN_TTL_MIN}m); ask him in one line" 3
 
 store "$file" "$line" || die "failed to write $file"
 if [ -z "$line" ]; then

@@ -1659,35 +1659,17 @@ assert grep -Fq 'return _round.pid_still_running(*stamp)' "$RB_CLI"
 assert eq "$(grep -c 'def pid_still_running(' "$RB_ROUND")" 1
 
 
-# --- Row ae: account pin ownership -------------------------------------------
-# Three doors, one marker, one TTL. A door silently removed, or two of them disagreeing on where
-# the marker lives, is a pin a session can move again — the failure this row exists to prevent.
+# --- Row ae: the account pin ------------------------------------------------
+# The file doors read the resolved file, both registrations stand, and no pin door is left: a pin
+# grant check coming back is a refusal Egor ended (2026-10-09).
 PIN_GATE="$ROOT/bin/worker-pin-gate.sh"
 WORKER_MODEL_SH="$ROOT/share/worker-model.sh"
-pin_model_ttl=$(grep -E '^WORKER_MODEL_PIN_TTL_MIN="\$\{WORKER_MODEL_PIN_TTL_MIN:-[0-9]+\}"$' \
-  "$WORKER_MODEL_SH" | grep -oE '[0-9]+' | head -1)
-pin_gate_ttl=$(grep -E '^GRANT_TTL_MIN="\$\{WORKER_MODEL_PIN_TTL_MIN:-[0-9]+\}"$' \
-  "$PIN_GATE" | grep -oE '[0-9]+' | head -1)
-assert eq "$pin_model_ttl" 30
-assert eq "$pin_gate_ttl" "$pin_model_ttl"
-assert eq "$((pin_model_ttl * 60))" 1800
-assert grep -Fq "printf '%s/pin-grants/pin' \"\$state\"" "$WORKER_MODEL_SH"
-assert grep -Fq "printf '%s/pin-grants/pin' \"\$state\"" "$PIN_GATE"
-# The command door: a session, the real file resolved rather than spelled, and both directions
-# past one guard.
-assert grep -Fq '[ -n "${CLAUDECODE:-}" ] || return 0' "$WORKER_MODEL_SH"
-assert grep -Fq 'worker_model_canonical_path "$(worker_model_file)"' "$WORKER_MODEL_SH"
-assert grep -Fq 'worker_model_canonical_path "$HOME/.claude/worker-model"' "$WORKER_MODEL_SH"
-assert grep -Fq 'if ! worker_model_pin_allowed; then' "$WORKER_MODEL_SH"
-# The file doors, all three registrations, and the pin-key rule that keeps `/worker` working —
-# half a gate is a gate that is off, and a gate over the whole file is one that gets worked around.
 assert grep -Fq 'canonical_path "$HOME/.claude/worker-model"' "$PIN_GATE"
-assert grep -Fq "PIN_KEY_RE='^(claudeb|codex|gemini|grok)_profile='" "$PIN_GATE"
-assert grep -Fq 'hooks/word-intake.sh' "$WORKER_GATE_SETTINGS"
 assert grep -Fq 'worker-pin-gate.sh write' "$WORKER_GATE_SETTINGS"
 assert grep -Fq 'worker-pin-gate.sh bash' "$WORKER_GATE_SETTINGS"
-assert doc_has 'Account pin ownership'
-assert doc_has '`<state_dir>/pin-grants/pin`'
+assert grep -Fq 'hooks/word-intake.sh' "$WORKER_GATE_SETTINGS"
+assert test -z "$(grep -lE 'word_gate_allow|pin-grants' "$PIN_GATE" "$WORKER_MODEL_SH" "$ROOT/bin/chat-pin")"
+assert doc_has 'Account pin'
 assert grep -Fq 'worker_model_clear_walled_pin' "$WORKER_MODEL_SH"
 assert grep -Fq 'clear_observed_pins' "$ROOT/bin/worker-pick"
 assert doc_has 'A met wall on a pinned account also removes that one name'
@@ -1702,7 +1684,7 @@ assert grep -Fq 'worker_model_pin_scope()' "$WORKER_MODEL_SH"
 assert grep -Fq 'worker_model_pool_accounts()' "$WORKER_MODEL_SH"
 assert grep -Fq 'elif $scope == "vendor" then "1" else "0" end' "$ROOT/bin/worker-pick"
 
-# --- Rows cl, cm: chat pin file and its grant ---------------------------------
+# --- Row cl: chat pin file -----------------------------------------------------
 # One resolver: a second spelling of the path is a chat whose pin half the readers never see.
 assert doc_has '`${CHAT_PINS_DIR:-$HOME/.cache/claude-chat-pins}/<session_id>`'
 assert grep -Fq "printf '%s/%s' \"\${CHAT_PINS_DIR:-\$HOME/.cache/claude-chat-pins}\" \"\$sid\"" "$WORKER_MODEL_SH"
@@ -1716,11 +1698,6 @@ assert grep -Fq 'line.strip() == "open=all"' "$RB_ACCOUNTS"
 assert doc_has '`bin/worker-pin-gate.sh` `chat_pins_dir`'
 assert doc_has '`bin/statusline.sh` `pin` segment'
 assert eq "$(grep -rlF 'claude-chat-pins' "$ROOT/bin" "$ROOT/share" "$ROOT/llm-limits.sh" | sed "s|^$ROOT/||" | sort | tr '\n' ' ')" 'bin/statusline.sh bin/worker-pin-gate.sh share/worker-model.sh '
-assert doc_has '`<state_dir>/pin-grants/chat-<session_id>`'
-assert grep -Fq "printf '%s/chat-%s' \"\$(dirname \"\$(worker_model_pin_grant)\")\" \"\$sid\"" "$WORKER_MODEL_SH"
-assert doc_has '`${WORDS_DIR:-$HOME/.cache/claude/words}/<session_id>/grant.pin`'
-assert grep -Fq 'word_gate_allow "$sid" pin "$(words_quoted_cmd "chat-pin $1")"' "$ROOT/bin/chat-pin"
-assert doc_has 'claude-setup `hooks/word-intake.sh` (writer)'
 assert grep -Fq "CLAUDE_CODE_SESSION_ID='' worker_model_pin_first grok" "$ROOT/llm-limits.sh"
 
 # --- Row ai: usage wall record ------------------------------------------------
