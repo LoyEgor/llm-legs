@@ -166,6 +166,14 @@ assert denied "$(wf "await agent('x', {subagent_type: 'codex-worker'})")"
 assert denied "$(wf "await agent('run worker-run start codex --brief b')")"
 assert contains "$(wf "await agent('then worker-run wait r1')")" 'reaches `worker-run wait`, but a worker run or relay inside a workflow has no chat waiting on it. Start workers from the chat itself'
 assert lacks "$(wf "await agent('grep the repo')")" 'permissionDecision'
+# The relay word is cut to shape only once a script reaches one.
+printf 'tr() { printf "tr %%s\\n" "$*" >>"$WF_CALLS"; command tr "$@"; }\nsed() { printf "sed %%s\\n" "$*" >>"$WF_CALLS"; command sed "$@"; }\n' \
+  >"$WORK/wf-count.sh"
+: >"$WORK/wf-calls"
+BASH_ENV="$WORK/wf-count.sh" WF_CALLS="$WORK/wf-calls" wf "await agent('grep the repo')" >/dev/null
+assert [ "$(grep -cE '^(tr -s \[:space:\]|sed s/ \$//)' "$WORK/wf-calls")" = 0 ]
+BASH_ENV="$WORK/wf-count.sh" WF_CALLS="$WORK/wf-calls" wf "await agent('then worker-run wait r1')" >/dev/null
+assert [ "$(grep -cE '^(tr -s \[:space:\]|sed s/ \$//)' "$WORK/wf-calls")" = 2 ]
 assert lacks "$(wf "await agent('review bin/worker-run, the codex-worker relay and review-waiter docs')")" 'permissionDecision'
 assert denied "$(wf "await agent(\"x\", {subagent_type: \"review-waiter\"})")"
 assert denied "$(wf "await agent('run light-research --out o q')")"

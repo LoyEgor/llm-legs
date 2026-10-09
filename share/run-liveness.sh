@@ -8,12 +8,20 @@
 # alive is a chat told to wait forever for one the hooks have already retired.
 PID_START_SLACK=30
 
+etime_parse() { # etime as ps prints it: [[dd-]hh:]mm:ss -> ETIME_SECONDS, empty for any other shape
+  local parts part total=0 scale
+  ETIME_SECONDS=''
+  IFS='-:' read -ra parts <<<"$1"
+  case ${#parts[@]} in 2) scale=(60 1) ;; 3) scale=(3600 60 1) ;; 4) scale=(86400 3600 60 1) ;; *) return 1 ;; esac
+  for part in "${!parts[@]}"; do
+    [[ ${parts[part]} =~ ^[0-9]+$ ]] || return 1
+    total=$((total + 10#${parts[part]} * scale[part]))
+  done
+  ETIME_SECONDS=$total
+}
+
 etime_seconds() { # etime as ps prints it: [[dd-]hh:]mm:ss
-  printf '%s' "$1" | awk -F'[-:]' '
-    NF == 2 { print $1 * 60 + $2; exit }
-    NF == 3 { print $1 * 3600 + $2 * 60 + $3; exit }
-    NF == 4 { print $1 * 86400 + $2 * 3600 + $3 * 60 + $4; exit }
-  ' 2>/dev/null
+  etime_parse "$1" && printf '%s\n' "$ETIME_SECONDS"
 }
 
 # Whether the process wearing a run's recorded pid IS that run's supervisor. The number is reused
@@ -24,10 +32,11 @@ etime_seconds() { # etime as ps prints it: [[dd-]hh:]mm:ss
 # written before pid_started_at existed cannot be checked this way and keeps the old answer, or
 # every run started before that field went in would begin reading dead.
 pid_alive_since() { # pid start-epoch (none: unchecked)
-  local elapsed seconds drift
+  local elapsed drift now
   [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -gt 0 ] || return 1
   command -v ps >/dev/null 2>&1 || { kill -0 "$1" 2>/dev/null; return; }
-  elapsed=$(ps -p "$1" -o etime= 2>/dev/null | tr -d '[:space:]')
+  elapsed=$(ps -p "$1" -o etime= 2>/dev/null)
+  elapsed=${elapsed//[[:space:]]/}
   if [ -z "$elapsed" ]; then
     # "No such process" and "ps could not answer" are the same empty output, and one of them is a
     # live run about to be reported failed. A pid that must be listed settles it — pid 1, not `$$`:
@@ -38,14 +47,15 @@ pid_alive_since() { # pid start-epoch (none: unchecked)
     return
   fi
   [[ "$2" =~ ^[0-9]+$ ]] && [ "$2" -gt 0 ] || return 0
-  seconds=$(etime_seconds "$elapsed")
-  [[ "$seconds" =~ ^[0-9]+$ ]] || return 0
-  drift=$(($(date +%s) - seconds - $2))
+  etime_parse "$elapsed" || return 0
+  printf -v now '%(%s)T' -1
+  drift=$((now - ETIME_SECONDS - $2))
   [ "${drift#-}" -le "$PID_START_SLACK" ]
 }
 
-supervisor_running() { # directory pid
+supervisor_running() { # directory pid [pid_started_at, read from meta.json when absent]
   [[ "$2" =~ ^[0-9]+$ ]] && [ "$2" -gt 0 ] || return 1
+  if [ "$#" -ge 3 ]; then pid_alive_since "$2" "$3"; return; fi
   pid_alive_since "$2" "$(jq -r '.pid_started_at // empty' "$1/meta.json" 2>/dev/null)"
 }
 

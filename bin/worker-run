@@ -665,16 +665,17 @@ stop_run() { # signal
   ( sleep 5; end_child "$child" KILL ) >/dev/null 2>&1 &
 }
 
-run_overdue() {
+run_overdue() { # directory [attempt-start, read from meta.json when absent]
   # A pid check alone cannot be trusted forever: a legacy record carries no launch
   # stamp for supervisor_running to compare, and then a run whose supervisor never
   # wrote exit_code reports "running" indefinitely. Twice the deadline covers the one
   # compatibility retry each vendor may make. Unparseable started_at counts as
   # overdue — better a failed report than an eternal "running".
   local started now
-  started=$(jq -r '([.started_at, .slot_at] | map(numbers) | max // 0)' "$1/meta.json" 2>/dev/null)
+  if [ "$#" -ge 2 ]; then started=$2
+  else started=$(jq -r '([.started_at, .slot_at] | map(numbers) | max // 0)' "$1/meta.json" 2>/dev/null); fi
   [[ "$started" =~ ^[0-9]+$ ]] && [ "$started" -gt 0 ] || return 0
-  now=$(date +%s)
+  printf -v now '%(%s)T' -1
   [ $((now - started)) -gt $((2 * DEADLINE + 900)) ]
 }
 
@@ -4472,7 +4473,8 @@ if usage is not None:
 PY
 }
 
-WAIT_STAMP='' WAIT_TOKENS_STAMP='' WAIT_META='' WAIT_VENDOR='' WAIT_ACCOUNT='' WAIT_WORKDIR='' WAIT_STARTED=''
+WAIT_STAMP='' WAIT_TOKENS_STAMP='' WAIT_VENDOR='' WAIT_ACCOUNT='' WAIT_WORKDIR='' WAIT_STARTED=''
+WAIT_PID='' WAIT_PID_STARTED='' WAIT_ATTEMPT_STARTED=''
 WAIT_TRANSCRIPT='' WAIT_OFFSET=0 WAIT_ROWS_NEXT=0 WAIT_TOKENS_NEXT=0 WAIT_CLOCK=0
 declare -A WAIT_PRINTED=() WAIT_COUNTS=()
 wait_clock() {
@@ -4485,17 +4487,19 @@ wait_clock() {
 # An empty WAIT_STAMP forces a full pass (the first and the last). Between them a slurped log is
 # re-read only after ten times its last read, and the tokens after max(60 s, ten times their last count),
 # so a long run's reads stay a bounded share of its wall time.
+# Every tick reads meta.json afresh: a walled reroute moves the account and restamps started_at mid-run.
+# wait_run's liveness and deadline checks read the WAIT_PID* fields this call leaves.
 wait_progress() { # directory run-id stream
-  local directory="$1" vendor account workdir started settled transcript='' stamp size row now prefix tokens out='' force=false began
+  local directory="$1" vendor account workdir started transcript='' stamp size row now prefix tokens out='' force=false began
   [ -n "$WAIT_STAMP" ] || force=true
-  if [ "$WAIT_META" != "$directory" ]; then
-    { IFS= read -r WAIT_VENDOR; IFS= read -r WAIT_ACCOUNT; IFS= read -r WAIT_WORKDIR; IFS= read -r WAIT_STARTED
-      IFS= read -r settled; } \
-      < <(jq -r '.vendor, .account, .workdir, (.pid_started_at // .started_at // 0), (.pid_started_at != null)' \
-        "$directory/meta.json" 2>/dev/null)
-    [ "$settled" != true ] || WAIT_META=$directory
-  fi
+  { IFS= read -r WAIT_VENDOR; IFS= read -r WAIT_ACCOUNT; IFS= read -r WAIT_WORKDIR; IFS= read -r WAIT_STARTED
+    IFS= read -r WAIT_PID; IFS= read -r WAIT_PID_STARTED; IFS= read -r WAIT_ATTEMPT_STARTED; } \
+    < <(jq -r '.vendor, .account, .workdir, (.pid_started_at // .started_at // 0), (.pid // ""), (.pid_started_at // ""),
+        ([.started_at, .slot_at] | map(numbers) | max // 0)' "$directory/meta.json" 2>/dev/null)
   vendor=$WAIT_VENDOR account=$WAIT_ACCOUNT workdir=$WAIT_WORKDIR started=$WAIT_STARTED
+  wait_clock
+  [ "$force" = true ] || [ "$vendor" = claudeb ] || [ "$WAIT_CLOCK" -ge "$WAIT_ROWS_NEXT" ] ||
+    [ "$WAIT_CLOCK" -ge "$WAIT_TOKENS_NEXT" ] || return 0
   if [ "$vendor" = claudeb ]; then
     { IFS= read -r transcript <"$directory/session-file"; } 2>/dev/null || transcript=''
   elif [ "$vendor" != gemini ] && [ -f "$WAIT_TRANSCRIPT" ]; then
@@ -4516,7 +4520,7 @@ wait_progress() { # directory run-id stream
   if [ "$stamp" != "$WAIT_STAMP" ] &&
     { [ "$force" = true ] || [ "$vendor" = claudeb ] || [ "$WAIT_CLOCK" -ge "$WAIT_ROWS_NEXT" ]; }; then
     WAIT_STAMP=$stamp began=$WAIT_CLOCK
-    now=$(date +%s)
+    printf -v now '%(%s)T' -1
     [[ "$started" =~ ^[0-9]+$ ]] || started=$now
     prefix="[$(elapsed_label "$((now > started ? now - started : 0))")] "
     [ "$vendor" = claudeb ] || WAIT_COUNTS=()
@@ -4545,6 +4549,8 @@ wait_progress() { # directory run-id stream
     rm -f "$directory/tokens.tmp.$$"
 }
 
+# 0.2 s with no process start: a read timing out on a fifo this shell holds open both ways never gets data.
+
 wait_run() {
   [ "$#" -ge 1 ] || usage
   local run_id="$1" max='' stream=false directory wait_started now waited remaining sleep_for ticks pid
@@ -4568,10 +4574,10 @@ wait_run() {
       wait_poll_lag "$directory" "$run_id" "$wait_started"; run_state_terminal "$directory"; terminal_report "$directory"; return 0
     fi
     wait_progress "$directory" "$run_id" "$stream"
-    pid=$(jq -r '.pid' "$directory/meta.json")
+    pid=$WAIT_PID
     # pid 0 is the pre-launch placeholder, and a probe of it would answer for our own
     # process group and report a never-started run as alive.
-    if ! supervisor_running "$directory" "$pid" || run_overdue "$directory"; then
+    if ! supervisor_running "$directory" "$pid" "$WAIT_PID_STARTED" || run_overdue "$directory" "$WAIT_ATTEMPT_STARTED"; then
       sleep 0.1
       WAIT_STAMP=''; wait_progress "$directory" "$run_id" "$stream"
       if [ -f "$directory/exit_code" ]; then
@@ -4583,7 +4589,7 @@ wait_run() {
       fi
       return 0
     fi
-    now=$(date +%s)
+    printf -v now '%(%s)T' -1
     waited=$((now - wait_started)); [ "$waited" -ge 0 ] || waited=0
     if [ "$waited" -ge "$max" ]; then running_report "$directory"; return 0; fi
     remaining=$((max - waited))

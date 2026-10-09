@@ -376,9 +376,19 @@ for doc_file in "$progress_dir"/*.json; do
   fi
 done
 for run in "${!review_waits[@]}"; do [ -n "${review_docs[$run]+set}" ] || review_docs[$run]=""; done
+# One jq for every document, each read on its own: a malformed or failing one answers nothing, as alone.
+review_args=() n=0
 for run in "${!review_docs[@]}"; do
-  review=""
-  [ -z "${review_docs[$run]}" ] || review=$(jq -r --argjson now "$now" --arg waited "${review_waits[$run]+1}" --arg repos "${review_repos[$run]-}" '
+  [ -n "${review_docs[$run]}" ] || continue
+  review_args+=(--rawfile "d$n" "${review_docs[$run]}" --arg "k$n" "$run" --arg "w$n" "${review_waits[$run]+1}"
+    --arg "r$n" "${review_repos[$run]-}")
+  n=$((n + 1))
+done
+declare -A review_out=()
+if [ "$n" -gt 0 ]; then
+  while IFS=$'\036' read -r run review; do
+    [ -z "$run" ] || review_out[$run]=$review
+  done < <(jq -nr --argjson now "$now" "${review_args[@]}" '
     def word(d): (if . == null then "" else tostring | gsub("[^A-Za-z0-9_.-]"; "") end) | if . == "" then d else . end;
     def line: tostring | split("\n") | map(select(test("\\S"))) | (.[0] // "") | gsub("[\t\u001f\r]"; " ") | .[0:200];
     def epoch: if type == "number" then floor
@@ -387,6 +397,7 @@ for run in "${!review_docs[@]}"; do
           | (.d + "Z" | fromdateiso8601) - (if .z == "Z" then 0
               else ((.h | tonumber) * 3600 + (.m | tonumber) * 60) * (if .s == "-" then -1 else 1 end) end)) // null)
       else null end;
+    def render($waited; $repos):
     select($waited != "" or ((.heartbeat_epoch | numbers) // $now) >= $now - 300)
     | (if (.kind // "") == "task" or (.hunt // false) then "task" else "review" end) as $kind
     | (.lens | word($kind)) as $lens | (.cells // []) as $cells | (.failed_cells // []) as $failed
@@ -441,7 +452,13 @@ for run in "${!review_docs[@]}"; do
        $st[0], $st[1],
        (if $judge_row then [$j.account, $j.model, $j.effort] | map(word("")) | map(select(. != "")) | join(" · ") else "" end),
        (if $judge_row then (.phase_at // $j.ts // null) | epoch // "?" | tostring else "" end)]
-    | join("\u001f")' "${review_docs[$run]}" 2>/dev/null)
+    | join("\u001f");
+    $ARGS.named | to_entries[] | select(.key | test("^d[0-9]+$")) | .key[1:] as $i
+    | $ARGS.named["k" + $i] as $run
+    | .value | try (fromjson | render($ARGS.named["w" + $i]; $ARGS.named["r" + $i]) | $run + "\u001e" + .) catch empty' 2>/dev/null)
+fi
+for run in "${!review_docs[@]}"; do
+  review=${review_out[$run]-}
   if [ -z "$review" ]; then
     [ -n "${review_waits[$run]+set}" ] || continue
     review=${review_waits[$run]}$'\037'"review · ${run: -7}"$'\037\037\037\037\037'

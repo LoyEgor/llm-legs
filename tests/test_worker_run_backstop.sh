@@ -42,10 +42,15 @@ assert_has 'Start each wait now as a Bash with run_in_background: true' "$(reaso
 # another run, does not.
 forget
 mkdir -p "$WORK/bin"
-printf '#!/bin/sh\nwhile :; do sleep 1; done\n' >"$WORK/bin/worker-run"
+# A stub's ready file is written once its own command line is in the process table.
+mkdir -p "$WORK/ready"
+printf '#!/bin/sh\n: >"%s/ready/${0##*/}-$2"\nwhile :; do sleep 1; done\n' "$WORK" >"$WORK/bin/worker-run"
 cp "$WORK/bin/worker-run" "$WORK/bin/review-bench"
 chmod +x "$WORK/bin/worker-run" "$WORK/bin/review-bench"
-wait_on() { "$WORK/bin/$1" wait "$2" & WAIT_PIDS="${WAIT_PIDS:-} $!"; sleep 0.2; }
+ready() { local name i; for name in "$@"; do
+  for i in $(seq 1000); do [ -e "$WORK/ready/$name" ] && break; sleep 0.01; done
+  [ -e "$WORK/ready/$name" ] || fail "line ${BASH_LINENO[0]}: $name never started"; done; }
+wait_on() { rm -f "$WORK/ready/$1-$2"; "$WORK/bin/$1" wait "$2" & WAIT_PIDS="${WAIT_PIDS:-} $!"; ready "$1-$2"; }
 end_waits() { kill $WAIT_PIDS 2>/dev/null; wait $WAIT_PIDS 2>/dev/null; WAIT_PIDS=''; }
 wait_on worker-run r1x
 assert_eq block "$(stop | jq -r .decision)"
@@ -69,13 +74,13 @@ rm -rf "$WORKER_RUN_DIR/r1"; forget
 # own wait process exists (2026-10-09, two chats held for waits they had started); a shell naming the id
 # with no wait, or a wait naming only a longer id, does not.
 run r5 s1 codex; run r6 s1 codex
-bash -c "for r in r5 r6; do sleep 30; $WORK/bin/worker-run wait \$r; done" & WAIT_PIDS="${WAIT_PIDS:-} $!"
-sleep 0.2
+bash -c ": >$WORK/ready/loop; for r in r5 r6; do sleep 30; $WORK/bin/worker-run wait \$r; done" & WAIT_PIDS="${WAIT_PIDS:-} $!"
+ready loop
 assert_eq "" "$(stop)"
 end_waits; forget
-bash -c "sleep 30; echo r5 r6" & WAIT_PIDS="${WAIT_PIDS:-} $!"
-bash -c "R=r5x; sleep 30; $WORK/bin/worker-run wait \$R r6x" & WAIT_PIDS="${WAIT_PIDS:-} $!"
-sleep 0.2
+bash -c ": >$WORK/ready/echo; sleep 30; echo r5 r6" & WAIT_PIDS="${WAIT_PIDS:-} $!"
+bash -c ": >$WORK/ready/longer; R=r5x; sleep 30; $WORK/bin/worker-run wait \$R r6x" & WAIT_PIDS="${WAIT_PIDS:-} $!"
+ready echo longer
 assert_eq block "$(stop | jq -r .decision)"
 end_waits; rm -rf "$WORKER_RUN_DIR/r5" "$WORKER_RUN_DIR/r6"; forget
 
@@ -161,7 +166,7 @@ printf '#!/bin/sh\necho "$*" >>"%s/ps-calls"\nexec %s "$@"\n' "$WORK" "$(command
 chmod +x "$WORK/shim/ps"
 WORKER_RUN_DIR="$WORK/runs-owned"
 for i in $(seq 4 15); do run "r$i" s1 codex; "$WORK/bin/worker-run" wait "r$i" & WAIT_PIDS="${WAIT_PIDS:-} $!"; done
-sleep 0.2
+for i in $(seq 4 15); do ready "worker-run-r$i"; done
 assert_eq "" "$(PATH="$WORK/shim:$PATH" stop)"
 assert_eq 1 "$(wc -l <"$WORK/ps-calls" | tr -d ' ')"
 end_waits
@@ -172,7 +177,7 @@ WORKER_RUN_DIR="$WORK/runs-chat"
 run r16 s1 codex
 assert_eq "" "$(unset WORKER_RUN_BACKSTOP_CHAT_PID; PATH="$WORK/shim:$PATH" HOOK="$HOOK" WORK="$WORK" "$WORK/bin/claude" -c '
   "$WORK/bin/worker-run" wait r16 & w=$!
-  sleep 0.2
+  until [ -e "$WORK/ready/worker-run-r16" ]; do sleep 0.01; done
   bash -c "jq -cn \"{hook_event_name:\\\"Stop\\\",session_id:\\\"s1\\\"}\" | bash \"\$HOOK\""
   kill $w')"
 assert_eq 2 "$(wc -l <"$WORK/ps-calls" | tr -d ' ')"

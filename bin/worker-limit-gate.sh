@@ -19,7 +19,10 @@ WORKER_PICK="${WORKER_GATE_WORKER_PICK:-/Volumes/Work/Projects/llm-legs/bin/work
 worker="$2-worker"
 computer=false
 [ "$2" != computer ] || { worker=codex-worker; computer=true; }
-prompt=$(head -c 65536 "$3" 2>/dev/null) || prompt=''
+prompt=''
+if [ -z "${4:-}" ] || { [ "$worker" = codex-worker ] && [ "$computer" = false ]; }; then
+  prompt=$(head -c 65536 "$3" 2>/dev/null) || prompt=''
+fi
 
 # Carries $toggle_note, so a vendor that disagrees with the toggle is reported without
 # stealing the exit from a limit verdict that matters more. `warn ""` is the quiet path.

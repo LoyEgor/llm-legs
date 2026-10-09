@@ -4268,6 +4268,13 @@ rm -f "$STATE_DIR/work-wp-sess"
 STATUSLINE_PS="$FAKE_PS_WORK" STATUSLINE_LSOF="$FAKE_LSOF_WORK" WORKER_RUN_DIR="$WP_RUNS" WORKER_STATS_DIR="$WP_STATS" \
   /bin/bash "$WORK_PROBE" wp-sess 1250
 assert_eq "$wp_cols" "$(wp_view 2>/dev/null)"
+# One jq formats every review document of the probe, however many there are.
+printf 'jq() { local a="$*"; printf "%%s\\n" "${a//$'"'"'\\n'"'"'/ }" >>"$WP_JQ_CALLS"; command jq "$@"; }\n' >"$WORK/wp-count.sh"
+: >"$WORK/wp-jq-calls"
+STATUSLINE_PS="$FAKE_PS_WORK" STATUSLINE_LSOF="$FAKE_LSOF_WORK" WORKER_RUN_DIR="$WP_RUNS" WORKER_STATS_DIR="$WP_STATS" \
+  BASH_ENV="$WORK/wp-count.sh" WP_JQ_CALLS="$WORK/wp-jq-calls" "$WORK_PROBE" wp-sess 1250
+assert_eq "$wp_cols" "$(wp_view 2>/dev/null)"
+assert_eq 1 "$(grep -cF "$WP_STATS/progress/" "$WORK/wp-jq-calls")"
 # An unstamped judge phase keeps the start the last probe gave it.
 perl -i -pe 's/\t[0-9]+(\t20261008T100000Z-jjjjjjj)$/\t12345$1/' "$STATE_DIR/work-wp-sess"
 STATUSLINE_PS="$FAKE_PS_WORK" STATUSLINE_LSOF="$FAKE_LSOF_WORK" WORKER_RUN_DIR="$WP_RUNS" WORKER_STATS_DIR="$WP_STATS" \
@@ -4309,7 +4316,8 @@ assert test ! -e "$IDLE_CALLS"
 wl_strip() { perl -pe 's/\e\[[0-9;]*m//g'; }
 # The render's clock is the fixture's: every fixture is written on wl_clock, which pins the render to it.
 wl_clock() { wl_now=$(date +%s); export STATUSLINE_NOW=$wl_now; }
-wl_rows() { run_statusline "$(statusline_payload "$1")" | perl -ne 'next if $. < 3; s/\e\[[0-9;]*m//g; print'; }
+wl_cut() { perl -ne 'next if $. < 3; s/\e\[[0-9;]*m//g; print'; }
+wl_rows() { run_statusline "$(statusline_payload "$1")" | wl_cut; }
 wl_clock
 # Each render gets its fixture rewritten on a fresh clock: a cache older than 4s also sends the
 # render's probe to rewrite it, which empties one with no process behind it.
@@ -4348,14 +4356,13 @@ wl_judge() { wl_clock; {
   printf 'main\treview\t%s\tT1 · standard · bugs\t\t✗ dead\t✗ dead\t\t\t20261009T100000Z-7654321\n' "$((wl_now - 65))"
 } > "$STATE_DIR/work-wl-judge"; }
 wl_judge
+wl_judged=$(run_statusline "$(statusline_payload wl-judge)")
 assert_eq "$(printf '%s\n' \
   'T1 · standard · bugs — llm-legs        ✓ report 3                 58m 00s' \
   'judge: notcom — 1234567                                            4m 05s' \
   'T0 · double · bugs — llm-legs          all 4/4 a ✓ b ✗2 · ✓ done   3m 20s' \
   'judge: notcom · opus · high — abcdefg                                 45s' \
-  'T1 · standard · bugs                   ✗ dead                      1m 05s')" "$(wl_rows wl-judge)"
-wl_judge
-wl_judged=$(run_statusline "$(statusline_payload wl-judge)")
+  'T1 · standard · bugs                   ✗ dead                      1m 05s')" "$(wl_cut <<< "$wl_judged")"
 assert grep -Fq "${MAGENTA}judge: notcom · opus · high${RESET} ${DIM}—${RESET} abcdefg " <<< "$wl_judged"
 assert grep -Fq "${DIM}${RESET}${GREEN}✓${RESET}${DIM} report 3" <<< "$wl_judged"
 assert grep -Fq "${DIM}${RESET}${RED}✗${RESET}${DIM} dead" <<< "$wl_judged"
@@ -4413,11 +4420,12 @@ assert_eq "$(printf '%s\n' \
 # A media-run job: `media · <tag>` is the head, its label the title, a fan-out's cells the state.
 wl_media() { wl_clock; printf 'main\tmedia\t%s\tnotcom · img·web\tedit\t\t\t\t\nmain\tmedia\t%s\tfanout · img\tall\t2\t1\t3\t\n' \
   "$((wl_now - 65))" "$((wl_now - 30))" > "$STATE_DIR/work-wl-media"; }
+wl_media
+wl_media_out=$(run_statusline "$(statusline_payload wl-media)")
 assert_eq "$(printf '%s\n' \
   'media · notcom · img·web — edit          1m 05s' \
-  'media · fanout · img — all       2/3 ✗1     30s')" "$(wl_media; wl_rows wl-media)"
-wl_media
-assert grep -Fq "${MAGENTA}media · notcom · img·web${RESET}" <<< "$(run_statusline "$(statusline_payload wl-media)")"
+  'media · fanout · img — all       2/3 ✗1     30s')" "$(wl_cut <<< "$wl_media_out")"
+assert grep -Fq "${MAGENTA}media · notcom · img·web${RESET}" <<< "$wl_media_out"
 # At most five rows; the rest is one dim line of hidden counts by kind, agents first, singular for one.
 wl_cap() { # session workers reviews media commands
   local i
@@ -4446,8 +4454,9 @@ wl_pair() { # session workers
 wl_pair wl-pair3 3 > "$STATE_DIR/work-wl-pair3"
 assert_eq 'w0 w1 w2 r abcdefg +1 command' "$(wl_rows wl-pair3 | awk '{ print ($1 == "judge:") ? $4 : ($1 ~ /^\+/) ? $0 : $7 }' | paste -sd' ' -)"
 wl_pair wl-pair4 4 > "$STATE_DIR/work-wl-pair4"
-assert_eq '+1 review, 1 command' "$(wl_rows wl-pair4 | tail -n1)"
-assert_eq 4 "$(wl_rows wl-pair4 | grep -c ' — w')"
+wl_pair4=$(wl_rows wl-pair4)
+assert_eq '+1 review, 1 command' "$(tail -n1 <<< "$wl_pair4")"
+assert_eq 4 "$(grep -c ' — w' <<< "$wl_pair4")"
 # Every width, UTF-8 or not: a row never outgrows COLUMNS − STATUSLINE_FIT_MARGIN while its floor
 # (first head word, short states, elapsed, tokens) fits; past that it is exactly that floor. Elapsed and
 # tokens stay whole and the right columns line up across rows.
@@ -4460,15 +4469,17 @@ assert_eq 4 "$(wl_rows wl-pair4 | grep -c ' — w')"
   printf 'main\tshell\t%s\tegorloy\tzsh\t\t\t\n' "$((wl_now - 3725))"
 } > "$STATE_DIR/work-wl-wide"
 mkdir -p "$WORK/wl-wide"
+# A cache older than 4s sends the render's probe to rewrite it, and this one has no process behind it:
+# dated ahead, it stays fresh for the whole sweep. The rows read no git state, so the cwd is no repository.
+perl -e 'utime time, time + 600, $ARGV[0]' "$STATE_DIR/work-wl-wide"
+wl_payload=$(statusline_payload wl-wide '' "$WORK/wl-wide")
 wl_jobs=0
 for wl_locale in UTF-8 C; do
   for ((wl_cols = 30; wl_cols <= 200; wl_cols++)); do
-    # A cache older than 4s sends the render's probe to rewrite it, and this one has no process behind it.
-    touch "$STATE_DIR/work-wl-wide"
     if [ "$wl_locale" = C ]; then
-      LC_ALL=C FIT_COLUMNS=$wl_cols FIT_MARGIN=4 wl_rows wl-wide > "$WORK/wl-wide/$wl_locale-$wl_cols" &
+      LC_ALL=C FIT_COLUMNS=$wl_cols FIT_MARGIN=4 run_statusline "$wl_payload" > "$WORK/wl-wide/$wl_locale-$wl_cols" &
     else
-      FIT_COLUMNS=$wl_cols FIT_MARGIN=4 wl_rows wl-wide > "$WORK/wl-wide/$wl_locale-$wl_cols" &
+      FIT_COLUMNS=$wl_cols FIT_MARGIN=4 run_statusline "$wl_payload" > "$WORK/wl-wide/$wl_locale-$wl_cols" &
     fi
     wl_jobs=$((wl_jobs + 1))
     [ "$wl_jobs" -ge 16 ] || continue
@@ -4485,7 +4496,8 @@ assert_eq "" "$(perl -CSD -Mutf8 -e '
     my ($cols) = $f =~ /-(\d+)$/; my $budget = $cols - 4; my (%end, $n);
     open my $h, "<", $f or die; my ($tag) = $f =~ m{([^/]+)$};
     while (<$h>) {
-      chomp; $n++;
+      next if $. < 3;
+      chomp; s/\e\[[0-9;]*m//g; $n++;
       if (!/(\d+[hms](?: \d\d[ms])?)(  ↓ \d+k)?$/ || ($n == 1 && !$2)) { print "$tag row $n: elapsed or tokens cut\n"; next }
       $end{length($`) + length($1)}++;
       print "$tag row $n: ", length($_), " cells\n" if length($_) > $budget && !/^[^ …]+…? {2,}\S/;
@@ -5621,6 +5633,12 @@ rm -f "$STATE_DIR/work-$TR_RSESS"
 assert_eq 9 "$(grep -c . <<<"$tr_wide")"
 assert_eq 'acc · astra · high — Implement the parser fix · 1m 5s · ↓ 12.3k tok' "$(tr_row "$tr_wide" w1)"
 assert_fails grep -Fq 'Running suites' <<<"$tr_wide"
+# A paint starts one jq to parse the payload and one to encode every row, and no sed or grep per row.
+printf '%s() { printf "%s\\n" >>"$TR_CALLS"; command %s "$@"; }\n' jq jq jq sed sed sed grep grep grep cat cat cat \
+  >"$WORK/tr-count.sh"
+: >"$WORK/tr-calls"
+(export BASH_ENV="$WORK/tr-count.sh" TR_CALLS="$WORK/tr-calls"; tr_render 300 >/dev/null)
+assert_eq 'jq jq' "$(tr '\n' ' ' <"$WORK/tr-calls" | sed 's/ $//')"
 # A finished task is answered with an empty content, never left out: the harness draws its own
 # native row for a listed id the renderer is silent about, and only "" removes the row.
 assert_eq '{"id":"w3","content":""}{"id":"w4","content":""}' \

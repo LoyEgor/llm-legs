@@ -26,7 +26,9 @@ $(cat "$script_path" 2>/dev/null)"
 relay_word=$({
   grep -oE "['\"\`]((claudeb|codex|gemini|grok|light)-worker|light-research|review-waiter)['\"\`]" <<<"$script"
   grep -oE 'worker-run[[:space:]]+(start|wait)([^A-Za-z0-9_-]|$)|light-research[[:space:]]+-' <<<"$script"
-} 2>/dev/null | head -n1 | grep -oE '[a-z]+-[a-z]+(-[a-z]+)?([[:space:]]+(start|wait))?' | head -n1 | tr -s '[:space:]' ' ' | sed 's/ $//')
+} 2>/dev/null | head -n1)
+[ -z "$relay_word" ] || relay_word=$(printf '%s\n' "$relay_word" |
+  grep -oE '[a-z]+-[a-z]+(-[a-z]+)?([[:space:]]+(start|wait))?' | head -n1 | tr -s '[:space:]' ' ' | sed 's/ $//')
 if [ -n "$relay_word" ]; then
   jq -cn --arg hook "${0##*/}" --arg r "Blocked: this workflow reaches \`$relay_word\`, but a worker run or relay inside a workflow has no chat waiting on it. Start workers from the chat itself (\`worker-run start\`, then \`worker-run wait <run-id>\` as a background Bash); keep the workflow to native agents on this session's own account." \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:("[" + $hook + "] " + $r)}}' 2>/dev/null

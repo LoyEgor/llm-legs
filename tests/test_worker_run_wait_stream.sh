@@ -3,9 +3,11 @@
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 mkdir -p "$WORK/shim"
 CALLS="$WORK/tool-calls"
-for tool in perl python3 find; do
-  printf '#!/bin/bash\nprintf "%%s\\n" "%s $*" >>"%s"\nexec %q "$@"\n' "$tool" "$CALLS" "$(command -v "$tool")" >"$WORK/shim/$tool"
-  chmod +x "$WORK/shim/$tool"
+mkdir -p "$WORK/tick-shim"
+for tool in perl python3 find sleep; do
+  shim="$WORK/shim/$tool"; [ "$tool" != sleep ] || shim="$WORK/tick-shim/$tool"
+  printf '#!/bin/bash\nprintf "%%s\\n" "%s $*" >>"%s"\nexec %q "$@"\n' "$tool" "$CALLS" "$(command -v "$tool")" >"$shim"
+  chmod +x "$shim"
 done
 export PATH="$WORK/shim:$PATH"
 
@@ -30,6 +32,8 @@ printf 'acct · opus · high\n' >"$RUN/tag"
 out=$("$RUNNER" wait "$ID" 2>&1)
 # One perl cuts every row of a read, never one per row.
 assert [ "$(grep -cF 'substr($_, 0, 119)' "$CALLS")" = 1 ]
+# A run already ended is read once, by the last pass alone.
+assert [ "$(grep -c "^python3 - .* $ID claudeb " "$CALLS")" = 1 ]
 waited=$(($(date +%s) - now))
 # The label is wall-clock elapsed at the wait's read: 4m05s plus however long the machine took to reach it.
 at=$(grep -oE '^\[[0-9]+m[0-5][0-9]s\]' <<<"$out" | head -n 1)
@@ -73,7 +77,7 @@ jq -c --argjson p "$live" --argjson t "$(date +%s)" '.pid = $p | .pid_started_at
   mv "$WORK/m" "$RUN/meta.json"
 row alpha-row >"$WORK/session.jsonl"
 : >"$CALLS"
-WORKER_RUN_WAIT_POLL_S=1 "$RUNNER" wait "$ID" >"$WORK/live.out" 2>&1 &
+PATH="$WORK/tick-shim:$PATH" WORKER_RUN_WAIT_POLL_S=1 "$RUNNER" wait "$ID" >"$WORK/live.out" 2>&1 &
 waiter=$!
 await alpha-row
 row bravo-row >"$WORK/session.jsonl"
@@ -92,6 +96,8 @@ assert [ "$(grep -c 'bravo-row' <<<"$live_out")" = 0 ]
 assert [ "$(grep -c 'charlie-row' <<<"$live_out")" = 1 ]
 assert [ "$(grep -c 'delta-row' <<<"$live_out")" = 1 ]
 assert [ "$(grep -c "^python3 - .* $ID claudeb " "$CALLS")" = 2 ]
+# The wait's ticks start no sleep process.
+assert [ "$(grep -c '^sleep 0.2$' "$CALLS")" = 0 ]
 
 # A codex run's rollout is looked up once per wait, never once per poll.
 CID=codex-1-2-x

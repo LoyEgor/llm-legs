@@ -1133,16 +1133,27 @@ jq --argjson s "$(now)" '.as_of_s = $s | .speed.spend.selection = ["spend:resume
   | .problems += [.problems[] | select(.id == "suite_audit:llm-legs:test_light") | .id = "suite_audit:llm-legs:test_extra"]
   | (.problems[] | select(.id == "opportunity:machine/contention") | .opportunity.hooks) = true' \
   "$S/harness/latest.json" >"$S/cap.json" && mv "$S/cap.json" "$S/harness/latest.json"
-git -C "$L" update-ref refs/night/n16/base HEAD
-env "${speed_env[@]}" WORKER_SLOTS=8 bash "$FIX" launch harness --night n16 >"$WORK/out" 2>"$WORK/err" || fail "capacity night n16: $(cat "$WORK/err")"
-assert jqe '[.[][1:][][0] | select(test("^(spend|suite_audit):|hooks|contention"))] | sort == ["opportunity:chat/hooks",
+# The share is the launch's own snapshot, read without its worktrees and briefs (the nights above build those).
+eval "$(sed -n "/^PY='\$/,/^'\$/p" "$FIX")"
+night_snapshot() { # night slots -> the entries the night's launch would queue
+  env "${speed_env[@]}" WORKER_SLOTS="$2" DF_ROOT="$ROOT" DF_PROJECTS="$DOCTOR_FIX_PROJECTS" DF_RUNS="$RUNS" DF_HOME="$HOME" \
+    DF_DOCS="$DOCTOR_FIX_DOCS" python3 -c "$PY" snapshot harness "$S/harness/latest.json" "$1"
+}
+assert jqe '[.[].id | select(test("^(spend|suite_audit):|hooks|contention"))] | sort == ["opportunity:chat/hooks",
   "opportunity:machine/contention", "spend:hook:gate.sh", "spend:resumes", "suite_audit:llm-legs:test_light",
-  "suite_audit:llm-legs:test_mid"]' <(speed_runs)
-for open in $(fix runs harness --open --json | jq -r '.[].id'); do fix abandon "$open" >/dev/null; done
-git -C "$L" update-ref refs/night/n17/base HEAD
-env "${speed_env[@]}" bash "$FIX" launch harness --night n17 >"$WORK/out" 2>"$WORK/err" || fail "capacity night n17: $(cat "$WORK/err")"
-assert jqe '[.[][1:][][0] | select(test("^(spend|suite_audit):|hooks|contention"))] | sort == ["opportunity:chat/hooks",
-  "spend:resumes", "suite_audit:llm-legs:test_mid"]' <(speed_runs)
+  "suite_audit:llm-legs:test_mid"]' <(night_snapshot n16 8)
+assert jqe '[.[].id | select(test("^(spend|suite_audit):|hooks|contention"))] | sort == ["opportunity:chat/hooks",
+  "spend:resumes", "suite_audit:llm-legs:test_mid"]' <(night_snapshot n17 4)
+# A Speed document whose three selections are empty never asks for the free slots it could not use.
+jq '.speed.selection = [] | .speed.spend.selection = [] | .speed.suites.selection = []' "$S/harness/latest.json" >"$S/none.json"
+cp "$S/harness/latest.json" "$S/cap.json" && mv "$S/none.json" "$S/harness/latest.json"
+mkdir -p "$WORK/spy"
+printf '#!%s\ncase "$*" in *worker_capacity*) echo probe >>"%s" ;; esac\nexec %q "$@"\n' "$(command -v bash)" "$WORK/spy/calls" \
+  "$(command -v bash)" >"$WORK/spy/bash"
+chmod +x "$WORK/spy/bash"
+assert [ "$(PATH="$WORK/spy:$PATH" night_snapshot n18 8)" = "$(PATH="$WORK/spy:$PATH" night_snapshot n18 1)" ]
+assert [ ! -e "$WORK/spy/calls" ]
+mv "$S/cap.json" "$S/harness/latest.json"
 
 # A log-audit reading names no file, so its run gets every sweep repository (a gate's cause sat in claude-setup).
 for r in "$RUNS"/harness-*.json; do

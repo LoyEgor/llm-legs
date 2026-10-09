@@ -2494,4 +2494,25 @@ env "${run_env[@]}" "PATH=$find_shim:$WORK/bin:$PATH" "FIND_LOG=$find_log" "LLM_
 assert grep -q "$CLAIMS/grok" "$find_log"
 clear_claims
 
+# worker-limit-gate reads the brief only where it decides something: the codex COMPUTER: line, or the
+# ACCOUNT: line when worker-run names no account.
+mkdir -p "$WORK/gate-shim"
+printf '#!/bin/sh\n[ "$1" != -c ] || echo read >>"%s"\nexec %q "$@"\n' "$WORK/gate-reads" "$(command -v head)" >"$WORK/gate-shim/head"
+chmod +x "$WORK/gate-shim/head"
+printf 'ACCOUNT: zz\nDo it\n' >"$WORK/gate-brief"
+gate_start() { # vendor brief [account]
+  : >"$WORK/gate-reads"
+  HOME="$WORK/gate-home" PATH="$WORK/gate-shim:$PATH" LLM_LIMITS_FILE="$WORK/none.json" WORKER_PICK_CONFIG_FILE="$WORK/none" \
+    WORKER_GATE_WORKER_PICK=/usr/bin/false bash "$ROOT/bin/worker-limit-gate.sh" --start "$@"
+}
+for gate_vendor in claudeb gemini grok computer; do
+  gate_out=$(gate_start "$gate_vendor" "$WORK/gate-brief" acct)
+  assert test ! -s "$WORK/gate-reads"
+  assert test "$gate_out" = "$(gate_start "$gate_vendor" "$WORK/no-brief" acct)"
+done
+gate_start codex "$WORK/gate-brief" acct >/dev/null
+assert test "$(cat "$WORK/gate-reads")" = read
+gate_start claudeb "$WORK/gate-brief" >/dev/null
+assert test "$(cat "$WORK/gate-reads")" = read
+
 printf 'PASS:%s assertions; the routing-contract rules (pool-toggle candidacy with a computable daily budget, pin-or-largest-budget selection where a nearer reset outranks an equal percentage and equal budgets order by name, walls only at effective 100%% with dead auth its own state), the five-hour deferral at 80%% with its `5h!` tag, claims as the second soft key (fresh demotes, TTL-expired does not, per-vendor, table never writes one, a refused query records nothing), the session account as an ordinary candidate in every role with no reserve anywhere, the seven roles including chat, research, light and computer without pins or role keys and light, image and computer ignoring workers-off and the pin alike, loud pin lapses, the fable bucket on explicit ask, --exclude re-queries and ALL WALLED exit 3, an emptied pool named as the switch it is rather than a limit, a NEXT block that ranks the top five ACCOUNTS across the vendors with several rows per vendor allowed, pins above budget and walls out of it, grok as the fourth vendor (weekly-only ranking, refreshable `expired` auth behind `ok`, mode arm, and absence that renders as absence), data hygiene and DATA age sourcing that a parked vendor contributes nothing to, the all-paused run naming the pause once and nothing else in the render and in the fail-safe alike, model/effort straight from worker-model, account rows that print the daily budget that ranked them with WALLED kept to the usage wall, a DATA line that names the stale rows instead of branding the table, the vendor and account a gateway chat owns rather than a Claude row it never spends, and the output/decision golden contract with no routing prose\n' "$asserts"

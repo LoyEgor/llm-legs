@@ -29,6 +29,14 @@ BASH_ENV="$WORK/count-jq.sh" JQ_CALLS="$WORK/jq-calls" bash "$HOOK" <<'JSON'
 {"hook_event_name":"PreToolUse","tool_name":"Workflow","session_id":"s1"}
 JSON
 assert_eq 1 "$(wc -l <"$WORK/jq-calls" | tr -d ' ')"
+# A denied type is answered by the one jq that classifies it, its prompt never copied into the shell.
+: >"$WORK/jq-calls"
+big=$(head -c 200000 /dev/zero | tr '\0' x)
+out=$(jq -cn --arg p "$big" '{hook_event_name:"PreToolUse",tool_name:"Agent",session_id:"s1",
+  tool_input:{subagent_type:"codex-worker",description:"d",prompt:$p}}' |
+  BASH_ENV="$WORK/count-jq.sh" JQ_CALLS="$WORK/jq-calls" bash "$HOOK")
+assert_eq 1 "$(wc -l <"$WORK/jq-calls" | tr -d ' ')"
+assert_has 'the codex-worker relay is retired. Delegate from this chat' "$(reason <<<"$out")"
 
 # Every retired relay is refused with the chat's own protocol for its vendor, and leaves no seed.
 for relay in claudeb codex gemini grok light; do

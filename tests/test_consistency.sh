@@ -1222,7 +1222,7 @@ assert doc_has 'Worker spawn pressure gate'
 ROUTING_DOC="$ROOT/docs/routing-contract.md"
 SPAWN_HOOK_BIN="$ROOT/bin/worker-spawn-hook.sh"
 assert test "$(grep -Ec '^  fork\) ;;$' "$SPAWN_HOOK_BIN")" -eq 1
-assert grep -Fq 'claudeb-worker | codex-worker | gemini-worker | grok-worker | light-worker)' "$SPAWN_HOOK_BIN"
+assert grep -Fq 'IN($type; "claudeb-worker", "codex-worker", "gemini-worker", "grok-worker", "light-worker")' "$SPAWN_HOOK_BIN"
 for retired in claudeb-worker codex-worker gemini-worker grok-worker light-worker light-research review-waiter; do
   assert grep -Fq "$retired" "$SPAWN_HOOK_BIN"
   assert grep -Fq "$retired" "$ROOT/$DOC"
