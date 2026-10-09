@@ -2270,10 +2270,10 @@ write_run_state() { # directory phase [exit-code]
 
 # The pressure check a chat's delegation passes before any account is picked: a deny refuses the
 # launch, a note rides along on stderr.
-limit_gate() { # vendor light brief
+limit_gate() { # vendor light brief account
   local gate=${WORKER_RUN_LIMIT_GATE:-$SCRIPT_DIRECTORY/worker-limit-gate.sh} verdict reason note
   [ -x "$gate" ] || return 0
-  verdict=$("$gate" --start "$([ -z "$2" ] && printf '%s' "$1" || printf light)" "$3" 2>/dev/null) || return 0
+  verdict=$("$gate" --start "$([ -z "$2" ] && printf '%s' "$1" || printf light)" "$3" ${4:+"$4"} 2>/dev/null) || return 0
   [ -n "$verdict" ] || return 0
   reason=$(jq -r 'select(.hookSpecificOutput.permissionDecision == "deny") | .hookSpecificOutput.permissionDecisionReason // empty' <<<"$verdict" 2>/dev/null)
   [ -z "$reason" ] || fail "$reason Nothing was launched and no account was spent."
@@ -2507,7 +2507,7 @@ start_run() {
     usage
   fi
   [ -r "$brief" ] || fail "brief is not readable: $brief"
-  [ "$role" != workers ] || [ -z "${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-}" ] || limit_gate "$vendor" "$light" "$brief"
+  [ "$role" != workers ] || [ -z "${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-}" ] || limit_gate "$vendor" "$light" "$brief" "$explicit_account"
   # The first line is the run's handle: the spawn gate and the relay agents read `RESUME <id>:` and
   # `ATTACH <id>:` off the top of it, and every reader that falls back to a prefix of the brief
   # matches nothing useful with a blank one.

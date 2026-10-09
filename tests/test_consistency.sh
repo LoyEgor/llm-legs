@@ -1052,7 +1052,7 @@ light_gate() {
     WORKER_GATE_STAMPS="$LIGHT_GATE_WORK/stamps" \
     WORKER_STATS_DIR="$LIGHT_GATE_WORK/stats" \
     CLAUDEB_DIR="$LIGHT_GATE_WORK/store" \
-      bash "$ROOT/bin/worker-limit-gate.sh" --start "${1%-worker}" "$LIGHT_GATE_WORK/brief"
+      bash "$ROOT/bin/worker-limit-gate.sh" --start "${1%-worker}" "$LIGHT_GATE_WORK/brief" ${3:+"$3"}
 }
 : >"$LIGHT_GATE_WORK/picks"
 light_gate_out=$(light_gate light-worker)
@@ -1077,6 +1077,8 @@ assert test -z "$(light_gate light-worker $'ACCOUNT: alpha\nx')"
 assert test -z "$(light_gate light-worker)"
 light_mismatch_out=$(light_gate light-worker $'ACCOUNT: beta\nx')
 assert test "$(jq -r '.hookSpecificOutput.additionalContext' <<<"$light_mismatch_out")" = 'ACCOUNT beta ≠ worker-pick alpha (allowed).'
+# worker-run's --account reaches the gate as an argument: judging the router's pick instead named another account.
+assert test "$(jq -r '.hookSpecificOutput.additionalContext' <<<"$(light_gate light-worker x beta)")" = 'ACCOUNT beta ≠ worker-pick alpha (allowed).'
 # A vendor start under the same toggle still hears it.
 assert grep -Fq 'The worker toggle says worker=codex' <<<"$(light_gate claudeb-worker)"
 # A Computer Use brief routes codex under `computer`, a role codex_workers=off does not close.

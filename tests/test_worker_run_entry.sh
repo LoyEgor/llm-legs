@@ -225,6 +225,12 @@ GATE
   CLAUDE_CODE_ENTRYPOINT=cli start_ok codex
   assert grep -Fqx -- "--start codex $WORK/brief" "$LIMIT_GATE_LOG"
   await_done
+  # The gate judges the account --account names, not the router's pick.
+  : >"$LIMIT_GATE_LOG"
+  clear_stub
+  CLAUDE_CODE_ENTRYPOINT=cli start_ok codex --account main
+  assert grep -Fqx -- "--start codex $WORK/brief main" "$LIMIT_GATE_LOG"
+  await_done
   # Outside Claude Code (Egor's terminal, the night's scripts) no gate is asked.
   : >"$LIMIT_GATE_LOG"
   clear_stub

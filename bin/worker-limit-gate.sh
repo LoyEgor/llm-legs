@@ -12,8 +12,9 @@ TOGGLE="${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}"
 WORKER_PICK="${WORKER_GATE_WORKER_PICK:-/Volumes/Work/Projects/llm-legs/bin/worker-pick}"
 
 
-# `worker-run start` asks before it picks an account: `--start <claudeb|codex|gemini|grok|light> <brief>`.
-[ "${1:-}" = --start ] && [ "$#" -eq 3 ] || exit 0
+# `worker-run start` asks before it picks an account: `--start <claudeb|codex|gemini|grok|light> <brief> [<account>]`,
+# the account its `--account` flag names, which a brief without an ACCOUNT: line does not carry.
+[ "${1:-}" = --start ] && { [ "$#" -eq 3 ] || [ "$#" -eq 4 ]; } || exit 0
 worker="$2-worker"
 prompt=$(head -c 65536 "$3" 2>/dev/null) || prompt=''
 
@@ -104,8 +105,8 @@ if [ "$worker" = codex-worker ] && grep -Eq '^COMPUTER:[[:space:]]*yes[[:space:]
   toggle_note=''
 fi
 
-brief_account=$(printf '%s\n' "$prompt" |
-  sed -nE 's/^ACCOUNT:[[:space:]]*([A-Za-z0-9_.-]+)[[:space:]]*$/\1/p' | head -n1)
+brief_account=${4:-$(printf '%s\n' "$prompt" |
+  sed -nE 's/^ACCOUNT:[[:space:]]*([A-Za-z0-9_.-]+)[[:space:]]*$/\1/p' | head -n1)}
 
 router_account=''
 router_rc=0
