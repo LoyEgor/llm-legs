@@ -85,6 +85,7 @@ survey: the sweep's opening report, default the sweep repositories: per reposito
 states: pending merged left failed-launch blocked-on-egor nothing-to-do (left and blocked-on-egor need reason=)
 commits=<repo>:<hash>[,<repo>:<hash>...]  replaces the job's list; <repo> is a sweep-repos
   basename or an absolute path; a changed list clears pushed unless pushed=true comes with it
+  A merged job whose branch is gone records what main's last fast-forward of it brought (main's reflog).
   A merged job whose branch exists records its own commits instead: those its branch's reflog made
   (commit, commit (amend), commit (cherry-pick), cherry-pick, revert; never a merge) and what it was created with past the night's base, each as landed on main
   (author, author time and subject survive a rebase), else as on the branch; every other listed commit
@@ -613,7 +614,17 @@ checked_event() { # check; reads job_set's id, ref, at, began and refusal, appen
 own_commits() { # id branch -> [{repo, hash}] the branch made, each as landed on main, else as on the branch; null when no repository has the branch
   local id=$1 branch=$2 repo log created stop made out='[]' found=false hash fmt='%H%x1f%ae%x1f%at%x1f%s'
   while IFS= read -r repo; do
-    [ -n "$repo" ] && git -C "$repo" rev-parse -q --verify "refs/heads/$branch^{commit}" >/dev/null 2>&1 || continue
+    [ -n "$repo" ] || continue
+    if ! git -C "$repo" rev-parse -q --verify "refs/heads/$branch^{commit}" >/dev/null 2>&1; then
+      made=$(git -C "$repo" reflog show --format='%H%x09%gs' refs/heads/main -- 2>/dev/null | awk -F '\t' -v s="merge $branch: Fast-forward" \
+        'hit { print $1 ".." tip; exit } $2 == s { hit = 1; tip = $1 }')
+      [ -n "$made" ] || continue
+      found=true
+      while IFS= read -r hash; do
+        out=$(jq -c --arg r "$(basename "$repo")" --arg h "$hash" '. + [{repo: $r, hash: $h}]' <<<"$out")
+      done < <(git -C "$repo" rev-list --reverse "$made")
+      continue
+    fi
     found=true
     log=$(git -C "$repo" reflog show --format='%H%x09%gs' "refs/heads/$branch" --) && [ -n "$log" ] || continue
     created=$(tail -n 1 <<<"$log" | cut -f1)

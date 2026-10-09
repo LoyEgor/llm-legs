@@ -406,7 +406,7 @@ def snapshot(doctor, doc_file, night=None):
                        "files": [("", os.path.relpath(f, source_root) if f.startswith(source_root + os.sep)
                                   else os.path.relpath(f, repos_dir(doctor)).split("/", 1)[-1]) for f in paths]}
             if ((problem.get("speed") or rule in time_budget.IMPROVEMENT_RULES) and files
-                    and time_budget.runtime_change(changes) is False and time_budget.night_speed_skip(admission)):
+                    and time_budget.runtime_change(changes) is False and time_budget.expected_gain(admission) is None):
                 admission["class"] = "measurement fix"
             if ((problem.get("speed") or rule in time_budget.IMPROVEMENT_RULES) and rule != "spend_audit" or rule in ("floor", "test_long_pole", "test_daily_cost", "test_slow", "suites_at_once", "hook_p50", "hook_sync", "hook_full_work", "hook_every_call")
                     or admission.get("class", (admission.get("opportunity") or {}).get("class")) == "measurement fix"):

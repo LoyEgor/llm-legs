@@ -26,14 +26,18 @@ the repositories.
    resolves conflicts and gets suites green; at night, after that repository's press-time push, it first
    rebases as step 4 does.
 4. Land one branch at a time, including its `ADD-DIR:` repositories; no parallel landing batches. Before
-   rebase, save `base=$(git merge-base main HEAD)` (night: `refs/night/<id>/base`) and
-   `suites=$(tests/affected --overlap "$base")` in the worktree; a selection error stops landing.
-   `git rebase main` (night: `--onto main "$base"`), then `if [ -n "$suites" ]; then tests/run-all "$suites"; fi`.
+   each rebase pass, in the worktree: `base=$(git merge-base main HEAD)`; at night, only while the branch
+   still holds the press snapshot, `n=refs/night/<id>/base; git merge-base --is-ancestor $n HEAD &&
+   ! git merge-base --is-ancestor $n main && base=$n` — once rebased onto main (step 3, a refused merge) the
+   night ref would replay main's commits and select nearly every suite. Then
+   `suites=$(tests/affected --overlap "$base")`; a selection error stops landing.
+   `git rebase --onto main "$base"`, then `if [ -n "$suites" ]; then tests/run-all "$suites"; fi`.
    No overlap means no rerun: mapped inputs main did not touch are still the worker's green inputs.
-   Green: in the main checkout `git merge --ff-only
-   <branch>` (hooks push), `git worktree remove <worktree>`, `git branch -D <branch>`, `git push origin --delete
-   <branch>`, the same per `ADD-DIR:` repository (one without commits loses only its worktree and branch), by day
-   `git update-ref -d refs/doctor-fix/<ref>/base`; a conflict or red goes to step 3.
+   Green: in the main checkout `git merge --ff-only <branch> &&` the teardown (`git worktree remove
+   <worktree>`, `git branch -D <branch>`, `git push origin --delete <branch>`, by day `git update-ref -d
+   refs/doctor-fix/<ref>/base`), the same per `ADD-DIR:` repository (one without commits loses only its
+   worktree and branch); chain with `&&`, never `;`: a refused merge (main moved) keeps everything and
+   repeats step 4. A conflict or red goes to step 3.
 5. A worker the watchdog killed (`KILLED: idle|silent|deadline`): `doctor-fix abandon <ref>`, its branch
    unlanded.
 

@@ -822,12 +822,18 @@ def night_speed_skip(problem, problems=()):
                and not night_speed_skip(p) for p in problems):
             return None
         return "measurement fix without a >=5 min/day blind opportunity"
+    gain = expected_gain(problem)
+    return None if gain is not None and gain >= NIGHT_GAIN_MIN_DAY else "expected gain <5 min/day or unpriced"
+
+
+def expected_gain(problem):
+    fields = problem.get("opportunity") or {}
     gain = num(problem.get("expected_min_day"))
     if gain is None:
         gain = num(fields.get("recoverable_min_day", fields.get("saving")))
     if gain is None and problem.get("rule") == "time_floor" and problem.get("unit") == "min/day":
         gain = num(problem.get("value"))
-    return None if gain is not None and gain >= NIGHT_GAIN_MIN_DAY else "expected gain <5 min/day or unpriced"
+    return gain
 
 
 def improvement_class(rule, pid):

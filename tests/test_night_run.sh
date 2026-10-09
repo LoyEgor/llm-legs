@@ -1498,6 +1498,16 @@ oc "$WORK/own-je" checkout -q -b je-side && printf 'f\n' >"$WORK/own-je/f.txt" &
 oc "$WORK/own-je" checkout -q night/on/je && oc "$WORK/own-je" cherry-pick je-side >/dev/null || fail "je cherry-pick"
 night job on set je state=merged >/dev/null || fail "je merged"
 assert jqe --arg h "$(git -C "$OC" rev-parse night/on/je)" '.jobs[4].commits == [{repo: "own", hash: $h}]' "$(record on)"
+# A branch torn down before state=merged (2026-10-09 night 817e: only the tip was recorded) keeps the commits
+# main's fast-forward of it brought.
+night job on add fixer jf --branch night/on/jf >/dev/null
+git -C "$OC" worktree add -q -b night/on/jf "$WORK/own-jf" main
+for n in 1 2; do oc "$WORK/own-jf" commit -q --allow-empty -m "jf $n"; done
+git -C "$OC" merge -q --ff-only night/on/jf || fail "jf did not land"
+jf1=$(git -C "$OC" rev-parse HEAD~1) jf2=$(git -C "$OC" rev-parse HEAD)
+git -C "$OC" worktree remove "$WORK/own-jf" && git -C "$OC" branch -qD night/on/jf
+night job on set jf state=merged "commits=own:$jf2" >/dev/null || fail "jf merged"
+assert jqe --arg a "$jf1" --arg b "$jf2" '.jobs[5].commits == [{repo: "own", hash: $a}, {repo: "own", hash: $b}]' "$(record on)"
 
 # finish keeps a landed worktree holding ignored files besides caches: removing it would delete them.
 PI="$WORK/prune"
