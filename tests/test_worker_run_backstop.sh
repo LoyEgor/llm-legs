@@ -63,6 +63,19 @@ assert_eq "" "$(unowned 'run r1' 'review v1')"
 assert_eq "run r1 worker-run wait r1" "$(WORKER_RUN_BACKSTOP_CHAT_PID=$LIVE_PID unowned 'run r1')"
 end_waits
 rm -rf "$WORKER_RUN_DIR/r1"; forget
+# A background shell that waits on its runs in turn, or after a sleep, owns every id it names before its
+# own wait process exists (2026-10-09, two chats held for waits they had started); a shell naming the id
+# with no wait, or a wait naming only a longer id, does not.
+run r5 s1 codex; run r6 s1 codex
+bash -c "for r in r5 r6; do sleep 30; $WORK/bin/worker-run wait \$r; done" & WAIT_PIDS="${WAIT_PIDS:-} $!"
+sleep 0.2
+assert_eq "" "$(stop)"
+end_waits; forget
+bash -c "sleep 30; echo r5 r6" & WAIT_PIDS="${WAIT_PIDS:-} $!"
+bash -c "R=r5x; sleep 30; $WORK/bin/worker-run wait \$R r6x" & WAIT_PIDS="${WAIT_PIDS:-} $!"
+sleep 0.2
+assert_eq block "$(stop | jq -r .decision)"
+end_waits; rm -rf "$WORKER_RUN_DIR/r5" "$WORKER_RUN_DIR/r6"; forget
 
 # A run whose starter (a script waiting on its runs one at a time) still lives is owned by it; a starter
 # that is gone, or whose pid now belongs to a younger process, is not.

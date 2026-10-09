@@ -5,10 +5,12 @@
 # spellings; this reads the runs themselves, so no spelling dodges it. The chat's turn is held until
 # it starts the wait as a background Bash.
 #
-# Owned = a live `worker-run wait <run-id>` (`review-bench wait <run-id>` for a review) in this chat's
-# process tree, below the nearest `claude` ancestor of this hook, or the process that started the
-# run still alive (a script waiting on its runs one at a time). A run whose state.json is not written yet is still inside
-# `worker-run start`. Fail-open everywhere.
+# Owned = a live process in this chat's process tree, below the nearest `claude` ancestor of this hook,
+# whose command line runs `worker-run wait` (`review-bench wait` for a review) and names the run id: a
+# background `for r in A B; do worker-run wait $r; done` or `R=A; sleep 30; worker-run wait $R` owns
+# every id it names before its own wait process exists. Or the process that started the run still
+# alive (a script waiting on its runs one at a time). A run whose state.json is not written yet is
+# still inside `worker-run start`. Fail-open everywhere.
 {
 set -u
 self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) || exit 0
@@ -31,8 +33,8 @@ chat_pid() {
   return 1
 }
 now=$(date +%s)
-# One process table read per stop, and only once a run needs it: "<run|review>=<id>" of every wait
-# below the chat.
+# One process table read per stop, and only once a run needs it: "<run|review>=<word>" for every word
+# of every waiting command line below the chat.
 waits=''
 waits_read=false
 owned() { # key id
@@ -46,10 +48,13 @@ owned() { # key id
       FNR == NR { if ($1 != root) below[$1] = 1; next }
       ($1 in below) {
         $1 = ""; $2 = ""
-        if (!match($0, /(^|[ \/])(worker-run|review-bench)[ ]+wait[ ]+[A-Za-z0-9._-]+/)) next
-        split(substr($0, RSTART, RLENGTH), w, " ")
-        sub(/.*\//, "", w[1])
-        print (w[1] == "review-bench" ? "review" : "run") "=" w[3]
+        kinds = ""
+        if ($0 ~ /(^|[^A-Za-z0-9._-])worker-run[ ]+wait[ ]/) kinds = "run"
+        if ($0 ~ /(^|[^A-Za-z0-9._-])review-bench[ ]+wait[ ]/) kinds = kinds " review"
+        if (kinds == "") next
+        nk = split(kinds, k, " "); nw = split($0, w, /[^A-Za-z0-9._-]+/)
+        for (i = 1; i <= nk; i++) for (j = 1; j <= nw; j++)
+          if (w[j] != "" && !seen[k[i] "=" w[j]]++) print k[i] "=" w[j]
       }' - <(printf '%s\n' "$listing"))
   fi
   case $'\n'"$waits"$'\n' in *$'\n'"$1=$2"$'\n'*) return 0 ;; esac
