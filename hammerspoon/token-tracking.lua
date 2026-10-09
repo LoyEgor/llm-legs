@@ -18,7 +18,6 @@ local TOKENMAP = HOME .. "/.local/bin/tokenmap"
 local TASK_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 local STALE_HOURS = 26
 local SCAN_FIRST_SECONDS = 30 * 60
-local SNAPSHOT_HOURS = 6
 local SETTINGS_KEY = "tokenTracking.range"
 local SPEND_KEY = "tokenTracking.spendRange"
 local SINCE_HINT = "Forms: 2026-09-29 18:00 · 18:00 · yesterday 18:00 · 6h · 90m"
@@ -47,11 +46,11 @@ local function askSince(default)
     return button == "Compute" and text or nil
 end
 local promptFn = askSince
-local scanTask, scanStarted, scanError, jobLabel = nil, nil, nil, nil
+local scanTask, scanError = nil, nil
 local jobSoft, jobSerial, sevenOwed = false, 0, false
 local jobScan, jobQuiet, jobFile, jobRange, pending = false, false, nil, nil, nil
 local active, asked = nil, nil
-local spendTask, spendStarted, spendError, spendAsked, spendActive, spendSerial = nil, nil, nil, nil, nil, 0
+local spendTask, spendError, spendAsked, spendActive, spendSerial = nil, nil, nil, nil, 0
 local tried = {}
 
 local function readFile(file)
@@ -272,42 +271,24 @@ local function sameRange(a, b)
 end
 
 local function trackingJob()
-    if not scanTask then return { error = scanError } end
-    return { running = true, scan = jobScan, started = scanStarted,
-             doing = jobScan and "scanning new data" or ("computing " .. (jobLabel or rangeLabel(jobRange))) }
+    return { running = scanTask ~= nil, error = scanError }
 end
 
+-- One line: when the data runs to, red once it is stale or older than the database, and whether a
+-- refresh runs; the range lives in the column headers.
 local function statusItems(data, problem, attrs, snapshot, job)
-    local items = {}
     job = job or trackingJob()
-    if problem == "missing" then
-        items[#items + 1] = { title = style("no data yet", RED), disabled = true }
-    elseif problem == "unreadable" then
-        items[#items + 1] = { title = style("data unreadable", RED), disabled = true }
-    else
-        local age = os.time() - (snapshot and attrs.modification or freshAt(data, attrs))
-        local through = clock(data.data_through or data.generated_at)
-        local verb = (snapshot and age > SNAPSHOT_HOURS * 3600) and "computed" or "scanned"
-        local text = string.format("7 days to %s vs the 7 before · %s %s", through, verb, menuStyle.ago(age))
-        if type(data.range) == "table" and data.range.title then
-            text = string.format("%s · data to %s · %s %s", data.range.title, through, verb,
-                menuStyle.ago(age))
-        end
-        local stale = not snapshot and isStale(data, attrs)
-        if outdated(data) then
-            stale, text = true, "outdated: " .. text
-        elseif job.running and job.scan then
-            text = "updating: " .. text
-        elseif stale then
-            text = "stale: " .. text
-        end
-        items[#items + 1] = { title = style(text, stale and RED or dimColor()), disabled = true }
+    local text, red = "no data yet", true
+    if problem == "unreadable" then
+        text = "data unreadable"
+    elseif problem ~= "missing" then
+        text = "data to " .. clock(data.data_through or data.generated_at)
+        red = outdated(data) or (not snapshot and isStale(data, attrs))
     end
-    if job.running then
-        items[#items + 1] = { title = style(job.doing .. " since " .. menuStyle.clock(job.started) .. "…", dimColor()),
-                              disabled = true }
-    elseif job.error then
-        items[#items + 1] = { title = style("last refresh failed: " .. job.error, RED), disabled = true }
+    if job.running then text = text .. " · refreshing…" end
+    local items = { { title = style(text, red and RED or dimColor()), disabled = true } }
+    if not job.running and job.error then
+        items[2] = { title = style("last refresh failed: " .. job.error, RED), disabled = true }
     end
     return items
 end
@@ -354,8 +335,8 @@ local function startStep(steps, index, serial, onStep)
         scanError = "could not start " .. TOKENMAP
         return false
     end
-    scanTask, jobSoft, jobLabel = task, step.soft or false, step.label
-    jobScan, jobFile, scanStarted = step.scan or false, step.file, os.time()
+    scanTask, jobSoft = task, step.soft or false
+    jobScan, jobFile = step.scan or false, step.file
     return true
 end
 
@@ -370,10 +351,10 @@ function startJob(range, scanFirst, quiet)
     local label = rangeLabel(range)
     local steps = {}
     if scanFirst and ranged then
-        steps[1] = { launch = TOKENMAP, args = { "scan", "--quiet", "--no-tracking" }, label = label, scan = true }
+        steps[1] = { launch = TOKENMAP, args = { "scan", "--quiet", "--no-tracking" }, scan = true }
         sevenOwed = true
     elseif scanFirst then
-        steps[1] = { launch = TOKENMAP, args = { "scan", "--quiet" }, label = nil, view = true, seven = true,
+        steps[1] = { launch = TOKENMAP, args = { "scan", "--quiet" }, view = true, seven = true,
                      scan = true }
     end
     if ranged then
@@ -384,13 +365,13 @@ function startJob(range, scanFirst, quiet)
             args[#args + 1], args[#args + 2] = "--range", range.key
         end
         args[#args + 1] = "--write"
-        steps[#steps + 1] = { launch = TOKENMAP, args = args, label = label, view = true, file = rangeFile(range) }
+        steps[#steps + 1] = { launch = TOKENMAP, args = args, view = true, file = rangeFile(range) }
         if sevenOwed then
-            steps[#steps + 1] = { launch = "/usr/bin/nice", label = RANGES[1].label, soft = true, seven = true,
+            steps[#steps + 1] = { launch = "/usr/bin/nice", soft = true, seven = true,
                                   args = { "-n", "19", TOKENMAP, "tracking", "--write" }, file = path }
         end
     elseif not scanFirst then
-        steps[1] = { launch = TOKENMAP, args = { "tracking", "--write" }, label = RANGES[1].label, view = true,
+        steps[1] = { launch = TOKENMAP, args = { "tracking", "--write" }, view = true,
                      seven = true, file = path }
     end
     local what = ranged and ("Token tracking " .. label) or "Token tracking refresh"
@@ -418,7 +399,7 @@ local function cancelJob()
     jobSerial = jobSerial + 1
     scanTask:terminate()
     if jobFile then tried[jobFile] = nil end
-    scanTask, jobSoft, jobLabel, jobQuiet = nil, false, nil, false
+    scanTask, jobSoft, jobQuiet = nil, false, false
     return true
 end
 
@@ -498,8 +479,18 @@ local function tableItems(data)
             if caption then items[#items + 1] = { title = style(caption, dimColor()), disabled = true } end
         end
         group = row.group
-        items[#items + 1] = { title = titles[index + 1], menu = rowMenu(row) }
+        local menu = rowMenu(row)
+        items[#items + 1] = #menu > 0 and { title = titles[index + 1], menu = menu }
+            or { title = titles[index + 1], disabled = true }
     end
+    return items
+end
+
+local function byDayMenu(days)
+    local rows = { { label = "day", nums = days.columns or {}, dim = true } }
+    for _, day in ipairs(days.rows or {}) do rows[#rows + 1] = { label = day.label, nums = day.cells } end
+    local items = {}
+    for _, title in ipairs(aligned(rows)) do items[#items + 1] = { title = title, disabled = true } end
     return items
 end
 
@@ -542,7 +533,7 @@ local function startSpend(range, quiet)
         if not quiet then alertFn(what .. " failed: " .. spendError) end
         return false
     end
-    spendTask, spendStarted, spendAsked = task, os.time(), range
+    spendTask, spendAsked = task, range
     return true
 end
 
@@ -566,15 +557,17 @@ local function spendItem()
         tried[file] = current
         startSpend(range, true)
     end
-    local job = { error = spendError }
-    if spendTask then job = { running = true, started = spendStarted, doing = "computing " .. spendAsked.label } end
-    local items = statusItems(data, problem, attrs, false, job)
+    local items = statusItems(data, problem, attrs, false, { running = spendTask ~= nil, error = spendError })
     local title = "Compare: " .. range.label
     if sameRange(spendAsked, range) then title = title .. " — computing…" end
     items[#items + 1] = { title = title, menu = rangeChoices(SPEND_RANGES, range, spendAsked, M.chooseSpend) }
     if data then
         items[#items + 1] = { title = "-" }
         for _, item in ipairs(tableItems(data)) do items[#items + 1] = item end
+        if type(data.days) == "table" and #(data.days.rows or {}) > 0 then
+            items[#items + 1] = { title = "-" }
+            items[#items + 1] = { title = "By day", menu = byDayMenu(data.days) }
+        end
     end
     return { title = "Spend", menu = items }
 end
