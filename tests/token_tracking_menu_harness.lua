@@ -370,6 +370,9 @@ local function fakeTask(launch, callback, args)
     return task
 end
 local function argLine(task) return task and (task.launch:match("[^/]+$") .. " " .. table.concat(task.args, " ")) or "none" end
+local busyPokes = 0
+menuStyle.onBusyChanged = function() busyPokes = busyPokes + 1 end
+local function busy() return table.concat(menuStyle.refreshing(), ",") end
 local function selector(list) return find(list, "Compare: ") end
 local function catCompare(list) return find(category(list), "Compare: ") end
 local function checked(menu)
@@ -403,12 +406,14 @@ check(#launched == 0 and #spendRuns == 1 and argLine(spendRuns[1]) == "tokenmap 
 local spendComputing = M.menuItems(nil)
 check(text(spendComputing[1].title) == "no data yet · refreshing…" and text(selector(spendComputing).title) == "Compare: 24h vs 24h before — computing…"
     and #launched == 0, "the top level does not show its own spend run, or a menu open started a category job")
+check(busy() == "Token tracking" and busyPokes > 0, "a Spend recompute does not wear the Automations marker through a rebuild: " .. busy())
 local daySpend = hs.json.decode(hs.json.encode(spendFixture))
 daySpend.data_through, daySpend.columns = "2026-09-25T12:41:00+03:00", { "24h", "prev 24h", "Δ", "share", "price" }
 daySpend.range = { key = "24h", title = "24h vs the 24h before", cur_label = "24h", prev_label = "prev 24h" }
 daySpend.index.cells = { "1.31", "1.00", "+31%", "4.3%", "" }
 writeSpend("24h", daySpend)
 spendRuns[1].callback(0, "", "")
+check(busy() == "", "a finished Spend recompute kept the Automations marker: " .. busy())
 ranged = M.menuItems(nil)
 check(text(ranged[1].title):find("^data to [^·]*12:41$") and find(ranged, "prev 24h") and text(ranged[2].title):find("+31%", 1, true)
     and #alerts == 0 and #launched == 0, "the top level does not read its range's spend file and harness index: " .. text(ranged[1].title))
@@ -423,6 +428,7 @@ check(#launched == 1 and argLine(launched[1]) == "tokenmap tracking --range 24h 
     "a By category range change did not start only its own run: " .. argLine(launched[1]))
 check(text(catStatus(M.menuItems(nil)).title):find("^data to .* · refreshing…$") ~= nil
     and text(M.menuItems(nil)[1].title):find("refreshing", 1, true) == nil, "the refreshing state is not By category's own")
+check(busy() == "Token tracking", "a By category recompute does not wear the Automations marker")
 pick(M.menuItems(nil), "3 days vs 3 before").fn()
 check(#launched == 2 and launched[1].terminated and argLine(launched[2]) == "tokenmap tracking --range 3d --write"
     and M.rescan() == false and #alerts == 0, "a newer choice did not supersede the running range: " .. argLine(launched[2]))
@@ -494,9 +500,11 @@ check(marked(afterRange) == "Today vs yesterday, same hours" and text(catStatus(
 
 launched, answer = {}, "  yesterday 18:00 "
 pick(M.menuItems(nil), "Since…").fn()
+check(busy() == "Token tracking", "a Since… scan does not wear the Automations marker")
 launched[1].callback(1, "", "db locked\nscan: boom\n")
 check(#launched == 1 and alerts[#alerts] == "Token tracking from yesterday 18:00 failed: scan: boom",
     "a failed scan still ran the range: " .. tostring(alerts[#alerts]))
+check(busy() == "", "a failed scan kept the Automations marker")
 launched = {}
 pick(M.menuItems(nil), "Since…").fn()
 launched[1].callback(0, "", "")
@@ -658,6 +666,42 @@ check(argLine(spendRun) == "tokenmap spend --range 24h --write" and #spendRuns =
     "an outdated spend export was not recomputed alone on open: " .. argLine(spendRun))
 spendRun.callback(0, "", "")
 check(#alerts == 0, "a quiet spend recompute alerted")
+
+local codePath, sourcePath = dir .. "/code", dir .. "/tokenmap"
+hs.fs.mkdir(sourcePath)
+local module = assert(io.open(sourcePath .. "/tracking.py", "w"))
+module:write("pass\n")
+module:close()
+hs.fs.touch(sourcePath .. "/tracking.py", os.time() - 600)
+M.setSources(sourcePath)
+local function setCode(digest, age)
+    local file = assert(io.open(codePath, "w"))
+    file:write(digest .. "\n")
+    file:close()
+    hs.fs.touch(codePath, os.time() - age)
+end
+daySpend.db_generation, daySpend.code = generationNow, "c0de000000000001"
+writeSpend("24h", daySpend)
+setCode("c0de000000000001", 60)
+spendBefore = #spendRuns
+check(not isRed(M.menuItems(nil)[1]) and #spendRuns == spendBefore, "an export of the code that last ran is not current")
+setCode("c0de000000000002", 60)
+local recoded = M.menuItems(nil)
+check(isRed(recoded[1]) and #spendRuns == spendBefore + 1 and argLine(spendRuns[#spendRuns]) == "tokenmap spend --range 24h --write",
+    "an export of older tokenmap code read as current or was not recomputed on open: " .. argLine(spendRuns[#spendRuns]))
+spendRuns[#spendRuns].callback(0, "", "")
+check(isRed(M.menuItems(nil)[1]) and #spendRuns == spendBefore + 1, "a recompute that changed nothing ran again on the next open")
+setCode("c0de000000000001", 60)
+hs.fs.touch(sourcePath .. "/tracking.py", os.time() - 30)
+check(isRed(M.menuItems(nil)[1]) and #spendRuns == spendBefore + 2,
+    "a tokenmap module edited after its last run left the export current until tokenmap ran again")
+spendRuns[#spendRuns].callback(0, "", "")
+hs.fs.touch(codePath)
+check(not isRed(M.menuItems(nil)[1]) and #spendRuns == spendBefore + 2, "the run after a code edit did not make the export current")
+M.setSources(nil)
+os.remove(sourcePath .. "/tracking.py")
+hs.fs.rmdir(sourcePath)
+os.remove(codePath)
 spendHook = false
 pickTop(M.menuItems(nil), "7 days vs 7 before").fn()
 os.remove(dir .. "/spend-24h.json")

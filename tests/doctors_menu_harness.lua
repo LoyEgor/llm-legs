@@ -710,7 +710,16 @@ refresh.fn()
 check(#tasks == 1 and tasks[1].path == "/fixture/bin/updater-doctor" and #tasks[1].args == 0, "Refresh runs bin/updater-doctor")
 check((tasks[1].env or {}).DOCTOR_TRIGGER == "menu", "a menu Refresh does not tag its collector run as menu")
 check(text(refreshRow(details(doctors.menuItems()[3].menu)).title) == "refreshing…", "a running Refresh")
+check(table.concat(palette.refreshing(), ",") == "Doctors", "a running doctor Refresh does not wear the Automations marker")
 tasks[1]:finish(0)
+check(#palette.refreshing() == 0, "a finished doctor Refresh kept the Automations marker")
+refresh.fn()
+check(tasks[#tasks].path == "/fixture/bin/updater-doctor", "the second Refresh did not run bin/updater-doctor")
+tasks[#tasks]:finish(1, "", "boom")
+check(#palette.refreshing() == 0, "a failed doctor Refresh kept the Automations marker")
+limits.harnessDoctorTask = { isRunning = function() return true end }
+check(table.concat(palette.refreshing(), ",") == "Doctors", "a running Harness doctor collector does not wear the Automations marker")
+limits.harnessDoctorTask = nil
 updater.as_of_s = now - 3 * 86400
 write("/updater-doctor/latest.json", updater)
 check(text(doctors.menuItems()[3].title) == summary("Updater", 1)

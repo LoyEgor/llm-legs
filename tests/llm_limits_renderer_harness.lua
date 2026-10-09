@@ -2316,6 +2316,7 @@ assert(startCount == 1, "live over-budget start-windows task allowed a duplicate
 startRunning = false
 assert(startModule.refreshState().prefix == "", "dead over-budget start-windows task was retained")
 
+do
 local automationState = { busy = true, warning = false }
 local automationTitles = {}
 local automationMenuBar = {}
@@ -2338,11 +2339,14 @@ local automationHs = {
 local automationLimits = {
   refreshState = function() return automationState end,
 }
+local automationStyle = assert(loadfile(root .. "/hammerspoon/menu-style.lua"))()
+automationStyle.busySource("LLM limits", function() return automationState.busy end)
 local automationEnv = setmetatable({
   hs = automationHs,
   package = { path = package.path },
   require = function(name)
     if name == "llm-limits" then return automationLimits end
+    if name == "menu-style" then return automationStyle end
     return require(name)
   end,
 }, { __index = _G })
@@ -2378,6 +2382,20 @@ assert(automationMenuBar.tooltip == automationState.holdText .. "\nLLM limits re
 automationState = { busy = false, warning = false }
 automationModule.refresh()
 assert(automationTitles[#automationTitles] == "A 05:00", "plain resume timer title changed")
+local trackingBusy = true
+automationStyle.busySource("Token tracking", function() return trackingBusy end)
+automationStyle.busyChanged()
+assert(automationTitles[#automationTitles] == "⟳ A 05:00"
+    and automationMenuBar.tooltip == "Token tracking refresh in progress",
+  "another menu's refresh did not wear LLM Legs' marker on its change: " .. automationTitles[#automationTitles])
+automationState = { busy = true, warning = false }
+automationModule.refresh()
+assert(automationMenuBar.tooltip == "LLM limits, Token tracking refresh in progress",
+  "two running refreshes are not both named: " .. tostring(automationMenuBar.tooltip))
+automationState, trackingBusy = { busy = false, warning = false }, false
+automationStyle.busyChanged()
+assert(automationTitles[#automationTitles] == "A 05:00", "an ended refresh kept the marker")
+end
 
 local xmidNow = os.time({ year = 2027, month = 1, day = 15, hour = 12, min = 0, sec = 0 })
 local sameDay = xmidNow + 14400
@@ -2440,6 +2458,10 @@ local watchHs = {
 local watchEnv = setmetatable({
   hs = watchHs,
   os = setmetatable({ time = function() return watchClock.now end }, { __index = os }),
+  require = function(name)
+    if name == "menu-style" then return palette end
+    return require(name)
+  end,
 }, { __index = _G })
 watchEnv._G = watchEnv
 local watchChunk, watchError = loadfile(root .. "/hammerspoon/llm-limits.lua", "t", watchEnv)

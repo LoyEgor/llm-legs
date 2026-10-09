@@ -810,15 +810,17 @@ end
 
 local readChats, stuckQueues
 
-function M.refreshState()
+local function busyNow()
   purgeTasks()
-  local busy = false
   for _, entry in pairs(taskRegistry) do
-    if entry.kind ~= "passive" and taskAlive(entry.task) then
-      busy = true
-      break
-    end
+    if entry.kind ~= "passive" and taskAlive(entry.task) then return true end
   end
+  return false
+end
+style.busySource("LLM limits", busyNow)
+
+function M.refreshState()
+  local busy = busyNow()
   local limits, readError = readLlmLimits()
   local globalError = errorState(limits and limits.refresh_error) or runtimeGlobalError
   if not globalError and not limits and readError then
@@ -869,7 +871,7 @@ function M.refreshState()
     refreshWarning = warning,
     holds = holds,
     holdText = holds[1] and holds[1].text,
-    prefix = #holds > 0 and "⚠ " or busy and "⟳ " or (warning and "⚠ " or ""),
+    prefix = #holds > 0 and "⚠ " or busy and style.BUSY or (warning and "⚠ " or ""),
     globalError = globalError,
     stalledSince = stalledSince,
     staleCount = staleCount,
@@ -934,6 +936,7 @@ local function startDiagnosticsTask(field, path, args, onExit)
   if taskRunning(M[field]) then return end
   local task = hs.task.new(path, function(exitCode, _, stdErr)
     M[field] = nil
+    style.busyChanged()
     logAction("diagnostics-exit", path .. " exit=" .. tostring(exitCode)
       .. (exitCode ~= 0 and stdErr and stdErr ~= "" and (" " .. stdErr:gsub("%s+$", "")) or ""))
     if onExit then onExit(exitCode) end
@@ -943,6 +946,7 @@ local function startDiagnosticsTask(field, path, args, onExit)
   M[field] = task
   logAction("diagnostics-start", path .. " " .. table.concat(args, " "))
   task:start()
+  style.busyChanged()
 end
 
 function M.rescanDoctor()

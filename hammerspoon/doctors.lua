@@ -309,6 +309,12 @@ local function fixItem(doctor, label, run, now)
 end
 
 local refreshTasks = {}
+style.busySource("Doctors", function()
+  for _, task in pairs(refreshTasks) do
+    if running(task) then return true end
+  end
+  return running(limits.llmDoctorTask) or running(limits.harnessDoctorTask) or running(limits.doctorRescanTask)
+end)
 
 local function refreshDoctor(key, args, title, documentPath)
   if running(refreshTasks[key]) then return end
@@ -316,6 +322,7 @@ local function refreshDoctor(key, args, title, documentPath)
   local path = M[key .. "DoctorCmd"] or (repoRoot and repoRoot .. "/bin/" .. key .. "-doctor")
   local ok, task = pcall(hs.task.new, path, function(code, stdout, stderr)
     refreshTasks[key], built = nil, nil
+    style.busyChanged()
     if code ~= 0 then
       hs.alert.show(name .. " failed: " .. (lastLine(stderr) or lastLine(stdout) or ("exit " .. tostring(code))), 5)
     else
@@ -334,6 +341,7 @@ local function refreshDoctor(key, args, title, documentPath)
     refreshTasks[key] = nil
     hs.alert.show(name .. ": could not start " .. tostring(path), 5)
   end
+  style.busyChanged()
 end
 
 local function refreshRows(items, key, refresh)

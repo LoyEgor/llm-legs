@@ -391,7 +391,11 @@ local function loadModule(fixture, state)
       return os.getenv(name)
     end,
   }, { __index = os })
-  local env = setmetatable({ hs = mock, io = fakeIo, os = fakeOs }, { __index = _G })
+  local palette = assert(loadfile((path:gsub("[^/]+$", "menu-style.lua"))))()
+  local env = setmetatable({ hs = mock, io = fakeIo, os = fakeOs, require = function(name)
+    if name == "menu-style" then return palette end
+    return require(name)
+  end }, { __index = _G })
   env._G = env
   local chunk, err = loadfile(path, "t", env)
   if not chunk then error(err) end

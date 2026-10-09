@@ -7,7 +7,8 @@
 -- decoded once per size+mtime — never a query or a subprocess on the click path. Every number,
 -- label and Δ tone is decided by tokenmap (tokenmap/tracking.py); this side only aligns the
 -- columns and colours the tone. An export is current while its db_generation is the one in the
--- `generation` file every tokenmap commit replaces. An outdated spend export is recomputed on open;
+-- `generation` file every tokenmap commit replaces and its `code` the digest in the `code` file
+-- beside it, written after every export run. An outdated spend export is recomputed on open;
 -- an outdated category export shows red until its own range or Refresh recomputes it.
 
 local M = {}
@@ -38,6 +39,7 @@ local function toneColor(tone, inactive)
 end
 
 local path = DEFAULT_PATH
+local sources = nil
 local caches = {}
 local pasteboardFn = function(text) hs.pasteboard.setContents(text) end
 local alertFn = function(text) hs.alert.show(text, 4) end
@@ -57,6 +59,7 @@ local active, asked = nil, nil
 local spendTask, spendError, spendAsked, spendActive, spendSerial = nil, nil, nil, nil, 0
 local spendScanning = false
 local tried = {}
+menuStyle.busySource("Token tracking", function() return scanTask ~= nil or spendTask ~= nil end)
 
 local function readFile(file)
     local handle = io.open(file, "r")
@@ -97,9 +100,37 @@ local function generation()
     return (readFile(file) or ""):match("^%s*(%x+)%s*$"), attrs
 end
 
+local function sourceDir()
+    if sources == nil then
+        local real = hs.fs.pathToAbsolute(TOKENMAP)
+        local root = real and real:match("^(.*)/bin/[^/]+$")
+        sources = root and (root .. "/tokenmap") or false
+    end
+    return sources or nil
+end
+
+-- The digest tokenmap's last run wrote beside `generation`; false once a module is as new as it, so a
+-- code change outdates every export before tokenmap next runs. nil: no tokenmap run has written one.
+local function codeDigest()
+    local file = besideExports("code")
+    local attrs = hs.fs.attributes(file)
+    if not attrs then return nil end
+    local dir = sourceDir()
+    if dir and hs.fs.attributes(dir, "mode") == "directory" then
+        for name in hs.fs.dir(dir) do
+            local module = name:match("%.py$") and hs.fs.attributes(dir .. "/" .. name)
+            if module and module.modification >= attrs.modification then return false end
+        end
+    end
+    return (readFile(file) or ""):match("^%s*(%x+)%s*$") or false
+end
+
 local function outdated(data)
     local current = generation()
-    return current ~= nil and (type(data) ~= "table" or data.db_generation ~= current)
+    if current == nil then return false end
+    if type(data) ~= "table" or data.db_generation ~= current then return true end
+    local code = codeDigest()
+    return code == false or (code ~= nil and data.code ~= code)
 end
 
 -- When the export last matched the database: a later scan that changed nothing confirms it.
@@ -326,8 +357,7 @@ local startJob
 
 local function startStep(steps, index, serial, onStep)
     local step = steps[index]
-    local task = taskFn(step.launch, function(code, _, err)
-        if serial ~= jobSerial then return end
+    local function finished(code, err)
         scanTask = nil
         if code ~= 0 then scanError = lastLine(err) or ("exit " .. tostring(code)) end
         onStep(step, code == 0)
@@ -341,6 +371,11 @@ local function startStep(steps, index, serial, onStep)
         if index < #steps and not startStep(steps, index + 1, serial, onStep) then
             onStep(steps[index + 1], false)
         end
+    end
+    local task = taskFn(step.launch, function(code, _, err)
+        if serial ~= jobSerial then return end
+        finished(code, err)
+        if not scanTask then menuStyle.busyChanged() end
     end, step.args)
     if not task then
         scanError = "could not start " .. TOKENMAP
@@ -352,6 +387,7 @@ local function startStep(steps, index, serial, onStep)
         return false
     end
     scanTask, jobSoft, jobScan = task, step.soft or false, step.scan or false
+    menuStyle.busyChanged()
     return true
 end
 
@@ -412,6 +448,7 @@ local function cancelJob()
     jobSerial = jobSerial + 1
     scanTask:terminate()
     scanTask, jobSoft = nil, false
+    menuStyle.busyChanged()
     return true
 end
 
@@ -522,6 +559,7 @@ local function cancelSpend()
     spendSerial = spendSerial + 1
     spendTask:terminate()
     spendTask, spendAsked = nil, nil
+    menuStyle.busyChanged()
 end
 
 -- The vendor trees' fast export (`tokenmap spend`), after a scan that skips the category export
@@ -539,6 +577,7 @@ local function startSpend(range, scanFirst)
         elseif scanFirst then
             startSpend(spendRange())
         end
+        if not spendTask then menuStyle.busyChanged() end
     end, args)
     if task then task:setEnvironment({ PATH = TASK_PATH, HOME = HOME }) end
     if not (task and task:start()) then
@@ -546,6 +585,7 @@ local function startSpend(range, scanFirst)
         return false
     end
     spendTask, spendAsked, spendScanning = task, range, scanFirst or false
+    menuStyle.busyChanged()
     return true
 end
 
@@ -616,8 +656,9 @@ function M.menuItems(changeLogItem)
     local file = spendFile(range)
     local data, problem, attrs = load(file)
     local current = generation()
-    if current and not spendTask and tried[file] ~= current and outdated(data) then
-        tried[file] = current
+    local attempt = current and (current .. "/" .. tostring(codeDigest()))
+    if current and not spendTask and tried[file] ~= attempt and outdated(data) then
+        tried[file] = attempt
         startSpend(range)
     end
     local items = statusItems(data, problem, attrs, false, { running = spendTask ~= nil, error = spendError })
@@ -657,6 +698,7 @@ function M.setPath(value)
     path = value or DEFAULT_PATH
     caches, tried = {}, {}
 end
+function M.setSources(dir) sources = dir end
 function M.setPasteboard(fn) pasteboardFn = fn or function(text) hs.pasteboard.setContents(text) end end
 function M.setAlert(fn) alertFn = fn or function(text) hs.alert.show(text, 4) end end
 function M.setTask(fn) taskFn = fn or function(...) return hs.task.new(...) end end

@@ -74,6 +74,26 @@ function M.clock(epoch, now)
   return os.date("%b ", epoch) .. tonumber(os.date("%d", epoch)) .. os.date(" %H:%M", epoch)
 end
 
+-- The Automations title wears BUSY while any menu's source says a refresh runs: each module answers
+-- from its own task state, so a rebuild keeps the marker and a finished or failed task drops it.
+M.BUSY = "⟳ "
+M.onBusyChanged = function() end
+local busySources = {}
+
+function M.busySource(name, running) busySources[name] = running end
+
+function M.busyChanged() pcall(M.onBusyChanged) end
+
+function M.refreshing()
+  local names = {}
+  for name, running in pairs(busySources) do
+    local ok, busy = pcall(running)
+    if ok and busy then names[#names + 1] = name end
+  end
+  table.sort(names)
+  return names
+end
+
 function M.day(epoch)
   if not epoch then return "?" end
   return os.date("%b ", epoch) .. tonumber(os.date("%d", epoch))
