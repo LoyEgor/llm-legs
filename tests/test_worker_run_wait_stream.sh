@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
-. "$(dirname "$0")/worker_run_harness.sh"
+. "$(dirname "$0")/worker_run_harness.sh" || exit 1
 mkdir -p "$WORK/shim"
 CALLS="$WORK/tool-calls"
 for tool in perl python3 find; do
