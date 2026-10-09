@@ -27,8 +27,9 @@ for _ in 1 2 3 4 5; do
   target=$(readlink "$self")
   case "$target" in /*) self=$target ;; *) self=$(dirname "$self")/$target ;; esac
 done
-. "$(dirname "$self")/../share/gate-journal.sh" 2>/dev/null || gate_journal() { :; }
-. "$(dirname "$self")/../share/instruction-files.sh" 2>/dev/null ||
+here=$(dirname "$self")
+. "$here/../share/gate-journal.sh" 2>/dev/null || gate_journal() { :; }
+. "$here/../share/instruction-files.sh" 2>/dev/null ||
   { gate_journal bloat fault '' '' '' 'share/instruction-files.sh missing'
     echo "instruction bloat gate: cannot load share/instruction-files.sh, so no edit can be priced" >&2; exit 2; }
 command -v jq >/dev/null 2>&1 ||
@@ -59,39 +60,34 @@ pass() { # [decision detail]
 }
 
 sid='' file_path=''
-tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/instruction-gate.XXXXXX") ||
-  { gate_journal bloat fault '' '' '' 'mktemp failed'; exit 0; }
-trap 'hook_time_end 2>/dev/null || :; rm -rf "$tmp_dir" 2>/dev/null' EXIT
-input_file="$tmp_dir/input.json"
-cat >"$input_file" || : >"$input_file"
+input=$(cat) || input=''
 
-jq -e 'type == "object"' "$input_file" >/dev/null 2>&1 ||
+fields=$(jq -j 'if type != "object" then error else
+  [(.tool_name // ""), (.session_id // ""), (.tool_use_id // "" | tostring), (.cwd // ""), (.agent_id // "" | tostring),
+   (if (.tool_input | type == "object") and (.tool_input.file_path | type == "string") then "ok" else "" end),
+   (.tool_input.file_path? // "" | tostring)]
+  | join("\u001f") end' <<<"$input" 2>/dev/null) && [ -n "$fields" ] ||
   { gate_journal bloat fault '' '' '' 'payload does not parse'
     echo "instruction bloat gate: the hook payload does not parse" >&2; exit 2; }
-IFS=$'\x1f' read -r -d '' tool_name sid tool_use_id payload_cwd agent_id < <(jq -j '
-  [(.tool_name // ""), (.session_id // ""), (.tool_use_id // "" | tostring), (.cwd // ""), (.agent_id // "" | tostring)]
-  | join("\u001f")' "$input_file" 2>/dev/null) || :
+IFS=$'\x1f' read -r -d '' tool_name sid tool_use_id payload_cwd agent_id path_ok file_path <<<"$fields" || :
+file_path=${file_path%$'\n'}
 # Before any decision: the tripwire attributes bytes to this call by the mark's time, and deny()
 # takes the mark back, since a denied call never runs.
 case "$tool_name" in
   Edit|Write|MultiEdit|NotebookEdit) instruction_inflight_mark "$sid" "$tool_use_id" "$tool_name" "$payload_cwd" "$agent_id" ;;
 esac
-jq -e '.tool_name == "Edit" or .tool_name == "Write" or .tool_name == "MultiEdit"' \
-  "$input_file" >/dev/null 2>&1 || exit 0
-jq -e '(.tool_input | type == "object") and (.tool_input.file_path | type == "string")' \
-  "$input_file" >/dev/null 2>&1 ||
+case "$tool_name" in Edit|Write|MultiEdit) ;; *) exit 0 ;; esac
+[ "$path_ok" = ok ] ||
   { instruction_inflight_clear "$sid"; echo "instruction bloat gate: the edit payload carries no file_path" >&2; exit 2; }
 
-file_path=$(jq -r '.tool_input.file_path' "$input_file" 2>/dev/null) || exit 2
 case "$file_path" in
   "~/"*) file_path="$HOME/${file_path#\~/}" ;;
 esac
 case "$file_path" in
   /*) ;;
   *)
-    cwd=$(jq -r '.cwd // ""' "$input_file" 2>/dev/null) || exit 0
-    [ -n "$cwd" ] || { gate_journal bloat fault "$sid" "$file_path" '' 'relative path with no cwd'; exit 0; }
-    file_path="$cwd/$file_path"
+    [ -n "$payload_cwd" ] || { gate_journal bloat fault "$sid" "$file_path" '' 'relative path with no cwd'; exit 0; }
+    file_path="$payload_cwd/$file_path"
     ;;
 esac
 
@@ -143,6 +139,21 @@ else
       ;;
   esac
 fi
+# This hook runs before every Edit and every Write in every session, so what it does for a file it
+# will never price has to be nothing. Only markdown is ever measured (the export indexes no other
+# extension) and only markdown carries a class rate, so a source file leaves here rather than paying
+# for a lookup over the whole rate index — whatever class_reads says, as instruction_read_rate's
+# directory patterns match a script under skills/ too.
+case "$file_path" in
+  *.[Mm][Dd]|*.[Mm][Aa][Rr][Kk][Dd][Oo][Ww][Nn]) ;;
+  *) [ -n "$global" ] || exit 0 ;;
+esac
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/instruction-gate.XXXXXX") ||
+  { gate_journal bloat fault "$sid" "$file_path" '' 'mktemp failed'; exit 0; }
+trap 'hook_time_end 2>/dev/null || :; rm -rf "$tmp_dir" 2>/dev/null' EXIT
+input_file="$tmp_dir/input.json"
+printf '%s' "$input" >"$input_file"
+
 # Which class the file belongs to is settled from its name alone, before any rate is asked for: the
 # English-only rule and the global file's ceiling are not prices, and neither may lapse because the
 # local index happens to have no figure for this file today.
@@ -169,21 +180,10 @@ if [ -z "$class_reads" ]; then
     fi
   fi
 fi
-# This hook runs before every Edit and every Write in every session, so what it does for a file it
-# will never price has to be nothing. Only markdown is ever measured (the export indexes no other
-# extension) and only markdown carries a class rate, so a source file leaves here rather than paying
-# for a lookup over the whole rate index — whatever class_reads says, as instruction_read_rate's
-# directory patterns match a script under skills/ too.
-case "$file_path" in
-  *.[Mm][Dd]|*.[Mm][Aa][Rr][Kk][Dd][Oo][Ww][Nn]) ;;
-  *) [ -n "$global" ] || exit 0 ;;
-esac
-
 payload_fault() { gate_journal bloat fault "$sid" "$file_path" '' 'edit payload unreadable'; exit 0; }
 
 # All sizes in UTF-8 bytes via files + wc -c; jq's `length` counts codepoints
 # and silently understates multibyte (Cyrillic) growth against the threshold.
-tool_name=$(jq -r '.tool_name' "$input_file" 2>/dev/null) || payload_fault
 if [ "$tool_name" = "Write" ]; then
   jq -j '.tool_input.content // ""' "$input_file" >"$tmp_dir/new" 2>/dev/null || payload_fault
   new_bytes=$(wc -c <"$tmp_dir/new" | tr -d '[:space:]')

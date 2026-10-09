@@ -65,6 +65,12 @@ rm -f "/tmp/claude-limits-triage-nudge-${session_tool}" "/tmp/claude-limits-tria
 printf 'not json at all' | LIMITS_TRIAGE_NUDGE_INTERVAL=900 bash "$HOOK" >/dev/null 2>&1
 [ $? -eq 0 ] || fail "malformed stdin did not exit 0"
 
+printf '%s\n' 'jq() { printf "jq\n" >>"$FORKS"; command jq "$@"; }' >"$WORK/count-jq.sh"
+: >"$WORK/forks"
+jq -cn '{hook_event_name:"PostToolUse",tool_name:"Bash",session_id:"plain",tool_response:"total 8 README.md"}' |
+  BASH_ENV="$WORK/count-jq.sh" FORKS="$WORK/forks" LIMITS_TRIAGE_NUDGE_INTERVAL=900 bash "$HOOK" >/dev/null
+[ ! -s "$WORK/forks" ] || fail "an output with no limit-shaped word reached jq"
+
 for s in match case-insensitive plain-429 no-context no-pattern dedup wrong-tool; do
   rm -f "/tmp/claude-limits-triage-nudge-limits-nudge-test-$$-${s}" \
         "/tmp/claude-limits-triage-nudge-limits-nudge-test-$$-${s}.lock"
