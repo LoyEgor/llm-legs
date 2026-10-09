@@ -60,6 +60,10 @@ finds room.
 A suite running past its bound is killed with its whole process tree and reads FAIL 124, TIMEOUT:
 5 x the p90 of its last 50 passes in the journal, never under RUN_SUITES_SUITE_FLOOR (default 1800 s,
 doubled for tests/slow-suites), twice that floor before it has 3 passes.
+
+A named or --changed run starts first the suites red in its checkout's last journaled run covering its
+set; once they all finished and one is red again it stops the rest: they read STOP, the run FAIL, and
+the green rerun that must follow runs them. The full run never stops early.
 USAGE
   exit 2
 }
@@ -182,7 +186,7 @@ fi
 suite_watch() { # pid bound marker -> ends the suite's tree once it outlives the bound or its owner ended
   local deadline=$((SECONDS + $2))
   while kill -0 "$1" 2>/dev/null; do
-    if [ -e "$logdir/owner-ended" ]; then process_tree_end "$1" 10; return; fi
+    if [ -e "$logdir/stop" ]; then process_tree_end "$1" 10; return; fi
     if [ "$SECONDS" -ge "$deadline" ]; then : >"$3"; process_tree_end "$1" 10; return; fi
     sleep 2
   done
@@ -299,6 +303,8 @@ if [ -z "${RUN_SUITES_SLOT:-}" ]; then
 fi
 run_slot=${RUN_SUITES_SLOT:-}
 
+# The longest reader, bin/harness-doctor hang_log, looks back test_cost_window_s (24 h).
+find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'run-suites.*' -type d -mmin +2880 -exec rm -rf {} + 2>/dev/null
 logdir=$(mktemp -d "${TMPDIR:-/tmp}/run-suites.XXXXXX") || fail 'could not create a log directory'
 # The statusline's work probe finds this run by its pid, counts its .status files for `n/m` and
 # names the repository from here: this process never leaves the caller's directory.
@@ -309,7 +315,7 @@ find "${progress_file%/*}" -maxdepth 1 -name 'suites-*.done' -mmin +1 -delete 2>
 suite_journal_git "$repo"
 suite_journal_content "$repo"
 journal_run() {
-  local entry name rc secs real cpu bound execs complete=true queued began ended reason=''
+  local entry name rc secs real cpu bound execs complete=true queued began ended reason='' stopped=''
   local -a names=()
   suite_journal_suites=''
   for entry in ${suites[@]+"${suites[@]}"}; do
@@ -323,17 +329,20 @@ journal_run() {
       $1 == "sleep" { for (i = 2; i <= NF; i++) { u = substr($i, length($i)); s += $i * (u == "m" ? 60 : u == "h" ? 3600 : u == "d" ? 86400 : 1) } }
       END { printf "\"execs\":{"; for (b in n) printf "%s\"%s\":%d", c++ ? "," : "", b, n[b]; printf "},\"sleep_s\":%.3f", s }' "$logdir/$name.execs")
     [ -z "${shards[$name]:-}" ] || execs="\"shards\":${shards[$name]}${execs:+,$execs}"
-    if [[ "$rc" =~ ^[0-9]+$ ]]; then suite_journal_suite "$name" "$rc" "${real:-$secs}" "$cpu" "$bound" "$execs"; else complete=false; fi
+    if [[ "$rc" =~ ^[0-9]+$ ]]; then suite_journal_suite "$name" "$rc" "${real:-$secs}" "$cpu" "$bound" "$execs"
+    else complete=false stopped+=" $name"; fi
   done
   [ -z "$run_signal" ] || complete=false
-  [ ! -e "$logdir/owner-ended" ] || reason=owner-ended
+  [ ! -s "$logdir/stop" ] || read -r reason <"$logdir/stop"
+  [ "$reason" != repeat-red ] || [ -n "$stopped" ] || reason=''
+  [ -n "$reason" ] || stopped=''
   [ "${#names[@]}" -eq 0 ] || mapfile -t names < <(printf '%s\n' "${names[@]}" | LC_ALL=C sort)
   suite_journal_digest ${names[@]+"${names[@]}"}
   suite_journal_ms queued "$run_suites_queued"; suite_journal_secs queued "$queued"
   suite_journal_ms began "$run_suites_began"; suite_journal_secs began "$began"
   suite_journal_ms ended; [ -n "$ended" ] || suite_journal_ms ended "$(date +%s)"; suite_journal_secs ended "$ended"
   suite_journal_row suites "$$" "$queued" "$began" "$ended" "$repo" "$times_key" "$suite_journal_head" "${scope:-}" \
-    "$run_worker" "$run_session" "$jobs" "$run_slot" "$run_signal" "$complete" "${slow_skipped:-}" "$reason"
+    "$run_worker" "$run_session" "$jobs" "$run_slot" "$run_signal" "$complete" "${slow_skipped:-}" "$reason" "$stopped"
   suite_journal_append "$run_journal"
 }
 run_signal='' run_finished='' owner_watch=''
@@ -396,12 +405,33 @@ shard_merge() { # name shards -> once its last shard has ended, the suite's .sta
   printf '%s\t%s\t%s\t%s\t%s\n' "$out_rc" "$out_secs" "$out_real" "$bound" "$out_cpu" >"$logdir/$name.status"
 }
 
+stop_run() { # reason -> the run's queued suites dropped and its running ones ended as a tree; the first reason stays
+  printf '%s\n' "$1" >"$logdir/stop.$BASHPID" && ln "$logdir/stop.$BASHPID" "$logdir/stop" 2>/dev/null
+  rm -f "$logdir/stop.$BASHPID"
+}
+stop_note() {
+  local reason=''
+  read -r reason 2>/dev/null <"$logdir/stop"
+  if [ "$reason" = repeat-red ]; then printf 'run-suites: stopped, a suite red in the last run is red again\n'
+  else printf 'run-suites: cancelled, its worker run ended\n'; fi
+}
+red_again() { # -> stops the run once every suite red in the last run has a verdict and one is red again
+  local name rc again=''
+  for name in "${!red_first[@]}"; do
+    rc=''
+    IFS=$'\t' read -r rc _ 2>/dev/null <"$logdir/$name.status"
+    [[ "$rc" =~ ^[0-9]+$ ]] || return 0
+    [ "$rc" = 0 ] || again=1
+  done
+  [ -z "$again" ] || stop_run repeat-red
+}
+
 run_one() { # suite-path [shard i/N]
   local path="$1" shard=${2:-} name job start finish rc began ended cpu bound suite watch
   name=$(basename "$path")
   job=$name
   [ -z "$shard" ] || job="$name.shard-${shard%/*}"
-  if [ -e "$logdir/owner-ended" ]; then printf 'run-suites: cancelled, its worker run ended\n' >"$logdir/$name.log"; return; fi
+  if [ -e "$logdir/stop" ]; then stop_note >"$logdir/$name.log"; return; fi
   suite_bound bound "$name"
   printf -v start '%(%s)T' -1
   suite_journal_ms began
@@ -451,9 +481,9 @@ run_one() { # suite-path [shard i/N]
   watch=$!
   wait "$suite"
   rc=$?
-  if [ -e "$logdir/owner-ended" ] || [ -e "$logdir/$job.timeout" ]; then wait "$watch"; else kill "$watch" 2>/dev/null; fi
-  if [ -e "$logdir/owner-ended" ] && [ "$rc" -ne 0 ]; then
-    printf 'run-suites: cancelled, its worker run ended\n' >>"$logdir/$job.log"
+  if [ -e "$logdir/stop" ] || [ -e "$logdir/$job.timeout" ]; then wait "$watch"; else kill "$watch" 2>/dev/null; fi
+  if [ -e "$logdir/stop" ] && [ "$rc" -ne 0 ]; then
+    stop_note >>"$logdir/$job.log"
     [ -z "$shard" ] || cat "$logdir/$job.log" >>"$logdir/$name.log"
     return
   fi
@@ -477,7 +507,21 @@ run_one() { # suite-path [shard i/N]
     printf '%s\t%s\t%s\t%s\t%s\n' "$rc" "$((finish - start))" "${began:--}" "$bound" "$cpu" >"$logdir/$job.st"
     shard_merge "$name" "${shard#*/}"
   fi
+  [ -z "${red_first[$name]:-}" ] || red_again
 }
+
+# The night's full run stays a full verdict; a day run stops once the suites red in this checkout's last
+# run covering its set are red again, since the green rerun that must follow runs the rest.
+declare -A red_first=()
+if [ "${#suites[@]}" -gt 1 ] && { [ "$scope" = named ] || [ "$scope" = changed ]; } && [ -r "$run_journal" ] && command -v jq >/dev/null; then
+  while IFS= read -r name; do red_first[$name]=1; done < <(tail -n 5000 "$run_journal" |
+    jq -nRr --arg repo "$repo" --arg names "$(printf '%s\n' "${suites[@]##*/}")" '
+      ($names | split("\n") | map(select(. != ""))) as $want
+      | last(inputs | fromjson? | objects | select(.repo == $repo and (.suites | type) == "object")
+          | select($want - ((.suites | keys) + (.stopped // [])) == [])) // empty
+      | .suites | to_entries[] | select((.key | IN($want[])) and (.value.rc | type) == "number" and .value.rc != 0) | .key' 2>/dev/null)
+  [ "${#red_first[@]}" -lt "${#suites[@]}" ] || red_first=()
+fi
 
 declare -a wave=() tail_wave=()
 for entry in "${suites[@]}"; do
@@ -487,8 +531,8 @@ done
 # Unknown suites first: a new one may be the longest.
 if [ "${#wave[@]}" -gt 1 ]; then
   mapfile -t wave < <(for i in "${!wave[@]}"; do
-    printf '%s\t%s\t%s\n' "${last_secs[${wave[i]##*/}]:-999999}" "$i" "${wave[i]}"
-  done | sort -t $'\t' -k1,1nr -k2,2n | cut -f3-)
+    printf '%s\t%s\t%s\t%s\n' "${red_first[${wave[i]##*/}]:-0}" "${last_secs[${wave[i]##*/}]:-999999}" "$i" "${wave[i]}"
+  done | sort -t $'\t' -k1,1nr -k2,2nr -k3,3n | cut -f4-)
 fi
 
 # Shards are jobs of this run's -j, so a slot still caps the fan-out; with no cores free they would
@@ -512,7 +556,7 @@ if [ "${#tail_wave[@]}" -gt 0 ] && unattended; then
     "${#tail_wave[@]}" "$(ps -o nice= -p $$ | tr -d '[:space:]')"
 fi
 if [ -n "$owner_record" ]; then
-  (while sleep 5 && kill -0 "$$" 2>/dev/null; do ! owner_ended || { : >"$logdir/owner-ended"; break; }; done) &
+  (while sleep 5 && kill -0 "$$" 2>/dev/null; do ! owner_ended || { stop_run owner-ended; break; }; done) &
   owner_watch=$!
   disown "$owner_watch"
 fi
@@ -550,8 +594,11 @@ for entry in ${tail_wave[@]+"${tail_wave[@]}"}; do
 done
 wall=$(( $(date +%s) - wall_start ))
 
-declare -a failed=()
+declare -a failed=() stopped=()
 declare -A ran=()
+repeat_red=''
+read -r repeat_red 2>/dev/null <"$logdir/stop"
+[ "$repeat_red" = repeat-red ] || repeat_red=''
 serial_total=0
 width=0
 for entry in "${suites[@]}"; do
@@ -564,16 +611,19 @@ for entry in "${suites[@]}"; do
   ran[$name]=1
   rc=1
   seconds=0
-  IFS=$'\t' read -r rc seconds _ 2>/dev/null <"$logdir/$name.status" || { rc=1; seconds=0; }
+  IFS=$'\t' read -r rc seconds _ 2>/dev/null <"$logdir/$name.status" || { rc=1; seconds=0; [ -z "$repeat_red" ] || rc=stop; }
   serial_total=$((serial_total + seconds))
   verdict=PASS
-  [ "$rc" -eq 0 ] || { verdict="FAIL $rc"; failed+=("$name"); }
-  [ "$rc" -ne 0 ] || last_secs[$name]=$seconds
+  if [ "$rc" = stop ]; then verdict=STOP; stopped+=("$name")
+  elif [ "$rc" -ne 0 ]; then verdict="FAIL $rc"; failed+=("$name")
+  else last_secs[$name]=$seconds; fi
   printf '%-*s  %-6s  %5s  %s\n' "$width" "$name" "$verdict" "$seconds" \
     "$(grep -v '^[[:space:]]*$' "$logdir/$name.log" 2>/dev/null | tail -n1 | cut -c1-100)"
 done
-printf '\n%s suites · %s PASS · %s FAIL · %ss wall (%ss serial)\n' \
-  "${#suites[@]}" "$(( ${#suites[@]} - ${#failed[@]} ))" "${#failed[@]}" "$wall" "$serial_total"
+stop_count=''
+[ "${#stopped[@]}" -eq 0 ] || stop_count=" · ${#stopped[@]} STOP"
+printf '\n%s suites · %s PASS · %s FAIL%s · %ss wall (%ss serial)\n' \
+  "${#suites[@]}" "$(( ${#suites[@]} - ${#failed[@]} - ${#stopped[@]} ))" "${#failed[@]}" "$stop_count" "$wall" "$serial_total"
 
 if [ "${#last_secs[@]}" -gt 0 ] && mkdir -p "${times_file%/*}" 2>/dev/null &&
     times_tmp=$(mktemp "$times_file.XXXXXX" 2>/dev/null); then
@@ -585,11 +635,14 @@ if [ "${#last_secs[@]}" -gt 0 ] && mkdir -p "${times_file%/*}" 2>/dev/null &&
   } >"$times_tmp" 2>/dev/null && mv -f "$times_tmp" "$times_file" 2>/dev/null || rm -f "$times_tmp"
 fi
 
-[ "${#failed[@]}" -eq 0 ] || {
-  for name in "${failed[@]}"; do
+[ "${#failed[@]}" -eq 0 ] && [ "${#stopped[@]}" -eq 0 ] || {
+  for name in ${failed[@]+"${failed[@]}"}; do
     printf '\n=== %s (last 30 lines) ===\n' "$name"
     tail -n 30 "$logdir/$name.log" 2>/dev/null
   done
+  [ "${#stopped[@]}" -eq 0 ] ||
+    printf '\nrun-suites: FAIL, not a full verdict: red again after the last run, so %s suite(s) stopped unrun: %s\n' \
+      "${#stopped[@]}" "${stopped[*]}"
   exit 1
 }
 exit 0

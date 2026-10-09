@@ -338,6 +338,13 @@ with open(mini, "w") as handle:
               mini_row(M + 900, M + 950, [("test_b.sh", 1, 50)], "m3", 5),
               mini_row(M + 1000, M + 1050, [("test_b.sh", 0, 50)], "m3", 5)):
         handle.write(json.dumps(r) + "\n")
+stops = os.path.join(work, "stops.jsonl")
+with open(stops, "w") as handle:
+    for reason in ("repeat-red", "owner-ended"):
+        handle.write(json.dumps(dict(mini_row(M, M + 50, [("test_b.sh", 1, 50)], "m4", 5), complete=False,
+                                     reason=reason, stopped=["test_a.sh"])) + "\n")
+check([e["killed"] for e in th.load(stops, 0)[1]] == [False, True],
+      "a repeat-red stop judges the suites it finished; an owner-ended row stays killed")
 mrows, mexecs = th.load(mini, 0)
 th.label(mexecs)
 th.allocate(mrows, {}, 5)

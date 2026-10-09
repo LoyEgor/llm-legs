@@ -125,7 +125,8 @@ def load(path, lo, night=()):
             e = {"repo": row["repo"], "root": root, "checkout": str(r.get("repo") or root), "name": name,
                  "start": start, "end": end, "secs": s["secs"], "cpu": num(s.get("cpu_s")),
                  "sleep": num(s.get("sleep_s")), "ok": s.get("rc") == 0,
-                 "killed": r.get("signal") is not None or r.get("complete") is False, "who": who,
+                 "killed": r.get("signal") is not None or r.get("complete") is False and r.get("reason") != "repeat-red",
+                 "who": who,
                  "tree": r.get("tree") or None, "head": r.get("head") or None, "scope": r.get("scope"), "row": row}
             row["execs"].append(e)
             execs.append(e)

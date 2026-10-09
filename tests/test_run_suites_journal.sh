@@ -449,4 +449,42 @@ assert jqe '.suites["test_prof.sh"] | .rc == 0 and .execs.jq == 3 and .execs.sle
 bash "$ROOT/share/run-suites.sh" --repo "$R7" >/dev/null 2>&1
 assert jqe '.suites["test_prof.sh"] | .rc == 0 and (has("execs") or has("sleep_s") | not)' <(tail -1 "$JOURNAL")
 
+# Red first: a day run starts the suites red in this checkout's last covering run first and, once they
+# are red again, stops the rest unrun; the summary says FAIL and the row is complete:false repeat-red.
+# A green repeat and the night's full run run everything. A run prunes log dirs past two days.
+R9="$WORK/r9"
+new_repo "$R9"
+suite "$R9" test_a.sh 'exit 0'
+suite "$R9" test_b.sh 'echo >>"'"$WORK"'/r9-b-runs"; exit 0'
+suite "$R9" test_z_red.sh '[ -e "'"$WORK"'/r9-green" ] && exit 0; exit 5'
+mkdir -p "$WORK/r9tmp/run-suites.old" "$WORK/r9tmp/run-suites.new" "$WORK/r9tmp/other.old"
+touch -t 202001010000 "$WORK/r9tmp/run-suites.old" "$WORK/r9tmp/other.old"
+r9() { TMPDIR="$WORK/r9tmp" bash "$ROOT/share/run-suites.sh" --repo "$R9" -j 1 "$@" 2>&1; }
+r9 test_a.sh test_b.sh test_z_red.sh >/dev/null
+assert test ! -e "$WORK/r9tmp/run-suites.old"
+assert test -d "$WORK/r9tmp/run-suites.new"
+assert test -d "$WORK/r9tmp/other.old"
+assert jqe '.complete == true and (has("stopped") | not) and (.suites | keys) == ["test_a.sh","test_b.sh","test_z_red.sh"]' <(tail -1 "$JOURNAL")
+r9_out=$(r9 test_a.sh test_b.sh test_z_red.sh) && fail "a repeat-red stop exited 0: $r9_out"
+assert test "$(wc -l <"$WORK/r9-b-runs" | tr -d ' ')" = 1
+assert grep -Eq '^test_a\.sh +STOP ' <<<"$r9_out"
+assert grep -Eq '^test_z_red\.sh +FAIL 5 ' <<<"$r9_out"
+assert grep -q '^3 suites · 0 PASS · 1 FAIL · 2 STOP · ' <<<"$r9_out"
+assert grep -q '^run-suites: FAIL, not a full verdict: .* 2 suite(s) stopped unrun: test_a.sh test_b.sh$' <<<"$r9_out"
+assert jqe '.complete == false and .reason == "repeat-red" and .stopped == ["test_a.sh","test_b.sh"]
+  and (.suites | keys) == ["test_z_red.sh"]' <(tail -1 "$JOURNAL")
+r9 test_a.sh test_b.sh test_z_red.sh >/dev/null && fail 'a second repeat-red stop exited 0'
+assert test "$(wc -l <"$WORK/r9-b-runs" | tr -d ' ')" = 1
+touch "$WORK/r9-green"
+r9_out=$(r9 test_a.sh test_b.sh test_z_red.sh) || fail "a green repeat failed: $r9_out"
+assert test "$(wc -l <"$WORK/r9-b-runs" | tr -d ' ')" = 2
+assert grep -Eq '^3 suites · 3 PASS · 0 FAIL · [0-9]+s wall \([0-9]+s serial\)$' <<<"$r9_out"
+assert jqe '.complete == true and (has("reason") or has("stopped") | not)' <(tail -1 "$JOURNAL")
+rm "$WORK/r9-green"
+r9 test_a.sh test_b.sh test_z_red.sh >/dev/null
+assert test "$(wc -l <"$WORK/r9-b-runs" | tr -d ' ')" = 3
+r9 >/dev/null
+assert test "$(wc -l <"$WORK/r9-b-runs" | tr -d ' ')" = 4
+assert jqe '.scope == "full" and .complete == true and (.suites | length) == 3' <(tail -1 "$JOURNAL")
+
 printf 'PASS: %s asserts; run-suites and direct suite runs journal one row each\n' "$asserts"
