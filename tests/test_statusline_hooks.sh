@@ -4033,6 +4033,10 @@ printf 'rawilimo · gemini-3.5-flash-high · high\n' > "$WP_RUNS/codex-7-7-light
 wp_run codex-7-7-fix wp-sess "{\"phase\": \"wait\", \"round_id\": \"20261009T120000Z-1a2b3c4d5\", \"started_epoch\": $((wp_now - 50))}" \
   "{\"pid\": 2500, \"pid_started_at\": $((wp_now - 50))}"
 printf 'com · opus · high\n' > "$WP_RUNS/codex-7-7-fix/tag"; printf 'Fix the findings\n' > "$WP_RUNS/codex-7-7-fix/title"
+# Waiting for its worker slot, its CLI not launched, a run whose chat already waits is queued, not working.
+wp_run codex-7-7-que wp-sess "{\"phase\": \"wait\", \"started_epoch\": $((wp_now - 40))}" \
+  "{\"pid\": 2600, \"pid_started_at\": $((wp_now - 40)), \"slot_at\": $((wp_now - 5))}"
+printf 'com · opus · high\n' > "$WP_RUNS/codex-7-7-que/tag"; printf 'Queued task\n' > "$WP_RUNS/codex-7-7-que/title"
 wp_run codex-7-7-new wp-sess "{\"phase\": \"start\", \"started_epoch\": $((wp_now - 20))}" '{"pid": 0}'
 printf 'MODEL: opus\nNew task\n' > "$WP_RUNS/codex-7-7-new/brief"
 wp_run codex-7-7-done wp-sess '{"phase": "done"}' '{"pid": 2100}'; printf '0\n' > "$WP_RUNS/codex-7-7-done/exit_code"
@@ -4149,6 +4153,7 @@ cat <<'SNAP'
 2300 1 04:00 bash -c supervisor _ /x/bin/worker-run /runs/codex-7-7-foreign
 2400 1 01:40 bash -c supervisor _ /x/bin/worker-run /runs/codex-7-7-light
 2500 1 00:50 bash -c supervisor _ /x/bin/worker-run /runs/codex-7-7-fix
+2600 1 00:40 bash -c supervisor _ /x/bin/worker-run /runs/codex-7-7-que
 3000 1 02:00 bash tests/test_orphan.sh
 3100 1 02:00 bash tests/test_other.sh
 3200 1 01:10 bash tests/test_sid.sh
@@ -4215,6 +4220,7 @@ assert_eq "$(printf '%s\n' \
   $'main\tworker\tcom · opus · high\tMap the hooks\tworking\t\t' \
   $'main\tworker\tlight research · 3.5-flash · rawilimo\tFind the docs\tworking\t\t' \
   $'main\tworker\tfix: com · opus · high\t2b3c4d5\tworking\t\t' \
+  $'main\tworker\tcom · opus · high\tQueued task\tqueued\t\t' \
   $'main\tworker\tworker · 7-7-new\tNew task\tstart\t\t' \
   $'main\treview\tT0 · double · bugs\tclaude-setup, llm-legs\tall 5/8 a 1/2 b 1/2 c ✓ d 1/2 ✗1\tall 5/8\t' \
   $'main\treview\tT1 · standard · review\tllm-legs\t✓ report 3\t✓ report 3\tnotcom · opus · high' \
@@ -4245,9 +4251,9 @@ assert_eq "$(printf '%s\n' \
 assert_eq "$((wp_now - 179))" "$(awk -F'\t' '$4 == "pool · img·web" { print $3 }' "$STATE_DIR/work-wp-sess")"
 # A worker starts at its run's start (state.json, else meta.json), a review at its document's, a
 # document-less wait at the wait's own start; the worker's own token count rides in the ninth field.
-assert_eq "600 300 100 50 20 900 700 650 600 400 350 50" "$(awk -F'\t' -v now="$wp_now" '$2 == "worker" || $2 == "review" { printf "%s%s", s, now - $3; s = " " }' \
+assert_eq "600 300 100 50 40 20 900 700 650 600 400 350 50" "$(awk -F'\t' -v now="$wp_now" '$2 == "worker" || $2 == "review" { printf "%s%s", s, now - $3; s = " " }' \
   "$STATE_DIR/work-wp-sess" | sed -E 's/ (4[6-9]|50)$/ 50/')"
-assert_eq "184321||||" "$(awk -F'\t' '$2 == "worker" { printf "%s%s", s, $9; s = "|" }' "$STATE_DIR/work-wp-sess")"
+assert_eq "184321|||||" "$(awk -F'\t' '$2 == "worker" { printf "%s%s", s, $9; s = "|" }' "$STATE_DIR/work-wp-sess")"
 wp_start=$(awk -F'\t' '$4 == "wp repo" && $5 == "suites" { print $3 }' "$STATE_DIR/work-wp-sess")
 assert_eq "$WP_STAMP" "$wp_start"
 wp_run_start=$(awk -F'\t' '$1 == "run" { print $3 }' "$STATE_DIR/work-wp-sess")

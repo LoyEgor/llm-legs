@@ -302,6 +302,7 @@ agent_records=""
 re_started='"started_epoch": *([0-9]+)' re_started_at='"started_at": *([0-9]+)' re_phase='"phase": *"([a-z_-]*)"'
 re_key='^[A-Z][A-Z0-9_-]*:([[:space:]]|$)' re_resume='^RESUME[[:space:]]+[^[:space:]]+:[[:space:]]*(.*)$'
 re_light='"light": *"([a-z]+)"' re_round='"round_id": *"([A-Za-z0-9_-]+)"'
+re_cli='"cli_pid": *[0-9]' re_slot='"slot_at": *[0-9]'
 for worker_run in ${worker_runs[@]+"${worker_runs[@]}"}; do
   IFS=$'\037' read -r run live waited <<< "$worker_run"
   dir="$runs_root/$run"
@@ -349,6 +350,7 @@ for worker_run in ${worker_runs[@]+"${worker_runs[@]}"}; do
   [[ "$tokens" =~ ^[0-9]+$ ]] || tokens=""
   wstate=working tests_at=""
   [ "$phase" != start ] || wstate=start
+  [[ $meta =~ $re_cli ]] || ! [[ $meta =~ $re_slot ]] || wstate=queued
   [ -z "${run_tests_at[$run]+set}" ] || wstate=tests tests_at=${run_tests_at[$run]}
   agent_records+=$'1\tmain\t'"worker"$'\t'"$start"$'\t'"$head"$'\t'"$title"$'\t'"$wstate"$'\t'"$tests_at"$'\t\t'"$tokens"$'\n'
 done
