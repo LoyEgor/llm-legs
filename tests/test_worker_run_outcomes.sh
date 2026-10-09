@@ -76,7 +76,20 @@ assert await_done
 report=$("$RUNNER" report "$RUN_ID")
 assert test "$(grep -c '^HINT:' <<<"$report")" -eq 0
 assert test ! -e "$RUN_DIR/report-readonly"
+assert grep -qx "RUN-FILES: unknown (the run's own calls name 1 path(s) git shows no change for here: ignored/lane.py)" <<<"$report"
 rm -rf "$readonly_workdir/ignored"
+
+# A shell program that may have written somewhere git cannot see leaves the listing a floor, never a 0.
+clear_stub
+mkdir -p "$CLAUDEB_PROFILES_ROOT/readonly-shell/projects/fixture"
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Bash command 'python3 tools/bench.py' >"$CLAUDEB_PROFILES_ROOT/readonly-shell/projects/fixture/readonly-shell.jsonl"
+export PICK_RC=0 PICK_ACCOUNT=readonly-shell STUB_SESSION=readonly-shell
+start_ok claudeb
+assert await_done
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'RUN-FILES: unknown (the run also ran shell commands, whose edits no transcript records)' <<<"$report"
+assert test "$(grep -c '^HINT:' <<<"$report")" -eq 0
 
 # Neither a failed run nor one whose transcript cannot be read is a read-only lookup.
 clear_stub

@@ -3954,13 +3954,24 @@ transcript_wrote_through_shell() { # transcript since [transcript...]
 }
 
 run_files() {
-  local directory="$1" workdir count value
+  local directory="$1" workdir count value named reason
   workdir=$(jq -r '.workdir' "$directory/meta.json" 2>/dev/null)
   compute_run_files "$directory"
   workdir_escape_line "$directory"
   [ ! -s "$directory/files-note" ] || sed 's/^/RUN-FILES-NOTE: /' "$directory/files-note"
-  if [ -n "$RUN_FILES_REASON" ]; then
-    printf 'RUN-FILES: unknown (%s)\n' "$RUN_FILES_REASON"
+  # Git sees no edit to an ignored path, a committed one or one in another checkout: an empty
+  # intersection beside the run's own named writes, or beside a listing that is only a floor, is no 0.
+  reason=$RUN_FILES_REASON
+  if [ -z "$reason" ] && [ -z "$RUN_FILES_LIST" ]; then
+    named=$(sed '/^$/d' "$directory/listed" 2>/dev/null)
+    if [ -n "$named" ]; then
+      reason="the run's own calls name $(grep -c '' <<<"$named") path(s) git shows no change for here: $(head -n 3 <<<"$named" | paste -sd' ' -)"
+    else
+      reason=$(sed -n 's/^PARTIAL: //p' "$directory/files" 2>/dev/null | head -n1)
+    fi
+  fi
+  if [ -n "$reason" ]; then
+    printf 'RUN-FILES: unknown (%s)\n' "$reason"
     printf 'RUN-FILES-RULE: claim only the files the result names; any other dirty file may be another chat'"'"'s\n'
     return 0
   fi
