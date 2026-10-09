@@ -71,7 +71,6 @@ pick_seed() {
   done < <(ls -tr "$cache_dir/pending-$agent_type"-* 2>/dev/null)
 }
 tag_line() { local first; [ -f "$tag_file" ] && IFS= read -r first < "$tag_file" && printf '%s' "$first"; }
-tag_value() { [ -f "$tag_file" ] && sed -n "s/^$1=//p" "$tag_file" 2>/dev/null | tail -n1; }
 # Rewrites the tag file atomically: line one is the tag (kept when $1 is empty), every other line a
 # key=value the renderer reads; each further argument sets one key, and `key=` drops it.
 # One lock per session directory serializes every tag-file rewrite: this hook and the `edit=N` count in
@@ -89,14 +88,6 @@ tag_lock() {
     sleep 0.1
     tries=$((tries + 1))
   done
-}
-write_tag_file() { # tag [key=value]...
-  mkdir -p "$cache_dir" 2>/dev/null || return 1
-  tag_lock || return 1
-  write_tag_file_locked "$@"
-  local rc=$?
-  rmdir "$cache_dir/.claim.lock" 2>/dev/null
-  return "$rc"
 }
 write_tag_file_locked() { # tag [key=value]...
   local tag="$1" tmp kv key want
@@ -116,14 +107,10 @@ write_tag_file_locked() { # tag [key=value]...
   return 1
 }
 
-extra=()
-# An agent making a call is running again, whatever SubagentStop marked on its tag before.
-[ -z "$(tag_value stopped)" ] || extra+=("stopped=")
-
 umask 077
 tag=$(tag_line)
 if [ -n "$tag" ]; then
-  if [ "${#extra[@]}" -gt 0 ]; then write_tag_file "" "${extra[@]}"; else touch "$tag_file" 2>/dev/null; fi
+  touch "$tag_file" 2>/dev/null
 else
   # The first call claims the oldest seed worker-spawn-hook left for this fork — one seed per
   # spawn, moved away so a sibling spawn claims its own.

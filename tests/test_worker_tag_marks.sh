@@ -19,10 +19,9 @@ call() { # agent-type agent-id command [description]
     bash "$HOOK" 2>/dev/null
 }
 
-# A fork marked stopped is live again the moment it makes a call, and its row prefixes the call.
-printf 'fork · opus · com\nstopped=1790000000\n' >"$TAGS/f1"
+# A tagged fork's row prefixes its call, once.
+printf 'fork · opus · com\n' >"$TAGS/f1"
 out=$(call fork f1 'ls' 'List files')
-assert_eq '' "$(grep '^stopped=' "$TAGS/f1")"
 assert_eq 'fork · opus · com — List files' "$(jq -r '.hookSpecificOutput.updatedInput.description' <<<"$out")"
 assert_eq '' "$(call fork f1 'ls' 'fork · opus · com — List files')"
 
@@ -51,4 +50,4 @@ jq -cn '{hook_event_name:"PreToolUse",tool_name:"Bash",session_id:"s1",tool_inpu
   BASH_ENV="$WORK/count-forks.sh" FORKS="$WORK/forks" bash "$HOOK" >/dev/null 2>&1
 assert_eq 0 "$(grep -c '' "$WORK/forks")"
 
-printf 'PASS: %s asserts; a fork'"'"'s stopped= mark clears on its next call and its tag prefixes the call once, no other agent type gets a tag, a seed is spent only once its tag file is written, and a main-session call exits on builtins\n' "$asserts"
+printf 'PASS: %s asserts; a fork'"'"'s tag prefixes its call once, no other agent type gets a tag, a seed is spent only once its tag file is written, and a main-session call exits on builtins\n' "$asserts"

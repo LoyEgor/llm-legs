@@ -5383,9 +5383,8 @@ assert_eq 'fork · opus · acct' "$(head -n1 "$TR_HOME_CACHE/tr-edit/a1")"
 assert_eq 'edit=2' "$(grep '^edit=' "$TR_HOME_CACHE/tr-edit/a1")"
 run_workdir_hook "$(agent_payload Read tr-edit "$REPO_A" "$REPO_A/one.txt")"
 assert_eq 'edit=2' "$(grep '^edit=' "$TR_HOME_CACHE/tr-edit/a1")"
-# Two writers racing on one tag file serialize through the directory's `.claim.lock`: no count is
-# lost and the fork's own rewrite (clearing its stopped= mark) is never undone by an edit count.
-printf 'stopped=1790000000\n' >> "$TR_HOME_CACHE/tr-edit/a1"
+# Edit counts racing the fork's own calls on one tag file serialize through `.claim.lock`: no count
+# is lost and the tag line survives.
 tr_edit_payload=$(agent_payload Write tr-edit "$REPO_A" "$REPO_A/two.txt")
 tr_fork_payload=$(worker_payload fork a1 'List' 'ls' tr-edit)
 for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -5394,7 +5393,7 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 done
 wait
 assert_eq 'edit=12' "$(grep '^edit=' "$TR_HOME_CACHE/tr-edit/a1")"
-assert_fails grep -q '^stopped=' "$TR_HOME_CACHE/tr-edit/a1"
+assert_eq 'fork · opus · acct' "$(head -n1 "$TR_HOME_CACHE/tr-edit/a1")"
 assert test ! -e "$TR_HOME_CACHE/tr-edit/.claim.lock"
 # The gate: a Monitor on a wait is refused; the chat's own Bash waits.
 monitor_payload() { jq -cn --arg command "$1" '{hook_event_name:"PreToolUse",tool_name:"Monitor",tool_input:{command:$command}}'; }

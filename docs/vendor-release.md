@@ -90,7 +90,7 @@ only with a stated reason), and every new capability is supported, per account, 
    `*_builtin()` fallback lists are frozen. `tests/test_consistency.sh` (row `cr`) fails on any other
    versioned id in the three repositories; a new id family goes into the fingerprint's `id_prefixes`.
 8. Surfaces: `share/worker-model.sh` table, `share/worker-policy.md`, `bin/worker-run`, `worker-pick`
-   roles, relay agent md files (every flag the leg accepts), review-bench catalog, cells, raters and
+   roles, worker-run usage (every flag the leg accepts), review-bench catalog, cells, raters and
    tests, Light rows, image legs and `image-fanout`, the Hammerspoon menu (read-only), statusline short
    names (`docs/statusline-contract.md`), `docs/image-vendors*.md`, `docs/DIAGNOSTICS.md`. And the
    review-bench transport (`share/rbench/launch.py` `run_<side>`, its stream-evidence parser): a

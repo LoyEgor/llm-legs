@@ -364,6 +364,3 @@ To disable any of these hooks, remove its entry from `hooks.PostToolUse` or `hoo
 
 Debug place tracking (a `cd`, a mutating `git -C` or `(cd X && <write>)` is required to record):
 `jq -cn --arg dir "$PWD" '{hook_event_name:"PostToolUse",tool_name:"Bash",session_id:"debug",cwd:$dir,tool_input:{command:("cd " + ($dir | @sh))}}' | ~/.claude/hooks/statusline-workdir-hook.sh; statusline-place why --session debug`
-
-Debug worker tag capture:
-`echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","agent_type":"codex-worker","agent_id":"debug","tool_input":{"command":"true","description":"Worker account: main · high"}}' | ~/.claude/hooks/worker-tag-hook.sh; cat ~/.cache/claude-worker-tags/debug`

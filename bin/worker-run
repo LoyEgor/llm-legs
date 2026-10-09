@@ -147,7 +147,7 @@ brief_add_dirs() { # brief
   done <"$1"
 }
 
-# A named *.md is read as part of the brief (relays hand over to brief files), and
+# A named *.md is read as part of the brief (chats hand over to brief files), and
 # `<repo>/.claude/worktrees/<name>` resolves in every repository the text names.
 brief_worktree_roots() { # brief
   local text value name root roots='' roots_read=''
@@ -174,7 +174,7 @@ brief_worktree_roots() { # brief
 }
 
 # A resumed session keeps every grant its earlier runs had, workdirs included: a RESUME brief rarely
-# repeats them, and its relay may pick another workdir.
+# repeats them, and its chat may pick another workdir.
 resumed_add_dirs() { # resume [jq filter]
   local entry
   [ -n "$1" ] || return 0
@@ -252,7 +252,7 @@ gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}"
 # to type it: serial full-suite reruns were 54-75% of the wall clock of every run that passed an
 # hour, and two of them died on the ceiling below with the work unfinished. Appended rather than
 # prepended — the brief's own first line is load-bearing (`RESUME <id>:`, `ATTACH <id>:`, which
-# both the relay agents and the spawn gate read off the top), and a rule a model must still obey at
+# readers take off the top), and a rule a model must still obey at
 # edit 60 belongs where it read last.
 BRIEF_PREAMBLE='AUDIENCE: your reader is another model (the orchestrator), never Egor — write the report and every message in English; Russian only as code in backticks. TEST LOOP: while iterating run a one-off probe or ONE covering suite, never every suite after each edit; a mutation check is one run of the covering suite (revert → fails → restore); at the end run, in one `tests/run-all <suite>...` call, only the suites covering the files you changed (`tests/affected <file>...` lists them where the repo has it) plus the one that goes red on the old code, and report PASS counts; never the full `tests/run-all`, which the night runs once in the background. Work in the files the brief names; if the brief covers more than ~8 findings or ~6 files, do them in the order given. RETURN: first line the outcome — done, partially done or failed, plus one clause; then changed files, verification with PASS counts and anything undone; mark anything you could not confirm and say where you looked. `worker-run report` puts its own `ACCOUNT: <account> (<vendor>)` line second, so never write one; an `OUTCOME:` line is a worker-run status code, written only where a preamble names its code. A command that ended by signal 9 (exit 137) was killed by the machine'"'"'s memory guard: do not rerun it as is — run one project'"'"'s tests, never the whole monorepo'"'"'s, or split the work. REUSE FIRST: nothing the project may already have is written from scratch — before writing a function, helper, wrapper over a platform API, list, constant or pattern, grep the whole project for an existing one (its name, the API it wraps, the literal) and use it; editing an existing value or call needs no search; one search, then proceed.'
 
@@ -731,7 +731,7 @@ outcome_line() (
 
 # Refused BEFORE the account is resolved and long before a CLI is launched, because the run is what
 # would be wasted, and the name reaches here by three roads that all end at the same list: the
-# brief's `MODEL:` line (relays forward it as `--model`), `--model` itself, and the vendor's own
+# brief's `MODEL:` line (a chat may forward it as `--model`), `--model` itself, and the vendor's own
 # `*_model=` key in the toggle file — including the default a missing key falls back to.
 refuse_unlisted_model() { # vendor offered-model [resume-id] [class]
   local vendor="$1" offered="$2" resume="${3:-}" class="${4:-}" effective
@@ -2161,7 +2161,7 @@ record_worker_session() {
   # for Claude compatibility and journals under its OWN session id, which read without this pairing
   # is a chat nothing on the machine answers for (live: grok sessions 01a0641b…/01a0647f… against
   # chat 35c155ac…, 2026-09-03). A codex or agy id reaching a journal is the same case one level
-  # down — a nested relay, a review-bench call — and one that never reaches one costs a reader
+  # down — a nested worker, a review-bench call — and one that never reaches one costs a reader
   # nothing: this mapping is only ever consulted about an id some row already carries.
   session=$(session_id "$directory")
   # A resumed run's id is known before its first token — the session keeps the id it already had,
@@ -2426,7 +2426,7 @@ start_run() {
     fail '--web-search and --no-web-search ask for opposite states: pass one of them'
   [ "$role" = workers ] || [ "$role" = research ] || usage
   if [ "$role" = workers ]; then
-    # A flag the relay rebuilt from the header must not outvote it: a relay that lost `--effort` to a
+    # A flag a chat rebuilt from the header must not outvote it: a relay that lost `--effort` to a
     # shell quoting slip launched a Fable `EFFORT: high` brief on the low default (2026-09-30).
     local header_key header_value header_flag
     for header_key in ACCOUNT MODEL EFFORT; do
@@ -2508,7 +2508,7 @@ start_run() {
   fi
   [ -r "$brief" ] || fail "brief is not readable: $brief"
   [ "$role" != workers ] || [ -z "${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-}" ] || limit_gate "$vendor" "$light" "$brief" "$explicit_account"
-  # The first line is the run's handle: the spawn gate and the relay agents read `RESUME <id>:` and
+  # The first line is the run's handle: readers take `RESUME <id>:` and
   # `ATTACH <id>:` off the top of it, and every reader that falls back to a prefix of the brief
   # matches nothing useful with a blank one.
   # `|| :` and not `|| first_line=''`: a file with no trailing newline fails the read and still
@@ -3124,7 +3124,7 @@ grok_error_text() { # directory [bytes]
 }
 
 # A turn cap the run hit is the vendor answering fine to the last turn. Read as GROK_UNAVAILABLE it
-# joins capacity weather, and the relay reroutes a brief that will outrun the same cap wherever it
+# joins capacity weather, and the chat reroutes a brief that will outrun the same cap wherever it
 # lands next.
 grok_max_turns_hit() { # directory
   grok_error_text "$1" | grep -q 'max_turns_reached'
@@ -3134,7 +3134,7 @@ grok_max_turns_hit() { # directory
 # then `end` with `stopReason: cancelled`, exit 0 and an empty stderr. Exit 0 alone reads as a
 # finished run, so the orchestrator was handed an empty result as `STATUS: done` (live 2026-09-08,
 # five runs across two accounts while their older sessions kept streaming). It is weather like a
-# 503: no wall is recorded, no pin lapses, and the relay pauses and relaunches once. The FIRST
+# 503: no wall is recorded, no pin lapses, and the chat relaunches. The FIRST
 # event that is a turn or the end decides — a cancel after real work is an ordinary ending.
 grok_cancelled_start() { # directory
   local first
@@ -3147,7 +3147,7 @@ grok_cancelled_start() { # directory
   return 1
 }
 
-# Which kind of not-a-wall a grok failure was, said where the relay reads its outcome: an expired
+# Which kind of not-a-wall a grok failure was, said where the chat reads its outcome: an expired
 # login needs a human, capacity weather needs nothing but another attempt.
 grok_reason_line() { # directory
   local text
@@ -3253,7 +3253,7 @@ print_outcome() {
   killed_line "$directory" "$code"
   if has_limit_signature "$directory" "$vendor"; then
     outcome_line "$(vendor_name "$vendor")_USAGE_LIMIT" "$directory"
-    # Worker agents relay these lines verbatim, so the wall's SCOPE lives here, not in agent prose.
+    # The chat reads these lines as they are, so the wall's SCOPE lives here, not in prose.
     if [ "$vendor" = claudeb ] && jq -e '.browser == true' "$directory/meta.json" >/dev/null; then
       printf 'WALL: browser device stays on %s\n' "$(jq -r '.account' "$directory/meta.json")"
     elif [ -n "$(jq -r '.resume // empty' "$directory/meta.json" 2>/dev/null)" ]; then
@@ -3985,7 +3985,7 @@ grok_result_text() { # directory
   if [ -n "$text" ]; then printf '%s\n' "$text"; else tail -n 400 "$1/out" 2>/dev/null; fi
 }
 
-# `wait` names the answer instead of quoting it: a relay reads `report` next in any case, and a tail
+# `wait` names the answer instead of quoting it: the chat reads `report` next in any case, and a tail
 # here made every terminal wait hand the orchestrator the same result twice.
 result_pointer() { # directory
   printf 'RESULT: run `worker-run report %s`\n' "${1##*/}"

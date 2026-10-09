@@ -509,7 +509,7 @@ instruction_span_live() { # session transcript
     words_span_live "${1:-}" "${2:-}" ) >/dev/null 2>&1
 }
 
-# Whether this process is a relay worker rather than the chat Egor negotiated with. His rule: an
+# Whether this process is a headless worker rather than the chat Egor negotiated with. His rule: an
 # instruction file is edited by the orchestrating model, after that model's audit — a worker
 # proposes and never writes. The audit-then-retry protocol both gates run on is honour-based and a
 # worker spends it by simply asking twice, which is how the global CLAUDE.md grew twice in one day
@@ -518,14 +518,14 @@ instruction_span_live() { # session transcript
 # only shape in which these hooks execute inside a worker at all, and it holds whoever launched
 # that run. GROK_WORKER is its twin, set by `grokb` for the same reason — the same pair
 # `rj_in_relay` reads. CLAUDE_LAUNCHER_SESSION rides along because `worker-run` exports it into the
-# run and into nothing else: a relay CLI launched some other way still carries it, and no
+# run and into nothing else: a worker CLI launched some other way still carries it, and no
 # interactive chat of Egor's ever does, since the export dies with the process that made it.
 instruction_in_relay() {
   [ "${CLAUDEB_WORKER:-}" = 1 ] || [ "${GROK_WORKER:-}" = 1 ] ||
     [ -n "${CLAUDE_LAUNCHER_SESSION:-}" ]
 }
 
-# What every door tells a relay worker, spelled once: two doors refusing the same write in two
+# What every door tells a headless worker, spelled once: two doors refusing the same write in two
 # wordings teach their reader that one of them is negotiable.
 instruction_relay_refusal() { # path
   printf "Instruction files are the orchestrator's to edit (Egor's rule): do not write %s; put the exact proposed text and its byte delta under MD-PROPOSAL in your RETURN, with the cut you suggest to pay for it.\n" "$1"

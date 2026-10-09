@@ -114,7 +114,7 @@ The whole wall clock stays short: about 3 hours, never a 12-hour chain. The morn
 - Run records: every read-modify-write takes a lock, and run ids are unique under parallel launch.
 - The whole night runs under `caffeinate -i`.
 - Every chat, the orchestrator too, gets `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=200` from the global settings `env`:
-  the default 20 refuses ~30 relay agents; slot admission decides how many run.
+  headroom over the default 20; slot admission decides how many run.
 
 ## Morning record
 `~/.cache/doctors/nights/<night-id>.json`:
