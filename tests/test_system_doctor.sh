@@ -82,7 +82,8 @@ def cli(*args, env=None):
 check(m.LIMITS == {"spawn_s": 1000, "spawn_heavy_s": 2500, "kernel": 0.40, "kernel_heavy": 0.55, "kernel_heavy_min": 30,
                    "compressor": 0.33, "compressor_min": 10, "swap": 0.50, "ssd_gb_day": 200, "ssd_heavy_gb_day": 400,
                    "swap_writes_gib_day": 20, "free_gib": 25, "free_heavy_gib": 10, "hammerspoon_crashes": 1,
-                   "job_crashes_day": 1, "unclean_reboots": 1}, "the limits are the design's: %s" % m.LIMITS)
+                   "job_crashes_day": 1, "unclean_reboots": 1, "log_growth_gib_day": 1.0,
+                   "log_growth_heavy_gib_day": 3.0}, "the limits are the design's: %s" % m.LIMITS)
 
 # ---- births counter: PIDs restart at 100 after 99998, the closing ps itself is not a birth
 check(m.births_rate(100, 2101, 2.0) == 1000.0, "births over a 2 s window: %s" % m.births_rate(100, 2101, 2.0))
@@ -661,9 +662,9 @@ saved_state = open(state_path).read()
 json.dump({"recent": storm}, open(state_path, "w"))
 started = []
 due = m.launch_due(now, started.append)
-check(due == ["census", "dumpstate", "harvest"] and started == due, "a storm starts a census beside the hourly and 6-hourly "
-      "collectors: %s" % due)
-check(m.launch_due(now + 60, started.append) == [] and len(started) == 3, "nothing starts again a minute later")
+check(due == ["census", "dumpstate", "harvest", "logstores"] and started == due, "a storm starts a census beside the "
+      "hourly, 6-hourly and daily collectors: %s" % due)
+check(m.launch_due(now + 60, started.append) == [] and len(started) == 4, "nothing starts again a minute later")
 json.dump({"recent": [dict(r, t=r["t"] + 1700) for r in storm]}, open(state_path, "w"))
 check(m.launch_due(now + 1700, started.append) == [], "a storm 28 min after the census starts none")
 json.dump({"recent": [dict(r, t=r["t"] + 3600) for r in storm]}, open(state_path, "w"))

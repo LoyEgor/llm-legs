@@ -1,0 +1,179 @@
+#!/usr/bin/env python3
+"""log-sweep: removes what each `sweep` store of share/log-stores.json is past its criterion: units untouched for
+`days`, beyond `keep_newest` or `max_mb` (oldest first), and truncates files to their last `tail_mb`. A directory some
+process holds open (its cwd or an open file inside) is skipped. `--dry-run` prints what it would remove with sizes. One
+summary line per run goes to ~/.cache/log-sweep/sweeps.jsonl, capped. Run daily by `system-doctor logstores`."""
+
+import argparse
+import fcntl
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
+import log_stores  # noqa: E402
+
+RECORD_MAX_BYTES = 256 * 1024
+RECORD_ITEMS = 20
+
+
+def state_dir():
+    return os.environ.get("LOG_SWEEP_DIR") or os.path.join(os.path.expanduser("~"), ".cache", "log-sweep")
+
+
+def open_paths():
+    """Every path a process of this user holds open or works in, from one lsof call."""
+    command = os.environ.get("LOG_SWEEP_LSOF") or "/usr/sbin/lsof"
+    try:
+        out = subprocess.run([command, "-n", "-P", "-w", "-u", str(os.getuid()), "-F", "n"], capture_output=True,
+                             text=True, timeout=120).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return {line[1:] for line in out.splitlines() if line.startswith("n/")}
+
+
+def held(path, paths):
+    prefix = path + "/"
+    return any(p == path or p.startswith(prefix) for p in paths)
+
+
+def glob_base(pattern):
+    parts = log_stores.expand(pattern).split("/")
+    fixed = []
+    for part in parts:
+        if re.search(r"[*?\[]", part):
+            break
+        fixed.append(part)
+    return "/".join(fixed) or "/"
+
+
+def prune_parents(path, bases):
+    base = max((b for b in bases if path.startswith(b.rstrip("/") + "/")), key=len, default=None)
+    up = os.path.dirname(path)
+    while base and up.startswith(base.rstrip("/") + "/"):
+        try:
+            os.rmdir(up)
+        except OSError:
+            return
+        up = os.path.dirname(up)
+
+
+def truncate(path, keep):
+    with open(path, "r+b") as handle:
+        handle.seek(-keep, os.SEEK_END)
+        tail = handle.read()
+        cut = tail.find(b"\n")
+        tail = tail[cut + 1:] if 0 <= cut < len(tail) - 1 else tail
+        handle.seek(0)
+        handle.write(tail)
+        handle.truncate()
+
+
+def remove(path):
+    if os.path.isdir(path) and not os.path.islink(path):
+        shutil.rmtree(path)
+    else:
+        os.remove(path)
+
+
+def record(row):
+    path = os.path.join(state_dir(), "sweeps.jsonl")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        lines = []
+    lines.append(json.dumps(row, ensure_ascii=False, separators=(",", ":")))
+    while len(lines) > 1 and sum(len(line) + 1 for line in lines) > RECORD_MAX_BYTES:
+        lines.pop(0)
+    temporary = "%s.%d.tmp" % (path, os.getpid())
+    with open(temporary, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+    os.replace(temporary, path)
+
+
+def sweep(registry, now, dry_run, only=None, say=print):
+    stores, items, errors, skipped = {}, [], 0, 0
+    paths = None
+    for entry in registry.get("stores") or ():
+        if entry["cleaner"] != "sweep" or only and entry["name"] not in only:
+            continue
+        key, value = log_stores.criterion(entry)
+        bases = [glob_base(p) for p in entry["globs"]]
+        done = [0, 0]
+        for row, action in log_stores.doomed(entry, log_stores.measure(entry), now):
+            if action == "delete" and row["dir"]:
+                if paths is None:
+                    paths = open_paths()
+                if paths is None or held(row["path"], paths):
+                    skipped += 1
+                    continue
+            freed = row["bytes"] if action == "delete" else max(0, row["bytes"] - value * log_stores.MB)
+            if dry_run:
+                say("  %-8s %8.1f MB  %s" % (action, freed / log_stores.MB, row["path"]))
+            else:
+                try:
+                    if action == "delete":
+                        remove(row["path"])
+                        prune_parents(row["path"], bases)
+                    else:
+                        truncate(row["path"], int(value * log_stores.MB))
+                except OSError as error:
+                    errors += 1
+                    say("log-sweep: %s %s: %s" % (action, row["path"], error))
+                    continue
+            done[0] += 1
+            done[1] += freed
+            items.append([row["path"], freed])
+        if done[0]:
+            stores[entry["name"]] = done
+            say("%s: %d unit%s, %.1f MB (%s %s)" % (entry["name"], done[0], "" if done[0] == 1 else "s",
+                                                    done[1] / log_stores.MB, key, value))
+    items.sort(key=lambda item: -item[1])
+    return {"t": round(now), "dry_run": dry_run, "units": sum(s[0] for s in stores.values()),
+            "bytes": sum(s[1] for s in stores.values()), "stores": stores, "skipped_open": skipped, "errors": errors,
+            "largest": items[:RECORD_ITEMS]}
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="log-sweep", description=__doc__.split("\n")[0])
+    parser.add_argument("--dry-run", action="store_true", help="print what would be removed, remove nothing")
+    parser.add_argument("--store", action="append", help="only this store (repeatable)")
+    parser.add_argument("--quiet", action="store_true", help="print nothing")
+    parser.add_argument("--json", action="store_true", help="print the run's summary as JSON")
+    args = parser.parse_args(argv)
+    try:
+        registry = log_stores.load()
+    except (OSError, ValueError) as error:
+        print("log-sweep: registry: %s" % error, file=sys.stderr)
+        return 1
+    say = (lambda *_: None) if args.quiet or args.json else print
+    os.makedirs(state_dir(), exist_ok=True)
+    with open(os.path.join(state_dir(), "sweep.lock"), "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            say("log-sweep: another sweep is running")
+            return 0
+        started = time.time()
+        result = sweep(registry, started, args.dry_run, set(args.store or ()), say)
+        result["wall_s"] = round(time.time() - started, 1)
+        if not args.dry_run:
+            record(result)
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False))
+    else:
+        say("%s %d units, %.1f MB in %.1f s%s%s" % ("would remove" if args.dry_run else "removed", result["units"],
+                                                   result["bytes"] / log_stores.MB, result["wall_s"],
+                                                   ", %d held open" % result["skipped_open"] if result["skipped_open"] else "",
+                                                   ", %d errors" % result["errors"] if result["errors"] else ""))
+    return 1 if result["errors"] else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

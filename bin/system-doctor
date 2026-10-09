@@ -25,6 +25,7 @@ import time
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 import collector_runs  # noqa: E402
+import log_stores  # noqa: E402
 import machine_probe  # noqa: E402
 from fix_commit import fix_commit, fix_landed, siblings_dir  # noqa: E402
 from spend import read_json  # noqa: E402
@@ -48,6 +49,8 @@ LIMITS = {
     "hammerspoon_crashes": 1,
     "job_crashes_day": 1,
     "unclean_reboots": 1,
+    "log_growth_gib_day": 1.0,
+    "log_growth_heavy_gib_day": 3.0,
 }
 PROOF = {"sightings": 30, "min_s": 2 * 3600, "max_s": 7 * 86400, "baseline_s": 7 * 86400, "drop": 0.25,
          "reports_s": 7 * 86400}
@@ -55,6 +58,8 @@ RATE_RULES = ("spawn", "kernel")
 COLLECT = {"storm_s": 2000, "storm_min": 2, "storm_kernel": 0.50, "census_s": 60, "census_poll_s": 0.02,
            "census_every_s": 30 * 60, "dumpstate_every_s": 3600, "harvest_every_s": 6 * 3600, "harvest_back_s": 11 * 3600,
            "loop_runs_h": 60, "loop_heavy_runs_h": 360, "loop_dt_s": 1800, "job_exits_day": 3, "job_exits_heavy_day": 24}
+LOGS = {"sweep_timeout_s": 1800, "compare_min_s": 20 * 3600, "keep_scan_days": 14, "growth_min_days": 5,
+        "stale_s": 36 * 3600}
 HARVEST = (("launchd", 'process == "launchd" AND eventMessage CONTAINS "ran for"', 300, 100000),
            ("das", 'subsystem == "com.apple.duetactivityscheduler" AND category IN {"scoring", "lifecycle", "BGSTHelper"}',
             150, 1200000),
@@ -77,7 +82,8 @@ LEVERS = (
 RULE_LABELS = {"spawn": "new processes", "job-loop": "job relaunch loop", "cohort": "standing cost", "kernel": "kernel CPU", "compressor": "memory compressed",
                "swap": "swap full", "ssd-writes": "SSD writes", "swap-writes": "swap writes",
                "hammerspoon-crash": "Hammerspoon crash", "job-crash": "job crashes", "unclean-reboot": "unclean reboot",
-               "free-space": "low disk space"}
+               "free-space": "low disk space", "log-store": "log cleaner broken", "log-growth": "LLM logs growing",
+               "unregistered-store": "unregistered log store"}
 COUNTED = ("new", "open", "regressed")
 DISMISSED = ("not-a-bug", "weather")
 HOUR_S = 3600
@@ -1088,6 +1094,8 @@ def launch_due(now, start=detach):
     for name, every in (("dumpstate", COLLECT["dumpstate_every_s"]), ("harvest", COLLECT["harvest_every_s"])):
         if now - (launched.get(name) or 0) >= every - 30:
             due.append(name)
+    if logstores_due(launched.get("logstores"), now):
+        due.append("logstores")
     if due:
         write_json(path, dict(launched, **{name: now for name in due}))
         for name in due:
@@ -1479,6 +1487,118 @@ def harvest(now=None, budget_s=None, max_lines=None):
     return row
 
 
+# ---------------------------------------------------------------- log stores
+
+
+def log_sweep_command():
+    return os.environ.get("SYSTEM_DOCTOR_LOG_SWEEP") or os.path.join(ROOT_DIR, "bin", "log-sweep")
+
+
+def run_log_sweep():
+    try:
+        out = subprocess.run([log_sweep_command(), "--json"], capture_output=True, text=True,
+                             timeout=LOGS["sweep_timeout_s"], stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as error:
+        return {"error": clip("%s: %s" % (type(error).__name__, error), 200)}
+    lines = out.stdout.strip().splitlines()
+    try:
+        found = json.loads(lines[-1]) if lines else None
+    except ValueError:
+        found = None
+    if not isinstance(found, dict):
+        return {"error": clip("exit %d: %s" % (out.returncode, out.stderr.strip() or "no summary"), 200)}
+    return {k: found.get(k) for k in ("units", "bytes", "errors", "skipped_open", "wall_s")}
+
+
+def tilde(path):
+    return "~" + path[len(HOME):] if path == HOME or path.startswith(HOME + "/") else path
+
+
+def previous_scan(now):
+    """({path: [kb, residual]}, days back) of the newest directory scan at least 20 h and at most 8 days old."""
+    best = None
+    for path in glob.glob(os.path.join(state_dir(), "logscan", "????-??-??.json")):
+        scan = read_json(path, {}) or {}
+        at = scan.get("t")
+        if isinstance(at, (int, float)) and now - 8 * DAY_S <= at <= now - LOGS["compare_min_s"] and \
+                (best is None or at > best["t"]):
+            best = scan
+    if not best:
+        return None, None
+    return {log_stores.expand(p): v for p, v in (best.get("dirs") or {}).items()}, (now - best["t"]) / DAY_S
+
+
+def logstores(now=None):
+    """Daily: bin/log-sweep, then every registered log store's size, files, oldest unit and what lies past its
+    criterion plus slack, and the du fallback naming each directory no store or ignore entry covers that holds
+    min_mb or grew grow_mb_day; one row in logstores/<day>.jsonl, the directory sizes in logscan/<day>.json."""
+    began = time.time()
+    now = began if now is None else now
+    started_cpu = collector_runs.cpu_total()
+    machine_probe.low_priority()
+    steps = Steps()
+    row = {"t": round(now, 1)}
+    try:
+        registry = log_stores.load()
+    except (OSError, ValueError) as error:
+        row["error"] = clip("registry: %s" % error, 200)
+        append_row("logstores", row)
+        return row
+    row["sweep"] = steps("sweep", run_log_sweep)
+    stores, claims = [], {}
+    for entry in registry.get("stores") or ():
+        rows = steps("store:" + entry["name"], log_stores.measure, entry)
+        claims.update((r["path"], r["bytes"]) for r in rows)
+        stores.append(dict(log_stores.summary(entry, rows, now), writer=entry.get("writer"), owner=entry.get("owner")))
+    scan = registry.get("scan") or {}
+    depth = scan.get("depth", 3)
+    roots = [r for r in (log_stores.expand(r) for r in scan.get("roots") or ()) if os.path.isdir(r)]
+    sizes, cut = {}, []
+    deadline = time.time() + scan.get("budget_s", 600)
+
+    def du_all():
+        for top, levels in log_stores.du_plan(roots, depth):
+            left = deadline - time.time()
+            found = log_stores.parse_du(machine_probe.run("du", ["-k", "-x", "-d", str(levels), top], timeout=left)
+                                        if left > 1 else "")
+            if top not in found:
+                cut.append(tilde(top))
+            sizes.update(found)
+
+    steps("du", du_all)
+    old, old_days = previous_scan(now)
+    reported, dirs = steps("fallback", log_stores.unregistered, sizes, roots, depth, claims,
+                           log_stores.ignore_paths(registry), scan.get("min_mb", 200) * 1024,
+                           scan.get("grow_mb_day", 50) * 1024, scan.get("floor_mb", 10) * 1024, old, old_days)
+    if not cut:
+        write_json(os.path.join(state_dir(), "logscan", local_day(now) + ".json"),
+                   {"t": round(now), "dirs": {tilde(p): v for p, v in dirs.items()}})
+        cutoff = local_day(now - LOGS["keep_scan_days"] * DAY_S)
+        for path in glob.glob(os.path.join(state_dir(), "logscan", "????-??-??.json")):
+            if os.path.basename(path)[:10] < cutoff:
+                with contextlib.suppress(OSError):
+                    os.remove(path)
+    row.update({"stores": stores, "total_bytes": sum(s["bytes"] for s in stores),
+                "unregistered": [{"path": tilde(r["path"]), "mb": round(r["kb"] / 1024),
+                                  "residual_mb": round(r["residual_kb"] / 1024),
+                                  "grow_mb_day": round(r["grow_kb_day"] / 1024) if r["grow_kb_day"] is not None else None}
+                                 for r in reported[:40]] if not cut else [],
+                "scan": {"roots": len(roots), "dirs": len(sizes), "cut": cut,
+                         "compared_days": round(old_days, 2) if old_days else None},
+                "self": {"wall_s": round(time.time() - began, 3), "cpu_s": round(collector_runs.cpu_total() - started_cpu, 3),
+                         "steps": {k: v for k, v in steps.out.items() if not k.startswith("store:")} |
+                         {"stores": [round(sum(v[0] for k, v in steps.out.items() if k.startswith("store:")), 3),
+                                     round(sum(v[1] for k, v in steps.out.items() if k.startswith("store:")), 3)]}}})
+    append_row("logstores", row)
+    return row
+
+
+def logstores_due(last, now):
+    if not isinstance(last, (int, float)):
+        return True
+    return local_day(last) != local_day(now) and time.localtime(now).tm_hour >= NIGHTLY_HOUR or now - last > NIGHTLY_STALE_S
+
+
 # ---------------------------------------------------------------- cohort score
 
 
@@ -1616,6 +1736,13 @@ def proof(name, rule, since, now, night=None, memo=None):
     if since is None:
         return {"verdict": "pending", "why": "the fix has not landed in main"}
     key = "%s|%s|%d" % (rule, name, round(since))
+    if rule == "log-store":
+        rows = [r for r in tick_rows(since, now, "logstores") if r.get("stores") is not None]
+        if not rows:
+            return {"verdict": "pending", "why": "no log-store scan since the fix", "need_s": DAY_S}
+        if name in log_firing(rows[-1], rule):
+            return {"verdict": "refused", "why": "the %s scan still fires it" % iso_time(rows[-1]["t"]), "need_s": DAY_S}
+        return {"verdict": "proven", "why": "the %s scan no longer fires it" % iso_time(rows[-1]["t"]), "need_s": DAY_S}
     if rule == "job-loop":
         rows = tick_rows(since, now, "launchd")
         after = [r["t"] for r in rows if any(loops(j, r) for j in r.get("jobs") or () if name in (j["name"], j["label"]))]
@@ -1980,7 +2107,114 @@ def judge_cohort(judge, score):
             watched += item["owner"] != "own"
 
 
-def judge_collectors(judge, rows, launches, harvests, censuses):
+def store_cause(store):
+    if store["cleaner"] == "sweep":
+        return {"name": "log-sweep", "share": None, "owner": "own", "fix_target": True}
+    owner = store.get("owner") or "third-party"
+    return {"name": store.get("writer") or store["name"], "share": None, "owner": owner,
+            "fix_target": owner == "own" and store["cleaner"] == "self"}
+
+
+def log_firing(row, rule):
+    """The causes a log-store scan row still fires `rule` for."""
+    if rule == "log-store":
+        found = {store_cause(s)["name"] for s in row.get("stores") or () if s.get("over_units")}
+        sweep = row.get("sweep") or {}
+        return found | ({"log-sweep"} if sweep.get("error") or sweep.get("errors") else set())
+    return set()
+
+
+def log_growth(rows):
+    """(GiB grown since the scan about a day before the newest, mean GiB/day over the newest 7 days or None under
+    growth_min_days of series), one scan a local day (its newest)."""
+    by_day = {}
+    for row in rows:
+        if isinstance(row.get("total_bytes"), (int, float)):
+            by_day[local_day(row["t"])] = row
+    series = [by_day[d] for d in sorted(by_day)]
+    if len(series) < 2:
+        return None, None
+    latest = series[-1]
+    day_ago = [r for r in series[:-1] if r["t"] <= latest["t"] - LOGS["compare_min_s"]]
+    one = (latest["total_bytes"] - day_ago[-1]["total_bytes"]) / GIB if day_ago else None
+    week = [r for r in series if r["t"] >= latest["t"] - 7.5 * DAY_S]
+    span = (latest["t"] - week[0]["t"]) / DAY_S
+    seven = (latest["total_bytes"] - week[0]["total_bytes"]) / GIB / span if span >= LOGS["growth_min_days"] else None
+    return one, seven
+
+
+def criterion_words(store):
+    key, value = store.get("criterion") or (None, None)
+    return {"days": "%s days", "max_mb": "%s MB", "keep_newest": "newest %s", "tail_mb": "last %s MB"}.get(
+        key, "%s") % value
+
+
+def judge_logstores(judge, rows):
+    """A store holding units past its criterion plus slack (its cleaner is broken), a failed sweep, the total of all
+    stores growing log_growth_gib_day a day over 7 days and still growing, and each directory the du fallback names."""
+    now = judge.now
+    rows = [r for r in rows if r.get("stores") is not None]
+    if not rows:
+        return
+    latest = rows[-1]
+    sweep = latest.get("sweep") or {}
+    if sweep.get("error") or sweep.get("errors"):
+        judge.add("log-store", "log-sweep", "log-sweep failed: %s" % (sweep.get("error") or "%d removals failed" % sweep["errors"]),
+                  1, 0, "runs", 24, 1, 1, latest["t"], latest["t"], [], found=store_cause({"cleaner": "sweep"}))
+    for store in latest["stores"]:
+        if not store.get("over_units"):
+            continue
+        words = "older than" if (store.get("criterion") or [None])[0] == "days" else "past"
+        judge.add("log-store", store["name"], "%s holds %d unit%s (%.2f GB) %s its %s plus slack, the oldest %d days: "
+                  "its cleaner (%s) does not keep up" % (
+                      store["name"], store["over_units"], "" if store["over_units"] == 1 else "s", store["over_bytes"] / 1e9,
+                      words, criterion_words(store), (now - (store.get("over_oldest_s") or now)) // DAY_S, store["cleaner"]),
+                  store["over_units"], 0, "units", 24, store["units"], store["over_units"], store.get("over_oldest_s"),
+                  latest["t"], [{"at": iso_time(latest["t"]), "ref": "logstores:%s" % store["name"], "account": None,
+                                 "excerpt": "%d units, %.2f GB in all" % (store["units"], store["bytes"] / 1e9)}],
+                  found=store_cause(store))
+    one, seven = log_growth(rows)
+    if seven is not None and seven >= LIMITS["log_growth_gib_day"] and one is not None and one > 0:
+        judge.add("log-growth", "total", "LLM log stores grew %.1f GiB a day over 7 days (%.1f GiB in the last day), %.0f GB "
+                  "in all" % (seven, one, latest["total_bytes"] / 1e9), round(seven, 2), LIMITS["log_growth_gib_day"],
+                  "GiB/day", 7 * 24, len(latest["stores"]), None, rows[0]["t"], latest["t"], [],
+                  heavy=seven >= LIMITS["log_growth_heavy_gib_day"])
+    scan = registry_scan()
+    for found in latest.get("unregistered") or ():
+        grow = found.get("grow_mb_day")
+        judge.add("unregistered-store", found["path"], "%s holds %.2f GB no log store or ignore entry covers%s" % (
+            found["path"], found["residual_mb"] / 1000, ", growing %d MB a day" % grow if grow and grow > 0 else ""),
+            found["residual_mb"], scan.get("min_mb", 200), "MB", 24, found["mb"], 1, latest["t"], latest["t"],
+            [{"at": iso_time(latest["t"]), "ref": "du:%s" % found["path"], "account": None,
+              "excerpt": "%d MB in the directory, %d MB of it in no store" % (found["mb"], found["residual_mb"])}])
+
+
+def registry_scan():
+    try:
+        return log_stores.load().get("scan") or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def logstores_view(rows):
+    rows = [r for r in rows if r.get("stores") is not None or r.get("error")]
+    if not rows:
+        return None
+    latest = rows[-1]
+    if latest.get("error"):
+        return {"as_of": iso_time(latest["t"]), "error": latest["error"]}
+    one, seven = log_growth([r for r in rows if r.get("stores") is not None])
+    stores = sorted(latest["stores"], key=lambda s: -s["bytes"])
+    return {"as_of": iso_time(latest["t"]), "total_gb": round(latest["total_bytes"] / 1e9, 2),
+            "growth_gb_1d": round(one * GIB / 1e9, 2) if one is not None else None,
+            "growth_gb_day_7d": round(seven * GIB / 1e9, 2) if seven is not None else None,
+            "stores": [[s["name"], round(s["bytes"] / 1e9, 2), s["files"],
+                        round((latest["t"] - s["oldest_s"]) / DAY_S, 1) if s.get("oldest_s") else None, s["cleaner"],
+                        criterion_words(s) if s.get("criterion") else None, s.get("over_units")] for s in stores],
+            "unregistered": latest.get("unregistered"), "sweep": latest.get("sweep"), "scan": latest.get("scan")}
+
+
+def judge_collectors(judge, rows, launches, harvests, censuses, logs=()):
     """Names each collector that cannot see: own footprints unreadable, no launchd snapshot for 3 h or no unified-log
     harvest for 12 h while the doctor ran, a harvest source that failed, a census that read nothing."""
     now = judge.now
@@ -1996,6 +2230,9 @@ def judge_collectors(judge, rows, launches, harvests, censuses):
         judge.blind.append("harvest")
     if censuses and censuses[-1]["t"] >= now - DAY_S and not censuses[-1].get("polls"):
         judge.blind.append("census")
+    fresh = [r for r in logs if r["t"] >= now - LOGS["stale_s"]]
+    if since <= now - LOGS["stale_s"] and not fresh or fresh and (fresh[-1].get("error") or (fresh[-1].get("scan") or {}).get("cut")):
+        judge.blind.append("logstores")
 
 
 def report_evidence(report):
@@ -2034,7 +2271,9 @@ def document(now, started, persist=True):
     judge_launchd(judge, launches, harvests)
     score = cohort_score(days, launches, now)
     judge_cohort(judge, score)
-    judge_collectors(judge, rows, launches, harvests, censuses)
+    logs = tick_rows(now - 9 * DAY_S, now, "logstores")
+    judge_logstores(judge, logs)
+    judge_collectors(judge, rows, launches, harvests, censuses, logs)
     judge.apply_ledger()
     if persist and json.dumps(judge.memo, sort_keys=True) != judge.memo_read:
         write_json(proofs_path(), judge.memo)
@@ -2066,7 +2305,7 @@ def document(now, started, persist=True):
                  "cpu_s_today": today.get("tick_cpu_s"), "steps": (latest.get("self") or {}).get("steps") or {}}
     crashed = sorted({r["name"] for r in judge.reports if r.get("job") and r["kind"] == "crash"})
     costs = {"tick": tick_cost}
-    for name, found in (("census", censuses), ("dumpstate", launches), ("harvest", harvests)):
+    for name, found in (("census", censuses), ("dumpstate", launches), ("harvest", harvests), ("logstores", logs)):
         day = [r for r in found if r["t"] >= now - DAY_S]
         costs[name] = {"runs_24h": len(day), "wall_s": round(sum((r.get("self") or {}).get("wall_s") or 0 for r in day), 2),
                        "cpu_s": round(sum((r.get("self") or {}).get("cpu_s") or 0 for r in day), 2)}
@@ -2091,7 +2330,7 @@ def document(now, started, persist=True):
         "status": status, "problem_count": count, "problems": judge.problems,
         "blind_spots": judge.ledger.get("blind_spots") or [], "blind": judge.blind, "measures": measures,
         "causes": causes, "nightly": nightly_summary(night, crashed), "costs": costs, "collectors": collectors,
-        "cohort": cohort,
+        "cohort": cohort, "log_stores": logstores_view(logs),
         "limits": LIMITS, "self": {"collector_s": round(time.time() - started, 3), "error": None},
     }
 
@@ -2280,7 +2519,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="system-doctor", description=__doc__.split("\n")[0])
     parser.add_argument("command", nargs="?", default="judge",
                         choices=("judge", "tick", "nightly", "agent", "install-agent", "uninstall-agent", "check",
-                                 "census", "dumpstate", "harvest"))
+                                 "census", "dumpstate", "harvest", "logstores"))
     parser.add_argument("cause", nargs="?", help="check: the cause (a script's basename) whose fix to prove")
     parser.add_argument("--json", action="store_true", help="judge: print the document and write nothing")
     parser.add_argument("--quiet", action="store_true", help="print nothing")
@@ -2350,7 +2589,7 @@ def main(argv=None):
 
 
 RECORD = True
-COLLECTORS = {"census": census, "dumpstate": dumpstate, "harvest": harvest}
+COLLECTORS = {"census": census, "dumpstate": dumpstate, "harvest": harvest, "logstores": logstores}
 
 if __name__ == "__main__":
     started = time.time()
