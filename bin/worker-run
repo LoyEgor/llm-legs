@@ -3300,6 +3300,9 @@ print_outcome() {
   elif [ "$vendor" = grok ] && grok_max_turns_hit "$directory"; then
     outcome_line GROK_MAX_TURNS "$directory"
     grok_reason_line "$directory"
+  elif case "$code" in 143|137) true ;; *) false ;; esac &&
+    head -n1 "$directory/killed" 2>/dev/null | grep -Eq '^(term|signal )'; then
+    outcome_line STOPPED "$directory"
   else
     outcome_line "$(failure_outcome "$vendor")" "$directory"
     case "$vendor" in grok) grok_reason_line "$directory" ;; esac

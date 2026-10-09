@@ -351,6 +351,11 @@ assert grep -q '^KILLED: signal TERM' <<<"$signal_wait"
 assert grep -qx term "$RUN_DIR/killed"
 assert jq -e '.terminal_reason == "term"' "$RUN_DIR/meta.json" >/dev/null
 assert grep -q '^KILLED: signal TERM' <<<"$("$RUNNER" report "$RUN_ID")"
+# A stopped run is no vendor verdict, in the report or the outcome record llm-doctor reads.
+assert grep -qx 'OUTCOME: STOPPED' <<<"$signal_wait"
+assert grep -qx 'OUTCOME: STOPPED' <<<"$("$RUNNER" report "$RUN_ID")"
+assert_fails grep -Eq '_(UNAVAILABLE|FAILED)' <<<"$signal_wait"
+assert test "$(cat "$RUN_DIR/outcome")" = STOPPED
 assert_fails kill -0 "$stub_pid"
 # Not the wrapper alone: the CLI's own children go with its group, or the `sleep` here — a worker
 # mid-edit in the real thing — outlives the run that was reported over.
