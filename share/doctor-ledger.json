@@ -2054,7 +2054,7 @@
     "detail": "hit your (session|weekly) limit"
    },
    "title": "a Claude cell's session wall read unclassified: the stored detail is cut mid-line, losing the api_error_status before the 429, and the walled vocabulary lacked Claude's own wall sentence",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-09T06:20:00+03:00",
@@ -2062,7 +2062,7 @@
      "files": [
       "review-bench/share/rbench/panel.py"
      ],
-     "in": null,
+     "in": "llm-legs@03ea0783",
      "regressed_at": null
     },
     {
@@ -2071,7 +2071,7 @@
      "files": [
       "llm-legs/bin/llm-doctor"
      ],
-     "in": null,
+     "in": "llm-legs@03ea0783",
      "regressed_at": null
     }
    ],
@@ -2090,7 +2090,7 @@
     "detail": "^worked in [^/]+$"
    },
    "title": "a shell-only codex run made its own worktree in another repository and worked there, but the made-worktree grant read only tool-named writes and the escape named the main checkout it ran `worktree add` from, so a run inside its own grant read as escaped",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-09T06:06:20+03:00",
@@ -2098,7 +2098,7 @@
      "files": [
       "llm-legs/bin/worker-run"
      ],
-     "in": null,
+     "in": "llm-legs@11cd3a81",
      "regressed_at": null
     }
    ],

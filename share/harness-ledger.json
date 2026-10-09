@@ -193,7 +193,7 @@
             "llm-legs/tests/test_harness_doctor.sh"
           ],
           "in": "llm-legs@ac75a868",
-          "regressed_at": null
+          "regressed_at": "2026-10-09T03:23:29+03:00"
         }
       ],
       "same_cause": [],
@@ -209,7 +209,7 @@
         "rule": "test_daily_cost",
         "ident": "llm-legs:test_worker_run(_(entry|reliability|browse|attribution|watchdog|websearch|lifecycle|pool|outcomes|files|claims|vendor_files|rounds|grok|grok_outcomes|stamps))?"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-01T14:10:00+03:00",
@@ -246,7 +246,7 @@
             "llm-legs/tests/test_worker_run_claims.sh"
           ],
           "in": "llm-legs@92feff0e",
-          "regressed_at": null
+          "regressed_at": "2026-10-08T04:19:15+03:00"
         },
         {
           "at": "2026-10-09T07:30:00+03:00",
@@ -257,7 +257,7 @@
             "llm-legs/tests/test_worker_run_attribution.sh",
             "llm-legs/tests/lib/suite-journal.sh"
           ],
-          "in": null,
+          "in": "llm-legs@f081980f",
           "regressed_at": null
         }
       ],
@@ -412,7 +412,7 @@
             "llm-legs/tests/test_harness_doctor.sh"
           ],
           "in": "llm-legs@565df254",
-          "regressed_at": null
+          "regressed_at": "2026-10-09T06:17:16+03:00"
         }
       ],
       "same_cause": [
@@ -430,7 +430,7 @@
         "rule": "growth-ungated",
         "ident": "between-sessions"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-09-30T03:59:26+03:00",
@@ -459,7 +459,7 @@
             "llm-legs/share/instruction-files.sh",
             "llm-legs/tests/test_instruction_watch_perf.py"
           ],
-          "in": null,
+          "in": "llm-legs@852dc4ed",
           "regressed_at": null
         }
       ],
@@ -1524,7 +1524,7 @@
         "rule": "floor",
         "ident": "event:SessionStart"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-09T07:20:00+03:00",
@@ -1534,7 +1534,7 @@
             "llm-legs/share/instruction-files.sh",
             "llm-legs/tests/test_instruction_gate_tripwire.sh"
           ],
-          "in": null,
+          "in": "llm-legs@852dc4ed",
           "regressed_at": null
         }
       ],
@@ -2478,7 +2478,7 @@
             "llm-legs/tests/test_llm_limits_render.sh"
           ],
           "in": "llm-legs@9571b2f4",
-          "regressed_at": null
+          "regressed_at": "2026-10-09T06:45:28+03:00"
         }
       ],
       "same_cause": [],
@@ -2655,7 +2655,7 @@
         "rule": "opportunity",
         "ident": "time/locks"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-08T01:03:55+03:00",
@@ -2681,7 +2681,7 @@
             "llm-legs/llm-limits.sh",
             "llm-legs/tests/test_llm_limits.sh"
           ],
-          "in": null,
+          "in": "llm-legs@17e08667",
           "regressed_at": null,
           "equivalence": {
             "compared": "worker-run wait at HEAD vs the fix: stdout and exit code with the script path, timestamps and elapsed labels masked; llm-limits.sh store output with and without an ElevenLabs reading",
@@ -2703,7 +2703,7 @@
         "rule": "opportunity",
         "ident": "chat/hooks"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-05T19:30:06+03:00",
@@ -2729,7 +2729,7 @@
             "claude-setup/hooks/lib/review-journal.sh",
             "claude-setup/tests/test_review_flow_gate.sh"
           ],
-          "in": null,
+          "in": "claude-setup@919d52b",
           "regressed_at": null,
           "equivalence": {
             "compared": "base vs fast path: every call the new pre-library screen clears must be one the base hook found door-idle with an empty rj_command_paths list; then the whole hook, exit code, stdout (door nonce masked) and stderr (library path masked)",
@@ -3135,7 +3135,7 @@
         "rule": "hook-held",
         "ident": "worker-run-backstop\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-06T06:54:29+03:00",
@@ -3155,8 +3155,8 @@
             "llm-legs/bin/worker-run",
             "llm-legs/tests/test_worker_run_backstop.sh"
           ],
-          "in": null,
-          "regressed_at": null
+          "in": "llm-legs@a85ef28e",
+          "regressed_at": "2026-10-08T11:40:54+03:00"
         },
         {
           "at": "2026-10-09T06:20:00+03:00",
@@ -3165,8 +3165,8 @@
             "llm-legs/bin/worker-run-backstop.sh",
             "llm-legs/tests/test_worker_run_backstop.sh"
           ],
-          "in": null,
-          "regressed_at": null
+          "in": "llm-legs@19e9f508",
+          "regressed_at": "2026-10-09T15:08:37+03:00"
         }
       ],
       "same_cause": [],
@@ -3918,7 +3918,7 @@
         "rule": "log_audit",
         "ident": "affected-suite-list-handling"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-07T03:30:00+03:00",
@@ -3928,7 +3928,7 @@
             "llm-legs/share/run-suites.sh",
             "llm-legs/tests/test_run_suites_journal.sh"
           ],
-          "in": null,
+          "in": "llm-legs@d10a0657",
           "regressed_at": null
         }
       ],
@@ -3945,7 +3945,7 @@
         "rule": "log_audit",
         "ident": "pretooluse-awk-multibyte-error"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-07T03:30:00+03:00",
@@ -3957,8 +3957,8 @@
             "llm-legs/share/heredoc-mask.sh",
             "llm-legs/tests/test_worker_launch_gate_visibility.sh"
           ],
-          "in": null,
-          "regressed_at": null
+          "in": "llm-legs@05430753",
+          "regressed_at": "2026-10-08T04:13:41+03:00"
         }
       ],
       "same_cause": [],
@@ -3974,7 +3974,7 @@
         "rule": "log_audit",
         "ident": "run-suites-journal-env-leak"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-07T03:30:00+03:00",
@@ -3987,7 +3987,7 @@
             "llm-legs/tests/test_test_journal.sh",
             "llm-legs/tests/test_harness_doctor.sh"
           ],
-          "in": null,
+          "in": "llm-legs@d10a0657",
           "regressed_at": null
         }
       ],
@@ -4004,7 +4004,7 @@
         "rule": "log_audit",
         "ident": "foreground-run-all-10min-cap"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-07T03:30:00+03:00",
@@ -4014,7 +4014,7 @@
             "llm-legs/tests/worker_run_harness.sh",
             "llm-legs/tests/test_worker_run_entry.sh"
           ],
-          "in": null,
+          "in": "llm-legs@6f032e70",
           "regressed_at": null
         }
       ],
@@ -4031,7 +4031,7 @@
         "rule": "log_audit",
         "ident": "launch-gate-refusals-first-attempt"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-08T01:30:00+03:00",
@@ -4043,7 +4043,7 @@
             "claude-setup/agents/grok-worker.md",
             "llm-legs/tests/test_consistency.sh"
           ],
-          "in": null,
+          "in": "llm-legs@12d5b84a",
           "regressed_at": null
         }
       ],
@@ -4101,7 +4101,7 @@
         "rule": "log_audit",
         "ident": "worker-on-exhausted-account"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-08T01:30:00+03:00",
@@ -4110,7 +4110,7 @@
             "llm-legs/bin/worker-run",
             "llm-legs/tests/test_worker_run_pool.sh"
           ],
-          "in": null,
+          "in": "llm-legs@942401d5",
           "regressed_at": null
         }
       ],
@@ -4142,7 +4142,7 @@
         "rule": "log_audit",
         "ident": "shared-ledger-landing-conflicts"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-08T01:30:00+03:00",
@@ -4150,7 +4150,7 @@
           "files": [
             "llm-legs/tests/test_harness_doctor.sh"
           ],
-          "in": null,
+          "in": "llm-legs@12d5b84a",
           "regressed_at": null
         }
       ],
@@ -4167,7 +4167,7 @@
         "rule": "log_audit",
         "ident": "limit-reset-no-auto-resume"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-08T01:30:00+03:00",
@@ -4176,7 +4176,7 @@
             "llm-legs/bin/claude-resume-timer",
             "llm-legs/tests/test_claude_resume_timer.sh"
           ],
-          "in": null,
+          "in": "llm-legs@536a73a4",
           "regressed_at": null
         }
       ],
@@ -4193,7 +4193,7 @@
         "rule": "log_audit",
         "ident": "browser-worker-launch-failures"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-06T19:26:00+03:00",
@@ -4203,7 +4203,7 @@
             "llm-legs/share/ext_leveldb.py",
             "llm-legs/tests/test_worker_run_browse.sh"
           ],
-          "in": null,
+          "in": "llm-legs@6f032e70",
           "regressed_at": null
         }
       ],
@@ -4346,7 +4346,7 @@
         "rule": "deploy-drift",
         "ident": "^\\~/\\.local/libexec/report\\-bus$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-08T01:30:00+03:00",
@@ -4357,7 +4357,7 @@
             "llm-legs/tests/test_harness_doctor.sh",
             "llm-legs/tests/test_night_run.sh"
           ],
-          "in": null,
+          "in": "llm-legs@4f6c775f",
           "regressed_at": null
         },
         {
@@ -4369,7 +4369,7 @@
             "llm-legs/tests/test_harness_doctor.sh",
             "llm-legs/tests/test_night_run.sh"
           ],
-          "in": null,
+          "in": "llm-legs@06c1915c",
           "regressed_at": null
         }
       ],
@@ -4437,7 +4437,7 @@
         "rule": "log_audit",
         "ident": "runall-foreground-timeout-cap"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-07T04:39:31+03:00",
@@ -4446,7 +4446,7 @@
             "llm-legs/bin/worker-run",
             "llm-legs/tests/test_worker_run_entry.sh"
           ],
-          "in": null,
+          "in": "llm-legs@6f032e70",
           "regressed_at": "2026-10-08T02:14:19+03:00"
         }
       ],
@@ -4463,7 +4463,7 @@
         "rule": "log_audit",
         "ident": "worker-ends-waiting-on-detached"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-08T01:40:00+03:00",
@@ -4472,7 +4472,7 @@
             "llm-legs/bin/worker-run",
             "llm-legs/tests/test_worker_run_entry.sh"
           ],
-          "in": null,
+          "in": "llm-legs@6f032e70",
           "regressed_at": null
         }
       ],
@@ -4489,7 +4489,7 @@
         "rule": "log_audit",
         "ident": "handoff-brief-missing-cross-repo-dir"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-08T01:40:00+03:00",
@@ -4500,7 +4500,7 @@
             "llm-legs/tests/test_night_carry.sh",
             "llm-legs/tests/test_doctor_fix.sh"
           ],
-          "in": null,
+          "in": "llm-legs@1b695513",
           "regressed_at": null
         }
       ],
@@ -4517,7 +4517,7 @@
         "rule": "log_audit",
         "ident": "same-day-apply-not-honored"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-07T13:43:17+03:00",
@@ -4526,7 +4526,7 @@
             "llm-legs/bin/night-run",
             "llm-legs/tests/test_night_run.sh"
           ],
-          "in": null,
+          "in": "llm-legs@4f6c775f",
           "regressed_at": null
         }
       ],
@@ -4543,7 +4543,7 @@
         "rule": "log_audit",
         "ident": "log-audit-full-read-repeated"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-07T00:25:31+03:00",
@@ -4552,7 +4552,7 @@
             "llm-legs/bin/log-audit",
             "llm-legs/tests/test_log_audit.sh"
           ],
-          "in": null,
+          "in": "llm-legs@c0d674c1",
           "regressed_at": "2026-10-08T02:14:19+03:00"
         }
       ],
@@ -4569,7 +4569,7 @@
         "rule": "log_audit",
         "ident": "subagent-cap-and-exit4-fallback"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-07T14:12:53+03:00",
@@ -4579,7 +4579,7 @@
             "llm-legs/docs/night-run.md",
             "llm-legs/tests/test_night_run.sh"
           ],
-          "in": null,
+          "in": "llm-legs@4f6c775f",
           "regressed_at": null
         }
       ],
@@ -4596,7 +4596,7 @@
         "rule": "log_audit",
         "ident": "chrome-extension-reconnect-window"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-07T04:20:45+03:00",
@@ -4605,7 +4605,7 @@
             "llm-legs/bin/worker-run",
             "llm-legs/tests/test_worker_run_browse.sh"
           ],
-          "in": null,
+          "in": "llm-legs@6f032e70",
           "regressed_at": "2026-10-08T02:14:19+03:00"
         }
       ],
@@ -4622,7 +4622,7 @@
         "rule": "log_audit",
         "ident": "hook-awk-multibyte-failure"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-09T06:44:43+03:00",
@@ -4631,7 +4631,7 @@
             "claude-setup/hooks/dia-not-chrome.sh",
             "claude-setup/hooks/limits-triage-nudge.sh"
           ],
-          "in": null,
+          "in": "claude-setup@8157a55",
           "regressed_at": null
         }
       ],
@@ -4648,7 +4648,7 @@
         "rule": "log_audit",
         "ident": "worker-launch-gate-account-flag"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-08T01:30:00+03:00",
@@ -4660,7 +4660,7 @@
             "claude-setup/agents/grok-worker.md",
             "llm-legs/tests/test_consistency.sh"
           ],
-          "in": null,
+          "in": "llm-legs@12d5b84a",
           "regressed_at": null
         }
       ],
@@ -4679,7 +4679,7 @@
         "rule": "log_audit",
         "ident": "relay-stop-leaves-worker-running"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-09T06:44:43+03:00",
@@ -4688,7 +4688,7 @@
             "llm-legs/bin/worker-run",
             "claude-setup/hooks/stop.d/ask-run-unfinished.sh"
           ],
-          "in": null,
+          "in": "llm-legs@56271bf5",
           "regressed_at": null
         }
       ],
@@ -4730,7 +4730,7 @@
         "rule": "log_audit",
         "ident": "harness-branches-conflict-on-shared-files"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-08T01:30:00+03:00",
@@ -4738,7 +4738,7 @@
           "files": [
             "llm-legs/tests/test_harness_doctor.sh"
           ],
-          "in": null,
+          "in": "llm-legs@12d5b84a",
           "regressed_at": null
         }
       ],
@@ -4866,7 +4866,7 @@
         "rule": "test_daily_cost",
         "ident": "llm-legs:test_statusline_hooks"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-08T02:10:00+03:00",
@@ -4875,7 +4875,7 @@
             "llm-legs/tests/test_statusline_hooks.sh"
           ],
           "in": "llm-legs@9571b2f4",
-          "regressed_at": null
+          "regressed_at": "2026-10-09T02:11:29+03:00"
         },
         {
           "at": "2026-10-09T07:30:00+03:00",
@@ -4885,7 +4885,7 @@
             "llm-legs/share/run-suites.sh",
             "llm-legs/tests/test_run_suites_shards.sh"
           ],
-          "in": null,
+          "in": "llm-legs@f081980f",
           "regressed_at": null
         }
       ],
@@ -4947,7 +4947,7 @@
         "rule": "growth-ungated",
         "ident": "\\~/\\.claude/[^/]+/\\.trash/.+"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-09T06:45:00+03:00",
@@ -4956,7 +4956,7 @@
             "llm-legs/share/instruction-files.sh",
             "llm-legs/tests/test_instruction_watch_perf.py"
           ],
-          "in": null,
+          "in": "llm-legs@852dc4ed",
           "regressed_at": null
         }
       ],
@@ -4975,7 +4975,7 @@
         "rule": "changed-while-watcher-off",
         "ident": "^tripwire$"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-09T06:45:00+03:00",
@@ -4984,7 +4984,7 @@
             "llm-legs/tests/test_instruction_gate_bypasses.sh",
             "llm-legs/tests/test_consistency.sh"
           ],
-          "in": null,
+          "in": "llm-legs@852dc4ed",
           "regressed_at": null
         }
       ],
@@ -5016,7 +5016,7 @@
         "rule": "log_audit",
         "ident": "launch-gate-blocks-legit-runs"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-09T06:51:59+03:00",
@@ -5025,7 +5025,7 @@
             "claude-setup/hooks/english-gate.sh",
             "claude-setup/tests/test_english_gates.sh"
           ],
-          "in": null,
+          "in": "claude-setup@5bdb22c",
           "regressed_at": null
         }
       ],
@@ -5045,7 +5045,7 @@
         "rule": "log_audit",
         "ident": "gates-match-command-text"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-09T06:51:59+03:00",
@@ -5054,7 +5054,7 @@
             "claude-setup/hooks/resume-timer-guard.sh",
             "claude-setup/tests/test_resume_timer_guard.sh"
           ],
-          "in": null,
+          "in": "claude-setup@5bdb22c",
           "regressed_at": null
         }
       ],
@@ -5071,7 +5071,7 @@
         "rule": "log_audit",
         "ident": "cd-guard-repeat-after-report"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-09T07:21:00+03:00",
@@ -5080,7 +5080,7 @@
             "llm-legs/bin/worker-launch-gate.sh",
             "llm-legs/tests/test_worker_launch_gate_visibility.sh"
           ],
-          "in": null,
+          "in": "llm-legs@9e2b8f76",
           "regressed_at": null
         }
       ],
@@ -5097,7 +5097,7 @@
         "rule": "log_audit",
         "ident": "run-files-misreport"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-09T07:21:00+03:00",
@@ -5106,7 +5106,7 @@
             "llm-legs/bin/worker-run",
             "llm-legs/tests/test_worker_run_files.sh"
           ],
-          "in": null,
+          "in": "llm-legs@3c3841ac",
           "regressed_at": null
         }
       ],
@@ -5123,7 +5123,7 @@
         "rule": "log_audit",
         "ident": "bench-lane-deadline-no-report"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-09T07:21:00+03:00",
@@ -5133,7 +5133,7 @@
             "llm-legs/tests/test_worker_run_watchdog.sh",
             "llm-legs/tests/worker_run_harness.sh"
           ],
-          "in": null,
+          "in": "llm-legs@3c3841ac",
           "regressed_at": null
         }
       ],
@@ -5165,7 +5165,7 @@
         "rule": "log_audit",
         "ident": "run-all-load-flakes"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-09T07:21:00+03:00",
@@ -5173,7 +5173,7 @@
           "files": [
             "llm-legs/tests/test_test_journal.sh"
           ],
-          "in": null,
+          "in": "llm-legs@97dc23b4",
           "regressed_at": null
         }
       ],
@@ -5347,7 +5347,7 @@
         "rule": "hook_full_work",
         "ident": "word-spend\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-09T06:52:00+03:00",
@@ -5356,7 +5356,7 @@
             "claude-setup/hooks/word-spend.sh",
             "claude-setup/tests/test_word_triggers.sh"
           ],
-          "in": null,
+          "in": "claude-setup@a07a758",
           "regressed_at": null
         }
       ],
@@ -5375,7 +5375,7 @@
         "rule": "hook_grows_size",
         "ident": "word-spend\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-09T06:52:00+03:00",
@@ -5384,7 +5384,7 @@
             "claude-setup/hooks/word-spend.sh",
             "claude-setup/tests/test_word_triggers.sh"
           ],
-          "in": null,
+          "in": "claude-setup@a07a758",
           "regressed_at": null
         }
       ],
@@ -5403,7 +5403,7 @@
         "rule": "hook_full_work",
         "ident": "limits-triage-nudge\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-09T06:52:00+03:00",
@@ -5412,7 +5412,7 @@
             "claude-setup/hooks/limits-triage-nudge.sh",
             "llm-legs/tests/test_limits_triage_nudge.sh"
           ],
-          "in": null,
+          "in": "claude-setup@8157a55",
           "regressed_at": null
         }
       ],
@@ -5429,7 +5429,7 @@
         "rule": "hook_full_work",
         "ident": "comment-gate\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-09T06:52:00+03:00",
@@ -5438,7 +5438,7 @@
             "claude-setup/hooks/comment-gate.sh",
             "claude-setup/tests/test_comment_gate.sh"
           ],
-          "in": null,
+          "in": "claude-setup@a07a758",
           "regressed_at": null
         }
       ],
@@ -5455,7 +5455,7 @@
         "rule": "hook_grows_repos",
         "ident": "instruction-bloat-gate\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-09T06:52:00+03:00",
@@ -5464,7 +5464,7 @@
             "llm-legs/bin/instruction-bloat-gate.sh",
             "llm-legs/tests/test_instruction_gate_bloat.sh"
           ],
-          "in": null,
+          "in": "llm-legs@3a5074a4",
           "regressed_at": null
         }
       ],
@@ -5483,7 +5483,7 @@
         "rule": "hook_grows_size",
         "ident": "instruction-bloat-gate\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-09T06:52:00+03:00",
@@ -5492,7 +5492,7 @@
             "llm-legs/bin/instruction-bloat-gate.sh",
             "llm-legs/tests/test_instruction_gate_bloat.sh"
           ],
-          "in": null,
+          "in": "llm-legs@3a5074a4",
           "regressed_at": null
         }
       ],
@@ -5511,7 +5511,7 @@
         "rule": "time_floor",
         "ident": "full-runs"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-08T21:55:00+03:00",
@@ -5520,7 +5520,7 @@
             "llm-legs/share/run-suites.sh",
             "llm-legs/tests/test_run_suites_journal.sh"
           ],
-          "in": null,
+          "in": "llm-legs@ae0d28dd",
           "regressed_at": null
         }
       ],
@@ -5539,7 +5539,7 @@
         "rule": "test_daily_cost",
         "ident": "llm-legs:test_doctor_fix"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-09T07:30:00+03:00",
@@ -5548,7 +5548,7 @@
             "llm-legs/tests/test_doctor_fix.sh",
             "llm-legs/tests/lib/suite-journal.sh"
           ],
-          "in": null,
+          "in": "llm-legs@f081980f",
           "regressed_at": null
         }
       ],
@@ -5565,7 +5565,7 @@
         "rule": "test_daily_cost",
         "ident": "llm-legs:test_night_run"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-09T07:30:00+03:00",
@@ -5574,7 +5574,7 @@
             "llm-legs/tests/test_night_run.sh",
             "llm-legs/tests/lib/suite-journal.sh"
           ],
-          "in": null,
+          "in": "llm-legs@f081980f",
           "regressed_at": null
         }
       ],
@@ -5591,7 +5591,7 @@
         "rule": "test_daily_cost",
         "ident": "review-bench:test_review_bench"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-09T07:30:00+03:00",
@@ -5599,7 +5599,7 @@
           "files": [
             "review-bench/tests/review_bench_harness.py"
           ],
-          "in": null,
+          "in": "review-bench@cf46f80",
           "regressed_at": null
         }
       ],
@@ -5616,7 +5616,7 @@
         "rule": "opportunity",
         "ident": "chat/media"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-09T07:15:00+03:00",
@@ -5625,7 +5625,7 @@
             "llm-legs/bin/harness-doctor",
             "llm-legs/tests/test_harness_doctor.sh"
           ],
-          "in": null,
+          "in": "llm-legs@728d50b9",
           "regressed_at": null,
           "equivalence": {
             "compared": "the media layer and the g phase spans under the old MEDIA_TOOL regex vs media_tool, per unique Bash command",
@@ -5647,7 +5647,7 @@
         "rule": "opportunity",
         "ident": "chat/tools"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-09T07:00:00+03:00",
@@ -5658,7 +5658,7 @@
             "llm-legs/tests/test_worker_pick.sh",
             "llm-legs/tests/test_elevenlabs_media.sh"
           ],
-          "in": null,
+          "in": "llm-legs@9f0772c9",
           "regressed_at": null,
           "equivalence": {
             "compared": "worker-pick table output byte for byte, base vs fix; elevenlabs_balance.py `accounts` JSON (as_of aside), base vs fix",
