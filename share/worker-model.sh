@@ -34,6 +34,7 @@ _worker_model_table_build() {
 claudeb opus high high,xhigh low,medium,max no
 claudeb fable low low,medium,high xhigh,max yes
 claudeb sonnet medium low,medium,high - no request
+claudeb haiku low low,medium - yes request
 codex astra low low,medium,high xhigh no
 codex sol medium medium,high low,xhigh yes
 codex luna medium low,medium,high - no request
