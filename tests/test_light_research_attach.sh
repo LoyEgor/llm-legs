@@ -2,30 +2,22 @@
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 . "$(dirname "$0")/light_research_harness.sh" || exit 1
 
-# One wait round per call: a run still going hands back its id, and --attach waits one more round
-# and lands the answer with the run's own exit code.
-# A unit holds until the test opens the gate: a fixed sleep was outlived by a launch under load.
-cat >"$BIN/geminib" <<'GATED'
+# --attach lands a run whose first call is gone (a stopped background Bash) with the run's own exit code.
+cat >"$BIN/geminib" <<'SLOW'
 #!/usr/bin/env bash
 if [ "$1" = list ]; then printf 'researcher: ready\n'; exit 0; fi
-while [ ! -e "${0%/bin/*}/gate" ] && [ -d "${0%/*}" ]; do sleep 0.1; done
 printf 'slow Gemini answer\n'
-GATED
+SLOW
 rm -f "$WORK/answer"
-WORKER_RUN_LONG_RUN_S=0 LIGHT_RESEARCH_WAIT_MAX=0 run; rc=$?; assert test "$rc" -eq 0
-assert grep -q '^STATUS: running$' "$WORK/out"; assert test ! -e "$WORK/answer"
-# worker-run says LONG-RUN once per run, so a running round that drops it loses it for good.
-assert grep -q '^LONG-RUN: 0 min' "$WORK/out"
-# The state is recorded at launch, so the round that hands back a running id already names it.
-assert grep -qx 'WEB: on' "$WORK/out"
-assert grep -qx "OUT: $(cd "$WORK" && pwd -P)/answer" "$WORK/out"
+run; rc=$?; assert test "$rc" -eq 0
 slow_run=$(sed -n 's/^RUN: //p' "$WORK/out" | tail -1); assert test -d "$RUNS/$slow_run"
-: >"$WORK/gate"
+rm -f "$WORK/answer"
 assert test ! -e "$REPO/answer-in-repo"
 attach --attach "$slow_run" --out "$REPO/answer-in-repo"; rc=$?; assert test "$rc" -eq 2
 assert test ! -e "$REPO/answer-in-repo"
 attach --attach "$slow_run" --out "$WORK/answer"; rc=$?; assert test "$rc" -eq 0
 assert test "$(sed '1,2d' "$WORK/answer")" = 'slow Gemini answer'; assert grep -q '^ACCOUNT: researcher (gemini)$' "$WORK/out"
+assert grep -qx 'WEB: on' "$WORK/out"
 # --attach lands the same headed answer file, and its stdout carries the header lines, not the answer.
 assert grep -qx 'CITATIONS: 0/0' "$WORK/out"
 assert grep -qx "ANSWER: $(cd "$WORK" && pwd -P)/answer" "$WORK/out"
@@ -34,8 +26,8 @@ attach --attach "$slow_run" --out "$WORK/answer" --repo "$REPO"; rc=$?; assert t
 attach --attach codex-1-2-none --out "$WORK/answer"; rc=$?; assert test "$rc" -eq 4
 assert grep -q '^OUTCOME: CODEX_UNAVAILABLE$' "$WORK/out"
 
-# A batch whose last unit is still running still exits on the worst rc a finished unit brought
-# back — a usage limit is what the caller routes on — and keeps the units it collected on disk.
+# A batch exits on the worst rc a unit brought back — a usage limit is what the caller routes on —
+# and keeps its units on disk, so an --attach of any unit reports the same.
 cat >"$BIN/geminib" <<'QUOTASLOW'
 #!/usr/bin/env bash
 if [ "$1" = list ]; then printf 'researcher: ready\n'; exit 0; fi
@@ -47,35 +39,17 @@ done
 case $brief in
   *QUOTA-Q*) [ -z "$log" ] || printf 'RESOURCE_EXHAUSTED\n' >"$log"; exit 1 ;;
 esac
-while [ ! -e "${0%/bin/*}/gate" ] && [ -d "${0%/*}" ]; do sleep 0.1; done
 printf 'slow Gemini answer\n'
 QUOTASLOW
 chmod +x "$BIN/geminib"
 printf 'QUOTA-Q: the leg answers with a quota wall.\n' >"$WORK/prompt"
 printf 'Research the repository slowly.\n' >"$WORK/prompt-slow"
-# The slow unit launches only once the quota unit has ended: under load that unit outlived a timed round.
-# A pick with --exclude is the quota unit's own supervisor moving off the walled account.
-mv "$BIN/worker-pick" "$BIN/worker-pick.plain"
-cat >"$BIN/worker-pick" <<'PICKAFTER'
-#!/usr/bin/env bash
-case " $* " in
-  *" --exclude "*) ;;
-  *) for meta in "$WORKER_RUN_DIR"/*/meta.json; do
-       while [ -f "$meta" ] && [ ! -e "${meta%/*}/exit_code" ]; do sleep 0.1; done
-     done ;;
-esac
-exec "${0%/*}/worker-pick.plain" "$@"
-PICKAFTER
-chmod +x "$BIN/worker-pick"
-rm -f "$WORK/answer" "$WORK/gate"; rm -rf "$WORK/answer.units"
-LIGHT_RESEARCH_WAIT_MAX=0 run --prompt-file "$WORK/prompt-slow"; rc=$?
-mv -f "$BIN/worker-pick.plain" "$BIN/worker-pick"
+rm -f "$WORK/answer"; rm -rf "$WORK/answer.units"
+run --prompt-file "$WORK/prompt-slow"; rc=$?
 assert test "$rc" -eq 3
-assert grep -q '^STATUS: running$' "$WORK/out"
 assert test ! -e "$WORK/answer"
 assert test "$(grep -c . "$WORK/answer.units/table")" = 2
 assert test "$(cat "$WORK/answer.units/rc.0")" = 3
-: >"$WORK/gate"
 slow_run=$(sed -n 's/^RUN: //p' "$WORK/out" | tail -1)
 attach --attach "$slow_run" --out "$WORK/answer"; rc=$?; assert test "$rc" -eq 3
 assert grep -qx 'OUTCOME: GEMINI_USAGE_LIMIT' "$WORK/out"
@@ -91,7 +65,6 @@ while [ "$#" -gt 1 ]; do
   case $1 in --print) brief=$2 ;; esac
   shift
 done
-while [ ! -e "${0%/bin/*}/gate" ] && [ -d "${0%/*}" ]; do sleep 0.1; done
 case $brief in
   *'Second question'*) printf 'second batched answer\n' ;;
   *) printf 'first batched answer\n' ;;
@@ -100,14 +73,12 @@ TWOSLOW
 chmod +x "$BIN/geminib"
 printf 'First question.\n' >"$WORK/prompt"
 printf 'Second question.\n' >"$WORK/prompt2"
-rm -f "$WORK/answer" "$WORK/gate"; rm -rf "$WORK/answer.units"
-LIGHT_RESEARCH_WAIT_MAX=0 run --prompt-file "$WORK/prompt2"; rc=$?
+rm -f "$WORK/answer"; rm -rf "$WORK/answer.units"
+run --prompt-file "$WORK/prompt2"; rc=$?
 assert test "$rc" -eq 0
-assert test "$(grep -c '^STATUS: running$' "$WORK/out")" = 2
 assert test -f "$WORK/answer.units/table"
-assert test ! -e "$WORK/answer"
 batch_run=$(sed -n 's/^RUN: //p' "$WORK/out" | tail -1)
-: >"$WORK/gate"
+rm -f "$WORK/answer"
 attach --attach "$batch_run" --out "$WORK/answer"; rc=$?
 assert test "$rc" -eq 0
 assert grep -qx 'first batched answer' "$WORK/answer"
@@ -121,4 +92,4 @@ while IFS=$'\t' read -r attached_run rest; do
   assert cmp -s "$WORK/first-answer" "$WORK/answer"
 done <"$WORK/answer.units/table"
 
-printf 'PASS: %s asserts; one wait round per call with --attach continuing a running run and re-assembling a whole batch\n' "$asserts"
+printf 'PASS: %s asserts; --attach lands a finished run and re-assembles a whole batch from its units table\n' "$asserts"

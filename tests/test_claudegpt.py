@@ -280,7 +280,6 @@ class GatewayAuthResolverTests(unittest.TestCase):
                      patch.object(sys, "argv", [str(source), "p", name, "--model", "astra"]), \
                      patch.object(app.os, "access", return_value=True), \
                      patch.object(app, "run_setup"), \
-                     patch.object(app, "relay_agents", return_value={}), \
                      patch.object(app.subprocess, "Popen", side_effect=proxy), \
                      patch.object(app.subprocess, "call", return_value=0) as launch, \
                      patch.object(app.urllib.request, "urlopen", side_effect=lambda *_a, **_k:
@@ -485,47 +484,6 @@ class LauncherTests(unittest.TestCase):
         with patch.dict(os.environ, values, clear=True):
             self.assertEqual(app.clean_env(), {"CLAUDE_CONFIG_DIR": "/fixture/shared-claude"})
 
-    def test_existing_relay_prompt_and_tools_survive_model_override(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            (root / "agents").mkdir()
-            path = root / "agents/grok-worker.md"
-            original = "---\nname: grok-worker\ndescription: Relay\ntools: Bash, Read\nmodel: sonnet\n---\nExisting relay contract.\n"
-            path.write_text(original)
-            agent = app.relay_agents(root)["grok-worker"]
-            self.assertEqual(agent["model"], "inherit")
-            self.assertEqual(agent["prompt"], "Existing relay contract.")
-            self.assertEqual(agent["tools"], ["Bash", "Read"])
-            self.assertEqual(path.read_text(), original)
-
-    def test_every_agent_is_relayed_not_only_the_worker_files(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            (root / "agents").mkdir()
-            (root / "agents/light-research.md").write_text(
-                "---\nname: light-research\ndescription: Research relay\n"
-                "tools: Read, Bash\nmodel: sonnet\n---\nRelay contract.\n")
-            (root / "agents/review-waiter.md").write_text(
-                "---\nname: review-waiter\ndescription: Review wait relay\n"
-                "tools: Read, Write, Bash\nmodel: sonnet\n---\nRelay contract.\n")
-            agents = app.relay_agents(root)
-            self.assertEqual(sorted(agents), ["light-research", "review-waiter"])
-            for agent in agents.values():
-                self.assertEqual(agent["model"], "inherit")
-
-    def test_optional_tools_and_stray_files_do_not_abort_the_launch(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            (root / "agents").mkdir()
-            (root / "agents/inherit-all.md").write_text(
-                "---\nname: inherit-all\ndescription: No tools line\nmodel: sonnet\n---\nRelay contract.\n")
-            (root / "agents/README.md").write_text("Notes about the agents directory.\n")
-            (root / "agents/nameless.md").write_text("---\nname: nameless\n---\nNo description.\n")
-            agents = app.relay_agents(root)
-            self.assertEqual(sorted(agents), ["inherit-all"])
-            self.assertNotIn("tools", agents["inherit-all"])
-            self.assertEqual(agents["inherit-all"]["model"], "inherit")
-
     def test_proxy_has_no_cross_account_or_model_failover(self):
         configuration = app.config(Path("/fixture/account/auth"), 12345)
         self.assertEqual(configuration["host"], "127.0.0.1")
@@ -569,7 +527,6 @@ class LauncherTests(unittest.TestCase):
             with patch.object(app, "STATE", state), \
                  patch.object(app.os, "access", return_value=True), \
                  patch.object(app, "run_setup") as setup, \
-                 patch.object(app, "relay_agents", return_value={}), \
                  patch.object(app.subprocess, "Popen", side_effect=proxy), \
                  patch.object(app.subprocess, "call", side_effect=launch), \
                  patch.object(app.urllib.request, "urlopen", side_effect=lambda *a, **k: io.BytesIO(b'{"data":[{"id":"gpt-5.6-sol"}]}')), \
@@ -609,7 +566,6 @@ class LauncherTests(unittest.TestCase):
         with patch.object(app, "STATE", state), \
              patch.object(app.os, "access", return_value=True), \
              patch.object(app, "run_setup"), \
-             patch.object(app, "relay_agents", return_value={}), \
              patch.object(app.subprocess, "Popen", return_value=process), \
              patch.object(app.subprocess, "call", side_effect=call), \
              patch.object(app.urllib.request, "urlopen",
@@ -732,7 +688,6 @@ class LauncherTests(unittest.TestCase):
             with patch.object(app, "STATE", state), \
                  patch.object(app.os, "access", return_value=True), \
                  patch.object(app, "run_setup"), \
-                 patch.object(app, "relay_agents", return_value={}), \
                  patch.object(app.subprocess, "Popen", return_value=process), \
                  patch.object(app.subprocess, "call", side_effect=call), \
                  patch.object(app.urllib.request, "urlopen",

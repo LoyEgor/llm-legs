@@ -300,7 +300,7 @@ slurp() { # var file
 }
 agent_records=""
 re_started='"started_epoch": *([0-9]+)' re_started_at='"started_at": *([0-9]+)' re_phase='"phase": *"([a-z_-]*)"'
-re_key='^[A-Z][A-Z0-9_-]*:([[:space:]]|$)' re_resume='^(RESUME|ATTACH)[[:space:]]+[^[:space:]]+:[[:space:]]*(.*)$'
+re_key='^[A-Z][A-Z0-9_-]*:([[:space:]]|$)' re_resume='^RESUME[[:space:]]+[^[:space:]]+:[[:space:]]*(.*)$'
 re_light='"light": *"([a-z]+)"' re_round='"round_id": *"([A-Za-z0-9_-]+)"'
 for worker_run in ${worker_runs[@]+"${worker_runs[@]}"}; do
   IFS=$'\037' read -r run live waited <<< "$worker_run"
@@ -325,7 +325,7 @@ for worker_run in ${worker_runs[@]+"${worker_runs[@]}"}; do
       brief_lines=$((brief_lines + 1))
       line=${line#"${line%%[![:space:]]*}"}
       [ -n "$line" ] && ! [[ $line =~ $re_key ]] || continue
-      if [[ $line =~ $re_resume ]]; then line=${BASH_REMATCH[2]}; [ -n "$line" ] || continue; fi
+      if [[ $line =~ $re_resume ]]; then line=${BASH_REMATCH[1]}; [ -n "$line" ] || continue; fi
       line=${line//[$'\t\037\r']/ }
       title=${line:0:200}
       break

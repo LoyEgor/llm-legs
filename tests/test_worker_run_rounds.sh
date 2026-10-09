@@ -2,7 +2,7 @@
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
 . "$(dirname "$0")/worker_run_harness.sh" || exit 1
 
-# A brief with no first line cannot identify its run: RESUME/ATTACH are read off the top of it, and
+# A brief with no first line cannot identify its run: RESUME is read off the top of it, and
 # a discovery prefix taken from a blank line matches every transcript in the tree at once.
 clear_stub
 set_config 'claudeb_profile=pinned'
@@ -255,7 +255,7 @@ assert test "$(jq 'has("review_round")' "$RUN_DIR/meta.json")" = false
 gate_open
 await_done || fail "the delegated run never finished"
 
-# A fixing worker's brief names the review round it fixes — line 1, or line 2 under a RESUME/ATTACH
+# A fixing worker's brief names the review round it fixes — line 1, or line 2 under a RESUME
 # line — and the run record keeps it: review-bench closes the round on what that run produced.
 clear_stub
 mkdir -p "$DELEG_BENCHES/20260801T140000Z-0a1b2c3"

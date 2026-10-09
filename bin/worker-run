@@ -84,12 +84,12 @@ brief_line_value() { # brief key
 
 brief_review_round() {
   local brief="$1" line='' round=''
-  # The header is every KEY: line the brief opens with (a RESUME/ATTACH handle among them), and
+  # The header is every KEY: line the brief opens with (a RESUME handle among them), and
   # ROUND: may stand after ACCOUNT:/EFFORT: there; a ROUND: past the first body line is prose.
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
       ROUND:*) break ;;
-      RESUME\ *:* | ATTACH\ *:*) continue ;;
+      RESUME\ *:*) continue ;;
     esac
     [[ "$line" =~ ^[A-Z][A-Z-]*: ]] || return 0
   done <"$brief"
@@ -111,8 +111,8 @@ brief_title() { # brief
   local line
   while IFS= read -r line || [ -n "$line" ]; do
     line=${line%$'\r'}
-    if [[ "${line#"${line%%[![:space:]]*}"}" =~ ^(RESUME|ATTACH)[[:space:]]+[^[:space:]]+:[[:space:]]*(.*)$ ]]; then
-      line=${BASH_REMATCH[2]}
+    if [[ "${line#"${line%%[![:space:]]*}"}" =~ ^RESUME[[:space:]]+[^[:space:]]+:[[:space:]]*(.*)$ ]]; then
+      line=${BASH_REMATCH[1]}
     elif [[ "$line" =~ ^[A-Z][A-Z-]*: ]]; then
       continue
     fi
@@ -143,7 +143,7 @@ brief_add_dirs() { # brief
         printf '%s\n' "${line%"${line##*[![:space:]]}"}"
         continue
         ;;
-      RESUME\ *:* | ATTACH\ *:*) continue ;;
+      RESUME\ *:*) continue ;;
     esac
     [[ "$line" =~ ^[A-Z][A-Z-]*: ]] || return 0
   done <"$1"
@@ -255,7 +255,7 @@ gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}"
 # Every launched brief carries this, so the loop rule cannot depend on an orchestrator remembering
 # to type it: serial full-suite reruns were 54-75% of the wall clock of every run that passed an
 # hour, and two of them died on the ceiling below with the work unfinished. Appended rather than
-# prepended — the brief's own first line is load-bearing (`RESUME <id>:`, `ATTACH <id>:`, which
+# prepended — the brief's own first line is load-bearing (`RESUME <id>:`, which
 # readers take off the top), and a rule a model must still obey at
 # edit 60 belongs where it read last.
 BRIEF_PREAMBLE='AUDIENCE: your reader is another model (the orchestrator), never Egor — write the report and every message in English; Russian only as code in backticks. TEST LOOP: while iterating run a one-off probe or ONE covering suite, never every suite after each edit; a mutation check is one run of the covering suite (revert → fails → restore); at the end run, in one `tests/run-all <suite>...` call, only the suites covering the files you changed (`tests/affected <file>...` lists them where the repo has it) plus the one that goes red on the old code, and report PASS counts; never the full `tests/run-all`, which the night runs once in the background. Work in the files the brief names; if the brief covers more than ~8 findings or ~6 files, do them in the order given. RETURN: first line the outcome — done, partially done or failed, plus one clause; then changed files, verification with PASS counts and anything undone; mark anything you could not confirm and say where you looked. `worker-run report` puts its own `ACCOUNT: <account> (<vendor>)` line second, so never write one; an `OUTCOME:` line is a worker-run status code, written only where a preamble names its code. A command that ended by signal 9 (exit 137) was killed by the machine'"'"'s memory guard: do not rerun it as is — run one project'"'"'s tests, never the whole monorepo'"'"'s, or split the work. REUSE FIRST: nothing the project may already have is written from scratch — before writing a function, helper, wrapper over a platform API, list, constant or pattern, grep the whole project for an existing one (its name, the API it wraps, the literal) and use it; editing an existing value or call needs no search; one search, then proceed.'
@@ -2518,15 +2518,15 @@ start_run() {
   [ -r "$brief" ] || fail "brief is not readable: $brief"
   [ -z "$explicit_account" ] || account_roster_refuse worker-run "$vendor" "$explicit_account" || exit 2
   [ "$role" != workers ] || [ -z "${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-}" ] || limit_gate "$vendor" "$light" "$brief" "$explicit_account" "$computer"
-  # The first line is the run's handle: readers take `RESUME <id>:` and
-  # `ATTACH <id>:` off the top of it, and every reader that falls back to a prefix of the brief
+  # The first line is the run's handle: readers take `RESUME <id>:`
+  # off the top of it, and every reader that falls back to a prefix of the brief
   # matches nothing useful with a blank one.
   # `|| :` and not `|| first_line=''`: a file with no trailing newline fails the read and still
   # assigns every byte of its one line.
   IFS= read -r first_line <"$brief" || :
   case "$first_line" in
     *[![:space:]]*) ;;
-    *) fail "brief starts with a blank line: $brief — the first line is the run's handle (RESUME/ATTACH) and what a reader identifies it by" ;;
+    *) fail "brief starts with a blank line: $brief — the first line is the run's handle (RESUME) and what a reader identifies it by" ;;
   esac
   # The flag is `review-bench fix`'s own composition and outranks the header, which stays the
   # fallback for a brief a chat wrote by hand.
@@ -2560,7 +2560,7 @@ start_run() {
   [ -z "$review_round" ] || [ "$role" = workers ] ||
     fail "a research run fixes nothing: drop --round / the ROUND: line, or launch it as a worker"
   if [ -n "$review_round" ]; then
-    # Composed once at start: a relaunch or an ATTACH must hand the worker the same rule text.
+    # Composed once at start: a relaunch must hand the worker the same rule text.
     fix_rule=$(review-bench fix "$review_round" --print 2>/dev/null) ||
       fail "review-bench fix $review_round --print failed: a round-tagged brief without the verdicts.jsonl rule cannot launch"
     # Only a brief holding every line of it (a `review-bench fix --brief` file) goes without it; a brief
@@ -2945,7 +2945,7 @@ start_run() {
   [ "$computer" = false ] || printf '%s\n' "$COMPUTER_PREAMBLE" >"$directory/computer-preamble" ||
     fail 'could not write the computer preamble'
   [ -z "$resume" ] || inbox_carry_resume "$directory" "$resume"
-  # The recorded brief is the input, byte for byte — `worker-run report`, RESUME and ATTACH all
+  # The recorded brief is the input, byte for byte — `worker-run report` and RESUME both
   # quote it back, and a preamble growing on every hop would be a brief nobody wrote. What the
   # vendor is handed is this second file, and only ever this one.
   launch_attempt "$directory" || fail 'could not compose the launched brief'
@@ -4198,12 +4198,6 @@ running_report() {
   out_bytes=$(wc -c <"$directory/out" | tr -d '[:space:]')
   err_bytes=$(wc -c <"$directory/err" | tr -d '[:space:]')
   printf 'STATUS: running\nELAPSED: %s\n' "$elapsed"
-  # Once per RUN, not once per round. The marker is written where the line is printed, so a `wait`
-  # that never got to print it still owes it.
-  if [ "$elapsed" -ge "${WORKER_RUN_LONG_RUN_S:-1500}" ] && [ ! -e "$directory/long-run-said" ]; then
-    printf 'LONG-RUN: %s min — the orchestrator'"'"'s prompt cache cools past the hour; the wait keeps going until the run ends\n' "$((elapsed / 60))"
-    : >"$directory/long-run-said" 2>/dev/null || :
-  fi
   printf 'OUT-BYTES: %s\nERR-BYTES: %s\nSESSION: %s\n' "$out_bytes" "$err_bytes" "$(session_id "$directory")"
   workdir=$(jq -r '.workdir' "$directory/meta.json" 2>/dev/null)
   age=$(last_edit_age "$directory" "$workdir" "$now") || age=none

@@ -986,7 +986,7 @@ stale_line=$(grep '^STALE:' "$FANOUT_OUT" || true)
 assert grep -Fq 'STALE: grok staleacct model_caps=stale' <<<"$stale_line"
 assert_fails "$stale_line" '/image-fanout.'
 
-# --- fanout.state.json: the task row's live cells, rewritten on every change ---
+# --- fanout.state.json: the media work line's live cells, rewritten on every change ---
 grok_roster 'delta: Logged in\nslow: Logged in\nbroken: Logged in\nwalled: Logged in\n'
 cat >"$FAKE_BIN/grok-image-slow" <<'EOF'
 #!/usr/bin/env bash

@@ -43,37 +43,20 @@ root=$(resolve_root)
 worker_run="$root/bin/worker-run"
 . "$root/share/light-research.sh"
 . "$root/share/web-search.sh"
-# Unset, one call waits the run out (the chat runs it as a background Bash); a bounded call hands a run
-# still going back as `RUN:`/`STATUS: running` for `--attach` to continue.
-wait_max=${LIGHT_RESEARCH_WAIT_MAX:-$((1 << 40))}
-start_seconds=$SECONDS
 
 unavailable() { # vendor reason
   printf 'OUTCOME: %s_UNAVAILABLE\nlight-research: %s\n' "$(tr '[:lower:]' '[:upper:]' <<<"$1")" "$2"
   exit 4
 }
 
-wait_budget() { # the whole call gets one round, however many runs share it
-  local left=$((wait_max - (SECONDS - start_seconds)))
-  [ "$left" -ge 0 ] || left=0
-  printf '%s\n' "$left"
-}
-
 # A usage limit outranks every other failure of a batch: it is the one the caller routes on.
 code_rank() { case "$1" in 3) printf '3\n' ;; 5) printf '2\n' ;; 4) printf '1\n' ;; *) printf '0\n' ;; esac; }
 
-COLLECT_RUNNING=false
 collect_run() { # run-id run-dir part-file
   local state account vendor code log web
-  COLLECT_RUNNING=false
-  state=$("$worker_run" wait "$1" --max "$(wait_budget)") || { printf '%s\n' "$state"; return 4; }
-  # The state is recorded at launch, so a run still going can already say it: an --attach round that
-  # named none left the caller waiting on an answer whose grounding it could not tell.
+  # A bare wait streams progress rows into the state; --max only keeps it quiet.
+  state=$("$worker_run" wait "$1" --max "$((1 << 40))") || { printf '%s\n' "$state"; return 4; }
   web=$(web_search_meta_state "$2/meta.json")
-  case "$state" in
-    *'STATUS: running'*) COLLECT_RUNNING=true; printf 'RUN: %s\nSTATUS: running\nWEB: %s\n' "$1" "$web"
-      grep -E '^(LONG-RUN|MEMGUARD):' <<<"$state"; return 0 ;;
-  esac
   printf '%s\n' "$state"
   account=$(jq -r .account "$2/meta.json")
   vendor=$(jq -r .vendor "$2/meta.json")
@@ -150,10 +133,10 @@ units_load() { # run-id — true when the table holds that run
   persist=true
 }
 
-# Collect every unit, then assemble — the exit code is the worst rc of the batch whether or not a
-# unit is still running, because a usage limit one unit hit is what the caller routes on.
+# Collect every unit, then assemble — the exit code is the worst rc of the batch, because a usage
+# limit one unit hit is what the caller routes on.
 units_finish() {
-  local u rc running=false unit_failed=false combined repo_heading counts total=0 verified=0 links=0 checked
+  local u rc unit_failed=false combined repo_heading counts total=0 verified=0 links=0 checked
   local unit_verified unit_total unit_links
   for ((u=0; u<units; u++)); do
     if [ "$persist" = true ] && [ -f "$units_dir/rc.$u" ]; then
@@ -164,20 +147,12 @@ units_finish() {
       rc=0
       collect_run "${run_ids[$u]}" "${run_dirs[$u]}" "$part_dir/part.$u" >"$part_dir/state.$u" || rc=$?
       cat "$part_dir/state.$u"
-      if [ "$COLLECT_RUNNING" = true ]; then
-        running=true
-      elif [ "$persist" = true ]; then
-        printf '%s\n' "$rc" >"$units_dir/rc.$u"
-      fi
+      [ "$persist" = false ] || printf '%s\n' "$rc" >"$units_dir/rc.$u"
     fi
     [ "$rc" -eq 0 ] || unit_failed=true
     [ "$(code_rank "$rc")" -le "$(code_rank "$worst")" ] || worst=$rc
   done
   [ "$persist" = false ] || printf '%s\n%s\n%s\n' "$question_count" "$fanout" "$worst" >"$units_dir/shape"
-  if [ "$running" = true ]; then
-    printf 'OUT: %s\n' "$out"
-    return "$worst"
-  fi
   # A worst that no unit brought back is a later launch's failure: the launched units still land.
   [ "$unit_failed" = false ] || return "$worst"
   for ((u=0; u<units; u++)); do
@@ -234,7 +209,6 @@ if [ -n "$attach" ]; then
   attach_part=$(mktemp "${TMPDIR:-/tmp}/light-research-part.XXXXXX") || exit 4
   trap 'rm -f "$attach_part"' EXIT
   collect_run "$attach" "$run_dir" "$attach_part" || exit $?
-  if [ "$COLLECT_RUNNING" = true ]; then printf 'OUT: %s\n' "$out"; exit 0; fi
   land_answer "$attach_part" "${attach_roots[@]}" || exit 4
   exit 0
 fi

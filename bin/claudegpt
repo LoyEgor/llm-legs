@@ -101,33 +101,6 @@ def run_setup(db, args, env):
         fail("router setup failed at " + " ".join(args[:2]))
 
 
-def relay_agents(directory):
-    """Every agent definition, re-pinned to the chat's own model.
-
-    The glob covers every agent, not just the `*-worker.md` relays: a launch is
-    `--auth-mode provider-only`, so an agent keeping its own Claude `model:` pin
-    reaches no credentials and 401s on its first turn, before any tool call.
-    """
-    agents = {}
-    for path in sorted((directory / "agents").glob("*.md")):
-        parts = path.read_text().split("---", 2)
-        if len(parts) != 3:
-            continue
-        description = re.search(r"^description: (.+)$", parts[1], re.M)
-        if not description:
-            continue
-        # `tools:` is optional and means "inherit every tool"; with the glob over the whole
-        # directory, demanding it would let one stray definition abort the launch.
-        tools = re.search(r"^tools: (.+)$", parts[1], re.M)
-        agents[path.stem] = {
-            "description": description.group(1), "prompt": parts[2].strip(),
-            "model": "inherit",
-        }
-        if tools:
-            agents[path.stem]["tools"] = [tool.strip() for tool in tools.group(1).split(",")]
-    return agents
-
-
 def forwarded_value(forwarded, *flags):
     """The value handed to one of `flags`, `--flag=value` included."""
     for index, argument in enumerate(forwarded):
@@ -361,7 +334,6 @@ def main():
                                "--context-window", str(CONTEXT_WINDOW)], env)
             directory = Path(env.get("CLAUDE_CONFIG_DIR", str(HOME / ".claude")))
             env["CLAUDE_CONFIG_DIR"] = str(directory)
-            agents = relay_agents(directory)
             worker_run = shutil.which("worker-run", path=env.get("PATH"))
             real_claude = shutil.which("claude", path=env.get("PATH"))
             if not real_claude:
@@ -407,8 +379,6 @@ def main():
             command += ["--"]
             if not any(arg == "--effort" or arg.startswith("--effort=") for arg in forwarded):
                 command += ["--effort", env.get("CLAUDE_CODE_EFFORT_LEVEL") or "high"]
-            if agents:
-                command += ["--agents", json.dumps(agents)]
             command += ["--append-system-prompt",
                             "For implementation tasks, implement directly or delegate through "
                             "worker-pick's START line. Never use native implementation agents. Task size "

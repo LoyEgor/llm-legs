@@ -849,7 +849,7 @@ write_state() {
     >"$state_file.tmp.$$" && mv -f "$state_file.tmp.$$" "$state_file"
 }
 
-# Read by the launching agent's task row (bin/subagent-statusline.sh) while the jobs run.
+# Read by the media work line (media-run's pointer names this file) while the jobs run.
 refresh_state() {
   [ "$dry_run" = false ] && [ "$state_dirty" = 1 ] || return 0
   mkdir -p "$work_dir" 2>/dev/null || :

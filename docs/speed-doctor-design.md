@@ -46,7 +46,7 @@ Sources: the 2026-10-02 research notes, now retired: [CT] chat turns, [HC] hooks
 - **R sensitivity**: 88 at R = 2, 287 at R = 10, no plateau. The menu shows all three; the headline is R = 5. A **bound** (his reaction in *any* owner chat confirms presence) is shown, never summed.
 - **Yield and proofs never use the headline's R-selection**: a component's exposure is frozen from its before window (attended share × all owner turns or calls of that class), so shortening a turn below his reaction cannot fake a saving.
 
-**Exclusive partition.** Every blocked minute is split once, in precedence: hook batch > queue (suite slot, media lock, worker slot; charged to the slot holder's job: night, worker or chat) > suite > media local phase > other tool > compaction > generation > residual. B splits along its critical path: pre-CLI, per-attempt run, reroute loss, suites inside, relay tail, notification, continuation turn. Media is a component of A and B with its own drill. Area lines are "of which" and sum to the headline.
+**Exclusive partition.** Every blocked minute is split once, in precedence: hook batch > queue (suite slot, media lock, worker slot; charged to the slot holder's job: night, worker or chat) > suite > media local phase > other tool > compaction > generation > residual. B splits along its critical path: pre-CLI, per-attempt run, reroute loss, suites inside, notification, continuation turn. Media is a component of A and B with its own drill. Area lines are "of which" and sum to the headline.
 
 **Load.** A local span (tool body, hook batch, stop hook, chat start, residual, media local phase) counts its unloaded service time (its class's p50 in the lowest load band) toward its own component; the excess goes to the contention pool **P**. So a hook fix and a background consumer never claim the same minute.
 - [V] Owner-chat Bash Pre+Post hook floors average 1.67 s per call (hooks journals, owner pids), 0.82 s on the lightest day 09-29. At ≈ 331 attended Bash calls/day: ≈ 4.5 OM/d direct, ≈ 4.7 in P.
@@ -81,7 +81,7 @@ Sources: the 2026-10-02 research notes, now retired: [CT] chat turns, [HC] hooks
 | chat · call waits, slow periods | moved `wait`, `local_slow` | Harness `c` events | as Harness |
 | chat · start | launch → ready, by SessionStart source (startup/resume/compact), cold/warm | C11 | compact starts belong to compaction |
 | delegation · blocked | B on the critical path; `result-turn` | C1 `d` rows + C3 | `started_at` is restamped on purpose (slot wait, reroute): queue = `pid_started_at → cli_starts[0]`; owner-decision pauses and `blocked-on-egor` stop the clock; deadline kills are a waste metric followed to a usable result |
-| delegation · overhead | pre-CLI, reroute loss (tail sum), relay tail, notification lag, stragglers, adjudication | C3, `runs.jsonl`, review-log | judged only on task-size-free components, ≥ 50 runs per class, ≥ 30 rounds per tier; wall per vendor × effort × role × warm/cold RESUME is display-only |
+| delegation · overhead | pre-CLI, reroute loss (tail sum), notification lag, stragglers, adjudication | C3, `runs.jsonl`, review-log | judged only on task-size-free components, ≥ 50 runs per class, ≥ 30 rounds per tier; wall per vendor × effort × role × warm/cold RESUME is display-only |
 | delegation · media | queue (lock acquisition incl. failures), prep, launch, render, download, recovery, per (tool, route, requested model, action, size) | C9 | render and failures stay judged by the LLM doctor (Speed converts minutes and links its problem id); rates per active day; only legs inside A ∪ B are judged, ≥ 30 attended legs per cohort, a concurrency band |
 | hooks · per call | batch floor + timeout of every cut hook; per-hook counterfactual floor without h; hook count/CPU term | C2 joined to calls inside A ∪ B (chat, subagent, worker on B's path) | slowest hook, never a sum; grows with transcript size; SubagentStop and SessionStart included; non-bypass sessions keep their floors (only permission waits drop); statusline-only gate keys belong to background |
 | hooks · turn end | stop.d part ms | C2 (`stop.d/<name>`) | attended stop ≈ 0.7 OM/d [CT] |
@@ -236,7 +236,6 @@ Saving is gross (direct + P part). Score = saving × confidence ÷ effort_h.
 | 1 | review-flow-gate sets the Pre-Bash floor | ≈ 2.6 → 2.0 | [V] counterfactual Pre mean −0.47 s/call, owner pids 09-29..10-02 | provable-absence fast path; then `statusline-workdir-hook` (jq before its `bash_worktree` check, no Read branch) and the other full-work hooks, one per night | S · 0.8 · 1.6 |
 | 2 | unattended work at foreground QoS during his hours | P share ≈ 5 → 3 (*est.*) | busy p50 0.87 [V]; merge-kick un-niced; night 12:26–18:16 inside his day [WN] | background QoS, attended suite priority | S · 0.5 · 1.5 |
 | 3 | commit-journal (+ commit-report) Post | ≈ 2.9 → 2.5 | [V] Post mean −0.30..−0.55 s without it | ordering-guaranteed detach; commit-report fast path | M · 0.8 · 0.67 |
-| 4 | relay tail | ≈ 4 → 3 (*est.*) | [WN W4] p95 11 min; reruns of run-all | relays return the report without re-verifying (`risk`); sized by C3 | M · 0.3 · 0.3 |
 | 5 | Σ suite work in llm-legs run-all (throughput-bound) | 9 attended → 1.5 | [V] 2 810 s run: Σ 13 899 s ÷ 5 ≈ wall, pole test_worker_pick 1 838 s; test_llm_limits ≈ 53 machine-min/day, 13 unmocked sleeps | mock sleeps and clocks, test_llm_limits first; staged M | M · 0.5 · 0.25 |
 | 6 | hook work grows with transcript size | ≈ 1.5 → 1 (*est.*) | review-flow-gate 145 → 375 ms from < 1 to 1–10 MB [HC] | O(1) per call | M · 0.5 · 0.17 |
 | 7 | chat start: `instruction-watch.sh baseline` sets the SessionStart p95 21.9 s | ≈ 0.7 (*est.*) | p50 0.76 s [HC] | baseline off the start path, built lazily | S · 0.5 · 0.35 |
@@ -250,7 +249,7 @@ Saving is gross (direct + P part). Score = saving × confidence ÷ effort_h.
 
 **Totals.** Within the fixer's reach ≈ 15 OM/d of 169 (≈ 9 %); ≈ 40 with the owner trades.
 - **Night 1** (one hook lever): #1, #2, #5 stage 1 (≈ 5 h).
-- **Night 2**: #3 as the hook lever; #4 and #8 once C3 holds a week.
+- **Night 2**: #3 as the hook lever; #8 once C3 holds a week.
 
 ## 7. Build stages
 
@@ -273,7 +272,7 @@ Fixtures only, through env overrides: `HOME`, `HARNESS_DOCTOR_DIR`, `HARNESS_DOC
 2. **A foreground-poll deny in owner chats only** (relays and headless exempt). Gain ≈ 1–2 OM/d of overshoot; loss: a 5–10 s re-plan per false denial. Recommend: yes, after a 14-day transcript replay shows zero denials of non-poll commands.
 3. **Night: split the debt round and commit/land per repository** (changes night-run.md's one-round rule), keeping 5 slots. Gain ≈ 1 OM/d on nights inside his day (−2 h of overlap × P rate); loss ≈ 0. The alternative, 8 slots, adds ≈ +0.9 OM/d of P during the overlap, netting ≈ 0. Recommend: the split, 5 slots.
 
-**Unverified**: P and every CPU share until C6/C7; the relay, reroute and QoS savings; detach ordering; payload rebuilding from transcripts; OTel.
+**Unverified**: P and every CPU share until C6/C7; the reroute and QoS savings; detach ordering; payload rebuilding from transcripts; OTel.
 
 ## Appendix: Rejected findings
 

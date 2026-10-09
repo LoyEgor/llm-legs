@@ -61,12 +61,7 @@ initial credential acquisition are serialized with an exclusive lock, while
 authenticated launches run concurrently, each running its own isolated loopback bridge
 and router database.
 
-The launcher reads the usual Claude configuration. Every existing agent
-definition is overridden only for this process to inherit the main model; their
-prompts and tools remain unchanged. The override covers every agent, not just
-the `*-worker.md` relays, because a launch is `--auth-mode provider-only`: an
-agent keeping its own Claude `model:` pin reaches no credentials and 401s on its
-first turn, before any tool call. A short launch-only instruction requests
+The launcher reads the usual Claude configuration. A short launch-only instruction requests
 delegation through the existing worker picker. Worker model and account policy
 remain owned by `worker-run`. A process-local wrapper removes gateway authentication
 from `worker-run` launches so workers use their own vendor profiles.
@@ -242,9 +237,7 @@ and `bin/workflow-burn-gate.sh` (prices a fan-out against the codex account).
 `share/chat_resume.py` for reopening, which is the same rule for a different question.
 
 Doctrine follows the same line: `anthropic.ccr.sol` / `anthropic.ccr.astra` is a session model the
-orchestrator rules bind exactly as they bind Fable — implementation through `worker-run` relay
-workers, native agents only for read-only helpers, read-only fan-out rewritten onto
-`light-research` — enforced for every session alike by `bin/worker-spawn-hook.sh`
+orchestrator rules bind exactly as they bind Fable — implementation through `worker-run`; only `fork` spawns — enforced for every session alike by `bin/worker-spawn-hook.sh`
 (`docs/shared-invariants.md` row `bt`).
 
 ## Reopening a gateway chat

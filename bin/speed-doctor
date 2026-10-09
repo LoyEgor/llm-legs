@@ -67,9 +67,6 @@ LEVERS = [
     {"component": "chat/start", "lever": "instruction-watch baseline off the start path",
      "effort": "S", "confidence": "estimated", "saving": 0.5, "night_cost_h": 0.0, "proof": "latency", "hooks": True,
      "hook": "instruction-watch.sh baseline", "quality": "equivalent"},
-    {"component": "delegation/workers", "lever": "relays return the report without re-verifying",
-     "effort": "M", "confidence": "unmeasured", "saving": 0.05, "night_cost_h": 0.0, "proof": "orchestration",
-     "quality": "risk"},
     {"component": "delegation/media", "lever": "lock-aware account pick, event-driven hiding",
      "effort": "M", "confidence": "unmeasured", "saving": 0.2, "night_cost_h": 0.0, "proof": "media",
      "quality": "equivalent"},
@@ -85,7 +82,7 @@ LEVERS = [
 ]
 SLICE_LEVER = {"effort": "M", "confidence": "unmeasured", "saving": 0.3, "night_cost_h": 0.0, "proof": "tail",
                "quality": "equivalent"}
-NO_SLICE_LEVER = ("chat/residual",)
+NO_SLICE_LEVER = ("chat/residual", "delegation/workers")
 CHAT_LEAVES = (("hook", "hooks"), ("stop", "hooks"), ("queue", "queue"), ("test", "tests"), ("media", "media"),
                ("tool", "tools"), ("compact", "compaction"), ("gen", "model"), ("resid", "residual"))
 HOLE_LAYERS = ("dark", "ask")
@@ -118,7 +115,7 @@ def validate_levers(levers):
 
 def slice_levers(partition):
     """A partition slice no LEVERS row names still ranks by its minutes, on a generic output-equivalent lever; the
-    model slice stays forbidden and the residual is a blind spot."""
+    model slice stays forbidden; the residual and the task-sized worker runs are blind spots."""
     named = {l["component"] for l in LEVERS} | set(FORBIDDEN_COMPONENTS) | set(NO_SLICE_LEVER)
     return [dict(SLICE_LEVER, component=component,
                  lever="cut the %s wait toward its floor, outputs unchanged" % component.split("/", 1)[1])

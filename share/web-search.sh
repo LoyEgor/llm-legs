@@ -95,7 +95,7 @@ web_search_brief_state() { # brief — prints on|off, or nothing when the brief 
     fi
     [ "$header" = true ] || continue
     case "$line" in
-      RESUME\ *:* | ATTACH\ *:*) continue ;;
+      RESUME\ *:*) continue ;;
     esac
     [[ "$line" =~ ^[A-Z][A-Z-]*: ]] || header=false
   done <"$brief"
