@@ -175,6 +175,21 @@ assert test ! -s "$RUN_DIR/out"
 assert test ! -s "$RUN_DIR/err"
 fi
 
+if suite_shard_owns 1 wd-answered; then
+# Found already holding the launch's first answer, then frozen: one long first tool call, no hung start.
+clear_stub
+set_config 'claudeb_profile=pinned'
+export PICK_RC=0 PICK_ACCOUNT=answered STUB_SLEEP=6 STUB_TRANSCRIPT_SESSION=answered-session \
+  STUB_TRANSCRIPT_ACCOUNT=answered STUB_TRANSCRIPT_SAY='running the suite' \
+  WORKER_RUN_SILENT_S=2 WORKER_RUN_IDLE_S=0 WORKER_RUN_DEADLINE=600
+start_ok claudeb
+unset STUB_SLEEP STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT STUB_TRANSCRIPT_SAY \
+  WORKER_RUN_SILENT_S WORKER_RUN_IDLE_S WORKER_RUN_DEADLINE
+answered_wait=$("$RUNNER" wait "$RUN_ID" --max 60)
+assert grep -qx 'STATUS: done' <<<"$answered_wait"
+assert test ! -e "$RUN_DIR/killed"
+fi
+
 if suite_shard_owns 4 wd-symlink; then
 # Through a SYMLINK, because that is the only shape a real profile has: `<profile>/projects` points
 # at `~/.claude/projects`, and a walk that does not follow one answers an empty tree — so discovery

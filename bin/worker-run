@@ -462,6 +462,15 @@ record_session_file() { # directory session transcript
 }
 
 # Shared-checkout dirt is not this run's activity; only paths its own transcript names count.
+transcript_answered() { # directory since
+  local transcript since="${2:-0}"
+  [[ "$since" =~ ^[0-9]+$ ]] || since=0
+  { IFS= read -r transcript <"$1/session-file"; } 2>/dev/null && [ -f "$transcript" ] || return 1
+  jq -ne --argjson since "$since" 'any(inputs; .type? == "assistant" and
+    ((((.timestamp? // "") | tostring | sub("\\.[0-9]+"; "")) | fromdateiso8601? // 0) >= $since))' \
+    <"$transcript" >/dev/null 2>&1
+}
+
 activity_fingerprint() { # directory vendor workdir
   local directory="$1" vendor="$2" workdir="$3" path stamp observed=y fingerprint='' session_path
   if [ "$vendor" = claudeb ]; then
@@ -605,6 +614,9 @@ run_with_deadline() {
       fi
       # A tool call waiting in a limiter (a suite slot) is no hung worker.
       ! holds_in_tree "$child" || { idle_since=$wd_now silent_since=$wd_now; }
+      # A transcript found already holding this launch's first answer (its first tool call long
+      # running) never moved under observation, yet its start was not hung.
+      [ "$ever_active" -eq 1 ] || ! transcript_answered "$directory" "$WD_STARTED" || ever_active=1
       # SILENT catches a hung START only: once the run has shown activity, a single long tool call
       # (a suite) freezes every source for many minutes and only IDLE may judge it (live 2026-09-24:
       # two sweep fixers killed mid `tests/run-all`).
