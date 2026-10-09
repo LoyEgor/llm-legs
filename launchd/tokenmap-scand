@@ -90,6 +90,12 @@ elif [ "$repo_ok" -eq 1 ]; then
     printf '%s scan skipped: export is fresh\n' "$(stamp)" >>"$LOG"
 fi
 
+# Haiku judges each new harness commit Upkeep or Development for Spend; launchd's PATH lacks claudeb.
+if [ "$repo_ok" -eq 1 ]; then
+    canary "kinds tokenmap" env PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin" PYTHONPATH="$REPO" \
+        nice -n 19 "$PYTHON" -m tokenmap kinds
+fi
+
 if [ "$repo_ok" -eq 1 ]; then
     canary "canary tokenmap" env PYTHONPATH="$REPO" nice -n 19 "$PYTHON" -m tokenmap canary
     canary "verify tokenmap" env PYTHONPATH="$REPO" nice -n 19 "$PYTHON" -m tokenmap verify --no-color
