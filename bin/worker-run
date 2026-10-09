@@ -4240,16 +4240,19 @@ chrome_runs() { # [jq-filter] live run ids that may be driving Google Chrome
     done
 }
 
-# The menu's Chrome row is the harness doctor's, which launchd runs only every 5 min.
-harness_kick() {
-  if [ -n "${WORKER_RUN_DOCTOR_KICK:-}" ]; then "$WORKER_RUN_DOCTOR_KICK" >/dev/null 2>&1 || :
-  elif [ -z "${WORKER_RUN_DIR:-}" ]; then launchctl kickstart "gui/$(id -u)/com.egor.harness-doctor" >/dev/null 2>&1 || :; fi
-}
-
+# browse/chrome-live is what the menu's Show Chrome checkbox reads on every open. Not the harness doctor:
+# launchd drops a kickstart while the doctor is mid-run, and its 1-3 min runs outlast short browser runs.
 chrome_run_edge() { # directory start|end
   jq -e "$CHROME_BROWSER_RUN" "$1/meta.json" >/dev/null 2>&1 || return 0
-  [ "$2" = start ] || chrome_runs "$CHROME_BROWSER_RUN" | grep -qvxF -- "${1##*/}" || rm -f "$(browse_dir)/hidden"
-  harness_kick
+  local dir live
+  dir=$(browse_dir)
+  live=$(chrome_runs "$CHROME_BROWSER_RUN" | grep -vxF -- "${1##*/}")
+  [ "$2" = end ] || live=$(printf '%s\n%s\n' "$live" "${1##*/}" | sed '/^$/d')
+  if [ -n "$live" ]; then
+    mkdir -p "$dir" && printf '%s\n' "$live" >"$dir/chrome-live.$$" && mv -f "$dir/chrome-live.$$" "$dir/chrome-live"
+  else
+    rm -f "$dir/chrome-live" "$dir/hidden"
+  fi
 }
 
 say_run() {
@@ -5778,12 +5781,10 @@ browse_run() {
       ! browse_chrome_running || browse_chrome_visible false
       "${BROWSE_PS:-ps}" -Ao command= | awk '/\/MacOS\/Google Chrome( |$)/ { print; exit }' | grep -q -- "${CHROME_FLAGS[2]}" ||
         printf 'WARNING: this Chrome runs without the anti-throttling flags: hidden page timers slow to ~1/min\n'
-      harness_kick
       printf 'CHROME: hidden\n' ;;
     show)
       ! browse_chrome_running || browse_chrome_visible true
       rm -f "$(browse_dir)/hidden"
-      harness_kick
       printf 'CHROME: shown\n' ;;
     *)
       for account in $(browse_pool); do

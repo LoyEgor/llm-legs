@@ -2586,11 +2586,8 @@ def running_now(now):
 # ---------------------------------------------------------------- document
 
 
-def row(cells, red=(), dim=False, menu=None, key=None, say=None, green=(), judge=None, head=None, action=None,
-        chrome_check=False):
+def row(cells, red=(), dim=False, menu=None, key=None, say=None, green=(), judge=None, head=None, action=None):
     out = {"cells": [str(c) for c in cells], "red": sorted(set(red)), "dim": bool(dim) and not action}
-    if chrome_check:
-        out["chrome_check"] = True
     if action:
         out["action"] = [str(a) for a in action]
     if head:
@@ -4472,15 +4469,6 @@ def browser_processes():
         return []
 
 
-def browser_chrome_runs():
-    command = (os.environ.get("HARNESS_BROWSE_CMD") or os.path.join(ROOT_DIR, "bin", "worker-run")).split()
-    try:
-        return subprocess.run(command + ["_chrome-runs", "--browser"], capture_output=True, text=True,
-                              timeout=20).stdout.split()
-    except (OSError, subprocess.SubprocessError):
-        return []
-
-
 def browser_section(now, write=False):
     """One row per enrolled account from accounts.json and the outcome log the supervisor writes, plus Dia's
     AppleScript flag from process arguments. No file a browser writes is read: Chrome and Dia rewrite theirs live."""
@@ -4554,9 +4542,6 @@ def browser_section(now, write=False):
                                        evidence=[evidence(now, "ps:dia", say)], bad=1)]))
         rows.append(row(["Restart Dia with AppleScript JS — unsaved input may be lost", "", ""],
                         action=["dia-js", "--relaunch"]))
-    if browser_chrome_runs():
-        rows.append(row(["Show Chrome", "", ""],
-                        action=["worker-run", "browse", "--toggle"], chrome_check=True))
     return section("Browser", rows, ["", "", ""], [False, False, False],
                    ok="every enrolled account proved its Chrome profile, no browser run went around the harness in 72 h",
                    blind="" if accounts else "no account is enrolled: worker-run browse --enroll all")
@@ -5194,8 +5179,7 @@ class MenuLines:
                     lead = len(piece[:len(piece) - len(piece.lstrip(" ·,"))].encode())
                     spans.append((style, at + lead, size - lead))
                 at += size
-        self.emit(depth, ("d" if item.get("dim") else "") + ("v" if item.get("chrome_check") else ""), spans, text,
-                  item.get("action"))
+        self.emit(depth, "d" if item.get("dim") else "", spans, text, item.get("action"))
         if item.get("menu"):
             self.layout(item["menu"], depth + 1)
 
@@ -5224,8 +5208,7 @@ class MenuLines:
             if source is None:
                 self.emit(depth, "d", [], text)
             else:
-                self.emit(depth, ("d" if source.get("dim") else "") + ("v" if source.get("chrome_check") else ""),
-                          spans, text, source.get("action"))
+                self.emit(depth, "d" if source.get("dim") else "", spans, text, source.get("action"))
                 if source.get("menu"):
                     self.layout(source["menu"], depth + 1)
 

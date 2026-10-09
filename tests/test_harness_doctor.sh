@@ -1515,7 +1515,6 @@ os.environ.pop("HARNESS_LIBEXEC_DIR")
 os.environ.pop("HARNESS_DEPLOY_SOURCE")
 B = m.browser_section
 m.browser_processes = lambda: []
-m.browser_chrome_runs = lambda: []
 runs = os.environ["WORKER_RUN_DIR"]
 shutil.rmtree(os.path.join(runs, "browse"), ignore_errors=True)
 check(B(T)["state"] == "blind" and judged(B(T)) == {}, "Browser: nothing enrolled is blind, nothing judged")
@@ -1570,19 +1569,6 @@ m.browser_processes = lambda: ["/Applications/Dia.app/Contents/MacOS/Dia --enabl
 part = B(T)
 check(("browser-applescript-js", "dia") not in judged(part) and restart not in [r["cells"][0] for r in part["rows"]],
       "Browser: Dia with its JS flag is fine and offers no restart")
-check(not any(r["cells"][0].startswith("Show Chrome") for r in part["rows"]), "Browser: no live Chrome run, no hide row")
-m.browser_chrome_runs = lambda: ["r1", "r2"]
-acts = {r["cells"][0]: r.get("action") for r in B(T)["rows"]}
-check(acts.get("Show Chrome") == ["worker-run", "browse", "--toggle"],
-      "Browser: live Chrome runs add the Show Chrome toggle")
-m.browser_chrome_runs = lambda: ["r1"]
-part = B(T)
-menu = m.MenuLines(0, 0, "t")
-menu.layout(part, 0)
-line = [l for l in menu.lines if "Show Chrome" in l][0]
-check(line.split("\t")[1] == "va" and line.endswith("\tworker-run\x1fbrowse\x1f--toggle"),
-      "Browser: the Show Chrome row is flagged v (checked live by the menu) and a")
-m.browser_chrome_runs = lambda: []
 calls = os.path.join(work, "browse-calls")
 if os.path.exists(calls):
     os.remove(calls)

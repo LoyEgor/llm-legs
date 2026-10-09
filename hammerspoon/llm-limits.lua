@@ -1786,7 +1786,7 @@ local function readHarnessMenu()
   if not contents then return nil end
   local red, asOf, title = contents:match("^T\t(%d+)\t(%d+)\t([^\n]*)")
   if not title then return nil end
-  local root, stack, chromeChecks = {}, {}, {}
+  local root, stack = {}, {}
   stack[0] = root
   for depth, flags, spans, text in contents:gmatch("\n(%d+)\t(%w*)\t([^\t\n]*)\t([^\n]*)") do
     depth = tonumber(depth)
@@ -1804,8 +1804,6 @@ local function readHarnessMenu()
         end
       end
       local item = harnessLine(flags, spans, text)
-      local chromeCheck = flags:find("v", 1, true) ~= nil
-      if chromeCheck then item.plainTitle, chromeChecks[#chromeChecks + 1] = text, item end
       if item.title ~= "-" then
         if actionPath then
           item.fn = function() startDiagnosticsTask("harnessActionTask", actionPath, actionArgs) end
@@ -1813,7 +1811,7 @@ local function readHarnessMenu()
           item.disabled = true
         end
       end
-      if not chromeCheck then parent[#parent + 1] = item end
+      parent[#parent + 1] = item
       local children = {}
       stack[depth + 1] = children
       item.children = children
@@ -1829,8 +1827,7 @@ local function readHarnessMenu()
     end
     return items
   end
-  local document = { red = tonumber(red), as_of = tonumber(asOf), title = title, items = settle(root),
-    chromeChecks = chromeChecks }
+  local document = { red = tonumber(red), as_of = tonumber(asOf), title = title, items = settle(root) }
   if key then harnessCache.key, harnessCache.document = key, document end
   return document
 end
@@ -1876,12 +1873,12 @@ function M.harnessDoctorEntry()
 end
 
 function M.chromeToggleItem()
-  local document = readHarnessMenu()
-  local item = document and document.chromeChecks[1]
-  if not item then return nil end
+  local live = readTextFile(os.getenv("HOME") .. "/.cache/claude-worker-runs/browse/chrome-live")
   local chrome = hs.application.get("com.google.Chrome")
-  -- Checked live on every open: the cached menu.txt lags a hide or show by up to the collector's run.
-  return { title = item.plainTitle, checked = chrome and not chrome:isHidden() or false, fn = item.fn }
+  local path, args = harnessAction("worker-run\31browse\31--toggle")
+  if not (live and live:find("%S") and chrome and path) then return nil end
+  return { title = "Show Chrome", checked = not chrome:isHidden(),
+    fn = function() startDiagnosticsTask("harnessActionTask", path, args) end }
 end
 
 local function appendChats(menu)

@@ -29,7 +29,6 @@ cat "$bt/tabs"
 EOF
   printf '#!/bin/sh\n[ "$1" = front ] && echo ASN:0x0-0x1: || printf "    bundleID=\\"%%s\\"\\n" "$(cat "%s/front")"\n' "$bt" >"$bt/stub/lsappinfo"
   echo com.apple.Terminal >"$bt/front"
-  printf '#!/bin/sh\necho kick >>"%s/kick.log"\n' "$bt" >"$bt/stub/kick"
   printf '#!/bin/sh\ncat "%s/dia-tabs"\n' "$bt" >"$bt/stub/dia-js"
   cat >"$bt/stub/open" <<EOF
 #!/bin/sh
@@ -65,9 +64,9 @@ EOF
   printf 'cccccccc-3333-4333-8333-333333333333\n' >"$bt/device-lost"
   local BROWSE_PGREP="$bt/stub/pgrep" BROWSE_OSASCRIPT="$bt/stub/osascript" BROWSE_OPEN="$bt/stub/open" BROWSE_PS="$bt/stub/ps"
   local BROWSE_DIA_JS="$bt/stub/dia-js" BROWSE_CHROME_USER_DATA="$bt/chrome" BROWSE_SEEN_WAIT=2 BROWSE_WINDOW_WAIT=6 BROWSE_SETTLE_S=0
-  local BROWSE_LSAPPINFO="$bt/stub/lsappinfo" WORKER_RUN_DOCTOR_KICK="$bt/stub/kick"
+  local BROWSE_LSAPPINFO="$bt/stub/lsappinfo"
   export BROWSE_PGREP BROWSE_OSASCRIPT BROWSE_OPEN BROWSE_PS BROWSE_DIA_JS BROWSE_CHROME_USER_DATA BROWSE_SEEN_WAIT BROWSE_WINDOW_WAIT BROWSE_SETTLE_S
-  export BROWSE_LSAPPINFO WORKER_RUN_DOCTOR_KICK
+  export BROWSE_LSAPPINFO
   local front='-e tell application "System Events" to set frontmost of first application process whose bundle identifier is "com.apple.Terminal" to true'
   local registry="$WORKER_RUN_DIR/browse/accounts.json" log="$WORKER_RUN_DIR/browse/log.jsonl"
   browse() { WORKER_RUN_CLAUDEB="$bt/stub/claudeb" "$RUNNER" browse "$@"; }
@@ -90,7 +89,6 @@ EOF
   assert grep -qx 'CHROME: hidden' <<<"$out"
   assert grep -q '^WARNING: this Chrome runs without the anti-throttling flags' <<<"$out"
   assert grep -qxF -- '-e tell application "System Events" to set visible of process "Google Chrome" to false' "$bt/osa.log"
-  assert test "$(wc -l <"$bt/kick.log")" -eq 1
   : >"$bt/osa.log"
   cp "$bt/tabs" "$bt/tabs.1"; cp "$bt/open.log" "$bt/open.1"
   browse --window extra >/dev/null
@@ -102,15 +100,13 @@ EOF
   assert grep -qx 'CHROME: shown' <<<"$(browse --show)"
   assert test ! -e "$WORKER_RUN_DIR/browse/hidden"
   assert grep -qxF -- '-e tell application "System Events" to set visible of process "Google Chrome" to true' "$bt/osa.log"
-  assert test "$(wc -l <"$bt/kick.log")" -eq 2
-  : >"$bt/kick.log"
   # 1c: --toggle (the menu checkbox) shows a hidden Chrome and hides a visible one
   echo false >"$bt/visible"
   assert grep -qx 'CHROME: shown' <<<"$(browse --toggle)"
   echo true >"$bt/visible"
   assert grep -qx 'CHROME: hidden' <<<"$(browse --toggle)"
   assert test -e "$WORKER_RUN_DIR/browse/hidden"
-  rm -f "$WORKER_RUN_DIR/browse/hidden"; : >"$bt/kick.log"
+  rm -f "$WORKER_RUN_DIR/browse/hidden"
 
   # 2: --seen reads the target browser's own tab list
   printf 'https://example.com/?wr=tok-1\n' >>"$bt/tabs"
@@ -177,11 +173,11 @@ EOF
   # 5: BROWSER: chrome in the brief is a Chrome run on the account's own profile
   printf 'BROWSER: chrome\nACCOUNT: com\nfill the form\n' >"$WORK/brief"
   clear_stub
-  : >"$bt/kick.log"
-  start_ok claudeb
+  STUB_SLEEP=2 start_ok claudeb
+  # the menu's Show Chrome checkbox reads browse/chrome-live: written at a Chrome run's start, gone after the last ends
+  assert test "$(cat "$WORKER_RUN_DIR/browse/chrome-live")" = "$RUN_ID"
   assert await_done
-  # the menu's Chrome row is refreshed at a Chrome run's start and end
-  assert test "$(wc -l <"$bt/kick.log")" -eq 2
+  assert test ! -e "$WORKER_RUN_DIR/browse/chrome-live"
   assert test "$(head -n 1 "$RUN_DIR/browser-preamble")" = '# Browser preamble (Claude in Chrome / Google Chrome / com)'
   assert grep -q "\`$dev_com\` first when listed" "$RUN_DIR/browser-preamble"
   assert grep -qF -- '- Never put `tabs_close_mcp` in a `browser_batch` with any other action' "$RUN_DIR/browser-preamble"
@@ -313,6 +309,7 @@ EOF
   : >"$WORKER_RUN_DIR/browse/hidden"
   deliver 'OUTCOME: BROWSER_OK' 0 >/dev/null
   assert test -e "$WORKER_RUN_DIR/browse/hidden"
+  assert test "$(cat "$WORKER_RUN_DIR/browse/chrome-live")" = live-browser
   mkdir -p "$WORKER_RUN_DIR/live-computer"
   printf '{"pid":%s,"started_at":%s,"computer":true}\n' "$holder" "$(date +%s)" >"$WORKER_RUN_DIR/live-computer/meta.json"
   assert test "$("$RUNNER" _chrome-runs --browser)" = live-browser
@@ -322,6 +319,7 @@ EOF
   wait "$holder" 2>/dev/null || true
   deliver 'OUTCOME: BROWSER_OK' 0 >/dev/null
   assert test ! -e "$WORKER_RUN_DIR/browse/hidden"
+  assert test ! -e "$WORKER_RUN_DIR/browse/chrome-live"
   rm -rf "$WORKER_RUN_DIR/live-browser"
   unset -f browse deliver
 
