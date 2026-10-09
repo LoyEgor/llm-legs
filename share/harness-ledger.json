@@ -4769,9 +4769,31 @@
       "reviewed_by": "night fixer harness-tests-20261007T214027Z-31b6",
       "note": "Of the 48 runs, 23 (3925 s) were one worker (claudeb-1791368833-96854-3ac2, worktree fix-suite-flakes-statusline-browse) rerunning the suite on one unchanged head 8b661c8d to chase a flake, and 10 (1350 s) were this fixer's own profiling; the other ~15 cost ~3000 s, a watch. Per run ~126 s at load ~5 (CPU ~100 s, sys > user: fork-bound); timing wrappers put ~87 s in the code under test (387 statusline.sh renders ~26 s, 227 worker-launch-gate ~21 s, 294 workdir-hook ~16 s, 80 worker-tag-hook ~14 s, 62 subagent-statusline ~7 s), so the test side held ~40 s. Fixed: the slow Codex refresher held 10 s of pure sleep (now a release file, max 10 s, so a blocking render still fails < 8 s; mutation: a synchronous kick goes red at assert 1024), and debt_render polled 5 s for a cache a missing review-debt binary never writes; side by side 126 s -> 108 s. Left as load-bearing: the 3 s .claim.lock hold (tag_lock's 30 x 0.1 s), the 8.5 MB transcript renders (~1.6 s each, the code's own scan), the 1 s and 0.2-0.3 s negative-check waits. A flake hunt's repeat runs on one head count as daily cost like any other: see blind_spots.",
       "handoff": null
+    },
+    {
+      "id": "speed-delegation-reviews",
+      "title": "Speed's reviews slice: the attended review-bench wait is the panel's reviewer model time",
+      "match": {
+        "rule": "opportunity",
+        "ident": "delegation/reviews"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-10-09",
+      "reviewed_by": "night fixer harness-speed-delegation-reviews-20261009T024756Z-0064",
+      "note": "2026-10-09: ruled out. The slice is attended `review-bench wait` (bin/speed-doctor delegation_leaf), launch to notification. Non-model parts measured: (1) the review-waiter Agent relay, retired in llm-legs@ee185fa8, cost 2.1 s spawn + 1.4 s final message (medians, 109 waiter transcripts in ~/.claude/projects) of a 671 s median wait; 62 of the window's 67 rows predate it; (2) review-bench cmd_wait polls panel_still_running every PANEL_POLL_S 2 s, ~1 s per review; (3) review-cells slot holds (launch.py admitted): all 106 on 2026-10-09 (9892 s, p50 68 s) belong to the unattended bench chat 7977deeb, none to the attended chat c0f23f02. The rest is reviewer cells' model time, which Speed never trades. Cheapest cut: event-driven panel exit instead of the 2 s poll saves ~1000 ms x ~3/day, costs a review-bench change (another repository). The slice lever's 30 % saving is the generic SLICE_LEVER, not a measurement: see blind_spots delegation-model-time.",
+      "handoff": "docs/handoffs/2026-10-09-delegation-reviews-floor.md"
     }
   ],
   "blind_spots": [
+    {
+      "id": "delegation-model-time",
+      "what": "how much of a delegation slice (reviews, workers) is the delegate's model time versus queue, relay and poll",
+      "reason": "speed-doctor credits a delegation span whole to its leaf and prices it with the generic SLICE_LEVER 30 %, so delegation/reviews read 2.0 min/day cuttable while the attended review waits were reviewer model time plus a 2 s poll (2026-10-09, measured by hand from transcripts and the waits store)",
+      "since": "2026-10-09",
+      "would_catch_if": "a delegation slice subtracted the review-cells and workers holds its caller made and the delegate's own model seconds, and priced only the rest"
+    },
     {
       "id": "collector-run-starved",
       "what": "a doctor collector run that is starved or killed before it ends",
