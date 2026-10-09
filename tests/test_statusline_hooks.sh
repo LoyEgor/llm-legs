@@ -3639,8 +3639,22 @@ assert grep -Fq "${GREEN}+2${RESET}/${RED}-0${RESET}" <<< "$dunborn_out"
 printf 'p\nq\n' > "$REPO_E/f.txt"
 dunborn2_out=$(run_statusline "$(statusline_payload diff-unborn-mod "$unborn_extra")")
 assert grep -Fq "${GREEN}+2${RESET}/${RED}-0${RESET}" <<< "$dunborn2_out"
+fi
+# The rate-limit cache render-pins leaves behind, so later renders read it in any shard.
+seed_rl_cache() {
+  [ ! -e "$HOME/.claude/statusline-cache-rl" ] || return 0
+  mkdir -p "$HOME/.claude"
+  jq -cn --argjson now "$(date +%s)" '
+    {five_hour:{used_percentage:70,resets_at:($now+3600),as_of:$now,origin:"session"},
+     seven_day:{used_percentage:7,resets_at:($now+86400),as_of:$now,origin:"session"},auth:{status:"ok",checked_at:$now}}' \
+    >"$HOME/.claude/statusline-cache-rl"
+}
+seed_rl_cache
 
+if suite_shard_owns 3 ports-probe; then
 # --- statusline-ports-probe.sh ---
+# Its own clock: the shard that runs this section skips render-pins, which stamps NOW.
+NOW=$(date +%s)
 PORTS_PROBE="$ROOT/bin/statusline-ports-probe.sh"
 FAKE_PS="$FIXTURES/ports-ps"
 cat > "$FAKE_PS" <<'PSEOF'
@@ -3980,7 +3994,7 @@ assert grep -Eq $'^[0-9]{16}\t[0-9]+\t([0-9]+|-)\twork$' "$probe_rows"
 # store; per-session caches go after a week, the place journals never.
 fi
 age_path() { touch -t "$(date -r "$(($(date +%s) - $1))" +%Y%m%d%H%M.%S)" "$2"; }
-if suite_shard_owns 2 sweep; then
+if suite_shard_owns 3 sweep; then
 prune_limits="$HOME/.claude-profiles/.claudeb/limits"
 mkdir -p "$prune_limits" "$STATE_DIR/old-probe.lock"
 for prune_file in x.tmp.1 y.tmp.2 work-old work-new scan-old rl-cost-old unpushed-old review-autonomy-old \
@@ -4608,13 +4622,7 @@ TAGDIR="$HOME/.cache/claude-worker-tags/wt"
 # The limits state render-pins leaves behind, so the worker-tag renders read it in any shard.
 printf '{}' > "$WORK/limits.json"
 RUN_STATUSLINE_DEFAULT_ACCOUNT=
-if [ ! -e "$HOME/.claude/statusline-cache-rl" ]; then
-  mkdir -p "$HOME/.claude"
-  jq -cn --argjson now "$(date +%s)" '
-    {five_hour:{used_percentage:70,resets_at:($now+3600),as_of:$now,origin:"session"},
-     seven_day:{used_percentage:7,resets_at:($now+86400),as_of:$now,origin:"session"},auth:{status:"ok",checked_at:$now}}' \
-    >"$HOME/.claude/statusline-cache-rl"
-fi
+seed_rl_cache
 
 if suite_shard_owns 3 worker-tags; then
 # A fork's first call claims the seed its spawn left and prefixes the tag; later calls reuse it, a

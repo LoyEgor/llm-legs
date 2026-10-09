@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 . "${BASH_SOURCE%"${BASH_SOURCE##*/}"}lib/suite-journal.sh"
+# shards: 3
 set -u
 
 # The suite reads docs/routing-contract.md as the specification: three rules (pool-toggle
@@ -156,6 +157,7 @@ query_case() {
   query "$@"
 }
 
+if suite_shard_owns 1 wp-golden; then
 write_config
 run_case golden
 if [ "${WORKER_PICK_UPDATE_GOLDEN:-0}" = 1 ]; then
@@ -513,9 +515,11 @@ query --account claudeb --exclude dry,tie-b,tie-a,session
 assert test "$query_rc" -eq 3
 assert grep -q 'pin dry excluded → no selectable account' "$WORK/query.err"
 write_config
+fi
 
 # Stale usage at 100% never skips or clears a pin. Only a met run-observed wall does.
 pinned_now() { sed -n 's/^claudeb_profile=//p' "$CONFIG"; }
+if suite_shard_owns 1 wp-pins; then
 kept_case() {
   write_config "claudeb_profile=$1"
   run_filter claude_pool "$2"
@@ -701,6 +705,7 @@ run_filter codex_plain '.vendors.codex.accounts = [
 assert contains "$(nrow 1)" 'codex/main'
 assert test "$(sed -n 's/^codex_profile=//p' "$CONFIG")" = main
 write_config
+fi
 
 # Grok is the fourth vendor and reads the same three rules, with one bucket and one auth softening:
 # weekly is all it measures, so no five-hour deferral applies, and an `expired` access token is one
@@ -721,6 +726,7 @@ GROK_PAIR='{available:true,accounts:[
 GROK_PAIR_JSON='{"available":true,"accounts":[
   {"account":"supergrok","enabled":true,"weekly":{"used_pct":40},"auth":{"status":"ok"}},
   {"account":"spare","enabled":true,"weekly":{"used_pct":10},"auth":{"status":"ok"}}]}'
+if suite_shard_owns 1 wp-grok-next; then
 # A store with no grok row at all is the state of every machine before the collector lands: the
 # vendor is simply absent from the render, never a wall and never a failed lookup.
 run_case golden
@@ -998,6 +1004,9 @@ run_filter golden "$TWO_BY_TWO
 assert contains "$(nrow 1)" 'grok/spare grok·high'
 assert before "$(next_block)" 'grok/spare' 'claude/session'
 assert contains "$(next_block)" 'session* opus·high 5h!'
+fi
+
+if suite_shard_owns 2 wp-roles; then
 # Walled, off, and dead-auth stay skips even when the table has room.
 run_case claude_pool
 assert not_contains "$(next_block)" 'claude/off'
@@ -1736,7 +1745,9 @@ assert test -z "$query_out"
 query_case all_walled --account codex
 assert test "$query_rc" -eq 3
 assert grep -q 'no selectable codex account' "$WORK/query.err"
+fi
 
+if suite_shard_owns 3 wp-hygiene; then
 # Data hygiene (shared-invariants y): effective_pct beats a stale raw reading, a bucket past
 # its reset reads 0%, and a weekly stamped `origin: headers` was never measured at all.
 run_case stale
@@ -2515,4 +2526,5 @@ assert test "$(cat "$WORK/gate-reads")" = read
 gate_start claudeb "$WORK/gate-brief" >/dev/null
 assert test "$(cat "$WORK/gate-reads")" = read
 
+fi
 printf 'PASS:%s assertions; the routing-contract rules (pool-toggle candidacy with a computable daily budget, pin-or-largest-budget selection where a nearer reset outranks an equal percentage and equal budgets order by name, walls only at effective 100%% with dead auth its own state), the five-hour deferral at 80%% with its `5h!` tag, claims as the second soft key (fresh demotes, TTL-expired does not, per-vendor, table never writes one, a refused query records nothing), the session account as an ordinary candidate in every role with no reserve anywhere, the seven roles including chat, research, light and computer without pins or role keys and light, image and computer ignoring workers-off and the pin alike, loud pin lapses, the fable bucket on explicit ask, --exclude re-queries and ALL WALLED exit 3, an emptied pool named as the switch it is rather than a limit, a NEXT block that ranks the top five ACCOUNTS across the vendors with several rows per vendor allowed, pins above budget and walls out of it, grok as the fourth vendor (weekly-only ranking, refreshable `expired` auth behind `ok`, mode arm, and absence that renders as absence), data hygiene and DATA age sourcing that a parked vendor contributes nothing to, the all-paused run naming the pause once and nothing else in the render and in the fail-safe alike, model/effort straight from worker-model, account rows that print the daily budget that ranked them with WALLED kept to the usage wall, a DATA line that names the stale rows instead of branding the table, the vendor and account a gateway chat owns rather than a Claude row it never spends, and the output/decision golden contract with no routing prose\n' "$asserts"
