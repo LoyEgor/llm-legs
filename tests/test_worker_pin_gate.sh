@@ -526,6 +526,13 @@ rm -f "$GRANT"
 chmod 000 "$WORDS_DIR/s"
 assert allowed "$(write_event "$PIN_FILE")"
 chmod 700 "$WORDS_DIR/s"
+# The door's open gate opens this pin like every other; his chat-scoped word still does not.
+pin_grant chat
+jq -nc --argjson u "$(($(date +%s) + 3600))" '{until: $u}' >"$WORDS_DIR/gate-open"
+assert allowed "$(write_event "$PIN_FILE")"
+rm -f "$WORDS_DIR/gate-open"
+assert denied "$(write_event "$PIN_FILE")"
+rm -f "$WORDS_DIR/s/grant.pin"
 # Egor's autonomy span moves the pin with no grant at all.
 printf '. %q\nwords_span_live() { [ "$1" = "$SPAN_SID" ]; }\n' "$WORDS_LIB" >"$WORK/span-words.sh"
 assert denied "$(WORDS_LIB="$WORK/span-words.sh" SPAN_SID=other write_event "$PIN_FILE")"
@@ -629,6 +636,29 @@ WORDS_LIB="$WORK/span-only.sh" CLAUDE_CODE_SESSION_ID=s \
 assert contains "$(cat "$REAL_PIN")" 'claudeb_profile=beta'
 WORDS_LIB="$WORK/span-only.sh" CLAUDE_CODE_SESSION_ID=s \
   assert worker_model_pin_account claudeb_profile claudeb accounts never_disabled --clear
+
+# With the words library the command path asks the same door the file hook does.
+export WORDS_LIB="${CLAUDE_SETUP_ROOT:-$PROJECTS/claude-setup}/hooks/lib/words.sh" WORDS_DIR="$WORK/words-cmd"
+export CLAUDE_CODE_SESSION_ID=s
+mkdir -p "$WORDS_DIR/s"
+cmd_grant() { # scope
+  jq -nc --arg s "$1" '{family: "pin", turn: 1, at: 0, excerpt: "x", lifetime: "ttl:30m",
+    source: "stem", target: "codex", scope: $s}' >"$WORDS_DIR/s/grant.pin"
+}
+assert_fails worker_model_pin_account claudeb_profile claudeb accounts never_disabled beta
+cmd_grant chat
+assert_fails worker_model_pin_account claudeb_profile claudeb accounts never_disabled beta
+jq -nc --argjson u "$(($(date +%s) + 3600))" '{until: $u}' >"$WORDS_DIR/gate-open"
+assert worker_model_pin_account claudeb_profile claudeb accounts never_disabled beta
+assert contains "$(cat "$REAL_PIN")" 'claudeb_profile=beta'
+rm -f "$WORDS_DIR/gate-open"
+cmd_grant account
+assert worker_model_pin_account claudeb_profile claudeb accounts never_disabled --clear
+assert lacks "$(cat "$REAL_PIN")" 'claudeb_profile='
+chmod 000 "$WORDS_DIR/s"
+assert_fails worker_model_pin_account claudeb_profile claudeb accounts never_disabled beta
+chmod 700 "$WORDS_DIR/s"
+unset WORDS_LIB WORDS_DIR CLAUDE_CODE_SESSION_ID
 
 # The same file spelled differently is still his file: keying the fixture exemption on the path
 # TEXT hands a session the pin for the price of an extra slash.

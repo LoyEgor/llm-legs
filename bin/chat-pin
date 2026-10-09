@@ -52,15 +52,19 @@ account_vendors() { # name → every vendor whose live pool holds it, one per li
 }
 
 granted() { # target
-  local grant content sid lib=${WORDS_LIB:-$HOME/.claude/hooks/lib/words.sh}
+  local grant content sid transcript lib=${WORDS_LIB:-$HOME/.claude/hooks/lib/words.sh}
   [ -n "${CLAUDECODE:-}" ] || return 0
-  if [ -r "$lib" ] && . "$lib" 2>/dev/null && command -v words_grant_target >/dev/null 2>&1; then
-    if command -v words_span_live >/dev/null 2>&1 && command -v words_session_transcript >/dev/null 2>&1; then
-      sid=$(worker_model_chat_session)
-      words_span_live "$sid" "$(words_session_transcript "$sid")" && return 0
-    fi
-    content=$(words_grant_target "$(worker_model_chat_session)" pin) || return 1
-    content=$(lower "$content")
+  if [ -r "$lib" ] && . "$lib" 2>/dev/null && command -v word_gate_allow >/dev/null 2>&1; then
+    sid=$(worker_model_chat_session)
+    transcript=$(words_session_transcript "$sid")
+    words_span_live "$sid" "$transcript" && return 0
+    word_gate_allow "$sid" pin "chat-pin $1" "" "$file" "$transcript" || return 1
+    grant=$(words_grant_fresh "$sid" pin)
+    # The door waves a pin on over an unreadable store; this one never did. Opened by anything but
+    # his word (the open gate), any target goes; opened by his word, only the target it names.
+    [ "$?" != 3 ] || return 1
+    [ "${WORDS_OPENED_BY:-}" = word ] || return 0
+    content=$(lower "$(jq -r '.target // empty' <<<"$grant" 2>/dev/null)")
     [ -n "$content" ] || return 1
     [ "$content" = "$(lower "$1")" ] && return 0
     # `воркеры на grok быстро` grants `grok-fast`: the modifier rides on the vendor word and must

@@ -154,6 +154,7 @@ fresh() { # call
       words_span_live "$sid" "$(jq -r '.transcript_path // empty' <<<"$input" 2>/dev/null)" && return 0
     word_gate_allow "$sid" pin "$(jq -r '.tool_input.command // empty' <<<"$input" 2>/dev/null)" \
       "${1:-}" "$(pin_file)" "$(jq -r '.transcript_path // empty' <<<"$input" 2>/dev/null)" || return 1
+    [ "${WORDS_OPENED_BY:-}" = word ] || return 0
     grant=$(words_grant_fresh "$sid" pin)
     case $? in
       # An unreadable store waves this door on; a door opened by a WORD= quote has no grant file to

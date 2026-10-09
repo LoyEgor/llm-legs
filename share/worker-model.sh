@@ -579,9 +579,20 @@ worker_model_pin_allowed() {
   # pin, and a session that only has to type the path differently has no gate at all.
   [ "$(worker_model_canonical_path "$(worker_model_file)")" \
     = "$(worker_model_canonical_path "$HOME/.claude/worker-model")" ] || return 0
+  # Same answers as worker-pin-gate.sh fresh(), the file door over this pin, except an unreadable
+  # store, which keeps refusing here. Exit 2: no door in the library, the older grant decides.
   ( . "${WORDS_LIB:-$HOME/.claude/hooks/lib/words.sh}" &&
-    command -v words_span_live && command -v words_session_transcript && sid=$(worker_model_chat_session) &&
-    words_span_live "$sid" "$(words_session_transcript "$sid")" ) >/dev/null 2>&1 && return 0
+    command -v words_span_live && command -v words_session_transcript || exit 2
+    sid=$(worker_model_chat_session)
+    transcript=$(words_session_transcript "$sid")
+    words_span_live "$sid" "$transcript" && exit 0
+    command -v word_gate_allow || exit 2
+    word_gate_allow "$sid" pin "worker-model pin" "" "$(worker_model_file)" "$transcript" || exit 1
+    grant=$(words_grant_fresh "$sid" pin)
+    [ "$?" != 3 ] || exit 1
+    [ "${WORDS_OPENED_BY:-}" = word ] || exit 0
+    [ "$(jq -r '.scope // empty' <<<"$grant")" = account ] ) >/dev/null 2>&1
+  case $? in 0) return 0 ;; 1) return 1 ;; esac
   [ -n "$(find "$(worker_model_pin_grant)" -mmin "-$WORKER_MODEL_PIN_TTL_MIN" 2>/dev/null)" ]
 }
 

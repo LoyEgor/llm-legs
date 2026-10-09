@@ -233,6 +233,36 @@ assert "$PIN" auto
 assert_fails test -e "$CHAT"
 words_grant grok-fast
 assert "$PIN" grok-fast
+# The grant is decided by word_gate_allow, the one door every pin asks: its open gate opens any
+# target, his word only its own.
+rm -f "$WORDS_DIR/sess-1/grant.pin"
+assert exits 3 "$PIN" all
+assert contains "$(cat "$WORK/out")" "no fresh grant for 'all'"
+assert chat_is 'grok_profile=*
+grok_fast=on'
+jq -nc --argjson u "$(($(date +%s) + 3600))" '{until: $u}' >"$WORDS_DIR/gate-open"
+assert "$PIN" all
+assert chat_is 'open=all'
+words_grant codex
+assert "$PIN" grok
+assert chat_is 'grok_profile=*'
+rm -f "$WORDS_DIR/gate-open"
+assert exits 3 "$PIN" all
+assert chat_is 'grok_profile=*'
+# A WORD= quote is attested by the door, but the door records no target for it, so it opens none.
+rm -f "$WORDS_DIR/sess-1/grant.pin"
+printf 'воркеры на все\n' >"$WORDS_DIR/sess-1/last.txt"
+assert exits 3 env WORD='воркеры на все' "$PIN" codex
+assert exits 3 env WORD='воркеры на все' "$PIN" all
+assert chat_is 'grok_profile=*'
+rm -f "$WORDS_DIR/sess-1/last.txt"
+words_grant codex
+chmod 000 "$WORDS_DIR/sess-1"
+assert exits 3 "$PIN" codex
+chmod 700 "$WORDS_DIR/sess-1"
+assert chat_is 'grok_profile=*'
+words_grant grok-fast
+assert "$PIN" grok-fast
 # Egor's autonomy span moves this chat's pin with no grant.
 rm -f "$WORDS_DIR/sess-1/grant.pin"
 # The span reads the chat's transcript first, so a span-off he queued mid-turn is caught.
