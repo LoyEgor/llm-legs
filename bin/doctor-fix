@@ -400,8 +400,11 @@ def snapshot(doctor, doc_file, night=None):
                                                    "rule_at": rule_at(doctor, rule)}}
         if night and doctor == "harness":
             admission = dict(problem)
+            source_root = norm(ROOT)
+            paths = [norm(f) for f in files]
             changes = {"ids": [pid], "class": time_budget.improvement_class(rule or "", pid),
-                       "files": [("", os.path.relpath(f, repos_dir(doctor)).split("/", 1)[-1]) for f in files]}
+                       "files": [("", os.path.relpath(f, source_root) if f.startswith(source_root + os.sep)
+                                  else os.path.relpath(f, repos_dir(doctor)).split("/", 1)[-1]) for f in paths]}
             if files and time_budget.runtime_change(changes) is False and time_budget.night_speed_skip(admission):
                 admission["class"] = "measurement fix"
             if ((problem.get("speed") or rule in time_budget.IMPROVEMENT_RULES) and rule != "spend_audit" or rule in ("floor", "test_long_pole", "test_daily_cost", "test_slow", "suites_at_once", "hook_p50", "hook_sync", "hook_full_work", "hook_every_call")
