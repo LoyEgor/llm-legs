@@ -1055,7 +1055,10 @@ close_run() { # id --decisions <file> note...
       bad+=("line $line_no ($pid): verdict '$verdict' is not one of fixed|ruled-out|weather|blind-spot|handoff")
       continue
     else
-      rule=$(jq -r --arg p "$pid" 'first((.problems + (.quiet // []))[] | select(.id == $p) | .rule) // ""' "$file")
+      rule=
+      case $verdict in handoff | ruled-out)
+        rule=$(jq -r --arg p "$pid" 'first((.problems + (.quiet // []))[] | select(.id == $p) | .rule) // ""' "$file")
+      esac
       if [ "$verdict" = handoff ] && [ -n "$rule" ] && [[ "$TEST_FIX_RULES menu_build " == *" $rule "* ]]; then
         bad+=("line $line_no ($pid): handoff refused: test speed and menu delays are this run's to fix")
         continue

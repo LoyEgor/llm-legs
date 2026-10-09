@@ -117,28 +117,18 @@ span_live() {
 command -v jq >/dev/null 2>&1 || exit 0
 IFS= read -r -d '' input || :
 parsed=$(jq -rn '[inputs] as $docs | $docs[] | select(.hook_event_name == "PreToolUse")
-  | [.agent_type, .agent_id, .tool_input.run_in_background, .tool_input.timeout, .transcript_path] as $more
   | [.tool_name // "", .tool_input.command // "",
-     ($docs | length) == 1 and all($more[]; type != "object" and type != "array"),
-     ($more | to_entries[] | .key as $k | .value
-       | if . == null or . == false then (if $k == 2 then "false" else "" end)
-         elif type == "string" then . else tojson end)] | @sh' \
+     ($docs | length) == 1 and (.agent_id | type != "object" and type != "array"),
+     (.agent_id | if . == null or . == false then "" elif type == "string" then . else tojson end)] | @sh' \
   <<<"$input" 2>/dev/null) || exit 0
 fields=()
 eval "fields=($parsed)"
 tool=${fields[0]-} cmd=${fields[1]-}
-input_field() { # jq path -> what `jq -r '<path> // empty'` prints for it (`// false` for run_in_background)
-  local i
-  case $1 in
-    .agent_type) i=3 ;; .agent_id) i=4 ;; .tool_input.run_in_background) i=5 ;; .tool_input.timeout) i=6 ;;
-    .transcript_path) i=7 ;;
-  esac
-  if [ "${#fields[@]}" = 8 ] && [ "${fields[2]}" = true ]; then
-    printf '%s\n' "${fields[$i]}"
-  elif [ "$1" = .tool_input.run_in_background ]; then
-    printf '%s' "$input" | jq -r "$1 // false" 2>/dev/null
+agent_id_field() { # what `jq -r '.agent_id // empty'` prints for the payload
+  if [ "${#fields[@]}" = 4 ] && [ "${fields[2]}" = true ]; then
+    printf '%s\n' "${fields[3]}"
   else
-    printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null
+    printf '%s' "$input" | jq -r '.agent_id // empty' 2>/dev/null
   fi
 }
 
@@ -265,12 +255,10 @@ ASSIGN_RE='^[[:space:]]*((export|local|readonly|declare|typeset)[[:space:]]+(-[^
 # The scan has joined a quoted value's words, and an unquoted `$C` splits them again (`C="codex
 # exec"; $C hi`), so a quoted value is read off the raw command first, its spaces kept.
 QUOTED_ASSIGN_RE="(^|[;&|({[:space:]])[A-Za-z_][A-Za-z0-9_]*=(\"[^\"\$\`\\\\&]*\"|'[^'\$\\\\&]*')"
-assigned=()
 while IFS= read -r assign; do
   [ -n "$assign" ] || continue
   assign=$(sed -E -e 's/^[[:space:]]*((export|local|readonly|declare|typeset)[[:space:]]+(-[^[:space:]]+[[:space:]]+)*)?//' \
     -e "s/^[;&|({[:space:]]//; s/=[\"']/=/; s/[\"']\$//" <<<"$assign")
-  assigned+=("$assign")
   scan=$(LC_ALL=C awk -v n="${assign%%=*}" -v v="${assign#*=}" '{
     gsub("\\$[{]" n "[}]", v)
     out = ""
@@ -286,7 +274,6 @@ for re in "${MAY_LAUNCH_RES[@]}"; do may_launch_args+=(-e "$re"); done
 grep -Eq "${may_launch_args[@]}" <<<"$unsplit"$'\n'"$scan" 2>/dev/null
 [ $? -ne 1 ] || exit 0
 
-agent_type=$(input_field .agent_type)
 first_hit() { # regex
   local hit
   hit=$(grep -Eo "$1" <<<"$scan" 2>/dev/null) || return 0
@@ -308,7 +295,7 @@ fi
 # A review panel spends the chat's grant and a pool of accounts, and only the chat's own shell holds
 # that grant; a worker run likewise belongs to the chat that waits on it. An agent of any type or a
 # headless worker launching either is a run nobody granted and nobody waits on.
-agent_id=$(input_field .agent_id)
+agent_id=$(agent_id_field)
 if [ -n "$agent_id" ] || [ "${CLAUDEB_WORKER:-}" = 1 ]; then
   worker_review_hit=$(grep -Ev -e "$REVIEW_IDLE_RE" <<<"$scan" 2>/dev/null | grep -Eo "$REVIEW_LAUNCH_RE" | head -n1 |
     tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')

@@ -7,7 +7,7 @@
 set -u
 
 IFS= read -r -d '' input || :
-case $input in *'"agent_type"'*) ;; *) exit 0 ;; esac
+case $input in *'"agent_type"'*'"fork"'* | *'"fork"'*'"agent_type"'*) ;; *) exit 0 ;; esac
 
 fields=()
 eval "fields=($(jq -rn '[inputs] | select(length == 1) | .[0]
@@ -17,9 +17,9 @@ eval "fields=($(jq -rn '[inputs] | select(length == 1) | .[0]
 [ "${#fields[@]}" = 6 ] || exit 0
 [ "${fields[0]}" = PreToolUse ] && [ "${fields[1]}" = fork ] || exit 0
 agent_type=fork
-agent_id=$(printf '%s' "${fields[2]}" | tr -cd 'A-Za-z0-9_-')
+agent_id=${fields[2]//[^A-Za-z0-9_-]/}
 [ -n "$agent_id" ] || exit 0
-session_id=$(printf '%s' "${fields[3]}" | tr -cd 'A-Za-z0-9_-')
+session_id=${fields[3]//[^A-Za-z0-9_-]/}
 [ -n "$session_id" ] || session_id=_
 description=${fields[4]}
 transcript_path=${fields[5]}

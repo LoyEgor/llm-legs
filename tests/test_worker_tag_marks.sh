@@ -49,5 +49,16 @@ printf '%s\n' 'jq() { printf "call\n" >> "$FORKS"; command jq "$@"; }' \
 jq -cn '{hook_event_name:"PreToolUse",tool_name:"Bash",session_id:"s1",tool_input:{command:"ls"}}' |
   BASH_ENV="$WORK/count-forks.sh" FORKS="$WORK/forks" bash "$HOOK" >/dev/null 2>&1
 assert_eq 0 "$(grep -c '' "$WORK/forks")"
+# So does any other subagent's payload: only a fork's carries the literal "fork".
+jq -cn '{hook_event_name:"PreToolUse",tool_name:"Bash",session_id:"s1",agent_type:"general-purpose",agent_id:"g1",tool_input:{command:"ls"}}' |
+  BASH_ENV="$WORK/count-forks.sh" FORKS="$WORK/forks" bash "$HOOK" >/dev/null 2>&1
+assert_eq 0 "$(grep -c '' "$WORK/forks")"
+# A fork's ids are cleaned in-process, never by a tr per id.
+printf '%s\n' 'tr() { printf "call\n" >> "$FORKS"; command tr "$@"; }' >"$WORK/count-tr.sh"
+: >"$WORK/tr-calls"
+jq -cn '{hook_event_name:"PreToolUse",tool_name:"Bash",session_id:"s1.",agent_type:"fork",agent_id:"f1;",tool_input:{command:"ls",description:"List"}}' |
+  BASH_ENV="$WORK/count-tr.sh" FORKS="$WORK/tr-calls" bash "$HOOK" >"$WORK/tr-out" 2>&1
+assert_eq 0 "$(grep -c '' "$WORK/tr-calls")"
+assert_eq 'fork · opus · com — List' "$(jq -r '.hookSpecificOutput.updatedInput.description' "$WORK/tr-out")"
 
-printf 'PASS: %s asserts; a fork'"'"'s tag prefixes its call once, no other agent type gets a tag, a seed is spent only once its tag file is written, and a main-session call exits on builtins\n' "$asserts"
+printf 'PASS: %s asserts; a fork'"'"'s tag prefixes its call once, no other agent type gets a tag, a seed is spent only once its tag file is written, and a main-session or non-fork subagent call exits on builtins\n' "$asserts"

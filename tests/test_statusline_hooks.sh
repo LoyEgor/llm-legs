@@ -4301,8 +4301,9 @@ assert test ! -e "$IDLE_CALLS"
 # visible rows share — state, elapsed, tokens — elapsed recomputed from the start column every render.
 wl_strip() { perl -pe 's/\e\[[0-9;]*m//g'; }
 # A second may tick between the fixture's clock and the render's; both spell the same width.
-wl_norm() { perl -pe 's/\b4m 0[56]s\b/4m 05s/g; s/(?<![0-9])4[56]s\b/45s/g; s/\b1m 0[56]s\b/1m 05s/g; s/(?<![0-9])3[01]s\b/30s/g'; }
-wl_rows() { run_statusline "$(statusline_payload "$1")" | tail -n +3 | wl_strip | wl_norm; }
+wl_norm_subs='s/\b4m 0[56]s\b/4m 05s/g; s/(?<![0-9])4[56]s\b/45s/g; s/\b1m 0[56]s\b/1m 05s/g; s/(?<![0-9])3[01]s\b/30s/g'
+wl_norm() { perl -pe "$wl_norm_subs"; }
+wl_rows() { run_statusline "$(statusline_payload "$1")" | perl -ne 'next if $. < 3; s/\e\[[0-9;]*m//g; '"$wl_norm_subs"'; print'; }
 wl_now=$(date +%s)
 # Each render gets its fixture rewritten on a fresh clock: a cache older than 4s also sends the
 # render's probe to rewrite it, which empties one with no process behind it.
@@ -4464,7 +4465,12 @@ for wl_locale in UTF-8 C; do
       FIT_COLUMNS=$wl_cols FIT_MARGIN=4 wl_rows wl-wide > "$WORK/wl-wide/$wl_locale-$wl_cols" &
     fi
     wl_jobs=$((wl_jobs + 1))
-    [ "$((wl_jobs % 16))" -ne 0 ] || wait
+    [ "$wl_jobs" -ge 16 ] || continue
+    if (( BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 1) )); then
+      wait -n; wl_jobs=$((wl_jobs - 1))
+    else
+      wait; wl_jobs=0
+    fi
   done
 done
 wait

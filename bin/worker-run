@@ -3090,9 +3090,9 @@ exit "$rc"'
   printf 'NEXT: worker-run wait %s as a background Bash; a mid-run note: worker-run say %s "<text>"\n' "$run_id" "$run_id"
 }
 
-session_id() {
-  local directory="$1" vendor session
-  vendor=$(jq -r '.vendor' "$directory/meta.json")
+session_id() { # directory [vendor]
+  local directory="$1" vendor="${2:-}" session
+  [ -n "$vendor" ] || vendor=$(jq -r '.vendor' "$directory/meta.json")
   session=''
   case "$vendor" in
     claudeb)
@@ -4321,21 +4321,29 @@ inbox_carry_resume() { # directory session
 
 # What `wait` streams to the chat's /tasks view: one line per tool call or short message of the
 # worker, read off its live session log with the same extractors the run's file list uses.
-progress_rows() { # vendor transcript since
+# A claudeb log is read from byte offset `from` on, and its first row `O<TAB>n` counts the bytes of the
+# whole lines it read: a partial last line is left for the next read.
+progress_rows() { # vendor transcript since from
   case "$1" in
     claudeb)
-      jq -rR --argjson since "$3" 'fromjson? | objects | select(.type? == "assistant")
+      tail -c +$(($4 + 1)) "$2" 2>/dev/null | jq -rRs --argjson since "$3" 'split("\n") as $lines
+        | (if ($lines | length) > 0 and ((($lines[-1] | fromjson?) // null) | type) == "object"
+           then $lines else $lines[:-1] end) as $done
+        | ("O\t" + (([$done[] | utf8bytelength + 1] | add // 0)
+            - (if ($done | length) > 0 and ($done | length) == ($lines | length) then 1 else 0 end) | tostring)),
+          ($done[] | fromjson? | objects | select(.type? == "assistant")
         | select((((.timestamp? // "") | tostring | sub("\\.[0-9]+"; "")) | fromdateiso8601? // 0) >= $since)
         | .message.content[]? | objects
         | if .type? == "tool_use" then
             ["X", ((.name // "tool") + " " + ((.input.command // .input.file_path // .input.notebook_path // .input.pattern
               // .input.url // .input.query // .input.description // "") | tostring))]
           elif .type? == "text" then ["M", (.text // "")]
-          else empty end | .[0] + "\t" + (.[1] | gsub("[\n\r\t]+"; " "))' "$2" 2>/dev/null ;;
+          else empty end | .[0] + "\t" + (.[1] | gsub("[\n\r\t]+"; " ")))' 2>/dev/null ;;
     codex) codex_tool_rows "$2" "$3" ;;
     gemini) gemini_tool_rows "$2" "$3" ;;
     grok) grok_tool_rows "$2" "$3" ;;
   esac | awk -F'\t' '
+    $1 == "O" { print "\037" $2; next }
     $1 == "F" { print "edit " $2; next }
     $1 == "C" { print "$ " $2; next }
     $1 == "X" && $2 !~ / (outcome|arguments)$/ { print $2; next }
@@ -4360,31 +4368,72 @@ if usage is not None:
 PY
 }
 
-WAIT_STAMP=''
-declare -A WAIT_PRINTED=()
+WAIT_STAMP='' WAIT_TOKENS_STAMP='' WAIT_META='' WAIT_VENDOR='' WAIT_ACCOUNT='' WAIT_WORKDIR='' WAIT_STARTED=''
+WAIT_TRANSCRIPT='' WAIT_OFFSET=0 WAIT_ROWS_NEXT=0 WAIT_TOKENS_NEXT=0 WAIT_CLOCK=0
+declare -A WAIT_PRINTED=() WAIT_COUNTS=()
+wait_clock() {
+  local t=${EPOCHREALTIME:-}
+  t=${t/[.,]/}
+  WAIT_CLOCK=${t%???}
+  [ -n "$t" ] || WAIT_CLOCK=$((SECONDS * 1000))
+}
+
+# An empty WAIT_STAMP forces a full pass (the first and the last). Between them a slurped log is
+# re-read only after ten times its last read, and the tokens after max(60 s, ten times their last count),
+# so a long run's reads stay a bounded share of its wall time.
 wait_progress() { # directory run-id stream
-  local directory="$1" vendor account workdir started transcript stamp row now prefix tokens
-  local -A counts=()
-  { IFS= read -r vendor; IFS= read -r account; IFS= read -r workdir; IFS= read -r started; } \
-    < <(jq -r '.vendor, .account, .workdir, (.pid_started_at // .started_at // 0)' "$directory/meta.json" 2>/dev/null)
-  transcript=''
-  [ "$vendor" != claudeb ] || { IFS= read -r transcript <"$directory/session-file"; } 2>/dev/null || transcript=''
+  local directory="$1" vendor account workdir started settled transcript='' stamp size row now prefix tokens out='' force=false began
+  [ -n "$WAIT_STAMP" ] || force=true
+  if [ "$WAIT_META" != "$directory" ]; then
+    { IFS= read -r WAIT_VENDOR; IFS= read -r WAIT_ACCOUNT; IFS= read -r WAIT_WORKDIR; IFS= read -r WAIT_STARTED
+      IFS= read -r settled; } \
+      < <(jq -r '.vendor, .account, .workdir, (.pid_started_at // .started_at // 0), (.pid_started_at != null)' \
+        "$directory/meta.json" 2>/dev/null)
+    [ "$settled" != true ] || WAIT_META=$directory
+  fi
+  vendor=$WAIT_VENDOR account=$WAIT_ACCOUNT workdir=$WAIT_WORKDIR started=$WAIT_STARTED
+  if [ "$vendor" = claudeb ]; then
+    { IFS= read -r transcript <"$directory/session-file"; } 2>/dev/null || transcript=''
+  elif [ "$vendor" != gemini ] && [ -f "$WAIT_TRANSCRIPT" ]; then
+    transcript=$WAIT_TRANSCRIPT
+  fi
   [ -n "$transcript" ] && [ -f "$transcript" ] ||
-    transcript=$(session_transcript "$vendor" "$account" "$(session_id "$directory")" "$workdir") || return 0
-  stamp="$transcript $(stat -f '%z %Fm' "$transcript" 2>/dev/null || stat -c '%s %.9Y' "$transcript" 2>/dev/null)"
-  [ "$stamp" != "$WAIT_STAMP" ] || return 0
-  WAIT_STAMP=$stamp
-  now=$(date +%s)
-  [[ "$started" =~ ^[0-9]+$ ]] || started=$now
-  prefix="[$(elapsed_label "$((now > started ? now - started : 0))")] "
-  [ "$3" = false ] || while IFS= read -r row; do
-    [ -n "$row" ] || continue
-    counts[$row]=$((${counts[$row]:-0} + 1))
-    [ "${counts[$row]}" -gt "${WAIT_PRINTED[$row]:-0}" ] || continue
-    WAIT_PRINTED[$row]=${counts[$row]}
-    printf '%s\n' "$prefix$row" | perl -CSD -ne 'chomp; print length($_) > 120 ? substr($_, 0, 119) . "\x{2026}" : $_, "\n"'
-  done < <(progress_rows "$vendor" "$transcript" "$started")
+    transcript=$(session_transcript "$vendor" "$account" "$(session_id "$directory" "$vendor")" "$workdir") || return 0
+  stamp=$(stat -f '%z %Fm' "$transcript" 2>/dev/null || stat -c '%s %.9Y' "$transcript" 2>/dev/null)
+  size=${stamp%% *}
+  if [ "$transcript" != "$WAIT_TRANSCRIPT" ] || ! [ "$size" -ge "$WAIT_OFFSET" ] 2>/dev/null; then
+    WAIT_TRANSCRIPT=$transcript WAIT_OFFSET=0
+    WAIT_COUNTS=()
+  fi
+  stamp="$transcript $stamp"
+  wait_clock
+  if [ "$stamp" != "$WAIT_STAMP" ] &&
+    { [ "$force" = true ] || [ "$vendor" = claudeb ] || [ "$WAIT_CLOCK" -ge "$WAIT_ROWS_NEXT" ]; }; then
+    WAIT_STAMP=$stamp began=$WAIT_CLOCK
+    now=$(date +%s)
+    [[ "$started" =~ ^[0-9]+$ ]] || started=$now
+    prefix="[$(elapsed_label "$((now > started ? now - started : 0))")] "
+    [ "$vendor" = claudeb ] || WAIT_COUNTS=()
+    [ "$3" = false ] || while IFS= read -r row; do
+      case $row in
+        '') continue ;;
+        $'\037'*) [[ ${row#?} =~ ^[0-9]+$ ]] && WAIT_OFFSET=$((WAIT_OFFSET + ${row#?})); continue ;;
+      esac
+      WAIT_COUNTS[$row]=$((${WAIT_COUNTS[$row]:-0} + 1))
+      [ "${WAIT_COUNTS[$row]}" -gt "${WAIT_PRINTED[$row]:-0}" ] || continue
+      WAIT_PRINTED[$row]=${WAIT_COUNTS[$row]}
+      out+="$prefix$row"$'\n'
+    done < <(progress_rows "$vendor" "$transcript" "$started" "$WAIT_OFFSET")
+    [ -z "$out" ] || printf '%s' "$out" | perl -CSD -ne 'chomp; print length($_) > 120 ? substr($_, 0, 119) . "\x{2026}" : $_, "\n"'
+    wait_clock
+    WAIT_ROWS_NEXT=$((WAIT_CLOCK + 10 * (WAIT_CLOCK - began)))
+  fi
+  [ "$force" = true ] || { [ "$stamp" != "$WAIT_TOKENS_STAMP" ] && [ "$WAIT_CLOCK" -ge "$WAIT_TOKENS_NEXT" ]; } || return 0
+  WAIT_TOKENS_STAMP=$stamp began=$WAIT_CLOCK
   tokens=$(run_tokens "$2" "$vendor" "$transcript")
+  wait_clock
+  WAIT_TOKENS_NEXT=$((WAIT_CLOCK + 10 * (WAIT_CLOCK - began)))
+  [ "$WAIT_TOKENS_NEXT" -ge "$((WAIT_CLOCK + 60000))" ] || WAIT_TOKENS_NEXT=$((WAIT_CLOCK + 60000))
   [[ "$tokens" =~ ^[0-9]+$ ]] || return 0
   printf '%s\n' "$tokens" >"$directory/tokens.tmp.$$" && mv -f "$directory/tokens.tmp.$$" "$directory/tokens" ||
     rm -f "$directory/tokens.tmp.$$"

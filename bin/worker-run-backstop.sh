@@ -22,15 +22,18 @@ command -v jq >/dev/null 2>&1 || exit 0
 . "${self%/*}/../share/processes.sh" 2>/dev/null || exit 0
 
 chat_pid() {
-  local pid=$PPID comm guard=0
   [ -z "${WORKER_RUN_BACKSTOP_CHAT_PID:-}" ] || { printf '%s' "$WORKER_RUN_BACKSTOP_CHAT_PID"; return 0; }
-  while [ -n "$pid" ] && [ "$pid" -gt 1 ] 2>/dev/null && [ "$guard" -lt 40 ]; do
-    comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
-    [ "${comm##*/}" != claude ] || { printf '%s' "$pid"; return 0; }
-    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
-    guard=$((guard + 1))
-  done
-  return 1
+  ps -Ao pid=,ppid=,comm= 2>/dev/null | awk -v pid="$PPID" '
+    match($0, /^ *[0-9]+ +[0-9]+ /) { parent[$1] = $2; comm[$1] = substr($0, RLENGTH + 1) }
+    END {
+      for (n = 0; pid > 1 && n < 40; n++) {
+        if (!(pid in comm)) exit 1
+        c = comm[pid]; sub(/.*\//, "", c)
+        if (c == "claude") { printf "%s", pid; exit 0 }
+        pid = parent[pid]
+      }
+      exit 1
+    }'
 }
 now=$(date +%s)
 # One process table read per stop, and only once a run needs it: "<run|review>=<word>" for every word

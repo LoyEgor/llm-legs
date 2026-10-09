@@ -158,9 +158,21 @@ mkdir -p "$WORK/shim"
 printf '#!/bin/sh\necho "$*" >>"%s/ps-calls"\nexec %s "$@"\n' "$WORK" "$(command -v ps)" >"$WORK/shim/ps"
 chmod +x "$WORK/shim/ps"
 WORKER_RUN_DIR="$WORK/runs-owned"
-for i in $(seq 4 15); do run "r$i" s1 codex; wait_on worker-run "r$i"; done
+for i in $(seq 4 15); do run "r$i" s1 codex; "$WORK/bin/worker-run" wait "r$i" & WAIT_PIDS="${WAIT_PIDS:-} $!"; done
+sleep 0.2
 assert_eq "" "$(PATH="$WORK/shim:$PATH" stop)"
 assert_eq 1 "$(wc -l <"$WORK/ps-calls" | tr -d ' ')"
 end_waits
+# Finding the chat's `claude` ancestor costs one more table read, however deep the hook sits below it.
+rm -f "$WORK/ps-calls"
+ln -s "$(command -v bash)" "$WORK/bin/claude"
+WORKER_RUN_DIR="$WORK/runs-chat"
+run r16 s1 codex
+assert_eq "" "$(unset WORKER_RUN_BACKSTOP_CHAT_PID; PATH="$WORK/shim:$PATH" HOOK="$HOOK" WORK="$WORK" "$WORK/bin/claude" -c '
+  "$WORK/bin/worker-run" wait r16 & w=$!
+  sleep 0.2
+  bash -c "jq -cn \"{hook_event_name:\\\"Stop\\\",session_id:\\\"s1\\\"}\" | bash \"\$HOOK\""
+  kill $w')"
+assert_eq 2 "$(wc -l <"$WORK/ps-calls" | tr -d ' ')"
 
 printf 'PASS: %s asserts; a live worker or review run of this chat that no live `worker-run wait` / `review-bench wait` under the chat process owns holds the stop naming that wait, while another chat'"'"'s, a finished, a dead or a still-starting run, a stale panel, a worker, a subagent and the retired --relay mode pass, --unowned answers the Stop ask with the same verdict and resume command, a dozen owned runs cost one process-table read, and three holds in a row release the fourth\n' "$asserts"

@@ -263,7 +263,7 @@ while IFS= read -r found_line; do
       m_counts=$'\t\t'
       [ -z "$m_state" ] || m_counts=$(jq -r '[(.cells // [])[] | .status // "" | select(. != "spare-cancelled")] | "\(map(select(. == "done" or . == "failed")) | length)\t\(map(select(. == "failed")) | length)\t\(length)"' \
         "$m_state" 2>/dev/null) || m_counts=$'\t\t'
-      media_records+="main"$'\t'"media"$'\t'"$m_stamp"$'\t'"$m_tag"$'\t'"$m_label"$'\t'"$m_counts"$'\t\t'$'\n' ;;
+      media_records+=$'3\tmain\t'"media"$'\t'"$m_stamp"$'\t'"$m_tag"$'\t'"$m_label"$'\t'"$m_counts"$'\t\t'$'\n' ;;
     M|O)
       [ "$kind" = M ] || [[ " $mine " = *" $b "* ]] || continue
       items+="$b"$'\037'"$a"$'\037'"$c"$'\037'"$d"$'\037'"$e"$'\037'"$f"$'\n'
@@ -349,7 +349,7 @@ for worker_run in ${worker_runs[@]+"${worker_runs[@]}"}; do
   wstate=working tests_at=""
   [ "$phase" != start ] || wstate=start
   [ -z "${run_tests_at[$run]+set}" ] || wstate=tests tests_at=${run_tests_at[$run]}
-  agent_records+="main"$'\t'"worker"$'\t'"$start"$'\t'"$head"$'\t'"$title"$'\t'"$wstate"$'\t'"$tests_at"$'\t\t'"$tokens"$'\n'
+  agent_records+=$'1\tmain\t'"worker"$'\t'"$start"$'\t'"$head"$'\t'"$title"$'\t'"$wstate"$'\t'"$tests_at"$'\t\t'"$tokens"$'\n'
 done
 
 # Review runs: each one this chat waits on, and each unfinished one it launched. A document whose
@@ -452,7 +452,7 @@ for run in "${!review_docs[@]}"; do
     j_since=$now re_seen=$'\nmain\treview\t[^\n]*\t([0-9]+)\t'"$run"$'(\n|$)'
     [[ $'\n'"$old_cache" =~ $re_seen ]] && j_since=${BASH_REMATCH[1]}
   fi
-  agent_records+="main"$'\t'"review"$'\t'"$start"$'\t'"$head"$'\t'"$title"$'\t'"$r_state"$'\t'"$r_short"$'\t'"$j_head"$'\t'"$j_since"$'\t'"$run"$'\n'
+  agent_records+=$'2\tmain\t'"review"$'\t'"$start"$'\t'"$head"$'\t'"$title"$'\t'"$r_state"$'\t'"$r_short"$'\t'"$j_head"$'\t'"$j_since"$'\t'"$run"$'\n'
 done
 
 declare -A cwd_by_pid=()
@@ -506,14 +506,16 @@ while IFS=$'\037' read -r pid class elapsed label tpath parent; do
   esac
   spid=""
   case "$label" in suites*) spid=$'\t'"$pid" ;; esac
-  records="${records}main"$'\t'"$class"$'\t'"$((now - elapsed))"$'\t'"$repo"$'\t'"$label"$'\t'"$done_n"$'\t'"$total"$'\t'"$outcome_dir"$'\t'"$root$spid"$'\n'
+  case $class in worker) rank=1 ;; review) rank=2 ;; media) rank=3 ;; tests) rank=4 ;; shell) rank=5 ;; *) rank=9 ;; esac
+  records="${records}$rank"$'\tmain\t'"$class"$'\t'"$((now - elapsed))"$'\t'"$repo"$'\t'"$label"$'\t'"$done_n"$'\t'"$total"$'\t'"$outcome_dir"$'\t'"$root$spid"$'\n'
 done <<< "$items"
 
 records+=$agent_records$media_records
 sorted_records=""
-[ -z "$records" ] || sorted_records=$(printf '%s' "$records" |
-  awk -F'\t' '{ r = index(" worker review media tests shell ", " " $2 " "); print (r ? r : 99) "\t" $0 }' |
-  sort -t$'\t' -k1,1n -k4,4n | cut -f2-)
+# Each record leads with its class rank (worker, review, media, tests, shell), cut off once sorted.
+[ -z "$records" ] || sorted_records=$(printf '%s' "$records" | sort -t$'\t' -k1,1n -k4,4n)
+sorted_records=${sorted_records#?$'\t'}
+sorted_records=${sorted_records//$'\n'?$'\t'/$'\n'}
 new_cache="$sorted_records${runs_out:+
 $runs_out}"
 

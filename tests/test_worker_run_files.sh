@@ -200,7 +200,7 @@ mkdir -p "$LOCK_RUN"
 sed -n -e '/^with_lock() {/,/^}/p' "$RUNNER" >"$WORK/with-lock.fns"
 locked_write() (
   . "$WORK/with-lock.fns"
-  sleep() { printf .\\n >>"$WORK/claim-sleeps"; command sleep "$@"; }
+  sleep() { printf .\\n >>"$WORK/claim-sleeps"; }
   with_lock "$LOCK_RUN" touch "$LOCK_RUN/written"
 )
 mkdir "$LOCK_RUN/.claim.lock"
