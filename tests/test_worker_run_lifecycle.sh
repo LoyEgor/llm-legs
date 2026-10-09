@@ -263,6 +263,7 @@ assert meta_account_is explicit
 assert await_done
 clear_stub
 rc=0
+roster_add codex ghost
 "$RUNNER" start codex --brief "$WORK/brief" --account ghost \
   >"$WORK/role-star.out" 2>"$WORK/role-star.err" || rc=$?
 assert test "$rc" -eq 4

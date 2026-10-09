@@ -74,6 +74,27 @@ export STUB_DIR="$WORK/stub-state"
 export CALL_LOG="$WORK/calls"
 export PICK_LOG="$WORK/picks"
 mkdir -p "$HOME" "$WORK/bin" "$WORKER_RUN_DIR" "$WORKER_WALLS_DIR" "$STUB_DIR" "$WORK/workdir" "$WORK/extra"
+roster_add() { # vendor name...
+  local vendor="$1" name
+  shift
+  for name; do
+    case "$vendor" in
+      claudeb) mkdir -p "$CLAUDEB_DIR/tokens" && : >"$CLAUDEB_DIR/tokens/$name" ;;
+      codex) mkdir -p "$CODEX_PROFILES_DIR/$name" ;;
+      gemini) mkdir -p "$GEMINIB_PROFILES_DIR/$name" ;;
+      grok) mkdir -p "$GROKB_PROFILES_DIR/$name" ;;
+    esac
+  done
+}
+for vendor in claudeb codex gemini grok; do
+  roster_add "$vendor" authdead badmodel benched busy chatty claudeb codex codexfiles com cu deadacct deleg duplicate \
+    edits effortacct explicit failedacct fast fastacct filesacct fixacct frozen gemfiles grok grokacct grokauth \
+    grokcancel grokchatty grokdenied grokevent grokfiles grokquoting grokturns grokwording growing hung ignored \
+    limitacct linkedacct model noisyacct options ordinary other ownlist patient paused picked pinacct pinnedacct \
+    pruner readonly-changed readonly-declared readonly-light readonly-one readonly-research readonly-two recordacct \
+    reportacct resacct rescue rescue1 resumeacct selfedit servedacct servedcodex servedcodex2 signalled silent \
+    stampacct symacct trusted unused wall walled1 websearch wedged
+done
 export PATH="$WORK/bin:$PATH"
 export REPORT_BUS_LOG="$WORK/report-posts.jsonl"
 : >"$REPORT_BUS_LOG"

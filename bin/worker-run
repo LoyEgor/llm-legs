@@ -237,6 +237,8 @@ command -v worker_walls_record >/dev/null ||
   fail 'share/gemini-accounts.sh is missing: worker-run cannot resolve an agy profile HOME'
 . "$SCRIPT_DIRECTORY/../share/codex-accounts.sh" ||
   fail 'share/codex-accounts.sh is missing: worker-run cannot tell whether codex main was removed'
+. "$SCRIPT_DIRECTORY/../share/account-roster.sh" ||
+  fail 'share/account-roster.sh is missing: worker-run cannot check a named account against the roster'
 . "$SCRIPT_DIRECTORY/../share/store-lock.sh" ||
   fail 'share/store-lock.sh is missing: worker-run cannot rotate the worker-attempts journal safely'
 . "$SCRIPT_DIRECTORY/../share/slots.sh" || fail 'share/slots.sh is missing'
@@ -2541,6 +2543,7 @@ start_run() {
     usage
   fi
   [ -r "$brief" ] || fail "brief is not readable: $brief"
+  [ -z "$explicit_account" ] || account_roster_refuse worker-run "$vendor" "$explicit_account" || exit 2
   [ "$role" != workers ] || [ -z "${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-}" ] || limit_gate "$vendor" "$light" "$brief" "$explicit_account" "$computer"
   # The first line is the run's handle: readers take `RESUME <id>:` and
   # `ATTACH <id>:` off the top of it, and every reader that falls back to a prefix of the brief

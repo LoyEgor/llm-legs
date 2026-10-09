@@ -26,7 +26,7 @@ model_effort_tests() {
   for spec in codex:astra:low codex:sol:medium claudeb:opus:high claudeb:fable:low gemini:flash38:high grok:auto:high grok:grok-4.6:high; do
     vendor=${spec%%:*}; model=${spec#*:}; effort=${model##*:}; model=${model%:*}
     clear_stub
-    start_ok "$vendor" --model "$model" --account main
+    start_ok "$vendor" --model "$model" --account "$([ "$vendor" = gemini ] && printf main || printf com)"
     assert await_done
     assert test "$(jq -r '.model' "$RUN_DIR/meta.json")" = "$model"
     assert test "$(jq -r '.effort' "$RUN_DIR/meta.json")" = "$effort"
@@ -47,19 +47,19 @@ model_effort_tests() {
   for spec in codex:astra:xhigh codex:gpt-5.6-sol:low claudeb:fable:max claudeb:opus:low; do
     vendor=${spec%%:*}; model=${spec#*:}; effort=${model##*:}; model=${model%:*}
     clear_stub
-    start_ok "$vendor" --model "$model" --effort "$effort" --account main
+    start_ok "$vendor" --model "$model" --effort "$effort" --account com
     assert await_done
     assert grep -qx "ARG=$([ "$model" = astra ] && printf gpt-6.1-astra || printf %s "$model")" "$CALL_LOG"
     assert test "$(jq -r '.effort' "$RUN_DIR/meta.json")" = "$effort"
     if [ "$model" = gpt-5.6-sol ]; then
       assert grep -qx 'ARG=-m' "$CALL_LOG"
       assert grep -qx 'ARG=model_reasoning_effort=low' "$CALL_LOG"
-      assert grep -qx 'main · sol · low' "$RUN_DIR/tag"
+      assert grep -qx 'com · sol · low' "$RUN_DIR/tag"
     fi
   done
   set_config 'claudeb_model=fable'
   clear_stub
-  start_ok claudeb --account main
+  start_ok claudeb --account com
   assert await_done
   assert grep -qx 'ARG=fable' "$CALL_LOG"
   assert test "$(jq -r '.effort' "$RUN_DIR/meta.json")" = low
@@ -68,14 +68,14 @@ model_effort_tests() {
   cp "$WORK/brief" "$WORK/brief.noheader"
   { printf 'MODEL: fable\nEFFORT: high\n\n'; cat "$WORK/brief.noheader"; } >"$WORK/brief"
   clear_stub
-  start_ok claudeb --account main
+  start_ok claudeb --account com
   assert await_done
   assert test "$(jq -r '[.model, .effort] | join(" ")' "$RUN_DIR/meta.json")" = 'fable high'
   for flag in '--effort low' '--model opus'; do
     clear_stub
     rc=0
     # shellcheck disable=SC2086
-    "$RUNNER" start claudeb --brief "$WORK/brief" --workdir "$WORK/workdir" --account main $flag >"$WORK/effort.out" 2>&1 || rc=$?
+    "$RUNNER" start claudeb --brief "$WORK/brief" --workdir "$WORK/workdir" --account com $flag >"$WORK/effort.out" 2>&1 || rc=$?
     assert test "$rc" -eq 4
     assert grep -qF -e "$flag contradicts the brief header" "$WORK/effort.out"
     assert test ! -s "$CALL_LOG"
@@ -106,9 +106,9 @@ model_effort_tests() {
     effort_refused "$vendor" "$model" "$effort"
   done
   effort_refused codex astra max --account main --resume codex-resume
-  effort_refused claudeb opus ultra --account main --resume claude-resume
+  effort_refused claudeb opus ultra --account com --resume claude-resume
   effort_refused gemini flash38 ultra --account main --resume gemini-resume
-  effort_refused grok auto low --account main --resume grok-resume
+  effort_refused grok auto low --account com --resume grok-resume
   set_config 'codex_effort=max'
   clear_stub
   rc=0
@@ -253,21 +253,41 @@ nested_model_tests() {
   mkdir -p "$parent"
   printf '{"vendor":"claudeb","model":"fable"}\n' >"$parent/meta.json"
   door_refused 'nested in a Fable worker and would hand its brief to claudeb opus' WORKER_RUN_RECORD="$parent" -- \
-    start claudeb --model opus --account main --brief "$WORK/brief" --workdir "$WORK/workdir"
+    start claudeb --model opus --account com --brief "$WORK/brief" --workdir "$WORK/workdir"
   assert grep -qx 'OUTCOME: NESTED_MODEL_REFUSED' "$WORK/door.out"
   door_refused 'nested in a Fable worker and would hand its brief to codex astra' WORKER_RUN_RECORD="$parent" -- \
     start codex --model astra --account main --brief "$WORK/brief" --workdir "$WORK/workdir"
   clear_stub
-  WORKER_RUN_RECORD="$parent" start_ok claudeb --model fable --account main
+  WORKER_RUN_RECORD="$parent" start_ok claudeb --model fable --account com
   assert await_done
   printf '{"vendor":"claudeb","model":"opus"}\n' >"$parent/meta.json"
   clear_stub
-  WORKER_RUN_RECORD="$parent" start_ok claudeb --model opus --account main
+  WORKER_RUN_RECORD="$parent" start_ok claudeb --model opus --account com
   assert await_done
+}
+
+off_roster_tests() {
+  local rc=0
+  roster_add gemini tronjhon
+  printf 'ACCOUNT: tronjhon\n\nwork\n' >"$WORK/cross-brief"
+  clear_stub
+  "$RUNNER" start claudeb --brief "$WORK/cross-brief" --workdir "$WORK/workdir" >"$WORK/cross.out" 2>&1 || rc=$?
+  assert test "$rc" -eq 2
+  assert grep -qF 'unknown account: tronjhon (not on the claudeb roster' "$WORK/cross.out"
+  assert test ! -s "$CALL_LOG"
+  assert test ! -e "$HOME/.cache/worker-claims/claudeb/tronjhon"
+  for vendor in codex gemini grok; do
+    rc=0
+    "$RUNNER" start "$vendor" --brief "$WORK/brief" --workdir "$WORK/workdir" --account nosuch >"$WORK/cross.out" 2>&1 || rc=$?
+    assert test "$rc" -eq 2
+    assert grep -qF "unknown account: nosuch (not on the $vendor roster" "$WORK/cross.out"
+  done
+  assert test ! -s "$CALL_LOG"
 }
 
 model_effort_tests
 worker_door_tests
 nested_model_tests
+off_roster_tests
 
-echo "PASS: $asserts asserts; the report bus, effort refusals before launch, the worker door refusing a headless worker's start and wait, and the limit gate a chat's start passes (deny refuses unlaunched, a note rides on stderr, none asked outside Claude Code)"
+echo "PASS: $asserts asserts; the report bus, effort refusals before launch, the worker door refusing a headless worker's start and wait, and the limit gate a chat's start passes (deny refuses unlaunched, a note rides on stderr, none asked outside Claude Code), an ACCOUNT off the vendor roster refused unlaunched"

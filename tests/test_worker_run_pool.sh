@@ -83,6 +83,7 @@ for bad_effort in ultra tiny; do
   assert test ! -s "$CALL_LOG"
 done
 printf 'known\n' >"$STUB_DIR/gemini_profiles"
+roster_add gemini unknown
 rc=0
 "$RUNNER" start gemini --brief "$WORK/brief" --account unknown >"$WORK/unknown.out" 2>&1 || rc=$?
 assert test "$rc" -eq 4
@@ -193,7 +194,7 @@ start_ok codex --account fastacct
 assert await_done
 assert grep -qxF 'ARG=service_tier=\"priority\"' "$CALL_LOG"
 assert_fails grep -q 'offers no Fast' "$WORK/start.err"
-rm -r "$CODEX_PROFILES_DIR/fastacct"
+rm "$CODEX_PROFILES_DIR/fastacct/models_cache.json"
 
 clear_stub
 printf 'default\n' >"$HOME/.codex-profiles/.codexb/fast-mode/fastacct"
