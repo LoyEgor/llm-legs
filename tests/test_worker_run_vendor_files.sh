@@ -533,6 +533,36 @@ transcript_report "$RUN_DIR" >/dev/null
 assert test ! -e "$RUN_DIR/workdir-escape"
 assert test "$(grep -c '^WORKDIR-ESCAPE: ' <<<"$(transcript_report "$RUN_DIR")")" -eq 0
 
+# A shell-only run that made its own worktree in another repository worked in its grant (W3), though
+# the first place it named is that repository's main checkout (codex-1791462438-96029-684c).
+cx_other="$WORK/cx-other"
+git init -q "$cx_other"
+git -C "$cx_other" -c user.name=fixture -c user.email=fixture@example.test commit -q --allow-empty -m base
+cx_other=$(cd "$cx_other" && pwd -P)
+git -C "$cx_other" worktree add -q "$cx_other/.claude/worktrees/cx-foreign" 2>/dev/null
+for cx_tree in cx-made cx-foreign; do
+  clear_stub
+  CX_TS=$(iso $(($(date +%s) + 60)))
+  {
+    [ "$cx_tree" = cx-foreign ] ||
+      cx_call exec_command "{\"cmd\":\"git worktree add .claude/worktrees/$cx_tree\",\"workdir\":\"$cx_other\"}"
+    cx_call exec_command "{\"cmd\":\"cat > lens.md\",\"workdir\":\"$cx_other/.claude/worktrees/$cx_tree\"}"
+  } >"$CX_ROLLOUT"
+  start_gated codex
+  [ "$cx_tree" = cx-foreign ] || git -C "$cx_other" worktree add -q "$cx_other/.claude/worktrees/$cx_tree" 2>/dev/null
+  gate_open
+  assert await_done
+  if [ "$cx_tree" = cx-made ]; then
+    assert jq -e --arg t "$cx_other/.claude/worktrees/cx-made" '.worktrees_made == [$t]' "$RUN_DIR/meta.json"
+    assert test ! -e "$RUN_DIR/workdir-escape"
+    assert test "$(grep -c '^WORKDIR-ESCAPE: ' <<<"$("$RUNNER" report "$RUN_ID")")" -eq 0
+  else
+    assert grep -qxF "$cx_other/.claude/worktrees/cx-foreign" "$RUN_DIR/workdir-escape"
+  fi
+done
+git -C "$cx_other" worktree remove --force "$cx_other/.claude/worktrees/cx-made"
+git -C "$cx_other" worktree remove --force "$cx_other/.claude/worktrees/cx-foreign"
+
 # Tool-looking text in strings and comments is not an executed call.
 clear_stub
 CX_TS=$(iso $(($(date +%s) + 60)))

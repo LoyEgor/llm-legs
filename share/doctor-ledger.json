@@ -2080,6 +2080,35 @@
    "reviewed_by": "Night fixer llm-reviewers-20261009T024643Z-3362",
    "note": "bench:20261008T013007Z-2bc6e3c/opus-high#0 and #2#1 (locomthebest), 06:10 local: `… 429,\"result\":\"You've hit your session limit · resets 6:20am\"`. At run time SIDE_WALL claude (accounts.is_429_error) saw the whole JSON and walled the account; only the word was wrong. Fixed: `you['’]ve hit your (session|weekly) limit` in the walled pattern of panel.py FAILURE_REASONS and its llm-doctor copy (test_llm_doctor.sh and test_review_bench.sh, red on the old code); a bare `hit your session limit` (a grep pattern echoed in a log) stays unclassified.",
    "handoff": null
+  },
+  {
+   "id": "W9",
+   "block": "workers",
+   "match": {
+    "word": "escaped",
+    "model": "^astra",
+    "detail": "^worked in [^/]+$"
+   },
+   "title": "a shell-only codex run made its own worktree in another repository and worked there, but the made-worktree grant read only tool-named writes and the escape named the main checkout it ran `worktree add` from, so a run inside its own grant read as escaped",
+   "status": "fixed-pending",
+   "fixes": [
+    {
+     "at": "2026-10-09T06:06:20+03:00",
+     "by": "LLM doctor",
+     "files": [
+      "llm-legs/bin/worker-run"
+     ],
+     "in": null,
+     "regressed_at": null
+    }
+   ],
+   "same_cause": [
+    "W3"
+   ],
+   "last_reviewed": "2026-10-09",
+   "reviewed_by": "LLM doctor",
+   "note": "2026-10-09 (night 20261009T023738Z-817e): codex-1791462438-96029-684c (notcom, astra) was launched from an llm-legs workdir on a review-bench brief naming a worktree that did not exist yet; the run ran `git worktree add .claude/worktrees/feat-speed-lens` with cwd review-bench and wrote only through the shell, so RUN_FILES_EXTERNAL was empty, worktrees_made stayed null and the first outside cwd row (review-bench main) became workdir-escape. worker-run now feeds every outside place of an all-outside run to record_made_worktrees and drops the escape when one lies under a made worktree (tests/test_worker_run_vendor_files.sh cx-made, red on the old code; cx-foreign keeps an un-made worktree escaped). W3 family, 6th shape: every cause so far is a cross-repository brief launched with the chat's own repository as workdir; the root lever is the launching chat passing --workdir or ADD-DIR, not more grants. The detail is the narrowest the leg carries: any other astra workdir escape lands here and reads as a regression.",
+   "handoff": null
   }
  ],
  "blind_spots": [

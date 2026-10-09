@@ -1630,7 +1630,7 @@ record_made_worktrees() { # directory
       [ -e "$root/.git" ] || continue
     fi
     made+="$tree"$'\n'
-  done <<<"${RUN_FILES_EXTERNAL:-}"
+  done < <({ printf '%s\n' "${RUN_FILES_EXTERNAL:-}"; sed '/^$/d; s|$|/|' <<<"${RUN_FILES_OUTSIDE:-}"; } | sort -u)
   [ -n "$made" ] || return 0
   meta_update "$directory" '.worktrees_made = ((.worktrees_made // []) + $made | unique)' \
     --argjson made "$(printf '%s' "$made" | jq -Rn '[inputs | select(length > 0)]')" || :
@@ -1644,6 +1644,15 @@ record_made_worktrees() { # directory
 record_workdir_escape() { # directory
   local directory="$1"
   [ -n "$RUN_FILES_ESCAPE" ] || return 0
+  # A worktree the run made is its own grant (W3), whichever place it named first: a shell-only
+  # codex run names the main checkout it ran `worktree add` from before the worktree itself.
+  if jq -r '.worktrees_made[]? // empty' "$directory/meta.json" 2>/dev/null |
+    awk 'NR == FNR { if ($0 != "") made[$0]; next }
+         { for (tree in made) if ($0 == tree || index($0, tree "/") == 1) found = 1 }
+         END { exit !found }' - <(printf '%s\n' "${RUN_FILES_OUTSIDE:-}"); then
+    RUN_FILES_ESCAPE=''
+    return 0
+  fi
   grep -qxF -- "$RUN_FILES_ESCAPE" "$directory/workdir-escape" 2>/dev/null && return 0
   printf '%s\n' "$RUN_FILES_ESCAPE" >>"$directory/workdir-escape" 2>/dev/null || :
   return 0
@@ -3460,7 +3469,7 @@ classify_tool_rows() { # rows workdir
         *) [ -n "$outside" ] || outside="$value" ;;
       esac
     done <<<"$places"
-    [ "$inside" -ne 0 ] || [ -z "$outside" ] || RUN_FILES_ESCAPE="$outside"
+    [ "$inside" -ne 0 ] || [ -z "$outside" ] || { RUN_FILES_ESCAPE="$outside"; RUN_FILES_OUTSIDE=$places; }
   fi
   [ -z "$RUN_FILES_REASON" ] || return 0
   RUN_FILES_LIST=$(AWK_DIR=$dir awk \
@@ -3773,6 +3782,7 @@ compute_transcript_files() {
   RUN_FILES_REASON=''
   RUN_FILES_PARTIAL=''
   RUN_FILES_ESCAPE=''
+  RUN_FILES_OUTSIDE=''
   RUN_SHELL_COMMANDS=''
   {
     IFS= read -r vendor || true
@@ -3797,7 +3807,7 @@ compute_transcript_files() {
         stat -c '%n %s %.9Y' "$transcript" ${subagents[@]+"${subagents[@]}"} 2>/dev/null; }) || key=''
     if [ -n "$key" ] && [ "$key" = "$TRANSCRIPT_MEMO" ]; then
       RUN_FILES_LIST=$TRANSCRIPT_MEMO_LIST RUN_FILES_REASON=$TRANSCRIPT_MEMO_REASON
-      RUN_FILES_PARTIAL=$TRANSCRIPT_MEMO_PARTIAL RUN_FILES_ESCAPE=$TRANSCRIPT_MEMO_ESCAPE
+      RUN_FILES_PARTIAL=$TRANSCRIPT_MEMO_PARTIAL RUN_FILES_ESCAPE=$TRANSCRIPT_MEMO_ESCAPE RUN_FILES_OUTSIDE=$TRANSCRIPT_MEMO_OUTSIDE
       RUN_SHELL_COMMANDS=$TRANSCRIPT_MEMO_COMMANDS
       return 0
     fi
@@ -3806,7 +3816,7 @@ compute_transcript_files() {
     return 0
   [ -z "$key" ] || {
     TRANSCRIPT_MEMO=$key TRANSCRIPT_MEMO_LIST=$RUN_FILES_LIST TRANSCRIPT_MEMO_REASON=$RUN_FILES_REASON
-    TRANSCRIPT_MEMO_PARTIAL=$RUN_FILES_PARTIAL TRANSCRIPT_MEMO_ESCAPE=$RUN_FILES_ESCAPE
+    TRANSCRIPT_MEMO_PARTIAL=$RUN_FILES_PARTIAL TRANSCRIPT_MEMO_ESCAPE=$RUN_FILES_ESCAPE TRANSCRIPT_MEMO_OUTSIDE=$RUN_FILES_OUTSIDE
     TRANSCRIPT_MEMO_COMMANDS=$RUN_SHELL_COMMANDS
   }
   return 0
